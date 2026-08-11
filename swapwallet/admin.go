@@ -332,6 +332,7 @@ func (s *Service) getExitPlan(ctx context.Context,
 			InfeasibilityReason: infeasibilityReasonFromUnroll(
 				entry.InfeasibilityReason,
 			),
+			RoundCommitment: errorString(entry.RoundCommitment),
 		})
 	}
 
@@ -579,6 +580,9 @@ func infeasibilityReasonFromUnroll(
 
 	case unroll.ExitWalletTooFewInputs:
 		return wavewalletrpc.ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS //nolint:ll
+
+	case unroll.ExitRoundCommitted:
+		return wavewalletrpc.ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED //nolint:ll
 
 	default:
 		return wavewalletrpc.ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_UNSPECIFIED //nolint:ll

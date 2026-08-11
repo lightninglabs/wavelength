@@ -6,6 +6,7 @@ import (
 	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/unroll"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/stretchr/testify/require"
@@ -279,14 +280,52 @@ func TestExitPlanEntrySurfacesStructuralInfeasibility(t *testing.T) {
 	}
 }
 
-// TestExitPlanEntryRefusesCommittedVTXO asserts the exit preview reports a
-// VTXO committed to a cooperative round as un-exitable.
+// exitPlanCommittedFixture persists a VTXO in the given lifecycle status with
+// a one-fragment ancestry, which is the minimum that makes the funding
+// estimate price the exit at all. Without it recoveryEstimate returns zero
+// required inputs and exitPlanEntry short-circuits on "no unilateral-exit
+// ancestry" before the commitment advisory is ever reached.
+func exitPlanCommittedFixture(t *testing.T, store *db.VTXOPersistenceStore,
+	hashByte byte, vtxoStatus vtxo.VTXOStatus) *vtxo.Descriptor {
+
+	t.Helper()
+
+	// A single-fragment ancestry: enough for the estimate to require
+	// real CPFP funding, shallow enough to stay economical against a
+	// 50k VTXO. The tree path must be non-nil because the ancestry row
+	// stores it NOT NULL.
+	desc := newRefreshEstimateVTXO(t, hashByte, 50_000, 900)
+	desc.Ancestry = []vtxo.Ancestry{
+		recoveryTestFragment(desc.CommitmentTxID, 0),
+	}
+	require.NoError(t, store.SaveVTXO(t.Context(), desc))
+
+	// SaveVTXO inserts at a fixed status and ignores desc.Status, so the
+	// lifecycle state under test has to be applied as an update.
+	desc.Status = vtxoStatus
+	require.NoError(
+		t,
+		store.UpdateVTXOStatus(
+			t.Context(), desc.Outpoint, vtxoStatus,
+		),
+	)
+
+	return desc
+}
+
+// TestExitPlanEntryWarnsCommittedVTXO asserts the exit preview reports a VTXO
+// committed to a cooperative round as an advisory alongside a full pricing,
+// rather than failing the entry.
 //
-// Previewing it as fundable is what escalated wavelength#577 into a near
-// miss: a user whose cooperative leave was already in flight was told
-// can_start=true, shortfall=0, and reached for --force-unroll-ack on a coin
-// the operator held a signed forfeit for.
-func TestExitPlanEntryRefusesCommittedVTXO(t *testing.T) {
+// Previewing it as unconditionally ready is what escalated wavelength#577
+// into a near miss: a user whose cooperative leave was already in flight was
+// told can_start=true, shortfall=0, and reached for --force-unroll-ack. But
+// refusing the entry outright is wrong in the other direction, because Unroll
+// has no commitment check and performs that exit — and it is the only lever
+// that recovers the coin when the operator is unreachable and the commitment
+// never confirms. An error would tell exactly that user their recovery is
+// impossible while withholding the funding figures it needs.
+func TestExitPlanEntryWarnsCommittedVTXO(t *testing.T) {
 	t.Parallel()
 
 	for _, committed := range []vtxo.VTXOStatus{
@@ -296,34 +335,79 @@ func TestExitPlanEntryRefusesCommittedVTXO(t *testing.T) {
 			t.Parallel()
 
 			r, store := newLeaveAdmissionServer(t)
-			desc := saveVTXOWithStatus(t, store, 0x61, committed)
+			desc := exitPlanCommittedFixture(
+				t, store, 0x61, committed,
+			)
 
+			// A wallet that comfortably covers the CPFP funding,
+			// so the only thing lowering the verdict is the round
+			// commitment itself.
 			entry, verdict := r.exitPlanEntry(
 				t.Context(), desc.Outpoint.String(), 1,
-				unroll.ExitFundingSnapshot{},
+				unroll.ExitFundingSnapshot{
+					WalletConfirmedSat: 1_000_000,
+					WalletUsableInputs: 4,
+				},
 			)
 
-			require.Error(t, entry.Err)
-			require.Contains(
-				t, entry.Err.Error(),
-				"cannot exit unilaterally",
+			// The entry is answered, not failed: Err means the
+			// preview could not price the coin at all.
+			require.NoError(t, entry.Err)
+
+			// The warning survives, and names what holds the coin.
+			require.Error(t, entry.RoundCommitment)
+			require.ErrorIs(
+				t, entry.RoundCommitment,
+				vtxo.ErrForfeitInFlight,
 			)
 			require.Contains(
-				t, entry.Err.Error(), desc.Outpoint.String(),
+				t, entry.RoundCommitment.Error(),
+				desc.Outpoint.String(),
 			)
 
-			// An entry carrying Err is excluded from the batch
-			// can_start aggregate, so the preview cannot report a
-			// ready exit for this coin.
+			// The verdict is lowered so no caller reads the coin
+			// as ready, and the reason says why.
 			require.False(t, entry.CanStart)
-			require.Zero(t, verdict.RequiredWalletInputs)
+			require.Equal(
+				t, unroll.ExitRoundCommitted,
+				entry.InfeasibilityReason,
+			)
 
-			// No funding address may be allocated: there is no
-			// shortfall to fund, and the block clears on its own
-			// when the round resolves.
-			require.Empty(t, entry.FundingAddress)
+			// The funding figures the recovery path needs are
+			// still there. The underlying funding assessment is
+			// untouched, which is what keeps the preview
+			// consistent with what Unroll will do.
+			require.True(t, verdict.Feasible)
+			require.Positive(t, entry.RequiredFeeUTXOCount)
+			require.Positive(t, entry.RecommendedTotalFundingSat)
+			require.Positive(t, entry.RecommendedUTXOAmountSat)
 		})
 	}
+}
+
+// TestExitPlanEntryUncommittedKeepsFeasibleVerdict is the control for the
+// test above: the same fixture in a live state must still preview as ready,
+// so the lowered verdict is attributable to the commitment and nothing else.
+func TestExitPlanEntryUncommittedKeepsFeasibleVerdict(t *testing.T) {
+	t.Parallel()
+
+	r, store := newLeaveAdmissionServer(t)
+	desc := exitPlanCommittedFixture(
+		t, store, 0x62, vtxo.VTXOStatusLive,
+	)
+
+	entry, _ := r.exitPlanEntry(
+		t.Context(), desc.Outpoint.String(), 1,
+		unroll.ExitFundingSnapshot{
+			WalletConfirmedSat: 1_000_000,
+			WalletUsableInputs: 4,
+		},
+	)
+
+	require.NoError(t, entry.Err)
+	require.NoError(t, entry.RoundCommitment)
+	require.True(t, entry.CanStart)
+	require.Equal(t, unroll.ExitFeasible, entry.InfeasibilityReason)
 }
 
 // TestExitPlanRoundCommitmentScope asserts the preview only blocks on a round
