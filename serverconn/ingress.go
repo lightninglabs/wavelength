@@ -721,7 +721,7 @@ func (a *ServerConnectionActor) ackRemote(
 func (a *ServerConnectionActor) loadCheckpoint(ctx context.Context) (AckState,
 	error) {
 
-	actorID := DurableActorID(a.cfg.LocalMailboxID)
+	actorID := a.runtimeID()
 
 	checkpoint, err := a.cfg.Store.LoadCheckpoint(ctx, actorID)
 	if err != nil {
@@ -1295,7 +1295,7 @@ func (a *ServerConnectionActor) saveCheckpointTo(ctx context.Context,
 		return err
 	}
 
-	actorID := DurableActorID(a.cfg.LocalMailboxID)
+	actorID := a.runtimeID()
 
 	return store.SaveCheckpoint(ctx, actor.CheckpointParams{
 		ActorID:   actorID,
