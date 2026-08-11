@@ -5325,6 +5325,15 @@ func (r *RPCServer) preflightUnrollFeasibility(ctx context.Context,
 		return nil
 	}
 
+	// An asset-bearing VTXO's worth is the assets riding on it, not its
+	// carrier sats, so the sats-denominated feasibility verdict would
+	// refuse every asset exit as uneconomical. The value judgment is
+	// the caller's; an underfunded wallet still surfaces through the
+	// exit's own broadcast failures.
+	if desc.TaprootAssetRoot != nil {
+		return nil
+	}
+
 	walletSnapshot, err := r.walletExitFundingSnapshot(ctx)
 	if err != nil {
 		return status.Errorf(codes.Internal, "preflight wallet "+
