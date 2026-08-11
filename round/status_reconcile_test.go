@@ -5,12 +5,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -766,5 +768,82 @@ func TestDeliveredFailureRetiresBoardingOnlyRound(t *testing.T) {
 	require.Less(
 		t, failIdx, cancelIdx, "a rejected cancel ahead of the "+
 			"notification would suppress the retirement",
+	)
+}
+
+// TestConfirmedThenFailedDoesNotRetireTheRound is the deliberate exception to
+// the rule the two tests above pin, and the reason retirement cannot simply be
+// hung off every path into ClientFailedState.
+//
+// A BoardingConfirmed that fails to build the client VTXOs still fails the
+// round in memory, but its commitment is already on-chain. The adopted
+// deposits have become VTXOs, and the round row is what keeps them out of the
+// boardable and sweepable pools: RoundFailedNotification would retire that row
+// and hand back deposits the client no longer owns as UTXOs. Local
+// bookkeeping broke; the round itself succeeded.
+//
+// The exit still disarms the reconcile clock, because the confirmation
+// resolved the round's fate and a one-shot left armed would probe a round that
+// has settled terminally.
+//
+// So this test asserts an absence. Routing this exit through
+// checkpointedFailureOutbox would look like a tidy unification of the
+// ClientFailedState exits and would break silently, in a direction nothing
+// else here catches.
+func TestConfirmedThenFailedDoesNotRetireTheRound(t *testing.T) {
+	t.Parallel()
+
+	ownerKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	roundID := reconcileRoundID(0xaa)
+	s := reconcileState(roundID, nil)
+
+	// A locally-owned VTXO request whose policy template cannot be
+	// decoded. That is the cheapest way to fail buildClientVTXOs; the
+	// branch under test does not care which of its errors fired, only
+	// that the confirmation could not be turned into local VTXOs.
+	s.Intents.VTXOs = []types.VTXORequest{{
+		OwnerKey: keychain.KeyDescriptor{
+			PubKey: ownerKey.PubKey(),
+		},
+		PolicyTemplate: []byte{
+			0xff,
+		},
+	}}
+
+	tr, err := s.ProcessEvent(
+		context.Background(), &BoardingConfirmed{
+			BlockHeight:   200,
+			Confirmations: 1,
+		},
+		reconcileEnv(),
+	)
+	require.NoError(t, err, "the build error is carried into the state")
+
+	failedState, ok := tr.NextState.(*ClientFailedState)
+	require.True(
+		t, ok, "expected ClientFailedState, got %T", tr.NextState,
+	)
+	require.Equal(t, "failed to build client VTXOs", failedState.Reason)
+
+	outbox := tr.NewEvents.UnwrapOr(ClientEmittedEvent{}).Outbox
+
+	// The clock is disarmed: the confirmation settled the round.
+	cancel, ok := findOutbox[*CancelTimeoutReq](outbox)
+	require.True(
+		t, ok, "confirmed-then-failed exit left the reconcile "+
+			"clock armed on a terminally settled round",
+	)
+	require.Equal(t, TimeoutPhaseStatusReconcile, cancel.Phase)
+
+	// And the round is NOT retired. This is the assertion the test exists
+	// for.
+	_, retired := findOutbox[*RoundFailedNotification](outbox)
+	require.False(
+		t, retired, "the confirmed-then-failed exit emitted a "+
+			"RoundFailedNotification: retiring a round whose "+
+			"commitment confirmed re-admits deposits that are "+
+			"already VTXOs",
 	)
 }
