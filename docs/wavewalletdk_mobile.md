@@ -52,7 +52,14 @@ not snake_case. Host models must map those exact names (e.g. `@SerialName`
 (`data_dir`, `wallet_esplora_url`, …), and `OpenWalletFromPasskey`, whose
 request is a small camelCase-tagged struct (`prfOutput`). Every other request
 decodes into the matching `wavewalletdk.*Request` DTO, so it follows the
-PascalCase rule.
+PascalCase rule. `Receive` additionally accepts `TimeoutSeconds`: zero or an
+omitted field selects a 20-second default, and positive values are capped at
+five minutes. A deadline error does not prove that the receive session was not
+created. The host must reconcile the authoritative Activity view and recover
+any matching invoice before deliberately asking to create another one.
+Repeatable `Balance`, `List`, and `Status` reads use a 10-second binding-owned
+deadline because gomobile cannot carry a caller `context.Context`; these reads
+are safe for the host to request again after timeout.
 
 `StartExternalSeedWallet` is another explicit exception in the private binding
 ABI. Its startup envelope is snake_case (`config`, `seed_entropy`,
@@ -95,6 +102,13 @@ func Stop() error
   and in-flight RPCs / subscriptions unwind on shutdown.
 - The startup deadline bounds daemon readiness only. External-seed opening and
   recovery use the lifecycle context cancelled by `Stop`.
+- The portable Go binding cannot observe an iOS or Android application
+  lifecycle. A host that leaves the embedded daemon alive while its process is
+  suspended also leaves external gRPC connections frozen on their old network
+  path. After a real background/resume transition, call `Stop` and `Start`
+  (then unlock the same durable wallet) so external transports are re-dialled.
+  The lifecycle state machine prevents overlapping daemon instances; it does
+  not infer foreground state for the host.
 
 ### External seed wallets
 

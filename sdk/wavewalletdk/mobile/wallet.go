@@ -8,9 +8,76 @@ import (
 	"fmt"
 	"io"
 	"runtime/debug"
+	"time"
 
 	"github.com/lightninglabs/wavelength/sdk/wavewalletdk"
 )
+
+const (
+	// defaultReadTimeout bounds read-only wallet calls whose foreign host
+	// cannot supply context.Context through gomobile. Reads are safe to
+	// repeat after a timeout and must not inherit the daemon's entire
+	// lifetime.
+	defaultReadTimeout = 10 * time.Second
+
+	// defaultReceiveTimeout bounds invoice creation when a mobile host
+	// omits TimeoutSeconds. A timed-out request has an uncertain outcome:
+	// callers must reconcile Activity before deliberately creating another
+	// invoice.
+	defaultReceiveTimeout = 20 * time.Second
+
+	// maxReceiveTimeout prevents malformed host input from restoring the
+	// effectively unbounded behavior this mobile-only request field avoids.
+	maxReceiveTimeout = 5 * time.Minute
+)
+
+// readContext derives the bounded context used by safe, repeatable mobile
+// reads. The daemon-lifetime parent still cancels it immediately during Stop.
+func readContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, defaultReadTimeout)
+}
+
+// mobileReceiveRequest extends the SDK receive DTO with a mobile-only request
+// deadline. The extra JSON field is backwards-compatible with older bindings,
+// whose encoding/json decoder ignores it.
+type mobileReceiveRequest struct {
+	AmountSat      uint64
+	Memo           string
+	TimeoutSeconds int64
+}
+
+// decodeReceiveRequest validates the mobile-only deadline and converts the
+// wire request into the SDK DTO. Zero selects the bounded default so older
+// hosts gain a deadline when they update only the native framework.
+func decodeReceiveRequest(reqJSON []byte) (wavewalletdk.ReceiveRequest,
+	time.Duration, error) {
+
+	var mobileReq mobileReceiveRequest
+	if err := decode(reqJSON, &mobileReq); err != nil {
+		return wavewalletdk.ReceiveRequest{}, 0, err
+	}
+
+	timeout := defaultReceiveTimeout
+	if mobileReq.TimeoutSeconds < 0 {
+		return wavewalletdk.ReceiveRequest{}, 0,
+			fmt.Errorf("receive timeout seconds must not be " +
+				"negative")
+	}
+	maxTimeoutSeconds := int64(maxReceiveTimeout / time.Second)
+	if mobileReq.TimeoutSeconds > maxTimeoutSeconds {
+		return wavewalletdk.ReceiveRequest{}, 0, fmt.Errorf("receive "+
+			"timeout seconds %d exceeds maximum %d",
+			mobileReq.TimeoutSeconds, maxTimeoutSeconds)
+	}
+	if mobileReq.TimeoutSeconds > 0 {
+		timeout = time.Duration(mobileReq.TimeoutSeconds) * time.Second
+	}
+
+	return wavewalletdk.ReceiveRequest{
+		AmountSat: mobileReq.AmountSat,
+		Memo:      mobileReq.Memo,
+	}, timeout, nil
+}
 
 // GetInfo returns the daemon readiness snapshot as JSON (wavewalletdk.Info).
 func GetInfo() ([]byte, error) {
@@ -73,10 +140,12 @@ func UnlockWallet(reqJSON []byte) ([]byte, error) {
 
 // Balance returns the wallet balance summary as JSON (wavewalletdk.Balance).
 func Balance() ([]byte, error) {
-	client, ctx, err := activeClient()
+	client, parentCtx, err := activeClient()
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := readContext(parentCtx)
+	defer cancel()
 
 	bal, err := client.Balance(ctx)
 	if err != nil {
@@ -107,18 +176,23 @@ func Deposit(reqJSON []byte) ([]byte, error) {
 	return marshal(res)
 }
 
-// Receive opens a Lightning invoice receive. reqJSON decodes to
-// wavewalletdk.ReceiveRequest; the response is wavewalletdk.ReceiveResult.
+// Receive opens a Lightning invoice receive. reqJSON accepts AmountSat, Memo,
+// and an optional mobile-only TimeoutSeconds; the response is
+// wavewalletdk.ReceiveResult. When the deadline expires, the outcome may be
+// uncertain, so the host must reconcile Activity before retrying deliberately.
 func Receive(reqJSON []byte) ([]byte, error) {
-	client, ctx, err := activeClient()
+	client, parentCtx, err := activeClient()
 	if err != nil {
 		return nil, err
 	}
 
-	var req wavewalletdk.ReceiveRequest
-	if err := decode(reqJSON, &req); err != nil {
+	req, timeout, err := decodeReceiveRequest(reqJSON)
+	if err != nil {
 		return nil, err
 	}
+
+	ctx, cancel := context.WithTimeout(parentCtx, timeout)
+	defer cancel()
 
 	res, err := client.Receive(ctx, req)
 	if err != nil {
@@ -175,10 +249,12 @@ func SendPrepared(reqJSON []byte) ([]byte, error) {
 // decodes to wavewalletdk.ListRequest; the response is the tagged-union
 // wavewalletdk.ListResult.
 func List(reqJSON []byte) ([]byte, error) {
-	client, ctx, err := activeClient()
+	client, parentCtx, err := activeClient()
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := readContext(parentCtx)
+	defer cancel()
 
 	var req wavewalletdk.ListRequest
 	if err := decode(reqJSON, &req); err != nil {
@@ -305,10 +381,12 @@ func SweepWallet(reqJSON []byte) ([]byte, error) {
 // Status returns wallet readiness, balance, and pending counts as JSON
 // (wavewalletdk.Status).
 func Status() ([]byte, error) {
-	client, ctx, err := activeClient()
+	client, parentCtx, err := activeClient()
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := readContext(parentCtx)
+	defer cancel()
 
 	status, err := client.Status(ctx)
 	if err != nil {
