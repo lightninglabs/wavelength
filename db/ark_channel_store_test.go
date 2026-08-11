@@ -2,7 +2,6 @@ package db
 
 import (
 	"bytes"
-	"math"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -12,6 +11,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightningnetwork/lnd/clock"
+	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,7 +24,10 @@ func TestArkChannelStoreRoundTrip(t *testing.T) {
 	coordinator, err := arkchannel.NewCoordinator(store)
 	require.NoError(t, err)
 	terms := testArkChannelTerms(t, arkchannel.KindReceiveIntent, 1)
-	terms.ReservedSCID = math.MaxUint64
+	terms.ReservedSCID = lnwire.ShortChannelID{
+		BlockHeight: 0x800001,
+		TxIndex:     1,
+	}.ToUint64()
 
 	_, err = coordinator.Request(t.Context(), terms)
 	require.NoError(t, err)
@@ -54,9 +57,7 @@ func TestArkChannelStoreRoundTrip(t *testing.T) {
 	loaded, err := store.Get(t.Context(), terms.ID)
 	require.NoError(t, err)
 	require.Equal(t, arkchannel.PhaseBackingReady, loaded.Snapshot.Phase)
-	require.Equal(
-		t, uint64(math.MaxUint64), loaded.Snapshot.Terms.ReservedSCID,
-	)
+	require.Equal(t, terms.ReservedSCID, loaded.Snapshot.Terms.ReservedSCID)
 	require.Equal(t, backing, *loaded.Snapshot.Backing)
 	require.Equal(t, binding, *loaded.Snapshot.Source)
 	byPendingID, err := store.GetByPendingChannelID(
@@ -64,6 +65,11 @@ func TestArkChannelStoreRoundTrip(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, loaded, byPendingID)
+	byChannelPoint, err := store.GetByChannelPoint(
+		t.Context(), backing.ChannelPoint,
+	)
+	require.NoError(t, err)
+	require.Equal(t, loaded, byChannelPoint)
 
 	_, err = store.CompareAndSwap(
 		t.Context(), terms.ID, bound.Revision, bound.Snapshot,
@@ -92,6 +98,12 @@ func TestArkChannelStoreNotFound(t *testing.T) {
 
 	store := newArkChannelStoreForTest(t)
 	_, err := store.Get(t.Context(), arkchannel.ID{99})
+	require.ErrorIs(t, err, arkchannel.ErrNotFound)
+	_, err = store.GetByChannelPoint(
+		t.Context(), wire.OutPoint{
+			Hash: chainhash.Hash{99},
+		},
+	)
 	require.ErrorIs(t, err, arkchannel.ErrNotFound)
 }
 
@@ -141,7 +153,11 @@ func testArkChannelTerms(t *testing.T, kind arkchannel.Kind,
 			seed,
 			2,
 		},
-		Capacity:      btcutil.Amount(100_000),
+		Capacity: btcutil.Amount(100_000),
+		ReservedSCID: lnwire.ShortChannelID{
+			BlockHeight: 16_000_000 + uint32(seed),
+			TxIndex:     uint32(seed),
+		}.ToUint64(),
 		ClientNodeKey: clientNodeKey,
 		HubNodeKey:    hubNodeKey,
 		VTXO: arkchannel.VTXOTerms{
@@ -158,7 +174,6 @@ func testArkChannelTerms(t *testing.T, kind arkchannel.Kind,
 	}
 	if kind == arkchannel.KindReceiveIntent {
 		terms.Funder = arkchannel.PartyHub
-		terms.ReservedSCID = uint64(seed)
 		terms.PaymentHash = [32]byte{seed, 4}
 	}
 

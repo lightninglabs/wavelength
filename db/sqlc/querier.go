@@ -75,6 +75,7 @@ type Querier interface {
 	// GetActivityEntry returns one entry by its canonical id.
 	GetActivityEntry(ctx context.Context, canonicalID string) (ActivityEntry, error)
 	GetArkChannel(ctx context.Context, channelID []byte) (ArkChannel, error)
+	GetArkChannelByChannelPoint(ctx context.Context, arg GetArkChannelByChannelPointParams) (ArkChannel, error)
 	GetArkChannelByPendingID(ctx context.Context, pendingChannelID []byte) (ArkChannel, error)
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)

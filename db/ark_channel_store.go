@@ -118,6 +118,35 @@ func (s *ArkChannelStoreDB) GetByPendingChannelID(ctx context.Context,
 	return arkChannelRecordFromRow(row)
 }
 
+// GetByChannelPoint loads one channel by lnd's durable funding outpoint.
+func (s *ArkChannelStoreDB) GetByChannelPoint(ctx context.Context,
+	channelPoint wire.OutPoint) (arkchannel.Record, error) {
+
+	var row sqlc.ArkChannel
+	err := s.ExecTx(ctx, ReadTxOption(), func(q *sqlc.Queries) error {
+		var err error
+		row, err = q.GetArkChannelByChannelPoint(
+			ctx, sqlc.GetArkChannelByChannelPointParams{
+				ChannelPointTxid: channelPoint.Hash[:],
+				ChannelPointIndex: sql.NullInt64{
+					Int64: int64(channelPoint.Index),
+					Valid: true,
+				},
+			},
+		)
+
+		return err
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return arkchannel.Record{}, arkchannel.ErrNotFound
+	}
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+
+	return arkChannelRecordFromRow(row)
+}
+
 // ListNonTerminal loads channels that need recovery or observation.
 func (s *ArkChannelStoreDB) ListNonTerminal(ctx context.Context) (
 	[]arkchannel.Record, error) {

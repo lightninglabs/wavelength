@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/btcsuite/btcd/wire/v2"
 )
 
 var (
@@ -35,6 +37,8 @@ type Store interface {
 	Get(context.Context, ID) (Record, error)
 
 	GetByPendingChannelID(context.Context, [32]byte) (Record, error)
+
+	GetByChannelPoint(context.Context, wire.OutPoint) (Record, error)
 
 	ListNonTerminal(context.Context) ([]Record, error)
 
@@ -120,6 +124,14 @@ func (c *Coordinator) FindByPendingChannelID(ctx context.Context,
 	pendingID [32]byte) (Record, error) {
 
 	return c.store.GetByPendingChannelID(ctx, pendingID)
+}
+
+// FindByChannelPoint resolves the durable backing record observed by lnd's
+// pending-channel lifecycle.
+func (c *Coordinator) FindByChannelPoint(ctx context.Context,
+	channelPoint wire.OutPoint) (Record, error) {
+
+	return c.store.GetByChannelPoint(ctx, channelPoint)
 }
 
 // Apply durably applies one event and then returns any side effect to execute.

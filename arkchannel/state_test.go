@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -41,11 +42,11 @@ func TestReceiveIntentLifecycle(t *testing.T) {
 
 	backing := testBacking(t, terms, binding)
 	for _, event := range []Event{
-		&FundingFinalized{
-			Party: PartyClient,
-		},
 		&BackingSigned{
 			Backing: backing,
+		},
+		&FundingFinalized{
+			Party: PartyClient,
 		},
 	} {
 		record, _, err = coordinator.Apply(t.Context(), terms.ID, event)
@@ -192,11 +193,11 @@ func TestPromotionActivatesWithoutRound(t *testing.T) {
 		&BindVTXO{
 			Binding: binding,
 		},
-		&FundingFinalized{
-			Party: PartyHub,
-		},
 		&BackingSigned{
 			Backing: backing,
+		},
+		&FundingFinalized{
+			Party: PartyHub,
 		},
 	} {
 		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
@@ -212,6 +213,31 @@ func TestPromotionActivatesWithoutRound(t *testing.T) {
 	require.Equal(t, PhaseActivating, record.Snapshot.Phase)
 	require.IsType(t, &ActivateChannel{}, requireOneAction(t, actions))
 	require.False(t, record.Snapshot.RoundCommitted)
+}
+
+// TestFundingFinalizationRequiresBacking ensures an edge-triggered lnd
+// notification cannot become the only durable key for recovery.
+func TestFundingFinalizationRequiresBacking(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	terms := testTerms(t, KindReceiveIntent)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	_, _, err = coordinator.Apply(
+		t.Context(), terms.ID, &BindVTXO{
+			Binding: testBinding(terms),
+		},
+	)
+	require.NoError(t, err)
+
+	_, _, err = coordinator.Apply(
+		t.Context(), terms.ID, &FundingFinalized{
+			Party: PartyHub,
+		},
+	)
+	require.ErrorContains(t, err, "before signed backing")
 }
 
 // TestCoordinatorIdempotency verifies duplicate facts do not advance the
@@ -460,6 +486,23 @@ func (s *memoryStore) GetByPendingChannelID(_ context.Context,
 	return Record{}, ErrNotFound
 }
 
+// GetByChannelPoint loads one record by its signed lnd funding outpoint.
+func (s *memoryStore) GetByChannelPoint(_ context.Context,
+	channelPoint wire.OutPoint) (Record, error) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, record := range s.records {
+		backing := record.Snapshot.Backing
+		if backing != nil && backing.ChannelPoint == channelPoint {
+			return cloneRecord(record), nil
+		}
+	}
+
+	return Record{}, ErrNotFound
+}
+
 // ListNonTerminal loads resumable records in stable ID order.
 func (s *memoryStore) ListNonTerminal(_ context.Context) ([]Record, error) {
 	s.mu.Lock()
@@ -552,7 +595,11 @@ func testTerms(t *testing.T, kind Kind) Terms {
 			5,
 			byte(kind),
 		},
-		Capacity:      btcutil.Amount(100_000),
+		Capacity: btcutil.Amount(100_000),
+		ReservedSCID: lnwire.ShortChannelID{
+			BlockHeight: 16_000_000 + uint32(kind),
+			TxIndex:     uint32(kind),
+		}.ToUint64(),
 		ClientNodeKey: clientNodeKey,
 		HubNodeKey:    hubNodeKey,
 		VTXO: VTXOTerms{
@@ -569,7 +616,6 @@ func testTerms(t *testing.T, kind Kind) Terms {
 	}
 	if kind == KindReceiveIntent {
 		terms.Funder = PartyHub
-		terms.ReservedSCID = 8_000_001
 		terms.PaymentHash = [32]byte{9, 9, byte(kind)}
 	}
 

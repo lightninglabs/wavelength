@@ -17,7 +17,7 @@ type VirtualFundingActivator interface {
 type FundingNegotiator interface {
 	NegotiateChannel(context.Context, ID, Terms, VTXOBinding) error
 
-	CancelChannel(context.Context, ID, Terms) error
+	CancelChannel(context.Context, ID, Terms, *Backing) error
 }
 
 // ChannelMaterializer publishes the Ark ancestry before the signed backing.
@@ -71,7 +71,9 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 		)
 
 	case *CancelFunding:
-		return e.negotiator.CancelChannel(ctx, id, action.Terms)
+		return e.negotiator.CancelChannel(
+			ctx, id, action.Terms, action.Backing,
+		)
 
 	case *PublishChannel:
 		return e.materializer.MaterializeChannel(

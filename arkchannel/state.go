@@ -132,8 +132,15 @@ func PendingAction(snapshot Snapshot) (Action, error) {
 		}, nil
 
 	case PhaseCancelling:
+		var backing *Backing
+		if snapshot.Backing != nil {
+			clone := snapshot.Backing.Clone()
+			backing = &clone
+		}
+
 		return &CancelFunding{
-			Terms: snapshot.Terms.Clone(),
+			Terms:   snapshot.Terms.Clone(),
+			Backing: backing,
 		}, nil
 
 	case PhaseMaterializing:
@@ -256,6 +263,10 @@ func applyFundingFinalized(next *Snapshot, party Party) (bool, error) {
 	if next.Source == nil {
 		return false, fmt.Errorf("cannot finalize funding before " +
 			"VTXO binding")
+	}
+	if next.Backing == nil {
+		return false, fmt.Errorf("cannot finalize funding before " +
+			"signed backing")
 	}
 	if next.Phase == PhaseCancelling || next.Phase == PhaseFailed {
 		return false, fmt.Errorf("cannot finalize abandoned channel")
@@ -492,8 +503,15 @@ func advance(next *Snapshot) (Action, error) {
 		}, nil
 
 	case PhaseCancelling:
+		var backing *Backing
+		if next.Backing != nil {
+			clone := next.Backing.Clone()
+			backing = &clone
+		}
+
 		return &CancelFunding{
-			Terms: next.Terms.Clone(),
+			Terms:   next.Terms.Clone(),
+			Backing: backing,
 		}, nil
 
 	case PhaseRequested, PhaseActivating, PhaseActive, PhaseOnChain,
@@ -545,6 +563,11 @@ func validateSnapshot(snapshot Snapshot) error {
 	if snapshot.Source == nil && (snapshot.Backing != nil ||
 		snapshot.ClientFinalized || snapshot.HubFinalized) {
 		return fmt.Errorf("funding facts require a bound VTXO")
+	}
+	if snapshot.Backing == nil && (snapshot.ClientFinalized ||
+		snapshot.HubFinalized) {
+		return fmt.Errorf("funding finalization requires signed " +
+			"backing")
 	}
 	if snapshot.Phase >= PhaseBackingReady &&
 		snapshot.Phase != PhaseCancelling &&

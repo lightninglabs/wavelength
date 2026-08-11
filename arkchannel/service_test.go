@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -13,6 +14,17 @@ type serviceExecutor struct {
 	t       *testing.T
 	service *Service
 	counts  map[string]int
+}
+
+type staticFundingFinalizationSource struct {
+	finalized bool
+}
+
+// FundingFinalized returns one fixed lnd database observation.
+func (s *staticFundingFinalizationSource) FundingFinalized(context.Context,
+	Terms, Backing) (bool, error) {
+
+	return s.finalized, nil
 }
 
 // Execute simulates native lnd and materializer completion callbacks.
@@ -148,4 +160,51 @@ func TestServiceRegistersReceiveIntentWithoutFunding(t *testing.T) {
 	require.Equal(t, PhaseRequested, record.Snapshot.Phase)
 }
 
-var _ ActionExecutor = (*serviceExecutor)(nil)
+// TestServiceReconcilesFundingByChannelPoint proves a missed lnd callback is
+// recoverable from the pending channel record keyed by signed backing.
+func TestServiceReconcilesFundingByChannelPoint(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	service, err := NewService(coordinator, &noOpActionExecutor{})
+	require.NoError(t, err)
+	terms := testTerms(t, KindPromotion)
+	_, err = service.RegisterPromotion(t.Context(), terms)
+	require.NoError(t, err)
+	binding := testBinding(terms)
+	_, err = service.BindVTXO(t.Context(), terms.ID, binding)
+	require.NoError(t, err)
+	backing := testBacking(t, terms, binding)
+	_, err = service.Apply(t.Context(), terms.ID, &BackingSigned{
+		Backing: backing,
+	})
+	require.NoError(t, err)
+
+	source := &staticFundingFinalizationSource{finalized: true}
+	require.NoError(
+		t,
+		service.ReconcileFunding(
+			t.Context(), PartyClient, source,
+		),
+	)
+	record, err := service.ObserveFundingFinalized(
+		t.Context(), PartyHub, backing.ChannelPoint,
+	)
+	require.NoError(t, err)
+	require.True(t, record.Snapshot.ClientFinalized)
+	require.True(t, record.Snapshot.HubFinalized)
+	require.Equal(t, PhaseActivating, record.Snapshot.Phase)
+
+	_, err = service.ObserveFundingFinalized(
+		t.Context(), PartyHub, wire.OutPoint{
+			Hash: [32]byte{99},
+		},
+	)
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+var (
+	_ ActionExecutor            = (*serviceExecutor)(nil)
+	_ FundingFinalizationSource = (*staticFundingFinalizationSource)(nil)
+)

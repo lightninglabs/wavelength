@@ -25,6 +25,10 @@ WHERE channel_id = $1;
 SELECT * FROM ark_channels
 WHERE pending_channel_id = $1;
 
+-- name: GetArkChannelByChannelPoint :one
+SELECT * FROM ark_channels
+WHERE channel_point_txid = $1 AND channel_point_index = $2;
+
 -- name: ListNonTerminalArkChannels :many
 SELECT * FROM ark_channels
 -- Phase 9 is closed and phase 11 is failed. Cancelling remains resumable.

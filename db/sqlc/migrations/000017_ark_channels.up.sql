@@ -62,3 +62,7 @@ CREATE TABLE IF NOT EXISTS ark_channels (
 
 CREATE INDEX IF NOT EXISTS idx_ark_channels_phase_created
     ON ark_channels(phase, created_at ASC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ark_channels_channel_point
+    ON ark_channels(channel_point_txid, channel_point_index)
+    WHERE channel_point_txid IS NOT NULL;

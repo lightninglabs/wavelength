@@ -106,7 +106,8 @@ func (*ActivateChannel) actionSealed() {}
 // CancelFunding asks the native funding adapter to remove an abandoned lnd
 // reservation before the Ark workflow becomes terminal.
 type CancelFunding struct {
-	Terms Terms
+	Terms   Terms
+	Backing *Backing
 }
 
 func (*CancelFunding) actionSealed() {}

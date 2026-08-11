@@ -17,8 +17,8 @@ type nativeExecutorHarness struct {
 }
 
 // CancelChannel records native funding cleanup.
-func (h *nativeExecutorHarness) CancelChannel(_ context.Context, id ID,
-	_ Terms) error {
+func (h *nativeExecutorHarness) CancelChannel(_ context.Context, id ID, _ Terms,
+	_ *Backing) error {
 
 	h.cancelledID = id
 
@@ -77,7 +77,8 @@ func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
 		t,
 		executor.Execute(
 			t.Context(), terms.ID, &CancelFunding{
-				Terms: terms,
+				Terms:   terms,
+				Backing: &backing,
 			},
 		),
 	)

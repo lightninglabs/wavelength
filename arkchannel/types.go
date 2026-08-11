@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightningnetwork/lnd/lnwire"
 )
 
 // ID is the stable identifier shared by both sides of an Ark channel.
@@ -252,6 +253,10 @@ func (t Terms) Validate() error {
 	if t.Capacity <= 0 {
 		return fmt.Errorf("channel capacity must be positive")
 	}
+	reservedSCID := lnwire.NewShortChanIDFromInt(t.ReservedSCID)
+	if reservedSCID.BlockHeight == 0 {
+		return fmt.Errorf("channel requires a reserved virtual SCID")
+	}
 	if _, _, err := t.VTXO.Artifacts(); err != nil {
 		return err
 	}
@@ -278,10 +283,6 @@ func (t Terms) Validate() error {
 	case KindReceiveIntent:
 		if t.Funder != PartyHub {
 			return fmt.Errorf("receive intent must be hub funded")
-		}
-		if t.ReservedSCID == 0 {
-			return fmt.Errorf("receive intent requires a " +
-				"reserved SCID")
 		}
 		if t.PaymentHash == ([32]byte{}) {
 			return fmt.Errorf("receive intent requires a payment " +
@@ -387,6 +388,12 @@ func (b Backing) Validate(terms Terms, source VTXOBinding) error {
 		return fmt.Errorf("channel point value %d does not match "+
 			"capacity %d", tx.TxOut[b.ChannelPoint.Index].Value,
 			terms.Capacity)
+	}
+	reservedSCID := lnwire.NewShortChanIDFromInt(terms.ReservedSCID)
+	if reservedSCID.TxPosition != uint16(b.ChannelPoint.Index) {
+		return fmt.Errorf("reserved SCID output %d does not match "+
+			"channel point output %d", reservedSCID.TxPosition,
+			b.ChannelPoint.Index)
 	}
 
 	return nil
