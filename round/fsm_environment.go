@@ -118,6 +118,11 @@ type ClientEnvironment struct {
 	// the owned receive scripts store.
 	OwnedScriptChecker OwnedScriptChecker
 
+	// ReadinessGate prepares externally constrained outputs after exact
+	// tree validation and commits their authorization before nonce
+	// generation.
+	ReadinessGate RoundReadinessGate
+
 	// Now returns the current wall-clock time. evaluateQuote
 	// uses this to enforce the server-advertised
 	// `quote_expires_at`; a nil value falls back to time.Now so

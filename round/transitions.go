@@ -2526,26 +2526,50 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 				err)
 		}
 
-		// Proceed to nonce generation. Forfeit mappings (if any) are
-		// carried forward through the MuSig2 signing states. Forfeit
-		// signatures are collected AFTER VTXO tree signing is complete,
-		// ensuring clients only forfeit old VTXOs after verifying new
-		// VTXOs are properly signed.
+		validatedState := &CommitmentTxValidatedState{
+			RoundID:              s.RoundID,
+			CommitmentTx:         s.CommitmentTx,
+			VTXOTreePaths:        s.VTXOTreePaths,
+			SweepDelay:           s.SweepDelay,
+			FlowVersion:          s.FlowVersion,
+			ForfeitKey:           s.ForfeitKey,
+			Intents:              s.Intents.Clone(),
+			ClientTrees:          clientTrees,
+			BoardingInputIndices: boardingInputIndices,
+			ForfeitMappings:      forfeitMappings,
+		}
+		if env.ReadinessGate == nil {
+			return &ClientStateTransition{
+				NextState: validatedState,
+				NewEvents: fn.Some(ClientEmittedEvent{
+					InternalEvent: []ClientEvent{
+						&GenerateNonces{},
+					},
+				}),
+			}, nil
+		}
+
+		readinessRequest, err := buildRoundReadinessRequest(
+			s.RoundID, s.TxID, s.Intents, clientTrees,
+		)
+		if err != nil {
+			return failBeforeForfeitSigning(
+				"build round readiness context", err, false,
+				s.RoundID, s.Intents.Forfeits,
+			), nil
+		}
+
 		return &ClientStateTransition{
-			NextState: &CommitmentTxValidatedState{
-				RoundID:              s.RoundID,
-				CommitmentTx:         s.CommitmentTx,
-				VTXOTreePaths:        s.VTXOTreePaths,
-				SweepDelay:           s.SweepDelay,
-				FlowVersion:          s.FlowVersion,
-				ForfeitKey:           s.ForfeitKey,
-				Intents:              s.Intents.Clone(),
-				ClientTrees:          clientTrees,
-				BoardingInputIndices: boardingInputIndices,
-				ForfeitMappings:      forfeitMappings,
+			NextState: &RoundReadinessPendingState{
+				Validated: validatedState,
+				Request:   readinessRequest,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
-				InternalEvent: []ClientEvent{&GenerateNonces{}},
+				Outbox: []ClientOutMsg{
+					&AwaitRoundReadinessRequest{
+						Request: readinessRequest,
+					},
+				},
 			}),
 		}, nil
 
@@ -2560,6 +2584,123 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 
 	default:
 		// Self-loop on unknown events - do not halt the FSM.
+		return selfLoop(s), nil
+	}
+}
+
+// buildRoundReadinessRequest derives exact VTXO outpoints from validated
+// client paths while preserving intent order.
+func buildRoundReadinessRequest(roundID RoundID, commitmentTxID chainhash.Hash,
+	intents Intents,
+	clientTrees map[SignerKey]*tree.Tree) (RoundReadinessRequest, error) {
+
+	request := RoundReadinessRequest{
+		RoundID:        roundID,
+		CommitmentTxID: commitmentTxID,
+		Outputs: make(
+			[]RoundReadinessOutput, 0, len(intents.VTXOs),
+		),
+	}
+	for i := range intents.VTXOs {
+		vtxoRequest := intents.VTXOs[i]
+		signerKey := NewSignerKey(vtxoRequest.SigningKey.PubKey)
+		clientTree := clientTrees[signerKey]
+		if clientTree == nil {
+			return RoundReadinessRequest{}, fmt.Errorf("VTXO "+
+				"request %d has no validated client tree", i)
+		}
+		leaves := clientTree.Root.GetLeafNodes()
+		if len(leaves) != 1 {
+			return RoundReadinessRequest{}, fmt.Errorf("VTXO "+
+				"request %d has %d leaves, want 1", i,
+				len(leaves))
+		}
+		outpoint, err := leaves[0].GetNonAnchorOutpoint()
+		if err != nil {
+			return RoundReadinessRequest{}, fmt.Errorf("derive "+
+				"VTXO request %d outpoint: %w", i, err)
+		}
+		amount, err := leafNonAnchorAmount(leaves[0])
+		if err != nil {
+			return RoundReadinessRequest{}, fmt.Errorf("derive "+
+				"VTXO request %d amount: %w", i, err)
+		}
+		policy, err := vtxoRequest.EffectivePolicyTemplate()
+		if err != nil {
+			return RoundReadinessRequest{}, fmt.Errorf("derive "+
+				"VTXO request %d policy: %w", i, err)
+		}
+		pkScript, err := vtxoRequest.EffectivePkScript()
+		if err != nil {
+			return RoundReadinessRequest{}, fmt.Errorf("derive "+
+				"VTXO request %d pkScript: %w", i, err)
+		}
+
+		request.Outputs = append(request.Outputs, RoundReadinessOutput{
+			SigningKey:     signerKey,
+			VTXOOutpoint:   *outpoint,
+			Amount:         amount,
+			PolicyTemplate: policy,
+			PkScript:       pkScript,
+			TreePath:       clientTree,
+		})
+	}
+
+	return request, nil
+}
+
+// ProcessEvent for RoundReadinessPendingState.
+func (s *RoundReadinessPendingState) ProcessEvent(_ context.Context,
+	event ClientEvent, _ *ClientEnvironment) (*ClientStateTransition,
+	error) {
+
+	if s.Validated == nil {
+		return nil, fmt.Errorf("round readiness state has no " +
+			"validated state")
+	}
+
+	switch event := event.(type) {
+	case *RoundReadinessResolved:
+		if err := event.validate(s.Validated.RoundID); err != nil {
+			return failBeforeForfeitSigning(
+				"invalid round readiness result", err, false,
+				s.Validated.RoundID,
+				s.Validated.Intents.Forfeits,
+			), nil
+		}
+		if event.Err != nil {
+
+			// The failed state durably carries the cause.
+			//nolint:nilerr
+			return failBeforeForfeitSigning(
+				"round output readiness failed", event.Err,
+				true, s.Validated.RoundID,
+				s.Validated.Intents.Forfeits,
+			), nil
+		}
+
+		request := s.Request.Clone()
+		s.Validated.ReadinessRequest = &request
+		s.Validated.ReadinessToken = slices.Clone(event.Token)
+
+		return &ClientStateTransition{
+			NextState: s.Validated,
+			NewEvents: fn.Some(ClientEmittedEvent{
+				InternalEvent: []ClientEvent{&GenerateNonces{}},
+			}),
+		}, nil
+
+	case *BoardingFailed:
+		return withFailureCode(
+			failBeforeForfeitSigning(
+				event.Reason, event.Error, event.Recoverable,
+				s.Validated.RoundID,
+				s.Validated.Intents.Forfeits,
+			),
+			event.FailureCode,
+		), nil
+
+	default:
 		return selfLoop(s), nil
 	}
 }
@@ -2587,6 +2728,13 @@ func (s *CommitmentTxValidatedState) processEvent(ctx context.Context,
 
 	switch evt := event.(type) {
 	case *GenerateNonces:
+		if err := s.commitSigningAuthorization(ctx, env); err != nil {
+			return failBeforeForfeitSigning(
+				"commit round signing authorization", err, true,
+				s.RoundID, s.Intents.Forfeits,
+			), nil
+		}
+
 		env.Log.InfoS(
 			ctx,
 			"Generating MuSig2 nonces for VTXO tree signing",
@@ -2819,6 +2967,20 @@ func (s *CommitmentTxValidatedState) processEvent(ctx context.Context,
 		// Self-loop on unknown events - do not halt the FSM.
 		return selfLoop(s), nil
 	}
+}
+
+// commitSigningAuthorization durably crosses the external readiness boundary
+// immediately before the signer creates any MuSig2 nonce.
+func (s *CommitmentTxValidatedState) commitSigningAuthorization(
+	ctx context.Context, env *ClientEnvironment) error {
+
+	if env.ReadinessGate == nil || s.ReadinessRequest == nil {
+		return nil
+	}
+
+	return env.ReadinessGate.CommitSigningAuthorization(
+		ctx, s.ReadinessRequest.Clone(), slices.Clone(s.ReadinessToken),
+	)
 }
 
 // ProcessEvent for ForfeitSignaturesCollectingState. This state handles the
