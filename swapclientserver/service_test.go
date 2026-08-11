@@ -18,6 +18,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btclog/v2"
@@ -946,6 +947,8 @@ func TestNewSwapServerClientsREST(t *testing.T) {
 	)
 	defer server.Close()
 
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
 	clients, err := newSwapServerClients(&waved.SwapConfig{
 		ServerTransport: waved.RPCTransportREST,
 		ServerInsecure:  true,
@@ -953,14 +956,11 @@ func TestNewSwapServerClientsREST(t *testing.T) {
 		error) {
 
 		return "auth-" + recipient, nil
-	}, nil)
+	}, testCreditAccountSigner(t, clientPriv), nil)
 	require.NoError(t, err)
 	require.NotNil(t, clients.server)
 	require.NotNil(t, clients.mailbox)
 	require.NoError(t, clients.cleanup())
-
-	clientPriv, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
 
 	hint, err := clients.server.RequestChannelID(
 		t.Context(), clientPriv.PubKey(), lntypes.Hash{1},
@@ -1002,7 +1002,7 @@ func TestNewSwapServerClientsUnknownTransport(t *testing.T) {
 
 	_, err := newSwapServerClients(&waved.SwapConfig{
 		ServerTransport: "webdav",
-	}, "localhost:10030", nil, nil)
+	}, "localhost:10030", nil, nil, nil)
 	require.ErrorContains(t, err, "unknown swap server transport")
 }
 
@@ -1048,6 +1048,8 @@ func TestSwapServerClientsWaitForLateGRPCServer(t *testing.T) {
 	t.Parallel()
 
 	addr := reserveLoopbackAddr(t)
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
 	clients, err := newSwapServerClients(
 		&waved.SwapConfig{
 			ServerTransport: waved.RPCTransportGRPC,
@@ -1055,7 +1057,7 @@ func TestSwapServerClientsWaitForLateGRPCServer(t *testing.T) {
 		},
 		addr, func(context.Context, string) (string, error) {
 			return "auth", nil
-		}, nil,
+		}, testCreditAccountSigner(t, clientPriv), nil,
 	)
 	require.NoError(t, err)
 	defer func() {
@@ -1104,6 +1106,30 @@ func TestSwapServerClientsWaitForLateGRPCServer(t *testing.T) {
 	}
 }
 
+// testCreditAccountSigner returns a deterministic account-request signer for
+// swap transport tests.
+func testCreditAccountSigner(t *testing.T,
+	privKey *btcec.PrivateKey) swaps.CreditAccountAuthorizationSigner {
+
+	t.Helper()
+
+	return func(_ context.Context, accountKey []byte,
+		requestDigest [32]byte, expiresAtUnix int64,
+		nonce [swaprpc.CreditAccountNonceSize]byte) (*schnorr.Signature,
+		error) {
+
+		require.Equal(
+			t, privKey.PubKey().SerializeCompressed(), accountKey,
+		)
+		digest := swaprpc.CreditAccountAuthDigest(
+			privKey.PubKey().SerializeCompressed(), requestDigest,
+			expiresAtUnix, nonce[:],
+		)
+
+		return schnorr.Sign(privKey, digest[:])
+	}
+}
+
 // TestSwapServerClientsBestEffortReadsFailFast verifies optional read-only
 // calls do not consume their parent wallet RPC's deadline while swapd is
 // unavailable.
@@ -1111,6 +1137,8 @@ func TestSwapServerClientsBestEffortReadsFailFast(t *testing.T) {
 	t.Parallel()
 
 	addr := reserveLoopbackAddr(t)
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
 	clients, err := newSwapServerClients(
 		&waved.SwapConfig{
 			ServerTransport: waved.RPCTransportGRPC,
@@ -1118,7 +1146,7 @@ func TestSwapServerClientsBestEffortReadsFailFast(t *testing.T) {
 		},
 		addr, func(context.Context, string) (string, error) {
 			return "auth", nil
-		}, nil,
+		}, testCreditAccountSigner(t, clientPriv), nil,
 	)
 	require.NoError(t, err)
 	defer func() {
@@ -1134,7 +1162,9 @@ func TestSwapServerClientsBestEffortReadsFailFast(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 
-	_, err = creditClient.ListCredits(ctx, []byte{1, 2, 3}, 10)
+	_, err = creditClient.ListCredits(
+		ctx, clientPriv.PubKey().SerializeCompressed(), 10,
+	)
 	require.Error(t, err)
 	require.Equal(t, codes.Unavailable, status.Code(err))
 	require.NoError(t, ctx.Err())

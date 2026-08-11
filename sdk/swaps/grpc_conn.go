@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"math"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -19,32 +21,66 @@ import (
 // GRPCSwapServerConn implements SwapServerConn using the shared generated
 // swaprpc client stubs.
 type GRPCSwapServerConn struct {
-	client swaprpc.SwapServiceClient
+	client              swaprpc.SwapServiceClient
+	creditAccountSigner CreditAccountAuthorizationSigner
+	authNow             func() time.Time
+	authRand            io.Reader
 }
 
 const wireCreditFundingLightningReceive = swaprpc.
 	CreditFundingSource_CREDIT_FUNDING_SOURCE_LIGHTNING_RECEIVE
 
 // NewGRPCSwapServerConn creates a gRPC-backed SwapServerConn from one connected
-// gRPC client connection.
-func NewGRPCSwapServerConn(conn grpc.ClientConnInterface) *GRPCSwapServerConn {
-	return &GRPCSwapServerConn{
-		client: swaprpc.NewSwapServiceClient(conn),
+// gRPC client connection. A signer is required for receive and credit-account
+// operations; send-only callers that do not use credits may omit it.
+func NewGRPCSwapServerConn(conn grpc.ClientConnInterface,
+	creditSigner ...CreditAccountAuthorizationSigner) *GRPCSwapServerConn {
+
+	serverConn := newSwapServerConn(swaprpc.NewSwapServiceClient(conn))
+	if len(creditSigner) > 0 {
+		serverConn.creditAccountSigner = creditSigner[0]
 	}
+
+	return serverConn
 }
 
-// NewRESTSwapServerConn creates a REST-backed SwapServerConn for one
-// grpc-gateway base address.
+// NewRESTSwapServerConn creates an unauthenticated REST-backed SwapServerConn
+// for one grpc-gateway base address. It supports send operations that do not
+// use credits; receive and credit-account operations require the authenticated
+// constructor.
 func NewRESTSwapServerConn(addr string,
 	opts ...restclient.Option) *GRPCSwapServerConn {
 
+	return newSwapServerConn(restclient.NewSwapServiceClient(addr, opts...))
+}
+
+// NewAuthenticatedRESTSwapServerConn creates a REST-backed SwapServerConn
+// that signs account-scoped credit requests.
+func NewAuthenticatedRESTSwapServerConn(addr string,
+	creditSigner CreditAccountAuthorizationSigner,
+	opts ...restclient.Option) *GRPCSwapServerConn {
+
+	serverConn := newSwapServerConn(
+		restclient.NewSwapServiceClient(addr, opts...),
+	)
+	serverConn.creditAccountSigner = creditSigner
+
+	return serverConn
+}
+
+// newSwapServerConn creates the shared transport wrapper with production
+// clock and entropy sources.
+func newSwapServerConn(client swaprpc.SwapServiceClient) *GRPCSwapServerConn {
 	return &GRPCSwapServerConn{
-		client: restclient.NewSwapServiceClient(addr, opts...),
+		client:   client,
+		authNow:  time.Now,
+		authRand: defaultCreditAccountAuthRand(),
 	}
 }
 
 // RequestChannelID asks the swap server for one route hint for a
-// Lightning-to-Ark receive flow.
+// Lightning-to-Ark receive flow. Receive routes are account-scoped and always
+// require a credit-account authorization signer.
 func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 	vhtlcPubkey *btcec.PublicKey, paymentHash lntypes.Hash,
 	amountSat btcutil.Amount, expirySeconds uint32,
@@ -57,18 +93,21 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 		return nil, fmt.Errorf("receive amount must be positive")
 	}
 
-	resp, err := g.client.RequestChannelId(
-		ctx, &swaprpc.RequestChannelIdRequest{
-			ExpirySeconds: expirySeconds,
-			ClientVhtlcPubkey: vhtlcPubkey.
-				SerializeCompressed(),
-			PaymentHash: append(
-				[]byte(nil), paymentHash[:]...,
-			),
-			AmountSat:           uint64(amountSat),
-			SupportsInArkCredit: supportsInArkCredit,
-		},
-	)
+	req := &swaprpc.RequestChannelIdRequest{
+		ExpirySeconds: expirySeconds,
+		ClientVhtlcPubkey: vhtlcPubkey.
+			SerializeCompressed(),
+		PaymentHash: append(
+			[]byte(nil), paymentHash[:]...,
+		),
+		AmountSat:           uint64(amountSat),
+		SupportsInArkCredit: supportsInArkCredit,
+	}
+	if err := g.authorizeCreditAccountRequest(ctx, req); err != nil {
+		return nil, err
+	}
+
+	resp, err := g.client.RequestChannelId(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("RequestChannelId RPC: %w", err)
 	}
@@ -159,16 +198,23 @@ func (g *GRPCSwapServerConn) CreateInSwapWithCredits(ctx context.Context,
 		return nil, fmt.Errorf("client vHTLC pubkey must be provided")
 	}
 
-	resp, err := g.client.CreateInSwap(
-		ctx, &swaprpc.CreateInSwapRequest{
-			Invoice:   invoice,
-			MaxFeeSat: maxFeeSat,
-			ClientVhtlcPubkey: clientVhtlcPubkey.
-				SerializeCompressed(),
-			AccountPubkey: append([]byte(nil), accountPubKey...),
-			MaxCreditSat:  maxCreditSat,
-		},
-	)
+	req := &swaprpc.CreateInSwapRequest{
+		Invoice:   invoice,
+		MaxFeeSat: maxFeeSat,
+		ClientVhtlcPubkey: clientVhtlcPubkey.
+			SerializeCompressed(),
+		AccountPubkey: append([]byte(nil), accountPubKey...),
+		MaxCreditSat:  maxCreditSat,
+	}
+	if len(accountPubKey) > 0 {
+		if err := g.authorizeCreditAccountRequest(
+			ctx, req,
+		); err != nil {
+			return nil, err
+		}
+	}
+
+	resp, err := g.client.CreateInSwap(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("CreateInSwap RPC: %w", err)
 	}
@@ -190,14 +236,21 @@ func (g *GRPCSwapServerConn) QuoteInSwapWithCredits(ctx context.Context,
 	invoice string, maxFeeSat uint64, accountPubKey []byte,
 	maxCreditSat uint64) (*InSwapQuote, error) {
 
-	resp, err := g.client.QuoteInSwap(
-		ctx, &swaprpc.QuoteInSwapRequest{
-			Invoice:       invoice,
-			MaxFeeSat:     maxFeeSat,
-			AccountPubkey: append([]byte(nil), accountPubKey...),
-			MaxCreditSat:  maxCreditSat,
-		},
-	)
+	req := &swaprpc.QuoteInSwapRequest{
+		Invoice:       invoice,
+		MaxFeeSat:     maxFeeSat,
+		AccountPubkey: append([]byte(nil), accountPubKey...),
+		MaxCreditSat:  maxCreditSat,
+	}
+	if len(accountPubKey) > 0 {
+		if err := g.authorizeCreditAccountRequest(
+			ctx, req,
+		); err != nil {
+			return nil, err
+		}
+	}
+
+	resp, err := g.client.QuoteInSwap(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("QuoteInSwap RPC: %w", err)
 	}
@@ -215,13 +268,18 @@ func (g *GRPCSwapServerConn) CreateCredit(ctx context.Context,
 		return nil, err
 	}
 
-	resp, err := g.client.CreateCredit(ctx, &swaprpc.CreateCreditRequest{
+	protoReq := &swaprpc.CreateCreditRequest{
 		AccountPubkey:  append([]byte(nil), accountPubKey...),
 		IdempotencyKey: req.IdempotencyKey,
 		Source:         source,
 		AmountSat:      req.AmountSat,
 		Memo:           req.Memo,
-	})
+	}
+	if err := g.authorizeCreditAccountRequest(ctx, protoReq); err != nil {
+		return nil, err
+	}
+
+	resp, err := g.client.CreateCredit(ctx, protoReq)
 	if err != nil {
 		return nil, fmt.Errorf("CreateCredit RPC: %w", err)
 	}
@@ -236,14 +294,19 @@ func (g *GRPCSwapServerConn) RedeemCredit(ctx context.Context,
 	accountPubKey []byte, req RedeemCreditRequest) (*CreditRedemption,
 	error) {
 
-	resp, err := g.client.RedeemCredit(ctx, &swaprpc.RedeemCreditRequest{
+	protoReq := &swaprpc.RedeemCreditRequest{
 		AccountPubkey:  append([]byte(nil), accountPubKey...),
 		IdempotencyKey: req.IdempotencyKey,
 		AmountSat:      req.AmountSat,
 		DestinationPubkey: append(
 			[]byte(nil), req.DestinationPubKey...,
 		),
-	})
+	}
+	if err := g.authorizeCreditAccountRequest(ctx, protoReq); err != nil {
+		return nil, err
+	}
+
+	resp, err := g.client.RedeemCredit(ctx, protoReq)
 	if err != nil {
 		return nil, fmt.Errorf("RedeemCredit RPC: %w", err)
 	}
@@ -268,10 +331,15 @@ func (g *GRPCSwapServerConn) RedeemCredit(ctx context.Context,
 func (g *GRPCSwapServerConn) ListCredits(ctx context.Context,
 	accountPubKey []byte, limit uint32) (*CreditSnapshot, error) {
 
-	resp, err := g.client.ListCredits(ctx, &swaprpc.ListCreditsRequest{
+	req := &swaprpc.ListCreditsRequest{
 		AccountPubkey: append([]byte(nil), accountPubKey...),
 		Limit:         limit,
-	})
+	}
+	if err := g.authorizeCreditAccountRequest(ctx, req); err != nil {
+		return nil, err
+	}
+
+	resp, err := g.client.ListCredits(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("ListCredits RPC: %w", err)
 	}

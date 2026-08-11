@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
@@ -120,6 +121,132 @@ func TestSignOutSwapHtlcAckSignsTerms(t *testing.T) {
 		keyDesc.PubKey, paymentHash, amountSat, pkScript,
 	)
 	require.True(t, sig.Verify(digest[:], keyDesc.PubKey))
+}
+
+// TestSignCreditAccountAuthorizationValidatesEnvelope verifies malformed and
+// stale authorization inputs are rejected before signing.
+func TestSignCreditAccountAuthorizationValidatesEnvelope(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	tooFarExpiry := now.Add(
+		swaprpc.CreditAccountMaxAuthTTL + time.Minute,
+	).Unix()
+	tests := []struct {
+		name string
+		req  *waverpc.SignCreditAccountAuthorizationRequest
+	}{
+		{
+			name: "request digest",
+			req: &waverpc.SignCreditAccountAuthorizationRequest{
+				Nonce: make(
+					[]byte, swaprpc.CreditAccountNonceSize,
+				),
+				ExpiresAtUnix: now.Add(time.Minute).Unix(),
+			},
+		},
+		{
+			name: "nonce",
+			req: &waverpc.SignCreditAccountAuthorizationRequest{
+				RequestDigest: make([]byte, 32),
+				ExpiresAtUnix: now.Add(time.Minute).Unix(),
+			},
+		},
+		{
+			name: "expired",
+			req: &waverpc.SignCreditAccountAuthorizationRequest{
+				AccountPubkey: make(
+					[]byte, btcec.PubKeyBytesLenCompressed,
+				),
+				RequestDigest: make([]byte, 32),
+				Nonce: make(
+					[]byte, swaprpc.CreditAccountNonceSize,
+				),
+				ExpiresAtUnix: now.Add(-time.Minute).Unix(),
+			},
+		},
+		{
+			name: "too far",
+			req: &waverpc.SignCreditAccountAuthorizationRequest{
+				AccountPubkey: make(
+					[]byte, btcec.PubKeyBytesLenCompressed,
+				),
+				RequestDigest: make([]byte, 32),
+				Nonce: make(
+					[]byte, swaprpc.CreditAccountNonceSize,
+				),
+				ExpiresAtUnix: tooFarExpiry,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := (&RPCServer{}).SignCreditAccountAuthorization(
+				t.Context(),
+				test.req,
+			)
+			require.Equal(
+				t, codes.InvalidArgument, status.Code(err),
+			)
+		})
+	}
+}
+
+// TestSignCreditAccountAuthorizationSignsDigest verifies the daemon identity
+// key signs the canonical account authorization message.
+func TestSignCreditAccountAuthorizationSignsDigest(t *testing.T) {
+	t.Parallel()
+
+	wallet := newFundedLwWallet(t)
+	keyDesc, err := wallet.KeyRing().DeriveKey(keychain.KeyLocator{
+		Family: keychain.KeyFamilyNodeKey,
+		Index:  0,
+	})
+	require.NoError(t, err)
+	walletReady := make(chan struct{})
+	close(walletReady)
+	rpcServer := &RPCServer{server: &Server{
+		walletReady:   walletReady,
+		clientKeyDesc: keyDesc,
+		lwWallet:      fn.Some(wallet),
+	}}
+
+	requestDigest := [32]byte{1, 2, 3}
+	nonce := [swaprpc.CreditAccountNonceSize]byte{4, 5, 6}
+	expiresAt := time.Now().Add(time.Minute).Unix()
+	resp, err := rpcServer.SignCreditAccountAuthorization(
+		t.Context(), &waverpc.SignCreditAccountAuthorizationRequest{
+			AccountPubkey: keyDesc.PubKey.SerializeCompressed(),
+			RequestDigest: requestDigest[:],
+			ExpiresAtUnix: expiresAt,
+			Nonce:         nonce[:],
+		},
+	)
+	require.NoError(t, err)
+
+	sig, err := schnorr.ParseSignature(resp.GetSignature())
+	require.NoError(t, err)
+	digest := swaprpc.CreditAccountAuthDigest(
+		keyDesc.PubKey.SerializeCompressed(), requestDigest, expiresAt,
+		nonce[:],
+	)
+	require.True(t, sig.Verify(digest[:], keyDesc.PubKey))
+
+	otherKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	_, err = rpcServer.SignCreditAccountAuthorization(
+		t.Context(), &waverpc.SignCreditAccountAuthorizationRequest{
+			AccountPubkey: otherKey.PubKey().SerializeCompressed(),
+			RequestDigest: requestDigest[:],
+			ExpiresAtUnix: expiresAt,
+			Nonce:         nonce[:],
+		},
+	)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
 }
 
 // TestWrongPassphraseErrorMapping pins the wrong-password

@@ -42,6 +42,9 @@ http:
     - selector: waverpc.DaemonService.SignOutSwapHtlcAck
       post: /v1/daemon/sign-out-swap-htlc-ack
       body: "*"
+    - selector: waverpc.DaemonService.SignCreditAccountAuthorization
+      post: /v1/daemon/sign-credit-account-authorization
+      body: "*"
     - selector: waverpc.DaemonService.GetIndexedVTXOByPkScript
       post: /v1/daemon/get-indexed-vtxo-by-pk-script
       body: "*"
