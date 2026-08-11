@@ -6,7 +6,9 @@ import (
 	"math"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
@@ -29,6 +31,14 @@ const (
 	// 5+). A pre-v5 snapshot omits this record, so it decodes to 0 (a fresh
 	// window) rather than failing.
 	snapshotFirstRejectNanosRecordType tlv.Type = 23
+
+	// snapshotRecipientsRecordType stores semantic recipient metadata for
+	// prepared and pre-submit sessions.
+	snapshotRecipientsRecordType tlv.Type = 25
+
+	// snapshotPrePONRFailureRecordType stores whether a terminal failure is
+	// definitive evidence that the source reservation was released.
+	snapshotPrePONRFailureRecordType tlv.Type = 27
 )
 
 func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
@@ -45,7 +55,6 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	inputSnapshots, err := encodeTransferInputSnapshots(
 		snapshot.TransferInputSnapshots,
 	)
@@ -57,8 +66,27 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 	failReason := []byte(snapshot.FailReason)
 	idempotencyKey := []byte(snapshot.IdempotencyKey)
 	firstRejectNanos := uint64(snapshot.FirstRejectUnixNanos)
+	recipientPayloads := make(
+		[]recipientPayload, 0, len(snapshot.RecipientOutputs),
+	)
+	for i := range snapshot.RecipientOutputs {
+		output := snapshot.RecipientOutputs[i]
+		recipientPayloads = append(recipientPayloads, recipientPayload{
+			PkScript:           output.PkScript,
+			ValueSat:           int64(output.Value),
+			VTXOPolicyTemplate: output.VTXOPolicyTemplate,
+		})
+	}
+	recipients, err := encodeRecipientPayloads(recipientPayloads)
+	if err != nil {
+		return nil, err
+	}
 
 	version := uint64(snapshot.Version)
+	var prePONRFailure uint8
+	if snapshot.PrePONRFailure {
+		prePONRFailure = 1
+	}
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(snapshotVersionRecordType, &version),
 		tlv.MakePrimitiveRecord(
@@ -83,6 +111,12 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotFirstRejectNanosRecordType, &firstRejectNanos,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotRecipientsRecordType, &recipients,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotPrePONRFailureRecordType, &prePONRFailure,
 		),
 	}
 
@@ -119,6 +153,8 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		failReasonRaw      []byte
 		idempotencyKeyRaw  []byte
 		firstRejectNanos   uint64
+		recipientsRaw      []byte
+		prePONRFailure     uint8
 	)
 
 	records := []tlv.Record{
@@ -145,6 +181,12 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotFirstRejectNanosRecordType, &firstRejectNanos,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotRecipientsRecordType, &recipientsRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotPrePONRFailureRecordType, &prePONRFailure,
 		),
 	}
 
@@ -205,6 +247,40 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 	if err != nil {
 		return nil, err
 	}
+	if prePONRFailure > 1 {
+		return nil, fmt.Errorf("snapshot pre-PONR failure must be 0 " +
+			"or 1")
+	}
+
+	var recipientOutputs []oortx.RecipientOutput
+	if len(recipientsRaw) > 0 {
+		recipientPayloads, err := decodeRecipientPayloadsWithLimits(
+			recipientsRaw, limits,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if len(recipientPayloads) > 0 {
+			recipientOutputs = make(
+				[]oortx.RecipientOutput, 0,
+				len(recipientPayloads),
+			)
+			for i := range recipientPayloads {
+				payload := recipientPayloads[i]
+				recipientOutputs = append(
+					recipientOutputs,
+					oortx.RecipientOutput{
+						PkScript: payload.PkScript,
+						Value: btcutil.Amount(
+							payload.ValueSat,
+						),
+						VTXOPolicyTemplate: payload.
+							VTXOPolicyTemplate,
+					},
+				)
+			}
+		}
+	}
 
 	return &OutgoingSnapshot{
 		Version:                decodedVersion,
@@ -217,6 +293,8 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		FailReason:             string(failReasonRaw),
 		IdempotencyKey:         string(idempotencyKeyRaw),
 		FirstRejectUnixNanos:   decodedFirstReject,
+		RecipientOutputs:       recipientOutputs,
+		PrePONRFailure:         prePONRFailure == 1,
 	}, nil
 }
 

@@ -50,6 +50,31 @@ func NewSessionWithIdempotencyKey(ctx context.Context,
 	outputs []oortx.RecipientOutput, idempotencyKey string,
 	envCfg EnvConfig) (*Session, []OutboxEvent, error) {
 
+	return newSessionWithIdempotencyKey(
+		ctx, policy, inputs, outputs, idempotencyKey, false, envCfg,
+	)
+}
+
+// NewPreparedSessionWithIdempotencyKey creates a durable OOR session whose
+// deterministic package is built but whose signatures and transport remain
+// gated on CommitPreparedEvent.
+func NewPreparedSessionWithIdempotencyKey(ctx context.Context,
+	policy arkscript.CheckpointPolicy, inputs []TransferInput,
+	outputs []oortx.RecipientOutput, idempotencyKey string,
+	envCfg EnvConfig) (*Session, []OutboxEvent, error) {
+
+	return newSessionWithIdempotencyKey(
+		ctx, policy, inputs, outputs, idempotencyKey, true, envCfg,
+	)
+}
+
+// newSessionWithIdempotencyKey constructs either an immediately committed or
+// explicitly prepared outgoing OOR session.
+func newSessionWithIdempotencyKey(ctx context.Context,
+	policy arkscript.CheckpointPolicy, inputs []TransferInput,
+	outputs []oortx.RecipientOutput, idempotencyKey string,
+	prepareOnly bool, envCfg EnvConfig) (*Session, []OutboxEvent, error) {
+
 	logger(ctx).DebugS(ctx, "Creating new OOR session",
 		slog.Int("num_inputs", len(inputs)),
 		slog.Int("num_outputs", len(outputs)),
@@ -77,6 +102,7 @@ func NewSessionWithIdempotencyKey(ctx context.Context,
 		RecipientOutputs: outputs,
 		Policy:           policy,
 		IdempotencyKey:   idempotencyKey,
+		PrepareOnly:      prepareOnly,
 	})
 	result := fut.Await(ctx)
 	if result.IsErr() {
@@ -90,6 +116,9 @@ func NewSessionWithIdempotencyKey(ctx context.Context,
 
 	var arkPSBT *psbt.Packet
 	switch s := currentState.(type) {
+	case *Prepared:
+		arkPSBT = s.ArkPSBT
+
 	case *AwaitingArkSignatures:
 		arkPSBT = s.ArkPSBT
 

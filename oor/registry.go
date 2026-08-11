@@ -636,7 +636,11 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 	// discarded; the spawned child rebuilds the identical one. Stop it
 	// immediately so its driveMachine goroutine does not linger for the
 	// daemon's lifetime (one leak per outgoing admission otherwise).
-	session, _, err := NewSessionWithIdempotencyKey(
+	newSession := NewSessionWithIdempotencyKey
+	if req.PrepareOnly {
+		newSession = NewPreparedSessionWithIdempotencyKey
+	}
+	session, _, err := newSession(
 		ctx, req.Policy, req.Inputs, req.Recipients, req.IdempotencyKey,
 		r.envConfig(),
 	)

@@ -65,6 +65,7 @@ func TestStartTransferPayloadTLVRoundTrip(t *testing.T) {
 		},
 		IdempotencyKey:             "funding-key-1",
 		AdmissionDeadlineUnixNanos: 1_700_000_000_123_456_789,
+		PrepareOnly:                true,
 	}
 
 	raw, err := encodeStartTransferPayload(payload)
@@ -83,8 +84,54 @@ func TestStartTransferPayloadTLVRoundTrip(t *testing.T) {
 		t, payload.AdmissionDeadlineUnixNanos,
 		decoded.AdmissionDeadlineUnixNanos,
 	)
+	require.Equal(t, payload.PrepareOnly, decoded.PrepareOnly)
 	require.Len(t, decoded.Inputs, 1)
 	require.Equal(t, payload.Inputs[0], decoded.Inputs[0])
+}
+
+// TestDriveEventRequestRoundTripPreparedEvents verifies the two-phase OOR
+// control events survive the durable mailbox codec.
+func TestDriveEventRequestRoundTripPreparedEvents(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		event Event
+	}{
+		{
+			name:  "commit",
+			event: &CommitPreparedEvent{},
+		},
+		{
+			name: "abort",
+			event: &AbortPreparedEvent{
+				Reason: "channel negotiation failed",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			msg := &DriveEventRequest{
+				SessionID: SessionID{
+					1,
+					2,
+					3,
+				},
+				Event: test.event,
+			}
+			var buf bytes.Buffer
+			require.NoError(t, msg.Encode(&buf))
+
+			var decoded DriveEventRequest
+			require.NoError(t, decoded.Decode(&buf))
+			require.Equal(t, msg.SessionID, decoded.SessionID)
+			require.Equal(t, test.event, decoded.Event)
+		})
+	}
 }
 
 // TestLookupTransferRequestRoundTrip verifies a read-only keyed reconciliation
