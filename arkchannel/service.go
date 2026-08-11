@@ -40,6 +40,27 @@ func (s *Service) RegisterReceiveIntent(ctx context.Context, terms Terms) (
 	return s.coordinator.Request(ctx, terms)
 }
 
+// RegisterPromotion durably records an existing-VTXO channel before either
+// endpoint starts native lnd funding.
+func (s *Service) RegisterPromotion(ctx context.Context, terms Terms) (Record,
+	error) {
+
+	if terms.Kind != KindPromotion {
+		return Record{}, fmt.Errorf("promotion terms are required")
+	}
+
+	return s.coordinator.Request(ctx, terms)
+}
+
+// BindVTXO attaches the exact validated source and starts native funding.
+func (s *Service) BindVTXO(ctx context.Context, id ID, binding VTXOBinding) (
+	Record, error) {
+
+	return s.Apply(ctx, id, &BindVTXO{
+		Binding: binding,
+	})
+}
+
 // PromoteVTXO registers and negotiates an existing client-funded VTXO.
 func (s *Service) PromoteVTXO(ctx context.Context, terms Terms,
 	binding VTXOBinding) (Record, error) {
@@ -47,12 +68,10 @@ func (s *Service) PromoteVTXO(ctx context.Context, terms Terms,
 	if terms.Kind != KindPromotion {
 		return Record{}, fmt.Errorf("promotion terms are required")
 	}
-	if _, err := s.coordinator.Request(ctx, terms); err != nil {
+	if _, err := s.RegisterPromotion(ctx, terms); err != nil {
 		return Record{}, err
 	}
-	if _, err := s.Apply(ctx, terms.ID, &BindVTXO{
-		Binding: binding,
-	}); err != nil {
+	if _, err := s.BindVTXO(ctx, terms.ID, binding); err != nil {
 		return Record{}, err
 	}
 

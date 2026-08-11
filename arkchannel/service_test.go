@@ -98,6 +98,35 @@ func TestServicePromotesAndMaterializesVTXO(t *testing.T) {
 	require.Equal(t, PhaseOnChain, record.Snapshot.Phase)
 }
 
+// TestServiceSeparatesPromotionRegistrationFromBinding verifies two peers can
+// persist identical terms before either one starts lnd negotiation.
+func TestServiceSeparatesPromotionRegistrationFromBinding(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	executor := &serviceExecutor{
+		t:      t,
+		counts: make(map[string]int),
+	}
+	service, err := NewService(coordinator, executor)
+	require.NoError(t, err)
+	executor.service = service
+	terms := testTerms(t, KindPromotion)
+
+	record, err := service.RegisterPromotion(t.Context(), terms)
+	require.NoError(t, err)
+	require.Equal(t, PhaseRequested, record.Snapshot.Phase)
+	require.Empty(t, executor.counts)
+
+	record, err = service.BindVTXO(
+		t.Context(), terms.ID, testBinding(terms),
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseActive, record.Snapshot.Phase)
+	require.Equal(t, 1, executor.counts["*arkchannel.NegotiateFunding"])
+}
+
 // TestServiceRegistersReceiveIntentWithoutFunding verifies registration does
 // not spend operator liquidity until a matching round output is known.
 func TestServiceRegistersReceiveIntentWithoutFunding(t *testing.T) {
