@@ -27,6 +27,7 @@ import (
 	btcwalletpkg "github.com/btcsuite/btcwallet/wallet"
 	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightninglabs/lndclient"
+	tapsdk "github.com/lightninglabs/tap-sdk"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/btcwbackend"
@@ -322,6 +323,11 @@ type Server struct {
 	// proofKeyBackend derives wallet-managed keys and produces proof
 	// signers for daemon-owned receive scripts and indexer identity.
 	proofKeyBackend proofkeys.Backend
+
+	// taprootAssetWallet is the daemon's tapd wallet, present when the
+	// optional Taproot Asset integration is configured. Onboarding and
+	// the exit claim build their transitions through it.
+	taprootAssetWallet *tapsdk.Wallet
 
 	// operatorTerms caches the operator policy fetched during daemon
 	// bootstrap so local RPC callers can inspect the current server

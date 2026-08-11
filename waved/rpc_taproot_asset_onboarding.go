@@ -60,6 +60,7 @@ func (r *RPCServer) ConfigureTaprootAssetOnboarding(wallet *tapsdk.Wallet,
 		return err
 	}
 	r.server.cfg.TaprootAssetOnboarder = onboarder
+	r.server.taprootAssetWallet = wallet
 
 	return nil
 }
