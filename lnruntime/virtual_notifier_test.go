@@ -30,10 +30,9 @@ func (n *countingNotifier) RegisterConfirmationsNtfn(*chainhash.Hash, []byte,
 	return chainntnfs.NewConfirmationEvent(1, func() {}), nil
 }
 
-// TestVirtualFundingNotifierActivatesAfterRoundConfirmation verifies lnd sees
-// no funding confirmation before the Ark coordinator opens the activation
-// gate.
-func TestVirtualFundingNotifierActivatesAfterRoundConfirmation(t *testing.T) {
+// TestVirtualFundingNotifierActivatesAfterOORFinalization verifies lnd sees no
+// funding confirmation before the Ark coordinator opens the activation gate.
+func TestVirtualFundingNotifierActivatesAfterOORFinalization(t *testing.T) {
 	t.Parallel()
 
 	base := &countingNotifier{runtimeNotifier: newRuntimeNotifier(800_000)}
@@ -66,7 +65,7 @@ func TestVirtualFundingNotifierActivatesAfterRoundConfirmation(t *testing.T) {
 
 	select {
 	case <-event.Confirmed:
-		t.Fatal("virtual funding confirmed before Ark round")
+		t.Fatal("virtual funding confirmed before OOR finalization")
 
 	case <-time.After(20 * time.Millisecond):
 	}

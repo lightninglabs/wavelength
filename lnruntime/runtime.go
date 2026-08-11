@@ -480,8 +480,8 @@ func (r *Runtime) HandleChannelMessage(message lnwire.LinkUpdater) error {
 
 // HandlePeerMessage routes one authenticated BOLT message to the native lnd
 // subsystem that owns it.
-func (r *Runtime) HandlePeerMessage(ctx context.Context,
-	message lnwire.Message, peer lnpeer.Peer) error {
+func (r *Runtime) HandlePeerMessage(ctx context.Context, message lnwire.Message,
+	peer lnpeer.Peer) error {
 
 	if message == nil {
 		return fmt.Errorf("lnd peer message is required")
@@ -528,7 +528,6 @@ func (r *Runtime) HandlePeerMessage(ctx context.Context,
 
 	case *lnwire.Pong, *lnwire.NodeAnnouncement1,
 		*lnwire.ChannelAnnouncement1, *lnwire.ChannelUpdate1:
-
 		return nil
 
 	default:
@@ -597,6 +596,45 @@ func (r *Runtime) GetLink(scid lnwire.ShortChannelID) (htlcswitch.ChannelLink,
 // RemoveLink stops and removes the native lnd link for a channel point.
 func (r *Runtime) RemoveLink(channelPoint wire.OutPoint) {
 	r.switcher.RemoveLink(lnwire.NewChanIDFromOutPoint(channelPoint))
+}
+
+// PrepareForceClose stops the live link and asks lnd's channel state machine
+// for its latest fully signed commitment transaction. The caller must
+// materialize the unpublished channel point before broadcasting this spend.
+func (r *Runtime) PrepareForceClose(channelPoint wire.OutPoint) (
+	*lnwallet.LocalForceCloseSummary, error) {
+
+	channelState, err := r.cfg.DB.ChannelStateDB().FetchChannel(
+		channelPoint,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("find channel for force close: %w", err)
+	}
+	if channelState.IsPending {
+		return nil, fmt.Errorf("cannot force close a pending channel")
+	}
+
+	r.RemoveLink(channelPoint)
+	channel, err := lnwallet.NewLightningChannel(
+		r.cfg.Signer, channelState, r.sigPool,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("restore channel for force close: %w",
+			err)
+	}
+	summary, err := channel.ForceClose(
+		lnwallet.WithSkipContractResolutions(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("prepare lnd force close: %w", err)
+	}
+	if len(summary.CloseTx.TxIn) == 0 ||
+		summary.CloseTx.TxIn[0].PreviousOutPoint != channelPoint {
+		return nil, fmt.Errorf("lnd force close does not spend " +
+			"channel point")
+	}
+
+	return summary, nil
 }
 
 // unavailableChannelUpdate is the default for a private runtime with no graph.

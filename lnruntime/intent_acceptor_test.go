@@ -1,6 +1,7 @@
 package lnruntime
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -108,7 +109,8 @@ func TestIntentAcceptorRejectsUnregisteredFunding(t *testing.T) {
 }
 
 // TestIntentAcceptorRequiresBoundVTXO verifies registration alone cannot
-// allocate lnd responder state before the Ark round fixes the source output.
+// allocate lnd responder state before the prepared OOR transfer fixes the
+// source output.
 func TestIntentAcceptorRequiresBoundVTXO(t *testing.T) {
 	t.Parallel()
 
@@ -171,30 +173,56 @@ func testReceiveIntentRecord(t *testing.T) (arkchannel.Record,
 			MinExitDelay:     144,
 		},
 	}
-	policy, pkScript, err := terms.VTXO.Artifacts()
-	require.NoError(t, err)
 
 	return arkchannel.Record{
 		Revision: 2,
 		Snapshot: arkchannel.Snapshot{
-			Terms: terms,
-			Phase: arkchannel.PhaseNegotiating,
-			Source: &arkchannel.VTXOBinding{
-				OutPoint: wire.OutPoint{
-					Hash: chainhash.Hash{
-						4,
-					},
-				},
-				Amount:  terms.Capacity,
-				RoundID: "round-1",
-				CommitmentTxID: chainhash.Hash{
-					5,
-				},
-				PolicyTemplate: policy,
-				PkScript:       pkScript,
-			},
+			Terms:  terms,
+			Phase:  arkchannel.PhaseNegotiating,
+			Source: testIntentBinding(t, terms, terms.Capacity, 0),
 		},
 	}, hubNode.PubKey()
+}
+
+// testIntentBinding creates a canonical unsigned Ark transaction containing
+// the exact channel-policy output.
+func testIntentBinding(t *testing.T, terms arkchannel.Terms,
+	amount btcutil.Amount, outputIndex uint32) *arkchannel.VTXOBinding {
+
+	t.Helper()
+	policy, pkScript, err := terms.VTXO.Artifacts()
+	require.NoError(t, err)
+	tx := wire.NewMsgTx(2)
+	tx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{Hash: chainhash.Hash{4, 2}},
+	})
+	for i := uint32(0); i < outputIndex; i++ {
+		tx.AddTxOut(
+			&wire.TxOut{
+				Value:    int64(i + 1),
+				PkScript: []byte{0x51},
+			},
+		)
+	}
+	tx.AddTxOut(&wire.TxOut{
+		Value:    int64(amount),
+		PkScript: pkScript,
+	})
+	var raw bytes.Buffer
+	require.NoError(t, tx.Serialize(&raw))
+	sessionID := [32]byte(tx.TxHash())
+
+	return &arkchannel.VTXOBinding{
+		OORSessionID: sessionID,
+		OutPoint: wire.OutPoint{
+			Hash:  tx.TxHash(),
+			Index: outputIndex,
+		},
+		Amount:         amount,
+		ArkTransaction: raw.Bytes(),
+		PolicyTemplate: policy,
+		PkScript:       pkScript,
+	}
 }
 
 // testIntentKey creates one policy or node key.

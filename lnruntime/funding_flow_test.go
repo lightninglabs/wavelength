@@ -5,15 +5,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
-	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
-	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightningnetwork/lnd/channeldb"
@@ -21,12 +21,14 @@ import (
 	lndfunding "github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/graph/db/models"
 	"github.com/lightningnetwork/lnd/htlcswitch"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnpeer"
 	"github.com/lightningnetwork/lnd/lntest/mock"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/lightningnetwork/lnd/lnwallet/chancloser"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/stretchr/testify/require"
@@ -50,6 +52,73 @@ type fundingFlowNode struct {
 	links     chan *chanstate.OpenChannel
 	failures  chan error
 	intents   *staticIntentSource
+}
+
+// fundingNegotiationSink models the already-tested durable channel FSM while
+// this component test exercises the production native funding coordinator.
+type fundingNegotiationSink struct {
+	mu     sync.Mutex
+	node   *fundingFlowNode
+	party  arkchannel.Party
+	record arkchannel.Record
+}
+
+// Apply records funding facts and releases virtual confirmation only after
+// both native lnd endpoints have finalized their initial commitments.
+func (s *fundingNegotiationSink) Apply(_ context.Context, id arkchannel.ID,
+	event arkchannel.Event) (arkchannel.Record, error) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if id != s.record.Snapshot.Terms.ID {
+		return arkchannel.Record{}, fmt.Errorf("unexpected channel ID")
+	}
+
+	snapshot := &s.record.Snapshot
+	switch event := event.(type) {
+	case *arkchannel.BackingSigned:
+		backing := event.Backing.Clone()
+		snapshot.Backing = &backing
+
+	case *arkchannel.FundingFinalized:
+		if event.Party == arkchannel.PartyClient {
+			snapshot.ClientFinalized = true
+		} else {
+			snapshot.HubFinalized = true
+		}
+		if snapshot.ClientFinalized && snapshot.HubFinalized &&
+			snapshot.Terms.Funder == s.party {
+
+			snapshot.OORFinalized = true
+			if err := s.node.runtime.Funding().ConfirmBacking(
+				snapshot.Backing.ChannelPoint.Hash,
+			); err != nil {
+				return arkchannel.Record{}, err
+			}
+		}
+
+	case *arkchannel.OORFinalized:
+		if event.SessionID != snapshot.Source.OORSessionID {
+			return arkchannel.Record{}, fmt.Errorf("unexpected " +
+				"OOR session")
+		}
+		snapshot.OORFinalized = true
+		if err := s.node.runtime.Funding().ConfirmBacking(
+			snapshot.Backing.ChannelPoint.Hash,
+		); err != nil {
+			return arkchannel.Record{}, err
+		}
+
+	case *arkchannel.ChannelActive:
+		snapshot.Phase = arkchannel.PhaseActive
+
+	default:
+		return arkchannel.Record{}, fmt.Errorf("unexpected channel "+
+			"event %T", event)
+	}
+	s.record.Revision++
+
+	return s.record, nil
 }
 
 // fundingFlowTransport preserves lnd wire ordering over an in-memory version
@@ -147,59 +216,55 @@ func TestNativeFundingFlowPaysBothDirections(t *testing.T) {
 	})
 
 	pendingID := lndfunding.PendingChanID{1, 3, 3, 7}
-	record, _ := testReceiveIntentRecord(t)
-	record.Snapshot.Terms.PendingChannelID = pendingID
-	record.Snapshot.Terms.Capacity = testFundingCapacity
-	record.Snapshot.Terms.HubNodeKey = compressedIntentKey(alice.key)
-	record.Snapshot.Terms.ClientNodeKey = compressedIntentKey(bob.key)
-	record.Snapshot.Source.Amount = testFundingCapacity + 1_000
-	record.Snapshot.Source.OutPoint = wire.OutPoint{
-		Hash: chainhash.Hash{
-			4,
-			2,
-		},
-		Index: 1,
-	}
+	record := fundingIntentRecord(t, alice, bob, pendingID)
 	alice.intents.record = record
 	bob.intents.record = record
 
-	flow, err := alice.runtime.Funding().OpenChannel(FundingOpenRequest{
-		Peer:             alice.peer,
-		PendingChannelID: pendingID,
-		Capacity:         testFundingCapacity,
-	})
+	aliceEndpoint, err := NewNativeFundingEndpoint(
+		arkchannel.PartyHub, alice.runtime.Funding(),
+		input.NewMockSigner(
+			[]*btcec.PrivateKey{alice.key}, nil,
+		),
+		keychain.KeyDescriptor{
+			PubKey: alice.key.PubKey(),
+		},
+	)
 	require.NoError(t, err)
-	packet := awaitFundingPSBT(t, flow)
-	funding := completeVirtualFunding(
-		t, packet, lnwire.NewShortChanIDFromInt(
-			record.Snapshot.Terms.ReservedSCID,
+	bobEndpoint, err := NewNativeFundingEndpoint(
+		arkchannel.PartyClient, bob.runtime.Funding(),
+		input.NewMockSigner(
+			[]*btcec.PrivateKey{bob.key}, nil,
 		),
+		keychain.KeyDescriptor{
+			PubKey: bob.key.PubKey(),
+		},
 	)
-	require.NoError(t, bob.runtime.Funding().RegisterBacking(funding))
-	require.NoError(
-		t, alice.runtime.Funding().FinalizeBacking(
-			pendingID, packet, funding,
-		),
-	)
-
-	aliceFinalized := awaitFinalized(t, alice, flow.Errors)
-	bobFinalized := awaitFinalized(t, bob, nil)
-	require.Equal(
-		t, funding.Transaction.TxHash(),
-		aliceFinalized.channelPoint.Hash,
-	)
-	require.Equal(t, aliceFinalized, bobFinalized)
-	backing := arkBackingFromFunding(t, funding)
-	for _, node := range []*fundingFlowNode{alice, bob} {
-		finalized, err := node.runtime.Funding().FundingFinalized(
-			t.Context(), record.Snapshot.Terms, backing,
-		)
-		require.NoError(t, err)
-		require.True(t, finalized)
+	require.NoError(t, err)
+	aliceSink := &fundingNegotiationSink{
+		node: alice, party: arkchannel.PartyHub, record: record,
 	}
-	txid := funding.Transaction.TxHash()
-	require.NoError(t, alice.runtime.Funding().ConfirmBacking(txid))
-	require.NoError(t, bob.runtime.Funding().ConfirmBacking(txid))
+	bobSink := &fundingNegotiationSink{
+		node: bob, party: arkchannel.PartyClient, record: record,
+	}
+	require.NoError(t, aliceEndpoint.BindChannelEventSink(aliceSink))
+	require.NoError(t, bobEndpoint.BindChannelEventSink(bobSink))
+	negotiator, err := NewChannelNegotiator(
+		aliceEndpoint, bobEndpoint, alice.peer,
+	)
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		negotiator.NegotiateChannel(
+			t.Context(), record.Snapshot.Terms.ID,
+			record.Snapshot.Terms, *record.Snapshot.Source,
+		),
+	)
+	require.NotNil(t, aliceSink.record.Snapshot.Backing)
+	require.Equal(
+		t, arkchannel.PhaseActive, aliceSink.record.Snapshot.Phase,
+	)
+	require.Equal(t, arkchannel.PhaseActive,
+		bobSink.record.Snapshot.Phase)
 	aliceChannel := awaitLink(t, alice)
 	bobChannel := awaitLink(t, bob)
 	require.Equal(
@@ -243,10 +308,193 @@ func TestNativeFundingFlowPaysBothDirections(t *testing.T) {
 	payRuntimeInvoice(
 		t, bob, alice, returnAmount, lntypes.Preimage{7, 8, 9},
 	)
+
+	forceClose, err := alice.runtime.PrepareForceClose(
+		aliceChannel.FundingOutpoint,
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, aliceChannel.FundingOutpoint,
+		forceClose.CloseTx.TxIn[0].PreviousOutPoint,
+	)
+
+	closeTx := cooperativelyCloseFundingFlowChannel(
+		t, alice, bob, aliceChannel.FundingOutpoint,
+	)
+	require.Equal(
+		t, aliceChannel.FundingOutpoint,
+		closeTx.TxIn[0].PreviousOutPoint,
+	)
 }
 
-// TestNativeFundingCancellationAfterFinalization proves a round can reseal
-// after both lnd databases persist the channel but before Ark commits.
+// TestNativeFundingFlowPromotesClientVTXO proves the same prepared-OOR flow
+// opens a client-funded channel with all initial liquidity on the client side.
+func TestNativeFundingFlowPromotesClientVTXO(t *testing.T) {
+	t.Parallel()
+
+	hub := newFundingFlowNode(t, arkchannel.PartyHub)
+	client := newFundingFlowNode(t, arkchannel.PartyClient)
+	connectFundingFlowNodes(t, hub, client)
+	require.NoError(t, hub.runtime.Start())
+	require.NoError(t, client.runtime.Start())
+	t.Cleanup(func() {
+		require.NoError(t, hub.runtime.Stop())
+		require.NoError(t, client.runtime.Stop())
+	})
+
+	pendingID := lndfunding.PendingChanID{7, 2, 0, 4}
+	record := fundingIntentRecord(t, hub, client, pendingID)
+	record.Snapshot.Terms.Kind = arkchannel.KindPromotion
+	record.Snapshot.Terms.Funder = arkchannel.PartyClient
+	record.Snapshot.Terms.PaymentHash = [32]byte{}
+	record.Snapshot.Source = testIntentBinding(
+		t, record.Snapshot.Terms, testFundingCapacity+1_000, 1,
+	)
+	hub.intents.record = record
+	client.intents.record = record
+
+	hubEndpoint, err := NewNativeFundingEndpoint(
+		arkchannel.PartyHub, hub.runtime.Funding(),
+		input.NewMockSigner([]*btcec.PrivateKey{hub.key}, nil),
+		keychain.KeyDescriptor{PubKey: hub.key.PubKey()},
+	)
+	require.NoError(t, err)
+	clientEndpoint, err := NewNativeFundingEndpoint(
+		arkchannel.PartyClient, client.runtime.Funding(),
+		input.NewMockSigner([]*btcec.PrivateKey{client.key}, nil),
+		keychain.KeyDescriptor{PubKey: client.key.PubKey()},
+	)
+	require.NoError(t, err)
+	hubSink := &fundingNegotiationSink{
+		node: hub, party: arkchannel.PartyHub, record: record,
+	}
+	clientSink := &fundingNegotiationSink{
+		node: client, party: arkchannel.PartyClient, record: record,
+	}
+	require.NoError(t, hubEndpoint.BindChannelEventSink(hubSink))
+	require.NoError(t, clientEndpoint.BindChannelEventSink(clientSink))
+	negotiator, err := NewChannelNegotiator(
+		clientEndpoint, hubEndpoint, client.peer,
+	)
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		negotiator.NegotiateChannel(
+			t.Context(), record.Snapshot.Terms.ID,
+			record.Snapshot.Terms, *record.Snapshot.Source,
+		),
+	)
+
+	hubChannel := awaitLink(t, hub)
+	clientChannel := awaitLink(t, client)
+	require.Equal(
+		t, clientChannel.FundingOutpoint, hubChannel.FundingOutpoint,
+	)
+	require.Positive(t, clientChannel.LocalCommitment.LocalBalance)
+	require.Zero(t, hubChannel.LocalCommitment.LocalBalance)
+}
+
+// cooperativelyCloseFundingFlowChannel drives lnd's native cooperative-close
+// FSM at both endpoints over the same logical peer boundary used for funding.
+func cooperativelyCloseFundingFlowChannel(t *testing.T, alice,
+	bob *fundingFlowNode, channelPoint wire.OutPoint) *wire.MsgTx {
+
+	t.Helper()
+
+	aliceBroadcast := make(chan *wire.MsgTx, 1)
+	bobBroadcast := make(chan *wire.MsgTx, 1)
+	feeRate := chainfee.SatPerKWeight(1_000)
+	aliceCloser, err := alice.runtime.NewCooperativeClose(
+		CooperativeCloseRequest{
+			ChannelPoint:    channelPoint,
+			DeliveryAddress: testCloseDeliveryAddress(alice.key),
+			IdealFeeRate:    feeRate,
+			Closer:          lntypes.Local,
+			BroadcastTx: func(tx *wire.MsgTx, _ string) error {
+				aliceBroadcast <- tx.Copy()
+
+				return nil
+			},
+		},
+	)
+	require.NoError(t, err)
+	bobCloser, err := bob.runtime.NewCooperativeClose(
+		CooperativeCloseRequest{
+			ChannelPoint:    channelPoint,
+			DeliveryAddress: testCloseDeliveryAddress(bob.key),
+			IdealFeeRate:    feeRate,
+			Closer:          lntypes.Remote,
+			BroadcastTx: func(tx *wire.MsgTx, _ string) error {
+				bobBroadcast <- tx.Copy()
+
+				return nil
+			},
+		},
+	)
+	require.NoError(t, err)
+
+	shutdown, err := aliceCloser.ShutdownChan()
+	require.NoError(t, err)
+	bobShutdown, err := bobCloser.ReceiveShutdown(*shutdown)
+	require.NoError(t, err)
+	bobOffer, err := bobCloser.BeginNegotiation()
+	require.NoError(t, err)
+	require.True(t, bobOffer.IsNone())
+
+	_, err = aliceCloser.ReceiveShutdown(bobShutdown.UnwrapOrFail(t))
+	require.NoError(t, err)
+	aliceOffer, err := aliceCloser.BeginNegotiation()
+	require.NoError(t, err)
+	require.True(t, aliceOffer.IsSome())
+
+	message := aliceOffer.UnwrapOrFail(t)
+	fromAlice := true
+	for i := 0; i < 10; i++ {
+		if fromAlice {
+			next, err := bobCloser.ReceiveClosingSigned(message)
+			require.NoError(t, err)
+			if next.IsNone() {
+				break
+			}
+			message = next.UnwrapOrFail(t)
+		} else {
+			next, err := aliceCloser.ReceiveClosingSigned(message)
+			require.NoError(t, err)
+			if next.IsNone() {
+				break
+			}
+			message = next.UnwrapOrFail(t)
+		}
+
+		fromAlice = !fromAlice
+	}
+
+	aliceTx, err := aliceCloser.ClosingTx()
+	require.NoError(t, err)
+	bobTx, err := bobCloser.ClosingTx()
+	require.NoError(t, err)
+	require.Equal(t, aliceTx.TxHash(), bobTx.TxHash())
+	require.Equal(t, aliceTx.TxHash(), (<-aliceBroadcast).TxHash())
+	require.Equal(t, bobTx.TxHash(), (<-bobBroadcast).TxHash())
+
+	return aliceTx
+}
+
+// testCloseDeliveryAddress returns a valid P2WPKH script for co-op close.
+func testCloseDeliveryAddress(
+	key *btcec.PrivateKey) chancloser.DeliveryAddrWithKey {
+
+	keyHash := address.Hash160(key.PubKey().SerializeCompressed())
+	pkScript := append([]byte{0x00, 0x14}, keyHash...)
+
+	return chancloser.DeliveryAddrWithKey{
+		DeliveryAddress: lnwire.DeliveryAddress(pkScript),
+	}
+}
+
+// TestNativeFundingCancellationAfterFinalization proves a prepared OOR
+// transfer can abort after both lnd databases persist the channel but before
+// Ark commits it.
 func TestNativeFundingCancellationAfterFinalization(t *testing.T) {
 	t.Parallel()
 
@@ -261,19 +509,7 @@ func TestNativeFundingCancellationAfterFinalization(t *testing.T) {
 	})
 
 	pendingID := lndfunding.PendingChanID{8, 6, 7, 5}
-	record, _ := testReceiveIntentRecord(t)
-	record.Snapshot.Terms.PendingChannelID = pendingID
-	record.Snapshot.Terms.Capacity = testFundingCapacity
-	record.Snapshot.Terms.HubNodeKey = compressedIntentKey(alice.key)
-	record.Snapshot.Terms.ClientNodeKey = compressedIntentKey(bob.key)
-	record.Snapshot.Source.Amount = testFundingCapacity + 1_000
-	record.Snapshot.Source.OutPoint = wire.OutPoint{
-		Hash: chainhash.Hash{
-			4,
-			2,
-		},
-		Index: 1,
-	}
+	record := fundingIntentRecord(t, alice, bob, pendingID)
 	alice.intents.record = record
 	bob.intents.record = record
 
@@ -284,10 +520,8 @@ func TestNativeFundingCancellationAfterFinalization(t *testing.T) {
 	})
 	require.NoError(t, err)
 	packet := awaitFundingPSBT(t, flow)
-	funding := completeVirtualFunding(
-		t, packet, lnwire.NewShortChanIDFromInt(
-			record.Snapshot.Terms.ReservedSCID,
-		),
+	funding, _ := completeChannelBacking(
+		t, packet, record, alice, bob,
 	)
 	require.NoError(t, bob.runtime.Funding().RegisterBacking(funding))
 	require.NoError(
@@ -471,53 +705,76 @@ func awaitFundingPSBT(t *testing.T, flow *FundingFlow) *psbt.Packet {
 	}
 }
 
-// completeVirtualFunding adds a signed SegWit VTXO input while preserving the
-// exact funding output negotiated by lnd.
-func completeVirtualFunding(t *testing.T, packet *psbt.Packet,
-	scid lnwire.ShortChannelID) VirtualFunding {
+// fundingIntentRecord binds the lnd node and materialization keys to one exact
+// prepared OOR output.
+func fundingIntentRecord(t *testing.T, hub, client *fundingFlowNode,
+	pendingID lndfunding.PendingChanID) arkchannel.Record {
 
 	t.Helper()
 
-	previousOutpoint := wire.OutPoint{Hash: chainhash.Hash{4, 2}, Index: 1}
-	packet.UnsignedTx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: previousOutpoint,
-		Sequence:         wire.MaxTxInSequenceNum,
-	})
-	vtxoScript := append([]byte{txscript.OP_1, 32}, make([]byte, 32)...)
-	packet.Inputs = append(packet.Inputs, psbt.PInput{
-		WitnessUtxo: &wire.TxOut{
-			Value:    int64(testFundingCapacity + 1_000),
-			PkScript: vtxoScript,
-		},
-	})
-	require.NoError(t, packet.SanityCheck())
+	record, _ := testReceiveIntentRecord(t)
+	record.Snapshot.Terms.PendingChannelID = pendingID
+	record.Snapshot.Terms.Capacity = testFundingCapacity
+	record.Snapshot.Terms.HubNodeKey = compressedIntentKey(hub.key)
+	record.Snapshot.Terms.ClientNodeKey = compressedIntentKey(client.key)
+	record.Snapshot.Terms.VTXO.HubChannelKey = compressedIntentKey(hub.key)
+	record.Snapshot.Terms.VTXO.ClientChannelKey = compressedIntentKey(
+		client.key,
+	)
+	record.Snapshot.Source = testIntentBinding(
+		t, record.Snapshot.Terms, testFundingCapacity+1_000, 1,
+	)
 
-	fundingTx := packet.UnsignedTx.Copy()
-	fundingTx.TxIn[0].Witness = wire.TxWitness{[]byte{1, 2, 3}}
-	fundingOutput := uint32(len(fundingTx.TxOut) - 1)
-
-	return VirtualFunding{
-		Transaction: fundingTx,
-		OutputIndex: fundingOutput,
-		SCID:        scid,
-	}
+	return record
 }
 
-// arkBackingFromFunding serializes one fully signed virtual funding record.
-func arkBackingFromFunding(t *testing.T,
-	funding VirtualFunding) arkchannel.Backing {
+// completeChannelBacking has both parties validate their local lnd funding
+// reservation, then signs the real channel-policy VTXO spend.
+func completeChannelBacking(t *testing.T, packet *psbt.Packet,
+	record arkchannel.Record, hub,
+	client *fundingFlowNode) (VirtualFunding, arkchannel.Backing) {
 
 	t.Helper()
-	var transaction bytes.Buffer
-	require.NoError(t, funding.Transaction.Serialize(&transaction))
+	terms := record.Snapshot.Terms
+	template, err := arkchannel.NewBackingTemplate(
+		packet, terms, *record.Snapshot.Source,
+	)
+	require.NoError(t, err)
 
-	return arkchannel.Backing{
-		Transaction: transaction.Bytes(),
-		ChannelPoint: wire.OutPoint{
-			Hash:  funding.Transaction.TxHash(),
-			Index: funding.OutputIndex,
-		},
+	for _, node := range []*fundingFlowNode{hub, client} {
+		expected, err := node.runtime.Funding().ExpectedFundingOutput(
+			terms.PendingChannelID,
+		)
+		require.NoError(t, err)
+		require.NoError(t, template.ValidateFundingOutput(expected))
 	}
+
+	sign := func(party arkchannel.Party,
+		key *btcec.PrivateKey) input.Signature {
+
+		desc, err := template.SignDescriptor(
+			terms, party, keychain.KeyDescriptor{
+				PubKey: key.PubKey(),
+			},
+		)
+		require.NoError(t, err)
+		sig, err := input.NewMockSigner(
+			[]*btcec.PrivateKey{key}, nil,
+		).SignOutputRaw(template.Packet().UnsignedTx, desc)
+		require.NoError(t, err)
+
+		return sig
+	}
+	backing, err := template.Complete(
+		terms, *record.Snapshot.Source,
+		sign(arkchannel.PartyClient, client.key),
+		sign(arkchannel.PartyHub, hub.key),
+	)
+	require.NoError(t, err)
+	funding, err := virtualFundingFromBacking(terms, backing)
+	require.NoError(t, err)
+
+	return funding, backing
 }
 
 // awaitFinalized waits for lnd's commitment-signature safety barrier.

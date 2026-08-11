@@ -80,7 +80,7 @@ func (a *IntentAcceptor) validate(
 		return fmt.Errorf("channel intent has no bound VTXO")
 	}
 	if snapshot.Phase < arkchannel.PhaseNegotiating ||
-		snapshot.Phase > arkchannel.PhaseAwaitingConfirmation {
+		snapshot.Phase > arkchannel.PhaseBackingReady {
 		return fmt.Errorf("channel intent phase %s cannot "+
 			"accept funding", snapshot.Phase)
 	}

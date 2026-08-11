@@ -57,9 +57,8 @@ func (r *Runtime) RestorePeerLinks(peer lnpeer.Peer,
 		} else if !errors.Is(err, htlcswitch.ErrChannelLinkNotFound) {
 			rollback()
 
-			return nil, fmt.Errorf(
-				"inspect lnd channel link: %w", err,
-			)
+			return nil, fmt.Errorf("inspect lnd channel link: %w",
+				err)
 		}
 
 		linkConfig, err := configSource(state)

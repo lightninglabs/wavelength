@@ -92,9 +92,8 @@ func TestDurablePeerTransportPreservesDistinctEvents(t *testing.T) {
 			NewIdentity: func() (string, error) {
 				nextIdentity++
 
-				identity := fmt.Sprintf(
-					"event-%d", nextIdentity,
-				)
+				identity := fmt.Sprintf("event-%d",
+					nextIdentity)
 
 				return identity, nil
 			},
@@ -164,9 +163,14 @@ func TestPeerMessageDispatcher(t *testing.T) {
 			return nil
 		},
 	)
-	require.NoError(t, dispatch(
-		t.Context(), &mailboxpb.Envelope{Body: body},
-	))
+	require.NoError(
+		t,
+		dispatch(
+			t.Context(), &mailboxpb.Envelope{
+				Body: body,
+			},
+		),
+	)
 	handledPing, ok := handled.(*lnwire.Ping)
 	require.True(t, ok)
 	require.EqualValues(t, 3, handledPing.NumPongBytes)

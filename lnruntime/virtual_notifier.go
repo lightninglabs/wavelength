@@ -12,7 +12,7 @@ import (
 )
 
 // VirtualFunding identifies an unpublished Lightning funding transaction and
-// the stable SCID lnd should use after its Ark backing round confirms.
+// the stable SCID lnd should use after its prepared OOR transfer finalizes.
 type VirtualFunding struct {
 	Transaction *wire.MsgTx
 	OutputIndex uint32
@@ -29,9 +29,9 @@ type virtualFundingRecord struct {
 }
 
 // VirtualFundingNotifier delegates normal chain events while treating a
-// fully signed, round-confirmed Ark backing transaction as confirmed for lnd's
-// channel lifecycle. RegisterVirtualFunding must run before funding.Manager
-// starts watching the channel point.
+// fully signed backing transaction as virtually confirmed after its prepared
+// OOR transfer finalizes. RegisterVirtualFunding must run before
+// funding.Manager starts watching the channel point.
 type VirtualFundingNotifier struct {
 	chainntnfs.ChainNotifier
 
@@ -228,7 +228,7 @@ func (n *VirtualFundingNotifier) RegisterConfirmationsNtfn(txid *chainhash.Hash,
 
 // ConfirmVirtualFunding activates lnd's ordinary funding-confirmation path.
 // The Ark FSM must call this only after both the backing signatures and the
-// containing round confirmation are durable.
+// finalized OOR transfer are durable.
 func (n *VirtualFundingNotifier) ConfirmVirtualFunding(
 	txid chainhash.Hash) error {
 
@@ -268,8 +268,8 @@ func (n *VirtualFundingNotifier) ConfirmVirtualFunding(
 	return nil
 }
 
-// ReorgVirtualFunding retracts a prior virtual confirmation when the Ark
-// backing round is reorged. A later ConfirmVirtualFunding call can reactivate
+// ReorgVirtualFunding retracts a prior virtual confirmation when its Ark
+// ancestry is invalidated. A later ConfirmVirtualFunding call can reactivate
 // the same subscriptions.
 func (n *VirtualFundingNotifier) ReorgVirtualFunding(txid chainhash.Hash,
 	depth int32) error {

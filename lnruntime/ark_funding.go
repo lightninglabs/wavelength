@@ -89,6 +89,26 @@ func (f *FundingRuntime) FundingFinalized(ctx context.Context,
 	return true, nil
 }
 
+// ChannelActive reports whether the exact finalized channel has left lnd's
+// pending-open state after Ark released virtual confirmation.
+func (f *FundingRuntime) ChannelActive(ctx context.Context,
+	terms arkchannel.Terms, backing arkchannel.Backing) (bool, error) {
+
+	finalized, err := f.FundingFinalized(ctx, terms, backing)
+	if err != nil || !finalized {
+		return false, err
+	}
+	channel, err := f.stateDB.FetchChannel(backing.ChannelPoint)
+	if errors.Is(err, channeldb.ErrChannelNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("find active lnd channel: %w", err)
+	}
+
+	return !channel.IsPending, nil
+}
+
 // channelParties resolves this runtime's role and expected remote identity.
 func (f *FundingRuntime) channelParties(terms arkchannel.Terms) (
 	arkchannel.Party, *btcec.PublicKey, error) {

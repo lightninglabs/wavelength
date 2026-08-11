@@ -97,9 +97,8 @@ func (t *DurablePeerTransport) SendMessages(_ bool,
 		}
 		identity, err := t.cfg.NewIdentity()
 		if err != nil {
-			return fmt.Errorf(
-				"allocate lnd peer message identity: %w", err,
-			)
+			return fmt.Errorf("allocate lnd peer message "+
+				"identity: %w", err)
 		}
 		if identity == "" {
 			return fmt.Errorf("lnd peer message identity is empty")

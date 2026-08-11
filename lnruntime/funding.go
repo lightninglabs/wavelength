@@ -403,6 +403,30 @@ func (f *FundingRuntime) OpenChannel(req FundingOpenRequest) (*FundingFlow,
 	}, nil
 }
 
+// ExpectedFundingOutput returns the exact output derived by this endpoint's
+// native lnd reservation. Both endpoints validate this independently before
+// signing the prepared OOR channel's backing transaction.
+func (f *FundingRuntime) ExpectedFundingOutput(
+	pendingID lndfunding.PendingChanID) (*wire.TxOut, error) {
+
+	for _, reservation := range f.wallet.ActiveReservations() {
+		if reservation.PendingChanID() != pendingID {
+			continue
+		}
+
+		output, err := reservation.FundingOutput()
+		if err != nil {
+			return nil, fmt.Errorf("read lnd funding output: %w",
+				err)
+		}
+
+		return output, nil
+	}
+
+	return nil, fmt.Errorf("lnd funding reservation %x not found",
+		pendingID[:])
+}
+
 // FinalizeBacking verifies lnd's negotiated funding output, registers the
 // fully signed backing transaction before lnd can watch it, and resumes the
 // native funding state machine.
@@ -492,8 +516,8 @@ func (f *FundingRuntime) CancelBacking(pendingID lndfunding.PendingChanID,
 	return fmt.Errorf("cancel lnd funding intent: %w", cancelErr)
 }
 
-// abandonPendingBacking removes finalized channel state before Ark crosses
-// its round-commitment safety boundary.
+// abandonPendingBacking removes finalized channel state before Ark commits the
+// prepared OOR transfer.
 func (f *FundingRuntime) abandonPendingBacking(
 	channel *chanstate.OpenChannel) error {
 
@@ -520,13 +544,13 @@ func (f *FundingRuntime) abandonPendingBacking(
 	return nil
 }
 
-// ConfirmBacking opens lnd's channel only after the Ark FSM's durable round
-// and backing-signature gates are satisfied.
+// ConfirmBacking opens lnd's channel only after the Ark FSM's durable OOR and
+// backing-signature gates are satisfied.
 func (f *FundingRuntime) ConfirmBacking(txid chainhash.Hash) error {
 	return f.notifier.ConfirmVirtualFunding(txid)
 }
 
-// ReorgBacking retracts activation when the containing Ark round reorgs.
+// ReorgBacking retracts activation when the channel's Ark ancestry reorgs.
 func (f *FundingRuntime) ReorgBacking(txid chainhash.Hash, depth int32) error {
 	return f.notifier.ReorgVirtualFunding(txid, depth)
 }
@@ -560,7 +584,6 @@ func (f *FundingRuntime) ProcessMessageSync(ctx context.Context,
 	case *lnwire.OpenChannel, *lnwire.AcceptChannel,
 		*lnwire.FundingCreated, *lnwire.FundingSigned,
 		*lnwire.ChannelReady, *lnwire.Warning, *lnwire.Error:
-
 		return f.manager.ProcessFundingMsgSync(ctx, message, peer)
 
 	default:
