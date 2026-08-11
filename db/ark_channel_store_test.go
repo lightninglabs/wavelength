@@ -187,20 +187,37 @@ func testArkChannelBinding(terms arkchannel.Terms) arkchannel.VTXOBinding {
 		panic(err)
 	}
 
+	amount := terms.Capacity + 1_000
+	tx := wire.NewMsgTx(2)
+	tx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash: chainhash.Hash{terms.ID[0], 5},
+		},
+	})
+	for i := 0; i < 3; i++ {
+		tx.AddTxOut(&wire.TxOut{
+			Value:    int64(i + 1),
+			PkScript: []byte{0x51},
+		})
+	}
+	tx.AddTxOut(&wire.TxOut{
+		Value:    int64(amount),
+		PkScript: pkScript,
+	})
+	var arkTransaction bytes.Buffer
+	if err := tx.Serialize(&arkTransaction); err != nil {
+		panic(err)
+	}
+	sessionID := [32]byte(tx.TxHash())
+
 	return arkchannel.VTXOBinding{
+		OORSessionID: sessionID,
 		OutPoint: wire.OutPoint{
-			Hash: chainhash.Hash{
-				terms.ID[0],
-				5,
-			},
+			Hash:  chainhash.Hash(sessionID),
 			Index: 3,
 		},
-		Amount:  terms.Capacity + 1_000,
-		RoundID: "round-store-test",
-		CommitmentTxID: chainhash.Hash{
-			terms.ID[0],
-			6,
-		},
+		Amount:         amount,
+		ArkTransaction: arkTransaction.Bytes(),
 		PolicyTemplate: policy,
 		PkScript:       pkScript,
 	}

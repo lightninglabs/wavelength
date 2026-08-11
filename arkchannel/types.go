@@ -20,10 +20,12 @@ type ID [32]byte
 type Kind uint8
 
 const (
-	// KindPromotion upgrades an existing client-owned VTXO.
+	// KindPromotion moves an existing client-owned VTXO into a
+	// channel-policy VTXO through an OOR transfer.
 	KindPromotion Kind = iota + 1
 
-	// KindReceiveIntent creates a hub-funded VTXO in an Ark round.
+	// KindReceiveIntent moves hub liquidity into a channel-policy VTXO
+	// through an OOR transfer before resuming an incoming payment.
 	KindReceiveIntent
 )
 
@@ -78,15 +80,11 @@ const (
 	PhaseNegotiating
 
 	// PhaseBackingReady means the signed backing and both lnd finalization
-	// acknowledgements are durable.
+	// acknowledgements are durable, so the prepared OOR transfer can
+	// commit.
 	PhaseBackingReady
 
-	// PhaseAwaitingConfirmation means a receive round was committed and
-	// must confirm before virtual activation.
-	PhaseAwaitingConfirmation
-
-	// PhaseActivating means lnd should observe the virtual channel point as
-	// confirmed.
+	// PhaseActivating means lnd should observe the virtual channel point.
 	PhaseActivating
 
 	// PhaseActive means lnd reports the ordinary channel active.
@@ -102,8 +100,8 @@ const (
 	// PhaseClosed means lnd completed the channel lifecycle.
 	PhaseClosed
 
-	// PhaseCancelling means Ark abandoned before round commitment and lnd's
-	// pending funding reservation must be removed.
+	// PhaseCancelling means the prepared OOR transfer is being aborted
+	// before lnd's pending funding reservation is removed.
 	PhaseCancelling
 
 	// PhaseFailed means negotiation failed before the no-failure boundary.
@@ -121,9 +119,6 @@ func (p Phase) String() string {
 
 	case PhaseBackingReady:
 		return "backing_ready"
-
-	case PhaseAwaitingConfirmation:
-		return "awaiting_confirmation"
 
 	case PhaseActivating:
 		return "activating"
@@ -298,16 +293,17 @@ func (t Terms) Validate() error {
 
 // VTXOBinding identifies the exact validated Ark output used as backing.
 type VTXOBinding struct {
+	OORSessionID   [32]byte
 	OutPoint       wire.OutPoint
 	Amount         btcutil.Amount
-	RoundID        string
-	CommitmentTxID chainhash.Hash
+	ArkTransaction []byte
 	PolicyTemplate []byte
 	PkScript       []byte
 }
 
 // Clone returns a binding without aliases to mutable byte slices.
 func (b VTXOBinding) Clone() VTXOBinding {
+	b.ArkTransaction = slices.Clone(b.ArkTransaction)
 	b.PolicyTemplate = slices.Clone(b.PolicyTemplate)
 	b.PkScript = slices.Clone(b.PkScript)
 
@@ -319,15 +315,40 @@ func (b VTXOBinding) Validate(terms Terms) error {
 	if b.OutPoint.Hash == (chainhash.Hash{}) {
 		return fmt.Errorf("VTXO outpoint is required")
 	}
+	if b.OORSessionID == ([32]byte{}) {
+		return fmt.Errorf("OOR session ID is required")
+	}
+	if len(b.ArkTransaction) == 0 {
+		return fmt.Errorf("prepared Ark transaction is required")
+	}
+	tx := wire.NewMsgTx(2)
+	reader := bytes.NewReader(b.ArkTransaction)
+	if err := tx.Deserialize(reader); err != nil {
+		return fmt.Errorf("decode prepared Ark transaction: %w", err)
+	}
+	if reader.Len() != 0 {
+		return fmt.Errorf("prepared Ark transaction has %d "+
+			"trailing bytes", reader.Len())
+	}
+	txid := tx.TxHash()
+	if txid != chainhash.Hash(b.OORSessionID) ||
+		b.OutPoint.Hash != txid {
+		return fmt.Errorf("VTXO outpoint does not belong to prepared " +
+			"OOR session")
+	}
+	if int(b.OutPoint.Index) >= len(tx.TxOut) {
+		return fmt.Errorf("VTXO output %d is out of range",
+			b.OutPoint.Index)
+	}
+	output := tx.TxOut[b.OutPoint.Index]
+	if output.Value != int64(b.Amount) ||
+		!bytes.Equal(output.PkScript, b.PkScript) {
+		return fmt.Errorf("prepared Ark transaction output does not " +
+			"match VTXO binding")
+	}
 	if b.Amount < terms.Capacity {
 		return fmt.Errorf("VTXO amount %d is below channel capacity %d",
 			b.Amount, terms.Capacity)
-	}
-	if b.RoundID == "" {
-		return fmt.Errorf("VTXO round ID is required")
-	}
-	if b.CommitmentTxID == (chainhash.Hash{}) {
-		return fmt.Errorf("VTXO commitment transaction is required")
 	}
 	policy, pkScript, err := terms.VTXO.Artifacts()
 	if err != nil {
@@ -407,8 +428,8 @@ type Snapshot struct {
 	Backing          *Backing
 	ClientFinalized  bool
 	HubFinalized     bool
-	RoundCommitted   bool
-	RoundConfirmed   bool
+	OORFinalized     bool
+	OORAborted       bool
 	BackingPublished bool
 	Failure          string
 }
@@ -428,14 +449,12 @@ func (s Snapshot) Clone() Snapshot {
 	return s
 }
 
-// ReadyForRoundSigning reports whether a receive output crossed the durable
-// no-failure boundary required before nonce release.
-func (s Snapshot) ReadyForRoundSigning() bool {
-	return s.Terms.Kind == KindReceiveIntent &&
-		s.Source != nil && s.Backing != nil &&
-		s.ClientFinalized && s.HubFinalized &&
-		s.Phase >= PhaseBackingReady && s.Phase != PhaseCancelling &&
-		s.Phase != PhaseFailed
+// ReadyToCommitOOR reports whether both lnd endpoints and the signed backing
+// are durable, allowing the prepared OOR transfer to cross its commit gate.
+func (s Snapshot) ReadyToCommitOOR() bool {
+	return s.Source != nil && s.Backing != nil && s.ClientFinalized &&
+		s.HubFinalized && s.Phase == PhaseBackingReady &&
+		!s.OORFinalized && !s.OORAborted
 }
 
 // validateNodeKey checks a compressed secp256k1 node key.

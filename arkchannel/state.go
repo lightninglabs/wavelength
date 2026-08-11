@@ -125,6 +125,12 @@ func PendingAction(snapshot Snapshot) (Action, error) {
 			Source: snapshot.Source.Clone(),
 		}, nil
 
+	case PhaseBackingReady:
+		return &CommitOOR{
+			Terms:  snapshot.Terms.Clone(),
+			Source: snapshot.Source.Clone(),
+		}, nil
+
 	case PhaseActivating:
 		return &ActivateChannel{
 			Terms:   snapshot.Terms.Clone(),
@@ -132,6 +138,14 @@ func PendingAction(snapshot Snapshot) (Action, error) {
 		}, nil
 
 	case PhaseCancelling:
+		if !snapshot.OORAborted {
+			return &AbortOOR{
+				Terms:  snapshot.Terms.Clone(),
+				Source: snapshot.Source.Clone(),
+				Reason: snapshot.Failure,
+			}, nil
+		}
+
 		var backing *Backing
 		if snapshot.Backing != nil {
 			clone := snapshot.Backing.Clone()
@@ -176,18 +190,21 @@ func applyEvent(next *Snapshot, event Event) (bool, error) {
 				"cancellation from %s", next.Phase)
 		}
 
+		if !next.OORAborted {
+			return false, fmt.Errorf("cannot finish funding " +
+				"cancellation before OOR abort")
+		}
+
 		next.Phase = PhaseFailed
 
 		return true, nil
 
-	case *RoundCommitted:
-		return applyRoundCommitted(
-			next, event.RoundID, event.CommitmentTxID,
-		)
+	case *OORFinalized:
+		return applyOORFinalized(next, event.SessionID)
 
-	case *RoundConfirmed:
-		return applyRoundConfirmed(
-			next, event.RoundID, event.CommitmentTxID,
+	case *OORAborted:
+		return applyOORAborted(
+			next, event.SessionID, event.Reason,
 		)
 
 	case *ChannelActive:
@@ -319,56 +336,65 @@ func applyBacking(next *Snapshot, backing Backing) (bool, error) {
 	return true, nil
 }
 
-// applyRoundCommitted records nonce release only after readiness is durable.
-func applyRoundCommitted(next *Snapshot, roundID string,
-	commitmentTxID [32]byte) (bool, error) {
-
-	if next.Terms.Kind != KindReceiveIntent {
-		return false, fmt.Errorf("promotion has no funding round")
+// applyOORFinalized records completion of the exact prepared transfer. The
+// state machine can activate lnd only after this fact is durable.
+func applyOORFinalized(next *Snapshot, sessionID [32]byte) (bool, error) {
+	if next.Source == nil {
+		return false, fmt.Errorf("cannot finalize OOR before VTXO " +
+			"binding")
 	}
-	if !backingReady(*next) {
-		return false, fmt.Errorf("cannot commit round before backing " +
-			"is ready")
+	if next.Source.OORSessionID != sessionID {
+		return false, fmt.Errorf("finalized OOR session does not " +
+			"match channel source")
 	}
-	if err := matchRound(
-		*next.Source, roundID, commitmentTxID,
-	); err != nil {
-		return false, err
-	}
-	if next.RoundCommitted {
+	if next.OORFinalized {
 		return false, nil
 	}
-	if next.Phase != PhaseBackingReady {
-		return false, fmt.Errorf("cannot commit round from %s",
+	if next.OORAborted {
+		return false, fmt.Errorf("cannot finalize an aborted OOR " +
+			"transfer")
+	}
+	if next.Phase != PhaseBackingReady || !backingReady(*next) {
+		return false, fmt.Errorf("cannot finalize OOR from %s",
 			next.Phase)
 	}
 
-	next.RoundCommitted = true
+	next.OORFinalized = true
 
 	return true, nil
 }
 
-// applyRoundConfirmed records confirmation of the exact bound round.
-func applyRoundConfirmed(next *Snapshot, roundID string,
-	commitmentTxID [32]byte) (bool, error) {
+// applyOORAborted records a definitive pre-PONR failure, allowing lnd's
+// pending channel reservation to be removed without risking a gifted VTXO.
+func applyOORAborted(next *Snapshot, sessionID [32]byte,
+	reason string) (bool, error) {
 
-	if next.Terms.Kind != KindReceiveIntent {
-		return false, fmt.Errorf("promotion has no funding round")
+	if next.Source == nil {
+		return false, fmt.Errorf("cannot abort OOR before VTXO binding")
 	}
-	if !next.RoundCommitted {
-		return false, fmt.Errorf("cannot confirm round before " +
-			"commitment")
+	if next.Source.OORSessionID != sessionID {
+		return false, fmt.Errorf("aborted OOR session does not match " +
+			"channel source")
 	}
-	if err := matchRound(
-		*next.Source, roundID, commitmentTxID,
-	); err != nil {
-		return false, err
+	if next.OORFinalized {
+		return false, fmt.Errorf("cannot abort a finalized OOR " +
+			"transfer")
 	}
-	if next.RoundConfirmed {
+	if next.OORAborted {
 		return false, nil
 	}
+	if next.Phase != PhaseCancelling && next.Phase != PhaseBackingReady {
+		return false, fmt.Errorf("cannot abort OOR from %s", next.Phase)
+	}
+	if next.Failure == "" {
+		if reason == "" {
+			return false, fmt.Errorf("OOR abort reason is required")
+		}
+		next.Failure = reason
+	}
 
-	next.RoundConfirmed = true
+	next.OORAborted = true
+	next.Phase = PhaseCancelling
 
 	return true, nil
 }
@@ -420,7 +446,9 @@ func applyBackingPublished(next *Snapshot, txID [32]byte) (bool, error) {
 	return true, nil
 }
 
-// applyFailure preserves the no-failure boundary once round signing begins.
+// applyFailure permits abandonment only before the OOR commit action is
+// durable. A commit-time failure must arrive as OORAborted so the coordinator
+// knows the transfer stayed before its point of no return.
 func applyFailure(next *Snapshot, reason string) (bool, error) {
 	if next.Phase == PhaseFailed {
 		if next.Failure == reason {
@@ -438,10 +466,7 @@ func applyFailure(next *Snapshot, reason string) (bool, error) {
 		return false, fmt.Errorf("channel already cancelling for " +
 			"another reason")
 	}
-	canFailReceiveBacking := next.Phase == PhaseBackingReady &&
-		next.Terms.Kind == KindReceiveIntent && !next.RoundCommitted
-	if next.Phase != PhaseRequested && next.Phase != PhaseNegotiating &&
-		!canFailReceiveBacking {
+	if next.Phase != PhaseRequested && next.Phase != PhaseNegotiating {
 		return false, fmt.Errorf("cannot fail channel after safety " +
 			"boundary")
 	}
@@ -473,7 +498,7 @@ func advance(next *Snapshot) (Action, error) {
 		}, nil
 
 	case PhaseBackingReady:
-		if next.Terms.Kind == KindPromotion {
+		if next.OORFinalized {
 			next.Phase = PhaseActivating
 
 			return &ActivateChannel{
@@ -481,19 +506,11 @@ func advance(next *Snapshot) (Action, error) {
 				Backing: next.Backing.Clone(),
 			}, nil
 		}
-		if next.RoundCommitted {
-			next.Phase = PhaseAwaitingConfirmation
-		}
 
-	case PhaseAwaitingConfirmation:
-		if next.RoundConfirmed {
-			next.Phase = PhaseActivating
-
-			return &ActivateChannel{
-				Terms:   next.Terms.Clone(),
-				Backing: next.Backing.Clone(),
-			}, nil
-		}
+		return &CommitOOR{
+			Terms:  next.Terms.Clone(),
+			Source: next.Source.Clone(),
+		}, nil
 
 	case PhaseMaterializing:
 		return &PublishChannel{
@@ -503,6 +520,14 @@ func advance(next *Snapshot) (Action, error) {
 		}, nil
 
 	case PhaseCancelling:
+		if !next.OORAborted {
+			return &AbortOOR{
+				Terms:  next.Terms.Clone(),
+				Source: next.Source.Clone(),
+				Reason: next.Failure,
+			}, nil
+		}
+
 		var backing *Backing
 		if next.Backing != nil {
 			clone := next.Backing.Clone()
@@ -561,7 +586,8 @@ func validateSnapshot(snapshot Snapshot) error {
 		}
 	}
 	if snapshot.Source == nil && (snapshot.Backing != nil ||
-		snapshot.ClientFinalized || snapshot.HubFinalized) {
+		snapshot.ClientFinalized || snapshot.HubFinalized ||
+		snapshot.OORFinalized || snapshot.OORAborted) {
 		return fmt.Errorf("funding facts require a bound VTXO")
 	}
 	if snapshot.Backing == nil && (snapshot.ClientFinalized ||
@@ -569,21 +595,22 @@ func validateSnapshot(snapshot Snapshot) error {
 		return fmt.Errorf("funding finalization requires signed " +
 			"backing")
 	}
-	if snapshot.Phase >= PhaseBackingReady &&
-		snapshot.Phase != PhaseCancelling &&
-		snapshot.Phase != PhaseFailed && !backingReady(snapshot) {
+	requiresBacking := snapshot.Phase == PhaseBackingReady ||
+		snapshot.Phase == PhaseActivating ||
+		snapshot.Phase == PhaseActive ||
+		snapshot.Phase == PhaseMaterializing ||
+		snapshot.Phase == PhaseOnChain ||
+		snapshot.Phase == PhaseClosed
+	if requiresBacking && !backingReady(snapshot) {
 		return fmt.Errorf("phase %s requires finalized backing",
 			snapshot.Phase)
 	}
-	if snapshot.RoundCommitted &&
-		snapshot.Terms.Kind != KindReceiveIntent {
-		return fmt.Errorf("promotion cannot have a committed round")
+	if snapshot.OORFinalized && !backingReady(snapshot) {
+		return fmt.Errorf("OOR finalization requires finalized backing")
 	}
-	if snapshot.RoundConfirmed && !snapshot.RoundCommitted {
-		return fmt.Errorf("round confirmation requires commitment")
-	}
-	if snapshot.RoundCommitted && !backingReady(snapshot) {
-		return fmt.Errorf("round commitment requires finalized backing")
+	if snapshot.OORFinalized && snapshot.OORAborted {
+		return fmt.Errorf("OOR transfer cannot be finalized and " +
+			"aborted")
 	}
 	if snapshot.BackingPublished && snapshot.Phase != PhaseOnChain &&
 		snapshot.Phase != PhaseClosed {
@@ -601,8 +628,8 @@ func validateSnapshot(snapshot Snapshot) error {
 
 	switch snapshot.Phase {
 	case PhaseRequested:
-		if snapshot.Source != nil || snapshot.RoundCommitted ||
-			snapshot.RoundConfirmed || snapshot.BackingPublished {
+		if snapshot.Source != nil || snapshot.OORFinalized ||
+			snapshot.OORAborted || snapshot.BackingPublished {
 			return fmt.Errorf("requested channel has advanced " +
 				"facts")
 		}
@@ -612,28 +639,23 @@ func validateSnapshot(snapshot Snapshot) error {
 			return fmt.Errorf("negotiating channel has no bound " +
 				"VTXO")
 		}
-
-	case PhaseBackingReady:
-		if snapshot.Terms.Kind != KindReceiveIntent ||
-			snapshot.RoundCommitted {
-			return fmt.Errorf("backing-ready phase requires an " +
-				"uncommitted receive intent")
+		if snapshot.OORFinalized || snapshot.OORAborted {
+			return fmt.Errorf("negotiating channel has terminal " +
+				"OOR facts")
 		}
 
-	case PhaseAwaitingConfirmation:
-		if snapshot.Terms.Kind != KindReceiveIntent ||
-			!snapshot.RoundCommitted || snapshot.RoundConfirmed {
-			return fmt.Errorf("awaiting-confirmation phase has " +
-				"invalid round facts")
+	case PhaseBackingReady:
+		if snapshot.OORFinalized || snapshot.OORAborted {
+			return fmt.Errorf("backing-ready channel has " +
+				"terminal OOR facts")
 		}
 
 	case PhaseActivating, PhaseActive, PhaseMaterializing,
 		PhaseOnChain, PhaseClosed:
 
-		if snapshot.Terms.Kind == KindReceiveIntent &&
-			!snapshot.RoundConfirmed {
-			return fmt.Errorf("receive channel advanced before " +
-				"round confirmation")
+		if !snapshot.OORFinalized || snapshot.OORAborted {
+			return fmt.Errorf("channel advanced before OOR " +
+				"finalization")
 		}
 
 	case PhaseCancelling:
@@ -641,17 +663,19 @@ func validateSnapshot(snapshot Snapshot) error {
 			return fmt.Errorf("cancelling channel has no bound " +
 				"VTXO")
 		}
-		if snapshot.RoundCommitted || snapshot.RoundConfirmed ||
-			snapshot.BackingPublished {
+		if snapshot.OORFinalized || snapshot.BackingPublished {
 			return fmt.Errorf("failed channel crossed the safety " +
 				"boundary")
 		}
 
 	case PhaseFailed:
-		if snapshot.RoundCommitted || snapshot.RoundConfirmed ||
-			snapshot.BackingPublished {
+		if snapshot.OORFinalized || snapshot.BackingPublished {
 			return fmt.Errorf("failed channel crossed the safety " +
 				"boundary")
+		}
+		if snapshot.Source != nil && !snapshot.OORAborted {
+			return fmt.Errorf("failed channel did not abort " +
+				"prepared OOR")
 		}
 	}
 	if snapshot.Phase == PhaseOnChain && !snapshot.BackingPublished {
@@ -661,33 +685,16 @@ func validateSnapshot(snapshot Snapshot) error {
 	return nil
 }
 
-// backingReady checks the three durable prerequisites for round signing.
+// backingReady checks the durable prerequisites for committing the OOR source.
 func backingReady(snapshot Snapshot) bool {
 	return snapshot.Source != nil && snapshot.Backing != nil &&
 		snapshot.ClientFinalized && snapshot.HubFinalized
 }
 
-// matchRound correlates confirmation events with the exact bound output.
-func matchRound(source VTXOBinding, roundID string,
-	commitmentTxID [32]byte) error {
-
-	if source.RoundID != roundID {
-		return fmt.Errorf("round ID %s does not match bound round %s",
-			roundID, source.RoundID)
-	}
-	if source.CommitmentTxID != commitmentTxID {
-		return fmt.Errorf("commitment transaction does not match " +
-			"bound round")
-	}
-
-	return nil
-}
-
 // bindingsEqual checks idempotency for an immutable VTXO binding.
 func bindingsEqual(a, b VTXOBinding) bool {
 	return a.OutPoint == b.OutPoint && a.Amount == b.Amount &&
-		a.RoundID == b.RoundID &&
-		a.CommitmentTxID == b.CommitmentTxID &&
+		a.OORSessionID == b.OORSessionID &&
 		string(a.PolicyTemplate) == string(b.PolicyTemplate) &&
 		string(a.PkScript) == string(b.PkScript)
 }

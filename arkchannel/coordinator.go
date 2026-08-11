@@ -261,8 +261,8 @@ func snapshotsEqual(a, b Snapshot) bool {
 	}
 	if a.Phase != b.Phase || a.ClientFinalized != b.ClientFinalized ||
 		a.HubFinalized != b.HubFinalized ||
-		a.RoundCommitted != b.RoundCommitted ||
-		a.RoundConfirmed != b.RoundConfirmed ||
+		a.OORFinalized != b.OORFinalized ||
+		a.OORAborted != b.OORAborted ||
 		a.BackingPublished != b.BackingPublished ||
 		a.Failure != b.Failure {
 		return false

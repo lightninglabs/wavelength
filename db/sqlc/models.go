@@ -81,18 +81,17 @@ type ArkChannel struct {
 	FunderDelay       int64
 	MinExitDelay      int64
 	Phase             int32
-	SourceTxid        []byte
+	OorSessionID      []byte
 	SourceIndex       sql.NullInt64
 	SourceAmount      sql.NullInt64
-	RoundID           sql.NullString
-	CommitmentTxid    []byte
+	SourceArkTx       []byte
 	BackingTx         []byte
 	ChannelPointTxid  []byte
 	ChannelPointIndex sql.NullInt64
 	ClientFinalized   bool
 	HubFinalized      bool
-	RoundCommitted    bool
-	RoundConfirmed    bool
+	OorFinalized      bool
+	OorAborted        bool
 	BackingPublished  bool
 	Failure           sql.NullString
 	Revision          int64

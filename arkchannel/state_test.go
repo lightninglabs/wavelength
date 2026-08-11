@@ -16,9 +16,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestReceiveIntentLifecycle proves round signing is authorized only after
-// both lnd endpoints and the immutable backing transaction are durable.
-func TestReceiveIntentLifecycle(t *testing.T) {
+// TestOORChannelLifecycle proves the prepared transfer commits only after both
+// lnd endpoints and the immutable backing transaction are durable.
+func TestOORChannelLifecycle(t *testing.T) {
 	t.Parallel()
 
 	store := newMemoryStore()
@@ -51,7 +51,7 @@ func TestReceiveIntentLifecycle(t *testing.T) {
 	} {
 		record, _, err = coordinator.Apply(t.Context(), terms.ID, event)
 		require.NoError(t, err)
-		require.False(t, record.Snapshot.ReadyForRoundSigning())
+		require.False(t, record.Snapshot.ReadyToCommitOOR())
 	}
 
 	record, actions, err = coordinator.Apply(
@@ -60,19 +60,9 @@ func TestReceiveIntentLifecycle(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
-	require.Empty(t, actions)
+	require.IsType(t, &CommitOOR{}, requireOneAction(t, actions))
 	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
-	require.True(t, record.Snapshot.ReadyForRoundSigning())
-
-	record, actions, err = coordinator.Apply(
-		t.Context(), terms.ID, &RoundCommitted{
-			RoundID:        binding.RoundID,
-			CommitmentTxID: binding.CommitmentTxID,
-		},
-	)
-	require.NoError(t, err)
-	require.Empty(t, actions)
-	require.Equal(t, PhaseAwaitingConfirmation, record.Snapshot.Phase)
+	require.True(t, record.Snapshot.ReadyToCommitOOR())
 
 	_, _, err = coordinator.Apply(
 		t.Context(), terms.ID, &Fail{
@@ -82,9 +72,8 @@ func TestReceiveIntentLifecycle(t *testing.T) {
 	require.ErrorContains(t, err, "after safety boundary")
 
 	record, actions, err = coordinator.Apply(
-		t.Context(), terms.ID, &RoundConfirmed{
-			RoundID:        binding.RoundID,
-			CommitmentTxID: binding.CommitmentTxID,
+		t.Context(), terms.ID, &OORFinalized{
+			SessionID: binding.OORSessionID,
 		},
 	)
 	require.NoError(t, err)
@@ -128,9 +117,9 @@ func TestReceiveIntentLifecycle(t *testing.T) {
 	require.Equal(t, PhaseClosed, record.Snapshot.Phase)
 }
 
-// TestReceiveIntentCanFailBeforeRoundCommit proves a signed backing does not
-// pin an output from a round whose nonce has not been released.
-func TestReceiveIntentCanFailBeforeRoundCommit(t *testing.T) {
+// TestOORChannelCanAbortBeforePONR proves a definitively failed prepared
+// transfer releases its source before lnd funding is canceled.
+func TestOORChannelCanAbortBeforePONR(t *testing.T) {
 	t.Parallel()
 
 	coordinator, err := NewCoordinator(newMemoryStore())
@@ -160,13 +149,15 @@ func TestReceiveIntentCanFailBeforeRoundCommit(t *testing.T) {
 	}
 
 	record, actions, err := coordinator.Apply(
-		t.Context(), terms.ID, &Fail{
-			Reason: "round resealed",
+		t.Context(), terms.ID, &OORAborted{
+			SessionID: binding.OORSessionID,
+			Reason:    "operator rejected transfer",
 		},
 	)
 	require.NoError(t, err)
 	require.Equal(t, PhaseCancelling, record.Snapshot.Phase)
 	require.IsType(t, &CancelFunding{}, requireOneAction(t, actions))
+	require.True(t, record.Snapshot.OORAborted)
 
 	record, _, err = coordinator.Apply(
 		t.Context(), terms.ID, &FundingCanceled{},
@@ -175,9 +166,9 @@ func TestReceiveIntentCanFailBeforeRoundCommit(t *testing.T) {
 	require.Equal(t, PhaseFailed, record.Snapshot.Phase)
 }
 
-// TestPromotionActivatesWithoutRound proves an existing VTXO can activate as
-// soon as native lnd and the signed backing are durable.
-func TestPromotionActivatesWithoutRound(t *testing.T) {
+// TestPromotionWaitsForOORFinalization proves a client-funded promotion uses
+// the same OOR commit gate as a hub-funded receive intent.
+func TestPromotionWaitsForOORFinalization(t *testing.T) {
 	t.Parallel()
 
 	store := newMemoryStore()
@@ -210,9 +201,18 @@ func TestPromotionActivatesWithoutRound(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
+	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
+	require.IsType(t, &CommitOOR{}, requireOneAction(t, actions))
+	require.False(t, record.Snapshot.OORFinalized)
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &OORFinalized{
+			SessionID: binding.OORSessionID,
+		},
+	)
+	require.NoError(t, err)
 	require.Equal(t, PhaseActivating, record.Snapshot.Phase)
 	require.IsType(t, &ActivateChannel{}, requireOneAction(t, actions))
-	require.False(t, record.Snapshot.RoundCommitted)
 }
 
 // TestFundingFinalizationRequiresBacking ensures an edge-triggered lnd
@@ -339,8 +339,8 @@ func TestChannelTermsRejectUnsafeRefundDelay(t *testing.T) {
 	require.ErrorContains(t, err, "preserve the reaction window")
 }
 
-// TestBindingRejectsDifferentChannelPolicy verifies the round cannot bind an
-// arbitrary output while retaining otherwise valid channel terms.
+// TestBindingRejectsDifferentChannelPolicy verifies an OOR preparation cannot
+// bind an arbitrary output while retaining otherwise valid channel terms.
 func TestBindingRejectsDifferentChannelPolicy(t *testing.T) {
 	t.Parallel()
 
@@ -622,25 +622,36 @@ func testTerms(t *testing.T, kind Kind) Terms {
 	return terms
 }
 
-// testBinding creates one exact round output for channel terms.
+// testBinding creates one exact prepared OOR output for channel terms.
 func testBinding(terms Terms) VTXOBinding {
-	commitmentTxID := chainhash.Hash{11, byte(terms.Kind)}
 	policy, pkScript, err := terms.VTXO.Artifacts()
 	if err != nil {
 		panic(err)
 	}
+	amount := terms.Capacity + 1_000
+	tx := wire.NewMsgTx(2)
+	tx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash: chainhash.Hash{10, byte(terms.Kind)},
+		},
+	})
+	tx.AddTxOut(&wire.TxOut{Value: 1, PkScript: []byte{0x51}})
+	tx.AddTxOut(&wire.TxOut{Value: 2, PkScript: []byte{0x51}})
+	tx.AddTxOut(&wire.TxOut{Value: int64(amount), PkScript: pkScript})
+	var arkTransaction bytes.Buffer
+	if err := tx.Serialize(&arkTransaction); err != nil {
+		panic(err)
+	}
+	sessionID := [32]byte(tx.TxHash())
 
 	return VTXOBinding{
+		OORSessionID: sessionID,
 		OutPoint: wire.OutPoint{
-			Hash: chainhash.Hash{
-				10,
-				byte(terms.Kind),
-			},
+			Hash:  chainhash.Hash(sessionID),
 			Index: 2,
 		},
-		Amount:         terms.Capacity + 1_000,
-		RoundID:        "round-1",
-		CommitmentTxID: commitmentTxID,
+		Amount:         amount,
+		ArkTransaction: arkTransaction.Bytes(),
 		PolicyTemplate: policy,
 		PkScript:       pkScript,
 	}

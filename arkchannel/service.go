@@ -31,13 +31,20 @@ func NewService(coordinator *Coordinator,
 		return nil, fmt.Errorf("channel action executor is required")
 	}
 
-	return &Service{
+	service := &Service{
 		coordinator: coordinator,
 		executor:    executor,
-	}, nil
+	}
+	if binder, ok := executor.(ChannelEventSinkBinder); ok {
+		if err := binder.BindChannelEventSink(service); err != nil {
+			return nil, err
+		}
+	}
+
+	return service, nil
 }
 
-// RegisterReceiveIntent durably reserves a future hub-funded channel.
+// RegisterReceiveIntent durably reserves a future hub-funded OOR channel.
 func (s *Service) RegisterReceiveIntent(ctx context.Context, terms Terms) (
 	Record, error) {
 
@@ -60,16 +67,35 @@ func (s *Service) RegisterPromotion(ctx context.Context, terms Terms) (Record,
 	return s.coordinator.Request(ctx, terms)
 }
 
-// BindVTXO attaches the exact validated source and starts native funding.
-func (s *Service) BindVTXO(ctx context.Context, id ID, binding VTXOBinding) (
-	Record, error) {
+// BindPreparedOOR validates and attaches the exact prepared OOR output before
+// starting native funding.
+func (s *Service) BindPreparedOOR(ctx context.Context, id ID,
+	binding VTXOBinding) (Record, error) {
+
+	validator, ok := s.executor.(interface {
+		ValidatePreparedOOR(context.Context, Terms, VTXOBinding) error
+	})
+	if !ok {
+		return Record{}, fmt.Errorf("channel executor cannot " +
+			"validate prepared OOR transfers")
+	}
+	record, err := s.coordinator.Get(ctx, id)
+	if err != nil {
+		return Record{}, err
+	}
+	if err := validator.ValidatePreparedOOR(
+		ctx, record.Snapshot.Terms, binding,
+	); err != nil {
+		return Record{}, fmt.Errorf("validate prepared OOR: %w", err)
+	}
 
 	return s.Apply(ctx, id, &BindVTXO{
 		Binding: binding,
 	})
 }
 
-// PromoteVTXO registers and negotiates an existing client-funded VTXO.
+// PromoteVTXO registers and negotiates a channel backed by a prepared OOR
+// transfer from an existing client-funded VTXO.
 func (s *Service) PromoteVTXO(ctx context.Context, terms Terms,
 	binding VTXOBinding) (Record, error) {
 
@@ -79,7 +105,7 @@ func (s *Service) PromoteVTXO(ctx context.Context, terms Terms,
 	if _, err := s.RegisterPromotion(ctx, terms); err != nil {
 		return Record{}, err
 	}
-	if _, err := s.BindVTXO(ctx, terms.ID, binding); err != nil {
+	if _, err := s.BindPreparedOOR(ctx, terms.ID, binding); err != nil {
 		return Record{}, err
 	}
 

@@ -7,7 +7,7 @@ type Event interface {
 	eventSealed()
 }
 
-// BindVTXO records the exact output validated by a round or wallet lookup.
+// BindVTXO records the exact output of a durable prepared OOR transfer.
 type BindVTXO struct {
 	Binding VTXOBinding
 }
@@ -34,21 +34,23 @@ type FundingCanceled struct{}
 
 func (*FundingCanceled) eventSealed() {}
 
-// RoundCommitted records that a receive round crossed nonce release.
-type RoundCommitted struct {
-	RoundID        string
-	CommitmentTxID chainhash.Hash
+// OORFinalized records that the prepared OOR transfer completed at the Ark
+// operator and the channel-policy VTXO now exists.
+type OORFinalized struct {
+	SessionID [32]byte
 }
 
-func (*RoundCommitted) eventSealed() {}
+func (*OORFinalized) eventSealed() {}
 
-// RoundConfirmed records confirmation of the bound receive round.
-type RoundConfirmed struct {
-	RoundID        string
-	CommitmentTxID chainhash.Hash
+// OORAborted records a definitive pre-PONR OOR failure. It proves the source
+// reservation is safe to release and permits the pending lnd channel to be
+// canceled.
+type OORAborted struct {
+	SessionID [32]byte
+	Reason    string
 }
 
-func (*RoundConfirmed) eventSealed() {}
+func (*OORAborted) eventSealed() {}
 
 // ChannelActive records that native lnd activated the expected channel point.
 type ChannelActive struct {
@@ -94,6 +96,25 @@ type NegotiateFunding struct {
 }
 
 func (*NegotiateFunding) actionSealed() {}
+
+// CommitOOR releases signing and transport for the prepared transfer only
+// after both lnd endpoints have durably stored their initial commitments.
+type CommitOOR struct {
+	Terms  Terms
+	Source VTXOBinding
+}
+
+func (*CommitOOR) actionSealed() {}
+
+// AbortOOR releases the source VTXO reservation before canceling native lnd
+// funding.
+type AbortOOR struct {
+	Terms  Terms
+	Source VTXOBinding
+	Reason string
+}
+
+func (*AbortOOR) actionSealed() {}
 
 // ActivateChannel asks the virtual notifier to confirm the backing to lnd.
 type ActivateChannel struct {

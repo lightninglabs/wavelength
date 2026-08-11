@@ -20,6 +20,27 @@ type staticFundingFinalizationSource struct {
 	finalized bool
 }
 
+type noOpActionExecutor struct{}
+
+// ValidatePreparedOOR accepts fixtures already covered by state validation.
+func (*noOpActionExecutor) ValidatePreparedOOR(context.Context, Terms,
+	VTXOBinding) error {
+
+	return nil
+}
+
+// Execute accepts already-durable actions without completing callbacks.
+func (*noOpActionExecutor) Execute(context.Context, ID, Action) error {
+	return nil
+}
+
+// ValidatePreparedOOR accepts fixtures already covered by state validation.
+func (*serviceExecutor) ValidatePreparedOOR(context.Context, Terms,
+	VTXOBinding) error {
+
+	return nil
+}
+
 // FundingFinalized returns one fixed lnd database observation.
 func (s *staticFundingFinalizationSource) FundingFinalized(context.Context,
 	Terms, Backing) (bool, error) {
@@ -53,6 +74,21 @@ func (e *serviceExecutor) Execute(ctx context.Context, id ID,
 				return err
 			}
 		}
+
+	case *CommitOOR:
+		_, err := e.service.Apply(ctx, id, &OORFinalized{
+			SessionID: action.Source.OORSessionID,
+		})
+
+		return err
+
+	case *AbortOOR:
+		_, err := e.service.Apply(ctx, id, &OORAborted{
+			SessionID: action.Source.OORSessionID,
+			Reason:    action.Reason,
+		})
+
+		return err
 
 	case *ActivateChannel:
 		_, err := e.service.Apply(ctx, id, &ChannelActive{
@@ -103,6 +139,7 @@ func TestServicePromotesAndMaterializesVTXO(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, PhaseActive, record.Snapshot.Phase)
 	require.Equal(t, 1, executor.counts["*arkchannel.NegotiateFunding"])
+	require.Equal(t, 1, executor.counts["*arkchannel.CommitOOR"])
 	require.Equal(t, 1, executor.counts["*arkchannel.ActivateChannel"])
 
 	record, err = service.Materialize(t.Context(), terms.ID)
@@ -131,7 +168,7 @@ func TestServiceSeparatesPromotionRegistrationFromBinding(t *testing.T) {
 	require.Equal(t, PhaseRequested, record.Snapshot.Phase)
 	require.Empty(t, executor.counts)
 
-	record, err = service.BindVTXO(
+	record, err = service.BindPreparedOOR(
 		t.Context(), terms.ID, testBinding(terms),
 	)
 	require.NoError(t, err)
@@ -140,7 +177,7 @@ func TestServiceSeparatesPromotionRegistrationFromBinding(t *testing.T) {
 }
 
 // TestServiceRegistersReceiveIntentWithoutFunding verifies registration does
-// not spend operator liquidity until a matching round output is known.
+// not spend operator liquidity until a matching prepared OOR output is known.
 func TestServiceRegistersReceiveIntentWithoutFunding(t *testing.T) {
 	t.Parallel()
 
@@ -173,7 +210,7 @@ func TestServiceReconcilesFundingByChannelPoint(t *testing.T) {
 	_, err = service.RegisterPromotion(t.Context(), terms)
 	require.NoError(t, err)
 	binding := testBinding(terms)
-	_, err = service.BindVTXO(t.Context(), terms.ID, binding)
+	_, err = service.BindPreparedOOR(t.Context(), terms.ID, binding)
 	require.NoError(t, err)
 	backing := testBacking(t, terms, binding)
 	_, err = service.Apply(t.Context(), terms.ID, &BackingSigned{
@@ -194,7 +231,8 @@ func TestServiceReconcilesFundingByChannelPoint(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, record.Snapshot.ClientFinalized)
 	require.True(t, record.Snapshot.HubFinalized)
-	require.Equal(t, PhaseActivating, record.Snapshot.Phase)
+	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
+	require.True(t, record.Snapshot.ReadyToCommitOOR())
 
 	_, err = service.ObserveFundingFinalized(
 		t.Context(), PartyHub, wire.OutPoint{

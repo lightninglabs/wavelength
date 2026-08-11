@@ -21,19 +21,18 @@ CREATE TABLE IF NOT EXISTS ark_channels (
     funder_delay BIGINT NOT NULL,
     min_exit_delay BIGINT NOT NULL,
 
-    phase INTEGER NOT NULL CHECK (phase BETWEEN 1 AND 11),
-    source_txid BLOB,
-    source_index BIGINT,
-    source_amount BIGINT,
-    round_id TEXT,
-    commitment_txid BLOB,
-    backing_tx BLOB,
+	phase INTEGER NOT NULL CHECK (phase BETWEEN 1 AND 10),
+	oor_session_id BLOB,
+	source_index BIGINT,
+	source_amount BIGINT,
+	source_ark_tx BLOB,
+	backing_tx BLOB,
     channel_point_txid BLOB,
     channel_point_index BIGINT,
     client_finalized BOOLEAN NOT NULL DEFAULT FALSE,
     hub_finalized BOOLEAN NOT NULL DEFAULT FALSE,
-    round_committed BOOLEAN NOT NULL DEFAULT FALSE,
-    round_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+	oor_finalized BOOLEAN NOT NULL DEFAULT FALSE,
+	oor_aborted BOOLEAN NOT NULL DEFAULT FALSE,
     backing_published BOOLEAN NOT NULL DEFAULT FALSE,
     failure TEXT,
 
@@ -42,12 +41,10 @@ CREATE TABLE IF NOT EXISTS ark_channels (
     updated_at BIGINT NOT NULL,
 
     CHECK (
-        (source_txid IS NULL AND source_index IS NULL AND
-         source_amount IS NULL AND round_id IS NULL AND
-         commitment_txid IS NULL) OR
-        (source_txid IS NOT NULL AND source_index IS NOT NULL AND
-         source_amount IS NOT NULL AND round_id IS NOT NULL AND
-         commitment_txid IS NOT NULL)
+		(oor_session_id IS NULL AND source_index IS NULL AND
+		 source_amount IS NULL AND source_ark_tx IS NULL) OR
+		(oor_session_id IS NOT NULL AND source_index IS NOT NULL AND
+		 source_amount IS NOT NULL AND source_ark_tx IS NOT NULL)
     ),
     CHECK (
         (backing_tx IS NULL AND channel_point_txid IS NULL AND

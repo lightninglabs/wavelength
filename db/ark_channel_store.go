@@ -221,18 +221,17 @@ func (s *ArkChannelStoreDB) CompareAndSwap(ctx context.Context,
 // arkChannelMutableFields is the shared SQL representation of mutable state.
 type arkChannelMutableFields struct {
 	phase             int32
-	sourceTxID        []byte
+	oorSessionID      []byte
 	sourceIndex       sql.NullInt64
 	sourceAmount      sql.NullInt64
-	roundID           sql.NullString
-	commitmentTxID    []byte
+	sourceArkTx       []byte
 	backingTx         []byte
 	channelPointTxID  []byte
 	channelPointIndex sql.NullInt64
 	clientFinalized   bool
 	hubFinalized      bool
-	roundCommitted    bool
-	roundConfirmed    bool
+	oorFinalized      bool
+	oorAborted        bool
 	backingPublished  bool
 	failure           sql.NullString
 }
@@ -245,8 +244,8 @@ func mutableArkChannelFields(snapshot arkchannel.Snapshot) (
 		phase:            int32(snapshot.Phase),
 		clientFinalized:  snapshot.ClientFinalized,
 		hubFinalized:     snapshot.HubFinalized,
-		roundCommitted:   snapshot.RoundCommitted,
-		roundConfirmed:   snapshot.RoundConfirmed,
+		oorFinalized:     snapshot.OORFinalized,
+		oorAborted:       snapshot.OORAborted,
 		backingPublished: snapshot.BackingPublished,
 		failure: sql.NullString{
 			String: snapshot.Failure,
@@ -254,8 +253,8 @@ func mutableArkChannelFields(snapshot arkchannel.Snapshot) (
 		},
 	}
 	if snapshot.Source != nil {
-		fields.sourceTxID = slices.Clone(
-			snapshot.Source.OutPoint.Hash[:],
+		fields.oorSessionID = slices.Clone(
+			snapshot.Source.OORSessionID[:],
 		)
 		fields.sourceIndex = sql.NullInt64{
 			Int64: int64(snapshot.Source.OutPoint.Index),
@@ -265,12 +264,8 @@ func mutableArkChannelFields(snapshot arkchannel.Snapshot) (
 			Int64: int64(snapshot.Source.Amount),
 			Valid: true,
 		}
-		fields.roundID = sql.NullString{
-			String: snapshot.Source.RoundID,
-			Valid:  true,
-		}
-		fields.commitmentTxID = slices.Clone(
-			snapshot.Source.CommitmentTxID[:],
+		fields.sourceArkTx = slices.Clone(
+			snapshot.Source.ArkTransaction,
 		)
 	}
 	if snapshot.Backing != nil {
@@ -317,18 +312,17 @@ func insertArkChannelParams(snapshot arkchannel.Snapshot,
 		FunderDelay:       int64(terms.VTXO.FunderDelay),
 		MinExitDelay:      int64(terms.VTXO.MinExitDelay),
 		Phase:             fields.phase,
-		SourceTxid:        fields.sourceTxID,
+		OorSessionID:      fields.oorSessionID,
 		SourceIndex:       fields.sourceIndex,
 		SourceAmount:      fields.sourceAmount,
-		RoundID:           fields.roundID,
-		CommitmentTxid:    fields.commitmentTxID,
+		SourceArkTx:       fields.sourceArkTx,
 		BackingTx:         fields.backingTx,
 		ChannelPointTxid:  fields.channelPointTxID,
 		ChannelPointIndex: fields.channelPointIndex,
 		ClientFinalized:   fields.clientFinalized,
 		HubFinalized:      fields.hubFinalized,
-		RoundCommitted:    fields.roundCommitted,
-		RoundConfirmed:    fields.roundConfirmed,
+		OorFinalized:      fields.oorFinalized,
+		OorAborted:        fields.oorAborted,
 		BackingPublished:  fields.backingPublished,
 		Failure:           fields.failure,
 		Revision:          initialArkChannelRevision,
@@ -350,18 +344,17 @@ func compareAndSwapArkChannelParams(snapshot arkchannel.Snapshot, revision,
 		ChannelID:         slices.Clone(snapshot.Terms.ID[:]),
 		Revision:          revision,
 		Phase:             fields.phase,
-		SourceTxid:        fields.sourceTxID,
+		OorSessionID:      fields.oorSessionID,
 		SourceIndex:       fields.sourceIndex,
 		SourceAmount:      fields.sourceAmount,
-		RoundID:           fields.roundID,
-		CommitmentTxid:    fields.commitmentTxID,
+		SourceArkTx:       fields.sourceArkTx,
 		BackingTx:         fields.backingTx,
 		ChannelPointTxid:  fields.channelPointTxID,
 		ChannelPointIndex: fields.channelPointIndex,
 		ClientFinalized:   fields.clientFinalized,
 		HubFinalized:      fields.hubFinalized,
-		RoundCommitted:    fields.roundCommitted,
-		RoundConfirmed:    fields.roundConfirmed,
+		OorFinalized:      fields.oorFinalized,
+		OorAborted:        fields.oorAborted,
 		BackingPublished:  fields.backingPublished,
 		Failure:           fields.failure,
 		UpdatedAt:         now,
@@ -461,8 +454,8 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 		Phase:            arkchannel.Phase(row.Phase),
 		ClientFinalized:  row.ClientFinalized,
 		HubFinalized:     row.HubFinalized,
-		RoundCommitted:   row.RoundCommitted,
-		RoundConfirmed:   row.RoundConfirmed,
+		OORFinalized:     row.OorFinalized,
+		OORAborted:       row.OorAborted,
 		BackingPublished: row.BackingPublished,
 		Failure:          row.Failure.String,
 	}
@@ -496,16 +489,14 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 func arkChannelSourceFromRow(row sqlc.ArkChannel,
 	terms arkchannel.Terms) (*arkchannel.VTXOBinding, error) {
 
-	if len(row.SourceTxid) == 0 {
+	if len(row.OorSessionID) == 0 {
 		return nil, nil
 	}
-	sourceHash, err := chainhash.NewHash(row.SourceTxid)
-	if err != nil {
-		return nil, fmt.Errorf("decode source txid: %w", err)
-	}
-	commitmentTxID, err := chainhash.NewHash(row.CommitmentTxid)
-	if err != nil {
-		return nil, fmt.Errorf("decode commitment txid: %w", err)
+	var oorSessionID [32]byte
+	if err := copyFixed(
+		oorSessionID[:], row.OorSessionID, "OOR session ID",
+	); err != nil {
+		return nil, err
 	}
 	sourceIndex, err := decodeIndex(row.SourceIndex, "source index")
 	if err != nil {
@@ -514,22 +505,19 @@ func arkChannelSourceFromRow(row sqlc.ArkChannel,
 	if !row.SourceAmount.Valid {
 		return nil, fmt.Errorf("source amount is missing")
 	}
-	if !row.RoundID.Valid {
-		return nil, fmt.Errorf("source round ID is missing")
-	}
 	policy, pkScript, err := terms.VTXO.Artifacts()
 	if err != nil {
 		return nil, err
 	}
 
 	return &arkchannel.VTXOBinding{
+		OORSessionID: oorSessionID,
 		OutPoint: wire.OutPoint{
-			Hash:  *sourceHash,
+			Hash:  chainhash.Hash(oorSessionID),
 			Index: sourceIndex,
 		},
 		Amount:         btcutil.Amount(row.SourceAmount.Int64),
-		RoundID:        row.RoundID.String,
-		CommitmentTxID: *commitmentTxID,
+		ArkTransaction: slices.Clone(row.SourceArkTx),
 		PolicyTemplate: policy,
 		PkScript:       pkScript,
 	}, nil
