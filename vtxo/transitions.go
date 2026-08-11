@@ -935,11 +935,33 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		}, nil
 
 	case *PendingForfeitEvent:
-		// Duplicate commit while already pending is harmless. The
-		// round may re-issue this after restart or replay.
-		return &VTXOStateTransition{
-			NextState: s,
-		}, nil
+		// A second cooperative commitment for a coin already committed
+		// to a round. This used to self-loop as a harmless duplicate,
+		// which is what made the reservation path unsafe: the manager
+		// validates only that an actor exists and that the outpoint is
+		// not spend-reserved, then trusts this FSM, so a claim that
+		// races the advisory pre-check was accepted here and the
+		// caller was told its leave to a fresh destination was queued
+		// while the first claim is what actually gets paid. Which of
+		// the two behaviours the caller met was decided purely by how
+		// far the round had progressed in the preceding seconds.
+		//
+		// Refusing closes the door ForfeitingState already closes.
+		// Every producer of this event is a fresh claim — the manager
+		// dedups within one request, largest-first selection is scoped
+		// to Live descriptors, and the restart-time re-reserve in the
+		// send-onchain intent replayer runs after the startup sweep
+		// has released orphaned pending forfeits back to Live — so
+		// nothing legitimate arrives here twice.
+		//
+		// The message names the outpoint and state for the same
+		// reason ForfeitingState's does: this refusal lands in front
+		// of a user who asked to leave or refresh the VTXO. The round
+		// ID is not available yet, since it is only stamped once the
+		// round has supplied forfeit details.
+		return nil, fmt.Errorf("%w (outpoint %s, state %s)",
+			ErrForfeitInFlight, s.VTXO.Outpoint,
+			VTXOStatusPendingForfeit)
 
 	case *ForfeitReleasedEvent:
 		// Release this VTXO. This happens when cooperative round

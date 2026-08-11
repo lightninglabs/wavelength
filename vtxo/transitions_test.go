@@ -2009,3 +2009,40 @@ func TestForfeitingStateForceUnrollTriggers(t *testing.T) {
 		})
 	}
 }
+
+// TestPendingForfeitEventFromPendingForfeit asserts a second cooperative
+// commitment is refused at the PendingForfeit door too, not only at
+// Forfeiting.
+//
+// This used to self-loop as a "harmless duplicate", which is what left the
+// reservation path unguarded: Manager.handleReserveForfeit validates only
+// that an actor exists and that the outpoint is not spend-reserved, then
+// trusts the FSM. A leave whose advisory pre-check passed while the coin was
+// still live, and which then raced a concurrent claim, was therefore accepted
+// here and reported as queued while the first claim is what actually gets
+// paid.
+func TestPendingForfeitEventFromPendingForfeit(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&PendingForfeitState{
+		VTXO:              vtxo,
+		RequestedAtHeight: 900,
+	})
+
+	_, err := h.sendEvent(&round.PendingForfeitEvent{})
+	require.ErrorIs(t, err, ErrForfeitInFlight)
+
+	// The message must name the coin and its state: this refusal lands in
+	// front of a user who asked to leave or refresh it (wavelength#577).
+	// No round id is available yet, since it is only stamped once the
+	// round supplies forfeit details.
+	require.Contains(t, err.Error(), vtxo.Outpoint.String())
+	require.Contains(t, err.Error(), VTXOStatusPendingForfeit.String())
+
+	// The coin stays committed to the claim that already holds it; a
+	// refused duplicate cannot disturb it.
+	assertState[*PendingForfeitState](h)
+}
