@@ -32,7 +32,7 @@ func TestPeerCarriesWireMessages(t *testing.T) {
 	require.NoError(t, peer.SendMessage(true, message))
 	require.Equal(t, []lnwire.Message{message}, transport.messages)
 	require.True(t, transport.sync)
-	require.Equal(t, "swapdk", peer.Address().Network())
+	require.Equal(t, "tcp", peer.Address().Network())
 	serializedPeerKey := peer.PubKey()
 	require.Equal(
 		t, remoteKey.PubKey().SerializeCompressed(),

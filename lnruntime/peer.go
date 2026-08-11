@@ -60,7 +60,11 @@ func NewPeer(cfg PeerConfig) (*Peer, error) {
 	}
 
 	if cfg.Address == nil {
-		cfg.Address = virtualPeerAddress{}
+		// lnd persists this diagnostic field in its channel record and
+		// its schema only supports standard peer address encodings.
+		// Message delivery still uses Transport; no TCP connection is
+		// opened.
+		cfg.Address = &net.TCPAddr{IP: net.IPv4zero}
 	}
 	if cfg.LocalFeatures == nil {
 		cfg.LocalFeatures = emptyFeatureVector()
@@ -214,19 +218,6 @@ func (p *Peer) Disconnect(reason error) {
 // emptyFeatureVector returns a feature vector with no optional behavior.
 func emptyFeatureVector() *lnwire.FeatureVector {
 	return lnwire.NewFeatureVector(lnwire.NewRawFeatureVector(), nil)
-}
-
-// virtualPeerAddress identifies a peer carried by the embedding application.
-type virtualPeerAddress struct{}
-
-// Network identifies the non-socket transport in diagnostics.
-func (virtualPeerAddress) Network() string {
-	return "swapdk"
-}
-
-// String returns a stable address without leaking transport details.
-func (virtualPeerAddress) String() string {
-	return "swapdk-peer"
 }
 
 var _ lnpeer.Peer = (*Peer)(nil)

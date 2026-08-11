@@ -1,7 +1,6 @@
 package lnruntime
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -19,7 +18,6 @@ import (
 	"github.com/lightningnetwork/lnd/chanacceptor"
 	"github.com/lightningnetwork/lnd/chanstate"
 	"github.com/lightningnetwork/lnd/discovery"
-	fn "github.com/lightningnetwork/lnd/fn/v2"
 	lndfunding "github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/graph/db/models"
 	"github.com/lightningnetwork/lnd/htlcswitch"
@@ -27,12 +25,10 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnpeer"
 	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwallet/chanfunding"
 	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/msgmux"
 )
 
 const (
@@ -54,8 +50,7 @@ type FundingConfig struct {
 
 	NotifyWhenOnline func([33]byte, chan<- lnpeer.Peer)
 	WatchNewChannel  func(*chanstate.OpenChannel, *btcec.PublicKey) error
-	NotifyFinalized  func(lndfunding.PendingChanID) error
-	NotifyReady      func(lnwallet.AuxChanState) error
+	NotifyFinalized  func(lndfunding.PendingChanID, bool) error
 
 	NotifyPendingOpen func(wire.OutPoint, *chanstate.OpenChannel,
 		*btcec.PublicKey)
@@ -100,14 +95,6 @@ type FundingRuntime struct {
 	mu      sync.Mutex
 	started bool
 	stopped bool
-}
-
-// fundingBarrier exposes only the two lifecycle callbacks Ark needs from the
-// AuxFundingController. It does not define a custom channel type or modify
-// lnd's commitment construction.
-type fundingBarrier struct {
-	finalized func(lndfunding.PendingChanID) error
-	ready     func(lnwallet.AuxChanState) error
 }
 
 // newFundingRuntime composes lnd's normal funding manager around Wavelength's
@@ -167,10 +154,6 @@ func newFundingRuntime(runtimeCfg RuntimeConfig, switcher *htlcswitch.Switch,
 		maxChanSize = lndfunding.MaxBtcFundingAmountWumbo
 	}
 
-	barrier := &fundingBarrier{
-		finalized: cfg.NotifyFinalized,
-		ready:     cfg.NotifyReady,
-	}
 	manager, err := lndfunding.NewFundingManager(lndfunding.Config{
 		NoWumboChans:       false,
 		IDKey:              cfg.IdentityKey.PubKey,
@@ -224,7 +207,8 @@ func newFundingRuntime(runtimeCfg RuntimeConfig, switcher *htlcswitch.Switch,
 		NotifyPendingOpenChannelEvent: optionalNotifyPending(
 			cfg,
 		),
-		NotifyFundingTimeout: optionalNotifyTimeout(cfg),
+		NotifyFundingTimeout:   optionalNotifyTimeout(cfg),
+		NotifyFundingFinalized: cfg.NotifyFinalized,
 		MaxAnchorsCommitFeeRate: runtimeCfg.FeeEstimator.
 			RelayFeePerKW(),
 		DeleteAliasEdge: func(lnwire.ShortChannelID) (
@@ -234,14 +218,6 @@ func newFundingRuntime(runtimeCfg RuntimeConfig, switcher *htlcswitch.Switch,
 		},
 		AliasManager:      aliasManager,
 		IsSweeperOutpoint: func(wire.OutPoint) bool { return false },
-		AuxLeafStore:      fn.None[lnwallet.AuxLeafStore](),
-		AuxFundingController: fn.Some[lndfunding.AuxFundingController](
-			barrier,
-		),
-		AuxSigner:            fn.None[lnwallet.AuxSigner](),
-		AuxResolver:          fn.None[lnwallet.AuxContractResolver](),
-		AuxChannelNegotiator: fn.None[lnwallet.AuxChannelNegotiator](),
-		ShutdownScript:       fn.None[lnwire.DeliveryAddress](),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create lnd funding manager: %w", err)
@@ -428,8 +404,10 @@ func (f *FundingRuntime) FinalizeBacking(pendingID lndfunding.PendingChanID,
 	if packet == nil {
 		return fmt.Errorf("funding PSBT is required")
 	}
+	// Keep the intent paused after verification. Passing skipFinalize would
+	// wake funding.Manager before the notifier knows the backing txid.
 	if err := f.wallet.PsbtFundingVerify(
-		pendingID, packet, true,
+		pendingID, packet, false,
 	); err != nil {
 		return fmt.Errorf("verify virtual channel funding PSBT: %w",
 			err)
@@ -450,6 +428,12 @@ func (f *FundingRuntime) FinalizeBacking(pendingID lndfunding.PendingChanID,
 	}
 
 	return nil
+}
+
+// RegisterBacking lets the responder install the same fully signed backing
+// transaction before the initiator resumes lnd's funding exchange.
+func (f *FundingRuntime) RegisterBacking(funding VirtualFunding) error {
+	return f.notifier.RegisterVirtualFunding(funding)
 }
 
 // CancelBacking cancels an in-memory lnd PSBT intent after its Ark workflow
@@ -597,53 +581,3 @@ func optionalNotifyTimeout(
 
 	return func(wire.OutPoint, *btcec.PublicKey) {}
 }
-
-// Name identifies the callback-only aux funding endpoint.
-func (*fundingBarrier) Name() msgmux.EndpointName {
-	return "ark-funding-barrier"
-}
-
-// CanHandle returns false because Ark uses ordinary BOLT funding messages.
-func (*fundingBarrier) CanHandle(msgmux.PeerMsg) bool {
-	return false
-}
-
-// SendMessage rejects custom messages because this controller only observes
-// lifecycle callbacks.
-func (*fundingBarrier) SendMessage(context.Context, msgmux.PeerMsg) bool {
-	return false
-}
-
-// DescFromPendingChanID leaves lnd's ordinary commitment format unchanged.
-func (*fundingBarrier) DescFromPendingChanID(lndfunding.PendingChanID,
-	lnwallet.AuxChanState, lntypes.Dual[lnwallet.CommitmentKeyRing],
-	bool) lndfunding.AuxFundingDescResult {
-
-	return fn.Ok(fn.None[lnwallet.AuxFundingDesc]())
-}
-
-// DeriveTapscriptRoot leaves lnd's ordinary funding output unchanged.
-func (*fundingBarrier) DeriveTapscriptRoot(
-	lndfunding.PendingChanID) lndfunding.AuxTapscriptResult {
-
-	return fn.Ok(fn.None[chainhash.Hash]())
-}
-
-// ChannelReady reports completion of lnd's normal channel opening lifecycle.
-func (b *fundingBarrier) ChannelReady(channel lnwallet.AuxChanState) error {
-	if b.ready == nil {
-		return nil
-	}
-
-	return b.ready(channel)
-}
-
-// ChannelFinalized is the round-signing barrier: both commitments are signed
-// and lnd considers the external funding transaction safe to publish.
-func (b *fundingBarrier) ChannelFinalized(
-	pendingID lndfunding.PendingChanID) error {
-
-	return b.finalized(pendingID)
-}
-
-var _ lndfunding.AuxFundingController = (*fundingBarrier)(nil)

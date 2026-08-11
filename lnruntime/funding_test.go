@@ -96,7 +96,9 @@ func TestRuntimeStartsNativeFunding(t *testing.T) {
 
 				return nil
 			},
-			NotifyFinalized: func([32]byte) error { return nil },
+			NotifyFinalized: func([32]byte, bool) error {
+				return nil
+			},
 		},
 	})
 	require.NoError(t, err)
