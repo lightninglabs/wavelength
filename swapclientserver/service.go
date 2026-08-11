@@ -415,6 +415,7 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 
 		return nil, nil, err
 	}
+	cfg.ArkChannelMailbox = swapClients.mailbox
 
 	arkClient, err := sdkark.WrapDaemonServer(ctx, sdkark.InProcessConfig{
 		DaemonServer: rpcServer,
@@ -526,6 +527,7 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 
 	cleanup := func() {
 		cancel()
+		cfg.ArkChannelMailbox = nil
 		_ = arkClient.Close()
 		_ = swapClients.server.Close()
 		_ = swapClients.cleanup()
@@ -938,11 +940,11 @@ func swapServerDialOptions(cfg *waved.SwapConfig, addr string,
 	}
 }
 
-// swapServerWaitForReadyInterceptor applies reconnect waiting only to swap
-// operations that create or advance protocol state. User operations remain
-// bounded by their request context, while background resume operations remain
-// bounded by the daemon root context. Read-only quotes and credit snapshots
-// retain gRPC's fail-fast behavior.
+// swapServerWaitForReadyInterceptor applies reconnect waiting only to swap and
+// mailbox operations that create or advance protocol state. User operations
+// remain bounded by their request context, while background resume operations
+// remain bounded by the daemon root context. Read-only quotes, mailbox pulls,
+// and credit snapshots retain gRPC's fail-fast behavior.
 func swapServerWaitForReadyInterceptor(ctx context.Context, method string, req,
 	reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker,
 	opts ...grpc.CallOption) error {
@@ -959,7 +961,8 @@ func swapServerWaitForReadyInterceptor(ctx context.Context, method string, req,
 // reconnects.
 func swapServerOperationWaitsForReady(method string) bool {
 	switch method {
-	case swaprpc.SwapService_RequestChannelId_FullMethodName,
+	case mailboxpb.MailboxService_Send_FullMethodName,
+		swaprpc.SwapService_RequestChannelId_FullMethodName,
 		swaprpc.SwapService_CreateInSwap_FullMethodName,
 		swaprpc.SwapService_CreateCredit_FullMethodName,
 		swaprpc.SwapService_RedeemCredit_FullMethodName,

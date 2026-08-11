@@ -1204,8 +1204,13 @@ func TestSwapServerOperationWaitsForReady(t *testing.T) {
 			method: swaprpc.SwapService_ListCredits_FullMethodName,
 		},
 		{
-			name:   "mailbox",
-			method: "/mailboxrpc.MailboxService/Pull",
+			name:   "mailbox send",
+			method: mailboxpb.MailboxService_Send_FullMethodName,
+			wait:   true,
+		},
+		{
+			name:   "mailbox pull",
+			method: mailboxpb.MailboxService_Pull_FullMethodName,
 		},
 		{
 			name:   "future swap method",
