@@ -52,6 +52,18 @@ SET status = 'confirmed',
     last_update_time = $5
 WHERE round_id = $1;
 
+-- name: RetireCheckpointedRound :execrows
+-- Stamps a checkpointed round 'failed'. Guarded on 'input_sig_sent', the same
+-- status ListActiveRounds keys on, so retirement can only ever consume a row
+-- that is still re-hydrating on startup. The row count lets the caller tell a
+-- real retirement from a late or duplicate failure for a round that has since
+-- finalized, and skip the deposit hand-back in the latter case: the round row
+-- is what the re-admission queries join on, so stamping a confirmed round
+-- 'failed' would make deposits that are already VTXOs boardable again.
+UPDATE rounds
+SET status = 'failed', last_update_time = $2
+WHERE round_id = $1 AND status = 'input_sig_sent';
+
 -- name: RevertAdoptedBoardingIntent :exec
 -- Returns a boarding intent adopted by a dead round to 'confirmed'. The
 -- commitment never broadcast, so the UTXO is exactly as it was before the

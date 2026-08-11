@@ -458,6 +458,11 @@ type RoundStore interface {
 	// BoardingStatusFailed: a dead round proves the commitment never
 	// broadcast, so nothing on-chain failed and the UTXO is exactly as it
 	// was before the round.
+	//
+	// Retiring a round that is not checkpointed is a no-op, not an error.
+	// A failure that races a confirmation must not reopen the round that
+	// won, so the implementation is required to consume only a
+	// checkpointed row.
 	FailRound(ctx context.Context, roundID RoundID) error
 
 	// FailForfeitIntents terminally fails the pending send intents anchored

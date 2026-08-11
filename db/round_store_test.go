@@ -2256,3 +2256,105 @@ func TestRoundStoreFailRoundLeavesSweptDepositAlone(t *testing.T) {
 		"round retirement clobbered an in-flight sweep",
 	)
 }
+
+// TestRoundStoreFailRoundOnlyRetiresCheckpointedRound pins the guard on the
+// round half of the retirement, the counterpart to the intent guard above.
+//
+// The round row is the authority the re-admission queries join on: an adopted
+// deposit stays out of the boardable and sweepable pools precisely while its
+// round reads something other than 'failed'. So stamping a round 'failed'
+// unconditionally is not a bookkeeping detail, it is the whole gate. A late or
+// duplicate failure for a round that has already confirmed would hand back
+// deposits whose commitment is on-chain and whose UTXO is now a VTXO, leaving
+// the client offering an already-spent outpoint for a fresh board.
+//
+// The FSM cannot produce that ordering today, so this is a structural guard
+// rather than a fix for a live bug: retirement consumes exactly the rows
+// ListActiveRounds keys on, and anything else is a total no-op.
+func TestRoundStoreFailRoundOnlyRetiresCheckpointedRound(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+
+		// roundStatus is the status the round row carries when the
+		// late failure lands.
+		roundStatus string
+
+		// wantStatus is the status it must carry afterwards.
+		wantStatus string
+
+		// wantRetired is whether the retirement should have consumed
+		// the row, which is also whether the deposit should come
+		// back.
+		wantRetired bool
+	}{{
+		name:        "checkpointed round retires",
+		roundStatus: "input_sig_sent",
+		wantStatus:  "failed",
+		wantRetired: true,
+	}, {
+		name:        "confirmed round survives",
+		roundStatus: "confirmed",
+		wantStatus:  "confirmed",
+		wantRetired: false,
+	}, {
+		name:        "failed round is not restamped",
+		roundStatus: "failed",
+		wantStatus:  "failed",
+		wantRetired: false,
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			roundStore, boardingStore, db :=
+				newRoundAndBoardingStoresForTest(t)
+			ctx := t.Context()
+
+			intent := createSweepStoreIntent(t, boardingStore)
+			roundID := testRoundIDDB(tc.name)
+			insertRoundBoardingIntentForTest(
+				t, db, roundID.String(), tc.roundStatus, intent,
+			)
+			require.NoError(
+				t, boardingStore.UpdateBoardingIntentStatus(
+					ctx, intent.Outpoint,
+					wallet.BoardingStatusAdopted,
+				),
+			)
+
+			require.NoError(t, roundStore.FailRound(ctx, roundID))
+
+			// The round row moved only if it was checkpointed.
+			// insertRoundBoardingIntentForTest stamps
+			// last_update_time at 100, so an untouched row still
+			// reads 100 while a retired one carries the store
+			// clock: that separates "already failed" from
+			// "restamped failed", which the status alone cannot.
+			row, err := db.GetRound(ctx, roundID.String())
+			require.NoError(t, err)
+			require.Equal(t, tc.wantStatus, row.Status)
+
+			if tc.wantRetired {
+				require.Greater(
+					t, row.LastUpdateTime, int64(100),
+					"retirement did not stamp the row",
+				)
+			} else {
+				require.EqualValues(
+					t, 100, row.LastUpdateTime,
+					"retirement rewrote a settled row",
+				)
+			}
+
+			// And the deposit follows the round row: back in both
+			// recovery pools on a real retirement, still committed
+			// to its round otherwise.
+			assertDepositRecoverable(
+				t, boardingStore, intent, tc.wantRetired,
+			)
+		})
+	}
+}
