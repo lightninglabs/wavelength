@@ -32,8 +32,7 @@ import (
 const testFundingCapacity = btcutil.Amount(200_000)
 
 type fundingFinalization struct {
-	pendingID lndfunding.PendingChanID
-	initiator bool
+	channelPoint wire.OutPoint
 }
 
 // fundingFlowNode contains one composed runtime and the callbacks used to
@@ -133,7 +132,11 @@ func TestNativeFundingFlowPaysBothDirections(t *testing.T) {
 	})
 	require.NoError(t, err)
 	packet := awaitFundingPSBT(t, flow)
-	funding := completeVirtualFunding(t, packet)
+	funding := completeVirtualFunding(
+		t, packet, lnwire.NewShortChanIDFromInt(
+			record.Snapshot.Terms.ReservedSCID,
+		),
+	)
 	require.NoError(t, bob.runtime.Funding().RegisterBacking(funding))
 	require.NoError(
 		t, alice.runtime.Funding().FinalizeBacking(
@@ -142,11 +145,20 @@ func TestNativeFundingFlowPaysBothDirections(t *testing.T) {
 	)
 
 	aliceFinalized := awaitFinalized(t, alice, flow.Errors)
-	require.Equal(t, pendingID, aliceFinalized.pendingID)
-	require.True(t, aliceFinalized.initiator)
 	bobFinalized := awaitFinalized(t, bob, nil)
-	require.Equal(t, pendingID, bobFinalized.pendingID)
-	require.False(t, bobFinalized.initiator)
+	require.Equal(
+		t, funding.Transaction.TxHash(),
+		aliceFinalized.channelPoint.Hash,
+	)
+	require.Equal(t, aliceFinalized, bobFinalized)
+	backing := arkBackingFromFunding(t, funding)
+	for _, node := range []*fundingFlowNode{alice, bob} {
+		finalized, err := node.runtime.Funding().FundingFinalized(
+			t.Context(), record.Snapshot.Terms, backing,
+		)
+		require.NoError(t, err)
+		require.True(t, finalized)
+	}
 	txid := funding.Transaction.TxHash()
 	require.NoError(t, alice.runtime.Funding().ConfirmBacking(txid))
 	require.NoError(t, bob.runtime.Funding().ConfirmBacking(txid))
@@ -167,6 +179,88 @@ func TestNativeFundingFlowPaysBothDirections(t *testing.T) {
 	payRuntimeInvoice(
 		t, bob, alice, returnAmount, lntypes.Preimage{7, 8, 9},
 	)
+}
+
+// TestNativeFundingCancellationAfterFinalization proves a round can reseal
+// after both lnd databases persist the channel but before Ark commits.
+func TestNativeFundingCancellationAfterFinalization(t *testing.T) {
+	t.Parallel()
+
+	alice := newFundingFlowNode(t, arkchannel.PartyHub)
+	bob := newFundingFlowNode(t, arkchannel.PartyClient)
+	connectFundingFlowNodes(t, alice, bob)
+	require.NoError(t, alice.runtime.Start())
+	require.NoError(t, bob.runtime.Start())
+	t.Cleanup(func() {
+		require.NoError(t, alice.runtime.Stop())
+		require.NoError(t, bob.runtime.Stop())
+	})
+
+	pendingID := lndfunding.PendingChanID{8, 6, 7, 5}
+	record, _ := testReceiveIntentRecord(t)
+	record.Snapshot.Terms.PendingChannelID = pendingID
+	record.Snapshot.Terms.Capacity = testFundingCapacity
+	record.Snapshot.Terms.HubNodeKey = compressedIntentKey(alice.key)
+	record.Snapshot.Terms.ClientNodeKey = compressedIntentKey(bob.key)
+	record.Snapshot.Source.Amount = testFundingCapacity + 1_000
+	record.Snapshot.Source.OutPoint = wire.OutPoint{
+		Hash: chainhash.Hash{
+			4,
+			2,
+		},
+		Index: 1,
+	}
+	alice.intents.record = record
+	bob.intents.record = record
+
+	flow, err := alice.runtime.Funding().OpenChannel(FundingOpenRequest{
+		Peer:             alice.peer,
+		PendingChannelID: pendingID,
+		Capacity:         testFundingCapacity,
+	})
+	require.NoError(t, err)
+	packet := awaitFundingPSBT(t, flow)
+	funding := completeVirtualFunding(
+		t, packet, lnwire.NewShortChanIDFromInt(
+			record.Snapshot.Terms.ReservedSCID,
+		),
+	)
+	require.NoError(t, bob.runtime.Funding().RegisterBacking(funding))
+	require.NoError(
+		t, alice.runtime.Funding().FinalizeBacking(
+			pendingID, packet, funding,
+		),
+	)
+	_ = awaitFinalized(t, alice, flow.Errors)
+	_ = awaitFinalized(t, bob, nil)
+
+	channelPoint := wire.OutPoint{
+		Hash:  funding.Transaction.TxHash(),
+		Index: funding.OutputIndex,
+	}
+	for _, node := range []*fundingFlowNode{alice, bob} {
+		require.NoError(
+			t, node.runtime.Funding().CancelBacking(
+				pendingID, &channelPoint,
+			),
+		)
+		_, err := node.db.ChannelStateDB().FetchChannel(channelPoint)
+		require.ErrorIs(t, err, channeldb.ErrChannelNotFound)
+		_, err = node.db.ChannelStateDB().FetchClosedChannel(
+			&channelPoint,
+		)
+		require.NoError(t, err)
+		require.NoError(
+			t, node.runtime.Funding().CancelBacking(
+				pendingID, &channelPoint,
+			),
+		)
+		require.Error(
+			t, node.runtime.Funding().ConfirmBacking(
+				channelPoint.Hash,
+			),
+		)
+	}
 }
 
 // newFundingFlowNode constructs one runtime before its transport-backed peer
@@ -234,15 +328,12 @@ func newFundingFlowNode(t *testing.T,
 
 				return nil
 			},
-			NotifyFinalized: func(id lndfunding.PendingChanID,
-				initiator bool) error {
+			NotifyPendingOpen: func(channelPoint wire.OutPoint,
+				_ *chanstate.OpenChannel, _ *btcec.PublicKey) {
 
 				node.finalized <- fundingFinalization{
-					pendingID: id,
-					initiator: initiator,
+					channelPoint: channelPoint,
 				}
-
-				return nil
 			},
 		},
 	})
@@ -318,7 +409,9 @@ func awaitFundingPSBT(t *testing.T, flow *FundingFlow) *psbt.Packet {
 
 // completeVirtualFunding adds a signed SegWit VTXO input while preserving the
 // exact funding output negotiated by lnd.
-func completeVirtualFunding(t *testing.T, packet *psbt.Packet) VirtualFunding {
+func completeVirtualFunding(t *testing.T, packet *psbt.Packet,
+	scid lnwire.ShortChannelID) VirtualFunding {
+
 	t.Helper()
 
 	previousOutpoint := wire.OutPoint{Hash: chainhash.Hash{4, 2}, Index: 1}
@@ -342,10 +435,23 @@ func completeVirtualFunding(t *testing.T, packet *psbt.Packet) VirtualFunding {
 	return VirtualFunding{
 		Transaction: fundingTx,
 		OutputIndex: fundingOutput,
-		SCID: lnwire.ShortChannelID{
-			BlockHeight: 16_000_100,
-			TxIndex:     77,
-			TxPosition:  uint16(fundingOutput),
+		SCID:        scid,
+	}
+}
+
+// arkBackingFromFunding serializes one fully signed virtual funding record.
+func arkBackingFromFunding(t *testing.T,
+	funding VirtualFunding) arkchannel.Backing {
+
+	t.Helper()
+	var transaction bytes.Buffer
+	require.NoError(t, funding.Transaction.Serialize(&transaction))
+
+	return arkchannel.Backing{
+		Transaction: transaction.Bytes(),
+		ChannelPoint: wire.OutPoint{
+			Hash:  funding.Transaction.TxHash(),
+			Index: funding.OutputIndex,
 		},
 	}
 }

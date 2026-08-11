@@ -124,6 +124,40 @@ func TestVirtualFundingNotifierRejectsMismatchedFunding(t *testing.T) {
 	require.ErrorContains(t, err, "does not match funding output")
 }
 
+// TestVirtualFundingNotifierCancellationFencesLateWaiters verifies a pending
+// lnd channel cannot escape cancellation by registering after the Ark event.
+func TestVirtualFundingNotifierCancellationFencesLateWaiters(t *testing.T) {
+	t.Parallel()
+
+	base := &countingNotifier{runtimeNotifier: newRuntimeNotifier(800_000)}
+	notifier, err := NewVirtualFundingNotifier(base)
+	require.NoError(t, err)
+	fundingTx := testVirtualFundingTx()
+	funding := VirtualFunding{
+		Transaction: fundingTx,
+		OutputIndex: 0,
+		SCID: lnwire.ShortChannelID{
+			BlockHeight: 16_000_123,
+			TxIndex:     42,
+		},
+	}
+	require.NoError(t, notifier.RegisterVirtualFunding(funding))
+	txid := fundingTx.TxHash()
+	require.NoError(t, notifier.CancelVirtualFunding(txid))
+
+	event, err := notifier.RegisterConfirmationsNtfn(
+		&txid, fundingTx.TxOut[0].PkScript, 1, 800_000,
+	)
+	require.NoError(t, err)
+	_, ok := <-event.Confirmed
+	require.False(t, ok)
+	require.Zero(t, base.confirmations.Load())
+	require.ErrorContains(
+		t, notifier.ConfirmVirtualFunding(txid),
+		"was canceled",
+	)
+}
+
 // testVirtualFundingTx creates an immutable witness funding transaction.
 func testVirtualFundingTx() *wire.MsgTx {
 	tx := wire.NewMsgTx(2)

@@ -16,6 +16,7 @@ import (
 	"github.com/lightningnetwork/lnd/actor"
 	"github.com/lightningnetwork/lnd/aliasmgr"
 	"github.com/lightningnetwork/lnd/chanacceptor"
+	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/chanstate"
 	"github.com/lightningnetwork/lnd/discovery"
 	lndfunding "github.com/lightningnetwork/lnd/funding"
@@ -50,7 +51,6 @@ type FundingConfig struct {
 
 	NotifyWhenOnline func([33]byte, chan<- lnpeer.Peer)
 	WatchNewChannel  func(*chanstate.OpenChannel, *btcec.PublicKey) error
-	NotifyFinalized  func(lndfunding.PendingChanID, bool) error
 
 	NotifyPendingOpen func(wire.OutPoint, *chanstate.OpenChannel,
 		*btcec.PublicKey)
@@ -89,6 +89,9 @@ type FundingRuntime struct {
 
 	feeEstimator chainfee.Estimator
 	netParams    *chaincfg.Params
+	chain        lnwallet.BlockChainIO
+	stateDB      chanstate.Store
+	identityKey  [33]byte
 	minChanSize  btcutil.Amount
 	maxChanSize  btcutil.Amount
 
@@ -193,22 +196,20 @@ func newFundingRuntime(runtimeCfg RuntimeConfig, switcher *htlcswitch.Switch,
 		RequiredRemoteMaxHTLCs: func(btcutil.Amount) uint16 {
 			return uint16(input.MaxHTLCNumber / 2)
 		},
-		WatchNewChannel:        cfg.WatchNewChannel,
-		ReportShortChanID:      optionalReportSCID(cfg),
-		ZombieSweeperInterval:  time.Hour,
-		ReservationTimeout:     chanfunding.DefaultReservationTimeout,
-		MinChanSize:            minChanSize,
-		MaxChanSize:            maxChanSize,
-		MaxPendingChannels:     defaultMaxPendingChannels,
-		RejectPush:             true,
-		MaxLocalCSVDelay:       defaultMaxLocalCSVDelay,
-		NotifyOpenChannelEvent: optionalNotifyOpen(cfg),
-		OpenChannelPredicate:   cfg.ChannelAcceptor,
-		NotifyPendingOpenChannelEvent: optionalNotifyPending(
-			cfg,
-		),
-		NotifyFundingTimeout:   optionalNotifyTimeout(cfg),
-		NotifyFundingFinalized: cfg.NotifyFinalized,
+		WatchNewChannel:       cfg.WatchNewChannel,
+		ReportShortChanID:     optionalReportSCID(cfg),
+		ZombieSweeperInterval: time.Hour,
+		ReservationTimeout: chanfunding.
+			DefaultReservationTimeout,
+		MinChanSize:                   minChanSize,
+		MaxChanSize:                   maxChanSize,
+		MaxPendingChannels:            defaultMaxPendingChannels,
+		RejectPush:                    true,
+		MaxLocalCSVDelay:              defaultMaxLocalCSVDelay,
+		NotifyOpenChannelEvent:        optionalNotifyOpen(cfg),
+		OpenChannelPredicate:          cfg.ChannelAcceptor,
+		NotifyPendingOpenChannelEvent: cfg.NotifyPendingOpen,
+		NotifyFundingTimeout:          optionalNotifyTimeout(cfg),
 		MaxAnchorsCommitFeeRate: runtimeCfg.FeeEstimator.
 			RelayFeePerKW(),
 		DeleteAliasEdge: func(lnwire.ShortChannelID) (
@@ -223,6 +224,9 @@ func newFundingRuntime(runtimeCfg RuntimeConfig, switcher *htlcswitch.Switch,
 		return nil, fmt.Errorf("create lnd funding manager: %w", err)
 	}
 
+	var identityKey [33]byte
+	copy(identityKey[:], cfg.IdentityKey.PubKey.SerializeCompressed())
+
 	return &FundingRuntime{
 		manager:      manager,
 		wallet:       lightningWallet,
@@ -230,6 +234,9 @@ func newFundingRuntime(runtimeCfg RuntimeConfig, switcher *htlcswitch.Switch,
 		aliases:      aliasManager,
 		feeEstimator: runtimeCfg.FeeEstimator,
 		netParams:    cfg.NetParams,
+		chain:        runtimeCfg.Chain,
+		stateDB:      runtimeCfg.DB.ChannelStateDB(),
+		identityKey:  identityKey,
 		minChanSize:  minChanSize,
 		maxChanSize:  maxChanSize,
 	}, nil
@@ -260,8 +267,8 @@ func validateFundingConfig(runtimeCfg RuntimeConfig, cfg FundingConfig) error {
 	case cfg.WatchNewChannel == nil:
 		return fmt.Errorf("new channel watcher is required")
 
-	case cfg.NotifyFinalized == nil:
-		return fmt.Errorf("funding finalization callback is required")
+	case cfg.NotifyPendingOpen == nil:
+		return fmt.Errorf("pending channel callback is required")
 
 	case cfg.MinChannelSize < 0:
 		return fmt.Errorf("minimum channel size cannot be negative")
@@ -436,12 +443,80 @@ func (f *FundingRuntime) RegisterBacking(funding VirtualFunding) error {
 	return f.notifier.RegisterVirtualFunding(funding)
 }
 
-// CancelBacking cancels an in-memory lnd PSBT intent after its Ark workflow
-// fails or expires.
-func (f *FundingRuntime) CancelBacking(
-	pendingID lndfunding.PendingChanID) error {
+// CancelBacking cancels either an in-memory PSBT intent or the pending lnd
+// channel that replaced it after commitment finalization.
+func (f *FundingRuntime) CancelBacking(pendingID lndfunding.PendingChanID,
+	channelPoint *wire.OutPoint) error {
 
-	return f.wallet.CancelFundingIntent(pendingID)
+	if channelPoint != nil {
+		channel, err := f.stateDB.FetchChannel(*channelPoint)
+		switch {
+		case err == nil:
+			return f.abandonPendingBacking(channel)
+
+		case !errors.Is(err, channeldb.ErrChannelNotFound):
+			return fmt.Errorf("find pending lnd channel: %w", err)
+		}
+	}
+
+	cancelErr := f.wallet.CancelFundingIntent(pendingID)
+	if cancelErr == nil {
+		if channelPoint == nil {
+			return nil
+		}
+
+		return f.notifier.UnregisterVirtualFunding(channelPoint.Hash)
+	}
+	if channelPoint == nil {
+		return fmt.Errorf("cancel lnd funding intent: %w", cancelErr)
+	}
+
+	// CompleteReservation removes the PSBT intent before it persists the
+	// pending channel. Re-read the channel DB to close that race.
+	channel, err := f.stateDB.FetchChannel(*channelPoint)
+	if err == nil {
+		return f.abandonPendingBacking(channel)
+	}
+	if !errors.Is(err, channeldb.ErrChannelNotFound) {
+		return fmt.Errorf("reconcile pending lnd channel: %w", err)
+	}
+	_, err = f.stateDB.FetchClosedChannel(channelPoint)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, channeldb.ErrClosedChannelNotFound) {
+		return fmt.Errorf("find canceled lnd channel: %w", err)
+	}
+
+	return fmt.Errorf("cancel lnd funding intent: %w", cancelErr)
+}
+
+// abandonPendingBacking removes finalized channel state before Ark crosses
+// its round-commitment safety boundary.
+func (f *FundingRuntime) abandonPendingBacking(
+	channel *chanstate.OpenChannel) error {
+
+	if !channel.IsPending {
+		return fmt.Errorf("cannot cancel active lnd channel %v",
+			channel.FundingOutpoint)
+	}
+	if err := f.notifier.CancelVirtualFunding(
+		channel.FundingOutpoint.Hash,
+	); err != nil {
+		return err
+	}
+	_, height, err := f.chain.GetBestBlock()
+	if err != nil {
+		return fmt.Errorf("read height for channel cancellation: %w",
+			err)
+	}
+	if err := f.stateDB.AbandonChannel(
+		&channel.FundingOutpoint, uint32(height),
+	); err != nil {
+		return fmt.Errorf("abandon pending lnd channel: %w", err)
+	}
+
+	return nil
 }
 
 // ConfirmBacking opens lnd's channel only after the Ark FSM's durable round
@@ -546,18 +621,6 @@ func optionalReportSCID(cfg FundingConfig) func(wire.OutPoint) error {
 	}
 
 	return func(wire.OutPoint) error { return nil }
-}
-
-// optionalNotifyPending supplies lnd's required pending-open callback.
-func optionalNotifyPending(
-	cfg FundingConfig,
-) func(wire.OutPoint, *chanstate.OpenChannel, *btcec.PublicKey) {
-
-	if cfg.NotifyPendingOpen != nil {
-		return cfg.NotifyPendingOpen
-	}
-
-	return func(wire.OutPoint, *chanstate.OpenChannel, *btcec.PublicKey) {}
 }
 
 // optionalNotifyOpen supplies lnd's required open callback.

@@ -149,7 +149,10 @@ func testReceiveIntentRecord(t *testing.T) (arkchannel.Record,
 		PendingChannelID: [32]byte{
 			2,
 		},
-		ReservedSCID:  8_000_001,
+		ReservedSCID: lnwire.ShortChannelID{
+			BlockHeight: 16_000_001,
+			TxIndex:     1,
+		}.ToUint64(),
 		Capacity:      btcutil.Amount(100_000),
 		ClientNodeKey: compressedIntentKey(clientNode),
 		HubNodeKey:    compressedIntentKey(hubNode),

@@ -6,6 +6,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightningnetwork/lnd/chanacceptor"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/chanstate"
@@ -96,8 +97,8 @@ func TestRuntimeStartsNativeFunding(t *testing.T) {
 
 				return nil
 			},
-			NotifyFinalized: func([32]byte, bool) error {
-				return nil
+			NotifyPendingOpen: func(wire.OutPoint,
+				*chanstate.OpenChannel, *btcec.PublicKey) {
 			},
 		},
 	})

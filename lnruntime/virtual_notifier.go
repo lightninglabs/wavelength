@@ -24,6 +24,7 @@ type VirtualFunding struct {
 type virtualFundingRecord struct {
 	funding       VirtualFunding
 	confirmed     bool
+	canceled      bool
 	registrations map[uint64]*chainntnfs.ConfirmationEvent
 }
 
@@ -96,6 +97,11 @@ func (n *VirtualFundingNotifier) RegisterVirtualFunding(
 
 	existing, ok := n.virtualFunding[txid]
 	if ok {
+		if existing.canceled {
+			return fmt.Errorf("virtual funding transaction %s was "+
+				"canceled", txid)
+		}
+
 		return sameVirtualFunding(existing.funding, funding)
 	}
 
@@ -125,6 +131,41 @@ func (n *VirtualFundingNotifier) UnregisterVirtualFunding(
 			txid)
 	}
 	delete(n.virtualFunding, txid)
+
+	return nil
+}
+
+// CancelVirtualFunding removes an unconfirmed virtual registration and wakes
+// lnd confirmation waiters so a durable Ark cancellation can complete.
+func (n *VirtualFundingNotifier) CancelVirtualFunding(
+	txid chainhash.Hash) error {
+
+	n.mu.Lock()
+	record, ok := n.virtualFunding[txid]
+	if !ok {
+		n.mu.Unlock()
+
+		return nil
+	}
+	if record.confirmed {
+		n.mu.Unlock()
+
+		return fmt.Errorf("virtual funding transaction %s is confirmed",
+			txid)
+	}
+	record.canceled = true
+	events := make(
+		[]*chainntnfs.ConfirmationEvent, 0, len(record.registrations),
+	)
+	for _, event := range record.registrations {
+		events = append(events, event)
+	}
+	record.registrations = make(map[uint64]*chainntnfs.ConfirmationEvent)
+	n.mu.Unlock()
+
+	for _, event := range events {
+		close(event.Confirmed)
+	}
 
 	return nil
 }
@@ -167,6 +208,12 @@ func (n *VirtualFundingNotifier) RegisterConfirmationsNtfn(txid *chainhash.Hash,
 	event := chainntnfs.NewConfirmationEvent(numConfs, func() {
 		n.cancelRegistration(*txid, registrationID)
 	})
+	if record.canceled {
+		n.mu.Unlock()
+		close(event.Confirmed)
+
+		return event, nil
+	}
 	record.registrations[registrationID] = event
 	confirmed := record.confirmed
 	funding := record.funding
@@ -192,6 +239,12 @@ func (n *VirtualFundingNotifier) ConfirmVirtualFunding(
 
 		return fmt.Errorf("virtual funding transaction %s is not "+
 			"registered", txid)
+	}
+	if record.canceled {
+		n.mu.Unlock()
+
+		return fmt.Errorf("virtual funding transaction %s was canceled",
+			txid)
 	}
 	if record.confirmed {
 		n.mu.Unlock()
