@@ -264,6 +264,30 @@ func withFailureCode(t *ClientStateTransition,
 	return t
 }
 
+// checkpointedFailureOutbox builds the failure notification for an exit from
+// InputSigSentState into ClientFailedState.
+//
+// The exits out of that state assemble their own transitions rather than
+// routing through failWithNotification or failureOutbox, so each one has to
+// carry this message itself. It is not merely observability: retirement of the
+// durable round record hangs on RoundFailedNotification in the actor, so a
+// checkpointed round that fails without emitting it keeps its input_sig_sent
+// row in ListActiveRounds, is re-hydrated on every start, and never releases
+// the boarding intents it adopted: they stay out of the sweep and pinned
+// against the board limit (wavelength#1051).
+func checkpointedFailureOutbox(roundID RoundID, reason string, recoverable bool,
+	err error) []ClientOutMsg {
+
+	return []ClientOutMsg{
+		&RoundFailedNotification{
+			RoundID:       fn.Some(roundID),
+			Reason:        reason,
+			Recoverable:   recoverable,
+			OriginalError: err,
+		},
+	}
+}
+
 // failureOutbox builds the common failure notification and rollback messages
 // for a round that failed before forfeit signatures were sent.
 func failureOutbox(reason string, err error, recoverable bool,
@@ -4401,17 +4425,30 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 		// way into this state.
 		if len(s.Intents.Forfeits) == 0 ||
 			env.StatusReconcileTimeout <= 0 {
-			return &ClientStateTransition{
+
+			// The round is checkpointed, so failing it in memory is
+			// only half the exit: the notification is what retires
+			// the persisted row and hands the adopted deposit back
+			// to the sweep. The disarm trails it, since a cancel
+			// ahead of a delivery can suppress that delivery.
+			transition := &ClientStateTransition{
 				NextState: &ClientFailedState{
 					Reason:      evt.Reason,
 					Error:       evt.Error,
 					Recoverable: evt.Recoverable,
 					FailureCode: evt.FailureCode,
 				},
-				NewEvents: reconcileDisarmEvents(
-					s.RoundID, env,
-				),
-			}, nil
+				NewEvents: fn.Some(ClientEmittedEvent{
+					Outbox: checkpointedFailureOutbox(
+						s.RoundID, evt.Reason,
+						evt.Recoverable, evt.Error,
+					),
+				}),
+			}
+
+			return appendReconcileDisarm(
+				transition, s.RoundID, env,
+			), nil
 		}
 
 		// Forfeit signatures are already out, so the notification alone
@@ -4537,6 +4574,12 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 			slog.Int("forfeit_count", len(s.Intents.Forfeits)),
 		)
 
+		// The notification rides out with the release. Without it the
+		// FSM would fail in memory while the checkpoint row stayed
+		// active and the adopted deposit stayed out of the sweep,
+		// which is the strand this reconcile exists to end: the dead
+		// answer proves the round can never finalize, so the durable
+		// side has to be retired too, not just the in-memory FSM.
 		transition := &ClientStateTransition{
 			NextState: &ClientFailedState{
 				Reason:      failure.Reason,
@@ -4544,6 +4587,12 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 				Recoverable: failure.Recoverable,
 				FailureCode: failure.FailureCode,
 			},
+			NewEvents: fn.Some(ClientEmittedEvent{
+				Outbox: checkpointedFailureOutbox(
+					s.RoundID, failure.Reason,
+					failure.Recoverable, failure.Error,
+				),
+			}),
 		}
 
 		// The release is safe here for the same reason it is safe in

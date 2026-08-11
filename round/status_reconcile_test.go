@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -636,5 +637,134 @@ func TestConfirmationDisarmTrailsNotifications(t *testing.T) {
 		t, doneIdx, cancelIdx, "disarm precedes the terminal "+
 			"notifications, so a rejected cancel would "+
 			"withhold confirmed funds",
+	)
+}
+
+// TestDeadStatusRetiresTheRound pins the durable half of the dead answer.
+// Failing the FSM in memory is only half the exit: retirement of the
+// persisted round hangs on RoundFailedNotification in the actor, so a dead
+// answer that emits no notification leaves the checkpoint row in
+// ListActiveRounds and never releases the deposits it adopted: they stay out
+// of the sweep and pinned against the board limit, the wavelength#1051 strand
+// this reconcile exists to end. The notification must also precede the
+// disarm, since a rejected cancel abandons the rest of the outbox.
+func TestDeadStatusRetiresTheRound(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		forfeits []types.ForfeitRequest
+	}{{
+		// The wavelength#1051 shape: a boarding-only round holds no
+		// reservations, so the release is a no-op and the
+		// notification is the only thing standing between the user
+		// and a deposit stranded until the CSV expires.
+		name: "boarding only",
+	}, {
+		name: "with forfeits",
+		forfeits: []types.ForfeitRequest{
+			mkForfeit(reconcileOutpoint(0x07), 10_000),
+		},
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			roundID := reconcileRoundID(0xa8)
+			s := reconcileState(roundID, tc.forfeits)
+
+			dead := &RoundStatusReported{
+				RoundID: roundID,
+				Status:  roundStatusDead,
+				Detail:  "round unknown to operator",
+			}
+
+			tr, err := s.ProcessEvent(
+				context.Background(), dead, reconcileEnv(),
+			)
+			require.NoError(t, err)
+
+			outbox := tr.NewEvents.UnwrapOr(
+				ClientEmittedEvent{},
+			).Outbox
+
+			failed, ok := findOutbox[*RoundFailedNotification](
+				outbox,
+			)
+			require.True(
+				t, ok, "no RoundFailedNotification: the "+
+					"round fails in memory but its "+
+					"checkpoint row and adopted "+
+					"deposits survive",
+			)
+			require.Equal(
+				t, fn.Some(roundID), failed.RoundID,
+				"retirement keys on the round id",
+			)
+			require.Equal(
+				t, "round unknown to operator", failed.Reason,
+			)
+			require.True(t, failed.Recoverable)
+
+			failIdx := outboxIndexOf[*RoundFailedNotification](
+				outbox,
+			)
+			cancelIdx := outboxIndexOf[*CancelTimeoutReq](outbox)
+			require.NotEqual(
+				t, -1, cancelIdx,
+				"dead answer left the clock armed",
+			)
+			require.Less(
+				t, failIdx, cancelIdx, "a rejected cancel "+
+					"ahead of the notification would "+
+					"suppress the retirement",
+			)
+		})
+	}
+}
+
+// TestDeliveredFailureRetiresBoardingOnlyRound covers the other checkpointed
+// exit into ClientFailedState: a failure the operator delivered directly to a
+// round with nothing reserved. It carries the same authority a probe would
+// return, so it retires the durable round for the same reason the dead answer
+// does.
+func TestDeliveredFailureRetiresBoardingOnlyRound(t *testing.T) {
+	t.Parallel()
+
+	roundID := reconcileRoundID(0xa9)
+	s := reconcileState(roundID, nil)
+
+	tr, err := s.ProcessEvent(
+		context.Background(),
+		&BoardingFailed{
+			RoundID:     fn.Some(roundID),
+			Reason:      "operator dropped the round",
+			Recoverable: true,
+		},
+		reconcileEnv(),
+	)
+	require.NoError(t, err)
+
+	_, ok := tr.NextState.(*ClientFailedState)
+	require.True(t, ok, "expected ClientFailedState, got %T", tr.NextState)
+
+	outbox := tr.NewEvents.UnwrapOr(ClientEmittedEvent{}).Outbox
+
+	failed, ok := findOutbox[*RoundFailedNotification](outbox)
+	require.True(
+		t, ok, "no RoundFailedNotification: the deposit stays "+
+			"adopted and out of the sweep",
+	)
+	require.Equal(t, "operator dropped the round", failed.Reason)
+
+	failIdx := outboxIndexOf[*RoundFailedNotification](outbox)
+	cancelIdx := outboxIndexOf[*CancelTimeoutReq](outbox)
+	require.NotEqual(
+		t, -1, cancelIdx, "delivered failure left the clock armed",
+	)
+	require.Less(
+		t, failIdx, cancelIdx, "a rejected cancel ahead of the "+
+			"notification would suppress the retirement",
 	)
 }
