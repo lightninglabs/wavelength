@@ -472,13 +472,6 @@ type RoundClientConfig struct {
 	// is skipped (tests).
 	OwnedScriptRegistrar OwnedScriptRegistrar
 
-	// ReadinessGate prepares constrained round outputs before nonce
-	// release.
-	ReadinessGate RoundReadinessGate
-
-	// CompletionObserver advances constrained outputs after confirmation.
-	CompletionObserver CompletionObserver
-
 	// LedgerSink is an optional reference to the client-side
 	// ledger accounting actor. When set, the round actor forwards
 	// VTXOReceivedMsg / VTXOSentMsg / FeePaidMsg events as round
@@ -530,7 +523,6 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		Log:                    actorLog,
 		DisableJoinRequestAuth: cfg.DisableJoinRequestAuth,
 		OwnedScriptChecker:     cfg.OwnedScriptChecker,
-		ReadinessGate:          cfg.ReadinessGate,
 	}
 	if env.SigningExecutor == nil {
 		env.SigningExecutor = NewSigningExecutor(1)
@@ -954,7 +946,6 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 		StatusReconcileTimeout: a.env.StatusReconcileTimeout,
 		RoundKey:               RoundKeyStr(roundID.KeyString()),
 		OwnedScriptChecker:     a.cfg.OwnedScriptChecker,
-		ReadinessGate:          a.cfg.ReadinessGate,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -1031,7 +1022,6 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 		StatusReconcileTimeout: a.env.StatusReconcileTimeout,
 		RoundKey:               RoundKeyStr(tempKey.KeyString()),
 		OwnedScriptChecker:     a.cfg.OwnedScriptChecker,
-		ReadinessGate:          a.cfg.ReadinessGate,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -1659,9 +1649,6 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 
 	case *TimeoutMsg:
 		return a.handleTimeout(ctx, m)
-
-	case *RoundReadinessResolved:
-		return a.handleRoundReadinessResolved(ctx, m)
 
 	case *RegisterIntentRequest:
 		return a.handleRegisterIntent(ctx, m)
@@ -2737,11 +2724,6 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 
 		// Handle non-server messages.
 		switch m := msg.(type) {
-		case *AwaitRoundReadinessRequest:
-			if err := a.startRoundReadiness(ctx, m); err != nil {
-				return err
-			}
-
 		case *RegisterConfirmationRequest:
 			if err := a.processConfirmationRequest(
 				ctx, m,
@@ -2888,16 +2870,6 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				slog.String("round_id", m.RoundID.String()),
 				slog.String("txid", m.TxID.String()),
 			)
-
-			if a.cfg.CompletionObserver != nil {
-				err := a.cfg.CompletionObserver.RoundConfirmed(
-					ctx, m.RoundID, m.TxID, m.ConfInfo,
-				)
-				if err != nil {
-					return fmt.Errorf("notify round "+
-						"completion: %w", err)
-				}
-			}
 
 			// Round FSM reached ConfirmedState. Perform actor
 			// cleanup.
@@ -3118,92 +3090,6 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 	}
 
 	return nil
-}
-
-// startRoundReadiness runs slow output preparation outside the actor loop.
-func (a *RoundClientActor) startRoundReadiness(ctx context.Context,
-	request *AwaitRoundReadinessRequest) error {
-
-	if request == nil {
-		return fmt.Errorf("round readiness request is required")
-	}
-	if a.cfg.ReadinessGate == nil {
-		return fmt.Errorf("round readiness gate is not configured")
-	}
-	if a.cfg.SelfRef == nil {
-		return fmt.Errorf("round self reference is required for " +
-			"readiness")
-	}
-
-	gate := a.cfg.ReadinessGate
-	readinessRequest := request.Request.Clone()
-	runCtx := a.lifecycleCtx(ctx)
-	go func() {
-		token, err := gate.AwaitSigningAuthorization(
-			runCtx, readinessRequest,
-		)
-		if runCtx.Err() != nil {
-			return
-		}
-
-		result := &RoundReadinessResolved{
-			RoundID: readinessRequest.RoundID,
-			Token:   slices.Clone(token),
-			Err:     err,
-		}
-		if tellErr := a.cfg.SelfRef.Tell(
-			runCtx, result,
-		); tellErr != nil {
-
-			a.log.WarnS(
-				runCtx, "Unable to deliver round readiness "+
-					"result",
-				tellErr,
-				slog.String(
-					"round_id",
-					readinessRequest.RoundID.String(),
-				),
-			)
-		}
-	}()
-
-	return nil
-}
-
-// handleRoundReadinessResolved resumes only the matching pending round.
-func (a *RoundClientActor) handleRoundReadinessResolved(ctx context.Context,
-	result *RoundReadinessResolved) fn.Result[actormsg.RoundActorResp] {
-
-	if result == nil {
-		return fn.Err[actormsg.RoundActorResp](
-			fmt.Errorf("round readiness result is required"),
-		)
-	}
-	key := RoundKeyStr(result.RoundID.KeyString())
-	roundFSM, ok := a.rounds[key]
-	if !ok {
-		return fn.Err[actormsg.RoundActorResp](
-			fmt.Errorf("no round for readiness result: %s",
-				result.RoundID),
-		)
-	}
-
-	state, err := fsmState(ctx, roundFSM.FSM)
-	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](err)
-	}
-	if _, ok := state.(*RoundReadinessPendingState); !ok {
-		return fn.Ok[actormsg.RoundActorResp](nil)
-	}
-
-	err = a.askEventAndProcessOutbox(ctx, roundFSM, result)
-	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](
-			fmt.Errorf("process round readiness result: %w", err),
-		)
-	}
-
-	return fn.Ok[actormsg.RoundActorResp](nil)
 }
 
 // processConfirmationRequest handles a RegisterConfirmationRequest emitted by

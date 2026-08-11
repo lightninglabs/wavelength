@@ -155,34 +155,14 @@ var BoardingClientTransitions = ClientTransitionTable{
 			FromState: &CommitmentTxReceivedState{},
 			Transitions: []ClientTransitionEntry{
 				{
-					Event:   &CommitmentTxValidated{},
-					ToState: &RoundReadinessPendingState{},
-					Description: "Commitment tx and VTXT validated; " +
-						"prepare constrained outputs",
+					Event:       &CommitmentTxValidated{},
+					ToState:     &CommitmentTxValidatedState{},
+					Description: "Commitment tx and VTXT validated",
 				},
 				{
 					Event:       &BoardingFailed{},
 					ToState:     &ClientFailedState{},
 					Description: "Validation failed",
-					IsTerminal:  true,
-				},
-			},
-		},
-
-		// RoundReadinessPendingState: Waiting for external output
-		// preparation before nonce release.
-		{
-			FromState: &RoundReadinessPendingState{},
-			Transitions: []ClientTransitionEntry{
-				{
-					Event:       &RoundReadinessResolved{},
-					ToState:     &CommitmentTxValidatedState{},
-					Description: "Constrained outputs prepared",
-				},
-				{
-					Event:       &BoardingFailed{},
-					ToState:     &ClientFailedState{},
-					Description: "Output preparation failed",
 					IsTerminal:  true,
 				},
 			},

@@ -814,14 +814,6 @@ type SendRecipient struct {
 	// spend path. Nil for pk_script destinations where the key is
 	// embedded in the script but not provided separately.
 	ClientKey *btcec.PublicKey
-
-	// PolicyTemplate optionally replaces the standard VTXO policy. It is
-	// used by protocol-owned outputs such as Ark channel backing.
-	PolicyTemplate []byte
-
-	// FixedAmount prevents the round quote from shrinking a contract
-	// output.
-	FixedAmount bool
 }
 
 // SendVTXOsRequest asks the wallet to execute an in-round directed

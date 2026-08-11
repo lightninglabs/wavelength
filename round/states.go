@@ -337,28 +337,6 @@ func (s *CommitmentTxReceivedState) IsTerminal() bool {
 
 func (s *CommitmentTxReceivedState) clientStateSealed() {}
 
-// RoundReadinessPendingState holds a validated round while an external output
-// owner prepares its transaction before the client releases a nonce.
-type RoundReadinessPendingState struct {
-	// Validated is the complete state resumed after preparation.
-	Validated *CommitmentTxValidatedState
-
-	// Request carries the exact validated output context.
-	Request RoundReadinessRequest
-}
-
-// String returns the state name.
-func (s *RoundReadinessPendingState) String() string {
-	return "RoundReadinessPending"
-}
-
-// IsTerminal reports that readiness is a resumable pre-signing state.
-func (s *RoundReadinessPendingState) IsTerminal() bool {
-	return false
-}
-
-func (s *RoundReadinessPendingState) clientStateSealed() {}
-
 // CommitmentTxValidatedState indicates the client has validated the VTXT
 // and is ready to participate in MuSig2 signing.
 type CommitmentTxValidatedState struct {
@@ -404,13 +382,6 @@ type CommitmentTxValidatedState struct {
 	// refresh rounds. Empty for boarding-only rounds. Carried forward
 	// through MuSig2 signing states until forfeit collection.
 	ForfeitMappings map[wire.OutPoint]*ConnectorLeafInfo
-
-	// ReadinessRequest is present when an external gate prepared this
-	// round.
-	ReadinessRequest *RoundReadinessRequest
-
-	// ReadinessToken correlates the prepared outputs with nonce commitment.
-	ReadinessToken []byte
 }
 
 func (s *CommitmentTxValidatedState) String() string {

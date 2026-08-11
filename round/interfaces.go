@@ -353,11 +353,6 @@ type ConfInfo struct {
 	BlockHash chainhash.Hash
 }
 
-// CompletionObserver advances durable consumers before round cleanup.
-type CompletionObserver interface {
-	RoundConfirmed(context.Context, RoundID, chainhash.Hash, ConfInfo) error
-}
-
 // Round represents a complete Ark round from the client's perspective. A round
 // coordinates one or more actions (boarding, refresh, offboard) that are
 // batched together in a single commitment transaction.
