@@ -93,19 +93,14 @@ func assertArmsReconcileFirst(t *testing.T, msgs []ClientOutMsg,
 	require.Equal(t, timeout, arm.Duration)
 	require.Equal(t, RoundKeyStr(roundID.KeyString()), arm.RoundKey)
 
+	// Nothing may precede the arm, a cancel of another phase included: the
+	// timeout actor rejects a cancel exactly as it would reject the arm, so
+	// leading with one is the same hazard wearing bookkeeping's clothes.
 	for i, msg := range msgs[:idx] {
-		switch msg.(type) {
-		// A cancel of some other phase is bookkeeping on a timer that
-		// is already running, so it may precede the arm.
-		case *CancelTimeoutReq:
-			continue
-
-		default:
-			t.Fatalf("checkpoint outbox arms the reconcile clock "+
-				"at index %d, behind %T at index %d: a failed "+
-				"Tell on that message commits the checkpoint "+
-				"with no clock armed", idx, msg, i)
-		}
+		t.Fatalf("checkpoint outbox arms the reconcile clock at index "+
+			"%d, behind %T at index %d: a failed Tell on that "+
+			"message commits the checkpoint with no clock armed",
+			idx, msg, i)
 	}
 }
 

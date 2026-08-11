@@ -2910,12 +2910,7 @@ func (s *ForfeitSignaturesCollectingState) forfeitCollectionOutbox(
 		s.CommitmentTx.UnsignedTx, s.VTXOTreePaths,
 	)
 
-	outboxMsgs := []ClientOutMsg{
-		&CancelTimeoutReq{
-			RoundKey: RoundKeyStr(s.RoundID.KeyString()),
-			Phase:    TimeoutPhaseForfeitCollection,
-		},
-	}
+	var outboxMsgs []ClientOutMsg
 
 	// The forfeit signatures leave the box on this transition, opening the
 	// wavelength#844 hazard window: from here on, a round failure (or a
@@ -2932,14 +2927,17 @@ func (s *ForfeitSignaturesCollectingState) forfeitCollectionOutbox(
 	// and no failure ever arrives, so the deposit strands until the CSV
 	// expires (wavelength#1051).
 	//
-	// The arm leads the fallible sends below deliberately. processOutbox
-	// abandons the rest of the outbox on the first failing Tell, and the
-	// FSM has already checkpointed into InputSigSentState by the time the
-	// outbox is dispatched, so arming last would let a mid-flight send
-	// error reopen the very strand this timer closes: a checkpointed round
-	// with no clock for the rest of the session. Arming first is the safe
-	// direction, since a later send failure merely means the timer fires
-	// and probes.
+	// The arm leads every other entry deliberately, the cancel below
+	// included. processOutbox abandons the rest of the outbox on the first
+	// failing Tell, and the FSM has already checkpointed into
+	// InputSigSentState by the time the outbox is dispatched, so arming
+	// after anything fallible would let a mid-flight error reopen the very
+	// strand this timer closes: a checkpointed round with no clock for the
+	// rest of the session. A cancel is one of the entries that can fail --
+	// a saturated timeout actor rejects it exactly as it would reject the
+	// arm -- so the forfeit-collection cancel is no safer to lead with than
+	// the sends are. Arming first is the safe direction, since a later
+	// failure merely means the timer fires and probes.
 	if env.StatusReconcileTimeout > 0 {
 		outboxMsgs = append(outboxMsgs, &StartTimeoutReq{
 			RoundKey: RoundKeyStr(s.RoundID.KeyString()),
@@ -2947,6 +2945,15 @@ func (s *ForfeitSignaturesCollectingState) forfeitCollectionOutbox(
 			Duration: env.StatusReconcileTimeout,
 		})
 	}
+
+	// Disarming the forfeit-collection clock trails the arm for the reason
+	// above. A cancel that never lands only leaks a one-shot timer, and a
+	// forfeit-collection timeout firing after this transition reaches
+	// InputSigSentState, which does not handle it, self-loops.
+	outboxMsgs = append(outboxMsgs, &CancelTimeoutReq{
+		RoundKey: RoundKeyStr(s.RoundID.KeyString()),
+		Phase:    TimeoutPhaseForfeitCollection,
+	})
 
 	outboxMsgs = append(outboxMsgs, &SubmitVTXOForfeitSigsToServer{
 		RoundID:    s.RoundID,
