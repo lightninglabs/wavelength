@@ -1,0 +1,166 @@
+syntax = "proto3";
+
+package arkchannelrpc;
+
+option go_package = "github.com/lightninglabs/wavelength/rpc/arkchannelrpc";
+
+// ArkChannelService is the local Wavelength control surface for channels
+// backed by unpublished Ark transactions.
+service ArkChannelService {
+    // RequestCooperativeClose asks the client to settle one clean channel
+    // directly from its channel-policy VTXO.
+    rpc RequestCooperativeClose (RequestCooperativeCloseRequest)
+        returns (RequestCooperativeCloseResponse);
+
+    // GetChannel returns the durable Ark lifecycle state for one channel.
+    rpc GetChannel (GetChannelRequest) returns (GetChannelResponse);
+}
+
+// ArkChannelPeerService is the authenticated client-to-hub control protocol.
+// It is served only through swapdk-server's mailbox edge, never as a public
+// gRPC service.
+service ArkChannelPeerService {
+    // BeginCooperativeClose fixes both payout scripts and quiesces the hub's
+    // native channel endpoint before the client signs anything.
+    rpc BeginCooperativeClose (BeginCooperativeCloseRequest)
+        returns (BeginCooperativeCloseResponse);
+
+    // CompleteCooperativeClose verifies the client's signature, then adds the
+    // hub and Ark-operator signatures and durably stores the settlement.
+    rpc CompleteCooperativeClose (CompleteCooperativeCloseRequest)
+        returns (CompleteCooperativeCloseResponse);
+
+    // AcknowledgeCooperativeClose records one client-owned durable barrier
+    // fact in the hub's channel FSM.
+    rpc AcknowledgeCooperativeClose (AcknowledgeCooperativeCloseRequest)
+        returns (AcknowledgeCooperativeCloseResponse);
+
+    // PublishCooperativeClose asks the hub to unroll the Ark ancestry, publish
+    // the exact settlement, wait for confirmation, and archive its channel.
+    rpc PublishCooperativeClose (PublishCooperativeCloseRequest)
+        returns (PublishCooperativeCloseResponse);
+
+    // AbortCooperativeClose releases the hub's quiescence barrier before any
+    // fully signed settlement exists.
+    rpc AbortCooperativeClose (AbortCooperativeCloseRequest)
+        returns (AbortCooperativeCloseResponse);
+}
+
+message RequestCooperativeCloseRequest {
+    // channel_id is the 32-byte durable Ark channel identifier.
+    bytes channel_id = 1;
+
+    // fee_rate_sat_per_kw is the deterministic settlement fee rate.
+    uint64 fee_rate_sat_per_kw = 2;
+}
+
+message RequestCooperativeCloseResponse {
+    ArkChannel channel = 1;
+}
+
+message GetChannelRequest {
+    bytes channel_id = 1;
+}
+
+message GetChannelResponse {
+    ArkChannel channel = 1;
+}
+
+message ArkChannel {
+    bytes channel_id = 1;
+    string kind = 2;
+    string phase = 3;
+    string funder = 4;
+    int64 capacity_sat = 5;
+    string source_outpoint = 6;
+    string channel_point = 7;
+    bytes cooperative_close_txid = 8;
+    uint64 revision = 9;
+}
+
+message BeginCooperativeCloseRequest {
+    bytes channel_id = 1;
+    bytes client_delivery_script = 2;
+    uint64 fee_rate_sat_per_kw = 3;
+}
+
+message BeginCooperativeCloseResponse {
+    CooperativeCloseRequest request = 1;
+    CleanChannelState clean_state = 2;
+    CooperativeClose settlement = 3;
+}
+
+message CompleteCooperativeCloseRequest {
+    bytes channel_id = 1;
+    CooperativeCloseProposal proposal = 2;
+    bytes client_signature = 3;
+}
+
+message CompleteCooperativeCloseResponse {
+    CooperativeClose settlement = 1;
+}
+
+enum CooperativeCloseAcknowledgement {
+    COOPERATIVE_CLOSE_ACKNOWLEDGEMENT_UNSPECIFIED = 0;
+    COOPERATIVE_CLOSE_ACKNOWLEDGEMENT_CLIENT_SIGNED = 1;
+    COOPERATIVE_CLOSE_ACKNOWLEDGEMENT_CLIENT_FINALIZED = 2;
+}
+
+message AcknowledgeCooperativeCloseRequest {
+    bytes channel_id = 1;
+    CooperativeCloseAcknowledgement acknowledgement = 2;
+    CooperativeClose settlement = 3;
+}
+
+message AcknowledgeCooperativeCloseResponse {
+    ArkChannel channel = 1;
+}
+
+message PublishCooperativeCloseRequest {
+    bytes channel_id = 1;
+}
+
+message PublishCooperativeCloseResponse {
+    bytes settlement_txid = 1;
+    bool hub_finalized = 2;
+}
+
+message AbortCooperativeCloseRequest {
+    bytes channel_id = 1;
+}
+
+message AbortCooperativeCloseResponse {
+    ArkChannel channel = 1;
+}
+
+message CooperativeCloseRequest {
+    bytes client_delivery_script = 1;
+    bytes hub_delivery_script = 2;
+    uint64 fee_rate_sat_per_kw = 3;
+}
+
+message CleanChannelState {
+    bytes channel_point_txid = 1;
+    uint32 channel_point_index = 2;
+    int64 local_balance_sat = 3;
+    int64 remote_balance_sat = 4;
+    int64 capacity_sat = 5;
+    uint64 commitment_height = 6;
+    bool local_initiator = 7;
+}
+
+message CooperativeCloseProposal {
+    bytes transaction = 1;
+    uint64 commitment_height = 2;
+    int64 client_balance_sat = 3;
+    int64 hub_balance_sat = 4;
+    int64 client_output_sat = 5;
+    int64 hub_output_sat = 6;
+    int64 fee_sat = 7;
+}
+
+message CooperativeClose {
+    CooperativeCloseProposal proposal = 1;
+    bytes transaction = 2;
+    bytes txid = 3;
+}
