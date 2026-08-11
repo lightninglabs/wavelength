@@ -1,6 +1,7 @@
 package wallet
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -2988,14 +2989,9 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context, req *SendVTXOsRequest,
 		len(req.Recipients)+1,
 	)
 	for i, r := range req.Recipients {
-		// Derive the VTXO policy template and pkScript from
-		// (ownerKey, operatorKey, exitDelay). Signing keys are
-		// NOT derived here — the round FSM derives them during
-		// the RegistrationSent transition per #210.
-		policyTemplate, pkScript, err := arkscript.
-			EncodeStandardVTXOArtifacts(
-				r.ClientKey, req.OperatorKey, req.VTXOExitDelay,
-			)
+		policyTemplate, pkScript, err := sendRecipientArtifacts(
+			r, req.OperatorKey, req.VTXOExitDelay,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("build recipient %d "+
 				"descriptor: %w", i, err)
@@ -3003,6 +2999,7 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context, req *SendVTXOsRequest,
 
 		vtxoRequests = append(vtxoRequests, types.VTXORequest{
 			Amount:         r.Amount,
+			FixedAmount:    r.FixedAmount,
 			PolicyTemplate: policyTemplate,
 			PkScript:       pkScript,
 			Expiry:         req.VTXOExitDelay,
@@ -3061,6 +3058,37 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context, req *SendVTXOsRequest,
 	}
 
 	return vtxoRequests, nil
+}
+
+// sendRecipientArtifacts resolves either a standard wallet VTXO or an exact
+// protocol-owned policy without accepting a script/policy mismatch.
+func sendRecipientArtifacts(recipient SendRecipient,
+	operatorKey *btcec.PublicKey, exitDelay uint32) ([]byte, []byte,
+	error) {
+
+	if len(recipient.PolicyTemplate) == 0 {
+		return arkscript.EncodeStandardVTXOArtifacts(
+			recipient.ClientKey, operatorKey, exitDelay,
+		)
+	}
+
+	template, err := arkscript.DecodePolicyTemplate(
+		recipient.PolicyTemplate,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decode custom policy: %w", err)
+	}
+	pkScript, err := template.PkScript()
+	if err != nil {
+		return nil, nil, fmt.Errorf("derive custom policy script: %w",
+			err)
+	}
+	if len(recipient.PkScript) > 0 &&
+		!bytes.Equal(recipient.PkScript, pkScript) {
+		return nil, nil, fmt.Errorf("custom policy script mismatch")
+	}
+
+	return bytes.Clone(recipient.PolicyTemplate), pkScript, nil
 }
 
 // handleSendOnChain plans and submits an atomic onchain payment from VTXOs.
