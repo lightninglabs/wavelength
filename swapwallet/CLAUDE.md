@@ -181,6 +181,9 @@ default builds avoid the swap executor's dependency graph.
   mid-leave. Confirmed-but-not-yet-boarded UTXOs must NOT inflate
   `confirmed_sat` (issue #502), and adopted-but-not-yet-live VTXOs
   must stay pending inbound until commitment confirmation (issue #542).
+  Optional remote credit enrichment has its own short deadline and degrades to
+  the local satoshi snapshot when unavailable; a stalled credit connection
+  must never hold an otherwise valid wallet refresh open indefinitely.
 
 ## Deep Docs
 
