@@ -113,6 +113,16 @@ func ClaimAssetVTXO(ctx context.Context, wallet *tapsdk.Wallet,
 		return nil, fmt.Errorf("confirm claim proof file: %w", err)
 	}
 
+	// The publish step verifies the transition against tapd's own proof
+	// archive, so the leaf's lineage must be imported first. Importing
+	// needs the leaf's OP_TRUE script key declared; its spec is fully
+	// recoverable from the witness stack's script and control block.
+	if err := importClaimLineage(
+		ctx, wallet, source, confirmedFile,
+	); err != nil {
+		return nil, err
+	}
+
 	assetRef, err := tapsdk.ParseAssetRef(req.AssetRef)
 	if err != nil {
 		return nil, fmt.Errorf("parse claim asset ref: %w", err)
@@ -247,6 +257,63 @@ func ClaimAssetVTXO(ctx context.Context, wallet *tapsdk.Wallet,
 		},
 		OutputValueSat: outputValue,
 	}, nil
+}
+
+// importClaimLineage declares the exited leaf's OP_TRUE script key and
+// imports its confirmed proof file into the owner's tapd, which archives
+// the lineage the publish step verifies against. Declaring is correct at
+// claim time: the anchor is on chain under the owner's exclusive control,
+// and the claim spends it in the same flow.
+func importClaimLineage(ctx context.Context, wallet *tapsdk.Wallet,
+	source *CreatedAssetProofSource, confirmedFile []byte) error {
+
+	if len(source.OPTrueWitness) != 2 {
+		return fmt.Errorf("claim OP_TRUE witness has %d items, "+
+			"expected script and control block",
+			len(source.OPTrueWitness))
+	}
+	leafScript := source.OPTrueWitness[0]
+	controlBlock, err := txscript.ParseControlBlock(
+		source.OPTrueWitness[1],
+	)
+	if err != nil {
+		return fmt.Errorf("parse claim OP_TRUE control block: %w", err)
+	}
+	tapTweak := controlBlock.RootHash(leafScript)
+
+	scriptKey, err := tapsdk.ParsePubKey(source.ScriptKey[:])
+	if err != nil {
+		return fmt.Errorf("parse claim script key: %w", err)
+	}
+	internalKey, err := tapsdk.ParsePubKey(
+		controlBlock.InternalKey.SerializeCompressed(),
+	)
+	if err != nil {
+		return fmt.Errorf("parse claim script internal key: %w", err)
+	}
+
+	_, err = wallet.Client().DeclareScriptKey(
+		ctx, &tapsdk.DeclareScriptKeyRequest{
+			ScriptKey: tapsdk.ScriptKey{
+				PubKey: scriptKey,
+				KeyDesc: tapsdk.KeyDescriptor{
+					RawKeyBytes: internalKey,
+				},
+				TapTweak: append([]byte(nil), tapTweak...),
+			},
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("declare claim script key: %w", err)
+	}
+
+	if _, err := wallet.ImportProofFile(ctx, &tapsdk.ProofFile{
+		RawProofFile: confirmedFile,
+	}); err != nil {
+		return fmt.Errorf("import claim proof file: %w", err)
+	}
+
+	return nil
 }
 
 // claimConfirmations converts the caller's chainhash-keyed block data into
