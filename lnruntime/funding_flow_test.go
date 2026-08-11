@@ -2,6 +2,8 @@ package lnruntime
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/lightningnetwork/lnd/chanstate"
 	lndfunding "github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/graph/db/models"
+	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnpeer"
@@ -79,6 +82,9 @@ func (t *fundingFlowTransport) SendMessages(_ bool,
 				return err
 			}
 
+		case *lnwire.ChannelReestablish:
+			go t.deliverReestablish(message)
+
 		case *lnwire.NodeAnnouncement1, *lnwire.ChannelAnnouncement1,
 			*lnwire.ChannelUpdate1:
 
@@ -90,6 +96,38 @@ func (t *fundingFlowTransport) SendMessages(_ bool,
 	}
 
 	return nil
+}
+
+// deliverReestablish models durable mailbox retry while the remote runtime is
+// still rebuilding its link during a simultaneous restart.
+func (t *fundingFlowTransport) deliverReestablish(
+	message *lnwire.ChannelReestablish) {
+
+	deadline := time.After(5 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		err := t.remote.runtime.HandlePeerMessage(
+			context.Background(), message, t.remote.peer,
+		)
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, htlcswitch.ErrChannelLinkNotFound) {
+			t.remote.failures <- err
+
+			return
+		}
+
+		select {
+		case <-ticker.C:
+		case <-deadline:
+			t.remote.failures <- err
+
+			return
+		}
+	}
 }
 
 // TestNativeFundingFlowPaysBothDirections proves the composed funding manager
@@ -174,6 +212,32 @@ func TestNativeFundingFlowPaysBothDirections(t *testing.T) {
 
 	const firstAmount = lnwire.MilliSatoshi(30_000_000)
 	payRuntimeInvoice(t, alice, bob, firstAmount, lntypes.Preimage{1, 2, 3})
+
+	// Rebuild both links from lnd's databases and let the normal
+	// channel_reestablish exchange recover the commitment stream.
+	alice.runtime.RemoveLink(aliceChannel.FundingOutpoint)
+	bob.runtime.RemoveLink(bobChannel.FundingOutpoint)
+	restored, err := alice.runtime.RestorePeerLinks(
+		alice.peer, func(*chanstate.OpenChannel) (LinkConfig, error) {
+			return testLinkConfig(alice.peer, alice.failures), nil
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, restored, 1)
+	restored, err = bob.runtime.RestorePeerLinks(
+		bob.peer, func(*chanstate.OpenChannel) (LinkConfig, error) {
+			return testLinkConfig(bob.peer, bob.failures), nil
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, restored, 1)
+	restored, err = alice.runtime.RestorePeerLinks(
+		alice.peer, func(*chanstate.OpenChannel) (LinkConfig, error) {
+			return testLinkConfig(alice.peer, alice.failures), nil
+		},
+	)
+	require.NoError(t, err)
+	require.Empty(t, restored)
 
 	const returnAmount = lnwire.MilliSatoshi(10_000_000)
 	payRuntimeInvoice(
