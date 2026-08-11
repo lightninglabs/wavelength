@@ -81,7 +81,7 @@ func TestAdmitLeaveTargetsStrictRejectsCommitted(t *testing.T) {
 			r, store := newLeaveAdmissionServer(t)
 			desc := saveVTXOWithStatus(t, store, 0x11, committed)
 
-			_, err := r.admitLeaveTargets(
+			_, _, err := r.admitLeaveTargets(
 				t.Context(), []wire.OutPoint{desc.Outpoint},
 				true,
 			)
@@ -115,12 +115,16 @@ func TestAdmitLeaveTargetsAllSkipsCommitted(t *testing.T) {
 		t, store, 0x22, vtxo.VTXOStatusForfeiting,
 	)
 
-	admitted, err := r.admitLeaveTargets(
+	admitted, skipped, err := r.admitLeaveTargets(
 		t.Context(),
 		[]wire.OutPoint{live.Outpoint, forfeiting.Outpoint}, false,
 	)
 	require.NoError(t, err)
 	require.Equal(t, []wire.OutPoint{live.Outpoint}, admitted)
+
+	// The drop must be counted, not silent: an empty answer would
+	// otherwise be indistinguishable from an empty wallet.
+	require.Equal(t, 1, skipped)
 }
 
 // TestAdmitLeaveTargetsAdmitsExpired asserts an expired VTXO stays leavable.
@@ -132,11 +136,12 @@ func TestAdmitLeaveTargetsAdmitsExpired(t *testing.T) {
 	r, store := newLeaveAdmissionServer(t)
 	desc := saveVTXOWithStatus(t, store, 0x31, vtxo.VTXOStatusExpired)
 
-	admitted, err := r.admitLeaveTargets(
+	admitted, skipped, err := r.admitLeaveTargets(
 		t.Context(), []wire.OutPoint{desc.Outpoint}, true,
 	)
 	require.NoError(t, err)
 	require.Equal(t, []wire.OutPoint{desc.Outpoint}, admitted)
+	require.Zero(t, skipped)
 }
 
 // TestAdmitLeaveTargetsUnknownOutpoint asserts the two selection modes
@@ -148,17 +153,18 @@ func TestAdmitLeaveTargetsUnknownOutpoint(t *testing.T) {
 	r, _ := newLeaveAdmissionServer(t)
 	missing := wire.OutPoint{Hash: chainhash.Hash{0x41}, Index: 0}
 
-	_, err := r.admitLeaveTargets(
+	_, _, err := r.admitLeaveTargets(
 		t.Context(), []wire.OutPoint{missing}, true,
 	)
 	require.Error(t, err)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 
-	admitted, err := r.admitLeaveTargets(
+	admitted, skipped, err := r.admitLeaveTargets(
 		t.Context(), []wire.OutPoint{missing}, false,
 	)
 	require.NoError(t, err)
 	require.Empty(t, admitted)
+	require.Equal(t, 1, skipped)
 }
 
 // TestLeaveVTXOsDryRunRejectsCommitted asserts the refusal reaches the caller
