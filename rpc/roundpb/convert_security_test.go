@@ -6,7 +6,6 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	treePkg "github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/stretchr/testify/require"
 )
 
@@ -316,21 +315,21 @@ func TestTreeFromProtoDiamondDAG(t *testing.T) {
 		},
 	}
 
-	// TreeFromProto rejects diamond DAGs because the shared
-	// child (node 3) would be referenced by node 2 at index 3,
-	// but node 1 already claims it. The pre-order invariant
-	// prevents this since shared children violate the tree
-	// property.
+	// Nodes 1 and 2 both name node 3 as their child. Every forward
+	// reference is valid, so the pre-order invariant (childIdx > i)
+	// admits this shape: it catches cycles, not shared children.
+	// Detecting the diamond needs a record of which parent already
+	// claimed each child, which TreeFromProto now keeps.
 	//
-	// NOTE: The pre-order invariant (childIdx > i) alone allows
-	// this specific diamond shape since all forward references
-	// are valid. However, the diamond is still structurally
-	// accepted here. The pre-order check primarily prevents
-	// cycles; diamond detection would require tracking parent
-	// counts. This test documents the current behavior.
+	// This test used to assert the opposite and document the gap as
+	// accepted behaviour. It is the gap that mattered: what decodes
+	// here is a DAG, not a tree, and a recursive walk re-visits the
+	// shared subtree once per path reaching it, so a linear-sized
+	// message buys exponential work downstream.
 	tree, err := TreeFromProto(pt)
-	require.NoError(t, err)
-	require.NotNil(t, tree)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must not share children")
+	require.Nil(t, tree)
 }
 
 // =====================================================================
@@ -1066,41 +1065,183 @@ func TestTreeFromProtoDiamondDoubleVisit(t *testing.T) {
 		},
 	}
 
-	// NOTE: The pre-order invariant (childIdx > i) does not
-	// prevent all diamond DAGs -- only those with back-edges.
-	// This specific diamond shape uses only forward references
-	// and is still accepted. Diamond detection would require a
-	// parent-count tracker. This test documents the current
-	// behavior: the diamond is accepted but the shared child
-	// is visited twice during traversal.
+	// This shape is why the single-parent check exists. It uses
+	// only forward references, so the pre-order invariant
+	// (childIdx > i) admits it, and what decodes is a DAG whose
+	// shared child sits on two distinct root-to-node paths.
+	//
+	// This test used to accept the decode and then demonstrate the
+	// consequence: a depth-first walk reached the shared child once
+	// per path, so it counted two visits for one node. That is the
+	// amplification in miniature -- at depth d a chain of shared
+	// children turns a linear message into 2^d visits, and the walks
+	// that do this are spread across the codebase rather than
+	// gathered behind one guard.
+	//
+	// So the fix is at the decode boundary, and the assertion moves
+	// with it: the DAG never becomes a tree.Node graph at all, which
+	// is what makes every downstream walk safe without auditing each
+	// one for re-visit behaviour.
 	tree, err := TreeFromProto(pt)
-	require.NoError(t, err)
-	require.NotNil(t, tree)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must not share children")
+	require.Nil(t, tree)
+}
 
-	// Count how many times each node pointer is visited during
-	// a manual depth-first traversal (simulating ForEach).
-	visitCount := make(map[*treePkg.Node]int)
-	var walk func(n *treePkg.Node)
-	walk = func(n *treePkg.Node) {
-		if n == nil {
-			return
-		}
-		visitCount[n]++
-		// Stop if we detect we already visited this node to
-		// prevent infinite recursion in the test.
-		if visitCount[n] > 1 {
-			return
-		}
-		for _, child := range n.Children {
-			walk(child)
-		}
+// =====================================================================
+// FINDING-M2: Single-parent plus forward-edges still admits a forest.
+// Severity: LOW (bounded by the node cap, but linear waste per node)
+//
+// "Every node has at most one parent" describes a forest, not a tree:
+// nothing requires a node to be reachable from index 0. A sender could
+// therefore pad a message up to the node cap with nodes no walk from
+// Root will ever reach, and every one of them was still deserialized
+// and run through ComputeFinalKey, a MuSig2 aggregation with a sort and
+// a copy per node.
+// =====================================================================
+
+// shapeTreeNode builds a minimal TreeNode carrying the given child
+// wiring. Only the shape matters to the tests below, so the payload
+// fields hold the cheapest values the decoder accepts.
+func shapeTreeNode(idx uint32, children map[uint32]uint32) *TreeNode {
+	hash := chainhash.Hash{byte(idx + 1)}
+
+	// Two outputs is the smallest count that lets one node name two
+	// distinct children.
+	outputs := []*TxOut{{
+		Value: 500,
+		PkScript: []byte{
+			0x51,
+		},
+	}, {
+		Value: 500,
+		PkScript: []byte{
+			0x51,
+		},
+	}}
+
+	return &TreeNode{
+		Input: &Outpoint{
+			TxHash:      hash[:],
+			OutputIndex: idx,
+		},
+		Outputs:  outputs,
+		Children: children,
+		Amount:   1000,
 	}
-	walk(tree.Root)
+}
 
-	// The shared child (goNodes[3]) is visited twice.
-	sharedChild := tree.Root.Children[0].Children[0]
-	require.Equal(
-		t, 2, visitCount[sharedChild],
-		"diamond: shared child visited twice",
+// shapeVTXOTree wraps nodes into a VTXOTree with a valid batch outpoint
+// and output, so any error observed comes from the node wiring.
+func shapeVTXOTree(nodes ...*TreeNode) *VTXOTree {
+	hash := chainhash.Hash{0xba}
+
+	return &VTXOTree{
+		Nodes: nodes,
+		BatchOutpoint: &Outpoint{
+			TxHash:      hash[:],
+			OutputIndex: 0,
+		},
+		BatchOutput: &TxOut{
+			Value: 1000,
+			PkScript: []byte{
+				0x51,
+			},
+		},
+	}
+}
+
+// TestTreeFromProtoRejectsUnreachableNodes covers the two forest shapes
+// that pass every per-edge check: a node nobody claims, and a detached
+// second root carrying its own subtree.
+func TestTreeFromProtoRejectsUnreachableNodes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		nodes []*TreeNode
+	}{{
+		// The root claims nothing, so node 1 is detached.
+		name: "orphan node",
+		nodes: []*TreeNode{
+			shapeTreeNode(0, nil),
+			shapeTreeNode(1, nil),
+		},
+	}, {
+		// Node 1 is a second root with its own subtree.
+		name: "detached second root",
+		nodes: []*TreeNode{
+			shapeTreeNode(0, nil),
+			shapeTreeNode(1, map[uint32]uint32{0: 2}),
+			shapeTreeNode(2, nil),
+		},
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := TreeFromProto(shapeVTXOTree(tc.nodes...))
+			require.Error(t, err)
+			require.ErrorContains(
+				t, err, "unreachable nodes or multiple roots",
+			)
+			require.Nil(t, got)
+		})
+	}
+}
+
+// TestTreeFromProtoReportsWildIndexAsOutOfRange pins the diagnostic
+// ordering. A repeated out-of-range index used to be reported as a
+// sharing violation, which sends whoever is reading the log looking for
+// a tree-shape bug when the real problem is a wild index.
+func TestTreeFromProtoReportsWildIndexAsOutOfRange(t *testing.T) {
+	t.Parallel()
+
+	pt := shapeVTXOTree(
+		shapeTreeNode(
+			0, map[uint32]uint32{
+				0: 999,
+				1: 999,
+			},
+		),
+		shapeTreeNode(1, nil),
 	)
+
+	got, err := TreeFromProto(pt)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "out of range")
+	require.NotContains(t, err.Error(), "share children")
+	require.Nil(t, got)
+}
+
+// TestTreeFromProtoAcceptsWellFormedTree guards against the reachability
+// check rejecting anything a legitimate producer emits: flattenNode
+// always yields one connected pre-order tree, so a plain branching shape
+// must still decode with its wiring intact.
+func TestTreeFromProtoAcceptsWellFormedTree(t *testing.T) {
+	t.Parallel()
+
+	pt := shapeVTXOTree(
+		shapeTreeNode(
+			0, map[uint32]uint32{
+				0: 1,
+				1: 2,
+			},
+		),
+		shapeTreeNode(
+			1, map[uint32]uint32{
+				0: 3,
+			},
+		),
+		shapeTreeNode(2, nil),
+		shapeTreeNode(3, nil),
+	)
+
+	got, err := TreeFromProto(pt)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Len(t, got.Root.Children, 2)
+	require.Len(t, got.Root.Children[0].Children, 1)
+	require.Empty(t, got.Root.Children[1].Children)
 }

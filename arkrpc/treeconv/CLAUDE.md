@@ -13,9 +13,10 @@ full `arkrpc` gRPC surface.
   to `arkrpc.TreePathFromTree`; converts a `lib/tree.Tree` to its proto
   wire representation using deterministic pre-order flattening with sorted
   child indices.
-- `TreePathToTree(tp *arkrpc.TreePath) (*tree.Tree, error)` — Delegates to
-  `arkrpc.TreePathToTree`; converts a proto `TreePath` back to a
-  `lib/tree.Tree`.
+- `TreePathToTree(tp *arkrpc.TreePath, opts ...arkrpc.TreePathToTreeOption)
+  (*tree.Tree, error)` — Delegates to `arkrpc.TreePathToTree`; converts a
+  proto `TreePath` back to a `lib/tree.Tree`, validating the decoded
+  shape. Options are forwarded verbatim.
 
 ## Relationships
 

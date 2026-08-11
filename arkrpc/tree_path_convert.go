@@ -37,15 +37,65 @@ func TreePathFromTree(t *tree.Tree) (*TreePath, error) {
 	}, nil
 }
 
+// DefaultMaxTreePathNodes is the upper bound on the number of nodes
+// allowed in a TreePath decoded from an indexer response. A path is a
+// slice through a commitment tree, so it is far smaller than a whole
+// tree in practice; the bound is deliberately set to the same generous
+// figure roundpb.DefaultMaxTreeNodes uses for a full tree, so the two
+// decode boundaries agree and no shape that survives one is rejected by
+// the other purely on size.
+const DefaultMaxTreePathNodes = 50_000
+
+// TreePathToTreeOption is a functional option for TreePathToTree that
+// allows callers to override default validation parameters.
+type TreePathToTreeOption func(*treePathToTreeConfig)
+
+// treePathToTreeConfig holds configurable validation parameters for tree
+// path deserialization.
+type treePathToTreeConfig struct {
+	maxNodes int
+}
+
+// defaultTreePathToTreeConfig returns the default configuration.
+func defaultTreePathToTreeConfig() treePathToTreeConfig {
+	return treePathToTreeConfig{
+		maxNodes: DefaultMaxTreePathNodes,
+	}
+}
+
+// WithMaxTreePathNodes sets the maximum number of nodes allowed in a
+// deserialized TreePath. A value of 0 disables the limit.
+func WithMaxTreePathNodes(maxNodes int) TreePathToTreeOption {
+	return func(cfg *treePathToTreeConfig) {
+		cfg.maxNodes = maxNodes
+	}
+}
+
 // TreePathToTree converts a proto TreePath back to a tree.Tree by
 // reconstructing the recursive node structure from the flattened nodes.
-func TreePathToTree(tp *TreePath) (*tree.Tree, error) {
+//
+// This sits on the indexer receive path, which treats responses as
+// untrusted, so the reconstructed shape is validated to be exactly one
+// connected tree rather than merely an acyclic graph.
+func TreePathToTree(tp *TreePath,
+	opts ...TreePathToTreeOption) (*tree.Tree, error) {
+
 	if tp == nil {
 		return nil, nil
 	}
 
+	cfg := defaultTreePathToTreeConfig()
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	if len(tp.Nodes) == 0 {
 		return nil, fmt.Errorf("empty tree path nodes")
+	}
+
+	if cfg.maxNodes > 0 && len(tp.Nodes) > cfg.maxNodes {
+		return nil, fmt.Errorf("tree path has %d nodes, exceeds "+
+			"maximum %d", len(tp.Nodes), cfg.maxNodes)
 	}
 
 	// Convert all proto nodes to Go nodes.
@@ -58,7 +108,26 @@ func TreePathToTree(tp *TreePath) (*tree.Tree, error) {
 		goNodes[i] = node
 	}
 
-	// Wire up children references with pre-order invariant.
+	// Wire up children references. The pre-order invariant
+	// (childIdx > i) rules out cycles, but on its own it still
+	// admits a DAG: two parents at different indices can both name
+	// the same higher-indexed child and both satisfy it.
+	//
+	// That matters most here. Children is a map, so one node may
+	// point all of its outputs at the same next node, and every
+	// recursive walk over the result then re-visits the shared
+	// subtree once per path that reaches it. nodeMaxDepth, which the
+	// receive path runs on this very tree to validate the claimed
+	// ancestry depth, is exactly such a walk: it has no memoization,
+	// so a shared child turns a linear-sized message into
+	// exponentially many paths.
+	//
+	// parentOf records the parent that claimed each child, so a
+	// second claim can name both of them. The bounds check runs
+	// first so a wild index is reported as out of range rather than
+	// as a sharing violation.
+	parentOf := make(map[uint32]int, len(tp.Nodes))
+
 	for i, pn := range tp.Nodes {
 		for outIdx, childIdx := range pn.Children {
 			if childIdx <= uint32(i) {
@@ -72,6 +141,14 @@ func TreePathToTree(tp *TreePath) (*tree.Tree, error) {
 					"%d out of range", i, childIdx)
 			}
 
+			if prev, dup := parentOf[childIdx]; dup {
+				return nil, fmt.Errorf("node[%d] child index "+
+					"%d is already a child of node[%d]; "+
+					"tree must not share children", i,
+					childIdx, prev)
+			}
+			parentOf[childIdx] = i
+
 			if int(outIdx) >= len(goNodes[i].Outputs) {
 				return nil, fmt.Errorf("node[%d] child output "+
 					"index %d out of range (node has %d "+
@@ -81,6 +158,20 @@ func TreePathToTree(tp *TreePath) (*tree.Tree, error) {
 
 			goNodes[i].Children[outIdx] = goNodes[childIdx]
 		}
+	}
+
+	// Single-parent plus forward-edges describes a forest, not a
+	// tree: nothing above requires a node to be reachable from index
+	// 0. Every node other than the root must be claimed exactly
+	// once, so counting the claims pins the shape to one connected
+	// tree and rejects both padding with unreachable nodes and a
+	// second detached root carrying its own subtree.
+	// flattenTreePathNode always emits exactly this shape, so no
+	// well-formed producer is affected.
+	if len(parentOf) != len(tp.Nodes)-1 {
+		return nil, fmt.Errorf("tree path has %d nodes but only %d "+
+			"are claimed as children; unreachable nodes or "+
+			"multiple roots", len(tp.Nodes), len(parentOf))
 	}
 
 	batchOP, err := outpointFromProto(tp.BatchOutpoint)
