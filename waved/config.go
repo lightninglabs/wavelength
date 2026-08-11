@@ -298,6 +298,13 @@ type Config struct {
 	// but defer background work until the wallet can sign.
 	WalletReadyHooks []WalletReadyHook
 
+	// ArkChannelControllerFactory constructs the client-owned channel
+	// process after the wallet, channel store, and authenticated
+	// swap-server mailbox are online. It is compiled-in process wiring, not
+	// user configuration.
+	//nolint:ll // Explicit process-wiring name prevents config ambiguity.
+	ArkChannelControllerFactory ArkChannelControllerFactory `mapstructure:"-"`
+
 	// Wallet configures the wallet backend used for signing, key
 	// derivation, and chain access.
 	Wallet *WalletConfig `mapstructure:"wallet"`
@@ -715,6 +722,11 @@ type SwapConfig struct {
 	// pending credit-backed send is about to spend. Nil in builds without
 	// the credit subsystem; set programmatically, never from config files.
 	CreditEarmarkSetter func(credit.EarmarkFunc) `mapstructure:"-"`
+
+	// ArkChannelMailbox is the authenticated swapdk-server mailbox edge
+	// published by swapclientserver for the channel control runtime. It is
+	// process wiring, never user configuration.
+	ArkChannelMailbox mailboxpb.MailboxServiceClient `mapstructure:"-"`
 }
 
 // CreditConfig configures the daemon-owned credit subsystem.
