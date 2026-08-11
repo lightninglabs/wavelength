@@ -13,7 +13,7 @@ import (
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightningnetwork/lnd/chanacceptor"
+	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/chanstate"
 	lndfunding "github.com/lightningnetwork/lnd/funding"
@@ -47,6 +47,7 @@ type fundingFlowNode struct {
 	finalized chan fundingFinalization
 	links     chan *chanstate.OpenChannel
 	failures  chan error
+	intents   *staticIntentSource
 }
 
 // fundingFlowTransport preserves lnd wire ordering over an in-memory version
@@ -98,8 +99,8 @@ func (t *fundingFlowTransport) SendMessages(_ bool,
 func TestNativeFundingFlowPaysBothDirections(t *testing.T) {
 	t.Parallel()
 
-	alice := newFundingFlowNode(t)
-	bob := newFundingFlowNode(t)
+	alice := newFundingFlowNode(t, arkchannel.PartyHub)
+	bob := newFundingFlowNode(t, arkchannel.PartyClient)
 	connectFundingFlowNodes(t, alice, bob)
 	require.NoError(t, alice.runtime.Start())
 	require.NoError(t, bob.runtime.Start())
@@ -109,6 +110,22 @@ func TestNativeFundingFlowPaysBothDirections(t *testing.T) {
 	})
 
 	pendingID := lndfunding.PendingChanID{1, 3, 3, 7}
+	record, _ := testReceiveIntentRecord(t)
+	record.Snapshot.Terms.PendingChannelID = pendingID
+	record.Snapshot.Terms.Capacity = testFundingCapacity
+	record.Snapshot.Terms.HubNodeKey = compressedIntentKey(alice.key)
+	record.Snapshot.Terms.ClientNodeKey = compressedIntentKey(bob.key)
+	record.Snapshot.Source.Amount = testFundingCapacity + 1_000
+	record.Snapshot.Source.OutPoint = wire.OutPoint{
+		Hash: chainhash.Hash{
+			4,
+			2,
+		},
+		Index: 1,
+	}
+	alice.intents.record = record
+	bob.intents.record = record
+
 	flow, err := alice.runtime.Funding().OpenChannel(FundingOpenRequest{
 		Peer:             alice.peer,
 		PendingChannelID: pendingID,
@@ -154,7 +171,9 @@ func TestNativeFundingFlowPaysBothDirections(t *testing.T) {
 
 // newFundingFlowNode constructs one runtime before its transport-backed peer
 // is connected.
-func newFundingFlowNode(t *testing.T) *fundingFlowNode {
+func newFundingFlowNode(t *testing.T,
+	localParty arkchannel.Party) *fundingFlowNode {
+
 	t.Helper()
 
 	nodeKey, err := btcec.NewPrivateKey()
@@ -169,6 +188,7 @@ func newFundingFlowNode(t *testing.T) *fundingFlowNode {
 		finalized: make(chan fundingFinalization, 1),
 		links:     make(chan *chanstate.OpenChannel, 1),
 		failures:  make(chan error, 2),
+		intents:   &staticIntentSource{},
 	}
 	baseNotifier := newRuntimeNotifier(800_000)
 	node.notifier, err = NewVirtualFundingNotifier(baseNotifier)
@@ -176,6 +196,8 @@ func newFundingFlowNode(t *testing.T) *fundingFlowNode {
 	keyRing := &mock.SecretKeyRing{RootKey: nodeKey}
 	walletController := &mock.WalletController{RootKey: nodeKey}
 	signer := mock.NewSingleSigner(nodeKey)
+	intentAcceptor, err := NewIntentAcceptor(localParty, node.intents)
+	require.NoError(t, err)
 	node.runtime, err = NewRuntime(RuntimeConfig{
 		DB:           db,
 		Chain:        fixedHeightChain{height: 800_000},
@@ -197,7 +219,7 @@ func newFundingFlowNode(t *testing.T) *fundingFlowNode {
 				},
 				PubKey: nodeKey.PubKey(),
 			},
-			ChannelAcceptor: chanacceptor.NewChainedAcceptor(),
+			ChannelAcceptor: intentAcceptor,
 			RoutingPolicy: models.ForwardingPolicy{
 				MinHTLCOut:    1,
 				TimeLockDelta: 18,

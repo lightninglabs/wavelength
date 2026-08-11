@@ -16,6 +16,8 @@ type VirtualFundingActivator interface {
 // application peer transport and records completion through Service.Apply.
 type FundingNegotiator interface {
 	NegotiateChannel(context.Context, ID, Terms, VTXOBinding) error
+
+	CancelChannel(context.Context, ID, Terms) error
 }
 
 // ChannelMaterializer publishes the Ark ancestry before the signed backing.
@@ -67,6 +69,9 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 		return e.funding.ConfirmBacking(
 			action.Backing.ChannelPoint.Hash,
 		)
+
+	case *CancelFunding:
+		return e.negotiator.CancelChannel(ctx, id, action.Terms)
 
 	case *PublishChannel:
 		return e.materializer.MaterializeChannel(

@@ -75,6 +75,7 @@ type Querier interface {
 	// GetActivityEntry returns one entry by its canonical id.
 	GetActivityEntry(ctx context.Context, canonicalID string) (ActivityEntry, error)
 	GetArkChannel(ctx context.Context, channelID []byte) (ArkChannel, error)
+	GetArkChannelByPendingID(ctx context.Context, pendingChannelID []byte) (ArkChannel, error)
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
 	GetBoardingSweep(ctx context.Context, txid []byte) (BoardingSweep, error)
@@ -240,6 +241,7 @@ type Querier interface {
 	// Also filter on spent = FALSE to handle VTXOs marked spent via the earlier
 	// flag before the status field was introduced.
 	ListLiveVTXOs(ctx context.Context) ([]Vtxo, error)
+	// Phase 9 is closed and phase 11 is failed. Cancelling remains resumable.
 	ListNonTerminalArkChannels(ctx context.Context) ([]ArkChannel, error)
 	// Status 1 = Completed, 2 = Failed (anchored to Go iota in
 	// db/credit_operation_store.go CreditOpStatus).

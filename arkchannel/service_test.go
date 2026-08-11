@@ -50,6 +50,11 @@ func (e *serviceExecutor) Execute(ctx context.Context, id ID,
 
 		return err
 
+	case *CancelFunding:
+		_, err := e.service.Apply(ctx, id, &FundingCanceled{})
+
+		return err
+
 	case *PublishChannel:
 		_, err := e.service.Apply(ctx, id, &BackingPublished{
 			TxID: action.Backing.ChannelPoint.Hash,

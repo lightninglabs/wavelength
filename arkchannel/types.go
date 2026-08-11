@@ -101,6 +101,10 @@ const (
 	// PhaseClosed means lnd completed the channel lifecycle.
 	PhaseClosed
 
+	// PhaseCancelling means Ark abandoned before round commitment and lnd's
+	// pending funding reservation must be removed.
+	PhaseCancelling
+
 	// PhaseFailed means negotiation failed before the no-failure boundary.
 	PhaseFailed
 )
@@ -134,6 +138,9 @@ func (p Phase) String() string {
 
 	case PhaseClosed:
 		return "closed"
+
+	case PhaseCancelling:
+		return "cancelling"
 
 	case PhaseFailed:
 		return "failed"
@@ -420,7 +427,8 @@ func (s Snapshot) ReadyForRoundSigning() bool {
 	return s.Terms.Kind == KindReceiveIntent &&
 		s.Source != nil && s.Backing != nil &&
 		s.ClientFinalized && s.HubFinalized &&
-		s.Phase >= PhaseBackingReady && s.Phase != PhaseFailed
+		s.Phase >= PhaseBackingReady && s.Phase != PhaseCancelling &&
+		s.Phase != PhaseFailed
 }
 
 // validateNodeKey checks a compressed secp256k1 node key.

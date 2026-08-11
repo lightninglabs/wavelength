@@ -59,6 +59,11 @@ func TestArkChannelStoreRoundTrip(t *testing.T) {
 	)
 	require.Equal(t, backing, *loaded.Snapshot.Backing)
 	require.Equal(t, binding, *loaded.Snapshot.Source)
+	byPendingID, err := store.GetByPendingChannelID(
+		t.Context(), terms.PendingChannelID,
+	)
+	require.NoError(t, err)
+	require.Equal(t, loaded, byPendingID)
 
 	_, err = store.CompareAndSwap(
 		t.Context(), terms.ID, bound.Revision, bound.Snapshot,

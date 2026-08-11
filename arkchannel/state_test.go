@@ -158,10 +158,17 @@ func TestReceiveIntentCanFailBeforeRoundCommit(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	record, _, err := coordinator.Apply(
+	record, actions, err := coordinator.Apply(
 		t.Context(), terms.ID, &Fail{
 			Reason: "round resealed",
 		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseCancelling, record.Snapshot.Phase)
+	require.IsType(t, &CancelFunding{}, requireOneAction(t, actions))
+
+	record, _, err = coordinator.Apply(
+		t.Context(), terms.ID, &FundingCanceled{},
 	)
 	require.NoError(t, err)
 	require.Equal(t, PhaseFailed, record.Snapshot.Phase)
@@ -251,6 +258,35 @@ func TestCoordinatorIdempotency(t *testing.T) {
 	changedTerms.Capacity++
 	_, err = coordinator.Request(t.Context(), changedTerms)
 	require.ErrorContains(t, err, "different terms")
+}
+
+// TestFindByPendingChannelID resolves the durable intent used by lnd's
+// responder-side channel acceptor.
+func TestFindByPendingChannelID(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	terms := testTerms(t, KindReceiveIntent)
+	expected, err := coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+
+	record, err := coordinator.FindByPendingChannelID(
+		t.Context(), terms.PendingChannelID,
+	)
+	require.NoError(t, err)
+	require.Equal(t, expected, record)
+
+	_, err = coordinator.FindByPendingChannelID(
+		t.Context(), [32]byte{99},
+	)
+	require.ErrorIs(t, err, ErrNotFound)
+
+	conflicting := testTerms(t, KindReceiveIntent)
+	conflicting.ID[0] = 99
+	conflicting.PendingChannelID = terms.PendingChannelID
+	_, err = coordinator.Request(t.Context(), conflicting)
+	require.ErrorContains(t, err, "belongs to another Ark channel")
 }
 
 // TestReceiveIntentRejectsUnsafeTerms verifies the hub must own all initial
@@ -406,6 +442,22 @@ func (s *memoryStore) Get(_ context.Context, id ID) (Record, error) {
 	}
 
 	return cloneRecord(record), nil
+}
+
+// GetByPendingChannelID loads one record by its lnd funding correlation ID.
+func (s *memoryStore) GetByPendingChannelID(_ context.Context,
+	pendingID [32]byte) (Record, error) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, record := range s.records {
+		if record.Snapshot.Terms.PendingChannelID == pendingID {
+			return cloneRecord(record), nil
+		}
+	}
+
+	return Record{}, ErrNotFound
 }
 
 // ListNonTerminal loads resumable records in stable ID order.

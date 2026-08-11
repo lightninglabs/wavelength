@@ -82,7 +82,7 @@ CREATE TABLE ark_channels (
     channel_id BLOB PRIMARY KEY NOT NULL,
     kind INTEGER NOT NULL CHECK (kind IN (1, 2)),
     funder INTEGER NOT NULL CHECK (funder IN (1, 2)),
-    pending_channel_id BLOB NOT NULL,
+    pending_channel_id BLOB NOT NULL UNIQUE,
     reserved_scid BLOB NOT NULL,
     capacity BIGINT NOT NULL CHECK (capacity > 0),
     client_node_key BLOB NOT NULL,
@@ -98,7 +98,7 @@ CREATE TABLE ark_channels (
     funder_delay BIGINT NOT NULL,
     min_exit_delay BIGINT NOT NULL,
 
-    phase INTEGER NOT NULL CHECK (phase BETWEEN 1 AND 10),
+    phase INTEGER NOT NULL CHECK (phase BETWEEN 1 AND 11),
     source_txid BLOB,
     source_index BIGINT,
     source_amount BIGINT,

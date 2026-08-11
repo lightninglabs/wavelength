@@ -129,6 +129,55 @@ func (q *Queries) GetArkChannel(ctx context.Context, channelID []byte) (ArkChann
 	return i, err
 }
 
+const GetArkChannelByPendingID = `-- name: GetArkChannelByPendingID :one
+SELECT channel_id, kind, funder, pending_channel_id, reserved_scid, capacity, client_node_key, hub_node_key, payment_hash, client_ark_key, hub_ark_key, ark_operator_key, client_channel_key, hub_channel_key, funder_key, channel_delay, funder_delay, min_exit_delay, phase, source_txid, source_index, source_amount, round_id, commitment_txid, backing_tx, channel_point_txid, channel_point_index, client_finalized, hub_finalized, round_committed, round_confirmed, backing_published, failure, revision, created_at, updated_at FROM ark_channels
+WHERE pending_channel_id = $1
+`
+
+func (q *Queries) GetArkChannelByPendingID(ctx context.Context, pendingChannelID []byte) (ArkChannel, error) {
+	row := q.db.QueryRowContext(ctx, GetArkChannelByPendingID, pendingChannelID)
+	var i ArkChannel
+	err := row.Scan(
+		&i.ChannelID,
+		&i.Kind,
+		&i.Funder,
+		&i.PendingChannelID,
+		&i.ReservedScid,
+		&i.Capacity,
+		&i.ClientNodeKey,
+		&i.HubNodeKey,
+		&i.PaymentHash,
+		&i.ClientArkKey,
+		&i.HubArkKey,
+		&i.ArkOperatorKey,
+		&i.ClientChannelKey,
+		&i.HubChannelKey,
+		&i.FunderKey,
+		&i.ChannelDelay,
+		&i.FunderDelay,
+		&i.MinExitDelay,
+		&i.Phase,
+		&i.SourceTxid,
+		&i.SourceIndex,
+		&i.SourceAmount,
+		&i.RoundID,
+		&i.CommitmentTxid,
+		&i.BackingTx,
+		&i.ChannelPointTxid,
+		&i.ChannelPointIndex,
+		&i.ClientFinalized,
+		&i.HubFinalized,
+		&i.RoundCommitted,
+		&i.RoundConfirmed,
+		&i.BackingPublished,
+		&i.Failure,
+		&i.Revision,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const InsertArkChannel = `-- name: InsertArkChannel :execrows
 
 INSERT INTO ark_channels (
@@ -235,10 +284,11 @@ func (q *Queries) InsertArkChannel(ctx context.Context, arg InsertArkChannelPara
 
 const ListNonTerminalArkChannels = `-- name: ListNonTerminalArkChannels :many
 SELECT channel_id, kind, funder, pending_channel_id, reserved_scid, capacity, client_node_key, hub_node_key, payment_hash, client_ark_key, hub_ark_key, ark_operator_key, client_channel_key, hub_channel_key, funder_key, channel_delay, funder_delay, min_exit_delay, phase, source_txid, source_index, source_amount, round_id, commitment_txid, backing_tx, channel_point_txid, channel_point_index, client_finalized, hub_finalized, round_committed, round_confirmed, backing_published, failure, revision, created_at, updated_at FROM ark_channels
-WHERE phase NOT IN (9, 10)
+WHERE phase NOT IN (9, 11)
 ORDER BY created_at ASC, channel_id ASC
 `
 
+// Phase 9 is closed and phase 11 is failed. Cancelling remains resumable.
 func (q *Queries) ListNonTerminalArkChannels(ctx context.Context) ([]ArkChannel, error) {
 	rows, err := q.db.QueryContext(ctx, ListNonTerminalArkChannels)
 	if err != nil {

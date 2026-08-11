@@ -12,7 +12,17 @@ import (
 type nativeExecutorHarness struct {
 	confirmed    chainhash.Hash
 	negotiatedID ID
+	cancelledID  ID
 	publishedID  ID
+}
+
+// CancelChannel records native funding cleanup.
+func (h *nativeExecutorHarness) CancelChannel(_ context.Context, id ID,
+	_ Terms) error {
+
+	h.cancelledID = id
+
+	return nil
 }
 
 // ConfirmBacking records lnd virtual activation.
@@ -62,6 +72,16 @@ func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
 		),
 	)
 	require.Equal(t, terms.ID, harness.negotiatedID)
+
+	require.NoError(
+		t,
+		executor.Execute(
+			t.Context(), terms.ID, &CancelFunding{
+				Terms: terms,
+			},
+		),
+	)
+	require.Equal(t, terms.ID, harness.cancelledID)
 
 	require.NoError(
 		t,

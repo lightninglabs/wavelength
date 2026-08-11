@@ -131,6 +131,11 @@ func PendingAction(snapshot Snapshot) (Action, error) {
 			Backing: snapshot.Backing.Clone(),
 		}, nil
 
+	case PhaseCancelling:
+		return &CancelFunding{
+			Terms: snapshot.Terms.Clone(),
+		}, nil
+
 	case PhaseMaterializing:
 		return &PublishChannel{
 			Terms:   snapshot.Terms.Clone(),
@@ -154,6 +159,19 @@ func applyEvent(next *Snapshot, event Event) (bool, error) {
 
 	case *BackingSigned:
 		return applyBacking(next, event.Backing)
+
+	case *FundingCanceled:
+		if next.Phase == PhaseFailed {
+			return false, nil
+		}
+		if next.Phase != PhaseCancelling {
+			return false, fmt.Errorf("cannot finish funding "+
+				"cancellation from %s", next.Phase)
+		}
+
+		next.Phase = PhaseFailed
+
+		return true, nil
 
 	case *RoundCommitted:
 		return applyRoundCommitted(
@@ -239,8 +257,8 @@ func applyFundingFinalized(next *Snapshot, party Party) (bool, error) {
 		return false, fmt.Errorf("cannot finalize funding before " +
 			"VTXO binding")
 	}
-	if next.Phase == PhaseFailed {
-		return false, fmt.Errorf("cannot finalize failed channel")
+	if next.Phase == PhaseCancelling || next.Phase == PhaseFailed {
+		return false, fmt.Errorf("cannot finalize abandoned channel")
 	}
 
 	switch party {
@@ -268,6 +286,10 @@ func applyBacking(next *Snapshot, backing Backing) (bool, error) {
 	if next.Source == nil {
 		return false, fmt.Errorf("cannot record backing before VTXO " +
 			"binding")
+	}
+	if next.Phase == PhaseCancelling || next.Phase == PhaseFailed {
+		return false, fmt.Errorf("cannot record backing for " +
+			"abandoned channel")
 	}
 	if err := backing.Validate(next.Terms, *next.Source); err != nil {
 		return false, err
@@ -304,6 +326,10 @@ func applyRoundCommitted(next *Snapshot, roundID string,
 	}
 	if next.RoundCommitted {
 		return false, nil
+	}
+	if next.Phase != PhaseBackingReady {
+		return false, fmt.Errorf("cannot commit round from %s",
+			next.Phase)
 	}
 
 	next.RoundCommitted = true
@@ -393,6 +419,14 @@ func applyFailure(next *Snapshot, reason string) (bool, error) {
 		return false, fmt.Errorf("channel already failed for another " +
 			"reason")
 	}
+	if next.Phase == PhaseCancelling {
+		if next.Failure == reason {
+			return false, nil
+		}
+
+		return false, fmt.Errorf("channel already cancelling for " +
+			"another reason")
+	}
 	canFailReceiveBacking := next.Phase == PhaseBackingReady &&
 		next.Terms.Kind == KindReceiveIntent && !next.RoundCommitted
 	if next.Phase != PhaseRequested && next.Phase != PhaseNegotiating &&
@@ -405,7 +439,11 @@ func applyFailure(next *Snapshot, reason string) (bool, error) {
 	}
 
 	next.Failure = reason
-	next.Phase = PhaseFailed
+	if next.Source == nil {
+		next.Phase = PhaseFailed
+	} else {
+		next.Phase = PhaseCancelling
+	}
 
 	return true, nil
 }
@@ -451,6 +489,11 @@ func advance(next *Snapshot) (Action, error) {
 			Terms:   next.Terms.Clone(),
 			Source:  next.Source.Clone(),
 			Backing: next.Backing.Clone(),
+		}, nil
+
+	case PhaseCancelling:
+		return &CancelFunding{
+			Terms: next.Terms.Clone(),
 		}, nil
 
 	case PhaseRequested, PhaseActivating, PhaseActive, PhaseOnChain,
@@ -504,6 +547,7 @@ func validateSnapshot(snapshot Snapshot) error {
 		return fmt.Errorf("funding facts require a bound VTXO")
 	}
 	if snapshot.Phase >= PhaseBackingReady &&
+		snapshot.Phase != PhaseCancelling &&
 		snapshot.Phase != PhaseFailed && !backingReady(snapshot) {
 		return fmt.Errorf("phase %s requires finalized backing",
 			snapshot.Phase)
@@ -522,10 +566,12 @@ func validateSnapshot(snapshot Snapshot) error {
 		snapshot.Phase != PhaseClosed {
 		return fmt.Errorf("published backing requires on-chain phase")
 	}
-	if snapshot.Phase == PhaseFailed && snapshot.Failure == "" {
-		return fmt.Errorf("failed channel requires a reason")
+	if (snapshot.Phase == PhaseCancelling ||
+		snapshot.Phase == PhaseFailed) && snapshot.Failure == "" {
+		return fmt.Errorf("abandoned channel requires a reason")
 	}
-	if snapshot.Phase != PhaseFailed && snapshot.Failure != "" {
+	if snapshot.Phase != PhaseCancelling &&
+		snapshot.Phase != PhaseFailed && snapshot.Failure != "" {
 		return fmt.Errorf("non-failed channel cannot have a failure " +
 			"reason")
 	}
@@ -565,6 +611,17 @@ func validateSnapshot(snapshot Snapshot) error {
 			!snapshot.RoundConfirmed {
 			return fmt.Errorf("receive channel advanced before " +
 				"round confirmation")
+		}
+
+	case PhaseCancelling:
+		if snapshot.Source == nil {
+			return fmt.Errorf("cancelling channel has no bound " +
+				"VTXO")
+		}
+		if snapshot.RoundCommitted || snapshot.RoundConfirmed ||
+			snapshot.BackingPublished {
+			return fmt.Errorf("failed channel crossed the safety " +
+				"boundary")
 		}
 
 	case PhaseFailed:

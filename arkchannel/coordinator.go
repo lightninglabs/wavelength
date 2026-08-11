@@ -34,6 +34,8 @@ type Store interface {
 
 	Get(context.Context, ID) (Record, error)
 
+	GetByPendingChannelID(context.Context, [32]byte) (Record, error)
+
 	ListNonTerminal(context.Context) ([]Record, error)
 
 	CompareAndSwap(context.Context, ID, uint64, Snapshot) (Record, error)
@@ -61,6 +63,27 @@ func (c *Coordinator) Request(ctx context.Context, terms Terms) (Record,
 	if err != nil {
 		return Record{}, err
 	}
+	existing, err := c.store.GetByPendingChannelID(
+		ctx, terms.PendingChannelID,
+	)
+	switch {
+	case err == nil:
+		if existing.Snapshot.Terms.ID != terms.ID {
+			return Record{}, fmt.Errorf("pending channel ID " +
+				"already belongs to another Ark channel")
+		}
+		if err := sameTerms(
+			existing.Snapshot.Terms, terms,
+		); err != nil {
+			return Record{}, err
+		}
+
+		return existing, nil
+
+	case !errors.Is(err, ErrNotFound):
+		return Record{}, err
+	}
+
 	record, err := c.store.Create(ctx, state.Snapshot())
 	if err == nil {
 		return record, nil
@@ -88,6 +111,15 @@ func (c *Coordinator) Get(ctx context.Context, id ID) (Record, error) {
 // ListNonTerminal loads channels that still need recovery or observation.
 func (c *Coordinator) ListNonTerminal(ctx context.Context) ([]Record, error) {
 	return c.store.ListNonTerminal(ctx)
+}
+
+// FindByPendingChannelID resolves a live channel intent for lnd's inbound
+// funding acceptor. Pending channel IDs are immutable and may identify only
+// one non-terminal Ark workflow.
+func (c *Coordinator) FindByPendingChannelID(ctx context.Context,
+	pendingID [32]byte) (Record, error) {
+
+	return c.store.GetByPendingChannelID(ctx, pendingID)
 }
 
 // Apply durably applies one event and then returns any side effect to execute.

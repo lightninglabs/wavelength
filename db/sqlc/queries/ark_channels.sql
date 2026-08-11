@@ -21,9 +21,14 @@ ON CONFLICT (channel_id) DO NOTHING;
 SELECT * FROM ark_channels
 WHERE channel_id = $1;
 
+-- name: GetArkChannelByPendingID :one
+SELECT * FROM ark_channels
+WHERE pending_channel_id = $1;
+
 -- name: ListNonTerminalArkChannels :many
 SELECT * FROM ark_channels
-WHERE phase NOT IN (9, 10)
+-- Phase 9 is closed and phase 11 is failed. Cancelling remains resumable.
+WHERE phase NOT IN (9, 11)
 ORDER BY created_at ASC, channel_id ASC;
 
 -- name: CompareAndSwapArkChannel :execrows

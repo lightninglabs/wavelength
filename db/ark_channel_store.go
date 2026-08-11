@@ -97,6 +97,27 @@ func (s *ArkChannelStoreDB) Get(ctx context.Context, id arkchannel.ID) (
 	return arkChannelRecordFromRow(row)
 }
 
+// GetByPendingChannelID loads one channel by lnd's funding correlation ID.
+func (s *ArkChannelStoreDB) GetByPendingChannelID(ctx context.Context,
+	pendingID [32]byte) (arkchannel.Record, error) {
+
+	var row sqlc.ArkChannel
+	err := s.ExecTx(ctx, ReadTxOption(), func(q *sqlc.Queries) error {
+		var err error
+		row, err = q.GetArkChannelByPendingID(ctx, pendingID[:])
+
+		return err
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return arkchannel.Record{}, arkchannel.ErrNotFound
+	}
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+
+	return arkChannelRecordFromRow(row)
+}
+
 // ListNonTerminal loads channels that need recovery or observation.
 func (s *ArkChannelStoreDB) ListNonTerminal(ctx context.Context) (
 	[]arkchannel.Record, error) {

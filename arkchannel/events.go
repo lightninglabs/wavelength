@@ -29,6 +29,11 @@ type BackingSigned struct {
 
 func (*BackingSigned) eventSealed() {}
 
+// FundingCanceled records that lnd removed the abandoned pending channel.
+type FundingCanceled struct{}
+
+func (*FundingCanceled) eventSealed() {}
+
 // RoundCommitted records that a receive round crossed nonce release.
 type RoundCommitted struct {
 	RoundID        string
@@ -97,6 +102,14 @@ type ActivateChannel struct {
 }
 
 func (*ActivateChannel) actionSealed() {}
+
+// CancelFunding asks the native funding adapter to remove an abandoned lnd
+// reservation before the Ark workflow becomes terminal.
+type CancelFunding struct {
+	Terms Terms
+}
+
+func (*CancelFunding) actionSealed() {}
 
 // PublishChannel asks the unroller to publish ancestry before the backing.
 type PublishChannel struct {
