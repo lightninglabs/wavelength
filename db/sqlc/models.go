@@ -61,6 +61,38 @@ type ActivityStatus struct {
 	Name string
 }
 
+type ArkChannel struct {
+	ChannelID         []byte
+	Kind              int32
+	Funder            int32
+	PendingChannelID  []byte
+	ReservedScid      []byte
+	Capacity          int64
+	ClientNodeKey     []byte
+	HubNodeKey        []byte
+	PaymentHash       []byte
+	PolicyTemplate    []byte
+	PkScript          []byte
+	Phase             int32
+	SourceTxid        []byte
+	SourceIndex       sql.NullInt64
+	SourceAmount      sql.NullInt64
+	RoundID           sql.NullString
+	CommitmentTxid    []byte
+	BackingTx         []byte
+	ChannelPointTxid  []byte
+	ChannelPointIndex sql.NullInt64
+	ClientFinalized   bool
+	HubFinalized      bool
+	RoundCommitted    bool
+	RoundConfirmed    bool
+	BackingPublished  bool
+	Failure           sql.NullString
+	Revision          int64
+	CreatedAt         int64
+	UpdatedAt         int64
+}
+
 type BoardingAddress struct {
 	PkScript            []byte
 	AddressString       string
