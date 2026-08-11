@@ -51,6 +51,17 @@ func edgeResponseError[T edgeStatusCarrier](op string, resp T,
 	return nil
 }
 
+// SendResponseError exposes edgeResponseError for the one Edge.Send call site
+// that lives outside this package (waved answers inbound mailbox RPCs on its
+// own edge client). Without it that path would have to re-implement the
+// status check, and a send whose rejection arrives as Status.Ok=false rather
+// than as a transport error would read as a success.
+func SendResponseError(op string, resp *mailboxpb.SendResponse,
+	err error) error {
+
+	return edgeResponseError(op, resp, err)
+}
+
 // compatibilityError returns the cached permanent version error if the
 // connector has transitioned to the terminal INCOMPATIBLE state, or nil while
 // it is still COMPATIBLE. Send paths consult this before contacting the edge.

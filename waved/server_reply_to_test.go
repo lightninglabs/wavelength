@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/stretchr/testify/require"
@@ -12,21 +13,31 @@ import (
 )
 
 // recordingReplyEdge captures the envelopes handleInboundRPC sends so a test
-// can assert where a response was addressed.
+// can assert where a response was addressed. When sendStatus is set it is
+// returned verbatim, which lets a test drive the application-level rejection
+// path that arrives as a non-OK status rather than as a transport error.
 type recordingReplyEdge struct {
 	sent []*mailboxpb.Envelope
+
+	sendStatus *mailboxpb.Status
 }
 
-// Send records the outbound envelope and reports success.
+// Send records the outbound envelope and reports the configured status,
+// defaulting to success.
 func (r *recordingReplyEdge) Send(_ context.Context, in *mailboxpb.SendRequest,
 	_ ...grpc.CallOption) (*mailboxpb.SendResponse, error) {
 
 	r.sent = append(r.sent, in.Envelope)
 
-	return &mailboxpb.SendResponse{
-		Status: &mailboxpb.Status{
+	status := r.sendStatus
+	if status == nil {
+		status = &mailboxpb.Status{
 			Ok: true,
-		},
+		}
+	}
+
+	return &mailboxpb.SendResponse{
+		Status: status,
 	}, nil
 }
 
@@ -70,18 +81,31 @@ func TestHandleInboundRPCAnswersTheSender(t *testing.T) {
 
 	tests := []struct {
 		name    string
+		sender  string
 		replyTo string
+		wantErr string
 	}{{
 		name:    "matching reply-to",
+		sender:  operatorMailboxID,
 		replyTo: operatorMailboxID,
 	}, {
 		// Previously produced an empty Recipient, which the mailbox
 		// store rejects, so the caller never got its answer.
 		name:    "absent reply-to",
+		sender:  operatorMailboxID,
 		replyTo: "",
 	}, {
 		name:    "reply-to naming another mailbox",
+		sender:  operatorMailboxID,
 		replyTo: otherMailboxID,
+	}, {
+		// Sender is now the sole input deciding where the answer goes,
+		// so an empty one reproduces the very failure the ReplyTo fix
+		// removed. It must be refused before anything is sent.
+		name:    "absent sender",
+		sender:  "",
+		replyTo: operatorMailboxID,
+		wantErr: "missing envelope sender",
 	}}
 
 	for _, tc := range tests {
@@ -94,7 +118,7 @@ func TestHandleInboundRPCAnswersTheSender(t *testing.T) {
 			s.localMailboxID = daemonMailboxID
 
 			env := &mailboxpb.Envelope{
-				Sender: operatorMailboxID,
+				Sender: tc.sender,
 				Body:   &anypb.Any{},
 				Rpc: &mailboxpb.RpcMeta{
 					Kind: mailboxpb.
@@ -107,6 +131,17 @@ func TestHandleInboundRPCAnswersTheSender(t *testing.T) {
 			}
 
 			err := s.handleInboundRPC(t.Context(), edge, env)
+
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+
+				// A refused envelope must not put an
+				// unaddressable response on the wire.
+				require.Empty(t, edge.sent)
+
+				return
+			}
+
 			require.NoError(t, err)
 
 			require.Len(t, edge.sent, 1)
@@ -124,4 +159,51 @@ func TestHandleInboundRPCAnswersTheSender(t *testing.T) {
 			)
 		})
 	}
+}
+
+// TestHandleInboundRPCReportsSendRejection asserts a mailbox rejection that
+// arrives as a non-OK SendResponse.Status is reported as an error rather than
+// swallowed. That status is the canonical application-level failure channel
+// for the mailbox edge, so discarding it would report a lost answer as a
+// successful dispatch and leave the caller blocked until its own deadline.
+func TestHandleInboundRPCReportsSendRejection(t *testing.T) {
+	t.Parallel()
+
+	const rejectCode = "UNKNOWN_RECIPIENT"
+
+	edge := &recordingReplyEdge{
+		sendStatus: &mailboxpb.Status{
+			Ok:      false,
+			Code:    rejectCode,
+			Message: "no such mailbox",
+		},
+	}
+
+	s := newCompatTestServer(t, edge)
+	s.mailboxMux = mailboxrpc.NewServeMux()
+	s.localMailboxID = "this-daemon"
+
+	env := &mailboxpb.Envelope{
+		Sender: "operator-1",
+		Body:   &anypb.Any{},
+		Rpc: &mailboxpb.RpcMeta{
+			Kind:          mailboxpb.RpcMeta_KIND_REQUEST,
+			Service:       "svc.Unregistered",
+			Method:        "Method",
+			CorrelationId: "corr-1",
+			ReplyTo:       "operator-1",
+		},
+	}
+
+	err := s.handleInboundRPC(t.Context(), edge, env)
+	require.Error(t, err)
+
+	// The structured status must survive, not be flattened into a string,
+	// so callers can classify a permanent version failure.
+	var statusErr *mailboxconn.StatusError
+	require.ErrorAs(t, err, &statusErr)
+	require.Equal(t, rejectCode, statusErr.Code())
+
+	// The send was attempted; only its outcome was misreported before.
+	require.Len(t, edge.sent, 1)
 }
