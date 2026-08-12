@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -117,6 +118,125 @@ func (s *VTXOPersistenceStore) SaveVTXO(
 			int32(desc.Outpoint.Index), desc.Ancestry,
 		)
 	})
+}
+
+// SaveRecoveryOnlyVTXO atomically persists an application-owned descriptor in
+// the recovery-only state. Unlike SaveVTXO, this method never exposes the row
+// as live between insertion and the status transition, so concurrent wallet
+// selection cannot mistake a channel or contract output for wallet liquidity.
+// Replays are accepted only when the existing immutable descriptor matches.
+func (s *VTXOPersistenceStore) SaveRecoveryOnlyVTXO(ctx context.Context,
+	desc *vtxo.Descriptor) error {
+
+	if desc == nil {
+		return fmt.Errorf("descriptor must be provided")
+	}
+	if desc.Status != vtxo.VTXOStatusRecoveryOnly {
+		return fmt.Errorf("recovery-only descriptor has status %s",
+			desc.Status)
+	}
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q RoundStore) error {
+		key := sqlc.GetVTXOParams{
+			OutpointHash:  desc.Outpoint.Hash[:],
+			OutpointIndex: int32(desc.Outpoint.Index),
+		}
+		existing, err := q.GetVTXO(ctx, key)
+		switch {
+		case err == nil:
+			if err := validateRecoveryOnlyVTXORow(
+				existing, desc,
+			); err != nil {
+				return err
+			}
+
+			return upsertAncestryPaths(
+				ctx, q, desc.Outpoint.Hash[:],
+				int32(desc.Outpoint.Index), desc.Ancestry,
+			)
+
+		case !errors.Is(err, sql.ErrNoRows):
+			return fmt.Errorf("load recovery-only VTXO: %w", err)
+		}
+
+		if err := s.ensureRoundExists(ctx, q, desc); err != nil {
+			return fmt.Errorf("ensure round: %w", err)
+		}
+		params, err := s.descriptorToInsertParams(ctx, q, desc)
+		if err != nil {
+			return fmt.Errorf("convert descriptor: %w", err)
+		}
+		if err := q.InsertVTXO(ctx, params); err != nil {
+			return fmt.Errorf("insert recovery-only VTXO: %w", err)
+		}
+		if err := q.UpdateVTXOStatus(ctx, sqlc.UpdateVTXOStatusParams{
+			OutpointHash:   desc.Outpoint.Hash[:],
+			OutpointIndex:  int32(desc.Outpoint.Index),
+			Status:         int32(desc.Status),
+			LastUpdateTime: s.clock.Now().Unix(),
+		}); err != nil {
+			return fmt.Errorf("mark VTXO recovery-only: %w", err)
+		}
+
+		return upsertAncestryPaths(
+			ctx, q, desc.Outpoint.Hash[:],
+			int32(desc.Outpoint.Index), desc.Ancestry,
+		)
+	})
+}
+
+// SetRecoveryOnlyVTXORelativeExpiry selects the delay used by the exact Ark
+// channel final-spend policy without making the descriptor wallet-owned.
+func (s *VTXOPersistenceStore) SetRecoveryOnlyVTXORelativeExpiry(
+	ctx context.Context, outpoint wire.OutPoint, delay uint32) error {
+
+	if delay > math.MaxInt32 {
+		return fmt.Errorf("recovery-only VTXO delay %d exceeds "+
+			"storage range", delay)
+	}
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q RoundStore) error {
+		rows, err := q.SetRecoveryOnlyVTXORelativeExpiry(
+			ctx, sqlc.SetRecoveryOnlyVTXORelativeExpiryParams{
+				OutpointHash:   outpoint.Hash[:],
+				OutpointIndex:  int32(outpoint.Index),
+				Expiry:         int32(delay),
+				LastUpdateTime: s.clock.Now().Unix(),
+			},
+		)
+		if err != nil {
+			return err
+		}
+		if rows != 1 {
+			return fmt.Errorf("recovery-only VTXO %s not found",
+				outpoint)
+		}
+
+		return nil
+	})
+}
+
+// validateRecoveryOnlyVTXORow rejects an outpoint collision or a replay after
+// another subsystem has taken ownership of the same VTXO.
+func validateRecoveryOnlyVTXORow(row VTXORow, desc *vtxo.Descriptor) error {
+	status := vtxo.VTXOStatus(row.Status)
+	if status != vtxo.VTXOStatusRecoveryOnly &&
+		status != vtxo.VTXOStatusSpent {
+		return fmt.Errorf("recovery-only VTXO already has status %s",
+			status)
+	}
+	if row.RoundID != desc.RoundID || row.Amount != int64(desc.Amount) ||
+		!bytes.Equal(row.PkScript, desc.PkScript) ||
+		!bytes.Equal(row.PolicyTemplate, desc.PolicyTemplate) ||
+		row.Expiry != int32(desc.RelativeExpiry) ||
+		row.BatchExpiry != desc.BatchExpiry ||
+		row.ChainDepth != int32(desc.ChainDepth) ||
+		row.CreatedHeight != desc.CreatedHeight ||
+		!bytes.Equal(row.CommitmentTxid, desc.CommitmentTxID[:]) {
+		return fmt.Errorf("recovery-only VTXO descriptor mismatch")
+	}
+
+	return nil
 }
 
 // ensureRoundExists inserts a minimal confirmed round row when a VTXO refers

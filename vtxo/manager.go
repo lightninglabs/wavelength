@@ -1373,16 +1373,24 @@ func (m *Manager) confirmExitedVTXO(ctx context.Context,
 	}
 
 	// No live actor: persist the terminal spent status directly so a
-	// restarted daemon still records the on-chain spend. Only act on a VTXO
-	// still in the exit state so a re-delivered confirmation cannot stomp a
-	// VTXO that has since been reissued or recovered to live.
+	// restarted daemon still records the on-chain spend. Recovery-only
+	// descriptors are also eligible when a non-standard policy completed;
+	// they deliberately have no VTXO actor because their owning application
+	// FSM controls admission. The policy check prevents an ordinary timeout
+	// job from retiring an application-owned row.
 	descriptor, err := m.cfg.Store.GetVTXO(ctx, req.Outpoint)
 	if err != nil {
 		return fn.Err[ManagerResp](
 			fmt.Errorf("load vtxo for confirm: %w", err),
 		)
 	}
-	if descriptor == nil || descriptor.Status != VTXOStatusUnilateralExit {
+	if descriptor == nil {
+		return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+	}
+	isOrdinaryExit := descriptor.Status == VTXOStatusUnilateralExit
+	isRecoveryOnly := descriptor.Status == VTXOStatusRecoveryOnly &&
+		req.ExitPolicyKind.Valid()
+	if !isOrdinaryExit && !isRecoveryOnly {
 		return fn.Ok[ManagerResp](&ExitOutcomeResp{})
 	}
 
@@ -2191,7 +2199,7 @@ func (m *Manager) exactSpendUnavailableError(ctx context.Context,
 
 	case VTXOStatusForfeited, VTXOStatusSpent,
 		VTXOStatusUnilateralExit, VTXOStatusFailed,
-		VTXOStatusExpired:
+		VTXOStatusExpired, VTXOStatusRecoveryOnly:
 		return fmt.Errorf("%w: exact spend outpoint %s has status %s",
 			ErrInsufficientSpendableFunds, op, desc.Status)
 	}
