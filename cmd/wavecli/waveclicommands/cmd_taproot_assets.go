@@ -19,7 +19,11 @@ func newTaprootAssetsCmd() *cobra.Command {
 			"integration is evaluated.",
 	}
 
-	cmd.AddCommand(newTaprootAssetOnboardCmd())
+	cmd.AddCommand(
+		newTaprootAssetOnboardCmd(), newTaprootAssetBoardCmd(),
+		newTaprootAssetClaimCmd(), newTaprootAssetListCmd(),
+		newTaprootAssetBalanceCmd(), newTaprootAssetSendCmd(),
+	)
 
 	return cmd
 }
