@@ -57,7 +57,11 @@ func (b *sessionBehavior) handleStartTransfer(ctx context.Context,
 		return fn.Err[ActorResp](ErrOutgoingAdmissionExpired)
 	}
 
-	session, outbox, err := NewSessionWithIdempotencyKey(
+	newSession := NewSessionWithIdempotencyKey
+	if req.PrepareOnly {
+		newSession = NewPreparedSessionWithIdempotencyKey
+	}
+	session, outbox, err := newSession(
 		ctx, req.Policy, req.Inputs, req.Recipients, req.IdempotencyKey,
 		b.envConfig(),
 	)

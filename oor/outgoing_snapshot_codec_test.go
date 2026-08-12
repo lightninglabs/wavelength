@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 )
@@ -66,6 +67,17 @@ func TestOutgoingSnapshotTLVRoundTrip(t *testing.T) {
 		RetryAfter:     3 * time.Second,
 		FailReason:     "retry later",
 		IdempotencyKey: "funding-key-1",
+		RecipientOutputs: []oortx.RecipientOutput{{
+			PkScript: []byte{
+				0x51,
+				0x20,
+			},
+			Value: 321,
+			VTXOPolicyTemplate: []byte{
+				0x01, 0x02,
+			},
+		}},
+		PrePONRFailure: true,
 	}
 
 	raw, err := encodeOutgoingSnapshot(snapshot)
