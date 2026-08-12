@@ -12,14 +12,20 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 
 - `Server` — main daemon. Owns the wallet, DB, chainsource actor, gRPC
   server, and `ActorSystem`. Caches `localMailboxID` (pubkey-derived),
-  `authSigHex` (Schnorr auth), and a single `clk` (`clock.Clock`) shared by
-  all sub-stores for deterministic time injection.
+  `authSigHex` (Schnorr auth), `mailboxAuthSigs` (per-recipient mailbox auth
+  signature memo, guarded by `mailboxAuthSigsMu`), and a single `clk`
+  (`clock.Clock`) shared by all sub-stores for deterministic time injection.
 - `RPCServer` — implements the gRPC `DaemonService`. Most write RPCs
   (`Board`, `SendVTXO`, `SendOOR`, `SweepBoardingUTXOs`, `SendOnChain`)
   validate input locally then `Ask` the relevant actor; `GetRound` and
   `ListVTXOs` merge live actor state with persisted SQL rows, while
   `GetFeeHistory` and `ListTransactions` are pure SQL reads
-  (`rpc_fees.go`).
+  (`rpc_fees.go`). Signing RPCs that lend the daemon identity key to a
+  higher layer live in `rpc_wallet.go`: `SignOutSwapHtlcAck`, the
+  receive-auth family, and `SignCreditAccountAuthorization` (plus its
+  in-process sibling `SignCreditAccountAuth`, which `swapclientserver`
+  wires straight into the swap SDK as a
+  `swaps.CreditAccountAuthorizationSigner`).
 - `Config` — daemon configuration: wallet backend selection, mailbox/chain
   backend wiring, `OORConfig`/`OORLimitsConfig` (receive safety caps),
   `UnrollConfig` (unilateral-exit fee-bump cadence and cap), and
@@ -50,6 +56,42 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `serverconn.PubKeyMailboxID`, not config strings. The operator's remote
   mailbox ID and pubkey are fetched via direct gRPC (`fetchCurrentOperatorPubKey`)
   before the mailbox runtime starts.
+- Every outbound mailbox edge is wrapped with
+  `serverconn.NewAuthenticatedMailboxClient`, so `Send`/`Pull`/`AckUpTo` all
+  carry `x-mailbox-auth-sig`. Both `connectOperatorClients` (gRPC and REST
+  arms) and `newMailboxEdge` wrap; the `newMailboxEdge` wrap is latent today
+  because `connectOperatorClients` runs first on every production path, and
+  it exists so a future caller cannot silently lose the header against an
+  operator running `requiredirectauth`.
+- `Server.mailboxAuthSig` memoizes one signature per recipient mailbox ID.
+  The digest covers only the identity key and the recipient, so a signature
+  stays valid for the life of the key and signing per RPC would otherwise
+  put a wallet round-trip in front of every `Pull` on a long-poll loop. Two
+  properties are easy to get wrong: (1) the map is **unbounded** — the
+  operator edge contributes two entries (compound `operator:client` for
+  `Send`, plain local ID for `Pull`/`AckUpTo`), but `SignMailboxAuth` also
+  routes here and the swap edge addresses a per-swap `client:payment_hash`
+  mailbox, so a long-lived daemon accrues one more entry per out-swap and
+  nothing is ever evicted; (2) the wallet call happens with
+  `mailboxAuthSigsMu` **released**, because `sync.Mutex.Lock` is not
+  context-aware and holding it across the round trip would serialize egress,
+  ingress, heartbeat, and ack behind one signature with their deadlines
+  silently ignored. Two callers racing a cold recipient may both sign, which
+  is harmless — the digest is deterministic. Signing is bounded by
+  `mailboxAuthSignTimeout` (30s) rather than inheriting the caller's context,
+  since the ingress puller passes a context with no deadline.
+- `initRPCClients` deliberately does NOT write `s.clientKeyDesc`.
+  `deriveIdentityKeyEarly` already stored the descriptor for that exact
+  locator and errors out rather than leaving it unset, so a re-store would
+  be both redundant and a data race: `StartEgress` runs earlier and its
+  workers read `clientKeyDesc` while signing every outbound envelope.
+- `SignCreditAccountAuthorization` refuses to sign for any `account_pubkey`
+  that is not this wallet's identity key (`errCreditAccountIdentityMismatch`
+  → `InvalidArgument`), and bounds the requested lifetime against
+  `swaprpc.CreditAccountMaxAuthTTL` — an expiry in the past or beyond the
+  cap is rejected before the key is touched. The daemon signs a digest it
+  did not compute, so these two checks are the only thing keeping the RPC
+  from being a general-purpose signing oracle for the identity key.
 - All sub-stores share the single `s.clk` clock assigned in `NewServer`; new
   code must not call `clock.NewDefaultClock()` directly, use `s.clk`.
 - Actor startup order in `startWalletDependentActors`: VTXO manager, then

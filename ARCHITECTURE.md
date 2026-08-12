@@ -83,7 +83,7 @@ package may import from a higher layer.
 | [`rpc/wavewalletrpc`](rpc/wavewalletrpc/) | Highest-level gRPC surface: `WalletService` with the seven core wallet verbs. Composes `waverpc` and `rpc/swapclientrpc` server-side via `swapwallet` |
 | [`rpc/restclient`](rpc/restclient/) | HTTP/protoJSON transport adapter: `Client`, `StreamClient[T]`, and per-service factory functions implementing the same gRPC stub interfaces over REST |
 | [`waverpc`](waverpc/) | Daemon gRPC API definitions |
-| [`swaprpc`](swaprpc/) | Generated gRPC/REST/mailbox-RPC stubs for the external `SwapService` |
+| [`swaprpc`](swaprpc/) | Generated gRPC/REST/mailbox-RPC stubs for the external `SwapService`, plus the hand-written canonical digest/signing transcript for account-scoped credit requests |
 
 ### Layer 4: Testing & Tooling
 

@@ -2,8 +2,11 @@
 
 ## Purpose
 
-Daemon gRPC API definitions for wallet, boarding, round, OOR, unroll, and
-VHTLC-recovery operations. Proto source: `waverpc/daemon.proto`. Generated
+Daemon gRPC API definitions for wallet, boarding, round, OOR, unroll,
+VHTLC-recovery, and identity-key signing operations (the latter lend the
+daemon identity key to a higher layer without exposing it — e.g.
+`SignOutSwapHtlcAck`, the receive-auth family, and
+`SignCreditAccountAuthorization`). Proto source: `waverpc/daemon.proto`. Generated
 gRPC, REST-gateway, and mailbox-RPC stubs plus one hand-written helper file
 (`errors.go`) for structured wallet-lifecycle errors.
 

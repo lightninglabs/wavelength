@@ -83,6 +83,15 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 
 ## Invariants
 
+- `newSwapServerClients` builds both outbound edges authenticated on **both**
+  transports: the mailbox client is wrapped with
+  `serverconn.NewAuthenticatedMailboxClient(…, rpcServer.SignMailboxAuth)`,
+  and the swap-server conn is built with
+  `rpcServer.SignCreditAccountAuth` as its
+  `swaps.CreditAccountAuthorizationSigner` (`NewGRPCSwapServerConn` on the
+  gRPC arm, `NewAuthenticatedRESTSwapServerConn` on the REST arm — the
+  unauthenticated `NewRESTSwapServerConn` must not be used here, since the
+  subserver drives receive and credit-account RPCs).
 - Worker ownership is process-local and mutex-guarded: at most one goroutine
   drives a given payment hash at any time. `markActive` is the admission gate;
   `markInactive` releases it on goroutine exit.

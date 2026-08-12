@@ -56,6 +56,12 @@ id; unlike `List` it may leak internal correlators, so it is kept out of
 - `ExitJobStatus` — Enum collapsing the underlying unroll job phases to a
   short wallet-facing status; shared by `ExitPlanEntry`,
   `ExitStatusResponse`, and `ExitSummaryItem`.
+- `ExitInfeasibilityReason` — why an exit preview lowered `can_start`.
+  `EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED` is advisory rather than a
+  refusal: it pairs with `ExitPlanEntry.round_commitment` (the round holding
+  the VTXO, empty when uncommitted), the entry is still priced, and `Exit`
+  still performs the exit — which is the only recovery when the operator is
+  unreachable and the commitment never confirms.
 - `FailureDomain` / `Reason*` constants (`failure_reasons.go`) — the
   `google.rpc.ErrorInfo` domain/reason wire contract for failed wallet
   RPCs; existing reason values MUST NOT be renamed.

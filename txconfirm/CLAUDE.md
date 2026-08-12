@@ -120,11 +120,25 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   parent txid.
 - **Per-parent fee-input reservation**: each parent txid reserves the
   wallet UTXO(s) it has committed to. Reservations survive block
-  boundaries and release only on eviction (terminal state) or when
+  boundaries and release only on eviction (terminal state), when
   the CPFP child never reaches the mempool (fallback / preflight
-  reject / package error). A parent IS allowed to re-pick UTXOs from
+  reject / package error), or when a mid-submission reselect abandons a
+  freshly chosen input. A parent IS allowed to re-pick UTXOs from
   its own reserved set — TRUC package RBF requires the new child to
   double-spend the previous child's fee input.
+- **Reselect releases only what this submission selected** (#664):
+  `broadcastWithCPFP` records `feeInputCarriedOver` via
+  `feeOutpointReserved` BEFORE re-reserving, so when script-class
+  reselection picks a different outpoint it can release the abandoned
+  original's reservation and wallet lease — but only if that original was
+  freshly selected this submission. A **carried-over** input (already
+  reserved by a prior committed bump) is deliberately left reserved,
+  because TRUC package RBF requires the replacement child to keep
+  double-spending it. Releasing it would drop an input the replacement
+  must spend; not releasing a fresh one strands it locked for the parent's
+  whole lifetime while nothing spends it. `feeOutpointReserved` reads
+  `parentStates` without creating an entry, so this pre-reservation probe
+  cannot leak an empty shell.
 - **Wallet-level lease coordination**: every reserved fee UTXO is
   also leased via `Wallet.LeaseOutput` (caller-scoped
   `txconfirmLockID`) and released on eviction/fallback. Lease errors

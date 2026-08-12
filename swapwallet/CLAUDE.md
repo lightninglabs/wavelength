@@ -137,6 +137,19 @@ default builds avoid the swap executor's dependency graph.
   `OnchainAddressRequest.sweep_all`, set by `leaveEntryStub`) also nets
   the fee back out of its gross pending amount, so every completed EXIT
   reads amount = destination-received, fee = cost on top.
+- **`GetExitPlan` round commitment is advisory, not an error**:
+  `getExitPlan` copies `entry.RoundCommitment` onto the response entry and
+  `infeasibilityReasonFromUnroll` maps `unroll.ExitRoundCommitted` to
+  `EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED`. The entry is still priced
+  and `Exit` still performs it, so the funding figures a recovery needs stay
+  populated — a client must not treat a non-empty `round_commitment` as a
+  refusal.
+- **`Exit` rejects `onchain_address` + `force_unroll_ack` with the way
+  out named**: `forceUnroll` states not just the constraint but that
+  clearing `force_unroll_ack` leaves cooperatively to the given address.
+  Stating the constraint alone invites clearing `onchain_address` instead,
+  which silently converts a cooperative leave into a unilateral exit rather
+  than rejecting an ambiguous request.
 - **Unilateral EXIT fee**: `applyUnrollStatus` applies the same shape on
   a COMPLETED unroll: `GetUnrollStatusResponse.exit_cost_sat` (the
   ledger's confirmed onchain_fee_paid exit leg) becomes `fee_sat` and is

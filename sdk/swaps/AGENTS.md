@@ -61,7 +61,21 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/swap
 - `Store` — isolated SQLite persistence. Runs its own migration table
   (`swap_client_schema_migrations`) separate from the main daemon DB.
 - `SwapServerConn` / `GRPCSwapServerConn` — remote swap-server gRPC
-  (`RequestChannelID`, `CreateInSwap`).
+  (`RequestChannelID`, `CreateInSwap`). Four constructors:
+  `NewGRPCSwapServerConn(conn, [signer])`,
+  `NewRESTSwapServerConn(addr, opts...)` (unauthenticated — send-only,
+  no credits), and `NewAuthenticatedRESTSwapServerConn(addr, signer,
+  opts...)`. `GRPCSwapServerConn` also holds injectable `authNow` /
+  `authRand` seams so tests can pin the expiry and nonce.
+- `CreditAccountAuthorizationSigner` (`credit_account_auth.go`) —
+  `func(ctx, accountKey, digest, expiresAtUnix, nonce) (*schnorr.Signature,
+  error)`. Signs one canonical account request with the wallet identity key
+  and **must reject `accountKey` unless it names that identity key**;
+  production is `waved.RPCServer.SignCreditAccountAuth`, wired in by
+  `swapclientserver`. `authorizeCreditAccountRequest` builds the digest via
+  `swaprpc.CreditAccountRequestDigest`, draws a fresh 32-byte nonce, stamps a
+  `creditAccountAuthorizationTTL` (1 minute) expiry, and attaches the result
+  with `swaprpc.SetCreditAccountAuthorization`.
 - `DaemonConn` — wallet operations (OOR sends, VTXO lookups, key
   queries, receive-auth signing/ECDH, VHTLC recovery arm/escalate/
   cancel, forfeit signing) provided by the Ark daemon. Includes
@@ -165,6 +179,19 @@ result into an `IncomingVHTLCNotification`.
 - The credit ledger is server-authoritative; local state only records
   what the wallet asked for. Always treat `ListCredits` as the source
   of truth after a retry or restart, not any locally cached operation.
+- Account-scoped requests are authorized per call, never per connection.
+  `RequestChannelID` **always** signs (a receive route is account-scoped),
+  as do `CreateCredit`, `RedeemCredit`, and `ListCredits`. `CreateInSwap`
+  and `QuoteInSwap` sign only when `accountPubKey` is non-empty, so a
+  send-only caller that never touches credits still works over an
+  unauthenticated conn. A missing signer is a hard error at the first
+  account-scoped call (`credit account authorization signer is required`),
+  not a silent downgrade to an unsigned request.
+- Every authorization carries a fresh nonce and a 1-minute expiry, so it is
+  single-use and short-lived by construction; the server additionally caps
+  validity at `swaprpc.CreditAccountMaxAuthTTL`. Do not cache or replay an
+  authorization across requests — the digest commits to the exact request
+  body and method.
 - `RecoveryPolicy.MaxFeeRateSatPerKW` is captured at arm time and
   stored on the recovery row, so a later, looser default cannot
   silently raise the exit-spend fee cap for an already-armed job.

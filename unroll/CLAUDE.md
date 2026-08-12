@@ -118,6 +118,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   refuse an exit that would leave a dust sweep or burn more in fees
   than the VTXO is worth (wavelength#608) instead of stranding it
   in an exit state after a min-relay-fee broadcast failure.
+- `ExitInfeasibilityReason` — why an exit is not (or may not be) startable:
+  `ExitUneconomical`, `ExitWalletUnderfunded`, `ExitWalletTooFewInputs`, and
+  `ExitRoundCommitted`. The last one is the odd member and is easy to
+  misread: it is NOT produced by the funding assessment. The exit preview
+  stamps it from the VTXO's lifecycle state, and it is **advisory rather
+  than a block**, because the manual unroll path still performs the exit.
+  That matters when the operator is unreachable and the round's commitment
+  never confirms — the forfeit can never confirm either, so the exit is the
+  only thing that recovers the coin, and the funding figures are still
+  computed alongside the reason.
 - `PlanExitFunding(desc, mat, feeRate, ...) ExitFundingPlan` —
   derives the wallet fee-input amount an operator/caller should fund
   before starting the exit; `RecommendedExitFeeInputAmount` reads the
