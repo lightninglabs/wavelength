@@ -393,7 +393,7 @@ func DefaultOptions() Options {
 		LNDImage: "mirror.gcr.io/lightninglabs/lnd:" +
 			"daily-testing-20260701",
 		TapdImage: "mirror.gcr.io/lightninglabs/taproot-assets:" +
-			"v0.7.0-rc1",
+			"v0.8.1",
 		ArtifactsBaseDir:    artifactsBaseDir,
 		HarnessLogStdOut:    *harnessLogStdOut,
 		AlwaysKeepArtifacts: true,
