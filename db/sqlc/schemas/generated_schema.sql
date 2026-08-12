@@ -80,7 +80,7 @@ CREATE TABLE activity_statuses (
 
 CREATE TABLE ark_channels (
     channel_id BLOB PRIMARY KEY NOT NULL,
-    kind INTEGER NOT NULL CHECK (kind IN (1, 2)),
+    kind INTEGER NOT NULL CHECK (kind IN (1, 2, 3)),
     funder INTEGER NOT NULL CHECK (funder IN (1, 2)),
     pending_channel_id BLOB NOT NULL UNIQUE,
     reserved_scid BLOB NOT NULL,
@@ -98,43 +98,43 @@ CREATE TABLE ark_channels (
     funder_delay BIGINT NOT NULL,
     min_exit_delay BIGINT NOT NULL,
 
-	phase INTEGER NOT NULL CHECK (phase BETWEEN 1 AND 13),
-	oor_session_id BLOB,
-	source_index BIGINT,
-	source_amount BIGINT,
-	source_ark_tx BLOB,
-	backing_tx BLOB,
+    phase INTEGER NOT NULL CHECK (phase BETWEEN 1 AND 13),
+    oor_session_id BLOB,
+    source_index BIGINT,
+    source_amount BIGINT,
+    source_ark_tx BLOB,
+    backing_tx BLOB,
     channel_point_txid BLOB,
     channel_point_index BIGINT,
     client_finalized BOOLEAN NOT NULL DEFAULT FALSE,
     hub_finalized BOOLEAN NOT NULL DEFAULT FALSE,
-	oor_finalized BOOLEAN NOT NULL DEFAULT FALSE,
-	oor_aborted BOOLEAN NOT NULL DEFAULT FALSE,
+    oor_finalized BOOLEAN NOT NULL DEFAULT FALSE,
+    oor_aborted BOOLEAN NOT NULL DEFAULT FALSE,
     backing_published BOOLEAN NOT NULL DEFAULT FALSE,
-	close_initiator INTEGER CHECK (close_initiator IN (1, 2)),
-	close_client_script BLOB,
-	close_hub_script BLOB,
-	close_fee_rate_sat_per_kw BIGINT,
-	cooperative_close_tx BLOB,
-	cooperative_close_txid BLOB,
-	close_commitment_height BIGINT,
-	close_client_balance BIGINT,
-	close_hub_balance BIGINT,
-	client_close_signed BOOLEAN NOT NULL DEFAULT FALSE,
-	hub_close_signed BOOLEAN NOT NULL DEFAULT FALSE,
-	client_close_finalized BOOLEAN NOT NULL DEFAULT FALSE,
-	hub_close_finalized BOOLEAN NOT NULL DEFAULT FALSE,
+    close_initiator INTEGER CHECK (close_initiator IN (1, 2)),
+    close_client_script BLOB,
+    close_hub_script BLOB,
+    close_fee_rate_sat_per_kw BIGINT,
+    cooperative_close_tx BLOB,
+    cooperative_close_txid BLOB,
+    close_commitment_height BIGINT,
+    close_client_balance BIGINT,
+    close_hub_balance BIGINT,
+    client_close_signed BOOLEAN NOT NULL DEFAULT FALSE,
+    hub_close_signed BOOLEAN NOT NULL DEFAULT FALSE,
+    client_close_finalized BOOLEAN NOT NULL DEFAULT FALSE,
+    hub_close_finalized BOOLEAN NOT NULL DEFAULT FALSE,
     failure TEXT,
 
     revision BIGINT NOT NULL CHECK (revision > 0),
     created_at BIGINT NOT NULL,
-    updated_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL, recovery_ready BOOLEAN NOT NULL DEFAULT FALSE, source_spent_outpoint_txid BLOB, source_spent_outpoint_index BIGINT, source_spending_txid BLOB,
 
     CHECK (
-		(oor_session_id IS NULL AND source_index IS NULL AND
-		 source_amount IS NULL AND source_ark_tx IS NULL) OR
-		(oor_session_id IS NOT NULL AND source_index IS NOT NULL AND
-		 source_amount IS NOT NULL AND source_ark_tx IS NOT NULL)
+        (oor_session_id IS NULL AND source_index IS NULL AND
+         source_amount IS NULL AND source_ark_tx IS NULL) OR
+        (oor_session_id IS NOT NULL AND source_index IS NOT NULL AND
+         source_amount IS NOT NULL AND source_ark_tx IS NOT NULL)
     ),
     CHECK (
         (backing_tx IS NULL AND channel_point_txid IS NULL AND
@@ -142,20 +142,20 @@ CREATE TABLE ark_channels (
         (backing_tx IS NOT NULL AND channel_point_txid IS NOT NULL AND
          channel_point_index IS NOT NULL)
     ),
-	CHECK (
-		(close_initiator IS NULL AND close_client_script IS NULL AND
-		 close_hub_script IS NULL AND close_fee_rate_sat_per_kw IS NULL) OR
-		(close_initiator IS NOT NULL AND close_client_script IS NOT NULL AND
-		 close_hub_script IS NOT NULL AND close_fee_rate_sat_per_kw IS NOT NULL)
-	),
-	CHECK (
-		(cooperative_close_tx IS NULL AND cooperative_close_txid IS NULL AND
-		 close_commitment_height IS NULL AND close_client_balance IS NULL AND
-		 close_hub_balance IS NULL) OR
-		(cooperative_close_tx IS NOT NULL AND cooperative_close_txid IS NOT NULL AND
-		 close_commitment_height IS NOT NULL AND close_client_balance IS NOT NULL AND
-		 close_hub_balance IS NOT NULL)
-	),
+    CHECK (
+        (close_initiator IS NULL AND close_client_script IS NULL AND
+         close_hub_script IS NULL AND close_fee_rate_sat_per_kw IS NULL) OR
+        (close_initiator IS NOT NULL AND close_client_script IS NOT NULL AND
+         close_hub_script IS NOT NULL AND close_fee_rate_sat_per_kw IS NOT NULL)
+    ),
+    CHECK (
+        (cooperative_close_tx IS NULL AND cooperative_close_txid IS NULL AND
+         close_commitment_height IS NULL AND close_client_balance IS NULL AND
+         close_hub_balance IS NULL) OR
+        (cooperative_close_tx IS NOT NULL AND cooperative_close_txid IS NOT NULL AND
+         close_commitment_height IS NOT NULL AND close_client_balance IS NOT NULL AND
+         close_hub_balance IS NOT NULL)
+    ),
     CHECK (channel_delay >= 0 AND channel_delay <= 4294967295),
     CHECK (funder_delay >= 0 AND funder_delay <= 4294967295),
     CHECK (min_exit_delay >= 0 AND min_exit_delay <= 4294967295)
@@ -1753,6 +1753,8 @@ CREATE TABLE vtxos (
     --   5 = UnilateralExit
     --   6 = Failed
     --   7 = Spending
+	--   8 = Expired
+	--   9 = RecoveryOnly
     status INTEGER NOT NULL DEFAULT 0,
 
     -- forfeit_round_id is the round in which this VTXO is being forfeited.

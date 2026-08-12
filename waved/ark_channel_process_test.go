@@ -4,9 +4,14 @@ import (
 	"context"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
+	"github.com/lightninglabs/wavelength/lnruntime"
 	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -19,6 +24,71 @@ type arkChannelControllerStub struct {
 	err     error
 	id      arkchannel.ID
 	feeRate chainfee.SatPerKWeight
+}
+
+// PromoteVTXO is not used by close RPC tests.
+func (s *arkChannelControllerStub) PromoteVTXO(context.Context,
+	btcutil.Amount) (arkchannel.Record, error) {
+
+	return s.record, s.err
+}
+
+// SendPayment is not used by close RPC tests.
+func (s *arkChannelControllerStub) SendPayment(context.Context, arkchannel.ID,
+	btcutil.Amount) (lntypes.Hash, error) {
+
+	return lntypes.Hash{}, s.err
+}
+
+// ReceivePayment is not used by close RPC tests.
+func (s *arkChannelControllerStub) ReceivePayment(context.Context,
+	arkchannel.ID, btcutil.Amount) (lntypes.Hash, error) {
+
+	return lntypes.Hash{}, s.err
+}
+
+// PayLightningInvoice is not used by close RPC tests.
+func (s *arkChannelControllerStub) PayLightningInvoice(context.Context, string,
+	btcutil.Amount) (LightningPaymentResult, error) {
+
+	return LightningPaymentResult{}, s.err
+}
+
+// PrepareIncomingPayment is not used by close RPC tests.
+func (s *arkChannelControllerStub) PrepareIncomingPayment(context.Context,
+	lntypes.Preimage, btcutil.Amount) error {
+
+	return s.err
+}
+
+// RegisterIncomingPayment is not used by close RPC tests.
+func (s *arkChannelControllerStub) RegisterIncomingPayment(context.Context,
+	lntypes.Hash, btcutil.Amount, uint64) error {
+
+	return s.err
+}
+
+// WaitIncomingPayment is not used by close RPC tests.
+func (s *arkChannelControllerStub) WaitIncomingPayment(context.Context,
+	lntypes.Hash) error {
+
+	return s.err
+}
+
+// PromoteIncomingVHTLC is not used by close RPC tests.
+func (s *arkChannelControllerStub) PromoteIncomingVHTLC(context.Context,
+	lntypes.Hash, uint64, btcutil.Amount, ArkChannelClaimSource) (
+	arkchannel.Record, error) {
+
+	return s.record, s.err
+}
+
+// MaterializeAndForceClose is not used by close RPC tests.
+func (s *arkChannelControllerStub) MaterializeAndForceClose(context.Context,
+	arkchannel.ID) (arkchannel.Record, chainhash.Hash, chainhash.Hash,
+	error) {
+
+	return s.record, chainhash.Hash{}, chainhash.Hash{}, s.err
 }
 
 // RequestCooperativeClose records the parsed public request.
@@ -39,6 +109,20 @@ func (s *arkChannelControllerStub) GetChannel(_ context.Context,
 	s.id = id
 
 	return s.record, s.err
+}
+
+// PeerMessageHandler returns an inert native peer handler for RPC-only tests.
+//
+//nolint:ll // The concrete method name and interface type are both significant.
+func (*arkChannelControllerStub) PeerMessageHandler() lnruntime.PeerEventHandler {
+	return func(context.Context, lnwire.Message) error {
+		return nil
+	}
+}
+
+// Stop is inert for the RPC-only controller stub.
+func (*arkChannelControllerStub) Stop() error {
+	return nil
 }
 
 // TestArkChannelRPCRequestCooperativeClose verifies fixed-width ID parsing,

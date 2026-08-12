@@ -212,6 +212,20 @@ func (c *Controller) waitForTerminal(ctx context.Context, id arkchannel.ID,
 				SessionID: source.OORSessionID,
 				Reason:    state.Reason,
 			})
+
+		case oor.ReceiveState:
+			// An incoming self-transfer for the same Ark txid can
+			// only exist after the operator finalized the outgoing
+			// package. Its row may replace the reaped outgoing row
+			// before this observer polls it.
+			if aborting {
+				return fmt.Errorf("OOR finalized while " +
+					"aborting channel")
+			}
+
+			return c.apply(ctx, id, &arkchannel.OORFinalized{
+				SessionID: source.OORSessionID,
+			})
 		}
 
 		timer := time.NewTimer(c.pollInterval)
@@ -228,7 +242,7 @@ func (c *Controller) waitForTerminal(ctx context.Context, id arkchannel.ID,
 	}
 }
 
-// state loads the authoritative in-memory state from the durable OOR actor.
+// state loads the authoritative state through the durable OOR registry.
 func (c *Controller) state(ctx context.Context, sessionID [32]byte) (
 	oor.SessionState, error) {
 

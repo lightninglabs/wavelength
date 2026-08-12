@@ -5,15 +5,17 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 )
 
 // serviceExecutor completes native callbacks through the public Service API.
 type serviceExecutor struct {
-	t       *testing.T
-	service *Service
-	counts  map[string]int
+	t           *testing.T
+	service     *Service
+	counts      map[string]int
+	failPublish int
 }
 
 type staticFundingFinalizationSource struct {
@@ -82,6 +84,13 @@ func (e *serviceExecutor) Execute(ctx context.Context, id ID,
 
 		return err
 
+	case *PrepareRecovery:
+		_, err := e.service.Apply(
+			ctx, id, &RecoveryPackageInstalled{},
+		)
+
+		return err
+
 	case *AbortOOR:
 		_, err := e.service.Apply(ctx, id, &OORAborted{
 			SessionID: action.Source.OORSessionID,
@@ -104,17 +113,96 @@ func (e *serviceExecutor) Execute(ctx context.Context, id ID,
 		return err
 
 	case *PublishChannel:
+		if e.failPublish > 0 {
+			e.failPublish--
+
+			return fmt.Errorf("injected handoff failure")
+		}
 		_, err := e.service.Apply(ctx, id, &BackingPublished{
 			TxID: action.Backing.ChannelPoint.Hash,
 		})
 
 		return err
 
+	case *ForceCloseChannel:
+		return nil
+
 	default:
 		return fmt.Errorf("unexpected service action %T", action)
 	}
 
 	return nil
+}
+
+// TestServiceReplaysSourceConflictAction proves repeating the same durable
+// chain fact retries a backing publication that failed after state commit.
+func TestServiceReplaysSourceConflictAction(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	executor := &serviceExecutor{
+		t: t, counts: make(map[string]int), failPublish: 1,
+	}
+	service, err := NewService(coordinator, executor)
+	require.NoError(t, err)
+	executor.service = service
+	terms := testTerms(t, KindPromotion)
+	binding := testBinding(terms)
+	_, err = service.PromoteVTXO(t.Context(), terms, binding)
+	require.NoError(t, err)
+
+	conflict := &SourceSpent{
+		OutPoint: binding.OutPoint,
+		SpendingTxID: chainhash.Hash{
+			44,
+		},
+	}
+	_, err = service.Apply(t.Context(), terms.ID, conflict)
+	require.ErrorContains(t, err, "injected handoff failure")
+	record, err := service.GetChannel(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, PhaseMaterializing, record.Snapshot.Phase)
+
+	record, err = service.Apply(t.Context(), terms.ID, conflict)
+	require.NoError(t, err)
+	require.Equal(t, PhaseOnChain, record.Snapshot.Phase)
+	require.Equal(t, 2, executor.counts["*arkchannel.PublishChannel"])
+	require.Equal(t, 1, executor.counts["*arkchannel.ForceCloseChannel"])
+}
+
+// TestServiceResumesMaterializationAction proves a retry cannot acknowledge a
+// durable materializing state without re-running the failed handoff and
+// publication action.
+func TestServiceResumesMaterializationAction(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	executor := &serviceExecutor{
+		t: t, counts: make(map[string]int),
+	}
+	service, err := NewService(coordinator, executor)
+	require.NoError(t, err)
+	executor.service = service
+
+	terms := testTerms(t, KindPromotion)
+	_, err = service.PromoteVTXO(
+		t.Context(), terms, testBinding(terms),
+	)
+	require.NoError(t, err)
+	executor.failPublish = 1
+
+	_, err = service.Materialize(t.Context(), terms.ID)
+	require.ErrorContains(t, err, "injected handoff failure")
+	record, err := service.GetChannel(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, PhaseMaterializing, record.Snapshot.Phase)
+
+	record, err = service.Materialize(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, PhaseOnChain, record.Snapshot.Phase)
+	require.Equal(t, 2, executor.counts["*arkchannel.PublishChannel"])
 }
 
 // TestServicePromotesAndMaterializesVTXO verifies the compact public workflow

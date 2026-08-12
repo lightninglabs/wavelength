@@ -280,11 +280,10 @@ alias wave='wavecli --no-tls --no-macaroons'
 ### Command tree
 
 The everyday wallet verbs and daemon introspection make up the default
-`--help` face. The advanced `ark`, `recovery`, and `dev` subtrees are
+`--help` face. The advanced `ark`, `channel`, `recovery`, and `dev` subtrees are
 hidden from `--help` (set `WAVELENGTH_DEV=1` to reveal them under an "Advanced"
-group) but stay fully runnable in every build — `wavecli ark …` works
-with or without the env var. `WAVELENGTH_DEV` only changes visibility; it never
-gates execution.
+group) but stay fully runnable in every build. `WAVELENGTH_DEV` only changes
+visibility; it never gates execution.
 
 The `swap` subtree was retired — `send`/`recv --offchain` and `activity`
 cover it, and a stale `wavecli swap …` fails with a hint toward
@@ -312,6 +311,10 @@ wavecli
 │   ├── sweep [list]          — broadcast requires approval
 │   ├── fees {estimate|history}
 │   └── listtransactions
+├── channel                  — Ark-backed native Lightning channels (hidden)
+│   ├── create / get
+│   ├── send / receive / pay
+│   └── close / force-close
 ├── recovery {list|status|escalate|cancel} — daemon-owned vHTLC recovery rows (hidden)
 └── dev                       — generated low-level RPC (hidden; no wavewalletrpc)
     └── daemon <Method>       — call any waverpc.DaemonService method
@@ -381,6 +384,32 @@ wavecli recv --offchain --amt 5000 --memo coffee
 # No-wavewalletrpc equivalent for the boarding-address case:
 wavecli dev daemon NewAddress
 ```
+
+### `channel` (development)
+
+Promote wallet VTXO value into an unpublished native Lightning channel, use it
+for private or public payments, and choose cooperative or unilateral closure.
+Creation intentionally takes only the desired channel capacity; the daemon
+owns OOR preparation, backing reserve, private-channel policy, and activation.
+Channel IDs accept either the base64 value printed by protobuf JSON or 32-byte
+hex.
+
+```bash
+wavecli channel create 100000
+wavecli channel get <channel-id>
+wavecli channel send <channel-id> 10000
+wavecli channel receive <channel-id> 5000
+wavecli channel pay <bolt11> --max-fee-sat 1000
+wavecli channel close <channel-id>
+wavecli channel force-close <channel-id>
+```
+
+`recv --offchain` uses an active channel directly when it has enough inbound
+liquidity. Otherwise the existing vHTLC receive rail claims into a newly
+negotiated channel before releasing the payment preimage. After completion,
+`activity inspect <payment-hash> --format json` reports the manifested
+`channel_id`, reserved alias SCID, and backing-fee reserve. A direct receive has
+an empty `channel_id` because it reused an existing channel.
 
 ### `ark board` / `dev daemon Board`
 

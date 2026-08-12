@@ -50,6 +50,7 @@ type RuntimeConfig struct {
 	SelfNode      route.Vertex
 	Clock         clock.Clock
 	Funding       *FundingConfig
+	Onchain       *OnchainConfig
 
 	LocalChannelClose      func([]byte, *htlcswitch.ChanClose)
 	FetchLastChannelUpdate func(lnwire.ShortChannelID) (
@@ -70,6 +71,7 @@ type Runtime struct {
 	interceptor    *htlcswitch.InterceptableSwitch
 	payments       *FixedRoutePayments
 	funding        *FundingRuntime
+	onchain        *OnchainRuntime
 	sigPool        *lnwallet.SigPool
 
 	mu      sync.Mutex
@@ -204,7 +206,7 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 		}
 	}
 
-	return &Runtime{
+	runtime := &Runtime{
 		cfg:            cfg,
 		onionProcessor: onionProcessor,
 		htlcNotifier:   htlcNotifier,
@@ -214,7 +216,17 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 		payments:       payments,
 		funding:        fundingRuntime,
 		sigPool:        lnwallet.NewSigPool(1, cfg.Signer),
-	}, nil
+	}
+	if cfg.Onchain != nil {
+		runtime.onchain, err = newOnchainRuntime(
+			runtime, *cfg.Onchain,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return runtime, nil
 }
 
 // validateRuntimeConfig rejects missing stateful dependencies before any lnd
@@ -320,6 +332,22 @@ func (r *Runtime) Start() error {
 			return err
 		}
 	}
+	if r.onchain != nil {
+		if err := r.onchain.Start(); err != nil {
+			if r.funding != nil {
+				_ = r.funding.Stop()
+			}
+			_ = r.payments.Stop()
+			_ = r.interceptor.Stop()
+			_ = r.switcher.Stop()
+			_ = r.invoices.Stop()
+			_ = r.onionProcessor.Stop()
+			_ = r.htlcNotifier.Stop()
+			_ = r.sigPool.Stop()
+
+			return err
+		}
+	}
 
 	r.started = true
 
@@ -339,13 +367,17 @@ func (r *Runtime) Stop() error {
 		return nil
 	}
 
+	var onchainErr error
+	if r.onchain != nil {
+		onchainErr = r.onchain.Stop()
+	}
 	var fundingErr error
 	if r.funding != nil {
 		fundingErr = r.funding.Stop()
 	}
 
 	return errors.Join(
-		fundingErr, r.payments.Stop(), r.interceptor.Stop(),
+		onchainErr, fundingErr, r.payments.Stop(), r.interceptor.Stop(),
 		r.switcher.Stop(), r.invoices.Stop(), r.onionProcessor.Stop(),
 		r.htlcNotifier.Stop(), r.sigPool.Stop(),
 	)
@@ -598,43 +630,76 @@ func (r *Runtime) RemoveLink(channelPoint wire.OutPoint) {
 	r.switcher.RemoveLink(lnwire.NewChanIDFromOutPoint(channelPoint))
 }
 
-// PrepareForceClose stops the live link and asks lnd's channel state machine
-// for its latest fully signed commitment transaction. The caller must
-// materialize the unpublished channel point before broadcasting this spend.
-func (r *Runtime) PrepareForceClose(channelPoint wire.OutPoint) (
-	*lnwallet.LocalForceCloseSummary, error) {
-
-	channelState, err := r.cfg.DB.ChannelStateDB().FetchChannel(
-		channelPoint,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("find channel for force close: %w", err)
-	}
-	if channelState.IsPending {
-		return nil, fmt.Errorf("cannot force close a pending channel")
+// WatchChannel admits an active channel to lnd's standard chain and contract
+// lifecycle before the unpublished channel point can be materialized.
+func (r *Runtime) WatchChannel(channel *chanstate.OpenChannel) error {
+	if r.onchain == nil {
+		return fmt.Errorf("on-chain lifecycle is disabled")
 	}
 
-	r.RemoveLink(channelPoint)
-	channel, err := lnwallet.NewLightningChannel(
-		r.cfg.Signer, channelState, r.sigPool,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("restore channel for force close: %w",
-			err)
+	return r.onchain.WatchChannel(channel)
+}
+
+// HandoffChannel verifies lnd's standard chain lifecycle is armed before Ark
+// publishes an active channel's backing transaction. WatchChannel is
+// idempotent, so this also repairs a missed registration after restart.
+func (r *Runtime) HandoffChannel(channelPoint wire.OutPoint) error {
+	if r.onchain == nil {
+		return fmt.Errorf("on-chain lifecycle is disabled")
 	}
-	summary, err := channel.ForceClose(
-		lnwallet.WithSkipContractResolutions(),
-	)
+	state, err := r.cfg.DB.ChannelStateDB().FetchChannel(channelPoint)
 	if err != nil {
-		return nil, fmt.Errorf("prepare lnd force close: %w", err)
+		return fmt.Errorf("find channel for on-chain handoff: %w", err)
 	}
-	if len(summary.CloseTx.TxIn) == 0 ||
-		summary.CloseTx.TxIn[0].PreviousOutPoint != channelPoint {
-		return nil, fmt.Errorf("lnd force close does not spend " +
-			"channel point")
+	if state.IsPending {
+		return fmt.Errorf("cannot hand off a pending channel")
+	}
+	if err := r.WatchChannel(state); err != nil {
+		return fmt.Errorf("watch materialized channel: %w", err)
 	}
 
-	return summary, nil
+	return nil
+}
+
+// ForceCloseChannel asks the standard lnd chain arbitrator to publish the
+// latest commitment and own all output resolutions through completion.
+func (r *Runtime) ForceCloseChannel(channelPoint wire.OutPoint) (*wire.MsgTx,
+	error) {
+
+	if r.onchain == nil {
+		return nil, fmt.Errorf("on-chain lifecycle is disabled")
+	}
+
+	return r.onchain.ForceClose(channelPoint)
+}
+
+// ResumeForceCloseChannel re-drives the publication edge after Ark has
+// durably materialized a channel. A channel already broadcast or moved to the
+// closed bucket needs no second force-close request.
+func (r *Runtime) ResumeForceCloseChannel(channelPoint wire.OutPoint) error {
+	stateDB := r.cfg.DB.ChannelStateDB()
+	channel, err := stateDB.FetchChannel(channelPoint)
+	if errors.Is(err, channeldb.ErrChannelNotFound) {
+		if _, closedErr := stateDB.FetchClosedChannel(
+			&channelPoint,
+		); closedErr != nil {
+			return fmt.Errorf("find materialized channel: %w",
+				closedErr)
+		}
+
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("find materialized channel: %w", err)
+	}
+	if channel.HasChanStatus(channeldb.ChanStatusCommitBroadcasted) {
+		return nil
+	}
+	if _, err := r.onchain.ResumeForceClose(channelPoint); err != nil {
+		return fmt.Errorf("resume lnd force close: %w", err)
+	}
+
+	return nil
 }
 
 // unavailableChannelUpdate is the default for a private runtime with no graph.

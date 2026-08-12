@@ -298,13 +298,6 @@ type Config struct {
 	// but defer background work until the wallet can sign.
 	WalletReadyHooks []WalletReadyHook
 
-	// ArkChannelControllerFactory constructs the client-owned channel
-	// process after the wallet, channel store, and authenticated
-	// swap-server mailbox are online. It is compiled-in process wiring, not
-	// user configuration.
-	//nolint:ll // Explicit process-wiring name prevents config ambiguity.
-	ArkChannelControllerFactory ArkChannelControllerFactory `mapstructure:"-"`
-
 	// Wallet configures the wallet backend used for signing, key
 	// derivation, and chain access.
 	Wallet *WalletConfig `mapstructure:"wallet"`

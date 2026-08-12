@@ -23,7 +23,26 @@ const (
 
 	// PeerMessageMethod is the mailbox method for one ordered wire message.
 	PeerMessageMethod = "Message"
+
+	arkChannelClientMailboxPrefix = "ark-channel-client"
+	arkChannelHubMailboxPrefix    = "ark-channel-hub"
 )
+
+// ArkChannelClientMailboxID returns the isolated client reply mailbox for one
+// authenticated Wavelength identity.
+func ArkChannelClientMailboxID(clientIdentity string) string {
+	return serverconn.CompoundMailboxID(
+		arkChannelClientMailboxPrefix, clientIdentity,
+	)
+}
+
+// ArkChannelHubMailboxID returns the operator mailbox paired with one
+// authenticated Wavelength identity.
+func ArkChannelHubMailboxID(clientIdentity string) string {
+	return serverconn.CompoundMailboxID(
+		arkChannelHubMailboxPrefix, clientIdentity,
+	)
+}
 
 // PeerEvent is one native lnd wire message prepared for durable delivery.
 type PeerEvent struct {

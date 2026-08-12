@@ -43,25 +43,42 @@ type CooperativeCloseOperatorSigner interface {
 // CooperativeClosePublisher materializes Ark ancestry and confirms the exact
 // direct VTXO settlement through the common unroller.
 type CooperativeClosePublisher interface {
-	SettleCooperativeClose(context.Context, arkchannel.ID,
+	SettleCooperativeClose(context.Context, arkchannel.ID, arkchannel.Terms,
 		arkchannel.VTXOBinding, arkchannel.CooperativeClose) error
+}
+
+// CooperativeClosePublisherFunc adapts a process-owned publication function
+// to the cooperative close protocol.
+type CooperativeClosePublisherFunc func(context.Context, arkchannel.ID,
+	arkchannel.Terms, arkchannel.VTXOBinding,
+	arkchannel.CooperativeClose) error
+
+// SettleCooperativeClose invokes the wrapped publication function.
+func (f CooperativeClosePublisherFunc) SettleCooperativeClose(
+	ctx context.Context, id arkchannel.ID, terms arkchannel.Terms,
+	source arkchannel.VTXOBinding,
+	settlement arkchannel.CooperativeClose) error {
+
+	return f(ctx, id, terms, source, settlement)
 }
 
 // CooperativeCloseDeliveryValidator proves one endpoint owns the payout script
 // assigned to its role before it signs or disables channel traffic.
 type CooperativeCloseDeliveryValidator interface {
-	ValidateCooperativeCloseDelivery(context.Context, []byte) error
+	ValidateCooperativeCloseDelivery(context.Context, arkchannel.ID,
+		[]byte) error
 }
 
 // CooperativeCloseDeliveryValidatorFunc adapts a wallet ownership check to the
 // cooperative-close endpoint.
-type CooperativeCloseDeliveryValidatorFunc func(context.Context, []byte) error
+type CooperativeCloseDeliveryValidatorFunc func(context.Context,
+	arkchannel.ID, []byte) error
 
 // ValidateCooperativeCloseDelivery invokes the wrapped ownership check.
 func (f CooperativeCloseDeliveryValidatorFunc) ValidateCooperativeCloseDelivery(
-	ctx context.Context, script []byte) error {
+	ctx context.Context, id arkchannel.ID, script []byte) error {
 
-	return f(ctx, script)
+	return f(ctx, id, script)
 }
 
 // NativeCooperativeCloseEndpoint owns one endpoint's lnd database and Ark
@@ -154,7 +171,7 @@ func (e *NativeCooperativeCloseEndpoint) QuiesceCooperativeClose(
 		deliveryScript = request.HubDeliveryScript
 	}
 	if err := e.delivery.ValidateCooperativeCloseDelivery(
-		ctx, deliveryScript,
+		ctx, id, deliveryScript,
 	); err != nil {
 		return CleanChannelState{}, fmt.Errorf("validate %s "+
 			"cooperative close payout: %w", e.party, err)

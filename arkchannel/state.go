@@ -96,6 +96,16 @@ func (s *channelState) ProcessEvent(_ context.Context, event Event,
 		return nil, err
 	}
 	if !changed {
+		switch event.(type) {
+		case *SourceSpent, *RecoveryPackageInstalled, *OORFinalized:
+			action, err := PendingAction(next)
+			if err != nil {
+				return nil, err
+			}
+
+			return transitionTo(next, action), nil
+		}
+
 		return transitionTo(next, nil), nil
 	}
 
@@ -103,7 +113,12 @@ func (s *channelState) ProcessEvent(_ context.Context, event Event,
 	if err != nil {
 		return nil, err
 	}
-	if next.Phase == previousPhase {
+	_, sourceSpent := event.(*SourceSpent)
+	_, recoveryInstalled := event.(*RecoveryPackageInstalled)
+	_, oorFinalized := event.(*OORFinalized)
+	if next.Phase == previousPhase && !sourceSpent &&
+		!recoveryInstalled && !oorFinalized {
+
 		action = nil
 	}
 	if err := validateSnapshot(next); err != nil {
@@ -127,6 +142,13 @@ func PendingAction(snapshot Snapshot) (Action, error) {
 		}, nil
 
 	case PhaseBackingReady:
+		if snapshot.OORFinalized && !snapshot.RecoveryReady {
+			return &PrepareRecovery{
+				Terms:  snapshot.Terms.Clone(),
+				Source: snapshot.Source.Clone(),
+			}, nil
+		}
+
 		return &CommitOOR{
 			Terms:  snapshot.Terms.Clone(),
 			Source: snapshot.Source.Clone(),
@@ -165,6 +187,13 @@ func PendingAction(snapshot Snapshot) (Action, error) {
 			Backing: snapshot.Backing.Clone(),
 		}, nil
 
+	case PhaseOnChain:
+		if snapshot.SourceConflict != nil {
+			return &ForceCloseChannel{
+				Backing: snapshot.Backing.Clone(),
+			}, nil
+		}
+
 	case PhaseCoopClosing:
 		return &NegotiateCooperativeClose{
 			Terms:   snapshot.Terms.Clone(),
@@ -192,6 +221,8 @@ func PendingAction(snapshot Snapshot) (Action, error) {
 	default:
 		return nil, nil
 	}
+
+	return nil, nil
 }
 
 // applyEvent mutates only the fact directly asserted by an event.
@@ -227,6 +258,9 @@ func applyEvent(next *Snapshot, event Event) (bool, error) {
 	case *OORFinalized:
 		return applyOORFinalized(next, event.SessionID)
 
+	case *RecoveryPackageInstalled:
+		return applyRecoveryPackageInstalled(next)
+
 	case *OORAborted:
 		return applyOORAborted(
 			next, event.SessionID, event.Reason,
@@ -252,8 +286,16 @@ func applyEvent(next *Snapshot, event Event) (bool, error) {
 
 		return true, nil
 
+	case *SourceSpent:
+		return applySourceSpent(
+			next, event.OutPoint, event.SpendingTxID,
+		)
+
 	case *BackingPublished:
 		return applyBackingPublished(next, event.TxID)
+
+	case *BackingObserved:
+		return applyBackingObserved(next, event.TxID)
 
 	case *ChannelClosed:
 		if next.Phase == PhaseClosed {
@@ -406,6 +448,76 @@ func applyOORFinalized(next *Snapshot, sessionID [32]byte) (bool, error) {
 	return true, nil
 }
 
+// applyRecoveryPackageInstalled records the symmetric recovery barrier. It is
+// valid before the remote OOR-finalized acknowledgement arrives because the
+// package itself can only be exported after actual OOR completion.
+func applyRecoveryPackageInstalled(next *Snapshot) (bool, error) {
+	if next.Source == nil || next.Backing == nil || !backingReady(*next) {
+		return false, fmt.Errorf("cannot install channel recovery " +
+			"before finalized backing")
+	}
+	if next.OORAborted || next.Phase == PhaseCancelling ||
+		next.Phase == PhaseFailed {
+		return false, fmt.Errorf("cannot install recovery for " +
+			"abandoned channel")
+	}
+	if next.RecoveryReady {
+		return false, nil
+	}
+	next.RecoveryReady = true
+
+	return true, nil
+}
+
+// applySourceSpent persists the first ancestor conflict and drives the
+// virtual channel toward its already-negotiated on-chain resolution path.
+func applySourceSpent(next *Snapshot, outpoint wire.OutPoint,
+	spendingTxID chainhash.Hash) (bool, error) {
+
+	if outpoint == (wire.OutPoint{}) || spendingTxID == (chainhash.Hash{}) {
+		return false, fmt.Errorf("source spend evidence is incomplete")
+	}
+	if next.SourceConflict != nil {
+		return false, nil
+	}
+	if !next.RecoveryReady || !next.OORFinalized {
+		return false, fmt.Errorf("cannot handle source spend before " +
+			"recovery is ready")
+	}
+	next.SourceConflict = &SourceConflict{
+		OutPoint: outpoint, SpendingTxID: spendingTxID,
+	}
+
+	switch next.Phase {
+	case PhaseActive:
+		next.Phase = PhaseMaterializing
+
+	case PhaseCoopClosing:
+		// A partially negotiated direct settlement cannot protect
+		// either endpoint once the source path starts confirming.
+		// Discard it and use the fully signed backing transaction
+		// instead. A settlement with both signatures has already
+		// advanced to CoopCloseSigned and remains authoritative below.
+		next.CooperativeCloseRequest = nil
+		next.CooperativeClose = nil
+		next.ClientCloseSigned = false
+		next.HubCloseSigned = false
+		next.ClientCloseFinalized = false
+		next.HubCloseFinalized = false
+		next.Phase = PhaseMaterializing
+
+	case PhaseActivating, PhaseMaterializing, PhaseOnChain,
+		PhaseCoopCloseSigned,
+		PhaseCoopClosePublished, PhaseClosed:
+
+	default:
+		return false, fmt.Errorf("cannot handle source spend from %s",
+			next.Phase)
+	}
+
+	return true, nil
+}
+
 // applyOORAborted records a definitive pre-PONR failure, allowing lnd's
 // pending channel reservation to be removed without risking a gifted VTXO.
 func applyOORAborted(next *Snapshot, sessionID [32]byte,
@@ -464,7 +576,11 @@ func applyChannelActive(next *Snapshot,
 			"channel point")
 	}
 
-	next.Phase = PhaseActive
+	if next.SourceConflict != nil {
+		next.Phase = PhaseMaterializing
+	} else {
+		next.Phase = PhaseActive
+	}
 
 	return true, nil
 }
@@ -485,6 +601,38 @@ func applyBackingPublished(next *Snapshot, txID [32]byte) (bool, error) {
 			"not match")
 	}
 
+	next.BackingPublished = true
+	next.Phase = PhaseOnChain
+
+	return true, nil
+}
+
+// applyBackingObserved gives independently observed chain state precedence
+// over a virtual or unfinished cooperative lifecycle. A fully resolved lnd
+// channel proves any conflicting direct settlement can no longer confirm.
+func applyBackingObserved(next *Snapshot, txID [32]byte) (bool, error) {
+	if next.Backing == nil || next.Backing.ChannelPoint.Hash != txID {
+		return false, fmt.Errorf("observed backing transaction does " +
+			"not match")
+	}
+	if next.Phase == PhaseOnChain {
+		return false, nil
+	}
+	switch next.Phase {
+	case PhaseActivating, PhaseActive, PhaseMaterializing,
+		PhaseCoopClosing, PhaseCoopCloseSigned:
+
+	default:
+		return false, fmt.Errorf("cannot observe backing from %s",
+			next.Phase)
+	}
+
+	next.CooperativeCloseRequest = nil
+	next.CooperativeClose = nil
+	next.ClientCloseSigned = false
+	next.HubCloseSigned = false
+	next.ClientCloseFinalized = false
+	next.HubCloseFinalized = false
 	next.BackingPublished = true
 	next.Phase = PhaseOnChain
 
@@ -709,13 +857,25 @@ func advance(next *Snapshot) (Action, error) {
 			Source: next.Source.Clone(),
 		}, nil
 
+	case PhaseActivating:
+		return &ActivateChannel{
+			Terms:   next.Terms.Clone(),
+			Backing: next.Backing.Clone(),
+		}, nil
+
 	case PhaseBackingReady:
-		if next.OORFinalized {
+		if next.OORFinalized && next.RecoveryReady {
 			next.Phase = PhaseActivating
 
 			return &ActivateChannel{
 				Terms:   next.Terms.Clone(),
 				Backing: next.Backing.Clone(),
+			}, nil
+		}
+		if next.OORFinalized {
+			return &PrepareRecovery{
+				Terms:  next.Terms.Clone(),
+				Source: next.Source.Clone(),
 			}, nil
 		}
 
@@ -730,6 +890,13 @@ func advance(next *Snapshot) (Action, error) {
 			Source:  next.Source.Clone(),
 			Backing: next.Backing.Clone(),
 		}, nil
+
+	case PhaseOnChain:
+		if next.SourceConflict != nil {
+			return &ForceCloseChannel{
+				Backing: next.Backing.Clone(),
+			}, nil
+		}
 
 	case PhaseCoopClosing:
 		return &NegotiateCooperativeClose{
@@ -781,8 +948,7 @@ func advance(next *Snapshot) (Action, error) {
 			Backing: backing,
 		}, nil
 
-	case PhaseRequested, PhaseActivating, PhaseActive, PhaseOnChain,
-		PhaseClosed, PhaseFailed:
+	case PhaseRequested, PhaseActive, PhaseClosed, PhaseFailed:
 	}
 
 	return nil, nil
@@ -830,7 +996,8 @@ func validateSnapshot(snapshot Snapshot) error {
 	}
 	if snapshot.Source == nil && (snapshot.Backing != nil ||
 		snapshot.ClientFinalized || snapshot.HubFinalized ||
-		snapshot.OORFinalized || snapshot.OORAborted) {
+		snapshot.OORFinalized || snapshot.OORAborted ||
+		snapshot.RecoveryReady || snapshot.SourceConflict != nil) {
 		return fmt.Errorf("funding facts require a bound VTXO")
 	}
 	if snapshot.Backing == nil && (snapshot.ClientFinalized ||
@@ -858,6 +1025,13 @@ func validateSnapshot(snapshot Snapshot) error {
 		return fmt.Errorf("OOR transfer cannot be finalized and " +
 			"aborted")
 	}
+	if snapshot.RecoveryReady && !backingReady(snapshot) {
+		return fmt.Errorf("channel recovery requires finalized backing")
+	}
+	if snapshot.SourceConflict != nil && (!snapshot.RecoveryReady ||
+		!snapshot.OORFinalized) {
+		return fmt.Errorf("source conflict requires ready recovery")
+	}
 	if snapshot.BackingPublished && snapshot.Phase != PhaseOnChain &&
 		snapshot.Phase != PhaseClosed {
 		return fmt.Errorf("published backing requires on-chain phase")
@@ -878,7 +1052,9 @@ func validateSnapshot(snapshot Snapshot) error {
 	switch snapshot.Phase {
 	case PhaseRequested:
 		if snapshot.Source != nil || snapshot.OORFinalized ||
-			snapshot.OORAborted || snapshot.BackingPublished {
+			snapshot.OORAborted || snapshot.RecoveryReady ||
+			snapshot.SourceConflict != nil ||
+			snapshot.BackingPublished {
 			return fmt.Errorf("requested channel has advanced " +
 				"facts")
 		}
@@ -888,13 +1064,15 @@ func validateSnapshot(snapshot Snapshot) error {
 			return fmt.Errorf("negotiating channel has no bound " +
 				"VTXO")
 		}
-		if snapshot.OORFinalized || snapshot.OORAborted {
+		if snapshot.OORFinalized || snapshot.OORAborted ||
+			snapshot.RecoveryReady ||
+			snapshot.SourceConflict != nil {
 			return fmt.Errorf("negotiating channel has terminal " +
 				"OOR facts")
 		}
 
 	case PhaseBackingReady:
-		if snapshot.OORFinalized || snapshot.OORAborted {
+		if snapshot.OORAborted || snapshot.SourceConflict != nil {
 			return fmt.Errorf("backing-ready channel has " +
 				"terminal OOR facts")
 		}
@@ -903,9 +1081,10 @@ func validateSnapshot(snapshot Snapshot) error {
 		PhaseClosed, PhaseCoopClosing, PhaseCoopCloseSigned,
 		PhaseCoopClosePublished:
 
-		if !snapshot.OORFinalized || snapshot.OORAborted {
+		if !snapshot.OORFinalized || snapshot.OORAborted ||
+			!snapshot.RecoveryReady {
 			return fmt.Errorf("channel advanced before OOR " +
-				"finalization")
+				"finalization and recovery installation")
 		}
 
 	case PhaseCancelling:
@@ -948,7 +1127,6 @@ func validateCooperativeCloseSnapshot(snapshot Snapshot) error {
 	if snapshot.CooperativeClose != nil {
 		if snapshot.Source == nil ||
 			snapshot.CooperativeCloseRequest == nil {
-
 			return fmt.Errorf("cooperative close has no request " +
 				"or source")
 		}
@@ -962,7 +1140,6 @@ func validateCooperativeCloseSnapshot(snapshot Snapshot) error {
 	if (snapshot.ClientCloseSigned || snapshot.HubCloseSigned ||
 		snapshot.ClientCloseFinalized || snapshot.HubCloseFinalized) &&
 		snapshot.CooperativeClose == nil {
-
 		return fmt.Errorf("close acknowledgements require signed " +
 			"settlement")
 	}
@@ -972,14 +1149,12 @@ func validateCooperativeCloseSnapshot(snapshot Snapshot) error {
 		if snapshot.CooperativeCloseRequest == nil ||
 			snapshot.ClientCloseFinalized ||
 			snapshot.HubCloseFinalized {
-
 			return fmt.Errorf("cooperative closing phase has " +
 				"invalid facts")
 		}
 		if snapshot.CooperativeClose == nil &&
 			(snapshot.ClientCloseSigned ||
 				snapshot.HubCloseSigned) {
-
 			return fmt.Errorf("cooperative close acknowledgement " +
 				"has no artifact")
 		}
@@ -988,7 +1163,6 @@ func validateCooperativeCloseSnapshot(snapshot Snapshot) error {
 				!snapshot.HubCloseSigned ||
 				snapshot.ClientCloseSigned &&
 					snapshot.HubCloseSigned) {
-
 			return fmt.Errorf("cooperative close staging has " +
 				"invalid acknowledgements")
 		}
@@ -1000,7 +1174,6 @@ func validateCooperativeCloseSnapshot(snapshot Snapshot) error {
 			!snapshot.HubCloseSigned ||
 			snapshot.ClientCloseFinalized ||
 			snapshot.HubCloseFinalized {
-
 			return fmt.Errorf("signed cooperative close has " +
 				"invalid facts")
 		}
@@ -1009,7 +1182,6 @@ func validateCooperativeCloseSnapshot(snapshot Snapshot) error {
 		if snapshot.CooperativeClose == nil ||
 			!snapshot.ClientCloseSigned ||
 			!snapshot.HubCloseSigned {
-
 			return fmt.Errorf("published cooperative close is " +
 				"missing")
 		}
@@ -1020,7 +1192,6 @@ func validateCooperativeCloseSnapshot(snapshot Snapshot) error {
 				!snapshot.HubCloseSigned ||
 				!snapshot.ClientCloseFinalized ||
 				!snapshot.HubCloseFinalized) {
-
 			return fmt.Errorf("cooperative close lacks endpoint " +
 				"finalization")
 		}
@@ -1032,7 +1203,6 @@ func validateCooperativeCloseSnapshot(snapshot Snapshot) error {
 			snapshot.HubCloseSigned ||
 			snapshot.ClientCloseFinalized ||
 			snapshot.HubCloseFinalized {
-
 			return fmt.Errorf("phase %s has cooperative "+
 				"close facts", snapshot.Phase)
 		}

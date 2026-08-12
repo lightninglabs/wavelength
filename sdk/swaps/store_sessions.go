@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -351,6 +352,16 @@ func receiveSummaryFromRow(row swapsqlc.ReceiveSwap) (SwapSummary, error) {
 	if err != nil {
 		return SwapSummary{}, err
 	}
+	if row.ChannelBackingFeeSat < 0 {
+		return SwapSummary{}, fmt.Errorf("negative channel backing fee")
+	}
+	if len(row.ReservedScid) != 0 && len(row.ReservedScid) != 8 {
+		return SwapSummary{}, fmt.Errorf("invalid reserved channel " +
+			"SCID")
+	}
+	if len(row.ChannelID) != 0 && len(row.ChannelID) != 32 {
+		return SwapSummary{}, fmt.Errorf("invalid receive channel ID")
+	}
 
 	paymentHash, err := hashFromBytes(row.PaymentHash)
 	if err != nil {
@@ -370,17 +381,22 @@ func receiveSummaryFromRow(row swapsqlc.ReceiveSwap) (SwapSummary, error) {
 	}
 
 	return SwapSummary{
-		Direction:          SwapDirectionReceive,
-		PaymentHash:        paymentHash,
-		Invoice:            row.Invoice,
-		State:              state.String(),
-		Pending:            !state.IsTerminal(),
-		AmountSat:          row.AmountSat,
-		PayerFeeMsat:       uint64(row.PayerFeeMsat),
-		VHTLCOutpoint:      row.VhtlcOutpoint,
-		VHTLCAmountSat:     row.VhtlcAmount,
-		ClaimSessionID:     row.ClaimSessionID,
-		SettlementType:     SettlementType(row.SettlementType),
+		Direction:      SwapDirectionReceive,
+		PaymentHash:    paymentHash,
+		Invoice:        row.Invoice,
+		State:          state.String(),
+		Pending:        !state.IsTerminal(),
+		AmountSat:      row.AmountSat,
+		PayerFeeMsat:   uint64(row.PayerFeeMsat),
+		VHTLCOutpoint:  row.VhtlcOutpoint,
+		VHTLCAmountSat: row.VhtlcAmount,
+		ClaimSessionID: row.ClaimSessionID,
+		SettlementType: SettlementType(row.SettlementType),
+		ChannelID:      receiveChannelID(row.ChannelID),
+		ReservedSCID:   decodeReceiveSCID(row.ReservedScid),
+		ChannelBackingFeeSat: uint64(
+			row.ChannelBackingFeeSat,
+		),
 		RequestedAmountSat: requestedAmountSat,
 		AvailableCreditSat: uint64(row.AvailableCreditSat),
 		AttachedCreditSat:  uint64(row.AttachedCreditSat),
@@ -515,6 +531,9 @@ func (s *ReceiveSession) persist(ctx context.Context) error {
 		AvailableCreditSat:   int64(s.availableCreditSat),
 		AttachedCreditSat:    int64(s.attachedCreditSat),
 		DustLimitSat:         int64(s.dustLimitSat),
+		ReservedScid:         encodeReceiveSCID(s.reservedSCID),
+		ChannelBackingFeeSat: int64(s.channelBackingFee),
+		ChannelID:            append([]byte(nil), s.channelID[:]...),
 		CreatedAtUnix:        s.createdAt.Unix(),
 		UpdatedAtUnix:        now,
 	}
@@ -712,6 +731,15 @@ func receiveSessionFromRow(c *SwapClient,
 	if err != nil {
 		return nil, err
 	}
+	if row.ChannelBackingFeeSat < 0 {
+		return nil, fmt.Errorf("negative channel backing fee")
+	}
+	if len(row.ReservedScid) != 0 && len(row.ReservedScid) != 8 {
+		return nil, fmt.Errorf("invalid reserved channel SCID")
+	}
+	if len(row.ChannelID) != 0 && len(row.ChannelID) != 32 {
+		return nil, fmt.Errorf("invalid receive channel ID")
+	}
 
 	clientKey, err := btcec.ParsePubKey(row.ClientPubkey)
 	if err != nil {
@@ -821,9 +849,14 @@ func receiveSessionFromRow(c *SwapClient,
 		operatorPubKey:     operatorKey,
 		swapServerPubKey:   swapServerKey,
 		settlementType:     SettlementType(row.SettlementType),
-		paymentAddr:        paymentAddr,
-		createdAt:          time.Unix(row.CreatedAtUnix, 0),
-		updatedAt:          time.Unix(row.UpdatedAtUnix, 0),
+		reservedSCID:       decodeReceiveSCID(row.ReservedScid),
+		channelBackingFee: btcutil.Amount(
+			row.ChannelBackingFeeSat,
+		),
+		channelID:   receiveChannelID(row.ChannelID),
+		paymentAddr: paymentAddr,
+		createdAt:   time.Unix(row.CreatedAtUnix, 0),
+		updatedAt:   time.Unix(row.UpdatedAtUnix, 0),
 	}, nil
 }
 
@@ -833,7 +866,35 @@ func receiveExpectedVHTLCSat(row swapsqlc.ReceiveSwap) uint64 {
 		requestedAmountSat = uint64(row.AmountSat)
 	}
 
-	return requestedAmountSat + uint64(row.AttachedCreditSat)
+	return requestedAmountSat + uint64(row.AttachedCreditSat) +
+		uint64(row.ChannelBackingFeeSat)
+}
+
+func encodeReceiveSCID(scid uint64) []byte {
+	if scid == 0 {
+		return []byte{}
+	}
+	encoded := make([]byte, 8)
+	binary.BigEndian.PutUint64(encoded, scid)
+
+	return encoded
+}
+
+func decodeReceiveSCID(encoded []byte) uint64 {
+	if len(encoded) != 8 {
+		return 0
+	}
+
+	return binary.BigEndian.Uint64(encoded)
+}
+
+func receiveChannelID(encoded []byte) [32]byte {
+	var id [32]byte
+	if len(encoded) == len(id) {
+		copy(id[:], encoded)
+	}
+
+	return id
 }
 
 // paySessionFromRow reconstructs one pay session from its persisted SQL row.

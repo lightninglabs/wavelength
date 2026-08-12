@@ -129,10 +129,16 @@ type ConnectorConfig struct {
 	// providing Send, Pull, and AckUpTo operations.
 	Edge mailboxpb.MailboxServiceClient
 
-	// LocalMailboxID is this client's mailbox identifier. Inbound
-	// envelopes are pulled from this mailbox, and it is set as the
-	// sender on outbound envelopes.
+	// LocalMailboxID is this client's authenticated mailbox identity. It is
+	// set as the sender on outbound envelopes and is also the default reply
+	// mailbox when ReplyMailboxID is empty.
 	LocalMailboxID string
+
+	// ReplyMailboxID optionally isolates this connector's inbound traffic
+	// from other connectors using the same authenticated identity. Replies
+	// name this mailbox, and ingress pulls and acknowledges it. Empty uses
+	// LocalMailboxID for backward compatibility.
+	ReplyMailboxID string
 
 	// RemoteMailboxID is the remote server's mailbox identifier. Outbound
 	// envelopes are addressed to this mailbox.
@@ -390,6 +396,15 @@ func (c *ConnectorConfig) mergeAuthHeaders(
 	}
 
 	return merged
+}
+
+// replyMailboxID returns the mailbox dedicated to replies and ingress.
+func (c *ConnectorConfig) replyMailboxID() string {
+	if c.ReplyMailboxID != "" {
+		return c.ReplyMailboxID
+	}
+
+	return c.LocalMailboxID
 }
 
 // DefaultEgressWorkers is the default size of the egress worker pool. It is

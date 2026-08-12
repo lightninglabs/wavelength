@@ -24,6 +24,16 @@ func NewArkChannelServiceMailboxClient(c rpc.RPCClient) *ArkChannelServiceMailbo
 
 // ArkChannelServiceMailboxServer is the mailbox server interface for ArkChannelService.
 type ArkChannelServiceMailboxServer interface {
+	// PromoteVTXO handles PromoteVTXO.
+	PromoteVTXO(ctx context.Context, req *PromoteVTXORequest) (*PromoteVTXOResponse, error)
+	// SendPayment handles SendPayment.
+	SendPayment(ctx context.Context, req *ChannelPaymentRequest) (*ChannelPaymentResponse, error)
+	// ReceivePayment handles ReceivePayment.
+	ReceivePayment(ctx context.Context, req *ChannelPaymentRequest) (*ChannelPaymentResponse, error)
+	// PayLightningInvoice handles PayLightningInvoice.
+	PayLightningInvoice(ctx context.Context, req *PayLightningInvoiceRequest) (*PayLightningInvoiceResponse, error)
+	// MaterializeAndForceClose handles MaterializeAndForceClose.
+	MaterializeAndForceClose(ctx context.Context, req *MaterializeAndForceCloseRequest) (*MaterializeAndForceCloseResponse, error)
 	// RequestCooperativeClose handles RequestCooperativeClose.
 	RequestCooperativeClose(ctx context.Context, req *RequestCooperativeCloseRequest) (*RequestCooperativeCloseResponse, error)
 	// GetChannel handles GetChannel.
@@ -32,6 +42,56 @@ type ArkChannelServiceMailboxServer interface {
 
 // RegisterArkChannelServiceMailboxServer registers handlers for ArkChannelService.
 func RegisterArkChannelServiceMailboxServer(r rpc.Router, impl ArkChannelServiceMailboxServer) {
+	r.Handle("arkchannelrpc.ArkChannelService", "PromoteVTXO", func() proto.Message {
+		return &PromoteVTXORequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*PromoteVTXORequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.PromoteVTXO(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelService", "SendPayment", func() proto.Message {
+		return &ChannelPaymentRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ChannelPaymentRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SendPayment(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelService", "ReceivePayment", func() proto.Message {
+		return &ChannelPaymentRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ChannelPaymentRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ReceivePayment(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelService", "PayLightningInvoice", func() proto.Message {
+		return &PayLightningInvoiceRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*PayLightningInvoiceRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.PayLightningInvoice(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelService", "MaterializeAndForceClose", func() proto.Message {
+		return &MaterializeAndForceCloseRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*MaterializeAndForceCloseRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.MaterializeAndForceClose(ctx, req)
+	})
 	r.Handle("arkchannelrpc.ArkChannelService", "RequestCooperativeClose", func() proto.Message {
 		return &RequestCooperativeCloseRequest{}
 	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
@@ -52,6 +112,121 @@ func RegisterArkChannelServiceMailboxServer(r rpc.Router, impl ArkChannelService
 
 		return impl.GetChannel(ctx, req)
 	})
+}
+
+// PromoteVTXO calls the PromoteVTXO RPC.
+func (c *ArkChannelServiceMailboxClient) PromoteVTXO(ctx context.Context, req *PromoteVTXORequest, opts ...rpc.RPCOptions) (*PromoteVTXOResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelService",
+		Method:  "PromoteVTXO",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(PromoteVTXOResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SendPayment calls the SendPayment RPC.
+func (c *ArkChannelServiceMailboxClient) SendPayment(ctx context.Context, req *ChannelPaymentRequest, opts ...rpc.RPCOptions) (*ChannelPaymentResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelService",
+		Method:  "SendPayment",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ChannelPaymentResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ReceivePayment calls the ReceivePayment RPC.
+func (c *ArkChannelServiceMailboxClient) ReceivePayment(ctx context.Context, req *ChannelPaymentRequest, opts ...rpc.RPCOptions) (*ChannelPaymentResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelService",
+		Method:  "ReceivePayment",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ChannelPaymentResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// PayLightningInvoice calls the PayLightningInvoice RPC.
+func (c *ArkChannelServiceMailboxClient) PayLightningInvoice(ctx context.Context, req *PayLightningInvoiceRequest, opts ...rpc.RPCOptions) (*PayLightningInvoiceResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelService",
+		Method:  "PayLightningInvoice",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(PayLightningInvoiceResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// MaterializeAndForceClose calls the MaterializeAndForceClose RPC.
+func (c *ArkChannelServiceMailboxClient) MaterializeAndForceClose(ctx context.Context, req *MaterializeAndForceCloseRequest, opts ...rpc.RPCOptions) (*MaterializeAndForceCloseResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelService",
+		Method:  "MaterializeAndForceClose",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(MaterializeAndForceCloseResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
 }
 
 // RequestCooperativeClose calls the RequestCooperativeClose RPC.
@@ -289,6 +464,517 @@ func (c *ArkChannelPeerServiceMailboxClient) AbortCooperativeClose(ctx context.C
 	}
 
 	resp := new(AbortCooperativeCloseResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ArkChannelFundingPeerServiceMailboxClient is a typed mailbox RPC client for ArkChannelFundingPeerService.
+type ArkChannelFundingPeerServiceMailboxClient struct {
+	// C is the underlying RPC-over-mailbox runtime client.
+	C rpc.RPCClient
+}
+
+// NewArkChannelFundingPeerServiceMailboxClient creates a typed mailbox client.
+func NewArkChannelFundingPeerServiceMailboxClient(c rpc.RPCClient) *ArkChannelFundingPeerServiceMailboxClient {
+	return &ArkChannelFundingPeerServiceMailboxClient{
+		C: c,
+	}
+}
+
+// ArkChannelFundingPeerServiceMailboxServer is the mailbox server interface for ArkChannelFundingPeerService.
+type ArkChannelFundingPeerServiceMailboxServer interface {
+	// GetPeerInfo handles GetPeerInfo.
+	GetPeerInfo(ctx context.Context, req *GetPeerInfoRequest) (*GetPeerInfoResponse, error)
+	// RegisterPromotion handles RegisterPromotion.
+	RegisterPromotion(ctx context.Context, req *RegisterPromotionRequest) (*RegisterPromotionResponse, error)
+	// BindPreparedOOR handles BindPreparedOOR.
+	BindPreparedOOR(ctx context.Context, req *BindPreparedOORRequest) (*BindPreparedOORResponse, error)
+	// SignBacking handles SignBacking.
+	SignBacking(ctx context.Context, req *SignBackingRequest) (*SignBackingResponse, error)
+	// InstallBacking handles InstallBacking.
+	InstallBacking(ctx context.Context, req *InstallBackingRequest) (*InstallBackingResponse, error)
+	// InstallRecoveryPackage handles InstallRecoveryPackage.
+	InstallRecoveryPackage(ctx context.Context, req *InstallRecoveryPackageRequest) (*InstallRecoveryPackageResponse, error)
+	// FundingFinalized handles FundingFinalized.
+	FundingFinalized(ctx context.Context, req *FundingStatusRequest) (*FundingStatusResponse, error)
+	// ChannelActive handles ChannelActive.
+	ChannelActive(ctx context.Context, req *FundingStatusRequest) (*FundingStatusResponse, error)
+	// ApplyChannelEvent handles ApplyChannelEvent.
+	ApplyChannelEvent(ctx context.Context, req *ApplyChannelEventRequest) (*ApplyChannelEventResponse, error)
+	// CreateInvoice handles CreateInvoice.
+	CreateInvoice(ctx context.Context, req *PeerInvoiceRequest) (*PeerInvoiceResponse, error)
+	// PayInvoice handles PayInvoice.
+	PayInvoice(ctx context.Context, req *PeerPayInvoiceRequest) (*PeerPayInvoiceResponse, error)
+	// PrepareOutgoingPayment handles PrepareOutgoingPayment.
+	PrepareOutgoingPayment(ctx context.Context, req *PrepareOutgoingPaymentRequest) (*PrepareOutgoingPaymentResponse, error)
+	// CancelOutgoingPayment handles CancelOutgoingPayment.
+	CancelOutgoingPayment(ctx context.Context, req *CancelOutgoingPaymentRequest) (*CancelOutgoingPaymentResponse, error)
+	// RegisterIncomingPayment handles RegisterIncomingPayment.
+	RegisterIncomingPayment(ctx context.Context, req *RegisterIncomingPaymentRequest) (*RegisterIncomingPaymentResponse, error)
+}
+
+// RegisterArkChannelFundingPeerServiceMailboxServer registers handlers for ArkChannelFundingPeerService.
+func RegisterArkChannelFundingPeerServiceMailboxServer(r rpc.Router, impl ArkChannelFundingPeerServiceMailboxServer) {
+	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "GetPeerInfo", func() proto.Message {
+		return &GetPeerInfoRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetPeerInfoRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetPeerInfo(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "RegisterPromotion", func() proto.Message {
+		return &RegisterPromotionRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*RegisterPromotionRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.RegisterPromotion(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "BindPreparedOOR", func() proto.Message {
+		return &BindPreparedOORRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*BindPreparedOORRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.BindPreparedOOR(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "SignBacking", func() proto.Message {
+		return &SignBackingRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SignBackingRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SignBacking(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "InstallBacking", func() proto.Message {
+		return &InstallBackingRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*InstallBackingRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.InstallBacking(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "InstallRecoveryPackage", func() proto.Message {
+		return &InstallRecoveryPackageRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*InstallRecoveryPackageRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.InstallRecoveryPackage(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "FundingFinalized", func() proto.Message {
+		return &FundingStatusRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*FundingStatusRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.FundingFinalized(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "ChannelActive", func() proto.Message {
+		return &FundingStatusRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*FundingStatusRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ChannelActive(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "ApplyChannelEvent", func() proto.Message {
+		return &ApplyChannelEventRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ApplyChannelEventRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ApplyChannelEvent(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "CreateInvoice", func() proto.Message {
+		return &PeerInvoiceRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*PeerInvoiceRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.CreateInvoice(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "PayInvoice", func() proto.Message {
+		return &PeerPayInvoiceRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*PeerPayInvoiceRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.PayInvoice(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "PrepareOutgoingPayment", func() proto.Message {
+		return &PrepareOutgoingPaymentRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*PrepareOutgoingPaymentRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.PrepareOutgoingPayment(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "CancelOutgoingPayment", func() proto.Message {
+		return &CancelOutgoingPaymentRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*CancelOutgoingPaymentRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.CancelOutgoingPayment(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "RegisterIncomingPayment", func() proto.Message {
+		return &RegisterIncomingPaymentRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*RegisterIncomingPaymentRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.RegisterIncomingPayment(ctx, req)
+	})
+}
+
+// GetPeerInfo calls the GetPeerInfo RPC.
+func (c *ArkChannelFundingPeerServiceMailboxClient) GetPeerInfo(ctx context.Context, req *GetPeerInfoRequest, opts ...rpc.RPCOptions) (*GetPeerInfoResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelFundingPeerService",
+		Method:  "GetPeerInfo",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetPeerInfoResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// RegisterPromotion calls the RegisterPromotion RPC.
+func (c *ArkChannelFundingPeerServiceMailboxClient) RegisterPromotion(ctx context.Context, req *RegisterPromotionRequest, opts ...rpc.RPCOptions) (*RegisterPromotionResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelFundingPeerService",
+		Method:  "RegisterPromotion",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(RegisterPromotionResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// BindPreparedOOR calls the BindPreparedOOR RPC.
+func (c *ArkChannelFundingPeerServiceMailboxClient) BindPreparedOOR(ctx context.Context, req *BindPreparedOORRequest, opts ...rpc.RPCOptions) (*BindPreparedOORResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelFundingPeerService",
+		Method:  "BindPreparedOOR",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(BindPreparedOORResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SignBacking calls the SignBacking RPC.
+func (c *ArkChannelFundingPeerServiceMailboxClient) SignBacking(ctx context.Context, req *SignBackingRequest, opts ...rpc.RPCOptions) (*SignBackingResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelFundingPeerService",
+		Method:  "SignBacking",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SignBackingResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// InstallBacking calls the InstallBacking RPC.
+func (c *ArkChannelFundingPeerServiceMailboxClient) InstallBacking(ctx context.Context, req *InstallBackingRequest, opts ...rpc.RPCOptions) (*InstallBackingResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelFundingPeerService",
+		Method:  "InstallBacking",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(InstallBackingResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// InstallRecoveryPackage calls the InstallRecoveryPackage RPC.
+func (c *ArkChannelFundingPeerServiceMailboxClient) InstallRecoveryPackage(ctx context.Context, req *InstallRecoveryPackageRequest, opts ...rpc.RPCOptions) (*InstallRecoveryPackageResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelFundingPeerService",
+		Method:  "InstallRecoveryPackage",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(InstallRecoveryPackageResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// FundingFinalized calls the FundingFinalized RPC.
+func (c *ArkChannelFundingPeerServiceMailboxClient) FundingFinalized(ctx context.Context, req *FundingStatusRequest, opts ...rpc.RPCOptions) (*FundingStatusResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelFundingPeerService",
+		Method:  "FundingFinalized",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(FundingStatusResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ChannelActive calls the ChannelActive RPC.
+func (c *ArkChannelFundingPeerServiceMailboxClient) ChannelActive(ctx context.Context, req *FundingStatusRequest, opts ...rpc.RPCOptions) (*FundingStatusResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelFundingPeerService",
+		Method:  "ChannelActive",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(FundingStatusResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ApplyChannelEvent calls the ApplyChannelEvent RPC.
+func (c *ArkChannelFundingPeerServiceMailboxClient) ApplyChannelEvent(ctx context.Context, req *ApplyChannelEventRequest, opts ...rpc.RPCOptions) (*ApplyChannelEventResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelFundingPeerService",
+		Method:  "ApplyChannelEvent",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ApplyChannelEventResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// CreateInvoice calls the CreateInvoice RPC.
+func (c *ArkChannelFundingPeerServiceMailboxClient) CreateInvoice(ctx context.Context, req *PeerInvoiceRequest, opts ...rpc.RPCOptions) (*PeerInvoiceResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelFundingPeerService",
+		Method:  "CreateInvoice",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(PeerInvoiceResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// PayInvoice calls the PayInvoice RPC.
+func (c *ArkChannelFundingPeerServiceMailboxClient) PayInvoice(ctx context.Context, req *PeerPayInvoiceRequest, opts ...rpc.RPCOptions) (*PeerPayInvoiceResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelFundingPeerService",
+		Method:  "PayInvoice",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(PeerPayInvoiceResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// PrepareOutgoingPayment calls the PrepareOutgoingPayment RPC.
+func (c *ArkChannelFundingPeerServiceMailboxClient) PrepareOutgoingPayment(ctx context.Context, req *PrepareOutgoingPaymentRequest, opts ...rpc.RPCOptions) (*PrepareOutgoingPaymentResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelFundingPeerService",
+		Method:  "PrepareOutgoingPayment",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(PrepareOutgoingPaymentResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// CancelOutgoingPayment calls the CancelOutgoingPayment RPC.
+func (c *ArkChannelFundingPeerServiceMailboxClient) CancelOutgoingPayment(ctx context.Context, req *CancelOutgoingPaymentRequest, opts ...rpc.RPCOptions) (*CancelOutgoingPaymentResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelFundingPeerService",
+		Method:  "CancelOutgoingPayment",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(CancelOutgoingPaymentResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// RegisterIncomingPayment calls the RegisterIncomingPayment RPC.
+func (c *ArkChannelFundingPeerServiceMailboxClient) RegisterIncomingPayment(ctx context.Context, req *RegisterIncomingPaymentRequest, opts ...rpc.RPCOptions) (*RegisterIncomingPaymentResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelFundingPeerService",
+		Method:  "RegisterIncomingPayment",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(RegisterIncomingPaymentResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

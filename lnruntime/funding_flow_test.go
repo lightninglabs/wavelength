@@ -68,6 +68,26 @@ type fundingNegotiationSink struct {
 	record arkchannel.Record
 }
 
+// noOpChannelRecoveryManager satisfies composition in lnd-focused tests. The
+// durable recovery archive and activation barrier are exercised separately.
+type noOpChannelRecoveryManager struct{}
+
+// ExportRecoveryPackage returns an unused package in these funding tests.
+func (*noOpChannelRecoveryManager) ExportRecoveryPackage(context.Context,
+	arkchannel.ID, arkchannel.Terms, arkchannel.VTXOBinding) (
+	arkchannel.RecoveryPackage, error) {
+
+	return arkchannel.RecoveryPackage{}, nil
+}
+
+// InstallRecoveryPackage accepts the unused package in these funding tests.
+func (*noOpChannelRecoveryManager) InstallRecoveryPackage(context.Context,
+	arkchannel.ID, arkchannel.Terms, arkchannel.VTXOBinding,
+	arkchannel.RecoveryPackage) error {
+
+	return nil
+}
+
 // activeFundingFlow is one fully activated unpublished channel and the two
 // endpoint snapshots that authorized it.
 type activeFundingFlow struct {
@@ -172,7 +192,7 @@ func exactCooperativeCloseDeliveryValidator(
 	expected []byte) CooperativeCloseDeliveryValidator {
 
 	return CooperativeCloseDeliveryValidatorFunc(func(_ context.Context,
-		script []byte) error {
+		_ arkchannel.ID, script []byte) error {
 
 		if !bytes.Equal(script, expected) {
 			return fmt.Errorf("payout script is not wallet owned")
@@ -184,7 +204,8 @@ func exactCooperativeCloseDeliveryValidator(
 
 // SettleCooperativeClose records the direct spend and waits for confirmation.
 func (p *blockingCooperativeClosePublisher) SettleCooperativeClose(
-	ctx context.Context, _ arkchannel.ID, source arkchannel.VTXOBinding,
+	ctx context.Context, _ arkchannel.ID, _ arkchannel.Terms,
+	source arkchannel.VTXOBinding,
 	settlement arkchannel.CooperativeClose) error {
 
 	tx := wire.NewMsgTx(2)
@@ -239,6 +260,7 @@ func (s *fundingNegotiationSink) Apply(_ context.Context, id arkchannel.ID,
 			snapshot.Terms.Funder == s.party {
 
 			snapshot.OORFinalized = true
+			snapshot.RecoveryReady = true
 			if err := s.node.runtime.Funding().ConfirmBacking(
 				snapshot.Backing.ChannelPoint.Hash,
 			); err != nil {
@@ -252,6 +274,7 @@ func (s *fundingNegotiationSink) Apply(_ context.Context, id arkchannel.ID,
 				"OOR session")
 		}
 		snapshot.OORFinalized = true
+		snapshot.RecoveryReady = true
 		if err := s.node.runtime.Funding().ConfirmBacking(
 			snapshot.Backing.ChannelPoint.Hash,
 		); err != nil {
@@ -274,13 +297,73 @@ func (s *fundingNegotiationSink) Apply(_ context.Context, id arkchannel.ID,
 // of the application transport used between Wavelength and swapdk-server.
 type fundingFlowTransport struct {
 	remote *fundingFlowNode
+	queue  chan []lnwire.Message
+	quit   chan struct{}
+	wg     sync.WaitGroup
+	stop   sync.Once
 }
 
-// SendMessages dispatches funding messages to funding.Manager and commitment
-// updates to the native channel link.
+// newFundingFlowTransport starts a FIFO delivery loop that models the
+// production mailbox boundary: durable admission completes before the remote
+// lnd subsystem handles the message.
+func newFundingFlowTransport(remote *fundingFlowNode) *fundingFlowTransport {
+	transport := &fundingFlowTransport{
+		remote: remote,
+		queue:  make(chan []lnwire.Message, 100),
+		quit:   make(chan struct{}),
+	}
+	transport.wg.Add(1)
+	go transport.deliver()
+
+	return transport
+}
+
+// SendMessages admits one ordered message batch without synchronously calling
+// into the remote lnd runtime.
 func (t *fundingFlowTransport) SendMessages(_ bool,
 	messages ...lnwire.Message) error {
 
+	batch := append([]lnwire.Message(nil), messages...)
+	select {
+	case t.queue <- batch:
+		return nil
+
+	case <-t.quit:
+		return fmt.Errorf("funding flow transport stopped")
+	}
+}
+
+// Stop terminates the delivery loop.
+func (t *fundingFlowTransport) Stop() {
+	t.stop.Do(func() {
+		close(t.quit)
+		t.wg.Wait()
+	})
+}
+
+// deliver handles admitted batches in FIFO order on the remote side.
+func (t *fundingFlowTransport) deliver() {
+	defer t.wg.Done()
+
+	for {
+		select {
+		case messages := <-t.queue:
+			if err := t.dispatch(messages...); err != nil {
+				select {
+				case t.remote.failures <- err:
+				case <-t.quit:
+				}
+			}
+
+		case <-t.quit:
+			return
+		}
+	}
+}
+
+// dispatch routes funding messages to funding.Manager and commitment updates
+// to the native channel link.
+func (t *fundingFlowTransport) dispatch(messages ...lnwire.Message) error {
 	for _, message := range messages {
 		switch message := message.(type) {
 		case *lnwire.OpenChannel, *lnwire.AcceptChannel,
@@ -417,15 +500,6 @@ func TestNativeFundingFlowPaysBothDirections(t *testing.T) {
 	const returnAmount = lnwire.MilliSatoshi(10_000_000)
 	payRuntimeInvoice(
 		t, bob, alice, returnAmount, lntypes.Preimage{7, 8, 9},
-	)
-
-	forceClose, err := alice.runtime.PrepareForceClose(
-		aliceChannel.FundingOutpoint,
-	)
-	require.NoError(t, err)
-	require.Equal(
-		t, aliceChannel.FundingOutpoint,
-		forceClose.CloseTx.TxIn[0].PreviousOutPoint,
 	)
 
 	closeTx := cooperativelyCloseFundingFlowChannel(
@@ -565,7 +639,7 @@ func TestNativeFundingFlowDirectCooperativeClose(t *testing.T) {
 		confirm:   make(chan struct{}),
 	}
 	hubClose, err := NewHubCooperativeCloseProcess(
-		hubEndpoint, operatorSigner, publisher,
+		hubEndpoint, operatorSigner,
 		&stableCooperativeCloseDelivery{
 			script: request.HubDeliveryScript,
 		},
@@ -599,7 +673,7 @@ func TestNativeFundingFlowDirectCooperativeClose(t *testing.T) {
 		script: request.ClientDeliveryScript,
 	}
 	clientClose, err := NewClientCooperativeCloseProcess(
-		clientEndpoint, lossyPeer, clientDelivery,
+		clientEndpoint, lossyPeer, publisher, clientDelivery,
 	)
 	require.NoError(t, err)
 	clientService, err := arkchannel.NewService(
@@ -767,6 +841,26 @@ func TestNativeFundingFlowDirectCooperativeClose(t *testing.T) {
 // opens a client-funded channel with all initial liquidity on the client side.
 func TestNativeFundingFlowPromotesClientVTXO(t *testing.T) {
 	t.Parallel()
+	testNativeFundingFlowPromotesClientVTXO(
+		t, arkchannel.KindPromotion, testFundingCapacity, [32]byte{},
+	)
+}
+
+// TestNativeFundingFlowPromotesReceiveClaim proves a preimage-claimed vHTLC
+// can fund the smaller client-side channel used by the receive fallback.
+func TestNativeFundingFlowPromotesReceiveClaim(t *testing.T) {
+	t.Parallel()
+	testNativeFundingFlowPromotesClientVTXO(
+		t, arkchannel.KindReceiveClaim, 50_000, [32]byte{9},
+	)
+}
+
+// testNativeFundingFlowPromotesClientVTXO exercises client-funded promotion
+// for either an ordinary wallet VTXO or a claimed receive-side vHTLC.
+func testNativeFundingFlowPromotesClientVTXO(t *testing.T, kind arkchannel.Kind,
+	capacity btcutil.Amount, paymentHash [32]byte) {
+
+	t.Helper()
 
 	hub := newFundingFlowNode(t, arkchannel.PartyHub)
 	client := newFundingFlowNode(t, arkchannel.PartyClient)
@@ -780,11 +874,12 @@ func TestNativeFundingFlowPromotesClientVTXO(t *testing.T) {
 
 	pendingID := lndfunding.PendingChanID{7, 2, 0, 4}
 	record := fundingIntentRecord(t, hub, client, pendingID)
-	record.Snapshot.Terms.Kind = arkchannel.KindPromotion
+	record.Snapshot.Terms.Kind = kind
 	record.Snapshot.Terms.Funder = arkchannel.PartyClient
-	record.Snapshot.Terms.PaymentHash = [32]byte{}
+	record.Snapshot.Terms.Capacity = capacity
+	record.Snapshot.Terms.PaymentHash = paymentHash
 	record.Snapshot.Source = testIntentBinding(
-		t, record.Snapshot.Terms, testFundingCapacity+1_000, 1,
+		t, record.Snapshot.Terms, capacity+1_000, 1,
 	)
 	hub.intents.record = record
 	client.intents.record = record
@@ -819,6 +914,7 @@ func TestNativeFundingFlowPromotesClientVTXO(t *testing.T) {
 	require.NoError(t, clientEndpoint.BindChannelEventSink(clientSink))
 	negotiator, err := NewChannelNegotiator(
 		clientEndpoint, hubEndpoint, client.peer,
+		&noOpChannelRecoveryManager{},
 	)
 	require.NoError(t, err)
 	require.NoError(
@@ -885,6 +981,7 @@ func activateFundingFlowChannel(t *testing.T, hub, client *fundingFlowNode,
 	}
 	negotiator, err := NewChannelNegotiator(
 		initiator, responder, initiatorPeer,
+		&noOpChannelRecoveryManager{},
 	)
 	require.NoError(t, err)
 	require.NoError(
@@ -1173,10 +1270,13 @@ func connectFundingFlowNodes(t *testing.T, alice, bob *fundingFlowNode) {
 func newFundingFlowPeer(t *testing.T, local, remote *fundingFlowNode) *Peer {
 	t.Helper()
 
+	transport := newFundingFlowTransport(remote)
+	t.Cleanup(transport.Stop)
+
 	var peer *Peer
 	peer, err := NewPeer(PeerConfig{
 		RemoteKey: remote.key.PubKey(),
-		Transport: &fundingFlowTransport{remote: remote},
+		Transport: transport,
 		AddChannel: func(channel *lnpeer.NewChannel,
 			_ <-chan struct{}) error {
 

@@ -77,8 +77,17 @@ func TestOORChannelLifecycle(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
+	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
+	require.IsType(t, &PrepareRecovery{}, requireOneAction(t, actions))
+	require.False(t, record.Snapshot.RecoveryReady)
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &RecoveryPackageInstalled{},
+	)
+	require.NoError(t, err)
 	require.Equal(t, PhaseActivating, record.Snapshot.Phase)
 	require.IsType(t, &ActivateChannel{}, requireOneAction(t, actions))
+	require.True(t, record.Snapshot.RecoveryReady)
 
 	_, resumed, err := coordinator.Resume(t.Context(), terms.ID)
 	require.NoError(t, err)
@@ -115,6 +124,243 @@ func TestOORChannelLifecycle(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, PhaseClosed, record.Snapshot.Phase)
+}
+
+// TestSourceConflictDrivesForceClose proves confirmed ancestry evidence is a
+// durable trigger for backing publication followed by native lnd force close.
+func TestSourceConflictDrivesForceClose(t *testing.T) {
+	t.Parallel()
+
+	terms := testTerms(t, KindPromotion)
+	source := testBinding(terms)
+	backing := testBacking(t, terms, source)
+	coordinator := activeCooperativeChannel(t, terms, source)
+	conflict := &SourceSpent{
+		OutPoint: source.OutPoint,
+		SpendingTxID: chainhash.Hash{
+			99,
+		},
+	}
+
+	record, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, conflict,
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseMaterializing, record.Snapshot.Phase)
+	require.Equal(
+		t, conflict.OutPoint, record.Snapshot.SourceConflict.OutPoint,
+	)
+	require.Equal(
+		t, conflict.SpendingTxID,
+		record.Snapshot.SourceConflict.SpendingTxID,
+	)
+	require.IsType(t, &PublishChannel{}, requireOneAction(t, actions))
+
+	// Replaying the same confirmed fact must also replay an action whose
+	// prior execution could have failed after the transition was stored.
+	_, actions, err = coordinator.Apply(t.Context(), terms.ID, conflict)
+	require.NoError(t, err)
+	require.IsType(t, &PublishChannel{}, requireOneAction(t, actions))
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &BackingPublished{
+			TxID: backing.ChannelPoint.Hash,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseOnChain, record.Snapshot.Phase)
+	require.True(t, record.Snapshot.BackingPublished)
+	require.IsType(t, &ForceCloseChannel{}, requireOneAction(t, actions))
+
+	_, actions, err = coordinator.Apply(t.Context(), terms.ID, conflict)
+	require.NoError(t, err)
+	require.IsType(t, &ForceCloseChannel{}, requireOneAction(t, actions))
+}
+
+// TestSourceConflictDuringActivationFinishesActivationFirst proves a parent
+// conflict cannot strand a channel between lnd funding and materialization.
+func TestSourceConflictDuringActivationFinishesActivationFirst(t *testing.T) {
+	t.Parallel()
+
+	store := newMemoryStore()
+	coordinator, err := NewCoordinator(store)
+	require.NoError(t, err)
+	terms := testTerms(t, KindPromotion)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	source := testBinding(terms)
+	backing := testBacking(t, terms, source)
+	for _, event := range []Event{
+		&BindVTXO{
+			Binding: source,
+		},
+		&BackingSigned{
+			Backing: backing,
+		},
+		&FundingFinalized{
+			Party: PartyClient,
+		},
+		&FundingFinalized{
+			Party: PartyHub,
+		},
+		&OORFinalized{
+			SessionID: source.OORSessionID,
+		},
+		&RecoveryPackageInstalled{},
+	} {
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+
+	conflict := &SourceSpent{
+		OutPoint: source.OutPoint,
+		SpendingTxID: chainhash.Hash{
+			100,
+		},
+	}
+	record, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, conflict,
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseActivating, record.Snapshot.Phase)
+	require.IsType(t, &ActivateChannel{}, requireOneAction(t, actions))
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &ChannelActive{
+			ChannelPointHash:  backing.ChannelPoint.Hash,
+			ChannelPointIndex: backing.ChannelPoint.Index,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseMaterializing, record.Snapshot.Phase)
+	require.IsType(t, &PublishChannel{}, requireOneAction(t, actions))
+}
+
+// TestSourceConflictPublishesSignedCooperativeClose proves a fully signed
+// direct settlement takes precedence over channel-point materialization.
+func TestSourceConflictPublishesSignedCooperativeClose(t *testing.T) {
+	t.Parallel()
+
+	terms, source, request, clientKey, hubKey, operatorKey :=
+		testCooperativeCloseFixture(t, KindPromotion, 5_000)
+	coordinator := activeCooperativeChannel(t, terms, source)
+	_, _, err := coordinator.Apply(
+		t.Context(), terms.ID, &RequestCooperativeClose{
+			Request: request,
+		},
+	)
+	require.NoError(t, err)
+	template, err := NewCooperativeCloseTemplate(
+		terms, source, request, 70_000, 30_000, 5,
+	)
+	require.NoError(t, err)
+	settlement := completeTestCooperativeClose(
+		t, template, terms, source, request, clientKey, hubKey,
+		operatorKey,
+	)
+	for _, party := range []Party{PartyClient, PartyHub} {
+		_, _, err = coordinator.Apply(
+			t.Context(), terms.ID, &CooperativeCloseSigned{
+				Close: settlement,
+				Party: party,
+			},
+		)
+		require.NoError(t, err)
+	}
+
+	record, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, &SourceSpent{
+			OutPoint: source.OutPoint,
+			SpendingTxID: chainhash.Hash{
+				101,
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseCoopCloseSigned, record.Snapshot.Phase)
+	require.False(t, record.Snapshot.BackingPublished)
+	publish := requireOneAction(t, actions)
+	require.IsType(t, &PublishCooperativeClose{}, publish)
+	cooperativePublish, ok := publish.(*PublishCooperativeClose)
+	require.True(t, ok)
+	require.Equal(
+		t, settlement.TxID,
+		cooperativePublish.Close.TxID,
+	)
+}
+
+// TestSourceConflictAbandonsPartialCooperativeClose proves an unavailable peer
+// cannot strand recovery after close negotiation starts but before both
+// signatures become durable.
+func TestSourceConflictAbandonsPartialCooperativeClose(t *testing.T) {
+	t.Parallel()
+
+	terms, source, request, clientKey, hubKey, operatorKey :=
+		testCooperativeCloseFixture(t, KindPromotion, 5_000)
+	template, err := NewCooperativeCloseTemplate(
+		terms, source, request, 70_000, 30_000, 5,
+	)
+	require.NoError(t, err)
+	settlement := completeTestCooperativeClose(
+		t, template, terms, source, request, clientKey, hubKey,
+		operatorKey,
+	)
+
+	for _, test := range []struct {
+		name          string
+		partialSigner Party
+	}{
+		{
+			name: "before signatures",
+		},
+		{
+			name:          "after client signature",
+			partialSigner: PartyClient,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			coordinator := activeCooperativeChannel(
+				t, terms, source,
+			)
+			_, _, err := coordinator.Apply(
+				t.Context(), terms.ID, &RequestCooperativeClose{
+					Request: request,
+				},
+			)
+			require.NoError(t, err)
+			if test.partialSigner != 0 {
+				_, _, err = coordinator.Apply(
+					t.Context(), terms.ID,
+					&CooperativeCloseSigned{
+						Close: settlement,
+						Party: test.partialSigner,
+					},
+				)
+				require.NoError(t, err)
+			}
+
+			record, actions, err := coordinator.Apply(
+				t.Context(), terms.ID, &SourceSpent{
+					OutPoint: source.OutPoint,
+					SpendingTxID: chainhash.Hash{
+						102,
+					},
+				},
+			)
+			require.NoError(t, err)
+			require.Equal(
+				t, PhaseMaterializing, record.Snapshot.Phase,
+			)
+			require.Nil(t, record.Snapshot.CooperativeCloseRequest)
+			require.Nil(t, record.Snapshot.CooperativeClose)
+			require.False(t, record.Snapshot.ClientCloseSigned)
+			require.False(t, record.Snapshot.HubCloseSigned)
+			require.IsType(
+				t, &PublishChannel{},
+				requireOneAction(t, actions),
+			)
+		})
+	}
 }
 
 // TestCooperativeCloseLifecycle proves a signed direct VTXO settlement is a
@@ -178,8 +424,6 @@ func TestCooperativeCloseLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, actions)
 	require.Equal(t, PhaseCoopCloseSigned, record.Snapshot.Phase)
-	_, _, err = coordinator.Apply(t.Context(), terms.ID, &Materialize{})
-	require.ErrorContains(t, err, "cannot materialize")
 
 	record, actions, err = coordinator.Apply(
 		t.Context(), terms.ID, &CooperativeClosePublished{
@@ -215,6 +459,78 @@ func TestCooperativeCloseLifecycle(t *testing.T) {
 		t, backing.ChannelPoint, record.Snapshot.Backing.ChannelPoint,
 	)
 	require.False(t, record.Snapshot.BackingPublished)
+}
+
+// TestMaterializationSupersedesCooperativeNegotiation proves chain evidence
+// can move an endpoint into lnd resolution before a direct settlement is
+// confirmed. This keeps a peer from blocking force close by going offline.
+func TestMaterializationSupersedesCooperativeNegotiation(t *testing.T) {
+	t.Parallel()
+
+	terms, source, request, clientKey, hubKey, operatorKey :=
+		testCooperativeCloseFixture(t, KindPromotion, 5_000)
+	template, err := NewCooperativeCloseTemplate(
+		terms, source, request, 70_000, 30_000, 5,
+	)
+	require.NoError(t, err)
+	settlement := completeTestCooperativeClose(
+		t, template, terms, source, request, clientKey, hubKey,
+		operatorKey,
+	)
+	backing := testBacking(t, terms, source)
+
+	tests := []struct {
+		name   string
+		signed bool
+	}{
+		{
+			name: "negotiating",
+		},
+		{
+			name:   "fully signed",
+			signed: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			coordinator := activeCooperativeChannel(
+				t, terms, source,
+			)
+			_, _, err := coordinator.Apply(
+				t.Context(), terms.ID,
+				&RequestCooperativeClose{
+					Request: request,
+				},
+			)
+			require.NoError(t, err)
+			if test.signed {
+				for _, party := range []Party{
+					PartyClient,
+					PartyHub,
+				} {
+					_, _, err = coordinator.Apply(
+						t.Context(), terms.ID,
+						&CooperativeCloseSigned{
+							Close: settlement,
+							Party: party,
+						},
+					)
+					require.NoError(t, err)
+				}
+			}
+
+			record, actions, err := coordinator.Apply(
+				t.Context(), terms.ID, &BackingObserved{
+					TxID: backing.ChannelPoint.Hash,
+				},
+			)
+			require.NoError(t, err)
+			require.Equal(t, PhaseOnChain, record.Snapshot.Phase)
+			require.Nil(t, record.Snapshot.CooperativeCloseRequest)
+			require.Nil(t, record.Snapshot.CooperativeClose)
+			require.Empty(t, actions)
+		})
+	}
 }
 
 // TestCooperativeCloseAbortReturnsActive proves a failure before the signed
@@ -334,6 +650,13 @@ func TestPromotionWaitsForOORFinalization(t *testing.T) {
 		t.Context(), terms.ID, &OORFinalized{
 			SessionID: binding.OORSessionID,
 		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
+	require.IsType(t, &PrepareRecovery{}, requireOneAction(t, actions))
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &RecoveryPackageInstalled{},
 	)
 	require.NoError(t, err)
 	require.Equal(t, PhaseActivating, record.Snapshot.Phase)
@@ -712,6 +1035,7 @@ func activeCooperativeChannel(t *testing.T, terms Terms,
 		&OORFinalized{
 			SessionID: source.OORSessionID,
 		},
+		&RecoveryPackageInstalled{},
 		&ChannelActive{
 			ChannelPointHash:  backing.ChannelPoint.Hash,
 			ChannelPointIndex: backing.ChannelPoint.Index,

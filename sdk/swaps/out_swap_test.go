@@ -209,6 +209,108 @@ func TestStartReceiveDerivesReceiveAuthKeyPerPaymentHash(t *testing.T) {
 	)
 }
 
+// TestArkChannelReceiveSettlesDirectly proves invoice creation installs and
+// registers the private destination before the returned invoice can settle.
+func TestArkChannelReceiveSettlesDirectly(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	creator := &testInvoiceCreator{invoice: &invoices.Invoice{
+		PaymentRequest: []byte("lnrtest1channel"),
+	}}
+	serverConn := &testSwapServerConn{hint: &RouteHint{
+		NodeID:    serverPriv.PubKey().SerializeCompressed(),
+		ChannelID: 99, CltvExpiryDelta: 40,
+	}}
+	bridge := &testArkChannelPaymentBridge{backingFee: 1_000}
+	client := NewSwapClient(
+		serverConn, &testDaemonConn{
+			identityKey: clientPriv.PubKey(),
+			operatorKey: operatorPriv.PubKey(),
+		}, nil, creator,
+	)
+	client.SetArkChannelPaymentBridge(bridge)
+	client.SetOutSwapEventReceiver(&blockingOutSwapEventReceiver{})
+
+	session, err := client.StartReceiveViaLightning(
+		t.Context(), btcutil.Amount(42_000),
+	)
+	require.NoError(t, err)
+	require.Equal(t, session.Preimage, bridge.preparePreimage)
+	require.Equal(t, btcutil.Amount(42_000), bridge.prepareAmount)
+	require.Equal(t, session.PaymentHash, bridge.registerHash)
+	require.Equal(t, uint64(99), bridge.registerSCID)
+	require.Equal(
+		t, btcutil.Amount(1_000), serverConn.lastChannelBackingFee,
+	)
+
+	result, err := session.Wait(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, SettlementTypeArkChannel, result.SettlementType)
+	require.Equal(t, ReceiveStateCompleted, session.State())
+}
+
+// TestArkChannelReceivePromotesFallbackVHTLC proves the fallback claim is
+// handed to channel negotiation instead of an ordinary wallet output.
+func TestArkChannelReceivePromotesFallbackVHTLC(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	preimage := lntypes.Preimage{1, 2, 3}
+	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender: serverPriv.PubKey(), Receiver: clientPriv.PubKey(),
+		Server: operatorPriv.PubKey(), PreimageHash: preimage.Hash(),
+		RefundLocktime: 500, UnilateralClaimDelay: 5,
+		UnilateralRefundDelay:                6,
+		UnilateralRefundWithoutReceiverDelay: 7,
+	})
+	require.NoError(t, err)
+	policyTemplate, err := encodeVHTLCPolicyTemplate(policy)
+	require.NoError(t, err)
+	pkScript, err := policy.PkScript()
+	require.NoError(t, err)
+	channelID := [32]byte{9}
+	oorID := [32]byte{8}
+	bridge := &testArkChannelPaymentBridge{
+		backingFee: 1_000,
+		promotionResult: ArkChannelPromotionResult{
+			ChannelID: channelID, OORSessionID: oorID,
+		},
+	}
+	session := &ReceiveSession{
+		client: &SwapClient{
+			daemon: &testDaemonConn{}, channelBridge: bridge,
+		},
+		Preimage: preimage, PaymentHash: preimage.Hash(),
+		amountSat: 42_000, requestedAmountSat: 42_000,
+		state: ReceiveStateClaimInitiated, reservedSCID: 99,
+		channelBackingFee: 1_000, vhtlcPolicy: policy,
+		vhtlcPolicyTemplate: policyTemplate, vhtlcPkScript: pkScript,
+		vhtlcOutpoint: chainhash.Hash{
+			7,
+		}.String() + ":0",
+		vhtlcAmount: 43_000,
+	}
+
+	err = session.claimFundedVHTLC(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateCompleted, session.State())
+	require.Equal(t, channelID, session.channelID)
+	require.Equal(t, btcutil.Amount(42_000), bridge.promotion.Capacity)
+	require.Equal(t, uint64(99), bridge.promotion.ReservedSCID)
+	require.Equal(t, int64(43_000), bridge.promotion.Input.AmountSat)
+}
+
 // TestStartReceiveEmbedsAllRouteHintPaths verifies every alternative
 // route-hint path from the quote flows through to invoice creation when all
 // paths terminate at the same virtual channel.
@@ -992,11 +1094,73 @@ type testSwapServerConn struct {
 	lastServerAckSig    *schnorr.Signature
 
 	lastSupportsInArkCredit bool
+	lastChannelBackingFee   btcutil.Amount
 
 	submitForfeitErr         error
 	submitForfeitCalls       int
 	lastSubmitForfeitPayload *ForfeitSignaturePayload
 	lastSubmitForfeitSig     *ForfeitParticipantSignature
+}
+
+type testArkChannelPaymentBridge struct {
+	backingFee      btcutil.Amount
+	preparePreimage lntypes.Preimage
+	prepareAmount   btcutil.Amount
+	registerHash    lntypes.Hash
+	registerAmount  btcutil.Amount
+	registerSCID    uint64
+	waitErr         error
+	wait            <-chan struct{}
+	promotion       ArkChannelReceivePromotion
+	promotionResult ArkChannelPromotionResult
+	promotionErr    error
+}
+
+func (b *testArkChannelPaymentBridge) IncomingBackingFee() btcutil.Amount {
+	return b.backingFee
+}
+
+func (b *testArkChannelPaymentBridge) PrepareIncomingPayment(_ context.Context,
+	preimage lntypes.Preimage, amount btcutil.Amount) error {
+
+	b.preparePreimage = preimage
+	b.prepareAmount = amount
+
+	return nil
+}
+
+func (b *testArkChannelPaymentBridge) RegisterIncomingPayment(_ context.Context,
+	hash lntypes.Hash, amount btcutil.Amount, scid uint64) error {
+
+	b.registerHash = hash
+	b.registerAmount = amount
+	b.registerSCID = scid
+
+	return nil
+}
+
+func (b *testArkChannelPaymentBridge) WaitIncomingPayment(ctx context.Context,
+	_ lntypes.Hash) error {
+
+	if b.wait != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+
+		case <-b.wait:
+		}
+	}
+
+	return b.waitErr
+}
+
+func (b *testArkChannelPaymentBridge) PromoteIncomingVHTLC(_ context.Context,
+	promotion ArkChannelReceivePromotion) (ArkChannelPromotionResult,
+	error) {
+
+	b.promotion = promotion
+
+	return b.promotionResult, b.promotionErr
 }
 
 type testIncomingEventReceiver struct {
@@ -1062,6 +1226,27 @@ func (c *testSwapServerConn) RequestChannelID(_ context.Context,
 		ReceiveAmountSat: amountSat,
 		PayerFeeMsat:     c.payerFeeMsat,
 	}, nil
+}
+
+// RequestChannelIDForArkChannel returns a padded fallback quote.
+func (c *testSwapServerConn) RequestChannelIDForArkChannel(ctx context.Context,
+	vhtlcPubkey *btcec.PublicKey, paymentHash lntypes.Hash,
+	amountSat btcutil.Amount, expirySeconds uint32,
+	supportsInArkCredit bool, backingFeeSat btcutil.Amount) (*OutSwapQuote,
+	error) {
+
+	quote, err := c.RequestChannelID(
+		ctx, vhtlcPubkey, paymentHash, amountSat, expirySeconds,
+		supportsInArkCredit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	c.lastChannelBackingFee = backingFeeSat
+	quote.ChannelBackingFeeSat = uint64(backingFeeSat)
+	quote.VHTLCAmountSat = uint64(amountSat + backingFeeSat)
+
+	return quote, nil
 }
 
 // WaitOutSwapHtlc returns the preconfigured out-swap HTLC event.

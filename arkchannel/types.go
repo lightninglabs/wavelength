@@ -27,6 +27,10 @@ const (
 	// KindReceiveIntent moves hub liquidity into a channel-policy VTXO
 	// through an OOR transfer before resuming an incoming payment.
 	KindReceiveIntent
+
+	// KindReceiveClaim promotes a server-funded vHTLC through its client
+	// preimage path into a client-funded channel-policy VTXO.
+	KindReceiveClaim
 )
 
 // String returns the durable name of a channel kind.
@@ -37,6 +41,9 @@ func (k Kind) String() string {
 
 	case KindReceiveIntent:
 		return "receive_intent"
+
+	case KindReceiveClaim:
+		return "receive_claim"
 
 	default:
 		return "unknown"
@@ -305,6 +312,15 @@ func (t Terms) Validate() error {
 				"hash")
 		}
 
+	case KindReceiveClaim:
+		if t.Funder != PartyClient {
+			return fmt.Errorf("receive claim must be client funded")
+		}
+		if t.PaymentHash == ([32]byte{}) {
+			return fmt.Errorf("receive claim requires a payment " +
+				"hash")
+		}
+
 	default:
 		return fmt.Errorf("unknown channel kind %d", t.Kind)
 	}
@@ -451,6 +467,8 @@ type Snapshot struct {
 	HubFinalized            bool
 	OORFinalized            bool
 	OORAborted              bool
+	RecoveryReady           bool
+	SourceConflict          *SourceConflict
 	BackingPublished        bool
 	CooperativeCloseRequest *CooperativeCloseRequest
 	CooperativeClose        *CooperativeClose
@@ -472,6 +490,10 @@ func (s Snapshot) Clone() Snapshot {
 		backing := s.Backing.Clone()
 		s.Backing = &backing
 	}
+	if s.SourceConflict != nil {
+		conflict := *s.SourceConflict
+		s.SourceConflict = &conflict
+	}
 	if s.CooperativeCloseRequest != nil {
 		request := s.CooperativeCloseRequest.Clone()
 		s.CooperativeCloseRequest = &request
@@ -482,6 +504,14 @@ func (s Snapshot) Clone() Snapshot {
 	}
 
 	return s
+}
+
+// SourceConflict records the first confirmed spend of any on-path ancestor
+// watched for a channel-policy VTXO. The channel FSM retains this evidence so
+// materialization and force close resume after a process restart.
+type SourceConflict struct {
+	OutPoint     wire.OutPoint
+	SpendingTxID chainhash.Hash
 }
 
 // ReadyToCommitOOR reports whether both lnd endpoints and the signed backing

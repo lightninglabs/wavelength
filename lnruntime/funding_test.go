@@ -1,6 +1,7 @@
 package lnruntime
 
 import (
+	"bytes"
 	"sync/atomic"
 	"testing"
 
@@ -28,6 +29,19 @@ type externalWalletController struct {
 
 	starts atomic.Int32
 	stops  atomic.Int32
+}
+
+// TestEmptyNodeAnnouncementSerializes verifies the private-only funding
+// callback still returns a valid wire message without running a gossiper.
+func TestEmptyNodeAnnouncementSerializes(t *testing.T) {
+	t.Parallel()
+
+	announcement, err := emptyNodeAnnouncement()
+	require.NoError(t, err)
+	require.NotNil(t, announcement.Features)
+
+	var buf bytes.Buffer
+	require.NoError(t, announcement.Encode(&buf, 0))
 }
 
 // Start records an unexpected start by lnd.

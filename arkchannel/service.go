@@ -60,7 +60,7 @@ func (s *Service) RegisterReceiveIntent(ctx context.Context, terms Terms) (
 func (s *Service) RegisterPromotion(ctx context.Context, terms Terms) (Record,
 	error) {
 
-	if terms.Kind != KindPromotion {
+	if terms.Kind != KindPromotion && terms.Kind != KindReceiveClaim {
 		return Record{}, fmt.Errorf("promotion terms are required")
 	}
 
@@ -175,8 +175,22 @@ func (s *Service) GetChannel(ctx context.Context, id ID) (Record, error) {
 	return s.coordinator.Get(ctx, id)
 }
 
-// Materialize asks the unroller to publish ancestry before the backing.
+// ListChannels returns every non-terminal channel owned by this endpoint.
+func (s *Service) ListChannels(ctx context.Context) ([]Record, error) {
+	return s.coordinator.ListNonTerminal(ctx)
+}
+
+// Materialize enters the durable on-chain handoff and resumes that exact
+// action on retry if a prior process stopped after persisting the transition.
 func (s *Service) Materialize(ctx context.Context, id ID) (Record, error) {
+	record, err := s.coordinator.Get(ctx, id)
+	if err != nil {
+		return Record{}, err
+	}
+	if record.Snapshot.Phase == PhaseMaterializing {
+		return s.ResumeChannelAction(ctx, id)
+	}
+
 	return s.Apply(ctx, id, &Materialize{})
 }
 

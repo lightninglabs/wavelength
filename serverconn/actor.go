@@ -876,7 +876,7 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 			Kind:    mailboxpb.RpcMeta_KIND_EVENT,
 			Service: service,
 			Method:  method,
-			ReplyTo: a.cfg.LocalMailboxID,
+			ReplyTo: a.cfg.replyMailboxID(),
 		},
 	}
 
@@ -1046,7 +1046,7 @@ func (a *ServerConnectionActor) sendUnaryEnvelope(ctx context.Context,
 			Service:       service,
 			Method:        method,
 			CorrelationId: correlationID,
-			ReplyTo:       a.cfg.LocalMailboxID,
+			ReplyTo:       a.cfg.replyMailboxID(),
 		},
 	}
 

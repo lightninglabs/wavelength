@@ -13,6 +13,7 @@ import (
 	"github.com/lightninglabs/wavelength/build"
 	clientdb "github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/rpc/oorpb"
 	"github.com/lightninglabs/wavelength/serverconn"
 	"github.com/lightninglabs/wavelength/timeout"
 	"github.com/lightninglabs/wavelength/vtxo"
@@ -1426,6 +1427,18 @@ func (r *oorRegistryBehavior) routeAsk(ctx context.Context, sessionID SessionID,
 		return fn.Err[ActorResp](err)
 	}
 	if child == nil {
+		if _, ok := msg.(*GetStateRequest); ok {
+			state, found, err := r.persistedState(ctx, sessionID)
+			if err != nil {
+				return fn.Err[ActorResp](err)
+			}
+			if found {
+				return fn.Ok[ActorResp](&GetStateResponse{
+					State: state,
+				})
+			}
+		}
+
 		return fn.Err[ActorResp](
 			fmt.Errorf("unknown session: %s", sessionID),
 		)
@@ -1458,6 +1471,60 @@ func (r *oorRegistryBehavior) routeAsk(ctx context.Context, sessionID SessionID,
 	)
 
 	return fn.Ok[ActorResp](&DriveEventResponse{})
+}
+
+// persistedState reconstructs a reaped session's state from its durable
+// snapshot. Terminal actors are deliberately short-lived, but status readers
+// must remain race-free after the child exits.
+func (r *oorRegistryBehavior) persistedState(ctx context.Context,
+	sessionID SessionID) (SessionState, bool, error) {
+
+	record, err := r.cfg.RegistryStore.GetSession(
+		ctx, chainHashOf(sessionID),
+	)
+	switch {
+	case errors.Is(err, clientdb.ErrOORSessionNotFound):
+		return nil, false, nil
+
+	case err != nil:
+		return nil, false, err
+	}
+
+	if err := oorpb.ValidateFlowVersion(record.FlowVersion); err != nil {
+		return nil, false, err
+	}
+	if len(record.SnapshotData) == 0 {
+		return nil, false, fmt.Errorf("session %s has no snapshot",
+			sessionID)
+	}
+
+	switch record.Direction {
+	case clientdb.OORSessionDirectionOutgoing:
+		snapshot, err := decodeOutgoingSnapshot(record.SnapshotData)
+		if err != nil {
+			return nil, false, err
+		}
+
+		state, err := OutgoingStateFromSnapshot(snapshot)
+
+		return state, true, err
+
+	case clientdb.OORSessionDirectionIncoming:
+		snapshot, err := decodeIncomingSnapshotWithLimits(
+			record.SnapshotData, r.cfg.Limits,
+		)
+		if err != nil {
+			return nil, false, err
+		}
+
+		state, err := IncomingStateFromSnapshot(snapshot)
+
+		return state, true, err
+
+	default:
+		return nil, false, fmt.Errorf("unknown session direction: %d",
+			record.Direction)
+	}
 }
 
 // sessionIsTerminal reports whether the durable row for a session exists and

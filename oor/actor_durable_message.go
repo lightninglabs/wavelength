@@ -2495,14 +2495,12 @@ func decodeEventPayloadWithLimits(raw []byte,
 
 // decodeIncomingTransferEvent decodes the list-shaped fields carried by an
 // incoming transfer event under the configured receive limits.
-func decodeIncomingTransferEvent(arkPSBT, checkpointPSBT,
-	ancestorPayload, recipientPayload []byte,
-	limits ReceiveLimits) (Event, error) {
+func decodeIncomingTransferEvent(arkPSBT, checkpointPSBT, ancestorPayload,
+	recipientPayload []byte, limits ReceiveLimits) (Event, error) {
 
 	if len(arkPSBT) == 0 {
-		return nil, fmt.Errorf(
-			"incoming transfer event ark psbt must be provided",
-		)
+		return nil, fmt.Errorf("incoming transfer event ark psbt " +
+			"must be provided")
 	}
 
 	ark, err := psbtutil.Parse(arkPSBT)

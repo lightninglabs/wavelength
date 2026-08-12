@@ -33,7 +33,8 @@ const (
 
 // Controller starts and observes channel materialization jobs.
 type Controller struct {
-	registry actor.ActorRef[unroll.RegistryMsg, unroll.RegistryResp]
+	registry       actor.ActorRef[unroll.RegistryMsg, unroll.RegistryResp]
+	sourcePreparer SourcePreparer
 
 	pollInterval time.Duration
 
@@ -41,19 +42,30 @@ type Controller struct {
 	sink arkchannel.ChannelEventSink
 }
 
+// SourcePreparer makes the channel-policy VTXO and its finalized OOR package
+// available to the common unroller without adding it to wallet inventory.
+type SourcePreparer interface {
+	EnsureChannelSource(context.Context, arkchannel.ID, arkchannel.Terms,
+		arkchannel.VTXOBinding, unroll.ExitPolicyKind) error
+}
+
 // NewController constructs a channel materializer over the common unroll
 // registry.
 func NewController(
-	registry actor.ActorRef[unroll.RegistryMsg, unroll.RegistryResp]) (
-	*Controller, error) {
+	registry actor.ActorRef[unroll.RegistryMsg, unroll.RegistryResp],
+	sourcePreparer SourcePreparer) (*Controller, error) {
 
 	if registry == nil {
 		return nil, fmt.Errorf("unroll registry is required")
 	}
+	if sourcePreparer == nil {
+		return nil, fmt.Errorf("channel source preparer is required")
+	}
 
 	return &Controller{
-		registry:     registry,
-		pollInterval: defaultPollInterval,
+		registry:       registry,
+		sourcePreparer: sourcePreparer,
+		pollInterval:   defaultPollInterval,
 	}, nil
 }
 
@@ -78,11 +90,12 @@ func (c *Controller) BindChannelEventSink(
 // MaterializeChannel asks the ordinary VTXO unroller to publish all OOR
 // ancestry and use the already signed backing transaction as its final spend.
 func (c *Controller) MaterializeChannel(ctx context.Context, id arkchannel.ID,
-	source arkchannel.VTXOBinding, backing arkchannel.Backing) error {
+	terms arkchannel.Terms, source arkchannel.VTXOBinding,
+	backing arkchannel.Backing) error {
 
 	if err := c.publishFinalSpend(
-		ctx, id, source, ExitPolicyKind, backing.ChannelPoint.Hash,
-		false,
+		ctx, id, terms, source, ExitPolicyKind,
+		backing.ChannelPoint.Hash, false,
 	); err != nil {
 		return err
 	}
@@ -95,19 +108,26 @@ func (c *Controller) MaterializeChannel(ctx context.Context, id arkchannel.ID,
 // SettleCooperativeClose publishes the Ark ancestry and exact direct VTXO
 // settlement, waiting for confirmation before lnd archives the channel.
 func (c *Controller) SettleCooperativeClose(ctx context.Context,
-	id arkchannel.ID, source arkchannel.VTXOBinding,
+	id arkchannel.ID, terms arkchannel.Terms, source arkchannel.VTXOBinding,
 	settlement arkchannel.CooperativeClose) error {
 
 	return c.publishFinalSpend(
-		ctx, id, source, CooperativeCloseExitPolicyKind,
+		ctx, id, terms, source, CooperativeCloseExitPolicyKind,
 		settlement.TxID, true,
 	)
 }
 
 // publishFinalSpend runs one durable unroll job and verifies its final spend.
 func (c *Controller) publishFinalSpend(ctx context.Context, id arkchannel.ID,
-	source arkchannel.VTXOBinding, policyKind unroll.ExitPolicyKind,
-	expectedTxID chainhash.Hash, waitForConfirmation bool) error {
+	terms arkchannel.Terms, source arkchannel.VTXOBinding,
+	policyKind unroll.ExitPolicyKind, expectedTxID chainhash.Hash,
+	waitForConfirmation bool) error {
+
+	if err := c.sourcePreparer.EnsureChannelSource(
+		ctx, id, terms, source, policyKind,
+	); err != nil {
+		return fmt.Errorf("prepare channel unroll source: %w", err)
+	}
 
 	result := c.registry.Ask(actor.WithoutTx(ctx),
 		&unroll.EnsureUnrollRequest{

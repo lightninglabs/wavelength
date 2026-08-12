@@ -185,7 +185,7 @@ func (r *Runtime) FinalizeExternalCooperativeClose(channelPoint wire.OutPoint,
 				"close")
 		}
 
-		return nil
+		return r.forgetExternallyClosedChannel(channelPoint)
 	}
 	if err != nil {
 		return fmt.Errorf("find channel for external close: %w", err)
@@ -230,6 +230,22 @@ func (r *Runtime) FinalizeExternalCooperativeClose(channelPoint wire.OutPoint,
 	}
 	if err := channel.CloseChannel(closeSummary, status); err != nil {
 		return fmt.Errorf("archive externally closed channel: %w", err)
+	}
+
+	return r.forgetExternallyClosedChannel(channelPoint)
+}
+
+// forgetExternallyClosedChannel retires the pre-registered on-chain watcher.
+// The Ark cooperative-close FSM is the terminal durability barrier here, so
+// this cleanup intentionally does not invoke the force-close resolution hook.
+func (r *Runtime) forgetExternallyClosedChannel(
+	channelPoint wire.OutPoint) error {
+
+	if r.onchain == nil {
+		return nil
+	}
+	if err := r.onchain.ForgetChannel(channelPoint); err != nil {
+		return fmt.Errorf("retire externally closed channel: %w", err)
 	}
 
 	return nil

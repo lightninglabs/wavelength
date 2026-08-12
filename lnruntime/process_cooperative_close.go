@@ -89,8 +89,8 @@ type ProcessCooperativeClosePeer interface {
 	AcknowledgeCooperativeCloseSigned(context.Context, arkchannel.ID,
 		arkchannel.CooperativeClose) error
 
-	PublishCooperativeClose(context.Context,
-		arkchannel.ID) (chainhash.Hash, error)
+	PublishCooperativeClose(context.Context, arkchannel.ID,
+		chainhash.Hash) (chainhash.Hash, error)
 
 	AcknowledgeCooperativeCloseFinalized(context.Context,
 		arkchannel.ID) error
@@ -102,9 +102,10 @@ type ProcessCooperativeClosePeer interface {
 // client. Its peer calls are strictly client-to-hub, which avoids nested
 // request deadlocks on a per-client mailbox ingress loop.
 type ClientCooperativeCloseProcess struct {
-	local    *NativeCooperativeCloseEndpoint
-	peer     ProcessCooperativeClosePeer
-	delivery CooperativeCloseDeliverySource
+	local     *NativeCooperativeCloseEndpoint
+	peer      ProcessCooperativeClosePeer
+	publisher CooperativeClosePublisher
+	delivery  CooperativeCloseDeliverySource
 
 	mu      sync.RWMutex
 	service CooperativeCloseStateSink
@@ -113,7 +114,7 @@ type ClientCooperativeCloseProcess struct {
 
 // NewClientCooperativeCloseProcess constructs the client-owned close process.
 func NewClientCooperativeCloseProcess(local *NativeCooperativeCloseEndpoint,
-	peer ProcessCooperativeClosePeer,
+	peer ProcessCooperativeClosePeer, publisher CooperativeClosePublisher,
 	delivery CooperativeCloseDeliverySource) (
 	*ClientCooperativeCloseProcess, error) {
 
@@ -124,14 +125,17 @@ func NewClientCooperativeCloseProcess(local *NativeCooperativeCloseEndpoint,
 	if peer == nil {
 		return nil, fmt.Errorf("cooperative close peer is required")
 	}
+	if publisher == nil {
+		return nil, fmt.Errorf("client cooperative close publisher " +
+			"is required")
+	}
 	if delivery == nil {
 		return nil, fmt.Errorf("client cooperative close delivery " +
 			"source is required")
 	}
 
 	return &ClientCooperativeCloseProcess{
-		local:    local,
-		peer:     peer,
+		local: local, peer: peer, publisher: publisher,
 		delivery: delivery,
 	}, nil
 }
@@ -374,20 +378,18 @@ func (p *ClientCooperativeCloseProcess) FinalizeCooperativeClose(
 	)
 }
 
-// publishAndFinalize asks the hub to publish only after both durable signed
-// barriers exist, then archives the client endpoint.
+// publishAndFinalize materializes and publishes from the client only after
+// both durable signed barriers exist, then asks the hub to archive its copy.
 func (p *ClientCooperativeCloseProcess) publishAndFinalize(ctx context.Context,
 	id arkchannel.ID, terms arkchannel.Terms, backing arkchannel.Backing,
 	source arkchannel.VTXOBinding,
 	request arkchannel.CooperativeCloseRequest,
 	settlement arkchannel.CooperativeClose) error {
 
-	txID, err := p.peer.PublishCooperativeClose(ctx, id)
-	if err != nil {
+	if err := p.publisher.SettleCooperativeClose(
+		ctx, id, terms, source, settlement,
+	); err != nil {
 		return err
-	}
-	if txID != settlement.TxID {
-		return fmt.Errorf("hub published another cooperative close")
 	}
 	service, err := p.stateService()
 	if err != nil {
@@ -395,10 +397,19 @@ func (p *ClientCooperativeCloseProcess) publishAndFinalize(ctx context.Context,
 	}
 	if _, err := service.RecordChannelEvent(
 		ctx, id, &arkchannel.CooperativeClosePublished{
-			TxID: txID,
+			TxID: settlement.TxID,
 		},
 	); err != nil {
 		return err
+	}
+	txID, err := p.peer.PublishCooperativeClose(
+		ctx, id, settlement.TxID,
+	)
+	if err != nil {
+		return err
+	}
+	if txID != settlement.TxID {
+		return fmt.Errorf("hub published another cooperative close")
 	}
 	if _, err := service.RecordChannelEvent(
 		ctx, id, &arkchannel.CooperativeCloseFinalized{
@@ -474,10 +485,9 @@ func (p *ClientCooperativeCloseProcess) stateService() (
 // HubCooperativeCloseProcess owns the operator endpoint's local actions. It
 // never calls the client while serving a client request.
 type HubCooperativeCloseProcess struct {
-	local     *NativeCooperativeCloseEndpoint
-	operator  CooperativeCloseOperatorSigner
-	publisher CooperativeClosePublisher
-	delivery  CooperativeCloseDeliverySource
+	local    *NativeCooperativeCloseEndpoint
+	operator CooperativeCloseOperatorSigner
+	delivery CooperativeCloseDeliverySource
 
 	mu      sync.RWMutex
 	service CooperativeCloseStateSink
@@ -487,7 +497,6 @@ type HubCooperativeCloseProcess struct {
 // NewHubCooperativeCloseProcess constructs the hub-owned close process.
 func NewHubCooperativeCloseProcess(local *NativeCooperativeCloseEndpoint,
 	operator CooperativeCloseOperatorSigner,
-	publisher CooperativeClosePublisher,
 	delivery CooperativeCloseDeliverySource) (*HubCooperativeCloseProcess,
 	error) {
 
@@ -498,18 +507,13 @@ func NewHubCooperativeCloseProcess(local *NativeCooperativeCloseEndpoint,
 	if operator == nil {
 		return nil, fmt.Errorf("Ark operator close signer is required")
 	}
-	if publisher == nil {
-		return nil, fmt.Errorf("cooperative close publisher is " +
-			"required")
-	}
 	if delivery == nil {
 		return nil, fmt.Errorf("hub cooperative close delivery " +
 			"source is required")
 	}
 
 	return &HubCooperativeCloseProcess{
-		local: local, operator: operator, publisher: publisher,
-		delivery: delivery,
+		local: local, operator: operator, delivery: delivery,
 	}, nil
 }
 
@@ -664,10 +668,11 @@ func (p *HubCooperativeCloseProcess) AcknowledgeCooperativeCloseSigned(
 	return err
 }
 
-// PublishCooperativeClose publishes once both signed acknowledgements are
-// durable, then archives the hub's native channel before replying.
+// PublishCooperativeClose accepts the client-confirmed settlement transaction
+// and archives the hub's native channel before replying.
 func (p *HubCooperativeCloseProcess) PublishCooperativeClose(
-	ctx context.Context, id arkchannel.ID) (chainhash.Hash, error) {
+	ctx context.Context, id arkchannel.ID, txID chainhash.Hash) (
+	chainhash.Hash, error) {
 
 	unlock := p.locks.lock(id)
 	defer unlock()
@@ -676,25 +681,38 @@ func (p *HubCooperativeCloseProcess) PublishCooperativeClose(
 	if err != nil {
 		return chainhash.Hash{}, err
 	}
-	for range 3 {
-		record, err := service.GetChannel(ctx, id)
-		if err != nil {
+	record, err := service.GetChannel(ctx, id)
+	if err != nil {
+		return chainhash.Hash{}, err
+	}
+	if record.Snapshot.CooperativeClose == nil {
+		return chainhash.Hash{}, fmt.Errorf("hub has no signed " +
+			"cooperative close")
+	}
+	if record.Snapshot.CooperativeClose.TxID != txID {
+		return chainhash.Hash{}, fmt.Errorf("client published " +
+			"another cooperative close")
+	}
+	if record.Snapshot.Phase == arkchannel.PhaseCoopCloseSigned {
+		if _, err := service.RecordChannelEvent(
+			ctx, id, &arkchannel.CooperativeClosePublished{
+				TxID: txID,
+			},
+		); err != nil {
 			return chainhash.Hash{}, err
 		}
-		if record.Snapshot.CooperativeClose == nil {
-			return chainhash.Hash{}, fmt.Errorf("hub has no " +
-				"signed cooperative close")
-		}
-		if record.Snapshot.HubCloseFinalized {
-			return record.Snapshot.CooperativeClose.TxID, nil
-		}
+	}
+	record, err = service.GetChannel(ctx, id)
+	if err != nil {
+		return chainhash.Hash{}, err
+	}
+	if !record.Snapshot.HubCloseFinalized {
 		if _, err := service.ResumeChannelAction(ctx, id); err != nil {
 			return chainhash.Hash{}, err
 		}
 	}
 
-	return chainhash.Hash{}, fmt.Errorf("hub cooperative close did not " +
-		"reach local finalization")
+	return txID, nil
 }
 
 // AcknowledgeCooperativeCloseFinalized records client-side channel archival.
@@ -759,30 +777,6 @@ func (p *HubCooperativeCloseProcess) NegotiateCooperativeClose(
 	return err
 }
 
-// publishCooperativeCloseAction settles and records the hub-local publication
-// action without calling back into the client process.
-func (p *HubCooperativeCloseProcess) publishCooperativeCloseAction(
-	ctx context.Context, id arkchannel.ID, source arkchannel.VTXOBinding,
-	settlement arkchannel.CooperativeClose) error {
-
-	if err := p.publisher.SettleCooperativeClose(
-		ctx, id, source, settlement,
-	); err != nil {
-		return err
-	}
-	service, err := p.stateService()
-	if err != nil {
-		return err
-	}
-	_, err = service.RecordChannelEvent(
-		ctx, id, &arkchannel.CooperativeClosePublished{
-			TxID: settlement.TxID,
-		},
-	)
-
-	return err
-}
-
 // FinalizeCooperativeClose archives the hub-local channel and records its
 // acknowledgement without a nested client RPC.
 func (p *HubCooperativeCloseProcess) FinalizeCooperativeClose(
@@ -827,15 +821,43 @@ func (p *HubCooperativeCloseProcess) stateService() (CooperativeCloseStateSink,
 // overloading the peer-facing PublishCooperativeClose method name.
 type HubCooperativeCloseExecutor struct {
 	*HubCooperativeCloseProcess
+	Publisher CooperativeClosePublisher
 }
 
-// PublishCooperativeClose executes the hub-local publication action.
+// PublishCooperativeClose normally defers submission to the client. Once a
+// watched source ancestor is spent, the hub independently publishes the same
+// fully signed settlement so client availability is no longer required.
 func (e *HubCooperativeCloseExecutor) PublishCooperativeClose(
-	ctx context.Context, id arkchannel.ID, _ arkchannel.Terms,
+	ctx context.Context, id arkchannel.ID, terms arkchannel.Terms,
 	source arkchannel.VTXOBinding,
 	settlement arkchannel.CooperativeClose) error {
 
-	return e.publishCooperativeCloseAction(ctx, id, source, settlement)
+	service, err := e.stateService()
+	if err != nil {
+		return err
+	}
+	record, err := service.GetChannel(ctx, id)
+	if err != nil {
+		return err
+	}
+	if record.Snapshot.SourceConflict == nil {
+		return nil
+	}
+	if e.Publisher == nil {
+		return fmt.Errorf("hub cooperative close publisher is required")
+	}
+	if err := e.Publisher.SettleCooperativeClose(
+		ctx, id, terms, source, settlement,
+	); err != nil {
+		return err
+	}
+	_, err = service.Apply(
+		ctx, id, &arkchannel.CooperativeClosePublished{
+			TxID: settlement.TxID,
+		},
+	)
+
+	return err
 }
 
 var _ arkchannel.ChannelCooperativeCloser = (*ClientCooperativeCloseProcess)(nil) //nolint:ll

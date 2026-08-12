@@ -51,6 +51,10 @@ const (
 	// SettlementTypeMixed means the invoice is funded by both a vHTLC and
 	// a reserved credit balance.
 	SettlementTypeMixed SettlementType = "mixed"
+
+	// SettlementTypeArkChannel means the receive settled directly into an
+	// active Ark-backed native Lightning channel.
+	SettlementTypeArkChannel SettlementType = "ark_channel"
 )
 
 // CreditQuote describes how a pay quote uses wallet credits.
@@ -223,6 +227,18 @@ type SwapSummary struct {
 	// or as a same-Ark payment when that detail is durably known.
 	SettlementType SettlementType
 
+	// ChannelID identifies the manifested Ark-backed Lightning channel for
+	// a receive that promoted its fallback vHTLC.
+	ChannelID [32]byte
+
+	// ReservedSCID is the virtual route advertised before direct settlement
+	// or fallback channel manifestation.
+	ReservedSCID uint64
+
+	// ChannelBackingFeeSat is the internal reserve consumed only by
+	// fallback channel creation.
+	ChannelBackingFeeSat uint64
+
 	// CreditQuote records the credit component of a pay quote when the
 	// server selected a credit or mixed rail.
 	CreditQuote *CreditQuote
@@ -283,6 +299,14 @@ type ReceiveResult struct {
 
 	// AmountSat is the value of the claimed VTXO in satoshis.
 	AmountSat int64
+
+	// ChannelID identifies the active Ark channel when the receive settled
+	// directly or promoted its fallback vHTLC.
+	ChannelID [32]byte
+
+	// SettlementType reports whether the result used a channel or ordinary
+	// vHTLC claim.
+	SettlementType SettlementType
 }
 
 // ReceiveVHTLCInfo holds the script details for one prepared
@@ -405,6 +429,10 @@ type OutSwapQuote struct {
 
 	// SettlementType identifies the receive rail selected by the server.
 	SettlementType SettlementType
+
+	// ChannelBackingFeeSat is the vHTLC value reserved above the credited
+	// channel capacity for its VTXO-to-channel backing transaction.
+	ChannelBackingFeeSat uint64
 }
 
 // VHTLCConfig holds the timelocks and keys for a vHTLC.
@@ -738,6 +766,50 @@ type SwapServerConn interface {
 	Close() error
 }
 
+// ArkChannelReceiveServerConn extends route reservation for clients that can
+// promote a fallback vHTLC directly into a native Ark channel.
+type ArkChannelReceiveServerConn interface {
+	RequestChannelIDForArkChannel(ctx context.Context,
+		vhtlcPubkey *btcec.PublicKey, paymentHash lntypes.Hash,
+		amountSat btcutil.Amount, expirySeconds uint32,
+		supportsInArkCredit bool,
+		backingFeeSat btcutil.Amount) (*OutSwapQuote, error)
+}
+
+// ArkChannelReceivePromotion contains the exact preimage claim input and
+// immutable future-SCID terms needed to promote a fallback vHTLC.
+type ArkChannelReceivePromotion struct {
+	PaymentHash  lntypes.Hash
+	ReservedSCID uint64
+	Capacity     btcutil.Amount
+	BackingFee   btcutil.Amount
+	Input        CustomInput
+}
+
+// ArkChannelPromotionResult identifies the channel and prepared OOR package
+// that atomically claimed the fallback vHTLC.
+type ArkChannelPromotionResult struct {
+	ChannelID    [32]byte
+	OORSessionID [32]byte
+}
+
+// ArkChannelPaymentBridge is the narrow daemon-owned channel boundary used by
+// the swap SDK. lnd remains authoritative for invoices and payments.
+type ArkChannelPaymentBridge interface {
+	IncomingBackingFee() btcutil.Amount
+
+	PrepareIncomingPayment(context.Context, lntypes.Preimage,
+		btcutil.Amount) error
+
+	RegisterIncomingPayment(context.Context, lntypes.Hash, btcutil.Amount,
+		uint64) error
+
+	WaitIncomingPayment(context.Context, lntypes.Hash) error
+
+	PromoteIncomingVHTLC(context.Context,
+		ArkChannelReceivePromotion) (ArkChannelPromotionResult, error)
+}
+
 // DaemonConn abstracts the connection to the client's own daemon for wallet
 // operations such as OOR sends and indexed VTXO lookups.
 //
@@ -891,12 +963,13 @@ type InSwapRefundAuthorization struct {
 // SwapClient is the high-level client API for Lightning<->Ark
 // swaps.
 type SwapClient struct {
-	server     SwapServerConn
-	daemon     DaemonConn
-	invoiceGen InvoiceCreator
-	outEvents  OutSwapEventReceiver
-	store      *Store
-	log        btclog.Logger
+	server        SwapServerConn
+	daemon        DaemonConn
+	invoiceGen    InvoiceCreator
+	outEvents     OutSwapEventReceiver
+	store         *Store
+	log           btclog.Logger
+	channelBridge ArkChannelPaymentBridge
 
 	waitPollInterval         time.Duration
 	overdueReceivePollWindow time.Duration
@@ -910,6 +983,14 @@ type SwapClient struct {
 	decodeOutSwapOnion       outSwapOnionDecoder
 	chainParams              *chaincfg.Params
 	now                      func() time.Time
+}
+
+// SetArkChannelPaymentBridge enables direct channel settlement and vHTLC
+// promotion for receive sessions. Callers must set it before resuming swaps.
+func (c *SwapClient) SetArkChannelPaymentBridge(
+	bridge ArkChannelPaymentBridge) {
+
+	c.channelBridge = bridge
 }
 
 // SetOutSwapEventReceiver sets the mailbox event receiver used by

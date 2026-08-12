@@ -1176,6 +1176,27 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 			s.outboxPublisher.Stop()
 		}
 
+		controller := s.getArkChannelController()
+		if controller != nil {
+			if err := controller.Stop(); err != nil {
+				s.log.WarnS(
+					ctx,
+					"Ark channel runtime shutdown failed",
+					err,
+				)
+			}
+		}
+		if runtime := s.getArkChannelMailboxRuntime(); runtime != nil {
+			//nolint:contextcheck // bounded shutdown
+			if err := runtime.StopAndWait(shutdownCtx); err != nil {
+				s.log.WarnS(
+					ctx,
+					"Ark channel mailbox shutdown failed",
+					err,
+				)
+			}
+		}
+
 		if s.runtime != nil {
 			s.setServerConnected(false)
 			//nolint:contextcheck // bounded shutdown

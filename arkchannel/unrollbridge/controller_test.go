@@ -83,6 +83,27 @@ type materializerRef struct {
 	statusCalls   int
 }
 
+// sourcePreparer records the recovery path selected before admission.
+type sourcePreparer struct {
+	id     arkchannel.ID
+	terms  arkchannel.Terms
+	source arkchannel.VTXOBinding
+	kind   unroll.ExitPolicyKind
+}
+
+// EnsureChannelSource records one idempotent source preparation.
+func (p *sourcePreparer) EnsureChannelSource(_ context.Context,
+	id arkchannel.ID, terms arkchannel.Terms, source arkchannel.VTXOBinding,
+	kind unroll.ExitPolicyKind) error {
+
+	p.id = id
+	p.terms = terms
+	p.source = source
+	p.kind = kind
+
+	return nil
+}
+
 // ID returns the fake actor identity.
 func (*materializerRef) ID() string {
 	return "channel-unroll-test"
@@ -181,7 +202,8 @@ func TestControllerAdmitsChannelPolicy(t *testing.T) {
 
 	record := channelRecord(t)
 	ref := &materializerRef{txid: record.Snapshot.Backing.ChannelPoint.Hash}
-	controller, err := NewController(ref)
+	preparer := &sourcePreparer{}
+	controller, err := NewController(ref, preparer)
 	require.NoError(t, err)
 	sink := &materializerSink{}
 	require.NoError(t, controller.BindChannelEventSink(sink))
@@ -189,9 +211,14 @@ func TestControllerAdmitsChannelPolicy(t *testing.T) {
 		t,
 		controller.MaterializeChannel(
 			t.Context(), record.Snapshot.Terms.ID,
-			*record.Snapshot.Source, *record.Snapshot.Backing,
+			record.Snapshot.Terms, *record.Snapshot.Source,
+			*record.Snapshot.Backing,
 		),
 	)
+	require.Equal(t, record.Snapshot.Terms.ID, preparer.id)
+	require.Equal(t, record.Snapshot.Terms, preparer.terms)
+	require.Equal(t, *record.Snapshot.Source, preparer.source)
+	require.Equal(t, ExitPolicyKind, preparer.kind)
 	require.NotNil(t, ref.request)
 	require.Equal(t, ExitPolicyKind, ref.request.ExitPolicyKind)
 	require.Equal(
@@ -247,17 +274,19 @@ func TestControllerWaitsForCooperativeCloseConfirmation(t *testing.T) {
 		txid:          record.Snapshot.CooperativeClose.TxID,
 		completeAfter: 2,
 	}
-	controller, err := NewController(ref)
+	preparer := &sourcePreparer{}
+	controller, err := NewController(ref, preparer)
 	require.NoError(t, err)
 	controller.pollInterval = time.Millisecond
 	require.NoError(
 		t,
 		controller.SettleCooperativeClose(
 			t.Context(), record.Snapshot.Terms.ID,
-			*record.Snapshot.Source,
+			record.Snapshot.Terms, *record.Snapshot.Source,
 			*record.Snapshot.CooperativeClose,
 		),
 	)
+	require.Equal(t, CooperativeCloseExitPolicyKind, preparer.kind)
 	require.NotNil(t, ref.request)
 	require.Equal(
 		t, CooperativeCloseExitPolicyKind, ref.request.ExitPolicyKind,

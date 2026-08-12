@@ -25,8 +25,8 @@ const (
 	groupIntrospection = "introspection"
 	groupAdvanced      = "advanced"
 
-	// devModeEnvVar, when set to "1", reveals the advanced subtrees
-	// (ark / dev / recovery) under an Advanced group in --help. It only
+	// devModeEnvVar, when set to "1", reveals the advanced subtrees (ark /
+	// channel / dev / recovery) under an Advanced group in --help. It only
 	// changes visibility; it never gates execution.
 	devModeEnvVar = "WAVELENGTH_DEV"
 )
@@ -35,9 +35,9 @@ const (
 // flags (--rpcserver, --timeout, --tlscertpath, --macaroonpath, --no-tls) are
 // registered here and made available to all subcommands via PersistentFlags.
 //
-// The advanced subtrees (ark / dev / recovery) are hidden from the default
-// --help unless WAVELENGTH_DEV=1 is set; execution is never gated on the env
-// var.
+// The advanced subtrees (ark / channel / dev / recovery) are hidden from the
+// default --help unless WAVELENGTH_DEV=1 is set; execution is never gated on
+// the env var.
 func NewRootCmd() *cobra.Command {
 	return newRootCmd(os.Getenv(devModeEnvVar) == "1")
 }
@@ -157,6 +157,7 @@ func newRootCmd(devMode bool) *cobra.Command {
 	// on a GroupID naming a group that was never registered.
 	advancedCmds := []*cobra.Command{
 		newArkCmd(),
+		newChannelCmd(),
 		newRecoveryCmd(),
 		devrpc.NewDevCmd(
 			devrpc.Config{

@@ -22,6 +22,7 @@ type PrepareRequest struct {
 	CheckpointPolicy arkscript.CheckpointPolicy
 	Inputs           []oor.TransferInput
 	BackingFee       btcutil.Amount
+	ChangeOutput     *oortx.RecipientOutput
 }
 
 // PrepareChannel durably reserves the selected VTXOs and constructs the exact
@@ -60,13 +61,27 @@ func (c *Controller) PrepareChannel(ctx context.Context, req PrepareRequest) (
 		Value:              amount,
 		VTXOPolicyTemplate: policy,
 	}
+	recipients := []oortx.RecipientOutput{recipient}
+	if req.ChangeOutput != nil {
+		change := *req.ChangeOutput
+		change.PkScript = append([]byte(nil), change.PkScript...)
+		change.VTXOPolicyTemplate = append(
+			[]byte(nil), change.VTXOPolicyTemplate...,
+		)
+		if change.Value <= 0 || len(change.PkScript) == 0 ||
+			len(change.VTXOPolicyTemplate) == 0 {
+			return arkchannel.VTXOBinding{}, fmt.Errorf(
+				"complete OOR change output is required")
+		}
+		recipients = append(recipients, change)
+	}
 	idempotencyKey := "ark-channel:" + hex.EncodeToString(
 		req.Terms.ID[:],
 	)
 	result := c.ref.Ask(actor.WithoutTx(ctx), &oor.StartTransferRequest{
 		Policy:         req.CheckpointPolicy,
 		Inputs:         req.Inputs,
-		Recipients:     []oortx.RecipientOutput{recipient},
+		Recipients:     recipients,
 		IdempotencyKey: idempotencyKey,
 		PrepareOnly:    true,
 	}).Await(ctx)
@@ -102,8 +117,7 @@ func (c *Controller) PrepareChannel(ctx context.Context, req PrepareRequest) (
 	}
 
 	outpoint, err := oortx.RecipientOutPoint(
-		chainhash.Hash(started.SessionID),
-		[]oortx.RecipientOutput{recipient}, recipient,
+		chainhash.Hash(started.SessionID), recipients, recipient,
 	)
 	if err != nil {
 		return arkchannel.VTXOBinding{}, fmt.Errorf("resolve prepared "+

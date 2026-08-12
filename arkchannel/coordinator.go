@@ -164,7 +164,7 @@ func (c *Coordinator) Apply(ctx context.Context, id ID, event Event) (Record,
 		}
 		next := nextState.Snapshot()
 		if snapshotsEqual(record.Snapshot, next) {
-			return record, nil, nil
+			return record, emittedActions(transition), nil
 		}
 
 		updated, err := c.store.CompareAndSwap(
@@ -263,6 +263,7 @@ func snapshotsEqual(a, b Snapshot) bool {
 		a.HubFinalized != b.HubFinalized ||
 		a.OORFinalized != b.OORFinalized ||
 		a.OORAborted != b.OORAborted ||
+		a.RecoveryReady != b.RecoveryReady ||
 		a.BackingPublished != b.BackingPublished ||
 		a.ClientCloseSigned != b.ClientCloseSigned ||
 		a.HubCloseSigned != b.HubCloseSigned ||
@@ -279,6 +280,15 @@ func snapshotsEqual(a, b Snapshot) bool {
 		return false
 	}
 	if a.Backing != nil && !backingsEqual(*a.Backing, *b.Backing) {
+		return false
+	}
+	if (a.SourceConflict == nil) != (b.SourceConflict == nil) {
+		return false
+	}
+	if a.SourceConflict != nil &&
+		(a.SourceConflict.OutPoint != b.SourceConflict.OutPoint ||
+			a.SourceConflict.SpendingTxID !=
+				b.SourceConflict.SpendingTxID) {
 		return false
 	}
 	if (a.CooperativeCloseRequest == nil) !=

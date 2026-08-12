@@ -29,6 +29,20 @@ type controllerTestRef struct {
 	startRequest   *oor.StartTransferRequest
 }
 
+// controllerTestSink records the terminal channel event applied by the bridge.
+type controllerTestSink struct {
+	event arkchannel.Event
+}
+
+// Apply records one channel event.
+func (s *controllerTestSink) Apply(_ context.Context, _ arkchannel.ID,
+	event arkchannel.Event) (arkchannel.Record, error) {
+
+	s.event = event
+
+	return arkchannel.Record{}, nil
+}
+
 // ID returns the fake actor identity.
 func (*controllerTestRef) ID() string {
 	return "oor-controller-test"
@@ -157,6 +171,31 @@ func TestValidatePreparedOORRejectsAdvancedSession(t *testing.T) {
 		),
 		"expected prepared",
 	)
+}
+
+// TestWaitForTerminalAcceptsIncomingSelfTransfer verifies a sender's change
+// notification proves the same OOR package finalized even after it replaced
+// the reaped outgoing status row.
+func TestWaitForTerminalAcceptsIncomingSelfTransfer(t *testing.T) {
+	t.Parallel()
+
+	ref := &controllerTestRef{state: &oor.ReceiveCompleted{}}
+	controller, err := NewWithRef(ref)
+	require.NoError(t, err)
+	sink := &controllerTestSink{}
+	require.NoError(t, controller.BindChannelEventSink(sink))
+
+	id := arkchannel.ID{1}
+	sessionID := [32]byte{2}
+	err = controller.waitForTerminal(
+		t.Context(), id, arkchannel.VTXOBinding{
+			OORSessionID: sessionID,
+		}, false,
+	)
+	require.NoError(t, err)
+	finalized, ok := sink.event.(*arkchannel.OORFinalized)
+	require.True(t, ok)
+	require.Equal(t, sessionID, finalized.SessionID)
 }
 
 // preparedChannelBinding creates a real deterministic OOR package containing

@@ -221,33 +221,37 @@ func (s *ArkChannelStoreDB) CompareAndSwap(ctx context.Context,
 
 // arkChannelMutableFields is the shared SQL representation of mutable state.
 type arkChannelMutableFields struct {
-	phase                 int32
-	oorSessionID          []byte
-	sourceIndex           sql.NullInt64
-	sourceAmount          sql.NullInt64
-	sourceArkTx           []byte
-	backingTx             []byte
-	channelPointTxID      []byte
-	channelPointIndex     sql.NullInt64
-	clientFinalized       bool
-	hubFinalized          bool
-	oorFinalized          bool
-	oorAborted            bool
-	backingPublished      bool
-	closeInitiator        sql.NullInt32
-	closeClientScript     []byte
-	closeHubScript        []byte
-	closeFeeRate          sql.NullInt64
-	cooperativeCloseTx    []byte
-	cooperativeCloseTxID  []byte
-	closeCommitmentHeight sql.NullInt64
-	closeClientBalance    sql.NullInt64
-	closeHubBalance       sql.NullInt64
-	clientCloseSigned     bool
-	hubCloseSigned        bool
-	clientCloseFinalized  bool
-	hubCloseFinalized     bool
-	failure               sql.NullString
+	phase                    int32
+	oorSessionID             []byte
+	sourceIndex              sql.NullInt64
+	sourceAmount             sql.NullInt64
+	sourceArkTx              []byte
+	backingTx                []byte
+	channelPointTxID         []byte
+	channelPointIndex        sql.NullInt64
+	clientFinalized          bool
+	hubFinalized             bool
+	oorFinalized             bool
+	oorAborted               bool
+	recoveryReady            bool
+	sourceSpentOutpointID    []byte
+	sourceSpentOutpointIndex sql.NullInt64
+	sourceSpendingTxID       []byte
+	backingPublished         bool
+	closeInitiator           sql.NullInt32
+	closeClientScript        []byte
+	closeHubScript           []byte
+	closeFeeRate             sql.NullInt64
+	cooperativeCloseTx       []byte
+	cooperativeCloseTxID     []byte
+	closeCommitmentHeight    sql.NullInt64
+	closeClientBalance       sql.NullInt64
+	closeHubBalance          sql.NullInt64
+	clientCloseSigned        bool
+	hubCloseSigned           bool
+	clientCloseFinalized     bool
+	hubCloseFinalized        bool
+	failure                  sql.NullString
 }
 
 // mutableArkChannelFields converts optional snapshot fields for sqlc.
@@ -260,6 +264,7 @@ func mutableArkChannelFields(snapshot arkchannel.Snapshot) (
 		hubFinalized:         snapshot.HubFinalized,
 		oorFinalized:         snapshot.OORFinalized,
 		oorAborted:           snapshot.OORAborted,
+		recoveryReady:        snapshot.RecoveryReady,
 		backingPublished:     snapshot.BackingPublished,
 		clientCloseSigned:    snapshot.ClientCloseSigned,
 		hubCloseSigned:       snapshot.HubCloseSigned,
@@ -269,6 +274,18 @@ func mutableArkChannelFields(snapshot arkchannel.Snapshot) (
 			String: snapshot.Failure,
 			Valid:  snapshot.Failure != "",
 		},
+	}
+	if snapshot.SourceConflict != nil {
+		fields.sourceSpentOutpointID = slices.Clone(
+			snapshot.SourceConflict.OutPoint.Hash[:],
+		)
+		fields.sourceSpentOutpointIndex = sql.NullInt64{
+			Int64: int64(snapshot.SourceConflict.OutPoint.Index),
+			Valid: true,
+		}
+		fields.sourceSpendingTxID = slices.Clone(
+			snapshot.SourceConflict.SpendingTxID[:],
+		)
 	}
 	if snapshot.Source != nil {
 		fields.oorSessionID = slices.Clone(
@@ -368,40 +385,44 @@ func insertArkChannelParams(snapshot arkchannel.Snapshot,
 		HubChannelKey: slices.Clone(
 			terms.VTXO.HubChannelKey[:],
 		),
-		FunderKey:             slices.Clone(terms.VTXO.FunderKey[:]),
-		ChannelDelay:          int64(terms.VTXO.ChannelDelay),
-		FunderDelay:           int64(terms.VTXO.FunderDelay),
-		MinExitDelay:          int64(terms.VTXO.MinExitDelay),
-		Phase:                 fields.phase,
-		OorSessionID:          fields.oorSessionID,
-		SourceIndex:           fields.sourceIndex,
-		SourceAmount:          fields.sourceAmount,
-		SourceArkTx:           fields.sourceArkTx,
-		BackingTx:             fields.backingTx,
-		ChannelPointTxid:      fields.channelPointTxID,
-		ChannelPointIndex:     fields.channelPointIndex,
-		ClientFinalized:       fields.clientFinalized,
-		HubFinalized:          fields.hubFinalized,
-		OorFinalized:          fields.oorFinalized,
-		OorAborted:            fields.oorAborted,
-		BackingPublished:      fields.backingPublished,
-		CloseInitiator:        fields.closeInitiator,
-		CloseClientScript:     fields.closeClientScript,
-		CloseHubScript:        fields.closeHubScript,
-		CloseFeeRateSatPerKw:  fields.closeFeeRate,
-		CooperativeCloseTx:    fields.cooperativeCloseTx,
-		CooperativeCloseTxid:  fields.cooperativeCloseTxID,
-		CloseCommitmentHeight: fields.closeCommitmentHeight,
-		CloseClientBalance:    fields.closeClientBalance,
-		CloseHubBalance:       fields.closeHubBalance,
-		ClientCloseSigned:     fields.clientCloseSigned,
-		HubCloseSigned:        fields.hubCloseSigned,
-		ClientCloseFinalized:  fields.clientCloseFinalized,
-		HubCloseFinalized:     fields.hubCloseFinalized,
-		Failure:               fields.failure,
-		Revision:              initialArkChannelRevision,
-		CreatedAt:             now,
-		UpdatedAt:             now,
+		FunderKey:                slices.Clone(terms.VTXO.FunderKey[:]),
+		ChannelDelay:             int64(terms.VTXO.ChannelDelay),
+		FunderDelay:              int64(terms.VTXO.FunderDelay),
+		MinExitDelay:             int64(terms.VTXO.MinExitDelay),
+		Phase:                    fields.phase,
+		OorSessionID:             fields.oorSessionID,
+		SourceIndex:              fields.sourceIndex,
+		SourceAmount:             fields.sourceAmount,
+		SourceArkTx:              fields.sourceArkTx,
+		BackingTx:                fields.backingTx,
+		ChannelPointTxid:         fields.channelPointTxID,
+		ChannelPointIndex:        fields.channelPointIndex,
+		ClientFinalized:          fields.clientFinalized,
+		HubFinalized:             fields.hubFinalized,
+		OorFinalized:             fields.oorFinalized,
+		OorAborted:               fields.oorAborted,
+		RecoveryReady:            fields.recoveryReady,
+		SourceSpentOutpointTxid:  fields.sourceSpentOutpointID,
+		SourceSpentOutpointIndex: fields.sourceSpentOutpointIndex,
+		SourceSpendingTxid:       fields.sourceSpendingTxID,
+		BackingPublished:         fields.backingPublished,
+		CloseInitiator:           fields.closeInitiator,
+		CloseClientScript:        fields.closeClientScript,
+		CloseHubScript:           fields.closeHubScript,
+		CloseFeeRateSatPerKw:     fields.closeFeeRate,
+		CooperativeCloseTx:       fields.cooperativeCloseTx,
+		CooperativeCloseTxid:     fields.cooperativeCloseTxID,
+		CloseCommitmentHeight:    fields.closeCommitmentHeight,
+		CloseClientBalance:       fields.closeClientBalance,
+		CloseHubBalance:          fields.closeHubBalance,
+		ClientCloseSigned:        fields.clientCloseSigned,
+		HubCloseSigned:           fields.hubCloseSigned,
+		ClientCloseFinalized:     fields.clientCloseFinalized,
+		HubCloseFinalized:        fields.hubCloseFinalized,
+		Failure:                  fields.failure,
+		Revision:                 initialArkChannelRevision,
+		CreatedAt:                now,
+		UpdatedAt:                now,
 	}, nil
 }
 
@@ -415,36 +436,40 @@ func compareAndSwapArkChannelParams(snapshot arkchannel.Snapshot, revision,
 	}
 
 	return sqlc.CompareAndSwapArkChannelParams{
-		ChannelID:             slices.Clone(snapshot.Terms.ID[:]),
-		Revision:              revision,
-		Phase:                 fields.phase,
-		OorSessionID:          fields.oorSessionID,
-		SourceIndex:           fields.sourceIndex,
-		SourceAmount:          fields.sourceAmount,
-		SourceArkTx:           fields.sourceArkTx,
-		BackingTx:             fields.backingTx,
-		ChannelPointTxid:      fields.channelPointTxID,
-		ChannelPointIndex:     fields.channelPointIndex,
-		ClientFinalized:       fields.clientFinalized,
-		HubFinalized:          fields.hubFinalized,
-		OorFinalized:          fields.oorFinalized,
-		OorAborted:            fields.oorAborted,
-		BackingPublished:      fields.backingPublished,
-		CloseInitiator:        fields.closeInitiator,
-		CloseClientScript:     fields.closeClientScript,
-		CloseHubScript:        fields.closeHubScript,
-		CloseFeeRateSatPerKw:  fields.closeFeeRate,
-		CooperativeCloseTx:    fields.cooperativeCloseTx,
-		CooperativeCloseTxid:  fields.cooperativeCloseTxID,
-		CloseCommitmentHeight: fields.closeCommitmentHeight,
-		CloseClientBalance:    fields.closeClientBalance,
-		CloseHubBalance:       fields.closeHubBalance,
-		ClientCloseSigned:     fields.clientCloseSigned,
-		HubCloseSigned:        fields.hubCloseSigned,
-		ClientCloseFinalized:  fields.clientCloseFinalized,
-		HubCloseFinalized:     fields.hubCloseFinalized,
-		Failure:               fields.failure,
-		UpdatedAt:             now,
+		ChannelID:                slices.Clone(snapshot.Terms.ID[:]),
+		Revision:                 revision,
+		Phase:                    fields.phase,
+		OorSessionID:             fields.oorSessionID,
+		SourceIndex:              fields.sourceIndex,
+		SourceAmount:             fields.sourceAmount,
+		SourceArkTx:              fields.sourceArkTx,
+		BackingTx:                fields.backingTx,
+		ChannelPointTxid:         fields.channelPointTxID,
+		ChannelPointIndex:        fields.channelPointIndex,
+		ClientFinalized:          fields.clientFinalized,
+		HubFinalized:             fields.hubFinalized,
+		OorFinalized:             fields.oorFinalized,
+		OorAborted:               fields.oorAborted,
+		RecoveryReady:            fields.recoveryReady,
+		SourceSpentOutpointTxid:  fields.sourceSpentOutpointID,
+		SourceSpentOutpointIndex: fields.sourceSpentOutpointIndex,
+		SourceSpendingTxid:       fields.sourceSpendingTxID,
+		BackingPublished:         fields.backingPublished,
+		CloseInitiator:           fields.closeInitiator,
+		CloseClientScript:        fields.closeClientScript,
+		CloseHubScript:           fields.closeHubScript,
+		CloseFeeRateSatPerKw:     fields.closeFeeRate,
+		CooperativeCloseTx:       fields.cooperativeCloseTx,
+		CooperativeCloseTxid:     fields.cooperativeCloseTxID,
+		CloseCommitmentHeight:    fields.closeCommitmentHeight,
+		CloseClientBalance:       fields.closeClientBalance,
+		CloseHubBalance:          fields.closeHubBalance,
+		ClientCloseSigned:        fields.clientCloseSigned,
+		HubCloseSigned:           fields.hubCloseSigned,
+		ClientCloseFinalized:     fields.clientCloseFinalized,
+		HubCloseFinalized:        fields.hubCloseFinalized,
+		Failure:                  fields.failure,
+		UpdatedAt:                now,
 	}, nil
 }
 
@@ -543,6 +568,7 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 		HubFinalized:         row.HubFinalized,
 		OORFinalized:         row.OorFinalized,
 		OORAborted:           row.OorAborted,
+		RecoveryReady:        row.RecoveryReady,
 		BackingPublished:     row.BackingPublished,
 		ClientCloseSigned:    row.ClientCloseSigned,
 		HubCloseSigned:       row.HubCloseSigned,
@@ -550,6 +576,11 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 		HubCloseFinalized:    row.HubCloseFinalized,
 		Failure:              row.Failure.String,
 	}
+	conflict, err := arkChannelSourceConflictFromRow(row)
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+	snapshot.SourceConflict = conflict
 	source, err := arkChannelSourceFromRow(row, terms)
 	if err != nil {
 		return arkchannel.Record{}, err
@@ -585,6 +616,41 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 	return arkchannel.Record{
 		Snapshot: snapshot,
 		Revision: uint64(row.Revision),
+	}, nil
+}
+
+// arkChannelSourceConflictFromRow restores the all-or-none source-spend tuple.
+func arkChannelSourceConflictFromRow(row sqlc.ArkChannel) (
+	*arkchannel.SourceConflict, error) {
+
+	present := len(row.SourceSpentOutpointTxid) != 0 ||
+		row.SourceSpentOutpointIndex.Valid ||
+		len(row.SourceSpendingTxid) != 0
+	if !present {
+		return nil, nil
+	}
+	if len(row.SourceSpentOutpointTxid) != chainhash.HashSize ||
+		!row.SourceSpentOutpointIndex.Valid ||
+		row.SourceSpentOutpointIndex.Int64 < 0 ||
+		row.SourceSpentOutpointIndex.Int64 > math.MaxUint32 ||
+		len(row.SourceSpendingTxid) != chainhash.HashSize {
+		return nil, fmt.Errorf("incomplete Ark channel source conflict")
+	}
+	outpointTxID, err := chainhash.NewHash(row.SourceSpentOutpointTxid)
+	if err != nil {
+		return nil, err
+	}
+	spendingTxID, err := chainhash.NewHash(row.SourceSpendingTxid)
+	if err != nil {
+		return nil, err
+	}
+
+	return &arkchannel.SourceConflict{
+		OutPoint: wire.OutPoint{
+			Hash:  *outpointTxID,
+			Index: uint32(row.SourceSpentOutpointIndex.Int64),
+		},
+		SpendingTxID: *spendingTxID,
 	}, nil
 }
 

@@ -650,7 +650,9 @@ func rejectInternalFundingPublish(*wire.MsgTx, string) error {
 // emptyNodeAnnouncement satisfies private-channel funding without starting a
 // public graph or gossiper.
 func emptyNodeAnnouncement() (lnwire.NodeAnnouncement1, error) {
-	return lnwire.NodeAnnouncement1{}, nil
+	return lnwire.NodeAnnouncement1{
+		Features: lnwire.NewRawFeatureVector(),
+	}, nil
 }
 
 // ignoreAnnouncement completes private funding gossip calls locally.

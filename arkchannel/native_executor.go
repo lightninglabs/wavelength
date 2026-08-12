@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 )
 
 // ActionExecutor performs one idempotent side effect after the channel FSM
@@ -23,6 +24,8 @@ type VirtualFundingActivator interface {
 // application peer transport and records completion through Service.Apply.
 type FundingNegotiator interface {
 	NegotiateChannel(context.Context, ID, Terms, VTXOBinding) error
+
+	PrepareChannelRecovery(context.Context, ID, Terms, VTXOBinding) error
 
 	CancelChannel(context.Context, ID, Terms, *Backing) error
 }
@@ -48,6 +51,10 @@ func (e *NativeExecutor) ValidatePreparedOOR(ctx context.Context, terms Terms,
 	if terms.Funder != e.localParty {
 		return nil
 	}
+	if e.oor == nil {
+		return fmt.Errorf("local OOR transfer controller is " +
+			"unavailable")
+	}
 
 	return e.oor.ValidatePreparedOOR(ctx, terms, source)
 }
@@ -66,7 +73,20 @@ type ChannelEventSinkBinder interface {
 
 // ChannelMaterializer publishes the Ark ancestry before the signed backing.
 type ChannelMaterializer interface {
-	MaterializeChannel(context.Context, ID, VTXOBinding, Backing) error
+	MaterializeChannel(context.Context, ID, Terms, VTXOBinding,
+		Backing) error
+}
+
+// ChannelOnchainHandoff verifies lnd's standard watcher, arbitrator, and
+// resolver lifecycle is armed before backing publication is allowed.
+type ChannelOnchainHandoff interface {
+	HandoffChannel(wire.OutPoint) error
+}
+
+// ChannelForceCloser resumes native lnd's commitment publication from a
+// durable Ark channel action.
+type ChannelForceCloser interface {
+	ResumeForceCloseChannel(wire.OutPoint) error
 }
 
 // ChannelCooperativeCloser coordinates clean lnd state, direct VTXO
@@ -89,13 +109,16 @@ type NativeExecutor struct {
 	negotiator   FundingNegotiator
 	oor          OORTransferController
 	materializer ChannelMaterializer
+	handoff      ChannelOnchainHandoff
+	forceCloser  ChannelForceCloser
 	closer       ChannelCooperativeCloser
 }
 
 // NewNativeExecutor constructs the thin native subsystem adapter.
 func NewNativeExecutor(localParty Party, funding VirtualFundingActivator,
 	negotiator FundingNegotiator, oor OORTransferController,
-	materializer ChannelMaterializer,
+	materializer ChannelMaterializer, handoff ChannelOnchainHandoff,
+	forceCloser ChannelForceCloser,
 	closer ChannelCooperativeCloser) (*NativeExecutor, error) {
 
 	if localParty != PartyClient && localParty != PartyHub {
@@ -107,14 +130,14 @@ func NewNativeExecutor(localParty Party, funding VirtualFundingActivator,
 	if negotiator == nil {
 		return nil, fmt.Errorf("funding negotiator is required")
 	}
-	if oor == nil {
-		return nil, fmt.Errorf("OOR transfer controller is required")
-	}
-	if materializer == nil {
-		return nil, fmt.Errorf("channel materializer is required")
-	}
 	if closer == nil {
 		return nil, fmt.Errorf("channel cooperative closer is required")
+	}
+	if handoff == nil {
+		return nil, fmt.Errorf("channel on-chain handoff is required")
+	}
+	if forceCloser == nil {
+		return nil, fmt.Errorf("channel force closer is required")
 	}
 
 	return &NativeExecutor{
@@ -123,6 +146,8 @@ func NewNativeExecutor(localParty Party, funding VirtualFundingActivator,
 		negotiator:   negotiator,
 		oor:          oor,
 		materializer: materializer,
+		handoff:      handoff,
+		forceCloser:  forceCloser,
 		closer:       closer,
 	}, nil
 }
@@ -142,14 +167,27 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 		if action.Terms.Funder != e.localParty {
 			return nil
 		}
+		if e.oor == nil {
+			return fmt.Errorf("local OOR transfer controller is " +
+				"unavailable")
+		}
 
 		return e.oor.CommitPreparedOOR(
+			ctx, id, action.Terms, action.Source,
+		)
+
+	case *PrepareRecovery:
+		return e.negotiator.PrepareChannelRecovery(
 			ctx, id, action.Terms, action.Source,
 		)
 
 	case *AbortOOR:
 		if action.Terms.Funder != e.localParty {
 			return nil
+		}
+		if e.oor == nil {
+			return fmt.Errorf("local OOR transfer controller is " +
+				"unavailable")
 		}
 
 		return e.oor.AbortPreparedOOR(
@@ -167,8 +205,22 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 		)
 
 	case *PublishChannel:
+		if err := e.handoff.HandoffChannel(
+			action.Backing.ChannelPoint,
+		); err != nil {
+			return err
+		}
+		if e.materializer == nil {
+			return fmt.Errorf("channel materializer is unavailable")
+		}
+
 		return e.materializer.MaterializeChannel(
-			ctx, id, action.Source, action.Backing,
+			ctx, id, action.Terms, action.Source, action.Backing,
+		)
+
+	case *ForceCloseChannel:
+		return e.forceCloser.ResumeForceCloseChannel(
+			action.Backing.ChannelPoint,
 		)
 
 	case *NegotiateCooperativeClose:
@@ -200,6 +252,9 @@ func (e *NativeExecutor) BindChannelEventSink(sink ChannelEventSink) error {
 	for _, component := range []any{
 		e.negotiator, e.oor, e.materializer, e.closer,
 	} {
+		if component == nil {
+			continue
+		}
 		binder, ok := component.(ChannelEventSinkBinder)
 		if !ok {
 			continue

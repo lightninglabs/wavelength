@@ -151,13 +151,15 @@ func (p *MailboxCooperativeClosePeer) AcknowledgeCooperativeCloseSigned(
 	return err
 }
 
-// PublishCooperativeClose asks the hub to confirm and archive its endpoint.
+// PublishCooperativeClose tells the hub which client-published settlement was
+// confirmed, then waits for hub-local archival.
 func (p *MailboxCooperativeClosePeer) PublishCooperativeClose(
-	ctx context.Context, id arkchannel.ID) (chainhash.Hash, error) {
+	ctx context.Context, id arkchannel.ID, txID chainhash.Hash) (
+	chainhash.Hash, error) {
 
 	resp, err := p.client.PublishCooperativeClose(
 		ctx, &arkchannelrpc.PublishCooperativeCloseRequest{
-			ChannelId: id[:],
+			ChannelId: id[:], SettlementTxid: txID[:],
 		}, closeRPCOptions(id, "publish"),
 	)
 	if err != nil {
@@ -344,7 +346,13 @@ func (s *CooperativeClosePeerRPCServer) PublishCooperativeClose(
 	if err != nil {
 		return nil, err
 	}
-	txID, err := s.hub.PublishCooperativeClose(ctx, id)
+	txID, err := rpcHash(
+		"settlement txid", req.GetSettlementTxid(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	txID, err = s.hub.PublishCooperativeClose(ctx, id, txID)
 	if err != nil {
 		return nil, err
 	}
@@ -414,12 +422,13 @@ func (s *CooperativeClosePeerRPCServer) hubRecord(ctx context.Context,
 func ArkChannelRecordToRPC(record arkchannel.Record) *arkchannelrpc.ArkChannel {
 	snapshot := record.Snapshot
 	channel := &arkchannelrpc.ArkChannel{
-		ChannelId:   snapshot.Terms.ID[:],
-		Kind:        snapshot.Terms.Kind.String(),
-		Phase:       snapshot.Phase.String(),
-		Funder:      snapshot.Terms.Funder.String(),
-		CapacitySat: int64(snapshot.Terms.Capacity),
-		Revision:    record.Revision,
+		ChannelId:    snapshot.Terms.ID[:],
+		Kind:         snapshot.Terms.Kind.String(),
+		Phase:        snapshot.Phase.String(),
+		Funder:       snapshot.Terms.Funder.String(),
+		CapacitySat:  int64(snapshot.Terms.Capacity),
+		Revision:     record.Revision,
+		ReservedScid: snapshot.Terms.ReservedSCID,
 	}
 	if snapshot.Source != nil {
 		channel.SourceOutpoint = snapshot.Source.OutPoint.String()

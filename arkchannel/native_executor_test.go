@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,9 +17,21 @@ type nativeExecutorHarness struct {
 	abortedID    ID
 	cancelledID  ID
 	publishedID  ID
+	recoveryID   ID
+	handedOff    wire.OutPoint
+	forceClosed  wire.OutPoint
 	closeID      ID
 	boundSinks   int
 	validations  int
+}
+
+// HandoffChannel records transfer to lnd's on-chain lifecycle.
+func (h *nativeExecutorHarness) HandoffChannel(
+	channelPoint wire.OutPoint) error {
+
+	h.handedOff = channelPoint
+
+	return nil
 }
 
 // BindChannelEventSink records each subsystem binding.
@@ -80,9 +93,27 @@ func (h *nativeExecutorHarness) NegotiateChannel(_ context.Context, id ID,
 	return nil
 }
 
+// PrepareChannelRecovery records installation of the source package.
+func (h *nativeExecutorHarness) PrepareChannelRecovery(_ context.Context, id ID,
+	_ Terms, _ VTXOBinding) error {
+
+	h.recoveryID = id
+
+	return nil
+}
+
+// ResumeForceCloseChannel records commitment publication through lnd.
+func (h *nativeExecutorHarness) ResumeForceCloseChannel(
+	channelPoint wire.OutPoint) error {
+
+	h.forceClosed = channelPoint
+
+	return nil
+}
+
 // MaterializeChannel records the unroller dispatch.
 func (h *nativeExecutorHarness) MaterializeChannel(_ context.Context, id ID,
-	_ VTXOBinding, _ Backing) error {
+	_ Terms, _ VTXOBinding, _ Backing) error {
 
 	h.publishedID = id
 
@@ -126,6 +157,7 @@ func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
 	harness := &nativeExecutorHarness{}
 	executor, err := NewNativeExecutor(
 		PartyClient, harness, harness, harness, harness, harness,
+		harness, harness,
 	)
 	require.NoError(t, err)
 	require.NoError(t, executor.BindChannelEventSink(harnessSink{}))
@@ -201,17 +233,19 @@ func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
 		),
 	)
 	require.Equal(t, terms.ID, harness.publishedID)
+	require.Equal(t, backing.ChannelPoint, harness.handedOff)
 }
 
-// TestNativeExecutorFencesOORActionsToFunder proves the responder validates
-// the canonical Ark transaction but cannot commit or abort the funder's OOR
-// actor session.
+// TestNativeExecutorFencesOORActionsToFunder proves the responder cannot commit
+// or abort the funder's OOR actor session, while either recovery-ready endpoint
+// can publish the shared source package after activation.
 func TestNativeExecutorFencesOORActionsToFunder(t *testing.T) {
 	t.Parallel()
 
 	harness := &nativeExecutorHarness{}
 	executor, err := NewNativeExecutor(
-		PartyHub, harness, harness, harness, harness, harness,
+		PartyHub, harness, harness, harness, harness, harness, harness,
+		harness,
 	)
 	require.NoError(t, err)
 	terms := testTerms(t, KindPromotion)
@@ -245,6 +279,20 @@ func TestNativeExecutorFencesOORActionsToFunder(t *testing.T) {
 	)
 	require.Equal(t, ID{}, harness.committedID)
 	require.Equal(t, ID{}, harness.abortedID)
+
+	backing := testBacking(t, terms, source)
+	require.NoError(
+		t,
+		executor.Execute(
+			t.Context(), terms.ID, &PublishChannel{
+				Terms:   terms,
+				Source:  source,
+				Backing: backing,
+			},
+		),
+	)
+	require.Equal(t, backing.ChannelPoint, harness.handedOff)
+	require.Equal(t, terms.ID, harness.publishedID)
 }
 
 // harnessSink accepts callback events for executor wiring tests.
@@ -260,6 +308,8 @@ var (
 	_ FundingNegotiator        = (*nativeExecutorHarness)(nil)
 	_ OORTransferController    = (*nativeExecutorHarness)(nil)
 	_ ChannelMaterializer      = (*nativeExecutorHarness)(nil)
+	_ ChannelOnchainHandoff    = (*nativeExecutorHarness)(nil)
+	_ ChannelForceCloser       = (*nativeExecutorHarness)(nil)
 	_ ChannelCooperativeCloser = (*nativeExecutorHarness)(nil)
 	_ ChannelEventSinkBinder   = (*nativeExecutorHarness)(nil)
 	_ ChannelEventSink         = harnessSink{}
