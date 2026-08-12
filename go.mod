@@ -5,6 +5,9 @@ go 1.26.0
 // Use the forked migrate with custom functionality.
 replace github.com/golang-migrate/migrate/v4 => github.com/lightninglabs/migrate/v4 v4.18.2-9023d66a-fork-pr-2
 
+// Build the modular channel runtime against the reviewed lnd fork checkout.
+replace github.com/lightningnetwork/lnd => ./third_party/lnd
+
 require (
 	github.com/btcsuite/btcd v0.26.0
 	github.com/btcsuite/btcd/btcec/v2 v2.5.0
@@ -145,12 +148,12 @@ require (
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/lightninglabs/gozmq v0.0.0-20191113021534-d20a764486bf // indirect
 	github.com/lightninglabs/lightning-node-connect/hashmailrpc v1.0.4-0.20250610182311-2f1d46ef18b7 // indirect
-	github.com/lightningnetwork/lnd/actor v0.0.6 // indirect
+	github.com/lightningnetwork/lnd/actor v0.0.6
 	github.com/lightningnetwork/lnd/cert v1.2.2
 	github.com/lightningnetwork/lnd/healthcheck v1.2.6 // indirect
 	github.com/lightningnetwork/lnd/queue v1.2.0 // indirect
 	github.com/lightningnetwork/lnd/sqldb v1.0.13
-	github.com/lightningnetwork/lnd/ticker v1.1.1 // indirect
+	github.com/lightningnetwork/lnd/ticker v1.1.1
 	github.com/lightningnetwork/lnd/tor v1.2.0 // indirect
 	github.com/ltcsuite/ltcd v0.0.0-20190101042124-f37f8bf35796 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
