@@ -137,7 +137,8 @@ func (r *RPCServer) SignOutSwapHtlcAck(ctx context.Context,
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
-	if r.server.clientKeyDesc.PubKey == nil {
+	identityDesc := r.server.loadClientKeyDesc()
+	if identityDesc.PubKey == nil {
 		return nil, status.Error(
 			codes.FailedPrecondition, "identity key is not ready",
 		)
@@ -146,7 +147,7 @@ func (r *RPCServer) SignOutSwapHtlcAck(ctx context.Context,
 	var paymentHash lntypes.Hash
 	copy(paymentHash[:], req.GetPaymentHash())
 	msg := swaprpc.OutSwapHTLCAckMessage(
-		r.server.clientKeyDesc.PubKey, paymentHash, req.GetAmountSat(),
+		identityDesc.PubKey, paymentHash, req.GetAmountSat(),
 		req.GetVhtlcPkScript(),
 	)
 	sig, err := r.server.signTaggedSchnorr(
@@ -226,10 +227,11 @@ func (r *RPCServer) SignCreditAccountAuth(ctx context.Context,
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
-	if r.server.clientKeyDesc.PubKey == nil {
+	identityDesc := r.server.loadClientKeyDesc()
+	if identityDesc.PubKey == nil {
 		return nil, fmt.Errorf("identity key is not ready")
 	}
-	identityKey := r.server.clientKeyDesc.PubKey.SerializeCompressed()
+	identityKey := identityDesc.PubKey.SerializeCompressed()
 	if !bytes.Equal(accountKey, identityKey) {
 		return nil, errCreditAccountIdentityMismatch
 	}

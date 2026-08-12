@@ -149,7 +149,7 @@ func (s *Server) mailboxAuthSigner() serverconn.MailboxAuthSigner {
 func (s *Server) mailboxAuthSig(ctx context.Context,
 	recipientMailboxID string) (*schnorr.Signature, error) {
 
-	if s.clientKeyDesc.PubKey == nil {
+	if s.loadClientKeyDesc().PubKey == nil {
 		return nil, fmt.Errorf("identity key not yet derived; wallet " +
 			"not ready")
 	}
@@ -188,12 +188,13 @@ func (s *Server) mailboxAuthSig(ctx context.Context,
 // serverClientTLSCerts returns the optional client certificate used by the
 // operator to bind mailbox access to the daemon identity key.
 func (s *Server) serverClientTLSCerts() ([]tls.Certificate, error) {
-	if s.cfg.Server.Insecure || s.clientKeyDesc.PubKey == nil {
+	identityDesc := s.loadClientKeyDesc()
+	if s.cfg.Server.Insecure || identityDesc.PubKey == nil {
 		return nil, nil
 	}
 
 	clientCert, err := serverconn.GenerateClientTLSCert(
-		s.clientKeyDesc.PubKey,
+		identityDesc.PubKey,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("generate client TLS cert: %w", err)
