@@ -703,6 +703,16 @@ type ServerConnectionActor struct {
 	ingressCancel atomic.Pointer[context.CancelFunc]
 }
 
+// runtimeID returns the caller-provided persistence namespace or the legacy
+// identity-derived value when only one connector exists in the process.
+func (a *ServerConnectionActor) runtimeID() string {
+	if a.cfg.RuntimeID != "" {
+		return a.cfg.RuntimeID
+	}
+
+	return DurableActorID(a.cfg.LocalMailboxID)
+}
+
 // NewServerConnectionActor creates a new server connection actor with the
 // given configuration. The actor must be started via its DurableActor wrapper
 // and the ingress loop must be started separately via StartIngress.
@@ -866,7 +876,7 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 			Kind:    mailboxpb.RpcMeta_KIND_EVENT,
 			Service: service,
 			Method:  method,
-			ReplyTo: a.cfg.LocalMailboxID,
+			ReplyTo: a.cfg.replyMailboxID(),
 		},
 	}
 
@@ -1036,7 +1046,7 @@ func (a *ServerConnectionActor) sendUnaryEnvelope(ctx context.Context,
 			Service:       service,
 			Method:        method,
 			CorrelationId: correlationID,
-			ReplyTo:       a.cfg.LocalMailboxID,
+			ReplyTo:       a.cfg.replyMailboxID(),
 		},
 	}
 

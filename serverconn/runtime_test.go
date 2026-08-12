@@ -120,6 +120,30 @@ func TestNewRuntime_DefaultCodec(t *testing.T) {
 	)
 }
 
+// TestNewRuntimeRuntimeIDNamespace verifies two independent remote services can
+// use the same local mailbox identity without sharing a durable actor ID.
+func TestNewRuntimeRuntimeIDNamespace(t *testing.T) {
+	t.Parallel()
+
+	mb := newInMemoryMailbox()
+	baseCfg := newTestConnectorConfig(mb, newMemCheckpointStore())
+	baseCfg.RuntimeID = "serverconn-lumos-client-1"
+
+	lumosRuntime, err := NewRuntime(baseCfg)
+	require.NoError(t, err)
+	require.Equal(
+		t, baseCfg.RuntimeID, lumosRuntime.Ref().ID(),
+	)
+
+	swapCfg := baseCfg
+	swapCfg.RuntimeID = "serverconn-swap-client-1"
+	swapCfg.RemoteMailboxID = "swap-server-1"
+	swapRuntime, err := NewRuntime(swapCfg)
+	require.NoError(t, err)
+	require.Equal(t, swapCfg.RuntimeID, swapRuntime.Ref().ID())
+	require.NotEqual(t, lumosRuntime.Ref().ID(), swapRuntime.Ref().ID())
+}
+
 // TestRuntime_StartStop verifies runtime lifecycle methods run and return
 // promptly when the parent context is cancelled.
 func TestRuntime_StartStop(t *testing.T) {

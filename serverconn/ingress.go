@@ -57,7 +57,7 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 	defer a.wg.Done()
 
 	a.log.InfoS(ctx, "Ingress loop starting",
-		slog.String("mailbox_id", a.cfg.LocalMailboxID),
+		slog.String("mailbox_id", a.cfg.replyMailboxID()),
 	)
 
 	var failCount int
@@ -476,7 +476,7 @@ func (a *ServerConnectionActor) pullPhase(ctx context.Context, state *AckState,
 // logIngressExit emits the common ingress shutdown log line.
 func (a *ServerConnectionActor) logIngressExit(ctx context.Context) {
 	a.log.InfoS(ctx, "Ingress loop exiting",
-		slog.String("mailbox_id", a.cfg.LocalMailboxID),
+		slog.String("mailbox_id", a.cfg.replyMailboxID()),
 	)
 }
 
@@ -498,7 +498,7 @@ func (a *ServerConnectionActor) pullBatch(ctx context.Context, cursor uint64) (
 	waitMs := uint32(a.cfg.PullWaitTimeout.Milliseconds())
 
 	resp, err := a.cfg.Edge.Pull(ctx, &mailboxpb.PullRequest{
-		MailboxId:     a.cfg.LocalMailboxID,
+		MailboxId:     a.cfg.replyMailboxID(),
 		MaxEnvelopes:  a.cfg.PullMaxEnvelopes,
 		WaitTimeoutMs: waitMs,
 		Cursor:        cursor,
@@ -709,7 +709,7 @@ func (a *ServerConnectionActor) ackRemote(
 ) error {
 
 	resp, err := a.cfg.Edge.AckUpTo(ctx, &mailboxpb.AckUpToRequest{
-		MailboxId: a.cfg.LocalMailboxID,
+		MailboxId: a.cfg.replyMailboxID(),
 		Cursor:    cursor,
 	})
 
@@ -721,7 +721,7 @@ func (a *ServerConnectionActor) ackRemote(
 func (a *ServerConnectionActor) loadCheckpoint(ctx context.Context) (AckState,
 	error) {
 
-	actorID := DurableActorID(a.cfg.LocalMailboxID)
+	actorID := a.runtimeID()
 
 	checkpoint, err := a.cfg.Store.LoadCheckpoint(ctx, actorID)
 	if err != nil {
@@ -1295,7 +1295,7 @@ func (a *ServerConnectionActor) saveCheckpointTo(ctx context.Context,
 		return err
 	}
 
-	actorID := DurableActorID(a.cfg.LocalMailboxID)
+	actorID := a.runtimeID()
 
 	return store.SaveCheckpoint(ctx, actor.CheckpointParams{
 		ActorID:   actorID,
