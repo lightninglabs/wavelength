@@ -130,6 +130,10 @@ func (r *RPCServer) SubLogger(tag string) btclog.Logger {
 // the daemon identity key bound to the recipient mailbox ID. Optional
 // subservers use this to authenticate mailbox RPCs without learning how the
 // daemon wallet backend stores or signs with the identity key.
+//
+// It goes through the memo rather than signing directly, so a subserver that
+// stamps every Send, Pull and AckUpTo costs one wallet round trip per
+// recipient rather than one per RPC.
 func (r *RPCServer) SignMailboxAuth(ctx context.Context,
 	recipientMailboxID string) (string, error) {
 
@@ -141,7 +145,7 @@ func (r *RPCServer) SignMailboxAuth(ctx context.Context,
 			"not ready")
 	}
 
-	sig, err := r.server.signMailboxAuth(ctx, recipientMailboxID)
+	sig, err := r.server.mailboxAuthSig(ctx, recipientMailboxID)
 	if err != nil {
 		return "", err
 	}

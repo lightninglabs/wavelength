@@ -2853,7 +2853,17 @@ func (s *Server) newMailboxEdge() mailboxpb.MailboxServiceClient {
 		return s.mailboxClient
 	}
 
-	base := mailboxpb.NewMailboxServiceClient(s.serverConn)
+	// A raw client here would reach the operator with no x-mailbox-auth-sig
+	// header, which is exactly what an operator running requiredirectauth
+	// rejects. connectOperatorClients already wraps the client it builds,
+	// and it runs before this on every production path, so this arm is
+	// latent today; wrapping it too means a future caller that reaches
+	// newMailboxEdge with no mailboxClient set cannot silently lose the
+	// header.
+	base := serverconn.NewAuthenticatedMailboxClient(
+		mailboxpb.NewMailboxServiceClient(s.serverConn),
+		s.mailboxAuthSigner(),
+	)
 	if s.cfg.MailboxEdgeFactory != nil {
 		return s.cfg.MailboxEdgeFactory(s.serverConn, base)
 	}
