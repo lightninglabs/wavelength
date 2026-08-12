@@ -79,6 +79,39 @@ func TestResumePendingStartsWorkersAndDedupes(t *testing.T) {
 	require.True(t, fakeClient.sawPendingOnlyList())
 }
 
+// TestReceiveWorkerRetriesWhileDurableSwapIsPending verifies a transient
+// process-local Wait failure does not strand a resumable receive FSM until the
+// daemon restarts. The worker keeps ownership across the retry and resumes the
+// same payment hash once more.
+func TestReceiveWorkerRetriesWhileDurableSwapIsPending(t *testing.T) {
+	t.Parallel()
+
+	receiveHash := testHash(3)
+	fakeClient := newFakeSwapRuntime(swaps.SwapSummary{
+		Direction:   swaps.SwapDirectionReceive,
+		PaymentHash: receiveHash,
+		State:       "claim_initiated",
+		Pending:     true,
+	})
+	fakeClient.receiveResumeSessions = []receiveSwapSession{
+		&fakeReceiveSession{
+			hash:    receiveHash,
+			waitErr: errors.New("temporary mailbox disconnect"),
+		},
+		&fakeReceiveSession{
+			hash: receiveHash,
+		},
+	}
+	service := newTestSwapClientService(fakeClient)
+	service.workerRetryDelay = 10 * time.Millisecond
+	defer service.cancel()
+
+	service.startReceiveWorker(receiveHash)
+	fakeClient.awaitReceiveResume(t, receiveHash)
+	fakeClient.awaitReceiveResume(t, receiveHash)
+	require.Equal(t, 2, fakeClient.receiveResumeCount(receiveHash))
+}
+
 // TestChainParamsForNetworkAcceptsTestNet4 verifies the swapruntime daemon
 // subserver accepts every network string the main daemon config advertises.
 func TestChainParamsForNetworkAcceptsTestNet4(t *testing.T) {
@@ -752,26 +785,29 @@ func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 	)
 
 	got := swapSummaryToProto(swaps.SwapSummary{
-		Direction:        swaps.SwapDirectionReceive,
-		PaymentHash:      hash,
-		Invoice:          "lnbc1summary",
-		State:            "Completed",
-		Pending:          false,
-		AmountSat:        1_000,
-		FeeSat:           20,
-		MaxFeeSat:        30,
-		VHTLCOutpoint:    "txid:0",
-		VHTLCAmountSat:   990,
-		FundingSessionID: "funding",
-		ClaimSessionID:   "claim",
-		RefundSessionID:  "refund",
-		TerminalReason:   "done",
-		CreatedAt:        createdAt,
-		UpdatedAt:        updatedAt,
-		Deadline:         deadline,
-		RefundLocktime:   42,
-		SettlementType:   swaps.SettlementTypeInArk,
-		SenderPubkey:     senderPubKey,
+		Direction:            swaps.SwapDirectionReceive,
+		PaymentHash:          hash,
+		Invoice:              "lnbc1summary",
+		State:                "Completed",
+		Pending:              false,
+		AmountSat:            1_000,
+		FeeSat:               20,
+		MaxFeeSat:            30,
+		VHTLCOutpoint:        "txid:0",
+		VHTLCAmountSat:       990,
+		FundingSessionID:     "funding",
+		ClaimSessionID:       "claim",
+		RefundSessionID:      "refund",
+		TerminalReason:       "done",
+		CreatedAt:            createdAt,
+		UpdatedAt:            updatedAt,
+		Deadline:             deadline,
+		RefundLocktime:       42,
+		SettlementType:       swaps.SettlementTypeArkChannel,
+		ChannelID:            [32]byte{7},
+		ReservedSCID:         99,
+		ChannelBackingFeeSat: 1_000,
+		SenderPubkey:         senderPubKey,
 	})
 
 	require.Equal(
@@ -798,9 +834,19 @@ func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 	require.Equal(t, deadline.Unix(), got.GetDeadlineUnix())
 	require.Equal(t, uint32(42), got.GetRefundLocktime())
 	require.Equal(
-		t, swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_IN_ARK,
+		t,
+		swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_ARK_CHANNEL,
 		got.GetSettlementType(),
 	)
+	require.Equal(
+		t,
+		append(
+			[]byte{7}, make([]byte, 31)...,
+		),
+		got.GetChannelId(),
+	)
+	require.Equal(t, uint64(99), got.GetReservedScid())
+	require.Equal(t, uint64(1_000), got.GetChannelBackingFeeSat())
 	require.Equal(t, senderPubKeyHex, got.GetSenderPubkey())
 }
 
@@ -1234,8 +1280,13 @@ func TestSwapServerOperationWaitsForReady(t *testing.T) {
 			method: swaprpc.SwapService_ListCredits_FullMethodName,
 		},
 		{
-			name:   "mailbox",
-			method: "/mailboxrpc.MailboxService/Pull",
+			name:   "mailbox send",
+			method: mailboxpb.MailboxService_Send_FullMethodName,
+			wait:   true,
+		},
+		{
+			name:   "mailbox pull",
+			method: mailboxpb.MailboxService_Pull_FullMethodName,
 		},
 		{
 			name:   "future swap method",
@@ -1448,23 +1499,24 @@ type fakeSwapRuntime struct {
 	listCreditsResp     *swaps.CreditSnapshot
 	listCreditsErr      error
 
-	quotePayCalls      int
-	quotePayInvoice    string
-	quotePayMaxFeeSat  uint64
-	startPayMaxFeeSat  uint64
-	startPayCalls      int
-	startReceiveCalls  int
-	startReceiveMemo   string
-	createCreditCalls  int
-	createCreditReq    swaps.CreateCreditRequest
-	redeemCreditCalls  int
-	redeemCreditReq    swaps.RedeemCreditRequest
-	listCreditsCalls   int
-	listCreditsLimit   uint32
-	getSummaryCalls    int
-	listPendingOnly    []bool
-	payResumeCalls     map[lntypes.Hash]int
-	receiveResumeCalls map[lntypes.Hash]int
+	quotePayCalls         int
+	quotePayInvoice       string
+	quotePayMaxFeeSat     uint64
+	startPayMaxFeeSat     uint64
+	startPayCalls         int
+	startReceiveCalls     int
+	startReceiveMemo      string
+	createCreditCalls     int
+	createCreditReq       swaps.CreateCreditRequest
+	redeemCreditCalls     int
+	redeemCreditReq       swaps.RedeemCreditRequest
+	listCreditsCalls      int
+	listCreditsLimit      uint32
+	getSummaryCalls       int
+	listPendingOnly       []bool
+	payResumeCalls        map[lntypes.Hash]int
+	receiveResumeCalls    map[lntypes.Hash]int
+	receiveResumeSessions []receiveSwapSession
 
 	payResumeCh     chan lntypes.Hash
 	receiveResumeCh chan lntypes.Hash
@@ -1552,6 +1604,10 @@ func (f *fakeSwapRuntime) ResumeReceiveViaLightning(_ context.Context,
 
 	f.receiveResumeCalls[hash]++
 	f.receiveResumeCh <- hash
+	resumeIndex := f.receiveResumeCalls[hash] - 1
+	if resumeIndex < len(f.receiveResumeSessions) {
+		return f.receiveResumeSessions[resumeIndex], nil
+	}
 
 	return &fakeReceiveSession{hash: hash}, nil
 }
@@ -1719,6 +1775,7 @@ func (f *fakePaySession) Wait(ctx context.Context) (*swaps.PayResult, error) {
 type fakeReceiveSession struct {
 	hash    lntypes.Hash
 	invoice string
+	waitErr error
 }
 
 func (f *fakeReceiveSession) PaymentHash() lntypes.Hash {
@@ -1731,6 +1788,10 @@ func (f *fakeReceiveSession) Invoice() string {
 
 func (f *fakeReceiveSession) Wait(ctx context.Context) (*swaps.ReceiveResult,
 	error) {
+
+	if f.waitErr != nil {
+		return nil, f.waitErr
+	}
 
 	<-ctx.Done()
 

@@ -86,6 +86,10 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - Worker ownership is process-local and mutex-guarded: at most one goroutine
   drives a given payment hash at any time. `markActive` is the admission gate;
   `markInactive` releases it on goroutine exit.
+- A process-local resume or `Wait` error is not itself terminal. The worker
+  reads the durable summary and retries while the FSM remains pending; it
+  releases ownership only after terminal state, successful completion, missing
+  durable state, or daemon shutdown.
 - The daemon uses `rootCtx` (not the individual RPC contexts) for all
   `ResumePayViaLightning` / `ResumeReceiveViaLightning` calls. A CLI
   disconnect does not cancel an admitted swap.
