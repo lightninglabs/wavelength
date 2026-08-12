@@ -110,8 +110,12 @@ func (s *Server) mailboxAuthSigner() serverconn.MailboxAuthSigner {
 // Memoizing is what makes signing per RPC affordable: the digest is
 // TaggedHash("mailbox-auth", identityPubKey || recipientMailboxID), so it does
 // not vary with the request, while signMailboxAuth costs a round-trip to
-// whichever wallet backend holds the key. The daemon addresses one recipient
-// mailbox in practice, so the map holds a single entry.
+// whichever wallet backend holds the key.
+//
+// The map holds two entries, not one. Send addresses the compound
+// operator:client mailbox, while Pull and AckUpTo address this client's own
+// plain mailbox ID, so the two arms sign different recipients and cache
+// separately. Keying on the recipient is what keeps them from colliding.
 func (s *Server) mailboxAuthSig(ctx context.Context,
 	recipientMailboxID string) (*schnorr.Signature, error) {
 

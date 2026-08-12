@@ -43,8 +43,24 @@ const MailboxTLSBindTagStr = "mailbox-tls-bind"
 //
 //	senderCompressedPubKey || recipientMailboxID
 //
-// Including the recipient mailbox ID (the server's pubkey-derived ID)
-// prevents cross-server replay of the signature.
+// Including the recipient mailbox ID binds the signature to what it
+// addresses, but how much that buys depends on the caller, and only
+// Send gets the strong version:
+//
+//   - Send passes the compound operator:client recipient, which
+//     embeds the operator's pubkey-derived ID, so a Send signature is
+//     useless at any other operator.
+//   - Pull and AckUpTo pass the client's own plain mailbox ID
+//     (ingress.go, via ConnectorConfig.LocalMailboxID), which carries
+//     no operator component. That digest is identical at every
+//     operator, so one Pull/Ack signature authorizes that client's
+//     mailbox at every operator its identity key is known to. Identity
+//     keys are a deterministic derivation, so a wallet driving two
+//     operators presents the same credential to both.
+//
+// Do not read this function as preventing cross-server replay on its
+// own. Closing the Pull/Ack case means folding a server identity into
+// the digest, which is a wire change on both sides.
 func MailboxAuthMessage(senderPubKey *btcec.PublicKey,
 	recipientMailboxID string) []byte {
 
