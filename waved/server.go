@@ -3779,7 +3779,7 @@ func (s *Server) initRPCClients(ctx context.Context) {
 			err,
 		)
 	} else {
-		identityDesc, identitySigner, err := s.IndexerProofKey(
+		_, identitySigner, err := s.IndexerProofKey(
 			ctx, keychain.KeyLocator{
 				Family: identityKeyFamily,
 				Index:  0,
@@ -3792,7 +3792,14 @@ func (s *Server) initRPCClients(ctx context.Context) {
 				err,
 			)
 		} else {
-			s.clientKeyDesc = *identityDesc
+			// clientKeyDesc is deliberately not written here.
+			// deriveIdentityKeyEarly has already stored the
+			// descriptor for this exact locator, and it errors out
+			// rather than leaving the field unset, so this would
+			// only re-store the same value. It would also be a
+			// data race: StartEgress runs before this, and its
+			// workers now sign every outbound envelope, so they
+			// read clientKeyDesc while this goroutine writes it.
 			signer = NewFallbackSchnorrSigner(
 				NewOwnedReceiveScriptSigner(
 					packageStore, signerFactory,

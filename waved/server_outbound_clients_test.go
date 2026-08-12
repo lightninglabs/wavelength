@@ -116,8 +116,12 @@ func TestConnectOperatorClientsREST(t *testing.T) {
 	require.NoError(t, err)
 
 	clientMailbox := serverconn.CompoundMailboxID(
-		serverconn.PubKeyMailboxID(operatorKey.PubKey()),
-		serverconn.PubKeyMailboxID(clientKey.PubKey()),
+		serverconn.PubKeyMailboxID(
+			operatorKey.PubKey(),
+		),
+		serverconn.PubKeyMailboxID(
+			clientKey.PubKey(),
+		),
 	)
 
 	authSig, err := serverconn.SignMailboxAuth(clientKey, clientMailbox)
@@ -163,7 +167,11 @@ func TestConnectOperatorClientsREST(t *testing.T) {
 	// certificate to bind the caller to a mailbox, so the REST edge has to
 	// carry it rather than only the gRPC one.
 	require.Equal(
-		t, hex.EncodeToString(authSig.Serialize()), pulledAuthSig(),
+		t,
+		hex.EncodeToString(
+			authSig.Serialize(),
+		),
+		pulledAuthSig(),
 	)
 }
 
@@ -232,8 +240,12 @@ func TestConnectOperatorClientsGRPC(t *testing.T) {
 	require.NoError(t, err)
 
 	clientMailbox := serverconn.CompoundMailboxID(
-		serverconn.PubKeyMailboxID(operatorKey.PubKey()),
-		serverconn.PubKeyMailboxID(clientKey.PubKey()),
+		serverconn.PubKeyMailboxID(
+			operatorKey.PubKey(),
+		),
+		serverconn.PubKeyMailboxID(
+			clientKey.PubKey(),
+		),
 	)
 
 	authSig, err := serverconn.SignMailboxAuth(clientKey, clientMailbox)
@@ -271,7 +283,10 @@ func TestConnectOperatorClientsGRPC(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(
-		t, hex.EncodeToString(authSig.Serialize()),
+		t,
+		hex.EncodeToString(
+			authSig.Serialize(),
+		),
 		capture.pulledAuthSig(),
 	)
 }
@@ -291,4 +306,60 @@ func TestConnectOperatorClientsUnknownTransport(t *testing.T) {
 
 	_, err := s.connectOperatorClients()
 	require.ErrorContains(t, err, "unknown server transport")
+}
+
+// TestMailboxAuthSigMemo covers the memo behaviour the two wiring tests above
+// deliberately skip past. Both of those prime the map, so a memo hit is all
+// they ever exercise; this drives the miss as well, which is the path every
+// first Pull takes on a live daemon.
+//
+// There is no seam to inject a signer — signTaggedSchnorr dispatches on the
+// concrete wallet backends — so a miss is observed through the error a Server
+// with no backend returns. That is enough to prove which recipients hit and
+// which miss, which is the property the compound-vs-plain split rests on.
+func TestMailboxAuthSigMemo(t *testing.T) {
+	t.Parallel()
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const (
+		plain    = "02aa"
+		compound = "02bb:02aa"
+	)
+
+	primed, err := serverconn.SignMailboxAuth(clientKey, plain)
+	require.NoError(t, err)
+
+	s := &Server{
+		clientKeyDesc: keychain.KeyDescriptor{
+			PubKey: clientKey.PubKey(),
+		},
+		mailboxAuthSigs: map[string]*schnorr.Signature{
+			plain: primed,
+		},
+	}
+
+	// The primed recipient is served from memory. No wallet backend is
+	// configured, so reaching the signing path at all would error.
+	got, err := s.mailboxAuthSig(t.Context(), plain)
+	require.NoError(t, err)
+	require.Same(t, primed, got)
+
+	// A different recipient is a distinct digest and therefore a distinct
+	// entry: it misses and goes to the wallet rather than being answered
+	// with the first recipient's signature. Serving the wrong signature
+	// here would authorize the wrong mailbox at the operator.
+	_, err = s.mailboxAuthSig(t.Context(), compound)
+	require.ErrorContains(t, err, "no wallet backend available")
+
+	// The miss must not have disturbed the entry that was already there.
+	got, err = s.mailboxAuthSig(t.Context(), plain)
+	require.NoError(t, err)
+	require.Same(t, primed, got)
+
+	// An unset identity key is refused before any of that.
+	empty := &Server{}
+	_, err = empty.mailboxAuthSig(t.Context(), plain)
+	require.ErrorContains(t, err, "identity key not yet derived")
 }

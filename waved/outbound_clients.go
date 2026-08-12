@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/lightninglabs/wavelength/arkrpc"
@@ -18,6 +19,12 @@ import (
 	"github.com/lightninglabs/wavelength/serverconn"
 	"google.golang.org/grpc"
 )
+
+// mailboxAuthSignTimeout bounds a single mailbox auth signing round trip to
+// the wallet backend. A mailbox RPC that cannot get its signature in this long
+// should fail on its own rather than hold the caller open, since the ingress
+// puller hands down a context with no deadline of its own.
+const mailboxAuthSignTimeout = 30 * time.Second
 
 // operatorClients holds the daemon-owned outbound clients used to talk to the
 // Ark operator directly and through the mailbox edge.
@@ -89,8 +96,13 @@ func (s *Server) connectOperatorClients() (*operatorClients, error) {
 }
 
 // mailboxAuthSigner returns the signer that stamps x-mailbox-auth-sig on
-// outbound mailbox RPCs. It reads the identity key lazily, per RPC, because
-// the mailbox edge is built before the wallet has derived one.
+// outbound mailbox RPCs.
+//
+// The identity key is read per RPC rather than captured at construction.
+// deriveIdentityKeyEarly runs before connectOperatorClients and fails the
+// startup path if it cannot derive, so the key is in fact already there by
+// the time the edge is built; reading it late costs nothing and keeps this
+// closure from pinning a descriptor that startup has not finished with.
 func (s *Server) mailboxAuthSigner() serverconn.MailboxAuthSigner {
 	return func(ctx context.Context, recipientMailboxID string) (string,
 		error) {
@@ -116,6 +128,16 @@ func (s *Server) mailboxAuthSigner() serverconn.MailboxAuthSigner {
 // operator:client mailbox, while Pull and AckUpTo address this client's own
 // plain mailbox ID, so the two arms sign different recipients and cache
 // separately. Keying on the recipient is what keeps them from colliding.
+//
+// The wallet call deliberately happens with the mutex released. Holding it
+// across the round trip would serialize the whole mailbox edge behind one
+// signature: sync.Mutex.Lock is not context-aware, so the egress workers and
+// the ingress puller would block on it with their own deadlines silently
+// ignored, and a wedged wallet would stall egress, ingress, heartbeat and ack
+// together with nothing in the logs to say why. Two callers racing the same
+// cold recipient may both sign, which is harmless — the digest is
+// deterministic, so they produce the same signature and the second store is a
+// no-op.
 func (s *Server) mailboxAuthSig(ctx context.Context,
 	recipientMailboxID string) (*schnorr.Signature, error) {
 
@@ -125,19 +147,30 @@ func (s *Server) mailboxAuthSig(ctx context.Context,
 	}
 
 	s.mailboxAuthSigsMu.Lock()
-	defer s.mailboxAuthSigsMu.Unlock()
+	sig, ok := s.mailboxAuthSigs[recipientMailboxID]
+	s.mailboxAuthSigsMu.Unlock()
 
-	if sig, ok := s.mailboxAuthSigs[recipientMailboxID]; ok {
+	if ok {
 		return sig, nil
 	}
 
-	sig, err := s.signMailboxAuth(ctx, recipientMailboxID)
+	// Bound the signing round trip rather than inheriting the caller's
+	// context. The ingress puller builds its context with no deadline at
+	// all, so a hung wallet would otherwise park this call forever, and
+	// the memo miss is on the path every Pull takes.
+	signCtx, cancel := context.WithTimeout(ctx, mailboxAuthSignTimeout)
+	defer cancel()
+
+	sig, err := s.signMailboxAuth(signCtx, recipientMailboxID)
 	if err != nil {
 		return nil, err
 	}
 
+	s.mailboxAuthSigsMu.Lock()
+	defer s.mailboxAuthSigsMu.Unlock()
+
 	if s.mailboxAuthSigs == nil {
-		s.mailboxAuthSigs = make(map[string]*schnorr.Signature, 1)
+		s.mailboxAuthSigs = make(map[string]*schnorr.Signature, 2)
 	}
 	s.mailboxAuthSigs[recipientMailboxID] = sig
 
