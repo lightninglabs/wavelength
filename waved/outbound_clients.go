@@ -1,13 +1,16 @@
 package waved
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
 	"strings"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/lightninglabs/wavelength/rpc/restclient"
@@ -27,7 +30,16 @@ type operatorClients struct {
 
 // connectOperatorClients builds the outbound clients for the configured
 // operator transport.
+//
+// Both mailbox edges are wrapped so every Send, Pull and AckUpTo carries the
+// x-mailbox-auth-sig metadata header. The operator authorizes a mailbox RPC
+// either from the TLS client certificate bound to the caller's mailbox ID or
+// from that header, and an operator that terminates TLS at a proxy never sees
+// a client certificate. Signing unconditionally means the daemon works against
+// either posture without the operator's TLS choice leaking into client config.
 func (s *Server) connectOperatorClients() (*operatorClients, error) {
+	sign := s.mailboxAuthSigner()
+
 	switch s.cfg.Server.Transport {
 	case "", RPCTransportGRPC:
 		conn, err := s.dialServer()
@@ -36,9 +48,11 @@ func (s *Server) connectOperatorClients() (*operatorClients, error) {
 		}
 
 		return &operatorClients{
-			conn:    conn,
-			ark:     arkrpc.NewArkServiceClient(conn),
-			mailbox: mailboxpb.NewMailboxServiceClient(conn),
+			conn: conn,
+			ark:  arkrpc.NewArkServiceClient(conn),
+			mailbox: serverconn.NewAuthenticatedMailboxClient(
+				mailboxpb.NewMailboxServiceClient(conn), sign,
+			),
 			cleanup: conn.Close,
 		}, nil
 
@@ -59,8 +73,11 @@ func (s *Server) connectOperatorClients() (*operatorClients, error) {
 			ark: restclient.NewArkServiceClientFromClient(
 				transport,
 			),
-			mailbox: restclient.NewMailboxServiceClientFromClient(
-				transport,
+			mailbox: serverconn.NewAuthenticatedMailboxClient(
+				restclient.NewMailboxServiceClientFromClient(
+					transport,
+				),
+				sign,
 			),
 			cleanup: func() error { return nil },
 		}, nil
@@ -69,6 +86,58 @@ func (s *Server) connectOperatorClients() (*operatorClients, error) {
 		return nil, fmt.Errorf("unknown server transport %q",
 			s.cfg.Server.Transport)
 	}
+}
+
+// mailboxAuthSigner returns the signer that stamps x-mailbox-auth-sig on
+// outbound mailbox RPCs. It reads the identity key lazily, per RPC, because
+// the mailbox edge is built before the wallet has derived one.
+func (s *Server) mailboxAuthSigner() serverconn.MailboxAuthSigner {
+	return func(ctx context.Context, recipientMailboxID string) (string,
+		error) {
+
+		sig, err := s.mailboxAuthSig(ctx, recipientMailboxID)
+		if err != nil {
+			return "", err
+		}
+
+		return hex.EncodeToString(sig.Serialize()), nil
+	}
+}
+
+// mailboxAuthSig returns the mailbox auth signature for recipientMailboxID,
+// signing once per recipient and serving every later call from memory.
+//
+// Memoizing is what makes signing per RPC affordable: the digest is
+// TaggedHash("mailbox-auth", identityPubKey || recipientMailboxID), so it does
+// not vary with the request, while signMailboxAuth costs a round-trip to
+// whichever wallet backend holds the key. The daemon addresses one recipient
+// mailbox in practice, so the map holds a single entry.
+func (s *Server) mailboxAuthSig(ctx context.Context,
+	recipientMailboxID string) (*schnorr.Signature, error) {
+
+	if s.clientKeyDesc.PubKey == nil {
+		return nil, fmt.Errorf("identity key not yet derived; wallet " +
+			"not ready")
+	}
+
+	s.mailboxAuthSigsMu.Lock()
+	defer s.mailboxAuthSigsMu.Unlock()
+
+	if sig, ok := s.mailboxAuthSigs[recipientMailboxID]; ok {
+		return sig, nil
+	}
+
+	sig, err := s.signMailboxAuth(ctx, recipientMailboxID)
+	if err != nil {
+		return nil, err
+	}
+
+	if s.mailboxAuthSigs == nil {
+		s.mailboxAuthSigs = make(map[string]*schnorr.Signature, 1)
+	}
+	s.mailboxAuthSigs[recipientMailboxID] = sig
+
+	return sig, nil
 }
 
 // serverClientTLSCerts returns the optional client certificate used by the

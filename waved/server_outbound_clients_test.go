@@ -1,15 +1,20 @@
 package waved
 
 import (
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/lightninglabs/wavelength/rpcauth"
+	"github.com/lightninglabs/wavelength/serverconn"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
 	"gopkg.in/macaroon-bakery.v2/bakery"
@@ -38,6 +43,19 @@ func TestConnectOperatorClientsREST(t *testing.T) {
 	macHex, err := rpcauth.HexFromFile(macaroonPath)
 	require.NoError(t, err)
 
+	// Record the mailbox auth header the REST edge sent, guarded because
+	// the handler runs on the test server's goroutine.
+	var (
+		authSigMu  sync.Mutex
+		gotAuthSig string
+	)
+	pulledAuthSig := func() string {
+		authSigMu.Lock()
+		defer authSigMu.Unlock()
+
+		return gotAuthSig
+	}
+
 	server := httptest.NewServer(
 		http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +81,12 @@ func TestConnectOperatorClientsREST(t *testing.T) {
 					)
 
 				case "/v1/mailbox/pull":
+					authSigMu.Lock()
+					gotAuthSig = r.Header.Get(
+						serverconn.AuthHeaderKey,
+					)
+					authSigMu.Unlock()
+
 					msg, marshalErr = protojson.Marshal(
 						&mailboxpb.PullResponse{},
 					)
@@ -81,6 +105,20 @@ func TestConnectOperatorClientsREST(t *testing.T) {
 	)
 	defer server.Close()
 
+	// The mailbox edge signs every call with the daemon identity key, so
+	// the fixture needs one. Priming the memo stands in for the wallet
+	// backend that would produce the signature in a running daemon.
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientMailbox := serverconn.CompoundMailboxID(
+		serverconn.PubKeyMailboxID(operatorKey.PubKey()),
+		serverconn.PubKeyMailboxID(clientKey.PubKey()),
+	)
+
+	authSig, err := serverconn.SignMailboxAuth(clientKey, clientMailbox)
+	require.NoError(t, err)
+
 	s := &Server{
 		cfg: &Config{
 			Server: &ServerConfig{
@@ -89,6 +127,12 @@ func TestConnectOperatorClientsREST(t *testing.T) {
 				Insecure:     true,
 				MacaroonPath: macaroonPath,
 			},
+		},
+		clientKeyDesc: keychain.KeyDescriptor{
+			PubKey: clientKey.PubKey(),
+		},
+		mailboxAuthSigs: map[string]*schnorr.Signature{
+			clientMailbox: authSig,
 		},
 	}
 
@@ -105,9 +149,18 @@ func TestConnectOperatorClientsREST(t *testing.T) {
 	require.Equal(t, operatorPubKey, info.Pubkey)
 
 	_, err = clients.mailbox.Pull(
-		t.Context(), &mailboxpb.PullRequest{},
+		t.Context(), &mailboxpb.PullRequest{
+			MailboxId: clientMailbox,
+		},
 	)
 	require.NoError(t, err)
+
+	// The operator authorizes Pull from this header when it has no client
+	// certificate to bind the caller to a mailbox, so the REST edge has to
+	// carry it rather than only the gRPC one.
+	require.Equal(
+		t, hex.EncodeToString(authSig.Serialize()), pulledAuthSig(),
+	)
 }
 
 // TestConnectOperatorClientsUnknownTransport rejects typoed config early.

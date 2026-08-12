@@ -281,6 +281,17 @@ type Server struct {
 	// so response envelopes can include it without re-computing.
 	authSigHex string
 
+	// mailboxAuthSigsMu guards mailboxAuthSigs.
+	mailboxAuthSigsMu sync.Mutex
+
+	// mailboxAuthSigs memoizes the mailbox auth signature per
+	// recipient mailbox ID. The signed digest covers the identity
+	// key and the recipient and nothing else, so one signature
+	// stays valid for the life of the key; signing per RPC would
+	// put a wallet round-trip in front of every Pull on a
+	// long-poll loop.
+	mailboxAuthSigs map[string]*schnorr.Signature
+
 	// tlsLeafSPKI is the DER-encoded SubjectPublicKeyInfo of the
 	// P-256 client TLS leaf certificate this daemon dialed with.
 	// It is captured during dialServer and used to compute the
@@ -3947,8 +3958,10 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	)
 
 	// Sign the Schnorr auth proving key ownership, bound to
-	// the compound recipient mailbox.
-	authSig, err := s.signMailboxAuth(ctx, remoteMailboxID)
+	// the compound recipient mailbox. This goes through the memo so
+	// the per-RPC signer installed on the mailbox edge serves the
+	// same signature from memory rather than signing a second time.
+	authSig, err := s.mailboxAuthSig(ctx, remoteMailboxID)
 	if err != nil {
 		return fmt.Errorf("sign mailbox auth: %w", err)
 	}
