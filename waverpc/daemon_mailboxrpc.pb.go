@@ -60,6 +60,10 @@ type DaemonServiceMailboxServer interface {
 	SendOOR(ctx context.Context, req *SendOORRequest) (*SendOORResponse, error)
 	// OnboardTaprootAsset handles OnboardTaprootAsset.
 	OnboardTaprootAsset(ctx context.Context, req *OnboardTaprootAssetRequest) (*OnboardTaprootAssetResponse, error)
+	// BoardTaprootAsset handles BoardTaprootAsset.
+	BoardTaprootAsset(ctx context.Context, req *BoardTaprootAssetRequest) (*BoardTaprootAssetResponse, error)
+	// ClaimTaprootAssetVTXO handles ClaimTaprootAssetVTXO.
+	ClaimTaprootAssetVTXO(ctx context.Context, req *ClaimTaprootAssetVTXORequest) (*ClaimTaprootAssetVTXOResponse, error)
 	// PrepareOOR handles PrepareOOR.
 	PrepareOOR(ctx context.Context, req *PrepareOORRequest) (*PrepareOORResponse, error)
 	// SignOORCustomInput handles SignOORCustomInput.
@@ -303,6 +307,26 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.OnboardTaprootAsset(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "BoardTaprootAsset", func() proto.Message {
+		return &BoardTaprootAssetRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*BoardTaprootAssetRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.BoardTaprootAsset(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "ClaimTaprootAssetVTXO", func() proto.Message {
+		return &ClaimTaprootAssetVTXORequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ClaimTaprootAssetVTXORequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ClaimTaprootAssetVTXO(ctx, req)
 	})
 	r.Handle("waverpc.DaemonService", "PrepareOOR", func() proto.Message {
 		return &PrepareOORRequest{}
@@ -1013,6 +1037,52 @@ func (c *DaemonServiceMailboxClient) OnboardTaprootAsset(ctx context.Context, re
 	}
 
 	resp := new(OnboardTaprootAssetResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// BoardTaprootAsset calls the BoardTaprootAsset RPC.
+func (c *DaemonServiceMailboxClient) BoardTaprootAsset(ctx context.Context, req *BoardTaprootAssetRequest, opts ...rpc.RPCOptions) (*BoardTaprootAssetResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "BoardTaprootAsset",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(BoardTaprootAssetResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ClaimTaprootAssetVTXO calls the ClaimTaprootAssetVTXO RPC.
+func (c *DaemonServiceMailboxClient) ClaimTaprootAssetVTXO(ctx context.Context, req *ClaimTaprootAssetVTXORequest, opts ...rpc.RPCOptions) (*ClaimTaprootAssetVTXOResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "ClaimTaprootAssetVTXO",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ClaimTaprootAssetVTXOResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

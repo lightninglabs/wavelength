@@ -534,6 +534,32 @@ func (c *DaemonServiceClient) OnboardTaprootAsset(ctx context.Context,
 	return out, err
 }
 
+// BoardTaprootAsset boards a confirmed onboarded output into a round.
+func (c *DaemonServiceClient) BoardTaprootAsset(ctx context.Context,
+	in *waverpc.BoardTaprootAssetRequest, _ ...grpc.CallOption) (
+	*waverpc.BoardTaprootAssetResponse, error) {
+
+	out := new(waverpc.BoardTaprootAssetResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/board-taproot-asset", in, out,
+	)
+
+	return out, err
+}
+
+// ClaimTaprootAssetVTXO claims an exited asset VTXO into the tapd wallet.
+func (c *DaemonServiceClient) ClaimTaprootAssetVTXO(ctx context.Context,
+	in *waverpc.ClaimTaprootAssetVTXORequest, _ ...grpc.CallOption) (
+	*waverpc.ClaimTaprootAssetVTXOResponse, error) {
+
+	out := new(waverpc.ClaimTaprootAssetVTXOResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/claim-taproot-asset-vtxo", in, out,
+	)
+
+	return out, err
+}
+
 // PrepareOOR builds an out-of-round transfer package without submitting it.
 func (c *DaemonServiceClient) PrepareOOR(ctx context.Context,
 	in *waverpc.PrepareOORRequest, _ ...grpc.CallOption) (
