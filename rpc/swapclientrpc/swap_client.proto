@@ -57,6 +57,7 @@ enum SwapSettlementType {
     SWAP_SETTLEMENT_TYPE_IN_ARK = 2;
     SWAP_SETTLEMENT_TYPE_CREDIT = 3;
     SWAP_SETTLEMENT_TYPE_MIXED = 4;
+    SWAP_SETTLEMENT_TYPE_ARK_CHANNEL = 5;
 }
 
 enum CreditFundingSource {
@@ -429,4 +430,15 @@ message SwapSummary {
     // available_credit_sat is the balance considered when the receive route was
     // planned.
     uint64 available_credit_sat = 26;
+
+    // channel_id identifies the manifested Ark-backed Lightning channel when
+    // this receive completed through channel settlement.
+    bytes channel_id = 27;
+
+    // reserved_scid is the future virtual SCID advertised in the invoice.
+    uint64 reserved_scid = 28;
+
+    // channel_backing_fee_sat is the internal reserve carried by the fallback
+    // vHTLC and consumed when it is promoted into a channel.
+    uint64 channel_backing_fee_sat = 29;
 }
