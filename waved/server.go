@@ -281,6 +281,17 @@ type Server struct {
 	// so response envelopes can include it without re-computing.
 	authSigHex string
 
+	// mailboxAuthSigsMu guards mailboxAuthSigs.
+	mailboxAuthSigsMu sync.Mutex
+
+	// mailboxAuthSigs memoizes the mailbox auth signature per
+	// recipient mailbox ID. The signed digest covers the identity
+	// key and the recipient and nothing else, so one signature
+	// stays valid for the life of the key; signing per RPC would
+	// put a wallet round-trip in front of every Pull on a
+	// long-poll loop.
+	mailboxAuthSigs map[string]*schnorr.Signature
+
 	// tlsLeafSPKI is the DER-encoded SubjectPublicKeyInfo of the
 	// P-256 client TLS leaf certificate this daemon dialed with.
 	// It is captured during dialServer and used to compute the
@@ -2842,7 +2853,17 @@ func (s *Server) newMailboxEdge() mailboxpb.MailboxServiceClient {
 		return s.mailboxClient
 	}
 
-	base := mailboxpb.NewMailboxServiceClient(s.serverConn)
+	// A raw client here would reach the operator with no x-mailbox-auth-sig
+	// header, which is exactly what an operator running requiredirectauth
+	// rejects. connectOperatorClients already wraps the client it builds,
+	// and it runs before this on every production path, so this arm is
+	// latent today; wrapping it too means a future caller that reaches
+	// newMailboxEdge with no mailboxClient set cannot silently lose the
+	// header.
+	base := serverconn.NewAuthenticatedMailboxClient(
+		mailboxpb.NewMailboxServiceClient(s.serverConn),
+		s.mailboxAuthSigner(),
+	)
 	if s.cfg.MailboxEdgeFactory != nil {
 		return s.cfg.MailboxEdgeFactory(s.serverConn, base)
 	}
@@ -3758,7 +3779,7 @@ func (s *Server) initRPCClients(ctx context.Context) {
 			err,
 		)
 	} else {
-		identityDesc, identitySigner, err := s.IndexerProofKey(
+		_, identitySigner, err := s.IndexerProofKey(
 			ctx, keychain.KeyLocator{
 				Family: identityKeyFamily,
 				Index:  0,
@@ -3771,7 +3792,14 @@ func (s *Server) initRPCClients(ctx context.Context) {
 				err,
 			)
 		} else {
-			s.clientKeyDesc = *identityDesc
+			// clientKeyDesc is deliberately not written here.
+			// deriveIdentityKeyEarly has already stored the
+			// descriptor for this exact locator, and it errors out
+			// rather than leaving the field unset, so this would
+			// only re-store the same value. It would also be a
+			// data race: StartEgress runs before this, and its
+			// workers now sign every outbound envelope, so they
+			// read clientKeyDesc while this goroutine writes it.
 			signer = NewFallbackSchnorrSigner(
 				NewOwnedReceiveScriptSigner(
 					packageStore, signerFactory,
@@ -3947,8 +3975,10 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	)
 
 	// Sign the Schnorr auth proving key ownership, bound to
-	// the compound recipient mailbox.
-	authSig, err := s.signMailboxAuth(ctx, remoteMailboxID)
+	// the compound recipient mailbox. This goes through the memo so
+	// the per-RPC signer installed on the mailbox edge serves the
+	// same signature from memory rather than signing a second time.
+	authSig, err := s.mailboxAuthSig(ctx, remoteMailboxID)
 	if err != nil {
 		return fmt.Errorf("sign mailbox auth: %w", err)
 	}

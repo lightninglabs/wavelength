@@ -1,13 +1,17 @@
 package waved
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/lightninglabs/wavelength/rpc/restclient"
@@ -15,6 +19,12 @@ import (
 	"github.com/lightninglabs/wavelength/serverconn"
 	"google.golang.org/grpc"
 )
+
+// mailboxAuthSignTimeout bounds a single mailbox auth signing round trip to
+// the wallet backend. A mailbox RPC that cannot get its signature in this long
+// should fail on its own rather than hold the caller open, since the ingress
+// puller hands down a context with no deadline of its own.
+const mailboxAuthSignTimeout = 30 * time.Second
 
 // operatorClients holds the daemon-owned outbound clients used to talk to the
 // Ark operator directly and through the mailbox edge.
@@ -27,7 +37,16 @@ type operatorClients struct {
 
 // connectOperatorClients builds the outbound clients for the configured
 // operator transport.
+//
+// Both mailbox edges are wrapped so every Send, Pull and AckUpTo carries the
+// x-mailbox-auth-sig metadata header. The operator authorizes a mailbox RPC
+// either from the TLS client certificate bound to the caller's mailbox ID or
+// from that header, and an operator that terminates TLS at a proxy never sees
+// a client certificate. Signing unconditionally means the daemon works against
+// either posture without the operator's TLS choice leaking into client config.
 func (s *Server) connectOperatorClients() (*operatorClients, error) {
+	sign := s.mailboxAuthSigner()
+
 	switch s.cfg.Server.Transport {
 	case "", RPCTransportGRPC:
 		conn, err := s.dialServer()
@@ -36,9 +55,11 @@ func (s *Server) connectOperatorClients() (*operatorClients, error) {
 		}
 
 		return &operatorClients{
-			conn:    conn,
-			ark:     arkrpc.NewArkServiceClient(conn),
-			mailbox: mailboxpb.NewMailboxServiceClient(conn),
+			conn: conn,
+			ark:  arkrpc.NewArkServiceClient(conn),
+			mailbox: serverconn.NewAuthenticatedMailboxClient(
+				mailboxpb.NewMailboxServiceClient(conn), sign,
+			),
 			cleanup: conn.Close,
 		}, nil
 
@@ -59,8 +80,11 @@ func (s *Server) connectOperatorClients() (*operatorClients, error) {
 			ark: restclient.NewArkServiceClientFromClient(
 				transport,
 			),
-			mailbox: restclient.NewMailboxServiceClientFromClient(
-				transport,
+			mailbox: serverconn.NewAuthenticatedMailboxClient(
+				restclient.NewMailboxServiceClientFromClient(
+					transport,
+				),
+				sign,
 			),
 			cleanup: func() error { return nil },
 		}, nil
@@ -69,6 +93,96 @@ func (s *Server) connectOperatorClients() (*operatorClients, error) {
 		return nil, fmt.Errorf("unknown server transport %q",
 			s.cfg.Server.Transport)
 	}
+}
+
+// mailboxAuthSigner returns the signer that stamps x-mailbox-auth-sig on
+// outbound mailbox RPCs.
+//
+// The identity key is read per RPC rather than captured at construction.
+// deriveIdentityKeyEarly runs before connectOperatorClients and fails the
+// startup path if it cannot derive, so the key is in fact already there by
+// the time the edge is built; reading it late costs nothing and keeps this
+// closure from pinning a descriptor that startup has not finished with.
+func (s *Server) mailboxAuthSigner() serverconn.MailboxAuthSigner {
+	return func(ctx context.Context, recipientMailboxID string) (string,
+		error) {
+
+		sig, err := s.mailboxAuthSig(ctx, recipientMailboxID)
+		if err != nil {
+			return "", err
+		}
+
+		return hex.EncodeToString(sig.Serialize()), nil
+	}
+}
+
+// mailboxAuthSig returns the mailbox auth signature for recipientMailboxID,
+// signing once per recipient and serving every later call from memory.
+//
+// Memoizing is what makes signing per RPC affordable: the digest is
+// TaggedHash("mailbox-auth", identityPubKey || recipientMailboxID), so it does
+// not vary with the request, while signMailboxAuth costs a round-trip to
+// whichever wallet backend holds the key.
+//
+// There is one entry per distinct recipient, which is more than the operator
+// edge alone accounts for. That edge contributes two: Send addresses the
+// compound operator:client mailbox while Pull and AckUpTo address this
+// client's own plain mailbox ID, so the two arms sign different recipients and
+// must not collide. RPCServer.SignMailboxAuth also routes here, and the swap
+// edge behind it addresses a per-swap mailbox (client:payment_hash), so a
+// long-lived daemon accumulates one further entry per out-swap. Each is a
+// mailbox ID and a 64-byte signature and none is ever evicted, so the map
+// grows with swaps performed rather than staying at a fixed size. Bounding it
+// would need an eviction policy, which is not worth the machinery at the sizes
+// involved — but it is growth, not a constant, and a reader should know that
+// before assuming otherwise.
+//
+// The wallet call deliberately happens with the mutex released. Holding it
+// across the round trip would serialize the whole mailbox edge behind one
+// signature: sync.Mutex.Lock is not context-aware, so the egress workers and
+// the ingress puller would block on it with their own deadlines silently
+// ignored, and a wedged wallet would stall egress, ingress, heartbeat and ack
+// together with nothing in the logs to say why. Two callers racing the same
+// cold recipient may both sign, which is harmless — the digest is
+// deterministic, so they produce the same signature and the second store is a
+// no-op.
+func (s *Server) mailboxAuthSig(ctx context.Context,
+	recipientMailboxID string) (*schnorr.Signature, error) {
+
+	if s.clientKeyDesc.PubKey == nil {
+		return nil, fmt.Errorf("identity key not yet derived; wallet " +
+			"not ready")
+	}
+
+	s.mailboxAuthSigsMu.Lock()
+	sig, ok := s.mailboxAuthSigs[recipientMailboxID]
+	s.mailboxAuthSigsMu.Unlock()
+
+	if ok {
+		return sig, nil
+	}
+
+	// Bound the signing round trip rather than inheriting the caller's
+	// context. The ingress puller builds its context with no deadline at
+	// all, so a hung wallet would otherwise park this call forever, and
+	// the memo miss is on the path every Pull takes.
+	signCtx, cancel := context.WithTimeout(ctx, mailboxAuthSignTimeout)
+	defer cancel()
+
+	sig, err := s.signMailboxAuth(signCtx, recipientMailboxID)
+	if err != nil {
+		return nil, err
+	}
+
+	s.mailboxAuthSigsMu.Lock()
+	defer s.mailboxAuthSigsMu.Unlock()
+
+	if s.mailboxAuthSigs == nil {
+		s.mailboxAuthSigs = make(map[string]*schnorr.Signature, 2)
+	}
+	s.mailboxAuthSigs[recipientMailboxID] = sig
+
+	return sig, nil
 }
 
 // serverClientTLSCerts returns the optional client certificate used by the
