@@ -78,6 +78,7 @@ const (
 	SwapSettlementType_SWAP_SETTLEMENT_TYPE_IN_ARK      SwapSettlementType = 2
 	SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT      SwapSettlementType = 3
 	SwapSettlementType_SWAP_SETTLEMENT_TYPE_MIXED       SwapSettlementType = 4
+	SwapSettlementType_SWAP_SETTLEMENT_TYPE_ARK_CHANNEL SwapSettlementType = 5
 )
 
 // Enum value maps for SwapSettlementType.
@@ -88,6 +89,7 @@ var (
 		2: "SWAP_SETTLEMENT_TYPE_IN_ARK",
 		3: "SWAP_SETTLEMENT_TYPE_CREDIT",
 		4: "SWAP_SETTLEMENT_TYPE_MIXED",
+		5: "SWAP_SETTLEMENT_TYPE_ARK_CHANNEL",
 	}
 	SwapSettlementType_value = map[string]int32{
 		"SWAP_SETTLEMENT_TYPE_UNSPECIFIED": 0,
@@ -95,6 +97,7 @@ var (
 		"SWAP_SETTLEMENT_TYPE_IN_ARK":      2,
 		"SWAP_SETTLEMENT_TYPE_CREDIT":      3,
 		"SWAP_SETTLEMENT_TYPE_MIXED":       4,
+		"SWAP_SETTLEMENT_TYPE_ARK_CHANNEL": 5,
 	}
 )
 
@@ -2031,8 +2034,16 @@ type SwapSummary struct {
 	// available_credit_sat is the balance considered when the receive route was
 	// planned.
 	AvailableCreditSat uint64 `protobuf:"varint,26,opt,name=available_credit_sat,json=availableCreditSat,proto3" json:"available_credit_sat,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// channel_id identifies the manifested Ark-backed Lightning channel when
+	// this receive completed through channel settlement.
+	ChannelId []byte `protobuf:"bytes,27,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
+	// reserved_scid is the future virtual SCID advertised in the invoice.
+	ReservedScid uint64 `protobuf:"varint,28,opt,name=reserved_scid,json=reservedScid,proto3" json:"reserved_scid,omitempty"`
+	// channel_backing_fee_sat is the internal reserve carried by the fallback
+	// vHTLC and consumed when it is promoted into a channel.
+	ChannelBackingFeeSat uint64 `protobuf:"varint,29,opt,name=channel_backing_fee_sat,json=channelBackingFeeSat,proto3" json:"channel_backing_fee_sat,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *SwapSummary) Reset() {
@@ -2247,6 +2258,27 @@ func (x *SwapSummary) GetAvailableCreditSat() uint64 {
 	return 0
 }
 
+func (x *SwapSummary) GetChannelId() []byte {
+	if x != nil {
+		return x.ChannelId
+	}
+	return nil
+}
+
+func (x *SwapSummary) GetReservedScid() uint64 {
+	if x != nil {
+		return x.ReservedScid
+	}
+	return 0
+}
+
+func (x *SwapSummary) GetChannelBackingFeeSat() uint64 {
+	if x != nil {
+		return x.ChannelBackingFeeSat
+	}
+	return 0
+}
+
 var File_swap_client_proto protoreflect.FileDescriptor
 
 const file_swap_client_proto_rawDesc = "" +
@@ -2375,7 +2407,7 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x10include_existing\x18\x01 \x01(\bR\x0fincludeExisting\x12!\n" +
 	"\fpending_only\x18\x02 \x01(\bR\vpendingOnly\"H\n" +
 	"\x16SubscribeSwapsResponse\x12.\n" +
-	"\x04swap\x18\x01 \x01(\v2\x1a.swapclientrpc.SwapSummaryR\x04swap\"\xca\b\n" +
+	"\x04swap\x18\x01 \x01(\v2\x1a.swapclientrpc.SwapSummaryR\x04swap\"\xc5\t\n" +
 	"\vSwapSummary\x12:\n" +
 	"\tdirection\x18\x01 \x01(\x0e2\x1c.swapclientrpc.SwapDirectionR\tdirection\x12!\n" +
 	"\fpayment_hash\x18\x02 \x01(\tR\vpaymentHash\x12.\n" +
@@ -2404,17 +2436,22 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x14requested_amount_sat\x18\x17 \x01(\x04R\x12requestedAmountSat\x12.\n" +
 	"\x13attached_credit_sat\x18\x18 \x01(\x04R\x11attachedCreditSat\x12$\n" +
 	"\x0edust_limit_sat\x18\x19 \x01(\x04R\fdustLimitSat\x120\n" +
-	"\x14available_credit_sat\x18\x1a \x01(\x04R\x12availableCreditSat*c\n" +
+	"\x14available_credit_sat\x18\x1a \x01(\x04R\x12availableCreditSat\x12\x1d\n" +
+	"\n" +
+	"channel_id\x18\x1b \x01(\fR\tchannelId\x12#\n" +
+	"\rreserved_scid\x18\x1c \x01(\x04R\freservedScid\x125\n" +
+	"\x17channel_backing_fee_sat\x18\x1d \x01(\x04R\x14channelBackingFeeSat*c\n" +
 	"\rSwapDirection\x12\x1e\n" +
 	"\x1aSWAP_DIRECTION_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12SWAP_DIRECTION_PAY\x10\x01\x12\x1a\n" +
-	"\x16SWAP_DIRECTION_RECEIVE\x10\x02*\xc0\x01\n" +
+	"\x16SWAP_DIRECTION_RECEIVE\x10\x02*\xe6\x01\n" +
 	"\x12SwapSettlementType\x12$\n" +
 	" SWAP_SETTLEMENT_TYPE_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eSWAP_SETTLEMENT_TYPE_LIGHTNING\x10\x01\x12\x1f\n" +
 	"\x1bSWAP_SETTLEMENT_TYPE_IN_ARK\x10\x02\x12\x1f\n" +
 	"\x1bSWAP_SETTLEMENT_TYPE_CREDIT\x10\x03\x12\x1e\n" +
-	"\x1aSWAP_SETTLEMENT_TYPE_MIXED\x10\x04*\x8e\x01\n" +
+	"\x1aSWAP_SETTLEMENT_TYPE_MIXED\x10\x04\x12$\n" +
+	" SWAP_SETTLEMENT_TYPE_ARK_CHANNEL\x10\x05*\x8e\x01\n" +
 	"\x13CreditFundingSource\x12%\n" +
 	"!CREDIT_FUNDING_SOURCE_UNSPECIFIED\x10\x00\x12+\n" +
 	"'CREDIT_FUNDING_SOURCE_LIGHTNING_RECEIVE\x10\x01\x12#\n" +
