@@ -846,6 +846,8 @@ func (r *RPCServer) GetBalance(ctx context.Context,
 			}
 		}
 		resp.VtxoUnilateralExitSat = int64(exitSat)
+
+		resp.TaprootAssets = taprootAssetBalances(liveVTXOs, exiting)
 	}
 
 	// Fetch the confirmed balance of the backing on-chain wallet so
@@ -1306,6 +1308,9 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 	}
 
 	filtered := vtxo.FilterDescriptors(dbVTXOs, filterOpts)
+	if req.AssetRef != "" {
+		filtered = filterDescriptorsByAssetRef(filtered, req.AssetRef)
+	}
 
 	// Resolving the OOR package for an outpoint costs one artifact-store
 	// read per VTXO, so listing-only callers can opt out of checkpoint
