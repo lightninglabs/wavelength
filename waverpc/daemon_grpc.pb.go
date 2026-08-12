@@ -37,6 +37,8 @@ const (
 	DaemonService_SendVTXO_FullMethodName                                       = "/waverpc.DaemonService/SendVTXO"
 	DaemonService_SendOOR_FullMethodName                                        = "/waverpc.DaemonService/SendOOR"
 	DaemonService_OnboardTaprootAsset_FullMethodName                            = "/waverpc.DaemonService/OnboardTaprootAsset"
+	DaemonService_BoardTaprootAsset_FullMethodName                              = "/waverpc.DaemonService/BoardTaprootAsset"
+	DaemonService_ClaimTaprootAssetVTXO_FullMethodName                          = "/waverpc.DaemonService/ClaimTaprootAssetVTXO"
 	DaemonService_PrepareOOR_FullMethodName                                     = "/waverpc.DaemonService/PrepareOOR"
 	DaemonService_SignOORCustomInput_FullMethodName                             = "/waverpc.DaemonService/SignOORCustomInput"
 	DaemonService_SignVTXOForfeit_FullMethodName                                = "/waverpc.DaemonService/SignVTXOForfeit"
@@ -138,6 +140,16 @@ type DaemonServiceClient interface {
 	// retry resumes publication or operator registration without committing
 	// another asset transition.
 	OnboardTaprootAsset(ctx context.Context, in *OnboardTaprootAssetRequest, opts ...grpc.CallOption) (*OnboardTaprootAssetResponse, error)
+	// BoardTaprootAsset boards a confirmed onboarded output into the next
+	// asset round. The daemon rebuilds the boarding disclosure from the
+	// onboarding named by the idempotency key, gathers the confirmation
+	// and the boarded asset proof itself, and registers the boarding
+	// together with a matching asset VTXO request. Safe to retry.
+	BoardTaprootAsset(ctx context.Context, in *BoardTaprootAssetRequest, opts ...grpc.CallOption) (*BoardTaprootAssetResponse, error)
+	// ClaimTaprootAssetVTXO claims an exited asset VTXO into the daemon's
+	// tapd wallet once its unrolled anchor has matured past the exit
+	// delay. The daemon gathers the lineage confirmations itself.
+	ClaimTaprootAssetVTXO(ctx context.Context, in *ClaimTaprootAssetVTXORequest, opts ...grpc.CallOption) (*ClaimTaprootAssetVTXOResponse, error)
 	// PrepareOOR builds the deterministic OOR package without submitting it.
 	// This lets callers collect signatures from external custom-input
 	// participants before calling SendOOR with the same parameters.
@@ -456,6 +468,26 @@ func (c *daemonServiceClient) OnboardTaprootAsset(ctx context.Context, in *Onboa
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(OnboardTaprootAssetResponse)
 	err := c.cc.Invoke(ctx, DaemonService_OnboardTaprootAsset_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) BoardTaprootAsset(ctx context.Context, in *BoardTaprootAssetRequest, opts ...grpc.CallOption) (*BoardTaprootAssetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BoardTaprootAssetResponse)
+	err := c.cc.Invoke(ctx, DaemonService_BoardTaprootAsset_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ClaimTaprootAssetVTXO(ctx context.Context, in *ClaimTaprootAssetVTXORequest, opts ...grpc.CallOption) (*ClaimTaprootAssetVTXOResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClaimTaprootAssetVTXOResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ClaimTaprootAssetVTXO_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -840,6 +872,16 @@ type DaemonServiceServer interface {
 	// retry resumes publication or operator registration without committing
 	// another asset transition.
 	OnboardTaprootAsset(context.Context, *OnboardTaprootAssetRequest) (*OnboardTaprootAssetResponse, error)
+	// BoardTaprootAsset boards a confirmed onboarded output into the next
+	// asset round. The daemon rebuilds the boarding disclosure from the
+	// onboarding named by the idempotency key, gathers the confirmation
+	// and the boarded asset proof itself, and registers the boarding
+	// together with a matching asset VTXO request. Safe to retry.
+	BoardTaprootAsset(context.Context, *BoardTaprootAssetRequest) (*BoardTaprootAssetResponse, error)
+	// ClaimTaprootAssetVTXO claims an exited asset VTXO into the daemon's
+	// tapd wallet once its unrolled anchor has matured past the exit
+	// delay. The daemon gathers the lineage confirmations itself.
+	ClaimTaprootAssetVTXO(context.Context, *ClaimTaprootAssetVTXORequest) (*ClaimTaprootAssetVTXOResponse, error)
 	// PrepareOOR builds the deterministic OOR package without submitting it.
 	// This lets callers collect signatures from external custom-input
 	// participants before calling SendOOR with the same parameters.
@@ -1037,6 +1079,12 @@ func (UnimplementedDaemonServiceServer) SendOOR(context.Context, *SendOORRequest
 }
 func (UnimplementedDaemonServiceServer) OnboardTaprootAsset(context.Context, *OnboardTaprootAssetRequest) (*OnboardTaprootAssetResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method OnboardTaprootAsset not implemented")
+}
+func (UnimplementedDaemonServiceServer) BoardTaprootAsset(context.Context, *BoardTaprootAssetRequest) (*BoardTaprootAssetResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method BoardTaprootAsset not implemented")
+}
+func (UnimplementedDaemonServiceServer) ClaimTaprootAssetVTXO(context.Context, *ClaimTaprootAssetVTXORequest) (*ClaimTaprootAssetVTXOResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ClaimTaprootAssetVTXO not implemented")
 }
 func (UnimplementedDaemonServiceServer) PrepareOOR(context.Context, *PrepareOORRequest) (*PrepareOORResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PrepareOOR not implemented")
@@ -1469,6 +1517,42 @@ func _DaemonService_OnboardTaprootAsset_Handler(srv interface{}, ctx context.Con
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).OnboardTaprootAsset(ctx, req.(*OnboardTaprootAssetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_BoardTaprootAsset_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BoardTaprootAssetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).BoardTaprootAsset(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_BoardTaprootAsset_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).BoardTaprootAsset(ctx, req.(*BoardTaprootAssetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ClaimTaprootAssetVTXO_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClaimTaprootAssetVTXORequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ClaimTaprootAssetVTXO(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ClaimTaprootAssetVTXO_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ClaimTaprootAssetVTXO(ctx, req.(*ClaimTaprootAssetVTXORequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2084,6 +2168,14 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "OnboardTaprootAsset",
 			Handler:    _DaemonService_OnboardTaprootAsset_Handler,
+		},
+		{
+			MethodName: "BoardTaprootAsset",
+			Handler:    _DaemonService_BoardTaprootAsset_Handler,
+		},
+		{
+			MethodName: "ClaimTaprootAssetVTXO",
+			Handler:    _DaemonService_ClaimTaprootAssetVTXO_Handler,
 		},
 		{
 			MethodName: "PrepareOOR",

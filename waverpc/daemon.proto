@@ -95,6 +95,20 @@ service DaemonService {
     rpc OnboardTaprootAsset (OnboardTaprootAssetRequest)
         returns (OnboardTaprootAssetResponse);
 
+    // BoardTaprootAsset boards a confirmed onboarded output into the next
+    // asset round. The daemon rebuilds the boarding disclosure from the
+    // onboarding named by the idempotency key, gathers the confirmation
+    // and the boarded asset proof itself, and registers the boarding
+    // together with a matching asset VTXO request. Safe to retry.
+    rpc BoardTaprootAsset (BoardTaprootAssetRequest)
+        returns (BoardTaprootAssetResponse);
+
+    // ClaimTaprootAssetVTXO claims an exited asset VTXO into the daemon's
+    // tapd wallet once its unrolled anchor has matured past the exit
+    // delay. The daemon gathers the lineage confirmations itself.
+    rpc ClaimTaprootAssetVTXO (ClaimTaprootAssetVTXORequest)
+        returns (ClaimTaprootAssetVTXOResponse);
+
     // PrepareOOR builds the deterministic OOR package without submitting it.
     // This lets callers collect signatures from external custom-input
     // participants before calling SendOOR with the same parameters.
@@ -330,6 +344,53 @@ message OnboardTaprootAssetResponse {
     // actual_fee_sat is the exact on-chain miner fee recorded in the sealed
     // tap-sdk package. It remains stable across retries and restarts.
     uint64 actual_fee_sat = 7;
+}
+
+message BoardTaprootAssetRequest {
+    // idempotency_key names the completed onboarding to board. It is the
+    // same key the caller passed to OnboardTaprootAsset.
+    string idempotency_key = 1;
+}
+
+message BoardTaprootAssetResponse {
+    // outpoint is the boarded composed output.
+    string outpoint = 1;
+
+    // value_sat is the output's carrier Bitcoin value.
+    int64 value_sat = 2;
+
+    // asset_ref and asset_amount identify the boarded units.
+    string asset_ref = 3;
+    uint64 asset_amount = 4;
+
+    // already_boarded reports an idempotent replay: the boarding intent
+    // already existed and no new round registration was sent.
+    bool already_boarded = 5;
+}
+
+message ClaimTaprootAssetVTXORequest {
+    // outpoint identifies the exited asset VTXO in "txid:vout" format.
+    string outpoint = 1;
+
+    // fee_sat is the on-chain miner fee, paid out of the VTXO's carrier
+    // value. Zero lets the daemon estimate one from the wallet's fee
+    // estimator.
+    int64 fee_sat = 2;
+}
+
+message ClaimTaprootAssetVTXOResponse {
+    // txid is the published claim transaction.
+    string txid = 1;
+
+    // anchor_outpoint is the new tapd-owned anchor holding the claimed
+    // units.
+    string anchor_outpoint = 2;
+
+    // output_value_sat is the new anchor's Bitcoin value.
+    int64 output_value_sat = 3;
+
+    // fee_sat is the miner fee the claim actually paid.
+    int64 fee_sat = 4;
 }
 
 // WalletState mirrors the daemon's in-process wallet lifecycle enum:
@@ -625,6 +686,32 @@ message GetBalanceResponse {
     // total_confirmed_sat; reappears under onchain_wallet_confirmed_sat
     // once the sweep confirms.
     int64 vtxo_unilateral_exit_sat = 10;
+
+    // taproot_assets breaks down asset-bearing VTXO holdings by asset
+    // reference. The carrier satoshis of these VTXOs stay counted in the
+    // Bitcoin fields above.
+    repeated TaprootAssetBalance taproot_assets = 11;
+}
+
+// TaprootAssetBalance is one asset reference's VTXO holdings, in asset
+// units.
+message TaprootAssetBalance {
+    // asset_ref is the tap-sdk asset or group reference.
+    string asset_ref = 1;
+
+    // live_amount is the total held in live (spendable) VTXOs.
+    uint64 live_amount = 2;
+
+    // pending_amount is the total held in VTXOs that are not yet live or
+    // are mid-spend.
+    uint64 pending_amount = 3;
+
+    // exiting_amount is the total held in VTXOs mid unilateral exit,
+    // claimable once the exit matures.
+    uint64 exiting_amount = 4;
+
+    // live_vtxo_count is the number of live VTXOs carrying this asset.
+    uint32 live_vtxo_count = 5;
 }
 
 // VTXOStatus represents the lifecycle state of a virtual transaction
@@ -843,6 +930,10 @@ message ListVTXOsRequest {
     // consumers (balance views, coin selection) that never inspect the
     // PSBTs. The default keeps the full response for compatibility.
     bool exclude_checkpoint_psbts = 3;
+
+    // asset_ref restricts the response to VTXOs carrying this Taproot
+    // Asset reference. Empty applies no asset filter.
+    string asset_ref = 4;
 }
 
 message ListVTXOsResponse {
