@@ -124,10 +124,18 @@ func (s *Server) mailboxAuthSigner() serverconn.MailboxAuthSigner {
 // not vary with the request, while signMailboxAuth costs a round-trip to
 // whichever wallet backend holds the key.
 //
-// The map holds two entries, not one. Send addresses the compound
-// operator:client mailbox, while Pull and AckUpTo address this client's own
-// plain mailbox ID, so the two arms sign different recipients and cache
-// separately. Keying on the recipient is what keeps them from colliding.
+// There is one entry per distinct recipient, which is more than the operator
+// edge alone accounts for. That edge contributes two: Send addresses the
+// compound operator:client mailbox while Pull and AckUpTo address this
+// client's own plain mailbox ID, so the two arms sign different recipients and
+// must not collide. RPCServer.SignMailboxAuth also routes here, and the swap
+// edge behind it addresses a per-swap mailbox (client:payment_hash), so a
+// long-lived daemon accumulates one further entry per out-swap. Each is a
+// mailbox ID and a 64-byte signature and none is ever evicted, so the map
+// grows with swaps performed rather than staying at a fixed size. Bounding it
+// would need an eviction policy, which is not worth the machinery at the sizes
+// involved — but it is growth, not a constant, and a reader should know that
+// before assuming otherwise.
 //
 // The wallet call deliberately happens with the mutex released. Holding it
 // across the round trip would serialize the whole mailbox edge behind one

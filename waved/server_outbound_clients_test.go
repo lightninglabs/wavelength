@@ -353,6 +353,12 @@ func TestMailboxAuthSigMemo(t *testing.T) {
 	_, err = s.mailboxAuthSig(t.Context(), compound)
 	require.ErrorContains(t, err, "no wallet backend available")
 
+	// A failed sign caches nothing. Caching it would pin the failure for
+	// the life of the process, so every later RPC to that mailbox would
+	// fail without ever retrying the wallet.
+	require.Len(t, s.mailboxAuthSigs, 1)
+	require.NotContains(t, s.mailboxAuthSigs, compound)
+
 	// The miss must not have disturbed the entry that was already there.
 	got, err = s.mailboxAuthSig(t.Context(), plain)
 	require.NoError(t, err)

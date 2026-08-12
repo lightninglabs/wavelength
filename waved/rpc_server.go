@@ -140,11 +140,9 @@ func (r *RPCServer) SignMailboxAuth(ctx context.Context,
 	if r == nil || r.server == nil {
 		return "", fmt.Errorf("daemon server unavailable")
 	}
-	if r.server.clientKeyDesc.PubKey == nil {
-		return "", fmt.Errorf("identity key not yet derived; wallet " +
-			"not ready")
-	}
 
+	// mailboxAuthSig makes the same "identity key not yet derived" check
+	// with the same error, so it is not repeated here.
 	sig, err := r.server.mailboxAuthSig(ctx, recipientMailboxID)
 	if err != nil {
 		return "", err
