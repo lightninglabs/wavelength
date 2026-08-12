@@ -57,6 +57,16 @@ const (
 
 	// testDustLimitSat is the fake operator dust limit used by the test.
 	testDustLimitSat = int64(546)
+
+	// systestLNDTransportEnv is the environment variable that selects the
+	// lnd wallet transport for every daemon built by
+	// newDirectedSendFixture. When set to the REST transport value it
+	// defaults the whole directed-send/OOR suite onto the lnd REST backend
+	// (a per-test config mutator still overrides it), so CI can rerun the
+	// signing-capable send/OOR flows against REST-backed lnd without
+	// duplicating the test bodies. Unset (or "grpc") keeps the historical
+	// gRPC path, so local `make systest` behaviour is unchanged.
+	systestLNDTransportEnv = "ARK_SYSTEST_LND_TRANSPORT"
 )
 
 // fakeMailboxServer implements just enough of the operator mailbox edge for the
@@ -592,8 +602,27 @@ func newDirectedSendFixture(t *testing.T,
 	cfg.RPC.NoTLS = true
 	cfg.RPC.NoMacaroons = true
 
+	// Default the lnd transport from the environment so a CI job can rerun
+	// the signing-capable send/OOR flows over REST without a per-test
+	// mutator. Applied before the mutators below so an explicit per-test
+	// mutator still wins.
+	if os.Getenv(systestLNDTransportEnv) == string(waved.RPCTransportREST) {
+		cfg.Lnd.Transport = waved.RPCTransportREST
+	}
+
 	for _, mutate := range cfgMutators {
 		mutate(cfg)
+	}
+
+	// When a mutator opts the lnd backend into the REST transport, point
+	// the host at the harness lnd REST gateway port (8080) instead of the
+	// gRPC port set above. The TLS cert and macaroon paths are unchanged;
+	// the lndrest client reads the same files and reaches lnd's
+	// grpc-gateway over HTTPS.
+	if cfg.Lnd.Transport == waved.RPCTransportREST {
+		cfg.Lnd.Host = net.JoinHostPort(
+			"localhost", h.Harness.LNDRestPort,
+		)
 	}
 
 	seededOutpoint := seedLiveVTXO(

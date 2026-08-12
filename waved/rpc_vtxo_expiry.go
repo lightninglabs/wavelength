@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/lightninglabs/lndclient"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/indexer"
 	"github.com/lightninglabs/wavelength/vtxo"
@@ -195,8 +194,9 @@ func (r *RPCServer) currentBlockHeight(ctx context.Context) (int32, error) {
 		found  bool
 	)
 
-	r.server.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
-		_, bestHeight, bestErr := lndSvc.ChainKit.GetBestBlock(ctx)
+	r.server.lnd.WhenSome(func(lndSvc lndServices) {
+		chainKit := lndSvc.Services().ChainKit
+		_, bestHeight, bestErr := chainKit.GetBestBlock(ctx)
 		if bestErr != nil {
 			err = fmt.Errorf("fetch lnd best block: %w", bestErr)
 
