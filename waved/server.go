@@ -57,6 +57,7 @@ import (
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	"github.com/lightninglabs/wavelength/rpcauth"
 	"github.com/lightninglabs/wavelength/serverconn"
+	"github.com/lightninglabs/wavelength/tapassets"
 	"github.com/lightninglabs/wavelength/timeout"
 	"github.com/lightninglabs/wavelength/txconfirm"
 	"github.com/lightninglabs/wavelength/unroll"
@@ -328,6 +329,11 @@ type Server struct {
 	// optional Taproot Asset integration is configured. Onboarding and
 	// the exit claim build their transitions through it.
 	taprootAssetWallet *tapsdk.Wallet
+
+	// taprootAssetStore is the durable Taproot Asset journal shared with
+	// the onboarding workflow; BoardTaprootAsset replays onboardings
+	// from it.
+	taprootAssetStore tapassets.Store
 
 	// operatorTerms caches the operator policy fetched during daemon
 	// bootstrap so local RPC callers can inspect the current server

@@ -61,6 +61,7 @@ func (r *RPCServer) ConfigureTaprootAssetOnboarding(wallet *tapsdk.Wallet,
 	}
 	r.server.cfg.TaprootAssetOnboarder = onboarder
 	r.server.taprootAssetWallet = wallet
+	r.server.taprootAssetStore = store
 
 	return nil
 }
@@ -133,7 +134,7 @@ func (r *RPCServer) OnboardTaprootAsset(ctx context.Context,
 		)
 	}
 
-	result, err := onboarder.Onboard(ctx, &tapassets.OnboardingRequest{
+	onboardingRequest := &tapassets.OnboardingRequest{
 		RequestID:   req.GetIdempotencyKey(),
 		AssetRef:    req.GetAssetRef(),
 		AssetAmount: req.GetAssetAmount(),
@@ -146,7 +147,8 @@ func (r *RPCServer) OnboardTaprootAsset(ctx context.Context,
 		MaxFeeSat:          req.GetMaxFeeSat(),
 		OperatorKey:        terms.PubKey,
 		ExitDelay:          terms.VTXOExitDelay,
-	})
+	}
+	result, err := onboarder.Onboard(ctx, onboardingRequest)
 	if errors.Is(err, tapassets.ErrReconciliationRequired) {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
@@ -158,6 +160,15 @@ func (r *RPCServer) OnboardTaprootAsset(ctx context.Context,
 		return nil, status.Error(
 			codes.Internal, "onboarding service returned no result",
 		)
+	}
+
+	// Persist the replay slice so BoardTaprootAsset can rebuild the
+	// disclosure from the idempotency key alone. The onboarding is
+	// idempotent, so a retry after a persist failure lands here again.
+	err = r.server.storeTaprootAssetBoardRequest(ctx, onboardingRequest)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "persist boarding "+
+			"replay request: %v", err)
 	}
 
 	response := &waverpc.OnboardTaprootAssetResponse{
