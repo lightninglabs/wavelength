@@ -884,14 +884,17 @@ func (n *Node) SigHash(prevOutFetcher txscript.PrevOutputFetcher) ([]byte,
 	)
 }
 
-// NewSignerSession creates a new MuSig2 signing session for this node.
+// NewSignerSession creates a new MuSig2 signing session for this node. The
+// cosigner set is copied first: session creation sorts the slice it is
+// handed in place, and concurrent sessions over nodes sharing one backing
+// array would race on that sort.
 func (n *Node) NewSignerSession(signerKey *keychain.KeyDescriptor,
 	signer input.MuSig2Signer, sweepTapscriptRoot []byte) (
 	*input.MuSig2SessionInfo, error) {
 
 	return signer.MuSig2CreateSession(
 		input.MuSig2Version100RC2, signerKey.KeyLocator,
-		n.CoSigners, &input.MuSig2Tweaks{
+		sortableCopy(n.CoSigners), &input.MuSig2Tweaks{
 			TaprootTweak: sweepTapscriptRoot,
 		}, nil, nil,
 	)
