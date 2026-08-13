@@ -101,8 +101,11 @@ Use `docker compose` (the v2 subcommand), not the standalone
 
 `--server.host` has no baked-in default. When it is empty the address is
 resolved from a network+transport table at startup: `localhost:10010` on
-mainnet, regtest, and simnet, and the Lightning Labs deployment on testnet,
-testnet4, and signet. Running on mainnet at all also requires
+regtest and simnet, and the Lightning Labs deployment on mainnet, testnet,
+testnet4, and signet. Only the mainnet gRPC endpoints are reachable today;
+the mainnet REST names are in the table but do not resolve yet, so mainnet
+plus `--server.transport=rest` needs an explicit `--server.host` until the
+REST ingress lands. Running on mainnet at all also requires
 `--allow-mainnet`, and pairing mainnet with `--rpc.notls` or
 `--rpc.no-macaroons` requires `--allow-insecure-mainnet` on top of that.
 
