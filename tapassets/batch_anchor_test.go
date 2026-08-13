@@ -86,6 +86,7 @@ func (f *fakeBatchDriver) Commit(_ context.Context,
 	}
 	for _, out := range request.Outputs {
 		result.outputs = append(result.outputs, commitOutput{
+			logicalOutputID:   out.ID,
 			anchorOutputIndex: out.AnchorOutputIndex,
 			anchorOutpoint: sdkOutpoint(wire.OutPoint{
 				Hash:  template.TxHash(),
@@ -400,6 +401,181 @@ func TestBatchAnchorCommitFailClosed(t *testing.T) {
 
 			funded := fundedFromTemplate(t, template, derived)
 			test.corrupt(req, funded, derived, fake)
+
+			_, err = committer.Commit(ctx, req, funded, derived)
+			require.ErrorContains(t, err, test.wantErr)
+		})
+	}
+}
+
+// addBatchAnchorChange rewires the fixture so 600 of the 1500 funded
+// units return as wallet-owned change on a second anchor output, and
+// returns the rebuilt two-output template.
+func addBatchAnchorChange(t *testing.T, req *BatchAnchorRequest,
+	template *psbt.Packet) *psbt.Packet {
+
+	t.Helper()
+
+	scriptPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	scriptPub, err := tapsdk.ParsePubKey(
+		scriptPriv.PubKey().SerializeCompressed(),
+	)
+	require.NoError(t, err)
+	internalPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	internalPub, err := tapsdk.ParsePubKey(
+		internalPriv.PubKey().SerializeCompressed(),
+	)
+	require.NoError(t, err)
+
+	req.Amount = 900
+	req.Change = &BatchAnchorChange{
+		Amount:         600,
+		OutputIndex:    1,
+		OutputValueSat: 1_000,
+		ScriptKey: tapsdk.ScriptKey{
+			PubKey: scriptPub,
+		},
+		AnchorInternalKey: tapsdk.InternalKey{
+			PubKey: internalPub,
+		},
+	}
+
+	tx := template.UnsignedTx.Copy()
+	tx.AddTxOut(&wire.TxOut{
+		Value:    req.Change.OutputValueSat,
+		PkScript: []byte{0x51},
+	})
+	rebuilt, err := psbt.NewFromUnsignedTx(tx)
+	require.NoError(t, err)
+
+	return rebuilt
+}
+
+// TestBatchAnchorChangeDeriveAndCommit proves a batch transition with
+// asset change derives both output scripts and seals only when the funded
+// transaction and the committed result carry them byte-for-byte.
+func TestBatchAnchorChangeDeriveAndCommit(t *testing.T) {
+	t.Parallel()
+
+	committer, req, template := newBatchAnchorFixture(t)
+	template = addBatchAnchorChange(t, req, template)
+	ctx := context.Background()
+
+	derived, err := committer.DeriveScript(ctx, req, template)
+	require.NoError(t, err)
+	require.NotEmpty(t, derived.ChangePkScript)
+
+	// The change script is the pinned wallet internal key tweaked with
+	// the change output's previewed root.
+	input := template.UnsignedTx.TxIn[0].PreviousOutPoint
+	changeInternal, err := btcec.ParsePubKey(
+		req.Change.AnchorInternalKey.PubKey[:],
+	)
+	require.NoError(t, err)
+	wantScript, err := composedScript(
+		changeInternal, batchMerkleRoot(input, req.Change.OutputIndex),
+	)
+	require.NoError(t, err)
+	require.Equal(t, wantScript, derived.ChangePkScript)
+
+	funded := fundedFromTemplate(t, template, derived)
+	funded.UnsignedTx.TxOut[1].PkScript = append(
+		[]byte(nil), derived.ChangePkScript...,
+	)
+
+	commit, err := committer.Commit(ctx, req, funded, derived)
+	require.NoError(t, err)
+	require.Equal(t, derived.ChangePkScript, commit.Script.ChangePkScript)
+}
+
+// TestBatchAnchorChangeFailClosed proves change divergences between the
+// request, the funded transaction, and the committed result are rejected.
+func TestBatchAnchorChangeFailClosed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		corrupt func(req *BatchAnchorRequest, funded *psbt.Packet,
+			fake *fakeBatchDriver)
+		wantErr string
+	}{
+		{
+			name: "sources do not cover batch and change",
+			corrupt: func(req *BatchAnchorRequest, _ *psbt.Packet,
+				_ *fakeBatchDriver) {
+
+				req.Change.Amount--
+			},
+			wantErr: "funding sources carry",
+		},
+		{
+			name: "funded output misses change script",
+			corrupt: func(_ *BatchAnchorRequest,
+				funded *psbt.Packet, _ *fakeBatchDriver) {
+
+				funded.UnsignedTx.TxOut[1].PkScript = []byte{
+					0x53,
+				}
+			},
+			wantErr: "does not carry the derived change script",
+		},
+		{
+			name: "committed change amount diverges",
+			corrupt: func(_ *BatchAnchorRequest, _ *psbt.Packet,
+				fake *fakeBatchDriver) {
+
+				fake.mutateCommit = func(r *commitResult) {
+					r.outputs[1].amount--
+				}
+			},
+			wantErr: "committed change amount",
+		},
+		{
+			name: "committed change root diverges",
+			corrupt: func(_ *BatchAnchorRequest, _ *psbt.Packet,
+				fake *fakeBatchDriver) {
+
+				fake.mutateCommit = func(r *commitResult) {
+					r.outputs[1].taprootMerkleRoot[0] ^= 1
+				}
+			},
+			wantErr: "does not reproduce the derived script",
+		},
+		{
+			name: "committed change output missing",
+			corrupt: func(_ *BatchAnchorRequest, _ *psbt.Packet,
+				fake *fakeBatchDriver) {
+
+				fake.mutateCommit = func(r *commitResult) {
+					r.outputs = r.outputs[:1]
+				}
+			},
+			wantErr: "want 2",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			committer, req, template := newBatchAnchorFixture(t)
+			template = addBatchAnchorChange(t, req, template)
+			fake, ok := committer.driver.(*fakeBatchDriver)
+			require.True(t, ok)
+			ctx := context.Background()
+
+			derived, err := committer.DeriveScript(
+				ctx, req, template,
+			)
+			require.NoError(t, err)
+
+			funded := fundedFromTemplate(t, template, derived)
+			funded.UnsignedTx.TxOut[1].PkScript = append(
+				[]byte(nil), derived.ChangePkScript...,
+			)
+			test.corrupt(req, funded, fake)
 
 			_, err = committer.Commit(ctx, req, funded, derived)
 			require.ErrorContains(t, err, test.wantErr)
