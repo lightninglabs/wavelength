@@ -308,6 +308,8 @@ message OnboardTaprootAssetRequest {
     uint64 asset_amount = 3;
 
     // input_proof_file is the complete confirmed Taproot Asset proof file.
+    // Optional; empty lets the daemon export the proof of its own matching
+    // UTXO from tapd.
     bytes input_proof_file = 4;
 
     // max_fee_sat is the hard upper bound for the on-chain miner fee. It is

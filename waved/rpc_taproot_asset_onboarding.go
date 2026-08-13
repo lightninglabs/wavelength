@@ -78,11 +78,10 @@ func (r *RPCServer) OnboardTaprootAsset(ctx context.Context,
 	}
 	if req == nil || req.GetIdempotencyKey() == "" ||
 		req.GetAssetRef() == "" || req.GetAssetAmount() == 0 ||
-		len(req.GetInputProofFile()) == 0 || req.GetMaxFeeSat() == 0 {
+		req.GetMaxFeeSat() == 0 {
 		return nil, status.Error(
 			codes.InvalidArgument, "idempotency key, asset "+
-				"ref, amount, proof, and maximum fee are "+
-				"required",
+				"ref, amount, and maximum fee are required",
 		)
 	}
 	if (req.GetFeeRateSatPerVbyte() == 0) ==
@@ -142,16 +141,46 @@ func (r *RPCServer) OnboardTaprootAsset(ctx context.Context,
 		return nil, err
 	}
 
+	// Without an explicit proof the daemon exports it from its own tapd,
+	// which requires the wallet to hold the amount in exactly one UTXO.
+	// A replay must reuse the originally resolved proof instead: the
+	// onboarding itself spends the source UTXO, so re-resolving after
+	// success finds nothing and would break idempotency.
+	proofFile := append([]byte(nil), req.GetInputProofFile()...)
+	if len(proofFile) == 0 {
+		stored, _, loadErr := r.server.loadTaprootAssetBoardRequest(
+			ctx, req.GetIdempotencyKey(),
+		)
+		switch {
+		case loadErr == nil:
+			proofFile = stored.ProofFile
+
+		case errors.Is(loadErr, tapassets.ErrStoreNotFound):
+			proofFile, err = tapassets.ResolveOwnedAssetProof(
+				ctx, r.server.taprootAssetWallet,
+				req.GetAssetRef(), req.GetAssetAmount(),
+			)
+			if err != nil {
+				return nil, status.Errorf(
+					codes.FailedPrecondition,
+					"resolve owned asset proof: %v", err,
+				)
+			}
+
+		default:
+			return nil, status.Errorf(codes.Internal, "load "+
+				"boarding replay request: %v", loadErr)
+		}
+	}
+
 	// The onboarded output is spent as a round boarding input, so it
 	// carries the boarding exit delay; AssetBoardingDisclosure replays
 	// the onboarding under the same delay when the boarding completes.
 	onboardingRequest := &tapassets.OnboardingRequest{
-		RequestID:   req.GetIdempotencyKey(),
-		AssetRef:    req.GetAssetRef(),
-		AssetAmount: req.GetAssetAmount(),
-		ProofFile: append(
-			[]byte(nil), req.GetInputProofFile()...,
-		),
+		RequestID:          req.GetIdempotencyKey(),
+		AssetRef:           req.GetAssetRef(),
+		AssetAmount:        req.GetAssetAmount(),
+		ProofFile:          proofFile,
 		CarrierValueSat:    carrierValue,
 		FeeRateSatPerVByte: req.GetFeeRateSatPerVbyte(),
 		TargetConf:         req.GetTargetConf(),
