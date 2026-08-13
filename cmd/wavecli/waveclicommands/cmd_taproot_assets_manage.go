@@ -233,10 +233,11 @@ func newTaprootAssetSendCmd() *cobra.Command {
 		Long: "Send Taproot Asset units to another Wavelength user " +
 			"out of round. The daemon spends one asset VTXO; " +
 			"when --amount is below the VTXO's full holding, the " +
-			"change rides on one of the sender's Bitcoin VTXOs. " +
-			"The recipient key comes from the recipient's " +
-			"'ark oor receive'. Without --outpoint the smallest " +
-			"sufficient asset VTXO is selected.",
+			"change rides on a minimal Bitcoin carrier and the " +
+			"rest of the selected Bitcoin VTXO returns as plain " +
+			"change. The recipient key comes from the " +
+			"recipient's 'ark oor receive'. Without --outpoint " +
+			"the smallest sufficient asset VTXO is selected.",
 		Args: cobra.NoArgs,
 		RunE: sendTaprootAsset,
 	}
@@ -254,18 +255,24 @@ func newTaprootAssetSendCmd() *cobra.Command {
 	flags.String(
 		"idempotency-key", "", "stable caller-generated retry key",
 	)
+	flags.Uint64(
+		"change-carrier-sat", 0, "Bitcoin value carrying the asset "+
+			"change of a partial send (zero uses the operator "+
+			"minimum)",
+	)
 
 	return cmd
 }
 
-// sendTaprootAsset resolves the input VTXO and change carrier, then submits
-// the asset OOR intent.
+// sendTaprootAsset resolves the input VTXO, then submits the asset OOR
+// intent.
 func sendTaprootAsset(cmd *cobra.Command, _ []string) error {
 	assetRef, _ := cmd.Flags().GetString("asset-ref")
 	amount, _ := cmd.Flags().GetUint64("amount")
 	recipientPubkey, _ := cmd.Flags().GetString("recipient-pubkey")
 	outpoint, _ := cmd.Flags().GetString("outpoint")
 	idempotencyKey, _ := cmd.Flags().GetString("idempotency-key")
+	changeCarrierSat, _ := cmd.Flags().GetUint64("change-carrier-sat")
 
 	switch {
 	case assetRef == "":
@@ -321,16 +328,12 @@ func sendTaprootAsset(cmd *cobra.Command, _ []string) error {
 		InputVtxoOutpoint:      input.GetOutpoint(),
 	}
 
-	// A partial send needs a Bitcoin VTXO to carry the asset change.
+	// A partial send keeps the asset change on a minimal carrier; the
+	// daemon defaults a zero value to the operator minimum and returns
+	// the rest of the selected Bitcoin VTXO as plain change.
 	if amount < intent.AssetAmount {
-		carrier, err := selectAssetChangeCarrier(ctx, client)
-		if err != nil {
-			return err
-		}
 		intent.RecipientAssetAmount = amount
-		intent.AssetChangeCarrierValueSat = uint64(
-			carrier.GetAmountSat(),
-		)
+		intent.AssetChangeCarrierValueSat = changeCarrierSat
 	}
 	if amount > intent.AssetAmount {
 		return invalidArgs(
@@ -401,36 +404,4 @@ func selectAssetSendInput(ctx context.Context,
 	}
 
 	return selected, nil
-}
-
-// selectAssetChangeCarrier picks the sender's largest live Bitcoin VTXO as
-// the asset-change carrier.
-func selectAssetChangeCarrier(ctx context.Context,
-	client waverpc.DaemonServiceClient) (*waverpc.VTXO, error) {
-
-	response, err := client.ListVTXOs(ctx, &waverpc.ListVTXOsRequest{
-		StatusFilter:           waverpc.VTXOStatus_VTXO_STATUS_LIVE,
-		ExcludeCheckpointPsbts: true,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("ListVTXOs RPC failed: %w", err)
-	}
-
-	var carrier *waverpc.VTXO
-	for _, v := range response.Vtxos {
-		if v.GetTaprootAsset() != nil {
-			continue
-		}
-		if carrier == nil ||
-			v.GetAmountSat() > carrier.GetAmountSat() {
-
-			carrier = v
-		}
-	}
-	if carrier == nil {
-		return nil, fmt.Errorf("a partial asset send needs a live " +
-			"Bitcoin VTXO to carry the change")
-	}
-
-	return carrier, nil
 }

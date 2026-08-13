@@ -53,8 +53,10 @@ type TaprootAssetOORIntent struct {
 	// caller's receiver. Zero preserves the legacy full-send default.
 	RecipientAssetAmount uint64
 
-	// AssetChangeCarrierValueSat is the explicit Bitcoin value assigned to
-	// local asset change. It must be zero for a full asset send.
+	// AssetChangeCarrierValueSat is the Bitcoin value assigned to local
+	// asset change on a partial send. Zero defers to the operator's
+	// minimum VTXO amount; the daemon materializes that default before
+	// preparation. It must be zero for a full asset send.
 	AssetChangeCarrierValueSat uint64
 
 	// ProofFile is the complete confirmed proof for the selected asset.
@@ -108,11 +110,6 @@ func (i *TaprootAssetOORIntent) Validate() error {
 		i.AssetChangeCarrierValueSat != 0 {
 		return fmt.Errorf("taproot asset change carrier must be zero " +
 			"for a full send")
-	}
-	if recipientAmount < i.AssetAmount &&
-		i.AssetChangeCarrierValueSat == 0 {
-		return fmt.Errorf("taproot asset change carrier is required " +
-			"for a partial send")
 	}
 	if i.AssetChangeCarrierValueSat > uint64(btcutil.MaxSatoshi) {
 		return fmt.Errorf("taproot asset change carrier exceeds " +
@@ -255,37 +252,67 @@ func (r *TaprootAssetOORPrepareRequest) Validate() error {
 	}
 
 	assetChange := btcutil.Amount(r.Intent.AssetChangeCarrierValueSat)
+	if r.Intent.EffectiveRecipientAssetAmount() < r.Intent.AssetAmount &&
+		assetChange == 0 {
+		return fmt.Errorf("taproot asset change carrier is required " +
+			"for a partial send")
+	}
 	if assetChange != 0 && assetChange < r.OutputFloor {
 		return fmt.Errorf("taproot asset OOR change carrier is below " +
 			"the output floor")
 	}
 
-	inputTotal, err := taprootAssetInputTotal(r.Inputs)
+	assetChange, bitcoinChange, err := r.CarrierAllocation()
 	if err != nil {
 		return err
 	}
-	required, err := addTaprootAssetCarrier(
-		r.Recipients[0].Value, assetChange,
-	)
-	if err != nil {
-		return err
-	}
-	if required > inputTotal {
-		return fmt.Errorf("taproot asset OOR carrier funding is " +
-			"insufficient")
-	}
-	change := inputTotal - required
-	if change != 0 && change < r.OutputFloor {
-		return fmt.Errorf("taproot asset OOR Bitcoin change is below " +
-			"the output floor")
-	}
-	if (assetChange != 0 || change != 0) &&
+	if (assetChange != 0 || bitcoinChange != 0) &&
 		r.BuildChangeRecipient == nil {
 		return fmt.Errorf("taproot asset OOR change recipient " +
 			"builder is required")
 	}
 
 	return nil
+}
+
+// CarrierAllocation returns the Bitcoin value assigned to the asset-change
+// output and to the sender's plain Bitcoin change output. A remainder below
+// the operator floor cannot become its own output, so a partial send folds it
+// into the asset-change carrier instead of creating a dust output.
+func (r *TaprootAssetOORPrepareRequest) CarrierAllocation() (btcutil.Amount,
+	btcutil.Amount, error) {
+
+	if r == nil || len(r.Recipients) != 1 {
+		return 0, 0, fmt.Errorf("taproot asset OOR requires exactly " +
+			"one recipient")
+	}
+
+	assetChange := btcutil.Amount(r.Intent.AssetChangeCarrierValueSat)
+	inputTotal, err := taprootAssetInputTotal(r.Inputs)
+	if err != nil {
+		return 0, 0, err
+	}
+	required, err := addTaprootAssetCarrier(
+		r.Recipients[0].Value, assetChange,
+	)
+	if err != nil {
+		return 0, 0, err
+	}
+	if required > inputTotal {
+		return 0, 0, fmt.Errorf("taproot asset OOR carrier funding " +
+			"is insufficient")
+	}
+
+	bitcoinChange := inputTotal - required
+	if bitcoinChange == 0 || bitcoinChange >= r.OutputFloor {
+		return assetChange, bitcoinChange, nil
+	}
+	if assetChange == 0 {
+		return 0, 0, fmt.Errorf("taproot asset OOR Bitcoin change is " +
+			"below the output floor")
+	}
+
+	return assetChange + bitcoinChange, 0, nil
 }
 
 // AssetInputIndex returns the unique asset-bearing input. Every other input

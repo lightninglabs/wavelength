@@ -210,8 +210,11 @@ func validateTaprootAssetOORResumeInputs(ctx context.Context,
 	return nil
 }
 
-// taprootAssetOORSelectionTarget adds the explicit local asset-change carrier
-// to the receiver carrier without conflating either quantity with asset units.
+// taprootAssetOORSelectionTarget adds the local asset-change carrier to the
+// receiver carrier without conflating either quantity with asset units. A
+// partial send with no explicit carrier is materialized to the operator's
+// minimum VTXO amount; the input remainder later returns to the sender as an
+// ordinary Bitcoin change output.
 func taprootAssetOORSelectionTarget(receiverCarrier btcutil.Amount,
 	intent *oor.TaprootAssetOORIntent,
 	outputFloor btcutil.Amount) (btcutil.Amount, error) {
@@ -224,6 +227,12 @@ func taprootAssetOORSelectionTarget(receiverCarrier btcutil.Amount,
 		return 0, status.Errorf(codes.InvalidArgument, "Taproot Asset "+
 			"change carrier must be <= %d",
 			int64(btcutil.MaxSatoshi))
+	}
+
+	if intent.AssetChangeCarrierValueSat == 0 &&
+		intent.EffectiveRecipientAssetAmount() < intent.AssetAmount {
+
+		intent.AssetChangeCarrierValueSat = uint64(outputFloor)
 	}
 
 	changeCarrier := btcutil.Amount(intent.AssetChangeCarrierValueSat)

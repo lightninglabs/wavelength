@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/stretchr/testify/require"
 )
 
@@ -73,6 +75,89 @@ func TestTaprootAssetOORIntentValidate(t *testing.T) {
 			require.ErrorContains(
 				t, intent.Validate(), test.wantErr,
 			)
+		})
+	}
+}
+
+// TestTaprootAssetOORCarrierAllocation pins the split between the asset
+// change carrier and plain Bitcoin change, including the fold of a sub-floor
+// remainder into the asset change carrier.
+func TestTaprootAssetOORCarrierAllocation(t *testing.T) {
+	t.Parallel()
+
+	newRequest := func(carrier uint64,
+		inputAmounts ...btcutil.Amount) *TaprootAssetOORPrepareRequest {
+
+		inputs := make([]TransferInput, len(inputAmounts))
+		for idx := range inputAmounts {
+			inputs[idx] = TransferInput{
+				VTXO: &vtxo.Descriptor{
+					Amount: inputAmounts[idx],
+				},
+			}
+		}
+
+		return &TaprootAssetOORPrepareRequest{
+			Inputs: inputs,
+			Recipients: []oortx.RecipientOutput{{
+				Value: 10_000,
+			}},
+			OutputFloor: 1_000,
+			Intent: TaprootAssetOORIntent{
+				AssetChangeCarrierValueSat: carrier,
+			},
+		}
+	}
+
+	tests := []struct {
+		name              string
+		request           *TaprootAssetOORPrepareRequest
+		wantAssetChange   btcutil.Amount
+		wantBitcoinChange btcutil.Amount
+		wantErr           string
+	}{
+		{
+			name:    "exact full send",
+			request: newRequest(0, 10_000),
+		},
+		{
+			name:              "partial send returns the remainder",
+			request:           newRequest(1_000, 10_000, 90_000),
+			wantAssetChange:   1_000,
+			wantBitcoinChange: 89_000,
+		},
+		{
+			name:            "sub-floor remainder folds in",
+			request:         newRequest(1_000, 10_000, 1_500),
+			wantAssetChange: 1_500,
+		},
+		{
+			name:    "sub-floor full-send remainder is refused",
+			request: newRequest(0, 10_500),
+			wantErr: "Bitcoin change is below the output floor",
+		},
+		{
+			name:    "insufficient carrier funding",
+			request: newRequest(1_000, 10_000),
+			wantErr: "carrier funding is insufficient",
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			assetChange, bitcoinChange, err := test.request.
+				CarrierAllocation()
+			if test.wantErr != "" {
+				require.ErrorContains(t, err, test.wantErr)
+
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, test.wantAssetChange, assetChange)
+			require.Equal(t, test.wantBitcoinChange, bitcoinChange)
 		})
 	}
 }
