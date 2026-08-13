@@ -207,6 +207,91 @@ func TestConditionNilInner(t *testing.T) {
 	require.Contains(t, err.Error(), "inner node is nil")
 }
 
+// TestConditionRejectsOpSuccess verifies that opaque predicates cannot use
+// tapscript's immediate-success opcodes to bypass the typed inner clause.
+func TestConditionRejectsOpSuccess(t *testing.T) {
+	t.Parallel()
+
+	key, _ := testutils.CreateKey(1)
+	checked := 0
+
+	for opcode := 0; opcode <= 0xff; opcode++ {
+		predicate := []byte{byte(opcode)}
+		if !txscript.ScriptHasOpSuccess(predicate) {
+			continue
+		}
+
+		checked++
+		node := &Condition{
+			Predicate: predicate,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{
+					key,
+				},
+			},
+		}
+
+		_, err := node.Script()
+		require.Error(t, err, "opcode 0x%x", opcode)
+		require.Contains(
+			t, err.Error(),
+			"OP_SUCCESS", "opcode 0x%x", opcode,
+		)
+	}
+
+	require.NotZero(t, checked)
+}
+
+// TestConditionAllowsOpSuccessByteInPushData verifies that an OP_SUCCESS byte
+// carried as push data is not mistaken for an executable opcode.
+func TestConditionAllowsOpSuccessByteInPushData(t *testing.T) {
+	t.Parallel()
+
+	predicate, err := txscript.NewScriptBuilder().
+		AddData([]byte{txscript.OP_RESERVED}).
+		AddOp(txscript.OP_DROP).
+		Script()
+	require.NoError(t, err)
+	require.False(t, txscript.ScriptHasOpSuccess(predicate))
+
+	key, _ := testutils.CreateKey(1)
+	node := &Condition{
+		Predicate: predicate,
+		Inner: &Multisig{
+			Keys: []*btcec.PublicKey{
+				key,
+			},
+		},
+	}
+
+	_, err = node.Script()
+	require.NoError(t, err)
+}
+
+// TestConditionRejectsIncompletePush verifies that a predicate cannot consume
+// the typed inner script as data by ending with an incomplete push opcode.
+func TestConditionRejectsIncompletePush(t *testing.T) {
+	t.Parallel()
+
+	key, _ := testutils.CreateKey(1)
+	node := &Condition{
+		// A single-key Multisig compiles to exactly 34 bytes. Without
+		// standalone predicate validation, this opcode consumes that
+		// entire signature clause as push data.
+		Predicate: []byte{
+			txscript.OP_DATA_34,
+		},
+		Inner: &Multisig{
+			Keys: []*btcec.PublicKey{
+				key,
+			},
+		},
+	}
+
+	_, err := node.Script()
+	require.ErrorContains(t, err, "not a complete script fragment")
+}
+
 // TestASTMatchesGoldenVectors verifies that the AST produces byte-identical
 // scripts to the golden test vectors from the current implementation.
 func TestASTMatchesGoldenVectors(t *testing.T) {

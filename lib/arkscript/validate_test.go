@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/lightninglabs/wavelength/internal/testutils"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
@@ -230,6 +231,33 @@ func TestValidatePolicy(t *testing.T) {
 
 		err := ValidatePolicy(nodes, opts)
 		require.NoError(t, err)
+	})
+
+	t.Run("OP_SUCCESS condition predicate rejected", func(t *testing.T) {
+		t.Parallel()
+
+		collabNode := &Condition{
+			Predicate: []byte{
+				txscript.OP_RESERVED,
+			},
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{
+					owner,
+					operator,
+				},
+			},
+		}
+		exitNode := &CSV{
+			Lock: 100,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{
+					owner,
+				},
+			},
+		}
+
+		err := ValidatePolicy([]Node{collabNode, exitNode}, opts)
+		require.ErrorContains(t, err, "OP_SUCCESS")
 	})
 
 	t.Run("collab leaf missing operator key", func(t *testing.T) {
@@ -496,7 +524,7 @@ func TestValidatePolicy(t *testing.T) {
 		}
 		operatorOnlyCondition := &Condition{
 			Predicate: []byte{
-				0x01,
+				txscript.OP_NOP,
 			},
 			Inner: &Multisig{
 				Keys: []*btcec.PublicKey{

@@ -239,10 +239,12 @@ correctly be flagged as an ungated exit leaf and rejected.
 
 **What about Condition predicates that embed keys?** The `Condition.Predicate`
 is opaque bytes — the validator does not parse it for operator keys. This is
-safe because the predicate only adds _restrictions_ (hashlocks, timelocks). A
-predicate cannot _grant_ spending authority — that comes from the `Inner`
-Multisig. The validator correctly checks only the Multisig nodes for key
-presence.
+safe because compilation rejects incomplete script fragments and all tapscript
+`OP_SUCCESSx` opcodes. An incomplete push could otherwise consume the typed
+inner script as data, while `OP_SUCCESSx` would make the leaf succeed before
+the inner signature checks execute. Once those bypasses are excluded, the
+predicate can only add conditions; spending authority still comes from the
+`Inner` Multisig.
 
 **Edge case: empty Multisig in exit leaf?** Impossible — `Multisig.Script()`
 returns an error if `len(Keys) == 0`, and `PolicyTemplate.Compile()` would
@@ -257,7 +259,7 @@ unspendable by anyone, which is safe (funds locked, not stolen).
 | Bypass CSV via key-path spend | Internal key is NUMS (unspendable)             |
 | Fake operator key in policy   | Operator validates own key presence at submit   |
 | Ungated exit leaf injection   | `ValidatePolicy` rejects non-CSV exit leaves   |
-| Predicate smuggling operator  | Predicates add restrictions, not authority      |
+| Predicate bypasses inner node | Compile rejects partial pushes and `OP_SUCCESSx` |
 | Insufficient exit delay       | `MinExitDelay` check enforces operator minimum  |
 
 ---

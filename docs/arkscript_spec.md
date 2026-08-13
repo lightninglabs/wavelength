@@ -111,7 +111,7 @@ type Condition struct {
 }
 ```
 
-Script encoding (from `Condition.Script`, `lib/arkscript/node.go:120-141`):
+Script encoding (from `Condition.Script` in `lib/arkscript/node.go`):
 
 ```
 <predicate> <inner>
@@ -119,7 +119,7 @@ Script encoding (from `Condition.Script`, `lib/arkscript/node.go:120-141`):
 
 `Condition` is the extension point for non-signature preconditions (hash
 locks, absolute locktimes, payment-hash preimages). Helper builders live in
-`lib/arkscript/node.go:148-190`:
+`lib/arkscript/node.go`:
 
 - `Hash160Condition(hash []byte)` — `HASH160 <hash> EQUALVERIFY`.
 - `AbsoluteLockTimeCondition(lock uint32)` — `<lock> CLTV DROP`.
@@ -127,9 +127,12 @@ locks, absolute locktimes, payment-hash preimages). Helper builders live in
   that also enforces the 32-byte preimage-size rule.
 
 The predicate bytes are opaque to the AST walker for the purposes of
-`ContainsKey` and key extraction (`lib/arkscript/validate.go:208-218`). This
-is intentional: the AST reasons about *who can sign*, not about *what
-hashlock values are in play*.
+`ContainsKey` and key extraction in `lib/arkscript/validate.go`. This is
+intentional: the AST reasons about *who can sign*, not about *what hashlock
+values are in play*. Compilation still requires the predicate to be a complete
+script fragment and rejects every tapscript `OP_SUCCESSx` opcode. These checks
+prevent a raw prefix from consuming the typed inner clause as push data or
+making the leaf succeed before that clause executes.
 
 ### 2.3 What is NOT in the AST
 
@@ -137,7 +140,8 @@ hashlock values are in play*.
   tapscript merkle tree already provides the OR semantics.
 - No `AND` nodes. Multisig is N-of-N; chain multiple signatures inside a
   single `Multisig`. CSV-gated signatures compose via `CSV{Inner: Multisig}`.
-- No custom opcode escape hatch. A future node kind requires a code change
+- No custom AST node escape hatch. `Condition` accepts raw predicate fragments,
+  subject to the safety checks above. A future node kind requires a code change
   in `lib/arkscript` and an encoding version bump (see §3.5).
 
 ---

@@ -124,6 +124,9 @@ func (c *Condition) Script() ([]byte, error) {
 	if len(c.Predicate) == 0 {
 		return nil, fmt.Errorf("condition: predicate script is empty")
 	}
+	if err := validateConditionPredicate(c.Predicate); err != nil {
+		return nil, err
+	}
 
 	innerScript, err := c.Inner.Script()
 	if err != nil {
@@ -136,6 +139,27 @@ func (c *Condition) Script() ([]byte, error) {
 	builder.AddOps(innerScript)
 
 	return builder.Script()
+}
+
+// validateConditionPredicate ensures a raw predicate cannot change how the
+// typed inner clause is parsed or bypass its execution. In particular, an
+// incomplete data push could consume the inner script as pushed bytes, while
+// OP_SUCCESS would make the entire tapscript succeed before the inner clause
+// executes.
+func validateConditionPredicate(predicate []byte) error {
+	tokenizer := txscript.MakeScriptTokenizer(0, predicate)
+	for tokenizer.Next() {
+	}
+	if err := tokenizer.Err(); err != nil {
+		return fmt.Errorf("condition: predicate is not a complete "+
+			"script fragment: %w", err)
+	}
+	if txscript.ScriptHasOpSuccess(predicate) {
+		return fmt.Errorf("condition: predicate contains OP_SUCCESS " +
+			"opcode")
+	}
+
+	return nil
 }
 
 // nodeSealed implements the Node interface.
