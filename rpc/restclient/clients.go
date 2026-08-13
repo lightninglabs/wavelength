@@ -499,6 +499,20 @@ func (c *DaemonServiceClient) GetIndexedOORSessionByTxid(ctx context.Context,
 	return out, err
 }
 
+// ExportOORRecoveryPackage returns immutable recovery data for one exact OOR
+// output created by this daemon.
+func (c *DaemonServiceClient) ExportOORRecoveryPackage(ctx context.Context,
+	in *waverpc.ExportOORRecoveryPackageRequest, _ ...grpc.CallOption) (
+	*waverpc.ExportOORRecoveryPackageResponse, error) {
+
+	out := new(waverpc.ExportOORRecoveryPackageResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/export-oor-recovery-package", in, out,
+	)
+
+	return out, err
+}
+
 // SendVTXO initiates an in-round VTXO transfer.
 func (c *DaemonServiceClient) SendVTXO(ctx context.Context,
 	in *waverpc.SendVTXORequest, _ ...grpc.CallOption) (

@@ -42,13 +42,14 @@ service ArkChannelService {
 // It is served only through swapdk-server's mailbox edge, never as a public
 // gRPC service.
 service ArkChannelPeerService {
-    // BeginCooperativeClose fixes both payout scripts and quiesces the hub's
-    // native channel endpoint before the client signs anything.
+    // BeginCooperativeClose fixes both replacement VTXO owners and quiesces
+    // the hub's native channel endpoint before the hub authorizes an OOR.
     rpc BeginCooperativeClose (BeginCooperativeCloseRequest)
         returns (BeginCooperativeCloseResponse);
 
-    // CompleteCooperativeClose verifies the client's signature, then adds the
-    // hub and Ark-operator signatures and durably stores the settlement.
+    // CompleteCooperativeClose lets the hub validate clean lnd balances and
+    // durably authorize the exact 3-of-3 OOR checkpoint. The client and Ark
+    // operator sign later in the ordinary OOR protocol.
     rpc CompleteCooperativeClose (CompleteCooperativeCloseRequest)
         returns (CompleteCooperativeCloseResponse);
 
@@ -57,13 +58,13 @@ service ArkChannelPeerService {
     rpc AcknowledgeCooperativeClose (AcknowledgeCooperativeCloseRequest)
         returns (AcknowledgeCooperativeCloseResponse);
 
-    // PublishCooperativeClose asks the hub to unroll the Ark ancestry, publish
-    // the exact settlement, wait for confirmation, and archive its channel.
+    // PublishCooperativeClose reports the finalized ordinary OOR session and
+    // waits for the hub to observe its replacement VTXO and archive lnd.
     rpc PublishCooperativeClose (PublishCooperativeCloseRequest)
         returns (PublishCooperativeCloseResponse);
 
-    // AbortCooperativeClose releases the hub's quiescence barrier before any
-    // fully signed settlement exists.
+    // AbortCooperativeClose releases the hub's quiescence barrier before the
+    // ordinary OOR crosses its signing point of no return.
     rpc AbortCooperativeClose (AbortCooperativeCloseRequest)
         returns (AbortCooperativeCloseResponse);
 }
@@ -81,6 +82,8 @@ service ArkChannelFundingPeerService {
     rpc InstallBacking (InstallBackingRequest) returns (InstallBackingResponse);
     rpc InstallRecoveryPackage (InstallRecoveryPackageRequest)
         returns (InstallRecoveryPackageResponse);
+    rpc ExportReceiveClaimRecovery (ExportReceiveClaimRecoveryRequest)
+        returns (ExportReceiveClaimRecoveryResponse);
     rpc FundingFinalized (FundingStatusRequest) returns (FundingStatusResponse);
     rpc ChannelActive (FundingStatusRequest) returns (FundingStatusResponse);
     rpc ApplyChannelEvent (ApplyChannelEventRequest)
@@ -195,6 +198,22 @@ message InstallRecoveryPackageRequest {
 }
 
 message InstallRecoveryPackageResponse {
+}
+
+message ExportReceiveClaimRecoveryRequest {
+    bytes channel_id = 1;
+}
+
+message ExportReceiveClaimRecoveryResponse {
+    ReceiveClaimRecoverySource source = 1;
+    ChannelRecoveryPackage recovery = 2;
+}
+
+message ReceiveClaimRecoverySource {
+    bytes txid = 1;
+    uint32 output_index = 2;
+    int64 amount_sat = 3;
+    bytes pk_script = 4;
 }
 
 message ChannelRecoveryPackage {
@@ -354,9 +373,8 @@ message ChannelBacking {
 message RequestCooperativeCloseRequest {
     // channel_id is the 32-byte durable Ark channel identifier.
     bytes channel_id = 1;
-
-    // fee_rate_sat_per_kw is the deterministic settlement fee rate.
-    uint64 fee_rate_sat_per_kw = 2;
+    reserved 2;
+    reserved "fee_rate_sat_per_kw";
 }
 
 message RequestCooperativeCloseResponse {
@@ -387,7 +405,8 @@ message ArkChannel {
 message BeginCooperativeCloseRequest {
     bytes channel_id = 1;
     bytes client_delivery_script = 2;
-    uint64 fee_rate_sat_per_kw = 3;
+    reserved 3;
+    reserved "fee_rate_sat_per_kw";
 }
 
 message BeginCooperativeCloseResponse {
@@ -399,7 +418,8 @@ message BeginCooperativeCloseResponse {
 message CompleteCooperativeCloseRequest {
     bytes channel_id = 1;
     CooperativeCloseProposal proposal = 2;
-    bytes client_signature = 3;
+    reserved 3;
+    reserved "client_signature";
 }
 
 message CompleteCooperativeCloseResponse {
@@ -443,7 +463,8 @@ message AbortCooperativeCloseResponse {
 message CooperativeCloseRequest {
     bytes client_delivery_script = 1;
     bytes hub_delivery_script = 2;
-    uint64 fee_rate_sat_per_kw = 3;
+    reserved 3;
+    reserved "fee_rate_sat_per_kw";
 }
 
 message CleanChannelState {
@@ -463,7 +484,8 @@ message CooperativeCloseProposal {
     int64 hub_balance_sat = 4;
     int64 client_output_sat = 5;
     int64 hub_output_sat = 6;
-    int64 fee_sat = 7;
+    reserved 7;
+    reserved "fee_sat";
 }
 
 message CooperativeClose {

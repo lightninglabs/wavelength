@@ -54,6 +54,8 @@ type DaemonServiceMailboxServer interface {
 	GetVTXOExpiryInfo(ctx context.Context, req *GetVTXOExpiryInfoRequest) (*GetVTXOExpiryInfoResponse, error)
 	// GetIndexedOORSessionByTxid handles GetIndexedOORSessionByTxid.
 	GetIndexedOORSessionByTxid(ctx context.Context, req *GetIndexedOORSessionByTxidRequest) (*GetIndexedOORSessionByTxidResponse, error)
+	// ExportOORRecoveryPackage handles ExportOORRecoveryPackage.
+	ExportOORRecoveryPackage(ctx context.Context, req *ExportOORRecoveryPackageRequest) (*ExportOORRecoveryPackageResponse, error)
 	// SendVTXO handles SendVTXO.
 	SendVTXO(ctx context.Context, req *SendVTXORequest) (*SendVTXOResponse, error)
 	// SendOOR handles SendOOR.
@@ -271,6 +273,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.GetIndexedOORSessionByTxid(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "ExportOORRecoveryPackage", func() proto.Message {
+		return &ExportOORRecoveryPackageRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ExportOORRecoveryPackageRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ExportOORRecoveryPackage(ctx, req)
 	})
 	r.Handle("waverpc.DaemonService", "SendVTXO", func() proto.Message {
 		return &SendVTXORequest{}
@@ -932,6 +944,29 @@ func (c *DaemonServiceMailboxClient) GetIndexedOORSessionByTxid(ctx context.Cont
 	}
 
 	resp := new(GetIndexedOORSessionByTxidResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ExportOORRecoveryPackage calls the ExportOORRecoveryPackage RPC.
+func (c *DaemonServiceMailboxClient) ExportOORRecoveryPackage(ctx context.Context, req *ExportOORRecoveryPackageRequest, opts ...rpc.RPCOptions) (*ExportOORRecoveryPackageResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "ExportOORRecoveryPackage",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ExportOORRecoveryPackageResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

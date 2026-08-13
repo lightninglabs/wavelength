@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package waverpc;
 
+import "rpc/arkchannelrpc/ark_channel.proto";
+
 option go_package = "github.com/lightninglabs/wavelength/waverpc";
 
 // DaemonService is the client daemon's own gRPC API. External tools such as
@@ -79,6 +81,12 @@ service DaemonService {
     // OOR session using a spent script proof and deterministic session txid.
     rpc GetIndexedOORSessionByTxid (GetIndexedOORSessionByTxidRequest)
         returns (GetIndexedOORSessionByTxidResponse);
+
+    // ExportOORRecoveryPackage returns the immutable local OOR package and
+    // round ancestry for one exact output. The caller must already know the
+    // output tuple; the daemon verifies it against its finalized artifacts.
+    rpc ExportOORRecoveryPackage (ExportOORRecoveryPackageRequest)
+        returns (ExportOORRecoveryPackageResponse);
 
     // SendVTXO initiates an in-round transfer by submitting a refresh
     // request to the round coordinator. The transfer completes when the
@@ -786,6 +794,11 @@ message NewReceiveScriptRequest {
     // label is an optional human-readable label stored with the
     // registration on the indexer.
     string label = 1;
+
+    // identity_key registers the daemon's durable identity key instead of
+    // deriving a fresh receive key. This is reserved for restart-stable
+    // protocol destinations such as Ark channel cooperative-close payouts.
+    bool identity_key = 2;
 }
 
 message NewReceiveScriptResponse {
@@ -1131,6 +1144,17 @@ message PrepareOORResponse {
 
     // session_id is the deterministic OOR session id derived from ark_psbt.
     string session_id = 4;
+}
+
+message ExportOORRecoveryPackageRequest {
+    // source identifies one exact output in a sender-owned finalized OOR
+    // package.
+    arkchannelrpc.ReceiveClaimRecoverySource source = 1;
+}
+
+message ExportOORRecoveryPackageResponse {
+    // recovery contains the complete endpoint-neutral source lineage.
+    arkchannelrpc.ChannelRecoveryPackage recovery = 1;
 }
 
 message SignOORCustomInputRequest {

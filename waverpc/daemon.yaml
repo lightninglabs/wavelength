@@ -54,6 +54,9 @@ http:
     - selector: waverpc.DaemonService.GetIndexedOORSessionByTxid
       post: /v1/daemon/get-indexed-oor-session-by-txid
       body: "*"
+    - selector: waverpc.DaemonService.ExportOORRecoveryPackage
+      post: /v1/daemon/export-oor-recovery-package
+      body: "*"
     - selector: waverpc.DaemonService.SendVTXO
       post: /v1/daemon/send-vtxo
       body: "*"

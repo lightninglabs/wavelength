@@ -396,20 +396,21 @@ const (
 // It is served only through swapdk-server's mailbox edge, never as a public
 // gRPC service.
 type ArkChannelPeerServiceClient interface {
-	// BeginCooperativeClose fixes both payout scripts and quiesces the hub's
-	// native channel endpoint before the client signs anything.
+	// BeginCooperativeClose fixes both replacement VTXO owners and quiesces
+	// the hub's native channel endpoint before the hub authorizes an OOR.
 	BeginCooperativeClose(ctx context.Context, in *BeginCooperativeCloseRequest, opts ...grpc.CallOption) (*BeginCooperativeCloseResponse, error)
-	// CompleteCooperativeClose verifies the client's signature, then adds the
-	// hub and Ark-operator signatures and durably stores the settlement.
+	// CompleteCooperativeClose lets the hub validate clean lnd balances and
+	// durably authorize the exact 3-of-3 OOR checkpoint. The client and Ark
+	// operator sign later in the ordinary OOR protocol.
 	CompleteCooperativeClose(ctx context.Context, in *CompleteCooperativeCloseRequest, opts ...grpc.CallOption) (*CompleteCooperativeCloseResponse, error)
 	// AcknowledgeCooperativeClose records one client-owned durable barrier
 	// fact in the hub's channel FSM.
 	AcknowledgeCooperativeClose(ctx context.Context, in *AcknowledgeCooperativeCloseRequest, opts ...grpc.CallOption) (*AcknowledgeCooperativeCloseResponse, error)
-	// PublishCooperativeClose asks the hub to unroll the Ark ancestry, publish
-	// the exact settlement, wait for confirmation, and archive its channel.
+	// PublishCooperativeClose reports the finalized ordinary OOR session and
+	// waits for the hub to observe its replacement VTXO and archive lnd.
 	PublishCooperativeClose(ctx context.Context, in *PublishCooperativeCloseRequest, opts ...grpc.CallOption) (*PublishCooperativeCloseResponse, error)
-	// AbortCooperativeClose releases the hub's quiescence barrier before any
-	// fully signed settlement exists.
+	// AbortCooperativeClose releases the hub's quiescence barrier before the
+	// ordinary OOR crosses its signing point of no return.
 	AbortCooperativeClose(ctx context.Context, in *AbortCooperativeCloseRequest, opts ...grpc.CallOption) (*AbortCooperativeCloseResponse, error)
 }
 
@@ -479,20 +480,21 @@ func (c *arkChannelPeerServiceClient) AbortCooperativeClose(ctx context.Context,
 // It is served only through swapdk-server's mailbox edge, never as a public
 // gRPC service.
 type ArkChannelPeerServiceServer interface {
-	// BeginCooperativeClose fixes both payout scripts and quiesces the hub's
-	// native channel endpoint before the client signs anything.
+	// BeginCooperativeClose fixes both replacement VTXO owners and quiesces
+	// the hub's native channel endpoint before the hub authorizes an OOR.
 	BeginCooperativeClose(context.Context, *BeginCooperativeCloseRequest) (*BeginCooperativeCloseResponse, error)
-	// CompleteCooperativeClose verifies the client's signature, then adds the
-	// hub and Ark-operator signatures and durably stores the settlement.
+	// CompleteCooperativeClose lets the hub validate clean lnd balances and
+	// durably authorize the exact 3-of-3 OOR checkpoint. The client and Ark
+	// operator sign later in the ordinary OOR protocol.
 	CompleteCooperativeClose(context.Context, *CompleteCooperativeCloseRequest) (*CompleteCooperativeCloseResponse, error)
 	// AcknowledgeCooperativeClose records one client-owned durable barrier
 	// fact in the hub's channel FSM.
 	AcknowledgeCooperativeClose(context.Context, *AcknowledgeCooperativeCloseRequest) (*AcknowledgeCooperativeCloseResponse, error)
-	// PublishCooperativeClose asks the hub to unroll the Ark ancestry, publish
-	// the exact settlement, wait for confirmation, and archive its channel.
+	// PublishCooperativeClose reports the finalized ordinary OOR session and
+	// waits for the hub to observe its replacement VTXO and archive lnd.
 	PublishCooperativeClose(context.Context, *PublishCooperativeCloseRequest) (*PublishCooperativeCloseResponse, error)
-	// AbortCooperativeClose releases the hub's quiescence barrier before any
-	// fully signed settlement exists.
+	// AbortCooperativeClose releases the hub's quiescence barrier before the
+	// ordinary OOR crosses its signing point of no return.
 	AbortCooperativeClose(context.Context, *AbortCooperativeCloseRequest) (*AbortCooperativeCloseResponse, error)
 	mustEmbedUnimplementedArkChannelPeerServiceServer()
 }
@@ -663,20 +665,21 @@ var ArkChannelPeerService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	ArkChannelFundingPeerService_GetPeerInfo_FullMethodName             = "/arkchannelrpc.ArkChannelFundingPeerService/GetPeerInfo"
-	ArkChannelFundingPeerService_RegisterPromotion_FullMethodName       = "/arkchannelrpc.ArkChannelFundingPeerService/RegisterPromotion"
-	ArkChannelFundingPeerService_BindPreparedOOR_FullMethodName         = "/arkchannelrpc.ArkChannelFundingPeerService/BindPreparedOOR"
-	ArkChannelFundingPeerService_SignBacking_FullMethodName             = "/arkchannelrpc.ArkChannelFundingPeerService/SignBacking"
-	ArkChannelFundingPeerService_InstallBacking_FullMethodName          = "/arkchannelrpc.ArkChannelFundingPeerService/InstallBacking"
-	ArkChannelFundingPeerService_InstallRecoveryPackage_FullMethodName  = "/arkchannelrpc.ArkChannelFundingPeerService/InstallRecoveryPackage"
-	ArkChannelFundingPeerService_FundingFinalized_FullMethodName        = "/arkchannelrpc.ArkChannelFundingPeerService/FundingFinalized"
-	ArkChannelFundingPeerService_ChannelActive_FullMethodName           = "/arkchannelrpc.ArkChannelFundingPeerService/ChannelActive"
-	ArkChannelFundingPeerService_ApplyChannelEvent_FullMethodName       = "/arkchannelrpc.ArkChannelFundingPeerService/ApplyChannelEvent"
-	ArkChannelFundingPeerService_CreateInvoice_FullMethodName           = "/arkchannelrpc.ArkChannelFundingPeerService/CreateInvoice"
-	ArkChannelFundingPeerService_PayInvoice_FullMethodName              = "/arkchannelrpc.ArkChannelFundingPeerService/PayInvoice"
-	ArkChannelFundingPeerService_PrepareOutgoingPayment_FullMethodName  = "/arkchannelrpc.ArkChannelFundingPeerService/PrepareOutgoingPayment"
-	ArkChannelFundingPeerService_CancelOutgoingPayment_FullMethodName   = "/arkchannelrpc.ArkChannelFundingPeerService/CancelOutgoingPayment"
-	ArkChannelFundingPeerService_RegisterIncomingPayment_FullMethodName = "/arkchannelrpc.ArkChannelFundingPeerService/RegisterIncomingPayment"
+	ArkChannelFundingPeerService_GetPeerInfo_FullMethodName                = "/arkchannelrpc.ArkChannelFundingPeerService/GetPeerInfo"
+	ArkChannelFundingPeerService_RegisterPromotion_FullMethodName          = "/arkchannelrpc.ArkChannelFundingPeerService/RegisterPromotion"
+	ArkChannelFundingPeerService_BindPreparedOOR_FullMethodName            = "/arkchannelrpc.ArkChannelFundingPeerService/BindPreparedOOR"
+	ArkChannelFundingPeerService_SignBacking_FullMethodName                = "/arkchannelrpc.ArkChannelFundingPeerService/SignBacking"
+	ArkChannelFundingPeerService_InstallBacking_FullMethodName             = "/arkchannelrpc.ArkChannelFundingPeerService/InstallBacking"
+	ArkChannelFundingPeerService_InstallRecoveryPackage_FullMethodName     = "/arkchannelrpc.ArkChannelFundingPeerService/InstallRecoveryPackage"
+	ArkChannelFundingPeerService_ExportReceiveClaimRecovery_FullMethodName = "/arkchannelrpc.ArkChannelFundingPeerService/ExportReceiveClaimRecovery"
+	ArkChannelFundingPeerService_FundingFinalized_FullMethodName           = "/arkchannelrpc.ArkChannelFundingPeerService/FundingFinalized"
+	ArkChannelFundingPeerService_ChannelActive_FullMethodName              = "/arkchannelrpc.ArkChannelFundingPeerService/ChannelActive"
+	ArkChannelFundingPeerService_ApplyChannelEvent_FullMethodName          = "/arkchannelrpc.ArkChannelFundingPeerService/ApplyChannelEvent"
+	ArkChannelFundingPeerService_CreateInvoice_FullMethodName              = "/arkchannelrpc.ArkChannelFundingPeerService/CreateInvoice"
+	ArkChannelFundingPeerService_PayInvoice_FullMethodName                 = "/arkchannelrpc.ArkChannelFundingPeerService/PayInvoice"
+	ArkChannelFundingPeerService_PrepareOutgoingPayment_FullMethodName     = "/arkchannelrpc.ArkChannelFundingPeerService/PrepareOutgoingPayment"
+	ArkChannelFundingPeerService_CancelOutgoingPayment_FullMethodName      = "/arkchannelrpc.ArkChannelFundingPeerService/CancelOutgoingPayment"
+	ArkChannelFundingPeerService_RegisterIncomingPayment_FullMethodName    = "/arkchannelrpc.ArkChannelFundingPeerService/RegisterIncomingPayment"
 )
 
 // ArkChannelFundingPeerServiceClient is the client API for ArkChannelFundingPeerService service.
@@ -693,6 +696,7 @@ type ArkChannelFundingPeerServiceClient interface {
 	SignBacking(ctx context.Context, in *SignBackingRequest, opts ...grpc.CallOption) (*SignBackingResponse, error)
 	InstallBacking(ctx context.Context, in *InstallBackingRequest, opts ...grpc.CallOption) (*InstallBackingResponse, error)
 	InstallRecoveryPackage(ctx context.Context, in *InstallRecoveryPackageRequest, opts ...grpc.CallOption) (*InstallRecoveryPackageResponse, error)
+	ExportReceiveClaimRecovery(ctx context.Context, in *ExportReceiveClaimRecoveryRequest, opts ...grpc.CallOption) (*ExportReceiveClaimRecoveryResponse, error)
 	FundingFinalized(ctx context.Context, in *FundingStatusRequest, opts ...grpc.CallOption) (*FundingStatusResponse, error)
 	ChannelActive(ctx context.Context, in *FundingStatusRequest, opts ...grpc.CallOption) (*FundingStatusResponse, error)
 	ApplyChannelEvent(ctx context.Context, in *ApplyChannelEventRequest, opts ...grpc.CallOption) (*ApplyChannelEventResponse, error)
@@ -765,6 +769,16 @@ func (c *arkChannelFundingPeerServiceClient) InstallRecoveryPackage(ctx context.
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(InstallRecoveryPackageResponse)
 	err := c.cc.Invoke(ctx, ArkChannelFundingPeerService_InstallRecoveryPackage_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *arkChannelFundingPeerServiceClient) ExportReceiveClaimRecovery(ctx context.Context, in *ExportReceiveClaimRecoveryRequest, opts ...grpc.CallOption) (*ExportReceiveClaimRecoveryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExportReceiveClaimRecoveryResponse)
+	err := c.cc.Invoke(ctx, ArkChannelFundingPeerService_ExportReceiveClaimRecovery_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -865,6 +879,7 @@ type ArkChannelFundingPeerServiceServer interface {
 	SignBacking(context.Context, *SignBackingRequest) (*SignBackingResponse, error)
 	InstallBacking(context.Context, *InstallBackingRequest) (*InstallBackingResponse, error)
 	InstallRecoveryPackage(context.Context, *InstallRecoveryPackageRequest) (*InstallRecoveryPackageResponse, error)
+	ExportReceiveClaimRecovery(context.Context, *ExportReceiveClaimRecoveryRequest) (*ExportReceiveClaimRecoveryResponse, error)
 	FundingFinalized(context.Context, *FundingStatusRequest) (*FundingStatusResponse, error)
 	ChannelActive(context.Context, *FundingStatusRequest) (*FundingStatusResponse, error)
 	ApplyChannelEvent(context.Context, *ApplyChannelEventRequest) (*ApplyChannelEventResponse, error)
@@ -900,6 +915,9 @@ func (UnimplementedArkChannelFundingPeerServiceServer) InstallBacking(context.Co
 }
 func (UnimplementedArkChannelFundingPeerServiceServer) InstallRecoveryPackage(context.Context, *InstallRecoveryPackageRequest) (*InstallRecoveryPackageResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method InstallRecoveryPackage not implemented")
+}
+func (UnimplementedArkChannelFundingPeerServiceServer) ExportReceiveClaimRecovery(context.Context, *ExportReceiveClaimRecoveryRequest) (*ExportReceiveClaimRecoveryResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ExportReceiveClaimRecovery not implemented")
 }
 func (UnimplementedArkChannelFundingPeerServiceServer) FundingFinalized(context.Context, *FundingStatusRequest) (*FundingStatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method FundingFinalized not implemented")
@@ -1051,6 +1069,24 @@ func _ArkChannelFundingPeerService_InstallRecoveryPackage_Handler(srv interface{
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ArkChannelFundingPeerServiceServer).InstallRecoveryPackage(ctx, req.(*InstallRecoveryPackageRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ArkChannelFundingPeerService_ExportReceiveClaimRecovery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExportReceiveClaimRecoveryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArkChannelFundingPeerServiceServer).ExportReceiveClaimRecovery(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArkChannelFundingPeerService_ExportReceiveClaimRecovery_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArkChannelFundingPeerServiceServer).ExportReceiveClaimRecovery(ctx, req.(*ExportReceiveClaimRecoveryRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1229,6 +1265,10 @@ var ArkChannelFundingPeerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "InstallRecoveryPackage",
 			Handler:    _ArkChannelFundingPeerService_InstallRecoveryPackage_Handler,
+		},
+		{
+			MethodName: "ExportReceiveClaimRecovery",
+			Handler:    _ArkChannelFundingPeerService_ExportReceiveClaimRecovery_Handler,
 		},
 		{
 			MethodName: "FundingFinalized",

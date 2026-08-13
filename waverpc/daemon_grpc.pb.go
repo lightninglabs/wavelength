@@ -34,6 +34,7 @@ const (
 	DaemonService_GetIndexedVTXOByPkScript_FullMethodName                       = "/waverpc.DaemonService/GetIndexedVTXOByPkScript"
 	DaemonService_GetVTXOExpiryInfo_FullMethodName                              = "/waverpc.DaemonService/GetVTXOExpiryInfo"
 	DaemonService_GetIndexedOORSessionByTxid_FullMethodName                     = "/waverpc.DaemonService/GetIndexedOORSessionByTxid"
+	DaemonService_ExportOORRecoveryPackage_FullMethodName                       = "/waverpc.DaemonService/ExportOORRecoveryPackage"
 	DaemonService_SendVTXO_FullMethodName                                       = "/waverpc.DaemonService/SendVTXO"
 	DaemonService_SendOOR_FullMethodName                                        = "/waverpc.DaemonService/SendOOR"
 	DaemonService_PrepareOOR_FullMethodName                                     = "/waverpc.DaemonService/PrepareOOR"
@@ -126,6 +127,10 @@ type DaemonServiceClient interface {
 	// GetIndexedOORSessionByTxid queries the authoritative indexer for one
 	// OOR session using a spent script proof and deterministic session txid.
 	GetIndexedOORSessionByTxid(ctx context.Context, in *GetIndexedOORSessionByTxidRequest, opts ...grpc.CallOption) (*GetIndexedOORSessionByTxidResponse, error)
+	// ExportOORRecoveryPackage returns the immutable local OOR package and
+	// round ancestry for one exact output. The caller must already know the
+	// output tuple; the daemon verifies it against its finalized artifacts.
+	ExportOORRecoveryPackage(ctx context.Context, in *ExportOORRecoveryPackageRequest, opts ...grpc.CallOption) (*ExportOORRecoveryPackageResponse, error)
 	// SendVTXO initiates an in-round transfer by submitting a refresh
 	// request to the round coordinator. The transfer completes when the
 	// next round commits.
@@ -421,6 +426,16 @@ func (c *daemonServiceClient) GetIndexedOORSessionByTxid(ctx context.Context, in
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetIndexedOORSessionByTxidResponse)
 	err := c.cc.Invoke(ctx, DaemonService_GetIndexedOORSessionByTxid_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ExportOORRecoveryPackage(ctx context.Context, in *ExportOORRecoveryPackageRequest, opts ...grpc.CallOption) (*ExportOORRecoveryPackageResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExportOORRecoveryPackageResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ExportOORRecoveryPackage_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -814,6 +829,10 @@ type DaemonServiceServer interface {
 	// GetIndexedOORSessionByTxid queries the authoritative indexer for one
 	// OOR session using a spent script proof and deterministic session txid.
 	GetIndexedOORSessionByTxid(context.Context, *GetIndexedOORSessionByTxidRequest) (*GetIndexedOORSessionByTxidResponse, error)
+	// ExportOORRecoveryPackage returns the immutable local OOR package and
+	// round ancestry for one exact output. The caller must already know the
+	// output tuple; the daemon verifies it against its finalized artifacts.
+	ExportOORRecoveryPackage(context.Context, *ExportOORRecoveryPackageRequest) (*ExportOORRecoveryPackageResponse, error)
 	// SendVTXO initiates an in-round transfer by submitting a refresh
 	// request to the round coordinator. The transfer completes when the
 	// next round commits.
@@ -1009,6 +1028,9 @@ func (UnimplementedDaemonServiceServer) GetVTXOExpiryInfo(context.Context, *GetV
 }
 func (UnimplementedDaemonServiceServer) GetIndexedOORSessionByTxid(context.Context, *GetIndexedOORSessionByTxidRequest) (*GetIndexedOORSessionByTxidResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetIndexedOORSessionByTxid not implemented")
+}
+func (UnimplementedDaemonServiceServer) ExportOORRecoveryPackage(context.Context, *ExportOORRecoveryPackageRequest) (*ExportOORRecoveryPackageResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ExportOORRecoveryPackage not implemented")
 }
 func (UnimplementedDaemonServiceServer) SendVTXO(context.Context, *SendVTXORequest) (*SendVTXOResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SendVTXO not implemented")
@@ -1393,6 +1415,24 @@ func _DaemonService_GetIndexedOORSessionByTxid_Handler(srv interface{}, ctx cont
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).GetIndexedOORSessionByTxid(ctx, req.(*GetIndexedOORSessionByTxidRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ExportOORRecoveryPackage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExportOORRecoveryPackageRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ExportOORRecoveryPackage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ExportOORRecoveryPackage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ExportOORRecoveryPackage(ctx, req.(*ExportOORRecoveryPackageRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2032,6 +2072,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetIndexedOORSessionByTxid",
 			Handler:    _DaemonService_GetIndexedOORSessionByTxid_Handler,
+		},
+		{
+			MethodName: "ExportOORRecoveryPackage",
+			Handler:    _DaemonService_ExportOORRecoveryPackage_Handler,
 		},
 		{
 			MethodName: "SendVTXO",

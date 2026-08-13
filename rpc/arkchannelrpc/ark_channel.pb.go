@@ -1187,6 +1187,170 @@ func (*InstallRecoveryPackageResponse) Descriptor() ([]byte, []int) {
 	return file_ark_channel_proto_rawDescGZIP(), []int{19}
 }
 
+type ExportReceiveClaimRecoveryRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ChannelId     []byte                 `protobuf:"bytes,1,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExportReceiveClaimRecoveryRequest) Reset() {
+	*x = ExportReceiveClaimRecoveryRequest{}
+	mi := &file_ark_channel_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExportReceiveClaimRecoveryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExportReceiveClaimRecoveryRequest) ProtoMessage() {}
+
+func (x *ExportReceiveClaimRecoveryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ark_channel_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExportReceiveClaimRecoveryRequest.ProtoReflect.Descriptor instead.
+func (*ExportReceiveClaimRecoveryRequest) Descriptor() ([]byte, []int) {
+	return file_ark_channel_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *ExportReceiveClaimRecoveryRequest) GetChannelId() []byte {
+	if x != nil {
+		return x.ChannelId
+	}
+	return nil
+}
+
+type ExportReceiveClaimRecoveryResponse struct {
+	state         protoimpl.MessageState      `protogen:"open.v1"`
+	Source        *ReceiveClaimRecoverySource `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
+	Recovery      *ChannelRecoveryPackage     `protobuf:"bytes,2,opt,name=recovery,proto3" json:"recovery,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExportReceiveClaimRecoveryResponse) Reset() {
+	*x = ExportReceiveClaimRecoveryResponse{}
+	mi := &file_ark_channel_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExportReceiveClaimRecoveryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExportReceiveClaimRecoveryResponse) ProtoMessage() {}
+
+func (x *ExportReceiveClaimRecoveryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ark_channel_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExportReceiveClaimRecoveryResponse.ProtoReflect.Descriptor instead.
+func (*ExportReceiveClaimRecoveryResponse) Descriptor() ([]byte, []int) {
+	return file_ark_channel_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *ExportReceiveClaimRecoveryResponse) GetSource() *ReceiveClaimRecoverySource {
+	if x != nil {
+		return x.Source
+	}
+	return nil
+}
+
+func (x *ExportReceiveClaimRecoveryResponse) GetRecovery() *ChannelRecoveryPackage {
+	if x != nil {
+		return x.Recovery
+	}
+	return nil
+}
+
+type ReceiveClaimRecoverySource struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Txid          []byte                 `protobuf:"bytes,1,opt,name=txid,proto3" json:"txid,omitempty"`
+	OutputIndex   uint32                 `protobuf:"varint,2,opt,name=output_index,json=outputIndex,proto3" json:"output_index,omitempty"`
+	AmountSat     int64                  `protobuf:"varint,3,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	PkScript      []byte                 `protobuf:"bytes,4,opt,name=pk_script,json=pkScript,proto3" json:"pk_script,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReceiveClaimRecoverySource) Reset() {
+	*x = ReceiveClaimRecoverySource{}
+	mi := &file_ark_channel_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReceiveClaimRecoverySource) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReceiveClaimRecoverySource) ProtoMessage() {}
+
+func (x *ReceiveClaimRecoverySource) ProtoReflect() protoreflect.Message {
+	mi := &file_ark_channel_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReceiveClaimRecoverySource.ProtoReflect.Descriptor instead.
+func (*ReceiveClaimRecoverySource) Descriptor() ([]byte, []int) {
+	return file_ark_channel_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *ReceiveClaimRecoverySource) GetTxid() []byte {
+	if x != nil {
+		return x.Txid
+	}
+	return nil
+}
+
+func (x *ReceiveClaimRecoverySource) GetOutputIndex() uint32 {
+	if x != nil {
+		return x.OutputIndex
+	}
+	return 0
+}
+
+func (x *ReceiveClaimRecoverySource) GetAmountSat() int64 {
+	if x != nil {
+		return x.AmountSat
+	}
+	return 0
+}
+
+func (x *ReceiveClaimRecoverySource) GetPkScript() []byte {
+	if x != nil {
+		return x.PkScript
+	}
+	return nil
+}
+
 type ChannelRecoveryPackage struct {
 	state            protoimpl.MessageState       `protogen:"open.v1"`
 	SourceDescriptor *ChannelRecoveryDescriptor   `protobuf:"bytes,1,opt,name=source_descriptor,json=sourceDescriptor,proto3" json:"source_descriptor,omitempty"`
@@ -1197,7 +1361,7 @@ type ChannelRecoveryPackage struct {
 
 func (x *ChannelRecoveryPackage) Reset() {
 	*x = ChannelRecoveryPackage{}
-	mi := &file_ark_channel_proto_msgTypes[20]
+	mi := &file_ark_channel_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1209,7 +1373,7 @@ func (x *ChannelRecoveryPackage) String() string {
 func (*ChannelRecoveryPackage) ProtoMessage() {}
 
 func (x *ChannelRecoveryPackage) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[20]
+	mi := &file_ark_channel_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1222,7 +1386,7 @@ func (x *ChannelRecoveryPackage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelRecoveryPackage.ProtoReflect.Descriptor instead.
 func (*ChannelRecoveryPackage) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{20}
+	return file_ark_channel_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ChannelRecoveryPackage) GetSourceDescriptor() *ChannelRecoveryDescriptor {
@@ -1254,7 +1418,7 @@ type ChannelRecoveryDescriptor struct {
 
 func (x *ChannelRecoveryDescriptor) Reset() {
 	*x = ChannelRecoveryDescriptor{}
-	mi := &file_ark_channel_proto_msgTypes[21]
+	mi := &file_ark_channel_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1266,7 +1430,7 @@ func (x *ChannelRecoveryDescriptor) String() string {
 func (*ChannelRecoveryDescriptor) ProtoMessage() {}
 
 func (x *ChannelRecoveryDescriptor) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[21]
+	mi := &file_ark_channel_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1279,7 +1443,7 @@ func (x *ChannelRecoveryDescriptor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelRecoveryDescriptor.ProtoReflect.Descriptor instead.
 func (*ChannelRecoveryDescriptor) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{21}
+	return file_ark_channel_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ChannelRecoveryDescriptor) GetAncestry() []*ChannelRecoveryAncestry {
@@ -1344,7 +1508,7 @@ type ChannelRecoveryAncestry struct {
 
 func (x *ChannelRecoveryAncestry) Reset() {
 	*x = ChannelRecoveryAncestry{}
-	mi := &file_ark_channel_proto_msgTypes[22]
+	mi := &file_ark_channel_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1356,7 +1520,7 @@ func (x *ChannelRecoveryAncestry) String() string {
 func (*ChannelRecoveryAncestry) ProtoMessage() {}
 
 func (x *ChannelRecoveryAncestry) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[22]
+	mi := &file_ark_channel_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1369,7 +1533,7 @@ func (x *ChannelRecoveryAncestry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelRecoveryAncestry.ProtoReflect.Descriptor instead.
 func (*ChannelRecoveryAncestry) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{22}
+	return file_ark_channel_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ChannelRecoveryAncestry) GetTreePath() []byte {
@@ -1419,7 +1583,7 @@ type ChannelRecoveryOORPackage struct {
 
 func (x *ChannelRecoveryOORPackage) Reset() {
 	*x = ChannelRecoveryOORPackage{}
-	mi := &file_ark_channel_proto_msgTypes[23]
+	mi := &file_ark_channel_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1431,7 +1595,7 @@ func (x *ChannelRecoveryOORPackage) String() string {
 func (*ChannelRecoveryOORPackage) ProtoMessage() {}
 
 func (x *ChannelRecoveryOORPackage) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[23]
+	mi := &file_ark_channel_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1444,7 +1608,7 @@ func (x *ChannelRecoveryOORPackage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelRecoveryOORPackage.ProtoReflect.Descriptor instead.
 func (*ChannelRecoveryOORPackage) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{23}
+	return file_ark_channel_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ChannelRecoveryOORPackage) GetSessionId() []byte {
@@ -1485,7 +1649,7 @@ type FundingStatusRequest struct {
 
 func (x *FundingStatusRequest) Reset() {
 	*x = FundingStatusRequest{}
-	mi := &file_ark_channel_proto_msgTypes[24]
+	mi := &file_ark_channel_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1497,7 +1661,7 @@ func (x *FundingStatusRequest) String() string {
 func (*FundingStatusRequest) ProtoMessage() {}
 
 func (x *FundingStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[24]
+	mi := &file_ark_channel_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1510,7 +1674,7 @@ func (x *FundingStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FundingStatusRequest.ProtoReflect.Descriptor instead.
 func (*FundingStatusRequest) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{24}
+	return file_ark_channel_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *FundingStatusRequest) GetTerms() *ChannelTerms {
@@ -1536,7 +1700,7 @@ type FundingStatusResponse struct {
 
 func (x *FundingStatusResponse) Reset() {
 	*x = FundingStatusResponse{}
-	mi := &file_ark_channel_proto_msgTypes[25]
+	mi := &file_ark_channel_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1548,7 +1712,7 @@ func (x *FundingStatusResponse) String() string {
 func (*FundingStatusResponse) ProtoMessage() {}
 
 func (x *FundingStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[25]
+	mi := &file_ark_channel_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1561,7 +1725,7 @@ func (x *FundingStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FundingStatusResponse.ProtoReflect.Descriptor instead.
 func (*FundingStatusResponse) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{25}
+	return file_ark_channel_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *FundingStatusResponse) GetReady() bool {
@@ -1585,7 +1749,7 @@ type ApplyChannelEventRequest struct {
 
 func (x *ApplyChannelEventRequest) Reset() {
 	*x = ApplyChannelEventRequest{}
-	mi := &file_ark_channel_proto_msgTypes[26]
+	mi := &file_ark_channel_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1597,7 +1761,7 @@ func (x *ApplyChannelEventRequest) String() string {
 func (*ApplyChannelEventRequest) ProtoMessage() {}
 
 func (x *ApplyChannelEventRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[26]
+	mi := &file_ark_channel_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1610,7 +1774,7 @@ func (x *ApplyChannelEventRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyChannelEventRequest.ProtoReflect.Descriptor instead.
 func (*ApplyChannelEventRequest) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{26}
+	return file_ark_channel_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ApplyChannelEventRequest) GetChannelId() []byte {
@@ -1664,7 +1828,7 @@ type ApplyChannelEventResponse struct {
 
 func (x *ApplyChannelEventResponse) Reset() {
 	*x = ApplyChannelEventResponse{}
-	mi := &file_ark_channel_proto_msgTypes[27]
+	mi := &file_ark_channel_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1676,7 +1840,7 @@ func (x *ApplyChannelEventResponse) String() string {
 func (*ApplyChannelEventResponse) ProtoMessage() {}
 
 func (x *ApplyChannelEventResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[27]
+	mi := &file_ark_channel_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1689,7 +1853,7 @@ func (x *ApplyChannelEventResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyChannelEventResponse.ProtoReflect.Descriptor instead.
 func (*ApplyChannelEventResponse) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{27}
+	return file_ark_channel_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ApplyChannelEventResponse) GetChannel() *ArkChannel {
@@ -1709,7 +1873,7 @@ type PeerInvoiceRequest struct {
 
 func (x *PeerInvoiceRequest) Reset() {
 	*x = PeerInvoiceRequest{}
-	mi := &file_ark_channel_proto_msgTypes[28]
+	mi := &file_ark_channel_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1721,7 +1885,7 @@ func (x *PeerInvoiceRequest) String() string {
 func (*PeerInvoiceRequest) ProtoMessage() {}
 
 func (x *PeerInvoiceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[28]
+	mi := &file_ark_channel_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1734,7 +1898,7 @@ func (x *PeerInvoiceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerInvoiceRequest.ProtoReflect.Descriptor instead.
 func (*PeerInvoiceRequest) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{28}
+	return file_ark_channel_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *PeerInvoiceRequest) GetChannelId() []byte {
@@ -1760,7 +1924,7 @@ type PeerInvoiceResponse struct {
 
 func (x *PeerInvoiceResponse) Reset() {
 	*x = PeerInvoiceResponse{}
-	mi := &file_ark_channel_proto_msgTypes[29]
+	mi := &file_ark_channel_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1772,7 +1936,7 @@ func (x *PeerInvoiceResponse) String() string {
 func (*PeerInvoiceResponse) ProtoMessage() {}
 
 func (x *PeerInvoiceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[29]
+	mi := &file_ark_channel_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1785,7 +1949,7 @@ func (x *PeerInvoiceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerInvoiceResponse.ProtoReflect.Descriptor instead.
 func (*PeerInvoiceResponse) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{29}
+	return file_ark_channel_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *PeerInvoiceResponse) GetPaymentHash() []byte {
@@ -1806,7 +1970,7 @@ type PeerPayInvoiceRequest struct {
 
 func (x *PeerPayInvoiceRequest) Reset() {
 	*x = PeerPayInvoiceRequest{}
-	mi := &file_ark_channel_proto_msgTypes[30]
+	mi := &file_ark_channel_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1818,7 +1982,7 @@ func (x *PeerPayInvoiceRequest) String() string {
 func (*PeerPayInvoiceRequest) ProtoMessage() {}
 
 func (x *PeerPayInvoiceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[30]
+	mi := &file_ark_channel_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1831,7 +1995,7 @@ func (x *PeerPayInvoiceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerPayInvoiceRequest.ProtoReflect.Descriptor instead.
 func (*PeerPayInvoiceRequest) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{30}
+	return file_ark_channel_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *PeerPayInvoiceRequest) GetChannelId() []byte {
@@ -1864,7 +2028,7 @@ type PeerPayInvoiceResponse struct {
 
 func (x *PeerPayInvoiceResponse) Reset() {
 	*x = PeerPayInvoiceResponse{}
-	mi := &file_ark_channel_proto_msgTypes[31]
+	mi := &file_ark_channel_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1876,7 +2040,7 @@ func (x *PeerPayInvoiceResponse) String() string {
 func (*PeerPayInvoiceResponse) ProtoMessage() {}
 
 func (x *PeerPayInvoiceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[31]
+	mi := &file_ark_channel_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1889,7 +2053,7 @@ func (x *PeerPayInvoiceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerPayInvoiceResponse.ProtoReflect.Descriptor instead.
 func (*PeerPayInvoiceResponse) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{31}
+	return file_ark_channel_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *PeerPayInvoiceResponse) GetSettled() bool {
@@ -1909,7 +2073,7 @@ type PrepareOutgoingPaymentRequest struct {
 
 func (x *PrepareOutgoingPaymentRequest) Reset() {
 	*x = PrepareOutgoingPaymentRequest{}
-	mi := &file_ark_channel_proto_msgTypes[32]
+	mi := &file_ark_channel_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1921,7 +2085,7 @@ func (x *PrepareOutgoingPaymentRequest) String() string {
 func (*PrepareOutgoingPaymentRequest) ProtoMessage() {}
 
 func (x *PrepareOutgoingPaymentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[32]
+	mi := &file_ark_channel_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1934,7 +2098,7 @@ func (x *PrepareOutgoingPaymentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrepareOutgoingPaymentRequest.ProtoReflect.Descriptor instead.
 func (*PrepareOutgoingPaymentRequest) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{32}
+	return file_ark_channel_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *PrepareOutgoingPaymentRequest) GetPaymentRequest() string {
@@ -1964,7 +2128,7 @@ type PrepareOutgoingPaymentResponse struct {
 
 func (x *PrepareOutgoingPaymentResponse) Reset() {
 	*x = PrepareOutgoingPaymentResponse{}
-	mi := &file_ark_channel_proto_msgTypes[33]
+	mi := &file_ark_channel_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1976,7 +2140,7 @@ func (x *PrepareOutgoingPaymentResponse) String() string {
 func (*PrepareOutgoingPaymentResponse) ProtoMessage() {}
 
 func (x *PrepareOutgoingPaymentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[33]
+	mi := &file_ark_channel_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1989,7 +2153,7 @@ func (x *PrepareOutgoingPaymentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrepareOutgoingPaymentResponse.ProtoReflect.Descriptor instead.
 func (*PrepareOutgoingPaymentResponse) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{33}
+	return file_ark_channel_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *PrepareOutgoingPaymentResponse) GetPaymentHash() []byte {
@@ -2037,7 +2201,7 @@ type CancelOutgoingPaymentRequest struct {
 
 func (x *CancelOutgoingPaymentRequest) Reset() {
 	*x = CancelOutgoingPaymentRequest{}
-	mi := &file_ark_channel_proto_msgTypes[34]
+	mi := &file_ark_channel_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2049,7 +2213,7 @@ func (x *CancelOutgoingPaymentRequest) String() string {
 func (*CancelOutgoingPaymentRequest) ProtoMessage() {}
 
 func (x *CancelOutgoingPaymentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[34]
+	mi := &file_ark_channel_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2062,7 +2226,7 @@ func (x *CancelOutgoingPaymentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelOutgoingPaymentRequest.ProtoReflect.Descriptor instead.
 func (*CancelOutgoingPaymentRequest) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{34}
+	return file_ark_channel_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *CancelOutgoingPaymentRequest) GetPaymentHash() []byte {
@@ -2088,7 +2252,7 @@ type CancelOutgoingPaymentResponse struct {
 
 func (x *CancelOutgoingPaymentResponse) Reset() {
 	*x = CancelOutgoingPaymentResponse{}
-	mi := &file_ark_channel_proto_msgTypes[35]
+	mi := &file_ark_channel_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2100,7 +2264,7 @@ func (x *CancelOutgoingPaymentResponse) String() string {
 func (*CancelOutgoingPaymentResponse) ProtoMessage() {}
 
 func (x *CancelOutgoingPaymentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[35]
+	mi := &file_ark_channel_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2113,7 +2277,7 @@ func (x *CancelOutgoingPaymentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelOutgoingPaymentResponse.ProtoReflect.Descriptor instead.
 func (*CancelOutgoingPaymentResponse) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{35}
+	return file_ark_channel_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *CancelOutgoingPaymentResponse) GetCancelled() bool {
@@ -2134,7 +2298,7 @@ type RegisterIncomingPaymentRequest struct {
 
 func (x *RegisterIncomingPaymentRequest) Reset() {
 	*x = RegisterIncomingPaymentRequest{}
-	mi := &file_ark_channel_proto_msgTypes[36]
+	mi := &file_ark_channel_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2146,7 +2310,7 @@ func (x *RegisterIncomingPaymentRequest) String() string {
 func (*RegisterIncomingPaymentRequest) ProtoMessage() {}
 
 func (x *RegisterIncomingPaymentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[36]
+	mi := &file_ark_channel_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2159,7 +2323,7 @@ func (x *RegisterIncomingPaymentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterIncomingPaymentRequest.ProtoReflect.Descriptor instead.
 func (*RegisterIncomingPaymentRequest) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{36}
+	return file_ark_channel_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *RegisterIncomingPaymentRequest) GetPaymentHash() []byte {
@@ -2192,7 +2356,7 @@ type RegisterIncomingPaymentResponse struct {
 
 func (x *RegisterIncomingPaymentResponse) Reset() {
 	*x = RegisterIncomingPaymentResponse{}
-	mi := &file_ark_channel_proto_msgTypes[37]
+	mi := &file_ark_channel_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2204,7 +2368,7 @@ func (x *RegisterIncomingPaymentResponse) String() string {
 func (*RegisterIncomingPaymentResponse) ProtoMessage() {}
 
 func (x *RegisterIncomingPaymentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[37]
+	mi := &file_ark_channel_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2217,7 +2381,7 @@ func (x *RegisterIncomingPaymentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterIncomingPaymentResponse.ProtoReflect.Descriptor instead.
 func (*RegisterIncomingPaymentResponse) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{37}
+	return file_ark_channel_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *RegisterIncomingPaymentResponse) GetRegistered() bool {
@@ -2245,7 +2409,7 @@ type ChannelTerms struct {
 
 func (x *ChannelTerms) Reset() {
 	*x = ChannelTerms{}
-	mi := &file_ark_channel_proto_msgTypes[38]
+	mi := &file_ark_channel_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2257,7 +2421,7 @@ func (x *ChannelTerms) String() string {
 func (*ChannelTerms) ProtoMessage() {}
 
 func (x *ChannelTerms) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[38]
+	mi := &file_ark_channel_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2270,7 +2434,7 @@ func (x *ChannelTerms) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelTerms.ProtoReflect.Descriptor instead.
 func (*ChannelTerms) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{38}
+	return file_ark_channel_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *ChannelTerms) GetChannelId() []byte {
@@ -2360,7 +2524,7 @@ type ChannelVTXOTerms struct {
 
 func (x *ChannelVTXOTerms) Reset() {
 	*x = ChannelVTXOTerms{}
-	mi := &file_ark_channel_proto_msgTypes[39]
+	mi := &file_ark_channel_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2372,7 +2536,7 @@ func (x *ChannelVTXOTerms) String() string {
 func (*ChannelVTXOTerms) ProtoMessage() {}
 
 func (x *ChannelVTXOTerms) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[39]
+	mi := &file_ark_channel_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2385,7 +2549,7 @@ func (x *ChannelVTXOTerms) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelVTXOTerms.ProtoReflect.Descriptor instead.
 func (*ChannelVTXOTerms) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{39}
+	return file_ark_channel_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *ChannelVTXOTerms) GetClientArkKey() []byte {
@@ -2466,7 +2630,7 @@ type ChannelVTXOBinding struct {
 
 func (x *ChannelVTXOBinding) Reset() {
 	*x = ChannelVTXOBinding{}
-	mi := &file_ark_channel_proto_msgTypes[40]
+	mi := &file_ark_channel_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2478,7 +2642,7 @@ func (x *ChannelVTXOBinding) String() string {
 func (*ChannelVTXOBinding) ProtoMessage() {}
 
 func (x *ChannelVTXOBinding) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[40]
+	mi := &file_ark_channel_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2491,7 +2655,7 @@ func (x *ChannelVTXOBinding) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelVTXOBinding.ProtoReflect.Descriptor instead.
 func (*ChannelVTXOBinding) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{40}
+	return file_ark_channel_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *ChannelVTXOBinding) GetOorSessionId() []byte {
@@ -2554,7 +2718,7 @@ type ChannelBacking struct {
 
 func (x *ChannelBacking) Reset() {
 	*x = ChannelBacking{}
-	mi := &file_ark_channel_proto_msgTypes[41]
+	mi := &file_ark_channel_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2566,7 +2730,7 @@ func (x *ChannelBacking) String() string {
 func (*ChannelBacking) ProtoMessage() {}
 
 func (x *ChannelBacking) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[41]
+	mi := &file_ark_channel_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2579,7 +2743,7 @@ func (x *ChannelBacking) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelBacking.ProtoReflect.Descriptor instead.
 func (*ChannelBacking) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{41}
+	return file_ark_channel_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *ChannelBacking) GetTransaction() []byte {
@@ -2606,16 +2770,14 @@ func (x *ChannelBacking) GetChannelPointIndex() uint32 {
 type RequestCooperativeCloseRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// channel_id is the 32-byte durable Ark channel identifier.
-	ChannelId []byte `protobuf:"bytes,1,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
-	// fee_rate_sat_per_kw is the deterministic settlement fee rate.
-	FeeRateSatPerKw uint64 `protobuf:"varint,2,opt,name=fee_rate_sat_per_kw,json=feeRateSatPerKw,proto3" json:"fee_rate_sat_per_kw,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	ChannelId     []byte `protobuf:"bytes,1,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RequestCooperativeCloseRequest) Reset() {
 	*x = RequestCooperativeCloseRequest{}
-	mi := &file_ark_channel_proto_msgTypes[42]
+	mi := &file_ark_channel_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2627,7 +2789,7 @@ func (x *RequestCooperativeCloseRequest) String() string {
 func (*RequestCooperativeCloseRequest) ProtoMessage() {}
 
 func (x *RequestCooperativeCloseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[42]
+	mi := &file_ark_channel_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2640,7 +2802,7 @@ func (x *RequestCooperativeCloseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequestCooperativeCloseRequest.ProtoReflect.Descriptor instead.
 func (*RequestCooperativeCloseRequest) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{42}
+	return file_ark_channel_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *RequestCooperativeCloseRequest) GetChannelId() []byte {
@@ -2648,13 +2810,6 @@ func (x *RequestCooperativeCloseRequest) GetChannelId() []byte {
 		return x.ChannelId
 	}
 	return nil
-}
-
-func (x *RequestCooperativeCloseRequest) GetFeeRateSatPerKw() uint64 {
-	if x != nil {
-		return x.FeeRateSatPerKw
-	}
-	return 0
 }
 
 type RequestCooperativeCloseResponse struct {
@@ -2666,7 +2821,7 @@ type RequestCooperativeCloseResponse struct {
 
 func (x *RequestCooperativeCloseResponse) Reset() {
 	*x = RequestCooperativeCloseResponse{}
-	mi := &file_ark_channel_proto_msgTypes[43]
+	mi := &file_ark_channel_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2678,7 +2833,7 @@ func (x *RequestCooperativeCloseResponse) String() string {
 func (*RequestCooperativeCloseResponse) ProtoMessage() {}
 
 func (x *RequestCooperativeCloseResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[43]
+	mi := &file_ark_channel_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2691,7 +2846,7 @@ func (x *RequestCooperativeCloseResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequestCooperativeCloseResponse.ProtoReflect.Descriptor instead.
 func (*RequestCooperativeCloseResponse) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{43}
+	return file_ark_channel_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *RequestCooperativeCloseResponse) GetChannel() *ArkChannel {
@@ -2710,7 +2865,7 @@ type GetChannelRequest struct {
 
 func (x *GetChannelRequest) Reset() {
 	*x = GetChannelRequest{}
-	mi := &file_ark_channel_proto_msgTypes[44]
+	mi := &file_ark_channel_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2722,7 +2877,7 @@ func (x *GetChannelRequest) String() string {
 func (*GetChannelRequest) ProtoMessage() {}
 
 func (x *GetChannelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[44]
+	mi := &file_ark_channel_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2735,7 +2890,7 @@ func (x *GetChannelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetChannelRequest.ProtoReflect.Descriptor instead.
 func (*GetChannelRequest) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{44}
+	return file_ark_channel_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *GetChannelRequest) GetChannelId() []byte {
@@ -2754,7 +2909,7 @@ type GetChannelResponse struct {
 
 func (x *GetChannelResponse) Reset() {
 	*x = GetChannelResponse{}
-	mi := &file_ark_channel_proto_msgTypes[45]
+	mi := &file_ark_channel_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2766,7 +2921,7 @@ func (x *GetChannelResponse) String() string {
 func (*GetChannelResponse) ProtoMessage() {}
 
 func (x *GetChannelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[45]
+	mi := &file_ark_channel_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2779,7 +2934,7 @@ func (x *GetChannelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetChannelResponse.ProtoReflect.Descriptor instead.
 func (*GetChannelResponse) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{45}
+	return file_ark_channel_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *GetChannelResponse) GetChannel() *ArkChannel {
@@ -2807,7 +2962,7 @@ type ArkChannel struct {
 
 func (x *ArkChannel) Reset() {
 	*x = ArkChannel{}
-	mi := &file_ark_channel_proto_msgTypes[46]
+	mi := &file_ark_channel_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2819,7 +2974,7 @@ func (x *ArkChannel) String() string {
 func (*ArkChannel) ProtoMessage() {}
 
 func (x *ArkChannel) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[46]
+	mi := &file_ark_channel_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2832,7 +2987,7 @@ func (x *ArkChannel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArkChannel.ProtoReflect.Descriptor instead.
 func (*ArkChannel) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{46}
+	return file_ark_channel_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *ArkChannel) GetChannelId() []byte {
@@ -2909,14 +3064,13 @@ type BeginCooperativeCloseRequest struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
 	ChannelId            []byte                 `protobuf:"bytes,1,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
 	ClientDeliveryScript []byte                 `protobuf:"bytes,2,opt,name=client_delivery_script,json=clientDeliveryScript,proto3" json:"client_delivery_script,omitempty"`
-	FeeRateSatPerKw      uint64                 `protobuf:"varint,3,opt,name=fee_rate_sat_per_kw,json=feeRateSatPerKw,proto3" json:"fee_rate_sat_per_kw,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
 
 func (x *BeginCooperativeCloseRequest) Reset() {
 	*x = BeginCooperativeCloseRequest{}
-	mi := &file_ark_channel_proto_msgTypes[47]
+	mi := &file_ark_channel_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2928,7 +3082,7 @@ func (x *BeginCooperativeCloseRequest) String() string {
 func (*BeginCooperativeCloseRequest) ProtoMessage() {}
 
 func (x *BeginCooperativeCloseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[47]
+	mi := &file_ark_channel_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2941,7 +3095,7 @@ func (x *BeginCooperativeCloseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BeginCooperativeCloseRequest.ProtoReflect.Descriptor instead.
 func (*BeginCooperativeCloseRequest) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{47}
+	return file_ark_channel_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *BeginCooperativeCloseRequest) GetChannelId() []byte {
@@ -2958,13 +3112,6 @@ func (x *BeginCooperativeCloseRequest) GetClientDeliveryScript() []byte {
 	return nil
 }
 
-func (x *BeginCooperativeCloseRequest) GetFeeRateSatPerKw() uint64 {
-	if x != nil {
-		return x.FeeRateSatPerKw
-	}
-	return 0
-}
-
 type BeginCooperativeCloseResponse struct {
 	state         protoimpl.MessageState   `protogen:"open.v1"`
 	Request       *CooperativeCloseRequest `protobuf:"bytes,1,opt,name=request,proto3" json:"request,omitempty"`
@@ -2976,7 +3123,7 @@ type BeginCooperativeCloseResponse struct {
 
 func (x *BeginCooperativeCloseResponse) Reset() {
 	*x = BeginCooperativeCloseResponse{}
-	mi := &file_ark_channel_proto_msgTypes[48]
+	mi := &file_ark_channel_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2988,7 +3135,7 @@ func (x *BeginCooperativeCloseResponse) String() string {
 func (*BeginCooperativeCloseResponse) ProtoMessage() {}
 
 func (x *BeginCooperativeCloseResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[48]
+	mi := &file_ark_channel_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3001,7 +3148,7 @@ func (x *BeginCooperativeCloseResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BeginCooperativeCloseResponse.ProtoReflect.Descriptor instead.
 func (*BeginCooperativeCloseResponse) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{48}
+	return file_ark_channel_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *BeginCooperativeCloseResponse) GetRequest() *CooperativeCloseRequest {
@@ -3026,17 +3173,16 @@ func (x *BeginCooperativeCloseResponse) GetSettlement() *CooperativeClose {
 }
 
 type CompleteCooperativeCloseRequest struct {
-	state           protoimpl.MessageState    `protogen:"open.v1"`
-	ChannelId       []byte                    `protobuf:"bytes,1,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
-	Proposal        *CooperativeCloseProposal `protobuf:"bytes,2,opt,name=proposal,proto3" json:"proposal,omitempty"`
-	ClientSignature []byte                    `protobuf:"bytes,3,opt,name=client_signature,json=clientSignature,proto3" json:"client_signature,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state         protoimpl.MessageState    `protogen:"open.v1"`
+	ChannelId     []byte                    `protobuf:"bytes,1,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
+	Proposal      *CooperativeCloseProposal `protobuf:"bytes,2,opt,name=proposal,proto3" json:"proposal,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CompleteCooperativeCloseRequest) Reset() {
 	*x = CompleteCooperativeCloseRequest{}
-	mi := &file_ark_channel_proto_msgTypes[49]
+	mi := &file_ark_channel_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3048,7 +3194,7 @@ func (x *CompleteCooperativeCloseRequest) String() string {
 func (*CompleteCooperativeCloseRequest) ProtoMessage() {}
 
 func (x *CompleteCooperativeCloseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[49]
+	mi := &file_ark_channel_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3061,7 +3207,7 @@ func (x *CompleteCooperativeCloseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompleteCooperativeCloseRequest.ProtoReflect.Descriptor instead.
 func (*CompleteCooperativeCloseRequest) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{49}
+	return file_ark_channel_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *CompleteCooperativeCloseRequest) GetChannelId() []byte {
@@ -3078,13 +3224,6 @@ func (x *CompleteCooperativeCloseRequest) GetProposal() *CooperativeCloseProposa
 	return nil
 }
 
-func (x *CompleteCooperativeCloseRequest) GetClientSignature() []byte {
-	if x != nil {
-		return x.ClientSignature
-	}
-	return nil
-}
-
 type CompleteCooperativeCloseResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Settlement    *CooperativeClose      `protobuf:"bytes,1,opt,name=settlement,proto3" json:"settlement,omitempty"`
@@ -3094,7 +3233,7 @@ type CompleteCooperativeCloseResponse struct {
 
 func (x *CompleteCooperativeCloseResponse) Reset() {
 	*x = CompleteCooperativeCloseResponse{}
-	mi := &file_ark_channel_proto_msgTypes[50]
+	mi := &file_ark_channel_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3106,7 +3245,7 @@ func (x *CompleteCooperativeCloseResponse) String() string {
 func (*CompleteCooperativeCloseResponse) ProtoMessage() {}
 
 func (x *CompleteCooperativeCloseResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[50]
+	mi := &file_ark_channel_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3119,7 +3258,7 @@ func (x *CompleteCooperativeCloseResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompleteCooperativeCloseResponse.ProtoReflect.Descriptor instead.
 func (*CompleteCooperativeCloseResponse) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{50}
+	return file_ark_channel_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *CompleteCooperativeCloseResponse) GetSettlement() *CooperativeClose {
@@ -3140,7 +3279,7 @@ type AcknowledgeCooperativeCloseRequest struct {
 
 func (x *AcknowledgeCooperativeCloseRequest) Reset() {
 	*x = AcknowledgeCooperativeCloseRequest{}
-	mi := &file_ark_channel_proto_msgTypes[51]
+	mi := &file_ark_channel_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3152,7 +3291,7 @@ func (x *AcknowledgeCooperativeCloseRequest) String() string {
 func (*AcknowledgeCooperativeCloseRequest) ProtoMessage() {}
 
 func (x *AcknowledgeCooperativeCloseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[51]
+	mi := &file_ark_channel_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3165,7 +3304,7 @@ func (x *AcknowledgeCooperativeCloseRequest) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use AcknowledgeCooperativeCloseRequest.ProtoReflect.Descriptor instead.
 func (*AcknowledgeCooperativeCloseRequest) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{51}
+	return file_ark_channel_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *AcknowledgeCooperativeCloseRequest) GetChannelId() []byte {
@@ -3198,7 +3337,7 @@ type AcknowledgeCooperativeCloseResponse struct {
 
 func (x *AcknowledgeCooperativeCloseResponse) Reset() {
 	*x = AcknowledgeCooperativeCloseResponse{}
-	mi := &file_ark_channel_proto_msgTypes[52]
+	mi := &file_ark_channel_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3210,7 +3349,7 @@ func (x *AcknowledgeCooperativeCloseResponse) String() string {
 func (*AcknowledgeCooperativeCloseResponse) ProtoMessage() {}
 
 func (x *AcknowledgeCooperativeCloseResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[52]
+	mi := &file_ark_channel_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3223,7 +3362,7 @@ func (x *AcknowledgeCooperativeCloseResponse) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use AcknowledgeCooperativeCloseResponse.ProtoReflect.Descriptor instead.
 func (*AcknowledgeCooperativeCloseResponse) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{52}
+	return file_ark_channel_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *AcknowledgeCooperativeCloseResponse) GetChannel() *ArkChannel {
@@ -3243,7 +3382,7 @@ type PublishCooperativeCloseRequest struct {
 
 func (x *PublishCooperativeCloseRequest) Reset() {
 	*x = PublishCooperativeCloseRequest{}
-	mi := &file_ark_channel_proto_msgTypes[53]
+	mi := &file_ark_channel_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3255,7 +3394,7 @@ func (x *PublishCooperativeCloseRequest) String() string {
 func (*PublishCooperativeCloseRequest) ProtoMessage() {}
 
 func (x *PublishCooperativeCloseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[53]
+	mi := &file_ark_channel_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3268,7 +3407,7 @@ func (x *PublishCooperativeCloseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublishCooperativeCloseRequest.ProtoReflect.Descriptor instead.
 func (*PublishCooperativeCloseRequest) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{53}
+	return file_ark_channel_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *PublishCooperativeCloseRequest) GetChannelId() []byte {
@@ -3295,7 +3434,7 @@ type PublishCooperativeCloseResponse struct {
 
 func (x *PublishCooperativeCloseResponse) Reset() {
 	*x = PublishCooperativeCloseResponse{}
-	mi := &file_ark_channel_proto_msgTypes[54]
+	mi := &file_ark_channel_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3307,7 +3446,7 @@ func (x *PublishCooperativeCloseResponse) String() string {
 func (*PublishCooperativeCloseResponse) ProtoMessage() {}
 
 func (x *PublishCooperativeCloseResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[54]
+	mi := &file_ark_channel_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3320,7 +3459,7 @@ func (x *PublishCooperativeCloseResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublishCooperativeCloseResponse.ProtoReflect.Descriptor instead.
 func (*PublishCooperativeCloseResponse) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{54}
+	return file_ark_channel_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *PublishCooperativeCloseResponse) GetSettlementTxid() []byte {
@@ -3346,7 +3485,7 @@ type AbortCooperativeCloseRequest struct {
 
 func (x *AbortCooperativeCloseRequest) Reset() {
 	*x = AbortCooperativeCloseRequest{}
-	mi := &file_ark_channel_proto_msgTypes[55]
+	mi := &file_ark_channel_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3358,7 +3497,7 @@ func (x *AbortCooperativeCloseRequest) String() string {
 func (*AbortCooperativeCloseRequest) ProtoMessage() {}
 
 func (x *AbortCooperativeCloseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[55]
+	mi := &file_ark_channel_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3371,7 +3510,7 @@ func (x *AbortCooperativeCloseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AbortCooperativeCloseRequest.ProtoReflect.Descriptor instead.
 func (*AbortCooperativeCloseRequest) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{55}
+	return file_ark_channel_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *AbortCooperativeCloseRequest) GetChannelId() []byte {
@@ -3390,7 +3529,7 @@ type AbortCooperativeCloseResponse struct {
 
 func (x *AbortCooperativeCloseResponse) Reset() {
 	*x = AbortCooperativeCloseResponse{}
-	mi := &file_ark_channel_proto_msgTypes[56]
+	mi := &file_ark_channel_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3402,7 +3541,7 @@ func (x *AbortCooperativeCloseResponse) String() string {
 func (*AbortCooperativeCloseResponse) ProtoMessage() {}
 
 func (x *AbortCooperativeCloseResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[56]
+	mi := &file_ark_channel_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3415,7 +3554,7 @@ func (x *AbortCooperativeCloseResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AbortCooperativeCloseResponse.ProtoReflect.Descriptor instead.
 func (*AbortCooperativeCloseResponse) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{56}
+	return file_ark_channel_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *AbortCooperativeCloseResponse) GetChannel() *ArkChannel {
@@ -3429,14 +3568,13 @@ type CooperativeCloseRequest struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
 	ClientDeliveryScript []byte                 `protobuf:"bytes,1,opt,name=client_delivery_script,json=clientDeliveryScript,proto3" json:"client_delivery_script,omitempty"`
 	HubDeliveryScript    []byte                 `protobuf:"bytes,2,opt,name=hub_delivery_script,json=hubDeliveryScript,proto3" json:"hub_delivery_script,omitempty"`
-	FeeRateSatPerKw      uint64                 `protobuf:"varint,3,opt,name=fee_rate_sat_per_kw,json=feeRateSatPerKw,proto3" json:"fee_rate_sat_per_kw,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
 
 func (x *CooperativeCloseRequest) Reset() {
 	*x = CooperativeCloseRequest{}
-	mi := &file_ark_channel_proto_msgTypes[57]
+	mi := &file_ark_channel_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3448,7 +3586,7 @@ func (x *CooperativeCloseRequest) String() string {
 func (*CooperativeCloseRequest) ProtoMessage() {}
 
 func (x *CooperativeCloseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[57]
+	mi := &file_ark_channel_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3461,7 +3599,7 @@ func (x *CooperativeCloseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CooperativeCloseRequest.ProtoReflect.Descriptor instead.
 func (*CooperativeCloseRequest) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{57}
+	return file_ark_channel_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *CooperativeCloseRequest) GetClientDeliveryScript() []byte {
@@ -3476,13 +3614,6 @@ func (x *CooperativeCloseRequest) GetHubDeliveryScript() []byte {
 		return x.HubDeliveryScript
 	}
 	return nil
-}
-
-func (x *CooperativeCloseRequest) GetFeeRateSatPerKw() uint64 {
-	if x != nil {
-		return x.FeeRateSatPerKw
-	}
-	return 0
 }
 
 type CleanChannelState struct {
@@ -3500,7 +3631,7 @@ type CleanChannelState struct {
 
 func (x *CleanChannelState) Reset() {
 	*x = CleanChannelState{}
-	mi := &file_ark_channel_proto_msgTypes[58]
+	mi := &file_ark_channel_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3512,7 +3643,7 @@ func (x *CleanChannelState) String() string {
 func (*CleanChannelState) ProtoMessage() {}
 
 func (x *CleanChannelState) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[58]
+	mi := &file_ark_channel_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3525,7 +3656,7 @@ func (x *CleanChannelState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CleanChannelState.ProtoReflect.Descriptor instead.
 func (*CleanChannelState) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{58}
+	return file_ark_channel_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *CleanChannelState) GetChannelPointTxid() []byte {
@@ -3585,14 +3716,13 @@ type CooperativeCloseProposal struct {
 	HubBalanceSat    int64                  `protobuf:"varint,4,opt,name=hub_balance_sat,json=hubBalanceSat,proto3" json:"hub_balance_sat,omitempty"`
 	ClientOutputSat  int64                  `protobuf:"varint,5,opt,name=client_output_sat,json=clientOutputSat,proto3" json:"client_output_sat,omitempty"`
 	HubOutputSat     int64                  `protobuf:"varint,6,opt,name=hub_output_sat,json=hubOutputSat,proto3" json:"hub_output_sat,omitempty"`
-	FeeSat           int64                  `protobuf:"varint,7,opt,name=fee_sat,json=feeSat,proto3" json:"fee_sat,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
 
 func (x *CooperativeCloseProposal) Reset() {
 	*x = CooperativeCloseProposal{}
-	mi := &file_ark_channel_proto_msgTypes[59]
+	mi := &file_ark_channel_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3604,7 +3734,7 @@ func (x *CooperativeCloseProposal) String() string {
 func (*CooperativeCloseProposal) ProtoMessage() {}
 
 func (x *CooperativeCloseProposal) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[59]
+	mi := &file_ark_channel_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3617,7 +3747,7 @@ func (x *CooperativeCloseProposal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CooperativeCloseProposal.ProtoReflect.Descriptor instead.
 func (*CooperativeCloseProposal) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{59}
+	return file_ark_channel_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *CooperativeCloseProposal) GetTransaction() []byte {
@@ -3662,13 +3792,6 @@ func (x *CooperativeCloseProposal) GetHubOutputSat() int64 {
 	return 0
 }
 
-func (x *CooperativeCloseProposal) GetFeeSat() int64 {
-	if x != nil {
-		return x.FeeSat
-	}
-	return 0
-}
-
 type CooperativeClose struct {
 	state         protoimpl.MessageState    `protogen:"open.v1"`
 	Proposal      *CooperativeCloseProposal `protobuf:"bytes,1,opt,name=proposal,proto3" json:"proposal,omitempty"`
@@ -3680,7 +3803,7 @@ type CooperativeClose struct {
 
 func (x *CooperativeClose) Reset() {
 	*x = CooperativeClose{}
-	mi := &file_ark_channel_proto_msgTypes[60]
+	mi := &file_ark_channel_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3692,7 +3815,7 @@ func (x *CooperativeClose) String() string {
 func (*CooperativeClose) ProtoMessage() {}
 
 func (x *CooperativeClose) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_channel_proto_msgTypes[60]
+	mi := &file_ark_channel_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3705,7 +3828,7 @@ func (x *CooperativeClose) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CooperativeClose.ProtoReflect.Descriptor instead.
 func (*CooperativeClose) Descriptor() ([]byte, []int) {
-	return file_ark_channel_proto_rawDescGZIP(), []int{60}
+	return file_ark_channel_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *CooperativeClose) GetProposal() *CooperativeCloseProposal {
@@ -3805,7 +3928,19 @@ const file_ark_channel_proto_rawDesc = "" +
 	"\x05terms\x18\x02 \x01(\v2\x1b.arkchannelrpc.ChannelTermsR\x05terms\x12;\n" +
 	"\abinding\x18\x03 \x01(\v2!.arkchannelrpc.ChannelVTXOBindingR\abinding\x12A\n" +
 	"\brecovery\x18\x04 \x01(\v2%.arkchannelrpc.ChannelRecoveryPackageR\brecovery\" \n" +
-	"\x1eInstallRecoveryPackageResponse\"\xbc\x01\n" +
+	"\x1eInstallRecoveryPackageResponse\"B\n" +
+	"!ExportReceiveClaimRecoveryRequest\x12\x1d\n" +
+	"\n" +
+	"channel_id\x18\x01 \x01(\fR\tchannelId\"\xaa\x01\n" +
+	"\"ExportReceiveClaimRecoveryResponse\x12A\n" +
+	"\x06source\x18\x01 \x01(\v2).arkchannelrpc.ReceiveClaimRecoverySourceR\x06source\x12A\n" +
+	"\brecovery\x18\x02 \x01(\v2%.arkchannelrpc.ChannelRecoveryPackageR\brecovery\"\x8f\x01\n" +
+	"\x1aReceiveClaimRecoverySource\x12\x12\n" +
+	"\x04txid\x18\x01 \x01(\fR\x04txid\x12!\n" +
+	"\foutput_index\x18\x02 \x01(\rR\voutputIndex\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\x03 \x01(\x03R\tamountSat\x12\x1b\n" +
+	"\tpk_script\x18\x04 \x01(\fR\bpkScript\"\xbc\x01\n" +
 	"\x16ChannelRecoveryPackage\x12U\n" +
 	"\x11source_descriptor\x18\x01 \x01(\v2(.arkchannelrpc.ChannelRecoveryDescriptorR\x10sourceDescriptor\x12K\n" +
 	"\foor_packages\x18\x02 \x03(\v2(.arkchannelrpc.ChannelRecoveryOORPackageR\voorPackages\"\xc1\x02\n" +
@@ -3923,11 +4058,10 @@ const file_ark_channel_proto_rawDesc = "" +
 	"\x0eChannelBacking\x12 \n" +
 	"\vtransaction\x18\x01 \x01(\fR\vtransaction\x12,\n" +
 	"\x12channel_point_txid\x18\x02 \x01(\fR\x10channelPointTxid\x12.\n" +
-	"\x13channel_point_index\x18\x03 \x01(\rR\x11channelPointIndex\"m\n" +
+	"\x13channel_point_index\x18\x03 \x01(\rR\x11channelPointIndex\"Z\n" +
 	"\x1eRequestCooperativeCloseRequest\x12\x1d\n" +
 	"\n" +
-	"channel_id\x18\x01 \x01(\fR\tchannelId\x12,\n" +
-	"\x13fee_rate_sat_per_kw\x18\x02 \x01(\x04R\x0ffeeRateSatPerKw\"V\n" +
+	"channel_id\x18\x01 \x01(\fR\tchannelIdJ\x04\b\x02\x10\x03R\x13fee_rate_sat_per_kw\"V\n" +
 	"\x1fRequestCooperativeCloseResponse\x123\n" +
 	"\achannel\x18\x01 \x01(\v2\x19.arkchannelrpc.ArkChannelR\achannel\"2\n" +
 	"\x11GetChannelRequest\x12\x1d\n" +
@@ -3948,24 +4082,22 @@ const file_ark_channel_proto_rawDesc = "" +
 	"\x16cooperative_close_txid\x18\b \x01(\fR\x14cooperativeCloseTxid\x12\x1a\n" +
 	"\brevision\x18\t \x01(\x04R\brevision\x12#\n" +
 	"\rreserved_scid\x18\n" +
-	" \x01(\x04R\freservedScid\"\xa1\x01\n" +
+	" \x01(\x04R\freservedScid\"\x8e\x01\n" +
 	"\x1cBeginCooperativeCloseRequest\x12\x1d\n" +
 	"\n" +
 	"channel_id\x18\x01 \x01(\fR\tchannelId\x124\n" +
-	"\x16client_delivery_script\x18\x02 \x01(\fR\x14clientDeliveryScript\x12,\n" +
-	"\x13fee_rate_sat_per_kw\x18\x03 \x01(\x04R\x0ffeeRateSatPerKw\"\xe5\x01\n" +
+	"\x16client_delivery_script\x18\x02 \x01(\fR\x14clientDeliveryScriptJ\x04\b\x03\x10\x04R\x13fee_rate_sat_per_kw\"\xe5\x01\n" +
 	"\x1dBeginCooperativeCloseResponse\x12@\n" +
 	"\arequest\x18\x01 \x01(\v2&.arkchannelrpc.CooperativeCloseRequestR\arequest\x12A\n" +
 	"\vclean_state\x18\x02 \x01(\v2 .arkchannelrpc.CleanChannelStateR\n" +
 	"cleanState\x12?\n" +
 	"\n" +
 	"settlement\x18\x03 \x01(\v2\x1f.arkchannelrpc.CooperativeCloseR\n" +
-	"settlement\"\xb0\x01\n" +
+	"settlement\"\x9d\x01\n" +
 	"\x1fCompleteCooperativeCloseRequest\x12\x1d\n" +
 	"\n" +
 	"channel_id\x18\x01 \x01(\fR\tchannelId\x12C\n" +
-	"\bproposal\x18\x02 \x01(\v2'.arkchannelrpc.CooperativeCloseProposalR\bproposal\x12)\n" +
-	"\x10client_signature\x18\x03 \x01(\fR\x0fclientSignature\"c\n" +
+	"\bproposal\x18\x02 \x01(\v2'.arkchannelrpc.CooperativeCloseProposalR\bproposalJ\x04\b\x03\x10\x04R\x10client_signature\"c\n" +
 	" CompleteCooperativeCloseResponse\x12?\n" +
 	"\n" +
 	"settlement\x18\x01 \x01(\v2\x1f.arkchannelrpc.CooperativeCloseR\n" +
@@ -3990,11 +4122,10 @@ const file_ark_channel_proto_rawDesc = "" +
 	"\n" +
 	"channel_id\x18\x01 \x01(\fR\tchannelId\"T\n" +
 	"\x1dAbortCooperativeCloseResponse\x123\n" +
-	"\achannel\x18\x01 \x01(\v2\x19.arkchannelrpc.ArkChannelR\achannel\"\xad\x01\n" +
+	"\achannel\x18\x01 \x01(\v2\x19.arkchannelrpc.ArkChannelR\achannel\"\x9a\x01\n" +
 	"\x17CooperativeCloseRequest\x124\n" +
 	"\x16client_delivery_script\x18\x01 \x01(\fR\x14clientDeliveryScript\x12.\n" +
-	"\x13hub_delivery_script\x18\x02 \x01(\fR\x11hubDeliveryScript\x12,\n" +
-	"\x13fee_rate_sat_per_kw\x18\x03 \x01(\x04R\x0ffeeRateSatPerKw\"\xc4\x02\n" +
+	"\x13hub_delivery_script\x18\x02 \x01(\fR\x11hubDeliveryScriptJ\x04\b\x03\x10\x04R\x13fee_rate_sat_per_kw\"\xc4\x02\n" +
 	"\x11CleanChannelState\x12,\n" +
 	"\x12channel_point_txid\x18\x01 \x01(\fR\x10channelPointTxid\x12.\n" +
 	"\x13channel_point_index\x18\x02 \x01(\rR\x11channelPointIndex\x12*\n" +
@@ -4002,15 +4133,14 @@ const file_ark_channel_proto_rawDesc = "" +
 	"\x12remote_balance_sat\x18\x04 \x01(\x03R\x10remoteBalanceSat\x12!\n" +
 	"\fcapacity_sat\x18\x05 \x01(\x03R\vcapacitySat\x12+\n" +
 	"\x11commitment_height\x18\x06 \x01(\x04R\x10commitmentHeight\x12'\n" +
-	"\x0flocal_initiator\x18\a \x01(\bR\x0elocalInitiator\"\xaa\x02\n" +
+	"\x0flocal_initiator\x18\a \x01(\bR\x0elocalInitiator\"\xa0\x02\n" +
 	"\x18CooperativeCloseProposal\x12 \n" +
 	"\vtransaction\x18\x01 \x01(\fR\vtransaction\x12+\n" +
 	"\x11commitment_height\x18\x02 \x01(\x04R\x10commitmentHeight\x12,\n" +
 	"\x12client_balance_sat\x18\x03 \x01(\x03R\x10clientBalanceSat\x12&\n" +
 	"\x0fhub_balance_sat\x18\x04 \x01(\x03R\rhubBalanceSat\x12*\n" +
 	"\x11client_output_sat\x18\x05 \x01(\x03R\x0fclientOutputSat\x12$\n" +
-	"\x0ehub_output_sat\x18\x06 \x01(\x03R\fhubOutputSat\x12\x17\n" +
-	"\afee_sat\x18\a \x01(\x03R\x06feeSat\"\x8d\x01\n" +
+	"\x0ehub_output_sat\x18\x06 \x01(\x03R\fhubOutputSatJ\x04\b\a\x10\bR\afee_sat\"\x8d\x01\n" +
 	"\x10CooperativeClose\x12C\n" +
 	"\bproposal\x18\x01 \x01(\v2'.arkchannelrpc.CooperativeCloseProposalR\bproposal\x12 \n" +
 	"\vtransaction\x18\x02 \x01(\fR\vtransaction\x12\x12\n" +
@@ -4041,14 +4171,15 @@ const file_ark_channel_proto_rawDesc = "" +
 	"\x18CompleteCooperativeClose\x12..arkchannelrpc.CompleteCooperativeCloseRequest\x1a/.arkchannelrpc.CompleteCooperativeCloseResponse\x12\x84\x01\n" +
 	"\x1bAcknowledgeCooperativeClose\x121.arkchannelrpc.AcknowledgeCooperativeCloseRequest\x1a2.arkchannelrpc.AcknowledgeCooperativeCloseResponse\x12x\n" +
 	"\x17PublishCooperativeClose\x12-.arkchannelrpc.PublishCooperativeCloseRequest\x1a..arkchannelrpc.PublishCooperativeCloseResponse\x12r\n" +
-	"\x15AbortCooperativeClose\x12+.arkchannelrpc.AbortCooperativeCloseRequest\x1a,.arkchannelrpc.AbortCooperativeCloseResponse2\xa5\v\n" +
+	"\x15AbortCooperativeClose\x12+.arkchannelrpc.AbortCooperativeCloseRequest\x1a,.arkchannelrpc.AbortCooperativeCloseResponse2\xa9\f\n" +
 	"\x1cArkChannelFundingPeerService\x12T\n" +
 	"\vGetPeerInfo\x12!.arkchannelrpc.GetPeerInfoRequest\x1a\".arkchannelrpc.GetPeerInfoResponse\x12f\n" +
 	"\x11RegisterPromotion\x12'.arkchannelrpc.RegisterPromotionRequest\x1a(.arkchannelrpc.RegisterPromotionResponse\x12`\n" +
 	"\x0fBindPreparedOOR\x12%.arkchannelrpc.BindPreparedOORRequest\x1a&.arkchannelrpc.BindPreparedOORResponse\x12T\n" +
 	"\vSignBacking\x12!.arkchannelrpc.SignBackingRequest\x1a\".arkchannelrpc.SignBackingResponse\x12]\n" +
 	"\x0eInstallBacking\x12$.arkchannelrpc.InstallBackingRequest\x1a%.arkchannelrpc.InstallBackingResponse\x12u\n" +
-	"\x16InstallRecoveryPackage\x12,.arkchannelrpc.InstallRecoveryPackageRequest\x1a-.arkchannelrpc.InstallRecoveryPackageResponse\x12]\n" +
+	"\x16InstallRecoveryPackage\x12,.arkchannelrpc.InstallRecoveryPackageRequest\x1a-.arkchannelrpc.InstallRecoveryPackageResponse\x12\x81\x01\n" +
+	"\x1aExportReceiveClaimRecovery\x120.arkchannelrpc.ExportReceiveClaimRecoveryRequest\x1a1.arkchannelrpc.ExportReceiveClaimRecoveryResponse\x12]\n" +
 	"\x10FundingFinalized\x12#.arkchannelrpc.FundingStatusRequest\x1a$.arkchannelrpc.FundingStatusResponse\x12Z\n" +
 	"\rChannelActive\x12#.arkchannelrpc.FundingStatusRequest\x1a$.arkchannelrpc.FundingStatusResponse\x12f\n" +
 	"\x11ApplyChannelEvent\x12'.arkchannelrpc.ApplyChannelEventRequest\x1a(.arkchannelrpc.ApplyChannelEventResponse\x12V\n" +
@@ -4072,7 +4203,7 @@ func file_ark_channel_proto_rawDescGZIP() []byte {
 }
 
 var file_ark_channel_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_ark_channel_proto_msgTypes = make([]protoimpl.MessageInfo, 61)
+var file_ark_channel_proto_msgTypes = make([]protoimpl.MessageInfo, 64)
 var file_ark_channel_proto_goTypes = []any{
 	(ChannelEventType)(0),                       // 0: arkchannelrpc.ChannelEventType
 	(CooperativeCloseAcknowledgement)(0),        // 1: arkchannelrpc.CooperativeCloseAcknowledgement
@@ -4096,140 +4227,147 @@ var file_ark_channel_proto_goTypes = []any{
 	(*InstallBackingResponse)(nil),              // 19: arkchannelrpc.InstallBackingResponse
 	(*InstallRecoveryPackageRequest)(nil),       // 20: arkchannelrpc.InstallRecoveryPackageRequest
 	(*InstallRecoveryPackageResponse)(nil),      // 21: arkchannelrpc.InstallRecoveryPackageResponse
-	(*ChannelRecoveryPackage)(nil),              // 22: arkchannelrpc.ChannelRecoveryPackage
-	(*ChannelRecoveryDescriptor)(nil),           // 23: arkchannelrpc.ChannelRecoveryDescriptor
-	(*ChannelRecoveryAncestry)(nil),             // 24: arkchannelrpc.ChannelRecoveryAncestry
-	(*ChannelRecoveryOORPackage)(nil),           // 25: arkchannelrpc.ChannelRecoveryOORPackage
-	(*FundingStatusRequest)(nil),                // 26: arkchannelrpc.FundingStatusRequest
-	(*FundingStatusResponse)(nil),               // 27: arkchannelrpc.FundingStatusResponse
-	(*ApplyChannelEventRequest)(nil),            // 28: arkchannelrpc.ApplyChannelEventRequest
-	(*ApplyChannelEventResponse)(nil),           // 29: arkchannelrpc.ApplyChannelEventResponse
-	(*PeerInvoiceRequest)(nil),                  // 30: arkchannelrpc.PeerInvoiceRequest
-	(*PeerInvoiceResponse)(nil),                 // 31: arkchannelrpc.PeerInvoiceResponse
-	(*PeerPayInvoiceRequest)(nil),               // 32: arkchannelrpc.PeerPayInvoiceRequest
-	(*PeerPayInvoiceResponse)(nil),              // 33: arkchannelrpc.PeerPayInvoiceResponse
-	(*PrepareOutgoingPaymentRequest)(nil),       // 34: arkchannelrpc.PrepareOutgoingPaymentRequest
-	(*PrepareOutgoingPaymentResponse)(nil),      // 35: arkchannelrpc.PrepareOutgoingPaymentResponse
-	(*CancelOutgoingPaymentRequest)(nil),        // 36: arkchannelrpc.CancelOutgoingPaymentRequest
-	(*CancelOutgoingPaymentResponse)(nil),       // 37: arkchannelrpc.CancelOutgoingPaymentResponse
-	(*RegisterIncomingPaymentRequest)(nil),      // 38: arkchannelrpc.RegisterIncomingPaymentRequest
-	(*RegisterIncomingPaymentResponse)(nil),     // 39: arkchannelrpc.RegisterIncomingPaymentResponse
-	(*ChannelTerms)(nil),                        // 40: arkchannelrpc.ChannelTerms
-	(*ChannelVTXOTerms)(nil),                    // 41: arkchannelrpc.ChannelVTXOTerms
-	(*ChannelVTXOBinding)(nil),                  // 42: arkchannelrpc.ChannelVTXOBinding
-	(*ChannelBacking)(nil),                      // 43: arkchannelrpc.ChannelBacking
-	(*RequestCooperativeCloseRequest)(nil),      // 44: arkchannelrpc.RequestCooperativeCloseRequest
-	(*RequestCooperativeCloseResponse)(nil),     // 45: arkchannelrpc.RequestCooperativeCloseResponse
-	(*GetChannelRequest)(nil),                   // 46: arkchannelrpc.GetChannelRequest
-	(*GetChannelResponse)(nil),                  // 47: arkchannelrpc.GetChannelResponse
-	(*ArkChannel)(nil),                          // 48: arkchannelrpc.ArkChannel
-	(*BeginCooperativeCloseRequest)(nil),        // 49: arkchannelrpc.BeginCooperativeCloseRequest
-	(*BeginCooperativeCloseResponse)(nil),       // 50: arkchannelrpc.BeginCooperativeCloseResponse
-	(*CompleteCooperativeCloseRequest)(nil),     // 51: arkchannelrpc.CompleteCooperativeCloseRequest
-	(*CompleteCooperativeCloseResponse)(nil),    // 52: arkchannelrpc.CompleteCooperativeCloseResponse
-	(*AcknowledgeCooperativeCloseRequest)(nil),  // 53: arkchannelrpc.AcknowledgeCooperativeCloseRequest
-	(*AcknowledgeCooperativeCloseResponse)(nil), // 54: arkchannelrpc.AcknowledgeCooperativeCloseResponse
-	(*PublishCooperativeCloseRequest)(nil),      // 55: arkchannelrpc.PublishCooperativeCloseRequest
-	(*PublishCooperativeCloseResponse)(nil),     // 56: arkchannelrpc.PublishCooperativeCloseResponse
-	(*AbortCooperativeCloseRequest)(nil),        // 57: arkchannelrpc.AbortCooperativeCloseRequest
-	(*AbortCooperativeCloseResponse)(nil),       // 58: arkchannelrpc.AbortCooperativeCloseResponse
-	(*CooperativeCloseRequest)(nil),             // 59: arkchannelrpc.CooperativeCloseRequest
-	(*CleanChannelState)(nil),                   // 60: arkchannelrpc.CleanChannelState
-	(*CooperativeCloseProposal)(nil),            // 61: arkchannelrpc.CooperativeCloseProposal
-	(*CooperativeClose)(nil),                    // 62: arkchannelrpc.CooperativeClose
+	(*ExportReceiveClaimRecoveryRequest)(nil),   // 22: arkchannelrpc.ExportReceiveClaimRecoveryRequest
+	(*ExportReceiveClaimRecoveryResponse)(nil),  // 23: arkchannelrpc.ExportReceiveClaimRecoveryResponse
+	(*ReceiveClaimRecoverySource)(nil),          // 24: arkchannelrpc.ReceiveClaimRecoverySource
+	(*ChannelRecoveryPackage)(nil),              // 25: arkchannelrpc.ChannelRecoveryPackage
+	(*ChannelRecoveryDescriptor)(nil),           // 26: arkchannelrpc.ChannelRecoveryDescriptor
+	(*ChannelRecoveryAncestry)(nil),             // 27: arkchannelrpc.ChannelRecoveryAncestry
+	(*ChannelRecoveryOORPackage)(nil),           // 28: arkchannelrpc.ChannelRecoveryOORPackage
+	(*FundingStatusRequest)(nil),                // 29: arkchannelrpc.FundingStatusRequest
+	(*FundingStatusResponse)(nil),               // 30: arkchannelrpc.FundingStatusResponse
+	(*ApplyChannelEventRequest)(nil),            // 31: arkchannelrpc.ApplyChannelEventRequest
+	(*ApplyChannelEventResponse)(nil),           // 32: arkchannelrpc.ApplyChannelEventResponse
+	(*PeerInvoiceRequest)(nil),                  // 33: arkchannelrpc.PeerInvoiceRequest
+	(*PeerInvoiceResponse)(nil),                 // 34: arkchannelrpc.PeerInvoiceResponse
+	(*PeerPayInvoiceRequest)(nil),               // 35: arkchannelrpc.PeerPayInvoiceRequest
+	(*PeerPayInvoiceResponse)(nil),              // 36: arkchannelrpc.PeerPayInvoiceResponse
+	(*PrepareOutgoingPaymentRequest)(nil),       // 37: arkchannelrpc.PrepareOutgoingPaymentRequest
+	(*PrepareOutgoingPaymentResponse)(nil),      // 38: arkchannelrpc.PrepareOutgoingPaymentResponse
+	(*CancelOutgoingPaymentRequest)(nil),        // 39: arkchannelrpc.CancelOutgoingPaymentRequest
+	(*CancelOutgoingPaymentResponse)(nil),       // 40: arkchannelrpc.CancelOutgoingPaymentResponse
+	(*RegisterIncomingPaymentRequest)(nil),      // 41: arkchannelrpc.RegisterIncomingPaymentRequest
+	(*RegisterIncomingPaymentResponse)(nil),     // 42: arkchannelrpc.RegisterIncomingPaymentResponse
+	(*ChannelTerms)(nil),                        // 43: arkchannelrpc.ChannelTerms
+	(*ChannelVTXOTerms)(nil),                    // 44: arkchannelrpc.ChannelVTXOTerms
+	(*ChannelVTXOBinding)(nil),                  // 45: arkchannelrpc.ChannelVTXOBinding
+	(*ChannelBacking)(nil),                      // 46: arkchannelrpc.ChannelBacking
+	(*RequestCooperativeCloseRequest)(nil),      // 47: arkchannelrpc.RequestCooperativeCloseRequest
+	(*RequestCooperativeCloseResponse)(nil),     // 48: arkchannelrpc.RequestCooperativeCloseResponse
+	(*GetChannelRequest)(nil),                   // 49: arkchannelrpc.GetChannelRequest
+	(*GetChannelResponse)(nil),                  // 50: arkchannelrpc.GetChannelResponse
+	(*ArkChannel)(nil),                          // 51: arkchannelrpc.ArkChannel
+	(*BeginCooperativeCloseRequest)(nil),        // 52: arkchannelrpc.BeginCooperativeCloseRequest
+	(*BeginCooperativeCloseResponse)(nil),       // 53: arkchannelrpc.BeginCooperativeCloseResponse
+	(*CompleteCooperativeCloseRequest)(nil),     // 54: arkchannelrpc.CompleteCooperativeCloseRequest
+	(*CompleteCooperativeCloseResponse)(nil),    // 55: arkchannelrpc.CompleteCooperativeCloseResponse
+	(*AcknowledgeCooperativeCloseRequest)(nil),  // 56: arkchannelrpc.AcknowledgeCooperativeCloseRequest
+	(*AcknowledgeCooperativeCloseResponse)(nil), // 57: arkchannelrpc.AcknowledgeCooperativeCloseResponse
+	(*PublishCooperativeCloseRequest)(nil),      // 58: arkchannelrpc.PublishCooperativeCloseRequest
+	(*PublishCooperativeCloseResponse)(nil),     // 59: arkchannelrpc.PublishCooperativeCloseResponse
+	(*AbortCooperativeCloseRequest)(nil),        // 60: arkchannelrpc.AbortCooperativeCloseRequest
+	(*AbortCooperativeCloseResponse)(nil),       // 61: arkchannelrpc.AbortCooperativeCloseResponse
+	(*CooperativeCloseRequest)(nil),             // 62: arkchannelrpc.CooperativeCloseRequest
+	(*CleanChannelState)(nil),                   // 63: arkchannelrpc.CleanChannelState
+	(*CooperativeCloseProposal)(nil),            // 64: arkchannelrpc.CooperativeCloseProposal
+	(*CooperativeClose)(nil),                    // 65: arkchannelrpc.CooperativeClose
 }
 var file_ark_channel_proto_depIdxs = []int32{
-	48, // 0: arkchannelrpc.PromoteVTXOResponse.channel:type_name -> arkchannelrpc.ArkChannel
-	48, // 1: arkchannelrpc.MaterializeAndForceCloseResponse.channel:type_name -> arkchannelrpc.ArkChannel
-	40, // 2: arkchannelrpc.RegisterPromotionRequest.terms:type_name -> arkchannelrpc.ChannelTerms
-	48, // 3: arkchannelrpc.RegisterPromotionResponse.channel:type_name -> arkchannelrpc.ArkChannel
-	42, // 4: arkchannelrpc.BindPreparedOORRequest.binding:type_name -> arkchannelrpc.ChannelVTXOBinding
-	48, // 5: arkchannelrpc.BindPreparedOORResponse.channel:type_name -> arkchannelrpc.ArkChannel
-	40, // 6: arkchannelrpc.SignBackingRequest.terms:type_name -> arkchannelrpc.ChannelTerms
-	42, // 7: arkchannelrpc.SignBackingRequest.binding:type_name -> arkchannelrpc.ChannelVTXOBinding
-	40, // 8: arkchannelrpc.InstallBackingRequest.terms:type_name -> arkchannelrpc.ChannelTerms
-	42, // 9: arkchannelrpc.InstallBackingRequest.binding:type_name -> arkchannelrpc.ChannelVTXOBinding
-	43, // 10: arkchannelrpc.InstallBackingRequest.backing:type_name -> arkchannelrpc.ChannelBacking
-	40, // 11: arkchannelrpc.InstallRecoveryPackageRequest.terms:type_name -> arkchannelrpc.ChannelTerms
-	42, // 12: arkchannelrpc.InstallRecoveryPackageRequest.binding:type_name -> arkchannelrpc.ChannelVTXOBinding
-	22, // 13: arkchannelrpc.InstallRecoveryPackageRequest.recovery:type_name -> arkchannelrpc.ChannelRecoveryPackage
-	23, // 14: arkchannelrpc.ChannelRecoveryPackage.source_descriptor:type_name -> arkchannelrpc.ChannelRecoveryDescriptor
-	25, // 15: arkchannelrpc.ChannelRecoveryPackage.oor_packages:type_name -> arkchannelrpc.ChannelRecoveryOORPackage
-	24, // 16: arkchannelrpc.ChannelRecoveryDescriptor.ancestry:type_name -> arkchannelrpc.ChannelRecoveryAncestry
-	40, // 17: arkchannelrpc.FundingStatusRequest.terms:type_name -> arkchannelrpc.ChannelTerms
-	43, // 18: arkchannelrpc.FundingStatusRequest.backing:type_name -> arkchannelrpc.ChannelBacking
-	0,  // 19: arkchannelrpc.ApplyChannelEventRequest.event_type:type_name -> arkchannelrpc.ChannelEventType
-	48, // 20: arkchannelrpc.ApplyChannelEventResponse.channel:type_name -> arkchannelrpc.ArkChannel
-	41, // 21: arkchannelrpc.ChannelTerms.vtxo:type_name -> arkchannelrpc.ChannelVTXOTerms
-	48, // 22: arkchannelrpc.RequestCooperativeCloseResponse.channel:type_name -> arkchannelrpc.ArkChannel
-	48, // 23: arkchannelrpc.GetChannelResponse.channel:type_name -> arkchannelrpc.ArkChannel
-	59, // 24: arkchannelrpc.BeginCooperativeCloseResponse.request:type_name -> arkchannelrpc.CooperativeCloseRequest
-	60, // 25: arkchannelrpc.BeginCooperativeCloseResponse.clean_state:type_name -> arkchannelrpc.CleanChannelState
-	62, // 26: arkchannelrpc.BeginCooperativeCloseResponse.settlement:type_name -> arkchannelrpc.CooperativeClose
-	61, // 27: arkchannelrpc.CompleteCooperativeCloseRequest.proposal:type_name -> arkchannelrpc.CooperativeCloseProposal
-	62, // 28: arkchannelrpc.CompleteCooperativeCloseResponse.settlement:type_name -> arkchannelrpc.CooperativeClose
-	1,  // 29: arkchannelrpc.AcknowledgeCooperativeCloseRequest.acknowledgement:type_name -> arkchannelrpc.CooperativeCloseAcknowledgement
-	62, // 30: arkchannelrpc.AcknowledgeCooperativeCloseRequest.settlement:type_name -> arkchannelrpc.CooperativeClose
-	48, // 31: arkchannelrpc.AcknowledgeCooperativeCloseResponse.channel:type_name -> arkchannelrpc.ArkChannel
-	48, // 32: arkchannelrpc.AbortCooperativeCloseResponse.channel:type_name -> arkchannelrpc.ArkChannel
-	61, // 33: arkchannelrpc.CooperativeClose.proposal:type_name -> arkchannelrpc.CooperativeCloseProposal
-	2,  // 34: arkchannelrpc.ArkChannelService.PromoteVTXO:input_type -> arkchannelrpc.PromoteVTXORequest
-	4,  // 35: arkchannelrpc.ArkChannelService.SendPayment:input_type -> arkchannelrpc.ChannelPaymentRequest
-	4,  // 36: arkchannelrpc.ArkChannelService.ReceivePayment:input_type -> arkchannelrpc.ChannelPaymentRequest
-	6,  // 37: arkchannelrpc.ArkChannelService.PayLightningInvoice:input_type -> arkchannelrpc.PayLightningInvoiceRequest
-	8,  // 38: arkchannelrpc.ArkChannelService.MaterializeAndForceClose:input_type -> arkchannelrpc.MaterializeAndForceCloseRequest
-	44, // 39: arkchannelrpc.ArkChannelService.RequestCooperativeClose:input_type -> arkchannelrpc.RequestCooperativeCloseRequest
-	46, // 40: arkchannelrpc.ArkChannelService.GetChannel:input_type -> arkchannelrpc.GetChannelRequest
-	49, // 41: arkchannelrpc.ArkChannelPeerService.BeginCooperativeClose:input_type -> arkchannelrpc.BeginCooperativeCloseRequest
-	51, // 42: arkchannelrpc.ArkChannelPeerService.CompleteCooperativeClose:input_type -> arkchannelrpc.CompleteCooperativeCloseRequest
-	53, // 43: arkchannelrpc.ArkChannelPeerService.AcknowledgeCooperativeClose:input_type -> arkchannelrpc.AcknowledgeCooperativeCloseRequest
-	55, // 44: arkchannelrpc.ArkChannelPeerService.PublishCooperativeClose:input_type -> arkchannelrpc.PublishCooperativeCloseRequest
-	57, // 45: arkchannelrpc.ArkChannelPeerService.AbortCooperativeClose:input_type -> arkchannelrpc.AbortCooperativeCloseRequest
-	10, // 46: arkchannelrpc.ArkChannelFundingPeerService.GetPeerInfo:input_type -> arkchannelrpc.GetPeerInfoRequest
-	12, // 47: arkchannelrpc.ArkChannelFundingPeerService.RegisterPromotion:input_type -> arkchannelrpc.RegisterPromotionRequest
-	14, // 48: arkchannelrpc.ArkChannelFundingPeerService.BindPreparedOOR:input_type -> arkchannelrpc.BindPreparedOORRequest
-	16, // 49: arkchannelrpc.ArkChannelFundingPeerService.SignBacking:input_type -> arkchannelrpc.SignBackingRequest
-	18, // 50: arkchannelrpc.ArkChannelFundingPeerService.InstallBacking:input_type -> arkchannelrpc.InstallBackingRequest
-	20, // 51: arkchannelrpc.ArkChannelFundingPeerService.InstallRecoveryPackage:input_type -> arkchannelrpc.InstallRecoveryPackageRequest
-	26, // 52: arkchannelrpc.ArkChannelFundingPeerService.FundingFinalized:input_type -> arkchannelrpc.FundingStatusRequest
-	26, // 53: arkchannelrpc.ArkChannelFundingPeerService.ChannelActive:input_type -> arkchannelrpc.FundingStatusRequest
-	28, // 54: arkchannelrpc.ArkChannelFundingPeerService.ApplyChannelEvent:input_type -> arkchannelrpc.ApplyChannelEventRequest
-	30, // 55: arkchannelrpc.ArkChannelFundingPeerService.CreateInvoice:input_type -> arkchannelrpc.PeerInvoiceRequest
-	32, // 56: arkchannelrpc.ArkChannelFundingPeerService.PayInvoice:input_type -> arkchannelrpc.PeerPayInvoiceRequest
-	34, // 57: arkchannelrpc.ArkChannelFundingPeerService.PrepareOutgoingPayment:input_type -> arkchannelrpc.PrepareOutgoingPaymentRequest
-	36, // 58: arkchannelrpc.ArkChannelFundingPeerService.CancelOutgoingPayment:input_type -> arkchannelrpc.CancelOutgoingPaymentRequest
-	38, // 59: arkchannelrpc.ArkChannelFundingPeerService.RegisterIncomingPayment:input_type -> arkchannelrpc.RegisterIncomingPaymentRequest
-	3,  // 60: arkchannelrpc.ArkChannelService.PromoteVTXO:output_type -> arkchannelrpc.PromoteVTXOResponse
-	5,  // 61: arkchannelrpc.ArkChannelService.SendPayment:output_type -> arkchannelrpc.ChannelPaymentResponse
-	5,  // 62: arkchannelrpc.ArkChannelService.ReceivePayment:output_type -> arkchannelrpc.ChannelPaymentResponse
-	7,  // 63: arkchannelrpc.ArkChannelService.PayLightningInvoice:output_type -> arkchannelrpc.PayLightningInvoiceResponse
-	9,  // 64: arkchannelrpc.ArkChannelService.MaterializeAndForceClose:output_type -> arkchannelrpc.MaterializeAndForceCloseResponse
-	45, // 65: arkchannelrpc.ArkChannelService.RequestCooperativeClose:output_type -> arkchannelrpc.RequestCooperativeCloseResponse
-	47, // 66: arkchannelrpc.ArkChannelService.GetChannel:output_type -> arkchannelrpc.GetChannelResponse
-	50, // 67: arkchannelrpc.ArkChannelPeerService.BeginCooperativeClose:output_type -> arkchannelrpc.BeginCooperativeCloseResponse
-	52, // 68: arkchannelrpc.ArkChannelPeerService.CompleteCooperativeClose:output_type -> arkchannelrpc.CompleteCooperativeCloseResponse
-	54, // 69: arkchannelrpc.ArkChannelPeerService.AcknowledgeCooperativeClose:output_type -> arkchannelrpc.AcknowledgeCooperativeCloseResponse
-	56, // 70: arkchannelrpc.ArkChannelPeerService.PublishCooperativeClose:output_type -> arkchannelrpc.PublishCooperativeCloseResponse
-	58, // 71: arkchannelrpc.ArkChannelPeerService.AbortCooperativeClose:output_type -> arkchannelrpc.AbortCooperativeCloseResponse
-	11, // 72: arkchannelrpc.ArkChannelFundingPeerService.GetPeerInfo:output_type -> arkchannelrpc.GetPeerInfoResponse
-	13, // 73: arkchannelrpc.ArkChannelFundingPeerService.RegisterPromotion:output_type -> arkchannelrpc.RegisterPromotionResponse
-	15, // 74: arkchannelrpc.ArkChannelFundingPeerService.BindPreparedOOR:output_type -> arkchannelrpc.BindPreparedOORResponse
-	17, // 75: arkchannelrpc.ArkChannelFundingPeerService.SignBacking:output_type -> arkchannelrpc.SignBackingResponse
-	19, // 76: arkchannelrpc.ArkChannelFundingPeerService.InstallBacking:output_type -> arkchannelrpc.InstallBackingResponse
-	21, // 77: arkchannelrpc.ArkChannelFundingPeerService.InstallRecoveryPackage:output_type -> arkchannelrpc.InstallRecoveryPackageResponse
-	27, // 78: arkchannelrpc.ArkChannelFundingPeerService.FundingFinalized:output_type -> arkchannelrpc.FundingStatusResponse
-	27, // 79: arkchannelrpc.ArkChannelFundingPeerService.ChannelActive:output_type -> arkchannelrpc.FundingStatusResponse
-	29, // 80: arkchannelrpc.ArkChannelFundingPeerService.ApplyChannelEvent:output_type -> arkchannelrpc.ApplyChannelEventResponse
-	31, // 81: arkchannelrpc.ArkChannelFundingPeerService.CreateInvoice:output_type -> arkchannelrpc.PeerInvoiceResponse
-	33, // 82: arkchannelrpc.ArkChannelFundingPeerService.PayInvoice:output_type -> arkchannelrpc.PeerPayInvoiceResponse
-	35, // 83: arkchannelrpc.ArkChannelFundingPeerService.PrepareOutgoingPayment:output_type -> arkchannelrpc.PrepareOutgoingPaymentResponse
-	37, // 84: arkchannelrpc.ArkChannelFundingPeerService.CancelOutgoingPayment:output_type -> arkchannelrpc.CancelOutgoingPaymentResponse
-	39, // 85: arkchannelrpc.ArkChannelFundingPeerService.RegisterIncomingPayment:output_type -> arkchannelrpc.RegisterIncomingPaymentResponse
-	60, // [60:86] is the sub-list for method output_type
-	34, // [34:60] is the sub-list for method input_type
-	34, // [34:34] is the sub-list for extension type_name
-	34, // [34:34] is the sub-list for extension extendee
-	0,  // [0:34] is the sub-list for field type_name
+	51, // 0: arkchannelrpc.PromoteVTXOResponse.channel:type_name -> arkchannelrpc.ArkChannel
+	51, // 1: arkchannelrpc.MaterializeAndForceCloseResponse.channel:type_name -> arkchannelrpc.ArkChannel
+	43, // 2: arkchannelrpc.RegisterPromotionRequest.terms:type_name -> arkchannelrpc.ChannelTerms
+	51, // 3: arkchannelrpc.RegisterPromotionResponse.channel:type_name -> arkchannelrpc.ArkChannel
+	45, // 4: arkchannelrpc.BindPreparedOORRequest.binding:type_name -> arkchannelrpc.ChannelVTXOBinding
+	51, // 5: arkchannelrpc.BindPreparedOORResponse.channel:type_name -> arkchannelrpc.ArkChannel
+	43, // 6: arkchannelrpc.SignBackingRequest.terms:type_name -> arkchannelrpc.ChannelTerms
+	45, // 7: arkchannelrpc.SignBackingRequest.binding:type_name -> arkchannelrpc.ChannelVTXOBinding
+	43, // 8: arkchannelrpc.InstallBackingRequest.terms:type_name -> arkchannelrpc.ChannelTerms
+	45, // 9: arkchannelrpc.InstallBackingRequest.binding:type_name -> arkchannelrpc.ChannelVTXOBinding
+	46, // 10: arkchannelrpc.InstallBackingRequest.backing:type_name -> arkchannelrpc.ChannelBacking
+	43, // 11: arkchannelrpc.InstallRecoveryPackageRequest.terms:type_name -> arkchannelrpc.ChannelTerms
+	45, // 12: arkchannelrpc.InstallRecoveryPackageRequest.binding:type_name -> arkchannelrpc.ChannelVTXOBinding
+	25, // 13: arkchannelrpc.InstallRecoveryPackageRequest.recovery:type_name -> arkchannelrpc.ChannelRecoveryPackage
+	24, // 14: arkchannelrpc.ExportReceiveClaimRecoveryResponse.source:type_name -> arkchannelrpc.ReceiveClaimRecoverySource
+	25, // 15: arkchannelrpc.ExportReceiveClaimRecoveryResponse.recovery:type_name -> arkchannelrpc.ChannelRecoveryPackage
+	26, // 16: arkchannelrpc.ChannelRecoveryPackage.source_descriptor:type_name -> arkchannelrpc.ChannelRecoveryDescriptor
+	28, // 17: arkchannelrpc.ChannelRecoveryPackage.oor_packages:type_name -> arkchannelrpc.ChannelRecoveryOORPackage
+	27, // 18: arkchannelrpc.ChannelRecoveryDescriptor.ancestry:type_name -> arkchannelrpc.ChannelRecoveryAncestry
+	43, // 19: arkchannelrpc.FundingStatusRequest.terms:type_name -> arkchannelrpc.ChannelTerms
+	46, // 20: arkchannelrpc.FundingStatusRequest.backing:type_name -> arkchannelrpc.ChannelBacking
+	0,  // 21: arkchannelrpc.ApplyChannelEventRequest.event_type:type_name -> arkchannelrpc.ChannelEventType
+	51, // 22: arkchannelrpc.ApplyChannelEventResponse.channel:type_name -> arkchannelrpc.ArkChannel
+	44, // 23: arkchannelrpc.ChannelTerms.vtxo:type_name -> arkchannelrpc.ChannelVTXOTerms
+	51, // 24: arkchannelrpc.RequestCooperativeCloseResponse.channel:type_name -> arkchannelrpc.ArkChannel
+	51, // 25: arkchannelrpc.GetChannelResponse.channel:type_name -> arkchannelrpc.ArkChannel
+	62, // 26: arkchannelrpc.BeginCooperativeCloseResponse.request:type_name -> arkchannelrpc.CooperativeCloseRequest
+	63, // 27: arkchannelrpc.BeginCooperativeCloseResponse.clean_state:type_name -> arkchannelrpc.CleanChannelState
+	65, // 28: arkchannelrpc.BeginCooperativeCloseResponse.settlement:type_name -> arkchannelrpc.CooperativeClose
+	64, // 29: arkchannelrpc.CompleteCooperativeCloseRequest.proposal:type_name -> arkchannelrpc.CooperativeCloseProposal
+	65, // 30: arkchannelrpc.CompleteCooperativeCloseResponse.settlement:type_name -> arkchannelrpc.CooperativeClose
+	1,  // 31: arkchannelrpc.AcknowledgeCooperativeCloseRequest.acknowledgement:type_name -> arkchannelrpc.CooperativeCloseAcknowledgement
+	65, // 32: arkchannelrpc.AcknowledgeCooperativeCloseRequest.settlement:type_name -> arkchannelrpc.CooperativeClose
+	51, // 33: arkchannelrpc.AcknowledgeCooperativeCloseResponse.channel:type_name -> arkchannelrpc.ArkChannel
+	51, // 34: arkchannelrpc.AbortCooperativeCloseResponse.channel:type_name -> arkchannelrpc.ArkChannel
+	64, // 35: arkchannelrpc.CooperativeClose.proposal:type_name -> arkchannelrpc.CooperativeCloseProposal
+	2,  // 36: arkchannelrpc.ArkChannelService.PromoteVTXO:input_type -> arkchannelrpc.PromoteVTXORequest
+	4,  // 37: arkchannelrpc.ArkChannelService.SendPayment:input_type -> arkchannelrpc.ChannelPaymentRequest
+	4,  // 38: arkchannelrpc.ArkChannelService.ReceivePayment:input_type -> arkchannelrpc.ChannelPaymentRequest
+	6,  // 39: arkchannelrpc.ArkChannelService.PayLightningInvoice:input_type -> arkchannelrpc.PayLightningInvoiceRequest
+	8,  // 40: arkchannelrpc.ArkChannelService.MaterializeAndForceClose:input_type -> arkchannelrpc.MaterializeAndForceCloseRequest
+	47, // 41: arkchannelrpc.ArkChannelService.RequestCooperativeClose:input_type -> arkchannelrpc.RequestCooperativeCloseRequest
+	49, // 42: arkchannelrpc.ArkChannelService.GetChannel:input_type -> arkchannelrpc.GetChannelRequest
+	52, // 43: arkchannelrpc.ArkChannelPeerService.BeginCooperativeClose:input_type -> arkchannelrpc.BeginCooperativeCloseRequest
+	54, // 44: arkchannelrpc.ArkChannelPeerService.CompleteCooperativeClose:input_type -> arkchannelrpc.CompleteCooperativeCloseRequest
+	56, // 45: arkchannelrpc.ArkChannelPeerService.AcknowledgeCooperativeClose:input_type -> arkchannelrpc.AcknowledgeCooperativeCloseRequest
+	58, // 46: arkchannelrpc.ArkChannelPeerService.PublishCooperativeClose:input_type -> arkchannelrpc.PublishCooperativeCloseRequest
+	60, // 47: arkchannelrpc.ArkChannelPeerService.AbortCooperativeClose:input_type -> arkchannelrpc.AbortCooperativeCloseRequest
+	10, // 48: arkchannelrpc.ArkChannelFundingPeerService.GetPeerInfo:input_type -> arkchannelrpc.GetPeerInfoRequest
+	12, // 49: arkchannelrpc.ArkChannelFundingPeerService.RegisterPromotion:input_type -> arkchannelrpc.RegisterPromotionRequest
+	14, // 50: arkchannelrpc.ArkChannelFundingPeerService.BindPreparedOOR:input_type -> arkchannelrpc.BindPreparedOORRequest
+	16, // 51: arkchannelrpc.ArkChannelFundingPeerService.SignBacking:input_type -> arkchannelrpc.SignBackingRequest
+	18, // 52: arkchannelrpc.ArkChannelFundingPeerService.InstallBacking:input_type -> arkchannelrpc.InstallBackingRequest
+	20, // 53: arkchannelrpc.ArkChannelFundingPeerService.InstallRecoveryPackage:input_type -> arkchannelrpc.InstallRecoveryPackageRequest
+	22, // 54: arkchannelrpc.ArkChannelFundingPeerService.ExportReceiveClaimRecovery:input_type -> arkchannelrpc.ExportReceiveClaimRecoveryRequest
+	29, // 55: arkchannelrpc.ArkChannelFundingPeerService.FundingFinalized:input_type -> arkchannelrpc.FundingStatusRequest
+	29, // 56: arkchannelrpc.ArkChannelFundingPeerService.ChannelActive:input_type -> arkchannelrpc.FundingStatusRequest
+	31, // 57: arkchannelrpc.ArkChannelFundingPeerService.ApplyChannelEvent:input_type -> arkchannelrpc.ApplyChannelEventRequest
+	33, // 58: arkchannelrpc.ArkChannelFundingPeerService.CreateInvoice:input_type -> arkchannelrpc.PeerInvoiceRequest
+	35, // 59: arkchannelrpc.ArkChannelFundingPeerService.PayInvoice:input_type -> arkchannelrpc.PeerPayInvoiceRequest
+	37, // 60: arkchannelrpc.ArkChannelFundingPeerService.PrepareOutgoingPayment:input_type -> arkchannelrpc.PrepareOutgoingPaymentRequest
+	39, // 61: arkchannelrpc.ArkChannelFundingPeerService.CancelOutgoingPayment:input_type -> arkchannelrpc.CancelOutgoingPaymentRequest
+	41, // 62: arkchannelrpc.ArkChannelFundingPeerService.RegisterIncomingPayment:input_type -> arkchannelrpc.RegisterIncomingPaymentRequest
+	3,  // 63: arkchannelrpc.ArkChannelService.PromoteVTXO:output_type -> arkchannelrpc.PromoteVTXOResponse
+	5,  // 64: arkchannelrpc.ArkChannelService.SendPayment:output_type -> arkchannelrpc.ChannelPaymentResponse
+	5,  // 65: arkchannelrpc.ArkChannelService.ReceivePayment:output_type -> arkchannelrpc.ChannelPaymentResponse
+	7,  // 66: arkchannelrpc.ArkChannelService.PayLightningInvoice:output_type -> arkchannelrpc.PayLightningInvoiceResponse
+	9,  // 67: arkchannelrpc.ArkChannelService.MaterializeAndForceClose:output_type -> arkchannelrpc.MaterializeAndForceCloseResponse
+	48, // 68: arkchannelrpc.ArkChannelService.RequestCooperativeClose:output_type -> arkchannelrpc.RequestCooperativeCloseResponse
+	50, // 69: arkchannelrpc.ArkChannelService.GetChannel:output_type -> arkchannelrpc.GetChannelResponse
+	53, // 70: arkchannelrpc.ArkChannelPeerService.BeginCooperativeClose:output_type -> arkchannelrpc.BeginCooperativeCloseResponse
+	55, // 71: arkchannelrpc.ArkChannelPeerService.CompleteCooperativeClose:output_type -> arkchannelrpc.CompleteCooperativeCloseResponse
+	57, // 72: arkchannelrpc.ArkChannelPeerService.AcknowledgeCooperativeClose:output_type -> arkchannelrpc.AcknowledgeCooperativeCloseResponse
+	59, // 73: arkchannelrpc.ArkChannelPeerService.PublishCooperativeClose:output_type -> arkchannelrpc.PublishCooperativeCloseResponse
+	61, // 74: arkchannelrpc.ArkChannelPeerService.AbortCooperativeClose:output_type -> arkchannelrpc.AbortCooperativeCloseResponse
+	11, // 75: arkchannelrpc.ArkChannelFundingPeerService.GetPeerInfo:output_type -> arkchannelrpc.GetPeerInfoResponse
+	13, // 76: arkchannelrpc.ArkChannelFundingPeerService.RegisterPromotion:output_type -> arkchannelrpc.RegisterPromotionResponse
+	15, // 77: arkchannelrpc.ArkChannelFundingPeerService.BindPreparedOOR:output_type -> arkchannelrpc.BindPreparedOORResponse
+	17, // 78: arkchannelrpc.ArkChannelFundingPeerService.SignBacking:output_type -> arkchannelrpc.SignBackingResponse
+	19, // 79: arkchannelrpc.ArkChannelFundingPeerService.InstallBacking:output_type -> arkchannelrpc.InstallBackingResponse
+	21, // 80: arkchannelrpc.ArkChannelFundingPeerService.InstallRecoveryPackage:output_type -> arkchannelrpc.InstallRecoveryPackageResponse
+	23, // 81: arkchannelrpc.ArkChannelFundingPeerService.ExportReceiveClaimRecovery:output_type -> arkchannelrpc.ExportReceiveClaimRecoveryResponse
+	30, // 82: arkchannelrpc.ArkChannelFundingPeerService.FundingFinalized:output_type -> arkchannelrpc.FundingStatusResponse
+	30, // 83: arkchannelrpc.ArkChannelFundingPeerService.ChannelActive:output_type -> arkchannelrpc.FundingStatusResponse
+	32, // 84: arkchannelrpc.ArkChannelFundingPeerService.ApplyChannelEvent:output_type -> arkchannelrpc.ApplyChannelEventResponse
+	34, // 85: arkchannelrpc.ArkChannelFundingPeerService.CreateInvoice:output_type -> arkchannelrpc.PeerInvoiceResponse
+	36, // 86: arkchannelrpc.ArkChannelFundingPeerService.PayInvoice:output_type -> arkchannelrpc.PeerPayInvoiceResponse
+	38, // 87: arkchannelrpc.ArkChannelFundingPeerService.PrepareOutgoingPayment:output_type -> arkchannelrpc.PrepareOutgoingPaymentResponse
+	40, // 88: arkchannelrpc.ArkChannelFundingPeerService.CancelOutgoingPayment:output_type -> arkchannelrpc.CancelOutgoingPaymentResponse
+	42, // 89: arkchannelrpc.ArkChannelFundingPeerService.RegisterIncomingPayment:output_type -> arkchannelrpc.RegisterIncomingPaymentResponse
+	63, // [63:90] is the sub-list for method output_type
+	36, // [36:63] is the sub-list for method input_type
+	36, // [36:36] is the sub-list for extension type_name
+	36, // [36:36] is the sub-list for extension extendee
+	0,  // [0:36] is the sub-list for field type_name
 }
 
 func init() { file_ark_channel_proto_init() }
@@ -4243,7 +4381,7 @@ func file_ark_channel_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ark_channel_proto_rawDesc), len(file_ark_channel_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   61,
+			NumMessages:   64,
 			NumExtensions: 0,
 			NumServices:   3,
 		},

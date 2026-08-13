@@ -122,6 +122,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "GetIndexedOORSessionByTxid queries the authoritative indexer for one\nOOR session using a spent script proof and deterministic session txid.",
 				},
 				{
+					Name:     "ExportOORRecoveryPackage",
+					Aliases:  []string{"export-oor-recovery-package"},
+					Input:    "waverpc.ExportOORRecoveryPackageRequest",
+					Output:   "waverpc.ExportOORRecoveryPackageResponse",
+					Comments: "ExportOORRecoveryPackage returns the immutable local OOR package and\nround ancestry for one exact output. The caller must already know the\noutput tuple; the daemon verifies it against its finalized artifacts.",
+				},
+				{
 					Name:     "SendVTXO",
 					Aliases:  []string{"send-vtxo"},
 					Input:    "waverpc.SendVTXORequest",
