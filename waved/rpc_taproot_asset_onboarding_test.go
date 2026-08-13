@@ -31,9 +31,9 @@ func TestOnboardTaprootAssetValidatesCarrierAndFeePolicy(t *testing.T) {
 	server := &Server{cfg: cfg, walletReady: make(chan struct{})}
 	server.walletState.Store(int32(WalletStateReady))
 	server.operatorTerms.Store(&types.OperatorTerms{
-		PubKey:        operator.PubKey(),
-		VTXOExitDelay: 144,
-		MinVTXOAmount: 1_000,
+		PubKey:            operator.PubKey(),
+		BoardingExitDelay: 144,
+		MinVTXOAmount:     1_000,
 	})
 	rpcServer := &RPCServer{server: server}
 	request := &waverpc.OnboardTaprootAssetRequest{
