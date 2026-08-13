@@ -182,6 +182,14 @@ func (s *Server) assetClaimConfirmations(ctx context.Context,
 		return nil, fmt.Errorf("decode claim proof path: %w", err)
 	}
 
+	// The chain backend requires an output script beside the txid, and
+	// every lineage anchor is a transaction of the VTXO's own ancestry:
+	// the commitment transaction or a node of its tree fragment.
+	lineageOutputs, err := assetLineageOutputs(desc)
+	if err != nil {
+		return nil, fmt.Errorf("index claim lineage outputs: %w", err)
+	}
+
 	confirmations := make(
 		map[chainhash.Hash]tapsdk.AnchorConfirmation, len(path.Steps),
 	)
@@ -198,8 +206,16 @@ func (s *Server) assetClaimConfirmations(ctx context.Context,
 			continue
 		}
 
+		outs := lineageOutputs[txid]
+		index := summary.AnchorOutpoint.Index
+		if int(index) >= len(outs) || outs[index] == nil {
+			return nil, fmt.Errorf("lineage tx %v output %d is "+
+				"not part of the VTXO's ancestry", txid, index)
+		}
+
 		event, err := s.lineageConfirmation(
-			ctx, chainRef, txid, uint32(desc.CreatedHeight),
+			ctx, chainRef, txid, outs[index].PkScript,
+			uint32(desc.CreatedHeight),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("confirm lineage tx %v: %w",
@@ -229,18 +245,62 @@ func (s *Server) assetClaimConfirmations(ctx context.Context,
 	return confirmations, nil
 }
 
+// assetLineageOutputs indexes the outputs of every transaction in the
+// VTXO's ancestry by txid: the commitment transaction's batch output plus
+// each tree node's outputs. The lineage confirmation watch resolves its
+// output script from this index.
+func assetLineageOutputs(desc *vtxo.Descriptor) (
+	map[chainhash.Hash][]*wire.TxOut, error) {
+
+	outputs := make(map[chainhash.Hash][]*wire.TxOut)
+	for i := range desc.Ancestry {
+		path := desc.Ancestry[i].TreePath
+		if path == nil {
+			continue
+		}
+
+		if path.BatchOutput != nil {
+			index := path.BatchOutpoint.Index
+			outs := make([]*wire.TxOut, index+1)
+			outs[index] = path.BatchOutput
+			outputs[path.BatchOutpoint.Hash] = outs
+		}
+
+		if path.Root == nil {
+			continue
+		}
+		for node := range path.Root.NodesIter() {
+			txid, err := node.TXID()
+			if err != nil {
+				return nil, fmt.Errorf("lineage node txid: %w",
+					err)
+			}
+			outputs[txid] = node.Outputs
+		}
+	}
+
+	return outputs, nil
+}
+
 // lineageConfirmation resolves one lineage transaction's confirmation with
 // the full block attached. The transactions are already confirmed by the
 // time a claim runs, so the await is bounded by the historical-dispatch
 // rescan rather than a future block.
 func (s *Server) lineageConfirmation(ctx context.Context,
-	chainRef chainSourceRef, txid chainhash.Hash, heightHint uint32) (
-	*chainsource.ConfirmationEvent, error) {
+	chainRef chainSourceRef, txid chainhash.Hash, pkScript []byte,
+	heightHint uint32) (*chainsource.ConfirmationEvent, error) {
+
+	// The chain backend refuses a zero hint; a legacy descriptor
+	// without a creation height falls back to the lowest scan start.
+	if heightHint == 0 {
+		heightHint = 1
+	}
 
 	resp, err := chainRef.Ask(
 		context.WithoutCancel(ctx), &chainsource.RegisterConfRequest{
 			CallerID:     "taproot-asset-claim-" + txid.String(),
 			Txid:         &txid,
+			PkScript:     append([]byte(nil), pkScript...),
 			TargetConfs:  1,
 			HeightHint:   heightHint,
 			IncludeBlock: true,
