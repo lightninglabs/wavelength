@@ -24,8 +24,9 @@ const taprootAssetBoardRequestKeyPrefix = "board-request/"
 const assetBoardingConfWait = 30 * time.Second
 
 // taprootAssetBoardRequest is the durable replay slice of an onboarding
-// request. It carries exactly the caller-owned fields; the operator key and
-// exit delay are re-derived from live operator terms on every replay.
+// request. It carries exactly the caller-owned fields plus the chain height
+// at onboarding time; the operator key and exit delay are re-derived from
+// live operator terms on every replay.
 type taprootAssetBoardRequest struct {
 	AssetRef           string `json:"asset_ref"`
 	AssetAmount        uint64 `json:"asset_amount"`
@@ -34,13 +35,18 @@ type taprootAssetBoardRequest struct {
 	FeeRateSatPerVByte uint64 `json:"fee_rate_sat_per_vbyte"`
 	TargetConf         uint32 `json:"target_conf"`
 	MaxFeeSat          uint64 `json:"max_fee_sat"`
+
+	// HeightHint is the best chain height when the onboarding ran. The
+	// anchor cannot confirm below it, so it seeds the confirmation
+	// watch's rescan.
+	HeightHint uint32 `json:"height_hint"`
 }
 
 // storeTaprootAssetBoardRequest persists the replay slice of a successful
 // onboarding so a later BoardTaprootAsset can rebuild the disclosure from
 // the idempotency key alone.
 func (s *Server) storeTaprootAssetBoardRequest(ctx context.Context,
-	req *tapassets.OnboardingRequest) error {
+	req *tapassets.OnboardingRequest, heightHint uint32) error {
 
 	if s.taprootAssetStore == nil {
 		return fmt.Errorf("taproot asset store is not configured")
@@ -54,6 +60,7 @@ func (s *Server) storeTaprootAssetBoardRequest(ctx context.Context,
 		FeeRateSatPerVByte: req.FeeRateSatPerVByte,
 		TargetConf:         req.TargetConf,
 		MaxFeeSat:          req.MaxFeeSat,
+		HeightHint:         heightHint,
 	})
 	if err != nil {
 		return fmt.Errorf("encode board replay request: %w", err)
@@ -65,24 +72,27 @@ func (s *Server) storeTaprootAssetBoardRequest(ctx context.Context,
 }
 
 // loadTaprootAssetBoardRequest rebuilds the onboarding request persisted by
-// a successful OnboardTaprootAsset call.
+// a successful OnboardTaprootAsset call, together with the chain height at
+// onboarding time.
 func (s *Server) loadTaprootAssetBoardRequest(ctx context.Context,
-	requestID string) (*tapassets.OnboardingRequest, error) {
+	requestID string) (*tapassets.OnboardingRequest, uint32, error) {
 
 	if s.taprootAssetStore == nil {
-		return nil, fmt.Errorf("taproot asset store is not configured")
+		return nil, 0, fmt.Errorf("taproot asset store is not " +
+			"configured")
 	}
 
 	encoded, err := s.taprootAssetStore.Load(
 		ctx, taprootAssetBoardRequestKeyPrefix+requestID,
 	)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	var stored taprootAssetBoardRequest
 	if err := json.Unmarshal(encoded, &stored); err != nil {
-		return nil, fmt.Errorf("decode board replay request: %w", err)
+		return nil, 0, fmt.Errorf("decode board replay request: %w",
+			err)
 	}
 
 	return &tapassets.OnboardingRequest{
@@ -94,7 +104,7 @@ func (s *Server) loadTaprootAssetBoardRequest(ctx context.Context,
 		FeeRateSatPerVByte: stored.FeeRateSatPerVByte,
 		TargetConf:         stored.TargetConf,
 		MaxFeeSat:          stored.MaxFeeSat,
-	}, nil
+	}, stored.HeightHint, nil
 }
 
 // BoardTaprootAssetResult reports a completed (or replayed) asset boarding.
@@ -127,7 +137,9 @@ var ErrAssetBoardingUnconfirmed = errors.New("onboarded output is not " +
 func (s *Server) BoardTaprootAsset(ctx context.Context, requestID string) (
 	*BoardTaprootAssetResult, error) {
 
-	onboardingReq, err := s.loadTaprootAssetBoardRequest(ctx, requestID)
+	onboardingReq, heightHint, err := s.loadTaprootAssetBoardRequest(
+		ctx, requestID,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("load onboarding %q: %w", requestID, err)
 	}
@@ -177,7 +189,7 @@ func (s *Server) BoardTaprootAsset(ctx context.Context, requestID string) (
 	}
 
 	conf, err := s.assetBoardingConfirmation(
-		ctx, disclosure.Outpoint, pkScript,
+		ctx, disclosure.Outpoint, pkScript, heightHint,
 	)
 	if err != nil {
 		return nil, err
@@ -222,11 +234,17 @@ func (s *Server) BoardTaprootAsset(ctx context.Context, requestID string) (
 // returns ErrAssetBoardingUnconfirmed rather than blocking the RPC until
 // the next block.
 func (s *Server) assetBoardingConfirmation(ctx context.Context,
-	outpoint wire.OutPoint, pkScript []byte) (
+	outpoint wire.OutPoint, pkScript []byte, heightHint uint32) (
 	*chainsource.ConfirmationEvent, error) {
 
 	if s.actorSystem == nil {
 		return nil, fmt.Errorf("actor system not initialized")
+	}
+
+	// The LND backend refuses a zero hint; a stored slice predating the
+	// hint falls back to the lowest scan start.
+	if heightHint == 0 {
+		heightHint = 1
 	}
 
 	chainRef := chainsource.ChainSourceKey.Ref(s.actorSystem)
@@ -238,6 +256,7 @@ func (s *Server) assetBoardingConfirmation(ctx context.Context,
 			Txid:        &txid,
 			PkScript:    pkScript,
 			TargetConfs: 1,
+			HeightHint:  heightHint,
 		},
 	).Await(ctx).Unpack()
 	if err != nil {

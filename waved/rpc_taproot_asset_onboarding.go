@@ -135,6 +135,13 @@ func (r *RPCServer) OnboardTaprootAsset(ctx context.Context,
 		)
 	}
 
+	// The anchor cannot confirm below the current height, so it seeds
+	// the boarding confirmation watch after a restart or a late replay.
+	heightHint, err := r.currentBlockHeight(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	// The onboarded output is spent as a round boarding input, so it
 	// carries the boarding exit delay; AssetBoardingDisclosure replays
 	// the onboarding under the same delay when the boarding completes.
@@ -169,7 +176,9 @@ func (r *RPCServer) OnboardTaprootAsset(ctx context.Context,
 	// Persist the replay slice so BoardTaprootAsset can rebuild the
 	// disclosure from the idempotency key alone. The onboarding is
 	// idempotent, so a retry after a persist failure lands here again.
-	err = r.server.storeTaprootAssetBoardRequest(ctx, onboardingRequest)
+	err = r.server.storeTaprootAssetBoardRequest(
+		ctx, onboardingRequest, uint32(heightHint),
+	)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "persist boarding "+
 			"replay request: %v", err)
