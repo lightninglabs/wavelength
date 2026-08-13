@@ -270,6 +270,25 @@ func (h *LocalPersistenceOutboxHandler) handleQueryIncomingMetadata(
 	}}, nil
 }
 
+// incomingAssetIdentity returns the asset identity for one owned recipient.
+// The recipient event overlays asset identity only onto its own output, and a
+// transfer with several wallet-owned outputs is driven by a single event, so
+// the remaining asset outputs take their identity from the indexer metadata.
+// Descriptor construction authenticates the claimed root against the wallet's
+// own policy via the composed pkScript check.
+func incomingAssetIdentity(recipient ArkRecipientOutput,
+	metadata IncomingVTXOMetadata) (*chainhash.Hash, string, uint64) {
+
+	if recipient.TaprootAssetRoot != nil ||
+		metadata.TaprootAssetRoot == nil {
+		return recipient.TaprootAssetRoot, recipient.TaprootAssetRef,
+			recipient.TaprootAssetAmount
+	}
+
+	return metadata.TaprootAssetRoot, metadata.TaprootAssetRef,
+		metadata.TaprootAssetAmount
+}
+
 // FilterIncomingMetadataRecipients returns only the incoming recipients owned
 // by the local wallet. Durable metadata queries use this before asking the
 // server/indexer to prove script ownership, because mixed OOR packages can
@@ -325,7 +344,6 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 	metadataByOutput := make(
 		map[uint32]IncomingVTXOMetadata, len(msg.MetadataMatches),
 	)
-
 	for i := range msg.MetadataMatches {
 		match := msg.MetadataMatches[i]
 		metadataByOutput[match.OutputIndex] = match.Metadata
@@ -422,6 +440,10 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 				"incoming output %d", recipient.OutputIndex)
 		}
 
+		assetRoot, assetRef, assetAmount := incomingAssetIdentity(
+			recipient, metadata,
+		)
+
 		desc, err := BuildIncomingVTXODescriptor(msg.ArkPSBT,
 			IncomingVTXOConfig{
 				OutputIndex: recipient.OutputIndex,
@@ -430,10 +452,9 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 				ExitDelay:   h.ExitDelay,
 				PolicyTemplate: recipient.
 					VTXOPolicyTemplate,
-				TaprootAssetRoot: recipient.TaprootAssetRoot,
-				TaprootAssetRef:  recipient.TaprootAssetRef,
-				TaprootAssetAmount: recipient.
-					TaprootAssetAmount,
+				TaprootAssetRoot:     assetRoot,
+				TaprootAssetRef:      assetRef,
+				TaprootAssetAmount:   assetAmount,
 				Metadata:             metadata,
 				FinalCheckpointPSBTs: msg.FinalCheckpointPSBTs,
 				AncestorPackages:     msg.AncestorPackages,

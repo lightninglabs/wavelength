@@ -61,6 +61,17 @@ type IncomingVTXOMetadata struct {
 	// commitment tx. Each entry carries its own TreePath, CommitmentTxID,
 	// InputIndices, and TreeDepth.
 	Ancestry []vtxo.Ancestry
+
+	// TaprootAssetRoot, TaprootAssetRef, and TaprootAssetAmount carry the
+	// indexer's asset identity for the created output. A recipient event
+	// overlays the same identity onto its own output, but a transfer with
+	// several wallet-owned outputs is driven by a single event, so the
+	// remaining asset outputs take their identity from here. The composed
+	// pkScript check during descriptor construction authenticates the
+	// root against the wallet's own policy.
+	TaprootAssetRoot   *chainhash.Hash
+	TaprootAssetRef    string
+	TaprootAssetAmount uint64
 }
 
 // IncomingVTXOConfig describes how to materialize an Ark tx output into a

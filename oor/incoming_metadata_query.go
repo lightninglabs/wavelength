@@ -175,14 +175,27 @@ func incomingMetadataFromRPC(candidate *arkrpc.VTXO) (IncomingVTXOMetadata,
 	var commitmentTxID chainhash.Hash
 	copy(commitmentTxID[:], candidate.GetCommitmentTxid())
 
+	var assetRoot *chainhash.Hash
+	if len(candidate.GetTaprootAssetRoot()) > 0 {
+		root, err := chainhash.NewHash(candidate.GetTaprootAssetRoot())
+		if err != nil {
+			return IncomingVTXOMetadata{}, fmt.Errorf("parse "+
+				"indexer vtxo Taproot Asset root: %w", err)
+		}
+		assetRoot = root
+	}
+
 	return IncomingVTXOMetadata{
-		RoundID:        candidate.GetRoundId(),
-		CommitmentTxID: commitmentTxID,
-		BatchExpiry:    candidate.GetBatchExpiryHeight(),
-		ChainDepth:     int(candidate.GetChainDepth()),
-		CreatedHeight:  candidate.GetCreatedHeight(),
-		OperatorKey:    operatorKey,
-		Ancestry:       ancestry,
+		RoundID:            candidate.GetRoundId(),
+		CommitmentTxID:     commitmentTxID,
+		BatchExpiry:        candidate.GetBatchExpiryHeight(),
+		ChainDepth:         int(candidate.GetChainDepth()),
+		CreatedHeight:      candidate.GetCreatedHeight(),
+		OperatorKey:        operatorKey,
+		Ancestry:           ancestry,
+		TaprootAssetRoot:   assetRoot,
+		TaprootAssetRef:    candidate.GetTaprootAssetRef(),
+		TaprootAssetAmount: candidate.GetTaprootAssetAmount(),
 	}, nil
 }
 

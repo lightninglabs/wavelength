@@ -197,6 +197,11 @@ type Server struct {
 	roundStore       *db.RoundPersistenceStore
 	ueStore          *db.UnilateralExitPersistenceStore
 
+	// oorArtifactStore persists owned receive-script and OOR package
+	// artifacts. Initialized with the database so RPC handlers share one
+	// store instead of constructing per-call instances.
+	oorArtifactStore *db.OORArtifactPersistenceStore
+
 	// oorSessionStore exposes the OOR session-registry control-plane rows
 	// for direct RPC reads (idempotency pre-flight); the OOR registry
 	// actor owns all writes.
@@ -3777,6 +3782,11 @@ func (s *Server) initDatabase(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("unable to open database: %w", err)
 	}
+
+	s.oorArtifactStore = db.NewStore(
+		s.db.DB, s.db.Queries, s.db.Backend(),
+		s.subLogger(db.Subsystem),
+	).NewOORArtifactStore(s.clk)
 
 	s.deliveryStore, err = actordelivery.NewTxAwareDeliveryStoreFromDB(
 		s.db.DB, s.db.Backend(), s.clk, s.subLogger(actor.Subsystem),

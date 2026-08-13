@@ -586,6 +586,7 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 
 	sessionID := SessionID(chainhash.Hash{10, 10, 10})
 	commitmentTxID := chainhash.Hash{11, 11, 11}
+	assetRoot := chainhash.Hash{12, 12, 12}
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
@@ -605,6 +606,9 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 						CommitmentTxID: commitmentTxID,
 						TreeDepth:      0,
 					}},
+					TaprootAssetRoot:   &assetRoot,
+					TaprootAssetRef:    "tapr1asset",
+					TaprootAssetAmount: 21,
 				},
 			}},
 		},
@@ -640,6 +644,9 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 		t, commitmentTxID, match.Metadata.Ancestry[0].CommitmentTxID,
 	)
 	require.Nil(t, match.Metadata.Ancestry[0].TreePath)
+	require.Equal(t, &assetRoot, match.Metadata.TaprootAssetRoot)
+	require.Equal(t, "tapr1asset", match.Metadata.TaprootAssetRef)
+	require.EqualValues(t, 21, match.Metadata.TaprootAssetAmount)
 }
 
 // TestDriveEventRequestRoundTripIncomingAckSentEvent asserts

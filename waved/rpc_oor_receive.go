@@ -442,8 +442,8 @@ func (r *RPCServer) acquireReceiveScriptLock(ctx context.Context, key string) (
 func (r *RPCServer) newOORReceiveScriptStore() (*db.OORArtifactPersistenceStore,
 	error) {
 
-	if r.server.db == nil {
-		return nil, fmt.Errorf("database not initialized")
+	if r.server.oorArtifactStore == nil {
+		return nil, fmt.Errorf("artifact store not initialized")
 	}
 
 	dbStore := db.NewStore(
