@@ -3634,6 +3634,11 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		if err := preparation.Validate(prepareRequest); err != nil {
 			return nil, invalidTaprootAssetPreparation(err)
 		}
+		if err := r.registerTaprootAssetChangeAliases(
+			ctx, preparation,
+		); err != nil {
+			return nil, taprootAssetOORPreparationError(err)
+		}
 
 		preparedSubmit = preparation.PreparedSubmit
 		recipients = preparation.Recipients

@@ -165,6 +165,9 @@ const (
 	incomingMetadataMatchCreatedHeightRecordType  tlv.Type = 13
 	incomingMetadataMatchAncestryPathsRecordType  tlv.Type = 17
 	incomingMetadataMatchOperatorKeyRecordType    tlv.Type = 19
+	incomingMetadataMatchAssetRootRecordType      tlv.Type = 21
+	incomingMetadataMatchAssetRefRecordType       tlv.Type = 23
+	incomingMetadataMatchAssetAmountRecordType    tlv.Type = 25
 )
 
 type startTransferPayload struct {
@@ -737,6 +740,12 @@ func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 	chainDepth := uint32(match.Metadata.ChainDepth)
 	createdHeight := uint32(match.Metadata.CreatedHeight)
 	operatorKey := encodeOptionalPubKey(match.Metadata.OperatorKey)
+	var assetRoot []byte
+	if match.Metadata.TaprootAssetRoot != nil {
+		assetRoot = match.Metadata.TaprootAssetRoot[:]
+	}
+	assetRef := []byte(match.Metadata.TaprootAssetRef)
+	assetAmount := match.Metadata.TaprootAssetAmount
 
 	ancestryBytes, err := encodeAncestryList(match.Metadata.Ancestry)
 	if err != nil {
@@ -774,6 +783,16 @@ func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 			incomingMetadataMatchOperatorKeyRecordType,
 			&operatorKey,
 		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchAssetRootRecordType, &assetRoot,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchAssetRefRecordType, &assetRef,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchAssetAmountRecordType,
+			&assetAmount,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -803,6 +822,9 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 		createdHeight  uint32
 		ancestryBytes  []byte
 		operatorKey    []byte
+		assetRoot      []byte
+		assetRef       []byte
+		assetAmount    uint64
 	)
 
 	records := []tlv.Record{
@@ -835,6 +857,16 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 		tlv.MakePrimitiveRecord(
 			incomingMetadataMatchOperatorKeyRecordType,
 			&operatorKey,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchAssetRootRecordType, &assetRoot,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchAssetRefRecordType, &assetRef,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchAssetAmountRecordType,
+			&assetAmount,
 		),
 	}
 
@@ -889,16 +921,29 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 	var decodedCommitmentTxID chainhash.Hash
 	copy(decodedCommitmentTxID[:], commitmentTxID)
 
+	var decodedAssetRoot *chainhash.Hash
+	if len(assetRoot) > 0 {
+		root, err := chainhash.NewHash(assetRoot)
+		if err != nil {
+			return IncomingMetadataMatch{}, fmt.Errorf("incoming "+
+				"metadata Taproot Asset root: %w", err)
+		}
+		decodedAssetRoot = root
+	}
+
 	return IncomingMetadataMatch{
 		OutputIndex: outputIndex,
 		Metadata: IncomingVTXOMetadata{
-			RoundID:        string(roundID),
-			CommitmentTxID: decodedCommitmentTxID,
-			BatchExpiry:    decodedBatchExpiry,
-			ChainDepth:     int(decodedChainDepth),
-			CreatedHeight:  decodedCreatedHeight,
-			OperatorKey:    decodedOperatorKey,
-			Ancestry:       ancestry,
+			RoundID:            string(roundID),
+			CommitmentTxID:     decodedCommitmentTxID,
+			BatchExpiry:        decodedBatchExpiry,
+			ChainDepth:         int(decodedChainDepth),
+			CreatedHeight:      decodedCreatedHeight,
+			OperatorKey:        decodedOperatorKey,
+			Ancestry:           ancestry,
+			TaprootAssetRoot:   decodedAssetRoot,
+			TaprootAssetRef:    string(assetRef),
+			TaprootAssetAmount: assetAmount,
 		},
 	}, nil
 }

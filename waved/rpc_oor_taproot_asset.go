@@ -255,3 +255,48 @@ func invalidTaprootAssetPreparation(err error) error {
 	return status.Errorf(codes.Internal, "invalid Taproot Asset OOR "+
 		"preparation: %v", err)
 }
+
+// registerTaprootAssetChangeAliases persists composed-script ownership for the
+// wallet's own change outputs before the transfer is admitted. The incoming
+// self-notification for this session is driven by a single recipient event,
+// so a composed asset-change script must resolve as owned without relying on
+// its own event's metadata overlay.
+func (r *RPCServer) registerTaprootAssetChangeAliases(ctx context.Context,
+	preparation *oor.TaprootAssetOORPreparation) error {
+
+	store, err := r.newOORReceiveScriptStore()
+	if err != nil {
+		return fmt.Errorf("open OOR receive-script store: %w", err)
+	}
+
+	for i := range preparation.Recipients {
+		recipient := preparation.Recipients[i]
+		if recipient.Value == preparation.Receiver.Value &&
+			bytes.Equal(
+				recipient.PkScript,
+				preparation.Receiver.PkScript,
+			) {
+
+			continue
+		}
+
+		_, err := ResolveOwnedReceiveScriptKey(
+			ctx, store, oor.ArkRecipientOutput{
+				Value:    recipient.Value,
+				PkScript: recipient.PkScript,
+				VTXOPolicyTemplate: recipient.
+					VTXOPolicyTemplate,
+				TaprootAssetRoot: recipient.TaprootAssetRoot,
+				TaprootAssetRef:  recipient.TaprootAssetRef,
+				TaprootAssetAmount: recipient.
+					TaprootAssetAmount,
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("resolve local change recipient "+
+				"%d: %w", i, err)
+		}
+	}
+
+	return nil
+}

@@ -8,7 +8,6 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/waverpc"
-	"github.com/lightningnetwork/lnd/clock"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -96,16 +95,11 @@ func (r *RPCServer) NewReceiveScript(ctx context.Context,
 func (r *RPCServer) newOORReceiveScriptStore() (*db.OORArtifactPersistenceStore,
 	error) {
 
-	if r.server.db == nil {
-		return nil, fmt.Errorf("database not initialized")
+	if r.server.oorArtifactStore == nil {
+		return nil, fmt.Errorf("artifact store not initialized")
 	}
 
-	dbStore := db.NewStore(
-		r.server.db.DB, r.server.db.Queries, r.server.db.Backend(),
-		r.server.subLogger(db.Subsystem),
-	)
-
-	return dbStore.NewOORArtifactStore(clock.NewDefaultClock()), nil
+	return r.server.oorArtifactStore, nil
 }
 
 // oorReceiveKeyOps returns the fresh-key derivation function and signer

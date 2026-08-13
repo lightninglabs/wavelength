@@ -215,12 +215,13 @@ func (p *testTaprootAssetOORPreparer) capturedResumes() []*assetResumeRequest {
 }
 
 type taprootAssetOORRPCFixture struct {
-	rpcServer *RPCServer
-	preparer  *testTaprootAssetOORPreparer
-	oorActor  *capturingSendOORActor
-	request   *waverpc.SendOORRequest
-	desc      *vtxo.Descriptor
-	wallet    *sendOORTestWallet
+	rpcServer     *RPCServer
+	preparer      *testTaprootAssetOORPreparer
+	oorActor      *capturingSendOORActor
+	request       *waverpc.SendOORRequest
+	desc          *vtxo.Descriptor
+	wallet        *sendOORTestWallet
+	artifactStore *db.OORArtifactPersistenceStore
 }
 
 func newTaprootAssetOORRPCFixture(t *testing.T) *taprootAssetOORRPCFixture {
@@ -251,8 +252,37 @@ func newTaprootAssetOORRPCFixtureWithActor(t *testing.T,
 	desc.PkScript, err = desc.EffectivePkScript()
 	require.NoError(t, err)
 
-	vtxoStore, _, sessionStore := newSendOORTestStores(t)
+	vtxoStore, _, sessionStore, artifactStore :=
+		newSendOORTestStoresWithArtifacts(t)
 	require.NoError(t, vtxoStore.SaveVTXO(t.Context(), desc))
+
+	// The mock preparer derives change recipients from the request
+	// recipient's policy script, so registering that script as owned lets
+	// the daemon's change-alias registration resolve them like the real
+	// wallet-derived change scripts.
+	recipientPolicy, err := arkscript.EncodeStandardVTXOTemplate(
+		recipientKey.PubKey(), operatorKey.PubKey(), exitDelay,
+	)
+	require.NoError(t, err)
+	recipientTemplate, err := arkscript.DecodePolicyTemplate(
+		recipientPolicy,
+	)
+	require.NoError(t, err)
+	recipientPkScript, err := recipientTemplate.PkScript()
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		artifactStore.UpsertOwnedReceiveScript(
+			t.Context(), db.OwnedReceiveScriptRecord{
+				PkScript:       recipientPkScript,
+				ClientKey:      desc.ClientKey,
+				OperatorPubKey: operatorKey.PubKey(),
+				ExitDelay:      int64(exitDelay),
+				Source:         db.OwnedReceiveScriptSourceRPC,
+				CreatedAt:      time.Now(),
+			},
+		),
+	)
 
 	system := actor.NewActorSystem()
 	t.Cleanup(func() {
@@ -302,14 +332,15 @@ func newTaprootAssetOORRPCFixtureWithActor(t *testing.T,
 		cfg: &Config{
 			TaprootAssetOORPreparer: preparer,
 		},
-		log:             btclog.Disabled,
-		walletReady:     walletReady,
-		chainParams:     &chaincfg.RegressionNetParams,
-		actorSystem:     system,
-		vtxoStore:       vtxoStore,
-		oorSessionStore: sessionStore,
-		walletRef:       fn.Some(walletRef),
-		clientKeyDesc:   desc.ClientKey,
+		log:              btclog.Disabled,
+		walletReady:      walletReady,
+		chainParams:      &chaincfg.RegressionNetParams,
+		actorSystem:      system,
+		oorArtifactStore: artifactStore,
+		vtxoStore:        vtxoStore,
+		oorSessionStore:  sessionStore,
+		walletRef:        fn.Some(walletRef),
+		clientKeyDesc:    desc.ClientKey,
 		serverConn: newBufconnClient(t, &fakeArkService{
 			getInfoResponse: &arkrpc.GetInfoResponse{
 				Pubkey: operatorKey.
@@ -339,12 +370,13 @@ func newTaprootAssetOORRPCFixtureWithActor(t *testing.T,
 	}
 
 	return &taprootAssetOORRPCFixture{
-		rpcServer: NewRPCServer(server),
-		preparer:  preparer,
-		oorActor:  oorActor,
-		request:   request,
-		desc:      desc,
-		wallet:    testWallet,
+		rpcServer:     NewRPCServer(server),
+		preparer:      preparer,
+		oorActor:      oorActor,
+		request:       request,
+		desc:          desc,
+		wallet:        testWallet,
+		artifactStore: artifactStore,
 	}
 }
 
@@ -516,6 +548,17 @@ func TestSendOORTaprootAssetDefaultsChangeCarrier(t *testing.T) {
 	require.Equal(t, btcutil.Amount(1000), recipients[1].Value)
 	require.Nil(t, recipients[2].TaprootAssetRoot)
 	require.Equal(t, btcutil.Amount(29_000), recipients[2].Value)
+
+	// The composed asset-change script is registered as an owned alias
+	// before admission, so the incoming self-notification resolves it
+	// regardless of which recipient event drives the receive session.
+	alias, err := fixture.artifactStore.LookupOwnedReceiveScript(
+		t.Context(), recipients[1].PkScript,
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, db.OwnedReceiveScriptSourceAssetAlias, alias.Source,
+	)
 }
 
 // TestSendOORTaprootAssetAdoptsPreparedInputs proves an RPC retry after the

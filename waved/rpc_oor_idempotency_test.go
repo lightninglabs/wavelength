@@ -1433,6 +1433,18 @@ func newSendOORTestStores(t *testing.T) (*db.VTXOPersistenceStore,
 
 	t.Helper()
 
+	vtxoStore, deliveryStore, registryStore, _ :=
+		newSendOORTestStoresWithArtifacts(t)
+
+	return vtxoStore, deliveryStore, registryStore
+}
+
+func newSendOORTestStoresWithArtifacts(t *testing.T) (*db.VTXOPersistenceStore,
+	actor.DeliveryStore, *db.OORSessionRegistryStoreDB,
+	*db.OORArtifactPersistenceStore) {
+
+	t.Helper()
+
 	sqlDB := db.NewTestDB(t)
 	roundDB := db.NewTransactionExecutor(
 		sqlDB.BaseDB,
@@ -1458,8 +1470,9 @@ func newSendOORTestStores(t *testing.T) (*db.VTXOPersistenceStore,
 	registryStore := dbStore.NewOORSessionRegistryStore(
 		clock.NewDefaultClock(),
 	)
+	artifactStore := dbStore.NewOORArtifactStore(clock.NewDefaultClock())
 
-	return vtxoStore, deliveryStore, registryStore
+	return vtxoStore, deliveryStore, registryStore, artifactStore
 }
 
 func newSendOORTestVTXO(t *testing.T, operatorKey *btcec.PublicKey,
