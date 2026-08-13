@@ -1439,11 +1439,23 @@ type networkEndpoints struct {
 }
 
 // defaultNetworkEndpoints returns the outbound service defaults for network.
-// Public test networks use the Lightning Labs deployments; networks without a
+// Public networks use the Lightning Labs deployments; networks without a
 // public service deployment keep the historical local development endpoints.
 func defaultNetworkEndpoints(network string) (networkEndpoints, bool) {
 	switch network {
-	case "mainnet", "regtest", "simnet":
+	case "mainnet":
+		return networkEndpoints{
+			ark: transportEndpoints{
+				grpc: defaultMainnetServerGRPCHost,
+				rest: defaultMainnetServerRESTHost,
+			},
+			swap: transportEndpoints{
+				grpc: defaultMainnetSwapServerGRPCHost,
+				rest: defaultMainnetSwapServerRESTHost,
+			},
+		}, true
+
+	case "regtest", "simnet":
 		return networkEndpoints{
 			ark: transportEndpoints{
 				grpc: DefaultServerHost,
