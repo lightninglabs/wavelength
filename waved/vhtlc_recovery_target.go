@@ -1,6 +1,7 @@
 package waved
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -12,12 +13,15 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/tx/arktx"
 	"github.com/lightninglabs/wavelength/vhtlcrecovery"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -69,6 +73,12 @@ const (
 	recoveryTargetPackagePollTimeout  = 10 * time.Second
 )
 
+type parsedRecoveryPackage struct {
+	entry       arkchannel.RecoveryOORPackage
+	arkPSBT     *psbt.Packet
+	checkpoints []*psbt.Packet
+}
+
 // vhtlcRecoveryTargetMaterializer prepares daemon-owned vHTLC outputs for the
 // generic unroll subsystem. vHTLC outputs are not normal wallet coin-selection
 // inventory: they are application-owned recovery targets. This adapter binds
@@ -94,6 +104,240 @@ func newVHTLCRecoveryTargetMaterializer(vtxos vtxo.VTXOStore,
 		packages: packages,
 		log:      log,
 	}
+}
+
+// InstallChannelRoot persists an indexer-verified receive vHTLC and the exact
+// peer-transferred creation lineage as recovery-only channel ancestry. Unlike
+// EnsureRecoveryTarget, this does not start an exit: the channel FSM still
+// decides whether to commit or abort the prepared claim OOR.
+func (m *vhtlcRecoveryTargetMaterializer) InstallChannelRoot(
+	ctx context.Context, job vhtlcrecovery.RecoveryJob,
+	desc *vtxo.Descriptor, source arkchannel.ReceiveClaimRecoverySource,
+	recovery arkchannel.RecoveryPackage) error {
+
+	if m == nil {
+		return fmt.Errorf("vhtlc recovery materializer is nil")
+	}
+	if desc == nil || desc.Outpoint != job.VTXOOutpoint ||
+		desc.Amount != btcutil.Amount(job.VTXOAmountSat) ||
+		desc.Status != vtxo.VTXOStatusRecoveryOnly {
+		return fmt.Errorf("invalid vhtlc channel recovery root")
+	}
+	if source.OutPoint != desc.Outpoint || source.Amount != desc.Amount ||
+		!bytes.Equal(source.PkScript, desc.PkScript) {
+		return fmt.Errorf("peer vhtlc recovery source does not match " +
+			"indexed root")
+	}
+	if err := recovery.ValidateReceiveClaim(source); err != nil {
+		return err
+	}
+	if err := validateReceiveClaimRecoveryDescriptor(
+		desc, recovery,
+	); err != nil {
+		return err
+	}
+	parsed := make([]parsedRecoveryPackage, 0, len(recovery.Packages))
+	targetFound := false
+	for i := range recovery.Packages {
+		entry := recovery.Packages[i]
+		arkPSBT, checkpoints, err := parseRecoveryOORPackage(entry)
+		if err != nil {
+			return fmt.Errorf("parse vhtlc channel recovery "+
+				"package %d: %w", i, err)
+		}
+		if entry.SessionID == source.OutPoint.Hash {
+			if int(source.OutPoint.Index) >= len(
+				arkPSBT.UnsignedTx.TxOut,
+			) {
+				return fmt.Errorf("vhtlc recovery output is " +
+					"out of range")
+			}
+			outputIndex := source.OutPoint.Index
+			output := arkPSBT.UnsignedTx.TxOut[outputIndex]
+			if output.Value != int64(source.Amount) ||
+				!bytes.Equal(output.PkScript, source.PkScript) {
+				return fmt.Errorf("vhtlc recovery package " +
+					"output does not match source")
+			}
+			targetFound = true
+		}
+		parsed = append(parsed, parsedRecoveryPackage{
+			entry:       entry,
+			arkPSBT:     arkPSBT,
+			checkpoints: checkpoints,
+		})
+	}
+	if !targetFound {
+		return fmt.Errorf("vhtlc recovery target package is missing")
+	}
+	roots, err := receiveClaimRecoveryRoots(source.OutPoint.Hash, parsed)
+	if err != nil {
+		return err
+	}
+	if err := validateRecoveryPackageRoots(
+		desc.Ancestry, roots,
+	); err != nil {
+		return fmt.Errorf("validate peer vhtlc recovery roots: %w", err)
+	}
+	store, ok := m.vtxos.(interface {
+		SaveRecoveryOnlyVTXO(context.Context, *vtxo.Descriptor) error
+	})
+	if !ok {
+		return fmt.Errorf("vtxo store cannot persist recovery-only " +
+			"channel roots")
+	}
+	for i := range parsed {
+		entry := parsed[i]
+		if err := m.packages.UpsertPackage(
+			ctx, db.OORPackageDirection(entry.entry.Direction),
+			entry.entry.SessionID, entry.arkPSBT, entry.checkpoints,
+		); err != nil {
+			return fmt.Errorf("store vhtlc channel recovery "+
+				"package %d: %w", i, err)
+		}
+	}
+	if err := store.SaveRecoveryOnlyVTXO(ctx, desc); err != nil {
+		return fmt.Errorf("save vhtlc channel recovery root: %w", err)
+	}
+	if err := m.bindRecoveryTarget(ctx, desc); err != nil {
+		return err
+	}
+
+	m.log.DebugS(ctx, "vhtlc channel recovery root materialized",
+		slog.String("recovery_id", job.ID),
+		slog.String("outpoint", desc.Outpoint.String()),
+		slog.Int64("amount_sat", int64(desc.Amount)),
+		slog.Int("ancestry_paths", len(desc.Ancestry)),
+		slog.Int("chain_depth", desc.ChainDepth),
+	)
+
+	return nil
+}
+
+// validateReceiveClaimRecoveryDescriptor requires the channel peer and Ark
+// indexer to agree on every immutable round-birth field before local storage.
+func validateReceiveClaimRecoveryDescriptor(desc *vtxo.Descriptor,
+	recovery arkchannel.RecoveryPackage) error {
+
+	remote := recovery.Descriptor
+	if remote.RoundID != desc.RoundID ||
+		remote.CommitmentTxID != desc.CommitmentTxID ||
+		remote.BatchExpiry != desc.BatchExpiry ||
+		remote.ChainDepth != desc.ChainDepth ||
+		remote.CreatedHeight != desc.CreatedHeight ||
+		remote.ConstructionVersion != int32(desc.ConstructionVersion) {
+		return fmt.Errorf("peer vhtlc recovery metadata does not " +
+			"match indexer")
+	}
+	localCommitments := make(map[chainhash.Hash]struct{})
+	for i := range desc.Ancestry {
+		local := desc.Ancestry[i]
+		if local.TreePath == nil || local.TreePath.Root == nil {
+			return fmt.Errorf("indexed vhtlc ancestry %d "+
+				"has no tree", i)
+		}
+		localCommitments[local.CommitmentTxID] = struct{}{}
+	}
+	peerCommitments := make(map[chainhash.Hash]struct{})
+	for i := range remote.Ancestry {
+		peer := remote.Ancestry[i]
+		if _, err := db.DeserializeTree(peer.TreePath); err != nil {
+			return fmt.Errorf("decode peer vhtlc ancestry %d: %w",
+				i, err)
+		}
+		peerCommitments[peer.CommitmentTxID] = struct{}{}
+	}
+	if !sameRecoveryCommitments(localCommitments, peerCommitments) {
+		return fmt.Errorf("peer vhtlc recovery commitments do not " +
+			"match indexer")
+	}
+
+	return nil
+}
+
+// sameRecoveryCommitments reports whether two ancestry views name the same
+// immutable round commitments even when their minimal tree encodings differ.
+func sameRecoveryCommitments(a, b map[chainhash.Hash]struct{}) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for commitment := range a {
+		if _, ok := b[commitment]; !ok {
+			return false
+		}
+	}
+
+	return true
+}
+
+// receiveClaimRecoveryRoots walks the transported package graph from the
+// target toward its round roots. Every transported package must be reachable,
+// and references to a transported ancestor must name a real non-anchor output.
+func receiveClaimRecoveryRoots(target chainhash.Hash,
+	packages []parsedRecoveryPackage) ([]wire.OutPoint, error) {
+
+	byID := make(map[chainhash.Hash]parsedRecoveryPackage, len(packages))
+	for i := range packages {
+		pkg := packages[i]
+		if _, ok := byID[pkg.entry.SessionID]; ok {
+			return nil, fmt.Errorf("duplicate vhtlc recovery "+
+				"package %s", pkg.entry.SessionID)
+		}
+		byID[pkg.entry.SessionID] = pkg
+	}
+	if _, ok := byID[target]; !ok {
+		return nil, fmt.Errorf("vhtlc recovery target package is " +
+			"missing")
+	}
+
+	visited := make(map[chainhash.Hash]struct{}, len(byID))
+	roots := make(map[wire.OutPoint]struct{})
+	queue := []chainhash.Hash{target}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		if _, ok := visited[id]; ok {
+			continue
+		}
+		visited[id] = struct{}{}
+		pkg := byID[id]
+		for _, checkpoint := range pkg.checkpoints {
+			for _, txIn := range checkpoint.UnsignedTx.TxIn {
+				input := txIn.PreviousOutPoint
+				parent, ok := byID[input.Hash]
+				if !ok {
+					roots[input] = struct{}{}
+					continue
+				}
+				outputs := parent.arkPSBT.UnsignedTx.TxOut
+				if input.Index >= uint32(len(outputs)) ||
+					arktx.IsAnchorOutput(
+						outputs[input.Index],
+					) {
+					return nil, fmt.Errorf("vhtlc "+
+						"recovery package %s does not "+
+						"create ancestor %s",
+						input.Hash, input)
+				}
+				queue = append(queue, input.Hash)
+			}
+		}
+	}
+	if len(visited) != len(byID) {
+		return nil, fmt.Errorf("vhtlc recovery contains unreachable " +
+			"packages")
+	}
+
+	result := make([]wire.OutPoint, 0, len(roots))
+	for root := range roots {
+		result = append(result, root)
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("vhtlc recovery package has no round " +
+			"roots")
+	}
+
+	return result, nil
 }
 
 // EnsureRecoveryTarget makes job.VTXOOutpoint loadable by unroll. The method is
@@ -221,6 +465,10 @@ func (m *vhtlcRecoveryTargetMaterializer) buildRecoveryDescriptor(
 	}
 
 	chainDepth := recoveryChainDepth(roots, 1)
+	constructionVersion, err := recoveryConstructionVersion(roots)
+	if err != nil {
+		return nil, err
+	}
 
 	return &vtxo.Descriptor{
 		Outpoint: target,
@@ -233,16 +481,17 @@ func (m *vhtlcRecoveryTargetMaterializer) buildRecoveryDescriptor(
 			},
 			PubKey: signingKey,
 		},
-		OperatorKey:    operatorKey,
-		Ancestry:       ancestry,
-		RoundID:        roundID,
-		CommitmentTxID: commitmentTxID,
-		BatchExpiry:    batchExpiry,
-		RelativeExpiry: csvDelay,
-		PolicyTemplate: policyTemplate,
-		ChainDepth:     chainDepth,
-		CreatedHeight:  createdHeight,
-		Status:         vtxo.VTXOStatusSpending,
+		OperatorKey:         operatorKey,
+		Ancestry:            ancestry,
+		RoundID:             roundID,
+		CommitmentTxID:      commitmentTxID,
+		BatchExpiry:         batchExpiry,
+		RelativeExpiry:      csvDelay,
+		PolicyTemplate:      policyTemplate,
+		ChainDepth:          chainDepth,
+		CreatedHeight:       createdHeight,
+		Status:              vtxo.VTXOStatusSpending,
+		ConstructionVersion: constructionVersion,
 	}, nil
 }
 

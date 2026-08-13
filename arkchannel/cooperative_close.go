@@ -5,31 +5,30 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/btcsuite/btcd/blockchain"
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
-	"github.com/btcsuite/btcd/btcutil/v2/txsort"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/lnwallet"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
-// CooperativeCloseRequest fixes the close initiator, settlement scripts, and
-// fee rate before either channel endpoint is quiesced.
+// CooperativeCloseRequest fixes the ordinary replacement VTXO owners before
+// either channel endpoint is quiesced. DeliveryScript retains its historical
+// name in the durable/RPC envelope, but now contains a compressed owner key.
 type CooperativeCloseRequest struct {
 	Initiator            Party
 	ClientDeliveryScript []byte
 	HubDeliveryScript    []byte
-	FeeRate              chainfee.SatPerKWeight
 }
 
-// Clone returns a request without aliases to delivery scripts.
+// Clone returns a request without aliases to owner keys.
 func (r CooperativeCloseRequest) Clone() CooperativeCloseRequest {
 	r.ClientDeliveryScript = slices.Clone(r.ClientDeliveryScript)
 	r.HubDeliveryScript = slices.Clone(r.HubDeliveryScript)
@@ -37,32 +36,31 @@ func (r CooperativeCloseRequest) Clone() CooperativeCloseRequest {
 	return r
 }
 
-// Validate rejects a close request that cannot create ordinary spendable
-// settlement outputs.
+// Validate rejects a close request whose replacement VTXOs cannot be bound to
+// the two expected owners.
 func (r CooperativeCloseRequest) Validate() error {
 	if r.Initiator != PartyClient {
 		return fmt.Errorf("cooperative close must be client initiated")
 	}
-	if err := validateDeliveryScript(
+	clientKey, err := parseCooperativeCloseOwner(
 		"client", r.ClientDeliveryScript,
-	); err != nil {
+	)
+	if err != nil {
 		return err
 	}
-	if err := validateDeliveryScript(
-		"hub", r.HubDeliveryScript,
-	); err != nil {
+	hubKey, err := parseCooperativeCloseOwner("hub", r.HubDeliveryScript)
+	if err != nil {
 		return err
 	}
-	if r.FeeRate < chainfee.FeePerKwFloor {
-		return fmt.Errorf("cooperative close fee rate %d is below "+
-			"floor %d", r.FeeRate, chainfee.FeePerKwFloor)
+	if clientKey.IsEqual(hubKey) {
+		return fmt.Errorf("cooperative close owners must differ")
 	}
 
 	return nil
 }
 
-// CooperativeCloseProposal is the exact unsigned VTXO settlement transaction
-// and the clean lnd commitment state from which its outputs were derived.
+// CooperativeCloseProposal is the exact unsigned OOR checkpoint and the clean
+// lnd commitment state from which its replacement VTXO amounts were derived.
 type CooperativeCloseProposal struct {
 	Transaction      []byte
 	CommitmentHeight uint64
@@ -70,21 +68,21 @@ type CooperativeCloseProposal struct {
 	HubBalance       btcutil.Amount
 	ClientOutput     btcutil.Amount
 	HubOutput        btcutil.Amount
-	Fee              btcutil.Amount
 }
 
-// Clone returns a proposal without an alias to its transaction bytes.
+// Clone returns a proposal without an alias to its checkpoint PSBT.
 func (p CooperativeCloseProposal) Clone() CooperativeCloseProposal {
 	p.Transaction = slices.Clone(p.Transaction)
 
 	return p
 }
 
-// Validate reconstructs the canonical proposal from immutable channel facts.
+// Validate reconstructs the canonical OOR package from immutable channel
+// facts and requires byte-identical checkpoint signing material.
 func (p CooperativeCloseProposal) Validate(terms Terms, source VTXOBinding,
 	request CooperativeCloseRequest) error {
 
-	expected, _, _, err := buildCooperativeCloseProposal(
+	expected, _, err := buildCooperativeCloseProposal(
 		terms, source, request, p.ClientBalance, p.HubBalance,
 		p.CommitmentHeight,
 	)
@@ -95,7 +93,7 @@ func (p CooperativeCloseProposal) Validate(terms Terms, source VTXOBinding,
 		p.ClientBalance != expected.ClientBalance ||
 		p.HubBalance != expected.HubBalance ||
 		p.ClientOutput != expected.ClientOutput ||
-		p.HubOutput != expected.HubOutput || p.Fee != expected.Fee ||
+		p.HubOutput != expected.HubOutput ||
 		!bytes.Equal(p.Transaction, expected.Transaction) {
 		return fmt.Errorf("cooperative close proposal is not canonical")
 	}
@@ -103,16 +101,16 @@ func (p CooperativeCloseProposal) Validate(terms Terms, source VTXOBinding,
 	return nil
 }
 
-// CooperativeClose is the fully signed direct spend of the channel-policy
-// VTXO. It closes the virtual lnd channel without first publishing its backing
-// transaction and channel point.
+// CooperativeClose is the hub-authorized OOR close artifact. Transaction
+// contains the hub signature for the channel VTXO's no-delay 3-of-3 leaf;
+// TxID is the deterministic OOR Ark transaction/session ID.
 type CooperativeClose struct {
 	Proposal    CooperativeCloseProposal
 	Transaction []byte
 	TxID        chainhash.Hash
 }
 
-// Clone returns a settlement without aliases to transaction bytes.
+// Clone returns a close artifact without aliases to signature or PSBT bytes.
 func (c CooperativeClose) Clone() CooperativeClose {
 	c.Proposal = c.Proposal.Clone()
 	c.Transaction = slices.Clone(c.Transaction)
@@ -120,78 +118,62 @@ func (c CooperativeClose) Clone() CooperativeClose {
 	return c
 }
 
-// Validate proves the settlement is the canonical proposal with a valid
-// client, hub, and Ark-operator witness.
+// Validate proves the proposal is canonical, its session ID is deterministic,
+// and the hub authorized the exact OOR checkpoint through the 3-of-3 leaf.
 func (c CooperativeClose) Validate(terms Terms, source VTXOBinding,
 	request CooperativeCloseRequest) error {
 
 	if err := c.Proposal.Validate(terms, source, request); err != nil {
 		return err
 	}
-	tx, err := decodeCooperativeCloseTransaction(c.Transaction)
+	template, err := NewCooperativeCloseTemplate(
+		terms, source, request, c.Proposal.ClientBalance,
+		c.Proposal.HubBalance, c.Proposal.CommitmentHeight,
+	)
 	if err != nil {
 		return err
 	}
-	if tx.TxHash() != c.TxID {
-		return fmt.Errorf("cooperative close transaction ID does not " +
+	if c.TxID != template.sessionID {
+		return fmt.Errorf("cooperative close OOR session ID does not " +
 			"match")
 	}
-	if len(tx.TxIn) != 1 || tx.TxIn[0].PreviousOutPoint != source.OutPoint {
-		return fmt.Errorf("cooperative close does not spend channel " +
-			"VTXO")
-	}
-	if len(tx.TxIn[0].Witness) == 0 {
-		return fmt.Errorf("cooperative close is not fully signed")
-	}
-	unsigned := tx.Copy()
-	unsigned.TxIn[0].Witness = nil
-	unsignedRaw, err := serializeCooperativeCloseTransaction(unsigned)
+	sig, err := schnorr.ParseSignature(c.Transaction)
 	if err != nil {
-		return err
-	}
-	if !bytes.Equal(unsignedRaw, c.Proposal.Transaction) {
-		return fmt.Errorf("cooperative close witness changes proposal")
-	}
-	previousOut := &wire.TxOut{
-		Value:    int64(source.Amount),
-		PkScript: slices.Clone(source.PkScript),
-	}
-	prevFetcher := txscript.NewCannedPrevOutputFetcher(
-		previousOut.PkScript, previousOut.Value,
-	)
-	sigHashes := txscript.NewTxSigHashes(tx, prevFetcher)
-	engine, err := txscript.NewEngine(
-		previousOut.PkScript, tx, 0, txscript.StandardVerifyFlags, nil,
-		sigHashes, previousOut.Value, prevFetcher,
-	)
-	if err != nil {
-		return fmt.Errorf("construct cooperative close verifier: %w",
-			err)
-	}
-	if err := engine.Execute(); err != nil {
-		return fmt.Errorf("verify cooperative close signatures: %w",
+		return fmt.Errorf("parse hub cooperative close signature: %w",
 			err)
 	}
 
-	return nil
+	return template.VerifySignature(terms, PartyHub, sig)
 }
 
-// CooperativeCloseTemplate owns the canonical proposal and immediate
-// three-party spend path while signatures are collected.
+// CooperativeCloseOORSpec contains the deterministic ordinary OOR actor input
+// data that is safe to hand across the core channel package boundary.
+type CooperativeCloseOORSpec struct {
+	CheckpointPolicy arkscript.CheckpointPolicy
+	SpendPath        []byte
+	Recipients       []oortx.RecipientOutput
+}
+
+// CooperativeCloseTemplate owns the canonical OOR proposal and the immediate
+// three-party spend path while the hub signature is collected.
 type CooperativeCloseTemplate struct {
 	proposal    CooperativeCloseProposal
+	sessionID   chainhash.Hash
 	previousOut *wire.TxOut
+	checkpoint  *psbt.Packet
 	spendPath   *arkscript.SpendPath
+	policy      arkscript.CheckpointPolicy
+	recipients  []oortx.RecipientOutput
 }
 
-// NewCooperativeCloseTemplate builds a direct settlement from the same clean
+// NewCooperativeCloseTemplate builds an OOR transfer from the same clean
 // commitment height and balance allocation observed by both lnd endpoints.
 func NewCooperativeCloseTemplate(terms Terms, source VTXOBinding,
 	request CooperativeCloseRequest,
 	clientBalance, hubBalance btcutil.Amount, commitmentHeight uint64) (
 	*CooperativeCloseTemplate, error) {
 
-	proposal, previousOut, spendPath, err := buildCooperativeCloseProposal(
+	proposal, artifacts, err := buildCooperativeCloseProposal(
 		terms, source, request, clientBalance, hubBalance,
 		commitmentHeight,
 	)
@@ -200,19 +182,36 @@ func NewCooperativeCloseTemplate(terms Terms, source VTXOBinding,
 	}
 
 	return &CooperativeCloseTemplate{
-		proposal:    proposal,
-		previousOut: previousOut,
-		spendPath:   spendPath,
+		proposal: proposal, sessionID: artifacts.sessionID,
+		previousOut: artifacts.previousOut,
+		checkpoint:  artifacts.checkpoint,
+		spendPath:   artifacts.spendPath,
+		policy:      artifacts.policy,
+		recipients:  artifacts.recipients,
 	}, nil
 }
 
-// Proposal returns an isolated copy of the unsigned settlement.
+// Proposal returns an isolated copy of the unsigned OOR close proposal.
 func (t *CooperativeCloseTemplate) Proposal() CooperativeCloseProposal {
 	return t.proposal.Clone()
 }
 
-// SignDescriptor returns the exact cooperative tapscript descriptor after
-// checking that the signing key belongs to the requested role.
+// OORSpec returns isolated deterministic inputs for the ordinary OOR actor.
+func (t *CooperativeCloseTemplate) OORSpec() (CooperativeCloseOORSpec, error) {
+	spendPath, err := t.spendPath.Encode()
+	if err != nil {
+		return CooperativeCloseOORSpec{}, err
+	}
+
+	return CooperativeCloseOORSpec{
+		CheckpointPolicy: t.policy,
+		SpendPath:        spendPath,
+		Recipients:       cloneCooperativeCloseRecipients(t.recipients),
+	}, nil
+}
+
+// SignDescriptor returns the exact checkpoint descriptor after checking that
+// the signer owns the requested endpoint role in the 3-of-3 policy leaf.
 func (t *CooperativeCloseTemplate) SignDescriptor(terms Terms, party Party,
 	keyDesc keychain.KeyDescriptor) (*input.SignDescriptor, error) {
 
@@ -232,16 +231,7 @@ func (t *CooperativeCloseTemplate) SignDescriptor(terms Terms, party Party,
 	return t.signDescriptor(expected, keyDesc)
 }
 
-// OperatorSignDescriptor returns the descriptor for the Ark operator's third
-// signature after checking key ownership.
-func (t *CooperativeCloseTemplate) OperatorSignDescriptor(terms Terms,
-	keyDesc keychain.KeyDescriptor) (*input.SignDescriptor, error) {
-
-	return t.signDescriptor(terms.VTXO.ArkOperatorKey, keyDesc)
-}
-
-// VerifySignature proves one endpoint signed the canonical proposal with the
-// key assigned to its immediate cooperative policy role.
+// VerifySignature proves one participant signed the canonical checkpoint.
 func (t *CooperativeCloseTemplate) VerifySignature(terms Terms, party Party,
 	sig input.Signature) error {
 
@@ -272,14 +262,10 @@ func (t *CooperativeCloseTemplate) VerifySignature(terms Terms, party Party,
 	if err != nil {
 		return err
 	}
-	tx, err := decodeCooperativeCloseTransaction(t.proposal.Transaction)
-	if err != nil {
-		return err
-	}
 	leaf := txscript.NewBaseTapLeaf(desc.WitnessScript)
 	sigHash, err := txscript.CalcTapscriptSignaturehash(
-		desc.SigHashes, desc.HashType, tx, desc.InputIndex,
-		desc.PrevOutputFetcher, leaf,
+		desc.SigHashes, desc.HashType, t.checkpoint.UnsignedTx,
+		desc.InputIndex, desc.PrevOutputFetcher, leaf,
 	)
 	if err != nil {
 		return fmt.Errorf("derive %s cooperative close sighash: %w",
@@ -293,7 +279,29 @@ func (t *CooperativeCloseTemplate) VerifySignature(terms Terms, party Party,
 	return nil
 }
 
-// signDescriptor binds one expected key to the canonical proposal.
+// Complete records the hub signature after verifying it against the exact
+// checkpoint. Client and Ark operator signatures remain absent until OOR
+// submission, where the operator-first custody rule is enforced.
+func (t *CooperativeCloseTemplate) Complete(terms Terms, source VTXOBinding,
+	request CooperativeCloseRequest, hubSig input.Signature) (
+	CooperativeClose, error) {
+
+	if err := t.VerifySignature(terms, PartyHub, hubSig); err != nil {
+		return CooperativeClose{}, err
+	}
+	settlement := CooperativeClose{
+		Proposal:    t.proposal.Clone(),
+		Transaction: hubSig.Serialize(),
+		TxID:        t.sessionID,
+	}
+	if err := settlement.Validate(terms, source, request); err != nil {
+		return CooperativeClose{}, err
+	}
+
+	return settlement, nil
+}
+
+// signDescriptor binds one expected key to the canonical checkpoint input.
 func (t *CooperativeCloseTemplate) signDescriptor(expected [33]byte,
 	keyDesc keychain.KeyDescriptor) (*input.SignDescriptor, error) {
 
@@ -305,308 +313,268 @@ func (t *CooperativeCloseTemplate) signDescriptor(expected [33]byte,
 	if err != nil {
 		return nil, err
 	}
-	if !bytes.Equal(
-		schnorr.SerializePubKey(keyDesc.PubKey),
-		schnorr.SerializePubKey(expectedKey),
-	) {
+	if !keyDesc.PubKey.IsEqual(expectedKey) {
 		return nil, fmt.Errorf("cooperative close signing key does " +
 			"not match policy role")
-	}
-	tx, err := decodeCooperativeCloseTransaction(t.proposal.Transaction)
-	if err != nil {
-		return nil, err
 	}
 	prevFetcher := txscript.NewCannedPrevOutputFetcher(
 		t.previousOut.PkScript, t.previousOut.Value,
 	)
-	sigHashes := txscript.NewTxSigHashes(tx, prevFetcher)
+	sigHashes := txscript.NewTxSigHashes(
+		t.checkpoint.UnsignedTx, prevFetcher,
+	)
 
 	return t.spendPath.BuildSignDescriptor(
 		keyDesc, t.previousOut, sigHashes, prevFetcher, 0,
 	), nil
 }
 
-// Complete attaches all three signatures and validates the resulting
-// settlement before returning it for durable persistence.
-func (t *CooperativeCloseTemplate) Complete(terms Terms, source VTXOBinding,
-	request CooperativeCloseRequest, clientSig, hubSig,
-	operatorSig input.Signature) (CooperativeClose, error) {
-
-	if clientSig == nil || hubSig == nil || operatorSig == nil {
-		return CooperativeClose{}, fmt.Errorf("client, hub, and Ark " +
-			"operator cooperative close signatures are required")
-	}
-	witness, err := t.spendPath.Witness(
-		arkscript.MaybeAppendSighash(
-			operatorSig, txscript.SigHashDefault,
-		),
-		arkscript.MaybeAppendSighash(hubSig, txscript.SigHashDefault),
-		arkscript.MaybeAppendSighash(
-			clientSig, txscript.SigHashDefault,
-		),
-	)
-	if err != nil {
-		return CooperativeClose{}, err
-	}
-	tx, err := decodeCooperativeCloseTransaction(t.proposal.Transaction)
-	if err != nil {
-		return CooperativeClose{}, err
-	}
-	tx.TxIn[0].Witness = witness
-	raw, err := serializeCooperativeCloseTransaction(tx)
-	if err != nil {
-		return CooperativeClose{}, err
-	}
-	settlement := CooperativeClose{
-		Proposal:    t.proposal.Clone(),
-		Transaction: raw,
-		TxID:        tx.TxHash(),
-	}
-	if err := settlement.Validate(terms, source, request); err != nil {
-		return CooperativeClose{}, err
-	}
-
-	return settlement, nil
+type cooperativeCloseArtifacts struct {
+	sessionID   chainhash.Hash
+	previousOut *wire.TxOut
+	checkpoint  *psbt.Packet
+	spendPath   *arkscript.SpendPath
+	policy      arkscript.CheckpointPolicy
+	recipients  []oortx.RecipientOutput
 }
 
-// buildCooperativeCloseProposal derives outputs and fee only from immutable
+// buildCooperativeCloseProposal derives OOR outputs only from immutable
 // channel facts and lnd's clean balance allocation.
 func buildCooperativeCloseProposal(terms Terms, source VTXOBinding,
 	request CooperativeCloseRequest,
 	clientBalance, hubBalance btcutil.Amount, commitmentHeight uint64) (
-	CooperativeCloseProposal, *wire.TxOut, *arkscript.SpendPath, error) {
+	CooperativeCloseProposal, cooperativeCloseArtifacts, error) {
 
 	if err := terms.Validate(); err != nil {
-		return CooperativeCloseProposal{}, nil, nil, err
+		return CooperativeCloseProposal{},
+			cooperativeCloseArtifacts{}, err
 	}
 	if err := source.Validate(terms); err != nil {
-		return CooperativeCloseProposal{}, nil, nil, err
+		return CooperativeCloseProposal{},
+			cooperativeCloseArtifacts{}, err
 	}
 	if err := request.Validate(); err != nil {
-		return CooperativeCloseProposal{}, nil, nil, err
+		return CooperativeCloseProposal{},
+			cooperativeCloseArtifacts{}, err
 	}
 	if clientBalance < 0 || hubBalance < 0 ||
 		clientBalance+hubBalance != terms.Capacity {
-		return CooperativeCloseProposal{}, nil, nil, fmt.Errorf(
-			"cooperative close balances %d + %d do not match "+
-				"capacity %d", clientBalance, hubBalance,
-			terms.Capacity)
+		return CooperativeCloseProposal{}, cooperativeCloseArtifacts{},
+			fmt.Errorf("cooperative close balances %d + %d do not "+
+				"match capacity %d", clientBalance, hubBalance,
+				terms.Capacity)
 	}
 	reserve := source.Amount - terms.Capacity
 	if reserve <= 0 {
-		return CooperativeCloseProposal{}, nil, nil, fmt.Errorf(
-			"channel VTXO has no cooperative close fee reserve")
+		return CooperativeCloseProposal{}, cooperativeCloseArtifacts{},
+			fmt.Errorf("channel VTXO has no backing reserve")
 	}
-	policy, err := channelPolicy(terms.VTXO)
-	if err != nil {
-		return CooperativeCloseProposal{}, nil, nil, err
-	}
-	spendPath, err := policy.CooperativeSpendPath()
-	if err != nil {
-		return CooperativeCloseProposal{}, nil, nil, fmt.Errorf(
-			"derive cooperative close path: %w", err)
-	}
-	if err := spendPath.VerifyBindsToPkScript(source.PkScript); err != nil {
-		return CooperativeCloseProposal{}, nil, nil, fmt.Errorf(
-			"validate cooperative close path: %w", err)
-	}
-	previousOut := &wire.TxOut{
-		Value:    int64(source.Amount),
-		PkScript: slices.Clone(source.PkScript),
+	clientOutput := clientBalance
+	hubOutput := hubBalance
+	if terms.Funder == PartyClient {
+		clientOutput += reserve
+	} else {
+		hubOutput += reserve
 	}
 
-	targetFee := btcutil.Amount(0)
-	var tx *wire.MsgTx
-	var clientOutput, hubOutput btcutil.Amount
-	converged := false
-	for range 8 {
-		clientOutput = clientBalance
-		hubOutput = hubBalance
-		reserveRemainder := reserve - targetFee
-		if reserveRemainder < 0 {
-			return CooperativeCloseProposal{}, nil, nil, fmt.Errorf(
-				"cooperative close fee %d exceeds "+
-					"reserve %d", targetFee, reserve)
-		}
-		if terms.Funder == PartyClient {
-			clientOutput += reserveRemainder
-		} else {
-			hubOutput += reserveRemainder
-		}
-		clientOutput = trimCooperativeCloseOutput(
-			clientOutput, request.ClientDeliveryScript,
-		)
-		hubOutput = trimCooperativeCloseOutput(
-			hubOutput, request.HubDeliveryScript,
-		)
-		tx, err = cooperativeCloseTransaction(
-			source.OutPoint, spendPath, request, clientOutput,
-			hubOutput,
-		)
-		if err != nil {
-			return CooperativeCloseProposal{}, nil, nil, err
-		}
-		dummySig := bytes.Repeat([]byte{1}, schnorr.SignatureSize)
-		dummyWitness, err := spendPath.Witness(
-			dummySig, dummySig, dummySig,
-		)
-		if err != nil {
-			return CooperativeCloseProposal{}, nil, nil, err
-		}
-		tx.TxIn[0].Witness = dummyWitness
-		weight := blockchain.GetTransactionWeight(btcutil.NewTx(tx))
-		nextFee := request.FeeRate.FeeForWeight(
-			lntypes.WeightUnit(weight),
-		)
-		tx.TxIn[0].Witness = nil
-		if nextFee == targetFee {
-			converged = true
-			break
-		}
-		targetFee = nextFee
-	}
-	if !converged {
-		return CooperativeCloseProposal{}, nil, nil, fmt.Errorf(
-			"cooperative close fee did not converge")
-	}
-	if targetFee <= 0 || targetFee > reserve {
-		return CooperativeCloseProposal{}, nil, nil, fmt.Errorf(
-			"cooperative close fee %d exceeds usable reserve %d",
-			targetFee, reserve)
-	}
-	fee := source.Amount - clientOutput - hubOutput
-	if fee < targetFee {
-		return CooperativeCloseProposal{}, nil, nil, fmt.Errorf(
-			"cooperative close fee %d is below target %d", fee,
-			targetFee)
-	}
-	raw, err := serializeCooperativeCloseTransaction(tx)
+	operatorKey, err := parseChannelKey(
+		"Ark operator", terms.VTXO.ArkOperatorKey,
+	)
 	if err != nil {
-		return CooperativeCloseProposal{}, nil, nil, err
+		return CooperativeCloseProposal{},
+			cooperativeCloseArtifacts{}, err
+	}
+	clientKey, err := parseChannelKey(
+		"client Ark", terms.VTXO.ClientArkKey,
+	)
+	if err != nil {
+		return CooperativeCloseProposal{},
+			cooperativeCloseArtifacts{}, err
+	}
+	channelPolicy, err := channelPolicy(terms.VTXO)
+	if err != nil {
+		return CooperativeCloseProposal{},
+			cooperativeCloseArtifacts{}, err
+	}
+	spendPath, err := channelPolicy.CooperativeSpendPath()
+	if err != nil {
+		return CooperativeCloseProposal{}, cooperativeCloseArtifacts{},
+			fmt.Errorf("derive cooperative close path: %w", err)
+	}
+	if err := spendPath.VerifyBindsToPkScript(source.PkScript); err != nil {
+		return CooperativeCloseProposal{}, cooperativeCloseArtifacts{},
+			fmt.Errorf("validate cooperative close path: %w", err)
+	}
+
+	ownerLeaf, err := arkscript.MultiSigCollabTapLeaf(
+		clientKey, operatorKey,
+	)
+	if err != nil {
+		return CooperativeCloseProposal{},
+			cooperativeCloseArtifacts{}, err
+	}
+	ownerPolicy, err := arkscript.LeafTemplate{
+		Node: &arkscript.Multisig{
+			Keys: []*btcec.PublicKey{
+				clientKey,
+				operatorKey,
+			},
+		},
+	}.Encode()
+	if err != nil {
+		return CooperativeCloseProposal{},
+			cooperativeCloseArtifacts{}, err
+	}
+	previousOut := &wire.TxOut{
+		Value: int64(source.Amount), PkScript: slices.Clone(
+			source.PkScript,
+		),
+	}
+	checkpointPolicy := arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey, CSVDelay: terms.VTXO.MinExitDelay,
+	}
+	checkpoint, err := oortx.BuildCheckpointPSBT(
+		checkpointPolicy, oortx.CheckpointInput{
+			SpentVTXO: oortx.SpentVTXORef{
+				Outpoint: source.OutPoint, Output: previousOut,
+			},
+			OwnerLeafScript: ownerLeaf.Script,
+			OwnerLeafPolicy: ownerPolicy,
+		},
+	)
+	if err != nil {
+		return CooperativeCloseProposal{},
+			cooperativeCloseArtifacts{}, err
+	}
+	checkpoint.PSBT.UnsignedTx.LockTime = spendPath.RequiredLockTime
+	checkpoint.PSBT.UnsignedTx.TxIn[0].Sequence = spendPath.RequiredSequence
+
+	recipients := make([]oortx.RecipientOutput, 0, 2)
+	if clientOutput > 0 {
+		recipient, err := cooperativeCloseRecipient(
+			request.ClientDeliveryScript, operatorKey,
+			terms.VTXO.MinExitDelay, clientOutput,
+		)
+		if err != nil {
+			return CooperativeCloseProposal{},
+				cooperativeCloseArtifacts{}, err
+		}
+		recipients = append(recipients, recipient)
+	}
+	if hubOutput > 0 {
+		recipient, err := cooperativeCloseRecipient(
+			request.HubDeliveryScript, operatorKey,
+			terms.VTXO.MinExitDelay, hubOutput,
+		)
+		if err != nil {
+			return CooperativeCloseProposal{},
+				cooperativeCloseArtifacts{}, err
+		}
+		recipients = append(recipients, recipient)
+	}
+	if len(recipients) == 0 {
+		return CooperativeCloseProposal{}, cooperativeCloseArtifacts{},
+			fmt.Errorf("cooperative close has no replacement VTXO")
+	}
+	checkpointOut, err := checkpoint.ToCheckpointOutput()
+	if err != nil {
+		return CooperativeCloseProposal{},
+			cooperativeCloseArtifacts{}, err
+	}
+	arkPSBT, err := oortx.BuildArkPSBT(
+		[]oortx.CheckpointOutput{checkpointOut}, recipients,
+	)
+	if err != nil {
+		return CooperativeCloseProposal{},
+			cooperativeCloseArtifacts{}, err
+	}
+	arkPSBT.UnsignedTx.LockTime = spendPath.RequiredLockTime
+	arkPSBT.UnsignedTx.TxIn[0].Sequence = spendPath.RequiredSequence
+	checkpointRaw, err := psbtutil.Serialize(checkpoint.PSBT)
+	if err != nil {
+		return CooperativeCloseProposal{},
+			cooperativeCloseArtifacts{}, err
 	}
 
 	return CooperativeCloseProposal{
-		Transaction:      raw,
-		CommitmentHeight: commitmentHeight,
-		ClientBalance:    clientBalance,
-		HubBalance:       hubBalance,
-		ClientOutput:     clientOutput,
-		HubOutput:        hubOutput,
-		Fee:              fee,
-	}, previousOut, spendPath, nil
+			Transaction:      checkpointRaw,
+			CommitmentHeight: commitmentHeight,
+			ClientBalance:    clientBalance,
+			HubBalance:       hubBalance,
+			ClientOutput:     clientOutput,
+			HubOutput:        hubOutput,
+		}, cooperativeCloseArtifacts{
+			sessionID:   arkPSBT.UnsignedTx.TxHash(),
+			previousOut: previousOut,
+			checkpoint:  checkpoint.PSBT,
+			spendPath:   spendPath,
+			policy:      checkpointPolicy,
+			recipients:  recipients,
+		}, nil
 }
 
-// trimCooperativeCloseOutput applies standard on-chain dust semantics while
-// retaining the exact clean lnd balance separately in the proposal.
-func trimCooperativeCloseOutput(amount btcutil.Amount,
-	script []byte) btcutil.Amount {
+// cooperativeCloseRecipient constructs one ordinary Ark VTXO output.
+func cooperativeCloseRecipient(rawOwnerKey []byte, operatorKey *btcec.PublicKey,
+	exitDelay uint32,
+	amount btcutil.Amount) (oortx.RecipientOutput, error) {
 
-	if amount > 0 && amount < lnwallet.DustLimitForSize(len(script)) {
-		return 0
+	ownerKey, err := parseCooperativeCloseOwner(
+		"replacement", rawOwnerKey,
+	)
+	if err != nil {
+		return oortx.RecipientOutput{}, err
+	}
+	policy, err := arkscript.NewVTXOPolicy(
+		ownerKey, operatorKey, exitDelay,
+	)
+	if err != nil {
+		return oortx.RecipientOutput{}, err
+	}
+	policyTemplate, err := policy.Template.Encode()
+	if err != nil {
+		return oortx.RecipientOutput{}, err
+	}
+	pkScript, err := policy.Template.PkScript()
+	if err != nil {
+		return oortx.RecipientOutput{}, err
 	}
 
-	return amount
+	return oortx.RecipientOutput{
+		PkScript: pkScript, Value: amount,
+		VTXOPolicyTemplate: policyTemplate,
+	}, nil
 }
 
-// cooperativeCloseTransaction builds deterministic settlement outputs.
-func cooperativeCloseTransaction(source wire.OutPoint,
-	spendPath *arkscript.SpendPath, request CooperativeCloseRequest,
-	clientOutput, hubOutput btcutil.Amount) (*wire.MsgTx, error) {
+// parseCooperativeCloseOwner accepts compressed secp256k1 public keys only.
+func parseCooperativeCloseOwner(role string,
+	raw []byte) (*btcec.PublicKey, error) {
 
-	tx := wire.NewMsgTx(2)
-	tx.LockTime = spendPath.RequiredLockTime
-	tx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: source,
-		Sequence:         spendPath.RequiredSequence,
-	})
-	for _, output := range []struct {
-		name   string
-		amount btcutil.Amount
-		script []byte
-	}{
-		{
-			name:   "client",
-			amount: clientOutput,
-			script: request.ClientDeliveryScript,
-		},
-		{
-			name:   "hub",
-			amount: hubOutput,
-			script: request.HubDeliveryScript,
-		},
-	} {
-		if output.amount == 0 {
-			continue
-		}
-		if output.amount < 0 {
-			return nil, fmt.Errorf("%s cooperative close output "+
-				"is negative", output.name)
-		}
-		dustLimit := lnwallet.DustLimitForSize(len(output.script))
-		if output.amount < dustLimit {
-			return nil, fmt.Errorf("%s cooperative close output "+
-				"%d is below dust limit %d", output.name,
-				output.amount, dustLimit)
-		}
-		tx.AddTxOut(&wire.TxOut{
-			Value:    int64(output.amount),
-			PkScript: slices.Clone(output.script),
-		})
+	if len(raw) != btcec.PubKeyBytesLenCompressed {
+		return nil, fmt.Errorf("%s cooperative close owner key has %d "+
+			"bytes, expected %d", role, len(raw),
+			btcec.PubKeyBytesLenCompressed)
 	}
-	if len(tx.TxOut) == 0 {
-		return nil, fmt.Errorf("cooperative close has no spendable " +
-			"outputs")
+	key, err := btcec.ParsePubKey(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s cooperative close "+
+			"owner key: %w", role, err)
 	}
-	txsort.InPlaceSort(tx)
 
-	return tx, nil
+	return key, nil
 }
 
-// validateDeliveryScript accepts standard spendable scripts and rejects data
-// outputs or malformed scripts before channel traffic is stopped.
-func validateDeliveryScript(name string, script []byte) error {
-	if len(script) == 0 {
-		return fmt.Errorf("%s cooperative close delivery script is "+
-			"required", name)
-	}
-	class := txscript.GetScriptClass(script)
-	if class == txscript.NonStandardTy || class == txscript.NullDataTy ||
-		class == txscript.PayToAnchorTy {
-		return fmt.Errorf("%s cooperative close delivery script is "+
-			"not spendable", name)
+// cloneCooperativeCloseRecipients returns recipients without mutable aliases.
+func cloneCooperativeCloseRecipients(
+	recipients []oortx.RecipientOutput) []oortx.RecipientOutput {
+
+	cloned := make([]oortx.RecipientOutput, len(recipients))
+	for i := range recipients {
+		cloned[i] = recipients[i]
+		cloned[i].PkScript = slices.Clone(recipients[i].PkScript)
+		cloned[i].VTXOPolicyTemplate = slices.Clone(
+			recipients[i].VTXOPolicyTemplate,
+		)
 	}
 
-	return nil
-}
-
-// decodeCooperativeCloseTransaction decodes one transaction with no trailing
-// bytes.
-func decodeCooperativeCloseTransaction(raw []byte) (*wire.MsgTx, error) {
-	if len(raw) == 0 {
-		return nil, fmt.Errorf("cooperative close transaction is " +
-			"required")
-	}
-	tx := wire.NewMsgTx(2)
-	reader := bytes.NewReader(raw)
-	if err := tx.Deserialize(reader); err != nil {
-		return nil, fmt.Errorf("decode cooperative close "+
-			"transaction: %w", err)
-	}
-	if reader.Len() != 0 {
-		return nil, fmt.Errorf("cooperative close transaction has %d "+
-			"trailing bytes", reader.Len())
-	}
-
-	return tx, nil
-}
-
-// serializeCooperativeCloseTransaction returns canonical wire bytes.
-func serializeCooperativeCloseTransaction(tx *wire.MsgTx) ([]byte, error) {
-	var raw bytes.Buffer
-	if err := tx.Serialize(&raw); err != nil {
-		return nil, fmt.Errorf("serialize cooperative close "+
-			"transaction: %w", err)
-	}
-
-	return raw.Bytes(), nil
+	return cloned
 }

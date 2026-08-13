@@ -22,12 +22,6 @@ const (
 	// in the durable unroll registry.
 	ExitPolicyKind unroll.ExitPolicyKind = "ark_channel_backing"
 
-	// CooperativeCloseExitPolicyKind identifies a fully signed direct spend
-	// of the channel-policy VTXO.
-	CooperativeCloseExitPolicyKind = unroll.ExitPolicyKind(
-		"ark_channel_cooperative_close",
-	)
-
 	defaultPollInterval = 100 * time.Millisecond
 )
 
@@ -95,7 +89,7 @@ func (c *Controller) MaterializeChannel(ctx context.Context, id arkchannel.ID,
 
 	if err := c.publishFinalSpend(
 		ctx, id, terms, source, ExitPolicyKind,
-		backing.ChannelPoint.Hash, false,
+		backing.ChannelPoint.Hash,
 	); err != nil {
 		return err
 	}
@@ -105,23 +99,10 @@ func (c *Controller) MaterializeChannel(ctx context.Context, id arkchannel.ID,
 	})
 }
 
-// SettleCooperativeClose publishes the Ark ancestry and exact direct VTXO
-// settlement, waiting for confirmation before lnd archives the channel.
-func (c *Controller) SettleCooperativeClose(ctx context.Context,
-	id arkchannel.ID, terms arkchannel.Terms, source arkchannel.VTXOBinding,
-	settlement arkchannel.CooperativeClose) error {
-
-	return c.publishFinalSpend(
-		ctx, id, terms, source, CooperativeCloseExitPolicyKind,
-		settlement.TxID, true,
-	)
-}
-
 // publishFinalSpend runs one durable unroll job and verifies its final spend.
 func (c *Controller) publishFinalSpend(ctx context.Context, id arkchannel.ID,
 	terms arkchannel.Terms, source arkchannel.VTXOBinding,
-	policyKind unroll.ExitPolicyKind, expectedTxID chainhash.Hash,
-	waitForConfirmation bool) error {
+	policyKind unroll.ExitPolicyKind, expectedTxID chainhash.Hash) error {
 
 	if err := c.sourcePreparer.EnsureChannelSource(
 		ctx, id, terms, source, policyKind,
@@ -172,10 +153,8 @@ func (c *Controller) publishFinalSpend(ctx context.Context, id arkchannel.ID,
 				return fmt.Errorf("unroller published a " +
 					"different Ark channel transaction")
 			}
-			if !waitForConfirmation ||
-				status.Phase == unroll.PhaseCompleted {
-				return nil
-			}
+
+			return nil
 		}
 		if status.Phase == unroll.PhaseCompleted {
 			return fmt.Errorf("completed channel unroll has no " +
@@ -219,7 +198,7 @@ type Resolver struct {
 
 // SupportsKind reports support for channel backing spends.
 func (r Resolver) SupportsKind(kind unroll.ExitPolicyKind) bool {
-	return kind == ExitPolicyKind || kind == CooperativeCloseExitPolicyKind
+	return kind == ExitPolicyKind
 }
 
 // ResolveExitSpendPolicy loads and validates the exact signed backing named by
@@ -252,44 +231,17 @@ func (r Resolver) ResolveExitSpendPolicy(ctx context.Context,
 	if !snapshot.OORFinalized {
 		return nil, fmt.Errorf("Ark channel OOR is not finalized")
 	}
-	switch req.Kind {
-	case ExitPolicyKind:
-		if err := snapshot.Backing.Validate(
-			snapshot.Terms, *snapshot.Source,
-		); err != nil {
-			return nil, err
-		}
-
-		return &channelExitPolicy{
-			terms:   snapshot.Terms,
-			source:  snapshot.Source.Clone(),
-			backing: snapshot.Backing.Clone(),
-		}, nil
-
-	case CooperativeCloseExitPolicyKind:
-		if snapshot.CooperativeCloseRequest == nil ||
-			snapshot.CooperativeClose == nil {
-			return nil, fmt.Errorf("Ark channel is missing " +
-				"cooperative close artifacts")
-		}
-		if err := snapshot.CooperativeClose.Validate(
-			snapshot.Terms, *snapshot.Source,
-			*snapshot.CooperativeCloseRequest,
-		); err != nil {
-			return nil, err
-		}
-
-		return &cooperativeCloseExitPolicy{
-			terms:      snapshot.Terms,
-			source:     snapshot.Source.Clone(),
-			request:    snapshot.CooperativeCloseRequest.Clone(),
-			settlement: snapshot.CooperativeClose.Clone(),
-		}, nil
-
-	default:
-		return nil, fmt.Errorf("unsupported channel exit policy %q",
-			req.Kind)
+	if err := snapshot.Backing.Validate(
+		snapshot.Terms, *snapshot.Source,
+	); err != nil {
+		return nil, err
 	}
+
+	return &channelExitPolicy{
+		terms:   snapshot.Terms,
+		source:  snapshot.Source.Clone(),
+		backing: snapshot.Backing.Clone(),
+	}, nil
 }
 
 // channelExitPolicy returns the immutable funding transaction as unroll's
@@ -350,6 +302,12 @@ func (p *channelExitPolicy) BuildSpendTx(_ context.Context,
 		return nil, err
 	}
 
+	return p.PreSignedSpendTx()
+}
+
+// PreSignedSpendTx returns the immutable backing transaction negotiated by
+// both channel parties before the OOR transfer was finalized.
+func (p *channelExitPolicy) PreSignedSpendTx() (*wire.MsgTx, error) {
 	return p.transaction()
 }
 
@@ -366,86 +324,9 @@ func (p *channelExitPolicy) transaction() (*wire.MsgTx, error) {
 	return tx, nil
 }
 
-// cooperativeCloseExitPolicy returns the signed immediate three-party VTXO
-// settlement after Ark ancestry reaches the chain.
-type cooperativeCloseExitPolicy struct {
-	terms      arkchannel.Terms
-	source     arkchannel.VTXOBinding
-	request    arkchannel.CooperativeCloseRequest
-	settlement arkchannel.CooperativeClose
-}
-
-// Kind returns the durable cooperative-close policy kind.
-func (p *cooperativeCloseExitPolicy) Kind() unroll.ExitPolicyKind {
-	return CooperativeCloseExitPolicyKind
-}
-
-// CSVDelay reports that the immediate cooperative policy has no relative
-// timelock.
-func (*cooperativeCloseExitPolicy) CSVDelay() uint32 {
-	return 0
-}
-
-// RequiredLockTime returns the signed settlement's absolute locktime.
-func (p *cooperativeCloseExitPolicy) RequiredLockTime() uint32 {
-	tx, err := p.transaction()
-	if err != nil {
-		return 0
-	}
-
-	return tx.LockTime
-}
-
-// ValidateTarget binds the settlement to the exact channel-policy VTXO.
-func (p *cooperativeCloseExitPolicy) ValidateTarget(target *wire.TxOut) error {
-	if target == nil {
-		return fmt.Errorf("materialized channel VTXO is required")
-	}
-	if target.Value != int64(p.source.Amount) ||
-		!bytes.Equal(target.PkScript, p.source.PkScript) {
-		return fmt.Errorf("materialized output does not match " +
-			"channel VTXO")
-	}
-
-	return nil
-}
-
-// BuildSpendTx returns the already signed and script-verified direct close.
-func (p *cooperativeCloseExitPolicy) BuildSpendTx(_ context.Context,
-	req unroll.ExitSpendRequest) (*wire.MsgTx, error) {
-
-	if req.TargetOutpoint != p.source.OutPoint {
-		return nil, fmt.Errorf("materialized outpoint does not match " +
-			"channel VTXO")
-	}
-	if err := p.ValidateTarget(req.TargetOutput); err != nil {
-		return nil, err
-	}
-	if err := p.settlement.Validate(
-		p.terms, p.source, p.request,
-	); err != nil {
-		return nil, err
-	}
-
-	return p.transaction()
-}
-
-// transaction decodes an isolated direct settlement transaction.
-func (p *cooperativeCloseExitPolicy) transaction() (*wire.MsgTx, error) {
-	tx := wire.NewMsgTx(2)
-	if err := tx.Deserialize(
-		bytes.NewReader(p.settlement.Transaction),
-	); err != nil {
-		return nil, fmt.Errorf("decode cooperative close "+
-			"transaction: %w", err)
-	}
-
-	return tx, nil
-}
-
 var _ arkchannel.ChannelMaterializer = (*Controller)(nil)
 var _ arkchannel.ChannelEventSinkBinder = (*Controller)(nil)
 var _ unroll.ExitSpendPolicyResolver = Resolver{}
 var _ unroll.ResolverKindSupport = Resolver{}
 var _ unroll.ExitSpendPolicy = (*channelExitPolicy)(nil)
-var _ unroll.ExitSpendPolicy = (*cooperativeCloseExitPolicy)(nil)
+var _ unroll.PreSignedExitSpendPolicy = (*channelExitPolicy)(nil)

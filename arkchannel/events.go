@@ -104,17 +104,18 @@ type ChannelClosed struct{}
 
 func (*ChannelClosed) eventSealed() {}
 
-// RequestCooperativeClose fixes the direct-settlement scripts and fee rate
-// before either lnd endpoint stops accepting new HTLCs.
+// RequestCooperativeClose fixes the replacement VTXO owners before either lnd
+// endpoint stops accepting new HTLCs.
 type RequestCooperativeClose struct {
 	Request CooperativeCloseRequest
 }
 
 func (*RequestCooperativeClose) eventSealed() {}
 
-// CooperativeCloseSigned records the fully signed direct spend of the
-// channel-policy VTXO and acknowledges which endpoint durably stored it. Both
-// acknowledgements are required before publication becomes replayable.
+// CooperativeCloseSigned records the hub-authorized 3-of-3 OOR close and
+// acknowledges which endpoint durably stored it. Both acknowledgements are
+// required before ordinary OOR submission becomes replayable. The historical
+// type name is retained for durable compatibility.
 type CooperativeCloseSigned struct {
 	Close CooperativeClose
 	Party Party
@@ -122,8 +123,8 @@ type CooperativeCloseSigned struct {
 
 func (*CooperativeCloseSigned) eventSealed() {}
 
-// CooperativeClosePublished records confirmation of the exact direct VTXO
-// settlement through the common unroller.
+// CooperativeClosePublished records finalization of the exact ordinary OOR
+// close. The historical type name is retained for durable compatibility.
 type CooperativeClosePublished struct {
 	TxID chainhash.Hash
 }
@@ -131,7 +132,7 @@ type CooperativeClosePublished struct {
 func (*CooperativeClosePublished) eventSealed() {}
 
 // CooperativeCloseFinalized records that one endpoint archived its lnd
-// channel after the direct settlement confirmed.
+// channel after the OOR close finalized.
 type CooperativeCloseFinalized struct {
 	Party Party
 }
@@ -227,8 +228,8 @@ type ForceCloseChannel struct {
 
 func (*ForceCloseChannel) actionSealed() {}
 
-// NegotiateCooperativeClose quiesces both lnd endpoints and collects the three
-// signatures for an immediate channel-policy VTXO spend.
+// NegotiateCooperativeClose quiesces both lnd endpoints and records the hub's
+// signature for an immediate 3-of-3 OOR checkpoint spend.
 type NegotiateCooperativeClose struct {
 	Terms   Terms
 	Source  VTXOBinding
@@ -238,8 +239,9 @@ type NegotiateCooperativeClose struct {
 
 func (*NegotiateCooperativeClose) actionSealed() {}
 
-// PublishCooperativeClose asks the unroller to publish ancestry followed by
-// the already signed direct VTXO settlement.
+// PublishCooperativeClose asks the client-owned ordinary OOR actor to settle
+// the authorized 3-of-3 close. The historical action name is retained for
+// durable compatibility.
 type PublishCooperativeClose struct {
 	Terms  Terms
 	Source VTXOBinding

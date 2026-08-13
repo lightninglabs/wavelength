@@ -73,6 +73,66 @@ func (a *arkChannelRecoveryArchive) ExportRecoveryPackage(ctx context.Context,
 	); err != nil {
 		return arkchannel.RecoveryPackage{}, err
 	}
+	claimSource := arkchannel.ReceiveClaimRecoverySource{
+		OutPoint: source.OutPoint, Amount: source.Amount,
+		PkScript: source.PkScript,
+	}
+	recovery, err := a.buildRecoveryPackage(
+		ctx, terms.VTXO.ArkOperatorKey, claimSource,
+	)
+	if err != nil {
+		return arkchannel.RecoveryPackage{}, err
+	}
+	desc, err := recoveryDescriptor(terms, source, recovery.Descriptor)
+	if err != nil {
+		return arkchannel.RecoveryPackage{}, err
+	}
+	if err := a.vtxos.SaveRecoveryOnlyVTXO(ctx, desc); err != nil {
+		return arkchannel.RecoveryPackage{}, fmt.Errorf("save Ark "+
+			"channel recovery source: %w", err)
+	}
+	if err := a.packages.UpsertBinding(
+		ctx, source.OutPoint, source.OORSessionID,
+		source.OutPoint.Index, db.OORPackageLinkKindCreatedOutput,
+	); err != nil {
+		return arkchannel.RecoveryPackage{}, fmt.Errorf("bind Ark "+
+			"channel recovery source: %w", err)
+	}
+	if err := a.verifySourceLineage(ctx, source.OutPoint); err != nil {
+		return arkchannel.RecoveryPackage{}, fmt.Errorf("verify "+
+			"exported Ark channel lineage: %w", err)
+	}
+
+	return recovery, nil
+}
+
+// ExportOORRecoveryPackage exports one exact sender-owned finalized OOR
+// package. The expected operator key binds its round ancestry to the daemon's
+// current Ark operator rather than to caller-provided channel terms.
+func (a *arkChannelRecoveryArchive) ExportOORRecoveryPackage(
+	ctx context.Context, source arkchannel.ReceiveClaimRecoverySource,
+	operatorKey *btcec.PublicKey) (arkchannel.RecoveryPackage, error) {
+
+	if err := source.Validate(); err != nil {
+		return arkchannel.RecoveryPackage{}, err
+	}
+	if operatorKey == nil {
+		return arkchannel.RecoveryPackage{}, fmt.Errorf("Ark " +
+			"operator key is required")
+	}
+	var serializedOperator [33]byte
+	copy(serializedOperator[:], operatorKey.SerializeCompressed())
+
+	return a.buildRecoveryPackage(ctx, serializedOperator, source)
+}
+
+// buildRecoveryPackage resolves one sender-owned finalized OOR package and
+// all locally known ancestors into endpoint-neutral recovery data.
+func (a *arkChannelRecoveryArchive) buildRecoveryPackage(ctx context.Context,
+	expectedOperator [33]byte,
+	source arkchannel.ReceiveClaimRecoverySource) (
+	arkchannel.RecoveryPackage, error) {
+
 	target, err := a.loadSourcePackage(ctx, source)
 	if err != nil {
 		return arkchannel.RecoveryPackage{}, err
@@ -94,7 +154,7 @@ func (a *arkChannelRecoveryArchive) ExportRecoveryPackage(ctx context.Context,
 		return arkchannel.RecoveryPackage{}, fmt.Errorf("Ark channel " +
 			"source root metadata incomplete")
 	}
-	if _, err := channelOperatorKey(terms, roots); err != nil {
+	if _, err := channelOperatorKey(expectedOperator, roots); err != nil {
 		return arkchannel.RecoveryPackage{}, err
 	}
 	// A sender persists the finalized package by session ID but does not
@@ -102,7 +162,7 @@ func (a *arkChannelRecoveryArchive) ExportRecoveryPackage(ctx context.Context,
 	// from that immutable package identity before installing the output as
 	// shared recovery state.
 	resolved, err := a.packages.ResolveUnrollPackagesBySessionID(
-		ctx, source.OutPoint, source.OORSessionID,
+		ctx, source.OutPoint, source.OutPoint.Hash,
 	)
 	if err != nil {
 		return arkchannel.RecoveryPackage{}, fmt.Errorf("resolve Ark "+
@@ -161,27 +221,8 @@ func (a *arkChannelRecoveryArchive) ExportRecoveryPackage(ctx context.Context,
 		}
 		recovery.Packages = append(recovery.Packages, entry)
 	}
-	if err := recovery.Validate(source); err != nil {
+	if err := recovery.ValidateReceiveClaim(source); err != nil {
 		return arkchannel.RecoveryPackage{}, err
-	}
-	desc, err := recoveryDescriptor(terms, source, recovery.Descriptor)
-	if err != nil {
-		return arkchannel.RecoveryPackage{}, err
-	}
-	if err := a.vtxos.SaveRecoveryOnlyVTXO(ctx, desc); err != nil {
-		return arkchannel.RecoveryPackage{}, fmt.Errorf("save Ark "+
-			"channel recovery source: %w", err)
-	}
-	if err := a.packages.UpsertBinding(
-		ctx, source.OutPoint, source.OORSessionID,
-		source.OutPoint.Index, db.OORPackageLinkKindCreatedOutput,
-	); err != nil {
-		return arkchannel.RecoveryPackage{}, fmt.Errorf("bind Ark "+
-			"channel recovery source: %w", err)
-	}
-	if err := a.verifySourceLineage(ctx, source.OutPoint); err != nil {
-		return arkchannel.RecoveryPackage{}, fmt.Errorf("verify "+
-			"exported Ark channel lineage: %w", err)
 	}
 
 	return recovery, nil
@@ -327,7 +368,7 @@ func validateRecoveryPackageRoots(ancestry []vtxo.Ancestry,
 	if len(unresolved) == 0 {
 		return nil
 	}
-	treeTxIDs := make(map[[32]byte]struct{})
+	treeOutputs := make(map[wire.OutPoint]struct{})
 	for i := range ancestry {
 		fragment := ancestry[i]
 		if fragment.TreePath == nil || fragment.TreePath.Root == nil {
@@ -340,11 +381,16 @@ func validateRecoveryPackageRoots(ancestry []vtxo.Ancestry,
 				return fmt.Errorf("build Ark channel ancestry "+
 					"%d: %w", i, err)
 			}
-			treeTxIDs[tx.TxHash()] = struct{}{}
+			txID := tx.TxHash()
+			for outputIndex := range tx.TxOut {
+				treeOutputs[wire.OutPoint{
+					Hash: txID, Index: uint32(outputIndex),
+				}] = struct{}{}
+			}
 		}
 	}
 	for _, outpoint := range unresolved {
-		if _, ok := treeTxIDs[outpoint.Hash]; !ok {
+		if _, ok := treeOutputs[outpoint]; !ok {
 			return fmt.Errorf("Ark channel OOR lineage is "+
 				"missing root %s", outpoint)
 		}
@@ -363,9 +409,10 @@ func (a *arkChannelRecoveryArchive) Stop() {
 // loadSourcePackage verifies that the finalized target package creates the
 // exact channel-policy output committed by the FSM.
 func (a *arkChannelRecoveryArchive) loadSourcePackage(ctx context.Context,
-	source arkchannel.VTXOBinding) (*db.OORPackageBundle, error) {
+	source arkchannel.ReceiveClaimRecoverySource) (*db.OORPackageBundle,
+	error) {
 
-	pkg, err := a.packages.GetPackage(ctx, source.OORSessionID)
+	pkg, err := a.packages.GetPackage(ctx, source.OutPoint.Hash)
 	if err != nil {
 		return nil, fmt.Errorf("load Ark channel OOR package: %w", err)
 	}
@@ -374,7 +421,7 @@ func (a *arkChannelRecoveryArchive) loadSourcePackage(ctx context.Context,
 			"transaction")
 	}
 	tx := pkg.ArkPSBT.UnsignedTx
-	if pkg.SessionID != source.OORSessionID ||
+	if pkg.SessionID != source.OutPoint.Hash ||
 		tx.TxHash() != source.OutPoint.Hash {
 		return nil, fmt.Errorf("Ark channel OOR package ID mismatch")
 	}
@@ -420,10 +467,10 @@ func (a *arkChannelRecoveryArchive) loadSourceRoots(ctx context.Context,
 
 // channelOperatorKey verifies that the channel and all roots share one Ark
 // operator under BIP-340 x-only key semantics.
-func channelOperatorKey(terms arkchannel.Terms,
+func channelOperatorKey(expectedOperator [33]byte,
 	roots []*vtxo.Descriptor) (*btcec.PublicKey, error) {
 
-	operatorKey, err := btcec.ParsePubKey(terms.VTXO.ArkOperatorKey[:])
+	operatorKey, err := btcec.ParsePubKey(expectedOperator[:])
 	if err != nil {
 		return nil, fmt.Errorf("parse Ark channel operator key: %w",
 			err)
@@ -570,9 +617,8 @@ func recoveryDescriptor(terms arkchannel.Terms, source arkchannel.VTXOBinding,
 		// The non-interactive fallback is the pre-signed client+hub
 		// channel path. Persist its delay before watches are armed so a
 		// confirmed ancestor cannot race proof assembly against a later
-		// mutable update. A fully signed cooperative settlement selects
-		// its immediate path through EnsureChannelSource before
-		// admission.
+		// mutable update. Cooperative close uses the ordinary OOR actor
+		// and never enters the unroller.
 		RelativeExpiry: terms.VTXO.ChannelDelay,
 		ChainDepth:     recovery.ChainDepth,
 		CreatedHeight:  recovery.CreatedHeight,
@@ -601,17 +647,12 @@ func validateArkChannelRecoveryRequest(id arkchannel.ID, terms arkchannel.Terms,
 func channelSourceCSVDelay(terms arkchannel.Terms,
 	kind unroll.ExitPolicyKind) (uint32, error) {
 
-	switch kind {
-	case unrollbridge.ExitPolicyKind:
-		return terms.VTXO.ChannelDelay, nil
-
-	case unrollbridge.CooperativeCloseExitPolicyKind:
-		return 0, nil
-
-	default:
+	if kind != unrollbridge.ExitPolicyKind {
 		return 0, fmt.Errorf("unsupported Ark channel exit policy %q",
 			kind)
 	}
+
+	return terms.VTXO.ChannelDelay, nil
 }
 
 var _ unrollbridge.SourcePreparer = (*arkChannelRecoveryArchive)(nil)

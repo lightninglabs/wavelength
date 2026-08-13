@@ -10,7 +10,6 @@ import (
 	"github.com/lightninglabs/wavelength/lnruntime"
 	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
 	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -20,10 +19,9 @@ import (
 // arkChannelControllerStub records local RPC calls and returns a configured
 // durable channel record.
 type arkChannelControllerStub struct {
-	record  arkchannel.Record
-	err     error
-	id      arkchannel.ID
-	feeRate chainfee.SatPerKWeight
+	record arkchannel.Record
+	err    error
+	id     arkchannel.ID
 }
 
 // PromoteVTXO is not used by close RPC tests.
@@ -93,11 +91,9 @@ func (s *arkChannelControllerStub) MaterializeAndForceClose(context.Context,
 
 // RequestCooperativeClose records the parsed public request.
 func (s *arkChannelControllerStub) RequestCooperativeClose(_ context.Context,
-	id arkchannel.ID, feeRate chainfee.SatPerKWeight) (arkchannel.Record,
-	error) {
+	id arkchannel.ID) (arkchannel.Record, error) {
 
 	s.id = id
-	s.feeRate = feeRate
 
 	return s.record, s.err
 }
@@ -125,8 +121,8 @@ func (*arkChannelControllerStub) Stop() error {
 	return nil
 }
 
-// TestArkChannelRPCRequestCooperativeClose verifies fixed-width ID parsing,
-// fee defaults, and controller dispatch on the local authenticated RPC surface.
+// TestArkChannelRPCRequestCooperativeClose verifies fixed-width ID parsing and
+// controller dispatch on the local authenticated RPC surface.
 func TestArkChannelRPCRequestCooperativeClose(t *testing.T) {
 	t.Parallel()
 
@@ -152,17 +148,8 @@ func TestArkChannelRPCRequestCooperativeClose(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, id, controller.id)
-	require.Equal(t, chainfee.FeePerKwFloor, controller.feeRate)
 	require.Equal(t, id[:], response.GetChannel().GetChannelId())
 	require.Equal(t, uint64(4), response.GetChannel().GetRevision())
-
-	_, err = rpcServer.RequestCooperativeClose(
-		t.Context(), &arkchannelrpc.RequestCooperativeCloseRequest{
-			ChannelId:       id[:],
-			FeeRateSatPerKw: uint64(chainfee.FeePerKwFloor - 1),
-		},
-	)
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
 
 	_, err = rpcServer.RequestCooperativeClose(
 		t.Context(), &arkchannelrpc.RequestCooperativeCloseRequest{

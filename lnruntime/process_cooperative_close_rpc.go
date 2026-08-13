@@ -4,17 +4,13 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"math"
 
-	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
 const (
@@ -68,7 +64,7 @@ func NewMailboxCooperativeClosePeer(client mailboxrpc.RPCClient) (
 
 // BeginCooperativeClose asks the hub to persist and quiesce its endpoint.
 func (p *MailboxCooperativeClosePeer) BeginCooperativeClose(ctx context.Context,
-	id arkchannel.ID, clientScript []byte, feeRate chainfee.SatPerKWeight) (
+	id arkchannel.ID, clientScript []byte) (
 	arkchannel.CooperativeCloseRequest, CleanChannelState,
 	*arkchannel.CooperativeClose, error) {
 
@@ -78,7 +74,6 @@ func (p *MailboxCooperativeClosePeer) BeginCooperativeClose(ctx context.Context,
 			ClientDeliveryScript: append(
 				[]byte(nil), clientScript...,
 			),
-			FeeRateSatPerKw: uint64(feeRate),
 		}, closeRPCOptions(id, "begin"),
 	)
 	if err != nil {
@@ -108,23 +103,18 @@ func (p *MailboxCooperativeClosePeer) BeginCooperativeClose(ctx context.Context,
 	return request, state, settlement, nil
 }
 
-// CompleteCooperativeClose submits the client-first signature to the hub.
+// CompleteCooperativeClose submits the exact OOR proposal to the hub.
 func (p *MailboxCooperativeClosePeer) CompleteCooperativeClose(
 	ctx context.Context, id arkchannel.ID,
-	proposal arkchannel.CooperativeCloseProposal,
-	clientSig input.Signature) (arkchannel.CooperativeClose, error) {
+	proposal arkchannel.CooperativeCloseProposal) (
+	arkchannel.CooperativeClose, error) {
 
-	if clientSig == nil {
-		return arkchannel.CooperativeClose{}, fmt.Errorf("client " +
-			"close signature is required")
-	}
 	resp, err := p.client.CompleteCooperativeClose(
 		ctx, &arkchannelrpc.CompleteCooperativeCloseRequest{
 			ChannelId: id[:],
 			Proposal: cooperativeCloseProposalToRPC(
 				proposal,
 			),
-			ClientSignature: clientSig.Serialize(),
 		}, closeRPCOptions(id, "complete"),
 	)
 	if err != nil {
@@ -134,7 +124,7 @@ func (p *MailboxCooperativeClosePeer) CompleteCooperativeClose(
 	return cooperativeCloseFromRPC(resp.GetSettlement())
 }
 
-// AcknowledgeCooperativeCloseSigned records the client's durable signature
+// AcknowledgeCooperativeCloseSigned records the client's durable authorization
 // barrier at the hub.
 func (p *MailboxCooperativeClosePeer) AcknowledgeCooperativeCloseSigned(
 	ctx context.Context, id arkchannel.ID,
@@ -151,8 +141,8 @@ func (p *MailboxCooperativeClosePeer) AcknowledgeCooperativeCloseSigned(
 	return err
 }
 
-// PublishCooperativeClose tells the hub which client-published settlement was
-// confirmed, then waits for hub-local archival.
+// PublishCooperativeClose tells the hub which client-finalized OOR session was
+// selected, then waits for hub-local archival.
 func (p *MailboxCooperativeClosePeer) PublishCooperativeClose(
 	ctx context.Context, id arkchannel.ID, txID chainhash.Hash) (
 	chainhash.Hash, error) {
@@ -237,12 +227,8 @@ func (s *CooperativeClosePeerRPCServer) BeginCooperativeClose(
 	if err != nil {
 		return nil, err
 	}
-	feeRate, err := rpcFeeRate(req.GetFeeRateSatPerKw())
-	if err != nil {
-		return nil, err
-	}
 	request, state, settlement, err := s.hub.BeginCooperativeClose(
-		ctx, id, req.GetClientDeliveryScript(), feeRate,
+		ctx, id, req.GetClientDeliveryScript(),
 	)
 	if err != nil {
 		return nil, err
@@ -258,7 +244,8 @@ func (s *CooperativeClosePeerRPCServer) BeginCooperativeClose(
 	return resp, nil
 }
 
-// CompleteCooperativeClose verifies and completes the client-first transcript.
+// CompleteCooperativeClose validates the proposal and returns the hub's 3-of-3
+// OOR authorization.
 func (s *CooperativeClosePeerRPCServer) CompleteCooperativeClose(
 	ctx context.Context,
 	req *arkchannelrpc.CompleteCooperativeCloseRequest) (
@@ -272,13 +259,8 @@ func (s *CooperativeClosePeerRPCServer) CompleteCooperativeClose(
 	if err != nil {
 		return nil, err
 	}
-	clientSig, err := schnorr.ParseSignature(req.GetClientSignature())
-	if err != nil {
-		return nil, fmt.Errorf("parse client cooperative close "+
-			"signature: %w", err)
-	}
 	settlement, err := s.hub.CompleteCooperativeClose(
-		ctx, id, proposal, clientSig,
+		ctx, id, proposal,
 	)
 	if err != nil {
 		return nil, err
@@ -336,7 +318,7 @@ func (s *CooperativeClosePeerRPCServer) AcknowledgeCooperativeClose(
 	}, nil
 }
 
-// PublishCooperativeClose waits for publication and hub-local archival.
+// PublishCooperativeClose waits for OOR finalization and hub-local archival.
 func (s *CooperativeClosePeerRPCServer) PublishCooperativeClose(
 	ctx context.Context,
 	req *arkchannelrpc.PublishCooperativeCloseRequest) (
@@ -463,20 +445,6 @@ func rpcChannelID(raw []byte) (arkchannel.ID, error) {
 	return id, nil
 }
 
-// rpcFeeRate validates a wire fee rate before converting its signed type.
-func rpcFeeRate(value uint64) (chainfee.SatPerKWeight, error) {
-	if value > math.MaxInt64 {
-		return 0, fmt.Errorf("cooperative close fee rate overflows")
-	}
-	feeRate := chainfee.SatPerKWeight(value)
-	if feeRate < chainfee.FeePerKwFloor {
-		return 0, fmt.Errorf("cooperative close fee rate is below " +
-			"floor")
-	}
-
-	return feeRate, nil
-}
-
 // rpcAmount rejects negative wire amounts before converting them.
 func rpcAmount(name string, value int64) (btcutil.Amount, error) {
 	if value < 0 {
@@ -508,7 +476,6 @@ func cooperativeCloseRequestToRPC(
 		HubDeliveryScript: append(
 			[]byte(nil), request.HubDeliveryScript...,
 		),
-		FeeRateSatPerKw: uint64(request.FeeRate),
 	}
 }
 
@@ -521,10 +488,6 @@ func cooperativeCloseRequestFromRPC(
 		return arkchannel.CooperativeCloseRequest{}, fmt.Errorf(
 			"cooperative close request is required")
 	}
-	feeRate, err := rpcFeeRate(request.GetFeeRateSatPerKw())
-	if err != nil {
-		return arkchannel.CooperativeCloseRequest{}, err
-	}
 	result := arkchannel.CooperativeCloseRequest{
 		Initiator: arkchannel.PartyClient,
 		ClientDeliveryScript: append(
@@ -533,7 +496,6 @@ func cooperativeCloseRequestFromRPC(
 		HubDeliveryScript: append(
 			[]byte(nil), request.GetHubDeliveryScript()...,
 		),
-		FeeRate: feeRate,
 	}
 	if err := result.Validate(); err != nil {
 		return arkchannel.CooperativeCloseRequest{}, err
@@ -594,7 +556,7 @@ func cleanChannelStateFromRPC(state *arkchannelrpc.CleanChannelState) (
 	}, nil
 }
 
-// cooperativeCloseProposalToRPC serializes the client-signed proposal.
+// cooperativeCloseProposalToRPC serializes the unsigned OOR checkpoint.
 func cooperativeCloseProposalToRPC(
 	proposal arkchannel.CooperativeCloseProposal) *arkchannelrpc.CooperativeCloseProposal { //nolint:ll
 
@@ -605,11 +567,10 @@ func cooperativeCloseProposalToRPC(
 		HubBalanceSat:    int64(proposal.HubBalance),
 		ClientOutputSat:  int64(proposal.ClientOutput),
 		HubOutputSat:     int64(proposal.HubOutput),
-		FeeSat:           int64(proposal.Fee),
 	}
 }
 
-// cooperativeCloseProposalFromRPC validates the client-signed proposal.
+// cooperativeCloseProposalFromRPC validates the unsigned OOR checkpoint.
 func cooperativeCloseProposalFromRPC(
 	proposal *arkchannelrpc.CooperativeCloseProposal) (
 	arkchannel.CooperativeCloseProposal, error) {
@@ -638,10 +599,6 @@ func cooperativeCloseProposalFromRPC(
 	if err != nil {
 		return arkchannel.CooperativeCloseProposal{}, err
 	}
-	fee, err := rpcAmount("fee", proposal.GetFeeSat())
-	if err != nil {
-		return arkchannel.CooperativeCloseProposal{}, err
-	}
 
 	return arkchannel.CooperativeCloseProposal{
 		Transaction: append(
@@ -652,11 +609,10 @@ func cooperativeCloseProposalFromRPC(
 		HubBalance:       hubBalance,
 		ClientOutput:     clientOutput,
 		HubOutput:        hubOutput,
-		Fee:              fee,
 	}, nil
 }
 
-// cooperativeCloseToRPC serializes the complete three-signature settlement.
+// cooperativeCloseToRPC serializes the hub-authorized OOR close.
 func cooperativeCloseToRPC(
 	settlement arkchannel.CooperativeClose) *arkchannelrpc.CooperativeClose { //nolint:ll
 

@@ -24,20 +24,21 @@ const fundingPeerService = "arkchannelrpc.ArkChannelFundingPeerService"
 const recoveryPackageInstalledEvent = arkchannelrpc.ChannelEventType_CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED //nolint:ll
 
 var fundingPeerMethods = map[string]struct{}{
-	"GetPeerInfo":             {},
-	"RegisterPromotion":       {},
-	"BindPreparedOOR":         {},
-	"SignBacking":             {},
-	"InstallBacking":          {},
-	"InstallRecoveryPackage":  {},
-	"FundingFinalized":        {},
-	"ChannelActive":           {},
-	"ApplyChannelEvent":       {},
-	"CreateInvoice":           {},
-	"PayInvoice":              {},
-	"PrepareOutgoingPayment":  {},
-	"CancelOutgoingPayment":   {},
-	"RegisterIncomingPayment": {},
+	"GetPeerInfo":                {},
+	"RegisterPromotion":          {},
+	"BindPreparedOOR":            {},
+	"SignBacking":                {},
+	"InstallBacking":             {},
+	"InstallRecoveryPackage":     {},
+	"ExportReceiveClaimRecovery": {},
+	"FundingFinalized":           {},
+	"ChannelActive":              {},
+	"ApplyChannelEvent":          {},
+	"CreateInvoice":              {},
+	"PayInvoice":                 {},
+	"PrepareOutgoingPayment":     {},
+	"CancelOutgoingPayment":      {},
+	"RegisterIncomingPayment":    {},
 }
 
 // OutgoingPaymentPreparation fixes the private source amount and active
@@ -61,6 +62,10 @@ type PaymentBridgeCoordinator interface {
 
 	RegisterIncomingPayment(context.Context, [33]byte, lntypes.Hash,
 		btcutil.Amount, uint64) error
+
+	ReceiveClaimRecovery(context.Context, [33]byte, lntypes.Hash, uint64) (
+		arkchannel.ReceiveClaimRecoverySource,
+		arkchannel.RecoveryPackage, error)
 }
 
 // FundingPeerInfo contains immutable hub policy needed to construct a client
@@ -107,6 +112,10 @@ type ProcessFundingPeer interface {
 
 	BindPreparedOOR(context.Context, arkchannel.ID,
 		arkchannel.VTXOBinding) (arkchannel.Record, error)
+
+	ExportReceiveClaimRecovery(context.Context, arkchannel.ID) (
+		arkchannel.ReceiveClaimRecoverySource,
+		arkchannel.RecoveryPackage, error)
 
 	CreateInvoice(context.Context, arkchannel.ID,
 		btcutil.Amount) (lntypes.Hash, error)
@@ -262,7 +271,7 @@ func (p *MailboxFundingPeer) InstallRecoveryPackage(ctx context.Context,
 	binding arkchannel.VTXOBinding,
 	recovery arkchannel.RecoveryPackage) error {
 
-	message, err := channelRecoveryToRPC(recovery)
+	message, err := ChannelRecoveryToRPC(recovery)
 	if err != nil {
 		return err
 	}
@@ -275,6 +284,39 @@ func (p *MailboxFundingPeer) InstallRecoveryPackage(ctx context.Context,
 	)
 
 	return err
+}
+
+// ExportReceiveClaimRecovery fetches the operator-derived vHTLC source and
+// finalized OOR lineage for one authenticated receive-claim channel.
+func (p *MailboxFundingPeer) ExportReceiveClaimRecovery(ctx context.Context,
+	id arkchannel.ID) (arkchannel.ReceiveClaimRecoverySource,
+	arkchannel.RecoveryPackage, error) {
+
+	response, err := p.client.ExportReceiveClaimRecovery(
+		ctx, &arkchannelrpc.ExportReceiveClaimRecoveryRequest{
+			ChannelId: id[:],
+		}, fundingRPCOptions(id, "export-receive-claim-recovery"),
+	)
+	if err != nil {
+		return arkchannel.ReceiveClaimRecoverySource{},
+			arkchannel.RecoveryPackage{}, err
+	}
+	source, err := ReceiveClaimRecoverySourceFromRPC(response.GetSource())
+	if err != nil {
+		return arkchannel.ReceiveClaimRecoverySource{},
+			arkchannel.RecoveryPackage{}, err
+	}
+	recovery, err := ChannelRecoveryFromRPC(
+		response.GetRecovery(), arkchannel.VTXOBinding{
+			OORSessionID: [32]byte(source.OutPoint.Hash),
+		},
+	)
+	if err != nil {
+		return arkchannel.ReceiveClaimRecoverySource{},
+			arkchannel.RecoveryPackage{}, err
+	}
+
+	return source, recovery, nil
 }
 
 // FundingFinalized queries the remote lnd durability barrier.
@@ -672,7 +714,7 @@ func (s *FundingPeerRPCServer) InstallRecoveryPackage(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	recovery, err := channelRecoveryFromRPC(
+	recovery, err := ChannelRecoveryFromRPC(
 		request.GetRecovery(), binding,
 	)
 	if err != nil {
@@ -685,6 +727,54 @@ func (s *FundingPeerRPCServer) InstallRecoveryPackage(ctx context.Context,
 	}
 
 	return &arkchannelrpc.InstallRecoveryPackageResponse{}, nil
+}
+
+// ExportReceiveClaimRecovery returns only the receive-claim source authorized
+// by swapd's durable payment record for this authenticated client.
+func (s *FundingPeerRPCServer) ExportReceiveClaimRecovery(ctx context.Context,
+	request *arkchannelrpc.ExportReceiveClaimRecoveryRequest) (
+	*arkchannelrpc.ExportReceiveClaimRecoveryResponse, error) {
+
+	_, record, err := s.channel(ctx, request.GetChannelId())
+	if err != nil {
+		return nil, err
+	}
+	terms := record.Snapshot.Terms
+	if terms.Kind != arkchannel.KindReceiveClaim ||
+		terms.Funder != arkchannel.PartyClient {
+		return nil, fmt.Errorf("channel is not a client-funded " +
+			"receive claim")
+	}
+	if s.cfg.Bridge == nil {
+		return nil, fmt.Errorf("channel payment bridge is not " +
+			"configured")
+	}
+	source, recovery, err := s.cfg.Bridge.ReceiveClaimRecovery(
+		ctx, s.cfg.RemoteNode, lntypes.Hash(terms.PaymentHash),
+		terms.ReservedSCID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if source.Amount <= terms.Capacity {
+		return nil, fmt.Errorf("receive-claim source has no channel " +
+			"backing reserve")
+	}
+	if err := recovery.ValidateReceiveClaim(source); err != nil {
+		return nil, err
+	}
+	recoveryMessage, err := ChannelRecoveryToRPC(recovery)
+	if err != nil {
+		return nil, err
+	}
+	sourceMessage, err := ReceiveClaimRecoverySourceToRPC(source)
+	if err != nil {
+		return nil, err
+	}
+
+	return &arkchannelrpc.ExportReceiveClaimRecoveryResponse{
+		Source: sourceMessage, Recovery: recoveryMessage,
+	}, nil
 }
 
 // FundingFinalized reports the remote native lnd durability barrier.
@@ -1325,8 +1415,8 @@ func channelEventFromRPC(request *arkchannelrpc.ApplyChannelEventRequest) (
 	}
 }
 
-// channelRecoveryToRPC serializes the endpoint-neutral recovery package.
-func channelRecoveryToRPC(recovery arkchannel.RecoveryPackage) (
+// ChannelRecoveryToRPC serializes the endpoint-neutral recovery package.
+func ChannelRecoveryToRPC(recovery arkchannel.RecoveryPackage) (
 	*arkchannelrpc.ChannelRecoveryPackage, error) {
 
 	if recovery.Descriptor.ChainDepth > math.MaxInt32 {
@@ -1377,9 +1467,9 @@ func channelRecoveryToRPC(recovery arkchannel.RecoveryPackage) (
 	return message, nil
 }
 
-// channelRecoveryFromRPC parses one recovery package and validates its target
+// ChannelRecoveryFromRPC parses one recovery package and validates its target
 // binding before storage sees any artifact.
-func channelRecoveryFromRPC(message *arkchannelrpc.ChannelRecoveryPackage,
+func ChannelRecoveryFromRPC(message *arkchannelrpc.ChannelRecoveryPackage,
 	source arkchannel.VTXOBinding) (arkchannel.RecoveryPackage, error) {
 
 	if message == nil || message.GetSourceDescriptor() == nil {
@@ -1465,6 +1555,51 @@ func channelRecoveryFromRPC(message *arkchannelrpc.ChannelRecoveryPackage,
 	}
 
 	return recovery, nil
+}
+
+// ReceiveClaimRecoverySourceToRPC serializes one swap-authorized vHTLC source.
+func ReceiveClaimRecoverySourceToRPC(
+	source arkchannel.ReceiveClaimRecoverySource) (
+	*arkchannelrpc.ReceiveClaimRecoverySource, error) {
+
+	if err := source.Validate(); err != nil {
+		return nil, err
+	}
+
+	return &arkchannelrpc.ReceiveClaimRecoverySource{
+		Txid:        source.OutPoint.Hash[:],
+		OutputIndex: source.OutPoint.Index, AmountSat: int64(
+			source.Amount,
+		),
+		PkScript: append([]byte(nil), source.PkScript...),
+	}, nil
+}
+
+// ReceiveClaimRecoverySourceFromRPC parses one swap-authorized vHTLC source.
+func ReceiveClaimRecoverySourceFromRPC(
+	message *arkchannelrpc.ReceiveClaimRecoverySource) (
+	arkchannel.ReceiveClaimRecoverySource, error) {
+
+	if message == nil {
+		return arkchannel.ReceiveClaimRecoverySource{}, fmt.Errorf(
+			"receive-claim recovery source is required")
+	}
+	txID, err := rpcHash("receive-claim recovery txid", message.GetTxid())
+	if err != nil {
+		return arkchannel.ReceiveClaimRecoverySource{}, err
+	}
+	source := arkchannel.ReceiveClaimRecoverySource{
+		OutPoint: wire.OutPoint{
+			Hash: txID, Index: message.GetOutputIndex(),
+		},
+		Amount:   btcutil.Amount(message.GetAmountSat()),
+		PkScript: append([]byte(nil), message.GetPkScript()...),
+	}
+	if err := source.Validate(); err != nil {
+		return arkchannel.ReceiveClaimRecoverySource{}, err
+	}
+
+	return source, nil
 }
 
 // recordSummaryFromRPC validates the immutable identity in a peer response.

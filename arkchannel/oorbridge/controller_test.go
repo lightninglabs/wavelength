@@ -8,15 +8,18 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
@@ -27,6 +30,7 @@ type controllerTestRef struct {
 	state          oor.SessionState
 	startSessionID oor.SessionID
 	startRequest   *oor.StartTransferRequest
+	driveEvent     oor.Event
 }
 
 // controllerTestSink records the terminal channel event applied by the bridge.
@@ -74,6 +78,13 @@ func (r *controllerTestRef) Ask(_ context.Context,
 			SessionID: r.startSessionID,
 		}
 
+	case *oor.DriveEventRequest:
+		r.driveEvent = message.Event
+		if _, ok := message.Event.(*oor.CommitPreparedEvent); ok {
+			r.state = &oor.Completed{}
+		}
+		response = &oor.DriveEventResponse{}
+
 	default:
 		response = &oor.DriveEventResponse{}
 	}
@@ -87,7 +98,7 @@ func (r *controllerTestRef) Ask(_ context.Context,
 func TestPrepareChannelStopsBeforeOORSignatures(t *testing.T) {
 	t.Parallel()
 
-	terms, expected, prepared := preparedChannelBinding(t)
+	terms, expected, prepared, _, _ := preparedChannelBinding(t)
 	operatorKey, err := btcec.ParsePubKey(terms.VTXO.ArkOperatorKey[:])
 	require.NoError(t, err)
 	ref := &controllerTestRef{
@@ -123,7 +134,7 @@ func TestPrepareChannelStopsBeforeOORSignatures(t *testing.T) {
 func TestValidatePreparedOORBindsExactOutput(t *testing.T) {
 	t.Parallel()
 
-	terms, binding, prepared := preparedChannelBinding(t)
+	terms, binding, prepared, _, _ := preparedChannelBinding(t)
 	controller, err := NewWithRef(&controllerTestRef{state: prepared})
 	require.NoError(t, err)
 	require.NoError(
@@ -159,7 +170,7 @@ func TestValidatePreparedOORBindsExactOutput(t *testing.T) {
 func TestValidatePreparedOORRejectsAdvancedSession(t *testing.T) {
 	t.Parallel()
 
-	terms, binding, _ := preparedChannelBinding(t)
+	terms, binding, _, _, _ := preparedChannelBinding(t)
 	controller, err := NewWithRef(&controllerTestRef{
 		state: &oor.AwaitingArkSignatures{},
 	})
@@ -198,10 +209,78 @@ func TestWaitForTerminalAcceptsIncomingSelfTransfer(t *testing.T) {
 	require.Equal(t, sessionID, finalized.SessionID)
 }
 
+// TestSettleCooperativeClosePreparesBeforeSigning proves the bridge verifies
+// the exact hub-authorized checkpoint while the OOR actor is still Prepared,
+// then explicitly releases the ordinary operator-first signing flow.
+func TestSettleCooperativeClosePreparesBeforeSigning(t *testing.T) {
+	t.Parallel()
+
+	terms, source, _, clientKey, hubKey := preparedChannelBinding(t)
+	request := arkchannel.CooperativeCloseRequest{
+		Initiator:            arkchannel.PartyClient,
+		ClientDeliveryScript: clientKey.PubKey().SerializeCompressed(),
+		HubDeliveryScript:    hubKey.PubKey().SerializeCompressed(),
+	}
+	// A newly opened channel is still at commitment height zero. Its clean
+	// genesis state must be eligible for an in-Ark cooperative spend.
+	template, err := arkchannel.NewCooperativeCloseTemplate(
+		terms, source, request, 60_000, 40_000, 0,
+	)
+	require.NoError(t, err)
+	desc, err := template.SignDescriptor(
+		terms, arkchannel.PartyHub, keychain.KeyDescriptor{
+			PubKey: hubKey.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	checkpoint, err := psbtutil.Parse(template.Proposal().Transaction)
+	require.NoError(t, err)
+	hubSig, err := input.NewMockSigner(
+		[]*btcec.PrivateKey{hubKey}, nil,
+	).SignOutputRaw(checkpoint.UnsignedTx, desc)
+	require.NoError(t, err)
+	settlement, err := template.Complete(terms, source, request, hubSig)
+	require.NoError(t, err)
+
+	ref := &controllerTestRef{
+		state: &oor.Prepared{
+			CheckpointPSBTs: []*psbt.Packet{
+				checkpoint,
+			},
+		},
+		startSessionID: oor.SessionID(settlement.TxID),
+	}
+	controller, err := NewWithRef(ref)
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		controller.SettleCooperativeClose(
+			t.Context(), terms.ID, terms, source, request,
+			settlement, keychain.KeyDescriptor{
+				PubKey: clientKey.PubKey(),
+			},
+		),
+	)
+	require.NotNil(t, ref.startRequest)
+	require.True(t, ref.startRequest.PrepareOnly)
+	require.Equal(
+		t, "ark-channel-close:"+hex.EncodeToString(terms.ID[:]),
+		ref.startRequest.IdempotencyKey,
+	)
+	require.Len(t, ref.startRequest.Inputs, 1)
+	require.Len(t, ref.startRequest.Inputs[0].ExternalSignatures, 1)
+	require.Equal(
+		t, settlement.Transaction,
+		ref.startRequest.Inputs[0].ExternalSignatures[0].Signature,
+	)
+	require.IsType(t, &oor.CommitPreparedEvent{}, ref.driveEvent)
+}
+
 // preparedChannelBinding creates a real deterministic OOR package containing
 // one channel-policy recipient.
 func preparedChannelBinding(t *testing.T) (arkchannel.Terms,
-	arkchannel.VTXOBinding, *oor.Prepared) {
+	arkchannel.VTXOBinding, *oor.Prepared, *btcec.PrivateKey,
+	*btcec.PrivateKey) {
 
 	t.Helper()
 	keys := make([]*btcec.PrivateKey, 8)
@@ -319,7 +398,7 @@ func preparedChannelBinding(t *testing.T) (arkchannel.Terms,
 		ArkTransaction: arkTransaction.Bytes(),
 		PolicyTemplate: policyTemplate,
 		PkScript:       channelScript,
-	}, prepared
+	}, prepared, keys[2], keys[3]
 }
 
 var _ actor.ActorRef[

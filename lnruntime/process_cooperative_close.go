@@ -9,8 +9,6 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
 // CooperativeCloseDeliverySource returns a wallet-owned settlement script.
@@ -78,13 +76,13 @@ func (l *cooperativeCloseOperationLock) lock(id arkchannel.ID) func() {
 // the client. The hub never calls back into the client's mailbox while a
 // request is in flight.
 type ProcessCooperativeClosePeer interface {
-	BeginCooperativeClose(context.Context, arkchannel.ID, []byte,
-		chainfee.SatPerKWeight) (arkchannel.CooperativeCloseRequest,
-		CleanChannelState, *arkchannel.CooperativeClose, error)
+	BeginCooperativeClose(context.Context, arkchannel.ID, []byte) (
+		arkchannel.CooperativeCloseRequest, CleanChannelState,
+		*arkchannel.CooperativeClose, error)
 
 	CompleteCooperativeClose(context.Context, arkchannel.ID,
-		arkchannel.CooperativeCloseProposal,
-		input.Signature) (arkchannel.CooperativeClose, error)
+		arkchannel.CooperativeCloseProposal) (
+		arkchannel.CooperativeClose, error)
 
 	AcknowledgeCooperativeCloseSigned(context.Context, arkchannel.ID,
 		arkchannel.CooperativeClose) error
@@ -98,8 +96,8 @@ type ProcessCooperativeClosePeer interface {
 	AbortCooperativeClose(context.Context, arkchannel.ID) error
 }
 
-// ClientCooperativeCloseProcess drives a direct close entirely from the
-// client. Its peer calls are strictly client-to-hub, which avoids nested
+// ClientCooperativeCloseProcess drives an in-Ark OOR close from the client.
+// Its peer calls are strictly client-to-hub, which avoids nested
 // request deadlocks on a per-client mailbox ingress loop.
 type ClientCooperativeCloseProcess struct {
 	local     *NativeCooperativeCloseEndpoint
@@ -164,8 +162,7 @@ func (p *ClientCooperativeCloseProcess) BindChannelEventSink(
 // RequestCooperativeClose allocates the client's payout, lets the hub fix its
 // own payout, then persists and executes the local durable request.
 func (p *ClientCooperativeCloseProcess) RequestCooperativeClose(
-	ctx context.Context, id arkchannel.ID, feeRate chainfee.SatPerKWeight) (
-	arkchannel.Record, error) {
+	ctx context.Context, id arkchannel.ID) (arkchannel.Record, error) {
 
 	unlock := p.locks.lock(id)
 	defer unlock()
@@ -190,35 +187,23 @@ func (p *ClientCooperativeCloseProcess) RequestCooperativeClose(
 		return record, nil
 	}
 
-	var request arkchannel.CooperativeCloseRequest
 	if record.Snapshot.CooperativeCloseRequest != nil {
-		request = record.Snapshot.CooperativeCloseRequest.Clone()
-		if request.FeeRate != feeRate {
-			return arkchannel.Record{}, fmt.Errorf("channel " +
-				"already has a cooperative close at another " +
-				"fee rate")
-		}
-
 		return service.ResumeChannelAction(ctx, id)
-	} else {
-		clientScript, err := p.delivery.CooperativeCloseDelivery(
-			ctx, id,
-		)
-		if err != nil {
-			return arkchannel.Record{}, fmt.Errorf("allocate "+
-				"client close delivery: %w", err)
-		}
-		request, _, _, err = p.peer.BeginCooperativeClose(
-			ctx, id, clientScript, feeRate,
-		)
-		if err != nil {
-			return arkchannel.Record{}, err
-		}
-		if !bytes.Equal(request.ClientDeliveryScript, clientScript) ||
-			request.FeeRate != feeRate {
-			return arkchannel.Record{}, fmt.Errorf("hub changed " +
-				"client cooperative close terms")
-		}
+	}
+	clientScript, err := p.delivery.CooperativeCloseDelivery(ctx, id)
+	if err != nil {
+		return arkchannel.Record{}, fmt.Errorf("allocate client close "+
+			"delivery: %w", err)
+	}
+	request, _, _, err := p.peer.BeginCooperativeClose(
+		ctx, id, clientScript,
+	)
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+	if !bytes.Equal(request.ClientDeliveryScript, clientScript) {
+		return arkchannel.Record{}, fmt.Errorf("hub changed client " +
+			"cooperative close terms")
 	}
 
 	return service.RequestCooperativeClose(ctx, id, request)
@@ -237,7 +222,7 @@ func (p *ClientCooperativeCloseProcess) GetChannel(ctx context.Context,
 }
 
 // NegotiateCooperativeClose quiesces both endpoints, reconciles their native
-// lnd state, and completes the two-database signed-artifact barrier.
+// lnd state, and completes the two-database hub-authorization barrier.
 func (p *ClientCooperativeCloseProcess) NegotiateCooperativeClose(
 	ctx context.Context, id arkchannel.ID, terms arkchannel.Terms,
 	source arkchannel.VTXOBinding, backing arkchannel.Backing,
@@ -253,7 +238,7 @@ func (p *ClientCooperativeCloseProcess) NegotiateCooperativeClose(
 	}
 	remoteRequest, remoteState, remoteSettlement, err :=
 		p.peer.BeginCooperativeClose(
-			ctx, id, request.ClientDeliveryScript, request.FeeRate,
+			ctx, id, request.ClientDeliveryScript,
 		)
 	if err != nil {
 		return err
@@ -288,15 +273,8 @@ func (p *ClientCooperativeCloseProcess) NegotiateCooperativeClose(
 			return p.abort(ctx, id, backing, err)
 		}
 		proposal := template.Proposal()
-		clientSig, err := p.local.SignCooperativeClose(
-			ctx, id, terms, source, backing, request, proposal,
-		)
-		if err != nil {
-			return p.abort(ctx, id, backing, err)
-		}
-
 		completed, err := p.peer.CompleteCooperativeClose(
-			ctx, id, proposal, clientSig,
+			ctx, id, proposal,
 		)
 		if err != nil {
 
@@ -339,7 +317,7 @@ func (p *ClientCooperativeCloseProcess) NegotiateCooperativeClose(
 }
 
 // PublishCooperativeClose resumes a client that crashed after both databases
-// stored the signed settlement but before hub publication completed.
+// stored the hub authorization but before ordinary OOR settlement completed.
 func (p *ClientCooperativeCloseProcess) PublishCooperativeClose(
 	ctx context.Context, id arkchannel.ID, terms arkchannel.Terms,
 	source arkchannel.VTXOBinding,
@@ -365,7 +343,7 @@ func (p *ClientCooperativeCloseProcess) PublishCooperativeClose(
 	)
 }
 
-// FinalizeCooperativeClose resumes local archival after publication was
+// FinalizeCooperativeClose resumes local archival after OOR finalization was
 // already recorded by the durable channel FSM.
 func (p *ClientCooperativeCloseProcess) FinalizeCooperativeClose(
 	ctx context.Context, id arkchannel.ID, terms arkchannel.Terms,
@@ -378,8 +356,8 @@ func (p *ClientCooperativeCloseProcess) FinalizeCooperativeClose(
 	)
 }
 
-// publishAndFinalize materializes and publishes from the client only after
-// both durable signed barriers exist, then asks the hub to archive its copy.
+// publishAndFinalize starts the ordinary OOR actor only after both durable
+// authorization barriers exist, then asks the hub to archive its copy.
 func (p *ClientCooperativeCloseProcess) publishAndFinalize(ctx context.Context,
 	id arkchannel.ID, terms arkchannel.Terms, backing arkchannel.Backing,
 	source arkchannel.VTXOBinding,
@@ -387,7 +365,7 @@ func (p *ClientCooperativeCloseProcess) publishAndFinalize(ctx context.Context,
 	settlement arkchannel.CooperativeClose) error {
 
 	if err := p.publisher.SettleCooperativeClose(
-		ctx, id, terms, source, settlement,
+		ctx, id, terms, source, request, settlement,
 	); err != nil {
 		return err
 	}
@@ -409,7 +387,7 @@ func (p *ClientCooperativeCloseProcess) publishAndFinalize(ctx context.Context,
 		return err
 	}
 	if txID != settlement.TxID {
-		return fmt.Errorf("hub published another cooperative close")
+		return fmt.Errorf("hub observed another cooperative close")
 	}
 	if _, err := service.RecordChannelEvent(
 		ctx, id, &arkchannel.CooperativeCloseFinalized{
@@ -452,7 +430,7 @@ func (p *ClientCooperativeCloseProcess) finalizeClient(ctx context.Context,
 	return p.peer.AcknowledgeCooperativeCloseFinalized(ctx, id)
 }
 
-// abort restores both quiesced links while no fully signed settlement exists.
+// abort restores both quiesced links before ordinary OOR settlement starts.
 func (p *ClientCooperativeCloseProcess) abort(ctx context.Context,
 	id arkchannel.ID, backing arkchannel.Backing, cause error) error {
 
@@ -486,8 +464,8 @@ func (p *ClientCooperativeCloseProcess) stateService() (
 // never calls the client while serving a client request.
 type HubCooperativeCloseProcess struct {
 	local    *NativeCooperativeCloseEndpoint
-	operator CooperativeCloseOperatorSigner
 	delivery CooperativeCloseDeliverySource
+	observer CooperativeCloseObserver
 
 	mu      sync.RWMutex
 	service CooperativeCloseStateSink
@@ -496,24 +474,25 @@ type HubCooperativeCloseProcess struct {
 
 // NewHubCooperativeCloseProcess constructs the hub-owned close process.
 func NewHubCooperativeCloseProcess(local *NativeCooperativeCloseEndpoint,
-	operator CooperativeCloseOperatorSigner,
-	delivery CooperativeCloseDeliverySource) (*HubCooperativeCloseProcess,
+	delivery CooperativeCloseDeliverySource,
+	observer CooperativeCloseObserver) (*HubCooperativeCloseProcess,
 	error) {
 
 	if local == nil || local.party != arkchannel.PartyHub {
 		return nil, fmt.Errorf("hub cooperative close endpoint is " +
 			"required")
 	}
-	if operator == nil {
-		return nil, fmt.Errorf("Ark operator close signer is required")
-	}
 	if delivery == nil {
 		return nil, fmt.Errorf("hub cooperative close delivery " +
 			"source is required")
 	}
+	if observer == nil {
+		return nil, fmt.Errorf("hub cooperative close observer is " +
+			"required")
+	}
 
 	return &HubCooperativeCloseProcess{
-		local: local, operator: operator, delivery: delivery,
+		local: local, delivery: delivery, observer: observer,
 	}, nil
 }
 
@@ -540,7 +519,7 @@ func (p *HubCooperativeCloseProcess) BindChannelEventSink(
 // BeginCooperativeClose allocates the hub payout exactly once, persists the
 // request, and returns the hub's authoritative clean channel state.
 func (p *HubCooperativeCloseProcess) BeginCooperativeClose(ctx context.Context,
-	id arkchannel.ID, clientScript []byte, feeRate chainfee.SatPerKWeight) (
+	id arkchannel.ID, clientScript []byte) (
 	arkchannel.CooperativeCloseRequest, CleanChannelState,
 	*arkchannel.CooperativeClose, error) {
 
@@ -560,8 +539,7 @@ func (p *HubCooperativeCloseProcess) BeginCooperativeClose(ctx context.Context,
 	var request arkchannel.CooperativeCloseRequest
 	if record.Snapshot.CooperativeCloseRequest != nil {
 		request = record.Snapshot.CooperativeCloseRequest.Clone()
-		if !bytes.Equal(request.ClientDeliveryScript, clientScript) ||
-			request.FeeRate != feeRate {
+		if !bytes.Equal(request.ClientDeliveryScript, clientScript) {
 			return arkchannel.CooperativeCloseRequest{},
 				CleanChannelState{}, nil, fmt.Errorf(
 					"channel already has another " +
@@ -580,7 +558,6 @@ func (p *HubCooperativeCloseProcess) BeginCooperativeClose(ctx context.Context,
 				[]byte(nil), clientScript...,
 			),
 			HubDeliveryScript: append([]byte(nil), hubScript...),
-			FeeRate:           feeRate,
 		}
 		if _, err := service.RequestCooperativeClose(
 			ctx, id, request,
@@ -619,8 +596,8 @@ func (p *HubCooperativeCloseProcess) BeginCooperativeClose(ctx context.Context,
 // CompleteCooperativeClose assembles and stores the three-signature spend.
 func (p *HubCooperativeCloseProcess) CompleteCooperativeClose(
 	ctx context.Context, id arkchannel.ID,
-	proposal arkchannel.CooperativeCloseProposal,
-	clientSig input.Signature) (arkchannel.CooperativeClose, error) {
+	proposal arkchannel.CooperativeCloseProposal) (
+	arkchannel.CooperativeClose, error) {
 
 	unlock := p.locks.lock(id)
 	defer unlock()
@@ -640,14 +617,14 @@ func (p *HubCooperativeCloseProcess) CompleteCooperativeClose(
 	}
 
 	return completeCooperativeClose(
-		ctx, p.local, p.operator, id, record.Snapshot.Terms,
+		ctx, p.local, id, record.Snapshot.Terms,
 		*record.Snapshot.Source, *record.Snapshot.Backing,
-		*record.Snapshot.CooperativeCloseRequest, proposal, clientSig,
+		*record.Snapshot.CooperativeCloseRequest, proposal,
 	)
 }
 
 // AcknowledgeCooperativeCloseSigned records that the client durably stored the
-// same fully signed transaction.
+// same hub-authorized OOR close.
 func (p *HubCooperativeCloseProcess) AcknowledgeCooperativeCloseSigned(
 	ctx context.Context, id arkchannel.ID,
 	settlement arkchannel.CooperativeClose) error {
@@ -668,8 +645,8 @@ func (p *HubCooperativeCloseProcess) AcknowledgeCooperativeCloseSigned(
 	return err
 }
 
-// PublishCooperativeClose accepts the client-confirmed settlement transaction
-// and archives the hub's native channel before replying.
+// PublishCooperativeClose accepts the client-confirmed OOR session and archives
+// the hub's native channel before replying.
 func (p *HubCooperativeCloseProcess) PublishCooperativeClose(
 	ctx context.Context, id arkchannel.ID, txID chainhash.Hash) (
 	chainhash.Hash, error) {
@@ -690,8 +667,17 @@ func (p *HubCooperativeCloseProcess) PublishCooperativeClose(
 			"cooperative close")
 	}
 	if record.Snapshot.CooperativeClose.TxID != txID {
-		return chainhash.Hash{}, fmt.Errorf("client published " +
+		return chainhash.Hash{}, fmt.Errorf("client finalized " +
 			"another cooperative close")
+	}
+	if record.Snapshot.CooperativeClose.Proposal.HubOutput > 0 {
+		if err := p.observer.WaitForCooperativeClose(
+			ctx, txID,
+			record.Snapshot.CooperativeClose.Proposal.HubOutput,
+		); err != nil {
+			return chainhash.Hash{}, fmt.Errorf("observe "+
+				"cooperative close OOR: %w", err)
+		}
 	}
 	if record.Snapshot.Phase == arkchannel.PhaseCoopCloseSigned {
 		if _, err := service.RecordChannelEvent(
@@ -818,46 +804,19 @@ func (p *HubCooperativeCloseProcess) stateService() (CooperativeCloseStateSink,
 }
 
 // HubCooperativeCloseExecutor adapts the process to NativeExecutor without
-// overloading the peer-facing PublishCooperativeClose method name.
+// overloading the legacy peer-facing PublishCooperativeClose method name.
 type HubCooperativeCloseExecutor struct {
 	*HubCooperativeCloseProcess
-	Publisher CooperativeClosePublisher
 }
 
-// PublishCooperativeClose normally defers submission to the client. Once a
-// watched source ancestor is spent, the hub independently publishes the same
-// fully signed settlement so client availability is no longer required.
-func (e *HubCooperativeCloseExecutor) PublishCooperativeClose(
-	ctx context.Context, id arkchannel.ID, terms arkchannel.Terms,
-	source arkchannel.VTXOBinding,
-	settlement arkchannel.CooperativeClose) error {
+// PublishCooperativeClose defers OOR submission to the client, which owns the
+// source policy key and ordinary durable OOR actor. The hub waits for the
+// client's finalized-session notification and verifies it independently.
+func (e *HubCooperativeCloseExecutor) PublishCooperativeClose(_ context.Context,
+	_ arkchannel.ID, _ arkchannel.Terms, _ arkchannel.VTXOBinding,
+	_ arkchannel.CooperativeClose) error {
 
-	service, err := e.stateService()
-	if err != nil {
-		return err
-	}
-	record, err := service.GetChannel(ctx, id)
-	if err != nil {
-		return err
-	}
-	if record.Snapshot.SourceConflict == nil {
-		return nil
-	}
-	if e.Publisher == nil {
-		return fmt.Errorf("hub cooperative close publisher is required")
-	}
-	if err := e.Publisher.SettleCooperativeClose(
-		ctx, id, terms, source, settlement,
-	); err != nil {
-		return err
-	}
-	_, err = service.Apply(
-		ctx, id, &arkchannel.CooperativeClosePublished{
-			TxID: settlement.TxID,
-		},
-	)
-
-	return err
+	return nil
 }
 
 var _ arkchannel.ChannelCooperativeCloser = (*ClientCooperativeCloseProcess)(nil) //nolint:ll
@@ -868,7 +827,7 @@ var _ arkchannel.ChannelCooperativeCloser = (*HubCooperativeCloseExecutor)(nil)
 func processCooperativeCloseRequestsEqual(
 	a, b arkchannel.CooperativeCloseRequest) bool {
 
-	return a.Initiator == b.Initiator && a.FeeRate == b.FeeRate &&
+	return a.Initiator == b.Initiator &&
 		bytes.Equal(a.ClientDeliveryScript, b.ClientDeliveryScript) &&
 		bytes.Equal(a.HubDeliveryScript, b.HubDeliveryScript)
 }

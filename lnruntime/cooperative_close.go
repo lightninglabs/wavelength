@@ -7,8 +7,10 @@ import (
 	"sync"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -31,39 +33,52 @@ type CooperativeCloseStateSink interface {
 	GetChannel(context.Context, arkchannel.ID) (arkchannel.Record, error)
 }
 
-// CooperativeCloseOperatorSigner supplies the Ark operator's signature after
-// independently validating the exact direct settlement proposal.
-type CooperativeCloseOperatorSigner interface {
-	SignOperatorCooperativeClose(context.Context, arkchannel.ID,
-		arkchannel.Terms, arkchannel.VTXOBinding,
-		arkchannel.CooperativeCloseRequest,
-		arkchannel.CooperativeCloseProposal) (input.Signature, error)
-}
-
-// CooperativeClosePublisher materializes Ark ancestry and confirms the exact
-// direct VTXO settlement through the common unroller.
+// CooperativeClosePublisher executes the exact 3-of-3 OOR transfer and waits
+// until the ordinary OOR actor durably finalizes it.
 type CooperativeClosePublisher interface {
 	SettleCooperativeClose(context.Context, arkchannel.ID, arkchannel.Terms,
-		arkchannel.VTXOBinding, arkchannel.CooperativeClose) error
+		arkchannel.VTXOBinding, arkchannel.CooperativeCloseRequest,
+		arkchannel.CooperativeClose) error
 }
 
-// CooperativeClosePublisherFunc adapts a process-owned publication function
+// CooperativeClosePublisherFunc adapts a process-owned OOR settlement function
 // to the cooperative close protocol.
 type CooperativeClosePublisherFunc func(context.Context, arkchannel.ID,
 	arkchannel.Terms, arkchannel.VTXOBinding,
-	arkchannel.CooperativeClose) error
+	arkchannel.CooperativeCloseRequest, arkchannel.CooperativeClose) error
 
-// SettleCooperativeClose invokes the wrapped publication function.
+// SettleCooperativeClose invokes the wrapped OOR settlement function.
 func (f CooperativeClosePublisherFunc) SettleCooperativeClose(
 	ctx context.Context, id arkchannel.ID, terms arkchannel.Terms,
 	source arkchannel.VTXOBinding,
+	request arkchannel.CooperativeCloseRequest,
 	settlement arkchannel.CooperativeClose) error {
 
-	return f(ctx, id, terms, source, settlement)
+	return f(ctx, id, terms, source, request, settlement)
 }
 
-// CooperativeCloseDeliveryValidator proves one endpoint owns the payout script
-// assigned to its role before it signs or disables channel traffic.
+// CooperativeCloseObserver verifies that the hub's ordinary Ark account has
+// durably accepted the expected incoming OOR transfer before channel archival.
+type CooperativeCloseObserver interface {
+	WaitForCooperativeClose(context.Context, chainhash.Hash,
+		btcutil.Amount) error
+}
+
+// CooperativeCloseObserverFunc adapts a daemon session lookup to the close
+// process.
+type CooperativeCloseObserverFunc func(context.Context, chainhash.Hash,
+	btcutil.Amount) error
+
+// WaitForCooperativeClose invokes the wrapped session observer.
+func (f CooperativeCloseObserverFunc) WaitForCooperativeClose(
+	ctx context.Context, sessionID chainhash.Hash,
+	amount btcutil.Amount) error {
+
+	return f(ctx, sessionID, amount)
+}
+
+// CooperativeCloseDeliveryValidator proves one endpoint owns the replacement
+// VTXO key assigned to its role before the hub signs or traffic is disabled.
 type CooperativeCloseDeliveryValidator interface {
 	ValidateCooperativeCloseDelivery(context.Context, arkchannel.ID,
 		[]byte) error
@@ -106,11 +121,13 @@ func NewNativeCooperativeCloseEndpoint(party arkchannel.Party, runtime *Runtime,
 	if runtime == nil {
 		return nil, fmt.Errorf("native lnd runtime is required")
 	}
-	if signer == nil {
-		return nil, fmt.Errorf("cooperative close signer is required")
+	if party == arkchannel.PartyHub && signer == nil {
+		return nil, fmt.Errorf("hub cooperative close signer is " +
+			"required")
 	}
-	if keyDesc.PubKey == nil {
-		return nil, fmt.Errorf("cooperative close Ark key is required")
+	if party == arkchannel.PartyHub && keyDesc.PubKey == nil {
+		return nil, fmt.Errorf("hub cooperative close Ark key is " +
+			"required")
 	}
 	if delivery == nil {
 		return nil, fmt.Errorf("cooperative close delivery validator " +
@@ -192,13 +209,18 @@ func (e *NativeCooperativeCloseEndpoint) QuiesceCooperativeClose(
 	return state, nil
 }
 
-// SignCooperativeClose re-reads the clean lnd state, reconstructs the canonical
-// proposal, and signs only this endpoint's immediate Ark policy role.
-func (e *NativeCooperativeCloseEndpoint) SignCooperativeClose(
+// SignHubCooperativeClose re-reads the clean lnd state, reconstructs the
+// canonical proposal, and signs only the hub's immediate Ark policy role.
+func (e *NativeCooperativeCloseEndpoint) SignHubCooperativeClose(
 	ctx context.Context, id arkchannel.ID, terms arkchannel.Terms,
 	source arkchannel.VTXOBinding, backing arkchannel.Backing,
 	request arkchannel.CooperativeCloseRequest,
 	proposal arkchannel.CooperativeCloseProposal) (input.Signature, error) {
+
+	if e.party != arkchannel.PartyHub {
+		return nil, fmt.Errorf("only hub can authorize cooperative " +
+			"close")
+	}
 
 	state, err := e.QuiesceCooperativeClose(
 		ctx, id, terms, source, backing, request,
@@ -235,8 +257,8 @@ func (e *NativeCooperativeCloseEndpoint) SignCooperativeClose(
 	return e.signer.SignOutputRaw(tx, desc)
 }
 
-// ResumeCooperativeClose re-enables traffic after a close aborts before a
-// fully signed direct settlement is durable.
+// ResumeCooperativeClose re-enables traffic after a close aborts before the
+// hub-authorized OOR package is durable at both endpoints.
 func (e *NativeCooperativeCloseEndpoint) ResumeCooperativeClose(
 	backing arkchannel.Backing) {
 
@@ -313,82 +335,20 @@ func (e *NativeCooperativeCloseEndpoint) stateSink() (CooperativeCloseStateSink,
 	return e.sink, nil
 }
 
-// NativeCooperativeCloseOperatorSigner validates and signs the operator role
-// without owning any lnd channel state.
-type NativeCooperativeCloseOperatorSigner struct {
-	signer  input.Signer
-	keyDesc keychain.KeyDescriptor
-}
-
-// NewNativeCooperativeCloseOperatorSigner constructs an Ark operator signer.
-func NewNativeCooperativeCloseOperatorSigner(signer input.Signer,
-	keyDesc keychain.KeyDescriptor) (*NativeCooperativeCloseOperatorSigner,
-	error) {
-
-	if signer == nil {
-		return nil, fmt.Errorf("Ark operator close signer is required")
-	}
-	if keyDesc.PubKey == nil {
-		return nil, fmt.Errorf("Ark operator close key is required")
-	}
-
-	return &NativeCooperativeCloseOperatorSigner{
-		signer:  signer,
-		keyDesc: keyDesc,
-	}, nil
-}
-
-// SignOperatorCooperativeClose validates the canonical proposal and signs the
-// Ark operator's immediate policy role.
-func (s *NativeCooperativeCloseOperatorSigner) SignOperatorCooperativeClose(
-	_ context.Context, id arkchannel.ID, terms arkchannel.Terms,
-	source arkchannel.VTXOBinding,
-	request arkchannel.CooperativeCloseRequest,
-	proposal arkchannel.CooperativeCloseProposal) (input.Signature, error) {
-
-	if id != terms.ID {
-		return nil, fmt.Errorf("cooperative close channel ID does " +
-			"not match")
-	}
-	if err := proposal.Validate(terms, source, request); err != nil {
-		return nil, err
-	}
-	template, err := arkchannel.NewCooperativeCloseTemplate(
-		terms, source, request, proposal.ClientBalance,
-		proposal.HubBalance, proposal.CommitmentHeight,
-	)
-	if err != nil {
-		return nil, err
-	}
-	desc, err := template.OperatorSignDescriptor(terms, s.keyDesc)
-	if err != nil {
-		return nil, err
-	}
-	tx, err := decodeCloseProposal(proposal)
-	if err != nil {
-		return nil, err
-	}
-
-	return s.signer.SignOutputRaw(tx, desc)
-}
-
-// completeCooperativeClose verifies client consent, adds both server-owned
-// signatures, and stores the exact settlement at the hub before returning it.
+// completeCooperativeClose verifies the proposal against the hub's clean lnd
+// state, adds only the hub's channel-policy signature, and stores that exact
+// OOR authorization before returning it. The Ark operator and client sign in
+// the ordinary OOR protocol.
 func completeCooperativeClose(ctx context.Context,
-	local *NativeCooperativeCloseEndpoint,
-	operator CooperativeCloseOperatorSigner, id arkchannel.ID,
+	local *NativeCooperativeCloseEndpoint, id arkchannel.ID,
 	terms arkchannel.Terms, source arkchannel.VTXOBinding,
 	backing arkchannel.Backing, request arkchannel.CooperativeCloseRequest,
-	proposal arkchannel.CooperativeCloseProposal,
-	clientSig input.Signature) (arkchannel.CooperativeClose, error) {
+	proposal arkchannel.CooperativeCloseProposal) (
+	arkchannel.CooperativeClose, error) {
 
 	if local.party != arkchannel.PartyHub {
 		return arkchannel.CooperativeClose{}, fmt.Errorf("only hub " +
 			"can complete cooperative close")
-	}
-	if operator == nil {
-		return arkchannel.CooperativeClose{}, fmt.Errorf("Ark " +
-			"operator close signer is required")
 	}
 	record, err := local.GetChannel(ctx, id)
 	if err != nil {
@@ -425,12 +385,7 @@ func completeCooperativeClose(ctx context.Context,
 	if err != nil {
 		return arkchannel.CooperativeClose{}, err
 	}
-	if err := template.VerifySignature(
-		terms, arkchannel.PartyClient, clientSig,
-	); err != nil {
-		return arkchannel.CooperativeClose{}, err
-	}
-	hubSig, err := local.SignCooperativeClose(
+	hubSig, err := local.SignHubCooperativeClose(
 		ctx, id, terms, source, backing, request, proposal,
 	)
 	if err != nil {
@@ -441,14 +396,8 @@ func completeCooperativeClose(ctx context.Context,
 	); err != nil {
 		return arkchannel.CooperativeClose{}, err
 	}
-	operatorSig, err := operator.SignOperatorCooperativeClose(
-		ctx, id, terms, source, request, proposal,
-	)
-	if err != nil {
-		return arkchannel.CooperativeClose{}, err
-	}
 	settlement, err := template.Complete(
-		terms, source, request, clientSig, hubSig, operatorSig,
+		terms, source, request, hubSig,
 	)
 	if err != nil {
 		return arkchannel.CooperativeClose{}, fmt.Errorf("complete "+
@@ -586,7 +535,6 @@ func validateLocalCooperativeClose(record arkchannel.Record,
 	}
 	localRequest := snapshot.CooperativeCloseRequest
 	if localRequest == nil || localRequest.Initiator != request.Initiator ||
-		localRequest.FeeRate != request.FeeRate ||
 		!bytes.Equal(
 			localRequest.ClientDeliveryScript,
 			request.ClientDeliveryScript,
@@ -605,23 +553,21 @@ func validateLocalCooperativeClose(record arkchannel.Record,
 	return nil
 }
 
-// decodeCloseProposal decodes the already validated unsigned transaction.
+// decodeCloseProposal decodes the already validated unsigned checkpoint PSBT.
 func decodeCloseProposal(proposal arkchannel.CooperativeCloseProposal) (
 	*wire.MsgTx, error) {
 
-	tx := wire.NewMsgTx(2)
-	if err := tx.Deserialize(
-		bytes.NewReader(proposal.Transaction),
-	); err != nil {
+	packet, err := psbtutil.Parse(proposal.Transaction)
+	if err != nil {
 		return nil, fmt.Errorf("decode cooperative close proposal: %w",
 			err)
 	}
 
-	return tx, nil
+	return packet.UnsignedTx, nil
 }
 
 // cooperativeCloseProposalsEqual compares every field that identifies one
-// exact unsigned direct settlement.
+// exact unsigned OOR checkpoint authorization.
 func cooperativeCloseProposalsEqual(
 	a, b arkchannel.CooperativeCloseProposal) bool {
 
@@ -630,5 +576,5 @@ func cooperativeCloseProposalsEqual(
 		a.HubBalance == b.HubBalance &&
 		a.ClientOutput == b.ClientOutput &&
 		a.HubOutput == b.HubOutput &&
-		a.Fee == b.Fee && bytes.Equal(a.Transaction, b.Transaction)
+		bytes.Equal(a.Transaction, b.Transaction)
 }

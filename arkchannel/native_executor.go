@@ -89,8 +89,8 @@ type ChannelForceCloser interface {
 	ResumeForceCloseChannel(wire.OutPoint) error
 }
 
-// ChannelCooperativeCloser coordinates clean lnd state, direct VTXO
-// settlement, publication, and local lnd archival across paired endpoints.
+// ChannelCooperativeCloser coordinates clean lnd state, a 3-of-3 OOR close,
+// and local lnd archival across paired endpoints.
 type ChannelCooperativeCloser interface {
 	NegotiateCooperativeClose(context.Context, ID, Terms, VTXOBinding,
 		Backing, CooperativeCloseRequest) error

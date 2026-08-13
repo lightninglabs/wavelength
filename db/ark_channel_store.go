@@ -15,7 +15,6 @@ import (
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightningnetwork/lnd/clock"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
 const initialArkChannelRevision = int64(1)
@@ -323,10 +322,9 @@ func mutableArkChannelFields(snapshot arkchannel.Snapshot) (
 			request.ClientDeliveryScript,
 		)
 		fields.closeHubScript = slices.Clone(request.HubDeliveryScript)
-		fields.closeFeeRate = sql.NullInt64{
-			Int64: int64(request.FeeRate),
-			Valid: true,
-		}
+		// The column predates in-Ark OOR close semantics. Keep a zero
+		// sentinel so existing databases retain their group constraint.
+		fields.closeFeeRate = sql.NullInt64{Valid: true}
 	}
 	if snapshot.CooperativeClose != nil {
 		settlement := snapshot.CooperativeClose
@@ -743,9 +741,6 @@ func arkChannelCloseRequestFromRow(row sqlc.ArkChannel) (
 			row.CloseClientScript,
 		),
 		HubDeliveryScript: slices.Clone(row.CloseHubScript),
-		FeeRate: chainfee.SatPerKWeight(
-			row.CloseFeeRateSatPerKw.Int64,
-		),
 	}
 	if err := request.Validate(); err != nil {
 		return nil, err

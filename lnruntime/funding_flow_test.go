@@ -11,8 +11,10 @@ import (
 
 	"github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
@@ -144,8 +146,8 @@ func (e *cooperativeCloseActionExecutor) Execute(ctx context.Context,
 	}
 }
 
-// blockingCooperativeClosePublisher models the unroller's confirmation
-// barrier so the test can prove lnd remains open until settlement confirms.
+// blockingCooperativeClosePublisher models the ordinary OOR completion barrier
+// so the test can prove lnd remains open until replacement VTXOs finalize.
 type blockingCooperativeClosePublisher struct {
 	published chan arkchannel.CooperativeClose
 	confirm   chan struct{}
@@ -202,21 +204,15 @@ func exactCooperativeCloseDeliveryValidator(
 	})
 }
 
-// SettleCooperativeClose records the direct spend and waits for confirmation.
+// SettleCooperativeClose validates the exact OOR authorization and waits for
+// the simulated durable OOR completion.
 func (p *blockingCooperativeClosePublisher) SettleCooperativeClose(
 	ctx context.Context, _ arkchannel.ID, _ arkchannel.Terms,
-	source arkchannel.VTXOBinding,
+	_ arkchannel.VTXOBinding, _ arkchannel.CooperativeCloseRequest,
 	settlement arkchannel.CooperativeClose) error {
 
-	tx := wire.NewMsgTx(2)
-	if err := tx.Deserialize(
-		bytes.NewReader(settlement.Transaction),
-	); err != nil {
-		return err
-	}
-	if len(tx.TxIn) != 1 || tx.TxIn[0].PreviousOutPoint != source.OutPoint {
-		return fmt.Errorf("cooperative close does not spend source " +
-			"VTXO")
+	if settlement.TxID == (chainhash.Hash{}) {
+		return fmt.Errorf("cooperative close OOR session ID is empty")
 	}
 
 	select {
@@ -511,11 +507,11 @@ func TestNativeFundingFlowPaysBothDirections(t *testing.T) {
 	)
 }
 
-// TestNativeFundingFlowDirectCooperativeClose proves an active unpublished
+// TestNativeFundingFlowInArkCooperativeClose proves an active unpublished
 // channel can carry payments in both directions and then settle its clean lnd
-// balances by spending the channel-policy VTXO directly. The backing channel
-// point never becomes an input to the closing transaction.
-func TestNativeFundingFlowDirectCooperativeClose(t *testing.T) {
+// balances with an ordinary OOR package over the channel VTXO's 3-of-3 path.
+// The backing channel point never becomes an input to the close package.
+func TestNativeFundingFlowInArkCooperativeClose(t *testing.T) {
 	t.Parallel()
 
 	hub := newFundingFlowNode(t, arkchannel.PartyHub)
@@ -547,14 +543,9 @@ func TestNativeFundingFlowDirectCooperativeClose(t *testing.T) {
 		t, record.Snapshot.Terms, testFundingCapacity+1_000, 1,
 	)
 	request := arkchannel.CooperativeCloseRequest{
-		Initiator: arkchannel.PartyClient,
-		ClientDeliveryScript: testCloseDeliveryAddress(
-			client.key,
-		).DeliveryAddress,
-		HubDeliveryScript: testCloseDeliveryAddress(
-			hub.key,
-		).DeliveryAddress,
-		FeeRate: chainfee.SatPerKWeight(1_000),
+		Initiator:            arkchannel.PartyClient,
+		ClientDeliveryScript: client.key.PubKey().SerializeCompressed(),
+		HubDeliveryScript:    hub.key.PubKey().SerializeCompressed(),
 	}
 	flow := activateFundingFlowChannel(t, hub, client, record)
 	channelPoint := flow.hubChannel.FundingOutpoint
@@ -609,29 +600,11 @@ func TestNativeFundingFlowDirectCooperativeClose(t *testing.T) {
 	)
 	require.NoError(t, err)
 	clientEndpoint, err := NewNativeCooperativeCloseEndpoint(
-		arkchannel.PartyClient, client.runtime,
-		&recordingCooperativeCloseSigner{
-			Signer: input.NewMockSigner(
-				[]*btcec.PrivateKey{clientArkKey}, nil,
-			),
-			label: "client",
-			order: signingOrder,
-		},
-		keychain.KeyDescriptor{PubKey: clientArkKey.PubKey()},
+		arkchannel.PartyClient, client.runtime, nil,
+		keychain.KeyDescriptor{},
 		exactCooperativeCloseDeliveryValidator(
 			request.ClientDeliveryScript,
 		),
-	)
-	require.NoError(t, err)
-	operatorSigner, err := NewNativeCooperativeCloseOperatorSigner(
-		&recordingCooperativeCloseSigner{
-			Signer: input.NewMockSigner(
-				[]*btcec.PrivateKey{operatorArkKey}, nil,
-			),
-			label: "operator",
-			order: signingOrder,
-		},
-		keychain.KeyDescriptor{PubKey: operatorArkKey.PubKey()},
 	)
 	require.NoError(t, err)
 	publisher := &blockingCooperativeClosePublisher{
@@ -639,10 +612,15 @@ func TestNativeFundingFlowDirectCooperativeClose(t *testing.T) {
 		confirm:   make(chan struct{}),
 	}
 	hubClose, err := NewHubCooperativeCloseProcess(
-		hubEndpoint, operatorSigner,
+		hubEndpoint,
 		&stableCooperativeCloseDelivery{
 			script: request.HubDeliveryScript,
 		},
+		CooperativeCloseObserverFunc(func(context.Context,
+			chainhash.Hash, btcutil.Amount) error {
+
+			return nil
+		}),
 	)
 	require.NoError(t, err)
 	hubExecutor := &HubCooperativeCloseExecutor{
@@ -684,19 +662,19 @@ func TestNativeFundingFlowDirectCooperativeClose(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = clientClose.RequestCooperativeClose(
-		t.Context(), record.Snapshot.Terms.ID, request.FeeRate,
+		t.Context(), record.Snapshot.Terms.ID,
 	)
 	require.ErrorContains(t, err, "lost begin response")
 	require.Equal(t, 1, clientDelivery.callCount())
 
 	_, err = clientClose.RequestCooperativeClose(
-		t.Context(), record.Snapshot.Terms.ID, request.FeeRate,
+		t.Context(), record.Snapshot.Terms.ID,
 	)
 	require.ErrorContains(t, err, "lost complete response")
 	require.Equal(t, 2, clientDelivery.callCount())
 
 	// The client received nothing, but the hub must already hold the
-	// complete transaction. Neither side may publish until the client
+	// exact hub authorization. OOR signing cannot start until the client
 	// recovers it and completes the durable acknowledgement barrier.
 	hubCompleted, err := hubStore.Get(
 		t.Context(), record.Snapshot.Terms.ID,
@@ -711,12 +689,12 @@ func TestNativeFundingFlowDirectCooperativeClose(t *testing.T) {
 	require.False(t, hubCompleted.Snapshot.ClientCloseSigned)
 	require.Nil(t, clientWaiting.Snapshot.CooperativeClose)
 	require.Equal(
-		t, []string{"client", "hub", "operator"},
+		t, []string{"hub"},
 		signingOrder.snapshot(),
 	)
 	select {
 	case <-publisher.published:
-		t.Fatal("cooperative close published before client recovery")
+		t.Fatal("cooperative close OOR started before client recovery")
 
 	default:
 	}
@@ -724,7 +702,7 @@ func TestNativeFundingFlowDirectCooperativeClose(t *testing.T) {
 	closeResult := make(chan error, 1)
 	go func() {
 		_, closeErr := clientClose.RequestCooperativeClose(
-			t.Context(), record.Snapshot.Terms.ID, request.FeeRate,
+			t.Context(), record.Snapshot.Terms.ID,
 		)
 		closeResult <- closeErr
 	}()
@@ -734,13 +712,13 @@ func TestNativeFundingFlowDirectCooperativeClose(t *testing.T) {
 	case settlement = <-publisher.published:
 	case err := <-closeResult:
 		require.NoError(t, err)
-		t.Fatal("cooperative close completed without hub publication")
+		t.Fatal("cooperative close completed without OOR settlement")
 
 	case <-time.After(10 * time.Second):
-		t.Fatal("timeout waiting for direct cooperative settlement")
+		t.Fatal("timeout waiting for cooperative OOR settlement")
 	}
 	require.Equal(
-		t, []string{"client", "hub", "operator"},
+		t, []string{"hub"},
 		signingOrder.snapshot(),
 	)
 	require.NoError(
@@ -748,23 +726,11 @@ func TestNativeFundingFlowDirectCooperativeClose(t *testing.T) {
 			record.Snapshot.Terms, *record.Snapshot.Source, request,
 		),
 	)
-	settlementTx := wire.NewMsgTx(2)
-	require.NoError(
-		t,
-		settlementTx.Deserialize(
-			bytes.NewReader(settlement.Transaction),
-		),
-	)
-	require.Equal(
-		t, record.Snapshot.Source.OutPoint,
-		settlementTx.TxIn[0].PreviousOutPoint,
-	)
-	require.NotEqual(
-		t, channelPoint, settlementTx.TxIn[0].PreviousOutPoint,
-	)
+	require.Len(t, settlement.Transaction, schnorr.SignatureSize)
+	require.NotEqual(t, channelPoint.Hash, settlement.TxID)
 
-	// Publication has started, but lnd must retain both open-channel
-	// records until the unroller reports confirmation.
+	// OOR submission has started, but lnd must retain both open-channel
+	// records until the OOR actor reports durable completion.
 	for _, node := range []*fundingFlowNode{hub, client} {
 		_, err := node.db.ChannelStateDB().FetchChannel(channelPoint)
 		require.NoError(t, err)
@@ -788,11 +754,11 @@ func TestNativeFundingFlowDirectCooperativeClose(t *testing.T) {
 		require.NoError(t, err)
 
 	case <-time.After(10 * time.Second):
-		t.Fatal("timeout finalizing direct cooperative close")
+		t.Fatal("timeout finalizing cooperative OOR close")
 	}
 	require.Equal(t, 2, clientDelivery.callCount())
 	closed, err := clientClose.RequestCooperativeClose(
-		t.Context(), record.Snapshot.Terms.ID, request.FeeRate,
+		t.Context(), record.Snapshot.Terms.ID,
 	)
 	require.NoError(t, err)
 	require.Equal(t, arkchannel.PhaseClosed, closed.Snapshot.Phase)

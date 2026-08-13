@@ -281,6 +281,7 @@ func TestArkChannelReceivePromotesFallbackVHTLC(t *testing.T) {
 	require.NoError(t, err)
 	channelID := [32]byte{9}
 	oorID := [32]byte{8}
+	recoveryID := "receive-channel-recovery"
 	bridge := &testArkChannelPaymentBridge{
 		backingFee: 1_000,
 		promotionResult: ArkChannelPromotionResult{
@@ -295,6 +296,7 @@ func TestArkChannelReceivePromotesFallbackVHTLC(t *testing.T) {
 		amountSat: 42_000, requestedAmountSat: 42_000,
 		state: ReceiveStateClaimInitiated, reservedSCID: 99,
 		channelBackingFee: 1_000, vhtlcPolicy: policy,
+		claimRecoveryID:     recoveryID,
 		vhtlcPolicyTemplate: policyTemplate, vhtlcPkScript: pkScript,
 		vhtlcOutpoint: chainhash.Hash{
 			7,
@@ -308,6 +310,7 @@ func TestArkChannelReceivePromotesFallbackVHTLC(t *testing.T) {
 	require.Equal(t, channelID, session.channelID)
 	require.Equal(t, btcutil.Amount(42_000), bridge.promotion.Capacity)
 	require.Equal(t, uint64(99), bridge.promotion.ReservedSCID)
+	require.Equal(t, recoveryID, bridge.promotion.RecoveryID)
 	require.Equal(t, int64(43_000), bridge.promotion.Input.AmountSat)
 }
 

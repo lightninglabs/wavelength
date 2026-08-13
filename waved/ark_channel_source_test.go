@@ -32,6 +32,15 @@ func TestValidateRecoveryPackageRoots(t *testing.T) {
 			ancestry, []wire.OutPoint{treeOutput},
 		),
 	)
+	wrongIndex := treeOutput
+	wrongIndex.Index++
+	require.ErrorContains(
+		t,
+		validateRecoveryPackageRoots(
+			ancestry, []wire.OutPoint{wrongIndex},
+		),
+		"missing root",
+	)
 	require.ErrorContains(
 		t,
 		validateRecoveryPackageRoots(
@@ -84,11 +93,8 @@ func TestRecoveryDescriptorUsesBackingDelay(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, terms.VTXO.ChannelDelay, backingDelay)
-	cooperativeDelay, err := channelSourceCSVDelay(
-		terms, unrollbridge.CooperativeCloseExitPolicyKind,
-	)
-	require.NoError(t, err)
-	require.Zero(t, cooperativeDelay)
+	_, err = channelSourceCSVDelay(terms, "cooperative_close")
+	require.ErrorContains(t, err, "unsupported")
 }
 
 // TestReceiveClaimTermsAreDeterministic proves invoice replay derives the same
@@ -176,7 +182,7 @@ func TestChannelOperatorKeyAcceptsOppositeParity(t *testing.T) {
 	require.False(t, privKey.PubKey().IsEqual(oppositeKey))
 
 	operatorKey, err := channelOperatorKey(
-		terms, []*vtxo.Descriptor{
+		terms.VTXO.ArkOperatorKey, []*vtxo.Descriptor{
 			{OperatorKey: oppositeKey},
 		},
 	)
@@ -199,7 +205,7 @@ func TestChannelOperatorKeyRejectsDifferentKey(t *testing.T) {
 	)
 
 	_, err = channelOperatorKey(
-		terms, []*vtxo.Descriptor{
+		terms.VTXO.ArkOperatorKey, []*vtxo.Descriptor{
 			{OperatorKey: rootKey.PubKey()},
 		},
 	)

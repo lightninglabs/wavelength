@@ -236,9 +236,10 @@ func TestSourceConflictDuringActivationFinishesActivationFirst(t *testing.T) {
 	require.IsType(t, &PublishChannel{}, requireOneAction(t, actions))
 }
 
-// TestSourceConflictPublishesSignedCooperativeClose proves a fully signed
-// direct settlement takes precedence over channel-point materialization.
-func TestSourceConflictPublishesSignedCooperativeClose(t *testing.T) {
+// TestSourceConflictAbandonsAuthorizedCooperativeClose proves a hub-authorized
+// but not yet finalized OOR close cannot override independent source-spend
+// evidence. Recovery materializes the channel point instead.
+func TestSourceConflictAbandonsAuthorizedCooperativeClose(t *testing.T) {
 	t.Parallel()
 
 	terms, source, request, clientKey, hubKey, operatorKey :=
@@ -277,16 +278,11 @@ func TestSourceConflictPublishesSignedCooperativeClose(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
-	require.Equal(t, PhaseCoopCloseSigned, record.Snapshot.Phase)
+	require.Equal(t, PhaseMaterializing, record.Snapshot.Phase)
 	require.False(t, record.Snapshot.BackingPublished)
-	publish := requireOneAction(t, actions)
-	require.IsType(t, &PublishCooperativeClose{}, publish)
-	cooperativePublish, ok := publish.(*PublishCooperativeClose)
-	require.True(t, ok)
-	require.Equal(
-		t, settlement.TxID,
-		cooperativePublish.Close.TxID,
-	)
+	require.Nil(t, record.Snapshot.CooperativeClose)
+	require.Nil(t, record.Snapshot.CooperativeCloseRequest)
+	require.IsType(t, &PublishChannel{}, requireOneAction(t, actions))
 }
 
 // TestSourceConflictAbandonsPartialCooperativeClose proves an unavailable peer
@@ -363,9 +359,9 @@ func TestSourceConflictAbandonsPartialCooperativeClose(t *testing.T) {
 	}
 }
 
-// TestCooperativeCloseLifecycle proves a signed direct VTXO settlement is a
-// separate durable path from backing materialization and requires both lnd
-// databases to archive before the channel is terminal.
+// TestCooperativeCloseLifecycle proves a finalized in-Ark OOR close is separate
+// from backing materialization and requires both lnd databases to archive
+// before the channel is terminal.
 func TestCooperativeCloseLifecycle(t *testing.T) {
 	t.Parallel()
 
@@ -462,8 +458,8 @@ func TestCooperativeCloseLifecycle(t *testing.T) {
 }
 
 // TestMaterializationSupersedesCooperativeNegotiation proves chain evidence
-// can move an endpoint into lnd resolution before a direct settlement is
-// confirmed. This keeps a peer from blocking force close by going offline.
+// can move an endpoint into lnd resolution before the cooperative-close OOR is
+// finalized. This keeps a peer from blocking force close by going offline.
 func TestMaterializationSupersedesCooperativeNegotiation(t *testing.T) {
 	t.Parallel()
 

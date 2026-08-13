@@ -783,6 +783,7 @@ type ArkChannelReceivePromotion struct {
 	ReservedSCID uint64
 	Capacity     btcutil.Amount
 	BackingFee   btcutil.Amount
+	RecoveryID   string
 	Input        CustomInput
 }
 

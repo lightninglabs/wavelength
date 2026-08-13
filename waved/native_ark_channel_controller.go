@@ -14,7 +14,6 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
@@ -24,7 +23,6 @@ import (
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -38,7 +36,6 @@ var (
 const (
 	arkChannelArkKeyFamily     keychain.KeyFamily = 220
 	arkChannelBackingKeyFamily keychain.KeyFamily = 221
-	arkChannelCloseKeyFamily   keychain.KeyFamily = 222
 	arkChannelFunderKeyFamily  keychain.KeyFamily = 223
 
 	defaultArkChannelBackingFee btcutil.Amount = 1_000
@@ -49,11 +46,11 @@ const (
 type HubArkChannelControllerConfig struct {
 	Process ArkChannelControllerConfig
 
-	RemoteNode     [33]byte
-	PeerSender     lnruntime.PeerEventSender
-	Info           lnruntime.FundingPeerInfo
-	OperatorSigner lnruntime.CooperativeCloseOperatorSigner
-	PaymentBridge  lnruntime.PaymentBridgeCoordinator
+	RemoteNode    [33]byte
+	PeerSender    lnruntime.PeerEventSender
+	Info          lnruntime.FundingPeerInfo
+	CloseObserver lnruntime.CooperativeCloseObserver
+	PaymentBridge lnruntime.PaymentBridgeCoordinator
 }
 
 // NativeArkChannelController owns one Ark FSM and one modular lnd endpoint.
@@ -198,7 +195,7 @@ func NewHubArkChannelController(ctx context.Context,
 	if _, err := btcec.ParsePubKey(cfg.RemoteNode[:]); err != nil {
 		return nil, fmt.Errorf("parse client channel node: %w", err)
 	}
-	if cfg.PeerSender == nil || cfg.OperatorSigner == nil {
+	if cfg.PeerSender == nil || cfg.CloseObserver == nil {
 		return nil, fmt.Errorf("complete hub channel process is " +
 			"required")
 	}
@@ -219,7 +216,7 @@ func NewHubArkChannelController(ctx context.Context,
 		paymentBridge: cfg.PaymentBridge,
 	}
 	if err := controller.startHub(
-		ctx, cfg.RemoteNode, cfg.PeerSender, cfg.OperatorSigner,
+		ctx, cfg.RemoteNode, cfg.PeerSender, cfg.CloseObserver,
 	); err != nil {
 		return nil, err
 	}
@@ -250,6 +247,9 @@ func validateArkChannelProcessConfig(cfg ArkChannelControllerConfig) error {
 
 	case cfg.IdentityKey.PubKey == nil:
 		return fmt.Errorf("Ark channel identity key is required")
+
+	case cfg.OORDestination == nil:
+		return fmt.Errorf("Ark channel OOR destination key is required")
 
 	case cfg.NetParams == nil:
 		return fmt.Errorf("Ark channel network is required")
@@ -351,20 +351,28 @@ func (c *NativeArkChannelController) ensureClientStarted(
 
 		return err
 	}
-	delivery := newArkChannelCloseDelivery(
-		c.cfg, arkChannelCloseKeyFamily,
-	)
+	delivery := newArkChannelCloseDelivery(c.cfg.OORDestination)
 	closeEndpoint, err := lnruntime.NewNativeCooperativeCloseEndpoint(
-		arkchannel.PartyClient, node.Runtime(), c.cfg.Wallet.BtcWallet,
-		c.keys.ark, delivery,
+		arkchannel.PartyClient, node.Runtime(), nil,
+		keychain.KeyDescriptor{}, delivery,
 	)
 	if err != nil {
 		_ = node.Stop()
 
 		return err
 	}
+	publisher := lnruntime.CooperativeClosePublisherFunc(func(
+		ctx context.Context, id arkchannel.ID, terms arkchannel.Terms,
+		source arkchannel.VTXOBinding,
+		request arkchannel.CooperativeCloseRequest,
+		settlement arkchannel.CooperativeClose) error {
+
+		return c.cfg.OOR.SettleCooperativeClose(
+			ctx, id, terms, source, request, settlement, c.keys.ark,
+		)
+	})
 	clientClose, err := lnruntime.NewClientCooperativeCloseProcess(
-		closeEndpoint, c.cfg.Peer, c.cfg.Materializer, delivery,
+		closeEndpoint, c.cfg.Peer, publisher, delivery,
 	)
 	if err != nil {
 		_ = node.Stop()
@@ -410,7 +418,7 @@ func (c *NativeArkChannelController) ensureClientStarted(
 // startHub starts one operator endpoint for an authenticated client.
 func (c *NativeArkChannelController) startHub(ctx context.Context,
 	remoteNode [33]byte, sender lnruntime.PeerEventSender,
-	operatorSigner lnruntime.CooperativeCloseOperatorSigner) error {
+	closeObserver lnruntime.CooperativeCloseObserver) error {
 
 	remoteKey, err := btcec.ParsePubKey(remoteNode[:])
 	if err != nil {
@@ -430,9 +438,7 @@ func (c *NativeArkChannelController) startHub(ctx context.Context,
 
 		return err
 	}
-	delivery := newArkChannelCloseDelivery(
-		c.cfg, arkChannelCloseKeyFamily,
-	)
+	delivery := newArkChannelCloseDelivery(c.cfg.OORDestination)
 	closeEndpoint, err := lnruntime.NewNativeCooperativeCloseEndpoint(
 		arkchannel.PartyHub, node.Runtime(), c.cfg.Wallet.BtcWallet,
 		c.keys.ark, delivery,
@@ -443,7 +449,7 @@ func (c *NativeArkChannelController) startHub(ctx context.Context,
 		return err
 	}
 	hubClose, err := lnruntime.NewHubCooperativeCloseProcess(
-		closeEndpoint, operatorSigner, delivery,
+		closeEndpoint, delivery, closeObserver,
 	)
 	if err != nil {
 		_ = node.Stop()
@@ -453,7 +459,6 @@ func (c *NativeArkChannelController) startHub(ctx context.Context,
 	service, err := c.newService(
 		node, negotiator, &lnruntime.HubCooperativeCloseExecutor{
 			HubCooperativeCloseProcess: hubClose,
-			Publisher:                  c.cfg.Materializer,
 		},
 	)
 	if err != nil {
@@ -870,10 +875,15 @@ func (c *NativeArkChannelController) PromoteIncomingVHTLC(ctx context.Context,
 		return arkchannel.Record{}, fmt.Errorf("invalid incoming " +
 			"vHTLC channel terms")
 	}
-	if source.Outpoint == "" || len(source.PolicyTemplate) == 0 ||
+	if source.RecoveryID == "" || source.Outpoint == "" ||
+		len(source.PolicyTemplate) == 0 ||
 		len(source.SpendPath) == 0 || len(source.PkScript) == 0 {
 		return arkchannel.Record{}, fmt.Errorf("complete incoming " +
 			"vHTLC claim source is required")
+	}
+	if c.cfg.PrepareClaimRoot == nil {
+		return arkchannel.Record{}, fmt.Errorf("incoming vHTLC " +
+			"channel recovery root preparer is required")
 	}
 	if c.cfg.PrepareClaimOOR == nil {
 		return arkchannel.Record{}, fmt.Errorf("incoming vHTLC " +
@@ -899,6 +909,19 @@ func (c *NativeArkChannelController) PromoteIncomingVHTLC(ctx context.Context,
 	if localRecord.Snapshot.Phase == arkchannel.PhaseActive &&
 		remoteRecord.Snapshot.Phase == arkchannel.PhaseActive {
 		return localRecord, nil
+	}
+	recoverySource, recovery, err := c.remote.ExportReceiveClaimRecovery(
+		ctx, terms.ID,
+	)
+	if err != nil {
+		return arkchannel.Record{}, fmt.Errorf("export incoming vHTLC "+
+			"channel recovery: %w", err)
+	}
+	if err := c.cfg.PrepareClaimRoot(
+		ctx, terms, source, recoverySource, recovery,
+	); err != nil {
+		return arkchannel.Record{}, fmt.Errorf("prepare incoming "+
+			"vHTLC channel recovery root: %w", err)
 	}
 
 	var binding arkchannel.VTXOBinding
@@ -1157,13 +1180,29 @@ func (c *NativeArkChannelController) MaterializeAndForceClose(
 	}
 	backing := record.Snapshot.Backing.Clone()
 	closeTx, err := c.node.ForceCloseChannel(backing.ChannelPoint)
-	if err != nil {
-		return arkchannel.Record{}, chainhash.Hash{},
-			chainhash.Hash{}, err
-	}
-	if closeTx == nil {
-		return arkchannel.Record{}, chainhash.Hash{}, chainhash.Hash{},
-			fmt.Errorf("lnd returned no force-close transaction")
+	var closeTxID chainhash.Hash
+	if err == nil {
+		if closeTx == nil {
+			return arkchannel.Record{}, chainhash.Hash{},
+				chainhash.Hash{}, fmt.Errorf("lnd returned " +
+					"no force-close transaction")
+		}
+		closeTxID = closeTx.TxHash()
+	} else {
+		// Both endpoints watch the unpublished channel point before Ark
+		// materializes it. Either endpoint may therefore win the
+		// commitment publication race. Only lnd's durable close summary
+		// can turn the losing broadcast error into success.
+		var waitErr error
+		closeTxID, waitErr = c.node.WaitForceCloseResult(
+			ctx, backing.ChannelPoint,
+		)
+		if waitErr != nil {
+			return arkchannel.Record{}, chainhash.Hash{},
+				chainhash.Hash{}, fmt.Errorf("force close "+
+					"channel: %w; reconcile peer close: %v",
+					err, waitErr)
+		}
 	}
 	record, err = c.service.GetChannel(ctx, id)
 	if err != nil {
@@ -1171,13 +1210,12 @@ func (c *NativeArkChannelController) MaterializeAndForceClose(
 			chainhash.Hash{}, err
 	}
 
-	return record, backing.ChannelPoint.Hash, closeTx.TxHash(), nil
+	return record, backing.ChannelPoint.Hash, closeTxID, nil
 }
 
-// RequestCooperativeClose starts the client-owned direct settlement process.
+// RequestCooperativeClose starts the client-owned 3-of-3 OOR close process.
 func (c *NativeArkChannelController) RequestCooperativeClose(
-	ctx context.Context, id arkchannel.ID, feeRate chainfee.SatPerKWeight) (
-	arkchannel.Record, error) {
+	ctx context.Context, id arkchannel.ID) (arkchannel.Record, error) {
 
 	if c.party != arkchannel.PartyClient {
 		return arkchannel.Record{}, fmt.Errorf("only a client can " +
@@ -1187,7 +1225,7 @@ func (c *NativeArkChannelController) RequestCooperativeClose(
 		return arkchannel.Record{}, err
 	}
 
-	return c.clientClose.RequestCooperativeClose(ctx, id, feeRate)
+	return c.clientClose.RequestCooperativeClose(ctx, id)
 }
 
 // GetChannel returns the endpoint's durable Ark channel record.
@@ -1409,47 +1447,43 @@ func (c *NativeArkChannelController) Stop() error {
 	return err
 }
 
-// arkChannelCloseDelivery derives a stable wallet payout per channel ID.
+// arkChannelCloseDelivery returns the ordinary Ark account key that owns this
+// endpoint's replacement VTXO after an in-Ark cooperative close.
 type arkChannelCloseDelivery struct {
-	cfg    ArkChannelControllerConfig
-	family keychain.KeyFamily
+	owner *btcec.PublicKey
 }
 
-// newArkChannelCloseDelivery constructs a deterministic wallet script source.
-func newArkChannelCloseDelivery(cfg ArkChannelControllerConfig,
-	family keychain.KeyFamily) *arkChannelCloseDelivery {
+// newArkChannelCloseDelivery constructs a fixed OOR owner-key source.
+func newArkChannelCloseDelivery(
+	owner *btcec.PublicKey) *arkChannelCloseDelivery {
 
-	return &arkChannelCloseDelivery{cfg: cfg, family: family}
+	return &arkChannelCloseDelivery{owner: owner}
 }
 
-// CooperativeCloseDelivery returns a stable P2TR payout for one channel.
-func (d *arkChannelCloseDelivery) CooperativeCloseDelivery(ctx context.Context,
-	id arkchannel.ID) ([]byte, error) {
+// CooperativeCloseDelivery returns the compressed replacement VTXO owner key.
+func (d *arkChannelCloseDelivery) CooperativeCloseDelivery(_ context.Context,
+	_ arkchannel.ID) ([]byte, error) {
 
-	index := binary.BigEndian.Uint32(id[:4])
-	desc, err := d.cfg.Wallet.DeriveKey(ctx, keychain.KeyLocator{
-		Family: d.family, Index: index,
-	})
-	if err != nil {
-		return nil, err
+	if d == nil || d.owner == nil {
+		return nil, fmt.Errorf("cooperative close OOR owner is " +
+			"required")
 	}
-	outputKey := txscript.ComputeTaprootKeyNoScript(desc.PubKey)
 
-	return txscript.PayToTaprootScript(outputKey)
+	return d.owner.SerializeCompressed(), nil
 }
 
-// ValidateCooperativeCloseDelivery proves the payout matches the exact
-// channel-derived wallet key.
+// ValidateCooperativeCloseDelivery proves the replacement VTXO is assigned to
+// this endpoint's ordinary Ark account.
 func (d *arkChannelCloseDelivery) ValidateCooperativeCloseDelivery(
-	ctx context.Context, id arkchannel.ID, script []byte) error {
+	ctx context.Context, id arkchannel.ID, owner []byte) error {
 
 	expected, err := d.CooperativeCloseDelivery(ctx, id)
 	if err != nil {
 		return err
 	}
-	if !bytes.Equal(expected, script) {
-		return fmt.Errorf("cooperative close payout is not wallet " +
-			"owned")
+	if !bytes.Equal(expected, owner) {
+		return fmt.Errorf("cooperative close owner is not the " +
+			"configured Ark account")
 	}
 
 	return nil

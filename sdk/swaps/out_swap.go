@@ -1934,6 +1934,7 @@ func (s *ReceiveSession) promoteFundedVHTLC(ctx context.Context) error {
 			ReservedSCID: s.reservedSCID,
 			Capacity:     capacity,
 			BackingFee:   s.channelBackingFee,
+			RecoveryID:   s.claimRecoveryID,
 			Input: CustomInput{
 				Outpoint: s.vhtlcOutpoint,
 				VTXOPolicyTemplate: append(

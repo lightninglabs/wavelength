@@ -9,6 +9,7 @@ import (
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/clock"
+	"github.com/lightningnetwork/lnd/keychain"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -18,9 +19,10 @@ const (
 	defaultOORChangeScriptLabel  = "oor change"
 )
 
-// NewReceiveScript allocates a fresh wallet key, registers the matching
-// taproot receive script with the indexer, and returns the script details
-// needed to hand this one-shot destination to a sender.
+// NewReceiveScript registers a wallet-owned taproot receive script and returns
+// the details needed to hand the destination to a sender. Ordinary callers get
+// a fresh key; protocol runtimes can explicitly register the durable identity
+// key when the destination must survive independent process restarts.
 func (r *RPCServer) NewReceiveScript(ctx context.Context,
 	req *waverpc.NewReceiveScriptRequest) (
 	*waverpc.NewReceiveScriptResponse, error) {
@@ -66,10 +68,26 @@ func (r *RPCServer) NewReceiveScript(ctx context.Context,
 		label = defaultOORReceiveScriptLabel
 	}
 
-	keyDesc, pkScript, err := CreateOORReceiveScript(
-		ctx, r.server.indexer, store, deriveNextKey, signerFactory,
-		terms.PubKey, terms.VTXOExitDelay, label,
-	)
+	var keyDesc *keychain.KeyDescriptor
+	var pkScript []byte
+	if req.GetIdentityKey() {
+		identityKey := r.server.clientKeyDesc
+		if identityKey.PubKey == nil {
+			return nil, status.Errorf(codes.Internal, "missing "+
+				"daemon identity key")
+		}
+
+		pkScript, err = RegisterOwnedOORReceiveScript(
+			ctx, r.server.indexer, store, identityKey,
+			signerFactory, terms.PubKey, terms.VTXOExitDelay, label,
+		)
+		keyDesc = &identityKey
+	} else {
+		keyDesc, pkScript, err = CreateOORReceiveScript(
+			ctx, r.server.indexer, store, deriveNextKey,
+			signerFactory, terms.PubKey, terms.VTXOExitDelay, label,
+		)
+	}
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "unable to create "+
 			"OOR receive script: %v", err)

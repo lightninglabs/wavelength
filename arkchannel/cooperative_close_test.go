@@ -7,19 +7,20 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/stretchr/testify/require"
 )
 
-// TestCooperativeCloseSettlesChannelVTXODirectly proves the immediate
-// three-party policy preserves lnd balances and spends the VTXO rather than the
-// unpublished channel point.
-func TestCooperativeCloseSettlesChannelVTXODirectly(t *testing.T) {
+// TestCooperativeCloseBuildsThreePartyOOR proves the no-delay 3-of-3 policy
+// authorizes an ordinary OOR transfer that preserves lnd balances and never
+// spends the unpublished channel point.
+func TestCooperativeCloseBuildsThreePartyOOR(t *testing.T) {
 	t.Parallel()
 
-	terms, source, request, clientKey, hubKey, operatorKey :=
+	terms, source, request, clientKey, hubKey, _ :=
 		testCooperativeCloseFixture(t, KindPromotion, 5_000)
 	const (
 		clientBalance = btcutil.Amount(63_000)
@@ -35,13 +36,25 @@ func TestCooperativeCloseSettlesChannelVTXODirectly(t *testing.T) {
 		t, terms.Capacity, proposal.ClientBalance+proposal.HubBalance,
 	)
 	require.Equal(
-		t, source.Amount-proposal.Fee,
-		proposal.ClientOutput+proposal.HubOutput,
+		t, source.Amount, proposal.ClientOutput+proposal.HubOutput,
+	)
+	require.Equal(t, clientBalance+5_000, proposal.ClientOutput)
+	require.Equal(t, hubBalance, proposal.HubOutput)
+
+	checkpoint, err := psbtutil.Parse(proposal.Transaction)
+	require.NoError(t, err)
+	require.Equal(
+		t, source.OutPoint,
+		checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint,
+	)
+	require.NotEqual(
+		t, testBacking(t, terms, source).ChannelPoint,
+		checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint,
 	)
 	require.Equal(
-		t, clientBalance+5_000-proposal.Fee, proposal.ClientOutput,
+		t, wire.MaxTxInSequenceNum,
+		checkpoint.UnsignedTx.TxIn[0].Sequence,
 	)
-	require.Equal(t, hubBalance, proposal.HubOutput)
 
 	clientSig := signCooperativeClose(
 		t, template, terms, PartyClient, clientKey,
@@ -53,45 +66,27 @@ func TestCooperativeCloseSettlesChannelVTXODirectly(t *testing.T) {
 		t, template, terms, PartyHub, hubKey,
 	)
 	require.NoError(t, template.VerifySignature(terms, PartyHub, hubSig))
-	wrongSig := signCooperativeClose(
-		t, template, terms, PartyHub, hubKey,
-	)
 	require.ErrorContains(
-		t, template.VerifySignature(terms, PartyClient, wrongSig),
+		t, template.VerifySignature(terms, PartyClient, hubSig),
 		"invalid client cooperative close signature",
 	)
-	operatorDesc, err := template.OperatorSignDescriptor(
-		terms, keychain.KeyDescriptor{
-			PubKey: operatorKey.PubKey(),
-		},
-	)
-	require.NoError(t, err)
-	operatorSig, err := input.NewMockSigner(
-		[]*btcec.PrivateKey{operatorKey}, nil,
-	).SignOutputRaw(
-		mustDecodeCooperativeClose(
-			t, proposal.Transaction,
-		), operatorDesc,
-	)
-	require.NoError(t, err)
 
-	settlement, err := template.Complete(
-		terms, source, request, clientSig, hubSig, operatorSig,
-	)
+	settlement, err := template.Complete(terms, source, request, hubSig)
 	require.NoError(t, err)
 	require.NoError(t, settlement.Validate(terms, source, request))
-	tx := mustDecodeCooperativeClose(t, settlement.Transaction)
-	require.Equal(t, source.OutPoint, tx.TxIn[0].PreviousOutPoint)
-	require.NotEqual(
-		t, testBacking(t, terms, source).ChannelPoint,
-		tx.TxIn[0].PreviousOutPoint,
-	)
-	require.Equal(t, settlement.TxID, tx.TxHash())
-	require.Len(t, tx.TxIn[0].Witness, 5)
+	require.Equal(t, hubSig.Serialize(), settlement.Transaction)
+	require.NotEqual(t, source.OutPoint.Hash, settlement.TxID)
+
+	spec, err := template.OORSpec()
+	require.NoError(t, err)
+	require.Len(t, spec.Recipients, 2)
+	path, err := arkscript.DecodeSpendPath(spec.SpendPath)
+	require.NoError(t, err)
+	require.Equal(t, wire.MaxTxInSequenceNum, path.RequiredSequence)
 }
 
-// TestCooperativeCloseReturnsReserveToHubFunder verifies the fee reserve never
-// changes the lnd balance allocation and follows the original OOR funder.
+// TestCooperativeCloseReturnsReserveToHubFunder verifies the backing reserve
+// never changes the lnd balance allocation and follows the original funder.
 func TestCooperativeCloseReturnsReserveToHubFunder(t *testing.T) {
 	t.Parallel()
 
@@ -104,13 +99,11 @@ func TestCooperativeCloseReturnsReserveToHubFunder(t *testing.T) {
 	require.NoError(t, err)
 	proposal := template.Proposal()
 	require.EqualValues(t, 25_000, proposal.ClientOutput)
-	require.Equal(
-		t, btcutil.Amount(79_000)-proposal.Fee, proposal.HubOutput,
-	)
+	require.Equal(t, btcutil.Amount(79_000), proposal.HubOutput)
 }
 
-// TestCooperativeCloseRejectsUnsafeSettlement verifies peers cannot sign a
-// changed payout or consume ordinary channel liquidity for the target fee.
+// TestCooperativeCloseRejectsUnsafeSettlement verifies peers cannot alter a
+// replacement amount or omit the backing reserve.
 func TestCooperativeCloseRejectsUnsafeSettlement(t *testing.T) {
 	t.Parallel()
 
@@ -128,20 +121,22 @@ func TestCooperativeCloseRejectsUnsafeSettlement(t *testing.T) {
 		"not canonical",
 	)
 
-	dustTemplate, err := NewCooperativeCloseTemplate(
+	smallTemplate, err := NewCooperativeCloseTemplate(
 		terms, source, request, 1, terms.Capacity-1, 4,
 	)
 	require.NoError(t, err)
-	dustProposal := dustTemplate.Proposal()
-	require.Zero(t, dustProposal.ClientOutput)
-	require.Equal(t, source.Amount,
-		dustProposal.HubOutput+dustProposal.Fee)
+	smallProposal := smallTemplate.Proposal()
+	require.EqualValues(t, 1, smallProposal.ClientOutput)
+	require.Equal(
+		t, source.Amount,
+		smallProposal.ClientOutput+smallProposal.HubOutput,
+	)
 
-	tooSmall := resizeCooperativeCloseSource(t, source, terms.Capacity+1)
+	tooSmall := resizeCooperativeCloseSource(t, source, terms.Capacity)
 	_, err = NewCooperativeCloseTemplate(
 		terms, tooSmall, request, 40_000, 60_000, 4,
 	)
-	require.ErrorContains(t, err, "exceeds reserve")
+	require.ErrorContains(t, err, "no backing reserve")
 }
 
 // TestCooperativeCloseRejectsWrongPolicyKey verifies role checking happens
@@ -188,9 +183,8 @@ func testCooperativeCloseFixture(t *testing.T, kind Kind,
 	)
 	request := CooperativeCloseRequest{
 		Initiator:            PartyClient,
-		ClientDeliveryScript: testCooperativeDeliveryScript(1),
-		HubDeliveryScript:    testCooperativeDeliveryScript(2),
-		FeeRate:              chainfee.SatPerKWeight(1_000),
+		ClientDeliveryScript: testCooperativeOwnerKey(1),
+		HubDeliveryScript:    testCooperativeOwnerKey(2),
 	}
 
 	return terms, source, request, clientKey, hubKey, operatorKey
@@ -202,7 +196,7 @@ func resizeCooperativeCloseSource(t *testing.T, source VTXOBinding,
 	amount btcutil.Amount) VTXOBinding {
 
 	t.Helper()
-	tx := mustDecodeCooperativeClose(t, source.ArkTransaction)
+	tx := mustDecodeTransaction(t, source.ArkTransaction)
 	tx.TxOut[source.OutPoint.Index].Value = int64(amount)
 	var raw bytes.Buffer
 	require.NoError(t, tx.Serialize(&raw))
@@ -215,9 +209,11 @@ func resizeCooperativeCloseSource(t *testing.T, source VTXOBinding,
 	return source
 }
 
-// testCooperativeDeliveryScript returns a standard P2WPKH output script.
-func testCooperativeDeliveryScript(tag byte) []byte {
-	return append([]byte{0x00, 0x14}, bytes.Repeat([]byte{tag}, 20)...)
+// testCooperativeOwnerKey returns a deterministic compressed account key.
+func testCooperativeOwnerKey(tag byte) []byte {
+	_, key := btcec.PrivKeyFromBytes(bytes.Repeat([]byte{tag}, 32))
+
+	return key.SerializeCompressed()
 }
 
 // signCooperativeClose signs one endpoint role with its Ark policy key.
@@ -234,54 +230,45 @@ func signCooperativeClose(t *testing.T, template *CooperativeCloseTemplate,
 	sig, err := input.NewMockSigner(
 		[]*btcec.PrivateKey{key}, nil,
 	).SignOutputRaw(
-		mustDecodeCooperativeClose(
-			t, template.Proposal().Transaction,
-		), desc,
+		mustDecodeCheckpoint(t, template.Proposal().Transaction), desc,
 	)
 	require.NoError(t, err)
 
 	return sig
 }
 
-// completeTestCooperativeClose signs all three immediate policy roles.
+// completeTestCooperativeClose records the hub's 3-of-3 OOR authorization.
+// The unused keys remain in the helper signature because state tests share the
+// full policy fixture.
 func completeTestCooperativeClose(t *testing.T,
 	template *CooperativeCloseTemplate, terms Terms, source VTXOBinding,
-	request CooperativeCloseRequest, clientKey, hubKey,
-	operatorKey *btcec.PrivateKey) CooperativeClose {
+	request CooperativeCloseRequest, _, hubKey,
+	_ *btcec.PrivateKey) CooperativeClose {
 
 	t.Helper()
-	clientSig := signCooperativeClose(
-		t, template, terms, PartyClient, clientKey,
-	)
 	hubSig := signCooperativeClose(
 		t, template, terms, PartyHub, hubKey,
 	)
-	operatorDesc, err := template.OperatorSignDescriptor(
-		terms, keychain.KeyDescriptor{
-			PubKey: operatorKey.PubKey(),
-		},
-	)
-	require.NoError(t, err)
-	operatorSig, err := input.NewMockSigner(
-		[]*btcec.PrivateKey{operatorKey}, nil,
-	).SignOutputRaw(
-		mustDecodeCooperativeClose(t, template.Proposal().Transaction),
-		operatorDesc,
-	)
-	require.NoError(t, err)
-	settlement, err := template.Complete(
-		terms, source, request, clientSig, hubSig, operatorSig,
-	)
+	settlement, err := template.Complete(terms, source, request, hubSig)
 	require.NoError(t, err)
 
 	return settlement
 }
 
-// mustDecodeCooperativeClose decodes a transaction fixture.
-func mustDecodeCooperativeClose(t *testing.T, raw []byte) *wire.MsgTx {
+// mustDecodeTransaction decodes a raw transaction fixture.
+func mustDecodeTransaction(t *testing.T, raw []byte) *wire.MsgTx {
 	t.Helper()
-	tx, err := decodeCooperativeCloseTransaction(raw)
-	require.NoError(t, err)
+	tx := wire.NewMsgTx(2)
+	require.NoError(t, tx.Deserialize(bytes.NewReader(raw)))
 
 	return tx
+}
+
+// mustDecodeCheckpoint returns an unsigned checkpoint transaction.
+func mustDecodeCheckpoint(t *testing.T, raw []byte) *wire.MsgTx {
+	t.Helper()
+	packet, err := psbtutil.Parse(raw)
+	require.NoError(t, err)
+
+	return packet.UnsignedTx
 }

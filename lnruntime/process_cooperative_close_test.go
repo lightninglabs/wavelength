@@ -7,8 +7,6 @@ import (
 
 	"github.com/lightninglabs/wavelength/arkchannel"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -104,13 +102,13 @@ type lossyCooperativeClosePeer struct {
 
 // BeginCooperativeClose can lose one response after the hub persisted it.
 func (p *lossyCooperativeClosePeer) BeginCooperativeClose(ctx context.Context,
-	id arkchannel.ID, clientScript []byte, feeRate chainfee.SatPerKWeight) (
+	id arkchannel.ID, clientScript []byte) (
 	arkchannel.CooperativeCloseRequest, CleanChannelState,
 	*arkchannel.CooperativeClose, error) {
 
 	request, state, settlement, err :=
 		p.ProcessCooperativeClosePeer.BeginCooperativeClose(
-			ctx, id, clientScript, feeRate,
+			ctx, id, clientScript,
 		)
 	if err != nil {
 		return request, state, settlement, err
@@ -130,12 +128,12 @@ func (p *lossyCooperativeClosePeer) BeginCooperativeClose(ctx context.Context,
 // CompleteCooperativeClose can lose one fully signed response after storage.
 func (p *lossyCooperativeClosePeer) CompleteCooperativeClose(
 	ctx context.Context, id arkchannel.ID,
-	proposal arkchannel.CooperativeCloseProposal,
-	clientSignature input.Signature) (arkchannel.CooperativeClose, error) {
+	proposal arkchannel.CooperativeCloseProposal) (
+	arkchannel.CooperativeClose, error) {
 
 	settlement, err :=
 		p.ProcessCooperativeClosePeer.CompleteCooperativeClose(
-			ctx, id, proposal, clientSignature,
+			ctx, id, proposal,
 		)
 	if err != nil {
 		return arkchannel.CooperativeClose{}, err

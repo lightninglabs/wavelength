@@ -4,13 +4,21 @@ package oorbridge
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightninglabs/wavelength/oor"
+	"github.com/lightninglabs/wavelength/vtxo"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 const defaultPollInterval = 50 * time.Millisecond
@@ -140,6 +148,133 @@ func (c *Controller) CommitPreparedOOR(ctx context.Context, id arkchannel.ID,
 	return c.waitForTerminal(ctx, id, source, false)
 }
 
+// SettleCooperativeClose spends the channel-policy VTXO through its no-delay
+// 3-of-3 path in the ordinary durable OOR protocol. The Ark operator signs the
+// checkpoint before the local actor adds the client's signature; the hub's
+// pre-authorized signature is supplied as external witness material.
+func (c *Controller) SettleCooperativeClose(ctx context.Context,
+	id arkchannel.ID, terms arkchannel.Terms, source arkchannel.VTXOBinding,
+	request arkchannel.CooperativeCloseRequest,
+	settlement arkchannel.CooperativeClose,
+	clientKey keychain.KeyDescriptor) error {
+
+	if id != terms.ID {
+		return fmt.Errorf("cooperative close channel ID does not match")
+	}
+	if err := settlement.Validate(terms, source, request); err != nil {
+		return err
+	}
+	template, err := arkchannel.NewCooperativeCloseTemplate(
+		terms, source, request, settlement.Proposal.ClientBalance,
+		settlement.Proposal.HubBalance,
+		settlement.Proposal.CommitmentHeight,
+	)
+	if err != nil {
+		return err
+	}
+	spec, err := template.OORSpec()
+	if err != nil {
+		return err
+	}
+	spendPath, err := arkscript.DecodeSpendPath(spec.SpendPath)
+	if err != nil {
+		return fmt.Errorf("decode cooperative close spend path: %w",
+			err)
+	}
+	clientPolicyKey, err := btcec.ParsePubKey(
+		terms.VTXO.ClientArkKey[:],
+	)
+	if err != nil {
+		return fmt.Errorf("parse client Ark key: %w", err)
+	}
+	if clientKey.PubKey == nil ||
+		!clientKey.PubKey.IsEqual(clientPolicyKey) {
+		return fmt.Errorf("cooperative close client key does not match")
+	}
+	operatorKey, err := btcec.ParsePubKey(terms.VTXO.ArkOperatorKey[:])
+	if err != nil {
+		return fmt.Errorf("parse Ark operator key: %w", err)
+	}
+	hubKey, err := btcec.ParsePubKey(terms.VTXO.HubArkKey[:])
+	if err != nil {
+		return fmt.Errorf("parse hub Ark key: %w", err)
+	}
+	transferInput := oor.TransferInput{
+		VTXO: &vtxo.Descriptor{
+			Outpoint: source.OutPoint, Amount: source.Amount,
+			PolicyTemplate: slices.Clone(source.PolicyTemplate),
+			PkScript:       slices.Clone(source.PkScript),
+			ClientKey:      clientKey,
+			OperatorKey:    operatorKey,
+			RelativeExpiry: terms.VTXO.MinExitDelay,
+		},
+		VTXOPolicyTemplate: slices.Clone(source.PolicyTemplate),
+		CustomSpend:        spendPath,
+		ExternalSignatures: []oor.ExternalTaprootScriptSignature{{
+			PubKey: hubKey, WitnessScript: slices.Clone(
+				spendPath.SpendInfo.WitnessScript,
+			),
+			Signature: slices.Clone(settlement.Transaction),
+			SigHash:   txscript.SigHashDefault,
+		}},
+	}
+	if err := transferInput.Validate(); err != nil {
+		return fmt.Errorf("validate cooperative close OOR input: %w",
+			err)
+	}
+
+	idempotencyKey := "ark-channel-close:" + hex.EncodeToString(id[:])
+	result := c.ref.Ask(actor.WithoutTx(ctx), &oor.StartTransferRequest{
+		Policy:         spec.CheckpointPolicy,
+		Inputs:         []oor.TransferInput{transferInput},
+		Recipients:     spec.Recipients,
+		IdempotencyKey: idempotencyKey,
+		PrepareOnly:    true,
+	}).Await(ctx)
+	response, err := result.Unpack()
+	if err != nil {
+		return fmt.Errorf("start cooperative close OOR: %w", err)
+	}
+	started, ok := response.(*oor.StartTransferResponse)
+	if !ok {
+		return fmt.Errorf("unexpected cooperative close OOR "+
+			"response %T", response)
+	}
+	if [32]byte(started.SessionID) != settlement.TxID {
+		return fmt.Errorf("cooperative close OOR session ID changed")
+	}
+	state, err := c.state(ctx, [32]byte(started.SessionID))
+	if err != nil {
+		return err
+	}
+	if prepared, ok := state.(*oor.Prepared); ok {
+		if len(prepared.CheckpointPSBTs) != 1 {
+			return fmt.Errorf("cooperative close OOR has %d "+
+				"checkpoints, expected one",
+				len(prepared.CheckpointPSBTs))
+		}
+		checkpoint, err := psbtutil.Serialize(
+			prepared.CheckpointPSBTs[0],
+		)
+		if err != nil {
+			return fmt.Errorf("serialize prepared cooperative "+
+				"close: %w", err)
+		}
+		if !bytes.Equal(checkpoint, settlement.Proposal.Transaction) {
+			return fmt.Errorf("prepared cooperative close " +
+				"checkpoint does not match hub authorization")
+		}
+		if err := c.driveSession(
+			ctx, [32]byte(started.SessionID),
+			&oor.CommitPreparedEvent{},
+		); err != nil {
+			return err
+		}
+	}
+
+	return c.waitForOORCompletion(ctx, [32]byte(started.SessionID))
+}
+
 // AbortPreparedOOR aborts only a pre-PONR transfer and waits until that fact is
 // durable before allowing lnd funding cancellation.
 func (c *Controller) AbortPreparedOOR(ctx context.Context, id arkchannel.ID,
@@ -165,8 +300,15 @@ func (c *Controller) AbortPreparedOOR(ctx context.Context, id arkchannel.ID,
 func (c *Controller) drive(ctx context.Context, source arkchannel.VTXOBinding,
 	event oor.Event) error {
 
+	return c.driveSession(ctx, source.OORSessionID, event)
+}
+
+// driveSession records one durable control event in the named OOR session.
+func (c *Controller) driveSession(ctx context.Context, sessionID [32]byte,
+	event oor.Event) error {
+
 	result := c.ref.Ask(actor.WithoutTx(ctx), &oor.DriveEventRequest{
-		SessionID: oor.SessionID(source.OORSessionID),
+		SessionID: oor.SessionID(sessionID),
 		Event:     event,
 	}).Await(ctx)
 	response, err := result.Unpack()
@@ -226,6 +368,45 @@ func (c *Controller) waitForTerminal(ctx context.Context, id arkchannel.ID,
 			return c.apply(ctx, id, &arkchannel.OORFinalized{
 				SessionID: source.OORSessionID,
 			})
+		}
+
+		timer := time.NewTimer(c.pollInterval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+
+			return ctx.Err()
+
+		case <-timer.C:
+		}
+	}
+}
+
+// waitForOORCompletion observes a cooperative-close OOR without emitting the
+// channel-creation OORFinalized event used by prepared funding sessions.
+func (c *Controller) waitForOORCompletion(ctx context.Context,
+	sessionID [32]byte) error {
+
+	for {
+		state, err := c.state(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+
+		switch state := state.(type) {
+		case *oor.Completed:
+			return nil
+
+		case *oor.Failed:
+			return fmt.Errorf("cooperative close OOR failed: %s",
+				state.Reason)
+
+		case oor.ReceiveState:
+			// The sender can also own one replacement output. Its
+			// incoming row may replace the completed outgoing row.
+			return nil
 		}
 
 		timer := time.NewTimer(c.pollInterval)

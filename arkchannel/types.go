@@ -115,15 +115,17 @@ const (
 	PhaseFailed
 
 	// PhaseCoopClosing means both endpoints must quiesce lnd and agree on
-	// one clean commitment state before signing a direct VTXO settlement.
+	// one clean commitment state before authorizing an ordinary OOR close.
 	PhaseCoopClosing
 
-	// PhaseCoopCloseSigned means the fully signed direct VTXO settlement is
-	// durable and must be published rather than materializing the backing.
+	// PhaseCoopCloseSigned means both endpoints durably stored the hub's
+	// authorization for the exact 3-of-3 OOR close. The historical name is
+	// retained because phase values are persisted.
 	PhaseCoopCloseSigned
 
-	// PhaseCoopClosePublished means the direct settlement confirmed through
-	// the unroller and both lnd databases must archive the channel.
+	// PhaseCoopClosePublished means the ordinary OOR close finalized and
+	// both lnd databases must archive the channel. The historical name is
+	// retained because phase values are persisted.
 	PhaseCoopClosePublished
 )
 
@@ -164,10 +166,10 @@ func (p Phase) String() string {
 		return "coop_closing"
 
 	case PhaseCoopCloseSigned:
-		return "coop_close_signed"
+		return "coop_close_authorized"
 
 	case PhaseCoopClosePublished:
-		return "coop_close_published"
+		return "coop_close_oor_finalized"
 
 	default:
 		return "unknown"

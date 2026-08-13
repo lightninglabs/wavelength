@@ -359,6 +359,7 @@ type Server struct {
 	arkChannelController     ArkChannelController
 	arkChannelMailboxRuntime *serverconn.Runtime
 	vhtlcRecovery            *coordinator.Service
+	vhtlcRecoveryTarget      *vhtlcRecoveryTargetMaterializer
 	vhtlcPreimages           *unrollpolicy.PreimageResolverRegistry
 
 	// ledgerStore exposes the client-side ledger DB adapter for
@@ -1613,6 +1614,17 @@ func (s *Server) startWalletReadyServices(ctx context.Context,
 	refreshCancel()
 	if refreshErr != nil {
 		return refreshErr
+	}
+
+	closeRegistrationCtx, closeRegistrationCancel := context.WithTimeout(
+		ctx, operatorTermsRefreshTimeout,
+	)
+	closeRegistrationErr := s.ensureConfiguredArkChannelCloseDelivery(
+		closeRegistrationCtx,
+	)
+	closeRegistrationCancel()
+	if closeRegistrationErr != nil {
+		return closeRegistrationErr
 	}
 
 	if err := s.replayPendingIntents(
@@ -5729,22 +5741,25 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		return fmt.Errorf("VTXO manager not initialized for vhtlc " +
 			"recovery")
 	}
+	recoveryTarget := newVHTLCRecoveryTargetMaterializer(
+		vtxoStore, oorStore, s.subLogger(VHTLCRecoverySubsystem),
+	)
 	recoverySvc, err := coordinator.NewService(coordinator.ServiceConfig{
 		Store:  recoveryStore,
 		Unroll: coordinator.NewActorUnrollRegistry(registry.Ref()),
 		Exiter: managerExitAdmitter{
 			mgr: s.vtxoMgrRef.UnsafeFromSome(),
 		},
-		Log: fn.Some(s.subLogger(VHTLCRecoverySubsystem)),
-		TargetMaterializer: newVHTLCRecoveryTargetMaterializer(
-			vtxoStore, oorStore,
+		Log: fn.Some(
 			s.subLogger(VHTLCRecoverySubsystem),
 		),
+		TargetMaterializer: recoveryTarget,
 	})
 	if err != nil {
 		return err
 	}
 	s.vhtlcRecovery = recoverySvc
+	s.vhtlcRecoveryTarget = recoveryTarget
 
 	err = s.initFraudWatcher(ctx, chainSourceRef)
 	if err != nil {

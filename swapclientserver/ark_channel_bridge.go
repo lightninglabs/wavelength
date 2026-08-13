@@ -60,8 +60,9 @@ func (b *arkChannelPaymentBridge) PromoteIncomingVHTLC(ctx context.Context,
 	record, err := b.rpc.PromoteArkChannelIncomingVHTLC(
 		ctx, request.PaymentHash, request.ReservedSCID,
 		request.Capacity, waved.ArkChannelClaimSource{
-			Outpoint: request.Input.Outpoint,
-			Amount:   btcutil.Amount(request.Input.AmountSat),
+			RecoveryID: request.RecoveryID,
+			Outpoint:   request.Input.Outpoint,
+			Amount:     btcutil.Amount(request.Input.AmountSat),
 			PolicyTemplate: append(
 				[]byte(nil),
 				request.Input.VTXOPolicyTemplate...,

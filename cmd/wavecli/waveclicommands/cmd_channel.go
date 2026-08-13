@@ -169,22 +169,18 @@ func newChannelPayCmd() *cobra.Command {
 
 // newChannelCloseCmd cooperatively closes one clean channel.
 func newChannelCloseCmd() *cobra.Command {
-	cmd := channelIDCommand(
+	return channelIDCommand(
 		"close <channel-id>", "Cooperatively close one channel", func(
 			cmd *cobra.Command,
 			client arkchannelrpc.ArkChannelServiceClient,
 			channelID []byte) error {
 
-			feeRate, _ := cmd.Flags().GetUint64(
-				"fee-rate-sat-per-kw",
-			)
 			ctx, cancel := rpcContext(cmd)
 			defer cancel()
 			resp, err := client.RequestCooperativeClose(
 				ctx,
 				&arkchannelrpc.RequestCooperativeCloseRequest{
-					ChannelId:       channelID,
-					FeeRateSatPerKw: feeRate,
+					ChannelId: channelID,
 				},
 			)
 			if err != nil {
@@ -194,10 +190,6 @@ func newChannelCloseCmd() *cobra.Command {
 			return printJSON(resp)
 		},
 	)
-	cmd.Flags().Uint64("fee-rate-sat-per-kw", 1_000,
-		"cooperative settlement fee rate")
-
-	return cmd
 }
 
 // newChannelForceCloseCmd materializes and force closes one channel.

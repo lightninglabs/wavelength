@@ -3,10 +3,10 @@ package waved
 import (
 	"context"
 	"fmt"
-	"math"
 	"path/filepath"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
@@ -36,6 +36,8 @@ const arkChannelMailboxRuntimePrefix = "arkchannel-serverconn-"
 
 const arkChannelControllerPollInterval = 25 * time.Millisecond
 
+const arkChannelCloseReceiveScriptLabel = "ark channel cooperative close"
+
 // ArkChannelLifecycleController owns channel creation, inspection, and close.
 type ArkChannelLifecycleController interface {
 	PromoteVTXO(context.Context, btcutil.Amount) (arkchannel.Record, error)
@@ -47,8 +49,8 @@ type ArkChannelLifecycleController interface {
 	MaterializeAndForceClose(context.Context, arkchannel.ID) (
 		arkchannel.Record, chainhash.Hash, chainhash.Hash, error)
 
-	RequestCooperativeClose(context.Context, arkchannel.ID,
-		chainfee.SatPerKWeight) (arkchannel.Record, error)
+	RequestCooperativeClose(context.Context,
+		arkchannel.ID) (arkchannel.Record, error)
 
 	GetChannel(context.Context, arkchannel.ID) (arkchannel.Record, error)
 
@@ -104,12 +106,20 @@ type ArkChannelOORPreparer func(context.Context, arkchannel.Terms,
 // ArkChannelClaimSource describes the exact vHTLC preimage input promoted by
 // a receive fallback. It contains no signing authority.
 type ArkChannelClaimSource struct {
+	RecoveryID     string
 	Outpoint       string
 	Amount         btcutil.Amount
 	PolicyTemplate []byte
 	SpendPath      []byte
 	PkScript       []byte
 }
+
+// ArkChannelClaimRootPreparer makes an externally described vHTLC available
+// to the generic channel recovery archive without exposing it as wallet
+// liquidity or starting unilateral recovery.
+type ArkChannelClaimRootPreparer func(context.Context, arkchannel.Terms,
+	ArkChannelClaimSource, arkchannel.ReceiveClaimRecoverySource,
+	arkchannel.RecoveryPackage) error
 
 // ArkChannelClaimOORPreparer prepares a channel OOR from an exact vHTLC claim
 // input without crossing its signing point of no return.
@@ -119,25 +129,27 @@ type ArkChannelClaimOORPreparer func(context.Context, arkchannel.Terms,
 // ArkChannelControllerConfig contains the process-owned dependencies supplied
 // after wallet, database, and authenticated swap-server transport startup.
 type ArkChannelControllerConfig struct {
-	Log             btclog.Logger
-	Store           *db.ArkChannelStoreDB
-	Peer            lnruntime.ProcessCooperativeClosePeer
-	PeerRPC         mailboxrpc.RPCClient
-	PeerSender      lnruntime.PeerEventSender
-	Wallet          *lwwallet.Wallet
-	ChainBackend    chainsource.ChainBackend
-	ChainNotifier   *chainbackends.BackendChainNotifier
-	FeeEstimator    *chainfees.BackendEstimator
-	OOR             *oorbridge.Controller
-	Materializer    *unrollbridge.Controller
-	Recovery        ArkChannelRecoveryController
-	OperatorTerms   *types.OperatorTerms
-	IdentityKey     keychain.KeyDescriptor
-	KeyIndex        uint32
-	NetParams       *chaincfg.Params
-	ChannelDataDir  string
-	PrepareOOR      ArkChannelOORPreparer
-	PrepareClaimOOR ArkChannelClaimOORPreparer
+	Log              btclog.Logger
+	Store            *db.ArkChannelStoreDB
+	Peer             lnruntime.ProcessCooperativeClosePeer
+	PeerRPC          mailboxrpc.RPCClient
+	PeerSender       lnruntime.PeerEventSender
+	Wallet           *lwwallet.Wallet
+	ChainBackend     chainsource.ChainBackend
+	ChainNotifier    *chainbackends.BackendChainNotifier
+	FeeEstimator     *chainfees.BackendEstimator
+	OOR              *oorbridge.Controller
+	Materializer     *unrollbridge.Controller
+	Recovery         ArkChannelRecoveryController
+	OperatorTerms    *types.OperatorTerms
+	IdentityKey      keychain.KeyDescriptor
+	OORDestination   *btcec.PublicKey
+	KeyIndex         uint32
+	NetParams        *chaincfg.Params
+	ChannelDataDir   string
+	PrepareOOR       ArkChannelOORPreparer
+	PrepareClaimRoot ArkChannelClaimRootPreparer
+	PrepareClaimOOR  ArkChannelClaimOORPreparer
 }
 
 // arkChannelRPCServer exposes the configured controller on waved's existing
@@ -310,26 +322,13 @@ func (s *arkChannelRPCServer) RequestCooperativeClose(ctx context.Context,
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if req.GetFeeRateSatPerKw() > math.MaxInt64 {
-		return nil, status.Error(
-			codes.InvalidArgument, "fee rate exceeds signed range",
-		)
-	}
-	feeRate := chainfee.SatPerKWeight(req.GetFeeRateSatPerKw())
-	if feeRate == 0 {
-		feeRate = chainfee.FeePerKwFloor
-	}
-	if feeRate < chainfee.FeePerKwFloor {
-		return nil, status.Errorf(codes.InvalidArgument, "fee rate is "+
-			"below floor %d", chainfee.FeePerKwFloor)
-	}
 	controller := s.server.getArkChannelController()
 	if controller == nil {
 		return nil, status.Error(
 			codes.Unavailable, "Ark channel runtime is not ready",
 		)
 	}
-	record, err := controller.RequestCooperativeClose(ctx, id, feeRate)
+	record, err := controller.RequestCooperativeClose(ctx, id)
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "request "+
 			"cooperative close: %v", err)
@@ -479,26 +478,28 @@ func (s *Server) initArkChannelProcess(ctx context.Context) error {
 	}
 	controller, err := NewClientArkChannelController(
 		ctx, ArkChannelControllerConfig{
-			Log:           s.subLogger(Subsystem),
-			Store:         s.arkChannelStore,
-			Peer:          peer,
-			PeerRPC:       runtime.Unary(),
-			PeerSender:    peerSender,
-			Wallet:        s.lwWallet.UnsafeFromSome(),
-			ChainBackend:  s.chainBackend,
-			ChainNotifier: chainNotifier,
-			FeeEstimator:  feeEstimator,
-			OOR:           oorController,
-			Materializer:  materializer,
-			Recovery:      recovery,
-			OperatorTerms: operatorTerms,
-			IdentityKey:   s.clientKeyDesc,
-			NetParams:     s.chainParams,
+			Log:            s.subLogger(Subsystem),
+			Store:          s.arkChannelStore,
+			Peer:           peer,
+			PeerRPC:        runtime.Unary(),
+			PeerSender:     peerSender,
+			Wallet:         s.lwWallet.UnsafeFromSome(),
+			ChainBackend:   s.chainBackend,
+			ChainNotifier:  chainNotifier,
+			FeeEstimator:   feeEstimator,
+			OOR:            oorController,
+			Materializer:   materializer,
+			Recovery:       recovery,
+			OperatorTerms:  operatorTerms,
+			IdentityKey:    s.clientKeyDesc,
+			OORDestination: s.clientKeyDesc.PubKey,
+			NetParams:      s.chainParams,
 			ChannelDataDir: filepath.Join(
 				s.cfg.DataDir, "ark-channels",
 			),
-			PrepareOOR:      s.prepareArkChannelOOR,
-			PrepareClaimOOR: s.prepareArkChannelClaimOOR,
+			PrepareOOR:       s.prepareArkChannelOOR,
+			PrepareClaimRoot: s.prepareArkChannelClaimRoot,
+			PrepareClaimOOR:  s.prepareArkChannelClaimOOR,
 		},
 	)
 	if err != nil {
@@ -522,6 +523,58 @@ func (s *Server) initArkChannelProcess(ctx context.Context) error {
 	}
 
 	s.setArkChannelProcess(runtime, controller)
+
+	return nil
+}
+
+// ensureConfiguredArkChannelCloseDelivery registers the close destination
+// once the main mailbox ingress is running. Registration is an indexer RPC and
+// therefore cannot run while wallet-dependent actors are still being built.
+func (s *Server) ensureConfiguredArkChannelCloseDelivery(
+	ctx context.Context) error {
+
+	if s.cfg.Swap == nil || s.cfg.Swap.ArkChannelMailbox == nil {
+		return nil
+	}
+	operatorTerms, err := s.fetchOperatorTerms(ctx)
+	if err != nil {
+		return fmt.Errorf("fetch Ark channel close terms: %w", err)
+	}
+
+	return s.ensureArkChannelCloseDelivery(ctx, operatorTerms)
+}
+
+// ensureArkChannelCloseDelivery registers the durable identity-backed VTXO
+// script before a close request can advertise it. The ordinary incoming OOR
+// actor then owns materialization and fraud recovery for the replacement.
+func (s *Server) ensureArkChannelCloseDelivery(ctx context.Context,
+	operatorTerms *types.OperatorTerms) error {
+
+	if s.indexer == nil {
+		return fmt.Errorf("Ark channel close requires the indexer")
+	}
+	if operatorTerms == nil || operatorTerms.PubKey == nil {
+		return fmt.Errorf("Ark channel close requires operator terms")
+	}
+	store, err := (&RPCServer{server: s}).newOORReceiveScriptStore()
+	if err != nil {
+		return fmt.Errorf("initialize Ark channel close receive "+
+			"store: %w", err)
+	}
+	signerFactory, err := s.indexerProofSignerFactory()
+	if err != nil {
+		return fmt.Errorf("initialize Ark channel close signer: %w",
+			err)
+	}
+	_, err = RegisterOwnedOORReceiveScript(
+		ctx, s.indexer, store, s.clientKeyDesc, signerFactory,
+		operatorTerms.PubKey, operatorTerms.VTXOExitDelay,
+		arkChannelCloseReceiveScriptLabel,
+	)
+	if err != nil {
+		return fmt.Errorf("register Ark channel close destination: %w",
+			err)
+	}
 
 	return nil
 }

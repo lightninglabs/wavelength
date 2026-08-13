@@ -160,7 +160,7 @@ func (s *Service) ResumeChannelAction(ctx context.Context, id ID) (Record,
 	return s.coordinator.Get(ctx, id)
 }
 
-// RequestCooperativeClose starts direct settlement of an active channel-policy
+// RequestCooperativeClose starts a 3-of-3 OOR spend of an active channel-policy
 // VTXO without materializing the unpublished lnd channel point.
 func (s *Service) RequestCooperativeClose(ctx context.Context, id ID,
 	request CooperativeCloseRequest) (Record, error) {

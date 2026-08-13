@@ -10,10 +10,10 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
 )
@@ -96,7 +96,7 @@ func TestArkChannelStoreRoundTrip(t *testing.T) {
 }
 
 // TestArkChannelStoreCooperativeCloseRoundTrip verifies the compact SQL facts
-// reconstruct and script-validate the exact signed direct VTXO settlement.
+// reconstruct and validate the exact hub-authorized OOR close.
 func TestArkChannelStoreCooperativeCloseRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -143,14 +143,9 @@ func TestArkChannelStoreCooperativeCloseRoundTrip(t *testing.T) {
 		require.NoError(t, err)
 	}
 	request := arkchannel.CooperativeCloseRequest{
-		Initiator: arkchannel.PartyClient,
-		ClientDeliveryScript: append(
-			[]byte{0x00, 0x14}, bytes.Repeat([]byte{1}, 20)...,
-		),
-		HubDeliveryScript: append(
-			[]byte{0x00, 0x14}, bytes.Repeat([]byte{2}, 20)...,
-		),
-		FeeRate: chainfee.SatPerKWeight(1_000),
+		Initiator:            arkchannel.PartyClient,
+		ClientDeliveryScript: clientKey.PubKey().SerializeCompressed(),
+		HubDeliveryScript:    hubKey.PubKey().SerializeCompressed(),
 	}
 	_, _, err = coordinator.Apply(
 		t.Context(), terms.ID, &arkchannel.RequestCooperativeClose{
@@ -162,26 +157,11 @@ func TestArkChannelStoreCooperativeCloseRoundTrip(t *testing.T) {
 		terms, binding, request, 70_000, 30_000, 9,
 	)
 	require.NoError(t, err)
-	clientSig := testArkChannelCloseSignature(
-		t, template, terms, arkchannel.PartyClient, clientKey,
-	)
 	hubSig := testArkChannelCloseSignature(
 		t, template, terms, arkchannel.PartyHub, hubKey,
 	)
-	operatorDesc, err := template.OperatorSignDescriptor(
-		terms, keychain.KeyDescriptor{
-			PubKey: operatorKey.PubKey(),
-		},
-	)
-	require.NoError(t, err)
-	operatorSig, err := input.NewMockSigner(
-		[]*btcec.PrivateKey{operatorKey}, nil,
-	).SignOutputRaw(
-		testArkChannelProposalTx(t, template.Proposal()), operatorDesc,
-	)
-	require.NoError(t, err)
 	settlement, err := template.Complete(
-		terms, binding, request, clientSig, hubSig, operatorSig,
+		terms, binding, request, hubSig,
 	)
 	require.NoError(t, err)
 	for _, event := range []arkchannel.Event{
@@ -435,18 +415,13 @@ func testArkChannelCloseSignature(t *testing.T,
 	return sig
 }
 
-// testArkChannelProposalTx decodes one unsigned close proposal.
+// testArkChannelProposalTx decodes one unsigned OOR checkpoint proposal.
 func testArkChannelProposalTx(t *testing.T,
 	proposal arkchannel.CooperativeCloseProposal) *wire.MsgTx {
 
 	t.Helper()
-	tx := wire.NewMsgTx(2)
-	require.NoError(
-		t,
-		tx.Deserialize(
-			bytes.NewReader(proposal.Transaction),
-		),
-	)
+	packet, err := psbtutil.Parse(proposal.Transaction)
+	require.NoError(t, err)
 
-	return tx
+	return packet.UnsignedTx
 }

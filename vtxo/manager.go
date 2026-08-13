@@ -2697,11 +2697,13 @@ func (m *Manager) handleCompleteSpend(ctx context.Context,
 	for _, op := range outpoints {
 		ref, ok := m.actors[op]
 		if !ok {
-			spent, err := m.isPersistedSpent(ctx, op)
+			completedWithoutActor, err := m.completePersistedSpend(
+				ctx, op,
+			)
 			if err != nil {
 				return fn.Err[ManagerResp](err)
 			}
-			if spent {
+			if completedWithoutActor {
 				m.dropReserved(op)
 				completed++
 
@@ -2738,15 +2740,17 @@ func (m *Manager) handleCompleteSpend(ctx context.Context,
 	})
 }
 
-// isPersistedSpent returns true when an actor was already cleaned up after
-// the spend status reached durable storage. It returns false with no error
-// when the VTXO is absent, and returns an error when the store cannot give a
-// definitive answer.
+// completePersistedSpend completes the two valid actorless spend cases. A
+// terminal Spent row means a previous attempt already completed. A
+// RecoveryOnly row deliberately has no VTXO actor because its application FSM
+// owns spend admission, so an accepted OOR spend retires it directly while
+// atomically releasing the durable spend reservation. Every other state still
+// requires its normal VTXO actor.
 //
 // This makes CompleteSpend idempotent across crashes that happen after the
 // VTXO status commit but before the OOR session checkpoints Completed.
-func (m *Manager) isPersistedSpent(ctx context.Context, op wire.OutPoint) (bool,
-	error) {
+func (m *Manager) completePersistedSpend(ctx context.Context,
+	op wire.OutPoint) (bool, error) {
 
 	if m.cfg.Store == nil {
 		return false, nil
@@ -2758,7 +2762,7 @@ func (m *Manager) isPersistedSpent(ctx context.Context, op wire.OutPoint) (bool,
 			return false, nil
 		}
 
-		return false, fmt.Errorf("load vtxo for spent check %s: %w", op,
+		return false, fmt.Errorf("load vtxo for completion %s: %w", op,
 			err)
 	}
 
@@ -2766,7 +2770,24 @@ func (m *Manager) isPersistedSpent(ctx context.Context, op wire.OutPoint) (bool,
 		return false, nil
 	}
 
-	return desc.Status == VTXOStatusSpent, nil
+	switch desc.Status {
+	case VTXOStatusSpent:
+		return true, nil
+
+	case VTXOStatusRecoveryOnly:
+		err := m.cfg.Store.UpdateVTXOStatusReleasingReservation(
+			ctx, op, VTXOStatusSpent,
+		)
+		if err != nil {
+			return false, fmt.Errorf("complete recovery-only vtxo "+
+				"%s: %w", op, err)
+		}
+
+		return true, nil
+
+	default:
+		return false, nil
+	}
 }
 
 // =============================================================================

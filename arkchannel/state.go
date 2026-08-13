@@ -492,12 +492,11 @@ func applySourceSpent(next *Snapshot, outpoint wire.OutPoint,
 	case PhaseActive:
 		next.Phase = PhaseMaterializing
 
-	case PhaseCoopClosing:
-		// A partially negotiated direct settlement cannot protect
-		// either endpoint once the source path starts confirming.
-		// Discard it and use the fully signed backing transaction
-		// instead. A settlement with both signatures has already
-		// advanced to CoopCloseSigned and remains authoritative below.
+	case PhaseCoopClosing, PhaseCoopCloseSigned:
+		// Until the OOR transfer itself is finalized, the hub signature
+		// is only an authorization and cannot supersede independently
+		// observed on-chain ancestry. Discard the pending close and
+		// hand the already signed backing transaction to lnd.
 		next.CooperativeCloseRequest = nil
 		next.CooperativeClose = nil
 		next.ClientCloseSigned = false
@@ -507,7 +506,6 @@ func applySourceSpent(next *Snapshot, outpoint wire.OutPoint,
 		next.Phase = PhaseMaterializing
 
 	case PhaseActivating, PhaseMaterializing, PhaseOnChain,
-		PhaseCoopCloseSigned,
 		PhaseCoopClosePublished, PhaseClosed:
 
 	default:
@@ -609,7 +607,7 @@ func applyBackingPublished(next *Snapshot, txID [32]byte) (bool, error) {
 
 // applyBackingObserved gives independently observed chain state precedence
 // over a virtual or unfinished cooperative lifecycle. A fully resolved lnd
-// channel proves any conflicting direct settlement can no longer confirm.
+// channel proves any conflicting OOR close can no longer finalize.
 func applyBackingObserved(next *Snapshot, txID [32]byte) (bool, error) {
 	if next.Backing == nil || next.Backing.ChannelPoint.Hash != txID {
 		return false, fmt.Errorf("observed backing transaction does " +
@@ -668,9 +666,9 @@ func applyCooperativeCloseRequest(next *Snapshot,
 	return true, nil
 }
 
-// applyCooperativeCloseSigned stores the fully signed settlement and one
-// endpoint's durable acknowledgement. Publication becomes replayable only
-// after both endpoint databases acknowledge the same transaction.
+// applyCooperativeCloseSigned stores the hub-authorized OOR close and one
+// endpoint's durable acknowledgement. OOR submission becomes replayable only
+// after both endpoint databases acknowledge the same artifact.
 func applyCooperativeCloseSigned(next *Snapshot, settlement CooperativeClose,
 	party Party) (bool, error) {
 
@@ -690,7 +688,7 @@ func applyCooperativeCloseSigned(next *Snapshot, settlement CooperativeClose,
 		next.Phase != PhaseCoopCloseSigned &&
 		next.Phase != PhaseCoopClosePublished &&
 		next.Phase != PhaseClosed {
-		return false, fmt.Errorf("cannot sign cooperative "+
+		return false, fmt.Errorf("cannot authorize cooperative "+
 			"close from %s", next.Phase)
 	}
 	changed := false
@@ -699,7 +697,7 @@ func applyCooperativeCloseSigned(next *Snapshot, settlement CooperativeClose,
 			*next.CooperativeClose, settlement,
 		) {
 			return false, fmt.Errorf("channel already has " +
-				"another cooperative close transaction")
+				"another cooperative close authorization")
 		}
 	} else {
 		clone := settlement.Clone()
@@ -729,23 +727,25 @@ func applyCooperativeCloseSigned(next *Snapshot, settlement CooperativeClose,
 	return changed, nil
 }
 
-// applyCooperativeClosePublished verifies the unroller confirmed the exact
-// direct VTXO settlement before lnd state can be archived.
+// applyCooperativeClosePublished verifies the ordinary OOR actor finalized the
+// exact close before lnd state can be archived. The historical function name
+// is retained because its event type predates the OOR implementation.
 func applyCooperativeClosePublished(next *Snapshot,
 	txID chainhash.Hash) (bool, error) {
 
 	if next.CooperativeClose == nil {
-		return false, fmt.Errorf("signed cooperative close is missing")
+		return false, fmt.Errorf("authorized cooperative close is " +
+			"missing")
 	}
 	if next.CooperativeClose.TxID != txID {
-		return false, fmt.Errorf("published cooperative close does " +
+		return false, fmt.Errorf("finalized cooperative close does " +
 			"not match")
 	}
 	if next.Phase == PhaseCoopClosePublished || next.Phase == PhaseClosed {
 		return false, nil
 	}
 	if next.Phase != PhaseCoopCloseSigned {
-		return false, fmt.Errorf("cannot publish cooperative "+
+		return false, fmt.Errorf("cannot finalize cooperative "+
 			"close from %s", next.Phase)
 	}
 	next.Phase = PhaseCoopClosePublished
@@ -790,8 +790,8 @@ func applyCooperativeCloseFinalized(next *Snapshot, party Party) (bool, error) {
 	return true, nil
 }
 
-// applyCooperativeCloseAborted permits recovery only before a fully signed
-// direct VTXO spend is durable.
+// applyCooperativeCloseAborted permits recovery only before the hub-authorized
+// OOR package is durable at both endpoints.
 func applyCooperativeCloseAborted(next *Snapshot) (bool, error) {
 	if next.Phase == PhaseActive && next.CooperativeCloseRequest == nil {
 		return false, nil
@@ -1116,7 +1116,7 @@ func validateSnapshot(snapshot Snapshot) error {
 }
 
 // validateCooperativeCloseSnapshot checks artifacts and acknowledgements owned
-// by the direct settlement lifecycle.
+// by the in-Ark OOR close lifecycle.
 func validateCooperativeCloseSnapshot(snapshot Snapshot) error {
 	if snapshot.CooperativeCloseRequest != nil {
 		request := snapshot.CooperativeCloseRequest
@@ -1174,7 +1174,7 @@ func validateCooperativeCloseSnapshot(snapshot Snapshot) error {
 			!snapshot.HubCloseSigned ||
 			snapshot.ClientCloseFinalized ||
 			snapshot.HubCloseFinalized {
-			return fmt.Errorf("signed cooperative close has " +
+			return fmt.Errorf("authorized cooperative close has " +
 				"invalid facts")
 		}
 
@@ -1182,7 +1182,7 @@ func validateCooperativeCloseSnapshot(snapshot Snapshot) error {
 		if snapshot.CooperativeClose == nil ||
 			!snapshot.ClientCloseSigned ||
 			!snapshot.HubCloseSigned {
-			return fmt.Errorf("published cooperative close is " +
+			return fmt.Errorf("finalized cooperative close is " +
 				"missing")
 		}
 
@@ -1233,24 +1233,24 @@ func backingsEqual(a, b Backing) bool {
 
 // cooperativeCloseRequestsEqual checks immutable payout instructions.
 func cooperativeCloseRequestsEqual(a, b CooperativeCloseRequest) bool {
-	return a.Initiator == b.Initiator && a.FeeRate == b.FeeRate &&
+	return a.Initiator == b.Initiator &&
 		string(a.ClientDeliveryScript) ==
 			string(b.ClientDeliveryScript) &&
 		string(a.HubDeliveryScript) == string(b.HubDeliveryScript)
 }
 
-// cooperativeClosesEqual checks the complete signed settlement artifact.
+// cooperativeClosesEqual checks the hub-authorized OOR close artifact.
 func cooperativeClosesEqual(a, b CooperativeClose) bool {
 	return a.TxID == b.TxID &&
 		cooperativeCloseProposalsEqual(a.Proposal, b.Proposal)
 }
 
-// cooperativeCloseProposalsEqual checks canonical unsigned settlement facts.
+// cooperativeCloseProposalsEqual checks canonical unsigned OOR facts.
 func cooperativeCloseProposalsEqual(a, b CooperativeCloseProposal) bool {
 	return a.CommitmentHeight == b.CommitmentHeight &&
 		a.ClientBalance == b.ClientBalance &&
 		a.HubBalance == b.HubBalance &&
 		a.ClientOutput == b.ClientOutput &&
 		a.HubOutput == b.HubOutput &&
-		a.Fee == b.Fee && string(a.Transaction) == string(b.Transaction)
+		string(a.Transaction) == string(b.Transaction)
 }
