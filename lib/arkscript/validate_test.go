@@ -5,6 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/internal/testutils"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
@@ -258,6 +259,42 @@ func TestValidatePolicy(t *testing.T) {
 
 		err := ValidatePolicy([]Node{collabNode, exitNode}, opts)
 		require.ErrorContains(t, err, "OP_SUCCESS")
+	})
+
+	t.Run("noncanonical CSV exit rejected", func(t *testing.T) {
+		t.Parallel()
+
+		collabNode := &Multisig{
+			Keys: []*btcec.PublicKey{
+				owner,
+				operator,
+			},
+		}
+
+		locks := []uint32{
+			0,
+			wire.SequenceLockTimeDisabled | 144,
+			wire.SequenceLockTimeIsSeconds | 1,
+			uint32(1)<<16 | 1,
+		}
+		for _, lock := range locks {
+			exitNode := &CSV{
+				Lock: lock,
+				Inner: &Multisig{
+					Keys: []*btcec.PublicKey{
+						owner,
+					},
+				},
+			}
+
+			err := ValidatePolicy(
+				[]Node{collabNode, exitNode}, opts,
+			)
+			require.ErrorContains(
+				t, err, "canonical block delay", "lock 0x%x",
+				lock,
+			)
+		}
 	})
 
 	t.Run("collab leaf missing operator key", func(t *testing.T) {

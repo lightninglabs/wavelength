@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/internal/testutils"
 	"github.com/stretchr/testify/require"
 )
@@ -122,6 +123,42 @@ func TestCSVNilInner(t *testing.T) {
 	_, err := node.Script()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "inner node is nil")
+}
+
+// TestCSVRejectsNonCanonicalLock verifies that CSV compilation accepts only
+// canonical, non-zero block-mode BIP-68 values. Every bit above the consensus
+// value mask either changes units, disables CSV, or is ignored by consensus.
+func TestCSVRejectsNonCanonicalLock(t *testing.T) {
+	t.Parallel()
+
+	key, _ := testutils.CreateKey(1)
+	compile := func(lock uint32) error {
+		node := &CSV{
+			Lock: lock,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{
+					key,
+				},
+			},
+		}
+
+		_, err := node.Script()
+
+		return err
+	}
+
+	require.ErrorContains(t, compile(0), "canonical block delay")
+
+	for bit := 16; bit < 32; bit++ {
+		lock := uint32(144) | uint32(1)<<bit
+		err := compile(lock)
+		require.ErrorContains(
+			t, err, "canonical block delay", "bit %d", bit,
+		)
+	}
+
+	require.NoError(t, compile(1))
+	require.NoError(t, compile(uint32(wire.SequenceLockTimeMask)))
 }
 
 // TestAbsoluteLockTimeCondition tests the opaque absolute locktime prefix.

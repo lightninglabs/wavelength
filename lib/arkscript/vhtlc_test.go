@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/internal/testutils"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
@@ -487,4 +488,43 @@ func TestVHTLCValidation(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "refund locktime")
 	})
+
+	delayFields := []struct {
+		name string
+		set  func(*VHTLCOpts)
+	}{
+		{
+			"unilateral claim delay",
+			func(o *VHTLCOpts) {
+				o.UnilateralClaimDelay =
+					uint32(wire.SequenceLockTimeMask) + 1
+			},
+		},
+		{
+			"unilateral refund delay",
+			func(o *VHTLCOpts) {
+				o.UnilateralRefundDelay =
+					uint32(wire.SequenceLockTimeMask) + 1
+			},
+		},
+		{
+			"unilateral refund without receiver delay",
+			func(o *VHTLCOpts) {
+				o.UnilateralRefundWithoutReceiverDelay =
+					uint32(wire.SequenceLockTimeMask) + 1
+			},
+		},
+	}
+	for _, field := range delayFields {
+		field := field
+		t.Run(field.name+" too large", func(t *testing.T) {
+			t.Parallel()
+
+			bad := opts
+			field.set(&bad)
+			_, err := NewVHTLCPolicy(bad)
+			require.ErrorContains(t, err, field.name)
+			require.ErrorContains(t, err, "canonical block delay")
+		})
+	}
 }

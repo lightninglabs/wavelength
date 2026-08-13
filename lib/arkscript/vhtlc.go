@@ -349,6 +349,30 @@ func (opts *VHTLCOpts) validate() error {
 			"delay must be non-zero")
 	}
 
+	delays := []struct {
+		name  string
+		value uint32
+	}{
+		{
+			"unilateral claim delay",
+			opts.UnilateralClaimDelay,
+		},
+		{
+			"unilateral refund delay",
+			opts.UnilateralRefundDelay,
+		},
+		{
+			"unilateral refund without receiver delay",
+			opts.UnilateralRefundWithoutReceiverDelay,
+		},
+	}
+	for _, delay := range delays {
+		if err := validateCSVLock(delay.value); err != nil {
+			return fmt.Errorf("vhtlc: invalid %s: %w", delay.name,
+				err)
+		}
+	}
+
 	return nil
 }
 

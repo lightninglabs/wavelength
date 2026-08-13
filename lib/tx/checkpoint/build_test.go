@@ -114,3 +114,29 @@ func TestBuildPSBTRejectsMissingWitness(t *testing.T) {
 	_, err = BuildPSBT(policy, Input{})
 	require.Error(t, err)
 }
+
+// TestBuildPSBTRejectsNonCanonicalCSV verifies that the checkpoint builder
+// propagates the shared arkscript CSV invariant instead of constructing an
+// operator timeout leaf whose apparent delay differs from consensus.
+func TestBuildPSBTRejectsNonCanonicalCSV(t *testing.T) {
+	t.Parallel()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	result, err := BuildPSBT(arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    uint32(wire.SequenceLockTimeMask) + 1,
+	}, Input{
+		SpentVTXO: SpentVTXORef{
+			Outpoint: wire.OutPoint{Index: 1},
+			Output: &wire.TxOut{
+				Value:    5000,
+				PkScript: randomP2TRScript(t),
+			},
+		},
+		OwnerLeafScript: []byte{txscript.OP_TRUE},
+	})
+	require.ErrorContains(t, err, "canonical block delay")
+	require.Nil(t, result)
+}

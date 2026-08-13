@@ -86,12 +86,12 @@ witness script on the stack).
 
 ```go
 type CSV struct {
-    Lock  uint32  // BIP-68 encoded sequence value
+    Lock  uint32  // canonical block-mode BIP-68 value, 1..65535
     Inner Node
 }
 ```
 
-Script encoding (from `CSV.Script`, `lib/arkscript/node.go:82-101`):
+Script encoding (from `CSV.Script` in `lib/arkscript/node.go`):
 
 ```
 <inner> <lock> OP_CHECKSEQUENCEVERIFY OP_DROP
@@ -100,7 +100,9 @@ Script encoding (from `CSV.Script`, `lib/arkscript/node.go:82-101`):
 At runtime the spending transaction's input `nSequence` must satisfy the
 BIP-68 relative-lock relation to the UTXO's confirmation height. Callers
 read the required sequence from a `SpendPath.RequiredSequence` computed by
-`DeriveSequence` (see §6).
+`DeriveSequence` (see §6). Ark policies support block-mode CSV only. Compilation
+rejects zero, the time-mode and disable flags, and every reserved high bit so
+policy validation compares exactly the value consensus enforces.
 
 #### `Condition` — generic predicate prefix
 
