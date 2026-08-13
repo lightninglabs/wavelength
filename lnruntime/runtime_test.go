@@ -65,6 +65,91 @@ func TestRuntimeStartsNativeSubsystems(t *testing.T) {
 	require.GreaterOrEqual(t, notifier.epochRegistrations.Load(), int32(2))
 }
 
+// TestForceCloseSingleFlight verifies duplicate RPC delivery joins the request
+// already blocked in Ark materialization instead of entering lnd twice.
+func TestForceCloseSingleFlight(t *testing.T) {
+	t.Parallel()
+
+	channelPoint := wire.OutPoint{Index: 7}
+	runtime := &Runtime{}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	closeTx := wire.NewMsgTx(2)
+	var calls atomic.Int32
+	forceClose := func() (*wire.MsgTx, error) {
+		calls.Add(1)
+		close(started)
+		<-release
+
+		return closeTx, nil
+	}
+	type result struct {
+		tx  *wire.MsgTx
+		err error
+	}
+	results := make(chan result, 2)
+	request := func() {
+		tx, err := runtime.runForceClose(channelPoint, forceClose)
+		results <- result{tx: tx, err: err}
+	}
+
+	go request()
+	<-started
+	go request()
+
+	require.NoError(t, runtime.ResumeForceCloseChannel(channelPoint))
+	require.True(t, runtime.forceCloseIsActive(channelPoint))
+	close(release)
+	for range 2 {
+		outcome := <-results
+		require.NoError(t, outcome.err)
+		require.Same(t, closeTx, outcome.tx)
+	}
+	require.Equal(t, int32(1), calls.Load())
+	require.False(t, runtime.forceCloseIsActive(channelPoint))
+}
+
+// TestForceCloseSummaryTxID accepts only an exact local or remote force-close
+// record as proof that a competing endpoint completed the close.
+func TestForceCloseSummaryTxID(t *testing.T) {
+	t.Parallel()
+
+	channelPoint := wire.OutPoint{Index: 7}
+	closingTxID := chainhash.Hash{1}
+	for _, closeType := range []channeldb.ClosureType{
+		channeldb.LocalForceClose, channeldb.RemoteForceClose,
+	} {
+		summary := &channeldb.ChannelCloseSummary{
+			ChanPoint:   channelPoint,
+			ClosingTXID: closingTxID,
+			CloseType:   closeType,
+		}
+		result, err := forceCloseSummaryTxID(summary, channelPoint)
+		require.NoError(t, err)
+		require.Equal(t, closingTxID, result)
+	}
+
+	_, err := forceCloseSummaryTxID(&channeldb.ChannelCloseSummary{
+		ChanPoint:   channelPoint,
+		ClosingTXID: closingTxID,
+		CloseType:   channeldb.CooperativeClose,
+	}, channelPoint)
+	require.ErrorContains(t, err, "not a force close")
+
+	_, err = forceCloseSummaryTxID(&channeldb.ChannelCloseSummary{
+		ChanPoint:   wire.OutPoint{Index: 8},
+		ClosingTXID: closingTxID,
+		CloseType:   channeldb.RemoteForceClose,
+	}, channelPoint)
+	require.ErrorContains(t, err, "summary is for")
+
+	_, err = forceCloseSummaryTxID(&channeldb.ChannelCloseSummary{
+		ChanPoint: channelPoint,
+		CloseType: channeldb.LocalForceClose,
+	}, channelPoint)
+	require.ErrorContains(t, err, "transaction ID is missing")
+}
+
 // TestRuntimePaysOverNativeChannelLinks proves Wavelength can run lnd's
 // channel and payment state machines without the lnd daemon or peer manager.
 func TestRuntimePaysOverNativeChannelLinks(t *testing.T) {

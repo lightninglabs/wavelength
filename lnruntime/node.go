@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightningnetwork/lnd/chainntnfs"
@@ -458,6 +459,14 @@ func (n *NativeNode) ForceCloseChannel(channelPoint wire.OutPoint) (*wire.MsgTx,
 	error) {
 
 	return n.runtime.ForceCloseChannel(channelPoint)
+}
+
+// WaitForceCloseResult returns the commitment transaction lnd durably
+// classified after either endpoint won a force-close publication race.
+func (n *NativeNode) WaitForceCloseResult(ctx context.Context,
+	channelPoint wire.OutPoint) (chainhash.Hash, error) {
+
+	return n.runtime.WaitForceCloseResult(ctx, channelPoint)
 }
 
 // ResumeForceCloseChannel reconciles an already materialized channel with
