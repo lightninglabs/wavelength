@@ -665,21 +665,23 @@ var ArkChannelPeerService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	ArkChannelFundingPeerService_GetPeerInfo_FullMethodName                = "/arkchannelrpc.ArkChannelFundingPeerService/GetPeerInfo"
-	ArkChannelFundingPeerService_RegisterPromotion_FullMethodName          = "/arkchannelrpc.ArkChannelFundingPeerService/RegisterPromotion"
-	ArkChannelFundingPeerService_BindPreparedOOR_FullMethodName            = "/arkchannelrpc.ArkChannelFundingPeerService/BindPreparedOOR"
-	ArkChannelFundingPeerService_SignBacking_FullMethodName                = "/arkchannelrpc.ArkChannelFundingPeerService/SignBacking"
-	ArkChannelFundingPeerService_InstallBacking_FullMethodName             = "/arkchannelrpc.ArkChannelFundingPeerService/InstallBacking"
-	ArkChannelFundingPeerService_InstallRecoveryPackage_FullMethodName     = "/arkchannelrpc.ArkChannelFundingPeerService/InstallRecoveryPackage"
-	ArkChannelFundingPeerService_ExportReceiveClaimRecovery_FullMethodName = "/arkchannelrpc.ArkChannelFundingPeerService/ExportReceiveClaimRecovery"
-	ArkChannelFundingPeerService_FundingFinalized_FullMethodName           = "/arkchannelrpc.ArkChannelFundingPeerService/FundingFinalized"
-	ArkChannelFundingPeerService_ChannelActive_FullMethodName              = "/arkchannelrpc.ArkChannelFundingPeerService/ChannelActive"
-	ArkChannelFundingPeerService_ApplyChannelEvent_FullMethodName          = "/arkchannelrpc.ArkChannelFundingPeerService/ApplyChannelEvent"
-	ArkChannelFundingPeerService_CreateInvoice_FullMethodName              = "/arkchannelrpc.ArkChannelFundingPeerService/CreateInvoice"
-	ArkChannelFundingPeerService_PayInvoice_FullMethodName                 = "/arkchannelrpc.ArkChannelFundingPeerService/PayInvoice"
-	ArkChannelFundingPeerService_PrepareOutgoingPayment_FullMethodName     = "/arkchannelrpc.ArkChannelFundingPeerService/PrepareOutgoingPayment"
-	ArkChannelFundingPeerService_CancelOutgoingPayment_FullMethodName      = "/arkchannelrpc.ArkChannelFundingPeerService/CancelOutgoingPayment"
-	ArkChannelFundingPeerService_RegisterIncomingPayment_FullMethodName    = "/arkchannelrpc.ArkChannelFundingPeerService/RegisterIncomingPayment"
+	ArkChannelFundingPeerService_GetPeerInfo_FullMethodName             = "/arkchannelrpc.ArkChannelFundingPeerService/GetPeerInfo"
+	ArkChannelFundingPeerService_RegisterPromotion_FullMethodName       = "/arkchannelrpc.ArkChannelFundingPeerService/RegisterPromotion"
+	ArkChannelFundingPeerService_RegisterReceiveIntent_FullMethodName   = "/arkchannelrpc.ArkChannelFundingPeerService/RegisterReceiveIntent"
+	ArkChannelFundingPeerService_GetFundingChannel_FullMethodName       = "/arkchannelrpc.ArkChannelFundingPeerService/GetFundingChannel"
+	ArkChannelFundingPeerService_BindPreparedOOR_FullMethodName         = "/arkchannelrpc.ArkChannelFundingPeerService/BindPreparedOOR"
+	ArkChannelFundingPeerService_SignBacking_FullMethodName             = "/arkchannelrpc.ArkChannelFundingPeerService/SignBacking"
+	ArkChannelFundingPeerService_InstallBacking_FullMethodName          = "/arkchannelrpc.ArkChannelFundingPeerService/InstallBacking"
+	ArkChannelFundingPeerService_InstallRecoveryPackage_FullMethodName  = "/arkchannelrpc.ArkChannelFundingPeerService/InstallRecoveryPackage"
+	ArkChannelFundingPeerService_ExportRecoveryPackage_FullMethodName   = "/arkchannelrpc.ArkChannelFundingPeerService/ExportRecoveryPackage"
+	ArkChannelFundingPeerService_FundingFinalized_FullMethodName        = "/arkchannelrpc.ArkChannelFundingPeerService/FundingFinalized"
+	ArkChannelFundingPeerService_ChannelActive_FullMethodName           = "/arkchannelrpc.ArkChannelFundingPeerService/ChannelActive"
+	ArkChannelFundingPeerService_ApplyChannelEvent_FullMethodName       = "/arkchannelrpc.ArkChannelFundingPeerService/ApplyChannelEvent"
+	ArkChannelFundingPeerService_CreateInvoice_FullMethodName           = "/arkchannelrpc.ArkChannelFundingPeerService/CreateInvoice"
+	ArkChannelFundingPeerService_PayInvoice_FullMethodName              = "/arkchannelrpc.ArkChannelFundingPeerService/PayInvoice"
+	ArkChannelFundingPeerService_PrepareOutgoingPayment_FullMethodName  = "/arkchannelrpc.ArkChannelFundingPeerService/PrepareOutgoingPayment"
+	ArkChannelFundingPeerService_CancelOutgoingPayment_FullMethodName   = "/arkchannelrpc.ArkChannelFundingPeerService/CancelOutgoingPayment"
+	ArkChannelFundingPeerService_RegisterIncomingPayment_FullMethodName = "/arkchannelrpc.ArkChannelFundingPeerService/RegisterIncomingPayment"
 )
 
 // ArkChannelFundingPeerServiceClient is the client API for ArkChannelFundingPeerService service.
@@ -692,11 +694,13 @@ const (
 type ArkChannelFundingPeerServiceClient interface {
 	GetPeerInfo(ctx context.Context, in *GetPeerInfoRequest, opts ...grpc.CallOption) (*GetPeerInfoResponse, error)
 	RegisterPromotion(ctx context.Context, in *RegisterPromotionRequest, opts ...grpc.CallOption) (*RegisterPromotionResponse, error)
+	RegisterReceiveIntent(ctx context.Context, in *RegisterReceiveIntentRequest, opts ...grpc.CallOption) (*RegisterReceiveIntentResponse, error)
+	GetFundingChannel(ctx context.Context, in *GetFundingChannelRequest, opts ...grpc.CallOption) (*GetFundingChannelResponse, error)
 	BindPreparedOOR(ctx context.Context, in *BindPreparedOORRequest, opts ...grpc.CallOption) (*BindPreparedOORResponse, error)
 	SignBacking(ctx context.Context, in *SignBackingRequest, opts ...grpc.CallOption) (*SignBackingResponse, error)
 	InstallBacking(ctx context.Context, in *InstallBackingRequest, opts ...grpc.CallOption) (*InstallBackingResponse, error)
 	InstallRecoveryPackage(ctx context.Context, in *InstallRecoveryPackageRequest, opts ...grpc.CallOption) (*InstallRecoveryPackageResponse, error)
-	ExportReceiveClaimRecovery(ctx context.Context, in *ExportReceiveClaimRecoveryRequest, opts ...grpc.CallOption) (*ExportReceiveClaimRecoveryResponse, error)
+	ExportRecoveryPackage(ctx context.Context, in *ExportRecoveryPackageRequest, opts ...grpc.CallOption) (*ExportRecoveryPackageResponse, error)
 	FundingFinalized(ctx context.Context, in *FundingStatusRequest, opts ...grpc.CallOption) (*FundingStatusResponse, error)
 	ChannelActive(ctx context.Context, in *FundingStatusRequest, opts ...grpc.CallOption) (*FundingStatusResponse, error)
 	ApplyChannelEvent(ctx context.Context, in *ApplyChannelEventRequest, opts ...grpc.CallOption) (*ApplyChannelEventResponse, error)
@@ -729,6 +733,26 @@ func (c *arkChannelFundingPeerServiceClient) RegisterPromotion(ctx context.Conte
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RegisterPromotionResponse)
 	err := c.cc.Invoke(ctx, ArkChannelFundingPeerService_RegisterPromotion_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *arkChannelFundingPeerServiceClient) RegisterReceiveIntent(ctx context.Context, in *RegisterReceiveIntentRequest, opts ...grpc.CallOption) (*RegisterReceiveIntentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RegisterReceiveIntentResponse)
+	err := c.cc.Invoke(ctx, ArkChannelFundingPeerService_RegisterReceiveIntent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *arkChannelFundingPeerServiceClient) GetFundingChannel(ctx context.Context, in *GetFundingChannelRequest, opts ...grpc.CallOption) (*GetFundingChannelResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetFundingChannelResponse)
+	err := c.cc.Invoke(ctx, ArkChannelFundingPeerService_GetFundingChannel_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -775,10 +799,10 @@ func (c *arkChannelFundingPeerServiceClient) InstallRecoveryPackage(ctx context.
 	return out, nil
 }
 
-func (c *arkChannelFundingPeerServiceClient) ExportReceiveClaimRecovery(ctx context.Context, in *ExportReceiveClaimRecoveryRequest, opts ...grpc.CallOption) (*ExportReceiveClaimRecoveryResponse, error) {
+func (c *arkChannelFundingPeerServiceClient) ExportRecoveryPackage(ctx context.Context, in *ExportRecoveryPackageRequest, opts ...grpc.CallOption) (*ExportRecoveryPackageResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ExportReceiveClaimRecoveryResponse)
-	err := c.cc.Invoke(ctx, ArkChannelFundingPeerService_ExportReceiveClaimRecovery_FullMethodName, in, out, cOpts...)
+	out := new(ExportRecoveryPackageResponse)
+	err := c.cc.Invoke(ctx, ArkChannelFundingPeerService_ExportRecoveryPackage_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -875,11 +899,13 @@ func (c *arkChannelFundingPeerServiceClient) RegisterIncomingPayment(ctx context
 type ArkChannelFundingPeerServiceServer interface {
 	GetPeerInfo(context.Context, *GetPeerInfoRequest) (*GetPeerInfoResponse, error)
 	RegisterPromotion(context.Context, *RegisterPromotionRequest) (*RegisterPromotionResponse, error)
+	RegisterReceiveIntent(context.Context, *RegisterReceiveIntentRequest) (*RegisterReceiveIntentResponse, error)
+	GetFundingChannel(context.Context, *GetFundingChannelRequest) (*GetFundingChannelResponse, error)
 	BindPreparedOOR(context.Context, *BindPreparedOORRequest) (*BindPreparedOORResponse, error)
 	SignBacking(context.Context, *SignBackingRequest) (*SignBackingResponse, error)
 	InstallBacking(context.Context, *InstallBackingRequest) (*InstallBackingResponse, error)
 	InstallRecoveryPackage(context.Context, *InstallRecoveryPackageRequest) (*InstallRecoveryPackageResponse, error)
-	ExportReceiveClaimRecovery(context.Context, *ExportReceiveClaimRecoveryRequest) (*ExportReceiveClaimRecoveryResponse, error)
+	ExportRecoveryPackage(context.Context, *ExportRecoveryPackageRequest) (*ExportRecoveryPackageResponse, error)
 	FundingFinalized(context.Context, *FundingStatusRequest) (*FundingStatusResponse, error)
 	ChannelActive(context.Context, *FundingStatusRequest) (*FundingStatusResponse, error)
 	ApplyChannelEvent(context.Context, *ApplyChannelEventRequest) (*ApplyChannelEventResponse, error)
@@ -904,6 +930,12 @@ func (UnimplementedArkChannelFundingPeerServiceServer) GetPeerInfo(context.Conte
 func (UnimplementedArkChannelFundingPeerServiceServer) RegisterPromotion(context.Context, *RegisterPromotionRequest) (*RegisterPromotionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RegisterPromotion not implemented")
 }
+func (UnimplementedArkChannelFundingPeerServiceServer) RegisterReceiveIntent(context.Context, *RegisterReceiveIntentRequest) (*RegisterReceiveIntentResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RegisterReceiveIntent not implemented")
+}
+func (UnimplementedArkChannelFundingPeerServiceServer) GetFundingChannel(context.Context, *GetFundingChannelRequest) (*GetFundingChannelResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetFundingChannel not implemented")
+}
 func (UnimplementedArkChannelFundingPeerServiceServer) BindPreparedOOR(context.Context, *BindPreparedOORRequest) (*BindPreparedOORResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method BindPreparedOOR not implemented")
 }
@@ -916,8 +948,8 @@ func (UnimplementedArkChannelFundingPeerServiceServer) InstallBacking(context.Co
 func (UnimplementedArkChannelFundingPeerServiceServer) InstallRecoveryPackage(context.Context, *InstallRecoveryPackageRequest) (*InstallRecoveryPackageResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method InstallRecoveryPackage not implemented")
 }
-func (UnimplementedArkChannelFundingPeerServiceServer) ExportReceiveClaimRecovery(context.Context, *ExportReceiveClaimRecoveryRequest) (*ExportReceiveClaimRecoveryResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ExportReceiveClaimRecovery not implemented")
+func (UnimplementedArkChannelFundingPeerServiceServer) ExportRecoveryPackage(context.Context, *ExportRecoveryPackageRequest) (*ExportRecoveryPackageResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ExportRecoveryPackage not implemented")
 }
 func (UnimplementedArkChannelFundingPeerServiceServer) FundingFinalized(context.Context, *FundingStatusRequest) (*FundingStatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method FundingFinalized not implemented")
@@ -1001,6 +1033,42 @@ func _ArkChannelFundingPeerService_RegisterPromotion_Handler(srv interface{}, ct
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ArkChannelFundingPeerService_RegisterReceiveIntent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RegisterReceiveIntentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArkChannelFundingPeerServiceServer).RegisterReceiveIntent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArkChannelFundingPeerService_RegisterReceiveIntent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArkChannelFundingPeerServiceServer).RegisterReceiveIntent(ctx, req.(*RegisterReceiveIntentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ArkChannelFundingPeerService_GetFundingChannel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetFundingChannelRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArkChannelFundingPeerServiceServer).GetFundingChannel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArkChannelFundingPeerService_GetFundingChannel_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArkChannelFundingPeerServiceServer).GetFundingChannel(ctx, req.(*GetFundingChannelRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ArkChannelFundingPeerService_BindPreparedOOR_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BindPreparedOORRequest)
 	if err := dec(in); err != nil {
@@ -1073,20 +1141,20 @@ func _ArkChannelFundingPeerService_InstallRecoveryPackage_Handler(srv interface{
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ArkChannelFundingPeerService_ExportReceiveClaimRecovery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ExportReceiveClaimRecoveryRequest)
+func _ArkChannelFundingPeerService_ExportRecoveryPackage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExportRecoveryPackageRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ArkChannelFundingPeerServiceServer).ExportReceiveClaimRecovery(ctx, in)
+		return srv.(ArkChannelFundingPeerServiceServer).ExportRecoveryPackage(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ArkChannelFundingPeerService_ExportReceiveClaimRecovery_FullMethodName,
+		FullMethod: ArkChannelFundingPeerService_ExportRecoveryPackage_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ArkChannelFundingPeerServiceServer).ExportReceiveClaimRecovery(ctx, req.(*ExportReceiveClaimRecoveryRequest))
+		return srv.(ArkChannelFundingPeerServiceServer).ExportRecoveryPackage(ctx, req.(*ExportRecoveryPackageRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1251,6 +1319,14 @@ var ArkChannelFundingPeerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ArkChannelFundingPeerService_RegisterPromotion_Handler,
 		},
 		{
+			MethodName: "RegisterReceiveIntent",
+			Handler:    _ArkChannelFundingPeerService_RegisterReceiveIntent_Handler,
+		},
+		{
+			MethodName: "GetFundingChannel",
+			Handler:    _ArkChannelFundingPeerService_GetFundingChannel_Handler,
+		},
+		{
 			MethodName: "BindPreparedOOR",
 			Handler:    _ArkChannelFundingPeerService_BindPreparedOOR_Handler,
 		},
@@ -1267,8 +1343,8 @@ var ArkChannelFundingPeerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ArkChannelFundingPeerService_InstallRecoveryPackage_Handler,
 		},
 		{
-			MethodName: "ExportReceiveClaimRecovery",
-			Handler:    _ArkChannelFundingPeerService_ExportReceiveClaimRecovery_Handler,
+			MethodName: "ExportRecoveryPackage",
+			Handler:    _ArkChannelFundingPeerService_ExportRecoveryPackage_Handler,
 		},
 		{
 			MethodName: "FundingFinalized",

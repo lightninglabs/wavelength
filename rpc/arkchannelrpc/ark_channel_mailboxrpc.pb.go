@@ -490,6 +490,10 @@ type ArkChannelFundingPeerServiceMailboxServer interface {
 	GetPeerInfo(ctx context.Context, req *GetPeerInfoRequest) (*GetPeerInfoResponse, error)
 	// RegisterPromotion handles RegisterPromotion.
 	RegisterPromotion(ctx context.Context, req *RegisterPromotionRequest) (*RegisterPromotionResponse, error)
+	// RegisterReceiveIntent handles RegisterReceiveIntent.
+	RegisterReceiveIntent(ctx context.Context, req *RegisterReceiveIntentRequest) (*RegisterReceiveIntentResponse, error)
+	// GetFundingChannel handles GetFundingChannel.
+	GetFundingChannel(ctx context.Context, req *GetFundingChannelRequest) (*GetFundingChannelResponse, error)
 	// BindPreparedOOR handles BindPreparedOOR.
 	BindPreparedOOR(ctx context.Context, req *BindPreparedOORRequest) (*BindPreparedOORResponse, error)
 	// SignBacking handles SignBacking.
@@ -498,8 +502,8 @@ type ArkChannelFundingPeerServiceMailboxServer interface {
 	InstallBacking(ctx context.Context, req *InstallBackingRequest) (*InstallBackingResponse, error)
 	// InstallRecoveryPackage handles InstallRecoveryPackage.
 	InstallRecoveryPackage(ctx context.Context, req *InstallRecoveryPackageRequest) (*InstallRecoveryPackageResponse, error)
-	// ExportReceiveClaimRecovery handles ExportReceiveClaimRecovery.
-	ExportReceiveClaimRecovery(ctx context.Context, req *ExportReceiveClaimRecoveryRequest) (*ExportReceiveClaimRecoveryResponse, error)
+	// ExportRecoveryPackage handles ExportRecoveryPackage.
+	ExportRecoveryPackage(ctx context.Context, req *ExportRecoveryPackageRequest) (*ExportRecoveryPackageResponse, error)
 	// FundingFinalized handles FundingFinalized.
 	FundingFinalized(ctx context.Context, req *FundingStatusRequest) (*FundingStatusResponse, error)
 	// ChannelActive handles ChannelActive.
@@ -539,6 +543,26 @@ func RegisterArkChannelFundingPeerServiceMailboxServer(r rpc.Router, impl ArkCha
 		}
 
 		return impl.RegisterPromotion(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "RegisterReceiveIntent", func() proto.Message {
+		return &RegisterReceiveIntentRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*RegisterReceiveIntentRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.RegisterReceiveIntent(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "GetFundingChannel", func() proto.Message {
+		return &GetFundingChannelRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetFundingChannelRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetFundingChannel(ctx, req)
 	})
 	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "BindPreparedOOR", func() proto.Message {
 		return &BindPreparedOORRequest{}
@@ -580,15 +604,15 @@ func RegisterArkChannelFundingPeerServiceMailboxServer(r rpc.Router, impl ArkCha
 
 		return impl.InstallRecoveryPackage(ctx, req)
 	})
-	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "ExportReceiveClaimRecovery", func() proto.Message {
-		return &ExportReceiveClaimRecoveryRequest{}
+	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "ExportRecoveryPackage", func() proto.Message {
+		return &ExportRecoveryPackageRequest{}
 	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
-		req, ok := msg.(*ExportReceiveClaimRecoveryRequest)
+		req, ok := msg.(*ExportRecoveryPackageRequest)
 		if !ok {
 			return nil, fmt.Errorf("unexpected request type: %T", msg)
 		}
 
-		return impl.ExportReceiveClaimRecovery(ctx, req)
+		return impl.ExportRecoveryPackage(ctx, req)
 	})
 	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "FundingFinalized", func() proto.Message {
 		return &FundingStatusRequest{}
@@ -718,6 +742,52 @@ func (c *ArkChannelFundingPeerServiceMailboxClient) RegisterPromotion(ctx contex
 	return resp, nil
 }
 
+// RegisterReceiveIntent calls the RegisterReceiveIntent RPC.
+func (c *ArkChannelFundingPeerServiceMailboxClient) RegisterReceiveIntent(ctx context.Context, req *RegisterReceiveIntentRequest, opts ...rpc.RPCOptions) (*RegisterReceiveIntentResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelFundingPeerService",
+		Method:  "RegisterReceiveIntent",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(RegisterReceiveIntentResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GetFundingChannel calls the GetFundingChannel RPC.
+func (c *ArkChannelFundingPeerServiceMailboxClient) GetFundingChannel(ctx context.Context, req *GetFundingChannelRequest, opts ...rpc.RPCOptions) (*GetFundingChannelResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelFundingPeerService",
+		Method:  "GetFundingChannel",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetFundingChannelResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
 // BindPreparedOOR calls the BindPreparedOOR RPC.
 func (c *ArkChannelFundingPeerServiceMailboxClient) BindPreparedOOR(ctx context.Context, req *BindPreparedOORRequest, opts ...rpc.RPCOptions) (*BindPreparedOORResponse, error) {
 	var opt rpc.RPCOptions
@@ -810,8 +880,8 @@ func (c *ArkChannelFundingPeerServiceMailboxClient) InstallRecoveryPackage(ctx c
 	return resp, nil
 }
 
-// ExportReceiveClaimRecovery calls the ExportReceiveClaimRecovery RPC.
-func (c *ArkChannelFundingPeerServiceMailboxClient) ExportReceiveClaimRecovery(ctx context.Context, req *ExportReceiveClaimRecoveryRequest, opts ...rpc.RPCOptions) (*ExportReceiveClaimRecoveryResponse, error) {
+// ExportRecoveryPackage calls the ExportRecoveryPackage RPC.
+func (c *ArkChannelFundingPeerServiceMailboxClient) ExportRecoveryPackage(ctx context.Context, req *ExportRecoveryPackageRequest, opts ...rpc.RPCOptions) (*ExportRecoveryPackageResponse, error) {
 	var opt rpc.RPCOptions
 	if len(opts) > 0 {
 		opt = opts[0]
@@ -819,13 +889,13 @@ func (c *ArkChannelFundingPeerServiceMailboxClient) ExportReceiveClaimRecovery(c
 
 	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
 		Service: "arkchannelrpc.ArkChannelFundingPeerService",
-		Method:  "ExportReceiveClaimRecovery",
+		Method:  "ExportRecoveryPackage",
 	}, req, opt)
 	if err != nil {
 		return nil, err
 	}
 
-	resp := new(ExportReceiveClaimRecoveryResponse)
+	resp := new(ExportRecoveryPackageResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

@@ -76,14 +76,18 @@ service ArkChannelFundingPeerService {
     rpc GetPeerInfo (GetPeerInfoRequest) returns (GetPeerInfoResponse);
     rpc RegisterPromotion (RegisterPromotionRequest)
         returns (RegisterPromotionResponse);
+    rpc RegisterReceiveIntent (RegisterReceiveIntentRequest)
+        returns (RegisterReceiveIntentResponse);
+    rpc GetFundingChannel (GetFundingChannelRequest)
+        returns (GetFundingChannelResponse);
     rpc BindPreparedOOR (BindPreparedOORRequest)
         returns (BindPreparedOORResponse);
     rpc SignBacking (SignBackingRequest) returns (SignBackingResponse);
     rpc InstallBacking (InstallBackingRequest) returns (InstallBackingResponse);
     rpc InstallRecoveryPackage (InstallRecoveryPackageRequest)
         returns (InstallRecoveryPackageResponse);
-    rpc ExportReceiveClaimRecovery (ExportReceiveClaimRecoveryRequest)
-        returns (ExportReceiveClaimRecoveryResponse);
+    rpc ExportRecoveryPackage (ExportRecoveryPackageRequest)
+        returns (ExportRecoveryPackageResponse);
     rpc FundingFinalized (FundingStatusRequest) returns (FundingStatusResponse);
     rpc ChannelActive (FundingStatusRequest) returns (FundingStatusResponse);
     rpc ApplyChannelEvent (ApplyChannelEventRequest)
@@ -96,6 +100,31 @@ service ArkChannelFundingPeerService {
         returns (CancelOutgoingPaymentResponse);
     rpc RegisterIncomingPayment (RegisterIncomingPaymentRequest)
         returns (RegisterIncomingPaymentResponse);
+}
+
+// FundingWireEnvelope carries the small reverse funding protocol over the
+// same authenticated, ordered peer transport as lnd's BOLT messages.
+message FundingWireEnvelope {
+    bytes request_id = 1;
+    FundingWireKind kind = 2;
+    FundingWireMethod method = 3;
+    bytes body = 4;
+    string error = 5;
+}
+
+enum FundingWireKind {
+    FUNDING_WIRE_KIND_UNSPECIFIED = 0;
+    FUNDING_WIRE_KIND_REQUEST = 1;
+    FUNDING_WIRE_KIND_RESPONSE = 2;
+}
+
+enum FundingWireMethod {
+    FUNDING_WIRE_METHOD_UNSPECIFIED = 0;
+    FUNDING_WIRE_METHOD_SIGN_BACKING = 1;
+    FUNDING_WIRE_METHOD_INSTALL_BACKING = 2;
+    FUNDING_WIRE_METHOD_FUNDING_FINALIZED = 3;
+    FUNDING_WIRE_METHOD_CHANNEL_ACTIVE = 4;
+    FUNDING_WIRE_METHOD_APPLY_CHANNEL_EVENT = 5;
 }
 
 message PromoteVTXORequest {
@@ -150,6 +179,7 @@ message GetPeerInfoResponse {
     uint32 channel_delay = 5;
     uint32 funder_delay = 6;
     uint32 min_exit_delay = 7;
+    bytes hub_funder_key = 8;
 }
 
 message RegisterPromotionRequest {
@@ -158,6 +188,29 @@ message RegisterPromotionRequest {
 
 message RegisterPromotionResponse {
     ArkChannel channel = 1;
+}
+
+message RegisterReceiveIntentRequest {
+    ChannelTerms terms = 1;
+}
+
+message RegisterReceiveIntentResponse {
+    ArkChannel channel = 1;
+}
+
+message GetFundingChannelRequest {
+    bytes channel_id = 1;
+}
+
+message GetFundingChannelResponse {
+    ChannelTerms terms = 1;
+    ChannelVTXOBinding binding = 2;
+    ChannelBacking backing = 3;
+    uint32 phase = 4;
+    bool oor_finalized = 5;
+    bool recovery_ready = 6;
+    string failure = 7;
+    uint64 revision = 8;
 }
 
 message BindPreparedOORRequest {
@@ -200,16 +253,16 @@ message InstallRecoveryPackageRequest {
 message InstallRecoveryPackageResponse {
 }
 
-message ExportReceiveClaimRecoveryRequest {
+message ExportRecoveryPackageRequest {
     bytes channel_id = 1;
 }
 
-message ExportReceiveClaimRecoveryResponse {
-    ReceiveClaimRecoverySource source = 1;
-    ChannelRecoveryPackage recovery = 2;
+message ExportRecoveryPackageResponse {
+    ChannelRecoveryPackage recovery = 1;
+    ChannelVTXOBinding binding = 2;
 }
 
-message ReceiveClaimRecoverySource {
+message OORRecoverySource {
     bytes txid = 1;
     uint32 output_index = 2;
     int64 amount_sat = 3;
@@ -263,6 +316,8 @@ enum ChannelEventType {
     CHANNEL_EVENT_TYPE_MATERIALIZE = 4;
     CHANNEL_EVENT_TYPE_BACKING_PUBLISHED = 5;
     CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED = 6;
+    CHANNEL_EVENT_TYPE_FAILED = 7;
+    CHANNEL_EVENT_TYPE_FUNDING_PEER_READY = 8;
 }
 
 message ApplyChannelEventRequest {
@@ -272,6 +327,7 @@ message ApplyChannelEventRequest {
     bytes oor_session_id = 4;
     bytes channel_point_txid = 5;
     uint32 channel_point_index = 6;
+    string failure_reason = 7;
 }
 
 message ApplyChannelEventResponse {
@@ -327,6 +383,7 @@ message RegisterIncomingPaymentRequest {
 
 message RegisterIncomingPaymentResponse {
     bool registered = 1;
+    int64 channel_capacity_sat = 2;
 }
 
 message ChannelTerms {

@@ -802,9 +802,8 @@ message ActivitySwapTrace {
     // invoice and later installed as the manifested channel's local alias.
     uint64 reserved_scid = 22;
 
-    // channel_backing_fee_sat is the payer-funded reserve carried by a receive
-    // fallback for eventual channel materialization.
-    uint64 channel_backing_fee_sat = 23;
+    reserved 23;
+    reserved "channel_backing_fee_sat";
 }
 
 // ActivityVTXOTrace describes one VTXO movement correlated to a wallet activity

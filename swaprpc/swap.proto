@@ -144,10 +144,8 @@ message RequestChannelIdRequest {
     // account credits.
     CreditAccountAuthorization account_authorization = 6;
 
-    // channel_backing_fee_sat asks the server to reserve this value above the
-    // receive amount if the payment must fall back to a vHTLC-backed channel.
-    // It is an internal wallet capability, not a user-selectable receive fee.
-    uint64 channel_backing_fee_sat = 7;
+    reserved 7;
+    reserved "channel_backing_fee_sat";
 }
 
 // RequestChannelIdResponse returns the route hint paths for one receive
@@ -193,9 +191,8 @@ message RequestChannelIdResponse {
     // pathfinding can pick whichever backend is reachable.
     repeated RouteHintPath route_hint_paths = 9;
 
-    // channel_backing_fee_sat echoes the reserve included in both the payer
-    // fee and fallback vHTLC amount. Zero means an ordinary wallet receive.
-    uint64 channel_backing_fee_sat = 10;
+    reserved 10;
+    reserved "channel_backing_fee_sat";
 }
 
 // AcknowledgeOutSwapHtlcRequest confirms that the receiver has validated and

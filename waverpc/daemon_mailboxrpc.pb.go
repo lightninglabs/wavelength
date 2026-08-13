@@ -56,6 +56,14 @@ type DaemonServiceMailboxServer interface {
 	GetIndexedOORSessionByTxid(ctx context.Context, req *GetIndexedOORSessionByTxidRequest) (*GetIndexedOORSessionByTxidResponse, error)
 	// ExportOORRecoveryPackage handles ExportOORRecoveryPackage.
 	ExportOORRecoveryPackage(ctx context.Context, req *ExportOORRecoveryPackageRequest) (*ExportOORRecoveryPackageResponse, error)
+	// PrepareArkChannelOOR handles PrepareArkChannelOOR.
+	PrepareArkChannelOOR(ctx context.Context, req *PrepareArkChannelOORRequest) (*PrepareArkChannelOORResponse, error)
+	// ValidatePreparedArkChannelOOR handles ValidatePreparedArkChannelOOR.
+	ValidatePreparedArkChannelOOR(ctx context.Context, req *ValidatePreparedArkChannelOORRequest) (*ValidatePreparedArkChannelOORResponse, error)
+	// CommitPreparedArkChannelOOR handles CommitPreparedArkChannelOOR.
+	CommitPreparedArkChannelOOR(ctx context.Context, req *CommitPreparedArkChannelOORRequest) (*CommitPreparedArkChannelOORResponse, error)
+	// AbortPreparedArkChannelOOR handles AbortPreparedArkChannelOOR.
+	AbortPreparedArkChannelOOR(ctx context.Context, req *AbortPreparedArkChannelOORRequest) (*AbortPreparedArkChannelOORResponse, error)
 	// SendVTXO handles SendVTXO.
 	SendVTXO(ctx context.Context, req *SendVTXORequest) (*SendVTXOResponse, error)
 	// SendOOR handles SendOOR.
@@ -283,6 +291,46 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.ExportOORRecoveryPackage(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "PrepareArkChannelOOR", func() proto.Message {
+		return &PrepareArkChannelOORRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*PrepareArkChannelOORRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.PrepareArkChannelOOR(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "ValidatePreparedArkChannelOOR", func() proto.Message {
+		return &ValidatePreparedArkChannelOORRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ValidatePreparedArkChannelOORRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ValidatePreparedArkChannelOOR(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "CommitPreparedArkChannelOOR", func() proto.Message {
+		return &CommitPreparedArkChannelOORRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*CommitPreparedArkChannelOORRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.CommitPreparedArkChannelOOR(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "AbortPreparedArkChannelOOR", func() proto.Message {
+		return &AbortPreparedArkChannelOORRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*AbortPreparedArkChannelOORRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.AbortPreparedArkChannelOOR(ctx, req)
 	})
 	r.Handle("waverpc.DaemonService", "SendVTXO", func() proto.Message {
 		return &SendVTXORequest{}
@@ -967,6 +1015,98 @@ func (c *DaemonServiceMailboxClient) ExportOORRecoveryPackage(ctx context.Contex
 	}
 
 	resp := new(ExportOORRecoveryPackageResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// PrepareArkChannelOOR calls the PrepareArkChannelOOR RPC.
+func (c *DaemonServiceMailboxClient) PrepareArkChannelOOR(ctx context.Context, req *PrepareArkChannelOORRequest, opts ...rpc.RPCOptions) (*PrepareArkChannelOORResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "PrepareArkChannelOOR",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(PrepareArkChannelOORResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ValidatePreparedArkChannelOOR calls the ValidatePreparedArkChannelOOR RPC.
+func (c *DaemonServiceMailboxClient) ValidatePreparedArkChannelOOR(ctx context.Context, req *ValidatePreparedArkChannelOORRequest, opts ...rpc.RPCOptions) (*ValidatePreparedArkChannelOORResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "ValidatePreparedArkChannelOOR",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ValidatePreparedArkChannelOORResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// CommitPreparedArkChannelOOR calls the CommitPreparedArkChannelOOR RPC.
+func (c *DaemonServiceMailboxClient) CommitPreparedArkChannelOOR(ctx context.Context, req *CommitPreparedArkChannelOORRequest, opts ...rpc.RPCOptions) (*CommitPreparedArkChannelOORResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "CommitPreparedArkChannelOOR",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(CommitPreparedArkChannelOORResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// AbortPreparedArkChannelOOR calls the AbortPreparedArkChannelOOR RPC.
+func (c *DaemonServiceMailboxClient) AbortPreparedArkChannelOOR(ctx context.Context, req *AbortPreparedArkChannelOORRequest, opts ...rpc.RPCOptions) (*AbortPreparedArkChannelOORResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "AbortPreparedArkChannelOOR",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(AbortPreparedArkChannelOORResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

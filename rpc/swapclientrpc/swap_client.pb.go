@@ -2038,12 +2038,9 @@ type SwapSummary struct {
 	// this receive completed through channel settlement.
 	ChannelId []byte `protobuf:"bytes,27,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
 	// reserved_scid is the future virtual SCID advertised in the invoice.
-	ReservedScid uint64 `protobuf:"varint,28,opt,name=reserved_scid,json=reservedScid,proto3" json:"reserved_scid,omitempty"`
-	// channel_backing_fee_sat is the internal reserve carried by the fallback
-	// vHTLC and consumed when it is promoted into a channel.
-	ChannelBackingFeeSat uint64 `protobuf:"varint,29,opt,name=channel_backing_fee_sat,json=channelBackingFeeSat,proto3" json:"channel_backing_fee_sat,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	ReservedScid  uint64 `protobuf:"varint,28,opt,name=reserved_scid,json=reservedScid,proto3" json:"reserved_scid,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SwapSummary) Reset() {
@@ -2272,13 +2269,6 @@ func (x *SwapSummary) GetReservedScid() uint64 {
 	return 0
 }
 
-func (x *SwapSummary) GetChannelBackingFeeSat() uint64 {
-	if x != nil {
-		return x.ChannelBackingFeeSat
-	}
-	return 0
-}
-
 var File_swap_client_proto protoreflect.FileDescriptor
 
 const file_swap_client_proto_rawDesc = "" +
@@ -2407,7 +2397,7 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x10include_existing\x18\x01 \x01(\bR\x0fincludeExisting\x12!\n" +
 	"\fpending_only\x18\x02 \x01(\bR\vpendingOnly\"H\n" +
 	"\x16SubscribeSwapsResponse\x12.\n" +
-	"\x04swap\x18\x01 \x01(\v2\x1a.swapclientrpc.SwapSummaryR\x04swap\"\xc5\t\n" +
+	"\x04swap\x18\x01 \x01(\v2\x1a.swapclientrpc.SwapSummaryR\x04swap\"\xad\t\n" +
 	"\vSwapSummary\x12:\n" +
 	"\tdirection\x18\x01 \x01(\x0e2\x1c.swapclientrpc.SwapDirectionR\tdirection\x12!\n" +
 	"\fpayment_hash\x18\x02 \x01(\tR\vpaymentHash\x12.\n" +
@@ -2439,8 +2429,7 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x14available_credit_sat\x18\x1a \x01(\x04R\x12availableCreditSat\x12\x1d\n" +
 	"\n" +
 	"channel_id\x18\x1b \x01(\fR\tchannelId\x12#\n" +
-	"\rreserved_scid\x18\x1c \x01(\x04R\freservedScid\x125\n" +
-	"\x17channel_backing_fee_sat\x18\x1d \x01(\x04R\x14channelBackingFeeSat*c\n" +
+	"\rreserved_scid\x18\x1c \x01(\x04R\freservedScidJ\x04\b\x1d\x10\x1eR\x17channel_backing_fee_sat*c\n" +
 	"\rSwapDirection\x12\x1e\n" +
 	"\x1aSWAP_DIRECTION_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12SWAP_DIRECTION_PAY\x10\x01\x12\x1a\n" +

@@ -2599,12 +2599,9 @@ type ActivitySwapTrace struct {
 	ChannelId []byte `protobuf:"bytes,21,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
 	// reserved_scid is the virtual short channel ID advertised in the receive
 	// invoice and later installed as the manifested channel's local alias.
-	ReservedScid uint64 `protobuf:"varint,22,opt,name=reserved_scid,json=reservedScid,proto3" json:"reserved_scid,omitempty"`
-	// channel_backing_fee_sat is the payer-funded reserve carried by a receive
-	// fallback for eventual channel materialization.
-	ChannelBackingFeeSat uint64 `protobuf:"varint,23,opt,name=channel_backing_fee_sat,json=channelBackingFeeSat,proto3" json:"channel_backing_fee_sat,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	ReservedScid  uint64 `protobuf:"varint,22,opt,name=reserved_scid,json=reservedScid,proto3" json:"reserved_scid,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ActivitySwapTrace) Reset() {
@@ -2787,13 +2784,6 @@ func (x *ActivitySwapTrace) GetChannelId() []byte {
 func (x *ActivitySwapTrace) GetReservedScid() uint64 {
 	if x != nil {
 		return x.ReservedScid
-	}
-	return 0
-}
-
-func (x *ActivitySwapTrace) GetChannelBackingFeeSat() uint64 {
-	if x != nil {
-		return x.ChannelBackingFeeSat
 	}
 	return 0
 }
@@ -5865,7 +5855,7 @@ const file_wallet_proto_rawDesc = "" +
 	"\x05vtxos\x18\x03 \x03(\v2 .wavewalletrpc.ActivityVTXOTraceR\x05vtxos\x12C\n" +
 	"\vledger_rows\x18\x04 \x03(\v2\".wavewalletrpc.ActivityLedgerTraceR\n" +
 	"ledgerRows\x12\x14\n" +
-	"\x05notes\x18\x05 \x03(\tR\x05notes\"\xd7\x06\n" +
+	"\x05notes\x18\x05 \x03(\tR\x05notes\"\xbf\x06\n" +
 	"\x11ActivitySwapTrace\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\tR\vpaymentHash\x12\x1c\n" +
 	"\tdirection\x18\x02 \x01(\tR\tdirection\x12\x14\n" +
@@ -5891,8 +5881,7 @@ const file_wallet_proto_rawDesc = "" +
 	"\bpreimage\x18\x14 \x01(\tR\bpreimage\x12\x1d\n" +
 	"\n" +
 	"channel_id\x18\x15 \x01(\fR\tchannelId\x12#\n" +
-	"\rreserved_scid\x18\x16 \x01(\x04R\freservedScid\x125\n" +
-	"\x17channel_backing_fee_sat\x18\x17 \x01(\x04R\x14channelBackingFeeSat\"\xc4\x01\n" +
+	"\rreserved_scid\x18\x16 \x01(\x04R\freservedScidJ\x04\b\x17\x10\x18R\x17channel_backing_fee_sat\"\xc4\x01\n" +
 	"\x11ActivityVTXOTrace\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +

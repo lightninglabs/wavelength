@@ -296,10 +296,6 @@ type RequestChannelIdRequest struct {
 	// exact request. Swap servers require it before consulting or reserving
 	// account credits.
 	AccountAuthorization *CreditAccountAuthorization `protobuf:"bytes,6,opt,name=account_authorization,json=accountAuthorization,proto3" json:"account_authorization,omitempty"`
-	// channel_backing_fee_sat asks the server to reserve this value above the
-	// receive amount if the payment must fall back to a vHTLC-backed channel.
-	// It is an internal wallet capability, not a user-selectable receive fee.
-	ChannelBackingFeeSat uint64 `protobuf:"varint,7,opt,name=channel_backing_fee_sat,json=channelBackingFeeSat,proto3" json:"channel_backing_fee_sat,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -376,13 +372,6 @@ func (x *RequestChannelIdRequest) GetAccountAuthorization() *CreditAccountAuthor
 	return nil
 }
 
-func (x *RequestChannelIdRequest) GetChannelBackingFeeSat() uint64 {
-	if x != nil {
-		return x.ChannelBackingFeeSat
-	}
-	return 0
-}
-
 // RequestChannelIdResponse returns the route hint paths for one receive
 // negotiation.
 type RequestChannelIdResponse struct {
@@ -414,11 +403,8 @@ type RequestChannelIdResponse struct {
 	// different backend node into the same virtual channel, so the sender's
 	// pathfinding can pick whichever backend is reachable.
 	RouteHintPaths []*RouteHintPath `protobuf:"bytes,9,rep,name=route_hint_paths,json=routeHintPaths,proto3" json:"route_hint_paths,omitempty"`
-	// channel_backing_fee_sat echoes the reserve included in both the payer
-	// fee and fallback vHTLC amount. Zero means an ordinary wallet receive.
-	ChannelBackingFeeSat uint64 `protobuf:"varint,10,opt,name=channel_backing_fee_sat,json=channelBackingFeeSat,proto3" json:"channel_backing_fee_sat,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *RequestChannelIdResponse) Reset() {
@@ -505,13 +491,6 @@ func (x *RequestChannelIdResponse) GetRouteHintPaths() []*RouteHintPath {
 		return x.RouteHintPaths
 	}
 	return nil
-}
-
-func (x *RequestChannelIdResponse) GetChannelBackingFeeSat() uint64 {
-	if x != nil {
-		return x.ChannelBackingFeeSat
-	}
-	return 0
 }
 
 // AcknowledgeOutSwapHtlcRequest confirms that the receiver has validated and
@@ -3137,7 +3116,7 @@ var File_swap_proto protoreflect.FileDescriptor
 const file_swap_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"swap.proto\x12\aswaprpc\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf8\x02\n" +
+	"swap.proto\x12\aswaprpc\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe0\x02\n" +
 	"\x17RequestChannelIdRequest\x12%\n" +
 	"\x0eexpiry_seconds\x18\x01 \x01(\rR\rexpirySeconds\x12.\n" +
 	"\x13client_vhtlc_pubkey\x18\x02 \x01(\fR\x11clientVhtlcPubkey\x12!\n" +
@@ -3145,8 +3124,7 @@ const file_swap_proto_rawDesc = "" +
 	"\n" +
 	"amount_sat\x18\x04 \x01(\x04R\tamountSat\x123\n" +
 	"\x16supports_in_ark_credit\x18\x05 \x01(\bR\x13supportsInArkCredit\x12X\n" +
-	"\x15account_authorization\x18\x06 \x01(\v2#.swaprpc.CreditAccountAuthorizationR\x14accountAuthorization\x125\n" +
-	"\x17channel_backing_fee_sat\x18\a \x01(\x04R\x14channelBackingFeeSat\"\xf6\x03\n" +
+	"\x15account_authorization\x18\x06 \x01(\v2#.swaprpc.CreditAccountAuthorizationR\x14accountAuthorizationJ\x04\b\a\x10\bR\x17channel_backing_fee_sat\"\xde\x03\n" +
 	"\x18RequestChannelIdResponse\x12$\n" +
 	"\x0epayer_fee_msat\x18\x02 \x01(\x04R\fpayerFeeMsat\x120\n" +
 	"\x14requested_amount_sat\x18\x03 \x01(\x04R\x12requestedAmountSat\x120\n" +
@@ -3155,9 +3133,8 @@ const file_swap_proto_rawDesc = "" +
 	"\x10vhtlc_amount_sat\x18\x06 \x01(\x04R\x0evhtlcAmountSat\x12$\n" +
 	"\x0edust_limit_sat\x18\a \x01(\x04R\fdustLimitSat\x12@\n" +
 	"\x0fsettlement_type\x18\b \x01(\x0e2\x17.swaprpc.SettlementTypeR\x0esettlementType\x12@\n" +
-	"\x10route_hint_paths\x18\t \x03(\v2\x16.swaprpc.RouteHintPathR\x0erouteHintPaths\x125\n" +
-	"\x17channel_backing_fee_sat\x18\n" +
-	" \x01(\x04R\x14channelBackingFeeSatJ\x04\b\x01\x10\x02R\x0froute_hint_path\"\xaf\x01\n" +
+	"\x10route_hint_paths\x18\t \x03(\v2\x16.swaprpc.RouteHintPathR\x0erouteHintPathsJ\x04\b\x01\x10\x02J\x04\b\n" +
+	"\x10\vR\x0froute_hint_pathR\x17channel_backing_fee_sat\"\xaf\x01\n" +
 	"\x1dAcknowledgeOutSwapHtlcRequest\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12.\n" +
 	"\x13client_vhtlc_pubkey\x18\x02 \x01(\fR\x11clientVhtlcPubkey\x12;\n" +

@@ -438,7 +438,6 @@ message SwapSummary {
     // reserved_scid is the future virtual SCID advertised in the invoice.
     uint64 reserved_scid = 28;
 
-    // channel_backing_fee_sat is the internal reserve carried by the fallback
-    // vHTLC and consumed when it is promoted into a channel.
-    uint64 channel_backing_fee_sat = 29;
+    reserved 29;
+    reserved "channel_backing_fee_sat";
 }
