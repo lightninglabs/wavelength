@@ -63,8 +63,8 @@ const (
 	// endpoint. The external NLB and dual-SAN certificates from
 	// lightning-infra#3592 only cover the gRPC names. The prod REST
 	// ingress still serves the raw cluster hostname on its own, so this
-	// name stays dark until a follow-up adds the friendly ingress host and
-	// the matching certificate SAN.
+	// name stays dark until the ingress host and matching certificate SAN
+	// work in lightning-infra#3749 lands.
 	defaultMainnetServerRESTHost = "wavelength-rest." +
 		"lightning.finance"
 
