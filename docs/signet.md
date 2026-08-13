@@ -73,9 +73,10 @@ waved \
   --wallet.esploraurl=http://localhost:3000
 ```
 
-Mainnet, regtest, and simnet have no public service deployment in the default
-table, so empty address fields resolve to `localhost:10010` and
-`localhost:10030`.
+Regtest and simnet have no public service deployment in the default table, so
+empty address fields resolve to `localhost:10010` and `localhost:10030`.
+Mainnet resolves to the public operator, though its REST names are not live
+yet.
 
 ## wavewalletdk
 
