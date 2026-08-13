@@ -405,11 +405,16 @@ wavecli channel force-close <channel-id>
 ```
 
 `recv --offchain` uses an active channel directly when it has enough inbound
-liquidity. Otherwise the existing vHTLC receive rail claims into a newly
-negotiated channel before releasing the payment preimage. After completion,
-`activity inspect <payment-hash> --format json` reports the manifested
-`channel_id`, reserved alias SCID, and backing-fee reserve. A direct receive has
-an empty `channel_id` because it reused an existing channel.
+liquidity. Otherwise an eligible single-part payment can manifest an
+overfunded, hub-owned channel before the same payment hash is delivered over
+it. After completion, `activity inspect <payment-hash> --format json` reports
+the manifested `channel_id` and reserved alias SCID. A receive that reused an
+existing channel has an empty `channel_id`.
+
+Payments that use the ordinary vHTLC fallback still settle into the wallet;
+they are not implicitly converted into channels. Any ordinary wallet VTXO,
+including value received through that fallback, can later be promoted with
+`wavecli channel create <amount-sat>`.
 
 ### `ark board` / `dev daemon Board`
 
