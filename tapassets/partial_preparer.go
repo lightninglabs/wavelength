@@ -151,11 +151,11 @@ func (p *Preparer) plannedRecipients(ctx context.Context,
 	}
 
 	recipients := cloneRecipients(request.Recipients)
-	recipientAssetAmount := request.Intent.EffectiveRecipientAssetAmount()
-	if recipientAssetAmount < request.Intent.AssetAmount {
-		assetChange := btcutil.Amount(
-			request.Intent.AssetChangeCarrierValueSat,
-		)
+	assetChange, bitcoinChange, err := request.CarrierAllocation()
+	if err != nil {
+		return nil, err
+	}
+	if assetChange > 0 {
 		change, err := request.BuildChangeRecipient(ctx, assetChange)
 		if err != nil {
 			return nil, fmt.Errorf("derive Taproot Asset "+
@@ -169,14 +169,6 @@ func (p *Preparer) plannedRecipients(ctx context.Context,
 		recipients = append(recipients, change)
 	}
 
-	inputTotal, err := taprootAssetInputTotalLocal(request.Inputs)
-	if err != nil {
-		return nil, err
-	}
-	required := request.Recipients[0].Value + btcutil.Amount(
-		request.Intent.AssetChangeCarrierValueSat,
-	)
-	bitcoinChange := inputTotal - required
 	if bitcoinChange > 0 {
 		change, err := request.BuildChangeRecipient(ctx, bitcoinChange)
 		if err != nil {
@@ -208,15 +200,10 @@ func validatePlannedRecipients(request *oor.TaprootAssetOORPrepareRequest,
 	if request == nil || len(request.Recipients) != 1 {
 		return fmt.Errorf("caller receiver is required")
 	}
-	inputTotal, err := taprootAssetInputTotalLocal(request.Inputs)
+	assetChange, bitcoinChange, err := request.CarrierAllocation()
 	if err != nil {
 		return err
 	}
-	assetChange := btcutil.Amount(
-		request.Intent.AssetChangeCarrierValueSat,
-	)
-	required := request.Recipients[0].Value + assetChange
-	bitcoinChange := inputTotal - required
 	expectedCount := 1
 	if assetChange != 0 {
 		expectedCount++
@@ -319,22 +306,6 @@ func validateUncomposedChange(recipient oortx.RecipientOutput,
 	}
 
 	return nil
-}
-
-func taprootAssetInputTotalLocal(inputs []oor.TransferInput) (btcutil.Amount,
-	error) {
-
-	var total btcutil.Amount
-	for idx := range inputs {
-		amount := inputs[idx].VTXO.Amount
-		if amount <= 0 || total > btcutil.MaxSatoshi-amount {
-			return 0, fmt.Errorf("Taproot Asset input carrier " +
-				"sum overflows")
-		}
-		total += amount
-	}
-
-	return total, nil
 }
 
 // resolveAssetSpendSource chooses either the initial managed proof or the

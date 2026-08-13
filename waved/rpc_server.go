@@ -3618,6 +3618,29 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 				err)
 		}
 
+		// SendOORResponse has no carrier fields, so the split between
+		// asset-bearing carriers and returned Bitcoin change is
+		// disclosed here.
+		assetChangeSat, bitcoinChangeSat, err := prepareRequest.
+			CarrierAllocation()
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "%v",
+				err)
+		}
+		changeAmt = bitcoinChangeSat
+		r.server.log.InfoS(ctx, "Taproot Asset OOR carriers",
+			slog.Int64(
+				"receiver_carrier_sat",
+				int64(recipients[0].Value),
+			),
+			slog.Int64(
+				"asset_change_carrier_sat",
+				int64(assetChangeSat),
+			),
+			slog.Int64(
+				"bitcoin_change_sat", int64(bitcoinChangeSat),
+			))
+
 		preparation, err := assetPreparer.PrepareTaprootAssetOOR(
 			ctx, prepareRequest,
 		)

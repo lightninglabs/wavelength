@@ -458,6 +458,66 @@ func TestSendOORTaprootAssetFiltersChangeOutpoints(t *testing.T) {
 	)
 }
 
+// TestSendOORTaprootAssetDefaultsChangeCarrier proves a partial send with no
+// explicit carrier rides on the operator minimum and returns the rest of the
+// selected Bitcoin VTXO as a plain change output.
+func TestSendOORTaprootAssetDefaultsChangeCarrier(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTaprootAssetOORRPCFixture(t)
+	fixture.request.TaprootAsset.RecipientAssetAmount = 20
+
+	carrierDesc, _ := newSendOORTestVTXO(
+		t, fixture.desc.OperatorKey, 0x62, 30_000,
+	)
+	require.NoError(
+		t,
+		fixture.rpcServer.server.vtxoStore.SaveVTXO(
+			t.Context(), carrierDesc,
+		),
+	)
+	fixture.wallet.selections = [][]wallet.SelectedVTXO{{
+		selectedVTXOFromDescriptor(fixture.desc),
+		selectedVTXOFromDescriptor(carrierDesc),
+	}}
+
+	response, err := fixture.rpcServer.SendOOR(
+		t.Context(), fixture.request,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "submitted", response.GetStatus())
+
+	// The daemon materializes the operator floor before selection and
+	// preparation see the intent.
+	selectRequests := fixture.wallet.selectionRequests()
+	require.Len(t, selectRequests, 1)
+	require.Equal(t, btcutil.Amount(51_000), selectRequests[0].TargetAmount)
+
+	prepareRequests := fixture.preparer.captured()
+	require.Len(t, prepareRequests, 1)
+	prepareRequest := prepareRequests[0]
+	require.EqualValues(
+		t, 1000, prepareRequest.Intent.AssetChangeCarrierValueSat,
+	)
+
+	assetChange, bitcoinChange, err := prepareRequest.CarrierAllocation()
+	require.NoError(t, err)
+	require.Equal(t, btcutil.Amount(1000), assetChange)
+	require.Equal(t, btcutil.Amount(29_000), bitcoinChange)
+
+	// The receiver and the minimal asset-change carrier are asset-bearing;
+	// the remainder returns as one plain Bitcoin output.
+	actorRequests := fixture.oorActor.capturedRequests()
+	require.Len(t, actorRequests, 1)
+	recipients := actorRequests[0].Recipients
+	require.Len(t, recipients, 3)
+	require.NotNil(t, recipients[0].TaprootAssetRoot)
+	require.NotNil(t, recipients[1].TaprootAssetRoot)
+	require.Equal(t, btcutil.Amount(1000), recipients[1].Value)
+	require.Nil(t, recipients[2].TaprootAssetRoot)
+	require.Equal(t, btcutil.Amount(29_000), recipients[2].Value)
+}
+
 // TestSendOORTaprootAssetAdoptsPreparedInputs proves an RPC retry after the
 // asset commits can rebuild the exact journaled inputs without asking wallet
 // selection to reserve an already-Spending asset VTXO again.
@@ -746,12 +806,14 @@ func TestSendOORTaprootAssetFailsClosed(t *testing.T) {
 			wantContains: "recipient amount exceeds input amount",
 		},
 		{
-			name: "partial send missing change carrier",
+			name: "partial send defaults the carrier",
 			mutate: func(f *taprootAssetOORRPCFixture) {
 				f.request.TaprootAsset.RecipientAssetAmount = 20
 			},
 			wantCode:     codes.InvalidArgument,
-			wantContains: "change carrier is required",
+			wantContains: "below Taproot Asset carrier amount",
+			wantSelect:   true,
+			wantUnlock:   true,
 		},
 		{
 			name: "full send with change carrier",
