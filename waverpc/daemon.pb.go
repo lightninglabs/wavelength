@@ -853,6 +853,8 @@ type OnboardTaprootAssetRequest struct {
 	// in the first PoC.
 	AssetAmount uint64 `protobuf:"varint,3,opt,name=asset_amount,json=assetAmount,proto3" json:"asset_amount,omitempty"`
 	// input_proof_file is the complete confirmed Taproot Asset proof file.
+	// Optional; empty lets the daemon export the proof of its own matching
+	// UTXO from tapd.
 	InputProofFile []byte `protobuf:"bytes,4,opt,name=input_proof_file,json=inputProofFile,proto3" json:"input_proof_file,omitempty"`
 	// max_fee_sat is the hard upper bound for the on-chain miner fee. It is
 	// independent of the fee-rate or confirmation-target estimator.

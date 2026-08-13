@@ -58,6 +58,23 @@ func TestTaprootAssetOnboardingRequestTargetConf(t *testing.T) {
 	require.Equal(t, uint32(6), request.TargetConf)
 }
 
+// TestTaprootAssetOnboardingRequestWithoutProof verifies an omitted proof
+// file leaves the wire field empty so the daemon resolves the proof itself.
+func TestTaprootAssetOnboardingRequestWithoutProof(t *testing.T) {
+	t.Parallel()
+
+	cmd := newTaprootAssetOnboardCmd()
+	require.NoError(t, cmd.Flags().Set("idempotency-key", "deposit-1"))
+	require.NoError(t, cmd.Flags().Set("asset-ref", "asset-id"))
+	require.NoError(t, cmd.Flags().Set("asset-amount", "42"))
+	require.NoError(t, cmd.Flags().Set("sat-per-vbyte", "2"))
+	require.NoError(t, cmd.Flags().Set("max-fee-sat", "500"))
+
+	request, err := taprootAssetOnboardingRequest(cmd)
+	require.NoError(t, err)
+	require.Empty(t, request.InputProofFile)
+}
+
 func TestTaprootAssetOnboardingRequestRejectsInvalidInput(t *testing.T) {
 	t.Parallel()
 
@@ -85,11 +102,6 @@ func TestTaprootAssetOnboardingRequestRejectsInvalidInput(t *testing.T) {
 			flag:    "asset-amount",
 			value:   "0",
 			wantErr: "--asset-amount must be positive",
-		},
-		{
-			name:    "proof path",
-			flag:    "proof-file",
-			wantErr: "--proof-file is required",
 		},
 		{
 			name:    "fee",

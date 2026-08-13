@@ -59,8 +59,9 @@ func newTaprootAssetOnboardCmd() *cobra.Command {
 		"complete asset amount held by the selected proof",
 	)
 	flags.String(
-		"proof-file", "",
-		"path to the complete confirmed Taproot Asset proof file",
+		"proof-file", "", "path to the complete confirmed Taproot "+
+			"Asset proof file (empty lets the daemon export "+
+			"the proof of its own matching UTXO from tapd)",
 	)
 	flags.Uint64(
 		"carrier-value-sat", 0, "Bitcoin value carried by the "+
@@ -127,9 +128,6 @@ func taprootAssetOnboardingRequest(cmd *cobra.Command) (
 	case assetAmount == 0:
 		return nil, fmt.Errorf("--asset-amount must be positive")
 
-	case proofPath == "":
-		return nil, fmt.Errorf("--proof-file is required")
-
 	case maxFeeSat == 0:
 		return nil, fmt.Errorf("--max-fee-sat must be positive")
 
@@ -148,20 +146,26 @@ func taprootAssetOnboardingRequest(cmd *cobra.Command) (
 		return nil, err
 	}
 
-	proofPath, err := expandCLIPath(proofPath)
-	if err != nil {
-		return nil, fmt.Errorf("expand --proof-file: %w", err)
-	}
-	// The command's purpose is to read the proof path selected by its
-	// caller and forward those exact bytes to the local daemon.
-	//nolint:gosec
-	proofFile, err := os.ReadFile(proofPath)
-	if err != nil {
-		return nil, fmt.Errorf("read --proof-file %q: %w", proofPath,
-			err)
-	}
-	if len(proofFile) == 0 {
-		return nil, fmt.Errorf("--proof-file must not be empty")
+	// Without an explicit proof file the daemon exports the proof of its
+	// own matching UTXO from tapd.
+	var proofFile []byte
+	if proofPath != "" {
+		expandedPath, err := expandCLIPath(proofPath)
+		if err != nil {
+			return nil, fmt.Errorf("expand --proof-file: %w", err)
+		}
+		// The command's purpose is to read the proof path selected by
+		// its caller and forward those exact bytes to the local
+		// daemon.
+		//nolint:gosec
+		proofFile, err = os.ReadFile(expandedPath)
+		if err != nil {
+			return nil, fmt.Errorf("read --proof-file %q: %w",
+				expandedPath, err)
+		}
+		if len(proofFile) == 0 {
+			return nil, fmt.Errorf("--proof-file must not be empty")
+		}
 	}
 
 	return &waverpc.OnboardTaprootAssetRequest{
