@@ -105,7 +105,8 @@ func (r *RPCServer) OnboardTaprootAsset(ctx context.Context,
 		)
 	}
 	terms := r.server.loadOperatorTerms()
-	if terms == nil || terms.PubKey == nil || terms.VTXOExitDelay == 0 {
+	if terms == nil || terms.PubKey == nil ||
+		terms.BoardingExitDelay == 0 {
 		return nil, status.Error(
 			codes.FailedPrecondition,
 			"operator terms are not ready",
@@ -134,6 +135,9 @@ func (r *RPCServer) OnboardTaprootAsset(ctx context.Context,
 		)
 	}
 
+	// The onboarded output is spent as a round boarding input, so it
+	// carries the boarding exit delay; AssetBoardingDisclosure replays
+	// the onboarding under the same delay when the boarding completes.
 	onboardingRequest := &tapassets.OnboardingRequest{
 		RequestID:   req.GetIdempotencyKey(),
 		AssetRef:    req.GetAssetRef(),
@@ -146,7 +150,7 @@ func (r *RPCServer) OnboardTaprootAsset(ctx context.Context,
 		TargetConf:         req.GetTargetConf(),
 		MaxFeeSat:          req.GetMaxFeeSat(),
 		OperatorKey:        terms.PubKey,
-		ExitDelay:          terms.VTXOExitDelay,
+		ExitDelay:          terms.BoardingExitDelay,
 	}
 	result, err := onboarder.Onboard(ctx, onboardingRequest)
 	if errors.Is(err, tapassets.ErrReconciliationRequired) {
