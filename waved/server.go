@@ -1613,8 +1613,65 @@ func (s *Server) initLndBackend(ctx context.Context) error {
 		"pubkey", lndServices.NodePubkey,
 	)
 
+	if err := s.validateLndAccount(ctx, lndServices); err != nil {
+		return err
+	}
+
 	// In lnd mode the wallet is immediately ready.
 	s.markWalletReady()
+
+	return nil
+}
+
+// validateLndAccount refuses to start when the configured lnd account cannot
+// serve this daemon, rather than letting the daemon boot and fail later.
+//
+// Every misconfiguration here surfaces late and badly otherwise, and one of
+// them is silent. A name that does not exist makes lnd's ListUnspent filter
+// every output away rather than error, so the exit preflight simply concludes
+// there is nothing to spend. An account under the wrong key scope is worse
+// than that: coin selection and signing resolve it by name across all scopes
+// and work fine, while address derivation pins the taproot scope and fails —
+// so the daemon runs until the moment a unilateral exit or a boarding sweep
+// needs a fresh script. A watch-only account fails later still, at signing,
+// once inputs are already leased.
+//
+// One lookup filtered by both name and address type distinguishes all three.
+//
+// NOTE: this confirms the taproot-scoped account exists, which is what address
+// derivation needs. It does not rule out the same name also existing under
+// another key scope, in which case funding's lookupFirstCustomAccount could
+// resolve to the other one. lnd only allowed that on older versions, so it is
+// not guarded against here.
+func (s *Server) validateLndAccount(ctx context.Context,
+	lnd *lndclient.GrpcLndServices) error {
+
+	account := s.lndWalletAccount()
+	if account == lndbackend.DefaultWalletAccount {
+		return nil
+	}
+
+	accounts, err := lnd.WalletKit.ListAccounts(
+		ctx, account, walletrpc.AddressType_TAPROOT_PUBKEY,
+	)
+	if err != nil || len(accounts) == 0 {
+		return fmt.Errorf("lnd wallet account %q not found under the "+
+			"taproot key scope: this daemon derives taproot "+
+			"addresses, and lnd resolves an account name within "+
+			"the key scope the requested address type implies, so "+
+			"the account must be created taproot-scoped (lookup "+
+			"error: %v)", account, err)
+	}
+
+	if accounts[0].GetWatchOnly() {
+		return fmt.Errorf("lnd wallet account %q is watch-only, so "+
+			"lnd cannot sign for it: coin selection would succeed "+
+			"and signing would fail after the inputs were "+
+			"already leased", account)
+	}
+
+	s.log.InfoS(ctx, "Using lnd wallet account",
+		"account", account)
 
 	return nil
 }
@@ -4047,6 +4104,9 @@ func (s *Server) initWalletActor(ctx context.Context,
 		lndSvc := s.lnd.UnsafeFromSome()
 		backend := lndbackend.NewBoardingBackend(
 			lndSvc.WalletKit, lndSvc.ChainKit,
+			lndbackend.WithAccount(
+				s.lndWalletAccount(),
+			),
 		)
 		backend.Log = fn.Some(s.subLogger(lndbackend.Subsystem))
 		boardingBackend = backend
@@ -5111,6 +5171,16 @@ func networkToLndclient(network string) (lndclient.Network, error) {
 	}
 }
 
+// lndWalletAccount returns the lnd wallet account this daemon spends from,
+// falling back to lnd's built-in account when none is configured.
+func (s *Server) lndWalletAccount() string {
+	if s.cfg.Lnd == nil || s.cfg.Lnd.Account == "" {
+		return lndbackend.DefaultWalletAccount
+	}
+
+	return s.cfg.Lnd.Account
+}
+
 // lndUnrollWallet composes the LND-backed signing/key-derivation wallet
 // with the boarding backend's ListUnspent to satisfy the
 // UnilateralExitWallet interface needed by the package executor.
@@ -5119,19 +5189,20 @@ type lndUnrollWallet struct {
 	boardingBackend *lndbackend.BoardingBackend
 }
 
-// ListUnspent returns UTXOs from LND's default wallet account only.
+// ListUnspent returns UTXOs from the boarding backend's configured LND wallet
+// account only.
 //
 // The boarding backend's unfiltered enumeration also surfaces imported
 // watch-only script outputs (boarding and exit scripts tracked via
 // ImportTaprootScript). Those are not signable by LND's FinalizePsbt, so
 // offering them as CPFP fee inputs makes the child PSBT unsignable and the
 // fee bump fails with "PSBT is not finalizable". Restricting fee selection
-// to the default account keeps selection aligned with what the finalize
+// to the wallet's own account keeps selection aligned with what the finalize
 // path can actually sign, mirroring the lwwallet and btcwallet adapters.
 func (w *lndUnrollWallet) ListUnspent(ctx context.Context, minConfs,
 	maxConfs int32) ([]*wallet.Utxo, error) {
 
-	return w.boardingBackend.ListUnspentDefaultAccount(
+	return w.boardingBackend.ListUnspentWalletAccount(
 		ctx, minConfs, maxConfs,
 	)
 }
@@ -5142,7 +5213,7 @@ func (w *lndUnrollWallet) NewWalletPkScript(ctx context.Context) ([]byte,
 	error) {
 
 	addr, err := w.boardingBackend.WalletKit().NextAddr(
-		ctx, lnwallet.DefaultAccountName,
+		ctx, w.boardingBackend.Account(),
 		walletrpc.AddressType_TAPROOT_PUBKEY, true,
 	)
 	if err != nil {
@@ -5169,7 +5240,7 @@ func (w *lndUnrollWallet) FinalizePsbt(ctx context.Context,
 	}
 
 	_, finalTx, err := w.boardingBackend.WalletKit().FinalizePsbt(
-		ctx, packet, "",
+		ctx, packet, w.boardingBackend.Account(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("LND FinalizePsbt: %w", err)
@@ -5183,24 +5254,35 @@ func (w *lndUnrollWallet) FundPsbt(ctx context.Context, packetBytes []byte,
 	feeRateSatPerVByte int64, lockID wallet.LockID,
 	lockExpiry time.Duration) (*wire.MsgTx, error) {
 
-	packet, _, _, err := w.boardingBackend.WalletKit().FundPsbt(
-		ctx, &walletrpc.FundPsbtRequest{
-			Template: &walletrpc.FundPsbtRequest_Psbt{
-				Psbt: packetBytes,
-			},
-			Fees: &walletrpc.FundPsbtRequest_SatPerVbyte{
-				SatPerVbyte: uint64(feeRateSatPerVByte),
-			},
-			Account:  lnwallet.DefaultAccountName,
-			MinConfs: 1,
-			ChangeType: walletrpc.
-				ChangeAddressType_CHANGE_ADDRESS_TYPE_P2TR,
-			CoinSelectionStrategy: lnrpc.
-				CoinSelectionStrategy_STRATEGY_LARGEST,
-			CustomLockId:          lockID[:],
-			LockExpirationSeconds: uint64(lockExpiry.Seconds()),
+	req := &walletrpc.FundPsbtRequest{
+		Template: &walletrpc.FundPsbtRequest_Psbt{
+			Psbt: packetBytes,
 		},
-	)
+		Fees: &walletrpc.FundPsbtRequest_SatPerVbyte{
+			SatPerVbyte: uint64(feeRateSatPerVByte),
+		},
+		Account:  w.boardingBackend.Account(),
+		MinConfs: 1,
+		CoinSelectionStrategy: lnrpc.
+			CoinSelectionStrategy_STRATEGY_LARGEST,
+		CustomLockId:          lockID[:],
+		LockExpirationSeconds: uint64(lockExpiry.Seconds()),
+	}
+
+	// The default account spans all key scopes, so LND needs to be told
+	// which one to take change from, and without an explicit type it
+	// defaults that account's change scope to BIP-0084. Asking for taproot
+	// keeps the change output P2TR, which matters because that output
+	// later becomes a fee input for a v3 CPFP child that needs a
+	// Schnorr-signable one. A custom account lives in exactly one key
+	// scope, which already fixes its change type, and LND rejects the
+	// request outright if a change type is supplied alongside one.
+	if w.boardingBackend.IsDefaultAccount() {
+		req.ChangeType =
+			walletrpc.ChangeAddressType_CHANGE_ADDRESS_TYPE_P2TR
+	}
+
+	packet, _, _, err := w.boardingBackend.WalletKit().FundPsbt(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("LND FundPsbt: %w", err)
 	}
@@ -5556,6 +5638,9 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		)
 		boardingBackend := lndbackend.NewBoardingBackend(
 			lndSvc.WalletKit, lndSvc.ChainKit,
+			lndbackend.WithAccount(
+				s.lndWalletAccount(),
+			),
 		)
 		w := &lndUnrollWallet{
 			ClientWallet:    clientWallet,
