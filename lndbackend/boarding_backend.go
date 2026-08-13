@@ -22,6 +22,17 @@ import (
 	"github.com/lightningnetwork/lnd/lnwallet"
 )
 
+// DefaultWalletAccount is the LND wallet account this backend spends from
+// when no other account is configured. LND's "default" account is the one
+// every wallet has and the one a freshly funded node puts its coins in, so
+// using it preserves the behaviour of deployments that never think about
+// accounts at all.
+//
+// Deployments that share one LND node between several daemons should give
+// each daemon its own account instead, so that one daemon's spending cannot
+// consume another's funds.
+const DefaultWalletAccount = lnwallet.DefaultAccountName
+
 // BoardingBackend implements the wallet.BoardingBackend interface by
 // wrapping an lndclient.WalletKitClient and ChainKitClient. This
 // provides the concrete integration with an LND node for boarding
@@ -35,19 +46,65 @@ type BoardingBackend struct {
 	// This enables TxProof construction when boarding UTXOs confirm.
 	chainKit lndclient.ChainKitClient
 
+	// account is the LND wallet account whose coins this backend may
+	// select, derive addresses from, and sign for. It never restricts
+	// which UTXOs the backend can *observe*: imported boarding scripts
+	// live in LND's separate watch-only account and are still enumerated
+	// by ListUnspent.
+	account string
+
 	// Log is an optional logger for this backend. If None, the backend
 	// falls back to extracting a logger from context.
 	Log fn.Option[btclog.Logger]
 }
 
+// Option customises a BoardingBackend at construction time.
+type Option func(*BoardingBackend)
+
+// WithAccount pins the backend to a named LND wallet account, so that coin
+// selection, change, address derivation and signing only ever touch that
+// account's funds. An empty name leaves the backend on DefaultWalletAccount.
+func WithAccount(account string) Option {
+	return func(b *BoardingBackend) {
+		if account == "" {
+			return
+		}
+
+		b.account = account
+	}
+}
+
 // NewBoardingBackend creates a new LND boarding backend.
 func NewBoardingBackend(walletKit lndclient.WalletKitClient,
-	chainKit lndclient.ChainKitClient) *BoardingBackend {
+	chainKit lndclient.ChainKitClient, opts ...Option) *BoardingBackend {
 
-	return &BoardingBackend{
+	backend := &BoardingBackend{
 		walletKit: walletKit,
 		chainKit:  chainKit,
+		account:   DefaultWalletAccount,
 	}
+
+	for _, opt := range opts {
+		opt(backend)
+	}
+
+	return backend
+}
+
+// Account returns the LND wallet account this backend spends from. Callers
+// that build PSBTs against the same LND node must fund, finalize and derive
+// change with this account so that every step stays inside the same pocket of
+// funds.
+func (l *BoardingBackend) Account() string {
+	return l.account
+}
+
+// IsDefaultAccount reports whether the backend spends from LND's built-in
+// default account. Custom accounts live in exactly one key scope, which fixes
+// their change address type, and LND rejects an explicit change type for them;
+// callers building PSBTs use this to decide whether they may ask for one.
+func (l *BoardingBackend) IsDefaultAccount() bool {
+	return l.account == DefaultWalletAccount
 }
 
 // WalletKit returns the underlying LND WalletKit client for
@@ -109,25 +166,28 @@ func (l *BoardingBackend) ImportTaprootScript(ctx context.Context,
 // The result spans every wallet account, including imported watch-only
 // script outputs (e.g. boarding scripts tracked via ImportTaprootScript).
 // Callers that need outputs the wallet can unilaterally sign, such as CPFP
-// fee-input selection, must use ListUnspentDefaultAccount instead.
+// fee-input selection, must use ListUnspentWalletAccount instead.
 func (l *BoardingBackend) ListUnspent(ctx context.Context, minConfs,
 	maxConfs int32) ([]*wallet.Utxo, error) {
 
 	return l.listUnspent(ctx, minConfs, maxConfs)
 }
 
-// ListUnspentDefaultAccount returns UTXOs from LND's default wallet account
-// only. This excludes imported watch-only script outputs (boarding and exit
-// scripts imported via ImportTaprootScript), which the wallet merely tracks
-// and cannot unilaterally sign. CPFP fee-input selection must use this
-// variant: offering a watch-only output as a fee input makes the child PSBT
-// unsignable and the fee bump fails with "PSBT is not finalizable".
-func (l *BoardingBackend) ListUnspentDefaultAccount(ctx context.Context,
+// ListUnspentWalletAccount returns UTXOs from the backend's configured LND
+// wallet account only. This excludes imported watch-only script outputs
+// (boarding and exit scripts imported via ImportTaprootScript), which the
+// wallet merely tracks and cannot unilaterally sign. CPFP fee-input selection
+// must use this variant: offering a watch-only output as a fee input makes the
+// child PSBT unsignable and the fee bump fails with "PSBT is not finalizable".
+//
+// When the backend is pinned to a non-default account, this is also what keeps
+// the daemon from spending another daemon's coins on the same LND node.
+func (l *BoardingBackend) ListUnspentWalletAccount(ctx context.Context,
 	minConfs, maxConfs int32) ([]*wallet.Utxo, error) {
 
 	return l.listUnspent(
 		ctx, minConfs, maxConfs,
-		lndclient.WithUnspentAccount(lnwallet.DefaultAccountName),
+		lndclient.WithUnspentAccount(l.account),
 	)
 }
 

@@ -41,6 +41,22 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 
 ## Invariants
 
+- The lnd wallet account (`lnd.account`, empty = lnd's `default`) bounds what
+  this daemon may **spend**: `ListWalletUnspent` (fee inputs and the exit
+  preflight), `NewWalletAddress` (the deposit address), and the
+  `lndUnrollWallet` fund/sign/change triple all resolve it through
+  `Server.lndWalletAccount()`. Observation deliberately does not:
+  `listBackingWalletUnspent` stays unfiltered because
+  `fetchUnconfirmedBoardingBalance` and `ListUnconfirmedBoardingUTXOs` exist
+  to see imported boarding scripts, which live in lnd's watch-only account
+  and belong to no wallet account. Scoping that dispatcher empties both, and
+  does so even with no account configured, since lnd reads an empty account
+  as *every* account but `"default"` as a real filter.
+- `validateLndAccount` refuses to start on a configured account that is
+  missing, not taproot-scoped, or watch-only. Without it each of those fails
+  later and worse — a missing account silently filters every UTXO away, a
+  wrong-scoped one funds and signs but cannot derive a fresh script, and a
+  watch-only one fails at signing after inputs are leased.
 - `Server.run` registers a deferred `actorSystem.Shutdown()` **before** the
   deferred `db.Close()` so in-flight actor DB transactions drain before the
   connection pool tears down.

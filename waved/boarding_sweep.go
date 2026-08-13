@@ -40,6 +40,9 @@ func (s *Server) newSweepWallet() (unroll.SweepWallet, error) {
 		)
 		boardingBackend := lndbackend.NewBoardingBackend(
 			lndSvc.WalletKit, lndSvc.ChainKit,
+			lndbackend.WithAccount(
+				s.lndWalletAccount(),
+			),
 		)
 
 		return &lndUnrollWallet{

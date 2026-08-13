@@ -913,6 +913,22 @@ type LndConfig struct {
 	// RPCTimeout is the maximum duration for individual RPC calls to
 	// lnd. If zero, DefaultRPCTimeout is used.
 	RPCTimeout time.Duration `mapstructure:"rpctimeout"`
+
+	// Account is the lnd wallet account this daemon may spend from. It
+	// bounds coin selection, change, address derivation and signing, but
+	// not what the daemon can observe: imported boarding scripts live in
+	// lnd's watch-only account and stay visible either way.
+	//
+	// Empty selects lndbackend.DefaultWalletAccount, lnd's built-in
+	// "default" account, which is where a freshly funded node keeps its
+	// coins. Set this when several daemons share one lnd node, so that one
+	// daemon's spending cannot drain another's funds. The named account
+	// must already exist on the node (lnd's `wallet accounts create`) and
+	// must be taproot-scoped: every lnd address this daemon derives for
+	// itself asks for a taproot address, and lnd resolves a custom account
+	// name within the key scope implied by the requested address type, so
+	// an account created under any other scope resolves as "not found".
+	Account string `mapstructure:"account"`
 }
 
 // ServerConfig holds connection parameters for the ark operator's mailbox
