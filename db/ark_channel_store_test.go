@@ -43,6 +43,7 @@ func TestArkChannelStoreRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	backing := testArkChannelBacking(t, terms, binding)
 	for _, event := range []arkchannel.Event{
+		&arkchannel.FundingPeerReady{},
 		&arkchannel.BackingSigned{
 			Backing: backing,
 		},
@@ -220,22 +221,22 @@ func TestArkChannelStoreNotFound(t *testing.T) {
 	require.ErrorIs(t, err, arkchannel.ErrNotFound)
 }
 
-// TestArkChannelStoreReceiveClaimKind verifies the receive fallback channel
-// kind survives the SQL constraint and domain round trip.
-func TestArkChannelStoreReceiveClaimKind(t *testing.T) {
+// TestArkChannelStoreReceiveIntentKind verifies a hub-funded receive channel
+// survives the SQL constraint and domain round trip.
+func TestArkChannelStoreReceiveIntentKind(t *testing.T) {
 	t.Parallel()
 
 	store := newArkChannelStoreForTest(t)
 	coordinator, err := arkchannel.NewCoordinator(store)
 	require.NoError(t, err)
-	terms := testArkChannelTerms(t, arkchannel.KindReceiveClaim, 9)
+	terms := testArkChannelTerms(t, arkchannel.KindReceiveIntent, 9)
 
 	_, err = coordinator.Request(t.Context(), terms)
 	require.NoError(t, err)
 	loaded, err := store.Get(t.Context(), terms.ID)
 	require.NoError(t, err)
 	require.Equal(
-		t, arkchannel.KindReceiveClaim, loaded.Snapshot.Terms.Kind,
+		t, arkchannel.KindReceiveIntent, loaded.Snapshot.Terms.Kind,
 	)
 }
 
@@ -307,9 +308,7 @@ func testArkChannelTerms(t *testing.T, kind arkchannel.Kind,
 	if kind == arkchannel.KindReceiveIntent {
 		terms.Funder = arkchannel.PartyHub
 	}
-	if kind == arkchannel.KindReceiveIntent ||
-		kind == arkchannel.KindReceiveClaim {
-
+	if kind == arkchannel.KindReceiveIntent {
 		terms.PaymentHash = [32]byte{seed, 4}
 	}
 

@@ -60,7 +60,7 @@ func (s *Service) RegisterReceiveIntent(ctx context.Context, terms Terms) (
 func (s *Service) RegisterPromotion(ctx context.Context, terms Terms) (Record,
 	error) {
 
-	if terms.Kind != KindPromotion && terms.Kind != KindReceiveClaim {
+	if terms.Kind != KindPromotion {
 		return Record{}, fmt.Errorf("promotion terms are required")
 	}
 

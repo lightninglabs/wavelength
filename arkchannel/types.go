@@ -2,6 +2,7 @@ package arkchannel
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"slices"
 
@@ -16,6 +17,30 @@ import (
 // ID is the stable identifier shared by both sides of an Ark channel.
 type ID [32]byte
 
+// ReceiveIntentID derives the stable channel identifier for one incoming
+// payment. Replays of the same invoice can only address the same intent.
+func ReceiveIntentID(paymentHash [32]byte) ID {
+	digest := sha256.Sum256(
+		append(
+			[]byte("wavelength-receive-channel-id:"),
+			paymentHash[:]...,
+		),
+	)
+
+	return ID(digest)
+}
+
+// ReceiveIntentPendingID derives lnd's stable pending channel identifier for
+// one incoming payment.
+func ReceiveIntentPendingID(paymentHash [32]byte) [32]byte {
+	return sha256.Sum256(
+		append(
+			[]byte("wavelength-receive-pending-id:"),
+			paymentHash[:]...,
+		),
+	)
+}
+
 // Kind identifies how the VTXO backing a channel is obtained.
 type Kind uint8
 
@@ -27,10 +52,6 @@ const (
 	// KindReceiveIntent moves hub liquidity into a channel-policy VTXO
 	// through an OOR transfer before resuming an incoming payment.
 	KindReceiveIntent
-
-	// KindReceiveClaim promotes a server-funded vHTLC through its client
-	// preimage path into a client-funded channel-policy VTXO.
-	KindReceiveClaim
 )
 
 // String returns the durable name of a channel kind.
@@ -42,12 +63,22 @@ func (k Kind) String() string {
 	case KindReceiveIntent:
 		return "receive_intent"
 
-	case KindReceiveClaim:
-		return "receive_claim"
-
 	default:
 		return "unknown"
 	}
+}
+
+// FundingInitiator returns the endpoint that starts lnd's channel-opening
+// state machine. The Ark funder also pays Lightning commitment fees, which
+// lets receive intents allocate the entire opening balance to the hub.
+func (t Terms) FundingInitiator() Party {
+	return t.Funder
+}
+
+// InitialPushAmount returns the amount the lnd initiator pushes to its peer.
+// Both channel kinds start with all liquidity on the Ark funder's side.
+func (t Terms) InitialPushAmount() btcutil.Amount {
+	return 0
 }
 
 // Party identifies one endpoint of the private Lightning channel.
@@ -311,15 +342,6 @@ func (t Terms) Validate() error {
 		}
 		if t.PaymentHash == ([32]byte{}) {
 			return fmt.Errorf("receive intent requires a payment " +
-				"hash")
-		}
-
-	case KindReceiveClaim:
-		if t.Funder != PartyClient {
-			return fmt.Errorf("receive claim must be client funded")
-		}
-		if t.PaymentHash == ([32]byte{}) {
-			return fmt.Errorf("receive claim requires a payment " +
 				"hash")
 		}
 

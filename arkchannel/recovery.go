@@ -49,33 +49,31 @@ type RecoveryOORPackage struct {
 	Checkpoints [][]byte
 }
 
-// ReceiveClaimRecoverySource identifies the server-funded vHTLC whose
-// preimage path is promoted into a channel. The source is derived from the
-// authenticated swap record rather than selected by the requesting client.
-type ReceiveClaimRecoverySource struct {
+// OORRecoverySource identifies one exact finalized output whose sender-owned
+// OOR artifacts must be exported for channel recovery.
+type OORRecoverySource struct {
 	OutPoint wire.OutPoint
 	Amount   btcutil.Amount
 	PkScript []byte
 }
 
-// Clone returns an isolated receive-claim source.
-func (s ReceiveClaimRecoverySource) Clone() ReceiveClaimRecoverySource {
+// Clone returns an isolated OOR recovery source.
+func (s OORRecoverySource) Clone() OORRecoverySource {
 	s.PkScript = slices.Clone(s.PkScript)
 
 	return s
 }
 
-// Validate rejects an incomplete receive-claim source.
-func (s ReceiveClaimRecoverySource) Validate() error {
+// Validate rejects an incomplete OOR recovery source.
+func (s OORRecoverySource) Validate() error {
 	if s.OutPoint.Hash == (chainhash.Hash{}) {
-		return fmt.Errorf("receive-claim recovery outpoint is required")
+		return fmt.Errorf("OOR recovery outpoint is required")
 	}
 	if s.Amount <= 0 {
-		return fmt.Errorf("receive-claim recovery amount must be " +
-			"positive")
+		return fmt.Errorf("OOR recovery amount must be positive")
 	}
 	if len(s.PkScript) == 0 {
-		return fmt.Errorf("receive-claim recovery script is required")
+		return fmt.Errorf("OOR recovery script is required")
 	}
 
 	return nil
@@ -117,11 +115,9 @@ func (p RecoveryPackage) Validate(source VTXOBinding) error {
 	return p.validate(source.OORSessionID)
 }
 
-// ValidateReceiveClaim checks the package shape and binds its target package
-// to an authenticated receive-claim source.
-func (p RecoveryPackage) ValidateReceiveClaim(
-	source ReceiveClaimRecoverySource) error {
-
+// ValidateOORSource checks the package shape and binds its target package to
+// one exact finalized OOR output.
+func (p RecoveryPackage) ValidateOORSource(source OORRecoverySource) error {
 	if err := source.Validate(); err != nil {
 		return err
 	}

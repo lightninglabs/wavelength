@@ -37,6 +37,14 @@ func TestOORChannelLifecycle(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
+	require.Equal(t, PhaseRequested, record.Snapshot.Phase)
+	require.Empty(t, actions)
+	require.NotNil(t, record.Snapshot.Source)
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &FundingPeerReady{},
+	)
+	require.NoError(t, err)
 	require.Equal(t, PhaseNegotiating, record.Snapshot.Phase)
 	require.IsType(t, &NegotiateFunding{}, requireOneAction(t, actions))
 
@@ -571,6 +579,7 @@ func TestOORChannelCanAbortBeforePONR(t *testing.T) {
 		&BindVTXO{
 			Binding: binding,
 		},
+		&FundingPeerReady{},
 		&BackingSigned{
 			Backing: backing,
 		},
@@ -721,6 +730,18 @@ func TestCoordinatorIdempotency(t *testing.T) {
 	require.NoError(t, err)
 	work, err := restarted.ResumeAll(t.Context())
 	require.NoError(t, err)
+	require.Empty(t, work)
+
+	_, actions, err = restarted.Apply(
+		t.Context(), terms.ID, &FundingPeerReady{},
+	)
+	require.NoError(t, err)
+	require.IsType(t, &NegotiateFunding{}, requireOneAction(t, actions))
+
+	restarted, err = NewCoordinator(store)
+	require.NoError(t, err)
+	work, err = restarted.ResumeAll(t.Context())
+	require.NoError(t, err)
 	require.Len(t, work, 1)
 	require.IsType(t, &NegotiateFunding{}, work[0].Action)
 
@@ -852,6 +873,11 @@ func TestPartialFundingFactsDoNotRestartNegotiation(t *testing.T) {
 		t.Context(), terms.ID, &BindVTXO{
 			Binding: binding,
 		},
+	)
+	require.NoError(t, err)
+	require.Empty(t, actions)
+	_, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &FundingPeerReady{},
 	)
 	require.NoError(t, err)
 	require.IsType(t, &NegotiateFunding{}, requireOneAction(t, actions))
@@ -1037,6 +1063,14 @@ func activeCooperativeChannel(t *testing.T, terms Terms,
 			ChannelPointIndex: backing.ChannelPoint.Index,
 		},
 	} {
+		if _, receive := event.(*BackingSigned); receive &&
+			terms.Kind == KindReceiveIntent {
+
+			_, _, err = coordinator.Apply(
+				t.Context(), terms.ID, &FundingPeerReady{},
+			)
+			require.NoError(t, err)
+		}
 		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
 		require.NoError(t, err)
 	}

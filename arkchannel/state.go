@@ -231,6 +231,9 @@ func applyEvent(next *Snapshot, event Event) (bool, error) {
 	case *BindVTXO:
 		return applyBinding(next, event.Binding)
 
+	case *FundingPeerReady:
+		return applyFundingPeerReady(next)
+
 	case *FundingFinalized:
 		return applyFundingFinalized(next, event.Party)
 
@@ -335,7 +338,9 @@ func applyEvent(next *Snapshot, event Event) (bool, error) {
 	}
 }
 
-// applyBinding binds the exact source once and starts lnd negotiation.
+// applyBinding binds the exact source once. Client-funded promotions can start
+// immediately because the protocol binds the hub first. Hub-funded receive
+// channels wait for the client's explicit durable readiness barrier.
 func applyBinding(next *Snapshot, binding VTXOBinding) (bool, error) {
 	if err := binding.Validate(next.Terms); err != nil {
 		return false, err
@@ -354,6 +359,28 @@ func applyBinding(next *Snapshot, binding VTXOBinding) (bool, error) {
 
 	clone := binding.Clone()
 	next.Source = &clone
+	if next.Terms.Kind == KindPromotion {
+		next.Phase = PhaseNegotiating
+	}
+
+	return true, nil
+}
+
+// applyFundingPeerReady starts a hub-funded receive channel only after its
+// peer has independently persisted and validated the exact prepared source.
+func applyFundingPeerReady(next *Snapshot) (bool, error) {
+	if next.Terms.Kind != KindReceiveIntent {
+		return false, fmt.Errorf("funding readiness is only valid " +
+			"for receive intents")
+	}
+	if next.Source == nil {
+		return false, fmt.Errorf("cannot accept funding readiness " +
+			"before VTXO binding")
+	}
+	if next.Phase != PhaseRequested {
+		return false, nil
+	}
+
 	next.Phase = PhaseNegotiating
 
 	return true, nil
@@ -1051,7 +1078,13 @@ func validateSnapshot(snapshot Snapshot) error {
 
 	switch snapshot.Phase {
 	case PhaseRequested:
-		if snapshot.Source != nil || snapshot.OORFinalized ||
+		if snapshot.Source != nil &&
+			snapshot.Terms.Kind != KindReceiveIntent {
+			return fmt.Errorf("only a receive intent may wait " +
+				"with a bound VTXO")
+		}
+		if snapshot.Backing != nil || snapshot.ClientFinalized ||
+			snapshot.HubFinalized || snapshot.OORFinalized ||
 			snapshot.OORAborted || snapshot.RecoveryReady ||
 			snapshot.SourceConflict != nil ||
 			snapshot.BackingPublished {

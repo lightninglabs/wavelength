@@ -144,6 +144,7 @@ type PaymentBridgeSnapshot struct {
 	DestinationSCID   uint64
 	SourceAmount      btcutil.Amount
 	DestinationAmount btcutil.Amount
+	ChannelCapacity   btcutil.Amount
 	ServerFee         btcutil.Amount
 	RoutingFeeBudget  btcutil.Amount
 	PublicInvoice     string
@@ -187,6 +188,10 @@ func (s PaymentBridgeSnapshot) Validate() error {
 
 	switch s.Direction {
 	case PaymentOutgoing:
+		if s.ChannelCapacity != 0 {
+			return fmt.Errorf("outgoing bridge cannot reserve " +
+				"channel capacity")
+		}
 		if s.PublicInvoice == "" {
 			return fmt.Errorf("outgoing bridge requires public " +
 				"invoice")
@@ -221,6 +226,11 @@ func (s PaymentBridgeSnapshot) Validate() error {
 		if s.ServerFee != 0 || s.RoutingFeeBudget != 0 ||
 			s.SourceAmount != s.DestinationAmount {
 			return fmt.Errorf("incoming bridge amounts must match")
+		}
+		if s.ChannelCapacity != 0 &&
+			s.ChannelCapacity < s.DestinationAmount {
+			return fmt.Errorf("incoming channel capacity is " +
+				"below payment amount")
 		}
 
 	default:
@@ -411,6 +421,7 @@ func SamePaymentBridgeTerms(a, b PaymentBridgeSnapshot) bool {
 		a.ReservedSCID != b.ReservedSCID ||
 		a.SourceAmount != b.SourceAmount ||
 		a.DestinationAmount != b.DestinationAmount ||
+		a.ChannelCapacity != b.ChannelCapacity ||
 		a.ServerFee != b.ServerFee ||
 		a.RoutingFeeBudget != b.RoutingFeeBudget ||
 		a.PublicInvoice != b.PublicInvoice {

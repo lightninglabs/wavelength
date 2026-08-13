@@ -17,6 +17,13 @@ type BindVTXO struct {
 
 func (*BindVTXO) eventSealed() {}
 
+// FundingPeerReady records that the authenticated peer has durably bound the
+// same prepared source. Hub-funded receive channels do not start native lnd
+// negotiation until this barrier is present.
+type FundingPeerReady struct{}
+
+func (*FundingPeerReady) eventSealed() {}
+
 // FundingFinalized records that one endpoint's native lnd funding manager has
 // persisted both initial commitments.
 type FundingFinalized struct {

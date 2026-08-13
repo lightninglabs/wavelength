@@ -283,6 +283,21 @@ func TestServiceRegistersReceiveIntentWithoutFunding(t *testing.T) {
 	record, err := service.RegisterReceiveIntent(t.Context(), terms)
 	require.NoError(t, err)
 	require.Equal(t, PhaseRequested, record.Snapshot.Phase)
+
+	record, err = service.BindPreparedOOR(
+		t.Context(), terms.ID, testBinding(terms),
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseRequested, record.Snapshot.Phase)
+	require.NotNil(t, record.Snapshot.Source)
+	require.Empty(t, executor.counts)
+
+	record, err = service.Apply(
+		t.Context(), terms.ID, &FundingPeerReady{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseActive, record.Snapshot.Phase)
+	require.Equal(t, 1, executor.counts["*arkchannel.NegotiateFunding"])
 }
 
 // TestServiceReconcilesFundingByChannelPoint proves a missed lnd callback is
