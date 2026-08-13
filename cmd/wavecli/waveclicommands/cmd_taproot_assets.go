@@ -11,7 +11,10 @@ import (
 // newTaprootAssetsCmd builds the prototype Taproot Asset command subtree.
 func newTaprootAssetsCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "taproot-assets",
+		Use: "assets",
+		Aliases: []string{
+			"taproot-assets",
+		},
 		Short: "Prototype Taproot Asset operations",
 		Long: "Prototype Taproot Asset operations backed by tapd " +
 			"and tap-sdk inside waved. These commands are " +

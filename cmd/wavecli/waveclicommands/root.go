@@ -26,7 +26,7 @@ const (
 	groupAdvanced      = "advanced"
 
 	// devModeEnvVar, when set to "1", reveals the advanced subtrees
-	// (ark / dev / recovery / taproot-assets) under an Advanced group in
+	// (ark / dev / recovery / assets) under an Advanced group in
 	// --help. It only changes visibility; it never gates execution.
 	devModeEnvVar = "WAVELENGTH_DEV"
 )
