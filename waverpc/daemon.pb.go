@@ -4225,11 +4225,12 @@ type SendOORRequest struct {
 	ExistingOnly bool `protobuf:"varint,6,opt,name=existing_only,json=existingOnly,proto3" json:"existing_only,omitempty"`
 	// taproot_asset requests the experimental proof-selected Taproot Asset
 	// extension. It requires exactly one managed asset input, one recipient,
-	// explicit Bitcoin carriers for every asset-bearing output, and a
-	// non-empty idempotency_key. The wallet may add ordinary Bitcoin VTXOs to
-	// cover a carrier shortfall. Asset transfers identify the managed asset
-	// input through taproot_asset.input_vtxo_outpoint and must not use
-	// custom_inputs. Bitcoin-only sends leave this field unset.
+	// and a non-empty idempotency_key. The wallet may add ordinary Bitcoin
+	// VTXOs to cover a carrier shortfall and returns any selected value
+	// beyond the asset-bearing carriers to the sender as a plain Bitcoin
+	// change VTXO. Asset transfers identify the managed asset input through
+	// taproot_asset.input_vtxo_outpoint and must not use custom_inputs.
+	// Bitcoin-only sends leave this field unset.
 	TaprootAsset  *TaprootAssetOORIntent `protobuf:"bytes,7,opt,name=taproot_asset,json=taprootAsset,proto3" json:"taproot_asset,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4349,10 +4350,12 @@ type TaprootAssetOORIntent struct {
 	// caller's recipient. Zero retains the legacy full-send behavior and
 	// assigns all asset_amount units to the recipient.
 	RecipientAssetAmount uint64 `protobuf:"varint,9,opt,name=recipient_asset_amount,json=recipientAssetAmount,proto3" json:"recipient_asset_amount,omitempty"`
-	// asset_change_carrier_value_sat is the explicit Bitcoin value assigned
-	// to asset change. It is required for a partial asset send and must be
-	// zero for a full asset send. Asset units are never converted into these
-	// carrier satoshis.
+	// asset_change_carrier_value_sat is the Bitcoin value carried by the
+	// asset change output of a partial asset send. Zero uses the operator's
+	// minimum VTXO amount. It must be zero for a full asset send. Selected
+	// input value beyond the recipient and asset-change carriers returns to
+	// the sender as an ordinary Bitcoin change VTXO. Asset units are never
+	// converted into these carrier satoshis.
 	AssetChangeCarrierValueSat uint64 `protobuf:"varint,10,opt,name=asset_change_carrier_value_sat,json=assetChangeCarrierValueSat,proto3" json:"asset_change_carrier_value_sat,omitempty"`
 	unknownFields              protoimpl.UnknownFields
 	sizeCache                  protoimpl.SizeCache
