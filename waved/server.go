@@ -46,6 +46,7 @@ import (
 	"github.com/lightninglabs/wavelength/lib/recovery"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/lndbackend"
+	"github.com/lightninglabs/wavelength/lnruntime"
 	"github.com/lightninglabs/wavelength/lwwallet"
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
@@ -358,6 +359,7 @@ type Server struct {
 	arkChannelMu             sync.RWMutex
 	arkChannelController     ArkChannelController
 	arkChannelMailboxRuntime *serverconn.Runtime
+	arkChannelPeerIngress    *lnruntime.PeerMessageIngress
 	vhtlcRecovery            *coordinator.Service
 	vhtlcRecoveryTarget      *vhtlcRecoveryTargetMaterializer
 	vhtlcPreimages           *unrollpolicy.PreimageResolverRegistry
@@ -1186,6 +1188,17 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 
 		if s.outboxPublisher != nil {
 			s.outboxPublisher.Stop()
+		}
+		if ingress := s.getArkChannelPeerIngress(); ingress != nil {
+			//nolint:contextcheck // bounded shutdown
+			if err := ingress.StopAndWait(shutdownCtx); err != nil {
+				s.log.WarnS(
+					ctx,
+					"Ark channel peer ingress shutdown "+
+						"failed",
+					err,
+				)
+			}
 		}
 
 		controller := s.getArkChannelController()

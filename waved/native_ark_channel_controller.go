@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -31,6 +31,11 @@ var (
 	// has enough balance on the requested sending side.
 	ErrInsufficientArkChannelLiquidity = fmt.Errorf("insufficient active " +
 		"Ark channel liquidity")
+
+	// ErrReceiveChannelFallback means channel creation was abandoned before
+	// the hub's prepared OOR crossed its signing point of no return.
+	ErrReceiveChannelFallback = fmt.Errorf("receive channel can safely " +
+		"fall back to vHTLC")
 )
 
 const (
@@ -60,7 +65,10 @@ type NativeArkChannelController struct {
 
 	coordinator *arkchannel.Coordinator
 	remote      lnruntime.ProcessFundingPeer
+	fundingPeer lnruntime.FundingCounterparty
+	paymentPeer lnruntime.ProcessPaymentPeer
 	peerInfo    lnruntime.FundingPeerInfo
+	remoteNode  [33]byte
 	keys        nativeArkChannelKeys
 
 	mu            sync.RWMutex
@@ -68,6 +76,7 @@ type NativeArkChannelController struct {
 	service       *arkchannel.Service
 	clientClose   *lnruntime.ClientCooperativeCloseProcess
 	hubClose      *lnruntime.HubCooperativeCloseProcess
+	fundingWire   *lnruntime.FundingWire
 	paymentBridge lnruntime.PaymentBridgeCoordinator
 }
 
@@ -147,6 +156,7 @@ func NewHubFundingPeerInfo(ctx context.Context,
 	copy(info.HubNodeKey[:], cfg.IdentityKey.PubKey.SerializeCompressed())
 	copy(info.HubArkKey[:], keys.ark.PubKey.SerializeCompressed())
 	copy(info.HubChannelKey[:], keys.backing.PubKey.SerializeCompressed())
+	copy(info.HubFunderKey[:], keys.funder.PubKey.SerializeCompressed())
 	copy(
 		info.ArkOperatorKey[:],
 		cfg.OperatorTerms.PubKey.SerializeCompressed(),
@@ -179,7 +189,8 @@ func NewClientArkChannelController(ctx context.Context,
 
 	return &NativeArkChannelController{
 		party: arkchannel.PartyClient, cfg: cfg,
-		coordinator: coordinator, remote: remote, keys: keys,
+		coordinator: coordinator, remote: remote,
+		fundingPeer: remote, paymentPeer: remote, keys: keys,
 	}, nil
 }
 
@@ -213,7 +224,7 @@ func NewHubArkChannelController(ctx context.Context,
 	controller := &NativeArkChannelController{
 		party: arkchannel.PartyHub, cfg: cfg.Process,
 		coordinator: coordinator, peerInfo: cfg.Info, keys: keys,
-		paymentBridge: cfg.PaymentBridge,
+		paymentBridge: cfg.PaymentBridge, remoteNode: cfg.RemoteNode,
 	}
 	if err := controller.startHub(
 		ctx, cfg.RemoteNode, cfg.PeerSender, cfg.CloseObserver,
@@ -345,8 +356,15 @@ func (c *NativeArkChannelController) ensureClientStarted(
 	if err != nil {
 		return err
 	}
-	negotiator, err := node.NewNegotiator(c.remote, c.cfg.Recovery)
+	fundingWire, err := lnruntime.NewFundingWire(node.Peer())
 	if err != nil {
+		_ = node.Stop()
+
+		return err
+	}
+	negotiator, err := node.NewNegotiator(c.fundingPeer, c.cfg.Recovery)
+	if err != nil {
+		fundingWire.Close()
 		_ = node.Stop()
 
 		return err
@@ -357,6 +375,7 @@ func (c *NativeArkChannelController) ensureClientStarted(
 		keychain.KeyDescriptor{}, delivery,
 	)
 	if err != nil {
+		fundingWire.Close()
 		_ = node.Stop()
 
 		return err
@@ -375,36 +394,52 @@ func (c *NativeArkChannelController) ensureClientStarted(
 		closeEndpoint, c.cfg.Peer, publisher, delivery,
 	)
 	if err != nil {
+		fundingWire.Close()
 		_ = node.Stop()
 
 		return err
 	}
 	service, err := c.newService(node, negotiator, clientClose)
 	if err != nil {
+		fundingWire.Close()
+		_ = node.Stop()
+
+		return err
+	}
+	if err := fundingWire.BindServer(lnruntime.FundingWireServerConfig{
+		Service: service, Funding: node.FundingEndpoint(),
+	}); err != nil {
+
+		fundingWire.Close()
 		_ = node.Stop()
 
 		return err
 	}
 	c.service = service
-	if err := node.Start(); err != nil {
+	c.fundingWire = fundingWire
+	cleanup := func() {
 		c.service = nil
+		c.fundingWire = nil
+		fundingWire.Close()
 		_ = node.Stop()
+	}
+	if err := node.Start(); err != nil {
+		cleanup()
 
 		return err
 	}
 	if err := c.restoreRecoveryWatches(ctx, service); err != nil {
-		c.service = nil
-		_ = node.Stop()
+		cleanup()
 
 		return err
 	}
 	if err := service.Resume(ctx); err != nil {
-		_ = node.Stop()
+		cleanup()
 
 		return err
 	}
 	if err := resumeOnchainArkChannels(ctx, node, service); err != nil {
-		_ = node.Stop()
+		cleanup()
 
 		return err
 	}
@@ -430,10 +465,17 @@ func (c *NativeArkChannelController) startHub(ctx context.Context,
 	if err != nil {
 		return err
 	}
+	fundingWire, err := lnruntime.NewFundingWire(node.Peer())
+	if err != nil {
+		_ = node.Stop()
+
+		return err
+	}
 	negotiator, err := node.NewNegotiator(
-		node.FundingEndpoint(), c.cfg.Recovery,
+		fundingWire.Counterparty(), c.cfg.Recovery,
 	)
 	if err != nil {
+		fundingWire.Close()
 		_ = node.Stop()
 
 		return err
@@ -444,6 +486,7 @@ func (c *NativeArkChannelController) startHub(ctx context.Context,
 		c.keys.ark, delivery,
 	)
 	if err != nil {
+		fundingWire.Close()
 		_ = node.Stop()
 
 		return err
@@ -452,6 +495,7 @@ func (c *NativeArkChannelController) startHub(ctx context.Context,
 		closeEndpoint, delivery, closeObserver,
 	)
 	if err != nil {
+		fundingWire.Close()
 		_ = node.Stop()
 
 		return err
@@ -462,30 +506,36 @@ func (c *NativeArkChannelController) startHub(ctx context.Context,
 		},
 	)
 	if err != nil {
+		fundingWire.Close()
 		_ = node.Stop()
 
 		return err
 	}
 	c.service = service
-	if err := node.Start(); err != nil {
+	c.fundingWire = fundingWire
+	cleanup := func() {
 		c.service = nil
+		c.fundingWire = nil
+		fundingWire.Close()
 		_ = node.Stop()
+	}
+	if err := node.Start(); err != nil {
+		cleanup()
 
 		return err
 	}
 	if err := c.restoreRecoveryWatches(ctx, service); err != nil {
-		c.service = nil
-		_ = node.Stop()
+		cleanup()
 
 		return err
 	}
 	if err := service.Resume(ctx); err != nil {
-		_ = node.Stop()
+		cleanup()
 
 		return err
 	}
 	if err := resumeOnchainArkChannels(ctx, node, service); err != nil {
-		_ = node.Stop()
+		cleanup()
 
 		return err
 	}
@@ -708,7 +758,9 @@ func (c *NativeArkChannelController) newService(node *lnruntime.NativeNode,
 	error) {
 
 	var oor arkchannel.OORTransferController
-	if c.cfg.OOR != nil {
+	if c.cfg.FundingOOR != nil {
+		oor = c.cfg.FundingOOR
+	} else if c.cfg.OOR != nil {
 		oor = c.cfg.OOR
 	}
 	var materializer arkchannel.ChannelMaterializer
@@ -859,133 +911,45 @@ func (c *NativeArkChannelController) newClientFundedTerms(id arkchannel.ID,
 	return terms, terms.Validate()
 }
 
-// PromoteIncomingVHTLC atomically claims one server-funded fallback vHTLC
-// into a client-funded channel using the invoice's already-advertised SCID.
-func (c *NativeArkChannelController) PromoteIncomingVHTLC(ctx context.Context,
-	paymentHash lntypes.Hash, reservedSCID uint64, capacity btcutil.Amount,
-	source ArkChannelClaimSource) (arkchannel.Record, error) {
-
-	if c.party != arkchannel.PartyClient {
-		return arkchannel.Record{}, fmt.Errorf("only a client can " +
-			"promote an incoming vHTLC")
-	}
-	if paymentHash == (lntypes.Hash{}) || reservedSCID == 0 ||
-		capacity <= 0 || source.Amount != capacity+
-		defaultArkChannelBackingFee {
-		return arkchannel.Record{}, fmt.Errorf("invalid incoming " +
-			"vHTLC channel terms")
-	}
-	if source.RecoveryID == "" || source.Outpoint == "" ||
-		len(source.PolicyTemplate) == 0 ||
-		len(source.SpendPath) == 0 || len(source.PkScript) == 0 {
-		return arkchannel.Record{}, fmt.Errorf("complete incoming " +
-			"vHTLC claim source is required")
-	}
-	if c.cfg.PrepareClaimRoot == nil {
-		return arkchannel.Record{}, fmt.Errorf("incoming vHTLC " +
-			"channel recovery root preparer is required")
-	}
-	if c.cfg.PrepareClaimOOR == nil {
-		return arkchannel.Record{}, fmt.Errorf("incoming vHTLC " +
-			"channel OOR preparer is required")
-	}
-	if err := c.ensureClientStarted(ctx); err != nil {
-		return arkchannel.Record{}, err
-	}
-	terms, err := c.newReceiveClaimTerms(
-		paymentHash, reservedSCID, capacity,
-	)
-	if err != nil {
-		return arkchannel.Record{}, err
-	}
-	remoteRecord, err := c.remote.RegisterPromotion(ctx, terms)
-	if err != nil {
-		return arkchannel.Record{}, err
-	}
-	localRecord, err := c.service.RegisterPromotion(ctx, terms)
-	if err != nil {
-		return arkchannel.Record{}, err
-	}
-	if localRecord.Snapshot.Phase == arkchannel.PhaseActive &&
-		remoteRecord.Snapshot.Phase == arkchannel.PhaseActive {
-		return localRecord, nil
-	}
-	recoverySource, recovery, err := c.remote.ExportReceiveClaimRecovery(
-		ctx, terms.ID,
-	)
-	if err != nil {
-		return arkchannel.Record{}, fmt.Errorf("export incoming vHTLC "+
-			"channel recovery: %w", err)
-	}
-	if err := c.cfg.PrepareClaimRoot(
-		ctx, terms, source, recoverySource, recovery,
-	); err != nil {
-		return arkchannel.Record{}, fmt.Errorf("prepare incoming "+
-			"vHTLC channel recovery root: %w", err)
-	}
-
-	var binding arkchannel.VTXOBinding
-	switch {
-	case localRecord.Snapshot.Source != nil:
-		binding = localRecord.Snapshot.Source.Clone()
-
-	case remoteRecord.Snapshot.Source != nil:
-		binding = remoteRecord.Snapshot.Source.Clone()
-
-	default:
-		binding, err = c.cfg.PrepareClaimOOR(
-			ctx, terms, defaultArkChannelBackingFee, source,
-		)
-		if err != nil {
-			return arkchannel.Record{}, err
-		}
-	}
-	if _, err := c.remote.BindPreparedOOR(
-		ctx, terms.ID, binding,
-	); err != nil {
-		return arkchannel.Record{}, err
-	}
-	if _, err := c.service.BindPreparedOOR(
-		ctx, terms.ID, binding,
-	); err != nil {
-		return arkchannel.Record{}, err
-	}
-
-	record, err := c.service.GetChannel(ctx, terms.ID)
-	if err != nil {
-		return arkchannel.Record{}, err
-	}
-	if record.Snapshot.Phase != arkchannel.PhaseActive {
-		return arkchannel.Record{}, fmt.Errorf("incoming vHTLC "+
-			"channel stopped in phase %s", record.Snapshot.Phase)
-	}
-
-	return record, nil
-}
-
-// newReceiveClaimTerms derives stable identifiers from the payment hash so a
-// restart cannot negotiate a second channel for the same fallback vHTLC.
-func (c *NativeArkChannelController) newReceiveClaimTerms(
+// newReceiveIntentTerms binds one deterministic invoice reservation to the
+// hub's Ark funding key and the client's channel endpoint keys.
+func (c *NativeArkChannelController) newReceiveIntentTerms(
 	paymentHash lntypes.Hash, reservedSCID uint64,
 	capacity btcutil.Amount) (arkchannel.Terms, error) {
 
-	id := sha256.Sum256(
-		append(
-			[]byte("wavelength-receive-channel-id:"),
-			paymentHash[:]...,
-		),
+	pendingChannelID := arkchannel.ReceiveIntentPendingID(paymentHash)
+	terms := arkchannel.Terms{
+		ID:               arkchannel.ReceiveIntentID(paymentHash),
+		Kind:             arkchannel.KindReceiveIntent,
+		Funder:           arkchannel.PartyHub,
+		PendingChannelID: pendingChannelID,
+		ReservedSCID:     reservedSCID, Capacity: capacity,
+		PaymentHash: paymentHash,
+		VTXO: arkchannel.VTXOTerms{
+			ChannelDelay:   c.peerInfo.ChannelDelay,
+			FunderDelay:    c.peerInfo.FunderDelay,
+			MinExitDelay:   c.peerInfo.MinimumExitDelay,
+			HubArkKey:      c.peerInfo.HubArkKey,
+			HubChannelKey:  c.peerInfo.HubChannelKey,
+			ArkOperatorKey: c.peerInfo.ArkOperatorKey,
+			FunderKey:      c.peerInfo.HubFunderKey,
+		},
+	}
+	copy(
+		terms.ClientNodeKey[:],
+		c.cfg.IdentityKey.PubKey.SerializeCompressed(),
 	)
-	pending := sha256.Sum256(
-		append(
-			[]byte("wavelength-receive-pending-id:"),
-			paymentHash[:]...,
-		),
+	terms.HubNodeKey = c.peerInfo.HubNodeKey
+	copy(
+		terms.VTXO.ClientArkKey[:],
+		c.keys.ark.PubKey.SerializeCompressed(),
+	)
+	copy(
+		terms.VTXO.ClientChannelKey[:],
+		c.keys.backing.PubKey.SerializeCompressed(),
 	)
 
-	return c.newClientFundedTerms(
-		arkchannel.ID(id), pending, reservedSCID, capacity,
-		arkchannel.KindReceiveClaim, paymentHash,
-	)
+	return terms, terms.Validate()
 }
 
 // SendPayment creates a hub invoice and pays it through native lnd.
@@ -1003,7 +967,7 @@ func (c *NativeArkChannelController) SendPayment(ctx context.Context,
 	if err != nil {
 		return lntypes.Hash{}, err
 	}
-	hash, err := c.remote.CreateInvoice(ctx, id, amount)
+	hash, err := c.paymentPeer.CreateInvoice(ctx, id, amount)
 	if err != nil {
 		return lntypes.Hash{}, err
 	}
@@ -1032,7 +996,7 @@ func (c *NativeArkChannelController) ReceivePayment(ctx context.Context,
 	if err != nil {
 		return lntypes.Hash{}, err
 	}
-	if err := c.remote.PayInvoice(ctx, id, hash, amount); err != nil {
+	if err := c.paymentPeer.PayInvoice(ctx, id, hash, amount); err != nil {
 		return lntypes.Hash{}, err
 	}
 	settled, err := c.node.InvoiceSettled(ctx, hash)
@@ -1064,7 +1028,7 @@ func (c *NativeArkChannelController) PayLightningInvoice(ctx context.Context,
 	if err := c.ensureClientStarted(ctx); err != nil {
 		return LightningPaymentResult{}, err
 	}
-	preparation, err := c.remote.PrepareOutgoingPayment(
+	preparation, err := c.paymentPeer.PrepareOutgoingPayment(
 		ctx, paymentRequest, maxFee,
 	)
 	if err != nil {
@@ -1082,7 +1046,7 @@ func (c *NativeArkChannelController) PayLightningInvoice(ctx context.Context,
 		ctx, record, preparation.PaymentHash, preparation.PrivateAmount,
 	)
 	if err != nil {
-		cancelErr := c.remote.CancelOutgoingPayment(
+		cancelErr := c.paymentPeer.CancelOutgoingPayment(
 			ctx, preparation.PaymentHash, err.Error(),
 		)
 		if cancelErr != nil {
@@ -1135,23 +1099,402 @@ func (c *NativeArkChannelController) RegisterIncomingPayment(
 		return err
 	}
 
-	return c.remote.RegisterIncomingPayment(
+	capacity, err := c.paymentPeer.RegisterIncomingPayment(
 		ctx, hash, amount, reservedSCID,
 	)
+	if err != nil {
+		return err
+	}
+	terms, err := c.newReceiveIntentTerms(
+		hash, reservedSCID, capacity,
+	)
+	if err != nil {
+		return err
+	}
+	if _, err := c.remote.RegisterReceiveIntent(ctx, terms); err != nil {
+		return err
+	}
+	_, err = c.service.RegisterReceiveIntent(ctx, terms)
+
+	return err
 }
 
 // WaitIncomingPayment waits for the known-preimage private invoice to settle.
 func (c *NativeArkChannelController) WaitIncomingPayment(ctx context.Context,
-	hash lntypes.Hash) error {
+	hash lntypes.Hash) (arkchannel.ID, error) {
 
 	if c.party != arkchannel.PartyClient {
-		return fmt.Errorf("incoming payment wait is client only")
+		return arkchannel.ID{}, fmt.Errorf("incoming payment wait is " +
+			"client only")
 	}
 	if err := c.ensureClientStarted(ctx); err != nil {
-		return err
+		return arkchannel.ID{}, err
 	}
 
-	return c.WaitInvoiceSettled(ctx, hash)
+	invoiceResult := make(chan error, 1)
+	go func() {
+		invoiceResult <- c.WaitInvoiceSettled(ctx, hash)
+	}()
+	syncResult := make(chan error, 1)
+	go func() {
+		syncResult <- c.syncReceiveIntent(ctx, hash)
+	}()
+
+	for {
+		select {
+		case err := <-invoiceResult:
+			if err != nil {
+				return arkchannel.ID{}, err
+			}
+
+			id := arkchannel.ReceiveIntentID(hash)
+			record, getErr := c.service.GetChannel(ctx, id)
+			if getErr != nil {
+				if c.cfg.Log != nil {
+					c.cfg.Log.WarnS(ctx, "Receive channel result "+
+						"lookup failed", getErr,
+						btclog.Hex(
+							"payment_hash", hash[:],
+						),
+					)
+				}
+
+				return arkchannel.ID{}, nil
+			}
+			if record.Snapshot.Phase != arkchannel.PhaseActive ||
+				record.Snapshot.Terms.Kind !=
+					arkchannel.KindReceiveIntent {
+				return arkchannel.ID{}, nil
+			}
+
+			return id, nil
+
+		case err := <-syncResult:
+			if err != nil && c.cfg.Log != nil {
+				c.cfg.Log.WarnS(
+					ctx,
+					"Receive channel intent stopped",
+					err,
+					btclog.Hex("payment_hash", hash[:]),
+				)
+			}
+			syncResult = nil
+
+		case <-ctx.Done():
+			return arkchannel.ID{}, ctx.Err()
+		}
+	}
+}
+
+// syncReceiveIntent binds a hub-prepared source locally and lets the common
+// funding FSM negotiate, commit, recover, and activate the channel.
+func (c *NativeArkChannelController) syncReceiveIntent(ctx context.Context,
+	hash lntypes.Hash) error {
+
+	id := arkchannel.ReceiveIntentID(hash)
+	ticker := time.NewTicker(arkChannelControllerPollInterval)
+	defer ticker.Stop()
+	for {
+		remote, err := c.remote.GetFundingChannel(ctx, id)
+		if err != nil {
+			return err
+		}
+		local, err := c.service.GetChannel(ctx, id)
+		if err != nil {
+			return err
+		}
+		if remote.Phase == arkchannel.PhaseFailed {
+			return c.mirrorReceiveIntentFailure(
+				ctx, local, remote.Failure,
+			)
+		}
+		if local.Snapshot.Phase == arkchannel.PhaseActive {
+			return nil
+		}
+		if remote.Source != nil && local.Snapshot.Source == nil {
+			_, err := c.service.BindPreparedOOR(
+				ctx, id, *remote.Source,
+			)
+			if err != nil {
+				return c.failReceiveIntent(ctx, id, err)
+			}
+
+			continue
+		}
+		if remote.Source != nil && local.Snapshot.Source != nil &&
+			(local.Snapshot.Phase == arkchannel.PhaseRequested ||
+				remote.Phase == arkchannel.PhaseRequested) {
+
+			event := &arkchannel.FundingPeerReady{}
+			if local.Snapshot.Phase == arkchannel.PhaseRequested {
+				if _, err := c.service.RecordChannelEvent(
+					ctx, id, event,
+				); err != nil {
+					return c.failReceiveIntent(ctx, id, err)
+				}
+			}
+			if remote.Phase == arkchannel.PhaseRequested {
+				if _, err := c.remote.ApplyChannelEvent(
+					ctx, id, event,
+				); err != nil {
+					return c.failReceiveIntent(ctx, id, err)
+				}
+			}
+
+			continue
+		}
+		if remote.OORFinalized && !local.Snapshot.RecoveryReady {
+			if local.Snapshot.Source == nil ||
+				local.Snapshot.Backing == nil {
+				return fmt.Errorf("finalized receive channel " +
+					"is missing funding artifacts")
+			}
+			recovery, err := c.remote.ExportRecoveryPackage(ctx, id)
+			if err != nil {
+				return err
+			}
+			if err := c.cfg.Recovery.InstallRecoveryPackage(
+				ctx, id, local.Snapshot.Terms,
+				*local.Snapshot.Source, recovery,
+			); err != nil {
+				return err
+			}
+			event := &arkchannel.RecoveryPackageInstalled{}
+			if _, err := c.remote.ApplyChannelEvent(
+				ctx, id, event,
+			); err != nil {
+				return err
+			}
+			if _, err := c.service.Apply(
+				ctx, id, event,
+			); err != nil {
+				return err
+			}
+
+			continue
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+
+		case <-ticker.C:
+		}
+	}
+}
+
+// failReceiveIntent abandons both prepared channel records only while their
+// common FSM still proves that the hub OOR can be aborted safely.
+func (c *NativeArkChannelController) failReceiveIntent(ctx context.Context,
+	id arkchannel.ID, cause error) error {
+
+	reason := cause.Error()
+	if _, err := c.remote.ApplyChannelEvent(
+		ctx, id, &arkchannel.Fail{
+			Reason: reason,
+		},
+	); err != nil {
+		return errors.Join(cause, err)
+	}
+	local, err := c.service.Apply(ctx, id, &arkchannel.Fail{Reason: reason})
+	if err != nil {
+		return errors.Join(cause, err)
+	}
+	if local.Snapshot.Source != nil &&
+		local.Snapshot.Phase == arkchannel.PhaseCancelling {
+
+		_, err = c.service.Apply(ctx, id, &arkchannel.OORAborted{
+			SessionID: local.Snapshot.Source.OORSessionID,
+			Reason:    reason,
+		})
+		if err != nil {
+			return errors.Join(cause, err)
+		}
+	}
+
+	return cause
+}
+
+// mirrorReceiveIntentFailure applies the hub's terminal pre-PONR failure to
+// the local channel record so restart recovery has no abandoned reservation.
+func (c *NativeArkChannelController) mirrorReceiveIntentFailure(
+	ctx context.Context, local arkchannel.Record, reason string) error {
+
+	if reason == "" {
+		reason = "hub receive channel failed"
+	}
+	if local.Snapshot.Phase == arkchannel.PhaseFailed {
+		return fmt.Errorf("%w: %s", ErrReceiveChannelFallback, reason)
+	}
+	record, err := c.service.Apply(
+		ctx, local.Snapshot.Terms.ID, &arkchannel.Fail{
+			Reason: reason,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	if record.Snapshot.Source != nil &&
+		record.Snapshot.Phase == arkchannel.PhaseCancelling {
+
+		_, err = c.service.Apply(
+			ctx, local.Snapshot.Terms.ID, &arkchannel.OORAborted{
+				SessionID: record.Snapshot.Source.OORSessionID,
+				Reason:    reason,
+			},
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	return fmt.Errorf("%w: %s", ErrReceiveChannelFallback, reason)
+}
+
+// ManifestIncomingChannel binds hub-owned Ark liquidity to a registered
+// receive intent and drives native lnd funding after the client records the
+// exact prepared source.
+func (c *NativeArkChannelController) ManifestIncomingChannel(
+	ctx context.Context, hash lntypes.Hash, amount, capacity btcutil.Amount,
+	reservedSCID uint64) (arkchannel.Record, error) {
+
+	if c.party != arkchannel.PartyHub {
+		return arkchannel.Record{}, fmt.Errorf("receive channel " +
+			"funding is hub only")
+	}
+	id := arkchannel.ReceiveIntentID(hash)
+	record, err := c.service.GetChannel(ctx, id)
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+	terms := record.Snapshot.Terms
+	if terms.Kind != arkchannel.KindReceiveIntent ||
+		terms.Funder != arkchannel.PartyHub ||
+		terms.PaymentHash != hash || terms.Capacity != capacity ||
+		terms.ReservedSCID != reservedSCID || capacity < amount {
+		return arkchannel.Record{}, fmt.Errorf("receive intent does " +
+			"not match intercepted payment")
+	}
+	if record.Snapshot.Phase == arkchannel.PhaseRequested {
+		if c.cfg.PrepareOOR == nil {
+			return arkchannel.Record{}, fmt.Errorf("hub channel " +
+				"OOR preparer is unavailable")
+		}
+		binding, prepareErr := c.cfg.PrepareOOR(
+			ctx, terms, defaultArkChannelBackingFee,
+		)
+		if prepareErr != nil {
+			_, _ = c.service.Apply(ctx, id, &arkchannel.Fail{
+				Reason: prepareErr.Error(),
+			})
+
+			return arkchannel.Record{}, fmt.Errorf("%w: %w",
+				ErrReceiveChannelFallback, prepareErr)
+		}
+		_, err = c.service.BindPreparedOOR(ctx, id, binding)
+		if err != nil {
+			return arkchannel.Record{}, err
+		}
+	}
+
+	ticker := time.NewTicker(arkChannelControllerPollInterval)
+	defer ticker.Stop()
+	for {
+		record, err = c.service.GetChannel(ctx, id)
+		if err != nil {
+			return arkchannel.Record{}, err
+		}
+		switch record.Snapshot.Phase {
+		case arkchannel.PhaseNegotiating:
+			_, err = c.service.ResumeChannelAction(ctx, id)
+			if err != nil {
+				return arkchannel.Record{}, err
+			}
+
+			continue
+
+		case arkchannel.PhaseActive:
+			return record, nil
+
+		case arkchannel.PhaseFailed:
+			return arkchannel.Record{}, fmt.Errorf("%w: %s",
+				ErrReceiveChannelFallback,
+				record.Snapshot.Failure)
+
+		case arkchannel.PhaseRequested, arkchannel.PhaseBackingReady,
+			arkchannel.PhaseActivating, arkchannel.PhaseCancelling:
+
+			// The opposite endpoint or a replayable FSM action
+			// still has work in flight. Poll the durable record
+			// below.
+
+		case arkchannel.PhaseMaterializing, arkchannel.PhaseOnChain,
+			arkchannel.PhaseClosed, arkchannel.PhaseCoopClosing,
+			arkchannel.PhaseCoopCloseSigned,
+			arkchannel.PhaseCoopClosePublished:
+			return arkchannel.Record{}, fmt.Errorf("receive "+
+				"channel entered unexpected phase %s before "+
+				"activation", record.Snapshot.Phase)
+
+		default:
+			return arkchannel.Record{}, fmt.Errorf("receive "+
+				"channel has unknown phase %d",
+				record.Snapshot.Phase)
+		}
+
+		select {
+		case <-ctx.Done():
+			return arkchannel.Record{}, ctx.Err()
+
+		case <-ticker.C:
+		}
+	}
+}
+
+// AbandonReceiveIntent removes an unused pre-funding reservation. Active
+// channels are retained because their liquidity is reusable after this
+// particular incoming payment takes another route.
+func (c *NativeArkChannelController) AbandonReceiveIntent(ctx context.Context,
+	hash lntypes.Hash, reason string) error {
+
+	if c.party != arkchannel.PartyHub {
+		return fmt.Errorf("receive intent abandonment is hub only")
+	}
+	if reason == "" {
+		return fmt.Errorf("receive intent abandonment reason is " +
+			"required")
+	}
+	id := arkchannel.ReceiveIntentID(hash)
+	record, err := c.service.GetChannel(ctx, id)
+	if err != nil {
+		return err
+	}
+	if record.Snapshot.Terms.Kind != arkchannel.KindReceiveIntent ||
+		record.Snapshot.Terms.PaymentHash != hash {
+		return fmt.Errorf("channel is not this payment's receive " +
+			"intent")
+	}
+	switch record.Snapshot.Phase {
+	case arkchannel.PhaseRequested:
+		_, err := c.service.Apply(
+			ctx, id, &arkchannel.Fail{
+				Reason: reason,
+			},
+		)
+
+		return err
+
+	case arkchannel.PhaseFailed, arkchannel.PhaseActive,
+		arkchannel.PhaseMaterializing, arkchannel.PhaseOnChain,
+		arkchannel.PhaseClosed, arkchannel.PhaseCoopClosing,
+		arkchannel.PhaseCoopCloseSigned,
+		arkchannel.PhaseCoopClosePublished:
+		return nil
+
+	default:
+		return fmt.Errorf("cannot abandon receive intent from %s",
+			record.Snapshot.Phase)
+	}
 }
 
 // MaterializeAndForceClose asks lnd to force close. Its blocking publication
@@ -1382,10 +1725,15 @@ func (c *NativeArkChannelController) PeerMessageHandler() lnruntime.PeerEventHan
 		)
 		c.mu.RLock()
 		node := c.node
+		fundingWire := c.fundingWire
 		c.mu.RUnlock()
 		if node == nil {
 			return fmt.Errorf("native Ark channel endpoint is " +
 				"not ready")
+		}
+
+		if fundingWire != nil && fundingWire.Handles(message) {
+			return fundingWire.Handle(ctx, message)
 		}
 
 		return node.PeerMessageHandler()(ctx, message)
@@ -1436,6 +1784,10 @@ func (c *NativeArkChannelController) Stop() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var err error
+	if c.fundingWire != nil {
+		c.fundingWire.Close()
+		c.fundingWire = nil
+	}
 	if c.node != nil {
 		err = c.node.Stop()
 		c.node = nil

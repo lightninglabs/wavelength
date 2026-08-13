@@ -2133,16 +2133,15 @@ func swapSummaryToProto(summary swaps.SwapSummary) *swapclientrpc.SwapSummary {
 		SettlementType: swapSettlementTypeToProto(
 			summary.SettlementType,
 		),
-		SenderPubkey:         senderPubKey,
-		Preimage:             preimage,
-		CreditQuote:          creditQuoteToProto(summary.CreditQuote),
-		RequestedAmountSat:   summary.RequestedAmountSat,
-		AttachedCreditSat:    summary.AttachedCreditSat,
-		DustLimitSat:         summary.DustLimitSat,
-		AvailableCreditSat:   summary.AvailableCreditSat,
-		ChannelId:            channelID,
-		ReservedScid:         summary.ReservedSCID,
-		ChannelBackingFeeSat: summary.ChannelBackingFeeSat,
+		SenderPubkey:       senderPubKey,
+		Preimage:           preimage,
+		CreditQuote:        creditQuoteToProto(summary.CreditQuote),
+		RequestedAmountSat: summary.RequestedAmountSat,
+		AttachedCreditSat:  summary.AttachedCreditSat,
+		DustLimitSat:       summary.DustLimitSat,
+		AvailableCreditSat: summary.AvailableCreditSat,
+		ChannelId:          channelID,
+		ReservedScid:       summary.ReservedSCID,
 	}
 }
 

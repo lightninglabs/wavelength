@@ -86,36 +86,6 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 	amountSat btcutil.Amount, expirySeconds uint32,
 	supportsInArkCredit bool) (*OutSwapQuote, error) {
 
-	return g.requestChannelID(
-		ctx, vhtlcPubkey, paymentHash, amountSat, expirySeconds,
-		supportsInArkCredit, 0,
-	)
-}
-
-// RequestChannelIDForArkChannel reserves enough fallback value to preserve
-// the requested receive amount after the channel backing transaction fee.
-func (g *GRPCSwapServerConn) RequestChannelIDForArkChannel(ctx context.Context,
-	vhtlcPubkey *btcec.PublicKey, paymentHash lntypes.Hash,
-	amountSat btcutil.Amount, expirySeconds uint32,
-	supportsInArkCredit bool, backingFeeSat btcutil.Amount) (*OutSwapQuote,
-	error) {
-
-	if backingFeeSat <= 0 {
-		return nil, fmt.Errorf("channel backing fee must be positive")
-	}
-
-	return g.requestChannelID(
-		ctx, vhtlcPubkey, paymentHash, amountSat, expirySeconds,
-		supportsInArkCredit, backingFeeSat,
-	)
-}
-
-func (g *GRPCSwapServerConn) requestChannelID(ctx context.Context,
-	vhtlcPubkey *btcec.PublicKey, paymentHash lntypes.Hash,
-	amountSat btcutil.Amount, expirySeconds uint32,
-	supportsInArkCredit bool, backingFeeSat btcutil.Amount) (*OutSwapQuote,
-	error) {
-
 	if vhtlcPubkey == nil {
 		return nil, fmt.Errorf("vHTLC pubkey must be provided")
 	}
@@ -130,9 +100,8 @@ func (g *GRPCSwapServerConn) requestChannelID(ctx context.Context,
 		PaymentHash: append(
 			[]byte(nil), paymentHash[:]...,
 		),
-		AmountSat:            uint64(amountSat),
-		SupportsInArkCredit:  supportsInArkCredit,
-		ChannelBackingFeeSat: uint64(backingFeeSat),
+		AmountSat:           uint64(amountSat),
+		SupportsInArkCredit: supportsInArkCredit,
 	}
 	if err := g.authorizeCreditAccountRequest(ctx, req); err != nil {
 		return nil, err
@@ -166,16 +135,15 @@ func (g *GRPCSwapServerConn) requestChannelID(ctx context.Context,
 	}
 
 	return &OutSwapQuote{
-		RouteHintPaths:       hintPaths,
-		ReceiveAmountSat:     btcutil.Amount(requestedAmountSat),
-		PayerFeeMsat:         resp.GetPayerFeeMsat(),
-		RequestedAmountSat:   requestedAmountSat,
-		AvailableCreditSat:   resp.GetAvailableCreditSat(),
-		AttachedCreditSat:    resp.GetAttachedCreditSat(),
-		VHTLCAmountSat:       vhtlcAmountSat,
-		DustLimitSat:         resp.GetDustLimitSat(),
-		SettlementType:       settlementType,
-		ChannelBackingFeeSat: resp.GetChannelBackingFeeSat(),
+		RouteHintPaths:     hintPaths,
+		ReceiveAmountSat:   btcutil.Amount(requestedAmountSat),
+		PayerFeeMsat:       resp.GetPayerFeeMsat(),
+		RequestedAmountSat: requestedAmountSat,
+		AvailableCreditSat: resp.GetAvailableCreditSat(),
+		AttachedCreditSat:  resp.GetAttachedCreditSat(),
+		VHTLCAmountSat:     vhtlcAmountSat,
+		DustLimitSat:       resp.GetDustLimitSat(),
+		SettlementType:     settlementType,
 	}, nil
 }
 

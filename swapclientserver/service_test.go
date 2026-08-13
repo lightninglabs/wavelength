@@ -785,29 +785,28 @@ func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 	)
 
 	got := swapSummaryToProto(swaps.SwapSummary{
-		Direction:            swaps.SwapDirectionReceive,
-		PaymentHash:          hash,
-		Invoice:              "lnbc1summary",
-		State:                "Completed",
-		Pending:              false,
-		AmountSat:            1_000,
-		FeeSat:               20,
-		MaxFeeSat:            30,
-		VHTLCOutpoint:        "txid:0",
-		VHTLCAmountSat:       990,
-		FundingSessionID:     "funding",
-		ClaimSessionID:       "claim",
-		RefundSessionID:      "refund",
-		TerminalReason:       "done",
-		CreatedAt:            createdAt,
-		UpdatedAt:            updatedAt,
-		Deadline:             deadline,
-		RefundLocktime:       42,
-		SettlementType:       swaps.SettlementTypeArkChannel,
-		ChannelID:            [32]byte{7},
-		ReservedSCID:         99,
-		ChannelBackingFeeSat: 1_000,
-		SenderPubkey:         senderPubKey,
+		Direction:        swaps.SwapDirectionReceive,
+		PaymentHash:      hash,
+		Invoice:          "lnbc1summary",
+		State:            "Completed",
+		Pending:          false,
+		AmountSat:        1_000,
+		FeeSat:           20,
+		MaxFeeSat:        30,
+		VHTLCOutpoint:    "txid:0",
+		VHTLCAmountSat:   990,
+		FundingSessionID: "funding",
+		ClaimSessionID:   "claim",
+		RefundSessionID:  "refund",
+		TerminalReason:   "done",
+		CreatedAt:        createdAt,
+		UpdatedAt:        updatedAt,
+		Deadline:         deadline,
+		RefundLocktime:   42,
+		SettlementType:   swaps.SettlementTypeArkChannel,
+		ChannelID:        [32]byte{7},
+		ReservedSCID:     99,
+		SenderPubkey:     senderPubKey,
 	})
 
 	require.Equal(
@@ -846,7 +845,6 @@ func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 		got.GetChannelId(),
 	)
 	require.Equal(t, uint64(99), got.GetReservedScid())
-	require.Equal(t, uint64(1_000), got.GetChannelBackingFeeSat())
 	require.Equal(t, senderPubKeyHex, got.GetSenderPubkey())
 }
 

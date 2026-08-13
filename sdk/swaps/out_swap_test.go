@@ -19,6 +19,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/vtxo"
@@ -227,7 +228,10 @@ func TestArkChannelReceiveSettlesDirectly(t *testing.T) {
 		NodeID:    serverPriv.PubKey().SerializeCompressed(),
 		ChannelID: 99, CltvExpiryDelta: 40,
 	}}
-	bridge := &testArkChannelPaymentBridge{backingFee: 1_000}
+	channelID := arkchannel.ID{1, 2, 3}
+	bridge := &testArkChannelPaymentBridge{
+		waitChannelID: channelID,
+	}
 	client := NewSwapClient(
 		serverConn, &testDaemonConn{
 			identityKey: clientPriv.PubKey(),
@@ -245,73 +249,12 @@ func TestArkChannelReceiveSettlesDirectly(t *testing.T) {
 	require.Equal(t, btcutil.Amount(42_000), bridge.prepareAmount)
 	require.Equal(t, session.PaymentHash, bridge.registerHash)
 	require.Equal(t, uint64(99), bridge.registerSCID)
-	require.Equal(
-		t, btcutil.Amount(1_000), serverConn.lastChannelBackingFee,
-	)
 
 	result, err := session.Wait(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, SettlementTypeArkChannel, result.SettlementType)
+	require.Equal(t, [32]byte(channelID), result.ChannelID)
 	require.Equal(t, ReceiveStateCompleted, session.State())
-}
-
-// TestArkChannelReceivePromotesFallbackVHTLC proves the fallback claim is
-// handed to channel negotiation instead of an ordinary wallet output.
-func TestArkChannelReceivePromotesFallbackVHTLC(t *testing.T) {
-	t.Parallel()
-
-	clientPriv, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-	serverPriv, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-	operatorPriv, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-	preimage := lntypes.Preimage{1, 2, 3}
-	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
-		Sender: serverPriv.PubKey(), Receiver: clientPriv.PubKey(),
-		Server: operatorPriv.PubKey(), PreimageHash: preimage.Hash(),
-		RefundLocktime: 500, UnilateralClaimDelay: 5,
-		UnilateralRefundDelay:                6,
-		UnilateralRefundWithoutReceiverDelay: 7,
-	})
-	require.NoError(t, err)
-	policyTemplate, err := encodeVHTLCPolicyTemplate(policy)
-	require.NoError(t, err)
-	pkScript, err := policy.PkScript()
-	require.NoError(t, err)
-	channelID := [32]byte{9}
-	oorID := [32]byte{8}
-	recoveryID := "receive-channel-recovery"
-	bridge := &testArkChannelPaymentBridge{
-		backingFee: 1_000,
-		promotionResult: ArkChannelPromotionResult{
-			ChannelID: channelID, OORSessionID: oorID,
-		},
-	}
-	session := &ReceiveSession{
-		client: &SwapClient{
-			daemon: &testDaemonConn{}, channelBridge: bridge,
-		},
-		Preimage: preimage, PaymentHash: preimage.Hash(),
-		amountSat: 42_000, requestedAmountSat: 42_000,
-		state: ReceiveStateClaimInitiated, reservedSCID: 99,
-		channelBackingFee: 1_000, vhtlcPolicy: policy,
-		claimRecoveryID:     recoveryID,
-		vhtlcPolicyTemplate: policyTemplate, vhtlcPkScript: pkScript,
-		vhtlcOutpoint: chainhash.Hash{
-			7,
-		}.String() + ":0",
-		vhtlcAmount: 43_000,
-	}
-
-	err = session.claimFundedVHTLC(t.Context())
-	require.NoError(t, err)
-	require.Equal(t, ReceiveStateCompleted, session.State())
-	require.Equal(t, channelID, session.channelID)
-	require.Equal(t, btcutil.Amount(42_000), bridge.promotion.Capacity)
-	require.Equal(t, uint64(99), bridge.promotion.ReservedSCID)
-	require.Equal(t, recoveryID, bridge.promotion.RecoveryID)
-	require.Equal(t, int64(43_000), bridge.promotion.Input.AmountSat)
 }
 
 // TestStartReceiveEmbedsAllRouteHintPaths verifies every alternative
@@ -1097,7 +1040,6 @@ type testSwapServerConn struct {
 	lastServerAckSig    *schnorr.Signature
 
 	lastSupportsInArkCredit bool
-	lastChannelBackingFee   btcutil.Amount
 
 	submitForfeitErr         error
 	submitForfeitCalls       int
@@ -1106,21 +1048,14 @@ type testSwapServerConn struct {
 }
 
 type testArkChannelPaymentBridge struct {
-	backingFee      btcutil.Amount
 	preparePreimage lntypes.Preimage
 	prepareAmount   btcutil.Amount
 	registerHash    lntypes.Hash
 	registerAmount  btcutil.Amount
 	registerSCID    uint64
+	waitChannelID   arkchannel.ID
 	waitErr         error
 	wait            <-chan struct{}
-	promotion       ArkChannelReceivePromotion
-	promotionResult ArkChannelPromotionResult
-	promotionErr    error
-}
-
-func (b *testArkChannelPaymentBridge) IncomingBackingFee() btcutil.Amount {
-	return b.backingFee
 }
 
 func (b *testArkChannelPaymentBridge) PrepareIncomingPayment(_ context.Context,
@@ -1143,27 +1078,18 @@ func (b *testArkChannelPaymentBridge) RegisterIncomingPayment(_ context.Context,
 }
 
 func (b *testArkChannelPaymentBridge) WaitIncomingPayment(ctx context.Context,
-	_ lntypes.Hash) error {
+	_ lntypes.Hash) (arkchannel.ID, error) {
 
 	if b.wait != nil {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return arkchannel.ID{}, ctx.Err()
 
 		case <-b.wait:
 		}
 	}
 
-	return b.waitErr
-}
-
-func (b *testArkChannelPaymentBridge) PromoteIncomingVHTLC(_ context.Context,
-	promotion ArkChannelReceivePromotion) (ArkChannelPromotionResult,
-	error) {
-
-	b.promotion = promotion
-
-	return b.promotionResult, b.promotionErr
+	return b.waitChannelID, b.waitErr
 }
 
 type testIncomingEventReceiver struct {
@@ -1229,27 +1155,6 @@ func (c *testSwapServerConn) RequestChannelID(_ context.Context,
 		ReceiveAmountSat: amountSat,
 		PayerFeeMsat:     c.payerFeeMsat,
 	}, nil
-}
-
-// RequestChannelIDForArkChannel returns a padded fallback quote.
-func (c *testSwapServerConn) RequestChannelIDForArkChannel(ctx context.Context,
-	vhtlcPubkey *btcec.PublicKey, paymentHash lntypes.Hash,
-	amountSat btcutil.Amount, expirySeconds uint32,
-	supportsInArkCredit bool, backingFeeSat btcutil.Amount) (*OutSwapQuote,
-	error) {
-
-	quote, err := c.RequestChannelID(
-		ctx, vhtlcPubkey, paymentHash, amountSat, expirySeconds,
-		supportsInArkCredit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	c.lastChannelBackingFee = backingFeeSat
-	quote.ChannelBackingFeeSat = uint64(backingFeeSat)
-	quote.VHTLCAmountSat = uint64(amountSat + backingFeeSat)
-
-	return quote, nil
 }
 
 // WaitOutSwapHtlc returns the preconfigured out-swap HTLC event.

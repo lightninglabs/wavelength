@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btclog/v2"
 	loopfsm "github.com/lightninglabs/loop/fsm"
+	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/htlcswitch/hop"
@@ -264,7 +265,6 @@ type ReceiveSession struct {
 	expectedVHTLCSat   uint64
 	dustLimitSat       uint64
 	reservedSCID       uint64
-	channelBackingFee  btcutil.Amount
 	channelID          [32]byte
 	state              ReceiveState
 	deadline           time.Time
@@ -436,8 +436,8 @@ func receiveInvoiceMemo(memo []string) string {
 	return memo[0]
 }
 
-// Wait blocks until the swap server funds the expected vHTLC, then claims it
-// into the client's wallet.
+// Wait blocks until the receive settles through either a private Ark channel
+// or the ordinary server-funded vHTLC rail.
 func (s *ReceiveSession) Wait(ctx context.Context) (*ReceiveResult, error) {
 	if s == nil || s.client == nil {
 		return nil, fmt.Errorf("receive session must be provided")
@@ -679,35 +679,18 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	// invoice deadline.
 	_, supportsInArkCredit :=
 		s.client.outEvents.(IncomingVHTLCEventReceiver)
-	var quote *OutSwapQuote
-	if s.client.channelBridge == nil {
-		quote, err = s.client.server.RequestChannelID(
-			ctx, clientKey, paymentHash, s.amountSat,
-			defaultReceiveExpirySeconds, supportsInArkCredit,
-		)
-	} else {
-		backingFee := s.client.channelBridge.IncomingBackingFee()
-		if backingFee <= 0 {
-			return fmt.Errorf("Ark channel backing fee must be " +
-				"positive")
-		}
+	if s.client.channelBridge != nil {
 		if err := s.client.channelBridge.PrepareIncomingPayment(
 			ctx, preimage, s.amountSat,
 		); err != nil {
 			return fmt.Errorf("prepare incoming Ark channel "+
 				"payment: %w", err)
 		}
-		server, ok := s.client.server.(ArkChannelReceiveServerConn)
-		if !ok {
-			return fmt.Errorf("swap server connection does not " +
-				"support Ark channel receives")
-		}
-		quote, err = server.RequestChannelIDForArkChannel(
-			ctx, clientKey, paymentHash, s.amountSat,
-			defaultReceiveExpirySeconds, supportsInArkCredit,
-			backingFee,
-		)
 	}
+	quote, err := s.client.server.RequestChannelID(
+		ctx, clientKey, paymentHash, s.amountSat,
+		defaultReceiveExpirySeconds, supportsInArkCredit,
+	)
 	if err != nil {
 		return fmt.Errorf("request channel ID: %w", err)
 	}
@@ -756,24 +739,13 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 			"vHTLC amount")
 	}
 	expectedQuoteVHTLC := requestedAmountSat + quote.AttachedCreditSat
-	if expectedQuoteVHTLC > ^uint64(0)-quote.ChannelBackingFeeSat {
-		return fmt.Errorf("route quote channel backing reserve " +
-			"overflows")
-	}
-	expectedQuoteVHTLC += quote.ChannelBackingFeeSat
 	if expectedVHTLCSat != expectedQuoteVHTLC {
 		return fmt.Errorf("route quote vHTLC amount %d does not equal "+
-			"requested amount %d plus attached credit %d and "+
-			"channel backing reserve %d", expectedVHTLCSat,
-			requestedAmountSat, quote.AttachedCreditSat,
-			quote.ChannelBackingFeeSat)
+			"requested amount %d plus attached credit %d",
+			expectedVHTLCSat, requestedAmountSat,
+			quote.AttachedCreditSat)
 	}
 	if s.client.channelBridge != nil {
-		backingFee := s.client.channelBridge.IncomingBackingFee()
-		if quote.ChannelBackingFeeSat != uint64(backingFee) {
-			return fmt.Errorf("route quote changed channel " +
-				"backing fee")
-		}
 		if err := s.client.channelBridge.RegisterIncomingPayment(
 			ctx, paymentHash, s.amountSat, finalHop.ChannelID,
 		); err != nil {
@@ -823,9 +795,6 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 		s.expectedVHTLCSat = expectedVHTLCSat
 		s.dustLimitSat = quote.DustLimitSat
 		s.reservedSCID = finalHop.ChannelID
-		s.channelBackingFee = btcutil.Amount(
-			quote.ChannelBackingFeeSat,
-		)
 		s.settlementType = quote.SettlementType
 		s.deadline = s.client.currentTime().Add(expiry)
 		if s.createdAt.IsZero() {
@@ -903,20 +872,29 @@ type incomingVHTLCWaitResult struct {
 	err          error
 }
 
+type incomingChannelWaitResult struct {
+	channelID arkchannel.ID
+	err       error
+}
+
 // waitForChannelOrVHTLC races lnd's durable private invoice against the
-// existing mailbox fallback. Exactly one rail can reveal the shared preimage;
-// cancellation only stops the losing local subscription.
+// ordinary mailbox vHTLC rail. Exactly one rail can reveal the shared
+// preimage; cancellation only stops the losing local subscription.
 func (s *ReceiveSession) waitForChannelOrVHTLC(
 	waitCtx, parentCtx context.Context, authKey ReceiveAuthKey) error {
 
 	bridgeCtx, cancel := context.WithCancel(waitCtx)
 	defer cancel()
 
-	channelResult := make(chan error, 1)
+	channelResult := make(chan incomingChannelWaitResult, 1)
 	go func() {
-		channelResult <- s.client.channelBridge.WaitIncomingPayment(
+		channelID, err := s.client.channelBridge.WaitIncomingPayment(
 			bridgeCtx, s.PaymentHash,
 		)
+		channelResult <- incomingChannelWaitResult{
+			channelID: channelID,
+			err:       err,
+		}
 	}()
 	vhtlcResult := make(chan incomingVHTLCWaitResult, 1)
 	go func() {
@@ -930,11 +908,11 @@ func (s *ReceiveSession) waitForChannelOrVHTLC(
 
 	for channelResult != nil {
 		select {
-		case err := <-channelResult:
-			if err != nil {
+		case result := <-channelResult:
+			if result.err != nil {
 				if bridgeCtx.Err() != nil {
 					return s.receiveWaitError(
-						parentCtx, waitCtx, err,
+						parentCtx, waitCtx, result.err,
 					)
 				}
 
@@ -945,6 +923,7 @@ func (s *ReceiveSession) waitForChannelOrVHTLC(
 
 			return s.mutateAndPersist(parentCtx, func() error {
 				s.settlementType = SettlementTypeArkChannel
+				s.channelID = result.channelID
 
 				return s.transition(receiveEventCompleted)
 			})
@@ -1752,17 +1731,6 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 			return s.transition(receiveEventCompleted)
 		})
 	}
-	if s.channelBackingFee > 0 {
-		if s.client.channelBridge == nil {
-			return newRetryableActionError(
-				fmt.Errorf("Ark channel payment bridge is " +
-					"not configured"),
-			)
-		}
-
-		return s.promoteFundedVHTLC(ctx)
-	}
-
 	if s.state == ReceiveStateClaimInitiated &&
 		!s.claimIntentRecordedInProcess {
 
@@ -1891,88 +1859,6 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-// promoteFundedVHTLC claims the exact fallback vHTLC into a channel-policy
-// VTXO. The channel coordinator prepares the OOR first, negotiates and stores
-// fully signed backing, and only then commits the preimage-bearing spend.
-func (s *ReceiveSession) promoteFundedVHTLC(ctx context.Context) error {
-	if s.vhtlcPolicy == nil || s.vhtlcOutpoint == "" ||
-		s.vhtlcAmount <= 0 {
-		return fmt.Errorf("complete funded vHTLC is required for " +
-			"channel promotion")
-	}
-	if s.reservedSCID == 0 {
-		return fmt.Errorf("future channel SCID is required")
-	}
-	if s.channelBackingFee <= 0 ||
-		s.vhtlcAmount <= int64(s.channelBackingFee) {
-		return fmt.Errorf("vHTLC does not cover channel backing fee")
-	}
-	capacity := btcutil.Amount(s.vhtlcAmount) - s.channelBackingFee
-	expectedCapacity := btcutil.Amount(s.requestedAmountSat) +
-		btcutil.Amount(s.attachedCreditSat)
-	if expectedCapacity == 0 {
-		expectedCapacity = s.amountSat
-	}
-	if capacity != expectedCapacity {
-		return fmt.Errorf("fallback channel capacity %d does not "+
-			"match credited receive amount %d", capacity,
-			expectedCapacity)
-	}
-	claimPath, err := s.vhtlcPolicy.ClaimPath(s.Preimage)
-	if err != nil {
-		return fmt.Errorf("build channel claim path: %w", err)
-	}
-	spendPath, err := claimPath.Encode()
-	if err != nil {
-		return fmt.Errorf("encode channel claim path: %w", err)
-	}
-	result, err := s.client.channelBridge.PromoteIncomingVHTLC(
-		ctx, ArkChannelReceivePromotion{
-			PaymentHash:  s.PaymentHash,
-			ReservedSCID: s.reservedSCID,
-			Capacity:     capacity,
-			BackingFee:   s.channelBackingFee,
-			RecoveryID:   s.claimRecoveryID,
-			Input: CustomInput{
-				Outpoint: s.vhtlcOutpoint,
-				VTXOPolicyTemplate: append(
-					[]byte(nil), s.vhtlcPolicyTemplate...,
-				),
-				SpendPath: append([]byte(nil), spendPath...),
-				AmountSat: s.vhtlcAmount,
-				PkScript: append(
-					[]byte(nil), s.vhtlcPkScript...,
-				),
-			},
-		},
-	)
-	if err != nil {
-		return newRetryableActionError(
-			fmt.Errorf("promote receive vHTLC into Ark "+
-				"channel: %w", err),
-		)
-	}
-	if result.ChannelID == ([32]byte{}) ||
-		result.OORSessionID == ([32]byte{}) {
-		return fmt.Errorf("channel promotion returned incomplete " +
-			"result")
-	}
-	if err := cancelVHTLCRecovery(
-		ctx, s.client.daemon, s.claimRecoveryID,
-		recoveryReasonClaimAccepted, "",
-	); err != nil {
-		return newRetryableActionError(err)
-	}
-
-	return s.mutateAndPersist(ctx, func() error {
-		s.channelID = result.ChannelID
-		s.claimSessionID = hex.EncodeToString(result.OORSessionID[:])
-		s.settlementType = SettlementTypeArkChannel
-
-		return s.transition(receiveEventCompleted)
-	})
 }
 
 // ensureClaimReceiveInfo recovers a missing claim destination for legacy or

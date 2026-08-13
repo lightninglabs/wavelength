@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/arkchannel"
 	sdkark "github.com/lightninglabs/wavelength/sdk/ark"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/invoices"
@@ -227,17 +228,14 @@ type SwapSummary struct {
 	// or as a same-Ark payment when that detail is durably known.
 	SettlementType SettlementType
 
-	// ChannelID identifies the manifested Ark-backed Lightning channel for
-	// a receive that promoted its fallback vHTLC.
+	// ChannelID identifies a new Ark-backed Lightning channel manifested
+	// for this receive. It is zero when settlement reused an existing
+	// channel.
 	ChannelID [32]byte
 
 	// ReservedSCID is the virtual route advertised before direct settlement
 	// or fallback channel manifestation.
 	ReservedSCID uint64
-
-	// ChannelBackingFeeSat is the internal reserve consumed only by
-	// fallback channel creation.
-	ChannelBackingFeeSat uint64
 
 	// CreditQuote records the credit component of a pay quote when the
 	// server selected a credit or mixed rail.
@@ -300,8 +298,9 @@ type ReceiveResult struct {
 	// AmountSat is the value of the claimed VTXO in satoshis.
 	AmountSat int64
 
-	// ChannelID identifies the active Ark channel when the receive settled
-	// directly or promoted its fallback vHTLC.
+	// ChannelID identifies a new Ark channel manifested for this receive.
+	// It is zero when the payment reused an existing channel or settled
+	// through the ordinary vHTLC rail.
 	ChannelID [32]byte
 
 	// SettlementType reports whether the result used a channel or ordinary
@@ -429,10 +428,6 @@ type OutSwapQuote struct {
 
 	// SettlementType identifies the receive rail selected by the server.
 	SettlementType SettlementType
-
-	// ChannelBackingFeeSat is the vHTLC value reserved above the credited
-	// channel capacity for its VTXO-to-channel backing transaction.
-	ChannelBackingFeeSat uint64
 }
 
 // VHTLCConfig holds the timelocks and keys for a vHTLC.
@@ -766,49 +761,17 @@ type SwapServerConn interface {
 	Close() error
 }
 
-// ArkChannelReceiveServerConn extends route reservation for clients that can
-// promote a fallback vHTLC directly into a native Ark channel.
-type ArkChannelReceiveServerConn interface {
-	RequestChannelIDForArkChannel(ctx context.Context,
-		vhtlcPubkey *btcec.PublicKey, paymentHash lntypes.Hash,
-		amountSat btcutil.Amount, expirySeconds uint32,
-		supportsInArkCredit bool,
-		backingFeeSat btcutil.Amount) (*OutSwapQuote, error)
-}
-
-// ArkChannelReceivePromotion contains the exact preimage claim input and
-// immutable future-SCID terms needed to promote a fallback vHTLC.
-type ArkChannelReceivePromotion struct {
-	PaymentHash  lntypes.Hash
-	ReservedSCID uint64
-	Capacity     btcutil.Amount
-	BackingFee   btcutil.Amount
-	RecoveryID   string
-	Input        CustomInput
-}
-
-// ArkChannelPromotionResult identifies the channel and prepared OOR package
-// that atomically claimed the fallback vHTLC.
-type ArkChannelPromotionResult struct {
-	ChannelID    [32]byte
-	OORSessionID [32]byte
-}
-
 // ArkChannelPaymentBridge is the narrow daemon-owned channel boundary used by
 // the swap SDK. lnd remains authoritative for invoices and payments.
 type ArkChannelPaymentBridge interface {
-	IncomingBackingFee() btcutil.Amount
-
 	PrepareIncomingPayment(context.Context, lntypes.Preimage,
 		btcutil.Amount) error
 
 	RegisterIncomingPayment(context.Context, lntypes.Hash, btcutil.Amount,
 		uint64) error
 
-	WaitIncomingPayment(context.Context, lntypes.Hash) error
-
-	PromoteIncomingVHTLC(context.Context,
-		ArkChannelReceivePromotion) (ArkChannelPromotionResult, error)
+	WaitIncomingPayment(context.Context,
+		lntypes.Hash) (arkchannel.ID, error)
 }
 
 // DaemonConn abstracts the connection to the client's own daemon for wallet

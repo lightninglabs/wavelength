@@ -34,6 +34,8 @@ import (
 
 const arkChannelMailboxRuntimePrefix = "arkchannel-serverconn-"
 
+const arkChannelPeerIngressPrefix = "arkchannel-peer-ingress-"
+
 const arkChannelControllerPollInterval = 25 * time.Millisecond
 
 const arkChannelCloseReceiveScriptLabel = "ark channel cooperative close"
@@ -41,10 +43,6 @@ const arkChannelCloseReceiveScriptLabel = "ark channel cooperative close"
 // ArkChannelLifecycleController owns channel creation, inspection, and close.
 type ArkChannelLifecycleController interface {
 	PromoteVTXO(context.Context, btcutil.Amount) (arkchannel.Record, error)
-
-	PromoteIncomingVHTLC(context.Context, lntypes.Hash, uint64,
-		btcutil.Amount,
-		ArkChannelClaimSource) (arkchannel.Record, error)
 
 	MaterializeAndForceClose(context.Context, arkchannel.ID) (
 		arkchannel.Record, chainhash.Hash, chainhash.Hash, error)
@@ -76,7 +74,8 @@ type ArkChannelPaymentController interface {
 	RegisterIncomingPayment(context.Context, lntypes.Hash, btcutil.Amount,
 		uint64) error
 
-	WaitIncomingPayment(context.Context, lntypes.Hash) error
+	WaitIncomingPayment(context.Context,
+		lntypes.Hash) (arkchannel.ID, error)
 }
 
 // ArkChannelController is the complete local process boundary exposed through
@@ -103,53 +102,29 @@ type ArkChannelRecoveryController interface {
 type ArkChannelOORPreparer func(context.Context, arkchannel.Terms,
 	btcutil.Amount) (arkchannel.VTXOBinding, error)
 
-// ArkChannelClaimSource describes the exact vHTLC preimage input promoted by
-// a receive fallback. It contains no signing authority.
-type ArkChannelClaimSource struct {
-	RecoveryID     string
-	Outpoint       string
-	Amount         btcutil.Amount
-	PolicyTemplate []byte
-	SpendPath      []byte
-	PkScript       []byte
-}
-
-// ArkChannelClaimRootPreparer makes an externally described vHTLC available
-// to the generic channel recovery archive without exposing it as wallet
-// liquidity or starting unilateral recovery.
-type ArkChannelClaimRootPreparer func(context.Context, arkchannel.Terms,
-	ArkChannelClaimSource, arkchannel.ReceiveClaimRecoverySource,
-	arkchannel.RecoveryPackage) error
-
-// ArkChannelClaimOORPreparer prepares a channel OOR from an exact vHTLC claim
-// input without crossing its signing point of no return.
-type ArkChannelClaimOORPreparer func(context.Context, arkchannel.Terms,
-	btcutil.Amount, ArkChannelClaimSource) (arkchannel.VTXOBinding, error)
-
 // ArkChannelControllerConfig contains the process-owned dependencies supplied
 // after wallet, database, and authenticated swap-server transport startup.
 type ArkChannelControllerConfig struct {
-	Log              btclog.Logger
-	Store            *db.ArkChannelStoreDB
-	Peer             lnruntime.ProcessCooperativeClosePeer
-	PeerRPC          mailboxrpc.RPCClient
-	PeerSender       lnruntime.PeerEventSender
-	Wallet           *lwwallet.Wallet
-	ChainBackend     chainsource.ChainBackend
-	ChainNotifier    *chainbackends.BackendChainNotifier
-	FeeEstimator     *chainfees.BackendEstimator
-	OOR              *oorbridge.Controller
-	Materializer     *unrollbridge.Controller
-	Recovery         ArkChannelRecoveryController
-	OperatorTerms    *types.OperatorTerms
-	IdentityKey      keychain.KeyDescriptor
-	OORDestination   *btcec.PublicKey
-	KeyIndex         uint32
-	NetParams        *chaincfg.Params
-	ChannelDataDir   string
-	PrepareOOR       ArkChannelOORPreparer
-	PrepareClaimRoot ArkChannelClaimRootPreparer
-	PrepareClaimOOR  ArkChannelClaimOORPreparer
+	Log            btclog.Logger
+	Store          *db.ArkChannelStoreDB
+	Peer           lnruntime.ProcessCooperativeClosePeer
+	PeerRPC        mailboxrpc.RPCClient
+	PeerSender     lnruntime.PeerEventSender
+	Wallet         *lwwallet.Wallet
+	ChainBackend   chainsource.ChainBackend
+	ChainNotifier  *chainbackends.BackendChainNotifier
+	FeeEstimator   *chainfees.BackendEstimator
+	OOR            *oorbridge.Controller
+	FundingOOR     arkchannel.OORTransferController
+	Materializer   *unrollbridge.Controller
+	Recovery       ArkChannelRecoveryController
+	OperatorTerms  *types.OperatorTerms
+	IdentityKey    keychain.KeyDescriptor
+	OORDestination *btcec.PublicKey
+	KeyIndex       uint32
+	NetParams      *chaincfg.Params
+	ChannelDataDir string
+	PrepareOOR     ArkChannelOORPreparer
 }
 
 // arkChannelRPCServer exposes the configured controller on waved's existing
@@ -415,73 +390,104 @@ func (s *Server) initArkChannelProcess(ctx context.Context) error {
 
 		return err
 	}
-	if !s.lwWallet.IsSome() {
+	controller, err := s.newClientArkChannelController(
+		ctx, peer, runtime.Unary(), peerSender,
+	)
+	if err != nil {
 		runtime.Stop()
 
-		return fmt.Errorf("Ark channel runtime requires lwwallet")
+		return err
+	}
+	// The actor owns a process-lifetime context and is stopped by
+	// Server.Stop.
+	//nolint:contextcheck
+	peerIngress, err := lnruntime.NewPeerMessageIngress(
+		lnruntime.PeerMessageIngressConfig{
+			ActorID: arkChannelPeerIngressPrefix + localMailbox,
+			Store:   s.deliveryStore,
+			Handler: controller.PeerMessageHandler(),
+			Log:     s.subLogger(Subsystem),
+		},
+	)
+	if err != nil {
+		_ = controller.Stop()
+		runtime.Stop()
+
+		return fmt.Errorf("create Ark channel peer ingress: %w", err)
+	}
+	connCfg.Dispatchers[lnruntime.PeerMessageRoute()] =
+		peerIngress.Dispatcher()
+	if err := runtime.StartIngress(ctx); err != nil {
+		peerIngress.Stop()
+		_ = controller.Stop()
+		runtime.Stop()
+
+		return fmt.Errorf("start Ark channel mailbox ingress: %w", err)
+	}
+
+	s.setArkChannelProcess(runtime, controller, peerIngress)
+
+	return nil
+}
+
+// newClientArkChannelController composes the wallet, chain, OOR, and recovery
+// dependencies behind the client channel controller.
+func (s *Server) newClientArkChannelController(ctx context.Context,
+	peer lnruntime.ProcessCooperativeClosePeer,
+	peerRPC mailboxrpc.RPCClient, peerSender lnruntime.PeerEventSender) (
+	*NativeArkChannelController, error) {
+
+	if !s.lwWallet.IsSome() {
+		return nil, fmt.Errorf("Ark channel runtime requires lwwallet")
 	}
 	if s.chainBackend == nil {
-		runtime.Stop()
-
-		return fmt.Errorf("Ark channel runtime requires a chain " +
+		return nil, fmt.Errorf("Ark channel runtime requires a chain " +
 			"backend")
 	}
 	if !s.unrollRegistryRef.IsSome() {
-		runtime.Stop()
-
-		return fmt.Errorf("Ark channel runtime requires the unroller")
+		return nil, fmt.Errorf("Ark channel runtime requires the " +
+			"unroller")
 	}
 	chainNotifier, err := chainbackends.NewBackendChainNotifier(
 		s.chainBackend,
 	)
 	if err != nil {
-		runtime.Stop()
-
-		return err
+		return nil, err
 	}
 	feeEstimator, err := chainfees.NewBackendEstimator(
 		s.chainBackend, chainfee.FeePerKwFloor,
 	)
 	if err != nil {
-		runtime.Stop()
-
-		return err
+		return nil, err
 	}
 	oorController, err := oorbridge.New(s.actorSystem)
 	if err != nil {
-		runtime.Stop()
-
-		return err
+		return nil, err
 	}
 	recovery, err := newArkChannelRecoveryArchive(
 		s.vtxoStore, (&RPCServer{server: s}).newLocalOORArtifactStore(),
 		s.chainBackend, s.subLogger(Subsystem),
 	)
 	if err != nil {
-		runtime.Stop()
-
-		return err
+		return nil, err
 	}
 	materializer, err := unrollbridge.NewController(
 		s.unrollRegistryRef.UnsafeFromSome(), recovery,
 	)
 	if err != nil {
-		runtime.Stop()
-
-		return err
+		return nil, err
 	}
 	operatorTerms, err := s.fetchOperatorTerms(ctx)
 	if err != nil {
-		runtime.Stop()
-
-		return fmt.Errorf("fetch Ark channel operator terms: %w", err)
+		return nil, fmt.Errorf("fetch Ark channel operator terms: %w",
+			err)
 	}
 	controller, err := NewClientArkChannelController(
 		ctx, ArkChannelControllerConfig{
 			Log:            s.subLogger(Subsystem),
 			Store:          s.arkChannelStore,
 			Peer:           peer,
-			PeerRPC:        runtime.Unary(),
+			PeerRPC:        peerRPC,
 			PeerSender:     peerSender,
 			Wallet:         s.lwWallet.UnsafeFromSome(),
 			ChainBackend:   s.chainBackend,
@@ -497,34 +503,19 @@ func (s *Server) initArkChannelProcess(ctx context.Context) error {
 			ChannelDataDir: filepath.Join(
 				s.cfg.DataDir, "ark-channels",
 			),
-			PrepareOOR:       s.prepareArkChannelOOR,
-			PrepareClaimRoot: s.prepareArkChannelClaimRoot,
-			PrepareClaimOOR:  s.prepareArkChannelClaimOOR,
+			PrepareOOR: s.prepareArkChannelOOR,
 		},
 	)
 	if err != nil {
-		runtime.Stop()
-
-		return fmt.Errorf("construct Ark channel controller: %w", err)
+		return nil, fmt.Errorf("construct Ark channel controller: %w",
+			err)
 	}
 	if controller == nil {
-		runtime.Stop()
-
-		return fmt.Errorf("Ark channel controller factory returned nil")
-	}
-	connCfg.Dispatchers[lnruntime.PeerMessageRoute()] =
-		lnruntime.NewPeerMessageDispatcher(
-			controller.PeerMessageHandler(),
-		)
-	if err := runtime.StartIngress(ctx); err != nil {
-		runtime.Stop()
-
-		return fmt.Errorf("start Ark channel mailbox ingress: %w", err)
+		return nil, fmt.Errorf("Ark channel controller factory " +
+			"returned nil")
 	}
 
-	s.setArkChannelProcess(runtime, controller)
-
-	return nil
+	return controller, nil
 }
 
 // ensureConfiguredArkChannelCloseDelivery registers the close destination
@@ -581,13 +572,23 @@ func (s *Server) ensureArkChannelCloseDelivery(ctx context.Context,
 
 // setArkChannelProcess publishes the controller and its transport together.
 func (s *Server) setArkChannelProcess(runtime *serverconn.Runtime,
-	controller ArkChannelController) {
+	controller ArkChannelController,
+	peerIngress *lnruntime.PeerMessageIngress) {
 
 	s.arkChannelMu.Lock()
 	defer s.arkChannelMu.Unlock()
 
 	s.arkChannelMailboxRuntime = runtime
 	s.arkChannelController = controller
+	s.arkChannelPeerIngress = peerIngress
+}
+
+// getArkChannelPeerIngress returns the durable BOLT ingress boundary.
+func (s *Server) getArkChannelPeerIngress() *lnruntime.PeerMessageIngress {
+	s.arkChannelMu.RLock()
+	defer s.arkChannelMu.RUnlock()
+
+	return s.arkChannelPeerIngress
 }
 
 // getArkChannelController returns the initialized local controller.
@@ -604,12 +605,6 @@ func (s *Server) getArkChannelMailboxRuntime() *serverconn.Runtime {
 	defer s.arkChannelMu.RUnlock()
 
 	return s.arkChannelMailboxRuntime
-}
-
-// ArkChannelIncomingBackingFee returns the process-owned reserve used by
-// receive fallback promotion. It is deliberately not a user-facing knob.
-func (r *RPCServer) ArkChannelIncomingBackingFee() btcutil.Amount {
-	return defaultArkChannelBackingFee
 }
 
 // PrepareArkChannelIncomingPayment installs the deterministic native invoice
@@ -642,30 +637,14 @@ func (r *RPCServer) RegisterArkChannelIncomingPayment(ctx context.Context,
 
 // WaitArkChannelIncomingPayment waits on lnd's durable private invoice.
 func (r *RPCServer) WaitArkChannelIncomingPayment(ctx context.Context,
-	hash lntypes.Hash) error {
+	hash lntypes.Hash) (arkchannel.ID, error) {
 
 	controller, err := r.waitArkChannelController(ctx)
 	if err != nil {
-		return err
+		return arkchannel.ID{}, err
 	}
 
 	return controller.WaitIncomingPayment(ctx, hash)
-}
-
-// PromoteArkChannelIncomingVHTLC negotiates backing before committing the
-// preimage-path OOR claim into the channel-policy VTXO.
-func (r *RPCServer) PromoteArkChannelIncomingVHTLC(ctx context.Context,
-	hash lntypes.Hash, reservedSCID uint64, capacity btcutil.Amount,
-	source ArkChannelClaimSource) (arkchannel.Record, error) {
-
-	controller, err := r.waitArkChannelController(ctx)
-	if err != nil {
-		return arkchannel.Record{}, err
-	}
-
-	return controller.PromoteIncomingVHTLC(
-		ctx, hash, reservedSCID, capacity, source,
-	)
 }
 
 // waitArkChannelController bridges optional subserver construction, which

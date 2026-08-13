@@ -513,6 +513,59 @@ func (c *DaemonServiceClient) ExportOORRecoveryPackage(ctx context.Context,
 	return out, err
 }
 
+// PrepareArkChannelOOR reserves daemon liquidity for a channel-policy output.
+func (c *DaemonServiceClient) PrepareArkChannelOOR(ctx context.Context,
+	in *waverpc.PrepareArkChannelOORRequest, _ ...grpc.CallOption) (
+	*waverpc.PrepareArkChannelOORResponse, error) {
+
+	out := new(waverpc.PrepareArkChannelOORResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/prepare-ark-channel-oor", in, out,
+	)
+
+	return out, err
+}
+
+// ValidatePreparedArkChannelOOR checks an existing daemon reservation.
+func (c *DaemonServiceClient) ValidatePreparedArkChannelOOR(ctx context.Context,
+	in *waverpc.ValidatePreparedArkChannelOORRequest,
+	_ ...grpc.CallOption) (*waverpc.ValidatePreparedArkChannelOORResponse,
+	error) {
+
+	out := new(waverpc.ValidatePreparedArkChannelOORResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/validate-prepared-ark-channel-oor", in, out,
+	)
+
+	return out, err
+}
+
+// CommitPreparedArkChannelOOR releases a safely backed channel OOR.
+func (c *DaemonServiceClient) CommitPreparedArkChannelOOR(ctx context.Context,
+	in *waverpc.CommitPreparedArkChannelOORRequest, _ ...grpc.CallOption) (
+	*waverpc.CommitPreparedArkChannelOORResponse, error) {
+
+	out := new(waverpc.CommitPreparedArkChannelOORResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/commit-prepared-ark-channel-oor", in, out,
+	)
+
+	return out, err
+}
+
+// AbortPreparedArkChannelOOR releases a channel reservation before PONR.
+func (c *DaemonServiceClient) AbortPreparedArkChannelOOR(ctx context.Context,
+	in *waverpc.AbortPreparedArkChannelOORRequest, _ ...grpc.CallOption) (
+	*waverpc.AbortPreparedArkChannelOORResponse, error) {
+
+	out := new(waverpc.AbortPreparedArkChannelOORResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/abort-prepared-ark-channel-oor", in, out,
+	)
+
+	return out, err
+}
+
 // SendVTXO initiates an in-round VTXO transfer.
 func (c *DaemonServiceClient) SendVTXO(ctx context.Context,
 	in *waverpc.SendVTXORequest, _ ...grpc.CallOption) (

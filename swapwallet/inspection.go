@@ -576,11 +576,10 @@ func swapTraceFromSummary(
 		SettlementType: swapSettlementTypeString(
 			swap.GetSettlementType(),
 		),
-		SenderPubkey:         swap.GetSenderPubkey(),
-		Preimage:             swap.GetPreimage(),
-		ChannelId:            swap.GetChannelId(),
-		ReservedScid:         swap.GetReservedScid(),
-		ChannelBackingFeeSat: swap.GetChannelBackingFeeSat(),
+		SenderPubkey: swap.GetSenderPubkey(),
+		Preimage:     swap.GetPreimage(),
+		ChannelId:    swap.GetChannelId(),
+		ReservedScid: swap.GetReservedScid(),
 	}
 }
 

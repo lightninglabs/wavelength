@@ -97,9 +97,9 @@ func TestRecoveryDescriptorUsesBackingDelay(t *testing.T) {
 	require.ErrorContains(t, err, "unsupported")
 }
 
-// TestReceiveClaimTermsAreDeterministic proves invoice replay derives the same
+// TestReceiveIntentTermsAreDeterministic proves invoice replay derives the same
 // channel identity without consulting chain height or random state.
-func TestReceiveClaimTermsAreDeterministic(t *testing.T) {
+func TestReceiveIntentTermsAreDeterministic(t *testing.T) {
 	identity := testKeyDescriptor(t, 1)
 	arkKey := testKeyDescriptor(t, 2)
 	backingKey := testKeyDescriptor(t, 3)
@@ -108,6 +108,7 @@ func TestReceiveClaimTermsAreDeterministic(t *testing.T) {
 	hubArk := testKeyDescriptor(t, 6)
 	hubBacking := testKeyDescriptor(t, 7)
 	operator := testKeyDescriptor(t, 8)
+	hubFunder := testKeyDescriptor(t, 9)
 	controller := &NativeArkChannelController{
 		cfg: ArkChannelControllerConfig{
 			IdentityKey: identity,
@@ -136,22 +137,28 @@ func TestReceiveClaimTermsAreDeterministic(t *testing.T) {
 		controller.peerInfo.ArkOperatorKey[:],
 		operator.PubKey.SerializeCompressed(),
 	)
+	copy(
+		controller.peerInfo.HubFunderKey[:],
+		hubFunder.PubKey.SerializeCompressed(),
+	)
 
 	hash := lntypes.Hash{9}
-	first, err := controller.newReceiveClaimTerms(
+	first, err := controller.newReceiveIntentTerms(
 		hash, 1<<63|42, btcutil.Amount(50_000),
 	)
 	require.NoError(t, err)
-	second, err := controller.newReceiveClaimTerms(
+	second, err := controller.newReceiveIntentTerms(
 		hash, 1<<63|42, btcutil.Amount(50_000),
 	)
 	require.NoError(t, err)
 	require.Equal(t, first, second)
-	require.Equal(t, arkchannel.KindReceiveClaim, first.Kind)
+	require.Equal(t, arkchannel.KindReceiveIntent, first.Kind)
+	require.Equal(t, arkchannel.PartyHub, first.Funder)
+	require.Equal(t, controller.peerInfo.HubFunderKey, first.VTXO.FunderKey)
 	require.Equal(t, hash, lntypes.Hash(first.PaymentHash))
 	require.Equal(t, uint64(1<<63|42), first.ReservedSCID)
 
-	other, err := controller.newReceiveClaimTerms(
+	other, err := controller.newReceiveIntentTerms(
 		lntypes.Hash{10}, 1<<63|43, btcutil.Amount(50_000),
 	)
 	require.NoError(t, err)

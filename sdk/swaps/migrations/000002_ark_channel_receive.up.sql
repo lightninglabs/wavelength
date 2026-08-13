@@ -1,5 +1,5 @@
--- Persist the future-channel identity and fee reserve needed to resume either
--- direct private settlement or a vHTLC-to-channel promotion after restart.
+-- Persist the future-channel identity and legacy fee reserve needed to resume
+-- direct private settlement after restart.
 ALTER TABLE receive_swaps
     ADD COLUMN reserved_scid BLOB;
 

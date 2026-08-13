@@ -68,17 +68,9 @@ func (s *arkChannelControllerStub) RegisterIncomingPayment(context.Context,
 
 // WaitIncomingPayment is not used by close RPC tests.
 func (s *arkChannelControllerStub) WaitIncomingPayment(context.Context,
-	lntypes.Hash) error {
+	lntypes.Hash) (arkchannel.ID, error) {
 
-	return s.err
-}
-
-// PromoteIncomingVHTLC is not used by close RPC tests.
-func (s *arkChannelControllerStub) PromoteIncomingVHTLC(context.Context,
-	lntypes.Hash, uint64, btcutil.Amount, ArkChannelClaimSource) (
-	arkchannel.Record, error) {
-
-	return s.record, s.err
+	return arkchannel.ID{}, s.err
 }
 
 // MaterializeAndForceClose is not used by close RPC tests.

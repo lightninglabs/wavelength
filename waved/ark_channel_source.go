@@ -73,12 +73,12 @@ func (a *arkChannelRecoveryArchive) ExportRecoveryPackage(ctx context.Context,
 	); err != nil {
 		return arkchannel.RecoveryPackage{}, err
 	}
-	claimSource := arkchannel.ReceiveClaimRecoverySource{
+	recoverySource := arkchannel.OORRecoverySource{
 		OutPoint: source.OutPoint, Amount: source.Amount,
 		PkScript: source.PkScript,
 	}
 	recovery, err := a.buildRecoveryPackage(
-		ctx, terms.VTXO.ArkOperatorKey, claimSource,
+		ctx, terms.VTXO.ArkOperatorKey, recoverySource,
 	)
 	if err != nil {
 		return arkchannel.RecoveryPackage{}, err
@@ -110,7 +110,7 @@ func (a *arkChannelRecoveryArchive) ExportRecoveryPackage(ctx context.Context,
 // package. The expected operator key binds its round ancestry to the daemon's
 // current Ark operator rather than to caller-provided channel terms.
 func (a *arkChannelRecoveryArchive) ExportOORRecoveryPackage(
-	ctx context.Context, source arkchannel.ReceiveClaimRecoverySource,
+	ctx context.Context, source arkchannel.OORRecoverySource,
 	operatorKey *btcec.PublicKey) (arkchannel.RecoveryPackage, error) {
 
 	if err := source.Validate(); err != nil {
@@ -129,8 +129,7 @@ func (a *arkChannelRecoveryArchive) ExportOORRecoveryPackage(
 // buildRecoveryPackage resolves one sender-owned finalized OOR package and
 // all locally known ancestors into endpoint-neutral recovery data.
 func (a *arkChannelRecoveryArchive) buildRecoveryPackage(ctx context.Context,
-	expectedOperator [33]byte,
-	source arkchannel.ReceiveClaimRecoverySource) (
+	expectedOperator [33]byte, source arkchannel.OORRecoverySource) (
 	arkchannel.RecoveryPackage, error) {
 
 	target, err := a.loadSourcePackage(ctx, source)
@@ -221,7 +220,7 @@ func (a *arkChannelRecoveryArchive) buildRecoveryPackage(ctx context.Context,
 		}
 		recovery.Packages = append(recovery.Packages, entry)
 	}
-	if err := recovery.ValidateReceiveClaim(source); err != nil {
+	if err := recovery.ValidateOORSource(source); err != nil {
 		return arkchannel.RecoveryPackage{}, err
 	}
 
@@ -409,8 +408,7 @@ func (a *arkChannelRecoveryArchive) Stop() {
 // loadSourcePackage verifies that the finalized target package creates the
 // exact channel-policy output committed by the FSM.
 func (a *arkChannelRecoveryArchive) loadSourcePackage(ctx context.Context,
-	source arkchannel.ReceiveClaimRecoverySource) (*db.OORPackageBundle,
-	error) {
+	source arkchannel.OORRecoverySource) (*db.OORPackageBundle, error) {
 
 	pkg, err := a.packages.GetPackage(ctx, source.OutPoint.Hash)
 	if err != nil {

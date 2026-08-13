@@ -134,6 +134,11 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 		"SignOORCustomInput",
 	)
 	grant(
+		daemon, entityChannel, "write", "PrepareArkChannelOOR",
+		"ValidatePreparedArkChannelOOR", "CommitPreparedArkChannelOOR",
+		"AbortPreparedArkChannelOOR",
+	)
+	grant(
 		daemon, entityOnChain, "read", "ListBoardingSweeps",
 		"GetUnrollStatus",
 	)

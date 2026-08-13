@@ -17,7 +17,7 @@ func (r *RPCServer) ExportOORRecoveryPackage(ctx context.Context,
 	if r == nil || r.server == nil || r.server.vtxoStore == nil {
 		return nil, fmt.Errorf("OOR recovery exporter is unavailable")
 	}
-	source, err := lnruntime.ReceiveClaimRecoverySourceFromRPC(
+	source, err := lnruntime.OORRecoverySourceFromRPC(
 		req.GetSource(),
 	)
 	if err != nil {
