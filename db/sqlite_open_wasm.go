@@ -27,6 +27,14 @@ func openSQLiteDatabase(cfg SQLiteOpenConfig) (*SQLiteOpenResult, error) {
 	values.Set("vfs", wasmSQLiteVFS)
 	values.Set("mode", "rwc")
 
+	// A wallet-grade database silently degrading to the in-memory VFS
+	// would lose every write on page close, so fail closed when no
+	// persistent OPFS VFS can be opened. The most common trigger is
+	// another tab of the same origin holding the exclusive OPFS handles;
+	// failing here surfaces that as a clear locked-database error instead
+	// of a later migration failure against a throwaway database.
+	values.Set("require_persistent", "true")
+
 	pragmas := make([]string, 0, len(cfg.Pragmas)+1)
 	for _, pragma := range cfg.Pragmas {
 		switch strings.ToLower(pragma.Name) {
@@ -87,7 +95,7 @@ func openWASMSQLiteWithRetry(dsn string) (*sql.DB, error) {
 		}
 
 		_ = db.Close()
-		if !isWASMCantOpen(err) {
+		if !isWASMRetryableOpen(err) {
 			return nil, err
 		}
 
@@ -98,10 +106,16 @@ func openWASMSQLiteWithRetry(dsn string) (*sql.DB, error) {
 	return nil, lastErr
 }
 
-// isWASMCantOpen identifies the SQLite error returned while OPFS still holds a
-// file lock from a just-unloaded page runtime.
-func isWASMCantOpen(err error) bool {
+// isWASMRetryableOpen identifies the SQLite errors returned while OPFS still
+// holds a file lock from a just-unloaded page runtime: SQLITE_CANTOPEN while
+// the previous runtime's handles are still being torn down, and SQLITE_BUSY
+// now that require_persistent surfaces lock contention as an open failure
+// instead of an in-memory fallback. A tab whose lock holder never goes away
+// exhausts the retries and returns the locked-database error to the caller.
+func isWASMRetryableOpen(err error) bool {
 	return strings.Contains(err.Error(), "SQLITE_CANTOPEN") ||
+		strings.Contains(err.Error(), "SQLITE_BUSY") ||
+		strings.Contains(err.Error(), "database is locked") ||
 		strings.Contains(err.Error(), "unable to open database file")
 }
 
