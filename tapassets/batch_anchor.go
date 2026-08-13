@@ -46,19 +46,98 @@ type BatchAnchorSource struct {
 	AnchorInternalKey *btcec.PublicKey
 }
 
+// Logical output identifiers naming the transition's outputs across
+// derivation, commit, and the sealed package.
+const (
+	batchAnchorOutputID = "batch-anchor-output"
+	batchAnchorChangeID = "batch-anchor-change"
+)
+
+// BatchAnchorChange returns a funding surplus to the operator's own tapd
+// wallet: the batch output consumes the request's amount and the
+// remainder re-anchors under wallet-owned keys on its own BIP-86 anchor
+// output, becoming ordinary spendable inventory once the anchor
+// confirms. Both keys are derived once and pinned on the request: the
+// split commitment binds the change script key, so derivation and
+// commit must see the same key to reproduce the same batch script.
+type BatchAnchorChange struct {
+	// Amount is the change output's asset amount.
+	Amount uint64
+
+	// OutputIndex is the change anchor output's position in the anchor
+	// transaction.
+	OutputIndex uint32
+
+	// OutputValueSat is the change anchor output's Bitcoin value.
+	OutputValueSat int64
+
+	// ScriptKey is the tapd wallet script key that owns the change.
+	ScriptKey tapsdk.ScriptKey
+
+	// AnchorInternalKey is the tapd wallet internal key of the change
+	// anchor output.
+	AnchorInternalKey tapsdk.InternalKey
+}
+
+// DeriveBatchAnchorChange derives and pins the wallet keys owning a batch
+// transition's asset change. The output index is assigned by the planner
+// when the anchor transaction's output positions are final.
+func DeriveBatchAnchorChange(ctx context.Context, wallet *tapsdk.Wallet,
+	amount uint64, outputValueSat int64) (*BatchAnchorChange, error) {
+
+	if wallet == nil {
+		return nil, fmt.Errorf("tap-sdk wallet is required")
+	}
+	if amount == 0 || outputValueSat <= 0 {
+		return nil, fmt.Errorf("change amount and value are required")
+	}
+
+	scriptKey, err := wallet.Client().DeriveScriptKey(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("derive change script key: %w", err)
+	}
+	internalKey, err := wallet.Client().DeriveInternalKey(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("derive change anchor internal key: %w",
+			err)
+	}
+
+	return &BatchAnchorChange{
+		Amount:            amount,
+		OutputValueSat:    outputValueSat,
+		ScriptKey:         *scriptKey,
+		AnchorInternalKey: *internalKey,
+	}, nil
+}
+
+// internalPubKey parses the change anchor internal key.
+func (c *BatchAnchorChange) internalPubKey() (*btcec.PublicKey, error) {
+	key, err := btcec.ParsePubKey(c.AnchorInternalKey.PubKey[:])
+	if err != nil {
+		return nil, fmt.Errorf("change anchor internal key: %w", err)
+	}
+
+	return key, nil
+}
+
 // BatchAnchorRequest describes one asset batch output on a caller-funded
-// anchor transaction: the whole funding UTXO moves into a single output whose
+// anchor transaction: the funding UTXOs move into a single output whose
 // taproot key is the cosigner aggregate tweaked with the combined tapscript
-// root. Full-value transitions produce no split commitment, so the derived
-// roots are independent of output reordering by the funding wallet.
+// root. Without change the transition is full-value and produces no split
+// commitment, so the derived roots are independent of output positions.
+// With change the split commitment binds every asset output's anchor
+// index, so both output positions must be final before derivation.
 type BatchAnchorRequest struct {
 	// AssetRef identifies the asset carried by the batch output.
 	AssetRef tapsdk.AssetRef
 
-	// Amount is the batch output's total asset amount: the sum of the
-	// funding sources' amounts, all of which move beneath the batch
-	// output.
+	// Amount is the batch output's total asset amount. The funding
+	// sources must carry exactly this amount plus any change.
 	Amount uint64
+
+	// Change optionally returns the funding surplus to the operator's
+	// tapd wallet on its own anchor output.
+	Change *BatchAnchorChange
 
 	// Sources identify the funding UTXOs the transition spends. Every
 	// source anchors one input of the anchor transaction.
@@ -102,6 +181,10 @@ type BatchAnchorScript struct {
 
 	// AssetRoot is the batch output's Taproot Asset commitment root.
 	AssetRoot tapsdk.Hash
+
+	// ChangePkScript is the composed change anchor output script, set
+	// only when the request carries change.
+	ChangePkScript []byte
 }
 
 // BatchAnchorCommit is the sealed commitment transition: the persistence
@@ -174,8 +257,9 @@ func (c *BatchAnchorCommitter) DeriveScript(ctx context.Context,
 		return nil, fmt.Errorf("preview batch anchor: %w", err)
 	}
 
+	var derived *BatchAnchorScript
 	for _, preview := range previews {
-		if preview.anchorOutputIndex != req.OutputIndex {
+		if preview.logicalOutputID != batchAnchorOutputID {
 			continue
 		}
 
@@ -186,16 +270,52 @@ func (c *BatchAnchorCommitter) DeriveScript(ctx context.Context,
 			return nil, err
 		}
 
-		return &BatchAnchorScript{
+		derived = &BatchAnchorScript{
 			PkScript:     pkScript,
 			InternalKey:  internalKey,
 			SigningTweak: preview.merkleRoot[:],
 			AssetRoot:    preview.assetRoot,
-		}, nil
+		}
+
+		break
+	}
+	if derived == nil {
+		return nil, fmt.Errorf("preview misses batch output %d",
+			req.OutputIndex)
+	}
+	if req.Change == nil {
+		return derived, nil
 	}
 
-	return nil, fmt.Errorf("preview misses batch output %d",
-		req.OutputIndex)
+	changeScript, err := changePreviewScript(req.Change, previews)
+	if err != nil {
+		return nil, err
+	}
+	derived.ChangePkScript = changeScript
+
+	return derived, nil
+}
+
+// changePreviewScript composes the change anchor output script from its
+// previewed roots.
+func changePreviewScript(change *BatchAnchorChange,
+	previews []commitmentPreview) ([]byte, error) {
+
+	changeKey, err := change.internalPubKey()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, preview := range previews {
+		if preview.logicalOutputID != batchAnchorChangeID {
+			continue
+		}
+
+		return composedScript(changeKey, preview.merkleRoot)
+	}
+
+	return nil, fmt.Errorf("preview misses change output %d",
+		change.OutputIndex)
 }
 
 // Commit seals the commitment transition against the final funded anchor
@@ -220,6 +340,9 @@ func (c *BatchAnchorCommitter) Commit(ctx context.Context,
 		return nil, fmt.Errorf("funded anchor output %d does not "+
 			"carry the derived batch script", req.OutputIndex)
 	}
+	if err := checkFundedChange(req.Change, derived, finalTx); err != nil {
+		return nil, err
+	}
 
 	request, internalKey, err := c.buildRequest(req, funded)
 	if err != nil {
@@ -233,11 +356,23 @@ func (c *BatchAnchorCommitter) Commit(ctx context.Context,
 		return nil, fmt.Errorf("commit batch anchor: %w", err)
 	}
 
-	if len(committed.outputs) != 1 {
-		return nil, fmt.Errorf("batch anchor committed %d "+
-			"outputs, want 1", len(committed.outputs))
+	wantOutputs := 1
+	if req.Change != nil {
+		wantOutputs = 2
 	}
-	out := committed.outputs[0]
+	if len(committed.outputs) != wantOutputs {
+		return nil, fmt.Errorf("batch anchor committed %d "+
+			"outputs, want %d", len(committed.outputs), wantOutputs)
+	}
+	out, err := committedOutput(committed, batchAnchorOutputID)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkCommittedChange(
+		req.Change, derived, committed,
+	); err != nil {
+		return nil, err
+	}
 	if out.anchorOutputIndex != req.OutputIndex {
 		return nil, fmt.Errorf("batch anchor committed output index "+
 			"%d, want %d", out.anchorOutputIndex, req.OutputIndex)
@@ -296,6 +431,89 @@ func (c *BatchAnchorCommitter) Commit(ctx context.Context,
 	}, nil
 }
 
+// committedOutput locates one committed output by its logical identifier.
+func committedOutput(committed *commitResult,
+	logicalID string) (commitOutput, error) {
+
+	for i := range committed.outputs {
+		if committed.outputs[i].logicalOutputID == logicalID {
+			return committed.outputs[i], nil
+		}
+	}
+
+	return commitOutput{}, fmt.Errorf("batch anchor commit misses "+
+		"output %q", logicalID)
+}
+
+// checkFundedChange verifies the funded transaction carries the derived
+// change script at the change position. Nil change passes.
+func checkFundedChange(change *BatchAnchorChange, derived *BatchAnchorScript,
+	finalTx *wire.MsgTx) error {
+
+	if change == nil {
+		return nil
+	}
+	if len(derived.ChangePkScript) == 0 {
+		return fmt.Errorf("derived change script is required")
+	}
+	if int(change.OutputIndex) >= len(finalTx.TxOut) {
+		return fmt.Errorf("change output %d exceeds anchor outputs",
+			change.OutputIndex)
+	}
+	if !bytes.Equal(
+		finalTx.TxOut[change.OutputIndex].PkScript,
+		derived.ChangePkScript,
+	) {
+		return fmt.Errorf("funded anchor output %d does not carry the "+
+			"derived change script", change.OutputIndex)
+	}
+
+	return nil
+}
+
+// checkCommittedChange verifies fail-closed that the committed change
+// output matches the request and reproduces the derived change script.
+// Nil change passes.
+func checkCommittedChange(change *BatchAnchorChange, derived *BatchAnchorScript,
+	committed *commitResult) error {
+
+	if change == nil {
+		return nil
+	}
+
+	out, err := committedOutput(committed, batchAnchorChangeID)
+	if err != nil {
+		return err
+	}
+	if out.anchorOutputIndex != change.OutputIndex {
+		return fmt.Errorf("committed change output index %d, want %d",
+			out.anchorOutputIndex, change.OutputIndex)
+	}
+	if out.amount != change.Amount {
+		return fmt.Errorf("committed change amount %d, want %d",
+			out.amount, change.Amount)
+	}
+	if out.anchorValueSat != change.OutputValueSat {
+		return fmt.Errorf("committed change value %d, want %d",
+			out.anchorValueSat, change.OutputValueSat)
+	}
+
+	changeKey, err := change.internalPubKey()
+	if err != nil {
+		return err
+	}
+	pkScript, err := composedScript(changeKey, out.taprootMerkleRoot)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(pkScript, derived.ChangePkScript) {
+		return fmt.Errorf("committed change output script does not " +
+			"reproduce the derived script")
+	}
+
+	return nil
+}
+
 // buildRequest assembles the caller-funded custom-anchor request shared by
 // derivation and commit.
 func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
@@ -343,9 +561,22 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 				source.AnchorOutpoint)
 		}
 	}
-	if sourceTotal != req.Amount {
+	wantTotal := req.Amount
+	if req.Change != nil {
+		change := req.Change
+		if change.Amount == 0 || change.OutputValueSat <= 0 {
+			return nil, nil, fmt.Errorf("change amount and value " +
+				"are required")
+		}
+		if change.OutputIndex == req.OutputIndex {
+			return nil, nil, fmt.Errorf("change and batch outputs "+
+				"share anchor index %d", change.OutputIndex)
+		}
+		wantTotal += change.Amount
+	}
+	if sourceTotal != wantTotal {
 		return nil, nil, fmt.Errorf("funding sources carry %d units, "+
-			"the batch carries %d", sourceTotal, req.Amount)
+			"the batch and change carry %d", sourceTotal, wantTotal)
 	}
 	if len(req.SweepLeaf.Script) == 0 {
 		return nil, nil, fmt.Errorf("sweep leaf is required")
@@ -415,29 +646,55 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 		return nil, nil, err
 	}
 
-	request := &tapsdk.CustomAnchorRequest{
-		Inputs: inputs,
-		Outputs: []tapsdk.CustomAssetOutput{{
-			ID:                "batch-anchor-output",
-			AssetRef:          req.AssetRef,
-			Amount:            req.Amount,
-			AnchorOutputIndex: req.OutputIndex,
-			AnchorValueSat:    uint64(req.OutputValueSat),
-			Script: tapsdk.CustomAssetScriptPlan{
-				Mode: tapsdk.CustomAssetScriptOPTrue,
-				OPTrue: &tapsdk.CustomAssetOPTrueScriptPlan{
-					InternalKey: tapsdk.KeyDescriptor{
-						RawKeyBytes: deterministicKey(
-							req.Digest,
-							"batch-anchor",
-						),
-					},
+	outputs := []tapsdk.CustomAssetOutput{{
+		ID:                batchAnchorOutputID,
+		AssetRef:          req.AssetRef,
+		Amount:            req.Amount,
+		AnchorOutputIndex: req.OutputIndex,
+		AnchorValueSat:    uint64(req.OutputValueSat),
+		Script: tapsdk.CustomAssetScriptPlan{
+			Mode: tapsdk.CustomAssetScriptOPTrue,
+			OPTrue: &tapsdk.CustomAssetOPTrueScriptPlan{
+				InternalKey: tapsdk.KeyDescriptor{
+					RawKeyBytes: deterministicKey(
+						req.Digest, "batch-anchor",
+					),
 				},
 			},
-			Anchor: anchorPlan(
-				internalKey, []txscript.TapLeaf{req.SweepLeaf},
+		},
+		Anchor: anchorPlan(
+			internalKey, []txscript.TapLeaf{req.SweepLeaf},
+		),
+	}}
+	if req.Change != nil {
+		outputs = append(outputs, tapsdk.CustomAssetOutput{
+			ID:                batchAnchorChangeID,
+			AssetRef:          req.AssetRef,
+			Amount:            req.Change.Amount,
+			AnchorOutputIndex: req.Change.OutputIndex,
+			AnchorValueSat: uint64(
+				req.Change.OutputValueSat,
 			),
-		}},
+			// The pinned wallet script key rides as an external
+			// key: the wallet script mode would derive a fresh
+			// key on every build, and derivation and commit must
+			// build identical transitions.
+			Script: tapsdk.CustomAssetScriptPlan{
+				Mode: scriptExternal,
+				External: &tapsdk.
+					CustomAssetExternalScriptPlan{
+					ScriptKey: req.Change.ScriptKey,
+				},
+			},
+			Anchor: tapsdk.CustomAnchorOutputPlan{
+				InternalKey: req.Change.AnchorInternalKey,
+			},
+		})
+	}
+
+	request := &tapsdk.CustomAnchorRequest{
+		Inputs:     inputs,
+		Outputs:    outputs,
 		AnchorPSBT: anchorBytes,
 		Funding: tapsdk.CustomAnchorFundingPlan{
 			Mode: tapsdk.CustomAnchorFundingCallerFundedExact,
