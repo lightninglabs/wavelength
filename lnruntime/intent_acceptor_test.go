@@ -52,6 +52,10 @@ func TestIntentAcceptorRejectsUnregisteredFunding(t *testing.T) {
 				PendingChannelID: record.Snapshot.Terms.
 					PendingChannelID,
 				FundingAmount: record.Snapshot.Terms.Capacity,
+				PushAmount: lnwire.NewMSatFromSatoshis(
+					record.Snapshot.Terms.
+						InitialPushAmount(),
+				),
 			},
 		}
 	}
@@ -83,9 +87,9 @@ func TestIntentAcceptorRejectsUnregisteredFunding(t *testing.T) {
 			},
 		},
 		{
-			name: "pushed client balance",
+			name: "wrong initial push",
 			mutate: func(req *chanacceptor.ChannelAcceptRequest) {
-				req.OpenChanMsg.PushAmount = 1
+				req.OpenChanMsg.PushAmount++
 			},
 		},
 		{

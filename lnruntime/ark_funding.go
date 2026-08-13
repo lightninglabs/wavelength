@@ -64,14 +64,19 @@ func (f *FundingRuntime) FundingFinalized(ctx context.Context,
 		return false, fmt.Errorf("finalized lnd channel peer does " +
 			"not match Ark terms")
 	}
-	expectedInitiator := terms.Funder == localParty
+	expectedInitiator := terms.FundingInitiator() == localParty
 	if channel.IsInitiator != expectedInitiator {
 		return false, fmt.Errorf("finalized lnd channel funder does " +
 			"not match Ark terms")
 	}
-	if !expectedInitiator &&
-		channel.LocalCommitment.LocalBalance.ToSatoshis() != 0 {
-		return false, fmt.Errorf("non-funder received initial " +
+	clientBalance := channel.LocalCommitment.RemoteBalance.ToSatoshis()
+	if localParty == arkchannel.PartyClient {
+		clientBalance = channel.LocalCommitment.LocalBalance.
+			ToSatoshis()
+	}
+	if terms.Kind == arkchannel.KindReceiveIntent &&
+		clientBalance != 0 {
+		return false, fmt.Errorf("client received spendable initial " +
 			"channel liquidity")
 	}
 

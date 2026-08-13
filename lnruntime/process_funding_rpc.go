@@ -24,21 +24,23 @@ const fundingPeerService = "arkchannelrpc.ArkChannelFundingPeerService"
 const recoveryPackageInstalledEvent = arkchannelrpc.ChannelEventType_CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED //nolint:ll
 
 var fundingPeerMethods = map[string]struct{}{
-	"GetPeerInfo":                {},
-	"RegisterPromotion":          {},
-	"BindPreparedOOR":            {},
-	"SignBacking":                {},
-	"InstallBacking":             {},
-	"InstallRecoveryPackage":     {},
-	"ExportReceiveClaimRecovery": {},
-	"FundingFinalized":           {},
-	"ChannelActive":              {},
-	"ApplyChannelEvent":          {},
-	"CreateInvoice":              {},
-	"PayInvoice":                 {},
-	"PrepareOutgoingPayment":     {},
-	"CancelOutgoingPayment":      {},
-	"RegisterIncomingPayment":    {},
+	"GetPeerInfo":             {},
+	"RegisterPromotion":       {},
+	"RegisterReceiveIntent":   {},
+	"GetFundingChannel":       {},
+	"BindPreparedOOR":         {},
+	"SignBacking":             {},
+	"InstallBacking":          {},
+	"InstallRecoveryPackage":  {},
+	"ExportRecoveryPackage":   {},
+	"FundingFinalized":        {},
+	"ChannelActive":           {},
+	"ApplyChannelEvent":       {},
+	"CreateInvoice":           {},
+	"PayInvoice":              {},
+	"PrepareOutgoingPayment":  {},
+	"CancelOutgoingPayment":   {},
+	"RegisterIncomingPayment": {},
 }
 
 // OutgoingPaymentPreparation fixes the private source amount and active
@@ -61,11 +63,7 @@ type PaymentBridgeCoordinator interface {
 		string) error
 
 	RegisterIncomingPayment(context.Context, [33]byte, lntypes.Hash,
-		btcutil.Amount, uint64) error
-
-	ReceiveClaimRecovery(context.Context, [33]byte, lntypes.Hash, uint64) (
-		arkchannel.ReceiveClaimRecoverySource,
-		arkchannel.RecoveryPackage, error)
+		btcutil.Amount, uint64) (btcutil.Amount, error)
 }
 
 // FundingPeerInfo contains immutable hub policy needed to construct a client
@@ -74,6 +72,7 @@ type FundingPeerInfo struct {
 	HubNodeKey       [33]byte
 	HubArkKey        [33]byte
 	HubChannelKey    [33]byte
+	HubFunderKey     [33]byte
 	ArkOperatorKey   [33]byte
 	ChannelDelay     uint32
 	FunderDelay      uint32
@@ -86,6 +85,7 @@ func (i FundingPeerInfo) Validate() error {
 		"hub node":     i.HubNodeKey,
 		"hub Ark":      i.HubArkKey,
 		"hub channel":  i.HubChannelKey,
+		"hub funder":   i.HubFunderKey,
 		"Ark operator": i.ArkOperatorKey,
 	} {
 		if _, err := parseCompressedKey(name, key); err != nil {
@@ -100,23 +100,35 @@ func (i FundingPeerInfo) Validate() error {
 	return nil
 }
 
-// ProcessFundingPeer is the authenticated remote surface used by one
-// channel-creation process.
+// ProcessFundingPeer is the authenticated coordination surface used by one
+// channel-creation process. Native lnd funding and payment dispatch use their
+// own narrower interfaces even though the mailbox adapter implements all
+// three.
 type ProcessFundingPeer interface {
-	RecoveryCounterparty
-
 	GetPeerInfo(context.Context) (FundingPeerInfo, error)
 
 	RegisterPromotion(context.Context,
 		arkchannel.Terms) (arkchannel.Record, error)
 
+	RegisterReceiveIntent(context.Context,
+		arkchannel.Terms) (arkchannel.Record, error)
+
+	GetFundingChannel(context.Context,
+		arkchannel.ID) (FundingChannelState, error)
+
 	BindPreparedOOR(context.Context, arkchannel.ID,
 		arkchannel.VTXOBinding) (arkchannel.Record, error)
 
-	ExportReceiveClaimRecovery(context.Context, arkchannel.ID) (
-		arkchannel.ReceiveClaimRecoverySource,
-		arkchannel.RecoveryPackage, error)
+	ExportRecoveryPackage(context.Context,
+		arkchannel.ID) (arkchannel.RecoveryPackage, error)
 
+	ApplyChannelEvent(context.Context, arkchannel.ID,
+		arkchannel.Event) (arkchannel.Record, error)
+}
+
+// ProcessPaymentPeer is the private-channel payment surface exposed by the
+// authenticated hub endpoint.
+type ProcessPaymentPeer interface {
 	CreateInvoice(context.Context, arkchannel.ID,
 		btcutil.Amount) (lntypes.Hash, error)
 
@@ -129,7 +141,20 @@ type ProcessFundingPeer interface {
 	CancelOutgoingPayment(context.Context, lntypes.Hash, string) error
 
 	RegisterIncomingPayment(context.Context, lntypes.Hash, btcutil.Amount,
-		uint64) error
+		uint64) (btcutil.Amount, error)
+}
+
+// FundingChannelState is the minimal remote channel-FSM view needed to bind a
+// hub-prepared source and mirror terminal pre-commit failure.
+type FundingChannelState struct {
+	Terms         arkchannel.Terms
+	Source        *arkchannel.VTXOBinding
+	Backing       *arkchannel.Backing
+	Phase         arkchannel.Phase
+	OORFinalized  bool
+	RecoveryReady bool
+	Failure       string
+	Revision      uint64
 }
 
 // IsFundingPeerRoute reports whether one mailbox route belongs to the channel
@@ -194,6 +219,68 @@ func (p *MailboxFundingPeer) RegisterPromotion(ctx context.Context,
 	}
 
 	return recordSummaryFromRPC(terms, response.GetChannel())
+}
+
+// RegisterReceiveIntent registers a hub-funded channel before public routing.
+func (p *MailboxFundingPeer) RegisterReceiveIntent(ctx context.Context,
+	terms arkchannel.Terms) (arkchannel.Record, error) {
+
+	response, err := p.client.RegisterReceiveIntent(
+		ctx, &arkchannelrpc.RegisterReceiveIntentRequest{
+			Terms: channelTermsToRPC(terms),
+		}, fundingRPCOptions(terms.ID, "register-receive-intent"),
+	)
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+
+	return recordSummaryFromRPC(terms, response.GetChannel())
+}
+
+// GetFundingChannel returns the remote channel coordination facts.
+func (p *MailboxFundingPeer) GetFundingChannel(ctx context.Context,
+	id arkchannel.ID) (FundingChannelState, error) {
+
+	response, err := p.client.GetFundingChannel(
+		ctx, &arkchannelrpc.GetFundingChannelRequest{
+			ChannelId: id[:],
+		}, fundingRPCOptions(id, "get-funding-channel"),
+	)
+	if err != nil {
+		return FundingChannelState{}, err
+	}
+	terms, err := channelTermsFromRPC(response.GetTerms())
+	if err != nil {
+		return FundingChannelState{}, err
+	}
+	if terms.ID != id {
+		return FundingChannelState{}, fmt.Errorf("funding peer " +
+			"returned another channel")
+	}
+	state := FundingChannelState{
+		Terms:         terms,
+		Phase:         arkchannel.Phase(response.GetPhase()),
+		OORFinalized:  response.GetOorFinalized(),
+		RecoveryReady: response.GetRecoveryReady(),
+		Failure:       response.GetFailure(),
+		Revision:      response.GetRevision(),
+	}
+	if response.GetBinding() != nil {
+		binding, err := channelBindingFromRPC(response.GetBinding())
+		if err != nil {
+			return FundingChannelState{}, err
+		}
+		state.Source = &binding
+	}
+	if response.GetBacking() != nil {
+		backing, err := channelBackingFromRPC(response.GetBacking())
+		if err != nil {
+			return FundingChannelState{}, err
+		}
+		state.Backing = &backing
+	}
+
+	return state, nil
 }
 
 // BindPreparedOOR installs the exact prepared output at the responder before
@@ -286,37 +373,33 @@ func (p *MailboxFundingPeer) InstallRecoveryPackage(ctx context.Context,
 	return err
 }
 
-// ExportReceiveClaimRecovery fetches the operator-derived vHTLC source and
-// finalized OOR lineage for one authenticated receive-claim channel.
-func (p *MailboxFundingPeer) ExportReceiveClaimRecovery(ctx context.Context,
-	id arkchannel.ID) (arkchannel.ReceiveClaimRecoverySource,
-	arkchannel.RecoveryPackage, error) {
+// ExportRecoveryPackage fetches the hub-funded channel source lineage.
+func (p *MailboxFundingPeer) ExportRecoveryPackage(ctx context.Context,
+	id arkchannel.ID) (arkchannel.RecoveryPackage, error) {
 
-	response, err := p.client.ExportReceiveClaimRecovery(
-		ctx, &arkchannelrpc.ExportReceiveClaimRecoveryRequest{
+	response, err := p.client.ExportRecoveryPackage(
+		ctx, &arkchannelrpc.ExportRecoveryPackageRequest{
 			ChannelId: id[:],
-		}, fundingRPCOptions(id, "export-receive-claim-recovery"),
+		}, fundingRPCOptions(id, "export-recovery-package"),
 	)
 	if err != nil {
-		return arkchannel.ReceiveClaimRecoverySource{},
-			arkchannel.RecoveryPackage{}, err
+		return arkchannel.RecoveryPackage{}, err
 	}
-	source, err := ReceiveClaimRecoverySourceFromRPC(response.GetSource())
+	// The recovery message includes and validates its exact source binding.
+	// Reconstruct that binding from the response rather than introducing a
+	// separate channel-state query into the funding protocol.
+	binding, err := channelBindingFromRPC(response.GetBinding())
 	if err != nil {
-		return arkchannel.ReceiveClaimRecoverySource{},
-			arkchannel.RecoveryPackage{}, err
+		return arkchannel.RecoveryPackage{}, err
 	}
 	recovery, err := ChannelRecoveryFromRPC(
-		response.GetRecovery(), arkchannel.VTXOBinding{
-			OORSessionID: [32]byte(source.OutPoint.Hash),
-		},
+		response.GetRecovery(), binding,
 	)
 	if err != nil {
-		return arkchannel.ReceiveClaimRecoverySource{},
-			arkchannel.RecoveryPackage{}, err
+		return arkchannel.RecoveryPackage{}, err
 	}
 
-	return source, recovery, nil
+	return recovery, nil
 }
 
 // FundingFinalized queries the remote lnd durability barrier.
@@ -486,10 +569,11 @@ func (p *MailboxFundingPeer) CancelOutgoingPayment(ctx context.Context,
 // RegisterIncomingPayment binds a future public route to this authenticated
 // client after its native invoice exists.
 func (p *MailboxFundingPeer) RegisterIncomingPayment(ctx context.Context,
-	hash lntypes.Hash, amount btcutil.Amount, reservedSCID uint64) error {
+	hash lntypes.Hash, amount btcutil.Amount, reservedSCID uint64) (
+	btcutil.Amount, error) {
 
 	if amount <= 0 || reservedSCID == 0 {
-		return fmt.Errorf("incoming payment amount and SCID are " +
+		return 0, fmt.Errorf("incoming payment amount and SCID are " +
 			"required")
 	}
 	response, err := p.client.RegisterIncomingPayment(
@@ -499,13 +583,19 @@ func (p *MailboxFundingPeer) RegisterIncomingPayment(ctx context.Context,
 		},
 	)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if !response.GetRegistered() {
-		return fmt.Errorf("incoming payment was not registered")
+		return 0, fmt.Errorf("incoming payment was not registered")
+	}
+	capacity, err := positiveRPCAmount(
+		"incoming channel capacity", response.GetChannelCapacitySat(),
+	)
+	if err != nil {
+		return 0, err
 	}
 
-	return nil
+	return capacity, nil
 }
 
 // FundingPeerRPCServerConfig contains one authenticated remote endpoint and
@@ -556,10 +646,60 @@ func (s *FundingPeerRPCServer) GetPeerInfo(context.Context,
 	return &arkchannelrpc.GetPeerInfoResponse{
 		HubNodeKey: i.HubNodeKey[:], HubArkKey: i.HubArkKey[:],
 		HubChannelKey:  i.HubChannelKey[:],
+		HubFunderKey:   i.HubFunderKey[:],
 		ArkOperatorKey: i.ArkOperatorKey[:],
 		ChannelDelay:   i.ChannelDelay, FunderDelay: i.FunderDelay,
 		MinExitDelay: i.MinimumExitDelay,
 	}, nil
+}
+
+// RegisterReceiveIntent registers immutable hub-funded receive terms.
+func (s *FundingPeerRPCServer) RegisterReceiveIntent(ctx context.Context,
+	request *arkchannelrpc.RegisterReceiveIntentRequest) (
+	*arkchannelrpc.RegisterReceiveIntentResponse, error) {
+
+	terms, err := channelTermsFromRPC(request.GetTerms())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.validateTerms(terms); err != nil {
+		return nil, err
+	}
+	record, err := s.cfg.Service.RegisterReceiveIntent(ctx, terms)
+	if err != nil {
+		return nil, err
+	}
+
+	return &arkchannelrpc.RegisterReceiveIntentResponse{
+		Channel: ArkChannelRecordToRPC(record),
+	}, nil
+}
+
+// GetFundingChannel returns the authenticated channel's durable facts.
+func (s *FundingPeerRPCServer) GetFundingChannel(ctx context.Context,
+	request *arkchannelrpc.GetFundingChannelRequest) (
+	*arkchannelrpc.GetFundingChannelResponse, error) {
+
+	_, record, err := s.channel(ctx, request.GetChannelId())
+	if err != nil {
+		return nil, err
+	}
+	snapshot := record.Snapshot
+	response := &arkchannelrpc.GetFundingChannelResponse{
+		Terms:         channelTermsToRPC(snapshot.Terms),
+		Phase:         uint32(snapshot.Phase),
+		OorFinalized:  snapshot.OORFinalized,
+		RecoveryReady: snapshot.RecoveryReady,
+		Failure:       snapshot.Failure, Revision: record.Revision,
+	}
+	if snapshot.Source != nil {
+		response.Binding = channelBindingToRPC(*snapshot.Source)
+	}
+	if snapshot.Backing != nil {
+		response.Backing = channelBackingToRPC(*snapshot.Backing)
+	}
+
+	return response, nil
 }
 
 // RegisterPromotion registers immutable terms for the authenticated client.
@@ -729,51 +869,41 @@ func (s *FundingPeerRPCServer) InstallRecoveryPackage(ctx context.Context,
 	return &arkchannelrpc.InstallRecoveryPackageResponse{}, nil
 }
 
-// ExportReceiveClaimRecovery returns only the receive-claim source authorized
-// by swapd's durable payment record for this authenticated client.
-func (s *FundingPeerRPCServer) ExportReceiveClaimRecovery(ctx context.Context,
-	request *arkchannelrpc.ExportReceiveClaimRecoveryRequest) (
-	*arkchannelrpc.ExportReceiveClaimRecoveryResponse, error) {
+// ExportRecoveryPackage returns the finalized hub-funded source lineage.
+func (s *FundingPeerRPCServer) ExportRecoveryPackage(ctx context.Context,
+	request *arkchannelrpc.ExportRecoveryPackageRequest) (
+	*arkchannelrpc.ExportRecoveryPackageResponse, error) {
 
 	_, record, err := s.channel(ctx, request.GetChannelId())
 	if err != nil {
 		return nil, err
 	}
 	terms := record.Snapshot.Terms
-	if terms.Kind != arkchannel.KindReceiveClaim ||
-		terms.Funder != arkchannel.PartyClient {
-		return nil, fmt.Errorf("channel is not a client-funded " +
-			"receive claim")
+	if terms.Kind != arkchannel.KindReceiveIntent ||
+		terms.Funder != arkchannel.PartyHub {
+		return nil, fmt.Errorf("channel is not a hub-funded receive " +
+			"intent")
 	}
-	if s.cfg.Bridge == nil {
-		return nil, fmt.Errorf("channel payment bridge is not " +
-			"configured")
+	if record.Snapshot.Source == nil || !record.Snapshot.OORFinalized {
+		return nil, fmt.Errorf("channel source is not finalized")
 	}
-	source, recovery, err := s.cfg.Bridge.ReceiveClaimRecovery(
-		ctx, s.cfg.RemoteNode, lntypes.Hash(terms.PaymentHash),
-		terms.ReservedSCID,
+	recovery, err := s.cfg.Recovery.ExportRecoveryPackage(
+		ctx, terms.ID, terms, *record.Snapshot.Source,
 	)
 	if err != nil {
 		return nil, err
 	}
-	if source.Amount <= terms.Capacity {
-		return nil, fmt.Errorf("receive-claim source has no channel " +
-			"backing reserve")
-	}
-	if err := recovery.ValidateReceiveClaim(source); err != nil {
+	if err := recovery.Validate(*record.Snapshot.Source); err != nil {
 		return nil, err
 	}
 	recoveryMessage, err := ChannelRecoveryToRPC(recovery)
 	if err != nil {
 		return nil, err
 	}
-	sourceMessage, err := ReceiveClaimRecoverySourceToRPC(source)
-	if err != nil {
-		return nil, err
-	}
 
-	return &arkchannelrpc.ExportReceiveClaimRecoveryResponse{
-		Source: sourceMessage, Recovery: recoveryMessage,
+	return &arkchannelrpc.ExportRecoveryPackageResponse{
+		Binding:  channelBindingToRPC(*record.Snapshot.Source),
+		Recovery: recoveryMessage,
 	}, nil
 }
 
@@ -825,9 +955,14 @@ func (s *FundingPeerRPCServer) ApplyChannelEvent(ctx context.Context,
 		return nil, err
 	}
 	var record arkchannel.Record
-	if _, materialize := event.(*arkchannel.Materialize); materialize {
+	switch event.(type) {
+	case *arkchannel.Materialize:
 		record, err = s.cfg.Service.Materialize(ctx, id)
-	} else {
+
+	case *arkchannel.FundingPeerReady:
+		record, err = s.cfg.Service.RecordChannelEvent(ctx, id, event)
+
+	default:
 		record, err = s.cfg.Funding.ApplyChannelEvent(ctx, id, event)
 	}
 	if err != nil {
@@ -974,14 +1109,15 @@ func (s *FundingPeerRPCServer) RegisterIncomingPayment(ctx context.Context,
 	if request.GetReservedScid() == 0 {
 		return nil, fmt.Errorf("incoming payment SCID is required")
 	}
-	if err := s.cfg.Bridge.RegisterIncomingPayment(
+	capacity, err := s.cfg.Bridge.RegisterIncomingPayment(
 		ctx, s.cfg.RemoteNode, hash, amount, request.GetReservedScid(),
-	); err != nil {
+	)
+	if err != nil {
 		return nil, err
 	}
 
 	return &arkchannelrpc.RegisterIncomingPaymentResponse{
-		Registered: true,
+		Registered: true, ChannelCapacitySat: int64(capacity),
 	}, nil
 }
 
@@ -1033,6 +1169,19 @@ func (s *FundingPeerRPCServer) validateTerms(terms arkchannel.Terms) error {
 		terms.HubNodeKey != s.cfg.Info.HubNodeKey {
 		return fmt.Errorf("channel belongs to another peer")
 	}
+	if terms.VTXO.HubArkKey != s.cfg.Info.HubArkKey ||
+		terms.VTXO.HubChannelKey != s.cfg.Info.HubChannelKey ||
+		terms.VTXO.ArkOperatorKey != s.cfg.Info.ArkOperatorKey ||
+		terms.VTXO.ChannelDelay != s.cfg.Info.ChannelDelay ||
+		terms.VTXO.FunderDelay != s.cfg.Info.FunderDelay ||
+		terms.VTXO.MinExitDelay != s.cfg.Info.MinimumExitDelay {
+		return fmt.Errorf("channel terms do not match hub policy")
+	}
+	if terms.Kind == arkchannel.KindReceiveIntent &&
+		terms.VTXO.FunderKey != s.cfg.Info.HubFunderKey {
+		return fmt.Errorf("receive intent does not use the hub " +
+			"funder key")
+	}
 
 	return nil
 }
@@ -1081,6 +1230,9 @@ func fundingPeerInfoFromRPC(response *arkchannelrpc.GetPeerInfoResponse) (
 		"hub channel": {
 			&info.HubChannelKey, response.GetHubChannelKey(),
 		},
+		"hub funder": {
+			&info.HubFunderKey, response.GetHubFunderKey(),
+		},
 		"Ark operator": {
 			&info.ArkOperatorKey, response.GetArkOperatorKey(),
 		},
@@ -1122,6 +1274,11 @@ func channelTermsToRPC(terms arkchannel.Terms) *arkchannelrpc.ChannelTerms {
 			MinExitDelay:     terms.VTXO.MinExitDelay,
 		},
 	}
+}
+
+// ChannelTermsToRPC serializes immutable channel terms for daemon adapters.
+func ChannelTermsToRPC(terms arkchannel.Terms) *arkchannelrpc.ChannelTerms {
+	return channelTermsToRPC(terms)
 }
 
 // channelTermsFromRPC parses and validates immutable Ark channel terms.
@@ -1208,6 +1365,13 @@ func channelTermsFromRPC(message *arkchannelrpc.ChannelTerms) (arkchannel.Terms,
 	return terms, terms.Validate()
 }
 
+// ChannelTermsFromRPC parses immutable channel terms for daemon adapters.
+func ChannelTermsFromRPC(message *arkchannelrpc.ChannelTerms) (arkchannel.Terms,
+	error) {
+
+	return channelTermsFromRPC(message)
+}
+
 // channelBindingToRPC serializes the exact prepared OOR output.
 func channelBindingToRPC(
 	binding arkchannel.VTXOBinding) *arkchannelrpc.ChannelVTXOBinding {
@@ -1221,6 +1385,13 @@ func channelBindingToRPC(
 		PolicyTemplate: append([]byte(nil), binding.PolicyTemplate...),
 		PkScript:       append([]byte(nil), binding.PkScript...),
 	}
+}
+
+// ChannelBindingToRPC serializes a prepared channel-policy VTXO binding.
+func ChannelBindingToRPC(
+	binding arkchannel.VTXOBinding) *arkchannelrpc.ChannelVTXOBinding {
+
+	return channelBindingToRPC(binding)
 }
 
 // channelBindingFromRPC parses one prepared OOR binding.
@@ -1264,6 +1435,13 @@ func channelBindingFromRPC(message *arkchannelrpc.ChannelVTXOBinding) (
 	}, nil
 }
 
+// ChannelBindingFromRPC parses a prepared channel-policy VTXO binding.
+func ChannelBindingFromRPC(message *arkchannelrpc.ChannelVTXOBinding) (
+	arkchannel.VTXOBinding, error) {
+
+	return channelBindingFromRPC(message)
+}
+
 // channelBackingToRPC serializes a signed VTXO-to-channel transaction.
 func channelBackingToRPC(
 	backing arkchannel.Backing) *arkchannelrpc.ChannelBacking {
@@ -1304,6 +1482,12 @@ func channelEventToRPC(id arkchannel.ID, event arkchannel.Event) (
 
 	request := &arkchannelrpc.ApplyChannelEventRequest{ChannelId: id[:]}
 	switch event := event.(type) {
+	case *arkchannel.FundingPeerReady:
+		request.EventType = arkchannelrpc.
+			ChannelEventType_CHANNEL_EVENT_TYPE_FUNDING_PEER_READY
+
+		return request, "funding-peer-ready", nil
+
 	case *arkchannel.FundingFinalized:
 		request.EventType = arkchannelrpc.
 			ChannelEventType_CHANNEL_EVENT_TYPE_FUNDING_FINALIZED
@@ -1344,6 +1528,17 @@ func channelEventToRPC(id arkchannel.ID, event arkchannel.Event) (
 
 		return request, "backing-published", nil
 
+	case *arkchannel.Fail:
+		if event.Reason == "" {
+			return nil, "", fmt.Errorf("channel failure reason " +
+				"is required")
+		}
+		request.EventType = arkchannelrpc.
+			ChannelEventType_CHANNEL_EVENT_TYPE_FAILED
+		request.FailureReason = event.Reason
+
+		return request, "fail", nil
+
 	default:
 		return nil, "", fmt.Errorf("unsupported remote channel "+
 			"event %T", event)
@@ -1355,6 +1550,10 @@ func channelEventFromRPC(request *arkchannelrpc.ApplyChannelEventRequest) (
 	arkchannel.Event, error) {
 
 	switch request.GetEventType() {
+	case arkchannelrpc.
+		ChannelEventType_CHANNEL_EVENT_TYPE_FUNDING_PEER_READY:
+		return &arkchannel.FundingPeerReady{}, nil
+
 	case arkchannelrpc.
 		ChannelEventType_CHANNEL_EVENT_TYPE_FUNDING_FINALIZED:
 
@@ -1408,6 +1607,14 @@ func channelEventFromRPC(request *arkchannelrpc.ApplyChannelEventRequest) (
 		}
 
 		return &arkchannel.BackingPublished{TxID: hash}, nil
+
+	case arkchannelrpc.ChannelEventType_CHANNEL_EVENT_TYPE_FAILED:
+		if request.GetFailureReason() == "" {
+			return nil, fmt.Errorf("channel failure reason is " +
+				"required")
+		}
+
+		return &arkchannel.Fail{Reason: request.GetFailureReason()}, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported channel event type %d",
@@ -1557,16 +1764,15 @@ func ChannelRecoveryFromRPC(message *arkchannelrpc.ChannelRecoveryPackage,
 	return recovery, nil
 }
 
-// ReceiveClaimRecoverySourceToRPC serializes one swap-authorized vHTLC source.
-func ReceiveClaimRecoverySourceToRPC(
-	source arkchannel.ReceiveClaimRecoverySource) (
-	*arkchannelrpc.ReceiveClaimRecoverySource, error) {
+// OORRecoverySourceToRPC serializes one exact finalized OOR output.
+func OORRecoverySourceToRPC(source arkchannel.OORRecoverySource) (
+	*arkchannelrpc.OORRecoverySource, error) {
 
 	if err := source.Validate(); err != nil {
 		return nil, err
 	}
 
-	return &arkchannelrpc.ReceiveClaimRecoverySource{
+	return &arkchannelrpc.OORRecoverySource{
 		Txid:        source.OutPoint.Hash[:],
 		OutputIndex: source.OutPoint.Index, AmountSat: int64(
 			source.Amount,
@@ -1575,20 +1781,19 @@ func ReceiveClaimRecoverySourceToRPC(
 	}, nil
 }
 
-// ReceiveClaimRecoverySourceFromRPC parses one swap-authorized vHTLC source.
-func ReceiveClaimRecoverySourceFromRPC(
-	message *arkchannelrpc.ReceiveClaimRecoverySource) (
-	arkchannel.ReceiveClaimRecoverySource, error) {
+// OORRecoverySourceFromRPC parses one exact finalized OOR output.
+func OORRecoverySourceFromRPC(message *arkchannelrpc.OORRecoverySource) (
+	arkchannel.OORRecoverySource, error) {
 
 	if message == nil {
-		return arkchannel.ReceiveClaimRecoverySource{}, fmt.Errorf(
-			"receive-claim recovery source is required")
+		return arkchannel.OORRecoverySource{}, fmt.Errorf("OOR " +
+			"recovery source is required")
 	}
-	txID, err := rpcHash("receive-claim recovery txid", message.GetTxid())
+	txID, err := rpcHash("OOR recovery txid", message.GetTxid())
 	if err != nil {
-		return arkchannel.ReceiveClaimRecoverySource{}, err
+		return arkchannel.OORRecoverySource{}, err
 	}
-	source := arkchannel.ReceiveClaimRecoverySource{
+	source := arkchannel.OORRecoverySource{
 		OutPoint: wire.OutPoint{
 			Hash: txID, Index: message.GetOutputIndex(),
 		},
@@ -1596,7 +1801,7 @@ func ReceiveClaimRecoverySourceFromRPC(
 		PkScript: append([]byte(nil), message.GetPkScript()...),
 	}
 	if err := source.Validate(); err != nil {
-		return arkchannel.ReceiveClaimRecoverySource{}, err
+		return arkchannel.OORRecoverySource{}, err
 	}
 
 	return source, nil
@@ -1671,6 +1876,8 @@ func parseCompressedKey(name string, key [33]byte) (*btcec.PublicKey, error) {
 }
 
 var _ ProcessFundingPeer = (*MailboxFundingPeer)(nil)
+var _ ProcessPaymentPeer = (*MailboxFundingPeer)(nil)
+var _ FundingCounterparty = (*MailboxFundingPeer)(nil)
 
 //nolint:ll // Keeping the generated interface name explicit aids API audits.
 var _ arkchannelrpc.ArkChannelFundingPeerServiceMailboxServer = (*FundingPeerRPCServer)(nil)

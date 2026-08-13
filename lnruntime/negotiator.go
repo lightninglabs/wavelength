@@ -68,6 +68,15 @@ type RecoveryCounterparty interface {
 		arkchannel.VTXOBinding, arkchannel.RecoveryPackage) error
 }
 
+// RecoveryExportCounterparty exposes the funder's finalized source package to
+// the lnd opener when Ark funding is owned by the remote endpoint.
+type RecoveryExportCounterparty interface {
+	FundingCounterparty
+
+	ExportRecoveryPackage(context.Context,
+		arkchannel.ID) (arkchannel.RecoveryPackage, error)
+}
+
 // ChannelRecoveryManager exports a finalized funder package and installs the
 // endpoint-local recovery-only descriptor, OOR artifacts, and ancestry
 // watches. Installation must be idempotent for an identical package.
@@ -279,8 +288,9 @@ func (n *ChannelNegotiator) BindChannelEventSink(
 	return nil
 }
 
-// NegotiateChannel runs only on the OOR funder. The responder's invocation is
-// a no-op because its intent acceptor and endpoint were registered first.
+// NegotiateChannel runs only on lnd's funding initiator. The Ark funder is also
+// the lnd opener, so every channel begins with its entire spendable balance on
+// the endpoint that supplied the prepared OOR transfer.
 func (n *ChannelNegotiator) NegotiateChannel(ctx context.Context,
 	id arkchannel.ID, terms arkchannel.Terms,
 	source arkchannel.VTXOBinding) error {
@@ -288,7 +298,7 @@ func (n *ChannelNegotiator) NegotiateChannel(ctx context.Context,
 	if err := validateFundingRequest(ctx, id, terms, source); err != nil {
 		return err
 	}
-	if terms.Funder != n.local.party {
+	if terms.FundingInitiator() != n.local.party {
 		return nil
 	}
 
@@ -296,6 +306,7 @@ func (n *ChannelNegotiator) NegotiateChannel(ctx context.Context,
 		Peer:             n.peer,
 		PendingChannelID: terms.PendingChannelID,
 		Capacity:         terms.Capacity,
+		PushAmount:       terms.InitialPushAmount(),
 	})
 	if err != nil {
 		return err
@@ -391,16 +402,30 @@ func (n *ChannelNegotiator) NegotiateChannel(ctx context.Context,
 			return err
 		}
 	}
-	if !localRecord.Snapshot.OORFinalized {
-		return fmt.Errorf("funder OOR did not finalize after lnd " +
-			"safety barrier")
-	}
-	if _, err := n.remote.ApplyChannelEvent(
-		ctx, id, &arkchannel.OORFinalized{
-			SessionID: source.OORSessionID,
-		},
-	); err != nil {
-		return err
+	if terms.Funder == n.local.party {
+		if !localRecord.Snapshot.OORFinalized {
+			return fmt.Errorf("funder OOR did not finalize after " +
+				"lnd safety barrier")
+		}
+		if _, err := n.remote.ApplyChannelEvent(
+			ctx, id, &arkchannel.OORFinalized{
+				SessionID: source.OORSessionID,
+			},
+		); err != nil {
+			return err
+		}
+	} else {
+		// The remote FundingFinalized call above is a synchronous
+		// durable barrier. On the Ark funder it does not return until
+		// CommitOOR has completed and OORFinalized has been recorded in
+		// its channel FSM.
+		if _, err := n.local.ApplyChannelEvent(
+			ctx, id, &arkchannel.OORFinalized{
+				SessionID: source.OORSessionID,
+			},
+		); err != nil {
+			return err
+		}
 	}
 	if err := n.waitForChannelActive(ctx, terms, backing); err != nil {
 		return err
@@ -420,8 +445,9 @@ func (n *ChannelNegotiator) NegotiateChannel(ctx context.Context,
 }
 
 // PrepareChannelRecovery copies the finalized source package to both
-// endpoints before recording the activation barrier. Only the OOR funder can
-// export the package; the responder remains parked until that fact arrives.
+// endpoints before recording the activation barrier. The lnd opener drives
+// this exchange and fetches the package from the remote endpoint when the hub
+// owns the OOR source.
 func (n *ChannelNegotiator) PrepareChannelRecovery(ctx context.Context,
 	id arkchannel.ID, terms arkchannel.Terms,
 	source arkchannel.VTXOBinding) error {
@@ -429,17 +455,42 @@ func (n *ChannelNegotiator) PrepareChannelRecovery(ctx context.Context,
 	if err := validateFundingRequest(ctx, id, terms, source); err != nil {
 		return err
 	}
-	if terms.Funder != n.local.party {
+	if terms.FundingInitiator() != n.local.party {
 		return nil
 	}
-	recovery, err := n.recovery.ExportRecoveryPackage(
-		ctx, id, terms, source,
-	)
+	var recovery arkchannel.RecoveryPackage
+	var err error
+	if terms.Funder == n.local.party {
+		recovery, err = n.recovery.ExportRecoveryPackage(
+			ctx, id, terms, source,
+		)
+	} else {
+		exporter, ok := n.remote.(RecoveryExportCounterparty)
+		if !ok {
+			return fmt.Errorf("remote channel recovery export is " +
+				"unavailable")
+		}
+		recovery, err = exporter.ExportRecoveryPackage(ctx, id)
+	}
 	if err != nil {
 		return fmt.Errorf("export channel recovery package: %w", err)
 	}
+	if err := n.recovery.InstallRecoveryPackage(
+		ctx, id, terms, source, recovery,
+	); err != nil {
+		return fmt.Errorf("install local channel recovery: %w", err)
+	}
 	remote, ok := n.remote.(RecoveryCounterparty)
 	if !ok {
+		if terms.Funder == n.local.party {
+
+			// Receive-channel recovery is fetched by the client
+			// over its existing authenticated control RPC. The hub
+			// installs its own package first, then waits for the
+			// client's common FSM event.
+			return nil
+		}
+
 		return fmt.Errorf("remote channel recovery transport is " +
 			"unavailable")
 	}
@@ -447,11 +498,6 @@ func (n *ChannelNegotiator) PrepareChannelRecovery(ctx context.Context,
 		ctx, id, terms, source, recovery,
 	); err != nil {
 		return fmt.Errorf("install remote channel recovery: %w", err)
-	}
-	if err := n.recovery.InstallRecoveryPackage(
-		ctx, id, terms, source, recovery,
-	); err != nil {
-		return fmt.Errorf("install local channel recovery: %w", err)
 	}
 	event := &arkchannel.RecoveryPackageInstalled{}
 	if _, err := n.remote.ApplyChannelEvent(ctx, id, event); err != nil {

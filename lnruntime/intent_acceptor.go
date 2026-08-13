@@ -65,32 +65,45 @@ func (a *IntentAcceptor) Accept(
 func (a *IntentAcceptor) validate(
 	req *chanacceptor.ChannelAcceptRequest) error {
 
+	_, err := a.terms(req)
+
+	return err
+}
+
+// terms validates an inbound request and returns its durable channel terms.
+func (a *IntentAcceptor) terms(req *chanacceptor.ChannelAcceptRequest) (
+	arkchannel.Terms, error) {
+
 	if req == nil || req.Node == nil || req.OpenChanMsg == nil {
-		return fmt.Errorf("complete channel request is required")
+		return arkchannel.Terms{}, fmt.Errorf("complete channel " +
+			"request is required")
 	}
 	open := req.OpenChanMsg
 	record, err := a.intents.FindByPendingChannelID(
 		context.Background(), open.PendingChannelID,
 	)
 	if err != nil {
-		return fmt.Errorf("find channel intent: %w", err)
+		return arkchannel.Terms{}, fmt.Errorf("find channel intent: %w",
+			err)
 	}
 	snapshot := record.Snapshot
 	if snapshot.Source == nil {
-		return fmt.Errorf("channel intent has no bound VTXO")
+		return arkchannel.Terms{}, fmt.Errorf("channel intent has no " +
+			"bound VTXO")
 	}
 	if snapshot.Phase < arkchannel.PhaseNegotiating ||
 		snapshot.Phase > arkchannel.PhaseBackingReady {
-		return fmt.Errorf("channel intent phase %s cannot "+
-			"accept funding", snapshot.Phase)
+		return arkchannel.Terms{}, fmt.Errorf("channel intent phase "+
+			"%s cannot accept funding", snapshot.Phase)
 	}
 	terms := snapshot.Terms
-	if terms.Funder == a.localParty {
-		return fmt.Errorf("local funder must initiate the channel")
+	if terms.FundingInitiator() == a.localParty {
+		return arkchannel.Terms{}, fmt.Errorf("local opener must " +
+			"initiate the channel")
 	}
 
 	var expectedPeer [33]byte
-	switch terms.Funder {
+	switch terms.FundingInitiator() {
 	case arkchannel.PartyClient:
 		expectedPeer = terms.ClientNodeKey
 
@@ -98,25 +111,32 @@ func (a *IntentAcceptor) validate(
 		expectedPeer = terms.HubNodeKey
 
 	default:
-		return fmt.Errorf("unknown channel funder %d", terms.Funder)
+		return arkchannel.Terms{}, fmt.Errorf("unknown channel "+
+			"opener %d", terms.FundingInitiator())
 	}
 	if !bytes.Equal(
 		req.Node.SerializeCompressed(), expectedPeer[:],
 	) {
-		return fmt.Errorf("channel initiator does not match intent")
+		return arkchannel.Terms{}, fmt.Errorf("channel initiator " +
+			"does not match intent")
 	}
 	if open.FundingAmount != terms.Capacity {
-		return fmt.Errorf("channel capacity %d does not match "+
-			"intent %d", open.FundingAmount, terms.Capacity)
+		return arkchannel.Terms{}, fmt.Errorf("channel capacity %d "+
+			"does not match intent %d", open.FundingAmount,
+			terms.Capacity)
 	}
-	if open.PushAmount != 0 {
-		return fmt.Errorf("channel intent requires zero push amount")
+	expectedPush := lnwire.NewMSatFromSatoshis(terms.InitialPushAmount())
+	if open.PushAmount != expectedPush {
+		return arkchannel.Terms{}, fmt.Errorf("channel push amount %d "+
+			"does not match intent %d", open.PushAmount,
+			expectedPush)
 	}
 	if open.ChannelFlags&lnwire.FFAnnounceChannel != 0 {
-		return fmt.Errorf("Ark channel must be private")
+		return arkchannel.Terms{}, fmt.Errorf("Ark channel must be " +
+			"private")
 	}
 
-	return nil
+	return terms, nil
 }
 
 var _ chanacceptor.ChannelAcceptor = (*IntentAcceptor)(nil)

@@ -449,7 +449,7 @@ func validateCleanChannelState(party arkchannel.Party, terms arkchannel.Terms,
 		state.Capacity != terms.Capacity {
 		return fmt.Errorf("clean lnd state does not match Ark channel")
 	}
-	if state.LocalInitiator != (terms.Funder == party) {
+	if state.LocalInitiator != (terms.FundingInitiator() == party) {
 		return fmt.Errorf("clean lnd state has unexpected channel " +
 			"funder")
 	}

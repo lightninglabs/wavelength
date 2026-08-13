@@ -63,13 +63,13 @@ type FundingConfig struct {
 	MaxChannelSize btcutil.Amount
 }
 
-// FundingOpenRequest starts an externally funded, private channel whose full
-// initial balance belongs to the initiator. Both VTXO promotion and receive
-// intent creation use this same invariant; they differ only in who initiates.
+// FundingOpenRequest starts an externally funded private channel with an
+// explicit initial push allocation.
 type FundingOpenRequest struct {
 	Peer             lnpeer.Peer
 	PendingChannelID lndfunding.PendingChanID
 	Capacity         btcutil.Amount
+	PushAmount       btcutil.Amount
 	BasePSBT         *psbt.Packet
 }
 
@@ -205,7 +205,7 @@ func newFundingRuntime(runtimeCfg RuntimeConfig, switcher *htlcswitch.Switch,
 		MinChanSize:                   minChanSize,
 		MaxChanSize:                   maxChanSize,
 		MaxPendingChannels:            defaultMaxPendingChannels,
-		RejectPush:                    true,
+		RejectPush:                    false,
 		MaxLocalCSVDelay:              defaultMaxLocalCSVDelay,
 		NotifyOpenChannelEvent:        optionalNotifyOpen(cfg),
 		OpenChannelPredicate:          cfg.ChannelAcceptor,
@@ -365,6 +365,10 @@ func (f *FundingRuntime) OpenChannel(req FundingOpenRequest) (*FundingFlow,
 		return nil, fmt.Errorf("channel capacity %d outside [%d, %d]",
 			req.Capacity, f.minChanSize, f.maxChanSize)
 	}
+	if req.PushAmount < 0 || req.PushAmount >= req.Capacity {
+		return nil, fmt.Errorf("channel push amount %d outside [0, %d)",
+			req.PushAmount, req.Capacity)
+	}
 
 	feeRate, err := f.feeEstimator.EstimateFeePerKW(
 		defaultFundingTargetConfs,
@@ -379,11 +383,13 @@ func (f *FundingRuntime) OpenChannel(req FundingOpenRequest) (*FundingFlow,
 		req.Capacity, req.BasePSBT, f.netParams, false,
 	)
 	f.manager.InitFundingWorkflow(&lndfunding.InitFundingMsg{
-		Peer:             req.Peer,
-		TargetPubkey:     req.Peer.IdentityKey(),
-		ChainHash:        *f.netParams.GenesisHash,
-		LocalFundingAmt:  req.Capacity,
-		PushAmt:          0,
+		Peer:            req.Peer,
+		TargetPubkey:    req.Peer.IdentityKey(),
+		ChainHash:       *f.netParams.GenesisHash,
+		LocalFundingAmt: req.Capacity,
+		PushAmt: lnwire.NewMSatFromSatoshis(
+			req.PushAmount,
+		),
 		FundingFeePerKw:  feeRate,
 		Private:          true,
 		MinHtlcIn:        1,
