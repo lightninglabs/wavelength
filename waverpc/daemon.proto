@@ -369,6 +369,16 @@ message BoardTaprootAssetResponse {
     // already_boarded reports an idempotent replay: the boarding intent
     // already existed and no new round registration was sent.
     bool already_boarded = 5;
+
+    // fee_funding_outpoint names the Bitcoin VTXO this boarding pulled
+    // into the round to pay its fee. The round returns the value it did
+    // not spend as a fresh change VTXO. Empty when the round already
+    // carried a fee-bearing output of the client's own.
+    string fee_funding_outpoint = 6;
+
+    // fee_funding_value_sat is that VTXO's value. The change comes back
+    // as this amount minus the fee the operator charges at seal time.
+    int64 fee_funding_value_sat = 7;
 }
 
 message ClaimTaprootAssetVTXORequest {

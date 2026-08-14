@@ -1102,8 +1102,16 @@ type BoardTaprootAssetResponse struct {
 	// already_boarded reports an idempotent replay: the boarding intent
 	// already existed and no new round registration was sent.
 	AlreadyBoarded bool `protobuf:"varint,5,opt,name=already_boarded,json=alreadyBoarded,proto3" json:"already_boarded,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// fee_funding_outpoint names the Bitcoin VTXO this boarding pulled
+	// into the round to pay its fee. The round returns the value it did
+	// not spend as a fresh change VTXO. Empty when the round already
+	// carried a fee-bearing output of the client's own.
+	FeeFundingOutpoint string `protobuf:"bytes,6,opt,name=fee_funding_outpoint,json=feeFundingOutpoint,proto3" json:"fee_funding_outpoint,omitempty"`
+	// fee_funding_value_sat is that VTXO's value. The change comes back
+	// as this amount minus the fee the operator charges at seal time.
+	FeeFundingValueSat int64 `protobuf:"varint,7,opt,name=fee_funding_value_sat,json=feeFundingValueSat,proto3" json:"fee_funding_value_sat,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *BoardTaprootAssetResponse) Reset() {
@@ -1169,6 +1177,20 @@ func (x *BoardTaprootAssetResponse) GetAlreadyBoarded() bool {
 		return x.AlreadyBoarded
 	}
 	return false
+}
+
+func (x *BoardTaprootAssetResponse) GetFeeFundingOutpoint() string {
+	if x != nil {
+		return x.FeeFundingOutpoint
+	}
+	return ""
+}
+
+func (x *BoardTaprootAssetResponse) GetFeeFundingValueSat() int64 {
+	if x != nil {
+		return x.FeeFundingValueSat
+	}
+	return 0
 }
 
 type ClaimTaprootAssetVTXORequest struct {
@@ -11263,13 +11285,15 @@ const file_daemon_proto_rawDesc = "" +
 	"\x12taproot_asset_root\x18\x05 \x01(\fR\x10taprootAssetRoot\x12$\n" +
 	"\x0eactual_fee_sat\x18\a \x01(\x04R\factualFeeSat\"C\n" +
 	"\x18BoardTaprootAssetRequest\x12'\n" +
-	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\"\xbd\x01\n" +
+	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\"\xa2\x02\n" +
 	"\x19BoardTaprootAssetResponse\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1b\n" +
 	"\tvalue_sat\x18\x02 \x01(\x03R\bvalueSat\x12\x1b\n" +
 	"\tasset_ref\x18\x03 \x01(\tR\bassetRef\x12!\n" +
 	"\fasset_amount\x18\x04 \x01(\x04R\vassetAmount\x12'\n" +
-	"\x0falready_boarded\x18\x05 \x01(\bR\x0ealreadyBoarded\"S\n" +
+	"\x0falready_boarded\x18\x05 \x01(\bR\x0ealreadyBoarded\x120\n" +
+	"\x14fee_funding_outpoint\x18\x06 \x01(\tR\x12feeFundingOutpoint\x121\n" +
+	"\x15fee_funding_value_sat\x18\a \x01(\x03R\x12feeFundingValueSat\"S\n" +
 	"\x1cClaimTaprootAssetVTXORequest\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x17\n" +
 	"\afee_sat\x18\x02 \x01(\x03R\x06feeSat\"\x9f\x01\n" +
