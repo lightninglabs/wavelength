@@ -133,6 +133,11 @@ type BoardTaprootAssetResult struct {
 	// AlreadyBoarded reports an idempotent replay: the boarding intent
 	// already existed and no new round registration was sent.
 	AlreadyBoarded bool
+
+	// FeeFunding names the Bitcoin VTXO this boarding pulled into the
+	// round to pay its fee, and that VTXO's value. Nil when the round
+	// already carried a fee-bearing output of the client's own.
+	FeeFunding *assetRoundFeeFunding
 }
 
 // ErrAssetBoardingUnconfirmed reports an onboarded output that has not
@@ -224,6 +229,19 @@ func (s *Server) BoardTaprootAsset(ctx context.Context, requestID string) (
 	disclosure.ConfTx = conf.Tx
 	disclosure.ConfHeight = conf.BlockHeight
 	disclosure.AssetProof = proofFile
+
+	// The round needs an output whose amount the operator may shrink
+	// before it can charge this boarding a fee, and the asset request
+	// below is fixed. Resolve that first: the boarding is not yet
+	// registered, so a client with no Bitcoin to spend fails here with
+	// something it can act on rather than inside a round that would be
+	// rejected at seal. An earlier retry of this call cannot have churned
+	// a VTXO either — everything above only reads.
+	funding, err := s.fundAssetRoundFee(ctx, result.ValueSat)
+	if err != nil {
+		return nil, err
+	}
+	result.FeeFunding = funding
 
 	if err := s.RegisterAssetBoarding(ctx, disclosure); err != nil {
 		return nil, fmt.Errorf("register asset boarding: %w", err)
