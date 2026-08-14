@@ -147,7 +147,10 @@ the owner can recover funds without operator cooperation.
 
 `ExtractCSVDelay(node)` walks the AST for the outermost `CSV` node. If an exit
 leaf has no CSV wrapper, the policy is rejected. This is the critical safety
-property — see the security analysis below.
+property — see the security analysis below. Compilation also requires the CSV
+operand to be a canonical block-mode BIP-68 value in `1..65535`. This rejects
+the disable flag, time-mode flag, and reserved bits before structural policy
+validation compares the delay.
 
 ### Invariant 4: Minimum exit delay
 
@@ -213,7 +216,9 @@ unilateral refund leaf is reachable only after the invoice expiry.
    - The UTXO must have been confirmed for at least that many blocks.
 
    This means an exit spend is physically impossible until the CSV delay has
-   passed since the on-chain commitment.
+   passed since the on-chain commitment. The compiler's canonical block-mode
+   check is essential here: consensus treats a CSV operand with bit 31 set as
+   a NOP and masks reserved high bits during comparison.
 
 5. During that delay window, the operator can observe the unilateral exit
    attempt and broadcast the appropriate **forfeit transaction** (which uses a
@@ -239,10 +244,12 @@ correctly be flagged as an ungated exit leaf and rejected.
 
 **What about Condition predicates that embed keys?** The `Condition.Predicate`
 is opaque bytes — the validator does not parse it for operator keys. This is
-safe because the predicate only adds _restrictions_ (hashlocks, timelocks). A
-predicate cannot _grant_ spending authority — that comes from the `Inner`
-Multisig. The validator correctly checks only the Multisig nodes for key
-presence.
+safe because compilation rejects incomplete script fragments and all tapscript
+`OP_SUCCESSx` opcodes. An incomplete push could otherwise consume the typed
+inner script as data, while `OP_SUCCESSx` would make the leaf succeed before
+the inner signature checks execute. Once those bypasses are excluded, the
+predicate can only add conditions; spending authority still comes from the
+`Inner` Multisig.
 
 **Edge case: empty Multisig in exit leaf?** Impossible — `Multisig.Script()`
 returns an error if `len(Keys) == 0`, and `PolicyTemplate.Compile()` would
@@ -257,7 +264,8 @@ unspendable by anyone, which is safe (funds locked, not stolen).
 | Bypass CSV via key-path spend | Internal key is NUMS (unspendable)             |
 | Fake operator key in policy   | Operator validates own key presence at submit   |
 | Ungated exit leaf injection   | `ValidatePolicy` rejects non-CSV exit leaves   |
-| Predicate smuggling operator  | Predicates add restrictions, not authority      |
+| Predicate bypasses inner node | Compile rejects partial pushes and `OP_SUCCESSx` |
+| CSV flag or reserved-bit bypass | Compile permits only block delays `1..65535` |
 | Insufficient exit delay       | `MinExitDelay` check enforces operator minimum  |
 
 ---
