@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"sync"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -30,21 +31,66 @@ const (
 	onboardingStorePrefix   = "onboarding/"
 	onboardingLockIDDomain  = "wavelength/taproot-assets/onboarding-lock/v1"
 	onboardingDustFloorSat  = uint64(330)
+
+	// onboardingChangeValueSat is the Bitcoin value carried by the asset
+	// change anchor output. The change is ordinary tapd wallet inventory,
+	// so it takes tapd's own asset-anchor value rather than the
+	// operator-mandated carrier value of the boarded output.
+	onboardingChangeValueSat = int64(1_000)
 )
 
-// OnboardingRequest selects one complete Taproot Asset proof and the standard
-// Wavelength policy that will own its new on-chain anchor.
+// Logical identifiers naming the transition's asset outputs across the
+// commit and the sealed package. The boarding identifier is part of the
+// single-output transition's committed shape and must not change.
+const (
+	onboardingOutputID = "wavelength-onboarding-output-0"
+	onboardingChangeID = "wavelength-onboarding-change"
+)
+
+// onboardingChangeOutputIndex is the asset change anchor output's position.
+// The boarded output holds index 0 and wallet funding appends its Bitcoin
+// change after both asset outputs, so the position is fixed at build time.
+const onboardingChangeOutputIndex = uint32(1)
+
+// OnboardingRequest selects the complete Taproot Asset proofs funding one
+// boarding and the standard Wavelength policy that will own its new
+// on-chain anchor. The selected proofs must cover AssetAmount; any surplus
+// returns to the daemon's own tapd wallet as asset change.
 type OnboardingRequest struct {
-	RequestID          string
-	AssetRef           string
-	AssetAmount        uint64
-	ProofFile          []byte
+	RequestID   string
+	AssetRef    string
+	AssetAmount uint64
+
+	// ProofFile is one complete confirmed proof file. Exactly one of
+	// ProofFile and ProofFiles must be set.
+	ProofFile []byte
+
+	// ProofFiles are the complete confirmed proof files of every funding
+	// UTXO the transition spends.
+	ProofFiles [][]byte
+
 	CarrierValueSat    uint64
 	FeeRateSatPerVByte uint64
 	TargetConf         uint32
 	MaxFeeSat          uint64
 	OperatorKey        *btcec.PublicKey
 	ExitDelay          uint32
+}
+
+// onboardingProofFiles returns the request's funding proofs with the
+// singular field folded in, so every caller sees one shape.
+func onboardingProofFiles(request *OnboardingRequest) [][]byte {
+	if request == nil {
+		return nil
+	}
+	if len(request.ProofFiles) != 0 {
+		return request.ProofFiles
+	}
+	if len(request.ProofFile) != 0 {
+		return [][]byte{request.ProofFile}
+	}
+
+	return nil
 }
 
 // OnboardingKeyDeriver returns the next wallet-owned standard VTXO key.
@@ -102,23 +148,44 @@ type OnboarderConfig struct {
 type Onboarder struct {
 	driver         onboardingDriver
 	inventory      proofInventoryClient
+	keys           onboardingKeyClient
 	store          Store
 	signer         tapsdk.AnchorSigner
 	deriveOwnerKey OnboardingKeyDeriver
 	mu             sync.Mutex
 }
 
+// onboardingKeyClient derives the tapd wallet keys owning asset change.
+type onboardingKeyClient interface {
+	DeriveScriptKey(context.Context) (*tapsdk.ScriptKey, error)
+
+	DeriveInternalKey(context.Context) (*tapsdk.InternalKey, error)
+}
+
+// onboardingChange is the pinned asset change of one onboarding: the units
+// the selected funding UTXOs carry beyond the boarded amount, returned to
+// the daemon's own tapd wallet on its own anchor output. Both keys are
+// derived once and persisted, because the split commitment binds the change
+// script key and a replay must rebuild the identical transition.
+type onboardingChange struct {
+	Amount            uint64             `json:"amount"`
+	OutputValueSat    int64              `json:"output_value_sat"`
+	ScriptKey         tapsdk.ScriptKey   `json:"script_key"`
+	AnchorInternalKey tapsdk.InternalKey `json:"anchor_internal_key"`
+}
+
 type onboardingState struct {
-	Version         uint16      `json:"version"`
-	RequestDigest   tapsdk.Hash `json:"request_digest"`
-	Attempt         string      `json:"attempt,omitempty"`
-	OwnerPubKey     []byte      `json:"owner_pub_key"`
-	OwnerKeyFamily  int32       `json:"owner_key_family"`
-	OwnerKeyIndex   uint32      `json:"owner_key_index"`
-	PolicyTemplate  []byte      `json:"policy_template"`
-	TransferPackage []byte      `json:"transfer_package,omitempty"`
-	FinalAnchorPSBT []byte      `json:"final_anchor_psbt,omitempty"`
-	Published       bool        `json:"published"`
+	Version         uint16            `json:"version"`
+	RequestDigest   tapsdk.Hash       `json:"request_digest"`
+	Attempt         string            `json:"attempt,omitempty"`
+	OwnerPubKey     []byte            `json:"owner_pub_key"`
+	OwnerKeyFamily  int32             `json:"owner_key_family"`
+	OwnerKeyIndex   uint32            `json:"owner_key_index"`
+	PolicyTemplate  []byte            `json:"policy_template"`
+	Change          *onboardingChange `json:"change,omitempty"`
+	TransferPackage []byte            `json:"transfer_package,omitempty"`
+	FinalAnchorPSBT []byte            `json:"final_anchor_psbt,omitempty"`
+	Published       bool              `json:"published"`
 }
 
 // NewOnboarder constructs the tap-sdk-backed onboarding workflow.
@@ -144,6 +211,7 @@ func NewOnboarder(cfg OnboarderConfig) (*Onboarder, error) {
 			wallet: cfg.Wallet,
 		},
 		inventory:      cfg.Wallet.Client(),
+		keys:           cfg.Wallet.Client(),
 		store:          cfg.Store,
 		signer:         cfg.Signer,
 		deriveOwnerKey: cfg.DeriveOwnerKey,
@@ -155,7 +223,7 @@ func NewOnboarder(cfg OnboarderConfig) (*Onboarder, error) {
 func (o *Onboarder) Onboard(ctx context.Context, request *OnboardingRequest) (
 	*OnboardingResult, error) {
 
-	if o == nil || o.driver == nil || o.inventory == nil ||
+	if o == nil || o.driver == nil || o.inventory == nil || o.keys == nil ||
 		o.store == nil ||
 		o.signer == nil || o.deriveOwnerKey == nil {
 		return nil, fmt.Errorf("taproot asset onboarder is not " +
@@ -275,7 +343,7 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 		return committed, nil
 	}
 
-	assetRef, anchor, verifier, err := o.verifyInput(ctx, request)
+	assetRef, assetInputs, verifier, err := o.verifyInputs(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -289,45 +357,98 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 			"the Taproot dust floor", outputValue)
 	}
 
-	anchorPSBT, err := onboardingAnchorPSBT(anchor.OutPoint, outputValue)
-	if err != nil {
+	// The funding surplus is whatever the selected anchors carry beyond
+	// the boarded amount. Its keys are derived once and pinned, because
+	// the split commitment binds the change script key and every later
+	// rebuild must reproduce the same transition.
+	if err := o.pinChange(
+		ctx, request, state, assetInputs,
+	); err != nil {
 		return nil, err
 	}
-	anchorInternalKey, err := btcec.ParsePubKey(anchor.InternalKey[:])
-	if err != nil {
-		return nil, fmt.Errorf("parse onboarding anchor "+
-			"internal key: %w", err)
-	}
-	anchorSigner, err := tapsdk.ParseXOnlyPubKey(
-		schnorr.SerializePubKey(anchorInternalKey),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("parse onboarding anchor signer: %w",
-			err)
-	}
 
-	requestDigest := onboardingRequestDigest(request)
-	requestDTO := &tapsdk.CustomAnchorRequest{
-		Inputs: []tapsdk.CustomAssetInput{{
-			ID:        "wavelength-onboarding-input-0",
+	inputs := make([]tapsdk.CustomAssetInput, 0, len(assetInputs))
+	plans := make(
+		[]tapsdk.CustomAnchorInputSigningPlan, 0, len(assetInputs),
+	)
+	anchorInputs := make([]tapsdk.Outpoint, 0, len(assetInputs))
+	for idx := range assetInputs {
+		input := &assetInputs[idx]
+		inputs = append(inputs, tapsdk.CustomAssetInput{
+			ID: fmt.Sprintf(
+				"wavelength-onboarding-input-%d", idx,
+			),
 			AssetRef:  assetRef,
-			Amount:    request.AssetAmount,
-			ProofFile: append([]byte(nil), request.ProofFile...),
+			Amount:    input.amount,
+			ProofFile: append([]byte(nil), input.proofFile...),
 			Witness: tapsdk.CustomAssetWitnessPlan{
 				Mode: tapsdk.CustomAssetWitnessBackendSigner,
 			},
-		}},
-		Outputs: []tapsdk.CustomAssetOutput{{
-			ID:                "wavelength-onboarding-output-0",
+		})
+
+		// Each funding anchor is a tapd key spend under its own
+		// internal key; wallet funding appends its own inputs after
+		// these and the backend manages them itself.
+		signer, err := onboardingAnchorSigner(input.anchor)
+		if err != nil {
+			return nil, err
+		}
+		plans = append(plans, tapsdk.CustomAnchorInputSigningPlan{
+			InputIndex: uint32(idx),
+			KeyPath: &tapsdk.CustomAnchorKeyPathSigningPlan{
+				Signer: signer,
+			},
+		})
+		anchorInputs = append(anchorInputs, input.anchor.OutPoint)
+	}
+
+	requestDigest := onboardingRequestDigest(request)
+	outputs := []tapsdk.CustomAssetOutput{{
+		ID:                onboardingOutputID,
+		AssetRef:          assetRef,
+		Amount:            request.AssetAmount,
+		AnchorOutputIndex: 0,
+		AnchorValueSat:    uint64(outputValue),
+		Script:            boardingScriptPlan(requestDigest),
+		Anchor: anchorPlan(
+			policy.InternalKey, policyTapLeaves(policy),
+		),
+	}}
+	anchorValues := []int64{outputValue}
+	if change := state.Change; change != nil {
+		outputs = append(outputs, tapsdk.CustomAssetOutput{
+			ID:                onboardingChangeID,
 			AssetRef:          assetRef,
-			Amount:            request.AssetAmount,
-			AnchorOutputIndex: 0,
-			AnchorValueSat:    uint64(outputValue),
-			Script:            boardingScriptPlan(requestDigest),
-			Anchor: anchorPlan(
-				policy.InternalKey, policyTapLeaves(policy),
-			),
-		}},
+			Amount:            change.Amount,
+			AnchorOutputIndex: onboardingChangeOutputIndex,
+			AnchorValueSat:    uint64(change.OutputValueSat),
+
+			// The pinned wallet script key rides as an external
+			// key: the wallet script mode would derive a fresh
+			// key on every build, and a rebuild must reproduce
+			// the identical transition.
+			Script: tapsdk.CustomAssetScriptPlan{
+				Mode: scriptExternal,
+				External: &tapsdk.
+					CustomAssetExternalScriptPlan{
+					ScriptKey: change.ScriptKey,
+				},
+			},
+			Anchor: tapsdk.CustomAnchorOutputPlan{
+				InternalKey: change.AnchorInternalKey,
+			},
+		})
+		anchorValues = append(anchorValues, change.OutputValueSat)
+	}
+
+	anchorPSBT, err := onboardingAnchorPSBT(anchorInputs, anchorValues)
+	if err != nil {
+		return nil, err
+	}
+
+	requestDTO := &tapsdk.CustomAnchorRequest{
+		Inputs:     inputs,
+		Outputs:    outputs,
 		AnchorPSBT: anchorPSBT,
 		Funding: tapsdk.CustomAnchorFundingPlan{
 			Mode: tapsdk.CustomAnchorFundingWalletFunded,
@@ -348,12 +469,7 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 		LossPolicy: tapsdk.CustomAnchorLossPolicy{
 			Mode: tapsdk.CustomAnchorLossReject,
 		},
-		SigningPlans: []tapsdk.CustomAnchorInputSigningPlan{{
-			InputIndex: 0,
-			KeyPath: &tapsdk.CustomAnchorKeyPathSigningPlan{
-				Signer: anchorSigner,
-			},
-		}},
+		SigningPlans: plans,
 	}
 
 	state.Attempt = onboardingAttemptCommit
@@ -389,30 +505,27 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 	return committed, nil
 }
 
-func (o *Onboarder) verifyInput(ctx context.Context,
-	request *OnboardingRequest) (tapsdk.AssetRef, *tapsdk.ManagedUtxo,
+// onboardingAssetInput is one verified funding UTXO of an onboarding: the
+// proof selecting it, the tapd-managed anchor holding it, and the exact
+// amount its proof tip carries.
+type onboardingAssetInput struct {
+	proofFile []byte
+	anchor    *tapsdk.ManagedUtxo
+	amount    uint64
+}
+
+// verifyInputs binds every funding proof to tapd's own managed inventory
+// and returns the verifier the builder revalidates them with. The proofs
+// select whole anchors, so their amounts are whatever the anchors hold; the
+// caller reconciles the total against the requested amount.
+func (o *Onboarder) verifyInputs(ctx context.Context,
+	request *OnboardingRequest) (tapsdk.AssetRef, []onboardingAssetInput,
 	tapsdk.ConfirmedProofVerifier, error) {
 
 	assetRef, err := tapsdk.ParseAssetRef(request.AssetRef)
 	if err != nil {
 		return "", nil, nil,
 			fmt.Errorf("parse Taproot Asset ref: %w", err)
-	}
-	verified, err := o.inventory.VerifyProof(ctx, request.ProofFile)
-	if err != nil {
-		return "", nil, nil,
-			fmt.Errorf("verify onboarding proof with tapd: %w", err)
-	}
-	if verified == nil || !verified.Valid || verified.DecodedProof == nil {
-		return "", nil, nil,
-			fmt.Errorf("tapd rejected onboarding proof")
-	}
-	tip := verified.DecodedProof
-	if !tip.AssetRef.Equivalent(assetRef) ||
-		tip.Amount != request.AssetAmount {
-		return "", nil, nil,
-			fmt.Errorf("onboarding proof tip does not match " +
-				"request")
 	}
 
 	utxos, err := o.inventory.ListUtxos(ctx, &tapsdk.ListUtxosRequest{
@@ -422,41 +535,177 @@ func (o *Onboarder) verifyInput(ctx context.Context,
 		return "", nil, nil,
 			fmt.Errorf("list tapd onboarding inventory: %w", err)
 	}
-	var anchor *tapsdk.ManagedUtxo
-	for _, candidate := range utxos {
-		if candidate != nil && candidate.OutPoint == tip.Outpoint {
-			anchor = candidate
-			break
+
+	proofs := onboardingProofFiles(request)
+	if len(proofs) == 0 {
+		return "", nil, nil,
+			fmt.Errorf("onboarding funding proof is required")
+	}
+	var (
+		inputs    = make([]onboardingAssetInput, 0, len(proofs))
+		verifiers = make(
+			[]tapsdk.ConfirmedProofVerifier, 0, len(proofs),
+		)
+		selected = make(map[tapsdk.Outpoint]struct{}, len(proofs))
+	)
+	for idx, proofFile := range proofs {
+		verified, err := o.inventory.VerifyProof(ctx, proofFile)
+		if err != nil {
+			return "", nil, nil, fmt.Errorf("verify onboarding "+
+				"proof %d with tapd: %w", idx, err)
 		}
-	}
-	if anchor == nil {
-		return "", nil, nil,
-			fmt.Errorf("onboarding proof anchor is not managed " +
-				"by tapd")
-	}
-	if len(anchor.Assets) != 1 {
-		return "", nil, nil, fmt.Errorf("Taproot Asset onboarding PoC "+
-			"requires one isolated asset, found %d",
-			len(anchor.Assets))
-	}
-	asset := anchor.Assets[0]
-	if asset == nil || asset.Genesis.IssuanceID != tip.IssuanceID ||
-		asset.Amount != tip.Amount ||
-		asset.ScriptKey.PubKey != tip.ScriptKey {
-		return "", nil, nil,
-			fmt.Errorf("tapd onboarding inventory does not match " +
-				"proof")
+		if verified == nil || !verified.Valid ||
+			verified.DecodedProof == nil {
+			return "", nil, nil, fmt.Errorf("tapd rejected "+
+				"onboarding proof %d", idx)
+		}
+		tip := verified.DecodedProof
+		if !tip.AssetRef.Equivalent(assetRef) || tip.Amount == 0 {
+			return "", nil, nil, fmt.Errorf("onboarding proof %d "+
+				"tip does not match request", idx)
+		}
+
+		// Two proofs selecting one anchor would double-count the units
+		// it holds against the requested amount.
+		if _, ok := selected[tip.Outpoint]; ok {
+			return "", nil, nil, fmt.Errorf("onboarding proof %d "+
+				"selects anchor %v twice", idx, tip.Outpoint)
+		}
+		selected[tip.Outpoint] = struct{}{}
+
+		var anchor *tapsdk.ManagedUtxo
+		for _, candidate := range utxos {
+			if candidate != nil &&
+				candidate.OutPoint == tip.Outpoint {
+
+				anchor = candidate
+
+				break
+			}
+		}
+		if anchor == nil {
+			return "", nil, nil, fmt.Errorf("onboarding proof %d "+
+				"anchor is not managed by tapd", idx)
+		}
+		if len(anchor.Assets) != 1 {
+			return "", nil, nil, fmt.Errorf("Taproot Asset "+
+				"onboarding PoC requires one isolated asset, "+
+				"found %d", len(anchor.Assets))
+		}
+		asset := anchor.Assets[0]
+		if asset == nil ||
+			asset.Genesis.IssuanceID != tip.IssuanceID ||
+			asset.Amount != tip.Amount ||
+			asset.ScriptKey.PubKey != tip.ScriptKey {
+			return "", nil, nil, fmt.Errorf("tapd onboarding "+
+				"inventory does not match proof %d", idx)
+		}
+
+		inputs = append(inputs, onboardingAssetInput{
+			proofFile: proofFile,
+			anchor:    anchor,
+			amount:    tip.Amount,
+		})
+		verifiers = append(verifiers, &proofInventoryVerifier{
+			client:    o.inventory,
+			assetRef:  assetRef,
+			amount:    tip.Amount,
+			anchor:    tip.Outpoint,
+			assetRoot: anchor.TaprootAssetRoot,
+		})
 	}
 
-	verifier := &proofInventoryVerifier{
-		client:    o.inventory,
-		assetRef:  assetRef,
-		amount:    request.AssetAmount,
-		anchor:    tip.Outpoint,
-		assetRoot: anchor.TaprootAssetRoot,
+	// Every verifier pins its own tip claim, so one proof can only ever
+	// satisfy the input it belongs to.
+	verifier := verifiers[0]
+	if len(verifiers) > 1 {
+		verifier = &multiSourceVerifier{verifiers: verifiers}
 	}
 
-	return assetRef, anchor, verifier, nil
+	return assetRef, inputs, verifier, nil
+}
+
+// pinChange resolves the funding surplus and, the first time an onboarding
+// needs one, derives and persists the tapd wallet keys owning it. An exact
+// funding total pins no change and keeps the single-output transition.
+func (o *Onboarder) pinChange(ctx context.Context, request *OnboardingRequest,
+	state *onboardingState, inputs []onboardingAssetInput) error {
+
+	var total uint64
+	for idx := range inputs {
+		if total > math.MaxUint64-inputs[idx].amount {
+			return fmt.Errorf("onboarding funding amounts overflow")
+		}
+		total += inputs[idx].amount
+	}
+	if total < request.AssetAmount {
+		return fmt.Errorf("onboarding funding proofs carry %d units, "+
+			"the request boards %d", total, request.AssetAmount)
+	}
+
+	amount := total - request.AssetAmount
+	switch {
+	case amount == 0 && state.Change != nil:
+		return fmt.Errorf("onboarding funding no longer needs the " +
+			"pinned asset change")
+
+	case amount == 0:
+		return nil
+
+	case state.Change != nil:
+		if state.Change.Amount != amount {
+			return fmt.Errorf("onboarding funding needs %d units "+
+				"of change, %d are pinned", amount,
+				state.Change.Amount)
+		}
+
+		return nil
+	}
+
+	scriptKey, err := o.keys.DeriveScriptKey(ctx)
+	if err != nil {
+		return fmt.Errorf("derive onboarding change script key: %w",
+			err)
+	}
+	internalKey, err := o.keys.DeriveInternalKey(ctx)
+	if err != nil {
+		return fmt.Errorf("derive onboarding change anchor "+
+			"internal key: %w", err)
+	}
+	if scriptKey == nil || internalKey == nil {
+		return fmt.Errorf("tapd returned an empty onboarding change " +
+			"key")
+	}
+
+	state.Change = &onboardingChange{
+		Amount:            amount,
+		OutputValueSat:    onboardingChangeValueSat,
+		ScriptKey:         *scriptKey,
+		AnchorInternalKey: *internalKey,
+	}
+
+	return o.storeState(ctx, request.RequestID, state)
+}
+
+// onboardingAnchorSigner returns the tapd key-path signer of one funding
+// anchor's Bitcoin input.
+func onboardingAnchorSigner(anchor *tapsdk.ManagedUtxo) (tapsdk.XOnlyPubKey,
+	error) {
+
+	internalKey, err := btcec.ParsePubKey(anchor.InternalKey[:])
+	if err != nil {
+		return tapsdk.XOnlyPubKey{}, fmt.Errorf("parse onboarding "+
+			"anchor internal key: %w", err)
+	}
+	signer, err := tapsdk.ParseXOnlyPubKey(
+		schnorr.SerializePubKey(internalKey),
+	)
+	if err != nil {
+		return tapsdk.XOnlyPubKey{}, fmt.Errorf("parse onboarding "+
+			"anchor signer: %w", err)
+	}
+
+	return signer, nil
 }
 
 func onboardingResultFromCommit(request *OnboardingRequest,
@@ -464,10 +713,15 @@ func onboardingResultFromCommit(request *OnboardingRequest,
 	policy *arkscript.VTXOPolicy, digest tapsdk.Hash,
 	committed *commitResult) (*OnboardingResult, error) {
 
-	if committed == nil || len(committed.inputs) != 1 ||
-		len(committed.outputs) != 1 {
-		return nil, fmt.Errorf("onboarding package must contain one " +
-			"input and one output")
+	wantInputs := len(onboardingProofFiles(request))
+	wantOutputs := 1
+	if state.Change != nil {
+		wantOutputs = 2
+	}
+	if committed == nil || len(committed.inputs) != wantInputs ||
+		len(committed.outputs) != wantOutputs {
+		return nil, fmt.Errorf("onboarding package must contain %d "+
+			"inputs and %d outputs", wantInputs, wantOutputs)
 	}
 	if committed.fundingMode != tapsdk.CustomAnchorFundingWalletFunded {
 		return nil, fmt.Errorf("onboarding package is not wallet " +
@@ -487,11 +741,36 @@ func onboardingResultFromCommit(request *OnboardingRequest,
 	if err != nil {
 		return nil, err
 	}
-	input := committed.inputs[0]
-	output := committed.outputs[0]
-	if !input.assetRef.Equivalent(assetRef) ||
-		!output.assetRef.Equivalent(assetRef) ||
-		input.amount != request.AssetAmount ||
+	output, err := committedOutput(committed, onboardingOutputID)
+	if err != nil {
+		return nil, err
+	}
+
+	// The transition conserves the asset exactly: everything the funding
+	// anchors carry either boards or returns as pinned change.
+	wantTotal := request.AssetAmount
+	if state.Change != nil {
+		wantTotal += state.Change.Amount
+	}
+	var inputTotal uint64
+	for idx := range committed.inputs {
+		input := committed.inputs[idx]
+		if !input.assetRef.Equivalent(assetRef) {
+			return nil, fmt.Errorf("onboarding package input %d "+
+				"carries another asset", idx)
+		}
+		if inputTotal > math.MaxUint64-input.amount {
+			return nil, fmt.Errorf("onboarding package input " +
+				"amounts overflow")
+		}
+		inputTotal += input.amount
+	}
+	if inputTotal != wantTotal {
+		return nil, fmt.Errorf("onboarding package spends %d units, "+
+			"the boarding and change carry %d", inputTotal,
+			wantTotal)
+	}
+	if !output.assetRef.Equivalent(assetRef) ||
 		output.amount != request.AssetAmount {
 		return nil, fmt.Errorf("onboarding package asset selection " +
 			"mismatch")
@@ -555,6 +834,11 @@ func onboardingResultFromCommit(request *OnboardingRequest,
 	if packet.UnsignedTx.TxHash() != outpoint.Hash {
 		return nil, fmt.Errorf("onboarding package outpoint mismatch")
 	}
+	if err := checkOnboardingChange(
+		state.Change, committed, packet.UnsignedTx,
+	); err != nil {
+		return nil, fmt.Errorf("committed onboarding change: %w", err)
+	}
 
 	return &OnboardingResult{
 		Outpoint:         outpoint,
@@ -572,6 +856,76 @@ func onboardingResultFromCommit(request *OnboardingRequest,
 		Digest:           digest,
 		OPTrueWitness:    cloneByteSlices(output.opTrueWitness),
 	}, nil
+}
+
+// checkOnboardingChange verifies fail-closed that the committed asset change
+// is the one that was pinned: the same units on the same anchor position,
+// keyed to the pinned wallet script key, under a BIP-86 output of the pinned
+// anchor internal key. Nil change passes.
+func checkOnboardingChange(change *onboardingChange, committed *commitResult,
+	anchorTx *wire.MsgTx) error {
+
+	if change == nil {
+		return nil
+	}
+
+	out, err := committedOutput(committed, onboardingChangeID)
+	if err != nil {
+		return err
+	}
+	if out.anchorOutputIndex != onboardingChangeOutputIndex {
+		return fmt.Errorf("output index %d, want %d",
+			out.anchorOutputIndex, onboardingChangeOutputIndex)
+	}
+	if out.anchorOutpoint.Index != out.anchorOutputIndex {
+		return fmt.Errorf("outpoint index mismatch")
+	}
+	if out.amount != change.Amount {
+		return fmt.Errorf("amount %d, want %d", out.amount,
+			change.Amount)
+	}
+	if out.anchorValueSat != change.OutputValueSat {
+		return fmt.Errorf("value %d, want %d", out.anchorValueSat,
+			change.OutputValueSat)
+	}
+	if out.scriptMode != scriptExternal {
+		return fmt.Errorf("script mode %d is not the pinned external "+
+			"wallet key", out.scriptMode)
+	}
+	if out.scriptKey != change.ScriptKey.PubKey {
+		return fmt.Errorf("script key does not reproduce the pinned " +
+			"wallet key")
+	}
+	if out.taprootAssetRoot == (tapsdk.Hash{}) ||
+		out.taprootMerkleRoot == (tapsdk.Hash{}) {
+		return fmt.Errorf("root hints are missing")
+	}
+
+	internalKey, err := btcec.ParsePubKey(
+		change.AnchorInternalKey.PubKey[:],
+	)
+	if err != nil {
+		return fmt.Errorf("pinned anchor internal key: %w", err)
+	}
+	pkScript, err := composedScript(internalKey, out.taprootMerkleRoot)
+	if err != nil {
+		return err
+	}
+	if int(out.anchorOutputIndex) >= len(anchorTx.TxOut) {
+		return fmt.Errorf("output index %d is out of range",
+			out.anchorOutputIndex)
+	}
+	anchorOutput := anchorTx.TxOut[out.anchorOutputIndex]
+	if anchorOutput.Value != change.OutputValueSat {
+		return fmt.Errorf("anchor value %d, want %d",
+			anchorOutput.Value, change.OutputValueSat)
+	}
+	if !bytes.Equal(anchorOutput.PkScript, pkScript) {
+		return fmt.Errorf("anchor output does not reproduce the " +
+			"pinned wallet script")
+	}
+
+	return nil
 }
 
 func (o *Onboarder) loadState(ctx context.Context, request *OnboardingRequest,
@@ -644,10 +998,23 @@ func validateOnboardingRequest(request *OnboardingRequest) error {
 		return fmt.Errorf("taproot asset onboarding idempotency key " +
 			"is required")
 	}
-	if request.AssetRef == "" || request.AssetAmount == 0 ||
-		len(request.ProofFile) == 0 {
+	if request.AssetRef == "" || request.AssetAmount == 0 {
+		return fmt.Errorf("taproot asset ref and amount are required")
+	}
+	if len(request.ProofFile) != 0 && len(request.ProofFiles) != 0 {
+		return fmt.Errorf("taproot asset onboarding takes either one " +
+			"proof file or a proof file set")
+	}
+	proofs := onboardingProofFiles(request)
+	if len(proofs) == 0 {
 		return fmt.Errorf("taproot asset ref, amount, and proof are " +
 			"required")
+	}
+	for idx := range proofs {
+		if len(proofs[idx]) == 0 {
+			return fmt.Errorf("taproot asset onboarding proof %d "+
+				"is empty", idx)
+		}
 	}
 	if len(request.AssetRef) > vtxo.MaxTaprootAssetRefBytes {
 		return fmt.Errorf("taproot asset ref exceeds %d bytes",
@@ -681,12 +1048,17 @@ func validateOnboardingRequest(request *OnboardingRequest) error {
 	return nil
 }
 
+// onboardingRequestDigest binds one onboarding's retry identity. The funding
+// proofs enter in content order, so the digest is independent of the order
+// the selection or the durable replay slice hands them over in.
 func onboardingRequestDigest(request *OnboardingRequest) tapsdk.Hash {
 	var value bytes.Buffer
 	writeDigestBytes(&value, []byte(request.RequestID))
 	writeDigestBytes(&value, []byte(request.AssetRef))
 	_ = binary.Write(&value, binary.BigEndian, request.AssetAmount)
-	writeDigestBytes(&value, request.ProofFile)
+	for _, proofFile := range sortedProofFiles(request) {
+		writeDigestBytes(&value, proofFile)
+	}
 	_ = binary.Write(&value, binary.BigEndian, request.CarrierValueSat)
 	_ = binary.Write(
 		&value, binary.BigEndian, request.FeeRateSatPerVByte,
@@ -733,6 +1105,18 @@ func onboardingAnchorFee(request *OnboardingRequest) (tapsdk.AnchorFee, error) {
 	}, nil
 }
 
+// sortedProofFiles returns the request's funding proofs ordered by content,
+// without disturbing the caller's slice.
+func sortedProofFiles(request *OnboardingRequest) [][]byte {
+	proofs := onboardingProofFiles(request)
+	sorted := append([][]byte(nil), proofs...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return bytes.Compare(sorted[i], sorted[j]) < 0
+	})
+
+	return sorted
+}
+
 func onboardingCustomLockID(requestDigest tapsdk.Hash) []byte {
 	var value bytes.Buffer
 	writeDigestBytes(&value, []byte(onboardingLockIDDomain))
@@ -762,7 +1146,18 @@ func ownerKeyFromState(state *onboardingState) (keychain.KeyDescriptor, error) {
 	}, nil
 }
 
-func onboardingAnchorPSBT(input tapsdk.Outpoint, value int64) ([]byte, error) {
+// onboardingAnchorPSBT builds the unfunded anchor template: one input per
+// funding anchor and one placeholder output per asset output, in index
+// order. Wallet funding adds the Bitcoin inputs and appends its change after
+// them, so tapd rewrites the placeholder scripts with the real composed
+// ones and every asset output keeps the position derived here.
+func onboardingAnchorPSBT(inputs []tapsdk.Outpoint,
+	values []int64) ([]byte, error) {
+
+	if len(inputs) == 0 || len(values) == 0 {
+		return nil, fmt.Errorf("onboarding anchor template needs an " +
+			"input and an output")
+	}
 	placeholderKey := txscript.ComputeTaprootKeyNoScript(
 		&arkscript.ARKNUMSKey,
 	)
@@ -772,20 +1167,24 @@ func onboardingAnchorPSBT(input tapsdk.Outpoint, value int64) ([]byte, error) {
 	}
 
 	tx := wire.NewMsgTx(2)
-	tx.AddTxIn(
-		wire.NewTxIn(
-			&wire.OutPoint{
-				Hash:  chainhash.Hash(input.Txid),
-				Index: input.Index,
-			},
-			nil,
-			nil,
-		),
-	)
-	tx.AddTxOut(&wire.TxOut{
-		Value:    value,
-		PkScript: placeholderScript,
-	})
+	for _, input := range inputs {
+		tx.AddTxIn(
+			wire.NewTxIn(
+				&wire.OutPoint{
+					Hash:  chainhash.Hash(input.Txid),
+					Index: input.Index,
+				},
+				nil,
+				nil,
+			),
+		)
+	}
+	for _, value := range values {
+		tx.AddTxOut(&wire.TxOut{
+			Value:    value,
+			PkScript: placeholderScript,
+		})
+	}
 	packet, err := psbt.NewFromUnsignedTx(tx)
 	if err != nil {
 		return nil, fmt.Errorf("build onboarding anchor PSBT: %w", err)

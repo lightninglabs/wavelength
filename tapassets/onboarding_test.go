@@ -34,6 +34,7 @@ func TestOnboarderResumesWithoutRebuilding(t *testing.T) {
 		return &Onboarder{
 			driver:    driver,
 			inventory: inventory,
+			keys:      inventory,
 			store:     store,
 			signer: func(_ context.Context, anchor []byte) ([]byte,
 				error) {
@@ -410,6 +411,304 @@ func TestOnboarderStopsAfterAmbiguousCommit(t *testing.T) {
 	require.Equal(t, 1, driver.commits)
 }
 
+// TestOnboarderFundsFromSeveralUtxos proves an onboarding that boards less
+// than its funding anchors carry spends one asset input per anchor and
+// returns the surplus on its own change output, owned by keys derived from
+// the daemon's own tapd exactly once and pinned across every rebuild.
+func TestOnboarderFundsFromSeveralUtxos(t *testing.T) {
+	t.Parallel()
+
+	const boarded = uint64(40)
+	request, inventory, owner := testMultiUtxoOnboardingRequest(t, boarded)
+	driver := newFakeOnboardingDriver()
+	store, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
+	onboarder := testOnboarder(driver, inventory, store, owner)
+
+	result, err := onboarder.Onboard(t.Context(), request)
+	require.NoError(t, err)
+	require.Equal(t, boarded, result.AssetAmount)
+
+	// One script key plus one anchor internal key, derived once and never
+	// again on a replay.
+	require.Equal(t, 2, inventory.derived)
+
+	dto := driver.requests[0]
+	require.Len(t, dto.Inputs, 2)
+	require.Equal(
+		t, "wavelength-onboarding-input-0", dto.Inputs[0].ID,
+	)
+	require.Equal(
+		t, "wavelength-onboarding-input-1", dto.Inputs[1].ID,
+	)
+	require.Equal(
+		t, testOnboardingFirstAmount, dto.Inputs[0].Amount,
+	)
+	require.Equal(
+		t, testOnboardingSecondAmount, dto.Inputs[1].Amount,
+	)
+	require.Equal(t, request.ProofFiles[0], dto.Inputs[0].ProofFile)
+	require.Equal(t, request.ProofFiles[1], dto.Inputs[1].ProofFile)
+
+	// Every funding anchor is a tapd key spend under its own internal
+	// key; wallet funding manages the inputs it adds after them.
+	require.Len(t, dto.SigningPlans, 2)
+	for idx := range dto.SigningPlans {
+		plan := dto.SigningPlans[idx]
+		require.EqualValues(t, idx, plan.InputIndex)
+		require.NotNil(t, plan.KeyPath)
+	}
+	template, err := psbtutil.Parse(dto.AnchorPSBT)
+	require.NoError(t, err)
+	require.Len(t, template.UnsignedTx.TxIn, 2)
+	require.Len(t, template.UnsignedTx.TxOut, 2)
+
+	// The boarded output keeps index 0 and the change takes index 1, so
+	// wallet funding can only append its Bitcoin change after both.
+	require.Len(t, dto.Outputs, 2)
+	require.Equal(t, onboardingOutputID, dto.Outputs[0].ID)
+	require.Equal(t, boarded, dto.Outputs[0].Amount)
+	require.EqualValues(t, 0, dto.Outputs[0].AnchorOutputIndex)
+	require.Equal(
+		t, tapsdk.CustomAssetScriptOPTrue, dto.Outputs[0].Script.Mode,
+	)
+
+	change := dto.Outputs[1]
+	require.Equal(t, onboardingChangeID, change.ID)
+	require.Equal(t, testOnboardingTotalAmount-boarded, change.Amount)
+	require.Equal(
+		t, onboardingChangeOutputIndex, change.AnchorOutputIndex,
+	)
+	require.EqualValues(
+		t, onboardingChangeValueSat, change.AnchorValueSat,
+	)
+	require.Equal(t, scriptExternal, change.Script.Mode)
+	require.NotNil(t, change.Script.External)
+	require.Empty(t, change.Anchor.Tapscript.TapLeaves)
+
+	// A replay must rebuild nothing and reuse the pinned change keys.
+	replayed, err := onboarder.Onboard(t.Context(), request)
+	require.NoError(t, err)
+	require.Equal(t, result.Outpoint, replayed.Outpoint)
+	require.Equal(t, 1, driver.commits)
+	require.Equal(t, 2, inventory.derived)
+}
+
+// TestOnboarderExactFundingKeepsOneOutput proves funding that matches the
+// boarded amount exactly still commits the single-output transition, so the
+// change path never touches a full-value onboarding.
+func TestOnboarderExactFundingKeepsOneOutput(t *testing.T) {
+	t.Parallel()
+
+	request, inventory, owner := testMultiUtxoOnboardingRequest(
+		t, testOnboardingTotalAmount,
+	)
+	driver := newFakeOnboardingDriver()
+	store, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
+	onboarder := testOnboarder(driver, inventory, store, owner)
+
+	result, err := onboarder.Onboard(t.Context(), request)
+	require.NoError(t, err)
+	require.Equal(t, testOnboardingTotalAmount, result.AssetAmount)
+	require.Zero(t, inventory.derived)
+
+	dto := driver.requests[0]
+	require.Len(t, dto.Inputs, 2)
+	require.Len(t, dto.Outputs, 1)
+	require.Equal(t, onboardingOutputID, dto.Outputs[0].ID)
+	template, err := psbtutil.Parse(dto.AnchorPSBT)
+	require.NoError(t, err)
+	require.Len(t, template.UnsignedTx.TxOut, 1)
+}
+
+// TestOnboarderRejectsInsufficientFunding keeps an onboarding that its
+// funding proofs cannot cover from ever reaching tapd.
+func TestOnboarderRejectsInsufficientFunding(t *testing.T) {
+	t.Parallel()
+
+	request, inventory, owner := testMultiUtxoOnboardingRequest(
+		t, testOnboardingTotalAmount+1,
+	)
+	driver := newFakeOnboardingDriver()
+	store, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
+	onboarder := testOnboarder(driver, inventory, store, owner)
+
+	_, err = onboarder.Onboard(t.Context(), request)
+	require.ErrorContains(t, err, "carry 55 units, the request boards 56")
+	require.Zero(t, driver.commits)
+}
+
+// TestOnboarderRejectsDuplicateFundingProof keeps two proofs selecting one
+// anchor from double-counting the units it holds.
+func TestOnboarderRejectsDuplicateFundingProof(t *testing.T) {
+	t.Parallel()
+
+	request, inventory, owner := testMultiUtxoOnboardingRequest(t, 40)
+	request.ProofFiles = [][]byte{
+		request.ProofFiles[0], request.ProofFiles[0],
+	}
+	driver := newFakeOnboardingDriver()
+	store, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
+	onboarder := testOnboarder(driver, inventory, store, owner)
+
+	_, err = onboarder.Onboard(t.Context(), request)
+	require.ErrorContains(t, err, "selects anchor")
+	require.Zero(t, driver.commits)
+}
+
+// TestOnboardingProofSetDigestIsOrderIndependent proves the retry identity
+// depends on which funding proofs an onboarding selects, not on the order
+// the selection or the durable replay slice hands them over in.
+func TestOnboardingProofSetDigestIsOrderIndependent(t *testing.T) {
+	t.Parallel()
+
+	request, _, _ := testMultiUtxoOnboardingRequest(t, 40)
+	digest := onboardingRequestDigest(request)
+
+	swapped := *request
+	swapped.ProofFiles = [][]byte{
+		request.ProofFiles[1], request.ProofFiles[0],
+	}
+	require.Equal(t, digest, onboardingRequestDigest(&swapped))
+
+	// A different funding set is a different request.
+	dropped := *request
+	dropped.ProofFiles = request.ProofFiles[:1]
+	require.NotEqual(t, digest, onboardingRequestDigest(&dropped))
+
+	// One proof reaches the same identity through either field.
+	single, _, _ := testOnboardingRequest(t)
+	folded := *single
+	folded.ProofFile = nil
+	folded.ProofFiles = [][]byte{single.ProofFile}
+	require.Equal(
+		t, onboardingRequestDigest(single),
+		onboardingRequestDigest(&folded),
+	)
+}
+
+// TestOnboardingChangeFailsClosed proves every divergence between the
+// pinned asset change and what tapd committed is refused.
+func TestOnboardingChangeFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		mutate      func(*commitResult, *onboardingChange)
+		errContains string
+	}{{
+		name: "missing change output",
+		mutate: func(result *commitResult, _ *onboardingChange) {
+			result.outputs = result.outputs[:1]
+		},
+		errContains: "misses output",
+	}, {
+		name: "wrong anchor position",
+		mutate: func(result *commitResult, _ *onboardingChange) {
+			result.outputs[1].anchorOutputIndex = 7
+		},
+		errContains: "output index 7",
+	}, {
+		name: "wrong amount",
+		mutate: func(result *commitResult, _ *onboardingChange) {
+			result.outputs[1].amount++
+		},
+		errContains: "amount 16, want 15",
+	}, {
+		name: "wrong carrier value",
+		mutate: func(result *commitResult, _ *onboardingChange) {
+			result.outputs[1].anchorValueSat--
+		},
+		errContains: "value 999, want 1000",
+	}, {
+		name: "wallet script mode substituted",
+		mutate: func(result *commitResult, _ *onboardingChange) {
+			result.outputs[1].scriptMode =
+				tapsdk.CustomAssetScriptOPTrue
+		},
+		errContains: "is not the pinned external wallet key",
+	}, {
+		name: "another script key",
+		mutate: func(result *commitResult, _ *onboardingChange) {
+			result.outputs[1].scriptKey[1] ^= 1
+		},
+		errContains: "script key does not reproduce",
+	}, {
+		name: "another anchor internal key",
+		mutate: func(_ *commitResult, change *onboardingChange) {
+			change.AnchorInternalKey.PubKey =
+				deterministicKey(
+					tapsdk.Hash{1}, "onboarding-test",
+				)
+		},
+		errContains: "does not reproduce the pinned wallet script",
+	}, {
+		name: "missing roots",
+		mutate: func(result *commitResult, _ *onboardingChange) {
+			result.outputs[1].taprootMerkleRoot = tapsdk.Hash{}
+		},
+		errContains: "root hints are missing",
+	}}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			committed, change, anchorTx := onboardingChangeFixture(
+				t,
+			)
+			test.mutate(committed, change)
+
+			err := checkOnboardingChange(
+				change, committed, anchorTx,
+			)
+			require.ErrorContains(t, err, test.errContains)
+		})
+	}
+}
+
+// onboardingChangeFixture commits one onboarding with change and returns the
+// sealed material its verification runs over.
+func onboardingChangeFixture(t *testing.T) (*commitResult, *onboardingChange,
+	*wire.MsgTx) {
+
+	t.Helper()
+	request, inventory, owner := testMultiUtxoOnboardingRequest(t, 40)
+	driver := newFakeOnboardingDriver()
+	store, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
+	onboarder := testOnboarder(driver, inventory, store, owner)
+
+	_, err = onboarder.Onboard(t.Context(), request)
+	require.NoError(t, err)
+
+	committed := cloneCommitResult(driver.result)
+	packet, err := psbtutil.Parse(committed.anchorPSBT)
+	require.NoError(t, err)
+
+	state, err := onboarder.loadState(
+		t.Context(), request, onboardingRequestDigest(request),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, state.Change)
+	require.EqualValues(t, 15, state.Change.Amount)
+
+	// The unmutated material must pass, so every case below fails on its
+	// own mutation alone.
+	change := *state.Change
+	require.NoError(
+		t, checkOnboardingChange(
+			&change, committed, packet.UnsignedTx,
+		),
+	)
+
+	return committed, &change, packet.UnsignedTx
+}
+
 type fakeOnboardingDriver struct {
 	mu            sync.Mutex
 	base          *fakeDriver
@@ -450,6 +749,25 @@ func (d *fakeOnboardingDriver) CommitOnboarding(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+
+	// Onboarding spends one anchor input per selected funding UTXO, in
+	// the template's own input order.
+	template, err := psbtutil.Parse(result.anchorPSBT)
+	if err != nil {
+		return nil, err
+	}
+	result.inputs = make([]commitInput, len(request.Inputs))
+	for idx := range request.Inputs {
+		result.inputs[idx] = commitInput{
+			logicalInputID:   request.Inputs[idx].ID,
+			anchorInputIndex: uint32(idx),
+			anchorOutpoint: sdkOutpoint(
+				template.UnsignedTx.TxIn[idx].PreviousOutPoint,
+			),
+			assetRef: request.Inputs[idx].AssetRef,
+			amount:   request.Inputs[idx].Amount,
+		}
+	}
 	result.fundingMode = request.Funding.Mode
 	result.actualFeeSat = d.actualFeeSat
 	if request.Funding.WalletFunded != nil {
@@ -467,11 +785,15 @@ func (d *fakeOnboardingDriver) CommitOnboarding(ctx context.Context,
 			return nil, parseErr
 		}
 		walletInputValue := int64(2_000)
-		packet.Inputs[0].WitnessUtxo = &wire.TxOut{
-			Value: int64(request.Outputs[0].AnchorValueSat),
-			PkScript: []byte{
-				txscript.OP_TRUE,
-			},
+		for idx := range request.Inputs {
+			packet.Inputs[idx].WitnessUtxo = &wire.TxOut{
+				Value: int64(
+					request.Outputs[0].AnchorValueSat,
+				),
+				PkScript: []byte{
+					txscript.OP_TRUE,
+				},
+			}
 		}
 		walletInputHash := sha256Bytes(
 			[]byte("onboarding-wallet-input"),
@@ -592,13 +914,84 @@ func testOnboardingRequest(t *testing.T) (*OnboardingRequest, *fakeInventory,
 	}, inventory, ownerDescriptor
 }
 
-func testOnboarder(driver onboardingDriver, inventory proofInventoryClient,
+// Amounts of the two-anchor onboarding fixture: the base fixture's anchor
+// holds 21 units and a second one holds 34.
+const (
+	testOnboardingFirstAmount  = uint64(21)
+	testOnboardingSecondAmount = uint64(34)
+	testOnboardingTotalAmount  = testOnboardingFirstAmount +
+		testOnboardingSecondAmount
+)
+
+// testMultiUtxoOnboardingRequest funds one onboarding from two anchors of
+// the same asset. Boarding less than they carry returns the surplus to the
+// daemon's own tapd wallet as asset change.
+func testMultiUtxoOnboardingRequest(t *testing.T, boarded uint64) (
+	*OnboardingRequest, *fakeInventory, keychain.KeyDescriptor) {
+
+	t.Helper()
+	request, inventory, owner := testOnboardingRequest(t)
+	first := inventory.onlyAnchor()
+	require.Equal(t, testOnboardingFirstAmount, first.Assets[0].Amount)
+	firstProof := append([]byte(nil), request.ProofFile...)
+
+	scriptKey, err := tapsdk.ParsePubKey(
+		testPrivateKey(t, 24).PubKey().SerializeCompressed(),
+	)
+	require.NoError(t, err)
+	second := &tapsdk.ManagedUtxo{
+		OutPoint: tapsdk.Outpoint{
+			Txid:  sha256Bytes([]byte("second-onboarding-anchor")),
+			Index: 3,
+		},
+		AmtSat:      first.AmtSat,
+		InternalKey: first.InternalKey,
+		TaprootAssetRoot: tapsdk.Hash(
+			sha256Bytes(
+				[]byte("second-onboarding-root"),
+			),
+		),
+		Assets: []*tapsdk.AssetRecord{{
+			AssetRef: first.Assets[0].AssetRef,
+			Genesis:  first.Assets[0].Genesis,
+			Amount:   testOnboardingSecondAmount,
+			ScriptKey: tapsdk.ScriptKey{
+				PubKey: scriptKey,
+			},
+		}},
+	}
+	inventory.utxos[second.OutPoint.String()] = second
+
+	secondProof := []byte("second-confirmed-proof")
+	inventory.verifications = map[string]*tapsdk.VerifyProofResponse{
+		string(firstProof): inventory.verification,
+		string(secondProof): {
+			Valid: true,
+			DecodedProof: &tapsdk.DecodedProof{
+				AssetRef:   second.Assets[0].AssetRef,
+				IssuanceID: second.Assets[0].Genesis.IssuanceID,
+				ScriptKey:  scriptKey,
+				Amount:     second.Assets[0].Amount,
+				Outpoint:   second.OutPoint,
+			},
+		},
+	}
+
+	request.ProofFile = nil
+	request.ProofFiles = [][]byte{firstProof, secondProof}
+	request.AssetAmount = boarded
+
+	return request, inventory, owner
+}
+
+func testOnboarder(driver onboardingDriver, inventory *fakeInventory,
 	store Store, owner keychain.KeyDescriptor,
 ) *Onboarder {
 
 	return &Onboarder{
 		driver:    driver,
 		inventory: inventory,
+		keys:      inventory,
 		store:     store,
 		signer: func(_ context.Context, anchor []byte) ([]byte, error) {
 			return append([]byte(nil), anchor...), nil

@@ -672,9 +672,7 @@ func (d *fakeDriver) Commit(ctx context.Context,
 		if err != nil {
 			return nil, err
 		}
-		combined := tapBranchHash(
-			policyRoot[:], preview.assetRoot[:],
-		)
+		combined := requestMerkleRoot(policyRoot, preview.assetRoot)
 		outputKey := txscript.ComputeTaprootOutputKey(
 			internalKey, combined[:],
 		)
@@ -686,6 +684,28 @@ func (d *fakeDriver) Commit(ctx context.Context,
 		}
 		packet.UnsignedTx.TxOut[outputRequest.AnchorOutputIndex].
 			PkScript = pkScript
+
+		// An external script plan commits the caller's own key and has
+		// no OP_TRUE spend; every other plan is anyone-can-spend at
+		// the asset layer.
+		var (
+			scriptKey tapsdk.PubKey
+			witness   [][]byte
+		)
+		if outputRequest.Script.Mode == scriptExternal {
+			scriptKey = outputRequest.
+				Script.External.ScriptKey.PubKey
+		} else {
+			witness = [][]byte{
+				{
+					txscript.OP_TRUE,
+				}, {
+					byte(idx + 1),
+					2,
+					3,
+				},
+			}
+		}
 		outputs[idx] = commitOutput{
 			logicalOutputID:   outputRequest.ID,
 			anchorOutputIndex: outputRequest.AnchorOutputIndex,
@@ -694,16 +714,9 @@ func (d *fakeDriver) Commit(ctx context.Context,
 			amount:            outputRequest.Amount,
 			taprootAssetRoot:  preview.assetRoot,
 			taprootMerkleRoot: preview.merkleRoot,
-			scriptMode:        tapsdk.CustomAssetScriptOPTrue,
-			opTrueWitness: [][]byte{
-				{
-					txscript.OP_TRUE,
-				}, {
-					byte(idx + 1),
-					2,
-					3,
-				},
-			},
+			scriptMode:        outputRequest.Script.Mode,
+			scriptKey:         scriptKey,
+			opTrueWitness:     witness,
 			proofBlob: []byte(
 				fmt.Sprintf("%s-proof", outputRequest.ID),
 			),
@@ -799,12 +812,13 @@ func fakeCommitmentPreviews(request *tapsdk.CustomAnchorRequest) (
 		if err != nil {
 			return nil, err
 		}
-		combined := tapBranchHash(policyRoot[:], assetRoot[:])
 		previews[idx] = commitmentPreview{
 			logicalOutputID:   output.ID,
 			anchorOutputIndex: output.AnchorOutputIndex,
 			assetRoot:         assetRoot,
-			merkleRoot:        tapsdk.Hash(combined),
+			merkleRoot: requestMerkleRoot(
+				policyRoot, assetRoot,
+			),
 		}
 	}
 
@@ -910,8 +924,18 @@ func cloneCommitResult(result *commitResult) *commitResult {
 
 type fakeInventory struct {
 	verification *tapsdk.VerifyProofResponse
-	utxos        map[string]*tapsdk.ManagedUtxo
-	err          error
+
+	// verifications resolves a proof file to its tip by content, for
+	// fixtures holding the asset across more than one anchor. It wins
+	// over verification whenever it has an entry.
+	verifications map[string]*tapsdk.VerifyProofResponse
+
+	utxos map[string]*tapsdk.ManagedUtxo
+	err   error
+
+	// derived counts key derivations, so a test can prove a pinned key is
+	// derived exactly once.
+	derived int
 }
 
 type reservationRecord struct {
@@ -1065,14 +1089,70 @@ func (f *fakeReservationStore) records() []reservationRecord {
 }
 
 // VerifyProof returns the configured tapd proof result.
-func (f *fakeInventory) VerifyProof(context.Context, []byte) (
+func (f *fakeInventory) VerifyProof(_ context.Context, proofFile []byte) (
 	*tapsdk.VerifyProofResponse, error) {
 
 	if f.err != nil {
 		return nil, f.err
 	}
+	if verification, ok := f.verifications[string(proofFile)]; ok {
+		return verification, nil
+	}
 
 	return f.verification, nil
+}
+
+// DeriveScriptKey returns a deterministic wallet script key, distinct on
+// every call so a test can tell a pinned key from a re-derived one.
+func (f *fakeInventory) DeriveScriptKey(context.Context) (*tapsdk.ScriptKey,
+	error) {
+
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.derived++
+	seed := sha256Bytes([]byte(fmt.Sprintf("script-key-%d", f.derived)))
+	_, pubKey := btcec.PrivKeyFromBytes(seed[:])
+	key, err := tapsdk.ParsePubKey(pubKey.SerializeCompressed())
+	if err != nil {
+		return nil, err
+	}
+
+	return &tapsdk.ScriptKey{
+		PubKey: key,
+		KeyDesc: tapsdk.KeyDescriptor{
+			RawKeyBytes: key,
+			KeyLocator: tapsdk.KeyLocator{
+				Family: 212,
+				Index:  uint32(f.derived),
+			},
+		},
+	}, nil
+}
+
+// DeriveInternalKey returns a deterministic wallet anchor internal key,
+// distinct on every call.
+func (f *fakeInventory) DeriveInternalKey(context.Context) (*tapsdk.InternalKey,
+	error) {
+
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.derived++
+	seed := sha256Bytes([]byte(fmt.Sprintf("internal-key-%d", f.derived)))
+	_, pubKey := btcec.PrivKeyFromBytes(seed[:])
+	key, err := tapsdk.ParsePubKey(pubKey.SerializeCompressed())
+	if err != nil {
+		return nil, err
+	}
+
+	return &tapsdk.InternalKey{
+		PubKey: key,
+		KeyLocator: tapsdk.KeyLocator{
+			Family: 213,
+			Index:  uint32(f.derived),
+		},
+	}, nil
 }
 
 // UnpackProofFile returns one synthetic issuance proof for chained-path tests.
@@ -1298,13 +1378,27 @@ func requestPolicyRoot(plan tapsdk.CustomAnchorOutputPlan) (chainhash.Hash,
 			plan.Tapscript.TapLeaves[idx].Script,
 		)
 	}
+
+	// A leafless plan is a BIP-86 wallet anchor: no sibling branches the
+	// asset commitment, so its root is the taproot root outright.
 	if len(leaves) == 0 {
-		return chainhash.Hash{}, nil, fmt.Errorf("fake policy has no " +
-			"leaves")
+		return chainhash.Hash{}, internalKey, nil
 	}
 	tree := txscript.AssembleTaprootScriptTree(leaves...)
 
 	return tree.RootNode.TapHash(), internalKey, nil
+}
+
+// requestMerkleRoot composes one fake output's taproot root from its host
+// policy root and asset commitment root.
+func requestMerkleRoot(policyRoot chainhash.Hash,
+	assetRoot tapsdk.Hash) tapsdk.Hash {
+
+	if policyRoot == (chainhash.Hash{}) {
+		return assetRoot
+	}
+
+	return tapsdk.Hash(tapBranchHash(policyRoot[:], assetRoot[:]))
 }
 
 // testPrivateKey deterministically derives a test-only private key.

@@ -141,30 +141,38 @@ func (r *RPCServer) OnboardTaprootAsset(ctx context.Context,
 		return nil, err
 	}
 
-	// Without an explicit proof the daemon exports it from its own tapd,
-	// which requires the wallet to hold the amount in exactly one UTXO.
-	// A replay must reuse the originally resolved proof instead: the
-	// onboarding itself spends the source UTXO, so re-resolving after
+	// Without an explicit proof the daemon selects and exports the proofs
+	// of its own tapd UTXOs, which must together cover the amount. A
+	// replay must reuse the originally resolved proofs instead: the
+	// onboarding itself spends the source UTXOs, so re-resolving after
 	// success finds nothing and would break idempotency.
-	proofFile := append([]byte(nil), req.GetInputProofFile()...)
-	if len(proofFile) == 0 {
+	var proofFiles [][]byte
+	if explicit := req.GetInputProofFile(); len(explicit) != 0 {
+		proofFiles = [][]byte{append([]byte(nil), explicit...)}
+	} else {
 		stored, _, loadErr := r.server.loadTaprootAssetBoardRequest(
 			ctx, req.GetIdempotencyKey(),
 		)
 		switch {
 		case loadErr == nil:
-			proofFile = stored.ProofFile
+			// A slice written before multi-UTXO funding carries
+			// its single proof in the singular field.
+			proofFiles = stored.ProofFiles
+			if len(proofFiles) == 0 &&
+				len(stored.ProofFile) != 0 {
+
+				proofFiles = [][]byte{stored.ProofFile}
+			}
 
 		case errors.Is(loadErr, tapassets.ErrStoreNotFound):
-			proofFile, err = tapassets.ResolveOwnedAssetProof(
+			proofFiles, err = tapassets.ResolveOwnedAssetProofs(
 				ctx, r.server.taprootAssetWallet,
 				req.GetAssetRef(), req.GetAssetAmount(),
 			)
 			if err != nil {
 				return nil, status.Errorf(
-					codes.FailedPrecondition,
-					"resolve owned asset proof: %v", err,
-				)
+					codes.FailedPrecondition, "resolve "+
+						"owned asset proofs: %v", err)
 			}
 
 		default:
@@ -180,7 +188,7 @@ func (r *RPCServer) OnboardTaprootAsset(ctx context.Context,
 		RequestID:          req.GetIdempotencyKey(),
 		AssetRef:           req.GetAssetRef(),
 		AssetAmount:        req.GetAssetAmount(),
-		ProofFile:          proofFile,
+		ProofFiles:         proofFiles,
 		CarrierValueSat:    carrierValue,
 		FeeRateSatPerVByte: req.GetFeeRateSatPerVbyte(),
 		TargetConf:         req.GetTargetConf(),
