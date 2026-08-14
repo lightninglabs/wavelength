@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -690,6 +691,11 @@ func (c *EsploraClient) GetOutspend(ctx context.Context, txid chainhash.Hash,
 	return &outspend, nil
 }
 
+// ErrNotEsploraAPI is returned when an endpoint answers a request with an
+// HTML page. It signals a misconfigured base URL rather than a transient
+// failure, so callers can treat it as fatal instead of retrying.
+var ErrNotEsploraAPI = errors.New("endpoint is not an Esplora REST API")
+
 // maxErrBodyBytes bounds how much of a response body an error quotes back.
 // A base URL pointing at a web frontend answers with a full HTML page, and
 // the unbounded form of these errors carried three kilobytes of markup
@@ -717,6 +723,44 @@ func truncateBody(body []byte) string {
 	return collapsed[:cut] + "... (truncated)"
 }
 
+// checkNotHTML rejects an otherwise-successful response that carries an HTML
+// body.
+//
+// No Esplora endpoint answers with HTML, so such a response did not come
+// from the API: something else is answering at this address. The case that
+// motivates the check is a base URL naming a mempool.space web frontend
+// rather than its REST root. That frontend is a single-page app, so it
+// serves index.html with a 200 for every path it does not route, including
+// every path this client asks for. The status check above therefore passes
+// and the markup reaches a parser, surfacing as
+// `strconv.ParseInt: parsing "<!doctype html>…` from inside wallet startup
+// — several layers away from the setting that caused it.
+//
+// The check keys on the content type alone. Body sniffing would be wrong
+// here: /tx/:txid/raw and /block/:hash/raw return arbitrary binary, which
+// can legitimately begin with the same '<' byte an HTML document does.
+func (c *EsploraClient) checkNotHTML(resp *http.Response, path string) error {
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		return nil
+	}
+
+	// A parse failure is deliberately not treated as evidence either way.
+	// ParseMediaType still yields the media type when only the parameters
+	// are malformed, and yields the empty string otherwise, which falls
+	// through to the caller's own parser rather than being reported as a
+	// misconfiguration.
+	mediaType, _, _ := mime.ParseMediaType(contentType)
+	if mediaType != "text/html" {
+		return nil
+	}
+
+	return fmt.Errorf("%w: %s%s answered with an HTML page; a "+
+		"mempool.space or Esplora instance serves this API under "+
+		"/api, so the URL likely needs that suffix (e.g. "+
+		"https://mempool.space/api)", ErrNotEsploraAPI, c.baseURL, path)
+}
+
 // get performs an HTTP GET request and returns the response body.
 func (c *EsploraClient) get(ctx context.Context, path string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(
@@ -742,6 +786,10 @@ func (c *EsploraClient) get(ctx context.Context, path string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode,
 			truncateBody(body))
+	}
+
+	if err := c.checkNotHTML(resp, path); err != nil {
+		return nil, err
 	}
 
 	return body, nil
@@ -802,6 +850,10 @@ func (c *EsploraClient) TestMempoolAccept(ctx context.Context,
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode,
 			truncateBody(respBody))
+	}
+
+	if err := c.checkNotHTML(resp, "/txs/test"); err != nil {
+		return nil, err
 	}
 
 	var results []testMempoolAcceptResult
@@ -899,6 +951,10 @@ func (c *EsploraClient) SubmitPackage(ctx context.Context,
 			truncateBody(respBody))
 	}
 
+	if err := c.checkNotHTML(resp, "/txs/package"); err != nil {
+		return err
+	}
+
 	if len(respBody) > 0 {
 		c.log.DebugS(ctx, "Package response",
 			slog.String("body", string(respBody)),
@@ -988,6 +1044,10 @@ func (c *EsploraClient) post(ctx context.Context, path string, body string) (
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode,
 			truncateBody(respBody))
+	}
+
+	if err := c.checkNotHTML(resp, path); err != nil {
+		return nil, err
 	}
 
 	return respBody, nil
