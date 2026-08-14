@@ -294,9 +294,9 @@ service DaemonService {
         returns (SignCreditAccountAuthorizationResponse);
 }
 
-// OnboardTaprootAssetRequest selects the complete confirmed asset proof, the
-// visible Bitcoin value carried by its Wavelength VTXO, and a bounded fee
-// policy for wallet funding.
+// OnboardTaprootAssetRequest selects the asset amount to board, the visible
+// Bitcoin value carried by its Wavelength VTXO, and a bounded fee policy for
+// wallet funding.
 message OnboardTaprootAssetRequest {
     // idempotency_key is a stable caller-generated retry key.
     string idempotency_key = 1;
@@ -304,13 +304,14 @@ message OnboardTaprootAssetRequest {
     // asset_ref is the tap-sdk asset or group reference.
     string asset_ref = 2;
 
-    // asset_amount must equal the complete amount selected by input_proof_file
-    // in the first PoC.
+    // asset_amount is the amount to board. The funding UTXOs must cover it;
+    // any surplus returns to the daemon's own tapd wallet as asset change.
     uint64 asset_amount = 3;
 
-    // input_proof_file is the complete confirmed Taproot Asset proof file.
-    // Optional; empty lets the daemon export the proof of its own matching
-    // UTXO from tapd.
+    // input_proof_file is the complete confirmed Taproot Asset proof file of
+    // one funding UTXO. Optional; empty lets the daemon select its own
+    // unleased confirmed UTXOs until they cover asset_amount and export
+    // their proofs from tapd.
     bytes input_proof_file = 4;
 
     // max_fee_sat is the hard upper bound for the on-chain miner fee. It is

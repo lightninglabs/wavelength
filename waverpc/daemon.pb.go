@@ -840,21 +840,22 @@ func (VHTLCRecoveryState) EnumDescriptor() ([]byte, []int) {
 	return file_daemon_proto_rawDescGZIP(), []int{10}
 }
 
-// OnboardTaprootAssetRequest selects the complete confirmed asset proof, the
-// visible Bitcoin value carried by its Wavelength VTXO, and a bounded fee
-// policy for wallet funding.
+// OnboardTaprootAssetRequest selects the asset amount to board, the visible
+// Bitcoin value carried by its Wavelength VTXO, and a bounded fee policy for
+// wallet funding.
 type OnboardTaprootAssetRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// idempotency_key is a stable caller-generated retry key.
 	IdempotencyKey string `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
 	// asset_ref is the tap-sdk asset or group reference.
 	AssetRef string `protobuf:"bytes,2,opt,name=asset_ref,json=assetRef,proto3" json:"asset_ref,omitempty"`
-	// asset_amount must equal the complete amount selected by input_proof_file
-	// in the first PoC.
+	// asset_amount is the amount to board. The funding UTXOs must cover it;
+	// any surplus returns to the daemon's own tapd wallet as asset change.
 	AssetAmount uint64 `protobuf:"varint,3,opt,name=asset_amount,json=assetAmount,proto3" json:"asset_amount,omitempty"`
-	// input_proof_file is the complete confirmed Taproot Asset proof file.
-	// Optional; empty lets the daemon export the proof of its own matching
-	// UTXO from tapd.
+	// input_proof_file is the complete confirmed Taproot Asset proof file of
+	// one funding UTXO. Optional; empty lets the daemon select its own
+	// unleased confirmed UTXOs until they cover asset_amount and export
+	// their proofs from tapd.
 	InputProofFile []byte `protobuf:"bytes,4,opt,name=input_proof_file,json=inputProofFile,proto3" json:"input_proof_file,omitempty"`
 	// max_fee_sat is the hard upper bound for the on-chain miner fee. It is
 	// independent of the fee-rate or confirmation-target estimator.
