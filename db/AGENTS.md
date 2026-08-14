@@ -105,7 +105,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   persistence), `ledger` (interfaces + domain types), `wallet` (domain
   types for boarding sweeps and the pending-intent outbox), `vtxo`
   (VTXO/ancestry domain types), `round` (round-state domain types),
-  `vhtlcrecovery` (recovery-job domain types).
+  `vhtlcrecovery` (recovery-job domain types), `internal/wasmhost`
+  (`js && wasm` only — which host, hence which SQLite VFS).
 - **Depended on by**: `round`, `vtxo`, `oor`, `wallet` (storage
   interfaces), `waved` (wires DB backends).
 
@@ -113,6 +114,35 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
 
 - **Never write raw SQL in Go** — add queries to `db/queries/`,
   regenerate with `make sqlc`.
+- **`js && wasm` SQLite opens must stay durable and single-connection**
+  (`sqlite_open_wasm.go`). Four things are load-bearing:
+  - The VFS comes from `wasmhost.SQLiteVFS()` — `nodefs` under Node,
+    `opfs` in a browser. Under Node the configured path is passed through
+    **as-is**; only a browser goes through `browserSQLiteFileName`, whose
+    hashing keeps distinct logical databases (regtest vs. signet
+    `client.db`, two `swaps.db`) from colliding inside one origin. Applying
+    that mangling on a real filesystem would only hide where the database
+    lives.
+  - `require_persistent=true` is set unconditionally. The daemon's
+    databases are the only record of VTXO, swap, and round state and there
+    is no server to re-fetch them from, so refusing an in-memory
+    substitute turns a storage failure into a startup error instead of a
+    wallet that looks healthy and forgets everything on exit.
+  - `locking_mode=EXCLUSIVE` is **not an optimization** — it is what makes
+    WAL reachable at all. Neither wasm VFS implements `xShmMap`, so the
+    only WAL available is the mode SQLite documents for hosts without
+    shared memory, where an EXCLUSIVE connection keeps the WAL index on
+    the heap. Relatedly, `journal_mode` travels as its own DSN key rather
+    than in the pragma list, because the driver hoists the locking mode
+    ahead of it and then reads the effective mode back — so a regression
+    surfaces as a startup error rather than a database quietly running on
+    the rollback journal while `synchronous` was chosen for WAL.
+  - `SetMaxOpenConns(1)`/`SetMaxIdleConns(1)`: a wasm SQLite handle must be
+    single-connection, or multiple SQL connections race the same database
+    through one worker.
+  `fullfsync` is dropped on both hosts — it asks Darwin for a stronger
+  barrier than `fsync`, which OPFS cannot express and which the `node:fs`
+  VFS already provides on every `xSync`.
 - Transaction atomicity: entire checkpoint succeeds or none.
 - Boarding intents persist from registration until round completion
   or failure.

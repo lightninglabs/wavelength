@@ -125,6 +125,19 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   reject / package error). A parent IS allowed to re-pick UTXOs from
   its own reserved set — TRUC package RBF requires the new child to
   double-spend the previous child's fee input.
+- **A mid-submit reselect releases only a *freshly selected* fee
+  input.** `broadcastWithCPFP` probes `feeOutpointReserved(txid,
+  feeInput.Outpoint)` **before** re-reserving, recording whether the
+  input was carried over from a prior committed bump. If the
+  script-class reselect then picks a different outpoint, the abandoned
+  original's reservation and wallet lease are released only when it was
+  *not* carried over (wavelength#664) — otherwise it would stay locked
+  for the parent's whole lifetime with nothing spending it. Releasing a
+  carried-over input instead would drop an input the replacement child
+  must double-spend, breaking TRUC package RBF. The order matters: the
+  probe must run before `reserveFeeInput`, or every input reads as
+  carried over. `feeOutpointReserved` deliberately does not create a
+  parent state entry, so the probe cannot leak an empty shell.
 - **Wallet-level lease coordination**: every reserved fee UTXO is
   also leased via `Wallet.LeaseOutput` (caller-scoped
   `txconfirmLockID`) and released on eviction/fallback. Lease errors

@@ -59,6 +59,7 @@ package may import from a higher layer.
 | [`rpcauth`](rpcauth/) | Shared macaroon and TLS helpers securing gRPC/REST connections |
 | [`metrics`](metrics/) | Prometheus instrumentation namespaced under `waved_`: event-driven counter actor pool plus a scrape-time `SystemCollector` for live gauges, and an opt-in `/metrics` HTTP server |
 | [`internal/sqlbase`](internal/sqlbase/) | `walletdb`-compatible key/value backend over `database/sql` (js/wasm walletdb storage for `lwwallet` browser builds) |
+| [`internal/wasmhost`](internal/wasmhost/) | js/wasm host detection (browser page vs. Node process) and the `go-wasmsqlite` VFS name that follows from it. Imports no repo package; the single place `db`, `lwwallet`, and `cmd/wavewalletdk-wasm` derive that answer |
 
 ### Layer 3: Application & Orchestration
 
@@ -74,7 +75,7 @@ package may import from a higher layer.
 | [`swapclientserver`](swapclientserver/) | Optional daemon-side swap subserver (build tag `swapruntime`): translates `swapclientrpc` RPCs into `sdk/swaps` operations and manages the daemon-local worker registry |
 | [`cmd/waved`](cmd/waved/) | Daemon entry point |
 | [`cmd/wavecli`](cmd/wavecli/) | CLI client |
-| [`cmd/wavewalletdk-wasm`](cmd/wavewalletdk-wasm/) | Command compiling the embedded wavewalletdk runtime to a browser WASM binary |
+| [`cmd/wavewalletdk-wasm`](cmd/wavewalletdk-wasm/) | Command compiling the embedded wavewalletdk runtime to a js/wasm binary. Targets two hosts: a browser page (OPFS storage) and a Node process (real filesystem), distinguished via `internal/wasmhost` |
 | [`timeout`](timeout/) | Generic timeout scheduling actor |
 | [`indexer`](indexer/) | Server indexing client for receive script registration |
 | [`arkrpc`](arkrpc/) | Server-side gRPC service definitions (ArkService, IndexerService) |
@@ -83,7 +84,7 @@ package may import from a higher layer.
 | [`rpc/wavewalletrpc`](rpc/wavewalletrpc/) | Highest-level gRPC surface: `WalletService` with the seven core wallet verbs. Composes `waverpc` and `rpc/swapclientrpc` server-side via `swapwallet` |
 | [`rpc/restclient`](rpc/restclient/) | HTTP/protoJSON transport adapter: `Client`, `StreamClient[T]`, and per-service factory functions implementing the same gRPC stub interfaces over REST |
 | [`waverpc`](waverpc/) | Daemon gRPC API definitions |
-| [`swaprpc`](swaprpc/) | Generated gRPC/REST/mailbox-RPC stubs for the external `SwapService` |
+| [`swaprpc`](swaprpc/) | Generated gRPC/REST/mailbox-RPC stubs for the external `SwapService`, plus the hand-written credit-account authorization transcript (`credit_account_auth.go`) that client and server both derive digests from |
 
 ### Layer 4: Testing & Tooling
 

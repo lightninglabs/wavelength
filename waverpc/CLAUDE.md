@@ -2,10 +2,11 @@
 
 ## Purpose
 
-Daemon gRPC API definitions for wallet, boarding, round, OOR, unroll, and
-VHTLC-recovery operations. Proto source: `waverpc/daemon.proto`. Generated
-gRPC, REST-gateway, and mailbox-RPC stubs plus one hand-written helper file
-(`errors.go`) for structured wallet-lifecycle errors.
+Daemon gRPC API definitions for wallet, boarding, round, OOR, unroll,
+VHTLC-recovery, and swap-signing operations. Proto source:
+`waverpc/daemon.proto`. Generated gRPC, REST-gateway, and mailbox-RPC stubs
+plus one hand-written helper file (`errors.go`) for structured
+wallet-lifecycle errors.
 
 ## Key Types
 
@@ -39,3 +40,14 @@ gRPC, REST-gateway, and mailbox-RPC stubs plus one hand-written helper file
 - `errors.go` is hand-written and not regenerated; callers must match wallet
   lifecycle errors via `IsWalletNotReadyError`/`WalletNotReadyState`, never by
   parsing the error message string.
+- **The identity-key signing RPCs exist so the key never leaves the daemon.**
+  `SignReceiveAuthMessage[Compact]`, `ReceiveAuthECDH`, `SignOutSwapHtlcAck`,
+  and `SignCreditAccountAuthorization` all sign a caller-supplied digest or
+  message with the daemon's identity key; the swap SDK holds no raw key
+  material. Adding another follows the same three steps and none is optional:
+  the RPC in `daemon.proto`, its gateway route in `daemon.yaml`, **and** a
+  macaroon grant in `waved.newWavedRPCPermissions` (the signing RPCs sit under
+  `entitySwap:write` / `entityWallet`) — a new RPC without the grant is
+  reachable only by an unrestricted macaroon. A REST caller additionally needs
+  a hand-written wrapper in `rpc/restclient`, which `make rpc` does not
+  generate.

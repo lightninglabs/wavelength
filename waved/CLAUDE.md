@@ -51,6 +51,42 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `serverconn.PubKeyMailboxID`, not config strings. The operator's remote
   mailbox ID and pubkey are fetched via direct gRPC (`fetchCurrentOperatorPubKey`)
   before the mailbox runtime starts.
+- **Both operator mailbox edges are wrapped in
+  `serverconn.NewAuthenticatedMailboxClient`, unconditionally** — gRPC and
+  REST alike (`connectOperatorClients`). The operator authorizes a mailbox
+  RPC from either the TLS client certificate bound to the caller's mailbox
+  ID *or* the `x-mailbox-auth-sig` header, and an operator terminating TLS
+  at a proxy never sees a client certificate. Signing always means the
+  daemon works against either posture without the operator's TLS choice
+  leaking into client config. Do not make this conditional on
+  `Server.Insecure` or on cert availability.
+- `mailboxAuthSig` memoizes one signature per recipient mailbox ID, which
+  is what makes per-RPC signing affordable: the digest is
+  `TaggedHash("mailbox-auth", identityPubKey || recipientMailboxID)` and
+  does not vary with the request, while signing costs a wallet-backend
+  round trip. Two properties are load-bearing:
+  - The wallet call happens **with the mutex released**. `sync.Mutex.Lock`
+    is not context-aware, so holding it across the round trip would
+    serialize the whole mailbox edge — egress workers, ingress puller,
+    heartbeat and ack all blocking with their own deadlines silently
+    ignored. Two callers racing a cold recipient may both sign; the digest
+    is deterministic, so the duplicate is harmless.
+  - The signing context is `context.WithTimeout(ctx,
+    mailboxAuthSignTimeout)` (30 s) rather than the caller's, because the
+    ingress puller builds a context with **no deadline at all** and a
+    memo miss is on the path every `Pull` takes.
+  The map grows with distinct recipients and is never evicted: the
+  operator edge contributes two (`Send` addresses the compound
+  `operator:client` mailbox, `Pull`/`AckUpTo` the client's own plain ID),
+  and `RPCServer.SignMailboxAuth` adds one per-swap mailbox
+  (`client:payment_hash`) per out-swap. Growth with swaps performed, not a
+  constant — small, but not fixed.
+- `SignCreditAccountAuthorization` signs the `swaprpc` credit-account
+  transcript with the daemon identity key (`entitySwap:write`, alongside
+  `SignOutSwapHtlcAck`). The daemon holds the key; the swap SDK never
+  does. It is reached from `sdk/swaps` through
+  `sdk/ark.Client.SignCreditAccountAuth`, which `swapclientserver` wires
+  in as the `swaps.CreditAccountAuthorizationSigner`.
 - All sub-stores share the single `s.clk` clock assigned in `NewServer`; new
   code must not call `clock.NewDefaultClock()` directly, use `s.clk`.
 - Actor startup order in `startWalletDependentActors`: VTXO manager, then

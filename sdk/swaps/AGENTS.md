@@ -61,7 +61,20 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/swap
 - `Store` — isolated SQLite persistence. Runs its own migration table
   (`swap_client_schema_migrations`) separate from the main daemon DB.
 - `SwapServerConn` / `GRPCSwapServerConn` — remote swap-server gRPC
-  (`RequestChannelID`, `CreateInSwap`).
+  (`RequestChannelID`, `CreateInSwap`). Three constructors:
+  `NewGRPCSwapServerConn(conn, creditSigner...)`,
+  `NewAuthenticatedRESTSwapServerConn(addr, creditSigner, opts...)`, and
+  the unauthenticated `NewRESTSwapServerConn(addr, opts...)`. Only the
+  last omits a signer, and it therefore supports send-only flows that do
+  not touch credits.
+- `CreditAccountAuthorizationSigner` — `func(ctx, accountKey []byte,
+  requestDigest [32]byte, expiresAtUnix int64, nonce [32]byte)
+  (*schnorr.Signature, error)`. Signs one canonical account request with
+  the wallet identity key; must **reject** an `accountKey` that does not
+  name that key. Production implementation is the daemon's
+  `SignCreditAccountAuthorization` RPC, reached via
+  `sdk/ark.Client.SignCreditAccountAuth` and wired by
+  `swapclientserver`.
 - `DaemonConn` — wallet operations (OOR sends, VTXO lookups, key
   queries, receive-auth signing/ECDH, VHTLC recovery arm/escalate/
   cancel, forfeit signing) provided by the Ark daemon. Includes
@@ -165,6 +178,23 @@ result into an `IncomingVHTLCNotification`.
 - The credit ledger is server-authoritative; local state only records
   what the wallet asked for. Always treat `ListCredits` as the source
   of truth after a retry or restart, not any locally cached operation.
+- **Every account-scoped request is signed immediately before it is
+  sent**, by `authorizeCreditAccountRequest` in `credit_account_auth.go`.
+  It applies to `RequestChannelID` (unconditionally — a receive route is
+  always account-scoped), `CreateInSwap` / `QuoteInSwap` (only when
+  `accountPubKey` is non-empty, so a plain non-credit send stays
+  unauthenticated), and all three credit RPCs. A missing signer is a hard
+  error, not a silently unsigned request.
+- Authorizations are short-lived and single-use by construction:
+  `creditAccountAuthorizationTTL` is **one minute** and each carries a
+  fresh 32-byte `authRand` nonce. Never cache or reuse one across
+  requests — the digest commits to the request body, so a cached
+  authorization is only ever valid for a byte-identical retry, and the
+  server is entitled to treat a repeated nonce as a replay.
+- `authNow` / `authRand` exist so tests can pin the clock and entropy.
+  Production paths must go through `newSwapServerConn`, which sets them to
+  `time.Now` and `crypto/rand.Reader`; a conn built by struct literal has
+  nil fields and panics on first authorization.
 - `RecoveryPolicy.MaxFeeRateSatPerKW` is captured at arm time and
   stored on the recovery row, so a later, looser default cannot
   silently raise the exit-spend fee cap for an already-armed job.

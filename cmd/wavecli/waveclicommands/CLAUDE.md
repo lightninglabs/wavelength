@@ -173,7 +173,24 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
 - `exit` defaults to a cooperative leave; it only starts a unilateral
   on-chain unroll when `--force-unroll-ack` matches the literal string
   `I_KNOW_WHAT_I_AM_DOING`, and that flag is mutually exclusive with
-  `--onchain-address`.
+  `--onchain-address`. Two consequences of the verb being named `exit` while
+  defaulting to the *other* operation, both of which exist because a queued
+  leave was once read as a no-op and the command re-run minutes later
+  (wavelength#577):
+  - **`printExitModeNotice` writes to stderr which of the two exits actually
+    ran**, keyed off `resp.GetMode()`, and names the follow-up command
+    (`wavecli list` for a cooperative leave, `wavecli exit status` for a
+    unilateral one). stdout keeps its machine-readable JSON — the notice must
+    never move there. `EXIT_MODE_UNSPECIFIED` (a daemon older than the field)
+    prints **nothing**: the point of the notice is being right about which ran,
+    so guessing is worse than silence.
+  - The `--onchain-address` + `--force-unroll-ack` rejection names the flag to
+    **drop** (`--force-unroll-ack`) and echoes the destination, rather than
+    only stating the constraint. Stating the constraint alone invites dropping
+    `--onchain-address`, which swaps a cooperative leave for the more dangerous
+    unilateral exit — not what a caller who supplied a destination asked for.
+    `swapwallet.forceUnroll` carries the same wording server-side; keep the two
+    in step.
 - `recovery escalate` refuses to run on non-interactive stdin unless
   `--yes` is passed — it never blocks on a y/N prompt an agent can't
   answer.

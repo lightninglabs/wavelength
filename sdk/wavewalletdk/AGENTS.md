@@ -78,6 +78,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/wave
   (`pending`/`materializing`/`csv_pending`/`sweeping`/`completed`/`failed`/`unspecified`).
 - `GetExitPlanRequest`/`Result`, `ExitPlanEntry` — previews backing-wallet
   funding needed before `Exit` can start, per outpoint and aggregated.
+  `ExitPlanEntry.RoundCommitment` names the cooperative round holding the
+  VTXO (empty when uncommitted) and pairs with
+  `ExitInfeasibilityReasonRoundCommitted`. Both are **advisory**: the entry is
+  still priced and the manual exit still performs it, so hosts must keep
+  showing the funding figures — they are exactly what a recovery needs when
+  the operator is unreachable and the commitment never confirms. Do not
+  render it as a blocked entry.
 - `ExitSummaryRequest`/`Result`, `ExitSummaryEntry` — wallet-wide
   portfolio of in-progress (non-terminal) exits plus aggregate totals.
 - `SweepWalletRequest`/`Result`, `WalletSweepInput` — preview or

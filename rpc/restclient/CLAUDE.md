@@ -49,6 +49,11 @@ interface, and per-service factory functions so callers are channel-agnostic
   server-streaming methods; all other methods are unary.
 - Generated service clients implement the same gRPC-generated interfaces
   as the generated gRPC stubs, so callers do not branch on transport type.
+  This package is hand-written, so **adding an RPC to a `.proto` does not add
+  it here** — every new method needs a matching hand-written wrapper posting
+  to the gateway route from the service's `.yaml`, or the REST transport fails
+  to satisfy the interface. `DaemonServiceClient.SignCreditAccountAuthorization`
+  (`/v1/daemon/sign-credit-account-authorization`) is the most recent example.
 
 ## Deep Docs
 

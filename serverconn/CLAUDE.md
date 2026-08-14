@@ -28,9 +28,12 @@ background ingress polling with event routing.
   secp256k1 identity via a BIP-340 Schnorr signature, complementing
   `GenerateClientTLSCert` (the cert alone proves nothing; this signature
   proves the TLS key and the identity key are held by the same party).
-- `NewAuthenticatedMailboxClient` — `mailboxpb.MailboxServiceClient` decorator
-  that signs and attaches the `x-mailbox-auth-sig` header to every `Send`
-  before forwarding to the wrapped edge transport.
+- `NewAuthenticatedMailboxClient` / `MailboxAuthSigner` — `mailboxpb.
+  MailboxServiceClient` decorator that signs and attaches the
+  `x-mailbox-auth-sig` header to every `Send`, `Pull`, **and** `AckUpTo`
+  before forwarding to the wrapped edge transport. The recipient each arm
+  signs over differs (see the replay-scope invariant below). A nil signer
+  returns the wrapped client unchanged; an empty recipient is not signed.
 - `AckState` — Four-cursor watermark state machine (PullCursor, DispatchCommittedTo, AckTarget, AckCommittedTo).
 - `SendUnaryRequest` — Durable typed unary request that becomes a real unary RPC after commit. The response arrives via KIND_RESPONSE and, if no in-memory waiter exists, falls back to durable route dispatch via the EventRouter.
 - `DurableUnaryRequestBuilder` — Interface for proof-gated request-body construction. Implementations build the actual proto request (e.g., with signed proofs) at send time, not at persist time. The interface is provided via `ConnectorConfig.DurableUnaryBuilder`.
@@ -65,6 +68,24 @@ background ingress polling with event routing.
 
 ## Invariants
 
+- **`MailboxAuthMessage` does not prevent cross-server replay on its own.**
+  The digest is `senderCompressedPubKey || recipientMailboxID`, so how much
+  the binding buys depends entirely on which recipient the caller passes, and
+  only `Send` gets the strong version:
+  - `Send` passes the **compound** `operator:client` recipient, which embeds
+    the operator's pubkey-derived ID, so a `Send` signature is useless at any
+    other operator.
+  - `Pull` and `AckUpTo` pass the client's **own plain** mailbox ID
+    (`ingress.go`, via `ConnectorConfig.LocalMailboxID`), which carries no
+    operator component. That digest is identical at every operator, so one
+    `Pull`/`Ack` signature authorizes that client's mailbox at *every*
+    operator its identity key is known to — and identity keys are a
+    deterministic derivation, so a wallet driving two operators presents the
+    same credential to both.
+
+  Closing the `Pull`/`Ack` case means folding a server identity into the
+  digest, which is a wire change on both sides. Until then, do not cite this
+  function as replay protection for anything but `Send`.
 - Ack watermark only advances AFTER durable local dispatch commit (prevents message loss on crash).
 - The ingress fold never holds the database writer across network IO. `runFoldedDispatch` runs waiter-backed responses and the `ConnectorConfig.NonTxRoutes` requests BEFORE opening the write transaction; only durable enqueues and the cursor checkpoint go inside it. A route is hoisted only when it is listed in `NonTxRoutes` AND the envelope is a `KIND_REQUEST`, so a durable actor `Tell` can never escape the fold. An envelope of any other kind arriving on a marked route is skip-warned by `dispatchBatch` rather than dispatched, because the mux bridge ignores `env.Rpc.Kind` and would otherwise serve a sender-mislabeled envelope over the network with the writer held. Any new dispatcher that terminates in `Edge.Send` rather than a durable enqueue MUST be added to `NonTxRoutes` at wiring time (see `waved.Server.buildRPCDispatchers`), otherwise it pins the SQLite global writer lock (production opens with `_txlock=immediate`) or a SERIALIZABLE Postgres snapshot for the length of a round trip to the operator.
 - Pre-transaction dispatch happens before the commit, never after. A crash in between re-pulls the batch and redelivers, which is the at-least-once contract; committing first would advance the cursor past a request that was never answered.

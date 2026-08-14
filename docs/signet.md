@@ -1,11 +1,12 @@
-# Public Test Network Endpoints
+# Public Network Endpoints
 
-`waved` has built-in Ark and swap service endpoints for testnet3, testnet4,
-and signet. Leave `server.host` and `swap.serveraddress` empty to select the
-endpoint for the configured Bitcoin network and outbound transport.
+`waved` has built-in Ark and swap service endpoints for mainnet, testnet3,
+testnet4, and signet. Leave `server.host` and `swap.serveraddress` empty to
+select the endpoint for the configured Bitcoin network and outbound transport.
 
 | Network config | Ark gRPC | Ark REST | Swap gRPC | Swap REST |
 |----------------|----------|----------|-----------|-----------|
+| `mainnet` | `wavelength.lightning.finance:443` | `https://wavelength-rest.lightning.finance` (not live) | `swap.wavelength.lightning.finance:443` | `https://swapd-rest.lightning.finance` (not live) |
 | `testnet` | `test.wavelength.lightning.finance:443` | `https://test.wavelength-rest.lightning.finance` | `swap.test.wavelength.lightning.finance:443` | `https://test.swapd-rest.lightning.finance` |
 | `testnet4` | `lumosd-testnet4.testnet.lightningcluster.com:443` | `https://test4.wavelength-rest.lightning.finance` | `swapd-testnet4.testnet.lightningcluster.com:443` | `https://test4.swapd-rest.lightning.finance` |
 | `signet` | `signet.wavelength.lightning.finance:443` | `https://signet.wavelength-rest.lightning.finance` | `swap.signet.wavelength.lightning.finance:443` | `https://signet.swapd-rest.lightning.finance` |
@@ -32,6 +33,15 @@ through its raw cluster hostname; a friendly-domain CNAME will follow once
 the certificate work in
 [lightning-infra#3517](https://github.com/lightninglabs/lightning-infra/pull/3517)
 lands.
+
+The two mainnet REST names are **not routable yet**, which makes mainnet with
+`--server.transport=rest` (or `--swap.servertransport=rest`) the one
+combination that still needs an explicit `--server.host` /
+`--swap.serveraddress`. The external NLB and dual-SAN certificates cover only
+the gRPC names; the prod REST ingress still serves its raw cluster hostname
+until the ingress host and matching certificate SAN work in
+[lightning-infra#3749](https://github.com/lightninglabs/lightning-infra/pull/3749)
+lands. Mainnet gRPC is live and needs no override.
 
 ## Wallet Chain Data and Fee Estimation
 

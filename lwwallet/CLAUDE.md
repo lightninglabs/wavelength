@@ -74,12 +74,28 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
 - **Depends on**: `walletcore` (shared HD key mgmt, signing, boarding base —
   also used by `btcwbackend`), `chainsource` (implements `ChainBackend`),
   `wallet` (implements `BoardingBackend`), `chainbackends` (typed
-  `PackageTxError` for package-relay results).
+  `PackageTxError` for package-relay results), and — for `js && wasm`
+  builds only — `internal/sqlbase` (`walletdb`-compatible SQL backend) plus
+  `internal/wasmhost` (which host, hence which SQLite VFS and path scheme).
 - **Depended on by**: `waved` (alternative to LND-backed wallet), `sdk`
   (embedded-wallet config references).
 
 ## Invariants
 
+- **The `js && wasm` wallet store is opened durably, per host**
+  (`walletdb_wasm.go`). The VFS is `wasmhost.SQLiteVFS()`; under Node the
+  store is `wallet.db` inside the caller's `dbDir`, because the containing
+  directory already distinguishes one wallet from another and
+  `wasmWalletDBFileName`'s hashed browser name would only hide it. That
+  hashing is a browser concern only. `require_persistent=true` is
+  mandatory here for a stronger reason than elsewhere: the wallet's seed
+  and key state have **no second copy anywhere**, so an in-memory
+  substitute is worse than not starting. WAL survives only because of
+  `locking_mode=EXCLUSIVE` (no wasm VFS implements `xShmMap`, so this is
+  the shared-memory-less WAL mode, which requires an already-exclusive
+  connection), and `journal_mode` must stay its own DSN key rather than a
+  pragma, since only that route is checked against the mode SQLite actually
+  ended up in — see the matching `db` invariant and keep the two in step.
 - Exactly one `TipPoller` goroutine drives both `EsploraChainService` and
   `ChainBackend`; neither polls Esplora independently.
 - `BestBlockAndSubscribe` holds `TipPoller.mu` across `{Subscribe + tip-read}`

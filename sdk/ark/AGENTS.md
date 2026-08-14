@@ -38,6 +38,13 @@ transport, without duplicating Ark runtime behavior.
   payment-scoped signing and Sphinx ECDH to the daemon wallet without
   exposing raw key material. Used by `sdk/swaps` for receive invoice signing
   and onion decoding.
+- `SignCreditAccountAuth(ctx, accountKey, requestDigest, expiresAtUnix,
+  nonce)` — asks the daemon identity key to authorize one canonical swap
+  credit-account request, returning a parsed `*schnorr.Signature`. Same
+  principle as the receive-auth helpers: the daemon holds the key, the SDK
+  never does. Its signature matches `swaps.CreditAccountAuthorizationSigner`
+  so it can be handed straight to a swap-server conn; the nonce is sized by
+  `swaprpc.CreditAccountNonceSize`.
 - `GetOORSession` — Single-session lookup of the daemon's local durable OOR
   transfer status, returning `*waverpc.OORSessionInfo`.
 - `Board`, `ListRounds`, `WatchRounds`, `EstimateFee`, `GetFeeHistory` — Round
@@ -45,11 +52,12 @@ transport, without duplicating Ark runtime behavior.
 
 ## Relationships
 
-- **Depends on**: `waverpc`, `waved` (embedded mode only), gRPC,
+- **Depends on**: `waverpc`, `waved` (embedded mode only), `swaprpc`
+  (`CreditAccountNonceSize` only), gRPC,
   `google.golang.org/grpc/test/bufconn` (in-process transport).
 - **Depended on by**: `sdk/swaps` (type aliases, receive-auth RPCs, OOR
-  helpers), `swapclientserver`, Go hosts that want remote, embedded, or
-  in-process Ark client access.
+  helpers, credit-account signing), `swapclientserver`, Go hosts that want
+  remote, embedded, or in-process Ark client access.
 
 ## Invariants
 
