@@ -28,9 +28,18 @@ const assetBoardingConfWait = 30 * time.Second
 // at onboarding time; the operator key and exit delay are re-derived from
 // live operator terms on every replay.
 type taprootAssetBoardRequest struct {
-	AssetRef           string `json:"asset_ref"`
-	AssetAmount        uint64 `json:"asset_amount"`
-	ProofFile          []byte `json:"proof_file"`
+	AssetRef    string `json:"asset_ref"`
+	AssetAmount uint64 `json:"asset_amount"`
+
+	// ProofFile is the funding proof of a slice written before onboarding
+	// could select more than one UTXO. Newer slices carry ProofFiles.
+	ProofFile []byte `json:"proof_file,omitempty"`
+
+	// ProofFiles are the funding proofs of every UTXO the onboarding
+	// spent. A replay runs after those UTXOs are gone, so the complete
+	// set has to survive here rather than be re-selected.
+	ProofFiles [][]byte `json:"proof_files,omitempty"`
+
 	CarrierValueSat    uint64 `json:"carrier_value_sat"`
 	FeeRateSatPerVByte uint64 `json:"fee_rate_sat_per_vbyte"`
 	TargetConf         uint32 `json:"target_conf"`
@@ -56,6 +65,7 @@ func (s *Server) storeTaprootAssetBoardRequest(ctx context.Context,
 		AssetRef:           req.AssetRef,
 		AssetAmount:        req.AssetAmount,
 		ProofFile:          req.ProofFile,
+		ProofFiles:         req.ProofFiles,
 		CarrierValueSat:    req.CarrierValueSat,
 		FeeRateSatPerVByte: req.FeeRateSatPerVByte,
 		TargetConf:         req.TargetConf,
@@ -100,6 +110,7 @@ func (s *Server) loadTaprootAssetBoardRequest(ctx context.Context,
 		AssetRef:           stored.AssetRef,
 		AssetAmount:        stored.AssetAmount,
 		ProofFile:          stored.ProofFile,
+		ProofFiles:         stored.ProofFiles,
 		CarrierValueSat:    stored.CarrierValueSat,
 		FeeRateSatPerVByte: stored.FeeRateSatPerVByte,
 		TargetConf:         stored.TargetConf,
