@@ -118,6 +118,23 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   command performs, and it is the only recovery when the operator is
   unreachable and the commitment never confirms. Failing the entry would
   contradict `Unroll` and withhold the funding figures that recovery needs.
+- `BoardTaprootAsset` funds its round's fee from Bitcoin the client already
+  holds in Ark (`taproot_asset_round_fee.go`). An asset VTXO request is
+  `FixedAmount`, so a round carrying only one gives the operator no output to
+  stamp the seal-time residual on and `resolveChangeDesignation` rejects the
+  whole intent. `fundAssetRoundFee` therefore refreshes one live Bitcoin VTXO
+  into the same assembling round — reusing the wallet's `RefreshVTXOsRequest`
+  rather than composing forfeits itself — and the residual returns as change.
+  Selection is smallest-sufficient over `fee + MinVTXOAmountFloor()` with an
+  outpoint tie-break, so a large coin is never churned for a small fee. It is
+  skipped when the client's intents for that round already include a non-fixed
+  output it owns (`hasFeeFundingSlot`), which is what keeps the same-round
+  Bitcoin-boarding flow working unchanged. The check runs *before* the
+  boarding is persisted, so a wallet with no spendable Bitcoin fails the RPC
+  with `FailedPrecondition` naming the fix instead of assembling a round the
+  operator rejects at seal. Nothing on the operator changes: a Bitcoin forfeit
+  carries zero asset units, so `validateAssetForfeitBalance` returns early and
+  `planAssetRound`'s boarding/refresh mix guard never sees it.
 - `RefreshVTXOs` dry-run short-circuits before the wallet-ready gate
   (LeaveVTXOs parity) and attaches a best-effort advisory fee estimate
   (`rpc_refresh_estimate.go`): explicit outpoints are deduped and

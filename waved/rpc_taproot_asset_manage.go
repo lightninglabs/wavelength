@@ -64,18 +64,32 @@ func (r *RPCServer) BoardTaprootAsset(ctx context.Context,
 		return nil, status.Errorf(codes.NotFound, "no onboarding "+
 			"found for idempotency key %q", req.GetIdempotencyKey())
 	}
+
+	// The wallet holding no spendable Bitcoin is the caller's to fix, and
+	// the sentinel's message says how, so pass it through verbatim.
+	if errors.Is(err, ErrNoFeeFundingVTXO) {
+		return nil, status.Error(
+			codes.FailedPrecondition, err.Error(),
+		)
+	}
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "board Taproot "+
 			"Asset: %v", err)
 	}
 
-	return &waverpc.BoardTaprootAssetResponse{
+	resp := &waverpc.BoardTaprootAssetResponse{
 		Outpoint:       result.Outpoint.String(),
 		ValueSat:       result.ValueSat,
 		AssetRef:       result.AssetRef,
 		AssetAmount:    result.AssetAmount,
 		AlreadyBoarded: result.AlreadyBoarded,
-	}, nil
+	}
+	if result.FeeFunding != nil {
+		resp.FeeFundingOutpoint = result.FeeFunding.Outpoint.String()
+		resp.FeeFundingValueSat = result.FeeFunding.ValueSat
+	}
+
+	return resp, nil
 }
 
 // ClaimTaprootAssetVTXO implements the user-facing exit-claim RPC. The
