@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -689,6 +690,33 @@ func (c *EsploraClient) GetOutspend(ctx context.Context, txid chainhash.Hash,
 	return &outspend, nil
 }
 
+// maxErrBodyBytes bounds how much of a response body an error quotes back.
+// A base URL pointing at a web frontend answers with a full HTML page, and
+// the unbounded form of these errors carried three kilobytes of markup
+// through every layer up to the RPC client.
+const maxErrBodyBytes = 256
+
+// truncateBody renders a response body for an error message: collapsed onto
+// one line, since a multi-line body is illegible inside a single-line log
+// record, and bounded to maxErrBodyBytes.
+//
+// The cut lands on a rune boundary. A body is arbitrary bytes from an
+// endpoint we have just decided we do not trust the shape of, so slicing it
+// blindly would emit a half-encoded rune into the log.
+func truncateBody(body []byte) string {
+	collapsed := strings.Join(strings.Fields(string(body)), " ")
+	if len(collapsed) <= maxErrBodyBytes {
+		return collapsed
+	}
+
+	cut := maxErrBodyBytes
+	for cut > 0 && !utf8.RuneStart(collapsed[cut]) {
+		cut--
+	}
+
+	return collapsed[:cut] + "... (truncated)"
+}
+
 // get performs an HTTP GET request and returns the response body.
 func (c *EsploraClient) get(ctx context.Context, path string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(
@@ -713,7 +741,7 @@ func (c *EsploraClient) get(ctx context.Context, path string) ([]byte, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode,
-			string(body))
+			truncateBody(body))
 	}
 
 	return body, nil
@@ -773,7 +801,7 @@ func (c *EsploraClient) TestMempoolAccept(ctx context.Context,
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode,
-			string(respBody))
+			truncateBody(respBody))
 	}
 
 	var results []testMempoolAcceptResult
@@ -868,7 +896,7 @@ func (c *EsploraClient) SubmitPackage(ctx context.Context,
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("submit package HTTP %d: %s", resp.StatusCode,
-			string(respBody))
+			truncateBody(respBody))
 	}
 
 	if len(respBody) > 0 {
@@ -959,7 +987,7 @@ func (c *EsploraClient) post(ctx context.Context, path string, body string) (
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode,
-			string(respBody))
+			truncateBody(respBody))
 	}
 
 	return respBody, nil

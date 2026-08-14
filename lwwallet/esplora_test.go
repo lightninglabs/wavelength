@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -455,4 +457,58 @@ func TestScriptHashEncoding(t *testing.T) {
 	require.NotEqual(
 		t, hex.EncodeToString(reversed), scriptHashHex(pkScript),
 	)
+}
+
+// TestEsploraHTTPErrorBodyTruncated verifies a non-200 body is collapsed
+// and bounded in the error. A misconfigured base URL naming a web frontend
+// answers with a full HTML page rather than a short status line, so the
+// error path needs a bound to stay readable.
+func TestEsploraHTTPErrorBodyTruncated(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+
+			_, err := w.Write([]byte(strings.Repeat("x", 4096)))
+			require.NoError(t, err)
+		}),
+	)
+	defer srv.Close()
+
+	client := NewEsploraClient(srv.URL, btclog.Disabled)
+	_, err := client.GetTipHeight(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "404")
+	require.Contains(t, err.Error(), "truncated")
+	require.Less(t, len(err.Error()), 512)
+}
+
+// TestTruncateBody covers the shapes the helper has to handle: a short body
+// passes through unchanged, a multi-line body is collapsed onto one line so
+// it stays legible inside a single-line log record, and a long body is cut.
+func TestTruncateBody(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(
+		t, "already short",
+		truncateBody(
+			[]byte("already  short"),
+		),
+	)
+
+	require.Equal(t, "a b c", truncateBody([]byte("a\n  b\n\tc\n")))
+
+	long := truncateBody([]byte(strings.Repeat("y", maxErrBodyBytes+10)))
+	require.Len(t, long, maxErrBodyBytes+len("... (truncated)"))
+	require.Contains(t, long, "truncated")
+
+	// A cut that would land inside a multi-byte rune backs up to the
+	// rune boundary rather than emitting a half-encoded rune. "€" is
+	// three bytes, so a body of them has no boundary at maxErrBodyBytes
+	// unless the helper looks for one.
+	runes := truncateBody(
+		[]byte(strings.Repeat("€", maxErrBodyBytes)),
+	)
+	require.True(t, utf8.ValidString(runes))
 }
