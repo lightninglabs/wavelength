@@ -3613,6 +3613,16 @@ func (s *Server) handleInboundRPC(ctx context.Context,
 		return fmt.Errorf("missing envelope body")
 	}
 
+	// The sender is where the answer goes, so an absent one is the same
+	// lost-response failure an absent ReplyTo used to cause: the recipient
+	// would be empty and the mailbox store rejects that outright. Nothing
+	// upstream asserts it — the ingress version check only compares the
+	// two version fields — so refuse here, where the value is used, and
+	// let the ingress loop log the dispatch error.
+	if env.Sender == "" {
+		return fmt.Errorf("missing envelope sender")
+	}
+
 	// Dispatch through the mux to the registered handler.
 	respMsg, err := s.mailboxMux.ServeRPC(
 		ctx, env.Rpc.Service, env.Rpc.Method, env.Body.Value,
@@ -3651,8 +3661,27 @@ func (s *Server) handleInboundRPC(ctx context.Context,
 	}
 
 	responseEnv := &mailboxpb.Envelope{
-		Sender:    s.localMailboxID,
-		Recipient: env.Rpc.ReplyTo,
+		Sender: s.localMailboxID,
+
+		// A response belongs to whoever sent the request, so address
+		// it to the sender rather than to the request's ReplyTo.
+		//
+		// The two agree for every producer in this repo: each sets
+		// Sender and Rpc.ReplyTo to the same LocalMailboxID (see
+		// serverconn/unary_facade.go, serverconn/actor.go,
+		// serverconn/heartbeat.go and the operator's clientconn
+		// equivalents). So this changes nothing for a well-formed
+		// peer, and it stops a request choosing a destination that
+		// disagrees with where it came from.
+		//
+		// It also fixes an absent ReplyTo. That used to produce an
+		// empty recipient, which the mailbox store rejects outright,
+		// so the caller lost its answer entirely.
+		//
+		// Rpc.ReplyTo is therefore advisory from the responder's
+		// point of view: producers still set it, and nothing here
+		// reads it.
+		Recipient: env.Sender,
 		Headers:   headers,
 		Body:      body,
 		Rpc: &mailboxpb.RpcMeta{
@@ -3668,11 +3697,18 @@ func (s *Server) handleInboundRPC(ctx context.Context,
 	// client's negotiated mailbox transport and Ark protocol versions.
 	s.runtime.StampEnvelope(responseEnv)
 
-	_, err = edge.Send(ctx, &mailboxpb.SendRequest{
+	// Fold the response status in alongside the transport error: a mailbox
+	// rejection (an unknown recipient, a version mismatch) travels as
+	// Status.Ok=false, not as an error, so discarding it would report a
+	// dropped answer as a successful dispatch and leave the caller waiting
+	// on its correlation ID until it times out.
+	resp, err := edge.Send(ctx, &mailboxpb.SendRequest{
 		Envelope: responseEnv,
 	})
-	if err != nil {
-		return fmt.Errorf("send RPC response: %w", err)
+	if sErr := serverconn.SendResponseError(
+		"send rpc response", resp, err,
+	); sErr != nil {
+		return sErr
 	}
 
 	return nil
