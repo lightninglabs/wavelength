@@ -38,6 +38,12 @@ transport, without duplicating Ark runtime behavior.
   payment-scoped signing and Sphinx ECDH to the daemon wallet without
   exposing raw key material. Used by `sdk/swaps` for receive invoice signing
   and onion decoding.
+- Swap-authorization helpers: `SignOutSwapHTLCAck` and
+  `SignCreditAccountAuth(ctx, accountKey, requestDigest, expiresAtUnix,
+  nonce)` — ask the daemon identity key to authorize one canonical swap
+  request. The latter satisfies `swaps.CreditAccountAuthorizationSigner`;
+  it wraps `waverpc.SignCreditAccountAuthorization` and parses the returned
+  Schnorr signature. Nonce width comes from `swaprpc.CreditAccountNonceSize`.
 - `GetOORSession` — Single-session lookup of the daemon's local durable OOR
   transfer status, returning `*waverpc.OORSessionInfo`.
 - `Board`, `ListRounds`, `WatchRounds`, `EstimateFee`, `GetFeeHistory` — Round
@@ -45,8 +51,9 @@ transport, without duplicating Ark runtime behavior.
 
 ## Relationships
 
-- **Depends on**: `waverpc`, `waved` (embedded mode only), gRPC,
-  `google.golang.org/grpc/test/bufconn` (in-process transport).
+- **Depends on**: `waverpc`, `swaprpc` (credit-account nonce width), `waved`
+  (embedded mode only), gRPC, `google.golang.org/grpc/test/bufconn`
+  (in-process transport).
 - **Depended on by**: `sdk/swaps` (type aliases, receive-auth RPCs, OOR
   helpers), `swapclientserver`, Go hosts that want remote, embedded, or
   in-process Ark client access.
@@ -74,7 +81,10 @@ transport, without duplicating Ark runtime behavior.
   directly. Those passthrough APIs are not yet treated as stable SDK-owned
   models.
 - Receive-auth signing and ECDH are always delegated to the daemon; the SDK
-  never holds raw private key material for receive-auth operations.
+  never holds raw private key material for receive-auth operations. The same
+  holds for credit-account authorizations: the SDK only ships a digest,
+  expiry, and nonce, and the daemon decides whether the claimed account key is
+  in fact this wallet's identity key.
 
 ## Deep Docs
 

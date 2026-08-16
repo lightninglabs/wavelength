@@ -118,6 +118,22 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
   UTXO set, because btcwallet does not credit-mark non-default scope outputs.
 - `Stop()` explicitly closes btcwallet's internal database to prevent resource
   leaks.
+- **Under `js && wasm`, btcwallet's SQL walletdb follows the host**
+  (`walletdb_wasm.go`, `internal/sqlbase`). `internal/wasmhost.SQLiteVFS()`
+  picks `nodefs` or `opfs`: under Node the store is `wallet.db` inside the
+  caller's `dbDir` (the directory already distinguishes one wallet from
+  another, and a real path is findable on disk), while a browser maps `dbDir`
+  to a stable origin-local OPFS name via `wasmWalletDBFileName`. The DSN sets
+  `require_persistent=true` because the wallet's seed and key state have no
+  second copy anywhere — not starting is strictly better than an in-memory
+  substitute. `journal_mode=WAL` survives only because of
+  `locking_mode=EXCLUSIVE`: no wasm VFS implements `xShmMap`, so this is
+  SQLite's WAL mode for hosts without shared memory, which keeps the WAL index
+  on the heap and requires an already-exclusive connection. The journal mode
+  travels as its own DSN key rather than in the pragma list, because only that
+  route is checked against the mode SQLite actually ended up in — so dropping
+  the exclusive lock fails the open instead of silently moving the wallet onto
+  the rollback journal.
 
 ## Deep Docs
 

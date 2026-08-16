@@ -61,7 +61,17 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/swap
 - `Store` — isolated SQLite persistence. Runs its own migration table
   (`swap_client_schema_migrations`) separate from the main daemon DB.
 - `SwapServerConn` / `GRPCSwapServerConn` — remote swap-server gRPC
-  (`RequestChannelID`, `CreateInSwap`).
+  (`RequestChannelID`, `CreateInSwap`). Three constructors:
+  `NewGRPCSwapServerConn(conn, creditSigner...)` (signer variadic and
+  optional), `NewRESTSwapServerConn(addr, opts...)` (unauthenticated,
+  send-only), and `NewAuthenticatedRESTSwapServerConn(addr, creditSigner,
+  opts...)`.
+- `CreditAccountAuthorizationSigner` — `func(ctx, accountKey []byte,
+  digest [32]byte, expiresAtUnix int64, nonce [32]byte)
+  (*schnorr.Signature, error)`. Signs one canonical account request with the
+  wallet identity key. The implementation **must** reject `accountKey` unless
+  it names that identity key; the production signer is
+  `waved.RPCServer.SignCreditAccountAuth`, wired in by `swapclientserver`.
 - `DaemonConn` — wallet operations (OOR sends, VTXO lookups, key
   queries, receive-auth signing/ECDH, VHTLC recovery arm/escalate/
   cancel, forfeit signing) provided by the Ark daemon. Includes
@@ -165,6 +175,22 @@ result into an `IncomingVHTLCNotification`.
 - The credit ledger is server-authoritative; local state only records
   what the wallet asked for. Always treat `ListCredits` as the source
   of truth after a retry or restart, not any locally cached operation.
+- **Every account-scoped request is signed before it leaves.**
+  `authorizeCreditAccountRequest` stamps a fresh nonce and a one-minute
+  expiry on `RequestChannelId`, `CreateCredit`, `RedeemCredit`, and
+  `ListCredits` unconditionally, and on `CreateInSwap` / `QuoteInSwap`
+  whenever an `accountPubKey` is present — those two are also reachable as
+  plain Lightning swaps with no credit account, which stay unsigned. A
+  connection with no signer fails these calls rather than sending them
+  unauthenticated, so a send-only caller can still omit the signer.
+- The authorization TTL (`creditAccountAuthorizationTTL`, 1 min) must stay at
+  or under `swaprpc.CreditAccountMaxAuthTTL` (5 min); the daemon signer
+  rejects anything longer, so raising it here without raising that bound
+  breaks signing rather than loosening it.
+- Nonces come from `crypto/rand` via `authRand`, and `authNow` supplies the
+  clock. Both are struct fields purely so tests can inject determinism —
+  production paths must go through `newSwapServerConn`, which sets
+  `time.Now` and `rand.Reader`.
 - `RecoveryPolicy.MaxFeeRateSatPerKW` is captured at arm time and
   stored on the recovery row, so a later, looser default cannot
   silently raise the exit-spend fee cap for an already-armed job.

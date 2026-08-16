@@ -51,6 +51,36 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `serverconn.PubKeyMailboxID`, not config strings. The operator's remote
   mailbox ID and pubkey are fetched via direct gRPC (`fetchCurrentOperatorPubKey`)
   before the mailbox runtime starts.
+- **Every outbound mailbox RPC carries `x-mailbox-auth-sig`.** Both operator
+  edges built by `connectOperatorClients` (gRPC and REST) are wrapped in
+  `serverconn.NewAuthenticatedMailboxClient`, and so is the latent
+  `newMailboxEdge` fallback. The operator authorizes a mailbox RPC from
+  *either* the TLS client certificate bound to the caller's mailbox ID or that
+  header, and an operator terminating TLS at a proxy never sees a client
+  certificate — so signing unconditionally keeps the daemon working against
+  either posture without the operator's TLS choice leaking into client config.
+- `Server.mailboxAuthSig` memoizes one signature per recipient mailbox ID
+  (`mailboxAuthSigs`, guarded by `mailboxAuthSigsMu`). The digest covers only
+  the identity key and the recipient, so a signature stays valid for the life
+  of the key; without the memo every `Pull` on a long-poll loop would put a
+  wallet round trip in front of itself. Two facts a reader must not assume
+  away: the map is **unbounded** — `Send` addresses the compound
+  `operator:client` mailbox while `Pull`/`AckUpTo` address the plain local
+  one, and `RPCServer.SignMailboxAuth` adds a per-swap
+  `client:payment_hash` entry per out-swap — and the wallet call deliberately
+  happens with the mutex **released**, because `sync.Mutex.Lock` is not
+  context-aware and holding it across the round trip would serialize egress,
+  ingress, heartbeat, and ack behind one wedged wallet. A race that signs
+  twice is harmless: the digest is deterministic. The signing call is bounded
+  by `mailboxAuthSignTimeout` (30 s) rather than inheriting the caller's
+  context, since the ingress puller builds its context with no deadline.
+- `defaultNetworkEndpoints` gives **mainnet** the public Lightning Labs
+  deployment (`wavelength.lightning.finance:443` for the operator,
+  `swap.wavelength.lightning.finance:443` for the swap server); only `regtest`
+  and `simnet` keep the historical localhost defaults. The two mainnet REST
+  hosts are declared but **not routable yet** — the external NLB and dual-SAN
+  certificates cover only the gRPC names, so REST stays dark pending
+  lightning-infra#3749. Do not treat the REST constants as reachable.
 - All sub-stores share the single `s.clk` clock assigned in `NewServer`; new
   code must not call `clock.NewDefaultClock()` directly, use `s.clk`.
 - Actor startup order in `startWalletDependentActors`: VTXO manager, then
@@ -138,6 +168,21 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   both success and failure.
 - `Unroll` / `GetUnrollStatus` return `codes.Unavailable` (not `Internal`)
   when the unroll subsystem refs are not yet set, so clients can retry.
+- `Unroll` sets `Trigger: actormsg.UnrollTriggerManual` explicitly on the
+  `ForceUnrollRequest`. The zero value admits as `UnrollTriggerCriticalExpiry`,
+  so omitting it makes a hand-typed unroll persist provenance naming a trigger
+  that never fired — and, since `ForfeitingState` suppresses only the
+  critical-expiry trigger once the forfeit signature has issued, it would also
+  silently drop the one exit a user explicitly asked for.
+- `SignCreditAccountAuthorization` (RPC) and `SignCreditAccountAuth` (the
+  in-process seam `swapclientserver` hands to `sdk/swaps`) both sign a
+  `swaprpc` credit-account request digest with the daemon identity key. Both
+  refuse an `account_pubkey` that is not byte-equal to that identity key
+  (`errCreditAccountIdentityMismatch` → `InvalidArgument`) and bound the
+  requested lifetime to `(now, now+swaprpc.CreditAccountMaxAuthTTL]`. The
+  daemon is the only holder of the key, so this is where "the account you are
+  claiming is yours" is actually decided. Granted under `entitySwap:write` in
+  `newWavedRPCPermissions`.
 - `OORLimitsConfig.MaxMailboxScriptBytes` must be at least
   `minOORMailboxScriptBytes = 34` (P2TR script length); validated in
   `Config.Validate()`.

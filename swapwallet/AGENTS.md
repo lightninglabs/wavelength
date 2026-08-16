@@ -95,6 +95,19 @@ default builds avoid the swap executor's dependency graph.
   admin-shape: they reach waverpc via the injected `RPCServer` and
   DO NOT depend on `Runtime`, router, recv, or history. Create and
   Unlock must work before the swap subsystem is live.
+- `Exit` refuses `onchain_address` combined with `force_unroll_ack`, and the
+  error **names the safe way out**: clear `force_unroll_ack` to leave
+  cooperatively to the given address. Stating the constraint alone invites
+  clearing `onchain_address` instead, which silently converts a cooperative
+  leave into a unilateral exit — the more dangerous of the two, and not what a
+  caller who supplied a destination was asking for. `cmd/wavecli`'s
+  client-side check carries the same wording; keep the two aligned.
+- `getExitPlan` maps `unroll.ExitRoundCommitted` →
+  `EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED` and stringifies
+  `ExitPlanEntry.RoundCommitment` onto the proto field. That commitment is an
+  **advisory**, distinct from the per-entry `error`: the entry is still priced
+  and `Exit` still performs the exit, so it must never be surfaced as a
+  failure.
 - Credit-backed routing is nil-safe: `Deps.CreditRegistry == nil` disables
   credit-only sends (falls back with `ErrSwapBackendUnavailable`) and the
   credit projector loop is a no-op, so builds without the credit subsystem

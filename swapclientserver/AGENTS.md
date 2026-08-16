@@ -106,6 +106,22 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `CreateCredit`/`RedeemCredit`/`ListCredits` type-assert `s.client` for the
   optional credit methods and return `Unimplemented` if the underlying
   `swapRuntimeClient` does not support credits.
+- **The swap-server connection is built with a credit-account signer.**
+  `newSwapServerClients` passes `RPCServer.SignCreditAccountAuth` to
+  `swaps.NewGRPCSwapServerConn` (gRPC) or
+  `swaps.NewAuthenticatedRESTSwapServerConn` (REST) alongside the mailbox
+  auth signer. The REST arm must use the *authenticated* constructor —
+  `NewRESTSwapServerConn` is the unauthenticated, send-only one, and wiring it
+  here would fail every receive and credit-account RPC. The daemon holds the
+  identity key, so it is also where the signer refuses an account key that is
+  not this wallet's.
+- **`ensureSwapDBDir` is host-sensitive under `js && wasm`**
+  (`fs_wasm.go`), not the unconditional no-op it used to be. It calls
+  `os.MkdirAll` and treats only `syscall.ENOSYS` as success — that is the
+  browser's way of saying `wasm_exec.js` installed a stub filesystem and there
+  is no directory to create. Every other error is real and is returned, so a
+  Node host given an unwritable path fails at startup rather than at the first
+  database open. Mirrors `waved.ensureDataDir`; keep the two in step.
 - `SetOutSwapEventReceiver` must run before any receive worker is started:
   `SwapClient` captures the receiver into the per-swap worker at start time,
   so a late install would leave already-running workers using whatever

@@ -59,6 +59,7 @@ package may import from a higher layer.
 | [`rpcauth`](rpcauth/) | Shared macaroon and TLS helpers securing gRPC/REST connections |
 | [`metrics`](metrics/) | Prometheus instrumentation namespaced under `waved_`: event-driven counter actor pool plus a scrape-time `SystemCollector` for live gauges, and an opt-in `/metrics` HTTP server |
 | [`internal/sqlbase`](internal/sqlbase/) | `walletdb`-compatible key/value backend over `database/sql` (js/wasm walletdb storage for `lwwallet` browser builds) |
+| [`internal/wasmhost`](internal/wasmhost/) | `js && wasm`-only host predicate (browser page vs. Node process) that selects the durable SQLite VFS — `opfs` or `nodefs` — for `db`, `lwwallet`, and `cmd/wavewalletdk-wasm` |
 
 ### Layer 3: Application & Orchestration
 

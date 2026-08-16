@@ -45,9 +45,11 @@ validated invariants.
   an explicit floor rather than silently accepting any exit delay (including
   dangerously small values that would break forfeit incentives).
 - `ValidatePolicy(nodes, opts)` — Structural admission check for any Ark policy
-  shape (custom vHTLC, etc.). Enforces: collab leaf with operator key, exit
-  leaf without operator key, no operator-unilateral leaf, CSV gating on exit
-  paths. `opts.MinExitDelay = 0` skips the CSV minimum check.
+  shape (custom vHTLC, etc.). Compiles every leaf first (so a leaf that cannot
+  safely compile is rejected before any structural reasoning), then enforces:
+  collab leaf with operator key, exit leaf without operator key, no
+  operator-unilateral leaf, CSV gating on exit paths.
+  `opts.MinExitDelay = 0` skips the CSV minimum check.
 - Decode budget constants: `MaxPolicyTemplateBytes` (64 KiB),
   `MaxLeafTemplateBytes` (16 KiB), `MaxPolicyLeaves` (32),
   `MaxPolicyDepth` (16), `MaxPolicyNodes` (256), `MaxMultisigKeys` (64) —
@@ -76,7 +78,21 @@ validated invariants.
   compare raw block counts against CSV lock values must convert accordingly.
 - CSV values are canonical non-zero block-mode encodings in `1..65535`.
   Time-mode, disable, and reserved high bits are rejected so structural delay
-  comparisons cannot diverge from the value enforced by consensus.
+  comparisons cannot diverge from the value enforced by consensus. The check
+  (`validateCSVLock`) runs at compile time in `CSV.Script()` and again at every
+  boundary that accepts a delay from a caller: `StandardVTXOTemplate`,
+  `DecodeStandardVTXOParams`, and all three `VHTLCOpts` unilateral delays.
+- A `Condition` node's raw `Predicate` must be a **complete** script fragment
+  and must not contain an `OP_SUCCESS` opcode. Both failures would let the raw
+  bytes change how the typed inner clause is treated rather than merely gating
+  it: an incomplete data push swallows the inner script as pushed bytes, and
+  `OP_SUCCESS` makes the whole tapscript succeed before the inner clause ever
+  executes. Enforced by `validateConditionPredicate` in `Condition.Script()`.
+- `ValidatePolicy` compiles every leaf (`node.Script()`) before reasoning about
+  its structure, and rejects a nil leaf outright. Structural checks alone would
+  otherwise pass a policy whose leaves cannot safely compile, so direct callers
+  of `ValidatePolicy` — not just those going through the compiler — get the
+  predicate and CSV guarantees above.
 - Canonical leaf ordering: sorted by version then lexicographic script bytes.
 - All taproot outputs use the unspendable ARK NUMS key for key path (no
   key-path spend possible).

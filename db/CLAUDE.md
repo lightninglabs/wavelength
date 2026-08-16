@@ -129,6 +129,29 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   3s cap).
 - SQLite `busy_timeout = 30 000 ms` under WAL mode tolerates
   multi-actor contention bursts.
+- **Under `js && wasm` the storage host decides the DSN**
+  (`sqlite_open_wasm.go`). `internal/wasmhost.SQLiteVFS()` picks
+  `nodefs` or `opfs`; under Node the configured path is used verbatim
+  (it is already unique, and findable on disk), while a browser hashes
+  it to an origin-local OPFS name via `browserSQLiteFileName` so two
+  networks' `client.db` cannot collide in one origin. The DSN always
+  sets `require_persistent=true`: these databases are the only record
+  of VTXO, swap, and round state, so a storage failure must be a
+  startup error rather than a wallet that looks healthy and forgets
+  everything on exit.
+- **`locking_mode=EXCLUSIVE` is what makes WAL reachable on wasm at
+  all** — it is not merely an optimization for a single-connection
+  handle. Neither wasm VFS implements `xShmMap`, so the only WAL
+  available is the mode SQLite documents for hosts without shared
+  memory, where an EXCLUSIVE connection keeps the WAL index on the
+  heap. The driver hoists the locking mode ahead of the journal mode
+  for exactly that reason and then reads back the effective mode, so
+  dropping it surfaces as a startup error rather than a database
+  quietly running on the rollback journal while `synchronous` was
+  chosen for WAL. `journal_mode` therefore travels as its own DSN key,
+  not in the pragma list, because only that route is checked. The
+  `fullfsync` pragma is dropped on wasm: OPFS has no such concept and
+  the `node:fs` VFS already issues a full fsync on every `xSync`.
 - `ledger_entries.entry_id` and `wallet_utxo_log.entry_id` use
   `INTEGER PRIMARY KEY AUTOINCREMENT` to prevent rowid reuse after
   deletion, preserving append-only ordering.

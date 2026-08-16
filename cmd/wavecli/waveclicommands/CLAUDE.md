@@ -173,7 +173,21 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
 - `exit` defaults to a cooperative leave; it only starts a unilateral
   on-chain unroll when `--force-unroll-ack` matches the literal string
   `I_KNOW_WHAT_I_AM_DOING`, and that flag is mutually exclusive with
-  `--onchain-address`.
+  `--onchain-address`. The conflict error must keep naming *which* flag to
+  drop (`--force-unroll-ack`) and why: stating the constraint alone invites
+  dropping `--onchain-address`, which swaps a cooperative leave for the more
+  dangerous unilateral exit and discards the destination the caller supplied.
+- `exit` prints an **exit-mode notice on stderr** (`printExitModeNotice`)
+  saying which of the two exits actually ran and how to follow it —
+  `wavecli list` for a cooperative leave, `wavecli exit status` for a
+  unilateral one. The verb is named `exit` but queues a leave by default, so a
+  user who meant "get my funds out unilaterally" otherwise reads the accepted
+  response as the command having ignored them; the report behind
+  wavelength#577 escalated from exactly that misreading, with the same command
+  re-run minutes later. stdout keeps its machine-readable JSON — the notice is
+  for the human at the terminal. `EXIT_MODE_UNSPECIFIED` (a daemon older than
+  the field) prints nothing, since being right about which exit ran is the
+  whole point.
 - `recovery escalate` refuses to run on non-interactive stdin unless
   `--yes` is passed — it never blocks on a y/N prompt an agent can't
   answer.

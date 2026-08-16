@@ -70,6 +70,21 @@ when the local wallet owns the receive script.
   manager. The VTXO actor cannot determine the confirmed on-chain miner fee,
   so its `emitExitCost` helper is intentionally empty; unroll emits
   `ExitCostMsg` after the final sweep confirms.
+- `CheckForfeitAdmission(desc *Descriptor) error` — Advisory pre-check
+  reporting whether a VTXO may be committed to a **new** cooperative forfeit
+  (a leave, a refresh, or an in-round send). `nil` means admissible. It is not
+  the authority: the reservation only settles once the VTXO actor's FSM has
+  processed `PendingForfeitEvent`, and a concurrent claim can take the coin in
+  between. It exists so the ordinary, entirely predictable rejections carry an
+  error naming the operation holding the coin instead of a raw FSM event-type
+  mismatch. `VTXOStatusExpired` is deliberately admissible — its value is
+  recoverable only by forfeiting into an ordinary round.
+- `ErrForfeitInFlight` / `ErrExitInFlight` / `ErrVTXOTerminal` — Admission
+  sentinels returned by `CheckForfeitAdmission` and by the FSM's duplicate
+  `PendingForfeitEvent` refusals, alongside the pre-existing
+  `ErrVTXOLiquidityLocked` (used for `VTXOStatusSpending`). Callers use
+  `errors.Is`; `waved.exitPlanRoundCommitment` keys on `ErrForfeitInFlight`
+  specifically.
 - `VTXOEvent` — Inbound events (BlockEpochEvent, ForfeitRequest, ForfeitConfirmed, SpendReserveEvent, SpendCompletedEvent, etc.).
 - `VTXOOutMsg` — Outbound messages (ForfeitRequest, ExpiringNotify, StatusUpdate, Terminated).
 - `FilterOptions` / `FilterDescriptors` — VTXO filtering by expiry status, spend state, etc.
@@ -87,7 +102,7 @@ when the local wallet owns the receive script.
 ## Relationships
 
 - **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/types` (`Ancestry`), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission and custom-forfeit message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `coinselect` (largest-first VTXO selection), `metrics` (optional `OORTransferReceivedMsg` sink), `ledger` (`Sink` type for compatibility with manager wiring), `unroll` (via `ExitOutcomeResolver` callback wired by `waved`).
-- **Depended on by**: `round` (triggers forfeit requests), `oor` (incoming VTXOs), `wallet` (admission gating), `db` (persistence), `waved` (wiring, owned-script adapters, incoming event route).
+- **Depended on by**: `round` (triggers forfeit requests), `oor` (incoming VTXOs), `wallet` (admission gating), `db` (persistence), `waved` (wiring, owned-script adapters, incoming event route, plus `CheckForfeitAdmission` for the leave-admission filter and the exit-plan round-commitment advisory), `sdk/swaps` (forfeit sign-request conversion).
 - **Sends**:
   - → `round` (via manager relay): `RelayToRoundMsg` wrapping `ForfeitSignatureSubmission`
   - → `db` (via outbox): `VTXOStatusUpdate`

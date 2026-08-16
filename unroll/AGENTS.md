@@ -122,6 +122,21 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   derives the wallet fee-input amount an operator/caller should fund
   before starting the exit; `RecommendedExitFeeInputAmount` reads the
   verdict for the same number.
+- `ExitInfeasibilityReason` — the verdict enum (`ExitFeasible`,
+  `ExitDustAfterFees`, `ExitUneconomical`, `ExitWalletUnderfunded`,
+  `ExitWalletTooFewInputs`, `ExitRoundCommitted`), rendered by
+  `String()` for logs and RPC. `ExitRoundCommitted` is the odd one out
+  and must stay that way: it is **not** produced by
+  `AssessExitFeasibility` at all. The exit preview
+  (`waved.exitPlanEntry`) stamps it from the VTXO's lifecycle state
+  after the funding assessment, and only when the funding verdict was
+  otherwise `ExitFeasible` — a real funding problem is what the user
+  must act on, while a commitment resolves on its own once the round
+  confirms. It is advisory rather than a block: the manual unroll path
+  has no commitment check and performs the exit regardless, which is
+  the only recovery when the operator is unreachable and the round's
+  commitment never confirms (the forfeit can never confirm either). So
+  the funding figures are still computed alongside it.
 - `ExitProgress` (in `GetStatusResp`) — `ConfirmedTxs`/`InFlightTxs`/
   `ReadyTxs`/`BlockedTxs` counts over the proof graph, for status
   probes.
