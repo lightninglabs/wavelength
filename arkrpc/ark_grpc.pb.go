@@ -19,8 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ArkService_GetInfo_FullMethodName     = "/arkrpc.ArkService/GetInfo"
-	ArkService_EstimateFee_FullMethodName = "/arkrpc.ArkService/EstimateFee"
+	ArkService_GetInfo_FullMethodName         = "/arkrpc.ArkService/GetInfo"
+	ArkService_EstimateFee_FullMethodName     = "/arkrpc.ArkService/EstimateFee"
+	ArkService_LeaseOORCarrier_FullMethodName = "/arkrpc.ArkService/LeaseOORCarrier"
 )
 
 // ArkServiceClient is the client API for ArkService service.
@@ -33,6 +34,11 @@ type ArkServiceClient interface {
 	// showing liquidity cost, on-chain share, margin, and minimum
 	// viable VTXO at current rates and utilization.
 	EstimateFee(ctx context.Context, in *EstimateFeeRequest, opts ...grpc.CallOption) (*EstimateFeeResponse, error)
+	// LeaseOORCarrier reserves one of the operator's carrier float
+	// VTXOs for an out-of-round transfer that needs the operator to
+	// fund its new asset-leaf carriers. The lease expires on its own
+	// if no submit consumes the returned outpoint in time.
+	LeaseOORCarrier(ctx context.Context, in *LeaseOORCarrierRequest, opts ...grpc.CallOption) (*LeaseOORCarrierResponse, error)
 }
 
 type arkServiceClient struct {
@@ -63,6 +69,16 @@ func (c *arkServiceClient) EstimateFee(ctx context.Context, in *EstimateFeeReque
 	return out, nil
 }
 
+func (c *arkServiceClient) LeaseOORCarrier(ctx context.Context, in *LeaseOORCarrierRequest, opts ...grpc.CallOption) (*LeaseOORCarrierResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LeaseOORCarrierResponse)
+	err := c.cc.Invoke(ctx, ArkService_LeaseOORCarrier_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ArkServiceServer is the server API for ArkService service.
 // All implementations must embed UnimplementedArkServiceServer
 // for forward compatibility.
@@ -73,6 +89,11 @@ type ArkServiceServer interface {
 	// showing liquidity cost, on-chain share, margin, and minimum
 	// viable VTXO at current rates and utilization.
 	EstimateFee(context.Context, *EstimateFeeRequest) (*EstimateFeeResponse, error)
+	// LeaseOORCarrier reserves one of the operator's carrier float
+	// VTXOs for an out-of-round transfer that needs the operator to
+	// fund its new asset-leaf carriers. The lease expires on its own
+	// if no submit consumes the returned outpoint in time.
+	LeaseOORCarrier(context.Context, *LeaseOORCarrierRequest) (*LeaseOORCarrierResponse, error)
 	mustEmbedUnimplementedArkServiceServer()
 }
 
@@ -88,6 +109,9 @@ func (UnimplementedArkServiceServer) GetInfo(context.Context, *GetInfoRequest) (
 }
 func (UnimplementedArkServiceServer) EstimateFee(context.Context, *EstimateFeeRequest) (*EstimateFeeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method EstimateFee not implemented")
+}
+func (UnimplementedArkServiceServer) LeaseOORCarrier(context.Context, *LeaseOORCarrierRequest) (*LeaseOORCarrierResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method LeaseOORCarrier not implemented")
 }
 func (UnimplementedArkServiceServer) mustEmbedUnimplementedArkServiceServer() {}
 func (UnimplementedArkServiceServer) testEmbeddedByValue()                    {}
@@ -146,6 +170,24 @@ func _ArkService_EstimateFee_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ArkService_LeaseOORCarrier_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LeaseOORCarrierRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArkServiceServer).LeaseOORCarrier(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArkService_LeaseOORCarrier_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArkServiceServer).LeaseOORCarrier(ctx, req.(*LeaseOORCarrierRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ArkService_ServiceDesc is the grpc.ServiceDesc for ArkService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -160,6 +202,10 @@ var ArkService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "EstimateFee",
 			Handler:    _ArkService_EstimateFee_Handler,
+		},
+		{
+			MethodName: "LeaseOORCarrier",
+			Handler:    _ArkService_LeaseOORCarrier_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
