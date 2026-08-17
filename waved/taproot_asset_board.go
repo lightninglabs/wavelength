@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/chainsource"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/round"
 	"github.com/lightninglabs/wavelength/tapassets"
 )
 
@@ -172,8 +173,10 @@ func (s *Server) BoardTaprootAsset(ctx context.Context, requestID string) (
 	}
 
 	// An existing boarding intent for the outpoint means an earlier call
-	// already completed the round registration; replaying it would hand
-	// the round actor a duplicate intent.
+	// already registered the intents; replaying it would hand the round
+	// actor a duplicate intent. Still nudge the join: a crash between
+	// that registration and the join would otherwise park the intents
+	// until an unrelated round join flushes them.
 	existing, err := s.newBoardingStore().FetchBoardingIntentOutpoints(
 		ctx,
 	)
@@ -183,6 +186,10 @@ func (s *Server) BoardTaprootAsset(ctx context.Context, requestID string) (
 	for _, op := range existing {
 		if op == disclosure.Outpoint {
 			result.AlreadyBoarded = true
+
+			if err := s.joinAssetBoardingRound(ctx); err != nil {
+				return nil, err
+			}
 
 			return result, nil
 		}
@@ -255,7 +262,26 @@ func (s *Server) BoardTaprootAsset(ctx context.Context, requestID string) (
 		return nil, fmt.Errorf("register asset VTXO request: %w", err)
 	}
 
+	if err := s.joinAssetBoardingRound(ctx); err != nil {
+		return nil, err
+	}
+
 	return result, nil
+}
+
+// joinAssetBoardingRound commits the queued boarding intents to the next
+// round. The registrations only queue intents, and the standalone build does
+// not join eagerly, so without this nudge the round actor waits for an
+// external JoinNextRound that a one-shot boarding caller never sends.
+// ErrNoPendingRound is benign: a join is already in flight (eager mode) or
+// an earlier call committed the intents.
+func (s *Server) joinAssetBoardingRound(ctx context.Context) error {
+	err := s.TriggerRoundRegistration(ctx)
+	if err != nil && !errors.Is(err, round.ErrNoPendingRound) {
+		return fmt.Errorf("trigger round registration: %w", err)
+	}
+
+	return nil
 }
 
 // assetBoardingConfirmation resolves the onboarded output's confirmation
