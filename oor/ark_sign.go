@@ -135,6 +135,12 @@ func signArkPSBTInput(signer input.Signer, arkPSBT *psbt.Packet, inputIndex int,
 		return err
 	}
 
+	// The operator provides both required leaf signatures for its own
+	// funded float input during cosign; the wallet holds no key for it.
+	if in.OperatorFunded {
+		return nil
+	}
+
 	pInput := &arkPSBT.Inputs[inputIndex]
 
 	// Find the collab leaf by matching against the expected owner

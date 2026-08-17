@@ -59,6 +59,14 @@ type TransferInput struct {
 	// ExternalSignatures are tapscript signatures produced by additional
 	// custom-spend participants before the local daemon adds its signature.
 	ExternalSignatures []ExternalTaprootScriptSignature
+
+	// OperatorFunded marks an input the local wallet cannot sign: an
+	// operator carrier-float VTXO leased for the transfer. The operator
+	// signs both legs of its checkpoint and Ark spends, so every local
+	// signing site skips the input while still verifying the operator's
+	// signatures. The input carries no ClientKey; its policy template and
+	// owner leaf come from the lease.
+	OperatorFunded bool
 }
 
 // ExternalTaprootScriptSignature carries one externally produced tapscript
@@ -88,6 +96,23 @@ func InputOutpoints(inputs []TransferInput) []wire.OutPoint {
 	return outpoints
 }
 
+// WalletInputOutpoints returns the outpoints of the inputs the local wallet
+// funds and signs. Operator-funded float inputs are excluded because they are
+// not wallet VTXOs: reservation stores and spend accounting reject or
+// misattribute outpoints that have no local VTXO row.
+func WalletInputOutpoints(inputs []TransferInput) []wire.OutPoint {
+	outpoints := make([]wire.OutPoint, 0, len(inputs))
+	for i := range inputs {
+		if inputs[i].OperatorFunded {
+			continue
+		}
+
+		outpoints = append(outpoints, inputs[i].VTXO.Outpoint)
+	}
+
+	return outpoints
+}
+
 // Validate performs basic structural validation. For custom spend
 // paths, the TapScript and ClientKey requirements are relaxed since
 // the spend path carries its own signing context.
@@ -105,11 +130,40 @@ func (i *TransferInput) Validate() error {
 	case len(i.VTXO.PkScript) == 0:
 		return fmt.Errorf("vtxo pkScript must be provided")
 
-	case !i.IsCustomSpend() && i.VTXO.TapScript == nil:
+	case !i.IsCustomSpend() && !i.OperatorFunded &&
+		i.VTXO.TapScript == nil:
 		return fmt.Errorf("vtxo tapscript must be provided")
 
-	case !i.IsCustomSpend() && i.VTXO.ClientKey.PubKey == nil:
+	case !i.IsCustomSpend() && !i.OperatorFunded &&
+		i.VTXO.ClientKey.PubKey == nil:
 		return fmt.Errorf("vtxo client key must be provided")
+	}
+
+	// An operator-funded input carries no local key material, so nothing
+	// can be auto-derived: the lease must have supplied the policy, the
+	// owner leaf, and the operator key explicitly.
+	if i.OperatorFunded {
+		switch {
+		case i.IsCustomSpend():
+			return fmt.Errorf("operator-funded input cannot use " +
+				"a custom spend path")
+
+		case i.VTXO.ClientKey.PubKey != nil:
+			return fmt.Errorf("operator-funded input cannot " +
+				"carry a client key")
+
+		case len(i.VTXOPolicyTemplate) == 0:
+			return fmt.Errorf("operator-funded input requires a " +
+				"policy template")
+
+		case len(i.OwnerLeafPolicy) == 0:
+			return fmt.Errorf("operator-funded input requires an " +
+				"owner leaf policy")
+
+		case i.VTXO.OperatorKey == nil:
+			return fmt.Errorf("operator-funded input requires an " +
+				"operator key")
+		}
 	}
 	if (i.VTXO.TaprootAssetRef == "") !=
 		(i.VTXO.TaprootAssetAmount == 0) {

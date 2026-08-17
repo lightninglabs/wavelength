@@ -57,6 +57,13 @@ func SignCheckpointPSBTs(signer input.Signer, inputs []TransferInput,
 	}
 
 	for i := range inputs {
+		// The operator signs both legs of its own funded float input;
+		// the wallet holds no key for it. The operator leg was already
+		// verified above like every other input.
+		if inputs[i].OperatorFunded {
+			continue
+		}
+
 		err = signCheckpointPSBT(signer, &inputs[i], checkpoints[i])
 		if err != nil {
 			return fmt.Errorf("sign checkpoint %d: %w", i, err)

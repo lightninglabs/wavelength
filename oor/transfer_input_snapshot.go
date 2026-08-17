@@ -92,6 +92,11 @@ type TransferInputSnapshot struct {
 	// ExternalSignatures are pre-collected tapscript signatures needed to
 	// resume custom OOR spends after restart.
 	ExternalSignatures []ExternalTaprootScriptSignature
+
+	// OperatorFunded marks an input the local wallet cannot sign (an
+	// operator carrier-float VTXO). It must survive snapshots so a
+	// resumed session never re-attempts local signing on the input.
+	OperatorFunded bool
 }
 
 // ToSnapshot converts the transfer input into a portable snapshot.
@@ -122,6 +127,7 @@ func (i *TransferInput) ToSnapshot() (*TransferInputSnapshot, error) {
 		OwnerLeafPolicy:    i.OwnerLeafPolicy,
 		VTXOPolicyTemplate: i.VTXOPolicyTemplate,
 		PkScript:           i.VTXO.PkScript,
+		OperatorFunded:     i.OperatorFunded,
 	}
 	if i.TaprootAssetRoot != nil {
 		root := *i.TaprootAssetRoot
@@ -165,8 +171,19 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 		return TransferInput{}, fmt.Errorf("amount must be positive")
 	}
 
-	if len(snap.ClientPubKey) == 0 || len(snap.OperatorPubKey) == 0 {
-		return TransferInput{}, fmt.Errorf("pubkeys must be provided")
+	if len(snap.OperatorPubKey) == 0 {
+		return TransferInput{}, fmt.Errorf("operator pubkey must be " +
+			"provided")
+	}
+
+	if len(snap.ClientPubKey) == 0 && !snap.OperatorFunded {
+		return TransferInput{}, fmt.Errorf("client pubkey must be " +
+			"provided")
+	}
+
+	if snap.OperatorFunded && len(snap.PkScript) == 0 {
+		return TransferInput{}, fmt.Errorf("operator-funded input " +
+			"requires a stored pkscript")
 	}
 
 	if snap.ExitDelay == 0 {
@@ -179,46 +196,59 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 			"policy must be provided")
 	}
 
-	clientPub, err := btcec.ParsePubKey(snap.ClientPubKey)
-	if err != nil {
-		return TransferInput{}, fmt.Errorf("parse client pubkey: %w",
-			err)
-	}
-
 	operatorPub, err := btcec.ParsePubKey(snap.OperatorPubKey)
 	if err != nil {
 		return TransferInput{}, fmt.Errorf("parse operator pubkey: %w",
 			err)
 	}
 
-	tapScript, err := arkscript.VTXOTapScript(
-		clientPub, operatorPub, snap.ExitDelay,
-	)
-	if err != nil {
-		return TransferInput{}, fmt.Errorf("rebuild vtxo tapscript: %w",
-			err)
-	}
-
-	tapKey, err := arkscript.VTXOTapKey(
-		clientPub, operatorPub, snap.ExitDelay,
-	)
-	if err != nil {
-		return TransferInput{}, fmt.Errorf("rebuild vtxo tapkey: %w",
-			err)
-	}
-
-	pkScript, err := txscript.PayToTaprootScript(tapKey)
-	if err != nil {
-		return TransferInput{}, fmt.Errorf("build vtxo pkscript: %w",
-			err)
-	}
-
 	desc := &vtxo.Descriptor{
-		Outpoint:       snap.Outpoint,
-		Amount:         btcutil.Amount(snap.AmountSat),
-		PolicyTemplate: bytes.Clone(snap.VTXOPolicyTemplate),
-		PkScript:       pkScript,
-		ClientKey: keychain.KeyDescriptor{
+		Outpoint:           snap.Outpoint,
+		Amount:             btcutil.Amount(snap.AmountSat),
+		PolicyTemplate:     bytes.Clone(snap.VTXOPolicyTemplate),
+		TaprootAssetRoot:   snap.TaprootAssetRoot,
+		TaprootAssetRef:    snap.TaprootAssetRef,
+		TaprootAssetAmount: snap.TaprootAssetAmount,
+		OperatorKey:        operatorPub,
+		RelativeExpiry:     snap.ExitDelay,
+		Status:             vtxo.VTXOStatusLive,
+	}
+
+	// An operator-funded float input has no local key material, so the
+	// stored pkScript and lease-supplied policy are authoritative; no
+	// tapscript can or needs to be rebuilt for local signing.
+	if !snap.OperatorFunded {
+		clientPub, err := btcec.ParsePubKey(snap.ClientPubKey)
+		if err != nil {
+			return TransferInput{}, fmt.Errorf("parse client "+
+				"pubkey: %w", err)
+		}
+
+		tapScript, err := arkscript.VTXOTapScript(
+			clientPub, operatorPub, snap.ExitDelay,
+		)
+		if err != nil {
+			return TransferInput{}, fmt.Errorf("rebuild vtxo "+
+				"tapscript: %w", err)
+		}
+
+		tapKey, err := arkscript.VTXOTapKey(
+			clientPub, operatorPub, snap.ExitDelay,
+		)
+		if err != nil {
+			return TransferInput{}, fmt.Errorf("rebuild vtxo "+
+				"tapkey: %w", err)
+		}
+
+		pkScript, err := txscript.PayToTaprootScript(tapKey)
+		if err != nil {
+			return TransferInput{}, fmt.Errorf("build vtxo "+
+				"pkscript: %w", err)
+		}
+
+		desc.PkScript = pkScript
+		desc.TapScript = tapScript
+		desc.ClientKey = keychain.KeyDescriptor{
 			KeyLocator: keychain.KeyLocator{
 				Family: keychain.KeyFamily(
 					snap.ClientKeyFamily,
@@ -226,14 +256,7 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 				Index: snap.ClientKeyIndex,
 			},
 			PubKey: clientPub,
-		},
-		TaprootAssetRoot:   snap.TaprootAssetRoot,
-		TaprootAssetRef:    snap.TaprootAssetRef,
-		TaprootAssetAmount: snap.TaprootAssetAmount,
-		OperatorKey:        operatorPub,
-		TapScript:          tapScript,
-		RelativeExpiry:     snap.ExitDelay,
-		Status:             vtxo.VTXOStatusLive,
+		}
 	}
 
 	result := TransferInput{
@@ -242,6 +265,7 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 		OwnerLeafPolicy:    snap.OwnerLeafPolicy,
 		VTXOPolicyTemplate: snap.VTXOPolicyTemplate,
 		TaprootAssetRoot:   snap.TaprootAssetRoot,
+		OperatorFunded:     snap.OperatorFunded,
 	}
 
 	if len(snap.SpendWitnessScript) > 0 {
