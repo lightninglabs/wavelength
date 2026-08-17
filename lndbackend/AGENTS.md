@@ -12,10 +12,13 @@ MuSig2) for the round actor, and proof-key derivation/signing.
   Implements `wallet.BoardingBackend` and `wallet.OutputLeaser`.
   `GetTransaction` returns `*wallet.TxInfo`; `GetBlock` fetches raw blocks via
   `chainKit` for TxProof merkle inclusion. `ListUnspent` spans every wallet
-  account including imported watch-only scripts; `ListUnspentDefaultAccount`
-  restricts to the default account for CPFP fee-input selection (watch-only
-  outputs are unsignable). `LeaseOutput`/`ReleaseOutput` forward to
-  walletKit, casting `wallet.LockID` <-> `wtxmgr.LockID`.
+  account including imported watch-only scripts; `ListUnspentWalletAccount`
+  restricts to the backend's own account for CPFP fee-input selection
+  (watch-only outputs are unsignable). The account defaults to
+  `DefaultWalletAccount` (lnd's "default") and is overridden with the
+  `WithAccount` option; `Account()`/`IsDefaultAccount()` expose it to PSBT
+  builders. `LeaseOutput`/`ReleaseOutput` forward to walletKit, casting
+  `wallet.LockID` <-> `wtxmgr.LockID`.
 - `ClientWallet` — Adapts lndclient's remote signer to `input.Signer` +
   MuSig2 (`round.ClientWallet`), so the round actor can sign VTXO tree
   branches and forfeit transactions via LND's remote signer without a local
@@ -39,9 +42,23 @@ MuSig2) for the round actor, and proof-key derivation/signing.
 - `ClientWallet.signOutputRawWithLocator` always forwards the key locator
   when set (including family != 0, index == 0), working around an lndclient
   gap that otherwise breaks the family-6/index-0 identity signing path.
-- CPFP fee-input selection must use `ListUnspentDefaultAccount`, not
+- CPFP fee-input selection must use `ListUnspentWalletAccount`, not
   `ListUnspent`: offering a watch-only (imported script) output as a fee
   input makes the child PSBT unsignable.
+- Every lnd call that spends, derives change, or signs must use the same
+  account (`Account()`). A custom account lives in one key scope, so lnd
+  rejects an explicit `ChangeType` for it on the `Psbt`/`Raw` templates —
+  guard that with `IsDefaultAccount()`.
+- A custom account must be **taproot-scoped**, and not because of CPFP
+  witness types: lnd resolves a custom account name *within the key scope
+  the requested address type implies* (`keyScopeForAccountAddr`), and every
+  address this daemon derives asks for taproot, so an account under any
+  other scope fails address derivation outright with "account not found".
+- Observation must stay unscoped. Imported boarding scripts live in lnd's
+  watch-only account, which belongs to no wallet account, so an account
+  filter hides them — and lnd treats an empty account name as *every*
+  account but `"default"` as a real filter, so scoping an observation path
+  breaks it even with no account configured.
 
 ## Deep Docs
 

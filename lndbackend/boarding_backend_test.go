@@ -43,8 +43,8 @@ func (f *fakeWalletKit) ListUnspent(_ context.Context, minConfs, maxConfs int32,
 }
 
 // TestListUnspentAccountScoping verifies that the general ListUnspent
-// enumeration spans all accounts while ListUnspentDefaultAccount pins the
-// query to LND's default account. The distinction is what keeps imported
+// enumeration spans all accounts while ListUnspentWalletAccount pins the
+// query to the backend's own account. The distinction is what keeps imported
 // watch-only script outputs (boarding/exit scripts) out of CPFP fee-input
 // selection: those coins list fine but LND's FinalizePsbt cannot sign
 // them, so offering one as a fee input fails the child with "PSBT is not
@@ -87,12 +87,80 @@ func TestListUnspentAccountScoping(t *testing.T) {
 	require.Equal(t, utxo.Value, utxos[0].Amount)
 	require.Equal(t, int32(3), utxos[0].Confirmations)
 
-	// The fee-input enumeration pins the default account so only coins
-	// the wallet can unilaterally sign are offered.
-	utxos, err = backend.ListUnspentDefaultAccount(t.Context(), 1, 100)
+	// The fee-input enumeration pins the wallet's account so only coins
+	// the wallet can unilaterally sign are offered. Without an explicit
+	// account that is LND's default one.
+	utxos, err = backend.ListUnspentWalletAccount(t.Context(), 1, 100)
 	require.NoError(t, err)
-	require.Equal(
-		t, lnwallet.DefaultAccountName, walletKit.lastReq.Account,
-	)
+	require.Equal(t, DefaultWalletAccount, walletKit.lastReq.Account)
 	require.Len(t, utxos, 1)
+	require.True(t, backend.IsDefaultAccount())
+}
+
+// TestListUnspentCustomAccount verifies that a backend pinned to a named
+// account only ever offers that account's coins for spending, while still
+// enumerating every account when asked for the unfiltered view. This is what
+// stops a daemon sharing an LND node from funding its transactions out of
+// another daemon's balance.
+func TestListUnspentCustomAccount(t *testing.T) {
+	t.Parallel()
+
+	const account = "swapd"
+
+	walletKit := &fakeWalletKit{}
+	backend := NewBoardingBackend(walletKit, nil, WithAccount(account))
+
+	require.Equal(t, account, backend.Account())
+	require.False(t, backend.IsDefaultAccount())
+
+	// Spending enumeration is confined to the configured account.
+	_, err := backend.ListUnspentWalletAccount(t.Context(), 1, 100)
+	require.NoError(t, err)
+	require.Equal(t, account, walletKit.lastReq.Account)
+
+	// Observation is deliberately not: imported boarding scripts live in
+	// LND's watch-only account and must stay visible.
+	_, err = backend.ListUnspent(t.Context(), 1, 100)
+	require.NoError(t, err)
+	require.Empty(t, walletKit.lastReq.Account)
+}
+
+// TestWithAccountEmptyKeepsDefault verifies that an unset account config leaves
+// the backend on LND's default account, so deployments that never configure
+// accounts keep their existing behaviour.
+func TestWithAccountEmptyKeepsDefault(t *testing.T) {
+	t.Parallel()
+
+	backend := NewBoardingBackend(&fakeWalletKit{}, nil, WithAccount(""))
+	require.Equal(t, DefaultWalletAccount, backend.Account())
+	require.True(t, backend.IsDefaultAccount())
+}
+
+// TestListUnspentObservationStaysUnscoped is a regression guard for the split
+// between observing and spending.
+//
+// Boarding scripts are imported into LND's watch-only account, which belongs
+// to no wallet account, so an account filter excludes them. Callers that exist
+// to see pending deposits — the unconfirmed boarding balance and the boarding
+// activity view — go through the unfiltered enumeration for exactly that
+// reason. Narrowing it would empty both with no error and no log line, and
+// would do so even with no account configured, since LND treats an empty
+// account as "every account" but "default" as a real filter.
+func TestListUnspentObservationStaysUnscoped(t *testing.T) {
+	t.Parallel()
+
+	for _, account := range []string{"", DefaultWalletAccount, "swapd"} {
+		walletKit := &fakeWalletKit{}
+		backend := NewBoardingBackend(
+			walletKit, nil, WithAccount(account),
+		)
+
+		_, err := backend.ListUnspent(t.Context(), 0, 100)
+		require.NoError(t, err)
+		require.Empty(
+			t, walletKit.lastReq.Account, "observation must not "+
+				"be filtered by account, configured account %q",
+			account,
+		)
+	}
 }
