@@ -9,8 +9,10 @@ repository root.
 
 After this change, a caller can attach an idempotency key to
 `NewReceiveScript`. Repeating the same request, including after the daemon
-restarts, returns the same wallet key, taproot script, label, and absolute
-registration expiry. A retry never silently extends the registration lifetime.
+restarts, returns the same wallet key, taproot script, and label. Replay within
+an active indexer window returns its absolute expiry unchanged. Replay after
+expiry atomically persists and resumes one new registration window for the
+same script before contacting the indexer.
 Calls without an idempotency key keep the existing behavior and allocate a
 fresh destination each time.
 
@@ -40,7 +42,14 @@ tests and migration tests.
 - [x] (2026-08-17 10:18Z) Ran full SQLite and PostgreSQL-tagged unit suites,
   generation checks, formatting, lint, module checks, documentation audit,
   funds-safety review, and compatibility review.
-- [ ] Refresh upstream and recheck migration numbering before push.
+- [x] (2026-08-17 12:00Z) Gateway found expired replay, broad SQL conflict,
+  canceled-waiter, PostgreSQL key-validation, namespace-documentation, and
+  RPC-level failure-coverage gaps.
+- [x] (2026-08-17 12:45Z) Rebased onto fresh upstream and addressed all five
+  findings with durable expired-window renewal, targeted conflict handling,
+  context-aware keyed locking, portable key validation, documentation, and
+  public RPC regression tests.
+- [ ] Re-run full verification and Gateway review on the new exact head.
 
 ## Surprises & Discoveries
 
@@ -83,8 +92,10 @@ tests and migration tests.
 - Decision: treat the normalized label as the caller-controlled immutable
   fingerprint. The daemon selects and persists one absolute expiry.
   Rationale: concurrent first calls can accept the same durable winner without
-  comparing independently resolved default expiries. Replay still never
-  extends the stored lifetime.
+  comparing independently resolved default expiries. Replay keeps that expiry
+  while it is active; after expiry, one exact durable CAS replaces only the
+  registration window and remote request key so the same allocation remains
+  usable.
   Date/Author: 2026-08-17, Codex.
 
 - Decision: store the allocation before indexer registration, and retain it if
@@ -105,15 +116,26 @@ tests and migration tests.
 - Decision: persist a random mailbox RPC key and registration-completion time.
   Serialize only callers sharing one local idempotency key.
   Rationale: ambiguous remote results retry one logical request, completed
-  replay does not depend on the indexer, and unrelated allocations remain
-  concurrent.
+  replay within its active window does not depend on the indexer, expired
+  replay starts one new durable remote operation, and unrelated allocations
+  remain concurrent.
+  Date/Author: 2026-08-17, Codex.
+
+- Decision: renew an expired registration in place instead of rejecting the
+  durable key or allocating a new script.
+  Rationale: callers may retain possible-funded value after the first indexer
+  window. Changing the wallet key or permanently rejecting replay would strand
+  recovery evidence. The renewal changes only expiry, remote request key, and
+  completion evidence before the remote call.
   Date/Author: 2026-08-17, Codex.
 
 ## Outcomes & Retrospective
 
 The implementation now persists one immutable allocation and remote mailbox
-key before registration. Completed replay does not contact the indexer.
-Pending replay reuses the original script, expiry, label, and mailbox key.
+key before registration. Completed replay within the active window does not
+contact the indexer. Pending replay reuses the original script, expiry, label,
+and mailbox key. Expired replay persists one fresh window and mailbox key,
+then registers the same script.
 
 Focused SQLite store, RPC, restart, concurrency, and failure-shape tests pass.
 Focused race tests pass. The full unit suite and full PostgreSQL-tagged suite
@@ -174,8 +196,11 @@ key, first look up the exact durable allocation. If none exists, derive a wallet
 key, build the script, mint one mailbox request key, and admit it through the
 store. Then register the stored script with the indexer using its stored
 expiry, label, and mailbox key. Mark completion only after acknowledgement.
-Pending state remains if registration fails. A completed replay returns from
-storage without calling the indexer. Return fields from the stored allocation.
+Pending state remains if registration fails. A completed replay within its
+active registration window returns from storage without calling the indexer.
+An expired replay atomically stores one replacement expiry and mailbox key,
+clears completion, and re-registers the same allocation. Return fields from
+the stored allocation.
 
 Keep the general-purpose `RegisterOwnedOORReceiveScript` behavior compatible
 for the daemon's existing default-script and recovery paths. Add a narrow
@@ -280,3 +305,8 @@ registration ordering.
 Plan revision note: updated 2026-08-17 after mailbox-contract review. The plan
 now records the stable remote request key, completion evidence, keyed local
 serialization, daemon-owned expiry, and correct PostgreSQL test tag.
+
+Plan revision note: updated 2026-08-17 after Gateway review. Expired replay now
+renews the same durable allocation through a persisted CAS before remote work;
+the plan also records targeted SQL conflicts, cancelable key locking, portable
+key validation, the global key namespace, and RPC-level ambiguous retry tests.

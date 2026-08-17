@@ -6,8 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"sync"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/lightninglabs/wavelength/db"
@@ -26,8 +27,8 @@ const (
 
 // receiveScriptLock serializes callers for one receive-script idempotency key.
 type receiveScriptLock struct {
-	mu   sync.Mutex
-	refs int
+	token chan struct{}
+	refs  int
 }
 
 // receiveScriptRegistrationCompleter persists acknowledged remote
@@ -65,13 +66,27 @@ func (r *RPCServer) NewReceiveScript(ctx context.Context,
 				"idempotency_key exceeds %d bytes",
 				db.MaxOwnedReceiveScriptIdempotencyKeyBytes)
 		}
+		hasControl := strings.IndexFunc(
+			req.IdempotencyKey, unicode.IsControl,
+		) >= 0
+		if hasControl {
+			return nil, status.Error(
+				codes.InvalidArgument,
+				"idempotency_key contains control characters",
+			)
+		}
 
 		if r.server.db == nil {
 			return nil, status.Errorf(codes.Internal, "database "+
 				"not initialized")
 		}
 
-		release := r.acquireReceiveScriptLock(req.IdempotencyKey)
+		release, err := r.acquireReceiveScriptLock(
+			ctx, req.IdempotencyKey,
+		)
+		if err != nil {
+			return nil, status.FromContextError(err).Err()
+		}
 		defer release()
 
 		return r.newIdempotentReceiveScript(
@@ -170,6 +185,25 @@ func (r *RPCServer) newIdempotentReceiveScript(ctx context.Context,
 		)
 		if err != nil {
 			return nil, err
+		}
+	}
+
+	now := r.server.clk.Now()
+	if !rec.RegistrationExpiresAt.After(now) {
+		nextRPCKey, err := mailboxrpc.NewIdempotencyKey()
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "unable to "+
+				"allocate renewal request key: %v", err)
+		}
+
+		rec, err = store.RenewOwnedReceiveScriptRegistration(
+			ctx, *rec, now.Add(defaultOORRegistrationTTL),
+			nextRPCKey,
+		)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "unable to "+
+				"renew OOR receive script registration: %v",
+				err)
 		}
 	}
 
@@ -346,8 +380,11 @@ func newReceiveScriptResponse(
 }
 
 // acquireReceiveScriptLock locks one idempotency key and returns its release
-// function. The registry entry is removed after the final waiter exits.
-func (r *RPCServer) acquireReceiveScriptLock(key string) func() {
+// function. A canceled waiter leaves promptly, and the registry entry is
+// removed after the final holder or waiter exits.
+func (r *RPCServer) acquireReceiveScriptLock(ctx context.Context, key string) (
+	func(), error) {
+
 	r.receiveScriptLocksMu.Lock()
 	if r.receiveScriptLocks == nil {
 		r.receiveScriptLocks = make(map[string]*receiveScriptLock)
@@ -355,17 +392,16 @@ func (r *RPCServer) acquireReceiveScriptLock(key string) func() {
 
 	entry, ok := r.receiveScriptLocks[key]
 	if !ok {
-		entry = &receiveScriptLock{}
+		entry = &receiveScriptLock{
+			token: make(chan struct{}, 1),
+		}
+		entry.token <- struct{}{}
 		r.receiveScriptLocks[key] = entry
 	}
 	entry.refs++
 	r.receiveScriptLocksMu.Unlock()
 
-	entry.mu.Lock()
-
-	return func() {
-		entry.mu.Unlock()
-
+	releaseRef := func() {
 		r.receiveScriptLocksMu.Lock()
 		entry.refs--
 		if entry.refs == 0 {
@@ -373,6 +409,20 @@ func (r *RPCServer) acquireReceiveScriptLock(key string) func() {
 		}
 		r.receiveScriptLocksMu.Unlock()
 	}
+
+	select {
+	case <-ctx.Done():
+		releaseRef()
+
+		return nil, ctx.Err()
+
+	case <-entry.token:
+	}
+
+	return func() {
+		entry.token <- struct{}{}
+		releaseRef()
+	}, nil
 }
 
 // newOORReceiveScriptStore returns the artifact store used to persist owned

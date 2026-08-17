@@ -2345,7 +2345,9 @@ type NewReceiveScriptRequest struct {
 	// non-empty key with the same normalized label returns the original
 	// receive script and expiry. Reusing it with a different label is
 	// rejected. An empty key preserves the legacy behavior and allocates a
-	// fresh script.
+	// fresh script. The key namespace is global to this daemon; callers must
+	// prefix keys with an application or tenant identity when they share one
+	// daemon.
 	IdempotencyKey string `protobuf:"bytes,2,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache

@@ -375,6 +375,7 @@ type Querier interface {
 	// PullActivityEvents returns transition rows strictly after the cursor in
 	// event_seq order, the resumable-subscribe replay primitive.
 	PullActivityEvents(ctx context.Context, arg PullActivityEventsParams) ([]ActivityEvent, error)
+	RenewOwnedReceiveScriptRegistration(ctx context.Context, arg RenewOwnedReceiveScriptRegistrationParams) (int64, error)
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error

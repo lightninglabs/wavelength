@@ -376,6 +376,8 @@ func (s *testOwnedReceiveScriptSigner) ProofPubKey(_ []byte) (*btcec.PublicKey,
 type testReceiveScriptRPCClient struct {
 	registerReqs []*arkrpc.RegisterReceiveScriptRequest
 	registerOpts []mailboxrpc.RPCOptions
+	awaitErrors  []error
+	awaitCalls   int
 }
 
 // SendRPC records RegisterReceiveScript requests and returns a fixed result.
@@ -405,6 +407,14 @@ func (c *testReceiveScriptRPCClient) SendRPC(_ context.Context,
 // AwaitRPC populates the response expected by the generated mailbox client.
 func (c *testReceiveScriptRPCClient) AwaitRPC(_ context.Context, _ string,
 	resp proto.Message) error {
+
+	if c.awaitCalls < len(c.awaitErrors) {
+		err := c.awaitErrors[c.awaitCalls]
+		c.awaitCalls++
+		if err != nil {
+			return err
+		}
+	}
 
 	registerResp, ok := resp.(*arkrpc.RegisterReceiveScriptResponse)
 	if !ok {

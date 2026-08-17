@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
@@ -192,6 +194,14 @@ type OORArtifactStore interface {
 	// allocation.
 	GetOwnedReceiveScriptByIdempotencyKey(ctx context.Context,
 		idempotencyKey sql.NullString) (sqlc.OwnedReceiveScript, error)
+
+	// RenewOwnedReceiveScriptRegistration atomically replaces one expired
+	// remote registration window without changing script ownership.
+	RenewOwnedReceiveScriptRegistration(ctx context.Context,
+		arg sqlc.RenewOwnedReceiveScriptRegistrationParams) (
+		int64,
+		error,
+	)
 
 	// MarkOwnedReceiveScriptRegistered records remote
 	// acknowledgement for one allocation and stable RPC key.
@@ -1136,6 +1146,132 @@ func (s *OORArtifactPersistenceStore) AdmitIdempotentOwnedReceiveScript(
 	return result, created, nil
 }
 
+// RenewOwnedReceiveScriptRegistration atomically replaces an expired indexer
+// registration window while preserving the allocation's wallet key, script,
+// label, and operator terms. A concurrent winner is returned so every retry
+// resumes the same new remote request key.
+func (s *OORArtifactPersistenceStore) RenewOwnedReceiveScriptRegistration(
+	ctx context.Context, existing OwnedReceiveScriptRecord,
+	nextExpiresAt time.Time, nextRPCKey string) (*OwnedReceiveScriptRecord,
+	error) {
+
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store must be provided")
+	}
+
+	if err := validateOwnedReceiveScriptReplay(
+		existing, existing.RegistrationLabel,
+	); err != nil {
+		return nil, err
+	}
+
+	now := s.clock.Now()
+	switch {
+	case nextRPCKey == "":
+		return nil, fmt.Errorf("next registration RPC key must be " +
+			"provided")
+
+	case !nextExpiresAt.After(now):
+		return nil, fmt.Errorf("next registration expiry must be in " +
+			"the future")
+
+	case nextExpiresAt.After(
+		now.Add(MaxOwnedReceiveScriptRegistrationTTL),
+	):
+		return nil, fmt.Errorf("next registration expiry exceeds %v",
+			MaxOwnedReceiveScriptRegistrationTTL)
+	}
+
+	var result *OwnedReceiveScriptRecord
+	err := s.db.ExecTx(
+		ctx, WriteTxOption(),
+		func(q OORArtifactStore) error {
+			expectedRPCKey := existing.RegistrationRPCKey
+			expectedExpiry := existing.RegistrationExpiresAt.Unix()
+			params :=
+				sqlc.RenewOwnedReceiveScriptRegistrationParams{
+					NextExpiresAt: sql.NullInt64{
+						Int64: nextExpiresAt.Unix(),
+						Valid: true,
+					},
+					NextRpcKey: sql.NullString{
+						String: nextRPCKey,
+						Valid:  true,
+					},
+					IdempotencyKey: sql.NullString{
+						String: existing.IdempotencyKey,
+						Valid:  true,
+					},
+					ExpectedRpcKey: sql.NullString{
+						String: expectedRPCKey,
+						Valid:  true,
+					},
+					ExpectedExpiresAt: sql.NullInt64{
+						Int64: expectedExpiry,
+						Valid: true,
+					},
+					NowUnix: sql.NullInt64{
+						Int64: now.Unix(),
+						Valid: true,
+					},
+				}
+			rows, err := q.RenewOwnedReceiveScriptRegistration(
+				ctx, params,
+			)
+			if err != nil {
+				return err
+			}
+
+			row, err := q.GetOwnedReceiveScriptByIdempotencyKey(
+				ctx, sql.NullString{
+					String: existing.IdempotencyKey,
+					Valid:  true,
+				},
+			)
+			if err != nil {
+				return fmt.Errorf("load renewed receive "+
+					"script: %w", err)
+			}
+
+			result, err = ownedReceiveScriptRowToRecord(ctx, q, row)
+			if err != nil {
+				return err
+			}
+
+			if err := validateOwnedReceiveScriptReplay(
+				*result, existing.RegistrationLabel,
+			); err != nil {
+				return err
+			}
+
+			stillExpired := !result.RegistrationExpiresAt.After(now)
+			if rows == 0 && stillExpired {
+				return fmt.Errorf("expired receive script " +
+					"registration renewal invariant failed")
+			}
+
+			nextExpiry := unixTimeUTC(nextExpiresAt.Unix())
+			rpcKeyMatches := result.RegistrationRPCKey == nextRPCKey
+			expiryMatches := result.RegistrationExpiresAt.Equal(
+				nextExpiry,
+			)
+			matchesRenewal := rpcKeyMatches && expiryMatches &&
+				result.RegistrationCompletedAt.IsNone()
+			if rows == 1 && !matchesRenewal {
+				return fmt.Errorf("renewed receive script " +
+					"registration invariant failed")
+			}
+
+			return nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
 // MarkOwnedReceiveScriptRegistered records an acknowledged indexer
 // registration. Repeating it succeeds only when the durable row already
 // proves that the same remote request completed.
@@ -1303,6 +1439,9 @@ func validateIdempotentOwnedReceiveScript(rec OwnedReceiveScriptRecord,
 		MaxOwnedReceiveScriptIdempotencyKeyBytes:
 		return fmt.Errorf("idempotency key exceeds %d bytes",
 			MaxOwnedReceiveScriptIdempotencyKeyBytes)
+
+	case strings.IndexFunc(rec.IdempotencyKey, unicode.IsControl) >= 0:
+		return fmt.Errorf("idempotency key contains control characters")
 
 	case len(rec.PkScript) == 0:
 		return fmt.Errorf("pk script must be provided")

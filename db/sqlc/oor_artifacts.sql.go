@@ -302,7 +302,7 @@ INSERT INTO owned_receive_scripts (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL
 )
-ON CONFLICT DO NOTHING
+ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 `
 
 type InsertIdempotentOwnedReceiveScriptParams struct {
@@ -622,6 +622,41 @@ type MarkOwnedReceiveScriptRegisteredParams struct {
 
 func (q *Queries) MarkOwnedReceiveScriptRegistered(ctx context.Context, arg MarkOwnedReceiveScriptRegisteredParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, MarkOwnedReceiveScriptRegistered, arg.IdempotencyKey, arg.RegistrationRpcKey, arg.RegistrationCompletedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const RenewOwnedReceiveScriptRegistration = `-- name: RenewOwnedReceiveScriptRegistration :execrows
+UPDATE owned_receive_scripts
+SET registration_expires_at = $1,
+    registration_rpc_key = $2,
+    registration_completed_at = NULL
+WHERE idempotency_key = $3
+  AND registration_rpc_key = $4
+  AND registration_expires_at = $5
+  AND registration_expires_at <= $6
+`
+
+type RenewOwnedReceiveScriptRegistrationParams struct {
+	NextExpiresAt     sql.NullInt64
+	NextRpcKey        sql.NullString
+	IdempotencyKey    sql.NullString
+	ExpectedRpcKey    sql.NullString
+	ExpectedExpiresAt sql.NullInt64
+	NowUnix           sql.NullInt64
+}
+
+func (q *Queries) RenewOwnedReceiveScriptRegistration(ctx context.Context, arg RenewOwnedReceiveScriptRegistrationParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, RenewOwnedReceiveScriptRegistration,
+		arg.NextExpiresAt,
+		arg.NextRpcKey,
+		arg.IdempotencyKey,
+		arg.ExpectedRpcKey,
+		arg.ExpectedExpiresAt,
+		arg.NowUnix,
+	)
 	if err != nil {
 		return 0, err
 	}
