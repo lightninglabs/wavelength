@@ -95,6 +95,19 @@ default builds avoid the swap executor's dependency graph.
   admin-shape: they reach waverpc via the injected `RPCServer` and
   DO NOT depend on `Runtime`, router, recv, or history. Create and
   Unlock must work before the swap subsystem is live.
+- `forceUnroll` rejects `onchain_address` combined with `force_unroll_ack`,
+  and the message must keep naming **which** field to clear. Stating the
+  constraint alone invites clearing `onchain_address`, which silently
+  converts a cooperative leave into a unilateral exit — the more dangerous
+  of the two, and not what a caller who supplied a destination asked for.
+  `cmd/wavecli`'s `--onchain-address` / `--force-unroll-ack` check carries
+  the same wording; keep them in step.
+- `getExitPlan` forwards `ExitPlanEntry.RoundCommitment` (via `errorString`)
+  and maps `unroll.ExitRoundCommitted` to
+  `EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED`. This is an advisory, not a
+  per-entry error — the entry stays priced, because a committed VTXO is
+  still exitable by the manual path and that exit is the only recovery when
+  the operator is unreachable.
 - Credit-backed routing is nil-safe: `Deps.CreditRegistry == nil` disables
   credit-only sends (falls back with `ErrSwapBackendUnavailable`) and the
   credit projector loop is a no-op, so builds without the credit subsystem

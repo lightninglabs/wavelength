@@ -106,6 +106,19 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `CreateCredit`/`RedeemCredit`/`ListCredits` type-assert `s.client` for the
   optional credit methods and return `Unimplemented` if the underlying
   `swapRuntimeClient` does not support credits.
+- `newSwapServerClients` wires **two** independent daemon-backed signers into
+  every swap-server transport: `RPCServer.SignMailboxAuth` for the mailbox
+  edge's `x-mailbox-auth-sig` header, and `RPCServer.SignCreditAccountAuth`
+  for account-scoped credit requests. The REST arm must use
+  `swaps.NewAuthenticatedRESTSwapServerConn` (not `NewRESTSwapServerConn`,
+  which is unauthenticated and send-only), or every receive and credit call
+  fails closed at the SDK with "credit account authorization signer is
+  required".
+- Under `js && wasm`, `ensureSwapDBDir` creates the swap database's parent
+  directory and treats only `ENOSYS` — the browser's stub filesystem — as
+  "no filesystem here". It mirrors `waved.ensureDataDir`; keep the two in
+  step, since a Node host given an unwritable path should fail there rather
+  than at the first database open.
 - `SetOutSwapEventReceiver` must run before any receive worker is started:
   `SwapClient` captures the receiver into the per-swap worker at start time,
   so a late install would leave already-running workers using whatever

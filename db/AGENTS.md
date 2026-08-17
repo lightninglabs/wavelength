@@ -140,6 +140,35 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   jobs store their registered kind plus the domain-owned durable ref
   needed to reconstruct the same spend policy after restart.
 
+### js/wasm SQLite (`sqlite_open_wasm.go`)
+
+- **Two hosts, one driver.** The VFS name comes from
+  `internal/wasmhost.SQLiteVFS()`: `nodefs` under Node, `opfs` in a
+  browser. Under Node the configured path is passed through as-is
+  (it is already unique and findable on disk); in a browser it is
+  mangled by `browserSQLiteFileName` into a stable origin-local name,
+  so two networks' `client.db` cannot silently collide within one
+  origin.
+- **`require_persistent=true` is mandatory.** The daemon's databases
+  are the only record of VTXO, swap, and round state — there is no
+  server to re-fetch them from. Refusing an in-memory substitute makes
+  a storage failure a startup error rather than a wallet that looks
+  healthy and forgets everything on exit.
+- **`locking_mode=EXCLUSIVE` is what makes WAL reachable**, not an
+  optimization. Neither wasm VFS implements `xShmMap`, so the only WAL
+  available is the mode SQLite documents for hosts without shared
+  memory, where an EXCLUSIVE connection keeps the WAL index on the
+  heap. The driver hoists the locking mode ahead of the journal mode
+  for that reason and reads the effective mode back, so a regression
+  fails the open instead of quietly running on the rollback journal
+  with `synchronous` tuned for WAL.
+- `journal_mode` travels as its own DSN key rather than in the pragma
+  list, because only that route is checked against the mode SQLite
+  actually ended up in. `fullfsync` is dropped: it is a Darwin-only
+  barrier that neither wasm VFS can express.
+- The handle is single-connection (`SetMaxOpenConns(1)`); multiple SQL
+  connections would race the same database through one worker.
+
 ### Migration baseline
 
 The migration history was squashed to a domain-grouped baseline ahead of

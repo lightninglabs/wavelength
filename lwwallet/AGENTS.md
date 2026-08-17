@@ -74,7 +74,9 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
 - **Depends on**: `walletcore` (shared HD key mgmt, signing, boarding base —
   also used by `btcwbackend`), `chainsource` (implements `ChainBackend`),
   `wallet` (implements `BoardingBackend`), `chainbackends` (typed
-  `PackageTxError` for package-relay results).
+  `PackageTxError` for package-relay results), and — on `js && wasm` builds
+  only — `internal/sqlbase` (walletdb-compatible SQL backend) plus
+  `internal/wasmhost` (which durable SQLite VFS the host offers).
 - **Depended on by**: `waved` (alternative to LND-backed wallet), `sdk`
   (embedded-wallet config references).
 
@@ -118,6 +120,26 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
   UTXO set, because btcwallet does not credit-mark non-default scope outputs.
 - `Stop()` explicitly closes btcwallet's internal database to prevent resource
   leaks.
+
+### js/wasm wallet store (`walletdb_wasm.go`)
+
+- The btcwallet SQL walletdb opens against whichever durable VFS
+  `internal/wasmhost` reports. Under Node it lives at
+  `<dbDir>/wallet.db` on the real filesystem — the containing directory
+  already distinguishes one wallet from another, so the hashed browser
+  name would only hide it. In a browser, `wasmWalletDBFileName` maps the
+  directory to a stable origin-local OPFS name.
+- `require_persistent=true` is not optional here: the wallet's seed and key
+  state have no second copy anywhere, so an in-memory substitute for the
+  store would be worse than failing to start.
+- WAL survives only because of `locking_mode=EXCLUSIVE`. No wasm VFS
+  implements `xShmMap`, so this is SQLite's WAL mode for hosts without
+  shared memory, which keeps the WAL index on the heap and requires an
+  already-exclusive connection. The driver hoists the locking mode ahead of
+  the journal mode and reads the effective mode back, so dropping the
+  exclusive lock fails the open rather than silently moving the wallet onto
+  the rollback journal. `journal_mode` therefore travels as its own DSN key,
+  not in the pragma list — only that route is checked.
 
 ## Deep Docs
 

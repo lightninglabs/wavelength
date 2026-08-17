@@ -13,8 +13,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 - `Server` — main daemon. Owns the wallet, DB, chainsource actor, gRPC
   server, and `ActorSystem`. Caches `localMailboxID` (pubkey-derived),
   `authSigHex` (Schnorr auth), `clientKeyDesc` (the stable daemon identity
-  descriptor), and a single `clk` (`clock.Clock`) shared by all sub-stores
-  for deterministic time injection.
+  descriptor, behind `clientKeyDescMu`), `mailboxAuthSigs` (per-recipient
+  mailbox auth signature memo, behind `mailboxAuthSigsMu`), and a single
+  `clk` (`clock.Clock`) shared by all sub-stores for deterministic time
+  injection.
 - `RPCServer` — implements the gRPC `DaemonService`. Most write RPCs
   (`Board`, `SendVTXO`, `SendOOR`, `SweepBoardingUTXOs`, `SendOnChain`)
   validate input locally then `Ask` the relevant actor; `GetRound` and
@@ -51,6 +53,42 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `serverconn.PubKeyMailboxID`, not config strings. The operator's remote
   mailbox ID and pubkey are fetched via direct gRPC (`fetchCurrentOperatorPubKey`)
   before the mailbox runtime starts.
+- **Every outbound mailbox edge is wrapped in
+  `serverconn.NewAuthenticatedMailboxClient`**, so `Send`, `Pull`, and
+  `AckUpTo` all carry `x-mailbox-auth-sig`. The operator authorizes a mailbox
+  RPC either from the TLS client certificate bound to the caller's mailbox ID
+  or from that header, and an operator terminating TLS at a proxy never sees a
+  client certificate — signing unconditionally keeps the operator's TLS
+  posture out of client config. Both `connectOperatorClients` arms (gRPC and
+  REST) and `newMailboxEdge` wrap; the last is latent today but exists so a
+  future caller cannot silently lose the header.
+- **Mailbox auth signatures are memoized per recipient** in `mailboxAuthSig`.
+  The digest is `TaggedHash("mailbox-auth", identityPubKey ||
+  recipientMailboxID)` and does not vary with the request, so one signature
+  serves the life of the key; signing per RPC would put a wallet round trip in
+  front of every long-poll `Pull`. Two properties are load-bearing:
+    - The wallet call happens with `mailboxAuthSigsMu` **released**.
+      `sync.Mutex.Lock` is not context-aware, so holding it across the round
+      trip would serialize the whole mailbox edge behind one signature and
+      stall egress, ingress, heartbeat, and ack together on a wedged wallet.
+      Two callers racing a cold recipient may both sign, which is harmless —
+      the digest is deterministic.
+    - The map **grows with distinct recipients and is never evicted**. The
+      operator edge alone contributes two (`Send` addresses the compound
+      `operator:client` mailbox; `Pull`/`AckUpTo` address the plain local
+      one), and `RPCServer.SignMailboxAuth` adds one per-swap mailbox
+      (`client:payment_hash`) per out-swap. This is growth, not a constant.
+  The signing round trip is bounded by `mailboxAuthSignTimeout` (30 s) rather
+  than inheriting the caller's context, because the ingress puller builds its
+  context with no deadline at all.
+- Public network endpoint defaults live in `defaultNetworkEndpoints`
+  (`config.go`). `mainnet`, `testnet3`, and `signet` resolve to the Lightning
+  Labs deployments; `regtest`/`simnet` keep the historical localhost
+  endpoints. The mainnet **REST** hosts are declared but not yet routable —
+  the external NLB and dual-SAN certificates cover only the gRPC names — so
+  they stay dark pending the ingress work tracked in lightning-infra#3749.
+  Changing a default here changes where an existing user's daemon dials on
+  restart; treat it as a deployment change, not a constant tweak.
 - All sub-stores share the single `s.clk` clock assigned in `NewServer`; new
   code must not call `clock.NewDefaultClock()` directly, use `s.clk`.
 - Actor startup order in `startWalletDependentActors`: VTXO manager, then
@@ -138,6 +176,26 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   both success and failure.
 - `Unroll` / `GetUnrollStatus` return `codes.Unavailable` (not `Internal`)
   when the unroll subsystem refs are not yet set, so clients can retry.
+- `Unroll` must set `ForceUnrollRequest.Trigger` explicitly to
+  `actormsg.UnrollTriggerManual`. The zero value admits as
+  `UnrollTriggerCriticalExpiry`, so omitting it records a hand-typed unroll as
+  the expiry safety net and the job's persisted provenance names a trigger
+  that never fired. The distinction is not cosmetic: `ForfeitingState`
+  suppresses a critical-expiry exit once the forfeit signature has issued but
+  still honours a manual one.
+- `SignCreditAccountAuthorization` (and the internal
+  `RPCServer.SignCreditAccountAuth` behind it) signs a canonical swap
+  credit-account request digest with the daemon identity key. It validates
+  the digest (32 B), nonce (32 B), and account key (33 B compressed) lengths,
+  **requires `account_pubkey` to equal this daemon's own identity key** —
+  the daemon signs only for itself, and a mismatch is `InvalidArgument`, not
+  `Internal` — and bounds the requested lifetime to
+  `(now, now + swaprpc.CreditAccountMaxAuthTTL]`. It is granted under the
+  `swap:write` macaroon entity alongside `SignOutSwapHtlcAck`.
+- Under `js && wasm`, `ensureDataDir` is no longer an unconditional no-op: it
+  calls `os.MkdirAll` and treats only `ENOSYS` (the browser's stub fs) as
+  "no filesystem here". Every other error is returned, so a Node host given
+  an unwritable path fails at startup rather than at the first database open.
 - `OORLimitsConfig.MaxMailboxScriptBytes` must be at least
   `minOORMailboxScriptBytes = 34` (P2TR script length); validated in
   `Config.Validate()`.
