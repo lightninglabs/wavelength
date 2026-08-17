@@ -22,7 +22,7 @@ func (s *Server) NewWalletAddress(ctx context.Context) (string, error) {
 		lndSvc := s.lnd.UnsafeFromSome()
 
 		addr, err := lndSvc.WalletKit.NextAddr(
-			ctx, lnwallet.DefaultAccountName,
+			ctx, s.lndWalletAccount(),
 			walletrpc.AddressType_TAPROOT_PUBKEY, false,
 		)
 		if err != nil {
@@ -75,7 +75,7 @@ func (s *Server) ListWalletUnspent(ctx context.Context, minConfs,
 		return nil, fmt.Errorf("wallet is not ready")
 	}
 
-	utxos, err := s.listBackingWalletUnspent(ctx, minConfs, maxConfs)
+	utxos, err := s.listSpendableWalletUnspent(ctx, minConfs, maxConfs)
 	if err != nil {
 		return nil, err
 	}
@@ -88,10 +88,48 @@ func (s *Server) ListWalletUnspent(ctx context.Context, minConfs,
 	return filterBoardingScripts(utxos, boardingScripts), nil
 }
 
+// listSpendableWalletUnspent returns only the UTXOs this daemon can actually
+// spend, which on the LND path means restricting to its configured account.
+//
+// This is deliberately separate from listBackingWalletUnspent: the fee-input
+// and exit-preflight callers must not see coins the funding path cannot
+// select, while the boarding-observation callers must see imported watch-only
+// scripts that no account contains. Narrowing the shared dispatcher instead
+// would silently empty the pending-deposit balance and activity views.
+func (s *Server) listSpendableWalletUnspent(ctx context.Context, minConfs,
+	maxConfs int32) ([]*wallet.Utxo, error) {
+
+	if s.lnd.IsSome() {
+		lndSvc := s.lnd.UnsafeFromSome()
+		backend := lndbackend.NewBoardingBackend(
+			lndSvc.WalletKit, lndSvc.ChainKit,
+			lndbackend.WithAccount(
+				s.lndWalletAccount(),
+			),
+		)
+
+		utxos, err := backend.ListUnspentWalletAccount(
+			ctx, minConfs, maxConfs,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("LND list unspent: %w", err)
+		}
+
+		return utxos, nil
+	}
+
+	return s.listBackingWalletUnspent(ctx, minConfs, maxConfs)
+}
+
 // listBackingWalletUnspent dispatches to the active wallet backend's
 // raw unspent-output query without any filtering. Split from
 // ListWalletUnspent so the dispatch is independently testable and the
 // post-filter step is a one-liner at the public entry point.
+//
+// NOTE: this must stay unfiltered. fetchUnconfirmedBoardingBalance and
+// ListUnconfirmedBoardingUTXOs use it precisely to see imported boarding
+// scripts, which live in LND's watch-only account and belong to no wallet
+// account.
 func (s *Server) listBackingWalletUnspent(ctx context.Context, minConfs,
 	maxConfs int32) ([]*wallet.Utxo, error) {
 
