@@ -14,7 +14,7 @@ background ingress polling with event routing.
 - `UnaryFacade` — Implements `mailboxrpc.RPCClient` for generated RPC stubs (low-latency path). Bounded waits come from the caller's context plus the response registry TTL; there is no separate timeout entry point. `SendRPC` gates on `ConnectorConfig.MaxInFlightUnary` and fails a send that would exceed it with `codes.ResourceExhausted`.
 - `ConnectorConfig` — Wiring configuration (edge address, mailbox IDs, dispatchers, store, durable unary builder, `EgressWorkers`, `MaxInFlightUnary`). `EgressWorkers` sizes the egress worker pool (default `DefaultEgressWorkers` = 4); `<= 1` keeps the legacy single sender. The `DurableUnaryBuilder` field must be set to handle `DurableUnaryQuery` message types; otherwise those messages are rejected. The `AuthSignature` field holds the Schnorr auth sig injected into every outbound envelope via `mergeAuthHeaders` (auth header always wins over caller-provided headers).
 - `PubKeyMailboxID` — Derives canonical mailbox ID from a public key (hex-encoded compressed SEC). Panics on nil.
-- `MailboxAuthDigest` / `MailboxAuthMessage` — BIP-340 tagged hash digest construction for mailbox auth signatures. Uses `chainhash.TaggedHash` with the `MailboxAuthTagStr` domain separator.
+- `MailboxAuthDigest` / `MailboxAuthMessage` — BIP-340 tagged hash digest construction for mailbox auth signatures. Uses `chainhash.TaggedHash` with the `MailboxAuthTagStr` domain separator over `senderCompressedPubKey || recipientMailboxID`. **Do not read this as preventing cross-server replay on its own** — see the invariant below for which callers get that property and which do not.
 - `SignMailboxAuth` / `VerifyMailboxAuth` / `ParseMailboxPubKey` — Schnorr sign/verify helpers for pubkey-derived mailbox identity.
 - `AuthHeaderKey` — Envelope header key (`x-mailbox-auth-sig`) for the Schnorr auth signature.
 - `GenerateClientTLSCert` — Creates an ephemeral P-256 mTLS client cert with the secp256k1 identity pubkey hex as Subject CN. Returns error on nil key.
@@ -28,9 +28,14 @@ background ingress polling with event routing.
   secp256k1 identity via a BIP-340 Schnorr signature, complementing
   `GenerateClientTLSCert` (the cert alone proves nothing; this signature
   proves the TLS key and the identity key are held by the same party).
-- `NewAuthenticatedMailboxClient` — `mailboxpb.MailboxServiceClient` decorator
-  that signs and attaches the `x-mailbox-auth-sig` header to every `Send`
-  before forwarding to the wrapped edge transport.
+- `NewAuthenticatedMailboxClient` / `MailboxAuthSigner` — `mailboxpb.MailboxServiceClient`
+  decorator that signs and attaches the `x-mailbox-auth-sig` header to every
+  `Send`, `Pull`, and `AckUpTo` before forwarding to the wrapped edge
+  transport. `MailboxAuthSigner` is `func(ctx, recipientMailboxID) (string,
+  error)` returning the hex-encoded signature; `waved` supplies a memoizing
+  implementation. Wrapping unconditionally means the daemon works against an
+  operator that terminates TLS at a proxy (and so never sees a client
+  certificate) without that posture leaking into client config.
 - `AckState` — Four-cursor watermark state machine (PullCursor, DispatchCommittedTo, AckTarget, AckCommittedTo).
 - `SendUnaryRequest` — Durable typed unary request that becomes a real unary RPC after commit. The response arrives via KIND_RESPONSE and, if no in-memory waiter exists, falls back to durable route dispatch via the EventRouter.
 - `DurableUnaryRequestBuilder` — Interface for proof-gated request-body construction. Implementations build the actual proto request (e.g., with signed proofs) at send time, not at persist time. The interface is provided via `ConnectorConfig.DurableUnaryBuilder`.
@@ -65,6 +70,19 @@ background ingress polling with event routing.
 
 ## Invariants
 
+- **Mailbox auth cross-server replay resistance is per-caller, not universal.**
+  Including the recipient mailbox ID in the digest binds the signature to what
+  it addresses, but only `Send` gets the strong version: it passes the
+  compound `operator:client` recipient, which embeds the operator's
+  pubkey-derived ID, so a `Send` signature is useless at any other operator.
+  `Pull` and `AckUpTo` pass the client's own **plain** mailbox ID (from
+  `ConnectorConfig.LocalMailboxID`), which carries no operator component — so
+  that digest is identical at every operator, and one `Pull`/`Ack` signature
+  authorizes that client's mailbox at every operator its identity key is known
+  to. Identity keys are a deterministic derivation, so a wallet driving two
+  operators presents the same credential to both. Closing the `Pull`/`Ack`
+  case means folding a server identity into the digest, which is a wire change
+  on both sides.
 - Ack watermark only advances AFTER durable local dispatch commit (prevents message loss on crash).
 - The ingress fold never holds the database writer across network IO. `runFoldedDispatch` runs waiter-backed responses and the `ConnectorConfig.NonTxRoutes` requests BEFORE opening the write transaction; only durable enqueues and the cursor checkpoint go inside it. A route is hoisted only when it is listed in `NonTxRoutes` AND the envelope is a `KIND_REQUEST`, so a durable actor `Tell` can never escape the fold. An envelope of any other kind arriving on a marked route is skip-warned by `dispatchBatch` rather than dispatched, because the mux bridge ignores `env.Rpc.Kind` and would otherwise serve a sender-mislabeled envelope over the network with the writer held. Any new dispatcher that terminates in `Edge.Send` rather than a durable enqueue MUST be added to `NonTxRoutes` at wiring time (see `waved.Server.buildRPCDispatchers`), otherwise it pins the SQLite global writer lock (production opens with `_txlock=immediate`) or a SERIALIZABLE Postgres snapshot for the length of a round trip to the operator.
 - Pre-transaction dispatch happens before the commit, never after. A crash in between re-pulls the batch and redelivers, which is the at-least-once contract; committing first would advance the cursor past a request that was never answered.
