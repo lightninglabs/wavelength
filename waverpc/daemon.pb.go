@@ -4373,12 +4373,12 @@ type TaprootAssetOORIntent struct {
 	// caller's recipient. Zero retains the legacy full-send behavior and
 	// assigns all asset_amount units to the recipient.
 	RecipientAssetAmount uint64 `protobuf:"varint,9,opt,name=recipient_asset_amount,json=recipientAssetAmount,proto3" json:"recipient_asset_amount,omitempty"`
-	// asset_change_carrier_value_sat is the Bitcoin value carried by the
-	// asset change output of a partial asset send. Zero uses the operator's
-	// minimum VTXO amount. It must be zero for a full asset send. Selected
-	// input value beyond the recipient and asset-change carriers returns to
-	// the sender as an ordinary Bitcoin change VTXO. Asset units are never
-	// converted into these carrier satoshis.
+	// asset_change_carrier_value_sat is deprecated and must be zero. New
+	// asset-leaf carriers (the recipient leaf, and the asset-change leaf of
+	// a partial send) are funded by the operator's carrier float at the
+	// operator's minimum VTXO amount; the sender's asset input carrier
+	// returns whole as an ordinary Bitcoin change VTXO. A nonzero value is
+	// rejected.
 	AssetChangeCarrierValueSat uint64 `protobuf:"varint,10,opt,name=asset_change_carrier_value_sat,json=assetChangeCarrierValueSat,proto3" json:"asset_change_carrier_value_sat,omitempty"`
 	unknownFields              protoimpl.UnknownFields
 	sizeCache                  protoimpl.SizeCache
