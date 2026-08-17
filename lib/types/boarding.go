@@ -87,6 +87,13 @@ type OperatorTerms struct {
 	// operator does not enforce a cap (the client should fall back to
 	// its own conservative default before submitting).
 	MaxOORLineageVBytes uint32
+
+	// OORCarrierPubKey is the key owning the operator's OOR carrier
+	// float. Set when the operator funds the new asset-leaf carriers of
+	// out-of-round transfers from its own float VTXOs; nil when carrier
+	// funding is disabled. Together with the operator's collab key and
+	// exit delay it derives the float's standard VTXO policy.
+	OORCarrierPubKey *btcec.PublicKey
 }
 
 // MinVTXOAmountFloor returns the effective minimum for a VTXO output. The
