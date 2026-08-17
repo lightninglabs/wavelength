@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	defaultOORReceiveScriptRegistrationTTL = 30 * 24 * time.Hour
+	defaultOORRegistrationTTL = db.MaxOwnedReceiveScriptRegistrationTTL
 
 	// oorReceiveKeyFamily is the key family used for OOR receive
 	// keys. It is distinct from the identity key family (and the
@@ -418,6 +418,23 @@ func CreateOORReceiveScript(ctx context.Context, idx *indexer.Client,
 	operatorKey *btcec.PublicKey, exitDelay uint32, label string) (
 	*keychain.KeyDescriptor, []byte, error) {
 
+	expiresAt := time.Now().Add(defaultOORRegistrationTTL)
+
+	return CreateOORReceiveScriptWithExpiry(
+		ctx, idx, store, deriveNextKey, signerFactory, operatorKey,
+		exitDelay, label, expiresAt,
+	)
+}
+
+// CreateOORReceiveScriptWithExpiry derives a fresh wallet key and registers
+// its receive script until the supplied absolute expiry.
+func CreateOORReceiveScriptWithExpiry(ctx context.Context, idx *indexer.Client,
+	store ownedReceiveScriptStore,
+	deriveNextKey DeriveDefaultOORReceiveKeyFunc,
+	signerFactory OORReceiveScriptSignerFactory,
+	operatorKey *btcec.PublicKey, exitDelay uint32, label string,
+	expiresAt time.Time) (*keychain.KeyDescriptor, []byte, error) {
+
 	if deriveNextKey == nil {
 		return nil, nil, fmt.Errorf("derive next key func must be " +
 			"provided")
@@ -433,9 +450,9 @@ func CreateOORReceiveScript(ctx context.Context, idx *indexer.Client,
 			"pubkey")
 	}
 
-	pkScript, err := RegisterOwnedOORReceiveScript(
+	pkScript, err := RegisterOwnedOORReceiveScriptWithExpiry(
 		ctx, idx, store, *keyDesc, signerFactory, operatorKey,
-		exitDelay, label,
+		exitDelay, label, expiresAt,
 	)
 	if err != nil {
 		return nil, nil, err
@@ -451,6 +468,23 @@ func RegisterOwnedOORReceiveScript(ctx context.Context, idx *indexer.Client,
 	signerFactory OORReceiveScriptSignerFactory,
 	operatorKey *btcec.PublicKey, exitDelay uint32,
 	label string) ([]byte, error) {
+
+	expiresAt := time.Now().Add(defaultOORRegistrationTTL)
+
+	return RegisterOwnedOORReceiveScriptWithExpiry(
+		ctx, idx, store, clientKey, signerFactory, operatorKey,
+		exitDelay, label, expiresAt,
+	)
+}
+
+// RegisterOwnedOORReceiveScriptWithExpiry registers and persists one
+// wallet-owned receive script with a caller-selected absolute expiry.
+func RegisterOwnedOORReceiveScriptWithExpiry(ctx context.Context,
+	idx *indexer.Client, store ownedReceiveScriptStore,
+	clientKey keychain.KeyDescriptor,
+	signerFactory OORReceiveScriptSignerFactory,
+	operatorKey *btcec.PublicKey, exitDelay uint32, label string,
+	expiresAt time.Time) ([]byte, error) {
 
 	switch {
 	case idx == nil:
@@ -473,7 +507,6 @@ func RegisterOwnedOORReceiveScript(ctx context.Context, idx *indexer.Client,
 
 	registerClient := idx.WithSigner(signerFactory(clientKey))
 
-	expiresAt := time.Now().Add(defaultOORReceiveScriptRegistrationTTL)
 	_, err = registerClient.RegisterReceiveScriptTaproot(
 		ctx, pkScript, expiresAt, label,
 	)

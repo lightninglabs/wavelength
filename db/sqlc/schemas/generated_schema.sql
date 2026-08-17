@@ -556,6 +556,10 @@ CREATE INDEX idx_outbox_messages_pending
     ON outbox_messages(status, created_at)
     WHERE status = 'pending';
 
+CREATE UNIQUE INDEX idx_owned_receive_scripts_idempotency_key
+    ON owned_receive_scripts(idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+
 CREATE INDEX idx_pending_intent_anchors_intent_id
 ON pending_intent_anchors (intent_id);
 
@@ -1044,7 +1048,7 @@ CREATE TABLE owned_receive_scripts (
     created_at BIGINT NOT NULL,
 
     -- last_used_at is an optional unix timestamp of latest usage.
-    last_used_at BIGINT,
+    last_used_at BIGINT, idempotency_key TEXT, registration_label TEXT, registration_expires_at BIGINT, registration_rpc_key TEXT, registration_completed_at BIGINT,
 
     -- Source enum foreign key.
     FOREIGN KEY (source) REFERENCES owned_receive_script_sources(source)

@@ -41,9 +41,8 @@ service DaemonService {
     // on-chain funds for use in the Ark protocol.
     rpc NewAddress (NewAddressRequest) returns (NewAddressResponse);
 
-    // NewReceiveScript allocates a fresh wallet key, registers the
-    // matching taproot receive script with the indexer, and returns the
-    // script details needed to hand the destination to a sender.
+    // NewReceiveScript allocates and registers a taproot receive script, or
+    // returns the exact existing allocation for an idempotent retry.
     rpc NewReceiveScript (NewReceiveScriptRequest)
         returns (NewReceiveScriptResponse);
 
@@ -786,6 +785,13 @@ message NewReceiveScriptRequest {
     // label is an optional human-readable label stored with the
     // registration on the indexer.
     string label = 1;
+
+    // idempotency_key makes allocation retry-safe. Repeating the same
+    // non-empty key with the same normalized label returns the original
+    // receive script and expiry. Reusing it with a different label is
+    // rejected. An empty key preserves the legacy behavior and allocates a
+    // fresh script.
+    string idempotency_key = 2;
 }
 
 message NewReceiveScriptResponse {
@@ -803,6 +809,10 @@ message NewReceiveScriptResponse {
 
     // label is the registration label stored with the indexer.
     string label = 5;
+
+    // expires_at_unix_s is the absolute indexer registration expiry used for
+    // this receive script.
+    uint64 expires_at_unix_s = 6;
 }
 
 message ReceiveAuthKeyRequest {

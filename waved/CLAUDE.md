@@ -199,6 +199,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   that never fired. The distinction is not cosmetic: `ForfeitingState`
   suppresses a critical-expiry exit once the forfeit signature has issued but
   still honours a manual one.
+- `NewReceiveScript` treats a non-empty idempotency key as one durable
+  allocation. The owned-script store records the key locator, script, operator
+  terms, absolute expiry, stable mailbox RPC key, and completion evidence
+  before indexer registration. Pending retry reuses those artifacts; completed
+  replay returns without the indexer. Empty keys preserve fresh allocation.
 - `SignCreditAccountAuthorization` (and the internal
   `RPCServer.SignCreditAccountAuth` behind it) signs a canonical swap
   credit-account request digest with the daemon identity key. It validates

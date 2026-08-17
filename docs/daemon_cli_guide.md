@@ -407,9 +407,11 @@ key locator.
 | Flag | Type | Description |
 |------|------|-------------|
 | `--label` | string | Optional indexer registration label |
+| `--idempotency-key` | string | Return the same allocation on exact retry |
 
 ```bash
 wavecli ark oor receive
+wavecli ark oor receive --idempotency-key durable-operation-42
 ```
 
 ### `ark vtxos list`

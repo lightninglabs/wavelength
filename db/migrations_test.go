@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -77,6 +78,56 @@ func TestMigrationSteps(t *testing.T) {
 	).Scan(&chainName)
 	require.NoError(t, err)
 	require.Equal(t, "testnet", chainName)
+}
+
+// TestIdempotentReceiveScriptsMigrationPreservesLegacyRows verifies migration
+// 17 adds nullable retry metadata without rewriting existing script ownership.
+func TestIdempotentReceiveScriptsMigrationPreservesLegacyRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	database := NewTestDBWithVersion(t, 16)
+	insert := transformByteLiterals(t, database.BaseDB, `
+		INSERT INTO owned_receive_scripts (
+			pk_script, client_key_id, operator_pubkey, exit_delay,
+			source, created_at, last_used_at
+		) VALUES (
+			X'512001', NULL, X'020101', 144, 0, 1700000000,
+			NULL
+		)
+	`)
+	_, err := database.ExecContext(ctx, insert)
+	require.NoError(t, err)
+
+	err = database.ExecuteMigrations(TargetLatest)
+	require.NoError(t, err)
+
+	var (
+		pkScript                []byte
+		idempotencyKey          sql.NullString
+		registrationLabel       sql.NullString
+		registrationExpiresAt   sql.NullInt64
+		registrationRPCKey      sql.NullString
+		registrationCompletedAt sql.NullInt64
+	)
+	err = database.QueryRowContext(ctx, `
+		SELECT pk_script, idempotency_key, registration_label,
+		       registration_expires_at, registration_rpc_key,
+		       registration_completed_at
+		FROM owned_receive_scripts
+		WHERE pk_script = $1
+	`, []byte{0x51, 0x20, 0x01}).Scan(
+		&pkScript, &idempotencyKey, &registrationLabel,
+		&registrationExpiresAt, &registrationRPCKey,
+		&registrationCompletedAt,
+	)
+	require.NoError(t, err)
+	require.Equal(t, []byte{0x51, 0x20, 0x01}, pkScript)
+	require.False(t, idempotencyKey.Valid)
+	require.False(t, registrationLabel.Valid)
+	require.False(t, registrationExpiresAt.Valid)
+	require.False(t, registrationRPCKey.Valid)
+	require.False(t, registrationCompletedAt.Valid)
 }
 
 // TestMigrationDowngrade tests that downgrading the database is prevented.

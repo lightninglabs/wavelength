@@ -2340,9 +2340,15 @@ type NewReceiveScriptRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// label is an optional human-readable label stored with the
 	// registration on the indexer.
-	Label         string `protobuf:"bytes,1,opt,name=label,proto3" json:"label,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Label string `protobuf:"bytes,1,opt,name=label,proto3" json:"label,omitempty"`
+	// idempotency_key makes allocation retry-safe. Repeating the same
+	// non-empty key with the same normalized label returns the original
+	// receive script and expiry. Reusing it with a different label is
+	// rejected. An empty key preserves the legacy behavior and allocates a
+	// fresh script.
+	IdempotencyKey string `protobuf:"bytes,2,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *NewReceiveScriptRequest) Reset() {
@@ -2382,6 +2388,13 @@ func (x *NewReceiveScriptRequest) GetLabel() string {
 	return ""
 }
 
+func (x *NewReceiveScriptRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
+}
+
 type NewReceiveScriptResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// pk_script_hex is the raw taproot output script encoded as hex.
@@ -2393,9 +2406,12 @@ type NewReceiveScriptResponse struct {
 	// key_index is the wallet key index used to derive the receive key.
 	KeyIndex uint32 `protobuf:"varint,4,opt,name=key_index,json=keyIndex,proto3" json:"key_index,omitempty"`
 	// label is the registration label stored with the indexer.
-	Label         string `protobuf:"bytes,5,opt,name=label,proto3" json:"label,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Label string `protobuf:"bytes,5,opt,name=label,proto3" json:"label,omitempty"`
+	// expires_at_unix_s is the absolute indexer registration expiry used for
+	// this receive script.
+	ExpiresAtUnixS uint64 `protobuf:"varint,6,opt,name=expires_at_unix_s,json=expiresAtUnixS,proto3" json:"expires_at_unix_s,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *NewReceiveScriptResponse) Reset() {
@@ -2461,6 +2477,13 @@ func (x *NewReceiveScriptResponse) GetLabel() string {
 		return x.Label
 	}
 	return ""
+}
+
+func (x *NewReceiveScriptResponse) GetExpiresAtUnixS() uint64 {
+	if x != nil {
+		return x.ExpiresAtUnixS
+	}
+	return 0
 }
 
 type ReceiveAuthKeyRequest struct {
@@ -10530,16 +10553,18 @@ const file_daemon_proto_rawDesc = "" +
 	"\x05vtxos\x18\x01 \x03(\v2\r.waverpc.VTXOR\x05vtxos\"\x13\n" +
 	"\x11NewAddressRequest\".\n" +
 	"\x12NewAddressResponse\x12\x18\n" +
-	"\aaddress\x18\x01 \x01(\tR\aaddress\"/\n" +
+	"\aaddress\x18\x01 \x01(\tR\aaddress\"X\n" +
 	"\x17NewReceiveScriptRequest\x12\x14\n" +
-	"\x05label\x18\x01 \x01(\tR\x05label\"\xba\x01\n" +
+	"\x05label\x18\x01 \x01(\tR\x05label\x12'\n" +
+	"\x0fidempotency_key\x18\x02 \x01(\tR\x0eidempotencyKey\"\xe5\x01\n" +
 	"\x18NewReceiveScriptResponse\x12\"\n" +
 	"\rpk_script_hex\x18\x01 \x01(\tR\vpkScriptHex\x12(\n" +
 	"\x10pubkey_xonly_hex\x18\x02 \x01(\tR\x0epubkeyXonlyHex\x12\x1d\n" +
 	"\n" +
 	"key_family\x18\x03 \x01(\rR\tkeyFamily\x12\x1b\n" +
 	"\tkey_index\x18\x04 \x01(\rR\bkeyIndex\x12\x14\n" +
-	"\x05label\x18\x05 \x01(\tR\x05label\":\n" +
+	"\x05label\x18\x05 \x01(\tR\x05label\x12)\n" +
+	"\x11expires_at_unix_s\x18\x06 \x01(\x04R\x0eexpiresAtUnixS\":\n" +
 	"\x15ReceiveAuthKeyRequest\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\"0\n" +
 	"\x16ReceiveAuthKeyResponse\x12\x16\n" +
