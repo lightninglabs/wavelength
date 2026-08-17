@@ -1,0 +1,71 @@
+name: gateway
+
+# Consumer shim for gateway, the Lightning Labs PR review bot. Adapted from
+# lightninglabs/gateway-action templates/gateway.yml.
+#
+# The review runtime lives in the private lightninglabs/gateway repo; this
+# public entry point mints an App token and checks it out at execution time.
+#
+# Triggers:
+#   - issue_comment.created               - /gateway <command> on a PR
+#   - pull_request_review_comment.created - /gateway dismiss|promote|explain
+#                                           as a reply on a finding thread
+#   - pull_request.review_requested       - the Re-request review button
+#   - pull_request.closed                 - cleanup on close/merge
+#
+# Comment- and review-request-driven only: there is no pull_request.opened
+# trigger, so fork PRs, which receive no secrets, never spawn failing runs.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request:
+    types: [review_requested, closed]
+
+permissions:
+  # The action mints an App installation token internally; the GITHUB_TOKEN
+  # handed to this shim is unused, so we minimize it.
+  contents: read
+
+jobs:
+  review:
+    # Comment events fire for every comment; gate on the /gateway prefix so
+    # non-command comments do not boot a runner at all.
+    if: >-
+      ${{
+        github.event_name == 'pull_request' ||
+        (github.event_name == 'issue_comment'
+          && github.event.issue.pull_request != null
+          && contains(github.event.comment.body, '/gateway')) ||
+        (github.event_name == 'pull_request_review_comment'
+          && contains(github.event.comment.body, '/gateway'))
+      }}
+    runs-on: ubuntu-latest
+    # Keep enough outer budget for setup, review, and a visible failure update.
+    # The pinned runtime does not yet own a shorter per-call deadline.
+    timeout-minutes: 30
+    env:
+      # Prefer the bounded single-call path until a runtime with internal
+      # multi-review deadlines and fallback is released and pinned here.
+      GATEWAY_REVIEW_MODE: single
+    steps:
+      - uses: lightninglabs/gateway-action@334a8455ee316e40668ae3ac85249150c62704ec # v0.6.0
+        with:
+          # Pin the private runtime as well as its public entry point so a
+          # runtime upgrade always arrives through an explicit repository PR.
+          runtime_ref: 75f6e67deac362bdcfc10d10629ddcf69c0e2615 # gateway v0.6.0
+          event_name:      ${{ github.event_name }}
+          event_action:    ${{ github.event.action }}
+          repo:            ${{ github.repository }}
+          pr_number:       ${{ github.event.issue.number || github.event.pull_request.number }}
+          actor:           ${{ github.event.sender.login }}
+          comment_body:    ${{ github.event.comment.body }}
+          comment_id:      ${{ github.event.comment.id }}
+          comment_in_reply_to: ${{ github.event.comment.in_reply_to_id }}
+          # installation_id is intentionally omitted. The runtime resolves
+          # the App installation covering this repository at authentication.
+          app_id:                  ${{ secrets.GATEWAY_APP_ID }}
+          private_key:             ${{ secrets.GATEWAY_PRIVATE_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
