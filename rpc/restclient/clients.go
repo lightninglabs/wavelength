@@ -86,6 +86,17 @@ func (c *ArkServiceClient) EstimateFee(ctx context.Context,
 	return out, err
 }
 
+// LeaseOORCarrier reserves one of the operator's carrier float VTXOs.
+func (c *ArkServiceClient) LeaseOORCarrier(ctx context.Context,
+	in *arkrpc.LeaseOORCarrierRequest, _ ...grpc.CallOption) (
+	*arkrpc.LeaseOORCarrierResponse, error) {
+
+	out := new(arkrpc.LeaseOORCarrierResponse)
+	err := c.client.Post(ctx, "/v1/ark/lease-oor-carrier", in, out)
+
+	return out, err
+}
+
 // NewMailboxServiceClient creates a MailboxService REST client.
 func NewMailboxServiceClient(addr string,
 	opts ...Option) mailboxpb.MailboxServiceClient {
