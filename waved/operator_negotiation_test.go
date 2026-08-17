@@ -129,6 +129,14 @@ func (s *stubArkServiceClient) EstimateFee(_ context.Context,
 	return &arkrpc.EstimateFeeResponse{}, nil
 }
 
+// LeaseOORCarrier is unused by these tests.
+func (s *stubArkServiceClient) LeaseOORCarrier(_ context.Context,
+	_ *arkrpc.LeaseOORCarrierRequest, _ ...grpc.CallOption) (
+	*arkrpc.LeaseOORCarrierResponse, error) {
+
+	return &arkrpc.LeaseOORCarrierResponse{}, nil
+}
+
 // testOperatorPubKeyBytes returns a valid compressed secp256k1 public key for
 // populating a fake GetInfo response.
 func testOperatorPubKeyBytes(t *testing.T) []byte {
