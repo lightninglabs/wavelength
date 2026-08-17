@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
@@ -79,6 +80,16 @@ type VTXOActorConfig struct {
 	// The VTXO actor routes round-bound signals through the manager
 	// rather than holding a direct round actor reference.
 	Manager actor.TellOnlyRef[ManagerMsg]
+
+	// NotifyForfeitPersisted, when set, is invoked after a VTXO's
+	// forfeiture marker is durably persisted (MarkForfeited), passing the
+	// consuming batch. It lets the batch canonicality manager redrive a
+	// terminal consumer-edge resolution that deferred because it ran before
+	// the marker existed, closing the race that would otherwise strand the
+	// consumed VTXO until restart. Optional: nil disables the redrive
+	// (harness paths and deployments without batch canonicality).
+	NotifyForfeitPersisted func(ctx context.Context,
+		consumerBatch chainhash.Hash) error
 
 	// LedgerSink is an optional reference to the client-side
 	// ledger accounting actor. The VTXO actor does not know the
@@ -927,6 +938,31 @@ func (a *VTXOActor) processStatusUpdate(ctx context.Context,
 
 		return fmt.Errorf("persist vtxo status %s to %s: %w",
 			m.Outpoint, m.NewStatus, err)
+	}
+
+	// A forfeiture marker just became durable. Redrive any terminal
+	// consumer-edge resolution that may have deferred because it ran before
+	// this marker existed (the consumer batch reached ConflictFinalized
+	// first). Best-effort: on failure the restart-time redrive remains the
+	// backstop, so we log rather than fail the status write. Skipped when
+	// no consuming batch is recorded (a plain forfeit with no reverse
+	// edge).
+	if m.NewStatus == VTXOStatusForfeited &&
+		a.cfg.NotifyForfeitPersisted != nil &&
+		m.ConsumerBatchTxID != (chainhash.Hash{}) {
+
+		if err := a.cfg.NotifyForfeitPersisted(
+			ctx, m.ConsumerBatchTxID,
+		); err != nil {
+
+			a.logger(ctx).WarnS(ctx, "Failed to redrive consumer "+
+				"edge after forfeit persist", err,
+				slog.String("outpoint", m.Outpoint.String()),
+				slog.String(
+					"consumer_batch",
+					m.ConsumerBatchTxID.String(),
+				))
+		}
 	}
 
 	return nil

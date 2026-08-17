@@ -1,14 +1,28 @@
 package vtxo
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
+
+// failClosedReader is a batchcanon.Reader that reports every batch as
+// not-found, so any lineage derives to the fail-closed LineageReconciling
+// availability (never usable).
+type failClosedReader struct{}
+
+func (failClosedReader) GetBatch(context.Context, chainhash.Hash) (
+	*batchcanon.Record, error) {
+
+	return nil, batchcanon.ErrBatchNotFound
+}
 
 // TestHandleForceUnrollLiveActorTransitions verifies the manager drives a live
 // VTXO actor into UnilateralExitState on a ForceUnrollRequest, so fraud and
@@ -35,6 +49,36 @@ func TestHandleForceUnrollLiveActorTransitions(t *testing.T) {
 	require.True(t, ok)
 	require.True(t, forceResp.Accepted)
 	require.IsType(t, &UnilateralExitState{}, ref.state)
+}
+
+// TestHandleForceUnrollGatedOnUnavailableLineage verifies the unroll point of
+// no return is fail-closed: a VTXO whose batch lineage is not admissible (here
+// fail-closed missing lineage) is refused rather than entering
+// UnilateralExitState and creating proof/sweep side effects. Fraud response
+// routes through this same path, so the gate protects it too.
+func TestHandleForceUnrollGatedOnUnavailableLineage(t *testing.T) {
+	t.Parallel()
+
+	vtxo := makeDescriptor(t, 50_000, 13)
+	store := &MockVTXOStore{}
+	mgr := &Manager{
+		cfg: &ManagerConfig{
+			Store:             store,
+			BatchCanonicality: failClosedReader{},
+		},
+		actors: make(map[wire.OutPoint]VTXOActorRef),
+	}
+
+	store.On("GetVTXO", t.Context(), vtxo.Outpoint).Return(vtxo, nil)
+
+	resp := mgr.Receive(t.Context(), &actormsg.ForceUnrollRequest{
+		Outpoint: vtxo.Outpoint,
+		Trigger:  actormsg.UnrollTriggerFraudSpend,
+	})
+	_, err := resp.Unpack()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not admissible")
+	store.AssertExpectations(t)
 }
 
 // TestHandleForceUnrollAbsentActorNoDescriptor verifies that a force-unroll for

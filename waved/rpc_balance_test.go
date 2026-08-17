@@ -8,11 +8,204 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/vtxo"
+	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
+
+// balanceCanonReader is a focused canonicality reader for balance tests.
+type balanceCanonReader struct {
+	records map[chainhash.Hash]*batchcanon.Record
+	err     error
+}
+
+// GetBatch returns the seeded record or canonical not-found result.
+func (r *balanceCanonReader) GetBatch(_ context.Context, txid chainhash.Hash) (
+	*batchcanon.Record, error) {
+
+	if r.err != nil {
+		return nil, r.err
+	}
+	record, ok := r.records[txid]
+	if !ok {
+		return nil, batchcanon.ErrBatchNotFound
+	}
+
+	return record, nil
+}
+
+// readyBalanceRecord builds the minimum ready record required by an
+// availability query. Its immutable transaction bytes are irrelevant to this
+// read-only test; registration validation covers their bindings separately.
+func readyBalanceRecord(txid chainhash.Hash,
+	state batchcanon.State) *batchcanon.Record {
+
+	return &batchcanon.Record{
+		BatchTxID: txid,
+		BatchTx: []byte{
+			1,
+		},
+		RegistrationStage:     batchcanon.RegistrationComplete,
+		ObservationGeneration: 1,
+		ReadyGeneration:       fn.Some(uint64(1)),
+		State:                 state,
+		ConfirmationPkScript: []byte{
+			1,
+		},
+		ConsumedInputs: []batchcanon.ConsumedInput{{
+			PkScript: []byte{
+				1,
+			},
+		}},
+	}
+}
+
+// balanceDescriptor builds a lifecycle-live VTXO under one batch.
+func balanceDescriptor(i byte, amount btcutil.Amount,
+	batch chainhash.Hash) *vtxo.Descriptor {
+
+	return &vtxo.Descriptor{
+		Outpoint: wire.OutPoint{
+			Hash:  chainhash.HashH([]byte{i}),
+			Index: uint32(i),
+		},
+		Amount:         amount,
+		CommitmentTxID: batch,
+		Status:         vtxo.VTXOStatusLive,
+	}
+}
+
+// TestCanonicalityAwareVTXOBalance verifies the user-visible balance excludes
+// unusable lineage while preserving reversible value in the temporary bucket.
+func TestCanonicalityAwareVTXOBalance(t *testing.T) {
+	t.Parallel()
+
+	batch := func(label string) chainhash.Hash {
+		return chainhash.HashH([]byte(label))
+	}
+	finalBatch := batch("final")
+	provisionalBatch := batch("provisional")
+	reorgBatch := batch("reorg")
+	conflictBatch := batch("conflict")
+	unseenBatch := batch("unseen")
+	reconcilingBatch := batch("reconciling")
+	invalidBatch := batch("invalid")
+
+	reader := &balanceCanonReader{
+		records: map[chainhash.Hash]*batchcanon.Record{
+			finalBatch: readyBalanceRecord(
+				finalBatch, batchcanon.StateFinalized,
+			),
+			provisionalBatch: readyBalanceRecord(
+				provisionalBatch, batchcanon.StateProvisional,
+			),
+			reorgBatch: readyBalanceRecord(
+				reorgBatch, batchcanon.StateReorgedOut,
+			),
+			conflictBatch: readyBalanceRecord(
+				conflictBatch,
+				batchcanon.StateConflictProvisional,
+			),
+			unseenBatch: readyBalanceRecord(
+				unseenBatch, batchcanon.StateUnseen,
+			),
+			reconcilingBatch: {
+				BatchTxID: reconcilingBatch,
+			},
+			invalidBatch: readyBalanceRecord(
+				invalidBatch, batchcanon.StateConflictFinalized,
+			),
+		},
+	}
+
+	descs := []*vtxo.Descriptor{
+		balanceDescriptor(1, 10_000, finalBatch),
+		balanceDescriptor(2, 20_000, provisionalBatch),
+		balanceDescriptor(3, 30_000, reorgBatch),
+		balanceDescriptor(4, 40_000, conflictBatch),
+		balanceDescriptor(5, 50_000, unseenBatch),
+		balanceDescriptor(6, 60_000, reconcilingBatch),
+		balanceDescriptor(7, 70_000, invalidBatch),
+	}
+
+	spendable, unavailable, err := vtxo.ClassifyCanonicalityBalance(
+		t.Context(), descs, reader,
+	)
+	require.NoError(t, err)
+	require.Equal(t, btcutil.Amount(30_000), spendable)
+	require.Equal(t, btcutil.Amount(180_000), unavailable)
+}
+
+// TestCanonicalityAwareVTXOBalanceUsesWorstParent verifies that any unusable
+// parent moves the full multi-parent VTXO into the temporary bucket.
+func TestCanonicalityAwareVTXOBalanceUsesWorstParent(t *testing.T) {
+	t.Parallel()
+
+	finalBatch := chainhash.HashH([]byte("final"))
+	reorgBatch := chainhash.HashH([]byte("reorg"))
+	reader := &balanceCanonReader{
+		records: map[chainhash.Hash]*batchcanon.Record{
+			finalBatch: readyBalanceRecord(
+				finalBatch, batchcanon.StateFinalized,
+			),
+			reorgBatch: readyBalanceRecord(
+				reorgBatch, batchcanon.StateReorgedOut,
+			),
+		},
+	}
+	desc := balanceDescriptor(1, 25_000, finalBatch)
+	desc.Ancestry = []vtxo.Ancestry{{
+		CommitmentTxID: reorgBatch,
+	}}
+
+	spendable, unavailable, err := vtxo.ClassifyCanonicalityBalance(
+		t.Context(), []*vtxo.Descriptor{desc}, reader,
+	)
+	require.NoError(t, err)
+	require.Zero(t, spendable)
+	require.Equal(t, btcutil.Amount(25_000), unavailable)
+}
+
+// TestCanonicalityAwareVTXOBalanceLegacy preserves the behavior-neutral path
+// used while the canonicality gate is disabled.
+func TestCanonicalityAwareVTXOBalanceLegacy(t *testing.T) {
+	t.Parallel()
+
+	desc := balanceDescriptor(
+		1, 25_000,
+		chainhash.HashH(
+			[]byte("batch"),
+		),
+	)
+	spendable, unavailable, err := vtxo.ClassifyCanonicalityBalance(
+		t.Context(), []*vtxo.Descriptor{desc}, nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, btcutil.Amount(25_000), spendable)
+	require.Zero(t, unavailable)
+}
+
+// TestCanonicalityAwareVTXOBalancePropagatesReaderError ensures a broken
+// authority cannot be presented to the user as a zero or spendable balance.
+func TestCanonicalityAwareVTXOBalancePropagatesReaderError(t *testing.T) {
+	t.Parallel()
+
+	desc := balanceDescriptor(
+		1, 25_000,
+		chainhash.HashH(
+			[]byte("batch"),
+		),
+	)
+	_, _, err := vtxo.ClassifyCanonicalityBalance(
+		t.Context(), []*vtxo.Descriptor{desc}, &balanceCanonReader{
+			err: errors.New("reader unavailable"),
+		},
+	)
+	require.ErrorContains(t, err, "reader unavailable")
+}
 
 // fakeExitJobLookup is an in-memory exitJobLookup. A missing outpoint returns
 // db.ErrUnilateralExitJobNotFound, mirroring the real store.

@@ -28,6 +28,13 @@ type fakeStore struct {
 	records   map[chainhash.Hash]*Record
 	consumers map[chainhash.Hash][]ConsumerEdge
 	applyErr  error
+
+	// deferConsumerEdges, when true, makes ResolveConsumerEdge report
+	// ConsumerEdgeDeferred without consuming the edge, modelling the real
+	// store's revision compare-and-swap deferring because the
+	// ForfeitedBy(consumer) marker is not yet persisted. Clearing it
+	// simulates the marker becoming durable so a redrive can resolve.
+	deferConsumerEdges bool
 }
 
 func newFakeStore() *fakeStore {
@@ -328,6 +335,12 @@ func (s *fakeStore) setApplyError(err error) {
 	s.applyErr = err
 }
 
+func (s *fakeStore) setDeferConsumerEdges(defer_ bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deferConsumerEdges = defer_
+}
+
 func (s *fakeStore) UpsertBatch(_ context.Context, r *Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -478,6 +491,13 @@ func (s *fakeStore) ResolveConsumerEdge(_ context.Context, edge ConsumerEdge,
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Model the revision compare-and-swap deferring while the forfeiture
+	// marker is not yet durable: the edge stays pending for a later
+	// redrive.
+	if s.deferConsumerEdges {
+		return ConsumerEdgeDeferred, nil
+	}
 
 	edges := s.consumers[edge.ConsumerBatch]
 	for i, pending := range edges {
@@ -750,6 +770,9 @@ func (h *managerHarness) registerBatch(t *testing.T,
 	t.Helper()
 	if len(req.ConfirmationPkScript) == 0 {
 		req.ConfirmationPkScript = []byte{0x51}
+	}
+	if req.CSVExpiryDelta <= 0 {
+		req.CSVExpiryDelta = 144
 	}
 	if len(req.ConsumedInputs) == 0 {
 		req.ConsumedInputs = []ConsumedInput{ci(wire.OutPoint{

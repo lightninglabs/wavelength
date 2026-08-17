@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	clientdb "github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tree"
@@ -62,6 +63,12 @@ type IncomingVTXOMetadata struct {
 	// commitment tx. Each entry carries its own TreePath, CommitmentTxID,
 	// InputIndices, and TreeDepth.
 	Ancestry []vtxo.Ancestry
+
+	// BatchEvidence authenticates every distinct commitment named by
+	// Ancestry and supplies the inputs required for reorg-aware conflict
+	// watches. Same-commitment multi-leaf ancestry shares one evidence
+	// item.
+	BatchEvidence []batchcanon.BatchEvidence
 }
 
 // IncomingVTXOConfig describes how to materialize an Ark tx output into a

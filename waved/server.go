@@ -20,6 +20,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -420,14 +421,16 @@ type Server struct {
 	// VTXO coin-selection reorg-safety gate (lumos#454). It is threaded
 	// into the VTXO manager only when Config.BatchCanonicalityGate is set;
 	// a nil store leaves the gate dormant. Read lazily at admission time.
-	batchCanonStore batchcanon.Store
+	batchCanonStore batchcanon.Reader
 
 	// batchCanonRef is the BatchCanonicalityManager actor ref. The round
 	// and OOR producers will Tell it a RegisterBatchRequest as their VTXOs
 	// are born so each lineage batch gets reorg-aware conf/spend watches
 	// (producer registration lands in a follow-up). None until
 	// initBatchCanonicality registers the manager.
-	batchCanonRef fn.Option[actor.TellOnlyRef[batchcanon.ManagerMsg]]
+	batchCanonRef fn.Option[actor.ActorRef[
+		batchcanon.ManagerMsg, batchcanon.ManagerResp,
+	]]
 
 	serverConn        *grpc.ClientConn
 	arkClient         arkrpc.ArkServiceClient
@@ -4350,8 +4353,22 @@ func (s *Server) initRoundActor(ctx context.Context,
 		SigningExecutor: round.NewSigningExecutor(
 			signingWorkers,
 		),
-		RoundStore:     roundStore,
-		VTXOStore:      roundStore,
+		RoundStore: roundStore,
+		VTXOStore:  roundStore,
+		BatchRegistrar: fn.MapOptionZ(
+			s.batchCanonRef,
+			func(
+				ref actor.ActorRef[
+					batchcanon.ManagerMsg,
+					batchcanon.ManagerResp,
+				],
+			) round.RoundBatchRegistrar {
+
+				return &batchRegistrar{
+					ref: ref,
+				}
+			},
+		),
 		OperatorTerms:  operatorTerms,
 		ServerConn:     s.runtime.TellRef(),
 		ChainSource:    chainSourceRef,
@@ -4484,15 +4501,23 @@ func (s *Server) initBatchCanonicality(ctx context.Context,
 			err)
 	}
 
-	s.batchCanonRef = fn.Some[actor.TellOnlyRef[batchcanon.ManagerMsg]](
+	s.batchCanonRef = fn.Some[actor.ActorRef[
+		batchcanon.ManagerMsg, batchcanon.ManagerResp,
+	]](
 		mgrRef,
 	)
 
 	// Only activate the VTXO admission gate when explicitly enabled. The
 	// gate is fail-closed, so threading the store before producers register
 	// their batches would strand all liquidity (see the config field doc).
+	//
+	// Thread the manager (not the raw durable store) so admission reads go
+	// through its in-memory overlay: a reorg/conflict observation whose
+	// durable write failed still closes admission immediately, instead of
+	// leaving the stale durable row admissible until a restart (see
+	// Manager.GetBatch).
 	if s.cfg.BatchCanonicalityGate {
-		s.batchCanonStore = canonStore
+		s.batchCanonStore = mgr
 	}
 
 	s.log.InfoS(ctx, "Batch canonicality manager registered and started",
@@ -4565,14 +4590,31 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	ledgerSink := ledger.NewSink(s.actorSystem)
 
 	manager := vtxo.NewManager(&vtxo.ManagerConfig{
-		Store:                    vtxoStore,
-		ReservationStore:         reservationStore,
-		Wallet:                   vtxoWallet,
-		ChainSource:              chainSourceRef,
-		ActorSystem:              s.actorSystem,
-		ChainParams:              s.chainParams,
-		ExpiryConfig:             s.vtxoExpiryConfig(),
-		BatchCanonicality:        s.batchCanonStore,
+		Store:             vtxoStore,
+		ReservationStore:  reservationStore,
+		Wallet:            vtxoWallet,
+		ChainSource:       chainSourceRef,
+		ActorSystem:       s.actorSystem,
+		ChainParams:       s.chainParams,
+		ExpiryConfig:      s.vtxoExpiryConfig(),
+		BatchCanonicality: s.batchCanonStore,
+		RedriveConsumerForfeit: func(ctx context.Context,
+			consumerBatch chainhash.Hash) error {
+
+			// After a forfeiture marker is persisted, ask the batch
+			// canonicality manager to re-resolve any terminal
+			// consumer edge that deferred because it ran before the
+			// marker existed. No-op when canonicality is disabled.
+			if s.batchCanonRef.IsNone() {
+				return nil
+			}
+
+			return s.batchCanonRef.UnsafeFromSome().Tell(
+				ctx, &batchcanon.ConsumerForfeitPersistedMsg{
+					ConsumerBatch: consumerBatch,
+				},
+			)
+		},
 		Log:                      fn.Some(s.subLogger(vtxo.Subsystem)),
 		RoundActor:               roundActor,
 		LedgerSink:               fn.Some(ledgerSink),
@@ -4726,17 +4768,26 @@ func (s *Server) initOORActor(ctx context.Context,
 		TimeoutActor: oorTimeoutRef,
 	}
 	oorKey := oor.NewServiceKey()
+	var incomingBatchRegistrar oor.BatchRegistrar
+	s.batchCanonRef.WhenSome(func(ref actor.ActorRef[
+		batchcanon.ManagerMsg, batchcanon.ManagerResp,
+	]) {
+
+		incomingBatchRegistrar = &batchRegistrar{ref: ref}
+	})
 
 	// The per-session OOR actors handle wallet signing inline, so there is
 	// no separate signing-effect actor. signingHandler remains the Next
 	// delegate of the local-persistence handler for retry scheduling.
 
 	outboxHandler := &oor.LocalPersistenceOutboxHandler{
-		Next:         signingHandler,
-		Store:        vtxoStore,
-		PackageStore: packageStore,
-		OperatorKey:  operatorTerms.PubKey,
-		ExitDelay:    operatorTerms.VTXOExitDelay,
+		Next:                    signingHandler,
+		Store:                   vtxoStore,
+		BatchRegistrar:          incomingBatchRegistrar,
+		IncomingLineageVerifier: vtxo.VerifyOORAncestryLineage,
+		PackageStore:            packageStore,
+		OperatorKey:             operatorTerms.PubKey,
+		ExitDelay:               operatorTerms.VTXOExitDelay,
 		NotifyIncomingVTXOs: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
@@ -4790,19 +4841,22 @@ func (s *Server) initOORActor(ctx context.Context,
 	s.oorSessionStore = registryStore
 
 	s.oorRegistry, err = oor.NewOORRegistryActor(oor.OORRegistryConfig{
-		Log:              fn.Some(s.subLogger(oor.Subsystem)),
-		Signer:           oorSigner,
-		IncomingHandler:  outboxHandler,
-		RegistryStore:    registryStore,
-		DeliveryStore:    s.deliveryStore,
-		ServerConn:       s.runtime.TellRef(),
-		VTXOManager:      vtxoManagerRef,
-		SpendCompleter:   s.oorCompleteSpend,
-		SpendReleaser:    s.oorReleaseSpend,
-		ReservationStore: reservationStore,
-		PackageStore:     packageStore,
-		VTXOStore:        vtxoStore,
-		LedgerSink:       fn.Some(ledger.NewSink(s.actorSystem)),
+		Log:             fn.Some(s.subLogger(oor.Subsystem)),
+		Signer:          oorSigner,
+		IncomingHandler: outboxHandler,
+		BatchRegistrar:  incomingBatchRegistrar,
+
+		IncomingLineageVerifier: vtxo.VerifyOORAncestryLineage,
+		RegistryStore:           registryStore,
+		DeliveryStore:           s.deliveryStore,
+		ServerConn:              s.runtime.TellRef(),
+		VTXOManager:             vtxoManagerRef,
+		SpendCompleter:          s.oorCompleteSpend,
+		SpendReleaser:           s.oorReleaseSpend,
+		ReservationStore:        reservationStore,
+		PackageStore:            packageStore,
+		VTXOStore:               vtxoStore,
+		LedgerSink:              fn.Some(ledger.NewSink(s.actorSystem)),
 		IncomingVTXOObserver: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
@@ -4875,6 +4929,7 @@ func (s *Server) initOORActor(ctx context.Context,
 			VTXOStore:       incomingVTXOStore,
 			VTXOManager:     vtxoManagerRef,
 			AncestryFetcher: ancestryFetcher,
+			BatchRegistrar:  incomingBatchRegistrar,
 			MetricsSink:     s.metricsSink,
 		},
 	)

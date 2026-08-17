@@ -111,6 +111,153 @@ func TestManagerRestoresForfeitedVTXOOnConflictFinalized(t *testing.T) {
 	require.Empty(t, remaining, "edges must be cleared after restore")
 }
 
+// TestConsumerForfeitPersistedRedrivesDeferredEdge proves the R14 ordering fix:
+// when a consumer batch reaches ConflictFinalized BEFORE its
+// ForfeitedBy(consumer) marker is durable, the terminal restore
+// compare-and-swap defers and no further batchcanon event is guaranteed -- the
+// consumed VTXO would stay stranded until restart. Once MarkForfeited persists
+// the marker, the VTXO actor sends ConsumerForfeitPersistedMsg, which redrives
+// resolution and restores the VTXO without a restart.
+func TestConsumerForfeitPersistedRedrivesDeferredEdge(t *testing.T) {
+	t.Parallel()
+
+	rec := &restoreRecorder{}
+	h := newManagerHarnessWithRestore(t, 100, rec.restore)
+
+	// The forfeiture marker is not yet durable: the terminal restore CAS
+	// must defer (as the real revision CAS would).
+	h.store.setDeferConsumerEdges(true)
+
+	consumerBatch := testBatchTxid(0xd2)
+	creatorBatch := testBatchTxid(0xd1)
+	forfeitedVTXO := testOutpoint(0xb1, 0)
+	consumedInput := testOutpoint(0x2e, 1)
+	creatorInput := testOutpoint(0x2d, 1)
+
+	h.registerBatch(t, &RegisterBatchRequest{
+		BatchTxID:            creatorBatch,
+		ConfirmationPkScript: []byte{0x51, 0x20, 0xd1},
+		ConsumedInputs:       []ConsumedInput{ci(creatorInput)},
+	})
+	h.fireConfirmed(t, creatorBatch, 100, testBatchTxid(0xa0))
+	h.fireSpend(t, creatorInput, creatorBatch, 100)
+
+	h.registerBatch(t, &RegisterBatchRequest{
+		BatchTxID:            consumerBatch,
+		ConfirmationPkScript: []byte{0x51, 0x20, 0xd2},
+		ConsumedInputs:       []ConsumedInput{ci(consumedInput)},
+		ConsumedVTXOs: []ConsumerEdge{
+			{
+				ConsumedVTXO:     forfeitedVTXO,
+				ExpectedRevision: 2,
+				CreatorLineage: []chainhash.Hash{
+					creatorBatch,
+				},
+			},
+		},
+	})
+
+	// Drive the consumer to ConflictFinalized while the marker is absent.
+	// Resolution runs but defers: the edge stays pending, nothing restored.
+	h.fireConfirmed(t, consumerBatch, 101, testBatchTxid(0xa1))
+	h.fireSpend(t, consumedInput, testBatchTxid(0x8e), 102)
+	h.fireSpendDone(t, consumedInput)
+	require.Equal(
+		t, StateConflictFinalized,
+		h.state(t, consumerBatch).Record.State,
+	)
+	require.Empty(
+		t, rec.outpoints(),
+		"restore must defer while the forfeiture marker is absent",
+	)
+	pending, err := h.store.ListPendingConsumerEdges(
+		t.Context(), consumerBatch,
+	)
+	require.NoError(t, err)
+	require.Len(
+		t, pending, 1, "the deferred edge must remain pending",
+	)
+
+	// The forfeiture marker becomes durable (MarkForfeited). The VTXO actor
+	// sends ConsumerForfeitPersistedMsg, redriving resolution.
+	h.store.setDeferConsumerEdges(false)
+	_, err = h.mgrRef.Ask(
+		t.Context(),
+		&ConsumerForfeitPersistedMsg{ConsumerBatch: consumerBatch},
+	).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	require.Equal(
+		t, []wire.OutPoint{forfeitedVTXO}, rec.outpoints(),
+		"redrive after the marker persists must restore the VTXO "+
+			"without a restart",
+	)
+	remaining, err := h.store.ListPendingConsumerEdges(
+		t.Context(), consumerBatch,
+	)
+	require.NoError(t, err)
+	require.Empty(t, remaining, "edge must be cleared after redrive")
+}
+
+// TestConsumerForfeitPersistedIgnoresNonTerminalConsumer proves the redrive is
+// gated on the consumer being terminal: a marker persisted while the consumer
+// is still provisional must NOT prematurely resolve the reverse edge (the
+// forfeit's fate is undecided), leaving it pending for a later terminal event.
+func TestConsumerForfeitPersistedIgnoresNonTerminalConsumer(t *testing.T) {
+	t.Parallel()
+
+	rec := &restoreRecorder{}
+	h := newManagerHarnessWithRestore(t, 100, rec.restore)
+
+	consumerBatch := testBatchTxid(0xe2)
+	creatorBatch := testBatchTxid(0xe1)
+	forfeitedVTXO := testOutpoint(0xc1, 0)
+	consumedInput := testOutpoint(0x3e, 1)
+	creatorInput := testOutpoint(0x3d, 1)
+
+	h.registerBatch(t, &RegisterBatchRequest{
+		BatchTxID:            creatorBatch,
+		ConfirmationPkScript: []byte{0x51, 0x20, 0xe1},
+		ConsumedInputs:       []ConsumedInput{ci(creatorInput)},
+	})
+	h.fireConfirmed(t, creatorBatch, 100, testBatchTxid(0x90))
+	h.fireSpend(t, creatorInput, creatorBatch, 100)
+
+	h.registerBatch(t, &RegisterBatchRequest{
+		BatchTxID:            consumerBatch,
+		ConfirmationPkScript: []byte{0x51, 0x20, 0xe2},
+		ConsumedInputs:       []ConsumedInput{ci(consumedInput)},
+		ConsumedVTXOs: []ConsumerEdge{
+			{
+				ConsumedVTXO:     forfeitedVTXO,
+				ExpectedRevision: 2,
+				CreatorLineage: []chainhash.Hash{
+					creatorBatch,
+				},
+			},
+		},
+	})
+
+	// The consumer is only provisionally confirmed (not terminal). A marker
+	// persist redrive must be a no-op: the edge stays pending, no restore.
+	h.fireConfirmed(t, consumerBatch, 101, testBatchTxid(0x91))
+	_, err := h.mgrRef.Ask(
+		t.Context(),
+		&ConsumerForfeitPersistedMsg{ConsumerBatch: consumerBatch},
+	).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	require.Empty(
+		t, rec.outpoints(),
+		"a non-terminal consumer must not resolve its reverse edge",
+	)
+	pending, err := h.store.ListPendingConsumerEdges(
+		t.Context(), consumerBatch,
+	)
+	require.NoError(t, err)
+	require.Len(t, pending, 1, "edge must remain pending until terminal")
+}
+
 // TestManagerClearsForfeitEdgesOnFinalized proves the other half of the
 // lifecycle: when the consumer batch becomes canonical and final, the forfeit
 // is permanent, so the reverse-dependency edges are dropped WITHOUT restoring.
