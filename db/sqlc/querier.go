@@ -383,6 +383,7 @@ type Querier interface {
 	// PullActivityEvents returns transition rows strictly after the cursor in
 	// event_seq order, the resumable-subscribe replay primitive.
 	PullActivityEvents(ctx context.Context, arg PullActivityEventsParams) ([]ActivityEvent, error)
+	RenewOwnedReceiveScriptRegistration(ctx context.Context, arg RenewOwnedReceiveScriptRegistrationParams) (int64, error)
 	// RepairCreditReceivePollCapActivity narrowly reopens an inbound credit
 	// receive that an older client marked terminal after exhausting its local poll
 	// budget. The exact kind, failed status, and legacy error guard prevent this

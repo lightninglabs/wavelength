@@ -123,13 +123,60 @@ func TestNewReceiveScriptRejectsOversizeIdempotencyKey(t *testing.T) {
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 }
 
+// TestNewReceiveScriptRejectsControlIdempotencyKey verifies keys invalid in a
+// PostgreSQL text column fail consistently before backend selection matters.
+func TestNewReceiveScriptRejectsControlIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	walletReady := make(chan struct{})
+	close(walletReady)
+	rpcServer := NewRPCServer(&Server{walletReady: walletReady})
+
+	_, err := rpcServer.NewReceiveScript(t.Context(),
+		&waverpc.NewReceiveScriptRequest{
+			IdempotencyKey: "allocation\x00one",
+		},
+	)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+}
+
 // TestAcquireReceiveScriptLockCleansRegistry verifies keyed lock entries do not
 // accumulate after the last caller releases them.
 func TestAcquireReceiveScriptLockCleansRegistry(t *testing.T) {
 	t.Parallel()
 
 	rpcServer := NewRPCServer(&Server{})
-	release := rpcServer.acquireReceiveScriptLock("allocation-1")
+	release, err := rpcServer.acquireReceiveScriptLock(
+		t.Context(),
+		"allocation-1",
+	)
+	require.NoError(t, err)
+	require.Len(t, rpcServer.receiveScriptLocks, 1)
+
+	release()
+	require.Empty(t, rpcServer.receiveScriptLocks)
+}
+
+// TestAcquireReceiveScriptLockHonorsCancellation verifies a retry does not
+// retain its goroutine after its own deadline while the first remote call is
+// still holding the same-key registration lock.
+func TestAcquireReceiveScriptLockHonorsCancellation(t *testing.T) {
+	t.Parallel()
+
+	rpcServer := NewRPCServer(&Server{})
+	release, err := rpcServer.acquireReceiveScriptLock(
+		t.Context(),
+		"allocation-1",
+	)
+	require.NoError(t, err)
+
+	waitCtx, cancel := context.WithCancel(t.Context())
+	cancel()
+	secondRelease, err := rpcServer.acquireReceiveScriptLock(
+		waitCtx, "allocation-1",
+	)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, secondRelease)
 	require.Len(t, rpcServer.receiveScriptLocks, 1)
 
 	release()

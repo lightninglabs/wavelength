@@ -769,6 +769,33 @@ func TestOORArtifactStoreAdmitIdempotentOwnedReceiveScriptChangedLabel(
 	requireOwnedReceiveScriptEqual(t, winner, *lookedUp)
 }
 
+// TestOORArtifactStoreIdempotentAdmissionSurfacesScriptCollision verifies the
+// idempotency conflict clause does not hide a distinct pk_script owner.
+func TestOORArtifactStoreIdempotentAdmissionSurfacesScriptCollision(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newOORArtifactStoreForTest(t)
+	candidate := testIdempotentOwnedReceiveScript(
+		t, 0x59, "receive-script-collision", "collision-label",
+	)
+	require.NoError(t, store.UpsertOwnedReceiveScript(ctx, candidate))
+
+	_, created, err := store.AdmitIdempotentOwnedReceiveScript(
+		ctx, candidate,
+	)
+	require.Error(t, err)
+	require.False(t, created)
+	require.NotErrorIs(t, err, errOwnedReceiveScriptAdmissionRace)
+
+	_, err = store.LookupOwnedReceiveScriptByIdempotencyKey(
+		ctx, candidate.IdempotencyKey,
+	)
+	require.ErrorIs(t, err, sql.ErrNoRows)
+}
+
 // TestOORArtifactStoreAdmitIdempotentOwnedReceiveScriptConcurrentWinner
 // verifies concurrent first admissions converge on one durable allocation.
 func TestOORArtifactStoreAdmitIdempotentOwnedReceiveScriptConcurrentWinner(
@@ -874,6 +901,71 @@ func TestOORArtifactStoreIdempotentOwnedReceiveScriptPendingAcrossRestart(
 	require.NoError(t, err)
 	require.False(t, created)
 	requireOwnedReceiveScriptEqual(t, winner, *replayed)
+}
+
+// TestOORArtifactStoreRenewExpiredOwnedReceiveScriptRegistration verifies an
+// expired completed allocation keeps its ownership identity while one new
+// durable registration window wins across stale concurrent retries.
+func TestOORArtifactStoreRenewExpiredOwnedReceiveScriptRegistration(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+	now := time.Now().UTC().Truncate(time.Second)
+	clk := clock.NewTestClock(now)
+	testDB := NewTestDB(t)
+	artifactDB := NewTransactionExecutor(
+		testDB.BaseDB,
+		func(tx *sql.Tx) OORArtifactStore {
+			return testDB.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+	store := NewOORArtifactPersistenceStore(artifactDB, clk)
+	winner := testIdempotentOwnedReceiveScript(
+		t, 0x79, "receive-renew", "renew-label",
+	)
+	winner.RegistrationExpiresAt = now.Add(time.Hour)
+
+	_, created, err := store.AdmitIdempotentOwnedReceiveScript(ctx, winner)
+	require.NoError(t, err)
+	require.True(t, created)
+	require.NoError(
+		t, store.MarkOwnedReceiveScriptRegistered(
+			ctx, winner.IdempotencyKey, winner.RegistrationRPCKey,
+		),
+	)
+
+	clk.SetTime(now.Add(2 * time.Hour))
+	nextExpiry := clk.Now().Add(4 * time.Hour)
+	renewed, err :=
+		store.RenewOwnedReceiveScriptRegistration(
+			ctx, winner, nextExpiry, "renewed-registration-key",
+		)
+	require.NoError(t, err)
+	require.Equal(t, winner.PkScript, renewed.PkScript)
+	require.Equal(t, winner.ClientKey, renewed.ClientKey)
+	require.True(t, winner.OperatorPubKey.IsEqual(renewed.OperatorPubKey))
+	require.Equal(t, winner.ExitDelay, renewed.ExitDelay)
+	require.Equal(t, winner.RegistrationLabel, renewed.RegistrationLabel)
+	require.Equal(t, nextExpiry, renewed.RegistrationExpiresAt)
+	require.Equal(t, "renewed-registration-key", renewed.RegistrationRPCKey)
+	require.True(t, renewed.RegistrationCompletedAt.IsNone())
+
+	staleReplay, err :=
+		store.RenewOwnedReceiveScriptRegistration(
+			ctx, winner, clk.Now().Add(5*time.Hour),
+			"losing-registration-key",
+		)
+	require.NoError(t, err)
+	require.Equal(
+		t, renewed.RegistrationExpiresAt,
+		staleReplay.RegistrationExpiresAt,
+	)
+	require.Equal(
+		t, renewed.RegistrationRPCKey, staleReplay.RegistrationRPCKey,
+	)
 }
 
 // TestOORArtifactStoreOwnedReceiveScriptCompletionIdempotency verifies the

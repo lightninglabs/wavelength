@@ -173,7 +173,17 @@ INSERT INTO owned_receive_scripts (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL
 )
-ON CONFLICT DO NOTHING;
+ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING;
+
+-- name: RenewOwnedReceiveScriptRegistration :execrows
+UPDATE owned_receive_scripts
+SET registration_expires_at = sqlc.arg(next_expires_at),
+    registration_rpc_key = sqlc.arg(next_rpc_key),
+    registration_completed_at = NULL
+WHERE idempotency_key = sqlc.arg(idempotency_key)
+  AND registration_rpc_key = sqlc.arg(expected_rpc_key)
+  AND registration_expires_at = sqlc.arg(expected_expires_at)
+  AND registration_expires_at <= sqlc.arg(now_unix);
 
 -- name: MarkOwnedReceiveScriptRegistered :execrows
 UPDATE owned_receive_scripts
