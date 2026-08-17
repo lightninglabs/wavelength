@@ -3241,9 +3241,20 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		return nil, err
 	}
 
-	targetAmt, err := sumSendOORRecipientAmounts(requestRecipients)
+	assetIntent, err := taprootAssetOORIntent(req)
 	if err != nil {
 		return nil, err
+	}
+
+	// Asset sends derive every Bitcoin-side value on the daemon: the
+	// recipient leaf is stamped at the operator floor and selection
+	// targets only the asset input's own carrier.
+	var targetAmt btcutil.Amount
+	if assetIntent == nil {
+		targetAmt, err = sumSendOORRecipientAmounts(requestRecipients)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if req.GetExistingOnly() && req.GetIdempotencyKey() == "" {
@@ -3257,11 +3268,6 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 	if req.GetAdmissionDeadlineUnixNanos() < 0 {
 		return nil, status.Errorf(codes.InvalidArgument,
 			"admission_deadline_unix_nanos must not be negative")
-	}
-
-	assetIntent, err := taprootAssetOORIntent(req)
-	if err != nil {
-		return nil, err
 	}
 
 	if req.GetIdempotencyKey() != "" && !req.DryRun {
@@ -3363,18 +3369,41 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		return nil, status.Errorf(codes.Internal, "unable to fetch "+
 			"operator terms: %v", err)
 	}
-	targetAmt, err = taprootAssetOORSelectionTarget(
-		targetAmt, assetIntent, terms.MinVTXOAmountFloor(),
-	)
-	if err != nil {
-		return nil, err
+
+	// For asset sends the sender contributes no Bitcoin VTXO: the
+	// operator float funds every new asset leaf at the floor, the asset
+	// input's carrier returns whole as plain change, so selection targets
+	// exactly the asset input.
+	recipientOutputs := requestRecipients
+	var assetInputCarrier btcutil.Amount
+	if assetIntent != nil {
+		if r.server.vtxoStore == nil {
+			return nil, status.Errorf(codes.Internal, "VTXO "+
+				"store not initialized")
+		}
+
+		inputDesc, err := r.server.vtxoStore.GetVTXO(
+			ctx, assetIntent.InputVTXOOutpoint,
+		)
+		if err != nil || inputDesc == nil {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"unknown Taproot Asset input VTXO %s",
+				assetIntent.InputVTXOOutpoint)
+		}
+		assetInputCarrier = inputDesc.Amount
+		targetAmt = assetInputCarrier
+
+		recipientOutputs = []*waverpc.Output{{
+			Destination: requestRecipients[0].Destination,
+			AmountSat:   int64(terms.MinVTXOAmountFloor()),
+		}}
 	}
 
 	// Resolve the recipients' pkScripts from the destination oneofs
 	// and bind any supplied semantic policy templates to those scripts.
 	phaseStart = time.Now()
 	oorRecipients, err := r.buildSendOORRecipients(
-		ctx, requestRecipients, terms,
+		ctx, recipientOutputs, terms,
 	)
 	resolveScriptDuration = time.Since(phaseStart)
 	if err != nil {
@@ -3442,6 +3471,50 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 			); err != nil {
 				return nil, err
 			}
+		}
+	}
+
+	// Lease the operator carrier float before any wallet reservation. A
+	// resumed request must reuse its journaled lease: the committed graph
+	// already spends that exact float.
+	var (
+		carrierLease *oor.OORCarrierLease
+		floatInput   oor.TransferInput
+	)
+	if assetIntent != nil {
+		if assetResume != nil {
+			if assetResume.Lease == nil {
+				missingLease := fmt.Errorf("%w: request %q "+
+					"has no journaled carrier lease",
+					oor.ErrTaprootAssetCommitOutcomeUnknown,
+					req.GetIdempotencyKey())
+
+				return nil, taprootAssetOORPreparationError(
+					missingLease,
+				)
+			}
+			carrierLease = assetResume.Lease
+		} else {
+			floor := terms.MinVTXOAmountFloor()
+			requiredSat := floor * btcutil.Amount(
+				assetIntent.NewAssetLeafCount(),
+			)
+			carrierLease, err = r.server.leaseOORCarrier(
+				ctx, terms, requiredSat,
+			)
+			if err != nil {
+				return nil, status.Errorf(
+					codes.FailedPrecondition, "lease OOR "+
+						"carrier float: %v", err)
+			}
+		}
+
+		floatInput, err = BuildOperatorFundedTransferInput(
+			carrierLease, terms.OORCarrierPubKey, terms.PubKey,
+		)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "build "+
+				"operator-funded input: %v", err)
 		}
 	}
 
@@ -3515,6 +3588,12 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		}
 	}
 
+	// The leased float rides along as an extra ark input the wallet
+	// neither reserved nor can sign.
+	if assetIntent != nil {
+		selectedInputs = append(selectedInputs, floatInput)
+	}
+
 	requestOORRecipients := append(
 		[]oortx.RecipientOutput(nil), oorRecipients...,
 	)
@@ -3545,14 +3624,9 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 			return nil, err
 		}
 	} else {
-		if inputTotal < targetAmt {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"selected input amount %d sat is below "+
-					"Taproot Asset carrier amount %d sat",
-				inputTotal, targetAmt)
-		}
-
-		changeAmt = inputTotal - targetAmt
+		// The sender's change is its own returned carrier; the
+		// prepare-request validation enforces full conservation.
+		changeAmt = assetInputCarrier
 	}
 	changeOutputDuration = time.Since(phaseStart)
 
@@ -3585,6 +3659,7 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 				)
 			},
 			Intent: *assetIntent,
+			Lease:  carrierLease,
 		}
 		if err := prepareRequest.Validate(); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "%v",
@@ -3592,15 +3667,14 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		}
 
 		// SendOORResponse has no carrier fields, so the split between
-		// asset-bearing carriers and returned Bitcoin change is
-		// disclosed here.
-		assetChangeSat, bitcoinChangeSat, err := prepareRequest.
-			CarrierAllocation()
+		// asset-bearing carriers, the sender's returned carrier, and
+		// the operator's float residual is disclosed here.
+		plan, err := prepareRequest.CarrierAllocation()
 		if err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "%v",
 				err)
 		}
-		changeAmt = bitcoinChangeSat
+		changeAmt = plan.SenderChange
 		r.server.log.InfoS(ctx, "Taproot Asset OOR carriers",
 			slog.Int64(
 				"receiver_carrier_sat",
@@ -3608,11 +3682,20 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 			),
 			slog.Int64(
 				"asset_change_carrier_sat",
-				int64(assetChangeSat),
+				int64(plan.AssetChange),
 			),
 			slog.Int64(
-				"bitcoin_change_sat", int64(bitcoinChangeSat),
-			))
+				"sender_change_sat", int64(plan.SenderChange),
+			),
+			slog.Int64(
+				"operator_change_sat",
+				int64(plan.OperatorChange),
+			),
+			slog.String(
+				"float_outpoint",
+				carrierLease.Outpoint.String(),
+			),
+			slog.Int64("float_value_sat", int64(carrierLease.Value)))
 
 		preparation, err := assetPreparer.PrepareTaprootAssetOOR(
 			ctx, prepareRequest,
@@ -3635,7 +3718,7 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 			return nil, invalidTaprootAssetPreparation(err)
 		}
 		if err := r.registerTaprootAssetChangeAliases(
-			ctx, preparation,
+			ctx, preparation, carrierLease,
 		); err != nil {
 			return nil, taprootAssetOORPreparationError(err)
 		}

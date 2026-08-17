@@ -52,16 +52,35 @@ func TestPreparerBuildsTwoTransitionGraph(t *testing.T) {
 		driver.requests[1].Inputs[0].Witness.Stack,
 	)
 	require.NoError(t, prepared.Validate(request))
-	require.Len(t, prepared.PreparedSubmit.CheckpointPSBTs, 1)
+	require.Len(t, prepared.PreparedSubmit.CheckpointPSBTs, 2)
 	require.NotNil(t, prepared.Recipients[0].TaprootAssetRoot)
+
+	// The full send pays out the receiver at the floor, the sender's
+	// returned carrier, and the operator's float residual.
+	require.Len(t, prepared.Recipients, 3)
+	require.Equal(t, btcutil.Amount(1_000), prepared.Recipients[0].Value)
+	require.Equal(t, btcutil.Amount(5_000), prepared.Recipients[1].Value)
+	require.Nil(t, prepared.Recipients[1].TaprootAssetRoot)
+	require.Equal(t, btcutil.Amount(29_000), prepared.Recipients[2].Value)
 	require.Equal(
-		t, prepared.PreparedSubmit.CheckpointPSBTs[0].
-			UnsignedTx.TxHash(),
-		prepared.PreparedSubmit.ArkPSBT.UnsignedTx.
-			TxIn[0].PreviousOutPoint.Hash,
+		t, request.Lease.PkScript, prepared.Recipients[2].PkScript,
 	)
+	require.Nil(t, prepared.Recipients[2].TaprootAssetRoot)
+
+	// Both checkpoints feed the Ark transaction; only the asset input's
+	// checkpoint carries a sealed tap-sdk package.
+	assetCheckpointHash := prepared.PreparedSubmit.CheckpointPSBTs[0].
+		UnsignedTx.TxHash()
+	assetArkInput, err := findArkInputIndex(
+		prepared.PreparedSubmit.ArkPSBT, wire.OutPoint{
+			Hash:  assetCheckpointHash,
+			Index: 0,
+		},
+	)
+	require.NoError(t, err)
+	require.LessOrEqual(t, assetArkInput, uint32(1))
 	require.Equal(
-		t, [][]byte{[]byte("checkpoint-package")},
+		t, [][]byte{[]byte("checkpoint-package"), nil},
 		prepared.PreparedSubmit.TaprootAssetTransfer.CheckpointPackages,
 	)
 	require.Equal(
@@ -92,7 +111,8 @@ func TestPreparerRestoresCommittedPackages(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(
-		t, oor.InputOutpoints(request.Inputs), resume.InputOutpoints,
+		t, oor.WalletInputOutpoints(request.Inputs),
+		resume.InputOutpoints,
 	)
 
 	changed := testResumeRequest(request)
@@ -165,7 +185,8 @@ func TestPreparerRestoresAfterOORReservationHandoff(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(
-		t, oor.InputOutpoints(request.Inputs), resume.InputOutpoints,
+		t, oor.WalletInputOutpoints(request.Inputs),
+		resume.InputOutpoints,
 	)
 	restored, err := restarted.PrepareTaprootAssetOOR(
 		t.Context(), request,
@@ -295,7 +316,7 @@ func TestPreparerResumeBeforeCommitAndRejectsCorruptVersion(t *testing.T) {
 	require.NoError(t, err)
 	state, err := preparer.loadState(
 		t.Context(), request.RequestID, requestDigest, intentDigest,
-		oor.InputOutpoints(request.Inputs),
+		oor.WalletInputOutpoints(request.Inputs),
 	)
 	require.NoError(t, err)
 
@@ -367,11 +388,25 @@ func TestPreparerRejectsCorruptPlannedRecipientsBeforeCommit(t *testing.T) {
 	require.NoError(t, err)
 	state, err := preparer.loadState(
 		t.Context(), request.RequestID, requestDigest, intentDigest,
-		oor.InputOutpoints(request.Inputs),
+		oor.WalletInputOutpoints(request.Inputs),
 	)
 	require.NoError(t, err)
-	state.PlannedRecipients = cloneRecipients(request.Recipients)
-	state.PlannedRecipients[0].Value++
+
+	// Journal a complete plan whose receiver was tampered with.
+	plan, err := request.CarrierAllocation()
+	require.NoError(t, err)
+	senderChange, err := request.BuildChangeRecipient(
+		t.Context(), plan.SenderChange,
+	)
+	require.NoError(t, err)
+	planned := cloneRecipients(request.Recipients)
+	planned = append(planned, senderChange, oortx.RecipientOutput{
+		PkScript:           request.Lease.PkScript,
+		Value:              plan.OperatorChange,
+		VTXOPolicyTemplate: request.Lease.PolicyTemplate,
+	})
+	planned[0].Value++
+	state.PlannedRecipients = planned
 	require.NoError(
 		t,
 		preparer.storeState(
@@ -413,7 +448,8 @@ func TestPreparerRetriesKnownCommitFailure(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(
-		t, oor.InputOutpoints(request.Inputs), resume.InputOutpoints,
+		t, oor.WalletInputOutpoints(request.Inputs),
+		resume.InputOutpoints,
 	)
 	_, err = restarted.PrepareTaprootAssetOOR(t.Context(), request)
 	require.NoError(t, err)
@@ -1215,8 +1251,92 @@ func newTestPreparer(driver customAnchorDriver, inventory proofInventoryClient,
 	}
 }
 
-// testPreparationRequest constructs one asset-bearing standard VTXO and one
-// Bitcoin-only recipient policy template.
+// testFloatInput builds the leased operator carrier-float input and its
+// lease, mirroring the daemon's BuildOperatorFundedTransferInput output.
+func testFloatInput(t *testing.T, operatorKey *btcec.PublicKey,
+	value btcutil.Amount) (oor.TransferInput, *oor.OORCarrierLease) {
+
+	t.Helper()
+
+	floatKey := testPrivateKey(t, 5)
+	policyTemplate, pkScript, err := arkscript.EncodeStandardVTXOArtifacts(
+		floatKey.PubKey(), operatorKey, 10,
+	)
+	require.NoError(t, err)
+
+	ownerLeafPolicy, err := arkscript.LeafTemplate{
+		Node: &arkscript.Multisig{
+			Keys: []*btcec.PublicKey{
+				floatKey.PubKey(),
+				operatorKey,
+			},
+		},
+	}.Encode()
+	require.NoError(t, err)
+
+	input := oor.TransferInput{
+		VTXO: &vtxo.Descriptor{
+			Outpoint: wire.OutPoint{
+				Hash: chainhash.Hash(
+					sha256Bytes(
+						[]byte("float-outpoint"),
+					),
+				),
+				Index: 0,
+			},
+			Amount:         value,
+			PkScript:       pkScript,
+			PolicyTemplate: policyTemplate,
+			OperatorKey:    operatorKey,
+			RelativeExpiry: 10,
+		},
+		VTXOPolicyTemplate: policyTemplate,
+		OwnerLeafPolicy:    ownerLeafPolicy,
+		OperatorFunded:     true,
+	}
+	lease := &oor.OORCarrierLease{
+		Outpoint:       input.VTXO.Outpoint,
+		Value:          value,
+		PolicyTemplate: policyTemplate,
+		PkScript:       pkScript,
+	}
+
+	return input, lease
+}
+
+// testChangeRecipientBuilder returns a deterministic wallet-owned change
+// builder that derives a fresh policy per call.
+func testChangeRecipientBuilder(t *testing.T, operatorKey *btcec.PublicKey,
+	firstKeyByte byte) oor.TaprootAssetChangeRecipientBuilder {
+
+	t.Helper()
+
+	calls := byte(0)
+
+	return func(_ context.Context, value btcutil.Amount) (
+		oortx.RecipientOutput, error) {
+
+		calls++
+		owner := testPrivateKey(t, firstKeyByte+calls)
+		policyTemplate, pkScript, err := arkscript.
+			EncodeStandardVTXOArtifacts(
+				owner.PubKey(), operatorKey, 10,
+			)
+		if err != nil {
+			return oortx.RecipientOutput{}, err
+		}
+
+		return oortx.RecipientOutput{
+			PkScript:           pkScript,
+			Value:              value,
+			VTXOPolicyTemplate: policyTemplate,
+		}, nil
+	}
+}
+
+// testPreparationRequest constructs one asset-bearing standard VTXO, one
+// leased operator float input, and one floor-valued Bitcoin-only recipient
+// policy template.
 func testPreparationRequest(t *testing.T) (*oor.TaprootAssetOORPrepareRequest,
 	*fakeInventory) {
 
@@ -1280,9 +1400,9 @@ func testPreparationRequest(t *testing.T) (*oor.TaprootAssetOORPrepareRequest,
 		OperatorKey: operator.PubKey(),
 		CSVDelay:    10,
 	}
-	inputs := []oor.TransferInput{input}
+	floatInput, lease := testFloatInput(t, operator.PubKey(), 30_000)
+	inputs := []oor.TransferInput{input, floatInput}
 	require.NoError(t, oor.NormalizeCheckpointOwnerLeaves(policy, inputs))
-	input = inputs[0]
 	recipientPolicy, err := arkscript.NewVTXOPolicy(
 		recipient.PubKey(), operator.PubKey(), 10,
 	)
@@ -1296,20 +1416,22 @@ func testPreparationRequest(t *testing.T) (*oor.TaprootAssetOORPrepareRequest,
 		RequestID:   "taproot-asset-request",
 		Policy:      policy,
 		OutputFloor: 1_000,
-		Inputs: []oor.TransferInput{
-			input,
-		},
+		Inputs:      inputs,
 		Recipients: []oortx.RecipientOutput{{
 			PkScript:           recipientScript,
-			Value:              5_000,
+			Value:              1_000,
 			VTXOPolicyTemplate: recipientPolicyBytes,
 		}},
+		BuildChangeRecipient: testChangeRecipientBuilder(
+			t, operator.PubKey(), 40,
+		),
 		Intent: oor.TaprootAssetOORIntent{
-			InputVTXOOutpoint: input.VTXO.Outpoint,
+			InputVTXOOutpoint: inputs[0].VTXO.Outpoint,
 			AssetRef:          assetRef.String(),
 			AssetAmount:       21,
 			ProofFile:         []byte("confirmed-proof"),
 		},
+		Lease: lease,
 	}
 	require.NoError(t, request.Validate())
 	scriptKey, err := tapsdk.ParsePubKey(

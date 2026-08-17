@@ -77,6 +77,7 @@ type preparationState struct {
 	ArkPackage        []byte                  `json:"ark_package,omitempty"`
 	PlannedRecipients []oortx.RecipientOutput `json:"planned_recipients,omitempty"` //nolint:ll
 	OrderingNonce     uint32                  `json:"ordering_nonce,omitempty"`     //nolint:ll
+	CarrierLease      *oor.OORCarrierLease    `json:"carrier_lease,omitempty"`      //nolint:ll
 }
 
 // NewPreparer constructs a production tap-sdk-backed OOR preparer.
@@ -151,9 +152,12 @@ func (p *Preparer) PrepareTaprootAssetOOR(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+	// The float input is not a wallet VTXO: it must never enter the
+	// wallet-side reservation journal, which precondition-checks every
+	// outpoint against a local Spending row.
 	state, err := p.loadState(
 		ctx, request.RequestID, digest, intentDigest,
-		oor.InputOutpoints(request.Inputs),
+		oor.WalletInputOutpoints(request.Inputs),
 	)
 	if err != nil {
 		return nil, err
@@ -162,6 +166,9 @@ func (p *Preparer) PrepareTaprootAssetOOR(ctx context.Context,
 		return nil, fmt.Errorf("%w: %s commit for request %q",
 			ErrReconciliationRequired, state.Attempt,
 			request.RequestID)
+	}
+	if err := p.journalCarrierLease(ctx, request, state); err != nil {
+		return nil, err
 	}
 	recipients, err := p.plannedRecipients(ctx, request, state)
 	if err != nil {
@@ -236,6 +243,42 @@ func (p *Preparer) PrepareTaprootAssetOOR(ctx context.Context,
 	}
 
 	return prepared, nil
+}
+
+// journalCarrierLease adopts the request's carrier lease into the durable
+// state on first sight and afterwards holds the journal authoritative: an
+// idempotent replay must reuse the exact float funding the graph committed
+// to, never a fresh lease.
+func (p *Preparer) journalCarrierLease(ctx context.Context,
+	request *oor.TaprootAssetOORPrepareRequest,
+	state *preparationState) error {
+
+	if state.CarrierLease != nil {
+		if !state.CarrierLease.FundingEquals(request.Lease) {
+			return fmt.Errorf("Taproot Asset OOR idempotency key " +
+				"reused with a different carrier lease")
+		}
+
+		return nil
+	}
+
+	// A committed journal without a lease predates carrier funding and
+	// cannot be adopted safely.
+	if len(state.CheckpointPackage) != 0 || len(state.ArkPackage) != 0 {
+		return fmt.Errorf("%w: committed request %q has no journaled "+
+			"carrier lease", ErrReconciliationRequired,
+			request.RequestID)
+	}
+
+	state.CarrierLease = request.Lease.Clone()
+	if err := p.storeState(ctx, request.RequestID, state); err != nil {
+		state.CarrierLease = nil
+
+		return fmt.Errorf("persist Taproot Asset carrier lease: %w",
+			err)
+	}
+
+	return nil
 }
 
 // ensureReservationSet either atomically acquires/revalidates preparation
@@ -421,6 +464,7 @@ func (p *Preparer) ResumeTaprootAssetOOR(ctx context.Context,
 
 	return &oor.TaprootAssetOORResume{
 		InputOutpoints: cloneOutpoints(state.InputOutpoints),
+		Lease:          state.CarrierLease.Clone(),
 	}, nil
 }
 
@@ -500,6 +544,7 @@ func (p *Preparer) loadState(ctx context.Context, requestID string,
 		state.InputOutpoints = cloneOutpoints(inputOutpoints)
 		state.PlannedRecipients = nil
 		state.OrderingNonce = 0
+		state.CarrierLease = nil
 		if err := p.storeState(ctx, requestID, state); err != nil {
 			return nil, fmt.Errorf("rebind Taproot Asset carrier "+
 				"selection: %w", err)

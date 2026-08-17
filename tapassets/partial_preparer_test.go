@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
@@ -17,70 +16,40 @@ import (
 	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightninglabs/wavelength/oor"
-	"github.com/lightninglabs/wavelength/vtxo"
-	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
-// TestPreparerBuildsPartialAssetTransferWithCarrierTopUp proves an asset input
-// can be supplemented by a Bitcoin-only VTXO while the asset allocation and
-// all three carrier outputs remain explicit and independently conserved.
-func TestPreparerBuildsPartialAssetTransferWithCarrierTopUp(t *testing.T) {
+// TestPreparerBuildsPartialAssetTransferFromOperatorFloat proves a partial
+// send funds both new asset leaves at the operator floor out of the leased
+// float, returns the sender's full carrier, and pays the float residual back
+// to the lease script.
+func TestPreparerBuildsPartialAssetTransferFromOperatorFloat(t *testing.T) {
 	t.Parallel()
 
 	request, inventory := testPreparationRequest(t)
-	assetInput := request.Inputs[0]
+	assetInput := &request.Inputs[0]
 	assetInput.VTXO.Amount = 500
 	assetInput.VTXO.TaprootAssetAmount = 1_000
 	request.Intent.AssetAmount = 1_000
 	request.Intent.RecipientAssetAmount = 800
-	request.Intent.AssetChangeCarrierValueSat = 500
-	request.Recipients[0].Value = 700
+	request.Intent.InputVTXOOutpoint = assetInput.VTXO.Outpoint
+	request.Recipients[0].Value = 300
 	request.OutputFloor = 300
 	inventory.onlyAnchor().Assets[0].Amount = 1_000
 	inventory.verification.DecodedProof.Amount = 1_000
-
-	bitcoinInput := testBitcoinInput(
-		t, request.Policy.OperatorKey, 1_000,
-	)
-	request.Inputs = []oor.TransferInput{bitcoinInput, assetInput}
-	require.NoError(
-		t, oor.NormalizeCheckpointOwnerLeaves(
-			request.Policy, request.Inputs,
-		),
-	)
 
 	var (
 		changeCalls  int
 		changeValues []btcutil.Amount
 	)
-	request.BuildChangeRecipient = func(_ context.Context,
+	builder := testChangeRecipientBuilder(t, request.Policy.OperatorKey, 10)
+	request.BuildChangeRecipient = func(ctx context.Context,
 		value btcutil.Amount) (oortx.RecipientOutput, error) {
 
 		changeCalls++
 		changeValues = append(changeValues, value)
-		owner := testPrivateKey(t, byte(10+changeCalls))
-		policy, err := arkscript.NewVTXOPolicy(
-			owner.PubKey(), request.Policy.OperatorKey,
-			request.Policy.CSVDelay,
-		)
-		if err != nil {
-			return oortx.RecipientOutput{}, err
-		}
-		template, err := policy.Template.Encode()
-		if err != nil {
-			return oortx.RecipientOutput{}, err
-		}
-		pkScript, err := policy.Template.PkScript()
-		if err != nil {
-			return oortx.RecipientOutput{}, err
-		}
 
-		return oortx.RecipientOutput{
-			PkScript:           pkScript,
-			Value:              value,
-			VTXOPolicyTemplate: template,
-		}, nil
+		return builder(ctx, value)
 	}
 	require.NoError(t, request.Validate())
 
@@ -97,24 +66,30 @@ func TestPreparerBuildsPartialAssetTransferWithCarrierTopUp(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, prepared.Validate(request))
 
-	// The input's 500 carrier sats cannot fund the 700-sat receiver and
-	// 500-sat asset change alone. The Bitcoin-only input tops up the graph,
-	// leaving an ordinary 300-sat Bitcoin change VTXO.
+	// The wallet derives the asset-change and sender-change scripts; the
+	// operator change reuses the lease script verbatim.
 	require.Equal(t, 2, changeCalls)
 	require.Equal(
-		t, []btcutil.Amount{500, 300}, changeValues,
+		t, []btcutil.Amount{300, 500}, changeValues,
 	)
-	require.Len(t, prepared.Recipients, 3)
-	require.Equal(t, btcutil.Amount(700), prepared.Recipients[0].Value)
+	require.Len(t, prepared.Recipients, 4)
+	require.Equal(t, btcutil.Amount(300), prepared.Recipients[0].Value)
 	require.Equal(t, uint64(800), prepared.Recipients[0].TaprootAssetAmount)
 	require.NotNil(t, prepared.Recipients[0].TaprootAssetRoot)
-	require.Equal(t, btcutil.Amount(500), prepared.Recipients[1].Value)
+	require.Equal(t, btcutil.Amount(300), prepared.Recipients[1].Value)
 	require.Equal(t, uint64(200), prepared.Recipients[1].TaprootAssetAmount)
 	require.NotNil(t, prepared.Recipients[1].TaprootAssetRoot)
-	require.Equal(t, btcutil.Amount(300), prepared.Recipients[2].Value)
+	require.Equal(t, btcutil.Amount(500), prepared.Recipients[2].Value)
 	require.Nil(t, prepared.Recipients[2].TaprootAssetRoot)
 	require.Empty(t, prepared.Recipients[2].TaprootAssetRef)
 	require.Zero(t, prepared.Recipients[2].TaprootAssetAmount)
+	require.Equal(
+		t, btcutil.Amount(29_400), prepared.Recipients[3].Value,
+	)
+	require.Equal(
+		t, request.Lease.PkScript, prepared.Recipients[3].PkScript,
+	)
+	require.Nil(t, prepared.Recipients[3].TaprootAssetRoot)
 	require.Equal(t, prepared.Recipients[0], prepared.Receiver)
 	require.NotEqual(t, prepared.Recipients[1], prepared.Receiver)
 
@@ -123,7 +98,7 @@ func TestPreparerBuildsPartialAssetTransferWithCarrierTopUp(t *testing.T) {
 	// position rather than the canonically sorted Ark-input position.
 	require.Len(t, prepared.PreparedSubmit.CheckpointPSBTs, 2)
 	require.Equal(
-		t, [][]byte{nil, []byte("checkpoint-package")},
+		t, [][]byte{[]byte("checkpoint-package"), nil},
 		prepared.PreparedSubmit.TaprootAssetTransfer.CheckpointPackages,
 	)
 	require.Len(t, driver.requests, 2)
@@ -135,10 +110,10 @@ func TestPreparerBuildsPartialAssetTransferWithCarrierTopUp(t *testing.T) {
 	require.Len(t, arkRequest.Outputs, 2)
 	require.Equal(t, receiverOutputID, arkRequest.Outputs[0].ID)
 	require.Equal(t, uint64(800), arkRequest.Outputs[0].Amount)
-	require.Equal(t, uint64(700), arkRequest.Outputs[0].AnchorValueSat)
+	require.Equal(t, uint64(300), arkRequest.Outputs[0].AnchorValueSat)
 	require.Equal(t, changeOutputID, arkRequest.Outputs[1].ID)
 	require.Equal(t, uint64(200), arkRequest.Outputs[1].Amount)
-	require.Equal(t, uint64(500), arkRequest.Outputs[1].AnchorValueSat)
+	require.Equal(t, uint64(300), arkRequest.Outputs[1].AnchorValueSat)
 	for idx := range arkRequest.Outputs {
 		require.Equal(
 			t, tapsdk.CustomAssetScriptOPTrue,
@@ -147,40 +122,36 @@ func TestPreparerBuildsPartialAssetTransferWithCarrierTopUp(t *testing.T) {
 		require.NotNil(t, arkRequest.Outputs[idx].Script.OPTrue)
 	}
 
-	// Each signing plan points at the actual BIP-69-sorted Ark input for
-	// the corresponding transfer checkpoint, not its caller-side index.
+	// Both non-asset outputs carry complete BIP-371 metadata: the sender's
+	// change from its wallet policy, the operator's change from the lease
+	// policy.
 	ark, err := psbtutil.Parse(arkRequest.AnchorPSBT)
 	require.NoError(t, err)
-	bitcoinChangeIndex, err := oortx.RecipientOutputIndex(
-		prepared.Recipients, prepared.Recipients[2],
-	)
-	require.NoError(t, err)
-	require.Zero(
-		t, bitcoinChangeIndex, "the 300-sat Bitcoin change must "+
-			"move from caller position 2 to canonical position 0",
-	)
-	bitcoinChangeOutput := ark.Outputs[bitcoinChangeIndex]
-	_, bitcoinChangePolicy, err := recipientAnchorPlan(
-		prepared.Recipients[2],
-	)
-	require.NoError(t, err)
-	require.Equal(
-		t, schnorr.SerializePubKey(bitcoinChangePolicy.InternalKey),
-		bitcoinChangeOutput.TaprootInternalKey,
-	)
-	bitcoinChangeRoot := assertBIP371TapTree(
-		t, bitcoinChangeOutput.TaprootTapTree, bitcoinChangePolicy,
-	)
-	require.Equal(
-		t, bitcoinChangePolicy.RootHash, bitcoinChangeRoot[:],
-	)
-	privateTapTree, err := arkscript.EncodeTapTree(bitcoinChangePolicy)
-	require.NoError(t, err)
-	require.NotEqual(
-		t, privateTapTree, bitcoinChangeOutput.TaprootTapTree, "Wave"+
-			"length's count-prefixed checkpoint encoding is "+
-			"not BIP-371",
-	)
+	for _, recipientIndex := range []int{2, 3} {
+		recipient := prepared.Recipients[recipientIndex]
+		outputIndex, err := oortx.RecipientOutputIndex(
+			prepared.Recipients, recipient,
+		)
+		require.NoError(t, err)
+		output := ark.Outputs[outputIndex]
+		_, policy, err := recipientAnchorPlan(recipient)
+		require.NoError(t, err)
+		require.Equal(
+			t, schnorr.SerializePubKey(policy.InternalKey),
+			output.TaprootInternalKey,
+		)
+		root := assertBIP371TapTree(
+			t, output.TaprootTapTree, policy,
+		)
+		require.Equal(t, policy.RootHash, root[:])
+		privateTapTree, err := arkscript.EncodeTapTree(policy)
+		require.NoError(t, err)
+		require.NotEqual(
+			t, privateTapTree, output.TaprootTapTree, "Wavelengt"+
+				"h's count-prefixed checkpoint encoding is "+
+				"not BIP-371",
+		)
+	}
 	for idx := range arkRequest.Outputs {
 		anchorIndex := arkRequest.Outputs[idx].AnchorOutputIndex
 		assetOutput := ark.Outputs[anchorIndex]
@@ -190,6 +161,11 @@ func TestPreparerBuildsPartialAssetTransferWithCarrierTopUp(t *testing.T) {
 	p2aOutput := ark.Outputs[len(ark.Outputs)-1]
 	require.Empty(t, p2aOutput.TaprootInternalKey)
 	require.Empty(t, p2aOutput.TaprootTapTree)
+
+	// Each signing plan points at the actual BIP-69-sorted Ark input for
+	// the corresponding transfer checkpoint, not its caller-side index.
+	// The float input's plan requires the lease policy's own collab pair
+	// instead of a wallet client key.
 	require.Len(t, arkRequest.SigningPlans, 2)
 	for idx := range request.Inputs {
 		checkpoint := prepared.PreparedSubmit.CheckpointPSBTs[idx]
@@ -203,9 +179,25 @@ func TestPreparerBuildsPartialAssetTransferWithCarrierTopUp(t *testing.T) {
 			t, want, arkRequest.SigningPlans[idx].InputIndex,
 		)
 	}
+	floatSigners, err := ownerLeafSigners(&request.Inputs[1])
+	require.NoError(t, err)
+	require.Len(t, floatSigners, 2)
+	wantFloatSigners := make([]tapsdk.XOnlyPubKey, 0, len(floatSigners))
+	for _, signer := range floatSigners {
+		key, err := tapsdk.ParseXOnlyPubKey(
+			schnorr.SerializePubKey(signer),
+		)
+		require.NoError(t, err)
+		wantFloatSigners = append(wantFloatSigners, key)
+	}
+	require.Equal(
+		t, wantFloatSigners,
+		arkRequest.SigningPlans[1].ScriptPath.RequiredSigners,
+	)
 
-	// Restart uses the persisted change policies and sealed packages. It
-	// neither derives new addresses nor repeats a tapd commit.
+	// Restart uses the persisted change policies, lease journal, and
+	// sealed packages. It neither derives new addresses nor repeats a
+	// tapd commit.
 	restarted := newTestPreparer(
 		driver, inventory, store, reservations,
 	)
@@ -217,7 +209,7 @@ func TestPreparerBuildsPartialAssetTransferWithCarrierTopUp(t *testing.T) {
 	require.Len(t, driver.requests, 2)
 	require.Equal(t, prepared.Recipients, restored.Recipients)
 	require.Equal(t, prepared.Receiver, restored.Receiver)
-	require.Len(t, reservations.records(), 4)
+	require.Len(t, reservations.records(), 2)
 }
 
 // TestEncodeBIP371TapTreePreservesArkShape proves the standard depth-first
@@ -357,7 +349,6 @@ func TestPreparerRejectsInvalidRecipientPlansBeforeReservation(t *testing.T) {
 				request.Recipients[0].Value = 500
 				request.OutputFloor = 500
 				request.Intent.RecipientAssetAmount = 10
-				request.Intent.AssetChangeCarrierValueSat = 500
 				request.BuildChangeRecipient = func(
 					_ context.Context,
 					value btcutil.Amount) (
@@ -460,7 +451,6 @@ func TestPreparerBoundsCanonicalOrderingCycles(t *testing.T) {
 	request.Recipients[0].Value = 500
 	request.OutputFloor = 500
 	request.Intent.RecipientAssetAmount = 10
-	request.Intent.AssetChangeCarrierValueSat = 500
 	request.BuildChangeRecipient = func(_ context.Context,
 		value btcutil.Amount) (oortx.RecipientOutput, error) {
 
@@ -615,50 +605,4 @@ func previewForRoot(output tapsdk.CustomAssetOutput, assetRoot tapsdk.Hash) (
 		assetRoot:         assetRoot,
 		merkleRoot:        tapsdk.Hash(combined),
 	}, pkScript, nil
-}
-
-// testBitcoinInput returns one standard, asset-free VTXO suitable for carrier
-// top-ups in mixed Taproot Asset preparation tests.
-func testBitcoinInput(t *testing.T, operator *btcec.PublicKey,
-	amount btcutil.Amount) oor.TransferInput {
-
-	t.Helper()
-	owner := testPrivateKey(t, 9)
-	policy, err := arkscript.NewVTXOPolicy(owner.PubKey(), operator, 10)
-	require.NoError(t, err)
-	template, err := policy.Template.Encode()
-	require.NoError(t, err)
-	pkScript, err := policy.Template.PkScript()
-	require.NoError(t, err)
-	legacyTapScript, err := arkscript.VTXOTapScript(
-		owner.PubKey(), operator, 10,
-	)
-	require.NoError(t, err)
-
-	return oor.TransferInput{
-		VTXO: &vtxo.Descriptor{
-			Outpoint: wire.OutPoint{
-				Hash: chainhash.Hash(
-					sha256Bytes(
-						[]byte("bitcoin-input"),
-					),
-				),
-				Index: 2,
-			},
-			Amount:   amount,
-			PkScript: pkScript,
-			ClientKey: keychain.KeyDescriptor{
-				KeyLocator: keychain.KeyLocator{
-					Family: 1,
-					Index:  9,
-				},
-				PubKey: owner.PubKey(),
-			},
-			OperatorKey:    operator,
-			TapScript:      legacyTapScript,
-			RelativeExpiry: 10,
-			Status:         vtxo.VTXOStatusLive,
-		},
-		VTXOPolicyTemplate: template,
-	}
 }

@@ -53,10 +53,9 @@ type TaprootAssetOORIntent struct {
 	// caller's receiver. Zero preserves the legacy full-send default.
 	RecipientAssetAmount uint64
 
-	// AssetChangeCarrierValueSat is the Bitcoin value assigned to local
-	// asset change on a partial send. Zero defers to the operator's
-	// minimum VTXO amount; the daemon materializes that default before
-	// preparation. It must be zero for a full asset send.
+	// AssetChangeCarrierValueSat is a deprecated wire field and must be
+	// zero: new asset-leaf carriers are operator-funded at the operator's
+	// minimum VTXO amount.
 	AssetChangeCarrierValueSat uint64
 
 	// ProofFile is the complete confirmed proof for the selected asset.
@@ -106,14 +105,10 @@ func (i *TaprootAssetOORIntent) Validate() error {
 		return fmt.Errorf("taproot asset recipient amount exceeds " +
 			"input amount")
 	}
-	if recipientAmount == i.AssetAmount &&
-		i.AssetChangeCarrierValueSat != 0 {
-		return fmt.Errorf("taproot asset change carrier must be zero " +
-			"for a full send")
-	}
-	if i.AssetChangeCarrierValueSat > uint64(btcutil.MaxSatoshi) {
-		return fmt.Errorf("taproot asset change carrier exceeds " +
-			"maximum satoshi value")
+	if i.AssetChangeCarrierValueSat != 0 {
+		return fmt.Errorf("taproot asset change carrier must be " +
+			"zero: carriers are operator-funded at the " +
+			"operator's minimum VTXO amount")
 	}
 	if len(i.ProofCourierAddress) >
 		MaxTaprootAssetCourierAddressBytes {
@@ -151,6 +146,20 @@ func (i *TaprootAssetOORIntent) EffectiveRecipientAssetAmount() uint64 {
 	return i.RecipientAssetAmount
 }
 
+// NewAssetLeafCount returns the number of new asset-leaf carriers the send
+// creates: the recipient leaf, plus an asset-change leaf on a partial send.
+func (i *TaprootAssetOORIntent) NewAssetLeafCount() int {
+	if i == nil {
+		return 0
+	}
+
+	if i.EffectiveRecipientAssetAmount() < i.AssetAmount {
+		return 2
+	}
+
+	return 1
+}
+
 // TaprootAssetChangeRecipientBuilder derives a wallet-owned Ark policy output
 // for either asset change or ordinary Bitcoin change.
 type TaprootAssetChangeRecipientBuilder func(context.Context,
@@ -186,6 +195,11 @@ type TaprootAssetOORPrepareRequest struct {
 
 	// Intent identifies the selected asset and its final receiver script.
 	Intent TaprootAssetOORIntent
+
+	// Lease is the operator carrier-float reservation funding the new
+	// asset-leaf carriers. Inputs must contain exactly one matching
+	// operator-funded input.
+	Lease *OORCarrierLease
 }
 
 // Validate checks the first showcase contract before preparation begins.
@@ -246,28 +260,29 @@ func (r *TaprootAssetOORPrepareRequest) Validate() error {
 			"uncomposed")
 	}
 
-	if r.Recipients[0].Value < r.OutputFloor {
-		return fmt.Errorf("taproot asset OOR receiver carrier is " +
-			"below the output floor")
+	// New asset leaves are always created exactly at the operator floor;
+	// anything else the operator rejects at submit.
+	if r.Recipients[0].Value != r.OutputFloor {
+		return fmt.Errorf("taproot asset OOR receiver carrier must " +
+			"equal the operator floor")
 	}
 
-	assetChange := btcutil.Amount(r.Intent.AssetChangeCarrierValueSat)
-	if r.Intent.EffectiveRecipientAssetAmount() < r.Intent.AssetAmount &&
-		assetChange == 0 {
-		return fmt.Errorf("taproot asset change carrier is required " +
-			"for a partial send")
-	}
-	if assetChange != 0 && assetChange < r.OutputFloor {
-		return fmt.Errorf("taproot asset OOR change carrier is below " +
-			"the output floor")
-	}
-
-	assetChange, bitcoinChange, err := r.CarrierAllocation()
+	floatInputIndex, err := r.OperatorFundedInputIndex()
 	if err != nil {
 		return err
 	}
-	if (assetChange != 0 || bitcoinChange != 0) &&
-		r.BuildChangeRecipient == nil {
+	if floatInputIndex == assetInputIndex {
+		return fmt.Errorf("taproot asset OOR float input cannot " +
+			"carry the asset")
+	}
+	if err := r.validateLeaseBinding(floatInputIndex); err != nil {
+		return err
+	}
+
+	if _, err := r.CarrierAllocation(); err != nil {
+		return err
+	}
+	if r.BuildChangeRecipient == nil {
 		return fmt.Errorf("taproot asset OOR change recipient " +
 			"builder is required")
 	}
@@ -275,44 +290,170 @@ func (r *TaprootAssetOORPrepareRequest) Validate() error {
 	return nil
 }
 
-// CarrierAllocation returns the Bitcoin value assigned to the asset-change
-// output and to the sender's plain Bitcoin change output. A remainder below
-// the operator floor cannot become its own output, so a partial send folds it
-// into the asset-change carrier instead of creating a dust output.
-func (r *TaprootAssetOORPrepareRequest) CarrierAllocation() (btcutil.Amount,
-	btcutil.Amount, error) {
+// validateLeaseBinding proves the operator-funded input spends exactly the
+// leased float, so the planned outputs and the signed graph cannot diverge
+// from the reservation the operator granted.
+func (r *TaprootAssetOORPrepareRequest) validateLeaseBinding(
+	floatInputIndex int) error {
+
+	if err := r.Lease.Validate(); err != nil {
+		return err
+	}
+
+	floatInput := &r.Inputs[floatInputIndex]
+	switch {
+	case floatInput.VTXO.Outpoint != r.Lease.Outpoint:
+		return fmt.Errorf("taproot asset OOR float input outpoint " +
+			"does not match the lease")
+
+	case floatInput.VTXO.Amount != r.Lease.Value:
+		return fmt.Errorf("taproot asset OOR float input value does " +
+			"not match the lease")
+
+	case !bytes.Equal(floatInput.VTXO.PkScript, r.Lease.PkScript):
+		return fmt.Errorf("taproot asset OOR float input pkScript " +
+			"does not match the lease")
+
+	case !bytes.Equal(
+		floatInput.VTXOPolicyTemplate, r.Lease.PolicyTemplate,
+	):
+		return fmt.Errorf("taproot asset OOR float input policy does " +
+			"not match the lease")
+	}
+
+	return nil
+}
+
+// TaprootAssetCarrierPlan is the Bitcoin-side output plan of an
+// operator-funded asset send. Every new asset leaf is created at the operator
+// floor out of the leased float, the sender's full input carrier returns as
+// plain Bitcoin change, and the float residual returns to the operator.
+type TaprootAssetCarrierPlan struct {
+	// AssetChange is the asset-change leaf carrier: the operator floor on
+	// a partial send, zero on a full send.
+	AssetChange btcutil.Amount
+
+	// SenderChange is the sender's plain Bitcoin change: the asset
+	// input's full carrier value.
+	SenderChange btcutil.Amount
+
+	// OperatorChange is the float residual returned to the lease
+	// pkScript: lease value minus the new asset-leaf floors. Zero means
+	// the lease was consumed exactly and no operator output exists.
+	OperatorChange btcutil.Amount
+}
+
+// CarrierAllocation returns the Bitcoin-side output plan funded by the
+// operator's carrier float. The recipient leaf and the asset-change leaf of a
+// partial send are always the operator floor; a lease below the summed floors
+// cannot fund the send.
+func (r *TaprootAssetOORPrepareRequest) CarrierAllocation() (
+	TaprootAssetCarrierPlan, error) {
 
 	if r == nil || len(r.Recipients) != 1 {
-		return 0, 0, fmt.Errorf("taproot asset OOR requires exactly " +
-			"one recipient")
+		return TaprootAssetCarrierPlan{}, fmt.Errorf("taproot asset " +
+			"OOR requires exactly one recipient")
+	}
+	if err := r.Lease.Validate(); err != nil {
+		return TaprootAssetCarrierPlan{}, err
+	}
+	if r.OutputFloor <= 0 {
+		return TaprootAssetCarrierPlan{}, fmt.Errorf("taproot asset " +
+			"OOR output floor is required")
 	}
 
-	assetChange := btcutil.Amount(r.Intent.AssetChangeCarrierValueSat)
-	inputTotal, err := taprootAssetInputTotal(r.Inputs)
+	// A light scan suffices here: every caller runs the request's full
+	// Validate (which runs AssetInputIndex) before planning values.
+	assetInputIndex, err := locateTaprootAssetInput(r.Inputs)
 	if err != nil {
-		return 0, 0, err
-	}
-	required, err := addTaprootAssetCarrier(
-		r.Recipients[0].Value, assetChange,
-	)
-	if err != nil {
-		return 0, 0, err
-	}
-	if required > inputTotal {
-		return 0, 0, fmt.Errorf("taproot asset OOR carrier funding " +
-			"is insufficient")
+		return TaprootAssetCarrierPlan{}, err
 	}
 
-	bitcoinChange := inputTotal - required
-	if bitcoinChange == 0 || bitcoinChange >= r.OutputFloor {
-		return assetChange, bitcoinChange, nil
+	leafCount := r.Intent.NewAssetLeafCount()
+	if leafCount <= 0 {
+		return TaprootAssetCarrierPlan{}, fmt.Errorf("taproot asset " +
+			"OOR requires at least one new asset leaf")
 	}
-	if assetChange == 0 {
-		return 0, 0, fmt.Errorf("taproot asset OOR Bitcoin change is " +
-			"below the output floor")
+	if r.OutputFloor > btcutil.MaxSatoshi/btcutil.Amount(leafCount) {
+		return TaprootAssetCarrierPlan{}, fmt.Errorf("taproot asset " +
+			"OOR carrier sum overflows")
 	}
 
-	return assetChange + bitcoinChange, 0, nil
+	floors := r.OutputFloor * btcutil.Amount(leafCount)
+	if r.Lease.Value < floors {
+		return TaprootAssetCarrierPlan{}, fmt.Errorf("taproot asset "+
+			"OOR float lease value %d sat is below the %d sat of "+
+			"new asset-leaf floors", r.Lease.Value, floors)
+	}
+
+	plan := TaprootAssetCarrierPlan{
+		SenderChange:   r.Inputs[assetInputIndex].VTXO.Amount,
+		OperatorChange: r.Lease.Value - floors,
+	}
+	if leafCount > 1 {
+		plan.AssetChange = r.OutputFloor
+	}
+
+	return plan, nil
+}
+
+// locateTaprootAssetInput returns the unique asset-bearing input without the
+// per-input structural validation AssetInputIndex performs.
+func locateTaprootAssetInput(inputs []TransferInput) (int, error) {
+	assetIndex := -1
+	for idx := range inputs {
+		input := &inputs[idx]
+		if input.VTXO == nil {
+			return 0, fmt.Errorf("taproot asset OOR input %d "+
+				"has no VTXO", idx)
+		}
+
+		hasAsset := input.TaprootAssetRoot != nil ||
+			input.VTXO.TaprootAssetRoot != nil ||
+			input.VTXO.TaprootAssetRef != "" ||
+			input.VTXO.TaprootAssetAmount != 0
+		if !hasAsset {
+			continue
+		}
+		if assetIndex >= 0 {
+			return 0, fmt.Errorf("taproot asset OOR requires " +
+				"exactly one asset input")
+		}
+		assetIndex = idx
+	}
+	if assetIndex < 0 {
+		return 0, fmt.Errorf("taproot asset OOR input root is required")
+	}
+
+	return assetIndex, nil
+}
+
+// OperatorFundedInputIndex returns the unique operator-funded float input.
+func (r *TaprootAssetOORPrepareRequest) OperatorFundedInputIndex() (int,
+	error) {
+
+	if r == nil {
+		return 0, fmt.Errorf("taproot asset OOR prepare request is " +
+			"required")
+	}
+
+	floatIndex := -1
+	for idx := range r.Inputs {
+		if !r.Inputs[idx].OperatorFunded {
+			continue
+		}
+		if floatIndex >= 0 {
+			return 0, fmt.Errorf("taproot asset OOR requires " +
+				"exactly one operator-funded input")
+		}
+		floatIndex = idx
+	}
+	if floatIndex < 0 {
+		return 0, fmt.Errorf("taproot asset OOR requires an " +
+			"operator-funded float input")
+	}
+
+	return floatIndex, nil
 }
 
 // AssetInputIndex returns the unique asset-bearing input. Every other input
@@ -365,30 +506,6 @@ func (r *TaprootAssetOORPrepareRequest) AssetInputIndex() (int, error) {
 	}
 
 	return assetIndex, nil
-}
-
-func taprootAssetInputTotal(inputs []TransferInput) (btcutil.Amount, error) {
-	var total btcutil.Amount
-	for idx := range inputs {
-		amount := inputs[idx].VTXO.Amount
-		if amount <= 0 || total > btcutil.MaxSatoshi-amount {
-			return 0, fmt.Errorf("taproot asset OOR input " +
-				"carrier sum overflows")
-		}
-		total += amount
-	}
-
-	return total, nil
-}
-
-func addTaprootAssetCarrier(left, right btcutil.Amount) (btcutil.Amount,
-	error) {
-
-	if left < 0 || right < 0 || left > btcutil.MaxSatoshi-right {
-		return 0, fmt.Errorf("taproot asset OOR carrier sum overflows")
-	}
-
-	return left + right, nil
 }
 
 // TaprootAssetOORPreparation is the immutable custom-anchor result supplied
@@ -449,9 +566,16 @@ func (p *TaprootAssetOORPreparation) Validate(
 			"changed")
 	}
 
+	plan, err := request.CarrierAllocation()
+	if err != nil {
+		return err
+	}
+
 	var (
-		assetTotal    uint64
-		matchingCount int
+		assetTotal         uint64
+		matchingCount      int
+		operatorChangeSeen int
+		senderChangeSeen   int
 	)
 	for idx := range p.Recipients {
 		recipient := p.Recipients[idx]
@@ -467,7 +591,36 @@ func (p *TaprootAssetOORPreparation) Validate(
 					"recipient %d: %w", idx, err)
 			}
 
+			// A non-asset output is either the operator's float
+			// residual (pays the lease pkScript verbatim) or the
+			// sender's returned carrier.
+			if bytes.Equal(
+				recipient.PkScript, request.Lease.PkScript,
+			) {
+
+				if recipient.Value != plan.OperatorChange {
+					return fmt.Errorf("taproot asset OOR " +
+						"operator change value " +
+						"mismatch")
+				}
+				operatorChangeSeen++
+
+				continue
+			}
+			if recipient.Value != plan.SenderChange {
+				return fmt.Errorf("taproot asset OOR sender " +
+					"change value mismatch")
+			}
+			senderChangeSeen++
+
 			continue
+		}
+
+		// Every new asset leaf is operator-funded at exactly the
+		// floor, mirroring the operator's submit validation.
+		if recipient.Value != request.OutputFloor {
+			return fmt.Errorf("taproot asset OOR asset carrier " +
+				"is not the operator floor")
 		}
 		err := recipient.ValidateTaprootAssetCommitment()
 		if err != nil {
@@ -488,6 +641,20 @@ func (p *TaprootAssetOORPreparation) Validate(
 		return fmt.Errorf("taproot asset OOR asset allocation is not " +
 			"conserved")
 	}
+	if senderChangeSeen != 1 {
+		return fmt.Errorf("taproot asset OOR sender change is not " +
+			"unique")
+	}
+
+	wantOperatorChange := 0
+	if plan.OperatorChange > 0 {
+		wantOperatorChange = 1
+	}
+	if operatorChangeSeen != wantOperatorChange {
+		return fmt.Errorf("taproot asset OOR operator change is not " +
+			"unique")
+	}
+
 	if err := p.PreparedSubmit.Validate(
 		request.Inputs, p.Recipients,
 	); err != nil {
@@ -521,10 +688,13 @@ type TaprootAssetOORResumeRequest struct {
 	Intent      TaprootAssetOORIntent
 }
 
-// TaprootAssetOORResume contains the exact input outpoints journaled before
-// the first external asset commit.
+// TaprootAssetOORResume contains the exact wallet input outpoints and the
+// carrier lease journaled before the first external asset commit. The float
+// input is not a wallet VTXO, so it is carried as the lease rather than an
+// outpoint the wallet could re-select.
 type TaprootAssetOORResume struct {
 	InputOutpoints []wire.OutPoint
+	Lease          *OORCarrierLease
 }
 
 // TaprootAssetOORPreparationResumer is an optional restart bridge implemented

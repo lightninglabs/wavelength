@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
@@ -105,6 +106,11 @@ func (p *testTaprootAssetOORPreparer) PrepareTaprootAssetOOR(_ context.Context,
 		return nil
 	}
 
+	plan, err := request.CarrierAllocation()
+	if err != nil {
+		return nil, err
+	}
+
 	receiverAmount := request.Intent.EffectiveRecipientAssetAmount()
 	if err := setAssetRecipient(
 		&recipients[0], "-receiver", receiverAmount,
@@ -116,9 +122,7 @@ func (p *testTaprootAssetOORPreparer) PrepareTaprootAssetOOR(_ context.Context,
 		assetChange := cloneTestTaprootAssetRecipients(
 			request.Recipients,
 		)[0]
-		assetChange.Value = btcutil.Amount(
-			request.Intent.AssetChangeCarrierValueSat,
-		)
+		assetChange.Value = plan.AssetChange
 		if err := setAssetRecipient(
 			&assetChange, "-asset-change",
 			request.Intent.AssetAmount-receiverAmount,
@@ -128,17 +132,16 @@ func (p *testTaprootAssetOORPreparer) PrepareTaprootAssetOOR(_ context.Context,
 		recipients = append(recipients, assetChange)
 	}
 
-	var inputTotal btcutil.Amount
-	for idx := range request.Inputs {
-		inputTotal += request.Inputs[idx].VTXO.Amount
-	}
-	requiredCarrier := request.Recipients[0].Value + btcutil.Amount(
-		request.Intent.AssetChangeCarrierValueSat,
-	)
-	if bitcoinChange := inputTotal - requiredCarrier; bitcoinChange > 0 {
-		change := cloneTestTaprootAssetRecipients(request.Recipients)[0]
-		change.Value = bitcoinChange
-		recipients = append(recipients, change)
+	senderChange := cloneTestTaprootAssetRecipients(request.Recipients)[0]
+	senderChange.Value = plan.SenderChange
+	recipients = append(recipients, senderChange)
+
+	if plan.OperatorChange > 0 {
+		recipients = append(recipients, oortx.RecipientOutput{
+			PkScript:           request.Lease.PkScript,
+			Value:              plan.OperatorChange,
+			VTXOPolicyTemplate: request.Lease.PolicyTemplate,
+		})
 	}
 
 	arkPSBT, checkpointPSBTs, err := oor.BuildSubmitPackage(
@@ -193,6 +196,7 @@ func (p *testTaprootAssetOORPreparer) ResumeTaprootAssetOOR(_ context.Context,
 		InputOutpoints: append(
 			[]wire.OutPoint(nil), p.resume.InputOutpoints...,
 		),
+		Lease: p.resume.Lease.Clone(),
 	}, nil
 }
 
@@ -222,6 +226,8 @@ type taprootAssetOORRPCFixture struct {
 	desc          *vtxo.Descriptor
 	wallet        *sendOORTestWallet
 	artifactStore *db.OORArtifactPersistenceStore
+	arkService    *fakeArkService
+	lease         *oor.OORCarrierLease
 }
 
 func newTaprootAssetOORRPCFixture(t *testing.T) *taprootAssetOORRPCFixture {
@@ -325,6 +331,46 @@ func newTaprootAssetOORRPCFixtureWithActor(t *testing.T,
 		)
 	}
 
+	// The operator advertises a carrier float and grants a lease whose
+	// policy binds the float owner and current operator keys to the
+	// leased pkScript.
+	floatKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	leasePolicy, leasePkScript, err := arkscript.
+		EncodeStandardVTXOArtifacts(
+			floatKey.PubKey(), operatorKey.PubKey(), exitDelay,
+		)
+	require.NoError(t, err)
+	lease := &oor.OORCarrierLease{
+		Outpoint: wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("carrier-float")),
+			Index: 0,
+		},
+		Value:          25_000,
+		PolicyTemplate: leasePolicy,
+		PkScript:       leasePkScript,
+		ExpiresAtUnix:  1_700_000_000,
+	}
+	arkService := &fakeArkService{
+		getInfoResponse: &arkrpc.GetInfoResponse{
+			Pubkey: operatorKey.
+				PubKey().
+				SerializeCompressed(),
+			VtxoExitDelay: exitDelay,
+			DustLimit:     1000,
+			OorCarrierPubkey: schnorr.SerializePubKey(
+				floatKey.PubKey(),
+			),
+		},
+		leaseResponse: &arkrpc.LeaseOORCarrierResponse{
+			Outpoint:           lease.Outpoint.String(),
+			ValueSat:           int64(lease.Value),
+			VtxoPolicyTemplate: lease.PolicyTemplate,
+			PkScript:           lease.PkScript,
+			ExpiresAtUnix:      lease.ExpiresAtUnix,
+		},
+	}
+
 	preparer := &testTaprootAssetOORPreparer{}
 	walletReady := make(chan struct{})
 	close(walletReady)
@@ -341,22 +387,14 @@ func newTaprootAssetOORRPCFixtureWithActor(t *testing.T,
 		oorSessionStore:  sessionStore,
 		walletRef:        fn.Some(walletRef),
 		clientKeyDesc:    desc.ClientKey,
-		serverConn: newBufconnClient(t, &fakeArkService{
-			getInfoResponse: &arkrpc.GetInfoResponse{
-				Pubkey: operatorKey.
-					PubKey().
-					SerializeCompressed(),
-				VtxoExitDelay: exitDelay,
-				DustLimit:     1000,
-			},
-		}),
+		serverConn:       newBufconnClient(t, arkService),
 	}
 
 	request := &waverpc.SendOORRequest{
 		Recipients: []*waverpc.Output{
 			sendOORPolicyRecipient(
 				t, recipientKey.PubKey(), operatorKey.PubKey(),
-				exitDelay, int64(amountSat),
+				exitDelay, 0,
 			),
 		},
 		IdempotencyKey: "taproot-asset-request-1",
@@ -377,6 +415,8 @@ func newTaprootAssetOORRPCFixtureWithActor(t *testing.T,
 		desc:          desc,
 		wallet:        testWallet,
 		artifactStore: artifactStore,
+		arkService:    arkService,
+		lease:         lease,
 	}
 }
 
@@ -416,6 +456,23 @@ func TestSendOORTaprootAssetPreparesBeforeActor(t *testing.T) {
 		prepareRequest.Inputs[0].TaprootAssetRoot,
 	)
 
+	// The daemon stamps the receiver leaf at the floor, leases one float
+	// covering it, and rides the float along as a foreign input.
+	require.Equal(
+		t, btcutil.Amount(1000), prepareRequest.Recipients[0].Value,
+	)
+	require.True(t, fixture.lease.FundingEquals(prepareRequest.Lease))
+	require.Len(t, prepareRequest.Inputs, 2)
+	require.True(t, prepareRequest.Inputs[1].OperatorFunded)
+	require.Equal(
+		t, fixture.lease.Outpoint,
+		prepareRequest.Inputs[1].VTXO.Outpoint,
+	)
+	require.Len(t, fixture.arkService.leaseRequests, 1)
+	require.EqualValues(
+		t, 1000, fixture.arkService.leaseRequests[0].GetRequiredSat(),
+	)
+
 	actorRequests := fixture.oorActor.capturedRequests()
 	require.Len(t, actorRequests, 1)
 	actorRequest := actorRequests[0]
@@ -424,25 +481,43 @@ func TestSendOORTaprootAssetPreparesBeforeActor(t *testing.T) {
 	require.NoError(
 		t, actorRequest.Recipients[0].ValidateTaprootAssetCommitment(),
 	)
+
+	// Full send: floor-valued receiver, the sender's returned carrier,
+	// and the operator's float residual.
+	require.Len(t, actorRequest.Recipients, 3)
+	require.Equal(
+		t, btcutil.Amount(1000), actorRequest.Recipients[0].Value,
+	)
+	require.Equal(
+		t, btcutil.Amount(50_000), actorRequest.Recipients[1].Value,
+	)
+	require.Equal(
+		t, btcutil.Amount(24_000), actorRequest.Recipients[2].Value,
+	)
+	require.Equal(
+		t, fixture.lease.PkScript, actorRequest.Recipients[2].PkScript,
+	)
+
 	selectRequests := fixture.wallet.selectionRequests()
 	require.Len(t, selectRequests, 1)
 	require.Equal(
 		t, []wire.OutPoint{fixture.desc.Outpoint},
 		selectRequests[0].RequiredOutpoints,
 	)
+	require.Equal(
+		t, btcutil.Amount(50_000), selectRequests[0].TargetAmount,
+	)
 	require.True(t, selectRequests[0].WaitForDurable)
 	require.Empty(t, fixture.wallet.unlockBatches())
 }
 
-// TestSendOORTaprootAssetFiltersChangeOutpoints proves an explicit partial
-// allocation funds local asset change but returns only the caller's receiver.
+// TestSendOORTaprootAssetFiltersChangeOutpoints proves a partial allocation
+// funds local asset change but returns only the caller's receiver.
 func TestSendOORTaprootAssetFiltersChangeOutpoints(t *testing.T) {
 	t.Parallel()
 
 	fixture := newTaprootAssetOORRPCFixture(t)
-	fixture.request.Recipients[0].AmountSat = 48_000
 	fixture.request.TaprootAsset.RecipientAssetAmount = 13
-	fixture.request.TaprootAsset.AssetChangeCarrierValueSat = 1000
 
 	response, err := fixture.rpcServer.SendOOR(
 		t.Context(), fixture.request,
@@ -457,26 +532,40 @@ func TestSendOORTaprootAssetFiltersChangeOutpoints(t *testing.T) {
 		t, 13,
 		prepareRequests[0].Intent.EffectiveRecipientAssetAmount(),
 	)
+
+	// Both new asset leaves are leased from the operator float.
+	require.Len(t, fixture.arkService.leaseRequests, 1)
 	require.EqualValues(
-		t, 1000, prepareRequests[0].Intent.AssetChangeCarrierValueSat,
+		t, 2000, fixture.arkService.leaseRequests[0].GetRequiredSat(),
 	)
 
 	selectRequests := fixture.wallet.selectionRequests()
 	require.Len(t, selectRequests, 1)
-	require.Equal(t, btcutil.Amount(49_000), selectRequests[0].TargetAmount)
+	require.Equal(t, btcutil.Amount(50_000), selectRequests[0].TargetAmount)
 
 	actorRequests := fixture.oorActor.capturedRequests()
 	require.Len(t, actorRequests, 1)
-	require.Len(t, actorRequests[0].Recipients, 3)
+	require.Len(t, actorRequests[0].Recipients, 4)
 	require.EqualValues(
 		t, 13, actorRequests[0].Recipients[0].TaprootAssetAmount,
 	)
 	require.EqualValues(
 		t, 8, actorRequests[0].Recipients[1].TaprootAssetAmount,
 	)
+	require.Equal(
+		t, btcutil.Amount(1000), actorRequests[0].Recipients[1].Value,
+	)
 	require.Nil(t, actorRequests[0].Recipients[2].TaprootAssetRoot)
 	require.Equal(
-		t, btcutil.Amount(1000), actorRequests[0].Recipients[2].Value,
+		t, btcutil.Amount(50_000), actorRequests[0].Recipients[2].Value,
+	)
+	require.Nil(t, actorRequests[0].Recipients[3].TaprootAssetRoot)
+	require.Equal(
+		t, btcutil.Amount(23_000), actorRequests[0].Recipients[3].Value,
+	)
+	require.Equal(
+		t, fixture.lease.PkScript,
+		actorRequests[0].Recipients[3].PkScript,
 	)
 
 	sessionHash := chainhash.HashH([]byte("taproot-asset-oor-session"))
@@ -490,28 +579,14 @@ func TestSendOORTaprootAssetFiltersChangeOutpoints(t *testing.T) {
 	)
 }
 
-// TestSendOORTaprootAssetDefaultsChangeCarrier proves a partial send with no
-// explicit carrier rides on the operator minimum and returns the rest of the
-// selected Bitcoin VTXO as a plain change output.
-func TestSendOORTaprootAssetDefaultsChangeCarrier(t *testing.T) {
+// TestSendOORTaprootAssetFundsCarriersFromFloat proves a partial send funds
+// both new asset leaves at the operator floor out of the leased float while
+// the sender's full carrier returns as one plain change output.
+func TestSendOORTaprootAssetFundsCarriersFromFloat(t *testing.T) {
 	t.Parallel()
 
 	fixture := newTaprootAssetOORRPCFixture(t)
 	fixture.request.TaprootAsset.RecipientAssetAmount = 20
-
-	carrierDesc, _ := newSendOORTestVTXO(
-		t, fixture.desc.OperatorKey, 0x62, 30_000,
-	)
-	require.NoError(
-		t,
-		fixture.rpcServer.server.vtxoStore.SaveVTXO(
-			t.Context(), carrierDesc,
-		),
-	)
-	fixture.wallet.selections = [][]wallet.SelectedVTXO{{
-		selectedVTXOFromDescriptor(fixture.desc),
-		selectedVTXOFromDescriptor(carrierDesc),
-	}}
 
 	response, err := fixture.rpcServer.SendOOR(
 		t.Context(), fixture.request,
@@ -519,35 +594,43 @@ func TestSendOORTaprootAssetDefaultsChangeCarrier(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "submitted", response.GetStatus())
 
-	// The daemon materializes the operator floor before selection and
-	// preparation see the intent.
+	// Selection targets exactly the asset input; no Bitcoin filler VTXO
+	// is selected.
 	selectRequests := fixture.wallet.selectionRequests()
 	require.Len(t, selectRequests, 1)
-	require.Equal(t, btcutil.Amount(51_000), selectRequests[0].TargetAmount)
+	require.Equal(t, btcutil.Amount(50_000), selectRequests[0].TargetAmount)
+	require.Equal(
+		t, []wire.OutPoint{fixture.desc.Outpoint},
+		selectRequests[0].RequiredOutpoints,
+	)
 
 	prepareRequests := fixture.preparer.captured()
 	require.Len(t, prepareRequests, 1)
 	prepareRequest := prepareRequests[0]
-	require.EqualValues(
-		t, 1000, prepareRequest.Intent.AssetChangeCarrierValueSat,
-	)
+	require.Zero(t, prepareRequest.Intent.AssetChangeCarrierValueSat)
 
-	assetChange, bitcoinChange, err := prepareRequest.CarrierAllocation()
+	plan, err := prepareRequest.CarrierAllocation()
 	require.NoError(t, err)
-	require.Equal(t, btcutil.Amount(1000), assetChange)
-	require.Equal(t, btcutil.Amount(29_000), bitcoinChange)
+	require.Equal(t, btcutil.Amount(1000), plan.AssetChange)
+	require.Equal(t, btcutil.Amount(50_000), plan.SenderChange)
+	require.Equal(t, btcutil.Amount(23_000), plan.OperatorChange)
 
-	// The receiver and the minimal asset-change carrier are asset-bearing;
-	// the remainder returns as one plain Bitcoin output.
+	// The receiver and the floor-valued asset-change carrier are
+	// asset-bearing; the sender's carrier and the operator's residual
+	// return as plain Bitcoin outputs.
 	actorRequests := fixture.oorActor.capturedRequests()
 	require.Len(t, actorRequests, 1)
 	recipients := actorRequests[0].Recipients
-	require.Len(t, recipients, 3)
+	require.Len(t, recipients, 4)
 	require.NotNil(t, recipients[0].TaprootAssetRoot)
+	require.Equal(t, btcutil.Amount(1000), recipients[0].Value)
 	require.NotNil(t, recipients[1].TaprootAssetRoot)
 	require.Equal(t, btcutil.Amount(1000), recipients[1].Value)
 	require.Nil(t, recipients[2].TaprootAssetRoot)
-	require.Equal(t, btcutil.Amount(29_000), recipients[2].Value)
+	require.Equal(t, btcutil.Amount(50_000), recipients[2].Value)
+	require.Nil(t, recipients[3].TaprootAssetRoot)
+	require.Equal(t, btcutil.Amount(23_000), recipients[3].Value)
+	require.Equal(t, fixture.lease.PkScript, recipients[3].PkScript)
 
 	// The composed asset-change script is registered as an owned alias
 	// before admission, so the incoming self-notification resolves it
@@ -559,6 +642,13 @@ func TestSendOORTaprootAssetDefaultsChangeCarrier(t *testing.T) {
 	require.Equal(
 		t, db.OwnedReceiveScriptSourceAssetAlias, alias.Source,
 	)
+
+	// The operator's float residual pays a foreign script and must not
+	// be registered as an owned alias.
+	_, err = fixture.artifactStore.LookupOwnedReceiveScript(
+		t.Context(), recipients[3].PkScript,
+	)
+	require.Error(t, err)
 }
 
 // TestSendOORTaprootAssetAdoptsPreparedInputs proves an RPC retry after the
@@ -572,6 +662,7 @@ func TestSendOORTaprootAssetAdoptsPreparedInputs(t *testing.T) {
 		InputOutpoints: []wire.OutPoint{
 			fixture.desc.Outpoint,
 		},
+		Lease: fixture.lease,
 	}
 	require.NoError(
 		t,
@@ -591,6 +682,41 @@ func TestSendOORTaprootAssetAdoptsPreparedInputs(t *testing.T) {
 	require.Len(t, fixture.preparer.capturedResumes(), 1)
 	require.Len(t, fixture.preparer.captured(), 1)
 	require.Len(t, fixture.oorActor.capturedRequests(), 1)
+
+	// A resumed request reuses the journaled lease; it never re-leases.
+	require.Empty(t, fixture.arkService.leaseRequests)
+	prepareRequests := fixture.preparer.captured()
+	require.True(
+		t, fixture.lease.FundingEquals(prepareRequests[0].Lease),
+	)
+}
+
+// TestSendOORTaprootAssetResumeRequiresJournaledLease proves an adopted
+// preparation without a journaled carrier lease fails into reconciliation
+// instead of leasing a fresh float under a committed graph.
+func TestSendOORTaprootAssetResumeRequiresJournaledLease(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTaprootAssetOORRPCFixture(t)
+	fixture.preparer.resume = &oor.TaprootAssetOORResume{
+		InputOutpoints: []wire.OutPoint{
+			fixture.desc.Outpoint,
+		},
+	}
+	require.NoError(
+		t,
+		fixture.rpcServer.server.vtxoStore.UpdateVTXOStatus(
+			t.Context(), fixture.desc.Outpoint,
+			vtxo.VTXOStatusSpending,
+		),
+	)
+
+	_, err := fixture.rpcServer.SendOOR(t.Context(), fixture.request)
+	require.Equal(t, codes.Aborted, status.Code(err))
+	require.ErrorContains(t, err, "no journaled carrier lease")
+	require.Empty(t, fixture.arkService.leaseRequests)
+	require.Zero(t, fixture.wallet.selectCount())
+	require.Empty(t, fixture.oorActor.capturedRequests())
 }
 
 // TestSendOORTaprootAssetQuarantinesAfterPreparation proves a later OOR actor
@@ -849,69 +975,51 @@ func TestSendOORTaprootAssetFailsClosed(t *testing.T) {
 			wantContains: "recipient amount exceeds input amount",
 		},
 		{
-			name: "partial send defaults the carrier",
-			mutate: func(f *taprootAssetOORRPCFixture) {
-				f.request.TaprootAsset.RecipientAssetAmount = 20
-			},
-			wantCode:     codes.InvalidArgument,
-			wantContains: "below Taproot Asset carrier amount",
-			wantSelect:   true,
-			wantUnlock:   true,
-		},
-		{
-			name: "full send with change carrier",
-			mutate: func(f *taprootAssetOORRPCFixture) {
-				f.request.TaprootAsset.
-					AssetChangeCarrierValueSat = 1000
-			},
-			wantCode:     codes.InvalidArgument,
-			wantContains: "change carrier must be zero",
-		},
-		{
-			name: "change carrier exceeds Bitcoin maximum",
-			mutate: func(f *taprootAssetOORRPCFixture) {
-				assetIntent := f.request.TaprootAsset
-				assetIntent.RecipientAssetAmount = 20
-				assetIntent.AssetChangeCarrierValueSat =
-					uint64(btcutil.MaxSatoshi) + 1
-			},
-			wantCode:     codes.InvalidArgument,
-			wantContains: "change carrier exceeds maximum",
-		},
-		{
-			name: "change carrier below output floor",
-			mutate: func(f *taprootAssetOORRPCFixture) {
-				f.request.TaprootAsset.RecipientAssetAmount = 20
-				f.request.TaprootAsset.
-					AssetChangeCarrierValueSat = 999
-			},
-			wantCode:     codes.InvalidArgument,
-			wantContains: "below operator minimum",
-		},
-		{
-			name: "carrier total overflows Bitcoin maximum",
-			mutate: func(f *taprootAssetOORRPCFixture) {
-				f.request.Recipients[0].AmountSat = int64(
-					btcutil.MaxSatoshi,
-				)
-				f.request.TaprootAsset.RecipientAssetAmount = 20
-				f.request.TaprootAsset.
-					AssetChangeCarrierValueSat = 1000
-			},
-			wantCode:     codes.InvalidArgument,
-			wantContains: "carrier total must be",
-		},
-		{
-			name: "selected carrier funding is insufficient",
+			name: "caller-set change carrier",
 			mutate: func(f *taprootAssetOORRPCFixture) {
 				f.request.TaprootAsset.RecipientAssetAmount = 20
 				f.request.TaprootAsset.
 					AssetChangeCarrierValueSat = 1000
 			},
+			wantCode: codes.InvalidArgument,
+			wantContains: "asset_change_carrier_value_sat must " +
+				"be zero",
+		},
+		{
+			name: "caller-set recipient amount",
+			mutate: func(f *taprootAssetOORRPCFixture) {
+				f.request.Recipients[0].AmountSat = 48_000
+			},
 			wantCode:     codes.InvalidArgument,
-			wantContains: "below Taproot Asset carrier amount",
-			wantSelect:   true,
-			wantUnlock:   true,
+			wantContains: "recipient amount_sat must be zero",
+		},
+		{
+			name: "unknown asset input VTXO",
+			mutate: func(f *taprootAssetOORRPCFixture) {
+				f.request.TaprootAsset.InputVtxoOutpoint =
+					"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
+						"aaaaaaaaaaaaaaaaaaaaaaaa" +
+						"aaaaaaaa:0"
+			},
+			wantCode:     codes.InvalidArgument,
+			wantContains: "unknown Taproot Asset input VTXO",
+		},
+		{
+			name: "carrier funding disabled",
+			mutate: func(f *taprootAssetOORRPCFixture) {
+				f.arkService.getInfoResponse.
+					OorCarrierPubkey = nil
+			},
+			wantCode:     codes.FailedPrecondition,
+			wantContains: "does not fund OOR carriers",
+		},
+		{
+			name: "leased float below the floors",
+			mutate: func(f *taprootAssetOORRPCFixture) {
+				f.arkService.leaseResponse.ValueSat = 500
+			},
+			wantCode:     codes.FailedPrecondition,
+			wantContains: "below required",
 		},
 		{
 			name: "adapter changes value",
