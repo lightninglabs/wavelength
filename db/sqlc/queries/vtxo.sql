@@ -85,6 +85,14 @@ SET status = $3,
     last_update_time = $4
 WHERE outpoint_hash = $1 AND outpoint_index = $2;
 
+-- name: SetRecoveryOnlyVTXORelativeExpiry :execrows
+-- Selects the exact final-spend delay for an application-owned recovery row.
+-- Ordinary wallet VTXOs can never be modified through this query.
+UPDATE vtxos
+SET expiry = $3,
+    last_update_time = $4
+WHERE outpoint_hash = $1 AND outpoint_index = $2 AND status = 9;
+
 -- name: MarkVTXOForfeiting :exec
 -- MarkVTXOForfeiting transitions a VTXO to Forfeiting status and persists
 -- the forfeit round ID and transaction for crash recovery. Called when

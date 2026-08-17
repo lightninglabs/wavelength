@@ -61,6 +61,61 @@ type ActivityStatus struct {
 	Name string
 }
 
+type ArkChannel struct {
+	ChannelID                []byte
+	Kind                     int32
+	Funder                   int32
+	PendingChannelID         []byte
+	ReservedScid             []byte
+	Capacity                 int64
+	ClientNodeKey            []byte
+	HubNodeKey               []byte
+	PaymentHash              []byte
+	ClientArkKey             []byte
+	HubArkKey                []byte
+	ArkOperatorKey           []byte
+	ClientChannelKey         []byte
+	HubChannelKey            []byte
+	FunderKey                []byte
+	ChannelDelay             int64
+	FunderDelay              int64
+	MinExitDelay             int64
+	Phase                    int32
+	OorSessionID             []byte
+	SourceIndex              sql.NullInt64
+	SourceAmount             sql.NullInt64
+	SourceArkTx              []byte
+	BackingTx                []byte
+	ChannelPointTxid         []byte
+	ChannelPointIndex        sql.NullInt64
+	ClientFinalized          bool
+	HubFinalized             bool
+	OorFinalized             bool
+	OorAborted               bool
+	BackingPublished         bool
+	CloseInitiator           sql.NullInt32
+	CloseClientScript        []byte
+	CloseHubScript           []byte
+	CloseFeeRateSatPerKw     sql.NullInt64
+	CooperativeCloseTx       []byte
+	CooperativeCloseTxid     []byte
+	CloseCommitmentHeight    sql.NullInt64
+	CloseClientBalance       sql.NullInt64
+	CloseHubBalance          sql.NullInt64
+	ClientCloseSigned        bool
+	HubCloseSigned           bool
+	ClientCloseFinalized     bool
+	HubCloseFinalized        bool
+	Failure                  sql.NullString
+	Revision                 int64
+	CreatedAt                int64
+	UpdatedAt                int64
+	RecoveryReady            bool
+	SourceSpentOutpointTxid  []byte
+	SourceSpentOutpointIndex sql.NullInt64
+	SourceSpendingTxid       []byte
+}
+
 type BoardingAddress struct {
 	PkScript            []byte
 	AddressString       string

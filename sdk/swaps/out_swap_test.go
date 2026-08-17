@@ -19,6 +19,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/vtxo"
@@ -207,6 +208,53 @@ func TestStartReceiveDerivesReceiveAuthKeyPerPaymentHash(t *testing.T) {
 			creator.authKeys[1].PubKey(),
 		),
 	)
+}
+
+// TestArkChannelReceiveSettlesDirectly proves invoice creation installs and
+// registers the private destination before the returned invoice can settle.
+func TestArkChannelReceiveSettlesDirectly(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	creator := &testInvoiceCreator{invoice: &invoices.Invoice{
+		PaymentRequest: []byte("lnrtest1channel"),
+	}}
+	serverConn := &testSwapServerConn{hint: &RouteHint{
+		NodeID:    serverPriv.PubKey().SerializeCompressed(),
+		ChannelID: 99, CltvExpiryDelta: 40,
+	}}
+	channelID := arkchannel.ID{1, 2, 3}
+	bridge := &testArkChannelPaymentBridge{
+		waitChannelID: channelID,
+	}
+	client := NewSwapClient(
+		serverConn, &testDaemonConn{
+			identityKey: clientPriv.PubKey(),
+			operatorKey: operatorPriv.PubKey(),
+		}, nil, creator,
+	)
+	client.SetArkChannelPaymentBridge(bridge)
+	client.SetOutSwapEventReceiver(&blockingOutSwapEventReceiver{})
+
+	session, err := client.StartReceiveViaLightning(
+		t.Context(), btcutil.Amount(42_000),
+	)
+	require.NoError(t, err)
+	require.Equal(t, session.Preimage, bridge.preparePreimage)
+	require.Equal(t, btcutil.Amount(42_000), bridge.prepareAmount)
+	require.Equal(t, session.PaymentHash, bridge.registerHash)
+	require.Equal(t, uint64(99), bridge.registerSCID)
+
+	result, err := session.Wait(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, SettlementTypeArkChannel, result.SettlementType)
+	require.Equal(t, [32]byte(channelID), result.ChannelID)
+	require.Equal(t, ReceiveStateCompleted, session.State())
 }
 
 // TestStartReceiveEmbedsAllRouteHintPaths verifies every alternative
@@ -997,6 +1045,51 @@ type testSwapServerConn struct {
 	submitForfeitCalls       int
 	lastSubmitForfeitPayload *ForfeitSignaturePayload
 	lastSubmitForfeitSig     *ForfeitParticipantSignature
+}
+
+type testArkChannelPaymentBridge struct {
+	preparePreimage lntypes.Preimage
+	prepareAmount   btcutil.Amount
+	registerHash    lntypes.Hash
+	registerAmount  btcutil.Amount
+	registerSCID    uint64
+	waitChannelID   arkchannel.ID
+	waitErr         error
+	wait            <-chan struct{}
+}
+
+func (b *testArkChannelPaymentBridge) PrepareIncomingPayment(_ context.Context,
+	preimage lntypes.Preimage, amount btcutil.Amount) error {
+
+	b.preparePreimage = preimage
+	b.prepareAmount = amount
+
+	return nil
+}
+
+func (b *testArkChannelPaymentBridge) RegisterIncomingPayment(_ context.Context,
+	hash lntypes.Hash, amount btcutil.Amount, scid uint64) error {
+
+	b.registerHash = hash
+	b.registerAmount = amount
+	b.registerSCID = scid
+
+	return nil
+}
+
+func (b *testArkChannelPaymentBridge) WaitIncomingPayment(ctx context.Context,
+	_ lntypes.Hash) (arkchannel.ID, error) {
+
+	if b.wait != nil {
+		select {
+		case <-ctx.Done():
+			return arkchannel.ID{}, ctx.Err()
+
+		case <-b.wait:
+		}
+	}
+
+	return b.waitChannelID, b.waitErr
 }
 
 type testIncomingEventReceiver struct {

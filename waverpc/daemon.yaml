@@ -54,6 +54,21 @@ http:
     - selector: waverpc.DaemonService.GetIndexedOORSessionByTxid
       post: /v1/daemon/get-indexed-oor-session-by-txid
       body: "*"
+    - selector: waverpc.DaemonService.ExportOORRecoveryPackage
+      post: /v1/daemon/export-oor-recovery-package
+      body: "*"
+    - selector: waverpc.DaemonService.PrepareArkChannelOOR
+      post: /v1/daemon/prepare-ark-channel-oor
+      body: "*"
+    - selector: waverpc.DaemonService.ValidatePreparedArkChannelOOR
+      post: /v1/daemon/validate-prepared-ark-channel-oor
+      body: "*"
+    - selector: waverpc.DaemonService.CommitPreparedArkChannelOOR
+      post: /v1/daemon/commit-prepared-ark-channel-oor
+      body: "*"
+    - selector: waverpc.DaemonService.AbortPreparedArkChannelOOR
+      post: /v1/daemon/abort-prepared-ark-channel-oor
+      body: "*"
     - selector: waverpc.DaemonService.SendVTXO
       post: /v1/daemon/send-vtxo
       body: "*"

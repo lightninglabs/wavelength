@@ -27,6 +27,7 @@ import (
 	btcwalletpkg "github.com/btcsuite/btcwallet/wallet"
 	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightninglabs/lndclient"
+	"github.com/lightninglabs/wavelength/arkchannel/unrollbridge"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/btcwbackend"
@@ -45,6 +46,7 @@ import (
 	"github.com/lightninglabs/wavelength/lib/recovery"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/lndbackend"
+	"github.com/lightninglabs/wavelength/lnruntime"
 	"github.com/lightninglabs/wavelength/lwwallet"
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
@@ -52,6 +54,7 @@ import (
 	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/proofkeys"
 	"github.com/lightninglabs/wavelength/round"
+	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
 	"github.com/lightninglabs/wavelength/rpc/oorpb"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	"github.com/lightninglabs/wavelength/rpcauth"
@@ -355,11 +358,17 @@ type Server struct {
 	walletRef    fn.Option[actor.ActorRef[
 		wallet.WalletMsg, wallet.WalletResp,
 	]]
-	oorRegistry        *oor.OORRegistryActor
-	creditRegistry     *credit.Registry
-	vhtlcRecoveryStore *db.VHTLCRecoveryStoreDB
-	vhtlcRecovery      *coordinator.Service
-	vhtlcPreimages     *unrollpolicy.PreimageResolverRegistry
+	oorRegistry              *oor.OORRegistryActor
+	creditRegistry           *credit.Registry
+	vhtlcRecoveryStore       *db.VHTLCRecoveryStoreDB
+	arkChannelStore          *db.ArkChannelStoreDB
+	arkChannelMu             sync.RWMutex
+	arkChannelController     ArkChannelController
+	arkChannelMailboxRuntime *serverconn.Runtime
+	arkChannelPeerIngress    *lnruntime.PeerMessageIngress
+	vhtlcRecovery            *coordinator.Service
+	vhtlcRecoveryTarget      *vhtlcRecoveryTargetMaterializer
+	vhtlcPreimages           *unrollpolicy.PreimageResolverRegistry
 
 	// ledgerStore exposes the client-side ledger DB adapter for
 	// read-only RPC handlers (GetFeeHistory). Writes go through
@@ -1205,13 +1214,44 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 		if s.outboxPublisher != nil {
 			s.outboxPublisher.Stop()
 		}
+		if ingress := s.getArkChannelPeerIngress(); ingress != nil {
+			//nolint:contextcheck // bounded shutdown
+			if err := ingress.StopAndWait(shutdownCtx); err != nil {
+				s.log.WarnS(
+					ctx,
+					"Ark channel peer ingress shutdown "+
+						"failed",
+					err,
+				)
+			}
+		}
+
+		controller := s.getArkChannelController()
+		if controller != nil {
+			if err := controller.Stop(); err != nil {
+				s.log.WarnS(
+					ctx,
+					"Ark channel runtime shutdown failed",
+					err,
+				)
+			}
+		}
+		if runtime := s.getArkChannelMailboxRuntime(); runtime != nil {
+			//nolint:contextcheck // bounded shutdown
+			if err := runtime.StopAndWait(shutdownCtx); err != nil {
+				s.log.WarnS(
+					ctx,
+					"Ark channel mailbox shutdown failed",
+					err,
+				)
+			}
+		}
 
 		if s.runtime != nil {
 			s.setServerConnected(false)
 			//nolint:contextcheck // bounded shutdown
 			_ = s.runtime.StopAndWait(shutdownCtx)
 		}
-
 		if s.actorSystem != nil {
 			//nolint:contextcheck // bounded shutdown
 			err := s.actorSystem.Shutdown(shutdownCtx)
@@ -1375,6 +1415,11 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	waverpc.RegisterDaemonServiceServer(
 		s.grpcServer, s.rpcServer,
 	)
+	arkchannelrpc.RegisterArkChannelServiceServer(
+		s.grpcServer, &arkChannelRPCServer{
+			server: s,
+		},
+	)
 	if cleanup := registerBtcwalletRPC(s.grpcServer, s); cleanup != nil {
 		defer cleanup()
 	}
@@ -1398,6 +1443,20 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 			defer cleanup()
 		}
 	}
+	// The Ark channel runtime borrows the swap registrar's mailbox
+	// transport. Register this defer after registrar cleanup defers so it
+	// runs first.
+	//nolint:contextcheck // Shutdown requires a fresh bounded context.
+	defer func() {
+		if runtime := s.getArkChannelMailboxRuntime(); runtime != nil {
+			shutdownCtx, cancel := context.WithTimeout(
+				context.Background(), DefaultShutdownTimeout,
+			)
+			defer cancel()
+
+			_ = runtime.StopAndWait(shutdownCtx)
+		}
+	}()
 	if authService != nil {
 		if _, err := registeredRPCPermissions(
 			s.grpcServer,
@@ -1593,6 +1652,17 @@ func (s *Server) startWalletReadyServices(ctx context.Context,
 	refreshCancel()
 	if refreshErr != nil {
 		return refreshErr
+	}
+
+	closeRegistrationCtx, closeRegistrationCancel := context.WithTimeout(
+		ctx, operatorTermsRefreshTimeout,
+	)
+	closeRegistrationErr := s.ensureConfiguredArkChannelCloseDelivery(
+		closeRegistrationCtx,
+	)
+	closeRegistrationCancel()
+	if closeRegistrationErr != nil {
+		return closeRegistrationErr
 	}
 
 	if err := s.replayPendingIntents(
@@ -2543,6 +2613,13 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	// subserver registrar above) are ready.
 	// -------------------------------------------------------
 	if err := s.initCreditRegistry(ctx); err != nil {
+		return err
+	}
+
+	// The channel controller is last because it requires the durable
+	// channel store, swap-server mailbox, and all wallet-owned native
+	// dependencies.
+	if err := s.initArkChannelProcess(ctx); err != nil {
 		return err
 	}
 
@@ -5595,6 +5672,8 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	s.ueStore = ueStore
 	recoveryStore := dbStore.NewVHTLCRecoveryStore(s.clk)
 	s.vhtlcRecoveryStore = recoveryStore
+	channelStore := dbStore.NewArkChannelStore(s.clk)
+	s.arkChannelStore = channelStore
 	preimages := s.vhtlcPreimages
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
 
@@ -5686,9 +5765,12 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		),
 		Log:                        fn.Some(s.subLogger("UNRL")),
 		MaxSweepFeeRateSatPerVByte: s.unrollMaxFeeRate(),
-		ExitSpendPolicyResolver: unrollpolicy.ExitSpendPolicyResolver{
-			Jobs:     recoveryStore,
-			Preimage: preimages,
+		ExitSpendPolicyResolver: unroll.PolicyResolvers{
+			unrollpolicy.ExitSpendPolicyResolver{
+				Jobs:     recoveryStore,
+				Preimage: preimages,
+			},
+			unrollbridge.Resolver{Channels: channelStore},
 		},
 		VTXOExitObserver: exitObserver,
 	})
@@ -5699,22 +5781,25 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		return fmt.Errorf("VTXO manager not initialized for vhtlc " +
 			"recovery")
 	}
+	recoveryTarget := newVHTLCRecoveryTargetMaterializer(
+		vtxoStore, oorStore, s.subLogger(VHTLCRecoverySubsystem),
+	)
 	recoverySvc, err := coordinator.NewService(coordinator.ServiceConfig{
 		Store:  recoveryStore,
 		Unroll: coordinator.NewActorUnrollRegistry(registry.Ref()),
 		Exiter: managerExitAdmitter{
 			mgr: s.vtxoMgrRef.UnsafeFromSome(),
 		},
-		Log: fn.Some(s.subLogger(VHTLCRecoverySubsystem)),
-		TargetMaterializer: newVHTLCRecoveryTargetMaterializer(
-			vtxoStore, oorStore,
+		Log: fn.Some(
 			s.subLogger(VHTLCRecoverySubsystem),
 		),
+		TargetMaterializer: recoveryTarget,
 	})
 	if err != nil {
 		return err
 	}
 	s.vhtlcRecovery = recoverySvc
+	s.vhtlcRecoveryTarget = recoveryTarget
 
 	err = s.initFraudWatcher(ctx, chainSourceRef)
 	if err != nil {

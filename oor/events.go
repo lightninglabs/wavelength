@@ -40,10 +40,31 @@ type StartTransferEvent struct {
 	// retries. Empty preserves the historical deterministic-session
 	// behavior.
 	IdempotencyKey string
+
+	// PrepareOnly stops after deterministically constructing and persisting
+	// the unsigned package. No signature or operator message is released
+	// until CommitPreparedEvent arrives.
+	PrepareOnly bool
 }
 
 // eventSealed marks this as implementing the sealed Event interface.
 func (e *StartTransferEvent) eventSealed() {}
+
+// CommitPreparedEvent releases a previously prepared transfer into the
+// ordinary OOR signing and submission flow.
+type CommitPreparedEvent struct{}
+
+// eventSealed marks this as implementing the sealed Event interface.
+func (*CommitPreparedEvent) eventSealed() {}
+
+// AbortPreparedEvent abandons a prepared transfer before any signature was
+// released and returns its reserved inputs to the wallet.
+type AbortPreparedEvent struct {
+	Reason string
+}
+
+// eventSealed marks this as implementing the sealed Event interface.
+func (*AbortPreparedEvent) eventSealed() {}
 
 // ArkSignedEvent is emitted after the client signs the Ark PSBT.
 type ArkSignedEvent struct {

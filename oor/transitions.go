@@ -66,12 +66,16 @@ func unexpectedEvent(state State) *StateTransition {
 func failedState(reason string, current State) *Failed {
 	return &Failed{
 		Reason:         reason,
+		PrePONR:        len(prePONRInputOutpoints(current)) > 0,
 		IdempotencyKey: stateIdempotencyKey(current),
 	}
 }
 
 func stateIdempotencyKey(state State) string {
 	switch s := state.(type) {
+	case *Prepared:
+		return s.IdempotencyKey
+
 	case *AwaitingArkSignatures:
 		return s.IdempotencyKey
 
@@ -170,10 +174,17 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 			}
 		}
 
-		signReq := &RequestArkSignatures{
-			ArkPSBT:         ark,
-			CheckpointPSBTs: checkpoints,
-			TransferInputs:  evt.VTXOInputs,
+		if evt.PrepareOnly {
+			return &StateTransition{
+				NextState: &Prepared{
+					ArkPSBT:          ark,
+					CheckpointPSBTs:  checkpoints,
+					TransferInputs:   evt.VTXOInputs,
+					RecipientOutputs: canonicalRecipients,
+					IdempotencyKey:   evt.IdempotencyKey,
+				},
+				NewEvents: fn.None[EmittedEvent](),
+			}, nil
 		}
 
 		return &StateTransition{
@@ -186,7 +197,11 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
-					signReq,
+					&RequestArkSignatures{
+						ArkPSBT:         ark,
+						CheckpointPSBTs: checkpoints,
+						TransferInputs:  evt.VTXOInputs,
+					},
 				},
 			}),
 		}, nil
@@ -199,6 +214,63 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 
 	default:
 		return unexpectedEvent(s), nil
+	}
+}
+
+// ProcessEvent handles events for Prepared.
+func (s *Prepared) ProcessEvent(_ context.Context, event Event,
+	_ *Environment) (*StateTransition, error) {
+
+	switch event := event.(type) {
+	case *CommitPreparedEvent:
+		request := &RequestArkSignatures{
+			ArkPSBT:         s.ArkPSBT,
+			CheckpointPSBTs: s.CheckpointPSBTs,
+			TransferInputs:  s.TransferInputs,
+		}
+
+		return &StateTransition{
+			NextState: &AwaitingArkSignatures{
+				ArkPSBT:          s.ArkPSBT,
+				CheckpointPSBTs:  s.CheckpointPSBTs,
+				TransferInputs:   s.TransferInputs,
+				RecipientOutputs: s.RecipientOutputs,
+				IdempotencyKey:   s.IdempotencyKey,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{request},
+			}),
+		}, nil
+
+	case *AbortPreparedEvent:
+		return abortPreparedTransition(s, event.Reason), nil
+
+	case *FailEvent:
+		return abortPreparedTransition(s, event.Reason), nil
+
+	default:
+		return unexpectedEvent(s), nil
+	}
+}
+
+// abortPreparedTransition releases every input because preparation has not
+// exposed signatures or crossed the operator co-sign boundary.
+func abortPreparedTransition(state *Prepared, reason string) *StateTransition {
+	if reason == "" {
+		reason = "prepared transfer aborted"
+	}
+
+	return &StateTransition{
+		NextState: failedState(reason, state),
+		NewEvents: fn.Some(EmittedEvent{
+			Outbox: []OutboxEvent{
+				&ReleaseInputsRequest{
+					Outpoints: InputOutpoints(
+						state.TransferInputs,
+					),
+				},
+			},
+		}),
 	}
 }
 
@@ -514,6 +586,9 @@ func (s *Failed) ProcessEvent(ctx context.Context, event Event,
 func prePONRInputOutpoints(state State) []wire.OutPoint {
 	var inputs []TransferInput
 	switch s := state.(type) {
+	case *Prepared:
+		inputs = s.TransferInputs
+
 	case *AwaitingArkSignatures:
 		inputs = s.TransferInputs
 

@@ -21,6 +21,7 @@ type Querier interface {
 	BackfillLedgerRoundUuid(ctx context.Context, arg BackfillLedgerRoundUuidParams) error
 	CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) (int64, error)
 	ClearPendingIntentAnchorByOutpoint(ctx context.Context, arg ClearPendingIntentAnchorByOutpointParams) error
+	CompareAndSwapArkChannel(ctx context.Context, arg CompareAndSwapArkChannelParams) (int64, error)
 	CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTLCRecoveryJobParams) (int64, error)
 	// CountActivityEntriesByStatus returns the number of current-state rows in the
 	// given status. It backs the wallet status summary's pending count, which must
@@ -73,6 +74,9 @@ type Querier interface {
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
 	// GetActivityEntry returns one entry by its canonical id.
 	GetActivityEntry(ctx context.Context, canonicalID string) (ActivityEntry, error)
+	GetArkChannel(ctx context.Context, channelID []byte) (ArkChannel, error)
+	GetArkChannelByChannelPoint(ctx context.Context, arg GetArkChannelByChannelPointParams) (ArkChannel, error)
+	GetArkChannelByPendingID(ctx context.Context, pendingChannelID []byte) (ArkChannel, error)
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
 	GetBoardingSweep(ctx context.Context, txid []byte) (BoardingSweep, error)
@@ -125,6 +129,8 @@ type Querier interface {
 	// GetVTXOReplacement retrieves the replacement VTXO outpoint for a forfeited
 	// VTXO. Returns NULL if not forfeited or no replacement recorded.
 	GetVTXOReplacement(ctx context.Context, arg GetVTXOReplacementParams) (GetVTXOReplacementRow, error)
+	// Ark channel coordination queries.
+	InsertArkChannel(ctx context.Context, arg InsertArkChannelParams) (int64, error)
 	// Boarding address queries.
 	InsertBoardingAddress(ctx context.Context, arg InsertBoardingAddressParams) error
 	// Boarding intent queries.
@@ -236,6 +242,8 @@ type Querier interface {
 	// Also filter on spent = FALSE to handle VTXOs marked spent via the earlier
 	// flag before the status field was introduced.
 	ListLiveVTXOs(ctx context.Context) ([]Vtxo, error)
+	// Phase 8 is closed and phase 10 is failed. Cancelling remains resumable.
+	ListNonTerminalArkChannels(ctx context.Context) ([]ArkChannel, error)
 	// Status 1 = Completed, 2 = Failed (anchored to Go iota in
 	// db/credit_operation_store.go CreditOpStatus).
 	ListNonTerminalCreditOperations(ctx context.Context) ([]CreditOperation, error)
@@ -372,6 +380,9 @@ type Querier interface {
 	// PullActivityEvents returns transition rows strictly after the cursor in
 	// event_seq order, the resumable-subscribe replay primitive.
 	PullActivityEvents(ctx context.Context, arg PullActivityEventsParams) ([]ActivityEvent, error)
+	// Selects the exact final-spend delay for an application-owned recovery row.
+	// Ordinary wallet VTXOs can never be modified through this query.
+	SetRecoveryOnlyVTXORelativeExpiry(ctx context.Context, arg SetRecoveryOnlyVTXORelativeExpiryParams) (int64, error)
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error

@@ -128,6 +128,19 @@ type ExitSpendPolicy interface {
 		req ExitSpendRequest) (*wire.MsgTx, error)
 }
 
+// PreSignedExitSpendPolicy is implemented by policies whose final spend is
+// fixed before the unroll actor reaches CSV maturity. Another authorized
+// participant may publish that exact transaction first, so the target spend
+// watcher must recognize it as successful completion instead of an external
+// conflict.
+type PreSignedExitSpendPolicy interface {
+	ExitSpendPolicy
+
+	// PreSignedSpendTx returns an isolated copy of the immutable, fully
+	// signed final spend.
+	PreSignedSpendTx() (*wire.MsgTx, error)
+}
+
 // ExitSpendPolicyResolver reconstructs a policy from the durable identity
 // stored with an unroll job. Custom actor factories can inject resolvers for
 // their policy families; the built-in actor default handles standard VTXO

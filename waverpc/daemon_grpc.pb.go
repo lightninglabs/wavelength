@@ -34,6 +34,11 @@ const (
 	DaemonService_GetIndexedVTXOByPkScript_FullMethodName                       = "/waverpc.DaemonService/GetIndexedVTXOByPkScript"
 	DaemonService_GetVTXOExpiryInfo_FullMethodName                              = "/waverpc.DaemonService/GetVTXOExpiryInfo"
 	DaemonService_GetIndexedOORSessionByTxid_FullMethodName                     = "/waverpc.DaemonService/GetIndexedOORSessionByTxid"
+	DaemonService_ExportOORRecoveryPackage_FullMethodName                       = "/waverpc.DaemonService/ExportOORRecoveryPackage"
+	DaemonService_PrepareArkChannelOOR_FullMethodName                           = "/waverpc.DaemonService/PrepareArkChannelOOR"
+	DaemonService_ValidatePreparedArkChannelOOR_FullMethodName                  = "/waverpc.DaemonService/ValidatePreparedArkChannelOOR"
+	DaemonService_CommitPreparedArkChannelOOR_FullMethodName                    = "/waverpc.DaemonService/CommitPreparedArkChannelOOR"
+	DaemonService_AbortPreparedArkChannelOOR_FullMethodName                     = "/waverpc.DaemonService/AbortPreparedArkChannelOOR"
 	DaemonService_SendVTXO_FullMethodName                                       = "/waverpc.DaemonService/SendVTXO"
 	DaemonService_SendOOR_FullMethodName                                        = "/waverpc.DaemonService/SendOOR"
 	DaemonService_PrepareOOR_FullMethodName                                     = "/waverpc.DaemonService/PrepareOOR"
@@ -126,6 +131,21 @@ type DaemonServiceClient interface {
 	// GetIndexedOORSessionByTxid queries the authoritative indexer for one
 	// OOR session using a spent script proof and deterministic session txid.
 	GetIndexedOORSessionByTxid(ctx context.Context, in *GetIndexedOORSessionByTxidRequest, opts ...grpc.CallOption) (*GetIndexedOORSessionByTxidResponse, error)
+	// ExportOORRecoveryPackage returns the immutable local OOR package and
+	// round ancestry for one exact output. The caller must already know the
+	// output tuple; the daemon verifies it against its finalized artifacts.
+	ExportOORRecoveryPackage(ctx context.Context, in *ExportOORRecoveryPackageRequest, opts ...grpc.CallOption) (*ExportOORRecoveryPackageResponse, error)
+	// PrepareArkChannelOOR reserves daemon-owned liquidity and builds the
+	// exact channel-policy output without releasing OOR signatures.
+	PrepareArkChannelOOR(ctx context.Context, in *PrepareArkChannelOORRequest, opts ...grpc.CallOption) (*PrepareArkChannelOORResponse, error)
+	// ValidatePreparedArkChannelOOR verifies that a binding still names the
+	// exact prepared daemon OOR session.
+	ValidatePreparedArkChannelOOR(ctx context.Context, in *ValidatePreparedArkChannelOORRequest, opts ...grpc.CallOption) (*ValidatePreparedArkChannelOORResponse, error)
+	// CommitPreparedArkChannelOOR releases the prepared OOR only after both
+	// lnd endpoints have persisted the fully signed channel backing.
+	CommitPreparedArkChannelOOR(ctx context.Context, in *CommitPreparedArkChannelOORRequest, opts ...grpc.CallOption) (*CommitPreparedArkChannelOORResponse, error)
+	// AbortPreparedArkChannelOOR releases a pre-signing channel reservation.
+	AbortPreparedArkChannelOOR(ctx context.Context, in *AbortPreparedArkChannelOORRequest, opts ...grpc.CallOption) (*AbortPreparedArkChannelOORResponse, error)
 	// SendVTXO initiates an in-round transfer by submitting a refresh
 	// request to the round coordinator. The transfer completes when the
 	// next round commits.
@@ -421,6 +441,56 @@ func (c *daemonServiceClient) GetIndexedOORSessionByTxid(ctx context.Context, in
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetIndexedOORSessionByTxidResponse)
 	err := c.cc.Invoke(ctx, DaemonService_GetIndexedOORSessionByTxid_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ExportOORRecoveryPackage(ctx context.Context, in *ExportOORRecoveryPackageRequest, opts ...grpc.CallOption) (*ExportOORRecoveryPackageResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExportOORRecoveryPackageResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ExportOORRecoveryPackage_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) PrepareArkChannelOOR(ctx context.Context, in *PrepareArkChannelOORRequest, opts ...grpc.CallOption) (*PrepareArkChannelOORResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PrepareArkChannelOORResponse)
+	err := c.cc.Invoke(ctx, DaemonService_PrepareArkChannelOOR_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ValidatePreparedArkChannelOOR(ctx context.Context, in *ValidatePreparedArkChannelOORRequest, opts ...grpc.CallOption) (*ValidatePreparedArkChannelOORResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ValidatePreparedArkChannelOORResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ValidatePreparedArkChannelOOR_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) CommitPreparedArkChannelOOR(ctx context.Context, in *CommitPreparedArkChannelOORRequest, opts ...grpc.CallOption) (*CommitPreparedArkChannelOORResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommitPreparedArkChannelOORResponse)
+	err := c.cc.Invoke(ctx, DaemonService_CommitPreparedArkChannelOOR_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) AbortPreparedArkChannelOOR(ctx context.Context, in *AbortPreparedArkChannelOORRequest, opts ...grpc.CallOption) (*AbortPreparedArkChannelOORResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AbortPreparedArkChannelOORResponse)
+	err := c.cc.Invoke(ctx, DaemonService_AbortPreparedArkChannelOOR_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -814,6 +884,21 @@ type DaemonServiceServer interface {
 	// GetIndexedOORSessionByTxid queries the authoritative indexer for one
 	// OOR session using a spent script proof and deterministic session txid.
 	GetIndexedOORSessionByTxid(context.Context, *GetIndexedOORSessionByTxidRequest) (*GetIndexedOORSessionByTxidResponse, error)
+	// ExportOORRecoveryPackage returns the immutable local OOR package and
+	// round ancestry for one exact output. The caller must already know the
+	// output tuple; the daemon verifies it against its finalized artifacts.
+	ExportOORRecoveryPackage(context.Context, *ExportOORRecoveryPackageRequest) (*ExportOORRecoveryPackageResponse, error)
+	// PrepareArkChannelOOR reserves daemon-owned liquidity and builds the
+	// exact channel-policy output without releasing OOR signatures.
+	PrepareArkChannelOOR(context.Context, *PrepareArkChannelOORRequest) (*PrepareArkChannelOORResponse, error)
+	// ValidatePreparedArkChannelOOR verifies that a binding still names the
+	// exact prepared daemon OOR session.
+	ValidatePreparedArkChannelOOR(context.Context, *ValidatePreparedArkChannelOORRequest) (*ValidatePreparedArkChannelOORResponse, error)
+	// CommitPreparedArkChannelOOR releases the prepared OOR only after both
+	// lnd endpoints have persisted the fully signed channel backing.
+	CommitPreparedArkChannelOOR(context.Context, *CommitPreparedArkChannelOORRequest) (*CommitPreparedArkChannelOORResponse, error)
+	// AbortPreparedArkChannelOOR releases a pre-signing channel reservation.
+	AbortPreparedArkChannelOOR(context.Context, *AbortPreparedArkChannelOORRequest) (*AbortPreparedArkChannelOORResponse, error)
 	// SendVTXO initiates an in-round transfer by submitting a refresh
 	// request to the round coordinator. The transfer completes when the
 	// next round commits.
@@ -1009,6 +1094,21 @@ func (UnimplementedDaemonServiceServer) GetVTXOExpiryInfo(context.Context, *GetV
 }
 func (UnimplementedDaemonServiceServer) GetIndexedOORSessionByTxid(context.Context, *GetIndexedOORSessionByTxidRequest) (*GetIndexedOORSessionByTxidResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetIndexedOORSessionByTxid not implemented")
+}
+func (UnimplementedDaemonServiceServer) ExportOORRecoveryPackage(context.Context, *ExportOORRecoveryPackageRequest) (*ExportOORRecoveryPackageResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ExportOORRecoveryPackage not implemented")
+}
+func (UnimplementedDaemonServiceServer) PrepareArkChannelOOR(context.Context, *PrepareArkChannelOORRequest) (*PrepareArkChannelOORResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PrepareArkChannelOOR not implemented")
+}
+func (UnimplementedDaemonServiceServer) ValidatePreparedArkChannelOOR(context.Context, *ValidatePreparedArkChannelOORRequest) (*ValidatePreparedArkChannelOORResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ValidatePreparedArkChannelOOR not implemented")
+}
+func (UnimplementedDaemonServiceServer) CommitPreparedArkChannelOOR(context.Context, *CommitPreparedArkChannelOORRequest) (*CommitPreparedArkChannelOORResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CommitPreparedArkChannelOOR not implemented")
+}
+func (UnimplementedDaemonServiceServer) AbortPreparedArkChannelOOR(context.Context, *AbortPreparedArkChannelOORRequest) (*AbortPreparedArkChannelOORResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AbortPreparedArkChannelOOR not implemented")
 }
 func (UnimplementedDaemonServiceServer) SendVTXO(context.Context, *SendVTXORequest) (*SendVTXOResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SendVTXO not implemented")
@@ -1393,6 +1493,96 @@ func _DaemonService_GetIndexedOORSessionByTxid_Handler(srv interface{}, ctx cont
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).GetIndexedOORSessionByTxid(ctx, req.(*GetIndexedOORSessionByTxidRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ExportOORRecoveryPackage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExportOORRecoveryPackageRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ExportOORRecoveryPackage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ExportOORRecoveryPackage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ExportOORRecoveryPackage(ctx, req.(*ExportOORRecoveryPackageRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_PrepareArkChannelOOR_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PrepareArkChannelOORRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).PrepareArkChannelOOR(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_PrepareArkChannelOOR_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).PrepareArkChannelOOR(ctx, req.(*PrepareArkChannelOORRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ValidatePreparedArkChannelOOR_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ValidatePreparedArkChannelOORRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ValidatePreparedArkChannelOOR(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ValidatePreparedArkChannelOOR_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ValidatePreparedArkChannelOOR(ctx, req.(*ValidatePreparedArkChannelOORRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_CommitPreparedArkChannelOOR_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CommitPreparedArkChannelOORRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).CommitPreparedArkChannelOOR(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_CommitPreparedArkChannelOOR_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).CommitPreparedArkChannelOOR(ctx, req.(*CommitPreparedArkChannelOORRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_AbortPreparedArkChannelOOR_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AbortPreparedArkChannelOORRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).AbortPreparedArkChannelOOR(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_AbortPreparedArkChannelOOR_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).AbortPreparedArkChannelOOR(ctx, req.(*AbortPreparedArkChannelOORRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2032,6 +2222,26 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetIndexedOORSessionByTxid",
 			Handler:    _DaemonService_GetIndexedOORSessionByTxid_Handler,
+		},
+		{
+			MethodName: "ExportOORRecoveryPackage",
+			Handler:    _DaemonService_ExportOORRecoveryPackage_Handler,
+		},
+		{
+			MethodName: "PrepareArkChannelOOR",
+			Handler:    _DaemonService_PrepareArkChannelOOR_Handler,
+		},
+		{
+			MethodName: "ValidatePreparedArkChannelOOR",
+			Handler:    _DaemonService_ValidatePreparedArkChannelOOR_Handler,
+		},
+		{
+			MethodName: "CommitPreparedArkChannelOOR",
+			Handler:    _DaemonService_CommitPreparedArkChannelOOR_Handler,
+		},
+		{
+			MethodName: "AbortPreparedArkChannelOOR",
+			Handler:    _DaemonService_AbortPreparedArkChannelOOR_Handler,
 		},
 		{
 			MethodName: "SendVTXO",
