@@ -375,12 +375,13 @@ func (s *testOwnedReceiveScriptSigner) ProofPubKey(_ []byte) (*btcec.PublicKey,
 // testReceiveScriptRPCClient records mailbox RPC requests for registration.
 type testReceiveScriptRPCClient struct {
 	registerReqs []*arkrpc.RegisterReceiveScriptRequest
+	registerOpts []mailboxrpc.RPCOptions
 }
 
 // SendRPC records RegisterReceiveScript requests and returns a fixed result.
 func (c *testReceiveScriptRPCClient) SendRPC(_ context.Context,
 	method mailboxrpc.ServiceMethod, req proto.Message,
-	_ mailboxrpc.RPCOptions) (mailboxrpc.SendResult, error) {
+	opts mailboxrpc.RPCOptions) (mailboxrpc.SendResult, error) {
 
 	if method.Service == "arkrpc.IndexerService" &&
 		method.Method == "RegisterReceiveScript" {
@@ -392,6 +393,7 @@ func (c *testReceiveScriptRPCClient) SendRPC(_ context.Context,
 		}
 
 		c.registerReqs = append(c.registerReqs, regReq)
+		c.registerOpts = append(c.registerOpts, opts)
 	}
 
 	return mailboxrpc.SendResult{

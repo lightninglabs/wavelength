@@ -102,6 +102,16 @@ type RPCServer struct {
 	// currently reserved by an in-flight SendOOR call.
 	customInputLocks map[wire.OutPoint]struct{}
 
+	// receiveScriptLocksMu guards receiveScriptLocks. The keyed locks keep
+	// two exact NewReceiveScript retries from using the same mailbox
+	// correlation id concurrently.
+	receiveScriptLocksMu sync.Mutex
+
+	// receiveScriptLocks contains only idempotency keys with active
+	// callers. Entries are removed when their last caller releases the
+	// lock.
+	receiveScriptLocks map[string]*receiveScriptLock
+
 	// oorSignerOverride lets focused RPC tests exercise custom-input
 	// signing without booting a full wallet backend.
 	oorSignerOverride input.Signer
@@ -110,8 +120,9 @@ type RPCServer struct {
 // NewRPCServer creates a new RPCServer backed by the given Server.
 func NewRPCServer(server *Server) *RPCServer {
 	return &RPCServer{
-		server:           server,
-		customInputLocks: make(map[wire.OutPoint]struct{}),
+		server:             server,
+		customInputLocks:   make(map[wire.OutPoint]struct{}),
+		receiveScriptLocks: make(map[string]*receiveScriptLock),
 	}
 }
 

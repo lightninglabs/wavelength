@@ -21,6 +21,14 @@ import (
 )
 
 const (
+	// MaxOwnedReceiveScriptIdempotencyKeyBytes bounds durable indexed
+	// replay keys at the registry owning boundary.
+	MaxOwnedReceiveScriptIdempotencyKeyBytes = 128
+
+	// MaxOwnedReceiveScriptRegistrationTTL bounds how far an idempotent
+	// allocation can extend the indexer's durable registration lifetime.
+	MaxOwnedReceiveScriptRegistrationTTL = 30 * 24 * time.Hour
+
 	// Direction codes persisted in oor_packages.direction.
 	oorPackageDirectionIncomingCode int32 = 0
 	oorPackageDirectionOutgoingCode int32 = 1
@@ -28,6 +36,20 @@ const (
 	// Link-kind codes persisted in oor_vtxo_bindings.link_kind.
 	oorPackageLinkKindCreatedOutputCode int32 = 0
 	oorPackageLinkKindConsumedInputCode int32 = 1
+)
+
+var (
+	// ErrOwnedReceiveScriptReplayMismatch is returned when an idempotency
+	// key is reused with a different immutable request fingerprint.
+	ErrOwnedReceiveScriptReplayMismatch = errors.New("owned receive " +
+		"script replay fingerprint mismatch")
+
+	// errOwnedReceiveScriptAdmissionRace asks the public admission method
+	// to resolve the durable winner after a concurrent insert. Returning it
+	// from the transaction body rolls back the unused internal key
+	// registration.
+	errOwnedReceiveScriptAdmissionRace = errors.New("owned receive " +
+		"script admission race")
 )
 
 // OORPackageDirection is the typed package direction enum.
@@ -155,8 +177,26 @@ type OORArtifactStore interface {
 	UpsertOwnedReceiveScript(ctx context.Context,
 		arg sqlc.UpsertOwnedReceiveScriptParams) error
 
+	// InsertIdempotentOwnedReceiveScript inserts one retry-safe allocation
+	// without replacing a durable winner.
+	InsertIdempotentOwnedReceiveScript(ctx context.Context,
+		arg sqlc.InsertIdempotentOwnedReceiveScriptParams) (
+		int64,
+		error,
+	)
+
 	GetOwnedReceiveScript(ctx context.Context,
 		pkScript []byte) (sqlc.OwnedReceiveScript, error)
+
+	// GetOwnedReceiveScriptByIdempotencyKey loads one durable retry
+	// allocation.
+	GetOwnedReceiveScriptByIdempotencyKey(ctx context.Context,
+		idempotencyKey sql.NullString) (sqlc.OwnedReceiveScript, error)
+
+	// MarkOwnedReceiveScriptRegistered records remote
+	// acknowledgement for one allocation and stable RPC key.
+	MarkOwnedReceiveScriptRegistered(ctx context.Context,
+		arg sqlc.MarkOwnedReceiveScriptRegisteredParams) (int64, error)
 
 	ListOwnedReceiveScripts(ctx context.Context) (
 		[]sqlc.OwnedReceiveScript,
@@ -249,6 +289,26 @@ type OwnedReceiveScriptRecord struct {
 
 	// LastUsedAt tracks the last usage timestamp when available.
 	LastUsedAt fn.Option[time.Time]
+
+	// IdempotencyKey identifies a retry-safe RPC allocation. It is empty
+	// for legacy and internal registrations that allocate a fresh script.
+	IdempotencyKey string
+
+	// RegistrationLabel is the immutable indexer label for an idempotent
+	// allocation.
+	RegistrationLabel string
+
+	// RegistrationExpiresAt is the immutable absolute indexer expiry for an
+	// idempotent allocation.
+	RegistrationExpiresAt time.Time
+
+	// RegistrationRPCKey is the stable mailbox idempotency key used for all
+	// attempts to register this script with the indexer.
+	RegistrationRPCKey string
+
+	// RegistrationCompletedAt is set after the indexer acknowledges the
+	// registration. An absent value means retry must resume registration.
+	RegistrationCompletedAt fn.Option[time.Time]
 }
 
 // OORArtifactPersistenceStore persists OOR artifacts and query surfaces needed
@@ -896,6 +956,253 @@ func (s *OORArtifactPersistenceStore) UpsertOwnedReceiveScript(
 	})
 }
 
+// LookupOwnedReceiveScriptByIdempotencyKey loads a retry-safe receive-script
+// allocation by its durable request key.
+func (s *OORArtifactPersistenceStore) LookupOwnedReceiveScriptByIdempotencyKey(
+	ctx context.Context, idempotencyKey string) (*OwnedReceiveScriptRecord,
+	error) {
+
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store must be provided")
+	}
+
+	if idempotencyKey == "" {
+		return nil, fmt.Errorf("idempotency key must be provided")
+	}
+	if len(idempotencyKey) > MaxOwnedReceiveScriptIdempotencyKeyBytes {
+		return nil, fmt.Errorf("idempotency key exceeds %d bytes",
+			MaxOwnedReceiveScriptIdempotencyKeyBytes)
+	}
+
+	var result *OwnedReceiveScriptRecord
+	readTx := ReadTxOption()
+	err := s.db.ExecTx(ctx, readTx, func(q OORArtifactStore) error {
+		row, err := q.GetOwnedReceiveScriptByIdempotencyKey(
+			ctx, sql.NullString{
+				String: idempotencyKey,
+				Valid:  true,
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		result, err = ownedReceiveScriptRowToRecord(ctx, q, row)
+
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// AdmitIdempotentOwnedReceiveScript atomically selects one durable receive
+// script for an idempotency key. An existing allocation wins over a newly
+// derived candidate when its normalized label matches.
+func (s *OORArtifactPersistenceStore) AdmitIdempotentOwnedReceiveScript(
+	ctx context.Context, candidate OwnedReceiveScriptRecord) (
+	*OwnedReceiveScriptRecord, bool, error) {
+
+	if s == nil || s.db == nil {
+		return nil, false, fmt.Errorf("store must be provided")
+	}
+
+	if err := validateIdempotentOwnedReceiveScript(
+		candidate, s.clock.Now(),
+	); err != nil {
+		return nil, false, err
+	}
+
+	var (
+		result  *OwnedReceiveScriptRecord
+		created bool
+	)
+
+	writeTx := WriteTxOption()
+	err := s.db.ExecTx(ctx, writeTx, func(q OORArtifactStore) error {
+		row, err := q.GetOwnedReceiveScriptByIdempotencyKey(
+			ctx, sql.NullString{
+				String: candidate.IdempotencyKey,
+				Valid:  true,
+			},
+		)
+		switch {
+		case err == nil:
+			result, err = ownedReceiveScriptRowToRecord(ctx, q, row)
+			if err != nil {
+				return err
+			}
+
+			return validateOwnedReceiveScriptReplay(
+				*result, candidate.RegistrationLabel,
+			)
+
+		case !errors.Is(err, sql.ErrNoRows):
+			return err
+		}
+
+		now := s.clock.Now().Unix()
+		createdAt := candidate.CreatedAt.Unix()
+		if candidate.CreatedAt.IsZero() {
+			createdAt = now
+		}
+
+		clientKeyID, err := RegisterInternalKeyTx(
+			ctx, q, now, candidate.ClientKey,
+		)
+		if err != nil {
+			return fmt.Errorf("register client key: %w", err)
+		}
+
+		source, err := ownedReceiveScriptSourceCode(candidate.Source)
+		if err != nil {
+			return err
+		}
+
+		rows, err := q.InsertIdempotentOwnedReceiveScript(
+			ctx, sqlc.InsertIdempotentOwnedReceiveScriptParams{
+				PkScript: candidate.PkScript,
+				ClientKeyID: sql.NullInt64{
+					Int64: clientKeyID,
+					Valid: true,
+				},
+				OperatorPubkey: candidate.OperatorPubKey.
+					SerializeCompressed(),
+				ExitDelay: candidate.ExitDelay,
+				Source:    source,
+				CreatedAt: createdAt,
+				LastUsedAt: nullUnixFromOptionTime(
+					candidate.LastUsedAt,
+				),
+				IdempotencyKey: sql.NullString{
+					String: candidate.IdempotencyKey,
+					Valid:  true,
+				},
+				RegistrationLabel: sql.NullString{
+					String: candidate.RegistrationLabel,
+					Valid:  true,
+				},
+				RegistrationExpiresAt: sql.NullInt64{
+					Int64: candidate.RegistrationExpiresAt.
+						Unix(),
+					Valid: true,
+				},
+				RegistrationRpcKey: sql.NullString{
+					String: candidate.RegistrationRPCKey,
+					Valid:  true,
+				},
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		if rows == 0 {
+			return errOwnedReceiveScriptAdmissionRace
+		}
+
+		candidate.CreatedAt = unixTimeUTC(createdAt)
+		candidate.RegistrationExpiresAt = unixTimeUTC(
+			candidate.RegistrationExpiresAt.Unix(),
+		)
+		result = &candidate
+		created = true
+
+		return nil
+	})
+	if errors.Is(err, errOwnedReceiveScriptAdmissionRace) {
+		winner, lookupErr := s.LookupOwnedReceiveScriptByIdempotencyKey(
+			ctx, candidate.IdempotencyKey,
+		)
+		if lookupErr != nil {
+			return nil, false, fmt.Errorf("resolve receive script "+
+				"admission race: %w", lookupErr)
+		}
+
+		if matchErr := validateOwnedReceiveScriptReplay(
+			*winner, candidate.RegistrationLabel,
+		); matchErr != nil {
+			return nil, false, matchErr
+		}
+
+		return winner, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+
+	return result, created, nil
+}
+
+// MarkOwnedReceiveScriptRegistered records an acknowledged indexer
+// registration. Repeating it succeeds only when the durable row already
+// proves that the same remote request completed.
+func (s *OORArtifactPersistenceStore) MarkOwnedReceiveScriptRegistered(
+	ctx context.Context, idempotencyKey, registrationRPCKey string) error {
+
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store must be provided")
+	}
+
+	if idempotencyKey == "" || registrationRPCKey == "" {
+		return fmt.Errorf("idempotency and registration RPC keys " +
+			"must be provided")
+	}
+	if len(idempotencyKey) > MaxOwnedReceiveScriptIdempotencyKeyBytes {
+		return fmt.Errorf("idempotency key exceeds %d bytes",
+			MaxOwnedReceiveScriptIdempotencyKeyBytes)
+	}
+
+	writeTx := WriteTxOption()
+
+	return s.db.ExecTx(ctx, writeTx, func(q OORArtifactStore) error {
+		rows, err := q.MarkOwnedReceiveScriptRegistered(
+			ctx, sqlc.MarkOwnedReceiveScriptRegisteredParams{
+				IdempotencyKey: sql.NullString{
+					String: idempotencyKey,
+					Valid:  true,
+				},
+				RegistrationRpcKey: sql.NullString{
+					String: registrationRPCKey,
+					Valid:  true,
+				},
+				RegistrationCompletedAt: sql.NullInt64{
+					Int64: s.clock.Now().Unix(),
+					Valid: true,
+				},
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		if rows == 1 {
+			return nil
+		}
+
+		row, err := q.GetOwnedReceiveScriptByIdempotencyKey(
+			ctx, sql.NullString{
+				String: idempotencyKey,
+				Valid:  true,
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("verify completed registration: %w",
+				err)
+		}
+
+		if row.RegistrationRpcKey.String != registrationRPCKey ||
+			!row.RegistrationCompletedAt.Valid {
+			return fmt.Errorf("receive script registration " +
+				"completion invariant failed")
+		}
+
+		return nil
+	})
+}
+
 // LookupOwnedReceiveScript loads one owned receive script metadata row by
 // pkScript.
 //
@@ -956,14 +1263,100 @@ func ownedReceiveScriptRowToRecord(ctx context.Context, q OORArtifactStore,
 	}
 
 	return &OwnedReceiveScriptRecord{
-		PkScript:       row.PkScript,
-		ClientKey:      clientKey,
-		OperatorPubKey: operatorPubKey,
-		ExitDelay:      row.ExitDelay,
-		Source:         source,
-		CreatedAt:      unixTimeUTC(row.CreatedAt),
-		LastUsedAt:     optionTimeFromNullUnix(row.LastUsedAt),
+		PkScript:              row.PkScript,
+		ClientKey:             clientKey,
+		OperatorPubKey:        operatorPubKey,
+		ExitDelay:             row.ExitDelay,
+		Source:                source,
+		CreatedAt:             unixTimeUTC(row.CreatedAt),
+		LastUsedAt:            optionTimeFromNullUnix(row.LastUsedAt),
+		IdempotencyKey:        row.IdempotencyKey.String,
+		RegistrationLabel:     row.RegistrationLabel.String,
+		RegistrationExpiresAt: nullUnixTime(row.RegistrationExpiresAt),
+		RegistrationRPCKey:    row.RegistrationRpcKey.String,
+		RegistrationCompletedAt: optionTimeFromNullUnix(
+			row.RegistrationCompletedAt,
+		),
 	}, nil
+}
+
+// nullUnixTime maps a nullable unix timestamp to UTC, returning the zero time
+// for legacy rows without the field.
+func nullUnixTime(value sql.NullInt64) time.Time {
+	if !value.Valid {
+		return time.Time{}
+	}
+
+	return unixTimeUTC(value.Int64)
+}
+
+// validateIdempotentOwnedReceiveScript checks the all-or-none replay metadata
+// and the ownership fields required before durable admission.
+func validateIdempotentOwnedReceiveScript(rec OwnedReceiveScriptRecord,
+	now time.Time) error {
+
+	switch {
+	case rec.IdempotencyKey == "":
+		return fmt.Errorf("idempotency key must be provided")
+
+	case len(rec.IdempotencyKey) >
+		MaxOwnedReceiveScriptIdempotencyKeyBytes:
+		return fmt.Errorf("idempotency key exceeds %d bytes",
+			MaxOwnedReceiveScriptIdempotencyKeyBytes)
+
+	case len(rec.PkScript) == 0:
+		return fmt.Errorf("pk script must be provided")
+
+	case rec.ClientKey.PubKey == nil:
+		return fmt.Errorf("client key pubkey must be provided")
+
+	case rec.OperatorPubKey == nil:
+		return fmt.Errorf("operator pubkey must be provided")
+
+	case rec.RegistrationLabel == "":
+		return fmt.Errorf("registration label must be provided")
+
+	case rec.RegistrationExpiresAt.IsZero():
+		return fmt.Errorf("registration expiry must be provided")
+
+	case !rec.RegistrationExpiresAt.After(now):
+		return fmt.Errorf("registration expiry must be in the future")
+
+	case rec.RegistrationExpiresAt.After(
+		now.Add(MaxOwnedReceiveScriptRegistrationTTL),
+	):
+		return fmt.Errorf("registration expiry exceeds %v",
+			MaxOwnedReceiveScriptRegistrationTTL)
+
+	case rec.RegistrationRPCKey == "":
+		return fmt.Errorf("registration RPC key must be provided")
+
+	case rec.RegistrationCompletedAt.IsSome():
+		return fmt.Errorf("new registration must not be complete")
+	}
+
+	return nil
+}
+
+// validateOwnedReceiveScriptReplay checks the caller-controlled immutable
+// fingerprint. Server-selected key, script, terms, expiry, and remote request
+// key always come from the first durable winner.
+func validateOwnedReceiveScriptReplay(existing OwnedReceiveScriptRecord,
+	label string) error {
+
+	if existing.RegistrationLabel != label {
+		return fmt.Errorf("%w: label differs",
+			ErrOwnedReceiveScriptReplayMismatch)
+	}
+
+	if existing.IdempotencyKey == "" ||
+		existing.RegistrationRPCKey == "" ||
+		existing.RegistrationExpiresAt.IsZero() {
+		return fmt.Errorf("idempotent receive script metadata " +
+			"incomplete")
+	}
+
+	return nil
 }
 
 // ListOwnedReceiveScripts returns all owned receive script registrations.

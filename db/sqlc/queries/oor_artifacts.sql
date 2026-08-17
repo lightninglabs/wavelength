@@ -151,9 +151,11 @@ ORDER BY updated_at DESC;
 -- name: UpsertOwnedReceiveScript :exec
 INSERT INTO owned_receive_scripts (
     pk_script, client_key_id, operator_pubkey, exit_delay, source,
-    created_at, last_used_at
+    created_at, last_used_at, idempotency_key, registration_label,
+    registration_expires_at, registration_rpc_key,
+    registration_completed_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7
+    $1, $2, $3, $4, $5, $6, $7, NULL, NULL, NULL, NULL, NULL
 )
 ON CONFLICT (pk_script) DO UPDATE SET
     client_key_id = EXCLUDED.client_key_id,
@@ -162,9 +164,31 @@ ON CONFLICT (pk_script) DO UPDATE SET
     source = EXCLUDED.source,
     last_used_at = EXCLUDED.last_used_at;
 
+-- name: InsertIdempotentOwnedReceiveScript :execrows
+INSERT INTO owned_receive_scripts (
+    pk_script, client_key_id, operator_pubkey, exit_delay, source,
+    created_at, last_used_at, idempotency_key, registration_label,
+    registration_expires_at, registration_rpc_key,
+    registration_completed_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL
+)
+ON CONFLICT DO NOTHING;
+
+-- name: MarkOwnedReceiveScriptRegistered :execrows
+UPDATE owned_receive_scripts
+SET registration_completed_at = $3
+WHERE idempotency_key = $1
+  AND registration_rpc_key = $2
+  AND registration_completed_at IS NULL;
+
 -- name: GetOwnedReceiveScript :one
 SELECT * FROM owned_receive_scripts
 WHERE pk_script = $1;
+
+-- name: GetOwnedReceiveScriptByIdempotencyKey :one
+SELECT * FROM owned_receive_scripts
+WHERE idempotency_key = $1;
 
 -- name: ListOwnedReceiveScripts :many
 SELECT * FROM owned_receive_scripts

@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,6 +58,36 @@ func newOORArtifactStoreForTest(t *testing.T) (*OORArtifactPersistenceStore,
 	)
 
 	return NewOORArtifactPersistenceStore(artifactDB, clk), roundStore
+}
+
+// newOORArtifactStoreFromBaseDB creates an artifact store over an existing
+// test database handle.
+func newOORArtifactStoreFromBaseDB(
+	baseDB *BaseDB) *OORArtifactPersistenceStore {
+
+	artifactDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) OORArtifactStore {
+			return baseDB.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+
+	return NewOORArtifactPersistenceStore(
+		artifactDB, clock.NewDefaultClock(),
+	)
+}
+
+// newOORArtifactStoreForTestPath opens an artifact store at a stable test
+// database path so callers can close and reopen it to model restart.
+func newOORArtifactStoreForTestPath(t *testing.T,
+	dbPath string) (*OORArtifactPersistenceStore, *BaseDB) {
+
+	t.Helper()
+
+	testDB := NewTestDBHandleFromPath(t, dbPath)
+
+	return newOORArtifactStoreFromBaseDB(testDB.BaseDB), testDB.BaseDB
 }
 
 func seedBindingOutpoint(t *testing.T, ctx context.Context,
@@ -599,6 +631,294 @@ func TestOORArtifactStoreOwnedReceiveScriptCRUD(t *testing.T) {
 
 	require.Equal(t, recB.PkScript, rows[0].PkScript)
 	require.Equal(t, recA.PkScript, rows[1].PkScript)
+}
+
+// testIdempotentOwnedReceiveScript builds deterministic ownership metadata for
+// one retry-safe receive-script admission.
+func testIdempotentOwnedReceiveScript(t *testing.T, seed byte, idempotencyKey,
+	label string) OwnedReceiveScriptRecord {
+
+	t.Helper()
+
+	clientKey, _ := btcec.PrivKeyFromBytes([]byte{seed, 0x01})
+	operatorKey, _ := btcec.PrivKeyFromBytes([]byte{seed, 0x02})
+	createdAt := time.Unix(1_700_000_000+int64(seed), 0).UTC()
+	lastUsedAt := time.Unix(1_700_001_000+int64(seed), 0).UTC()
+
+	return OwnedReceiveScriptRecord{
+		PkScript: []byte{
+			0x51, 0x20, seed,
+		},
+		ClientKey: keychain.KeyDescriptor{
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamily(seed),
+				Index:  uint32(seed) + 10,
+			},
+			PubKey: clientKey.PubKey(),
+		},
+		OperatorPubKey:    operatorKey.PubKey(),
+		ExitDelay:         int64(seed) + 20,
+		Source:            OwnedReceiveScriptSourceRPC,
+		CreatedAt:         createdAt,
+		LastUsedAt:        fn.Some(lastUsedAt),
+		IdempotencyKey:    idempotencyKey,
+		RegistrationLabel: label,
+		RegistrationExpiresAt: time.Now().UTC().Add(
+			4 * time.Hour,
+		).Truncate(time.Second),
+		RegistrationRPCKey: "register-" + idempotencyKey,
+	}
+}
+
+// requireOwnedReceiveScriptEqual compares every persisted receive-script
+// ownership and retry field without relying on public-key pointer identity.
+func requireOwnedReceiveScriptEqual(t *testing.T, want,
+	got OwnedReceiveScriptRecord) {
+
+	t.Helper()
+
+	require.Equal(t, want.PkScript, got.PkScript)
+	require.Equal(t, want.ClientKey.Family, got.ClientKey.Family)
+	require.Equal(t, want.ClientKey.Index, got.ClientKey.Index)
+	require.True(t, want.ClientKey.PubKey.IsEqual(got.ClientKey.PubKey))
+	require.True(t, want.OperatorPubKey.IsEqual(got.OperatorPubKey))
+	require.Equal(t, want.ExitDelay, got.ExitDelay)
+	require.Equal(t, want.Source, got.Source)
+	require.Equal(t, want.CreatedAt, got.CreatedAt)
+	require.Equal(t, want.LastUsedAt, got.LastUsedAt)
+	require.Equal(t, want.IdempotencyKey, got.IdempotencyKey)
+	require.Equal(t, want.RegistrationLabel, got.RegistrationLabel)
+	require.Equal(
+		t, want.RegistrationExpiresAt, got.RegistrationExpiresAt,
+	)
+	require.Equal(t, want.RegistrationRPCKey, got.RegistrationRPCKey)
+	require.Equal(
+		t, want.RegistrationCompletedAt, got.RegistrationCompletedAt,
+	)
+}
+
+// TestOORArtifactStoreAdmitIdempotentOwnedReceiveScriptExactReplay verifies a
+// repeated admission returns the first durable allocation and round-trips all
+// ownership and registration metadata.
+func TestOORArtifactStoreAdmitIdempotentOwnedReceiveScriptExactReplay(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newOORArtifactStoreForTest(t)
+	winner := testIdempotentOwnedReceiveScript(
+		t, 0x41, "receive-replay", "credit-topup",
+	)
+
+	admitted, created, err := store.AdmitIdempotentOwnedReceiveScript(
+		ctx, winner,
+	)
+	require.NoError(t, err)
+	require.True(t, created)
+	requireOwnedReceiveScriptEqual(t, winner, *admitted)
+
+	replay := testIdempotentOwnedReceiveScript(
+		t, 0x42, winner.IdempotencyKey, winner.RegistrationLabel,
+	)
+	replayed, created, err := store.AdmitIdempotentOwnedReceiveScript(
+		ctx, replay,
+	)
+	require.NoError(t, err)
+	require.False(t, created)
+	requireOwnedReceiveScriptEqual(t, winner, *replayed)
+
+	lookedUp, err := store.LookupOwnedReceiveScriptByIdempotencyKey(
+		ctx, winner.IdempotencyKey,
+	)
+	require.NoError(t, err)
+	requireOwnedReceiveScriptEqual(t, winner, *lookedUp)
+}
+
+// TestOORArtifactStoreAdmitIdempotentOwnedReceiveScriptChangedLabel verifies
+// reusing an idempotency key for a different caller-controlled label is
+// rejected without rewriting the durable winner.
+func TestOORArtifactStoreAdmitIdempotentOwnedReceiveScriptChangedLabel(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newOORArtifactStoreForTest(t)
+	winner := testIdempotentOwnedReceiveScript(
+		t, 0x51, "receive-label", "first-label",
+	)
+
+	_, created, err := store.AdmitIdempotentOwnedReceiveScript(ctx, winner)
+	require.NoError(t, err)
+	require.True(t, created)
+
+	mismatch := testIdempotentOwnedReceiveScript(
+		t, 0x52, winner.IdempotencyKey, "second-label",
+	)
+	_, created, err = store.AdmitIdempotentOwnedReceiveScript(
+		ctx, mismatch,
+	)
+	require.ErrorIs(t, err, ErrOwnedReceiveScriptReplayMismatch)
+	require.False(t, created)
+
+	lookedUp, err := store.LookupOwnedReceiveScriptByIdempotencyKey(
+		ctx, winner.IdempotencyKey,
+	)
+	require.NoError(t, err)
+	requireOwnedReceiveScriptEqual(t, winner, *lookedUp)
+}
+
+// TestOORArtifactStoreAdmitIdempotentOwnedReceiveScriptConcurrentWinner
+// verifies concurrent first admissions converge on one durable allocation.
+func TestOORArtifactStoreAdmitIdempotentOwnedReceiveScriptConcurrentWinner(
+	t *testing.T) {
+
+	t.Parallel()
+
+	type admissionResult struct {
+		record  *OwnedReceiveScriptRecord
+		created bool
+		err     error
+	}
+
+	ctx := t.Context()
+	store, _ := newOORArtifactStoreForTest(t)
+	candidates := []OwnedReceiveScriptRecord{
+		testIdempotentOwnedReceiveScript(
+			t, 0x61, "receive-concurrent", "shared-label",
+		),
+		testIdempotentOwnedReceiveScript(
+			t, 0x62, "receive-concurrent", "shared-label",
+		),
+	}
+
+	start := make(chan struct{})
+	results := make(chan admissionResult, len(candidates))
+	var workers sync.WaitGroup
+	for i := range candidates {
+		candidate := candidates[i]
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+
+			record, created, err :=
+				store.AdmitIdempotentOwnedReceiveScript(
+					ctx, candidate,
+				)
+			results <- admissionResult{
+				record:  record,
+				created: created,
+				err:     err,
+			}
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+
+	var admissions []admissionResult
+	for result := range results {
+		require.NoError(t, result.err)
+		require.NotNil(t, result.record)
+		admissions = append(admissions, result)
+	}
+	require.Len(t, admissions, 2)
+	require.NotEqual(t, admissions[0].created, admissions[1].created)
+	requireOwnedReceiveScriptEqual(
+		t, *admissions[0].record, *admissions[1].record,
+	)
+
+	winner := *admissions[0].record
+	require.True(
+		t, string(winner.PkScript) == string(candidates[0].PkScript) ||
+			string(winner.PkScript) == string(
+				candidates[1].PkScript,
+			),
+	)
+}
+
+// TestOORArtifactStoreIdempotentOwnedReceiveScriptPendingAcrossRestart
+// verifies an admitted but unregistered allocation survives a database-handle
+// restart and remains the exact replay winner.
+func TestOORArtifactStoreIdempotentOwnedReceiveScriptPendingAcrossRestart(
+	t *testing.T) {
+
+	dbPath := filepath.Join(t.TempDir(), "receive-script.db")
+	store, baseDB := newOORArtifactStoreForTestPath(t, dbPath)
+	winner := testIdempotentOwnedReceiveScript(
+		t, 0x71, "receive-restart", "restart-label",
+	)
+
+	_, created, err := store.AdmitIdempotentOwnedReceiveScript(
+		t.Context(), winner,
+	)
+	require.NoError(t, err)
+	require.True(t, created)
+	require.NoError(t, baseDB.DB.Close())
+
+	restarted, _ := newOORArtifactStoreForTestPath(t, dbPath)
+	pending, err := restarted.LookupOwnedReceiveScriptByIdempotencyKey(
+		t.Context(), winner.IdempotencyKey,
+	)
+	require.NoError(t, err)
+	require.True(t, pending.RegistrationCompletedAt.IsNone())
+	requireOwnedReceiveScriptEqual(t, winner, *pending)
+
+	replay := testIdempotentOwnedReceiveScript(
+		t, 0x72, winner.IdempotencyKey, winner.RegistrationLabel,
+	)
+	replayed, created, err :=
+		restarted.AdmitIdempotentOwnedReceiveScript(t.Context(), replay)
+	require.NoError(t, err)
+	require.False(t, created)
+	requireOwnedReceiveScriptEqual(t, winner, *replayed)
+}
+
+// TestOORArtifactStoreOwnedReceiveScriptCompletionIdempotency verifies the
+// registration completion transition is retry-safe for the exact remote key
+// and rejects a different remote request identity.
+func TestOORArtifactStoreOwnedReceiveScriptCompletionIdempotency(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newOORArtifactStoreForTest(t)
+	winner := testIdempotentOwnedReceiveScript(
+		t, 0x81, "receive-complete", "completion-label",
+	)
+
+	_, created, err := store.AdmitIdempotentOwnedReceiveScript(ctx, winner)
+	require.NoError(t, err)
+	require.True(t, created)
+
+	err = store.MarkOwnedReceiveScriptRegistered(
+		ctx, winner.IdempotencyKey, winner.RegistrationRPCKey,
+	)
+	require.NoError(t, err)
+	completed, err := store.LookupOwnedReceiveScriptByIdempotencyKey(
+		ctx, winner.IdempotencyKey,
+	)
+	require.NoError(t, err)
+	require.True(t, completed.RegistrationCompletedAt.IsSome())
+	completedAt := completed.RegistrationCompletedAt
+
+	err = store.MarkOwnedReceiveScriptRegistered(
+		ctx, winner.IdempotencyKey, winner.RegistrationRPCKey,
+	)
+	require.NoError(t, err)
+	completed, err = store.LookupOwnedReceiveScriptByIdempotencyKey(
+		ctx, winner.IdempotencyKey,
+	)
+	require.NoError(t, err)
+	require.Equal(t, completedAt, completed.RegistrationCompletedAt)
+
+	err = store.MarkOwnedReceiveScriptRegistered(
+		ctx, winner.IdempotencyKey, "different-registration-key",
+	)
+	require.ErrorContains(
+		t, err, "registration completion invariant failed",
+	)
 }
 
 // buildTestOORPackage constructs a deterministic incoming-style OOR package

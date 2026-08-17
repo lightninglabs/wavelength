@@ -102,9 +102,8 @@ type DaemonServiceClient interface {
 	// NewAddress generates a new boarding address that can receive
 	// on-chain funds for use in the Ark protocol.
 	NewAddress(ctx context.Context, in *NewAddressRequest, opts ...grpc.CallOption) (*NewAddressResponse, error)
-	// NewReceiveScript allocates a fresh wallet key, registers the
-	// matching taproot receive script with the indexer, and returns the
-	// script details needed to hand the destination to a sender.
+	// NewReceiveScript allocates and registers a taproot receive script, or
+	// returns the exact existing allocation for an idempotent retry.
 	NewReceiveScript(ctx context.Context, in *NewReceiveScriptRequest, opts ...grpc.CallOption) (*NewReceiveScriptResponse, error)
 	// ReceiveAuthKey returns the per-payment receive-auth public key.
 	ReceiveAuthKey(ctx context.Context, in *ReceiveAuthKeyRequest, opts ...grpc.CallOption) (*ReceiveAuthKeyResponse, error)
@@ -790,9 +789,8 @@ type DaemonServiceServer interface {
 	// NewAddress generates a new boarding address that can receive
 	// on-chain funds for use in the Ark protocol.
 	NewAddress(context.Context, *NewAddressRequest) (*NewAddressResponse, error)
-	// NewReceiveScript allocates a fresh wallet key, registers the
-	// matching taproot receive script with the indexer, and returns the
-	// script details needed to hand the destination to a sender.
+	// NewReceiveScript allocates and registers a taproot receive script, or
+	// returns the exact existing allocation for an idempotent retry.
 	NewReceiveScript(context.Context, *NewReceiveScriptRequest) (*NewReceiveScriptResponse, error)
 	// ReceiveAuthKey returns the per-payment receive-auth public key.
 	ReceiveAuthKey(context.Context, *ReceiveAuthKeyRequest) (*ReceiveAuthKeyResponse, error)
