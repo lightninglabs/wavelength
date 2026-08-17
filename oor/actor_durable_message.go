@@ -144,6 +144,11 @@ const (
 	transferInputTaprootAssetRootRecordType   tlv.Type = 18
 	transferInputTaprootAssetRefRecordType    tlv.Type = 19
 	transferInputTaprootAssetAmountRecordType tlv.Type = 20
+
+	// transferInputOperatorFundedRecordType marks an operator-funded
+	// float input (snapshot version 8+). The record is written only when
+	// set, so older snapshots decode it to false.
+	transferInputOperatorFundedRecordType tlv.Type = 21
 )
 
 const (
@@ -1547,6 +1552,16 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 		)
 	}
 
+	if input.OperatorFunded {
+		operatorFunded := uint8(1)
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				transferInputOperatorFundedRecordType,
+				&operatorFunded,
+			),
+		)
+	}
+
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
 		return nil, err
@@ -1582,6 +1597,7 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		assetRootRaw       []byte
 		assetRefRaw        []byte
 		assetAmount        uint64
+		operatorFunded     uint8
 	)
 
 	records := []tlv.Record{
@@ -1651,6 +1667,9 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		tlv.MakePrimitiveRecord(
 			transferInputTaprootAssetAmountRecordType, &assetAmount,
 		),
+		tlv.MakePrimitiveRecord(
+			transferInputOperatorFundedRecordType, &operatorFunded,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -1698,6 +1717,7 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		RequiredLockTime:   requiredLockTime,
 		TaprootAssetRef:    string(assetRefRaw),
 		TaprootAssetAmount: assetAmount,
+		OperatorFunded:     operatorFunded != 0,
 	}
 
 	if len(condBlob) > 0 {

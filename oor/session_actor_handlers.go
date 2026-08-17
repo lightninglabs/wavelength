@@ -236,7 +236,11 @@ func (b *sessionBehavior) recordReservations(ctx context.Context,
 	}
 
 	ownerID := chainHashOf(b.sessionID)
-	outpoints := InputOutpoints(inputs)
+
+	// Reservation rows exist only for wallet VTXOs; an operator-funded
+	// float input has no local row and would fail the store's
+	// wallet-state precondition.
+	outpoints := WalletInputOutpoints(inputs)
 	if assetPrepared {
 		if strings.TrimSpace(assetPreparationRequestID) == "" {
 			return fmt.Errorf("Taproot Asset OOR idempotency key " +
@@ -432,6 +436,12 @@ func (b *sessionBehavior) queueVTXOSent(ctx context.Context,
 
 	var total int64
 	for i := range state.TransferInputs {
+		// The operator's leased float value is not wallet money and
+		// must not inflate the sent amount.
+		if state.TransferInputs[i].OperatorFunded {
+			continue
+		}
+
 		total += int64(state.TransferInputs[i].VTXO.Amount)
 	}
 	if total <= 0 {

@@ -752,6 +752,13 @@ func NormalizeCheckpointOwnerLeaves(policy arkscript.CheckpointPolicy,
 			continue
 		}
 
+		// An operator-funded float input keeps the owner leaf carried
+		// by its own lease policy; the wallet holds no float owner key
+		// to derive a replacement from.
+		if input.OperatorFunded {
+			continue
+		}
+
 		if input.VTXO == nil || input.VTXO.ClientKey.PubKey == nil {
 			continue
 		}

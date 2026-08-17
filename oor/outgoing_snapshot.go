@@ -149,11 +149,11 @@ func NewOutgoingSnapshot(sessionID SessionID,
 	}
 
 	snap := &OutgoingSnapshot{
-		// Version 7 adds SDK-neutral asset identity and amount within
-		// the recipient and input records. Restore remains
-		// backward-compatible because the appended TLV fields are
-		// optional.
-		Version:   7,
+		// Version 8 adds the operator-funded marker within the input
+		// records so a resumed session never re-attempts local signing
+		// on a leased float input. Restore remains backward-compatible
+		// because the appended TLV field is optional.
+		Version:   8,
 		SessionID: sessionID,
 	}
 
