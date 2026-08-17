@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/oor"
@@ -48,6 +47,19 @@ func taprootAssetOORIntent(req *waverpc.SendOORRequest) (
 		return nil, status.Errorf(codes.InvalidArgument, "Taproot "+
 			"Asset OOR transfers require "+
 			"acknowledge_unconfirmed=true")
+
+	// New asset-leaf carriers are operator-funded at the operator's
+	// minimum VTXO amount, so no caller-chosen Bitcoin value survives.
+	case rpcIntent.GetAssetChangeCarrierValueSat() != 0:
+		return nil, status.Errorf(codes.InvalidArgument,
+			"asset_change_carrier_value_sat must be zero: "+
+				"carriers are operator-funded at the floor")
+
+	case req.GetRecipients()[0].GetAmountSat() != 0:
+		return nil, status.Errorf(codes.InvalidArgument, "recipient "+
+			"amount_sat must be zero for Taproot Asset sends: "+
+			"the daemon stamps the operator-funded carrier at "+
+			"the operator's minimum VTXO amount")
 	}
 
 	inputOutpoint, err := parseOutpointString(
@@ -210,46 +222,6 @@ func validateTaprootAssetOORResumeInputs(ctx context.Context,
 	return nil
 }
 
-// taprootAssetOORSelectionTarget adds the local asset-change carrier to the
-// receiver carrier without conflating either quantity with asset units. A
-// partial send with no explicit carrier is materialized to the operator's
-// minimum VTXO amount; the input remainder later returns to the sender as an
-// ordinary Bitcoin change output.
-func taprootAssetOORSelectionTarget(receiverCarrier btcutil.Amount,
-	intent *oor.TaprootAssetOORIntent,
-	outputFloor btcutil.Amount) (btcutil.Amount, error) {
-
-	if intent == nil {
-		return receiverCarrier, nil
-	}
-
-	if intent.AssetChangeCarrierValueSat > uint64(btcutil.MaxSatoshi) {
-		return 0, status.Errorf(codes.InvalidArgument, "Taproot Asset "+
-			"change carrier must be <= %d",
-			int64(btcutil.MaxSatoshi))
-	}
-
-	if intent.AssetChangeCarrierValueSat == 0 &&
-		intent.EffectiveRecipientAssetAmount() < intent.AssetAmount {
-
-		intent.AssetChangeCarrierValueSat = uint64(outputFloor)
-	}
-
-	changeCarrier := btcutil.Amount(intent.AssetChangeCarrierValueSat)
-	if changeCarrier != 0 && changeCarrier < outputFloor {
-		return 0, status.Errorf(codes.InvalidArgument, "Taproot Asset "+
-			"change carrier %d sat is below operator "+
-			"minimum %d sat", changeCarrier, outputFloor)
-	}
-	if receiverCarrier > btcutil.MaxSatoshi-changeCarrier {
-		return 0, status.Errorf(codes.InvalidArgument, "Taproot Asset "+
-			"carrier total must be <= %d",
-			int64(btcutil.MaxSatoshi))
-	}
-
-	return receiverCarrier + changeCarrier, nil
-}
-
 // invalidTaprootAssetPreparation reports a bug or compromised adapter result.
 func invalidTaprootAssetPreparation(err error) error {
 	return status.Errorf(codes.Internal, "invalid Taproot Asset OOR "+
@@ -262,7 +234,8 @@ func invalidTaprootAssetPreparation(err error) error {
 // so a composed asset-change script must resolve as owned without relying on
 // its own event's metadata overlay.
 func (r *RPCServer) registerTaprootAssetChangeAliases(ctx context.Context,
-	preparation *oor.TaprootAssetOORPreparation) error {
+	preparation *oor.TaprootAssetOORPreparation,
+	lease *oor.OORCarrierLease) error {
 
 	store, err := r.newOORReceiveScriptStore()
 	if err != nil {
@@ -276,6 +249,14 @@ func (r *RPCServer) registerTaprootAssetChangeAliases(ctx context.Context,
 				recipient.PkScript,
 				preparation.Receiver.PkScript,
 			) {
+
+			continue
+		}
+
+		// The operator's float residual is not wallet money and has
+		// no owned receive script to alias.
+		if lease != nil &&
+			bytes.Equal(recipient.PkScript, lease.PkScript) {
 
 			continue
 		}

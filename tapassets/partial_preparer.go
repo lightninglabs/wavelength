@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
@@ -151,35 +152,50 @@ func (p *Preparer) plannedRecipients(ctx context.Context,
 	}
 
 	recipients := cloneRecipients(request.Recipients)
-	assetChange, bitcoinChange, err := request.CarrierAllocation()
+	plan, err := request.CarrierAllocation()
 	if err != nil {
 		return nil, err
 	}
-	if assetChange > 0 {
-		change, err := request.BuildChangeRecipient(ctx, assetChange)
+	if plan.AssetChange > 0 {
+		change, err := request.BuildChangeRecipient(
+			ctx, plan.AssetChange,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("derive Taproot Asset "+
 				"change: %w", err)
 		}
 		if err := validateUncomposedChange(
-			change, assetChange,
+			change, plan.AssetChange,
 		); err != nil {
 			return nil, fmt.Errorf("Taproot Asset change: %w", err)
 		}
 		recipients = append(recipients, change)
 	}
 
-	if bitcoinChange > 0 {
-		change, err := request.BuildChangeRecipient(ctx, bitcoinChange)
-		if err != nil {
-			return nil, fmt.Errorf("derive Bitcoin change: %w", err)
-		}
-		if err := validateUncomposedChange(
-			change, bitcoinChange,
-		); err != nil {
-			return nil, fmt.Errorf("Bitcoin change: %w", err)
-		}
-		recipients = append(recipients, change)
+	change, err := request.BuildChangeRecipient(ctx, plan.SenderChange)
+	if err != nil {
+		return nil, fmt.Errorf("derive Bitcoin change: %w", err)
+	}
+	if err := validateUncomposedChange(
+		change, plan.SenderChange,
+	); err != nil {
+		return nil, fmt.Errorf("Bitcoin change: %w", err)
+	}
+	recipients = append(recipients, change)
+
+	// The float residual returns to the lease pkScript verbatim: a plain
+	// recipient output under the float's own policy, so BIP-371 output
+	// metadata and VTXO registration derive from the lease template.
+	if plan.OperatorChange > 0 {
+		recipients = append(recipients, oortx.RecipientOutput{
+			PkScript: append(
+				[]byte(nil), request.Lease.PkScript...,
+			),
+			Value: plan.OperatorChange,
+			VTXOPolicyTemplate: append(
+				[]byte(nil), request.Lease.PolicyTemplate...,
+			),
+		})
 	}
 	if err := validatePlannedRecipients(request, recipients); err != nil {
 		return nil, err
@@ -200,15 +216,15 @@ func validatePlannedRecipients(request *oor.TaprootAssetOORPrepareRequest,
 	if request == nil || len(request.Recipients) != 1 {
 		return fmt.Errorf("caller receiver is required")
 	}
-	assetChange, bitcoinChange, err := request.CarrierAllocation()
+	plan, err := request.CarrierAllocation()
 	if err != nil {
 		return err
 	}
-	expectedCount := 1
-	if assetChange != 0 {
+	expectedCount := 2
+	if plan.AssetChange != 0 {
 		expectedCount++
 	}
-	if bitcoinChange != 0 {
+	if plan.OperatorChange != 0 {
 		expectedCount++
 	}
 	if len(recipients) != expectedCount {
@@ -231,19 +247,36 @@ func validatePlannedRecipients(request *oor.TaprootAssetOORPrepareRequest,
 	}
 
 	next := 1
-	if assetChange != 0 {
+	if plan.AssetChange != 0 {
 		if err := validateUncomposedChange(
-			recipients[next], assetChange,
+			recipients[next], plan.AssetChange,
 		); err != nil {
 			return fmt.Errorf("Taproot Asset change: %w", err)
 		}
 		next++
 	}
-	if bitcoinChange != 0 {
-		if err := validateUncomposedChange(
-			recipients[next], bitcoinChange,
-		); err != nil {
-			return fmt.Errorf("Bitcoin change: %w", err)
+	if err := validateUncomposedChange(
+		recipients[next], plan.SenderChange,
+	); err != nil {
+		return fmt.Errorf("Bitcoin change: %w", err)
+	}
+	next++
+	if plan.OperatorChange != 0 {
+		operatorChange := recipients[next]
+		if operatorChange.Value != plan.OperatorChange ||
+			!bytes.Equal(
+				operatorChange.PkScript, request.Lease.PkScript,
+			) ||
+			!bytes.Equal(
+				operatorChange.VTXOPolicyTemplate,
+				request.Lease.PolicyTemplate,
+			) {
+			return fmt.Errorf("operator change does not pay the " +
+				"leased float script")
+		}
+		err := validateUncomposedRecipient(operatorChange)
+		if err != nil {
+			return fmt.Errorf("operator change: %w", err)
 		}
 	}
 
@@ -873,10 +906,12 @@ func buildArkRequest(request *oor.TaprootAssetOORPrepareRequest,
 		}
 		ark.Inputs[arkIndex].TaprootLeafScript =
 			[]*psbt.TaprootTapLeafScript{leaf}
-		input := &request.Inputs[idx]
+		signers, err := ownerLeafSigners(&request.Inputs[idx])
+		if err != nil {
+			return nil, fmt.Errorf("input %d signers: %w", idx, err)
+		}
 		signingPlans[idx] = scriptSigningPlan(
-			arkIndex, artifacts[idx].OwnerLeafScript,
-			input.VTXO.ClientKey.PubKey, input.VTXO.OperatorKey,
+			arkIndex, artifacts[idx].OwnerLeafScript, signers...,
 		)
 	}
 
@@ -965,6 +1000,30 @@ func buildArkRequest(request *oor.TaprootAssetOORPrepareRequest,
 		},
 		verifier: verifier,
 	}, nil
+}
+
+// ownerLeafSigners returns the keys that must sign an input's checkpoint
+// owner leaf in the Ark transaction. An operator-funded float input has no
+// local client key; its signers are the lease policy's own collab pair.
+func ownerLeafSigners(input *oor.TransferInput) ([]*btcec.PublicKey, error) {
+	if !input.OperatorFunded {
+		return []*btcec.PublicKey{
+			input.VTXO.ClientKey.PubKey,
+			input.VTXO.OperatorKey,
+		}, nil
+	}
+
+	leaf, err := arkscript.DecodeLeafTemplate(input.OwnerLeafPolicy)
+	if err != nil {
+		return nil, fmt.Errorf("decode float owner leaf: %w", err)
+	}
+
+	multisig, ok := leaf.Node.(*arkscript.Multisig)
+	if !ok || len(multisig.Keys) == 0 {
+		return nil, fmt.Errorf("float owner leaf is not a multisig")
+	}
+
+	return append([]*btcec.PublicKey(nil), multisig.Keys...), nil
 }
 
 // addNonAssetArkOutputMetadata attaches the complete standard PSBT Taproot
