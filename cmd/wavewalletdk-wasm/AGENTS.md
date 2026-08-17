@@ -32,9 +32,14 @@ VM with no separate gateway.
 - Every verb takes a JS request object and resolves/rejects a JS `Promise`;
   never call back into JS synchronously from a goroutine without going
   through `promise`, or a panic can escape and kill the Go runtime.
-- `data_dir` must default to `browserDataDir` (`/wavelength`) when unset, because
-  the embedded daemon's config validation calls `os.UserHomeDir` for the
-  default `~/.waved`, which fails under `wasm_exec.js` (no `$HOME`).
+- `data_dir` must default to `browserDataDir` (`/wavelength`) when unset **on a
+  browser host**, because the embedded daemon's config validation calls
+  `os.UserHomeDir` for the default `~/.waved`, which fails under
+  `wasm_exec.js` (no `$HOME`). Under a Node host that default is refused
+  instead: Node has a real filesystem, so `waved.ensureDataDir` would
+  `os.MkdirAll` at the filesystem root and fail with `EROFS`/`EACCES`. A Node
+  caller must set `data_dir` explicitly and gets a rejected promise if it
+  does not.
 - The `executor` `js.Func` passed to `Promise.New` must be released right
   after construction (the executor runs synchronously), otherwise every
   wallet call leaks a Go callback handle for the life of the page.

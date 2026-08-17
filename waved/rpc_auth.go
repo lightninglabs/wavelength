@@ -118,6 +118,10 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 	)
 	grant(daemon, entitySwap, "write", "SignOutSwapHtlcAck")
 	grant(
+		daemon, entitySwap, "write", "SignOutSwapHtlcAck",
+		"SignCreditAccountAuthorization",
+	)
+	grant(
 		daemon, entityOOR, "read", "GetIndexedOORSessionByTxid",
 		"ListOORSessions", "GetOORSession",
 	)

@@ -20,11 +20,8 @@ type CheckpointPolicy struct {
 	// CSV unroll leaf.
 	OperatorKey *btcec.PublicKey
 
-	// CSVDelay is the relative timelock enforced by the
-	// operator-controlled leaf.
-	//
-	// This is a raw BIP-68 sequence value interpreted by
-	// OP_CHECKSEQUENCEVERIFY.
+	// CSVDelay is the canonical block delay enforced by the
+	// operator-controlled leaf. It must be in the range 1..65535.
 	CSVDelay uint32
 }
 

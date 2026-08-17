@@ -23,6 +23,8 @@ delivery.
   Maps `CorrelationID` to `actor.Promise[*mailboxpb.Envelope]`. Supports
   three scenarios: waiter registered before response, response arrives
   before waiter (buffered), and stale cleanup via configurable TTL.
+  `WaiterCount()` reports how many unary requests are currently outstanding
+  (pruning stale entries first) so senders can bound their in-flight set.
 - `DeliveryResult` — Tri-state enum returned by `ResponseRegistry.DeliverResponse`:
   - `DeliveryWaiter` — Response completed an active in-memory waiter.
   - `DeliveryBuffered` — Response buffered; no waiter registered yet.

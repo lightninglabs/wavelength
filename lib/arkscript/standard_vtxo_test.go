@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/internal/testutils"
 	"github.com/stretchr/testify/require"
 )
@@ -123,6 +124,18 @@ func TestEncodeStandardVTXOArtifacts(t *testing.T) {
 		require.Nil(t, pkScript)
 	})
 
+	t.Run("oversize exit delay rejected", func(t *testing.T) {
+		t.Parallel()
+
+		template, pkScript, err := EncodeStandardVTXOArtifacts(
+			ownerKey, operatorKey,
+			uint32(wire.SequenceLockTimeMask)+1,
+		)
+		require.ErrorContains(t, err, "canonical block delay")
+		require.Nil(t, template)
+		require.Nil(t, pkScript)
+	})
+
 	// Changing any input parameter must change the pkScript. This is a
 	// light fuzz-like sanity check that the helper is actually
 	// threading every parameter into the compiled output key and not,
@@ -183,10 +196,10 @@ func TestStandardVTXOTemplateRoundTrip(t *testing.T) {
 			1,
 		},
 		{
-			"large delay",
+			"maximum delay",
 			7,
 			8,
-			100_000,
+			uint32(wire.SequenceLockTimeMask),
 		},
 		{
 			"distinct high indices",
@@ -227,6 +240,26 @@ func TestStandardVTXOTemplateRoundTrip(t *testing.T) {
 			require.True(t, IsStandardVTXOTemplate(decoded))
 		})
 	}
+}
+
+// TestDecodeStandardVTXOParamsRejectsNonCanonicalCSV verifies that callers
+// cannot bypass constructor validation by decoding a hand-crafted template.
+func TestDecodeStandardVTXOParamsRejectsNonCanonicalCSV(t *testing.T) {
+	t.Parallel()
+
+	ownerKey, _ := testutils.CreateKey(1)
+	operatorKey, _ := testutils.CreateKey(2)
+	template, err := StandardVTXOTemplate(ownerKey, operatorKey, 144)
+	require.NoError(t, err)
+
+	exit, ok := template.Leaves[1].Node.(*CSV)
+	require.True(t, ok)
+	exit.Lock = wire.SequenceLockTimeDisabled | 144
+
+	params, err := DecodeStandardVTXOParams(template)
+	require.ErrorContains(t, err, "canonical block delay")
+	require.Nil(t, params)
+	require.False(t, IsStandardVTXOTemplate(template))
 }
 
 // TestEncodeStandardVTXOArtifactsPkScriptMatchesWallet asserts that the

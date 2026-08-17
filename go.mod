@@ -62,7 +62,7 @@ require (
 	github.com/btcsuite/btcd/psbt/v2 v2.0.0
 	github.com/btcsuite/btcd/txscript/v2 v2.0.0
 	github.com/btcsuite/btcd/wire/v2 v2.0.0
-	github.com/lightninglabs/go-wasmsqlite v0.0.0-20260627090804-0dce68fc5287
+	github.com/lightninglabs/go-wasmsqlite v0.0.0-20260811033710-d14cd0d80aa0
 )
 
 require (

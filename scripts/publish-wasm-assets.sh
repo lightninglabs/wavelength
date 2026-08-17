@@ -38,6 +38,7 @@ FILES=(
   wasm_exec.js
   sqlite-bridge.js
   sqlite-worker.js
+  sqlite-node-vfs.js
   sqlite3.js
   sqlite3.wasm
   sqlite3-opfs-async-proxy.js

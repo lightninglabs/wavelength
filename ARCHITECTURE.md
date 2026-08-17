@@ -36,6 +36,7 @@ package may import from a higher layer.
 | Package | Purpose |
 |---------|---------|
 | [`baselib`](baselib/) | Actor framework (`baselib/actor`) and protofsm state machine engine (`baselib/protofsm`) |
+| [`build`](build/) | Cross-cutting build metadata and logging infrastructure: deployment mode, build-tag-controlled log type/level, context logger propagation, subsystem logger factory, version string. Imports no repo package |
 | [`chainsource`](chainsource/) | `ChainBackend` interface: fee estimation, block/conf/spend notifications |
 | [`chainbackends`](chainbackends/) | LND-backed `ChainBackend` implementation plus lndclient adapters (`TxBroadcaster`, `PackageSubmitter`) |
 | [`chainbackends/lndsubmitter`](chainbackends/lndsubmitter/) | `chainbackends.PackageSubmitter` over lnd's WalletKit; the default LND package-relay submitter |
@@ -56,7 +57,9 @@ package may import from a higher layer.
 | [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade |
 | [`serverconn/mailboxpull`](serverconn/mailboxpull/) | Shared exponential-backoff retry primitives for mailbox pull loops (used by serverconn ingress and SDK swap consumers) |
 | [`rpcauth`](rpcauth/) | Shared macaroon and TLS helpers securing gRPC/REST connections |
+| [`metrics`](metrics/) | Prometheus instrumentation namespaced under `waved_`: event-driven counter actor pool plus a scrape-time `SystemCollector` for live gauges, and an opt-in `/metrics` HTTP server |
 | [`internal/sqlbase`](internal/sqlbase/) | `walletdb`-compatible key/value backend over `database/sql` (js/wasm walletdb storage for `lwwallet` browser builds) |
+| [`internal/wasmhost`](internal/wasmhost/) | js/wasm host detection (browser vs Node) and the durable SQLite VFS name that follows from it; imported by `db`, `lwwallet`, and `cmd/wavewalletdk-wasm` |
 
 ### Layer 3: Application & Orchestration
 

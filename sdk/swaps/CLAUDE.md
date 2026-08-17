@@ -61,7 +61,15 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/swap
 - `Store` — isolated SQLite persistence. Runs its own migration table
   (`swap_client_schema_migrations`) separate from the main daemon DB.
 - `SwapServerConn` / `GRPCSwapServerConn` — remote swap-server gRPC
-  (`RequestChannelID`, `CreateInSwap`).
+  (`RequestChannelID`, `CreateInSwap`). Built by `NewGRPCSwapServerConn`
+  (optional variadic credit signer), `NewRESTSwapServerConn`
+  (unauthenticated, send-only), or `NewAuthenticatedRESTSwapServerConn`.
+- `CreditAccountAuthorizationSigner` — `func(ctx, accountKey []byte,
+  requestDigest [32]byte, expiresAtUnix int64, nonce [32]byte)
+  (*schnorr.Signature, error)`. Signs one canonical account request with the
+  wallet identity key; the signer must reject `accountKey` unless it names
+  that identity key. Production implementation is
+  `waved.RPCServer.SignCreditAccountAuth`, wired by `swapclientserver`.
 - `DaemonConn` — wallet operations (OOR sends, VTXO lookups, key
   queries, receive-auth signing/ECDH, VHTLC recovery arm/escalate/
   cancel, forfeit signing) provided by the Ark daemon. Includes
@@ -168,6 +176,22 @@ result into an `IncomingVHTLCNotification`.
 - `RecoveryPolicy.MaxFeeRateSatPerKW` is captured at arm time and
   stored on the recovery row, so a later, looser default cannot
   silently raise the exit-spend fee cap for an already-armed job.
+- **Account-scoped requests are signed, and the signature is per request.**
+  `authorizeCreditAccountRequest` stamps a fresh `CreditAccountAuthorization`
+  (1 min TTL, 32 bytes of `crypto/rand` nonce) onto `RequestChannelId`,
+  `CreateInSwap`, `QuoteInSwap`, `CreateCredit`, `RedeemCredit`, and
+  `ListCredits` before they go out. It is not memoized the way the mailbox
+  auth signature is: the digest commits to the whole request body, so it
+  changes with every call by construction.
+- **`RequestChannelID` always requires a signer; the in-swap paths require
+  one only when an account key is supplied.** A send-only caller that never
+  touches credits can construct an unauthenticated conn, but a receive route
+  is account-scoped and fails closed with "credit account authorization
+  signer is required" rather than reaching the server unsigned. A nil
+  signature from a present signer is likewise rejected.
+- `authNow` and `authRand` are struct fields (production values installed by
+  `newSwapServerConn`) so tests can pin the expiry and nonce; production code
+  must not reach past them to `time.Now` / `crypto/rand` directly.
 
 ## Deep Docs
 

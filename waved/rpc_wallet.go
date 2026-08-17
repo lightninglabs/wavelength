@@ -1,6 +1,7 @@
 package waved
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/lndclient"
@@ -29,6 +31,9 @@ import (
 const identityKeyFamily = keychain.KeyFamilyNodeKey
 
 const receiveAuthKeyTag = "wavelength/swap/receive-auth/v1"
+
+var errCreditAccountIdentityMismatch = errors.New("credit account key does " +
+	"not match wallet identity")
 
 // ReceiveAuthKey returns the public key for the payment-scoped receive-auth
 // key while keeping the private scalar inside the daemon.
@@ -132,7 +137,8 @@ func (r *RPCServer) SignOutSwapHtlcAck(ctx context.Context,
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
-	if r.server.clientKeyDesc.PubKey == nil {
+	identityDesc := r.server.loadClientKeyDesc()
+	if identityDesc.PubKey == nil {
 		return nil, status.Error(
 			codes.FailedPrecondition, "identity key is not ready",
 		)
@@ -141,7 +147,7 @@ func (r *RPCServer) SignOutSwapHtlcAck(ctx context.Context,
 	var paymentHash lntypes.Hash
 	copy(paymentHash[:], req.GetPaymentHash())
 	msg := swaprpc.OutSwapHTLCAckMessage(
-		r.server.clientKeyDesc.PubKey, paymentHash, req.GetAmountSat(),
+		identityDesc.PubKey, paymentHash, req.GetAmountSat(),
 		req.GetVhtlcPkScript(),
 	)
 	sig, err := r.server.signTaggedSchnorr(
@@ -156,6 +162,112 @@ func (r *RPCServer) SignOutSwapHtlcAck(ctx context.Context,
 	return &waverpc.SignOutSwapHtlcAckResponse{
 		Signature: sig.Serialize(),
 	}, nil
+}
+
+// SignCreditAccountAuthorization signs one canonical swap credit-account
+// request with the daemon identity key.
+func (r *RPCServer) SignCreditAccountAuthorization(ctx context.Context,
+	req *waverpc.SignCreditAccountAuthorizationRequest) (
+	*waverpc.SignCreditAccountAuthorizationResponse, error) {
+
+	if len(req.GetRequestDigest()) != chainhash.HashSize {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"request_digest must be %d bytes", chainhash.HashSize)
+	}
+	if len(req.GetNonce()) != swaprpc.CreditAccountNonceSize {
+		return nil, status.Errorf(codes.InvalidArgument, "nonce must "+
+			"be %d bytes", swaprpc.CreditAccountNonceSize)
+	}
+	if len(req.GetAccountPubkey()) != btcec.PubKeyBytesLenCompressed {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"account_pubkey must be %d bytes",
+			btcec.PubKeyBytesLenCompressed)
+	}
+
+	var (
+		digest [chainhash.HashSize]byte
+		nonce  [swaprpc.CreditAccountNonceSize]byte
+	)
+	copy(digest[:], req.GetRequestDigest())
+	copy(nonce[:], req.GetNonce())
+	if err := validateCreditAccountAuthExpiry(
+		req.GetExpiresAtUnix(), time.Now(),
+	); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	sig, err := r.SignCreditAccountAuth(
+		ctx, req.GetAccountPubkey(), digest, req.GetExpiresAtUnix(),
+		nonce,
+	)
+	if err != nil {
+		if errors.Is(err, errCreditAccountIdentityMismatch) {
+			return nil, status.Error(
+				codes.InvalidArgument, err.Error(),
+			)
+		}
+
+		return nil, status.Errorf(codes.Internal, "sign credit "+
+			"account authorization: %v", err)
+	}
+
+	return &waverpc.SignCreditAccountAuthorizationResponse{
+		Signature: sig.Serialize(),
+	}, nil
+}
+
+// SignCreditAccountAuth signs one request digest for the internal swap client.
+func (r *RPCServer) SignCreditAccountAuth(ctx context.Context,
+	accountKey []byte, requestDigest [32]byte, expiresAtUnix int64,
+	nonce [swaprpc.CreditAccountNonceSize]byte) (*schnorr.Signature,
+	error) {
+
+	if r == nil || r.server == nil {
+		return nil, fmt.Errorf("daemon server unavailable")
+	}
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+	identityDesc := r.server.loadClientKeyDesc()
+	if identityDesc.PubKey == nil {
+		return nil, fmt.Errorf("identity key is not ready")
+	}
+	identityKey := identityDesc.PubKey.SerializeCompressed()
+	if !bytes.Equal(accountKey, identityKey) {
+		return nil, errCreditAccountIdentityMismatch
+	}
+
+	if err := validateCreditAccountAuthExpiry(
+		expiresAtUnix, time.Now(),
+	); err != nil {
+		return nil, err
+	}
+
+	message := swaprpc.CreditAccountAuthMessage(
+		identityKey, requestDigest, expiresAtUnix, nonce[:],
+	)
+	sig, err := r.server.signTaggedSchnorr(
+		ctx, message, []byte(swaprpc.CreditAccountAuthTag),
+		"credit account authorization",
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return sig, nil
+}
+
+// validateCreditAccountAuthExpiry bounds one requested authorization lifetime.
+func validateCreditAccountAuthExpiry(expiresAtUnix int64, now time.Time) error {
+	nowUnix := now.Unix()
+	if expiresAtUnix <= nowUnix {
+		return fmt.Errorf("authorization expiry must be in the future")
+	}
+	if expiresAtUnix > nowUnix+
+		int64(swaprpc.CreditAccountMaxAuthTTL/time.Second) {
+		return fmt.Errorf("authorization expiry exceeds maximum TTL")
+	}
+
+	return nil
 }
 
 // deriveReceiveAuthKey derives the receive-auth base using the same

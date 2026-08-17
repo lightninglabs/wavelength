@@ -268,8 +268,14 @@ type Server struct {
 	// mode it is derived from the config's network string.
 	chainParams *chaincfg.Params
 
-	// clientKeyDesc is the client's identity key descriptor,
-	// derived during wallet initialization.
+	// clientKeyDescMu guards clientKeyDesc. GetInfo is callable while
+	// wallet startup derives the descriptor, so status reads and startup
+	// publication must synchronize even though all later consumers run
+	// after bootstrap.
+	clientKeyDescMu sync.RWMutex
+
+	// clientKeyDesc is the client's identity key descriptor, derived during
+	// wallet initialization.
 	clientKeyDesc keychain.KeyDescriptor
 
 	// localMailboxID caches the pubkey-derived mailbox ID for
@@ -280,6 +286,17 @@ type Server struct {
 	// authSigHex caches the hex-encoded Schnorr auth signature
 	// so response envelopes can include it without re-computing.
 	authSigHex string
+
+	// mailboxAuthSigsMu guards mailboxAuthSigs.
+	mailboxAuthSigsMu sync.Mutex
+
+	// mailboxAuthSigs memoizes the mailbox auth signature per
+	// recipient mailbox ID. The signed digest covers the identity
+	// key and the recipient and nothing else, so one signature
+	// stays valid for the life of the key; signing per RPC would
+	// put a wallet round-trip in front of every Pull on a
+	// long-poll loop.
+	mailboxAuthSigs map[string]*schnorr.Signature
 
 	// tlsLeafSPKI is the DER-encoded SubjectPublicKeyInfo of the
 	// P-256 client TLS leaf certificate this daemon dialed with.
@@ -465,6 +482,25 @@ func (s *Server) WalletLifecycleState() WalletState {
 // WalletType returns the configured wallet backend type string.
 func (s *Server) WalletType() string {
 	return s.cfg.Wallet.Type
+}
+
+// loadClientKeyDesc returns the identity descriptor most recently published
+// by wallet startup. The returned descriptor is a value copy whose public-key
+// pointer is immutable.
+func (s *Server) loadClientKeyDesc() keychain.KeyDescriptor {
+	s.clientKeyDescMu.RLock()
+	defer s.clientKeyDescMu.RUnlock()
+
+	return s.clientKeyDesc
+}
+
+// storeClientKeyDesc publishes the stable identity descriptor derived during
+// wallet startup so pre-ready status requests cannot race its initialization.
+func (s *Server) storeClientKeyDesc(desc keychain.KeyDescriptor) {
+	s.clientKeyDescMu.Lock()
+	defer s.clientKeyDescMu.Unlock()
+
+	s.clientKeyDesc = desc
 }
 
 // markWalletReady atomically stores WalletStateReady and closes the
@@ -2842,7 +2878,17 @@ func (s *Server) newMailboxEdge() mailboxpb.MailboxServiceClient {
 		return s.mailboxClient
 	}
 
-	base := mailboxpb.NewMailboxServiceClient(s.serverConn)
+	// A raw client here would reach the operator with no x-mailbox-auth-sig
+	// header, which is exactly what an operator running requiredirectauth
+	// rejects. connectOperatorClients already wraps the client it builds,
+	// and it runs before this on every production path, so this arm is
+	// latent today; wrapping it too means a future caller that reaches
+	// newMailboxEdge with no mailboxClient set cannot silently lose the
+	// header.
+	base := serverconn.NewAuthenticatedMailboxClient(
+		mailboxpb.NewMailboxServiceClient(s.serverConn),
+		s.mailboxAuthSigner(),
+	)
 	if s.cfg.MailboxEdgeFactory != nil {
 		return s.cfg.MailboxEdgeFactory(s.serverConn, base)
 	}
@@ -3758,7 +3804,7 @@ func (s *Server) initRPCClients(ctx context.Context) {
 			err,
 		)
 	} else {
-		identityDesc, identitySigner, err := s.IndexerProofKey(
+		_, identitySigner, err := s.IndexerProofKey(
 			ctx, keychain.KeyLocator{
 				Family: identityKeyFamily,
 				Index:  0,
@@ -3771,7 +3817,13 @@ func (s *Server) initRPCClients(ctx context.Context) {
 				err,
 			)
 		} else {
-			s.clientKeyDesc = *identityDesc
+			// clientKeyDesc is deliberately not published here.
+			// deriveIdentityKeyEarly has already stored the
+			// descriptor for this exact locator, and it errors out
+			// rather than leaving the field unset, so this would
+			// only re-store the same value after StartEgress has
+			// begun using the descriptor to sign outbound
+			// envelopes.
 			signer = NewFallbackSchnorrSigner(
 				NewOwnedReceiveScriptSigner(
 					packageStore, signerFactory,
@@ -3783,9 +3835,8 @@ func (s *Server) initRPCClients(ctx context.Context) {
 
 	// The indexer principal is the client's pubkey-derived
 	// mailbox ID, used in proof-of-control signatures.
-	principal := serverconn.PubKeyMailboxID(
-		s.clientKeyDesc.PubKey,
-	)
+	identityDesc := s.loadClientKeyDesc()
+	principal := serverconn.PubKeyMailboxID(identityDesc.PubKey)
 
 	s.indexer = indexer.New(
 		s.runtime.Unary(), signer, indexerProofServerID, principal,
@@ -3938,17 +3989,18 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	dispatchers, nonTxRoutes := s.buildRPCDispatchers(edge)
 
 	// Derive compound mailbox ID: operator:client.
-	s.localMailboxID = serverconn.PubKeyMailboxID(
-		s.clientKeyDesc.PubKey,
-	)
+	identityDesc := s.loadClientKeyDesc()
+	s.localMailboxID = serverconn.PubKeyMailboxID(identityDesc.PubKey)
 	operatorMBID := serverconn.PubKeyMailboxID(operatorPubKey)
 	remoteMailboxID := serverconn.CompoundMailboxID(
 		operatorMBID, s.localMailboxID,
 	)
 
 	// Sign the Schnorr auth proving key ownership, bound to
-	// the compound recipient mailbox.
-	authSig, err := s.signMailboxAuth(ctx, remoteMailboxID)
+	// the compound recipient mailbox. This goes through the memo so
+	// the per-RPC signer installed on the mailbox edge serves the
+	// same signature from memory rather than signing a second time.
+	authSig, err := s.mailboxAuthSig(ctx, remoteMailboxID)
 	if err != nil {
 		return fmt.Errorf("sign mailbox auth: %w", err)
 	}
@@ -4882,7 +4934,7 @@ func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 			return
 		}
 
-		s.clientKeyDesc = *desc
+		s.storeClientKeyDesc(*desc)
 		derived = true
 	})
 
@@ -4906,7 +4958,7 @@ func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 			return
 		}
 
-		s.clientKeyDesc = *desc
+		s.storeClientKeyDesc(*desc)
 		derived = true
 	})
 
@@ -4930,7 +4982,7 @@ func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 			return
 		}
 
-		s.clientKeyDesc = desc
+		s.storeClientKeyDesc(desc)
 		derived = true
 	})
 
@@ -4952,10 +5004,11 @@ func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 			"identity key")
 	}
 
+	identityDesc := s.loadClientKeyDesc()
 	s.log.InfoS(ctx, "Derived client identity key",
 		slog.String(
 			"mailbox_id", serverconn.PubKeyMailboxID(
-				s.clientKeyDesc.PubKey,
+				identityDesc.PubKey,
 			),
 		))
 
@@ -4969,8 +5022,9 @@ func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 func (s *Server) signMailboxAuth(ctx context.Context,
 	recipientMailboxID string) (*schnorr.Signature, error) {
 
+	identityDesc := s.loadClientKeyDesc()
 	msg := serverconn.MailboxAuthMessage(
-		s.clientKeyDesc.PubKey, recipientMailboxID,
+		identityDesc.PubKey, recipientMailboxID,
 	)
 	tag := []byte(serverconn.MailboxAuthTagStr)
 
@@ -4987,8 +5041,9 @@ func (s *Server) signMailboxAuth(ctx context.Context,
 func (s *Server) signMailboxTLSBind(ctx context.Context, tlsLeafSPKI []byte) (
 	*schnorr.Signature, error) {
 
+	identityDesc := s.loadClientKeyDesc()
 	msg := serverconn.MailboxTLSBindMessage(
-		s.clientKeyDesc.PubKey, tlsLeafSPKI,
+		identityDesc.PubKey, tlsLeafSPKI,
 	)
 	tag := []byte(serverconn.MailboxTLSBindTagStr)
 
@@ -5010,6 +5065,7 @@ func (s *Server) signTaggedSchnorr(ctx context.Context, msg, tag []byte,
 		sig *schnorr.Signature
 		err error
 	)
+	identityDesc := s.loadClientKeyDesc()
 
 	// In LND mode, use lnd's tagged Schnorr signing RPC. We pass the
 	// raw message and tag so LND computes the BIP-340 tagged hash
@@ -5017,7 +5073,7 @@ func (s *Server) signTaggedSchnorr(ctx context.Context, msg, tag []byte,
 	s.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
 		var rawSig []byte
 		rawSig, err = lndSvc.Signer.SignMessage(
-			ctx, msg, s.clientKeyDesc.KeyLocator,
+			ctx, msg, identityDesc.KeyLocator,
 			lndclient.SignSchnorr(nil), withSchnorrTag(tag),
 		)
 		if err != nil {
@@ -5068,8 +5124,9 @@ func (s *Server) signTaggedSchnorr(ctx context.Context, msg, tag []byte,
 func (s *Server) signTaggedSchnorrViaKeyRing(keyRing keychain.SecretKeyRing,
 	msg, tag []byte, opName string) (*schnorr.Signature, error) {
 
+	identityDesc := s.loadClientKeyDesc()
 	sig, err := keyRing.SignMessageSchnorr(
-		s.clientKeyDesc.KeyLocator, msg, false, nil, tag,
+		identityDesc.KeyLocator, msg, false, nil, tag,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("keyring sign %s: %w", opName, err)

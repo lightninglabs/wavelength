@@ -266,6 +266,11 @@ service DaemonService {
     // the daemon identity key.
     rpc SignOutSwapHtlcAck (SignOutSwapHtlcAckRequest)
         returns (SignOutSwapHtlcAckResponse);
+
+    // SignCreditAccountAuthorization signs one canonical swap credit-account
+    // request digest with the daemon identity key.
+    rpc SignCreditAccountAuthorization (SignCreditAccountAuthorizationRequest)
+        returns (SignCreditAccountAuthorizationResponse);
 }
 
 // WalletState mirrors the daemon's in-process wallet lifecycle enum:
@@ -2837,6 +2842,27 @@ message SignOutSwapHtlcAckRequest {
 }
 
 message SignOutSwapHtlcAckResponse {
+    // signature is the 64-byte BIP-340 Schnorr signature.
+    bytes signature = 1;
+}
+
+message SignCreditAccountAuthorizationRequest {
+    // request_digest is the canonical 32-byte swap credit request digest.
+    bytes request_digest = 1;
+
+    // expires_at_unix is the unix timestamp committed by the authorization.
+    int64 expires_at_unix = 2;
+
+    // nonce is the caller-generated 32-byte unique value committed by the
+    // authorization.
+    bytes nonce = 3;
+
+    // account_pubkey is the compressed wallet identity key named by the
+    // account-scoped request. The daemon only signs for its own identity.
+    bytes account_pubkey = 4;
+}
+
+message SignCreditAccountAuthorizationResponse {
     // signature is the 64-byte BIP-340 Schnorr signature.
     bytes signature = 1;
 }

@@ -125,6 +125,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
 - `ExitProgress` (in `GetStatusResp`) — `ConfirmedTxs`/`InFlightTxs`/
   `ReadyTxs`/`BlockedTxs` counts over the proof graph, for status
   probes.
+- `ExitInfeasibilityReason` — why an exit cannot start. Every value except
+  one is produced by the funding assessment. `ExitRoundCommitted` is the
+  exception: `waved.GetExitPlan` stamps it from the VTXO's lifecycle state
+  (via `vtxo.CheckForfeitAdmission`), and it is **advisory** — the manual
+  unroll path still performs the exit, and the funding figures are still
+  computed alongside it, because the exit is the only recovery when the
+  operator is unreachable and the round's commitment never confirms.
 
 ### Support
 

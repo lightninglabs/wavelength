@@ -25,6 +25,12 @@ permissions:
   # only needs read access for the action's own bookkeeping.
   contents: read
   pull-requests: read
+  # The failure canary opens its tracking issue with the workflow's own
+  # GITHUB_TOKEN rather than BOT_GITHUB_TOKEN, so an expired or revoked
+  # bot token can never take the canary down with it (that exact failure
+  # mode went unnoticed for two days when the bot PAT hit its 90-day
+  # expiry: checkout died AND the notify step died with the same 401).
+  issues: write
 
 jobs:
   sweep:
@@ -33,7 +39,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout (bot token)
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           # Use BOT_GITHUB_TOKEN so subsequent `git push` operations
           # authenticate as the bot. This is required for the resulting PR
@@ -46,8 +52,19 @@ jobs:
           # returns empty history and turns the sweep into a false no-op.
           fetch-depth: 0
 
+      - name: Neutralize git hooks
+        # Point core.hooksPath at an empty target so no repository hook can
+        # execute during this run. The model is granted native Write and
+        # Bash(git commit:*), so a prompt injection could otherwise drop a
+        # .git/hooks/pre-commit and have the sweep's own `git commit` run
+        # it with the bot token in env. `git config` is deliberately NOT in
+        # the model's allowlist, and `git -c core.hooksPath=... commit` does
+        # not match the Bash(git commit:*) prefix, so the model cannot undo
+        # this from inside the action.
+        run: git config core.hooksPath /dev/null
+
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -77,7 +94,7 @@ jobs:
             done
 
       - name: Run /doc-gardening sweep and open PR
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@fb326f7c687fa273d0843a59bbd2ddbc9e481ca1 # v1
         env:
           # Belt-and-suspenders: also surface the bot token as GH_TOKEN on
           # the step env so `gh` inside Claude's Bash subprocess picks it
@@ -115,11 +132,16 @@ jobs:
           # the Actions log so we can grep what the model actually did
           # on a NO-OP day. Without this, the action buffers stdout
           # internally and the Actions log shows only step start/end.
-          # GitHub auto-masks `secrets.*` values, so BOT_GITHUB_TOKEN
-          # and CLAUDE_CODE_OAUTH_TOKEN remain redacted; the residual
-          # leak risk is content Claude reads off disk that isn't
-          # registered as a secret. For a docs-only sweep on a public
-          # repo, that risk is acceptable.
+          # GitHub auto-masks `secrets.*` values in the log, so
+          # BOT_GITHUB_TOKEN and CLAUDE_CODE_OAUTH_TOKEN stay redacted
+          # there. Two residual risks remain on this private repo: content
+          # Claude reads off disk that isn't registered as a secret, and
+          # the base64-encoded credential actions/checkout persists into
+          # .git/config (a different string than the masked secret, so a
+          # `cat .git/config` would print it unredacted). Both are bounded
+          # by keeping BOT_GITHUB_TOKEN a fine-grained PAT scoped to only
+          # these repos; log readers are first-party. Accepted on that
+          # basis.
           show_full_output: "true"
           prompt: |
             You are running in a nightly GitHub Actions cron job. Your job
@@ -165,9 +187,31 @@ jobs:
                makes the sweep actually look at everything that changed
                since the last merged nightly (not just "new packages").
 
-            2. **Validate.** Phase 7 runs `make doc-check`. If it fails,
-               iterate to fix the errors — never commit broken docs. If you
-               cannot make it pass after reasonable effort, print
+            2. **Mirror and scrub, then validate.** Before running
+               `make doc-check`, do two things that the check itself will
+               NOT catch on its own:
+
+               - **Mirror every CLAUDE.md to its AGENTS.md.** For each
+                 `CLAUDE.md` you created or edited, `cp` it to the sibling
+                 `AGENTS.md` so the pair is byte-identical. The root
+                 `CLAUDE.md`/`AGENTS.md` pair is the one most often missed —
+                 mirror it too. `make doc-check` verifies byte-identity, so
+                 a missed mirror fails the build; do the copy proactively.
+               - **Scrub tool/formatting artifacts.** Fan-out doc edits can
+                 leak stray tags into `.md` files (e.g. a literal
+                 `</content>` or `</invoke>`, or a trailing
+                 ` ``` ` fence with no opener). Run
+                 `grep -rn --include='*.md' -e '</content>' -e '</invoke>'
+                 -e '<parameter' .` over the changed docs (scoped to
+                 markdown so a legitimate occurrence in Go source or a test
+                 fixture is never treated as an artifact) and delete any
+                 such artifact before
+                 committing. A doc with a leaked tag is a failed sweep even
+                 if `make doc-check` is green.
+
+               Then run `make doc-check`. If it fails, iterate to fix the
+               errors — never commit broken docs. If you cannot make it
+               pass after reasonable effort, print
                `DOC-GARDENING ABORTED: make doc-check still failing` and
                exit without committing, pushing, or opening a PR.
 
@@ -179,7 +223,11 @@ jobs:
                - Create and check out a fresh branch:
                  `BRANCH="doc-gardening/nightly-$(date -u +%Y-%m-%d)-${RUN_NUMBER}"`
                  then `git checkout -b "$BRANCH"`.
-               - Stage everything with `git add -A`.
+               - Stage only markdown docs with `git add -- '*.md'`. Never
+                 `git add -A`: this sweep is docs-only, so scoping the add
+                 to `*.md` guarantees a stray binary or any secret-bearing
+                 file dropped into the worktree can never be committed or
+                 pushed.
                - Write the commit message to `.git/COMMIT_MSG` using this
                  template (substitute today's UTC date):
 
@@ -220,6 +268,10 @@ jobs:
             - Never push to `main` directly.
             - Never modify files outside this repo.
             - Never add reviewers or assignees to the PR.
+            - This sweep is docs-only. Never run `go build`, `go test`, or
+              anything that compiles the tree — those drop stray binaries
+              (`accounting`, etc.) into package dirs that then get swept
+              into `git add -A`. Use `go doc` for symbol lookups only.
             - If any `gh` command fails, print the error and exit non-zero
               so the workflow's failure handler opens an issue.
           # Tool capability boundary for Claude.
@@ -243,8 +295,9 @@ jobs:
           # gh operations even with the native edit tools granted.
           claude_args: >-
             --max-turns 200
+            --model claude-opus-5
             --allowed-tools
-            "Edit,Write,MultiEdit,Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git checkout:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git branch:*),Bash(git fetch:*),Bash(git push:*),Bash(make doc-check:*),Bash(go doc:*),Bash(find:*),Bash(ls:*),Bash(cp:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(date:*),Bash(sort:*),Bash(sed:*),Bash(awk:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh auth status:*)"
+            "Edit,Write,MultiEdit,Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git checkout:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git branch:*),Bash(git fetch:*),Bash(git push:*),Bash(make doc-check:*),Bash(go doc:*),Bash(grep:*),Bash(ls:*),Bash(cp:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(date:*),Bash(sort:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh auth status:*)"
             --disallowed-tools
             "Bash(rm:*),Bash(rmdir:*),Bash(git push --force:*),Bash(git push -f:*),Bash(git push --delete:*),Bash(git reset --hard:*),Bash(git commit --amend:*),Bash(gh api:*),Bash(gh secret:*),Bash(gh auth login:*),Bash(gh auth logout:*),Bash(gh auth refresh:*),Bash(gh repo delete:*),Bash(gh workflow:*),Bash(gh release:*),Bash(curl:*),Bash(wget:*)"
 
@@ -252,7 +305,11 @@ jobs:
         if: failure()
         id: notify_create
         env:
-          GH_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
+          # Deliberately NOT the bot token: the most likely cause of a
+          # failed run is the bot token itself going bad, and a canary
+          # that authenticates with the thing it is monitoring reports
+          # nothing exactly when it matters most.
+          GH_TOKEN: ${{ github.token }}
         run: |
           # Create the tracking issue WITHOUT labels first so a missing or
           # renamed label can never swallow the canary. The label-attach
@@ -267,7 +324,7 @@ jobs:
         if: failure() && steps.notify_create.outputs.issue_url != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           ISSUE_URL: ${{ steps.notify_create.outputs.issue_url }}
         run: |
           # Best-effort label attach. `continue-on-error: true` plus `|| true`

@@ -18,6 +18,7 @@ import (
 	"io"
 	"syscall/js"
 
+	"github.com/lightninglabs/wavelength/internal/wasmhost"
 	"github.com/lightninglabs/wavelength/sdk/wavewalletdk/mobile"
 )
 
@@ -50,7 +51,10 @@ func walletCall(_ js.Value, args []js.Value) any {
 	switch method {
 	// Lifecycle.
 	case "start":
-		cfg := startConfig(req)
+		cfg, err := startConfig(req)
+		if err != nil {
+			return rejected(err)
+		}
 
 		return promise(func() (any, error) {
 			return js.Null(), mobile.Start(cfg)
@@ -269,19 +273,38 @@ func jsError(err error) js.Value {
 	return js.Global().Get("Error").New(err.Error())
 }
 
-// browserDataDir is a WASM-safe default data directory. A browser has no $HOME
-// for the daemon's `~` expansion to resolve against, and persistent state lives
-// in OPFS-backed SQLite keyed by hashed file names rather than host directories
-// (see waved.ensureDataDir, a no-op under js/wasm), so any fixed in-origin
-// path is all the embedded daemon needs.
+// browserDataDir is a WASM-safe default data directory for a browser host. A
+// browser has no $HOME for the daemon's `~` expansion to resolve against, and
+// persistent state lives in OPFS-backed SQLite keyed by hashed file names
+// rather than host directories, so any fixed in-origin path is all the
+// embedded daemon needs.
+//
+// A Node host inverts both halves of that reasoning, which is why this default
+// is not for it. Node has a real filesystem, so waved.ensureDataDir creates
+// this path rather than ignoring it, and the node:fs SQLite VFS writes to the
+// configured path rather than to a hashed OPFS name. Injecting it there asks
+// the host to mkdir at the filesystem root, which fails with EROFS or EACCES
+// for any process not running as root.
 const browserDataDir = "/wavelength"
+
+// errNodeDataDirRequired reports that a Node host started the daemon without
+// saying where its databases should live. There is no default worth guessing
+// here: the daemon's databases are the only copy of the wallet's state, and a
+// path picked from the process's working directory or environment would put
+// them somewhere that changes with how the host happened to be launched.
+var errNodeDataDirRequired = errors.New("data_dir must be set when the " +
+	"js/wasm host is Node, which stores databases on the host filesystem")
 
 // startConfig renders the start request as a config JSON string, injecting the
 // browser-safe data dir when the caller didn't set one. Without it the embedded
 // daemon's config validation expands the default `~/.waved` via
 // os.UserHomeDir, which fails with "$HOME is not defined" under wasm_exec.js
 // and aborts start before the wallet boots.
-func startConfig(req js.Value) string {
+//
+// A Node caller that omits the path is told so instead, because the browser
+// default cannot be created there and the alternative is an EROFS from mkdir
+// well after start was accepted.
+func startConfig(req js.Value) (string, error) {
 	if req.IsUndefined() || req.IsNull() {
 		req = js.Global().Get("Object").New()
 	}
@@ -289,10 +312,14 @@ func startConfig(req js.Value) string {
 	if v := req.Get("data_dir"); v.IsUndefined() || v.IsNull() ||
 		v.String() == "" {
 
+		if wasmhost.UnderNode() {
+			return "", errNodeDataDirRequired
+		}
+
 		req.Set("data_dir", browserDataDir)
 	}
 
-	return stringify(req)
+	return stringify(req), nil
 }
 
 // stringify renders a JS request value as a JSON string, or "" when absent.

@@ -154,6 +154,18 @@ const (
 	// construction time, so distinct inputs — not just total balance —
 	// are required.
 	ExitWalletTooFewInputs
+
+	// ExitRoundCommitted means the VTXO is committed to a cooperative
+	// round, which normally resolves it without an exit at all. Unlike
+	// every reason above it is not produced by the funding assessment:
+	// the exit preview stamps it from the VTXO's lifecycle state, and it
+	// is advisory rather than a block, because the manual unroll path
+	// still performs the exit. That matters when the operator is
+	// unreachable and the round's commitment never confirms, in which
+	// case the forfeit can never confirm either and the exit is the only
+	// thing that recovers the coin — so the funding figures are still
+	// computed alongside it.
+	ExitRoundCommitted
 )
 
 // String renders the reason for logs and error messages.
@@ -173,6 +185,9 @@ func (r ExitInfeasibilityReason) String() string {
 
 	case ExitWalletTooFewInputs:
 		return "wallet_too_few_inputs"
+
+	case ExitRoundCommitted:
+		return "round_committed"
 
 	default:
 		return fmt.Sprintf("unknown(%d)", uint8(r))

@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/internal/testutils"
 	"github.com/stretchr/testify/require"
 )
@@ -124,6 +125,42 @@ func TestCSVNilInner(t *testing.T) {
 	require.Contains(t, err.Error(), "inner node is nil")
 }
 
+// TestCSVRejectsNonCanonicalLock verifies that CSV compilation accepts only
+// canonical, non-zero block-mode BIP-68 values. Every bit above the consensus
+// value mask either changes units, disables CSV, or is ignored by consensus.
+func TestCSVRejectsNonCanonicalLock(t *testing.T) {
+	t.Parallel()
+
+	key, _ := testutils.CreateKey(1)
+	compile := func(lock uint32) error {
+		node := &CSV{
+			Lock: lock,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{
+					key,
+				},
+			},
+		}
+
+		_, err := node.Script()
+
+		return err
+	}
+
+	require.ErrorContains(t, compile(0), "canonical block delay")
+
+	for bit := 16; bit < 32; bit++ {
+		lock := uint32(144) | uint32(1)<<bit
+		err := compile(lock)
+		require.ErrorContains(
+			t, err, "canonical block delay", "bit %d", bit,
+		)
+	}
+
+	require.NoError(t, compile(1))
+	require.NoError(t, compile(uint32(wire.SequenceLockTimeMask)))
+}
+
 // TestAbsoluteLockTimeCondition tests the opaque absolute locktime prefix.
 func TestAbsoluteLockTimeCondition(t *testing.T) {
 	t.Parallel()
@@ -205,6 +242,91 @@ func TestConditionNilInner(t *testing.T) {
 	_, err = node.Script()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "inner node is nil")
+}
+
+// TestConditionRejectsOpSuccess verifies that opaque predicates cannot use
+// tapscript's immediate-success opcodes to bypass the typed inner clause.
+func TestConditionRejectsOpSuccess(t *testing.T) {
+	t.Parallel()
+
+	key, _ := testutils.CreateKey(1)
+	checked := 0
+
+	for opcode := 0; opcode <= 0xff; opcode++ {
+		predicate := []byte{byte(opcode)}
+		if !txscript.ScriptHasOpSuccess(predicate) {
+			continue
+		}
+
+		checked++
+		node := &Condition{
+			Predicate: predicate,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{
+					key,
+				},
+			},
+		}
+
+		_, err := node.Script()
+		require.Error(t, err, "opcode 0x%x", opcode)
+		require.Contains(
+			t, err.Error(),
+			"OP_SUCCESS", "opcode 0x%x", opcode,
+		)
+	}
+
+	require.NotZero(t, checked)
+}
+
+// TestConditionAllowsOpSuccessByteInPushData verifies that an OP_SUCCESS byte
+// carried as push data is not mistaken for an executable opcode.
+func TestConditionAllowsOpSuccessByteInPushData(t *testing.T) {
+	t.Parallel()
+
+	predicate, err := txscript.NewScriptBuilder().
+		AddData([]byte{txscript.OP_RESERVED}).
+		AddOp(txscript.OP_DROP).
+		Script()
+	require.NoError(t, err)
+	require.False(t, txscript.ScriptHasOpSuccess(predicate))
+
+	key, _ := testutils.CreateKey(1)
+	node := &Condition{
+		Predicate: predicate,
+		Inner: &Multisig{
+			Keys: []*btcec.PublicKey{
+				key,
+			},
+		},
+	}
+
+	_, err = node.Script()
+	require.NoError(t, err)
+}
+
+// TestConditionRejectsIncompletePush verifies that a predicate cannot consume
+// the typed inner script as data by ending with an incomplete push opcode.
+func TestConditionRejectsIncompletePush(t *testing.T) {
+	t.Parallel()
+
+	key, _ := testutils.CreateKey(1)
+	node := &Condition{
+		// A single-key Multisig compiles to exactly 34 bytes. Without
+		// standalone predicate validation, this opcode consumes that
+		// entire signature clause as push data.
+		Predicate: []byte{
+			txscript.OP_DATA_34,
+		},
+		Inner: &Multisig{
+			Keys: []*btcec.PublicKey{
+				key,
+			},
+		},
+	}
+
+	_, err := node.Script()
+	require.ErrorContains(t, err, "not a complete script fragment")
 }
 
 // TestASTMatchesGoldenVectors verifies that the AST produces byte-identical
