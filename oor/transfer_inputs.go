@@ -67,6 +67,13 @@ type TransferInput struct {
 	// signatures. The input carries no ClientKey; its policy template and
 	// owner leaf come from the lease.
 	OperatorFunded bool
+
+	// TaprootAssetRoundCreated marks an asset input whose leaf was
+	// created by a round (boarded or refreshed), so its Bitcoin carrier
+	// is the sender's own money and returns as plain change. An
+	// OOR-created leaf rides an operator-funded carrier instead, which
+	// is reclaimed into the operator's change when the leaf is spent.
+	TaprootAssetRoundCreated bool
 }
 
 // ExternalTaprootScriptSignature carries one externally produced tapscript
@@ -169,6 +176,10 @@ func (i *TransferInput) Validate() error {
 		(i.VTXO.TaprootAssetAmount == 0) {
 		return fmt.Errorf("vtxo asset ref and amount must both be " +
 			"provided")
+	}
+	if i.TaprootAssetRoundCreated && i.VTXO.TaprootAssetRef == "" {
+		return fmt.Errorf("round-created marker requires an " +
+			"asset-bearing vtxo")
 	}
 	if len(i.VTXO.TaprootAssetRef) > MaxTaprootAssetRefBytes {
 		return fmt.Errorf("vtxo asset ref exceeds %d bytes",

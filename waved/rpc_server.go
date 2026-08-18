@@ -3398,9 +3398,10 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 	}
 
 	// For asset sends the sender contributes no Bitcoin VTXO: the
-	// operator float funds every new asset leaf at the floor, the asset
-	// input's carrier returns whole as plain change, so selection targets
-	// exactly the asset input.
+	// operator float funds every new asset leaf at the floor and the
+	// spent leaf's carrier follows its origin (returned to the sender or
+	// reclaimed by the operator), so selection targets exactly the asset
+	// input.
 	recipientOutputs := requestRecipients
 	var assetInputCarrier btcutil.Amount
 	if assetIntent != nil {
@@ -3650,10 +3651,6 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		if err != nil {
 			return nil, err
 		}
-	} else {
-		// The sender's change is its own returned carrier; the
-		// prepare-request validation enforces full conservation.
-		changeAmt = assetInputCarrier
 	}
 	changeOutputDuration = time.Since(phaseStart)
 

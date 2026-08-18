@@ -95,13 +95,15 @@ func TestTaprootAssetOORIntentValidate(t *testing.T) {
 
 // TestTaprootAssetOORCarrierAllocation pins the operator-funded carrier
 // arithmetic: every new asset leaf is the operator floor out of the leased
-// float, the sender's carrier returns whole, and the float residual returns
-// to the operator.
+// float, a round-created input's carrier returns to the sender, and an
+// OOR-created input's carrier is reclaimed into the operator change on top
+// of the float residual.
 func TestTaprootAssetOORCarrierAllocation(t *testing.T) {
 	t.Parallel()
 
 	newRequest := func(leaseValue, inputCarrier btcutil.Amount,
-		recipientUnits uint64) *TaprootAssetOORPrepareRequest {
+		recipientUnits uint64,
+		roundCreated bool) *TaprootAssetOORPrepareRequest {
 
 		return &TaprootAssetOORPrepareRequest{
 			Inputs: []TransferInput{
@@ -112,6 +114,7 @@ func TestTaprootAssetOORCarrierAllocation(t *testing.T) {
 							"asset",
 						TaprootAssetAmount: 21,
 					},
+					TaprootAssetRoundCreated: roundCreated,
 				},
 				{
 					VTXO: &vtxo.Descriptor{
@@ -154,16 +157,16 @@ func TestTaprootAssetOORCarrierAllocation(t *testing.T) {
 		wantErr  string
 	}{
 		{
-			name:    "full send",
-			request: newRequest(25_000, 5_000, 0),
+			name:    "full send of a round-created leaf",
+			request: newRequest(25_000, 5_000, 0, true),
 			wantPlan: TaprootAssetCarrierPlan{
 				SenderChange:   5_000,
 				OperatorChange: 24_000,
 			},
 		},
 		{
-			name:    "partial send",
-			request: newRequest(25_000, 5_000, 13),
+			name:    "partial send of a round-created leaf",
+			request: newRequest(25_000, 5_000, 13, true),
 			wantPlan: TaprootAssetCarrierPlan{
 				AssetChange:    1_000,
 				SenderChange:   5_000,
@@ -171,8 +174,23 @@ func TestTaprootAssetOORCarrierAllocation(t *testing.T) {
 			},
 		},
 		{
+			name:    "full send reclaims an OOR-created carrier",
+			request: newRequest(25_000, 5_000, 0, false),
+			wantPlan: TaprootAssetCarrierPlan{
+				OperatorChange: 29_000,
+			},
+		},
+		{
+			name:    "partial send reclaims an OOR-created carrier",
+			request: newRequest(25_000, 5_000, 13, false),
+			wantPlan: TaprootAssetCarrierPlan{
+				AssetChange:    1_000,
+				OperatorChange: 28_000,
+			},
+		},
+		{
 			name:    "lease consumed exactly",
-			request: newRequest(2_000, 5_000, 13),
+			request: newRequest(2_000, 5_000, 13, true),
 			wantPlan: TaprootAssetCarrierPlan{
 				AssetChange:  1_000,
 				SenderChange: 5_000,
@@ -180,13 +198,13 @@ func TestTaprootAssetOORCarrierAllocation(t *testing.T) {
 		},
 		{
 			name:    "lease below the floors",
-			request: newRequest(1_500, 5_000, 13),
+			request: newRequest(1_500, 5_000, 13, true),
 			wantErr: "below the 2000 sat of new asset-leaf floors",
 		},
 		{
 			name: "missing lease",
 			request: func() *TaprootAssetOORPrepareRequest {
-				request := newRequest(25_000, 5_000, 0)
+				request := newRequest(25_000, 5_000, 0, true)
 				request.Lease = nil
 
 				return request
@@ -214,9 +232,12 @@ func TestTaprootAssetOORCarrierAllocation(t *testing.T) {
 
 // testOperatorFundedPreparation builds a complete operator-funded full-send
 // preparation: an asset input, a leased float input, a floor-valued composed
-// receiver, the sender's returned carrier, and the operator's float residual.
-func testOperatorFundedPreparation(t *testing.T) (
-	*TaprootAssetOORPrepareRequest, *TaprootAssetOORPreparation) {
+// receiver, and the operator's change. A round-created input adds the
+// sender's returned carrier; an OOR-created input reclaims it into the
+// operator change instead.
+func testOperatorFundedPreparation(t *testing.T,
+	roundCreated bool) (*TaprootAssetOORPrepareRequest,
+	*TaprootAssetOORPreparation) {
 
 	t.Helper()
 
@@ -285,8 +306,9 @@ func testOperatorFundedPreparation(t *testing.T) (
 			TaprootAssetRef:    "asset-id:010203",
 			TaprootAssetAmount: 21,
 		},
-		VTXOPolicyTemplate: inputPolicyRaw,
-		TaprootAssetRoot:   &inputAssetRoot,
+		VTXOPolicyTemplate:       inputPolicyRaw,
+		TaprootAssetRoot:         &inputAssetRoot,
+		TaprootAssetRoundCreated: roundCreated,
 	}
 
 	floatInput := newTestOperatorFundedInput(
@@ -348,19 +370,23 @@ func testOperatorFundedPreparation(t *testing.T) (
 		)
 	require.NoError(t, err)
 
-	recipients := []oortx.RecipientOutput{
-		receiver,
-		{
+	operatorChange := leaseValue - outputFloor
+	if !roundCreated {
+		operatorChange += assetCarrier
+	}
+	recipients := []oortx.RecipientOutput{receiver}
+	if roundCreated {
+		recipients = append(recipients, oortx.RecipientOutput{
 			PkScript:           senderChangePkScript,
 			Value:              assetCarrier,
 			VTXOPolicyTemplate: senderChangePolicy,
-		},
-		{
-			PkScript:           bytes.Clone(lease.PkScript),
-			Value:              leaseValue - outputFloor,
-			VTXOPolicyTemplate: bytes.Clone(lease.PolicyTemplate),
-		},
+		})
 	}
+	recipients = append(recipients, oortx.RecipientOutput{
+		PkScript:           bytes.Clone(lease.PkScript),
+		Value:              operatorChange,
+		VTXOPolicyTemplate: bytes.Clone(lease.PolicyTemplate),
+	})
 
 	ark, checkpoints, err := BuildSubmitPackage(policy, inputs, recipients)
 	require.NoError(t, err)
@@ -416,7 +442,7 @@ func testOperatorFundedPreparation(t *testing.T) (
 func TestTaprootAssetOORPreparationBindsRequest(t *testing.T) {
 	t.Parallel()
 
-	request, preparation := testOperatorFundedPreparation(t)
+	request, preparation := testOperatorFundedPreparation(t, true)
 	require.NoError(t, request.Validate())
 	require.NoError(t, preparation.Validate(request))
 
@@ -523,5 +549,74 @@ func TestTaprootAssetOORPreparationBindsRequest(t *testing.T) {
 	require.ErrorContains(
 		t, missingOperatorChange.Validate(request),
 		"operator change is not unique",
+	)
+
+	missingSenderChange := *preparation
+	missingSenderChange.Recipients = cloneRecipientOutputs(
+		[]oortx.RecipientOutput{
+			preparation.Recipients[0],
+			preparation.Recipients[2],
+		},
+	)
+	require.ErrorContains(
+		t, missingSenderChange.Validate(request),
+		"sender change is not unique",
+	)
+
+	markedFloat := *request
+	markedFloat.Inputs = append([]TransferInput(nil), request.Inputs...)
+	markedFloat.Inputs[1].TaprootAssetRoundCreated = true
+	require.ErrorContains(
+		t, markedFloat.Validate(),
+		"round-created marker requires an asset-bearing vtxo",
+	)
+}
+
+// TestTaprootAssetOORPreparationReclaimsOORCarrier proves an OOR-created
+// leaf's operator-funded carrier is reclaimed into the operator change, and
+// that drift in either direction (wrong reclaimed value, or a sender output
+// that must not exist) is rejected.
+func TestTaprootAssetOORPreparationReclaimsOORCarrier(t *testing.T) {
+	t.Parallel()
+
+	request, preparation := testOperatorFundedPreparation(t, false)
+	require.NoError(t, request.Validate())
+	require.NoError(t, preparation.Validate(request))
+
+	// The fixture's lease is 3_000 sat, one floor of 1_000 sat funds the
+	// receiver leaf, and the 5_000 sat carrier is reclaimed.
+	plan, err := request.CarrierAllocation()
+	require.NoError(t, err)
+	require.Zero(t, plan.SenderChange)
+	require.Equal(t, btcutil.Amount(7_000), plan.OperatorChange)
+	require.Len(t, preparation.Recipients, 2)
+	require.Equal(
+		t, plan.OperatorChange, preparation.Recipients[1].Value,
+	)
+
+	reclaimDrift := *preparation
+	reclaimDrift.Recipients = cloneRecipientOutputs(
+		preparation.Recipients,
+	)
+	reclaimDrift.Recipients[1].Value--
+	require.ErrorContains(
+		t, reclaimDrift.Validate(request),
+		"operator change value mismatch",
+	)
+
+	straySenderChange := *preparation
+	straySenderChange.Recipients = cloneRecipientOutputs(
+		preparation.Recipients,
+	)
+	stray, err := request.BuildChangeRecipient(
+		t.Context(), btcutil.Amount(5_000),
+	)
+	require.NoError(t, err)
+	straySenderChange.Recipients = append(
+		straySenderChange.Recipients, stray,
+	)
+	require.ErrorContains(
+		t, straySenderChange.Validate(request),
+		"sender change must be absent",
 	)
 }

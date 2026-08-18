@@ -132,9 +132,13 @@ func (p *testTaprootAssetOORPreparer) PrepareTaprootAssetOOR(_ context.Context,
 		recipients = append(recipients, assetChange)
 	}
 
-	senderChange := cloneTestTaprootAssetRecipients(request.Recipients)[0]
-	senderChange.Value = plan.SenderChange
-	recipients = append(recipients, senderChange)
+	if plan.SenderChange > 0 {
+		senderChange := cloneTestTaprootAssetRecipients(
+			request.Recipients,
+		)[0]
+		senderChange.Value = plan.SenderChange
+		recipients = append(recipients, senderChange)
+	}
 
 	if plan.OperatorChange > 0 {
 		recipients = append(recipients, oortx.RecipientOutput{
@@ -237,6 +241,16 @@ func newTaprootAssetOORRPCFixture(t *testing.T) *taprootAssetOORRPCFixture {
 func newTaprootAssetOORRPCFixtureWithActor(t *testing.T,
 	blockingActor *blockingSendOORActor) *taprootAssetOORRPCFixture {
 
+	return newTaprootAssetOORRPCFixtureWithOrigin(t, blockingActor, true)
+}
+
+// newTaprootAssetOORRPCFixtureWithOrigin stores the asset input with or
+// without the sealed round package, the discriminator the daemon derives the
+// carrier origin from.
+func newTaprootAssetOORRPCFixtureWithOrigin(t *testing.T,
+	blockingActor *blockingSendOORActor,
+	roundCreated bool) *taprootAssetOORRPCFixture {
+
 	t.Helper()
 
 	operatorKey, err := btcec.NewPrivateKey()
@@ -255,6 +269,9 @@ func newTaprootAssetOORRPCFixtureWithActor(t *testing.T,
 	desc.TaprootAssetRoot = &inputAssetRoot
 	desc.TaprootAssetRef = "tapr1asset"
 	desc.TaprootAssetAmount = 21
+	if roundCreated {
+		desc.TaprootAssetSealedPackage = []byte("sealed-package")
+	}
 	desc.PkScript, err = desc.EffectivePkScript()
 	require.NoError(t, err)
 
@@ -463,7 +480,9 @@ func TestSendOORTaprootAssetPreparesBeforeActor(t *testing.T) {
 	)
 	require.True(t, fixture.lease.FundingEquals(prepareRequest.Lease))
 	require.Len(t, prepareRequest.Inputs, 2)
+	require.True(t, prepareRequest.Inputs[0].TaprootAssetRoundCreated)
 	require.True(t, prepareRequest.Inputs[1].OperatorFunded)
+	require.False(t, prepareRequest.Inputs[1].TaprootAssetRoundCreated)
 	require.Equal(
 		t, fixture.lease.Outpoint,
 		prepareRequest.Inputs[1].VTXO.Outpoint,
@@ -649,6 +668,43 @@ func TestSendOORTaprootAssetFundsCarriersFromFloat(t *testing.T) {
 		t.Context(), recipients[3].PkScript,
 	)
 	require.Error(t, err)
+}
+
+// TestSendOORTaprootAssetReclaimsOORCreatedCarrier proves the daemon derives
+// the leaf origin from the stored descriptor (no sealed package means the
+// leaf was OOR-created) and hands the operator the reclaimed carrier instead
+// of paying the sender plain change.
+func TestSendOORTaprootAssetReclaimsOORCreatedCarrier(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTaprootAssetOORRPCFixtureWithOrigin(t, nil, false)
+	response, err := fixture.rpcServer.SendOOR(
+		t.Context(), fixture.request,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "submitted", response.GetStatus())
+
+	prepareRequests := fixture.preparer.captured()
+	require.Len(t, prepareRequests, 1)
+	prepareRequest := prepareRequests[0]
+	require.False(t, prepareRequest.Inputs[0].TaprootAssetRoundCreated)
+
+	// 25_000 sat lease, one 1_000 sat floor for the receiver leaf, and
+	// the 50_000 sat OOR-created carrier reclaimed on top of the residual.
+	plan, err := prepareRequest.CarrierAllocation()
+	require.NoError(t, err)
+	require.Zero(t, plan.SenderChange)
+	require.Equal(t, btcutil.Amount(74_000), plan.OperatorChange)
+
+	actorRequests := fixture.oorActor.capturedRequests()
+	require.Len(t, actorRequests, 1)
+	recipients := actorRequests[0].Recipients
+	require.Len(t, recipients, 2)
+	require.NotNil(t, recipients[0].TaprootAssetRoot)
+	require.Equal(t, btcutil.Amount(1_000), recipients[0].Value)
+	require.Nil(t, recipients[1].TaprootAssetRoot)
+	require.Equal(t, btcutil.Amount(74_000), recipients[1].Value)
+	require.Equal(t, fixture.lease.PkScript, recipients[1].PkScript)
 }
 
 // TestSendOORTaprootAssetAdoptsPreparedInputs proves an RPC retry after the

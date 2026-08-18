@@ -326,27 +326,33 @@ func (r *TaprootAssetOORPrepareRequest) validateLeaseBinding(
 
 // TaprootAssetCarrierPlan is the Bitcoin-side output plan of an
 // operator-funded asset send. Every new asset leaf is created at the operator
-// floor out of the leased float, the sender's full input carrier returns as
-// plain Bitcoin change, and the float residual returns to the operator.
+// floor out of the leased float, and a spent leaf's carrier follows its
+// origin: round-created carriers return to the sender as plain Bitcoin
+// change, while OOR-created carriers were operator money and are reclaimed
+// into the operator's change.
 type TaprootAssetCarrierPlan struct {
 	// AssetChange is the asset-change leaf carrier: the operator floor on
 	// a partial send, zero on a full send.
 	AssetChange btcutil.Amount
 
-	// SenderChange is the sender's plain Bitcoin change: the asset
-	// input's full carrier value.
+	// SenderChange is the sender's plain Bitcoin change: the summed
+	// carriers of the round-created asset inputs. Zero means every spent
+	// leaf was OOR-created and no sender change output exists.
 	SenderChange btcutil.Amount
 
-	// OperatorChange is the float residual returned to the lease
-	// pkScript: lease value minus the new asset-leaf floors. Zero means
-	// the lease was consumed exactly and no operator output exists.
+	// OperatorChange is the value returned to the lease pkScript: the
+	// float residual (lease value minus the new asset-leaf floors) plus
+	// the reclaimed carriers of the OOR-created asset inputs. Zero means
+	// the lease was consumed exactly with nothing reclaimed and no
+	// operator output exists.
 	OperatorChange btcutil.Amount
 }
 
 // CarrierAllocation returns the Bitcoin-side output plan funded by the
 // operator's carrier float. The recipient leaf and the asset-change leaf of a
 // partial send are always the operator floor; a lease below the summed floors
-// cannot fund the send.
+// cannot fund the send. The carrier arithmetic sums over every asset input so
+// atomic multi-input sends can reuse it unchanged.
 func (r *TaprootAssetOORPrepareRequest) CarrierAllocation() (
 	TaprootAssetCarrierPlan, error) {
 
@@ -364,8 +370,7 @@ func (r *TaprootAssetOORPrepareRequest) CarrierAllocation() (
 
 	// A light scan suffices here: every caller runs the request's full
 	// Validate (which runs AssetInputIndex) before planning values.
-	assetInputIndex, err := locateTaprootAssetInput(r.Inputs)
-	if err != nil {
+	if _, err := locateTaprootAssetInput(r.Inputs); err != nil {
 		return TaprootAssetCarrierPlan{}, err
 	}
 
@@ -386,15 +391,50 @@ func (r *TaprootAssetOORPrepareRequest) CarrierAllocation() (
 			"new asset-leaf floors", r.Lease.Value, floors)
 	}
 
+	senderCarriers, reclaimedCarriers := splitAssetInputCarriers(r.Inputs)
 	plan := TaprootAssetCarrierPlan{
-		SenderChange:   r.Inputs[assetInputIndex].VTXO.Amount,
-		OperatorChange: r.Lease.Value - floors,
+		SenderChange:   senderCarriers,
+		OperatorChange: r.Lease.Value - floors + reclaimedCarriers,
 	}
 	if leafCount > 1 {
 		plan.AssetChange = r.OutputFloor
 	}
 
 	return plan, nil
+}
+
+// splitAssetInputCarriers sums the asset inputs' Bitcoin carriers by leaf
+// origin: a round-created leaf's carrier is the sender's own money, while an
+// OOR-created leaf's carrier was operator-funded and is reclaimed when the
+// leaf is spent.
+func splitAssetInputCarriers(inputs []TransferInput) (btcutil.Amount,
+	btcutil.Amount) {
+
+	var sender, reclaimed btcutil.Amount
+	for idx := range inputs {
+		input := &inputs[idx]
+		if input.VTXO == nil || !hasTaprootAssetState(input) {
+			continue
+		}
+		if input.TaprootAssetRoundCreated {
+			sender += input.VTXO.Amount
+
+			continue
+		}
+		reclaimed += input.VTXO.Amount
+	}
+
+	return sender, reclaimed
+}
+
+// hasTaprootAssetState reports whether any identity field marks the input as
+// asset-bearing. The transfer-input and descriptor views must agree, which
+// AssetInputIndex enforces separately.
+func hasTaprootAssetState(input *TransferInput) bool {
+	return input.TaprootAssetRoot != nil ||
+		input.VTXO.TaprootAssetRoot != nil ||
+		input.VTXO.TaprootAssetRef != "" ||
+		input.VTXO.TaprootAssetAmount != 0
 }
 
 // locateTaprootAssetInput returns the unique asset-bearing input without the
@@ -408,11 +448,7 @@ func locateTaprootAssetInput(inputs []TransferInput) (int, error) {
 				"has no VTXO", idx)
 		}
 
-		hasAsset := input.TaprootAssetRoot != nil ||
-			input.VTXO.TaprootAssetRoot != nil ||
-			input.VTXO.TaprootAssetRef != "" ||
-			input.VTXO.TaprootAssetAmount != 0
-		if !hasAsset {
+		if !hasTaprootAssetState(input) {
 			continue
 		}
 		if assetIndex >= 0 {
@@ -479,11 +515,7 @@ func (r *TaprootAssetOORPrepareRequest) AssetInputIndex() (int, error) {
 		}
 		seenOutpoints[input.VTXO.Outpoint] = struct{}{}
 
-		hasAsset := input.TaprootAssetRoot != nil ||
-			input.VTXO.TaprootAssetRoot != nil ||
-			input.VTXO.TaprootAssetRef != "" ||
-			input.VTXO.TaprootAssetAmount != 0
-		if !hasAsset {
+		if !hasTaprootAssetState(input) {
 			continue
 		}
 		if input.TaprootAssetRoot == nil ||
@@ -591,9 +623,9 @@ func (p *TaprootAssetOORPreparation) Validate(
 					"recipient %d: %w", idx, err)
 			}
 
-			// A non-asset output is either the operator's float
-			// residual (pays the lease pkScript verbatim) or the
-			// sender's returned carrier.
+			// A non-asset output is either the operator's change
+			// (pays the lease pkScript verbatim) or the sender's
+			// returned carrier.
 			if bytes.Equal(
 				recipient.PkScript, request.Lease.PkScript,
 			) {
@@ -606,6 +638,15 @@ func (p *TaprootAssetOORPreparation) Validate(
 				operatorChangeSeen++
 
 				continue
+			}
+
+			// The sender's carrier returns only when the spent
+			// leaf was round-created; a reclaim-only send must
+			// not pay the sender any plain output.
+			if plan.SenderChange == 0 {
+				return fmt.Errorf("taproot asset OOR sender " +
+					"change must be absent when every " +
+					"carrier is reclaimed")
 			}
 			if recipient.Value != plan.SenderChange {
 				return fmt.Errorf("taproot asset OOR sender " +
@@ -641,7 +682,11 @@ func (p *TaprootAssetOORPreparation) Validate(
 		return fmt.Errorf("taproot asset OOR asset allocation is not " +
 			"conserved")
 	}
-	if senderChangeSeen != 1 {
+	wantSenderChange := 0
+	if plan.SenderChange > 0 {
+		wantSenderChange = 1
+	}
+	if senderChangeSeen != wantSenderChange {
 		return fmt.Errorf("taproot asset OOR sender change is not " +
 			"unique")
 	}
