@@ -231,14 +231,18 @@ func newTaprootAssetSendCmd() *cobra.Command {
 		Use:   "send",
 		Short: "Send asset units out of round",
 		Long: "Send Taproot Asset units to another Wavelength user " +
-			"out of round. The daemon spends one asset VTXO and " +
-			"leases an operator carrier float that funds every " +
-			"new asset leaf at the operator's minimum VTXO " +
-			"amount, so the sender needs no Bitcoin: the asset " +
-			"VTXO's own carrier returns whole as plain change. " +
-			"The recipient key comes from the recipient's 'ark " +
-			"oor receive'. Without --outpoint the smallest " +
-			"sufficient asset VTXO is selected.",
+			"out of round. The daemon spends up to eight asset " +
+			"VTXOs in ONE atomic transfer (never split into " +
+			"several transfers) and leases an operator carrier " +
+			"float that funds every new asset leaf at the " +
+			"operator's minimum VTXO amount, so the sender needs " +
+			"no Bitcoin: the spent VTXOs' own carriers return as " +
+			"plain change. The recipient key comes from the " +
+			"recipient's 'ark oor receive'. Without --outpoint " +
+			"the daemon selects the inputs: one sufficient VTXO " +
+			"when possible, otherwise the largest VTXOs until " +
+			"the amount is covered. A send needing more than " +
+			"eight inputs fails; consolidate first.",
 		Args: cobra.NoArgs,
 		RunE: sendTaprootAsset,
 	}
@@ -250,8 +254,8 @@ func newTaprootAssetSendCmd() *cobra.Command {
 		"recipient-pubkey", "", "recipient receive pubkey (hex)",
 	)
 	flags.String(
-		"outpoint", "",
-		"asset VTXO to spend (txid:vout; empty selects one)",
+		"outpoint", "", "asset VTXO to spend (txid:vout; empty "+
+			"lets the daemon select up to eight)",
 	)
 	flags.String(
 		"idempotency-key", "", "stable caller-generated retry key",
@@ -309,32 +313,39 @@ func sendTaprootAsset(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := rpcContext(cmd)
 	defer cancel()
 
-	input, err := selectAssetSendInput(
-		ctx, client, assetRef, amount, outpoint,
-	)
-	if err != nil {
-		return err
-	}
-
+	// Without a pinned outpoint the daemon selects the inputs itself and
+	// asset_amount names the units to send.
 	intent := &waverpc.TaprootAssetOORIntent{
 		AssetRef:               assetRef,
-		AssetAmount:            input.GetTaprootAsset().GetAmount(),
+		AssetAmount:            amount,
 		AcknowledgeUnconfirmed: true,
-		InputVtxoOutpoint:      input.GetOutpoint(),
 	}
-
-	// A partial send keeps the asset change on its own operator-funded
-	// carrier; the daemon derives every Bitcoin-side value.
-	if amount < intent.AssetAmount {
-		intent.RecipientAssetAmount = amount
-	}
-	if amount > intent.AssetAmount {
-		return invalidArgs(
-			fmt.Errorf(
-				"VTXO %s holds %d units, cannot send %d",
-				input.GetOutpoint(), intent.AssetAmount, amount,
-			),
+	if outpoint != "" {
+		input, err := selectAssetSendInput(
+			ctx, client, assetRef, outpoint,
 		)
+		if err != nil {
+			return err
+		}
+
+		intent.AssetAmount = input.GetTaprootAsset().GetAmount()
+		intent.InputVtxoOutpoint = input.GetOutpoint()
+
+		// A partial send keeps the asset change on its own
+		// operator-funded carrier; the daemon derives every
+		// Bitcoin-side value.
+		if amount < intent.AssetAmount {
+			intent.RecipientAssetAmount = amount
+		}
+		if amount > intent.AssetAmount {
+			return invalidArgs(
+				fmt.Errorf(
+					"VTXO %s holds %d units, cannot "+
+						"send %d", input.GetOutpoint(),
+					intent.AssetAmount, amount,
+				),
+			)
+		}
 	}
 
 	// The recipient carrier is daemon-derived (operator floor), so the
@@ -355,10 +366,10 @@ func sendTaprootAsset(cmd *cobra.Command, _ []string) error {
 	return printJSON(response)
 }
 
-// selectAssetSendInput resolves the asset VTXO to spend: the named
-// outpoint, or the smallest live VTXO of the asset that covers the amount.
+// selectAssetSendInput resolves the pinned asset VTXO to spend by its
+// outpoint. Amount-only sends skip this entirely: the daemon selects.
 func selectAssetSendInput(ctx context.Context,
-	client waverpc.DaemonServiceClient, assetRef string, amount uint64,
+	client waverpc.DaemonServiceClient, assetRef string,
 	outpoint string) (*waverpc.VTXO, error) {
 
 	response, err := client.ListVTXOs(ctx, &waverpc.ListVTXOsRequest{
@@ -370,32 +381,12 @@ func selectAssetSendInput(ctx context.Context,
 		return nil, fmt.Errorf("ListVTXOs RPC failed: %w", err)
 	}
 
-	var selected *waverpc.VTXO
 	for _, v := range response.Vtxos {
-		if outpoint != "" {
-			if v.GetOutpoint() == outpoint {
-				return v, nil
-			}
-
-			continue
-		}
-		if v.GetTaprootAsset().GetAmount() < amount {
-			continue
-		}
-		if selected == nil || v.GetTaprootAsset().GetAmount() <
-			selected.GetTaprootAsset().GetAmount() {
-
-			selected = v
+		if v.GetOutpoint() == outpoint {
+			return v, nil
 		}
 	}
-	if outpoint != "" {
-		return nil, fmt.Errorf("no live VTXO %s carries asset %s",
-			outpoint, assetRef)
-	}
-	if selected == nil {
-		return nil, fmt.Errorf("no live asset VTXO covers %d "+
-			"units of %s", amount, assetRef)
-	}
 
-	return selected, nil
+	return nil, fmt.Errorf("no live VTXO %s carries asset %s", outpoint,
+		assetRef)
 }
