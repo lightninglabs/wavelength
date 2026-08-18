@@ -95,6 +95,19 @@ default builds avoid the swap executor's dependency graph.
   admin-shape: they reach waverpc via the injected `RPCServer` and
   DO NOT depend on `Runtime`, router, recv, or history. Create and
   Unlock must work before the swap subsystem is live.
+- `forceUnroll` rejects `onchain_address` combined with `force_unroll_ack`,
+  and the message must keep naming **which** field to clear. Stating the
+  constraint alone invites clearing `onchain_address`, which silently
+  converts a cooperative leave into a unilateral exit — the more dangerous
+  of the two, and not what a caller who supplied a destination asked for.
+  `cmd/wavecli`'s `--onchain-address` / `--force-unroll-ack` check carries
+  the same wording; keep them in step.
+- `getExitPlan` forwards `ExitPlanEntry.RoundCommitment` (via `errorString`)
+  and maps `unroll.ExitRoundCommitted` to
+  `EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED`. This is an advisory, not a
+  per-entry error — the entry stays priced, because a committed VTXO is
+  still exitable by the manual path and that exit is the only recovery when
+  the operator is unreachable.
 - Credit-backed routing is nil-safe: `Deps.CreditRegistry == nil` disables
   credit-only sends (falls back with `ErrSwapBackendUnavailable`) and the
   credit projector loop is a no-op, so builds without the credit subsystem
@@ -129,6 +142,19 @@ default builds avoid the swap executor's dependency graph.
   calls `listLiveVTXOsForLeave` for sweep-all enumeration.
 - `SendResponse.actual_amount_sat` carries the true outflow for sweep-all
   sends and SHOULD be echoed back before the send is treated as confirmed.
+- **Cooperative-leave EXIT fee**: at completion
+  (`applyCooperativeLeaveForfeited`), the forfeited source VTXO's
+  settlement carries the forfeit round's operator fee (from the daemon
+  ledger via the `ListVTXOsByStatus` fee join), which is stamped onto
+  `WalletEntry.fee_sat`. A sweep-all row (marked via
+  `OnchainAddressRequest.sweep_all`, set by `leaveEntryStub`) also nets
+  the fee back out of its gross pending amount, so every completed EXIT
+  reads amount = destination-received, fee = cost on top.
+- **Unilateral EXIT fee**: `applyUnrollStatus` applies the same shape on
+  a COMPLETED unroll: `GetUnrollStatusResponse.exit_cost_sat` (the
+  ledger's confirmed onchain_fee_paid exit leg) becomes `fee_sat` and is
+  netted out of the row's gross VTXO amount. Zero cost (old daemon, or
+  an exit predating exit-cost accounting) leaves the row untouched.
 - **Onchain SEND is a one-shot**: after the intent is accepted the router
   immediately calls `JoinNextRound` so the queued leave intent is committed
   to the next round without a separate CLI step. If the implicit join fails,
@@ -160,8 +186,12 @@ default builds avoid the swap executor's dependency graph.
   shape: `confirmed_sat` is VTXO-only (`vtxo_balance_sat`),
   `pending_in_sat` sums `boarding_confirmed_sat +
   boarding_unconfirmed_sat + boarding_adopted_sat`, and
-  `pending_out_sat` mirrors `boarding_pending_sweep_sat`.
-  Confirmed-but-not-yet-boarded UTXOs must NOT inflate
+  `pending_out_sat` sums `boarding_pending_sweep_sat +
+  vtxo_pending_sat + vtxo_unilateral_exit_sat`. The two VTXO buckets
+  carry value locked in an in-flight round / OOR spend and in a
+  unilateral on-chain exit; folding them into `pending_out_sat` keeps
+  the balance from momentarily reading zero mid-refresh, mid-spend, or
+  mid-leave. Confirmed-but-not-yet-boarded UTXOs must NOT inflate
   `confirmed_sat` (issue #502), and adopted-but-not-yet-live VTXOs
   must stay pending inbound until commitment confirmation (issue #542).
 

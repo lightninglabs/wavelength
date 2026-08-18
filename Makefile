@@ -486,8 +486,8 @@ mobile-ios: #? Build the iOS .xcframework for sdk/wavewalletdk
 WASM_WALLET_OUT := bin/wasm
 WASMSQLITE_DIR := $(shell $(GOCC) list -m -f '{{.Dir}}' github.com/lightninglabs/go-wasmsqlite 2>/dev/null)
 
-wasm-wallet: #? Build the wavewalletdk browser wasm blob + runtime assets into bin/wasm
-	@$(call print, "Building wavewalletdk browser wasm blob.")
+wasm-wallet: #? Build the wavewalletdk wasm blob + runtime assets into bin/wasm
+	@$(call print, "Building wavewalletdk wasm blob.")
 	$(RM) -r $(WASM_WALLET_OUT)
 	mkdir -p $(WASM_WALLET_OUT)
 	GOOS=js GOARCH=wasm $(GOBUILD) -trimpath -ldflags="-s -w" \
@@ -501,6 +501,9 @@ wasm-wallet: #? Build the wavewalletdk browser wasm blob + runtime assets into b
 	cp $(WASMSQLITE_DIR)/assets/sqlite3-opfs-async-proxy.js $(WASM_WALLET_OUT)/
 	cp $(WASMSQLITE_DIR)/bridge/sqlite-bridge.js $(WASM_WALLET_OUT)/
 	cp $(WASMSQLITE_DIR)/bridge/sqlite-worker.js $(WASM_WALLET_OUT)/
+	# sqlite-node-vfs.js is loaded only by a Node host, but it ships in every
+	# bundle so one asset set serves both hosts.
+	cp $(WASMSQLITE_DIR)/bridge/sqlite-node-vfs.js $(WASM_WALLET_OUT)/
 	# The go-wasmsqlite assets are read-only in the module cache; make the
 	# copies writable so re-runs (and callers staging the bundle) aren't
 	# blocked by a read-only destination.

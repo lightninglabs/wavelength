@@ -1612,7 +1612,12 @@ func (r *realMuSig2Signer) MuSig2CreateSession(version input.MuSig2Version,
 		return nil, err
 	}
 
-	musigSession, err := ctx.NewSession()
+	// The session must sign with the same nonces we advertise in the
+	// session info below, so hand them to the session explicitly instead
+	// of letting NewSession generate a second, unrelated pair.
+	musigSession, err := ctx.NewSession(
+		musig2.WithPreGeneratedNonce(nonces),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -1671,13 +1676,17 @@ func (r *realMuSig2Signer) MuSig2RegisterCombinedNonce(
 		return fmt.Errorf("session not found: %v", sessionID)
 	}
 
-	// Register the combined nonce as if it's from all other participants.
-	haveAll, err := session.musigSession.RegisterPubNonce(nonce)
+	// Tree signing distributes only the pre-aggregated nonce, so install
+	// it directly. Registering it via RegisterPubNonce would treat the
+	// aggregate as one peer's nonce, double-counting our own share in the
+	// session's combined nonce and leaving haveAll false for any session
+	// with more than two signers.
+	err := session.musigSession.RegisterCombinedNonce(nonce)
 	if err != nil {
 		return err
 	}
 
-	session.allNoncesKnown = haveAll
+	session.allNoncesKnown = true
 
 	return nil
 }

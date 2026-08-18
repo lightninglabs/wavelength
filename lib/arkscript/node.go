@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lntypes"
 )
@@ -70,7 +71,7 @@ func (m *Multisig) nodeSealed() {}
 // The inner expression is evaluated first, then the CSV check is performed.
 // Canonical encoding: <inner> <lock> OP_CHECKSEQUENCEVERIFY OP_DROP.
 type CSV struct {
-	// Lock is the BIP-68 encoded relative locktime value.
+	// Lock is a canonical block-mode BIP-68 delay in the range 1..65535.
 	Lock uint32
 
 	// Inner is the expression to gate with the timelock.
@@ -81,6 +82,9 @@ type CSV struct {
 func (c *CSV) Script() ([]byte, error) {
 	if c.Inner == nil {
 		return nil, fmt.Errorf("csv: inner node is nil")
+	}
+	if err := validateCSVLock(c.Lock); err != nil {
+		return nil, err
 	}
 
 	// Compile the inner expression first.
@@ -97,6 +101,22 @@ func (c *CSV) Script() ([]byte, error) {
 	builder.AddOp(txscript.OP_DROP)
 
 	return builder.Script()
+}
+
+// validateCSVLock ensures a CSV operand is the canonical BIP-68 encoding of a
+// non-zero block delay. Ark policies do not support time-mode CSV values, and
+// accepting any high bit would let the raw validator comparison diverge from
+// consensus. In particular, bit 31 makes OP_CHECKSEQUENCEVERIFY a NOP, while
+// reserved bits are masked away during script execution.
+func validateCSVLock(lock uint32) error {
+	const maxBlockDelay = uint32(wire.SequenceLockTimeMask)
+
+	if lock == 0 || lock > maxBlockDelay {
+		return fmt.Errorf("csv: lock must be a canonical block delay "+
+			"in range [1, %d], got 0x%08x", maxBlockDelay, lock)
+	}
+
+	return nil
 }
 
 // nodeSealed implements the Node interface.
@@ -124,6 +144,9 @@ func (c *Condition) Script() ([]byte, error) {
 	if len(c.Predicate) == 0 {
 		return nil, fmt.Errorf("condition: predicate script is empty")
 	}
+	if err := validateConditionPredicate(c.Predicate); err != nil {
+		return nil, err
+	}
 
 	innerScript, err := c.Inner.Script()
 	if err != nil {
@@ -136,6 +159,27 @@ func (c *Condition) Script() ([]byte, error) {
 	builder.AddOps(innerScript)
 
 	return builder.Script()
+}
+
+// validateConditionPredicate ensures a raw predicate cannot change how the
+// typed inner clause is parsed or bypass its execution. In particular, an
+// incomplete data push could consume the inner script as pushed bytes, while
+// OP_SUCCESS would make the entire tapscript succeed before the inner clause
+// executes.
+func validateConditionPredicate(predicate []byte) error {
+	tokenizer := txscript.MakeScriptTokenizer(0, predicate)
+	for tokenizer.Next() {
+	}
+	if err := tokenizer.Err(); err != nil {
+		return fmt.Errorf("condition: predicate is not a complete "+
+			"script fragment: %w", err)
+	}
+	if txscript.ScriptHasOpSuccess(predicate) {
+		return fmt.Errorf("condition: predicate contains OP_SUCCESS " +
+			"opcode")
+	}
+
+	return nil
 }
 
 // nodeSealed implements the Node interface.

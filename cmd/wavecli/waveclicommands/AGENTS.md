@@ -173,7 +173,15 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
 - `exit` defaults to a cooperative leave; it only starts a unilateral
   on-chain unroll when `--force-unroll-ack` matches the literal string
   `I_KNOW_WHAT_I_AM_DOING`, and that flag is mutually exclusive with
-  `--onchain-address`.
+  `--onchain-address`. Because the verb is named `exit` but queues a
+  cooperative leave by default, `printExitModeNotice` states on **stderr**
+  which of the two actually ran and how to follow it — stdout keeps its
+  machine-readable JSON. `EXIT_MODE_UNSPECIFIED` (a daemon older than the
+  field) prints nothing rather than guessing; the whole point of the notice
+  is to be right about which exit ran. The mutual-exclusion error names
+  which flag to drop and why, since stating the constraint alone invites
+  dropping `--onchain-address` and silently getting the more dangerous
+  unilateral exit (`swapwallet.forceUnroll` carries the same wording).
 - `recovery escalate` refuses to run on non-interactive stdin unless
   `--yes` is passed — it never blocks on a y/N prompt an agent can't
   answer.

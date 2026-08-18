@@ -11,7 +11,8 @@ type LndBoardingBackend = lndbackend.BoardingBackend
 
 // NewLndBoardingBackend creates a new LND boarding backend.
 func NewLndBoardingBackend(walletKit lndclient.WalletKitClient,
-	chainKit lndclient.ChainKitClient) *LndBoardingBackend {
+	chainKit lndclient.ChainKitClient,
+	opts ...lndbackend.Option) *LndBoardingBackend {
 
-	return lndbackend.NewBoardingBackend(walletKit, chainKit)
+	return lndbackend.NewBoardingBackend(walletKit, chainKit, opts...)
 }

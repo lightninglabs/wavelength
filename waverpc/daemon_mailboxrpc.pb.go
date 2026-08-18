@@ -116,6 +116,8 @@ type DaemonServiceMailboxServer interface {
 	ListVHTLCRecoveries(ctx context.Context, req *ListVHTLCRecoveriesRequest) (*ListVHTLCRecoveriesResponse, error)
 	// SignOutSwapHtlcAck handles SignOutSwapHtlcAck.
 	SignOutSwapHtlcAck(ctx context.Context, req *SignOutSwapHtlcAckRequest) (*SignOutSwapHtlcAckResponse, error)
+	// SignCreditAccountAuthorization handles SignCreditAccountAuthorization.
+	SignCreditAccountAuthorization(ctx context.Context, req *SignCreditAccountAuthorizationRequest) (*SignCreditAccountAuthorizationResponse, error)
 }
 
 // RegisterDaemonServiceMailboxServer registers handlers for DaemonService.
@@ -579,6 +581,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.SignOutSwapHtlcAck(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "SignCreditAccountAuthorization", func() proto.Message {
+		return &SignCreditAccountAuthorizationRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SignCreditAccountAuthorizationRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SignCreditAccountAuthorization(ctx, req)
 	})
 }
 
@@ -1633,6 +1645,29 @@ func (c *DaemonServiceMailboxClient) SignOutSwapHtlcAck(ctx context.Context, req
 	}
 
 	resp := new(SignOutSwapHtlcAckResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SignCreditAccountAuthorization calls the SignCreditAccountAuthorization RPC.
+func (c *DaemonServiceMailboxClient) SignCreditAccountAuthorization(ctx context.Context, req *SignCreditAccountAuthorizationRequest, opts ...rpc.RPCOptions) (*SignCreditAccountAuthorizationResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "SignCreditAccountAuthorization",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SignCreditAccountAuthorizationResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

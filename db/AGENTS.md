@@ -140,6 +140,35 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   jobs store their registered kind plus the domain-owned durable ref
   needed to reconstruct the same spend policy after restart.
 
+### js/wasm SQLite (`sqlite_open_wasm.go`)
+
+- **Two hosts, one driver.** The VFS name comes from
+  `internal/wasmhost.SQLiteVFS()`: `nodefs` under Node, `opfs` in a
+  browser. Under Node the configured path is passed through as-is
+  (it is already unique and findable on disk); in a browser it is
+  mangled by `browserSQLiteFileName` into a stable origin-local name,
+  so two networks' `client.db` cannot silently collide within one
+  origin.
+- **`require_persistent=true` is mandatory.** The daemon's databases
+  are the only record of VTXO, swap, and round state — there is no
+  server to re-fetch them from. Refusing an in-memory substitute makes
+  a storage failure a startup error rather than a wallet that looks
+  healthy and forgets everything on exit.
+- **`locking_mode=EXCLUSIVE` is what makes WAL reachable**, not an
+  optimization. Neither wasm VFS implements `xShmMap`, so the only WAL
+  available is the mode SQLite documents for hosts without shared
+  memory, where an EXCLUSIVE connection keeps the WAL index on the
+  heap. The driver hoists the locking mode ahead of the journal mode
+  for that reason and reads the effective mode back, so a regression
+  fails the open instead of quietly running on the rollback journal
+  with `synchronous` tuned for WAL.
+- `journal_mode` travels as its own DSN key rather than in the pragma
+  list, because only that route is checked against the mode SQLite
+  actually ended up in. `fullfsync` is dropped: it is a Darwin-only
+  barrier that neither wasm VFS can express.
+- The handle is single-connection (`SetMaxOpenConns(1)`); multiple SQL
+  connections would race the same database through one worker.
+
 ### Migration baseline
 
 The migration history was squashed to a domain-grouped baseline ahead of
@@ -197,13 +226,40 @@ when adding one.
   constraint on `vtxo_ancestry_paths`: fragment identity is
   (commitment_txid, tree_path), so an OOR spend of inputs at different
   leaves of one commitment tree persists one row per leaf.
+- `000015_ledger_round_uuid` — adds `ledger_entries.round_uuid`, the
+  canonical TEXT UUID mirror of the raw 16-byte `round_id` BLOB, plus a
+  partial index. The ledger and the round tables historically stored the
+  same identifier in different encodings, and no BLOB↔TEXT conversion
+  exists in the SQL dialect subset shared by SQLite and Postgres; the
+  TEXT mirror makes ledger rows joinable against `rounds.round_id` /
+  `vtxos.forfeit_round_id` (e.g. the `ListVTXOsByStatus` settlement fee
+  join). New inserts stamp it via `roundUUIDText`; existing rows are
+  backfilled by the version-15 Go post-migration step
+  (`backfillLedgerRoundUUIDs` in `post_migration_checks.go`), wired into
+  both store constructors via `makePostStepCallbacks` (its first
+  production user). A crash between the post-step and the clean
+  SetVersion leaves the migration dirty and the next boot fails with
+  ErrDirty; forcing the version and re-running is safe because the
+  backfill guards on `round_uuid IS NULL` and re-executes as a no-op.
+- `000016_round_sweep_delay` — adds `rounds.sweep_delay`. A round is
+  checkpointed at `input_sig_sent` and can confirm after a restart; the
+  confirmation handler derives each new VTXO's absolute batch expiry as
+  `confirmation_height + sweep_delay`, so a delay held only in memory made
+  a resumed round stamp `BatchExpiry == CreatedHeight` and the wallet read
+  the VTXO back as already expired. `InsertRound` only adopts a non-zero
+  incoming value, since the delay is fixed for the life of a round and a
+  later checkpoint must not clear what an earlier one recorded. Rows
+  predating the column read back zero, which the confirmation path treats
+  as "unknown" and leaves the expiry unstamped rather than wrong.
 
 ## Deep Docs
 
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
-- `000016_round_sweep_delay` — adds `rounds.sweep_delay` so a round that
-  confirms after a restart can still derive each new VTXO's absolute batch
-  expiry (`confirmation_height + sweep_delay`). `InsertRound` only adopts a
-  non-zero incoming value; rows predating the column read back zero, which
-  the confirmation path treats as unknown and leaves the expiry unstamped
-  rather than wrong.
+- [docs/postgres_isolation.md](../docs/postgres_isolation.md) — Isolation
+  policy: read-only Postgres transactions run at `REPEATABLE READ` with
+  `READ ONLY` (no `SIRead` predicate locks, never a 40001), writers stay
+  `SERIALIZABLE`. Also holds the write-path snapshot-isolation audit and the
+  inventory of the six partial unique indexes that any new `ON CONFLICT`
+  target has to be checked against, along with the caveat that a conflict
+  target can also miss a plain unique constraint declared inline in a
+  `CREATE TABLE`.

@@ -11,7 +11,11 @@ func TreePathFromTree(t *tree.Tree) (*arkrpc.TreePath, error) {
 	return arkrpc.TreePathFromTree(t)
 }
 
-// TreePathToTree converts a proto TreePath back into a tree.Tree.
-func TreePathToTree(tp *arkrpc.TreePath) (*tree.Tree, error) {
-	return arkrpc.TreePathToTree(tp)
+// TreePathToTree converts a proto TreePath back into a tree.Tree. The
+// options are forwarded verbatim so a caller on this narrow import path
+// can still override the decoder's validation bounds.
+func TreePathToTree(tp *arkrpc.TreePath,
+	opts ...arkrpc.TreePathToTreeOption) (*tree.Tree, error) {
+
+	return arkrpc.TreePathToTree(tp, opts...)
 }

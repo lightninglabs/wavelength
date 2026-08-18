@@ -45,7 +45,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/wave
   values seeded by `waved.DefaultConfig` or carried on a caller-owned
   `DaemonConfig`. First option: `WithEagerRoundJoinDisabled()` forces
   `daemonCfg.EagerRoundJoin = false`.
-- DTOs (wrapper-owned, isolated from proto enums): `Info`, `Balance`,
+- DTOs (wrapper-owned, isolated from proto enums): `Info` / `ServerInfo`
+  (including the advisory free-refresh window), `Balance`,
   `CreateWalletResult`, `UnlockWalletResult`, `ReceiveRequest`/`Result`
   (returns invoice + initial `Entry`), the two-step send DTOs
   `PrepareSendRequest`/`PrepareSendResult` and
@@ -77,6 +78,15 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/wave
   (`pending`/`materializing`/`csv_pending`/`sweeping`/`completed`/`failed`/`unspecified`).
 - `GetExitPlanRequest`/`Result`, `ExitPlanEntry` — previews backing-wallet
   funding needed before `Exit` can start, per outpoint and aggregated.
+  `ExitPlanEntry.RoundCommitment` names the cooperative round holding the
+  VTXO (empty when none). It is **advisory, not an error**: the entry is
+  still fully priced and the manual exit still performs it, so the funding
+  figures stay the ones a recovery needs. `Err` is reserved for entries that
+  could not be answered at all.
+- `ExitInfeasibilityReason` — string enum mirroring `unroll`'s reasons.
+  `ExitInfeasibilityReasonRoundCommitted` (`"round_committed"`) is the only
+  value not produced by the funding assessment; it accompanies a non-empty
+  `RoundCommitment`.
 - `ExitSummaryRequest`/`Result`, `ExitSummaryEntry` — wallet-wide
   portfolio of in-progress (non-terminal) exits plus aggregate totals.
 - `SweepWalletRequest`/`Result`, `WalletSweepInput` — preview or

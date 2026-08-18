@@ -130,18 +130,20 @@ func (r *RPCServer) SubLogger(tag string) btclog.Logger {
 // the daemon identity key bound to the recipient mailbox ID. Optional
 // subservers use this to authenticate mailbox RPCs without learning how the
 // daemon wallet backend stores or signs with the identity key.
+//
+// It goes through the memo rather than signing directly, so a subserver that
+// stamps every Send, Pull and AckUpTo costs one wallet round trip per
+// recipient rather than one per RPC.
 func (r *RPCServer) SignMailboxAuth(ctx context.Context,
 	recipientMailboxID string) (string, error) {
 
 	if r == nil || r.server == nil {
 		return "", fmt.Errorf("daemon server unavailable")
 	}
-	if r.server.clientKeyDesc.PubKey == nil {
-		return "", fmt.Errorf("identity key not yet derived; wallet " +
-			"not ready")
-	}
 
-	sig, err := r.server.signMailboxAuth(ctx, recipientMailboxID)
+	// mailboxAuthSig makes the same "identity key not yet derived" check
+	// with the same error, so it is not repeated here.
+	sig, err := r.server.mailboxAuthSig(ctx, recipientMailboxID)
 	if err != nil {
 		return "", err
 	}
@@ -210,13 +212,14 @@ func (r *RPCServer) ClientTLSCerts() ([]tls.Certificate, error) {
 		return nil, fmt.Errorf("daemon server unavailable")
 	}
 
-	if r.server.clientKeyDesc.PubKey == nil {
+	identityDesc := r.server.loadClientKeyDesc()
+	if identityDesc.PubKey == nil {
 		return nil, fmt.Errorf("identity key not yet derived; wallet " +
 			"not ready")
 	}
 
 	clientCert, err := serverconn.GenerateClientTLSCert(
-		r.server.clientKeyDesc.PubKey,
+		identityDesc.PubKey,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("generate client TLS cert: %w", err)
@@ -635,13 +638,26 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *waverpc.GetInfoRequest) (
 	// intentionally differs from the
 	// public node key above and must stay aligned with the indexer proof
 	// signer used for script-scoped VTXO queries.
-	identityPubkey, err := r.deriveIdentityPubkey(ctx)
-	if err != nil {
-		r.server.log.WarnS(ctx, "Unable to derive daemon identity key",
-			err,
-		)
+	identityDesc := r.server.loadClientKeyDesc()
+	if identityKey := identityDesc.PubKey; identityKey != nil {
+		// The daemon derives and stores this stable key before mailbox
+		// bootstrap. Avoid deriving it again on every status read:
+		// BtcWalletKeyRing.DeriveKey opens a walletdb write
+		// transaction, which can block an otherwise read-only GetInfo
+		// call behind an unrelated wallet writer.
+		resp.IdentityPubkey = fmt.Sprintf("%x",
+			identityKey.SerializeCompressed())
 	} else {
-		resp.IdentityPubkey = identityPubkey
+		identityPubkey, err := r.deriveIdentityPubkey(ctx)
+		if err != nil {
+			r.server.log.WarnS(
+				ctx,
+				"Unable to derive daemon identity key",
+				err,
+			)
+		} else {
+			resp.IdentityPubkey = identityPubkey
+		}
 	}
 
 	// Populate lwwallet fields if the lightweight wallet is active.
@@ -1798,8 +1814,9 @@ func (r *RPCServer) RefreshCustomVTXOs(ctx context.Context,
 		return nil, status.Errorf(codes.Unavailable, "fetch operator "+
 			"terms: %v", err)
 	}
+	identityDesc := r.server.loadClientKeyDesc()
 	if err := r.enrichCustomRefreshInputs(
-		ctx, inputs, r.server.clientKeyDesc, terms.PubKey,
+		ctx, inputs, identityDesc, terms.PubKey,
 	); err != nil {
 		return nil, err
 	}
@@ -2403,6 +2420,29 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 		}
 	}
 
+	// Drop (or reject) targets that cannot be committed to a round.
+	// ListLiveVTXOs above returns every non-terminal VTXO, so
+	// selection=all would otherwise hand the wallet coins already
+	// committed to another round and fail the whole batch on the first
+	// one. This runs before the dry_run echo so the preview stays a
+	// truthful validity probe rather than listing outpoints the real
+	// dispatch is guaranteed to refuse.
+	targets, skipped, err := r.admitLeaveTargets(ctx, targets, !leaveAll)
+	if err != nil {
+		return nil, err
+	}
+
+	// Report the filtering on the way out too, not just per dropped
+	// outpoint. Without it an empty result is indistinguishable from an
+	// empty wallet, which is the same class of silent failure this
+	// admission filter exists to remove.
+	if skipped > 0 {
+		r.server.log.InfoS(ctx, "Leave targets skipped",
+			slog.Int("skipped_count", skipped),
+			slog.Int("remaining_count", len(targets)),
+		)
+	}
+
 	// For dry_run, echo the outpoints without touching the
 	// wallet or the operator. Matches RefreshVTXOs semantics; the
 	// short-circuit stays before the wallet-ready gate so callers
@@ -2479,6 +2519,7 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 	r.server.log.InfoS(ctx, "VTXOs queued for leave",
 		slog.Int("queued_count", len(queued)),
 		slog.Int("error_count", len(resp.Errors)),
+		slog.Int("skipped_count", skipped),
 	)
 
 	return &waverpc.LeaveVTXOsResponse{
@@ -3197,10 +3238,10 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		inputSelectDuration = time.Since(phaseStart)
 
 		phaseStart = time.Now()
+		identityDesc := r.server.loadClientKeyDesc()
 		selectedInputs, err = BuildCustomTransferInputs(
-			ctx, r.server.vtxoStore, req.CustomInputs,
-			r.server.clientKeyDesc, terms.PubKey,
-			terms.VTXOExitDelay,
+			ctx, r.server.vtxoStore, req.CustomInputs, identityDesc,
+			terms.PubKey, terms.VTXOExitDelay,
 		)
 		buildInputsDuration = time.Since(phaseStart)
 		if err != nil {
@@ -3515,9 +3556,10 @@ func (r *RPCServer) PrepareOOR(ctx context.Context,
 		return nil, err
 	}
 
+	identityDesc := r.server.loadClientKeyDesc()
 	selectedInputs, err := BuildCustomTransferInputs(
-		ctx, r.server.vtxoStore, req.GetCustomInputs(),
-		r.server.clientKeyDesc, terms.PubKey, terms.VTXOExitDelay,
+		ctx, r.server.vtxoStore, req.GetCustomInputs(), identityDesc,
+		terms.PubKey, terms.VTXOExitDelay,
 	)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "build custom "+
@@ -3649,10 +3691,11 @@ func (r *RPCServer) SignOORCustomInput(ctx context.Context,
 			"operator terms: %v", err)
 	}
 
+	identityDesc := r.server.loadClientKeyDesc()
 	inputs, err := BuildCustomTransferInputs(
 		ctx, r.server.vtxoStore,
-		[]*waverpc.CustomOORInput{req.GetCustomInput()},
-		r.server.clientKeyDesc, terms.PubKey, terms.VTXOExitDelay,
+		[]*waverpc.CustomOORInput{req.GetCustomInput()}, identityDesc,
+		terms.PubKey, terms.VTXOExitDelay,
 	)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "build custom "+
@@ -3806,7 +3849,8 @@ func (r *RPCServer) SignVTXOForfeit(ctx context.Context,
 		return nil, status.Errorf(codes.InvalidArgument, "resolve "+
 			"signing keys: %v", err)
 	}
-	if !containsSigningKey(signingKeys, r.server.clientKeyDesc.PubKey) {
+	identityDesc := r.server.loadClientKeyDesc()
+	if !containsSigningKey(signingKeys, identityDesc.PubKey) {
 		return nil, status.Errorf(codes.InvalidArgument, "daemon "+
 			"identity key is not required by spend path")
 	}
@@ -3861,7 +3905,7 @@ func (r *RPCServer) SignVTXOForfeit(ctx context.Context,
 
 	sigHashes := txscript.NewTxSigHashes(forfeitTx, prevFetcher)
 	signDesc := spendPath.SpendInfo.BuildSignDescriptor(
-		r.server.clientKeyDesc, vtxoOutput, sigHashes, prevFetcher,
+		identityDesc, vtxoOutput, sigHashes, prevFetcher,
 		arktx.ForfeitVTXOInputIndex,
 	)
 	sig, err := signer.SignOutputRaw(forfeitTx, signDesc)
@@ -3875,7 +3919,7 @@ func (r *RPCServer) SignVTXOForfeit(ctx context.Context,
 	}
 
 	return &waverpc.SignVTXOForfeitResponse{
-		Pubkey:    r.server.clientKeyDesc.PubKey.SerializeCompressed(),
+		Pubkey:    identityDesc.PubKey.SerializeCompressed(),
 		Signature: sig.Serialize(),
 	}, nil
 }
@@ -4924,6 +4968,13 @@ func (r *RPCServer) Unroll(ctx context.Context, req *waverpc.UnrollRequest) (
 		admissionCtx, &actormsg.ForceUnrollRequest{
 			Outpoint: outpoint,
 			Reason:   "manual RPC request",
+
+			// Without this the request carries the zero value,
+			// which admits as UnrollTriggerCriticalExpiry: a
+			// hand-typed unroll then records as the expiry safety
+			// net, so the job's persisted provenance names a
+			// trigger that never fired.
+			Trigger: actormsg.UnrollTriggerManual,
 		},
 	).Await(admissionCtx).Unpack()
 	if askErr != nil {

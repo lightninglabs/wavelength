@@ -55,10 +55,21 @@ func ValidatePolicy(nodes []Node, opts PolicyValidationOpts) error {
 		foundCSV        bool
 	)
 
-	// Invariant 3 is enforced across every leaf, not just collab leaves,
-	// so a malformed exit leaf that nevertheless includes the operator
-	// is still rejected.
+	// Compile every leaf before reasoning about its structure. This keeps
+	// direct callers from accepting a Condition predicate that can bypass
+	// or consume the typed inner clause.
 	for i, node := range nodes {
+		if node == nil {
+			return fmt.Errorf("leaf %d is nil", i)
+		}
+
+		if _, err := node.Script(); err != nil {
+			return fmt.Errorf("leaf %d is invalid: %w", i, err)
+		}
+
+		// Invariant 3 is enforced across every leaf, not just collab
+		// leaves, so a malformed exit leaf that nevertheless includes
+		// the operator is still rejected.
 		if err := rejectOperatorUnilateral(
 			node, opts.OperatorKey,
 		); err != nil {

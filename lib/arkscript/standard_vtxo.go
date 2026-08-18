@@ -50,6 +50,9 @@ func StandardVTXOTemplate(ownerKey, operatorKey *btcec.PublicKey,
 	if exitDelay == 0 {
 		return nil, fmt.Errorf("vtxo: exit delay must be non-zero")
 	}
+	if err := validateCSVLock(exitDelay); err != nil {
+		return nil, fmt.Errorf("vtxo: invalid exit delay: %w", err)
+	}
 
 	// exitDelay is a raw block count. LockTimeToSequence's first
 	// argument selects time-mode (true) vs block-mode (false);
@@ -221,9 +224,9 @@ func DecodeStandardVTXOParams(template *PolicyTemplate) (*StandardVTXOParams,
 		return nil, fmt.Errorf("collab leaf missing owner key")
 	}
 
-	if exit.Lock == 0 {
-		return nil, fmt.Errorf("standard vtxo exit delay must be " +
-			"non-zero")
+	if err := validateCSVLock(exit.Lock); err != nil {
+		return nil, fmt.Errorf("standard vtxo exit delay is "+
+			"invalid: %w", err)
 	}
 
 	return &StandardVTXOParams{

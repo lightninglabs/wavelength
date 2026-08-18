@@ -1058,6 +1058,102 @@ func TestCPFPBumpFailsClosedAtFeeRateCap(t *testing.T) {
 	})
 }
 
+// TestCPFPReselectReleasesAbandonedFeeInput reproduces wavelength#664: when the
+// precise-vsize fee recompute forces a reselect to a larger fee UTXO, the
+// originally reserved input must be released -- both the in-memory reservation
+// and the wallet lease -- rather than staying locked for the parent's whole
+// lifetime while the child spends the reselected input instead.
+func TestCPFPReselectReleasesAbandonedFeeInput(t *testing.T) {
+	t.Parallel()
+
+	const feeRate = 5
+
+	chain := newFakeChainSourceRef(100)
+	chain.feeRate = feeRate
+
+	parent := makeTestTx(true)
+	txid := parent.TxHash()
+
+	// Same shape as TestCPFPReselectsAfterPreciseFeeGrowth: a P2PKH fee
+	// input is heavier than the OP_TRUE change proxy, so the precise vsize
+	// recompute grows the fee and forces a reselect off the small UTXO.
+	opTrue := []byte{txscript.OP_TRUE}
+	changeVSize := estimateChildVSize(opTrue, opTrue)
+	p2pkhScript := p2pkhTestPkScript(t)
+	preciseVSize := estimateChildVSize(p2pkhScript, opTrue)
+	require.Greater(t, preciseVSize, changeVSize)
+
+	baseFee, err := computePackageFee(parent, feeRate, changeVSize)
+	require.NoError(t, err)
+	preciseFee, err := computePackageFee(parent, feeRate, preciseVSize)
+	require.NoError(t, err)
+	require.Greater(t, preciseFee, baseFee)
+
+	// small (A) clears the initial threshold but not the grown one, so it
+	// is selected + reserved first and then abandoned for large (B).
+	small := &walletcore.Utxo{
+		Outpoint: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0xaa,
+			},
+			Index: 0,
+		},
+		Amount:   baseFee + DustLimit,
+		PkScript: p2pkhScript,
+	}
+	large := &walletcore.Utxo{
+		Outpoint: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0xbb,
+			},
+			Index: 0,
+		},
+		Amount:   preciseFee + DustLimit + 1000,
+		PkScript: p2pkhScript,
+	}
+
+	w := &fakeWallet{utxos: []*walletcore.Utxo{small, large}}
+	b := NewCPFPBroadcaster(
+		BroadcasterConfig{
+			ChainSource: chain,
+			Wallet:      w,
+		},
+	)
+
+	_, err = b.Submit(t.Context(), 100, &BroadcastRequest{
+		Tx: parent, Label: "reselect-release",
+	})
+	require.NoError(t, err)
+
+	// The in-memory reservation must hold the reselected input (B) and NOT
+	// the abandoned original (A).
+	state, ok := b.parentStates[txid]
+	require.True(t, ok)
+	require.Contains(t, state.UsedFeeOutpoints, large.Outpoint)
+	require.NotContains(
+		t, state.UsedFeeOutpoints, small.Outpoint,
+		"abandoned fee input must not stay reserved (#664)",
+	)
+
+	// The wallet lease on the abandoned input must be released. Lease
+	// releases run asynchronously, so wait for the call to land.
+	require.Eventually(t, func() bool {
+		releaseCalls, _ := w.releaseSnapshot()
+		for _, op := range releaseCalls {
+			if op == small.Outpoint {
+				return true
+			}
+		}
+
+		return false
+	}, time.Second, 10*time.Millisecond,
+		"abandoned fee input's wallet lease must be released")
+
+	// The reselected input's lease must NOT have been released.
+	releaseCalls, _ := w.releaseSnapshot()
+	require.NotContains(t, releaseCalls, large.Outpoint)
+}
+
 // makeCheckpointShapedParent builds a v3/TRUC parent that mirrors a finalized
 // OOR checkpoint / fraud-response tx: its sole non-anchor input already carries
 // a real (pre-signed) taproot key-spend witness, it has a taproot checkpoint

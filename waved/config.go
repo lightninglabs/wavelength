@@ -54,6 +54,31 @@ const (
 	// defaultSwapServerHost is the default address for the swap server.
 	defaultSwapServerHost = "localhost:10030"
 
+	// defaultMainnetServerGRPCHost is the public mainnet Ark operator gRPC
+	// endpoint.
+	defaultMainnetServerGRPCHost = "wavelength." +
+		"lightning.finance:443"
+
+	// defaultMainnetServerRESTHost is the public mainnet Ark operator REST
+	// endpoint. The external NLB and dual-SAN certificates from
+	// lightning-infra#3592 only cover the gRPC names. The prod REST
+	// ingress still serves the raw cluster hostname on its own, so this
+	// name stays dark until the ingress host and matching certificate SAN
+	// work in lightning-infra#3749 lands.
+	defaultMainnetServerRESTHost = "wavelength-rest." +
+		"lightning.finance"
+
+	// defaultMainnetSwapServerGRPCHost is the public mainnet swap server
+	// gRPC endpoint.
+	defaultMainnetSwapServerGRPCHost = "swap.wavelength." +
+		"lightning.finance:443"
+
+	// defaultMainnetSwapServerRESTHost is the public mainnet swap server
+	// REST endpoint. Not routable yet either; see
+	// defaultMainnetServerRESTHost.
+	defaultMainnetSwapServerRESTHost = "swapd-rest." +
+		"lightning.finance"
+
 	// defaultTestnet3ServerGRPCHost is the public testnet3 Ark operator
 	// gRPC endpoint.
 	defaultTestnet3ServerGRPCHost = "test.wavelength." +
@@ -913,6 +938,22 @@ type LndConfig struct {
 	// RPCTimeout is the maximum duration for individual RPC calls to
 	// lnd. If zero, DefaultRPCTimeout is used.
 	RPCTimeout time.Duration `mapstructure:"rpctimeout"`
+
+	// Account is the lnd wallet account this daemon may spend from. It
+	// bounds coin selection, change, address derivation and signing, but
+	// not what the daemon can observe: imported boarding scripts live in
+	// lnd's watch-only account and stay visible either way.
+	//
+	// Empty selects lndbackend.DefaultWalletAccount, lnd's built-in
+	// "default" account, which is where a freshly funded node keeps its
+	// coins. Set this when several daemons share one lnd node, so that one
+	// daemon's spending cannot drain another's funds. The named account
+	// must already exist on the node (lnd's `wallet accounts create`) and
+	// must be taproot-scoped: every lnd address this daemon derives for
+	// itself asks for a taproot address, and lnd resolves a custom account
+	// name within the key scope implied by the requested address type, so
+	// an account created under any other scope resolves as "not found".
+	Account string `mapstructure:"account"`
 }
 
 // ServerConfig holds connection parameters for the ark operator's mailbox
@@ -1414,11 +1455,23 @@ type networkEndpoints struct {
 }
 
 // defaultNetworkEndpoints returns the outbound service defaults for network.
-// Public test networks use the Lightning Labs deployments; networks without a
+// Public networks use the Lightning Labs deployments; networks without a
 // public service deployment keep the historical local development endpoints.
 func defaultNetworkEndpoints(network string) (networkEndpoints, bool) {
 	switch network {
-	case "mainnet", "regtest", "simnet":
+	case "mainnet":
+		return networkEndpoints{
+			ark: transportEndpoints{
+				grpc: defaultMainnetServerGRPCHost,
+				rest: defaultMainnetServerRESTHost,
+			},
+			swap: transportEndpoints{
+				grpc: defaultMainnetSwapServerGRPCHost,
+				rest: defaultMainnetSwapServerRESTHost,
+			},
+		}, true
+
+	case "regtest", "simnet":
 		return networkEndpoints{
 			ark: transportEndpoints{
 				grpc: DefaultServerHost,

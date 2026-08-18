@@ -986,6 +986,93 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 	require.Equal(t, uint32(2), resp.ServerInfo.MinConfirmations)
 }
 
+// TestGetInfoUsesCachedIdentityKey verifies ordinary status reads do not
+// reopen key derivation after startup has already cached the stable daemon
+// identity. The wallet backend is deliberately absent: falling back to
+// deriveIdentityPubkey would fail and leave the response key empty.
+func TestGetInfoUsesCachedIdentityKey(t *testing.T) {
+	t.Parallel()
+
+	identityPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	server := &Server{
+		cfg: &Config{
+			Network: "regtest",
+			Wallet: &WalletConfig{
+				Type: WalletTypeLwwallet,
+			},
+		},
+		log: btclog.Disabled,
+	}
+	server.storeClientKeyDesc(keychain.KeyDescriptor{
+		PubKey: identityPriv.PubKey(),
+	})
+	r := &RPCServer{server: server}
+
+	resp, err := r.GetInfo(
+		context.Background(), &waverpc.GetInfoRequest{},
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t,
+		fmt.Sprintf(
+			"%x", identityPriv.PubKey().SerializeCompressed(),
+		),
+		resp.IdentityPubkey,
+	)
+}
+
+// TestGetInfoSynchronizesCachedIdentityPublication verifies status requests
+// can read the cached identity while wallet startup publishes it. Repeatedly
+// publishing the same stable descriptor makes the startup/read overlap large
+// enough for the race detector to enforce the synchronization contract.
+func TestGetInfoSynchronizesCachedIdentityPublication(t *testing.T) {
+	t.Parallel()
+
+	identityPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	server := &Server{
+		cfg: &Config{
+			Network: "regtest",
+			Wallet: &WalletConfig{
+				Type: WalletTypeLwwallet,
+			},
+		},
+		log: btclog.Disabled,
+	}
+	identityDesc := keychain.KeyDescriptor{
+		PubKey: identityPriv.PubKey(),
+	}
+	server.storeClientKeyDesc(identityDesc)
+	r := &RPCServer{server: server}
+
+	const iterations = 1_000
+	start := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		<-start
+
+		for range iterations {
+			server.storeClientKeyDesc(identityDesc)
+		}
+	}()
+
+	close(start)
+	expectedKey := fmt.Sprintf("%x",
+		identityPriv.PubKey().SerializeCompressed())
+	for range iterations {
+		resp, err := r.GetInfo(
+			context.Background(), &waverpc.GetInfoRequest{},
+		)
+		require.NoError(t, err)
+		require.Equal(t, expectedKey, resp.IdentityPubkey)
+	}
+	<-done
+}
+
 // TestGetInfoFloorsMinVTXOAmountAtDust verifies GetInfo never exposes a
 // VTXO minimum below the cached dust limit.
 func TestGetInfoFloorsMinVTXOAmountAtDust(t *testing.T) {

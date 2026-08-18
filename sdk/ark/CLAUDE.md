@@ -38,6 +38,12 @@ transport, without duplicating Ark runtime behavior.
   payment-scoped signing and Sphinx ECDH to the daemon wallet without
   exposing raw key material. Used by `sdk/swaps` for receive invoice signing
   and onion decoding.
+- Swap-authorization helpers: `SignOutSwapHTLCAck` and
+  `SignCreditAccountAuth` — ask the daemon identity key to authorize an
+  out-swap HTLC acknowledgement and a canonical swap credit-account request
+  respectively, returning a parsed `*schnorr.Signature`. Both keep the key
+  inside the daemon; `SignCreditAccountAuth`'s signature satisfies
+  `sdk/swaps.CreditAccountAuthorizationSigner`.
 - `GetOORSession` — Single-session lookup of the daemon's local durable OOR
   transfer status, returning `*waverpc.OORSessionInfo`.
 - `Board`, `ListRounds`, `WatchRounds`, `EstimateFee`, `GetFeeHistory` — Round
@@ -45,7 +51,9 @@ transport, without duplicating Ark runtime behavior.
 
 ## Relationships
 
-- **Depends on**: `waverpc`, `waved` (embedded mode only), gRPC,
+- **Depends on**: `waverpc`, `waved` (embedded mode only), `swaprpc`
+  (`CreditAccountNonceSize`, so the account-auth signature shape cannot drift
+  from the wire contract), gRPC,
   `google.golang.org/grpc/test/bufconn` (in-process transport).
 - **Depended on by**: `sdk/swaps` (type aliases, receive-auth RPCs, OOR
   helpers), `swapclientserver`, Go hosts that want remote, embedded, or
@@ -67,8 +75,9 @@ transport, without duplicating Ark runtime behavior.
 - `WrapDaemonServer` owns only the private bufconn transport and gRPC
   server; it does not own the caller's `DaemonServer` runtime. `Close()`
   tears down only the private transport.
-- `ServerInfo` is a bootstrap-time operator-terms snapshot; refresh after
-  reconnect is not wired through yet.
+- `ServerInfo` is a bootstrap-time operator-terms snapshot, including the
+  advisory `FreeRefreshWindowBlocks`; refresh after reconnect is not wired
+  through yet.
 - Pre-1.0, some methods intentionally return `waverpc` protobuf types
   directly. Those passthrough APIs are not yet treated as stable SDK-owned
   models.

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/lightninglabs/wavelength/internal/testutils"
 	"github.com/stretchr/testify/require"
 )
@@ -239,7 +240,7 @@ func nestedConditionNode(t *testing.T, depth int) Node {
 	for i := 0; i < depth; i++ {
 		node = &Condition{
 			Predicate: []byte{
-				0x01,
+				txscript.OP_NOP,
 			},
 			Inner: node,
 		}

@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/unroll"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/wallet"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/grpc/codes"
@@ -48,6 +49,14 @@ type ExitPlanEntry struct {
 	// also reflected in FundingShortfallSat). It is unroll.ExitFeasible
 	// (the zero value) when CanStart is true.
 	InfeasibilityReason unroll.ExitInfeasibilityReason
+
+	// RoundCommitment names the cooperative round holding this VTXO, or
+	// is nil when it is not committed to one. It is advisory: the entry
+	// is still priced and the manual exit still performs it, so the
+	// funding figures above are the ones a recovery needs. It is not
+	// reported through Err, because Err means the entry could not be
+	// answered at all.
+	RoundCommitment error
 
 	ExitJobFound bool
 	ExitStatus   waverpc.UnrollJobStatus
@@ -175,8 +184,13 @@ func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 		resp.TotalRecommendedFundingSat += recommended
 
 		// A feasible exit notionally claims its fee inputs, so shrink
-		// the wallet the remaining entries get to plan against.
-		if entry.CanStart {
+		// the wallet the remaining entries get to plan against. This
+		// keys off the funding verdict rather than entry.CanStart:
+		// a round-committed entry is priced and still exitable by the
+		// manual path, so it would consume those inputs if the caller
+		// went ahead, and planning the rest of the batch as though it
+		// would not is the direction that under-reports the overlap.
+		if verdict.Feasible {
 			remaining = claimExitFunding(remaining, verdict)
 		}
 	}
@@ -250,6 +264,40 @@ func (r *RPCServer) exitPlanEntry(ctx context.Context, raw string,
 	entry.FundingShortfallSat = int64(plan.FundingShortfallSat)
 	entry.CanStart = verdict.Feasible
 	entry.InfeasibilityReason = verdict.Reason
+
+	// A VTXO committed to a cooperative round is normally resolved by the
+	// leave or refresh that claimed it, so previewing it as a ready exit
+	// is what sends a user reaching for --force-unroll-ack on a coin the
+	// operator already holds a forfeit for (wavelength#577, #845).
+	//
+	// It is an advisory, not a refusal. Unroll short-circuits only on a
+	// VTXO already exiting; it has no commitment check, and the FSM
+	// escalates a manual trigger from both PendingForfeit and Forfeiting.
+	// So the exit this warns about is one the exit command will actually
+	// perform — and it is the lever that saves principal when the
+	// operator is unreachable and the commitment never confirms, because
+	// the forfeit can never confirm either. Refusing the entry would tell
+	// exactly that user their only recovery is impossible, and would drop
+	// the funding figures it needs.
+	//
+	// So the pricing above stands and only the verdict is lowered. The
+	// funding reason wins when there is one: it is what the user must act
+	// on to make the exit possible at all, while the commitment resolves
+	// on its own once the round confirms.
+	if commitErr := exitPlanRoundCommitment(desc); commitErr != nil {
+		entry.RoundCommitment = commitErr
+		entry.CanStart = false
+
+		if verdict.Reason == unroll.ExitFeasible {
+			entry.InfeasibilityReason = unroll.ExitRoundCommitted
+		}
+
+		r.server.log.InfoS(ctx, "Exit plan entry is committed to a "+
+			"round",
+			slog.String("outpoint", entry.Outpoint),
+			slog.String("commitment", commitErr.Error()),
+		)
+	}
 
 	// A dust or uneconomical VTXO is infeasible with a zero funding
 	// shortfall: no amount of wallet funding makes it exitable, so the
@@ -655,4 +703,25 @@ func (r *RPCServer) exitSummaryEntry(ctx context.Context,
 	entry.EstNetRecoveredSat = int64(f.NetRecoveredSat)
 
 	return entry
+}
+
+// exitPlanRoundCommitment returns the round commitment held over a VTXO, or
+// nil when it is not committed to one. It is an advisory the preview reports
+// alongside a full pricing, not a refusal: the manual exit path has no
+// commitment check and performs the exit regardless, so refusing here would
+// make the preview contradict the command it previews.
+//
+// It reuses the forfeit-admission predicate so the exit preview and the leave
+// admission filter cannot drift on which lifecycle states count as committed,
+// and narrows to that one class deliberately: a VTXO already exiting still
+// wants a real preview (its exit job status is the useful answer), and a
+// terminal one is reported by the pricing path as it always was.
+func exitPlanRoundCommitment(desc *vtxo.Descriptor) error {
+	if err := vtxo.CheckForfeitAdmission(desc); errors.Is(
+		err, vtxo.ErrForfeitInFlight,
+	) {
+		return err
+	}
+
+	return nil
 }

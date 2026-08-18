@@ -14,10 +14,13 @@ module.
 - `internal/sqlbase` — `js && wasm`-only `walletdb`-compatible SQL backend
   (SQLite over `go-wasmsqlite`), used by `lwwallet` for browser builds.
 - `internal/testutils` — Deterministic key pair and Schnorr signature generation for tests.
+- `internal/wasmhost` — `js && wasm`-only host detection (browser vs Node) and
+  the durable SQLite VFS name that follows from it.
 
 ## Relationships
 
 - **Depends on**: `baselib/actor`, `db` (real backends for integration tests),
   `btcwallet/walletdb` (sqlbase's wasm backend).
 - **Depended on by**: internal module packages only, plus `lwwallet` (wasm
-  builds, via `internal/sqlbase`).
+  builds, via `internal/sqlbase` and `internal/wasmhost`), `db` and
+  `cmd/wavewalletdk-wasm` (wasm builds, via `internal/wasmhost`).

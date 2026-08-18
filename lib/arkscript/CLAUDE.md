@@ -74,6 +74,9 @@ validated invariants.
 - CSV encoding uses `blockchain.LockTimeToSequence(false, exitDelay)` to store
   the BIP-68 block-mode sequence value, not the raw block count. Decoders that
   compare raw block counts against CSV lock values must convert accordingly.
+- CSV values are canonical non-zero block-mode encodings in `1..65535`.
+  Time-mode, disable, and reserved high bits are rejected so structural delay
+  comparisons cannot diverge from the value enforced by consensus.
 - Canonical leaf ordering: sorted by version then lexicographic script bytes.
 - All taproot outputs use the unspendable ARK NUMS key for key path (no
   key-path spend possible).

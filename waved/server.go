@@ -268,8 +268,14 @@ type Server struct {
 	// mode it is derived from the config's network string.
 	chainParams *chaincfg.Params
 
-	// clientKeyDesc is the client's identity key descriptor,
-	// derived during wallet initialization.
+	// clientKeyDescMu guards clientKeyDesc. GetInfo is callable while
+	// wallet startup derives the descriptor, so status reads and startup
+	// publication must synchronize even though all later consumers run
+	// after bootstrap.
+	clientKeyDescMu sync.RWMutex
+
+	// clientKeyDesc is the client's identity key descriptor, derived during
+	// wallet initialization.
 	clientKeyDesc keychain.KeyDescriptor
 
 	// localMailboxID caches the pubkey-derived mailbox ID for
@@ -280,6 +286,17 @@ type Server struct {
 	// authSigHex caches the hex-encoded Schnorr auth signature
 	// so response envelopes can include it without re-computing.
 	authSigHex string
+
+	// mailboxAuthSigsMu guards mailboxAuthSigs.
+	mailboxAuthSigsMu sync.Mutex
+
+	// mailboxAuthSigs memoizes the mailbox auth signature per
+	// recipient mailbox ID. The signed digest covers the identity
+	// key and the recipient and nothing else, so one signature
+	// stays valid for the life of the key; signing per RPC would
+	// put a wallet round-trip in front of every Pull on a
+	// long-poll loop.
+	mailboxAuthSigs map[string]*schnorr.Signature
 
 	// tlsLeafSPKI is the DER-encoded SubjectPublicKeyInfo of the
 	// P-256 client TLS leaf certificate this daemon dialed with.
@@ -465,6 +482,25 @@ func (s *Server) WalletLifecycleState() WalletState {
 // WalletType returns the configured wallet backend type string.
 func (s *Server) WalletType() string {
 	return s.cfg.Wallet.Type
+}
+
+// loadClientKeyDesc returns the identity descriptor most recently published
+// by wallet startup. The returned descriptor is a value copy whose public-key
+// pointer is immutable.
+func (s *Server) loadClientKeyDesc() keychain.KeyDescriptor {
+	s.clientKeyDescMu.RLock()
+	defer s.clientKeyDescMu.RUnlock()
+
+	return s.clientKeyDesc
+}
+
+// storeClientKeyDesc publishes the stable identity descriptor derived during
+// wallet startup so pre-ready status requests cannot race its initialization.
+func (s *Server) storeClientKeyDesc(desc keychain.KeyDescriptor) {
+	s.clientKeyDescMu.Lock()
+	defer s.clientKeyDescMu.Unlock()
+
+	s.clientKeyDesc = desc
 }
 
 // markWalletReady atomically stores WalletStateReady and closes the
@@ -1613,8 +1649,65 @@ func (s *Server) initLndBackend(ctx context.Context) error {
 		"pubkey", lndServices.NodePubkey,
 	)
 
+	if err := s.validateLndAccount(ctx, lndServices); err != nil {
+		return err
+	}
+
 	// In lnd mode the wallet is immediately ready.
 	s.markWalletReady()
+
+	return nil
+}
+
+// validateLndAccount refuses to start when the configured lnd account cannot
+// serve this daemon, rather than letting the daemon boot and fail later.
+//
+// Every misconfiguration here surfaces late and badly otherwise, and one of
+// them is silent. A name that does not exist makes lnd's ListUnspent filter
+// every output away rather than error, so the exit preflight simply concludes
+// there is nothing to spend. An account under the wrong key scope is worse
+// than that: coin selection and signing resolve it by name across all scopes
+// and work fine, while address derivation pins the taproot scope and fails —
+// so the daemon runs until the moment a unilateral exit or a boarding sweep
+// needs a fresh script. A watch-only account fails later still, at signing,
+// once inputs are already leased.
+//
+// One lookup filtered by both name and address type distinguishes all three.
+//
+// NOTE: this confirms the taproot-scoped account exists, which is what address
+// derivation needs. It does not rule out the same name also existing under
+// another key scope, in which case funding's lookupFirstCustomAccount could
+// resolve to the other one. lnd only allowed that on older versions, so it is
+// not guarded against here.
+func (s *Server) validateLndAccount(ctx context.Context,
+	lnd *lndclient.GrpcLndServices) error {
+
+	account := s.lndWalletAccount()
+	if account == lndbackend.DefaultWalletAccount {
+		return nil
+	}
+
+	accounts, err := lnd.WalletKit.ListAccounts(
+		ctx, account, walletrpc.AddressType_TAPROOT_PUBKEY,
+	)
+	if err != nil || len(accounts) == 0 {
+		return fmt.Errorf("lnd wallet account %q not found under the "+
+			"taproot key scope: this daemon derives taproot "+
+			"addresses, and lnd resolves an account name within "+
+			"the key scope the requested address type implies, so "+
+			"the account must be created taproot-scoped (lookup "+
+			"error: %v)", account, err)
+	}
+
+	if accounts[0].GetWatchOnly() {
+		return fmt.Errorf("lnd wallet account %q is watch-only, so "+
+			"lnd cannot sign for it: coin selection would succeed "+
+			"and signing would fail after the inputs were "+
+			"already leased", account)
+	}
+
+	s.log.InfoS(ctx, "Using lnd wallet account",
+		"account", account)
 
 	return nil
 }
@@ -2842,7 +2935,17 @@ func (s *Server) newMailboxEdge() mailboxpb.MailboxServiceClient {
 		return s.mailboxClient
 	}
 
-	base := mailboxpb.NewMailboxServiceClient(s.serverConn)
+	// A raw client here would reach the operator with no x-mailbox-auth-sig
+	// header, which is exactly what an operator running requiredirectauth
+	// rejects. connectOperatorClients already wraps the client it builds,
+	// and it runs before this on every production path, so this arm is
+	// latent today; wrapping it too means a future caller that reaches
+	// newMailboxEdge with no mailboxClient set cannot silently lose the
+	// header.
+	base := serverconn.NewAuthenticatedMailboxClient(
+		mailboxpb.NewMailboxServiceClient(s.serverConn),
+		s.mailboxAuthSigner(),
+	)
 	if s.cfg.MailboxEdgeFactory != nil {
 		return s.cfg.MailboxEdgeFactory(s.serverConn, base)
 	}
@@ -3758,7 +3861,7 @@ func (s *Server) initRPCClients(ctx context.Context) {
 			err,
 		)
 	} else {
-		identityDesc, identitySigner, err := s.IndexerProofKey(
+		_, identitySigner, err := s.IndexerProofKey(
 			ctx, keychain.KeyLocator{
 				Family: identityKeyFamily,
 				Index:  0,
@@ -3771,7 +3874,13 @@ func (s *Server) initRPCClients(ctx context.Context) {
 				err,
 			)
 		} else {
-			s.clientKeyDesc = *identityDesc
+			// clientKeyDesc is deliberately not published here.
+			// deriveIdentityKeyEarly has already stored the
+			// descriptor for this exact locator, and it errors out
+			// rather than leaving the field unset, so this would
+			// only re-store the same value after StartEgress has
+			// begun using the descriptor to sign outbound
+			// envelopes.
 			signer = NewFallbackSchnorrSigner(
 				NewOwnedReceiveScriptSigner(
 					packageStore, signerFactory,
@@ -3783,9 +3892,8 @@ func (s *Server) initRPCClients(ctx context.Context) {
 
 	// The indexer principal is the client's pubkey-derived
 	// mailbox ID, used in proof-of-control signatures.
-	principal := serverconn.PubKeyMailboxID(
-		s.clientKeyDesc.PubKey,
-	)
+	identityDesc := s.loadClientKeyDesc()
+	principal := serverconn.PubKeyMailboxID(identityDesc.PubKey)
 
 	s.indexer = indexer.New(
 		s.runtime.Unary(), signer, indexerProofServerID, principal,
@@ -3938,17 +4046,18 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	dispatchers, nonTxRoutes := s.buildRPCDispatchers(edge)
 
 	// Derive compound mailbox ID: operator:client.
-	s.localMailboxID = serverconn.PubKeyMailboxID(
-		s.clientKeyDesc.PubKey,
-	)
+	identityDesc := s.loadClientKeyDesc()
+	s.localMailboxID = serverconn.PubKeyMailboxID(identityDesc.PubKey)
 	operatorMBID := serverconn.PubKeyMailboxID(operatorPubKey)
 	remoteMailboxID := serverconn.CompoundMailboxID(
 		operatorMBID, s.localMailboxID,
 	)
 
 	// Sign the Schnorr auth proving key ownership, bound to
-	// the compound recipient mailbox.
-	authSig, err := s.signMailboxAuth(ctx, remoteMailboxID)
+	// the compound recipient mailbox. This goes through the memo so
+	// the per-RPC signer installed on the mailbox edge serves the
+	// same signature from memory rather than signing a second time.
+	authSig, err := s.mailboxAuthSig(ctx, remoteMailboxID)
 	if err != nil {
 		return fmt.Errorf("sign mailbox auth: %w", err)
 	}
@@ -4047,6 +4156,9 @@ func (s *Server) initWalletActor(ctx context.Context,
 		lndSvc := s.lnd.UnsafeFromSome()
 		backend := lndbackend.NewBoardingBackend(
 			lndSvc.WalletKit, lndSvc.ChainKit,
+			lndbackend.WithAccount(
+				s.lndWalletAccount(),
+			),
 		)
 		backend.Log = fn.Some(s.subLogger(lndbackend.Subsystem))
 		boardingBackend = backend
@@ -4882,7 +4994,7 @@ func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 			return
 		}
 
-		s.clientKeyDesc = *desc
+		s.storeClientKeyDesc(*desc)
 		derived = true
 	})
 
@@ -4906,7 +5018,7 @@ func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 			return
 		}
 
-		s.clientKeyDesc = *desc
+		s.storeClientKeyDesc(*desc)
 		derived = true
 	})
 
@@ -4930,7 +5042,7 @@ func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 			return
 		}
 
-		s.clientKeyDesc = desc
+		s.storeClientKeyDesc(desc)
 		derived = true
 	})
 
@@ -4952,10 +5064,11 @@ func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 			"identity key")
 	}
 
+	identityDesc := s.loadClientKeyDesc()
 	s.log.InfoS(ctx, "Derived client identity key",
 		slog.String(
 			"mailbox_id", serverconn.PubKeyMailboxID(
-				s.clientKeyDesc.PubKey,
+				identityDesc.PubKey,
 			),
 		))
 
@@ -4969,8 +5082,9 @@ func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 func (s *Server) signMailboxAuth(ctx context.Context,
 	recipientMailboxID string) (*schnorr.Signature, error) {
 
+	identityDesc := s.loadClientKeyDesc()
 	msg := serverconn.MailboxAuthMessage(
-		s.clientKeyDesc.PubKey, recipientMailboxID,
+		identityDesc.PubKey, recipientMailboxID,
 	)
 	tag := []byte(serverconn.MailboxAuthTagStr)
 
@@ -4987,8 +5101,9 @@ func (s *Server) signMailboxAuth(ctx context.Context,
 func (s *Server) signMailboxTLSBind(ctx context.Context, tlsLeafSPKI []byte) (
 	*schnorr.Signature, error) {
 
+	identityDesc := s.loadClientKeyDesc()
 	msg := serverconn.MailboxTLSBindMessage(
-		s.clientKeyDesc.PubKey, tlsLeafSPKI,
+		identityDesc.PubKey, tlsLeafSPKI,
 	)
 	tag := []byte(serverconn.MailboxTLSBindTagStr)
 
@@ -5010,6 +5125,7 @@ func (s *Server) signTaggedSchnorr(ctx context.Context, msg, tag []byte,
 		sig *schnorr.Signature
 		err error
 	)
+	identityDesc := s.loadClientKeyDesc()
 
 	// In LND mode, use lnd's tagged Schnorr signing RPC. We pass the
 	// raw message and tag so LND computes the BIP-340 tagged hash
@@ -5017,7 +5133,7 @@ func (s *Server) signTaggedSchnorr(ctx context.Context, msg, tag []byte,
 	s.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
 		var rawSig []byte
 		rawSig, err = lndSvc.Signer.SignMessage(
-			ctx, msg, s.clientKeyDesc.KeyLocator,
+			ctx, msg, identityDesc.KeyLocator,
 			lndclient.SignSchnorr(nil), withSchnorrTag(tag),
 		)
 		if err != nil {
@@ -5068,8 +5184,9 @@ func (s *Server) signTaggedSchnorr(ctx context.Context, msg, tag []byte,
 func (s *Server) signTaggedSchnorrViaKeyRing(keyRing keychain.SecretKeyRing,
 	msg, tag []byte, opName string) (*schnorr.Signature, error) {
 
+	identityDesc := s.loadClientKeyDesc()
 	sig, err := keyRing.SignMessageSchnorr(
-		s.clientKeyDesc.KeyLocator, msg, false, nil, tag,
+		identityDesc.KeyLocator, msg, false, nil, tag,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("keyring sign %s: %w", opName, err)
@@ -5111,6 +5228,16 @@ func networkToLndclient(network string) (lndclient.Network, error) {
 	}
 }
 
+// lndWalletAccount returns the lnd wallet account this daemon spends from,
+// falling back to lnd's built-in account when none is configured.
+func (s *Server) lndWalletAccount() string {
+	if s.cfg.Lnd == nil || s.cfg.Lnd.Account == "" {
+		return lndbackend.DefaultWalletAccount
+	}
+
+	return s.cfg.Lnd.Account
+}
+
 // lndUnrollWallet composes the LND-backed signing/key-derivation wallet
 // with the boarding backend's ListUnspent to satisfy the
 // UnilateralExitWallet interface needed by the package executor.
@@ -5119,19 +5246,20 @@ type lndUnrollWallet struct {
 	boardingBackend *lndbackend.BoardingBackend
 }
 
-// ListUnspent returns UTXOs from LND's default wallet account only.
+// ListUnspent returns UTXOs from the boarding backend's configured LND wallet
+// account only.
 //
 // The boarding backend's unfiltered enumeration also surfaces imported
 // watch-only script outputs (boarding and exit scripts tracked via
 // ImportTaprootScript). Those are not signable by LND's FinalizePsbt, so
 // offering them as CPFP fee inputs makes the child PSBT unsignable and the
 // fee bump fails with "PSBT is not finalizable". Restricting fee selection
-// to the default account keeps selection aligned with what the finalize
+// to the wallet's own account keeps selection aligned with what the finalize
 // path can actually sign, mirroring the lwwallet and btcwallet adapters.
 func (w *lndUnrollWallet) ListUnspent(ctx context.Context, minConfs,
 	maxConfs int32) ([]*wallet.Utxo, error) {
 
-	return w.boardingBackend.ListUnspentDefaultAccount(
+	return w.boardingBackend.ListUnspentWalletAccount(
 		ctx, minConfs, maxConfs,
 	)
 }
@@ -5142,7 +5270,7 @@ func (w *lndUnrollWallet) NewWalletPkScript(ctx context.Context) ([]byte,
 	error) {
 
 	addr, err := w.boardingBackend.WalletKit().NextAddr(
-		ctx, lnwallet.DefaultAccountName,
+		ctx, w.boardingBackend.Account(),
 		walletrpc.AddressType_TAPROOT_PUBKEY, true,
 	)
 	if err != nil {
@@ -5169,7 +5297,7 @@ func (w *lndUnrollWallet) FinalizePsbt(ctx context.Context,
 	}
 
 	_, finalTx, err := w.boardingBackend.WalletKit().FinalizePsbt(
-		ctx, packet, "",
+		ctx, packet, w.boardingBackend.Account(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("LND FinalizePsbt: %w", err)
@@ -5183,24 +5311,35 @@ func (w *lndUnrollWallet) FundPsbt(ctx context.Context, packetBytes []byte,
 	feeRateSatPerVByte int64, lockID wallet.LockID,
 	lockExpiry time.Duration) (*wire.MsgTx, error) {
 
-	packet, _, _, err := w.boardingBackend.WalletKit().FundPsbt(
-		ctx, &walletrpc.FundPsbtRequest{
-			Template: &walletrpc.FundPsbtRequest_Psbt{
-				Psbt: packetBytes,
-			},
-			Fees: &walletrpc.FundPsbtRequest_SatPerVbyte{
-				SatPerVbyte: uint64(feeRateSatPerVByte),
-			},
-			Account:  lnwallet.DefaultAccountName,
-			MinConfs: 1,
-			ChangeType: walletrpc.
-				ChangeAddressType_CHANGE_ADDRESS_TYPE_P2TR,
-			CoinSelectionStrategy: lnrpc.
-				CoinSelectionStrategy_STRATEGY_LARGEST,
-			CustomLockId:          lockID[:],
-			LockExpirationSeconds: uint64(lockExpiry.Seconds()),
+	req := &walletrpc.FundPsbtRequest{
+		Template: &walletrpc.FundPsbtRequest_Psbt{
+			Psbt: packetBytes,
 		},
-	)
+		Fees: &walletrpc.FundPsbtRequest_SatPerVbyte{
+			SatPerVbyte: uint64(feeRateSatPerVByte),
+		},
+		Account:  w.boardingBackend.Account(),
+		MinConfs: 1,
+		CoinSelectionStrategy: lnrpc.
+			CoinSelectionStrategy_STRATEGY_LARGEST,
+		CustomLockId:          lockID[:],
+		LockExpirationSeconds: uint64(lockExpiry.Seconds()),
+	}
+
+	// The default account spans all key scopes, so LND needs to be told
+	// which one to take change from, and without an explicit type it
+	// defaults that account's change scope to BIP-0084. Asking for taproot
+	// keeps the change output P2TR, which matters because that output
+	// later becomes a fee input for a v3 CPFP child that needs a
+	// Schnorr-signable one. A custom account lives in exactly one key
+	// scope, which already fixes its change type, and LND rejects the
+	// request outright if a change type is supplied alongside one.
+	if w.boardingBackend.IsDefaultAccount() {
+		req.ChangeType =
+			walletrpc.ChangeAddressType_CHANGE_ADDRESS_TYPE_P2TR
+	}
+
+	packet, _, _, err := w.boardingBackend.WalletKit().FundPsbt(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("LND FundPsbt: %w", err)
 	}
@@ -5556,6 +5695,9 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		)
 		boardingBackend := lndbackend.NewBoardingBackend(
 			lndSvc.WalletKit, lndSvc.ChainKit,
+			lndbackend.WithAccount(
+				s.lndWalletAccount(),
+			),
 		)
 		w := &lndUnrollWallet{
 			ClientWallet:    clientWallet,

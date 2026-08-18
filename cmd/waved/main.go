@@ -119,6 +119,12 @@ func newRootCmd() *cobra.Command {
 		"lnd.macaroonpath", cfg.Lnd.MacaroonPath,
 		"path to lnd admin macaroon",
 	)
+	f.String(
+		"lnd.account", cfg.Lnd.Account, "lnd wallet account this "+
+			"daemon may spend from; empty uses lnd's default "+
+			"account. Set it when sharing an lnd node with "+
+			"another daemon so neither can drain the other's funds",
+	)
 
 	registerArkServerFlags(f, cfg)
 
