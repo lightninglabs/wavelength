@@ -253,13 +253,18 @@ type OorVtxoBindingLinkKind struct {
 }
 
 type OwnedReceiveScript struct {
-	PkScript       []byte
-	ClientKeyID    sql.NullInt64
-	OperatorPubkey []byte
-	ExitDelay      int64
-	Source         int32
-	CreatedAt      int64
-	LastUsedAt     sql.NullInt64
+	PkScript                []byte
+	ClientKeyID             sql.NullInt64
+	OperatorPubkey          []byte
+	ExitDelay               int64
+	Source                  int32
+	CreatedAt               int64
+	LastUsedAt              sql.NullInt64
+	IdempotencyKey          sql.NullString
+	RegistrationLabel       sql.NullString
+	RegistrationExpiresAt   sql.NullInt64
+	RegistrationRpcKey      sql.NullString
+	RegistrationCompletedAt sql.NullInt64
 }
 
 type OwnedReceiveScriptSource struct {

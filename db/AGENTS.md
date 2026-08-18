@@ -33,6 +33,21 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   (`InsertClientVTXO`, `FetchByOutpoint`). Persists `ChainDepth`.
 - `OORArtifactStore`, `OwnedReceiveScriptStore` — OOR session state
   and locally owned receive-script metadata.
+- `OwnedReceiveScriptRecord` — one owned receive-script row. Its
+  `IdempotencyKey`, `RegistrationLabel`, `RegistrationExpiresAt`, and
+  `RegistrationRPCKey` fields define a retry-safe allocation;
+  `RegistrationCompletedAt` is set only after the indexer acknowledges that
+  remote request. Legacy rows and internal registrations leave the replay
+  identity empty, which keeps fresh allocation as the default.
+- Idempotent receive-script admission on `OORArtifactPersistenceStore`:
+  `AdmitIdempotentOwnedReceiveScript` selects the durable winner,
+  `LookupOwnedReceiveScriptByIdempotencyKey` loads it,
+  `RenewOwnedReceiveScriptRegistration` replaces an expired remote window by
+  compare-and-swap, and `MarkOwnedReceiveScriptRegistered` records remote
+  acknowledgement for the current request key. Bounds are
+  `MaxOwnedReceiveScriptIdempotencyKeyBytes = 128` and
+  `MaxOwnedReceiveScriptRegistrationTTL = 30 * 24h`. Reusing a key with a
+  different label fails with `ErrOwnedReceiveScriptReplayMismatch`.
 - `LedgerStoreDB` — implements `ledger.LedgerStore`. Wraps
   `sqlc.InsertClientLedgerEntry` (ON CONFLICT DO NOTHING for replay
   idempotency). Joins the outer actor transaction via
@@ -71,7 +86,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 16` — current schema version.
+- `LatestMigrationVersion = 17` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -125,6 +140,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   `(outpoint_hash, outpoint_index)` WHERE status IN
   `('pending','published')`) prevents two concurrent sweeps from
   racing on the same boarding UTXO.
+- `idx_owned_receive_scripts_idempotency_key` (UNIQUE on `idempotency_key`
+  WHERE `idempotency_key IS NOT NULL`) admits exactly one durable receive-script
+  allocation per RPC retry key while leaving legacy and internal registrations
+  unconstrained.
 - Default retry logic: 10 retries with exponential backoff (40ms →
   3s cap).
 - SQLite `busy_timeout = 30 000 ms` under WAL mode tolerates
@@ -251,6 +270,10 @@ when adding one.
   later checkpoint must not clear what an earlier one recorded. Rows
   predating the column read back zero, which the confirmation path treats
   as "unknown" and leaves the expiry unstamped rather than wrong.
+- `000017_idempotent_receive_scripts` — adds retry identity, immutable
+  registration terms, a stable remote RPC key, and completion evidence to
+  `owned_receive_scripts`. The partial unique index admits one durable
+  allocation per non-null idempotency key.
 
 ## Deep Docs
 
@@ -259,7 +282,7 @@ when adding one.
   policy: read-only Postgres transactions run at `REPEATABLE READ` with
   `READ ONLY` (no `SIRead` predicate locks, never a 40001), writers stay
   `SERIALIZABLE`. Also holds the write-path snapshot-isolation audit and the
-  inventory of the six partial unique indexes that any new `ON CONFLICT`
+  inventory of partial unique indexes that any new `ON CONFLICT`
   target has to be checked against, along with the caveat that a conflict
   target can also miss a plain unique constraint declared inline in a
   `CREATE TABLE`.

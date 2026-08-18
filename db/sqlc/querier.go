@@ -103,6 +103,7 @@ type Querier interface {
 	GetOORVTXOBindingByOutpoint(ctx context.Context, arg GetOORVTXOBindingByOutpointParams) (OorVtxoBinding, error)
 	GetOORVTXOBindingByOutpointAndKind(ctx context.Context, arg GetOORVTXOBindingByOutpointAndKindParams) (OorVtxoBinding, error)
 	GetOwnedReceiveScript(ctx context.Context, pkScript []byte) (OwnedReceiveScript, error)
+	GetOwnedReceiveScriptByIdempotencyKey(ctx context.Context, idempotencyKey sql.NullString) (OwnedReceiveScript, error)
 	// Fetch one intent header by id, exposing the terminal-failure columns so
 	// callers (and tests) can assert send-failure state without raw SQL.
 	GetPendingIntentByID(ctx context.Context, intentID []byte) (GetPendingIntentByIDRow, error)
@@ -153,6 +154,7 @@ type Querier interface {
 	// Client tree txids queries.
 	InsertClientTreeTxid(ctx context.Context, arg InsertClientTreeTxidParams) error
 	InsertExitFundingAddress(ctx context.Context, arg InsertExitFundingAddressParams) error
+	InsertIdempotentOwnedReceiveScript(ctx context.Context, arg InsertIdempotentOwnedReceiveScriptParams) (int64, error)
 	InsertMacaroonRootKey(ctx context.Context, arg InsertMacaroonRootKeyParams) error
 	InsertOORPackageCheckpoint(ctx context.Context, arg InsertOORPackageCheckpointParams) error
 	// Round queries.
@@ -344,6 +346,7 @@ type Querier interface {
 	MarkBoardingSweepInputStatus(ctx context.Context, arg MarkBoardingSweepInputStatusParams) error
 	MarkBoardingSweepInputsStatus(ctx context.Context, arg MarkBoardingSweepInputsStatusParams) error
 	MarkBoardingSweepStatus(ctx context.Context, arg MarkBoardingSweepStatusParams) error
+	MarkOwnedReceiveScriptRegistered(ctx context.Context, arg MarkOwnedReceiveScriptRegisteredParams) (int64, error)
 	// Terminally fail the pending send intent anchored to the given outpoint,
 	// recording the reason and typed failure code. Idempotent: the status guard
 	// makes a repeat call (e.g. a second forfeit outpoint of the same intent) a
@@ -372,6 +375,7 @@ type Querier interface {
 	// PullActivityEvents returns transition rows strictly after the cursor in
 	// event_seq order, the resumable-subscribe replay primitive.
 	PullActivityEvents(ctx context.Context, arg PullActivityEventsParams) ([]ActivityEvent, error)
+	RenewOwnedReceiveScriptRegistration(ctx context.Context, arg RenewOwnedReceiveScriptRegistrationParams) (int64, error)
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error

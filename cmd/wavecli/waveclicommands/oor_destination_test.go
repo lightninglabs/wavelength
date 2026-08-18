@@ -124,6 +124,20 @@ func TestMethodRegistryOORReceiveSchema(t *testing.T) {
 	method := findSchemaMethod(t, "ark.oor.receive")
 	require.Equal(t, "NewReceiveScriptRequest", method.RequestType)
 	require.Equal(t, "NewReceiveScriptResponse", method.ResponseType)
+	require.Equal(t, []schemaParam{
+		{
+			Name: "label",
+			Type: "string",
+			Description: "optional indexer registration " +
+				"label",
+		},
+		{
+			Name: "idempotency-key",
+			Type: "string",
+			Description: "retry key that returns same " +
+				"receive script",
+		},
+	}, method.Params)
 }
 
 // TestOORGetAcceptsSnakeCaseSessionID verifies the oor get command resolves

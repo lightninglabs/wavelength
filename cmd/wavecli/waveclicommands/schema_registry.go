@@ -816,6 +816,12 @@ func arkBaseMethodRegistry() []schemaMethod {
 					Description: "optional indexer " +
 						"registration label",
 				},
+				{
+					Name: "idempotency-key",
+					Type: "string",
+					Description: "retry key that returns " +
+						"same receive script",
+				},
 			},
 			RequestType:  "NewReceiveScriptRequest",
 			ResponseType: "NewReceiveScriptResponse",

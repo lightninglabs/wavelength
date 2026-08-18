@@ -260,7 +260,7 @@ func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 			r.server.proofKeyBackend.ProofSigner(*keyDesc),
 		)
 		expiresAt := r.server.clk.Now().Add(
-			defaultOORReceiveScriptRegistrationTTL,
+			defaultOORRegistrationTTL,
 		)
 		err = retryRecoveryIndexerRPC(ctx, func(
 			opts mailboxrpc.RPCOptions) error {

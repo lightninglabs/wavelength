@@ -70,7 +70,7 @@ func generatedRegistry() []serviceSpec {
 					Aliases:  []string{"new-receive-script"},
 					Input:    "waverpc.NewReceiveScriptRequest",
 					Output:   "waverpc.NewReceiveScriptResponse",
-					Comments: "NewReceiveScript allocates a fresh wallet key, registers the\nmatching taproot receive script with the indexer, and returns the\nscript details needed to hand the destination to a sender.",
+					Comments: "NewReceiveScript allocates and registers a taproot receive script, or\nreturns the exact existing allocation for an idempotent retry.",
 				},
 				{
 					Name:     "ReceiveAuthKey",
