@@ -32,7 +32,9 @@ func TestPreparerBuildsPartialAssetTransferFromOperatorFloat(t *testing.T) {
 	assetInput.VTXO.TaprootAssetAmount = 1_000
 	request.Intent.AssetAmount = 1_000
 	request.Intent.RecipientAssetAmount = 800
-	request.Intent.InputVTXOOutpoint = assetInput.VTXO.Outpoint
+	request.Intent.InputVTXOOutpoints = []wire.OutPoint{
+		assetInput.VTXO.Outpoint,
+	}
 	request.Recipients[0].Value = 300
 	request.OutputFloor = 300
 	inventory.onlyAnchor().Assets[0].Amount = 1_000

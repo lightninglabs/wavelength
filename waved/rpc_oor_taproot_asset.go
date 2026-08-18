@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/btcsuite/btcd/wire/v2"
-	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waverpc"
@@ -72,7 +71,9 @@ func taprootAssetOORIntent(req *waverpc.SendOORRequest) (
 	}
 
 	intent := &oor.TaprootAssetOORIntent{
-		InputVTXOOutpoint:    inputOutpoint,
+		InputVTXOOutpoints: []wire.OutPoint{
+			inputOutpoint,
+		},
 		AssetRef:             rpcIntent.GetAssetRef(),
 		AssetAmount:          rpcIntent.GetAssetAmount(),
 		RecipientAssetAmount: rpcIntent.GetRecipientAssetAmount(),
@@ -149,8 +150,7 @@ func resumeTaprootAssetOOR(ctx context.Context,
 		return nil, nil
 	}
 	if len(resume.InputOutpoints) == 0 ||
-		len(resume.InputOutpoints) >
-			oortx.MaxTaprootAssetCheckpointPackages {
+		len(resume.InputOutpoints) > oor.MaxTaprootAssetInputs {
 		return nil, invalidTaprootAssetPreparation(
 			fmt.Errorf(
 				"resume input count %d is invalid",
@@ -160,7 +160,6 @@ func resumeTaprootAssetOOR(ctx context.Context,
 	}
 
 	seen := make(map[wire.OutPoint]struct{}, len(resume.InputOutpoints))
-	assetMatches := 0
 	for _, outpoint := range resume.InputOutpoints {
 		if _, ok := seen[outpoint]; ok {
 			return nil, invalidTaprootAssetPreparation(
@@ -169,15 +168,32 @@ func resumeTaprootAssetOOR(ctx context.Context,
 			)
 		}
 		seen[outpoint] = struct{}{}
-		if outpoint == request.Intent.InputVTXOOutpoint {
-			assetMatches++
-		}
 	}
-	if assetMatches != 1 {
-		return nil, invalidTaprootAssetPreparation(
-			fmt.Errorf("resume does not contain the requested " +
-				"asset input exactly once"),
-		)
+
+	// Caller-pinned outpoints must be adopted verbatim: the journaled set
+	// has to be exactly the pinned set. A selection-mode retry pins
+	// nothing and adopts whatever selection the journal committed to.
+	pinned := request.Intent.InputVTXOOutpoints
+	if len(pinned) != 0 {
+		if len(resume.InputOutpoints) != len(pinned) {
+			return nil, invalidTaprootAssetPreparation(
+				fmt.Errorf(
+					"resume input count %d does not "+
+						"match the %d pinned asset "+
+						"inputs",
+					len(resume.InputOutpoints), len(pinned),
+				),
+			)
+		}
+		for _, outpoint := range pinned {
+			if _, ok := seen[outpoint]; !ok {
+				return nil, invalidTaprootAssetPreparation(
+					fmt.Errorf("resume does not contain "+
+						"the requested asset input "+
+						"%s exactly once", outpoint),
+				)
+			}
+		}
 	}
 
 	return resume, nil

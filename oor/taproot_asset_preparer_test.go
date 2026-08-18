@@ -230,6 +230,169 @@ func TestTaprootAssetOORCarrierAllocation(t *testing.T) {
 	}
 }
 
+// TestTaprootAssetOORCarrierAllocationMultiInput proves the carrier plan sums
+// per-input origins across an atomic multi-input send: round-created carriers
+// return to the sender, OOR-created carriers are reclaimed by the operator.
+func TestTaprootAssetOORCarrierAllocationMultiInput(t *testing.T) {
+	t.Parallel()
+
+	request := &TaprootAssetOORPrepareRequest{
+		Inputs: []TransferInput{
+			{
+				VTXO: &vtxo.Descriptor{
+					Amount:             5_000,
+					TaprootAssetRef:    "tapr1asset",
+					TaprootAssetAmount: 200,
+				},
+				TaprootAssetRoundCreated: true,
+			},
+			{
+				VTXO: &vtxo.Descriptor{
+					Amount:             4_000,
+					TaprootAssetRef:    "tapr1asset",
+					TaprootAssetAmount: 50,
+				},
+			},
+			{
+				VTXO: &vtxo.Descriptor{
+					Amount: 25_000,
+				},
+				OperatorFunded: true,
+			},
+		},
+		Recipients: []oortx.RecipientOutput{{
+			Value: 1_000,
+		}},
+		OutputFloor: 1_000,
+		Intent: TaprootAssetOORIntent{
+			AssetRef:             "tapr1asset",
+			AssetAmount:          250,
+			RecipientAssetAmount: 240,
+		},
+		Lease: &OORCarrierLease{
+			Outpoint: wire.OutPoint{
+				Hash: [32]byte{
+					0xf0,
+				},
+			},
+			Value: 25_000,
+			PolicyTemplate: []byte{
+				0x01,
+			},
+			PkScript: []byte{
+				0x02,
+			},
+		},
+	}
+
+	plan, err := request.CarrierAllocation()
+	require.NoError(t, err)
+	require.Equal(t, TaprootAssetCarrierPlan{
+		AssetChange:    1_000,
+		SenderChange:   5_000,
+		OperatorChange: 25_000 - 2_000 + 4_000,
+	}, plan)
+}
+
+// TestTaprootAssetOORAssetInputIndices pins the ordered multi-input contract:
+// the intent's outpoint list names every asset input, spine first, in the
+// inputs' own relative order, and the per-input amounts sum to the total.
+func TestTaprootAssetOORAssetInputIndices(t *testing.T) {
+	t.Parallel()
+
+	request, _ := testOperatorFundedPreparation(t, true)
+	second := request.Inputs[0]
+	secondVTXO := *second.VTXO
+	secondVTXO.Outpoint.Index++
+	secondVTXO.TaprootAssetAmount = 13
+	second.VTXO = &secondVTXO
+	second.TaprootAssetRoundCreated = false
+
+	// Inputs are [spine, co, float]; the fixture's float stays last.
+	request.Inputs = []TransferInput{
+		request.Inputs[0], second, request.Inputs[1],
+	}
+	request.Intent.InputVTXOOutpoints = []wire.OutPoint{
+		request.Inputs[0].VTXO.Outpoint,
+		second.VTXO.Outpoint,
+	}
+	request.Intent.AssetAmount = 21 + 13
+
+	// Multi-input sends resolve every input from its sealed local package;
+	// the caller-supplied proof file stays a single-input affordance.
+	request.Intent.ProofFile = nil
+	require.NoError(t, request.Validate())
+
+	indices, err := request.AssetInputIndices()
+	require.NoError(t, err)
+	require.Equal(t, []int{0, 1}, indices)
+
+	reversed := *request
+	reversed.Intent.InputVTXOOutpoints = []wire.OutPoint{
+		second.VTXO.Outpoint,
+		request.Inputs[0].VTXO.Outpoint,
+	}
+	_, err = reversed.AssetInputIndices()
+	require.ErrorContains(t, err, "not in intent order")
+
+	missing := *request
+	missing.Intent.InputVTXOOutpoints = []wire.OutPoint{
+		request.Inputs[0].VTXO.Outpoint,
+	}
+	_, err = missing.AssetInputIndices()
+	require.ErrorContains(t, err, "asset inputs, the intent names")
+
+	sumDrift := *request
+	sumDrift.Intent.AssetAmount++
+	_, err = sumDrift.AssetInputIndices()
+	require.ErrorContains(t, err, "input amount does not match")
+
+	proofFile := *request
+	proofFile.Intent.ProofFile = []byte("confirmed-proof")
+	require.ErrorContains(
+		t, proofFile.Validate(),
+		"requires a single pinned input",
+	)
+
+	duplicated := *request
+	duplicated.Intent.InputVTXOOutpoints = []wire.OutPoint{
+		request.Inputs[0].VTXO.Outpoint,
+		request.Inputs[0].VTXO.Outpoint,
+	}
+	require.ErrorContains(t, duplicated.Validate(), "is duplicated")
+
+	overCap := *request
+	overCap.Intent.InputVTXOOutpoints = make(
+		[]wire.OutPoint, MaxTaprootAssetInputs+1,
+	)
+	for idx := range overCap.Intent.InputVTXOOutpoints {
+		overCap.Intent.InputVTXOOutpoints[idx] = wire.OutPoint{
+			Index: uint32(idx),
+		}
+	}
+	require.ErrorContains(t, overCap.Validate(), "consolidate first")
+
+	bitcoinInput := *request
+	plainVTXO := *second.VTXO
+	plainVTXO.Outpoint.Index += 10
+	plainVTXO.TaprootAssetRef = ""
+	plainVTXO.TaprootAssetAmount = 0
+	plainVTXO.TaprootAssetRoot = nil
+	plain := second
+	plain.VTXO = &plainVTXO
+	plain.TaprootAssetRoot = nil
+	bitcoinInput.Inputs = append(
+		append(
+			[]TransferInput(nil), request.Inputs...,
+		),
+		plain,
+	)
+	_, err = bitcoinInput.AssetInputIndices()
+	require.ErrorContains(
+		t, err, "neither an asset input nor the operator float",
+	)
+}
+
 // testOperatorFundedPreparation builds a complete operator-funded full-send
 // preparation: an asset input, a leased float input, a floor-valued composed
 // receiver, and the operator's change. A round-created input adds the
@@ -420,10 +583,12 @@ func testOperatorFundedPreparation(t *testing.T,
 			}, nil
 		},
 		Intent: TaprootAssetOORIntent{
-			InputVTXOOutpoint: assetInput.VTXO.Outpoint,
-			AssetRef:          "asset-id:010203",
-			AssetAmount:       21,
-			ProofFile:         []byte("confirmed-proof"),
+			InputVTXOOutpoints: []wire.OutPoint{
+				assetInput.VTXO.Outpoint,
+			},
+			AssetRef:    "asset-id:010203",
+			AssetAmount: 21,
+			ProofFile:   []byte("confirmed-proof"),
 		},
 		Lease: lease,
 	}
@@ -471,7 +636,11 @@ func TestTaprootAssetOORPreparationBindsRequest(t *testing.T) {
 	)
 
 	mismatchedInput := *request
-	mismatchedInput.Intent.InputVTXOOutpoint.Index++
+	mismatchedOutpoint := request.Inputs[0].VTXO.Outpoint
+	mismatchedOutpoint.Index++
+	mismatchedInput.Intent.InputVTXOOutpoints = []wire.OutPoint{
+		mismatchedOutpoint,
+	}
 	require.ErrorContains(
 		t, mismatchedInput.Validate(),
 		"does not match",

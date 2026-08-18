@@ -155,11 +155,15 @@ func (p *testTaprootAssetOORPreparer) PrepareTaprootAssetOOR(_ context.Context,
 		return nil, err
 	}
 	checkpointPackages := make([][]byte, len(request.Inputs))
-	assetInputIndex, err := request.AssetInputIndex()
+	assetInputIndices, err := request.AssetInputIndices()
 	if err != nil {
 		return nil, err
 	}
-	checkpointPackages[assetInputIndex] = []byte("checkpoint-package")
+	for _, assetInputIndex := range assetInputIndices {
+		checkpointPackages[assetInputIndex] = []byte(
+			"checkpoint-package",
+		)
+	}
 	preparation := &oor.TaprootAssetOORPreparation{
 		PreparedSubmit: &oor.PreparedSubmitPackage{
 			ArkPSBT:         arkPSBT,
@@ -465,8 +469,8 @@ func TestSendOORTaprootAssetPreparesBeforeActor(t *testing.T) {
 	require.Equal(t, btcutil.Amount(1000), prepareRequest.OutputFloor)
 	require.NotNil(t, prepareRequest.BuildChangeRecipient)
 	require.Equal(
-		t, fixture.desc.Outpoint,
-		prepareRequest.Intent.InputVTXOOutpoint,
+		t, []wire.OutPoint{fixture.desc.Outpoint},
+		prepareRequest.Intent.InputVTXOOutpoints,
 	)
 	require.Equal(
 		t, fixture.desc.TaprootAssetRoot,
@@ -907,8 +911,9 @@ func TestSendOORTaprootAssetRejectsInvalidResume(t *testing.T) {
 					}},
 				}
 			},
-			wantCode:     codes.Internal,
-			wantContains: "requested asset input exactly once",
+			wantCode: codes.Internal,
+			wantContains: "does not contain the requested " +
+				"asset input",
 		},
 		{
 			name: "duplicate input",

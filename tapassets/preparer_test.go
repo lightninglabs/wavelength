@@ -1427,10 +1427,12 @@ func testPreparationRequest(t *testing.T) (*oor.TaprootAssetOORPrepareRequest,
 			t, operator.PubKey(), 40,
 		),
 		Intent: oor.TaprootAssetOORIntent{
-			InputVTXOOutpoint: inputs[0].VTXO.Outpoint,
-			AssetRef:          assetRef.String(),
-			AssetAmount:       21,
-			ProofFile:         []byte("confirmed-proof"),
+			InputVTXOOutpoints: []wire.OutPoint{
+				inputs[0].VTXO.Outpoint,
+			},
+			AssetRef:    assetRef.String(),
+			AssetAmount: 21,
+			ProofFile:   []byte("confirmed-proof"),
 		},
 		Lease: lease,
 	}

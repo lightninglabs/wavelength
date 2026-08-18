@@ -121,10 +121,16 @@ func (p *Preparer) PrepareTaprootAssetOOR(ctx context.Context,
 	if err := request.Validate(); err != nil {
 		return nil, err
 	}
-	assetInputIndex, err := request.AssetInputIndex()
+	assetInputIndices, err := request.AssetInputIndices()
 	if err != nil {
 		return nil, err
 	}
+	if len(assetInputIndices) != 1 {
+		return nil, fmt.Errorf("taproot asset preparer supports "+
+			"exactly one asset input, got %d",
+			len(assetInputIndices))
+	}
+	assetInputIndex := assetInputIndices[0]
 	for idx := range request.Inputs {
 		if request.Inputs[idx].CustomSpend != nil ||
 			len(request.Inputs[idx].ExternalSignatures) != 0 {
@@ -999,11 +1005,13 @@ func preparationIntentDigest(request *oor.TaprootAssetOORResumeRequest) (
 	_ = binary.Write(
 		&value, binary.BigEndian, uint64(request.OutputFloor),
 	)
-	writeDigestBytes(&value, request.Intent.InputVTXOOutpoint.Hash[:])
-	_ = binary.Write(
-		&value, binary.BigEndian,
-		request.Intent.InputVTXOOutpoint.Index,
-	)
+	if len(request.Intent.InputVTXOOutpoints) != 1 {
+		return tapsdk.Hash{}, fmt.Errorf("Taproot Asset OOR intent " +
+			"requires exactly one input outpoint")
+	}
+	spineOutpoint := request.Intent.InputVTXOOutpoints[0]
+	writeDigestBytes(&value, spineOutpoint.Hash[:])
+	_ = binary.Write(&value, binary.BigEndian, spineOutpoint.Index)
 	writeDigestBytes(&value, []byte(request.Intent.AssetRef))
 	_ = binary.Write(&value, binary.BigEndian, request.Intent.AssetAmount)
 	_ = binary.Write(
