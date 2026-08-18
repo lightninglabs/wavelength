@@ -1,11 +1,12 @@
-# Public Test Network Endpoints
+# Public Network Endpoints
 
-`waved` has built-in Ark and swap service endpoints for testnet3, testnet4,
-and signet. Leave `server.host` and `swap.serveraddress` empty to select the
-endpoint for the configured Bitcoin network and outbound transport.
+`waved` has built-in Ark and swap service endpoints for mainnet, testnet3,
+testnet4, and signet. Leave `server.host` and `swap.serveraddress` empty to
+select the endpoint for the configured Bitcoin network and outbound transport.
 
 | Network config | Ark gRPC | Ark REST | Swap gRPC | Swap REST |
 |----------------|----------|----------|-----------|-----------|
+| `mainnet` | `wavelength.lightning.finance:443` | `https://wavelength-rest.lightning.finance` (not live) | `swap.wavelength.lightning.finance:443` | `https://swapd-rest.lightning.finance` (not live) |
 | `testnet` | `test.wavelength.lightning.finance:443` | `https://test.wavelength-rest.lightning.finance` | `swap.test.wavelength.lightning.finance:443` | `https://test.swapd-rest.lightning.finance` |
 | `testnet4` | `lumosd-testnet4.testnet.lightningcluster.com:443` | `https://test4.wavelength-rest.lightning.finance` | `swapd-testnet4.testnet.lightningcluster.com:443` | `https://test4.swapd-rest.lightning.finance` |
 | `signet` | `signet.wavelength.lightning.finance:443` | `https://signet.wavelength-rest.lightning.finance` | `swap.signet.wavelength.lightning.finance:443` | `https://signet.swapd-rest.lightning.finance` |
@@ -76,7 +77,10 @@ waved \
 Regtest and simnet have no public service deployment in the default table, so
 empty address fields resolve to `localhost:10010` and `localhost:10030`.
 Mainnet resolves to the public operator, though its REST names are not live
-yet.
+yet: only the gRPC names are covered by the external load balancer and its
+certificates, so a mainnet daemon must stay on the default `grpc` transport
+until the REST ingress lands. Running on mainnet at all also requires the
+`--allow-mainnet` safety guard.
 
 ## wavewalletdk
 

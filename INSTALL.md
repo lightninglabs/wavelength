@@ -173,8 +173,8 @@ waved \
 fee-estimate endpoint when left empty; set it explicitly only to point at a
 custom `fee_by_block_target` JSON endpoint.
 
-The Ark and swap connections resolve from the configured public test network
-unless explicitly overridden. See [`docs/signet.md`](docs/signet.md) for the
+The Ark and swap connections resolve from the configured public network unless
+explicitly overridden. See [`docs/signet.md`](docs/signet.md) for the mainnet,
 testnet3, testnet4, and signet gRPC and REST addresses.
 
 ### `lnd`

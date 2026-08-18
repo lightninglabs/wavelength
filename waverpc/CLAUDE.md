@@ -7,6 +7,22 @@ VHTLC-recovery operations. Proto source: `waverpc/daemon.proto`. Generated
 gRPC, REST-gateway, and mailbox-RPC stubs plus one hand-written helper file
 (`errors.go`) for structured wallet-lifecycle errors.
 
+`DaemonService` also carries a **delegated-signing family** —
+`SignReceiveAuthMessage`, `SignReceiveAuthMessageCompact`, `SignOORCustomInput`,
+`SignVTXOForfeit`, `SignOutSwapHtlcAck`, `SignCreditAccountAuthorization` —
+through which higher layers (`sdk/swaps`, `swapclientserver`, `swapwallet`)
+obtain signatures from keys the daemon holds without ever handling those keys
+themselves. The request shapes are deliberately narrow rather than
+"sign these bytes", so the daemon can bound what it authorizes:
+`SignVTXOForfeit` and `SignOORCustomInput` describe the transaction being
+signed, and `SignOutSwapHtlcAck` / `SignCreditAccountAuthorization` carry the
+authorization's committed fields (expiry, nonce, account key) alongside the
+digest so the daemon can refuse one that is not its own to grant — see
+[waved/CLAUDE.md](../waved/CLAUDE.md) for the checks each applies.
+`SignReceiveAuthMessage`(`Compact`) is the exception and is scoped by key
+instead: it signs a raw message under the per-swap receive-auth key selected by
+`payment_hash`, not under the daemon identity key.
+
 ## Key Types
 
 - `DaemonServiceClient` / `DaemonServiceServer` — Generated gRPC client and

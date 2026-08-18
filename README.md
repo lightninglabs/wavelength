@@ -191,7 +191,7 @@ own `CLAUDE.md` / `AGENTS.md` with package-local context.
 |----------------------------------|-----------------------------------------------------------------------|
 | System architecture              | [`ARCHITECTURE.md`](ARCHITECTURE.md)                                  |
 | Install, configure, operate      | [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md)                |
-| Public test-network endpoints    | [`docs/signet.md`](docs/signet.md)                                    |
+| Public network endpoints         | [`docs/signet.md`](docs/signet.md)                                    |
 | Build-tag matrix                 | [`docs/wavewalletrpc_build.md`](docs/wavewalletrpc_build.md)                  |
 | Durable actor pattern            | [`docs/durable_actor_architecture.md`](docs/durable_actor_architecture.md) |
 | Mailbox transport                | [`docs/mailbox_architecture.md`](docs/mailbox_architecture.md)        |

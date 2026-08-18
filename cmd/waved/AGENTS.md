@@ -45,3 +45,10 @@ hands off to `waved.Main` to run the daemon.
 - `EagerRoundJoin`'s flag default comes from `waved.DefaultConfig()`,
   which is itself build-tag aware (true under `wavewalletrpc`, false
   otherwise); `--eagerroundjoin` still overrides it either way.
+- Several flags default to *empty* on purpose, because the meaning of "unset"
+  is resolved later against the network or the backend rather than here:
+  `--lnd.account` (empty = lnd's `default` account; set it to isolate spending
+  when two daemons share one lnd node) and `--server.host` /
+  `--swap.serveraddress` (empty = the selected network's public endpoint, via
+  `waved.defaultNetworkEndpoints`). Do not give these cosmetic non-empty
+  defaults in the flag registration — that would override the resolution.

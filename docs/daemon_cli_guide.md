@@ -147,8 +147,8 @@ waved \
 | `--swap.servertransport` | `grpc` | Swap server transport: `grpc` or `rest` |
 
 Empty Ark and swap addresses resolve from the selected network and transport.
-See [signet.md](signet.md) for the testnet3, testnet4, and signet endpoints and
-override examples.
+See [signet.md](signet.md) for the mainnet, testnet3, testnet4, and signet
+endpoints and override examples.
 
 There is no mailbox-ID flag: the client and compound server mailbox IDs are
 derived automatically from the client's identity key at connect time.

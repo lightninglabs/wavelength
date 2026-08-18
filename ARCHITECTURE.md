@@ -84,7 +84,7 @@ package may import from a higher layer.
 | [`rpc/wavewalletrpc`](rpc/wavewalletrpc/) | Highest-level gRPC surface: `WalletService` with the seven core wallet verbs. Composes `waverpc` and `rpc/swapclientrpc` server-side via `swapwallet` |
 | [`rpc/restclient`](rpc/restclient/) | HTTP/protoJSON transport adapter: `Client`, `StreamClient[T]`, and per-service factory functions implementing the same gRPC stub interfaces over REST |
 | [`waverpc`](waverpc/) | Daemon gRPC API definitions |
-| [`swaprpc`](swaprpc/) | Generated gRPC/REST/mailbox-RPC stubs for the external `SwapService` |
+| [`swaprpc`](swaprpc/) | Generated gRPC/REST/mailbox-RPC stubs for the external `SwapService`, plus the hand-written canonical digest constructions (`out_swap_ack.go`, `credit_account_auth.go`) that client and server must derive identically |
 
 ### Layer 4: Testing & Tooling
 
@@ -233,11 +233,35 @@ once new ones are confirmed signed.
 ```
 Live → PendingForfeit → Forfeiting → Forfeited
 Live → Forfeiting → Forfeited  (fast path: ForfeitRequestEvent in LiveState)
-PendingForfeit → UnilateralExit  (critical expiry while pending)
-Live → UnilateralExit  (critical expiry)
+Live → Expired → (PendingForfeit | Forfeiting) → Forfeited  (round reclaim)
+Live | PendingForfeit | Spending | Forfeiting → UnilateralExit
 Live → Spent
 Any → Failed
 ```
+`Expired` is **not** terminal — the value is still reclaimable by forfeiting the
+VTXO in a round, so the actor stays alive holding the signing material. It is
+the one state that refuses a unilateral exit outright: past expiry the exit must
+confirm the whole ancestry and then wait out the exit CSV while racing an
+operator sweep that is already spendable.
+
+`UnilateralExit` is **non-terminal**: the actor survives to observe the exit
+and is reaped only on a terminal on-chain outcome. Every entry into it goes
+through the manager's admission gate (`ForceUnrollEvent`), which carries the
+trigger (critical expiry, manual `Unroll`, fraud spend, vHTLC recovery) and an
+optional exit policy. Two refusals are load-bearing rather than incidental:
+
+- From `Forfeiting`, once the forfeit signature has issued, a **critical-expiry**
+  trigger self-loops instead of escalating — the operator can spend the coin
+  into a connector immediately, so the exit would race a transaction that has
+  already won. Manual and fraud-spend triggers still escalate.
+- A second `PendingForfeitEvent` is refused in both `PendingForfeit` and
+  `Forfeiting`, so a leave or refresh racing an existing claim is reported as
+  refused rather than queued behind the claim that actually gets paid.
+
+`vtxo.CheckForfeitAdmission` is the advisory pre-check for the same question,
+used by `waved` to filter leave targets and to annotate exit plans. It is
+advisory only — the FSM above is the enforcement point. See
+[vtxo/CLAUDE.md](vtxo/CLAUDE.md) for the per-state detail.
 
 ### OOR FSM
 Manages outgoing/incoming transfer state through checkpoint signing with

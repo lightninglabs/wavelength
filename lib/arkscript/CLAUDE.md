@@ -47,7 +47,11 @@ validated invariants.
 - `ValidatePolicy(nodes, opts)` — Structural admission check for any Ark policy
   shape (custom vHTLC, etc.). Enforces: collab leaf with operator key, exit
   leaf without operator key, no operator-unilateral leaf, CSV gating on exit
-  paths. `opts.MinExitDelay = 0` skips the CSV minimum check.
+  paths. `opts.MinExitDelay = 0` skips the CSV minimum check. It first rejects
+  nil leaves and **compiles** every leaf, so a direct caller that never calls
+  `PolicyTemplate.Compile()` still gets the compiler's `CSV` and `Condition`
+  safety checks (see Invariants) rather than validating a shape that could not
+  be built.
 - Decode budget constants: `MaxPolicyTemplateBytes` (64 KiB),
   `MaxLeafTemplateBytes` (16 KiB), `MaxPolicyLeaves` (32),
   `MaxPolicyDepth` (16), `MaxPolicyNodes` (256), `MaxMultisigKeys` (64) —
@@ -76,7 +80,18 @@ validated invariants.
   compare raw block counts against CSV lock values must convert accordingly.
 - CSV values are canonical non-zero block-mode encodings in `1..65535`.
   Time-mode, disable, and reserved high bits are rejected so structural delay
-  comparisons cannot diverge from the value enforced by consensus.
+  comparisons cannot diverge from the value enforced by consensus. The check
+  (`validateCSVLock`) runs in `CSV.Script()` and again at every entry point
+  that accepts a delay from a caller or a decoder:
+  `StandardVTXOTemplate`, `DecodeStandardVTXOParams`, and `VHTLCOpts.validate`
+  (all three unilateral delays).
+- `Condition.Predicate` is opaque to the AST walker but **not** unchecked.
+  `Condition.Script()` requires the predicate to tokenize as a complete script
+  fragment and rejects any tapscript `OP_SUCCESSx` opcode. Without those two
+  checks a raw prefix could consume the typed `Inner` clause as push data, or
+  make the leaf succeed before the inner signature checks ever execute — either
+  one turns "predicates only add restrictions" into a bypass, which is the
+  assumption `rejectOperatorUnilateral` and key extraction rely on.
 - Canonical leaf ordering: sorted by version then lexicographic script bytes.
 - All taproot outputs use the unspendable ARK NUMS key for key path (no
   key-path spend possible).
