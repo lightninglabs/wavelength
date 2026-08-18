@@ -2,6 +2,7 @@ package tapassets
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -151,13 +152,24 @@ func resolveCreatedAssetProofSource(committed *commitResult,
 			"package output")
 	}
 
-	var input *commitInput
+	// The emitted transition's predecessor is vPacket input 0: the spine.
+	// Every other same-asset input of the package is a co-input whose
+	// prior state the transition consumed alongside the spine tip.
+	var (
+		input    *commitInput
+		coInputs []*commitInput
+	)
 	for idx := range committed.inputs {
 		candidate := &committed.inputs[idx]
-		if candidate.anchorOutpoint !=
-			stepSummary.PreviousAnchorOutpoint ||
-			!candidate.assetRef.Equivalent(stepSummary.AssetRef) ||
+		if !candidate.assetRef.Equivalent(stepSummary.AssetRef) ||
 			candidate.issuanceID != stepSummary.IssuanceID {
+			return nil, fmt.Errorf("sealed package carries a " +
+				"foreign asset input")
+		}
+		if candidate.anchorOutpoint !=
+			stepSummary.PreviousAnchorOutpoint {
+
+			coInputs = append(coInputs, candidate)
 
 			continue
 		}
@@ -171,11 +183,38 @@ func resolveCreatedAssetProofSource(committed *commitResult,
 		return nil, fmt.Errorf("created asset proof predecessor is " +
 			"not present in the sealed package")
 	}
+	if len(coInputs) > tapsdk.AssetProofPathMaxStepCoPaths {
+		return nil, fmt.Errorf("created asset proof merges %d "+
+			"co-inputs, more than %d", len(coInputs),
+			tapsdk.AssetProofPathMaxStepCoPaths)
+	}
+
+	// Co-tips are declared in the package's own input order, matching the
+	// order the Ark request presented them in.
+	sort.SliceStable(coInputs, func(i, j int) bool {
+		return coInputs[i].logicalInputIndex <
+			coInputs[j].logicalInputIndex
+	})
+	for _, coInput := range coInputs {
+		coPath := &tapsdk.AssetProofPath{}
+		if _, err := proofPathFromSource(
+			coInput.proofSource, coPath,
+		); err != nil {
+			return nil, fmt.Errorf("co-input %d: %w",
+				coInput.logicalInputIndex, err)
+		}
+		step.CoInputPaths = append(step.CoInputPaths, coPath)
+	}
 
 	path := &tapsdk.AssetProofPath{}
 	sourceKind, err := proofPathFromSource(input.proofSource, path)
 	if err != nil {
 		return nil, err
+	}
+	if len(step.CoInputPaths) != 0 {
+		if err := promoteAssetProofPathV2(path); err != nil {
+			return nil, err
+		}
 	}
 	path.Steps = append(path.Steps, step)
 	compactPath, err := path.MarshalBinary()
@@ -213,6 +252,90 @@ func resolveCreatedAssetProofSource(committed *commitResult,
 			cloneByteSlices(selected.opTrueWitness),
 		),
 	}, nil
+}
+
+// promoteAssetProofPathV2 re-expresses a path at version 2 so a merging step
+// can carry co-input paths. V1 additional bases become first-step co-input
+// paths of stepless confirmed files, the SDK's own internal model, because a
+// V2 path must leave AdditionalBaseProofs empty.
+func promoteAssetProofPathV2(path *tapsdk.AssetProofPath) error {
+	if path.Version == tapsdk.AssetProofPathVersionV2 {
+		return nil
+	}
+	if len(path.AdditionalBaseProofs) != 0 {
+		if len(path.Steps) == 0 {
+			return fmt.Errorf("spine path carries additional " +
+				"bases without their merging step")
+		}
+		for _, base := range path.AdditionalBaseProofs {
+			path.Steps[0].CoInputPaths = append(
+				path.Steps[0].CoInputPaths,
+				&tapsdk.AssetProofPath{
+					Version: tapsdk.
+						AssetProofPathVersionV0,
+					ConfirmedBaseProof: base,
+				},
+			)
+		}
+		path.AdditionalBaseProofs = nil
+	}
+	path.Version = tapsdk.AssetProofPathVersionV2
+
+	return nil
+}
+
+// AssetProofPathAnchor identifies one unconfirmed anchor transaction of a
+// compact path's transfer DAG. OutputIndex selects the transition's
+// asset-bearing output within that transaction.
+type AssetProofPathAnchor struct {
+	Txid        chainhash.Hash
+	OutputIndex uint32
+}
+
+// CollectAssetProofPathAnchors returns every unconfirmed anchor across the
+// path's transfer DAG: the spine steps plus, recursively, every step's
+// co-input paths. Anchors are deduplicated by txid so a shared ancestor
+// resolves once.
+func CollectAssetProofPathAnchors(path *tapsdk.AssetProofPath) (
+	[]AssetProofPathAnchor, error) {
+
+	if path == nil {
+		return nil, fmt.Errorf("asset proof path is required")
+	}
+
+	seen := make(map[chainhash.Hash]struct{})
+	var anchors []AssetProofPathAnchor
+	var walk func(*tapsdk.AssetProofPath) error
+	walk = func(current *tapsdk.AssetProofPath) error {
+		for i := range current.Steps {
+			summary, err := current.Steps[i].Summary()
+			if err != nil {
+				return fmt.Errorf("summarize lineage step "+
+					"%d: %w", i, err)
+			}
+			txid := chainhash.Hash(summary.AnchorOutpoint.Txid)
+			if _, ok := seen[txid]; !ok {
+				seen[txid] = struct{}{}
+				anchors = append(anchors, AssetProofPathAnchor{
+					Txid: txid,
+					OutputIndex: summary.
+						AnchorOutpoint.Index,
+				})
+			}
+			for _, coPath := range current.Steps[i].CoInputPaths {
+				if err := walk(coPath); err != nil {
+					return err
+				}
+			}
+		}
+
+		return nil
+	}
+	if err := walk(path); err != nil {
+		return nil, err
+	}
+
+	return anchors, nil
 }
 
 func proofPathFromSource(source commitProofSource,
