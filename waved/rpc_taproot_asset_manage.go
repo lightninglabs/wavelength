@@ -198,30 +198,34 @@ func (s *Server) assetClaimConfirmations(ctx context.Context,
 
 	// The chain backend requires an output script beside the txid, and
 	// every lineage anchor is a transaction of the VTXO's own ancestry:
-	// the commitment transaction or a node of its tree fragment.
+	// the commitment transaction or a node of its tree fragment. A
+	// multi-input transfer's co-input anchors are covered too, since the
+	// ancestry fragments span every Bitcoin-side branch of the DAG.
 	lineageOutputs, err := assetLineageOutputs(desc)
 	if err != nil {
 		return nil, fmt.Errorf("index claim lineage outputs: %w", err)
 	}
 
+	// The lineage is a DAG, not a chain: every step of the spine plus,
+	// recursively, each merging step's co-input paths needs its anchor
+	// confirmed before the compact path completes into a proof file.
+	anchors, err := tapassets.CollectAssetProofPathAnchors(&path)
+	if err != nil {
+		return nil, fmt.Errorf("collect claim lineage anchors: %w", err)
+	}
+
 	confirmations := make(
-		map[chainhash.Hash]tapsdk.AnchorConfirmation, len(path.Steps),
+		map[chainhash.Hash]tapsdk.AnchorConfirmation, len(anchors),
 	)
 	chainRef := chainsource.ChainSourceKey.Ref(s.actorSystem)
-	for i := range path.Steps {
-		summary, err := path.Steps[i].Summary()
-		if err != nil {
-			return nil, fmt.Errorf("summarize lineage step %d: %w",
-				i, err)
-		}
-
-		txid := chainhash.Hash(summary.AnchorOutpoint.Txid)
+	for _, anchor := range anchors {
+		txid := anchor.Txid
 		if _, ok := confirmations[txid]; ok {
 			continue
 		}
 
 		outs := lineageOutputs[txid]
-		index := summary.AnchorOutpoint.Index
+		index := anchor.OutputIndex
 		if int(index) >= len(outs) || outs[index] == nil {
 			return nil, fmt.Errorf("lineage tx %v output %d is "+
 				"not part of the VTXO's ancestry", txid, index)

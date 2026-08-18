@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/vtxo"
@@ -61,19 +63,13 @@ func taprootAssetOORIntent(req *waverpc.SendOORRequest) (
 			"the operator's minimum VTXO amount")
 	}
 
-	inputOutpoint, err := parseOutpointString(
-		rpcIntent.GetInputVtxoOutpoint(),
-	)
+	inputOutpoints, err := taprootAssetIntentOutpoints(rpcIntent)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "parse "+
-			"Taproot Asset input VTXO outpoint %q: %v",
-			rpcIntent.GetInputVtxoOutpoint(), err)
+		return nil, err
 	}
 
 	intent := &oor.TaprootAssetOORIntent{
-		InputVTXOOutpoints: []wire.OutPoint{
-			inputOutpoint,
-		},
+		InputVTXOOutpoints:   inputOutpoints,
 		AssetRef:             rpcIntent.GetAssetRef(),
 		AssetAmount:          rpcIntent.GetAssetAmount(),
 		RecipientAssetAmount: rpcIntent.GetRecipientAssetAmount(),
@@ -95,6 +91,236 @@ func taprootAssetOORIntent(req *waverpc.SendOORRequest) (
 	}
 
 	return intent, nil
+}
+
+// taprootAssetIntentOutpoints resolves the pinned input, if any. An empty
+// outpoint delegates input selection to the daemon, where asset_amount
+// already names the units to send: the split between recipient and change
+// derives from whatever selection covers it.
+func taprootAssetIntentOutpoints(rpcIntent *waverpc.TaprootAssetOORIntent) (
+	[]wire.OutPoint, error) {
+
+	rawOutpoint := rpcIntent.GetInputVtxoOutpoint()
+	if rawOutpoint == "" {
+		if rpcIntent.GetRecipientAssetAmount() != 0 {
+			message := "recipient_asset_amount requires " +
+				"input_vtxo_outpoint: asset_amount already " +
+				"names the units to send"
+
+			return nil, status.Error(
+				codes.InvalidArgument, message,
+			)
+		}
+		if len(rpcIntent.GetInputProofFile()) != 0 {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"input_proof_file requires input_vtxo_outpoint")
+		}
+
+		return nil, nil
+	}
+
+	inputOutpoint, err := parseOutpointString(rawOutpoint)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "parse "+
+			"Taproot Asset input VTXO outpoint %q: %v", rawOutpoint,
+			err)
+	}
+
+	return []wire.OutPoint{inputOutpoint}, nil
+}
+
+// selectTaprootAssetOORInputs picks the live asset VTXOs one atomic transfer
+// spends to cover want units. A single sufficient VTXO wins (the smallest
+// such), otherwise the largest VTXOs accumulate until covered, spine first,
+// bounded by the per-transfer input cap.
+func selectTaprootAssetOORInputs(candidates []*vtxo.Descriptor,
+	want uint64) ([]*vtxo.Descriptor, error) {
+
+	if want == 0 {
+		return nil, fmt.Errorf("taproot asset send amount is required")
+	}
+
+	live := make([]*vtxo.Descriptor, 0, len(candidates))
+	var total uint64
+	for _, candidate := range candidates {
+		if candidate == nil ||
+			candidate.Status != vtxo.VTXOStatusLive ||
+			candidate.TaprootAssetAmount == 0 {
+
+			continue
+		}
+		if candidate.TaprootAssetAmount > ^uint64(0)-total {
+			return nil, fmt.Errorf("taproot asset balance " +
+				"overflows")
+		}
+		total += candidate.TaprootAssetAmount
+		live = append(live, candidate)
+	}
+	if total < want {
+		return nil, fmt.Errorf("insufficient taproot asset balance: "+
+			"need %d units, have %d", want, total)
+	}
+
+	// Deterministic order: units descending, outpoint as tie-break.
+	sort.Slice(live, func(i, j int) bool {
+		if live[i].TaprootAssetAmount != live[j].TaprootAssetAmount {
+			return live[i].TaprootAssetAmount >
+				live[j].TaprootAssetAmount
+		}
+
+		return live[i].Outpoint.String() < live[j].Outpoint.String()
+	})
+
+	// A single sufficient VTXO avoids merging entirely: the smallest one
+	// covering the send preserves the larger leaves. Equal amounts keep
+	// the earlier entry so the outpoint tie-break stays in force.
+	var single *vtxo.Descriptor
+	for _, candidate := range live {
+		if candidate.TaprootAssetAmount < want {
+			break
+		}
+		if single == nil ||
+			candidate.TaprootAssetAmount <
+				single.TaprootAssetAmount {
+
+			single = candidate
+		}
+	}
+	if single != nil {
+		return []*vtxo.Descriptor{single}, nil
+	}
+
+	var (
+		selected []*vtxo.Descriptor
+		covered  uint64
+	)
+	for _, candidate := range live {
+		if len(selected) == oor.MaxTaprootAssetInputs {
+			return nil, fmt.Errorf("sending %d units spans more "+
+				"than %d asset VTXOs; consolidate first", want,
+				oor.MaxTaprootAssetInputs)
+		}
+		selected = append(selected, candidate)
+		covered += candidate.TaprootAssetAmount
+		if covered >= want {
+			return selected, nil
+		}
+	}
+
+	return nil, fmt.Errorf("sending %d units spans more than %d asset "+
+		"VTXOs; consolidate first", want, oor.MaxTaprootAssetInputs)
+}
+
+// resolveTaprootAssetOORIntent turns the public intent into the resolved
+// per-input shape: the ordered asset input set (adopted from a resumed
+// preparation, pinned by the caller, or selected from the live wallet), the
+// summed input units, and the derived recipient allocation. The second
+// return value is the summed Bitcoin carrier value wallet selection targets.
+func (r *RPCServer) resolveTaprootAssetOORIntent(ctx context.Context,
+	intent *oor.TaprootAssetOORIntent, resume *oor.TaprootAssetOORResume) (
+	*oor.TaprootAssetOORIntent, btcutil.Amount, error) {
+
+	pinned := len(intent.InputVTXOOutpoints) != 0
+
+	var outpoints []wire.OutPoint
+	switch {
+	case resume != nil:
+		outpoints = append(
+			[]wire.OutPoint(nil), resume.InputOutpoints...,
+		)
+
+	case pinned:
+		outpoints = append(
+			[]wire.OutPoint(nil), intent.InputVTXOOutpoints...,
+		)
+
+	default:
+		live, err := r.server.vtxoStore.ListLiveVTXOs(ctx)
+		if err != nil {
+			return nil, 0, status.Errorf(codes.Internal, "list "+
+				"live VTXOs: %v", err)
+		}
+
+		// Exact reference match only: the resolved inputs must carry
+		// the intent's reference verbatim through preparation.
+		candidates := make([]*vtxo.Descriptor, 0, len(live))
+		for _, desc := range live {
+			if desc.TaprootAssetRef == intent.AssetRef {
+				candidates = append(candidates, desc)
+			}
+		}
+		selected, err := selectTaprootAssetOORInputs(
+			candidates, intent.AssetAmount,
+		)
+		if err != nil {
+			return nil, 0, status.Errorf(codes.FailedPrecondition,
+				"%v", err)
+		}
+		for _, desc := range selected {
+			outpoints = append(outpoints, desc.Outpoint)
+		}
+	}
+
+	var (
+		totalUnits uint64
+		carriers   btcutil.Amount
+	)
+	for _, outpoint := range outpoints {
+		desc, err := r.server.vtxoStore.GetVTXO(ctx, outpoint)
+		if err != nil || desc == nil {
+			return nil, 0, status.Errorf(codes.InvalidArgument,
+				"unknown Taproot Asset input VTXO %s", outpoint)
+		}
+		totalUnits += desc.TaprootAssetAmount
+		carriers += desc.Amount
+	}
+
+	resolved := *intent
+	resolved.InputVTXOOutpoints = outpoints
+	if !pinned {
+		// Selection mode: the caller's asset_amount is the send
+		// total; the resolved total is whatever the inputs carry.
+		want := intent.AssetAmount
+		if want > totalUnits {
+			return nil, 0, status.Errorf(codes.FailedPrecondition,
+				"resolved asset inputs carry %d units, need %d",
+				totalUnits, want)
+		}
+		resolved.AssetAmount = totalUnits
+		resolved.RecipientAssetAmount = 0
+		if want < totalUnits {
+			resolved.RecipientAssetAmount = want
+		}
+	}
+	if err := resolved.Validate(); err != nil {
+		return nil, 0, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+
+	return &resolved, carriers, nil
+}
+
+// orderAssetSelectedOutpoints pins wallet-locked outpoints to the intent's
+// spine-first order. The wallet must have selected exactly the required set:
+// asset sends never carry extra Bitcoin filler inputs.
+func orderAssetSelectedOutpoints(selected, required []wire.OutPoint) (
+	[]wire.OutPoint, error) {
+
+	if len(selected) != len(required) {
+		return nil, fmt.Errorf("wallet selected %d inputs, want %d",
+			len(selected), len(required))
+	}
+	seen := make(map[wire.OutPoint]struct{}, len(selected))
+	for _, outpoint := range selected {
+		seen[outpoint] = struct{}{}
+	}
+	for _, outpoint := range required {
+		if _, ok := seen[outpoint]; !ok {
+			return nil, fmt.Errorf("wallet selection misses "+
+				"required input %s", outpoint)
+		}
+	}
+
+	return append([]wire.OutPoint(nil), required...), nil
 }
 
 // requireTaprootAssetOORPreparer fails before input reservation when the

@@ -3147,6 +3147,19 @@ func (r *RPCServer) prepareWalletOORInputs(ctx context.Context,
 		for _, selected := range locked.SelectedVTXOs {
 			outpoints = append(outpoints, selected.Outpoint)
 		}
+
+		// Asset sends pin the transition input order (spine first);
+		// the wallet's own selection order is not significant.
+		if assetIntent != nil {
+			outpoints, err = orderAssetSelectedOutpoints(
+				outpoints, assetIntent.InputVTXOOutpoints,
+			)
+			if err != nil {
+				return nil, locked, 0, 0, status.Errorf(
+					codes.Internal, "order asset "+
+						"selection: %v", err)
+			}
+		}
 	}
 	selectDuration := time.Since(selectStart)
 
@@ -3373,30 +3386,16 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 	}
 
 	// For asset sends the sender contributes no Bitcoin VTXO: the
-	// operator float funds every new asset leaf at the floor and the
+	// operator float funds every new asset leaf at the floor and each
 	// spent leaf's carrier follows its origin (returned to the sender or
-	// reclaimed by the operator), so selection targets exactly the asset
-	// input.
+	// reclaimed by the operator), so selection later targets exactly the
+	// asset inputs' own carriers.
 	recipientOutputs := requestRecipients
-	var assetInputCarrier btcutil.Amount
 	if assetIntent != nil {
 		if r.server.vtxoStore == nil {
 			return nil, status.Errorf(codes.Internal, "VTXO "+
 				"store not initialized")
 		}
-
-		for _, outpoint := range assetIntent.InputVTXOOutpoints {
-			inputDesc, err := r.server.vtxoStore.GetVTXO(
-				ctx, outpoint,
-			)
-			if err != nil || inputDesc == nil {
-				return nil, status.Errorf(codes.InvalidArgument,
-					"unknown Taproot Asset input VTXO %s",
-					outpoint)
-			}
-			assetInputCarrier += inputDesc.Amount
-		}
-		targetAmt = assetInputCarrier
 
 		recipientOutputs = []*waverpc.Output{{
 			Destination: requestRecipients[0].Destination,
@@ -3476,6 +3475,16 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 			); err != nil {
 				return nil, err
 			}
+		}
+
+		// Resolve the ordered asset input set only after the resume
+		// probe: a journaled selection is immutable, while a fresh
+		// request may pin one input or delegate selection entirely.
+		assetIntent, targetAmt, err = r.resolveTaprootAssetOORIntent(
+			ctx, assetIntent, assetResume,
+		)
+		if err != nil {
+			return nil, err
 		}
 	}
 

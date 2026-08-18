@@ -534,6 +534,210 @@ func TestSendOORTaprootAssetPreparesBeforeActor(t *testing.T) {
 	require.Empty(t, fixture.wallet.unlockBatches())
 }
 
+// addAssetVTXO stores one more live asset VTXO sharing the fixture's asset
+// reference and signing material.
+func (f *taprootAssetOORRPCFixture) addAssetVTXO(t *testing.T, seed byte,
+	units uint64, carrier btcutil.Amount) *vtxo.Descriptor {
+
+	t.Helper()
+
+	clone := *f.desc
+	clone.Outpoint.Hash[0] = seed
+	clone.TaprootAssetAmount = units
+	clone.Amount = carrier
+	require.NoError(
+		t,
+		f.rpcServer.server.vtxoStore.SaveVTXO(
+			t.Context(), &clone,
+		),
+	)
+
+	return &clone
+}
+
+// TestSendOORTaprootAssetSelectsInputs proves an empty input outpoint
+// delegates selection to the daemon: the largest VTXOs accumulate until the
+// requested units are covered and feed ONE atomic transfer, spine first,
+// regardless of the wallet lock order.
+func TestSendOORTaprootAssetSelectsInputs(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTaprootAssetOORRPCFixture(t)
+	second := fixture.addAssetVTXO(t, 0x71, 13, 40_000)
+	fixture.addAssetVTXO(t, 0x72, 8, 30_000)
+
+	// The wallet returns the required set in its own order; the daemon
+	// re-pins the spine-first transition order.
+	fixture.wallet.selections = [][]wallet.SelectedVTXO{{
+		selectedVTXOFromDescriptor(second),
+		selectedVTXOFromDescriptor(fixture.desc),
+	}}
+
+	fixture.request.TaprootAsset.InputVtxoOutpoint = ""
+	fixture.request.TaprootAsset.InputProofFile = nil
+	fixture.request.TaprootAsset.AssetAmount = 30
+
+	response, err := fixture.rpcServer.SendOOR(
+		t.Context(), fixture.request,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "submitted", response.GetStatus())
+
+	// 21 + 13 covers 30; the 8-unit leaf stays untouched. The spine is
+	// the largest input and the resolved intent carries the summed units
+	// with the requested send as the recipient allocation.
+	prepareRequests := fixture.preparer.captured()
+	require.Len(t, prepareRequests, 1)
+	prepareRequest := prepareRequests[0]
+	require.Equal(
+		t, []wire.OutPoint{fixture.desc.Outpoint, second.Outpoint},
+		prepareRequest.Intent.InputVTXOOutpoints,
+	)
+	require.EqualValues(t, 34, prepareRequest.Intent.AssetAmount)
+	require.EqualValues(
+		t, 30, prepareRequest.Intent.RecipientAssetAmount,
+	)
+	require.Len(t, prepareRequest.Inputs, 3)
+	require.Equal(
+		t, fixture.desc.Outpoint,
+		prepareRequest.Inputs[0].VTXO.Outpoint,
+	)
+	require.Equal(
+		t, second.Outpoint, prepareRequest.Inputs[1].VTXO.Outpoint,
+	)
+	require.True(t, prepareRequest.Inputs[2].OperatorFunded)
+
+	// Wallet selection targets exactly the two carriers and requires the
+	// exact selected outpoints; the recipient and asset-change leaves are
+	// leased from the float.
+	selectRequests := fixture.wallet.selectionRequests()
+	require.Len(t, selectRequests, 1)
+	require.Equal(
+		t, []wire.OutPoint{fixture.desc.Outpoint, second.Outpoint},
+		selectRequests[0].RequiredOutpoints,
+	)
+	require.Equal(
+		t, btcutil.Amount(90_000), selectRequests[0].TargetAmount,
+	)
+	require.Len(t, fixture.arkService.leaseRequests, 1)
+	require.EqualValues(
+		t, 2000, fixture.arkService.leaseRequests[0].GetRequiredSat(),
+	)
+
+	// Both spent leaves are round-created, so their summed carriers come
+	// back as one sender change output beside the operator residual.
+	actorRequests := fixture.oorActor.capturedRequests()
+	require.Len(t, actorRequests, 1)
+	recipients := actorRequests[0].Recipients
+	require.Len(t, recipients, 4)
+	require.EqualValues(t, 30, recipients[0].TaprootAssetAmount)
+	require.EqualValues(t, 4, recipients[1].TaprootAssetAmount)
+	require.Equal(t, btcutil.Amount(90_000), recipients[2].Value)
+	require.Equal(t, btcutil.Amount(23_000), recipients[3].Value)
+	require.Equal(t, fixture.lease.PkScript, recipients[3].PkScript)
+}
+
+// TestSendOORTaprootAssetSelectsSingleSufficientInput proves selection keeps
+// the current single-input behavior when one VTXO covers the send: the
+// smallest sufficient leaf wins.
+func TestSendOORTaprootAssetSelectsSingleSufficientInput(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTaprootAssetOORRPCFixture(t)
+	second := fixture.addAssetVTXO(t, 0x71, 13, 40_000)
+	fixture.wallet.selections = [][]wallet.SelectedVTXO{{
+		selectedVTXOFromDescriptor(second),
+	}}
+	fixture.request.TaprootAsset.InputVtxoOutpoint = ""
+	fixture.request.TaprootAsset.InputProofFile = nil
+	fixture.request.TaprootAsset.AssetAmount = 10
+
+	response, err := fixture.rpcServer.SendOOR(
+		t.Context(), fixture.request,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "submitted", response.GetStatus())
+
+	prepareRequests := fixture.preparer.captured()
+	require.Len(t, prepareRequests, 1)
+	require.Equal(
+		t, []wire.OutPoint{second.Outpoint},
+		prepareRequests[0].Intent.InputVTXOOutpoints,
+	)
+	require.EqualValues(t, 13, prepareRequests[0].Intent.AssetAmount)
+	require.EqualValues(
+		t, 10, prepareRequests[0].Intent.RecipientAssetAmount,
+	)
+}
+
+// TestSelectTaprootAssetOORInputs pins the selection policy: smallest
+// sufficient single VTXO, largest-first accumulation, the eight-input cap
+// with a consolidate-first error, and the need/have insufficiency error.
+func TestSelectTaprootAssetOORInputs(t *testing.T) {
+	t.Parallel()
+
+	leaf := func(seed byte, units uint64) *vtxo.Descriptor {
+		return &vtxo.Descriptor{
+			Outpoint: wire.OutPoint{
+				Hash: chainhash.Hash{
+					seed,
+				},
+			},
+			Status:             vtxo.VTXOStatusLive,
+			TaprootAssetAmount: units,
+		}
+	}
+	outpoints := func(selected []*vtxo.Descriptor) []wire.OutPoint {
+		result := make([]wire.OutPoint, len(selected))
+		for idx := range selected {
+			result[idx] = selected[idx].Outpoint
+		}
+
+		return result
+	}
+
+	candidates := []*vtxo.Descriptor{
+		leaf(1, 50), leaf(2, 200), leaf(3, 50),
+	}
+
+	// Single sufficient: the smallest covering leaf, not the largest.
+	selected, err := selectTaprootAssetOORInputs(candidates, 40)
+	require.NoError(t, err)
+	require.Equal(
+		t, []wire.OutPoint{
+			{Hash: chainhash.Hash{1}},
+		},
+		outpoints(selected),
+	)
+
+	// Largest-first accumulation, spine first: 200 + 50 covers 240.
+	selected, err = selectTaprootAssetOORInputs(candidates, 240)
+	require.NoError(t, err)
+	require.Equal(
+		t, []wire.OutPoint{
+			{Hash: chainhash.Hash{2}},
+			{Hash: chainhash.Hash{1}},
+		},
+		outpoints(selected),
+	)
+
+	// A mid-spend leaf holds no selectable balance.
+	spending := leaf(4, 1_000)
+	spending.Status = vtxo.VTXOStatusSpending
+	_, err = selectTaprootAssetOORInputs(
+		append(candidates, spending), 400,
+	)
+	require.ErrorContains(t, err, "need 400 units, have 300")
+
+	// Nine leaves cover the send but exceed the atomic input cap.
+	var many []*vtxo.Descriptor
+	for seed := byte(1); seed <= 9; seed++ {
+		many = append(many, leaf(seed, 10))
+	}
+	_, err = selectTaprootAssetOORInputs(many, 90)
+	require.ErrorContains(t, err, "consolidate first")
+}
+
 // TestSendOORTaprootAssetFiltersChangeOutpoints proves a partial allocation
 // funds local asset change but returns only the caller's receiver.
 func TestSendOORTaprootAssetFiltersChangeOutpoints(t *testing.T) {
@@ -972,12 +1176,34 @@ func TestSendOORTaprootAssetFailsClosed(t *testing.T) {
 		wantUnlock   bool
 	}{
 		{
-			name: "missing managed input outpoint",
+			name: "proof file requires a pinned input",
 			mutate: func(f *taprootAssetOORRPCFixture) {
 				f.request.TaprootAsset.InputVtxoOutpoint = ""
 			},
-			wantCode:     codes.InvalidArgument,
-			wantContains: "input VTXO outpoint",
+			wantCode: codes.InvalidArgument,
+			wantContains: "input_proof_file requires " +
+				"input_vtxo_outpoint",
+		},
+		{
+			name: "recipient amount requires a pinned input",
+			mutate: func(f *taprootAssetOORRPCFixture) {
+				f.request.TaprootAsset.InputVtxoOutpoint = ""
+				f.request.TaprootAsset.InputProofFile = nil
+				f.request.TaprootAsset.RecipientAssetAmount = 5
+			},
+			wantCode: codes.InvalidArgument,
+			wantContains: "recipient_asset_amount requires " +
+				"input_vtxo_outpoint",
+		},
+		{
+			name: "insufficient live asset balance",
+			mutate: func(f *taprootAssetOORRPCFixture) {
+				f.request.TaprootAsset.InputVtxoOutpoint = ""
+				f.request.TaprootAsset.InputProofFile = nil
+				f.request.TaprootAsset.AssetAmount = 100
+			},
+			wantCode:     codes.FailedPrecondition,
+			wantContains: "need 100 units, have 21",
 		},
 		{
 			name: "malformed managed input outpoint",
