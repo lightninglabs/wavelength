@@ -219,6 +219,7 @@ func TestNewReceiveScriptRenewsExpiredRegistration(t *testing.T) {
 	server := &Server{
 		walletReady: walletReady,
 		clk:         clk,
+		log:         btclog.Disabled,
 		db:          db.NewTestDB(t),
 		indexer: indexer.New(
 			rpcClient, nil, "test-server", "client:test",

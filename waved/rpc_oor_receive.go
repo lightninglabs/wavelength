@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode"
@@ -190,6 +191,7 @@ func (r *RPCServer) newIdempotentReceiveScript(ctx context.Context,
 
 	now := r.server.clk.Now()
 	if !rec.RegistrationExpiresAt.After(now) {
+		oldExpiresAt := rec.RegistrationExpiresAt
 		nextRPCKey, err := mailboxrpc.NewIdempotencyKey()
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "unable to "+
@@ -205,6 +207,16 @@ func (r *RPCServer) newIdempotentReceiveScript(ctx context.Context,
 				"renew OOR receive script registration: %v",
 				err)
 		}
+
+		r.server.log.DebugS(ctx, "Renewed expired OOR receive-script "+
+			"registration window",
+			slog.String("idempotency_key", idempotencyKey),
+			slog.Int64("old_expires_at_unix_s", oldExpiresAt.Unix()),
+			slog.Int64(
+				"new_expires_at_unix_s",
+				rec.RegistrationExpiresAt.Unix(),
+			),
+		)
 	}
 
 	if rec.RegistrationCompletedAt.IsSome() {
