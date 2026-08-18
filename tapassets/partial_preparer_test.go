@@ -100,7 +100,12 @@ func TestPreparerBuildsPartialAssetTransferFromOperatorFloat(t *testing.T) {
 	// position rather than the canonically sorted Ark-input position.
 	require.Len(t, prepared.PreparedSubmit.CheckpointPSBTs, 2)
 	require.Equal(
-		t, [][]byte{[]byte("checkpoint-package"), nil},
+		t, [][]byte{
+			fakeCheckpointPackageName(
+				request.Inputs[0].VTXO.Outpoint,
+			),
+			nil,
+		},
 		prepared.PreparedSubmit.TaprootAssetTransfer.CheckpointPackages,
 	)
 	require.Len(t, driver.requests, 2)
