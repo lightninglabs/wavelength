@@ -33,20 +33,29 @@ const (
 	// MaxTaprootAssetCourierAddressBytes bounds the optional proof courier
 	// address before the concrete tap-sdk adapter interprets it.
 	MaxTaprootAssetCourierAddressBytes = 2048
+
+	// MaxTaprootAssetInputs bounds the asset-bearing inputs of one atomic
+	// transfer. Each input adds a checkpoint transition plus recursive
+	// co-input evidence on every created leaf, so a send needing more
+	// must consolidate first.
+	MaxTaprootAssetInputs = 8
 )
 
 // TaprootAssetOORIntent is the proof-selected asset movement requested by an
 // OOR caller. AssetAmount is measured in asset units and is deliberately
 // separate from the satoshi value of the containing Ark VTXO.
 type TaprootAssetOORIntent struct {
-	// InputVTXOOutpoint is the wallet-managed asset-bearing VTXO that must
-	// be selected and reserved through the normal VTXO manager path.
-	InputVTXOOutpoint wire.OutPoint
+	// InputVTXOOutpoints are the wallet-managed asset-bearing VTXOs the
+	// transfer spends in one atomic transition, spine first. The daemon
+	// resolves the list before preparation, so an empty list is valid
+	// only on the public RPC surface where it delegates selection.
+	InputVTXOOutpoints []wire.OutPoint
 
 	// AssetRef is the opaque tap-sdk asset or group identifier.
 	AssetRef string
 
-	// AssetAmount is the exact number of asset units selected by ProofFile.
+	// AssetAmount is the exact total number of asset units carried by the
+	// selected inputs.
 	AssetAmount uint64
 
 	// RecipientAssetAmount is the number of asset units delivered to the
@@ -92,9 +101,31 @@ func (i *TaprootAssetOORIntent) Validate() error {
 	if i.AssetAmount == 0 {
 		return fmt.Errorf("taproot asset amount is required")
 	}
+	if len(i.InputVTXOOutpoints) > MaxTaprootAssetInputs {
+		return fmt.Errorf("taproot asset OOR spans %d inputs, more "+
+			"than %d: consolidate first", len(i.InputVTXOOutpoints),
+			MaxTaprootAssetInputs)
+	}
+	seenInputs := make(
+		map[wire.OutPoint]struct{}, len(i.InputVTXOOutpoints),
+	)
+	for _, outpoint := range i.InputVTXOOutpoints {
+		if _, ok := seenInputs[outpoint]; ok {
+			return fmt.Errorf("taproot asset OOR intent input %s "+
+				"is duplicated", outpoint)
+		}
+		seenInputs[outpoint] = struct{}{}
+	}
 	if len(i.ProofFile) > oortx.MaxTaprootAssetPackageBytes {
 		return fmt.Errorf("taproot asset input proof exceeds %d bytes",
 			oortx.MaxTaprootAssetPackageBytes)
+	}
+
+	// A caller-supplied proof file describes exactly one confirmed input;
+	// multi-input sends resolve every input from its sealed local package.
+	if len(i.InputVTXOOutpoints) > 1 && len(i.ProofFile) != 0 {
+		return fmt.Errorf("taproot asset input proof file requires a " +
+			"single pinned input")
 	}
 	if len(i.RecipientScriptKey) != 0 {
 		return fmt.Errorf("taproot asset recipient script key is " +
@@ -232,22 +263,9 @@ func (r *TaprootAssetOORPrepareRequest) Validate() error {
 	if r.OutputFloor <= 0 {
 		return fmt.Errorf("taproot asset OOR output floor is required")
 	}
-	assetInputIndex, err := r.AssetInputIndex()
+	assetInputIndices, err := r.AssetInputIndices()
 	if err != nil {
 		return err
-	}
-	assetInput := r.Inputs[assetInputIndex]
-	if assetInput.VTXO.Outpoint != r.Intent.InputVTXOOutpoint {
-		return fmt.Errorf("taproot asset OOR input outpoint does not " +
-			"match the requested managed VTXO")
-	}
-	if assetInput.VTXO.TaprootAssetRef != r.Intent.AssetRef {
-		return fmt.Errorf("taproot asset OOR input ref does not " +
-			"match the requested asset")
-	}
-	if assetInput.VTXO.TaprootAssetAmount != r.Intent.AssetAmount {
-		return fmt.Errorf("taproot asset OOR input amount does not " +
-			"match the requested asset")
 	}
 	if len(r.Recipients[0].VTXOPolicyTemplate) == 0 {
 		return fmt.Errorf("taproot asset OOR recipient policy is " +
@@ -271,9 +289,11 @@ func (r *TaprootAssetOORPrepareRequest) Validate() error {
 	if err != nil {
 		return err
 	}
-	if floatInputIndex == assetInputIndex {
-		return fmt.Errorf("taproot asset OOR float input cannot " +
-			"carry the asset")
+	for _, assetIndex := range assetInputIndices {
+		if floatInputIndex == assetIndex {
+			return fmt.Errorf("taproot asset OOR float input " +
+				"cannot carry the asset")
+		}
 	}
 	if err := r.validateLeaseBinding(floatInputIndex); err != nil {
 		return err
@@ -369,8 +389,8 @@ func (r *TaprootAssetOORPrepareRequest) CarrierAllocation() (
 	}
 
 	// A light scan suffices here: every caller runs the request's full
-	// Validate (which runs AssetInputIndex) before planning values.
-	if _, err := locateTaprootAssetInput(r.Inputs); err != nil {
+	// Validate (which runs AssetInputIndices) before planning values.
+	if err := requireTaprootAssetInput(r.Inputs); err != nil {
 		return TaprootAssetCarrierPlan{}, err
 	}
 
@@ -437,31 +457,22 @@ func hasTaprootAssetState(input *TransferInput) bool {
 		input.VTXO.TaprootAssetAmount != 0
 }
 
-// locateTaprootAssetInput returns the unique asset-bearing input without the
-// per-input structural validation AssetInputIndex performs.
-func locateTaprootAssetInput(inputs []TransferInput) (int, error) {
-	assetIndex := -1
+// requireTaprootAssetInput checks at least one asset-bearing input exists,
+// without the per-input structural validation AssetInputIndices performs.
+func requireTaprootAssetInput(inputs []TransferInput) error {
 	for idx := range inputs {
 		input := &inputs[idx]
 		if input.VTXO == nil {
-			return 0, fmt.Errorf("taproot asset OOR input %d "+
+			return fmt.Errorf("taproot asset OOR input %d "+
 				"has no VTXO", idx)
 		}
 
-		if !hasTaprootAssetState(input) {
-			continue
+		if hasTaprootAssetState(input) {
+			return nil
 		}
-		if assetIndex >= 0 {
-			return 0, fmt.Errorf("taproot asset OOR requires " +
-				"exactly one asset input")
-		}
-		assetIndex = idx
-	}
-	if assetIndex < 0 {
-		return 0, fmt.Errorf("taproot asset OOR input root is required")
 	}
 
-	return assetIndex, nil
+	return fmt.Errorf("taproot asset OOR input root is required")
 }
 
 // OperatorFundedInputIndex returns the unique operator-funded float input.
@@ -492,31 +503,51 @@ func (r *TaprootAssetOORPrepareRequest) OperatorFundedInputIndex() (int,
 	return floatIndex, nil
 }
 
-// AssetInputIndex returns the unique asset-bearing input. Every other input
-// must be an ordinary Bitcoin VTXO.
-func (r *TaprootAssetOORPrepareRequest) AssetInputIndex() (int, error) {
+// AssetInputIndices returns the asset-bearing inputs resolved against the
+// intent's ordered outpoint list, spine first. The intent order also has to
+// be the inputs' relative order, so the journaled wallet input set and the
+// asset transition input order stay interchangeable across restarts. Every
+// other input must be the operator-funded carrier float.
+func (r *TaprootAssetOORPrepareRequest) AssetInputIndices() ([]int, error) {
 	if r == nil {
-		return 0, fmt.Errorf("taproot asset OOR prepare request is " +
+		return nil, fmt.Errorf("taproot asset OOR prepare request is " +
 			"required")
 	}
+	outpointCount := len(r.Intent.InputVTXOOutpoints)
+	if outpointCount == 0 {
+		return nil, fmt.Errorf("taproot asset OOR intent input " +
+			"outpoints are required")
+	}
 
-	assetIndex := -1
+	byOutpoint := make(map[wire.OutPoint]int, outpointCount)
 	seenOutpoints := make(map[wire.OutPoint]struct{}, len(r.Inputs))
+	assetOrder := make([]wire.OutPoint, 0, outpointCount)
 	for idx := range r.Inputs {
 		input := &r.Inputs[idx]
 		if err := input.Validate(); err != nil {
-			return 0, fmt.Errorf("taproot asset OOR input %d: %w",
+			return nil, fmt.Errorf("taproot asset OOR input %d: %w",
 				idx, err)
 		}
 		if _, ok := seenOutpoints[input.VTXO.Outpoint]; ok {
-			return 0, fmt.Errorf("taproot asset OOR input %d has "+
-				"duplicate outpoint %s", idx,
+			return nil, fmt.Errorf("taproot asset OOR input %d "+
+				"has duplicate outpoint %s", idx,
 				input.VTXO.Outpoint)
 		}
 		seenOutpoints[input.VTXO.Outpoint] = struct{}{}
 
 		if !hasTaprootAssetState(input) {
+			if !input.OperatorFunded {
+				return nil, fmt.Errorf("taproot asset OOR "+
+					"input %d is neither an asset input "+
+					"nor the operator float", idx)
+			}
+
 			continue
+		}
+		if input.OperatorFunded {
+			return nil, fmt.Errorf("taproot asset OOR input %d "+
+				"cannot be both asset-bearing and "+
+				"operator-funded", idx)
 		}
 		if input.TaprootAssetRoot == nil ||
 			input.VTXO.TaprootAssetRoot == nil ||
@@ -524,20 +555,49 @@ func (r *TaprootAssetOORPrepareRequest) AssetInputIndex() (int, error) {
 				*input.VTXO.TaprootAssetRoot ||
 			input.VTXO.TaprootAssetRef == "" ||
 			input.VTXO.TaprootAssetAmount == 0 {
-			return 0, fmt.Errorf("taproot asset OOR input %d has "+
-				"incomplete asset state", idx)
+			return nil, fmt.Errorf("taproot asset OOR input %d "+
+				"has incomplete asset state", idx)
 		}
-		if assetIndex >= 0 {
-			return 0, fmt.Errorf("taproot asset OOR requires " +
-				"exactly one asset input")
-		}
-		assetIndex = idx
+		byOutpoint[input.VTXO.Outpoint] = idx
+		assetOrder = append(assetOrder, input.VTXO.Outpoint)
 	}
-	if assetIndex < 0 {
-		return 0, fmt.Errorf("taproot asset OOR input root is required")
+	if len(byOutpoint) != outpointCount {
+		return nil, fmt.Errorf("taproot asset OOR has %d asset "+
+			"inputs, the intent names %d", len(byOutpoint),
+			outpointCount)
 	}
 
-	return assetIndex, nil
+	indices := make([]int, 0, outpointCount)
+	var total uint64
+	for ordinal, outpoint := range r.Intent.InputVTXOOutpoints {
+		idx, ok := byOutpoint[outpoint]
+		if !ok {
+			return nil, fmt.Errorf("taproot asset OOR input "+
+				"outpoint %s does not match the requested "+
+				"managed VTXOs", outpoint)
+		}
+		if assetOrder[ordinal] != outpoint {
+			return nil, fmt.Errorf("taproot asset OOR asset " +
+				"inputs are not in intent order")
+		}
+		input := &r.Inputs[idx]
+		if input.VTXO.TaprootAssetRef != r.Intent.AssetRef {
+			return nil, fmt.Errorf("taproot asset OOR input ref " +
+				"does not match the requested asset")
+		}
+		if input.VTXO.TaprootAssetAmount > ^uint64(0)-total {
+			return nil, fmt.Errorf("taproot asset OOR input " +
+				"amounts overflow")
+		}
+		total += input.VTXO.TaprootAssetAmount
+		indices = append(indices, idx)
+	}
+	if total != r.Intent.AssetAmount {
+		return nil, fmt.Errorf("taproot asset OOR input amount does " +
+			"not match the requested asset")
+	}
+
+	return indices, nil
 }
 
 // TaprootAssetOORPreparation is the immutable custom-anchor result supplied

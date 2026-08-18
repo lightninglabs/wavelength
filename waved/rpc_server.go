@@ -3114,7 +3114,9 @@ func sendOORRequiredOutpoints(
 		return nil
 	}
 
-	return []wire.OutPoint{assetIntent.InputVTXOOutpoint}
+	return append(
+		[]wire.OutPoint(nil), assetIntent.InputVTXOOutpoints...,
+	)
 }
 
 func (r *RPCServer) prepareWalletOORInputs(ctx context.Context,
@@ -3410,15 +3412,17 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 				"store not initialized")
 		}
 
-		inputDesc, err := r.server.vtxoStore.GetVTXO(
-			ctx, assetIntent.InputVTXOOutpoint,
-		)
-		if err != nil || inputDesc == nil {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"unknown Taproot Asset input VTXO %s",
-				assetIntent.InputVTXOOutpoint)
+		for _, outpoint := range assetIntent.InputVTXOOutpoints {
+			inputDesc, err := r.server.vtxoStore.GetVTXO(
+				ctx, outpoint,
+			)
+			if err != nil || inputDesc == nil {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"unknown Taproot Asset input VTXO %s",
+					outpoint)
+			}
+			assetInputCarrier += inputDesc.Amount
 		}
-		assetInputCarrier = inputDesc.Amount
 		targetAmt = assetInputCarrier
 
 		recipientOutputs = []*waverpc.Output{{
