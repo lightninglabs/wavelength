@@ -449,7 +449,7 @@ func splitAssetInputCarriers(inputs []TransferInput) (btcutil.Amount,
 
 // hasTaprootAssetState reports whether any identity field marks the input as
 // asset-bearing. The transfer-input and descriptor views must agree, which
-// AssetInputIndex enforces separately.
+// AssetInputIndices enforces separately.
 func hasTaprootAssetState(input *TransferInput) bool {
 	return input.TaprootAssetRoot != nil ||
 		input.VTXO.TaprootAssetRoot != nil ||

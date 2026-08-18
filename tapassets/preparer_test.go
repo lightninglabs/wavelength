@@ -614,7 +614,6 @@ type fakeDriver struct {
 	commitPreviewMutator func(
 		*tapsdk.CustomAnchorRequest, []commitmentPreview,
 	)
-	forcedAssetInputIndex *uint32
 
 	// lineages holds one entry per committed checkpoint in commit order,
 	// which equals the Ark request's transition-input order.
@@ -789,9 +788,6 @@ func (d *fakeDriver) Commit(ctx context.Context,
 					break
 				}
 			}
-		}
-		if d.forcedAssetInputIndex != nil {
-			anchorInputIndex = *d.forcedAssetInputIndex
 		}
 		inputs[idx] = commitInput{
 			logicalInputIndex: uint32(idx),
