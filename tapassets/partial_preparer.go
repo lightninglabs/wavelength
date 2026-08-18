@@ -80,21 +80,24 @@ func (s *assetSpendSource) validateTransitionCapacity() error {
 	return nil
 }
 
-// verify performs the complete proof/path validation before the atomic input
-// reservation set is acquired. The SDK repeats this during build, but doing it
-// here keeps deterministic proof, passive-asset, and lineage failures on the
-// safe side of Wavelength's reservation point of no return.
-func (s *assetSpendSource) verify(ctx context.Context) error {
-	if s == nil || s.verifier == nil {
+// verifySpendSource performs the complete proof/path validation before the
+// atomic input reservation set is acquired. The SDK repeats this during
+// build, but doing it here keeps deterministic proof, passive-asset, and
+// lineage failures on the safe side of Wavelength's reservation point of no
+// return.
+func (p *Preparer) verifySpendSource(ctx context.Context,
+	source *assetSpendSource) error {
+
+	if source == nil || source.verifier == nil {
 		return fmt.Errorf("Taproot Asset proof source verifier is " +
 			"required")
 	}
 
-	if s.proofPath == nil {
-		verification, err := s.verifier.VerifyConfirmedProof(
+	if source.proofPath == nil {
+		verification, err := source.verifier.VerifyConfirmedProof(
 			ctx,
 			append(
-				[]byte(nil), s.proofFile...,
+				[]byte(nil), source.proofFile...,
 			),
 		)
 		if err != nil {
@@ -115,7 +118,13 @@ func (s *assetSpendSource) verify(ctx context.Context) error {
 		return nil
 	}
 
-	if _, err := s.proofPath.Clone().Verify(ctx, s.verifier); err != nil {
+	verify := p.verifyProofPath
+	if verify == nil {
+		verify = verifyAssetProofPath
+	}
+	if err := verify(
+		ctx, source.proofPath.Clone(), source.verifier,
+	); err != nil {
 		return fmt.Errorf("preflight Taproot Asset proof path: %w", err)
 	}
 
@@ -388,10 +397,20 @@ func (p *Preparer) resolveAssetSpendSource(ctx context.Context,
 		return nil, fmt.Errorf("load created Taproot Asset package: %w",
 			err)
 	}
-	resolved, err := ResolveCreatedAssetProofSource(
-		packageBytes, input.VTXO.Outpoint, int64(input.VTXO.Amount),
-		input.VTXO.TaprootAssetRef, input.VTXO.TaprootAssetAmount,
-		*input.TaprootAssetRoot,
+	inputRef, err := tapsdk.ParseAssetRef(input.VTXO.TaprootAssetRef)
+	if err != nil {
+		return nil, fmt.Errorf("parse Taproot Asset input ref: %w", err)
+	}
+	committed, err := p.driver.DecodePackage(packageBytes)
+	if err != nil {
+		return nil, fmt.Errorf("decode created Taproot Asset "+
+			"package: %w", err)
+	}
+	resolved, err := resolveCreatedAssetProofSource(
+		committed, sdkOutpoint(input.VTXO.Outpoint),
+		int64(input.VTXO.Amount), inputRef,
+		input.VTXO.TaprootAssetAmount,
+		tapsdk.Hash(*input.TaprootAssetRoot),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("resolve created Taproot Asset "+
@@ -485,13 +504,13 @@ func (s *assetSpendSource) appendTransition(proofBlob []byte,
 	}, nil
 }
 
-// prepareCheckpoints builds every Bitcoin checkpoint and commits only the
-// unique asset-bearing checkpoint through tap-sdk.
+// prepareCheckpoints builds every Bitcoin checkpoint and commits one
+// asset-bearing checkpoint per asset input through tap-sdk, spine first.
 func (p *Preparer) prepareCheckpoints(ctx context.Context,
-	request *oor.TaprootAssetOORPrepareRequest, assetInputIndex int,
-	assetRef tapsdk.AssetRef, digest tapsdk.Hash, source *assetSpendSource,
-	state *preparationState) ([]*psbt.Packet, []*oortx.CheckpointArtifact,
-	*commitResult, error) {
+	request *oor.TaprootAssetOORPrepareRequest, assetInputIndices []int,
+	assetRef tapsdk.AssetRef, digest tapsdk.Hash,
+	sources []*assetSpendSource, state *preparationState) ([]*psbt.Packet,
+	[]*oortx.CheckpointArtifact, []*commitResult, error) {
 
 	checkpoints := make([]*psbt.Packet, len(request.Inputs))
 	artifacts := make([]*oortx.CheckpointArtifact, len(request.Inputs))
@@ -520,47 +539,68 @@ func (p *Preparer) prepareCheckpoints(ctx context.Context,
 		checkpoints[idx] = artifact.PSBT
 	}
 
-	committed, err := p.commitAssetCheckpoint(
-		ctx, request, assetInputIndex, assetRef, digest, source,
-		artifacts[assetInputIndex], state,
-	)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	checkpoint, err := psbtutil.Parse(committed.anchorPSBT)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	checkpoints[assetInputIndex] = checkpoint
-	if err := validateCheckpointResult(
-		request, assetInputIndex, assetRef, checkpoint, committed,
-	); err != nil {
-		return nil, nil, nil, err
+	results := make([]*commitResult, len(assetInputIndices))
+	for ordinal, inputIndex := range assetInputIndices {
+		var source *assetSpendSource
+		if sources != nil {
+			source = sources[ordinal]
+		}
+		committed, err := p.commitAssetCheckpoint(
+			ctx, request, ordinal, inputIndex,
+			len(assetInputIndices), assetRef, digest, source,
+			artifacts[inputIndex], state,
+		)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		checkpoint, err := psbtutil.Parse(committed.anchorPSBT)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		checkpoints[inputIndex] = checkpoint
+		if err := validateCheckpointResult(
+			request, inputIndex, assetRef, checkpoint, committed,
+		); err != nil {
+			return nil, nil, nil, err
+		}
+		results[ordinal] = committed
 	}
 
-	return checkpoints, artifacts, committed, nil
+	return checkpoints, artifacts, results, nil
 }
 
 func (p *Preparer) commitAssetCheckpoint(ctx context.Context,
-	request *oor.TaprootAssetOORPrepareRequest, assetInputIndex int,
-	assetRef tapsdk.AssetRef, digest tapsdk.Hash, source *assetSpendSource,
-	artifact *oortx.CheckpointArtifact, state *preparationState) (
-	*commitResult, error) {
+	request *oor.TaprootAssetOORPrepareRequest, ordinal, inputIndex,
+	assetInputCount int, assetRef tapsdk.AssetRef, digest tapsdk.Hash,
+	source *assetSpendSource, artifact *oortx.CheckpointArtifact,
+	state *preparationState) (*commitResult, error) {
 
-	if len(state.CheckpointPackage) != 0 {
+	if len(state.CheckpointPackages) == 0 {
+		state.CheckpointPackages = make([][]byte, assetInputCount)
+	}
+	if len(state.CheckpointPackages) != assetInputCount {
+		return nil, fmt.Errorf("checkpoint package journal holds %d "+
+			"slots, want %d", len(state.CheckpointPackages),
+			assetInputCount)
+	}
+	if len(state.CheckpointPackages[ordinal]) != 0 {
 		committed, err := p.driver.DecodePackage(
-			state.CheckpointPackage,
+			state.CheckpointPackages[ordinal],
 		)
 		if err != nil {
-			return nil, fmt.Errorf("restore checkpoint package: %w",
-				err)
+			return nil, fmt.Errorf("restore checkpoint package "+
+				"%d: %w", ordinal, err)
 		}
 
 		return committed, nil
 	}
-	input := &request.Inputs[assetInputIndex]
+	if source == nil {
+		return nil, fmt.Errorf("checkpoint %d spend source is required",
+			ordinal)
+	}
+	input := &request.Inputs[inputIndex]
 	assetInput, err := source.customInput(
-		"wavelength-input", assetRef, request.Intent.AssetAmount,
+		"wavelength-input", assetRef, input.VTXO.TaprootAssetAmount,
 	)
 	if err != nil {
 		return nil, err
@@ -579,7 +619,11 @@ func (p *Preparer) commitAssetCheckpoint(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	opTrueKey := deterministicKey(digest, attemptCheckpoint)
+
+	// The attempt marker doubles as the deterministic key domain, so
+	// every asset input's checkpoint derives a distinct OP_TRUE key.
+	attempt := checkpointAttempt(ordinal)
+	opTrueKey := deterministicKey(digest, attempt)
 	sdkRequest := &tapsdk.CustomAnchorRequest{
 		Inputs: []tapsdk.CustomAssetInput{
 			assetInput,
@@ -587,7 +631,7 @@ func (p *Preparer) commitAssetCheckpoint(ctx context.Context,
 		Outputs: []tapsdk.CustomAssetOutput{{
 			ID:                "wavelength-checkpoint",
 			AssetRef:          assetRef,
-			Amount:            request.Intent.AssetAmount,
+			Amount:            input.VTXO.TaprootAssetAmount,
 			AnchorOutputIndex: 0,
 			AnchorValueSat:    uint64(input.VTXO.Amount),
 			Script: tapsdk.CustomAssetScriptPlan{
@@ -618,18 +662,18 @@ func (p *Preparer) commitAssetCheckpoint(ctx context.Context,
 	}
 
 	committed, err := p.commit(
-		ctx, request.RequestID, state, attemptCheckpoint, sdkRequest,
+		ctx, request.RequestID, state, attempt, sdkRequest,
 		source.verifier,
 	)
 	if err != nil {
 		return nil, err
 	}
-	state.CheckpointPackage = append(
+	state.CheckpointPackages[ordinal] = append(
 		[]byte(nil), committed.packageBytes...,
 	)
 	state.Attempt = ""
 	if err := p.storeState(ctx, request.RequestID, state); err != nil {
-		state.Attempt = attemptCheckpoint
+		state.Attempt = attempt
 
 		return nil, fmt.Errorf("persist checkpoint package: %w", err)
 	}
@@ -639,12 +683,13 @@ func (p *Preparer) commitAssetCheckpoint(ctx context.Context,
 
 // prepareMixedArk restores or commits the checkpoint-to-recipient transition.
 func (p *Preparer) prepareMixedArk(ctx context.Context,
-	request *oor.TaprootAssetOORPrepareRequest, assetInputIndex int,
+	request *oor.TaprootAssetOORPrepareRequest, assetInputIndices []int,
 	assetRef tapsdk.AssetRef, checkpoints []*psbt.Packet,
-	artifacts []*oortx.CheckpointArtifact, checkpointResult *commitResult,
-	planned []oortx.RecipientOutput, digest tapsdk.Hash,
-	source *assetSpendSource, state *preparationState) (*psbt.Packet,
-	*commitResult, []oortx.RecipientOutput, error) {
+	artifacts []*oortx.CheckpointArtifact,
+	checkpointResults []*commitResult, planned []oortx.RecipientOutput,
+	digest tapsdk.Hash, sources []*assetSpendSource,
+	state *preparationState) (*psbt.Packet, *commitResult,
+	[]oortx.RecipientOutput, error) {
 
 	checkpointOutputs, err := checkpointOutputs(checkpoints, artifacts)
 	if err != nil {
@@ -661,19 +706,24 @@ func (p *Preparer) prepareMixedArk(ctx context.Context,
 			return nil, nil, nil, err
 		}
 		recipients, err := validateMixedArkResult(
-			request, assetInputIndex, assetRef, ark,
-			checkpointOutputs, checkpointResult, planned, committed,
-			nil,
+			request, assetInputIndices, assetRef, ark,
+			checkpointOutputs, checkpointResults, planned,
+			committed, nil,
 		)
 
 		return ark, committed, recipients, err
 	}
 
+	assetCheckpointTxs := make([][]byte, len(assetInputIndices))
+	for ordinal, inputIndex := range assetInputIndices {
+		assetCheckpointTxs[ordinal] = serializeTx(
+			checkpoints[inputIndex].UnsignedTx,
+		)
+	}
 	build, previews, _, nonce, err := p.stableArkBuild(
-		ctx, request, assetInputIndex, assetRef, checkpointOutputs,
-		artifacts, checkpointResult, planned, digest, source,
-		serializeTx(checkpoints[assetInputIndex].UnsignedTx),
-		state.OrderingNonce,
+		ctx, request, assetInputIndices, assetRef, checkpointOutputs,
+		artifacts, checkpointResults, planned, digest, sources,
+		assetCheckpointTxs, state.OrderingNonce,
 	)
 	if err != nil {
 		return nil, nil, nil, err
@@ -707,8 +757,8 @@ func (p *Preparer) prepareMixedArk(ctx context.Context,
 		return nil, nil, nil, err
 	}
 	recipients, err := validateMixedArkResult(
-		request, assetInputIndex, assetRef, ark, checkpointOutputs,
-		checkpointResult, planned, committed, previews,
+		request, assetInputIndices, assetRef, ark, checkpointOutputs,
+		checkpointResults, planned, committed, previews,
 	)
 	if err != nil {
 		return nil, nil, nil, err
@@ -746,13 +796,13 @@ func checkpointOutputs(checkpoints []*psbt.Packet,
 }
 
 func (p *Preparer) stableArkBuild(ctx context.Context,
-	request *oor.TaprootAssetOORPrepareRequest, assetInputIndex int,
+	request *oor.TaprootAssetOORPrepareRequest, assetInputIndices []int,
 	assetRef tapsdk.AssetRef, checkpoints []oortx.CheckpointOutput,
-	artifacts []*oortx.CheckpointArtifact, checkpointResult *commitResult,
-	planned []oortx.RecipientOutput, digest tapsdk.Hash,
-	source *assetSpendSource, assetCheckpointTx []byte, firstNonce uint32) (
-	*arkBuild, []commitmentPreview, []oortx.RecipientOutput, uint32,
-	error) {
+	artifacts []*oortx.CheckpointArtifact,
+	checkpointResults []*commitResult, planned []oortx.RecipientOutput,
+	digest tapsdk.Hash, sources []*assetSpendSource,
+	assetCheckpointTxs [][]byte, firstNonce uint32) (*arkBuild,
+	[]commitmentPreview, []oortx.RecipientOutput, uint32, error) {
 
 	if firstNonce >= maxOrderingNonces {
 		return nil, nil, nil, 0, fmt.Errorf("Taproot Asset output " +
@@ -765,9 +815,10 @@ func (p *Preparer) stableArkBuild(ctx context.Context,
 			maxOrderingIterations; iteration++ {
 
 			build, err := buildArkRequest(
-				request, assetInputIndex, assetRef, checkpoints,
-				artifacts, checkpointResult, planned, current,
-				digest, source, assetCheckpointTx, nonce,
+				request, assetInputIndices, assetRef,
+				checkpoints, artifacts, checkpointResults,
+				planned, current, digest, sources,
+				assetCheckpointTxs, nonce,
 			)
 			if err != nil {
 				return nil, nil, nil, 0, err
@@ -793,10 +844,10 @@ func (p *Preparer) stableArkBuild(ctx context.Context,
 			}
 			if stable {
 				finalBuild, err := buildArkRequest(
-					request, assetInputIndex, assetRef,
+					request, assetInputIndices, assetRef,
 					checkpoints, artifacts,
-					checkpointResult, planned, composed,
-					digest, source, assetCheckpointTx,
+					checkpointResults, planned, composed,
+					digest, sources, assetCheckpointTxs,
 					nonce,
 				)
 				if err != nil {
@@ -843,13 +894,24 @@ func (p *Preparer) stableArkBuild(ctx context.Context,
 		"ordering did not converge")
 }
 
+// assetTransitionInputID names one Ark transition input. The spine keeps the
+// historical single-input identifier so single-input packages stay stable.
+func assetTransitionInputID(ordinal int) string {
+	if ordinal == 0 {
+		return "wavelength-checkpoint"
+	}
+
+	return fmt.Sprintf("wavelength-checkpoint/%d", ordinal)
+}
+
 func buildArkRequest(request *oor.TaprootAssetOORPrepareRequest,
-	assetInputIndex int, assetRef tapsdk.AssetRef,
+	assetInputIndices []int, assetRef tapsdk.AssetRef,
 	checkpoints []oortx.CheckpointOutput,
-	artifacts []*oortx.CheckpointArtifact, checkpointResult *commitResult,
+	artifacts []*oortx.CheckpointArtifact,
+	checkpointResults []*commitResult,
 	planned, current []oortx.RecipientOutput, digest tapsdk.Hash,
-	source *assetSpendSource, assetCheckpointTx []byte, nonce uint32) (
-	*arkBuild, error) {
+	sources []*assetSpendSource, assetCheckpointTxs [][]byte,
+	nonce uint32) (*arkBuild, error) {
 
 	ark, err := oortx.BuildArkPSBT(checkpoints, current)
 	if err != nil {
@@ -862,7 +924,10 @@ func buildArkRequest(request *oor.TaprootAssetOORPrepareRequest,
 		inputPositions[ark.UnsignedTx.TxIn[idx].PreviousOutPoint] =
 			uint32(idx)
 	}
-	assetCheckpoint := checkpointResult.outputs[0]
+	ordinalByInput := make(map[int]int, len(assetInputIndices))
+	for ordinal, inputIndex := range assetInputIndices {
+		ordinalByInput[inputIndex] = ordinal
+	}
 	signingPlans := make(
 		[]tapsdk.CustomAnchorInputSigningPlan, len(checkpoints),
 	)
@@ -882,9 +947,10 @@ func buildArkRequest(request *oor.TaprootAssetOORPrepareRequest,
 		if err != nil {
 			return nil, err
 		}
-		if idx == assetInputIndex {
+		if ordinal, ok := ordinalByInput[idx]; ok {
 			leaf, err = composeTapLeaf(
-				leaf, assetCheckpoint.taprootAssetRoot,
+				leaf, checkpointResults[ordinal].
+					outputs[0].taprootAssetRoot,
 			)
 			if err != nil {
 				return nil, err
@@ -901,28 +967,41 @@ func buildArkRequest(request *oor.TaprootAssetOORPrepareRequest,
 		)
 	}
 
-	transitionInput, err := source.appendTransition(
-		assetCheckpoint.proofBlob, assetCheckpoint.opTrueWitness,
+	// The spine must stay Ark request input 0: the emitted transition
+	// proof's predecessor is vPacket input 0, and every created output's
+	// respend evidence keys its spine off that predecessor.
+	transitionInputs := make(
+		[]tapsdk.CustomAssetInput, len(assetInputIndices),
 	)
-	if err != nil {
-		return nil, err
-	}
-	transitionInput.ID = "wavelength-checkpoint"
-	transitionInput.AssetRef = assetRef
-	transitionInput.Amount = request.Intent.AssetAmount
-
-	verifier, err := newAssetTransitionVerifier(
-		[]*assetSpendSource{source},
-		[]*expectedUnconfirmedAnchor{{
+	expected := make(
+		[]*expectedUnconfirmedAnchor, len(assetInputIndices),
+	)
+	for ordinal, inputIndex := range assetInputIndices {
+		assetCheckpoint := checkpointResults[ordinal].outputs[0]
+		transitionInput, err := sources[ordinal].appendTransition(
+			assetCheckpoint.proofBlob,
+			assetCheckpoint.opTrueWitness,
+		)
+		if err != nil {
+			return nil, err
+		}
+		transitionInput.ID = assetTransitionInputID(ordinal)
+		transitionInput.AssetRef = assetRef
+		transitionInput.Amount =
+			request.Inputs[inputIndex].VTXO.TaprootAssetAmount
+		transitionInputs[ordinal] = transitionInput
+		expected[ordinal] = &expectedUnconfirmedAnchor{
 			previousOutpoint: sdkOutpoint(
-				request.Inputs[assetInputIndex].VTXO.Outpoint,
+				request.Inputs[inputIndex].VTXO.Outpoint,
 			),
 			anchorOutpoint: assetCheckpoint.anchorOutpoint,
 			transaction: append(
-				[]byte(nil), assetCheckpointTx...,
+				[]byte(nil), assetCheckpointTxs[ordinal]...,
 			),
-		}},
-	)
+		}
+	}
+
+	verifier, err := newAssetTransitionVerifier(sources, expected)
 	if err != nil {
 		return nil, err
 	}
@@ -977,9 +1056,7 @@ func buildArkRequest(request *oor.TaprootAssetOORPrepareRequest,
 
 	return &arkBuild{
 		request: &tapsdk.CustomAnchorRequest{
-			Inputs: []tapsdk.CustomAssetInput{
-				transitionInput,
-			},
+			Inputs:     transitionInputs,
 			Outputs:    outputs,
 			AnchorPSBT: anchorBytes,
 			Funding:    callerFundedExact(),
@@ -1252,8 +1329,8 @@ func previewIndicesStable(recipients []oortx.RecipientOutput,
 // validateMixedArkResult binds the sealed tap-sdk package to every Ark input
 // and recipient while preserving Bitcoin-only change as an unrooted output.
 func validateMixedArkResult(request *oor.TaprootAssetOORPrepareRequest,
-	assetInputIndex int, assetRef tapsdk.AssetRef, ark *psbt.Packet,
-	checkpoints []oortx.CheckpointOutput, checkpoint *commitResult,
+	assetInputIndices []int, assetRef tapsdk.AssetRef, ark *psbt.Packet,
+	checkpoints []oortx.CheckpointOutput, checkpointResults []*commitResult,
 	planned []oortx.RecipientOutput, result *commitResult,
 	expectedPreviews []commitmentPreview) ([]oortx.RecipientOutput, error) {
 
@@ -1261,7 +1338,7 @@ func validateMixedArkResult(request *oor.TaprootAssetOORPrepareRequest,
 		return nil, fmt.Errorf("committed Ark PSBT is required")
 	}
 	specs := assetRecipientSpecs(request)
-	if result == nil || len(result.inputs) != 1 ||
+	if result == nil || len(result.inputs) != len(assetInputIndices) ||
 		len(result.outputs) != len(specs) {
 		return nil, fmt.Errorf("Ark package asset cardinality mismatch")
 	}
@@ -1270,22 +1347,38 @@ func validateMixedArkResult(request *oor.TaprootAssetOORPrepareRequest,
 		return nil, fmt.Errorf("Ark package funding mode mismatch")
 	}
 
-	assetCheckpoint := checkpoint.outputs[0]
-	assetArkInput, err := findArkInputIndex(
-		ark, wire.OutPoint{
-			Hash:  checkpoints[assetInputIndex].Txid,
-			Index: 0,
-		},
+	// Every asset input binds 1:1 to its committed checkpoint output,
+	// with the per-input unit amount preserved through the checkpoint.
+	inputsByOutpoint := make(
+		map[tapsdk.Outpoint]*commitInput, len(result.inputs),
 	)
-	if err != nil {
-		return nil, err
+	for idx := range result.inputs {
+		input := &result.inputs[idx]
+		if _, ok := inputsByOutpoint[input.anchorOutpoint]; ok {
+			return nil, fmt.Errorf("Ark package input %v is "+
+				"duplicated", input.anchorOutpoint)
+		}
+		inputsByOutpoint[input.anchorOutpoint] = input
 	}
-	input := result.inputs[0]
-	if input.anchorOutpoint != assetCheckpoint.anchorOutpoint ||
-		input.anchorInputIndex != assetArkInput ||
-		!input.assetRef.Equivalent(assetRef) ||
-		input.amount != request.Intent.AssetAmount {
-		return nil, fmt.Errorf("Ark package asset input mismatch")
+	for ordinal, inputIndex := range assetInputIndices {
+		assetCheckpoint := checkpointResults[ordinal].outputs[0]
+		assetArkInput, err := findArkInputIndex(
+			ark, wire.OutPoint{
+				Hash:  checkpoints[inputIndex].Txid,
+				Index: 0,
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+		input, ok := inputsByOutpoint[assetCheckpoint.anchorOutpoint]
+		if !ok || input.anchorInputIndex != assetArkInput ||
+			!input.assetRef.Equivalent(assetRef) ||
+			input.amount != request.Inputs[inputIndex].
+				VTXO.TaprootAssetAmount {
+			return nil, fmt.Errorf("Ark package asset input %d "+
+				"mismatch", ordinal)
+		}
 	}
 
 	previewByID := make(map[string]commitmentPreview, len(expectedPreviews))

@@ -80,7 +80,12 @@ func TestPreparerBuildsTwoTransitionGraph(t *testing.T) {
 	require.NoError(t, err)
 	require.LessOrEqual(t, assetArkInput, uint32(1))
 	require.Equal(
-		t, [][]byte{[]byte("checkpoint-package"), nil},
+		t, [][]byte{
+			fakeCheckpointPackageName(
+				request.Inputs[0].VTXO.Outpoint,
+			),
+			nil,
+		},
 		prepared.PreparedSubmit.TaprootAssetTransfer.CheckpointPackages,
 	)
 	require.Equal(
@@ -281,7 +286,7 @@ func TestPreparerRebindsCarrierSelectionBeforeCommit(t *testing.T) {
 	require.Equal(t, secondInputs, rebound.InputOutpoints)
 	require.Empty(t, rebound.PlannedRecipients)
 
-	rebound.CheckpointPackage = []byte("committed")
+	rebound.CheckpointPackages = [][]byte{[]byte("committed")}
 	require.NoError(
 		t,
 		preparer.storeState(
@@ -591,6 +596,14 @@ func TestProofInventoryVerifierFailsClosed(t *testing.T) {
 	require.Equal(t, uint32(1), result.PassiveAssetCount)
 }
 
+// fakeCheckpointLineage records one committed fake checkpoint so later Ark
+// builds can bind their transition inputs the way the real SDK would.
+type fakeCheckpointLineage struct {
+	previous           wire.OutPoint
+	checkpointOutpoint wire.OutPoint
+	tx                 []byte
+}
+
 type fakeDriver struct {
 	mu                   sync.Mutex
 	requests             []*tapsdk.CustomAnchorRequest
@@ -601,10 +614,30 @@ type fakeDriver struct {
 	commitPreviewMutator func(
 		*tapsdk.CustomAnchorRequest, []commitmentPreview,
 	)
-	forcedAssetInputIndex   *uint32
-	assetCheckpointOutpoint *wire.OutPoint
-	assetPreviousOutpoint   *wire.OutPoint
-	assetCheckpointTx       []byte
+	forcedAssetInputIndex *uint32
+
+	// lineages holds one entry per committed checkpoint in commit order,
+	// which equals the Ark request's transition-input order.
+	lineages []fakeCheckpointLineage
+}
+
+// recordLineage stores one committed checkpoint, replacing an earlier entry
+// for the same spent outpoint so retries keep a stable ordinal order.
+func (d *fakeDriver) recordLineage(lineage fakeCheckpointLineage) {
+	for idx := range d.lineages {
+		if d.lineages[idx].previous == lineage.previous {
+			d.lineages[idx] = lineage
+
+			return
+		}
+	}
+	d.lineages = append(d.lineages, lineage)
+}
+
+// fakeCheckpointPackageName mirrors the fake driver's per-input checkpoint
+// package naming.
+func fakeCheckpointPackageName(outpoint wire.OutPoint) []byte {
+	return []byte("checkpoint-package/" + outpoint.String())
 }
 
 // newFakeDriver constructs a deterministic SDK commit boundary for graph
@@ -727,40 +760,53 @@ func (d *fakeDriver) Commit(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	input := request.Inputs[0]
 	isCheckpoint := request.Outputs[0].ID == "wavelength-checkpoint"
-	packageBytes := []byte("checkpoint-package")
-	if !isCheckpoint {
-		packageBytes = []byte("ark-package")
+	packageBytes := []byte("ark-package")
+	if isCheckpoint {
+		packageBytes = fakeCheckpointPackageName(
+			packet.UnsignedTx.TxIn[0].PreviousOutPoint,
+		)
 	}
-	anchorInputIndex := uint32(0)
-	if !isCheckpoint && d.assetCheckpointOutpoint != nil {
-		for idx := range packet.UnsignedTx.TxIn {
-			if packet.UnsignedTx.TxIn[idx].PreviousOutPoint ==
-				*d.assetCheckpointOutpoint {
-
-				anchorInputIndex = uint32(idx)
-				break
+	inputs := make([]commitInput, len(request.Inputs))
+	for idx := range request.Inputs {
+		requestInput := request.Inputs[idx]
+		anchorInputIndex := uint32(0)
+		anchorOutpoint := sdkOutpoint(
+			packet.UnsignedTx.TxIn[0].PreviousOutPoint,
+		)
+		// Non-checkpoint requests without recorded lineages come from
+		// flows that overwrite the inputs themselves (onboarding).
+		if !isCheckpoint && idx < len(d.lineages) {
+			lineage := d.lineages[idx]
+			anchorOutpoint = sdkOutpoint(
+				lineage.checkpointOutpoint,
+			)
+			for txIdx := range packet.UnsignedTx.TxIn {
+				previous := packet.UnsignedTx.
+					TxIn[txIdx].PreviousOutPoint
+				if previous == lineage.checkpointOutpoint {
+					anchorInputIndex = uint32(txIdx)
+					break
+				}
 			}
 		}
+		if d.forcedAssetInputIndex != nil {
+			anchorInputIndex = *d.forcedAssetInputIndex
+		}
+		inputs[idx] = commitInput{
+			logicalInputIndex: uint32(idx),
+			anchorInputIndex:  anchorInputIndex,
+			anchorOutpoint:    anchorOutpoint,
+			assetRef:          requestInput.AssetRef,
+			amount:            requestInput.Amount,
+		}
 	}
-	if d.forcedAssetInputIndex != nil {
-		anchorInputIndex = *d.forcedAssetInputIndex
-	}
-	assetAnchorOutpoint := sdkOutpoint(
-		packet.UnsignedTx.TxIn[anchorInputIndex].PreviousOutPoint,
-	)
 	result := &commitResult{
 		packageBytes: packageBytes,
 		anchorPSBT:   encoded,
 		fundingMode:  tapsdk.CustomAnchorFundingCallerFundedExact,
-		inputs: []commitInput{{
-			anchorInputIndex: anchorInputIndex,
-			anchorOutpoint:   assetAnchorOutpoint,
-			assetRef:         input.AssetRef,
-			amount:           input.Amount,
-		}},
-		outputs: outputs,
+		inputs:       inputs,
+		outputs:      outputs,
 	}
 	for idx := range result.outputs {
 		result.outputs[idx].anchorOutpoint = sdkOutpoint(
@@ -771,14 +817,15 @@ func (d *fakeDriver) Commit(ctx context.Context,
 		)
 	}
 	if isCheckpoint {
-		outpoint := wire.OutPoint{
-			Hash:  packet.UnsignedTx.TxHash(),
-			Index: result.outputs[0].anchorOutputIndex,
-		}
-		d.assetCheckpointOutpoint = &outpoint
-		previous := packet.UnsignedTx.TxIn[0].PreviousOutPoint
-		d.assetPreviousOutpoint = &previous
-		d.assetCheckpointTx = serializeTx(packet.UnsignedTx)
+		d.recordLineage(fakeCheckpointLineage{
+			previous: packet.UnsignedTx.TxIn[0].PreviousOutPoint,
+			checkpointOutpoint: wire.OutPoint{
+				Hash: packet.UnsignedTx.TxHash(),
+				Index: result.outputs[0].
+					anchorOutputIndex,
+			},
+			tx: serializeTx(packet.UnsignedTx),
+		})
 	}
 	d.results[string(packageBytes)] = result
 
@@ -833,12 +880,79 @@ func (d *fakeDriver) verifyFakeSource(ctx context.Context,
 	if verifier == nil || len(request.Inputs) == 0 {
 		return nil
 	}
-	proofFile := request.Inputs[0].ProofFile
-	if request.Inputs[0].ProofPath != nil {
-		proofFile = request.Inputs[0].ProofPath.ConfirmedBaseProof
+	isCheckpoint := len(request.Outputs) != 0 &&
+		request.Outputs[0].ID == "wavelength-checkpoint"
+	for idx := range request.Inputs {
+		requestInput := request.Inputs[idx]
+		proofFile := requestInput.ProofFile
+		if requestInput.ProofPath != nil {
+			proofFile = requestInput.ProofPath.ConfirmedBaseProof
+		}
+		verification, err := verifier.VerifyConfirmedProof(
+			ctx, proofFile,
+		)
+		if err != nil {
+			return err
+		}
+		if verification == nil ||
+			!verification.AnchorAssetInventoryComplete ||
+			verification.PassiveAssetCount != 0 {
+			return fmt.Errorf("fake verifier rejected passive " +
+				"inventory")
+		}
+
+		// Checkpoint commits carry no appended step to bind; only the
+		// Ark build presents each input's newest checkpoint step.
+		if isCheckpoint || requestInput.ProofPath == nil ||
+			len(requestInput.ProofPath.Steps) == 0 {
+
+			continue
+		}
+		if idx >= len(d.lineages) {
+			return fmt.Errorf("fake checkpoint lineage is " +
+				"incomplete")
+		}
+		lineage := d.lineages[idx]
+		stepIndex := len(requestInput.ProofPath.Steps) - 1
+		unconfirmedVerifier, ok :=
+			verifier.(tapsdk.UnconfirmedAnchorVerifier)
+		if !ok {
+			return fmt.Errorf("fake verifier has no unconfirmed " +
+				"anchor verifier")
+		}
+		stepVerification := tapsdk.UnconfirmedAnchorVerification{
+			StepIndex: uint16(stepIndex),
+			PreviousAnchorOutpoint: sdkOutpoint(
+				lineage.previous,
+			),
+			AnchorOutpoint: sdkOutpoint(
+				lineage.checkpointOutpoint,
+			),
+			AnchorTransaction: append(
+				[]byte(nil), lineage.tx...,
+			),
+			PreviousAnchorOutpoints: []tapsdk.Outpoint{
+				sdkOutpoint(lineage.previous),
+			},
+		}
+		if err := unconfirmedVerifier.VerifyUnconfirmedAnchor(
+			ctx, stepVerification,
+		); err != nil {
+			return err
+		}
 	}
+
+	return nil
+}
+
+// fakeVerifyProofPath fakes tap-sdk's preflight compact-path verification:
+// every confirmed base in the co-input tree is checked through the host
+// verifier while the cryptographic step checks stay with the real SDK.
+func fakeVerifyProofPath(ctx context.Context, path *tapsdk.AssetProofPath,
+	verifier tapsdk.ConfirmedProofVerifier) error {
+
 	verification, err := verifier.VerifyConfirmedProof(
-		ctx, proofFile,
+		ctx, path.ConfirmedBaseProof,
 	)
 	if err != nil {
 		return err
@@ -848,41 +962,12 @@ func (d *fakeDriver) verifyFakeSource(ctx context.Context,
 		verification.PassiveAssetCount != 0 {
 		return fmt.Errorf("fake verifier rejected passive inventory")
 	}
-	if request.Inputs[0].ProofPath != nil &&
-		len(request.Inputs[0].ProofPath.Steps) != 0 {
-
-		if d.assetPreviousOutpoint == nil ||
-			d.assetCheckpointOutpoint == nil ||
-			len(d.assetCheckpointTx) == 0 {
-			return fmt.Errorf("fake checkpoint lineage is " +
-				"incomplete")
-		}
-		stepIndex := len(request.Inputs[0].ProofPath.Steps) - 1
-		unconfirmedVerifier, ok :=
-			verifier.(tapsdk.UnconfirmedAnchorVerifier)
-		if !ok {
-			return fmt.Errorf("fake verifier has no unconfirmed " +
-				"anchor verifier")
-		}
-		verification := tapsdk.UnconfirmedAnchorVerification{
-			StepIndex: uint16(stepIndex),
-			PreviousAnchorOutpoint: sdkOutpoint(
-				*d.assetPreviousOutpoint,
-			),
-			AnchorOutpoint: sdkOutpoint(
-				*d.assetCheckpointOutpoint,
-			),
-			AnchorTransaction: append(
-				[]byte(nil), d.assetCheckpointTx...,
-			),
-			PreviousAnchorOutpoints: []tapsdk.Outpoint{
-				sdkOutpoint(*d.assetPreviousOutpoint),
-			},
-		}
-		if err := unconfirmedVerifier.VerifyUnconfirmedAnchor(
-			ctx, verification,
-		); err != nil {
-			return err
+	for i := range path.Steps {
+		for _, coPath := range path.Steps[i].CoInputPaths {
+			err := fakeVerifyProofPath(ctx, coPath, verifier)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1212,10 +1297,11 @@ func newTestPreparer(driver customAnchorDriver, inventory proofInventoryClient,
 	}
 
 	return &Preparer{
-		driver:       driver,
-		inventory:    inventory,
-		store:        store,
-		reservations: reservationStore,
+		driver:          driver,
+		inventory:       inventory,
+		store:           store,
+		reservations:    reservationStore,
+		verifyProofPath: fakeVerifyProofPath,
 	}
 }
 
