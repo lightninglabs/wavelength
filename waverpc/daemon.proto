@@ -1211,10 +1211,11 @@ message SendOORRequest {
 
     // taproot_asset requests the experimental proof-selected Taproot Asset
     // extension. It requires exactly one managed asset input, one recipient,
-    // and a non-empty idempotency_key. The wallet may add ordinary Bitcoin
-    // VTXOs to cover a carrier shortfall and returns any selected value
-    // beyond the asset-bearing carriers to the sender as a plain Bitcoin
-    // change VTXO. Asset transfers identify the managed asset input through
+    // and a non-empty idempotency_key. The spent leaf's Bitcoin carrier
+    // follows its origin: a round-created leaf's carrier returns to the
+    // sender as a plain Bitcoin change VTXO, while an OOR-created leaf's
+    // operator-funded carrier is reclaimed into the operator's change.
+    // Asset transfers identify the managed asset input through
     // taproot_asset.input_vtxo_outpoint and must not use custom_inputs.
     // Bitcoin-only sends leave this field unset.
     TaprootAssetOORIntent taproot_asset = 7;
@@ -1266,9 +1267,9 @@ message TaprootAssetOORIntent {
     // asset_change_carrier_value_sat is deprecated and must be zero. New
     // asset-leaf carriers (the recipient leaf, and the asset-change leaf of
     // a partial send) are funded by the operator's carrier float at the
-    // operator's minimum VTXO amount; the sender's asset input carrier
-    // returns whole as an ordinary Bitcoin change VTXO. A nonzero value is
-    // rejected.
+    // operator's minimum VTXO amount; the spent leaf's carrier returns to
+    // the sender only when the leaf was round-created and is otherwise
+    // reclaimed by the operator. A nonzero value is rejected.
     uint64 asset_change_carrier_value_sat = 10;
 }
 
