@@ -697,6 +697,61 @@ func requireOwnedReceiveScriptEqual(t *testing.T, want,
 	)
 }
 
+// TestOORArtifactStoreUpsertPreservesIdempotentReplayMetadata verifies a
+// wallet or recovery upsert can refresh script ownership without clearing the
+// retry identity and remote-registration evidence owned by admission.
+func TestOORArtifactStoreUpsertPreservesIdempotentReplayMetadata(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newOORArtifactStoreForTest(t)
+	winner := testIdempotentOwnedReceiveScript(
+		t, 0x39, "receive-recovery-upsert", "recovery-label",
+	)
+
+	_, created, err := store.AdmitIdempotentOwnedReceiveScript(ctx, winner)
+	require.NoError(t, err)
+	require.True(t, created)
+	require.NoError(
+		t, store.MarkOwnedReceiveScriptRegistered(
+			ctx, winner.IdempotencyKey, winner.RegistrationRPCKey,
+		),
+	)
+
+	before, err := store.LookupOwnedReceiveScriptByIdempotencyKey(
+		ctx, winner.IdempotencyKey,
+	)
+	require.NoError(t, err)
+	require.True(t, before.RegistrationCompletedAt.IsSome())
+
+	recovery := winner
+	recovery.Source = OwnedReceiveScriptSourceSync
+	recovery.IdempotencyKey = ""
+	recovery.RegistrationLabel = ""
+	recovery.RegistrationExpiresAt = time.Time{}
+	recovery.RegistrationRPCKey = ""
+	recovery.RegistrationCompletedAt = fn.None[time.Time]()
+	require.NoError(t, store.UpsertOwnedReceiveScript(ctx, recovery))
+
+	after, err := store.LookupOwnedReceiveScriptByIdempotencyKey(
+		ctx, winner.IdempotencyKey,
+	)
+	require.NoError(t, err)
+	require.Equal(t, OwnedReceiveScriptSourceSync, after.Source)
+	require.Equal(t, before.IdempotencyKey, after.IdempotencyKey)
+	require.Equal(t, before.RegistrationLabel, after.RegistrationLabel)
+	require.Equal(
+		t, before.RegistrationExpiresAt, after.RegistrationExpiresAt,
+	)
+	require.Equal(
+		t, before.RegistrationRPCKey, after.RegistrationRPCKey,
+	)
+	require.Equal(
+		t, before.RegistrationCompletedAt,
+		after.RegistrationCompletedAt,
+	)
+}
+
 // TestOORArtifactStoreAdmitIdempotentOwnedReceiveScriptExactReplay verifies a
 // repeated admission returns the first durable allocation and round-trips all
 // ownership and registration metadata.
