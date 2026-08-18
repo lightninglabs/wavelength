@@ -161,6 +161,178 @@ func TestProofLineageVerifierRejectsInvalidIssuanceBootstrap(t *testing.T) {
 	}
 }
 
+// TestAssetTransitionVerifierRoutesByAnchorEdge proves checkpoint bindings
+// route by the (previous, anchor) outpoint pair: matched edges are checked
+// byte-for-byte against the committed checkpoint transaction, historical
+// steps pass through, and merging steps can never satisfy a checkpoint edge.
+func TestAssetTransitionVerifierRoutesByAnchorEdge(t *testing.T) {
+	t.Parallel()
+
+	firstEdge := &expectedUnconfirmedAnchor{
+		previousOutpoint: tapsdk.Outpoint{
+			Index: 1,
+		},
+		anchorOutpoint: tapsdk.Outpoint{
+			Index: 2,
+		},
+		transaction: []byte("checkpoint-0"),
+	}
+	secondEdge := &expectedUnconfirmedAnchor{
+		previousOutpoint: tapsdk.Outpoint{
+			Index: 3,
+		},
+		anchorOutpoint: tapsdk.Outpoint{
+			Index: 4,
+		},
+		transaction: []byte("checkpoint-1"),
+	}
+	sources := []*assetSpendSource{
+		{
+			proofFile: []byte("base-0"),
+			verifier:  &proofLineageVerifier{},
+		},
+		{
+			proofPath: &tapsdk.AssetProofPath{
+				ConfirmedBaseProof: []byte("base-1"),
+			},
+			verifier: &proofLineageVerifier{},
+		},
+	}
+	verifier, err := newAssetTransitionVerifier(
+		sources, []*expectedUnconfirmedAnchor{firstEdge, secondEdge},
+	)
+	require.NoError(t, err)
+
+	for _, edge := range []*expectedUnconfirmedAnchor{
+		firstEdge, secondEdge,
+	} {
+		transition := tapsdk.UnconfirmedAnchorVerification{
+			PreviousAnchorOutpoint: edge.previousOutpoint,
+			AnchorOutpoint:         edge.anchorOutpoint,
+			AnchorTransaction: append(
+				[]byte(nil), edge.transaction...,
+			),
+			PreviousAnchorOutpoints: []tapsdk.Outpoint{
+				edge.previousOutpoint,
+			},
+		}
+		require.NoError(
+			t,
+			verifier.VerifyUnconfirmedAnchor(
+				t.Context(), transition,
+			),
+		)
+
+		tampered := transition
+		tampered.AnchorTransaction = append(
+			[]byte(nil), edge.transaction...,
+		)
+		tampered.AnchorTransaction[0] ^= 1
+		require.ErrorContains(
+			t,
+			verifier.VerifyUnconfirmedAnchor(
+				t.Context(), tampered,
+			),
+			"transaction mismatch",
+		)
+	}
+
+	// A historical step matches no edge and is accepted here; tap-sdk
+	// verified its cryptographic transition.
+	historical := tapsdk.UnconfirmedAnchorVerification{
+		PreviousAnchorOutpoint: tapsdk.Outpoint{
+			Index: 9,
+		},
+		AnchorOutpoint: tapsdk.Outpoint{
+			Index: 10,
+		},
+		AnchorTransaction: []byte("historical"),
+	}
+	require.NoError(
+		t,
+		verifier.VerifyUnconfirmedAnchor(
+			t.Context(), historical,
+		),
+	)
+
+	// A merging transition consumes several anchors and cannot bind to a
+	// checkpoint edge, even when its spine matches.
+	merging := tapsdk.UnconfirmedAnchorVerification{
+		PreviousAnchorOutpoint: firstEdge.previousOutpoint,
+		AnchorOutpoint:         firstEdge.anchorOutpoint,
+		AnchorTransaction: append(
+			[]byte(nil), firstEdge.transaction...,
+		),
+		PreviousAnchorOutpoints: []tapsdk.Outpoint{
+			firstEdge.previousOutpoint,
+			{
+				Index: 7,
+			},
+		},
+	}
+	require.ErrorContains(
+		t,
+		verifier.VerifyUnconfirmedAnchor(
+			t.Context(), merging,
+		),
+		"want one",
+	)
+
+	// Duplicate expected edges are a bug in the build, never mergeable.
+	_, err = newAssetTransitionVerifier(
+		sources, []*expectedUnconfirmedAnchor{firstEdge, firstEdge},
+	)
+	require.ErrorContains(t, err, "duplicate expected anchor edge")
+}
+
+// TestAssetTransitionVerifierRoutesConfirmedBases proves confirmed proofs
+// route to the declaring input's verifier by content, covering bases nested
+// in recursive co-input paths, and fail closed on undeclared proofs.
+func TestAssetTransitionVerifierRoutesConfirmedBases(t *testing.T) {
+	t.Parallel()
+
+	spineClient := &fakeLineageClient{
+		rawProofs: [][]byte{
+			[]byte("issuance"),
+		},
+		decoded: &tapsdk.DecodedProof{
+			IsIssuance: true,
+		},
+		verification: &tapsdk.VerifyProofResponse{
+			Valid:        true,
+			DecodedProof: &tapsdk.DecodedProof{},
+		},
+	}
+	sources := []*assetSpendSource{{
+		proofPath: &tapsdk.AssetProofPath{
+			Version:            tapsdk.AssetProofPathVersionV2,
+			ConfirmedBaseProof: []byte("spine-base"),
+			Steps: []tapsdk.AssetProofPathStep{{
+				TransitionProof: []byte("merge"),
+				CoInputPaths: []*tapsdk.AssetProofPath{{
+					ConfirmedBaseProof: []byte("co-base"),
+				}},
+			}},
+		},
+		verifier: &proofLineageVerifier{
+			client: spineClient,
+		},
+	}}
+	verifier, err := newAssetTransitionVerifier(sources, nil)
+	require.NoError(t, err)
+
+	for _, base := range [][]byte{
+		[]byte("spine-base"), []byte("co-base"),
+	} {
+		result, err := verifier.VerifyConfirmedProof(t.Context(), base)
+		require.NoError(t, err)
+		require.True(t, result.AnchorAssetInventoryComplete)
+	}
+
+	_, err = verifier.VerifyConfirmedProof(t.Context(), []byte("foreign"))
+	require.ErrorContains(t, err, "does not belong to this transfer")
+}
+
 type fakeLineageClient struct {
 	rawProofs    [][]byte
 	rawProofsSet bool

@@ -591,41 +591,6 @@ func TestProofInventoryVerifierFailsClosed(t *testing.T) {
 	require.Equal(t, uint32(1), result.PassiveAssetCount)
 }
 
-// TestProofInventoryVerifierBindsUnconfirmedAnchor proves compact proof steps
-// cannot substitute a different transaction at the checkpoint boundary.
-func TestProofInventoryVerifierBindsUnconfirmedAnchor(t *testing.T) {
-	t.Parallel()
-
-	expected := &expectedUnconfirmedAnchor{
-		previousOutpoint: tapsdk.Outpoint{
-			Index: 1,
-		},
-		anchorOutpoint: tapsdk.Outpoint{
-			Index: 2,
-		},
-		transaction: []byte("checkpoint"),
-	}
-	verifier := &proofInventoryVerifier{unconfirmed: expected}
-	transition := tapsdk.UnconfirmedAnchorVerification{
-		StepIndex:              0,
-		PreviousAnchorOutpoint: expected.previousOutpoint,
-		AnchorOutpoint:         expected.anchorOutpoint,
-		AnchorTransaction: append(
-			[]byte(nil), expected.transaction...,
-		),
-	}
-	require.NoError(
-		t,
-		verifier.VerifyUnconfirmedAnchor(
-			t.Context(), transition,
-		),
-	)
-
-	transition.AnchorTransaction[0] ^= 1
-	err := verifier.VerifyUnconfirmedAnchor(t.Context(), transition)
-	require.ErrorContains(t, err, "transaction mismatch")
-}
-
 type fakeDriver struct {
 	mu                   sync.Mutex
 	requests             []*tapsdk.CustomAnchorRequest
@@ -910,6 +875,9 @@ func (d *fakeDriver) verifyFakeSource(ctx context.Context,
 			AnchorTransaction: append(
 				[]byte(nil), d.assetCheckpointTx...,
 			),
+			PreviousAnchorOutpoints: []tapsdk.Outpoint{
+				sdkOutpoint(*d.assetPreviousOutpoint),
+			},
 		}
 		if err := unconfirmedVerifier.VerifyUnconfirmedAnchor(
 			ctx, verification,

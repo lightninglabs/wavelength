@@ -3,6 +3,7 @@ package tapassets
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 
 	tapsdk "github.com/lightninglabs/tap-sdk"
@@ -35,19 +36,17 @@ type proofLineageClient interface {
 }
 
 type expectedUnconfirmedAnchor struct {
-	stepIndex        uint16
 	previousOutpoint tapsdk.Outpoint
 	anchorOutpoint   tapsdk.Outpoint
 	transaction      []byte
 }
 
 type proofInventoryVerifier struct {
-	client      proofInventoryClient
-	assetRef    tapsdk.AssetRef
-	amount      uint64
-	anchor      tapsdk.Outpoint
-	assetRoot   tapsdk.Hash
-	unconfirmed *expectedUnconfirmedAnchor
+	client    proofInventoryClient
+	assetRef  tapsdk.AssetRef
+	amount    uint64
+	anchor    tapsdk.Outpoint
+	assetRoot tapsdk.Hash
 }
 
 // VerifyConfirmedProof asks tapd to verify the proof chain and then binds its
@@ -124,43 +123,13 @@ func (v *proofInventoryVerifier) VerifyConfirmedProof(ctx context.Context,
 	}, nil
 }
 
-// VerifyUnconfirmedAnchor binds the compact proof step to the exact committed
-// checkpoint transaction that Wavelength will later submit and sign.
-func (v *proofInventoryVerifier) VerifyUnconfirmedAnchor(_ context.Context,
-	transition tapsdk.UnconfirmedAnchorVerification) error {
-
-	if v == nil || v.unconfirmed == nil {
-		return fmt.Errorf("unconfirmed Wavelength anchor is not " +
-			"configured")
-	}
-	expected := v.unconfirmed
-	if transition.StepIndex != expected.stepIndex {
-		return fmt.Errorf("unexpected unconfirmed proof step %d",
-			transition.StepIndex)
-	}
-	if transition.PreviousAnchorOutpoint != expected.previousOutpoint {
-		return fmt.Errorf("unconfirmed proof previous outpoint " +
-			"mismatch")
-	}
-	if transition.AnchorOutpoint != expected.anchorOutpoint {
-		return fmt.Errorf("unconfirmed proof anchor outpoint mismatch")
-	}
-	if !bytes.Equal(transition.AnchorTransaction, expected.transaction) {
-		return fmt.Errorf("unconfirmed proof anchor transaction " +
-			"mismatch")
-	}
-
-	return nil
-}
-
 // proofLineageVerifier verifies a chained path's confirmed base with tapd and
 // delegates cryptographic validation of every sealed unconfirmed step to
 // tap-sdk. The exact package that created the local VTXO is the authority for
 // passive isolation; a receiver must not need the sender's base anchor in its
 // own ListUtxos inventory.
 type proofLineageVerifier struct {
-	client       proofLineageClient
-	expectedLast *expectedUnconfirmedAnchor
+	client proofLineageClient
 }
 
 // VerifyConfirmedProof verifies the confirmed base through tapd. Complete
@@ -228,26 +197,157 @@ func bootstrapProofIssuance(ctx context.Context, client proofLineageClient,
 }
 
 // VerifyUnconfirmedAnchor accepts sealed historical steps after tap-sdk has
-// verified their transactions and asset transitions. When a new checkpoint
-// step is appended, it additionally binds that last step to Wavelength's exact
-// committed transaction.
-func (v *proofLineageVerifier) VerifyUnconfirmedAnchor(_ context.Context,
+// verified their transactions and asset transitions. Binding a freshly
+// appended checkpoint step to Wavelength's exact committed transaction is
+// the transition verifier's job, which routes by anchor edge instead of the
+// per-path step index that repeats inside co-input paths.
+func (v *proofLineageVerifier) VerifyUnconfirmedAnchor(context.Context,
+	tapsdk.UnconfirmedAnchorVerification) error {
+
+	return nil
+}
+
+// assetAnchorEdge identifies one unconfirmed transition by the asset-bearing
+// outpoint it consumes and the one it creates. Every outpoint is consumed at
+// most once across the transfer DAG, so the pair routes verification
+// callbacks unambiguously, unlike per-path step indices, which repeat inside
+// co-input paths.
+type assetAnchorEdge struct {
+	previous tapsdk.Outpoint
+	anchor   tapsdk.Outpoint
+}
+
+// assetTransitionVerifier fans one SDK verifier callback across every asset
+// input of the Ark transition build. Confirmed base proofs route to their
+// input's own verifier by exact content, failing closed on proofs outside
+// the declared set. Appended checkpoint steps are bound to the committed
+// checkpoint transactions by their (previous, anchor) edge; steps matching
+// no edge are historical, already cryptographically verified by tap-sdk and
+// bound to their transactions when the packages that created them committed.
+type assetTransitionVerifier struct {
+	confirmed map[[sha256.Size]byte]tapsdk.ConfirmedProofVerifier
+	expected  map[assetAnchorEdge]*expectedUnconfirmedAnchor
+}
+
+// newAssetTransitionVerifier indexes the sources' confirmed bases, including
+// every base inside recursive co-input paths, and the expected checkpoint
+// anchor edges of the pending Ark build.
+func newAssetTransitionVerifier(sources []*assetSpendSource,
+	expected []*expectedUnconfirmedAnchor) (*assetTransitionVerifier,
+	error) {
+
+	verifier := &assetTransitionVerifier{
+		confirmed: make(
+			map[[sha256.Size]byte]tapsdk.ConfirmedProofVerifier,
+		),
+		expected: make(
+			map[assetAnchorEdge]*expectedUnconfirmedAnchor,
+			len(expected),
+		),
+	}
+	for idx, source := range sources {
+		if source == nil || source.verifier == nil {
+			return nil, fmt.Errorf("asset source %d verifier is "+
+				"required", idx)
+		}
+		if len(source.proofFile) != 0 {
+			verifier.addConfirmedBase(
+				source.proofFile, source.verifier,
+			)
+		}
+		if source.proofPath != nil {
+			verifier.addPathBases(
+				source.proofPath, source.verifier,
+			)
+		}
+	}
+	for _, entry := range expected {
+		edge := assetAnchorEdge{
+			previous: entry.previousOutpoint,
+			anchor:   entry.anchorOutpoint,
+		}
+		if _, ok := verifier.expected[edge]; ok {
+			return nil, fmt.Errorf("duplicate expected "+
+				"anchor edge %v", edge)
+		}
+		verifier.expected[edge] = entry
+	}
+
+	return verifier, nil
+}
+
+// addPathBases registers every confirmed base of the path's co-input tree.
+// Inputs sharing one base may overwrite each other: chained verifiers are
+// scoped to the proof file itself, never to a particular input.
+func (v *assetTransitionVerifier) addPathBases(path *tapsdk.AssetProofPath,
+	verifier tapsdk.ConfirmedProofVerifier) {
+
+	v.addConfirmedBase(path.ConfirmedBaseProof, verifier)
+	for _, base := range path.AdditionalBaseProofs {
+		v.addConfirmedBase(base, verifier)
+	}
+	for i := range path.Steps {
+		for _, coPath := range path.Steps[i].CoInputPaths {
+			v.addPathBases(coPath, verifier)
+		}
+	}
+}
+
+// addConfirmedBase indexes one confirmed proof file by content.
+func (v *assetTransitionVerifier) addConfirmedBase(base []byte,
+	verifier tapsdk.ConfirmedProofVerifier) {
+
+	if len(base) == 0 {
+		return
+	}
+	v.confirmed[sha256.Sum256(base)] = verifier
+}
+
+// VerifyConfirmedProof routes one confirmed base to the verifier of the
+// input that declared it.
+func (v *assetTransitionVerifier) VerifyConfirmedProof(ctx context.Context,
+	proofFile []byte) (*tapsdk.ConfirmedProofVerification, error) {
+
+	delegate, ok := v.confirmed[sha256.Sum256(proofFile)]
+	if !ok {
+		return nil, fmt.Errorf("confirmed base proof does not belong " +
+			"to this transfer")
+	}
+
+	return delegate.VerifyConfirmedProof(ctx, proofFile)
+}
+
+// VerifyUnconfirmedAnchor binds an appended checkpoint step to the exact
+// committed checkpoint transaction. tap-sdk derives the presented outpoints
+// from the step's own proof, so a substituted transition cannot reach its
+// expected edge without also failing the SDK's continuity checks.
+func (v *assetTransitionVerifier) VerifyUnconfirmedAnchor(_ context.Context,
 	transition tapsdk.UnconfirmedAnchorVerification) error {
 
-	if v == nil || v.expectedLast == nil ||
-		transition.StepIndex != v.expectedLast.stepIndex {
+	edge := assetAnchorEdge{
+		previous: transition.PreviousAnchorOutpoint,
+		anchor:   transition.AnchorOutpoint,
+	}
+	expected, ok := v.expected[edge]
+	if !ok {
 		return nil
 	}
 
-	expected := v.expectedLast
-	if transition.PreviousAnchorOutpoint != expected.previousOutpoint {
-		return fmt.Errorf("chained proof previous outpoint mismatch")
+	// A checkpoint transition consumes exactly its single predecessor;
+	// a merging step can never bind to a checkpoint edge.
+	if len(transition.PreviousAnchorOutpoints) > 1 {
+		return fmt.Errorf("checkpoint transition consumes %d anchors, "+
+			"want one", len(transition.PreviousAnchorOutpoints))
 	}
-	if transition.AnchorOutpoint != expected.anchorOutpoint {
-		return fmt.Errorf("chained proof anchor outpoint mismatch")
+	if len(transition.PreviousAnchorOutpoints) == 1 &&
+		transition.PreviousAnchorOutpoints[0] !=
+			expected.previousOutpoint {
+		return fmt.Errorf("checkpoint transition previous anchor " +
+			"mismatch")
 	}
 	if !bytes.Equal(transition.AnchorTransaction, expected.transaction) {
-		return fmt.Errorf("chained proof anchor transaction mismatch")
+		return fmt.Errorf("unconfirmed proof anchor transaction " +
+			"mismatch")
 	}
 
 	return nil
