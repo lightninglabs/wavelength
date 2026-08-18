@@ -4222,14 +4222,16 @@ type SendOORRequest struct {
 	// idempotency_key.
 	ExistingOnly bool `protobuf:"varint,6,opt,name=existing_only,json=existingOnly,proto3" json:"existing_only,omitempty"`
 	// taproot_asset requests the experimental proof-selected Taproot Asset
-	// extension. It requires exactly one managed asset input, one recipient,
-	// and a non-empty idempotency_key. The spent leaf's Bitcoin carrier
-	// follows its origin: a round-created leaf's carrier returns to the
-	// sender as a plain Bitcoin change VTXO, while an OOR-created leaf's
+	// extension. It requires one recipient and a non-empty idempotency_key,
+	// and spends up to eight managed asset inputs in one atomic transfer
+	// (never split into several transfers). Each spent leaf's Bitcoin
+	// carrier follows its origin: a round-created leaf's carrier returns to
+	// the sender as a plain Bitcoin change VTXO, while an OOR-created leaf's
 	// operator-funded carrier is reclaimed into the operator's change.
-	// Asset transfers identify the managed asset input through
-	// taproot_asset.input_vtxo_outpoint and must not use custom_inputs.
-	// Bitcoin-only sends leave this field unset.
+	// Asset transfers either pin one managed asset input through
+	// taproot_asset.input_vtxo_outpoint or leave it empty for daemon-side
+	// selection, and must not use custom_inputs. Bitcoin-only sends leave
+	// this field unset.
 	TaprootAsset  *TaprootAssetOORIntent `protobuf:"bytes,7,opt,name=taproot_asset,json=taprootAsset,proto3" json:"taproot_asset,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4322,8 +4324,10 @@ type TaprootAssetOORIntent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// asset_ref is the opaque tap-sdk asset or group identifier.
 	AssetRef string `protobuf:"bytes,1,opt,name=asset_ref,json=assetRef,proto3" json:"asset_ref,omitempty"`
-	// asset_amount is the exact number of asset units carried by the selected
-	// input VTXO.
+	// asset_amount depends on the selection mode. With input_vtxo_outpoint
+	// set it is the exact number of asset units carried by that input VTXO.
+	// With input_vtxo_outpoint empty it is the total number of units to
+	// send: the daemon selects live asset VTXOs covering it.
 	AssetAmount uint64 `protobuf:"varint,2,opt,name=asset_amount,json=assetAmount,proto3" json:"asset_amount,omitempty"`
 	// input_proof_file is the complete confirmed proof for an initially
 	// onboarded asset. It can be omitted for a chained Wavelength transfer
@@ -4341,13 +4345,20 @@ type TaprootAssetOORIntent struct {
 	// persists compact unconfirmed proof paths but cannot yet publish and log
 	// them through tapd's chain porter.
 	AcknowledgeUnconfirmed bool `protobuf:"varint,7,opt,name=acknowledge_unconfirmed,json=acknowledgeUnconfirmed,proto3" json:"acknowledge_unconfirmed,omitempty"`
-	// input_vtxo_outpoint identifies the wallet-managed asset-bearing VTXO in
-	// "txid:vout" form. The wallet reserves this required input through the
-	// normal VTXO manager path before any Taproot Asset commit occurs.
+	// input_vtxo_outpoint optionally pins the wallet-managed asset-bearing
+	// VTXO to spend, in "txid:vout" form. Empty delegates selection to the
+	// daemon: a single sufficient VTXO is preferred (smallest first),
+	// otherwise the largest VTXOs accumulate until asset_amount is covered,
+	// up to eight inputs spent in one atomic transfer. A send needing more
+	// than eight inputs fails; consolidate first. The wallet reserves every
+	// selected input through the normal VTXO manager path before any
+	// Taproot Asset commit occurs.
 	InputVtxoOutpoint string `protobuf:"bytes,8,opt,name=input_vtxo_outpoint,json=inputVtxoOutpoint,proto3" json:"input_vtxo_outpoint,omitempty"`
 	// recipient_asset_amount is the number of asset units assigned to the
-	// caller's recipient. Zero retains the legacy full-send behavior and
-	// assigns all asset_amount units to the recipient.
+	// caller's recipient when input_vtxo_outpoint pins the input. Zero
+	// retains the legacy full-send behavior and assigns all asset_amount
+	// units to the recipient. It must be zero with daemon-side selection,
+	// where asset_amount already names the units to send.
 	RecipientAssetAmount uint64 `protobuf:"varint,9,opt,name=recipient_asset_amount,json=recipientAssetAmount,proto3" json:"recipient_asset_amount,omitempty"`
 	// asset_change_carrier_value_sat is deprecated and must be zero. New
 	// asset-leaf carriers (the recipient leaf, and the asset-change leaf of
