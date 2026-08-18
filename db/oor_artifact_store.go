@@ -1032,6 +1032,9 @@ func (s *OORArtifactPersistenceStore) AdmitIdempotentOwnedReceiveScript(
 
 	writeTx := WriteTxOption()
 	err := s.db.ExecTx(ctx, writeTx, func(q OORArtifactStore) error {
+		// ExecTx may retry this closure after a serialization failure.
+		created = false
+
 		row, err := q.GetOwnedReceiveScriptByIdempotencyKey(
 			ctx, sql.NullString{
 				String: candidate.IdempotencyKey,
