@@ -885,7 +885,6 @@ func batchRootSource(req *BatchAnchorRequest, out commitOutput,
 	}
 
 	expected := &expectedUnconfirmedAnchor{
-		stepIndex:        0,
 		previousOutpoint: previousOutpoint,
 		anchorOutpoint:   out.anchorOutpoint,
 		transaction:      serializeTx(finalTx),

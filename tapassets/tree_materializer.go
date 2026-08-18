@@ -675,8 +675,8 @@ func (m *TreeMaterializer) prepareChildren(node *tree.Node, input wire.OutPoint,
 			anchorOutpoint:   out.anchorOutpoint,
 			transaction:      append([]byte(nil), serializedTx...),
 		}
-		transitionInput, _, err := source.appendTransition(
-			out.proofBlob, out.opTrueWitness, expected,
+		transitionInput, err := source.appendTransition(
+			out.proofBlob, out.opTrueWitness,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("child %d: %w", idx, err)

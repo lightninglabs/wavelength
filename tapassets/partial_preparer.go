@@ -450,13 +450,12 @@ func (s *assetSpendSource) customInput(id string, assetRef tapsdk.AssetRef,
 	return input, nil
 }
 
-func (s *assetSpendSource) appendTransition(proofBlob []byte, witness [][]byte,
-	expected *expectedUnconfirmedAnchor) (tapsdk.CustomAssetInput,
-	tapsdk.ConfirmedProofVerifier, error) {
+func (s *assetSpendSource) appendTransition(proofBlob []byte,
+	witness [][]byte) (tapsdk.CustomAssetInput, error) {
 
 	if s == nil || len(proofBlob) == 0 {
-		return tapsdk.CustomAssetInput{}, nil, fmt.Errorf(
-			"checkpoint transition proof is required")
+		return tapsdk.CustomAssetInput{}, fmt.Errorf("checkpoint " +
+			"transition proof is required")
 	}
 	var path *tapsdk.AssetProofPath
 	if s.proofPath != nil {
@@ -470,15 +469,12 @@ func (s *assetSpendSource) appendTransition(proofBlob []byte, witness [][]byte,
 		}
 	}
 	if len(path.Steps) >= tapsdk.AssetProofPathMaxDepth {
-		return tapsdk.CustomAssetInput{}, nil, fmt.Errorf("Taproot " +
-			"Asset proof path has no remaining transition slot")
+		return tapsdk.CustomAssetInput{}, fmt.Errorf("Taproot Asset " +
+			"proof path has no remaining transition slot")
 	}
 	path.Steps = append(path.Steps, tapsdk.AssetProofPathStep{
 		TransitionProof: append([]byte(nil), proofBlob...),
 	})
-	expected.stepIndex = uint16(len(path.Steps) - 1)
-
-	verifier := verifierWithExpectedLast(s.verifier, expected)
 
 	return tapsdk.CustomAssetInput{
 		ProofPath: path,
@@ -486,28 +482,7 @@ func (s *assetSpendSource) appendTransition(proofBlob []byte, witness [][]byte,
 			Mode:  witnessCallerProvided,
 			Stack: cloneByteSlices(witness),
 		},
-	}, verifier, nil
-}
-
-func verifierWithExpectedLast(verifier tapsdk.ConfirmedProofVerifier,
-	expected *expectedUnconfirmedAnchor) tapsdk.ConfirmedProofVerifier {
-
-	switch typed := verifier.(type) {
-	case *proofInventoryVerifier:
-		clone := *typed
-		clone.unconfirmed = expected
-
-		return &clone
-
-	case *proofLineageVerifier:
-		clone := *typed
-		clone.expectedLast = expected
-
-		return &clone
-
-	default:
-		return verifier
-	}
+	}, nil
 }
 
 // prepareCheckpoints builds every Bitcoin checkpoint and commits only the
@@ -926,17 +901,8 @@ func buildArkRequest(request *oor.TaprootAssetOORPrepareRequest,
 		)
 	}
 
-	transitionInput, verifier, err := source.appendTransition(
+	transitionInput, err := source.appendTransition(
 		assetCheckpoint.proofBlob, assetCheckpoint.opTrueWitness,
-		&expectedUnconfirmedAnchor{
-			previousOutpoint: sdkOutpoint(
-				request.Inputs[assetInputIndex].VTXO.Outpoint,
-			),
-			anchorOutpoint: assetCheckpoint.anchorOutpoint,
-			transaction: append(
-				[]byte(nil), assetCheckpointTx...,
-			),
-		},
 	)
 	if err != nil {
 		return nil, err
@@ -944,6 +910,22 @@ func buildArkRequest(request *oor.TaprootAssetOORPrepareRequest,
 	transitionInput.ID = "wavelength-checkpoint"
 	transitionInput.AssetRef = assetRef
 	transitionInput.Amount = request.Intent.AssetAmount
+
+	verifier, err := newAssetTransitionVerifier(
+		[]*assetSpendSource{source},
+		[]*expectedUnconfirmedAnchor{{
+			previousOutpoint: sdkOutpoint(
+				request.Inputs[assetInputIndex].VTXO.Outpoint,
+			),
+			anchorOutpoint: assetCheckpoint.anchorOutpoint,
+			transaction: append(
+				[]byte(nil), assetCheckpointTx...,
+			),
+		}},
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	specs := assetRecipientSpecs(request)
 	outputs := make([]tapsdk.CustomAssetOutput, len(specs))
