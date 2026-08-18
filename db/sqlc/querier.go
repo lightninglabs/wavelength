@@ -372,6 +372,19 @@ type Querier interface {
 	// PullActivityEvents returns transition rows strictly after the cursor in
 	// event_seq order, the resumable-subscribe replay primitive.
 	PullActivityEvents(ctx context.Context, arg PullActivityEventsParams) ([]ActivityEvent, error)
+	// Stamps a checkpointed round 'failed'. Guarded on 'input_sig_sent', the same
+	// status ListActiveRounds keys on, so retirement can only ever consume a row
+	// that is still re-hydrating on startup. The row count lets the caller tell a
+	// real retirement from a late or duplicate failure for a round that has since
+	// finalized, and skip the deposit hand-back in the latter case: the round row
+	// is what the re-admission queries join on, so stamping a confirmed round
+	// 'failed' would make deposits that are already VTXOs boardable again.
+	RetireCheckpointedRound(ctx context.Context, arg RetireCheckpointedRoundParams) (int64, error)
+	// Returns a boarding intent adopted by a dead round to 'confirmed'. The
+	// commitment never broadcast, so the UTXO is exactly as it was before the
+	// round: re-boardable, and sweepable again. Guarded on 'adopted' so a later
+	// sweep that already moved the intent on is never clobbered.
+	RevertAdoptedBoardingIntent(ctx context.Context, arg RevertAdoptedBoardingIntentParams) error
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error

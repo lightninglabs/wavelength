@@ -2,6 +2,7 @@ package round
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -3986,4 +3987,59 @@ func TestHandleRegisterIntent(t *testing.T) {
 			"duplicate VTXOs by PkScript should be deduplicated",
 		)
 	})
+}
+
+// TestFailedRoundIsRetiredDurably pins the actor half of the deposit release.
+// Reaping only drops the in-memory FSM, so without this call the checkpoint
+// row stays in ListActiveRounds and is re-hydrated on every start, and the
+// deposits the round adopted stay adopted: out of the sweep and pinned
+// against the board limit for good. RoundFailedNotification is the single
+// choke point every failure path passes through, so retirement hangs there
+// rather than on the individual FSM exits.
+func TestFailedRoundIsRetiredDurably(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+	require.NoError(t, h.start())
+
+	roundID := testRoundID("retire-on-failure")
+	h.roundStore.On("FailRound", mock.Anything, roundID).Return(nil)
+
+	err := h.actor.processOutbox(h.ctx, []ClientOutMsg{
+		&RoundFailedNotification{
+			RoundID:     fn.Some(roundID),
+			Reason:      "round dead at operator",
+			Recoverable: true,
+		},
+	})
+	require.NoError(t, err)
+
+	h.roundStore.AssertCalled(t, "FailRound", mock.Anything, roundID)
+}
+
+// TestFailedRoundRetirementSurvivesStoreError pins that a store error on
+// retirement does not propagate. The round has already failed and the client
+// has already been told; a failed write here means the row is reclaimed on a
+// later pass, not that the failure is in doubt, so it must not abort the rest
+// of the outbox.
+func TestFailedRoundRetirementSurvivesStoreError(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+	require.NoError(t, h.start())
+
+	roundID := testRoundID("retire-store-error")
+	h.roundStore.On(
+		"FailRound", mock.Anything, roundID,
+	).Return(errors.New("db down"))
+
+	err := h.actor.processOutbox(h.ctx, []ClientOutMsg{
+		&RoundFailedNotification{
+			RoundID: fn.Some(roundID),
+			Reason:  "round dead at operator",
+		},
+	})
+	require.NoError(t, err, "a failed retirement aborted the outbox")
 }

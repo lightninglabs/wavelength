@@ -2172,3 +2172,284 @@ func TestOrphanSweepKeepsFailedSendRecord(t *testing.T) {
 	require.Len(t, remaining, 1)
 	require.Equal(t, retry.ID, remaining[0].ID)
 }
+
+// newRoundAndBoardingStoresForTest builds a round store and a boarding wallet
+// store over one database. FailRound spans both domains, since it retires the
+// round row and returns the deposits that row adopted, so a test that reads
+// the deposit back has to see the same rows the round store wrote.
+func newRoundAndBoardingStoresForTest(t *testing.T) (*RoundPersistenceStore,
+	*BoardingWalletStore, *BaseDB) {
+
+	t.Helper()
+
+	db := NewTestDB(t)
+	testClock := clock.NewDefaultClock()
+
+	roundDB := NewTransactionExecutor(
+		db.BaseDB,
+		func(tx *sql.Tx) RoundStore {
+			return db.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+	boardingDB := NewTransactionExecutor(
+		db.BaseDB,
+		func(tx *sql.Tx) BoardingStore {
+			return db.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+	intentDB := NewTransactionExecutor(
+		db.BaseDB,
+		func(tx *sql.Tx) PendingIntentStore {
+			return db.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+
+	roundStore := NewRoundPersistenceStore(
+		roundDB, &chaincfg.RegressionNetParams, testClock,
+	)
+	boardingStore := NewBoardingWalletStore(
+		boardingDB, intentDB, &chaincfg.RegressionNetParams, testClock,
+	)
+
+	return roundStore, boardingStore, db.BaseDB
+}
+
+// TestRoundStoreFailRoundReleasesDeposit is the money half of
+// wavelength#1051. Arming the reconcile clock un-parks the client FSM, but a
+// dead round still has to give the deposit back, and until FailRound existed
+// nothing did: the checkpoint row stayed in ListActiveRounds and the intent
+// stayed adopted, which keeps it out of both the sweep and the boardable pool
+// permanently, with or without its CSV expiring.
+//
+// The recovery machinery was already built. ListBoardingIntentsByStatus and
+// ListBoardingIntentsBySweepableStatuses both re-admit a confirmed intent
+// exactly when its linked round reads 'failed'; nothing ever wrote that
+// status, so the path was unreachable.
+func TestRoundStoreFailRoundReleasesDeposit(t *testing.T) {
+	t.Parallel()
+
+	roundStore, boardingStore, db := newRoundAndBoardingStoresForTest(t)
+	ctx := t.Context()
+
+	// A confirmed deposit, adopted by a round that reached the checkpoint
+	// and then died.
+	intent := createSweepStoreIntent(t, boardingStore)
+	deadRound := testRoundIDDB("dead-deposit")
+	insertRoundBoardingIntentForTest(
+		t, db, deadRound.String(),
+		"input_sig_sent", intent,
+	)
+	require.NoError(
+		t, boardingStore.UpdateBoardingIntentStatus(
+			ctx, intent.Outpoint, wallet.BoardingStatusAdopted,
+		),
+	)
+
+	// While the round is live the deposit is correctly invisible: it is
+	// committed to a round, so it is neither boardable nor sweepable.
+	assertDepositRecoverable(t, boardingStore, intent, false)
+
+	require.NoError(t, roundStore.FailRound(ctx, deadRound))
+
+	// The round no longer re-hydrates on startup.
+	active, err := roundStore.ListActiveRounds(ctx)
+	require.NoError(t, err)
+	require.Empty(t, active, "dead round still reloads on every start")
+
+	// And the deposit is back: boardable for a retry, sweepable for an
+	// on-chain exit, and no longer pinned against the board limit.
+	assertDepositRecoverable(t, boardingStore, intent, true)
+
+	adopted, err := boardingStore.FetchBoardingIntentsByStatus(
+		ctx, wallet.BoardingStatusAdopted,
+	)
+	require.NoError(t, err)
+	require.Empty(
+		t, adopted, "deposit still counted against the board limit "+
+			"after its round died",
+	)
+}
+
+// assertDepositRecoverable checks both recovery routes for a deposit at once:
+// whether it can be boarded again, and whether it can be swept back on-chain.
+func assertDepositRecoverable(t *testing.T, store *BoardingWalletStore,
+	intent wallet.BoardingIntent, want bool) {
+
+	t.Helper()
+
+	ctx := t.Context()
+
+	confirmed, err := store.FetchBoardingIntentsByStatus(
+		ctx, wallet.BoardingStatusConfirmed,
+	)
+	require.NoError(t, err)
+
+	sweepable, err := store.FetchBoardingIntentsBySweepableStatuses(
+		ctx, []wallet.BoardingStatus{
+			wallet.BoardingStatusConfirmed,
+			wallet.BoardingStatusFailed,
+			wallet.BoardingStatusExpired,
+		},
+	)
+	require.NoError(t, err)
+
+	require.Lenf(
+		t, confirmed, boolToLen(want),
+		"boardable = %v, want %v", len(confirmed) > 0, want,
+	)
+	require.Lenf(
+		t, sweepable, boolToLen(want),
+		"sweepable = %v, want %v", len(sweepable) > 0, want,
+	)
+
+	if want {
+		require.Equal(t, intent.Outpoint, confirmed[0].Outpoint)
+		require.Equal(t, intent.Outpoint, sweepable[0].Outpoint)
+	}
+}
+
+// boolToLen maps an expectation about presence onto the expected slice length.
+func boolToLen(present bool) int {
+	if present {
+		return 1
+	}
+
+	return 0
+}
+
+// TestRoundStoreFailRoundLeavesSweptDepositAlone pins the guard on the
+// revert: the SQL only moves an intent that is still 'adopted', so a deposit
+// a sweep has already claimed is not dragged back into the boardable pool by
+// a late round retirement.
+func TestRoundStoreFailRoundLeavesSweptDepositAlone(t *testing.T) {
+	t.Parallel()
+
+	roundStore, boardingStore, db := newRoundAndBoardingStoresForTest(t)
+	ctx := t.Context()
+
+	intent := createSweepStoreIntent(t, boardingStore)
+	sweptRound := testRoundIDDB("already-swept")
+	insertRoundBoardingIntentForTest(
+		t, db, sweptRound.String(),
+		"input_sig_sent", intent,
+	)
+	require.NoError(
+		t, boardingStore.UpdateBoardingIntentStatus(
+			ctx, intent.Outpoint, wallet.BoardingStatusSweepPending,
+		),
+	)
+
+	require.NoError(t, roundStore.FailRound(ctx, sweptRound))
+
+	got, err := boardingStore.GetIntent(ctx, intent.Outpoint)
+	require.NoError(t, err)
+	require.Equal(
+		t, wallet.BoardingStatusSweepPending, got.Status,
+		"round retirement clobbered an in-flight sweep",
+	)
+}
+
+// TestRoundStoreFailRoundOnlyRetiresCheckpointedRound pins the guard on the
+// round half of the retirement, the counterpart to the intent guard above.
+//
+// The round row is the authority the re-admission queries join on: an adopted
+// deposit stays out of the boardable and sweepable pools precisely while its
+// round reads something other than 'failed'. So stamping a round 'failed'
+// unconditionally is not a bookkeeping detail, it is the whole gate. A late or
+// duplicate failure for a round that has already confirmed would hand back
+// deposits whose commitment is on-chain and whose UTXO is now a VTXO, leaving
+// the client offering an already-spent outpoint for a fresh board.
+//
+// The FSM cannot produce that ordering today, so this is a structural guard
+// rather than a fix for a live bug: retirement consumes exactly the rows
+// ListActiveRounds keys on, and anything else is a total no-op.
+func TestRoundStoreFailRoundOnlyRetiresCheckpointedRound(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+
+		// roundStatus is the status the round row carries when the
+		// late failure lands.
+		roundStatus string
+
+		// wantStatus is the status it must carry afterwards.
+		wantStatus string
+
+		// wantRetired is whether the retirement should have consumed
+		// the row, which is also whether the deposit should come
+		// back.
+		wantRetired bool
+	}{{
+		name:        "checkpointed round retires",
+		roundStatus: "input_sig_sent",
+		wantStatus:  "failed",
+		wantRetired: true,
+	}, {
+		name:        "confirmed round survives",
+		roundStatus: "confirmed",
+		wantStatus:  "confirmed",
+		wantRetired: false,
+	}, {
+		name:        "failed round is not restamped",
+		roundStatus: "failed",
+		wantStatus:  "failed",
+		wantRetired: false,
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			roundStore, boardingStore, db :=
+				newRoundAndBoardingStoresForTest(t)
+			ctx := t.Context()
+
+			intent := createSweepStoreIntent(t, boardingStore)
+			roundID := testRoundIDDB(tc.name)
+			insertRoundBoardingIntentForTest(
+				t, db, roundID.String(), tc.roundStatus, intent,
+			)
+			require.NoError(
+				t, boardingStore.UpdateBoardingIntentStatus(
+					ctx, intent.Outpoint,
+					wallet.BoardingStatusAdopted,
+				),
+			)
+
+			require.NoError(t, roundStore.FailRound(ctx, roundID))
+
+			// The round row moved only if it was checkpointed.
+			// insertRoundBoardingIntentForTest stamps
+			// last_update_time at 100, so an untouched row still
+			// reads 100 while a retired one carries the store
+			// clock: that separates "already failed" from
+			// "restamped failed", which the status alone cannot.
+			row, err := db.GetRound(ctx, roundID.String())
+			require.NoError(t, err)
+			require.Equal(t, tc.wantStatus, row.Status)
+
+			if tc.wantRetired {
+				require.Greater(
+					t, row.LastUpdateTime, int64(100),
+					"retirement did not stamp the row",
+				)
+			} else {
+				require.EqualValues(
+					t, 100, row.LastUpdateTime,
+					"retirement rewrote a settled row",
+				)
+			}
+
+			// And the deposit follows the round row: back in both
+			// recovery pools on a real retirement, still committed
+			// to its round otherwise.
+			assertDepositRecoverable(
+				t, boardingStore, intent, tc.wantRetired,
+			)
+		})
+	}
+}

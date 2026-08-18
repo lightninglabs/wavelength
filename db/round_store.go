@@ -92,6 +92,9 @@ type RoundStore interface {
 		ctx context.Context, arg sqlc.UpdateRoundStatusParams,
 	) error
 
+	RetireCheckpointedRound(ctx context.Context,
+		arg sqlc.RetireCheckpointedRoundParams) (int64, error)
+
 	FinalizeRound(ctx context.Context, arg sqlc.FinalizeRoundParams) error
 
 	InsertRoundBoardingIntent(ctx context.Context,
@@ -213,6 +216,9 @@ type RoundStore interface {
 
 	UpdateBoardingIntentStatus(ctx context.Context,
 		arg sqlc.UpdateBoardingIntentStatusParams) error
+
+	RevertAdoptedBoardingIntent(ctx context.Context,
+		arg sqlc.RevertAdoptedBoardingIntentParams) error
 
 	// ClearPendingIntentAnchorByOutpoint deletes the pending-intent
 	// anchor row bound to one outpoint. Called from CommitState in the
@@ -851,6 +857,80 @@ func (s *RoundPersistenceStore) FinalizeRound(ctx context.Context,
 		}
 
 		return q.FinalizeRound(ctx, params)
+	})
+}
+
+// FailRound retires a checkpointed round whose fate is known to be dead, and
+// returns the boarding intents it adopted to the live pool.
+//
+// This is the exact inverse of the checkpoint write in CommitState, and it
+// runs in one transaction for the same reason that one does: the round row
+// and the intent statuses are a single fact about where the deposit lives,
+// and a crash between the two halves would leave the deposit accounted for in
+// a round that no longer exists.
+//
+// Intents revert to 'confirmed' rather than 'failed'. Nothing on-chain
+// failed: a dead round proves the commitment was never broadcast, so the
+// boarding UTXO is exactly as it was before the round started. 'confirmed'
+// restores that truth, which both returns the deposit to the boardable pool
+// and makes it sweepable again (boardingIntentSweepable excludes 'adopted',
+// so an intent left adopted by a dead round is never swept, with or without
+// its CSV expiring).
+//
+// Retiring a round that is not checkpointed is a no-op rather than an error.
+// The round row is what the re-admission queries join on: a 'confirmed' round
+// is exactly what keeps its deposits out of the boardable and sweepable pools
+// once they have become VTXOs. Stamping such a row 'failed' would hand those
+// deposits back while their commitment sits on-chain, so retirement leads with
+// the guarded write and only gives the deposits back if it actually consumed a
+// checkpointed row.
+func (s *RoundPersistenceStore) FailRound(ctx context.Context,
+	roundID round.RoundID) error {
+
+	writeTxOpts := WriteTxOption()
+	nowUnix := s.clock.Now().Unix()
+	roundIDStr := roundID.String()
+
+	return s.db.ExecTx(ctx, writeTxOpts, func(q RoundStore) error {
+		// Retire the round first, and let the row count decide
+		// whether there is anything to give back. Ordering the
+		// guarded write ahead of the hand-back is what makes the
+		// no-op total: a failure that races a confirmation touches
+		// neither half.
+		retired, err := q.RetireCheckpointedRound(
+			ctx, sqlc.RetireCheckpointedRoundParams{
+				RoundID:        roundIDStr,
+				LastUpdateTime: nowUnix,
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("retire round: %w", err)
+		}
+
+		if retired == 0 {
+			return nil
+		}
+
+		intents, err := q.GetRoundBoardingIntents(ctx, roundIDStr)
+		if err != nil {
+			return fmt.Errorf("fetch round intents: %w", err)
+		}
+
+		for _, intent := range intents {
+			err := q.RevertAdoptedBoardingIntent(
+				ctx, sqlc.RevertAdoptedBoardingIntentParams{
+					OutpointHash:   intent.OutpointHash,
+					OutpointIndex:  intent.OutpointIndex,
+					LastUpdateTime: nowUnix,
+				},
+			)
+			if err != nil {
+				return fmt.Errorf("revert boarding intent: %w",
+					err)
+			}
+		}
+
+		return nil
 	})
 }
 
