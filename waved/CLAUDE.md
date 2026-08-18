@@ -203,7 +203,14 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   allocation. The owned-script store records the key locator, script, operator
   terms, absolute expiry, stable mailbox RPC key, and completion evidence
   before indexer registration. Pending retry reuses those artifacts; completed
-  replay returns without the indexer. Empty keys preserve fresh allocation.
+  replay returns without the indexer while its window is active. Expired replay
+  atomically persists a new window and remote key before re-registering the
+  same script. Empty keys preserve fresh allocation. Concurrent callers on one
+  key serialize on `RPCServer.receiveScriptLocks`, a refcounted in-process
+  keyed lock, so two retries never drive the same mailbox correlation ID at
+  once; the entry is dropped when its last holder or waiter leaves.
+  `NewReceiveScriptResponse.expires_at_unix_s` reports the absolute indexer
+  registration expiry on both fresh and replayed paths.
 - `SignCreditAccountAuthorization` (and the internal
   `RPCServer.SignCreditAccountAuth` behind it) signs a canonical swap
   credit-account request digest with the daemon identity key. It validates

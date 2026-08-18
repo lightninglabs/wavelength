@@ -400,9 +400,10 @@ wavecli ark board --target-vtxo-count 4
 
 ### `ark oor receive` — incoming OOR pubkey
 
-Allocate a fresh out-of-round receive script backed by a newly derived
-wallet key. Returns `pk_script_hex`, `pubkey_xonly_hex`, and the wallet
-key locator.
+Allocate an out-of-round receive script backed by a newly derived wallet key,
+or replay the exact allocation for a previously used idempotency key. Returns
+`pk_script_hex`, `pubkey_xonly_hex`, the wallet key locator, and the absolute
+indexer registration expiry.
 
 | Flag | Type | Description |
 |------|------|-------------|
@@ -411,8 +412,11 @@ key locator.
 
 ```bash
 wavecli ark oor receive
-wavecli ark oor receive --idempotency-key durable-operation-42
+wavecli ark oor receive --idempotency-key my-app:durable-operation-42
 ```
+
+Idempotency keys share one daemon-wide namespace. Prefix them with an
+application or tenant identity when several callers use the same daemon.
 
 ### `ark vtxos list`
 
