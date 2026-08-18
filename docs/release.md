@@ -30,6 +30,11 @@ $  make docker-release tag=<TAG>
 Where `<TAG>` is the name of the next release of `wavelength`, e.g.
 `v0.1.0-rc2`.
 
+The release container only mounts the source checkout, which lets it write the
+finished archives back to the host. Its Go build and module caches stay inside
+the container and are discarded with it. The release build never reads,
+writes, or clears the host's Go caches.
+
 ### Linux/Windows (WSL)
 
 No prior set up beyond a pinned `go` toolchain (see `GO_VERSION` in the
