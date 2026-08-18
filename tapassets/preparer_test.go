@@ -1393,8 +1393,9 @@ func testPreparationRequest(t *testing.T) (*oor.TaprootAssetOORPrepareRequest,
 			TaprootAssetRef:    assetRef.String(),
 			TaprootAssetAmount: 21,
 		},
-		VTXOPolicyTemplate: inputPolicyBytes,
-		TaprootAssetRoot:   &inputRoot,
+		VTXOPolicyTemplate:       inputPolicyBytes,
+		TaprootAssetRoot:         &inputRoot,
+		TaprootAssetRoundCreated: true,
 	}
 	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operator.PubKey(),

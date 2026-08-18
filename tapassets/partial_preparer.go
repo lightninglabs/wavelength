@@ -172,16 +172,22 @@ func (p *Preparer) plannedRecipients(ctx context.Context,
 		recipients = append(recipients, change)
 	}
 
-	change, err := request.BuildChangeRecipient(ctx, plan.SenderChange)
-	if err != nil {
-		return nil, fmt.Errorf("derive Bitcoin change: %w", err)
+	// The sender's carrier returns only when the spent leaf was
+	// round-created; a reclaim-only send derives no wallet change at all.
+	if plan.SenderChange > 0 {
+		change, err := request.BuildChangeRecipient(
+			ctx, plan.SenderChange,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("derive Bitcoin change: %w", err)
+		}
+		if err := validateUncomposedChange(
+			change, plan.SenderChange,
+		); err != nil {
+			return nil, fmt.Errorf("Bitcoin change: %w", err)
+		}
+		recipients = append(recipients, change)
 	}
-	if err := validateUncomposedChange(
-		change, plan.SenderChange,
-	); err != nil {
-		return nil, fmt.Errorf("Bitcoin change: %w", err)
-	}
-	recipients = append(recipients, change)
 
 	// The float residual returns to the lease pkScript verbatim: a plain
 	// recipient output under the float's own policy, so BIP-371 output
@@ -220,8 +226,11 @@ func validatePlannedRecipients(request *oor.TaprootAssetOORPrepareRequest,
 	if err != nil {
 		return err
 	}
-	expectedCount := 2
+	expectedCount := 1
 	if plan.AssetChange != 0 {
+		expectedCount++
+	}
+	if plan.SenderChange != 0 {
 		expectedCount++
 	}
 	if plan.OperatorChange != 0 {
@@ -255,12 +264,14 @@ func validatePlannedRecipients(request *oor.TaprootAssetOORPrepareRequest,
 		}
 		next++
 	}
-	if err := validateUncomposedChange(
-		recipients[next], plan.SenderChange,
-	); err != nil {
-		return fmt.Errorf("Bitcoin change: %w", err)
+	if plan.SenderChange != 0 {
+		if err := validateUncomposedChange(
+			recipients[next], plan.SenderChange,
+		); err != nil {
+			return fmt.Errorf("Bitcoin change: %w", err)
+		}
+		next++
 	}
-	next++
 	if plan.OperatorChange != 0 {
 		operatorChange := recipients[next]
 		if operatorChange.Value != plan.OperatorChange ||

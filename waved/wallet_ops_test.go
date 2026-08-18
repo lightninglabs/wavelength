@@ -192,6 +192,64 @@ func TestBuildTransferInputsCarriesTaprootAssetRoot(t *testing.T) {
 	require.NoError(t, inputs[0].Validate())
 }
 
+// TestBuildTransferInputsDerivesRoundCreatedFromSealedPackage pins the
+// carrier-origin discriminator: only a round-created asset leaf stores a
+// sealed package, so its presence is what marks the leaf's carrier as the
+// sender's own money rather than reclaimable operator float.
+func TestBuildTransferInputsDerivesRoundCreatedFromSealedPackage(t *testing.T) {
+	t.Parallel()
+
+	owner, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operator, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	template, err := arkscript.EncodeStandardVTXOTemplate(
+		owner.PubKey(), operator.PubKey(), 10,
+	)
+	require.NoError(t, err)
+
+	assetRoot := chainhash.Hash{0x77, 0x88, 0x99}
+	desc := &vtxo.Descriptor{
+		Outpoint:           testWalletOpsOutpoint(0x43),
+		Amount:             50_000,
+		PolicyTemplate:     template,
+		TaprootAssetRoot:   &assetRoot,
+		TaprootAssetRef:    "tapr1asset",
+		TaprootAssetAmount: 21,
+		ClientKey: keychain.KeyDescriptor{
+			PubKey: owner.PubKey(),
+		},
+		OperatorKey:    operator.PubKey(),
+		RelativeExpiry: 10,
+	}
+	desc.PkScript, err = desc.EffectivePkScript()
+	require.NoError(t, err)
+	desc.TapScript, err = desc.StandardTapScript()
+	require.NoError(t, err)
+
+	desc.TaprootAssetSealedPackage = []byte("sealed-package")
+	inputs, err := BuildTransferInputs(
+		t.Context(), &testCustomInputStore{
+			desc: desc,
+		},
+		[]wire.OutPoint{desc.Outpoint},
+	)
+	require.NoError(t, err)
+	require.Len(t, inputs, 1)
+	require.True(t, inputs[0].TaprootAssetRoundCreated)
+
+	desc.TaprootAssetSealedPackage = nil
+	inputs, err = BuildTransferInputs(
+		t.Context(), &testCustomInputStore{
+			desc: desc,
+		},
+		[]wire.OutPoint{desc.Outpoint},
+	)
+	require.NoError(t, err)
+	require.Len(t, inputs, 1)
+	require.False(t, inputs[0].TaprootAssetRoundCreated)
+}
+
 // TestBuildCustomTransferInputsCarriesTaprootAssetRoot proves an explicitly
 // selected local VTXO retains its stored root. Taproot Asset sends use custom
 // inputs because generic Bitcoin coin selection deliberately excludes these

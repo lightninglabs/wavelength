@@ -212,6 +212,48 @@ func TestPreparerBuildsPartialAssetTransferFromOperatorFloat(t *testing.T) {
 	require.Len(t, reservations.records(), 2)
 }
 
+// TestPreparerReclaimsOORCreatedCarrier proves a full send of an OOR-created
+// leaf derives no wallet change at all and pays the reclaimed carrier to the
+// lease script on top of the float residual.
+func TestPreparerReclaimsOORCreatedCarrier(t *testing.T) {
+	t.Parallel()
+
+	request, inventory := testPreparationRequest(t)
+	request.Inputs[0].TaprootAssetRoundCreated = false
+
+	var changeCalls int
+	builder := testChangeRecipientBuilder(t, request.Policy.OperatorKey, 10)
+	request.BuildChangeRecipient = func(ctx context.Context,
+		value btcutil.Amount) (oortx.RecipientOutput, error) {
+
+		changeCalls++
+
+		return builder(ctx, value)
+	}
+	require.NoError(t, request.Validate())
+
+	driver := newFakeDriver()
+	store, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
+	preparer := newTestPreparer(driver, inventory, store)
+	prepared, err := preparer.PrepareTaprootAssetOOR(t.Context(), request)
+	require.NoError(t, err)
+	require.NoError(t, prepared.Validate(request))
+
+	// 30_000 sat lease, one 1_000 sat floor for the receiver leaf, and
+	// the 5_000 sat OOR-created carrier reclaimed on top of the residual.
+	require.Zero(t, changeCalls)
+	require.Len(t, prepared.Recipients, 2)
+	require.Equal(t, btcutil.Amount(1_000), prepared.Recipients[0].Value)
+	require.NotNil(t, prepared.Recipients[0].TaprootAssetRoot)
+	require.Equal(t, btcutil.Amount(34_000), prepared.Recipients[1].Value)
+	require.Equal(
+		t, request.Lease.PkScript, prepared.Recipients[1].PkScript,
+	)
+	require.Nil(t, prepared.Recipients[1].TaprootAssetRoot)
+	require.Equal(t, prepared.Recipients[0], prepared.Receiver)
+}
+
 // TestEncodeBIP371TapTreePreservesArkShape proves the standard depth-first
 // tuples reconstruct the exact Ark root for balanced and non-power-of-two
 // policy shapes.
