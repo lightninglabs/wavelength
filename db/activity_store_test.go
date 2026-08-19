@@ -91,6 +91,49 @@ func TestActivityStoreProjectInsertsEntryAndEvent(t *testing.T) {
 	require.EqualValues(t, 1, events[0].Status)
 }
 
+// TestActivityStoreRemoveEntry verifies reconciliation can atomically remove
+// an erroneous wallet projection and its replay events without changing an
+// unrelated activity row.
+func TestActivityStoreRemoveEntry(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActivityStoreForTest(t)
+
+	require.NoError(
+		t,
+		projected(
+			store.ProjectEntry(
+				ctx, sampleProjection("ledger-3"),
+			),
+		),
+	)
+	require.NoError(
+		t,
+		projected(
+			store.ProjectEntry(
+				ctx, sampleProjection("payment"),
+			),
+		),
+	)
+
+	require.NoError(t, store.RemoveEntry(ctx, "ledger-3"))
+	_, err := store.GetEntry(ctx, "ledger-3")
+	require.ErrorIs(t, err, sql.ErrNoRows)
+
+	_, err = store.GetEntry(ctx, "payment")
+	require.NoError(t, err)
+
+	events, err := store.PullEvents(ctx, 0, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.Equal(t, "payment", events[0].CanonicalID)
+
+	// Startup and periodic reconciliation may both discover the same stale
+	// id, so removal must stay idempotent after the row is gone.
+	require.NoError(t, store.RemoveEntry(ctx, "ledger-3"))
+}
+
 // TestActivityStoreRejectsTerminalRegression verifies a stale pending write
 // cannot overwrite a terminal row or append a backward lifecycle event.
 func TestActivityStoreRejectsTerminalRegression(t *testing.T) {

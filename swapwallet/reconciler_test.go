@@ -4,6 +4,7 @@ package swapwallet
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 
@@ -174,6 +175,99 @@ func TestReconcileProjectsRawOORLive(t *testing.T) {
 		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, recv.Status,
 		"reconciler must land the raw-OOR receive live",
 	)
+}
+
+// TestBackfillRemovesPersistedInternalOORSend simulates an upgrade after an
+// older binary projected a receive swap's internal claim input as `ledger-3`.
+// Startup backfill must remove that durable artifact while keeping the real
+// RECV row and an unrelated raw OOR SEND.
+func TestBackfillRemovesPersistedInternalOORSend(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	runtime, store, rpc := newReconcileFixture(t)
+	swap := runtime.deps.SwapService.(*fakeSwapService)
+
+	_, _, err := runtime.project(ctx, &wavewalletrpc.WalletEntry{
+		Id:            "ledger-3",
+		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		AmountSat:     -1_000,
+		CreatedAtUnix: 100,
+		UpdatedAtUnix: 100,
+		Progress: &wavewalletrpc.WalletEntryProgress{
+			Phase: wavewalletrpc.
+				WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
+			PhaseLabel: "confirmed",
+		},
+	})
+	require.NoError(t, err)
+
+	claimSession := testBytes(32, 0x83)
+	claimSessionHex := testSessionString(t, claimSession)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			{
+				PaymentHash: "payment-hash",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_RECEIVE,
+				State: swapclientrpc.
+					SwapState_SWAP_STATE_COMPLETED,
+				AmountSat:      1_000,
+				UpdatedAtUnix:  200,
+				ClaimSessionId: claimSessionHex,
+			},
+		},
+	}
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
+			{
+				Type:               "oor",
+				Subtype:            ledger.EventVTXOSent,
+				ConfirmationStatus: "recorded",
+				AmountSat:          1_000,
+				DebitAccount:       ledger.AccountTransfersOut,
+				CreditAccount:      ledger.AccountVTXOBalance,
+				SessionId:          claimSession,
+				EntryId:            3,
+				CreatedAtUnixS:     100,
+			},
+			{
+				Type:               "oor",
+				Subtype:            ledger.EventVTXOSent,
+				ConfirmationStatus: "recorded",
+				AmountSat:          2_000,
+				DebitAccount:       ledger.AccountTransfersOut,
+				CreditAccount:      ledger.AccountVTXOBalance,
+				SessionId:          testBytes(32, 0x84),
+				EntryId:            4,
+				CreatedAtUnixS:     101,
+			},
+		},
+	}
+
+	runtime.backfillActivity(ctx)
+
+	_, err = store.GetEntry(ctx, "ledger-3")
+	require.ErrorIs(t, err, sql.ErrNoRows)
+
+	recv, err := store.GetEntry(ctx, "payment-hash")
+	require.NoError(t, err)
+	require.EqualValues(
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_RECV, recv.Kind,
+	)
+
+	rawSend, err := store.GetEntry(ctx, "ledger-4")
+	require.NoError(t, err)
+	require.EqualValues(
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_SEND, rawSend.Kind,
+	)
+
+	events, err := store.PullEvents(ctx, 0, 10)
+	require.NoError(t, err)
+	for _, event := range events {
+		require.NotEqual(t, "ledger-3", event.CanonicalID)
+	}
 }
 
 // TestReconcileSkipsCreditOnlySwapRows asserts the periodic SEND/RECV
@@ -453,6 +547,7 @@ type failingProjectStore struct {
 	waved.ActivityStore
 }
 
+// ProjectEntry injects a durable projection failure for every call.
 func (failingProjectStore) ProjectEntry(context.Context,
 	db.ActivityProjection) (int64, error) {
 
@@ -650,6 +745,7 @@ type erringRehydrateStore struct {
 	waved.ActivityStore
 }
 
+// ListEntriesByKindStatus injects a rehydration scan failure.
 func (erringRehydrateStore) ListEntriesByKindStatus(context.Context, int64,
 	int64, string, int32) ([]sqlc.ActivityEntry, error) {
 

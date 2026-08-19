@@ -44,6 +44,12 @@ type history struct {
 	// instead of one per page. Instances are used single-threaded.
 	creditTopupLinks    map[string]creditTopupLink
 	creditTopupLinksSet bool
+
+	// internalOORActivityIDs collects synthetic canonical ids for ledger
+	// rows that structured swap correlation proved are internal. The
+	// projector uses the set after a successful derive pass to remove rows
+	// that an older binary already persisted in the canonical store.
+	internalOORActivityIDs map[string]struct{}
 }
 
 // newHistory constructs the history merger.
@@ -1164,6 +1170,8 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 	)
 	for _, t := range resp.GetTransactions() {
 		if _, ok := oorProjection.hidden[t.GetEntryId()]; ok {
+			h.rememberInternalOORActivity(t)
+
 			continue
 		}
 
@@ -1187,6 +1195,36 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 	// UTXOs paid to the same address show their total rather than
 	// overwriting each other. See sumDepositsByAddress.
 	return sumDepositsByAddress(out), nil
+}
+
+// rememberInternalOORActivity records the synthetic canonical id of a hidden
+// ledger row so reconciliation can remove a copy persisted by an older binary.
+// Stable non-ledger ids are excluded because this repair targets only the
+// `ledger-N` artifact produced when a session-keyed send has no txid.
+func (h *history) rememberInternalOORActivity(
+	row *waverpc.TransactionHistoryEntry) {
+
+	entry, ok := walletEntryFromLedgerRow(row)
+	if !ok || !strings.HasPrefix(entry.GetId(), "ledger-") {
+		return
+	}
+
+	if h.internalOORActivityIDs == nil {
+		h.internalOORActivityIDs = make(map[string]struct{})
+	}
+	h.internalOORActivityIDs[entry.GetId()] = struct{}{}
+}
+
+// sortedInternalOORActivityIDs returns the hidden synthetic ids in stable
+// order so cleanup and tests are deterministic.
+func (h *history) sortedInternalOORActivityIDs() []string {
+	ids := make([]string, 0, len(h.internalOORActivityIDs))
+	for id := range h.internalOORActivityIDs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	return ids
 }
 
 // sumDepositsByAddress collapses boarding-deposit rows that share a canonical

@@ -60,6 +60,18 @@ RETURNING event_seq;
 -- GetActivityEntry returns one entry by its canonical id.
 SELECT * FROM activity_entries WHERE canonical_id = $1;
 
+-- name: DeleteActivityEventsByCanonicalID :exec
+-- DeleteActivityEventsByCanonicalID removes transition events for a projection
+-- that was proven to be an internal implementation detail rather than wallet
+-- activity. Callers delete these first to satisfy the activity_entries foreign
+-- key without weakening it for ordinary lifecycle rows.
+DELETE FROM activity_events WHERE canonical_id = $1;
+
+-- name: DeleteActivityEntry :execrows
+-- DeleteActivityEntry removes the current-state projection after its erroneous
+-- transition events have been removed in the same transaction.
+DELETE FROM activity_entries WHERE canonical_id = $1;
+
 -- name: CountActivityEntriesByStatus :one
 -- CountActivityEntriesByStatus returns the number of current-state rows in the
 -- given status. It backs the wallet status summary's pending count, which must

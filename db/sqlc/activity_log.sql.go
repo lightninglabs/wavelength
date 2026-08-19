@@ -57,6 +57,33 @@ func (q *Queries) CountActivityEntriesByStatus(ctx context.Context, status int64
 	return count, err
 }
 
+const DeleteActivityEntry = `-- name: DeleteActivityEntry :execrows
+DELETE FROM activity_entries WHERE canonical_id = $1
+`
+
+// DeleteActivityEntry removes the current-state projection after its erroneous
+// transition events have been removed in the same transaction.
+func (q *Queries) DeleteActivityEntry(ctx context.Context, canonicalID string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, DeleteActivityEntry, canonicalID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const DeleteActivityEventsByCanonicalID = `-- name: DeleteActivityEventsByCanonicalID :exec
+DELETE FROM activity_events WHERE canonical_id = $1
+`
+
+// DeleteActivityEventsByCanonicalID removes transition events for a projection
+// that was proven to be an internal implementation detail rather than wallet
+// activity. Callers delete these first to satisfy the activity_entries foreign
+// key without weakening it for ordinary lifecycle rows.
+func (q *Queries) DeleteActivityEventsByCanonicalID(ctx context.Context, canonicalID string) error {
+	_, err := q.db.ExecContext(ctx, DeleteActivityEventsByCanonicalID, canonicalID)
+	return err
+}
+
 const GetActivityEntry = `-- name: GetActivityEntry :one
 SELECT canonical_id, kind, status, amount_sat, fee_sat, counterparty, note, phase, phase_label, failure_code, failure_reason, payment_hash, txid, confirmation_height, vtxo_outpoint, swap_session_id, ledger_txid, boarding_addr, request_json, created_at_unix, updated_at_unix FROM activity_entries WHERE canonical_id = $1
 `

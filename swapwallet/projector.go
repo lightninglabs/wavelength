@@ -215,6 +215,27 @@ func (r *Runtime) projectDerivedPage(ctx context.Context,
 	}
 }
 
+// removePersistedInternalOORActivity removes synthetic `ledger-N` rows that a
+// prior binary projected before the current structured OOR correlation hid
+// them. The underlying double-entry ledger remains the audit source of truth;
+// only the incorrect wallet activity projection and its replay events are
+// removed. Calls are idempotent, so startup and periodic reconciliation can
+// repeat the repair safely.
+func (r *Runtime) removePersistedInternalOORActivity(ctx context.Context,
+	ids []string) error {
+
+	for _, id := range ids {
+		if err := r.deps.ActivityStore.RemoveEntry(
+			ctx, id,
+		); err != nil {
+			return fmt.Errorf("remove internal OOR activity %s: %w",
+				id, err)
+		}
+	}
+
+	return nil
+}
+
 // reprojectActivity pages the derive-on-read feed and projects every row into
 // the canonical activity store, returning the number of rows projected. Because
 // ProjectEntry is idempotent on canonical_id and suppresses no-op changes,
@@ -275,6 +296,12 @@ func (r *Runtime) reprojectActivity(ctx context.Context,
 		}
 	}
 
+	if err := r.removePersistedInternalOORActivity(
+		ctx, h.sortedInternalOORActivityIDs(),
+	); err != nil {
+		return projected, err
+	}
+
 	return projected, nil
 }
 
@@ -311,6 +338,11 @@ func (r *Runtime) reprojectRecentActivity(ctx context.Context,
 
 	entries := list.GetEntries()
 	r.projectDerivedPage(ctx, entries)
+	if err := r.removePersistedInternalOORActivity(
+		ctx, h.sortedInternalOORActivityIDs(),
+	); err != nil {
+		return len(entries), err
+	}
 
 	return len(entries), nil
 }

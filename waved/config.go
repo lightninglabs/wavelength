@@ -854,6 +854,11 @@ type ActivityStore interface {
 	GetEntry(ctx context.Context,
 		canonicalID string) (sqlc.ActivityEntry, error)
 
+	// RemoveEntry deletes a projection and its transition events after the
+	// history merger proves that the row is internal accounting rather than
+	// user activity. The underlying accounting ledger is not changed.
+	RemoveEntry(ctx context.Context, canonicalID string) error
+
 	// ListEntries returns up to limit current-state rows newest-first,
 	// starting after the (cursorCreated, cursorID) keyset. A cursorCreated
 	// of 0 starts from the newest row.
