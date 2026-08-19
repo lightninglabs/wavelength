@@ -16,14 +16,16 @@ This file is a **map**, not a manual. Follow links for details.
 | `make fmt-changed-check` | Verify changed Go source files are formatted |
 | `make unit pkg=<pkg> case=<test>` | Run unit tests |
 | `make unit log="stdlog trace" pkg=<pkg> case=<test>` | Unit tests with debug logs |
-| `make systest` | System integration tests (use `db=postgres` for PostgreSQL) |
+| `make systest` | Run system integration tests (sqlite) |
+| `make systest db=postgres` | Run system integration tests (postgres) |
 | `make tidy-module-check` | Verify module files are tidy |
 | `make rpc` | Regenerate protobuf stubs |
 | `make sqlc` | Regenerate type-safe DB queries |
 | `make ast-lint` | Check ast-grep style rules |
+| `make doc-check` | Verify documentation cross-links (CI canonical) |
+| `make schema-check` | Verify schema registry, MCP tools, and cobra commands agree |
+| `make sample-conf-check` | Verify `sample-waved.conf` matches daemon config options |
 | `make commitmsg-lint range="origin/main..HEAD"` | Lint commit messages on the current branch |
-| `make systest` | Run system integration tests (sqlite) |
-| `make systest db=postgres` | Run system integration tests (postgres) |
 
 ## Code Style (Summary)
 
@@ -72,13 +74,20 @@ Body wrapped at 72 characters. Explain WHY, not just WHAT.
 9. Do not batch actor messages without backpressure.
 10. Comments explain WHY and HOW, not WHAT.
 
-## Review Skills
+## Skills
 
 - [`.claude/skills/context-lifecycle/SKILL.md`](.claude/skills/context-lifecycle/SKILL.md)
   — Review goroutines, timers, callbacks, actor handoffs, and async cleanup
   for context lifetime bugs where short-lived request cancellation is captured
   by work that should be owned by a daemon, actor, registration, or bounded
   cleanup path.
+- [`.claude/skills/doc-gardening/SKILL.md`](.claude/skills/doc-gardening/SKILL.md)
+  — Maintain this documentation graph: per-package `CLAUDE.md`/`AGENTS.md`,
+  `docs/`, and `ARCHITECTURE.md`. Run it after adding a package, changing
+  types or dependencies significantly, or when `make doc-check` fails.
+- [`.claude/skills/bug-report/SKILL.md`](.claude/skills/bug-report/SKILL.md)
+  — File a structured GitHub issue from a test session, collecting daemon
+  logs, config, build commit, and chain-backend reachability.
 
 ## Efficient Code Lookup (save tokens)
 

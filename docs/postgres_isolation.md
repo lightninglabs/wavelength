@@ -99,6 +99,17 @@ Separately, a lost creation race can stop being a retryable `40001` and become
 a `23505` unique violation that the retry loop correctly refuses to retry.
 Several write paths perform a plain insert that can lose such a race.
 
+A retry loop also changes what a closure's captured variables mean. Where
+`ExecTx` does retry, the closure body is per-attempt but anything it captures
+from the enclosing function is per-call, so a closure that assigns an
+out-parameter has to clear it on entry rather than relying on the caller's
+initialization. A serialization failure raised after that assignment otherwise
+carries the abandoned attempt's answer into the attempt that commits.
+`AdmitIdempotentOwnedReceiveScript` in
+[`db/oor_artifact_store.go`](../db/oor_artifact_store.go) hit exactly this and
+now resets its `created` flag inside the closure. The more retries a level
+change induces, the more this shape matters.
+
 That last point only applies to half of them, and the distinction decides
 whether a given site is exposed today or only after a move. SSI promotes a
 creation race to `40001` only when the losing transaction read the contested

@@ -146,6 +146,14 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   unconstrained.
 - Default retry logic: 10 retries with exponential backoff (40ms →
   3s cap).
+- An `ExecTx` closure may run **more than once**, so any variable it
+  captures from the enclosing function is per-attempt state, not
+  per-call state. Reset every captured out-parameter at the top of the
+  closure rather than at the call site. Otherwise a serialization
+  failure late in one attempt leaves that attempt's partial result in
+  place, and the retry that succeeds returns the durable row alongside a
+  stale flag — `AdmitIdempotentOwnedReceiveScript` reset `created` this
+  way after reporting a replayed allocation as freshly created.
 - SQLite `busy_timeout = 30 000 ms` under WAL mode tolerates
   multi-actor contention bursts.
 - `ledger_entries.entry_id` and `wallet_utxo_log.entry_id` use
