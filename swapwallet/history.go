@@ -1341,7 +1341,11 @@ func projectOORLedgerActivity(rows []*waverpc.TransactionHistoryEntry,
 		amounts := correlations.payAmountsByFundingSession[session]
 		received := receivedBySession[session]
 		if received == 0 {
-			if consumePayFundingAmount(amounts, row.GetAmountSat()) {
+			if internalSwapOORSend(correlations, session) ||
+				consumePayFundingAmount(
+					amounts, row.GetAmountSat(),
+				) {
+
 				projection.hidden[row.GetEntryId()] = struct{}{}
 			}
 
@@ -1386,14 +1390,24 @@ func consumePayFundingAmount(amounts map[int64]int, amount int64) bool {
 	return true
 }
 
+// internalSwapOORSend reports whether a session-keyed OOR outflow is the
+// claim or refund leg of an existing swap activity row. These sessions remain
+// internal even when the claimed or refunded output has no separate ledger
+// receive row to pair with the send.
+func internalSwapOORSend(correlations swapOORCorrelations,
+	session string) bool {
+
+	return sessionInSet(correlations.claimSessions, session) ||
+		sessionInSet(correlations.refundSessions, session)
+}
+
 // internalZeroDeltaSession reports whether a balanced same-session OOR
 // send+receive pair belongs to a swap-internal claim or refund. Those rows
 // are already represented by the swap entry itself.
 func internalZeroDeltaSession(correlations swapOORCorrelations,
 	claimOutputSessions map[string]struct{}, session string) bool {
 
-	return sessionInSet(correlations.claimSessions, session) ||
-		sessionInSet(correlations.refundSessions, session) ||
+	return internalSwapOORSend(correlations, session) ||
 		sessionInSet(claimOutputSessions, session)
 }
 
