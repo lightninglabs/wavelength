@@ -1170,7 +1170,9 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 	)
 	for _, t := range resp.GetTransactions() {
 		if _, ok := oorProjection.hidden[t.GetEntryId()]; ok {
-			h.rememberInternalOORActivity(t)
+			if _, repair := oorProjection.repairableInternalSend[t.GetEntryId()]; repair {
+				h.rememberInternalOORActivity(t)
+			}
 
 			continue
 		}
@@ -1325,6 +1327,7 @@ func swapOORCorrelationsFromSwaps(
 type oorLedgerActivityProjection struct {
 	hidden                 map[int64]struct{}
 	displayAmountByEntryID map[int64]int64
+	repairableInternalSend map[int64]struct{}
 }
 
 // internalOORLedgerEntries returns ledger entry IDs for OOR legs that are
@@ -1369,6 +1372,7 @@ func projectOORLedgerActivity(rows []*waverpc.TransactionHistoryEntry,
 	projection := oorLedgerActivityProjection{
 		hidden:                 make(map[int64]struct{}),
 		displayAmountByEntryID: make(map[int64]int64),
+		repairableInternalSend: make(map[int64]struct{}),
 	}
 	for _, row := range rows {
 		session, ok := oorSendSessionID(row)
@@ -1379,10 +1383,16 @@ func projectOORLedgerActivity(rows []*waverpc.TransactionHistoryEntry,
 		amounts := correlations.payAmountsByFundingSession[session]
 		received := receivedBySession[session]
 		if received == 0 {
-			if internalSwapOORSend(correlations, session) ||
-				consumePayFundingAmount(
-					amounts, row.GetAmountSat(),
-				) {
+			if internalSwapOORSend(correlations, session) {
+				projection.hidden[row.GetEntryId()] = struct{}{}
+				projection.repairableInternalSend[row.GetEntryId()] = struct{}{}
+
+				continue
+			}
+
+			if consumePayFundingAmount(
+				amounts, row.GetAmountSat(),
+			) {
 
 				projection.hidden[row.GetEntryId()] = struct{}{}
 			}

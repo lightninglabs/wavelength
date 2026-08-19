@@ -219,12 +219,23 @@ func (r *Runtime) projectDerivedPage(ctx context.Context,
 // prior binary projected before the current structured OOR correlation hid
 // them. The underlying double-entry ledger remains the audit source of truth;
 // only the incorrect wallet activity projection and its replay events are
-// removed. Calls are idempotent, so startup and periodic reconciliation can
-// repeat the repair safely.
+// removed. Startup runs before activity subscribers connect, so the repair
+// cannot leave a live consumer holding a row without a corresponding removal
+// event. Calls are idempotent across restarts.
 func (r *Runtime) removePersistedInternalOORActivity(ctx context.Context,
 	ids []string) error {
 
 	for _, id := range ids {
+		_, err := r.deps.ActivityStore.GetEntry(ctx, id)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			continue
+
+		case err != nil:
+			return fmt.Errorf("read internal OOR activity %s: %w",
+				id, err)
+		}
+
 		if err := r.deps.ActivityStore.RemoveEntry(
 			ctx, id,
 		); err != nil {
@@ -248,6 +259,8 @@ func (r *Runtime) removePersistedInternalOORActivity(ctx context.Context,
 // to seed every kind, while the reconciler passes only the low-volume
 // DEPOSIT/EXIT producers here and reconciles the high-volume SEND/RECV kinds
 // separately over a bounded window (reprojectRecentActivity).
+// repairInternalOOR is true only during startup, before activity subscribers
+// connect, and removes synthetic rows persisted by an older binary.
 //
 // A wallet-local EXIT's pending record is cleared only from here and
 // reprojectRecentActivity (via projectDerivedPage), and only after its terminal
@@ -255,7 +268,7 @@ func (r *Runtime) removePersistedInternalOORActivity(ctx context.Context,
 // projection or a row that paged out is retried on a later pass instead of
 // being stranded PENDING in the store.
 func (r *Runtime) reprojectActivity(ctx context.Context,
-	kinds []wavewalletrpc.EntryKind) (int, error) {
+	kinds []wavewalletrpc.EntryKind, repairInternalOOR bool) (int, error) {
 
 	if r.deps == nil || r.deps.ActivityStore == nil {
 		return 0, nil
@@ -296,10 +309,12 @@ func (r *Runtime) reprojectActivity(ctx context.Context,
 		}
 	}
 
-	if err := r.removePersistedInternalOORActivity(
-		ctx, h.sortedInternalOORActivityIDs(),
-	); err != nil {
-		return projected, err
+	if repairInternalOOR {
+		if err := r.removePersistedInternalOORActivity(
+			ctx, h.sortedInternalOORActivityIDs(),
+		); err != nil {
+			return projected, err
+		}
 	}
 
 	return projected, nil
@@ -338,11 +353,6 @@ func (r *Runtime) reprojectRecentActivity(ctx context.Context,
 
 	entries := list.GetEntries()
 	r.projectDerivedPage(ctx, entries)
-	if err := r.removePersistedInternalOORActivity(
-		ctx, h.sortedInternalOORActivityIDs(),
-	); err != nil {
-		return len(entries), err
-	}
 
 	return len(entries), nil
 }
@@ -394,7 +404,7 @@ func (r *Runtime) backfillActivity(ctx context.Context) {
 	}
 
 	log := r.deps.resolveLog()
-	projected, err := r.reprojectActivity(ctx, nil)
+	projected, err := r.reprojectActivity(ctx, nil, true)
 	if err != nil {
 		log.WarnS(ctx, "Activity backfill stopped: list failed", err)
 

@@ -332,6 +332,11 @@ func TestHistoryHidesReceiveClaimOORSend(t *testing.T) {
 		t, wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
 		entries[0].GetKind(),
 	)
+	require.Empty(
+		t, h.sortedInternalOORActivityIDs(),
+		"paired internal rows were already suppressed before this "+
+			"repair",
+	)
 }
 
 // TestHistoryHidesReceiveClaimOORSendWithoutReceiveLedgerRow confirms a
@@ -385,6 +390,9 @@ func TestHistoryHidesReceiveClaimOORSendWithoutReceiveLedgerRow(t *testing.T) {
 	require.Equal(
 		t, wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
 		entries[0].GetKind(),
+	)
+	require.Equal(
+		t, []string{"ledger-3"}, h.sortedInternalOORActivityIDs(),
 	)
 }
 
@@ -468,6 +476,7 @@ func TestHistoryKeepsUnpairedOORSend(t *testing.T) {
 		entries[0].GetKind(),
 	)
 	require.Equal(t, int64(-1_000), entries[0].GetAmountSat())
+	require.Empty(t, h.sortedInternalOORActivityIDs())
 }
 
 // TestClassifyLedgerRowHidesBoardingFeeLeg confirms the boarding_fee_paid
