@@ -16,30 +16,47 @@ import (
 // activity log: the current-state activity_entries projection and the
 // append-only activity_events transition log.
 type ActivityStore interface {
+	// UpsertActivityEntry inserts or advances one current-state projection.
 	UpsertActivityEntry(ctx context.Context,
 		arg sqlc.UpsertActivityEntryParams) (int64, error)
 
+	// AppendActivityEvent records one immutable activity transition.
 	AppendActivityEvent(ctx context.Context,
 		arg sqlc.AppendActivityEventParams) (int64, error)
 
+	// GetActivityEntry loads one projection by its canonical identity.
 	GetActivityEntry(ctx context.Context,
 		canonicalID string) (sqlc.ActivityEntry, error)
 
+	// DeleteActivityEventsByCanonicalID removes the replay history for an
+	// erroneous projection before its foreign-key parent is removed.
+	DeleteActivityEventsByCanonicalID(ctx context.Context,
+		canonicalID string) error
+
+	// DeleteActivityEntry removes one current-state projection.
+	DeleteActivityEntry(ctx context.Context,
+		canonicalID string) (int64, error)
+
+	// CountActivityEntriesByStatus counts the full current-state set for
+	// one lifecycle status.
 	CountActivityEntriesByStatus(ctx context.Context,
 		status int64) (int64, error)
 
+	// ListActivityEntries reads one newest-first keyset page.
 	ListActivityEntries(ctx context.Context,
 		arg sqlc.ListActivityEntriesParams) (
 		[]sqlc.ActivityEntry,
 		error,
 	)
 
+	// ListEntriesByKindStatus reads a canonical-id page for rehydration.
 	ListEntriesByKindStatus(ctx context.Context,
 		arg sqlc.ListEntriesByKindStatusParams) (
 		[]sqlc.ActivityEntry,
 		error,
 	)
 
+	// PullActivityEvents reads replay events strictly after a cursor.
 	PullActivityEvents(ctx context.Context,
 		arg sqlc.PullActivityEventsParams) ([]sqlc.ActivityEvent, error)
 }
@@ -266,6 +283,27 @@ func (s *ActivityPersistenceStore) GetEntry(ctx context.Context,
 	})
 
 	return entry, err
+}
+
+// RemoveEntry atomically removes a current-state activity row and its event
+// history after the wallet projection proves that the row represents an
+// internal implementation detail. The accounting ledger remains untouched.
+// Deleting the events first preserves the activity_events foreign key, and a
+// missing row is an idempotent success so startup reconciliation can retry.
+func (s *ActivityPersistenceStore) RemoveEntry(ctx context.Context,
+	canonicalID string) error {
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q ActivityStore) error {
+		if err := q.DeleteActivityEventsByCanonicalID(
+			ctx, canonicalID,
+		); err != nil {
+			return err
+		}
+
+		_, err := q.DeleteActivityEntry(ctx, canonicalID)
+
+		return err
+	})
 }
 
 // CountByStatus returns the number of current-state rows in the given status.

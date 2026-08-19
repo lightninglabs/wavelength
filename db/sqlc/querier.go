@@ -38,6 +38,14 @@ type Querier interface {
 	// CountVTXOsByStatus returns the count of VTXOs with the specified status.
 	CountVTXOsByStatus(ctx context.Context, status int32) (int64, error)
 	CountWalletUTXOLog(ctx context.Context) (int64, error)
+	// DeleteActivityEntry removes the current-state projection after its erroneous
+	// transition events have been removed in the same transaction.
+	DeleteActivityEntry(ctx context.Context, canonicalID string) (int64, error)
+	// DeleteActivityEventsByCanonicalID removes transition events for a projection
+	// that was proven to be an internal implementation detail rather than wallet
+	// activity. Callers delete these first to satisfy the activity_entries foreign
+	// key without weakening it for ordinary lifecycle rows.
+	DeleteActivityEventsByCanonicalID(ctx context.Context, canonicalID string) error
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
 	DeleteOORPackageCheckpoints(ctx context.Context, sessionID []byte) error
 	DeleteOrphanedPendingBoardIntents(ctx context.Context) error

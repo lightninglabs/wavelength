@@ -30,6 +30,8 @@ type fakeActivityProjector struct {
 	onProject func()
 }
 
+// ProjectEntry records one successful projection and returns a monotonic fake
+// event sequence, or returns the configured failure.
 func (f *fakeActivityProjector) ProjectEntry(_ context.Context,
 	p db.ActivityProjection) (int64, error) {
 
@@ -59,6 +61,13 @@ func (f *fakeActivityProjector) GetEntry(context.Context, string) (
 	return sqlc.ActivityEntry{}, sql.ErrNoRows
 }
 
+// RemoveEntry satisfies waved.ActivityStore. The fake has no durable rows, so
+// removing an already-hidden projection is an idempotent no-op.
+func (f *fakeActivityProjector) RemoveEntry(context.Context, string) error {
+	return nil
+}
+
+// count returns the number of projections recorded by the fake.
 func (f *fakeActivityProjector) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
