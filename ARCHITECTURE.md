@@ -52,6 +52,7 @@ package may import from a higher layer.
 | [`fraud`](fraud/) | Fraud detection actor: watches OOR ancestor outpoints on-chain and triggers unilateral exit when an ancestor is spent |
 | [`vhtlcrecovery/coordinator`](vhtlcrecovery/coordinator/) | Runtime coordinator for durable vHTLC recovery jobs: arms, escalates into unroll, cancels, and reconciles after restart |
 | [`vhtlcrecovery/unrollpolicy`](vhtlcrecovery/unrollpolicy/) | Adapter that resolves `(exit_policy_kind, recovery_id)` into a concrete `unroll.ExitSpendPolicy` for vHTLC claim and refund exits |
+| [`tapassets`](tapassets/) | The only tapd integration: adapts tap-sdk custom-anchor transactions to Ark's durable boundaries — asset onboarding, out-of-round asset transitions, asset-aware VTXO trees, and the asset-aware exit claim. Owns no DB, RPC, or actor |
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts, fee ledger |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
 | [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade |
@@ -125,6 +126,12 @@ waved (orchestrator)
 │   ├── db          │ (oor artifact store)
 │   ├── ledger      │ (VTXOSentMsg / VTXOReceivedMsg via ledger.Sink)
 │   └── lib/tx      │ (arktx, checkpoint, oor, psbtutil)
+├── tapassets       │ (tapd integration; called synchronously, no actor)
+│   ├── oor         │ (implements TaprootAssetOORPreparer / Resumer)
+│   ├── vtxo        │ (asset-ref bound only)
+│   ├── lib/arkscript (composed asset scripts)
+│   ├── lib/tree    │ (asset-aware tree materialization)
+│   └── tap-sdk     │ (external: tapd over gRPC)
 ├── unroll          │ (unilateral-exit registry + per-target actor)
 │   ├── txconfirm   │ (CPFP / confirmation tracking)
 │   ├── lib/recovery│ (recovery proof graph)
@@ -183,6 +190,21 @@ intentionally carry a zero `KeyLocator` so they are not registered on the
 sender side — the recipient materializes those VTXOs via the incoming VTXO
 push path instead.
 
+### Composed Taproot Asset Outputs
+An asset-bearing Ark output pays to `taproot(internal_key,
+tapBranch(sorted(policy_root, taproot_asset_root)))`: the asset commitment
+root is a *sibling* of the ordinary Ark policy root, so the semantic policy
+is untouched and every script spend carries one extra top-level
+control-block sibling. Byte equality between the recomputed composed script
+and the on-chain one is what authenticates a disclosed asset root. A VTXO
+descriptor stores the composed `PkScript`, while
+`oortx.RecipientOutput.RoutingPkScript()` derives the uncomposed policy
+script used for owned-script routing and addressing — a receiver has to be
+addressable before the final composed script exists. Bitcoin carriers pay
+for the new asset leaves: round-created leaves are the sender's own money,
+OOR-created ones ride an operator-funded lease that is reclaimed when
+spent. See `docs/taproot_assets_architecture.md`.
+
 ### Outbox Pattern
 FSMs emit messages as data (outbox events). The actor runtime dispatches them
 after state is persisted. This ensures no message is sent without the
@@ -213,6 +235,13 @@ corresponding state transition being durable.
 | `Backend` | proofkeys | Wallet key derivation and proof signing interface |
 | `Node` | lib/arkscript | Sealed AST node interface for tapscript compilation |
 | `VTXOPolicy` | lib/arkscript | Compiled VTXO taproot policy with collab/exit spend paths |
+| `TaprootAssetOORPreparer` | oor | Seam between the declarative asset-transfer contract (owned by `oor`) and the tapd driver (owned by `tapassets`) |
+| `TransferInput` | oor | One selected OOR spend input; `OperatorFunded` and `TaprootAssetRoundCreated` decide which signing sites run and who pays each new asset leaf's carrier |
+| `OORCarrierLease` | oor | Operator carrier-float VTXO leased for one asset transfer via `arkrpc.LeaseOORCarrier` |
+| `Preparer` | tapassets | tap-sdk-backed OOR asset preparer: N asset checkpoints merged into one ark transition, journaled per attempt |
+| `Onboarder` | tapassets | Journaled workflow moving a confirmed tapd asset anchor into a composed boarding output |
+| `CreatedAssetProofSource` | tapassets | Compact proof path plus OP_TRUE witness for an asset output this wallet created |
+| `AssetTreeContext` | lib/tree | Side-car of an asset-aware tree: per-node signing tweaks, sealed packages, subtree amounts |
 
 ## State Machines
 
