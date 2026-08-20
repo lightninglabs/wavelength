@@ -8,8 +8,8 @@ import (
 )
 
 // TestDefaultEsploraURL verifies each supported network resolves to its
-// public mempool.space Esplora endpoint, and unsupported networks error out
-// instead of silently returning an empty URL.
+// Esplora endpoint, and unsupported networks error out instead of silently
+// returning an empty URL.
 func TestDefaultEsploraURL(t *testing.T) {
 	t.Parallel()
 

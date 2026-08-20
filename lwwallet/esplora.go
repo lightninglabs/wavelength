@@ -36,7 +36,8 @@ import (
 // address UTXOs, tx confirmation status, mempool fee estimates) are
 // never cached.
 type EsploraClient struct {
-	// baseURL is the Esplora API root (e.g. "https://mempool.space/api").
+	// baseURL is the Esplora API root (e.g. the mainnet default in
+	// DefaultEsploraURLMainnet).
 	baseURL string
 
 	// httpClient is the underlying HTTP client with a configured timeout.
@@ -79,8 +80,8 @@ type EsploraClient struct {
 }
 
 // NewEsploraClient creates a new Esplora REST API client. The baseURL should
-// point to the API root without a trailing slash (e.g.
-// "https://mempool.space/api").
+// point to the API root without a trailing slash (e.g. the mainnet default in
+// DefaultEsploraURLMainnet).
 func NewEsploraClient(baseURL string, logger btclog.Logger) *EsploraClient {
 	return &EsploraClient{
 		baseURL: strings.TrimRight(baseURL, "/"),

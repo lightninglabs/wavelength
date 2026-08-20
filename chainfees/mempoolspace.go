@@ -32,10 +32,10 @@ const (
 	// wall-clock time but not the number of bytes read.
 	maxMempoolSpaceResponseBytes = 64 << 10
 
-	// The test networks default to Lightning Labs-operated mempool
-	// instances, matching the lwwallet Esplora defaults; only mainnet uses
-	// the public mempool.space endpoint.
-	mempoolSpaceMainnetURL = "https://mempool.space/api/v1/fees/recommended"
+	// All networks default to Lightning Labs-operated mempool instances,
+	// matching the lwwallet Esplora defaults.
+	mempoolSpaceMainnetURL = "https://mempool.staging." +
+		"lightningcluster.com/api/v1/fees/recommended"
 	mempoolSpaceTestnetURL = "https://mempool-testnet3.testnet." +
 		"lightningcluster.com/api/v1/fees/recommended"
 	mempoolSpaceTestnet4URL = "https://mempool-testnet4.testnet." +
