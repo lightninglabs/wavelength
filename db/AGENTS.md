@@ -86,10 +86,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 17` — current schema version.
-- `LatestMigrationVersion = 18` — current schema version.
-- `LatestMigrationVersion = 19` — current schema version.
-- `LatestMigrationVersion = 20` — current schema version.
+- `LatestMigrationVersion = 21` — current schema version. One value
+  only; adding a migration means editing this constant, not appending a
+  second line.
+- Taproot Asset codecs: `encodeTaprootAssetMetadata` /
+  `decodeTaprootAssetMetadata` (`vtxo_store.go`),
+  `encodeClientVTXOAssetMetadata` (`round_store.go`),
+  `UpsertPackageWithAssets` / `decodeStoredTaprootAssetTransfer`
+  (`oor_artifact_store.go`). Asset columns are folded into the existing
+  `InsertVTXO`, `ListVTXOSelectionCandidatesByStatus`, and
+  `UpsertOORPackage` queries rather than living in their own query file.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -278,15 +284,42 @@ when adding one.
   registration terms, a stable remote RPC key, and completion evidence to
   `owned_receive_scripts`. The partial unique index admits one durable
   allocation per non-null idempotency key.
-- `000018_taproot_asset_vtxos` — optional Taproot Asset commitment root on
-  VTXO descriptors; generic Bitcoin coin selection excludes these rows.
-- `000019_oor_taproot_asset_packages` — optional sealed Taproot Asset
-  transition container on finalized OOR package rows.
-- `000020_taproot_asset_vtxo_metadata` — optional SDK-neutral asset
-  reference and unit amount alongside the commitment root.
-- `000021_owned_receive_asset_alias` — append-only asset-alias source on
-  `owned_receive_scripts`, so a composed asset script resolves to the
-  uncomposed policy script the wallet owns.
+- `000018_taproot_asset_vtxos` — adds `vtxos.taproot_asset_root` (BLOB,
+  nullable; NULL is a historical Bitcoin-only output). This one column is
+  the discriminator generic Bitcoin coin selection filters on:
+  `ListVTXOSelectionCandidatesByStatus` carries
+  `AND taproot_asset_root IS NULL`, so an asset leaf can never be picked
+  as a fee or change input and spent as satoshis.
+- `000019_oor_taproot_asset_packages` — adds
+  `oor_packages.taproot_asset_transfer` (BLOB, nullable) holding the
+  sealed Taproot Asset transition container of a finalized OOR package.
+  NULL is a Bitcoin-only session.
+- `000020_taproot_asset_vtxo_metadata` — adds three nullable columns to
+  `vtxos`: `taproot_asset_ref` (TEXT, the SDK-neutral asset identity),
+  `taproot_asset_amount` (BLOB, stored as exactly 8 bytes big-endian so
+  the full `uint64` survives both SQLite and PostgreSQL — neither has an
+  unsigned 64-bit integer type), and `taproot_asset_sealed_package`
+  (BLOB, the package that created a round asset leaf). No indexes: these
+  are read by outpoint alongside the descriptor.
+- `000021_owned_receive_asset_alias` — registers source `3`
+  (`asset_alias`) in `owned_receive_script_sources` so a composed asset
+  script resolves to the uncomposed policy script the wallet owns.
+  Because SQLite cannot alter a CHECK constraint in place, this is a
+  **full table rebuild** of `owned_receive_scripts` (create
+  `owned_receive_scripts_asset_alias`, copy every row, drop, rename,
+  recreate the index) whose only semantic change is
+  `CHECK (source IN (0, 1, 2, 3))`. The rebuild must carry the
+  idempotent-registration columns 000017 added — `idempotency_key`,
+  `registration_label`, `registration_expires_at`,
+  `registration_rpc_key`, `registration_completed_at` — and recreate
+  `idx_owned_receive_scripts_idempotency_key`. Dropping any of them would
+  silently turn every keyed `NewReceiveScript` retry back into a fresh
+  allocation. The `INSERT ... SELECT` names all twelve columns
+  explicitly for that reason.
+
+Migrations 18 through 21 have no Go post-migration step;
+`postMigrationChecks` still holds only version 15
+(`backfillLedgerRoundUUIDs`).
 
 ## Deep Docs
 
