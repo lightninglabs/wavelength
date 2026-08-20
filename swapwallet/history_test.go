@@ -332,6 +332,68 @@ func TestHistoryHidesReceiveClaimOORSend(t *testing.T) {
 		t, wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
 		entries[0].GetKind(),
 	)
+	require.Empty(
+		t, h.sortedInternalOORActivityIDs(),
+		"paired internal rows were already suppressed before this "+
+			"repair",
+	)
+}
+
+// TestHistoryHidesReceiveClaimOORSendWithoutReceiveLedgerRow confirms a
+// receive swap's session-keyed claim input stays internal when the claimed
+// output is represented by the swap activity row rather than a paired ledger
+// receive row. A raw OOR send with no swap correlation remains covered by
+// TestHistoryKeepsUnpairedOORSend.
+func TestHistoryHidesReceiveClaimOORSendWithoutReceiveLedgerRow(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+
+	sessionID := testBytes(32, 0x83)
+	sessionHex := testSessionString(t, sessionID)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			{
+				PaymentHash: "payment-hash",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_RECEIVE,
+				State: swapclientrpc.
+					SwapState_SWAP_STATE_COMPLETED,
+				AmountSat:      1_000,
+				UpdatedAtUnix:  200,
+				ClaimSessionId: sessionHex,
+			},
+		},
+	}
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
+			{
+				Type:               "oor",
+				Subtype:            ledger.EventVTXOSent,
+				ConfirmationStatus: "recorded",
+				AmountSat:          1_000,
+				DebitAccount:       ledger.AccountTransfersOut,
+				CreditAccount:      ledger.AccountVTXOBalance,
+				SessionId:          sessionID,
+				EntryId:            3,
+				CreatedAtUnixS:     100,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "payment-hash", entries[0].GetId())
+	require.Equal(
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
+		entries[0].GetKind(),
+	)
+	require.Equal(
+		t, []string{"ledger-3"}, h.sortedInternalOORActivityIDs(),
+	)
 }
 
 // TestHistoryPendingFilterHidesReceiveClaimByOutputTxid confirms --pending
@@ -414,6 +476,7 @@ func TestHistoryKeepsUnpairedOORSend(t *testing.T) {
 		entries[0].GetKind(),
 	)
 	require.Equal(t, int64(-1_000), entries[0].GetAmountSat())
+	require.Empty(t, h.sortedInternalOORActivityIDs())
 }
 
 // TestClassifyLedgerRowHidesBoardingFeeLeg confirms the boarding_fee_paid
