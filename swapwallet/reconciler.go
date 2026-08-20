@@ -114,7 +114,10 @@ func (r *Runtime) reconcilerLoop() {
 // backfill.
 func (r *Runtime) reconcileActivity(ctx context.Context) {
 	// Full-history pass over the low-volume DEPOSIT/EXIT kinds.
-	if _, err := r.reprojectActivity(ctx, reconcilerKinds); err != nil {
+	if _, err := r.reprojectActivity(
+		ctx, reconcilerKinds, false,
+	); err != nil {
+
 		r.deps.resolveLog().WarnS(ctx, "Activity reconcile pass failed",
 			err,
 		)

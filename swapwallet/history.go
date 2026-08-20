@@ -44,6 +44,12 @@ type history struct {
 	// instead of one per page. Instances are used single-threaded.
 	creditTopupLinks    map[string]creditTopupLink
 	creditTopupLinksSet bool
+
+	// internalOORActivityIDs collects synthetic canonical ids for ledger
+	// rows that structured swap correlation proved are internal. The
+	// projector uses the set after a successful derive pass to remove rows
+	// that an older binary already persisted in the canonical store.
+	internalOORActivityIDs map[string]struct{}
 }
 
 // newHistory constructs the history merger.
@@ -1164,6 +1170,10 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 	)
 	for _, t := range resp.GetTransactions() {
 		if _, ok := oorProjection.hidden[t.GetEntryId()]; ok {
+			if _, repair := oorProjection.repairableInternalSend[t.GetEntryId()]; repair {
+				h.rememberInternalOORActivity(t)
+			}
+
 			continue
 		}
 
@@ -1187,6 +1197,36 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 	// UTXOs paid to the same address show their total rather than
 	// overwriting each other. See sumDepositsByAddress.
 	return sumDepositsByAddress(out), nil
+}
+
+// rememberInternalOORActivity records the synthetic canonical id of a hidden
+// ledger row so reconciliation can remove a copy persisted by an older binary.
+// Stable non-ledger ids are excluded because this repair targets only the
+// `ledger-N` artifact produced when a session-keyed send has no txid.
+func (h *history) rememberInternalOORActivity(
+	row *waverpc.TransactionHistoryEntry) {
+
+	entry, ok := walletEntryFromLedgerRow(row)
+	if !ok || !strings.HasPrefix(entry.GetId(), "ledger-") {
+		return
+	}
+
+	if h.internalOORActivityIDs == nil {
+		h.internalOORActivityIDs = make(map[string]struct{})
+	}
+	h.internalOORActivityIDs[entry.GetId()] = struct{}{}
+}
+
+// sortedInternalOORActivityIDs returns the hidden synthetic ids in stable
+// order so cleanup and tests are deterministic.
+func (h *history) sortedInternalOORActivityIDs() []string {
+	ids := make([]string, 0, len(h.internalOORActivityIDs))
+	for id := range h.internalOORActivityIDs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	return ids
 }
 
 // sumDepositsByAddress collapses boarding-deposit rows that share a canonical
@@ -1287,6 +1327,7 @@ func swapOORCorrelationsFromSwaps(
 type oorLedgerActivityProjection struct {
 	hidden                 map[int64]struct{}
 	displayAmountByEntryID map[int64]int64
+	repairableInternalSend map[int64]struct{}
 }
 
 // internalOORLedgerEntries returns ledger entry IDs for OOR legs that are
@@ -1331,6 +1372,7 @@ func projectOORLedgerActivity(rows []*waverpc.TransactionHistoryEntry,
 	projection := oorLedgerActivityProjection{
 		hidden:                 make(map[int64]struct{}),
 		displayAmountByEntryID: make(map[int64]int64),
+		repairableInternalSend: make(map[int64]struct{}),
 	}
 	for _, row := range rows {
 		session, ok := oorSendSessionID(row)
@@ -1341,7 +1383,17 @@ func projectOORLedgerActivity(rows []*waverpc.TransactionHistoryEntry,
 		amounts := correlations.payAmountsByFundingSession[session]
 		received := receivedBySession[session]
 		if received == 0 {
-			if consumePayFundingAmount(amounts, row.GetAmountSat()) {
+			if internalSwapOORSend(correlations, session) {
+				projection.hidden[row.GetEntryId()] = struct{}{}
+				projection.repairableInternalSend[row.GetEntryId()] = struct{}{}
+
+				continue
+			}
+
+			if consumePayFundingAmount(
+				amounts, row.GetAmountSat(),
+			) {
+
 				projection.hidden[row.GetEntryId()] = struct{}{}
 			}
 
@@ -1386,14 +1438,24 @@ func consumePayFundingAmount(amounts map[int64]int, amount int64) bool {
 	return true
 }
 
+// internalSwapOORSend reports whether a session-keyed OOR outflow is the
+// claim or refund leg of an existing swap activity row. These sessions remain
+// internal even when the claimed or refunded output has no separate ledger
+// receive row to pair with the send.
+func internalSwapOORSend(correlations swapOORCorrelations,
+	session string) bool {
+
+	return sessionInSet(correlations.claimSessions, session) ||
+		sessionInSet(correlations.refundSessions, session)
+}
+
 // internalZeroDeltaSession reports whether a balanced same-session OOR
 // send+receive pair belongs to a swap-internal claim or refund. Those rows
 // are already represented by the swap entry itself.
 func internalZeroDeltaSession(correlations swapOORCorrelations,
 	claimOutputSessions map[string]struct{}, session string) bool {
 
-	return sessionInSet(correlations.claimSessions, session) ||
-		sessionInSet(correlations.refundSessions, session) ||
+	return internalSwapOORSend(correlations, session) ||
 		sessionInSet(claimOutputSessions, session)
 }
 
