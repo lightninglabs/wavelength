@@ -3237,8 +3237,7 @@ func (r *RPCServer) prepareCustomOORInputs(ctx context.Context,
 	buildStart := time.Now()
 	selectedInputs, err := BuildCustomTransferInputs(
 		ctx, r.server.vtxoStore, customInputs,
-		r.server.loadClientKeyDesc(),
-		terms.PubKey, terms.VTXOExitDelay,
+		r.server.loadClientKeyDesc(), terms.PubKey, terms.VTXOExitDelay,
 	)
 	buildDuration := time.Since(buildStart)
 	if err != nil {

@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -84,7 +85,7 @@ func TestMigrationSteps(t *testing.T) {
 func TestOwnedReceiveAssetAliasMigration(t *testing.T) {
 	ctx := t.Context()
 
-	db := NewTestDBWithVersion(t, 18)
+	db := NewTestDBWithVersion(t, 20)
 
 	insertExisting := transformByteLiterals(t, db.BaseDB, `
 		INSERT INTO owned_receive_scripts (

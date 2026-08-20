@@ -37,20 +37,50 @@ CREATE TABLE owned_receive_scripts_asset_alias (
     -- last_used_at is an optional unix timestamp of latest usage.
     last_used_at BIGINT,
 
+    -- idempotency_key identifies one durable receive-script allocation
+    -- across retries; NULL keeps the legacy allocate-a-fresh-script
+    -- behavior.
+    idempotency_key TEXT,
+
+    -- registration_label is the immutable label the allocation was
+    -- admitted with.
+    registration_label TEXT,
+
+    -- registration_expires_at is the absolute indexer registration
+    -- expiry.
+    registration_expires_at BIGINT,
+
+    -- registration_rpc_key is the stable mailbox RPC correlation key.
+    registration_rpc_key TEXT,
+
+    -- registration_completed_at records completion evidence for a
+    -- finished admission.
+    registration_completed_at BIGINT,
+
     -- Source enum foreign key.
     FOREIGN KEY (source) REFERENCES owned_receive_script_sources(source)
 );
 
 INSERT INTO owned_receive_scripts_asset_alias (
     pk_script, client_key_id, operator_pubkey, exit_delay, source,
-    created_at, last_used_at
+    created_at, last_used_at, idempotency_key, registration_label,
+    registration_expires_at, registration_rpc_key,
+    registration_completed_at
 )
 SELECT
     pk_script, client_key_id, operator_pubkey, exit_delay, source,
-    created_at, last_used_at
+    created_at, last_used_at, idempotency_key, registration_label,
+    registration_expires_at, registration_rpc_key,
+    registration_completed_at
 FROM owned_receive_scripts;
 
 DROP TABLE owned_receive_scripts;
 
 ALTER TABLE owned_receive_scripts_asset_alias
     RENAME TO owned_receive_scripts;
+
+-- The rebuild dropped the index with the old table; restore it so one
+-- durable allocation per non-null idempotency key stays enforced.
+CREATE UNIQUE INDEX idx_owned_receive_scripts_idempotency_key
+    ON owned_receive_scripts(idempotency_key)
+    WHERE idempotency_key IS NOT NULL;

@@ -44,6 +44,8 @@ func main() {
 }
 
 // newRootCmd creates the top-level cobra command that starts the daemon.
+//
+//nolint:funlen
 func newRootCmd() *cobra.Command {
 	cfg := waved.DefaultConfig()
 	v := viper.New()

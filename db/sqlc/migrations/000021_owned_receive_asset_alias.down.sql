@@ -25,17 +25,29 @@ CREATE TABLE owned_receive_scripts_without_asset_alias (
     -- last_used_at is an optional unix timestamp of latest usage.
     last_used_at BIGINT,
 
+    -- The idempotent-registration columns predate this migration and must
+    -- survive the rollback.
+    idempotency_key TEXT,
+    registration_label TEXT,
+    registration_expires_at BIGINT,
+    registration_rpc_key TEXT,
+    registration_completed_at BIGINT,
+
     -- Source enum foreign key.
     FOREIGN KEY (source) REFERENCES owned_receive_script_sources(source)
 );
 
 INSERT INTO owned_receive_scripts_without_asset_alias (
     pk_script, client_key_id, operator_pubkey, exit_delay, source,
-    created_at, last_used_at
+    created_at, last_used_at, idempotency_key, registration_label,
+    registration_expires_at, registration_rpc_key,
+    registration_completed_at
 )
 SELECT
     pk_script, client_key_id, operator_pubkey, exit_delay, source,
-    created_at, last_used_at
+    created_at, last_used_at, idempotency_key, registration_label,
+    registration_expires_at, registration_rpc_key,
+    registration_completed_at
 FROM owned_receive_scripts;
 
 DROP TABLE owned_receive_scripts;
@@ -44,3 +56,8 @@ ALTER TABLE owned_receive_scripts_without_asset_alias
     RENAME TO owned_receive_scripts;
 
 DELETE FROM owned_receive_script_sources WHERE source = 3;
+
+-- Restore the index the rebuild dropped with the old table.
+CREATE UNIQUE INDEX idx_owned_receive_scripts_idempotency_key
+    ON owned_receive_scripts(idempotency_key)
+    WHERE idempotency_key IS NOT NULL;

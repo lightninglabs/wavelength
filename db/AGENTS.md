@@ -278,14 +278,15 @@ when adding one.
   registration terms, a stable remote RPC key, and completion evidence to
   `owned_receive_scripts`. The partial unique index admits one durable
   allocation per non-null idempotency key.
-- `000017_taproot_asset_vtxos` — optional Taproot Asset commitment root on
+- `000018_taproot_asset_vtxos` — optional Taproot Asset commitment root on
   VTXO descriptors; generic Bitcoin coin selection excludes these rows.
-- `000017_oor_taproot_asset_packages` — optional sealed Taproot Asset
+- `000019_oor_taproot_asset_packages` — optional sealed Taproot Asset
   transition container on finalized OOR package rows.
-- `000019_taproot_asset_vtxo_metadata` — optional SDK-neutral asset reference
-  and full-width unsigned asset amount on VTXO descriptors. The amount is an
-  eight-byte big-endian BLOB because SQL `BIGINT` cannot represent all
-  `uint64` Taproot Asset quantities.
+- `000020_taproot_asset_vtxo_metadata` — optional SDK-neutral asset
+  reference and unit amount alongside the commitment root.
+- `000021_owned_receive_asset_alias` — append-only asset-alias source on
+  `owned_receive_scripts`, so a composed asset script resolves to the
+  uncomposed policy script the wallet owns.
 
 ## Deep Docs
 
