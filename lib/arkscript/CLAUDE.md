@@ -47,7 +47,10 @@ validated invariants.
 - `ValidatePolicy(nodes, opts)` — Structural admission check for any Ark policy
   shape (custom vHTLC, etc.). Enforces: collab leaf with operator key, exit
   leaf without operator key, no operator-unilateral leaf, CSV gating on exit
-  paths. `opts.MinExitDelay = 0` skips the CSV minimum check.
+  paths. `opts.MinExitDelay = 0` skips the CSV minimum check. Every leaf is
+  compiled via `Node.Script()` *before* any structural reasoning, so a nil or
+  uncompilable leaf is rejected up front rather than being read as a shape the
+  structural rules then bless.
 - Decode budget constants: `MaxPolicyTemplateBytes` (64 KiB),
   `MaxLeafTemplateBytes` (16 KiB), `MaxPolicyLeaves` (32),
   `MaxPolicyDepth` (16), `MaxPolicyNodes` (256), `MaxMultisigKeys` (64) —
@@ -77,6 +80,14 @@ validated invariants.
 - CSV values are canonical non-zero block-mode encodings in `1..65535`.
   Time-mode, disable, and reserved high bits are rejected so structural delay
   comparisons cannot diverge from the value enforced by consensus.
+- A `Condition` node's raw `Predicate` may not change how the typed inner clause
+  is parsed or skip it entirely. `Condition.Script()` tokenizes the predicate
+  and rejects it unless it is a complete script fragment (an incomplete data
+  push would swallow the inner script as pushed bytes) and contains no
+  `OP_SUCCESS` (which would make the whole tapscript succeed before the inner
+  clause ever runs). Raw predicate bytes are the one untyped escape hatch in an
+  otherwise sealed AST, so they are validated at compile time, not at review
+  time.
 - Canonical leaf ordering: sorted by version then lexicographic script bytes.
 - All taproot outputs use the unspendable ARK NUMS key for key path (no
   key-path spend possible).

@@ -42,6 +42,11 @@ hands off to `waved.Main` to run the daemon.
   wallet registrar reads `cfg.Swap.Backend`, which the swap subserver
   registrar publishes, and sets `cfg.Swap.SuppressResume = true` so the
   wallet layer (not the swap subserver) drives the unified startup resume.
+- `lnd.account` is registered here but enforced in `waved`
+  (`validateLndAccount`, which refuses to start on a configured account lnd
+  does not have). Leaving it empty means lnd's `default` account, so a daemon
+  sharing an lnd node with another daemon must set it or the two can drain
+  each other's funds.
 - `EagerRoundJoin`'s flag default comes from `waved.DefaultConfig()`,
   which is itself build-tag aware (true under `wavewalletrpc`, false
   otherwise); `--eagerroundjoin` still overrides it either way.
