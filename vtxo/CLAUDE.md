@@ -24,6 +24,23 @@ when the local wallet owns the receive script.
   verbatim once persisted). Use `EffectivePkScript`/`EffectivePolicyTemplate`
   to derive the current script/policy rather than reading `PkScript`
   directly, since custom policies decode through `PolicyTemplate`.
+- Taproot Asset fields on `Descriptor` (all optional; nil/empty means an
+  ordinary Bitcoin-only VTXO):
+  - `TaprootAssetRoot *chainhash.Hash` — the asset commitment root
+    composed *beside* `PolicyTemplate`. When set, `PkScript` commits to
+    `TapBranch(policy_root, taproot_asset_root)` and every Ark spend path
+    must carry this root as its final control-block sibling. It is also
+    the single discriminator the rest of the daemon switches on to
+    recognize an asset-bearing coin.
+  - `TaprootAssetRef string` — the opaque tap-sdk asset identity, kept a
+    string on purpose so the wallet domain never imports tap-sdk or
+    taproot-assets types. Bounded by `MaxTaprootAssetRefBytes = 512`.
+  - `TaprootAssetAmount uint64` — asset **units**. `Amount` remains the
+    separate Bitcoin carrier value; the two are never converted.
+  - `TaprootAssetSealedPackage []byte` — the sealed tap-sdk package that
+    created this leaf, present **only** for an asset leaf received from a
+    round. Spending it out of round rebuilds the compact proof path and
+    the OP_TRUE witness from it.
 - `Manager` — Actor managing per-VTXO FSM instances, lifecycle, and admission gating. Configured via `ManagerConfig`.
 - `ManagerConfig` — Configuration holding Store, Wallet, ChainSource,
   ActorSystem, ChainParams, ExpiryConfig, RoundActor ref, ChainResolver ref,
@@ -152,6 +169,27 @@ when the local wallet owns the receive script.
   `ListRecoverableVTXOs` includes them and is what `Manager.Start` recovers
   actors from. Coin selection is already `VTXOStatusLive`-scoped via
   `ListSelectionCandidatesByStatus`, so it excludes them by construction.
+- **Asset-bearing rows are excluded from generic Bitcoin coin selection
+  by the query, not by the caller.**
+  `ListSelectionCandidatesByStatus` runs
+  `ListVTXOSelectionCandidatesByStatus`, whose predicate is
+  `WHERE status = $1 AND taproot_asset_root IS NULL`, and
+  `SumSpendableBalance` skips `d.TaprootAssetRoot != nil`. Spending an
+  asset leaf as if it were satoshis destroys the asset commitment and
+  recovers only the carrier, so the exclusion is placed where no new
+  caller can forget it. The daemon adds matching refusals at the RPC edge
+  (`waved.rejectAssetBearingTargets`) for refresh, leave, and
+  send-on-chain targets.
+- **`TaprootAssetSealedPackage` is round-leaf-only.** The single producer
+  is the round FSM's asset-leaf path (`round/transitions.go`), which
+  hard-fails when the sealed package for a new asset leaf is missing;
+  every other site clones or reads it. The OOR incoming path
+  (`incoming_handler.go`) sets root, ref, and amount but deliberately
+  never a sealed package, because the receiver was not party to the
+  ceremony that produced it. This asymmetry is what the OOR-received
+  claim gap rests on: the claim path needs the package as the leaf's only
+  lineage, so an OOR-received asset VTXO can be spent onward but not
+  claimed after a unilateral exit.
 - VTXO actor state is the single source of truth for availability.
 - Forfeit transaction is not broadcast until the connector output's round confirms (atomic replacement).
 - Refresh is auto-triggered at configurable height before expiry.
