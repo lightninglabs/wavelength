@@ -16,6 +16,8 @@ descriptors through branch nodes to the batch output.
 - `Structure` — Intermediate tree layout built by `BuildStructure` before materialization.
 - `StructureConfig` — Configuration for tree building (radix, partition weight function).
 - `SignerSession` — MuSig2 signing session for tree transactions, wrapping `input.MuSig2Signer`.
+- `AssetTreeContext` — side-car of an asset-aware tree (per-node signing tweaks, sealed packages, subtree amounts, asset ref), paired via `Tree.AssetContext`; amounts fall back to input-outpoint keying so extracted/deserialized clones resolve.
+- `Node.Sequence` / `SequenceV2` / `TxSequence()` — per-node input sequence; zero means the flow-V1 final sequence, `SequenceV2` is the RBF-signalling flow-V2 value. Consensus-visible (changes txids); tree-wide by invariant.
 - `Materializer` / `BTCMaterializer` — Interface and implementation for materializing tree nodes into actual Bitcoin transactions.
 - `TreeAssembler` — Two-pass builder (`BuildStructure` then `Materialize`) driven by `TreeConfig`.
 - `Queue[T]` — Generic queue used internally for BFS tree traversal.
