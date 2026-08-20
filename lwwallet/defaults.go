@@ -8,9 +8,10 @@ import (
 )
 
 const (
-	// DefaultEsploraURLMainnet is the public mempool.space
-	// Esplora-compatible REST API for mainnet.
-	DefaultEsploraURLMainnet = "https://mempool.space/api"
+	// DefaultEsploraURLMainnet is the Esplora-compatible REST API for
+	// mainnet, backed by a Lightning Labs-operated mempool instance.
+	DefaultEsploraURLMainnet = "https://mempool.staging." +
+		"lightningcluster.com/api"
 
 	// DefaultEsploraURLTestnet3 is the Esplora-compatible REST API for
 	// testnet3, backed by a Lightning Labs-operated mempool instance.

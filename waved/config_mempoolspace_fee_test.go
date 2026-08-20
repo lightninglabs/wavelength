@@ -23,6 +23,9 @@ func lndBaseConfig() *Config {
 func TestMempoolSpaceFeeAccessorsAreNilSafe(t *testing.T) {
 	t.Parallel()
 
+	const mainnetURL = "https://mempool.staging.lightningcluster.com/" +
+		"api/v1/fees/recommended"
+
 	cfg := &Config{}
 	require.False(t, cfg.MempoolSpaceFeeEnabled())
 	require.Empty(t, cfg.MempoolSpaceFeeURL())
@@ -33,13 +36,10 @@ func TestMempoolSpaceFeeAccessorsAreNilSafe(t *testing.T) {
 
 	cfg.FeeEstimation.MempoolSpace = &MempoolSpaceFeeConfig{
 		Enabled: true,
-		URL:     "https://mempool.space/api/v1/fees/recommended",
+		URL:     mainnetURL,
 	}
 	require.True(t, cfg.MempoolSpaceFeeEnabled())
-	require.Equal(
-		t, "https://mempool.space/api/v1/fees/recommended",
-		cfg.MempoolSpaceFeeURL(),
-	)
+	require.Equal(t, mainnetURL, cfg.MempoolSpaceFeeURL())
 }
 
 // TestDefaultConfigDisablesMempoolSpaceFee locks in that the provider is off by

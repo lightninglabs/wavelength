@@ -229,7 +229,7 @@ func TestMempoolSpaceEstimatorRejectsInsecureURL(t *testing.T) {
 	}{
 		{
 			name: "https ok",
-			url:  "https://mempool.space/api/v1/fees/recommended",
+			url:  mempoolSpaceMainnetURL,
 		},
 		{
 			name: "loopback http ok",

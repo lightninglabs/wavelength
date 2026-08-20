@@ -33,9 +33,9 @@ type Config struct {
 	// uses it to bound recovery rescans instead of starting from genesis.
 	Birthday time.Time
 
-	// EsploraURL is the base URL of the Esplora/mempool.space REST API
-	// (e.g. "https://mempool.space/api" or "http://localhost:3000"). The
-	// wallet uses this for all chain data: blocks, transactions, UTXOs,
+	// EsploraURL is the base URL of the Esplora/mempool.space REST API.
+	// For example, DefaultEsploraURLMainnet or "http://localhost:3000".
+	// The wallet uses this for all chain data: blocks, transactions, UTXOs,
 	// fee estimates, and broadcasting.
 	EsploraURL string
 
