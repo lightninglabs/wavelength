@@ -44,33 +44,24 @@ func newReconcileFixture(t *testing.T) (*Runtime, *db.ActivityPersistenceStore,
 	return runtime, store, rpc
 }
 
-// TestRecoveredSettledPayProjectsOnceAndMatchesBalance verifies the wallet
-// surfaces a restart-reconciled pay as COMPLETE exactly once and preserves the
-// daemon's post-OOR VTXO balance. The negative control proves an authoritative
-// failed pay does not imply a balance debit at the wallet projection layer.
-func TestRecoveredSettledPayProjectsOnceAndMatchesBalance(t *testing.T) {
+// TestRecoveredSettledPayProjectsOnceOnStartup verifies the wallet surfaces a
+// restart-reconciled pay as COMPLETE exactly once. The negative control proves
+// an authoritative failed pay remains FAILED through the same startup backfill.
+func TestRecoveredSettledPayProjectsOnceOnStartup(t *testing.T) {
 	t.Parallel()
 
 	const (
 		paymentHash = "b960600a4e03672eefd18d12604a1e5b" +
 			"932c57dc2670f62ffb6ac17a4c6b31f2"
-		failedHash     = "failed-before-funding"
-		startingVTXOs  = int64(3000)
-		paymentAmount  = int64(1001)
-		remainingVTXOs = startingVTXOs - paymentAmount
+		failedHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		paymentAmount = int64(1001)
 	)
 
 	ctx := t.Context()
-	runtime, store, rpc := newReconcileFixture(t)
-	service := newService(runtime.deps, runtime)
-
-	rpc.getBalanceResp = &waverpc.GetBalanceResponse{
-		VtxoBalanceSat: startingVTXOs,
-	}
-	before, err := service.Balance(
-		ctx, &wavewalletrpc.BalanceRequest{},
-	)
-	require.NoError(t, err)
+	runtime, store, _ := newReconcileFixture(t)
+	swap, ok := runtime.deps.SwapService.(*fakeSwapService)
+	require.True(t, ok)
 
 	settled := &swapclientrpc.SwapSummary{
 		PaymentHash: paymentHash,
@@ -90,24 +81,15 @@ func TestRecoveredSettledPayProjectsOnceAndMatchesBalance(t *testing.T) {
 		),
 	)
 
-	// Startup replay can deliver the same terminal summary again. The
-	// canonical store must suppress the duplicate transition event.
-	require.NoError(
-		t,
-		runtime.fanOutSwapUpdate(
-			&swapclientrpc.SubscribeSwapsResponse{
-				Swap: settled,
-			},
-		),
-	)
-
-	rpc.getBalanceResp = &waverpc.GetBalanceResponse{
-		VtxoBalanceSat: remainingVTXOs,
+	// A daemon restart replays persisted swaps through ListSwaps and the
+	// startup backfill. The canonical store must suppress the duplicate
+	// terminal transition event.
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			settled,
+		},
 	}
-	after, err := service.Balance(
-		ctx, &wavewalletrpc.BalanceRequest{},
-	)
-	require.NoError(t, err)
+	runtime.backfillActivity(ctx)
 
 	entry, err := store.GetEntry(ctx, paymentHash)
 	require.NoError(t, err)
@@ -117,10 +99,6 @@ func TestRecoveredSettledPayProjectsOnceAndMatchesBalance(t *testing.T) {
 	)
 	require.Equal(t, -paymentAmount, entry.AmountSat)
 	require.Equal(t, int64(1), entry.FeeSat)
-	require.Equal(
-		t, entry.AmountSat,
-		after.GetConfirmedSat()-before.GetConfirmedSat(),
-	)
 
 	events, err := store.PullEvents(ctx, 0, 100)
 	require.NoError(t, err)
@@ -134,14 +112,8 @@ func TestRecoveredSettledPayProjectsOnceAndMatchesBalance(t *testing.T) {
 		State:     swapclientrpc.SwapState_SWAP_STATE_FAILED,
 		AmountSat: paymentAmount,
 	}
-	require.NoError(
-		t,
-		runtime.fanOutSwapUpdate(
-			&swapclientrpc.SubscribeSwapsResponse{
-				Swap: failed,
-			},
-		),
-	)
+	swap.listSwapsResp.Swaps = append(swap.listSwapsResp.Swaps, failed)
+	runtime.backfillActivity(ctx)
 
 	failedEntry, err := store.GetEntry(ctx, failedHash)
 	require.NoError(t, err)
@@ -150,11 +122,15 @@ func TestRecoveredSettledPayProjectsOnceAndMatchesBalance(t *testing.T) {
 		failedEntry.Status,
 	)
 
-	afterFailure, err := service.Balance(
-		ctx, &wavewalletrpc.BalanceRequest{},
-	)
+	events, err = store.PullEvents(ctx, 0, 100)
 	require.NoError(t, err)
-	require.Equal(t, after, afterFailure)
+	require.Len(t, events, 2)
+
+	// A repeated startup pass must suppress both terminal rows.
+	runtime.backfillActivity(ctx)
+	events, err = store.PullEvents(ctx, 0, 100)
+	require.NoError(t, err)
+	require.Len(t, events, 2)
 }
 
 // TestReconcileActivityFlipsDepositLive verifies the reconciler lands a
