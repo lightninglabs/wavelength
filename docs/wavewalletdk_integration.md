@@ -106,6 +106,48 @@ if err != nil {
 fmt.Println("identity:", unlocked.IdentityPubKey)
 ```
 
+### Externally derived wallet entropy
+
+`StartExternalSeedWallet` imports or unlocks a self-managed wallet from exactly
+16 bytes of already-derived aezeed entropy. The host owns mnemonic, derivation,
+account, and directory conventions and must pass the final `Config.DataDir`.
+Legacy startup and its data-directory behavior are unchanged.
+
+```go
+cfg.DataDir = finalWalletDataDir
+defer clear(derivedEntropy)
+
+openReq := wavewalletdk.ExternalSeedWalletRequest{
+	SeedEntropy:           derivedEntropy, // exactly 16 bytes
+	ExpectedIdentityPubKey: previouslyPinnedIdentity,
+}
+
+client, opened, err := wavewalletdk.StartExternalSeedWallet(
+	ctx, cfg, openReq,
+)
+if err != nil {
+	panic(err)
+}
+defer client.Stop()
+
+fmt.Println("identity:", opened.IdentityPubKey)
+```
+
+The method supports `lwwallet` and `btcwallet`. It rejects custom state, log,
+and password-file paths that could escape the selected directory. It returns
+after wallet-dependent services are ready and stops the daemon if startup
+fails.
+
+The result contains the wallet identity and recovery counters, never an
+internal mnemonic. Persist the identity and supply it as
+`ExpectedIdentityPubKey` when reopening the directory. `RecoverState` is a
+per-start request that runs only after this identity check; a partial scan is
+safe to retry but may scan from Bitcoin genesis.
+
+`Client.Deposit` returns a Wavelength boarding address. It is not a BIP84
+address; expose a separately named Bitcoin-address API if the host also needs
+that conventional account model.
+
 ## Wallet Operations
 
 Fetch readiness and balances:
@@ -275,6 +317,7 @@ Keep host-language bindings thin:
 - Expose explicit `Start` or `Connect`, `Stop`, `CreateWallet`,
   `UnlockWallet`, `Status`, `Balance`, `Deposit`, `Receive`, `PrepareSend`,
   `SendPrepared`, `List`, and `Subscribe` methods.
+- Expose `StartExternalSeedWallet` when the host owns wallet derivation.
 - Convert SDK structs into plain host DTOs. Do not expose protobuf messages to
   mobile or JavaScript callers.
 - Accept caller-provided timeouts or cancellation handles for every operation.
@@ -283,9 +326,8 @@ Keep host-language bindings thin:
   security decisions owned by the host app.
 
 For gomobile or React Native bridges, prefer a small manager object with string
-or JSON DTO methods. For browser WASM, prefer the `Connect` shape against a
-remote or host-provided daemon until the embedded daemon storage and transport
-stack is browser-ready.
+or JSON DTO methods. For browser WASM, route lifecycle calls through a Worker
+so blocking Go calls do not run on the application thread.
 
 ## LLM Integration Checklist
 
@@ -305,3 +347,4 @@ When generating wallet code against `wavewalletdk`, follow this checklist:
 10. Call `Stop` during app shutdown.
 11. Never log wallet passwords, seed passphrases, mnemonics, or full invoices
     unless the product explicitly asks for that debug behavior.
+12. Never log external seed entropy.

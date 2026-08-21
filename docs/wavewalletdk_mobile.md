@@ -6,6 +6,9 @@ facade over the wallet SDK. It lets an Android (Kotlin/Java) or iOS
 separate daemon binary, no open socket — by reusing the private `bufconn` gRPC
 transport that [`wavewalletdk.Start`](../sdk/wavewalletdk/embedded.go) already sets up.
 
+The exported functions and browser global are low-level binding APIs. Host SDKs
+should wrap them with typed lifecycle methods.
+
 It borrows the *bytes-out* idea from `lightninglabs/falafel` and `lnd/mobile`
 **without** the protoc generator or their callback interfaces, because the
 `wavewalletdk` facade already owns the wiring and `wavewalletdk.Start` returns once gRPC
@@ -29,6 +32,7 @@ The package is gated behind three build tags — `mobile`, `wavewalletrpc`, and
 | Shape | Convention | Verbs |
 |-------|-----------|-------|
 | RPC verbs | **JSON `[]byte` in / out** (throwing) | `GetInfo`, `CreateWallet`, `UnlockWallet`, `OpenWalletFromPasskey`, `Balance`, `Deposit`, `Receive`, `PrepareSend`, `SendPrepared`, `List`, `Exit`, `ExitStatus`, `ExitSummary`, `GetExitPlan`, `SweepWallet`, `Status` |
+| Lifecycle JSON | **JSON `[]byte` in / out** (throwing) | `StartExternalSeedWallet` |
 | Streaming | **pull handle** `Subscription{ next() []byte; close() }` | `Subscribe` |
 | Hot-path scalars | **plain `int64`/`bool`** | `ConfirmedBalanceSat`, `PendingInboundSat`, `WalletReady`, `IsRunning` |
 
@@ -50,12 +54,26 @@ request is a small camelCase-tagged struct (`prfOutput`). Every other request
 decodes into the matching `wavewalletdk.*Request` DTO, so it follows the
 PascalCase rule.
 
+`StartExternalSeedWallet` is another explicit exception in the private binding
+ABI. Its startup envelope is snake_case (`config`, `seed_entropy`,
+`expected_identity_pubkey`, `recover_state`, and `recovery_window`). In JSON,
+`seed_entropy` is standard base64 because the Go field is `[]byte`. The response
+is the PascalCase `ExternalSeedWalletOpenResult`. Typed SDKs map their public
+request types onto this wire shape.
+
 ## Lifecycle
+
+These signatures document the generated binding:
 
 ```go
 // Start boots the daemon and blocks until gRPC is serving (or errors).
 // Call it off the main thread.
 func Start(cfgJSON string) error
+
+// StartExternalSeedWallet starts at a host-selected final data directory, then
+// imports or unlocks exactly 16 bytes of already-derived entropy. It returns
+// ExternalSeedWalletOpenResult JSON.
+func StartExternalSeedWallet(reqJSON []byte) ([]byte, error)
 
 // Stop tears down the daemon. Idempotent; resets the singleton so a host can
 // restart after the OS suspends/resumes the app.
@@ -75,6 +93,40 @@ func Stop() error
 - The wrapper owns an internal `context.Context` created in `Start` and
   cancelled by `Stop`, so the mobile API never has to express a `context.Context`
   and in-flight RPCs / subscriptions unwind on shutdown.
+- The startup deadline bounds daemon readiness only. External-seed opening and
+  recovery use the lifecycle context cancelled by `Stop`.
+
+### External seed wallets
+
+`StartExternalSeedWallet` accepts a nested config and exactly 16 bytes of
+already-derived entropy. The host owns seed derivation and account directories;
+`config.data_dir` is the final wallet directory. The method supports
+`lwwallet` and `btcwallet`, while legacy `Start` remains unchanged.
+
+The request uses snake_case keys and standard base64 for `seed_entropy`:
+
+```json
+{
+  "config": {
+    "data_dir": "/data/user/0/<app>/files/wavelength/wallets/<id>",
+    "network": "signet",
+    "wallet_type": "lwwallet"
+  },
+  "seed_entropy": "ABEiM0RVZneImaq7zN3u/w==",
+  "expected_identity_pubkey": "optional identity pinned after first use",
+  "recover_state": false,
+  "recovery_window": 0
+}
+```
+
+The client becomes active only after wallet services are ready; an earlier
+failure stops the daemon and resets the singleton. `recover_state` is a
+per-start request and runs only after `expected_identity_pubkey` matches. A
+partial recovery is safe to retry. The response contains identity and recovery
+counters, not an internal mnemonic.
+
+Mobile and WASM expose one active client per binding instance. Call `Stop`
+before reusing that instance for another final directory.
 
 ### Streaming
 
