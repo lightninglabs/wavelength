@@ -442,18 +442,24 @@ func (r *RPCServer) acquireReceiveScriptLock(ctx context.Context, key string) (
 func (r *RPCServer) newOORReceiveScriptStore() (*db.OORArtifactPersistenceStore,
 	error) {
 
+	// Startup builds this store from the daemon's own handles and clock,
+	// so prefer it: rebuilding one per call re-derives an identical value
+	// and dereferences handles a caller may not have wired.
+	if r.server.oorArtifactStore != nil {
+		return r.server.oorArtifactStore, nil
+	}
+
 	if r.server.db == nil {
-		return nil, fmt.Errorf("database not initialized")
+		return nil, fmt.Errorf("artifact store not initialized")
+	}
+	if r.server.clk == nil {
+		return nil, fmt.Errorf("server clock not initialized")
 	}
 
 	dbStore := db.NewStore(
 		r.server.db.DB, r.server.db.Queries, r.server.db.Backend(),
 		r.server.subLogger(db.Subsystem),
 	)
-
-	if r.server.clk == nil {
-		return nil, fmt.Errorf("server clock not initialized")
-	}
 
 	return dbStore.NewOORArtifactStore(r.server.clk), nil
 }

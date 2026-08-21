@@ -121,6 +121,7 @@ equivalents — `documentSymbol`, `hover`, `goToDefinition`,
 - [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md) — waved/wavecli setup and CLI reference
 - [`docs/go_workspace.md`](docs/go_workspace.md) — Multi-module Go workspace setup
 - [`docs/policy_arkscript_review_guide.md`](docs/policy_arkscript_review_guide.md) — Policy-first arkscript reviewer guide
+- [`docs/taproot_assets_architecture.md`](docs/taproot_assets_architecture.md) — Composed asset outputs, onboarding, boarding, OOR sends with operator-funded carriers, exit/claim
 
 ### Per-Package Context
 Each major package contains a `CLAUDE.md`/`AGENTS.md` with purpose, key types,

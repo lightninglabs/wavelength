@@ -2,6 +2,7 @@
 package round
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -1632,6 +1633,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 	case *RegisterVTXORequestsRequest:
 		return a.handleVTXORequests(ctx, m)
 
+	case *RegisterAssetBoardingRequest:
+		return a.handleAssetBoarding(ctx, m)
+
 	case *VTXORequestsReceived:
 		return a.handleVTXORequestsReceived(ctx, m)
 
@@ -1804,12 +1808,126 @@ func buildBoardingIntentFromWallet(walletIntent *wallet.BoardingIntent) (
 	}, nil
 }
 
+// handleAssetBoarding assembles a confirmed asset boarding output into a
+// boarding intent and forwards it to an assembling round. The wallet's
+// address watcher cannot recognize composed outputs, so the caller
+// supplies the intent material directly.
+func (a *RoundClientActor) handleAssetBoarding(ctx context.Context,
+	msg *RegisterAssetBoardingRequest) fn.Result[actormsg.RoundActorResp] {
+
+	if msg.ConfTx == nil ||
+		int(msg.Outpoint.Index) >= len(msg.ConfTx.TxOut) {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("asset boarding confirmation is invalid"),
+		)
+	}
+	output := msg.ConfTx.TxOut[msg.Outpoint.Index]
+
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		msg.KeyDesc.PubKey, msg.OperatorKey, msg.ExitDelay,
+	)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("encode boarding policy: %w", err),
+		)
+	}
+
+	// The wallet never derived this address, so the composed script
+	// material the round's auth and witness assembly need is rebuilt
+	// from the disclosure.
+	address, tapscript, err := arkscript.ComposedBoardingAddress(
+		policyTemplate, [32]byte(msg.AssetCommitmentLeafHash),
+		msg.KeyDesc.PubKey, msg.OperatorKey, msg.ExitDelay,
+		a.cfg.ChainParams,
+	)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("compose asset boarding address: %w", err),
+		)
+	}
+	if !bytes.Equal(output.PkScript, mustPayToAddrScript(address)) {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("composed asset boarding address does not "+
+				"match the confirmed output %s", msg.Outpoint),
+		)
+	}
+
+	authSpend, err := arkscript.ComposedBoardingAuthSpend(
+		[32]byte(msg.AssetCommitmentLeafHash), msg.KeyDesc.PubKey,
+		msg.OperatorKey, msg.ExitDelay,
+	)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("compose asset boarding auth spend: %w",
+				err),
+		)
+	}
+
+	intent := BoardingIntent{
+		AuthSpend: authSpend,
+		BoardingIntent: wallet.BoardingIntent{
+			Address: wallet.BoardingAddress{
+				Address:     address,
+				Tapscript:   tapscript,
+				KeyDesc:     msg.KeyDesc,
+				OperatorKey: msg.OperatorKey,
+				ExitDelay:   msg.ExitDelay,
+			},
+			Outpoint: msg.Outpoint,
+			ChainInfo: wallet.BoardingChainInfo{
+				ConfHeight: msg.ConfHeight,
+				ConfTx:     msg.ConfTx,
+				OutPoint:   msg.Outpoint,
+				Amount:     btcutil.Amount(output.Value),
+			},
+		},
+		Request: types.BoardingRequest{
+			Outpoint:       &msg.Outpoint,
+			PolicyTemplate: policyTemplate,
+			AssetRef:       msg.AssetRef,
+			AssetAmount:    msg.AssetAmount,
+			AssetDigest:    msg.AssetDigest,
+			AssetProof:     msg.AssetProof,
+			AssetCommitmentLeafHash: msg.
+				AssetCommitmentLeafHash,
+			AssetWitness: msg.AssetWitness,
+		},
+	}
+
+	roundFSM := a.findAssemblingRound(ctx)
+	if roundFSM == nil {
+		roundFSM, err = a.createNewRound(ctx)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("create round for asset "+
+					"boarding: %w", err),
+			)
+		}
+	}
+
+	pkg := &IntentPackage{Intents: Intents{
+		Boarding: []BoardingIntent{
+			intent,
+		},
+	}}
+	if err := a.askEventAndProcessOutbox(ctx, roundFSM, pkg); err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("FSM error processing asset boarding: %w",
+				err),
+		)
+	}
+
+	return fn.Ok[actormsg.RoundActorResp](&RegisterVTXORequestsResponse{
+		Success: true,
+	})
+}
+
 // handleVTXORequests processes client-submitted VTXO requests and forwards
 // them to an idle round FSM. If no idle round exists, a new one is created.
 func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 	msg *RegisterVTXORequestsRequest) fn.Result[actormsg.RoundActorResp] {
 
-	if len(msg.Amounts) == 0 {
+	if len(msg.Amounts) == 0 && len(msg.AssetRequests) == 0 {
 		return fn.Err[actormsg.RoundActorResp](
 			fmt.Errorf("VTXO request amounts are empty"),
 		)
@@ -1822,7 +1940,9 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 		)
 	}
 
-	requests := make([]types.VTXORequest, 0, len(msg.Amounts))
+	requests := make(
+		[]types.VTXORequest, 0, len(msg.Amounts)+len(msg.AssetRequests),
+	)
 	for i, amount := range msg.Amounts {
 		if amount <= 0 {
 			return fn.Err[actormsg.RoundActorResp](
@@ -1857,6 +1977,35 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 		// that marker centrally via designateChangeMarker over
 		// the fully-composed intent, so this loop leaves
 		// IsChange unset.
+
+		requests = append(requests, *req)
+	}
+
+	// Asset VTXO requests ride the same intent with the asset identity
+	// and amount attached; their Bitcoin amount is fixed so the seal
+	// quote can never shrink the carrier value, and they never act as
+	// the change output.
+	for i, assetReq := range msg.AssetRequests {
+		if assetReq.AmountSat <= 0 || assetReq.AssetAmount == 0 ||
+			assetReq.AssetRef == "" {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("asset VTXO request %d is "+
+					"incomplete", i),
+			)
+		}
+
+		req, err := a.buildVTXORequest(
+			ctx, assetReq.AmountSat, types.VTXOOriginUnknown,
+		)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("build asset VTXO request %d: %w",
+					i, err),
+			)
+		}
+		req.AssetRef = assetReq.AssetRef
+		req.AssetAmount = assetReq.AssetAmount
+		req.FixedAmount = true
 
 		requests = append(requests, *req)
 	}

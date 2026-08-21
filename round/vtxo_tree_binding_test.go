@@ -48,6 +48,46 @@ func TestValidateVTXOTreeBindingAccepts(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestValidateVTXOTreeBindingAssetRootTweak proves the binding recompute
+// honors an asset tree's combined root tweak: the committed batch output
+// keyed with the combined tweak passes, and a tampered tweak that no
+// longer reproduces the committed script is rejected.
+func TestValidateVTXOTreeBindingAssetRootTweak(t *testing.T) {
+	t.Parallel()
+
+	commitmentTx, vtxtTree, _ := newBoundVTXOFixture(t)
+
+	// Re-key the committed batch output with a combined tweak (sweep
+	// leaf plus asset commitment root), as an asset round does.
+	combined := chainhash.HashH([]byte("combined root tweak"))
+	finalKey, err := tree.ComputeFinalKey(
+		vtxtTree.Root.CoSigners, combined[:],
+	)
+	require.NoError(t, err)
+	script, err := txscript.PayToTaprootScript(finalKey)
+	require.NoError(t, err)
+
+	commitmentTx.TxOut[0].PkScript = script
+	vtxtTree.BatchOutput.PkScript = script
+
+	// The output mutation changed the commitment txid; rebind the root.
+	vtxtTree.BatchOutpoint.Hash = commitmentTx.TxHash()
+	vtxtTree.Root.Input = vtxtTree.BatchOutpoint
+
+	assetCtx := tree.NewAssetTreeContext()
+	assetCtx.SetSigningTweak(vtxtTree.Root.Input, combined[:])
+	vtxtTree.AssetContext = assetCtx
+
+	trees := map[int]*tree.Tree{0: vtxtTree}
+	require.NoError(t, validateVTXOTreeBinding(commitmentTx, trees))
+
+	// A tampered tweak no longer reproduces the committed script.
+	tampered := chainhash.HashH([]byte("tampered tweak"))
+	assetCtx.SetSigningTweak(vtxtTree.Root.Input, tampered[:])
+	err = validateVTXOTreeBinding(commitmentTx, trees)
+	require.ErrorContains(t, err, "recomputed from tree cosigners")
+}
+
 // TestValidateVTXOTreeBindingRejects walks each way an operator-supplied tree
 // can fail to bind to the commitment tx the client is about to sign into. Each
 // case starts from an honest fixture and corrupts exactly one aspect, proving

@@ -239,12 +239,32 @@ func TreeToProto(t *tree.Tree) (*VTXOTree, error) {
 		return nil, err
 	}
 
-	return &VTXOTree{
+	pt := &VTXOTree{
 		Nodes:              nodes,
 		BatchOutpoint:      OutpointToProto(t.BatchOutpoint),
 		BatchOutput:        TxOutToProto(t.BatchOutput),
 		SweepTapscriptRoot: t.SweepTapscriptRoot,
-	}, nil
+	}
+
+	// Asset-aware trees carry their per-node asset data on the wire: the
+	// tree's asset reference, each node's signing tweak and subtree
+	// asset amount, and a leaf's own commitment root. Sealed packages
+	// stay operator-side.
+	if t.AssetContext != nil {
+		pt.AssetRef = t.AssetContext.AssetRef()
+		for node, idx := range nodeIndex {
+			pn := nodes[idx]
+			pn.SigningTweak = t.AssetContext.SigningTweak(
+				node.Input,
+			)
+			pn.AssetAmount = t.AssetContext.NodeAssetAmount(node)
+			pn.AssetCommitmentRoot = t.AssetContext.LeafAssetRoot(
+				node.Input,
+			)
+		}
+	}
+
+	return pt, nil
 }
 
 // flattenNode recursively flattens a tree node into the nodes slice.
@@ -317,7 +337,8 @@ type TreeFromProtoOption func(*treeFromProtoConfig)
 // treeFromProtoConfig holds configurable validation parameters for
 // tree deserialization.
 type treeFromProtoConfig struct {
-	maxNodes int
+	maxNodes     int
+	nodeSequence uint32
 }
 
 // defaultTreeFromProtoConfig returns the default configuration.
@@ -332,6 +353,16 @@ func defaultTreeFromProtoConfig() treeFromProtoConfig {
 func WithMaxTreeNodes(maxNodes int) TreeFromProtoOption {
 	return func(cfg *treeFromProtoConfig) {
 		cfg.maxNodes = maxNodes
+	}
+}
+
+// WithNodeSequence sets the input sequence stamped on every deserialized
+// node. The sequence is consensus-visible (it changes node txids), so it is
+// derived from the round's flow version rather than carried per node on the
+// wire. Zero keeps the flow-V1 default.
+func WithNodeSequence(sequence uint32) TreeFromProtoOption {
+	return func(cfg *treeFromProtoConfig) {
+		cfg.nodeSequence = sequence
 	}
 }
 
@@ -369,6 +400,7 @@ func TreeFromProto(pt *VTXOTree,
 		if err != nil {
 			return nil, fmt.Errorf("node[%d]: %w", i, err)
 		}
+		node.Sequence = cfg.nodeSequence
 		goNodes[i] = node
 	}
 
@@ -460,9 +492,38 @@ func TreeFromProto(pt *VTXOTree,
 	// bypasses them. Without FinalKey, signature verification
 	// in VerifySigned will fail. Nodes without cosigners (e.g.
 	// certain connector nodes) are skipped.
-	for _, node := range goNodes {
+	// An asset-aware wire tree reconstructs its context alongside the
+	// nodes so verification and signing can consume the per-node data.
+	var assetCtx *tree.AssetTreeContext
+	if treeHasAssetData(pt) {
+		assetCtx = tree.NewAssetTreeContext()
+		assetCtx.SetAssetRef(pt.AssetRef)
+	}
+
+	for i, node := range goNodes {
+		pn := pt.Nodes[i]
+		if assetCtx != nil {
+			if len(pn.SigningTweak) > 0 {
+				assetCtx.SetSigningTweak(
+					node.Input, pn.SigningTweak,
+				)
+			}
+			assetCtx.SetNodeAssetAmount(node, pn.AssetAmount)
+			assetCtx.SetLeafAssetRoot(
+				node.Input, pn.AssetCommitmentRoot,
+			)
+		}
+
 		if len(node.CoSigners) == 0 {
 			continue
+		}
+
+		// The node's own tweak wins when present: asset-aware nodes
+		// commit a per-node asset root into their key, every other
+		// node uses the tree-wide sweep root.
+		taprootTweak := pt.SweepTapscriptRoot
+		if len(pn.SigningTweak) > 0 {
+			taprootTweak = pn.SigningTweak
 		}
 
 		// Copy cosigners before computing the final key
@@ -474,9 +535,7 @@ func TreeFromProto(pt *VTXOTree,
 		)
 		copy(csCopy, node.CoSigners)
 
-		fk, fkErr := tree.ComputeFinalKey(
-			csCopy, pt.SweepTapscriptRoot,
-		)
+		fk, fkErr := tree.ComputeFinalKey(csCopy, taprootTweak)
 		if fkErr != nil {
 			return nil, fmt.Errorf("compute final key: %w", fkErr)
 		}
@@ -499,7 +558,24 @@ func TreeFromProto(pt *VTXOTree,
 		BatchOutpoint:      batchOP,
 		BatchOutput:        batchOut,
 		SweepTapscriptRoot: pt.SweepTapscriptRoot,
+		AssetContext:       assetCtx,
 	}, nil
+}
+
+// treeHasAssetData reports whether a wire tree carries any asset-aware
+// fields.
+func treeHasAssetData(pt *VTXOTree) bool {
+	if pt.AssetRef != "" {
+		return true
+	}
+	for _, pn := range pt.Nodes {
+		if len(pn.SigningTweak) > 0 || pn.AssetAmount != 0 ||
+			len(pn.AssetCommitmentRoot) > 0 {
+			return true
+		}
+	}
+
+	return false
 }
 
 // treeNodeFromProto converts a single proto TreeNode to a tree.Node.

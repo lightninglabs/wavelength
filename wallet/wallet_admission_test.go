@@ -278,6 +278,10 @@ func TestSelectAndLockVTXOs(t *testing.T) {
 		Outpoints: []wire.OutPoint{
 			testOutpoint(1), testOutpoint(0),
 		},
+		WaitForDurable: true,
+		RequiredOutpoints: []wire.OutPoint{
+			testOutpoint(9),
+		},
 	}
 	result := w.Receive(t.Context(), req)
 	require.True(t, result.IsOk(), "expected ok, got: %v",
@@ -295,6 +299,18 @@ func TestSelectAndLockVTXOs(t *testing.T) {
 	require.Equal(t, btcutil.Amount(70000), mgr.selectReq.TargetAmount)
 	require.Equal(t, btcutil.Amount(1000), mgr.selectReq.MinChangeAmount)
 	require.Equal(t, req.Outpoints, mgr.selectReq.Outpoints)
+	require.True(t, mgr.selectReq.WaitForDurable)
+	require.Equal(
+		t, []wire.OutPoint{testOutpoint(9)},
+		mgr.selectReq.RequiredOutpoints,
+	)
+
+	// The actor boundary owns its request copy.
+	req.RequiredOutpoints[0] = testOutpoint(10)
+	require.Equal(
+		t, []wire.OutPoint{testOutpoint(9)},
+		mgr.selectReq.RequiredOutpoints,
+	)
 }
 
 // TestSelectAndLockVTXOsInsufficientFunds verifies that the wallet surfaces
@@ -1988,4 +2004,55 @@ func TestSendVTXOsIntentPackageContents(t *testing.T) {
 			"validateChangeDesignation rejects intents with 0 "+
 			"or 2+ markers)",
 	)
+}
+
+// TestRefreshCarriesAssetIdentity verifies that refreshing an
+// asset-bearing VTXO stamps the asset onto the new VTXO request: the
+// round must reissue the units through its asset transition, and the
+// carrier value is fixed so the seal quote can never shrink it.
+func TestRefreshCarriesAssetIdentity(t *testing.T) {
+	t.Parallel()
+
+	op := testOutpoint(7)
+	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
+		op: {
+			Outpoint: op,
+			Amount:   10_000,
+			PkScript: []byte{
+				0x51,
+				0x20,
+				0x01,
+			},
+			PolicyTemplate: []byte{
+				0xde,
+				0xad,
+				0xbe,
+				0xef,
+			},
+			Expiry:             100,
+			TaprootAssetRef:    "test-asset-ref",
+			TaprootAssetAmount: 900,
+		},
+	}
+
+	mgr := &mockVTXOManagerBehavior{
+		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
+	}
+	roundActor := &mockRoundActorBehavior{}
+	w := newTestWalletWithManagerAndRound(
+		t, mgr, roundActor, testVTXOReader(vtxoDescs),
+	)
+
+	result := w.Receive(t.Context(), &RefreshVTXOsRequest{
+		TargetOutpoints: []wire.OutPoint{op},
+	})
+	require.True(t, result.IsOk(), "expected ok, got: %v", result.Err())
+
+	require.NotNil(t, roundActor.capturedIntent)
+	require.Len(t, roundActor.capturedIntent.VTXOs, 1)
+	request := roundActor.capturedIntent.VTXOs[0]
+	require.Equal(t, "test-asset-ref", request.AssetRef)
+	require.EqualValues(t, 900, request.AssetAmount)
+	require.True(t, request.FixedAmount)
+	require.False(t, request.IsChange)
 }

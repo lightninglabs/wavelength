@@ -169,13 +169,23 @@ type SignerSession struct {
 	txs map[TxID]*TxSignerSession
 }
 
+// TaprootTweakLookup returns the taproot tweak to sign a given node with,
+// or nil to fall back to the tree-wide default. Asset-aware trees commit a
+// per-node Taproot Asset root into each output key, so their signing tweak
+// varies per node instead of being the single sweep tapscript root.
+type TaprootTweakLookup func(node *Node) []byte
+
 // NewSignerSession creates a new signing session for a tree. It
 // automatically extracts the path for the given signer and creates sessions
 // for each transaction in that path.
+//
+// tweakLookup optionally overrides the taproot tweak per node; when nil, or
+// when it returns an empty tweak for a node, sweepTapscriptRoot is used.
+// BTC-only trees pass nil.
 func NewSignerSession(signer input.MuSig2Signer,
 	signerKey *keychain.KeyDescriptor, sweepTapscriptRoot []byte,
-	prevOuts txscript.PrevOutputFetcher,
-	tree *Node) (*SignerSession, error) {
+	prevOuts txscript.PrevOutputFetcher, tree *Node,
+	tweakLookup TaprootTweakLookup) (*SignerSession, error) {
 
 	// Validate inputs.
 	if signer == nil {
@@ -207,8 +217,18 @@ func NewSignerSession(signer input.MuSig2Signer,
 			return fmt.Errorf("failed to create tx: %w", err)
 		}
 
+		// The lookup wins when it names a tweak for this node; the
+		// tree-wide sweep root stays the default for every other
+		// node.
+		taprootTweak := sweepTapscriptRoot
+		if tweakLookup != nil {
+			if nodeTweak := tweakLookup(node); len(nodeTweak) > 0 {
+				taprootTweak = nodeTweak
+			}
+		}
+
 		session, err := node.NewTxSignerSession(
-			signer, sweepTapscriptRoot, signerKey, prevOuts,
+			signer, taprootTweak, signerKey, prevOuts,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create tx session: %w",
@@ -318,4 +338,16 @@ func (s *SignerSession) Signatures(cleanup bool) (
 	}
 
 	return sigs, nil
+}
+
+// SessionIDs returns the MuSig2 session ID for each transaction managed by
+// this signer, keyed by txid. Higher-level coordinators use these to combine
+// partial signatures across signers.
+func (s *SignerSession) SessionIDs() map[TxID]input.MuSig2SessionID {
+	ids := make(map[TxID]input.MuSig2SessionID, len(s.txs))
+	for txid, txSession := range s.txs {
+		ids[txid] = txSession.signSession.SessionID
+	}
+
+	return ids
 }

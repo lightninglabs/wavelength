@@ -13,6 +13,7 @@ into specific topics below.
 | [durable_actor_architecture.md](durable_actor_architecture.md) | CDC pattern, durable mailbox lifecycle, recovery flow |
 | [durable_actor_quickstart.md](durable_actor_quickstart.md) | Developer guide: TLVMessage, ActorBehavior, migration checklist |
 | [oor_subsystem.md](oor_subsystem.md) | The OOR (out-of-round) subsystem: per-session actor model, the `oor_session_registry` single source of truth, the Read/Commit turn with its inline outbox switch, outgoing/incoming flows, crash recovery, and the per-session concurrency fix for issue #605 |
+| [taproot_assets_architecture.md](taproot_assets_architecture.md) | Client-side Taproot Assets architecture: composed outputs (`tapBranch(policy_root, asset_root)`), tapd onboarding, boarding plus the asset round-fee slot, out-of-round sends with operator-funded carriers and reclaim, the compact proof-path model (v2 co-inputs, respend, claim DAG), the withheld sweep and the asset-aware claim, the RPC/CLI surface, and the known gaps |
 | [fee_ledger.md](fee_ledger.md) | Client-side double-entry fee ledger: chart of accounts, per-flow walkthroughs, emission sites, replay safety |
 | [fee-change-model.md](fee-change-model.md) | Seal-time fee handshake (#270): change-output designation rules, 11-scenario catalogue, proto contract, CLI mapping |
 | [credit_system.md](credit_system.md) | Sat-native credit accounts for below-dust receives, credit-assisted receives, credit-backed sends (Lightning and same-Ark internal settlement), top-ups, and wavewalletdk integration, with mermaid diagrams |
@@ -66,3 +67,9 @@ into specific topics below.
 |----------|-------------|
 | [PLANS.md](../PLANS.md) | ExecPlan specification for complex features |
 | [idempotent-receive-scripts-execplan.md](idempotent-receive-scripts-execplan.md) | Retry-safe `NewReceiveScript` allocation: durable identity, exact replay, and expiry renewal |
+| [taproot-assets-onboarding-execplan.md](taproot-assets-onboarding-execplan.md) | Prototype plan for onboarding a Taproot Asset into a Wavelength VTXO |
+| [taproot-assets-carrier-onboarding-execplan.md](taproot-assets-carrier-onboarding-execplan.md) | Prototype plan for funding onboarding carriers from the shared Bitcoin wallet |
+| [taproot-assets-carrier-selection-execplan.md](taproot-assets-carrier-selection-execplan.md) | Prototype plan for mandatory asset-input and ordinary Bitcoin carrier selection |
+| [taproot-assets-oor-execplan.md](taproot-assets-oor-execplan.md) | Prototype plan for sealed Taproot Asset OOR packages |
+| [taproot-assets-asset-state-execplan.md](taproot-assets-asset-state-execplan.md) | Prototype plan for durable asset state and mixed-package bindings |
+| [taproot-assets-partial-oor-execplan.md](taproot-assets-partial-oor-execplan.md) | Prototype plan for partial asset sends with explicit carrier satoshis |

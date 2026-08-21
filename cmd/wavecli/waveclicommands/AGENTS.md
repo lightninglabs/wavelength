@@ -16,7 +16,7 @@ default `--help` face:
    wavewalletrpc-backed.
 2. **Daemon introspection (group "Introspection")** — getinfo, schema, mcp
    (the built-in `help` command is grouped here too).
-3. **Advanced subtrees (`ark`, `dev`, `recovery`)** — raw
+3. **Advanced subtrees (`ark`, `dev`, `recovery`, `assets`)** — raw
    waverpc/devrpc commands for power users and operator runbooks.
    Hidden from the default `--help` via cobra `Hidden` (not a build tag),
    so they stay compiled and fully runnable in the shipped binary;
@@ -88,6 +88,32 @@ let the swap FSM arm and cancel recovery automatically.
 
 Generated low-level daemon RPC CLI; see [`devrpc/`](devrpc/). Hidden from
 the default `--help` (revealed with `WAVELENGTH_DEV=1`) but always runnable.
+
+### `assets.*` prototype commands
+
+The `assets` group (`taproot-assets` remains an alias) holds the six
+prototype verbs: `onboard`, `board`, `claim`, `list`, `balance`, `send`.
+The whole group stays in the advanced group while the tapd/tap-sdk
+integration is evaluated.
+
+- `onboard` invokes the durable `waverpc.OnboardTaprootAsset` workflow;
+  without `--proof-file` the daemon exports the proof of its own matching
+  UTXOs from tapd. `--idempotency-key` is the durable identity, and the
+  same key is what `board` takes.
+- `board` gets a completed onboarding admitted into a round and reports
+  `already_boarded` on replay. It takes only `--idempotency-key`.
+- `claim` is the asset-aware final spend after a unilateral exit;
+  `--fee-sat 0` asks the daemon to estimate.
+- `send` carries no carrier flags on purpose: new asset leaves ride
+  operator-funded carriers stamped at the operator's floor, so there is
+  nothing for the caller to size. `--outpoint` is optional; omitting it
+  lets the daemon select inputs.
+- `list` and `balance` are thin views over `ListVTXOs.asset_ref` and
+  `GetBalance.taproot_assets`.
+
+Flags are kebab-case (`--asset-ref`), matching the rest of the CLI.
+See [`docs/taproot_assets_architecture.md`](../../../docs/taproot_assets_architecture.md)
+for what each verb does end to end.
 
 ## Key Helpers
 

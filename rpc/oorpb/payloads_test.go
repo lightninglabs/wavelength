@@ -2,6 +2,7 @@ package oorpb
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
@@ -26,6 +27,7 @@ func TestSubmitPackageRequestRoundTrip(t *testing.T) {
 
 	hashHex := "0f555f77697777895555121212121212" +
 		"12121212121212121212121212121212"
+	inputAssetRoot := chainhash.Hash{1, 2, 3}
 	descs := []SigningDescriptor{{
 		Outpoint: wire.OutPoint{
 			Hash:  mustHash(t, hashHex),
@@ -45,7 +47,11 @@ func TestSubmitPackageRequestRoundTrip(t *testing.T) {
 			0x02,
 			0x03,
 		},
+		TaprootAssetRoot:   &inputAssetRoot,
+		TaprootAssetRef:    "asset:input",
+		TaprootAssetAmount: ^uint64(0),
 	}}
+	recipientAssetRoot := chainhash.Hash{4, 5, 6}
 	recipients := []oortx.RecipientOutput{{
 		PkScript: []byte{
 			0x51,
@@ -57,15 +63,26 @@ func TestSubmitPackageRequestRoundTrip(t *testing.T) {
 			0xaa,
 			0xbb,
 		},
+		TaprootAssetRoot:   &recipientAssetRoot,
+		TaprootAssetRef:    "asset:recipient",
+		TaprootAssetAmount: 800,
 	}}
+	assetTransfer := &oortx.TaprootAssetTransfer{
+		Version: oortx.TaprootAssetTransferVersion,
+		CheckpointPackages: [][]byte{
+			[]byte("checkpoint-0"),
+			[]byte("checkpoint-1"),
+		},
+		ArkPackage: []byte("ark"),
+	}
 
-	req, err := NewSubmitPackageRequest(
-		ark, checkpoints, descs, recipients,
+	req, err := NewSubmitPackageRequestWithAssets(
+		ark, checkpoints, descs, recipients, assetTransfer,
 	)
 	require.NoError(t, err)
 
-	decArk, decCheckpoints, decDescs, decRecipients, err :=
-		ParseSubmitPackageRequest(req)
+	decArk, decCheckpoints, decDescs, decRecipients, decAssets, err :=
+		ParseSubmitPackageRequestWithAssets(req)
 	require.NoError(t, err)
 	require.Equal(t, 1, len(decDescs))
 	require.Equal(t, descs[0].Outpoint, decDescs[0].Outpoint)
@@ -76,7 +93,17 @@ func TestSubmitPackageRequestRoundTrip(t *testing.T) {
 	require.Equal(
 		t, descs[0].OwnerLeafPolicy, decDescs[0].OwnerLeafPolicy,
 	)
+	require.Equal(
+		t, descs[0].TaprootAssetRoot, decDescs[0].TaprootAssetRoot,
+	)
+	require.Equal(
+		t, descs[0].TaprootAssetRef, decDescs[0].TaprootAssetRef,
+	)
+	require.Equal(
+		t, descs[0].TaprootAssetAmount, decDescs[0].TaprootAssetAmount,
+	)
 	require.Equal(t, recipients, decRecipients)
+	require.Equal(t, assetTransfer, decAssets)
 
 	require.True(
 		t,
@@ -94,6 +121,186 @@ func TestSubmitPackageRequestRoundTrip(t *testing.T) {
 			),
 		)
 	}
+}
+
+// TestSubmitPackageRequestRejectsAssetMetadataShapes verifies both encoding
+// and parsing fail closed when signing-descriptor or recipient metadata is
+// partial or exceeds the bounded opaque asset-reference size.
+func TestSubmitPackageRequestRejectsAssetMetadataShapes(t *testing.T) {
+	t.Parallel()
+
+	root := chainhash.HashH([]byte("wire-asset-root"))
+	oversizedRef := strings.Repeat(
+		"a", oortx.MaxTaprootAssetRefBytes+1,
+	)
+	encodeTests := []struct {
+		name       string
+		descs      []SigningDescriptor
+		recipients []oortx.RecipientOutput
+		want       string
+	}{
+		{
+			name: "signing descriptor partial",
+			descs: []SigningDescriptor{{
+				TaprootAssetRoot: &root,
+				TaprootAssetRef:  "asset:partial",
+			}},
+			want: "asset ref and amount must both be provided",
+		},
+		{
+			name: "signing descriptor oversized reference",
+			descs: []SigningDescriptor{{
+				TaprootAssetRoot:   &root,
+				TaprootAssetRef:    oversizedRef,
+				TaprootAssetAmount: 1,
+			}},
+			want: "asset ref exceeds",
+		},
+		{
+			name: "recipient partial",
+			recipients: []oortx.RecipientOutput{{
+				TaprootAssetRoot:   &root,
+				TaprootAssetAmount: 1,
+			}},
+			want: "asset ref and amount must both be provided",
+		},
+		{
+			name: "recipient oversized reference",
+			recipients: []oortx.RecipientOutput{{
+				TaprootAssetRoot:   &root,
+				TaprootAssetRef:    oversizedRef,
+				TaprootAssetAmount: 1,
+			}},
+			want: "asset ref exceeds",
+		},
+	}
+	for _, test := range encodeTests {
+		test := test
+		t.Run("encode "+test.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := NewSubmitPackageRequest(
+				mustTestPSBT(t, 0x71), nil, test.descs,
+				test.recipients,
+			)
+			require.ErrorContains(t, err, test.want)
+		})
+	}
+
+	decodeTests := []struct {
+		name   string
+		mutate func(*SubmitPackageRequest)
+		want   string
+	}{
+		{
+			name: "signing descriptor partial",
+			mutate: func(req *SubmitPackageRequest) {
+				assetRoot := root.CloneBytes()
+				desc := &OORSigningDescriptor{
+					Outpoint: encodeOutPoint(
+						wire.OutPoint{},
+					),
+					TaprootAssetRoot: assetRoot,
+					TaprootAssetRef:  "a",
+				}
+				descs := []*OORSigningDescriptor{
+					desc,
+				}
+				req.SigningDescriptors = descs
+			},
+			want: "asset ref and amount must both be provided",
+		},
+		{
+			name: "signing descriptor oversized reference",
+			mutate: func(req *SubmitPackageRequest) {
+				assetRoot := root.CloneBytes()
+				assetRef := oversizedRef
+				desc := &OORSigningDescriptor{
+					Outpoint: encodeOutPoint(
+						wire.OutPoint{},
+					),
+					TaprootAssetRoot:   assetRoot,
+					TaprootAssetRef:    assetRef,
+					TaprootAssetAmount: 1,
+				}
+				descs := []*OORSigningDescriptor{
+					desc,
+				}
+				req.SigningDescriptors = descs
+			},
+			want: "asset ref exceeds",
+		},
+		{
+			name: "recipient partial",
+			mutate: func(req *SubmitPackageRequest) {
+				req.RecipientOutputs = []*OORRecipientOutput{{
+					TaprootAssetRoot:   root.CloneBytes(),
+					TaprootAssetAmount: 1,
+				}}
+			},
+			want: "asset ref and amount must both be provided",
+		},
+		{
+			name: "recipient oversized reference",
+			mutate: func(req *SubmitPackageRequest) {
+				req.RecipientOutputs = []*OORRecipientOutput{{
+					TaprootAssetRoot:   root.CloneBytes(),
+					TaprootAssetRef:    oversizedRef,
+					TaprootAssetAmount: 1,
+				}}
+			},
+			want: "asset ref exceeds",
+		},
+	}
+	for _, test := range decodeTests {
+		test := test
+		t.Run("decode "+test.name, func(t *testing.T) {
+			t.Parallel()
+
+			req, err := NewSubmitPackageRequest(
+				mustTestPSBT(t, 0x72), nil, nil, nil,
+			)
+			require.NoError(t, err)
+			test.mutate(req)
+
+			_, _, _, _, err = ParseSubmitPackageRequest(req)
+			require.ErrorContains(t, err, test.want)
+		})
+	}
+}
+
+func TestParseSubmitPackageRequestRejectsInvalidAssetMetadata(t *testing.T) {
+	t.Parallel()
+
+	ark := mustTestPSBT(t, 11)
+	checkpoints := []*psbt.Packet{mustTestPSBT(t, 21)}
+	assetTransfer := &oortx.TaprootAssetTransfer{
+		Version: oortx.TaprootAssetTransferVersion,
+		CheckpointPackages: [][]byte{
+			[]byte("checkpoint"),
+		},
+		ArkPackage: []byte("ark"),
+	}
+	req, err := NewSubmitPackageRequestWithAssets(
+		ark, checkpoints, nil, nil, assetTransfer,
+	)
+	require.NoError(t, err)
+
+	req.SigningDescriptors = []*OORSigningDescriptor{{
+		Outpoint: &OOROutPoint{
+			Txid: make([]byte, chainhash.HashSize),
+		},
+		TaprootAssetRoot: []byte{
+			1,
+		},
+	}}
+	_, _, _, _, _, err = ParseSubmitPackageRequestWithAssets(req)
+	require.ErrorContains(t, err, "taproot asset root length")
+
+	req.SigningDescriptors = nil
+	req.TaprootAssetTransfer[len(req.TaprootAssetTransfer)-1] ^= 1
+	_, _, _, _, _, err = ParseSubmitPackageRequestWithAssets(req)
+	require.ErrorContains(t, err, "checksum mismatch")
 }
 
 // TestSubmitPackageResponseRoundTrip verifies submit response conversion

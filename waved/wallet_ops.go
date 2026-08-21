@@ -94,9 +94,19 @@ func BuildTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 				op, err)
 		}
 
+		// Only a round-created asset leaf stores a sealed package
+		// (OOR-received leaves never do), so its presence proves the
+		// leaf's carrier is the sender's own money rather than
+		// operator float. Deriving this from the store keeps
+		// idempotent replays deterministic without journaling it.
+		roundCreated := desc.TaprootAssetRef != "" &&
+			len(desc.TaprootAssetSealedPackage) > 0
+
 		inputs = append(inputs, oor.TransferInput{
-			VTXO:            desc,
-			OwnerLeafScript: collabLeaf.Script,
+			VTXO:                     desc,
+			OwnerLeafScript:          collabLeaf.Script,
+			TaprootAssetRoot:         desc.TaprootAssetRoot,
+			TaprootAssetRoundCreated: roundCreated,
 		})
 	}
 
@@ -218,6 +228,7 @@ func BuildCustomTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 		input := oor.TransferInput{
 			VTXO:               desc,
 			VTXOPolicyTemplate: ci.VtxoPolicyTemplate,
+			TaprootAssetRoot:   desc.TaprootAssetRoot,
 			OwnerLeafScript:    ownerLeaf,
 			OwnerLeafPolicy:    ownerLeafPolicy,
 		}

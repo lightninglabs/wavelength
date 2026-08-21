@@ -34,6 +34,14 @@ func IsIncomingRecipientNotOwned(err error) bool {
 	return errors.Is(err, ErrIncomingRecipientNotOwned)
 }
 
+func equalOptionalHash(a, b *chainhash.Hash) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+
+	return *a == *b
+}
+
 // IncomingClientKeyResolver resolves the local client key for a recipient
 // output being materialized from an incoming transfer.
 type IncomingClientKeyResolver func(ctx context.Context,
@@ -196,6 +204,7 @@ func (h *LocalPersistenceOutboxHandler) validateMaterializeIncoming(
 		root := packageArtifactForValidation(
 			msg.SessionID, msg.ArkPSBT, msg.FinalCheckpointPSBTs,
 		)
+		root.TaprootAssetTransfer = msg.TaprootAssetTransfer
 		err := validateIncomingPackageGraph(
 			root, msg.AncestorPackages,
 		)
@@ -261,6 +270,25 @@ func (h *LocalPersistenceOutboxHandler) handleQueryIncomingMetadata(
 	}}, nil
 }
 
+// incomingAssetIdentity returns the asset identity for one owned recipient.
+// The recipient event overlays asset identity only onto its own output, and a
+// transfer with several wallet-owned outputs is driven by a single event, so
+// the remaining asset outputs take their identity from the indexer metadata.
+// Descriptor construction authenticates the claimed root against the wallet's
+// own policy via the composed pkScript check.
+func incomingAssetIdentity(recipient ArkRecipientOutput,
+	metadata IncomingVTXOMetadata) (*chainhash.Hash, string, uint64) {
+
+	if recipient.TaprootAssetRoot != nil ||
+		metadata.TaprootAssetRoot == nil {
+		return recipient.TaprootAssetRoot, recipient.TaprootAssetRef,
+			recipient.TaprootAssetAmount
+	}
+
+	return metadata.TaprootAssetRoot, metadata.TaprootAssetRef,
+		metadata.TaprootAssetAmount
+}
+
 // FilterIncomingMetadataRecipients returns only the incoming recipients owned
 // by the local wallet. Durable metadata queries use this before asking the
 // server/indexer to prove script ownership, because mixed OOR packages can
@@ -316,7 +344,6 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 	metadataByOutput := make(
 		map[uint32]IncomingVTXOMetadata, len(msg.MetadataMatches),
 	)
-
 	for i := range msg.MetadataMatches {
 		match := msg.MetadataMatches[i]
 		metadataByOutput[match.OutputIndex] = match.Metadata
@@ -330,9 +357,10 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 			return nil, err
 		}
 
-		err = h.PackageStore.UpsertPackage(
-			ctx, PackageDirectionIncoming, sessionIDHash,
-			msg.ArkPSBT, msg.FinalCheckpointPSBTs,
+		err = upsertPackage(
+			ctx, h.PackageStore, PackageDirectionIncoming,
+			sessionIDHash, msg.ArkPSBT, msg.FinalCheckpointPSBTs,
+			msg.TaprootAssetTransfer,
 		)
 		if err != nil {
 			isDirectionConflict := errors.Is(
@@ -412,6 +440,10 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 				"incoming output %d", recipient.OutputIndex)
 		}
 
+		assetRoot, assetRef, assetAmount := incomingAssetIdentity(
+			recipient, metadata,
+		)
+
 		desc, err := BuildIncomingVTXODescriptor(msg.ArkPSBT,
 			IncomingVTXOConfig{
 				OutputIndex: recipient.OutputIndex,
@@ -420,7 +452,12 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 				ExitDelay:   h.ExitDelay,
 				PolicyTemplate: recipient.
 					VTXOPolicyTemplate,
-				Metadata: metadata,
+				TaprootAssetRoot:     assetRoot,
+				TaprootAssetRef:      assetRef,
+				TaprootAssetAmount:   assetAmount,
+				Metadata:             metadata,
+				FinalCheckpointPSBTs: msg.FinalCheckpointPSBTs,
+				AncestorPackages:     msg.AncestorPackages,
 			},
 		)
 		if err != nil {
@@ -443,6 +480,17 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 			}
 
 			if !bytes.Equal(existing.PkScript, desc.PkScript) {
+				return nil, err
+			}
+			if !equalOptionalHash(
+				existing.TaprootAssetRoot,
+				desc.TaprootAssetRoot,
+			) {
+				return nil, err
+			}
+			if existing.TaprootAssetRef != desc.TaprootAssetRef ||
+				existing.TaprootAssetAmount !=
+					desc.TaprootAssetAmount {
 				return nil, err
 			}
 
@@ -512,9 +560,11 @@ func (h *LocalPersistenceOutboxHandler) persistIncomingAncestorPackages(
 		ancestor := ancestors[i]
 		sessionHash := chainhash.Hash(ancestor.SessionID)
 
-		err := h.PackageStore.UpsertPackage(
-			ctx, PackageDirectionIncoming, sessionHash,
-			ancestor.ArkPSBT, ancestor.FinalCheckpointPSBTs,
+		err := upsertPackage(
+			ctx, h.PackageStore, PackageDirectionIncoming,
+			sessionHash, ancestor.ArkPSBT,
+			ancestor.FinalCheckpointPSBTs,
+			ancestor.TaprootAssetTransfer,
 		)
 		if err == nil {
 			continue

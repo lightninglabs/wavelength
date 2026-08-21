@@ -121,6 +121,10 @@ type Querier interface {
 	GetRoundClientTree(ctx context.Context, arg GetRoundClientTreeParams) (RoundClientTree, error)
 	GetRoundClientTrees(ctx context.Context, roundID string) ([]RoundClientTree, error)
 	GetRoundVtxoRequests(ctx context.Context, roundID string) ([]RoundVtxoRequest, error)
+	// GetSpendingReservation returns the owner recorded for one reserved
+	// outpoint. Atomic reservation-set operations use it to reject partial sets
+	// and owner handoffs before crossing an external commit boundary.
+	GetSpendingReservation(ctx context.Context, arg GetSpendingReservationParams) (GetSpendingReservationRow, error)
 	// Returns cumulative Ark protocol fees paid to the operator (fees_paid
 	// account only). Does not include L1 chain/miner fees (onchain_fees).
 	GetTotalOperatorFeesPaid(ctx context.Context) (int64, error)
@@ -134,6 +138,10 @@ type Querier interface {
 	// GetVTXOReplacement retrieves the replacement VTXO outpoint for a forfeited
 	// VTXO. Returns NULL if not forfeited or no replacement recorded.
 	GetVTXOReplacement(ctx context.Context, arg GetVTXOReplacementParams) (GetVTXOReplacementRow, error)
+	// HandoffSpendingReservation changes one reservation owner only when the row
+	// still belongs to the exact expected owner. A zero-row result is a conflict;
+	// callers must roll back the complete reservation-set transaction.
+	HandoffSpendingReservation(ctx context.Context, arg HandoffSpendingReservationParams) (int64, error)
 	// Boarding address queries.
 	InsertBoardingAddress(ctx context.Context, arg InsertBoardingAddressParams) error
 	// Boarding intent queries.
@@ -173,6 +181,10 @@ type Querier interface {
 	InsertRoundClientTree(ctx context.Context, arg InsertRoundClientTreeParams) error
 	// Round VTXO request queries.
 	InsertRoundVtxoRequest(ctx context.Context, arg InsertRoundVtxoRequestParams) error
+	// InsertSpendingReservation acquires an unowned outpoint without changing an
+	// existing owner. Set acquisition inspects a zero-row result to distinguish
+	// an idempotent same-owner race from a conflicting owner.
+	InsertSpendingReservation(ctx context.Context, arg InsertSpendingReservationParams) (int64, error)
 	// vHTLC recovery job queries.
 	InsertVHTLCRecoveryJob(ctx context.Context, arg InsertVHTLCRecoveryJobParams) error
 	// VTXO queries.
@@ -308,8 +320,9 @@ type Querier interface {
 	// VTXO matches the given status code. Companion to ListVTXOsByStatus.
 	ListVTXOAncestryPathsByStatus(ctx context.Context, status int32) ([]VtxoAncestryPath, error)
 	// ListVTXOSelectionCandidatesByStatus returns the lightweight projection coin
-	// selection runs on: outpoint, amount, and pkScript. Selection happens on
-	// every payment and only needs these three fields, so this avoids decoding
+	// selection runs on: outpoint, amount, pkScript, and the optional Taproot
+	// Asset root. Selection happens on every payment and only needs these fields,
+	// so this avoids decoding
 	// full descriptors (pubkey parsing, taproot script reconstruction, policy
 	// template decode) and the batched ancestry-path query on the hot path.
 	ListVTXOSelectionCandidatesByStatus(ctx context.Context, status int32) ([]ListVTXOSelectionCandidatesByStatusRow, error)
@@ -435,8 +448,8 @@ type Querier interface {
 	// active spend owner (e.g. an outgoing OOR session) so a startup sweep can
 	// release orphaned Spending VTXOs that have no live reservation.
 	// UpsertSpendingReservation records (or refreshes) the reservation for one
-	// outpoint. The owner fields are updated on conflict so a re-checkpointed
-	// session re-binds the same outpoint to its current owner.
+	// outpoint. The owner fields are updated on conflict so a resumed workflow
+	// re-binds the same outpoint to its current durable owner.
 	UpsertSpendingReservation(ctx context.Context, arg UpsertSpendingReservationParams) error
 	// Unilateral-exit job control-plane queries.
 	UpsertUnilateralExitJob(ctx context.Context, arg UpsertUnilateralExitJobParams) error

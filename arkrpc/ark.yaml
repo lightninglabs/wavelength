@@ -9,3 +9,6 @@ http:
     - selector: arkrpc.ArkService.EstimateFee
       post: /v1/ark/estimate-fee
       body: "*"
+    - selector: arkrpc.ArkService.LeaseOORCarrier
+      post: /v1/ark/lease-oor-carrier
+      body: "*"

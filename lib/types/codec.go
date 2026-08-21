@@ -52,6 +52,15 @@ const (
 	joinRoundAuthVTXOSigningKeyRecordType  tlv.Type = 3
 	joinRoundAuthVTXOIsChangeRecordType    tlv.Type = 4
 	joinRoundAuthVTXOFixedAmountRecordType tlv.Type = 5
+	joinRoundAuthVTXOAssetRefRecordType    tlv.Type = 6
+	joinRoundAuthVTXOAssetAmountRecordType tlv.Type = 7
+)
+
+const (
+	joinRoundAuthBoardAssetRefRecordType    tlv.Type = 4
+	joinRoundAuthBoardAssetAmountRecordType tlv.Type = 5
+	joinRoundAuthBoardAssetDigestRecordType tlv.Type = 6
+	joinRoundAuthBoardAssetLeafRecordType   tlv.Type = 7
 )
 
 const (
@@ -396,9 +405,13 @@ func decodeJoinAuthBoardingRequests(raw []byte) ([]*BoardingRequest, error) {
 // decodeJoinAuthBoardingRequest parses one boarding request entry.
 func decodeJoinAuthBoardingRequest(raw []byte) (*BoardingRequest, error) {
 	var (
-		hash   []byte
-		index  uint64
-		policy []byte
+		hash        []byte
+		index       uint64
+		policy      []byte
+		assetRef    []byte
+		assetAmount uint64
+		assetDigest []byte
+		assetLeaf   []byte
 	)
 
 	stream, err := tlv.NewStream(
@@ -410,6 +423,18 @@ func decodeJoinAuthBoardingRequest(raw []byte) (*BoardingRequest, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthBoardPolicyRecordType, &policy,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthBoardAssetRefRecordType, &assetRef,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthBoardAssetAmountRecordType, &assetAmount,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthBoardAssetDigestRecordType, &assetDigest,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthBoardAssetLeafRecordType, &assetLeaf,
 		),
 	)
 	if err != nil {
@@ -455,8 +480,12 @@ func decodeJoinAuthBoardingRequest(raw []byte) (*BoardingRequest, error) {
 	}
 
 	req := &BoardingRequest{
-		Outpoint:       outpoint,
-		PolicyTemplate: bytes.Clone(policy),
+		Outpoint:                outpoint,
+		PolicyTemplate:          bytes.Clone(policy),
+		AssetRef:                string(assetRef),
+		AssetAmount:             assetAmount,
+		AssetDigest:             bytes.Clone(assetDigest),
+		AssetCommitmentLeafHash: bytes.Clone(assetLeaf),
 	}
 
 	_, err = req.DecodePolicyTemplate()
@@ -493,11 +522,13 @@ func decodeJoinAuthVTXORequests(raw []byte) ([]*VTXORequest, error) {
 // decodeJoinAuthVTXORequest parses one VTXO request entry.
 func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 	var (
-		amount     uint64
-		policy     []byte
-		signingKey []byte
-		isChange   uint8
-		fixedAmt   uint8
+		amount      uint64
+		policy      []byte
+		signingKey  []byte
+		isChange    uint8
+		fixedAmt    uint8
+		assetRef    []byte
+		assetAmount uint64
 	)
 
 	stream, err := tlv.NewStream(
@@ -515,6 +546,12 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthVTXOFixedAmountRecordType, &fixedAmt,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthVTXOAssetRefRecordType, &assetRef,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthVTXOAssetAmountRecordType, &assetAmount,
 		),
 	)
 	if err != nil {
@@ -571,6 +608,8 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 		IsChange:       isChange != 0,
 		FixedAmount:    fixedAmt != 0,
 		PolicyTemplate: bytes.Clone(policy),
+		AssetRef:       string(assetRef),
+		AssetAmount:    assetAmount,
 		SigningKey: keychain.KeyDescriptor{
 			PubKey: signingPubKey,
 		},
@@ -904,6 +943,35 @@ func encodeJoinAuthBoardingRequest(req *BoardingRequest) ([]byte, error) {
 		),
 	}
 
+	// Asset boarding binds the asset identity, amount, OP_TRUE digest,
+	// and the commitment leaf hash into the auth digest so the operator
+	// cannot alter any of them. The proof file itself is
+	// chain-authenticated and stays outside the signature. Bitcoin-only
+	// boarding keeps the historical record set, preserving its digests.
+	if req.AssetRef != "" {
+		assetRef := []byte(req.AssetRef)
+		assetAmount := req.AssetAmount
+		assetDigest := req.AssetDigest
+		assetLeaf := req.AssetCommitmentLeafHash
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				joinRoundAuthBoardAssetRefRecordType, &assetRef,
+			),
+			tlv.MakePrimitiveRecord(
+				joinRoundAuthBoardAssetAmountRecordType,
+				&assetAmount,
+			),
+			tlv.MakePrimitiveRecord(
+				joinRoundAuthBoardAssetDigestRecordType,
+				&assetDigest,
+			),
+			tlv.MakePrimitiveRecord(
+				joinRoundAuthBoardAssetLeafRecordType,
+				&assetLeaf,
+			),
+		)
+	}
+
 	return encodeJoinAuthTLV(records)
 }
 
@@ -954,6 +1022,8 @@ func encodeJoinAuthVTXORequest(req *VTXORequest) ([]byte, error) {
 	if req.FixedAmount {
 		fixedAmt = 1
 	}
+	assetRef := []byte(req.AssetRef)
+	assetAmount := req.AssetAmount
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -971,6 +1041,22 @@ func encodeJoinAuthVTXORequest(req *VTXORequest) ([]byte, error) {
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthVTXOFixedAmountRecordType, &fixedAmt,
 		),
+	}
+
+	// Asset requests bind their asset identity and amount into the
+	// auth digest so the operator cannot alter either. Bitcoin-only
+	// requests keep the historical record set, preserving their
+	// digests.
+	if req.AssetRef != "" {
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				joinRoundAuthVTXOAssetRefRecordType, &assetRef,
+			),
+			tlv.MakePrimitiveRecord(
+				joinRoundAuthVTXOAssetAmountRecordType,
+				&assetAmount,
+			),
+		)
 	}
 
 	return encodeJoinAuthTLV(records)

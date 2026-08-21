@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/lib/types"
@@ -54,6 +55,17 @@ func operatorTermsFromResponse(resp *arkrpc.GetInfoResponse) (
 		minVTXOAmount = resp.DustLimit
 	}
 
+	// The carrier float owner key is advertised x-only; an empty field
+	// means the operator does not fund OOR carriers.
+	var carrierKey *btcec.PublicKey
+	if len(resp.OorCarrierPubkey) != 0 {
+		carrierKey, err = schnorr.ParsePubKey(resp.OorCarrierPubkey)
+		if err != nil {
+			return nil, fmt.Errorf("parse OOR carrier pubkey: %w",
+				err)
+		}
+	}
+
 	// The forfeit penalty key, sweep key and sweep delay are no longer
 	// global operator terms; they are delivered per round in the batch
 	// info, so GetInfo no longer carries them.
@@ -71,6 +83,7 @@ func operatorTermsFromResponse(resp *arkrpc.GetInfoResponse) (
 		MinConfirmations:        resp.MinConfirmations,
 		MaxOORLineageVBytes:     resp.MaxOorLineageVbytes,
 		MaxUserBalance:          btcutil.Amount(resp.MaxUserBalance),
+		OORCarrierPubKey:        carrierKey,
 	}, nil
 }
 

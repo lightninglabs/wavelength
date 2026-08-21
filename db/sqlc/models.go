@@ -196,11 +196,12 @@ type Macaroon struct {
 }
 
 type OorPackage struct {
-	SessionID []byte
-	Direction int32
-	ArkPsbt   []byte
-	CreatedAt int64
-	UpdatedAt int64
+	SessionID            []byte
+	Direction            int32
+	ArkPsbt              []byte
+	CreatedAt            int64
+	UpdatedAt            int64
+	TaprootAssetTransfer []byte
 }
 
 type OorPackageCheckpoint struct {
@@ -430,29 +431,33 @@ type VhtlcRecoveryJob struct {
 }
 
 type Vtxo struct {
-	OutpointHash        []byte
-	OutpointIndex       int32
-	RoundID             string
-	Amount              int64
-	PkScript            []byte
-	Expiry              int32
-	PolicyTemplate      []byte
-	ClientKeyID         sql.NullInt64
-	OperatorPubkey      []byte
-	BatchExpiry         int32
-	CreatedHeight       int32
-	CommitmentTxid      []byte
-	Spent               bool
-	Status              int32
-	ForfeitRoundID      sql.NullString
-	ForfeitTx           []byte
-	ForfeitTxid         []byte
-	ReplacedByHash      []byte
-	ReplacedByIndex     sql.NullInt32
-	CreationTime        int64
-	LastUpdateTime      int64
-	ChainDepth          int32
-	ConstructionVersion int32
+	OutpointHash              []byte
+	OutpointIndex             int32
+	RoundID                   string
+	Amount                    int64
+	PkScript                  []byte
+	Expiry                    int32
+	PolicyTemplate            []byte
+	ClientKeyID               sql.NullInt64
+	OperatorPubkey            []byte
+	BatchExpiry               int32
+	CreatedHeight             int32
+	CommitmentTxid            []byte
+	Spent                     bool
+	Status                    int32
+	ForfeitRoundID            sql.NullString
+	ForfeitTx                 []byte
+	ForfeitTxid               []byte
+	ReplacedByHash            []byte
+	ReplacedByIndex           sql.NullInt32
+	CreationTime              int64
+	LastUpdateTime            int64
+	ChainDepth                int32
+	ConstructionVersion       int32
+	TaprootAssetRoot          []byte
+	TaprootAssetRef           sql.NullString
+	TaprootAssetAmount        []byte
+	TaprootAssetSealedPackage []byte
 }
 
 type VtxoAncestryPath struct {

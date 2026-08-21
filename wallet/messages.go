@@ -565,6 +565,15 @@ type SelectAndLockVTXOsRequest struct {
 	// lock instead of running coin selection. The requested order is
 	// preserved in the response.
 	Outpoints []wire.OutPoint
+
+	// RequiredOutpoints identifies managed VTXOs that must be included in
+	// the selection before ordinary Bitcoin VTXOs cover any shortfall.
+	RequiredOutpoints []wire.OutPoint
+
+	// WaitForDurable requires every selected VTXO's Spending status to be
+	// persisted before selection returns. Asset preparation needs this
+	// barrier before an external transition; ordinary BTC sends omit it.
+	WaitForDurable bool
 }
 
 // MessageType returns the message type identifier for logging and debugging.

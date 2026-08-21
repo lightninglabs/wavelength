@@ -8,10 +8,18 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tx/arktx"
 	"github.com/lightninglabs/wavelength/lib/tx/checkpoint"
+	"github.com/lightninglabs/wavelength/vtxo"
+)
+
+const (
+	// MaxTaprootAssetRefBytes bounds the opaque tap-sdk asset identifier on
+	// every SDK-neutral recipient and persistence boundary.
+	MaxTaprootAssetRefBytes = vtxo.MaxTaprootAssetRefBytes
 )
 
 // CheckpointInput describes the VTXO input being transformed into a checkpoint
@@ -79,6 +87,126 @@ type RecipientOutput struct {
 	// services persist authoritative ownership semantics for the created
 	// VTXO.
 	VTXOPolicyTemplate []byte
+
+	// TaprootAssetRoot is the optional root of the Taproot Asset
+	// commitment anchored in this VTXO. When present, the actual P2TR
+	// output commits to the branch hash of the VTXO policy root and this
+	// root. Keeping the root beside the semantic policy lets receivers and
+	// operators reconstruct the composed control blocks without importing
+	// taproot-assets implementation types.
+	TaprootAssetRoot *chainhash.Hash
+
+	// TaprootAssetRef is the opaque SDK-level identity of the asset carried
+	// by this output.
+	TaprootAssetRef string
+
+	// TaprootAssetAmount is the number of asset units carried by this
+	// output. Value remains the separate Bitcoin carrier amount.
+	TaprootAssetAmount uint64
+}
+
+// ValidateTaprootAssetCommitment proves that an asset-bearing recipient
+// output commits to both its semantic Ark policy and its declared Taproot
+// Asset root. Bitcoin-only outputs are unchanged.
+func (o RecipientOutput) ValidateTaprootAssetCommitment() error {
+	if err := o.ValidateTaprootAssetMetadata(); err != nil {
+		return err
+	}
+	if o.TaprootAssetRoot == nil {
+		return nil
+	}
+	if len(o.VTXOPolicyTemplate) == 0 {
+		return fmt.Errorf("asset-bearing recipient policy is required")
+	}
+
+	template, err := arkscript.DecodePolicyTemplate(o.VTXOPolicyTemplate)
+	if err != nil {
+		return fmt.Errorf("decode asset-bearing recipient policy: %w",
+			err)
+	}
+	compiled, err := template.Compile()
+	if err != nil {
+		return fmt.Errorf("compile asset-bearing recipient policy: %w",
+			err)
+	}
+	composed, err := arkscript.ComposeWithSiblingRoot(
+		compiled, *o.TaprootAssetRoot,
+	)
+	if err != nil {
+		return fmt.Errorf("compose asset-bearing recipient policy: %w",
+			err)
+	}
+	wantPkScript, err := txscript.PayToTaprootScript(composed.OutputKey())
+	if err != nil {
+		return fmt.Errorf("derive asset-bearing recipient pkscript: %w",
+			err)
+	}
+	if !bytes.Equal(wantPkScript, o.PkScript) {
+		return fmt.Errorf("recipient taproot asset root and pkscript " +
+			"mismatch")
+	}
+
+	return nil
+}
+
+// RoutingPkScript returns the stable receive script used to address this
+// output to its owner. Taproot Asset composition changes the final output
+// script only after the receiver has registered its semantic Ark policy, so
+// asset outputs route through the uncomposed policy script.
+func (o RecipientOutput) RoutingPkScript() ([]byte, error) {
+	if err := o.ValidateTaprootAssetCommitment(); err != nil {
+		return nil, err
+	}
+	if o.TaprootAssetRoot == nil {
+		return append([]byte(nil), o.PkScript...), nil
+	}
+
+	template, err := arkscript.DecodePolicyTemplate(o.VTXOPolicyTemplate)
+	if err != nil {
+		return nil, fmt.Errorf("decode recipient routing policy: %w",
+			err)
+	}
+	compiled, err := template.Compile()
+	if err != nil {
+		return nil, fmt.Errorf("compile recipient routing policy: %w",
+			err)
+	}
+
+	pkScript, err := txscript.PayToTaprootScript(compiled.OutputKey())
+	if err != nil {
+		return nil, fmt.Errorf("derive recipient routing pkscript: %w",
+			err)
+	}
+
+	return pkScript, nil
+}
+
+// ValidateTaprootAssetMetadata checks that SDK-neutral asset identity and
+// quantity are either absent or complete. A root-only output is accepted for
+// compatibility with v0 packages created before identity and amount were
+// propagated.
+func (o RecipientOutput) ValidateTaprootAssetMetadata() error {
+	if o.TaprootAssetRoot == nil {
+		if o.TaprootAssetRef != "" || o.TaprootAssetAmount != 0 {
+			return fmt.Errorf("recipient asset metadata requires " +
+				"a commitment root")
+		}
+
+		return nil
+	}
+	if o.TaprootAssetRef == "" && o.TaprootAssetAmount == 0 {
+		return nil
+	}
+	if o.TaprootAssetRef == "" || o.TaprootAssetAmount == 0 {
+		return fmt.Errorf("recipient asset ref and amount must both " +
+			"be provided")
+	}
+	if len(o.TaprootAssetRef) > MaxTaprootAssetRefBytes {
+		return fmt.Errorf("recipient asset ref exceeds %d bytes",
+			MaxTaprootAssetRefBytes)
+	}
+
+	return nil
 }
 
 // CanonicalRecipientOutputs returns a BIP69-style stable copy of recipients in
@@ -256,6 +384,10 @@ func BuildArkPSBT(checkpoints []CheckpointOutput,
 		if out.Value <= 0 {
 			return nil, fmt.Errorf("recipient value must be " +
 				"positive")
+		}
+
+		if err := out.ValidateTaprootAssetCommitment(); err != nil {
+			return nil, err
 		}
 
 		sumOutputs += out.Value

@@ -65,6 +65,13 @@ type Node struct {
 	// that must sign this node's input. This is cached to avoid repeated
 	// MuSig2 aggregations during signature verification.
 	FinalKey *btcec.PublicKey
+
+	// Sequence is the input sequence of this node's transaction. Zero
+	// selects the flow-V1 default (MaxTxInSequenceNum); V2 trees use an
+	// RBF-signalling sequence. Sequence is consensus-visible: it changes
+	// the node's txid and sighash, so every node of a tree must carry
+	// the same value.
+	Sequence uint32
 }
 
 // NewLeafNode creates a leaf node (transaction with leaf output).
@@ -216,6 +223,37 @@ func NewBranchNode(input wire.OutPoint, groups [][]LeafDescriptor,
 	}, nil
 }
 
+// ComputeInternalKey computes the MuSig2 aggregate key of the given
+// cosigners without any taproot tweak. Asset-aware materialization hands
+// this untweaked key to tapd, which applies the combined tapscript/asset
+// commitment tweak itself when deriving the anchor output key.
+func ComputeInternalKey(cosigners []*btcec.PublicKey) (*btcec.PublicKey,
+	error) {
+
+	if len(cosigners) == 0 {
+		return nil, fmt.Errorf("no cosigners provided")
+	}
+
+	if len(cosigners) == 1 {
+		return cosigners[0], nil
+	}
+
+	aggKey, _, _, err := musig2.AggregateKeys(sortableCopy(cosigners), true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to aggregate keys: %w", err)
+	}
+
+	return aggKey.PreTweakedKey, nil
+}
+
+// sortableCopy returns a copy of the cosigner set for MuSig2 aggregation.
+// AggregateKeys sorts the slice it is handed in place, which would silently
+// reorder a caller's set — and callers that identify a participant by
+// position (the operator first, say) would then read the wrong key.
+func sortableCopy(cosigners []*btcec.PublicKey) []*btcec.PublicKey {
+	return append([]*btcec.PublicKey(nil), cosigners...)
+}
+
 // ComputeFinalKey computes the final aggregated public key for signing.
 // This is a helper function that aggregates the cosigners and applies the
 // taproot tweak with the given sweep tapscript root. It handles both
@@ -238,7 +276,8 @@ func ComputeFinalKey(cosigners []*btcec.PublicKey,
 
 	// Multi-key case: use MuSig2 aggregation with taproot tweak.
 	aggKey, _, _, err := musig2.AggregateKeys(
-		cosigners, true, musig2.WithTaprootKeyTweak(sweepTapscriptRoot),
+		sortableCopy(cosigners), true,
+		musig2.WithTaprootKeyTweak(sweepTapscriptRoot),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to aggregate keys: %w", err)
@@ -258,6 +297,20 @@ func (n *Node) SetChildren(children map[uint32]*Node) {
 	n.Children = children
 }
 
+// SequenceV2 is the RBF-signalling input sequence carried by flow-V2
+// tree transactions. V1 trees use MaxTxInSequenceNum (final).
+const SequenceV2 = wire.MaxTxInSequenceNum - 2
+
+// TxSequence returns the input sequence of this node's transaction: the
+// node's explicit sequence when set, the flow-V1 default otherwise.
+func (n *Node) TxSequence() uint32 {
+	if n.Sequence != 0 {
+		return n.Sequence
+	}
+
+	return wire.MaxTxInSequenceNum
+}
+
 // ToTx converts the Node into its unsigned wire.MsgTx representation.
 func (n *Node) ToTx() (*wire.MsgTx, error) {
 	// Virtual transactions are V3 since they use ephemeral anchors.
@@ -266,7 +319,7 @@ func (n *Node) ToTx() (*wire.MsgTx, error) {
 	// Add the single, unsigned input.
 	tx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: n.Input,
-		Sequence:         wire.MaxTxInSequenceNum,
+		Sequence:         n.TxSequence(),
 	})
 
 	// Add all outputs.
@@ -505,6 +558,7 @@ func (n *Node) ExtractPathForCoSigners(targetKeys ...*btcec.PublicKey) (*Node,
 		Outputs:   n.Outputs,
 		Signature: n.Signature,
 		FinalKey:  n.FinalKey,
+		Sequence:  n.Sequence,
 		Children:  make(map[uint32]*Node),
 	}
 
@@ -600,6 +654,7 @@ func (n *Node) extractPathForIndicesRecursive(targetSet fn.Set[int],
 				Outputs:   n.Outputs,
 				Signature: n.Signature,
 				FinalKey:  n.FinalKey,
+				Sequence:  n.Sequence,
 				Children:  make(map[uint32]*Node),
 			}, currentIndex + 1, true
 		}
@@ -614,6 +669,7 @@ func (n *Node) extractPathForIndicesRecursive(targetSet fn.Set[int],
 		Outputs:   n.Outputs,
 		Signature: n.Signature,
 		FinalKey:  n.FinalKey,
+		Sequence:  n.Sequence,
 		Children:  make(map[uint32]*Node),
 	}
 
@@ -828,14 +884,17 @@ func (n *Node) SigHash(prevOutFetcher txscript.PrevOutputFetcher) ([]byte,
 	)
 }
 
-// NewSignerSession creates a new MuSig2 signing session for this node.
+// NewSignerSession creates a new MuSig2 signing session for this node. The
+// cosigner set is copied first: session creation sorts the slice it is
+// handed in place, and concurrent sessions over nodes sharing one backing
+// array would race on that sort.
 func (n *Node) NewSignerSession(signerKey *keychain.KeyDescriptor,
 	signer input.MuSig2Signer, sweepTapscriptRoot []byte) (
 	*input.MuSig2SessionInfo, error) {
 
 	return signer.MuSig2CreateSession(
 		input.MuSig2Version100RC2, signerKey.KeyLocator,
-		n.CoSigners, &input.MuSig2Tweaks{
+		sortableCopy(n.CoSigners), &input.MuSig2Tweaks{
 			TaprootTweak: sweepTapscriptRoot,
 		}, nil, nil,
 	)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -57,9 +58,18 @@ func (b *sessionBehavior) handleStartTransfer(ctx context.Context,
 		return fn.Err[ActorResp](ErrOutgoingAdmissionExpired)
 	}
 
-	session, outbox, err := NewSessionWithIdempotencyKey(
+	assetPrepared := req.PreparedSubmit != nil &&
+		req.PreparedSubmit.TaprootAssetTransfer != nil
+	if assetPrepared && strings.TrimSpace(req.IdempotencyKey) == "" {
+		return fn.Err[ActorResp](
+			fmt.Errorf("Taproot Asset OOR idempotency key is " +
+				"required"),
+		)
+	}
+
+	session, outbox, err := newSessionWithPrepared(
 		ctx, req.Policy, req.Inputs, req.Recipients, req.IdempotencyKey,
-		b.envConfig(),
+		b.envConfig(), req.PreparedSubmit,
 	)
 	if err != nil {
 		return fn.Err[ActorResp](err)
@@ -77,11 +87,20 @@ func (b *sessionBehavior) handleStartTransfer(ctx context.Context,
 
 	// Stage one durable spending-reservation row per input. The write joins
 	// the commit transaction so a row exists IFF the session is
-	// checkpointed.
+	// checkpointed. Asset-bearing sessions atomically hand the complete set
+	// over from the preparation owner instead of recreating individual
+	// rows.
 	inputs := req.Inputs
+	assetPreparationRequestID := ""
+	if assetPrepared {
+		assetPreparationRequestID = req.IdempotencyKey
+	}
 	b.commitWork = append(b.commitWork,
 		func(txCtx context.Context, _ oorTx) error {
-			return b.recordReservations(txCtx, inputs)
+			return b.recordReservations(
+				txCtx, inputs, assetPrepared,
+				assetPreparationRequestID,
+			)
 		},
 	)
 
@@ -209,14 +228,51 @@ func (b *sessionBehavior) captureFinalizeState(event Event) (
 
 // recordReservations writes one spending-reservation row per outgoing input.
 func (b *sessionBehavior) recordReservations(ctx context.Context,
-	inputs []TransferInput) error {
+	inputs []TransferInput, assetPrepared bool,
+	assetPreparationRequestID string) error {
 
 	if b.cfg.ReservationStore == nil {
 		return nil
 	}
 
 	ownerID := chainHashOf(b.sessionID)
-	for _, op := range InputOutpoints(inputs) {
+
+	// Reservation rows exist only for wallet VTXOs; an operator-funded
+	// float input has no local row and would fail the store's
+	// wallet-state precondition.
+	outpoints := WalletInputOutpoints(inputs)
+	if assetPrepared {
+		if strings.TrimSpace(assetPreparationRequestID) == "" {
+			return fmt.Errorf("Taproot Asset OOR idempotency key " +
+				"is required")
+		}
+
+		setStore, ok := b.cfg.ReservationStore.(ReservationSetStore)
+		if !ok {
+			return fmt.Errorf("reservation store does not " +
+				"support atomic Taproot Asset ownership " +
+				"handoff")
+		}
+
+		preparationOwnerID := TaprootAssetPreparationReservationOwner(
+			assetPreparationRequestID,
+		)
+		err := setStore.HandoffReservationSet(
+			ctx, outpoints,
+			ReservationOwnerKindTaprootAssetPreparation,
+			preparationOwnerID, ReservationOwnerKindOOROutgoing,
+			ownerID,
+		)
+		if err != nil {
+			return fmt.Errorf("handoff Taproot Asset spending "+
+				"reservations to session %s: %w", b.sessionID,
+				err)
+		}
+
+		return nil
+	}
+
+	for _, op := range outpoints {
 		err := b.cfg.ReservationStore.UpsertReservation(
 			ctx, op, ReservationOwnerKindOOROutgoing, ownerID,
 		)
@@ -339,9 +395,10 @@ func (b *sessionBehavior) persistOutgoingPackage(ctx context.Context,
 
 	sessionHash := chainHashOf(b.sessionID)
 
-	err := b.cfg.PackageStore.UpsertPackage(
-		ctx, PackageDirectionOutgoing, sessionHash, state.ArkPSBT,
-		state.FinalCheckpointPSBTs,
+	err := upsertPackage(
+		ctx, b.cfg.PackageStore, PackageDirectionOutgoing, sessionHash,
+		state.ArkPSBT, state.FinalCheckpointPSBTs,
+		state.TaprootAssetTransfer,
 	)
 	if err != nil {
 		return err
@@ -379,6 +436,12 @@ func (b *sessionBehavior) queueVTXOSent(ctx context.Context,
 
 	var total int64
 	for i := range state.TransferInputs {
+		// The operator's leased float value is not wallet money and
+		// must not inflate the sent amount.
+		if state.TransferInputs[i].OperatorFunded {
+			continue
+		}
+
 		total += int64(state.TransferInputs[i].VTXO.Amount)
 	}
 	if total <= 0 {

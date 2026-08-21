@@ -44,6 +44,8 @@ func main() {
 }
 
 // newRootCmd creates the top-level cobra command that starts the daemon.
+//
+//nolint:funlen
 func newRootCmd() *cobra.Command {
 	cfg := waved.DefaultConfig()
 	v := viper.New()
@@ -77,6 +79,7 @@ func newRootCmd() *cobra.Command {
 
 			configureSwapRuntime(cfg)
 			configureWalletRPC(cfg)
+			configureTaprootAssets(cfg)
 
 			return nil
 		},
@@ -168,6 +171,8 @@ func newRootCmd() *cobra.Command {
 	registerBitcoindFlags(f)
 
 	registerDaemonRPCFlags(f, cfg)
+
+	registerTaprootAssetFlags(f, cfg)
 
 	registerSwapRuntimeFlags(f, cfg)
 
@@ -299,6 +304,45 @@ func registerOperatorFeeFlags(f *pflag.FlagSet, cfg *waved.Config) {
 	f.Uint32(
 		"autorefreshfeerateppm", cfg.AutoRefreshFeeRatePPM,
 		autoRefreshFeeRateHelp,
+	)
+}
+
+// registerTaprootAssetFlags registers the disabled-by-default tapd adapter
+// used by the Taproot Asset OOR PoC.
+func registerTaprootAssetFlags(f *pflag.FlagSet, cfg *waved.Config) {
+	rpcTimeoutHelp := "timeout for individual tapd RPCs; zero uses the " +
+		"tap-sdk default"
+
+	f.Bool(
+		"taprootassets.enabled", cfg.TaprootAssets.Enabled,
+		"enable the experimental tap-sdk-backed Taproot Asset OOR path",
+	)
+	f.String(
+		"taprootassets.host", cfg.TaprootAssets.Host,
+		"tapd gRPC address for Taproot Asset OOR preparation",
+	)
+	f.String(
+		"taprootassets.tlscertpath", cfg.TaprootAssets.TLSCertPath,
+		"path to the tapd TLS certificate; empty uses the tap-sdk "+
+			"default",
+	)
+	f.String(
+		"taprootassets.macaroonpath", cfg.TaprootAssets.MacaroonPath,
+		"path to the tapd admin macaroon; empty uses the tap-sdk "+
+			"default",
+	)
+	f.Bool(
+		"taprootassets.insecure", cfg.TaprootAssets.Insecure,
+		"disable tapd TLS verification (regtest and simnet only)",
+	)
+	f.Duration(
+		"taprootassets.rpctimeout", cfg.TaprootAssets.RPCTimeout,
+		rpcTimeoutHelp,
+	)
+	f.String(
+		"taprootassets.preparationdir",
+		cfg.TaprootAssets.PreparationDir,
+		"directory for the durable Taproot Asset commit journal",
 	)
 }
 

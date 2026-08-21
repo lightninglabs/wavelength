@@ -6,10 +6,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/lightninglabs/lndclient"
-	"github.com/lightninglabs/taproot-assets/taprpc"
 	lnrpc "github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/ory/dockertest/v3"
 	"github.com/ory/dockertest/v3/docker"
@@ -48,6 +48,11 @@ type TapdHarness struct {
 
 	// TapdRestPort is the host port mapped to tapd REST.
 	TapdRestPort string
+
+	// TapdContainerName is the tapd container's Docker network name.
+	// Other containers on the harness network reach this tapd at
+	// TapdContainerName:10029, e.g. as a universe proof courier.
+	TapdContainerName string
 
 	// LNDTLSCert is the path to the LND TLS cert.
 	LNDTLSCert string
@@ -139,6 +144,9 @@ func (h *Harness) NewTapdHarness(name string) *TapdHarness {
 	h.Logf("Initializing LND wallet for %s...", name)
 	th.initAndWaitLND()
 
+	tapdImage, tapdTag, err := h.tapdImage()
+	require.NoError(h.T, err, "failed to prepare tapd image")
+
 	h.Logf("Starting tapd for %s...", name)
 	th.tapd = h.startTapdContainer(tapdConfig{
 		name:         name + "-tapd",
@@ -147,8 +155,8 @@ func (h *Harness) NewTapdHarness(name string) *TapdHarness {
 		lndContainer: th.lnd,
 		network:      h.network,
 		group:        h.group,
-		image:        imageRepo(h.opts.TapdImage),
-		tag:          imageTag(h.opts.TapdImage),
+		image:        tapdImage,
+		tag:          tapdTag,
 	})
 	th.setupTapdPaths()
 
@@ -414,6 +422,9 @@ func (th *TapdHarness) setupLNDPaths() {
 func (th *TapdHarness) setupTapdPaths() {
 	th.TapdGRPCPort = th.tapd.GetPort("10029/tcp")
 	th.TapdRestPort = th.tapd.GetPort("8089/tcp")
+	th.TapdContainerName = strings.TrimPrefix(
+		th.tapd.Container.Name, "/",
+	)
 	th.h.Logf(
 		"%s tapd gRPC=127.0.0.1:%s REST=127.0.0.1:%s", th.Name,
 		th.TapdGRPCPort, th.TapdRestPort,
@@ -520,21 +531,10 @@ func (th *TapdHarness) waitForTapdReady() {
 		defer cancel()
 
 		addr := net.JoinHostPort("127.0.0.1", th.TapdGRPCPort)
-		conn, err := getTapdClientConn(
+
+		return tapdSyncedToChain(
 			ctx, addr, th.TapdTLSCert, th.TapdMacaroon,
 		)
-		if err != nil {
-			return false
-		}
-		defer conn.Close()
-
-		client := taprpc.NewTaprootAssetsClient(conn)
-		resp, err := client.GetInfo(ctx, &taprpc.GetInfoRequest{})
-		if err != nil {
-			return false
-		}
-
-		return resp.SyncToChain
 	}, defaultTimeout, time.Second, th.Name+" tapd not ready or not synced")
 }
 

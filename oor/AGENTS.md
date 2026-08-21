@@ -31,6 +31,29 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
 - `ReceiveLimits` / `DefaultReceiveLimits` — defense-in-depth bounds on
   incoming receive (`MaxCheckpoints`, `MaxVTXOMatches`, `MaxMailboxItems`,
   `MaxMailboxScriptBytes`, `MaxConcurrentIncomingSessions`).
+- `TransferInput` (`transfer_inputs.go`) — one selected spend input: the
+  VTXO descriptor, its policy template, optional `TaprootAssetRoot`,
+  owner leaf, custom spend path, and the two asset markers
+  `OperatorFunded` / `TaprootAssetRoundCreated` (see the Taproot Asset
+  section below). `TransferInputSnapshot`
+  (`transfer_input_snapshot.go`) is its durable form.
+- `TaprootAssetOORIntent` / `TaprootAssetOORPrepareRequest` /
+  `TaprootAssetOORPreparation` / `TaprootAssetOORPreparer`
+  (`taproot_asset_preparer.go`) — the declarative asset-transfer contract
+  and its driver seam. This package owns validation and carrier
+  arithmetic only; the concrete driver is `tapassets.Preparer`, which
+  imports `oor` (never the reverse).
+- `TaprootAssetCarrierPlan` — the satoshi layout an asset transfer must
+  produce: `AssetChange`, `SenderChange`, `OperatorChange`. Computed by
+  `TaprootAssetOORPrepareRequest.CarrierAllocation()`.
+- `TaprootAssetOORPreparationResumer` / `TaprootAssetOORResumeRequest` /
+  `TaprootAssetOORResume` — restart adoption of a journaled preparation:
+  returns the outpoint set and lease the pre-crash attempt committed to.
+- `OORCarrierLease` (`carrier_lease.go`) — an operator carrier-float VTXO
+  leased for one transfer: `Outpoint`, `Value`, `PolicyTemplate`,
+  `PkScript`, `ExpiresAtUnix`.
+- `MaxTaprootAssetInputs = 8` — hard cap on asset VTXOs merged into one
+  transfer.
 
 ## Relationships
 
@@ -38,10 +61,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   framework), `serverconn` (submit/finalize/query transport), `vtxo`
   (materialization + status), `ledger` (`Sink`, accounting emission),
   `timeout` (`TimeoutActor` retry scheduling), `lib/arkscript` (checkpoint
-  policy, collab tapleaf), `arkrpc` (indexer response types), `lnd/input`
-  (signer interface for inline Ark/checkpoint signing).
+  policy, collab tapleaf, `ComposeWithSiblingRoot` for composed asset
+  scripts), `lib/tx/oor` (`RecipientOutput`, asset transfer container),
+  `arkrpc` (indexer response types), `lnd/input` (signer interface for
+  inline Ark/checkpoint signing).
 - **Depended on by**: `waved` (spawns the registry, wires config, drives
-  RPCs and event routing).
+  RPCs and event routing), `tapassets` (implements
+  `TaprootAssetOORPreparer` against these types).
 - **Messages to/from**: Sends `SendSubmitPackageRequest` /
   `SendFinalizePackageRequest` / `SendIncomingAckRequest` and durable query
   requests (`QueryIncomingTransferRequest`, `QueryIncomingMetadataRequest`)
@@ -51,6 +77,85 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   `ResolveIncomingTransferRequest` <- `serverconn` event router;
   `StartTransferRequest` / `DriveEventRequest` / `ListSessionsRequest` <-
   `waved` RPC layer.
+
+## Taproot Asset Transfers
+
+An asset-bearing VTXO pays to `taproot(internal_key,
+tapBranch(sorted(policy_root, taproot_asset_root)))`. The asset root is a
+sibling of the ordinary Ark policy root, so every Ark spend path needs
+that root as its final control-block sibling —
+`EffectiveSpendPath` and `defaultVTXOPolicyTemplate`
+(`transfer_inputs.go`) extend the collab control block, and
+`validateTaprootAssetPkScript` re-derives the composed script and
+requires byte equality before signing.
+
+### One transfer, N inputs
+
+`TaprootAssetOORIntent.InputVTXOOutpoints` is an **ordered set**, spine
+first. Up to `MaxTaprootAssetInputs = 8` asset VTXOs are merged into
+**one** atomic transfer: N asset checkpoints feed a single merged ark
+transition, never several sequential transfers. The spine is transition
+input 0 because tap-sdk emits the merged transition with `PrevOut` set
+to vPacket input 0. `TaprootAssetOORIntent.Validate` rejects duplicate
+outpoints, more than 8, and a caller-supplied `ProofFile` alongside more
+than one input (a multi-input transfer resolves each base proof itself).
+`TaprootAssetOORPrepareRequest.Validate` separately bounds the package
+count at `oortx.MaxTaprootAssetCheckpointPackages = 64`.
+
+### The two input markers
+
+`TransferInput` carries two booleans that the rest of the subsystem
+switches on. Both describe *whose satoshis* an input is, which is why
+they change signing and change-output arithmetic rather than script
+construction.
+
+- `OperatorFunded` — the input is an operator carrier-float VTXO leased
+  through `arkrpc.LeaseOORCarrier`. The local wallet holds no key for
+  it, so **every** local signing and normalization site must skip it:
+  `SignCheckpointPSBTs` (`checkpoint_sign.go`),
+  `signArkPSBTInput` (`ark_sign.go`), and
+  `NormalizeCheckpointOwnerLeaves` (`transitions.go`) — the last one
+  because normalizing would overwrite the float's lease-supplied owner
+  leaf with a locally derived one. `WalletInputOutpoints` and
+  `queueVTXOSent` also exclude it, so the float is neither reserved as
+  wallet liquidity nor booked as value sent. The operator's own
+  signatures on both legs are still verified
+  (`validateOperatorCheckpointSignatures`).
+- `TaprootAssetRoundCreated` — the asset leaf came out of a round
+  (boarded or refreshed), so its Bitcoin carrier is the sender's own
+  money and returns as plain sender change. An OOR-created leaf rides an
+  operator-funded carrier instead, which is *reclaimed* into the
+  operator's change when the leaf is spent. `BuildTransferInputs`
+  (`waved/wallet_ops.go`) derives it as
+  `desc.TaprootAssetRef != "" && len(desc.TaprootAssetSealedPackage) > 0`
+  — only a round-created leaf stores a sealed package.
+
+### Carrier allocation and reclaim
+
+`TaprootAssetOORPrepareRequest.CarrierAllocation()` is the single place
+the satoshi layout is decided, with `leafCount =
+Intent.NewAssetLeafCount()` (2 on a partial send, 1 otherwise) and
+`floors = OutputFloor * leafCount`:
+
+```
+recipient leaf   = OutputFloor                          (always)
+AssetChange      = OutputFloor                          (partial send only)
+SenderChange     = Σ carriers of ROUND-created inputs   (omitted when 0)
+OperatorChange   = Lease.Value - floors
+                     + Σ carriers of OOR-created inputs (reclaim)
+```
+
+`splitAssetInputCarriers` performs that split. A lease worth less than
+`floors` is refused outright. `tapassets.Preparer.plannedRecipients`
+materializes the outputs in that order — receiver, asset change, sender
+change, operator change — and `TaprootAssetOORPreparation.Validate`
+re-checks all of it: exactly one output paying `Lease.PkScript` for
+`OperatorChange`, a sender-change output iff `SenderChange > 0`, every
+new asset leaf exactly at `OutputFloor`, and asset units conserved
+against `Intent.AssetAmount`.
+
+The practical consequence: **a sender needs no Bitcoin at all for an
+asset OOR send.** Bitcoin in Ark is for round fees.
 
 ## Invariants
 
@@ -72,10 +177,37 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   actor's DB transaction; both phase-1 hint resolution and phase-2
   authoritative metadata lookup go through durable `serverconn` query
   messages and return as fresh events.
-- Snapshots are versioned per direction (`OutgoingSnapshot.Version = 5`,
+- Point-of-no-return moves **earlier** for an asset transfer:
+  `prePONRInputOutpoints` returns nil whenever
+  `TaprootAssetTransfer != nil`, because the tapd commit already
+  happened and releasing the inputs would strand a committed transition.
+  Ordinary Bitcoin transfers still release their inputs up to server
+  co-signing.
+- `TaprootAssetTransfer` rides byte-identically through
+  `AwaitingArkSignatures` → `AwaitingSubmitAccepted` →
+  `AwaitingCheckpointSignatures` → `AwaitingFinalizeAccepted` and across
+  submit retries; the asset path enters the FSM through
+  `evt.PreparedSubmit` instead of `buildSubmitPackage`, since the package
+  was built (and journaled) by the preparer before the session started.
+  Restore re-validates it against the persisted checkpoint count.
+- `TaprootAssetRoundCreated` is deliberately **not** in the snapshot TLV.
+  It is re-derived per request by `BuildTransferInputs` from the
+  descriptor's sealed package, and carrier arithmetic runs at the RPC
+  edge before the point of no return, so nothing after a restart needs
+  it. Adding a resume path that recomputes `CarrierAllocation()` would
+  have to re-derive it the same way, never read it back from a snapshot.
+- Snapshots are versioned per direction (`OutgoingSnapshot.Version = 8`,
   `IncomingSnapshot.Version = 1`); restore rejects a zero version. Outgoing
   v5 adds the `FirstRejectUnixNanos` record (bounded transient submit-reject
-  retry window); a pre-v5 snapshot decodes it to 0 (a fresh window).
+  retry window); a pre-v5 snapshot decodes it to 0 (a fresh window). v8
+  adds `transferInputOperatorFundedRecordType = 21` inside each transfer
+  input record, so a resumed session never re-attempts local signing on a
+  leased float; the field is an optional appended TLV, so older snapshots
+  still decode. TLV record numbers are per-record-block, so 21 is also in
+  use by unrelated blocks (`eventPayloadRetryAfterNanosRecordType`,
+  `snapshotIdempotencyKeyRecordType`,
+  `incomingMetadataMatchAssetRootRecordType`) — read the block, not the
+  number.
 - `StartTransferRequest.IdempotencyKey` dedup relies on a partial UNIQUE
   index on `oor_session_registry` (at most one live-or-completed row per
   key); a failed session never blocks a keyed retry.

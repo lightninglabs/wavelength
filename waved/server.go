@@ -27,6 +27,7 @@ import (
 	btcwalletpkg "github.com/btcsuite/btcwallet/wallet"
 	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightninglabs/lndclient"
+	tapsdk "github.com/lightninglabs/tap-sdk"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/btcwbackend"
@@ -56,6 +57,7 @@ import (
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	"github.com/lightninglabs/wavelength/rpcauth"
 	"github.com/lightninglabs/wavelength/serverconn"
+	"github.com/lightninglabs/wavelength/tapassets"
 	"github.com/lightninglabs/wavelength/timeout"
 	"github.com/lightninglabs/wavelength/txconfirm"
 	"github.com/lightninglabs/wavelength/unroll"
@@ -187,12 +189,18 @@ type Server struct {
 	loggers    SubLoggers
 	log        btclog.Logger
 
-	db            *db.SqliteStore
-	deliveryStore actor.DeliveryStore
-	vtxoStore     *db.VTXOPersistenceStore
-	activityStore *db.ActivityPersistenceStore
-	roundStore    *db.RoundPersistenceStore
-	ueStore       *db.UnilateralExitPersistenceStore
+	db               *db.SqliteStore
+	deliveryStore    actor.DeliveryStore
+	vtxoStore        *db.VTXOPersistenceStore
+	reservationStore *db.SpendingReservationPersistenceStore
+	activityStore    *db.ActivityPersistenceStore
+	roundStore       *db.RoundPersistenceStore
+	ueStore          *db.UnilateralExitPersistenceStore
+
+	// oorArtifactStore persists owned receive-script and OOR package
+	// artifacts. Initialized with the database so RPC handlers share one
+	// store instead of constructing per-call instances.
+	oorArtifactStore *db.OORArtifactPersistenceStore
 
 	// oorSessionStore exposes the OOR session-registry control-plane rows
 	// for direct RPC reads (idempotency pre-flight); the OOR registry
@@ -321,6 +329,16 @@ type Server struct {
 	// proofKeyBackend derives wallet-managed keys and produces proof
 	// signers for daemon-owned receive scripts and indexer identity.
 	proofKeyBackend proofkeys.Backend
+
+	// taprootAssetWallet is the daemon's tapd wallet, present when the
+	// optional Taproot Asset integration is configured. Onboarding and
+	// the exit claim build their transitions through it.
+	taprootAssetWallet *tapsdk.Wallet
+
+	// taprootAssetStore is the durable Taproot Asset journal shared with
+	// the onboarding workflow; BoardTaprootAsset replays onboardings
+	// from it.
+	taprootAssetStore tapassets.Store
 
 	// operatorTerms caches the operator policy fetched during daemon
 	// bootstrap so local RPC callers can inspect the current server
@@ -1314,6 +1332,7 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 		s.subLogger(db.Subsystem),
 	)
 	s.vtxoStore = dbStore.NewVTXOStore(s.clk)
+	s.reservationStore = dbStore.NewSpendingReservationStore(s.clk)
 
 	// Build the activity-log store for the wavewalletrpc subserver.
 	s.activityStore = dbStore.NewActivityStore(s.clk)
@@ -3764,6 +3783,11 @@ func (s *Server) initDatabase(ctx context.Context) error {
 		return fmt.Errorf("unable to open database: %w", err)
 	}
 
+	s.oorArtifactStore = db.NewStore(
+		s.db.DB, s.db.Queries, s.db.Backend(),
+		s.subLogger(db.Subsystem),
+	).NewOORArtifactStore(s.clk)
+
 	s.deliveryStore, err = actordelivery.NewTxAwareDeliveryStoreFromDB(
 		s.db.DB, s.db.Backend(), s.clk, s.subLogger(actor.Subsystem),
 	)
@@ -4184,13 +4208,15 @@ func (s *Server) initWalletActor(ctx context.Context,
 		}
 
 		return &wallet.VTXODescriptor{
-			Outpoint:       desc.Outpoint,
-			Amount:         desc.Amount,
-			PolicyTemplate: desc.PolicyTemplate,
-			PkScript:       desc.PkScript,
-			Expiry:         desc.RelativeExpiry,
-			ClientKey:      desc.ClientKey,
-			OperatorKey:    desc.OperatorKey,
+			Outpoint:           desc.Outpoint,
+			Amount:             desc.Amount,
+			PolicyTemplate:     desc.PolicyTemplate,
+			PkScript:           desc.PkScript,
+			Expiry:             desc.RelativeExpiry,
+			ClientKey:          desc.ClientKey,
+			OperatorKey:        desc.OperatorKey,
+			TaprootAssetRef:    desc.TaprootAssetRef,
+			TaprootAssetAmount: desc.TaprootAssetAmount,
 		}, nil
 	})
 
@@ -4484,7 +4510,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
 	roundStore := dbStore.NewRoundStore(s.chainParams, s.clk)
 	ueStore := dbStore.NewUnilateralExitStore(s.clk)
-	reservationStore := dbStore.NewSpendingReservationStore(s.clk)
+	reservationStore := s.spendingReservationStore(dbStore)
 	roundActor := round.NewServiceKey().Ref(s.actorSystem)
 	ledgerSink := ledger.NewSink(s.actorSystem)
 
@@ -4585,6 +4611,21 @@ func resolveExitOutcome(ctx context.Context,
 // wiring site instead.
 var _ oor.ReservationStore = (*db.SpendingReservationPersistenceStore)(nil)
 
+// spendingReservationStore returns the one reservation-store instance shared
+// by the VTXO manager, OOR registry, and optional Taproot Asset preparer. The
+// fallback construction keeps focused actor tests that initialize these
+// components without running the full daemon startup sequence working while
+// caching the result for every later consumer.
+func (s *Server) spendingReservationStore(
+	dbStore *db.Store) *db.SpendingReservationPersistenceStore {
+
+	if s.reservationStore == nil {
+		s.reservationStore = dbStore.NewSpendingReservationStore(s.clk)
+	}
+
+	return s.reservationStore
+}
+
 // initOORActor creates and starts the OOR (out-of-round) client actor.
 //
 // The OOR actor manages outgoing off-chain transfers: it drives the
@@ -4615,7 +4656,7 @@ func (s *Server) initOORActor(ctx context.Context,
 
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
 	packageStore := dbStore.NewOORArtifactStore(s.clk)
-	reservationStore := dbStore.NewSpendingReservationStore(s.clk)
+	reservationStore := s.spendingReservationStore(dbStore)
 
 	operatorTerms := s.loadOperatorTerms()
 	if operatorTerms == nil {

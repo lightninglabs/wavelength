@@ -278,6 +278,7 @@ func transitionIncomingTransfer(evt *IncomingTransferEvent) (*StateTransition,
 		FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
 		AncestorPackages:     evt.AncestorPackages,
 		Recipients:           recipients,
+		TaprootAssetTransfer: evt.TaprootAssetTransfer.Clone(),
 	}
 
 	// The metadata query (like the phase-1 hint query) has no failure
@@ -485,6 +486,9 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 						MetadataMatches: evt.Matches,
 						AncestorPackages: s.
 							AncestorPackages,
+						TaprootAssetTransfer: s.
+							TaprootAssetTransfer.
+							Clone(),
 					},
 				},
 			}),

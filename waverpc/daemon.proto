@@ -88,6 +88,27 @@ service DaemonService {
     // client and operator, without waiting for a round.
     rpc SendOOR (SendOORRequest) returns (SendOORResponse);
 
+    // OnboardTaprootAsset moves one complete, isolated Taproot Asset anchor
+    // into a standard Wavelength VTXO policy. The request is idempotent: a
+    // retry resumes publication or operator registration without committing
+    // another asset transition.
+    rpc OnboardTaprootAsset (OnboardTaprootAssetRequest)
+        returns (OnboardTaprootAssetResponse);
+
+    // BoardTaprootAsset boards a confirmed onboarded output into the next
+    // asset round. The daemon rebuilds the boarding disclosure from the
+    // onboarding named by the idempotency key, gathers the confirmation
+    // and the boarded asset proof itself, and registers the boarding
+    // together with a matching asset VTXO request. Safe to retry.
+    rpc BoardTaprootAsset (BoardTaprootAssetRequest)
+        returns (BoardTaprootAssetResponse);
+
+    // ClaimTaprootAssetVTXO claims an exited asset VTXO into the daemon's
+    // tapd wallet once its unrolled anchor has matured past the exit
+    // delay. The daemon gathers the lineage confirmations itself.
+    rpc ClaimTaprootAssetVTXO (ClaimTaprootAssetVTXORequest)
+        returns (ClaimTaprootAssetVTXOResponse);
+
     // PrepareOOR builds the deterministic OOR package without submitting it.
     // This lets callers collect signatures from external custom-input
     // participants before calling SendOOR with the same parameters.
@@ -270,6 +291,119 @@ service DaemonService {
     // request digest with the daemon identity key.
     rpc SignCreditAccountAuthorization (SignCreditAccountAuthorizationRequest)
         returns (SignCreditAccountAuthorizationResponse);
+}
+
+// OnboardTaprootAssetRequest selects the asset amount to board, the visible
+// Bitcoin value carried by its Wavelength VTXO, and a bounded fee policy for
+// wallet funding.
+message OnboardTaprootAssetRequest {
+    // idempotency_key is a stable caller-generated retry key.
+    string idempotency_key = 1;
+
+    // asset_ref is the tap-sdk asset or group reference.
+    string asset_ref = 2;
+
+    // asset_amount is the amount to board. The funding UTXOs must cover it;
+    // any surplus returns to the daemon's own tapd wallet as asset change.
+    uint64 asset_amount = 3;
+
+    // input_proof_file is the complete confirmed Taproot Asset proof file of
+    // one funding UTXO. Optional; empty lets the daemon select its own
+    // unleased confirmed UTXOs until they cover asset_amount and export
+    // their proofs from tapd.
+    bytes input_proof_file = 4;
+
+    // max_fee_sat is the hard upper bound for the on-chain miner fee. It is
+    // independent of the fee-rate or confirmation-target estimator.
+    uint64 max_fee_sat = 5;
+
+    // carrier_value_sat is the Bitcoin value assigned to the asset-bearing
+    // VTXO. Zero uses the operator's current minimum VTXO value.
+    uint64 carrier_value_sat = 6;
+
+    // fee_rate_sat_per_vbyte selects an explicit on-chain fee rate. Exactly
+    // one of this field and target_conf must be non-zero.
+    uint64 fee_rate_sat_per_vbyte = 7;
+
+    // target_conf asks the shared LND wallet to estimate a fee for this many
+    // blocks. Exactly one of this field and fee_rate_sat_per_vbyte must be
+    // non-zero.
+    uint32 target_conf = 8;
+}
+
+// OnboardTaprootAssetResponse describes the composed boarding output the
+// onboarding created. It is an ordinary on-chain output until a round
+// boards it, so the caller waits for its confirmation itself.
+message OnboardTaprootAssetResponse {
+    // outpoint, value_sat, and pk_script identify the created output.
+    string outpoint = 2;
+    int64 value_sat = 3;
+    bytes pk_script = 4;
+
+    // taproot_asset_root is the output's asset commitment root, which is
+    // also the commitment leaf hash a round's boarding disclosure names.
+    bytes taproot_asset_root = 5;
+
+    // actual_fee_sat is the exact on-chain miner fee recorded in the sealed
+    // tap-sdk package. It remains stable across retries and restarts.
+    uint64 actual_fee_sat = 7;
+}
+
+message BoardTaprootAssetRequest {
+    // idempotency_key names the completed onboarding to board. It is the
+    // same key the caller passed to OnboardTaprootAsset.
+    string idempotency_key = 1;
+}
+
+message BoardTaprootAssetResponse {
+    // outpoint is the boarded composed output.
+    string outpoint = 1;
+
+    // value_sat is the output's carrier Bitcoin value.
+    int64 value_sat = 2;
+
+    // asset_ref and asset_amount identify the boarded units.
+    string asset_ref = 3;
+    uint64 asset_amount = 4;
+
+    // already_boarded reports an idempotent replay: the boarding intent
+    // already existed and no new round registration was sent.
+    bool already_boarded = 5;
+
+    // fee_funding_outpoint names the Bitcoin VTXO this boarding pulled
+    // into the round to pay its fee. The round returns the value it did
+    // not spend as a fresh change VTXO. Empty when the round already
+    // carried a fee-bearing output of the client's own.
+    string fee_funding_outpoint = 6;
+
+    // fee_funding_value_sat is that VTXO's value. The change comes back
+    // as this amount minus the fee the operator charges at seal time.
+    int64 fee_funding_value_sat = 7;
+}
+
+message ClaimTaprootAssetVTXORequest {
+    // outpoint identifies the exited asset VTXO in "txid:vout" format.
+    string outpoint = 1;
+
+    // fee_sat is the on-chain miner fee, paid out of the VTXO's carrier
+    // value. Zero lets the daemon estimate one from the wallet's fee
+    // estimator.
+    int64 fee_sat = 2;
+}
+
+message ClaimTaprootAssetVTXOResponse {
+    // txid is the published claim transaction.
+    string txid = 1;
+
+    // anchor_outpoint is the new tapd-owned anchor holding the claimed
+    // units.
+    string anchor_outpoint = 2;
+
+    // output_value_sat is the new anchor's Bitcoin value.
+    int64 output_value_sat = 3;
+
+    // fee_sat is the miner fee the claim actually paid.
+    int64 fee_sat = 4;
 }
 
 // WalletState mirrors the daemon's in-process wallet lifecycle enum:
@@ -565,6 +699,32 @@ message GetBalanceResponse {
     // total_confirmed_sat; reappears under onchain_wallet_confirmed_sat
     // once the sweep confirms.
     int64 vtxo_unilateral_exit_sat = 10;
+
+    // taproot_assets breaks down asset-bearing VTXO holdings by asset
+    // reference. The carrier satoshis of these VTXOs stay counted in the
+    // Bitcoin fields above.
+    repeated TaprootAssetBalance taproot_assets = 11;
+}
+
+// TaprootAssetBalance is one asset reference's VTXO holdings, in asset
+// units.
+message TaprootAssetBalance {
+    // asset_ref is the tap-sdk asset or group reference.
+    string asset_ref = 1;
+
+    // live_amount is the total held in live (spendable) VTXOs.
+    uint64 live_amount = 2;
+
+    // pending_amount is the total held in VTXOs that are not yet live or
+    // are mid-spend.
+    uint64 pending_amount = 3;
+
+    // exiting_amount is the total held in VTXOs mid unilateral exit,
+    // claimable once the exit matures.
+    uint64 exiting_amount = 4;
+
+    // live_vtxo_count is the number of live VTXOs carrying this asset.
+    uint32 live_vtxo_count = 5;
 }
 
 // VTXOStatus represents the lifecycle state of a virtual transaction
@@ -734,6 +894,23 @@ message VTXO {
     // only for FORFEITED VTXOs whose forfeit round is known, and unset
     // otherwise, so absence is explicit rather than a zero-value sentinel.
     VTXOSettlement settlement = 14;
+
+    // taproot_asset is present when this VTXO carries a Taproot Asset.
+    // amount_sat above remains the separate Bitcoin carrier value.
+    VTXOTaprootAsset taproot_asset = 15;
+}
+
+// VTXOTaprootAsset is SDK-neutral asset metadata attached to one VTXO.
+message VTXOTaprootAsset {
+    // asset_ref is the opaque tap-sdk asset identity.
+    string asset_ref = 1;
+
+    // amount is the number of Taproot Asset units carried by the VTXO.
+    uint64 amount = 2;
+
+    // commitment_root is the 32-byte Taproot Asset commitment root composed
+    // beside the VTXO's semantic Ark policy.
+    bytes commitment_root = 3;
 }
 
 message VTXOSettlement {
@@ -766,6 +943,10 @@ message ListVTXOsRequest {
     // consumers (balance views, coin selection) that never inspect the
     // PSBTs. The default keeps the full response for compatibility.
     bool exclude_checkpoint_psbts = 3;
+
+    // asset_ref restricts the response to VTXOs carrying this Taproot
+    // Asset reference. Empty applies no asset filter.
+    string asset_ref = 4;
 }
 
 message ListVTXOsResponse {
@@ -1039,6 +1220,80 @@ message SendOORRequest {
     // never selects inputs or admits a new transfer. This requires a non-empty
     // idempotency_key.
     bool existing_only = 6;
+
+    // taproot_asset requests the experimental proof-selected Taproot Asset
+    // extension. It requires one recipient and a non-empty idempotency_key,
+    // and spends up to eight managed asset inputs in one atomic transfer
+    // (never split into several transfers). Each spent leaf's Bitcoin
+    // carrier follows its origin: a round-created leaf's carrier returns to
+    // the sender as a plain Bitcoin change VTXO, while an OOR-created leaf's
+    // operator-funded carrier is reclaimed into the operator's change.
+    // Asset transfers either pin one managed asset input through
+    // taproot_asset.input_vtxo_outpoint or leave it empty for daemon-side
+    // selection, and must not use custom_inputs. Bitcoin-only sends leave
+    // this field unset.
+    TaprootAssetOORIntent taproot_asset = 7;
+}
+
+// TaprootAssetOORIntent selects exact asset units for the experimental OOR
+// custom-anchor flow. The BTC amount remains on the enclosing recipient and
+// managed VTXO input; asset_amount is measured in independent Taproot Asset
+// units.
+message TaprootAssetOORIntent {
+    // asset_ref is the opaque tap-sdk asset or group identifier.
+    string asset_ref = 1;
+
+    // asset_amount depends on the selection mode. With input_vtxo_outpoint
+    // set it is the exact number of asset units carried by that input VTXO.
+    // With input_vtxo_outpoint empty it is the total number of units to
+    // send: the daemon selects live asset VTXOs covering it.
+    uint64 asset_amount = 2;
+
+    // input_proof_file is the complete confirmed proof for an initially
+    // onboarded asset. It can be omitted for a chained Wavelength transfer
+    // whose exact locally created package supplies the proof lineage.
+    bytes input_proof_file = 3;
+
+    // recipient_script_key is deprecated and must be empty. Ark-policy-owned
+    // outputs use a wallet-derived OP_TRUE asset script.
+    bytes recipient_script_key = 4;
+
+    // proof_courier_address optionally identifies the receiver proof courier.
+    string proof_courier_address = 5;
+
+    // proof_delivery_metadata is opaque receiver-owned delivery metadata
+    // sealed into the tap-sdk package.
+    bytes proof_delivery_metadata = 6;
+
+    // acknowledge_unconfirmed must be true. The first Wavelength slice
+    // persists compact unconfirmed proof paths but cannot yet publish and log
+    // them through tapd's chain porter.
+    bool acknowledge_unconfirmed = 7;
+
+    // input_vtxo_outpoint optionally pins the wallet-managed asset-bearing
+    // VTXO to spend, in "txid:vout" form. Empty delegates selection to the
+    // daemon: a single sufficient VTXO is preferred (smallest first),
+    // otherwise the largest VTXOs accumulate until asset_amount is covered,
+    // up to eight inputs spent in one atomic transfer. A send needing more
+    // than eight inputs fails; consolidate first. The wallet reserves every
+    // selected input through the normal VTXO manager path before any
+    // Taproot Asset commit occurs.
+    string input_vtxo_outpoint = 8;
+
+    // recipient_asset_amount is the number of asset units assigned to the
+    // caller's recipient when input_vtxo_outpoint pins the input. Zero
+    // retains the legacy full-send behavior and assigns all asset_amount
+    // units to the recipient. It must be zero with daemon-side selection,
+    // where asset_amount already names the units to send.
+    uint64 recipient_asset_amount = 9;
+
+    // asset_change_carrier_value_sat is deprecated and must be zero. New
+    // asset-leaf carriers (the recipient leaf, and the asset-change leaf of
+    // a partial send) are funded by the operator's carrier float at the
+    // operator's minimum VTXO amount; the spent leaf's carrier returns to
+    // the sender only when the leaf was round-created and is otherwise
+    // reclaimed by the operator. A nonzero value is rejected.
+    uint64 asset_change_carrier_value_sat = 10;
 }
 
 // CustomOORInput specifies a VTXO to spend with an explicit semantic policy

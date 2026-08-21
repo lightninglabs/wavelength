@@ -251,8 +251,15 @@ type GetInfoResponse struct {
 	// The number of blocks before batch expiry in which a pure refresh
 	// qualifies for a complete fee waiver. Zero disables the waiver.
 	FreeRefreshWindowBlocks uint32 `protobuf:"varint,23,opt,name=free_refresh_window_blocks,json=freeRefreshWindowBlocks,proto3" json:"free_refresh_window_blocks,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// The x-only public key owning the operator's carrier float. Set
+	// when the operator funds the new asset-leaf carriers of
+	// out-of-round transfers from its own float VTXOs; empty when
+	// carrier funding is disabled. Together with the operator's collab
+	// key and exit delay it derives the float's standard VTXO policy,
+	// which is also the script that stocks the float.
+	OorCarrierPubkey []byte `protobuf:"bytes,24,opt,name=oor_carrier_pubkey,json=oorCarrierPubkey,proto3" json:"oor_carrier_pubkey,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *GetInfoResponse) Reset() {
@@ -425,6 +432,148 @@ func (x *GetInfoResponse) GetFreeRefreshWindowBlocks() uint32 {
 	return 0
 }
 
+func (x *GetInfoResponse) GetOorCarrierPubkey() []byte {
+	if x != nil {
+		return x.OorCarrierPubkey
+	}
+	return nil
+}
+
+// LeaseOORCarrierRequest asks the operator to reserve a carrier float
+// VTXO covering at least the given value.
+type LeaseOORCarrierRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// required_sat is the minimum float value the transfer needs: the
+	// sum of the new asset-leaf carriers it will create.
+	RequiredSat   int64 `protobuf:"varint,1,opt,name=required_sat,json=requiredSat,proto3" json:"required_sat,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LeaseOORCarrierRequest) Reset() {
+	*x = LeaseOORCarrierRequest{}
+	mi := &file_ark_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LeaseOORCarrierRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LeaseOORCarrierRequest) ProtoMessage() {}
+
+func (x *LeaseOORCarrierRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ark_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LeaseOORCarrierRequest.ProtoReflect.Descriptor instead.
+func (*LeaseOORCarrierRequest) Descriptor() ([]byte, []int) {
+	return file_ark_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *LeaseOORCarrierRequest) GetRequiredSat() int64 {
+	if x != nil {
+		return x.RequiredSat
+	}
+	return 0
+}
+
+// LeaseOORCarrierResponse names the reserved float VTXO. The transfer
+// spends it whole: the new asset-leaf carriers come out of it and the
+// residual returns to the float script as the operator's change.
+type LeaseOORCarrierResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// outpoint identifies the leased float VTXO in "txid:vout" form.
+	Outpoint string `protobuf:"bytes,1,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
+	// value_sat is the float VTXO's full value.
+	ValueSat int64 `protobuf:"varint,2,opt,name=value_sat,json=valueSat,proto3" json:"value_sat,omitempty"`
+	// vtxo_policy_template is the float VTXO's serialized arkscript
+	// policy.
+	VtxoPolicyTemplate []byte `protobuf:"bytes,3,opt,name=vtxo_policy_template,json=vtxoPolicyTemplate,proto3" json:"vtxo_policy_template,omitempty"`
+	// pk_script is the float VTXO's output script, which the
+	// operator's change output must pay.
+	PkScript []byte `protobuf:"bytes,4,opt,name=pk_script,json=pkScript,proto3" json:"pk_script,omitempty"`
+	// expires_at_unix is when the lease lapses if unconsumed, in Unix
+	// seconds.
+	ExpiresAtUnix int64 `protobuf:"varint,5,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LeaseOORCarrierResponse) Reset() {
+	*x = LeaseOORCarrierResponse{}
+	mi := &file_ark_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LeaseOORCarrierResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LeaseOORCarrierResponse) ProtoMessage() {}
+
+func (x *LeaseOORCarrierResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ark_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LeaseOORCarrierResponse.ProtoReflect.Descriptor instead.
+func (*LeaseOORCarrierResponse) Descriptor() ([]byte, []int) {
+	return file_ark_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *LeaseOORCarrierResponse) GetOutpoint() string {
+	if x != nil {
+		return x.Outpoint
+	}
+	return ""
+}
+
+func (x *LeaseOORCarrierResponse) GetValueSat() int64 {
+	if x != nil {
+		return x.ValueSat
+	}
+	return 0
+}
+
+func (x *LeaseOORCarrierResponse) GetVtxoPolicyTemplate() []byte {
+	if x != nil {
+		return x.VtxoPolicyTemplate
+	}
+	return nil
+}
+
+func (x *LeaseOORCarrierResponse) GetPkScript() []byte {
+	if x != nil {
+		return x.PkScript
+	}
+	return nil
+}
+
+func (x *LeaseOORCarrierResponse) GetExpiresAtUnix() int64 {
+	if x != nil {
+		return x.ExpiresAtUnix
+	}
+	return 0
+}
+
 // EstimateFeeRequest asks the server to estimate the fee for a
 // VTXO operation at current rates and utilization.
 type EstimateFeeRequest struct {
@@ -443,7 +592,7 @@ type EstimateFeeRequest struct {
 
 func (x *EstimateFeeRequest) Reset() {
 	*x = EstimateFeeRequest{}
-	mi := &file_ark_proto_msgTypes[3]
+	mi := &file_ark_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -455,7 +604,7 @@ func (x *EstimateFeeRequest) String() string {
 func (*EstimateFeeRequest) ProtoMessage() {}
 
 func (x *EstimateFeeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[3]
+	mi := &file_ark_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -468,7 +617,7 @@ func (x *EstimateFeeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EstimateFeeRequest.ProtoReflect.Descriptor instead.
 func (*EstimateFeeRequest) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{3}
+	return file_ark_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *EstimateFeeRequest) GetAmountSat() int64 {
@@ -521,7 +670,7 @@ type EstimateFeeResponse struct {
 
 func (x *EstimateFeeResponse) Reset() {
 	*x = EstimateFeeResponse{}
-	mi := &file_ark_proto_msgTypes[4]
+	mi := &file_ark_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -533,7 +682,7 @@ func (x *EstimateFeeResponse) String() string {
 func (*EstimateFeeResponse) ProtoMessage() {}
 
 func (x *EstimateFeeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[4]
+	mi := &file_ark_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -546,7 +695,7 @@ func (x *EstimateFeeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EstimateFeeResponse.ProtoReflect.Descriptor instead.
 func (*EstimateFeeResponse) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{4}
+	return file_ark_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *EstimateFeeResponse) GetLiquidityFeeSat() int64 {
@@ -611,7 +760,7 @@ const file_ark_proto_rawDesc = "" +
 	"\x05State\x12\x15\n" +
 	"\x11STATE_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fSTATE_ACTIVE\x10\x01\x12\x12\n" +
-	"\x0eSTATE_DISABLED\x10\x02\"\xd3\x06\n" +
+	"\x0eSTATE_DISABLED\x10\x02\"\x81\a\n" +
 	"\x0fGetInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06pubkey\x18\x02 \x01(\fR\x06pubkey\x12\x18\n" +
@@ -635,7 +784,16 @@ const file_ark_proto_rawDesc = "" +
 	"\x10max_user_balance\x18\x14 \x01(\x03R\x0emaxUserBalance\x120\n" +
 	"\x14selected_ark_version\x18\x15 \x01(\rR\x12selectedArkVersion\x12J\n" +
 	"\x14ark_version_policies\x18\x16 \x03(\v2\x18.arkrpc.ArkVersionPolicyR\x12arkVersionPolicies\x12;\n" +
-	"\x1afree_refresh_window_blocks\x18\x17 \x01(\rR\x17freeRefreshWindowBlocks\"\x7f\n" +
+	"\x1afree_refresh_window_blocks\x18\x17 \x01(\rR\x17freeRefreshWindowBlocks\x12,\n" +
+	"\x12oor_carrier_pubkey\x18\x18 \x01(\fR\x10oorCarrierPubkey\";\n" +
+	"\x16LeaseOORCarrierRequest\x12!\n" +
+	"\frequired_sat\x18\x01 \x01(\x03R\vrequiredSat\"\xc9\x01\n" +
+	"\x17LeaseOORCarrierResponse\x12\x1a\n" +
+	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1b\n" +
+	"\tvalue_sat\x18\x02 \x01(\x03R\bvalueSat\x120\n" +
+	"\x14vtxo_policy_template\x18\x03 \x01(\fR\x12vtxoPolicyTemplate\x12\x1b\n" +
+	"\tpk_script\x18\x04 \x01(\fR\bpkScript\x12&\n" +
+	"\x0fexpires_at_unix\x18\x05 \x01(\x03R\rexpiresAtUnix\"\x7f\n" +
 	"\x12EstimateFeeRequest\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x01 \x01(\x03R\tamountSat\x12\x1f\n" +
@@ -650,11 +808,12 @@ const file_ark_proto_rawDesc = "" +
 	"\rtotal_fee_sat\x18\x04 \x01(\x03R\vtotalFeeSat\x122\n" +
 	"\x15effective_annual_rate\x18\x05 \x01(\x01R\x13effectiveAnnualRate\x121\n" +
 	"\x15min_viable_amount_sat\x18\x06 \x01(\x03R\x12minViableAmountSat\x12,\n" +
-	"\x12below_dust_warning\x18\a \x01(\bR\x10belowDustWarning2\x90\x01\n" +
+	"\x12below_dust_warning\x18\a \x01(\bR\x10belowDustWarning2\xe4\x01\n" +
 	"\n" +
 	"ArkService\x12:\n" +
 	"\aGetInfo\x12\x16.arkrpc.GetInfoRequest\x1a\x17.arkrpc.GetInfoResponse\x12F\n" +
-	"\vEstimateFee\x12\x1a.arkrpc.EstimateFeeRequest\x1a\x1b.arkrpc.EstimateFeeResponseB,Z*github.com/lightninglabs/wavelength/arkrpcb\x06proto3"
+	"\vEstimateFee\x12\x1a.arkrpc.EstimateFeeRequest\x1a\x1b.arkrpc.EstimateFeeResponse\x12R\n" +
+	"\x0fLeaseOORCarrier\x12\x1e.arkrpc.LeaseOORCarrierRequest\x1a\x1f.arkrpc.LeaseOORCarrierResponseB,Z*github.com/lightninglabs/wavelength/arkrpcb\x06proto3"
 
 var (
 	file_ark_proto_rawDescOnce sync.Once
@@ -669,24 +828,28 @@ func file_ark_proto_rawDescGZIP() []byte {
 }
 
 var file_ark_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_ark_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_ark_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_ark_proto_goTypes = []any{
-	(ArkVersionPolicy_State)(0), // 0: arkrpc.ArkVersionPolicy.State
-	(*GetInfoRequest)(nil),      // 1: arkrpc.GetInfoRequest
-	(*ArkVersionPolicy)(nil),    // 2: arkrpc.ArkVersionPolicy
-	(*GetInfoResponse)(nil),     // 3: arkrpc.GetInfoResponse
-	(*EstimateFeeRequest)(nil),  // 4: arkrpc.EstimateFeeRequest
-	(*EstimateFeeResponse)(nil), // 5: arkrpc.EstimateFeeResponse
+	(ArkVersionPolicy_State)(0),     // 0: arkrpc.ArkVersionPolicy.State
+	(*GetInfoRequest)(nil),          // 1: arkrpc.GetInfoRequest
+	(*ArkVersionPolicy)(nil),        // 2: arkrpc.ArkVersionPolicy
+	(*GetInfoResponse)(nil),         // 3: arkrpc.GetInfoResponse
+	(*LeaseOORCarrierRequest)(nil),  // 4: arkrpc.LeaseOORCarrierRequest
+	(*LeaseOORCarrierResponse)(nil), // 5: arkrpc.LeaseOORCarrierResponse
+	(*EstimateFeeRequest)(nil),      // 6: arkrpc.EstimateFeeRequest
+	(*EstimateFeeResponse)(nil),     // 7: arkrpc.EstimateFeeResponse
 }
 var file_ark_proto_depIdxs = []int32{
 	0, // 0: arkrpc.ArkVersionPolicy.state:type_name -> arkrpc.ArkVersionPolicy.State
 	2, // 1: arkrpc.GetInfoResponse.ark_version_policies:type_name -> arkrpc.ArkVersionPolicy
 	1, // 2: arkrpc.ArkService.GetInfo:input_type -> arkrpc.GetInfoRequest
-	4, // 3: arkrpc.ArkService.EstimateFee:input_type -> arkrpc.EstimateFeeRequest
-	3, // 4: arkrpc.ArkService.GetInfo:output_type -> arkrpc.GetInfoResponse
-	5, // 5: arkrpc.ArkService.EstimateFee:output_type -> arkrpc.EstimateFeeResponse
-	4, // [4:6] is the sub-list for method output_type
-	2, // [2:4] is the sub-list for method input_type
+	6, // 3: arkrpc.ArkService.EstimateFee:input_type -> arkrpc.EstimateFeeRequest
+	4, // 4: arkrpc.ArkService.LeaseOORCarrier:input_type -> arkrpc.LeaseOORCarrierRequest
+	3, // 5: arkrpc.ArkService.GetInfo:output_type -> arkrpc.GetInfoResponse
+	7, // 6: arkrpc.ArkService.EstimateFee:output_type -> arkrpc.EstimateFeeResponse
+	5, // 7: arkrpc.ArkService.LeaseOORCarrier:output_type -> arkrpc.LeaseOORCarrierResponse
+	5, // [5:8] is the sub-list for method output_type
+	2, // [2:5] is the sub-list for method input_type
 	2, // [2:2] is the sub-list for extension type_name
 	2, // [2:2] is the sub-list for extension extendee
 	0, // [0:2] is the sub-list for field type_name
@@ -703,7 +866,7 @@ func file_ark_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ark_proto_rawDesc), len(file_ark_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   5,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

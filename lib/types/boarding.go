@@ -87,6 +87,13 @@ type OperatorTerms struct {
 	// operator does not enforce a cap (the client should fall back to
 	// its own conservative default before submitting).
 	MaxOORLineageVBytes uint32
+
+	// OORCarrierPubKey is the key owning the operator's OOR carrier
+	// float. Set when the operator funds the new asset-leaf carriers of
+	// out-of-round transfers from its own float VTXOs; nil when carrier
+	// funding is disabled. Together with the operator's collab key and
+	// exit delay it derives the float's standard VTXO policy.
+	OORCarrierPubKey *btcec.PublicKey
 }
 
 // MinVTXOAmountFloor returns the effective minimum for a VTXO output. The
@@ -276,6 +283,16 @@ type VTXORequest struct {
 	// output is not eligible for the implicit-change exception.
 	FixedAmount bool
 
+	// AssetRef identifies the Taproot Asset this VTXO must carry (group
+	// key reference for grouped assets). Empty for Bitcoin-only VTXOs.
+	// Asset requests carry a fixed Amount and never act as the change
+	// output.
+	AssetRef string
+
+	// AssetAmount is the requested Taproot Asset amount. Non-zero
+	// exactly when AssetRef is set.
+	AssetAmount uint64
+
 	// PolicyTemplate is the semantic arkscript policy for the requested
 	// output. This is the authoritative join-round representation.
 	PolicyTemplate []byte
@@ -368,6 +385,34 @@ type BoardingRequest struct {
 	// maybeRebuildBoardingProof recovery path reconstructs it from the
 	// chain backend for any persisted intent that lacks one.
 	TxProof fn.Option[proof.TxProof]
+
+	// AssetRef identifies the Taproot Asset carried by the boarding
+	// output (group key reference for grouped assets). Empty for
+	// Bitcoin-only boarding.
+	AssetRef string
+
+	// AssetAmount is the asset amount the boarding output carries.
+	// Non-zero exactly when AssetRef is set.
+	AssetAmount uint64
+
+	// AssetDigest scopes the boarding output's deterministic OP_TRUE
+	// asset script key. 32 bytes when AssetRef is set.
+	AssetDigest []byte
+
+	// AssetProof is the boarded asset's confirmed proof file.
+	AssetProof []byte
+
+	// AssetCommitmentLeafHash is the tap hash of the boarding output's
+	// asset commitment leaf, the tapscript sibling of the boarding
+	// policy tree. Authenticated by the composed-script recompute.
+	// 32 bytes when AssetRef is set.
+	AssetCommitmentLeafHash []byte
+
+	// AssetWitness is the boarded asset's OP_TRUE witness stack. It
+	// carries no authority — the asset script key is anyone-can-spend
+	// by design — so it stays outside the auth digest; a wrong stack
+	// fails the sealed commit.
+	AssetWitness [][]byte
 }
 
 // BoardingInputSignature represents the client's signature for a boarding

@@ -120,12 +120,19 @@ func (r *RPCServer) resolveRefreshPreviewTargets(ctx context.Context,
 		// Keep only VTXOs actually in LiveState or ExpiredState,
 		// matching the real refresh path's filter: anything already
 		// on its way through a round must not be double-counted in
-		// the preview either.
+		// the preview either. Asset-bearing VTXOs are excluded from
+		// the catch-all selection: refreshing one commits its
+		// units through the round's asset transition, so it takes
+		// an explicit outpoint rather than riding along with a
+		// bulk Bitcoin refresh.
 		descs := make([]*vtxo.Descriptor, 0, len(candidates))
 		for _, desc := range candidates {
 			switch desc.Status {
 			case vtxo.VTXOStatusLive, vtxo.VTXOStatusExpired:
 			default:
+				continue
+			}
+			if desc.TaprootAssetRoot != nil {
 				continue
 			}
 

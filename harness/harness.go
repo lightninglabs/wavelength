@@ -11,12 +11,15 @@ import (
 	crand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -35,7 +38,9 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/lndclient"
-	"github.com/lightninglabs/taproot-assets/taprpc"
+	tapsdk "github.com/lightninglabs/tap-sdk"
+	tapgrpc "github.com/lightninglabs/tap-sdk/grpc"
+	tapmacaroon "github.com/lightninglabs/tap-sdk/macaroon"
 	"github.com/lightninglabs/wavelength/chain"
 	lnrpc "github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
@@ -191,6 +196,21 @@ type Harness struct {
 	// times (for example via t.Cleanup and signal handler).
 	stopOnce sync.Once
 
+	// tapdImageOnce ensures image selection and any local build happen only
+	// once. All tapd instances in this harness therefore use the same
+	// image.
+	tapdImageOnce sync.Once
+
+	// tapdImageSpec is the immutable image selection shared by all tapd
+	// instances after tapdImageOnce completes.
+	tapdImageSpec tapdImageSpec
+
+	// tapdImageErr is the result of image selection and any local build.
+	tapdImageErr error
+
+	// localTapdImage is the image reference produced by tapdImageOnce.
+	localTapdImage string
+
 	// sigCh receives OS signals to trigger cleanup when tests are aborted
 	// with Ctrl+C or similar.
 	sigCh chan os.Signal
@@ -332,6 +352,11 @@ type Options struct {
 	// TapdImage is the docker image:tag to use for tapd.
 	TapdImage string
 
+	// TapdBuildPath is optional: build the tapd image from a local
+	// Taproot Assets source tree instead of pulling TapdImage. The source
+	// tree must contain dev.Dockerfile.
+	TapdBuildPath string
+
 	// ArtifactsBaseDir is the base directory to create store artifacts in.
 	ArtifactsBaseDir string
 
@@ -368,7 +393,7 @@ func DefaultOptions() Options {
 		LNDImage: "mirror.gcr.io/lightninglabs/lnd:" +
 			"daily-testing-20260701",
 		TapdImage: "mirror.gcr.io/lightninglabs/taproot-assets:" +
-			"v0.7.0-rc1",
+			"v0.8.1",
 		ArtifactsBaseDir:    artifactsBaseDir,
 		HarnessLogStdOut:    *harnessLogStdOut,
 		AlwaysKeepArtifacts: true,
@@ -732,10 +757,41 @@ func (h *Harness) purgeDockerResources() {
 	h.purgeResource(h.tapd, "tapd")
 	h.purgeResource(h.lnd, "lnd")
 	h.purgeResource(h.bitcoind, "bitcoind")
+	h.removeLocalTapdImage()
 
 	// Use force removal to ensure the network is cleaned up even if some
 	// containers are still connected (e.g., due to a test panic).
 	h.forceRemoveNetwork()
+}
+
+// removeLocalTapdImage removes the harness-scoped tapd image, if one was
+// built. A failed removal is non-fatal because container cleanup should still
+// continue.
+func (h *Harness) removeLocalTapdImage() {
+	if h.localTapdImage == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), defaultTimeout,
+	)
+	defer cancel()
+
+	err := h.pool.Client.RemoveImageExtended(
+		h.localTapdImage, docker.RemoveImageOptions{
+			Force:   true,
+			Context: ctx,
+		},
+	)
+	if errors.Is(err, docker.ErrNoSuchImage) {
+		return
+	}
+	if err != nil {
+		h.Logf(
+			"failed to remove local tapd image %s: %v",
+			h.localTapdImage, err,
+		)
+	}
 }
 
 // purgeResource removes a single Docker container resource.
@@ -2866,6 +2922,9 @@ func (h *Harness) SetupChannelBetween(local *LndInstance, peer *LndInstance,
 
 // startTapd launches a tapd container that connects to the LND instance.
 func (h *Harness) startTapd() {
+	tapdImage, tapdTag, err := h.tapdImage()
+	require.NoError(h.T, err, "failed to prepare tapd image")
+
 	h.tapd = h.startTapdContainer(tapdConfig{
 		name:         "tapd",
 		tapdDataDir:  h.tapdDataDir,
@@ -2873,8 +2932,8 @@ func (h *Harness) startTapd() {
 		lndContainer: h.lnd,
 		network:      h.network,
 		group:        h.group,
-		image:        imageRepo(h.opts.TapdImage),
-		tag:          imageTag(h.opts.TapdImage),
+		image:        tapdImage,
+		tag:          tapdTag,
 	})
 
 	h.TapdGRPCPort = h.tapd.GetPort("10029/tcp")
@@ -2936,45 +2995,39 @@ func GetLNDClientConn(ctx context.Context, addr, tlsPath,
 	return conn, nil
 }
 
-// getTapdClientConn creates a gRPC connection to tapd using TLS and macaroon
-// authentication.
-func getTapdClientConn(ctx context.Context, addr, tlsPath,
-	macaroonPath string) (*grpc.ClientConn, error) {
+// tapdSyncedToChain reports whether the tapd instance at addr responds to
+// GetInfo through the tap-sdk client and is synced to chain.
+func tapdSyncedToChain(ctx context.Context, addr, tlsPath,
+	macaroonPath string) bool {
 
-	// Load TLS credentials.
-	creds, err := credentials.NewClientTLSFromFile(tlsPath, "")
+	client, err := tapgrpc.NewClient(&tapgrpc.Config{
+		Host:     addr,
+		Network:  tapsdk.NetworkRegtest,
+		Macaroon: tapmacaroon.FromPath(macaroonPath),
+		TLS:      tapgrpc.TLSFromPath(tlsPath),
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to load TLS cert: %w", err)
+		return false
 	}
+	defer client.Close()
 
-	// Load macaroon.
-	macBytes, err := os.ReadFile(macaroonPath)
+	info, err := client.GetInfo(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read macaroon: %w", err)
-	}
-	mac := &macaroon.Macaroon{}
-	if err := mac.UnmarshalBinary(macBytes); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal macaroon: %w", err)
+		return false
 	}
 
-	macaroonCred, err := macaroons.NewMacaroonCredential(mac)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create macaroon "+
-			"credential: %w", err)
-	}
+	return info.SyncedToChain
+}
 
-	// Create dial options with TLS and macaroon credentials.
-	opts := []grpc.DialOption{
-		grpc.WithTransportCredentials(creds),
-		grpc.WithPerRPCCredentials(macaroonCred),
-	}
+// TapdTLSCertPath returns the shared tapd instance's TLS certificate
+// path.
+func (h *Harness) TapdTLSCertPath() string {
+	return h.tapdTLSCert
+}
 
-	conn, err := grpc.NewClient(addr, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial tapd: %w", err)
-	}
-
-	return conn, nil
+// TapdMacaroonPath returns the shared tapd instance's admin macaroon path.
+func (h *Harness) TapdMacaroonPath() string {
+	return h.tapdMacaroon
 }
 
 // waitForTapdReady waits until tapd's GetInfo RPC responds and reports that
@@ -2999,24 +3052,172 @@ func (h *Harness) waitForTapdReady() {
 		defer cancel()
 
 		addr := net.JoinHostPort("127.0.0.1", h.TapdGRPCPort)
-		conn, err := getTapdClientConn(
+
+		return tapdSyncedToChain(
 			ctx, addr, h.tapdTLSCert, h.tapdMacaroon,
 		)
-		if err != nil {
-			return false
-		}
-		defer conn.Close()
-
-		// Call GetInfo to check if tapd is ready and synced.
-		client := taprpc.NewTaprootAssetsClient(conn)
-		resp, err := client.GetInfo(ctx, &taprpc.GetInfoRequest{})
-		if err != nil {
-			return false
-		}
-
-		// Check if tapd is synced to chain.
-		return resp.SyncToChain
 	}, defaultTimeout, time.Second, "tapd not ready or not synced")
+}
+
+const localTapdImageRepository = "wavelength-tapd-local"
+
+// tapdImageSpec describes either a released tapd image or a harness-scoped
+// image built from a local Taproot Assets source tree.
+type tapdImageSpec struct {
+	repository string
+	tag        string
+	buildPath  string
+	dockerfile string
+}
+
+// reference returns the complete Docker image reference.
+func (s tapdImageSpec) reference() string {
+	if s.tag == "" {
+		return s.repository
+	}
+
+	return s.repository + ":" + s.tag
+}
+
+// local returns true if the image must be built from a local source tree.
+func (s tapdImageSpec) local() bool {
+	return s.buildPath != ""
+}
+
+// newTapdImageSpec selects the configured tapd image and validates any local
+// source tree without contacting Docker.
+func newTapdImageSpec(opts *Options, suffix string) (tapdImageSpec, error) {
+	if opts.TapdBuildPath == "" {
+		return tapdImageSpec{
+			repository: imageRepo(opts.TapdImage),
+			tag:        imageTag(opts.TapdImage),
+		}, nil
+	}
+
+	buildPath, err := filepath.Abs(opts.TapdBuildPath)
+	if err != nil {
+		return tapdImageSpec{}, fmt.Errorf("resolve tapd build "+
+			"path: %w", err)
+	}
+
+	dockerfile := filepath.Join(buildPath, "dev.Dockerfile")
+	info, err := os.Stat(dockerfile)
+	if err != nil {
+		return tapdImageSpec{}, fmt.Errorf("stat tapd "+
+			"dev.Dockerfile: %w", err)
+	}
+	if info.IsDir() {
+		return tapdImageSpec{}, fmt.Errorf("tapd dev.Dockerfile is a "+
+			"directory: %s", dockerfile)
+	}
+
+	return tapdImageSpec{
+		repository: localTapdImageRepository,
+		tag:        suffix,
+		buildPath:  buildPath,
+		dockerfile: "dev.Dockerfile",
+	}, nil
+}
+
+const tapdBuildWaitDelay = 5 * time.Second
+
+// runTapdImageBuild executes the Docker CLI in the selected source directory.
+// CommandContext terminates the CLI when the test context is canceled, while
+// WaitDelay prevents inherited output descriptors from holding Run open after
+// cancellation.
+func runTapdImageBuild(ctx context.Context, spec tapdImageSpec, image string,
+	output io.Writer) error {
+
+	if output == nil {
+		output = io.Discard
+	}
+
+	// TapdBuildPath is an explicit, trusted test-harness option. The
+	// arguments are passed directly to Docker without a shell.
+	// #nosec G204
+	buildCmd := exec.CommandContext(
+		ctx, "docker", "build", "--file", spec.dockerfile, "--tag",
+		image, ".",
+	)
+	buildCmd.Dir = spec.buildPath
+	buildCmd.Stdout = output
+	buildCmd.Stderr = output
+	buildCmd.WaitDelay = tapdBuildWaitDelay
+
+	err := buildCmd.Run()
+	if err == nil {
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("docker build interrupted: %w", ctxErr)
+	}
+
+	return err
+}
+
+// tapdImage returns the image and tag that each tapd container should run. A
+// local source tree is built at most once and shared by all tapd instances in
+// the harness.
+func (h *Harness) tapdImage() (string, string, error) {
+	h.tapdImageOnce.Do(func() {
+		spec, err := newTapdImageSpec(
+			h.opts, h.dockerNameSuffix,
+		)
+		if err != nil {
+			h.tapdImageErr = err
+
+			return
+		}
+		h.tapdImageSpec = spec
+		if !spec.local() {
+			return
+		}
+
+		image := spec.reference()
+		h.Logf(
+			"Building local tapd image %s from %s...", image,
+			spec.buildPath,
+		)
+
+		buildOutputs := make([]io.Writer, 0, 2)
+		if h.harnessLogFile != nil {
+			buildOutputs = append(buildOutputs, h.harnessLogFile)
+		}
+		if h.opts.HarnessLogStdOut {
+			buildOutputs = append(buildOutputs, os.Stdout)
+		}
+		var buildOutput io.Writer = io.Discard
+		switch len(buildOutputs) {
+		case 1:
+			buildOutput = buildOutputs[0]
+
+		case 2:
+			buildOutput = io.MultiWriter(buildOutputs...)
+		}
+
+		h.tapdImageErr = runTapdImageBuild(
+			h.T.Context(), spec, image, buildOutput,
+		)
+		if h.tapdImageErr != nil {
+			logHint := ""
+			if h.harnessLogFile != nil {
+				logHint = fmt.Sprintf("; output in %s",
+					h.harnessLogFile.Name())
+			}
+			h.tapdImageErr = fmt.Errorf("build local tapd image "+
+				"%s%s: %w", image, logHint, h.tapdImageErr)
+
+			return
+		}
+
+		h.localTapdImage = image
+		h.Logf("Built local tapd image %s", image)
+	})
+	if h.tapdImageErr != nil {
+		return "", "", h.tapdImageErr
+	}
+
+	return h.tapdImageSpec.repository, h.tapdImageSpec.tag, nil
 }
 
 // imageRepo extracts the repository from a Docker image reference.

@@ -62,6 +62,18 @@ type fakeArkService struct {
 	// lastRequest records the most recent EstimateFeeRequest
 	// so tests can assert what the client asked for.
 	lastRequest *arkrpc.EstimateFeeRequest
+
+	// leaseResponse is the canned LeaseOORCarrier reply. Nil falls
+	// through to the embedded Unimplemented server.
+	leaseResponse *arkrpc.LeaseOORCarrierResponse
+
+	// leaseErr, when non-nil, is returned from LeaseOORCarrier instead
+	// of the canned response.
+	leaseErr error
+
+	// leaseRequests records every LeaseOORCarrierRequest so tests can
+	// assert the requested float value and the number of lease calls.
+	leaseRequests []*arkrpc.LeaseOORCarrierRequest
 }
 
 // EstimateFee records the request and returns the canned reply
@@ -105,6 +117,26 @@ func (f *fakeArkService) GetInfo(ctx context.Context,
 	}
 
 	return f.UnimplementedArkServiceServer.GetInfo(ctx, req)
+}
+
+// LeaseOORCarrier records the request and returns the canned reply (or an
+// injected error). When both fields are nil the call falls through to the
+// embedded Unimplemented server.
+func (f *fakeArkService) LeaseOORCarrier(ctx context.Context,
+	req *arkrpc.LeaseOORCarrierRequest) (*arkrpc.LeaseOORCarrierResponse,
+	error) {
+
+	f.leaseRequests = append(f.leaseRequests, req)
+
+	if f.leaseErr != nil {
+		return nil, f.leaseErr
+	}
+
+	if f.leaseResponse != nil {
+		return f.leaseResponse, nil
+	}
+
+	return f.UnimplementedArkServiceServer.LeaseOORCarrier(ctx, req)
 }
 
 // newBufconnClient builds a *grpc.ClientConn wired to an

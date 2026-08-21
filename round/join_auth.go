@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sort"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
@@ -380,6 +381,7 @@ func buildJoinRoundAuthRequest(ctx context.Context, env *ClientEnvironment,
 			OperatorKey: intent.Address.OperatorKey,
 			TapScript:   intent.Address.Tapscript,
 			Sequence:    intent.Address.ExitDelay,
+			AuthSpend:   intent.AuthSpend,
 		})
 	}
 
@@ -410,6 +412,27 @@ func buildJoinRoundAuthRequest(ctx context.Context, env *ClientEnvironment,
 				"missing operator key", outpoint)
 		}
 
+		// An asset leaf pays to its policy tree branched with the
+		// asset commitment, so the default timeout proof path would
+		// derive the wrong witness program. Compose the timeout path
+		// with the leaf's asset root instead.
+		authSpend := forfeitReq.AuthSpend
+		if authSpend == nil && vtxo.TaprootAssetRoot != nil {
+			authSpend, err = arkscript.ComposedBoardingAuthSpend(
+				[32]byte(
+					vtxo.TaprootAssetRoot.CloneBytes(),
+				),
+				vtxo.OwnerKey.PubKey,
+				vtxo.OperatorKey,
+				vtxo.Expiry,
+			)
+			if err != nil {
+				return nil, nil, fmt.Errorf("forfeit auth "+
+					"input %s composed spend: %w", outpoint,
+					err)
+			}
+		}
+
 		signingInputs = append(signingInputs, joinAuthInput{
 			OutPoint: outpoint,
 			PrevOut: &wire.TxOut{
@@ -422,7 +445,7 @@ func buildJoinRoundAuthRequest(ctx context.Context, env *ClientEnvironment,
 				vtxo.Expiry, forfeitReq,
 			),
 			LockTime:  forfeitAuthLockTime(forfeitReq),
-			AuthSpend: forfeitReq.AuthSpend,
+			AuthSpend: authSpend,
 		})
 	}
 
@@ -715,4 +738,16 @@ func joinAuthValidUntil(currentHeight uint32) uint32 {
 	}
 
 	return currentHeight + joinRoundAuthWindowBlocks
+}
+
+// mustPayToAddrScript returns the address's pkScript, or nil when it
+// cannot be encoded. Callers compare against a known-good script, so a
+// nil result fails the comparison rather than masking the error.
+func mustPayToAddrScript(address btcaddr.Address) []byte {
+	script, err := txscript.PayToAddrScript(address)
+	if err != nil {
+		return nil
+	}
+
+	return script
 }

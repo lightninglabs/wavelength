@@ -86,6 +86,17 @@ func (c *ArkServiceClient) EstimateFee(ctx context.Context,
 	return out, err
 }
 
+// LeaseOORCarrier reserves one of the operator's carrier float VTXOs.
+func (c *ArkServiceClient) LeaseOORCarrier(ctx context.Context,
+	in *arkrpc.LeaseOORCarrierRequest, _ ...grpc.CallOption) (
+	*arkrpc.LeaseOORCarrierResponse, error) {
+
+	out := new(arkrpc.LeaseOORCarrierResponse)
+	err := c.client.Post(ctx, "/v1/ark/lease-oor-carrier", in, out)
+
+	return out, err
+}
+
 // NewMailboxServiceClient creates a MailboxService REST client.
 func NewMailboxServiceClient(addr string,
 	opts ...Option) mailboxpb.MailboxServiceClient {
@@ -517,6 +528,45 @@ func (c *DaemonServiceClient) SendOOR(ctx context.Context,
 
 	out := new(waverpc.SendOORResponse)
 	err := c.client.Post(ctx, "/v1/daemon/send-oor", in, out)
+
+	return out, err
+}
+
+// OnboardTaprootAsset moves one isolated asset into a Wavelength VTXO.
+func (c *DaemonServiceClient) OnboardTaprootAsset(ctx context.Context,
+	in *waverpc.OnboardTaprootAssetRequest, _ ...grpc.CallOption) (
+	*waverpc.OnboardTaprootAssetResponse, error) {
+
+	out := new(waverpc.OnboardTaprootAssetResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/onboard-taproot-asset", in, out,
+	)
+
+	return out, err
+}
+
+// BoardTaprootAsset boards a confirmed onboarded output into a round.
+func (c *DaemonServiceClient) BoardTaprootAsset(ctx context.Context,
+	in *waverpc.BoardTaprootAssetRequest, _ ...grpc.CallOption) (
+	*waverpc.BoardTaprootAssetResponse, error) {
+
+	out := new(waverpc.BoardTaprootAssetResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/board-taproot-asset", in, out,
+	)
+
+	return out, err
+}
+
+// ClaimTaprootAssetVTXO claims an exited asset VTXO into the tapd wallet.
+func (c *DaemonServiceClient) ClaimTaprootAssetVTXO(ctx context.Context,
+	in *waverpc.ClaimTaprootAssetVTXORequest, _ ...grpc.CallOption) (
+	*waverpc.ClaimTaprootAssetVTXOResponse, error) {
+
+	out := new(waverpc.ClaimTaprootAssetVTXOResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/claim-taproot-asset-vtxo", in, out,
+	)
 
 	return out, err
 }

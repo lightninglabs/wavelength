@@ -38,7 +38,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `chainsource`, `lib/actormsg`, `db`, `ledger`, `round`, `txconfirm`,
   `unroll`, `vtxo`, `wallet`, `walletcore`, `oor`, `serverconn`, `indexer`,
   `arkrpc`, `lndbackend`, `fraud`, `gateway`, `rpc/restclient`,
-  `vhtlcrecovery`, `vhtlcrecovery/coordinator`, `vhtlcrecovery/unrollpolicy`.
+  `vhtlcrecovery`, `vhtlcrecovery/coordinator`, `vhtlcrecovery/unrollpolicy`,
+  `tapassets` (the only importer: onboarding, OOR preparation, claim).
 - **Depended on by**: `cmd/waved`.
 
 ## Invariants
@@ -173,6 +174,127 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   command performs, and it is the only recovery when the operator is
   unreachable and the commitment never confirms. Failing the entry would
   contradict `Unroll` and withhold the funding figures that recovery needs.
+- `BoardTaprootAsset` funds its round's fee from Bitcoin the client already
+  holds in Ark (`taproot_asset_round_fee.go`). An asset VTXO request is
+  `FixedAmount`, so a round carrying only one gives the operator no output to
+  stamp the seal-time residual on and `resolveChangeDesignation` rejects the
+  whole intent. `fundAssetRoundFee` therefore refreshes one live Bitcoin VTXO
+  into the same assembling round — reusing the wallet's `RefreshVTXOsRequest`
+  rather than composing forfeits itself — and the residual returns as change.
+  Selection is smallest-sufficient over `fee + MinVTXOAmountFloor()` with an
+  outpoint tie-break, so a large coin is never churned for a small fee. It is
+  skipped when the client's intents for that round already include a non-fixed
+  output it owns (`hasFeeFundingSlot`), which is what keeps the same-round
+  Bitcoin-boarding flow working unchanged. The check runs *before* the
+  boarding is persisted, so a wallet with no spendable Bitcoin fails the RPC
+  with `FailedPrecondition` naming the fix instead of assembling a round the
+  operator rejects at seal. Nothing on the operator changes: a Bitcoin forfeit
+  carries zero asset units, so `validateAssetForfeitBalance` returns early and
+  `planAssetRound`'s boarding/refresh mix guard never sees it.
+- `BoardTaprootAsset` **triggers the round join itself**
+  (`joinAssetBoardingRound` → `TriggerRoundRegistration`, an
+  `IntentRequested` notification to the round actor). `EagerRoundJoin`
+  defaults to `false` on the standalone build, so registering the
+  boarding disclosure and the asset VTXO request only *queues* intents:
+  the round actor then waits for a `JoinNextRound` that a one-shot
+  boarding caller never sends, and the intents sit parked forever. The
+  nudge also runs on the `already_boarded` replay path, so a crash
+  between registration and join is recoverable. `round.ErrNoPendingRound`
+  is swallowed — a join is already in flight, or an earlier call
+  committed the intents.
+- The boarded output carries `terms.BoardingExitDelay`, re-read from live
+  operator terms on every replay rather than persisted in
+  `taprootAssetBoardRequest`. Round admission rejects the shorter VTXO
+  delay, which leaves the operator too little margin on an input it has
+  to be able to forfeit.
+- A `BoardTaprootAsset` replay reports `already_boarded` and returns
+  before confirmation gathering and before `fundAssetRoundFee`, so
+  `value_sat` and the fee-funding fields stay zero on that path. The
+  replay is detected against `FetchBoardingIntentOutpoints`, not against
+  the journal, because the journal alone cannot distinguish "onboarded"
+  from "onboarded and already registered".
+- **Asset OOR sends are operator-funded end to end.** `SendOOR` with a
+  `taproot_asset` intent rejects `dry_run`, custom inputs, a missing
+  idempotency key, more than one recipient, a non-zero recipient
+  `amount_sat`, and a non-zero `asset_change_carrier_value_sat`: the
+  daemon stamps every new asset leaf at `MinVTXOAmountFloor()` out of a
+  leased operator float, so a caller-supplied carrier can only
+  contradict it. A sender needs no Bitcoin at all for an asset send.
+- Daemon-side input selection (`selectTaprootAssetOORInputs`) runs when
+  `input_vtxo_outpoint` is empty: live candidates filtered to the exact
+  `asset_ref`, sorted descending by units with an outpoint tie-break,
+  then the **smallest sufficient single VTXO** if one exists (it
+  preserves the larger leaves), else largest-first accumulation. Hitting
+  `oor.MaxTaprootAssetInputs` (8) is a consolidate-first
+  `FailedPrecondition`, not a silent partial send. In selection mode the
+  caller's `asset_amount` is reinterpreted as the amount to send and
+  becomes `RecipientAssetAmount` when it is short of the selected total.
+- `orderAssetSelectedOutpoints` re-imposes the intent's order on whatever
+  the wallet's lock returned, because the transition input order is
+  consensus-relevant: the spine must be transition input 0. It returns a
+  copy of the required set, so a Bitcoin filler input the wallet added
+  cannot slip in, and a count or membership mismatch is `Internal`.
+- The carrier float is leased **before any wallet reservation**
+  (`leaseOORCarrier`, `requiredSat = MinVTXOAmountFloor() *
+  NewAssetLeafCount()`), so a lease failure costs nothing.
+  `BuildOperatorFundedTransferInput` binds the lease locally rather than
+  trusting it: the policy template must match the returned pkScript,
+  validate against the operator key, and name the `GetInfo`-advertised
+  `oor_carrier_pubkey` as owner. The owner leaf is rebuilt as the
+  float's own collab multisig, and no client key is stamped — the
+  operator signs both legs, which is what `OperatorFunded` tells every
+  signing site. There is **no release RPC**; an unused lease expires on
+  its own.
+- A resumed asset send must reuse its journaled lease. `assetResume`
+  with a nil `Lease` is `Aborted` (reconciliation required), never a
+  fresh lease, because a second float would double the operator's
+  exposure for one transfer.
+- `registerTaprootAssetChangeAliases` skips the recipient whose pkScript
+  equals the lease pkScript: the operator's float residual is not wallet
+  money and must not get an owned receive script.
+- `ClaimTaprootAssetVTXO` is a **separate asset-aware spend**, not part
+  of the generic exit. The unroll actor deliberately withholds the final
+  sweep for an asset target (`resolveExitSpendPolicy` refuses when
+  `desc.TaprootAssetRoot != nil`) because a plain sweep would spend the
+  carrier as satoshis and destroy the asset commitment; the unroll has
+  already put the composed output on chain under the owner's exit leaf,
+  and the claim finishes the job after the exit delay matures.
+- The claim gathers **every** lineage anchor's confirmation across the
+  DAG, not just the spine: `CollectAssetProofPathAnchors` recurses
+  through each merging step's co-input paths, and each anchor is matched
+  against `assetLineageOutputs` (the ancestry tree paths) to supply the
+  output script the chain backend needs beside the txid. Those
+  confirmations upgrade the compact path into a confirmed proof file
+  (`ConfirmProofFile`) before the composed exit leaf is spent into a
+  fresh tapd-owned anchor, paying the claim's miner fee out of the
+  carrier. The claim requires `VTXOStatusUnilateralExit`.
+- **KNOWN GAP: an OOR-received asset VTXO cannot be claimed.** Both
+  claim entry points (`Server.ClaimAssetVTXO` and
+  `assetClaimConfirmations`) require a non-empty
+  `Descriptor.TaprootAssetSealedPackage`, and only a round-created leaf
+  persists one. Such a leaf can still be spent onward out of round, but
+  after a unilateral exit its carrier is strandable value: the sweep is
+  withheld and the claim refuses. Closing this means persisting the
+  receiving side's package, not relaxing the check.
+- Asset-bearing VTXOs are rejected from every Bitcoin-shaped flow
+  (`rejectAssetBearingTargets` / `bitcoinOnlyOutpoints`): explicit
+  `RefreshVTXOs`, `LeaveVTXOs`, and `SendOnChain` targets are
+  `InvalidArgument`, sweep-all filters them out, and the exit preflight
+  short-circuits, because an asset VTXO's worth is the units riding on
+  it rather than its carrier satoshis.
+- `ConfigureTaprootAssets` registration is lazy and at most once per
+  `Config`: it appends a service registrar, so no authenticated tapd
+  connection or journal is opened until the gRPC services start, and it
+  is a no-op when a caller injected its own `TaprootAssetOORPreparer`
+  (embedded consumers own that integration).
+- Onboarding hard-requires the **LND** wallet backend
+  (`signTaprootAssetOnboardingAnchor`), because the anchor's carrier
+  satoshis, the asset-change output, and the miner fee all come from the
+  same on-chain wallet tapd is backed by, and the PSBT is signed and
+  finalized through lnd's `WalletKit`.
+- The three asset RPCs (`OnboardTaprootAsset`, `BoardTaprootAsset`,
+  `ClaimTaprootAssetVTXO`) are granted under `onchain:write`; the asset
+  send rides `SendOOR` and stays under `oor:write`.
 - `RefreshVTXOs` dry-run short-circuits before the wallet-ready gate
   (LeaveVTXOs parity) and attaches a best-effort advisory fee estimate
   (`rpc_refresh_estimate.go`): explicit outpoints are deduped and
@@ -263,4 +385,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 
 - [docs/daemon_cli_guide.md](../docs/daemon_cli_guide.md) — Installation,
   configuration, CLI reference.
+- [docs/taproot_assets_architecture.md](../docs/taproot_assets_architecture.md)
+  — Client-side Taproot Assets architecture: onboarding, boarding and
+  round fees, asset OOR sends with operator-funded carriers, exit and
+  claim, and the known gaps.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.

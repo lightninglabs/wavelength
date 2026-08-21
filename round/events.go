@@ -159,6 +159,12 @@ type CommitmentTxBuilt struct {
 	// unilateral exit if needed.
 	VTXOTreePaths map[int]*tree.Tree
 
+	// AssetLeafPackages maps each of this client's asset leaf outpoints
+	// to the sealed tap-sdk package that created it. Spending that leaf
+	// out of round needs the package to rebuild the compact proof path
+	// and the OP_TRUE witness; the owner has no other source for either.
+	AssetLeafPackages map[wire.OutPoint][]byte
+
 	// ForfeitMappings maps each VTXO outpoint to its connector leaf info.
 	// This allows VTXO actors to find their connector output and construct
 	// the forfeit transaction. Only set when refresh requests are present.

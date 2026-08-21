@@ -57,10 +57,39 @@ func AncestryPathFromTree(t *tree.Tree, commitmentTxID chainhash.Hash,
 
 // AncestryPathToTree reconstructs a tree.Tree from an AncestryPath. Returns
 // (nil, nil) when the path or its embedded tree_path is unset; callers must
-// treat a nil tree as an absent ancestry.
+// treat a nil tree as absent ancestry.
+//
+// A present tree_path with zero nodes is the explicit external-root variant.
+// It reconstructs as a non-nil tree with Root == nil while retaining the exact
+// BatchOutpoint and BatchOutput. Keeping it distinct from an absent tree lets
+// receive validation bind a confirmed direct VTXO to its checkpoint without
+// inventing a recovery transaction.
 func AncestryPathToTree(p *AncestryPath) (*tree.Tree, error) {
 	if p == nil || p.TreePath == nil {
 		return nil, nil
+	}
+
+	if len(p.TreePath.Nodes) == 0 {
+		batchOutpoint, err := outpointFromProto(
+			p.TreePath.BatchOutpoint,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("external root outpoint: %w",
+				err)
+		}
+
+		batchOutput, err := txOutFromProto(p.TreePath.BatchOutput)
+		if err != nil {
+			return nil, fmt.Errorf("external root output: %w", err)
+		}
+
+		return &tree.Tree{
+			BatchOutpoint: batchOutpoint,
+			BatchOutput:   batchOutput,
+			SweepTapscriptRoot: append(
+				[]byte(nil), p.TreePath.SweepTapscriptRoot...,
+			),
+		}, nil
 	}
 
 	return TreePathToTree(p.TreePath)

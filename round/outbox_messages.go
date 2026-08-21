@@ -288,7 +288,13 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		}
 
 		br := &roundpb.BoardingRequest{
-			PolicyTemplate: policyTemplate,
+			PolicyTemplate:          policyTemplate,
+			AssetRef:                req.AssetRef,
+			AssetAmount:             req.AssetAmount,
+			AssetDigest:             req.AssetDigest,
+			AssetProof:              req.AssetProof,
+			AssetCommitmentLeafHash: req.AssetCommitmentLeafHash,
+			AssetWitness:            req.AssetWitness,
 		}
 		if req.Outpoint != nil {
 			br.Outpoint = roundpb.OutpointToProto(
@@ -325,6 +331,8 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 			IsChange:        req.IsChange,
 			FixedAmount:     req.FixedAmount,
 			PolicyTemplate:  policyTemplate,
+			AssetRef:        req.AssetRef,
+			AssetAmount:     req.AssetAmount,
 		}
 		if req.SigningKey.PubKey != nil {
 			vr.SigningKey = req.SigningKey.PubKey.

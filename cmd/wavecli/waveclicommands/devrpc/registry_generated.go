@@ -136,6 +136,27 @@ func generatedRegistry() []serviceSpec {
 					Comments: "SendOOR initiates an out-of-round transfer directly between the\nclient and operator, without waiting for a round.",
 				},
 				{
+					Name:     "OnboardTaprootAsset",
+					Aliases:  []string{"onboard-taproot-asset"},
+					Input:    "waverpc.OnboardTaprootAssetRequest",
+					Output:   "waverpc.OnboardTaprootAssetResponse",
+					Comments: "OnboardTaprootAsset moves one complete, isolated Taproot Asset anchor\ninto a standard Wavelength VTXO policy. The request is idempotent: a\nretry resumes publication or operator registration without committing\nanother asset transition.",
+				},
+				{
+					Name:     "BoardTaprootAsset",
+					Aliases:  []string{"board-taproot-asset"},
+					Input:    "waverpc.BoardTaprootAssetRequest",
+					Output:   "waverpc.BoardTaprootAssetResponse",
+					Comments: "BoardTaprootAsset boards a confirmed onboarded output into the next\nasset round. The daemon rebuilds the boarding disclosure from the\nonboarding named by the idempotency key, gathers the confirmation\nand the boarded asset proof itself, and registers the boarding\ntogether with a matching asset VTXO request. Safe to retry.",
+				},
+				{
+					Name:     "ClaimTaprootAssetVTXO",
+					Aliases:  []string{"claim-taproot-asset-vtxo"},
+					Input:    "waverpc.ClaimTaprootAssetVTXORequest",
+					Output:   "waverpc.ClaimTaprootAssetVTXOResponse",
+					Comments: "ClaimTaprootAssetVTXO claims an exited asset VTXO into the daemon's\ntapd wallet once its unrolled anchor has matured past the exit\ndelay. The daemon gathers the lineage confirmations itself.",
+				},
+				{
 					Name:     "PrepareOOR",
 					Aliases:  []string{"prepare-oor"},
 					Input:    "waverpc.PrepareOORRequest",

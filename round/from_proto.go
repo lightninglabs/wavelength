@@ -203,6 +203,23 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 	}
 	e.Tx = tx
 
+	// Validate the flow version before decoding trees: it decides the
+	// node sequence, which is consensus-visible through every node txid.
+	flowVersion := roundpb.FlowVersion(pb.GetFlowVersion())
+	if err := roundpb.ValidateFlowVersion(flowVersion); err != nil {
+		return fmt.Errorf("flow_version: %w", err)
+	}
+
+	treeOpts := e.TreeOpts
+	if flowVersion >= roundpb.FlowVersionV2 {
+		treeOpts = append(
+			append(
+				[]roundpb.TreeFromProtoOption(nil), treeOpts...,
+			),
+			roundpb.WithNodeSequence(tree.SequenceV2),
+		)
+	}
+
 	// Convert VTXO tree paths. Reject negative indices since they
 	// are semantically invalid as commitment tx output indices.
 	if pb.VtxoTreePaths != nil {
@@ -216,13 +233,31 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 			}
 
 			t, treeErr := roundpb.TreeFromProto(
-				pt, e.TreeOpts...,
+				pt, treeOpts...,
 			)
 			if treeErr != nil {
 				return fmt.Errorf("vtxo_tree_paths[%d]: %w",
 					idx, treeErr)
 			}
 			e.VTXOTreePaths[int(idx)] = t
+		}
+	}
+
+	// Carry the sealed package behind each of this client's asset
+	// leaves, keyed by the leaf outpoint it created.
+	if len(pb.AssetLeafPackages) > 0 {
+		e.AssetLeafPackages = make(
+			map[wire.OutPoint][]byte, len(pb.AssetLeafPackages),
+		)
+		for key, pkg := range pb.AssetLeafPackages {
+			outpoint, opErr := roundpb.OutpointFromMapKey(key)
+			if opErr != nil {
+				return fmt.Errorf("asset_leaf_packages[%q]: %w",
+					key, opErr)
+			}
+			e.AssetLeafPackages[outpoint] = append(
+				[]byte(nil), pkg...,
+			)
 		}
 	}
 
@@ -315,18 +350,8 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 		e.ForfeitKey = key
 	}
 
-	// Record and validate the round flow version stamped by the operator.
-	// Fail closed on a version this build does not understand rather than
-	// joining a round conducted under unknown choreography rules. Versions
-	// are zero-indexed, so an omitted wire field reads as V1.
-	if err := roundpb.ValidateFlowVersion(
-		roundpb.FlowVersion(
-			pb.GetFlowVersion(),
-		),
-	); err != nil {
-		return err
-	}
-	e.FlowVersion = roundpb.FlowVersion(pb.GetFlowVersion())
+	// The flow version was validated before tree decoding; record it.
+	e.FlowVersion = flowVersion
 
 	return nil
 }
@@ -556,6 +581,8 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 			IsChange:       vr.IsChange,
 			FixedAmount:    vr.FixedAmount,
 			PolicyTemplate: bytes.Clone(vr.PolicyTemplate),
+			AssetRef:       vr.AssetRef,
+			AssetAmount:    vr.AssetAmount,
 		}
 
 		if len(vr.SigningKey) > 0 {
