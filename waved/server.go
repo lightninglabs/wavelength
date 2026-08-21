@@ -255,6 +255,14 @@ type Server struct {
 	// handlers that require wallet access select on this channel.
 	walletReady chan struct{}
 
+	// walletServicesReady is resolved after wallet-dependent actors and
+	// mailbox ingress have started. The first result is sticky: failures
+	// before that boundary are published to waiters, while later startup
+	// failures cannot replace a successful result.
+	walletServicesReady     chan struct{}
+	walletServicesReadyErr  error
+	walletServicesReadyOnce sync.Once
+
 	// daemonReady is closed when all startup steps have
 	// completed: wallet initialized, mailbox transport
 	// connected, and wallet-dependent actors started. Test
@@ -432,18 +440,19 @@ type Server struct {
 	forfeitSignatures *forfeitSignatureBroker
 }
 
-// NewServer allocates a Server from a validated Config. The server is
-// inert until RunUntilShutdown is called. The walletReady channel and
-// recovery preimage registry are initialized here so RPC handlers can use
-// them immediately.
+// NewServer allocates a Server from a validated Config. The server is inert
+// until RunUntilShutdown is called. The wallet and wallet-services readiness
+// signals and recovery preimage registry are initialized here so RPC handlers
+// and embedded clients can use them immediately.
 func NewServer(cfg *Config) (*Server, error) {
 	return &Server{
-		cfg:               cfg,
-		clk:               clock.NewDefaultClock(),
-		walletReady:       make(chan struct{}),
-		daemonReady:       make(chan struct{}),
-		vhtlcPreimages:    &unrollpolicy.PreimageResolverRegistry{},
-		forfeitSignatures: newForfeitSignatureBroker(),
+		cfg:                 cfg,
+		clk:                 clock.NewDefaultClock(),
+		walletReady:         make(chan struct{}),
+		walletServicesReady: make(chan struct{}),
+		daemonReady:         make(chan struct{}),
+		vhtlcPreimages:      &unrollpolicy.PreimageResolverRegistry{},
+		forfeitSignatures:   newForfeitSignatureBroker(),
 	}, nil
 }
 
@@ -513,6 +522,61 @@ func (s *Server) markWalletReady() {
 	s.walletReadyOnce.Do(func() {
 		close(s.walletReady)
 	})
+}
+
+// markWalletServicesReady publishes the first wallet-services startup result.
+// A nil error means wallet-dependent actors and mailbox ingress are online.
+// Once that boundary is crossed, authenticated terms refreshes and wallet-ready
+// hooks cannot replace success with their later errors.
+func (s *Server) markWalletServicesReady(err error) {
+	s.walletServicesReadyOnce.Do(func() {
+		s.walletServicesReadyErr = err
+		close(s.walletServicesReady)
+	})
+}
+
+// markWalletServicesStopped resolves an unfinished readiness wait when the
+// daemon run loop exits before wallet-dependent services come online. A prior
+// readiness result remains sticky and cannot be replaced during shutdown.
+func (s *Server) markWalletServicesStopped(runErr, contextErr error) {
+	if runErr == nil {
+		runErr = contextErr
+	}
+	if runErr == nil {
+		runErr = errors.New("daemon stopped")
+	}
+
+	s.markWalletServicesReady(
+		fmt.Errorf("daemon exited before wallet services were "+
+			"ready: %w", runErr),
+	)
+}
+
+// WaitForWalletServicesReady waits until wallet-dependent actors and mailbox
+// ingress are online, or returns the first error encountered before that
+// boundary. It intentionally does not wait for authenticated terms refreshes,
+// pending-intent replay, or wallet-ready hooks.
+func (s *Server) WaitForWalletServicesReady(ctx context.Context) error {
+	if s == nil || s.walletServicesReady == nil {
+		return errors.New("wallet services readiness signal " +
+			"unavailable")
+	}
+
+	select {
+	case <-s.walletServicesReady:
+		return s.walletServicesReadyErr
+
+	case <-ctx.Done():
+		// Prefer a result published concurrently with cancellation so a
+		// completed startup is not reported as cancelled.
+		select {
+		case <-s.walletServicesReady:
+			return s.walletServicesReadyErr
+
+		default:
+			return ctx.Err()
+		}
+	}
 }
 
 // markDaemonReady closes the daemonReady channel, signaling that all
@@ -1030,9 +1094,21 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 // run is the shared core startup logic for both RunUntilShutdown
 // and RunWithContext. The shutdownFn is wired into the logging
 // subsystem so critical log events can trigger daemon shutdown.
+func (s *Server) run(ctx context.Context, shutdownFn func()) error {
+	var runErr error
+	defer func() {
+		s.markWalletServicesStopped(runErr, ctx.Err())
+	}()
+
+	runErr = s.runInner(ctx, shutdownFn)
+
+	return runErr
+}
+
+// runInner performs the daemon startup, service, and shutdown sequence.
 //
 //nolint:funlen
-func (s *Server) run(ctx context.Context, shutdownFn func()) error {
+func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 	// Store the run context so background goroutines (like the
 	// btcwallet sync poller) can outlive individual RPC
 	// handlers but still shut down with the daemon.
@@ -1531,6 +1607,10 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 				ctx, chainSourceRef, timeoutRef,
 			)
 			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+
 				s.log.ErrorS(
 					ctx,
 					"Failed to start wallet-ready services",
@@ -1569,18 +1649,26 @@ func (s *Server) startWalletReadyServices(ctx context.Context,
 	], timeoutRef actor.TellOnlyRef[timeout.Msg]) error {
 
 	if err := s.connectAndBootstrapMailbox(ctx); err != nil {
+		s.markWalletServicesReady(err)
+
 		return err
 	}
 
 	if err := s.startWalletDependentActors(
 		ctx, chainSourceRef, timeoutRef,
 	); err != nil {
+
+		s.markWalletServicesReady(err)
+
 		return err
 	}
 
 	if err := s.startMailboxIngress(ctx); err != nil {
+		s.markWalletServicesReady(err)
+
 		return err
 	}
+	s.markWalletServicesReady(nil)
 
 	// The bootstrap GetInfo call cannot use the mailbox identity because
 	// the runtime does not exist yet. Refresh the cached terms now that

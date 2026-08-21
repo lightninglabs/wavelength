@@ -41,12 +41,31 @@ const (
 	recoveryIndexerRetryMax      = 5 * time.Second
 )
 
-type walletRecoveryResult struct {
+// WalletRecoveryResult reports the state discovered by one idempotent wallet
+// recovery scan. Counters describe artifacts found and persisted during that
+// scan; on a retry, some artifacts may already have existed locally.
+type WalletRecoveryResult struct {
 	BoardingAddresses uint32
 	BoardingUTXOs     uint32
 	VTXOs             uint32
 	OORReceiveScripts uint32
 	OOREvents         uint32
+}
+
+// RecoverWalletState reruns the daemon's idempotent seed-recovery scan. It is
+// intended for in-process embedders that need to retry recovery after wallet
+// initialization succeeded but the original scan did not.
+func (s *Server) RecoverWalletState(ctx context.Context, window uint32) (
+	*WalletRecoveryResult, error) {
+
+	if s == nil {
+		return nil, fmt.Errorf("wallet server is nil")
+	}
+	if s.rpcServer == nil {
+		return nil, fmt.Errorf("wallet RPC server is not running")
+	}
+
+	return s.rpcServer.recoverWalletState(ctx, window)
 }
 
 // retryRecoveryIndexerRPC retries recovery-local indexer calls that hit the
@@ -74,7 +93,7 @@ func retryRecoveryIndexerRPC(ctx context.Context,
 	)
 }
 
-func (r walletRecoveryResult) apply(resp *waverpc.InitWalletResponse) {
+func (r WalletRecoveryResult) apply(resp *waverpc.InitWalletResponse) {
 	resp.RecoveryRan = true
 	resp.RecoveredBoardingAddresses = r.BoardingAddresses
 	resp.RecoveredBoardingUtxos = r.BoardingUTXOs
@@ -84,7 +103,7 @@ func (r walletRecoveryResult) apply(resp *waverpc.InitWalletResponse) {
 }
 
 func (r *RPCServer) recoverWalletState(ctx context.Context, window uint32) (
-	*walletRecoveryResult, error) {
+	*WalletRecoveryResult, error) {
 
 	if window == 0 {
 		window = r.server.cfg.Wallet.RecoveryWindow
@@ -99,12 +118,12 @@ func (r *RPCServer) recoverWalletState(ctx context.Context, window uint32) (
 
 	// InitWallet stores the seed before this point, which lets the daemon
 	// start wallet-backed services on a separate goroutine. Recovery needs
-	// those services, so wait for that async startup before scanning.
-	select {
-	case <-r.server.DaemonReady():
-	case <-ctx.Done():
+	// the actors and mailbox ingress, but not the later authenticated terms
+	// refresh or wallet-ready hooks, so wait on the precise service
+	// boundary.
+	if err := r.server.WaitForWalletServicesReady(ctx); err != nil {
 		return nil, fmt.Errorf("wait for wallet-ready services: %w",
-			ctx.Err())
+			err)
 	}
 
 	if r.server.indexer == nil {
@@ -116,7 +135,7 @@ func (r *RPCServer) recoverWalletState(ctx context.Context, window uint32) (
 		return nil, err
 	}
 
-	var result walletRecoveryResult
+	var result WalletRecoveryResult
 	if err := r.recoverBoardingKeys(
 		ctx, terms, window, &result,
 	); err != nil {
@@ -138,7 +157,7 @@ func (r *RPCServer) recoverWalletState(ctx context.Context, window uint32) (
 
 func (r *RPCServer) recoverBoardingKeys(ctx context.Context,
 	terms *libtypes.OperatorTerms, window uint32,
-	result *walletRecoveryResult) error {
+	result *WalletRecoveryResult) error {
 
 	backend, err := r.server.recoveryBoardingBackend()
 	if err != nil {
@@ -236,7 +255,7 @@ func (s *Server) recoveryBoardingBackend() (wallet.BoardingBackend, error) {
 
 func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 	terms *libtypes.OperatorTerms, window uint32,
-	result *walletRecoveryResult) error {
+	result *WalletRecoveryResult) error {
 
 	for i := uint32(0); i < window; i++ {
 		keyDesc, err := r.server.proofKeyBackend.DeriveKey(
@@ -531,7 +550,7 @@ func (r *RPCServer) notifyRecoveredVTXOs(ctx context.Context,
 
 func (r *RPCServer) recoverOORReceiveScripts(ctx context.Context,
 	terms *libtypes.OperatorTerms, window uint32,
-	result *walletRecoveryResult) error {
+	result *WalletRecoveryResult) error {
 
 	var registered *arkrpc.ListMyReceiveScriptsResponse
 	err := retryRecoveryIndexerRPC(ctx, func(
@@ -674,7 +693,7 @@ func (r *RPCServer) recoveryOORHandler(
 func (r *RPCServer) recoverOOREventsForScript(ctx context.Context,
 	idx *indexer.Client, pkScript []byte, ensureScript func() error,
 	handler *oor.LocalPersistenceOutboxHandler,
-	result *walletRecoveryResult) error {
+	result *WalletRecoveryResult) error {
 
 	var afterEventID uint64
 	for {

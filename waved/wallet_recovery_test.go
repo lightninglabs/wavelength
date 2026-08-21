@@ -10,6 +10,22 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// TestRecoverWalletStateRequiresRunningServer verifies the in-process retry
+// hook reports lifecycle misuse instead of dereferencing an unavailable RPC
+// server. Legacy startup still owns when that server becomes available.
+func TestRecoverWalletStateRequiresRunningServer(t *testing.T) {
+	t.Parallel()
+
+	var nilServer *Server
+	_, err := nilServer.RecoverWalletState(t.Context(), 1)
+	require.ErrorContains(t, err, "server is nil")
+
+	server, err := NewServer(DefaultConfig())
+	require.NoError(t, err)
+	_, err = server.RecoverWalletState(t.Context(), 1)
+	require.ErrorContains(t, err, "not running")
+}
+
 // TestRetryRecoveryIndexerRPCRetriesResourceExhausted verifies seed recovery
 // backs off and retries when the operator query limiter rejects a scan request.
 func TestRetryRecoveryIndexerRPCRetriesResourceExhausted(t *testing.T) {
