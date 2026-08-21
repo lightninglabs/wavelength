@@ -1278,6 +1278,64 @@ func TestVTXOPersistenceStoreListVTXOsByStatusSettlement(t *testing.T) {
 	require.Equal(t, refreshFeeSat+boardingFeeSat, settleLight.FeeSat)
 }
 
+// TestVTXOPersistenceStoreListVTXOsAllStatusesLight verifies that
+// ListVTXOsAllStatusesLight returns every VTXO regardless of status,
+// including the terminal statuses ListVTXOsExcludingStatusesLight omits.
+func TestVTXOPersistenceStoreListVTXOsAllStatusesLight(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-round-all-statuses")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	require.NoError(t, roundStore.CommitState(ctx, testRound, state))
+
+	live := createTestVTXODescriptor(t, roundID, 1)
+	forfeited := createTestVTXODescriptor(t, roundID, 2)
+	spent := createTestVTXODescriptor(t, roundID, 3)
+
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, live))
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, forfeited))
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, spent))
+
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, forfeited.Outpoint, vtxo.VTXOStatusForfeited,
+		),
+	)
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, spent.Outpoint, vtxo.VTXOStatusSpent,
+		),
+	)
+
+	// The default listing excludes forfeited and spent.
+	excluding, err := vtxoStore.ListVTXOsExcludingStatusesLight(
+		ctx, vtxo.VTXOStatusForfeited, vtxo.VTXOStatusSpent,
+	)
+	require.NoError(t, err)
+	require.Len(t, excluding, 1)
+	require.Equal(t, live.Outpoint, excluding[0].Outpoint)
+
+	// show_all surfaces every VTXO, terminal or not.
+	all, err := vtxoStore.ListVTXOsAllStatusesLight(ctx)
+	require.NoError(t, err)
+	require.Len(t, all, 3)
+
+	outpoints := make(map[wire.OutPoint]bool)
+	for _, v := range all {
+		outpoints[v.Outpoint] = true
+	}
+	require.True(t, outpoints[live.Outpoint])
+	require.True(t, outpoints[forfeited.Outpoint])
+	require.True(t, outpoints[spent.Outpoint])
+}
+
 // TestGroupAncestryRowsPreservesOrder is a unit test on the grouping
 // helper — distinct outpoints in the same row stream must produce
 // distinct map entries, and per-outpoint fragments must be appended

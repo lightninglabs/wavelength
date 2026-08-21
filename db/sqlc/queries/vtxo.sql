@@ -37,6 +37,44 @@ LEFT JOIN rounds ON vtxos.forfeit_round_id = rounds.round_id
 WHERE vtxos.status = $1
 ORDER BY vtxos.creation_time DESC;
 
+-- name: ListVTXOsExcludingStatuses :many
+-- ListVTXOsExcludingStatuses returns all VTXOs except those with either of
+-- the two given statuses. Mirrors ListVTXOsByStatus's settlement join so
+-- terminal states (e.g. UnilateralExit) still surface forfeit-round
+-- settlement info.
+SELECT sqlc.embed(vtxos),
+    rounds.commitment_txid AS settlement_txid,
+    rounds.confirmation_height AS settlement_height,
+    CAST(COALESCE((
+        SELECT SUM(le.amount_sat)
+        FROM ledger_entries AS le
+        WHERE le.round_uuid = vtxos.forfeit_round_id
+          AND le.event_type IN ('boarding_fee_paid', 'refresh_fee_paid')
+    ), 0) AS BIGINT) AS settlement_fee_sat
+FROM vtxos
+LEFT JOIN rounds ON vtxos.forfeit_round_id = rounds.round_id
+WHERE vtxos.status NOT IN ($1, $2)
+ORDER BY vtxos.creation_time DESC;
+
+-- name: ListVTXOsAllStatuses :many
+-- ListVTXOsAllStatuses returns every VTXO regardless of status. Mirrors
+-- ListVTXOsByStatus's settlement join so terminal states still surface
+-- forfeit-round settlement info. Named distinctly from the pre-existing
+-- unjoined ListAllVTXOs (round.sql), which round-side callers use for
+-- their own purposes.
+SELECT sqlc.embed(vtxos),
+    rounds.commitment_txid AS settlement_txid,
+    rounds.confirmation_height AS settlement_height,
+    CAST(COALESCE((
+        SELECT SUM(le.amount_sat)
+        FROM ledger_entries AS le
+        WHERE le.round_uuid = vtxos.forfeit_round_id
+          AND le.event_type IN ('boarding_fee_paid', 'refresh_fee_paid')
+    ), 0) AS BIGINT) AS settlement_fee_sat
+FROM vtxos
+LEFT JOIN rounds ON vtxos.forfeit_round_id = rounds.round_id
+ORDER BY vtxos.creation_time DESC;
+
 -- name: ListVTXOSelectionCandidatesByStatus :many
 -- ListVTXOSelectionCandidatesByStatus returns the lightweight projection coin
 -- selection runs on: outpoint, amount, and pkScript. Selection happens on

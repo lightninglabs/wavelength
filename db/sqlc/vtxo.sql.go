@@ -297,6 +297,83 @@ func (q *Queries) ListVTXOSelectionCandidatesByStatus(ctx context.Context, statu
 	return items, nil
 }
 
+const ListVTXOsAllStatuses = `-- name: ListVTXOsAllStatuses :many
+SELECT vtxos.outpoint_hash, vtxos.outpoint_index, vtxos.round_id, vtxos.amount, vtxos.pk_script, vtxos.expiry, vtxos.policy_template, vtxos.client_key_id, vtxos.operator_pubkey, vtxos.batch_expiry, vtxos.created_height, vtxos.commitment_txid, vtxos.spent, vtxos.status, vtxos.forfeit_round_id, vtxos.forfeit_tx, vtxos.forfeit_txid, vtxos.replaced_by_hash, vtxos.replaced_by_index, vtxos.creation_time, vtxos.last_update_time, vtxos.chain_depth, vtxos.construction_version,
+    rounds.commitment_txid AS settlement_txid,
+    rounds.confirmation_height AS settlement_height,
+    CAST(COALESCE((
+        SELECT SUM(le.amount_sat)
+        FROM ledger_entries AS le
+        WHERE le.round_uuid = vtxos.forfeit_round_id
+          AND le.event_type IN ('boarding_fee_paid', 'refresh_fee_paid')
+    ), 0) AS BIGINT) AS settlement_fee_sat
+FROM vtxos
+LEFT JOIN rounds ON vtxos.forfeit_round_id = rounds.round_id
+ORDER BY vtxos.creation_time DESC
+`
+
+type ListVTXOsAllStatusesRow struct {
+	Vtxo             Vtxo
+	SettlementTxid   []byte
+	SettlementHeight sql.NullInt32
+	SettlementFeeSat int64
+}
+
+// ListVTXOsAllStatuses returns every VTXO regardless of status. Mirrors
+// ListVTXOsByStatus's settlement join so terminal states still surface
+// forfeit-round settlement info. Named distinctly from the pre-existing
+// unjoined ListAllVTXOs (round.sql), which round-side callers use for
+// their own purposes.
+func (q *Queries) ListVTXOsAllStatuses(ctx context.Context) ([]ListVTXOsAllStatusesRow, error) {
+	rows, err := q.db.QueryContext(ctx, ListVTXOsAllStatuses)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListVTXOsAllStatusesRow
+	for rows.Next() {
+		var i ListVTXOsAllStatusesRow
+		if err := rows.Scan(
+			&i.Vtxo.OutpointHash,
+			&i.Vtxo.OutpointIndex,
+			&i.Vtxo.RoundID,
+			&i.Vtxo.Amount,
+			&i.Vtxo.PkScript,
+			&i.Vtxo.Expiry,
+			&i.Vtxo.PolicyTemplate,
+			&i.Vtxo.ClientKeyID,
+			&i.Vtxo.OperatorPubkey,
+			&i.Vtxo.BatchExpiry,
+			&i.Vtxo.CreatedHeight,
+			&i.Vtxo.CommitmentTxid,
+			&i.Vtxo.Spent,
+			&i.Vtxo.Status,
+			&i.Vtxo.ForfeitRoundID,
+			&i.Vtxo.ForfeitTx,
+			&i.Vtxo.ForfeitTxid,
+			&i.Vtxo.ReplacedByHash,
+			&i.Vtxo.ReplacedByIndex,
+			&i.Vtxo.CreationTime,
+			&i.Vtxo.LastUpdateTime,
+			&i.Vtxo.ChainDepth,
+			&i.Vtxo.ConstructionVersion,
+			&i.SettlementTxid,
+			&i.SettlementHeight,
+			&i.SettlementFeeSat,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListVTXOsByStatus = `-- name: ListVTXOsByStatus :many
 
 SELECT vtxos.outpoint_hash, vtxos.outpoint_index, vtxos.round_id, vtxos.amount, vtxos.pk_script, vtxos.expiry, vtxos.policy_template, vtxos.client_key_id, vtxos.operator_pubkey, vtxos.batch_expiry, vtxos.created_height, vtxos.commitment_txid, vtxos.spent, vtxos.status, vtxos.forfeit_round_id, vtxos.forfeit_tx, vtxos.forfeit_txid, vtxos.replaced_by_hash, vtxos.replaced_by_index, vtxos.creation_time, vtxos.last_update_time, vtxos.chain_depth, vtxos.construction_version,
@@ -353,6 +430,88 @@ func (q *Queries) ListVTXOsByStatus(ctx context.Context, status int32) ([]ListVT
 	var items []ListVTXOsByStatusRow
 	for rows.Next() {
 		var i ListVTXOsByStatusRow
+		if err := rows.Scan(
+			&i.Vtxo.OutpointHash,
+			&i.Vtxo.OutpointIndex,
+			&i.Vtxo.RoundID,
+			&i.Vtxo.Amount,
+			&i.Vtxo.PkScript,
+			&i.Vtxo.Expiry,
+			&i.Vtxo.PolicyTemplate,
+			&i.Vtxo.ClientKeyID,
+			&i.Vtxo.OperatorPubkey,
+			&i.Vtxo.BatchExpiry,
+			&i.Vtxo.CreatedHeight,
+			&i.Vtxo.CommitmentTxid,
+			&i.Vtxo.Spent,
+			&i.Vtxo.Status,
+			&i.Vtxo.ForfeitRoundID,
+			&i.Vtxo.ForfeitTx,
+			&i.Vtxo.ForfeitTxid,
+			&i.Vtxo.ReplacedByHash,
+			&i.Vtxo.ReplacedByIndex,
+			&i.Vtxo.CreationTime,
+			&i.Vtxo.LastUpdateTime,
+			&i.Vtxo.ChainDepth,
+			&i.Vtxo.ConstructionVersion,
+			&i.SettlementTxid,
+			&i.SettlementHeight,
+			&i.SettlementFeeSat,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListVTXOsExcludingStatuses = `-- name: ListVTXOsExcludingStatuses :many
+SELECT vtxos.outpoint_hash, vtxos.outpoint_index, vtxos.round_id, vtxos.amount, vtxos.pk_script, vtxos.expiry, vtxos.policy_template, vtxos.client_key_id, vtxos.operator_pubkey, vtxos.batch_expiry, vtxos.created_height, vtxos.commitment_txid, vtxos.spent, vtxos.status, vtxos.forfeit_round_id, vtxos.forfeit_tx, vtxos.forfeit_txid, vtxos.replaced_by_hash, vtxos.replaced_by_index, vtxos.creation_time, vtxos.last_update_time, vtxos.chain_depth, vtxos.construction_version,
+    rounds.commitment_txid AS settlement_txid,
+    rounds.confirmation_height AS settlement_height,
+    CAST(COALESCE((
+        SELECT SUM(le.amount_sat)
+        FROM ledger_entries AS le
+        WHERE le.round_uuid = vtxos.forfeit_round_id
+          AND le.event_type IN ('boarding_fee_paid', 'refresh_fee_paid')
+    ), 0) AS BIGINT) AS settlement_fee_sat
+FROM vtxos
+LEFT JOIN rounds ON vtxos.forfeit_round_id = rounds.round_id
+WHERE vtxos.status NOT IN ($1, $2)
+ORDER BY vtxos.creation_time DESC
+`
+
+type ListVTXOsExcludingStatusesParams struct {
+	Status   int32
+	Status_2 int32
+}
+
+type ListVTXOsExcludingStatusesRow struct {
+	Vtxo             Vtxo
+	SettlementTxid   []byte
+	SettlementHeight sql.NullInt32
+	SettlementFeeSat int64
+}
+
+// ListVTXOsExcludingStatuses returns all VTXOs except those with either of
+// the two given statuses. Mirrors ListVTXOsByStatus's settlement join so
+// terminal states (e.g. UnilateralExit) still surface forfeit-round
+// settlement info.
+func (q *Queries) ListVTXOsExcludingStatuses(ctx context.Context, arg ListVTXOsExcludingStatusesParams) ([]ListVTXOsExcludingStatusesRow, error) {
+	rows, err := q.db.QueryContext(ctx, ListVTXOsExcludingStatuses, arg.Status, arg.Status_2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListVTXOsExcludingStatusesRow
+	for rows.Next() {
+		var i ListVTXOsExcludingStatusesRow
 		if err := rows.Scan(
 			&i.Vtxo.OutpointHash,
 			&i.Vtxo.OutpointIndex,

@@ -426,12 +426,16 @@ List VTXOs known to the wallet with optional filters.
 |------|------|-------------|
 | `--status` | string | Filter: live, pending_forfeit, forfeiting, forfeited, spent, unilateral_exit, failed, spending |
 | `--min-amount` | int64 | Minimum amount in sats |
+| `--show-all` | bool | Show every VTXO regardless of status, including forfeited and spent ones; mutually exclusive with `--status` |
 | `--fields` | string | Comma-separated field names to include |
 | `--ndjson` | bool | Emit one JSON object per VTXO (newline-delimited) |
 
 ```bash
-# All VTXOs
+# VTXO inventory (excludes forfeited, spent)
 wavecli ark vtxos list
+
+# Every VTXO, including forfeited and spent
+wavecli ark vtxos list --show-all
 
 # Live VTXOs above 10k sats, only outpoint and amount
 wavecli ark vtxos list --status live --min-amount 10000 \
@@ -671,7 +675,7 @@ The VTXO inventory and onchain history are not part of the activity feed.
 Use the `ark` subtree for those:
 
 ```bash
-wavecli ark vtxos list          # live VTXO inventory
+wavecli ark vtxos list          # VTXO inventory (excludes forfeited, spent)
 wavecli ark listtransactions    # raw transaction / onchain history
 wavecli ark sweep list          # boarding-timeout sweep records
 ```
