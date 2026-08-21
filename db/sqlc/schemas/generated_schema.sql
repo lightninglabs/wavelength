@@ -775,6 +775,13 @@ CREATE TABLE mailbox_messages (
     correlation_key TEXT
 );
 
+CREATE TABLE oor_dispatch_attempts (
+    idempotency_key TEXT PRIMARY KEY,
+    session_id BLOB NOT NULL UNIQUE,
+    request_data BLOB,
+    created_at BIGINT NOT NULL
+);
+
 CREATE TABLE oor_package_checkpoints (
     -- session_id references the owning OOR package row.
     session_id BLOB NOT NULL,
