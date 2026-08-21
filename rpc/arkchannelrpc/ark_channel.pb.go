@@ -140,6 +140,7 @@ const (
 	ChannelEventType_CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED ChannelEventType = 6
 	ChannelEventType_CHANNEL_EVENT_TYPE_FAILED                     ChannelEventType = 7
 	ChannelEventType_CHANNEL_EVENT_TYPE_FUNDING_PEER_READY         ChannelEventType = 8
+	ChannelEventType_CHANNEL_EVENT_TYPE_OOR_ABORTED                ChannelEventType = 9
 )
 
 // Enum value maps for ChannelEventType.
@@ -154,6 +155,7 @@ var (
 		6: "CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED",
 		7: "CHANNEL_EVENT_TYPE_FAILED",
 		8: "CHANNEL_EVENT_TYPE_FUNDING_PEER_READY",
+		9: "CHANNEL_EVENT_TYPE_OOR_ABORTED",
 	}
 	ChannelEventType_value = map[string]int32{
 		"CHANNEL_EVENT_TYPE_UNSPECIFIED":                0,
@@ -165,6 +167,7 @@ var (
 		"CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED": 6,
 		"CHANNEL_EVENT_TYPE_FAILED":                     7,
 		"CHANNEL_EVENT_TYPE_FUNDING_PEER_READY":         8,
+		"CHANNEL_EVENT_TYPE_OOR_ABORTED":                9,
 	}
 )
 
@@ -1112,6 +1115,7 @@ type GetFundingChannelResponse struct {
 	RecoveryReady bool                   `protobuf:"varint,6,opt,name=recovery_ready,json=recoveryReady,proto3" json:"recovery_ready,omitempty"`
 	Failure       string                 `protobuf:"bytes,7,opt,name=failure,proto3" json:"failure,omitempty"`
 	Revision      uint64                 `protobuf:"varint,8,opt,name=revision,proto3" json:"revision,omitempty"`
+	OorAborted    bool                   `protobuf:"varint,9,opt,name=oor_aborted,json=oorAborted,proto3" json:"oor_aborted,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1200,6 +1204,13 @@ func (x *GetFundingChannelResponse) GetRevision() uint64 {
 		return x.Revision
 	}
 	return 0
+}
+
+func (x *GetFundingChannelResponse) GetOorAborted() bool {
+	if x != nil {
+		return x.OorAborted
+	}
+	return false
 }
 
 type BindPreparedOORRequest struct {
@@ -4362,7 +4373,7 @@ const file_ark_channel_proto_rawDesc = "" +
 	"\achannel\x18\x01 \x01(\v2\x19.arkchannelrpc.ArkChannelR\achannel\"9\n" +
 	"\x18GetFundingChannelRequest\x12\x1d\n" +
 	"\n" +
-	"channel_id\x18\x01 \x01(\fR\tchannelId\"\xdc\x02\n" +
+	"channel_id\x18\x01 \x01(\fR\tchannelId\"\xfd\x02\n" +
 	"\x19GetFundingChannelResponse\x121\n" +
 	"\x05terms\x18\x01 \x01(\v2\x1b.arkchannelrpc.ChannelTermsR\x05terms\x12;\n" +
 	"\abinding\x18\x02 \x01(\v2!.arkchannelrpc.ChannelVTXOBindingR\abinding\x127\n" +
@@ -4371,7 +4382,9 @@ const file_ark_channel_proto_rawDesc = "" +
 	"\roor_finalized\x18\x05 \x01(\bR\foorFinalized\x12%\n" +
 	"\x0erecovery_ready\x18\x06 \x01(\bR\rrecoveryReady\x12\x18\n" +
 	"\afailure\x18\a \x01(\tR\afailure\x12\x1a\n" +
-	"\brevision\x18\b \x01(\x04R\brevision\"t\n" +
+	"\brevision\x18\b \x01(\x04R\brevision\x12\x1f\n" +
+	"\voor_aborted\x18\t \x01(\bR\n" +
+	"oorAborted\"t\n" +
 	"\x16BindPreparedOORRequest\x12\x1d\n" +
 	"\n" +
 	"channel_id\x18\x01 \x01(\fR\tchannelId\x12;\n" +
@@ -4628,7 +4641,7 @@ const file_ark_channel_proto_rawDesc = "" +
 	"#FUNDING_WIRE_METHOD_INSTALL_BACKING\x10\x02\x12)\n" +
 	"%FUNDING_WIRE_METHOD_FUNDING_FINALIZED\x10\x03\x12&\n" +
 	"\"FUNDING_WIRE_METHOD_CHANNEL_ACTIVE\x10\x04\x12+\n" +
-	"'FUNDING_WIRE_METHOD_APPLY_CHANNEL_EVENT\x10\x05*\xf8\x02\n" +
+	"'FUNDING_WIRE_METHOD_APPLY_CHANNEL_EVENT\x10\x05*\x9c\x03\n" +
 	"\x10ChannelEventType\x12\"\n" +
 	"\x1eCHANNEL_EVENT_TYPE_UNSPECIFIED\x10\x00\x12(\n" +
 	"$CHANNEL_EVENT_TYPE_FUNDING_FINALIZED\x10\x01\x12$\n" +
@@ -4638,7 +4651,8 @@ const file_ark_channel_proto_rawDesc = "" +
 	"$CHANNEL_EVENT_TYPE_BACKING_PUBLISHED\x10\x05\x121\n" +
 	"-CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED\x10\x06\x12\x1d\n" +
 	"\x19CHANNEL_EVENT_TYPE_FAILED\x10\a\x12)\n" +
-	"%CHANNEL_EVENT_TYPE_FUNDING_PEER_READY\x10\b*\xc1\x01\n" +
+	"%CHANNEL_EVENT_TYPE_FUNDING_PEER_READY\x10\b\x12\"\n" +
+	"\x1eCHANNEL_EVENT_TYPE_OOR_ABORTED\x10\t*\xc1\x01\n" +
 	"\x1fCooperativeCloseAcknowledgement\x121\n" +
 	"-COOPERATIVE_CLOSE_ACKNOWLEDGEMENT_UNSPECIFIED\x10\x00\x123\n" +
 	"/COOPERATIVE_CLOSE_ACKNOWLEDGEMENT_CLIENT_SIGNED\x10\x01\x126\n" +

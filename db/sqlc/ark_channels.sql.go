@@ -43,6 +43,11 @@ UPDATE ark_channels SET
 	client_close_finalized = $31,
 	hub_close_finalized = $32,
 	failure = $33,
+	pre_ponr_started_at = CASE
+		WHEN pre_ponr_started_at IS NULL AND
+			($35 OR $4 IS NOT NULL) THEN $34
+		ELSE pre_ponr_started_at
+	END,
 	revision = revision + 1,
 	updated_at = $34
 WHERE channel_id = $1 AND revision = $2
@@ -83,6 +88,7 @@ type CompareAndSwapArkChannelParams struct {
 	HubCloseFinalized        bool
 	Failure                  sql.NullString
 	UpdatedAt                int64
+	PrePonrStarted           sql.NullInt64
 }
 
 func (q *Queries) CompareAndSwapArkChannel(ctx context.Context, arg CompareAndSwapArkChannelParams) (int64, error) {
@@ -121,6 +127,7 @@ func (q *Queries) CompareAndSwapArkChannel(ctx context.Context, arg CompareAndSw
 		arg.HubCloseFinalized,
 		arg.Failure,
 		arg.UpdatedAt,
+		arg.PrePonrStarted,
 	)
 	if err != nil {
 		return 0, err
@@ -129,7 +136,7 @@ func (q *Queries) CompareAndSwapArkChannel(ctx context.Context, arg CompareAndSw
 }
 
 const GetArkChannel = `-- name: GetArkChannel :one
-SELECT channel_id, kind, funder, pending_channel_id, reserved_scid, capacity, client_node_key, hub_node_key, payment_hash, client_ark_key, hub_ark_key, ark_operator_key, client_channel_key, hub_channel_key, funder_key, channel_delay, funder_delay, min_exit_delay, phase, oor_session_id, source_index, source_amount, source_ark_tx, backing_tx, channel_point_txid, channel_point_index, client_finalized, hub_finalized, oor_finalized, oor_aborted, backing_published, close_initiator, close_client_script, close_hub_script, close_fee_rate_sat_per_kw, cooperative_close_tx, cooperative_close_txid, close_commitment_height, close_client_balance, close_hub_balance, client_close_signed, hub_close_signed, client_close_finalized, hub_close_finalized, failure, revision, created_at, updated_at, recovery_ready, source_spent_outpoint_txid, source_spent_outpoint_index, source_spending_txid FROM ark_channels
+SELECT channel_id, kind, funder, pending_channel_id, reserved_scid, capacity, client_node_key, hub_node_key, payment_hash, client_ark_key, hub_ark_key, ark_operator_key, client_channel_key, hub_channel_key, funder_key, channel_delay, funder_delay, min_exit_delay, phase, oor_session_id, source_index, source_amount, source_ark_tx, backing_tx, channel_point_txid, channel_point_index, client_finalized, hub_finalized, oor_finalized, oor_aborted, backing_published, close_initiator, close_client_script, close_hub_script, close_fee_rate_sat_per_kw, cooperative_close_tx, cooperative_close_txid, close_commitment_height, close_client_balance, close_hub_balance, client_close_signed, hub_close_signed, client_close_finalized, hub_close_finalized, failure, revision, created_at, updated_at, recovery_ready, source_spent_outpoint_txid, source_spent_outpoint_index, source_spending_txid, pre_ponr_started_at FROM ark_channels
 WHERE channel_id = $1
 `
 
@@ -189,12 +196,13 @@ func (q *Queries) GetArkChannel(ctx context.Context, channelID []byte) (ArkChann
 		&i.SourceSpentOutpointTxid,
 		&i.SourceSpentOutpointIndex,
 		&i.SourceSpendingTxid,
+		&i.PrePonrStartedAt,
 	)
 	return i, err
 }
 
 const GetArkChannelByChannelPoint = `-- name: GetArkChannelByChannelPoint :one
-SELECT channel_id, kind, funder, pending_channel_id, reserved_scid, capacity, client_node_key, hub_node_key, payment_hash, client_ark_key, hub_ark_key, ark_operator_key, client_channel_key, hub_channel_key, funder_key, channel_delay, funder_delay, min_exit_delay, phase, oor_session_id, source_index, source_amount, source_ark_tx, backing_tx, channel_point_txid, channel_point_index, client_finalized, hub_finalized, oor_finalized, oor_aborted, backing_published, close_initiator, close_client_script, close_hub_script, close_fee_rate_sat_per_kw, cooperative_close_tx, cooperative_close_txid, close_commitment_height, close_client_balance, close_hub_balance, client_close_signed, hub_close_signed, client_close_finalized, hub_close_finalized, failure, revision, created_at, updated_at, recovery_ready, source_spent_outpoint_txid, source_spent_outpoint_index, source_spending_txid FROM ark_channels
+SELECT channel_id, kind, funder, pending_channel_id, reserved_scid, capacity, client_node_key, hub_node_key, payment_hash, client_ark_key, hub_ark_key, ark_operator_key, client_channel_key, hub_channel_key, funder_key, channel_delay, funder_delay, min_exit_delay, phase, oor_session_id, source_index, source_amount, source_ark_tx, backing_tx, channel_point_txid, channel_point_index, client_finalized, hub_finalized, oor_finalized, oor_aborted, backing_published, close_initiator, close_client_script, close_hub_script, close_fee_rate_sat_per_kw, cooperative_close_tx, cooperative_close_txid, close_commitment_height, close_client_balance, close_hub_balance, client_close_signed, hub_close_signed, client_close_finalized, hub_close_finalized, failure, revision, created_at, updated_at, recovery_ready, source_spent_outpoint_txid, source_spent_outpoint_index, source_spending_txid, pre_ponr_started_at FROM ark_channels
 WHERE channel_point_txid = $1 AND channel_point_index = $2
 `
 
@@ -259,12 +267,13 @@ func (q *Queries) GetArkChannelByChannelPoint(ctx context.Context, arg GetArkCha
 		&i.SourceSpentOutpointTxid,
 		&i.SourceSpentOutpointIndex,
 		&i.SourceSpendingTxid,
+		&i.PrePonrStartedAt,
 	)
 	return i, err
 }
 
 const GetArkChannelByPendingID = `-- name: GetArkChannelByPendingID :one
-SELECT channel_id, kind, funder, pending_channel_id, reserved_scid, capacity, client_node_key, hub_node_key, payment_hash, client_ark_key, hub_ark_key, ark_operator_key, client_channel_key, hub_channel_key, funder_key, channel_delay, funder_delay, min_exit_delay, phase, oor_session_id, source_index, source_amount, source_ark_tx, backing_tx, channel_point_txid, channel_point_index, client_finalized, hub_finalized, oor_finalized, oor_aborted, backing_published, close_initiator, close_client_script, close_hub_script, close_fee_rate_sat_per_kw, cooperative_close_tx, cooperative_close_txid, close_commitment_height, close_client_balance, close_hub_balance, client_close_signed, hub_close_signed, client_close_finalized, hub_close_finalized, failure, revision, created_at, updated_at, recovery_ready, source_spent_outpoint_txid, source_spent_outpoint_index, source_spending_txid FROM ark_channels
+SELECT channel_id, kind, funder, pending_channel_id, reserved_scid, capacity, client_node_key, hub_node_key, payment_hash, client_ark_key, hub_ark_key, ark_operator_key, client_channel_key, hub_channel_key, funder_key, channel_delay, funder_delay, min_exit_delay, phase, oor_session_id, source_index, source_amount, source_ark_tx, backing_tx, channel_point_txid, channel_point_index, client_finalized, hub_finalized, oor_finalized, oor_aborted, backing_published, close_initiator, close_client_script, close_hub_script, close_fee_rate_sat_per_kw, cooperative_close_tx, cooperative_close_txid, close_commitment_height, close_client_balance, close_hub_balance, client_close_signed, hub_close_signed, client_close_finalized, hub_close_finalized, failure, revision, created_at, updated_at, recovery_ready, source_spent_outpoint_txid, source_spent_outpoint_index, source_spending_txid, pre_ponr_started_at FROM ark_channels
 WHERE pending_channel_id = $1
 `
 
@@ -324,6 +333,7 @@ func (q *Queries) GetArkChannelByPendingID(ctx context.Context, pendingChannelID
 		&i.SourceSpentOutpointTxid,
 		&i.SourceSpentOutpointIndex,
 		&i.SourceSpendingTxid,
+		&i.PrePonrStartedAt,
 	)
 	return i, err
 }
@@ -345,12 +355,16 @@ INSERT INTO ark_channels (
 	cooperative_close_txid, close_commitment_height, close_client_balance,
 	close_hub_balance, client_close_signed, hub_close_signed,
 	client_close_finalized, hub_close_finalized, failure, revision, created_at,
-	updated_at
+	updated_at, pre_ponr_started_at
 ) VALUES (
 	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
 	$15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27,
 	$28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40,
-	$41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52
+	$41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52,
+	CASE
+		WHEN $53 OR $20 IS NOT NULL THEN $52
+		ELSE NULL
+	END
 )
 ON CONFLICT (channel_id) DO NOTHING
 `
@@ -408,6 +422,7 @@ type InsertArkChannelParams struct {
 	Revision                 int64
 	CreatedAt                int64
 	UpdatedAt                int64
+	PrePonrStarted           interface{}
 }
 
 // Ark channel coordination queries.
@@ -465,6 +480,7 @@ func (q *Queries) InsertArkChannel(ctx context.Context, arg InsertArkChannelPara
 		arg.Revision,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.PrePonrStarted,
 	)
 	if err != nil {
 		return 0, err
@@ -473,12 +489,15 @@ func (q *Queries) InsertArkChannel(ctx context.Context, arg InsertArkChannelPara
 }
 
 const ListNonTerminalArkChannels = `-- name: ListNonTerminalArkChannels :many
-SELECT channel_id, kind, funder, pending_channel_id, reserved_scid, capacity, client_node_key, hub_node_key, payment_hash, client_ark_key, hub_ark_key, ark_operator_key, client_channel_key, hub_channel_key, funder_key, channel_delay, funder_delay, min_exit_delay, phase, oor_session_id, source_index, source_amount, source_ark_tx, backing_tx, channel_point_txid, channel_point_index, client_finalized, hub_finalized, oor_finalized, oor_aborted, backing_published, close_initiator, close_client_script, close_hub_script, close_fee_rate_sat_per_kw, cooperative_close_tx, cooperative_close_txid, close_commitment_height, close_client_balance, close_hub_balance, client_close_signed, hub_close_signed, client_close_finalized, hub_close_finalized, failure, revision, created_at, updated_at, recovery_ready, source_spent_outpoint_txid, source_spent_outpoint_index, source_spending_txid FROM ark_channels
+SELECT channel_id, kind, funder, pending_channel_id, reserved_scid, capacity, client_node_key, hub_node_key, payment_hash, client_ark_key, hub_ark_key, ark_operator_key, client_channel_key, hub_channel_key, funder_key, channel_delay, funder_delay, min_exit_delay, phase, oor_session_id, source_index, source_amount, source_ark_tx, backing_tx, channel_point_txid, channel_point_index, client_finalized, hub_finalized, oor_finalized, oor_aborted, backing_published, close_initiator, close_client_script, close_hub_script, close_fee_rate_sat_per_kw, cooperative_close_tx, cooperative_close_txid, close_commitment_height, close_client_balance, close_hub_balance, client_close_signed, hub_close_signed, client_close_finalized, hub_close_finalized, failure, revision, created_at, updated_at, recovery_ready, source_spent_outpoint_txid, source_spent_outpoint_index, source_spending_txid, pre_ponr_started_at FROM ark_channels
 WHERE phase NOT IN (8, 10)
+    OR (phase = 8 AND cooperative_close_txid IS NOT NULL)
 ORDER BY created_at ASC, channel_id ASC
 `
 
-// Phase 8 is closed and phase 10 is failed. Cancelling remains resumable.
+// Phase 8 is closed and phase 10 is failed. A cooperatively closed channel
+// remains resumable because its signed replacement VTXOs still need source
+// ancestry defense. Cancelling also remains resumable.
 func (q *Queries) ListNonTerminalArkChannels(ctx context.Context) ([]ArkChannel, error) {
 	rows, err := q.db.QueryContext(ctx, ListNonTerminalArkChannels)
 	if err != nil {
@@ -541,6 +560,7 @@ func (q *Queries) ListNonTerminalArkChannels(ctx context.Context) ([]ArkChannel,
 			&i.SourceSpentOutpointTxid,
 			&i.SourceSpentOutpointIndex,
 			&i.SourceSpendingTxid,
+			&i.PrePonrStartedAt,
 		); err != nil {
 			return nil, err
 		}

@@ -16,6 +16,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testRecordObserver captures post-commit channel projections.
+type testRecordObserver struct {
+	records []Record
+}
+
+// ObserveArkChannel records one already-durable channel revision.
+func (o *testRecordObserver) ObserveArkChannel(_ context.Context,
+	record Record) {
+
+	o.records = append(o.records, record)
+}
+
 // TestOORChannelLifecycle proves the prepared transfer commits only after both
 // lnd endpoints and the immutable backing transaction are durable.
 func TestOORChannelLifecycle(t *testing.T) {
@@ -72,13 +84,6 @@ func TestOORChannelLifecycle(t *testing.T) {
 	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
 	require.True(t, record.Snapshot.ReadyToCommitOOR())
 
-	_, _, err = coordinator.Apply(
-		t.Context(), terms.ID, &Fail{
-			Reason: "peer disconnected",
-		},
-	)
-	require.ErrorContains(t, err, "after safety boundary")
-
 	record, actions, err = coordinator.Apply(
 		t.Context(), terms.ID, &OORFinalized{
 			SessionID: binding.OORSessionID,
@@ -88,6 +93,13 @@ func TestOORChannelLifecycle(t *testing.T) {
 	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
 	require.IsType(t, &PrepareRecovery{}, requireOneAction(t, actions))
 	require.False(t, record.Snapshot.RecoveryReady)
+
+	_, _, err = coordinator.Apply(
+		t.Context(), terms.ID, &Fail{
+			Reason: "peer disconnected",
+		},
+	)
+	require.ErrorContains(t, err, "after safety boundary")
 
 	record, actions, err = coordinator.Apply(
 		t.Context(), terms.ID, &RecoveryPackageInstalled{},
@@ -463,6 +475,34 @@ func TestCooperativeCloseLifecycle(t *testing.T) {
 		t, backing.ChannelPoint, record.Snapshot.Backing.ChannelPoint,
 	)
 	require.False(t, record.Snapshot.BackingPublished)
+
+	conflictOutpoint := wire.OutPoint{
+		Hash: chainhash.Hash{
+			7,
+		}, Index: 2,
+	}
+	conflictTxID := chainhash.Hash{8}
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &SourceSpent{
+			OutPoint: conflictOutpoint, SpendingTxID: conflictTxID,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseClosed, record.Snapshot.Phase)
+	require.Equal(
+		t, conflictOutpoint, record.Snapshot.SourceConflict.OutPoint,
+	)
+	require.Equal(
+		t, conflictTxID, record.Snapshot.SourceConflict.SpendingTxID,
+	)
+	require.IsType(
+		t, &PublishCooperativeClose{}, requireOneAction(t, actions),
+	)
+	_, resumed, err := coordinator.Resume(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.IsType(
+		t, &PublishCooperativeClose{}, requireOneAction(t, resumed),
+	)
 }
 
 // TestMaterializationSupersedesCooperativeNegotiation proves chain evidence
@@ -605,11 +645,141 @@ func TestOORChannelCanAbortBeforePONR(t *testing.T) {
 	require.IsType(t, &CancelFunding{}, requireOneAction(t, actions))
 	require.True(t, record.Snapshot.OORAborted)
 
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &OORAborted{
+			SessionID: binding.OORSessionID,
+			Reason:    "operator rejected transfer",
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseCancelling, record.Snapshot.Phase)
+	require.IsType(t, &CancelFunding{}, requireOneAction(t, actions))
+
 	record, _, err = coordinator.Apply(
 		t.Context(), terms.ID, &FundingCanceled{},
 	)
 	require.NoError(t, err)
 	require.Equal(t, PhaseFailed, record.Snapshot.Phase)
+}
+
+// TestBackingReadyRejectsGenericFailure proves only the OOR actor's definitive
+// terminal result can replace a commit action after the durable commit gate.
+func TestBackingReadyRejectsGenericFailure(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	terms := testTerms(t, KindReceiveIntent)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	binding := testBinding(terms)
+	backing := testBacking(t, terms, binding)
+	for _, event := range []Event{
+		&BindVTXO{
+			Binding: binding,
+		},
+		&FundingPeerReady{},
+		&BackingSigned{
+			Backing: backing,
+		},
+		&FundingFinalized{
+			Party: PartyClient,
+		},
+		&FundingFinalized{
+			Party: PartyHub,
+		},
+	} {
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+
+	_, _, err = coordinator.Apply(
+		t.Context(), terms.ID, &Fail{
+			Reason: "incoming HTLC is expiring",
+		},
+	)
+	require.ErrorContains(t, err, "after safety boundary")
+
+	record, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, &ExpirePrePONR{
+			Reason: "incoming HTLC is expiring",
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
+	require.Empty(t, actions)
+
+	_, resumed, err := coordinator.Resume(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.IsType(t, &CommitOOR{}, requireOneAction(t, resumed))
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &OORAborted{
+			SessionID: binding.OORSessionID,
+			Reason:    "operator rejected transfer",
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseCancelling, record.Snapshot.Phase)
+	require.IsType(t, &CancelFunding{}, requireOneAction(t, actions))
+}
+
+// TestPrePONRExpiryLosesCommitGateCASRace proves a timer that read Negotiating
+// cannot overwrite a concurrently persisted BackingReady commit action.
+func TestPrePONRExpiryLosesCommitGateCASRace(t *testing.T) {
+	t.Parallel()
+
+	store := newMemoryStore()
+	coordinator, err := NewCoordinator(store)
+	require.NoError(t, err)
+	terms := testTerms(t, KindReceiveIntent)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	binding := testBinding(terms)
+	backing := testBacking(t, terms, binding)
+	for _, event := range []Event{
+		&BindVTXO{
+			Binding: binding,
+		},
+		&FundingPeerReady{},
+	} {
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+	stale, err := coordinator.Get(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, PhaseNegotiating, stale.Snapshot.Phase)
+	for _, event := range []Event{
+		&BackingSigned{
+			Backing: backing,
+		},
+		&FundingFinalized{
+			Party: PartyClient,
+		},
+		&FundingFinalized{
+			Party: PartyHub,
+		},
+	} {
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+
+	staleStore := &staleReadStore{
+		memoryStore: store, stale: stale,
+	}
+	staleCoordinator, err := NewCoordinator(staleStore)
+	require.NoError(t, err)
+	record, actions, err := staleCoordinator.Apply(
+		t.Context(), terms.ID, &ExpirePrePONR{
+			Reason: "expired from stale scan",
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
+	require.Empty(t, actions)
+	_, actions, err = staleCoordinator.Resume(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.IsType(t, &CommitOOR{}, requireOneAction(t, actions))
 }
 
 // TestPromotionWaitsForOORFinalization proves a client-funded promotion uses
@@ -858,6 +1028,58 @@ func TestCoordinatorDoesNotEmitBeforeCommit(t *testing.T) {
 	require.Empty(t, actions)
 }
 
+// TestCoordinatorObserverRunsAfterCommit proves ancillary accounting sees the
+// exact revision that is already present in the canonical channel store.
+func TestCoordinatorObserverRunsAfterCommit(t *testing.T) {
+	t.Parallel()
+
+	store := newMemoryStore()
+	observer := &testRecordObserver{}
+	coordinator, err := NewCoordinator(store, observer)
+	require.NoError(t, err)
+	terms := testTerms(t, KindReceiveIntent)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	updated, _, err := coordinator.Apply(
+		t.Context(), terms.ID, &BindVTXO{
+			Binding: testBinding(terms),
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, observer.records, 2)
+	require.Equal(t, updated, observer.records[1])
+	persisted, err := store.Get(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, persisted, observer.records[1])
+}
+
+// TestOORPreparationStartedIsIdempotent proves wallet selection is armed as a
+// durable channel fact before the source outpoint exists.
+func TestOORPreparationStartedIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	terms := testTerms(t, KindPromotion)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+
+	record, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, &OORPreparationStarted{},
+	)
+	require.NoError(t, err)
+	require.Empty(t, actions)
+	require.True(t, record.Snapshot.OORPreparationStarted)
+	revision := record.Revision
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &OORPreparationStarted{},
+	)
+	require.NoError(t, err)
+	require.Empty(t, actions)
+	require.Equal(t, revision, record.Revision)
+}
+
 // TestPartialFundingFactsDoNotRestartNegotiation verifies callback progress
 // stays within one native lnd funding attempt.
 func TestPartialFundingFactsDoNotRestartNegotiation(t *testing.T) {
@@ -903,6 +1125,24 @@ type memoryStore struct {
 	mu       sync.Mutex
 	records  map[ID]Record
 	writeErr error
+}
+
+// staleReadStore serves one stale record before delegating to the real store.
+type staleReadStore struct {
+	*memoryStore
+	stale Record
+}
+
+// Get returns one stale snapshot to force a compare-and-swap retry.
+func (s *staleReadStore) Get(ctx context.Context, id ID) (Record, error) {
+	if s.stale.Snapshot.Terms.ID == id {
+		stale := s.stale
+		s.stale = Record{}
+
+		return cloneRecord(stale), nil
+	}
+
+	return s.memoryStore.Get(ctx, id)
 }
 
 // newMemoryStore creates an empty test store.

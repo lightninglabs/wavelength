@@ -24,6 +24,11 @@ type staticFundingFinalizationSource struct {
 
 type noOpActionExecutor struct{}
 
+type recordingResumeExecutor struct {
+	failID ID
+	calls  []ID
+}
+
 // ValidatePreparedOOR accepts fixtures already covered by state validation.
 func (*noOpActionExecutor) ValidatePreparedOOR(context.Context, Terms,
 	VTXOBinding) error {
@@ -33,6 +38,18 @@ func (*noOpActionExecutor) ValidatePreparedOOR(context.Context, Terms,
 
 // Execute accepts already-durable actions without completing callbacks.
 func (*noOpActionExecutor) Execute(context.Context, ID, Action) error {
+	return nil
+}
+
+// Execute records every replay and fails only the selected channel.
+func (e *recordingResumeExecutor) Execute(_ context.Context, id ID,
+	_ Action) error {
+
+	e.calls = append(e.calls, id)
+	if id == e.failID {
+		return fmt.Errorf("injected channel failure")
+	}
+
 	return nil
 }
 
@@ -343,6 +360,45 @@ func TestServiceReconcilesFundingByChannelPoint(t *testing.T) {
 		},
 	)
 	require.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestServiceResumeIsolatesChannelFailures proves one corrupt or unavailable
+// channel cannot prevent independent durable channels from replaying.
+func TestServiceResumeIsolatesChannelFailures(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	first := testTerms(t, KindPromotion)
+	second := testTerms(t, KindPromotion)
+	second.ID[0] = 2
+	second.PendingChannelID[0] = 6
+	second.ReservedSCID++
+	for _, terms := range []Terms{first, second} {
+		_, err := coordinator.Request(t.Context(), terms)
+		require.NoError(t, err)
+		_, actions, err := coordinator.Apply(
+			t.Context(), terms.ID, &BindVTXO{
+				Binding: testBinding(terms),
+			},
+		)
+		require.NoError(t, err)
+		require.Len(t, actions, 1)
+	}
+
+	executor := &recordingResumeExecutor{failID: first.ID}
+	service, err := NewService(coordinator, executor)
+	require.NoError(t, err)
+	err = service.Resume(t.Context())
+
+	var failures *ResumeFailures
+	require.ErrorAs(t, err, &failures)
+	require.Len(t, failures.Failures, 1)
+	require.Equal(t, first.ID, failures.Failures[0].ChannelID)
+	require.ErrorContains(
+		t, failures.Failures[0].Err, "injected channel failure",
+	)
+	require.ElementsMatch(t, []ID{first.ID, second.ID}, executor.calls)
 }
 
 var (

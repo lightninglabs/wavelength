@@ -211,6 +211,7 @@ message GetFundingChannelResponse {
     bool recovery_ready = 6;
     string failure = 7;
     uint64 revision = 8;
+    bool oor_aborted = 9;
 }
 
 message BindPreparedOORRequest {
@@ -318,6 +319,7 @@ enum ChannelEventType {
     CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED = 6;
     CHANNEL_EVENT_TYPE_FAILED = 7;
     CHANNEL_EVENT_TYPE_FUNDING_PEER_READY = 8;
+    CHANNEL_EVENT_TYPE_OOR_ABORTED = 9;
 }
 
 message ApplyChannelEventRequest {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
@@ -50,7 +51,8 @@ func (s *ArkChannelStoreDB) Create(ctx context.Context,
 	if _, err := arkchannel.RestoreState(snapshot); err != nil {
 		return arkchannel.Record{}, err
 	}
-	now := s.clock.Now().Unix()
+	nowTime := time.Unix(s.clock.Now().Unix(), 0).UTC()
+	now := nowTime.Unix()
 	params, err := insertArkChannelParams(snapshot, now)
 	if err != nil {
 		return arkchannel.Record{}, err
@@ -70,10 +72,16 @@ func (s *ArkChannelStoreDB) Create(ctx context.Context,
 		return arkchannel.Record{}, arkchannel.ErrConflict
 	}
 
-	return arkchannel.Record{
-		Snapshot: snapshot.Clone(),
-		Revision: uint64(initialArkChannelRevision),
-	}, nil
+	record := arkchannel.Record{
+		Snapshot:  snapshot.Clone(),
+		Revision:  uint64(initialArkChannelRevision),
+		CreatedAt: nowTime, UpdatedAt: nowTime,
+	}
+	if snapshot.OORPreparationStarted || snapshot.Source != nil {
+		record.PrePONRStartedAt = nowTime
+	}
+
+	return record, nil
 }
 
 // Get loads one channel by stable ID.
@@ -147,7 +155,9 @@ func (s *ArkChannelStoreDB) GetByChannelPoint(ctx context.Context,
 	return arkChannelRecordFromRow(row)
 }
 
-// ListNonTerminal loads channels that need recovery or observation.
+// ListNonTerminal loads channels that need recovery or observation. This
+// includes cooperatively closed channels whose replacement VTXOs retain a
+// source-ancestry defense obligation.
 func (s *ArkChannelStoreDB) ListNonTerminal(ctx context.Context) (
 	[]arkchannel.Record, error) {
 
@@ -198,10 +208,17 @@ func (s *ArkChannelStoreDB) CompareAndSwap(ctx context.Context,
 	if err != nil {
 		return arkchannel.Record{}, err
 	}
-	var rows int64
+	var (
+		rows int64
+		row  sqlc.ArkChannel
+	)
 	err = s.ExecTx(ctx, WriteTxOption(), func(q *sqlc.Queries) error {
 		var err error
 		rows, err = q.CompareAndSwapArkChannel(ctx, params)
+		if err != nil || rows != 1 {
+			return err
+		}
+		row, err = q.GetArkChannel(ctx, id[:])
 
 		return err
 	})
@@ -212,10 +229,7 @@ func (s *ArkChannelStoreDB) CompareAndSwap(ctx context.Context,
 		return arkchannel.Record{}, arkchannel.ErrConflict
 	}
 
-	return arkchannel.Record{
-		Snapshot: snapshot.Clone(),
-		Revision: expected + 1,
-	}, nil
+	return arkChannelRecordFromRow(row)
 }
 
 // arkChannelMutableFields is the shared SQL representation of mutable state.
@@ -421,6 +435,7 @@ func insertArkChannelParams(snapshot arkchannel.Snapshot,
 		Revision:                 initialArkChannelRevision,
 		CreatedAt:                now,
 		UpdatedAt:                now,
+		PrePonrStarted:           arkChannelPrePONRStarted(snapshot),
 	}, nil
 }
 
@@ -468,7 +483,19 @@ func compareAndSwapArkChannelParams(snapshot arkchannel.Snapshot, revision,
 		HubCloseFinalized:        fields.hubCloseFinalized,
 		Failure:                  fields.failure,
 		UpdatedAt:                now,
+		PrePonrStarted:           arkChannelPrePONRStarted(snapshot),
 	}, nil
+}
+
+// arkChannelPrePONRStarted encodes the durable preparation fact for SQLite's
+// integer boolean representation.
+func arkChannelPrePONRStarted(snapshot arkchannel.Snapshot) sql.NullInt64 {
+	var value int64
+	if snapshot.OORPreparationStarted || snapshot.Source != nil {
+		value = 1
+	}
+
+	return sql.NullInt64{Int64: value, Valid: true}
 }
 
 // arkChannelRecordFromRow validates one SQL row before exposing it.
@@ -560,19 +587,20 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 	terms.Capacity = btcutil.Amount(row.Capacity)
 
 	snapshot := arkchannel.Snapshot{
-		Terms:                terms,
-		Phase:                arkchannel.Phase(row.Phase),
-		ClientFinalized:      row.ClientFinalized,
-		HubFinalized:         row.HubFinalized,
-		OORFinalized:         row.OorFinalized,
-		OORAborted:           row.OorAborted,
-		RecoveryReady:        row.RecoveryReady,
-		BackingPublished:     row.BackingPublished,
-		ClientCloseSigned:    row.ClientCloseSigned,
-		HubCloseSigned:       row.HubCloseSigned,
-		ClientCloseFinalized: row.ClientCloseFinalized,
-		HubCloseFinalized:    row.HubCloseFinalized,
-		Failure:              row.Failure.String,
+		Terms:                 terms,
+		Phase:                 arkchannel.Phase(row.Phase),
+		OORPreparationStarted: row.PrePonrStartedAt.Valid,
+		ClientFinalized:       row.ClientFinalized,
+		HubFinalized:          row.HubFinalized,
+		OORFinalized:          row.OorFinalized,
+		OORAborted:            row.OorAborted,
+		RecoveryReady:         row.RecoveryReady,
+		BackingPublished:      row.BackingPublished,
+		ClientCloseSigned:     row.ClientCloseSigned,
+		HubCloseSigned:        row.HubCloseSigned,
+		ClientCloseFinalized:  row.ClientCloseFinalized,
+		HubCloseFinalized:     row.HubCloseFinalized,
+		Failure:               row.Failure.String,
 	}
 	conflict, err := arkChannelSourceConflictFromRow(row)
 	if err != nil {
@@ -612,9 +640,23 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 	}
 
 	return arkchannel.Record{
-		Snapshot: snapshot,
-		Revision: uint64(row.Revision),
+		Snapshot:  snapshot,
+		Revision:  uint64(row.Revision),
+		CreatedAt: time.Unix(row.CreatedAt, 0).UTC(),
+		UpdatedAt: time.Unix(row.UpdatedAt, 0).UTC(),
+		PrePONRStartedAt: nullableUnixTime(
+			row.PrePonrStartedAt,
+		),
 	}, nil
+}
+
+// nullableUnixTime decodes optional persisted lifecycle metadata.
+func nullableUnixTime(value sql.NullInt64) time.Time {
+	if !value.Valid {
+		return time.Time{}
+	}
+
+	return time.Unix(value.Int64, 0).UTC()
 }
 
 // arkChannelSourceConflictFromRow restores the all-or-none source-spend tuple.

@@ -242,7 +242,9 @@ type Querier interface {
 	// Also filter on spent = FALSE to handle VTXOs marked spent via the earlier
 	// flag before the status field was introduced.
 	ListLiveVTXOs(ctx context.Context) ([]Vtxo, error)
-	// Phase 8 is closed and phase 10 is failed. Cancelling remains resumable.
+	// Phase 8 is closed and phase 10 is failed. A cooperatively closed channel
+	// remains resumable because its signed replacement VTXOs still need source
+	// ancestry defense. Cancelling also remains resumable.
 	ListNonTerminalArkChannels(ctx context.Context) ([]ArkChannel, error)
 	// Status 1 = Completed, 2 = Failed (anchored to Go iota in
 	// db/credit_operation_store.go CreditOpStatus).

@@ -10,6 +10,22 @@ type Event interface {
 	eventSealed()
 }
 
+// OORPreparationStarted records that the funder may now reserve wallet VTXOs
+// for this channel. Persisting this fact before selection makes an interrupted
+// preparation discoverable without funding an unpaid receive intent.
+type OORPreparationStarted struct{}
+
+func (*OORPreparationStarted) eventSealed() {}
+
+// ExpirePrePONR abandons an armed channel only while its OOR commit action
+// cannot have started. Replaying a stale expiry after the commit gate is a
+// durable no-op rather than a generic failure.
+type ExpirePrePONR struct {
+	Reason string
+}
+
+func (*ExpirePrePONR) eventSealed() {}
+
 // BindVTXO records the exact output of a durable prepared OOR transfer.
 type BindVTXO struct {
 	Binding VTXOBinding
@@ -152,7 +168,7 @@ type CooperativeCloseAborted struct{}
 
 func (*CooperativeCloseAborted) eventSealed() {}
 
-// Fail abandons negotiation before the signed-backing safety boundary.
+// Fail abandons negotiation before the OOR commit action becomes replayable.
 type Fail struct {
 	Reason string
 }
@@ -212,7 +228,9 @@ func (*ActivateChannel) actionSealed() {}
 // reservation before the Ark workflow becomes terminal.
 type CancelFunding struct {
 	Terms   Terms
+	Source  VTXOBinding
 	Backing *Backing
+	Reason  string
 }
 
 func (*CancelFunding) actionSealed() {}

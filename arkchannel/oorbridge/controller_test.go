@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -27,10 +28,18 @@ import (
 
 // controllerTestRef returns a fixed OOR state to the controller.
 type controllerTestRef struct {
-	state          oor.SessionState
-	startSessionID oor.SessionID
-	startRequest   *oor.StartTransferRequest
-	driveEvent     oor.Event
+	state           oor.SessionState
+	startSessionID  oor.SessionID
+	startExisting   bool
+	startErr        error
+	startPending    bool
+	startRequest    *oor.StartTransferRequest
+	lookupFound     bool
+	lookupPending   bool
+	lookupRequests  int
+	driveEvent      oor.Event
+	driveErr        error
+	stateAfterDrive oor.SessionState
 }
 
 // controllerTestSink records the terminal channel event applied by the bridge.
@@ -74,14 +83,44 @@ func (r *controllerTestRef) Ask(_ context.Context,
 
 	case *oor.StartTransferRequest:
 		r.startRequest = message
+		if r.startPending {
+			return promise.Future()
+		}
+		if r.startErr != nil {
+			promise.Complete(fn.Err[oor.ActorResp](r.startErr))
+
+			return promise.Future()
+		}
 		response = &oor.StartTransferResponse{
-			SessionID: r.startSessionID,
+			SessionID: r.startSessionID, Existing: r.startExisting,
+		}
+
+	case *oor.LookupTransferRequest:
+		r.lookupRequests++
+		response = &oor.LookupTransferResponse{
+			SessionID: r.startSessionID, Found: r.lookupFound,
+			Pending: r.lookupPending,
 		}
 
 	case *oor.DriveEventRequest:
 		r.driveEvent = message.Event
-		if _, ok := message.Event.(*oor.CommitPreparedEvent); ok {
-			r.state = &oor.Completed{}
+		if r.stateAfterDrive != nil {
+			r.state = r.stateAfterDrive
+		} else {
+			switch event := message.Event.(type) {
+			case *oor.CommitPreparedEvent:
+				r.state = &oor.Completed{}
+
+			case *oor.AbortPreparedEvent:
+				r.state = &oor.Failed{
+					Reason: event.Reason, PrePONR: true,
+				}
+			}
+		}
+		if r.driveErr != nil {
+			promise.Complete(fn.Err[oor.ActorResp](r.driveErr))
+
+			return promise.Future()
 		}
 		response = &oor.DriveEventResponse{}
 
@@ -108,7 +147,7 @@ func TestPrepareChannelStopsBeforeOORSignatures(t *testing.T) {
 	controller, err := NewWithRef(ref)
 	require.NoError(t, err)
 
-	binding, err := controller.PrepareChannel(t.Context(), PrepareRequest{
+	result, err := controller.PrepareChannel(t.Context(), PrepareRequest{
 		Terms: terms,
 		CheckpointPolicy: arkscript.CheckpointPolicy{
 			OperatorKey: operatorKey,
@@ -118,7 +157,8 @@ func TestPrepareChannelStopsBeforeOORSignatures(t *testing.T) {
 		BackingFee: expected.Amount - terms.Capacity,
 	})
 	require.NoError(t, err)
-	require.Equal(t, expected, binding)
+	require.Equal(t, expected, result.Binding)
+	require.False(t, result.Existing)
 	require.NotNil(t, ref.startRequest)
 	require.True(t, ref.startRequest.PrepareOnly)
 	require.Equal(
@@ -127,6 +167,162 @@ func TestPrepareChannelStopsBeforeOORSignatures(t *testing.T) {
 	)
 	require.Equal(t, prepared.TransferInputs, ref.startRequest.Inputs)
 	require.Len(t, ref.startRequest.Recipients, 1)
+}
+
+// TestPrepareChannelPreservesAmbiguousAdmission proves a caller cannot release
+// channel accounting after the OOR registry has returned a durable session ID
+// but its exact prepared state cannot be reconstructed yet.
+func TestPrepareChannelPreservesAmbiguousAdmission(t *testing.T) {
+	t.Parallel()
+
+	terms, expected, prepared, _, _ := preparedChannelBinding(t)
+	operatorKey, err := btcec.ParsePubKey(terms.VTXO.ArkOperatorKey[:])
+	require.NoError(t, err)
+	ref := &controllerTestRef{
+		state: &oor.Completed{}, startSessionID: oor.SessionID(
+			expected.OORSessionID,
+		),
+	}
+	controller, err := NewWithRef(ref)
+	require.NoError(t, err)
+
+	_, err = controller.PrepareChannel(t.Context(), PrepareRequest{
+		Terms: terms,
+		CheckpointPolicy: arkscript.CheckpointPolicy{
+			OperatorKey: operatorKey,
+			CSVDelay:    terms.VTXO.MinExitDelay,
+		},
+		Inputs: prepared.TransferInputs, BackingFee: expected.Amount -
+			terms.Capacity,
+	})
+	require.ErrorIs(t, err, arkchannel.ErrOORPreparationAmbiguous)
+}
+
+// TestPrepareChannelReturnsDefinitiveAdmissionError proves an actor rejection
+// observed while the caller is live is safe for the wallet to unlock.
+func TestPrepareChannelReturnsDefinitiveAdmissionError(t *testing.T) {
+	t.Parallel()
+
+	terms, expected, prepared, _, _ := preparedChannelBinding(t)
+	operatorKey, err := btcec.ParsePubKey(terms.VTXO.ArkOperatorKey[:])
+	require.NoError(t, err)
+	ref := &controllerTestRef{
+		state: prepared, startSessionID: oor.SessionID(
+			expected.OORSessionID,
+		),
+		startErr: fmt.Errorf("admission rejected"),
+	}
+	controller, err := NewWithRef(ref)
+	require.NoError(t, err)
+
+	_, err = controller.PrepareChannel(t.Context(), PrepareRequest{
+		Terms: terms,
+		CheckpointPolicy: arkscript.CheckpointPolicy{
+			OperatorKey: operatorKey,
+			CSVDelay:    terms.VTXO.MinExitDelay,
+		},
+		Inputs: prepared.TransferInputs, BackingFee: expected.Amount -
+			terms.Capacity,
+	})
+	require.ErrorContains(t, err, "admission rejected")
+	require.NotErrorIs(t, err, arkchannel.ErrOORPreparationAmbiguous)
+}
+
+// TestPrepareChannelMarksCanceledWaitAmbiguous proves caller cancellation
+// cannot be interpreted as a registry admission rejection.
+func TestPrepareChannelMarksCanceledWaitAmbiguous(t *testing.T) {
+	t.Parallel()
+
+	terms, expected, prepared, _, _ := preparedChannelBinding(t)
+	operatorKey, err := btcec.ParsePubKey(terms.VTXO.ArkOperatorKey[:])
+	require.NoError(t, err)
+	controller, err := NewWithRef(&controllerTestRef{startPending: true})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = controller.PrepareChannel(ctx, PrepareRequest{
+		Terms: terms,
+		CheckpointPolicy: arkscript.CheckpointPolicy{
+			OperatorKey: operatorKey,
+			CSVDelay:    terms.VTXO.MinExitDelay,
+		},
+		Inputs: prepared.TransferInputs, BackingFee: expected.Amount -
+			terms.Capacity,
+	})
+	require.ErrorIs(t, err, arkchannel.ErrOORPreparationAmbiguous)
+}
+
+// TestLookupPreparedChannelReconstructsBinding proves restart recovery uses the
+// durable idempotency winner without submitting another transfer request.
+func TestLookupPreparedChannelReconstructsBinding(t *testing.T) {
+	t.Parallel()
+
+	terms, expected, prepared, _, _ := preparedChannelBinding(t)
+	ref := &controllerTestRef{
+		state: prepared, startSessionID: oor.SessionID(
+			expected.OORSessionID,
+		),
+		lookupFound: true,
+	}
+	controller, err := NewWithRef(ref)
+	require.NoError(t, err)
+
+	binding, found, err := controller.LookupPreparedChannel(
+		t.Context(), terms, expected.Amount-terms.Capacity,
+	)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, expected, binding)
+	require.Equal(t, 1, ref.lookupRequests)
+	require.Nil(t, ref.startRequest)
+}
+
+// TestLookupChannelPreparationReportsPending proves an accepted registry
+// request cannot be treated as an authoritative miss during retry cleanup.
+func TestLookupChannelPreparationReportsPending(t *testing.T) {
+	t.Parallel()
+
+	terms, expected, _, _, _ := preparedChannelBinding(t)
+	ref := &controllerTestRef{
+		startSessionID: oor.SessionID(expected.OORSessionID),
+		lookupPending:  true,
+	}
+	controller, err := NewWithRef(ref)
+	require.NoError(t, err)
+
+	lookup, err := controller.LookupChannelPreparation(
+		t.Context(), terms, expected.Amount-terms.Capacity,
+	)
+	require.NoError(t, err)
+	require.Equal(t, PreparationPending, lookup.Status)
+	require.Empty(t, lookup.InputOutpoints)
+	_, found, err := controller.LookupPreparedChannel(
+		t.Context(), terms, expected.Amount-terms.Capacity,
+	)
+	require.ErrorIs(t, err, arkchannel.ErrOORPreparationAmbiguous)
+	require.False(t, found)
+	require.Nil(t, ref.startRequest)
+}
+
+// TestLookupChannelPreparationTreatsPrePONRFailureAsAbsent proves a failed
+// admission no longer owns wallet inputs and permits a clean retry.
+func TestLookupChannelPreparationTreatsPrePONRFailureAsAbsent(t *testing.T) {
+	t.Parallel()
+
+	terms, expected, _, _, _ := preparedChannelBinding(t)
+	controller, err := NewWithRef(&controllerTestRef{
+		state:          &oor.Failed{Reason: "rejected", PrePONR: true},
+		startSessionID: oor.SessionID(expected.OORSessionID),
+		lookupFound:    true,
+	})
+	require.NoError(t, err)
+
+	lookup, err := controller.LookupChannelPreparation(
+		t.Context(), terms, expected.Amount-terms.Capacity,
+	)
+	require.NoError(t, err)
+	require.Equal(t, PreparationAbsent, lookup.Status)
 }
 
 // TestValidatePreparedOORBindsExactOutput proves a caller cannot bind a
@@ -193,20 +389,115 @@ func TestWaitForTerminalAcceptsIncomingSelfTransfer(t *testing.T) {
 	ref := &controllerTestRef{state: &oor.ReceiveCompleted{}}
 	controller, err := NewWithRef(ref)
 	require.NoError(t, err)
+
+	sessionID := [32]byte{2}
+	result, err := controller.waitForTerminal(
+		t.Context(), arkchannel.VTXOBinding{
+			OORSessionID: sessionID,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, TerminalResult{Finalized: true}, result)
+}
+
+// TestAbortPreparedOORReconcilesLostFinalizedResponse proves replaying abort
+// after commit completed reports finalization and never submits an abort event.
+func TestAbortPreparedOORReconcilesLostFinalizedResponse(t *testing.T) {
+	t.Parallel()
+
+	terms, source, _, _, _ := preparedChannelBinding(t)
+	ref := &controllerTestRef{state: &oor.Completed{}}
+	controller, err := NewWithRef(ref)
+	require.NoError(t, err)
+	result, err := controller.AbortPreparedOORResult(
+		t.Context(), terms.ID, terms, source, "expired",
+	)
+	require.NoError(t, err)
+	require.Equal(t, TerminalResult{Finalized: true}, result)
+	require.Nil(t, ref.driveEvent)
+}
+
+// TestCommitPreparedOORReconcilesPrePONRAbort proves a lost commit response can
+// report the actor's definitive pre-PONR failure without retrying signatures.
+func TestCommitPreparedOORReconcilesPrePONRAbort(t *testing.T) {
+	t.Parallel()
+
+	terms, source, _, _, _ := preparedChannelBinding(t)
+	ref := &controllerTestRef{state: &oor.Failed{
+		Reason: "admission rejected", PrePONR: true,
+	}}
+	controller, err := NewWithRef(ref)
+	require.NoError(t, err)
+	result, err := controller.CommitPreparedOORResult(
+		t.Context(), terms.ID, terms, source,
+	)
+	require.NoError(t, err)
+	require.Equal(t, TerminalResult{
+		Aborted: true, Reason: "admission rejected",
+	}, result)
+	require.Nil(t, ref.driveEvent)
+}
+
+// TestAbortPreparedOORLosesConcurrentCommit proves an abort response race is
+// reconciled from actor state instead of releasing the committed source.
+func TestAbortPreparedOORLosesConcurrentCommit(t *testing.T) {
+	t.Parallel()
+
+	terms, source, prepared, _, _ := preparedChannelBinding(t)
+	ref := &controllerTestRef{
+		state: prepared, driveErr: fmt.Errorf("concurrent control"),
+		stateAfterDrive: &oor.Completed{},
+	}
+	controller, err := NewWithRef(ref)
+	require.NoError(t, err)
+	result, err := controller.AbortPreparedOORResult(
+		t.Context(), terms.ID, terms, source, "expired",
+	)
+	require.NoError(t, err)
+	require.Equal(t, TerminalResult{Finalized: true}, result)
+	require.IsType(t, &oor.AbortPreparedEvent{}, ref.driveEvent)
+}
+
+// TestPostPONRFailureRemainsUnresolved proves source loss alone cannot be
+// mistaken for proof that the channel-policy output was finalized.
+func TestPostPONRFailureRemainsUnresolved(t *testing.T) {
+	t.Parallel()
+
+	terms, source, _, _, _ := preparedChannelBinding(t)
+	ref := &controllerTestRef{state: &oor.Failed{
+		Reason: "operator rejected finalization", PrePONR: false,
+	}}
+	controller, err := NewWithRef(ref)
+	require.NoError(t, err)
+	result, err := controller.CommitPreparedOORResult(
+		t.Context(), terms.ID, terms, source,
+	)
+	require.ErrorIs(t, err, ErrOORPostPONRFailure)
+	require.Zero(t, result)
+	require.Nil(t, ref.driveEvent)
+}
+
+// TestCommitPreparedOORAppliesTerminalFact proves the executor-facing wrapper
+// still records the result after the sink-independent control method returns.
+func TestCommitPreparedOORAppliesTerminalFact(t *testing.T) {
+	t.Parallel()
+
+	terms, source, _, _, _ := preparedChannelBinding(t)
+	controller, err := NewWithRef(&controllerTestRef{
+		state: &oor.Completed{},
+	})
+	require.NoError(t, err)
 	sink := &controllerTestSink{}
 	require.NoError(t, controller.BindChannelEventSink(sink))
 
-	id := arkchannel.ID{1}
-	sessionID := [32]byte{2}
-	err = controller.waitForTerminal(
-		t.Context(), id, arkchannel.VTXOBinding{
-			OORSessionID: sessionID,
-		}, false,
+	require.NoError(
+		t,
+		controller.CommitPreparedOOR(
+			t.Context(), terms.ID, terms, source,
+		),
 	)
-	require.NoError(t, err)
-	finalized, ok := sink.event.(*arkchannel.OORFinalized)
+	_, ok := sink.event.(*arkchannel.OORFinalized)
 	require.True(t, ok)
-	require.Equal(t, sessionID, finalized.SessionID)
 }
 
 // TestSettleCooperativeClosePreparesBeforeSigning proves the bridge verifies

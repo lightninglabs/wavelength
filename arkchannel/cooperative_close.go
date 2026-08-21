@@ -146,6 +146,68 @@ func (c CooperativeClose) Validate(terms Terms, source VTXOBinding,
 	return template.VerifySignature(terms, PartyHub, sig)
 }
 
+// ReplacementOutPoint derives the exact ordinary VTXO assigned to one close
+// participant. Reconstructing the canonical Ark transaction avoids assuming
+// recipient order, which is changed by BIP69 output sorting.
+func (c CooperativeClose) ReplacementOutPoint(terms Terms, source VTXOBinding,
+	request CooperativeCloseRequest, party Party) (wire.OutPoint, error) {
+
+	if err := c.Validate(terms, source, request); err != nil {
+		return wire.OutPoint{}, err
+	}
+
+	var (
+		owner  []byte
+		amount btcutil.Amount
+	)
+	switch party {
+	case PartyClient:
+		owner = request.ClientDeliveryScript
+		amount = c.Proposal.ClientOutput
+
+	case PartyHub:
+		owner = request.HubDeliveryScript
+		amount = c.Proposal.HubOutput
+
+	default:
+		return wire.OutPoint{}, fmt.Errorf("unknown cooperative close "+
+			"party %d", party)
+	}
+	if amount <= 0 {
+		return wire.OutPoint{}, fmt.Errorf("%s cooperative close has "+
+			"no replacement output", party)
+	}
+
+	operatorKey, err := parseChannelKey(
+		"Ark operator", terms.VTXO.ArkOperatorKey,
+	)
+	if err != nil {
+		return wire.OutPoint{}, err
+	}
+	target, err := cooperativeCloseRecipient(
+		owner, operatorKey, terms.VTXO.MinExitDelay, amount,
+	)
+	if err != nil {
+		return wire.OutPoint{}, err
+	}
+	template, err := NewCooperativeCloseTemplate(
+		terms, source, request, c.Proposal.ClientBalance,
+		c.Proposal.HubBalance, c.Proposal.CommitmentHeight,
+	)
+	if err != nil {
+		return wire.OutPoint{}, err
+	}
+	outpoint, err := oortx.RecipientOutPoint(
+		c.TxID, template.recipients, target,
+	)
+	if err != nil {
+		return wire.OutPoint{}, fmt.Errorf("derive %s cooperative "+
+			"close replacement: %w", party, err)
+	}
+
+	return outpoint, nil
+}
+
 // CooperativeCloseOORSpec contains the deterministic ordinary OOR actor input
 // data that is safe to hand across the core channel package boundary.
 type CooperativeCloseOORSpec struct {

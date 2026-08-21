@@ -70,7 +70,7 @@ func (h *nativeExecutorHarness) AbortPreparedOOR(_ context.Context, id ID,
 
 // CancelChannel records native funding cleanup.
 func (h *nativeExecutorHarness) CancelChannel(_ context.Context, id ID, _ Terms,
-	_ *Backing) error {
+	_ VTXOBinding, _ *Backing, _ string) error {
 
 	h.cancelledID = id
 

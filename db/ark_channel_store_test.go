@@ -32,8 +32,19 @@ func TestArkChannelStoreRoundTrip(t *testing.T) {
 		TxIndex:     1,
 	}.ToUint64()
 
-	_, err = coordinator.Request(t.Context(), terms)
+	requested, err := coordinator.Request(t.Context(), terms)
 	require.NoError(t, err)
+	require.False(t, requested.CreatedAt.IsZero())
+	require.False(t, requested.UpdatedAt.IsZero())
+	require.True(t, requested.PrePONRStartedAt.IsZero())
+	armed, _, err := coordinator.Apply(
+		t.Context(), terms.ID, &arkchannel.OORPreparationStarted{},
+	)
+	require.NoError(t, err)
+	require.True(t, armed.Snapshot.OORPreparationStarted)
+	require.Nil(t, armed.Snapshot.Source)
+	require.False(t, armed.PrePONRStartedAt.IsZero())
+	prePONRStartedAt := armed.PrePONRStartedAt
 	binding := testArkChannelBinding(terms)
 	bound, _, err := coordinator.Apply(
 		t.Context(), terms.ID, &arkchannel.BindVTXO{
@@ -41,6 +52,7 @@ func TestArkChannelStoreRoundTrip(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
+	require.Equal(t, prePONRStartedAt, bound.PrePONRStartedAt)
 	backing := testArkChannelBacking(t, terms, binding)
 	for _, event := range []arkchannel.Event{
 		&arkchannel.FundingPeerReady{},
@@ -64,6 +76,7 @@ func TestArkChannelStoreRoundTrip(t *testing.T) {
 	require.Equal(t, terms.ReservedSCID, loaded.Snapshot.Terms.ReservedSCID)
 	require.Equal(t, backing, *loaded.Snapshot.Backing)
 	require.Equal(t, binding, *loaded.Snapshot.Source)
+	require.Equal(t, prePONRStartedAt, loaded.PrePONRStartedAt)
 	byPendingID, err := store.GetByPendingChannelID(
 		t.Context(), terms.PendingChannelID,
 	)
@@ -204,6 +217,10 @@ func TestArkChannelStoreCooperativeCloseRoundTrip(t *testing.T) {
 	loaded, err = store.Get(t.Context(), terms.ID)
 	require.NoError(t, err)
 	require.Equal(t, arkchannel.PhaseClosed, loaded.Snapshot.Phase)
+	records, err := store.ListNonTerminal(t.Context())
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	require.Equal(t, terms.ID, records[0].Snapshot.Terms.ID)
 }
 
 // TestArkChannelStoreNotFound verifies the shared coordinator sentinel.

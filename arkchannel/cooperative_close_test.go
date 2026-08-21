@@ -76,6 +76,21 @@ func TestCooperativeCloseBuildsThreePartyOOR(t *testing.T) {
 	require.NoError(t, settlement.Validate(terms, source, request))
 	require.Equal(t, hubSig.Serialize(), settlement.Transaction)
 	require.NotEqual(t, source.OutPoint.Hash, settlement.TxID)
+	clientOutpoint, err := settlement.ReplacementOutPoint(
+		terms, source, request, PartyClient,
+	)
+	require.NoError(t, err)
+	hubOutpoint, err := settlement.ReplacementOutPoint(
+		terms, source, request, PartyHub,
+	)
+	require.NoError(t, err)
+	require.Equal(t, settlement.TxID, clientOutpoint.Hash)
+	require.Equal(t, settlement.TxID, hubOutpoint.Hash)
+	require.NotEqual(t, clientOutpoint, hubOutpoint)
+	_, err = settlement.ReplacementOutPoint(
+		terms, source, request, Party(99),
+	)
+	require.ErrorContains(t, err, "unknown cooperative close party")
 
 	spec, err := template.OORSpec()
 	require.NoError(t, err)

@@ -16,12 +16,16 @@ INSERT INTO ark_channels (
 	cooperative_close_txid, close_commitment_height, close_client_balance,
 	close_hub_balance, client_close_signed, hub_close_signed,
 	client_close_finalized, hub_close_finalized, failure, revision, created_at,
-	updated_at
+	updated_at, pre_ponr_started_at
 ) VALUES (
 	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
 	$15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27,
 	$28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40,
-	$41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52
+	$41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52,
+	CASE
+		WHEN sqlc.arg(pre_ponr_started) OR $20 IS NOT NULL THEN $52
+		ELSE NULL
+	END
 )
 ON CONFLICT (channel_id) DO NOTHING;
 
@@ -39,8 +43,11 @@ WHERE channel_point_txid = $1 AND channel_point_index = $2;
 
 -- name: ListNonTerminalArkChannels :many
 SELECT * FROM ark_channels
--- Phase 8 is closed and phase 10 is failed. Cancelling remains resumable.
+-- Phase 8 is closed and phase 10 is failed. A cooperatively closed channel
+-- remains resumable because its signed replacement VTXOs still need source
+-- ancestry defense. Cancelling also remains resumable.
 WHERE phase NOT IN (8, 10)
+    OR (phase = 8 AND cooperative_close_txid IS NOT NULL)
 ORDER BY created_at ASC, channel_id ASC;
 
 -- name: CompareAndSwapArkChannel :execrows
@@ -76,6 +83,11 @@ UPDATE ark_channels SET
 	client_close_finalized = $31,
 	hub_close_finalized = $32,
 	failure = $33,
+	pre_ponr_started_at = CASE
+		WHEN pre_ponr_started_at IS NULL AND
+			(sqlc.arg(pre_ponr_started) OR $4 IS NOT NULL) THEN $34
+		ELSE pre_ponr_started_at
+	END,
 	revision = revision + 1,
 	updated_at = $34
 WHERE channel_id = $1 AND revision = $2;

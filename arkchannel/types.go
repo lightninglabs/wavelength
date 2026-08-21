@@ -14,6 +14,10 @@ import (
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
+// DefaultBackingFee is the fixed fee reserved above channel capacity for the
+// deterministic VTXO-to-channel funding transaction.
+const DefaultBackingFee btcutil.Amount = 1_000
+
 // ID is the stable identifier shared by both sides of an Ark channel.
 type ID [32]byte
 
@@ -485,6 +489,7 @@ func (b Backing) Validate(terms Terms, source VTXOBinding) error {
 type Snapshot struct {
 	Terms                   Terms
 	Phase                   Phase
+	OORPreparationStarted   bool
 	Source                  *VTXOBinding
 	Backing                 *Backing
 	ClientFinalized         bool

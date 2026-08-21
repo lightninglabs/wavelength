@@ -114,6 +114,7 @@ type ArkChannel struct {
 	SourceSpentOutpointTxid  []byte
 	SourceSpentOutpointIndex sql.NullInt64
 	SourceSpendingTxid       []byte
+	PrePonrStartedAt         sql.NullInt64
 }
 
 type BoardingAddress struct {

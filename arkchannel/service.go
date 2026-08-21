@@ -20,6 +20,48 @@ type Service struct {
 	executor    ActionExecutor
 }
 
+// ResumeFailure identifies one channel whose already-durable action could not
+// be replayed during process startup.
+type ResumeFailure struct {
+	ChannelID ID
+	Err       error
+}
+
+// ResumeFailures reports isolated per-channel replay failures after every
+// resumable channel has been attempted.
+type ResumeFailures struct {
+	Failures []ResumeFailure
+}
+
+// Error summarizes the channels that could not resume.
+func (e *ResumeFailures) Error() string {
+	if e == nil || len(e.Failures) == 0 {
+		return "Ark channel resume failed"
+	}
+	if len(e.Failures) == 1 {
+		failure := e.Failures[0]
+
+		return fmt.Sprintf("resume Ark channel %x: %v",
+			failure.ChannelID[:4], failure.Err)
+	}
+
+	return fmt.Sprintf("%d Ark channels failed to resume", len(e.Failures))
+}
+
+// Unwrap exposes each underlying action failure to errors.Is and errors.As.
+func (e *ResumeFailures) Unwrap() []error {
+	if e == nil {
+		return nil
+	}
+
+	errs := make([]error, 0, len(e.Failures))
+	for _, failure := range e.Failures {
+		errs = append(errs, failure.Err)
+	}
+
+	return errs
+}
+
 // NewService constructs an Ark channel coordination service.
 func NewService(coordinator *Coordinator,
 	executor ActionExecutor) (*Service, error) {
@@ -67,9 +109,17 @@ func (s *Service) RegisterPromotion(ctx context.Context, terms Terms) (Record,
 	return s.coordinator.Request(ctx, terms)
 }
 
-// BindPreparedOOR validates and attaches the exact prepared OOR output before
-// starting native funding.
-func (s *Service) BindPreparedOOR(ctx context.Context, id ID,
+// StartOORPreparation durably arms wallet selection before the funder asks the
+// OOR actor to construct the channel-policy output.
+func (s *Service) StartOORPreparation(ctx context.Context, id ID) (Record,
+	error) {
+
+	return s.Apply(ctx, id, &OORPreparationStarted{})
+}
+
+// RecordPreparedOOR validates and durably attaches the exact prepared OOR
+// output without executing the resulting native funding action.
+func (s *Service) RecordPreparedOOR(ctx context.Context, id ID,
 	binding VTXOBinding) (Record, error) {
 
 	validator, ok := s.executor.(interface {
@@ -89,9 +139,23 @@ func (s *Service) BindPreparedOOR(ctx context.Context, id ID,
 		return Record{}, fmt.Errorf("validate prepared OOR: %w", err)
 	}
 
-	return s.Apply(ctx, id, &BindVTXO{
+	record, _, err = s.coordinator.Apply(ctx, id, &BindVTXO{
 		Binding: binding,
 	})
+
+	return record, err
+}
+
+// BindPreparedOOR records the exact prepared output before resuming native
+// funding. A crash between these calls leaves the funding action replayable.
+func (s *Service) BindPreparedOOR(ctx context.Context, id ID,
+	binding VTXOBinding) (Record, error) {
+
+	if _, err := s.RecordPreparedOOR(ctx, id, binding); err != nil {
+		return Record{}, err
+	}
+
+	return s.ResumeChannelAction(ctx, id)
 }
 
 // PromoteVTXO registers and negotiates a channel backed by a prepared OOR
@@ -175,7 +239,8 @@ func (s *Service) GetChannel(ctx context.Context, id ID) (Record, error) {
 	return s.coordinator.Get(ctx, id)
 }
 
-// ListChannels returns every non-terminal channel owned by this endpoint.
+// ListChannels returns every channel with a remaining runtime or recovery
+// obligation owned by this endpoint.
 func (s *Service) ListChannels(ctx context.Context) ([]Record, error) {
 	return s.coordinator.ListNonTerminal(ctx)
 }
@@ -268,17 +333,27 @@ func partyFinalized(snapshot Snapshot, party Party) bool {
 	}
 }
 
-// Resume replays side effects implied by all non-terminal durable records.
+// Resume replays side effects implied by all resumable durable records.
 func (s *Service) Resume(ctx context.Context) error {
 	work, err := s.coordinator.ResumeAll(ctx)
 	if err != nil {
 		return err
 	}
+	failures := make([]ResumeFailure, 0)
 	for _, item := range work {
 		id := item.Record.Snapshot.Terms.ID
 		if err := s.executor.Execute(ctx, id, item.Action); err != nil {
-			return err
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			failures = append(failures, ResumeFailure{
+				ChannelID: id,
+				Err:       err,
+			})
 		}
+	}
+	if len(failures) > 0 {
+		return &ResumeFailures{Failures: failures}
 	}
 
 	return nil

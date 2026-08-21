@@ -128,7 +128,7 @@ CREATE TABLE ark_channels (
 
     revision BIGINT NOT NULL CHECK (revision > 0),
     created_at BIGINT NOT NULL,
-    updated_at BIGINT NOT NULL, recovery_ready BOOLEAN NOT NULL DEFAULT FALSE, source_spent_outpoint_txid BLOB, source_spent_outpoint_index BIGINT, source_spending_txid BLOB,
+    updated_at BIGINT NOT NULL, recovery_ready BOOLEAN NOT NULL DEFAULT FALSE, source_spent_outpoint_txid BLOB, source_spent_outpoint_index BIGINT, source_spending_txid BLOB, pre_ponr_started_at BIGINT,
 
     CHECK (
 		(oor_session_id IS NULL AND source_index IS NULL AND

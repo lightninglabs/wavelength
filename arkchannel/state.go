@@ -97,7 +97,9 @@ func (s *channelState) ProcessEvent(_ context.Context, event Event,
 	}
 	if !changed {
 		switch event.(type) {
-		case *SourceSpent, *RecoveryPackageInstalled, *OORFinalized:
+		case *SourceSpent, *RecoveryPackageInstalled, *OORFinalized,
+			*OORAborted:
+
 			action, err := PendingAction(next)
 			if err != nil {
 				return nil, err
@@ -116,8 +118,9 @@ func (s *channelState) ProcessEvent(_ context.Context, event Event,
 	_, sourceSpent := event.(*SourceSpent)
 	_, recoveryInstalled := event.(*RecoveryPackageInstalled)
 	_, oorFinalized := event.(*OORFinalized)
+	_, oorAborted := event.(*OORAborted)
 	if next.Phase == previousPhase && !sourceSpent &&
-		!recoveryInstalled && !oorFinalized {
+		!recoveryInstalled && !oorFinalized && !oorAborted {
 
 		action = nil
 	}
@@ -177,7 +180,9 @@ func PendingAction(snapshot Snapshot) (Action, error) {
 
 		return &CancelFunding{
 			Terms:   snapshot.Terms.Clone(),
+			Source:  snapshot.Source.Clone(),
 			Backing: backing,
+			Reason:  snapshot.Failure,
 		}, nil
 
 	case PhaseMaterializing:
@@ -218,6 +223,16 @@ func PendingAction(snapshot Snapshot) (Action, error) {
 			Close:   snapshot.CooperativeClose.Clone(),
 		}, nil
 
+	case PhaseClosed:
+		if snapshot.CooperativeClose != nil &&
+			snapshot.SourceConflict != nil {
+			return &PublishCooperativeClose{
+				Terms:  snapshot.Terms.Clone(),
+				Source: snapshot.Source.Clone(),
+				Close:  snapshot.CooperativeClose.Clone(),
+			}, nil
+		}
+
 	default:
 		return nil, nil
 	}
@@ -228,6 +243,12 @@ func PendingAction(snapshot Snapshot) (Action, error) {
 // applyEvent mutates only the fact directly asserted by an event.
 func applyEvent(next *Snapshot, event Event) (bool, error) {
 	switch event := event.(type) {
+	case *OORPreparationStarted:
+		return applyOORPreparationStarted(next)
+
+	case *ExpirePrePONR:
+		return applyPrePONRExpiry(next, event.Reason)
+
 	case *BindVTXO:
 		return applyBinding(next, event.Binding)
 
@@ -338,6 +359,22 @@ func applyEvent(next *Snapshot, event Event) (bool, error) {
 	}
 }
 
+// applyOORPreparationStarted arms preparation once while immutable channel
+// terms are still the only externally visible protocol fact.
+func applyOORPreparationStarted(next *Snapshot) (bool, error) {
+	if next.OORPreparationStarted {
+		return false, nil
+	}
+	if next.Phase != PhaseRequested || next.Source != nil {
+		return false, fmt.Errorf("cannot start OOR preparation from %s",
+			next.Phase)
+	}
+
+	next.OORPreparationStarted = true
+
+	return true, nil
+}
+
 // applyBinding binds the exact source once. Client-funded promotions can start
 // immediately because the protocol binds the hub first. Hub-funded receive
 // channels wait for the client's explicit durable readiness barrier.
@@ -347,7 +384,12 @@ func applyBinding(next *Snapshot, binding VTXOBinding) (bool, error) {
 	}
 	if next.Source != nil {
 		if bindingsEqual(*next.Source, binding) {
-			return false, nil
+			if next.OORPreparationStarted {
+				return false, nil
+			}
+			next.OORPreparationStarted = true
+
+			return true, nil
 		}
 
 		return false, fmt.Errorf("channel already bound to another " +
@@ -359,6 +401,7 @@ func applyBinding(next *Snapshot, binding VTXOBinding) (bool, error) {
 
 	clone := binding.Clone()
 	next.Source = &clone
+	next.OORPreparationStarted = true
 	if next.Terms.Kind == KindPromotion {
 		next.Phase = PhaseNegotiating
 	}
@@ -833,6 +876,17 @@ func applyCooperativeCloseAborted(next *Snapshot) (bool, error) {
 	return true, nil
 }
 
+// applyPrePONRExpiry lets a stale timer lose cleanly once the commit action is
+// replayable. The phase check is applied against the CAS-reloaded state, not
+// the record that the expiry scan originally observed.
+func applyPrePONRExpiry(next *Snapshot, reason string) (bool, error) {
+	if next.Phase != PhaseRequested && next.Phase != PhaseNegotiating {
+		return false, nil
+	}
+
+	return applyFailure(next, reason)
+}
+
 // applyFailure permits abandonment only before the OOR commit action is
 // durable. A commit-time failure must arrive as OORAborted so the coordinator
 // knows the transfer stayed before its point of no return.
@@ -955,6 +1009,15 @@ func advance(next *Snapshot) (Action, error) {
 			Close:   next.CooperativeClose.Clone(),
 		}, nil
 
+	case PhaseClosed:
+		if next.CooperativeClose != nil && next.SourceConflict != nil {
+			return &PublishCooperativeClose{
+				Terms:  next.Terms.Clone(),
+				Source: next.Source.Clone(),
+				Close:  next.CooperativeClose.Clone(),
+			}, nil
+		}
+
 	case PhaseCancelling:
 		if !next.OORAborted {
 			return &AbortOOR{
@@ -972,10 +1035,12 @@ func advance(next *Snapshot) (Action, error) {
 
 		return &CancelFunding{
 			Terms:   next.Terms.Clone(),
+			Source:  next.Source.Clone(),
 			Backing: backing,
+			Reason:  next.Failure,
 		}, nil
 
-	case PhaseRequested, PhaseActive, PhaseClosed, PhaseFailed:
+	case PhaseRequested, PhaseActive, PhaseFailed:
 	}
 
 	return nil, nil

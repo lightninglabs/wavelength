@@ -27,7 +27,8 @@ type FundingNegotiator interface {
 
 	PrepareChannelRecovery(context.Context, ID, Terms, VTXOBinding) error
 
-	CancelChannel(context.Context, ID, Terms, *Backing) error
+	CancelChannel(context.Context, ID, Terms, VTXOBinding, *Backing,
+		string) error
 }
 
 // OORTransferController commits or aborts the prepared transfer that creates
@@ -201,7 +202,8 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 
 	case *CancelFunding:
 		return e.negotiator.CancelChannel(
-			ctx, id, action.Terms, action.Backing,
+			ctx, id, action.Terms, action.Source, action.Backing,
+			action.Reason,
 		)
 
 	case *PublishChannel:

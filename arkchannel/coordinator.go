@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/wire/v2"
 )
@@ -14,14 +15,25 @@ var (
 
 	// ErrConflict indicates that another worker advanced the channel first.
 	ErrConflict = errors.New("ark channel revision conflict")
+
+	// ErrOORPreparationAmbiguous means the prepared-transfer request may
+	// have reached its durable actor even though the caller did not receive
+	// the resulting binding. The channel must remain recoverable until a
+	// keyed lookup either reconstructs and aborts that transfer or
+	// preparation succeeds.
+	ErrOORPreparationAmbiguous = errors.New("ark channel OOR preparation " +
+		"outcome is ambiguous")
 )
 
 const maxCASAttempts = 8
 
 // Record wraps a snapshot with its compare-and-swap revision.
 type Record struct {
-	Snapshot Snapshot
-	Revision uint64
+	Snapshot         Snapshot
+	Revision         uint64
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	PrePONRStartedAt time.Time
 }
 
 // PendingWork pairs a durable record with its replayable side effect.
@@ -45,18 +57,33 @@ type Store interface {
 	CompareAndSwap(context.Context, ID, uint64, Snapshot) (Record, error)
 }
 
+// RecordObserver projects already-durable channel facts into ancillary state.
+// Observers must fail safe internally because they cannot veto an FSM commit.
+type RecordObserver interface {
+	ObserveArkChannel(context.Context, Record)
+}
+
 // Coordinator persists transitions before returning replayable side effects.
 type Coordinator struct {
-	store Store
+	store     Store
+	observers []RecordObserver
 }
 
 // NewCoordinator constructs a durable Ark-channel coordinator.
-func NewCoordinator(store Store) (*Coordinator, error) {
+func NewCoordinator(store Store,
+	observers ...RecordObserver) (*Coordinator, error) {
+
 	if store == nil {
 		return nil, fmt.Errorf("channel store is required")
 	}
+	for _, observer := range observers {
+		if observer == nil {
+			return nil, fmt.Errorf("channel record observer is " +
+				"required")
+		}
+	}
 
-	return &Coordinator{store: store}, nil
+	return &Coordinator{store: store, observers: observers}, nil
 }
 
 // Request registers immutable terms idempotently.
@@ -90,6 +117,8 @@ func (c *Coordinator) Request(ctx context.Context, terms Terms) (Record,
 
 	record, err := c.store.Create(ctx, state.Snapshot())
 	if err == nil {
+		c.observe(ctx, record)
+
 		return record, nil
 	}
 	if !errors.Is(err, ErrConflict) {
@@ -112,7 +141,8 @@ func (c *Coordinator) Get(ctx context.Context, id ID) (Record, error) {
 	return c.store.Get(ctx, id)
 }
 
-// ListNonTerminal loads channels that still need recovery or observation.
+// ListNonTerminal loads channels that still need recovery or observation,
+// including closed cooperative channels with a source-defense obligation.
 func (c *Coordinator) ListNonTerminal(ctx context.Context) ([]Record, error) {
 	return c.store.ListNonTerminal(ctx)
 }
@@ -164,6 +194,8 @@ func (c *Coordinator) Apply(ctx context.Context, id ID, event Event) (Record,
 		}
 		next := nextState.Snapshot()
 		if snapshotsEqual(record.Snapshot, next) {
+			c.observe(ctx, record)
+
 			return record, emittedActions(transition), nil
 		}
 
@@ -176,12 +208,20 @@ func (c *Coordinator) Apply(ctx context.Context, id ID, event Event) (Record,
 		if err != nil {
 			return Record{}, nil, err
 		}
+		c.observe(ctx, updated)
 
 		return updated, emittedActions(transition), nil
 	}
 
 	return Record{}, nil, fmt.Errorf("advance channel %x: %w", id[:4],
 		ErrConflict)
+}
+
+// observe notifies best-effort projections only after the channel row commits.
+func (c *Coordinator) observe(ctx context.Context, record Record) {
+	for _, observer := range c.observers {
+		observer.ObserveArkChannel(ctx, record)
+	}
 }
 
 // Resume returns the idempotent action implied by already-durable state.
@@ -203,7 +243,7 @@ func (c *Coordinator) Resume(ctx context.Context, id ID) (Record, []Action,
 	return record, []Action{action}, nil
 }
 
-// ResumeAll loads non-terminal records and returns their replayable work.
+// ResumeAll loads resumable records and returns their replayable work.
 func (c *Coordinator) ResumeAll(ctx context.Context) ([]PendingWork, error) {
 	records, err := c.store.ListNonTerminal(ctx)
 	if err != nil {
@@ -259,7 +299,9 @@ func snapshotsEqual(a, b Snapshot) bool {
 	if err := sameTerms(a.Terms, b.Terms); err != nil {
 		return false
 	}
-	if a.Phase != b.Phase || a.ClientFinalized != b.ClientFinalized ||
+	if a.Phase != b.Phase ||
+		a.OORPreparationStarted != b.OORPreparationStarted ||
+		a.ClientFinalized != b.ClientFinalized ||
 		a.HubFinalized != b.HubFinalized ||
 		a.OORFinalized != b.OORFinalized ||
 		a.OORAborted != b.OORAborted ||
