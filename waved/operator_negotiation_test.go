@@ -60,14 +60,20 @@ type stubArkServiceClient struct {
 	resp  *arkrpc.GetInfoResponse
 	err   error
 	calls int
+	await func(context.Context) error
 }
 
 // GetInfo returns the canned response.
-func (s *stubArkServiceClient) GetInfo(_ context.Context,
+func (s *stubArkServiceClient) GetInfo(ctx context.Context,
 	_ *arkrpc.GetInfoRequest, _ ...grpc.CallOption) (
 	*arkrpc.GetInfoResponse, error) {
 
 	s.calls++
+	if s.await != nil {
+		if err := s.await(ctx); err != nil {
+			return nil, err
+		}
+	}
 
 	if s.err != nil {
 		return nil, s.err
@@ -217,6 +223,98 @@ func TestFetchOperatorTermsRefreshPinsVersion(t *testing.T) {
 
 	// The runtime version must be unchanged by a refresh.
 	require.Equal(t, uint32(1), srv.arkProtocolVersion)
+}
+
+// TestOperatorVTXOFloorRefreshesEffectiveMinimum verifies credit policy reads
+// the current operator terms and uses the VTXO minimum when it exceeds dust.
+func TestOperatorVTXOFloorRefreshesEffectiveMinimum(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubArkServiceClient{
+		resp: &arkrpc.GetInfoResponse{
+			Pubkey:             testOperatorPubKeyBytes(t),
+			SelectedArkVersion: 1,
+			DustLimit:          546,
+			MinVtxoAmountSat:   1_000,
+		},
+	}
+	rpc := &RPCServer{server: &Server{
+		arkClient:          stub,
+		arkProtocolVersion: 1,
+	}}
+
+	floor, err := rpc.OperatorVTXOFloor(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, uint64(1_000), floor)
+
+	stub.resp.MinVtxoAmountSat = 1_200
+	floor, err = rpc.OperatorVTXOFloor(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, uint64(1_200), floor)
+	require.Equal(t, 2, stub.calls)
+}
+
+// TestOperatorVTXOFloorFailsClosed verifies credit policy cannot fall back to
+// a baked-in threshold while operator terms are unavailable.
+func TestOperatorVTXOFloorFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	rpc := &RPCServer{server: &Server{
+		arkClient: &stubArkServiceClient{
+			err: fmt.Errorf("operator unavailable"),
+		},
+		arkProtocolVersion: 1,
+	}}
+
+	_, err := rpc.OperatorVTXOFloor(t.Context())
+	require.ErrorContains(t, err, "operator unavailable")
+}
+
+// TestOperatorVTXOFloorRejectsZero verifies an otherwise successful terms
+// refresh cannot authorize a zero-satoshi credit materialization threshold.
+func TestOperatorVTXOFloorRejectsZero(t *testing.T) {
+	t.Parallel()
+
+	rpc := &RPCServer{server: &Server{
+		arkClient: &stubArkServiceClient{
+			resp: &arkrpc.GetInfoResponse{
+				Pubkey:             testOperatorPubKeyBytes(t),
+				SelectedArkVersion: 1,
+			},
+		},
+		arkProtocolVersion: 1,
+	}}
+
+	_, err := rpc.OperatorVTXOFloor(t.Context())
+	require.ErrorContains(t, err, "operator VTXO floor is unavailable")
+}
+
+// TestOperatorVTXOFloorBoundsRefresh verifies a daemon-lifetime caller cannot
+// leave the policy turn parked forever on an operator that never responds.
+func TestOperatorVTXOFloorBoundsRefresh(t *testing.T) {
+	t.Parallel()
+
+	var observedDeadline time.Time
+	rpc := &RPCServer{server: &Server{
+		arkClient: &stubArkServiceClient{
+			await: func(ctx context.Context) error {
+				deadline, ok := ctx.Deadline()
+				require.True(t, ok)
+				observedDeadline = deadline
+
+				return context.DeadlineExceeded
+			},
+		},
+		arkProtocolVersion: 1,
+	}}
+
+	started := time.Now()
+	_, err := rpc.OperatorVTXOFloor(t.Context())
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.WithinDuration(
+		t, started.Add(operatorTermsRefreshTimeout), observedDeadline,
+		time.Second,
+	)
 }
 
 // TestRefreshAuthenticatedOperatorTermsUsesMailbox verifies that the
