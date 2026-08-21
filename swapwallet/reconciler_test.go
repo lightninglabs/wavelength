@@ -44,6 +44,119 @@ func newReconcileFixture(t *testing.T) (*Runtime, *db.ActivityPersistenceStore,
 	return runtime, store, rpc
 }
 
+// TestRecoveredSettledPayProjectsOnceAndMatchesBalance verifies the wallet
+// surfaces a restart-reconciled pay as COMPLETE exactly once and preserves the
+// daemon's post-OOR VTXO balance. The negative control proves an authoritative
+// failed pay does not imply a balance debit at the wallet projection layer.
+func TestRecoveredSettledPayProjectsOnceAndMatchesBalance(t *testing.T) {
+	t.Parallel()
+
+	const (
+		paymentHash = "b960600a4e03672eefd18d12604a1e5b" +
+			"932c57dc2670f62ffb6ac17a4c6b31f2"
+		failedHash     = "failed-before-funding"
+		startingVTXOs  = int64(3000)
+		paymentAmount  = int64(1001)
+		remainingVTXOs = startingVTXOs - paymentAmount
+	)
+
+	ctx := t.Context()
+	runtime, store, rpc := newReconcileFixture(t)
+	service := newService(runtime.deps, runtime)
+
+	rpc.getBalanceResp = &waverpc.GetBalanceResponse{
+		VtxoBalanceSat: startingVTXOs,
+	}
+	before, err := service.Balance(
+		ctx, &wavewalletrpc.BalanceRequest{},
+	)
+	require.NoError(t, err)
+
+	settled := &swapclientrpc.SwapSummary{
+		PaymentHash: paymentHash,
+		Direction: swapclientrpc.
+			SwapDirection_SWAP_DIRECTION_PAY,
+		State:     swapclientrpc.SwapState_SWAP_STATE_COMPLETED,
+		AmountSat: paymentAmount,
+		FeeSat:    1,
+		Preimage:  "authoritative-settlement-preimage",
+	}
+	require.NoError(
+		t,
+		runtime.fanOutSwapUpdate(
+			&swapclientrpc.SubscribeSwapsResponse{
+				Swap: settled,
+			},
+		),
+	)
+
+	// Startup replay can deliver the same terminal summary again. The
+	// canonical store must suppress the duplicate transition event.
+	require.NoError(
+		t,
+		runtime.fanOutSwapUpdate(
+			&swapclientrpc.SubscribeSwapsResponse{
+				Swap: settled,
+			},
+		),
+	)
+
+	rpc.getBalanceResp = &waverpc.GetBalanceResponse{
+		VtxoBalanceSat: remainingVTXOs,
+	}
+	after, err := service.Balance(
+		ctx, &wavewalletrpc.BalanceRequest{},
+	)
+	require.NoError(t, err)
+
+	entry, err := store.GetEntry(ctx, paymentHash)
+	require.NoError(t, err)
+	require.Equal(
+		t, int64(wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE),
+		entry.Status,
+	)
+	require.Equal(t, -paymentAmount, entry.AmountSat)
+	require.Equal(t, int64(1), entry.FeeSat)
+	require.Equal(
+		t, entry.AmountSat,
+		after.GetConfirmedSat()-before.GetConfirmedSat(),
+	)
+
+	events, err := store.PullEvents(ctx, 0, 100)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.Equal(t, paymentHash, events[0].CanonicalID)
+
+	failed := &swapclientrpc.SwapSummary{
+		PaymentHash: failedHash,
+		Direction: swapclientrpc.
+			SwapDirection_SWAP_DIRECTION_PAY,
+		State:     swapclientrpc.SwapState_SWAP_STATE_FAILED,
+		AmountSat: paymentAmount,
+	}
+	require.NoError(
+		t,
+		runtime.fanOutSwapUpdate(
+			&swapclientrpc.SubscribeSwapsResponse{
+				Swap: failed,
+			},
+		),
+	)
+
+	failedEntry, err := store.GetEntry(ctx, failedHash)
+	require.NoError(t, err)
+	require.Equal(
+		t, int64(wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED),
+		failedEntry.Status,
+	)
+
+	afterFailure, err := service.Balance(
+		ctx, &wavewalletrpc.BalanceRequest{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, after, afterFailure)
+}
+
 // TestReconcileActivityFlipsDepositLive verifies the reconciler lands a
 // confirmed boarding deposit's PENDING -> COMPLETE transition into the store
 // live (no restart), and that a second pass is a no-op (ProjectEntry
