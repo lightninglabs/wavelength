@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
@@ -21,15 +22,17 @@ import (
 // Steady-state auto-redeem is folded into the receive state machine: a settled
 // receive that clears the watermark signals the registry directly (see
 // awaitingSettlementState). The autoRedeemer therefore no longer runs a
-// periodic sweep; it performs a single boot-time reconcile so a balance that
-// accumulated over the watermark before this start — which no receive trigger
-// will re-evaluate — is still materialized.
+// steady-state periodic sweep; it performs a boot-time reconcile, retrying
+// transient evaluation failures until one succeeds, so a balance accumulated
+// before this start is still materialized even when no receive will re-evaluate
+// it.
 type autoRedeemer struct {
 	cfg      AutoRedeemConfig
 	server   CreditServer
 	daemon   CreditDaemon
 	registry actor.TellOnlyRef[CreditMsg]
 	log      btclog.Logger
+	retry    time.Duration
 
 	// earmark is the shared credit-earmark provider, read on the boot
 	// reconcile. It is the same atomic pointer the per-operation children
@@ -37,7 +40,9 @@ type autoRedeemer struct {
 	// every redeem decision.
 	earmark *atomic.Pointer[EarmarkFunc]
 
-	wg sync.WaitGroup
+	mu     sync.Mutex
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 // newAutoRedeemer builds an auto-redeemer from the registry config, sharing the
@@ -46,12 +51,17 @@ type autoRedeemer struct {
 func newAutoRedeemer(cfg RegistryConfig, registry actor.TellOnlyRef[CreditMsg],
 	earmark *atomic.Pointer[EarmarkFunc]) *autoRedeemer {
 
+	if cfg.PollInterval <= 0 {
+		cfg.PollInterval = DefaultPollInterval
+	}
+
 	return &autoRedeemer{
 		cfg:      cfg.AutoRedeem,
 		server:   cfg.Server,
 		daemon:   cfg.Daemon,
 		registry: registry,
 		log:      cfg.Log.UnwrapOr(btclog.Disabled),
+		retry:    cfg.PollInterval,
 		earmark:  earmark,
 	}
 }
@@ -67,29 +77,68 @@ func (a *autoRedeemer) setEarmark(fn EarmarkFunc) {
 	a.earmark.Store(&fn)
 }
 
-// start runs the single boot-time reconcile when the policy is enabled. There
-// is no periodic loop: the receive state machine drives steady-state
-// auto-redeem. It is anchored to ctx, which must be a daemon-lifetime context.
+// start runs the boot-time reconcile when the policy is enabled. A failed
+// evaluation retries until one complete evaluation succeeds, because no later
+// receive necessarily exists to reconsider an already-available balance.
+// Steady-state auto-redeem remains receive-driven. The retry loop is anchored
+// to ctx, which must be a daemon-lifetime context.
 func (a *autoRedeemer) start(ctx context.Context) {
 	if a == nil || !a.cfg.Enabled {
 		return
 	}
 
+	a.mu.Lock()
+	if a.cancel != nil {
+		a.mu.Unlock()
+
+		return
+	}
+
+	reconcileCtx, cancel := context.WithCancel(ctx)
+	a.cancel = cancel
 	a.wg.Add(1)
+	a.mu.Unlock()
+
 	go func() {
 		defer a.wg.Done()
 
-		if err := a.reconcile(ctx); err != nil {
-			a.logger(ctx).DebugS(ctx, "Boot auto-redeem reconcile "+
-				"failed", slog.String("err", err.Error()))
+		for attempt := 1; ; attempt++ {
+			err := a.reconcile(reconcileCtx)
+			if err == nil || reconcileCtx.Err() != nil {
+				return
+			}
+
+			a.logger(reconcileCtx).WarnS(
+				reconcileCtx,
+				"Boot auto-redeem reconcile failed; retrying",
+				err,
+				slog.Int("attempt", attempt),
+			)
+
+			timer := time.NewTimer(a.retry)
+			select {
+			case <-reconcileCtx.Done():
+				timer.Stop()
+
+				return
+
+			case <-timer.C:
+			}
 		}
 	}()
 }
 
-// stop waits for the boot reconcile goroutine to exit.
+// stop cancels and waits for the boot reconcile goroutine to exit.
 func (a *autoRedeemer) stop() {
 	if a == nil {
 		return
+	}
+
+	a.mu.Lock()
+	cancel := a.cancel
+	a.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 
 	a.wg.Wait()
@@ -137,7 +186,7 @@ func (a *autoRedeemer) reconcile(ctx context.Context) error {
 		}
 	}
 
-	if available <= threshold {
+	if available < threshold {
 		return nil
 	}
 
@@ -151,19 +200,18 @@ func (a *autoRedeemer) reconcile(ctx context.Context) error {
 	})
 }
 
-// threshold returns the configured minimum, defaulting to the operator dust
-// limit (the smallest amount that can legally become a vTXO).
+// threshold returns the greater of the configured minimum and the live
+// effective operator VTXO floor.
 func (a *autoRedeemer) threshold(ctx context.Context) (uint64, error) {
-	if a.cfg.MinRedeemSat > 0 {
-		return a.cfg.MinRedeemSat, nil
-	}
-
-	dust, err := a.daemon.DustLimit(ctx)
+	floor, err := a.daemon.VTXOFloor(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("get dust limit: %w", err)
+		return 0, fmt.Errorf("get operator VTXO floor: %w", err)
+	}
+	if floor == 0 {
+		return 0, fmt.Errorf("operator VTXO floor is unavailable")
 	}
 
-	return dust, nil
+	return max(a.cfg.MinRedeemSat, floor), nil
 }
 
 // logger returns the redeemer logger bound to ctx.

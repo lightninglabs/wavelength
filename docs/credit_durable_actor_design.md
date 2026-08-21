@@ -80,17 +80,18 @@ The wallet decides when to redeem, and redemption is **not exposed to the user**
 A settled receive is the only event that grows the available balance, so
 auto-redeem is driven by the receive state machine: when a receive settles and
 the available balance clears the watermark, it signals a redeem (section 6). A
-single boot-time reconcile covers the one case the receive trigger cannot, a
-balance already sitting over the watermark at startup. There is no periodic
-sweep.
+boot-time reconcile covers the one case the receive trigger cannot, a balance
+already sitting over the watermark at startup. It retries transient evaluation
+failures until one complete evaluation succeeds; after that there is no
+periodic sweep.
 
 The policy stays conservative, to avoid churn and to never strand value:
 
-- **Threshold.** Auto-redeem fires once `available_sat` strictly exceeds
-  `MinRedeemSat`, which **defaults to the operator dust limit**. The dust limit
-  is the smallest amount that can legally become a vTXO, so the default recovers
-  stranded value as early as possible and never attempts an impossible sub-dust
-  redemption.
+- **Threshold.** Auto-redeem fires once `available_sat` reaches
+  `max(MinRedeemSat, live_operator_vtxo_floor)`. The live floor is
+  `max(dust_limit, min_vtxo_amount_sat)` and is refreshed for every decision.
+  An unavailable floor skips redemption, so configured policy can delay
+  materialization but can never authorize an invalid smaller vTXO.
 - **Earmark interlock.** A credit-backed `PrepareSend` reserves nothing
   server-side and writes no durable row until `Send`. Before deciding,
   auto-redeem subtracts the credits earmarked by such in-flight sends (an
@@ -362,12 +363,15 @@ intent; the registry owns the decision.
 `redeemWatermarkCleared` decides whether to redeem:
 
 1. Gate on `AutoRedeemEnabled`.
-2. Resolve the threshold: `MinRedeemSat`, or the operator dust limit when zero.
-3. Subtract the earmark. The earmark provider is an `atomic.Pointer[EarmarkFunc]`
+2. Subtract the earmark. The earmark provider is an `atomic.Pointer[EarmarkFunc]`
    shared by the registry and every child, so the daemon can wire it once after
    construction. A nil provider subtracts nothing (safe before any credit-backed
    send has been prepared); an error from the provider redeems nothing.
-4. Redeem only when the earmark-adjusted balance strictly exceeds the threshold.
+3. Return before contacting the operator when the earmark-adjusted balance is
+   below `MinRedeemSat`.
+4. Refresh the operator terms and resolve the threshold as
+   `max(MinRedeemSat, live_operator_vtxo_floor)`.
+5. Redeem when the earmark-adjusted balance reaches the threshold.
    The subtraction floors at zero, so it cannot underflow.
 
 When it clears, the step emits `triggerRedeem{AvailableSat}`. The actor stashes it

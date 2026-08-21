@@ -753,7 +753,9 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *waverpc.GetInfoRequest) (
 // OperatorVTXOFloor refreshes the operator terms and returns the effective
 // minimum amount for a newly materialized VTXO. Credit policy uses this direct
 // lookup instead of the daemon's bootstrap snapshot so an unavailable operator
-// fails closed and a raised minimum takes effect on the next request.
+// fails closed and a raised minimum takes effect on the next request. The terms
+// refresh also enforces protocol compatibility and can transition the daemon to
+// incompatible when the operator disables the bound Ark version.
 func (r *RPCServer) OperatorVTXOFloor(ctx context.Context) (uint64, error) {
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	if err != nil {
