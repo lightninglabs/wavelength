@@ -44,12 +44,43 @@ func (b *sessionBehavior) handleStartTransfer(ctx context.Context,
 	req *StartTransferRequest) fn.Result[ActorResp] {
 
 	// Idempotent admission: a duplicate StartTransfer for an
-	// already-installed session returns the existing id.
+	// already-installed session returns the existing id. One legacy edge is
+	// intentionally replaceable: a keyed exact retry over a terminal failed
+	// outgoing row that has no immutable attempt. Rebuilding retains the
+	// same deterministic session id, and the first new submit checkpoint
+	// binds the request before transport enqueue.
 	if b.loaded && b.fsm != nil {
-		return fn.Ok[ActorResp](&StartTransferResponse{
-			SessionID: b.sessionID,
-			Existing:  true,
-		})
+		replaceFailed := false
+		state, err := b.fsm.CurrentState()
+		if err != nil {
+			return fn.Err[ActorResp](err)
+		}
+		if _, failed := state.(*Failed); failed &&
+			req.IdempotencyKey != "" {
+
+			_, attemptErr := b.cfg.RegistryStore.
+				GetDispatchAttemptBySessionID(
+					ctx, chainHashOf(b.sessionID),
+				)
+			switch {
+			case errors.Is(
+				attemptErr,
+				clientdb.ErrOORDispatchAttemptNotFound,
+			):
+
+				replaceFailed = true
+
+			case attemptErr != nil:
+				return fn.Err[ActorResp](attemptErr)
+			}
+		}
+
+		if !replaceFailed {
+			return fn.Ok[ActorResp](&StartTransferResponse{
+				SessionID: b.sessionID,
+				Existing:  true,
+			})
+		}
 	}
 
 	now := b.envConfig().newEnvironment(b.sessionID).Now()
@@ -57,9 +88,9 @@ func (b *sessionBehavior) handleStartTransfer(ctx context.Context,
 		return fn.Err[ActorResp](ErrOutgoingAdmissionExpired)
 	}
 
-	session, outbox, err := NewSessionWithIdempotencyKey(
+	session, outbox, err := newSessionWithDispatchRequest(
 		ctx, req.Policy, req.Inputs, req.Recipients, req.IdempotencyKey,
-		b.envConfig(),
+		req.DispatchRequestData, b.envConfig(),
 	)
 	if err != nil {
 		return fn.Err[ActorResp](err)

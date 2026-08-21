@@ -1088,8 +1088,8 @@ message TaprootScriptSignature {
 }
 
 message SendOORResponse {
-    // status is the result: "submitted" on success, "preview" on
-    // dry_run.
+    // status is the result: "submitted" on success, "failed" when replay
+    // finds a known terminal failure, or "preview" on dry_run.
     string status = 1;
 
     // session_id is the OOR session identifier. Empty on dry_run.

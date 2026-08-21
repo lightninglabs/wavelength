@@ -3835,8 +3835,8 @@ func (x *TaprootScriptSignature) GetSighash() uint32 {
 
 type SendOORResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// status is the result: "submitted" on success, "preview" on
-	// dry_run.
+	// status is the result: "submitted" on success, "failed" when replay
+	// finds a known terminal failure, or "preview" on dry_run.
 	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
 	// session_id is the OOR session identifier. Empty on dry_run.
 	SessionId string `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`

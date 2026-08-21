@@ -54,6 +54,9 @@ type AwaitingArkSignatures struct {
 	// IdempotencyKey identifies the caller intent that created this
 	// outgoing session, when provided.
 	IdempotencyKey string
+
+	// DispatchRequestData is the normalized caller-recipient proof.
+	DispatchRequestData []byte
 }
 
 // String returns a human-readable representation of AwaitingArkSignatures.
@@ -100,6 +103,9 @@ type AwaitingSubmitAccepted struct {
 	// IdempotencyKey identifies the caller intent that created this
 	// outgoing session, when provided.
 	IdempotencyKey string
+
+	// DispatchRequestData is the normalized caller-recipient proof.
+	DispatchRequestData []byte
 
 	// FirstRejectUnixNanos is the Unix-nanosecond timestamp of the first
 	// transient submit rejection observed while awaiting submit acceptance,

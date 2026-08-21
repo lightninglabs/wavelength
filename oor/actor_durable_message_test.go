@@ -63,7 +63,12 @@ func TestStartTransferPayloadTLVRoundTrip(t *testing.T) {
 				ValueSat: 321,
 			},
 		},
-		IdempotencyKey:             "funding-key-1",
+		IdempotencyKey: "funding-key-1",
+		DispatchRequestData: []byte{
+			1,
+			2,
+			3,
+		},
 		AdmissionDeadlineUnixNanos: 1_700_000_000_123_456_789,
 	}
 
@@ -79,6 +84,9 @@ func TestStartTransferPayloadTLVRoundTrip(t *testing.T) {
 	require.Equal(t, payload.CSVDelay, decoded.CSVDelay)
 	require.Equal(t, payload.Recipients, decoded.Recipients)
 	require.Equal(t, payload.IdempotencyKey, decoded.IdempotencyKey)
+	require.Equal(
+		t, payload.DispatchRequestData, decoded.DispatchRequestData,
+	)
 	require.Equal(
 		t, payload.AdmissionDeadlineUnixNanos,
 		decoded.AdmissionDeadlineUnixNanos,

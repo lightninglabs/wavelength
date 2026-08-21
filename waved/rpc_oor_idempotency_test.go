@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
@@ -177,6 +178,7 @@ type capturingSendOORActor struct {
 	mu       sync.Mutex
 	requests []*oor.StartTransferRequest
 	response *oor.StartTransferResponse
+	err      error
 }
 
 func (a *capturingSendOORActor) Receive(_ context.Context,
@@ -198,7 +200,11 @@ func (a *capturingSendOORActor) Receive(_ context.Context,
 	a.mu.Lock()
 	a.requests = append(a.requests, &reqCopy)
 	resp := a.response
+	err := a.err
 	a.mu.Unlock()
+	if err != nil {
+		return fn.Err[oor.ActorResp](err)
+	}
 
 	return fn.Ok[oor.ActorResp](resp)
 }
@@ -733,11 +739,17 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	recipientKey, err := btcec.NewPrivateKey()
+	recipientKeyA, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	recipientKeyB, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
 	const (
-		amountSat      = int64(10000)
+		amountA        = int64(4000)
+		amountB        = int64(6000)
+		totalAmount    = amountA + amountB
+		inputAmount    = totalAmount + 2000
 		exitDelay      = uint32(10)
 		idempotencyKey = "rpc-send-oor-idempotency-key"
 	)
@@ -745,7 +757,7 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 	vtxoStore, deliveryStore, registryStore := newSendOORTestStores(t)
 
 	firstDesc, clientKey := newSendOORTestVTXO(
-		t, operatorKey.PubKey(), 0x31, btcutil.Amount(amountSat),
+		t, operatorKey.PubKey(), 0x31, btcutil.Amount(inputAmount),
 	)
 
 	require.NoError(t, vtxoStore.SaveVTXO(ctx, firstDesc))
@@ -817,9 +829,28 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 	}
 
 	rpcServer := NewRPCServer(server)
-	recipient := sendOORPolicyRecipient(
-		t, recipientKey.PubKey(), operatorKey.PubKey(), exitDelay,
-		amountSat,
+	changeKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	rpcServer.oorChangeRecipientOverride = func(_ context.Context,
+		change btcutil.Amount) (oortx.RecipientOutput, error) {
+
+		pkScript, err := txscript.PayToTaprootScript(changeKey.PubKey())
+		if err != nil {
+			return oortx.RecipientOutput{}, err
+		}
+
+		return oortx.RecipientOutput{
+			PkScript: pkScript,
+			Value:    change,
+		}, nil
+	}
+	recipientA := sendOORPolicyRecipient(
+		t, recipientKeyA.PubKey(), operatorKey.PubKey(), exitDelay,
+		amountA,
+	)
+	recipientB := sendOORPolicyRecipient(
+		t, recipientKeyB.PubKey(), operatorKey.PubKey(), exitDelay,
+		amountB,
 	)
 
 	// A failed session row carrying the same key must not dedup the send:
@@ -843,50 +874,173 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 	)
 
 	firstResp, err := rpcServer.SendOOR(ctx, &waverpc.SendOORRequest{
-		Recipients:     []*waverpc.Output{recipient},
+		Recipients:     []*waverpc.Output{recipientA, recipientB},
 		IdempotencyKey: idempotencyKey,
 	})
 	require.NoError(t, err)
 	require.Equal(t, "submitted", firstResp.Status)
 	require.NotEmpty(t, firstResp.SessionId)
-	require.Equal(
-		t, []string{
-			firstResp.SessionId + ":0",
-		},
-		firstResp.RecipientOutpoints,
+	require.Len(t, firstResp.RecipientOutpoints, 2)
+	require.NotEqual(
+		t, firstResp.RecipientOutpoints[0],
+		firstResp.RecipientOutpoints[1],
+	)
+	require.NotContains(
+		t, firstResp.RecipientOutpoints, firstResp.SessionId+":0",
 	)
 	require.Empty(t, testWallet.unlockBatches())
 	selectReqs := testWallet.selectionRequests()
 	require.Len(t, selectReqs, 1)
-	require.Equal(t, btcutil.Amount(amountSat), selectReqs[0].TargetAmount)
+	require.Equal(
+		t, btcutil.Amount(totalAmount), selectReqs[0].TargetAmount,
+	)
 	require.Equal(t, btcutil.Amount(1), selectReqs[0].MinChangeAmount)
 
-	secondResp, err := rpcServer.SendOOR(ctx, &waverpc.SendOORRequest{
-		Recipients:     []*waverpc.Output{recipient},
-		IdempotencyKey: idempotencyKey,
-		AdmissionDeadlineUnixNanos: time.Now().
-			Add(-time.Second).
-			UnixNano(),
-		ExistingOnly: true,
-	})
+	// A sender can ingest its own OOR change under the same session id. The
+	// incoming lifecycle must advance independently without hiding the
+	// outgoing recipient proof needed to prove a keyed replay.
+	sessionID, err := chainhash.NewHashFromStr(firstResp.SessionId)
+	require.NoError(t, err)
+
+	outgoingRecord, err := registryStore.GetSession(ctx, *sessionID)
+	require.NoError(t, err)
+	attempt, err := registryStore.GetDispatchAttemptByIdempotencyKey(
+		ctx, idempotencyKey,
+	)
+	require.NoError(t, err)
+	require.NotEmpty(t, attempt.RequestData)
+	proofRecipients, err := oor.OutgoingReplayRecipients(
+		attempt.RequestData,
+	)
+	require.NoError(t, err)
+	require.Len(t, proofRecipients, 2)
+	for _, recipient := range proofRecipients {
+		require.Contains(
+			t, firstResp.RecipientOutpoints, fmt.Sprintf("%s:%d",
+				firstResp.SessionId, recipient.OutputIndex),
+		)
+	}
+
+	// The real terminal outgoing bridge intentionally emits a minimal
+	// snapshot with no Ark PSBT. Model that persisted update and verify the
+	// database keeps the earlier artifact-bearing proof while status
+	// advances.
+	require.NoError(
+		t,
+		registryStore.UpsertSession(
+			ctx, db.OORSessionRegistryRecord{
+				SessionID:       *sessionID,
+				ActorID:         outgoingRecord.ActorID,
+				Direction:       db.OORSessionDirectionOutgoing,
+				Phase:           "completed",
+				IdempotencyKey:  idempotencyKey,
+				Status:          db.OORSessionStatusCompleted,
+				SnapshotData:    []byte{0xff},
+				SnapshotVersion: 5,
+				FlowVersion:     outgoingRecord.FlowVersion,
+				CreatedAt:       outgoingRecord.CreatedAt,
+			},
+		),
+	)
+
+	terminalRecord, err := registryStore.GetSession(ctx, *sessionID)
+	require.NoError(t, err)
+	require.Equal(t, []byte{0xff}, terminalRecord.SnapshotData)
+	terminalAttempt, err :=
+		registryStore.GetDispatchAttemptByIdempotencyKey(
+			ctx, idempotencyKey,
+		)
+	require.NoError(t, err)
+	require.Equal(t, attempt.RequestData, terminalAttempt.RequestData)
+
+	require.NoError(
+		t,
+		registryStore.UpsertSession(
+			ctx, db.OORSessionRegistryRecord{
+				SessionID:       *sessionID,
+				ActorID:         outgoingRecord.ActorID,
+				Direction:       db.OORSessionDirectionIncoming,
+				Phase:           "completed",
+				Status:          db.OORSessionStatusCompleted,
+				SnapshotData:    []byte{0x02},
+				SnapshotVersion: 1,
+				FlowVersion:     outgoingRecord.FlowVersion,
+				CreatedAt:       outgoingRecord.CreatedAt,
+			},
+		),
+	)
+
+	// Model response loss followed by process restart. A fresh RPC server
+	// reads only the durable attempt. Reordering the same recipient
+	// multiset must return the same outpoints in the caller's new order
+	// without a second wallet selection or transport send.
+	restartedRPCServer := NewRPCServer(server)
+	secondResp, err := restartedRPCServer.SendOOR(
+		ctx, &waverpc.SendOORRequest{
+			Recipients: []*waverpc.Output{
+				recipientB, recipientA,
+			},
+			IdempotencyKey: idempotencyKey,
+			AdmissionDeadlineUnixNanos: time.Now().
+				Add(-time.Second).
+				UnixNano(),
+			ExistingOnly: true,
+		},
+	)
 	require.NoError(t, err)
 	require.Equal(t, firstResp.SessionId, secondResp.SessionId)
 	require.Equal(
-		t, firstResp.RecipientOutpoints, secondResp.RecipientOutpoints,
+		t, []string{
+			firstResp.RecipientOutpoints[1],
+			firstResp.RecipientOutpoints[0],
+		}, secondResp.RecipientOutpoints,
 	)
 	require.Equal(t, 1, testWallet.selectCount())
 	require.Empty(t, testWallet.unlockBatches())
 
-	_, err = rpcServer.SendOOR(ctx, &waverpc.SendOORRequest{
-		Recipients:     []*waverpc.Output{recipient},
+	amountMismatch := sendOORPolicyRecipient(
+		t, recipientKeyA.PubKey(), operatorKey.PubKey(), exitDelay,
+		amountA+1,
+	)
+	_, err = restartedRPCServer.SendOOR(
+		ctx, &waverpc.SendOORRequest{
+			Recipients: []*waverpc.Output{
+				amountMismatch, recipientB,
+			},
+			IdempotencyKey: idempotencyKey,
+			ExistingOnly:   true,
+		},
+	)
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
+
+	otherRecipientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	scriptMismatch := sendOORPolicyRecipient(
+		t, otherRecipientKey.PubKey(), operatorKey.PubKey(), exitDelay,
+		amountA,
+	)
+	_, err = restartedRPCServer.SendOOR(
+		ctx, &waverpc.SendOORRequest{
+			Recipients: []*waverpc.Output{
+				scriptMismatch, recipientB,
+			},
+			IdempotencyKey: idempotencyKey,
+			ExistingOnly:   true,
+		},
+	)
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
+	require.Equal(t, 1, testWallet.selectCount())
+
+	_, err = restartedRPCServer.SendOOR(ctx, &waverpc.SendOORRequest{
+		Recipients:     []*waverpc.Output{recipientA},
 		IdempotencyKey: "missing-existing-only-key",
 		ExistingOnly:   true,
 	})
 	require.Equal(t, codes.NotFound, status.Code(err))
 	require.Equal(t, 1, testWallet.selectCount())
 
-	_, err = rpcServer.SendOOR(ctx, &waverpc.SendOORRequest{
-		Recipients:     []*waverpc.Output{recipient},
+	_, err = restartedRPCServer.SendOOR(ctx, &waverpc.SendOORRequest{
+		Recipients:     []*waverpc.Output{recipientA},
 		IdempotencyKey: "expired-admission-key",
 		AdmissionDeadlineUnixNanos: time.Now().
 			Add(-time.Second).
@@ -900,6 +1054,248 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 // releases freshly selected wallet inputs when the OOR actor returns an
 // existing deterministic session after input selection.
 func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	recipientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const (
+		amountSat = int64(10000)
+		exitDelay = uint32(10)
+	)
+
+	vtxoStore, deliveryStore, registryStore := newSendOORTestStores(t)
+
+	desc, clientKey := newSendOORTestVTXO(
+		t, operatorKey.PubKey(), 0x30, btcutil.Amount(amountSat),
+	)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
+
+	selectedVTXO := selectedVTXOFromDescriptor(desc)
+	testWallet := &sendOORTestWallet{
+		selections: [][]wallet.SelectedVTXO{
+			{
+				selectedVTXO,
+			},
+			{
+				selectedVTXO,
+			},
+		},
+	}
+
+	system := actor.NewActorSystem()
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer cancel()
+
+		require.NoError(t, system.Shutdown(shutdownCtx))
+	})
+
+	walletKey := actor.NewServiceKey[
+		wallet.WalletMsg, wallet.WalletResp,
+	](
+		"send-oor-existing-session-wallet",
+	)
+	walletRef := walletKey.Spawn(
+		system, "send-oor-existing-session-wallet", testWallet,
+	)
+
+	signer := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+	packageStore, reservationStore := newSendOORChildStores(t)
+	oorRegistry, err := oor.NewOORRegistryActor(oor.OORRegistryConfig{
+		Log:              fn.Some[btclog.Logger](btclog.Disabled),
+		Signer:           signer,
+		IncomingHandler:  noopOORHandler{},
+		RegistryStore:    registryStore,
+		DeliveryStore:    deliveryStore,
+		ServerConn:       &fakeOORServerConn{},
+		PackageStore:     packageStore,
+		ReservationStore: reservationStore,
+		ActorSystem:      system,
+	})
+	require.NoError(t, err)
+	defer oorRegistry.Stop()
+
+	walletReady := make(chan struct{})
+	close(walletReady)
+
+	server := &Server{
+		cfg:         &Config{},
+		log:         btclog.Disabled,
+		walletReady: walletReady,
+		chainParams: &chaincfg.RegressionNetParams,
+		serverConn: newBufconnClient(t, &fakeArkService{
+			getInfoResponse: &arkrpc.GetInfoResponse{
+				Pubkey: operatorKey.
+					PubKey().
+					SerializeCompressed(),
+				VtxoExitDelay: exitDelay,
+				DustLimit:     1,
+			},
+		}),
+		actorSystem: system,
+		vtxoStore:   vtxoStore,
+		walletRef:   fn.Some(walletRef),
+	}
+
+	rpcServer := NewRPCServer(server)
+	recipient := sendOORPolicyRecipient(
+		t, recipientKey.PubKey(), operatorKey.PubKey(), exitDelay,
+		amountSat,
+	)
+
+	firstResp, err := rpcServer.SendOOR(ctx, &waverpc.SendOORRequest{
+		Recipients: []*waverpc.Output{recipient},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "submitted", firstResp.Status)
+	require.NotEmpty(t, firstResp.SessionId)
+	require.Equal(
+		t, []string{
+			firstResp.SessionId + ":0",
+		},
+		firstResp.RecipientOutpoints,
+	)
+	require.Empty(t, testWallet.unlockBatches())
+
+	secondResp, err := rpcServer.SendOOR(ctx, &waverpc.SendOORRequest{
+		Recipients: []*waverpc.Output{recipient},
+	})
+	require.NoError(t, err)
+	require.Equal(t, firstResp.SessionId, secondResp.SessionId)
+	require.Equal(
+		t, firstResp.RecipientOutpoints, secondResp.RecipientOutpoints,
+	)
+	require.Equal(t, 2, testWallet.selectCount())
+
+	require.Eventually(t, func() bool {
+		batches := testWallet.unlockBatches()
+		if len(batches) != 1 {
+			return false
+		}
+
+		return len(batches[0]) == 1 &&
+			batches[0][0] == desc.Outpoint
+	}, 5*time.Second, 50*time.Millisecond)
+}
+
+// TestSendOORReturnsPendingKeyedSessionBeforeAttemptCommit verifies a same-key
+// retry can receive the in-memory admission winner before the child's first
+// transaction makes its immutable attempt visible. The RPC returns the stable
+// session handle with no unproven outpoints and releases its fresh selection.
+func TestSendOORReturnsPendingKeyedSessionBeforeAttemptCommit(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	recipientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const (
+		amountSat = int64(10000)
+		exitDelay = uint32(10)
+	)
+
+	vtxoStore, _, registryStore := newSendOORTestStores(t)
+	desc, _ := newSendOORTestVTXO(
+		t, operatorKey.PubKey(), 0x35, btcutil.Amount(amountSat),
+	)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
+
+	testWallet := &sendOORTestWallet{
+		selections: [][]wallet.SelectedVTXO{{
+			selectedVTXOFromDescriptor(desc),
+		}},
+	}
+
+	system := actor.NewActorSystem()
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer cancel()
+
+		require.NoError(t, system.Shutdown(shutdownCtx))
+	})
+
+	walletKey := actor.NewServiceKey[
+		wallet.WalletMsg, wallet.WalletResp,
+	](
+		"send-oor-pending-key-wallet",
+	)
+	walletRef := walletKey.Spawn(
+		system, "send-oor-pending-key-wallet", testWallet,
+	)
+
+	sessionHash := chainhash.HashH([]byte("pending-keyed-oor-session"))
+	oorActor := &capturingSendOORActor{
+		response: &oor.StartTransferResponse{
+			SessionID: oor.SessionID(sessionHash),
+			Existing:  true,
+		},
+	}
+	oor.NewServiceKey().Spawn(
+		system, "send-oor-pending-key-actor", oorActor,
+	)
+
+	walletReady := make(chan struct{})
+	close(walletReady)
+
+	server := &Server{
+		cfg:         &Config{},
+		log:         btclog.Disabled,
+		walletReady: walletReady,
+		chainParams: &chaincfg.RegressionNetParams,
+		serverConn: newBufconnClient(t, &fakeArkService{
+			getInfoResponse: &arkrpc.GetInfoResponse{
+				Pubkey: operatorKey.
+					PubKey().
+					SerializeCompressed(),
+				VtxoExitDelay: exitDelay,
+				DustLimit:     1,
+			},
+		}),
+		actorSystem:     system,
+		vtxoStore:       vtxoStore,
+		oorSessionStore: registryStore,
+		walletRef:       fn.Some(walletRef),
+	}
+
+	recipient := sendOORPolicyRecipient(
+		t, recipientKey.PubKey(), operatorKey.PubKey(), exitDelay,
+		amountSat,
+	)
+	resp, err := NewRPCServer(server).SendOOR(
+		ctx, &waverpc.SendOORRequest{
+			Recipients:     []*waverpc.Output{recipient},
+			IdempotencyKey: "pending-key",
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "submitted", resp.Status)
+	require.Equal(t, sessionHash.String(), resp.SessionId)
+	require.Empty(t, resp.RecipientOutpoints)
+	require.Equal(t, 1, testWallet.selectCount())
+	require.Eventually(t, func() bool {
+		batches := testWallet.unlockBatches()
+
+		return len(batches) == 1 && len(batches[0]) == 1 &&
+			batches[0][0] == desc.Outpoint
+	}, 5*time.Second, 50*time.Millisecond)
+}
+
+// TestSendOORRejectsDifferentKeyForExistingSession verifies the daemon never
+// reports success under a caller key that an existing deterministic session
+// does not retain, and releases the inputs selected for the rejected attempt.
+func TestSendOORRejectsDifferentKeyForExistingSession(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -987,9 +1383,10 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 				DustLimit:     1,
 			},
 		}),
-		actorSystem: system,
-		vtxoStore:   vtxoStore,
-		walletRef:   fn.Some(walletRef),
+		actorSystem:     system,
+		vtxoStore:       vtxoStore,
+		oorSessionStore: registryStore,
+		walletRef:       fn.Some(walletRef),
 	}
 
 	rpcServer := NewRPCServer(server)
@@ -999,7 +1396,8 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 	)
 
 	firstResp, err := rpcServer.SendOOR(ctx, &waverpc.SendOORRequest{
-		Recipients: []*waverpc.Output{recipient},
+		Recipients:     []*waverpc.Output{recipient},
+		IdempotencyKey: "first-caller-key",
 	})
 	require.NoError(t, err)
 	require.Equal(t, "submitted", firstResp.Status)
@@ -1013,13 +1411,11 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 	require.Empty(t, testWallet.unlockBatches())
 
 	secondResp, err := rpcServer.SendOOR(ctx, &waverpc.SendOORRequest{
-		Recipients: []*waverpc.Output{recipient},
+		Recipients:     []*waverpc.Output{recipient},
+		IdempotencyKey: "second-caller-key",
 	})
-	require.NoError(t, err)
-	require.Equal(t, firstResp.SessionId, secondResp.SessionId)
-	require.Equal(
-		t, firstResp.RecipientOutpoints, secondResp.RecipientOutpoints,
-	)
+	require.Nil(t, secondResp)
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
 	require.Equal(t, 2, testWallet.selectCount())
 
 	require.Eventually(t, func() bool {
@@ -1031,6 +1427,192 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 		return len(batches[0]) == 1 &&
 			batches[0][0] == desc.Outpoint
 	}, 5*time.Second, 50*time.Millisecond)
+
+	firstRecord, err := registryStore.GetDispatchAttemptByIdempotencyKey(
+		ctx, "first-caller-key",
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, firstResp.SessionId,
+		oor.SessionID(firstRecord.SessionID).String(),
+	)
+
+	_, err = registryStore.GetDispatchAttemptByIdempotencyKey(
+		ctx, "second-caller-key",
+	)
+	require.ErrorIs(t, err, db.ErrOORDispatchAttemptNotFound)
+}
+
+// TestSendOORRejectsNewKeyForDispatchedFailedSession verifies a terminal
+// lifecycle cannot release the immutable dispatch identity and admit the same
+// deterministic operation under a second key.
+func TestSendOORRejectsNewKeyForDispatchedFailedSession(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	recipientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const (
+		amountSat = int64(10000)
+		exitDelay = uint32(10)
+	)
+
+	vtxoStore, deliveryStore, registryStore := newSendOORTestStores(t)
+	desc, clientKey := newSendOORTestVTXO(
+		t, operatorKey.PubKey(), 0x32, btcutil.Amount(amountSat),
+	)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
+
+	testWallet := &sendOORTestWallet{
+		selections: [][]wallet.SelectedVTXO{{
+			selectedVTXOFromDescriptor(desc),
+		}},
+	}
+
+	system := actor.NewActorSystem()
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer cancel()
+
+		require.NoError(t, system.Shutdown(shutdownCtx))
+	})
+
+	walletKey := actor.NewServiceKey[
+		wallet.WalletMsg, wallet.WalletResp,
+	](
+		"send-oor-failed-retry-wallet",
+	)
+	walletRef := walletKey.Spawn(
+		system, "send-oor-failed-retry-wallet", testWallet,
+	)
+
+	walletReady := make(chan struct{})
+	close(walletReady)
+
+	server := &Server{
+		cfg:         &Config{},
+		log:         btclog.Disabled,
+		walletReady: walletReady,
+		chainParams: &chaincfg.RegressionNetParams,
+		serverConn: newBufconnClient(t, &fakeArkService{
+			getInfoResponse: &arkrpc.GetInfoResponse{
+				Pubkey: operatorKey.
+					PubKey().
+					SerializeCompressed(),
+				VtxoExitDelay: exitDelay,
+				DustLimit:     1,
+			},
+		}),
+		actorSystem:     system,
+		vtxoStore:       vtxoStore,
+		oorSessionStore: registryStore,
+		walletRef:       fn.Some(walletRef),
+	}
+
+	rpcServer := NewRPCServer(server)
+	recipient := sendOORPolicyRecipient(
+		t, recipientKey.PubKey(), operatorKey.PubKey(), exitDelay,
+		amountSat,
+	)
+
+	terms, err := server.fetchOperatorTerms(ctx)
+	require.NoError(t, err)
+	recipients, err := rpcServer.buildSendOORRecipients(
+		ctx, []*waverpc.Output{recipient}, terms,
+	)
+	require.NoError(t, err)
+	inputs, err := BuildTransferInputs(
+		ctx, vtxoStore, []wire.OutPoint{desc.Outpoint},
+	)
+	require.NoError(t, err)
+
+	failedSession, _, err := oor.NewSessionWithIdempotencyKey(
+		ctx, arkscript.CheckpointPolicy{
+			OperatorKey: operatorKey.PubKey(),
+			CSVDelay:    exitDelay,
+		}, inputs, recipients, "key-1", oor.EnvConfig{},
+	)
+	require.NoError(t, err)
+	failedSession.FSM.Stop()
+
+	failedID := chainhash.Hash(failedSession.ID)
+	require.NoError(
+		t,
+		registryStore.UpsertSession(
+			ctx, db.OORSessionRegistryRecord{
+				SessionID: failedID,
+				ActorID: oor.ActorIDForSession(
+					failedSession.ID,
+				),
+				Direction:       db.OORSessionDirectionOutgoing,
+				Phase:           "failed",
+				IdempotencyKey:  "key-1",
+				Status:          db.OORSessionStatusFailed,
+				LastError:       "operator rejected",
+				SnapshotData:    []byte{0xff},
+				SnapshotVersion: 5,
+				DispatchRequestData: []byte{
+					0xee,
+				},
+			},
+		),
+	)
+
+	packageStore, reservationStore := newSendOORChildStores(t)
+	oorRegistry, err := oor.NewOORRegistryActor(
+		oor.OORRegistryConfig{
+			Log: fn.Some[btclog.Logger](
+				btclog.Disabled,
+			),
+			Signer: input.NewMockSigner(
+				[]*btcec.PrivateKey{clientKey}, nil,
+			),
+			IncomingHandler:  noopOORHandler{},
+			RegistryStore:    registryStore,
+			DeliveryStore:    deliveryStore,
+			ServerConn:       &fakeOORServerConn{},
+			PackageStore:     packageStore,
+			ReservationStore: reservationStore,
+			ActorSystem:      system,
+		},
+	)
+	require.NoError(t, err)
+	defer oorRegistry.Stop()
+
+	failedReplay, err := rpcServer.SendOOR(ctx, &waverpc.SendOORRequest{
+		Recipients:     []*waverpc.Output{recipient},
+		IdempotencyKey: "key-1",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "failed", failedReplay.Status)
+	require.Equal(t, failedSession.ID.String(), failedReplay.SessionId)
+	require.Empty(t, failedReplay.RecipientOutpoints)
+	require.Equal(t, 0, testWallet.selectCount())
+
+	resp, err := rpcServer.SendOOR(ctx, &waverpc.SendOORRequest{
+		Recipients:     []*waverpc.Output{recipient},
+		IdempotencyKey: "key-2",
+	})
+	require.Nil(t, resp)
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
+	require.Equal(t, 1, testWallet.selectCount())
+	require.Eventually(t, func() bool {
+		return len(testWallet.unlockBatches()) == 1
+	}, 5*time.Second, 50*time.Millisecond)
+
+	firstAttempt, err := registryStore.GetDispatchAttemptByIdempotencyKey(
+		ctx, "key-1",
+	)
+	require.NoError(t, err)
+	require.Equal(t, failedID, firstAttempt.SessionID)
+
+	_, err = registryStore.GetDispatchAttemptByIdempotencyKey(ctx, "key-2")
+	require.ErrorIs(t, err, db.ErrOORDispatchAttemptNotFound)
 }
 
 // TestSendOORWaitCancelDoesNotUnlockSubmittedInputs verifies that once a

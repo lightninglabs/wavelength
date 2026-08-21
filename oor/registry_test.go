@@ -77,22 +77,21 @@ func (r *recordingActorRef) Ask(_ context.Context,
 	return promise.Future()
 }
 
-// neverResolvingActorRef is an ActorRef stub whose Ask returns a future that
-// never completes, modeling a wedged child admission turn. It lets a test
-// assert the registry's detached-continuation wait is bounded rather than
-// leaking the OnComplete goroutine forever under an uncancellable caller
-// context.
-type neverResolvingActorRef struct {
+// controllableActorRef returns a caller-owned future so a test can let the
+// registry's bounded wait expire before completing the child's actual turn.
+type controllableActorRef struct {
 	recordingTellRef
+
+	future actor.Future[ActorResp]
 }
 
-// Ask returns a future that never resolves.
-func (r *neverResolvingActorRef) Ask(_ context.Context,
-	_ OORDurableMsg) actor.Future[ActorResp] {
+// Ask records the message and returns the externally controlled future.
+func (r *controllableActorRef) Ask(_ context.Context,
+	msg OORDurableMsg) actor.Future[ActorResp] {
 
-	// The promise is never completed, so the only unblock for a
-	// continuation parked on this future is its wait context being done.
-	return actor.NewPromise[ActorResp]().Future()
+	r.rec.record(msg)
+
+	return r.future
 }
 
 // registrySpawnRecorder captures the children spawned by a registry behavior
@@ -200,6 +199,16 @@ func upsertRegistryRow(t *testing.T, store *fakeRegistryStore, id SessionID,
 	dir clientdb.OORSessionDirection, phase, key string,
 	status clientdb.OORSessionStatus) {
 
+	upsertRegistryRowContext(
+		t.Context(), t, store, id, dir, phase, key, status,
+	)
+}
+
+func upsertRegistryRowContext(ctx context.Context, t *testing.T,
+	store *fakeRegistryStore, id SessionID,
+	dir clientdb.OORSessionDirection, phase, key string,
+	status clientdb.OORSessionStatus) {
+
 	t.Helper()
 
 	rec := clientdb.OORSessionRegistryRecord{
@@ -213,7 +222,10 @@ func upsertRegistryRow(t *testing.T, store *fakeRegistryStore, id SessionID,
 			0x01,
 		},
 	}
-	require.NoError(t, store.UpsertSession(t.Context(), rec))
+	if dir == clientdb.OORSessionDirectionOutgoing && key != "" {
+		rec.DispatchRequestData = []byte{0x01}
+	}
+	require.NoError(t, store.UpsertSession(ctx, rec))
 }
 
 // TestOORRegistryRestoreNonTerminal verifies restore spawns one child per
@@ -383,9 +395,9 @@ func TestOORRegistryLookupTransfer(t *testing.T) {
 	require.NotContains(t, b.pendingOutgoingKeys, key)
 }
 
-// TestOORRegistryStartTransferRetryAfterFailure verifies a failed keyed
-// session never dedups a retry: admission proceeds past the idempotency
-// lookup instead of echoing the dead session as Existing.
+// TestOORRegistryStartTransferRetryAfterFailure verifies a key remains
+// bound after a dispatched session fails. The caller must observe the original
+// operation instead of creating an ambiguous second send.
 func TestOORRegistryStartTransferRetryAfterFailure(t *testing.T) {
 	t.Parallel()
 
@@ -400,13 +412,16 @@ func TestOORRegistryStartTransferRetryAfterFailure(t *testing.T) {
 
 	b, _ := newTestRegistryBehavior(store)
 
-	// The lookup must skip the failed row, so admission falls through to
-	// deterministic session construction, which rejects this empty request
-	// instead of returning the dead session as Existing.
+	// Failure does not release a key after dispatch.
 	res := b.handleStartTransfer(ctx, &StartTransferRequest{
 		IdempotencyKey: "key-1",
 	})
-	require.True(t, res.IsErr())
+	require.True(t, res.IsOk(), res.Err())
+
+	resp, ok := res.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+	require.True(t, resp.Existing)
+	require.Equal(t, failed, resp.SessionID)
 }
 
 // TestOORRegistryListSessions verifies the coarse list projects the
@@ -1544,8 +1559,8 @@ func TestOORRegistryAsyncAdmissionEndToEnd(t *testing.T) {
 }
 
 // TestOORRegistryDetachedAdmissionWaitBounded verifies the
-// detached-continuation wait is bounded: a child whose admission future never
-// resolves, addressed under an uncancellable caller context
+// detached-continuation wait is bounded: a child whose admission future does
+// not resolve before the bound, addressed under an uncancellable caller context
 // (context.WithoutCancel, as the production StartTransfer call site derives
 // it), must not leak the OnComplete goroutine forever. The registry wraps the
 // caller context in detachedWaitTimeout, so the caller's promise completes with
@@ -1584,23 +1599,31 @@ func TestOORRegistryDetachedAdmissionWaitBounded(t *testing.T) {
 	defer registry.Stop()
 
 	// Shrink the bound so the test does not wait the production default,
-	// and replace the spawn with a stub child whose admission Ask never
-	// resolves, modeling a wedged child turn.
+	// and replace the spawn with a child future the test completes only
+	// after the bounded caller continuation fires.
 	registry.behavior.detachedWaitTimeout = 200 * time.Millisecond
+	childPromise := actor.NewPromise[ActorResp]()
+	spawnRec := &registrySpawnRecorder{}
 	registry.behavior.spawnFunc = func(id SessionID,
 		dir clientdb.OORSessionDirection) (*OORSessionActor, error) {
 
 		tellRef := &recordingTellRef{
 			id:  ActorIDForSession(id),
-			rec: &registrySpawnRecorder{},
+			rec: spawnRec,
 		}
 
 		return &OORSessionActor{
-			ref: &neverResolvingActorRef{
+			ref: &controllableActorRef{
 				recordingTellRef: *tellRef,
+				future:           childPromise.Future(),
 			},
 			tellRef: tellRef,
-			stop:    func() {},
+			stop: func() {
+				spawnRec.mu.Lock()
+				defer spawnRec.mu.Unlock()
+
+				spawnRec.stops++
+			},
 		}, nil
 	}
 
@@ -1619,7 +1642,7 @@ func TestOORRegistryDetachedAdmissionWaitBounded(t *testing.T) {
 	// the registry's detachedWaitTimeout wrap can unblock the continuation.
 	askCtx := actor.WithoutTx(context.WithoutCancel(ctx))
 
-	future := registry.Ref().Ask(askCtx, &StartTransferRequest{
+	req := &StartTransferRequest{
 		Policy: arkscript.CheckpointPolicy{
 			OperatorKey: operatorKey.PubKey(),
 			CSVDelay:    10,
@@ -1629,7 +1652,15 @@ func TestOORRegistryDetachedAdmissionWaitBounded(t *testing.T) {
 			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
 			Value:    inputs[0].VTXO.Amount,
 		}},
-	})
+		IdempotencyKey: "bounded-wait-key",
+	}
+	session, _, err := NewSessionWithIdempotencyKey(
+		ctx, req.Policy, req.Inputs, req.Recipients, req.IdempotencyKey,
+		EnvConfig{},
+	)
+	require.NoError(t, err)
+	session.FSM.Stop()
+	future := registry.Ref().Ask(askCtx, req)
 
 	// The continuation must settle the caller's promise off the bound, not
 	// off the Await context: a regression that drops the registry's
@@ -1657,6 +1688,7 @@ func TestOORRegistryDetachedAdmissionWaitBounded(t *testing.T) {
 				"promise never completed",
 		)
 	}
+
 }
 
 // TestOORRegistryDriveEventRouting verifies the registry's hot path: an
@@ -1778,6 +1810,194 @@ func TestOORRegistryStartTransferNoKeyActiveDedup(t *testing.T) {
 	require.True(t, resp.Existing)
 	require.Equal(t, session.ID, resp.SessionID)
 	require.Equal(t, 0, rec.spawns)
+}
+
+// TestOORRegistryStartTransferRejectsDifferentKeyForSession verifies a caller
+// cannot receive success under a key that the deterministic session's pending
+// admission or durable row will not retain.
+func TestOORRegistryStartTransferRejectsDifferentKeyForSession(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, operatorKey.PubKey(), wire.OutPoint{
+				Hash:  [32]byte{0x77},
+				Index: 0,
+			}, btcutil.Amount(10_000),
+		),
+	}
+	req := &StartTransferRequest{
+		Policy: arkscript.CheckpointPolicy{
+			OperatorKey: operatorKey.PubKey(),
+			CSVDelay:    10,
+		},
+		Inputs: inputs,
+		Recipients: []oortx.RecipientOutput{{
+			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+			Value:    inputs[0].VTXO.Amount,
+		}},
+		IdempotencyKey: "second-caller-key",
+	}
+
+	session, _, err := NewSessionWithIdempotencyKey(
+		ctx, req.Policy, req.Inputs, req.Recipients, req.IdempotencyKey,
+		EnvConfig{},
+	)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		prepare func(*fakeRegistryStore, *oorRegistryBehavior)
+	}{
+		{
+			name: "pending admission",
+			prepare: func(_ *fakeRegistryStore,
+				b *oorRegistryBehavior) {
+
+				b.pendingOutgoingKeys["first-caller-key"] =
+					session.ID
+			},
+		},
+		{
+			name: "durable row",
+			prepare: func(store *fakeRegistryStore,
+				_ *oorRegistryBehavior) {
+
+				upsertRegistryRow(
+					t, store, session.ID,
+					clientdb.OORSessionDirectionOutgoing,
+					"submit_sent", "first-caller-key",
+					clientdb.OORSessionStatusPending,
+				)
+				record, err := store.GetSession(
+					t.Context(), chainHashOf(session.ID),
+				)
+				require.NoError(t, err)
+				record.DispatchRequestData = []byte{
+					0x01,
+				}
+				require.NoError(
+					t,
+					store.UpsertSession(
+						t.Context(), *record,
+					),
+				)
+			},
+		},
+		{
+			name: "keyless durable row",
+			prepare: func(store *fakeRegistryStore,
+				_ *oorRegistryBehavior) {
+
+				upsertRegistryRow(
+					t, store, session.ID,
+					clientdb.OORSessionDirectionOutgoing,
+					"submit_sent", "",
+					clientdb.OORSessionStatusPending,
+				)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newFakeRegistryStore()
+			b, rec := newTestRegistryBehavior(store)
+			b.active[session.ID] = &OORSessionActor{
+				stop: func() {},
+			}
+			test.prepare(store, b)
+
+			res := b.handleStartTransfer(ctx, req)
+			require.True(t, res.IsErr())
+			require.ErrorIs(
+				t, res.Err(), ErrIdempotencyKeyConflict,
+			)
+			require.Equal(t, 0, rec.spawns)
+			require.Empty(t, rec.recorded())
+
+			_, err := store.GetDispatchAttemptByIdempotencyKey(
+				ctx, req.IdempotencyKey,
+			)
+			require.ErrorIs(
+				t, err, clientdb.ErrOORDispatchAttemptNotFound,
+			)
+		})
+	}
+}
+
+// TestOORRegistryStartTransferRebindsAttemptlessFailedSession verifies a
+// terminal legacy/keyless row does not permanently block an exact keyed retry.
+// The stale terminal child is replaced, while the deterministic session id
+// stays unchanged so the new child can bind the request before submit.
+func TestOORRegistryStartTransferRebindsAttemptlessFailedSession(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, operatorKey.PubKey(), wire.OutPoint{
+				Hash:  [32]byte{0x78},
+				Index: 0,
+			}, btcutil.Amount(10_000),
+		),
+	}
+	req := &StartTransferRequest{
+		Policy: arkscript.CheckpointPolicy{
+			OperatorKey: operatorKey.PubKey(),
+			CSVDelay:    10,
+		},
+		Inputs: inputs,
+		Recipients: []oortx.RecipientOutput{{
+			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+			Value:    inputs[0].VTXO.Amount,
+		}},
+		IdempotencyKey: "new-caller-key",
+	}
+
+	session, _, err := NewSessionWithIdempotencyKey(
+		ctx, req.Policy, req.Inputs, req.Recipients, req.IdempotencyKey,
+		EnvConfig{},
+	)
+	require.NoError(t, err)
+	session.FSM.Stop()
+
+	store := newFakeRegistryStore()
+	upsertRegistryRow(
+		t, store, session.ID, clientdb.OORSessionDirectionOutgoing,
+		"failed", "", clientdb.OORSessionStatusFailed,
+	)
+
+	b, rec := newTestRegistryBehavior(store)
+	b.active[session.ID] = &OORSessionActor{stop: func() {
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+
+		rec.stops++
+	}}
+
+	res := b.handleStartTransfer(ctx, req)
+	require.True(t, res.IsOk(), res.Err())
+
+	resp, ok := res.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+	require.False(t, resp.Existing)
+	require.Equal(t, session.ID, resp.SessionID)
+	require.Equal(t, 1, rec.stopCount())
+	require.Equal(t, 1, rec.spawns)
+	require.Len(t, rec.recorded(), 1)
+	require.Equal(t, session.ID, b.pendingOutgoingKeys[req.IdempotencyKey])
 }
 
 // TestOORRegistryStartTransferDropsPhantomResident verifies the phantom-child

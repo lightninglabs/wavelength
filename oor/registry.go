@@ -45,6 +45,13 @@ var errSelfTransferDeferred = errors.New("outgoing session still active for " +
 var ErrOutgoingAdmissionExpired = errors.New("outgoing OOR admission " +
 	"deadline reached")
 
+// ErrIdempotencyKeyConflict is returned when a deterministic outgoing session
+// id is already pending or durably bound under a different caller idempotency
+// key. The new key must not receive a success response because later lookup
+// cannot prove it identifies the existing dispatch.
+var ErrIdempotencyKeyConflict = errors.New("outgoing OOR session is bound to " +
+	"a different idempotency key")
+
 // selfHintRedeliveryBackoff is the flat redelivery backoff for a deferred
 // self-transfer hint's durable delivery. The terminal-reap redrive is the
 // fast path, so the durable copy only needs to cover a crash or a missed
@@ -577,12 +584,13 @@ func (r *oorRegistryBehavior) handleRestoreNonTerminal(ctx context.Context,
 func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 	req *StartTransferRequest) fn.Result[ActorResp] {
 
-	// Idempotency dedup against the durable store first. The lookup skips
-	// failed rows, so a keyed retry after a failed transfer admits a fresh
-	// session instead of echoing the dead one.
+	// Idempotency dedup reads the immutable dispatch-attempt record, not
+	// the mutable session row. Once the first transport enqueue commits,
+	// later outgoing failure or incoming self-transfer progress cannot
+	// release the caller key.
 	if req.IdempotencyKey != "" {
 		store := r.cfg.RegistryStore
-		existing, err := store.LookupActiveSessionByIdempotencyKey(
+		existing, err := store.GetDispatchAttemptByIdempotencyKey(
 			ctx, req.IdempotencyKey,
 		)
 		switch {
@@ -604,7 +612,7 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 				Existing:  true,
 			})
 
-		case !errors.Is(err, clientdb.ErrOORSessionNotFound):
+		case !errors.Is(err, clientdb.ErrOORDispatchAttemptNotFound):
 			return fn.Err[ActorResp](err)
 		}
 
@@ -636,15 +644,22 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 	// discarded; the spawned child rebuilds the identical one. Stop it
 	// immediately so its driveMachine goroutine does not linger for the
 	// daemon's lifetime (one leak per outgoing admission otherwise).
-	session, _, err := NewSessionWithIdempotencyKey(
+	session, _, err := newSessionWithDispatchRequest(
 		ctx, req.Policy, req.Inputs, req.Recipients, req.IdempotencyKey,
-		r.envConfig(),
+		req.DispatchRequestData, r.envConfig(),
 	)
 	if err != nil {
 		return fn.Err[ActorResp](err)
 	}
 	sessionID := session.ID
 	session.FSM.Stop()
+
+	replaceFailed, err := r.validateOutgoingDispatchIdentity(
+		ctx, sessionID, req.IdempotencyKey,
+	)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
 
 	// A resident child only answers Existing when a durable row backs it. A
 	// failed admission on the production (detachable) path is reaped
@@ -657,38 +672,46 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 	// deduping; on a missing row drop the phantom synchronously here on the
 	// registry goroutine and fall through to a fresh admission.
 	if child, ok := r.active[sessionID]; ok {
-		_, err := r.cfg.RegistryStore.GetSession(
-			ctx, chainHashOf(sessionID),
-		)
-		switch {
-		case err == nil:
-			r.
-				logger(ctx).
-				DebugS(
-					ctx,
-					"Outgoing OOR session already "+
-						"resident; returning existing",
+		if replaceFailed {
+			// A terminal child can remain resident briefly while
+			// its advisory reap is queued. Stop it before spawning
+			// the fresh exact-operation admission below.
+			r.dropChild(sessionID, child)
+		} else {
+			_, err := r.cfg.RegistryStore.GetSession(
+				ctx, chainHashOf(sessionID),
+			)
+			switch {
+			case err == nil:
+				log := r.logger(ctx)
+				log.DebugS(ctx, "Outgoing OOR session already "+
+					"resident; returning existing",
 					slog.String(
 						"session_id",
 						sessionID.String(),
 					),
 				)
 
-			return fn.Ok[ActorResp](&StartTransferResponse{
-				SessionID: sessionID,
-				Existing:  true,
-			})
+				return fn.Ok[ActorResp](&StartTransferResponse{
+					SessionID: sessionID,
+					Existing:  true,
+				})
 
-		case errors.Is(err, clientdb.ErrOORSessionNotFound):
-			r.logger(ctx).DebugS(ctx, "Dropping row-less phantom "+
-				"outgoing child before re-admitting",
-				slog.String("session_id", sessionID.String()),
-			)
+			case errors.Is(err, clientdb.ErrOORSessionNotFound):
+				log := r.logger(ctx)
+				log.DebugS(ctx, "Dropping row-less phantom "+
+					"outgoing child before re-admitting",
+					slog.String(
+						"session_id",
+						sessionID.String(),
+					),
+				)
 
-			r.dropChild(sessionID, child)
+				r.dropChild(sessionID, child)
 
-		case err != nil:
-			return fn.Err[ActorResp](err)
+			case err != nil:
+				return fn.Err[ActorResp](err)
+			}
 		}
 	}
 
@@ -698,7 +721,6 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 	if err != nil {
 		return fn.Err[ActorResp](err)
 	}
-
 	r.logger(ctx).InfoS(ctx, "Admitting outgoing OOR session",
 		slog.String("session_id", sessionID.String()),
 		slog.Int("num_inputs", len(req.Inputs)),
@@ -730,6 +752,74 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 	return fn.Ok[ActorResp](&StartTransferResponse{SessionID: sessionID})
 }
 
+// validateOutgoingDispatchIdentity prevents one deterministic OOR operation
+// from being admitted under two caller keys. It checks the immutable durable
+// binding and the same-boot child-commit window before a request can reach the
+// session actor.
+func (r *oorRegistryBehavior) validateOutgoingDispatchIdentity(
+	ctx context.Context, sessionID SessionID, key string) (bool, error) {
+
+	if key == "" {
+		return false, nil
+	}
+
+	attempt, err := r.cfg.RegistryStore.GetDispatchAttemptBySessionID(
+		ctx, chainHashOf(sessionID),
+	)
+	switch {
+	case err == nil && attempt.IdempotencyKey != key:
+		return false, fmt.Errorf("%w: session %s",
+			ErrIdempotencyKeyConflict, sessionID)
+
+	case err == nil:
+		return false, nil
+
+	case !errors.Is(err, clientdb.ErrOORDispatchAttemptNotFound):
+		return false, err
+	}
+
+	// A live durable session without an attempt was admitted keylessly. It
+	// cannot acquire a key later because every checkpoint carries the
+	// original empty identity. A terminal failed outgoing row is different:
+	// no immutable attempt exists, and rebuilding the same deterministic
+	// session replays the exact operation. Its first fresh submit
+	// checkpoint binds the new key before transport enqueue.
+	replaceFailed := false
+	record, err := r.cfg.RegistryStore.GetSession(
+		ctx, chainHashOf(sessionID),
+	)
+	switch {
+	case err == nil && record.Direction ==
+		clientdb.OORSessionDirectionOutgoing &&
+		record.Status == clientdb.OORSessionStatusFailed:
+
+		replaceFailed = true
+
+	case err == nil:
+		return false, fmt.Errorf("%w: session %s",
+			ErrIdempotencyKeyConflict, sessionID)
+
+	case !errors.Is(err, clientdb.ErrOORSessionNotFound):
+		return false, err
+	}
+
+	for pendingKey, pendingID := range r.pendingOutgoingKeys {
+		if pendingID != sessionID || pendingKey == key {
+			continue
+		}
+
+		if _, active := r.active[pendingID]; !active {
+			delete(r.pendingOutgoingKeys, pendingKey)
+			continue
+		}
+
+		return false, fmt.Errorf("%w: session %s",
+			ErrIdempotencyKeyConflict, sessionID)
+	}
+
+	return replaceFailed, nil
+}
+
 // handleLookupTransfer reconciles one key without building a transfer or
 // selecting inputs. The registry mailbox orders this read behind admissions it
 // has already accepted; pendingOutgoingKeys covers the child-commit handoff
@@ -743,7 +833,7 @@ func (r *oorRegistryBehavior) handleLookupTransfer(ctx context.Context,
 		)
 	}
 
-	record, err := r.cfg.RegistryStore.LookupActiveSessionByIdempotencyKey(
+	record, err := r.cfg.RegistryStore.GetDispatchAttemptByIdempotencyKey(
 		ctx, req.IdempotencyKey,
 	)
 	switch {
@@ -755,7 +845,7 @@ func (r *oorRegistryBehavior) handleLookupTransfer(ctx context.Context,
 			Found:     true,
 		})
 
-	case !errors.Is(err, clientdb.ErrOORSessionNotFound):
+	case !errors.Is(err, clientdb.ErrOORDispatchAttemptNotFound):
 		return fn.Err[ActorResp](err)
 	}
 
@@ -1095,7 +1185,6 @@ func (r *oorRegistryBehavior) resolveSelfTransfer(ctx context.Context,
 	if record.Direction != clientdb.OORSessionDirectionOutgoing {
 		return nil
 	}
-
 	// Deferring is an error so the durable delivery is retained (nacked on
 	// the long self-transfer backoff); the caller parks the hint for the
 	// event-driven redrive at the outgoing session's terminal reap.
