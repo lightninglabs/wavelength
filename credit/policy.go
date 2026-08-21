@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -13,6 +14,20 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/build"
+	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
+)
+
+const (
+	// defaultBootReconcileTimeout bounds how long startup keeps probing for
+	// a transiently unavailable operator. It matches the durable credit
+	// operation backstop closely enough to absorb a short outage without
+	// creating an unbounded daemon-lifetime retry loop.
+	defaultBootReconcileTimeout = 4 * time.Minute
+
+	// maxBootReconcileBackoff caps exponential retry spacing so a
+	// recovering operator is noticed promptly without being polled every
+	// two seconds throughout a longer outage.
+	maxBootReconcileBackoff = 30 * time.Second
 )
 
 // autoRedeemer runs the wallet-owned auto-redeem policy. Redemption is never
@@ -22,17 +37,19 @@ import (
 // Steady-state auto-redeem is folded into the receive state machine: a settled
 // receive that clears the watermark signals the registry directly (see
 // awaitingSettlementState). The autoRedeemer therefore no longer runs a
-// steady-state periodic sweep; it performs a boot-time reconcile, retrying
-// transient evaluation failures until one succeeds, so a balance accumulated
-// before this start is still materialized even when no receive will re-evaluate
-// it.
+// steady-state periodic sweep; it performs a bounded boot-time reconcile,
+// retrying transient evaluation failures with backoff so a balance accumulated
+// before this start can still be materialized even when no receive will
+// re-evaluate it.
 type autoRedeemer struct {
-	cfg      AutoRedeemConfig
-	server   CreditServer
-	daemon   CreditDaemon
-	registry actor.TellOnlyRef[CreditMsg]
-	log      btclog.Logger
-	retry    time.Duration
+	cfg          AutoRedeemConfig
+	server       CreditServer
+	daemon       CreditDaemon
+	registry     actor.TellOnlyRef[CreditMsg]
+	log          btclog.Logger
+	retry        time.Duration
+	maxRetry     time.Duration
+	retryTimeout time.Duration
 
 	// earmark is the shared credit-earmark provider, read on the boot
 	// reconcile. It is the same atomic pointer the per-operation children
@@ -40,9 +57,10 @@ type autoRedeemer struct {
 	// every redeem decision.
 	earmark *atomic.Pointer[EarmarkFunc]
 
-	mu     sync.Mutex
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	mu           sync.Mutex
+	cancel       context.CancelFunc
+	signalCancel context.CancelFunc
+	wg           sync.WaitGroup
 }
 
 // newAutoRedeemer builds an auto-redeemer from the registry config, sharing the
@@ -56,13 +74,15 @@ func newAutoRedeemer(cfg RegistryConfig, registry actor.TellOnlyRef[CreditMsg],
 	}
 
 	return &autoRedeemer{
-		cfg:      cfg.AutoRedeem,
-		server:   cfg.Server,
-		daemon:   cfg.Daemon,
-		registry: registry,
-		log:      cfg.Log.UnwrapOr(btclog.Disabled),
-		retry:    cfg.PollInterval,
-		earmark:  earmark,
+		cfg:          cfg.AutoRedeem,
+		server:       cfg.Server,
+		daemon:       cfg.Daemon,
+		registry:     registry,
+		log:          cfg.Log.UnwrapOr(btclog.Disabled),
+		retry:        cfg.PollInterval,
+		maxRetry:     maxBootReconcileBackoff,
+		retryTimeout: defaultBootReconcileTimeout,
+		earmark:      earmark,
 	}
 }
 
@@ -77,11 +97,11 @@ func (a *autoRedeemer) setEarmark(fn EarmarkFunc) {
 	a.earmark.Store(&fn)
 }
 
-// start runs the boot-time reconcile when the policy is enabled. A failed
-// evaluation retries until one complete evaluation succeeds, because no later
-// receive necessarily exists to reconsider an already-available balance.
-// Steady-state auto-redeem remains receive-driven. The retry loop is anchored
-// to ctx, which must be a daemon-lifetime context.
+// start runs the boot-time reconcile when the policy is enabled. Transient
+// evaluation failures retry with exponential backoff until one evaluation
+// succeeds or the cumulative retry window expires. Permanent compatibility
+// errors stop immediately. Steady-state auto-redeem remains receive-driven.
+// The retry loop is anchored to ctx, which must be a daemon-lifetime context.
 func (a *autoRedeemer) start(ctx context.Context) {
 	if a == nil || !a.cfg.Enabled {
 		return
@@ -94,18 +114,79 @@ func (a *autoRedeemer) start(ctx context.Context) {
 		return
 	}
 
-	reconcileCtx, cancel := context.WithCancel(ctx)
+	retry := a.retry
+	if retry <= 0 {
+		retry = DefaultPollInterval
+	}
+	maxRetry := a.maxRetry
+	if maxRetry < retry {
+		maxRetry = retry
+	}
+	retryTimeout := a.retryTimeout
+	if retryTimeout <= 0 {
+		retryTimeout = defaultBootReconcileTimeout
+	}
+
+	reconcileCtx, cancel := context.WithTimeout(ctx, retryTimeout)
+	signalCtx, signalCancel := context.WithCancel(ctx)
 	a.cancel = cancel
+	a.signalCancel = signalCancel
 	a.wg.Add(1)
 	a.mu.Unlock()
 
 	go func() {
 		defer a.wg.Done()
+		defer cancel()
 
-		for attempt := 1; ; attempt++ {
-			err := a.reconcile(reconcileCtx)
-			if err == nil || reconcileCtx.Err() != nil {
+		var (
+			attempt int
+			lastErr error
+		)
+		for {
+			if reconcileCtx.Err() != nil {
+				if ctx.Err() == nil && errors.Is(
+					reconcileCtx.Err(),
+					context.DeadlineExceeded,
+				) {
+
+					a.logger(ctx).WarnS(
+						ctx,
+						"Boot auto-redeem reconcile "+
+							"stopped",
+						lastErr,
+						slog.Int("attempt", attempt),
+						slog.String(
+							"reason",
+							"retry window expired",
+						),
+					)
+				}
+
 				return
+			}
+
+			attempt++
+			err := a.reconcile(reconcileCtx, signalCtx)
+			if err == nil || ctx.Err() != nil {
+				return
+			}
+			lastErr = err
+			if mailboxconn.IsPermanentVersionError(err) {
+				a.logger(reconcileCtx).WarnS(
+					reconcileCtx,
+					"Boot auto-redeem reconcile stopped",
+					err,
+					slog.Int("attempt", attempt),
+					slog.String(
+						"reason",
+						"incompatible operator",
+					),
+				)
+
+				return
+			}
+			if reconcileCtx.Err() != nil {
+				continue
 			}
 
 			a.logger(reconcileCtx).WarnS(
@@ -113,16 +194,19 @@ func (a *autoRedeemer) start(ctx context.Context) {
 				"Boot auto-redeem reconcile failed; retrying",
 				err,
 				slog.Int("attempt", attempt),
+				slog.Duration("retry_after", retry),
 			)
 
-			timer := time.NewTimer(a.retry)
+			timer := time.NewTimer(retry)
 			select {
 			case <-reconcileCtx.Done():
 				timer.Stop()
 
-				return
-
 			case <-timer.C:
+			}
+
+			if retry < maxRetry {
+				retry = min(retry*2, maxRetry)
 			}
 		}
 	}()
@@ -136,30 +220,31 @@ func (a *autoRedeemer) stop() {
 
 	a.mu.Lock()
 	cancel := a.cancel
+	signalCancel := a.signalCancel
 	a.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	if signalCancel != nil {
+		signalCancel()
 	}
 
 	a.wg.Wait()
 }
 
 // reconcile evaluates the auto-redeem watermark once and signals the registry
-// when an over-watermark balance is already sitting available. The registry
-// applies the no-pending-pay/redeem interlock before admitting the redeem, so
-// this only has to clear the threshold against the earmark-adjusted balance.
-func (a *autoRedeemer) reconcile(ctx context.Context) error {
-	threshold, err := a.threshold(ctx)
-	if err != nil {
-		return err
-	}
-
-	acctKey, err := a.daemon.IdentityPubKey(ctx)
+// when an over-watermark balance is already sitting available. evalCtx bounds
+// the external reads, while signalCtx owns the queued actor work and must live
+// until auto-redeemer shutdown. The registry applies the no-pending-pay/redeem
+// interlock before admitting the redeem, so this only has to clear the
+// threshold against the earmark-adjusted balance.
+func (a *autoRedeemer) reconcile(evalCtx, signalCtx context.Context) error {
+	acctKey, err := a.daemon.IdentityPubKey(evalCtx)
 	if err != nil {
 		return fmt.Errorf("get identity pubkey: %w", err)
 	}
 
-	snapshot, err := a.server.ListCredits(ctx, acctKey)
+	snapshot, err := a.server.ListCredits(evalCtx, acctKey)
 	if err != nil {
 		return fmt.Errorf("list credits: %w", err)
 	}
@@ -173,7 +258,7 @@ func (a *autoRedeemer) reconcile(ctx context.Context) error {
 	available := snapshot.AvailableSat
 	if a.earmark != nil {
 		if earmarkFn := a.earmark.Load(); earmarkFn != nil {
-			earmarked, err := (*earmarkFn)(ctx)
+			earmarked, err := (*earmarkFn)(evalCtx)
 			if err != nil {
 				return fmt.Errorf("read earmarked credits: %w",
 					err)
@@ -186,16 +271,24 @@ func (a *autoRedeemer) reconcile(ctx context.Context) error {
 		}
 	}
 
+	if available == 0 || available < a.cfg.MinRedeemSat {
+		return nil
+	}
+
+	threshold, err := a.threshold(evalCtx)
+	if err != nil {
+		return err
+	}
 	if available < threshold {
 		return nil
 	}
 
-	a.logger(ctx).InfoS(ctx, "Boot reconcile signaling auto-redeem",
+	a.logger(evalCtx).InfoS(evalCtx, "Boot reconcile signaling auto-redeem",
 		slog.Uint64("available_sat", available),
 		slog.Uint64("threshold_sat", threshold),
 	)
 
-	return a.registry.Tell(ctx, &ConsiderRedeemRequest{
+	return a.registry.Tell(signalCtx, &ConsiderRedeemRequest{
 		AvailableSat: available,
 	})
 }

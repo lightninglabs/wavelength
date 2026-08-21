@@ -60,14 +60,20 @@ type stubArkServiceClient struct {
 	resp  *arkrpc.GetInfoResponse
 	err   error
 	calls int
+	await func(context.Context) error
 }
 
 // GetInfo returns the canned response.
-func (s *stubArkServiceClient) GetInfo(_ context.Context,
+func (s *stubArkServiceClient) GetInfo(ctx context.Context,
 	_ *arkrpc.GetInfoRequest, _ ...grpc.CallOption) (
 	*arkrpc.GetInfoResponse, error) {
 
 	s.calls++
+	if s.await != nil {
+		if err := s.await(ctx); err != nil {
+			return nil, err
+		}
+	}
 
 	if s.err != nil {
 		return nil, s.err
@@ -281,6 +287,34 @@ func TestOperatorVTXOFloorRejectsZero(t *testing.T) {
 
 	_, err := rpc.OperatorVTXOFloor(t.Context())
 	require.ErrorContains(t, err, "operator VTXO floor is unavailable")
+}
+
+// TestOperatorVTXOFloorBoundsRefresh verifies a daemon-lifetime caller cannot
+// leave the policy turn parked forever on an operator that never responds.
+func TestOperatorVTXOFloorBoundsRefresh(t *testing.T) {
+	t.Parallel()
+
+	var observedDeadline time.Time
+	rpc := &RPCServer{server: &Server{
+		arkClient: &stubArkServiceClient{
+			await: func(ctx context.Context) error {
+				deadline, ok := ctx.Deadline()
+				require.True(t, ok)
+				observedDeadline = deadline
+
+				return context.DeadlineExceeded
+			},
+		},
+		arkProtocolVersion: 1,
+	}}
+
+	started := time.Now()
+	_, err := rpc.OperatorVTXOFloor(t.Context())
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.WithinDuration(
+		t, started.Add(operatorTermsRefreshTimeout), observedDeadline,
+		time.Second,
+	)
 }
 
 // TestRefreshAuthenticatedOperatorTermsUsesMailbox verifies that the

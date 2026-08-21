@@ -757,7 +757,12 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *waverpc.GetInfoRequest) (
 // refresh also enforces protocol compatibility and can transition the daemon to
 // incompatible when the operator disables the bound Ark version.
 func (r *RPCServer) OperatorVTXOFloor(ctx context.Context) (uint64, error) {
-	terms, err := r.server.fetchOperatorTerms(ctx)
+	refreshCtx, cancel := context.WithTimeout(
+		ctx, operatorTermsRefreshTimeout,
+	)
+	defer cancel()
+
+	terms, err := r.server.fetchOperatorTerms(refreshCtx)
 	if err != nil {
 		return 0, fmt.Errorf("fetch operator terms: %w", err)
 	}
