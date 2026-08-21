@@ -9,10 +9,11 @@
 // gRPC is serving (lnd.Main blocks forever, so lnd needs a callback; we do
 // not). RPC verbs use a JSON bytes-in / bytes-out convention (the host decodes
 // with kotlinx.serialization / Codable, no protobuf runtime needed), with a
-// handful of scalar convenience methods for the hottest paths. Start is
-// synchronous (call it off the main thread), and the one streaming verb,
-// Subscribe, hands back a pull-based Subscription handle (Next / Close) instead
-// of a callback, since a Go channel cannot cross the gomobile boundary.
+// handful of scalar convenience methods for the hottest paths. Start and
+// StartExternalSeedWallet are synchronous and share one active-client
+// lifecycle. The one streaming verb, Subscribe, hands back a pull-based
+// Subscription handle (Next / Close) instead of a callback, since a Go channel
+// cannot cross the gomobile boundary.
 //
 // Everything is gated behind the mobile, wavewalletrpc, and swapruntime build
 // tags so the package only compiles into a gomobile bind output; ordinary

@@ -40,6 +40,7 @@ VM with no separate gateway.
   `os.MkdirAll` at the filesystem root and fail with `EROFS`/`EACCES`. A Node
   caller must set `data_dir` explicitly and gets a rejected promise if it
   does not.
+- External-seed startup always requires an explicit final directory.
 - The `executor` `js.Func` passed to `Promise.New` must be released right
   after construction (the executor runs synchronously), otherwise every
   wallet call leaks a Go callback handle for the life of the page.
