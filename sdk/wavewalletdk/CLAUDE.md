@@ -29,10 +29,18 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/wave
   value, zero defers to `DaemonConfig` (no tri-state). To force a
   `false`, set `DaemonConfig` directly or use the matching `Option`.
 - `DefaultConfig` — `Config` populated from `waved.DefaultConfig()`.
+- `ExternalSeedWalletRequest` / `ExternalSeedWalletOpenResult` — 16 bytes of
+  already-derived aezeed entropy with optional identity and recovery inputs,
+  and the resulting identity and recovery counters. No mnemonic is returned.
 - `Start(ctx, cfg, opts...)` — boots the embedded daemon, dials it,
   waits for gRPC readiness, and returns a ready `*Client`. The daemon
   lifetime is owned by wavewalletdk's `runCtx`, not the caller's `ctx`, so
   a tight startup deadline cancels dialing only.
+- `StartExternalSeedWallet(ctx, cfg, req, opts...)` /
+  `StartExternalSeedWalletWithContexts(startCtx, openCtx, cfg, req, opts...)`
+  — starts at an explicit `Config.DataDir`, imports or unlocks the wallet, and
+  returns the ready client and open result. The two-context form separates the
+  daemon boot deadline from wallet opening and recovery.
 - `Connect(ctx, ConnectConfig)` — dials an already-running external
   daemon instead of embedding one. `ConnectConfig.Transport` selects
   `TransportGRPC` (default) or `TransportREST`; `Insecure`,
@@ -167,10 +175,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/wave
   after the convenience merge and `configureWalletRPC` so the
   disable wins over the build-tag default and any `DaemonConfig`
   value.
-- Secret-bearing slices (`SeedPassphrase`, `WalletPassword`,
+- Secret-bearing slices (`SeedEntropy`, `SeedPassphrase`, `WalletPassword`,
   `Mnemonic`) are cloned at the SDK boundary via `bytes.Clone` /
   `append` before being handed to the RPC layer, so host apps can zero
   their copies on return without racing the marshaller.
+- External-seed startup leaves `Start` unchanged. It accepts only `lwwallet` or
+  `btcwallet`, requires the final `Config.DataDir`, and assigns no derivation,
+  account, or directory semantics to the entropy.
+- The client is published only after wallet-dependent actors and mailbox
+  ingress start. Earlier failure stops the new daemon. Optional recovery runs
+  only after identity verification and may retry a partial scan.
 - Wallet methods fail with `ErrWalletRPCUnavailable` synchronously at
   the wrapper boundary on builds without the `wavewalletrpc` tag, before
   any RPC is attempted. `ErrSwapRuntimeUnavailable` is an alias for

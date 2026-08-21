@@ -25,6 +25,7 @@ type stubDaemonServer struct {
 	identity      string
 	freeWindow    uint32
 	initErr       error
+	initResp      *waverpc.InitWalletResponse
 	unlockErr     error
 	initCalled    bool
 	unlockCalled  bool
@@ -73,6 +74,9 @@ func (s *stubDaemonServer) InitWallet(_ context.Context,
 	s.lastInitReq = req
 	if s.initErr != nil {
 		return nil, s.initErr
+	}
+	if s.initResp != nil {
+		return s.initResp, nil
 	}
 
 	return &waverpc.InitWalletResponse{IdentityPubkey: "init-id"}, nil

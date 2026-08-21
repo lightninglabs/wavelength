@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/rpcauth"
+	"github.com/lightninglabs/wavelength/waved"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/grpc"
 )
@@ -32,6 +33,17 @@ type Client struct {
 
 	canWallet bool
 	waitCh    <-chan error
+
+	// waitWalletServicesReady is installed only by Start. It waits until
+	// wallet-dependent actors and mailbox ingress are online, and returns
+	// the first startup error before that boundary. Remote clients
+	// intentionally leave it nil.
+	waitWalletServicesReady func(context.Context) error
+
+	// recoverWalletState is installed only by Start, which owns a waved
+	// Server in this process. Remote clients intentionally leave it nil.
+	recoverWalletState func(context.Context, uint32) (
+		*waved.WalletRecoveryResult, error)
 
 	closeFn   func(context.Context) error
 	closeOnce sync.Once

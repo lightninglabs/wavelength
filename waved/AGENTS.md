@@ -29,6 +29,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `MaxOperatorFeeSat` (the #270 seal-time fee-cap validated in
   `Config.Validate()`).
 - `WalletState` — `None` / `Locked` / `Ready` wallet lifecycle.
+- `WalletRecoveryResult` — counters returned by the in-process,
+  post-unlock recovery hook.
 - `UnrollConfig` / `OORConfig` — subsystem tunables; see `Config.Validate()`
   for the invariants each enforces.
 
@@ -65,6 +67,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 - Wallet transitions `None → Locked → Ready` (or direct to `Ready` if a seed
   is provided). Three wallet backends: LND, lightweight (`lwwallet`), or
   neutrino-backed (`btcwallet` via `btcwbackend`).
+- `WaitForWalletServicesReady` resolves after wallet-dependent actors and
+  mailbox ingress start, or with the first error before that boundary.
+  `DaemonReady` remains the later full-startup signal.
+- `Server.RecoverWalletState` is an in-process, post-unlock retry seam. It
+  keeps the supplied context through the scan; idempotent writes make a partial
+  scan safe to retry.
 - Mailbox IDs are derived from identity pubkeys via
   `serverconn.PubKeyMailboxID`, not config strings. The operator's remote
   mailbox ID and pubkey are fetched via direct gRPC (`fetchCurrentOperatorPubKey`)

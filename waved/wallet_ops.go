@@ -9,11 +9,13 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/btcutil/v2/hdkeychain"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/vtxo"
+	"github.com/lightninglabs/wavelength/walletcore"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/aezeed"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -52,6 +54,58 @@ func WalletSeedFromMnemonic(mnemonic []string, seedPassphrase,
 	}
 
 	return seed, birthday, nil
+}
+
+// WalletIdentityPubKeyFromSeed derives the self-managed wallet identity at
+// m/1017'/coinType'/6'/0/0 without creating or opening a wallet database. It
+// deliberately uses btcwallet's legacy-compatible BIP32 derivation so the
+// result matches both lwwallet and btcwallet exactly.
+func WalletIdentityPubKeyFromSeed(seed [rawSeedLen]byte,
+	network string) (string, error) {
+
+	defer zeroBytes(seed[:])
+
+	chainParams, err := networkToChainParams(network)
+	if err != nil {
+		return "", err
+	}
+
+	coinType := walletcore.CoinTypeForNet(chainParams)
+	key, err := hdkeychain.NewMaster(seed[:], chainParams)
+	if err != nil {
+		return "", fmt.Errorf("derive identity master key: %w", err)
+	}
+	defer func() {
+		key.Zero()
+	}()
+
+	path := []uint32{
+		keychain.BIP0043Purpose + hdkeychain.HardenedKeyStart,
+		coinType + hdkeychain.HardenedKeyStart,
+		uint32(keychain.KeyFamilyNodeKey) +
+			hdkeychain.HardenedKeyStart,
+		0,
+		0,
+	}
+	for _, childIndex := range path {
+		child, err := key.DeriveNonStandard(
+			childIndex,
+		)
+		if err != nil {
+			return "", fmt.Errorf("derive identity child %d: %w",
+				childIndex, err)
+		}
+
+		key.Zero()
+		key = child
+	}
+
+	pubKey, err := key.ECPubKey()
+	if err != nil {
+		return "", fmt.Errorf("derive identity public key: %w", err)
+	}
+
+	return fmt.Sprintf("%x", pubKey.SerializeCompressed()), nil
 }
 
 // ValidateWalletPassword enforces the daemon-wide minimum wallet

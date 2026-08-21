@@ -2,10 +2,12 @@ package lwwallet
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +20,92 @@ import (
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/stretchr/testify/require"
 )
+
+// TestEsploraChainServiceStopCancelsRequestContext verifies that Stop cancels
+// the context used by chain.Interface methods. Btcwallet waits for its recovery
+// goroutine before it stops the chain client, so lwwallet must be able to
+// cancel an in-flight recovery request before entering that wait.
+func TestEsploraChainServiceStopCancelsRequestContext(t *testing.T) {
+	t.Parallel()
+
+	chainStub := newRawBlockStubChain(100)
+	srv := mockEsploraServer(t, chainStub.handler(t))
+	esplora := NewEsploraClient(srv.URL, btclog.Disabled)
+	tipPoller := NewTipPoller(
+		esplora, 5*time.Millisecond, btclog.Disabled,
+	)
+	require.NoError(t, tipPoller.Start())
+	t.Cleanup(tipPoller.Stop)
+
+	service := NewEsploraChainService(
+		esplora, tipPoller, btclog.Disabled,
+	)
+	require.NoError(t, service.Start(context.Background()))
+	t.Cleanup(func() {
+		service.Stop()
+		service.WaitForShutdown()
+	})
+
+	requestCtx := service.requestContext()
+	require.NoError(t, requestCtx.Err())
+
+	service.Stop()
+	require.ErrorIs(t, requestCtx.Err(), context.Canceled)
+}
+
+// TestEsploraChainServiceStopCancelsInFlightRequest pins the first-create
+// shutdown failure seen in the WASM integration: btcwallet recovery was
+// waiting inside a chain.Interface HTTP call while Stop waited for recovery.
+func TestEsploraChainServiceStopCancelsInFlightRequest(t *testing.T) {
+	t.Parallel()
+
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	server := httptest.NewServer(
+		http.HandlerFunc(
+			func(_ http.ResponseWriter, req *http.Request) {
+				close(requestStarted)
+				select {
+				case <-req.Context().Done():
+				case <-releaseRequest:
+				}
+			},
+		),
+	)
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(releaseRequest) })
+
+	service := NewEsploraChainService(
+		NewEsploraClient(server.URL, btclog.Disabled), nil,
+		btclog.Disabled,
+	)
+	runCtx, runCancel := context.WithCancel(context.Background())
+	service.mu.Lock()
+	service.runCtx = runCtx
+	service.runCancel = runCancel
+	service.mu.Unlock()
+
+	requestErr := make(chan error, 1)
+	go func() {
+		_, err := service.GetBlockHash(100)
+		requestErr <- err
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Esplora request did not start")
+	}
+
+	service.Stop()
+	select {
+	case err := <-requestErr:
+		require.ErrorIs(t, err, context.Canceled)
+
+	case <-time.After(time.Second):
+		t.Fatal("Esplora request did not observe service shutdown")
+	}
+}
 
 // rawBlockStubChain is a tip+block fixture richer than stubChain: it
 // builds real wire.MsgBlock values per height (so /block/:hash/raw

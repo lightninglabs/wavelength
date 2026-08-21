@@ -153,10 +153,13 @@ func deriveSeedAndPassword(passkeyPRFOutput []byte) ([aezeed.EntropySize]byte,
 func entropyToMnemonic(entropy [aezeed.EntropySize]byte) (aezeed.Mnemonic,
 	error) {
 
+	defer clear(entropy[:])
+
 	cipherSeed, err := aezeed.New(0, &entropy, aezeed.BitcoinGenesisDate)
 	if err != nil {
 		return aezeed.Mnemonic{}, err
 	}
+	defer clear(cipherSeed.Entropy[:])
 
 	return cipherSeed.ToMnemonic(nil)
 }
