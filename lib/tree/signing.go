@@ -169,13 +169,20 @@ type SignerSession struct {
 	txs map[TxID]*TxSignerSession
 }
 
+// TaprootTweakLookup returns the taproot tweak used to sign a node. An
+// asset-aware tree must provide a non-empty tweak for every signed node.
+type TaprootTweakLookup func(node *Node) []byte
+
 // NewSignerSession creates a new signing session for a tree. It
 // automatically extracts the path for the given signer and creates sessions
 // for each transaction in that path.
+//
+// tweakLookups optionally supplies the required per-node tweaks. At most one
+// lookup is accepted so Bitcoin-only callers need no asset-specific argument.
 func NewSignerSession(signer input.MuSig2Signer,
 	signerKey *keychain.KeyDescriptor, sweepTapscriptRoot []byte,
-	prevOuts txscript.PrevOutputFetcher,
-	tree *Node) (*SignerSession, error) {
+	prevOuts txscript.PrevOutputFetcher, tree *Node,
+	tweakLookups ...TaprootTweakLookup) (*SignerSession, error) {
 
 	// Validate inputs.
 	if signer == nil {
@@ -188,6 +195,15 @@ func NewSignerSession(signer input.MuSig2Signer,
 
 	if tree == nil {
 		return nil, fmt.Errorf("tree cannot be nil")
+	}
+	if len(tweakLookups) > 1 {
+		return nil, fmt.Errorf("at most one taproot tweak lookup is " +
+			"allowed")
+	}
+
+	var tweakLookup TaprootTweakLookup
+	if len(tweakLookups) == 1 {
+		tweakLookup = tweakLookups[0]
 	}
 
 	// Extract the path for this cosigner only.
@@ -207,8 +223,17 @@ func NewSignerSession(signer input.MuSig2Signer,
 			return fmt.Errorf("failed to create tx: %w", err)
 		}
 
+		taprootTweak := sweepTapscriptRoot
+		if tweakLookup != nil {
+			taprootTweak = tweakLookup(node)
+			if len(taprootTweak) == 0 {
+				return fmt.Errorf("missing taproot tweak "+
+					"for node %s", node.Input)
+			}
+		}
+
 		session, err := node.NewTxSignerSession(
-			signer, sweepTapscriptRoot, signerKey, prevOuts,
+			signer, taprootTweak, signerKey, prevOuts,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create tx session: %w",
