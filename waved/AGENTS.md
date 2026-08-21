@@ -198,6 +198,28 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 - `SendOOR` with custom inputs serializes concurrent calls on the same
   outpoints via `reserveCustomInputs`; the release function is deferred on
   both success and failure.
+- `SendOOR` maps `oor.ErrIdempotencyKeyConflict` to `codes.AlreadyExists`
+  after releasing the freshly selected VTXO locks, so it never reports success
+  under a caller key the deterministic session cannot retain. This includes a
+  keyed retry over a live durable session that was originally admitted
+  keylessly. A terminal failed outgoing row with no immutable attempt can be
+  rebound only by rebuilding the same deterministic operation; its new key and
+  proof still commit before transport enqueue.
+- `resolveExistingOORRecipientOutpoints` (the keyed-replay path that rebuilds
+  `SendOORResponse.RecipientOutpoints` without reselecting wallet inputs)
+  reads the immutable dispatch attempt, not the mutable session snapshot. The
+  sender can ingest its own OOR change under the same session id without
+  hiding the outgoing identity. The proof covers caller recipients, not the
+  separately added wallet change output. Exact recipient reordering returns
+  the same distinct outpoints in caller order. A changed count, amount, or
+  script is rejected with `codes.AlreadyExists`; malformed durable data is
+  `codes.DataLoss`. A legacy binding with no canonical request returns the
+  stable session id without recipient outpoints and never sends again. If the
+  current outgoing lifecycle is known to have failed, replay returns status
+  `failed` without claiming that its recipient outpoints exist. A same-key
+  retry that reaches the in-memory admission winner before its attempt commits
+  returns the stable session id with no unproven outpoints; a later retry
+  resolves them from the committed attempt.
 - `Unroll` / `GetUnrollStatus` return `codes.Unavailable` (not `Internal`)
   when the unroll subsystem refs are not yet set, so clients can retry.
 - `Unroll` must set `ForceUnrollRequest.Trigger` explicitly to

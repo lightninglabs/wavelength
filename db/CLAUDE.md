@@ -48,6 +48,14 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   `MaxOwnedReceiveScriptIdempotencyKeyBytes = 128` and
   `MaxOwnedReceiveScriptRegistrationTTL = 30 * 24h`. Reusing a key with a
   different label fails with `ErrOwnedReceiveScriptReplayMismatch`.
+- `OORSessionRegistryStoreDB` / `OORSessionRegistryRecord` — control-plane
+  registry of per-session durable OOR actors
+  (`UpsertSession`/`GetSession`/`ListSessions`/`ListNonTerminal`). One mutable
+  row per session id is shared by both lifecycle directions.
+- `OORDispatchAttemptRecord` — immutable keyed outgoing identity, loaded by
+  idempotency key or session id. It stores the canonical recipient record
+  before the first transport enqueue and remains authoritative after the
+  mutable session row becomes terminal or changes direction.
 - `LedgerStoreDB` — implements `ledger.LedgerStore`. Wraps
   `sqlc.InsertClientLedgerEntry` (ON CONFLICT DO NOTHING for replay
   idempotency). Joins the outer actor transaction via
@@ -86,7 +94,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 17` — current schema version.
+- `LatestMigrationVersion = 18` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -153,6 +161,22 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   deletion, preserving append-only ordering.
 - Per-subsystem logging via the instance logger, not the global
   package logger.
+- `oor_dispatch_attempts` is the permanent identity boundary for keyed sends.
+  Its primary key admits one session per caller key, and its unique
+  `session_id` admits one caller key per deterministic operation. A failure,
+  terminal update, or incoming self-transfer never releases a dispatched key.
+- `request_data` is the versioned canonical output-index, value, and pkScript
+  record. The first submit-capable checkpoint inserts it in the same
+  transaction as the mutable snapshot and first transport enqueue. A repeated
+  insert must match both session id and bytes or the full transaction fails.
+- `ListNonTerminalOORSessionRegistry` intentionally filters on the mutable
+  session row's current `status`.
+  `oorRegistryBehavior.resolveSelfTransfer` defers a self-transfer incoming
+  hint until the outgoing lifecycle is terminal, and
+  `sessionBehavior.restore` independently rejects an earlier direction
+  replacement. After takeover, the incoming lifecycle's current status and
+  snapshot are the state that boot restore must resume; the separate dispatch
+  row still answers keyed replay.
 - `unilateral_exit_jobs.exit_policy_kind` and `exit_policy_ref`
   persist the durable final spend policy identity. Standard timeout
   jobs use `standard_vtxo_timeout` with an empty ref; policy-specific
@@ -274,6 +298,13 @@ when adding one.
   registration terms, a stable remote RPC key, and completion evidence to
   `owned_receive_scripts`. The partial unique index admits one durable
   allocation per non-null idempotency key.
+- `000018_oor_outgoing_replay` — adds `oor_dispatch_attempts`, an immutable
+  key/session/canonical-request table separate from the mutable lifecycle row.
+  SQL cannot normalize opaque legacy snapshots, so migration backfills one
+  conservative key/session binding with `request_data = NULL`; this prevents a
+  duplicate send but cannot recover recipient outpoints. If legacy failed and
+  non-failed rows reused one key, the non-failed row wins deterministically.
+  The down migration only drops the new table.
 
 ## Deep Docs
 
