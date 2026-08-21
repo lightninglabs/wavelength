@@ -14,10 +14,10 @@ import (
 	"github.com/lightninglabs/wavelength/sdk/wavewalletdk"
 )
 
-// startTimeout bounds how long Start will wait for the embedded daemon's gRPC
-// transport to report readiness before giving up. The daemon lifetime itself
-// is owned by wavewalletdk's internal runCtx, so this deadline only cancels
-// dialing, never the running daemon.
+// startTimeout bounds how long either startup path waits for the embedded
+// daemon's gRPC transport to report readiness. Wallet opening and recovery use
+// a separate lifecycle context, while the running daemon is owned by
+// wavewalletdk's internal runCtx.
 const startTimeout = 90 * time.Second
 
 // lifecycleStatus is the explicit state of the embedded daemon. A plain CAS on
@@ -73,7 +73,34 @@ var state = struct {
 // Start then tears down any client it produced instead of publishing it. A
 // panic in the boot path is recovered into the returned error so it never
 // crosses the gomobile boundary as a process kill.
-func Start(cfgJSON string) (err error) {
+func Start(cfgJSON string) error {
+	return startEmbedded(func(startCtx, _ context.Context) (
+		*wavewalletdk.Client, error) {
+
+		cfg, err := parseConfig(cfgJSON)
+		if err != nil {
+			return nil, fmt.Errorf("parse config: %w", err)
+		}
+
+		client, err := wavewalletdk.Start(startCtx, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("start embedded wallet: %w", err)
+		}
+
+		return client, nil
+	})
+}
+
+// startEmbedded owns the singleton lifecycle shared by Start and the additive
+// account-aware startup paths. startCtx has the bounded daemon-readiness
+// deadline. operationCtx has no deadline and remains valid for wallet opening,
+// recovery, and later mobile calls until Stop cancels it. The supplied function
+// must either return a fully initialized client or clean up any client it
+// started before returning an error.
+func startEmbedded(
+	start func(context.Context, context.Context) (*wavewalletdk.Client, error)) (
+	err error) {
+
 	state.mu.Lock()
 	if state.status != statusStopped {
 		state.mu.Unlock()
@@ -84,9 +111,14 @@ func Start(cfgJSON string) (err error) {
 	state.gen++
 	gen := state.gen
 
-	startCtx, startCancel := context.WithTimeout(
-		context.Background(), startTimeout,
+	operationCtx, operationCancel := context.WithCancel(
+		context.Background(),
 	)
+	startCtx, bootCancel := context.WithTimeout(operationCtx, startTimeout)
+	startCancel := func() {
+		bootCancel()
+		operationCancel()
+	}
 	state.startCancel = startCancel
 	state.mu.Unlock()
 
@@ -113,17 +145,10 @@ func Start(cfgJSON string) (err error) {
 		state.mu.Unlock()
 	}()
 
-	cfg, err := parseConfig(cfgJSON)
+	client, err := start(startCtx, operationCtx)
 	if err != nil {
-		return fmt.Errorf("parse config: %w", err)
+		return err
 	}
-
-	client, err := wavewalletdk.Start(startCtx, cfg)
-	if err != nil {
-		return fmt.Errorf("start embedded wallet: %w", err)
-	}
-
-	callCtx, callCancel := context.WithCancel(context.Background())
 
 	state.mu.Lock()
 	// A Stop raced this boot: it cancelled startCtx and moved us out of the
@@ -131,16 +156,23 @@ func Start(cfgJSON string) (err error) {
 	// it under a reset guard.
 	if state.status != statusStarting || state.gen != gen {
 		state.mu.Unlock()
+		startCancel()
 		_ = client.Stop()
 
 		return errors.New("wavewalletdk mobile start cancelled by Stop")
 	}
 	state.client = client
-	state.callCtx = callCtx
-	state.callCancel = callCancel
+	// The lifecycle context intentionally spans later RPC calls.
+	//nolint:fatcontext
+	state.callCtx = operationCtx
+	state.callCancel = operationCancel
 	state.startCancel = nil
 	state.status = statusStarted
 	state.mu.Unlock()
+
+	// The readiness deadline is no longer needed. Keep only the Stop-owned
+	// operation context for wallet calls and subscriptions.
+	bootCancel()
 
 	return nil
 }
