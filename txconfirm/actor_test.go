@@ -1510,6 +1510,60 @@ func TestFeeBumpOnNewBlocks(t *testing.T) {
 	require.IsType(t, &TxConfirmed{}, confirmed)
 }
 
+// TestFailedFeeBumpPreservesProgress verifies that a rejected fee-bump
+// attempt updates retry pacing without counting the failed attempt as a
+// successful bump or discarding the last successful broadcast metadata.
+func TestFailedFeeBumpPreservesProgress(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	walletRef := &fakeWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXO(t),
+		},
+	}
+	ref, behavior := newTestActor(t, Config{
+		ChainSource:           chain,
+		Wallet:                walletRef,
+		FeeBumpIntervalBlocks: 2,
+	})
+
+	tx := makeTestTx(true)
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+	require.Equal(t, TxStateAwaitingConfirmation, resp.State)
+	require.Equal(t, 1, chain.packageCallCount())
+
+	entry := behavior.tracked[tx.TxHash()]
+	initialState, err := entry.currentFSMState()
+	require.NoError(t, err)
+	initial, ok := initialState.(*trackedTxStateAwaitingConfirmation)
+	require.True(t, ok)
+
+	chain.packageErr = fmt.Errorf("package rejected")
+	chain.emitBlock(t, 102)
+	require.Equal(
+		t, TxStateAwaitingConfirmation,
+		mustTrackedState(
+			t, ref.Ref(), tx, sub,
+		),
+	)
+
+	failedState, err := entry.currentFSMState()
+	require.NoError(t, err)
+	afterFailure, ok := failedState.(*trackedTxStateAwaitingConfirmation)
+	require.True(t, ok)
+	require.Equal(t, initial.BumpCount, afterFailure.BumpCount)
+	require.Equal(t, initial.CurrentFeeRate, afterFailure.CurrentFeeRate)
+	require.Equal(t, initial.ChildTxid, afterFailure.ChildTxid)
+	require.Equal(
+		t, fn.Some[int32](102), afterFailure.LastBroadcastHeight,
+	)
+	require.Equal(t, 2, chain.packageCallCount())
+	mustHaveNoNotification(t, sub)
+}
+
 // TestEnsureConfirmedWaitsForInitialCPFPInput verifies that an anchor parent
 // whose first broadcast attempt reaches no mempool (no confirmed fee input)
 // stays in the Broadcasting state — not AwaitingConfirmation — and is
