@@ -265,8 +265,7 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		return startTransferPayload{}, err
 	}
 
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+	if _, err := decodeBoundedStream(stream, raw); err != nil {
 		return startTransferPayload{}, err
 	}
 
@@ -574,8 +573,7 @@ func decodeAncestryEntry(raw []byte) (vtxo.Ancestry, error) {
 		return vtxo.Ancestry{}, err
 	}
 
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+	if _, err := decodeBoundedStream(stream, raw); err != nil {
 		return vtxo.Ancestry{}, err
 	}
 
@@ -777,8 +775,7 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 		return IncomingMetadataMatch{}, err
 	}
 
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+	if _, err := decodeBoundedStream(stream, raw); err != nil {
 		return IncomingMetadataMatch{}, err
 	}
 
@@ -910,8 +907,7 @@ func decodeRecipientPayload(raw []byte) (recipientPayload, error) {
 		return recipientPayload{}, err
 	}
 
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+	if _, err := decodeBoundedStream(stream, raw); err != nil {
 		return recipientPayload{}, err
 	}
 
@@ -1365,8 +1361,7 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		return nil, err
 	}
 
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+	if _, err := decodeBoundedStream(stream, raw); err != nil {
 		return nil, err
 	}
 
@@ -1686,8 +1681,7 @@ func decodeSessionPayload(raw []byte) (SessionID, error) {
 		return SessionID{}, err
 	}
 
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+	if _, err := decodeBoundedStream(stream, raw); err != nil {
 		return SessionID{}, err
 	}
 
@@ -1750,8 +1744,7 @@ func decodeResumePayload(raw []byte) (SessionID, bool, error) {
 		return SessionID{}, false, err
 	}
 
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+	if _, err := decodeBoundedStream(stream, raw); err != nil {
 		return SessionID{}, false, err
 	}
 
@@ -1816,8 +1809,7 @@ func decodeListSessionsPayload(raw []byte) (SessionDirection, bool, error) {
 		return SessionDirectionAll, false, err
 	}
 
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+	if _, err := decodeBoundedStream(stream, raw); err != nil {
 		return SessionDirectionAll, false, err
 	}
 
@@ -1903,8 +1895,7 @@ func decodeResolveIncomingTransferPayloadWithLimits(raw []byte,
 		return SessionID{}, nil, 0, err
 	}
 
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+	if _, err := decodeBoundedStream(stream, raw); err != nil {
 		return SessionID{}, nil, 0, err
 	}
 
@@ -1973,8 +1964,7 @@ func decodeRestoreSnapshotPayloadWithLimits(raw []byte,
 		return nil, err
 	}
 
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+	if _, err := decodeBoundedStream(stream, raw); err != nil {
 		return nil, err
 	}
 
@@ -2047,8 +2037,7 @@ func decodeDriveEventRequestPayloadWithLimits(raw []byte,
 		return SessionID{}, nil, err
 	}
 
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+	if _, err := decodeBoundedStream(stream, raw); err != nil {
 		return SessionID{}, nil, err
 	}
 
@@ -2350,8 +2339,7 @@ func decodeEventPayloadWithLimits(raw []byte,
 		return nil, err
 	}
 
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+	if _, err := decodeBoundedStream(stream, raw); err != nil {
 		return nil, err
 	}
 
@@ -2616,11 +2604,30 @@ func decodeLengthPrefixedBlobListWithLimits(raw []byte,
 			limits.MaxMailboxItems)
 	}
 
+	// Each element occupies at least one length-prefix byte on the wire, so
+	// a count claiming more elements than the remaining bytes could back is
+	// corrupt. This bounds the make([][]byte, 0, count) capacity even
+	// though count is also capped by MaxMailboxItems.
+	if err := checkElemCount(reader.Len(), count, 1); err != nil {
+		return nil, fmt.Errorf("blob list count: %w", err)
+	}
+
 	blobs := make([][]byte, 0, count)
 	for i := uint64(0); i < count; i++ {
 		elementLen, err := tlv.ReadVarInt(reader, &scratch)
 		if err != nil {
 			return nil, err
+		}
+
+		// Reject an element length that exceeds the bytes physically
+		// present before allocating make([]byte, elementLen). Without
+		// this a tiny payload declaring a huge length panics with
+		// "makeslice: cap out of range" or drives an OOM, reachable
+		// from attacker-controlled durable-mailbox bytes.
+		if elementLen > uint64(reader.Len()) {
+			return nil, fmt.Errorf("blob list element length %d "+
+				"exceeds %d remaining bytes", elementLen,
+				reader.Len())
 		}
 
 		element := make([]byte, elementLen)
