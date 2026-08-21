@@ -739,6 +739,24 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *waverpc.GetInfoRequest) (
 	return resp, nil
 }
 
+// OperatorVTXOFloor refreshes the operator terms and returns the effective
+// minimum amount for a newly materialized VTXO. Credit policy uses this direct
+// lookup instead of the daemon's bootstrap snapshot so an unavailable operator
+// fails closed and a raised minimum takes effect on the next request.
+func (r *RPCServer) OperatorVTXOFloor(ctx context.Context) (uint64, error) {
+	terms, err := r.server.fetchOperatorTerms(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("fetch operator terms: %w", err)
+	}
+
+	floor := terms.MinVTXOAmountFloor()
+	if floor <= 0 {
+		return 0, fmt.Errorf("operator VTXO floor is unavailable")
+	}
+
+	return uint64(floor), nil
+}
+
 // requireWalletReady returns a gRPC error if the wallet is not yet
 // ready. Callers use this to gate RPCs that need wallet access.
 func (r *RPCServer) requireWalletReady() error {

@@ -219,6 +219,51 @@ func TestFetchOperatorTermsRefreshPinsVersion(t *testing.T) {
 	require.Equal(t, uint32(1), srv.arkProtocolVersion)
 }
 
+// TestOperatorVTXOFloorRefreshesEffectiveMinimum verifies credit policy reads
+// the current operator terms and uses the VTXO minimum when it exceeds dust.
+func TestOperatorVTXOFloorRefreshesEffectiveMinimum(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubArkServiceClient{
+		resp: &arkrpc.GetInfoResponse{
+			Pubkey:             testOperatorPubKeyBytes(t),
+			SelectedArkVersion: 1,
+			DustLimit:          546,
+			MinVtxoAmountSat:   1_000,
+		},
+	}
+	rpc := &RPCServer{server: &Server{
+		arkClient:          stub,
+		arkProtocolVersion: 1,
+	}}
+
+	floor, err := rpc.OperatorVTXOFloor(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, uint64(1_000), floor)
+
+	stub.resp.MinVtxoAmountSat = 1_200
+	floor, err = rpc.OperatorVTXOFloor(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, uint64(1_200), floor)
+	require.Equal(t, 2, stub.calls)
+}
+
+// TestOperatorVTXOFloorFailsClosed verifies credit policy cannot fall back to
+// a baked-in threshold while operator terms are unavailable.
+func TestOperatorVTXOFloorFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	rpc := &RPCServer{server: &Server{
+		arkClient: &stubArkServiceClient{
+			err: fmt.Errorf("operator unavailable"),
+		},
+		arkProtocolVersion: 1,
+	}}
+
+	_, err := rpc.OperatorVTXOFloor(t.Context())
+	require.ErrorContains(t, err, "operator unavailable")
+}
+
 // TestRefreshAuthenticatedOperatorTermsUsesMailbox verifies that the
 // post-bootstrap refresh replaces anonymous policy with the terms resolved for
 // the daemon's authenticated mailbox identity.
