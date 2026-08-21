@@ -9,11 +9,12 @@ semantics, recovery mechanisms, and type-erased actor discovery.
 1. [Overview](#overview)
 2. [OutboxPublisher CDC Pattern](#outboxpublisher-cdc-pattern)
 3. [DurableMailbox Message Lifecycle](#durablemailbox-message-lifecycle)
-4. [Actor System Architecture](#actor-system-architecture)
-5. [Lease-Based Delivery Semantics](#lease-based-delivery-semantics)
-6. [Recovery and Restart Flow](#recovery-and-restart-flow)
-7. [TypeAssertingRef and MapRef Pattern](#typeassertingref-and-mapref-pattern)
-8. [DurableAsk: Crash-Safe Request-Response](#durableask-crash-safe-request-response)
+4. [Postpone Semantics](#postpone-semantics)
+5. [Actor System Architecture](#actor-system-architecture)
+6. [Lease-Based Delivery Semantics](#lease-based-delivery-semantics)
+7. [Recovery and Restart Flow](#recovery-and-restart-flow)
+8. [TypeAssertingRef and MapRef Pattern](#typeassertingref-and-mapref-pattern)
+9. [DurableAsk: Crash-Safe Request-Response](#durableask-crash-safe-request-response)
 
 ---
 
@@ -269,6 +270,237 @@ debug delivery issues and design retry strategies.
 7. **Dead Letter**: After `max_attempts` failures, the message is moved to
    `dead_letters` with the failure reason. Dead letters require manual inspection
    and can be replayed or deleted.
+
+---
+
+## Postpone Semantics
+
+A nack is the wrong tool for "not now". Sections 6 and 7 above describe the
+nack path: a failed Tell is released with a retry delay, and every release
+increments `attempts` until `max_attempts` sends the message to the
+`dead_letters` table. That is the right shape for a message that failed. It is
+the wrong shape for a message that a consumer merely cannot handle yet.
+
+Plenty of turns fail for reasons that have nothing to do with the message: a
+concurrency cap is full, a peer is still draining, an operator has not caught
+up. The condition clears on its own, and the message that happened to arrive
+during the window did nothing to deserve a shortened life. Nacking it anyway
+walks an innocent message toward the dead-letter table one redelivery at a
+time, and it walks it there fastest exactly when the system is busiest, since
+that is when the condition holds longest.
+
+Postpone is the attempt-preserving alternative. A behavior returns
+`actor.Postpone(delay)` (or wraps it with context, since detection matches
+anywhere in the wrap chain), and the consume path releases the message for
+redelivery after the delay **without counting the attempt**:
+
+```go
+if len(r.incoming) >= maxIncoming {
+        return fmt.Errorf("%w: %w", errAdmissionCapped,
+                actor.Postpone(5*time.Second))
+}
+```
+
+### Nack vs Postpone
+
+The two paths differ in exactly one dimension, the attempt budget, and that
+one difference decides whether a message can outlive the condition blocking it.
+
+| | Nack | Postpone |
+|---|---|---|
+| `available_at` | pushed out by the retry delay | pushed out by the postpone delay |
+| `attempts` | incremented | unchanged |
+| Marked processed | no (so it redelivers) | no (so it redelivers) |
+| Consults `TellRetryPolicy` | yes | no, it is detected first |
+| Log level | warn (a failure) | debug (control flow) |
+| Horizon | bounded by `max_attempts` | unbounded |
+
+`ErrPostponed` is the sentinel `errors.Is` matches, and `*PostponeError`
+carries the delay. Pass a real backoff: a zero or negative delay makes the
+message claim-eligible immediately, which against a condition that has not
+moved is a busy retry loop against the database.
+
+### Fenced and Leaseless Mechanics
+
+The store operation mirrors the ack/nack pair, and which one runs depends on
+whether the delivery holds a lease token, exactly as `ackMessage` and
+`nackMessage` decide:
+
+- **Fenced** (`PostponeMessage`, non-empty lease token). The leased claim
+  pre-incremented `attempts`, so the postpone query decrements it to
+  compensate, restoring the retry budget to what it was before this delivery.
+  The decrement is clamped (`CASE WHEN attempts > 0`), so a corrupt row can
+  never wrap negative.
+- **Leaseless** (`PostponeMessageByID`, empty lease token). The single-worker
+  peek takes no lease and never incremented `attempts`, so the query leaves it
+  alone. There is no lease to validate, so the release is by ID.
+
+Either way the message's retry budget after a postpone is byte-identical to
+what it was before the delivery.
+
+That matters more than it looks, because an "always retry" `TellRetryPolicy` is
+not a substitute. Such a policy cannot stop `attempts` from climbing, and what
+happens when it reaches `max_attempts` depends on which release path the actor
+uses:
+
+- **Non-transaction path** (`handleResult` via `Delivery.Nack`, used by the
+  classic non-tx path and by the Read/Commit path's `finishNonTx` tail). `Nack`
+  checks `ShouldDeadLetter` before releasing, so the message dead-letters at
+  exhaustion no matter what the policy said. The policy does not keep it alive;
+  it only chooses the delay right up until the boundary.
+- **Transaction path** (`handleResultInTx`, a classic behavior on a tx-aware
+  store). The retry branch calls the store's nack directly with no
+  `ShouldDeadLetter` arm, so a policy that always answers "retry" nacks the row
+  past `max_attempts` and it simply goes dark: both the claim and the peek
+  queries filter on `attempts < max_attempts`, so the row leaves the eligible
+  set without ever reaching `dead_letters`. That asymmetry is a pre-existing
+  bug in the tx path, not something postpone introduces.
+
+Either way, a policy override is the wrong tool for "wait indefinitely":
+depending on the path it either dead-letters anyway or strands the row
+invisibly. Postpone is the only release that keeps a waiting message
+claim-eligible without spending the budget.
+
+### Tell-Only Semantics
+
+Only Tell deliveries honor a postpone. An Ask has a caller parked on the
+promise, so postponing it would strand that caller for the length of the delay
+with nothing to observe and no way to learn why. An Ask behavior that returns a
+`PostponeError` therefore gets ordinary error treatment: the promise completes
+with the error, and the caller decides whether to re-issue. Behaviors that
+serve both a routed Tell and an RPC-driven Ask over the same condition should
+postpone on the Tell path only and hand the Ask a plain error.
+
+### The Livelock Tradeoff
+
+This is deliberate and it is the whole cost of the feature: **a postponed
+message never climbs toward `max_attempts`, so nothing dead-letters it
+automatically.** The framework has removed the only mechanism that would
+eventually give up on it. A behavior that postpones against a condition that
+never clears will postpone forever, and the message will sit in the mailbox
+until an operator removes it.
+
+The framework cannot bound this for you, because only the behavior knows when
+waiting stops making sense. A capacity cap that clears in seconds and an
+operator response that may never come deserve different horizons, and a
+generic attempt counter cannot tell them apart. **A behavior that postpones
+must bound its own horizon**: track how long it has been waiting and return a
+real error once the wait is no longer justified, so the normal nack path can
+dead-letter it. If a behavior genuinely wants to wait forever, that is a
+legitimate choice, but it must be a choice, not an oversight.
+
+The framework supplies the reference for that bound:
+
+```go
+enqueuedAt, ok := actor.DeliveryEnqueuedAt(ctx)
+if ok && time.Since(enqueuedAt) >= myHorizon {
+        return errCondition // Ordinary nack path, dead-letters.
+}
+
+return fmt.Errorf("%w: %w", errCondition, actor.Postpone(backoff))
+```
+
+`DeliveryEnqueuedAt` reports when the message was first persisted, taken from
+the durable row's `created_at`. Neither a nack nor a postpone rewrites that
+column, so it survives every redelivery and measures the true age of the wait.
+
+Prefer it over behavior-side state whenever the message stream is
+attacker-controlled. A map keyed on anything the sender chooses (a session id,
+a request id) is unbounded by construction, so the bookkeeping meant to protect
+the actor becomes the resource the attacker grows. The row's own age costs
+nothing to consult and cannot be inflated by fabricating new messages. Note
+that the second return distinguishes "no timestamp available" from "age zero":
+treat absence as no horizon information rather than as an infinitely old
+message.
+
+### Correlation-Key Interaction
+
+A postpone does not exempt a message from per-correlation-key FIFO. The claim
+path makes a keyed message eligible only when no earlier same-key message
+exists in the mailbox, and a postponed message is still very much in the
+mailbox. **A postponed head still blocks its key lane** for the length of the
+delay, and every subsequent postpone extends the block.
+
+Head-of-line blocking is bounded to the key, not the mailbox, so unkeyed
+traffic and other lanes drain normally. Still, a behavior that postpones a
+keyed message is choosing to stall an ordered lane, and a long backoff on a
+busy key is a throughput decision, not just a retry decision. Unkeyed messages
+have no such interaction: the postponed row simply loses its place in the
+global `available_at` order until it becomes eligible again.
+
+**Scope of the FIFO guarantee.** For a postponing consumer, per-key ordering
+holds when **either** the actor is single-worker (`NumWorkers <= 1`) **or** the
+lane's messages never reach their final attempt. Both hold for every adopter
+today, so this is a constraint to respect rather than a bug to work around.
+
+The gap is a boundary case in the claim query's anti-join, which passes over a
+predecessor that has exhausted its retry budget (`m2.attempts <
+m2.max_attempts`, so a dead row cannot wedge its lane forever). A predecessor
+leased on its *final* attempt already satisfies `attempts == max_attempts`, so
+it is invisible to the anti-join while it is still being processed, and a
+competing worker may claim its same-key successor. With only ack and nack that
+is harmless, since the predecessor can then only complete or dead-letter. A
+postpone breaks it: the release decrements `attempts` back below the cap, so
+the predecessor becomes eligible again and reprocesses *after* the successor
+already ran, inverting per-key order.
+
+No adopter combines all three preconditions (keyed lanes, `NumWorkers > 1`, and
+a postponing behavior), so the SQL is deliberately left alone rather than
+complicated for a hypothetical. Future work, required before wiring a
+postponing behavior onto a keyed lane with a worker pool: add a lease-liveness
+disjunct to the anti-join so a currently-leased predecessor blocks its
+successors regardless of its attempts, instead of relying on the attempts
+predicate alone.
+
+### Adopter: OOR Over-Cap Admission
+
+The `oor` registry bounds how many incoming receive sessions one daemon keeps
+resident via `ReceiveLimits.MaxConcurrentIncomingSessions`, enforced at the
+`ensureChild` choke point that every resident-making path funnels through. The
+cap is a real defense: without it, an operator streaming unanswered hints over
+an owned receive script could pin unbounded children, mailboxes, and rows.
+
+But the hint that arrives when the daemon is full is ordinary traffic, and the
+cap clears as soon as an earlier session terminates and is reaped. Failing that
+hint's turn nacked its durable message and spent one of its attempts on a
+condition it did not cause, and a daemon that stayed full long enough would
+dead-letter a perfectly valid incoming transfer.
+
+The registry now postpones instead, on the Tell-driven routed paths only:
+`handleResolveIncoming` (the hint the event router pushes), `handleDriveEvent`'s
+lazy restore of an already-admitted session, and `handleResumeSession` (the
+retry callback's timer expiry). All three wrap the postpone alongside the
+existing `errIncomingAdmissionCapped` sentinel with a double `%w`, so boot
+restore's skip check keeps matching the sentinel while the consume path sees the
+postpone. `StartTransferRequest` is untouched: it arrives as an Ask from the RPC
+layer, and it is outgoing, so the incoming cap never applies to it. Boot restore
+keeps its own treatment as well, skipping over-cap rows rather than aborting the
+boot.
+
+The registry bounds the wait, as every postponing behavior must.
+`overCapPostponeHorizon` (10 minutes) is measured against
+`actor.DeliveryEnqueuedAt`, and past it the plain sentinel is returned so the
+ordinary nack path dead-letters the hint into a table where it is visible and
+requeue-able. The bound is load-bearing rather than decorative here, because the
+hint stream is operator-controlled: every redelivery of a capped hint re-runs
+the wallet-ownership query and the self-transfer row read before the cap
+rejects it again, so an unbounded postpone would let an operator streaming
+fabricated session ids build a permanent churn queue against the single-worker
+registry. Deriving the age from the row rather than from a per-session map is
+the same point in miniature: the map would be keyed on ids the operator picks.
+
+The deferred self-transfer hint in the same registry is the second adopter. It
+previously carried a custom `TellRetryPolicy` that answered "retry in 30
+seconds, always", intending that the hint never dead-letter while its outgoing
+session ran. That intent was never actually achieved. The registry runs the
+Read/Commit path, whose `finishNonTx` tail releases through `Delivery.Nack`,
+and `Nack` checks `ShouldDeadLetter` before the release: the tenth deferral
+dead-lettered the hint regardless of what the policy answered. (Had the
+registry been a classic behavior on the tx path, the same policy would instead
+have stranded the row invisibly, per the asymmetry described above. Neither
+outcome is the one the policy was written for.) Postponing on the same 30
+second backoff gives the intended semantics for real, and the registry went
+back to the default Tell retry policy for everything else.
 
 ---
 

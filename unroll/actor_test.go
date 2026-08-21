@@ -876,6 +876,20 @@ func (s *memCheckpointStore) NackMessageByID(context.Context, string,
 	return 1, nil
 }
 
+// PostponeMessage is unused in these tests.
+func (s *memCheckpointStore) PostponeMessage(context.Context, string, string,
+	time.Duration) (int64, error) {
+
+	return 1, nil
+}
+
+// PostponeMessageByID is unused in these tests.
+func (s *memCheckpointStore) PostponeMessageByID(context.Context, string,
+	time.Duration) (int64, error) {
+
+	return 1, nil
+}
+
 // ExtendLease is unused in these tests.
 func (s *memCheckpointStore) ExtendLease(context.Context, string, string,
 	time.Duration) (int64, error) {

@@ -16,18 +16,21 @@ import (
 
 // Type aliases for SQLC-generated types to reduce import noise.
 type (
-	MailboxMsgRow          = adsqlc.MailboxMessage
-	OutboxMsgRow           = adsqlc.OutboxMessage
-	AskResultRow           = adsqlc.AskResult
-	FsmCheckpointRow       = adsqlc.FsmCheckpoint
-	DeadLetterRow          = adsqlc.DeadLetter
-	EnqueueMailboxParams   = adsqlc.EnqueueMailboxMessageParams
-	EnqueueOutboxParams    = adsqlc.EnqueueOutboxMessageParams
-	LeaseMailboxParams     = adsqlc.LeaseNextMailboxMessageParams
-	PeekMailboxParams      = adsqlc.PeekNextMailboxMessageParams
-	AckMailboxParams       = adsqlc.AckMailboxMessageParams
-	NackMailboxParams      = adsqlc.NackMailboxMessageParams
-	NackMailboxByIDParams  = adsqlc.NackMailboxMessageByIDParams
+	MailboxMsgRow             = adsqlc.MailboxMessage
+	OutboxMsgRow              = adsqlc.OutboxMessage
+	AskResultRow              = adsqlc.AskResult
+	FsmCheckpointRow          = adsqlc.FsmCheckpoint
+	DeadLetterRow             = adsqlc.DeadLetter
+	EnqueueMailboxParams      = adsqlc.EnqueueMailboxMessageParams
+	EnqueueOutboxParams       = adsqlc.EnqueueOutboxMessageParams
+	LeaseMailboxParams        = adsqlc.LeaseNextMailboxMessageParams
+	PeekMailboxParams         = adsqlc.PeekNextMailboxMessageParams
+	AckMailboxParams          = adsqlc.AckMailboxMessageParams
+	NackMailboxParams         = adsqlc.NackMailboxMessageParams
+	NackMailboxByIDParams     = adsqlc.NackMailboxMessageByIDParams
+	PostponeMailboxParams     = adsqlc.PostponeMailboxMessageParams
+	PostponeMailboxByIDParams = adsqlc.
+					PostponeMailboxMessageByIDParams
 	ExtendMailboxParams    = adsqlc.ExtendMailboxLeaseParams
 	InsertAskResultParams  = adsqlc.InsertAskResultParams
 	ClaimOutboxBatchParams = adsqlc.ClaimOutboxBatchParams
@@ -68,6 +71,12 @@ type ActorDeliveryQueries interface {
 
 	NackMailboxMessageByID(ctx context.Context,
 		arg NackMailboxByIDParams) (int64, error)
+
+	PostponeMailboxMessage(ctx context.Context,
+		arg PostponeMailboxParams) (int64, error)
+
+	PostponeMailboxMessageByID(ctx context.Context,
+		arg PostponeMailboxByIDParams) (int64, error)
 
 	ExtendMailboxLease(ctx context.Context,
 		arg ExtendMailboxParams) (int64, error)
@@ -452,6 +461,73 @@ func (s *Store) NackMessageByID(ctx context.Context, id string,
 			rows, err = q.NackMailboxMessageByID(
 				ctx,
 				NackMailboxByIDParams{
+					ID:          id,
+					AvailableAt: availableAt.Unix(),
+				},
+			)
+
+			return err
+		},
+	)
+
+	return rows, err
+}
+
+// PostponeMessage releases a message for redelivery after the given delay
+// WITHOUT burning a delivery attempt: the query decrements attempts to
+// compensate the increment the lease took at claim. Validates the lease
+// token to prevent stale postpones.
+func (s *Store) PostponeMessage(ctx context.Context, id, leaseToken string,
+	retryAfter time.Duration) (int64, error) {
+
+	writeTxOpts := db.WriteTxOption()
+
+	var rows int64
+
+	err := s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			availableAt := s.clock.Now().Add(retryAfter)
+
+			var err error
+			rows, err = q.PostponeMailboxMessage(
+				ctx,
+				PostponeMailboxParams{
+					ID:          id,
+					LeaseToken:  toNullString(leaseToken),
+					AvailableAt: availableAt.Unix(),
+				},
+			)
+
+			return err
+		},
+	)
+
+	return rows, err
+}
+
+// PostponeMessageByID releases a message for redelivery by ID without
+// validating a lease token and without touching attempts, because the
+// leaseless peek never incremented it. It is the leaseless single-worker
+// counterpart to PostponeMessage.
+func (s *Store) PostponeMessageByID(ctx context.Context, id string,
+	retryAfter time.Duration) (int64, error) {
+
+	writeTxOpts := db.WriteTxOption()
+
+	var rows int64
+
+	err := s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			availableAt := s.clock.Now().Add(retryAfter)
+
+			var err error
+			rows, err = q.PostponeMailboxMessageByID(
+				ctx,
+				PostponeMailboxByIDParams{
 					ID:          id,
 					AvailableAt: availableAt.Unix(),
 				},
@@ -1292,6 +1368,39 @@ func (s *TxActorDeliveryStore) NackMessageByID(ctx context.Context, id string,
 		ID:          id,
 		AvailableAt: availableAt.Unix(),
 	})
+}
+
+// PostponeMessage releases a message for redelivery WITHOUT burning a
+// delivery attempt, within the current transaction. It is the
+// attempt-preserving counterpart to NackMessage.
+func (s *TxActorDeliveryStore) PostponeMessage(ctx context.Context, id,
+	leaseToken string, retryAfter time.Duration) (int64, error) {
+
+	availableAt := s.clock.Now().Add(retryAfter)
+
+	return s.querier.PostponeMailboxMessage(ctx, PostponeMailboxParams{
+		ID:          id,
+		LeaseToken:  toNullString(leaseToken),
+		AvailableAt: availableAt.Unix(),
+	})
+}
+
+// PostponeMessageByID releases a message for redelivery by ID without
+// validating a lease token and without touching attempts, within the current
+// transaction. It is the leaseless single-worker counterpart to
+// PostponeMessage.
+func (s *TxActorDeliveryStore) PostponeMessageByID(ctx context.Context,
+	id string, retryAfter time.Duration) (int64, error) {
+
+	availableAt := s.clock.Now().Add(retryAfter)
+
+	return s.querier.PostponeMailboxMessageByID(
+		ctx,
+		PostponeMailboxByIDParams{
+			ID:          id,
+			AvailableAt: availableAt.Unix(),
+		},
+	)
 }
 
 // ExtendLease extends the lease for long-running message processing.
