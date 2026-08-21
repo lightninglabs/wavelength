@@ -73,6 +73,20 @@ func (c *MessageCodec) Register(typeID tlv.Type,
 	return nil
 }
 
+// Supports reports whether the codec can decode the given TLV type. It lets a
+// caller decide whether a message is worth enqueueing at all rather than
+// discovering at delivery time that the consumer cannot decode it. The
+// supervision path uses it to avoid prepending a RestartMessage to an actor
+// whose codec never registered one.
+func (c *MessageCodec) Supports(typeID tlv.Type) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	_, exists := c.registry[typeID]
+
+	return exists
+}
+
 // MustRegister is like Register but panics on error. Useful for init-time
 // registration where errors should be caught early.
 func (c *MessageCodec) MustRegister(typeID tlv.Type,

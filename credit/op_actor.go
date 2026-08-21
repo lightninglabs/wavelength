@@ -266,7 +266,23 @@ func (b *opBehavior) Receive(ctx context.Context, msg CreditDurableMsg,
 
 	if _, ok := msg.(*actor.RestartMessage); ok {
 
-		// Restore already ran at construction; nothing to persist.
+		// A restart message reaches a live behavior in exactly one
+		// case: the actor's supervisor restarted it after this
+		// behavior panicked. The panic may have left rec advanced in
+		// memory past the last durable checkpoint, and the framework
+		// reuses this same behavior instance across the restart, so
+		// treating the message as a no-op would hand the stale advance
+		// straight back to the next turn. Arm the same reload guard the
+		// failed-commit path uses: the next turn rebuilds rec from the
+		// durable row before it dispatches.
+		//
+		// The reload is deferred to that turn rather than run here so
+		// the restart message stays a pure control message with no IO
+		// of its own. That matters because the framework delivers it
+		// with max_attempts 1 and dead-letters (rather than retries) a
+		// restart turn that fails.
+		b.commitFailed = true
+
 		return fn.Ok[CreditResp](&AckResponse{})
 	}
 
