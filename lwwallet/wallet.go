@@ -292,7 +292,11 @@ func (w *Wallet) Start() error {
 	if err := w.BtcWallet.Start(); err != nil {
 		return fmt.Errorf("start btcwallet: %w", err)
 	}
-	rollback = append(rollback, func() { _ = w.BtcWallet.Stop() })
+	rollback = append(rollback, func() {
+		w.chainSvc.Stop()
+		_ = w.BtcWallet.Stop()
+		w.chainSvc.WaitForShutdown()
+	})
 
 	// Start the chainsource ChainBackend used by the actor system.
 	// It also subscribes to the wallet's TipPoller; it does not
@@ -311,30 +315,27 @@ func (w *Wallet) Start() error {
 	return nil
 }
 
-// Stop shuts down the wallet, chain service, chain backend, and
-// shared tip poller. The teardown order mirrors Start in reverse:
-// btcwallet first (so it stops draining notifications), then the
-// chain backend (which unsubscribes from the poller), and finally
-// the tip poller itself once nobody else can be observing it.
+// Stop shuts down the wallet, chain service, chain backend, and shared tip
+// poller. The chain service is signaled first so its lifecycle context cancels
+// any Esplora request made by btcwallet's recovery goroutine. Btcwallet can
+// then finish that recovery and drain its own goroutines before the shared tip
+// poller stops.
 func (w *Wallet) Stop() {
 	ctx := context.Background()
 
 	w.Logger(ctx).InfoS(ctx, "Stopping lightweight wallet")
 
+	// btcwallet waits for an active recovery before it stops its chain
+	// client. Cancel the chain-service context first so a recovery blocked
+	// in an Esplora request can observe shutdown and return.
+	w.chainSvc.Stop()
 	_ = w.BtcWallet.Stop()
 	if err := w.BtcWallet.InternalWallet().Database().Close(); err != nil {
 		w.Logger(ctx).WarnS(ctx, "Failed to close btcwallet DB", err)
 	}
 
-	// Explicitly Stop the chain service before waiting on its
-	// goroutine. btcwallet.Stop will transitively call
-	// chainClient.Stop today, but relying on that is brittle —
-	// any future fast-shutdown path that bypasses
-	// btcwallet.Stop would leave handleTipEvents blocked on its
-	// quit channel and deadlock WaitForShutdown. The Stop is
-	// idempotent (sync.Once), so the duplicate-close path is
-	// safe even if btcwallet's Stop already fired it.
-	w.chainSvc.Stop()
+	// Stop is idempotent, so btcwallet's own chain-client shutdown and the
+	// explicit signal above safely converge before this wait.
 	w.chainSvc.WaitForShutdown()
 	_ = w.chainBackend.Stop()
 	w.tipPoller.Stop()
