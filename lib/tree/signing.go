@@ -177,6 +177,17 @@ func NewSignerSession(signer input.MuSig2Signer,
 	prevOuts txscript.PrevOutputFetcher,
 	tree *Node) (*SignerSession, error) {
 
+	return newSignerSession(
+		signer, signerKey, sweepTapscriptRoot, prevOuts, tree, nil,
+	)
+}
+
+// newSignerSession creates a signing session with optional per-node tweaks.
+func newSignerSession(signer input.MuSig2Signer,
+	signerKey *keychain.KeyDescriptor, sweepTapscriptRoot []byte,
+	prevOuts txscript.PrevOutputFetcher, tree *Node,
+	tweakLookup func(*Node) []byte) (*SignerSession, error) {
+
 	// Validate inputs.
 	if signer == nil {
 		return nil, fmt.Errorf("signer cannot be nil")
@@ -207,8 +218,17 @@ func NewSignerSession(signer input.MuSig2Signer,
 			return fmt.Errorf("failed to create tx: %w", err)
 		}
 
+		taprootTweak := sweepTapscriptRoot
+		if tweakLookup != nil {
+			taprootTweak = tweakLookup(node)
+			if len(taprootTweak) == 0 {
+				return fmt.Errorf("missing taproot tweak "+
+					"for node %s", node.Input)
+			}
+		}
+
 		session, err := node.NewTxSignerSession(
-			signer, sweepTapscriptRoot, signerKey, prevOuts,
+			signer, taprootTweak, signerKey, prevOuts,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create tx session: %w",

@@ -216,10 +216,35 @@ func NewBranchNode(input wire.OutPoint, groups [][]LeafDescriptor,
 	}, nil
 }
 
-// ComputeFinalKey computes the final aggregated public key for signing.
-// This is a helper function that aggregates the cosigners and applies the
-// taproot tweak with the given sweep tapscript root. It handles both
-// single-key and multi-key cases.
+// ComputeInternalKey returns the untweaked MuSig2 aggregate key.
+func ComputeInternalKey(cosigners []*btcec.PublicKey) (*btcec.PublicKey,
+	error) {
+
+	if len(cosigners) == 0 {
+		return nil, fmt.Errorf("no cosigners provided")
+	}
+
+	if len(cosigners) == 1 {
+		return cosigners[0], nil
+	}
+
+	// AggregateKeys sorts its input in place.
+	aggKey, _, _, err := musig2.AggregateKeys(
+		copyCosigners(cosigners), true,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to aggregate keys: %w", err)
+	}
+
+	return aggKey.PreTweakedKey, nil
+}
+
+// copyCosigners returns a shallow copy of the cosigner set.
+func copyCosigners(cosigners []*btcec.PublicKey) []*btcec.PublicKey {
+	return append([]*btcec.PublicKey(nil), cosigners...)
+}
+
+// ComputeFinalKey returns the tweaked aggregate key for the cosigners.
 func ComputeFinalKey(cosigners []*btcec.PublicKey,
 	sweepTapscriptRoot []byte) (*btcec.PublicKey, error) {
 
@@ -236,9 +261,10 @@ func ComputeFinalKey(cosigners []*btcec.PublicKey,
 		), nil
 	}
 
-	// Multi-key case: use MuSig2 aggregation with taproot tweak.
+	// AggregateKeys sorts its input in place.
 	aggKey, _, _, err := musig2.AggregateKeys(
-		cosigners, true, musig2.WithTaprootKeyTweak(sweepTapscriptRoot),
+		copyCosigners(cosigners), true,
+		musig2.WithTaprootKeyTweak(sweepTapscriptRoot),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to aggregate keys: %w", err)
@@ -828,14 +854,17 @@ func (n *Node) SigHash(prevOutFetcher txscript.PrevOutputFetcher) ([]byte,
 	)
 }
 
-// NewSignerSession creates a new MuSig2 signing session for this node.
+// NewSignerSession creates a MuSig2 signing session for this node.
 func (n *Node) NewSignerSession(signerKey *keychain.KeyDescriptor,
 	signer input.MuSig2Signer, sweepTapscriptRoot []byte) (
 	*input.MuSig2SessionInfo, error) {
 
+	// A local signer may sort the cosigner slice in place.
+	cosigners := copyCosigners(n.CoSigners)
+
 	return signer.MuSig2CreateSession(
 		input.MuSig2Version100RC2, signerKey.KeyLocator,
-		n.CoSigners, &input.MuSig2Tweaks{
+		cosigners, &input.MuSig2Tweaks{
 			TaprootTweak: sweepTapscriptRoot,
 		}, nil, nil,
 	)
