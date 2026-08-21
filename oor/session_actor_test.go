@@ -1,6 +1,7 @@
 package oor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sync"
@@ -29,8 +30,10 @@ import (
 // mutex makes it safe for end-to-end tests where real child actors write
 // snapshots concurrently with registry-goroutine reads.
 type fakeRegistryStore struct {
-	mu   sync.Mutex
-	rows map[chainhash.Hash]clientdb.OORSessionRegistryRecord
+	mu                  sync.Mutex
+	rows                map[chainhash.Hash]clientdb.OORSessionRegistryRecord
+	attemptsByKey       map[string]clientdb.OORDispatchAttemptRecord
+	attemptKeyBySession map[chainhash.Hash]string
 }
 
 func newFakeRegistryStore() *fakeRegistryStore {
@@ -38,6 +41,10 @@ func newFakeRegistryStore() *fakeRegistryStore {
 		rows: make(
 			map[chainhash.Hash]clientdb.OORSessionRegistryRecord,
 		),
+		attemptsByKey: make(
+			map[string]clientdb.OORDispatchAttemptRecord,
+		),
+		attemptKeyBySession: make(map[chainhash.Hash]string),
 	}
 }
 
@@ -47,6 +54,38 @@ func (s *fakeRegistryStore) UpsertSession(_ context.Context,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if record.Direction == clientdb.OORSessionDirectionOutgoing &&
+		record.IdempotencyKey != "" &&
+		len(record.DispatchRequestData) != 0 {
+
+		if existing, ok := s.attemptsByKey[record.IdempotencyKey]; ok {
+			if existing.SessionID != record.SessionID ||
+				!bytes.Equal(
+					existing.RequestData,
+					record.DispatchRequestData,
+				) {
+				return clientdb.ErrOORDispatchAttemptConflict
+			}
+		} else if key, ok :=
+			s.attemptKeyBySession[record.SessionID]; ok &&
+			key != record.IdempotencyKey {
+			return clientdb.ErrOORDispatchAttemptConflict
+		} else {
+			s.attemptsByKey[record.IdempotencyKey] =
+				clientdb.OORDispatchAttemptRecord{
+					IdempotencyKey: record.IdempotencyKey,
+					SessionID:      record.SessionID,
+					RequestData: append(
+						[]byte(nil),
+						record.DispatchRequestData...,
+					),
+				}
+			s.attemptKeyBySession[record.SessionID] =
+				record.IdempotencyKey
+		}
+	}
+
+	record.DispatchRequestData = nil
 	s.rows[record.SessionID] = record
 
 	return nil
@@ -66,22 +105,35 @@ func (s *fakeRegistryStore) GetSession(_ context.Context,
 	return &record, nil
 }
 
-func (s *fakeRegistryStore) LookupActiveSessionByIdempotencyKey(
-	_ context.Context, key string) (*clientdb.OORSessionRegistryRecord,
+func (s *fakeRegistryStore) GetDispatchAttemptByIdempotencyKey(
+	_ context.Context, key string) (*clientdb.OORDispatchAttemptRecord,
 	error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for i := range s.rows {
-		record := s.rows[i]
-		failed := record.Status == clientdb.OORSessionStatusFailed
-		if record.IdempotencyKey == key && key != "" && !failed {
-			return &record, nil
-		}
+	record, ok := s.attemptsByKey[key]
+	if !ok {
+		return nil, clientdb.ErrOORDispatchAttemptNotFound
 	}
 
-	return nil, clientdb.ErrOORSessionNotFound
+	return &record, nil
+}
+
+func (s *fakeRegistryStore) GetDispatchAttemptBySessionID(_ context.Context,
+	sessionID chainhash.Hash) (*clientdb.OORDispatchAttemptRecord, error) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key, ok := s.attemptKeyBySession[sessionID]
+	if !ok {
+		return nil, clientdb.ErrOORDispatchAttemptNotFound
+	}
+
+	record := s.attemptsByKey[key]
+
+	return &record, nil
 }
 
 func (s *fakeRegistryStore) ListNonTerminal(_ context.Context) (
@@ -394,6 +446,9 @@ func TestSessionActorDedupRaceRedeliversThenDedups(t *testing.T) {
 			OORSessionDirectionOutgoing,
 		IdempotencyKey: key,
 		Status:         clientdb.OORSessionStatusPending,
+		DispatchRequestData: []byte{
+			0x01,
+		},
 	}
 	require.NoError(t, store.UpsertSession(ctx, winnerRow))
 
@@ -1037,6 +1092,105 @@ func TestSessionActorSubmitAcceptedNilArkPSBTEnrichment(t *testing.T) {
 	require.Empty(t, b.pendingTransport)
 }
 
+// TestSessionActorReopensAttemptlessFailedOutgoing verifies a legacy/keyless
+// failed row stays available for an exact keyed readmission. The replacement
+// starts from Idle instead of returning the terminal snapshot as Existing.
+func TestSessionActorReopensAttemptlessFailedOutgoing(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, policy.OperatorKey, wire.OutPoint{
+				Hash:  [32]byte{0x06},
+				Index: 0,
+			}, btcutil.Amount(10_000),
+		),
+	}
+	recipients := []oortx.RecipientOutput{{
+		PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+		Value:    inputs[0].VTXO.Amount,
+	}}
+
+	session, _, err := NewSessionWithIdempotencyKey(
+		ctx, policy, inputs, recipients, "replacement-key", EnvConfig{},
+	)
+	require.NoError(t, err)
+	session.FSM.Stop()
+
+	store := newFakeRegistryStore()
+	failedSnapshot, err := NewOutgoingSnapshot(
+		session.ID, &Failed{
+			Reason: "legacy operator rejection",
+		},
+	)
+	require.NoError(t, err)
+	failedRaw, err := encodeOutgoingSnapshot(failedSnapshot)
+	require.NoError(t, err)
+	direction := clientdb.OORSessionDirectionOutgoing
+	failedStatus := clientdb.OORSessionStatusFailed
+	require.NoError(
+		t,
+		store.UpsertSession(
+			ctx, clientdb.OORSessionRegistryRecord{
+				SessionID:       chainHashOf(session.ID),
+				ActorID:         ActorIDForSession(session.ID),
+				Direction:       direction,
+				Phase:           string(OutgoingPhaseFailed),
+				Status:          failedStatus,
+				LastError:       failedSnapshot.FailReason,
+				SnapshotData:    failedRaw,
+				SnapshotVersion: int32(failedSnapshot.Version),
+			},
+		),
+	)
+
+	b := &sessionBehavior{
+		cfg: SessionActorConfig{
+			RegistryStore: store,
+			Signer: input.NewMockSigner(
+				[]*btcec.PrivateKey{clientKey}, nil,
+			),
+		},
+		actorID:   ActorIDForSession(session.ID),
+		log:       btclog.Disabled,
+		sessionID: session.ID,
+		direction: clientdb.OORSessionDirectionOutgoing,
+	}
+	require.NoError(t, b.restore(ctx))
+	require.True(t, b.loaded)
+	restoredState, err := b.fsm.CurrentState()
+	require.NoError(t, err)
+	require.IsType(t, &Failed{}, restoredState)
+
+	proof, err := NewOutgoingReplayData(recipients, recipients)
+	require.NoError(t, err)
+	res := b.handleStartTransfer(ctx, &StartTransferRequest{
+		Policy:              policy,
+		Inputs:              inputs,
+		Recipients:          recipients,
+		IdempotencyKey:      "replacement-key",
+		DispatchRequestData: proof,
+	})
+	require.True(t, res.IsOk(), res.Err())
+	require.True(t, b.loaded)
+	require.Equal(t, session.ID, b.sessionID)
+	require.Len(t, b.pendingTransport, 1)
+
+	state, err := b.fsm.CurrentState()
+	require.NoError(t, err)
+	require.IsType(t, &AwaitingSubmitAccepted{}, state)
+}
+
 // fakeExec runs every Read/Stage/Commit closure inline against the carried
 // transaction store, standing in for the durable framework in behavior tests.
 type fakeExec struct {
@@ -1433,11 +1587,12 @@ func TestSessionActorRestoreDirectionMismatch(t *testing.T) {
 	id := oorSessionID(0x71)
 
 	testCases := []struct {
-		name      string
-		requested clientdb.OORSessionDirection
-		rowDir    clientdb.OORSessionDirection
-		rowStatus clientdb.OORSessionStatus
-		wantErr   string
+		name                   string
+		requested              clientdb.OORSessionDirection
+		rowDir                 clientdb.OORSessionDirection
+		rowStatus              clientdb.OORSessionStatus
+		wantErr                string
+		retainedFailedOutgoing bool
 
 		// wantLoaded reports whether restore must end with a live FSM.
 		wantLoaded bool
@@ -1447,6 +1602,20 @@ func TestSessionActorRestoreDirectionMismatch(t *testing.T) {
 		rowDir:    clientdb.OORSessionDirectionOutgoing,
 		rowStatus: clientdb.OORSessionStatusPending,
 		wantErr:   "direction mismatch",
+	}, {
+		name:                   "rejects live incoming owner",
+		requested:              clientdb.OORSessionDirectionOutgoing,
+		rowDir:                 clientdb.OORSessionDirectionIncoming,
+		rowStatus:              clientdb.OORSessionStatusPending,
+		wantErr:                "direction mismatch",
+		retainedFailedOutgoing: true,
+	}, {
+		name:                   "rejects settled incoming owner",
+		requested:              clientdb.OORSessionDirectionOutgoing,
+		rowDir:                 clientdb.OORSessionDirectionIncoming,
+		rowStatus:              clientdb.OORSessionStatusCompleted,
+		wantErr:                "direction mismatch",
+		retainedFailedOutgoing: true,
 	}, {
 		name:      "outgoing over incoming row errors",
 		requested: clientdb.OORSessionDirectionOutgoing,
@@ -1467,6 +1636,14 @@ func TestSessionActorRestoreDirectionMismatch(t *testing.T) {
 			t.Parallel()
 
 			store := newFakeRegistryStore()
+			if tc.retainedFailedOutgoing {
+				upsertRegistryRow(
+					t, store, id,
+					clientdb.OORSessionDirectionOutgoing,
+					"failed", "key-1",
+					clientdb.OORSessionStatusFailed,
+				)
+			}
 			upsertRegistryRow(
 				t, store, id, tc.rowDir, "submit_sent", "",
 				tc.rowStatus,

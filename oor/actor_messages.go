@@ -112,6 +112,10 @@ type StartTransferRequest struct {
 	// behavior.
 	IdempotencyKey string
 
+	// DispatchRequestData is the normalized caller-recipient proof. It is
+	// committed with the first submit transport for keyed sends.
+	DispatchRequestData []byte
+
 	// AdmissionDeadlineUnixNanos is the latest wall-clock time at which a
 	// new transfer may be admitted. Existing keyed winners remain readable
 	// after this deadline. Zero leaves admission unbounded.
@@ -136,6 +140,7 @@ func (m *StartTransferRequest) Encode(w io.Writer) error {
 	payload := startTransferPayload{
 		CSVDelay:                   m.Policy.CSVDelay,
 		IdempotencyKey:             m.IdempotencyKey,
+		DispatchRequestData:        m.DispatchRequestData,
 		AdmissionDeadlineUnixNanos: m.AdmissionDeadlineUnixNanos,
 		Recipients: make(
 			[]recipientPayload, 0, len(m.Recipients),
@@ -204,6 +209,7 @@ func (m *StartTransferRequest) Decode(r io.Reader) error {
 		CSVDelay:    payload.CSVDelay,
 	}
 	m.IdempotencyKey = payload.IdempotencyKey
+	m.DispatchRequestData = payload.DispatchRequestData
 	m.AdmissionDeadlineUnixNanos = payload.AdmissionDeadlineUnixNanos
 
 	m.Inputs = make([]TransferInput, 0, len(payload.Inputs))
