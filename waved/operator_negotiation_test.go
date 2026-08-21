@@ -264,6 +264,25 @@ func TestOperatorVTXOFloorFailsClosed(t *testing.T) {
 	require.ErrorContains(t, err, "operator unavailable")
 }
 
+// TestOperatorVTXOFloorRejectsZero verifies an otherwise successful terms
+// refresh cannot authorize a zero-satoshi credit materialization threshold.
+func TestOperatorVTXOFloorRejectsZero(t *testing.T) {
+	t.Parallel()
+
+	rpc := &RPCServer{server: &Server{
+		arkClient: &stubArkServiceClient{
+			resp: &arkrpc.GetInfoResponse{
+				Pubkey:             testOperatorPubKeyBytes(t),
+				SelectedArkVersion: 1,
+			},
+		},
+		arkProtocolVersion: 1,
+	}}
+
+	_, err := rpc.OperatorVTXOFloor(t.Context())
+	require.ErrorContains(t, err, "operator VTXO floor is unavailable")
+}
+
 // TestRefreshAuthenticatedOperatorTermsUsesMailbox verifies that the
 // post-bootstrap refresh replaces anonymous policy with the terms resolved for
 // the daemon's authenticated mailbox identity.

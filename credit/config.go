@@ -152,8 +152,9 @@ type CreditServer interface {
 	ListCredits(ctx context.Context,
 		accountPubKey []byte) (*CreditSnapshot, error)
 
-	// RedeemCredit reserves available credits and sends them to the
-	// supplied Ark destination.
+	// RedeemCredit reserves available credits and sends amountSat as the
+	// exact Ark recipient output amount. Transfer fees must be funded
+	// separately and never deducted from this payout.
 	RedeemCredit(ctx context.Context, accountPubKey []byte,
 		idempotencyKey string, amountSat uint64,
 		destinationPubKey []byte) (*RedeemResult, error)
@@ -195,14 +196,15 @@ type Store interface {
 
 // CreditDaemon is the wallet/daemon surface the credit actor uses to fund
 // top-ups, allocate redemption destinations, observe redeemed outputs, and read
-// the operator dust limit.
+// the operator's effective VTXO floor.
 type CreditDaemon interface {
 	// IdentityPubKey returns the compressed wallet identity pubkey that
 	// keys the server credit account.
 	IdentityPubKey(ctx context.Context) ([]byte, error)
 
-	// DustLimit returns the operator dust limit in satoshis.
-	DustLimit(ctx context.Context) (uint64, error)
+	// VTXOFloor returns the positive live effective operator minimum in
+	// satoshis. A zero floor must be returned as an error.
+	VTXOFloor(ctx context.Context) (uint64, error)
 
 	// SendOOR submits an idempotency-keyed OOR transfer of amountSat to the
 	// pubkey-backed destination and returns the OOR session id. The
@@ -273,9 +275,8 @@ type OpActorConfig struct {
 	// without ever considering a redeem.
 	AutoRedeemEnabled bool
 
-	// MinRedeemSat is the available-credit watermark above which a settled
-	// receive triggers an auto-redeem. Zero defaults to the operator dust
-	// limit at runtime, the smallest amount that can legally become a vTXO.
+	// MinRedeemSat is an optional available-credit watermark. The effective
+	// threshold is never lower than the live operator VTXO floor.
 	MinRedeemSat uint64
 
 	// Earmark, when set, reports the credit balance reserved by in-flight
@@ -359,16 +360,16 @@ type EarmarkFunc = func(context.Context) (uint64, error)
 // AutoRedeemConfig configures the wallet-owned auto-redeem policy. Redemption
 // is never exposed to the user: the wallet decides when to materialize
 // available credits back into a vTXO. Auto-redeem is driven by the receive
-// state machine (a settled receive that clears the watermark) plus a single
-// boot-time reconcile; there is no periodic sweep.
+// state machine (a settled receive that clears the watermark) plus a boot-time
+// reconcile that retries until one complete evaluation succeeds; there is no
+// steady-state periodic sweep.
 type AutoRedeemConfig struct {
 	// Enabled turns receive-driven auto-redeem and the boot-time reconcile
 	// on.
 	Enabled bool
 
-	// MinRedeemSat is the available-credit threshold above which a settled
-	// receive triggers a redeem. Zero defaults to the operator dust limit
-	// at runtime, the smallest amount that can legally become a vTXO.
+	// MinRedeemSat is an optional available-credit threshold. The effective
+	// threshold is never lower than the live operator VTXO floor.
 	MinRedeemSat uint64
 
 	// EarmarkedSat, when set, reports the credit balance reserved by

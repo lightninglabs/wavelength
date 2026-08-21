@@ -154,10 +154,11 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 }
 
 // StartAutoRedeem runs the wallet-owned auto-redeem boot reconcile (a no-op
-// when the policy is disabled). Steady-state auto-redeem is driven by the
-// receive state machine; this only covers a balance already over the watermark
-// at start. It is anchored to ctx, which must be a daemon-lifetime context, not
-// an RPC-call context.
+// when the policy is disabled) and retries transient evaluation failures until
+// one evaluation succeeds. Steady-state auto-redeem is driven by the receive
+// state machine; this only covers a balance already over the watermark at
+// start. It is anchored to ctx, which must be a daemon-lifetime context, not an
+// RPC-call context.
 func (r *Registry) StartAutoRedeem(ctx context.Context) {
 	if r == nil {
 		return
