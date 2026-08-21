@@ -544,13 +544,19 @@ func TestTreeMaterializerJournal(t *testing.T) {
 	require.Equal(t, commits, f.driver.commits)
 
 	key := fmt.Sprintf("asset-tree/%s/%s", f.mat.cfg.Digest, f.batch)
-	digest, err := treeCommitRequestDigest(request)
+	digest, err := customAnchorCommitRequestDigest(
+		request, treeCommitDigestDomain,
+	)
 	require.NoError(t, err)
+	journal := customAnchorCommitJournal{
+		store:     f.mat.cfg.Store,
+		operation: "asset tree",
+	}
 	require.NoError(
 		t,
-		f.mat.storeTreeCommitState(
-			t.Context(), key, &treeCommitState{
-				Version:       treeCommitStateVersion,
+		journal.storeState(
+			t.Context(), key, &customAnchorCommitState{
+				Version:       customAnchorCommitStateVersion,
 				RequestDigest: digest,
 				Attempt:       true,
 			},

@@ -15,6 +15,7 @@ const (
 	opTrueKeyDomain       = "wavelength/assets/optrue/v0/"
 	witnessBackendSigner  = tapsdk.CustomAssetWitnessBackendSigner
 	witnessCallerProvided = tapsdk.CustomAssetWitnessCallerProvided
+	scriptExternal        = tapsdk.CustomAssetScriptExternal
 )
 
 type expectedUnconfirmedAnchor struct {
