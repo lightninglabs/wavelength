@@ -454,30 +454,16 @@ func (s failedState) ProcessEvent(_ context.Context, _ CreditEvent,
 // redeemWatermarkCleared reports whether the wallet-owned auto-redeem watermark
 // is cleared for the supplied account snapshot, and the earmark-adjusted
 // available balance to redeem. It returns false when auto-redeem is disabled,
-// when the available balance does not strictly exceed the threshold, or when
-// the earmark provider errors (fail-safe: never redeem credits an in-flight
-// wallet operation may be about to spend). The registry still applies the
-// no-pending-pay/redeem interlock before admitting the redeem.
+// when the available balance is below the threshold, or when the earmark
+// provider or live-floor lookup errors (fail-safe: never redeem credits an
+// in-flight wallet operation may be about to spend, and never materialize an
+// invalid VTXO). The registry still applies the no-pending-pay/redeem interlock
+// before admitting the redeem.
 func (b *opBehavior) redeemWatermarkCleared(ctx context.Context,
 	snapshot *CreditSnapshot) (uint64, bool) {
 
 	if !b.cfg.AutoRedeemEnabled || snapshot == nil {
 		return 0, false
-	}
-
-	threshold := b.cfg.MinRedeemSat
-	if threshold == 0 {
-		dust, err := b.cfg.Daemon.DustLimit(ctx)
-		if err != nil {
-			b.logger(ctx).DebugS(ctx, "Skipping auto-redeem: dust "+
-				"limit unavailable",
-				slog.String("op_id", b.cfg.OpID),
-				slog.String("err", err.Error()),
-			)
-
-			return 0, false
-		}
-		threshold = dust
 	}
 
 	available := snapshot.AvailableSat
@@ -505,7 +491,30 @@ func (b *opBehavior) redeemWatermarkCleared(ctx context.Context,
 		}
 	}
 
-	if available <= threshold {
+	// A configured watermark can rule the decision out without consulting
+	// the operator. Equality continues because the live floor may allow an
+	// exact-threshold payout.
+	if available < b.cfg.MinRedeemSat {
+		return 0, false
+	}
+
+	floor, err := b.cfg.Daemon.VTXOFloor(ctx)
+	if err != nil || floor == 0 {
+		if err == nil {
+			err = fmt.Errorf("operator returned a zero VTXO floor")
+		}
+
+		b.logger(ctx).DebugS(ctx, "Skipping auto-redeem: VTXO "+
+			"floor unavailable",
+			slog.String("op_id", b.cfg.OpID),
+			slog.String("err", err.Error()),
+		)
+
+		return 0, false
+	}
+	threshold := max(b.cfg.MinRedeemSat, floor)
+
+	if available < threshold {
 		return 0, false
 	}
 

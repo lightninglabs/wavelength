@@ -750,9 +750,9 @@ type CreditConfig struct {
 	// manually set this to true.
 	AutoRedeemDisabled bool `mapstructure:"autoredeemdisabled"`
 
-	// AutoRedeemMinSat is the available-credit threshold above which a
-	// settled receive triggers a redeem. Zero defaults to the operator dust
-	// limit, the smallest amount that can legally become a vTXO.
+	// AutoRedeemMinSat optionally delays redemption above the live operator
+	// VTXO floor. A settled receive triggers at or above the greater of
+	// this value and the live floor; zero uses the live floor alone.
 	AutoRedeemMinSat uint64 `mapstructure:"autoredeemminsat"`
 
 	// MaxAwaitingPolls caps how many reconciliation polls a single

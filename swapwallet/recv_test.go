@@ -119,17 +119,19 @@ func TestRecvProjectsPendingEntry(t *testing.T) {
 	)
 }
 
-// TestRecvBelowDustHandsToCreditRegistry asserts a sub-dust receive is handed
-// to the durable credit registry, which returns the server-owned invoice
-// synchronously, instead of the wallet calling CreateCredit inline.
-func TestRecvBelowDustHandsToCreditRegistry(t *testing.T) {
+// TestRecvBelowVTXOFloorHandsToCreditRegistry asserts receive planning uses the
+// larger operator VTXO minimum rather than routing an above-dust, sub-floor
+// amount to a normal swap.
+func TestRecvBelowVTXOFloorHandsToCreditRegistry(t *testing.T) {
 	t.Parallel()
+	const amountSat = 800
 
 	swap := &fakeSwapService{}
 	rpc := &fakeRPCServer{
 		getInfoResp: &waverpc.GetInfoResponse{
 			ServerInfo: &waverpc.ServerInfo{
-				DustLimit: 1_000,
+				DustLimit:        546,
+				MinVtxoAmountSat: 1_000,
 			},
 		},
 	}
@@ -155,7 +157,7 @@ func TestRecvBelowDustHandsToCreditRegistry(t *testing.T) {
 
 	resp, err := receiver.Recv(
 		t.Context(), &wavewalletrpc.RecvRequest{
-			AmtSat: 500,
+			AmtSat: amountSat,
 			Memo:   "tiny",
 		},
 	)
@@ -166,7 +168,7 @@ func TestRecvBelowDustHandsToCreditRegistry(t *testing.T) {
 	require.Equal(t, 0, swap.createCreditCalls)
 	require.Equal(t, 1, reg.receiveCalls)
 	require.NotNil(t, reg.lastReceive)
-	require.Equal(t, uint64(500), reg.lastReceive.AmountSat)
+	require.Equal(t, uint64(amountSat), reg.lastReceive.AmountSat)
 	require.Equal(t, "tiny", reg.lastReceive.Memo)
 	require.Contains(t, reg.lastReceive.OpKey, "recv:")
 
@@ -174,7 +176,7 @@ func TestRecvBelowDustHandsToCreditRegistry(t *testing.T) {
 	require.Equal(t, "lnbc1credit", resp.GetInvoice())
 	require.Equal(t, "cr_recv", resp.GetCreditReceive().GetOperationId())
 	require.Equal(t, "abcd", resp.GetCreditReceive().GetPaymentHash())
-	require.Equal(t, int64(500), resp.GetEntry().GetAmountSat())
+	require.Equal(t, int64(amountSat), resp.GetEntry().GetAmountSat())
 	require.Equal(
 		t, wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
 		resp.GetEntry().GetKind(),
@@ -188,14 +190,14 @@ func TestRecvBelowDustHandsToCreditRegistry(t *testing.T) {
 	require.Equal(t, 1, store.count())
 	projection := store.lastProjection()
 	require.Equal(t, "cr_recv", projection.CanonicalID)
-	require.Equal(t, int64(500), projection.AmountSat)
+	require.Equal(t, int64(amountSat), projection.AmountSat)
 	require.Equal(t, "tiny", projection.Note)
 	require.NotEmpty(t, projection.RequestJSON)
 	require.Equal(t, []byte{0xab, 0xcd}, projection.PaymentHash)
 }
 
 // TestRecvCreditFailureIsTypedAndRecorded locks the wavelength#1041 fix: when a
-// sub-dust receive is routed to the credit subsystem and the swap server never
+// sub-floor receive is routed to the credit subsystem and the swap server never
 // completes the credit request (here a DeadlineExceeded, the exact symptom seen
 // on signet), the failure must (1) surface as the typed
 // ErrCreditReceiveUnavailable with actionable guidance rather than an opaque
@@ -243,7 +245,7 @@ func TestRecvCreditFailureIsTypedAndRecorded(t *testing.T) {
 	})
 
 	// (1) The failure is the typed sentinel carrying actionable guidance:
-	// the requested amount and the dust floor to retry at or above.
+	// the requested amount and the VTXO floor to retry at or above.
 	require.ErrorIs(t, err, ErrCreditReceiveUnavailable)
 	require.Contains(t, err.Error(), "999")
 	require.Contains(t, err.Error(), "1000")
@@ -336,9 +338,9 @@ func TestRecvCreditCallerContextIsPreserved(t *testing.T) {
 	}
 }
 
-// TestRecvDustLimitLookupFailureFallsBackOpen asserts that advisory dust
-// planning does not block receives when the daemon has not fetched terms.
-func TestRecvDustLimitLookupFailureFallsBackOpen(t *testing.T) {
+// TestRecvVTXOFloorLookupFailureFallsBackOpen asserts advisory floor planning
+// does not block receives when the daemon has not fetched terms.
+func TestRecvVTXOFloorLookupFailureFallsBackOpen(t *testing.T) {
 	t.Parallel()
 
 	swap := &fakeSwapService{

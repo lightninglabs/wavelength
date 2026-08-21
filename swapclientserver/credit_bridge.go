@@ -149,17 +149,15 @@ func (b *creditDaemonBridge) IdentityPubKey(ctx context.Context) ([]byte,
 	return key.SerializeCompressed(), nil
 }
 
-// DustLimit returns the operator dust limit from the daemon GetInfo surface.
-func (b *creditDaemonBridge) DustLimit(ctx context.Context) (uint64, error) {
-	info, err := b.rpc.GetInfo(ctx, &waverpc.GetInfoRequest{})
+// VTXOFloor fetches the operator's live effective VTXO minimum. Credit
+// redemptions fail closed when the operator terms cannot be refreshed.
+func (b *creditDaemonBridge) VTXOFloor(ctx context.Context) (uint64, error) {
+	floor, err := b.rpc.OperatorVTXOFloor(ctx)
 	if err != nil {
-		return 0, err
-	}
-	if info.GetServerInfo() == nil {
-		return 0, fmt.Errorf("server info is required for dust limit")
+		return 0, fmt.Errorf("fetch operator VTXO floor: %w", err)
 	}
 
-	return info.GetServerInfo().GetDustLimit(), nil
+	return floor, nil
 }
 
 // SendOOR submits an idempotency-keyed OOR transfer to a pubkey-backed

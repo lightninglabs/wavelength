@@ -307,6 +307,8 @@ type fakeDaemon struct {
 	sendOORCalls map[string]int
 	allocCalls   int
 	vtxoFound    bool
+	vtxoFloor    uint64
+	vtxoFloorErr error
 }
 
 func newFakeDaemon() *fakeDaemon {
@@ -317,7 +319,14 @@ func (d *fakeDaemon) IdentityPubKey(context.Context) ([]byte, error) {
 	return []byte("identity-pubkey"), nil
 }
 
-func (d *fakeDaemon) DustLimit(context.Context) (uint64, error) {
+func (d *fakeDaemon) VTXOFloor(context.Context) (uint64, error) {
+	if d.vtxoFloorErr != nil {
+		return 0, d.vtxoFloorErr
+	}
+	if d.vtxoFloor > 0 {
+		return d.vtxoFloor, nil
+	}
+
 	return 354, nil
 }
 
