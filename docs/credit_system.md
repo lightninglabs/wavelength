@@ -87,9 +87,9 @@ effective VTXO floor.
 
 | Condition | Rail | Result |
 |---|---|---|
-| `requested_amount_sat >= dust_limit_sat` | normal | Server funds a vHTLC for the requested amount. |
-| `requested_amount_sat < dust_limit_sat` and `requested + available < dust_limit_sat` | credit | Server creates a credit receive invoice. No vHTLC is created. |
-| `requested_amount_sat < dust_limit_sat` and `requested + available >= dust_limit_sat` | credit-assisted | Server reserves all available credits and funds a vHTLC for `requested + attached_credit_sat`. |
+| `requested_amount_sat >= vtxo_floor_sat` | normal | Server funds a vHTLC for the requested amount. |
+| `requested_amount_sat < vtxo_floor_sat` and `requested + available < vtxo_floor_sat` | credit | Server creates a credit receive invoice. No vHTLC is created. |
+| `requested_amount_sat < vtxo_floor_sat` and `requested + available >= vtxo_floor_sat` | credit-assisted | Server reserves all available credits and funds a vHTLC for `requested + attached_credit_sat`. |
 
 For credit-assisted receives, the server attaches all currently available
 credits, not only the shortfall needed to reach dust. The quote/prepare surface
@@ -101,14 +101,14 @@ returns the full plan:
 | `available_credit_sat` | Server balance considered by the planner. |
 | `attached_credit_sat` | Credits reserved and added to the receive vHTLC. |
 | `vhtlc_amount_sat` | Amount the client must see in the funded vHTLC. |
-| `dust_limit_sat` | Effective operator VTXO floor used for the decision. |
+| `dust_limit_sat` | Legacy wire-field name carrying the effective operator VTXO floor used for the decision. |
 | `settlement_type` | `LIGHTNING`, `CREDIT`, or `MIXED`. |
 
 ```mermaid
 flowchart TD
-    A["Recv(requested_amount_sat)"] --> B{"requested >= dust?"}
+    A["Recv(requested_amount_sat)"] --> B{"requested >= floor?"}
     B -->|"yes"| N["normal receive"]
-    B -->|"no"| C{"requested + available_credit >= dust?"}
+    B -->|"no"| C{"requested + available_credit >= floor?"}
     C -->|"no"| R["credit receive invoice"]
     C -->|"yes"| M["credit-assisted receive"]
     M --> V["reserve all available credits"]
@@ -171,7 +171,7 @@ preview, and call `Send` with the prepared intent id. There is no public
 
 | Field | Meaning |
 |---|---|
-| `must_use_credit` | This payment must use credits, such as a sub-dust invoice. |
+| `must_use_credit` | This payment must use credits, such as a sub-floor invoice. |
 | `credit_applied_sat` | Credits the server expects to reserve. |
 | `credit_shortfall_sat` | More credits needed before the payment can start. |
 | `credit_topup_sat` | Ark top-up amount needed to cover the shortfall. |
@@ -198,7 +198,7 @@ sequenceDiagram
     Swap->>Server: CreateInSwap(max_credit_sat)
 ```
 
-For a sub-dust invoice, the quote sets `must_use_credit=true`. If the account
+For a sub-floor invoice, the quote sets `must_use_credit=true`. If the account
 lacks enough credits, `PrepareSend` shows the required Ark top-up and `Send`
 performs that top-up before starting the credit-backed pay.
 

@@ -57,40 +57,40 @@ func (r *receiver) Recv(ctx context.Context, req *wavewalletrpc.RecvRequest) (
 	}
 
 	plannedVHTLCSat := amt
-	dustLimit, err := r.receiveDustLimit(ctx)
+	vtxoFloor, err := r.receiveVTXOFloor(ctx)
 	if err != nil {
-		r.deps.resolveLog().WarnS(ctx, "Skipping receive dust "+
+		r.deps.resolveLog().WarnS(ctx, "Skipping receive VTXO floor "+
 			"planning: operator terms unavailable", err)
-		dustLimit = 0
+		vtxoFloor = 0
 	}
-	if dustLimit > 0 && amt < dustLimit {
+	if vtxoFloor > 0 && amt < vtxoFloor {
 		availableCreditSat, err := r.availableCreditSat(ctx)
 		switch {
 		case err != nil:
 			// Credit balance lookup failed; still route to credit
 			// (a fresh wallet has no credits anyway), but log the
-			// decision so the sub-dust path is not silent.
-			r.deps.resolveLog().InfoS(ctx, "Routing sub-dust "+
+			// decision so the sub-floor path is not silent.
+			r.deps.resolveLog().InfoS(ctx, "Routing sub-floor "+
 				"receive to credit subsystem",
 				slog.Uint64("amt_sat", amt),
-				slog.Uint64("dust_limit_sat", dustLimit),
+				slog.Uint64("vtxo_floor_sat", vtxoFloor),
 				slog.String("credit_balance", "unavailable"))
 
-			return r.recvCredit(ctx, req, amt, dustLimit)
+			return r.recvCredit(ctx, req, amt, vtxoFloor)
 
 		case amt > ^uint64(0)-availableCreditSat ||
-			amt+availableCreditSat < dustLimit:
+			amt+availableCreditSat < vtxoFloor:
 
-			r.deps.resolveLog().InfoS(ctx, "Routing sub-dust "+
+			r.deps.resolveLog().InfoS(ctx, "Routing sub-floor "+
 				"receive to credit subsystem",
 				slog.Uint64("amt_sat", amt),
-				slog.Uint64("dust_limit_sat", dustLimit),
+				slog.Uint64("vtxo_floor_sat", vtxoFloor),
 				slog.Uint64(
 					"available_credit_sat",
 					availableCreditSat,
 				))
 
-			return r.recvCredit(ctx, req, amt, dustLimit)
+			return r.recvCredit(ctx, req, amt, vtxoFloor)
 
 		default:
 			plannedVHTLCSat = amt + availableCreditSat
@@ -147,7 +147,11 @@ func (r *receiver) Recv(ctx context.Context, req *wavewalletrpc.RecvRequest) (
 	}, nil
 }
 
-func (r *receiver) receiveDustLimit(ctx context.Context) (uint64, error) {
+// receiveVTXOFloor returns the effective floor from the daemon's latest
+// operator snapshot. Receive routing is advisory and falls open when the
+// snapshot is unavailable; the swap server enforces its live floor at the
+// credit boundary.
+func (r *receiver) receiveVTXOFloor(ctx context.Context) (uint64, error) {
 	if r.deps.RPCServer == nil {
 		return 0, nil
 	}
@@ -160,7 +164,9 @@ func (r *receiver) receiveDustLimit(ctx context.Context) (uint64, error) {
 		return 0, nil
 	}
 
-	return info.GetServerInfo().GetDustLimit(), nil
+	server := info.GetServerInfo()
+
+	return max(server.GetDustLimit(), server.GetMinVtxoAmountSat()), nil
 }
 
 func (r *receiver) availableCreditSat(ctx context.Context) (uint64, error) {
@@ -176,14 +182,14 @@ func (r *receiver) availableCreditSat(ctx context.Context) (uint64, error) {
 	return credits.GetAvailableSat(), nil
 }
 
-// recvCredit hands a sub-dust receive to the durable credit subsystem. The
+// recvCredit hands a sub-floor receive to the durable credit subsystem. The
 // registry creates the server-owned receive invoice synchronously and returns
 // it, while durably tracking the operation so the pending row survives a
 // restart. Each Recv is a distinct receive, so the op key is freshly random
 // (inbound receives carry no double-spend risk that would need cross-call
 // dedup).
 func (r *receiver) recvCredit(ctx context.Context,
-	req *wavewalletrpc.RecvRequest, amt, dustLimit uint64) (
+	req *wavewalletrpc.RecvRequest, amt, vtxoFloor uint64) (
 	*wavewalletrpc.RecvResponse, error) {
 
 	if r.deps.CreditRegistry == nil {
@@ -218,14 +224,16 @@ func (r *receiver) recvCredit(ctx context.Context,
 			return nil, err
 		}
 
-		// A sub-dust receive that the swap server never completes must
+		// A sub-floor receive that the swap server never completes must
 		// not vanish silently (wavelength#1041): log it, record a
 		// FAILED activity row, and return a typed, actionable error
 		// instead of the opaque underlying deadline/RPC error.
-		r.deps.resolveLog().WarnS(ctx, "Sub-dust credit receive failed",
+		r.deps.resolveLog().WarnS(
+			ctx,
+			"Sub-floor credit receive failed",
 			err,
 			slog.Uint64("amt_sat", amt),
-			slog.Uint64("dust_limit_sat", dustLimit),
+			slog.Uint64("vtxo_floor_sat", vtxoFloor),
 		)
 
 		r.projectFailedCreditReceive(ctx, req, "recv:"+keyID, amt)
@@ -239,8 +247,8 @@ func (r *receiver) recvCredit(ctx context.Context,
 		// cause is logged above.
 		return nil, fmt.Errorf("%w: the operator did not complete the "+
 			"credit request for %d sat and may not support "+
-			"sub-dust receives; receive at least %d sat instead",
-			ErrCreditReceiveUnavailable, amt, dustLimit)
+			"sub-floor receives; receive at least %d sat instead",
+			ErrCreditReceiveUnavailable, amt, vtxoFloor)
 	}
 
 	start, ok := resp.(*credit.StartCreditResponse)
@@ -271,7 +279,7 @@ func (r *receiver) recvCredit(ctx context.Context,
 }
 
 // projectFailedCreditReceive records a terminal FAILED activity row for a
-// sub-dust credit receive whose admission never completed. Without it a failed
+// sub-floor credit receive whose admission never completed. Without it a failed
 // attempt leaves no trace at all (the success path is the only place that
 // projects a row), so the user has no evidence the receive was attempted
 // (wavelength#1041).
