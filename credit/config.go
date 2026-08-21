@@ -360,9 +360,9 @@ type EarmarkFunc = func(context.Context) (uint64, error)
 // AutoRedeemConfig configures the wallet-owned auto-redeem policy. Redemption
 // is never exposed to the user: the wallet decides when to materialize
 // available credits back into a vTXO. Auto-redeem is driven by the receive
-// state machine (a settled receive that clears the watermark) plus a boot-time
-// reconcile that retries until one complete evaluation succeeds; there is no
-// steady-state periodic sweep.
+// state machine (a settled receive that clears the watermark) plus a bounded
+// boot-time reconcile that retries transient failures with backoff until one
+// complete evaluation succeeds; there is no steady-state periodic sweep.
 type AutoRedeemConfig struct {
 	// Enabled turns receive-driven auto-redeem and the boot-time reconcile
 	// on.

@@ -8,6 +8,8 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/stretchr/testify/require"
 )
 
@@ -19,6 +21,7 @@ type scriptedFloorDaemon struct {
 	calls     atomic.Int32
 	failCalls int32
 	floor     uint64
+	floorErr  error
 }
 
 // VTXOFloor returns the scripted transient failures and eventual floor.
@@ -27,6 +30,9 @@ func (d *scriptedFloorDaemon) VTXOFloor(context.Context) (uint64, error) {
 	if call <= d.failCalls {
 		return 0, context.DeadlineExceeded
 	}
+	if d.floorErr != nil {
+		return 0, d.floorErr
+	}
 
 	return d.floor, nil
 }
@@ -34,6 +40,7 @@ func (d *scriptedFloorDaemon) VTXOFloor(context.Context) (uint64, error) {
 // recordingCreditRef captures policy messages without starting an actor.
 type recordingCreditRef struct {
 	messages chan CreditMsg
+	contexts chan context.Context
 }
 
 // ID returns the stable test reference id.
@@ -43,6 +50,14 @@ func (r *recordingCreditRef) ID() string {
 
 // Tell captures one policy message or returns caller cancellation.
 func (r *recordingCreditRef) Tell(ctx context.Context, msg CreditMsg) error {
+	if r.contexts != nil {
+		select {
+		case r.contexts <- ctx:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
 	select {
 	case r.messages <- msg:
 		return nil
@@ -315,11 +330,13 @@ func TestBootAutoRedeemRetriesTransientFloorFailure(t *testing.T) {
 		cfg: AutoRedeemConfig{
 			Enabled: true,
 		},
-		server:   server,
-		daemon:   daemon,
-		registry: registry,
-		log:      btclog.Disabled,
-		retry:    5 * time.Millisecond,
+		server:       server,
+		daemon:       daemon,
+		registry:     registry,
+		log:          btclog.Disabled,
+		retry:        5 * time.Millisecond,
+		maxRetry:     10 * time.Millisecond,
+		retryTimeout: time.Second,
 	}
 
 	redeemer.start(t.Context())
@@ -338,6 +355,259 @@ func TestBootAutoRedeemRetriesTransientFloorFailure(t *testing.T) {
 				"floor error",
 		)
 	}
+}
+
+// TestBootAutoRedeemStopsOnPermanentFloorFailure verifies a compatibility
+// transition is terminal for startup reconciliation rather than a daemon-life
+// retry loop.
+func TestBootAutoRedeemStopsOnPermanentFloorFailure(t *testing.T) {
+	t.Parallel()
+
+	server := newFakeServer()
+	server.available = 1_000
+	permanentErr := mailboxconn.NewStatusError(
+		"GetInfo", &mailboxpb.Status{
+			Code: mailboxconn.StatusUpgradeRequired,
+		},
+	)
+	daemon := &scriptedFloorDaemon{
+		fakeDaemon: newFakeDaemon(),
+		floorErr:   permanentErr,
+	}
+	redeemer := &autoRedeemer{
+		cfg: AutoRedeemConfig{
+			Enabled: true,
+		},
+		server: server,
+		daemon: daemon,
+		registry: &recordingCreditRef{
+			messages: make(chan CreditMsg, 1),
+		},
+		log:          btclog.Disabled,
+		retry:        time.Millisecond,
+		maxRetry:     2 * time.Millisecond,
+		retryTimeout: time.Second,
+	}
+
+	redeemer.start(t.Context())
+	t.Cleanup(redeemer.stop)
+
+	done := make(chan struct{})
+	go func() {
+		redeemer.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("permanent boot reconcile failure kept retrying")
+	}
+	require.Equal(t, int32(1), daemon.calls.Load())
+}
+
+// TestBootAutoRedeemBoundsTransientFailures verifies a persistently
+// unavailable operator exhausts a cumulative retry window with backoff.
+func TestBootAutoRedeemBoundsTransientFailures(t *testing.T) {
+	t.Parallel()
+
+	server := newFakeServer()
+	server.available = 1_000
+	daemon := &scriptedFloorDaemon{
+		fakeDaemon: newFakeDaemon(),
+		failCalls:  1_000,
+	}
+	redeemer := &autoRedeemer{
+		cfg: AutoRedeemConfig{
+			Enabled: true,
+		},
+		server: server,
+		daemon: daemon,
+		registry: &recordingCreditRef{
+			messages: make(chan CreditMsg, 1),
+		},
+		log:          btclog.Disabled,
+		retry:        5 * time.Millisecond,
+		maxRetry:     10 * time.Millisecond,
+		retryTimeout: 30 * time.Millisecond,
+	}
+
+	redeemer.start(t.Context())
+	t.Cleanup(redeemer.stop)
+
+	done := make(chan struct{})
+	go func() {
+		redeemer.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal(
+			"transient boot reconcile failures exceeded retry " +
+				"window",
+		)
+	}
+	require.Greater(t, daemon.calls.Load(), int32(1))
+}
+
+// TestBootAutoRedeemSkipsFloorWithoutAvailableCredit verifies a fresh wallet
+// completes boot reconciliation without waiting for unreachable operator
+// terms it cannot use.
+func TestBootAutoRedeemSkipsFloorWithoutAvailableCredit(t *testing.T) {
+	t.Parallel()
+
+	server := newFakeServer()
+	daemon := &scriptedFloorDaemon{
+		fakeDaemon: newFakeDaemon(),
+		failCalls:  1_000,
+	}
+	registry := &recordingCreditRef{
+		messages: make(chan CreditMsg, 1),
+	}
+	redeemer := &autoRedeemer{
+		cfg: AutoRedeemConfig{
+			Enabled: true,
+		},
+		server:       server,
+		daemon:       daemon,
+		registry:     registry,
+		log:          btclog.Disabled,
+		retry:        time.Millisecond,
+		maxRetry:     2 * time.Millisecond,
+		retryTimeout: time.Second,
+	}
+
+	redeemer.start(t.Context())
+	t.Cleanup(redeemer.stop)
+
+	done := make(chan struct{})
+	go func() {
+		redeemer.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("empty wallet boot reconcile did not finish")
+	}
+	require.Zero(t, daemon.calls.Load())
+	select {
+	case <-registry.messages:
+		t.Fatal("empty wallet signaled auto-redeem")
+
+	default:
+	}
+}
+
+// TestBootAutoRedeemSignalOutlivesReconcile verifies the bounded evaluation
+// context is not attached to queued registry work and canceled on success.
+func TestBootAutoRedeemSignalOutlivesReconcile(t *testing.T) {
+	t.Parallel()
+
+	server := newFakeServer()
+	server.available = 1_000
+	registry := &recordingCreditRef{
+		messages: make(chan CreditMsg, 1),
+		contexts: make(chan context.Context, 1),
+	}
+	redeemer := &autoRedeemer{
+		cfg: AutoRedeemConfig{
+			Enabled: true,
+		},
+		server: server,
+		daemon: &scriptedFloorDaemon{
+			fakeDaemon: newFakeDaemon(),
+			floor:      1_000,
+		},
+		registry:     registry,
+		log:          btclog.Disabled,
+		retry:        time.Millisecond,
+		maxRetry:     2 * time.Millisecond,
+		retryTimeout: time.Second,
+	}
+
+	redeemer.start(t.Context())
+	t.Cleanup(redeemer.stop)
+
+	select {
+	case <-registry.messages:
+	case <-time.After(time.Second):
+		t.Fatal("boot auto-redeem did not signal registry")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		redeemer.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("boot auto-redeem did not finish")
+	}
+
+	signalCtx := <-registry.contexts
+	require.NoError(t, signalCtx.Err())
+}
+
+// TestBootAutoRedeemStopCancelsQueuedSignal verifies shutdown interrupts a
+// registry delivery blocked behind a full mailbox without coupling successful
+// reconciliation to its shorter evaluation context.
+func TestBootAutoRedeemStopCancelsQueuedSignal(t *testing.T) {
+	t.Parallel()
+
+	server := newFakeServer()
+	server.available = 1_000
+	registry := &recordingCreditRef{
+		messages: make(chan CreditMsg),
+		contexts: make(chan context.Context, 1),
+	}
+	redeemer := &autoRedeemer{
+		cfg: AutoRedeemConfig{
+			Enabled: true,
+		},
+		server: server,
+		daemon: &scriptedFloorDaemon{
+			fakeDaemon: newFakeDaemon(),
+			floor:      1_000,
+		},
+		registry:     registry,
+		log:          btclog.Disabled,
+		retry:        time.Millisecond,
+		maxRetry:     2 * time.Millisecond,
+		retryTimeout: time.Second,
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	redeemer.start(ctx)
+
+	var signalCtx context.Context
+	select {
+	case signalCtx = <-registry.contexts:
+	case <-time.After(time.Second):
+		t.Fatal("boot auto-redeem did not begin registry delivery")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		redeemer.stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal(
+			"boot auto-redeem stop did not cancel registry " +
+				"delivery",
+		)
+	}
+	require.ErrorIs(t, signalCtx.Err(), context.Canceled)
 }
 
 // TestRedeemOpKeyUnique asserts redeem op keys are prefixed and random.

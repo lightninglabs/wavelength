@@ -52,10 +52,14 @@ credit redemptions against the swap-server credit ledger, as a crash-safe
 - Every external call the behavior makes (`CreateCredit`, `SendOOR`,
   `StartPay`, `RedeemCredit`) must stay idempotent by op key or payment hash,
   since a redelivered message or a reload-after-`commitFailed` re-runs it.
-- Auto-redeem is receive-triggered, not a periodic sweep (except a single
-  boot-time reconcile); `triggerRedeem` fires only after the settled receive's
-  terminal snapshot commits, so a crash before that leaves no half-applied
-  redeem.
+- Auto-redeem is receive-triggered, not a periodic sweep. Its boot reconcile
+  retries transient failures with exponential backoff for at most four
+  minutes, stops immediately on permanent mailbox/Ark version errors, and
+  requires a positive live operator VTXO floor. Its bounded context scopes
+  evaluation only; the queued registry signal uses a separately cancelable
+  child of the daemon-lifetime context so shutdown remains prompt.
+  `triggerRedeem` fires only after the settled receive's terminal snapshot
+  commits, so a crash before that leaves no half-applied redeem.
 
 ## Deep Docs
 

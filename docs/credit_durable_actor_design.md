@@ -82,8 +82,9 @@ auto-redeem is driven by the receive state machine: when a receive settles and
 the available balance clears the watermark, it signals a redeem (section 6). A
 boot-time reconcile covers the one case the receive trigger cannot, a balance
 already sitting over the watermark at startup. It retries transient evaluation
-failures until one complete evaluation succeeds; after that there is no
-periodic sweep.
+failures with exponential backoff inside a bounded window, stops immediately on
+permanent compatibility errors, and has no periodic sweep after a successful
+evaluation.
 
 The policy stays conservative, to avoid churn and to never strand value:
 

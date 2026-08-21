@@ -242,6 +242,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   so the bound survives restarts.
 - `operatorTermsFromResponse` and daemon `GetInfo` must preserve
   `FreeRefreshWindowBlocks` end to end.
+- `RPCServer.OperatorVTXOFloor` refreshes authenticated operator terms for
+  each credit materialization decision and bounds that refresh with
+  `operatorTermsRefreshTimeout` (30 s). Its callers use daemon/actor lifetime
+  contexts, so removing this local timeout can park boot reconciliation or a
+  settled-receive actor turn forever on a stalled operator.
 - `deriveIdentityKeyEarly` publishes `clientKeyDesc` before mailbox bootstrap.
   `GetInfo` reuses this descriptor instead of deriving the same key for every
   status request because btcwallet-backed derivation opens a wallet database
