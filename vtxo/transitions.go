@@ -108,13 +108,14 @@ func (s *LiveState) ProcessEvent(ctx context.Context, event VTXOEvent,
 	case *ForceUnrollEvent:
 		return s.handleForceUnroll(ctx, evt)
 
-	case *ExitFailedEvent, *ExitConfirmedEvent:
+	case *ExitFailedEvent, *ExitConfirmedEvent, *ExitConflictedEvent:
 		// A duplicate or stale exit-outcome event for a VTXO that is
 		// already live (e.g. boot reconciliation re-delivering a
 		// recovery that already landed). Idempotent no-op: the VTXO is
-		// live, which is the recovered state. ExitConfirmedEvent should
-		// never reach a live VTXO, but ignoring it is safer than
-		// retiring a live coin to spent on a stray signal.
+		// live, which is the recovered state. ExitConfirmedEvent and
+		// ExitConflictedEvent should never reach a live VTXO, but
+		// ignoring them is safer than retiring a live coin on a stray
+		// signal.
 		return &VTXOStateTransition{
 			NextState: s,
 		}, nil
@@ -1484,7 +1485,7 @@ func (s *ForfeitedState) ProcessEvent(_ context.Context, _ VTXOEvent,
 // alive to observe the outcome: a clean failure rolls the VTXO back to
 // LiveState, an on-chain confirmation retires it to the terminal
 // SpentState, and everything else self-loops while the exit is in flight.
-func (s *UnilateralExitState) ProcessEvent(_ context.Context, event VTXOEvent,
+func (s *UnilateralExitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 	_ *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	switch evt := event.(type) {
@@ -1561,6 +1562,63 @@ func (s *UnilateralExitState) ProcessEvent(_ context.Context, event VTXOEvent,
 						VTXOOutpoint: s.VTXO.Outpoint,
 						FinalState:   "Spent",
 						Reason:       "exit confirmed",
+					},
+				},
+			}),
+		}, nil
+
+	case *ExitConflictedEvent:
+		// A confirmed foreign spend conflicts with the recovery tree
+		// (the operator swept a source batch commitment output the exit
+		// depends on): the unilateral exit is provably impossible. The
+		// operator can only sweep that output past batch expiry, so the
+		// coin is expired, not lost — its value is still recoverable
+		// through the ordinary refresh path (wavelength#1000). Route it
+		// to the non-terminal ExpiredState rather than the terminal
+		// FailedState: this quarantines the value from coin selection
+		// (its lineage is dead) while the next block epoch drives the
+		// cooperative reclaim. Unlike ExitConfirmedEvent this did not
+		// spend our coin, and unlike a terminal failure the value is
+		// recoverable, so — like the recoverable ExitFailedEvent — the
+		// actor stays alive and emits no terminated notification
+		// (wavelength#1050).
+		//
+		// Soundness of the ExpiredState landing: ExpiredState's
+		// block-epoch handler rolls a VTXO back to LiveState when
+		// CheckExpiry reports it is NOT expired — a relive that must
+		// never happen to a dead-lineage coin. It provably cannot fire
+		// for a conflicted coin. The operator can only spend a batch
+		// commitment output past that batch's expiry, and a VTXO's
+		// BatchExpiry is the most-restrictive expiry across every
+		// contributing commitment (the operator-supplied value the
+		// client trusts here as everywhere: see
+		// oor.IncomingVTXOMetadata.BatchExpiry, "most-restrictive
+		// across all contributing rounds"). So the confirmed spend we
+		// just observed proves currentHeight >= swept-source expiry >=
+		// this VTXO's BatchExpiry, i.e. CheckExpiry reports Expired at
+		// this height and every height after it. The rollback branch is
+		// therefore unreachable for a conflicted coin and the only exit
+		// from ExpiredState is the cooperative reclaim, across restarts
+		// too (a respawn re-enters ExpiredState at a height that is
+		// still past BatchExpiry). Pinned by
+		// TestUnilateralExitConflictReclaimsWhenExpired.
+		build.LoggerFromContext(ctx).WithPrefix(Subsystem).InfoS(
+			ctx, "Source-batch conflict: routing exit to expired "+
+				"reclaim",
+			slog.String("outpoint", s.VTXO.Outpoint.String()),
+			slog.String("reason", evt.Reason),
+		)
+
+		return &VTXOStateTransition{
+			NextState: &ExpiredState{
+				VTXO:           s.VTXO,
+				ObservedHeight: s.LastCheckedHeight,
+			},
+			NewEvents: fn.Some(VTXOEmittedEvent{
+				Outbox: []VTXOOutMsg{
+					&VTXOStatusUpdate{
+						Outpoint:  s.VTXO.Outpoint,
+						NewStatus: VTXOStatusExpired,
 					},
 				},
 			}),

@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
@@ -166,4 +167,51 @@ func TestProofAccessors(t *testing.T) {
 
 	_, err = proof.ChildTxids(chainhash.Hash{0xff})
 	require.ErrorContains(t, err, "unknown txid")
+}
+
+// TestProofRootExternalInputs verifies that RootExternalInputs returns exactly
+// the external funding inputs of the proof's root transactions — the outpoints
+// a competing spend can conflict with — deduplicated, deterministically
+// ordered, and excluding in-graph (node-produced) inputs.
+func TestProofRootExternalInputs(t *testing.T) {
+	// Two independent roots (a fan-in lineage), each spending its own
+	// external commitment output, feeding one target.
+	rootA := makeProofTx('a', nil)
+	rootB := makeProofTx('b', nil)
+	target := makeProofTx('t', []wire.OutPoint{
+		{Hash: rootA.TxHash(), Index: 0},
+		{Hash: rootB.TxHash(), Index: 0},
+	})
+
+	proof, err := NewProof(
+		wire.OutPoint{
+			Hash: target.TxHash(),
+		},
+		5, &Node{
+			Kind: NodeKindTree,
+			Tx:   rootA,
+		}, &Node{
+			Kind: NodeKindTree,
+			Tx:   rootB,
+		}, &Node{
+			Kind: NodeKindArk,
+			Tx:   target,
+		},
+	)
+	require.NoError(t, err)
+
+	// makeProofTx seeds a root's external input at {Hash{tag,0xff}, tag}.
+	wantA := wire.OutPoint{Hash: chainhash.Hash{'a', 0xff}, Index: 'a'}
+	wantB := wire.OutPoint{Hash: chainhash.Hash{'b', 0xff}, Index: 'b'}
+
+	got := proof.RootExternalInputs()
+
+	// Both roots' external inputs are present; the target's in-graph inputs
+	// (produced by rootA/rootB) are excluded.
+	require.Len(t, got, 2)
+	require.Contains(t, got, wantA)
+	require.Contains(t, got, wantB)
+
+	// Deterministic ordering: sorted by hash bytes then index.
+	require.True(t, bytes.Compare(got[0].Hash[:], got[1].Hash[:]) <= 0)
 }

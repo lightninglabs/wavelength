@@ -113,6 +113,49 @@ func TestRecoverableFailureDBRoundTrip(t *testing.T) {
 	})
 }
 
+// TestConflictedFailureDBRoundTrip pins the mapping for a source-batch
+// conflict: it persists as the dedicated FailedConflicted status, decodes back
+// to ConflictedFailure=true (and NOT RecoverableFailure), and stays terminal.
+// Boot-time reconciliation relies on this to retire the coin out of pending
+// rather than relive it (wavelength#1050).
+func TestConflictedFailureDBRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	rec := RegistryRecord{
+		Phase:             PhaseFailed,
+		ConflictedFailure: true,
+	}
+	status := statusForRecord(rec)
+	require.Equal(
+		t, db.UnilateralExitJobStatusFailedConflicted, status,
+	)
+	require.True(t, status.IsTerminal())
+
+	got := recordFromDB(db.UnilateralExitJobRecord{Status: status})
+	require.Equal(t, PhaseFailed, got.Phase)
+	require.True(t, got.ConflictedFailure)
+	require.False(t, got.RecoverableFailure)
+}
+
+// TestConflictTakesPrecedenceOverRecoverable guards the classification order:
+// a record flagged both conflicted and recoverable (the child never sets both,
+// but the store must fail safe) maps to FailedConflicted so the coin is retired
+// rather than relived.
+func TestConflictTakesPrecedenceOverRecoverable(t *testing.T) {
+	t.Parallel()
+
+	rec := RegistryRecord{
+		Phase:              PhaseFailed,
+		ConflictedFailure:  true,
+		RecoverableFailure: true,
+	}
+
+	require.Equal(
+		t, db.UnilateralExitJobStatusFailedConflicted,
+		statusForRecord(rec),
+	)
+}
+
 // TestTriggerDBRoundTrip pins the StartTrigger↔UnilateralExitJobTrigger
 // mapping so FraudSpend rows round-trip through a dedicated constant
 // rather than silently decoding as TriggerManual.

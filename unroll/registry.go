@@ -82,6 +82,15 @@ type RegistryRecord struct {
 	// reconciliation can recover a VTXO whose recovery notification was
 	// lost before the manager applied it (wavelength#602).
 	RecoverableFailure bool
+
+	// ConflictedFailure is set on a terminal failure caused by a confirmed
+	// spend conflicting with the recovery tree (the operator swept a source
+	// batch commitment output the exit depends on). It is persisted as a
+	// distinct DB status so boot-time reconciliation retires the target
+	// VTXO out of unilateral-exit (FAILED) — clearing it from pending
+	// balance — rather than leaving it pending forever or reliving it
+	// (wavelength#1050).
+	ConflictedFailure bool
 }
 
 // IsTerminal reports whether the record reached a terminal phase.
@@ -964,7 +973,14 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 
 	// A terminal failure with no on-chain footprint is recoverable: the
 	// VTXO never left off-chain custody, so it can be rolled back to live.
-	recoverable := req.Phase == PhaseFailed && !req.HadOnChainFootprint
+	// A source-batch conflict is a distinct, non-recoverable terminal: the
+	// coin is provably gone, so it must be retired out of pending rather
+	// than relived (wavelength#1050). The child never sets both at once,
+	// but a conflict is not a no-footprint failure, so it is never
+	// recoverable.
+	conflicted := req.Phase == PhaseFailed && req.Conflicted
+	recoverable := req.Phase == PhaseFailed && !req.HadOnChainFootprint &&
+		!conflicted
 
 	record := RegistryRecord{
 		TargetOutpoint:     req.Outpoint,
@@ -973,6 +989,7 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 		FailReason:         req.FailReason,
 		SweepTxid:          copyHash(req.SweepTxid),
 		RecoverableFailure: recoverable,
+		ConflictedFailure:  conflicted,
 	}
 
 	if cached, ok := r.pending[req.Outpoint]; ok {
@@ -981,6 +998,7 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 		record.FailReason = req.FailReason
 		record.SweepTxid = copyHash(req.SweepTxid)
 		record.RecoverableFailure = recoverable
+		record.ConflictedFailure = conflicted
 		if record.ActorID == "" {
 			record.ActorID = req.ActorID
 		}
@@ -1030,10 +1048,13 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 //   - PhaseFailed with no on-chain footprint: the unroll never broadcast,
 //     so the VTXO is still live from the operator's perspective. Ask the
 //     manager to roll it back to live (ExitOutcomeRecoverable).
+//   - PhaseFailed from a source-batch conflict: a confirmed spend consumed a
+//     commitment output the exit depends on, so the coin is provably gone.
+//     Ask the manager to retire it out of pending (ExitOutcomeConflicted).
 //   - PhaseCompleted: the exit was swept and confirmed on-chain, so ask the
 //     manager to retire the VTXO to spent (ExitOutcomeConfirmed).
-//   - PhaseFailed with an on-chain footprint: the exit has begun on-chain;
-//     leave the VTXO in unilateral-exit (no notification).
+//   - PhaseFailed with an on-chain footprint but no conflict: the exit has
+//     begun on-chain; leave the VTXO in unilateral-exit (no notification).
 //
 // Delivery is best-effort: a failed Tell is logged, not retried. This is the
 // fast runtime path; the durable backstop is the VTXO manager's startup
@@ -1053,6 +1074,12 @@ func (r *registryBehavior) notifyVTXOExit(ctx context.Context,
 	switch {
 	case req.Phase == PhaseCompleted:
 		outcome = vtxo.ExitOutcomeConfirmed
+
+	case req.Phase == PhaseFailed && req.Conflicted:
+		// A confirmed conflicting spend defeated the exit (the operator
+		// swept a source batch commitment output). Retire the coin out
+		// of pending rather than relive it (wavelength#1050).
+		outcome = vtxo.ExitOutcomeConflicted
 
 	case req.Phase == PhaseFailed && !req.HadOnChainFootprint:
 		outcome = vtxo.ExitOutcomeRecoverable
@@ -1735,7 +1762,8 @@ func sameRegistryRecord(a, b RegistryRecord) bool {
 		a.ExitPolicyRef != b.ExitPolicyRef ||
 		a.Phase != b.Phase ||
 		a.FailReason != b.FailReason ||
-		a.RecoverableFailure != b.RecoverableFailure {
+		a.RecoverableFailure != b.RecoverableFailure ||
+		a.ConflictedFailure != b.ConflictedFailure {
 		return false
 	}
 
