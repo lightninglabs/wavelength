@@ -93,6 +93,10 @@ type OutgoingSnapshot struct {
 	// outgoing session, when one was provided.
 	IdempotencyKey string
 
+	// DispatchRequestData is the normalized caller-recipient proof retained
+	// until the first submit-capable checkpoint commits it separately.
+	DispatchRequestData []byte
+
 	// FirstRejectUnixNanos is the Unix-nanosecond timestamp of the first
 	// transient submit rejection observed in the AwaitingSubmitAccepted
 	// (OutgoingPhaseSubmitSent) phase. It bounds the cumulative transient
@@ -101,29 +105,6 @@ type OutgoingSnapshot struct {
 	// (which lacks the record) restores to, preserving a fresh retry
 	// window.
 	FirstRejectUnixNanos int64
-}
-
-// OutgoingSnapshotRecipients extracts the canonical Ark recipients from one
-// durable outgoing snapshot. Callers use this to recover response metadata for
-// an idempotent replay without rebuilding the transfer or selecting new wallet
-// inputs.
-func OutgoingSnapshotRecipients(raw []byte) ([]ArkRecipientOutput, error) {
-	snapshot, err := decodeOutgoingSnapshot(raw)
-	if err != nil {
-		return nil, fmt.Errorf("decode outgoing snapshot: %w", err)
-	}
-
-	ark, err := psbtutil.Parse(snapshot.ArkPSBT)
-	if err != nil {
-		return nil, fmt.Errorf("parse outgoing Ark PSBT: %w", err)
-	}
-
-	recipients, err := ExtractArkRecipients(ark)
-	if err != nil {
-		return nil, fmt.Errorf("extract outgoing recipients: %w", err)
-	}
-
-	return recipients, nil
 }
 
 // NewOutgoingSnapshot exports an outgoing transfer FSM state into a snapshot.
@@ -153,6 +134,9 @@ func NewOutgoingSnapshot(sessionID SessionID,
 		// This lets resume re-drive Ark signing without rebuilding.
 		snap.Phase = OutgoingPhaseArkSignRequested
 		snap.IdempotencyKey = s.IdempotencyKey
+		snap.DispatchRequestData = append(
+			[]byte(nil), s.DispatchRequestData...,
+		)
 
 		ark, err := psbtutil.Serialize(s.ArkPSBT)
 		if err != nil {
@@ -182,6 +166,9 @@ func NewOutgoingSnapshot(sessionID SessionID,
 		// resilient to later refactors in the PSBT builder.
 		snap.Phase = OutgoingPhaseSubmitSent
 		snap.IdempotencyKey = s.IdempotencyKey
+		snap.DispatchRequestData = append(
+			[]byte(nil), s.DispatchRequestData...,
+		)
 		snap.FirstRejectUnixNanos = s.FirstRejectUnixNanos
 
 		if err := assignPSBTArtifacts(
@@ -323,6 +310,9 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 			CheckpointPSBTs: cps,
 			TransferInputs:  inputs,
 			IdempotencyKey:  snapshot.IdempotencyKey,
+			DispatchRequestData: append(
+				[]byte(nil), snapshot.DispatchRequestData...,
+			),
 		}, nil
 
 	case OutgoingPhaseSubmitSent:
@@ -344,10 +334,13 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 		}
 
 		return &AwaitingSubmitAccepted{
-			ArkPSBT:              ark,
-			CheckpointPSBTs:      cps,
-			TransferInputs:       inputs,
-			IdempotencyKey:       snapshot.IdempotencyKey,
+			ArkPSBT:         ark,
+			CheckpointPSBTs: cps,
+			TransferInputs:  inputs,
+			IdempotencyKey:  snapshot.IdempotencyKey,
+			DispatchRequestData: append(
+				[]byte(nil), snapshot.DispatchRequestData...,
+			),
 			FirstRejectUnixNanos: snapshot.FirstRejectUnixNanos,
 		}, nil
 

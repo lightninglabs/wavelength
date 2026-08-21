@@ -37,6 +37,10 @@ const (
 	// startPayloadAdmissionDeadlineType stores the optional absolute
 	// admission deadline as Unix nanoseconds.
 	startPayloadAdmissionDeadlineType tlv.Type = 7
+
+	// startPayloadDispatchRequestDataType stores the normalized caller
+	// recipient proof for a keyed dispatch.
+	startPayloadDispatchRequestDataType tlv.Type = 9
 )
 
 const (
@@ -155,6 +159,7 @@ type startTransferPayload struct {
 	Inputs                     []*TransferInputSnapshot
 	Recipients                 []recipientPayload
 	IdempotencyKey             string
+	DispatchRequestData        []byte
 	AdmissionDeadlineUnixNanos int64
 }
 
@@ -185,6 +190,7 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 	operatorKey := payload.OperatorPubKey
 	csvDelay := payload.CSVDelay
 	idempotencyKey := []byte(payload.IdempotencyKey)
+	dispatchRequestData := payload.DispatchRequestData
 	admissionDeadline := uint64(payload.AdmissionDeadlineUnixNanos)
 
 	records := []tlv.Record{
@@ -205,6 +211,10 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			startPayloadAdmissionDeadlineType, &admissionDeadline,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadDispatchRequestDataType,
+			&dispatchRequestData,
 		),
 	}
 
@@ -233,12 +243,13 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 	limits ReceiveLimits) (startTransferPayload, error) {
 
 	var (
-		operatorKey []byte
-		csvDelay    uint32
-		inputsRaw   []byte
-		recipients  []byte
-		idKey       []byte
-		deadline    uint64
+		operatorKey         []byte
+		csvDelay            uint32
+		inputsRaw           []byte
+		recipients          []byte
+		idKey               []byte
+		dispatchRequestData []byte
+		deadline            uint64
 	)
 
 	records := []tlv.Record{
@@ -257,6 +268,10 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		tlv.MakePrimitiveRecord(startPayloadIdempotencyKeyType, &idKey),
 		tlv.MakePrimitiveRecord(
 			startPayloadAdmissionDeadlineType, &deadline,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadDispatchRequestDataType,
+			&dispatchRequestData,
 		),
 	}
 
@@ -290,6 +305,7 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		Inputs:                     inputs,
 		Recipients:                 recipientsPayload,
 		IdempotencyKey:             string(idKey),
+		DispatchRequestData:        dispatchRequestData,
 		AdmissionDeadlineUnixNanos: int64(deadline),
 	}, nil
 }

@@ -66,6 +66,9 @@ func TestOutgoingSnapshotTLVRoundTrip(t *testing.T) {
 		RetryAfter:     3 * time.Second,
 		FailReason:     "retry later",
 		IdempotencyKey: "funding-key-1",
+		DispatchRequestData: []byte{
+			1, 2, 3,
+		},
 	}
 
 	raw, err := encodeOutgoingSnapshot(snapshot)

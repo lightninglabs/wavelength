@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	clientdb "github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/stretchr/testify/require"
@@ -66,6 +67,186 @@ func TestNewOutgoingSnapshotFinalizeSentMinimality(t *testing.T) {
 	require.NotEmpty(t, snapshot.CheckpointPSBTs)
 	require.NotNil(t, snapshot.TransferInputSnapshots)
 	require.Len(t, snapshot.TransferInputSnapshots, 1)
+}
+
+// TestOutgoingRegistryRecordSuppliesNormalizedReplayProof verifies the
+// registry bridge records the trusted canonical recipient list before submit
+// and does not derive replacement proof from a later terminal snapshot.
+func TestOutgoingRegistryRecordSuppliesNormalizedReplayProof(t *testing.T) {
+	t.Parallel()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	recipientKey1, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	recipientKey2, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const (
+		idempotencyKey = "artifact-proof-key"
+		inputValue     = btcutil.Amount(10_000)
+		recipientValue = inputValue / 2
+	)
+
+	policy := arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+	input := newTestTransferInput(
+		t, clientKey, operatorKey.PubKey(), wire.OutPoint{
+			Hash:  [32]byte{0x02},
+			Index: 0,
+		}, inputValue,
+	)
+
+	// Start with equal-value recipients in the opposite of canonical
+	// pkScript order. This pins the tie-break that determines each stored
+	// positional outpoint and covers a pair the old value/script lookup
+	// could not safely disambiguate by amount alone.
+	canonicalRecipients := oortx.CanonicalRecipientOutputs(
+		[]oortx.RecipientOutput{
+			{
+				Value: recipientValue,
+				PkScript: newTestTaprootPkScript(
+					t, recipientKey1.PubKey(),
+				),
+			},
+			{
+				Value: recipientValue,
+				PkScript: newTestTaprootPkScript(
+					t, recipientKey2.PubKey(),
+				),
+			},
+		},
+	)
+	nonCanonicalRecipients := []oortx.RecipientOutput{
+		canonicalRecipients[1], canonicalRecipients[0],
+	}
+	require.NotEqual(t, canonicalRecipients, nonCanonicalRecipients)
+
+	start, err := (&Idle{}).ProcessEvent(
+		t.Context(), &StartTransferEvent{
+			VTXOInputs:       []TransferInput{input},
+			RecipientOutputs: nonCanonicalRecipients,
+			Policy:           policy,
+			IdempotencyKey:   idempotencyKey,
+		}, nil,
+	)
+	require.NoError(t, err)
+	awaitingSignatures, ok := start.NextState.(*AwaitingArkSignatures)
+	require.True(t, ok)
+	require.Equal(
+		t, canonicalRecipients, awaitingSignatures.RecipientOutputs,
+	)
+
+	submit, err := awaitingSignatures.ProcessEvent(
+		t.Context(), &ArkSignedEvent{
+			ArkPSBT: awaitingSignatures.ArkPSBT,
+		}, nil,
+	)
+	require.NoError(t, err)
+	awaiting, ok := submit.NextState.(*AwaitingSubmitAccepted)
+	require.True(t, ok)
+
+	sessionID, err := sessionIDFromArk(awaiting.ArkPSBT)
+	require.NoError(t, err)
+	arkRecipients, err := ExtractArkRecipients(awaiting.ArkPSBT)
+	require.NoError(t, err)
+	require.Len(t, arkRecipients, 2)
+
+	proofRecord, err := outgoingRegistryRecord(sessionID, awaiting)
+	require.NoError(t, err)
+	require.NotEmpty(t, proofRecord.DispatchRequestData)
+
+	recipients, err := OutgoingReplayRecipients(
+		proofRecord.DispatchRequestData,
+	)
+	require.NoError(t, err)
+	require.Equal(t, arkRecipients, recipients)
+
+	terminalRecord, err := outgoingRegistryRecord(
+		sessionID, &Completed{
+			IdempotencyKey: idempotencyKey,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, idempotencyKey, terminalRecord.IdempotencyKey)
+	require.Empty(t, terminalRecord.DispatchRequestData)
+	require.Equal(
+		t, clientdb.OORSessionStatusCompleted, terminalRecord.Status,
+	)
+
+	_, err = OutgoingReplayRecipients(terminalRecord.SnapshotData)
+	require.Error(t, err)
+}
+
+// TestOutgoingRegistryRecordDoesNotDeriveProofAfterSubmit verifies a later
+// checkpoint never parses the Ark PSBT to rebuild replay proof. A malformed
+// artifact can still be durably checkpointed and replay remains fail closed.
+func TestOutgoingRegistryRecordDoesNotDeriveProofAfterSubmit(t *testing.T) {
+	t.Parallel()
+
+	ark, checkpoints := testOutboxPSBTPair(t)
+
+	// Move the anchor before the recipient to violate canonical output
+	// ordering without making the PSBT unserializable.
+	ark.UnsignedTx.TxOut[0], ark.UnsignedTx.TxOut[1] =
+		ark.UnsignedTx.TxOut[1], ark.UnsignedTx.TxOut[0]
+	ark.Outputs[0], ark.Outputs[1] = ark.Outputs[1], ark.Outputs[0]
+
+	sessionID := SessionID(ark.UnsignedTx.TxHash())
+	record, err := outgoingRegistryRecord(
+		sessionID, &AwaitingFinalizeAccepted{
+			SessionID:            sessionID,
+			ArkPSBT:              ark,
+			FinalCheckpointPSBTs: checkpoints,
+			TransferInputs:       testRetryTransferInputs(t),
+			IdempotencyKey:       "invalid-proof-key",
+		},
+	)
+	require.NoError(t, err)
+	require.Empty(t, record.DispatchRequestData)
+
+	_, err = OutgoingReplayRecipients(record.DispatchRequestData)
+	require.Error(t, err)
+}
+
+// TestOutgoingReplayRecipientsRejectsMalformedProof verifies replay accepts
+// only the versioned positional record written by newOutgoingReplayData.
+func TestOutgoingReplayRecipientsRejectsMalformedProof(t *testing.T) {
+	t.Parallel()
+
+	recipients := []oortx.RecipientOutput{{
+		Value: 10_000,
+		PkScript: []byte{
+			0x51,
+			0x20,
+			0x01,
+		},
+	}}
+	proof, err := newOutgoingReplayData(recipients)
+	require.NoError(t, err)
+
+	decoded, err := OutgoingReplayRecipients(proof)
+	require.NoError(t, err)
+	require.Equal(t, uint32(0), decoded[0].OutputIndex)
+	require.Equal(t, recipients[0].Value, decoded[0].Value)
+	require.Equal(t, recipients[0].PkScript, decoded[0].PkScript)
+
+	unknownVersion := append([]byte(nil), proof...)
+	unknownVersion[0]++
+	_, err = OutgoingReplayRecipients(unknownVersion)
+	require.ErrorContains(t, err, "unknown outgoing replay proof version")
+
+	trailing := append(append([]byte(nil), proof...), 0x00)
+	_, err = OutgoingReplayRecipients(trailing)
+	require.ErrorContains(t, err, "trailing bytes")
+
+	truncated := proof[:len(proof)-1]
+	_, err = OutgoingReplayRecipients(truncated)
+	require.ErrorContains(t, err, "pkScript is truncated")
 }
 
 // TestSnapshotRetryMetadataRoundTrip verifies that RetryAfter and retry
@@ -134,15 +315,6 @@ func TestSnapshotRetryMetadataRoundTrip(t *testing.T) {
 	// persistence.
 	raw, err := encodeOutgoingSnapshot(snapshot)
 	require.NoError(t, err)
-
-	snapshotRecipients, err := OutgoingSnapshotRecipients(raw)
-	require.NoError(t, err)
-	require.Len(t, snapshotRecipients, 1)
-	require.Equal(t, uint32(0), snapshotRecipients[0].OutputIndex)
-	require.Equal(t, inputValue, snapshotRecipients[0].Value)
-	require.Equal(
-		t, recipients[0].PkScript, snapshotRecipients[0].PkScript,
-	)
 
 	decoded, err := decodeOutgoingSnapshot(raw)
 	require.NoError(t, err)

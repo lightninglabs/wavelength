@@ -1155,11 +1155,11 @@ func (b *sessionBehavior) resolveKeyDedup(ctx context.Context,
 	}
 
 	store := b.cfg.RegistryStore
-	existing, err := store.LookupActiveSessionByIdempotencyKey(
+	existing, err := store.GetDispatchAttemptByIdempotencyKey(
 		ctx, record.IdempotencyKey,
 	)
 	switch {
-	case errors.Is(err, clientdb.ErrOORSessionNotFound):
+	case errors.Is(err, clientdb.ErrOORDispatchAttemptNotFound):
 		return SessionID{}, false, nil
 
 	case err != nil:
