@@ -2,6 +2,7 @@ package waved
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/lightninglabs/wavelength/arkchannel"
@@ -9,38 +10,9 @@ import (
 	"github.com/lightninglabs/wavelength/lnruntime"
 	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
-
-// channelOORResultSink captures the terminal event from a detached daemon OOR
-// controller. The swapserver adapter records the same fact in its channel FSM.
-type channelOORResultSink struct {
-	id        arkchannel.ID
-	finalized bool
-	aborted   string
-}
-
-// Apply captures only the terminal events emitted by prepared OOR control.
-func (s *channelOORResultSink) Apply(_ context.Context, id arkchannel.ID,
-	event arkchannel.Event) (arkchannel.Record, error) {
-
-	if id != s.id {
-		return arkchannel.Record{}, fmt.Errorf("OOR callback channel " +
-			"changed")
-	}
-	switch event := event.(type) {
-	case *arkchannel.OORFinalized:
-		s.finalized = true
-
-	case *arkchannel.OORAborted:
-		s.aborted = event.Reason
-
-	default:
-		return arkchannel.Record{}, fmt.Errorf("unexpected OOR "+
-			"callback %T", event)
-	}
-
-	return arkchannel.Record{}, nil
-}
 
 // PrepareArkChannelOOR reserves daemon-owned VTXOs and creates the exact
 // channel-policy output without releasing any OOR signatures.
@@ -58,15 +30,62 @@ func (r *RPCServer) PrepareArkChannelOOR(ctx context.Context,
 			"receive intent")
 	}
 	binding, err := r.server.prepareArkChannelOOR(
-		ctx, terms, defaultArkChannelBackingFee,
+		ctx, terms, arkchannel.DefaultBackingFee,
 	)
 	if err != nil {
+		if errors.Is(err, arkchannel.ErrOORPreparationAmbiguous) {
+			return nil, status.Error(codes.Aborted, err.Error())
+		}
+
 		return nil, err
 	}
 
 	return &waverpc.PrepareArkChannelOORResponse{
 		Binding: lnruntime.ChannelBindingToRPC(binding),
 	}, nil
+}
+
+// LookupPreparedArkChannelOOR reconciles one deterministic channel OOR key
+// without selecting or locking new wallet inputs.
+func (r *RPCServer) LookupPreparedArkChannelOOR(ctx context.Context,
+	req *waverpc.LookupPreparedArkChannelOORRequest) (
+	*waverpc.LookupPreparedArkChannelOORResponse, error) {
+
+	terms, err := lnruntime.ChannelTermsFromRPC(req.GetTerms())
+	if err != nil {
+		return nil, err
+	}
+	if terms.Funder != arkchannel.PartyHub ||
+		terms.Kind != arkchannel.KindReceiveIntent {
+		return nil, fmt.Errorf("daemon channel OOR must fund a " +
+			"receive intent")
+	}
+	lookup, err := r.server.lookupArkChannelOOR(
+		ctx, terms, arkchannel.DefaultBackingFee,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	response := &waverpc.LookupPreparedArkChannelOORResponse{}
+	switch lookup.Status {
+	case oorbridge.PreparationAbsent:
+	case oorbridge.PreparationPending:
+	case oorbridge.PreparationPrepared:
+		response.Binding = lnruntime.ChannelBindingToRPC(lookup.Binding)
+
+	case oorbridge.PreparationAccepted:
+	default:
+		return nil, fmt.Errorf("unknown channel OOR preparation "+
+			"status %d", lookup.Status)
+	}
+	// The RPC enum reserves zero for unspecified while the internal
+	// statuses are the same contiguous sequence starting at zero.
+	response.Status = waverpc.ArkChannelOORPreparationStatus(
+		int32(lookup.Status) + 1,
+	)
+
+	return response, nil
 }
 
 // ValidatePreparedArkChannelOOR verifies a daemon-owned prepared session.
@@ -105,21 +124,24 @@ func (r *RPCServer) CommitPreparedArkChannelOOR(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	controller, sink, err := r.detachedChannelOORController(id)
+	controller, err := oorbridge.New(r.server.actorSystem)
 	if err != nil {
 		return nil, err
 	}
-	if err := controller.CommitPreparedOOR(
+	result, err := controller.CommitPreparedOORResult(
 		ctx, id, terms, binding,
-	); err != nil {
+	)
+	if err != nil {
 		return nil, err
 	}
-	if !sink.finalized {
-		return nil, fmt.Errorf("prepared channel OOR did not finalize")
+	if err := result.Validate(); err != nil {
+		return nil, err
 	}
 
 	return &waverpc.CommitPreparedArkChannelOORResponse{
-		Finalized: true,
+		Finalized: result.Finalized,
+		Aborted:   result.Aborted,
+		Reason:    result.Reason,
 	}, nil
 }
 
@@ -137,21 +159,23 @@ func (r *RPCServer) AbortPreparedArkChannelOOR(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	controller, sink, err := r.detachedChannelOORController(id)
+	controller, err := oorbridge.New(r.server.actorSystem)
 	if err != nil {
 		return nil, err
 	}
-	if err := controller.AbortPreparedOOR(
+	result, err := controller.AbortPreparedOORResult(
 		ctx, id, terms, binding, req.GetReason(),
-	); err != nil {
+	)
+	if err != nil {
 		return nil, err
 	}
-	if sink.aborted == "" {
-		return nil, fmt.Errorf("prepared channel OOR did not abort")
+	if err := result.Validate(); err != nil {
+		return nil, err
 	}
 
 	return &waverpc.AbortPreparedArkChannelOORResponse{
-		Aborted: true, Reason: sink.aborted,
+		Aborted: result.Aborted, Reason: result.Reason,
+		Finalized: result.Finalized,
 	}, nil
 }
 
@@ -204,21 +228,4 @@ func (r *RPCServer) channelOORControlRequest(rawID []byte,
 	}
 
 	return id, terms, binding, nil
-}
-
-// detachedChannelOORController constructs a controller whose callback is
-// returned to this RPC instead of being applied to an unrelated local channel.
-func (r *RPCServer) detachedChannelOORController(id arkchannel.ID) (
-	*oorbridge.Controller, *channelOORResultSink, error) {
-
-	controller, err := oorbridge.New(r.server.actorSystem)
-	if err != nil {
-		return nil, nil, err
-	}
-	sink := &channelOORResultSink{id: id}
-	if err := controller.BindChannelEventSink(sink); err != nil {
-		return nil, nil, err
-	}
-
-	return controller, sink, nil
 }

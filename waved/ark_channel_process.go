@@ -24,6 +24,7 @@ import (
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
 	"github.com/lightninglabs/wavelength/serverconn"
+	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -102,29 +103,43 @@ type ArkChannelRecoveryController interface {
 type ArkChannelOORPreparer func(context.Context, arkchannel.Terms,
 	btcutil.Amount) (arkchannel.VTXOBinding, error)
 
+// ArkChannelOORLookup reconciles a deterministic channel OOR key without
+// selecting or locking fresh wallet inputs.
+type ArkChannelOORLookup func(context.Context, arkchannel.Terms,
+	btcutil.Amount) (oorbridge.PreparationLookup, error)
+
+// ArkChannelReceiveCapitalReserver durably reserves global hub capital before
+// an armed receive intent is allowed to select funding inputs.
+type ArkChannelReceiveCapitalReserver func(context.Context,
+	arkchannel.Terms) error
+
 // ArkChannelControllerConfig contains the process-owned dependencies supplied
 // after wallet, database, and authenticated swap-server transport startup.
 type ArkChannelControllerConfig struct {
-	Log            btclog.Logger
-	Store          *db.ArkChannelStoreDB
-	Peer           lnruntime.ProcessCooperativeClosePeer
-	PeerRPC        mailboxrpc.RPCClient
-	PeerSender     lnruntime.PeerEventSender
-	Wallet         *lwwallet.Wallet
-	ChainBackend   chainsource.ChainBackend
-	ChainNotifier  *chainbackends.BackendChainNotifier
-	FeeEstimator   *chainfees.BackendEstimator
-	OOR            *oorbridge.Controller
-	FundingOOR     arkchannel.OORTransferController
-	Materializer   *unrollbridge.Controller
-	Recovery       ArkChannelRecoveryController
-	OperatorTerms  *types.OperatorTerms
-	IdentityKey    keychain.KeyDescriptor
-	OORDestination *btcec.PublicKey
-	KeyIndex       uint32
-	NetParams      *chaincfg.Params
-	ChannelDataDir string
-	PrepareOOR     ArkChannelOORPreparer
+	Log                   btclog.Logger
+	Store                 *db.ArkChannelStoreDB
+	Peer                  lnruntime.ProcessCooperativeClosePeer
+	PeerRPC               mailboxrpc.RPCClient
+	PeerSender            lnruntime.PeerEventSender
+	Wallet                *lwwallet.Wallet
+	ChainBackend          chainsource.ChainBackend
+	ChainNotifier         *chainbackends.BackendChainNotifier
+	FeeEstimator          *chainfees.BackendEstimator
+	OOR                   *oorbridge.Controller
+	FundingOOR            arkchannel.OORTransferController
+	Materializer          *unrollbridge.Controller
+	Recovery              ArkChannelRecoveryController
+	OperatorTerms         *types.OperatorTerms
+	IdentityKey           keychain.KeyDescriptor
+	OORDestination        *btcec.PublicKey
+	KeyIndex              uint32
+	NetParams             *chaincfg.Params
+	ChannelDataDir        string
+	PrepareOOR            ArkChannelOORPreparer
+	LookupOOR             ArkChannelOORLookup
+	ReserveReceiveCapital ArkChannelReceiveCapitalReserver
+	Clock                 clock.Clock
+	RecordObserver        arkchannel.RecordObserver
 }
 
 // arkChannelRPCServer exposes the configured controller on waved's existing
@@ -477,11 +492,6 @@ func (s *Server) newClientArkChannelController(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	operatorTerms, err := s.fetchOperatorTerms(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("fetch Ark channel operator terms: %w",
-			err)
-	}
 	controller, err := NewClientArkChannelController(
 		ctx, ArkChannelControllerConfig{
 			Log:            s.subLogger(Subsystem),
@@ -496,7 +506,6 @@ func (s *Server) newClientArkChannelController(ctx context.Context,
 			OOR:            oorController,
 			Materializer:   materializer,
 			Recovery:       recovery,
-			OperatorTerms:  operatorTerms,
 			IdentityKey:    s.clientKeyDesc,
 			OORDestination: s.clientKeyDesc.PubKey,
 			NetParams:      s.chainParams,
@@ -504,6 +513,7 @@ func (s *Server) newClientArkChannelController(ctx context.Context,
 				s.cfg.DataDir, "ark-channels",
 			),
 			PrepareOOR: s.prepareArkChannelOOR,
+			LookupOOR:  s.lookupArkChannelOOR,
 		},
 	)
 	if err != nil {

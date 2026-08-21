@@ -136,6 +136,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "PrepareArkChannelOOR reserves daemon-owned liquidity and builds the\nexact channel-policy output without releasing OOR signatures.",
 				},
 				{
+					Name:     "LookupPreparedArkChannelOOR",
+					Aliases:  []string{"lookup-prepared-ark-channel-oor"},
+					Input:    "waverpc.LookupPreparedArkChannelOORRequest",
+					Output:   "waverpc.LookupPreparedArkChannelOORResponse",
+					Comments: "LookupPreparedArkChannelOOR reconciles the deterministic channel OOR\nkey without selecting or locking new wallet inputs.",
+				},
+				{
 					Name:     "ValidatePreparedArkChannelOOR",
 					Aliases:  []string{"validate-prepared-ark-channel-oor"},
 					Input:    "waverpc.ValidatePreparedArkChannelOORRequest",

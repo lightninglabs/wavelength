@@ -93,6 +93,11 @@ service DaemonService {
     rpc PrepareArkChannelOOR (PrepareArkChannelOORRequest)
         returns (PrepareArkChannelOORResponse);
 
+    // LookupPreparedArkChannelOOR reconciles the deterministic channel OOR
+    // key without selecting or locking new wallet inputs.
+    rpc LookupPreparedArkChannelOOR (LookupPreparedArkChannelOORRequest)
+        returns (LookupPreparedArkChannelOORResponse);
+
     // ValidatePreparedArkChannelOOR verifies that a binding still names the
     // exact prepared daemon OOR session.
     rpc ValidatePreparedArkChannelOOR (ValidatePreparedArkChannelOORRequest)
@@ -1184,6 +1189,23 @@ message PrepareArkChannelOORResponse {
     arkchannelrpc.ChannelVTXOBinding binding = 1;
 }
 
+enum ArkChannelOORPreparationStatus {
+    ARK_CHANNEL_OOR_PREPARATION_STATUS_UNSPECIFIED = 0;
+    ARK_CHANNEL_OOR_PREPARATION_STATUS_ABSENT = 1;
+    ARK_CHANNEL_OOR_PREPARATION_STATUS_PENDING = 2;
+    ARK_CHANNEL_OOR_PREPARATION_STATUS_PREPARED = 3;
+    ARK_CHANNEL_OOR_PREPARATION_STATUS_ACCEPTED = 4;
+}
+
+message LookupPreparedArkChannelOORRequest {
+    arkchannelrpc.ChannelTerms terms = 1;
+}
+
+message LookupPreparedArkChannelOORResponse {
+    ArkChannelOORPreparationStatus status = 1;
+    arkchannelrpc.ChannelVTXOBinding binding = 2;
+}
+
 message ValidatePreparedArkChannelOORRequest {
     arkchannelrpc.ChannelTerms terms = 1;
     arkchannelrpc.ChannelVTXOBinding binding = 2;
@@ -1201,6 +1223,8 @@ message CommitPreparedArkChannelOORRequest {
 
 message CommitPreparedArkChannelOORResponse {
     bool finalized = 1;
+    bool aborted = 2;
+    string reason = 3;
 }
 
 message AbortPreparedArkChannelOORRequest {
@@ -1213,6 +1237,7 @@ message AbortPreparedArkChannelOORRequest {
 message AbortPreparedArkChannelOORResponse {
     bool aborted = 1;
     string reason = 2;
+    bool finalized = 3;
 }
 
 message SignOORCustomInputRequest {

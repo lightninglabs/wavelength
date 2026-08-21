@@ -526,6 +526,19 @@ func (c *DaemonServiceClient) PrepareArkChannelOOR(ctx context.Context,
 	return out, err
 }
 
+// LookupPreparedArkChannelOOR reconciles a deterministic daemon reservation.
+func (c *DaemonServiceClient) LookupPreparedArkChannelOOR(ctx context.Context,
+	in *waverpc.LookupPreparedArkChannelOORRequest, _ ...grpc.CallOption) (
+	*waverpc.LookupPreparedArkChannelOORResponse, error) {
+
+	out := new(waverpc.LookupPreparedArkChannelOORResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/lookup-prepared-ark-channel-oor", in, out,
+	)
+
+	return out, err
+}
+
 // ValidatePreparedArkChannelOOR checks an existing daemon reservation.
 func (c *DaemonServiceClient) ValidatePreparedArkChannelOOR(ctx context.Context,
 	in *waverpc.ValidatePreparedArkChannelOORRequest,

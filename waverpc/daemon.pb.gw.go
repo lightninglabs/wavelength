@@ -494,6 +494,33 @@ func local_request_DaemonService_PrepareArkChannelOOR_0(ctx context.Context, mar
 	return msg, metadata, err
 }
 
+func request_DaemonService_LookupPreparedArkChannelOOR_0(ctx context.Context, marshaler runtime.Marshaler, client DaemonServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq LookupPreparedArkChannelOORRequest
+		metadata runtime.ServerMetadata
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.LookupPreparedArkChannelOOR(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_DaemonService_LookupPreparedArkChannelOOR_0(ctx context.Context, marshaler runtime.Marshaler, server DaemonServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq LookupPreparedArkChannelOORRequest
+		metadata runtime.ServerMetadata
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	msg, err := server.LookupPreparedArkChannelOOR(ctx, &protoReq)
+	return msg, metadata, err
+}
+
 func request_DaemonService_ValidatePreparedArkChannelOOR_0(ctx context.Context, marshaler runtime.Marshaler, client DaemonServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
 		protoReq ValidatePreparedArkChannelOORRequest
@@ -1781,6 +1808,26 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		}
 		forward_DaemonService_PrepareArkChannelOOR_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_DaemonService_LookupPreparedArkChannelOOR_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/LookupPreparedArkChannelOOR", runtime.WithHTTPPathPattern("/v1/daemon/lookup-prepared-ark-channel-oor"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_DaemonService_LookupPreparedArkChannelOOR_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_DaemonService_LookupPreparedArkChannelOOR_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodPost, pattern_DaemonService_ValidatePreparedArkChannelOOR_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -2797,6 +2844,23 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		}
 		forward_DaemonService_PrepareArkChannelOOR_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_DaemonService_LookupPreparedArkChannelOOR_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/LookupPreparedArkChannelOOR", runtime.WithHTTPPathPattern("/v1/daemon/lookup-prepared-ark-channel-oor"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_DaemonService_LookupPreparedArkChannelOOR_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_DaemonService_LookupPreparedArkChannelOOR_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodPost, pattern_DaemonService_ValidatePreparedArkChannelOOR_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -3413,6 +3477,7 @@ var (
 	pattern_DaemonService_GetIndexedOORSessionByTxid_0                     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-indexed-oor-session-by-txid"}, ""))
 	pattern_DaemonService_ExportOORRecoveryPackage_0                       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "export-oor-recovery-package"}, ""))
 	pattern_DaemonService_PrepareArkChannelOOR_0                           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "prepare-ark-channel-oor"}, ""))
+	pattern_DaemonService_LookupPreparedArkChannelOOR_0                    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "lookup-prepared-ark-channel-oor"}, ""))
 	pattern_DaemonService_ValidatePreparedArkChannelOOR_0                  = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "validate-prepared-ark-channel-oor"}, ""))
 	pattern_DaemonService_CommitPreparedArkChannelOOR_0                    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "commit-prepared-ark-channel-oor"}, ""))
 	pattern_DaemonService_AbortPreparedArkChannelOOR_0                     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "abort-prepared-ark-channel-oor"}, ""))
@@ -3468,6 +3533,7 @@ var (
 	forward_DaemonService_GetIndexedOORSessionByTxid_0                     = runtime.ForwardResponseMessage
 	forward_DaemonService_ExportOORRecoveryPackage_0                       = runtime.ForwardResponseMessage
 	forward_DaemonService_PrepareArkChannelOOR_0                           = runtime.ForwardResponseMessage
+	forward_DaemonService_LookupPreparedArkChannelOOR_0                    = runtime.ForwardResponseMessage
 	forward_DaemonService_ValidatePreparedArkChannelOOR_0                  = runtime.ForwardResponseMessage
 	forward_DaemonService_CommitPreparedArkChannelOOR_0                    = runtime.ForwardResponseMessage
 	forward_DaemonService_AbortPreparedArkChannelOOR_0                     = runtime.ForwardResponseMessage

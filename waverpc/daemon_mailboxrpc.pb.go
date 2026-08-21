@@ -58,6 +58,8 @@ type DaemonServiceMailboxServer interface {
 	ExportOORRecoveryPackage(ctx context.Context, req *ExportOORRecoveryPackageRequest) (*ExportOORRecoveryPackageResponse, error)
 	// PrepareArkChannelOOR handles PrepareArkChannelOOR.
 	PrepareArkChannelOOR(ctx context.Context, req *PrepareArkChannelOORRequest) (*PrepareArkChannelOORResponse, error)
+	// LookupPreparedArkChannelOOR handles LookupPreparedArkChannelOOR.
+	LookupPreparedArkChannelOOR(ctx context.Context, req *LookupPreparedArkChannelOORRequest) (*LookupPreparedArkChannelOORResponse, error)
 	// ValidatePreparedArkChannelOOR handles ValidatePreparedArkChannelOOR.
 	ValidatePreparedArkChannelOOR(ctx context.Context, req *ValidatePreparedArkChannelOORRequest) (*ValidatePreparedArkChannelOORResponse, error)
 	// CommitPreparedArkChannelOOR handles CommitPreparedArkChannelOOR.
@@ -301,6 +303,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.PrepareArkChannelOOR(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "LookupPreparedArkChannelOOR", func() proto.Message {
+		return &LookupPreparedArkChannelOORRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*LookupPreparedArkChannelOORRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.LookupPreparedArkChannelOOR(ctx, req)
 	})
 	r.Handle("waverpc.DaemonService", "ValidatePreparedArkChannelOOR", func() proto.Message {
 		return &ValidatePreparedArkChannelOORRequest{}
@@ -1038,6 +1050,29 @@ func (c *DaemonServiceMailboxClient) PrepareArkChannelOOR(ctx context.Context, r
 	}
 
 	resp := new(PrepareArkChannelOORResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// LookupPreparedArkChannelOOR calls the LookupPreparedArkChannelOOR RPC.
+func (c *DaemonServiceMailboxClient) LookupPreparedArkChannelOOR(ctx context.Context, req *LookupPreparedArkChannelOORRequest, opts ...rpc.RPCOptions) (*LookupPreparedArkChannelOORResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "LookupPreparedArkChannelOOR",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(LookupPreparedArkChannelOORResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

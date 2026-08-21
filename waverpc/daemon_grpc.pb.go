@@ -36,6 +36,7 @@ const (
 	DaemonService_GetIndexedOORSessionByTxid_FullMethodName                     = "/waverpc.DaemonService/GetIndexedOORSessionByTxid"
 	DaemonService_ExportOORRecoveryPackage_FullMethodName                       = "/waverpc.DaemonService/ExportOORRecoveryPackage"
 	DaemonService_PrepareArkChannelOOR_FullMethodName                           = "/waverpc.DaemonService/PrepareArkChannelOOR"
+	DaemonService_LookupPreparedArkChannelOOR_FullMethodName                    = "/waverpc.DaemonService/LookupPreparedArkChannelOOR"
 	DaemonService_ValidatePreparedArkChannelOOR_FullMethodName                  = "/waverpc.DaemonService/ValidatePreparedArkChannelOOR"
 	DaemonService_CommitPreparedArkChannelOOR_FullMethodName                    = "/waverpc.DaemonService/CommitPreparedArkChannelOOR"
 	DaemonService_AbortPreparedArkChannelOOR_FullMethodName                     = "/waverpc.DaemonService/AbortPreparedArkChannelOOR"
@@ -138,6 +139,9 @@ type DaemonServiceClient interface {
 	// PrepareArkChannelOOR reserves daemon-owned liquidity and builds the
 	// exact channel-policy output without releasing OOR signatures.
 	PrepareArkChannelOOR(ctx context.Context, in *PrepareArkChannelOORRequest, opts ...grpc.CallOption) (*PrepareArkChannelOORResponse, error)
+	// LookupPreparedArkChannelOOR reconciles the deterministic channel OOR
+	// key without selecting or locking new wallet inputs.
+	LookupPreparedArkChannelOOR(ctx context.Context, in *LookupPreparedArkChannelOORRequest, opts ...grpc.CallOption) (*LookupPreparedArkChannelOORResponse, error)
 	// ValidatePreparedArkChannelOOR verifies that a binding still names the
 	// exact prepared daemon OOR session.
 	ValidatePreparedArkChannelOOR(ctx context.Context, in *ValidatePreparedArkChannelOORRequest, opts ...grpc.CallOption) (*ValidatePreparedArkChannelOORResponse, error)
@@ -461,6 +465,16 @@ func (c *daemonServiceClient) PrepareArkChannelOOR(ctx context.Context, in *Prep
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PrepareArkChannelOORResponse)
 	err := c.cc.Invoke(ctx, DaemonService_PrepareArkChannelOOR_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) LookupPreparedArkChannelOOR(ctx context.Context, in *LookupPreparedArkChannelOORRequest, opts ...grpc.CallOption) (*LookupPreparedArkChannelOORResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LookupPreparedArkChannelOORResponse)
+	err := c.cc.Invoke(ctx, DaemonService_LookupPreparedArkChannelOOR_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -891,6 +905,9 @@ type DaemonServiceServer interface {
 	// PrepareArkChannelOOR reserves daemon-owned liquidity and builds the
 	// exact channel-policy output without releasing OOR signatures.
 	PrepareArkChannelOOR(context.Context, *PrepareArkChannelOORRequest) (*PrepareArkChannelOORResponse, error)
+	// LookupPreparedArkChannelOOR reconciles the deterministic channel OOR
+	// key without selecting or locking new wallet inputs.
+	LookupPreparedArkChannelOOR(context.Context, *LookupPreparedArkChannelOORRequest) (*LookupPreparedArkChannelOORResponse, error)
 	// ValidatePreparedArkChannelOOR verifies that a binding still names the
 	// exact prepared daemon OOR session.
 	ValidatePreparedArkChannelOOR(context.Context, *ValidatePreparedArkChannelOORRequest) (*ValidatePreparedArkChannelOORResponse, error)
@@ -1100,6 +1117,9 @@ func (UnimplementedDaemonServiceServer) ExportOORRecoveryPackage(context.Context
 }
 func (UnimplementedDaemonServiceServer) PrepareArkChannelOOR(context.Context, *PrepareArkChannelOORRequest) (*PrepareArkChannelOORResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PrepareArkChannelOOR not implemented")
+}
+func (UnimplementedDaemonServiceServer) LookupPreparedArkChannelOOR(context.Context, *LookupPreparedArkChannelOORRequest) (*LookupPreparedArkChannelOORResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method LookupPreparedArkChannelOOR not implemented")
 }
 func (UnimplementedDaemonServiceServer) ValidatePreparedArkChannelOOR(context.Context, *ValidatePreparedArkChannelOORRequest) (*ValidatePreparedArkChannelOORResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ValidatePreparedArkChannelOOR not implemented")
@@ -1529,6 +1549,24 @@ func _DaemonService_PrepareArkChannelOOR_Handler(srv interface{}, ctx context.Co
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).PrepareArkChannelOOR(ctx, req.(*PrepareArkChannelOORRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_LookupPreparedArkChannelOOR_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LookupPreparedArkChannelOORRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).LookupPreparedArkChannelOOR(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_LookupPreparedArkChannelOOR_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).LookupPreparedArkChannelOOR(ctx, req.(*LookupPreparedArkChannelOORRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2230,6 +2268,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PrepareArkChannelOOR",
 			Handler:    _DaemonService_PrepareArkChannelOOR_Handler,
+		},
+		{
+			MethodName: "LookupPreparedArkChannelOOR",
+			Handler:    _DaemonService_LookupPreparedArkChannelOOR_Handler,
 		},
 		{
 			MethodName: "ValidatePreparedArkChannelOOR",
