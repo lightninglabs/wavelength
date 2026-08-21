@@ -13,136 +13,174 @@ import (
 )
 
 const (
-	treeCommitStateVersion  = uint16(0)
-	maxTreeCommitStateSize  = 128 * 1024 * 1024
-	treeJournalWriteTimeout = 5 * time.Second
+	customAnchorCommitStateVersion = uint16(0)
+	maxCustomAnchorCommitStateSize = 128 * 1024 * 1024
+	commitJournalWriteTimeout      = 5 * time.Second
+	treeCommitDigestDomain         = "wavelength/asset-tree-request/v0"
 )
 
-type treeCommitState struct {
+type customAnchorCommitState struct {
 	Version       uint16      `json:"version"`
 	RequestDigest tapsdk.Hash `json:"request_digest"`
 	Package       []byte      `json:"package,omitempty"`
+}
+
+type customAnchorCommitJournal struct {
+	store        Store
+	driver       assetTreeDriver
+	operation    string
+	digestDomain string
 }
 
 func (m *treeMaterializer) commitDurably(ctx context.Context,
 	input wire.OutPoint, request *tapsdk.CustomAnchorRequest,
 	verifier tapsdk.ConfirmedProofVerifier) (*commitResult, error) {
 
-	if request == nil {
-		return nil, fmt.Errorf("asset tree request is required")
+	key := fmt.Sprintf("asset-tree/%s/%s", m.cfg.Digest, input)
+	journal := customAnchorCommitJournal{
+		store:        m.cfg.Store,
+		driver:       m.driver,
+		operation:    "asset tree",
+		digestDomain: treeCommitDigestDomain,
 	}
 
-	digest, err := treeCommitRequestDigest(request)
+	return journal.commitDurably(ctx, key, request, verifier)
+}
+
+func (j *customAnchorCommitJournal) commitDurably(ctx context.Context,
+	key string, request *tapsdk.CustomAnchorRequest,
+	verifier tapsdk.ConfirmedProofVerifier) (*commitResult, error) {
+
+	if request == nil {
+		return nil, fmt.Errorf("%s request is required", j.operation)
+	}
+	if j.store == nil {
+		return nil, fmt.Errorf("%s store is required", j.operation)
+	}
+	if j.driver == nil {
+		return nil, fmt.Errorf("%s driver is required", j.operation)
+	}
+	if key == "" || j.digestDomain == "" || j.operation == "" {
+		return nil, fmt.Errorf("commit journal configuration is " +
+			"invalid")
+	}
+
+	digest, err := customAnchorCommitRequestDigest(
+		request, j.digestDomain,
+	)
 	if err != nil {
 		return nil, err
 	}
-	key := fmt.Sprintf("asset-tree/%s/%s", m.cfg.Digest, input)
 
-	state, err := m.loadTreeCommitState(ctx, key, digest)
+	state, err := j.load(ctx, key, digest)
 	if err != nil {
 		return nil, err
 	}
 	if len(state.Package) != 0 {
-		committed, err := m.driver.DecodePackage(state.Package)
+		committed, err := j.driver.DecodePackage(state.Package)
 		if err != nil {
-			return nil, fmt.Errorf("decode journaled asset tree "+
-				"package: %w", err)
+			return nil, fmt.Errorf("decode journaled %s "+
+				"package: %w", j.operation, err)
 		}
 
 		return committed, nil
 	}
-	committed, err := m.driver.Commit(ctx, request, verifier)
+
+	committed, err := j.driver.Commit(ctx, request, verifier)
 	if err != nil {
 		return nil, err
 	}
 	if committed == nil || len(committed.packageBytes) == 0 {
-		return nil, fmt.Errorf("committed asset tree has no sealed " +
-			"package")
+		return nil, fmt.Errorf("committed %s has no sealed package",
+			j.operation)
 	}
 
 	state.Package = append([]byte(nil), committed.packageBytes...)
-	if err := m.storeTreeCommitStateAfterCommit(
+	if err := j.storeStateAfterCommit(
 		ctx, key, state,
 	); err != nil {
-		return nil, fmt.Errorf("record committed asset tree "+
-			"package: %w", err)
+		return nil, fmt.Errorf("record committed %s package: %w",
+			j.operation, err)
 	}
 
 	return committed, nil
 }
 
-func (m *treeMaterializer) storeTreeCommitStateAfterCommit(
-	requestCtx context.Context, key string, state *treeCommitState) error {
+func (j *customAnchorCommitJournal) storeStateAfterCommit(
+	requestCtx context.Context, key string,
+	state *customAnchorCommitState) error {
 
 	journalCtx, cancel := context.WithTimeout(
-		context.WithoutCancel(requestCtx), treeJournalWriteTimeout,
+		context.WithoutCancel(requestCtx), commitJournalWriteTimeout,
 	)
 	defer cancel()
 
-	return m.storeTreeCommitState(journalCtx, key, state)
+	return j.storeState(journalCtx, key, state)
 }
 
-func (m *treeMaterializer) loadTreeCommitState(ctx context.Context, key string,
-	digest tapsdk.Hash) (*treeCommitState, error) {
+func (j *customAnchorCommitJournal) load(ctx context.Context, key string,
+	digest tapsdk.Hash) (*customAnchorCommitState, error) {
 
-	encoded, err := m.cfg.Store.Load(ctx, key)
+	encoded, err := j.store.Load(ctx, key)
 	if errors.Is(err, ErrStoreNotFound) {
-		return &treeCommitState{
-			Version:       treeCommitStateVersion,
+		return &customAnchorCommitState{
+			Version:       customAnchorCommitStateVersion,
 			RequestDigest: digest,
 		}, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("load asset tree commit state: %w", err)
-	}
-	if len(encoded) == 0 || len(encoded) > maxTreeCommitStateSize {
-		return nil, fmt.Errorf("asset tree commit state size %d "+
-			"is invalid", len(encoded))
-	}
-
-	var state treeCommitState
-	if err := json.Unmarshal(encoded, &state); err != nil {
-		return nil, fmt.Errorf("decode asset tree commit state: %w",
+		return nil, fmt.Errorf("load %s commit state: %w", j.operation,
 			err)
 	}
-	if state.Version != treeCommitStateVersion {
-		return nil, fmt.Errorf("asset tree commit state version %d is "+
-			"unsupported", state.Version)
+	if len(encoded) == 0 || len(encoded) > maxCustomAnchorCommitStateSize {
+		return nil, fmt.Errorf("%s commit state size %d is invalid",
+			j.operation, len(encoded))
+	}
+
+	var state customAnchorCommitState
+	if err := json.Unmarshal(encoded, &state); err != nil {
+		return nil, fmt.Errorf("decode %s commit state: %w",
+			j.operation, err)
+	}
+	if state.Version != customAnchorCommitStateVersion {
+		return nil, fmt.Errorf("%s commit state version %d is "+
+			"unsupported", j.operation, state.Version)
 	}
 	if state.RequestDigest != digest {
-		return nil, fmt.Errorf("asset tree journal key reused with a " +
-			"different request")
+		return nil, fmt.Errorf("%s journal key reused with a "+
+			"different request", j.operation)
 	}
 
 	return &state, nil
 }
 
-func (m *treeMaterializer) storeTreeCommitState(ctx context.Context, key string,
-	state *treeCommitState) error {
+func (j *customAnchorCommitJournal) storeState(ctx context.Context, key string,
+	state *customAnchorCommitState) error {
 
 	encoded, err := json.Marshal(state)
 	if err != nil {
-		return fmt.Errorf("encode asset tree commit state: %w", err)
+		return fmt.Errorf("encode %s commit state: %w", j.operation,
+			err)
 	}
-	if len(encoded) > maxTreeCommitStateSize {
-		return fmt.Errorf("asset tree commit state exceeds %d bytes",
-			maxTreeCommitStateSize)
+	if len(encoded) > maxCustomAnchorCommitStateSize {
+		return fmt.Errorf("%s commit state exceeds %d bytes",
+			j.operation, maxCustomAnchorCommitStateSize)
 	}
 
-	return m.cfg.Store.Store(ctx, key, encoded)
+	return j.store.Store(ctx, key, encoded)
 }
 
-func treeCommitRequestDigest(request *tapsdk.CustomAnchorRequest) (tapsdk.Hash,
-	error) {
+func customAnchorCommitRequestDigest(request *tapsdk.CustomAnchorRequest,
+	domain string) (tapsdk.Hash, error) {
 
 	encoded, err := json.Marshal(request)
 	if err != nil {
-		return tapsdk.Hash{}, fmt.Errorf("encode asset tree "+
+		return tapsdk.Hash{}, fmt.Errorf("encode custom anchor "+
 			"request: %w", err)
 	}
 
 	digest := sha256.New()
-	_, _ = digest.Write([]byte("wavelength/asset-tree-request/v0"))
+	_, _ = digest.Write([]byte(domain))
 	_, _ = digest.Write(encoded)
 
 	var result tapsdk.Hash
