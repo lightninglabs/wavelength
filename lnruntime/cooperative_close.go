@@ -77,6 +77,24 @@ func (f CooperativeCloseObserverFunc) WaitForCooperativeClose(
 	return f(ctx, sessionID, amount)
 }
 
+// CooperativeCloseDefender asks the ordinary Ark wallet to unroll one exact
+// replacement VTXO when the closed channel's former source ancestry appears
+// on chain.
+type CooperativeCloseDefender interface {
+	DefendCooperativeClose(context.Context, wire.OutPoint) error
+}
+
+// CooperativeCloseDefenderFunc adapts an ordinary wallet unroll request to
+// the cooperative-close process.
+type CooperativeCloseDefenderFunc func(context.Context, wire.OutPoint) error
+
+// DefendCooperativeClose invokes the wrapped wallet recovery function.
+func (f CooperativeCloseDefenderFunc) DefendCooperativeClose(
+	ctx context.Context, outpoint wire.OutPoint) error {
+
+	return f(ctx, outpoint)
+}
+
 // CooperativeCloseDeliveryValidator proves one endpoint owns the replacement
 // VTXO key assigned to its role before the hub signs or traffic is disabled.
 type CooperativeCloseDeliveryValidator interface {
@@ -229,11 +247,10 @@ func (e *NativeCooperativeCloseEndpoint) SignHubCooperativeClose(
 		return nil, err
 	}
 	clientBalance, hubBalance := mapCleanBalances(e.party, state)
-	if proposal.CommitmentHeight != state.CommitmentHeight ||
-		proposal.ClientBalance != clientBalance ||
-		proposal.HubBalance != hubBalance {
-		return nil, fmt.Errorf("cooperative close proposal does not " +
-			"match local clean lnd state")
+	if err := validateCooperativeCloseState(
+		e.party, state, proposal,
+	); err != nil {
+		return nil, err
 	}
 	template, err := arkchannel.NewCooperativeCloseTemplate(
 		terms, source, request, clientBalance, hubBalance,
@@ -472,6 +489,23 @@ func mapCleanBalances(party arkchannel.Party,
 	return state.RemoteBalance, state.LocalBalance
 }
 
+// validateCooperativeCloseState rejects a signed settlement whose role-stable
+// balance split no longer matches the endpoint's clean lnd commitment.
+func validateCooperativeCloseState(party arkchannel.Party,
+	state CleanChannelState,
+	proposal arkchannel.CooperativeCloseProposal) error {
+
+	clientBalance, hubBalance := mapCleanBalances(party, state)
+	if proposal.CommitmentHeight != state.CommitmentHeight ||
+		proposal.ClientBalance != clientBalance ||
+		proposal.HubBalance != hubBalance {
+		return fmt.Errorf("cooperative close proposal does not match " +
+			"local clean lnd state")
+	}
+
+	return nil
+}
+
 // otherChannelParty returns the only counterparty role.
 func otherChannelParty(party arkchannel.Party) arkchannel.Party {
 	if party == arkchannel.PartyClient {
@@ -545,8 +579,13 @@ func validateLocalCooperativeClose(record arkchannel.Record,
 		return fmt.Errorf("local cooperative close request does not " +
 			"match")
 	}
-	if snapshot.Phase != arkchannel.PhaseCoopClosing {
-		return fmt.Errorf("local channel cannot sign close from %s",
+	switch snapshot.Phase {
+	case arkchannel.PhaseCoopClosing,
+		arkchannel.PhaseCoopCloseSigned,
+		arkchannel.PhaseCoopClosePublished:
+
+	default:
+		return fmt.Errorf("local channel cannot quiesce close from %s",
 			snapshot.Phase)
 	}
 

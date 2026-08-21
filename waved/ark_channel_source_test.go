@@ -97,6 +97,81 @@ func TestRecoveryDescriptorUsesBackingDelay(t *testing.T) {
 	require.ErrorContains(t, err, "unsupported")
 }
 
+// TestShouldRestoreArkChannelSourceWatch verifies a cooperative close remains
+// protected after its lnd channel has been archived.
+func TestShouldRestoreArkChannelSourceWatch(t *testing.T) {
+	t.Parallel()
+
+	source := &arkchannel.VTXOBinding{
+		OutPoint: wire.OutPoint{
+			Index: 1,
+		},
+	}
+	cooperativeClose := &arkchannel.CooperativeClose{}
+	tests := []struct {
+		name     string
+		snapshot arkchannel.Snapshot
+		restore  bool
+	}{
+		{
+			name: "active",
+			snapshot: arkchannel.Snapshot{
+				Phase:  arkchannel.PhaseActive,
+				Source: source, RecoveryReady: true,
+			},
+			restore: true,
+		},
+		{
+			name: "cooperatively closed",
+			snapshot: arkchannel.Snapshot{
+				Phase:  arkchannel.PhaseClosed,
+				Source: source, RecoveryReady: true,
+				CooperativeClose: cooperativeClose,
+			},
+			restore: true,
+		},
+		{
+			name: "ordinary closed",
+			snapshot: arkchannel.Snapshot{
+				Phase:  arkchannel.PhaseClosed,
+				Source: source, RecoveryReady: true,
+			},
+		},
+		{
+			name: "conflict already durable",
+			snapshot: arkchannel.Snapshot{
+				Phase:  arkchannel.PhaseClosed,
+				Source: source, RecoveryReady: true,
+				CooperativeClose: cooperativeClose,
+				SourceConflict: &arkchannel.SourceConflict{
+					OutPoint: wire.OutPoint{
+						Index: 2,
+					},
+				},
+			},
+		},
+		{
+			name: "recovery not installed",
+			snapshot: arkchannel.Snapshot{
+				Phase: arkchannel.PhaseActive, Source: source,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(
+				t, test.restore,
+				shouldRestoreArkChannelSourceWatch(
+					test.snapshot,
+				),
+			)
+		})
+	}
+}
+
 // TestReceiveIntentTermsAreDeterministic proves invoice replay derives the same
 // channel identity without consulting chain height or random state.
 func TestReceiveIntentTermsAreDeterministic(t *testing.T) {

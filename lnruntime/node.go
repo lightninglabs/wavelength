@@ -104,6 +104,7 @@ type NativeNodeConfig struct {
 	OnChannelOpened            func(*chanstate.OpenChannel)
 	OnChannelFailure           LinkFailureHandler
 	ShouldWatchChannel         func(wire.OutPoint) (bool, error)
+	ShouldDisableChannelAdds   func(wire.OutPoint) (bool, error)
 	BeforeCommitmentPublish    func(wire.OutPoint) error
 	RecordChannelFullyResolved func(wire.OutPoint) error
 }
@@ -375,27 +376,7 @@ func (n *NativeNode) Start() error {
 	if err := n.runtime.Start(); err != nil {
 		return err
 	}
-	_, err := n.runtime.RestorePeerLinks(
-		n.peer, func(state *chanstate.OpenChannel) (LinkConfig, error) {
-			watch, err := n.cfg.ShouldWatchChannel(
-				state.FundingOutpoint,
-			)
-			if err != nil {
-				return LinkConfig{}, err
-			}
-			if !watch {
-				return LinkConfig{}, fmt.Errorf("active "+
-					"channel %v is not admitted to the "+
-					"on-chain lifecycle",
-					state.FundingOutpoint)
-			}
-
-			return n.runtime.NewOnchainLinkConfig(
-				n.peer, state.FundingOutpoint,
-				n.cfg.OnChannelFailure,
-			)
-		},
-	)
+	_, err := n.runtime.RestorePeerLinks(n.peer, n.restoredLinkConfig)
 	if err != nil {
 		_ = n.runtime.Stop()
 
@@ -404,6 +385,40 @@ func (n *NativeNode) Start() error {
 	n.started = true
 
 	return nil
+}
+
+// restoredLinkConfig applies durable Ark admission and cooperative-close state
+// whenever lnd reconstructs one persisted channel link.
+func (n *NativeNode) restoredLinkConfig(state *chanstate.OpenChannel) (
+	LinkConfig, error) {
+
+	watch, err := n.cfg.ShouldWatchChannel(state.FundingOutpoint)
+	if err != nil {
+		return LinkConfig{}, err
+	}
+	if !watch {
+		return LinkConfig{}, fmt.Errorf("active channel %v is not "+
+			"admitted to the on-chain lifecycle",
+			state.FundingOutpoint)
+	}
+
+	linkConfig, err := n.runtime.NewOnchainLinkConfig(
+		n.peer, state.FundingOutpoint, n.cfg.OnChannelFailure,
+	)
+	if err != nil {
+		return LinkConfig{}, err
+	}
+	if n.cfg.ShouldDisableChannelAdds != nil {
+		disabled, err := n.cfg.ShouldDisableChannelAdds(
+			state.FundingOutpoint,
+		)
+		if err != nil {
+			return LinkConfig{}, err
+		}
+		linkConfig.AddsDisabled = disabled
+	}
+
+	return linkConfig, nil
 }
 
 // Stop stops native lnd state before closing a node-owned channel database.
@@ -448,6 +463,24 @@ func (n *NativeNode) FundingActivator() arkchannel.VirtualFundingActivator {
 	return n.runtime.Funding()
 }
 
+// RestoreBacking registers one durable virtual funding transaction before the
+// native funding manager restores pending channels from lnd's database.
+func (n *NativeNode) RestoreBacking(terms arkchannel.Terms,
+	backing arkchannel.Backing) error {
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.started {
+		return fmt.Errorf("cannot restore backing after native node " +
+			"start")
+	}
+	if n.stopped {
+		return fmt.Errorf("native channel node already stopped")
+	}
+
+	return n.runtime.Funding().RestoreBacking(terms, backing)
+}
+
 // HandoffChannel verifies lnd owns the chain lifecycle before Ark publishes
 // one channel's backing transaction.
 func (n *NativeNode) HandoffChannel(channelPoint wire.OutPoint) error {
@@ -487,7 +520,16 @@ func (n *NativeNode) NewNegotiator(remote FundingCounterparty,
 // PeerMessageHandler returns the authenticated ingress for native BOLT
 // messages.
 func (n *NativeNode) PeerMessageHandler() PeerEventHandler {
-	return n.runtime.PeerMessageHandler(n.peer)
+	return func(ctx context.Context, message lnwire.Message) error {
+		reestablish, ok := message.(*lnwire.ChannelReestablish)
+		if ok {
+			return n.runtime.HandleChannelReestablish(
+				reestablish, n.peer, n.restoredLinkConfig,
+			)
+		}
+
+		return n.runtime.HandlePeerMessage(ctx, message, n.peer)
+	}
 }
 
 // AddInvoice creates a native lnd invoice and returns its preimage and hash.

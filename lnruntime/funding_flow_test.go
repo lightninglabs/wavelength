@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -60,6 +61,8 @@ type fundingFlowNode struct {
 	links       chan *chanstate.OpenChannel
 	failures    chan error
 	intents     *staticIntentSource
+
+	restoreAddsDisabled atomic.Bool
 }
 
 // fundingNegotiationSink models the already-tested durable channel FSM while
@@ -661,8 +664,17 @@ func (t *fundingFlowTransport) deliverReestablish(
 	defer ticker.Stop()
 
 	for {
-		err := t.remote.runtime.HandlePeerMessage(
-			context.Background(), message, t.remote.peer,
+		err := t.remote.runtime.HandleChannelReestablish(
+			message, t.remote.peer,
+			func(*chanstate.OpenChannel) (LinkConfig, error) {
+				cfg := testLinkConfig(
+					t.remote.peer, t.remote.failures,
+				)
+				cfg.AddsDisabled = t.remote.
+					restoreAddsDisabled.Load()
+
+				return cfg, nil
+			},
 		)
 		if err == nil {
 			return
@@ -730,32 +742,47 @@ func TestNativeFundingFlowPaysBothDirections(t *testing.T) {
 
 	const firstAmount = lnwire.MilliSatoshi(30_000_000)
 	payRuntimeInvoice(t, alice, bob, firstAmount, lntypes.Preimage{1, 2, 3})
+	for _, node := range []*fundingFlowNode{alice, bob} {
+		_, err := node.runtime.QuiesceChannel(
+			t.Context(), aliceChannel.FundingOutpoint,
+		)
+		require.NoError(t, err)
+	}
+	alice.runtime.ResumeChannel(aliceChannel.FundingOutpoint)
+	bob.runtime.ResumeChannel(bobChannel.FundingOutpoint)
 
-	// Rebuild both links from lnd's databases and let the normal
-	// channel_reestablish exchange recover the commitment stream.
-	alice.runtime.RemoveLink(aliceChannel.FundingOutpoint)
+	// Restart only Bob's link. Alice recycles its still-live link when the
+	// mailbox delivers Bob's new channel_reestablish handshake.
 	bob.runtime.RemoveLink(bobChannel.FundingOutpoint)
-	restored, err := alice.runtime.RestorePeerLinks(
-		alice.peer, func(*chanstate.OpenChannel) (LinkConfig, error) {
-			return testLinkConfig(alice.peer, alice.failures), nil
-		},
-	)
-	require.NoError(t, err)
-	require.Len(t, restored, 1)
-	restored, err = bob.runtime.RestorePeerLinks(
+	restored, err := bob.runtime.RestorePeerLinks(
 		bob.peer, func(*chanstate.OpenChannel) (LinkConfig, error) {
 			return testLinkConfig(bob.peer, bob.failures), nil
 		},
 	)
 	require.NoError(t, err)
 	require.Len(t, restored, 1)
-	restored, err = alice.runtime.RestorePeerLinks(
-		alice.peer, func(*chanstate.OpenChannel) (LinkConfig, error) {
-			return testLinkConfig(alice.peer, alice.failures), nil
-		},
-	)
-	require.NoError(t, err)
-	require.Empty(t, restored)
+	recycleDeadline := time.After(5 * time.Second)
+	recycleTicker := time.NewTicker(10 * time.Millisecond)
+	defer recycleTicker.Stop()
+	for {
+		newAliceLink, linkErr := alice.runtime.GetLink(
+			aliceChannel.ShortChanID(),
+		)
+		if linkErr == nil && newAliceLink != aliceLink {
+			break
+		}
+		select {
+		case failure := <-alice.failures:
+			require.NoError(t, failure)
+
+		case failure := <-bob.failures:
+			require.NoError(t, failure)
+
+		case <-recycleTicker.C:
+		case <-recycleDeadline:
+			t.Fatal("live peer did not recycle its channel link")
+		}
+	}
 
 	const returnAmount = lnwire.MilliSatoshi(10_000_000)
 	payRuntimeInvoice(
@@ -769,6 +796,62 @@ func TestNativeFundingFlowPaysBothDirections(t *testing.T) {
 		t, aliceChannel.FundingOutpoint,
 		closeTx.TxIn[0].PreviousOutPoint,
 	)
+}
+
+// TestNativeFundingFlowRestoresQuiescedLinks proves a restart in any durable
+// cooperative-close phase installs both links with new HTLC adds disabled.
+func TestNativeFundingFlowRestoresQuiescedLinks(t *testing.T) {
+	t.Parallel()
+
+	hub := newFundingFlowNode(t, arkchannel.PartyHub)
+	client := newFundingFlowNode(t, arkchannel.PartyClient)
+	connectFundingFlowNodes(t, hub, client)
+	require.NoError(t, hub.runtime.Start())
+	require.NoError(t, client.runtime.Start())
+	t.Cleanup(func() {
+		require.NoError(t, hub.runtime.Stop())
+		require.NoError(t, client.runtime.Stop())
+	})
+
+	record := fundingIntentRecord(
+		t, hub, client, lndfunding.PendingChanID{8, 1, 7, 2},
+	)
+	flow := activateFundingFlowChannel(t, hub, client, record)
+	hub.restoreAddsDisabled.Store(true)
+	client.restoreAddsDisabled.Store(true)
+	client.runtime.RemoveLink(flow.clientChannel.FundingOutpoint)
+
+	restored, err := client.runtime.RestorePeerLinks(
+		client.peer,
+		func(*chanstate.OpenChannel) (LinkConfig, error) {
+			cfg := testLinkConfig(client.peer, client.failures)
+			cfg.AddsDisabled = true
+
+			return cfg, nil
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, restored, 1)
+
+	require.Eventually(t, func() bool {
+		for _, node := range []*fundingFlowNode{hub, client} {
+			channels, err := node.db.ChannelStateDB().
+				FetchAllOpenChannels()
+			if err != nil || len(channels) != 1 {
+				return false
+			}
+			link, err := node.runtime.GetLink(
+				channels[0].ShortChanID(),
+			)
+			if err != nil ||
+				!link.IsFlushing(htlcswitch.Incoming) ||
+				!link.IsFlushing(htlcswitch.Outgoing) {
+				return false
+			}
+		}
+
+		return true
+	}, 5*time.Second, 10*time.Millisecond)
 }
 
 // TestNativeFundingFlowInArkCooperativeClose proves an active unpublished
@@ -875,6 +958,7 @@ func TestNativeFundingFlowInArkCooperativeClose(t *testing.T) {
 		published: make(chan arkchannel.CooperativeClose, 1),
 		confirm:   make(chan struct{}),
 	}
+	defended := make(chan wire.OutPoint, 1)
 	hubClose, err := NewHubCooperativeCloseProcess(
 		hubEndpoint,
 		&stableCooperativeCloseDelivery{
@@ -882,6 +966,13 @@ func TestNativeFundingFlowInArkCooperativeClose(t *testing.T) {
 		},
 		CooperativeCloseObserverFunc(func(context.Context,
 			chainhash.Hash, btcutil.Amount) error {
+
+			return nil
+		}),
+		CooperativeCloseDefenderFunc(func(_ context.Context,
+			outpoint wire.OutPoint) error {
+
+			defended <- outpoint
 
 			return nil
 		}),
@@ -1063,7 +1154,26 @@ func TestNativeFundingFlowInArkCooperativeClose(t *testing.T) {
 		}
 		require.Equal(t, expectedBalance, closedChannel.SettledBalance)
 	}
-	_ = hubService
+	expectedHubReplacement, err := settlement.ReplacementOutPoint(
+		record.Snapshot.Terms, *record.Snapshot.Source, request,
+		arkchannel.PartyHub,
+	)
+	require.NoError(t, err)
+	_, err = hubService.Apply(
+		t.Context(), record.Snapshot.Terms.ID,
+		&arkchannel.SourceSpent{
+			OutPoint:     record.Snapshot.Source.OutPoint,
+			SpendingTxID: chainhash.Hash{9, 9, 9},
+		},
+	)
+	require.NoError(t, err)
+	select {
+	case outpoint := <-defended:
+		require.Equal(t, expectedHubReplacement, outpoint)
+
+	case <-time.After(time.Second):
+		t.Fatal("hub replacement was not defended")
+	}
 	_ = clientService
 }
 

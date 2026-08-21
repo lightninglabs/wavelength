@@ -152,6 +152,7 @@ type FundingChannelState struct {
 	Backing       *arkchannel.Backing
 	Phase         arkchannel.Phase
 	OORFinalized  bool
+	OORAborted    bool
 	RecoveryReady bool
 	Failure       string
 	Revision      uint64
@@ -261,6 +262,7 @@ func (p *MailboxFundingPeer) GetFundingChannel(ctx context.Context,
 		Terms:         terms,
 		Phase:         arkchannel.Phase(response.GetPhase()),
 		OORFinalized:  response.GetOorFinalized(),
+		OORAborted:    response.GetOorAborted(),
 		RecoveryReady: response.GetRecoveryReady(),
 		Failure:       response.GetFailure(),
 		Revision:      response.GetRevision(),
@@ -689,6 +691,7 @@ func (s *FundingPeerRPCServer) GetFundingChannel(ctx context.Context,
 		Terms:         channelTermsToRPC(snapshot.Terms),
 		Phase:         uint32(snapshot.Phase),
 		OorFinalized:  snapshot.OORFinalized,
+		OorAborted:    snapshot.OORAborted,
 		RecoveryReady: snapshot.RecoveryReady,
 		Failure:       snapshot.Failure, Revision: record.Revision,
 	}
@@ -1502,6 +1505,18 @@ func channelEventToRPC(id arkchannel.ID, event arkchannel.Event) (
 
 		return request, "oor-finalized", nil
 
+	case *arkchannel.OORAborted:
+		if event.Reason == "" {
+			return nil, "", fmt.Errorf("OOR abort reason is " +
+				"required")
+		}
+		request.EventType = arkchannelrpc.
+			ChannelEventType_CHANNEL_EVENT_TYPE_OOR_ABORTED
+		request.OorSessionId = event.SessionID[:]
+		request.FailureReason = event.Reason
+
+		return request, "oor-aborted", nil
+
 	case *arkchannel.RecoveryPackageInstalled:
 		request.EventType = recoveryPackageInstalledEvent
 
@@ -1575,6 +1590,22 @@ func channelEventFromRPC(request *arkchannelrpc.ApplyChannelEventRequest) (
 		}
 
 		return &arkchannel.OORFinalized{SessionID: session}, nil
+
+	case arkchannelrpc.ChannelEventType_CHANNEL_EVENT_TYPE_OOR_ABORTED:
+		var session [32]byte
+		if err := copyFixed(
+			"OOR session ID", session[:], request.GetOorSessionId(),
+		); err != nil {
+			return nil, err
+		}
+		if request.GetFailureReason() == "" {
+			return nil, fmt.Errorf("OOR abort reason is required")
+		}
+
+		return &arkchannel.OORAborted{
+			SessionID: session,
+			Reason:    request.GetFailureReason(),
+		}, nil
 
 	case arkchannelrpc.
 		ChannelEventType_CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED:

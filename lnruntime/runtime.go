@@ -32,12 +32,30 @@ import (
 
 const (
 	defaultCommitInterval        = 50 * time.Millisecond
-	defaultPendingCommitInterval = time.Minute
 	defaultCommitBatchSize       = uint32(10)
 	defaultOutgoingRejectDelta   = uint32(3)
 	defaultQuiescenceTimeout     = time.Minute
 	forceCloseResultPollInterval = 100 * time.Millisecond
 )
+
+// durablePeerPendingCommitTicker disables lnd's socket-liveness timeout for a
+// peer whose ordered messages remain durably queued while either endpoint is
+// unavailable. HTLC deadlines remain enforced by lnd's contract lifecycle.
+type durablePeerPendingCommitTicker struct{}
+
+// Ticks returns a permanently parked channel, as permitted by ticker.Ticker.
+func (durablePeerPendingCommitTicker) Ticks() <-chan time.Time {
+	return nil
+}
+
+// Resume leaves the durable peer's disconnect timer parked.
+func (durablePeerPendingCommitTicker) Resume() {}
+
+// Pause leaves the durable peer's disconnect timer parked.
+func (durablePeerPendingCommitTicker) Pause() {}
+
+// Stop has no resources to release.
+func (durablePeerPendingCommitTicker) Stop() {}
 
 // RuntimeConfig contains the shared dependencies for lnd's native channel and
 // payment subsystems. The caller continues to own the chain notifier and DB.
@@ -79,6 +97,9 @@ type Runtime struct {
 	mu      sync.Mutex
 	started bool
 	stopped bool
+
+	reestablishMu       sync.Mutex
+	awaitingReestablish map[lnwire.ChannelID]struct{}
 
 	forceCloseMu    sync.Mutex
 	forceCloseCalls map[wire.OutPoint]*forceCloseCall
@@ -222,16 +243,17 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 	}
 
 	runtime := &Runtime{
-		cfg:             cfg,
-		onionProcessor:  onionProcessor,
-		htlcNotifier:    htlcNotifier,
-		invoices:        invoiceRegistry,
-		switcher:        switcher,
-		interceptor:     interceptor,
-		payments:        payments,
-		funding:         fundingRuntime,
-		sigPool:         lnwallet.NewSigPool(1, cfg.Signer),
-		forceCloseCalls: make(map[wire.OutPoint]*forceCloseCall),
+		cfg:                 cfg,
+		onionProcessor:      onionProcessor,
+		htlcNotifier:        htlcNotifier,
+		invoices:            invoiceRegistry,
+		switcher:            switcher,
+		interceptor:         interceptor,
+		payments:            payments,
+		funding:             fundingRuntime,
+		sigPool:             lnwallet.NewSigPool(1, cfg.Signer),
+		awaitingReestablish: make(map[lnwire.ChannelID]struct{}),
+		forceCloseCalls:     make(map[wire.OutPoint]*forceCloseCall),
 	}
 	if cfg.Onchain != nil {
 		runtime.onchain, err = newOnchainRuntime(
@@ -406,6 +428,7 @@ type LinkConfig struct {
 	Policy           models.ForwardingPolicy
 	ChainEvents      *contractcourt.ChainEventSubscription
 	SyncStates       bool
+	AddsDisabled     bool
 	Aliases          []lnwire.ShortChannelID
 	MaxAnchorFeeRate chainfee.SatPerKWeight
 
@@ -457,27 +480,25 @@ func (r *Runtime) AddLink(state *chanstate.OpenChannel, cfg LinkConfig) (
 		return append([]lnwire.ShortChannelID(nil), aliases...)
 	}
 	linkCfg := htlcswitch.ChannelLinkConfig{
-		FwrdingPolicy:          cfg.Policy,
-		Circuits:               r.switcher.CircuitModifier(),
-		BestHeight:             r.switcher.BestHeight,
-		ForwardPackets:         r.interceptor.ForwardPackets,
-		DecodeHopIterators:     r.onionProcessor.DecodeHopIterators,
-		ExtractErrorEncrypter:  r.onionProcessor.ExtractErrorEncrypter,
-		FetchLastChannelUpdate: r.cfg.FetchLastChannelUpdate,
-		Peer:                   cfg.Peer,
-		Registry:               r.invoices,
-		PreimageCache:          r.cfg.WitnessBeacon,
-		OnChannelFailure:       cfg.OnChannelFailure,
-		UpdateContractSignals:  cfg.UpdateContractSignals,
-		NotifyContractUpdate:   cfg.NotifyContractUpdate,
-		ChainEvents:            cfg.ChainEvents,
-		FeeEstimator:           r.cfg.FeeEstimator,
-		SyncStates:             cfg.SyncStates,
-		BatchTicker:            ticker.New(defaultCommitInterval),
-		FwdPkgGCTicker:         ticker.New(time.Hour),
-		PendingCommitTicker: ticker.New(
-			defaultPendingCommitInterval,
-		),
+		FwrdingPolicy:           cfg.Policy,
+		Circuits:                r.switcher.CircuitModifier(),
+		BestHeight:              r.switcher.BestHeight,
+		ForwardPackets:          r.interceptor.ForwardPackets,
+		DecodeHopIterators:      r.onionProcessor.DecodeHopIterators,
+		ExtractErrorEncrypter:   r.onionProcessor.ExtractErrorEncrypter,
+		FetchLastChannelUpdate:  r.cfg.FetchLastChannelUpdate,
+		Peer:                    cfg.Peer,
+		Registry:                r.invoices,
+		PreimageCache:           r.cfg.WitnessBeacon,
+		OnChannelFailure:        cfg.OnChannelFailure,
+		UpdateContractSignals:   cfg.UpdateContractSignals,
+		NotifyContractUpdate:    cfg.NotifyContractUpdate,
+		ChainEvents:             cfg.ChainEvents,
+		FeeEstimator:            r.cfg.FeeEstimator,
+		SyncStates:              cfg.SyncStates,
+		BatchTicker:             ticker.New(defaultCommitInterval),
+		FwdPkgGCTicker:          ticker.New(time.Hour),
+		PendingCommitTicker:     durablePeerPendingCommitTicker{},
 		BatchSize:               defaultCommitBatchSize,
 		MinUpdateTimeout:        minUpdateTimeout,
 		MaxUpdateTimeout:        maxUpdateTimeout,
@@ -513,11 +534,110 @@ func (r *Runtime) AddLink(state *chanstate.OpenChannel, cfg LinkConfig) (
 		QuiescenceTimeout:    defaultQuiescenceTimeout,
 	}
 
-	if err := r.switcher.CreateAndAddLink(linkCfg, channel); err != nil {
+	link := htlcswitch.NewChannelLink(linkCfg, channel)
+	if cfg.AddsDisabled {
+		link.DisableAdds(htlcswitch.Incoming)
+		link.DisableAdds(htlcswitch.Outgoing)
+	}
+	channelID := lnwire.NewChanIDFromOutPoint(state.FundingOutpoint)
+	r.setAwaitingReestablish(channelID, cfg.SyncStates)
+	if err := r.switcher.AddLink(link); err != nil {
+		r.setAwaitingReestablish(channelID, false)
+
 		return nil, fmt.Errorf("add lnd channel link: %w", err)
 	}
 
 	return channel, nil
+}
+
+// HandleChannelReestablish dispatches an expected startup handshake or
+// recycles one live link when only the remote endpoint restarted.
+func (r *Runtime) HandleChannelReestablish(message *lnwire.ChannelReestablish,
+	peer lnpeer.Peer, configSource LinkConfigSource) error {
+
+	if message == nil {
+		return fmt.Errorf("channel reestablish message is required")
+	}
+	if peer == nil {
+		return fmt.Errorf("channel peer is required")
+	}
+	if configSource == nil {
+		return fmt.Errorf("link config source is required")
+	}
+	if r.claimExpectedReestablish(message.ChanID) {
+		return r.handleChannelMessage(message.ChanID, message)
+	}
+
+	state, err := r.openChannelByID(peer, message.ChanID)
+	if err != nil {
+		return err
+	}
+	r.RemoveLink(state.FundingOutpoint)
+	linkConfig, err := configSource(state)
+	if err != nil {
+		return fmt.Errorf("build reestablished lnd link config: %w",
+			err)
+	}
+	linkConfig.Peer = peer
+	linkConfig.SyncStates = true
+	if _, err := r.AddLink(state, linkConfig); err != nil {
+		return fmt.Errorf("recycle lnd channel link: %w", err)
+	}
+	if !r.claimExpectedReestablish(message.ChanID) {
+		return fmt.Errorf("recycled lnd channel did not await " +
+			"reestablish")
+	}
+
+	return r.handleChannelMessage(message.ChanID, message)
+}
+
+// openChannelByID resolves one authenticated peer's durable channel state.
+func (r *Runtime) openChannelByID(peer lnpeer.Peer,
+	channelID lnwire.ChannelID) (*chanstate.OpenChannel, error) {
+
+	states, err := r.cfg.DB.ChannelStateDB().FetchOpenChannels(
+		peer.IdentityKey(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("fetch lnd peer channels: %w", err)
+	}
+	for _, state := range states {
+		if lnwire.NewChanIDFromOutPoint(
+			state.FundingOutpoint,
+		) == channelID {
+			return state, nil
+		}
+	}
+
+	return nil, fmt.Errorf("find lnd channel link: %w",
+		htlcswitch.ErrChannelLinkNotFound)
+}
+
+// setAwaitingReestablish records whether a newly installed link expects the
+// next channel_reestablish instead of treating it as a remote restart signal.
+func (r *Runtime) setAwaitingReestablish(channelID lnwire.ChannelID,
+	expected bool) {
+
+	r.reestablishMu.Lock()
+	defer r.reestablishMu.Unlock()
+	if expected {
+		r.awaitingReestablish[channelID] = struct{}{}
+
+		return
+	}
+	delete(r.awaitingReestablish, channelID)
+}
+
+// claimExpectedReestablish consumes one startup handshake expectation.
+func (r *Runtime) claimExpectedReestablish(channelID lnwire.ChannelID) bool {
+	r.reestablishMu.Lock()
+	defer r.reestablishMu.Unlock()
+	if _, ok := r.awaitingReestablish[channelID]; !ok {
+		return false
+	}
+	delete(r.awaitingReestablish, channelID)
+
+	return true
 }
 
 // HandleChannelMessage dispatches one incoming commitment or HTLC update to
@@ -643,7 +763,9 @@ func (r *Runtime) GetLink(scid lnwire.ShortChannelID) (htlcswitch.ChannelLink,
 
 // RemoveLink stops and removes the native lnd link for a channel point.
 func (r *Runtime) RemoveLink(channelPoint wire.OutPoint) {
-	r.switcher.RemoveLink(lnwire.NewChanIDFromOutPoint(channelPoint))
+	channelID := lnwire.NewChanIDFromOutPoint(channelPoint)
+	r.setAwaitingReestablish(channelID, false)
+	r.switcher.RemoveLink(channelID)
 }
 
 // WatchChannel admits an active channel to lnd's standard chain and contract

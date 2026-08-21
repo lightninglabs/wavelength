@@ -511,7 +511,27 @@ func (n *ChannelNegotiator) PrepareChannelRecovery(ctx context.Context,
 // CancelChannel removes this endpoint's native lnd reservation after its
 // funder's prepared OOR session has durably aborted.
 func (n *ChannelNegotiator) CancelChannel(ctx context.Context, id arkchannel.ID,
-	terms arkchannel.Terms, backing *arkchannel.Backing) error {
+	terms arkchannel.Terms, source arkchannel.VTXOBinding,
+	backing *arkchannel.Backing, reason string) error {
+
+	if terms.Funder == n.local.party {
+		if _, err := n.remote.ApplyChannelEvent(
+			ctx, id, &arkchannel.Fail{
+				Reason: reason,
+			},
+		); err != nil {
+			return fmt.Errorf("fail remote channel funding: %w",
+				err)
+		}
+		if _, err := n.remote.ApplyChannelEvent(
+			ctx, id, &arkchannel.OORAborted{
+				SessionID: source.OORSessionID,
+				Reason:    reason,
+			},
+		); err != nil {
+			return fmt.Errorf("confirm remote OOR abort: %w", err)
+		}
+	}
 
 	var channelPoint *wire.OutPoint
 	if backing != nil {

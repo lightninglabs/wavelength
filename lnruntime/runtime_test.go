@@ -29,6 +29,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestDurablePeerPendingCommitTickerStaysParked proves mailbox delay cannot be
+// misclassified as a broken socket and fail an otherwise recoverable link.
+func TestDurablePeerPendingCommitTickerStaysParked(t *testing.T) {
+	t.Parallel()
+
+	var pendingCommitTicker durablePeerPendingCommitTicker
+	pendingCommitTicker.Resume()
+	require.Nil(t, pendingCommitTicker.Ticks())
+	pendingCommitTicker.Pause()
+	require.Nil(t, pendingCommitTicker.Ticks())
+	pendingCommitTicker.Stop()
+
+	select {
+	case <-pendingCommitTicker.Ticks():
+		t.Fatal("durable peer pending-commit ticker fired")
+
+	case <-time.After(time.Millisecond):
+	}
+}
+
 // TestRuntimeStartsNativeSubsystems verifies the composed lifecycle starts and
 // stops without constructing an lnd daemon or graph.
 func TestRuntimeStartsNativeSubsystems(t *testing.T) {

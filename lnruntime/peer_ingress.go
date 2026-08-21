@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
@@ -12,6 +13,11 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
 	"google.golang.org/protobuf/types/known/wrapperspb"
+)
+
+const (
+	peerMessageMaxRetryDelay = time.Minute
+	peerMessageMaxAttempts   = 1<<31 - 1
 )
 
 const (
@@ -133,6 +139,32 @@ func (b *peerMessageIngressBehavior) Receive(ctx context.Context,
 func NewPeerMessageIngress(cfg PeerMessageIngressConfig) (*PeerMessageIngress,
 	error) {
 
+	return newPeerMessageIngress(cfg, parkPeerMessageRetryPolicy)
+}
+
+// parkPeerMessageRetryPolicy keeps an ordered BOLT lane blocked until its
+// endpoint can process the message. Advancing past a failed CommitSig or
+// RevokeAndAck would silently desynchronize the channel.
+func parkPeerMessageRetryPolicy(_ error, attempts int) (bool, time.Duration) {
+	if attempts < 0 {
+		attempts = 0
+	}
+	if attempts > 6 {
+		attempts = 6
+	}
+	delay := time.Second << uint(attempts)
+	if delay > peerMessageMaxRetryDelay {
+		delay = peerMessageMaxRetryDelay
+	}
+
+	return true, delay
+}
+
+// newPeerMessageIngress accepts a retry policy so tests can exercise repeated
+// endpoint failures without waiting for production backoff intervals.
+func newPeerMessageIngress(cfg PeerMessageIngressConfig,
+	retryPolicy actor.TellRetryPolicy) (*PeerMessageIngress, error) {
+
 	if cfg.ActorID == "" {
 		return nil, fmt.Errorf("peer ingress actor id is required")
 	}
@@ -142,6 +174,9 @@ func NewPeerMessageIngress(cfg PeerMessageIngressConfig) (*PeerMessageIngress,
 	}
 	if cfg.Handler == nil {
 		return nil, fmt.Errorf("peer ingress handler is required")
+	}
+	if retryPolicy == nil {
+		return nil, fmt.Errorf("peer ingress retry policy is required")
 	}
 
 	codec := actor.NewMessageCodec()
@@ -161,6 +196,8 @@ func NewPeerMessageIngress(cfg PeerMessageIngressConfig) (*PeerMessageIngress,
 	if cfg.Log != nil {
 		durableCfg.Log = fn.Some(cfg.Log)
 	}
+	durableCfg.TellRetryPolicy = retryPolicy
+	durableCfg.MaxAttempts = peerMessageMaxAttempts
 	durable, err := actor.NewDurableActor(durableCfg).Unpack()
 	if err != nil {
 		return nil, fmt.Errorf("create peer ingress actor: %w", err)

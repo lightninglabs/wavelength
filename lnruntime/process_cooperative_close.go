@@ -364,6 +364,19 @@ func (p *ClientCooperativeCloseProcess) publishAndFinalize(ctx context.Context,
 	request arkchannel.CooperativeCloseRequest,
 	settlement arkchannel.CooperativeClose) error {
 
+	state, err := p.local.QuiesceCooperativeClose(
+		ctx, id, terms, source, backing, request,
+	)
+	if err != nil {
+		return fmt.Errorf("revalidate cooperative close state: %w", err)
+	}
+	if err := validateCooperativeCloseState(
+		arkchannel.PartyClient, state, settlement.Proposal,
+	); err != nil {
+		return fmt.Errorf("revalidate signed cooperative close: %w",
+			err)
+	}
+
 	if err := p.publisher.SettleCooperativeClose(
 		ctx, id, terms, source, request, settlement,
 	); err != nil {
@@ -466,6 +479,7 @@ type HubCooperativeCloseProcess struct {
 	local    *NativeCooperativeCloseEndpoint
 	delivery CooperativeCloseDeliverySource
 	observer CooperativeCloseObserver
+	defender CooperativeCloseDefender
 
 	mu      sync.RWMutex
 	service CooperativeCloseStateSink
@@ -475,7 +489,8 @@ type HubCooperativeCloseProcess struct {
 // NewHubCooperativeCloseProcess constructs the hub-owned close process.
 func NewHubCooperativeCloseProcess(local *NativeCooperativeCloseEndpoint,
 	delivery CooperativeCloseDeliverySource,
-	observer CooperativeCloseObserver) (*HubCooperativeCloseProcess,
+	observer CooperativeCloseObserver,
+	defender CooperativeCloseDefender) (*HubCooperativeCloseProcess,
 	error) {
 
 	if local == nil || local.party != arkchannel.PartyHub {
@@ -490,9 +505,14 @@ func NewHubCooperativeCloseProcess(local *NativeCooperativeCloseEndpoint,
 		return nil, fmt.Errorf("hub cooperative close observer is " +
 			"required")
 	}
+	if defender == nil {
+		return nil, fmt.Errorf("hub cooperative close defender is " +
+			"required")
+	}
 
 	return &HubCooperativeCloseProcess{
 		local: local, delivery: delivery, observer: observer,
+		defender: defender,
 	}, nil
 }
 
@@ -789,6 +809,56 @@ func (p *HubCooperativeCloseProcess) FinalizeCooperativeClose(
 	return err
 }
 
+// DefendCooperativeClose starts ordinary wallet recovery for the exact hub
+// replacement VTXO after a closed channel's source ancestry is spent.
+func (p *HubCooperativeCloseProcess) DefendCooperativeClose(ctx context.Context,
+	id arkchannel.ID, terms arkchannel.Terms, source arkchannel.VTXOBinding,
+	settlement arkchannel.CooperativeClose) error {
+
+	unlock := p.locks.lock(id)
+	defer unlock()
+
+	service, err := p.stateService()
+	if err != nil {
+		return err
+	}
+	record, err := service.GetChannel(ctx, id)
+	if err != nil {
+		return err
+	}
+	snapshot := record.Snapshot
+	if snapshot.SourceConflict == nil {
+		return nil
+	}
+	if snapshot.Phase != arkchannel.PhaseClosed ||
+		snapshot.CooperativeCloseRequest == nil ||
+		snapshot.CooperativeClose == nil {
+		return fmt.Errorf("cooperative close defense state is " +
+			"incomplete")
+	}
+	if snapshot.CooperativeClose.TxID != settlement.TxID {
+		return fmt.Errorf("cooperative close defense settlement " +
+			"changed")
+	}
+	if settlement.Proposal.HubOutput == 0 {
+		return nil
+	}
+	outpoint, err := settlement.ReplacementOutPoint(
+		terms, source, *snapshot.CooperativeCloseRequest,
+		arkchannel.PartyHub,
+	)
+	if err != nil {
+		return fmt.Errorf("derive hub cooperative close "+
+			"replacement: %w", err)
+	}
+	if err := p.defender.DefendCooperativeClose(ctx, outpoint); err != nil {
+		return fmt.Errorf("defend hub cooperative close "+
+			"replacement: %w", err)
+	}
+
+	return nil
+}
+
 // stateService returns the bound durable channel FSM service.
 func (p *HubCooperativeCloseProcess) stateService() (CooperativeCloseStateSink,
 	error) {
@@ -809,14 +879,17 @@ type HubCooperativeCloseExecutor struct {
 	*HubCooperativeCloseProcess
 }
 
-// PublishCooperativeClose defers OOR submission to the client, which owns the
-// source policy key and ordinary durable OOR actor. The hub waits for the
-// client's finalized-session notification and verifies it independently.
-func (e *HubCooperativeCloseExecutor) PublishCooperativeClose(_ context.Context,
-	_ arkchannel.ID, _ arkchannel.Terms, _ arkchannel.VTXOBinding,
-	_ arkchannel.CooperativeClose) error {
+// PublishCooperativeClose defers initial OOR submission to the client. If the
+// same durable action is emitted after the close because old source ancestry
+// appeared, it instead protects the hub's replacement through its wallet.
+func (e *HubCooperativeCloseExecutor) PublishCooperativeClose(
+	ctx context.Context, id arkchannel.ID, terms arkchannel.Terms,
+	source arkchannel.VTXOBinding,
+	settlement arkchannel.CooperativeClose) error {
 
-	return nil
+	return e.DefendCooperativeClose(
+		ctx, id, terms, source, settlement,
+	)
 }
 
 var _ arkchannel.ChannelCooperativeCloser = (*ClientCooperativeCloseProcess)(nil) //nolint:ll

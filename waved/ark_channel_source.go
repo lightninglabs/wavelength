@@ -292,15 +292,14 @@ func (a *arkChannelRecoveryArchive) InstallRecoveryPackage(ctx context.Context,
 	return nil
 }
 
-// RestoreWatches re-arms every recovery-ready non-terminal channel at boot.
+// RestoreWatches re-arms every channel whose Ark source still secures either
+// an open channel or the replacement VTXOs from a cooperative close.
 func (a *arkChannelRecoveryArchive) RestoreWatches(ctx context.Context,
 	records []arkchannel.Record) error {
 
 	for i := range records {
 		snapshot := records[i].Snapshot
-		if !snapshot.RecoveryReady || snapshot.Source == nil ||
-			snapshot.Phase.IsTerminal() {
-
+		if !shouldRestoreArkChannelSourceWatch(snapshot) {
 			continue
 		}
 		desc, err := a.vtxos.GetVTXO(ctx, snapshot.Source.OutPoint)
@@ -316,6 +315,22 @@ func (a *arkChannelRecoveryArchive) RestoreWatches(ctx context.Context,
 	}
 
 	return nil
+}
+
+// shouldRestoreArkChannelSourceWatch reports whether confirmed ancestry can
+// still require a durable channel action. Once conflict evidence is stored,
+// Service.Resume owns retries and another chain registration is unnecessary.
+func shouldRestoreArkChannelSourceWatch(snapshot arkchannel.Snapshot) bool {
+	if !snapshot.RecoveryReady || snapshot.Source == nil ||
+		snapshot.SourceConflict != nil {
+		return false
+	}
+	if !snapshot.Phase.IsTerminal() {
+		return true
+	}
+
+	return snapshot.Phase == arkchannel.PhaseClosed &&
+		snapshot.CooperativeClose != nil
 }
 
 // EnsureChannelSource selects the final-spend delay and verifies that the
