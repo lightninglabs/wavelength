@@ -10,8 +10,11 @@ on-chain transactions from wallet and daemon chain backends.
 - `WalletKitEstimator` — proxies fee estimates to an `lndclient.WalletKitClient`;
   fail-fast by default, optional `FallbackOnError` to serve the last
   successful rate instead of propagating errors.
-- `MempoolSpaceEstimator` — fetches recommended fees from the mempool.space
-  HTTP API, with a TTL cache and network-default endpoint selection.
+- `MempoolSpaceEstimator` — fetches recommended fees from a mempool.space-style
+  `/api/v1/fees/recommended` endpoint, with a TTL cache and network-default
+  endpoint selection. Every network's default is a Lightning Labs-operated
+  mempool instance, mirroring the `lwwallet` Esplora defaults; set
+  `MempoolSpaceConfig.URL` to point at another instance.
 - `MinEstimator` — composes multiple `NamedEstimator` children and returns the
   lowest successful estimate, logging when providers diverge.
 - `NamedEstimator` — pairs a `chainfee.Estimator` with a stable name for logs.
