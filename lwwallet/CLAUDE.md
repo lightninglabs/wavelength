@@ -41,7 +41,13 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
   (transactions, blocks, headers) are cached in LRU caches bounded by
   cumulative serialized byte size (see `esplora_cache.go`). Mutable live data
   (tip height, UTXOs, fee estimates) is never cached. Cache integrity: every
-  response is verified to hash to the requested key before insertion.
+  response is verified to hash to the requested key before insertion. Every
+  response also passes an endpoint-shape guard before reaching a parser; a
+  200 carrying an HTML body is rejected with `ErrNotEsploraAPI`.
+- `ErrNotEsploraAPI` — Sentinel error returned when an endpoint answers with
+  an HTML page. It marks a misconfigured base URL rather than a transient
+  failure, so callers can treat it as fatal instead of retrying. Match with
+  `errors.Is`; the message names the likely fix (the `/api` suffix).
 - `EsploraChainService` — `chain.Interface` adapter over `EsploraClient`,
   driven by a shared `TipPoller`. Feeds btcwallet's internal address-credit
   pipeline. Constructor: `NewEsploraChainService(esplora, tipPoller, logger)`.
@@ -91,6 +97,16 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
   (known limitation; acceptable for confirmation-target use cases).
 - LRU caches only hold immutable, hash-addressed data; a verified hash prevents
   a compromised Esplora endpoint from injecting arbitrary cache entries.
+- The HTML guard keys on `Content-Type` alone, never on the body bytes.
+  `/tx/:txid/raw` and `/block/:hash/raw` return arbitrary binary that can
+  legitimately begin with the same `<` byte an HTML document does, so
+  sniffing would reject valid responses. A missing or unparseable content
+  type falls through to the caller's own parser rather than being reported
+  as a misconfiguration.
+- Response bodies quoted back in an error are collapsed onto one line and
+  bounded to 256 bytes, cut on a rune boundary. A base URL naming a web
+  frontend answers with a full HTML page, and the unbounded form carried
+  kilobytes of markup through every layer up to the RPC client.
 - `scriptHashHex` hex-encodes the SHA256 digest in its natural byte order.
   Esplora's REST API differs from the Electrum wire protocol here, which
   reverses it, and a wrong order fails silently because the API answers an

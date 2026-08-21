@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -455,4 +457,172 @@ func TestScriptHashEncoding(t *testing.T) {
 	require.NotEqual(
 		t, hex.EncodeToString(reversed), scriptHashHex(pkScript),
 	)
+}
+
+// mempoolFrontendHTML is the opening of the single-page app a mempool.space
+// web frontend serves for any path it does not route. It is what the client
+// receives when its base URL names the frontend rather than the REST root
+// under /api.
+const mempoolFrontendHTML = `<!doctype html>
+<html lang="en-US" dir="ltr">
+
+<head>
+  <meta charset="utf-8">
+  <title>mempool - Bitcoin Explorer</title>
+  <base href="/">
+</head>
+
+<body>
+  <app-root></app-root>
+</body>
+
+</html>
+`
+
+// newHTMLFrontendServer returns a server that imitates that frontend: every
+// path answers 200 with the HTML document rather than 404, which is what
+// makes the misconfiguration survive the status check.
+func newHTMLFrontendServer(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	srv := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; "+
+				"charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+
+			_, err := w.Write([]byte(mempoolFrontendHTML))
+			require.NoError(t, err)
+		}),
+	)
+	t.Cleanup(srv.Close)
+
+	return srv
+}
+
+// TestEsploraRejectsHTMLResponse verifies that a 200 carrying an HTML body
+// is reported as a misconfigured endpoint rather than handed to a parser.
+// Without the check the markup reaches strconv.ParseInt and surfaces from
+// inside wallet startup as a parse error quoting the whole document.
+func TestEsploraRejectsHTMLResponse(t *testing.T) {
+	t.Parallel()
+
+	srv := newHTMLFrontendServer(t)
+
+	client := NewEsploraClient(srv.URL, btclog.Disabled)
+	_, err := client.GetTipHeight(t.Context())
+	require.ErrorIs(t, err, ErrNotEsploraAPI)
+
+	// The message has to name the fix, since the symptom points at a
+	// parser rather than at the setting that caused it.
+	require.Contains(t, err.Error(), "/api")
+	require.Contains(t, err.Error(), "/blocks/tip/height")
+
+	// And it must not carry the page: the unbounded form of this error
+	// dragged kilobytes of markup up through every layer to the caller.
+	require.NotContains(t, err.Error(), "<app-root>")
+	require.Less(t, len(err.Error()), 512)
+}
+
+// TestEsploraRejectsHTMLResponseOnPost verifies the POST path is guarded
+// too. A misconfigured base URL reaches broadcast the same way it reaches
+// every read, and the SPA answers a POST with the same 200 and page.
+func TestEsploraRejectsHTMLResponseOnPost(t *testing.T) {
+	t.Parallel()
+
+	srv := newHTMLFrontendServer(t)
+
+	client := NewEsploraClient(srv.URL, btclog.Disabled)
+	_, err := client.BroadcastTx(t.Context(), wire.NewMsgTx(2))
+	require.ErrorIs(t, err, ErrNotEsploraAPI)
+	require.Contains(t, err.Error(), "/tx")
+}
+
+// TestEsploraAcceptsBinaryBodyStartingWithAngleBracket pins that the guard
+// keys on the content type and not on the body. The raw transaction and raw
+// block endpoints return arbitrary binary, which can legitimately begin with
+// the same '<' byte an HTML document does; sniffing the body would reject
+// those responses. A transaction with version 60 serializes to a leading
+// 0x3c, which is exactly that byte.
+func TestEsploraAcceptsBinaryBodyStartingWithAngleBracket(t *testing.T) {
+	t.Parallel()
+
+	tx := wire.NewMsgTx(60)
+	tx.AddTxIn(wire.NewTxIn(&wire.OutPoint{}, nil, nil))
+	tx.AddTxOut(wire.NewTxOut(1000, []byte{0x00, 0x14}))
+
+	var buf bytes.Buffer
+	require.NoError(t, tx.Serialize(&buf))
+	require.Equal(t, byte('<'), buf.Bytes()[0])
+
+	srv := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set(
+				"Content-Type", "application/octet-stream",
+			)
+
+			_, err := w.Write(buf.Bytes())
+			require.NoError(t, err)
+		}),
+	)
+	defer srv.Close()
+
+	client := NewEsploraClient(srv.URL, btclog.Disabled)
+	got, err := client.GetRawTx(t.Context(), tx.TxHash())
+	require.NoError(t, err)
+	require.Equal(t, tx.TxHash(), got.TxHash())
+}
+
+// TestEsploraHTTPErrorBodyTruncated verifies a non-200 body is collapsed
+// and bounded in the error. A misconfigured base URL naming a web frontend
+// answers with a full HTML page rather than a short status line, so the
+// error path needs a bound to stay readable.
+func TestEsploraHTTPErrorBodyTruncated(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+
+			_, err := w.Write([]byte(strings.Repeat("x", 4096)))
+			require.NoError(t, err)
+		}),
+	)
+	defer srv.Close()
+
+	client := NewEsploraClient(srv.URL, btclog.Disabled)
+	_, err := client.GetTipHeight(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "404")
+	require.Contains(t, err.Error(), "truncated")
+	require.Less(t, len(err.Error()), 512)
+}
+
+// TestTruncateBody covers the shapes the helper has to handle: a short body
+// passes through unchanged, a multi-line body is collapsed onto one line so
+// it stays legible inside a single-line log record, and a long body is cut.
+func TestTruncateBody(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(
+		t, "already short",
+		truncateBody(
+			[]byte("already  short"),
+		),
+	)
+
+	require.Equal(t, "a b c", truncateBody([]byte("a\n  b\n\tc\n")))
+
+	long := truncateBody([]byte(strings.Repeat("y", maxErrBodyBytes+10)))
+	require.Len(t, long, maxErrBodyBytes+len("... (truncated)"))
+	require.Contains(t, long, "truncated")
+
+	// A cut that would land inside a multi-byte rune backs up to the
+	// rune boundary rather than emitting a half-encoded rune. "€" is
+	// three bytes, so a body of them has no boundary at maxErrBodyBytes
+	// unless the helper looks for one.
+	runes := truncateBody(
+		[]byte(strings.Repeat("€", maxErrBodyBytes)),
+	)
+	require.True(t, utf8.ValidString(runes))
 }
