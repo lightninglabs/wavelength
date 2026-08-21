@@ -2479,8 +2479,10 @@ func TestPaySessionResumeFundingGraceEventuallyRetries(t *testing.T) {
 
 // TestPaySessionFundingReplayAfterLostResponse verifies an accepted funding
 // OOR whose RPC response is lost is recovered under the same payment-scoped
-// idempotency key. The resumed SDK must obtain the original session/outpoint;
-// it must not create a second daemon-side funding intent.
+// idempotency key. After restart, the SDK must obtain the original
+// session/outpoint, observe the authoritative Lightning preimage, and persist
+// completion. A second restart must return that result without repeating any
+// funding or recovery side effect.
 func TestPaySessionFundingReplayAfterLostResponse(t *testing.T) {
 	t.Parallel()
 
@@ -2624,6 +2626,65 @@ func TestPaySessionFundingReplayAfterLostResponse(t *testing.T) {
 			t, start.Add(55*time.Second), opts.AdmissionDeadline,
 		)
 	}
+
+	// The server settles the Lightning invoice and claims the funded vHTLC.
+	// Model the authoritative indexer exposing both the spend and its
+	// checkpoint preimage after the SDK has recovered from the lost
+	// response.
+	daemonConn.spentVTXO = &VTXOInfo{
+		Outpoint:    "funding-session:0",
+		AmountSat:   testInSwapAmountSat,
+		SpentByTxID: "claim-session",
+	}
+	daemonConn.indexedPackage = &OORPackageInfo{
+		CheckpointPSBTs: [][]byte{
+			testCheckpointPSBTWithPreimage(t, preimage[:]),
+		},
+	}
+
+	result, err := resumed.Wait(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, preimage.Hash(), result.PaymentHash)
+	require.Equal(t, preimage, result.Preimage)
+	require.Equal(t, "funding-session", result.FundingSessionID)
+	require.Equal(t, PayStateCompleted, resumed.State())
+	require.Len(t, accepted, 1)
+	require.Equal(t, 3, daemonConn.sendPolicyCalls)
+	require.Equal(t, 1, daemonConn.armRecoveryCalls)
+	require.Equal(t, 1, daemonConn.cancelCalls)
+
+	summary, err := resumedClient.GetSwapSummary(
+		t.Context(), preimage.Hash(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, PayStateCompleted.String(), summary.State)
+	require.False(t, summary.Pending)
+	require.NotNil(t, summary.Preimage)
+	require.Equal(t, preimage, *summary.Preimage)
+	require.Equal(t, "funding-session", summary.FundingSessionID)
+	require.Equal(t, "funding-session:0", summary.VHTLCOutpoint)
+
+	// A daemon restart after terminal persistence must only reload the
+	// completed result. It must not re-submit funding or re-arm/cancel the
+	// recovery actor.
+	terminalClient := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
+	)
+	terminal, err := terminalClient.ResumePayViaLightning(
+		t.Context(), preimage.Hash(),
+	)
+	require.NoError(t, err)
+
+	terminalResult, err := terminal.Wait(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, result, terminalResult)
+	require.Equal(t, PayStateCompleted, terminal.State())
+	require.Len(t, accepted, 1)
+	require.Equal(t, 3, daemonConn.sendPolicyCalls)
+	require.Equal(t, 1, daemonConn.armRecoveryCalls)
+	require.Equal(t, 1, daemonConn.cancelCalls)
 }
 
 // TestPaySessionExpiresAfterAuthoritativeFundingMiss verifies an ambiguous
@@ -2716,6 +2777,32 @@ func TestPaySessionExpiresAfterAuthoritativeFundingMiss(t *testing.T) {
 		daemonConn.sendPolicyOpts[0].AdmissionDeadline,
 	)
 	require.True(t, daemonConn.sendPolicyOpts[0].ExistingOnly)
+
+	// A later restart must preserve the authoritative failure and must not
+	// create a funding intent while reloading the terminal row.
+	terminalClient := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
+	)
+	terminal, err := terminalClient.ResumePayViaLightning(
+		t.Context(), preimage.Hash(),
+	)
+	require.NoError(t, err)
+
+	_, err = terminal.Wait(t.Context())
+	require.ErrorIs(t, err, errSwapExpired)
+	require.Equal(t, PayStateExpired, terminal.State())
+	require.Equal(t, 0, daemonConn.armRecoveryCalls)
+	require.Equal(t, 1, daemonConn.sendPolicyCalls)
+
+	summary, err := terminalClient.GetSwapSummary(
+		t.Context(), preimage.Hash(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, PayStateExpired.String(), summary.State)
+	require.False(t, summary.Pending)
+	require.Nil(t, summary.Preimage)
 }
 
 // TestPaySessionRefundsAmountMismatch asserts the client preserves mismatch
