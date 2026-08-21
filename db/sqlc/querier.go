@@ -103,6 +103,8 @@ type Querier interface {
 	GetInternalKeyByID(ctx context.Context, id int64) (InternalKey, error)
 	// Macaroon root key store queries.
 	GetMacaroonRootKey(ctx context.Context, id []byte) (Macaroon, error)
+	GetOORDispatchAttemptByIdempotencyKey(ctx context.Context, idempotencyKey string) (OorDispatchAttempt, error)
+	GetOORDispatchAttemptBySessionID(ctx context.Context, sessionID []byte) (OorDispatchAttempt, error)
 	GetOORPackage(ctx context.Context, sessionID []byte) (OorPackage, error)
 	GetOORPackageByOutpoint(ctx context.Context, arg GetOORPackageByOutpointParams) (GetOORPackageByOutpointRow, error)
 	GetOORPackageByOutpointAndKind(ctx context.Context, arg GetOORPackageByOutpointAndKindParams) (GetOORPackageByOutpointAndKindRow, error)
@@ -164,6 +166,7 @@ type Querier interface {
 	InsertExitFundingAddress(ctx context.Context, arg InsertExitFundingAddressParams) error
 	InsertIdempotentOwnedReceiveScript(ctx context.Context, arg InsertIdempotentOwnedReceiveScriptParams) (int64, error)
 	InsertMacaroonRootKey(ctx context.Context, arg InsertMacaroonRootKeyParams) error
+	InsertOORDispatchAttempt(ctx context.Context, arg InsertOORDispatchAttemptParams) error
 	InsertOORPackageCheckpoint(ctx context.Context, arg InsertOORPackageCheckpointParams) error
 	// Round queries.
 	InsertRound(ctx context.Context, arg InsertRoundParams) error
@@ -345,11 +348,6 @@ type Querier interface {
 	// CreditOpStatus). Failed operations never dedup a keyed retry, so the lookup
 	// skips them: only a pending or completed operation answers for an op_key.
 	LookupActiveCreditOperationByKey(ctx context.Context, opKey string) (CreditOperation, error)
-	// Status 2 = Failed (anchored to Go iota in
-	// db/oor_session_registry_store.go OORSessionStatus). Failed sessions never
-	// dedup a keyed retry, so the lookup skips them: only a pending or completed
-	// session answers for an idempotency key.
-	LookupActiveOORSessionRegistryByIdempotencyKey(ctx context.Context, idempotencyKey sql.NullString) (OorSessionRegistry, error)
 	MarkBoardingSweepInputSpentByOutpoint(ctx context.Context, arg MarkBoardingSweepInputSpentByOutpointParams) (int64, error)
 	MarkBoardingSweepInputStatus(ctx context.Context, arg MarkBoardingSweepInputStatusParams) error
 	MarkBoardingSweepInputsStatus(ctx context.Context, arg MarkBoardingSweepInputsStatusParams) error

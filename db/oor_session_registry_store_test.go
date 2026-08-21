@@ -149,8 +149,9 @@ func TestOORSessionRegistryUpsertUpdates(t *testing.T) {
 	require.Equal(t, first.CreatedAt.Unix(), second.CreatedAt.Unix())
 }
 
-// TestOORSessionRegistryListNonTerminal verifies restore queries only return
-// non-terminal rows.
+// TestOORSessionRegistryListNonTerminal verifies restore queries follow the
+// shared row's current lifecycle status. The immutable dispatch attempt does
+// not change which direction must resume after self-transfer.
 func TestOORSessionRegistryListNonTerminal(t *testing.T) {
 	t.Parallel()
 
@@ -160,6 +161,7 @@ func TestOORSessionRegistryListNonTerminal(t *testing.T) {
 	pending := sessionHash(0x10)
 	completed := sessionHash(0x20)
 	failed := sessionHash(0x30)
+	selfTransfer := sessionHash(0x31)
 
 	upsert := func(sid chainhash.Hash, status OORSessionStatus) {
 		rec := OORSessionRegistryRecord{
@@ -180,63 +182,127 @@ func TestOORSessionRegistryListNonTerminal(t *testing.T) {
 	upsert(completed, OORSessionStatusCompleted)
 	upsert(failed, OORSessionStatusFailed)
 
-	rows, err := store.ListNonTerminal(ctx)
-	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	require.Equal(t, pending, rows[0].SessionID)
-}
-
-// TestOORSessionRegistryLookupActiveByIdempotencyKey verifies outgoing
-// idempotency-key lookup hits and misses behave correctly, and that failed
-// sessions never answer for a key.
-func TestOORSessionRegistryLookupActiveByIdempotencyKey(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-	store := newOORSessionRegistryStoreForTest(t)
-
-	sid := sessionHash(0x40)
+	// A self-transfer can replace an outgoing lifecycle only after it is
+	// terminal. The new incoming lifecycle must resume even though the
+	// immutable outgoing dispatch attempt still exists.
 	record := OORSessionRegistryRecord{
-		SessionID:      sid,
-		ActorID:        "actor-key",
+		SessionID:      selfTransfer,
+		ActorID:        "actor-" + selfTransfer.String(),
 		Direction:      OORSessionDirectionOutgoing,
-		Phase:          "submit_sent",
-		IdempotencyKey: "the-key",
-		Status:         OORSessionStatusPending,
+		Phase:          "completed",
+		IdempotencyKey: "self-transfer-key",
+		Status:         OORSessionStatusCompleted,
 		SnapshotData: []byte{
 			0x01,
 		},
 		SnapshotVersion: 1,
 	}
 	require.NoError(t, store.UpsertSession(ctx, record))
-
-	got, err := store.LookupActiveSessionByIdempotencyKey(ctx, "the-key")
-	require.NoError(t, err)
-	require.Equal(t, sid, got.SessionID)
-
-	_, err = store.LookupActiveSessionByIdempotencyKey(ctx, "missing")
-	require.ErrorIs(t, err, ErrOORSessionNotFound)
-
-	// An empty key never matches the NULL idempotency rows.
-	_, err = store.LookupActiveSessionByIdempotencyKey(ctx, "")
-	require.ErrorIs(t, err, ErrOORSessionNotFound)
-
-	// A completed session still dedups its key: replaying a finished
-	// transfer must return the existing session, never re-send funds.
-	record.Status = OORSessionStatusCompleted
+	record.Direction = OORSessionDirectionIncoming
+	record.Phase = "resolve_pending"
+	record.Status = OORSessionStatusPending
+	record.IdempotencyKey = ""
+	record.SnapshotData = []byte{0x02}
 	require.NoError(t, store.UpsertSession(ctx, record))
 
-	got, err = store.LookupActiveSessionByIdempotencyKey(ctx, "the-key")
+	rows, err := store.ListNonTerminal(ctx)
 	require.NoError(t, err)
-	require.Equal(t, sid, got.SessionID)
+	require.Len(t, rows, 2)
+	require.ElementsMatch(
+		t, []chainhash.Hash{pending, selfTransfer},
+		[]chainhash.Hash{rows[0].SessionID, rows[1].SessionID},
+	)
+}
 
-	// A failed session releases its key so a keyed retry admits a fresh
-	// session instead of deduping against the dead one.
-	record.Status = OORSessionStatusFailed
-	require.NoError(t, store.UpsertSession(ctx, record))
+// TestOORDispatchAttemptSurvivesSessionUpdates verifies that the canonical
+// keyed request remains immutable after terminal and incoming lifecycle writes
+// replace the mutable session projection.
+func TestOORDispatchAttemptSurvivesSessionUpdates(t *testing.T) {
+	t.Parallel()
 
-	_, err = store.LookupActiveSessionByIdempotencyKey(ctx, "the-key")
+	ctx := t.Context()
+	store := newOORSessionRegistryStoreForTest(t)
+
+	sid := sessionHash(0x41)
+	requestData := []byte{0xa1, 0xb2}
+	outgoing := OORSessionRegistryRecord{
+		SessionID:      sid,
+		ActorID:        "actor-shared-session",
+		Direction:      OORSessionDirectionOutgoing,
+		Phase:          "submit_sent",
+		IdempotencyKey: "durable-dispatch-key",
+		Status:         OORSessionStatusPending,
+		SnapshotData: []byte{
+			0x01,
+		},
+		SnapshotVersion:     1,
+		DispatchRequestData: requestData,
+	}
+	require.NoError(t, store.UpsertSession(ctx, outgoing))
+
+	attempt, err := store.GetDispatchAttemptByIdempotencyKey(
+		ctx, outgoing.IdempotencyKey,
+	)
+	require.NoError(t, err)
+	require.Equal(t, sid, attempt.SessionID)
+	require.Equal(t, requestData, attempt.RequestData)
+
+	// Redelivery of the same checkpoint is idempotent.
+	require.NoError(t, store.UpsertSession(ctx, outgoing))
+	replayed, err := store.GetDispatchAttemptBySessionID(ctx, sid)
+	require.NoError(t, err)
+	require.Equal(t, *attempt, *replayed)
+
+	incoming := OORSessionRegistryRecord{
+		SessionID: sid,
+		ActorID:   outgoing.ActorID,
+		Direction: OORSessionDirectionIncoming,
+		Phase:     "completed",
+		Status:    OORSessionStatusCompleted,
+		SnapshotData: []byte{
+			0x02,
+		},
+		SnapshotVersion: 1,
+	}
+	require.NoError(t, store.UpsertSession(ctx, incoming))
+
+	stored, err := store.GetSession(ctx, sid)
+	require.NoError(t, err)
+	require.Equal(t, OORSessionDirectionIncoming, stored.Direction)
+	require.Equal(t, incoming.SnapshotData, stored.SnapshotData)
+
+	attempt, err = store.GetDispatchAttemptByIdempotencyKey(
+		ctx, outgoing.IdempotencyKey,
+	)
+	require.NoError(t, err)
+	require.Equal(t, requestData, attempt.RequestData)
+
+	conflict := outgoing
+	conflict.DispatchRequestData = []byte{0xff}
+	err = store.UpsertSession(ctx, conflict)
+	require.ErrorIs(t, err, ErrOORDispatchAttemptConflict)
+
+	conflict = outgoing
+	conflict.SessionID = sessionHash(0x42)
+	conflict.DispatchRequestData = []byte{0xff}
+	err = store.UpsertSession(ctx, conflict)
+	require.ErrorIs(t, err, ErrOORDispatchAttemptConflict)
+	_, err = store.GetSession(ctx, conflict.SessionID)
 	require.ErrorIs(t, err, ErrOORSessionNotFound)
+
+	conflict = outgoing
+	conflict.IdempotencyKey = "different-key"
+	err = store.UpsertSession(ctx, conflict)
+	require.ErrorIs(t, err, ErrOORDispatchAttemptConflict)
+	_, err = store.GetDispatchAttemptByIdempotencyKey(
+		ctx, conflict.IdempotencyKey,
+	)
+	require.ErrorIs(t, err, ErrOORDispatchAttemptNotFound)
+
+	stored, err = store.GetSession(ctx, sid)
+	require.NoError(t, err)
+	require.Equal(t, incoming.Direction, stored.Direction)
+	require.Empty(t, stored.IdempotencyKey)
 }
 
 // TestOORSessionRegistryIdempotencyKeyUniqueIndex verifies the partial UNIQUE
