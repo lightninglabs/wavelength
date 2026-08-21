@@ -2632,9 +2632,10 @@ func TestPaySessionFundingReplayAfterLostResponse(t *testing.T) {
 	// checkpoint preimage after the SDK has recovered from the lost
 	// response.
 	daemonConn.spentVTXO = &VTXOInfo{
-		Outpoint:    "funding-session:0",
-		AmountSat:   testInSwapAmountSat,
-		SpentByTxID: "claim-session",
+		Outpoint:  "funding-session:0",
+		AmountSat: testInSwapAmountSat,
+		SpentByTxID: "0123456789abcdef0123456789abcdef" +
+			"0123456789abcdef0123456789abcdef",
 	}
 	daemonConn.indexedPackage = &OORPackageInfo{
 		CheckpointPSBTs: [][]byte{
@@ -2677,7 +2678,12 @@ func TestPaySessionFundingReplayAfterLostResponse(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	terminalResult, err := terminal.Wait(t.Context())
+	terminalCtx, cancelTerminal := context.WithTimeout(
+		t.Context(), time.Second,
+	)
+	defer cancelTerminal()
+
+	terminalResult, err := terminal.Wait(terminalCtx)
 	require.NoError(t, err)
 	require.Equal(t, result, terminalResult)
 	require.Equal(t, PayStateCompleted, terminal.State())
@@ -2790,7 +2796,12 @@ func TestPaySessionExpiresAfterAuthoritativeFundingMiss(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	_, err = terminal.Wait(t.Context())
+	terminalCtx, cancelTerminal := context.WithTimeout(
+		t.Context(), time.Second,
+	)
+	defer cancelTerminal()
+
+	_, err = terminal.Wait(terminalCtx)
 	require.ErrorIs(t, err, errSwapExpired)
 	require.Equal(t, PayStateExpired, terminal.State())
 	require.Equal(t, 0, daemonConn.armRecoveryCalls)
