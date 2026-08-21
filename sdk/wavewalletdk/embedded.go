@@ -204,7 +204,7 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 			errors.Join(err, closeErr, runErr, listenerErr))
 	}
 
-	return newClient(conn, true, waitErrChan,
+	client := newClient(conn, true, waitErrChan,
 		func(closeCtx context.Context) error {
 			closeErr := conn.Close()
 			cancel()
@@ -213,7 +213,11 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 
 			return errors.Join(closeErr, runErr, listenerErr)
 		},
-	), nil
+	)
+	client.waitWalletServicesReady = server.WaitForWalletServicesReady
+	client.recoverWalletState = server.RecoverWalletState
+
+	return client, nil
 }
 
 // requireEmbeddedWalletRuntime makes Start fail before booting a daemon when

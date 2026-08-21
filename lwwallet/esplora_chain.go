@@ -58,6 +58,12 @@ type EsploraChainService struct {
 	// whose methods do not accept a context parameter.
 	runCtx context.Context //nolint:containedctx
 
+	// runCancel cancels runCtx before btcwallet waits for its recovery
+	// goroutine. Without this explicit cancellation, a first-start recovery
+	// can remain blocked in an Esplora request while wallet shutdown waits
+	// for that same recovery to finish.
+	runCancel context.CancelFunc
+
 	// maxGapFillPerTipEvent caps the number of missed heights that a
 	// single processTipEvent invocation will walk before yielding
 	// back to the handleTipEvents loop. Initialized from
@@ -124,13 +130,16 @@ func (s *EsploraChainService) Start(ctx context.Context) error {
 		return fmt.Errorf("subscribe to tip poller: %w", err)
 	}
 
+	runCtx, runCancel := context.WithCancel(ctx)
+
 	s.mu.Lock()
 	s.bestBlock = waddrmgr.BlockStamp{
 		Height:    tipHeight,
 		Hash:      tipHash,
 		Timestamp: tipTime,
 	}
-	s.runCtx = ctx
+	s.runCtx = runCtx
+	s.runCancel = runCancel
 	s.mu.Unlock()
 
 	// Send ClientConnected so btcwallet knows the chain backend
@@ -138,9 +147,9 @@ func (s *EsploraChainService) Start(ctx context.Context) error {
 	s.notifications <- chain.ClientConnected{}
 
 	s.wg.Add(1)
-	go s.handleChainEvents(ctx, chainSub)
+	go s.handleChainEvents(runCtx, chainSub)
 
-	s.log.InfoS(ctx, "Esplora chain service started",
+	s.log.InfoS(runCtx, "Esplora chain service started",
 		slog.Int("tip_height", int(tipHeight)),
 		slog.String("tip_hash", tipHash.String()),
 	)
@@ -154,10 +163,18 @@ func (s *EsploraChainService) Start(ctx context.Context) error {
 // both reach close(s.quit) and panic on a double close.
 func (s *EsploraChainService) Stop() {
 	s.stopOnce.Do(func() {
+		ctx := s.requestContext()
 		s.log.InfoS(
-			s.requestContext(),
+			ctx,
 			"Stopping Esplora chain service",
 		)
+
+		s.mu.Lock()
+		cancel := s.runCancel
+		s.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
 
 		close(s.quit)
 	})

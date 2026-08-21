@@ -152,6 +152,21 @@ type OpenWalletResult struct {
 	IdentityPubKey string
 }
 
+// ExternalSeedWalletOpenResult reports an external-seed wallet import or
+// unlock and the optional state-recovery scan performed for that operation.
+// It deliberately omits the transient internal aezeed mnemonic: the host-owned
+// external root and derivation contract are the wallet's backup boundary.
+type ExternalSeedWalletOpenResult struct {
+	Imported                    bool
+	IdentityPubKey              string
+	RecoveryRan                 bool
+	RecoveredBoardingAddresses  uint32
+	RecoveredBoardingUTXOs      uint32
+	RecoveredVTXOs              uint32
+	RecoveredOORReceiveScripts  uint32
+	RecoveredOORRecipientEvents uint32
+}
+
 // Balance is the wallet-level balance view.
 type Balance struct {
 	ConfirmedSat       int64

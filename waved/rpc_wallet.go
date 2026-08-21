@@ -524,7 +524,7 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 	// failures are reported as such: the caller must not retry
 	// InitWallet (the daemon is already unlocked), only the
 	// post-start step that failed.
-	var recoveryResult *walletRecoveryResult
+	var recoveryResult *WalletRecoveryResult
 	if req.GetRecoverState() {
 		recoveryResult, err = r.recoverWalletState(
 			ctx, req.GetRecoveryWindow(),

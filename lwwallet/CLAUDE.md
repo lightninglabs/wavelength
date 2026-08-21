@@ -126,6 +126,8 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
   UTXO set, because btcwallet does not credit-mark non-default scope outputs.
 - `Stop()` explicitly closes btcwallet's internal database to prevent resource
   leaks.
+- Shutdown and startup rollback cancel `EsploraChainService` before stopping
+  btcwallet so an active recovery can drain.
 
 ### js/wasm wallet store (`walletdb_wasm.go`)
 

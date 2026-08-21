@@ -1,13 +1,15 @@
 //go:build js && wasm
 
-// Command wavewalletdk-wasm exposes the embedded wavewalletdk runtime to
-// browser JavaScript. It is a thin syscall/js adapter over the
+// Command wavewalletdk-wasm exposes the embedded wavewalletdk runtime through
+// a private browser transport ABI. It is a thin syscall/js adapter over the
 // sdk/wavewalletdk/mobile JSON facade: every verb takes a JS request object and
 // resolves a JS response object, so the daemon, swap, and OOR machinery all run
-// in-process in the one browser VM with no separate gateway. The facade is the
-// single source of truth shared with the gomobile bindings, so this bridge
-// never reaches into the wavewalletdk.Client API directly and cannot drift from
-// it.
+// in-process in the one browser VM with no separate gateway. A typed host SDK
+// invokes this ABI from its Worker and owns lifecycle serialization and
+// cross-tab locking; application code must not call the global directly. The
+// facade is the single source of truth shared with the gomobile bindings, so
+// this bridge never reaches into the wavewalletdk.Client API directly and
+// cannot drift from it.
 //
 //	Build with: GOOS=js GOARCH=wasm go build \
 //		-tags "mobile wavewalletrpc swapruntime" ./cmd/wavewalletdk-wasm
@@ -22,8 +24,8 @@ import (
 	"github.com/lightninglabs/wavelength/sdk/wavewalletdk/mobile"
 )
 
-// main installs the browser entry point and then parks the Go runtime so the
-// exported callbacks stay live for the lifetime of the page.
+// main installs the private browser transport entry point and then parks the Go
+// runtime so the exported callbacks stay live for the lifetime of the page.
 func main() {
 	js.Global().Set("wavewalletdkCall", js.FuncOf(walletCall))
 	js.Global().Call("dispatchEvent", js.Global().Get("CustomEvent").New(
@@ -33,9 +35,11 @@ func main() {
 	select {}
 }
 
-// walletCall is the single JS entry point. It takes a method name and an
-// optional request object and returns a Promise that resolves with the verb's
-// JSON response decoded into a JS value (or rejects with an Error).
+// walletCall is the private JS transport dispatcher used by a typed host SDK.
+// It takes a method name and an optional request object and returns a Promise
+// that resolves with the verb's JSON response decoded into a JS value (or
+// rejects with an Error). Calling it directly would bypass the host SDK's
+// lifecycle queue and runtime lock.
 func walletCall(_ js.Value, args []js.Value) any {
 	if len(args) == 0 {
 		return rejected(errors.New("method is required"))
@@ -49,7 +53,8 @@ func walletCall(_ js.Value, args []js.Value) any {
 	}
 
 	switch method {
-	// Lifecycle.
+	// Private lifecycle transport verbs. The typed host SDK serializes them
+	// with stop and owns the runtime lock.
 	case "start":
 		cfg, err := startConfig(req)
 		if err != nil {
@@ -58,6 +63,21 @@ func walletCall(_ js.Value, args []js.Value) any {
 
 		return promise(func() (any, error) {
 			return js.Null(), mobile.Start(cfg)
+		})
+
+	case "startExternalSeedWallet":
+		body, err := externalSeedWalletStartRequest(req)
+		if err != nil {
+			return rejected(err)
+		}
+
+		return promise(func() (any, error) {
+			out, err := mobile.StartExternalSeedWallet(body)
+			if err != nil {
+				return nil, err
+			}
+
+			return parse(out), nil
 		})
 
 	case "stop":
@@ -309,17 +329,49 @@ func startConfig(req js.Value) (string, error) {
 		req = js.Global().Get("Object").New()
 	}
 
-	if v := req.Get("data_dir"); v.IsUndefined() || v.IsNull() ||
-		v.String() == "" {
-
-		if wasmhost.UnderNode() {
-			return "", errNodeDataDirRequired
-		}
-
-		req.Set("data_dir", browserDataDir)
+	if err := ensureDataDir(req); err != nil {
+		return "", err
 	}
 
 	return stringify(req), nil
+}
+
+// externalSeedWalletStartRequest renders the typed SDK's private external-seed
+// transport request. Its nested config must already select the final wallet
+// data directory; unlike legacy Start, this path cannot safely guess one.
+func externalSeedWalletStartRequest(req js.Value) ([]byte, error) {
+	if req.IsUndefined() || req.IsNull() || req.Type() != js.TypeObject {
+		req = js.Global().Get("Object").New()
+	}
+
+	cfg := req.Get("config")
+	if cfg.IsUndefined() || cfg.IsNull() || cfg.Type() != js.TypeObject {
+		return nil, errors.New("config must be an object")
+	}
+	dataDir := cfg.Get("data_dir")
+	if dataDir.IsUndefined() || dataDir.IsNull() || dataDir.String() == "" {
+		return nil, errors.New("config.data_dir must select the " +
+			"final wallet directory")
+	}
+
+	return jsonBytes(req), nil
+}
+
+// ensureDataDir fills the browser-safe data directory or requires an explicit
+// host-filesystem path under Node for legacy Start.
+func ensureDataDir(cfg js.Value) error {
+	if v := cfg.Get("data_dir"); !v.IsUndefined() && !v.IsNull() &&
+		v.String() != "" {
+		return nil
+	}
+
+	if wasmhost.UnderNode() {
+		return errNodeDataDirRequired
+	}
+
+	cfg.Set("data_dir", browserDataDir)
+
+	return nil
 }
 
 // stringify renders a JS request value as a JSON string, or "" when absent.
