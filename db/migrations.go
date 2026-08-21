@@ -10,7 +10,11 @@ const (
 	// daemon.
 	//
 	// NOTE: This MUST be updated when a new migration is added.
+<<<<<<< HEAD
 	LatestMigrationVersion uint = 16
+=======
+	LatestMigrationVersion uint = 18
+>>>>>>> 3c9995b6 (db: Persist immutable OOR dispatch attempts)
 )
 
 // MigrationTarget is a functional option that can be passed to applyMigrations
