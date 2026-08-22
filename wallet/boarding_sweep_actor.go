@@ -210,19 +210,63 @@ func (m *ReplayPendingIntentsResponse) MessageType() string {
 
 func (m *ReplayPendingIntentsResponse) walletRespSealed() {}
 
-// BoardingSweepSpendNotification is a Tell carrying a chainsource spend
-// event for a boarding-sweep input. Emitted by the chainsource subscription
-// the wallet actor sets up via MapSpendEvent.
+// BoardingSweepSpendStatus identifies which point in the chainsource
+// spend-watch reorg-aware lifecycle drove this notification. Splitting
+// the status out makes it impossible for the handler to confuse a
+// reorg-out with a fresh spend: a reorged-out spending block should
+// not advance the input's persistent state machine further than the
+// canonical chain has.
+type BoardingSweepSpendStatus int
+
+const (
+	// BoardingSweepSpendStatusUnknown is the zero value; receiving it
+	// indicates a programmer error (MapSpendEvent fell through).
+	BoardingSweepSpendStatusUnknown BoardingSweepSpendStatus = iota
+
+	// BoardingSweepSpendStatusSpent reports that the watched outpoint
+	// was observed spent on the canonical chain by SpendingTxid at
+	// SpendingHeight. The observation is provisional until
+	// BoardingSweepSpendStatusDone arrives — a reorg can roll it back
+	// via BoardingSweepSpendStatusReorged.
+	BoardingSweepSpendStatusSpent
+
+	// BoardingSweepSpendStatusReorged reports that a previously
+	// delivered Spent observation was reorged out. The handler logs
+	// the divergence and leaves the watch armed; the chainsource
+	// sub-actor stays alive in reorg-aware mode so a subsequent
+	// re-spend on the new canonical chain re-fires
+	// BoardingSweepSpendStatusSpent.
+	BoardingSweepSpendStatusReorged
+
+	// BoardingSweepSpendStatusDone reports that the spend observation
+	// is past the chainsource backend's reorg-safety depth and is no
+	// longer reversible. Synthesized by the spend-actor's
+	// FinalityDepth synthesizer when the backend (notably lndclient
+	// over gRPC) does not surface a native Done signal.
+	BoardingSweepSpendStatusDone
+)
+
+// BoardingSweepSpendNotification is a Tell carrying one event from the
+// chainsource spend-watch reorg-aware lifecycle for a boarding-sweep
+// input. Emitted by the subscription the wallet actor sets up via
+// MapSpendEvent / MapSpendReorgedEvent / MapSpendDoneEvent.
 type BoardingSweepSpendNotification struct {
 	actor.BaseMessage
 
-	// Outpoint is the boarding UTXO that was spent.
+	// Status identifies which lifecycle event this notification
+	// carries. See BoardingSweepSpendStatus.
+	Status BoardingSweepSpendStatus
+
+	// Outpoint is the boarding UTXO whose spend lifecycle changed.
 	Outpoint wire.OutPoint
 
-	// SpendingTxid is the transaction that confirmed the spend.
+	// SpendingTxid is the transaction that spent the outpoint when
+	// Status=Spent; zero on Reorged / Done (the wire-level event
+	// carries no spender identity past the first Spent observation).
 	SpendingTxid chainhash.Hash
 
-	// SpendingHeight is the block height of the spending transaction.
+	// SpendingHeight is the block height of the spending transaction
+	// when Status=Spent; zero on Reorged / Done.
 	SpendingHeight int32
 }
 
@@ -257,8 +301,7 @@ const (
 	// delivered TxConfirmed for this sweep was reorged out. The
 	// handler must NOT call MarkBoardingSweepFailed; instead it
 	// leaves the spend watches and pending state armed so the next
-	// TxConfirmed on the new canonical chain (or an eventual
-	// TxFailed) drives the terminal decision.
+	// TxConfirmed on the new canonical chain can drive finality.
 	BoardingSweepTxStatusReorged
 
 	// BoardingSweepTxStatusFinalized reports that the sweep
@@ -268,9 +311,9 @@ const (
 	BoardingSweepTxStatusFinalized
 
 	// BoardingSweepTxStatusFailed reports a terminal failure from
-	// txconfirm (broadcast rejected, retry budget exhausted, etc.).
-	// The handler marks the sweep failed in the store and cleans up
-	// pending state.
+	// txconfirm. It is terminal for that broadcaster attempt, but is not
+	// objective evidence that every input is unspent. The wallet therefore
+	// keeps the sweep reserved for the normal tip-paced resume path.
 	BoardingSweepTxStatusFailed
 )
 
@@ -298,8 +341,8 @@ func classifyTxconfirmNotificationForBoardingSweep(
 	case *txconfirm.TxReorged:
 		// Reorg-out: do NOT mark the sweep as failed in the
 		// handler. Leave spend watches and pending state armed so
-		// the next TxConfirmed on the new canonical chain (or an
-		// eventual TxFailed) drives the terminal decision.
+		// the next TxConfirmed on the new canonical chain can drive
+		// finality.
 		return BoardingSweepTxNotification{
 			Status: BoardingSweepTxStatusReorged,
 			Txid:   ev.Txid,
@@ -416,6 +459,12 @@ type pendingSweepState struct {
 	// chainsource spend-watch deregistration.
 	inputs map[wire.OutPoint]string
 
+	// provisionalSpends keeps the spender identity that arrives with a
+	// Spent event until the matching Done event seals it. Reorged removes
+	// the observation, while restart reconstructs it from the still-pending
+	// durable row and historical spend watch.
+	provisionalSpends map[wire.OutPoint]provisionalSweepSpend
+
 	// totalAmount is the gross input value of the sweep.
 	totalAmount btcutil.Amount
 
@@ -435,6 +484,13 @@ type pendingSweepState struct {
 	// re-attempt the txconfirm submit and any missing input watches"
 	// when the same sweep is observed across a block-epoch retry.
 	submitted bool
+}
+
+// provisionalSweepSpend is the reversible positive observation retained until
+// chainsource reports that the spend reached policy finality.
+type provisionalSweepSpend struct {
+	txid   chainhash.Hash
+	height int32
 }
 
 // boardingSweepCallerID returns the deterministic chainsource caller-id
@@ -838,22 +894,19 @@ func (a *Ark) publishBoardingSweep(ctx context.Context,
 		ctx, args.signed.Tx, args.pkScript, uint32(args.bestHeight),
 	); err != nil {
 
-		failErr := a.sweepStore.MarkBoardingSweepFailed(
-			ctx, pending.txid, err,
-		)
-		if failErr != nil {
-			log.WarnS(ctx, "Failed to roll back failed sweep",
-				failErr, slog.String(
-					"txid", pending.txid.String(),
-				))
-		}
-
-		delete(a.pendingSweeps, pending.txid)
-		a.cancelSweepSpendWatches(ctx, pending)
+		// A broadcaster failure proves only that this submission
+		// attempt failed. It cannot prove all inputs remained unspent,
+		// especially when a conflicting spend notification may already
+		// be queued. Keep the durable reservation and watches intact.
+		// The existing per-tip recovery pass retries at a bounded
+		// cadence; an immediate self-retry here could spin forever on a
+		// structurally invalid tx.
+		pending.submitted = false
 
 		return fn.Ok[WalletResp](
 			failedSweepResponse(
-				fmt.Errorf("submit sweep to broadcaster: %w",
+				fmt.Errorf("submit sweep to broadcaster: %w; "+
+					"inputs remain reserved for recovery",
 					err),
 				args.feeRate,
 				args.confTarget,
@@ -923,9 +976,36 @@ func (a *Ark) registerSweepSpendWatch(ctx context.Context,
 	notify := chainsource.MapSpendEvent(a.selfRef,
 		func(ev chainsource.SpendEvent) WalletMsg {
 			return BoardingSweepSpendNotification{
+				Status:         BoardingSweepSpendStatusSpent,
 				Outpoint:       ev.Outpoint,
 				SpendingTxid:   ev.SpendingTxid,
 				SpendingHeight: ev.SpendingHeight,
+			}
+		},
+	)
+
+	// Reorg-aware lifecycle refs. Without these, a reorged-out
+	// external spender would leave the input row marked
+	// external_spent in the persistent store with no rollback path —
+	// the chainsource SpendActor would either tear the registration
+	// down (legacy mode) or hold reorg events for nobody (reorg-aware
+	// mode missing the refs). Wiring them keeps the registration
+	// alive past the first Spent event, surfaces Reorged on rollback,
+	// and lets the FinalityDepth synthesizer eventually fire Done so
+	// the sub-actor exits cleanly.
+	reorgedNotify := chainsource.MapSpendReorgedEvent(a.selfRef,
+		func(ev chainsource.SpendReorgedEvent) WalletMsg {
+			return BoardingSweepSpendNotification{
+				Status:   BoardingSweepSpendStatusReorged,
+				Outpoint: ev.Outpoint,
+			}
+		},
+	)
+	doneNotify := chainsource.MapSpendDoneEvent(a.selfRef,
+		func(ev chainsource.SpendDoneEvent) WalletMsg {
+			return BoardingSweepSpendNotification{
+				Status:   BoardingSweepSpendStatusDone,
+				Outpoint: ev.Outpoint,
 			}
 		},
 	)
@@ -935,11 +1015,13 @@ func (a *Ark) registerSweepSpendWatch(ctx context.Context,
 		notify,
 	)
 	req := &chainsource.RegisterSpendRequest{
-		CallerID:    callerID,
-		Outpoint:    &op,
-		PkScript:    out.PkScript,
-		HeightHint:  heightHint,
-		NotifyActor: notifyOpt,
+		CallerID:      callerID,
+		Outpoint:      &op,
+		PkScript:      out.PkScript,
+		HeightHint:    heightHint,
+		NotifyActor:   notifyOpt,
+		NotifyReorged: fn.Some(reorgedNotify),
+		NotifyDone:    fn.Some(doneNotify),
 	}
 
 	future := a.chainSource.Ask(ctx, req)
@@ -965,6 +1047,9 @@ func (a *Ark) cancelSweepSpendWatches(ctx context.Context,
 		cancellations[op] = id
 	}
 	pending.inputs = make(map[wire.OutPoint]string)
+	pending.provisionalSpends = make(
+		map[wire.OutPoint]provisionalSweepSpend,
+	)
 
 	for op, callerID := range cancellations {
 		op := op
@@ -1069,8 +1154,9 @@ func (a *Ark) submitSweepToConfirm(ctx context.Context, tx *wire.MsgTx,
 	return nil
 }
 
-// handleSweepSpendNotification updates persistent state when an input of
-// an in-flight aggregate sweep is observed spent on chain.
+// handleSweepSpendNotification holds a positive spend observation in memory
+// until Done seals it. Reorged discards that provisional observation, so the
+// durable sweep row never advances on evidence that can still disappear.
 func (a *Ark) handleSweepSpendNotification(ctx context.Context,
 	notif BoardingSweepSpendNotification) fn.Result[WalletResp] {
 
@@ -1078,109 +1164,169 @@ func (a *Ark) handleSweepSpendNotification(ctx context.Context,
 		return fn.Ok[WalletResp](&BoardingSweepNotificationAck{})
 	}
 
-	var (
-		callerID string
-		pending  *pendingSweepState
-	)
+	var pending *pendingSweepState
 	for _, candidate := range a.pendingSweeps {
-		id, ok := candidate.inputs[notif.Outpoint]
+		_, ok := candidate.inputs[notif.Outpoint]
 		if !ok {
 			continue
 		}
 
-		callerID = id
 		pending = candidate
 
 		break
 	}
 
-	// The sweep's own input-spend notification is only a provisional
-	// one-confirmation observation. txconfirm owns the reorg-aware watch
-	// for that transaction and will commit the store transition at
-	// Finalized. Deferring here prevents a Confirmed -> Reorged -> Failed
-	// lifecycle from leaving the store and ledger falsely
-	// terminal-successful.
-	if pending != nil && notif.SpendingTxid == pending.txid {
-		a.logger(ctx).DebugS(
-			ctx,
-			"Deferring own sweep spend until finality",
+	switch notif.Status {
+	case BoardingSweepSpendStatusSpent:
+		if pending == nil {
+			return fn.Ok[WalletResp](
+				&BoardingSweepNotificationAck{},
+			)
+		}
+		if pending.provisionalSpends == nil {
+			pending.provisionalSpends = make(
+				map[wire.OutPoint]provisionalSweepSpend,
+			)
+		}
+
+		pending.provisionalSpends[notif.Outpoint] =
+			provisionalSweepSpend{
+				txid:   notif.SpendingTxid,
+				height: notif.SpendingHeight,
+			}
+
+		return fn.Ok[WalletResp](&BoardingSweepNotificationAck{})
+
+	case BoardingSweepSpendStatusReorged:
+		if pending != nil {
+			delete(pending.provisionalSpends, notif.Outpoint)
+		}
+
+		a.logger(ctx).WarnS(ctx, "Boarding-sweep input spend "+
+			"reorged out; waiting for a canonical re-spend",
+			nil,
 			slog.String("outpoint", notif.Outpoint.String()),
-			slog.String("sweep_txid", pending.txid.String()),
+		)
+
+		return fn.Ok[WalletResp](&BoardingSweepNotificationAck{})
+
+	case BoardingSweepSpendStatusDone:
+		if pending == nil {
+			return fn.Ok[WalletResp](
+				&BoardingSweepNotificationAck{},
+			)
+		}
+
+		spend, ok := pending.provisionalSpends[notif.Outpoint]
+		if !ok {
+			a.logger(ctx).WarnS(ctx, "Final boarding-sweep spend "+
+				"arrived without its positive observation",
+				nil,
+				slog.String("outpoint", notif.Outpoint.String()),
+			)
+			a.rearmSweepSpendWatch(ctx, pending, notif.Outpoint)
+
+			return fn.Ok[WalletResp](
+				&BoardingSweepNotificationAck{},
+			)
+		}
+
+		resolved, err := a.sweepStore.MarkBoardingSweepInputSpent(
+			ctx, notif.Outpoint, spend.txid, spend.height,
+		)
+
+		return a.finishSweepSpend(
+			ctx, pending, notif.Outpoint, spend.txid, resolved, err,
+		)
+
+	default:
+		a.logger(ctx).WarnS(ctx, "Boarding-sweep spend notification "+
+			"with unknown status",
+			fmt.Errorf("status=%d", notif.Status),
+			slog.String("outpoint", notif.Outpoint.String()),
 		)
 
 		return fn.Ok[WalletResp](&BoardingSweepNotificationAck{})
 	}
+}
 
-	resolved, err := a.sweepStore.MarkBoardingSweepInputSpent(
-		ctx, notif.Outpoint, notif.SpendingTxid, notif.SpendingHeight,
-	)
+// finishSweepSpend applies a terminal store result and keeps the durable row
+// recoverable when persistence fails.
+func (a *Ark) finishSweepSpend(ctx context.Context, pending *pendingSweepState,
+	outpoint wire.OutPoint, spendingTxid chainhash.Hash, resolved bool,
+	err error) fn.Result[WalletResp] {
+
 	switch {
-	// A duplicate spend event for an input row that has already been
-	// resolved (e.g. a re-org-then-respend, or a stale buffered event
-	// arriving after the sweep moved to a terminal state) returns
-	// ErrNoRows from the store. This is benign — the row is already in
-	// its target state — so suppress it to Debug rather than alerting on
-	// every duplicate.
 	case errors.Is(err, sql.ErrNoRows):
-		a.logger(ctx).DebugS(ctx,
-			"Boarding sweep input already resolved; "+
-				"ignoring duplicate spend",
-			slog.String("outpoint", notif.Outpoint.String()),
-			slog.String(
-				"spending_txid", notif.SpendingTxid.String(),
-			))
-
-		return fn.Ok[WalletResp](&BoardingSweepNotificationAck{})
+		a.logger(ctx).DebugS(
+			ctx,
+			"Boarding sweep input already resolved; ignoring "+
+				"duplicate",
+			slog.String("outpoint", outpoint.String()),
+			slog.String("spending_txid", spendingTxid.String()),
+		)
 
 	case err != nil:
-		a.logger(ctx).WarnS(ctx,
-			"Failed to mark boarding sweep input spent", err,
-			slog.String("outpoint", notif.Outpoint.String()),
-			slog.String(
-				"spending_txid", notif.SpendingTxid.String(),
-			))
+		a.logger(ctx).WarnS(
+			ctx,
+			"Failed to finalize boarding sweep input spend",
+			err,
+			slog.String("outpoint", outpoint.String()),
+			slog.String("spending_txid", spendingTxid.String()),
+		)
+		a.rearmSweepSpendWatch(ctx, pending, outpoint)
 
 		return fn.Ok[WalletResp](&BoardingSweepNotificationAck{})
 	}
 
-	if pending != nil {
-		delete(pending.inputs, notif.Outpoint)
-		delete(a.pendingSweepInputs, notif.Outpoint)
-		if resolved {
-			delete(a.pendingSweeps, pending.txid)
-		}
-	}
-
-	if callerID != "" {
-		op := notif.Outpoint
-		if err := a.chainSource.Tell(ctx,
-			&chainsource.UnregisterSpendRequest{
-				CallerID: callerID,
-				Outpoint: &op,
-			}); err != nil {
-
-			a.logger(ctx).DebugS(
-				ctx,
-				"Best-effort unregister spend failed",
-				err,
-				slog.String("outpoint", op.String()),
-			)
-		}
-	}
-
-	if resolved && pending != nil {
-		// Cancel any straggler spend watches for the same sweep so
-		// chainsource sub-actors do not leak.
+	delete(pending.provisionalSpends, outpoint)
+	delete(pending.inputs, outpoint)
+	delete(a.pendingSweepInputs, outpoint)
+	if resolved || len(pending.inputs) == 0 {
+		delete(a.pendingSweeps, pending.txid)
 		a.cancelSweepSpendWatches(ctx, pending)
 	}
 
 	return fn.Ok[WalletResp](&BoardingSweepNotificationAck{})
 }
 
+// rearmSweepSpendWatch drops stale in-memory watch ownership and asks the
+// normal resume path to replay the still-pending durable row.
+func (a *Ark) rearmSweepSpendWatch(ctx context.Context,
+	pending *pendingSweepState, outpoint wire.OutPoint) {
+
+	delete(pending.provisionalSpends, outpoint)
+	delete(pending.inputs, outpoint)
+	delete(a.pendingSweepInputs, outpoint)
+
+	a.scheduleBoardingSweepResume(ctx)
+}
+
+// scheduleBoardingSweepResume asks the actor-owned recovery path to reconstruct
+// pending watches without inheriting notification-message cancellation.
+func (a *Ark) scheduleBoardingSweepResume(ctx context.Context) {
+	if a.selfRef == nil {
+		return
+	}
+
+	// The wallet actor, not the notification message, owns recovery. Keep
+	// trace values while detaching the re-arm from a caller context that
+	// may already be canceled as a chainsource sub-actor shuts down.
+	rearmCtx := context.WithoutCancel(ctx)
+	err := a.selfRef.Tell(rearmCtx, &ResumeBoardingSweepsRequest{})
+	if err != nil {
+		a.logger(ctx).WarnS(
+			ctx,
+			"Failed to schedule boarding sweep spend re-arm",
+			err,
+		)
+	}
+}
+
 // handleSweepTxNotification processes the reorg-aware txconfirm lifecycle for
 // a tracked aggregate sweep. Confirmed remains provisional. Finalized commits
-// the store and ledger transitions and releases the in-memory watches, while
-// Failed mirrors a terminal broadcaster failure into the store.
+// the store and ledger transitions and releases the in-memory watches. Failed
+// ends one broadcaster attempt but keeps the inputs reserved for safe replay.
 func (a *Ark) handleSweepTxNotification(ctx context.Context,
 	notif BoardingSweepTxNotification) fn.Result[WalletResp] {
 
@@ -1205,16 +1351,6 @@ func (a *Ark) handleSweepTxNotification(ctx context.Context,
 		// alive, so a subsequent TxConfirmed on the new canonical
 		// chain remains provisional and an eventual Finalized commits
 		// the canonical result.
-		//
-		// Best-effort backstop only: the per-input chainsource
-		// spend watch fires handleSweepSpendNotification if some
-		// other party spends an input. That spend-watch path is
-		// not itself reorg-symmetric — MapSpendEvent collapses the
-		// chainsource SpendEvent lifecycle to a single
-		// BoardingSweepSpendNotification without surfacing
-		// Reorged / Done — so a reorged-out external spender will
-		// leave the input row marked external_spent until manual
-		// reconciliation. Closing that gap is tracked separately.
 		a.logger(ctx).WarnS(
 			ctx,
 			"Boarding sweep confirmation reorged out; waiting "+
@@ -1234,7 +1370,21 @@ func (a *Ark) handleSweepTxNotification(ctx context.Context,
 			slog.String("txid", notif.Txid.String()),
 			slog.Int("block_height", int(notif.BlockHeight)),
 		)
-		a.reconcileSweepInputsOnFinalized(ctx, notif)
+		if !a.reconcileSweepInputsOnFinalized(ctx, notif) {
+			// The txconfirm lifecycle is terminal, but durable
+			// input state is not. Re-submit through the normal
+			// recovery path so historical confirmation replay can
+			// retry finalization.
+			pending := a.pendingSweeps[notif.Txid]
+			if pending != nil {
+				pending.submitted = false
+			}
+			a.scheduleBoardingSweepResume(ctx)
+
+			return fn.Ok[WalletResp](
+				&BoardingSweepNotificationAck{},
+			)
+		}
 		a.emitSweepConfirmedLedger(ctx, notif)
 
 		pending := a.pendingSweeps[notif.Txid]
@@ -1252,21 +1402,31 @@ func (a *Ark) handleSweepTxNotification(ctx context.Context,
 		// would diverge the store from the ledger. If the persisted
 		// record shows the sweep already reached a terminal-success
 		// status, ignore the failure rather than undo a booked sweep.
-		if rec, ok := a.lookupSweepRecord(ctx, notif.Txid); ok &&
-			isTerminalSuccessSweepStatus(rec.Status) {
+		if rec, ok := a.lookupSweepRecord(ctx, notif.Txid); ok {
+			switch {
+			case isTerminalSuccessSweepStatus(rec.Status):
+				a.logger(ctx).WarnS(
+					ctx,
+					"Ignoring resolved sweep failure",
+					errors.New(notif.Reason),
+					slog.String("txid",
+						notif.Txid.String()),
+					slog.String("status", rec.Status),
+				)
 
-			a.logger(ctx).WarnS(
-				ctx,
-				"Ignoring boarding sweep failure for an "+
-					"already-resolved sweep",
-				errors.New(notif.Reason),
-				slog.String("txid", notif.Txid.String()),
-				slog.String("status", rec.Status),
-			)
+				return fn.Ok[WalletResp](
+					&BoardingSweepNotificationAck{},
+				)
 
-			return fn.Ok[WalletResp](
-				&BoardingSweepNotificationAck{},
-			)
+			case rec.Status == BoardingSweepStatusFailed:
+				// A legacy/pre-submission path already
+				// completed the failure transition. Do not
+				// schedule a futile replay for a row the
+				// pending-sweep query will not return.
+				return fn.Ok[WalletResp](
+					&BoardingSweepNotificationAck{},
+				)
+			}
 		}
 
 		a.logger(ctx).WarnS(
@@ -1280,23 +1440,13 @@ func (a *Ark) handleSweepTxNotification(ctx context.Context,
 		// operators can alert on a stuck boarding-sweep watcher.
 		a.emitBackgroundTaskError(ctx, "boarding_sweep_watcher")
 
-		err := a.sweepStore.MarkBoardingSweepFailed(
-			ctx, notif.Txid, errors.New(notif.Reason),
-		)
-		if err != nil {
-			a.logger(ctx).WarnS(
-				ctx,
-				"Failed to mark boarding sweep failed",
-				err,
-				slog.String("txid", notif.Txid.String()),
-			)
-		}
-
-		pending := a.pendingSweeps[notif.Txid]
-		delete(a.pendingSweeps, notif.Txid)
-
-		if pending != nil {
-			a.cancelSweepSpendWatches(ctx, pending)
+		// The attempt failed, but that is not negative chain evidence
+		// for any input. Keep the durable reservation and every spend
+		// watch alive so a queued/conflicting spend can still reach
+		// Done. The tip-driven resume path creates a fresh txconfirm
+		// attempt at a bounded cadence until recovery succeeds.
+		if pending := a.pendingSweeps[notif.Txid]; pending != nil {
+			pending.submitted = false
 		}
 
 	default:
@@ -1322,22 +1472,47 @@ func (a *Ark) handleSweepTxNotification(ctx context.Context,
 // The store's status guard rejects a redundant transition with sql.ErrNoRows;
 // that signals "input row already advanced past pending/published" and is
 // treated as a benign no-op. Other errors still log at warn because they
-// indicate a real persistence problem.
+// indicate a real persistence problem. The return value is true only when
+// every durable input transition is known to be complete.
 func (a *Ark) reconcileSweepInputsOnFinalized(ctx context.Context,
-	notif BoardingSweepTxNotification) {
+	notif BoardingSweepTxNotification) bool {
 
-	pending, ok := a.pendingSweeps[notif.Txid]
-	if !ok || pending == nil {
-		return
+	record, found := a.lookupSweepRecord(ctx, notif.Txid)
+	if !found {
+		return false
+	}
+	if record.Status == BoardingSweepStatusConfirmed {
+		return true
+	}
+	if record.Status != BoardingSweepStatusPending &&
+		record.Status != BoardingSweepStatusPublished {
+
+		a.logger(ctx).WarnS(
+			ctx,
+			"Finalized sweep conflicts with durable status",
+			nil,
+			slog.String("txid", notif.Txid.String()),
+			slog.String("status", record.Status),
+		)
+
+		return false
 	}
 
-	for op := range pending.inputs {
-		_, err := a.sweepStore.MarkBoardingSweepInputSpent(
-			ctx, op, notif.Txid, notif.BlockHeight,
+	durable := true
+	resolved := false
+	for _, input := range record.Inputs {
+		if input.Status != BoardingSweepInputStatusPending &&
+			input.Status != BoardingSweepInputStatusPublished {
+
+			continue
+		}
+
+		inputResolved, err := a.sweepStore.MarkBoardingSweepInputSpent(
+			ctx, input.Outpoint, notif.Txid, notif.BlockHeight,
 		)
 		switch {
 		case err == nil:
-			// Success.
+			resolved = resolved || inputResolved
 
 		case errors.Is(err, sql.ErrNoRows):
 			// Row already past pending/published — likely
@@ -1346,15 +1521,31 @@ func (a *Ark) reconcileSweepInputsOnFinalized(ctx context.Context,
 			// Idempotent no-op.
 
 		default:
+			durable = false
 			a.logger(ctx).WarnS(
 				ctx,
 				"Failed to mark sweep input spent on confirm",
 				err,
-				slog.String("outpoint", op.String()),
+				slog.String("outpoint",
+					input.Outpoint.String()),
 				slog.String("txid", notif.Txid.String()),
 			)
 		}
 	}
+
+	if !durable {
+		return false
+	}
+	if resolved {
+		return true
+	}
+
+	// Every candidate raced to a terminal row between the initial read and
+	// its guarded update. Re-read the aggregate so a concurrent idempotent
+	// finalization is accepted only if the durable parent is now confirmed.
+	record, found = a.lookupSweepRecord(ctx, notif.Txid)
+
+	return found && record.Status == BoardingSweepStatusConfirmed
 }
 
 // emitSweepConfirmedLedger emits the double-entry ledger and UTXO audit

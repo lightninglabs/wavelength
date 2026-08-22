@@ -88,6 +88,17 @@ func TestCheckpointRoundTripByPhase(t *testing.T) {
 			typ: &Completed{},
 		},
 		{
+			name: "external_spend_completed",
+			state: &Completed{
+				Job: &JobState{
+					Height:                 106,
+					Trigger:                TriggerRestart,
+					ExternalSpendFinalized: true,
+				},
+			},
+			typ: &Completed{},
+		},
+		{
 			name: "failed",
 			state: &Failed{
 				Job: &JobState{
@@ -144,6 +155,14 @@ func TestCheckpointRoundTripByPhase(t *testing.T) {
 			require.Equal(
 				t, stateJob(tc.state).DeferredCheckpoints,
 				stateJob(restored).DeferredCheckpoints,
+			)
+			require.Equal(
+				t, stateJob(tc.state).ExternalSpendFinalized,
+				stateJob(restored).ExternalSpendFinalized,
+			)
+			require.Equal(
+				t, stateJob(tc.state).ReliveUnsafe,
+				stateJob(restored).ReliveUnsafe,
 			)
 		})
 	}

@@ -75,8 +75,8 @@ func operatorTermsFromResponse(resp *arkrpc.GetInfoResponse) (
 }
 
 // clientSupportedArkVersions returns the Ark protocol versions this client
-// advertises during bootstrap, ordered by preference. Production supports only
-// v1; no production default advertises a higher version.
+// advertises during bootstrap, ordered by preference. V2 remains deliberately
+// absent until the complete one-confirmation safety stack is enabled.
 func clientSupportedArkVersions() []uint32 {
 	return []uint32{arkrpc.ArkProtocolVersionV1}
 }
