@@ -214,6 +214,13 @@ func NewOORSessionActor(cfg SessionActorConfig) (*OORSessionActor, error) {
 	)
 	durableCfg.Log = cfg.Log
 
+	// Bound the session's durable backlog with the shared default
+	// watermarks; a single OOR session that parks this many undelivered
+	// events is wedged, and shedding at the producer is the only move
+	// that helps it.
+	durableCfg.SoftHighWatermark = actor.DefaultSoftHighWatermark
+	durableCfg.HardHighWatermark = actor.DefaultHardHighWatermark
+
 	durable, err := actor.NewDurableActor(durableCfg).Unpack()
 	if err != nil {
 		return nil, err

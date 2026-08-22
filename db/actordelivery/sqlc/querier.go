@@ -35,6 +35,16 @@ type Querier interface {
 	CompleteOutboxMessage(ctx context.Context, arg CompleteOutboxMessageParams) error
 	// Count total dead letters.
 	CountDeadLetters(ctx context.Context) (int64, error)
+	// Count every row currently parked in one mailbox, leased or not. Rows are
+	// deleted on ack, so COUNT(*) is exactly the undelivered backlog. This is the
+	// depth the durable mailbox's watermark admission check reads; the prefix of
+	// idx_mailbox_messages_available covers the mailbox_id equality scan.
+	CountMailboxMessages(ctx context.Context, mailboxID string) (int64, error)
+	// Report the backlog of every mailbox currently holding at least one message,
+	// for the scrape-time depth gauges. Mailboxes with an empty backlog produce
+	// no row, which keeps the result bounded by the number of backed-up actors
+	// rather than the number of actors that have ever existed.
+	CountMailboxMessagesByMailbox(ctx context.Context) ([]CountMailboxMessagesByMailboxRow, error)
 	// Count pending messages for an actor's mailbox.
 	CountPendingMailboxMessages(ctx context.Context, arg CountPendingMailboxMessagesParams) (int64, error)
 	// Count pending outbox messages.

@@ -134,6 +134,16 @@ var ErrMailboxFull = fmt.Errorf("mailbox full")
 // because it has been closed.
 var ErrMailboxClosed = fmt.Errorf("mailbox closed")
 
+// ErrMailboxSaturated indicates that a durable mailbox refused a send because
+// its persistent backlog is at or above the configured hard high watermark.
+// It is the durable analogue of ErrMailboxFull: an in-memory mailbox bounds
+// its queue with channel capacity, a durable mailbox with its watermarks. The
+// message was NOT enqueued, so the caller may drop, stash, or retry it later,
+// exactly as it would on ErrMailboxFull. The refusal is depth-based rather
+// than transactional, so a retry after the consumer catches up succeeds.
+// Mailboxes with no watermarks configured (the default) never return it.
+var ErrMailboxSaturated = fmt.Errorf("mailbox saturated")
+
 // TellOnlyRef is a reference to an actor that only supports "tell" operations.
 // This is useful for scenarios where only fire-and-forget message passing is
 // needed, or to restrict capabilities.
@@ -161,18 +171,23 @@ type TellOnlyRef[M Message] interface {
 	// Durable targets behave differently in three ways that callers must
 	// plan for.
 	//
-	// First, a durable queue has no capacity, so a durable ref never
-	// returns ErrMailboxFull. What it returns under load is the failure
-	// of a bounded database write, because the enqueue is a write that
-	// the mailbox bounds with a short internal deadline rather than
-	// completing instantaneously. That is usually a wrapped
-	// context.DeadlineExceeded, but the identity is the driver's to
-	// choose and some report a deadline as an error of their own. A
+	// First, a durable queue has no in-memory capacity, so a durable ref
+	// never returns ErrMailboxFull. Its capacity signal is
+	// ErrMailboxSaturated instead: a mailbox configured with backlog
+	// watermarks refuses the enqueue once its persistent backlog crosses
+	// the hard watermark, and a mailbox without watermarks (the default)
+	// never refuses for depth at all. What a durable ref returns under
+	// database load is the failure of a bounded write, because the
+	// enqueue is a write that the mailbox bounds with a short internal
+	// deadline rather than completing instantaneously. That is usually a
+	// wrapped context.DeadlineExceeded, but the identity is the driver's
+	// to choose and some report a deadline as an error of their own. A
 	// caller that only retries on ErrMailboxFull therefore discards
 	// durable messages the moment the database slows down, and one that
 	// keys off the deadline instead is only slightly better off. Decide
 	// by exclusion: retry on anything that is not ErrActorTerminated or
-	// ErrMailboxClosed.
+	// ErrMailboxClosed (ErrMailboxSaturated included: it clears once the
+	// consumer drains back under the watermark).
 	//
 	// Second, a durable TryTell drops the caller's database transaction:
 	// the mailbox performs its bounded write on its own background

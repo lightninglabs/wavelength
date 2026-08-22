@@ -164,6 +164,16 @@ type ResumeCreditOpRequest struct {
 	FromRetryTimer bool
 }
 
+// Priority marks the resume as a control message so it bypasses the durable
+// mailbox's backlog admission check: a per-operation backlog past the hard
+// watermark is exactly the condition the boot-time resume exists to work
+// through, and refusing it would silently strand the in-flight operation.
+// Control priority also claims the resume ahead of the redelivered backlog,
+// mirroring RestartMessage.
+func (m *ResumeCreditOpRequest) Priority() int {
+	return actor.ControlPriority
+}
+
 // MessageType returns the human-readable message type.
 func (m *ResumeCreditOpRequest) MessageType() string {
 	return "ResumeCreditOpRequest"
