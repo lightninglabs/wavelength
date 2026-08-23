@@ -42,6 +42,11 @@ helper file (`errors.go`) for structured wallet-lifecycle errors.
 - `errors.go` is hand-written and not regenerated; callers must match wallet
   lifecycle errors via `IsWalletNotReadyError`/`WalletNotReadyState`, never by
   parsing the error message string.
+- `SendOORResponse.status` is a **tri-state** wire contract, not a
+  success/preview boolean: `"submitted"` on a fresh send, `"preview"` on
+  `dry_run`, and `"failed"` when a keyed replay resolves to a known terminal
+  failure. A client that treats any non-`"preview"` status as success will
+  report a failed transfer as sent, so callers must branch on all three.
 - `NewReceiveScriptRequest.idempotency_key` is an API-level contract, not just
   an implementation detail: the key namespace is **global to one daemon**, so
   callers sharing a daemon must prefix keys with an application or tenant

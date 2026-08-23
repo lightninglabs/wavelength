@@ -103,6 +103,14 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   returns `Unimplemented` to guard against accidental duplicate-start
   assumptions; by contrast `CreateCredit` / `RedeemCredit` require a
   caller-supplied `idempotency_key` today.
+- `creditDaemonBridge.VTXOFloor` satisfies `credit.CreditDaemon` by calling
+  `waved.RPCServer.OperatorVTXOFloor`, which refreshes **live** authenticated
+  operator terms rather than reading the cached `GetInfo` snapshot. It fails
+  closed: an unreachable operator surfaces an error and the credit
+  materialization decision is refused, never silently taken against a stale or
+  zero floor. `swapwallet`'s receive-side floor read is deliberately the
+  opposite (advisory, fails open) — it only picks a route, while this bridge
+  gates the redemption itself.
 - `CreateCredit`/`RedeemCredit`/`ListCredits` type-assert `s.client` for the
   optional credit methods and return `Unimplemented` if the underlying
   `swapRuntimeClient` does not support credits.

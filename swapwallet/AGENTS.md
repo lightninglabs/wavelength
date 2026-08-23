@@ -8,9 +8,10 @@ cooperative-leave RPC, the daemon's wallet/admin surface, the boarding
 ledger, the `credit` durable-actor subsystem, and the unilateral-exit
 registry into one flat user-facing API: the seven wallet verbs (Create,
 Unlock, Send, Recv, List, Balance, Exit) plus the supporting Deposit /
-Status / SubscribeWallet methods. Sends/receives that are sub-dust or
-otherwise credit-eligible are routed through the credit registry
-transparently — the caller only sees wallet vocabulary.
+Status / SubscribeWallet methods. Sends/receives that fall below the
+operator's effective VTXO floor, or are otherwise credit-eligible, are
+routed through the credit registry transparently — the caller only sees
+wallet vocabulary.
 
 The whole package lives behind `//go:build wavewalletrpc && swapruntime` so
 default builds avoid the swap executor's dependency graph.
@@ -108,6 +109,15 @@ default builds avoid the swap executor's dependency graph.
   per-entry error — the entry stays priced, because a committed VTXO is
   still exitable by the manual path and that exit is the only recovery when
   the operator is unreachable.
+- `receiveVTXOFloor` reads `max(dust_limit_sat, min_vtxo_amount_sat)` off the
+  daemon's latest `GetInfo` operator snapshot, NOT a live operator refresh.
+  Receive routing is therefore **advisory and fails open**: an unavailable
+  snapshot logs a warning and plans with floor `0` (a plain vHTLC receive)
+  rather than refusing the call. The authoritative check is the swap server's
+  live floor, enforced at the credit boundary
+  (`swapclientserver.creditDaemonBridge.VTXOFloor`), which fails closed. Keep
+  the two asymmetric: making the wallet-side read fail closed would break
+  ordinary receives whenever operator terms are momentarily unreachable.
 - Credit-backed routing is nil-safe: `Deps.CreditRegistry == nil` disables
   credit-only sends (falls back with `ErrSwapBackendUnavailable`) and the
   credit projector loop is a no-op, so builds without the credit subsystem

@@ -22,7 +22,8 @@ credit redemptions against the swap-server credit ledger, as a crash-safe
   `ProcessEvent` dispatch in transitions.go.
 - `CreditServer` / `CreditDaemon` / `Store` — external surfaces: the
   swap-server credit/pay RPCs, the wallet/daemon (OOR send, receive-script
-  allocation, VTXO lookup), and the durable control-plane store.
+  allocation, VTXO lookup, and `VTXOFloor` — the live effective operator
+  minimum), and the durable control-plane store.
 - `StartCreditPayRequest` / `StartCreditReceiveRequest` / `RedeemRequest` —
   admission messages for the three operation kinds (`KindPay`, `KindReceive`,
   `KindRedeem`).
