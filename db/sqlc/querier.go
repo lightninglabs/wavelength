@@ -558,6 +558,9 @@ type Querier interface {
 	// SetAssetDepositError records the latest failure of a deposit that has not
 	// confirmed.
 	SetAssetDepositError(ctx context.Context, arg SetAssetDepositErrorParams) error
+	// Selects the exact final-spend delay for an application-owned recovery row.
+	// Ordinary wallet VTXOs can never be modified through this query.
+	SetRecoveryOnlyVTXORelativeExpiry(ctx context.Context, arg SetRecoveryOnlyVTXORelativeExpiryParams) (int64, error)
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	// SumLedgerWalletLegs totals the ledger legs that move value in and out of
 	// wallet_balance, split by event type and by whether wallet_balance is the
