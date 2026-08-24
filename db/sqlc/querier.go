@@ -414,6 +414,9 @@ type Querier interface {
 	// round actually adopted, so a round can never release a deposit another round
 	// has since taken.
 	RevertRoundAdoptedBoardingIntents(ctx context.Context, arg RevertRoundAdoptedBoardingIntentsParams) error
+	// Selects the exact final-spend delay for an application-owned recovery row.
+	// Ordinary wallet VTXOs can never be modified through this query.
+	SetRecoveryOnlyVTXORelativeExpiry(ctx context.Context, arg SetRecoveryOnlyVTXORelativeExpiryParams) (int64, error)
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error

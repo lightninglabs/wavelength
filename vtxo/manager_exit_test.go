@@ -181,6 +181,40 @@ func TestHandleExitOutcomeConfirmedNoActorPersistsSpent(t *testing.T) {
 	store.AssertExpectations(t)
 }
 
+// TestHandleExitOutcomeConfirmedNoActorPersistsChannelRecoverySpent verifies
+// that a confirmed channel-backing spend retires its recovery-only source even
+// though the source deliberately has no live wallet actor.
+func TestHandleExitOutcomeConfirmedNoActorPersistsChannelRecoverySpent(
+	t *testing.T) {
+
+	t.Parallel()
+
+	vtxo := makeDescriptor(t, 50_000, 8)
+	vtxo.Status = VTXOStatusRecoveryOnly
+	store := &MockVTXOStore{}
+	mgr := &Manager{
+		cfg: &ManagerConfig{
+			Store: store,
+		},
+		actors: make(map[wire.OutPoint]VTXOActorRef),
+	}
+
+	store.On("GetVTXO", t.Context(), vtxo.Outpoint).Return(vtxo, nil)
+	store.On(
+		"UpdateVTXOStatus", t.Context(), vtxo.Outpoint, VTXOStatusSpent,
+	).Return(nil)
+
+	resp := mgr.Receive(t.Context(), &ExitOutcomeNotification{
+		Outpoint:       vtxo.Outpoint,
+		Outcome:        ExitOutcomeConfirmed,
+		ExitPolicyKind: actormsg.ExitPolicyArkChannelBacking,
+	})
+	_, err := resp.Unpack()
+	require.NoError(t, err)
+
+	store.AssertExpectations(t)
+}
+
 // TestHandleExitOutcomeConfirmedNoActorAlreadySpentIsNoop verifies that a
 // re-delivered confirmation for a VTXO that is no longer in the exit state
 // (e.g. already spent) does not rewrite its status.
