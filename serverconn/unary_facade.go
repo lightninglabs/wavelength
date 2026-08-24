@@ -136,7 +136,7 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 			Service:       method.Service,
 			Method:        method.Method,
 			CorrelationId: correlationID,
-			ReplyTo:       cfg.LocalMailboxID,
+			ReplyTo:       cfg.replyMailboxID(),
 		},
 	}
 
