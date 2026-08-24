@@ -2011,3 +2011,62 @@ func TestVTXOStoreExpiredExcludedFromLiveSet(t *testing.T) {
 			"value can be reclaimed",
 	)
 }
+
+// TestVTXOStoreRecoveryOnlyExcludedFromWalletSets verifies that a descriptor
+// prepared for channel materialization remains available to the unroller but
+// cannot become wallet liquidity or spawn an ordinary VTXO actor.
+func TestVTXOStoreRecoveryOnlyExcludedFromWalletSets(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, _, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+	desc := createTestVTXODescriptor(
+		t, testRoundIDDB("test-round-recovery-only"), 21,
+	)
+	desc.Status = vtxo.VTXOStatusRecoveryOnly
+
+	require.NoError(t, vtxoStore.SaveRecoveryOnlyVTXO(ctx, desc))
+
+	stored, err := vtxoStore.GetVTXO(ctx, desc.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, vtxo.VTXOStatusRecoveryOnly, stored.Status)
+	require.Len(t, stored.Ancestry, len(desc.Ancestry))
+	require.Equal(
+		t, desc.Ancestry[0].CommitmentTxID,
+		stored.Ancestry[0].CommitmentTxID,
+	)
+	require.Equal(
+		t, desc.Ancestry[0].TreeDepth, stored.Ancestry[0].TreeDepth,
+	)
+
+	live, err := vtxoStore.ListLiveVTXOs(ctx)
+	require.NoError(t, err)
+	require.Empty(t, live)
+
+	recoverable, err := vtxoStore.ListRecoverableVTXOs(ctx)
+	require.NoError(t, err)
+	require.Empty(t, recoverable)
+	require.ErrorContains(
+		t, vtxoStore.SetRecoveryOnlyVTXORelativeExpiry(
+			ctx, desc.Outpoint, ^uint32(0),
+		),
+		"exceeds storage range",
+	)
+
+	candidates, err := vtxoStore.ListSelectionCandidatesByStatus(
+		ctx, vtxo.VTXOStatusLive,
+	)
+	require.NoError(t, err)
+	require.Empty(t, candidates)
+
+	// Durable close actions may replay source preparation after the row has
+	// already been committed. Identical terms are idempotent, while an
+	// outpoint collision with different immutable terms must fail.
+	require.NoError(t, vtxoStore.SaveRecoveryOnlyVTXO(ctx, desc))
+	mismatch := *desc
+	mismatch.Amount++
+	require.ErrorContains(
+		t, vtxoStore.SaveRecoveryOnlyVTXO(ctx, &mismatch),
+		"descriptor mismatch",
+	)
+}

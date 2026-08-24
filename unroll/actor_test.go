@@ -36,6 +36,71 @@ import (
 
 const testTimeout = time.Second
 
+const testPreSignedExitPolicyKind ExitPolicyKind = "test_pre_signed"
+
+// testPreSignedExitPolicy exposes one immutable final spend for actor tests.
+type testPreSignedExitPolicy struct {
+	tx       *wire.MsgTx
+	csvDelay uint32
+}
+
+// Kind returns the test policy identity.
+func (p *testPreSignedExitPolicy) Kind() ExitPolicyKind {
+	return testPreSignedExitPolicyKind
+}
+
+// CSVDelay returns the configured relative delay.
+func (p *testPreSignedExitPolicy) CSVDelay() uint32 {
+	return p.csvDelay
+}
+
+// RequiredLockTime reports no absolute timelock.
+func (*testPreSignedExitPolicy) RequiredLockTime() uint32 {
+	return 0
+}
+
+// ValidateTarget accepts the actor fixture's proof output.
+func (*testPreSignedExitPolicy) ValidateTarget(target *wire.TxOut) error {
+	if target == nil {
+		return fmt.Errorf("target output is required")
+	}
+
+	return nil
+}
+
+// BuildSpendTx returns the same transaction as the pre-signed fast path.
+func (p *testPreSignedExitPolicy) BuildSpendTx(context.Context,
+	ExitSpendRequest) (*wire.MsgTx, error) {
+
+	return p.PreSignedSpendTx()
+}
+
+// PreSignedSpendTx returns an isolated copy of the fixed spend.
+func (p *testPreSignedExitPolicy) PreSignedSpendTx() (*wire.MsgTx, error) {
+	if p == nil || p.tx == nil {
+		return nil, fmt.Errorf("pre-signed transaction is required")
+	}
+
+	return p.tx.Copy(), nil
+}
+
+// testExitPolicyResolver serves one custom policy to the unroll actor.
+type testExitPolicyResolver struct {
+	policy ExitSpendPolicy
+}
+
+// ResolveExitSpendPolicy returns the configured policy for its exact kind.
+func (r *testExitPolicyResolver) ResolveExitSpendPolicy(_ context.Context,
+	req ExitSpendPolicyRequest) (ExitSpendPolicy, error) {
+
+	if r == nil || r.policy == nil || req.Kind != r.policy.Kind() {
+		return nil, fmt.Errorf("unsupported test exit policy %q",
+			req.Kind)
+	}
+
+	return r.policy, nil
+}
+
 // mockProofAssembler is a programmable proof assembler test double.
 type mockProofAssembler struct {
 	proof *recovery.Proof
@@ -1122,6 +1187,15 @@ func newActorHarnessExec(t *testing.T, proof *recovery.Proof,
 	desc *vtxo.Descriptor) (*actor.Actor[Msg, Resp], *behavior,
 	*fakeTxConfirmRef, *memCheckpointStore, *memExec) {
 
+	return newActorHarnessExecWithConfig(t, proof, desc, nil)
+}
+
+// newActorHarnessExecWithConfig allows focused tests to install optional
+// production seams while preserving the common actor fixture.
+func newActorHarnessExecWithConfig(t *testing.T, proof *recovery.Proof,
+	desc *vtxo.Descriptor, mutate func(*Config)) (*actor.Actor[Msg, Resp],
+	*behavior, *fakeTxConfirmRef, *memCheckpointStore, *memExec) {
+
 	t.Helper()
 
 	txconfirmRef := &fakeTxConfirmRef{}
@@ -1140,6 +1214,9 @@ func newActorHarnessExec(t *testing.T, proof *recovery.Proof,
 		ChainSource:  &fakeChainSourceRef{},
 		Wallet:       &fakeSweepWallet{},
 		Log:          fn.Some(btclog.Disabled),
+	}
+	if mutate != nil {
+		mutate(&cfg)
 	}
 	behavior := &behavior{
 		cfg: cfg,
@@ -3639,6 +3716,86 @@ func TestExternalSpendTerminatesActor(t *testing.T) {
 	require.Contains(t, stateResp.FailReason, "spent externally")
 }
 
+// TestPreSignedExitSpendPublishedByPeerCompletesActor verifies a peer can win
+// the publication race for an immutable final spend without making the local
+// unroller classify the exact expected transaction as an external conflict.
+func TestPreSignedExitSpendPublishedByPeerCompletesActor(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	targetOutput, err := proof.TargetOutput()
+	require.NoError(t, err)
+
+	exitTx := wire.NewMsgTx(2)
+	exitTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: proof.TargetOutpoint(),
+		Sequence:         proof.CSVDelay(),
+	})
+	exitTx.AddTxOut(&wire.TxOut{
+		Value:    targetOutput.Value - 1,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+	policy := &testPreSignedExitPolicy{
+		tx:       exitTx,
+		csvDelay: proof.CSVDelay(),
+	}
+	unrollActor, behavior, txconfirmRef, store, _ :=
+		newActorHarnessExecWithConfig(
+			t, proof, desc, func(cfg *Config) {
+				cfg.ExitSpendPolicyResolver =
+					&testExitPolicyResolver{policy: policy}
+			},
+		)
+
+	chainSource, ok := behavior.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:         100,
+		Trigger:        TriggerManual,
+		ExitPolicyKind: testPreSignedExitPolicyKind,
+		ExitPolicyRef:  "fixed",
+	})
+
+	rootTxid := proof.RootTxids()[0]
+	txconfirmRef.emitConfirmed(t, 0, rootTxid, 101)
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(
+			proof.TargetOutpoint().Hash,
+		) == 1
+	}, testTimeout, 10*time.Millisecond)
+	txconfirmRef.emitConfirmed(
+		t, 1, proof.TargetOutpoint().Hash, 102,
+	)
+	require.Eventually(t, func() bool {
+		state, ok := mustAsk(
+			t, unrollActor.Ref(), &GetStateRequest{},
+		).(*GetStateResp)
+		require.True(t, ok)
+
+		return state.Phase == PhaseCSVPending
+	}, testTimeout, 10*time.Millisecond)
+
+	chainSource.emitSpendForOutpoint(
+		t, proof.TargetOutpoint(), exitTx.TxHash(), 110,
+	)
+	require.Eventually(t, func() bool {
+		state, ok := mustAsk(
+			t, unrollActor.Ref(), &GetStateRequest{},
+		).(*GetStateResp)
+		require.True(t, ok)
+
+		return state.Phase == PhaseCompleted
+	}, testTimeout, 10*time.Millisecond)
+
+	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	require.NotNil(t, checkpoint.SweepTx)
+	require.Equal(t, exitTx.TxHash(), checkpoint.SweepTx.TxHash())
+	require.True(t, checkpoint.State.Sweep.Txid.IsSome())
+	require.Equal(
+		t, exitTx.TxHash(),
+		checkpoint.State.Sweep.Txid.UnsafeFromSome(),
+	)
+}
+
 // TestStartUnrollIsIdempotent verifies that reissuing start does not duplicate
 // already-in-flight proof requests.
 func TestStartUnrollIsIdempotent(t *testing.T) {
@@ -3667,6 +3824,8 @@ func TestStartUnrollIsIdempotent(t *testing.T) {
 
 var _ input.Signature = testSignature{}
 var _ SweepWallet = (*fakeSweepWallet)(nil)
+var _ PreSignedExitSpendPolicy = (*testPreSignedExitPolicy)(nil)
+var _ ExitSpendPolicyResolver = (*testExitPolicyResolver)(nil)
 var _ vtxo.VTXOStore = (*mockVTXOStore)(nil)
 var _ actor.DeliveryStore = (*memCheckpointStore)(nil)
 var _ actor.ActorRef[txconfirm.Msg, txconfirm.Resp] = (*fakeTxConfirmRef)(nil)
