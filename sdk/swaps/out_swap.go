@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btclog/v2"
 	loopfsm "github.com/lightninglabs/loop/fsm"
+	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/htlcswitch/hop"
@@ -214,6 +215,7 @@ var receiveTransitions = map[ReceiveState]map[receiveEvent]ReceiveState{
 	},
 	ReceiveStateInvoiceCreated: {
 		receiveEventHTLCEventAccepted: ReceiveStateHTLCEventAccepted,
+		receiveEventCompleted:         ReceiveStateCompleted,
 		receiveEventExpired:           ReceiveStateExpired,
 		receiveEventNeedsIntervention: ReceiveStateNeedsIntervention,
 		receiveEventFailed:            ReceiveStateFailed,
@@ -262,6 +264,8 @@ type ReceiveSession struct {
 	attachedCreditSat  uint64
 	expectedVHTLCSat   uint64
 	dustLimitSat       uint64
+	reservedSCID       uint64
+	channelID          [32]byte
 	state              ReceiveState
 	deadline           time.Time
 	createdAt          time.Time
@@ -432,8 +436,8 @@ func receiveInvoiceMemo(memo []string) string {
 	return memo[0]
 }
 
-// Wait blocks until the swap server funds the expected vHTLC, then claims it
-// into the client's wallet.
+// Wait blocks until the receive settles through either a private Ark channel
+// or the ordinary server-funded vHTLC rail.
 func (s *ReceiveSession) Wait(ctx context.Context) (*ReceiveResult, error) {
 	if s == nil || s.client == nil {
 		return nil, fmt.Errorf("receive session must be provided")
@@ -444,11 +448,13 @@ func (s *ReceiveSession) Wait(ctx context.Context) (*ReceiveResult, error) {
 	}
 
 	return &ReceiveResult{
-		Invoice:      s.Invoice,
-		Preimage:     s.Preimage,
-		PaymentHash:  s.PaymentHash,
-		VTXOOutpoint: s.vhtlcOutpoint,
-		AmountSat:    s.vhtlcAmount,
+		Invoice:        s.Invoice,
+		Preimage:       s.Preimage,
+		PaymentHash:    s.PaymentHash,
+		VTXOOutpoint:   s.vhtlcOutpoint,
+		AmountSat:      s.vhtlcAmount,
+		ChannelID:      s.channelID,
+		SettlementType: s.settlementType,
 	}, nil
 }
 
@@ -534,11 +540,13 @@ func (s *ReceiveSession) Claim(ctx context.Context, outpoint string,
 	}
 
 	return &ReceiveResult{
-		Invoice:      s.Invoice,
-		Preimage:     s.Preimage,
-		PaymentHash:  s.PaymentHash,
-		VTXOOutpoint: s.vhtlcOutpoint,
-		AmountSat:    s.vhtlcAmount,
+		Invoice:        s.Invoice,
+		Preimage:       s.Preimage,
+		PaymentHash:    s.PaymentHash,
+		VTXOOutpoint:   s.vhtlcOutpoint,
+		AmountSat:      s.vhtlcAmount,
+		ChannelID:      s.channelID,
+		SettlementType: s.settlementType,
 	}, nil
 }
 
@@ -654,14 +662,8 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("allocate claim receive script: %w", err)
 	}
-	if claimReceiveInfo == nil {
-		return fmt.Errorf("claim receive script is required")
-	}
-	if len(claimReceiveInfo.PubKeyXOnly) == 0 {
-		return fmt.Errorf("claim receive pubkey is required")
-	}
-	if len(claimReceiveInfo.PkScript) == 0 {
-		return fmt.Errorf("claim receive script is required")
+	if err := validateClaimReceiveInfo(claimReceiveInfo); err != nil {
+		return err
 	}
 
 	// Receive setup is the one session edge that prepares external
@@ -680,6 +682,14 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	// invoice deadline.
 	_, supportsInArkCredit :=
 		s.client.outEvents.(IncomingVHTLCEventReceiver)
+	if s.client.channelBridge != nil {
+		if err := s.client.channelBridge.PrepareIncomingPayment(
+			ctx, preimage, s.amountSat,
+		); err != nil {
+			return fmt.Errorf("prepare incoming Ark channel "+
+				"payment: %w", err)
+		}
+	}
 	quote, err := s.client.server.RequestChannelID(
 		ctx, clientKey, paymentHash, s.amountSat,
 		defaultReceiveExpirySeconds, supportsInArkCredit,
@@ -731,12 +741,20 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 		return fmt.Errorf("route quote attached credit overflows " +
 			"vHTLC amount")
 	}
-	if quote.AttachedCreditSat > 0 &&
-		expectedVHTLCSat != requestedAmountSat+quote.AttachedCreditSat {
+	expectedQuoteVHTLC := requestedAmountSat + quote.AttachedCreditSat
+	if expectedVHTLCSat != expectedQuoteVHTLC {
 		return fmt.Errorf("route quote vHTLC amount %d does not equal "+
 			"requested amount %d plus attached credit %d",
 			expectedVHTLCSat, requestedAmountSat,
 			quote.AttachedCreditSat)
+	}
+	if s.client.channelBridge != nil {
+		if err := s.client.channelBridge.RegisterIncomingPayment(
+			ctx, paymentHash, s.amountSat, finalHop.ChannelID,
+		); err != nil {
+			return fmt.Errorf("register incoming Ark channel "+
+				"payment: %w", err)
+		}
 	}
 
 	s.client.log.InfoS(ctx, "Received route hint from swap server",
@@ -779,6 +797,7 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 		s.attachedCreditSat = quote.AttachedCreditSat
 		s.expectedVHTLCSat = expectedVHTLCSat
 		s.dustLimitSat = quote.DustLimitSat
+		s.reservedSCID = finalHop.ChannelID
 		s.settlementType = quote.SettlementType
 		s.deadline = s.client.currentTime().Add(expiry)
 		if s.createdAt.IsZero() {
@@ -798,6 +817,19 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	})
 }
 
+// validateClaimReceiveInfo checks that the allocated vHTLC claim destination
+// has both the signing identity and exact output script needed for recovery.
+func validateClaimReceiveInfo(info *ReceiveInfo) error {
+	if info == nil || len(info.PkScript) == 0 {
+		return fmt.Errorf("claim receive script is required")
+	}
+	if len(info.PubKeyXOnly) == 0 {
+		return fmt.Errorf("claim receive pubkey is required")
+	}
+
+	return nil
+}
+
 // waitForHTLCEvent waits until the swap server delivers the HTLC event,
 // validates it, then persists the accepted event before acking the mailbox.
 func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
@@ -812,6 +844,9 @@ func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
 
 	waitCtx, cancel := s.invoiceDeadlineContext(ctx)
 	defer cancel()
+	if s.client.channelBridge != nil {
+		return s.waitForChannelOrVHTLC(waitCtx, ctx, authKey)
+	}
 
 	notification, err := s.waitIncomingVHTLCNotification(
 		waitCtx, authKey,
@@ -833,6 +868,119 @@ func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
 	}
 
 	return s.ackAcceptedHTLCEvent(ctx, notification.Ack)
+}
+
+type incomingVHTLCWaitResult struct {
+	notification *IncomingVHTLCNotification
+	err          error
+}
+
+type incomingChannelWaitResult struct {
+	channelID arkchannel.ID
+	err       error
+}
+
+// waitForChannelOrVHTLC races lnd's durable private invoice against the
+// ordinary mailbox vHTLC rail. Exactly one rail can reveal the shared
+// preimage; cancellation only stops the losing local subscription.
+func (s *ReceiveSession) waitForChannelOrVHTLC(
+	waitCtx, parentCtx context.Context, authKey ReceiveAuthKey) error {
+
+	bridgeCtx, cancel := context.WithCancel(waitCtx)
+	defer cancel()
+
+	channelResult := make(chan incomingChannelWaitResult, 1)
+	go func() {
+		channelID, err := s.client.channelBridge.WaitIncomingPayment(
+			bridgeCtx, s.PaymentHash,
+		)
+		channelResult <- incomingChannelWaitResult{
+			channelID: channelID,
+			err:       err,
+		}
+	}()
+	vhtlcResult := make(chan incomingVHTLCWaitResult, 1)
+	go func() {
+		notification, err := s.waitIncomingVHTLCNotification(
+			bridgeCtx, authKey,
+		)
+		vhtlcResult <- incomingVHTLCWaitResult{
+			notification: notification, err: err,
+		}
+	}()
+
+	for channelResult != nil {
+		select {
+		case result := <-channelResult:
+			if result.err != nil {
+				if bridgeCtx.Err() != nil {
+					return s.receiveWaitError(
+						parentCtx, waitCtx, result.err,
+					)
+				}
+
+				channelResult = nil
+
+				continue
+			}
+
+			return s.mutateAndPersist(parentCtx, func() error {
+				s.settlementType = SettlementTypeArkChannel
+				s.channelID = result.channelID
+
+				return s.transition(receiveEventCompleted)
+			})
+
+		case result := <-vhtlcResult:
+			if result.err != nil {
+				return s.receiveWaitError(
+					parentCtx, waitCtx, result.err,
+				)
+			}
+			if result.notification == nil {
+				return fmt.Errorf("incoming vHTLC " +
+					"notification must be provided")
+			}
+			if result.notification.Ack != nil &&
+				result.notification.AckCursor == 0 {
+				return fmt.Errorf("incoming vHTLC ack cursor " +
+					"must be provided")
+			}
+
+			return s.ackAcceptedHTLCEvent(
+				parentCtx, result.notification.Ack,
+			)
+
+		case <-waitCtx.Done():
+			return s.receiveWaitError(
+				parentCtx, waitCtx, waitCtx.Err(),
+			)
+		}
+	}
+
+	result := <-vhtlcResult
+	if result.err != nil {
+		return s.receiveWaitError(parentCtx, waitCtx, result.err)
+	}
+	if result.notification == nil {
+		return fmt.Errorf("incoming vHTLC notification must be " +
+			"provided")
+	}
+
+	return s.ackAcceptedHTLCEvent(parentCtx, result.notification.Ack)
+}
+
+// receiveWaitError preserves the invoice-expiry classification used by the
+// original mailbox-only path.
+func (s *ReceiveSession) receiveWaitError(parentCtx, waitCtx context.Context,
+	err error) error {
+
+	if invoiceDeadlineExceeded(parentCtx, waitCtx, err) {
+		return fmt.Errorf("receive invoice deadline elapsed: %w",
+			errSwapExpired)
+	}
+
+	return err
 }
 
 // invoiceDeadlineContext bounds only the unpaid-invoice mailbox wait. When a
@@ -1668,7 +1816,6 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 			return s.transition(receiveEventCompleted)
 		})
 	}
-
 	if s.state == ReceiveStateClaimInitiated &&
 		!s.claimIntentRecordedInProcess {
 

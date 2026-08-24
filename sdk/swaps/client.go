@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/arkchannel"
 	sdkark "github.com/lightninglabs/wavelength/sdk/ark"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/invoices"
@@ -51,6 +52,10 @@ const (
 	// SettlementTypeMixed means the invoice is funded by both a vHTLC and
 	// a reserved credit balance.
 	SettlementTypeMixed SettlementType = "mixed"
+
+	// SettlementTypeArkChannel means the receive settled directly into an
+	// active Ark-backed native Lightning channel.
+	SettlementTypeArkChannel SettlementType = "ark_channel"
 )
 
 // CreditQuote describes how a pay quote uses wallet credits.
@@ -223,6 +228,15 @@ type SwapSummary struct {
 	// or as a same-Ark payment when that detail is durably known.
 	SettlementType SettlementType
 
+	// ChannelID identifies a new Ark-backed Lightning channel manifested
+	// for this receive. It is zero when settlement reused an existing
+	// channel.
+	ChannelID [32]byte
+
+	// ReservedSCID is the virtual route advertised before direct settlement
+	// or fallback channel manifestation.
+	ReservedSCID uint64
+
 	// CreditQuote records the credit component of a pay quote when the
 	// server selected a credit or mixed rail.
 	CreditQuote *CreditQuote
@@ -283,6 +297,15 @@ type ReceiveResult struct {
 
 	// AmountSat is the value of the claimed VTXO in satoshis.
 	AmountSat int64
+
+	// ChannelID identifies a new Ark channel manifested for this receive.
+	// It is zero when the payment reused an existing channel or settled
+	// through the ordinary vHTLC rail.
+	ChannelID [32]byte
+
+	// SettlementType reports whether the result used a channel or ordinary
+	// vHTLC claim.
+	SettlementType SettlementType
 }
 
 // ReceiveVHTLCInfo holds the script details for one prepared
@@ -738,6 +761,19 @@ type SwapServerConn interface {
 	Close() error
 }
 
+// ArkChannelPaymentBridge is the narrow daemon-owned channel boundary used by
+// the swap SDK. lnd remains authoritative for invoices and payments.
+type ArkChannelPaymentBridge interface {
+	PrepareIncomingPayment(context.Context, lntypes.Preimage,
+		btcutil.Amount) error
+
+	RegisterIncomingPayment(context.Context, lntypes.Hash, btcutil.Amount,
+		uint64) error
+
+	WaitIncomingPayment(context.Context,
+		lntypes.Hash) (arkchannel.ID, error)
+}
+
 // DaemonConn abstracts the connection to the client's own daemon for wallet
 // operations such as OOR sends and indexed VTXO lookups.
 //
@@ -891,12 +927,13 @@ type InSwapRefundAuthorization struct {
 // SwapClient is the high-level client API for Lightning<->Ark
 // swaps.
 type SwapClient struct {
-	server     SwapServerConn
-	daemon     DaemonConn
-	invoiceGen InvoiceCreator
-	outEvents  OutSwapEventReceiver
-	store      *Store
-	log        btclog.Logger
+	server        SwapServerConn
+	daemon        DaemonConn
+	invoiceGen    InvoiceCreator
+	outEvents     OutSwapEventReceiver
+	store         *Store
+	log           btclog.Logger
+	channelBridge ArkChannelPaymentBridge
 
 	waitPollInterval         time.Duration
 	overdueReceivePollWindow time.Duration
@@ -910,6 +947,14 @@ type SwapClient struct {
 	decodeOutSwapOnion       outSwapOnionDecoder
 	chainParams              *chaincfg.Params
 	now                      func() time.Time
+}
+
+// SetArkChannelPaymentBridge enables direct channel settlement and vHTLC
+// promotion for receive sessions. Callers must set it before resuming swaps.
+func (c *SwapClient) SetArkChannelPaymentBridge(
+	bridge ArkChannelPaymentBridge) {
+
+	c.channelBridge = bridge
 }
 
 // SetOutSwapEventReceiver sets the mailbox event receiver used by
