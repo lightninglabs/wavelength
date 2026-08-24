@@ -6,7 +6,9 @@ import (
 	"math"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
@@ -33,6 +35,14 @@ const (
 	// snapshotDispatchRequestDataRecordType retains the normalized caller
 	// proof until the first submit-capable checkpoint.
 	snapshotDispatchRequestDataRecordType tlv.Type = 25
+
+	// snapshotRecipientsRecordType stores semantic recipient metadata for
+	// prepared and pre-submit sessions.
+	snapshotRecipientsRecordType tlv.Type = 27
+
+	// snapshotPrePONRFailureRecordType stores whether a terminal failure is
+	// definitive evidence that the source reservation was released.
+	snapshotPrePONRFailureRecordType tlv.Type = 29
 )
 
 func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
@@ -49,7 +59,6 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	inputSnapshots, err := encodeTransferInputSnapshots(
 		snapshot.TransferInputSnapshots,
 	)
@@ -62,8 +71,27 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 	idempotencyKey := []byte(snapshot.IdempotencyKey)
 	firstRejectNanos := uint64(snapshot.FirstRejectUnixNanos)
 	dispatchRequestData := snapshot.DispatchRequestData
+	recipientPayloads := make(
+		[]recipientPayload, 0, len(snapshot.RecipientOutputs),
+	)
+	for i := range snapshot.RecipientOutputs {
+		output := snapshot.RecipientOutputs[i]
+		recipientPayloads = append(recipientPayloads, recipientPayload{
+			PkScript:           output.PkScript,
+			ValueSat:           int64(output.Value),
+			VTXOPolicyTemplate: output.VTXOPolicyTemplate,
+		})
+	}
+	recipients, err := encodeRecipientPayloads(recipientPayloads)
+	if err != nil {
+		return nil, err
+	}
 
 	version := uint64(snapshot.Version)
+	var prePONRFailure uint8
+	if snapshot.PrePONRFailure {
+		prePONRFailure = 1
+	}
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(snapshotVersionRecordType, &version),
 		tlv.MakePrimitiveRecord(
@@ -92,6 +120,12 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 		tlv.MakePrimitiveRecord(
 			snapshotDispatchRequestDataRecordType,
 			&dispatchRequestData,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotRecipientsRecordType, &recipients,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotPrePONRFailureRecordType, &prePONRFailure,
 		),
 	}
 
@@ -129,6 +163,8 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		idempotencyKeyRaw   []byte
 		firstRejectNanos    uint64
 		dispatchRequestData []byte
+		recipientsRaw       []byte
+		prePONRFailure      uint8
 	)
 
 	records := []tlv.Record{
@@ -159,6 +195,12 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		tlv.MakePrimitiveRecord(
 			snapshotDispatchRequestDataRecordType,
 			&dispatchRequestData,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotRecipientsRecordType, &recipientsRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotPrePONRFailureRecordType, &prePONRFailure,
 		),
 	}
 
@@ -222,6 +264,40 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 	if err != nil {
 		return nil, err
 	}
+	if prePONRFailure > 1 {
+		return nil, fmt.Errorf("snapshot pre-PONR failure must be 0 " +
+			"or 1")
+	}
+
+	var recipientOutputs []oortx.RecipientOutput
+	if len(recipientsRaw) > 0 {
+		recipientPayloads, err := decodeRecipientPayloadsWithLimits(
+			recipientsRaw, limits,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if len(recipientPayloads) > 0 {
+			recipientOutputs = make(
+				[]oortx.RecipientOutput, 0,
+				len(recipientPayloads),
+			)
+			for i := range recipientPayloads {
+				payload := recipientPayloads[i]
+				recipientOutputs = append(
+					recipientOutputs,
+					oortx.RecipientOutput{
+						PkScript: payload.PkScript,
+						Value: btcutil.Amount(
+							payload.ValueSat,
+						),
+						VTXOPolicyTemplate: payload.
+							VTXOPolicyTemplate,
+					},
+				)
+			}
+		}
+	}
 
 	return &OutgoingSnapshot{
 		Version:                decodedVersion,
@@ -235,6 +311,8 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		IdempotencyKey:         string(idempotencyKeyRaw),
 		FirstRejectUnixNanos:   decodedFirstReject,
 		DispatchRequestData:    dispatchRequestData,
+		RecipientOutputs:       recipientOutputs,
+		PrePONRFailure:         prePONRFailure == 1,
 	}, nil
 }
 

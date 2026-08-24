@@ -166,6 +166,84 @@ func TestSessionHappyPath(t *testing.T) {
 	require.True(t, ok)
 }
 
+// TestPreparedSessionCommitAndAbort verifies a prepared transfer has no
+// signing side effects until commit and releases its inputs when aborted.
+func TestPreparedSessionCommitAndAbort(t *testing.T) {
+	t.Parallel()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+	input := newTestTransferInput(
+		t, clientKey, operatorKey.PubKey(), wire.OutPoint{
+			Hash:  [32]byte{0x02},
+			Index: 1,
+		}, btcutil.Amount(10_000),
+	)
+	outputs := []oortx.RecipientOutput{{
+		PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+		Value:    btcutil.Amount(10_000),
+	}}
+
+	prepared, outbox, err := NewPreparedSessionWithIdempotencyKey(
+		t.Context(), policy, []TransferInput{input}, outputs,
+		"channel-intent", EnvConfig{},
+	)
+	require.NoError(t, err)
+	require.Empty(t, outbox)
+	require.NotEqual(t, SessionID{}, prepared.ID)
+
+	state, err := prepared.FSM.CurrentState()
+	require.NoError(t, err)
+	require.IsType(t, &Prepared{}, state)
+	outgoingState, ok := state.(State)
+	require.True(t, ok)
+	resumeOutbox, err := OutboxForState(outgoingState)
+	require.NoError(t, err)
+	require.Empty(t, resumeOutbox)
+
+	result := prepared.FSM.AskEvent(
+		t.Context(), &CommitPreparedEvent{},
+	).Await(t.Context())
+	require.False(t, result.IsErr())
+	require.Len(t, result.UnwrapOr(nil), 1)
+	require.IsType(t, &RequestArkSignatures{}, result.UnwrapOr(nil)[0])
+
+	committedState, err := prepared.FSM.CurrentState()
+	require.NoError(t, err)
+	require.IsType(t, &AwaitingArkSignatures{}, committedState)
+
+	aborted, _, err := NewPreparedSessionWithIdempotencyKey(
+		t.Context(), policy, []TransferInput{input}, outputs,
+		"aborted-channel-intent", EnvConfig{},
+	)
+	require.NoError(t, err)
+
+	result = aborted.FSM.AskEvent(t.Context(), &AbortPreparedEvent{
+		Reason: "channel negotiation failed",
+	}).Await(t.Context())
+	require.False(t, result.IsErr())
+	require.Len(t, result.UnwrapOr(nil), 1)
+	release, ok := result.UnwrapOr(nil)[0].(*ReleaseInputsRequest)
+	require.True(t, ok)
+	require.Equal(
+		t, []wire.OutPoint{input.VTXO.Outpoint}, release.Outpoints,
+	)
+
+	abortedState, err := aborted.FSM.CurrentState()
+	require.NoError(t, err)
+	failure, ok := abortedState.(*Failed)
+	require.True(t, ok)
+	require.Equal(t, "channel negotiation failed", failure.Reason)
+	require.True(t, failure.PrePONR)
+}
+
 // TestSessionMultiInputHappyPath verifies the outgoing transfer FSM with
 // multiple VTXO inputs. This exercises the multi-input Ark signing path
 // where BIP-341 sighash commits to ALL prevouts, requiring a
