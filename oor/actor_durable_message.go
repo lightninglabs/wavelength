@@ -41,6 +41,10 @@ const (
 	// startPayloadDispatchRequestDataType stores the normalized caller
 	// recipient proof for a keyed dispatch.
 	startPayloadDispatchRequestDataType tlv.Type = 9
+
+	// startPayloadPrepareOnlyType stores whether admission must stop before
+	// signing. It is optional so pre-feature messages decode as false.
+	startPayloadPrepareOnlyType tlv.Type = 11
 )
 
 const (
@@ -113,6 +117,8 @@ const (
 	eventKindIncomingMetadata  uint64 = 10
 	eventKindOutboxError       uint64 = 11
 	eventKindArkSigned         uint64 = 12
+	eventKindCommitPrepared    uint64 = 13
+	eventKindAbortPrepared     uint64 = 14
 )
 
 const (
@@ -162,6 +168,7 @@ type startTransferPayload struct {
 	IdempotencyKey             string
 	DispatchRequestData        []byte
 	AdmissionDeadlineUnixNanos int64
+	PrepareOnly                bool
 }
 
 type recipientPayload struct {
@@ -193,6 +200,10 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 	idempotencyKey := []byte(payload.IdempotencyKey)
 	dispatchRequestData := payload.DispatchRequestData
 	admissionDeadline := uint64(payload.AdmissionDeadlineUnixNanos)
+	var prepareOnly uint8
+	if payload.PrepareOnly {
+		prepareOnly = 1
+	}
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -216,6 +227,9 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 		tlv.MakePrimitiveRecord(
 			startPayloadDispatchRequestDataType,
 			&dispatchRequestData,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadPrepareOnlyType, &prepareOnly,
 		),
 	}
 
@@ -251,6 +265,7 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		idKey               []byte
 		dispatchRequestData []byte
 		deadline            uint64
+		prepareOnly         uint8
 	)
 
 	records := []tlv.Record{
@@ -273,6 +288,9 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		tlv.MakePrimitiveRecord(
 			startPayloadDispatchRequestDataType,
 			&dispatchRequestData,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadPrepareOnlyType, &prepareOnly,
 		),
 	}
 
@@ -308,6 +326,7 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		IdempotencyKey:             string(idKey),
 		DispatchRequestData:        dispatchRequestData,
 		AdmissionDeadlineUnixNanos: int64(deadline),
+		PrepareOnly:                prepareOnly != 0,
 	}, nil
 }
 
@@ -2124,6 +2143,13 @@ func encodeEventPayload(event Event) ([]byte, error) {
 	)
 
 	switch evt := event.(type) {
+	case *CommitPreparedEvent:
+		eventKind = eventKindCommitPrepared
+
+	case *AbortPreparedEvent:
+		eventKind = eventKindAbortPrepared
+		reason = []byte(evt.Reason)
+
 	case *ArkSignedEvent:
 		eventKind = eventKindArkSigned
 		if evt.ArkPSBT == nil {
@@ -2388,6 +2414,12 @@ func decodeEventPayloadWithLimits(raw []byte,
 	}
 
 	switch eventKind {
+	case eventKindCommitPrepared:
+		return &CommitPreparedEvent{}, nil
+
+	case eventKindAbortPrepared:
+		return &AbortPreparedEvent{Reason: string(reason)}, nil
+
 	case eventKindArkSigned:
 		ark, err := psbtutil.Parse(arkPSBT)
 		if err != nil {
@@ -2448,43 +2480,10 @@ func decodeEventPayloadWithLimits(raw []byte,
 		return &FailEvent{Reason: string(reason)}, nil
 
 	case eventKindIncomingTransfer:
-		if len(arkPSBT) == 0 {
-			return nil, fmt.Errorf("incoming transfer event ark " +
-				"psbt must be provided")
-		}
-
-		ark, err := psbtutil.Parse(arkPSBT)
-		if err != nil {
-			return nil, err
-		}
-
-		checkpoints, err := decodeCheckpointPSBTsWithLimits(
-			checkpointPSBT, limits,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		ancestors, err := decodePackageArtifactsWithLimits(
-			ancestorPayload, limits,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		recipients, err := decodeIncomingRecipientsWithLimits(
+		return decodeIncomingTransferEvent(
+			arkPSBT, checkpointPSBT, ancestorPayload,
 			recipientPayload, limits,
 		)
-		if err != nil {
-			return nil, err
-		}
-
-		return &IncomingTransferEvent{
-			ArkPSBT:              ark,
-			FinalCheckpointPSBTs: checkpoints,
-			AncestorPackages:     ancestors,
-			Recipients:           recipients,
-		}, nil
 
 	case eventKindIncomingHandled:
 		outpoints, err := decodeOutPointListWithLimits(
@@ -2524,6 +2523,47 @@ func decodeEventPayloadWithLimits(raw []byte,
 	default:
 		return nil, fmt.Errorf("unknown event kind: %d", eventKind)
 	}
+}
+
+// decodeIncomingTransferEvent decodes the list-shaped fields carried by an
+// incoming transfer event under the configured receive limits.
+func decodeIncomingTransferEvent(arkPSBT, checkpointPSBT, ancestorPayload,
+	recipientPayload []byte, limits ReceiveLimits) (Event, error) {
+
+	if len(arkPSBT) == 0 {
+		return nil, fmt.Errorf("incoming transfer event ark psbt " +
+			"must be provided")
+	}
+
+	ark, err := psbtutil.Parse(arkPSBT)
+	if err != nil {
+		return nil, err
+	}
+	checkpoints, err := decodeCheckpointPSBTsWithLimits(
+		checkpointPSBT, limits,
+	)
+	if err != nil {
+		return nil, err
+	}
+	ancestors, err := decodePackageArtifactsWithLimits(
+		ancestorPayload, limits,
+	)
+	if err != nil {
+		return nil, err
+	}
+	recipients, err := decodeIncomingRecipientsWithLimits(
+		recipientPayload, limits,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &IncomingTransferEvent{
+		ArkPSBT:              ark,
+		FinalCheckpointPSBTs: checkpoints,
+		AncestorPackages:     ancestors,
+		Recipients:           recipients,
+	}, nil
 }
 
 // decodeCheckpointPSBTsWithLimits decodes checkpoint PSBT lists using receive
