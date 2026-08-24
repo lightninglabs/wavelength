@@ -221,6 +221,10 @@ func (m *vhtlcRecoveryTargetMaterializer) buildRecoveryDescriptor(
 	}
 
 	chainDepth := recoveryChainDepth(roots, 1)
+	constructionVersion, err := recoveryConstructionVersion(roots)
+	if err != nil {
+		return nil, err
+	}
 
 	return &vtxo.Descriptor{
 		Outpoint: target,
@@ -233,16 +237,17 @@ func (m *vhtlcRecoveryTargetMaterializer) buildRecoveryDescriptor(
 			},
 			PubKey: signingKey,
 		},
-		OperatorKey:    operatorKey,
-		Ancestry:       ancestry,
-		RoundID:        roundID,
-		CommitmentTxID: commitmentTxID,
-		BatchExpiry:    batchExpiry,
-		RelativeExpiry: csvDelay,
-		PolicyTemplate: policyTemplate,
-		ChainDepth:     chainDepth,
-		CreatedHeight:  createdHeight,
-		Status:         vtxo.VTXOStatusSpending,
+		OperatorKey:         operatorKey,
+		Ancestry:            ancestry,
+		RoundID:             roundID,
+		CommitmentTxID:      commitmentTxID,
+		BatchExpiry:         batchExpiry,
+		RelativeExpiry:      csvDelay,
+		PolicyTemplate:      policyTemplate,
+		ChainDepth:          chainDepth,
+		CreatedHeight:       createdHeight,
+		Status:              vtxo.VTXOStatusSpending,
+		ConstructionVersion: constructionVersion,
 	}, nil
 }
 
