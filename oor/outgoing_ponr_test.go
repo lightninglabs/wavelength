@@ -145,10 +145,13 @@ func TestOutgoingFailedBeforePONRFromRecord(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, got)
 
-	// A snapshot from before the record existed ends without the trailing
-	// record: type, length, and one value byte.
+	// A pre-v6 failed snapshot carries no failure-proof record. Build that
+	// format directly rather than assuming which TLV is last today.
 	legacy := record(&Failed{Reason: "old", PrePONR: true})
-	legacy.SnapshotData = legacy.SnapshotData[:len(legacy.SnapshotData)-3]
+	legacy.SnapshotData, err = encodeSnapshotRawForDecodeTest(
+		5, 0, OutgoingPhaseFailed,
+	)
+	require.NoError(t, err)
 	decoded, err := decodeOutgoingSnapshot(legacy.SnapshotData)
 	require.NoError(t, err)
 	require.False(t, decoded.FailedPrePONR)
