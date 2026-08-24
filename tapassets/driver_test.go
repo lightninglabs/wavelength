@@ -24,16 +24,27 @@ func TestCommitResultProjection(t *testing.T) {
 			ActualFeeSat: 5,
 		},
 		Inputs: []tapsdk.CustomAnchorAssetInputSummary{{
-			LogicalInputID: "input-0",
-			AnchorOutpoint: firstOutpoint,
-			AssetRef:       assetRef,
+			LogicalInputID:    "input-0",
+			PacketIndex:       3,
+			PacketRole:        tapsdk.CustomAnchorPacketRoleActive,
+			VirtualInputIndex: 4,
+			AnchorOutpoint:    firstOutpoint,
+			AssetRef:          assetRef,
 			IssuanceID: tapsdk.AssetID{
 				0x05,
 			},
 			Amount: 10,
+			ProofSource: tapsdk.CustomAnchorProofSourceSummary{
+				Kind: tapsdk.
+					CustomAnchorProofSourceConfirmedFile,
+				Blob: []byte{
+					0x0D,
+				},
+			},
 		}},
 		Outputs: []tapsdk.CustomAnchorAssetOutputSummary{
 			{
+				LogicalOutputID: "output-0",
 				PacketRole: tapsdk.
 					CustomAnchorPacketRoleActive,
 				PacketIndex:        0,
@@ -63,6 +74,7 @@ func TestCommitResultProjection(t *testing.T) {
 				},
 			},
 			{
+				LogicalOutputID: "output-1",
 				PacketRole: tapsdk.
 					CustomAnchorPacketRoleActive,
 				PacketIndex:        1,
@@ -109,8 +121,20 @@ func TestCommitResultProjection(t *testing.T) {
 	require.Equal(t, transfer.Funding.ActualFeeSat, result.actualFeeSat)
 	require.Len(t, result.inputs, 1)
 	require.Equal(t, "input-0", result.inputs[0].logicalInputID)
+	require.Equal(t, uint32(3), result.inputs[0].packetIndex)
+	require.Equal(
+		t, tapsdk.CustomAnchorPacketRoleActive,
+		result.inputs[0].packetRole,
+	)
+	require.Equal(t, uint32(4), result.inputs[0].virtualInputIndex)
 	require.Equal(t, tapsdk.AssetID{0x05}, result.inputs[0].issuanceID)
+	require.Equal(
+		t, tapsdk.CustomAnchorProofSourceConfirmedFile,
+		result.inputs[0].proofSource.kind,
+	)
+	require.Equal(t, []byte{0x0D}, result.inputs[0].proofSource.blob)
 	require.Len(t, result.outputs, 2)
+	require.Equal(t, "output-0", result.outputs[0].logicalOutputID)
 	require.Equal(t, []byte{0x0B}, result.outputs[0].proofBlob)
 	require.Equal(t, []byte{0x0A}, result.outputs[1].proofBlob)
 	require.Equal(
@@ -119,9 +143,11 @@ func TestCommitResultProjection(t *testing.T) {
 
 	packageBytes[0]++
 	transfer.AnchorPsbt[0]++
+	transfer.Inputs[0].ProofSource.Blob[0]++
 	transfer.ProofUpdates[1].ProofBlob[0]++
 	require.Equal(t, []byte{0x0C}, result.packageBytes)
 	require.Equal(t, []byte{0x04}, result.anchorPSBT)
+	require.Equal(t, []byte{0x0D}, result.inputs[0].proofSource.blob)
 	require.Equal(t, []byte{0x0B}, result.outputs[0].proofBlob)
 }
 
