@@ -11,6 +11,7 @@ import (
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightningnetwork/lnd/channeldb"
 	lndfunding "github.com/lightningnetwork/lnd/funding"
+	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -95,7 +96,7 @@ func (f *FundingRuntime) FundingFinalized(ctx context.Context,
 }
 
 // ChannelActive reports whether the exact finalized channel has left lnd's
-// pending-open state after Ark released virtual confirmation.
+// pending-open state and its reserved-SCID link can carry payments.
 func (f *FundingRuntime) ChannelActive(ctx context.Context,
 	terms arkchannel.Terms, backing arkchannel.Backing) (bool, error) {
 
@@ -110,8 +111,21 @@ func (f *FundingRuntime) ChannelActive(ctx context.Context,
 	if err != nil {
 		return false, fmt.Errorf("find active lnd channel: %w", err)
 	}
+	if channel.IsPending {
+		return false, nil
+	}
+	_, err = f.switcher.GetLinkByShortID(
+		lnwire.NewShortChanIDFromInt(terms.ReservedSCID),
+	)
+	if errors.Is(err, htlcswitch.ErrChannelLinkNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("find active lnd channel link: %w",
+			err)
+	}
 
-	return !channel.IsPending, nil
+	return true, nil
 }
 
 // channelParties resolves this runtime's role and expected remote identity.

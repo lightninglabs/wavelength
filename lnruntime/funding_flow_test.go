@@ -820,6 +820,15 @@ func TestNativeFundingFlowRestoresQuiescedLinks(t *testing.T) {
 	hub.restoreAddsDisabled.Store(true)
 	client.restoreAddsDisabled.Store(true)
 	client.runtime.RemoveLink(flow.clientChannel.FundingOutpoint)
+	active, err := client.runtime.Funding().ChannelActive(
+		t.Context(), flow.clientSink.record.Snapshot.Terms,
+		*flow.clientSink.record.Snapshot.Backing,
+	)
+	require.NoError(t, err)
+	require.False(
+		t, active,
+		"an open database row without a link is not payment-ready",
+	)
 
 	restored, err := client.runtime.RestorePeerLinks(
 		client.peer,

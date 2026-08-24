@@ -87,6 +87,7 @@ type FundingRuntime struct {
 	wallet   *lnwallet.LightningWallet
 	notifier *VirtualFundingNotifier
 	aliases  *aliasmgr.Manager
+	switcher *htlcswitch.Switch
 
 	feeEstimator chainfee.Estimator
 	netParams    *chaincfg.Params
@@ -233,6 +234,7 @@ func newFundingRuntime(runtimeCfg RuntimeConfig, switcher *htlcswitch.Switch,
 		wallet:       lightningWallet,
 		notifier:     virtualNotifier,
 		aliases:      aliasManager,
+		switcher:     switcher,
 		feeEstimator: runtimeCfg.FeeEstimator,
 		netParams:    cfg.NetParams,
 		chain:        runtimeCfg.Chain,
