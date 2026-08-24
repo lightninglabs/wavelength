@@ -1,0 +1,554 @@
+syntax = "proto3";
+
+package arkchannelrpc;
+
+option go_package = "github.com/lightninglabs/wavelength/rpc/arkchannelrpc";
+
+// ArkChannelService is the local Wavelength control surface for channels
+// backed by unpublished Ark transactions.
+service ArkChannelService {
+    // PromoteVTXO turns existing wallet liquidity into an active OOR-backed
+    // channel. The daemon derives every protocol parameter from amount_sat.
+    rpc PromoteVTXO (PromoteVTXORequest) returns (PromoteVTXOResponse);
+
+    // SendPayment pays an invoice created by the swapserver endpoint over the
+    // named active channel.
+    rpc SendPayment (ChannelPaymentRequest) returns (ChannelPaymentResponse);
+
+    // ReceivePayment creates a local invoice and asks the swapserver endpoint
+    // to pay it over the named active channel.
+    rpc ReceivePayment (ChannelPaymentRequest) returns (ChannelPaymentResponse);
+
+    // PayLightningInvoice atomically holds the private leg, asks the hub to
+    // dispatch the public invoice, and settles with the public preimage.
+    rpc PayLightningInvoice (PayLightningInvoiceRequest)
+        returns (PayLightningInvoiceResponse);
+
+    // MaterializeAndForceClose publishes the Ark ancestry, exact channel
+    // backing, and lnd's latest commitment transaction.
+    rpc MaterializeAndForceClose (MaterializeAndForceCloseRequest)
+        returns (MaterializeAndForceCloseResponse);
+
+    // RequestCooperativeClose asks the client to settle one clean channel
+    // directly from its channel-policy VTXO.
+    rpc RequestCooperativeClose (RequestCooperativeCloseRequest)
+        returns (RequestCooperativeCloseResponse);
+
+    // GetChannel returns the durable Ark lifecycle state for one channel.
+    rpc GetChannel (GetChannelRequest) returns (GetChannelResponse);
+}
+
+// ArkChannelPeerService is the authenticated client-to-hub control protocol.
+// It is served only through swapdk-server's mailbox edge, never as a public
+// gRPC service.
+service ArkChannelPeerService {
+    // BeginCooperativeClose fixes both replacement VTXO owners and quiesces
+    // the hub's native channel endpoint before the hub authorizes an OOR.
+    rpc BeginCooperativeClose (BeginCooperativeCloseRequest)
+        returns (BeginCooperativeCloseResponse);
+
+    // CompleteCooperativeClose lets the hub validate clean lnd balances and
+    // durably authorize the exact 3-of-3 OOR checkpoint. The client and Ark
+    // operator sign later in the ordinary OOR protocol.
+    rpc CompleteCooperativeClose (CompleteCooperativeCloseRequest)
+        returns (CompleteCooperativeCloseResponse);
+
+    // AcknowledgeCooperativeClose records one client-owned durable barrier
+    // fact in the hub's channel FSM.
+    rpc AcknowledgeCooperativeClose (AcknowledgeCooperativeCloseRequest)
+        returns (AcknowledgeCooperativeCloseResponse);
+
+    // PublishCooperativeClose reports the finalized ordinary OOR session and
+    // waits for the hub to observe its replacement VTXO and archive lnd.
+    rpc PublishCooperativeClose (PublishCooperativeCloseRequest)
+        returns (PublishCooperativeCloseResponse);
+
+    // AbortCooperativeClose releases the hub's quiescence barrier before the
+    // ordinary OOR crosses its signing point of no return.
+    rpc AbortCooperativeClose (AbortCooperativeCloseRequest)
+        returns (AbortCooperativeCloseResponse);
+}
+
+// ArkChannelFundingPeerService is the authenticated channel-creation and
+// one-hop payment protocol between one Wavelength client and swapdk-server's
+// endpoint. It is served only through the mailbox edge.
+service ArkChannelFundingPeerService {
+    rpc GetPeerInfo (GetPeerInfoRequest) returns (GetPeerInfoResponse);
+    rpc RegisterPromotion (RegisterPromotionRequest)
+        returns (RegisterPromotionResponse);
+    rpc RegisterReceiveIntent (RegisterReceiveIntentRequest)
+        returns (RegisterReceiveIntentResponse);
+    rpc GetFundingChannel (GetFundingChannelRequest)
+        returns (GetFundingChannelResponse);
+    rpc BindPreparedOOR (BindPreparedOORRequest)
+        returns (BindPreparedOORResponse);
+    rpc SignBacking (SignBackingRequest) returns (SignBackingResponse);
+    rpc InstallBacking (InstallBackingRequest) returns (InstallBackingResponse);
+    rpc InstallRecoveryPackage (InstallRecoveryPackageRequest)
+        returns (InstallRecoveryPackageResponse);
+    rpc ExportRecoveryPackage (ExportRecoveryPackageRequest)
+        returns (ExportRecoveryPackageResponse);
+    rpc FundingFinalized (FundingStatusRequest) returns (FundingStatusResponse);
+    rpc ChannelActive (FundingStatusRequest) returns (FundingStatusResponse);
+    rpc ApplyChannelEvent (ApplyChannelEventRequest)
+        returns (ApplyChannelEventResponse);
+    rpc CreateInvoice (PeerInvoiceRequest) returns (PeerInvoiceResponse);
+    rpc PayInvoice (PeerPayInvoiceRequest) returns (PeerPayInvoiceResponse);
+    rpc PrepareOutgoingPayment (PrepareOutgoingPaymentRequest)
+        returns (PrepareOutgoingPaymentResponse);
+    rpc CancelOutgoingPayment (CancelOutgoingPaymentRequest)
+        returns (CancelOutgoingPaymentResponse);
+    rpc RegisterIncomingPayment (RegisterIncomingPaymentRequest)
+        returns (RegisterIncomingPaymentResponse);
+}
+
+// FundingWireEnvelope carries the small reverse funding protocol over the
+// same authenticated, ordered peer transport as lnd's BOLT messages.
+message FundingWireEnvelope {
+    bytes request_id = 1;
+    FundingWireKind kind = 2;
+    FundingWireMethod method = 3;
+    bytes body = 4;
+    string error = 5;
+}
+
+enum FundingWireKind {
+    FUNDING_WIRE_KIND_UNSPECIFIED = 0;
+    FUNDING_WIRE_KIND_REQUEST = 1;
+    FUNDING_WIRE_KIND_RESPONSE = 2;
+}
+
+enum FundingWireMethod {
+    FUNDING_WIRE_METHOD_UNSPECIFIED = 0;
+    FUNDING_WIRE_METHOD_SIGN_BACKING = 1;
+    FUNDING_WIRE_METHOD_INSTALL_BACKING = 2;
+    FUNDING_WIRE_METHOD_FUNDING_FINALIZED = 3;
+    FUNDING_WIRE_METHOD_CHANNEL_ACTIVE = 4;
+    FUNDING_WIRE_METHOD_APPLY_CHANNEL_EVENT = 5;
+}
+
+message PromoteVTXORequest {
+    int64 amount_sat = 1;
+}
+
+message PromoteVTXOResponse {
+    ArkChannel channel = 1;
+}
+
+message ChannelPaymentRequest {
+    bytes channel_id = 1;
+    int64 amount_sat = 2;
+}
+
+message ChannelPaymentResponse {
+    bytes payment_hash = 1;
+    bool settled = 2;
+}
+
+message PayLightningInvoiceRequest {
+    string payment_request = 1;
+    uint64 max_fee_sat = 2;
+}
+
+message PayLightningInvoiceResponse {
+    bytes payment_hash = 1;
+    bytes preimage = 2;
+    int64 private_amount_sat = 3;
+    int64 fee_sat = 4;
+    bytes channel_id = 5;
+}
+
+message MaterializeAndForceCloseRequest {
+    bytes channel_id = 1;
+}
+
+message MaterializeAndForceCloseResponse {
+    ArkChannel channel = 1;
+    bytes backing_txid = 2;
+    bytes commitment_txid = 3;
+}
+
+message GetPeerInfoRequest {
+}
+
+message GetPeerInfoResponse {
+    bytes hub_node_key = 1;
+    bytes hub_ark_key = 2;
+    bytes hub_channel_key = 3;
+    bytes ark_operator_key = 4;
+    uint32 channel_delay = 5;
+    uint32 funder_delay = 6;
+    uint32 min_exit_delay = 7;
+    bytes hub_funder_key = 8;
+}
+
+message RegisterPromotionRequest {
+    ChannelTerms terms = 1;
+}
+
+message RegisterPromotionResponse {
+    ArkChannel channel = 1;
+}
+
+message RegisterReceiveIntentRequest {
+    ChannelTerms terms = 1;
+}
+
+message RegisterReceiveIntentResponse {
+    ArkChannel channel = 1;
+}
+
+message GetFundingChannelRequest {
+    bytes channel_id = 1;
+}
+
+message GetFundingChannelResponse {
+    ChannelTerms terms = 1;
+    ChannelVTXOBinding binding = 2;
+    ChannelBacking backing = 3;
+    uint32 phase = 4;
+    bool oor_finalized = 5;
+    bool recovery_ready = 6;
+    string failure = 7;
+    uint64 revision = 8;
+    bool oor_aborted = 9;
+}
+
+message BindPreparedOORRequest {
+    bytes channel_id = 1;
+    ChannelVTXOBinding binding = 2;
+}
+
+message BindPreparedOORResponse {
+    ArkChannel channel = 1;
+}
+
+message SignBackingRequest {
+    bytes channel_id = 1;
+    ChannelTerms terms = 2;
+    ChannelVTXOBinding binding = 3;
+    bytes funding_psbt = 4;
+}
+
+message SignBackingResponse {
+    bytes signature = 1;
+}
+
+message InstallBackingRequest {
+    bytes channel_id = 1;
+    ChannelTerms terms = 2;
+    ChannelVTXOBinding binding = 3;
+    ChannelBacking backing = 4;
+}
+
+message InstallBackingResponse {
+}
+
+message InstallRecoveryPackageRequest {
+    bytes channel_id = 1;
+    ChannelTerms terms = 2;
+    ChannelVTXOBinding binding = 3;
+    ChannelRecoveryPackage recovery = 4;
+}
+
+message InstallRecoveryPackageResponse {
+}
+
+message ExportRecoveryPackageRequest {
+    bytes channel_id = 1;
+}
+
+message ExportRecoveryPackageResponse {
+    ChannelRecoveryPackage recovery = 1;
+    ChannelVTXOBinding binding = 2;
+}
+
+message OORRecoverySource {
+    bytes txid = 1;
+    uint32 output_index = 2;
+    int64 amount_sat = 3;
+    bytes pk_script = 4;
+}
+
+message ChannelRecoveryPackage {
+    ChannelRecoveryDescriptor source_descriptor = 1;
+    repeated ChannelRecoveryOORPackage oor_packages = 2;
+}
+
+message ChannelRecoveryDescriptor {
+    repeated ChannelRecoveryAncestry ancestry = 1;
+    string round_id = 2;
+    bytes commitment_txid = 3;
+    int32 batch_expiry = 4;
+    int32 chain_depth = 5;
+    int32 created_height = 6;
+    int32 construction_version = 7;
+}
+
+message ChannelRecoveryAncestry {
+    bytes tree_path = 1;
+    bytes commitment_txid = 2;
+    repeated uint32 input_indices = 3;
+    uint32 tree_depth = 4;
+    int32 commitment_height = 5;
+}
+
+message ChannelRecoveryOORPackage {
+    bytes session_id = 1;
+    int32 direction = 2;
+    bytes ark_psbt = 3;
+    repeated bytes checkpoint_psbts = 4;
+}
+
+message FundingStatusRequest {
+    ChannelTerms terms = 1;
+    ChannelBacking backing = 2;
+}
+
+message FundingStatusResponse {
+    bool ready = 1;
+}
+
+enum ChannelEventType {
+    CHANNEL_EVENT_TYPE_UNSPECIFIED = 0;
+    CHANNEL_EVENT_TYPE_FUNDING_FINALIZED = 1;
+    CHANNEL_EVENT_TYPE_OOR_FINALIZED = 2;
+    CHANNEL_EVENT_TYPE_CHANNEL_ACTIVE = 3;
+    CHANNEL_EVENT_TYPE_MATERIALIZE = 4;
+    CHANNEL_EVENT_TYPE_BACKING_PUBLISHED = 5;
+    CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED = 6;
+    CHANNEL_EVENT_TYPE_FAILED = 7;
+    CHANNEL_EVENT_TYPE_FUNDING_PEER_READY = 8;
+    CHANNEL_EVENT_TYPE_OOR_ABORTED = 9;
+}
+
+message ApplyChannelEventRequest {
+    bytes channel_id = 1;
+    ChannelEventType event_type = 2;
+    uint32 party = 3;
+    bytes oor_session_id = 4;
+    bytes channel_point_txid = 5;
+    uint32 channel_point_index = 6;
+    string failure_reason = 7;
+}
+
+message ApplyChannelEventResponse {
+    ArkChannel channel = 1;
+}
+
+message PeerInvoiceRequest {
+    bytes channel_id = 1;
+    int64 amount_sat = 2;
+}
+
+message PeerInvoiceResponse {
+    bytes payment_hash = 1;
+}
+
+message PeerPayInvoiceRequest {
+    bytes channel_id = 1;
+    bytes payment_hash = 2;
+    int64 amount_sat = 3;
+}
+
+message PeerPayInvoiceResponse {
+    bool settled = 1;
+}
+
+message PrepareOutgoingPaymentRequest {
+    string payment_request = 1;
+    uint64 max_fee_sat = 2;
+}
+
+message PrepareOutgoingPaymentResponse {
+    bytes payment_hash = 1;
+    int64 private_amount_sat = 2;
+    int64 fee_sat = 3;
+    bytes channel_id = 4;
+    uint64 reserved_scid = 5;
+}
+
+message CancelOutgoingPaymentRequest {
+    bytes payment_hash = 1;
+    string reason = 2;
+}
+
+message CancelOutgoingPaymentResponse {
+    bool cancelled = 1;
+}
+
+message RegisterIncomingPaymentRequest {
+    bytes payment_hash = 1;
+    int64 amount_sat = 2;
+    uint64 reserved_scid = 3;
+}
+
+message RegisterIncomingPaymentResponse {
+    bool registered = 1;
+    int64 channel_capacity_sat = 2;
+}
+
+message ChannelTerms {
+    bytes channel_id = 1;
+    uint32 kind = 2;
+    uint32 funder = 3;
+    bytes pending_channel_id = 4;
+    uint64 reserved_scid = 5;
+    int64 capacity_sat = 6;
+    bytes client_node_key = 7;
+    bytes hub_node_key = 8;
+    bytes payment_hash = 9;
+    ChannelVTXOTerms vtxo = 10;
+}
+
+message ChannelVTXOTerms {
+    bytes client_ark_key = 1;
+    bytes hub_ark_key = 2;
+    bytes ark_operator_key = 3;
+    bytes client_channel_key = 4;
+    bytes hub_channel_key = 5;
+    bytes funder_key = 6;
+    uint32 channel_delay = 7;
+    uint32 funder_delay = 8;
+    uint32 min_exit_delay = 9;
+}
+
+message ChannelVTXOBinding {
+    bytes oor_session_id = 1;
+    bytes outpoint_txid = 2;
+    uint32 outpoint_index = 3;
+    int64 amount_sat = 4;
+    bytes ark_transaction = 5;
+    bytes policy_template = 6;
+    bytes pk_script = 7;
+}
+
+message ChannelBacking {
+    bytes transaction = 1;
+    bytes channel_point_txid = 2;
+    uint32 channel_point_index = 3;
+}
+
+message RequestCooperativeCloseRequest {
+    // channel_id is the 32-byte durable Ark channel identifier.
+    bytes channel_id = 1;
+    reserved 2;
+    reserved "fee_rate_sat_per_kw";
+}
+
+message RequestCooperativeCloseResponse {
+    ArkChannel channel = 1;
+}
+
+message GetChannelRequest {
+    bytes channel_id = 1;
+}
+
+message GetChannelResponse {
+    ArkChannel channel = 1;
+}
+
+message ArkChannel {
+    bytes channel_id = 1;
+    string kind = 2;
+    string phase = 3;
+    string funder = 4;
+    int64 capacity_sat = 5;
+    string source_outpoint = 6;
+    string channel_point = 7;
+    bytes cooperative_close_txid = 8;
+    uint64 revision = 9;
+    uint64 reserved_scid = 10;
+}
+
+message BeginCooperativeCloseRequest {
+    bytes channel_id = 1;
+    bytes client_delivery_script = 2;
+    reserved 3;
+    reserved "fee_rate_sat_per_kw";
+}
+
+message BeginCooperativeCloseResponse {
+    CooperativeCloseRequest request = 1;
+    CleanChannelState clean_state = 2;
+    CooperativeClose settlement = 3;
+}
+
+message CompleteCooperativeCloseRequest {
+    bytes channel_id = 1;
+    CooperativeCloseProposal proposal = 2;
+    reserved 3;
+    reserved "client_signature";
+}
+
+message CompleteCooperativeCloseResponse {
+    CooperativeClose settlement = 1;
+}
+
+enum CooperativeCloseAcknowledgement {
+    COOPERATIVE_CLOSE_ACKNOWLEDGEMENT_UNSPECIFIED = 0;
+    COOPERATIVE_CLOSE_ACKNOWLEDGEMENT_CLIENT_SIGNED = 1;
+    COOPERATIVE_CLOSE_ACKNOWLEDGEMENT_CLIENT_FINALIZED = 2;
+}
+
+message AcknowledgeCooperativeCloseRequest {
+    bytes channel_id = 1;
+    CooperativeCloseAcknowledgement acknowledgement = 2;
+    CooperativeClose settlement = 3;
+}
+
+message AcknowledgeCooperativeCloseResponse {
+    ArkChannel channel = 1;
+}
+
+message PublishCooperativeCloseRequest {
+    bytes channel_id = 1;
+    bytes settlement_txid = 2;
+}
+
+message PublishCooperativeCloseResponse {
+    bytes settlement_txid = 1;
+    bool hub_finalized = 2;
+}
+
+message AbortCooperativeCloseRequest {
+    bytes channel_id = 1;
+}
+
+message AbortCooperativeCloseResponse {
+    ArkChannel channel = 1;
+}
+
+message CooperativeCloseRequest {
+    bytes client_delivery_script = 1;
+    bytes hub_delivery_script = 2;
+    reserved 3;
+    reserved "fee_rate_sat_per_kw";
+}
+
+message CleanChannelState {
+    bytes channel_point_txid = 1;
+    uint32 channel_point_index = 2;
+    int64 local_balance_sat = 3;
+    int64 remote_balance_sat = 4;
+    int64 capacity_sat = 5;
+    uint64 commitment_height = 6;
+    bool local_initiator = 7;
+}
+
+message CooperativeCloseProposal {
+    bytes transaction = 1;
+    uint64 commitment_height = 2;
+    int64 client_balance_sat = 3;
+    int64 hub_balance_sat = 4;
+    int64 client_output_sat = 5;
+    int64 hub_output_sat = 6;
+    reserved 7;
+    reserved "fee_sat";
+}
+
+message CooperativeClose {
+    CooperativeCloseProposal proposal = 1;
+    bytes transaction = 2;
+    bytes txid = 3;
+}

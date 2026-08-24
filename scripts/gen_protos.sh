@@ -95,6 +95,9 @@ generate "rpc/swapclientrpc" 1
 # Generate optional daemon-owned simplified wallet RPC protos.
 generate "rpc/wavewalletrpc" 1
 
+# Generate Ark-channel local and authenticated peer control protos.
+generate "rpc/arkchannelrpc"
+
 # Generate waverpc protos for the client daemon's own gRPC API.
 generate "waverpc" 1
 
