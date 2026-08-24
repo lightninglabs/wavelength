@@ -69,8 +69,8 @@ func NewRuntime(cfg ConnectorConfig) (*Runtime, error) {
 	durableCfg := actor.DefaultDurableTxActorConfig[
 		ServerConnMsg, ServerConnResp, egressTx,
 	](
-		DurableActorID(cfg.LocalMailboxID), connector,
-		connector.bindStores, cfg.Store, cfg.Codec,
+		connector.runtimeID(), connector, connector.bindStores,
+		cfg.Store, cfg.Codec,
 	)
 	durableCfg.Log = cfg.Log
 

@@ -196,6 +196,48 @@ func TestAckRemote_StatusFailure(t *testing.T) {
 	require.Contains(t, stErr.Error(), "ack failed")
 }
 
+// TestIngressUsesSeparateReplyMailbox verifies Pull and AckUpTo use the
+// connector's isolated inbound mailbox instead of its sender identity.
+func TestIngressUsesSeparateReplyMailbox(t *testing.T) {
+	t.Parallel()
+
+	var pulled, acknowledged string
+	edge := &mailboxClientStub{
+		pullFn: func(_ context.Context, request *mailboxpb.PullRequest,
+			_ ...grpc.CallOption) (*mailboxpb.PullResponse, error) {
+
+			pulled = request.GetMailboxId()
+
+			return &mailboxpb.PullResponse{
+				Status: &mailboxpb.Status{
+					Ok: true,
+				},
+			}, nil
+		},
+		ackFn: func(_ context.Context,
+			request *mailboxpb.AckUpToRequest,
+			_ ...grpc.CallOption) (*mailboxpb.AckUpToResponse,
+			error) {
+
+			acknowledged = request.GetMailboxId()
+
+			return &mailboxpb.AckUpToResponse{
+				Status: &mailboxpb.Status{
+					Ok: true,
+				},
+			}, nil
+		},
+	}
+	actor := newErrorPathActor(edge, newMemCheckpointStore())
+	actor.cfg.ReplyMailboxID = "client-channel-1"
+
+	_, _, err := actor.pullBatch(t.Context(), 0)
+	require.NoError(t, err)
+	require.NoError(t, actor.ackRemote(t.Context(), 1))
+	require.Equal(t, "client-channel-1", pulled)
+	require.Equal(t, "client-channel-1", acknowledged)
+}
+
 // TestIsIngressShutdownErr verifies expected shutdown cancellation is
 // distinguished from retryable ingress failures.
 func TestIsIngressShutdownErr(t *testing.T) {
