@@ -3,9 +3,9 @@
 The credit subsystem orchestrates server-custodial sat "credits" through three
 multi-step flows:
 
-- a sub-dust or shortfall **pay** (an optional Ark top-up, then a credit or
+- a sub-floor or shortfall **pay** (an optional Ark top-up, then a credit or
   mixed pay),
-- a sub-dust **credit receive**, and
+- a sub-floor **credit receive**, and
 - a **redeem** that materializes available credits back into an Ark vTXO.
 
 The server ledger is authoritative and guarantees no fund loss. The *client
@@ -109,7 +109,7 @@ Returning an error from a turn means retry until dead-letter, so each transition
 classifies server responses:
 
 - **Deterministic rejections** (insufficient balance, idempotency-key reuse with
-  different params, expired invoice, impossible sub-dust) **terminal-fail** the
+  different params, expired invoice, impossible sub-floor) **terminal-fail** the
   op with a durable reason. They never wedge in redelivery.
 - **Transient errors** (network, `Unavailable`) return the error for the
   framework's free retry and backoff.

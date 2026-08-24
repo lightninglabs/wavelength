@@ -8,7 +8,8 @@ cooperative-leave RPC, the daemon's wallet/admin surface, the boarding
 ledger, the `credit` durable-actor subsystem, and the unilateral-exit
 registry into one flat user-facing API: the seven wallet verbs (Create,
 Unlock, Send, Recv, List, Balance, Exit) plus the supporting Deposit /
-Status / SubscribeWallet methods. Sends/receives that are sub-dust or
+Status / SubscribeWallet methods. Sends/receives that fall below the
+effective operator VTXO floor (`max(dust_limit, min_vtxo_amount_sat)`) or are
 otherwise credit-eligible are routed through the credit registry
 transparently — the caller only sees wallet vocabulary.
 
@@ -108,6 +109,15 @@ default builds avoid the swap executor's dependency graph.
   per-entry error — the entry stays priced, because a committed VTXO is
   still exitable by the manual path and that exit is the only recovery when
   the operator is unreachable.
+- **Receive routing reads the VTXO floor, not the dust limit.**
+  `receiveVTXOFloor` returns `max(ServerInfo.dust_limit,
+  ServerInfo.min_vtxo_amount_sat)` from the daemon's `GetInfo` snapshot.
+  Unlike the credit boundary (`swapclientserver.creditDaemonBridge.VTXOFloor`,
+  which fails closed on a live-terms refresh), this lookup is **advisory and
+  falls open**: an unavailable snapshot logs a warning and plans with floor
+  `0`, so the receive proceeds down the normal vHTLC path. That is safe
+  because the swap server re-checks its own live floor before funding — a
+  stale local snapshot can misroute a receive, never mint a sub-floor VTXO.
 - Credit-backed routing is nil-safe: `Deps.CreditRegistry == nil` disables
   credit-only sends (falls back with `ErrSwapBackendUnavailable`) and the
   credit projector loop is a no-op, so builds without the credit subsystem

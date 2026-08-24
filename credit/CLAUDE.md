@@ -3,9 +3,10 @@
 ## Purpose
 
 Client-side credit subsystem: a supervisor/per-operation-actor pair that drives
-sub-dust pays (with optional Ark top-up), server-owned Lightning receives, and
+sub-floor pays (with optional Ark top-up), server-owned Lightning receives, and
 credit redemptions against the swap-server credit ledger, as a crash-safe
-`protofsm` state machine per operation.
+`protofsm` state machine per operation. "Sub-floor" means below the effective
+operator VTXO floor, `max(dust_limit, min_vtxo_amount_sat)`.
 
 ## Key Types
 
@@ -22,7 +23,9 @@ credit redemptions against the swap-server credit ledger, as a crash-safe
   `ProcessEvent` dispatch in transitions.go.
 - `CreditServer` / `CreditDaemon` / `Store` — external surfaces: the
   swap-server credit/pay RPCs, the wallet/daemon (OOR send, receive-script
-  allocation, VTXO lookup), and the durable control-plane store.
+  allocation, VTXO lookup, and `VTXOFloor` — the live effective operator
+  minimum, which must be positive or an error), and the durable control-plane
+  store.
 - `StartCreditPayRequest` / `StartCreditReceiveRequest` / `RedeemRequest` —
   admission messages for the three operation kinds (`KindPay`, `KindReceive`,
   `KindRedeem`).
@@ -55,9 +58,13 @@ credit redemptions against the swap-server credit ledger, as a crash-safe
 - Auto-redeem is receive-triggered, not a periodic sweep. Its boot reconcile
   retries transient failures with exponential backoff for at most four
   minutes, stops immediately on permanent mailbox/Ark version errors, and
-  requires a positive live operator VTXO floor. Its bounded context scopes
-  evaluation only; the queued registry signal uses a separately cancelable
-  child of the daemon-lifetime context so shutdown remains prompt.
+  requires a positive live operator VTXO floor. The redeem watermark is
+  `max(AutoRedeemConfig.MinRedeemSat, VTXOFloor())`, refreshed per decision,
+  so a raised operator minimum takes effect immediately and an unavailable
+  operator suppresses the sweep rather than minting below the floor. Its
+  bounded context scopes evaluation only; the queued registry signal uses a
+  separately cancelable child of the daemon-lifetime context so shutdown
+  remains prompt.
   `triggerRedeem` fires only after the settled receive's terminal snapshot
   commits, so a crash before that leaves no half-applied redeem.
 

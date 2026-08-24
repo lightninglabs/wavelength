@@ -92,7 +92,8 @@ effective VTXO floor.
 | `requested_amount_sat < vtxo_floor_sat` and `requested + available >= vtxo_floor_sat` | credit-assisted | Server reserves all available credits and funds a vHTLC for `requested + attached_credit_sat`. |
 
 For credit-assisted receives, the server attaches all currently available
-credits, not only the shortfall needed to reach dust. The quote/prepare surface
+credits, not only the shortfall needed to reach the floor. The quote/prepare
+surface
 returns the full plan:
 
 | Field | Meaning |
