@@ -34,6 +34,47 @@ func (s *Idle) IsTerminal() bool {
 // stateSealed marks Idle as implementing the sealed State interface.
 func (s *Idle) stateSealed() {}
 
+// Prepared holds a deterministic OOR package without releasing signatures or
+// transport. A channel coordinator can safely use its output outpoint while
+// negotiating the lnd channel, then explicitly commit or abort the transfer.
+type Prepared struct {
+	// ArkPSBT is the unsigned canonical Ark transaction whose txid is the
+	// stable session identifier.
+	ArkPSBT *psbt.Packet
+
+	// CheckpointPSBTs are the unsigned checkpoint transactions for the
+	// selected source VTXOs.
+	CheckpointPSBTs []*psbt.Packet
+
+	// TransferInputs carry the signing context retained until commit or
+	// abort.
+	TransferInputs []TransferInput
+
+	// RecipientOutputs preserve semantic output metadata for submit.
+	RecipientOutputs []oortx.RecipientOutput
+
+	// IdempotencyKey identifies the caller intent that prepared the
+	// transfer.
+	IdempotencyKey string
+
+	// DispatchRequestData is the normalized caller-recipient proof retained
+	// until the prepared transfer is committed.
+	DispatchRequestData []byte
+}
+
+// String returns the state name.
+func (*Prepared) String() string {
+	return "Prepared"
+}
+
+// IsTerminal reports that a prepared transfer remains resumable.
+func (*Prepared) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks Prepared as implementing State.
+func (*Prepared) stateSealed() {}
+
 // AwaitingArkSignatures indicates the submit package has been built and the
 // client must attach Ark signatures before submit can be sent.
 type AwaitingArkSignatures struct {
@@ -274,6 +315,10 @@ type Failed struct {
 	// Reason is a human-readable failure reason intended for logs and
 	// tests.
 	Reason string
+
+	// PrePONR is true when failure occurred before the operator co-signed
+	// the checkpoints, so the source VTXO reservation was safe to release.
+	PrePONR bool
 
 	// IdempotencyKey identifies the caller intent that created this
 	// outgoing session, when provided.

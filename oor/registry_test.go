@@ -228,6 +228,34 @@ func upsertRegistryRowContext(ctx context.Context, t *testing.T,
 	require.NoError(t, store.UpsertSession(ctx, rec))
 }
 
+// TestOORRegistryGetStateReadsReapedSnapshot verifies status probes remain
+// valid after a terminal child has been removed from the active set.
+func TestOORRegistryGetStateReadsReapedSnapshot(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newFakeRegistryStore()
+	id := oorSessionID(0x7a)
+	record, err := outgoingRegistryRecord(id, &Completed{
+		IdempotencyKey: "ark-channel:test",
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.UpsertSession(ctx, record))
+
+	registry, recorder := newTestRegistryBehavior(store)
+	result := registry.routeAsk(ctx, id, &GetStateRequest{
+		SessionID: id,
+	})
+	require.True(t, result.IsOk(), result.Err())
+	require.Zero(t, recorder.spawns)
+
+	response, ok := result.UnwrapOr(nil).(*GetStateResponse)
+	require.True(t, ok)
+	completed, ok := response.State.(*Completed)
+	require.True(t, ok)
+	require.Equal(t, "ark-channel:test", completed.IdempotencyKey)
+}
+
 // TestOORRegistryRestoreNonTerminal verifies restore spawns one child per
 // non-terminal row and skips terminal ones.
 func TestOORRegistryRestoreNonTerminal(t *testing.T) {
