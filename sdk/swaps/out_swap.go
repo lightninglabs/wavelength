@@ -1292,7 +1292,9 @@ func (s *ReceiveSession) acceptInArkHtlcEvent(ctx context.Context,
 		)
 	}
 
-	if event.RequestedAmountSat > 0 || event.AttachedCreditSat > 0 {
+	creditShaped := event.RequestedAmountSat > 0 ||
+		event.AttachedCreditSat > 0
+	if creditShaped {
 		// A credit-shaped event is the swap-server-funded in-ark leg
 		// of a credit-attach receive: amount_sat carries the padded
 		// vHTLC and the event must match the session's route quote
@@ -1360,13 +1362,21 @@ func (s *ReceiveSession) acceptInArkHtlcEvent(ctx context.Context,
 			ctx, "in-ark HTLC sender pubkey mismatch", nil, nil,
 		)
 	}
-	if err := s.validateReceiveClaimWindow(
-		ctx, cfg, s.client.recoveryPolicy.WithDefaults().
-			ExitAncestryDelayBlocks,
-	); err != nil {
-		return s.failReceiveTimingAdmission(
-			ctx, "in-ark HTLC timing window is invalid", err,
-		)
+	// A legacy direct p2p event describes a vHTLC the sender already
+	// funded, so a short unilateral-exit window cannot undo the exposure
+	// and must not prevent the still-available cooperative claim. The
+	// credit-shaped path remains safe to reject here because its
+	// server-side funding is gated on the acknowledgement below.
+	if creditShaped {
+		if err := s.validateReceiveClaimWindow(
+			ctx, cfg, s.client.recoveryPolicy.WithDefaults().
+				ExitAncestryDelayBlocks,
+		); err != nil {
+			return s.failReceiveTimingAdmission(
+				ctx, "in-ark HTLC timing window is invalid",
+				err,
+			)
+		}
 	}
 	refundNoReceiverDelay := cfg.UnilateralRefundWithoutReceiverDelay
 

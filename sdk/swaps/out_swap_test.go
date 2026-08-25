@@ -320,8 +320,9 @@ func TestStartReceiveRejectsDivergentRouteHintPaths(t *testing.T) {
 	require.Nil(t, creator.lastHintPaths)
 }
 
-// TestAcceptInArkHtlcEventBuildsSenderReceiverPolicy verifies that same-Ark
-// receive events are validated directly without requiring a Lightning onion.
+// TestAcceptInArkHtlcEventBuildsSenderReceiverPolicy verifies a pre-funded
+// same-Ark receive keeps its cooperative claim even when the unilateral exit
+// window is already too short for new funding admission.
 func TestAcceptInArkHtlcEventBuildsSenderReceiverPolicy(t *testing.T) {
 	t.Parallel()
 
@@ -337,7 +338,7 @@ func TestAcceptInArkHtlcEventBuildsSenderReceiverPolicy(t *testing.T) {
 	preimage := lntypes.Preimage{1, 2, 3}
 	hash := preimage.Hash()
 	cfg := VHTLCConfig{
-		RefundLocktime:                       900,
+		RefundLocktime:                       180,
 		UnilateralClaimDelay:                 5,
 		UnilateralRefundDelay:                6,
 		UnilateralRefundWithoutReceiverDelay: 7,
@@ -346,7 +347,9 @@ func TestAcceptInArkHtlcEventBuildsSenderReceiverPolicy(t *testing.T) {
 	}
 	session := &ReceiveSession{
 		client: &SwapClient{
-			daemon: &testDaemonConn{},
+			daemon: &testDaemonConn{
+				blockHeight: 100,
+			},
 		},
 		amountSat:      btcutil.Amount(42_000),
 		state:          ReceiveStateInvoiceCreated,
@@ -380,6 +383,59 @@ func TestAcceptInArkHtlcEventBuildsSenderReceiverPolicy(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, expectedScript, session.vhtlcPkScript)
 	require.True(t, session.swapServerPubKey.IsEqual(senderPriv.PubKey()))
+}
+
+// TestAcceptInArkHtlcEventRejectsUnsafeCreditWindow verifies the
+// swap-server-funded same-Ark rail still applies the full timing admission
+// budget before its acknowledgement can trigger funding.
+func TestAcceptInArkHtlcEventRejectsUnsafeCreditWindow(t *testing.T) {
+	t.Parallel()
+
+	senderPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	receiverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage := lntypes.Preimage{4, 5, 6}
+	hash := preimage.Hash()
+	session := &ReceiveSession{
+		client: &SwapClient{
+			daemon: &testDaemonConn{
+				blockHeight: 205,
+			},
+			log: btclog.Disabled,
+		},
+		amountSat:         btcutil.Amount(300),
+		attachedCreditSat: 800,
+		expectedVHTLCSat:  1_100,
+		state:             ReceiveStateInvoiceCreated,
+		PaymentHash:       hash,
+		clientPubKey:      receiverPriv.PubKey(),
+		operatorPubKey:    operatorPriv.PubKey(),
+	}
+	cfg := VHTLCConfig{
+		RefundLocktime:                       300,
+		UnilateralClaimDelay:                 12,
+		UnilateralRefundDelay:                24,
+		UnilateralRefundWithoutReceiverDelay: 36,
+		SwapServerPubkey: senderPriv.PubKey().
+			SerializeCompressed(),
+	}
+
+	err = session.acceptInArkHtlcEvent(
+		t.Context(), &InArkHtlcEvent{
+			PaymentHash:        hash,
+			AmountSat:          1_100,
+			RequestedAmountSat: 300,
+			AttachedCreditSat:  800,
+			SenderPubkey:       senderPriv.PubKey(),
+			VHTLCConfig:        cfg,
+		}, 1,
+	)
+	require.ErrorContains(t, err, "timing window is invalid")
+	require.Equal(t, ReceiveStateFailed, session.State())
 }
 
 // TestAcceptInArkHtlcEventRejectsCreditBoundSession verifies a session whose
