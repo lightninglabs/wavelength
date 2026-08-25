@@ -372,6 +372,9 @@ func (opts *VHTLCOpts) validate() error {
 				err)
 		}
 	}
+	if err := opts.Timing().ValidateOrder(); err != nil {
+		return err
+	}
 
 	return nil
 }

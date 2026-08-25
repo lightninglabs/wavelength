@@ -20,6 +20,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	sdkark "github.com/lightninglabs/wavelength/sdk/ark"
 	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waverpc"
@@ -501,7 +502,7 @@ func TestReceiveSessionSkipsServerAckForSameArkHTLCEvent(t *testing.T) {
 			CltvExpiryDelta: 40,
 		},
 		cfg: &VHTLCConfig{
-			RefundLocktime:                       144,
+			RefundLocktime:                       300,
 			UnilateralClaimDelay:                 12,
 			UnilateralRefundDelay:                24,
 			UnilateralRefundWithoutReceiverDelay: 36,
@@ -572,7 +573,7 @@ func TestReceiveSessionAcksServerForCreditAssistedOutSwap(t *testing.T) {
 	useTestOnionDecoder(client, 300)
 
 	cfg := VHTLCConfig{}
-	cfg.RefundLocktime = 144
+	cfg.RefundLocktime = 300
 	cfg.UnilateralClaimDelay = 12
 	cfg.UnilateralRefundDelay = 24
 	cfg.UnilateralRefundWithoutReceiverDelay = 36
@@ -650,7 +651,7 @@ func TestReceiveSessionAcksServerForCreditAssistedInArk(t *testing.T) {
 	client := NewSwapClient(serverConn, daemonConn, nil, nil)
 
 	cfg := VHTLCConfig{
-		RefundLocktime:                       144,
+		RefundLocktime:                       300,
 		UnilateralClaimDelay:                 12,
 		UnilateralRefundDelay:                24,
 		UnilateralRefundWithoutReceiverDelay: 36,
@@ -845,7 +846,7 @@ func TestForfeitSignaturePayloadFromVTXORequest(t *testing.T) {
 		Receiver:                             receiver.PubKey(),
 		Server:                               operator.PubKey(),
 		PreimageHash:                         paymentHash,
-		RefundLocktime:                       144,
+		RefundLocktime:                       300,
 		UnilateralClaimDelay:                 10,
 		UnilateralRefundDelay:                11,
 		UnilateralRefundWithoutReceiverDelay: 12,
@@ -1231,7 +1232,13 @@ func TestReceiveSessionAcceptsCreditAssistedOutSwapHTLC(t *testing.T) {
 
 	preimage := lntypes.Preimage{0x1, 0x2, 0x3}
 	hash := preimage.Hash()
-	client := &SwapClient{}
+	client := NewSwapClient(
+		nil, &testDaemonConn{
+			blockHeight: 100,
+		},
+		nil,
+		nil,
+	)
 	useTestOnionDecoder(client, 300)
 
 	session := &ReceiveSession{
@@ -1266,6 +1273,139 @@ func TestReceiveSessionAcceptsCreditAssistedOutSwapHTLC(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, ReceiveStateHTLCEventAccepted, session.State())
 	require.Equal(t, SettlementTypeMixed, session.settlementType)
+}
+
+// TestReceiveSessionRejectsUnsafeVHTLCClaimWindow verifies a receive refuses
+// a server event whose refund path can mature before the receiver can expose
+// and claim the vHTLC through its unilateral exit ancestry.
+func TestReceiveSessionRejectsUnsafeVHTLCClaimWindow(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage := lntypes.Preimage{0x9, 0x8, 0x7}
+	client := NewSwapClient(
+		nil, &testDaemonConn{
+			blockHeight: 100,
+		},
+		nil,
+		nil,
+	)
+	useTestOnionDecoder(client, 42_000)
+
+	session := &ReceiveSession{
+		client:         client,
+		amountSat:      42_000,
+		state:          ReceiveStateInvoiceCreated,
+		PaymentHash:    preimage.Hash(),
+		clientPubKey:   clientPriv.PubKey(),
+		operatorPubKey: operatorPriv.PubKey(),
+	}
+	cfg := VHTLCConfig{
+		RefundLocktime:                       140,
+		UnilateralClaimDelay:                 144,
+		UnilateralRefundDelay:                144,
+		UnilateralRefundWithoutReceiverDelay: 256,
+		SwapServerPubkey: serverPriv.PubKey().
+			SerializeCompressed(),
+	}
+
+	err = session.acceptOutSwapHtlcEvent(
+		t.Context(), &OutSwapHtlcEvent{
+			PaymentHash: preimage.Hash(),
+			AmountSat:   42_000,
+			VHTLCConfig: cfg,
+		}, &daemonReceiveAuthKey{}, 0,
+	)
+	require.ErrorContains(t, err, "timing window is invalid")
+	require.ErrorContains(t, err, "refund window 40")
+	require.Equal(t, ReceiveStateFailed, session.State())
+}
+
+// TestReceiveSessionRevalidatesVHTLCClaimWindow verifies a once-safe event is
+// rejected after a delayed restart or deeper funded ancestry consumes its
+// remaining recovery budget.
+func TestReceiveSessionRevalidatesVHTLCClaimWindow(t *testing.T) {
+	t.Parallel()
+
+	newSession := func(t *testing.T, refundLocktime uint32) (
+		*ReceiveSession, *testDaemonConn) {
+
+		clientPriv, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+
+		operatorPriv, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+
+		serverPriv, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+
+		preimage := lntypes.Preimage{0x6, 0x5, 0x4}
+		daemon := &testDaemonConn{blockHeight: 100}
+		client := NewSwapClient(nil, daemon, nil, nil)
+		useTestOnionDecoder(client, 42_000)
+
+		session := &ReceiveSession{
+			client:         client,
+			amountSat:      42_000,
+			state:          ReceiveStateInvoiceCreated,
+			PaymentHash:    preimage.Hash(),
+			clientPubKey:   clientPriv.PubKey(),
+			operatorPubKey: operatorPriv.PubKey(),
+		}
+		cfg := VHTLCConfig{
+			RefundLocktime:                       refundLocktime,
+			UnilateralClaimDelay:                 144,
+			UnilateralRefundDelay:                144,
+			UnilateralRefundWithoutReceiverDelay: 256,
+			SwapServerPubkey: serverPriv.PubKey().
+				SerializeCompressed(),
+		}
+		err = session.acceptOutSwapHtlcEvent(
+			t.Context(), &OutSwapHtlcEvent{
+				PaymentHash: preimage.Hash(),
+				AmountSat:   42_000,
+				VHTLCConfig: cfg,
+			}, &daemonReceiveAuthKey{}, 0,
+		)
+		require.NoError(t, err)
+
+		return session, daemon
+	}
+
+	t.Run("delayed restart", func(t *testing.T) {
+		session, daemon := newSession(t, 329)
+		daemon.blockHeight = 101
+
+		err := session.ensureReceiveFundingStillPossible(t.Context())
+		require.ErrorIs(t, err, errSwapExpired)
+		require.ErrorContains(t, err, "refund window 228")
+	})
+
+	t.Run("deeper funded ancestry", func(t *testing.T) {
+		session, _ := newSession(t, 343)
+
+		err := session.validateReceiveFunding(
+			t.Context(), &VTXOInfo{
+				Outpoint:  "funding:0",
+				AmountSat: 42_000,
+				ExpiryInfo: &sdkark.VTXOExpiryInfo{
+					RelativeExpiry:          1_008,
+					CriticalThresholdBlocks: 1_114,
+				},
+			},
+		)
+		require.ErrorContains(t, err, "claim window is invalid")
+		require.ErrorContains(t, err, "refund window 243")
+		require.Equal(t, ReceiveStateFailed, session.State())
+	})
 }
 
 // TestReceiveSessionRejectsCreditAssistedFundingMismatch verifies a
@@ -1659,12 +1799,12 @@ func TestWaitForVHTLCFallsBackToLocalVTXOOnUnregisteredScript(t *testing.T) {
 	}
 	client := NewSwapClient(nil, daemonConn, nil, nil)
 
-	outpoint, amount, err := client.waitForVHTLC(
+	funding, err := client.waitForVHTLC(
 		t.Context(), pkScript, time.Time{}, nil,
 	)
 	require.NoError(t, err)
-	require.Equal(t, localVTXO.Outpoint, outpoint)
-	require.Equal(t, localVTXO.AmountSat, amount)
+	require.Equal(t, localVTXO.Outpoint, funding.Outpoint)
+	require.Equal(t, localVTXO.AmountSat, funding.AmountSat)
 	require.Equal(t, 1, daemonConn.liveLookupCalls)
 }
 
@@ -1711,12 +1851,12 @@ func TestWaitForVHTLCRetriesThroughIndexerRowLag(t *testing.T) {
 	client := NewSwapClient(nil, daemonConn, nil, nil)
 	client.waitPollInterval = time.Millisecond
 
-	outpoint, amount, err := client.waitForVHTLC(
+	fundingInfo, err := client.waitForVHTLC(
 		t.Context(), pkScript, time.Time{}, nil,
 	)
 	require.NoError(t, err)
-	require.Equal(t, funded.Outpoint, outpoint)
-	require.Equal(t, funded.AmountSat, amount)
+	require.Equal(t, funded.Outpoint, fundingInfo.Outpoint)
+	require.Equal(t, funded.AmountSat, fundingInfo.AmountSat)
 	require.Equal(t, lagPolls+1, daemonConn.liveLookupCalls)
 }
 
@@ -1750,7 +1890,7 @@ func TestWaitForVHTLCExpiresOnPersistentUnregisteredScript(t *testing.T) {
 		},
 	}
 
-	_, _, err := client.waitForVHTLC(
+	_, err := client.waitForVHTLC(
 		t.Context(), pkScript, time.Time{},
 		session.ensureReceiveFundingStillPossible,
 	)
@@ -2346,7 +2486,7 @@ func TestReceiveSessionWaitClaimsVHTLC(t *testing.T) {
 			CltvExpiryDelta: 40,
 		},
 		cfg: &VHTLCConfig{
-			RefundLocktime:                       144,
+			RefundLocktime:                       300,
 			UnilateralClaimDelay:                 12,
 			UnilateralRefundDelay:                24,
 			UnilateralRefundWithoutReceiverDelay: 36,
@@ -2434,7 +2574,7 @@ func TestReceiveSessionVHTLCInfoWaitsForAcceptedEvent(t *testing.T) {
 	}
 	serverPubKey := serverPriv.PubKey().SerializeCompressed()
 	cfg := VHTLCConfig{
-		RefundLocktime:                       144,
+		RefundLocktime:                       300,
 		UnilateralClaimDelay:                 12,
 		UnilateralRefundDelay:                24,
 		UnilateralRefundWithoutReceiverDelay: 36,
@@ -2507,7 +2647,7 @@ func TestReceiveSessionRejectsInvalidOnion(t *testing.T) {
 			CltvExpiryDelta: 40,
 		},
 		cfg: &VHTLCConfig{
-			RefundLocktime:                       144,
+			RefundLocktime:                       300,
 			UnilateralClaimDelay:                 12,
 			UnilateralRefundDelay:                24,
 			UnilateralRefundWithoutReceiverDelay: 36,
@@ -2583,7 +2723,7 @@ func TestReceiveSessionResumeFromStore(t *testing.T) {
 		},
 		payerFeeMsat: 123_000,
 		cfg: &VHTLCConfig{
-			RefundLocktime:                       144,
+			RefundLocktime:                       300,
 			UnilateralClaimDelay:                 12,
 			UnilateralRefundDelay:                24,
 			UnilateralRefundWithoutReceiverDelay: 36,
@@ -2681,7 +2821,7 @@ func TestReceiveSessionCancelDoesNotPersistFailed(t *testing.T) {
 			CltvExpiryDelta: 40,
 		},
 		cfg: &VHTLCConfig{
-			RefundLocktime:                       144,
+			RefundLocktime:                       300,
 			UnilateralClaimDelay:                 12,
 			UnilateralRefundDelay:                24,
 			UnilateralRefundWithoutReceiverDelay: 36,
@@ -2747,7 +2887,7 @@ func TestReceiveSessionResumesAfterAckedHTLCEvent(t *testing.T) {
 	}
 	serverPubKey := serverPriv.PubKey().SerializeCompressed()
 	cfg := &VHTLCConfig{
-		RefundLocktime:                       144,
+		RefundLocktime:                       300,
 		UnilateralClaimDelay:                 12,
 		UnilateralRefundDelay:                24,
 		UnilateralRefundWithoutReceiverDelay: 36,
@@ -2859,7 +2999,7 @@ func TestReceiveSessionWaitForFundingSurvivesIndexerRowLag(t *testing.T) {
 			CltvExpiryDelta: 40,
 		},
 		cfg: &VHTLCConfig{
-			RefundLocktime:                       144,
+			RefundLocktime:                       300,
 			UnilateralClaimDelay:                 12,
 			UnilateralRefundDelay:                24,
 			UnilateralRefundWithoutReceiverDelay: 36,
@@ -2931,7 +3071,7 @@ func TestReceiveSessionRetriesAcceptedHTLCAckOnResume(t *testing.T) {
 	}
 	serverPubKey := serverPriv.PubKey().SerializeCompressed()
 	cfg := &VHTLCConfig{
-		RefundLocktime:                       144,
+		RefundLocktime:                       300,
 		UnilateralClaimDelay:                 12,
 		UnilateralRefundDelay:                24,
 		UnilateralRefundWithoutReceiverDelay: 36,
@@ -3046,7 +3186,7 @@ func TestReceiveSessionRetriesAcceptedHTLCServerAckOnResume(t *testing.T) {
 	}
 	serverPubKey := serverPriv.PubKey().SerializeCompressed()
 	cfg := &VHTLCConfig{
-		RefundLocktime:                       144,
+		RefundLocktime:                       300,
 		UnilateralClaimDelay:                 12,
 		UnilateralRefundDelay:                24,
 		UnilateralRefundWithoutReceiverDelay: 36,
@@ -3176,7 +3316,7 @@ func TestReceiveSessionClassifiesOutSwapServerAckStatus(t *testing.T) {
 				PubKey().
 				SerializeCompressed()
 			cfg := &VHTLCConfig{
-				RefundLocktime:        144,
+				RefundLocktime:        300,
 				UnilateralClaimDelay:  12,
 				UnilateralRefundDelay: 24,
 			}
@@ -3278,6 +3418,7 @@ func TestReceiveSessionExpiresAtRefundLocktimeWithoutFunding(t *testing.T) {
 		t.Context(), btcutil.Amount(42_000),
 	)
 	require.NoError(t, err)
+	acceptTestOutSwapHtlcEvent(t, client, session, *serverConn.cfg)
 
 	daemonConn.blockHeight = 143
 
@@ -3285,12 +3426,12 @@ func TestReceiveSessionExpiresAtRefundLocktimeWithoutFunding(t *testing.T) {
 		t.Context(), session.PaymentHash,
 	)
 	require.NoError(t, err)
-	require.Equal(t, ReceiveStateInvoiceCreated, resumed.State())
+	require.Equal(t, ReceiveStateHTLCEventAccepted, resumed.State())
 
 	_, _, err = resumed.WaitForFunding(t.Context())
 	require.ErrorIs(t, err, errSwapExpired)
 	require.ErrorContains(
-		t, err, "refund locktime 144 is imminent or reached",
+		t, err, "receive funding claim window closed",
 	)
 	require.Equal(t, ReceiveStateExpired, resumed.State())
 
@@ -3336,7 +3477,7 @@ func TestReceiveSessionExpiresUnpaidInvoiceAtDeadline(t *testing.T) {
 			CltvExpiryDelta: 40,
 		},
 		cfg: &VHTLCConfig{
-			RefundLocktime:                       144,
+			RefundLocktime:                       300,
 			UnilateralClaimDelay:                 12,
 			UnilateralRefundDelay:                24,
 			UnilateralRefundWithoutReceiverDelay: 36,
@@ -3424,7 +3565,7 @@ func TestReceiveSessionOverdueInvoiceAcceptsDeliveredEvent(t *testing.T) {
 			CltvExpiryDelta: 40,
 		},
 		cfg: &VHTLCConfig{
-			RefundLocktime:                       144,
+			RefundLocktime:                       300,
 			UnilateralClaimDelay:                 12,
 			UnilateralRefundDelay:                24,
 			UnilateralRefundWithoutReceiverDelay: 36,
@@ -3502,7 +3643,7 @@ func TestReceiveSessionFailsOnAmountMismatch(t *testing.T) {
 			CltvExpiryDelta: 40,
 		},
 		cfg: &VHTLCConfig{
-			RefundLocktime:                       144,
+			RefundLocktime:                       300,
 			UnilateralClaimDelay:                 12,
 			UnilateralRefundDelay:                24,
 			UnilateralRefundWithoutReceiverDelay: 36,
@@ -3577,7 +3718,7 @@ func TestReceiveSessionWaitReconcilesBeforeExpiry(t *testing.T) {
 			CltvExpiryDelta: 40,
 		},
 		cfg: &VHTLCConfig{
-			RefundLocktime:                       144,
+			RefundLocktime:                       300,
 			UnilateralClaimDelay:                 12,
 			UnilateralRefundDelay:                24,
 			UnilateralRefundWithoutReceiverDelay: 36,
@@ -3648,7 +3789,7 @@ func TestReceiveSessionClaimBeforeHTLCEventFailsClearly(t *testing.T) {
 			CltvExpiryDelta: 40,
 		},
 		cfg: &VHTLCConfig{
-			RefundLocktime:                       144,
+			RefundLocktime:                       300,
 			UnilateralClaimDelay:                 12,
 			UnilateralRefundDelay:                24,
 			UnilateralRefundWithoutReceiverDelay: 36,
@@ -3711,7 +3852,7 @@ func TestReceiveSessionClaimFailsOnAmountMismatch(t *testing.T) {
 	}
 	serverPubKey := serverPriv.PubKey().SerializeCompressed()
 	cfg := VHTLCConfig{
-		RefundLocktime:                       144,
+		RefundLocktime:                       300,
 		UnilateralClaimDelay:                 12,
 		UnilateralRefundDelay:                24,
 		UnilateralRefundWithoutReceiverDelay: 36,
@@ -3788,7 +3929,7 @@ func TestReceiveSessionFreshClaimBoundsSpentLookup(t *testing.T) {
 		PreimageHash: lntypes.Hash(
 			sha256.Sum256(preimage[:]),
 		),
-		RefundLocktime:                       144,
+		RefundLocktime:                       300,
 		UnilateralClaimDelay:                 12,
 		UnilateralRefundDelay:                24,
 		UnilateralRefundWithoutReceiverDelay: 36,
@@ -3828,7 +3969,7 @@ func TestReceiveSessionFreshClaimBoundsSpentLookup(t *testing.T) {
 		vhtlcPolicyTemplate: policyTemplate,
 		vhtlcPkScript:       pkScript,
 		vhtlcConfig: VHTLCConfig{
-			RefundLocktime: 144,
+			RefundLocktime: 300,
 		},
 		vhtlcOutpoint: "funding:0",
 		vhtlcAmount:   42_000,
@@ -3853,7 +3994,7 @@ func TestReceiveSessionFreshClaimBoundsSpentLookup(t *testing.T) {
 			GetVtxoOutpoint(),
 	)
 	require.Equal(
-		t, int32(144), daemonConn.lastArmRecovery.
+		t, int32(300), daemonConn.lastArmRecovery.
 			GetRefundLocktime(),
 	)
 	require.Equal(t, 1, daemonConn.cancelCalls)
@@ -3886,7 +4027,7 @@ func TestReceiveSessionClaimFollowsRefreshedLiveVHTLC(t *testing.T) {
 		PreimageHash: lntypes.Hash(
 			sha256.Sum256(preimage[:]),
 		),
-		RefundLocktime:                       144,
+		RefundLocktime:                       300,
 		UnilateralClaimDelay:                 12,
 		UnilateralRefundDelay:                24,
 		UnilateralRefundWithoutReceiverDelay: 36,
@@ -3933,7 +4074,7 @@ func TestReceiveSessionClaimFollowsRefreshedLiveVHTLC(t *testing.T) {
 		vhtlcPolicyTemplate: policyTemplate,
 		vhtlcPkScript:       pkScript,
 		vhtlcConfig: VHTLCConfig{
-			RefundLocktime: 144,
+			RefundLocktime: 300,
 		},
 		vhtlcOutpoint: "original:0",
 		vhtlcAmount:   43_000,
@@ -3981,7 +4122,7 @@ func TestReceiveSessionFreshClaimBoundsSpentLookupGRPCDeadline(t *testing.T) {
 		PreimageHash: lntypes.Hash(
 			sha256.Sum256(preimage[:]),
 		),
-		RefundLocktime:                       144,
+		RefundLocktime:                       300,
 		UnilateralClaimDelay:                 12,
 		UnilateralRefundDelay:                24,
 		UnilateralRefundWithoutReceiverDelay: 36,
@@ -4030,7 +4171,7 @@ func TestReceiveSessionFreshClaimBoundsSpentLookupGRPCDeadline(t *testing.T) {
 		vhtlcPolicyTemplate: policyTemplate,
 		vhtlcPkScript:       pkScript,
 		vhtlcConfig: VHTLCConfig{
-			RefundLocktime: 144,
+			RefundLocktime: 300,
 		},
 		vhtlcOutpoint: "funding:0",
 		vhtlcAmount:   42_000,
@@ -4108,7 +4249,10 @@ func TestReceiveSessionClaimRejectsAfterRefundLocktime(t *testing.T) {
 		vhtlcPolicyTemplate: policyTemplate,
 		vhtlcPkScript:       pkScript,
 		vhtlcConfig: VHTLCConfig{
-			RefundLocktime: 144,
+			RefundLocktime:                       144,
+			UnilateralClaimDelay:                 12,
+			UnilateralRefundDelay:                24,
+			UnilateralRefundWithoutReceiverDelay: 36,
 		},
 		vhtlcOutpoint: "funding:0",
 		vhtlcAmount:   42_000,
@@ -4190,7 +4334,10 @@ func TestReceiveSessionClaimRecoveryCompletionWinsAfterRefundLocktime(
 		vhtlcPolicyTemplate: policyTemplate,
 		vhtlcPkScript:       pkScript,
 		vhtlcConfig: VHTLCConfig{
-			RefundLocktime: 144,
+			RefundLocktime:                       144,
+			UnilateralClaimDelay:                 12,
+			UnilateralRefundDelay:                24,
+			UnilateralRefundWithoutReceiverDelay: 36,
 		},
 		vhtlcOutpoint:   "funding:0",
 		vhtlcAmount:     42_000,
@@ -4231,7 +4378,7 @@ func TestReceiveSessionClaimRejectsSpentVHTLCWithoutPreimage(t *testing.T) {
 		PreimageHash: lntypes.Hash(
 			sha256.Sum256(preimage[:]),
 		),
-		RefundLocktime:                       144,
+		RefundLocktime:                       300,
 		UnilateralClaimDelay:                 12,
 		UnilateralRefundDelay:                24,
 		UnilateralRefundWithoutReceiverDelay: 36,
@@ -4263,7 +4410,7 @@ func TestReceiveSessionClaimRejectsSpentVHTLCWithoutPreimage(t *testing.T) {
 		vhtlcPolicyTemplate: policyTemplate,
 		vhtlcPkScript:       pkScript,
 		vhtlcConfig: VHTLCConfig{
-			RefundLocktime: 144,
+			RefundLocktime: 300,
 		},
 		vhtlcOutpoint: "funding:0",
 		vhtlcAmount:   42_000,
@@ -4307,7 +4454,7 @@ func TestReceiveSessionClaimIDPreventsDuplicateClaim(t *testing.T) {
 			CltvExpiryDelta: 40,
 		},
 		cfg: &VHTLCConfig{
-			RefundLocktime:                       144,
+			RefundLocktime:                       300,
 			UnilateralClaimDelay:                 12,
 			UnilateralRefundDelay:                24,
 			UnilateralRefundWithoutReceiverDelay: 36,
@@ -4377,7 +4524,7 @@ func TestReceiveSessionClaimReturnsLastSendError(t *testing.T) {
 		PreimageHash: lntypes.Hash(
 			sha256.Sum256(preimage[:]),
 		),
-		RefundLocktime:                       144,
+		RefundLocktime:                       300,
 		UnilateralClaimDelay:                 12,
 		UnilateralRefundDelay:                24,
 		UnilateralRefundWithoutReceiverDelay: 36,
@@ -4444,7 +4591,7 @@ func TestReceiveSessionAcksServerForCreditShapedInArkEvent(t *testing.T) {
 	client := NewSwapClient(serverConn, daemonConn, nil, nil)
 
 	cfg := VHTLCConfig{
-		RefundLocktime:                       144,
+		RefundLocktime:                       300,
 		UnilateralClaimDelay:                 12,
 		UnilateralRefundDelay:                24,
 		UnilateralRefundWithoutReceiverDelay: 36,
