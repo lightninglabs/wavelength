@@ -337,6 +337,12 @@ func TestAcceptInArkHtlcEventBuildsSenderReceiverPolicy(t *testing.T) {
 
 	preimage := lntypes.Preimage{1, 2, 3}
 	hash := preimage.Hash()
+	var logOutput bytes.Buffer
+	log := btclog.NewSLogger(
+		btclog.NewDefaultHandler(
+			&logOutput, btclog.WithNoTimestamp(),
+		),
+	)
 	cfg := VHTLCConfig{
 		RefundLocktime:                       180,
 		UnilateralClaimDelay:                 5,
@@ -350,6 +356,7 @@ func TestAcceptInArkHtlcEventBuildsSenderReceiverPolicy(t *testing.T) {
 			daemon: &testDaemonConn{
 				blockHeight: 100,
 			},
+			log: log,
 		},
 		amountSat:      btcutil.Amount(42_000),
 		state:          ReceiveStateInvoiceCreated,
@@ -383,6 +390,10 @@ func TestAcceptInArkHtlcEventBuildsSenderReceiverPolicy(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, expectedScript, session.vhtlcPkScript)
 	require.True(t, session.swapServerPubKey.IsEqual(senderPriv.PubKey()))
+	require.Contains(
+		t, logOutput.String(),
+		"Receive vHTLC has limited recovery window",
+	)
 }
 
 // TestAcceptInArkHtlcEventRejectsUnsafeCreditWindow verifies the
