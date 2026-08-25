@@ -68,6 +68,11 @@ type VHTLCPolicy struct {
 }
 
 // NewVHTLCPolicy constructs a vHTLC policy using the AST closure system.
+// Timing suitability depends on the lifecycle boundary and current chain
+// height, so callers admitting a new policy must separately use
+// VHTLCTiming.ValidateOrder or VHTLCTiming.ValidateClaimWindow. Keeping policy
+// reconstruction separate lets already-funded policies retain their available
+// spend paths even when their remaining timing window is no longer admissible.
 //
 // The vHTLC has 6 leaves:
 //  1. Claim (collab): HashLock(preimage) + Multisig([receiver, server])
@@ -371,9 +376,6 @@ func (opts *VHTLCOpts) validate() error {
 			return fmt.Errorf("vhtlc: invalid %s: %w", delay.name,
 				err)
 		}
-	}
-	if err := opts.Timing().ValidateOrder(); err != nil {
-		return err
 	}
 
 	return nil

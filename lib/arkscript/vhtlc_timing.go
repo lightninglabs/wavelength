@@ -103,7 +103,10 @@ func (t VHTLCTiming) ValidateClaimWindow(window VHTLCClaimWindow) error {
 
 // DecodeVHTLCTiming recognizes the canonical six-leaf vHTLC semantic shape
 // and returns its four timing constraints. Other custom policies return an
-// error so callers cannot accidentally apply vHTLC assumptions to them.
+// error so callers cannot accidentally apply vHTLC assumptions to them. The
+// decoded tuple reflects the committed script exactly; admission callers must
+// apply ValidateOrder or ValidateClaimWindow, while recovery code can still
+// reconstruct an already-funded legacy policy.
 func DecodeVHTLCTiming(template *PolicyTemplate) (*VHTLCTiming, error) {
 	if template == nil {
 		return nil, fmt.Errorf("vhtlc: policy template is required")

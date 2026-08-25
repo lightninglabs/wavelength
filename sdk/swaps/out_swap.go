@@ -1062,8 +1062,7 @@ func (s *ReceiveSession) acceptOutSwapHtlcEvent(ctx context.Context,
 		)
 	}
 	if err := s.validateReceiveClaimWindow(
-		ctx, event.VHTLCConfig, s.client.recoveryPolicy.WithDefaults().
-			ExitAncestryDelayBlocks,
+		ctx, event.VHTLCConfig,
 	); err != nil {
 		return s.failReceiveTimingAdmission(
 			ctx, "out-swap HTLC timing window is invalid", err,
@@ -1367,10 +1366,7 @@ func (s *ReceiveSession) acceptInArkHtlcEvent(ctx context.Context,
 	// and must not prevent the still-available cooperative claim. Retain a
 	// warning for operators while keeping the credit-shaped path safe to
 	// reject before its acknowledgement triggers server-side funding.
-	timingErr := s.validateReceiveClaimWindow(
-		ctx, cfg, s.client.recoveryPolicy.WithDefaults().
-			ExitAncestryDelayBlocks,
-	)
+	timingErr := s.validateReceiveClaimWindow(ctx, cfg)
 	if timingErr != nil {
 		if creditShaped {
 			return s.failReceiveTimingAdmission(
@@ -1605,7 +1601,7 @@ func (s *ReceiveSession) validateReceiveFunding(ctx context.Context,
 // validateReceiveClaimWindow applies the shared semantic timing check when a
 // server event first asks the receiver to accept a vHTLC policy.
 func (s *ReceiveSession) validateReceiveClaimWindow(ctx context.Context,
-	cfg VHTLCConfig, exitAncestryDelay uint32) error {
+	cfg VHTLCConfig) error {
 
 	if s == nil || s.client == nil || s.client.daemon == nil {
 		return newRetryableActionError(
@@ -1621,18 +1617,24 @@ func (s *ReceiveSession) validateReceiveClaimWindow(ctx context.Context,
 		)
 	}
 
-	return (arkscript.VHTLCTiming{
+	policy := s.client.recoveryPolicy.WithDefaults()
+
+	return vhtlcTiming(cfg).ValidateClaimWindow(arkscript.VHTLCClaimWindow{
+		CurrentHeight:     height,
+		ExitAncestryDelay: policy.ExitAncestryDelayBlocks,
+		RecoveryMargin:    policy.MinRecoveryMarginBlocks,
+	})
+}
+
+// vhtlcTiming projects the wire configuration into the shared timing model.
+func vhtlcTiming(cfg VHTLCConfig) arkscript.VHTLCTiming {
+	return arkscript.VHTLCTiming{
 		RefundLocktime:        cfg.RefundLocktime,
 		UnilateralClaimDelay:  cfg.UnilateralClaimDelay,
 		UnilateralRefundDelay: cfg.UnilateralRefundDelay,
 		UnilateralRefundWithoutReceiverDelay: cfg.
 			UnilateralRefundWithoutReceiverDelay,
-	}).ValidateClaimWindow(arkscript.VHTLCClaimWindow{
-		CurrentHeight:     height,
-		ExitAncestryDelay: exitAncestryDelay,
-		RecoveryMargin: s.client.recoveryPolicy.WithDefaults().
-			MinRecoveryMarginBlocks,
-	})
+	}
 }
 
 // failReceiveTimingAdmission keeps backend availability failures retryable and

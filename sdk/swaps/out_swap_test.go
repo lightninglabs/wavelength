@@ -20,7 +20,6 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
-	sdkark "github.com/lightninglabs/wavelength/sdk/ark"
 	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waverpc"
@@ -345,8 +344,8 @@ func TestAcceptInArkHtlcEventBuildsSenderReceiverPolicy(t *testing.T) {
 	)
 	cfg := VHTLCConfig{
 		RefundLocktime:                       180,
-		UnilateralClaimDelay:                 5,
-		UnilateralRefundDelay:                6,
+		UnilateralClaimDelay:                 6,
+		UnilateralRefundDelay:                5,
 		UnilateralRefundWithoutReceiverDelay: 7,
 		SwapServerPubkey: senderPriv.PubKey().
 			SerializeCompressed(),
@@ -1413,7 +1412,6 @@ func TestReceiveSessionRetriesAdmissionHeightLookup(t *testing.T) {
 
 	err := session.validateReceiveClaimWindow(
 		t.Context(), VHTLCConfig{},
-		DefaultRecoveryExitAncestryDelayBlocks,
 	)
 	err = session.failReceiveTimingAdmission(
 		t.Context(),
@@ -1513,10 +1511,6 @@ func TestReceiveSessionUsesFullClaimWindowOnlyAtAdmission(t *testing.T) {
 			t.Context(), &VTXOInfo{
 				Outpoint:  "funding:0",
 				AmountSat: 42_000,
-				ExpiryInfo: &sdkark.VTXOExpiryInfo{
-					RelativeExpiry:          1_008,
-					CriticalThresholdBlocks: 1_114,
-				},
 			},
 		)
 		require.NoError(t, err)
@@ -4165,10 +4159,6 @@ func TestReceiveSessionClaimFollowsRefreshedLiveVHTLC(t *testing.T) {
 		Outpoint:  "refreshed:0",
 		AmountSat: 42_000,
 		PkScript:  pkScript,
-		ExpiryInfo: &sdkark.VTXOExpiryInfo{
-			RelativeExpiry:          1_008,
-			CriticalThresholdBlocks: 1_114,
-		},
 	}
 	daemonConn := &testDaemonConn{
 		// The full unilateral window is already closed here, but the
