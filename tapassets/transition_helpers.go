@@ -127,7 +127,6 @@ func (s *assetSpendSource) appendTransition(output commitOutput,
 		path = s.proofPath.Clone()
 	} else {
 		path = &tapsdk.AssetProofPath{
-			Version: tapsdk.AssetProofPathVersionV0,
 			ConfirmedBaseProof: append(
 				[]byte(nil), s.proofFile...,
 			),
