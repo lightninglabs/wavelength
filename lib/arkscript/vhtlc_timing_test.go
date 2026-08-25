@@ -154,4 +154,18 @@ func TestDecodeVHTLCTiming(t *testing.T) {
 
 	_, err = DecodeVHTLCTiming(badCSV)
 	require.ErrorContains(t, err, "canonical block delay")
+
+	unorderedOpts := opts
+	unorderedOpts.UnilateralClaimDelay =
+		unorderedOpts.UnilateralRefundDelay + 1
+	unorderedPolicy, err := NewVHTLCPolicy(unorderedOpts)
+	require.NoError(t, err)
+	unorderedEncoded, err := unorderedPolicy.Template.Encode()
+	require.NoError(t, err)
+	unordered, err := DecodePolicyTemplate(unorderedEncoded)
+	require.NoError(t, err)
+
+	unorderedTiming, err := DecodeVHTLCTiming(unordered)
+	require.NoError(t, err)
+	require.Equal(t, unorderedOpts.Timing(), *unorderedTiming)
 }
