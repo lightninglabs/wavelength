@@ -151,8 +151,8 @@ type RecoveryPolicy struct {
 	MinRecoveryMarginBlocks uint32
 
 	// ExitAncestryDelayBlocks is the pre-funding block budget reserved for
-	// making the vHTLC output available on chain. Once the funded VTXO is
-	// visible, its exact expiry metadata may require a larger budget.
+	// making the vHTLC output available on chain when the receiver first
+	// evaluates a proposed vHTLC policy.
 	ExitAncestryDelayBlocks uint32
 
 	// MaxFeeRateSatPerKW caps the final recovery exit-spend fee rate. The

@@ -1065,8 +1065,8 @@ func (s *ReceiveSession) acceptOutSwapHtlcEvent(ctx context.Context,
 		ctx, event.VHTLCConfig, s.client.recoveryPolicy.WithDefaults().
 			ExitAncestryDelayBlocks,
 	); err != nil {
-		return s.failTerminal(
-			ctx, "out-swap HTLC timing window is invalid", err, nil,
+		return s.failReceiveTimingAdmission(
+			ctx, "out-swap HTLC timing window is invalid", err,
 		)
 	}
 
@@ -1364,8 +1364,8 @@ func (s *ReceiveSession) acceptInArkHtlcEvent(ctx context.Context,
 		ctx, cfg, s.client.recoveryPolicy.WithDefaults().
 			ExitAncestryDelayBlocks,
 	); err != nil {
-		return s.failTerminal(
-			ctx, "in-ark HTLC timing window is invalid", err, nil,
+		return s.failReceiveTimingAdmission(
+			ctx, "in-ark HTLC timing window is invalid", err,
 		)
 	}
 	refundNoReceiverDelay := cfg.UnilateralRefundWithoutReceiverDelay
@@ -1525,15 +1525,25 @@ func decodeOutSwapOnion(receiveAuthKey ReceiveAuthKey, paymentHash lntypes.Hash,
 func (s *ReceiveSession) ensureReceiveFundingStillPossible(
 	ctx context.Context) error {
 
-	exitDelay := s.client.recoveryPolicy.WithDefaults().
-		ExitAncestryDelayBlocks
-	err := s.validateReceiveClaimWindow(ctx, s.vhtlcConfig, exitDelay)
-	if err == nil {
+	height, err := s.client.daemon.BlockHeight(ctx)
+	if err != nil {
+		s.client.log.DebugS(
+			ctx,
+			"Unable to query receive refund locktime height",
+			slog.String("err", err.Error()),
+			btclog.Hex("hash", s.PaymentHash[:]),
+		)
+
 		return nil
 	}
 
-	return fmt.Errorf("receive funding claim window closed: %w: %w", err,
-		errSwapExpired)
+	if height+s.client.refundLocktimeBuffer < s.vhtlcConfig.RefundLocktime {
+		return nil
+	}
+
+	return fmt.Errorf("refund locktime %d is imminent or reached before "+
+		"receive funding was observed at height %d: %w",
+		s.vhtlcConfig.RefundLocktime, height, errSwapExpired)
 }
 
 // validateReceiveFunding checks manually or automatically observed funding
@@ -1560,44 +1570,26 @@ func (s *ReceiveSession) validateReceiveFunding(ctx context.Context,
 		})
 	}
 
-	exitDelay, err := s.receiveExitAncestryDelay(funding)
-	if err != nil {
-		return s.failTerminal(
-			ctx, "funded vHTLC exit metadata is invalid", err,
-			func() {
-				s.vhtlcOutpoint = funding.Outpoint
-				s.vhtlcAmount = funding.AmountSat
-			},
-		)
-	}
-	if err := s.validateReceiveClaimWindow(
-		ctx, s.vhtlcConfig, exitDelay,
-	); err != nil {
-		return s.failTerminal(
-			ctx, "funded vHTLC claim window is invalid", err,
-			func() {
-				s.vhtlcOutpoint = funding.Outpoint
-				s.vhtlcAmount = funding.AmountSat
-			},
-		)
-	}
-
 	return nil
 }
 
-// validateReceiveClaimWindow applies the shared semantic timing check at the
-// current daemon height.
+// validateReceiveClaimWindow applies the shared semantic timing check when a
+// server event first asks the receiver to accept a vHTLC policy.
 func (s *ReceiveSession) validateReceiveClaimWindow(ctx context.Context,
 	cfg VHTLCConfig, exitAncestryDelay uint32) error {
 
 	if s == nil || s.client == nil || s.client.daemon == nil {
-		return fmt.Errorf("daemon connection is required for vHTLC " +
-			"timing validation")
+		return newRetryableActionError(
+			fmt.Errorf("daemon connection is required for vHTLC " +
+				"timing validation"),
+		)
 	}
 
 	height, err := s.client.daemon.BlockHeight(ctx)
 	if err != nil {
-		return fmt.Errorf("get block height: %w", err)
+		return newRetryableActionError(
+			fmt.Errorf("get block height: %w", err),
+		)
 	}
 
 	return (arkscript.VHTLCTiming{
@@ -1614,35 +1606,17 @@ func (s *ReceiveSession) validateReceiveClaimWindow(ctx context.Context,
 	})
 }
 
-// receiveExitAncestryDelay combines the conservative pre-funding budget with
-// the funded VTXO's exact critical-exit metadata. A deeper ancestry can only
-// increase the accepted budget.
-func (s *ReceiveSession) receiveExitAncestryDelay(funding *VTXOInfo) (uint32,
-	error) {
+// failReceiveTimingAdmission keeps backend availability failures retryable and
+// durably rejects only a timing tuple that was evaluated against chain state.
+func (s *ReceiveSession) failReceiveTimingAdmission(ctx context.Context,
+	reason string, err error) error {
 
-	fallback := s.client.recoveryPolicy.WithDefaults().
-		ExitAncestryDelayBlocks
-	if funding == nil || funding.ExpiryInfo == nil {
-		return fallback, nil
+	var retryable *retryableActionError
+	if errors.As(err, &retryable) {
+		return err
 	}
 
-	info := funding.ExpiryInfo
-	// RelativeExpiry is the wrapping VTXO's exit CSV. For a custom vHTLC
-	// policy it can reflect a different branch than the receiver-only claim
-	// CSV, so only use it to remove the CSV component from the daemon's
-	// critical threshold.
-	if info.CriticalThresholdBlocks <= int32(info.RelativeExpiry) {
-		return fallback, nil
-	}
-
-	delay := uint32(
-		info.CriticalThresholdBlocks - int32(info.RelativeExpiry),
-	)
-	if delay < fallback {
-		return fallback, nil
-	}
-
-	return delay, nil
+	return s.failTerminal(ctx, reason, err, nil)
 }
 
 // claimFundedVHTLC reconciles an already-spent vHTLC before sending the claim
@@ -1832,16 +1806,22 @@ func (s *ReceiveSession) ensureClaimReceiveInfo(ctx context.Context) error {
 func (s *ReceiveSession) ensureReceiveClaimStillPossible(
 	ctx context.Context) error {
 
-	exitDelay := s.client.recoveryPolicy.WithDefaults().
-		ExitAncestryDelayBlocks
-	err := s.validateReceiveClaimWindow(
-		ctx, s.vhtlcConfig, exitDelay,
-	)
-	if err == nil {
+	height, err := s.client.daemon.BlockHeight(ctx)
+	if err != nil {
+		return newRetryableActionError(
+			fmt.Errorf("get block height: %w", err),
+		)
+	}
+
+	if height+s.client.refundLocktimeBuffer < s.vhtlcConfig.RefundLocktime {
 		return nil
 	}
 
-	reason := fmt.Sprintf("receive claim window closed: %v", err)
+	// Once the refund locktime is mature, a new receive claim becomes a
+	// late race with the server refund path and should stop durably.
+	reason := fmt.Sprintf("refund locktime %d is imminent or reached "+
+		"before receive claim at height %d",
+		s.vhtlcConfig.RefundLocktime, height)
 	if persistErr := s.mutateAndPersist(ctx, func() error {
 		s.interventionReason = reason
 
@@ -2067,15 +2047,6 @@ func (s *ReceiveSession) reconcileLiveReceiveFunding(
 	}
 	if vtxo == nil || vtxo.Outpoint == "" {
 		return nil
-	}
-	exitDelay, err := s.receiveExitAncestryDelay(vtxo)
-	if err != nil {
-		return err
-	}
-	if err := s.validateReceiveClaimWindow(
-		ctx, s.vhtlcConfig, exitDelay,
-	); err != nil {
-		return err
 	}
 	if s.vhtlcAmount != 0 && vtxo.AmountSat != s.vhtlcAmount {
 		s.client.log.WarnS(
