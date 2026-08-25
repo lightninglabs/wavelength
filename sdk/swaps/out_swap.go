@@ -1364,17 +1364,36 @@ func (s *ReceiveSession) acceptInArkHtlcEvent(ctx context.Context,
 	}
 	// A legacy direct p2p event describes a vHTLC the sender already
 	// funded, so a short unilateral-exit window cannot undo the exposure
-	// and must not prevent the still-available cooperative claim. The
-	// credit-shaped path remains safe to reject here because its
-	// server-side funding is gated on the acknowledgement below.
-	if creditShaped {
-		if err := s.validateReceiveClaimWindow(
-			ctx, cfg, s.client.recoveryPolicy.WithDefaults().
-				ExitAncestryDelayBlocks,
-		); err != nil {
+	// and must not prevent the still-available cooperative claim. Retain a
+	// warning for operators while keeping the credit-shaped path safe to
+	// reject before its acknowledgement triggers server-side funding.
+	timingErr := s.validateReceiveClaimWindow(
+		ctx, cfg, s.client.recoveryPolicy.WithDefaults().
+			ExitAncestryDelayBlocks,
+	)
+	if timingErr != nil {
+		if creditShaped {
 			return s.failReceiveTimingAdmission(
 				ctx, "in-ark HTLC timing window is invalid",
-				err,
+				timingErr,
+			)
+		}
+
+		var retryable *retryableActionError
+		if errors.As(timingErr, &retryable) {
+			s.client.log.DebugS(
+				ctx,
+				"Unable to evaluate receive vHTLC recovery "+
+					"window",
+				slog.String("err", timingErr.Error()),
+				btclog.Hex("hash", s.PaymentHash[:]),
+			)
+		} else {
+			s.client.log.WarnS(
+				ctx,
+				"Receive vHTLC has limited recovery window",
+				timingErr,
+				btclog.Hex("hash", s.PaymentHash[:]),
 			)
 		}
 	}
