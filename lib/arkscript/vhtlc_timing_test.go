@@ -3,6 +3,7 @@ package arkscript
 import (
 	"testing"
 
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -117,8 +118,8 @@ func TestDecodeVHTLCTiming(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, opts.Timing(), *timing)
 
-	bad := *decoded
-	bad.Leaves = append([]LeafTemplate(nil), decoded.Leaves...)
+	bad, err := DecodePolicyTemplate(encoded)
+	require.NoError(t, err)
 	for i := range bad.Leaves {
 		shape, shapeErr := decodeVHTLCNode(bad.Leaves[i].Node)
 		require.NoError(t, shapeErr)
@@ -135,6 +136,22 @@ func TestDecodeVHTLCTiming(t *testing.T) {
 		}
 	}
 
-	_, err = DecodeVHTLCTiming(&bad)
+	_, err = DecodeVHTLCTiming(bad)
 	require.ErrorContains(t, err, "unilateral refund keys do not match")
+
+	badCSV, err := DecodePolicyTemplate(encoded)
+	require.NoError(t, err)
+	for i := range badCSV.Leaves {
+		csv, ok := badCSV.Leaves[i].Node.(*CSV)
+		if !ok {
+			continue
+		}
+
+		csv.Lock |= wire.SequenceLockTimeIsSeconds
+
+		break
+	}
+
+	_, err = DecodeVHTLCTiming(badCSV)
+	require.ErrorContains(t, err, "canonical block delay")
 }

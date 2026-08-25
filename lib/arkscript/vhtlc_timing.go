@@ -3,6 +3,8 @@ package arkscript
 import (
 	"bytes"
 	"fmt"
+
+	"github.com/btcsuite/btcd/wire/v2"
 )
 
 // VHTLCTiming contains the four block-based constraints in a vHTLC policy.
@@ -158,7 +160,14 @@ func decodeVHTLCNode(node Node) (*vhtlcNodeShape, error) {
 	shape := &vhtlcNodeShape{}
 
 	if csv, ok := node.(*CSV); ok {
-		shape.csvDelay = csv.Lock
+		if err := validateCSVLock(csv.Lock); err != nil {
+			return nil, fmt.Errorf("invalid CSV delay: %w", err)
+		}
+
+		// CSV.Lock stores a BIP-68 sequence. Decode the relative block
+		// count explicitly after rejecting disable, time-mode and
+		// reserved flag bits above.
+		shape.csvDelay = csv.Lock & uint32(wire.SequenceLockTimeMask)
 		node = csv.Inner
 	}
 	if condition, ok := node.(*Condition); ok {

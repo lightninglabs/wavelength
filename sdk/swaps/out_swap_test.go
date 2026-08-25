@@ -1329,10 +1329,40 @@ func TestReceiveSessionRejectsUnsafeVHTLCClaimWindow(t *testing.T) {
 	require.Equal(t, ReceiveStateFailed, session.State())
 }
 
-// TestReceiveSessionRevalidatesVHTLCClaimWindow verifies a once-safe event is
-// rejected after a delayed restart or deeper funded ancestry consumes its
-// remaining recovery budget.
-func TestReceiveSessionRevalidatesVHTLCClaimWindow(t *testing.T) {
+// TestReceiveSessionRetriesAdmissionHeightLookup verifies backend availability
+// cannot be confused with a timing tuple that was evaluated and rejected.
+func TestReceiveSessionRetriesAdmissionHeightLookup(t *testing.T) {
+	t.Parallel()
+
+	heightErr := errors.New("block height unavailable")
+	session := &ReceiveSession{
+		client: NewSwapClient(
+			nil, &testDaemonConn{
+				blockHeightErr: heightErr,
+			}, nil, nil,
+		),
+		state: ReceiveStateInvoiceCreated,
+	}
+
+	err := session.validateReceiveClaimWindow(
+		t.Context(), VHTLCConfig{},
+		DefaultRecoveryExitAncestryDelayBlocks,
+	)
+	err = session.failReceiveTimingAdmission(
+		t.Context(),
+		"vHTLC timing window is invalid", err,
+	)
+
+	var retryable *retryableActionError
+	require.ErrorAs(t, err, &retryable)
+	require.ErrorIs(t, err, heightErr)
+	require.Equal(t, ReceiveStateInvoiceCreated, session.State())
+}
+
+// TestReceiveSessionUsesFullClaimWindowOnlyAtAdmission verifies an accepted
+// receive keeps pursuing its cooperative claim after the unilateral recovery
+// budget closes, until the refund path itself is imminent.
+func TestReceiveSessionUsesFullClaimWindowOnlyAtAdmission(t *testing.T) {
 	t.Parallel()
 
 	newSession := func(t *testing.T, refundLocktime uint32) (
@@ -1380,19 +1410,39 @@ func TestReceiveSessionRevalidatesVHTLCClaimWindow(t *testing.T) {
 		return session, daemon
 	}
 
-	t.Run("delayed restart", func(t *testing.T) {
+	t.Run("cooperative window stays open", func(t *testing.T) {
 		session, daemon := newSession(t, 329)
+		heightErr := errors.New("block height unavailable")
+		daemon.blockHeightErr = heightErr
+
+		require.NoError(
+			t,
+			session.ensureReceiveFundingStillPossible(
+				t.Context(),
+			),
+		)
+		err := session.ensureReceiveClaimStillPossible(t.Context())
+		var retryable *retryableActionError
+		require.ErrorAs(t, err, &retryable)
+		require.ErrorIs(t, err, heightErr)
+		require.Equal(t, ReceiveStateHTLCEventAccepted, session.State())
+
+		daemon.blockHeightErr = nil
 		daemon.blockHeight = 101
 
-		err := session.ensureReceiveFundingStillPossible(t.Context())
-		require.ErrorIs(t, err, errSwapExpired)
-		require.ErrorContains(t, err, "refund window 228")
-	})
-
-	t.Run("deeper funded ancestry", func(t *testing.T) {
-		session, _ := newSession(t, 343)
-
-		err := session.validateReceiveFunding(
+		require.NoError(
+			t,
+			session.ensureReceiveFundingStillPossible(
+				t.Context(),
+			),
+		)
+		require.NoError(
+			t,
+			session.ensureReceiveClaimStillPossible(
+				t.Context(),
+			),
+		)
+		err = session.validateReceiveFunding(
 			t.Context(), &VTXOInfo{
 				Outpoint:  "funding:0",
 				AmountSat: 42_000,
@@ -1402,9 +1452,12 @@ func TestReceiveSessionRevalidatesVHTLCClaimWindow(t *testing.T) {
 				},
 			},
 		)
-		require.ErrorContains(t, err, "claim window is invalid")
-		require.ErrorContains(t, err, "refund window 243")
-		require.Equal(t, ReceiveStateFailed, session.State())
+		require.NoError(t, err)
+
+		daemon.blockHeight = 328
+		err = session.ensureReceiveClaimStillPossible(t.Context())
+		require.ErrorIs(t, err, errSwapExpired)
+		require.Equal(t, ReceiveStateExpired, session.State())
 	})
 }
 
@@ -1905,6 +1958,7 @@ type testDaemonConn struct {
 	identityKey       *btcec.PublicKey
 	operatorKey       *btcec.PublicKey
 	blockHeight       uint32
+	blockHeightErr    error
 	liveVTXOs         []VTXOInfo
 	spentVTXOs        []VTXOInfo
 	vhtlc             *VTXOInfo
@@ -1972,7 +2026,7 @@ type testDaemonConn struct {
 
 // BlockHeight returns the configured best block height.
 func (d *testDaemonConn) BlockHeight(context.Context) (uint32, error) {
-	return d.blockHeight, nil
+	return d.blockHeight, d.blockHeightErr
 }
 
 // SendOORWithPolicyOptionsDetails records the requested output policy template
@@ -3431,7 +3485,7 @@ func TestReceiveSessionExpiresAtRefundLocktimeWithoutFunding(t *testing.T) {
 	_, _, err = resumed.WaitForFunding(t.Context())
 	require.ErrorIs(t, err, errSwapExpired)
 	require.ErrorContains(
-		t, err, "receive funding claim window closed",
+		t, err, "refund locktime 144 is imminent or reached",
 	)
 	require.Equal(t, ReceiveStateExpired, resumed.State())
 
@@ -4044,9 +4098,15 @@ func TestReceiveSessionClaimFollowsRefreshedLiveVHTLC(t *testing.T) {
 		Outpoint:  "refreshed:0",
 		AmountSat: 42_000,
 		PkScript:  pkScript,
+		ExpiryInfo: &sdkark.VTXOExpiryInfo{
+			RelativeExpiry:          1_008,
+			CriticalThresholdBlocks: 1_114,
+		},
 	}
 	daemonConn := &testDaemonConn{
-		blockHeight: 100,
+		// The full unilateral window is already closed here, but the
+		// cooperative claim remains uncontested until height 300.
+		blockHeight: 205,
 		receiveInfo: &ReceiveInfo{
 			PkScript: []byte{
 				0x51,
