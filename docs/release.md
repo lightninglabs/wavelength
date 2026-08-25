@@ -35,6 +35,10 @@ finished archives back to the host. Its Go build and module caches stay inside
 the container and are discarded with it. The release build never reads,
 writes, or clears the host's Go caches.
 
+Allow at least 5 GB of free space in Docker's storage for these temporary
+caches. The release clears its build cache between target platforms, and
+Docker removes the remaining cache data when the container exits.
+
 ### Linux/Windows (WSL)
 
 No prior set up beyond a pinned `go` toolchain (see `GO_VERSION` in the
