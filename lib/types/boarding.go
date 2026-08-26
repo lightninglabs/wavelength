@@ -79,6 +79,10 @@ type OperatorTerms struct {
 	// MinConfirmations is the minimum confs required on boarding inputs.
 	MinConfirmations uint32
 
+	// VTXOConfirmations is the confirmation depth at which VTXOs created by
+	// a round become available for off-chain spending.
+	VTXOConfirmations uint32
+
 	// MaxOORLineageVBytes is the operator-published cap on the
 	// cumulative on-chain virtual bytes a recipient must publish to
 	// claim a VTXO produced by an OOR submit unilaterally. Clients
@@ -102,6 +106,21 @@ func (t *OperatorTerms) MinVTXOAmountFloor() btcutil.Amount {
 	}
 
 	return t.MinVTXOAmount
+}
+
+// VTXOTargetConfirmations returns the depth at which round VTXOs become
+// available. A zero split field preserves the legacy policy that reused the
+// boarding-input minimum for commitment outputs.
+func (t *OperatorTerms) VTXOTargetConfirmations() uint32 {
+	if t == nil {
+		return 0
+	}
+
+	if t.VTXOConfirmations == 0 {
+		return t.MinConfirmations
+	}
+
+	return t.VTXOConfirmations
 }
 
 // JoinRoundRequest represents a participant's request to join a round.
