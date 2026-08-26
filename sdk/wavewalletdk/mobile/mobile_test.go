@@ -3,13 +3,118 @@
 package mobile
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lightninglabs/wavelength/sdk/wavewalletdk"
 )
+
+// TestDecodeReceiveRequestUsesBoundedDefault verifies older hosts that omit
+// TimeoutSeconds still receive a finite deadline without changing the SDK DTO.
+func TestDecodeReceiveRequestUsesBoundedDefault(t *testing.T) {
+	req, timeout, err := decodeReceiveRequest([]byte(
+		`{"AmountSat":21000,"Memo":"coffee"}`,
+	))
+	if err != nil {
+		t.Fatalf("decode receive request: %v", err)
+	}
+	if req.AmountSat != 21_000 || req.Memo != "coffee" {
+		t.Fatalf("unexpected receive request: %+v", req)
+	}
+	if timeout != defaultReceiveTimeout {
+		t.Fatalf("timeout = %v, want %v", timeout,
+			defaultReceiveTimeout)
+	}
+}
+
+// TestDecodeReceiveRequestAcceptsExplicitDeadline verifies a mobile host can
+// choose a shorter bounded foreground deadline for invoice creation.
+func TestDecodeReceiveRequestAcceptsExplicitDeadline(t *testing.T) {
+	_, timeout, err := decodeReceiveRequest([]byte(
+		`{"AmountSat":1000,"TimeoutSeconds":12}`,
+	))
+	if err != nil {
+		t.Fatalf("decode receive request: %v", err)
+	}
+	if timeout != 12*time.Second {
+		t.Fatalf("timeout = %v, want 12s", timeout)
+	}
+}
+
+// TestDecodeReceiveRequestRejectsInvalidDeadlines verifies malformed negative
+// or excessive values cannot restore an unbounded receive call.
+func TestDecodeReceiveRequestRejectsInvalidDeadlines(t *testing.T) {
+	for name, body := range map[string]string{
+		"negative":  `{"AmountSat":1000,"TimeoutSeconds":-1}`,
+		"excessive": `{"AmountSat":1000,"TimeoutSeconds":301}`,
+		"overflow":  `{"AmountSat":1000,"TimeoutSeconds":9223372036854775807}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := decodeReceiveRequest(
+				[]byte(body),
+			); err == nil {
+
+				t.Fatal("expected invalid timeout error")
+			}
+		})
+	}
+}
+
+// TestReadContextHasDeadline verifies repeatable mobile reads never inherit the
+// full daemon lifetime when a foreign host cannot provide context.Context.
+func TestReadContextHasDeadline(t *testing.T) {
+	ctx, cancel := readContext(t.Context())
+	defer cancel()
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("read context has no deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 || remaining > defaultReadTimeout {
+		t.Fatalf("read deadline remaining = %v", remaining)
+	}
+}
+
+// TestReceiveErrorMarksUncertainTimeout verifies a binding-owned receive
+// deadline has a stable host-visible prefix and preserves the original cause.
+func TestReceiveErrorMarksUncertainTimeout(t *testing.T) {
+	parentCtx := context.Background()
+	callCtx, cancel := context.WithTimeout(parentCtx, 0)
+	defer cancel()
+
+	err := receiveError(callCtx, context.DeadlineExceeded)
+	if !strings.HasPrefix(err.Error(), receiveUncertainErrorPrefix) {
+		t.Fatalf("receive error = %q", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("receive error lost deadline cause: %v", err)
+	}
+}
+
+// TestReceiveErrorMarksLifecycleCancellation verifies Stop cancellation has
+// the same reconcile-before-retry marker as a binding-owned deadline.
+func TestReceiveErrorMarksLifecycleCancellation(t *testing.T) {
+	parentCtx, cancelParent := context.WithCancel(context.Background())
+	callCtx, cancelCall := context.WithTimeout(parentCtx, time.Minute)
+	defer cancelCall()
+	cancelParent()
+	<-callCtx.Done()
+
+	want := errors.New("wallet stopped")
+	got := receiveError(callCtx, want)
+	if !strings.HasPrefix(got.Error(), receiveUncertainErrorPrefix) {
+		t.Fatalf("receive error = %q", got)
+	}
+	if !errors.Is(got, want) {
+		t.Fatalf("receive error lost lifecycle cause: %v", got)
+	}
+}
 
 // TestParseConfigEmptyUsesDefaults verifies that an empty config string yields
 // the wavewalletdk defaults rather than a zero config.

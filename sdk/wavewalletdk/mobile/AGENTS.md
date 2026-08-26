@@ -27,12 +27,17 @@ application-facing wallet API.
   `applyMobileConfig` into a `wavewalletdk.Config`; validated (non-negative
   durations/counts, `uint32`-safe recovery window) before merging onto
   `wavewalletdk.DefaultConfig()`.
+- `mobileReceiveRequest` — unexported wire DTO carrying the SDK's current
+  `AmountSat`/`Memo` fields plus the mobile-only `TimeoutSeconds`. It is
+  projected onto `wavewalletdk.ReceiveRequest` after deadline validation.
 - RPC verbs (`GetInfo`, `CreateWallet`, `UnlockWallet`, `Balance`, `Deposit`,
   `Receive`, `PrepareSend`, `SendPrepared`, `List`, `Exit`, `ExitStatus`,
   `ExitSummary`, `GetExitPlan`, `SweepWallet`, `Status`, `Subscribe`,
   `OpenWalletFromPasskey`) — each dereferences the singleton `wavewalletdk.Client`
   via `activeClient()`, decodes a JSON request into the matching
   `wavewalletdk.*Request`, and marshals the `wavewalletdk.*Result` response.
+  `Receive` is the exception: it decodes `mobileReceiveRequest` first so the
+  binding can own its request deadline without changing the SDK DTO.
 - Scalar conveniences (`ConfirmedBalanceSat`, `PendingInboundSat`,
   `WalletReady`, `IsRunning`) — avoid a JSON round trip for hot-path reads;
   `IsRunning` never blocks on an RPC.
@@ -57,6 +62,18 @@ application-facing wallet API.
   can succeed (e.g. after OS suspend/resume).
 - `startEmbedded` separates its daemon-readiness deadline from the lifecycle
   context used to open or recover the wallet. `Stop` cancels both.
+- gomobile cannot carry a caller `context.Context`, so this package owns
+  per-call deadlines. Repeatable reads (`GetInfo`, `Balance`, `List`,
+  `ExitStatus`, `ExitSummary`, `GetExitPlan`, `Status`, and the scalar
+  balance/readiness helpers) use `readContext`'s 10-second deadline. `Receive`
+  uses `TimeoutSeconds`, defaults to 20 seconds when zero or omitted, and
+  rejects negative values or values above five minutes.
+- A `Receive` canceled by its binding-owned deadline or the parent lifecycle is
+  returned with the stable `receiveUncertainErrorPrefix`. The result is
+  uncertain: the host must reconcile Activity before deliberately requesting
+  another invoice.
+- Every bounded call context derives from the daemon-lifetime parent returned
+  by `activeClient`, so `Stop` still cancels in-flight calls immediately.
 - Startup through `startEmbedded` and `Subscription.Next` recover panics into
   a returned `error`; those are the entry points documented to survive a panic
   without crossing the gomobile boundary and killing the host process.
@@ -70,6 +87,8 @@ application-facing wallet API.
 
 ## Deep Docs
 
+- [docs/wavewalletdk_mobile.md](../../../docs/wavewalletdk_mobile.md) — Binding
+  ABI, JSON field casing, per-call deadlines, and host lifecycle rules.
 - [sdk/wavewalletdk/CLAUDE.md](../CLAUDE.md) — Wrapped SDK; see for full DTO and
   RPC method detail.
 - [ARCHITECTURE.md](../../../ARCHITECTURE.md) — System-wide package map.

@@ -5,12 +5,18 @@ package swapwallet
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/protobuf/encoding/protojson"
 )
+
+// defaultCreditReadTimeout bounds optional remote credit enrichment during a
+// balance read. The local satoshi balance remains useful when this call times
+// out, so refresh paths must not wait on remote connectivity indefinitely.
+const defaultCreditReadTimeout = 2 * time.Second
 
 // Service implements the daemon-side WalletService gRPC handler. It is a
 // thin facade: every method translates the proto request into typed internal
@@ -24,6 +30,8 @@ type Service struct {
 	router  *router
 	recv    *receiver
 	history *history
+
+	creditReadTimeout time.Duration
 }
 
 // newService builds the Service handle given its composed dependencies and
@@ -32,11 +40,12 @@ type Service struct {
 // pure wiring.
 func newService(deps *Deps, runtime *Runtime) *Service {
 	return &Service{
-		deps:    deps,
-		runtime: runtime,
-		router:  newRouter(deps, runtime),
-		recv:    newReceiver(deps, runtime),
-		history: newHistory(deps, runtime),
+		deps:              deps,
+		runtime:           runtime,
+		router:            newRouter(deps, runtime),
+		recv:              newReceiver(deps, runtime),
+		history:           newHistory(deps, runtime),
+		creditReadTimeout: defaultCreditReadTimeout,
 	}
 }
 
@@ -558,7 +567,9 @@ func gapResponse(cursor int64) *wavewalletrpc.SubscribeWalletResponse {
 }
 
 // fetchBalance is the shared helper that pulls the daemon's GetBalance and
-// projects its richer breakdown onto the flat wallet shape.
+// projects its richer breakdown onto the flat wallet shape. Optional credit
+// enrichment has its own short deadline; when it is unavailable, the method
+// still returns the authoritative local satoshi balance.
 func (s *Service) fetchBalance(ctx context.Context) (
 	*wavewalletrpc.BalanceResponse, error) {
 
@@ -605,12 +616,23 @@ func (s *Service) fetchBalance(ctx context.Context) (
 		return resp, nil
 	}
 
+	creditCtx, cancel := context.WithTimeout(
+		ctx, s.creditReadTimeout,
+	)
+	defer cancel()
+
 	credits, err := s.deps.SwapService.ListCredits(
-		ctx, &swapclientrpc.ListCreditsRequest{
+		creditCtx, &swapclientrpc.ListCreditsRequest{
 			Limit: 1,
 		},
 	)
 	if err != nil {
+		s.deps.resolveLog().WarnS(
+			ctx,
+			"Credit balance enrichment skipped",
+			err,
+		)
+
 		return resp, nil
 	}
 
