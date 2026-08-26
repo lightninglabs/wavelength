@@ -9,10 +9,8 @@ LABEL maintainer="Olaoluwa Osuntokun <laolu32@gmail.com>"
 ENV GODEBUG=netdns=cgo
 ENV CGO_ENABLED=0
 
-# Set up cache directories. Those will be mounted from the host system to
-# speed up builds. If go isn't installed on the host system, those will fall
-# back to temp directories during the build (see the docker-release target in
-# the Makefile).
+# Keep Go caches in the container so release cache cleanup cannot modify or
+# race with the host's Go caches.
 ENV GOCACHE=/tmp/build/.cache
 ENV GOMODCACHE=/tmp/build/.modcache
 
