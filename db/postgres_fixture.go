@@ -36,6 +36,7 @@ type TestPgFixture struct {
 	resource *dockertest.Resource
 	host     string
 	port     int
+	expiry   *time.Timer
 
 	releaseSlot func()
 }
@@ -96,8 +97,16 @@ func NewTestPgFixture(t testing.TB, expiry time.Duration,
 	databaseURL := fixture.GetDSN()
 	t.Logf("Connecting to Postgres fixture: %v\n", databaseURL)
 
-	// Tell docker to hard kill the container in "expiry" seconds.
-	require.NoError(t, resource.Expire(uint(expiry.Seconds())))
+	// Kill the container if the test outlives the fixture lifetime. The
+	// dockertest Expire method calls Docker's stop endpoint immediately and
+	// uses the duration as the graceful-stop timeout. On Docker daemons
+	// that serialize stop requests, that can block every fixture slot until
+	// the timeout elapses.
+	fixture.expiry = time.AfterFunc(expiry, func() {
+		_ = pool.Client.KillContainer(docker.KillContainerOptions{
+			ID: resource.Container.ID,
+		})
+	})
 
 	// Exponential backoff-retry, because the application in the container
 	// might not be ready to accept connections yet.
@@ -159,6 +168,10 @@ func (f *TestPgFixture) GetConfig() *PostgresConfig {
 
 // TearDown stops the underlying docker container.
 func (f *TestPgFixture) TearDown(t testing.TB) {
+	if f.expiry != nil {
+		f.expiry.Stop()
+	}
+
 	err := f.pool.Purge(f.resource)
 	if f.releaseSlot != nil {
 		f.releaseSlot()
