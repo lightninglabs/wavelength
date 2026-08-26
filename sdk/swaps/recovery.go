@@ -122,6 +122,12 @@ const (
 	// lets claim recovery override the wall-clock grace period before a
 	// refund locktime can make waiting unsafe.
 	DefaultRecoveryMinMarginBlocks = uint32(12)
+
+	// DefaultRecoveryExitAncestryDelayBlocks is the conservative budget for
+	// confirming the vHTLC's commitment-tree and OOR ancestry before its
+	// own unilateral claim CSV begins. Exact funded VTXO metadata can
+	// increase this budget when the ancestry is deeper.
+	DefaultRecoveryExitAncestryDelayBlocks = uint32(72)
 )
 
 // RecoveryPolicy controls automatic escalation from cooperative vHTLC retry to
@@ -144,6 +150,11 @@ type RecoveryPolicy struct {
 	// the current height plus this margin reaches the refund locktime.
 	MinRecoveryMarginBlocks uint32
 
+	// ExitAncestryDelayBlocks is the pre-funding block budget reserved for
+	// making the vHTLC output available on chain when the receiver first
+	// evaluates a proposed vHTLC policy.
+	ExitAncestryDelayBlocks uint32
+
 	// MaxFeeRateSatPerKW caps the final recovery exit-spend fee rate. The
 	// recovery row stores this cap at arm time so restart and manual
 	// escalation cannot accidentally use a looser later default.
@@ -154,12 +165,14 @@ type RecoveryPolicy struct {
 func DefaultRecoveryPolicy() RecoveryPolicy {
 	gracePeriod := DefaultRecoveryCooperativeFailureGracePeriod
 	marginBlocks := DefaultRecoveryMinMarginBlocks
+	exitDelay := DefaultRecoveryExitAncestryDelayBlocks
 	feeCap := DefaultRecoveryMaxFeeRateSatPerKW
 
 	return RecoveryPolicy{
 		AutoEscalate:                  false,
 		CooperativeFailureGracePeriod: gracePeriod,
 		MinRecoveryMarginBlocks:       marginBlocks,
+		ExitAncestryDelayBlocks:       exitDelay,
 		MaxFeeRateSatPerKW:            feeCap,
 	}
 }
@@ -170,6 +183,10 @@ func DefaultRecoveryPolicy() RecoveryPolicy {
 func (p RecoveryPolicy) WithDefaults() RecoveryPolicy {
 	if p.MinRecoveryMarginBlocks == 0 {
 		p.MinRecoveryMarginBlocks = DefaultRecoveryMinMarginBlocks
+	}
+	if p.ExitAncestryDelayBlocks == 0 {
+		p.ExitAncestryDelayBlocks =
+			DefaultRecoveryExitAncestryDelayBlocks
 	}
 	if p.MaxFeeRateSatPerKW == 0 {
 		p.MaxFeeRateSatPerKW = DefaultRecoveryMaxFeeRateSatPerKW

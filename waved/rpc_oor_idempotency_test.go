@@ -302,7 +302,7 @@ func TestSendOORSubmitsMultipleRecipients(t *testing.T) {
 	)
 	totalAmount := btcutil.Amount(amountA + amountB)
 
-	vtxoStore, _, _ := newSendOORTestStores(t)
+	vtxoStore, _, _, _, _ := newSendOORTestStores(t)
 	desc, _ := newSendOORTestVTXO(
 		t, operatorKey.PubKey(), 0x51, totalAmount,
 	)
@@ -432,7 +432,7 @@ func TestSendOORReservesExactManagedCustomInputs(t *testing.T) {
 		exitDelay       = uint32(10)
 	)
 
-	vtxoStore, _, _ := newSendOORTestStores(t)
+	vtxoStore, _, _, _, _ := newSendOORTestStores(t)
 	input1, _ := newSendOORTestVTXO(
 		t, operatorKey.PubKey(), 0x61, inputAmount,
 	)
@@ -742,7 +742,8 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 		idempotencyKey = "rpc-send-oor-idempotency-key"
 	)
 
-	vtxoStore, deliveryStore, registryStore := newSendOORTestStores(t)
+	vtxoStore, deliveryStore, registryStore, packageStore,
+		reservationStore := newSendOORTestStores(t)
 
 	firstDesc, clientKey := newSendOORTestVTXO(
 		t, operatorKey.PubKey(), 0x31, btcutil.Amount(amountSat),
@@ -778,7 +779,6 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 	)
 
 	signer := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
-	packageStore, reservationStore := newSendOORChildStores(t)
 	oorRegistry, err := oor.NewOORRegistryActor(oor.OORRegistryConfig{
 		Log:              fn.Some[btclog.Logger](btclog.Disabled),
 		Signer:           signer,
@@ -915,7 +915,8 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 		exitDelay = uint32(10)
 	)
 
-	vtxoStore, deliveryStore, registryStore := newSendOORTestStores(t)
+	vtxoStore, deliveryStore, registryStore, packageStore,
+		reservationStore := newSendOORTestStores(t)
 
 	desc, clientKey := newSendOORTestVTXO(
 		t, operatorKey.PubKey(), 0x31, btcutil.Amount(amountSat),
@@ -955,7 +956,6 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 	)
 
 	signer := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
-	packageStore, reservationStore := newSendOORChildStores(t)
 	oorRegistry, err := oor.NewOORRegistryActor(oor.OORRegistryConfig{
 		Log:              fn.Some[btclog.Logger](btclog.Disabled),
 		Signer:           signer,
@@ -1052,7 +1052,7 @@ func TestSendOORWaitCancelDoesNotUnlockSubmittedInputs(t *testing.T) {
 		exitDelay = uint32(10)
 	)
 
-	vtxoStore, _, _ := newSendOORTestStores(t)
+	vtxoStore, _, _, _, _ := newSendOORTestStores(t)
 
 	desc, _ := newSendOORTestVTXO(
 		t, operatorKey.PubKey(), 0x31, btcutil.Amount(amountSat),
@@ -1399,26 +1399,11 @@ func (noopOORHandler) Handle(context.Context, oor.SessionID, oor.OutboxEvent) (
 	return nil, nil
 }
 
-// newSendOORChildStores builds the package and reservation stores the registry
-// constructor now requires. The idempotency pre-flight tests do not drive these
-// paths; the stores exist only to pass construction validation.
-func newSendOORChildStores(t *testing.T) (oor.PackagePersistence,
-	oor.ReservationStore) {
-
-	t.Helper()
-
-	sqlDB := db.NewTestDB(t)
-	dbStore := db.NewStore(
-		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(), btclog.Disabled,
-	)
-	clk := clock.NewDefaultClock()
-
-	return dbStore.NewOORArtifactStore(clk),
-		dbStore.NewSpendingReservationStore(clk)
-}
-
+// newSendOORTestStores builds every SQL-backed OOR test store from one
+// database so each parallel test consumes only one bounded fixture slot.
 func newSendOORTestStores(t *testing.T) (*db.VTXOPersistenceStore,
-	actor.DeliveryStore, *db.OORSessionRegistryStoreDB) {
+	actor.DeliveryStore, *db.OORSessionRegistryStoreDB,
+	oor.PackagePersistence, oor.ReservationStore) {
 
 	t.Helper()
 
@@ -1444,11 +1429,12 @@ func newSendOORTestStores(t *testing.T) (*db.VTXOPersistenceStore,
 	dbStore := db.NewStore(
 		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(), btclog.Disabled,
 	)
-	registryStore := dbStore.NewOORSessionRegistryStore(
-		clock.NewDefaultClock(),
-	)
+	clk := clock.NewDefaultClock()
+	registryStore := dbStore.NewOORSessionRegistryStore(clk)
 
-	return vtxoStore, deliveryStore, registryStore
+	return vtxoStore, deliveryStore, registryStore,
+		dbStore.NewOORArtifactStore(clk),
+		dbStore.NewSpendingReservationStore(clk)
 }
 
 func newSendOORTestVTXO(t *testing.T, operatorKey *btcec.PublicKey,

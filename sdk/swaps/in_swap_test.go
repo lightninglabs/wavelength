@@ -536,6 +536,44 @@ func TestPaySessionRejectsUnboundInSwapQuote(t *testing.T) {
 	require.Zero(t, daemonConn.sendPolicyCalls)
 }
 
+// TestPaySessionRejectsUnorderedVHTLC verifies a newly proposed policy is
+// rejected before the client derives or funds its output.
+func TestPaySessionRejectsUnorderedVHTLC(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+	cfg := testInSwapConfig(
+		serverPriv.PubKey(), preimage, time.Now().Add(time.Minute),
+	)
+	cfg.VHTLCConfig.UnilateralClaimDelay = 25
+	cfg.VHTLCConfig.UnilateralRefundDelay = 24
+
+	serverConn := &testInSwapServerConn{cfg: cfg}
+	daemonConn := &testDaemonConn{
+		identityKey: clientPriv.PubKey(),
+		operatorKey: operatorPriv.PubKey(),
+	}
+	client := configureTestPayClient(
+		NewSwapClient(serverConn, daemonConn, nil, nil),
+	)
+
+	session, err := client.StartPayViaLightning(
+		t.Context(), invoice, testInSwapFeeSat,
+	)
+	require.Nil(t, session)
+	require.ErrorContains(t, err, "unilateral claim delay 25 exceeds")
+	require.Zero(t, daemonConn.sendPolicyCalls)
+}
+
 // TestPaySessionCreditOnlyStartCompletesWithoutVHTLC verifies credit-only
 // pays can complete during creation without forcing the Loop FSM through a
 // vHTLC funding state.
