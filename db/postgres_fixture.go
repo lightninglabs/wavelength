@@ -124,10 +124,12 @@ func NewTestPgFixture(t testing.TB, expiry time.Duration,
 	return fixture
 }
 
-// acquireTestPgFixtureSlot bounds active Postgres containers in parallel test
-// runs. The db package marks most tests parallel, and unbounded docker startup
-// can starve CI runners enough that stores observe partially initialized
-// schemas.
+// acquireTestPgFixtureSlot bounds concurrent Postgres fixture initialization.
+// The db package marks most tests parallel, and unbounded Docker startup and
+// migrations can starve CI runners enough that stores observe partially
+// initialized schemas. Callers release the slot once store initialization
+// returns; holding it for the full test lifetime can deadlock Go's parallel
+// test barrier.
 func acquireTestPgFixtureSlot() func() {
 	testPgFixtureSem <- struct{}{}
 
@@ -137,6 +139,15 @@ func acquireTestPgFixtureSlot() func() {
 		once.Do(func() {
 			<-testPgFixtureSem
 		})
+	}
+}
+
+// releaseFixtureInitSlot releases the fixture's initialization slot. The
+// closure is idempotent so teardown remains a safe fallback for callers that
+// fail before store initialization returns.
+func (f *TestPgFixture) releaseFixtureInitSlot() {
+	if f.releaseSlot != nil {
+		f.releaseSlot()
 	}
 }
 
@@ -160,9 +171,7 @@ func (f *TestPgFixture) GetConfig() *PostgresConfig {
 // TearDown stops the underlying docker container.
 func (f *TestPgFixture) TearDown(t testing.TB) {
 	err := f.pool.Purge(f.resource)
-	if f.releaseSlot != nil {
-		f.releaseSlot()
-	}
+	f.releaseFixtureInitSlot()
 	require.NoError(t, err, "Could not purge resource")
 }
 

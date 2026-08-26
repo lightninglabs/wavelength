@@ -73,6 +73,7 @@ func NewTestDBHandleFromPath(t testing.TB, dbPath string) *PostgresStore {
 		sqlFixture = NewTestPgFixture(
 			t, DefaultPostgresFixtureLifetime, true,
 		)
+		defer sqlFixture.releaseFixtureInitSlot()
 
 		store, err := NewPostgresStore(sqlFixture.GetConfig(), log)
 		if err != nil {
