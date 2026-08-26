@@ -3,10 +3,12 @@
 package swapwallet
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
@@ -371,6 +373,12 @@ func TestServiceBalanceDegradesWhenCreditsAreUnavailable(t *testing.T) {
 	t.Parallel()
 
 	svc, swap, rpc := newServiceFixture(t)
+	var logBuf bytes.Buffer
+	svc.deps.Log = btclog.NewSLogger(
+		btclog.NewDefaultHandler(
+			&logBuf, btclog.WithNoTimestamp(),
+		),
+	)
 	rpc.getBalanceResp = &waverpc.GetBalanceResponse{
 		VtxoBalanceSat: 75_000,
 	}
@@ -383,6 +391,11 @@ func TestServiceBalanceDegradesWhenCreditsAreUnavailable(t *testing.T) {
 	require.Equal(t, int64(75_000), resp.GetConfirmedSat())
 	require.Zero(t, resp.GetCreditAvailableSat())
 	require.Zero(t, resp.GetCreditReservedSat())
+	require.Contains(
+		t, logBuf.String(),
+		"Credit balance enrichment skipped",
+	)
+	require.Contains(t, logBuf.String(), context.DeadlineExceeded.Error())
 }
 
 // TestServiceBalanceBoundsStalledCreditRead verifies a transport that never
