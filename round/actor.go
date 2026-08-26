@@ -2941,12 +2941,21 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			m.RoundID.WhenSome(func(id RoundID) {
 				roundIDStr = id.String()
 			})
-			a.log.WarnS(ctx, "Round failed",
-				m.OriginalError,
-				slog.String("round_id", roundIDStr),
-				slog.String("reason", m.Reason),
-				slog.Bool("recoverable", m.Recoverable),
-			)
+			if m.Recoverable {
+				a.log.InfoS(ctx, "Round failed",
+					slog.Any("err", m.OriginalError),
+					slog.String("round_id", roundIDStr),
+					slog.String("reason", m.Reason),
+					slog.Bool("recoverable", true),
+				)
+			} else {
+				a.log.WarnS(ctx, "Round failed",
+					m.OriginalError,
+					slog.String("round_id", roundIDStr),
+					slog.String("reason", m.Reason),
+					slog.Bool("recoverable", false),
+				)
+			}
 
 			// Count the failed round for observability. The
 			// counter pairs with the confirmed branch above so an
