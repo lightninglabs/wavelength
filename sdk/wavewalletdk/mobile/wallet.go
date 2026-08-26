@@ -29,12 +29,30 @@ const (
 	// maxReceiveTimeout prevents malformed host input from restoring the
 	// effectively unbounded behavior this mobile-only request field avoids.
 	maxReceiveTimeout = 5 * time.Minute
+
+	// receiveTimeoutErrorPrefix is stable binding ABI. It lets a foreign
+	// host distinguish an uncertain receive timeout from a rejected request
+	// without depending on transport-specific context error text.
+	receiveTimeoutErrorPrefix = "receive timed out; outcome uncertain; " +
+		"reconcile Activity before retrying"
 )
 
 // readContext derives the bounded context used by safe, repeatable mobile
 // reads. The daemon-lifetime parent still cancels it immediately during Stop.
 func readContext(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, defaultReadTimeout)
+}
+
+// receiveError preserves ordinary receive errors while marking a deadline
+// owned by this binding as an uncertain outcome. A parent cancellation means
+// the daemon is stopping, so it keeps the lifecycle error unchanged.
+func receiveError(parentCtx, callCtx context.Context, err error) error {
+	if err == nil || parentCtx.Err() != nil ||
+		callCtx.Err() != context.DeadlineExceeded {
+		return err
+	}
+
+	return fmt.Errorf("%s: %w", receiveTimeoutErrorPrefix, err)
 }
 
 // mobileReceiveRequest extends the SDK receive DTO with a mobile-only request
@@ -81,10 +99,12 @@ func decodeReceiveRequest(reqJSON []byte) (wavewalletdk.ReceiveRequest,
 
 // GetInfo returns the daemon readiness snapshot as JSON (wavewalletdk.Info).
 func GetInfo() ([]byte, error) {
-	client, ctx, err := activeClient()
+	client, parentCtx, err := activeClient()
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := readContext(parentCtx)
+	defer cancel()
 
 	info, err := client.GetInfo(ctx)
 	if err != nil {
@@ -196,7 +216,7 @@ func Receive(reqJSON []byte) ([]byte, error) {
 
 	res, err := client.Receive(ctx, req)
 	if err != nil {
-		return nil, err
+		return nil, receiveError(parentCtx, ctx, err)
 	}
 
 	return marshal(res)
@@ -294,10 +314,12 @@ func Exit(reqJSON []byte) ([]byte, error) {
 // wavewalletdk.ExitStatusRequest; the response is
 // wavewalletdk.ExitStatusResult.
 func ExitStatus(reqJSON []byte) ([]byte, error) {
-	client, ctx, err := activeClient()
+	client, parentCtx, err := activeClient()
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := readContext(parentCtx)
+	defer cancel()
 
 	var req wavewalletdk.ExitStatusRequest
 	if err := decode(reqJSON, &req); err != nil {
@@ -316,10 +338,12 @@ func ExitStatus(reqJSON []byte) ([]byte, error) {
 // decodes to wavewalletdk.ExitSummaryRequest (an empty object is fine); the
 // response is wavewalletdk.ExitSummaryResult.
 func ExitSummary(reqJSON []byte) ([]byte, error) {
-	client, ctx, err := activeClient()
+	client, parentCtx, err := activeClient()
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := readContext(parentCtx)
+	defer cancel()
 
 	var req wavewalletdk.ExitSummaryRequest
 	if err := decode(reqJSON, &req); err != nil {
@@ -338,10 +362,12 @@ func ExitSummary(reqJSON []byte) ([]byte, error) {
 // decodes to wavewalletdk.GetExitPlanRequest; the response is
 // wavewalletdk.GetExitPlanResult.
 func GetExitPlan(reqJSON []byte) ([]byte, error) {
-	client, ctx, err := activeClient()
+	client, parentCtx, err := activeClient()
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := readContext(parentCtx)
+	defer cancel()
 
 	var req wavewalletdk.GetExitPlanRequest
 	if err := decode(reqJSON, &req); err != nil {
