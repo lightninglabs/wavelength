@@ -64,6 +64,17 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   `CountLedgerEntries`/`ListAccounts`.
 - `UTXOAuditStoreDB` — implements `ledger.UTXOAuditStore` via
   `sqlc.InsertWalletUTXOLog` (ON CONFLICT DO NOTHING).
+- `ActivityStore` / `BatchedActivityStore` / `ActivityPersistenceStore` —
+  query interface, batched-tx variant, and concrete store for the canonical
+  activity log laid down by `000010_activity_log`: the `activity_entries`
+  current-state projection plus the append-only `activity_events` transition
+  log. Read/write API: `ProjectEntry` (upsert + transition, atomically),
+  `GetEntry`, `RemoveEntry`, `CountByStatus`, `ListEntries`,
+  `ListEntriesByKindStatus`, `PullEvents` (cursor replay).
+- `ActivityProjection` — the projector's input: a normalized snapshot of one
+  activity row at a single lifecycle transition, so callers never touch sqlc
+  params. Empty BLOB handles MUST be nil, never a zero-length slice (the
+  Postgres BYTEA `x''` pitfall).
 - `UnilateralExitStore` / `UnilateralExitPersistenceStore` —
   control-plane store: `Upsert` / `Get` / `ListNonTerminal` /
   `MarkTerminal`.
@@ -177,6 +188,15 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   replacement. After takeover, the incoming lifecycle's current status and
   snapshot are the state that boot restore must resume; the separate dispatch
   row still answers keyed replay.
+- **`ProjectEntry` is change-suppressed, so the event log stays a true
+  transition log.** It loads the existing `activity_entries` row first and
+  returns event_seq 0 without appending when `ActivityProjection.changesRow`
+  reports no observable difference. Redundant re-emits are routine — the
+  startup activity backfill runs on every wallet-ready start and the swap
+  monitor replays with include-existing — so without the guard a resumable
+  `PullEvents` subscriber would later replay bogus transitions for states
+  that never actually changed. A projection carrying `PendingStatus` is also
+  suppressed when it would move an already-advanced row back to pending.
 - `unilateral_exit_jobs.exit_policy_kind` and `exit_policy_ref`
   persist the durable final spend policy identity. Standard timeout
   jobs use `standard_vtxo_timeout` with an empty ref; policy-specific

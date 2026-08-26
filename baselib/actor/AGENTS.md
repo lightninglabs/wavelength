@@ -125,6 +125,20 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   is bounded to the correlation key, not the mailbox; consumers are
   already strictly serial per mailbox so this does not regress
   throughput.
+- **`MaxAttempts` is a hard ceiling that outranks `TellRetryPolicy`.**
+  `handleResultInTx` consults the policy on a failed delivery but only
+  retries when `Delivery.ShouldDeadLetter()` is still false, so a policy
+  that keeps returning `retry=true` can stop retries early yet never
+  extend the durable budget; past the ceiling the message dead-letters
+  with a `max attempts reached:` reason instead. The clamp is required
+  because both claim queries gate on `attempts < max_attempts`
+  (`LeaseNextMailboxMessage` and the leaseless `PeekNextMessage` in
+  `db/actordelivery/queries/mailbox.sql`). Nacking a row that has already
+  exhausted its budget would release it into a state no query can ever
+  select again — a silently stranded message rather than an observable
+  dead letter. `ShouldDeadLetter` compares `EffectiveAttempts()`, which
+  adds the uncounted in-flight attempt on the leaseless path, so the
+  leased and leaseless paths share one boundary.
 
 ## Deep Docs
 

@@ -227,9 +227,9 @@ sequenceDiagram
                 C->>DB: MarkProcessed(id)
                 C->>DB: Ack(id, token)
             else Failure (Tell)
-                alt Retry Policy Says Retry
+                alt Retry Policy Says Retry AND attempts < max_attempts
                     C->>DB: Nack(id, token, delay)
-                else Max Attempts Exceeded
+                else Policy Gives Up OR Max Attempts Exceeded
                     C->>DL: MoveToDeadLetter(id, reason)
                     C->>DB: DeleteMessage(id)
                 end
@@ -268,7 +268,13 @@ debug delivery issues and design retry strategies.
 
 7. **Dead Letter**: After `max_attempts` failures, the message is moved to
    `dead_letters` with the failure reason. Dead letters require manual inspection
-   and can be replayed or deleted.
+   and can be replayed or deleted. `max_attempts` is a hard ceiling rather than
+   a hint the retry policy can negotiate: the consumer only Nacks when the
+   policy asks to retry *and* `Delivery.ShouldDeadLetter()` is still false, and
+   a message that trips the ceiling dead-letters with a `max attempts reached:`
+   reason. This ordering matters because both claim queries gate on
+   `attempts < max_attempts`, so releasing an exhausted message back to the
+   mailbox would strand it where nothing can ever claim it again.
 
 ---
 

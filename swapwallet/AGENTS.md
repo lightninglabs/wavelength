@@ -170,6 +170,17 @@ default builds avoid the swap executor's dependency graph.
   to the next round without a separate CLI step. If the implicit join fails,
   the error carries the explicit recovery hint (`ark rounds join`) so the
   leave intent — already queued in the round actor — is not stranded silently.
+- **`backfillActivity` runs on every wallet-ready start and must stay
+  event-neutral for rows that did not move.** It reprojects the
+  derive-on-read collectors into the canonical store so current state is
+  present before any new transition lands, which means a restart replays
+  every already-terminal swap through `ProjectEntry`. Emitting one activity
+  event per terminal swap per boot is the failure this guards against: a
+  settled pay recovered across restart must land exactly one COMPLETE
+  transition, with `amount_sat` the negative VTXO debit and the operator
+  cost separated into `fee_sat`. The suppression lives in `db`'s
+  `ActivityProjection.changesRow`, not here, so a new projector field must
+  be added there too or it will silently stop triggering transitions.
 - `ListView` defaults to Activity. Only Activity honors
   `pending_only` and `kinds`; those filters are ignored for VTXOs
   and Onchain.

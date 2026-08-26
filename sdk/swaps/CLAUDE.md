@@ -150,6 +150,15 @@ result into an `IncomingVHTLCNotification`.
   `ExistingOnly`: an existing keyed winner is recovered and protected, a
   daemon `NotFound` expires the swap, and unavailable or pending results remain
   retryable. A post-deadline reconciliation must never admit a new vHTLC.
+- **Resuming a terminal session is a pure reload, never a replay of work.**
+  `runUntil` checks `PayState.IsTerminal()` / `ReceiveState.IsTerminal()`
+  *before* advancing the FSM, returning `nil` for `PayStateCompleted` and
+  `terminalErr()` otherwise, so a restart against an already-terminal row
+  issues no funding submit and no recovery arm or cancel. `eventForProgress`
+  independently maps a terminal state to `loopfsm.NoOp`. Reloading a
+  completed swap must yield a byte-identical result (same preimage, funding
+  session ID, and vHTLC outpoint), and reloading a failed one must preserve
+  the original authoritative failure rather than re-deriving it.
 - The store is optional — both `NewSwapClient` and
   `NewSwapClientWithStore` are valid; `persist()` is a no-op when
   `store == nil`.
