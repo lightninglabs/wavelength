@@ -184,10 +184,15 @@ else
 DOCKER_RELEASE_USER_ARGS = --user $(shell id -u):$(shell id -g)
 endif
 
+# Keep the Go caches inside the release container. The release script clears
+# the build cache between platforms, so mounting the host cache would delete
+# host entries and race with Go commands running outside the container.
+# Trust only the checkout's fixed container path without changing host config.
 DOCKER_RELEASE_ARGS = --rm $(DOCKER_RELEASE_USER_ARGS) \
-  -v $(shell bash -c "$(GOCC) env GOCACHE || (mkdir -p /tmp/go-cache; echo /tmp/go-cache)"):/tmp/build/.cache \
-  -v $(shell bash -c "$(GOCC) env GOMODCACHE || (mkdir -p /tmp/go-modcache; echo /tmp/go-modcache)"):/tmp/build/.modcache \
-  -e SKIP_VERSION_CHECK
+  -e SKIP_VERSION_CHECK \
+  -e GIT_CONFIG_COUNT=1 \
+  -e GIT_CONFIG_KEY_0=safe.directory \
+  -e GIT_CONFIG_VALUE_0=/tmp/build/wavelength
 
 # ============
 # DEPENDENCIES
