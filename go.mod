@@ -9,7 +9,7 @@ require (
 	github.com/btcsuite/btcd v0.26.0
 	github.com/btcsuite/btcd/btcec/v2 v2.5.0
 	github.com/btcsuite/btclog/v2 v2.0.1-0.20250728225537-6090e87c6c5b
-	github.com/btcsuite/btcwallet v0.18.0
+	github.com/btcsuite/btcwallet v0.18.1-0.20260826052527-33c252f3b4d6
 	github.com/btcsuite/btcwallet/walletdb v1.6.0
 	github.com/btcsuite/btcwallet/wtxmgr v1.6.0
 	github.com/golang-migrate/migrate/v4 v4.19.1

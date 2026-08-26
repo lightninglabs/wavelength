@@ -156,6 +156,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   3s cap).
 - SQLite `busy_timeout = 30 000 ms` under WAL mode tolerates
   multi-actor contention bursts.
+- Postgres test fixture slots bound Docker startup and migrations only. Helpers
+  release the slot before returning the initialized store; retaining it until
+  test cleanup can deadlock Go's parallel-test barrier.
 - `ledger_entries.entry_id` and `wallet_utxo_log.entry_id` use
   `INTEGER PRIMARY KEY AUTOINCREMENT` to prevent rowid reuse after
   deletion, preserving append-only ordering.

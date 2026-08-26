@@ -30,6 +30,7 @@ func NewTestPostgresDB(t testing.TB) *PostgresStore {
 	log := btclog.Disabled
 
 	sqlFixture := NewTestPgFixture(t, DefaultPostgresFixtureLifetime, true)
+	defer sqlFixture.releaseFixtureInitSlot()
 
 	// Cleanups run in reverse order. Register the fixture first so the
 	// store pool registered below is closed before its container is
@@ -62,6 +63,7 @@ func NewTestPostgresDBWithVersion(t testing.TB, version uint) *PostgresStore {
 	log := btclog.Disabled
 
 	sqlFixture := NewTestPgFixture(t, DefaultPostgresFixtureLifetime, true)
+	defer sqlFixture.releaseFixtureInitSlot()
 
 	// Cleanups run in reverse order. Register the fixture first so the
 	// store pool registered below is closed before its container is

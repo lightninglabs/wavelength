@@ -8,10 +8,12 @@ package mobile
 
 // ConfirmedBalanceSat returns the confirmed wallet balance in satoshis.
 func ConfirmedBalanceSat() (int64, error) {
-	client, ctx, err := activeClient()
+	client, parentCtx, err := activeClient()
 	if err != nil {
 		return 0, err
 	}
+	ctx, cancel := readContext(parentCtx)
+	defer cancel()
 
 	bal, err := client.Balance(ctx)
 	if err != nil {
@@ -23,10 +25,12 @@ func ConfirmedBalanceSat() (int64, error) {
 
 // PendingInboundSat returns the pending inbound balance in satoshis.
 func PendingInboundSat() (int64, error) {
-	client, ctx, err := activeClient()
+	client, parentCtx, err := activeClient()
 	if err != nil {
 		return 0, err
 	}
+	ctx, cancel := readContext(parentCtx)
+	defer cancel()
 
 	bal, err := client.Balance(ctx)
 	if err != nil {
@@ -39,10 +43,12 @@ func PendingInboundSat() (int64, error) {
 // WalletReady reports whether the daemon wallet is fully unlocked and ready to
 // sign. It is the scalar form of GetInfo().WalletState == ready.
 func WalletReady() (bool, error) {
-	client, ctx, err := activeClient()
+	client, parentCtx, err := activeClient()
 	if err != nil {
 		return false, err
 	}
+	ctx, cancel := readContext(parentCtx)
+	defer cancel()
 
 	info, err := client.GetInfo(ctx)
 	if err != nil {
