@@ -55,7 +55,7 @@ DB_CONNECTIONSTRING ?= sqlite://./wavelength.db
 DEV_TAGS := dev
 LOG_TAGS := nolog
 TEST_FLAGS :=
-RELEASE_TAGS :=
+RELEASE_TAGS := wavewalletrpc swapruntime
 
 # Build flags for debug builds (similar to lnd).
 DEV_GCFLAGS := -gcflags "all=-N -l"
@@ -583,7 +583,8 @@ docker-release: #? Same as release but within a docker container to support repr
 	$(DOCKER) run $(DOCKER_RELEASE_ARGS) \
 		-v $(shell pwd):/tmp/build/wavelength \
 		wavelength-release-helper \
-		make release tag="$(tag)" sys="$(sys)" COMMIT="$(COMMIT)"
+		make release tag="$(tag)" sys="$(sys)" \
+		RELEASE_TAGS="$(RELEASE_TAGS)" COMMIT="$(COMMIT)"
 
 # ============
 # CLEANUP

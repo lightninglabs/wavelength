@@ -58,6 +58,11 @@ archives of the release binaries (`waved` and `wavecli`) for each
 supported operating system and architecture, and a manifest file containing
 the hash of each archive.
 
+Both release commands build `waved` and `wavecli` with the `wavewalletrpc` and
+`swapruntime` tags. The Docker command passes the same release tags into its
+container, so both commands produce identical binaries for the same source and
+target platform.
+
 ## Publishing a Release
 
 Pushing a `v*` tag starts the Release Build workflow
