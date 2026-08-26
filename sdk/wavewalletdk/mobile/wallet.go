@@ -30,11 +30,11 @@ const (
 	// effectively unbounded behavior this mobile-only request field avoids.
 	maxReceiveTimeout = 5 * time.Minute
 
-	// receiveTimeoutErrorPrefix is stable binding ABI. It lets a foreign
-	// host distinguish an uncertain receive timeout from a rejected request
-	// without depending on transport-specific context error text.
-	receiveTimeoutErrorPrefix = "receive timed out; outcome uncertain; " +
-		"reconcile Activity before retrying"
+	// receiveUncertainErrorPrefix is stable binding ABI. It lets a foreign
+	// host distinguish a canceled receive with an uncertain outcome from a
+	// rejected request without depending on context-specific error text.
+	receiveUncertainErrorPrefix = "receive outcome uncertain; reconcile " +
+		"Activity before retrying"
 )
 
 // readContext derives the bounded context used by safe, repeatable mobile
@@ -43,16 +43,14 @@ func readContext(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, defaultReadTimeout)
 }
 
-// receiveError preserves ordinary receive errors while marking a deadline
-// owned by this binding as an uncertain outcome. A parent cancellation means
-// the daemon is stopping, so it keeps the lifecycle error unchanged.
-func receiveError(parentCtx, callCtx context.Context, err error) error {
-	if err == nil || parentCtx.Err() != nil ||
-		callCtx.Err() != context.DeadlineExceeded {
+// receiveError preserves ordinary receive errors while marking cancellation by
+// either the binding-owned deadline or Stop as an uncertain outcome.
+func receiveError(callCtx context.Context, err error) error {
+	if err == nil || callCtx.Err() == nil {
 		return err
 	}
 
-	return fmt.Errorf("%s: %w", receiveTimeoutErrorPrefix, err)
+	return fmt.Errorf("%s: %w", receiveUncertainErrorPrefix, err)
 }
 
 // mobileReceiveRequest extends the SDK receive DTO with a mobile-only request
@@ -216,7 +214,7 @@ func Receive(reqJSON []byte) ([]byte, error) {
 
 	res, err := client.Receive(ctx, req)
 	if err != nil {
-		return nil, receiveError(parentCtx, ctx, err)
+		return nil, receiveError(ctx, err)
 	}
 
 	return marshal(res)
