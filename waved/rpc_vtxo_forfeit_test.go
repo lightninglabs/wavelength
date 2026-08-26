@@ -129,7 +129,7 @@ func newSignVTXOForfeitFixtureWithLocalVTXO(t *testing.T,
 		},
 	}
 
-	vtxoStore, _, _ := newSendOORTestStores(t)
+	vtxoStore, _, _, _, _ := newSendOORTestStores(t)
 
 	server := &Server{
 		cfg: &Config{

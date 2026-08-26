@@ -628,6 +628,10 @@ func (s *paySession) createSwap(ctx context.Context) error {
 		})
 	}
 
+	if err := vhtlcTiming(cfg.VHTLCConfig).ValidateOrder(); err != nil {
+		return fmt.Errorf("validate in-swap vHTLC timing: %w", err)
+	}
+
 	operatorKey, err := s.client.daemon.OperatorPubKey(ctx)
 	if err != nil {
 		return fmt.Errorf("get operator pubkey: %w", err)

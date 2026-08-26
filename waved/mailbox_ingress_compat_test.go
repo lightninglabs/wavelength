@@ -84,7 +84,7 @@ func newCompatTestServer(t *testing.T,
 
 	t.Helper()
 
-	_, deliveryStore, _ := newSendOORTestStores(t)
+	_, deliveryStore, _, _, _ := newSendOORTestStores(t)
 
 	s := &Server{log: btclog.Disabled}
 
