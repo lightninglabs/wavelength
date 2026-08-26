@@ -328,6 +328,27 @@ type terminalNotifyResultMsg struct {
 	err          error
 }
 
+// terminalNotifyOutcome describes the synchronous result of one terminal-shape
+// notification attempt. A stopped target is distinct from a delivered message:
+// both end retries, but a stopped subscriber must not remain attached for the
+// reorg-aware tail of a confirmed transaction.
+type terminalNotifyOutcome uint8
+
+const (
+	// terminalNotifyPending means delivery failed transiently or continues
+	// on the bounded async completion path, so the subscriber must remain
+	// for a later retry.
+	terminalNotifyPending terminalNotifyOutcome = iota
+
+	// terminalNotifyDelivered means the subscriber accepted the
+	// notification.
+	terminalNotifyDelivered
+
+	// terminalNotifySubscriberStopped means the subscriber actor terminated
+	// or closed its mailbox and can never accept another notification.
+	terminalNotifySubscriberStopped
+)
+
 // MessageType returns the stable message type identifier.
 func (m *terminalNotifyResultMsg) MessageType() string {
 	return "terminalNotifyResultMsg"
@@ -367,12 +388,13 @@ func NewTxBroadcasterActor(cfg Config) *TxBroadcasterActor {
 	// The fanout FSM shares the broadcaster's per-parent reservation map,
 	// so it is constructed from the broadcaster rather than alongside it.
 	broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
-		ChainSource:                    cfg.ChainSource,
-		Wallet:                         cfg.Wallet,
-		Log:                            cfg.Log,
-		MaxFeeRateSatPerVByte:          cfg.MaxFeeRateSatPerVByte,
-		IncrementalRelayFeeSatPerVByte: cfg.IncrementalRelayFeeSatPerVByte,
-		PreSubmitTestMempoolAccept:     cfg.PreSubmitTestMempoolAccept,
+		ChainSource:           cfg.ChainSource,
+		Wallet:                cfg.Wallet,
+		Log:                   cfg.Log,
+		MaxFeeRateSatPerVByte: cfg.MaxFeeRateSatPerVByte,
+		IncrementalRelayFeeSatPerVByte: cfg.
+			IncrementalRelayFeeSatPerVByte,
+		PreSubmitTestMempoolAccept: cfg.PreSubmitTestMempoolAccept,
 	})
 
 	log := cfg.Log.UnwrapOr(btclog.Disabled)
@@ -1326,12 +1348,21 @@ func (a *TxBroadcasterActor) handleBlockObserved(ctx context.Context,
 				// so it is logged at debug to avoid emitting a
 				// warning every interval for the tx's whole
 				// lifetime (wavelength#403).
-				if errors.Is(err, ErrFeeRateCapReached) {
+				switch {
+				case errors.Is(err, ErrFeeRateCapReached):
 					a.log.DebugS(ctx, "Fee bump held at the "+
 						"max fee rate cap; leaving tx at "+
 						"its last in-cap fee",
 						"txid", entry.data.Txid)
-				} else {
+
+				case errors.Is(err, ErrParentAlreadyBroadcast):
+					a.log.DebugS(ctx, "Fee bump child rejected "+
+						"after parent reached the network; "+
+						"will retry",
+						"txid", entry.data.Txid,
+						slog.Any("err", err))
+
+				default:
 					a.log.WarnS(ctx, "Fee bump failed, "+
 						"will retry", err,
 						"txid", entry.data.Txid)
@@ -1384,18 +1415,26 @@ func (a *TxBroadcasterActor) attachExistingSubscriber(
 		}
 
 		// Reliable replay of the at-least-once TxConfirmed contract.
-		// The subscriber is retained in the map regardless of
-		// delivery outcome so it also receives any later TxReorged
-		// or TxFinalized on this entry, and on timeout the per-tick
-		// retryLifecycleNotifications re-attempts delivery via
-		// the still-true pendingConfirmed flag until it lands.
-		if a.notifyOneConfirmed(
+		// A live subscriber is retained so it receives any later
+		// TxReorged or TxFinalized, and on timeout the per-tick
+		// retryLifecycleNotifications re-attempts delivery via the
+		// still-true pendingConfirmed flag until it lands. A stopped
+		// subscriber is not attached because it cannot recover.
+		outcome := a.notifyOneConfirmed(
 			ctx, subscriber.Ref, entry.data.Txid, txConfirmed,
-		) {
-
+		)
+		switch outcome {
+		case terminalNotifyDelivered:
 			subscriber.pendingConfirmed = false
+			entry.subscribers[subID] = subscriber
+
+		case terminalNotifyPending:
+			entry.subscribers[subID] = subscriber
+
+		case terminalNotifySubscriberStopped:
+			// The new subscriber was never inserted, so there is no
+			// tracked interest to remove.
 		}
-		entry.subscribers[subID] = subscriber
 
 	case *trackedTxStateFinalized:
 		// Finalized is terminal. Deliver TxFinalized reliably and
@@ -1406,19 +1445,19 @@ func (a *TxBroadcasterActor) attachExistingSubscriber(
 		// it (sweep-finality gates etc.) can recover without an
 		// out-of-band lookup.
 		subscriber.pendingConfirmed = false
-		if !a.notifyOneFinalized(
+		if a.notifyOneFinalized(
 			ctx, subscriber.Ref, entry.data.Txid,
 			state.ConfirmHeight, entry.data.TargetConfs,
-		) {
+		) == terminalNotifyPending {
 
 			entry.subscribers[subID] = subscriber
 		}
 
 	case *trackedTxStateFailed:
 		reason, _ := trackedTxFailureReason(state)
-		if !a.notifyOneFailed(
+		if a.notifyOneFailed(
 			ctx, subscriber.Ref, entry.data.Txid, reason,
-		) {
+		) == terminalNotifyPending {
 
 			entry.subscribers[subID] = subscriber
 		}
@@ -1974,13 +2013,38 @@ func (a *TxBroadcasterActor) retryConfirmedRedelivery(ctx context.Context,
 			BlockHash:   confirmBlockHash,
 			NumConfs:    entry.data.TargetConfs,
 		}
-		if a.notifyOneConfirmed(
+		outcome := a.notifyOneConfirmed(
 			ctx, subscriber.Ref, entry.data.Txid, txConfirmed,
-		) {
-
+		)
+		switch outcome {
+		case terminalNotifyDelivered:
 			subscriber.pendingConfirmed = false
 			entry.subscribers[id] = subscriber
+
+		case terminalNotifySubscriberStopped:
+			a.removeStoppedConfirmedSubscriber(ctx, entry, id)
+
+		case terminalNotifyPending:
+			// Keep pendingConfirmed set for the next actor tick.
 		}
+	}
+}
+
+// removeStoppedConfirmedSubscriber removes a dead subscriber from a confirmed
+// entry. handleCancel also releases confirmation and fee-bump resources when
+// this was the final subscriber.
+func (a *TxBroadcasterActor) removeStoppedConfirmedSubscriber(
+	ctx context.Context, entry *trackedTx, subscriberID string) {
+
+	_, err := a.handleCancel(ctx, &CancelInterestReq{
+		Txid:         entry.data.Txid,
+		SubscriberID: subscriberID,
+	})
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to remove stopped confirmed tx "+
+			"subscriber",
+			err, "txid", entry.data.Txid,
+			"subscriber_id", subscriberID)
 	}
 }
 
@@ -2008,6 +2072,29 @@ func (a *TxBroadcasterActor) handleTerminalNotifyResult(ctx context.Context,
 	delete(a.terminalNotifyInflight, msg.inflightKey)
 
 	if msg.err != nil {
+		if errors.Is(msg.err, actor.ErrActorTerminated) ||
+			errors.Is(msg.err, actor.ErrMailboxClosed) {
+
+			a.log.DebugS(ctx, "Terminal tx subscriber stopped "+
+				"after deferred delivery; dropping subscription",
+				"txid", msg.txid,
+				"subscriber_id", msg.subscriberID,
+				"notification_kind", msg.kind,
+				slog.Any("err", msg.err))
+
+			_, err := a.handleCancel(ctx, &CancelInterestReq{
+				Txid:         msg.txid,
+				SubscriberID: msg.subscriberID,
+			})
+			if err != nil {
+				a.log.WarnS(ctx, "Failed to remove stopped terminal "+
+					"tx subscriber", err, "txid", msg.txid,
+					"subscriber_id", msg.subscriberID)
+			}
+
+			return
+		}
+
 		a.log.WarnS(ctx, "Terminal notification failed after "+
 			"actor-path timeout", msg.err, "txid", msg.txid,
 			"subscriber_id", msg.subscriberID,
@@ -2089,9 +2176,9 @@ func (a *TxBroadcasterActor) handleTerminalNotifyResult(ctx context.Context,
 // the authoritative height / numConfs so a missed re-confirmation is
 // not load-bearing.
 //
-// Subscribers are never deleted from the map by this function — that
-// happens only on TxFinalized / TxFailed acknowledgment, which is
-// when the reorg-aware lifecycle reaches a truly terminal state.
+// Live subscribers are deleted only on TxFinalized / TxFailed acknowledgment.
+// A stopped subscriber is removed immediately because it cannot receive the
+// rest of the reorg-aware lifecycle.
 func (a *TxBroadcasterActor) notifyConfirmed(ctx context.Context,
 	entry *trackedTx, blockHeight int32, blockHash chainhash.Hash,
 	numConfs uint32) {
@@ -2113,12 +2200,19 @@ func (a *TxBroadcasterActor) notifyConfirmed(ctx context.Context,
 			continue
 		}
 
-		if a.notifyOneConfirmed(
+		outcome := a.notifyOneConfirmed(
 			ctx, subscriber.Ref, entry.data.Txid, txConfirmed,
-		) {
-
+		)
+		switch outcome {
+		case terminalNotifyDelivered:
 			subscriber.pendingConfirmed = false
 			entry.subscribers[id] = subscriber
+
+		case terminalNotifySubscriberStopped:
+			a.removeStoppedConfirmedSubscriber(ctx, entry, id)
+
+		case terminalNotifyPending:
+			// Keep pendingConfirmed set for the next actor tick.
 		}
 	}
 }
@@ -2130,7 +2224,7 @@ func (a *TxBroadcasterActor) notifyConfirmed(ctx context.Context,
 // TxConfirmed delivery.
 func (a *TxBroadcasterActor) notifyOneConfirmed(ctx context.Context,
 	subscriber actor.TellOnlyRef[Notification], txid chainhash.Hash,
-	notification *TxConfirmed) bool {
+	notification *TxConfirmed) terminalNotifyOutcome {
 
 	return a.notifyOneTerminal(
 		ctx, subscriber, txid, "confirmed",
@@ -2248,7 +2342,7 @@ func (a *TxBroadcasterActor) notifyFinalized(ctx context.Context,
 
 	for id, subscriber := range entry.subscribers {
 		if subscriber.pendingConfirmed {
-			if a.notifyOneConfirmed(
+			outcome := a.notifyOneConfirmed(
 				ctx, subscriber.Ref, entry.data.Txid,
 				&TxConfirmed{
 					Txid:        entry.data.Txid,
@@ -2256,11 +2350,17 @@ func (a *TxBroadcasterActor) notifyFinalized(ctx context.Context,
 					BlockHash:   confirmBlockHash,
 					NumConfs:    entry.data.TargetConfs,
 				},
-			) {
-
+			)
+			switch outcome {
+			case terminalNotifyDelivered:
 				subscriber.pendingConfirmed = false
 				entry.subscribers[id] = subscriber
-			} else {
+
+			case terminalNotifySubscriberStopped:
+				delete(entry.subscribers, id)
+				continue
+
+			case terminalNotifyPending:
 				// Hold until the next tick — we must not
 				// deliver TxFinalized before the documented
 				// initial TxConfirmed has landed.
@@ -2268,11 +2368,11 @@ func (a *TxBroadcasterActor) notifyFinalized(ctx context.Context,
 			}
 		}
 
-		ok := a.notifyOneFinalized(
+		outcome := a.notifyOneFinalized(
 			ctx, subscriber.Ref, entry.data.Txid, confirmHeight,
 			entry.data.TargetConfs,
 		)
-		if !ok {
+		if outcome == terminalNotifyPending {
 			continue
 		}
 
@@ -2295,10 +2395,10 @@ func (a *TxBroadcasterActor) notifyFailed(ctx context.Context, entry *trackedTx,
 	entry.sealed.Store(true)
 
 	for id, subscriber := range entry.subscribers {
-		ok := a.notifyOneFailed(
+		outcome := a.notifyOneFailed(
 			ctx, subscriber.Ref, entry.data.Txid, reason,
 		)
-		if !ok {
+		if outcome == terminalNotifyPending {
 			continue
 		}
 
@@ -2316,7 +2416,7 @@ func (a *TxBroadcasterActor) notifyFailed(ctx context.Context, entry *trackedTx,
 // the authoritative confirmation height.
 func (a *TxBroadcasterActor) notifyOneFinalized(ctx context.Context,
 	subscriber actor.TellOnlyRef[Notification], txid chainhash.Hash,
-	blockHeight int32, numConfs uint32) bool {
+	blockHeight int32, numConfs uint32) terminalNotifyOutcome {
 
 	return a.notifyOneTerminal(
 		ctx, subscriber, txid, "finalized",
@@ -2333,7 +2433,7 @@ func (a *TxBroadcasterActor) notifyOneFinalized(ctx context.Context,
 // notifyOneFailed delivers one terminal failure notification.
 func (a *TxBroadcasterActor) notifyOneFailed(ctx context.Context,
 	subscriber actor.TellOnlyRef[Notification], txid chainhash.Hash,
-	reason string) bool {
+	reason string) terminalNotifyOutcome {
 
 	return a.notifyOneTerminal(
 		ctx, subscriber, txid, "failed",
@@ -2350,12 +2450,13 @@ func (a *TxBroadcasterActor) notifyOneFailed(ctx context.Context,
 // durable subscriber block txconfirm's actor loop indefinitely.
 func (a *TxBroadcasterActor) notifyOneTerminal(ctx context.Context,
 	subscriber actor.TellOnlyRef[Notification], txid chainhash.Hash,
-	kind string, deliver func(context.Context) error) bool {
+	kind string,
+	deliver func(context.Context) error) terminalNotifyOutcome {
 
 	subscriberID := subscriber.ID()
 	inflightKey := terminalNotifyKey(txid, subscriberID, kind)
 	if _, ok := a.terminalNotifyInflight[inflightKey]; ok {
-		return false
+		return terminalNotifyPending
 	}
 
 	notifyCtx, cancel := terminalNotifyContext(ctx, inflightKey)
@@ -2368,15 +2469,31 @@ func (a *TxBroadcasterActor) notifyOneTerminal(ctx context.Context,
 	case err := <-errChan:
 		cancel()
 		if err != nil {
+			// A stopped subscriber can never accept the terminal
+			// notification. Report it separately from successful
+			// delivery so confirmed entries do not retain it for
+			// the reorg-aware tail.
+			if errors.Is(err, actor.ErrActorTerminated) ||
+				errors.Is(err, actor.ErrMailboxClosed) {
+
+				a.log.DebugS(ctx, "Terminal tx subscriber stopped; "+
+					"dropping subscription", "txid", txid,
+					"subscriber_id", subscriberID,
+					"notification_kind", kind,
+					slog.Any("err", err))
+
+				return terminalNotifySubscriberStopped
+			}
+
 			a.log.WarnS(ctx, "Failed to deliver terminal tx "+
 				"notification", err, "txid", txid,
 				"subscriber_id", subscriberID,
 				"notification_kind", kind)
 
-			return false
+			return terminalNotifyPending
 		}
 
-		return true
+		return terminalNotifyDelivered
 
 	case <-notifyCtx.Done():
 		a.terminalNotifyInflight[inflightKey] = struct{}{}
@@ -2391,7 +2508,7 @@ func (a *TxBroadcasterActor) notifyOneTerminal(ctx context.Context,
 			"notification_kind", kind,
 		)
 
-		return false
+		return terminalNotifyPending
 	}
 }
 
