@@ -754,6 +754,7 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *waverpc.GetInfoRequest) (
 			FeeRate:           uint64(terms.FeeRate),
 			MinOperatorFee:    uint64(terms.MinOperatorFee),
 			MinConfirmations:  terms.MinConfirmations,
+			VtxoConfirmations: terms.VTXOTargetConfirmations(),
 			MinVtxoAmountSat:  uint64(minVTXOAmount),
 			MaxUserBalance:    uint64(terms.MaxUserBalance),
 		}

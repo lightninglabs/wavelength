@@ -180,6 +180,34 @@ func TestOperatorTermsFreeRefreshWindow(t *testing.T) {
 	require.Equal(t, uint32(72), terms.FreeRefreshWindowBlocks)
 }
 
+// TestOperatorTermsVTXOConfirmations verifies new operators can advertise a
+// shallow VTXO activation depth without weakening boarding-input maturity.
+func TestOperatorTermsVTXOConfirmations(t *testing.T) {
+	t.Parallel()
+
+	terms, err := operatorTermsFromResponse(&arkrpc.GetInfoResponse{
+		Pubkey:            testOperatorPubKeyBytes(t),
+		MinConfirmations:  6,
+		VtxoConfirmations: 1,
+	})
+	require.NoError(t, err)
+	require.Equal(t, uint32(6), terms.MinConfirmations)
+	require.Equal(t, uint32(1), terms.VTXOConfirmations)
+}
+
+// TestOperatorTermsVTXOConfirmationsLegacyFallback verifies a new client
+// preserves the old coupled policy when the additive field is absent.
+func TestOperatorTermsVTXOConfirmationsLegacyFallback(t *testing.T) {
+	t.Parallel()
+
+	terms, err := operatorTermsFromResponse(&arkrpc.GetInfoResponse{
+		Pubkey:           testOperatorPubKeyBytes(t),
+		MinConfirmations: 3,
+	})
+	require.NoError(t, err)
+	require.Equal(t, uint32(3), terms.VTXOConfirmations)
+}
+
 // TestNegotiateArkBootstrapZeroSelection proves the client refuses to bootstrap
 // when the operator returns a zero selection (no common version, or a
 // pre-versioning server). There is no legacy fallback.

@@ -164,6 +164,10 @@ type ServerInfo struct {
 	// inputs.
 	MinConfirmations uint32
 
+	// VTXOConfirmations is the confirmation depth at which VTXOs created by
+	// a round become available for off-chain spending.
+	VTXOConfirmations uint32
+
 	// MaxUserBalance is the maximum total balance in satoshis a single
 	// user should hold in the system. A value of zero means no cap.
 	MaxUserBalance uint64
@@ -470,6 +474,7 @@ func (c *Client) GetInfo(ctx context.Context) (*Info, error) {
 			MinOperatorFee:          serverInfo.MinOperatorFee,
 			FreeRefreshWindowBlocks: freeRefreshWindow,
 			MinConfirmations:        serverInfo.MinConfirmations,
+			VTXOConfirmations:       serverInfo.VtxoConfirmations,
 			MaxUserBalance:          serverInfo.MaxUserBalance,
 		}
 	}

@@ -54,6 +54,14 @@ func operatorTermsFromResponse(resp *arkrpc.GetInfoResponse) (
 		minVTXOAmount = resp.DustLimit
 	}
 
+	vtxoConfirmations := resp.VtxoConfirmations
+	if vtxoConfirmations == 0 {
+		// Older operators used MinConfirmations for both boarding
+		// inputs and commitment outputs. Preserve that behavior until
+		// the server explicitly advertises the split policy.
+		vtxoConfirmations = resp.MinConfirmations
+	}
+
 	// The forfeit penalty key, sweep key and sweep delay are no longer
 	// global operator terms; they are delivered per round in the batch
 	// info, so GetInfo no longer carries them.
@@ -69,6 +77,7 @@ func operatorTermsFromResponse(resp *arkrpc.GetInfoResponse) (
 		MinOperatorFee:          btcutil.Amount(resp.MinOperatorFee),
 		FreeRefreshWindowBlocks: resp.FreeRefreshWindowBlocks,
 		MinConfirmations:        resp.MinConfirmations,
+		VTXOConfirmations:       vtxoConfirmations,
 		MaxOORLineageVBytes:     resp.MaxOorLineageVbytes,
 		MaxUserBalance:          btcutil.Amount(resp.MaxUserBalance),
 	}, nil

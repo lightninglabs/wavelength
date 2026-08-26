@@ -1079,8 +1079,11 @@ type ServerInfo struct {
 	// free_refresh_window_blocks is the operator's late-lifetime refresh
 	// waiver window. Zero disables the policy.
 	FreeRefreshWindowBlocks uint32 `protobuf:"varint,15,opt,name=free_refresh_window_blocks,json=freeRefreshWindowBlocks,proto3" json:"free_refresh_window_blocks,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// vtxo_confirmations is the confirmation depth at which new round VTXOs
+	// become available for off-chain spending.
+	VtxoConfirmations uint32 `protobuf:"varint,16,opt,name=vtxo_confirmations,json=vtxoConfirmations,proto3" json:"vtxo_confirmations,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *ServerInfo) Reset() {
@@ -1193,6 +1196,13 @@ func (x *ServerInfo) GetMaxUserBalance() uint64 {
 func (x *ServerInfo) GetFreeRefreshWindowBlocks() uint32 {
 	if x != nil {
 		return x.FreeRefreshWindowBlocks
+	}
+	return 0
+}
+
+func (x *ServerInfo) GetVtxoConfirmations() uint32 {
+	if x != nil {
+		return x.VtxoConfirmations
 	}
 	return 0
 }
@@ -10741,7 +10751,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fidentity_pubkey\x18\n" +
 	" \x01(\tR\x0eidentityPubkey\x124\n" +
 	"\vserver_info\x18\v \x01(\v2\x13.waverpc.ServerInfoR\n" +
-	"serverInfo\"\x8c\x04\n" +
+	"serverInfo\"\xbb\x04\n" +
 	"\n" +
 	"ServerInfo\x12'\n" +
 	"\x0foperator_pubkey\x18\x01 \x01(\fR\x0eoperatorPubkey\x12.\n" +
@@ -10757,7 +10767,8 @@ const file_daemon_proto_rawDesc = "" +
 	"\x11min_confirmations\x18\f \x01(\rR\x10minConfirmations\x12-\n" +
 	"\x13min_vtxo_amount_sat\x18\r \x01(\x04R\x10minVtxoAmountSat\x12(\n" +
 	"\x10max_user_balance\x18\x0e \x01(\x04R\x0emaxUserBalance\x12;\n" +
-	"\x1afree_refresh_window_blocks\x18\x0f \x01(\rR\x17freeRefreshWindowBlocks\"9\n" +
+	"\x1afree_refresh_window_blocks\x18\x0f \x01(\rR\x17freeRefreshWindowBlocks\x12-\n" +
+	"\x12vtxo_confirmations\x18\x10 \x01(\rR\x11vtxoConfirmations\"9\n" +
 	"\x0eGenSeedRequest\x12'\n" +
 	"\x0fseed_passphrase\x18\x01 \x01(\fR\x0eseedPassphrase\"V\n" +
 	"\x0fGenSeedResponse\x12\x1a\n" +
