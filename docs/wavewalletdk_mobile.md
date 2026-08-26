@@ -54,10 +54,10 @@ request is a small camelCase-tagged struct (`prfOutput`). Every other request
 decodes into the matching `wavewalletdk.*Request` DTO, so it follows the
 PascalCase rule. `Receive` additionally accepts `TimeoutSeconds`: zero or an
 omitted field selects a 20-second default, and values above five minutes are
-rejected. A binding-owned deadline returns an error beginning `receive timed
-out; outcome uncertain; reconcile Activity before retrying`. It does not prove
-that the receive session was not created. The host must reconcile the
-authoritative Activity view and recover any matching invoice before
+rejected. A binding-owned deadline or lifecycle cancellation returns an error
+beginning `receive outcome uncertain; reconcile Activity before retrying`. It
+does not prove that the receive session was not created. The host must reconcile
+the authoritative Activity view and recover any matching invoice before
 deliberately asking to create another one. Repeatable reads (`GetInfo`,
 `Balance`, `List`, `ExitStatus`, `ExitSummary`, `GetExitPlan`, `Status`, and the
 scalar balance/readiness helpers) use a 10-second binding-owned deadline because

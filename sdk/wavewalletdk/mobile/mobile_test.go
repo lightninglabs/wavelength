@@ -88,8 +88,8 @@ func TestReceiveErrorMarksUncertainTimeout(t *testing.T) {
 	callCtx, cancel := context.WithTimeout(parentCtx, 0)
 	defer cancel()
 
-	err := receiveError(parentCtx, callCtx, context.DeadlineExceeded)
-	if !strings.HasPrefix(err.Error(), receiveTimeoutErrorPrefix) {
+	err := receiveError(callCtx, context.DeadlineExceeded)
+	if !strings.HasPrefix(err.Error(), receiveUncertainErrorPrefix) {
 		t.Fatalf("receive error = %q", err)
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -97,9 +97,9 @@ func TestReceiveErrorMarksUncertainTimeout(t *testing.T) {
 	}
 }
 
-// TestReceiveErrorPreservesLifecycleCancellation verifies Stop cancellation is
-// not mislabeled as a request deadline with an uncertain receive outcome.
-func TestReceiveErrorPreservesLifecycleCancellation(t *testing.T) {
+// TestReceiveErrorMarksLifecycleCancellation verifies Stop cancellation has
+// the same reconcile-before-retry marker as a binding-owned deadline.
+func TestReceiveErrorMarksLifecycleCancellation(t *testing.T) {
 	parentCtx, cancelParent := context.WithCancel(context.Background())
 	callCtx, cancelCall := context.WithTimeout(parentCtx, time.Minute)
 	defer cancelCall()
@@ -107,8 +107,12 @@ func TestReceiveErrorPreservesLifecycleCancellation(t *testing.T) {
 	<-callCtx.Done()
 
 	want := errors.New("wallet stopped")
-	if got := receiveError(parentCtx, callCtx, want); got != want {
-		t.Fatalf("receive error = %v, want original %v", got, want)
+	got := receiveError(callCtx, want)
+	if !strings.HasPrefix(got.Error(), receiveUncertainErrorPrefix) {
+		t.Fatalf("receive error = %q", got)
+	}
+	if !errors.Is(got, want) {
+		t.Fatalf("receive error lost lifecycle cause: %v", got)
 	}
 }
 

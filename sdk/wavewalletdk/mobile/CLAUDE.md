@@ -68,10 +68,10 @@ application-facing wallet API.
   balance/readiness helpers) use `readContext`'s 10-second deadline. `Receive`
   uses `TimeoutSeconds`, defaults to 20 seconds when zero or omitted, and
   rejects negative values or values above five minutes.
-- A binding-owned `Receive` deadline is returned with the stable
-  `receiveTimeoutErrorPrefix`. The result is uncertain: the host must reconcile
-  Activity before deliberately requesting another invoice. Parent lifecycle
-  cancellation is left unchanged because it means the daemon is stopping.
+- A `Receive` canceled by its binding-owned deadline or the parent lifecycle is
+  returned with the stable `receiveUncertainErrorPrefix`. The result is
+  uncertain: the host must reconcile Activity before deliberately requesting
+  another invoice.
 - Every bounded call context derives from the daemon-lifetime parent returned
   by `activeClient`, so `Stop` still cancels in-flight calls immediately.
 - Startup through `startEmbedded` and `Subscription.Next` recover panics into
