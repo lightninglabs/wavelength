@@ -169,6 +169,8 @@ func NewOutgoingSnapshot(sessionID SessionID,
 		snap.DispatchRequestData = append(
 			[]byte(nil), s.DispatchRequestData...,
 		)
+		snap.RetryAfter = s.RetryAfter
+		snap.FailReason = s.RetryReason
 		snap.FirstRejectUnixNanos = s.FirstRejectUnixNanos
 
 		if err := assignPSBTArtifacts(
@@ -341,6 +343,8 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 			DispatchRequestData: append(
 				[]byte(nil), snapshot.DispatchRequestData...,
 			),
+			RetryAfter:           snapshot.RetryAfter,
+			RetryReason:          snapshot.FailReason,
 			FirstRejectUnixNanos: snapshot.FirstRejectUnixNanos,
 		}, nil
 

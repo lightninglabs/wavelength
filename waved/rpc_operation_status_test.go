@@ -3,9 +3,64 @@ package waved
 import (
 	"testing"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 )
+
+// TestOORSessionSummaryToProtoProjectsRetryReason verifies the RPC projection
+// exposes a pending retry reason without misclassifying it as terminal, while
+// preserving the same field for a terminal failure.
+func TestOORSessionSummaryToProtoProjectsRetryReason(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		summary    oor.SessionSummary
+		wantStatus waverpc.OORSessionStatus
+	}{
+		{
+			name: "pending retry",
+			summary: oor.SessionSummary{
+				SessionID: oor.SessionID(chainhash.Hash{1}),
+				Direction: oor.SessionDirectionOutgoing,
+				Phase: string(
+					oor.OutgoingPhaseSubmitSent,
+				),
+				Pending:     true,
+				RetryReason: "input not spendable",
+			},
+			wantStatus: waverpc.
+				OORSessionStatus_OOR_SESSION_STATUS_PENDING,
+		},
+		{
+			name: "terminal failure",
+			summary: oor.SessionSummary{
+				SessionID:   oor.SessionID(chainhash.Hash{2}),
+				Direction:   oor.SessionDirectionOutgoing,
+				Phase:       string(oor.OutgoingPhaseFailed),
+				RetryReason: "retry budget exhausted",
+			},
+			wantStatus: waverpc.
+				OORSessionStatus_OOR_SESSION_STATUS_FAILED,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			info := oorSessionSummaryToProto(test.summary)
+			require.Equal(t, test.wantStatus, info.GetStatus())
+			require.Equal(
+				t, test.summary.RetryReason,
+				info.GetFailureReason(),
+			)
+		})
+	}
+}
 
 // TestPageOORSessionsUsesSessionCursor asserts OOR pagination resumes after
 // the last session id returned to the caller.
