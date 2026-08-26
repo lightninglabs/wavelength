@@ -3,7 +3,9 @@
 package mobile
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -76,6 +78,37 @@ func TestReadContextHasDeadline(t *testing.T) {
 	remaining := time.Until(deadline)
 	if remaining <= 0 || remaining > defaultReadTimeout {
 		t.Fatalf("read deadline remaining = %v", remaining)
+	}
+}
+
+// TestReceiveErrorMarksUncertainTimeout verifies a binding-owned receive
+// deadline has a stable host-visible prefix and preserves the original cause.
+func TestReceiveErrorMarksUncertainTimeout(t *testing.T) {
+	parentCtx := context.Background()
+	callCtx, cancel := context.WithTimeout(parentCtx, 0)
+	defer cancel()
+
+	err := receiveError(parentCtx, callCtx, context.DeadlineExceeded)
+	if !strings.HasPrefix(err.Error(), receiveTimeoutErrorPrefix) {
+		t.Fatalf("receive error = %q", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("receive error lost deadline cause: %v", err)
+	}
+}
+
+// TestReceiveErrorPreservesLifecycleCancellation verifies Stop cancellation is
+// not mislabeled as a request deadline with an uncertain receive outcome.
+func TestReceiveErrorPreservesLifecycleCancellation(t *testing.T) {
+	parentCtx, cancelParent := context.WithCancel(context.Background())
+	callCtx, cancelCall := context.WithTimeout(parentCtx, time.Minute)
+	defer cancelCall()
+	cancelParent()
+	<-callCtx.Done()
+
+	want := errors.New("wallet stopped")
+	if got := receiveError(parentCtx, callCtx, want); got != want {
+		t.Fatalf("receive error = %v, want original %v", got, want)
 	}
 }
 
