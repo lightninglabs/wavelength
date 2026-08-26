@@ -4662,6 +4662,15 @@ func resolveExitOutcome(ctx context.Context,
 			),
 		}), nil
 
+	case db.UnilateralExitJobStatusFailedConflicted:
+		return fn.Some(vtxo.ExitOutcomeResolution{
+			Outcome: vtxo.ExitOutcomeConflicted,
+			Reason:  job.LastError,
+			ExitPolicyKind: actormsg.ExitPolicyKind(
+				job.ExitPolicyKind,
+			),
+		}), nil
+
 	default:
 		return fn.None[vtxo.ExitOutcomeResolution](), nil
 	}

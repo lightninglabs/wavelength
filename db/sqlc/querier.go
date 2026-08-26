@@ -255,8 +255,9 @@ type Querier interface {
 	// Status 1 = Completed, 2 = Failed (anchored to Go iota in
 	// db/oor_session_registry_store.go OORSessionStatus).
 	ListNonTerminalOORSessionRegistry(ctx context.Context) ([]OorSessionRegistry, error)
-	// Status 4 = Completed, 5 = Failed, 7 = FailedRecoverable (anchored to Go
-	// iota in db/unilateral_exit_store.go UnilateralExitJobStatus).
+	// Status 4 = Completed, 5 = Failed, 7 = FailedRecoverable, 8 =
+	// FailedConflicted (anchored to Go iota in db/unilateral_exit_store.go
+	// UnilateralExitJobStatus). All four are terminal and excluded from restore.
 	ListNonTerminalUnilateralExitJobs(ctx context.Context) ([]UnilateralExitJob, error)
 	ListNonTerminalVHTLCRecoveryJobs(ctx context.Context) ([]VhtlcRecoveryJob, error)
 	ListOORPackageCheckpoints(ctx context.Context, sessionID []byte) ([]OorPackageCheckpoint, error)

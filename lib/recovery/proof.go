@@ -447,6 +447,68 @@ func (p *Proof) RootTxids() []chainhash.Hash {
 	return append([]chainhash.Hash(nil), p.layers[0]...)
 }
 
+// RootExternalInputs returns the outpoints consumed by root transactions that
+// are NOT themselves produced by any node in this proof — the external funding
+// inputs the whole recovery graph hangs off of. For a round-direct VTXO this is
+// the batch/commitment output the tree root spends; for an OOR-chained or
+// multi-input fan-in VTXO it is every distinct commitment output rooting a
+// local lineage fragment.
+//
+// These are exactly the outpoints a competing party (an operator sweeping an
+// expired batch, a fraud spend) can consume out from under the exit: a
+// confirmed foreign spend of any one of them makes every root that depends on
+// it — and therefore the whole proof — permanently unbroadcastable. Callers arm
+// spend watches on them so such a conflict fails the exit terminally instead of
+// spinning forever on a tree that can never confirm (wavelength#1050).
+//
+// The result is deduplicated and sorted deterministically (by hash then index)
+// so two proofs built from the same node set yield identical output regardless
+// of map iteration order.
+func (p *Proof) RootExternalInputs() []wire.OutPoint {
+	seen := make(map[wire.OutPoint]struct{})
+	external := make([]wire.OutPoint, 0)
+
+	for _, rootTxid := range p.RootTxids() {
+		root, ok := p.nodes[rootTxid]
+		if !ok || root.Tx == nil {
+			continue
+		}
+
+		for _, txIn := range root.Tx.TxIn {
+			if txIn == nil {
+				continue
+			}
+
+			outpoint := txIn.PreviousOutPoint
+
+			// An input produced by another node is an in-graph
+			// dependency, not an external funding input.
+			if _, isNode := p.nodes[outpoint.Hash]; isNode {
+				continue
+			}
+
+			if _, dup := seen[outpoint]; dup {
+				continue
+			}
+
+			seen[outpoint] = struct{}{}
+			external = append(external, outpoint)
+		}
+	}
+
+	sort.Slice(external, func(i, j int) bool {
+		if c := bytes.Compare(
+			external[i].Hash[:], external[j].Hash[:],
+		); c != 0 {
+			return c < 0
+		}
+
+		return external[i].Index < external[j].Index
+	})
+
+	return external
+}
+
 // Layer returns the topological layer index for the requested txid. Layer 0
 // is the set of roots; the target node's layer is always the maximum layer
 // index.

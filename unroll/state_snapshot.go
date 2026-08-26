@@ -39,6 +39,7 @@ func checkpointFromState(state State, sweepTx *wire.MsgTx) *actorCheckpoint {
 		checkpoint.State.Sweep.Txid = fn.Some(*sweepTxid)
 	}
 	checkpoint.Fail = job.FailReason
+	checkpoint.Conflicted = job.Conflicted
 	checkpoint.SweepAttempts = job.SweepAttempts
 
 	return checkpoint
@@ -109,6 +110,7 @@ func stateFromCheckpoint(checkpoint *actorCheckpoint) State {
 		PlannerState:        copyPlannerState(checkpoint.State),
 		DeferredCheckpoints: deferred,
 		FailReason:          checkpoint.Fail,
+		Conflicted:          checkpoint.Conflicted,
 		SweepAttempts:       checkpoint.SweepAttempts,
 	}
 

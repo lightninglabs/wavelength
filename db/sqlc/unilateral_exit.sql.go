@@ -93,12 +93,13 @@ func (q *Queries) InsertExitFundingAddress(ctx context.Context, arg InsertExitFu
 
 const ListNonTerminalUnilateralExitJobs = `-- name: ListNonTerminalUnilateralExitJobs :many
 SELECT target_outpoint_hash, target_outpoint_index, actor_id, status, trigger, last_error, sweep_txid, created_at, updated_at, exit_policy_kind, exit_policy_ref FROM unilateral_exit_jobs
-WHERE status NOT IN (4, 5, 7)
+WHERE status NOT IN (4, 5, 7, 8)
 ORDER BY created_at ASC
 `
 
-// Status 4 = Completed, 5 = Failed, 7 = FailedRecoverable (anchored to Go
-// iota in db/unilateral_exit_store.go UnilateralExitJobStatus).
+// Status 4 = Completed, 5 = Failed, 7 = FailedRecoverable, 8 =
+// FailedConflicted (anchored to Go iota in db/unilateral_exit_store.go
+// UnilateralExitJobStatus). All four are terminal and excluded from restore.
 func (q *Queries) ListNonTerminalUnilateralExitJobs(ctx context.Context) ([]UnilateralExitJob, error) {
 	rows, err := q.db.QueryContext(ctx, ListNonTerminalUnilateralExitJobs)
 	if err != nil {

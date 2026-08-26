@@ -25,6 +25,7 @@ import (
 	"github.com/lightninglabs/wavelength/ledger"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/recovery"
+	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/txconfirm"
 	"github.com/lightninglabs/wavelength/unrollplan"
 	"github.com/lightninglabs/wavelength/vtxo"
@@ -422,6 +423,7 @@ type fakeChainSourceRef struct {
 	blockRef    actor.TellOnlyRef[chainsource.BlockEpoch]
 	spendRefs   map[wire.OutPoint]spendEventRef
 	spendRegs   []wire.OutPoint
+	spendScrpt  map[wire.OutPoint][]byte
 	removedTxes []chainhash.Hash
 	confRefs    map[chainhash.Hash]confRef
 	confReqs    map[chainhash.Hash]*confReq
@@ -540,8 +542,14 @@ func (f *fakeChainSourceRef) Ask(_ context.Context,
 		if msg.Outpoint != nil {
 			outpoint = *msg.Outpoint
 		}
+		if f.spendScrpt == nil {
+			f.spendScrpt = make(map[wire.OutPoint][]byte)
+		}
 		f.spendRefs[outpoint] = msg.NotifyActor.UnwrapOr(nil)
 		f.spendRegs = append(f.spendRegs, outpoint)
+		f.spendScrpt[outpoint] = append(
+			[]byte(nil), msg.PkScript...,
+		)
 		f.mu.Unlock()
 		promise.Complete(
 			fn.Ok[chainsource.ChainSourceResp](
@@ -679,6 +687,15 @@ func (f *fakeChainSourceRef) removedTxSnapshot() []chainhash.Hash {
 	defer f.mu.Unlock()
 
 	return append([]chainhash.Hash(nil), f.removedTxes...)
+}
+
+// spendPkScript returns the pkScript a spend watch was registered with for the
+// given outpoint, or nil if none was registered or it was outpoint-only.
+func (f *fakeChainSourceRef) spendPkScript(outpoint wire.OutPoint) []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]byte(nil), f.spendScrpt[outpoint]...)
 }
 
 // fakeSweepWallet is a minimal signer plus wallet-destination test double.
@@ -2649,6 +2666,182 @@ func TestAbandonedBroadcastRemovalSkipsConfirmedTxids(t *testing.T) {
 			"a confirmed tx must never be removed from the wallet",
 		)
 	}
+}
+
+// sourceOutpoint is the external funding input the linear test proof's root
+// spends — the round batch/commitment output the recovery tree hangs off of.
+var sourceOutpoint = wire.OutPoint{Hash: chainhash.Hash{1}, Index: 0}
+
+// TestSourceSpendWatchArmed verifies the fix's core mechanism: on
+// materialization the actor arms a spend watch on the roots' external funding
+// input (the batch commitment output), which nothing watched before
+// wavelength#1050 — leaving a swept-source exit stuck in materialization
+// forever.
+func TestSourceSpendWatchArmed(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, beh, _, _ := newActorHarness(t, proof, desc)
+
+	chainSource, ok := beh.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+
+	require.Eventually(t, func() bool {
+		for _, outpoint := range chainSource.spendRegistrations() {
+			if outpoint == sourceOutpoint {
+				return true
+			}
+		}
+
+		return false
+	}, testTimeout, 10*time.Millisecond)
+}
+
+// TestSourceSpendWatchCarriesBatchPkScript verifies the source watch is armed
+// WITH the batch output's pkScript when the descriptor ancestry carries it.
+// This matters for neutrino: it matches a spend via the prevout script in the
+// BIP-158 block filter, so an outpoint-only watch would silently miss the sweep
+// (lwwallet/Esplora match by outpoint alone, so they are unaffected). The other
+// source-watch tests use an empty-ancestry descriptor and so only exercise the
+// outpoint; this one pins the script ride-along.
+func TestSourceSpendWatchCarriesBatchPkScript(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+
+	// Give the descriptor an ancestry fragment whose batch outpoint is the
+	// proof root's external funding input (sourceOutpoint), carrying a
+	// distinctive pkScript that must ride along on the spend watch.
+	batchScript := []byte{txscript.OP_1, 0xab, 0xcd, 0xef}
+	desc.Ancestry = []vtxo.Ancestry{{
+		TreePath: &tree.Tree{
+			BatchOutpoint: sourceOutpoint,
+			BatchOutput: &wire.TxOut{
+				Value:    90_000,
+				PkScript: batchScript,
+			},
+		},
+	}}
+
+	unrollActor, beh, _, _ := newActorHarness(t, proof, desc)
+
+	chainSource, ok := beh.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+
+	require.Eventually(t, func() bool {
+		return chainSource.spendPkScript(sourceOutpoint) != nil
+	}, testTimeout, 10*time.Millisecond)
+
+	require.Equal(
+		t, batchScript, chainSource.spendPkScript(sourceOutpoint),
+		"source watch must carry the batch output pkScript so a "+
+			"neutrino BIP-158 filter can match the sweep",
+	)
+}
+
+// TestSweptSourceFailsActor reproduces wavelength#1050: once the operator
+// sweeps the source batch commitment output (a foreign spend of the roots'
+// external input), the exit is provably impossible, so the actor must fail
+// terminally with a source-conflict reason rather than materialize forever.
+func TestSweptSourceFailsActor(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, beh, _, _ := newActorHarness(t, proof, desc)
+
+	chainSource, ok := beh.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+
+	require.Eventually(t, func() bool {
+		for _, outpoint := range chainSource.spendRegistrations() {
+			if outpoint == sourceOutpoint {
+				return true
+			}
+		}
+
+		return false
+	}, testTimeout, 10*time.Millisecond)
+
+	// The operator's expired-batch sweep is a foreign tx (not one of our
+	// proof nodes) consuming the batch commitment output.
+	operatorSweep := chainhash.Hash{0xaa}
+	chainSource.emitSpendForOutpoint(t, sourceOutpoint, operatorSweep, 101)
+
+	require.Eventually(t, func() bool {
+		stateResp, ok := mustAsk(
+			t, unrollActor.Ref(), &GetStateRequest{},
+		).(*GetStateResp)
+		require.True(t, ok)
+
+		return stateResp.Phase == PhaseFailed
+	}, testTimeout, 10*time.Millisecond)
+
+	stateResp, ok := mustAsk(
+		t, unrollActor.Ref(), &GetStateRequest{},
+	).(*GetStateResp)
+	require.True(t, ok)
+	require.Contains(t, stateResp.FailReason, "source batch")
+	require.Contains(t, stateResp.FailReason, "swept")
+	require.Contains(t, stateResp.FailReason, sourceOutpoint.String())
+	require.Contains(t, stateResp.FailReason, operatorSweep.String())
+}
+
+// TestOwnRootSpendOfSourceConfirms guards the benign side of the source watch:
+// when OUR own root spends the batch output (the exit winning the race), the
+// spend notification must be read as a parent confirmation, never as a
+// source-conflict failure.
+func TestOwnRootSpendOfSourceConfirms(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, beh, txconfirmRef, _ := newActorHarness(t, proof, desc)
+
+	chainSource, ok := beh.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+
+	require.Eventually(t, func() bool {
+		for _, outpoint := range chainSource.spendRegistrations() {
+			if outpoint == sourceOutpoint {
+				return true
+			}
+		}
+
+		return false
+	}, testTimeout, 10*time.Millisecond)
+
+	// Our own root tx spends the batch output: a parent confirmation, not a
+	// conflict. The actor should advance to requesting the target rather
+	// than failing.
+	rootTxid := proof.RootTxids()[0]
+	chainSource.emitSpendForOutpoint(t, sourceOutpoint, rootTxid, 101)
+
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(
+			proof.TargetOutpoint().Hash,
+		) == 1
+	}, testTimeout, 10*time.Millisecond)
+
+	stateResp, ok := mustAsk(
+		t, unrollActor.Ref(), &GetStateRequest{},
+	).(*GetStateResp)
+	require.True(t, ok)
+	require.NotEqual(t, PhaseFailed, stateResp.Phase)
 }
 
 // TestConfirmedNodesAdvanceToSweep verifies that node confirmations move the
