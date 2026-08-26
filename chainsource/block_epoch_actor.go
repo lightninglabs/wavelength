@@ -2,6 +2,7 @@ package chainsource
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -353,11 +354,30 @@ func (a *BlockEpochActor) monitorBlocks() {
 					),
 				)
 
+				notifyActorStopped := false
 				notifyRef := func(
 					ref actor.TellOnlyRef[BlockEpoch]) {
 
 					err := ref.Tell(a.ctx, blockEpoch)
-					if err != nil {
+					switch {
+					case errors.Is(
+						err, actor.ErrActorTerminated,
+					), errors.Is(
+						err, actor.ErrMailboxClosed,
+					):
+
+						notifyActorStopped = true
+						log.DebugS(
+							a.ctx,
+							"Block epoch notify actor "+
+								"stopped; ending subscription",
+							slog.String(
+								"notify_actor",
+								ref.ID(),
+							),
+						)
+
+					case err != nil:
 						log.WarnS(
 							a.ctx,
 							"Failed to deliver "+
@@ -367,6 +387,15 @@ func (a *BlockEpochActor) monitorBlocks() {
 					}
 				}
 				a.notifyActor.WhenSome(notifyRef)
+				if notifyActorStopped {
+					// The notify target is the owner of
+					// this actor-mode subscription. End the
+					// component-owned context when that
+					// target can no longer receive events.
+					a.cancel()
+
+					return
+				}
 			}
 
 		case <-a.ctx.Done():

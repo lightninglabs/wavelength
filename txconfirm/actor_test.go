@@ -109,6 +109,33 @@ type contextInspectNotifyRef struct {
 	msgs   []Notification
 }
 
+// stoppedNotifyRef models a subscriber that permanently rejects delivery
+// because its actor or mailbox has stopped.
+type stoppedNotifyRef struct {
+	id       string
+	err      error
+	attempts atomic.Int32
+}
+
+// ID returns the stopped subscriber ID.
+func (s *stoppedNotifyRef) ID() string {
+	return s.id
+}
+
+// Tell records an attempt and returns the configured terminal actor error.
+func (s *stoppedNotifyRef) Tell(context.Context, Notification) error {
+	s.attempts.Add(1)
+
+	return s.err
+}
+
+// TryTell uses the same immediate terminal result as Tell.
+func (s *stoppedNotifyRef) TryTell(context.Context, Notification) error {
+	s.attempts.Add(1)
+
+	return s.err
+}
+
 // newRetryNotifyRef creates a subscriber that fails the first failures calls.
 func newRetryNotifyRef(id string, failures int) *retryNotifyRef {
 	return &retryNotifyRef{
@@ -176,7 +203,8 @@ func (b *blockingNotifyRef) attemptsCount() int {
 // notification, producing a terminalNotifyResultMsg{err: nil} that the
 // actor mailbox processes via handleTerminalNotifyResult.
 type deferringNotifyRef struct {
-	id string
+	id  string
+	err error
 
 	started chan struct{}
 	release chan struct{}
@@ -202,9 +230,9 @@ func (d *deferringNotifyRef) ID() string {
 	return d.id
 }
 
-// Tell blocks until release is closed, records the notification, and
-// returns nil. ctx cancellation is intentionally ignored so the test can
-// drive the "Tell eventually succeeded" path even after the actor-side
+// Tell blocks until release is closed, then returns the configured result. A
+// successful delivery records the notification. Context cancellation is
+// intentionally ignored so the test can drive completion after the actor-side
 // notifyCtx timed out.
 func (d *deferringNotifyRef) Tell(_ context.Context, n Notification) error {
 	d.mu.Lock()
@@ -216,6 +244,9 @@ func (d *deferringNotifyRef) Tell(_ context.Context, n Notification) error {
 	})
 
 	<-d.release
+	if d.err != nil {
+		return d.err
+	}
 
 	d.mu.Lock()
 	d.msgs = append(d.msgs, n)
@@ -1131,10 +1162,10 @@ func TestTerminalNotificationsDoNotInheritCallerContext(t *testing.T) {
 
 	txid := chainhash.Hash{1}
 	finalizedSub := &contextInspectNotifyRef{id: "finalized-sub"}
-	ok := behavior.notifyOneFinalized(
+	outcome := behavior.notifyOneFinalized(
 		ctx, finalizedSub, txid, 101, 1,
 	)
-	require.True(t, ok)
+	require.Equal(t, terminalNotifyDelivered, outcome)
 
 	hasTx, ctxErr, msgs := finalizedSub.snapshot()
 	require.False(t, hasTx)
@@ -1143,8 +1174,8 @@ func TestTerminalNotificationsDoNotInheritCallerContext(t *testing.T) {
 	require.IsType(t, &TxFinalized{}, msgs[0])
 
 	failedSub := &contextInspectNotifyRef{id: "failed-sub"}
-	ok = behavior.notifyOneFailed(ctx, failedSub, txid, "boom")
-	require.True(t, ok)
+	outcome = behavior.notifyOneFailed(ctx, failedSub, txid, "boom")
+	require.Equal(t, terminalNotifyDelivered, outcome)
 
 	hasTx, ctxErr, msgs = failedSub.snapshot()
 	require.False(t, hasTx)
@@ -1183,10 +1214,10 @@ func TestTerminalNotificationTimeoutDoesNotBlockActor(t *testing.T) {
 	}()
 
 	start := time.Now()
-	ok := behavior.notifyOneFinalized(
+	outcome := behavior.notifyOneFinalized(
 		context.Background(), sub, txid, 101, 1,
 	)
-	require.False(t, ok)
+	require.Equal(t, terminalNotifyPending, outcome)
 	require.Less(t, time.Since(start), testTimeout)
 	require.True(t, <-started)
 
@@ -2047,6 +2078,61 @@ func TestEnsureConfirmedDefersToExistingParentBroadcast(t *testing.T) {
 	mustHaveNoNotification(t, sub)
 }
 
+// TestFeeBumpExistingParentLogsAtDebug verifies that a later fee bump does
+// not warn when another path already placed the parent in the mempool. The
+// original transaction remains live and the actor keeps its confirmation
+// watch, so this is an expected retry state.
+func TestFeeBumpExistingParentLogsAtDebug(t *testing.T) {
+	var buf bytes.Buffer
+	logger := btclog.NewSLogger(btclog.NewDefaultHandler(&buf))
+	logger.SetLevel(btclog.LevelTrace)
+
+	chain := newFakeChainSourceRef(100)
+	walletRef := &fakeWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXO(t),
+		},
+	}
+	ref, _ := newTestActor(t, Config{
+		ChainSource:           chain,
+		Wallet:                walletRef,
+		FeeBumpIntervalBlocks: 1,
+		Log:                   fn.Some[btclog.Logger](logger),
+	})
+
+	tx := makeTestTx(true)
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+	require.Equal(t, TxStateAwaitingConfirmation, resp.State)
+
+	chain.packageErr = errors.Join(
+		chainbackends.NewPackageTxError(
+			"W1", tx.TxHash(),
+			"txn-already-known",
+		),
+		chainbackends.NewPackageTxError(
+			"W2", chainhash.Hash{0xab},
+			"bad-txns-inputs-missingorspent",
+		),
+	)
+	chain.emitBlock(t, 101)
+
+	require.Equal(
+		t, TxStateAwaitingConfirmation,
+		mustTrackedState(
+			t, ref.Ref(), tx, sub,
+		),
+	)
+	require.NotContains(t, buf.String(), "Fee bump failed, will retry")
+	require.Contains(
+		t, buf.String(),
+		"Fee bump child rejected after parent",
+	)
+}
+
 // TestEnsureConfirmedEscalatesAfterRepeatedFailures verifies that repeated
 // total broadcast failures escalate to an operator-visible warning once the
 // configured threshold is crossed, while the tx keeps retrying and never
@@ -2170,6 +2256,152 @@ func TestEnsureConfirmedFailsPermanentBroadcastError(t *testing.T) {
 
 	failed := mustAwaitNotification(t, sub)
 	require.IsType(t, &TxFailed{}, failed)
+}
+
+// TestNotifyOneTerminalClassifiesStoppedSubscriber verifies that permanent
+// actor errors are distinct from both successful and retryable delivery.
+func TestNotifyOneTerminalClassifiesStoppedSubscriber(t *testing.T) {
+	actorBehavior := NewTxBroadcasterActor(Config{})
+	subscriber := actor.NewChannelTellOnlyRef[Notification]("stopped", 1)
+	txid := chainhash.Hash{0x01}
+
+	tests := []struct {
+		name    string
+		err     error
+		outcome terminalNotifyOutcome
+	}{
+		{
+			name:    "actor terminated",
+			err:     actor.ErrActorTerminated,
+			outcome: terminalNotifySubscriberStopped,
+		},
+		{
+			name:    "mailbox closed",
+			err:     actor.ErrMailboxClosed,
+			outcome: terminalNotifySubscriberStopped,
+		},
+		{
+			name:    "retryable delivery failure",
+			err:     actor.ErrMailboxFull,
+			outcome: terminalNotifyPending,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			outcome := actorBehavior.notifyOneTerminal(
+				t.Context(), subscriber, txid, "finalized",
+				func(context.Context) error {
+					return test.err
+				},
+			)
+			require.Equal(t, test.outcome, outcome)
+		})
+	}
+}
+
+// TestNotifyConfirmedDropsStoppedSubscriber verifies that an immediate
+// terminal actor error removes a confirmed subscriber instead of treating the
+// undelivered TxConfirmed as accepted and retaining the dead lifecycle tail.
+func TestNotifyConfirmedDropsStoppedSubscriber(t *testing.T) {
+	tx := makeTestTx(false)
+	txid := tx.TxHash()
+	entry := newTrackedTxForState(t, &trackedTxStateConfirmed{
+		trackedTxData: trackedTxData{
+			Tx:          tx,
+			Txid:        txid,
+			TargetConfs: 1,
+		},
+		ConfirmHeight: 101,
+	})
+
+	stopped := &stoppedNotifyRef{
+		id:  "stopped",
+		err: actor.ErrActorTerminated,
+	}
+	live := actor.NewChannelTellOnlyRef[Notification]("live", 1)
+	entry.subscribers[stopped.ID()] = trackedSubscriber{
+		Ref:              stopped,
+		pendingConfirmed: true,
+	}
+	entry.subscribers[live.ID()] = trackedSubscriber{
+		Ref:              live,
+		pendingConfirmed: true,
+	}
+
+	behavior := NewTxBroadcasterActor(Config{})
+	behavior.tracked[txid] = entry
+	behavior.notifyConfirmed(
+		t.Context(), entry, 101, chainhash.Hash{1}, 1,
+	)
+
+	require.Equal(t, int32(1), stopped.attempts.Load())
+	require.NotContains(t, entry.subscribers, stopped.ID())
+	require.Contains(t, entry.subscribers, live.ID())
+	require.False(t, entry.subscribers[live.ID()].pendingConfirmed)
+	require.IsType(t, &TxConfirmed{}, mustAwaitNotification(t, live))
+}
+
+// TestDeferredStoppedSubscriberIsRemoved verifies that a terminal actor error
+// arriving after the synchronous delivery budget removes the dead subscriber
+// when the deferred result returns through the txconfirm mailbox.
+func TestDeferredStoppedSubscriberIsRemoved(t *testing.T) {
+	oldTimeout := terminalNotifyTimeout
+	terminalNotifyTimeout = 20 * time.Millisecond
+	t.Cleanup(func() {
+		terminalNotifyTimeout = oldTimeout
+	})
+
+	tx := makeTestTx(false)
+	txid := tx.TxHash()
+	entry := newTrackedTxForState(t, &trackedTxStateConfirmed{
+		trackedTxData: trackedTxData{
+			Tx:          tx,
+			Txid:        txid,
+			TargetConfs: 1,
+		},
+		ConfirmHeight: 101,
+	})
+
+	stopped := newDeferringNotifyRef("async-stopped")
+	stopped.err = actor.ErrActorTerminated
+	live := actor.NewChannelTellOnlyRef[Notification]("live", 1)
+	entry.subscribers[stopped.ID()] = trackedSubscriber{
+		Ref:              stopped,
+		pendingConfirmed: true,
+	}
+	entry.subscribers[live.ID()] = trackedSubscriber{
+		Ref:              live,
+		pendingConfirmed: false,
+	}
+
+	behavior := NewTxBroadcasterActor(Config{})
+	selfRef := actor.NewChannelTellOnlyRef[Msg]("txconfirm", 1)
+	behavior.SetSelfRef(selfRef)
+	behavior.tracked[txid] = entry
+
+	outcome := behavior.notifyOneConfirmed(
+		t.Context(), stopped, txid, &TxConfirmed{
+			Txid:        txid,
+			BlockHeight: 101,
+			NumConfs:    1,
+		},
+	)
+	require.Equal(t, terminalNotifyPending, outcome)
+	stopped.waitStarted(t)
+	stopped.releaseTell()
+
+	msg, ok := selfRef.AwaitMessage(testTimeout)
+	require.True(t, ok, "expected deferred terminal result")
+	result, ok := msg.(*terminalNotifyResultMsg)
+	require.True(t, ok)
+	require.ErrorIs(t, result.err, actor.ErrActorTerminated)
+
+	behavior.handleTerminalNotifyResult(t.Context(), result)
+	require.NotContains(t, entry.subscribers, stopped.ID())
+	require.Contains(t, entry.subscribers, live.ID())
+	_, inflight := behavior.terminalNotifyInflight[result.inflightKey]
+	require.False(t, inflight)
 }
 
 // TestInitialConfirmedAsyncDeliveryRetainsSubscriber regression-tests an
