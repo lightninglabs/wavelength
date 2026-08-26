@@ -627,6 +627,12 @@ func (s *Service) fetchBalance(ctx context.Context) (
 		},
 	)
 	if err != nil {
+		s.deps.resolveLog().WarnS(
+			ctx,
+			"Credit balance enrichment skipped",
+			err,
+		)
+
 		return resp, nil
 	}
 
