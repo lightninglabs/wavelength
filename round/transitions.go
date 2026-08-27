@@ -918,8 +918,9 @@ func (s *IntentSentState) processEvent(ctx context.Context, event ClientEvent,
 		timeoutErr := fmt.Errorf("server did not acknowledge join " +
 			"request before registration timeout")
 
-		env.Log.WarnS(ctx, "Round admission timed out; failing round "+
-			"and releasing forfeit reservation", timeoutErr,
+		env.Log.InfoS(ctx, "Round admission timed out; failing round "+
+			"and releasing forfeit reservation",
+			slog.Any("err", timeoutErr),
 			slog.Int("forfeit_count", len(s.Intents.Forfeits)),
 		)
 

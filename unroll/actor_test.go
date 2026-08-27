@@ -1832,6 +1832,42 @@ func TestProofNodeHeightHintFallsBackWithoutCommitmentHeight(t *testing.T) {
 	require.Equal(t, startHeight-proofNodeHeightHintLookback, hint)
 }
 
+// TestProofNodeHeightHintWarnsOncePerActor verifies an old VTXO without a
+// commitment height emits one operator warning even when several proof-node
+// watches ask for the same fallback floor.
+func TestProofNodeHeightHintWarnsOncePerActor(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 1
+
+	var buf bytes.Buffer
+	logger := btclog.NewSLogger(btclog.NewDefaultHandler(&buf))
+	logger.SetLevel(btclog.LevelInfo)
+
+	const startHeight uint32 = 850_000
+
+	unrollActor, behavior, _, _ := newActorHarness(t, proof, desc)
+	behavior.log = logger
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  int32(startHeight),
+		Trigger: TriggerManual,
+	})
+
+	behavior.proofNodeConfHeightHint(t.Context(), chainhash.Hash{1})
+	behavior.proofNodeConfHeightHint(t.Context(), chainhash.Hash{2})
+
+	require.Equal(
+		t, 1,
+		bytes.Count(
+			buf.Bytes(), []byte(
+				"Proof-node confirmation floor may exceed "+
+					"ancestor height",
+			),
+		),
+	)
+}
+
 // TestFraudTriggerDefersReadyCheckpoint verifies fraud-triggered recovery
 // watches a ready checkpoint before asking txconfirm to broadcast it.
 func TestFraudTriggerDefersReadyCheckpoint(t *testing.T) {

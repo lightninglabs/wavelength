@@ -910,8 +910,7 @@ func (m *Manager) handleVTXOCreated(ctx context.Context,
 		outpoint := clientVTXO.Outpoint
 
 		if _, exists := m.actors[outpoint]; exists {
-			m.logger(ctx).WarnS(ctx, "VTXO actor already exists",
-				nil,
+			m.logger(ctx).DebugS(ctx, "VTXO actor already exists",
 				slog.String("outpoint", outpoint.String()),
 			)
 
@@ -972,8 +971,7 @@ func (m *Manager) handleVTXOsMaterialized(ctx context.Context,
 
 		outpoint := descriptor.Outpoint
 		if _, exists := m.actors[outpoint]; exists {
-			m.logger(ctx).WarnS(ctx, "VTXO actor already exists",
-				nil,
+			m.logger(ctx).DebugS(ctx, "VTXO actor already exists",
 				slog.String("outpoint", outpoint.String()),
 			)
 
