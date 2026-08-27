@@ -62,6 +62,11 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 
 	var failCount int
 
+	// pullFailCount scopes alert suppression to one remote pull outage.
+	// failCount is shared by every transport and checkpoint backoff, so it
+	// cannot identify whether a pull failure is the first in its episode.
+	var pullFailCount int
+
 	// When the delivery store supports transactions, each pulled batch is
 	// dispatched and checkpointed in ONE write transaction below. The
 	// ack watermark then rides along with the next dispatch checkpoint
@@ -116,7 +121,7 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 
 		// Step 2: Pull a batch of envelopes from the remote mailbox.
 		envelopes, nextCursor, exit, retry := a.pullPhase(
-			ctx, &state, &ackDirty, &failCount,
+			ctx, &state, &ackDirty, &failCount, &pullFailCount,
 		)
 		if exit {
 			return
@@ -392,15 +397,16 @@ func (a *ServerConnectionActor) ackPhase(ctx context.Context, state *AckState,
 
 // pullPhase pulls the next batch of envelopes from the remote mailbox and
 // absorbs the two outcomes that are not a batch to dispatch: a failed pull and
-// an empty long-poll. It mutates state, ackDirty and failCount in place and
-// returns (envelopes, nextCursor, exit, retry) on the same convention as
-// ackPhase — exit is true when the loop must stop (local shutdown or a
-// permanent version error), and retry is true when the caller should continue
-// without dispatching. Both booleans are false only when envelopes holds a
-// non-empty batch, and any backoff a retry needs has already been slept here.
+// an empty long-poll. It mutates state, ackDirty, the shared backoff counter,
+// and the pull-only failure counter in place. It returns (envelopes,
+// nextCursor, exit, retry) on the same convention as ackPhase — exit is true
+// when the loop must stop (local shutdown or a permanent version error), and
+// retry is true when the caller should continue without dispatching. Both
+// booleans are false only when envelopes holds a non-empty batch, and any
+// backoff a retry needs has already been slept here.
 func (a *ServerConnectionActor) pullPhase(ctx context.Context, state *AckState,
-	ackDirty *bool, failCount *int) ([]*mailboxpb.Envelope, uint64, bool,
-	bool) {
+	ackDirty *bool, failCount, pullFailCount *int) ([]*mailboxpb.Envelope,
+	uint64, bool, bool) {
 
 	envelopes, nextCursor, err := a.pullBatch(ctx, state.PullCursor)
 	if err != nil {
@@ -416,15 +422,28 @@ func (a *ServerConnectionActor) pullPhase(ctx context.Context, state *AckState,
 			return nil, 0, true, false
 		}
 
-		a.log.WarnS(ctx, "Pull failed, retrying",
-			err,
-			slog.Uint64("cursor", state.PullCursor),
-		)
+		if *pullFailCount == 0 {
+			a.log.WarnS(ctx, "Pull failed, retrying",
+				err,
+				slog.Uint64("cursor", state.PullCursor),
+			)
+		} else {
+			a.log.DebugS(ctx, "Pull retry failed",
+				slog.Any("err", err),
+				slog.Uint64("cursor", state.PullCursor),
+				slog.Int(
+					"consecutive_failures",
+					*pullFailCount+1,
+				),
+			)
+		}
 
+		*pullFailCount++
 		a.sleepBackoff(ctx, failCount)
 
 		return nil, 0, false, true
 	}
+	*pullFailCount = 0
 
 	// The pull returned, so the one goroutine that consumes the remote
 	// mailbox is still running its loop. Stamping here rather than after
