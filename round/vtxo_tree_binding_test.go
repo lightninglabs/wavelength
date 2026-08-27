@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/tree"
@@ -254,6 +255,41 @@ func TestConfirmationWatchScriptUsesBatchOutput(t *testing.T) {
 	watch := confirmationWatchScript(tx, trees)
 	require.Equal(t, batchScript, watch)
 	require.NotEqual(t, fillerScript, watch)
+
+	// The real FSM outbox must carry the same validated script and
+	// operator confirmation target. This is the sole steady-state watch;
+	// restart recovery independently rebuilds the same parameters.
+	packet, err := psbt.NewFromUnsignedTx(tx)
+	require.NoError(t, err)
+	state := &ForfeitSignaturesCollectingState{
+		RoundID:       testRoundIDTr("nonzero-batch-output"),
+		CommitmentTx:  packet,
+		VTXOTreePaths: trees,
+	}
+	const targetConfs = 6
+	const startHeight = 123
+	outbox := state.forfeitCollectionOutbox(
+		&ClientEnvironment{
+			OperatorTerms: &types.OperatorTerms{
+				MinConfirmations: targetConfs,
+			},
+			StartHeight: startHeight,
+		},
+		nil, nil,
+	)
+
+	var registration *RegisterConfirmationRequest
+	for _, msg := range outbox {
+		if request, ok := msg.(*RegisterConfirmationRequest); ok {
+			registration = request
+			break
+		}
+	}
+	require.NotNil(t, registration)
+	require.Equal(t, batchScript, registration.PkScript)
+	require.Equal(t, uint32(targetConfs), registration.TargetConfs)
+	require.Equal(t, uint32(startHeight), registration.HeightHint)
+	require.True(t, registration.Txid.IsEqual(&txid))
 }
 
 // TestCommitmentTxReceivedRejectsUnboundTree confirms the binding is wired into
