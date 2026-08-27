@@ -2,6 +2,7 @@ package round
 
 import (
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
@@ -265,6 +266,11 @@ func TestConfirmationWatchScriptUsesBatchOutput(t *testing.T) {
 		RoundID:       testRoundIDTr("nonzero-batch-output"),
 		CommitmentTx:  packet,
 		VTXOTreePaths: trees,
+		Intents: Intents{
+			Forfeits: []types.ForfeitRequest{
+				{},
+			},
+		},
 	}
 	const targetConfs = 6
 	const startHeight = 123
@@ -273,19 +279,23 @@ func TestConfirmationWatchScriptUsesBatchOutput(t *testing.T) {
 			OperatorTerms: &types.OperatorTerms{
 				MinConfirmations: targetConfs,
 			},
-			StartHeight: startHeight,
+			StartHeight:            startHeight,
+			StatusReconcileTimeout: time.Minute,
 		},
-		nil, nil,
+		nil, []*types.BoardingInputSignature{{}},
 	)
 
-	var registration *RegisterConfirmationRequest
-	for _, msg := range outbox {
-		if request, ok := msg.(*RegisterConfirmationRequest); ok {
-			registration = request
-			break
-		}
-	}
-	require.NotNil(t, registration)
+	// Keep the timeout ahead of every fallible effect while preserving the
+	// server submission order: VTXO forfeits, boarding signatures, and then
+	// chain registration. This must not depend on an insertion index whose
+	// meaning changes when another outbox message is added.
+	require.Len(t, outbox, 5)
+	require.IsType(t, &CancelTimeoutReq{}, outbox[0])
+	require.IsType(t, &StartTimeoutReq{}, outbox[1])
+	require.IsType(t, &SubmitVTXOForfeitSigsToServer{}, outbox[2])
+	require.IsType(t, &SubmitForfeitSigRequest{}, outbox[3])
+	registration, ok := outbox[4].(*RegisterConfirmationRequest)
+	require.True(t, ok)
 	require.Equal(t, batchScript, registration.PkScript)
 	require.Equal(t, uint32(targetConfs), registration.TargetConfs)
 	require.Equal(t, uint32(startHeight), registration.HeightHint)
