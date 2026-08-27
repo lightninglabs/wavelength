@@ -23,6 +23,27 @@ validated invariants.
   Provides `CollabSpendInfo()` and `ExitSpendInfo()`.
 - `VHTLCPolicy` — 6-leaf vHTLC policy with claim/refund/unilateral paths for
   hash-time-locked conditional transfers.
+- `VHTLCTiming` — the four block-based constraints in a vHTLC policy
+  (`RefundLocktime`, `UnilateralClaimDelay`, `UnilateralRefundDelay`,
+  `UnilateralRefundWithoutReceiverDelay`), projected from a live policy via
+  `VHTLCOpts.Timing()` or recovered from a persisted template via
+  `DecodeVHTLCTiming`. Two checks hang off it:
+  - `ValidateOrder()` — structural only. Rejects a tuple whose branches drop
+    cooperation requirements out of order (claim delay ≤ refund delay ≤
+    refund-without-receiver delay).
+  - `ValidateClaimWindow(VHTLCClaimWindow)` — chain-relative. Requires the
+    remaining `RefundLocktime - CurrentHeight` budget to strictly exceed
+    `ExitAncestryDelay + UnilateralClaimDelay + RecoveryMargin`, so a receiver
+    can publish the exit ancestry, wait out its own claim CSV, and still keep
+    margin before the sender/operator refund branch opens.
+- `VHTLCClaimWindow` — caller-supplied chain budget for
+  `ValidateClaimWindow`: `CurrentHeight`, `ExitAncestryDelay`,
+  `RecoveryMargin`.
+- `DecodeVHTLCTiming(*PolicyTemplate)` — recognizes the canonical six-leaf
+  vHTLC semantic shape and returns its timing tuple. Binds all six branches to
+  one sender/receiver/operator key set, payment hash, and refund locktime;
+  any other custom policy shape is rejected so vHTLC assumptions cannot be
+  applied to it.
 - `CheckpointPolicy` — Parameters for OOR checkpoint taproot tree construction. `CheckpointTapScript` / `CheckpointPkScript` derive the checkpoint output.
 - `SpendInfo` — Witness script + control block needed to spend a specific leaf. Methods: `BuildSignDescriptor`, `CollabWitness`, `TimeoutWitness`.
 - `SpendPath` — Serializable spend path (leaf index + encoded leaf data) with `Witness` and `AttachTapLeafScript` helpers for PSBT integration.
@@ -95,6 +116,18 @@ validated invariants.
   (collaborative) and at least one non-operator leaf (exit/unilateral).
 - Exit delay must be >= `MinExitDelay` when `ValidateStandardVTXOPolicy` is
   used; `ValidatePolicy` with `MinExitDelay = 0` skips this check.
+- **Policy construction does not validate timing.** `NewVHTLCPolicy` compiles
+  whatever timing tuple it is given; suitability depends on the lifecycle
+  boundary and the current chain height, which the compiler does not know.
+  Callers *admitting* a new policy must call `VHTLCTiming.ValidateOrder` or
+  `ValidateClaimWindow` themselves. This separation is deliberate: an
+  already-funded policy must still be reconstructible (and therefore
+  spendable) even once its remaining timing window is no longer admissible —
+  refusing to rebuild it would strand funds rather than protect them.
+- `DecodeVHTLCTiming` reports the committed script exactly and applies no
+  policy judgement. Admission callers layer `ValidateOrder` /
+  `ValidateClaimWindow` on top; recovery callers deliberately do not, so a
+  legacy on-chain policy can still be reconstructed.
 - Decode budget: policy template decode caps at `MaxPolicyTemplateBytes` /
   `MaxPolicyLeaves` / `MaxPolicyDepth` / `MaxPolicyNodes`; a single budget is
   shared across all leaves of one policy so an adversary cannot multiply work by
