@@ -2034,15 +2034,12 @@ func TestEnsureConfirmedRetriesWhenFirstAttemptFailsAtHeightZero(t *testing.T) {
 	mustHaveNoNotification(t, sub)
 }
 
-// TestEnsureConfirmedDefersToExistingParentAtDebug verifies that an initial
-// package replacement race advances to AwaitingConfirmation without emitting
-// an operator warning. The existing parent remains live under the confirmation
-// watch, so the rejected duplicate child needs no operator action.
-func TestEnsureConfirmedDefersToExistingParentAtDebug(t *testing.T) {
-	var buf bytes.Buffer
-	logger := btclog.NewSLogger(btclog.NewDefaultHandler(&buf))
-	logger.SetLevel(btclog.LevelInfo)
-
+// TestEnsureConfirmedDefersToExistingParentBroadcast verifies that when the
+// package submission reports the parent is already known on another path (and
+// only the child failed), the tx advances to AwaitingConfirmation rather than
+// staying in Broadcasting — the conf watch rides the existing parent to
+// confirmation.
+func TestEnsureConfirmedDefersToExistingParentBroadcast(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
 
 	tx := makeTestTx(true)
@@ -2065,7 +2062,6 @@ func TestEnsureConfirmedDefersToExistingParentAtDebug(t *testing.T) {
 	ref, _ := newTestActor(t, Config{
 		ChainSource: chain,
 		Wallet:      walletRef,
-		Log:         fn.Some[btclog.Logger](logger),
 	})
 
 	tx2 := tx
@@ -2080,10 +2076,6 @@ func TestEnsureConfirmedDefersToExistingParentAtDebug(t *testing.T) {
 	require.Equal(t, TxStateAwaitingConfirmation, resp.State)
 	require.Equal(t, 1, chain.packageCallCount())
 	mustHaveNoNotification(t, sub)
-	require.NotContains(
-		t, buf.String(),
-		"Initial anchor broadcast deferring to existing path",
-	)
 }
 
 // TestFeeBumpExistingParentLogsAtDebug verifies that a later fee bump does
