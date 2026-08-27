@@ -231,11 +231,12 @@ func (a *UnrollRegistryActor) Stop() {
 // NewUnrollRegistryActor creates and starts the thin unroll registry actor.
 func NewUnrollRegistryActor(cfg RegistryConfig) *UnrollRegistryActor {
 	behavior := &registryBehavior{
-		cfg:        cfg,
-		log:        cfg.Log.UnwrapOr(btclog.Disabled),
-		active:     make(map[wire.OutPoint]*VTXOUnrollActor),
-		pending:    make(map[wire.OutPoint]RegistryRecord),
-		persisting: make(map[wire.OutPoint]RegistryRecord),
+		cfg:                  cfg,
+		log:                  cfg.Log.UnwrapOr(btclog.Disabled),
+		active:               make(map[wire.OutPoint]*VTXOUnrollActor),
+		pending:              make(map[wire.OutPoint]RegistryRecord),
+		persisting:           make(map[wire.OutPoint]RegistryRecord),
+		proofNodeFloorAlerts: newProofNodeFloorAlertDeduper(),
 	}
 
 	registry := actor.NewActor(actor.ActorConfig[RegistryMsg, RegistryResp]{
@@ -263,6 +264,8 @@ type registryBehavior struct {
 	active     map[wire.OutPoint]*VTXOUnrollActor
 	pending    map[wire.OutPoint]RegistryRecord
 	persisting map[wire.OutPoint]RegistryRecord
+
+	proofNodeFloorAlerts *proofNodeFloorAlertDeduper
 
 	spawnFunc func(context.Context, wire.OutPoint) (*VTXOUnrollActor, error)
 }
@@ -1489,6 +1492,7 @@ func (r *registryBehavior) childConfig(target wire.OutPoint) Config {
 		ExitSpendPolicyResolver:     r.cfg.ExitSpendPolicyResolver,
 		FraudCheckpointSafetyMargin: r.cfg.FraudCheckpointSafetyMargin,
 		RegistryRef:                 r.selfRef,
+		proofNodeFloorAlerts:        r.proofNodeFloorAlerts,
 	}
 }
 

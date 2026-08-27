@@ -185,7 +185,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   fallback anchors to tip minus a lookback (never `CreatedHeight`), bounding
   the neutrino historical rescan instead of scanning to genesis
   (wavelength#884). The fallback path warns when the VTXO's age exceeds the
-  lookback (the floor may then miss an already-confirmed ancestor).
+  lookback (the floor may then miss an already-confirmed ancestor). One
+  process-local `proofNodeFloorAlertDeduper` is shared by every child of an
+  unroll registry, so targets with the same proof ancestor produce one warning
+  per proof transaction and process lifetime. That warning carries the first
+  affected target's outpoint, age, and creation height. A Debug record retains
+  the same evidence for every target. A restart creates a new deduper and
+  warns again if the condition persists.
 
 ## Relationships
 
