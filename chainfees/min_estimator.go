@@ -94,9 +94,13 @@ func (e *MinEstimator) EstimateFeePerKW(confTarget uint32) (
 		}
 
 		if rate < chainfee.FeePerKwFloor {
-			e.log.InfoS(context.Background(),
+			err := fmt.Errorf("fee provider %s returned %d sat/kw "+
+				"below relay floor %d sat/kw", child.Name, rate,
+				chainfee.FeePerKwFloor)
+			e.log.WarnS(context.Background(),
 				"Fee provider returned sub-floor rate; "+
 					"clamping",
+				err,
 				slog.String("provider", child.Name),
 				slog.Int64("raw_sat_kw", int64(rate)),
 				slog.Int64(
