@@ -2333,8 +2333,10 @@ func (a *RoundClientActor) handleGetState(ctx context.Context,
 	for keyStr, roundFSM := range a.rounds {
 		roundState, err := fsmState(scanCtx, roundFSM.FSM)
 		if err != nil {
-			a.log.WarnS(ctx, "Failed to get FSM state for round",
-				err,
+			a.log.DebugS(
+				ctx,
+				"Skipped round with unreadable FSM state",
+				slog.Any("err", err),
 				slog.String("key", string(keyStr)),
 			)
 
