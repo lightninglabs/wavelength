@@ -693,9 +693,9 @@ func (a *TxBroadcasterActor) recordInitialBroadcastOutcome(ctx context.Context,
 	case errors.Is(err, ErrParentAlreadyBroadcast):
 		// A live parent exists on another path, so the conf watch can
 		// ride to confirmation. Advance to AwaitingConfirmation.
-		a.log.WarnS(ctx,
+		a.log.DebugS(ctx,
 			"Initial anchor broadcast deferring to existing path",
-			err, "txid", entry.data.Txid,
+			"txid", entry.data.Txid, slog.Any("err", err),
 		)
 
 		_ = a.advanceTrackedTxFSM(
