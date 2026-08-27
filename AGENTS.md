@@ -35,7 +35,10 @@ This file is a **map**, not a manual. Follow links for details.
 - Function **definitions**: first param on same line, closing `)` with last param.
 - Structured logging: use `InfoS`/`DebugS`/etc. with static messages and
   `slog.Int()`/`btclog.Fmt()` key-value pairs. See [`docs/structured-logging.md`](docs/structured-logging.md).
-- `error` log level is **only** for internal bugs, never external triggers.
+- Production `Warn`, `Error`, and `Critical` logs alert a human. Use them
+  only when the event is actionable at that severity. Expected client input,
+  policy rejection, safe fallback, and repeated retry noise belong at
+  `Info`/`Debug` ([`docs/structured-logging.md`](docs/structured-logging.md)).
 
 Full style guide with examples: [`docs/development_guidelines.md`](docs/development_guidelines.md)
 

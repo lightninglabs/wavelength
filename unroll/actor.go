@@ -156,6 +156,7 @@ type behavior struct {
 	blockSubActive             bool
 	spendWatchActive           bool
 	proofSpendWatches          map[wire.OutPoint]struct{}
+	proofNodeFloorWarned       bool
 	terminalNotified           bool
 	exitCostNotified           bool
 	abandonedBroadcastsRemoved bool
@@ -858,9 +859,12 @@ func (b *behavior) proofNodeConfHeightHint(ctx context.Context,
 	// confirmation height. Once the VTXO's age reaches the lookback the
 	// floor sits at or above it, so an ancestor that confirmed earlier can
 	// escape the rescan window.
-	if b.desc != nil && b.desc.CreatedHeight > 0 {
+	if !b.proofNodeFloorWarned && b.desc != nil &&
+		b.desc.CreatedHeight > 0 {
+
 		age := int64(currentHeight) - int64(b.desc.CreatedHeight)
 		if age >= int64(proofNodeHeightHintLookback) {
+			b.proofNodeFloorWarned = true
 			b.log.WarnS(ctx, "Proof-node confirmation floor may "+
 				"exceed ancestor height; exit could stall",
 				nil,
