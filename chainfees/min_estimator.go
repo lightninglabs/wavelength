@@ -94,13 +94,15 @@ func (e *MinEstimator) EstimateFeePerKW(confTarget uint32) (
 		}
 
 		if rate < chainfee.FeePerKwFloor {
-			e.log.WarnS(context.Background(),
+			e.log.InfoS(context.Background(),
 				"Fee provider returned sub-floor rate; "+
 					"clamping",
-				fmt.Errorf("rate %d below floor %d", rate,
-					chainfee.FeePerKwFloor),
 				slog.String("provider", child.Name),
 				slog.Int64("raw_sat_kw", int64(rate)),
+				slog.Int64(
+					"floor_sat_kw",
+					int64(chainfee.FeePerKwFloor),
+				),
 			)
 			rate = chainfee.FeePerKwFloor
 		}
