@@ -163,6 +163,24 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   wallet leases), and deletes the tracked-tx entry. Late callers
   after eviction re-register from scratch and receive an immediate
   `TxConfirmed` via the normal path if the tx is already on chain.
+- **A stopped subscriber is dropped, not retried.** Terminal delivery is
+  three-valued (`terminalNotifyOutcome`: `Pending` / `Delivered` /
+  `SubscriberStopped`), not a bool. A `Tell` failing with
+  `actor.ErrActorTerminated` or `actor.ErrMailboxClosed` can never succeed,
+  so the subscriber is removed immediately rather than being retained for the
+  reorg-aware `TxReorged` / `TxFinalized` tail — otherwise a dead subscriber
+  keeps a confirmed entry (and its fee-input reservations and wallet leases)
+  alive forever while `retryLifecycleNotifications` re-warns every tick. On
+  the confirmed path, removal goes through `handleCancel`, so a dead *final*
+  subscriber also releases the entry's resources. Only `Pending` — a
+  transient failure or a delivery still running on the bounded async path —
+  keeps `pendingConfirmed` set for the next tick. The same split applies on
+  the deferred `handleTerminalNotifyResult` path, where a post-timeout stop
+  is logged at debug and cancelled rather than warned.
+- **Attach never inserts a dead subscriber**: `attachExistingSubscriber` only
+  writes the subscriber into `entry.subscribers` on `Delivered` or `Pending`.
+  On `SubscriberStopped` there is no tracked interest to unwind, because it
+  was never recorded.
 
 ## Deep Docs
 

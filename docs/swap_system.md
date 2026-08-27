@@ -470,6 +470,28 @@ production default is conservative:
   manual escalation months later cannot quietly spend at a looser rate than the
   client originally consented to.
 
+The same policy also supplies the *admission* budget, one lifecycle stage
+earlier. Before a receiver accepts a proposed vHTLC at all,
+`validateReceiveClaimWindow` asks
+[`arkscript.VHTLCTiming.ValidateClaimWindow`](../lib/arkscript/vhtlc_timing.go)
+whether the remaining `RefundLocktime - height` budget strictly exceeds
+`ExitAncestryDelayBlocks` (72 — confirming the vHTLC's commitment-tree and OOR
+ancestry) plus the vHTLC's own `UnilateralClaimDelay` plus
+`MinRecoveryMarginBlocks` (12). A vHTLC that fails this check could be accepted
+and then discovered, too late, to have no room for the on-chain rung described
+above — so it is rejected up front rather than armed and escalated into a
+window that was never wide enough.
+
+Two exceptions keep that check from destroying value. A backend that cannot
+answer `BlockHeight` yields a *retryable* error, never a terminal one — an
+unreachable node is not a bad vHTLC. And a **legacy direct-p2p in-Ark** event
+describes a vHTLC the sender has *already funded*: refusing it cannot undo the
+exposure, and would forfeit a cooperative claim that is still available, so the
+session logs `Receive vHTLC has limited recovery window` and proceeds.
+Credit-shaped in-Ark events and Lightning out-swap events both fail closed,
+because in those flows the rejection lands before the acknowledgement that
+triggers server-side funding.
+
 ### 5.6 The recovery row's life, and how cooperation cancels it
 
 A recovery row moves through a small state machine: it starts **ARMED**

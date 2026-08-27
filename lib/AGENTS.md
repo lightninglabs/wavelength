@@ -16,6 +16,9 @@ message interfaces, and core Ark types.
 ### lib/arkscript
 - `Node` — Sealed AST interface for tapscript spending conditions (Multisig, CSV, Condition, etc.).
 - `VTXOPolicy` / `VHTLCPolicy` / `CheckpointPolicy` — High-level policy templates.
+- `VHTLCTiming` / `VHTLCClaimWindow` — Shared vHTLC block-timing model with
+  `ValidateOrder` (structural) and `ValidateClaimWindow` (chain-relative)
+  admission checks; `DecodeVHTLCTiming` recovers the tuple from a template.
 - `CompiledPolicy` — Fully compiled taproot tree with canonical leaf ordering.
 - `PolicyTemplate` / `StandardVTXOParams` — Serializable policy template with helpers for encoding, decoding, and deriving pkScripts.
 - `SpendInfo` / `AnchorPkScript` — Taproot spend helpers and standardized P2A anchor output construction.
