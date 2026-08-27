@@ -82,10 +82,10 @@ func (e *MinEstimator) EstimateFeePerKW(confTarget uint32) (
 		rate, err := child.Estimator.EstimateFeePerKW(confTarget)
 		if err != nil {
 			lastErr = err
-			e.log.WarnS(
+			e.log.InfoS(
 				context.Background(),
 				"Fee provider estimate failed",
-				err,
+				slog.Any("err", err),
 				slog.String("provider", child.Name),
 				slog.Uint64("conf_target", uint64(confTarget)),
 			)
