@@ -56,11 +56,22 @@ type Config struct {
 	// scenarios where previously derived keys must be rediscovered.
 	RecoveryWindow uint32
 
-	// DBDir is the directory for btcwallet's bbolt database. The
+	// DBDir is the directory for btcwallet's wallet database. The
 	// caller owns the lifecycle of this directory: for tests a temp
 	// directory can be created and cleaned up after the wallet stops,
 	// while production callers may use a persistent path.
 	DBDir string
+
+	// DBBackend selects the database engine btcwallet's wallet
+	// database (seed, key state and transaction store) is kept in,
+	// one of DBBackendBolt or DBBackendSQLite. An empty value
+	// resolves to DBBackendBolt. Both backends keep their database
+	// under DBDir, under a backend-specific file name.
+	//
+	// Browser builds ignore the field: there the store is always the
+	// OPFS-backed SQLite database, because BoltDB cannot be used
+	// under js/wasm at all.
+	DBBackend string
 
 	// Log is an optional logger for the wallet and all its sub-components
 	// (chain service, chain backend, boarding backend, Esplora client). If
