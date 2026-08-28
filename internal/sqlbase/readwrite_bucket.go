@@ -84,7 +84,7 @@ func (b *readWriteBucket) Get(key []byte) []byte {
 	err := row.Scan(&value)
 
 	switch {
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 		return nil
 
 	case err != nil:
@@ -137,7 +137,7 @@ func (b *readWriteBucket) NestedReadWriteBucket(
 	err := row.Scan(&id)
 
 	switch {
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 		return nil
 
 	case err != nil:
@@ -173,7 +173,7 @@ func (b *readWriteBucket) CreateBucket(key []byte) (walletdb.ReadWriteBucket,
 	err := row.Scan(&id, &value)
 
 	switch {
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 	case err == nil && value == nil:
 		return nil, walletdb.ErrBucketExists
 
@@ -229,7 +229,7 @@ func (b *readWriteBucket) CreateBucketIfNotExists(key []byte) (
 	switch {
 	// Bucket does not yet exist, so create it now. Postgres will generate a
 	// bucket id for the new bucket.
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 		row, cancel := b.tx.QueryRow(
 			"INSERT INTO "+b.table+" (parent_id, key) "+
 				"VALUES($1, $2) RETURNING id",
@@ -365,7 +365,7 @@ func (b *readWriteBucket) Delete(key []byte) error {
 	err := row.Scan(&dummy)
 	switch {
 	// No bucket exists, proceed to deletion of the key.
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
 		return err
 
@@ -447,7 +447,7 @@ func (b *readWriteBucket) Sequence() uint64 {
 	err := row.Scan(&seq)
 
 	switch {
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 		return 0
 
 	case err != nil:

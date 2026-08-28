@@ -77,6 +77,8 @@ type db struct {
 	//
 	// TODO: This is an anti-pattern that is in place until the kvdb
 	// interface supports a context.
+	//
+	//nolint:containedctx
 	ctx context.Context
 
 	// db is the underlying database connection instance.
@@ -163,11 +165,6 @@ func (db *db) getTimeoutCtx() (context.Context, func()) {
 	return context.WithTimeout(db.ctx, db.cfg.Timeout)
 }
 
-// getPrefixedTableName returns a table name for this prefix (namespace).
-func (db *db) getPrefixedTableName(table string) string {
-	return fmt.Sprintf("%s_%s", db.prefix, table)
-}
-
 // catchPanic executes the specified function. If a panic occurs, it is returned
 // as an error value.
 func catchPanic(f func() error) (err error) {
@@ -208,9 +205,11 @@ func catchPanic(f func() error) (err error) {
 // expect retries of the f closure (depending on the database backend used), the
 // reset function will be called before each retry respectively.
 func (db *db) View(f func(tx walletdb.ReadTx) error, reset func()) error {
+	// walletdb.ReadWriteTx embeds walletdb.ReadTx, so the read-write
+	// transaction satisfies the read-only callback as-is.
 	return db.executeTransaction(
 		func(tx walletdb.ReadWriteTx) error {
-			return f(tx.(walletdb.ReadTx))
+			return f(tx)
 		},
 		reset, true,
 	)
@@ -245,6 +244,7 @@ func (db *db) executeTransaction(f func(tx walletdb.ReadWriteTx) error,
 		}
 
 		reset()
+
 		return catchPanic(func() error { return f(kvTx) })
 	}
 
