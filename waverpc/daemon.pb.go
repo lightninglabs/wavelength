@@ -207,8 +207,9 @@ const (
 	// VTXO_EXPIRY_STATUS_NEEDS_REFRESH indicates the VTXO has entered the
 	// cooperative refresh window but is not yet critical.
 	VTXOExpiryStatus_VTXO_EXPIRY_STATUS_NEEDS_REFRESH VTXOExpiryStatus = 2
-	// VTXO_EXPIRY_STATUS_CRITICAL indicates the VTXO should stop waiting for
-	// cooperative refresh and move to unilateral exit/recovery handling.
+	// VTXO_EXPIRY_STATUS_CRITICAL indicates the unilateral time budget is
+	// active. Automatic handling assesses package viability before choosing
+	// unilateral exit or continued cooperative refresh.
 	VTXOExpiryStatus_VTXO_EXPIRY_STATUS_CRITICAL VTXOExpiryStatus = 3
 	// VTXO_EXPIRY_STATUS_EXPIRED indicates the VTXO's batch expiry has
 	// passed.
