@@ -4,6 +4,7 @@ package sqlbase
 
 import (
 	"database/sql"
+	"errors"
 
 	"github.com/btcsuite/btcwallet/walletdb"
 )
@@ -39,7 +40,7 @@ func (c *readWriteCursor) First() ([]byte, []byte) {
 	err := row.Scan(&key, &value)
 
 	switch {
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 		return nil, nil
 
 	case err != nil:
@@ -69,7 +70,7 @@ func (c *readWriteCursor) Last() ([]byte, []byte) {
 	err := row.Scan(&key, &value)
 
 	switch {
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 		return nil, nil
 
 	case err != nil:
@@ -100,7 +101,7 @@ func (c *readWriteCursor) Next() ([]byte, []byte) {
 	err := row.Scan(&key, &value)
 
 	switch {
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 		return nil, nil
 
 	case err != nil:
@@ -131,7 +132,7 @@ func (c *readWriteCursor) Prev() ([]byte, []byte) {
 	err := row.Scan(&key, &value)
 
 	switch {
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 		return nil, nil
 
 	case err != nil:
@@ -169,7 +170,7 @@ func (c *readWriteCursor) Seek(seek []byte) ([]byte, []byte) {
 	err := row.Scan(&key, &value)
 
 	switch {
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 		return nil, nil
 
 	case err != nil:
@@ -199,7 +200,7 @@ func (c *readWriteCursor) Delete() error {
 	err := row.Scan(&key)
 
 	switch {
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 		return nil
 
 	case err != nil:

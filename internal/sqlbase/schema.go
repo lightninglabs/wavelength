@@ -20,8 +20,7 @@ func newKVSchemaCreationCmd(table, schema string,
 		finalCmd      string
 	)
 	if schema != "" {
-		finalCmd = fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS ` + schema +
-			`;`)
+		finalCmd = `CREATE SCHEMA IF NOT EXISTS ` + schema + `;`
 
 		tableInSchema = fmt.Sprintf("%s.%s", schema, table)
 	}
@@ -43,7 +42,7 @@ func newKVSchemaCreationCmd(table, schema string,
 	//
 	// The replacements map can be used to replace any sqlite keywords.
 	// Callers should note that the sqlite keywords are case-sensitive.
-	finalCmd += fmt.Sprintf(`
+	finalCmd += `
 CREATE TABLE IF NOT EXISTS ` + tableInSchema + `
 (
     key BLOB NOT NULL,
@@ -63,10 +62,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS ` + table + `_up
     (parent_id, key) WHERE parent_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ` + table + `_unp 
     ON ` + tableInSchema + ` (key) WHERE parent_id IS NULL;
-`)
+`
 
 	for from, to := range replacements {
-		finalCmd = strings.Replace(finalCmd, from, to, -1)
+		finalCmd = strings.ReplaceAll(finalCmd, from, to)
 	}
 
 	return finalCmd
