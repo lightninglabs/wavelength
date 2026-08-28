@@ -1142,6 +1142,13 @@ type WalletConfig struct {
 	// automatically without requiring an UnlockWallet RPC call.
 	PasswordFile string `mapstructure:"password_file"`
 
+	// DBBackend selects the database engine the lwwallet backend
+	// keeps btcwallet's wallet database in: "bolt" (the default) uses
+	// the classic BoltDB file, "sqlite" uses a SQLite database so the
+	// network directory holds no BoltDB file at all. Both live in the
+	// network directory. Only used when Type is "lwwallet".
+	DBBackend string `mapstructure:"dbbackend"`
+
 	// BtcwalletPeers is a list of host:port addresses for neutrino
 	// to connect to exclusively (no DNS seeding). Only used when
 	// Type is "btcwallet".
@@ -1217,6 +1224,7 @@ func DefaultConfig() *Config {
 			Type:           DefaultWalletType,
 			PollInterval:   DefaultEsploraPollInterval,
 			RecoveryWindow: DefaultRecoveryWindow,
+			DBBackend:      lwwallet.DBBackendBolt,
 		},
 		Swap: &SwapConfig{
 			ServerTransport: RPCTransportGRPC,
@@ -1423,6 +1431,20 @@ func (c *Config) validateWalletConfig() error {
 					"required when wallet.type is lwwallet")
 			}
 			c.Wallet.EsploraURL = esploraURL
+		}
+
+		// Reject an unknown database backend here rather than at
+		// wallet-unlock time: a typo would otherwise only surface
+		// once the operator tries to use the wallet.
+		switch c.Wallet.DBBackend {
+		case "", lwwallet.DBBackendBolt, lwwallet.DBBackendSQLite:
+			// An empty value keeps the lwwallet default.
+
+		default:
+			return fmt.Errorf("unknown wallet.dbbackend %q, valid "+
+				"values: %s, %s", c.Wallet.DBBackend,
+				lwwallet.DBBackendBolt,
+				lwwallet.DBBackendSQLite)
 		}
 
 	case WalletTypeBtcwallet:

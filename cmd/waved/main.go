@@ -355,6 +355,10 @@ func registerWalletFlags(f *pflag.FlagSet, cfg *waved.Config) {
 		"esplora REST API URL (required for lwwallet)",
 	)
 	f.String(
+		"wallet.dbbackend", cfg.Wallet.DBBackend,
+		"wallet database backend for lwwallet (bolt, sqlite)",
+	)
+	f.String(
 		"wallet.feeurl", cfg.Wallet.FeeURL,
 		"fee-estimate JSON endpoint URL (required for btcwallet)",
 	)
