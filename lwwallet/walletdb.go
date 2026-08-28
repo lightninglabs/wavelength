@@ -1,0 +1,56 @@
+package lwwallet
+
+import (
+	"context"
+	"time"
+
+	"github.com/btcsuite/btcwallet/walletdb"
+	"github.com/lightninglabs/wavelength/internal/sqlbase"
+)
+
+const (
+	// sqlWalletDBTablePrefix namespaces btcwallet's key/value table
+	// inside the wallet database, so the resulting "walletdb_kv"
+	// table can coexist with tables owned by other stores.
+	sqlWalletDBTablePrefix = "walletdb"
+
+	// sqlWalletDBBusyTimeout is how long SQLite waits for a lock held
+	// by another connection to the same database before failing the
+	// query.
+	sqlWalletDBBusyTimeout = 30 * time.Second
+
+	// sqlWalletDBTimeout is the per-query timeout applied to the
+	// wallet database. It has to stay comfortably above
+	// sqlWalletDBBusyTimeout: a query that legitimately waits out the
+	// busy handler would otherwise race its own context deadline, and
+	// the caller would see "context deadline exceeded" instead of the
+	// SQLITE_BUSY that names the actual problem.
+	sqlWalletDBTimeout = 2 * sqlWalletDBBusyTimeout
+
+	// sqlWalletDBMaxConnections bounds the connection pool sqlbase
+	// keeps per DSN. The walletdb emulation funnels its read-write
+	// transactions through a single in-process lock anyway, so a
+	// second connection would only add contention on the database's
+	// own write lock.
+	sqlWalletDBMaxConnections = 1
+)
+
+// openSQLWalletDB opens, creating it if needed, btcwallet's wallet
+// database on the given database/sql driver and DSN. The driver must
+// already be registered by the caller. The returned handle is owned by
+// the caller and must be closed once the wallet has stopped.
+func openSQLWalletDB(ctx context.Context, driverName,
+	dsn string) (walletdb.DB, error) {
+
+	// The connection set is process-global and initialized exactly
+	// once; a later call with a different limit is a no-op.
+	sqlbase.Init(sqlWalletDBMaxConnections)
+
+	return sqlbase.NewSqlBackend(ctx, &sqlbase.Config{
+		DriverName:      driverName,
+		Dsn:             dsn,
+		Timeout:         sqlWalletDBTimeout,
+		TableNamePrefix: sqlWalletDBTablePrefix,
+		WithTxLevelLock: true,
+	})
+}
