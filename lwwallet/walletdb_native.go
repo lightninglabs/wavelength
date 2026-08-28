@@ -68,6 +68,20 @@ func walletDBPath(cfg Config) (string, error) {
 	return walletDBFilePath(cfg.DBDir, backend), nil
 }
 
+// SQLiteWalletDBExists reports whether dbDir holds a wallet database
+// written by the SQLite backend, and returns that database's path.
+// Wallet implementations sharing the directory use it to refuse to start
+// beside one: they only know their own file name, so to them a directory
+// holding a SQLite wallet looks empty, and they would create a second,
+// unrelated wallet next to it. The zero-length file a failed first open
+// leaves behind does not count, the same as for the backend itself.
+func SQLiteWalletDBExists(dbDir string) (string, bool, error) {
+	path := walletDBFilePath(dbDir, DBBackendSQLite)
+	exists, err := walletDBExists(path, DBBackendSQLite)
+
+	return path, exists, err
+}
+
 // walletDBFilePath returns the file the given backend keeps the wallet
 // database in.
 func walletDBFilePath(dbDir, backend string) string {
