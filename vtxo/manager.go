@@ -139,6 +139,11 @@ type ManagerConfig struct {
 	// fills in the residual via the JoinRoundQuote.
 	RefreshFeeQuoter RefreshFeeQuoter
 
+	// CriticalExitAssessor is propagated to each spawned VTXOActor. It
+	// lets automatic critical-expiry handling prefer cooperative refresh
+	// only while the unilateral package is not viable.
+	CriticalExitAssessor CriticalExitAssessor
+
 	// FetchOperatorKey is propagated to each spawned VTXOActor so
 	// the auto-refresh emission can fetch the operator's current
 	// long-term key at join time and rebuild the NEW VTXO output's
@@ -1435,8 +1440,10 @@ func (m *Manager) handleVTXOTerminated(ctx context.Context,
 // Liveness guarantee: when a VTXO approaches expiry, the VTXO actor
 // autonomously emits a ForfeitRequest (wrapped in RelayToRoundMsg) without
 // requiring wallet input. The manager relays this immediately, ensuring
-// cooperative action is always attempted before critical expiry. This
-// default policy means safety does not depend on wallet reaction time.
+// cooperative action is attempted before critical expiry and remains the
+// fallback at critical expiry while the backing wallet cannot execute the
+// unilateral package. This default policy means safety does not depend on
+// wallet reaction time or on entering an exit that cannot make progress.
 // Auto-expiry forfeits intentionally bypass admission gating because
 // the VTXO actor has already determined that cooperative action is
 // urgent. Delaying relay would risk missing the expiry window.
@@ -1866,6 +1873,9 @@ func (m *Manager) respawnActorFromStore(ctx context.Context,
 	return ref, nil
 }
 
+// spawnVTXOActor creates and starts the per-outpoint actor with the manager's
+// shared expiry, funding-assessment, round, wallet, and persistence seams. A
+// start failure removes the actor registration before returning.
 func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 	VTXOActorRef, error) {
 
@@ -1884,6 +1894,7 @@ func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 		Manager:                  m.managerRef,
 		LedgerSink:               m.cfg.LedgerSink,
 		RefreshFeeQuoter:         m.cfg.RefreshFeeQuoter,
+		CriticalExitAssessor:     m.cfg.CriticalExitAssessor,
 		FetchOperatorKey:         m.cfg.FetchOperatorKey,
 		ForfeitParticipantSigner: m.cfg.ForfeitParticipantSigner,
 	}

@@ -636,8 +636,9 @@ enum VTXOExpiryStatus {
     // cooperative refresh window but is not yet critical.
     VTXO_EXPIRY_STATUS_NEEDS_REFRESH = 2;
 
-    // VTXO_EXPIRY_STATUS_CRITICAL indicates the VTXO should stop waiting for
-    // cooperative refresh and move to unilateral exit/recovery handling.
+    // VTXO_EXPIRY_STATUS_CRITICAL indicates the unilateral time budget is
+    // active. Automatic handling assesses package viability before choosing
+    // unilateral exit or continued cooperative refresh.
     VTXO_EXPIRY_STATUS_CRITICAL = 3;
 
     // VTXO_EXPIRY_STATUS_EXPIRED indicates the VTXO's batch expiry has

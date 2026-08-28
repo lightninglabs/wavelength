@@ -56,6 +56,24 @@ func VTXOActorServiceKey(outpoint wire.OutPoint) actor.ServiceKey[
 type RefreshFeeQuoter func(ctx context.Context,
 	amount btcutil.Amount, remainingBlocks uint32) btcutil.Amount
 
+// CriticalExitAssessment reports whether the backing wallet can execute an
+// automatic unilateral exit at the current fee rate. Reason is a short,
+// stable diagnostic when Feasible is false.
+type CriticalExitAssessment struct {
+	// Feasible permits the existing automatic unilateral-exit transition.
+	Feasible bool
+
+	// Reason explains an infeasible verdict in logs.
+	Reason string
+}
+
+// CriticalExitAssessor checks the whole exit package before a live VTXO enters
+// unilateral exit due to critical expiry. Errors preserve the existing direct
+// exit behavior so an unavailable assessment cannot suppress the safety path.
+type CriticalExitAssessor func(context.Context, *Descriptor) (
+	CriticalExitAssessment, error,
+)
+
 // VTXOActorConfig holds configuration for a single VTXO actor.
 type VTXOActorConfig struct {
 	VTXO        *Descriptor
@@ -96,6 +114,13 @@ type VTXOActorConfig struct {
 	// emits RefreshVTXORequest with OperatorFee=0, which is fine:
 	// the seal-time quote is still the source of truth.
 	RefreshFeeQuoter RefreshFeeQuoter
+
+	// CriticalExitAssessor, when set, checks wallet funding and package
+	// economics before an automatic critical-expiry exit. An infeasible
+	// verdict starts or continues cooperative refresh; the actor reassesses
+	// each block and exits when viable. Nil, errors, and feasible verdicts
+	// retain the existing direct exit.
+	CriticalExitAssessor CriticalExitAssessor
 
 	// FetchOperatorKey, when set, returns the operator's current
 	// long-term public key by issuing a fresh GetInfo round-trip to
@@ -139,7 +164,7 @@ type VTXOActor struct {
 
 	// autoRefreshRetryHeight is an in-memory maintenance cooldown. It is
 	// deliberately fail-safe on restart: clearing it can cause one earlier
-	// retry, but can never delay the critical unilateral-exit path.
+	// retry, but can never delay the critical path decision.
 	autoRefreshRetryHeight int32
 
 	// autoRefreshCohortLeader owns a manager-forced pending reservation.
@@ -296,6 +321,83 @@ func (a *VTXOActor) preflightAutoRefresh(ctx context.Context, event VTXOEvent) (
 	)
 
 	return currentKey, true, nil
+}
+
+// preflightCriticalExit chooses between the normal critical-expiry event and
+// cooperative refresh. Only a live or pending-forfeit critical VTXO with an
+// explicit infeasible assessment is diverted. The check repeats each block,
+// so funding the wallet restores the unilateral path without another state
+// transition. Missing or failed assessments retain the unilateral path.
+func (a *VTXOActor) preflightCriticalExit(ctx context.Context,
+	event VTXOEvent) VTXOEvent {
+
+	blockEvent, ok := event.(*BlockEpochEvent)
+	if !ok || a.cfg.CriticalExitAssessor == nil {
+		return event
+	}
+
+	var desc *Descriptor
+	switch state := a.state.(type) {
+	case *LiveState:
+		desc = state.VTXO
+
+	case *PendingForfeitState:
+		desc = state.VTXO
+
+	default:
+		return event
+	}
+
+	status := a.env.ExpiryConfig.CheckExpiry(
+		desc, blockEvent.Height,
+	)
+	if status != ExpiryStatusCritical {
+		return event
+	}
+
+	blocksRemaining := BlocksUntilExpiry(
+		desc, blockEvent.Height,
+	)
+	assessment, err := a.cfg.CriticalExitAssessor(ctx, desc)
+	if err != nil {
+		a.logger(ctx).WarnS(ctx, "Automatic expiry decision",
+			err,
+			slog.String("action", "unilateral_exit"),
+			slog.String("reason", "exit assessment unavailable"),
+			slog.Int("height", int(blockEvent.Height)),
+			slog.Int("blocks_remaining", int(blocksRemaining)),
+			slog.String("outpoint", desc.Outpoint.String()),
+		)
+
+		return event
+	}
+
+	if assessment.Feasible {
+		a.logger(ctx).InfoS(ctx, "Automatic expiry decision",
+			slog.String("action", "unilateral_exit"),
+			slog.String("reason", "exit funding is feasible"),
+			slog.Int("height", int(blockEvent.Height)),
+			slog.Int("blocks_remaining", int(blocksRemaining)),
+			slog.String("outpoint", desc.Outpoint.String()),
+		)
+
+		return event
+	}
+
+	reason := assessment.Reason
+	if reason == "" {
+		reason = "exit funding is infeasible"
+	}
+	a.logger(ctx).InfoS(ctx, "Automatic expiry decision",
+		slog.String("action", "cooperative_refresh"),
+		slog.String("reason", reason),
+		slog.Int("height", int(blockEvent.Height)),
+		slog.Int("blocks_remaining", int(blocksRemaining)),
+		slog.Bool("reassess_next_block", true),
+		slog.String("outpoint", desc.Outpoint.String()),
+	)
+
+	return &criticalRefreshEvent{Height: blockEvent.Height}
 }
 
 // emitExitCost is the VTXO-actor entry point for unilateral-exit accounting.
@@ -473,6 +575,7 @@ func (a *VTXOActor) Receive(ctx context.Context,
 	if preflightKey != nil {
 		refreshKey = preflightKey
 	}
+	vtxoEvent = a.preflightCriticalExit(ctx, vtxoEvent)
 
 	transition, err := a.state.ProcessEvent(ctx, vtxoEvent, a.env)
 	if err != nil {

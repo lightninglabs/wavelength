@@ -4575,6 +4575,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	reservationStore := dbStore.NewSpendingReservationStore(s.clk)
 	roundActor := round.NewServiceKey().Ref(s.actorSystem)
 	ledgerSink := ledger.NewSink(s.actorSystem)
+	criticalExitAssessor := s.rpcServer.assessAutomaticCriticalExit
 
 	manager := vtxo.NewManager(&vtxo.ManagerConfig{
 		Store:                    vtxoStore,
@@ -4589,6 +4590,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 		LedgerSink:               fn.Some(ledgerSink),
 		ChainResolver:            chainResolver,
 		RefreshFeeQuoter:         s.autoRefreshFeeQuoter(),
+		CriticalExitAssessor:     criticalExitAssessor,
 		FetchOperatorKey:         s.fetchCurrentOperatorPubKey,
 		ForfeitParticipantSigner: s.forfeitSignatures.sign,
 		TerminalVTXOObserver: func(ctx context.Context,
