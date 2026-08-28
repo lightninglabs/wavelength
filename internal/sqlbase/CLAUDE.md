@@ -6,14 +6,16 @@ A `walletdb`-compatible key/value backend implemented over `database/sql`.
 It emulates `btcwallet/walletdb` buckets/cursors on top of a relational
 table so `lwwallet` can run the wallet stack on any `database/sql` driver
 instead of the BoltDB/`kvdb` backends: `go-wasmsqlite` (OPFS) in the
-browser, where BoltDB is unavailable at all, and `modernc.org/sqlite` on
-native builds.
+browser, where BoltDB is unavailable at all, and on native builds whichever
+SQLite driver `db.SQLiteDSN` selects for the build.
 
 ## Key Types
 
 - `db` (unexported) — implements `walletdb.DB`. Constructed via
   `NewSqlBackend(ctx, cfg *Config)`. `View`/`Update` drive read/read-write
   transactions with retry via a caller-supplied `reset` func.
+  `CheckpointWAL(ctx)` folds a SQLite write-ahead log back into the main
+  database file (`lwwallet` calls it right after creating a wallet).
 - `Config` — driver name, DSN, timeout, schema, table-name prefix, per-backend
   `SQLiteCmdReplacements`, and `WithTxLevelLock` (forces a single-writer
   in-process lock).

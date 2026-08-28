@@ -9,6 +9,23 @@ import (
 )
 
 const (
+	// DBBackendBolt keeps btcwallet's wallet database in the classic
+	// BoltDB file under Config.DBDir. It is the default.
+	DBBackendBolt = "bolt"
+
+	// DBBackendSQLite keeps btcwallet's wallet database in a SQLite
+	// database under Config.DBDir. It lets an embedded daemon hold
+	// all of its state in one storage engine, in a directory the host
+	// application picks, rather than an mmap'd BoltDB file alongside
+	// the SQLite databases every other store already uses.
+	//
+	// Like BoltDB's file lock, the database is opened in EXCLUSIVE
+	// locking mode, so a second process opening the same directory
+	// fails instead of deriving the same addresses as the first.
+	DBBackendSQLite = "sqlite"
+)
+
+const (
 	// sqlWalletDBTablePrefix namespaces btcwallet's key/value table
 	// inside the wallet database, so the resulting "walletdb_kv"
 	// table can coexist with tables owned by other stores.
@@ -28,10 +45,14 @@ const (
 	sqlWalletDBTimeout = 2 * sqlWalletDBBusyTimeout
 
 	// sqlWalletDBMaxConnections bounds the connection pool sqlbase
-	// keeps per DSN. The walletdb emulation funnels its read-write
-	// transactions through a single in-process lock anyway, so a
-	// second connection would only add contention on the database's
-	// own write lock.
+	// keeps per DSN. The wallet databases are opened in EXCLUSIVE
+	// locking mode, in which the first connection keeps the file
+	// lock for its lifetime, so a second connection to the same file
+	// could not get at the database at all. With a single connection
+	// every transaction, read-only ones included, waits for the one
+	// before it to finish; a transaction opened while the same
+	// goroutine still holds another therefore blocks forever, which
+	// is why the wallet never nests them.
 	sqlWalletDBMaxConnections = 1
 )
 
@@ -56,4 +77,22 @@ func openSQLWalletDB(ctx context.Context, driverName,
 		TableNamePrefix: sqlWalletDBTablePrefix,
 		WithTxLevelLock: true,
 	})
+}
+
+// walletDBCheckpointer is implemented by the SQL wallet stores, whose
+// write-ahead log can be folded back into the main database file.
+type walletDBCheckpointer interface {
+	CheckpointWAL(ctx context.Context) error
+}
+
+// checkpointWalletDB folds a SQL wallet store's write-ahead log back into
+// its main database file. It is a no-op for the BoltDB backend, which
+// has no log.
+func checkpointWalletDB(ctx context.Context, walletDB walletdb.DB) error {
+	checkpointer, ok := walletDB.(walletDBCheckpointer)
+	if !ok {
+		return nil
+	}
+
+	return checkpointer.CheckpointWAL(ctx)
 }

@@ -298,6 +298,19 @@ func (db *db) BeginReadTx() (walletdb.ReadTx, error) {
 	return newReadWriteTx(db, true)
 }
 
+// CheckpointWAL copies every frame of a SQLite database's write-ahead log
+// back into the main database file and truncates the log. Until that
+// happens, which SQLite on its own only does once the log has grown past
+// its auto-checkpoint threshold or the last connection closes, recent
+// commits exist only in the -wal file, and anything that copies the main
+// file alone sees the database as it was before them. It is a no-op for
+// a database that is not in WAL mode.
+func (db *db) CheckpointWAL(ctx context.Context) error {
+	_, err := db.db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
+
+	return err
+}
+
 // Copy writes a copy of the database to the provided writer. This call will
 // start a read-only transaction to perform all operations.
 // This function is part of the walletdb.Db interface implementation.
