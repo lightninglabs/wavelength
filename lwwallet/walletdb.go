@@ -9,6 +9,25 @@ import (
 )
 
 const (
+	// DBBackendBolt keeps btcwallet's wallet database in the classic
+	// BoltDB file under Config.DBDir. It is the default.
+	DBBackendBolt = "bolt"
+
+	// DBBackendSQLite keeps btcwallet's wallet database in a SQLite
+	// database under Config.DBDir. It lets an embedded daemon hold
+	// all of its state in one storage engine, in a directory the host
+	// application picks, rather than an mmap'd BoltDB file alongside
+	// the SQLite databases every other store already uses.
+	//
+	// Note that this gives up one property BoltDB provides: its file
+	// lock excludes a second OS process, while SQLite in WAL mode
+	// does not. Two daemons on one directory stay safe at the storage
+	// layer but not at the wallet layer, where both would derive the
+	// same addresses and keep their own idea of sync state.
+	DBBackendSQLite = "sqlite"
+)
+
+const (
 	// sqlWalletDBTablePrefix namespaces btcwallet's key/value table
 	// inside the wallet database, so the resulting "walletdb_kv"
 	// table can coexist with tables owned by other stores.
