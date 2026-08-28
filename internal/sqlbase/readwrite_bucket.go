@@ -473,6 +473,13 @@ func (b *readWriteBucket) ForAll(cb func(k, v []byte) error) error {
 	}
 	defer cancel()
 
+	// cancel only releases the query's timeout context; the result set
+	// holds a connection from the pool until it is closed explicitly,
+	// which rows.Next() only does for us if it is driven to completion.
+	defer func() {
+		_ = rows.Close()
+	}()
+
 	for rows.Next() {
 		var key, value []byte
 
@@ -487,5 +494,8 @@ func (b *readWriteBucket) ForAll(cb func(k, v []byte) error) error {
 		}
 	}
 
-	return nil
+	// A row error terminates the loop above just like a fully consumed
+	// result set does, so without this check a truncated bucket walk is
+	// indistinguishable from a complete one.
+	return rows.Err()
 }
