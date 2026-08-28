@@ -835,8 +835,20 @@ func TestActorProcessOutbox(t *testing.T) {
 		// Set up a round in InputSigSentState, simulating the state
 		// after the round has completed through partial sigs.
 		commitmentTx := h.setupRoundInInputSigSentState(roundID)
+		txid := commitmentTx.UnsignedTx.TxHash()
+		pkScript := confirmationWatchScript(
+			commitmentTx.UnsignedTx, nil,
+		)
+		targetConfs := h.actor.env.OperatorTerms.MinConfirmations
 
 		outbox := []ClientOutMsg{
+			&RegisterConfirmationRequest{
+				CallerID:    "commitment-" + txid.String(),
+				Txid:        &txid,
+				PkScript:    pkScript,
+				TargetConfs: targetConfs,
+				HeightHint:  h.actor.env.StartHeight,
+			},
 			&RoundCheckpointedNotification{
 				RoundID: roundID,
 			},
@@ -850,10 +862,18 @@ func TestActorProcessOutbox(t *testing.T) {
 		keyStr := RoundKeyStr(roundID.KeyString())
 		require.Contains(t, h.actor.rounds, keyStr)
 
-		txid := commitmentTx.UnsignedTx.TxHash()
 		indexedKeyStr, exists := h.actor.commitmentTxIndex[txid]
 		require.True(t, exists)
 		require.Equal(t, keyStr, indexedKeyStr)
+
+		// The FSM outbox registration is sufficient. Processing the
+		// checkpoint notification must not create a second notifier for
+		// the same commitment transaction.
+		require.Len(t, h.chainSource.registrations, 1)
+		registration := h.chainSource.registrations[0]
+		require.True(t, registration.Txid.IsEqual(&txid))
+		require.Equal(t, pkScript, registration.PkScript)
+		require.Equal(t, targetConfs, registration.TargetConfs)
 	})
 
 	t.Run("new_boarding_creates_round", func(t *testing.T) {

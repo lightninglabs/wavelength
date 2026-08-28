@@ -773,6 +773,15 @@ type memCheckpointStore struct {
 	checkpoints map[string]*actor.Checkpoint
 }
 
+// ExecTx lets durable actor tests exercise the transaction-aware path. The
+// in-memory methods take their own locks, so the callback can use this store
+// directly without a separate transaction handle.
+func (s *memCheckpointStore) ExecTx(ctx context.Context, _ bool,
+	fn actor.TxFunc) error {
+
+	return fn(ctx, s)
+}
+
 // newMemCheckpointStore creates a new in-memory checkpoint store.
 func newMemCheckpointStore() *memCheckpointStore {
 	return &memCheckpointStore{

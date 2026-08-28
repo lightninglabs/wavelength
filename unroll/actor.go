@@ -75,13 +75,18 @@ type Config struct {
 	// LedgerSink receives the confirmed on-chain exit fee once the
 	// final sweep has confirmed.
 	LedgerSink fn.Option[ledger.Sink]
+
+	// proofNodeFloorAlerts is shared by every child of one registry so
+	// targets with the same proof ancestor produce one operator alert.
+	proofNodeFloorAlerts *proofNodeFloorAlertDeduper
 }
 
 // VTXOUnrollActor wraps one durable per-target unroll actor.
 type VTXOUnrollActor struct {
-	ref     actor.ActorRef[Msg, Resp]
-	durable *actor.DurableActor[Msg, Resp]
-	stop    func()
+	ref      actor.ActorRef[Msg, Resp]
+	durable  *actor.DurableActor[Msg, Resp]
+	stop     func()
+	behavior *behavior
 }
 
 // Ref returns the public actor reference.
@@ -111,6 +116,9 @@ func NewVTXOUnrollActor(cfg Config) (*VTXOUnrollActor, error) {
 	if cfg.ActorID == "" {
 		cfg.ActorID = actorIDForTarget(cfg.TargetOutpoint)
 	}
+	if cfg.proofNodeFloorAlerts == nil {
+		cfg.proofNodeFloorAlerts = newProofNodeFloorAlertDeduper()
+	}
 
 	behavior := &behavior{
 		cfg: cfg,
@@ -134,9 +142,10 @@ func NewVTXOUnrollActor(cfg Config) (*VTXOUnrollActor, error) {
 	durable.Start()
 
 	return &VTXOUnrollActor{
-		ref:     durable.Ref(),
-		durable: durable,
-		stop:    durable.Stop,
+		ref:      durable.Ref(),
+		durable:  durable,
+		stop:     durable.Stop,
+		behavior: behavior,
 	}, nil
 }
 
@@ -865,9 +874,35 @@ func (b *behavior) proofNodeConfHeightHint(ctx context.Context,
 		age := int64(currentHeight) - int64(b.desc.CreatedHeight)
 		if age >= int64(proofNodeHeightHintLookback) {
 			b.proofNodeFloorWarned = true
-			b.log.WarnS(ctx, "Proof-node confirmation floor may "+
-				"exceed ancestor height; exit could stall",
-				nil,
+			firstAlert := b.cfg.proofNodeFloorAlerts == nil ||
+				b.cfg.proofNodeFloorAlerts.first(txid)
+			if firstAlert {
+				b.log.WarnS(ctx, "Proof-node confirmation "+
+					"floor may exceed ancestor height; "+
+					"exits could stall",
+					nil,
+					slog.String(
+						"target_outpoint",
+						b.cfg.TargetOutpoint.String(),
+					),
+					slog.String("proof_txid", txid.String()),
+					slog.Int64("vtxo_age_blocks", age),
+					slog.Uint64(
+						"lookback", uint64(
+							proofNodeHeightHintLookback,
+						),
+					),
+					slog.Uint64(
+						"height_hint", uint64(hint),
+					),
+					slog.Int64(
+						"created_height",
+						int64(b.desc.CreatedHeight),
+					),
+				)
+			}
+
+			b.log.DebugS(ctx, "Proof-node confirmation floor target",
 				slog.String(
 					"target_outpoint",
 					b.cfg.TargetOutpoint.String(),

@@ -3097,6 +3097,9 @@ func confirmationWatchScript(commitmentTx *wire.MsgTx,
 	return commitmentTx.TxOut[idx].PkScript
 }
 
+// forfeitCollectionOutbox orders the reconciliation timeout before every
+// fallible external effect, then preserves the server submission sequence
+// before registering the commitment confirmation watch.
 func (s *ForfeitSignaturesCollectingState) forfeitCollectionOutbox(
 	env *ClientEnvironment,
 	forfeitTxs map[wire.OutPoint]*types.ForfeitTxSig,
@@ -3114,17 +3117,6 @@ func (s *ForfeitSignaturesCollectingState) forfeitCollectionOutbox(
 		&CancelTimeoutReq{
 			RoundKey: RoundKeyStr(s.RoundID.KeyString()),
 			Phase:    TimeoutPhaseForfeitCollection,
-		},
-		&SubmitVTXOForfeitSigsToServer{
-			RoundID:    s.RoundID,
-			ForfeitTxs: forfeitTxs,
-		},
-		&RegisterConfirmationRequest{
-			CallerID:    callerID,
-			Txid:        &txid,
-			PkScript:    pkScript,
-			TargetConfs: env.OperatorTerms.MinConfirmations,
-			HeightHint:  env.StartHeight,
 		},
 	}
 
@@ -3144,18 +3136,28 @@ func (s *ForfeitSignaturesCollectingState) forfeitCollectionOutbox(
 		})
 	}
 
-	if len(boardingInputSigs) == 0 {
-		return outboxMsgs
+	// The timeout must be armed before either fallible external effect.
+	// processOutbox stops on the first error, so placing it after the
+	// signature submission or chain registration could strand the round in
+	// forfeit collection with no reconciliation path.
+	outboxMsgs = append(outboxMsgs, &SubmitVTXOForfeitSigsToServer{
+		RoundID:    s.RoundID,
+		ForfeitTxs: forfeitTxs,
+	})
+	if len(boardingInputSigs) > 0 {
+		outboxMsgs = append(outboxMsgs, &SubmitForfeitSigRequest{
+			RoundID:    s.RoundID,
+			Signatures: boardingInputSigs,
+		})
 	}
 
-	return append(
-		outboxMsgs[:2], append([]ClientOutMsg{
-			&SubmitForfeitSigRequest{
-				RoundID:    s.RoundID,
-				Signatures: boardingInputSigs,
-			},
-		}, outboxMsgs[2:]...)...,
-	)
+	return append(outboxMsgs, &RegisterConfirmationRequest{
+		CallerID:    callerID,
+		Txid:        &txid,
+		PkScript:    pkScript,
+		TargetConfs: env.OperatorTerms.MinConfirmations,
+		HeightHint:  env.StartHeight,
+	})
 }
 
 func (s *ForfeitSignaturesCollectingState) checkpointRound(

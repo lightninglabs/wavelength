@@ -2333,8 +2333,10 @@ func (a *RoundClientActor) handleGetState(ctx context.Context,
 	for keyStr, roundFSM := range a.rounds {
 		roundState, err := fsmState(scanCtx, roundFSM.FSM)
 		if err != nil {
-			a.log.WarnS(ctx, "Failed to get FSM state for round",
-				err,
+			a.log.DebugS(
+				ctx,
+				"Skipped round with unreadable FSM state",
+				slog.Any("err", err),
 				slog.String("key", string(keyStr)),
 			)
 
@@ -2923,12 +2925,13 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				inputSigState.CommitmentTx,
 			)
 
-			// Index for confirmation routing and register.
+			// Index the transaction before the confirmation request
+			// emitted by the FSM can be delivered. The FSM outbox
+			// owns the steady-state registration; registering again
+			// here creates two notifier subscriptions for the same
+			// tx. A restarted actor still re-registers active
+			// rounds in Start.
 			a.commitmentTxIndex[txid] = keyStr
-			a.registerCommitmentConfirmation(
-				ctx, txid, roundFSM.CommitmentTx,
-				inputSigState.VTXOTreePaths,
-			)
 
 			a.log.InfoS(ctx, "Round checkpoint processed",
 				slog.String("round_id", m.RoundID.String()),
