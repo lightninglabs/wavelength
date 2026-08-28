@@ -2,11 +2,12 @@
 
 ## Purpose
 
-A `walletdb`-compatible key/value backend implemented over `database/sql`,
-built only for `js && wasm` (every file carries that build tag). It emulates
-`btcwallet/walletdb` buckets/cursors on top of a relational table so
-`lwwallet` can run the wallet stack in the browser (SQLite via
-`go-wasmsqlite`), where the native BoltDB/`kvdb` backends are unavailable.
+A `walletdb`-compatible key/value backend implemented over `database/sql`.
+It emulates `btcwallet/walletdb` buckets/cursors on top of a relational
+table so `lwwallet` can run the wallet stack on any `database/sql` driver
+instead of the BoltDB/`kvdb` backends: `go-wasmsqlite` (OPFS) in the
+browser, where BoltDB is unavailable at all, and `modernc.org/sqlite` on
+native builds.
 
 ## Key Types
 
@@ -29,13 +30,10 @@ built only for `js && wasm` (every file carries that build tag). It emulates
 
 - **Depends on**: `btcwallet/walletdb` (interface being implemented),
   `lnd/sqldb` (shared SQL error classification).
-- **Depended on by**: `lwwallet` (wasm builds only, via `internal/sqlbase`).
+- **Depended on by**: `lwwallet` (all platforms).
 
 ## Invariants
 
-- Every file is `//go:build js && wasm`; this package does not build (and
-  cannot be exercised) on native `GOOS`/`GOARCH` — use
-  `GOOS=js GOARCH=wasm go build ./internal/sqlbase` or `go doc` to inspect it.
 - `DefaultNumTxRetries = 50`: `Update`/`View` retry on transaction errors that
   permit repetition, calling the caller's `reset` before each retry.
 - `WithTxLevelLock` serializes all read-write transactions through a single

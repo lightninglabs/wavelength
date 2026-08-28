@@ -29,6 +29,7 @@ on:
       - "sdk/swaps/**"
       - "db/**"
       - "lwwallet/**"
+      - "internal/sqlbase/**"
       - "internal/testutils/wasmsqlite.go"
       - "swapwallet/**"
       - "go.mod"
