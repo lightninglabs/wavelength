@@ -270,6 +270,16 @@ func (m *ResumeUnrollRequest) MessageType() string {
 	return "ResumeUnrollRequest"
 }
 
+// Priority marks the resume as a control message. Boot-time restore treats a
+// failed resume Ask as fatal, so the message must bypass the mailbox's
+// backlog admission check: a backlog past the hard watermark is exactly the
+// condition the resume exists to drain, and refusing it would turn a wedged
+// consumer into a daemon-wide restart crash loop. Control priority also
+// claims ahead of the redelivered backlog, mirroring RestartMessage.
+func (m *ResumeUnrollRequest) Priority() int {
+	return actor.ControlPriority
+}
+
 // TLVType returns the durable mailbox type ID.
 func (m *ResumeUnrollRequest) TLVType() tlv.Type {
 	return resumeUnrollRequestTLVType

@@ -255,3 +255,32 @@ func (a *systemStatsAdapter) GetRoundStatsByStatus(ctx context.Context) (
 
 	return a.srv.rpcServer.liveRoundsByStatus(ctx)
 }
+
+// GetMailboxDepths returns the pending backlog of every durable mailbox
+// currently holding messages, straight off the delivery store. The depth
+// surface is optional on the store interface, so a store without it skips
+// the gauges rather than failing the scrape.
+func (a *systemStatsAdapter) GetMailboxDepths(ctx context.Context) (
+	[]metrics.MailboxDepthRow, error) {
+
+	depthStore, ok := a.srv.deliveryStore.(actor.MailboxDepthStore)
+	if !ok {
+		return nil, fmt.Errorf("delivery store cannot report mailbox " +
+			"depth")
+	}
+
+	depths, err := depthStore.MailboxDepths(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	rows := make([]metrics.MailboxDepthRow, 0, len(depths))
+	for _, d := range depths {
+		rows = append(rows, metrics.MailboxDepthRow{
+			MailboxID: d.MailboxID,
+			Depth:     d.Depth,
+		})
+	}
+
+	return rows, nil
+}

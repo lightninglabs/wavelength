@@ -22,6 +22,16 @@ const RestartTLVType tlv.Type = 0xFFFE
 // Uses math.MaxInt32 to ensure restart messages are processed first.
 const RestartPriority = math.MaxInt32
 
+// ControlPriority is the priority level for domain-level control messages
+// that recovery paths depend on: boot-time restore/resume requests and
+// similar admissions that must land even when the target mailbox's backlog
+// is past its hard watermark. Messages at or above this priority bypass the
+// backlog admission check entirely (RestartPriority included), because the
+// message that would un-wedge a backed-up actor must not be refused by the
+// very backlog it exists to drain. It sits one below RestartPriority so a
+// checkpoint restore still claims strictly first.
+const ControlPriority = math.MaxInt32 - 1
+
 // RestartMessage is a special message sent to an actor when it starts up and
 // has a persisted checkpoint. This allows the actor to restore its FSM state
 // and continue processing from where it left off after a crash.

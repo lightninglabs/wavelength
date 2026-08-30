@@ -12,10 +12,11 @@ import (
 )
 
 // ErrDispatchDeferred marks an inbound envelope that could not be handed to its
-// target actor because the target's in-memory mailbox was full. It is not a
-// dispatch failure: the envelope is intact, unacknowledged, and the ingress
-// loop re-pulls it after a backoff, so the cursor never passes an event that
-// was not delivered.
+// target actor because the target refused it for want of room: a full
+// in-memory mailbox, or a durable mailbox whose backlog crossed its hard
+// watermark. It is not a dispatch failure: the envelope is intact,
+// unacknowledged, and the ingress loop re-pulls it after a backoff, so the
+// cursor never passes an event that was not delivered.
 //
 // The error exists so the ingress loop can tell backpressure apart from a real
 // dispatch error. Both back off, but only backpressure is expected to clear on
@@ -39,8 +40,9 @@ type deferredDispatchError struct {
 	// also the cursor the next pull resumes from.
 	eventSeq uint64
 
-	// err is the underlying delivery error, always wrapping
-	// actor.ErrMailboxFull.
+	// err is the underlying delivery error, always wrapping either
+	// actor.ErrMailboxFull (bounded in-memory target) or
+	// actor.ErrMailboxSaturated (durable target past its hard watermark).
 	err error
 }
 
@@ -52,7 +54,8 @@ func (e *deferredDispatchError) Error() string {
 
 // Unwrap exposes both the sentinel and the underlying mailbox error, so
 // errors.Is matches ErrDispatchDeferred for the loop's classification and
-// actor.ErrMailboxFull for anything that cares about the cause.
+// the concrete cause (actor.ErrMailboxFull or actor.ErrMailboxSaturated)
+// for anything that cares which bound turned the envelope away.
 func (e *deferredDispatchError) Unwrap() []error {
 	return []error{ErrDispatchDeferred, e.err}
 }
@@ -75,7 +78,11 @@ func deferDispatch(service, method, target string, eventSeq uint64,
 // parking the ingress goroutine. A bounded in-memory target is sent to with
 // TryTell and a full mailbox comes back as a deferral; a durable target keeps
 // the blocking Tell, which is bounded by its own write and has to stay inside
-// the caller's transaction to commit atomically with the cursor.
+// the caller's transaction to commit atomically with the cursor. A durable
+// target with backlog watermarks configured can refuse that Tell with
+// ErrMailboxSaturated, which classifies as the same deferral: the backlog is
+// expected to drain on its own, and stalling the cursor at the undelivered
+// envelope is exactly the backpressure the watermark asks for.
 //
 // This is the fix for the wedge that made a deployed client go deaf: the round
 // client and the incoming-VTXO handler are registered with the default
@@ -99,7 +106,8 @@ func deliverToActor[M actor.Message, R any](ctx context.Context,
 	}
 
 	outsideTx, err := actor.TellWithoutParking[M](ctx, ref, msg).Unpack()
-	if errors.Is(err, actor.ErrMailboxFull) {
+	if errors.Is(err, actor.ErrMailboxFull) ||
+		errors.Is(err, actor.ErrMailboxSaturated) {
 		return deferDispatch(service, method, ref.ID(), eventSeq, err)
 	}
 	if err != nil {

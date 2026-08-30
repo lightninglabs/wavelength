@@ -84,6 +84,17 @@ background ingress polling with event routing.
   case means folding a server identity into the digest, which is a wire change
   on both sides.
 - Ack watermark only advances AFTER durable local dispatch commit (prevents message loss on crash).
+- **Dispatch deferral covers both refusal shapes.** `deliverToActor`
+  classifies `actor.ErrMailboxFull` (bounded in-memory target) AND
+  `actor.ErrMailboxSaturated` (durable target past its hard backlog
+  watermark) as `ErrDispatchDeferred`: the envelope stays unacknowledged,
+  the cursor stalls, and the loop re-pulls after a backoff. A backed-up
+  durable actor therefore exerts backpressure on the operator stream
+  instead of deepening its own backlog. The egress `DurableActor` itself
+  carries the shared default watermarks (`actor.DefaultSoftHighWatermark` /
+  `DefaultHardHighWatermark`), so producers Telling into egress see
+  `ErrMailboxSaturated` once the operator has been unreachable long enough
+  to park that many undelivered events.
 - The ingress fold never holds the database writer across network IO. `runFoldedDispatch` runs waiter-backed responses and the `ConnectorConfig.NonTxRoutes` requests BEFORE opening the write transaction; only durable enqueues and the cursor checkpoint go inside it. A route is hoisted only when it is listed in `NonTxRoutes` AND the envelope is a `KIND_REQUEST`, so a durable actor `Tell` can never escape the fold. An envelope of any other kind arriving on a marked route is skip-warned by `dispatchBatch` rather than dispatched, because the mux bridge ignores `env.Rpc.Kind` and would otherwise serve a sender-mislabeled envelope over the network with the writer held. Any new dispatcher that terminates in `Edge.Send` rather than a durable enqueue MUST be added to `NonTxRoutes` at wiring time (see `waved.Server.buildRPCDispatchers`), otherwise it pins the SQLite global writer lock (production opens with `_txlock=immediate`) or a SERIALIZABLE Postgres snapshot for the length of a round trip to the operator.
 - Pre-transaction dispatch happens before the commit, never after. A crash in between re-pulls the batch and redelivers, which is the at-least-once contract; committing first would advance the cursor past a request that was never answered.
 - Unary RPC responses use in-memory registry first; if no waiter exists (crash replay), the ingress falls back to durable EventRouter dispatch. The ResponseRegistry returns a tri-state delivery result (waiter/buffered/dropped) so the ingress knows whether to route durably.

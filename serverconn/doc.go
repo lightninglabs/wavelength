@@ -50,6 +50,14 @@
 // only mailbox puller for as long as the target took to drain, with the write
 // transaction open. See deliverToActor.
 //
+// Durable targets refuse for a different reason: a durable mailbox has no
+// in-memory capacity, but one configured with backlog watermarks turns a Tell
+// away with ErrMailboxSaturated once its persistent backlog crosses the hard
+// watermark. That refusal classifies as the same deferral, so a durable actor
+// whose consumer has fallen ten thousand messages behind stalls the cursor
+// instead of deepening its backlog — the same backpressure shape as a full
+// in-memory mailbox, at a bound measured in rows instead of channel slots.
+//
 // Known residual: one strictly-ordered cursor feeds every inbound route, so an
 // actor that stops draining still stops delivery on ALL of them. What the
 // deferral changes is the blast radius and the diagnosis — the database writer

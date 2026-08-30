@@ -895,6 +895,18 @@ func (m *RestoreNonTerminalRequest) MessageType() string {
 	return "RestoreNonTerminalRequest"
 }
 
+// Priority marks the restore as a control message. Boot treats a failed
+// restore Ask as fatal, so the message must bypass the registry mailbox's
+// backlog admission check: a backlog past the hard watermark is exactly the
+// condition the restore exists to work through, and refusing it would turn
+// a backed-up registry into a daemon-wide restart crash loop. Control
+// priority also claims the restore ahead of the redelivered backlog; both
+// orders are safe (routing and restore converge on ensureChild's dedup),
+// and restore-first re-admits in-flight sessions sooner.
+func (m *RestoreNonTerminalRequest) Priority() int {
+	return actor.ControlPriority
+}
+
 // actorMsgSealed marks this as implementing the sealed ActorMsg interface.
 func (m *RestoreNonTerminalRequest) actorMsgSealed() {}
 

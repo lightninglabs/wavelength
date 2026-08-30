@@ -23,7 +23,11 @@ OOR/round state).
   across the worker pool.
 - `SystemCollector` / `SystemStatsQuerier` — `prometheus.Collector` that
   queries live client state on each scrape (VTXO inventory/value, wallet
-  balance, block height, `oor_sessions_by_state`, `rounds_by_status`). Each
+  balance, block height, `oor_sessions_by_state`, `rounds_by_status`,
+  and durable-mailbox backlog: `waved_mailbox_backlog` emits an explicit
+  zero when every mailbox is drained, `waved_mailbox_depth{mailbox_id}`
+  one series per mailbox currently holding messages, sourced from the
+  delivery store's `actor.MailboxDepthStore` surface). Each
   querier method is collected independently; an error only suppresses that
   method's gauges for the scrape.
 - `Server` / `ServerConfig` — opt-in HTTP `/metrics` endpoint; disabled
