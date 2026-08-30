@@ -10,9 +10,13 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 
 - `LNDBackend` — Full-node backend wrapping lnd's chain notification and fee
   estimation interfaces. Accepts an optional `PackageSubmitter` for v3 CPFP
-  package relay (set via `SetPackageSubmitter`).
+  package relay (set via `SetPackageSubmitter`). Also implements
+  `chainsource.TxRemover` via `RemoveTx`.
 - `TxBroadcaster` — Interface over transaction broadcasting (wraps
-  lndclient.WalletKitClient or in-process lnd).
+  lndclient.WalletKitClient or in-process lnd). Carries
+  `PublishTransaction(ctx, tx, label)` and `RemoveTransaction(ctx, txid)`;
+  the latter abandons a transaction (and its descendants) so the wallet stops
+  rebroadcasting it from its unconfirmed queue (wavelength#609).
 - `PackageSubmitter` — Optional interface for v3 package relay:
   `SubmitPackage(ctx, parents, child, maxFeeRate)`. Used by backends that need
   a direct bitcoind path for atomic parent+child submission; absent in
@@ -43,6 +47,27 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
   joined error tree. Use this instead of `errors.As` when all per-tx entries
   must be inspected (e.g. to distinguish parent-known vs. child-fee
   classification).
+- `reorgSignalBufferSize = 8` (unexported, `lnd.go`) — depth of the buffered
+  `Reorged` channel handed to each conf/spend registration. Reorg signals are
+  coalescing (the consumer re-queries chain state), so the buffer only needs
+  to be deep enough to keep the forwarder from stalling on a multi-block
+  reorg burst, not to record every event.
+
+## Reorg & Finality Forwarding
+
+`RegisterConf` / `RegisterSpend` bridge lnd's notifier events into the
+reorg-aware `chainsource` registration lifecycle. lnd signals a reorg by
+firing `ConfirmationEvent.NegativeConf` (conf) or `SpendEvent.Reorg` (spend);
+a single per-registration forwarder goroutine translates those into the
+backend-agnostic `Reorged` channel while also forwarding `Confirmed`/`Spend`
+and `Done`.
+
+Because Go's `select` picks randomly among ready channels, the forwarder
+routes every lifecycle fact through `chainsource.PositiveDoneOrder`
+(`ObservePositive` / `ObserveReorg` / `ObserveDone`) so the causal
+positive-before-`Done` contract survives the transport boundary. Delivery uses
+`forwardValue`, which drops the send if the registration context was cancelled
+first.
 
 ## Relationships
 
@@ -53,6 +78,13 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
   `LNDBackend` via lndclient for system tests), `btcwbackend` / `lwwallet` /
   `txconfirm` (reuse `PackageSubmitter`, `PackageTxError`, and
   `WalkPackageTxErrors` to classify per-tx package-relay results).
+- **Sends → `chainsource`** (as registration channel payloads):
+  `BlockRegistration`, `ConfRegistration`, `SpendRegistration` — each
+  carrying `Confirmed`/`Spend`, `Reorged`, and `Done`.
+- **Receives ← `chainsource`** (via the actor, on behalf of `unroll`):
+  `RemoveTxRequest` → `LNDBackend.RemoveTx`. Backends without a
+  rebroadcasting wallet do not implement `TxRemover` and the request is a
+  no-op for them.
 
 ## Invariants
 
@@ -65,7 +97,17 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
   sets the same field); otherwise, for an LND wallet it falls back to
   `chainbackends/lndsubmitter.New(lndSvc.WalletKit)` as the default.
 - `LndClientChainNotifier` enforces a 15-second timeout on registration to
-  prevent hanging under LND block load.
+  prevent hanging under LND block load (`lndRegistrationTimeout`).
+- One forwarder goroutine per conf/spend registration owns ordering. Never
+  emit `Confirmed`/`Spend`, `Reorged`, and `Done` from separate goroutines —
+  the `PositiveDoneOrder` state machine is what makes the ordering contract
+  hold, and it is not safe for concurrent use.
+- A `Canceled` status from lnd is only demoted to `Debug` when the owning
+  registration context is *also* done (`isBlockEpochShutdownError`). Round
+  completion stops each VTXO's block subscription, so an in-flight block can
+  lose that race; that is expected shutdown, not an operator-actionable event.
+  A `Canceled` status from a still-live subscription — and every other
+  notifier or block-hash failure — stays at `Warn`.
 - Log messages use canonical txid strings (not reversed byte slices).
 
 ## Deep Docs

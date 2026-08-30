@@ -23,15 +23,20 @@ state transitions and validation rules live under [Invariants](#invariants).
   `RecoveryInitiatedState`.
 - `ClientEvent` — sealed inbound event interface. Notable members:
   `JoinRoundQuoteReceived` (carries reseal `SealPass`), `QuoteAccepted`,
-  `QuoteRejected`, `ForfeitCollectionTimedOut`, `ForfeitSignatureResponse`,
-  `ConnectorLeafInfo`, `IntentPackage` (atomic delivery of all intent
-  types).
+  `QuoteRejected`, `ForfeitCollectionTimedOut`, `RegistrationTimedOut`,
+  `ForfeitSignatureResponse`, `ConnectorLeafInfo`, `IntentPackage` (atomic
+  delivery of all intent types), `StatusReconcileTimedOut` and
+  `RoundStatusReported` (the wavelength#844 status reconcile, below).
 - `ClientOutMsg` — sealed outbox interface. Members:
-  `JoinRoundAcceptOutbox`, `JoinRoundRejectOutbox`,
-  `SubmitForfeitSigRequest`, `StartTimeoutReq`, `CancelTimeoutReq`,
+  `JoinRoundRequest`, `JoinRoundAcceptOutbox`, `JoinRoundRejectOutbox`,
+  `SubmitNoncesRequest`, `SubmitPartialSigRequest`,
+  `SubmitForfeitSigRequest`, `SubmitVTXOForfeitSigsToServer`,
+  `RegisterConfirmationRequest`, `StartTimeoutReq`, `CancelTimeoutReq`,
+  `ReleaseForfeitReservation`, `DropCustomForfeitReservation`,
+  `QueryRoundStatusOutbox`, `VTXOCreatedNotification`,
   `RoundCheckpointedNotification`, `RoundCompletedNotification`,
-  `RoundFailedNotification`, `ForfeitRequestToVTXO`,
-  `ForfeitConfirmedToVTXO`.
+  `RoundFailedNotification`, `TerminalJobFailedNotification`,
+  `ForfeitRequestToVTXO`, `ForfeitConfirmedToVTXO`.
 
 ### Quote & Intent (`interfaces.go`, `events.go`)
 
@@ -81,7 +86,14 @@ state transitions and validation rules live under [Invariants](#invariants).
 - `RefreshVTXORequest` — per-VTXO refresh. Under the seal-time fee
   handshake (#270) `OperatorFee` is **advisory only**: the FSM does NOT
   subtract it from `Amount`. The actor's `designateChangeMarker` stamps
-  exactly one `IsChange=true` across the assembled intent.
+  exactly one `IsChange=true` across the assembled intent. Expiry-driven
+  auto-refreshes additionally carry `BatchExpiry` (the maintenance cohort
+  key), `ExpandCohort` (local-only coordination provenance), the leader's
+  operator-key snapshot, `PolicyTemplate`, and `OwnerKey`.
+- `RefreshVTXOCohortRequest` — local-only message that atomically adds a
+  manager-coordinated maintenance cohort (`Requests
+  []*RefreshVTXORequest`) to a single assembling round, so cohort members
+  cannot be split across rounds or pay per-member operator fees.
 - `ConfirmationEvent`, `TimeoutMsg` — chain confirmation / timeout
   delivery to the actor.
 - VTXO-actor messages (`vtxo_messages.go`): `ForfeitRequestEvent`,
@@ -92,13 +104,17 @@ state transitions and validation rules live under [Invariants](#invariants).
 
 ### Misc
 
-- `TimeoutPhase` (`fsm_timeouts.go`) — `TimeoutPhaseForfeitCollection`
-  (forfeit-signature collection window) and `TimeoutPhaseRegistration`
-  (IntentSentState admission window; on expiry the FSM fails the round
-  recoverably and emits `ReleaseForfeitReservation` so forfeit-reserved
-  inputs are not stranded — wavelength#653). Timeout outbox messages
-  (`StartTimeoutReq`/`CancelTimeoutReq`) key on `RoundKeyStr` so temp-keyed
-  rounds (pre-admission) can be timed.
+- `TimeoutPhase` (`fsm_timeouts.go`) — four phases:
+  `TimeoutPhaseForfeitCollection` (forfeit-signature collection window),
+  `TimeoutPhaseRegistration` (IntentSentState admission window; on expiry
+  the FSM fails the round recoverably and emits
+  `ReleaseForfeitReservation` so forfeit-reserved inputs are not
+  stranded — wavelength#653), `TimeoutPhaseRefreshRegistration` (the quiet
+  period that coalesces expiry-driven refreshes into one round), and
+  `TimeoutPhaseStatusReconcile` (the wavelength#844 probe window). Timeout
+  outbox messages (`StartTimeoutReq`/`CancelTimeoutReq`) key on
+  `RoundKeyStr` so temp-keyed rounds (pre-admission) can be timed, and the
+  distinct phase keys let two timers coexist on one round.
 - `MaxQuoteEntriesPerClient = 1024` (`from_proto.go`) — bounds quote
   entry decoding to reject malformed envelopes before allocating slices.
 - `FromProto` methods on `JoinRoundQuoteReceived`, `RoundJoined`,
@@ -114,6 +130,23 @@ state transitions and validation rules live under [Invariants](#invariants).
   selects `defaultRegistrationTimeout` (60 s); negative disables the timeout
   (round waits indefinitely). Bounds how long forfeit-reserved inputs sit
   stranded when the server never responds (wavelength#653).
+- `RoundClientConfig.StatusReconcileTimeout` — window a forfeit-bearing
+  round in `InputSigSentState` waits before probing the operator with
+  `QueryRoundStatusOutbox`; doubles as the retry interval between probes
+  (exponential backoff capped at 16× the base). Zero selects
+  `defaultStatusReconcileTimeout` (90 s); non-positive opts out entirely.
+- `RoundClientConfig.WalletAskTimeout` — bounds *every* Ask this actor
+  makes into the wallet actor, covering both the enqueue and the Await.
+  Zero selects `defaultWalletAskTimeout` (30 s). Applied by the
+  `askWallet` helper.
+- `RoundClientConfig.AutoRefreshFeeFloor` / `AutoRefreshFeeRatePPM` —
+  the unattended-maintenance fee budget curve (floor plus proportional
+  rate over preserved value). See `autoRefreshFeeBudget` under
+  [Invariants](#invariants). Both zero disables the curve and falls back
+  to `MaxOperatorFee` alone.
+- `defaultRefreshRegistrationDelay` (500 ms) — quiet period used to
+  coalesce back-to-back expiry-driven refreshes (one per VTXO actor on a
+  block epoch) into a single round registration.
 - `computeClientOperatorFee(intents, ownedVTXOs) int64` —
   Σ(boarding inputs) + Σ(forfeited VTXOs) − Σ(owned output VTXOs) −
   Σ(cooperative leave outputs), clamped to zero. Carried on
@@ -131,7 +164,8 @@ state transitions and validation rules live under [Invariants](#invariants).
 - **Sends → `serverconn`**: `JoinRoundRequest`,
   `JoinRoundAcceptOutbox`, `JoinRoundRejectOutbox`,
   `SubmitNoncesRequest`, `SubmitPartialSigRequest`,
-  `SubmitForfeitSigRequest`, `SubmitVTXOForfeitSigsToServer`.
+  `SubmitForfeitSigRequest`, `SubmitVTXOForfeitSigsToServer`,
+  `QueryRoundStatusOutbox` (→ `roundpb.MethodQueryRoundStatus`).
 - **Sends → `vtxo`**: forfeit/spend/block-epoch events listed above;
   manager-level `VTXOCreatedNotification`, `VTXOTerminatedMsg`.
 - **Sends → `wallet`**: `RegisterConfirmationRequest`.
@@ -146,8 +180,11 @@ state transitions and validation rules live under [Invariants](#invariants).
   `OperatorFeeSat > 0` and any refresh-origin VTXO was emitted.
 - **Receives ← `serverconn`** (via `ServerMessageNotification`):
   `CommitmentTxBuilt`, `NoncesAggregated`, `OperatorSigned`,
-  `RoundJoined`, `BoardingFailed`, `JoinRoundQuoteReceived`.
-- **Receives ← `vtxo`**: `ForfeitSignatureResponse` (via manager).
+  `RoundJoined`, `BoardingFailed`, `JoinRoundQuoteReceived`,
+  `RoundStatusReported`.
+- **Receives ← `vtxo`**: `ForfeitSignatureResponse` (via manager),
+  `RefreshVTXORequest` (per-VTXO expiry refresh) and
+  `RefreshVTXOCohortRequest` (manager-coordinated maintenance cohort).
 - **Receives ← `wallet`** (via `lib/actormsg`): `RegisterIntentMsg`
   (pre-admitted intent packages), `TriggerBoardMsg`. Boarding UTXO
   confirmations arrive wrapped in `WalletBoardingConfirmed`.
@@ -248,6 +285,86 @@ state transitions and validation rules live under [Invariants](#invariants).
   collaborative leaf when the live output uses a custom script policy;
   without it the VTXO actor would build a forfeit against the wrong
   tapscript branch.
+- **Forfeit release past `PartialSigsSent` goes through a status
+  reconcile, never a blind release** (wavelength#844).
+  `releaseForfeitsOnFailure` (the #653 rollback wrapper) deliberately
+  stops at `PartialSigsSentState`, because beyond that point the operator
+  may hold fully-signed forfeit txs and an unconditional release risks a
+  double-spend. A `BoardingFailed` landing in `InputSigSentState` with
+  forfeits at stake therefore parks in `InputSigSentState.PendingFailure`
+  while `QueryRoundStatusOutbox` probes the operator. Only a
+  `ROUND_STATUS_DEAD` answer — proof the commitment can never confirm,
+  since the operator persists a finalized round atomically with its VTXOs
+  *before* broadcasting — releases the reservations. Any other answer
+  holds them.
+- The `TimeoutPhaseStatusReconcile` timer never releases anything on its
+  own; expiry only re-emits the probe. It exists to cover the silent
+  operator (lumos#618): a crashed operator sends no failure at all, so
+  without the timer the FSM would wait forever for an event that is not
+  coming. It is armed when forfeit signatures are emitted, re-armed per
+  probe, and re-armed on restart reload. `InputSigSentState.PendingFailure`
+  and `ReconcileProbes` are **in-memory only** — a restart resets the probe
+  count and relies on the re-armed timer.
+- **Arm status reconciliation before any fallible outbox effect.**
+  `processOutbox` stops at the first failed external effect, so a transient
+  failure while submitting forfeit signatures or registering the chain
+  watch would otherwise skip arming the timeout *after* signatures had
+  already left the client, stranding reserved inputs with no reconciliation
+  path. The forfeit-collection outbox order is: cancel the
+  forfeit-collection timeout, arm status reconciliation, then VTXO forfeit
+  signatures → optional boarding signatures → chain registration.
+- **Exactly one commitment-confirmation watch per round.** The FSM outbox
+  emits `RegisterConfirmationRequest` after committing the durable
+  `InputSigSent` state; checkpoint handling only installs the routing
+  index, and restart recovery re-registers from durable state. Registering
+  again from the checkpoint notification produced a second subscription
+  under a different caller ID — the first completed the round and the
+  second reported the tx as no longer indexed. The FSM request uses the
+  validated batch-output script and the operator's minimum confirmation
+  target, matching restart recovery.
+- **`SweepDelay` must survive a restart** (`rounds.sweep_delay`). The
+  confirmation handler derives each new VTXO's absolute batch expiry as
+  `confirmation_height + SweepDelay`, and a round checkpointed at
+  `input_sig_sent` can confirm long afterwards. The upsert only adopts a
+  non-zero incoming delay — the value is fixed for the life of a round, so
+  a later checkpoint must never clear what an earlier one recorded. Rounds
+  checkpointed before the migration have no recorded delay; for those the
+  confirmation path leaves the expiry **unstamped** (logging at error
+  level) rather than stamping `BatchExpiry == CreatedHeight`, which the
+  wallet would read back as already expired. An unstamped expiry
+  classifies as `ExpiryStatusUnknown`, so the VTXO stays live and spendable
+  with only expiry monitoring disabled.
+- **Every round → wallet `Ask` is bounded** by `askWallet`, which applies
+  one `WithTimeout` covering both the enqueue and the `Await`. The wallet's
+  own handlers Ask the round actor back, so two full mailboxes could
+  otherwise produce a circular wait that parks the receive loop forever.
+  Bounding one direction breaks the cycle; the wallet → round direction is
+  left unbounded **deliberately**, because an Ask's context becomes the
+  receiver's turn context and a deadline there would bound money-path FSM
+  registration work. The actor lifecycle context stays the parent so
+  shutdown still cancels a pending Ask.
+- Call sites that scan every tracked round share **one** deadline per scan
+  rather than paying the per-query budget per FSM. With N rounds
+  mid-transition a single message could otherwise spend N × the per-query
+  budget, and `OnStop` could burn its whole cleanup budget on queries and
+  strand external-signer session cleanup. Every scanning caller already
+  degrades by skipping an unreadable round, so the shared budget changes
+  worst-case latency, not behaviour.
+- **Automatic (expiry-driven) refreshes are cohort-scoped.** Members of
+  one `BatchExpiry` cohort are handed to a round atomically via
+  `RefreshVTXOCohortRequest`, reusing the leader's operator-key snapshot so
+  a single registration cannot mix operator terms or spend its deadline on
+  repeated `GetInfo` calls. If the round handoff fails, the leader is
+  released together with its reserved siblings.
+- **Auto-refresh fee budget** (`autoRefreshFeeBudget`): the allowance is
+  `max(AutoRefreshFeeFloor, autoValue × AutoRefreshFeeRatePPM / 1e6)`,
+  clamped to `MaxOperatorFee`, which remains the hard global ceiling. The
+  floor covers fixed costs for small VTXOs without giving large cohorts an
+  unbounded allowance. It **fails closed**: with a configured policy and a
+  non-positive automatic value (malformed or overflowed intents) the budget
+  is zero, not unlimited. The denominator counts only automatic-maintenance
+  outputs, but the resulting cap applies to the entire realised round fee.
+  A `ratePPM > 1_000_000` is rejected outright.
 
 ## Deep Docs
 

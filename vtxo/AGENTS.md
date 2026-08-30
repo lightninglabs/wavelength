@@ -29,8 +29,8 @@ when the local wallet owns the receive script.
   ActorSystem, ChainParams, ExpiryConfig, RoundActor ref, ChainResolver ref,
   optional `Log`, optional `LedgerSink fn.Option[ledger.Sink]`,
   `ForfeitVTXOActorAskTimeout`, `RefreshFeeQuoter`, `FetchOperatorKey`,
-  `ForfeitParticipantSigner`, `TerminalVTXOObserver`, `ExitOutcomeResolver`,
-  and `ReservationStore`. Confirmed exit-cost accounting is emitted by unroll
+  `ForfeitParticipantSigner`, `CriticalExitAssessor`, `TerminalVTXOObserver`,
+  `ExitOutcomeResolver`, and `ReservationStore`. Confirmed exit-cost accounting is emitted by unroll
   after final sweep confirmation. `ForfeitVTXOActorAskTimeout`
   (default 5 s) bounds forfeit and refresh child asks so a blocked child actor
   cannot monopolize the manager until the outer RPC deadline. Zero uses the
@@ -84,6 +84,11 @@ when the local wallet owns the receive script.
   `ErrVTXOLiquidityLocked` (`admission_errors.go`) — admission sentinels;
   match with `errors.Is`.
 - `VTXOEvent` — Inbound events (BlockEpochEvent, ForfeitRequest, ForfeitConfirmed, SpendReserveEvent, SpendCompletedEvent, etc.).
+- `CohortRefreshEvent` — Asks an eligible sibling VTXO from the same
+  `BatchExpiry` batch to join an automatic refresh another VTXO already
+  triggered. The manager sends these with bounded Ask backpressure and the
+  member returns its constructed `round.RefreshVTXORequest` directly in the
+  Ask response, so no recursive manager-mailbox re-entry occurs.
 - `VTXOOutMsg` — Outbound messages (ForfeitRequest, ExpiringNotify, StatusUpdate, Terminated).
 - `FilterOptions` / `FilterDescriptors` — VTXO filtering by expiry status, spend state, etc.
 - `GetActiveVTXOCountRequest` / `GetActiveVTXOCountResponse` — Ask-message for querying active VTXO count from the manager.
@@ -95,6 +100,11 @@ when the local wallet owns the receive script.
 - `VTXOSaver` — Narrow persistence interface (`SaveVTXO(ctx, *Descriptor)`) the incoming handler uses; the production implementation is the `db` VTXO store, which serializes a missing tree path as an empty blob.
 - `VTXOsMaterializedNotification` — Manager-facing notification carrying already-persisted descriptors; the manager spawns one actor per descriptor without performing another store write. Used by both the OOR receive path and the new incoming round VTXO handler.
 - `LazyChainResolver` — Forwarding `TellOnlyRef[ExpiringNotification]` that buffers notifications until `Set()` wires the real chain-resolver target. Breaks the init-order dependency between the VTXO manager (which spawns `LazyChainResolver` at startup) and the unroll registry (which is wired after the VTXO manager starts). Buffered notifications are replayed in-order on `Set()`.
+- `CriticalExitAssessor` / `CriticalExitAssessment` — Function type
+  `func(ctx, *Descriptor) (CriticalExitAssessment, error)` and its result
+  (`Feasible bool`, `Reason string`). Set on `ManagerConfig` and propagated to
+  every spawned `VTXOActor`; consulted before a critical-expiry VTXO enters
+  automatic unilateral exit. See the viable-recovery invariant below.
 - `RefreshFeeQuoter` — Function type `func(ctx, amount btcutil.Amount, remainingBlocks uint32) btcutil.Amount`. Optional hook on `VTXOActorConfig`; invoked as an **advisory preview** before each auto-refresh emission to estimate the per-input operator fee for UX surfaces. Under the seal-time fee handshake (#270) the server is the binding fee authority — the quoter's return value is no longer attached to the wire intent. Nil quoter (legacy and test paths) yields `OperatorFee=0` on the harness-local `RefreshVTXORequest`, which has no effect on the round protocol.
 
 ## Relationships
@@ -103,6 +113,9 @@ when the local wallet owns the receive script.
 - **Depended on by**: `round` (triggers forfeit requests), `oor` (incoming VTXOs), `wallet` (admission gating), `db` (persistence), `waved` (wiring, owned-script adapters, incoming event route, and `CheckForfeitAdmission` for the leave filter and exit-plan advisory), `sdk/swaps` (forfeit sign-request conversion).
 - **Sends**:
   - → `round` (via manager relay): `RelayToRoundMsg` wrapping `ForfeitSignatureSubmission`
+  - → `round`: `RefreshVTXORequest` (single expiry-driven refresh) or
+    `RefreshVTXOCohortRequest` (a coordinated same-`BatchExpiry` maintenance
+    cohort, sent atomically so members cannot be split across rounds)
   - → `db` (via outbox): `VTXOStatusUpdate`
   - → `vtxo` manager: `VTXOTerminatedNotification`, `RelayToRoundMsg`, `VTXOsMaterializedNotification` (from `IncomingVTXOHandler`)
   - → `ledger` actor: no direct messages; unroll emits confirmed
@@ -155,6 +168,17 @@ when the local wallet owns the receive script.
 - VTXO actor state is the single source of truth for availability.
 - Forfeit transaction is not broadcast until the connector output's round confirms (atomic replacement).
 - Refresh is auto-triggered at configurable height before expiry.
+- **Automatic refresh coordinates a cohort, best-effort and bounded.**
+  `coordinateAutoRefreshCohort` pulls eligible live and pending-forfeit
+  siblings sharing the leader's `BatchExpiry` into one round so the batch pays
+  one operator fee instead of N. It is capped at `maxAutoRefreshCohortSize`
+  (32) and runs every child Ask sequentially under **one** aggregate deadline
+  (`ForfeitVTXOActorAskTimeout`), not a per-child budget. All of it is
+  best-effort: a store failure or a declining child must never delay the
+  leader's own maintenance attempt, and each child independently refuses
+  stale, critical, reserved, or non-live requests. The leader snapshots the
+  operator key once and reuses it for every member, so a single registration
+  cannot mix operator terms.
 - Auto-refresh delays to an advertised fee-waiver boundary only when the
   boundary remains at least `MinRefreshBuffer` blocks above the dynamic
   critical threshold. An overly late window never weakens unilateral-exit or
@@ -162,6 +186,23 @@ when the local wallet owns the receive script.
 - When the cached boundary fires, auto-refresh fetches fresh operator terms
   before reserving the VTXO. A later still-safe boundary leaves the VTXO live;
   a disabled or unsafe-late window preserves the ordinary paid refresh path.
+- **Critical expiry prefers a recovery path that can actually execute.**
+  `preflightCriticalExit` intercepts a `BlockEpochEvent` that would take a
+  `LiveState` or `PendingForfeitState` VTXO into unilateral exit at
+  `ExpiryStatusCritical`, and runs `CriticalExitAssessor` over the whole exit
+  package. An explicitly infeasible verdict (the backing wallet cannot fund
+  the package at the current fee rate) is rewritten into the actor-local
+  `criticalRefreshEvent`, which starts cooperative refresh from `LiveState`
+  and keeps waiting for the round from `PendingForfeitState`. Without this,
+  a critical VTXO entered an exit that could only retry while a cooperative
+  round was still available.
+  **The check fails open**: a nil assessor, an assessment error, or a
+  feasible verdict all retain the existing direct unilateral-exit
+  transition — an unavailable assessment must never suppress the safety
+  path. The assessment repeats on every block, so funding the wallet
+  restores the unilateral path with no extra state transition.
+  `criticalRefreshEvent` is actor-local; external block notifications stay
+  `BlockEpochEvent`.
 - Once ForfeitedState is reached, the old VTXO is unspendable; the new VTXO is available only after round confirmation.
 - SpendingState is persisted as VTXOStatusSpending and survives restarts.
 - OOR completion transitions VTXOs to SpentState through the VTXO actor FSM, not by direct store writes.

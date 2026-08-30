@@ -45,6 +45,22 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 
 ## Invariants
 
+- **Manual and automatic exit admission share one feasibility model.**
+  `assessUnrollFeasibility` gathers the wallet snapshot, fee rate, and OOR
+  lineage for a single unilateral package and returns
+  `unroll.PlanExitFunding(...).Feasibility`. Both consumers go through it:
+  `preflightUnrollFeasibility` (the manual `Unroll` RPC admission gate) and
+  `assessAutomaticCriticalExit`, which `Server.initVTXOManager` wires onto
+  `vtxo.ManagerConfig.CriticalExitAssessor`. Keeping one model is the point —
+  the manual gate and the VTXO actor's critical-expiry path selection must not
+  be able to disagree about whether the wallet can execute an exit. The
+  adapter is a plain function value, so the VTXO manager gets the verdict
+  without an import cycle back into `waved`.
+- `automaticExitDecisionReason` renders the first failed feasibility invariant
+  with concrete values (`sweep_below_dust`, `uneconomical`,
+  `wallet_underfunded`, `wallet_too_few_inputs`) so the automatic path choice
+  is diagnosable from one structured log entry. A feasible verdict returns a
+  stable short label because the VTXO actor logs the chosen action separately.
 - The lnd wallet account (`lnd.account`, empty = lnd's `default`) bounds what
   this daemon may **spend**: `ListWalletUnspent` (fee inputs and the exit
   preflight), `NewWalletAddress` (the deposit address), and the

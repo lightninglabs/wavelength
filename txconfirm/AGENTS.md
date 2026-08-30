@@ -101,7 +101,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   overcome. Only a structurally permanent error
   (`isPermanentBroadcastError`, currently `ErrNonTRUCParent`) fails
   terminally; `ErrParentAlreadyBroadcast` advances to
-  `AwaitingConfirmation` (a live parent exists on another path). Rationale:
+  `AwaitingConfirmation` (a live parent exists on another path) and is logged
+  at `Debug`, not `Warn`, on **both** the initial-broadcast and fee-bump
+  paths. Losing the package race to an existing broadcast leaves the parent
+  under its confirmation watch, so the rejected duplicate child needs no
+  operator action. Rationale:
   a fraud-response checkpoint must land before the counterparty's
   CSV-timeout path, so the actor escalates to operators rather than
   silently aborting.

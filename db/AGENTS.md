@@ -159,6 +159,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
 - Postgres test fixture slots bound Docker startup and migrations only. Helpers
   release the slot before returning the initialized store; retaining it until
   test cleanup can deadlock Go's parallel-test barrier.
+- `TestPgFixture` enforces its lifetime with a `time.AfterFunc` timer that
+  calls `KillContainer`, **not** dockertest's `Resource.Expire`. `Expire`
+  calls Docker's stop endpoint immediately and treats the duration as the
+  *graceful-stop timeout*, so on daemons that serialize stop requests it can
+  block every fixture slot until that timeout elapses. `TearDown` stops the
+  timer before purging.
 - `ledger_entries.entry_id` and `wallet_utxo_log.entry_id` use
   `INTEGER PRIMARY KEY AUTOINCREMENT` to prevent rowid reuse after
   deletion, preserving append-only ordering.

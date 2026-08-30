@@ -39,6 +39,23 @@ on-chain transactions from wallet and daemon chain backends.
 - `MempoolSpaceEstimator` rejects non-HTTPS URLs except for loopback hosts, to
   avoid tampering with fee data in transit.
 
+## Log Severity
+
+This package is deliberate about which fee conditions page a human (see
+[`docs/structured-logging.md`](../docs/structured-logging.md)).
+
+- An individual child-provider failure inside `MinEstimator` is `Info`.
+  Failing over to the remaining providers is the design, not an incident.
+- Providers whose estimates diverge is `Info`, and the selected provider is
+  `Info` — both are routine observability, not an alert.
+- A **sub-floor** provider rate — one clamped up to `chainfee.FeePerKwFloor` —
+  stays at `Warn`. Clamping makes the returned rate relay-valid but does not
+  repair *selection*: the clamped provider becomes the minimum candidate and
+  can pin the whole aggregate at the relay floor indefinitely, so persistent
+  fee underpayment needs operator action.
+- `Warn` is otherwise reserved for the case where *every* provider failed and
+  the estimator falls back to its last successful rate.
+
 ## Deep Docs
 
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map
