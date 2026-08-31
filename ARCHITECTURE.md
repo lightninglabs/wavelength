@@ -218,11 +218,15 @@ corresponding state transition being durable.
 
 ### Round FSM
 ```
-Idle → PendingRoundAssembly → RegistrationSent → RoundJoined →
+Idle → PendingRoundAssembly → IntentSent → QuoteReceived → RoundJoined →
 CommitmentTxReceived → CommitmentTxValidated → NoncesSent →
 NoncesAggregated → PartialSigsSent → [ForfeitSignaturesCollecting] →
 InputSigSent → Confirmed → Idle
 ```
+The concrete state types carry a `State` suffix (`IntentSentState`,
+`QuoteReceivedState`, …); `IntentSent` is the state older comments call
+"RegistrationSent". A `JoinRoundQuoteReceived` with a strictly higher
+`SealPass` can walk `RoundJoined` back to `QuoteReceived` for a reseal.
 ForfeitSignaturesCollecting is entered only when `len(ForfeitMappings) > 0`
 (i.e., the round includes refresh or leave VTXOs). Boarding-only rounds
 skip directly from PartialSigsSent to InputSigSent. Forfeit collection
@@ -234,10 +238,21 @@ once new ones are confirmed signed.
 Live → PendingForfeit → Forfeiting → Forfeited
 Live → Forfeiting → Forfeited  (fast path: ForfeitRequestEvent in LiveState)
 PendingForfeit → UnilateralExit  (critical expiry while pending)
-Live → UnilateralExit  (critical expiry)
+Live → UnilateralExit  (critical expiry, exit package fundable)
+Live → PendingForfeit  (critical expiry, exit package NOT fundable)
 Live → Spent
 Any → Failed
 ```
+At critical expiry the VTXO actor first consults the optional
+`vtxo.CriticalExitAssessor` (wired by `waved` to the same
+`unroll.PlanExitFunding` verdict the manual exit path uses). Only an
+explicitly infeasible verdict diverts to continued cooperative refresh; a
+nil assessor, an assessor error, or a feasible verdict all take the
+unilateral-exit edge, so an unavailable assessment never suppresses the
+safety path. The check repeats every block, so funding the backing wallet
+restores the exit edge without another transition. Past the batch deadline
+`PendingForfeit` stops escalating entirely — the in-flight cooperative spend
+is the only recovery that can still land.
 
 ### OOR FSM
 Manages outgoing/incoming transfer state through checkpoint signing with

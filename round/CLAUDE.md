@@ -167,6 +167,22 @@ state transitions and validation rules live under [Invariants](#invariants).
 - Round state is checkpointed atomically after tree validation — a
   crash before checkpoint means the client has no record of sent
   signatures.
+- **The FSM outbox is the single owner of commitment-confirmation
+  registration.** `processOutbox`'s `RoundCheckpointedNotification` branch
+  only records `commitmentTxIndex[txid] = keyStr` (so the confirmation the
+  FSM's own `RegisterConfirmationRequest` triggers can be routed back to the
+  right round); it must **not** call `registerCommitmentConfirmation` itself.
+  Doing both opened two notifier subscriptions for one commitment tx. Restart
+  recovery is unaffected: `Start` re-registers every active round.
+- **The forfeit-collection timeout is armed before any fallible external
+  effect.** `forfeitCollectionOutbox` emits `StartTimeoutReq`
+  (`TimeoutPhaseForfeitCollection`) first, then `SubmitVTXOForfeitSigsToServer`,
+  then the optional `SubmitForfeitSigRequest` for boarding inputs, and only
+  last the `RegisterConfirmationRequest`. `processOutbox` stops at the first
+  error, so ordering the timeout after a submission or the chain registration
+  would strand the round in forfeit collection with no reconciliation path.
+  The two submissions keep their relative order because that is the sequence
+  the server expects.
 - Primary FSM handles interactive phases (through `InputSigSent`); a
   dedicated FSM per round handles confirmation monitoring.
 - The round actor does **not** mark VTXOs as `PendingForfeit` — the

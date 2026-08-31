@@ -138,6 +138,20 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   cycle) into `unroll.StartTrigger`; an empty or unknown trigger admits as
   critical expiry. A `None` exit policy leaves the registry on its standard
   VTXO timeout policy.
+- `ManagerConfig.CriticalExitAssessor` is wired to
+  `RPCServer.assessAutomaticCriticalExit`, closing the loop in the other
+  direction: before a critically-expiring VTXO escalates itself into
+  unilateral exit, the VTXO actor asks waved whether the backing wallet can
+  actually fund and relay the exit package. Both that callback and the manual
+  `GetExitPlan` / `Unroll` path route through the single
+  `assessUnrollFeasibility` helper (wallet snapshot → `resolveExitLineage` →
+  `unroll.PlanExitFunding`), so automatic and hand-typed admission cannot
+  disagree about executability. `automaticExitDecisionReason` renders the
+  first failed `unroll.ExitFeasibility` invariant into the short string the
+  VTXO actor logs. Because this is a plain function seam, `vtxo` gains no
+  compile-time dependency on `unroll` or `waved`. An error from the helper is
+  returned as-is and the VTXO actor deliberately falls back to the direct
+  exit, so a wallet-query failure can never suppress the safety path.
 - The fraud watcher (`initFraudWatcher`) is wired with `VTXOManagerRef`, so
   fraud spends drive exits through the VTXO manager — the same admission path
   as manual, critical-expiry, and vHTLC recovery exits — rather than talking to

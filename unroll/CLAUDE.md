@@ -121,7 +121,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
 - `PlanExitFunding(desc, mat, feeRate, ...) ExitFundingPlan` —
   derives the wallet fee-input amount an operator/caller should fund
   before starting the exit; `RecommendedExitFeeInputAmount` reads the
-  verdict for the same number.
+  verdict for the same number. The resulting `Feasibility` is also what
+  `waved` adapts into `vtxo.CriticalExitAssessor`, so the **automatic**
+  critical-expiry path decision (unilateral exit vs. continued cooperative
+  refresh) is scored by the same verdict the manual `GetExitPlan` / `Unroll`
+  path reports.
 - `ExitProgress` (in `GetStatusResp`) — `ConfirmedTxs`/`InFlightTxs`/
   `ReadyTxs`/`BlockedTxs` counts over the proof graph, for status
   probes.
