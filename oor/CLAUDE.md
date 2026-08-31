@@ -103,6 +103,48 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   registry's `ensureChild` choke point, the only path that makes a session
   resident, so every admission path (RPC, routed message, boot restore)
   shares the same bound.
+- Over-cap rejection on a Tell-driven routed path is a **postpone**, not a
+  failure: being at the cap is a not-now condition that clears when a resident
+  session terminates and is reaped, so nacking the routed hint would spend one
+  of its finite attempts (and eventually dead-letter a valid incoming
+  transfer) for a condition it did not cause. `handleResolveIncoming`,
+  `handleDriveEvent`'s lazy restore, and `handleResumeSession` wrap the
+  rejection as `fmt.Errorf("%w: %w", errIncomingAdmissionCapped,
+  actor.Postpone(incomingCapBackoff))`, so the consume path releases the
+  delivery on a 5s backoff with attempts intact while boot restore's skip
+  check keeps matching the sentinel. The Ask-driven `StartTransferRequest` is
+  deliberately excluded (it is outgoing, so the incoming cap never applies,
+  and a postponed Ask gets ordinary error treatment anyway), and boot restore
+  keeps skipping over-cap rows rather than aborting.
+- The over-cap postpone is **bounded** by `overCapPostponeHorizon` (10m),
+  measured against `actor.DeliveryEnqueuedAt` (the durable mailbox row's
+  `created_at`, which no release rewrites). Past the horizon `postponeOverCap`
+  returns the plain sentinel so the ordinary nack path dead-letters the hint
+  into a visible, requeue-able table. The bound is required, not cosmetic:
+  postpone removes the attempt-based give-up, and every redelivery of a capped
+  hint re-runs `validateIncomingAdmission` (an ownership DB query) and
+  `resolveSelfTransfer` (a registry-row read) before the cap rejects it again,
+  so an unbounded postpone would let an operator streaming fabricated session
+  ids pin a permanent churn queue on the single-worker registry. The age must
+  come from the row and never from a per-session map, since the session ids in
+  that stream are operator-chosen and the map would itself be the unbounded
+  resource. `incomingCapBackoff` (5s) is a floor on the redelivery gap, not the
+  gap: a postponed row is rediscovered by the idle poll backoff, so the
+  effective wait is roughly 5 to 35 seconds.
+- A deferred self-transfer hint postpones on `selfHintRedeliveryBackoff` (30s
+  flat) rather than riding a custom never-dead-letter `TellRetryPolicy`. That
+  policy never achieved its intent: the registry runs the Read/Commit path,
+  whose `finishNonTx` tail releases via `Delivery.Nack`, and `Nack` checks
+  `ShouldDeadLetter` before releasing, so the tenth deferral dead-lettered the
+  hint no matter what the policy answered. This adopter deliberately has no
+  time horizon: the hint names the wallet's own change output, so discarding it
+  while its outgoing session is still pending is worse than retaining it. The
+  terminal-reap redrive is the normal recovery path, and the durable 30s copy
+  covers a crash or missed redrive. If the outgoing session never becomes
+  terminal, the hint remains in the registry mailbox and does not enter
+  `dead_letters`; operators should watch the age of non-terminal outgoing OOR
+  sessions and inspect that mailbox when one is stuck. The registry uses the
+  default Tell retry policy for every other failure.
 - Witness/script decode bounds mirror consensus limits:
   `maxConditionWitnessItems = 64` items of at most 520 bytes each (Bitcoin's
   `MAX_SCRIPT_ELEMENT_SIZE`), enforced on both encode and decode.

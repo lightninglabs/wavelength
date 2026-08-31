@@ -14,6 +14,24 @@ import (
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
+// errLostLeaseMidTurn reports that a lease-fenced release inside the
+// transaction path matched no rows, which means this consumer no longer owns
+// the message: the lease expired while the behavior was running and another
+// consumer claimed it.
+//
+// It is returned from handleResultInTx for one reason only, to roll the
+// transaction back, so the behavior's writes vanish rather than committing
+// under a row somebody else now governs. processInTransaction recognizes it
+// and returns without nacking, dead-lettering, or marking processed.
+//
+// The "without nacking" part is the load-bearing half. Delivery.Nack's
+// dead-letter arm is unfenced: it calls MoveToDeadLetter and DeleteMessage by
+// ID with no lease-token check, so routing a stale consumer through it would
+// let us dead-letter (and delete) a message its legitimate owner is actively
+// processing. Rolling back and walking away leaves the row entirely to that
+// owner, whose own turn decides its fate.
+var errLostLeaseMidTurn = errors.New("lease lost mid-turn; rolling back")
+
 // TellRetryPolicy determines whether a failed Tell message should be retried
 // and how long to wait before the next attempt. A policy may stop retries
 // early, but it cannot extend the durable MaxAttempts ceiling.
@@ -629,6 +647,13 @@ func (a *DurableActor[M, R]) processDelivery(delivery *Delivery[M, R]) {
 	}
 	defer cancel()
 
+	// Expose the durable row's enqueue time to the behavior. This is the
+	// only wall-clock reference a postponing behavior can use to bound its
+	// own horizon without keeping per-message state, so it is stamped here,
+	// above the fork into the three execution paths, rather than in any one
+	// of them.
+	processCtx = withDeliveryEnqueuedAt(processCtx, delivery.EnqueuedAt)
+
 	logger(processCtx).TraceS(processCtx, "Durable actor processing message",
 		"actor_id", a.id,
 		"msg_type", delivery.Message.MessageType(),
@@ -747,6 +772,31 @@ func (a *DurableActor[M, R]) processInTransaction(ctx context.Context,
 	})
 
 	if err != nil {
+		// Losing the lease mid-turn is not a transaction failure to
+		// retry, it is a change of ownership. The rollback has already
+		// undone the behavior's writes, which is the correctness
+		// requirement, and the message now belongs to whichever
+		// consumer holds the lease. Do nothing further: no nack, no
+		// dead-letter, no processed mark.
+		//
+		// Nacking here would be actively harmful. Delivery.Nack
+		// dead-letters when the attempt budget is spent, and that arm
+		// is unfenced (MoveToDeadLetter and DeleteMessage run by ID
+		// with no lease check), so this stale consumer could delete a
+		// row its legitimate owner is in the middle of processing.
+		// Walking away leaves the row and its outcome to that owner.
+		if errors.Is(err, errLostLeaseMidTurn) {
+			logger(ctx).WarnS(ctx,
+				"Rolled back turn after losing lease",
+				err,
+				"actor_id", a.id,
+				"delivery_id", delivery.ID,
+				"msg_type", delivery.Message.MessageType(),
+			)
+
+			return
+		}
+
 		logger(ctx).WarnS(ctx,
 			"Transaction failed, nacking message",
 			err,
@@ -847,10 +897,15 @@ func (a *DurableActor[M, R]) finishNonTx(ctx context.Context,
 		// handleResult.
 		shouldMarkProcessed = false
 	} else if delivery.IsTell() && result.Err() != nil {
-		retry, _ := a.tellRetryPolicy(
+		// A postponed message always redelivers, so marking it
+		// processed here would dedup-skip the redelivery. Failures
+		// consult the retry policy as before.
+		if _, postponed := postponeDelay(result.Err()); postponed {
+			shouldMarkProcessed = false
+		} else if retry, _ := a.tellRetryPolicy(
 			result.Err(), delivery.EffectiveAttempts(),
-		)
-		if retry {
+		); retry {
+
 			shouldMarkProcessed = false
 		}
 	}
@@ -1094,6 +1149,49 @@ func (a *DurableActor[M, R]) executeBehaviorSafely(ctx context.Context,
 	return classic.Receive(ctx, delivery.Message)
 }
 
+// releasedRowsInTx interprets the row count from a release performed inside
+// the transaction path, where a zero count has two very different meanings
+// depending on whether the release was fenced.
+//
+// An unfenced (leaseless, empty-token) release that matched no rows just means
+// the row is already gone, which is benign: the original processing consumed
+// it and this is a duplicate. A fenced release that matched no rows means the
+// lease-token comparison failed, so the lease expired mid-turn and another
+// consumer owns the message now. That is not something to retry past, it is a
+// reason to abandon the turn: returning errLostLeaseMidTurn rolls the
+// transaction back so the behavior's writes never commit under a row this
+// consumer no longer holds.
+//
+// The op argument names the release ("Postpone" or "Nack") for the log line.
+func (a *DurableActor[M, R]) releasedRowsInTx(ctx context.Context,
+	delivery *Delivery[M, R], rows int64, op string) error {
+
+	if rows != 0 {
+		return nil
+	}
+
+	if delivery.LeaseToken == "" {
+		logger(ctx).DebugS(ctx, "Release found row already gone",
+			"actor_id", a.id,
+			"delivery_id", delivery.ID,
+			"op", op,
+			"msg_type", delivery.Message.MessageType(),
+		)
+
+		return nil
+	}
+
+	logger(ctx).WarnS(ctx, "Release matched no rows; rolling back turn",
+		errLostLeaseMidTurn,
+		"actor_id", a.id,
+		"delivery_id", delivery.ID,
+		"op", op,
+		"msg_type", delivery.Message.MessageType(),
+	)
+
+	return errLostLeaseMidTurn
+}
+
 // handleResultInTx handles the result within a transaction.
 // It determines whether to ack, nack for retry, or dead-letter, and only
 // marks the message as processed when we won't retry (to avoid dedup issues).
@@ -1119,6 +1217,7 @@ func (a *DurableActor[M, R]) handleResultInTx(
 		LeaseUntil:      delivery.LeaseUntil,
 		Attempts:        delivery.Attempts,
 		MaxAttempts:     delivery.MaxAttempts,
+		EnqueuedAt:      delivery.EnqueuedAt,
 		store:           store,
 		deferPromise:    delivery.deferPromise,
 	}
@@ -1159,6 +1258,32 @@ func (a *DurableActor[M, R]) handleResultInTx(
 
 	// For Tell messages, handle based on success/error.
 	if err := result.Err(); err != nil {
+		// A postpone is control flow, not a failure: release the
+		// message without burning an attempt and without marking it
+		// processed, so it redelivers with its retry budget intact.
+		if delay, ok := postponeDelay(err); ok {
+			logger(ctx).DebugS(
+				ctx,
+				"Durable actor Tell message postponed",
+				"actor_id", a.id,
+				"delivery_id", delivery.ID,
+				"msg_type", delivery.Message.MessageType(),
+				"delay", delay,
+			)
+
+			rows, ppErr := postponeMessage(
+				ctx, store, delivery.ID, delivery.LeaseToken,
+				delay,
+			)
+			if ppErr != nil {
+				return ppErr
+			}
+
+			return a.releasedRowsInTx(
+				ctx, delivery, rows, "Postpone",
+			)
+		}
+
 		effectiveAttempts := delivery.EffectiveAttempts()
 		logger(ctx).WarnS(ctx,
 			"Durable actor Tell message failed",
@@ -1181,12 +1306,15 @@ func (a *DurableActor[M, R]) handleResultInTx(
 			// Don't mark as processed - we want retry to work.
 			// nackMessage routes a leaseless (empty-token) delivery
 			// to the by-ID nack, which increments attempts.
-			_, nackErr := nackMessage(
+			rows, nackErr := nackMessage(
 				ctx, store, delivery.ID, delivery.LeaseToken,
 				delay,
 			)
+			if nackErr != nil {
+				return nackErr
+			}
 
-			return nackErr
+			return a.releasedRowsInTx(ctx, delivery, rows, "Nack")
 		}
 
 		// Max retries exceeded - dead letter. Mark as processed since
@@ -1287,6 +1415,33 @@ func (a *DurableActor[M, R]) handleResult(ctx context.Context,
 
 	// For Tell messages, handle based on success/error.
 	if err := result.Err(); err != nil {
+		// A postpone is control flow, not a failure: release the
+		// message without burning an attempt so it redelivers with
+		// its retry budget intact.
+		if delay, ok := postponeDelay(err); ok {
+			logger(ctx).DebugS(
+				ctx,
+				"Durable actor Tell message postponed",
+				"actor_id", a.id,
+				"delivery_id", delivery.ID,
+				"msg_type", delivery.Message.MessageType(),
+				"delay", delay,
+			)
+
+			if ppErr := delivery.Postpone(
+				ctx, delay,
+			); ppErr != nil {
+
+				logger(ctx).WarnS(ctx, "Failed to postpone "+
+					"Tell message",
+					ppErr,
+					"actor_id", a.id,
+					"delivery_id", delivery.ID)
+			}
+
+			return
+		}
+
 		effectiveAttempts := delivery.EffectiveAttempts()
 		logger(ctx).WarnS(ctx,
 			"Durable actor Tell message failed",
