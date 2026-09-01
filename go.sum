@@ -1064,8 +1064,6 @@ github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20260706193822-2adfadc58
 github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20260706193822-2adfadc58e3c/go.mod h1:nOjUfSstCfHYY0QNnxlhN+N915Vcl5ziyHiOD8hVoJI=
 github.com/lightningnetwork/lightning-onion v1.4.0 h1:qWE1icOH4AKXRcq1KCzt6P/TesqptgBTP++V7wowTc0=
 github.com/lightningnetwork/lightning-onion v1.4.0/go.mod h1:YDPkvVTVQ6FBBE6Yj93tDd7zA3iTSrryi9xq46i7bKE=
-github.com/lightningnetwork/lnd v0.21.0-beta.rc2.0.20260630214209-40c64f9db30d h1:mDcB9mwuwJXRbDmxps6mBgGs318Iz5ZbOrt0ieEx0os=
-github.com/lightningnetwork/lnd v0.21.0-beta.rc2.0.20260630214209-40c64f9db30d/go.mod h1:LWfQaNNXlZghUJqIIh+JsgfxiVtC+ecZkrIe5bm9o4U=
 github.com/lightningnetwork/lnd/actor v0.0.6 h1:Ge8N2wivARG+27qJBwTlB0vwsypStZYZy8vk4Zl38sU=
 github.com/lightningnetwork/lnd/actor v0.0.6/go.mod h1:YAsoniSbY/cAM9HTVNfZLvt7RI6swDxy6wzPspTcMZg=
 github.com/lightningnetwork/lnd/cert v1.2.2 h1:71YK6hogeJtxSxw2teq3eGeuy4rHGKcFf0d0Uy4qBjI=
@@ -1215,6 +1213,8 @@ github.com/spf13/pflag v1.0.10 h1:4EBh2KAYBwaONj6b2Ye1GiHfwjqyROoF4RwYO+vPwFk=
 github.com/spf13/pflag v1.0.10/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
 github.com/spf13/viper v1.21.0 h1:x5S+0EU27Lbphp4UKm1C+1oQO+rKx36vfCoaVebLFSU=
 github.com/spf13/viper v1.21.0/go.mod h1:P0lhsswPGWD/1lZJ9ny3fYnVqxiegrlNrEmgLjbTCAY=
+github.com/sputn1ck/lnd v0.4.2-beta.0.20260812173519-3963ad13611a h1:7FffhsL+B3cWTHat4Hem78O8TihAyFpg8TUY8FIAHaY=
+github.com/sputn1ck/lnd v0.4.2-beta.0.20260812173519-3963ad13611a/go.mod h1:LWfQaNNXlZghUJqIIh+JsgfxiVtC+ecZkrIe5bm9o4U=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/objx v0.1.1/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/objx v0.4.0/go.mod h1:YvHI0jy2hoMjB+UWwv71VJQ9isScKT/TqJzVSSt89Yw=

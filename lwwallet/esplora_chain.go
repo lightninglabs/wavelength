@@ -812,6 +812,10 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 	if err != nil {
 		return fmt.Errorf("get tip height for rescan: %w", err)
 	}
+	if startHeight > tipHeight {
+		return fmt.Errorf("rescan start height %d exceeds tip %d",
+			startHeight, tipHeight)
+	}
 
 	s.log.InfoS(ctx, "Starting chain rescan",
 		slog.Int("start_height", int(startHeight)),
@@ -822,7 +826,11 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 
 	// Collect all notifications first, then flush them
 	// asynchronously. See method doc for deadlock rationale.
-	var pending []interface{}
+	var (
+		pending   []interface{}
+		finalHash chainhash.Hash
+		finalTime time.Time
+	)
 
 	// Ask the address index which transactions in this range are
 	// relevant, instead of downloading every block and scanning it.
@@ -871,6 +879,8 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 			},
 			Time: time.Unix(blockHeader.Timestamp, 0),
 		}
+		finalHash = blockHash
+		finalTime = blockMeta.Time
 
 		// Build records for whatever the index attributed to this
 		// canonical block. An inconsistent index answer falls back to
@@ -940,6 +950,15 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 			chain.BlockConnected(blockMeta),
 		)
 	}
+
+	// btcwallet only marks its chain view synchronized after this terminal
+	// notification. Advancing SyncedTo without it leaves channel funding
+	// disabled even though every block has been processed.
+	pending = append(pending, &chain.RescanFinished{
+		Hash:   &finalHash,
+		Height: tipHeight,
+		Time:   finalTime,
+	})
 
 	s.log.InfoS(ctx, "Chain rescan complete",
 		slog.Int("tip_height", int(tipHeight)),
