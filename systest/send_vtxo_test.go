@@ -30,6 +30,7 @@ import (
 	"github.com/lightninglabs/wavelength/round"
 	"github.com/lightninglabs/wavelength/rpc/oorpb"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
+	"github.com/lightninglabs/wavelength/rpcauth"
 	"github.com/lightninglabs/wavelength/serverconn"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waved"
@@ -639,18 +640,63 @@ func (f *directedSendFixture) launch() {
 	f.serverCancel = cancel
 	f.serverErrChan = errChan
 
-	conn, err := grpc.NewClient(
-		f.rpcAddr,
-		grpc.WithTransportCredentials(
-			insecure.NewCredentials(),
-		),
-	)
+	conn, err := f.dial(f.cfg.RPC.MacaroonPath)
 	require.NoError(t, err)
 
 	f.conn = conn
 	f.client = waverpc.NewDaemonServiceClient(conn)
 
 	waitForDaemonReady(t, f.client)
+}
+
+// dial connects to the daemon using the fixture's configured transport and
+// the macaroon at macaroonPath when authentication is enabled.
+func (f *directedSendFixture) dial(macaroonPath string) (*grpc.ClientConn,
+	error) {
+
+	var opts []grpc.DialOption
+	if f.cfg.RPC.NoTLS {
+		opts = append(
+			opts,
+			grpc.WithTransportCredentials(
+				insecure.NewCredentials(),
+			),
+		)
+	} else {
+		waitForFixtureFile(f.t, f.cfg.RPC.TLSCertPath)
+
+		creds, err := rpcauth.ClientTLSCredentials(
+			f.cfg.RPC.TLSCertPath,
+		)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, grpc.WithTransportCredentials(creds))
+	}
+
+	if !f.cfg.RPC.NoMacaroons {
+		waitForFixtureFile(f.t, macaroonPath)
+
+		macaroonOpt, err := rpcauth.DialOptionFromFile(macaroonPath)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, macaroonOpt)
+	}
+
+	return grpc.NewClient(f.rpcAddr, opts...)
+}
+
+// waitForFixtureFile waits for a daemon credential file to be created during
+// asynchronous startup.
+func waitForFixtureFile(t *testing.T, path string) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(path)
+
+		return err == nil
+	}, 15*time.Second, 50*time.Millisecond, "file %s", path)
 }
 
 // shutdown stops the currently running daemon and closes its client connection,
