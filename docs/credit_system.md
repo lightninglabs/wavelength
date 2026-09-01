@@ -347,6 +347,14 @@ daemon restarts after an Ark top-up but before the pay starts, it resumes the
 same operation under the same idempotency key, so the top-up is never repeated
 and the value is not lost.
 
+A credit receive stays pending for the lifetime of its server-owned invoice.
+Local polling never marks it failed; only the server's credited or terminal
+operation state resolves it. On upgrade, the daemon reconciles the exact
+poll-cap failure written by older versions against one server snapshot so a
+still-payable or already-credited receive is visible again. A still-payable
+receive's wallet activity row is restored from the exact legacy failure to
+pending without weakening terminal-state handling for other wallet activity.
+
 If the daemon restarts during a credit-assisted receive, the receive session
 reloads the planned `attached_credit_sat` and `vhtlc_amount_sat`. When the HTLC
 event arrives, the FSM validates the funded vHTLC against that plan before it

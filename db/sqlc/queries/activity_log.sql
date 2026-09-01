@@ -45,6 +45,23 @@ ON CONFLICT (canonical_id) DO UPDATE SET
 WHERE activity_entries.status = sqlc.arg(pending_status)
     OR EXCLUDED.status <> sqlc.arg(pending_status);
 
+-- name: RepairCreditReceivePollCapActivity :execrows
+-- RepairCreditReceivePollCapActivity narrowly reopens an inbound credit
+-- receive that an older client marked terminal after exhausting its local poll
+-- budget. The exact kind, failed status, and legacy error guard prevent this
+-- compatibility repair from weakening the normal terminal-to-pending rule.
+UPDATE activity_entries SET
+    status          = sqlc.arg(pending_status),
+    phase           = sqlc.arg(pending_phase),
+    phase_label     = sqlc.arg(pending_phase_label),
+    failure_code    = 0,
+    failure_reason  = '',
+    updated_at_unix = sqlc.arg(updated_at_unix)
+WHERE canonical_id = sqlc.arg(canonical_id)
+    AND kind = sqlc.arg(receive_kind)
+    AND status = sqlc.arg(failed_status)
+    AND failure_reason = sqlc.arg(legacy_failure_reason);
+
 -- name: AppendActivityEvent :one
 -- AppendActivityEvent records one immutable lifecycle-transition row and
 -- returns the event_seq the database assigned (monotonic, not necessarily

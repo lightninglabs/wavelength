@@ -18,7 +18,14 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
-const creditChildStopTimeout = 5 * time.Second
+const (
+	creditChildStopTimeout = 5 * time.Second
+
+	// LegacyReceivePollCapError is the exact terminal error written by
+	// clients that incorrectly applied the outgoing-operation poll cap to
+	// server-owned receive invoices.
+	LegacyReceivePollCapError = "receive credit not settled within poll cap"
+)
 
 // Registry is the credit subsystem coordinator. It is a plain (non-durable)
 // supervisor actor: it admits operations by writing their control-plane row in
@@ -524,6 +531,12 @@ func (b *registryBehavior) ensureChild(ctx context.Context, opID string) (
 
 // restoreNonTerminal respawns and resumes every non-terminal operation.
 func (b *registryBehavior) restoreNonTerminal(ctx context.Context) error {
+	// Repair the false terminal receive state written by older clients
+	// before selecting rows to restore. This is deliberately best-effort:
+	// an unavailable server snapshot cannot prove a different state, so it
+	// must not either rewrite local history or block ordinary boot restore.
+	b.repairLegacyReceivePollCapFailures(ctx)
+
 	rows, err := b.cfg.Store.ListNonTerminal(ctx)
 	if err != nil {
 		return fmt.Errorf("list non-terminal credit ops: %w", err)
@@ -538,6 +551,241 @@ func (b *registryBehavior) restoreNonTerminal(ctx context.Context) error {
 	)
 
 	return nil
+}
+
+// repairLegacyReceivePollCapFailures reconciles receives that an older client
+// falsely terminal-failed after exhausting its local poll budget. All eligible
+// rows share one server snapshot so the repair makes one coherent decision per
+// boot. Missing operations and unavailable evidence leave their rows untouched.
+func (b *registryBehavior) repairLegacyReceivePollCapFailures(
+	ctx context.Context) {
+
+	rows, err := b.cfg.Store.ListOperations(ctx)
+	if err != nil {
+		b.
+			logger(ctx).
+			InfoS(
+				ctx,
+				"Skipping legacy credit receive repair: "+
+					"operations unavailable",
+				slog.String("err", err.Error()),
+			)
+
+		return
+	}
+
+	candidates := make([]db.CreditOperationRecord, 0)
+	for i := range rows {
+		if isLegacyReceivePollCapFailure(rows[i]) {
+			candidates = append(candidates, rows[i])
+		}
+	}
+	if len(candidates) == 0 {
+		return
+	}
+
+	repairTimeout := b.cfg.ReceiveAdmitTimeout
+	if repairTimeout <= 0 {
+		repairTimeout = DefaultReceiveAdmitTimeout
+	}
+	repairCtx, cancel := context.WithTimeout(ctx, repairTimeout)
+	defer cancel()
+
+	accountKey, err := b.cfg.Daemon.IdentityPubKey(repairCtx)
+	if err != nil {
+		b.
+			logger(ctx).
+			InfoS(
+				ctx,
+				"Skipping legacy credit receive repair: "+
+					"identity unavailable",
+				slog.String("err", err.Error()),
+			)
+
+		return
+	}
+
+	snapshot, err := b.cfg.Server.ListCredits(repairCtx, accountKey)
+	if err != nil || snapshot == nil {
+		attrs := []any{
+			slog.Int("candidate_count", len(candidates)),
+		}
+		if err != nil {
+			attrs = append(attrs, slog.String("err", err.Error()))
+		}
+		b.
+			logger(ctx).
+			InfoS(
+				ctx,
+				"Skipping legacy credit receive repair: "+
+					"server snapshot unavailable",
+				attrs...,
+			)
+
+		return
+	}
+
+	serverStates := make(
+		map[string]ServerCreditState, len(snapshot.Operations),
+	)
+	for i := range snapshot.Operations {
+		op := snapshot.Operations[i]
+		serverStates[op.OperationID] = op.State
+	}
+
+	var repaired int
+	store := b.cfg.Store
+	for i := range candidates {
+		rec := candidates[i]
+		serverState, ok := serverStates[rec.ServerOpID]
+		if !ok {
+			continue
+		}
+
+		updated, changed, err := repairLegacyReceiveRecord(
+			rec, serverState,
+		)
+		if err != nil {
+			b.
+				logger(ctx).
+				InfoS(
+					ctx,
+					"Skipping legacy credit receive "+
+						"repair: snapshot invalid",
+					slog.String("op_id", rec.OpID),
+					slog.String("err", err.Error()),
+				)
+
+			continue
+		}
+		if !changed {
+			continue
+		}
+
+		// Pending and completed rows participate in the active op-key
+		// uniqueness constraint. A retry admitted after the legacy
+		// failure owns that key now, so leave the historical row failed
+		// instead of colliding with or displacing the newer operation.
+		if updated.Status != db.CreditOpStatusFailed {
+			active, lookupErr := store.LookupActiveOperationByKey(
+				ctx, updated.OpKey,
+			)
+			switch {
+			case lookupErr == nil && active.OpID != updated.OpID:
+				// Keep failed; the newer row owns the key.
+				// Replace only the known-false verdict.
+				updated = rec
+				updated.LastError = supersededReceiveReason(
+					serverState,
+				)
+
+			case lookupErr != nil && !errors.Is(
+				lookupErr, db.ErrCreditOperationNotFound,
+			):
+
+				b.
+					logger(ctx).
+					InfoS(
+						ctx,
+						"Credit receive repair skipped",
+						slog.String("op_id", rec.OpID),
+						slog.String(
+							"err",
+							lookupErr.Error(),
+						),
+					)
+
+				continue
+			}
+		}
+
+		if err := store.UpsertOperation(
+			ctx, updated,
+		); err != nil {
+
+			b.
+				logger(ctx).
+				InfoS(
+					ctx,
+					"Unable to repair legacy credit "+
+						"receive",
+					slog.String("op_id", rec.OpID),
+					slog.String("err", err.Error()),
+				)
+
+			continue
+		}
+
+		repaired++
+	}
+
+	if repaired > 0 {
+		b.logger(ctx).InfoS(ctx, "Repaired legacy credit receive "+
+			"operations", slog.Int("count", repaired))
+	}
+}
+
+// isLegacyReceivePollCapFailure reports whether a row carries the exact false
+// terminal state written by the old receive poll-cap path. The strict match
+// keeps unrelated failures and operation kinds outside the compatibility fix.
+func isLegacyReceivePollCapFailure(rec db.CreditOperationRecord) bool {
+	return rec.Kind == KindReceive &&
+		rec.State == string(StateFailed) &&
+		rec.Status == db.CreditOpStatusFailed &&
+		rec.ServerOpID != "" &&
+		rec.LastError == LegacyReceivePollCapError
+}
+
+// repairLegacyReceiveRecord maps one legacy false failure to the authoritative
+// server state. A still-payable invoice resumes, a credited invoice completes,
+// and a server terminal failure remains failed with its authoritative reason.
+func repairLegacyReceiveRecord(rec db.CreditOperationRecord,
+	serverState ServerCreditState) (db.CreditOperationRecord, bool, error) {
+
+	switch serverState {
+	case ServerStateCreated, ServerStateAwaitingPayment:
+		snapshot, err := decodeOpSnapshot(rec.SnapshotData)
+		if err != nil {
+			return rec, false, err
+		}
+		snapshot.AwaitPolls = 0
+
+		raw, err := snapshot.encode()
+		if err != nil {
+			return rec, false, err
+		}
+
+		rec.State = string(StateAwaitingSettlement)
+		rec.Status = db.CreditOpStatusPending
+		rec.LastError = ""
+		rec.SnapshotData = raw
+		rec.SnapshotVersion = snapshotVersion
+
+		return rec, true, nil
+
+	case ServerStateCredited:
+		rec.State = string(StateCompleted)
+		rec.Status = db.CreditOpStatusCompleted
+		rec.LastError = ""
+
+		return rec, true, nil
+
+	case ServerStateExpired, ServerStateFailed, ServerStateReleased:
+		rec.LastError = fmt.Sprintf("receive funding ended in %s",
+			serverState)
+
+		return rec, true, nil
+
+	default:
+		return rec, false, nil
+	}
+}
+
+// supersededReceiveReason replaces the known-false legacy poll-cap verdict
+// when a newer local operation already owns the active operation key.
+func supersededReceiveReason(serverState ServerCreditState) string {
+	return fmt.Sprintf("legacy receive superseded while server state is %s",
+		serverState)
 }
 
 // handleList projects the stored operations into compact summaries. A

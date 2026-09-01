@@ -67,9 +67,11 @@ func (s *Server) initCreditRegistry(ctx context.Context) error {
 		CallbackRef:   callbackRef,
 		ActorSystem:   s.actorSystem,
 
-		// Bound the awaiting states so a stuck credit-backed send fails
-		// fast rather than parking forever (wavelength#880); see
-		// MaxAwaitingPollsOrDefault for the zero-coercion rationale.
+		// Bound outgoing credit work so a stuck credit-backed send
+		// fails fast rather than parking forever (wavelength#880).
+		// Inbound receives still follow the server-owned invoice
+		// lifecycle; see MaxAwaitingPollsOrDefault for the
+		// zero-coercion rationale.
 		MaxAwaitingPolls: s.cfg.Swap.Credit.MaxAwaitingPollsOrDefault(),
 		AutoRedeem: credit.AutoRedeemConfig{
 			Enabled:      !s.cfg.Swap.Credit.AutoRedeemDisabled,

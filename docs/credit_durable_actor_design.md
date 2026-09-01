@@ -299,10 +299,10 @@ quoting → topup_creating → topup_funding → topup_awaiting_credit → payin
   / `FAILED` / `EXPIRED` fails. This closes the window where a credit-only pay was
   reported complete before the Lightning leg settled.
 
-Every awaiting state honors an optional `MaxAwaitingPolls` cap: an operation the
-server never resolves terminal-fails after the cap rather than polling forever.
-Zero (the default) relies on the server-reported terminal states to bound the
-wait.
+The top-up, pay, and redeem awaiting states honor an optional
+`MaxAwaitingPolls` cap: an outgoing operation the server never resolves
+terminal-fails after the cap rather than blocking forever. Zero (the default)
+disables the cap.
 
 ### 5.2 Receive
 
@@ -317,6 +317,19 @@ the caller and survives restart. The spawned child therefore enters at
 `awaiting_settlement`, a poll-driven `ListCredits` for `CREDITED`.
 `receive_creating` remains the resume and fallback path; its `CreateCredit` is
 idempotent by op key.
+
+The receive remains pending until the server reports `CREDITED`, `EXPIRED`,
+`FAILED`, or `RELEASED`. `MaxAwaitingPolls` does not apply: exhausting a local
+poll budget cannot prove that the server-owned invoice is no longer payable.
+At boot, the registry repairs rows written by older versions with the exact
+legacy poll-cap failure. It reads one authoritative account snapshot, restores
+still-payable receives to `awaiting_settlement`, promotes already-credited
+receives to `completed`, and preserves authoritative terminal failures. A
+missing operation or unavailable snapshot leaves the local row unchanged.
+For a still-payable receive, the wallet projector atomically reopens the exact
+legacy `FAILED` activity row to `PENDING` and appends a corrective event. The
+ordinary terminal-to-pending guard remains unchanged for every other activity
+row.
 
 When the receive settles, the same step evaluates the auto-redeem watermark
 (section 6) and, when it clears, emits `triggerRedeem` on the edge to

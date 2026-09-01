@@ -755,9 +755,10 @@ type CreditConfig struct {
 	// this value and the live floor; zero uses the live floor alone.
 	AutoRedeemMinSat uint64 `mapstructure:"autoredeemminsat"`
 
-	// MaxAwaitingPolls caps how many reconciliation polls a single
-	// credit-operation awaiting state (top-up funding or credit-pay
-	// settlement) may take before the operation terminal-fails. It is the
+	// MaxAwaitingPolls caps how many reconciliation polls a pay top-up,
+	// credit-only pay, or redemption may take before terminal failure. It
+	// does not cap inbound credit receives because the server-owned invoice
+	// lifecycle is authoritative for those operations. It is the
 	// backstop that stops a credit-backed send from parking forever when
 	// the server never reports a terminal state (wavelength#880). Zero
 	// applies credit.DefaultMaxAwaitingPolls: the fail-fast bound cannot be
@@ -847,6 +848,12 @@ type ActivityStore interface {
 	// change-suppressed (no transition, so nothing to emit).
 	ProjectEntry(ctx context.Context,
 		p db.ActivityProjection) (int64, error)
+
+	// RepairCreditReceivePollCap atomically reopens only a receive row
+	// carrying the exact legacy local poll-cap failure and appends its
+	// corrective pending event. Ordinary terminal rows remain immutable.
+	RepairCreditReceivePollCap(ctx context.Context, p db.ActivityProjection,
+		failedStatus int64, legacyFailureReason string) (int64, error)
 
 	// GetEntry returns the current durable projection for one canonical id.
 	// The live projector uses it to retain immutable request context in a

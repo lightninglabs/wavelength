@@ -25,12 +25,14 @@ type fakeExec struct {
 	commitCalls int
 }
 
+// Read executes a fake actor read transaction inline.
 func (e *fakeExec) Read(ctx context.Context,
 	fn func(context.Context, creditTx) error) error {
 
 	return fn(ctx, creditTx{})
 }
 
+// Stage executes a fake actor stage transaction or returns its one-shot error.
 func (e *fakeExec) Stage(ctx context.Context,
 	fn func(context.Context, creditTx) error) error {
 
@@ -45,6 +47,8 @@ func (e *fakeExec) Stage(ctx context.Context,
 	return fn(ctx, creditTx{})
 }
 
+// Commit executes a fake actor commit transaction or returns its one-shot
+// error.
 func (e *fakeExec) Commit(ctx context.Context,
 	fn func(context.Context, creditTx) error) error {
 
@@ -69,10 +73,12 @@ type fakeStore struct {
 	getErr error
 }
 
+// newFakeStore creates an empty in-memory credit operation store.
 func newFakeStore() *fakeStore {
 	return &fakeStore{ops: make(map[string]db.CreditOperationRecord)}
 }
 
+// GetOperation returns a defensive copy of one fake operation.
 func (s *fakeStore) GetOperation(_ context.Context, opID string) (
 	*db.CreditOperationRecord, error) {
 
@@ -92,6 +98,7 @@ func (s *fakeStore) GetOperation(_ context.Context, opID string) (
 	return &out, nil
 }
 
+// UpsertOperation inserts or replaces one fake operation.
 func (s *fakeStore) UpsertOperation(_ context.Context,
 	rec db.CreditOperationRecord) error {
 
@@ -103,6 +110,7 @@ func (s *fakeStore) UpsertOperation(_ context.Context,
 	return nil
 }
 
+// LookupActiveOperationByKey returns the non-failed operation for an op key.
 func (s *fakeStore) LookupActiveOperationByKey(_ context.Context, key string) (
 	*db.CreditOperationRecord, error) {
 
@@ -120,6 +128,7 @@ func (s *fakeStore) LookupActiveOperationByKey(_ context.Context, key string) (
 	return nil, db.ErrCreditOperationNotFound
 }
 
+// ListNonTerminal returns every fake operation that remains in flight.
 func (s *fakeStore) ListNonTerminal(_ context.Context) (
 	[]db.CreditOperationRecord, error) {
 
@@ -136,6 +145,7 @@ func (s *fakeStore) ListNonTerminal(_ context.Context) (
 	return out, nil
 }
 
+// ListOperations returns every fake operation, including terminal rows.
 func (s *fakeStore) ListOperations(_ context.Context) (
 	[]db.CreditOperationRecord, error) {
 
@@ -170,8 +180,11 @@ type fakeServer struct {
 	createState ServerCreditState
 	redeemState ServerCreditState
 	receiveHash []byte
+	listCalls   int
+	listErr     error
 }
 
+// newFakeServer creates an empty server ledger with non-terminal defaults.
 func newFakeServer() *fakeServer {
 	return &fakeServer{
 		ops:         make(map[string]*fakeServerOp),
@@ -183,6 +196,7 @@ func newFakeServer() *fakeServer {
 	}
 }
 
+// CreateCredit creates or reuses a fake server funding operation by key.
 func (s *fakeServer) CreateCredit(_ context.Context, _ []byte,
 	idempotencyKey string, source CreditSource, _ uint64, _ string) (
 	*CreateCreditResult, error) {
@@ -217,12 +231,16 @@ func (s *fakeServer) CreateCredit(_ context.Context, _ []byte,
 	return res, nil
 }
 
+// ListCredits returns one snapshot of all fake server operations.
 func (s *fakeServer) ListCredits(_ context.Context, _ []byte) (*CreditSnapshot,
 	error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
+	s.listCalls++
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
 	snap := &CreditSnapshot{AvailableSat: s.available}
 	for _, op := range s.ops {
 		snap.Operations = append(snap.Operations, ServerCreditOp{
@@ -235,6 +253,7 @@ func (s *fakeServer) ListCredits(_ context.Context, _ []byte) (*CreditSnapshot,
 	return snap, nil
 }
 
+// RedeemCredit creates or reuses a fake server redemption by key.
 func (s *fakeServer) RedeemCredit(_ context.Context, _ []byte,
 	idempotencyKey string, _ uint64, _ []byte) (*RedeemResult, error) {
 
@@ -255,6 +274,7 @@ func (s *fakeServer) RedeemCredit(_ context.Context, _ []byte,
 	return &RedeemResult{OperationID: op.id, State: op.state}, nil
 }
 
+// StartPay records a fake payment attempt and returns its configured error.
 func (s *fakeServer) StartPay(_ context.Context, _ string, _, _ uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -286,6 +306,22 @@ func (s *fakeServer) setOpState(key string, state ServerCreditState) {
 	}
 }
 
+// addServerOp adds an operation with an explicit server id to ListCredits.
+func (s *fakeServer) addServerOp(id string, state ServerCreditState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.ops["test:"+id] = &fakeServerOp{id: id, state: state}
+}
+
+// listCallCount returns the number of ListCredits snapshots requested.
+func (s *fakeServer) listCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.listCalls
+}
+
 // setPayOp registers a server pay operation bound to a payment hash in the
 // given state, so a credit-only pay can reconcile against it via ListCredits.
 func (s *fakeServer) setPayOp(paymentHash []byte, state ServerCreditState) {
@@ -311,14 +347,17 @@ type fakeDaemon struct {
 	vtxoFloorErr error
 }
 
+// newFakeDaemon creates a fake daemon with no observed redeemed VTXO.
 func newFakeDaemon() *fakeDaemon {
 	return &fakeDaemon{sendOORCalls: make(map[string]int)}
 }
 
+// IdentityPubKey returns the stable fake credit account key.
 func (d *fakeDaemon) IdentityPubKey(context.Context) ([]byte, error) {
 	return []byte("identity-pubkey"), nil
 }
 
+// VTXOFloor returns the configured fake operator floor.
 func (d *fakeDaemon) VTXOFloor(context.Context) (uint64, error) {
 	if d.vtxoFloorErr != nil {
 		return 0, d.vtxoFloorErr
@@ -330,6 +369,7 @@ func (d *fakeDaemon) VTXOFloor(context.Context) (uint64, error) {
 	return 354, nil
 }
 
+// SendOOR records one idempotency-keyed fake transfer.
 func (d *fakeDaemon) SendOOR(_ context.Context, _ []byte, _ uint64,
 	idempotencyKey string) (string, error) {
 
@@ -341,6 +381,7 @@ func (d *fakeDaemon) SendOOR(_ context.Context, _ []byte, _ uint64,
 	return "oor-" + idempotencyKey, nil
 }
 
+// AllocateReceiveScript returns a stable fake redemption destination.
 func (d *fakeDaemon) AllocateReceiveScript(context.Context, string) ([]byte,
 	[]byte, error) {
 
@@ -352,6 +393,7 @@ func (d *fakeDaemon) AllocateReceiveScript(context.Context, string) ([]byte,
 	return []byte("redeem-pubkey"), []byte("redeem-pkscript"), nil
 }
 
+// FindLiveVTXOByPkScript reports the configured fake redemption observation.
 func (d *fakeDaemon) FindLiveVTXOByPkScript(context.Context, []byte) (bool,
 	int64, error) {
 
@@ -427,6 +469,7 @@ func driveTurn(b *opBehavior, ax actor.Exec[creditTx]) error {
 	return err
 }
 
+// payHash returns the stable payment hash shared by credit-pay tests.
 func payHash() [32]byte {
 	var h [32]byte
 	copy(h[:], "payment-hash-for-testing-000000000")
@@ -440,6 +483,7 @@ var errInjected = errInjectedT{}
 
 type errInjectedT struct{}
 
+// Error identifies the injected transaction failure.
 func (errInjectedT) Error() string { return "injected failure" }
 
 // TestDispatchFailsCorruptState asserts that an operation whose persisted state
@@ -630,9 +674,10 @@ func TestCreditPayFailsOnRelease(t *testing.T) {
 	require.NotEmpty(t, b.rec.LastError)
 }
 
-// TestAwaitingPollCapFailsOp asserts the configurable poll cap terminal-fails
-// an operation that the server never resolves, instead of parking forever.
-func TestAwaitingPollCapFailsOp(t *testing.T) {
+// TestReceiveIgnoresPollCap asserts an inbound receive remains pending beyond
+// the outgoing-operation poll cap and can still complete when the server later
+// reports the invoice credited.
+func TestReceiveIgnoresPollCap(t *testing.T) {
 	t.Parallel()
 
 	store := newFakeStore()
@@ -649,13 +694,99 @@ func TestAwaitingPollCapFailsOp(t *testing.T) {
 	drive(t, b, &ResumeCreditOpRequest{OpID: "op1"})
 	require.Equal(t, string(StateAwaitingSettlement), b.rec.State)
 
-	// The server never credits; after the poll cap the op fails rather than
-	// parking forever.
+	// The server never credits during several more polls than the cap. The
+	// client cannot treat that local count as proof the invoice failed.
+	for i := 0; i < 5; i++ {
+		drive(t, b, &ResumeCreditOpRequest{OpID: "op1"})
+		require.Equal(t, string(StateAwaitingSettlement), b.rec.State)
+	}
+
+	// A late authoritative credit still completes the receive.
+	server.markCredited("recv:abc", 42)
+	drive(t, b, &ResumeCreditOpRequest{OpID: "op1"})
+	require.Equal(t, string(StateCompleted), b.rec.State)
+}
+
+// TestReceiveFailsOnServerExpiry asserts an inbound receive fails when the
+// server reports its invoice expired, even though the local poll cap is not an
+// authority for receive termination.
+func TestReceiveFailsOnServerExpiry(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	server, daemon := newFakeServer(), newFakeDaemon()
+	b := testBehavior("op1", store, server, daemon)
+	b.cfg.MaxAwaitingPolls = 1
+
+	admit(t, b, store, &StartCreditReceiveRequest{
+		OpKey:     "recv:abc",
+		AmountSat: 42,
+	})
 	drive(t, b, &ResumeCreditOpRequest{OpID: "op1"})
 	require.Equal(t, string(StateAwaitingSettlement), b.rec.State)
+
+	server.setOpState("recv:abc", ServerStateExpired)
 	drive(t, b, &ResumeCreditOpRequest{OpID: "op1"})
 	require.Equal(t, string(StateFailed), b.rec.State)
-	require.NotEmpty(t, b.rec.LastError)
+	require.Equal(t, "receive funding ended in expired", b.rec.LastError)
+}
+
+// TestOutgoingOperationsHonorPollCap is the negative control for receive's
+// unbounded wait: top-up funding and credit-only payment settlement still fail
+// when their server operations remain unresolved past the configured cap.
+func TestOutgoingOperationsHonorPollCap(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		msg  CreditMsg
+		want State
+	}{
+		{
+			name: "top-up",
+			msg: &StartCreditPayRequest{
+				OpKey:        "pay:topup",
+				Invoice:      "lnbc1",
+				PaymentHash:  payHash(),
+				AmountSat:    500,
+				TopupSat:     200,
+				MaxCreditSat: 500,
+			},
+			want: StateTopupAwaitingCredit,
+		},
+		{
+			name: "credit-only pay",
+			msg: &StartCreditPayRequest{
+				OpKey:        "pay:credit-only",
+				Invoice:      "lnbc2",
+				PaymentHash:  payHash(),
+				AmountSat:    500,
+				MaxCreditSat: 500,
+				CreditOnly:   true,
+			},
+			want: StatePayAwaitingSettlement,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := newFakeStore()
+			server, daemon := newFakeServer(), newFakeDaemon()
+			b := testBehavior("op1", store, server, daemon)
+			b.cfg.MaxAwaitingPolls = 1
+
+			admit(t, b, store, test.msg)
+			drive(t, b, &ResumeCreditOpRequest{OpID: "op1"})
+			require.Equal(t, string(test.want), b.rec.State)
+
+			drive(t, b, &ResumeCreditOpRequest{OpID: "op1"})
+			require.Equal(t, string(StateFailed), b.rec.State)
+			require.NotEmpty(t, b.rec.LastError)
+		})
+	}
 }
 
 // TestPayNoTopupCompletes asserts a pay with no shortfall jumps straight to
