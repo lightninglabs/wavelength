@@ -3,6 +3,11 @@ config_version: 3
 
 http:
   rules:
+    - selector: waverpc.MacaroonService.BakeMacaroon
+      post: /v1/daemon/macaroon
+      body: "*"
+    - selector: waverpc.MacaroonService.ListPermissions
+      get: /v1/daemon/macaroon/permissions
     - selector: waverpc.DaemonService.GetInfo
       post: /v1/daemon/get-info
       body: "*"
