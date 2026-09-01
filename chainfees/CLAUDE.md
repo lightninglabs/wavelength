@@ -38,6 +38,17 @@ on-chain transactions from wallet and daemon chain backends.
   estimate yet" (see `WalletKitEstimator.cachedRate`).
 - `MempoolSpaceEstimator` rejects non-HTTPS URLs except for loopback hosts, to
   avoid tampering with fee data in transit.
+- **Log severity in `MinEstimator` tracks whether an operator must act.** A
+  single provider failing is logged at info: the estimator queries several
+  providers precisely so it can continue past one, and a later provider can
+  still supply the selected rate, so this is degraded input diversity rather
+  than an incident. The all-providers-failed fallback stays a warning. A
+  provider whose rate had to be clamped up to `chainfee.FeePerKwFloor` also
+  stays a **warning**, even though clamping already made the returned rate
+  relay-valid: clamping repairs the value but not the selection, so the clamped
+  provider becomes the minimum candidate and can pin the aggregate estimator at
+  the relay floor indefinitely. Persistent fee underpayment needs a human, so
+  do not demote that one along with the others.
 
 ## Deep Docs
 

@@ -67,6 +67,18 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 - `LndClientChainNotifier` enforces a 15-second timeout on registration to
   prevent hanging under LND block load.
 - Log messages use canonical txid strings (not reversed byte slices).
+- **A `Canceled` status is only shutdown noise when the owning context is also
+  done.** Round completion stops each VTXO's block subscription, and a block
+  already in flight can race that cancellation, so `GetBlockHash` or the
+  notifier error channel returns `Canceled` while the forwarder exits normally
+  — paging an operator per terminated VTXO is pure noise.
+  `isBlockEpochShutdownError(ctx, err)` demotes these to debug, but it returns
+  false whenever `ctx.Err() == nil`. Do not simplify it to a bare
+  `errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled`
+  check: a `Canceled` arriving from a *live* subscription means the backend
+  dropped it independently, which is actionable and must stay at warning. Every
+  other notifier or block-hash failure remains a warning regardless of context
+  state.
 
 ## Deep Docs
 

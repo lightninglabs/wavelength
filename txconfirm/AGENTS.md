@@ -177,6 +177,17 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   keeps `pendingConfirmed` set for the next tick. The same split applies on
   the deferred `handleTerminalNotifyResult` path, where a post-timeout stop
   is logged at debug and cancelled rather than warned.
+- **`ErrParentAlreadyBroadcast` is a race outcome, not a failure.** An initial
+  package attempt can lose to an existing broadcast path once the parent
+  reaches a mempool; the duplicate child is rejected, but the parent stays
+  under its confirmation watch, so the entry still advances to
+  `AwaitingConfirmation` and no operator action is possible. Both
+  `recordInitialBroadcastOutcome` and the later fee-bump path log this sentinel
+  at debug — keep the two consistent if either is touched. Log severity here is
+  deliberately **not** pinned by a unit test: the initial-package test asserts
+  the state transition (already-broadcast parent → `AwaitingConfirmation`,
+  still watched), because a test that only asserts the absence of a warning
+  still passes if the diagnostic is deleted outright.
 - **Attach never inserts a dead subscriber**: `attachExistingSubscriber` only
   writes the subscriber into `entry.subscribers` on `Delivered` or `Pending`.
   On `SubscriberStopped` there is no tracked interest to unwind, because it
