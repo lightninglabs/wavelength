@@ -263,9 +263,9 @@ func (receiveCreatingState) ProcessEvent(ctx context.Context, _ CreditEvent,
 // and, if the earmark-adjusted available balance now clears the threshold,
 // emits a triggerRedeem so the registry can materialize the credits — folding
 // the auto-redeem decision into the receive state machine instead of a periodic
-// background sweep. The wait is bounded by the server-reported terminal states
-// and the optional poll cap, so an unpaid invoice the server expires fails the
-// operation deterministically.
+// background sweep. The server owns the invoice lifecycle, so only its
+// CREDITED/EXPIRED/FAILED/RELEASED state can terminate the receive. A client
+// poll count cannot prove that a still-payable invoice failed.
 func (awaitingSettlementState) ProcessEvent(ctx context.Context, _ CreditEvent,
 	b *opBehavior) (*CreditTransition, error) {
 
@@ -300,10 +300,6 @@ func (awaitingSettlementState) ProcessEvent(ctx context.Context, _ CreditEvent,
 		}
 
 		return emit(&completedState{}, out...)
-	}
-
-	if b.awaitExhausted() {
-		return b.fail(ctx, "receive credit not settled within poll cap")
 	}
 
 	return emit(&awaitingSettlementState{}, &parkOp{})

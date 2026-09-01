@@ -382,6 +382,11 @@ type Querier interface {
 	// event_seq order, the resumable-subscribe replay primitive.
 	PullActivityEvents(ctx context.Context, arg PullActivityEventsParams) ([]ActivityEvent, error)
 	RenewOwnedReceiveScriptRegistration(ctx context.Context, arg RenewOwnedReceiveScriptRegistrationParams) (int64, error)
+	// RepairCreditReceivePollCapActivity narrowly reopens an inbound credit
+	// receive that an older client marked terminal after exhausting its local poll
+	// budget. The exact kind, failed status, and legacy error guard prevent this
+	// compatibility repair from weakening the normal terminal-to-pending rule.
+	RepairCreditReceivePollCapActivity(ctx context.Context, arg RepairCreditReceivePollCapActivityParams) (int64, error)
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error

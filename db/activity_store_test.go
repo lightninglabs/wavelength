@@ -168,6 +168,81 @@ func TestActivityStoreRejectsTerminalRegression(t *testing.T) {
 	require.Len(t, events, 2)
 }
 
+// TestActivityStoreRepairsCreditReceivePollCap verifies the compatibility
+// write is narrower than the ordinary terminal-to-pending rule: only the exact
+// receive failure is reopened, its correction is appended, and other terminal
+// failures remain immutable.
+func TestActivityStoreRepairsCreditReceivePollCap(t *testing.T) {
+	t.Parallel()
+
+	const legacyError = "receive credit not settled within poll cap"
+
+	ctx := t.Context()
+	store := newActivityStoreForTest(t)
+
+	failed := sampleProjection("legacy-receive")
+	failed.Kind = 2
+	failed.Status = 2
+	failed.Phase = 9
+	failed.PhaseLabel = "failed"
+	failed.FailureCode = 1
+	failed.FailureReason = legacyError
+	failed.EntryJSON = `{"id":"legacy-receive","status":"failed"}`
+	_, err := store.ProjectEntry(ctx, failed)
+	require.NoError(t, err)
+
+	pending := failed
+	pending.Status = 1
+	pending.Phase = 4
+	pending.PhaseLabel = "waiting_for_payment"
+	pending.FailureCode = 0
+	pending.FailureReason = ""
+	pending.EntryJSON = `{"id":"legacy-receive","status":"pending"}`
+	pending.UpdatedAtUnix = 200
+
+	ordinarySeq, err := store.ProjectEntry(ctx, pending)
+	require.NoError(t, err)
+	require.Zero(t, ordinarySeq)
+
+	repairSeq, err := store.RepairCreditReceivePollCap(
+		ctx, pending, 2, legacyError,
+	)
+	require.NoError(t, err)
+	require.Positive(t, repairSeq)
+
+	row, err := store.GetEntry(ctx, failed.CanonicalID)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, row.Status)
+	require.EqualValues(t, 4, row.Phase)
+	require.Empty(t, row.FailureReason)
+
+	events, err := store.PullEvents(ctx, 0, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 2)
+	require.EqualValues(t, 1, events[1].Status)
+
+	// An authoritative failure with a different reason cannot be reopened
+	// through the compatibility method.
+	other := failed
+	other.CanonicalID = "other-failure"
+	other.FailureReason = "receive funding ended in expired"
+	_, err = store.ProjectEntry(ctx, other)
+	require.NoError(t, err)
+
+	otherPending := pending
+	otherPending.CanonicalID = other.CanonicalID
+	seq, err := store.RepairCreditReceivePollCap(
+		ctx, otherPending, 2, legacyError,
+	)
+	require.NoError(t, err)
+	require.Zero(t, seq)
+
+	row, err = store.GetEntry(ctx, other.CanonicalID)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, row.Status)
+	require.Equal(t, other.FailureReason, row.FailureReason)
+}
+
 // TestActivityStoreRequestOnlyEnrichment verifies immutable request context is
 // allowed to enrich an otherwise unchanged sparse row exactly once.
 func TestActivityStoreRequestOnlyEnrichment(t *testing.T) {
