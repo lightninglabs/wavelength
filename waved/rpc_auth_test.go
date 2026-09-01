@@ -5,6 +5,7 @@ import (
 
 	btcrpcserver "github.com/btcsuite/btcwallet/rpc/rpcserver"
 	btcwalletrpc "github.com/btcsuite/btcwallet/rpc/walletrpc"
+	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
@@ -53,6 +54,8 @@ func TestWavedRPCPermissionsMapsMutatingMethods(t *testing.T) {
 		waverpc.DaemonService_RefreshVTXOs_FullMethodName,
 		waverpc.DaemonService_SignReceiveAuthMessage_FullMethodName,
 		waverpc.DaemonService_SignOutSwapHtlcAck_FullMethodName,
+		arkchannelrpc.
+			ArkChannelService_PayLightningInvoice_FullMethodName,
 		fullDaemonMethod("SubmitForfeitParticipantSignatures"),
 	} {
 		ops, ok := wavedRPCPermissions[fullMethod]

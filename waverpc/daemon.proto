@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package waverpc;
 
+import "rpc/arkchannelrpc/ark_channel.proto";
+
 option go_package = "github.com/lightninglabs/wavelength/waverpc";
 
 // DaemonService is the client daemon's own gRPC API. External tools such as
@@ -78,6 +80,36 @@ service DaemonService {
     // OOR session using a spent script proof and deterministic session txid.
     rpc GetIndexedOORSessionByTxid (GetIndexedOORSessionByTxidRequest)
         returns (GetIndexedOORSessionByTxidResponse);
+
+    // ExportOORRecoveryPackage returns the immutable local OOR package and
+    // round ancestry for one exact output. The caller must already know the
+    // output tuple; the daemon verifies it against its finalized artifacts.
+    rpc ExportOORRecoveryPackage (ExportOORRecoveryPackageRequest)
+        returns (ExportOORRecoveryPackageResponse);
+
+    // PrepareArkChannelOOR reserves daemon-owned liquidity and builds the
+    // exact channel-policy output without releasing OOR signatures.
+    rpc PrepareArkChannelOOR (PrepareArkChannelOORRequest)
+        returns (PrepareArkChannelOORResponse);
+
+    // LookupPreparedArkChannelOOR reconciles the deterministic channel OOR
+    // key without selecting or locking new wallet inputs.
+    rpc LookupPreparedArkChannelOOR (LookupPreparedArkChannelOORRequest)
+        returns (LookupPreparedArkChannelOORResponse);
+
+    // ValidatePreparedArkChannelOOR verifies that a binding still names the
+    // exact prepared daemon OOR session.
+    rpc ValidatePreparedArkChannelOOR (ValidatePreparedArkChannelOORRequest)
+        returns (ValidatePreparedArkChannelOORResponse);
+
+    // CommitPreparedArkChannelOOR releases the prepared OOR only after both
+    // lnd endpoints have persisted the fully signed channel backing.
+    rpc CommitPreparedArkChannelOOR (CommitPreparedArkChannelOORRequest)
+        returns (CommitPreparedArkChannelOORResponse);
+
+    // AbortPreparedArkChannelOOR releases a pre-signing channel reservation.
+    rpc AbortPreparedArkChannelOOR (AbortPreparedArkChannelOORRequest)
+        returns (AbortPreparedArkChannelOORResponse);
 
     // SendVTXO initiates an in-round transfer by submitting a refresh
     // request to the round coordinator. The transfer completes when the
@@ -795,6 +827,11 @@ message NewReceiveScriptRequest {
     // prefix keys with an application or tenant identity when they share one
     // daemon.
     string idempotency_key = 2;
+
+    // identity_key registers the daemon's durable identity key instead of
+    // deriving a fresh receive key. This is reserved for restart-stable
+    // protocol destinations such as Ark channel cooperative-close payouts.
+    bool identity_key = 3;
 }
 
 message NewReceiveScriptResponse {
@@ -1144,6 +1181,76 @@ message PrepareOORResponse {
 
     // session_id is the deterministic OOR session id derived from ark_psbt.
     string session_id = 4;
+}
+
+message ExportOORRecoveryPackageRequest {
+    // source identifies one exact output in a sender-owned finalized OOR
+    // package.
+    arkchannelrpc.OORRecoverySource source = 1;
+}
+
+message ExportOORRecoveryPackageResponse {
+    // recovery contains the complete endpoint-neutral source lineage.
+    arkchannelrpc.ChannelRecoveryPackage recovery = 1;
+}
+
+message PrepareArkChannelOORRequest {
+    arkchannelrpc.ChannelTerms terms = 1;
+}
+
+message PrepareArkChannelOORResponse {
+    arkchannelrpc.ChannelVTXOBinding binding = 1;
+}
+
+enum ArkChannelOORPreparationStatus {
+    ARK_CHANNEL_OOR_PREPARATION_STATUS_UNSPECIFIED = 0;
+    ARK_CHANNEL_OOR_PREPARATION_STATUS_ABSENT = 1;
+    ARK_CHANNEL_OOR_PREPARATION_STATUS_PENDING = 2;
+    ARK_CHANNEL_OOR_PREPARATION_STATUS_PREPARED = 3;
+    ARK_CHANNEL_OOR_PREPARATION_STATUS_ACCEPTED = 4;
+}
+
+message LookupPreparedArkChannelOORRequest {
+    arkchannelrpc.ChannelTerms terms = 1;
+}
+
+message LookupPreparedArkChannelOORResponse {
+    ArkChannelOORPreparationStatus status = 1;
+    arkchannelrpc.ChannelVTXOBinding binding = 2;
+}
+
+message ValidatePreparedArkChannelOORRequest {
+    arkchannelrpc.ChannelTerms terms = 1;
+    arkchannelrpc.ChannelVTXOBinding binding = 2;
+}
+
+message ValidatePreparedArkChannelOORResponse {
+    bool valid = 1;
+}
+
+message CommitPreparedArkChannelOORRequest {
+    bytes channel_id = 1;
+    arkchannelrpc.ChannelTerms terms = 2;
+    arkchannelrpc.ChannelVTXOBinding binding = 3;
+}
+
+message CommitPreparedArkChannelOORResponse {
+    bool finalized = 1;
+    bool aborted = 2;
+    string reason = 3;
+}
+
+message AbortPreparedArkChannelOORRequest {
+    bytes channel_id = 1;
+    arkchannelrpc.ChannelTerms terms = 2;
+    arkchannelrpc.ChannelVTXOBinding binding = 3;
+    string reason = 4;
+}
+
+message AbortPreparedArkChannelOORResponse {
+    bool aborted = 1;
+    string reason = 2;
+    bool finalized = 3;
 }
 
 message SignOORCustomInputRequest {

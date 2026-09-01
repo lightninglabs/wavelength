@@ -17,6 +17,7 @@ import (
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -41,8 +42,9 @@ type receiveScriptRegistrationCompleter interface {
 		registrationRPCKey string) error
 }
 
-// NewReceiveScript allocates and registers a taproot receive script, or returns
-// the exact existing allocation for an idempotent retry.
+// NewReceiveScript registers a wallet-owned taproot receive script. Callers can
+// request either a retry-safe fresh key or the daemon's durable identity key
+// for a protocol destination that must survive independent process restarts.
 func (r *RPCServer) NewReceiveScript(ctx context.Context,
 	req *waverpc.NewReceiveScriptRequest) (
 	*waverpc.NewReceiveScriptResponse, error) {
@@ -58,6 +60,13 @@ func (r *RPCServer) NewReceiveScript(ctx context.Context,
 	label := req.Label
 	if label == "" {
 		label = defaultOORReceiveScriptLabel
+	}
+
+	if req.IdempotencyKey != "" && req.GetIdentityKey() {
+		return nil, status.Error(
+			codes.InvalidArgument,
+			"idempotency_key and identity_key cannot be combined",
+		)
 	}
 
 	if req.IdempotencyKey != "" {
@@ -123,13 +132,29 @@ func (r *RPCServer) NewReceiveScript(ctx context.Context,
 			"initialize OOR receive key ops: %v", err)
 	}
 
-	expiresAt := r.server.clk.Now().Add(
-		defaultOORRegistrationTTL,
-	)
-	keyDesc, pkScript, err := CreateOORReceiveScriptWithExpiry(
-		ctx, r.server.indexer, store, deriveNextKey, signerFactory,
-		terms.PubKey, terms.VTXOExitDelay, label, expiresAt,
-	)
+	expiresAt := r.server.clk.Now().Add(defaultOORRegistrationTTL)
+	var keyDesc *keychain.KeyDescriptor
+	var pkScript []byte
+	if req.GetIdentityKey() {
+		identityKey := r.server.clientKeyDesc
+		if identityKey.PubKey == nil {
+			return nil, status.Errorf(codes.Internal, "missing "+
+				"daemon identity key")
+		}
+
+		pkScript, err = RegisterOwnedOORReceiveScriptWithExpiry(
+			ctx, r.server.indexer, store, identityKey,
+			signerFactory, terms.PubKey, terms.VTXOExitDelay, label,
+			expiresAt,
+		)
+		keyDesc = &identityKey
+	} else {
+		keyDesc, pkScript, err = CreateOORReceiveScriptWithExpiry(
+			ctx, r.server.indexer, store, deriveNextKey,
+			signerFactory, terms.PubKey, terms.VTXOExitDelay, label,
+			expiresAt,
+		)
+	}
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "unable to create "+
 			"OOR receive script: %v", err)
