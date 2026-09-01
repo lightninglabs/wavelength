@@ -2165,3 +2165,161 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 	},
 	Metadata: "daemon.proto",
 }
+
+const (
+	MacaroonService_BakeMacaroon_FullMethodName    = "/waverpc.MacaroonService/BakeMacaroon"
+	MacaroonService_ListPermissions_FullMethodName = "/waverpc.MacaroonService/ListPermissions"
+)
+
+// MacaroonServiceClient is the client API for MacaroonService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// MacaroonService exposes local credential management for the daemon. It is
+// registered on the authenticated local gRPC/REST listener only, not on the
+// operator mailbox transport used by DaemonService.
+type MacaroonServiceClient interface {
+	// BakeMacaroon creates a new daemon macaroon with the requested scoped
+	// permissions. Callers may use known entity/action pairs or the special
+	// uri entity with a full registered RPC method as its action.
+	BakeMacaroon(ctx context.Context, in *BakeMacaroonRequest, opts ...grpc.CallOption) (*BakeMacaroonResponse, error)
+	// ListPermissions returns every RPC method registered by this daemon and
+	// the entity/action permissions that authorize it.
+	ListPermissions(ctx context.Context, in *ListPermissionsRequest, opts ...grpc.CallOption) (*ListPermissionsResponse, error)
+}
+
+type macaroonServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewMacaroonServiceClient(cc grpc.ClientConnInterface) MacaroonServiceClient {
+	return &macaroonServiceClient{cc}
+}
+
+func (c *macaroonServiceClient) BakeMacaroon(ctx context.Context, in *BakeMacaroonRequest, opts ...grpc.CallOption) (*BakeMacaroonResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BakeMacaroonResponse)
+	err := c.cc.Invoke(ctx, MacaroonService_BakeMacaroon_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *macaroonServiceClient) ListPermissions(ctx context.Context, in *ListPermissionsRequest, opts ...grpc.CallOption) (*ListPermissionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPermissionsResponse)
+	err := c.cc.Invoke(ctx, MacaroonService_ListPermissions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// MacaroonServiceServer is the server API for MacaroonService service.
+// All implementations must embed UnimplementedMacaroonServiceServer
+// for forward compatibility.
+//
+// MacaroonService exposes local credential management for the daemon. It is
+// registered on the authenticated local gRPC/REST listener only, not on the
+// operator mailbox transport used by DaemonService.
+type MacaroonServiceServer interface {
+	// BakeMacaroon creates a new daemon macaroon with the requested scoped
+	// permissions. Callers may use known entity/action pairs or the special
+	// uri entity with a full registered RPC method as its action.
+	BakeMacaroon(context.Context, *BakeMacaroonRequest) (*BakeMacaroonResponse, error)
+	// ListPermissions returns every RPC method registered by this daemon and
+	// the entity/action permissions that authorize it.
+	ListPermissions(context.Context, *ListPermissionsRequest) (*ListPermissionsResponse, error)
+	mustEmbedUnimplementedMacaroonServiceServer()
+}
+
+// UnimplementedMacaroonServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedMacaroonServiceServer struct{}
+
+func (UnimplementedMacaroonServiceServer) BakeMacaroon(context.Context, *BakeMacaroonRequest) (*BakeMacaroonResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method BakeMacaroon not implemented")
+}
+func (UnimplementedMacaroonServiceServer) ListPermissions(context.Context, *ListPermissionsRequest) (*ListPermissionsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListPermissions not implemented")
+}
+func (UnimplementedMacaroonServiceServer) mustEmbedUnimplementedMacaroonServiceServer() {}
+func (UnimplementedMacaroonServiceServer) testEmbeddedByValue()                         {}
+
+// UnsafeMacaroonServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to MacaroonServiceServer will
+// result in compilation errors.
+type UnsafeMacaroonServiceServer interface {
+	mustEmbedUnimplementedMacaroonServiceServer()
+}
+
+func RegisterMacaroonServiceServer(s grpc.ServiceRegistrar, srv MacaroonServiceServer) {
+	// If the following call pancis, it indicates UnimplementedMacaroonServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&MacaroonService_ServiceDesc, srv)
+}
+
+func _MacaroonService_BakeMacaroon_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BakeMacaroonRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MacaroonServiceServer).BakeMacaroon(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MacaroonService_BakeMacaroon_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MacaroonServiceServer).BakeMacaroon(ctx, req.(*BakeMacaroonRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _MacaroonService_ListPermissions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPermissionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MacaroonServiceServer).ListPermissions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MacaroonService_ListPermissions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MacaroonServiceServer).ListPermissions(ctx, req.(*ListPermissionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// MacaroonService_ServiceDesc is the grpc.ServiceDesc for MacaroonService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var MacaroonService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "waverpc.MacaroonService",
+	HandlerType: (*MacaroonServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "BakeMacaroon",
+			Handler:    _MacaroonService_BakeMacaroon_Handler,
+		},
+		{
+			MethodName: "ListPermissions",
+			Handler:    _MacaroonService_ListPermissions_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "daemon.proto",
+}
