@@ -47,6 +47,205 @@ func waitForState(t *testing.T, store Store, opID string, want State) {
 	}, 5*time.Second, 20*time.Millisecond)
 }
 
+// legacyFailedReceive builds the exact terminal row written by the old receive
+// poll-cap path, including a persisted exhausted counter that repair must reset
+// before resuming the operation.
+func legacyFailedReceive(t *testing.T, opID, opKey,
+	serverOpID string) db.CreditOperationRecord {
+
+	t.Helper()
+
+	raw, err := (&opSnapshot{AwaitPolls: 121}).encode()
+	require.NoError(t, err)
+
+	return db.CreditOperationRecord{
+		OpID:            opID,
+		OpKey:           opKey,
+		Kind:            KindReceive,
+		State:           string(StateFailed),
+		Status:          db.CreditOpStatusFailed,
+		ServerOpID:      serverOpID,
+		Invoice:         "lnbc-" + opID,
+		AmountSat:       200,
+		LastError:       LegacyReceivePollCapError,
+		SnapshotData:    raw,
+		SnapshotVersion: snapshotVersion,
+	}
+}
+
+// TestRepairLegacyReceivePollCapFailures asserts one server snapshot repairs
+// every eligible legacy row according to server truth while leaving absent and
+// unrelated operations untouched.
+func TestRepairLegacyReceivePollCapFailures(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	server, daemon := newFakeServer(), newFakeDaemon()
+
+	awaiting := legacyFailedReceive(
+		t, "recv-awaiting", "recv:key-awaiting", "srv-awaiting",
+	)
+	credited := legacyFailedReceive(
+		t, "recv-credited", "recv:key-credited", "srv-credited",
+	)
+	expired := legacyFailedReceive(
+		t, "recv-expired", "recv:key-expired", "srv-expired",
+	)
+	missing := legacyFailedReceive(
+		t, "recv-missing", "recv:key-missing", "srv-missing",
+	)
+	unrelated := legacyFailedReceive(
+		t, "recv-unrelated", "recv:key-unrelated", "srv-unrelated",
+	)
+	unrelated.LastError = "some other failure"
+	conflictPending := legacyFailedReceive(
+		t, "recv-conflict-pending", "recv:key-conflict-pending",
+		"srv-conflict-pending",
+	)
+	conflictCompleted := legacyFailedReceive(
+		t, "recv-conflict-completed", "recv:key-conflict-completed",
+		"srv-conflict-completed",
+	)
+
+	for _, rec := range []db.CreditOperationRecord{
+		awaiting, credited, expired, missing, unrelated,
+		conflictPending, conflictCompleted,
+	} {
+		store.ops[rec.OpID] = rec
+	}
+	store.ops["newer-pending"] = db.CreditOperationRecord{
+		OpID:   "newer-pending",
+		OpKey:  conflictPending.OpKey,
+		Kind:   KindReceive,
+		State:  string(StateAwaitingSettlement),
+		Status: db.CreditOpStatusPending,
+	}
+	store.ops["newer-completed"] = db.CreditOperationRecord{
+		OpID:   "newer-completed",
+		OpKey:  conflictCompleted.OpKey,
+		Kind:   KindReceive,
+		State:  string(StateCompleted),
+		Status: db.CreditOpStatusCompleted,
+	}
+	server.addServerOp("srv-awaiting", ServerStateAwaitingPayment)
+	server.addServerOp("srv-credited", ServerStateCredited)
+	server.addServerOp("srv-expired", ServerStateExpired)
+	server.addServerOp("srv-unrelated", ServerStateCredited)
+	server.addServerOp(
+		"srv-conflict-pending", ServerStateAwaitingPayment,
+	)
+	server.addServerOp("srv-conflict-completed", ServerStateCredited)
+
+	behavior := &registryBehavior{
+		cfg: RegistryConfig{
+			Store:  store,
+			Server: server,
+			Daemon: daemon,
+		},
+		log:    btclog.Disabled,
+		active: make(map[string]*OpActor),
+	}
+	behavior.repairLegacyReceivePollCapFailures(t.Context())
+
+	require.Equal(t, 1, server.listCallCount())
+
+	got, err := store.GetOperation(t.Context(), awaiting.OpID)
+	require.NoError(t, err)
+	require.Equal(t, string(StateAwaitingSettlement), got.State)
+	require.Equal(t, db.CreditOpStatusPending, got.Status)
+	require.Empty(t, got.LastError)
+	snapshot, err := decodeOpSnapshot(got.SnapshotData)
+	require.NoError(t, err)
+	require.Zero(t, snapshot.AwaitPolls)
+
+	got, err = store.GetOperation(t.Context(), credited.OpID)
+	require.NoError(t, err)
+	require.Equal(t, string(StateCompleted), got.State)
+	require.Equal(t, db.CreditOpStatusCompleted, got.Status)
+	require.Empty(t, got.LastError)
+
+	got, err = store.GetOperation(t.Context(), expired.OpID)
+	require.NoError(t, err)
+	require.Equal(t, string(StateFailed), got.State)
+	require.Equal(t, db.CreditOpStatusFailed, got.Status)
+	require.Equal(t, "receive funding ended in expired", got.LastError)
+
+	got, err = store.GetOperation(t.Context(), missing.OpID)
+	require.NoError(t, err)
+	require.Equal(t, missing, *got)
+
+	got, err = store.GetOperation(t.Context(), unrelated.OpID)
+	require.NoError(t, err)
+	require.Equal(t, unrelated, *got)
+
+	got, err = store.GetOperation(t.Context(), conflictPending.OpID)
+	require.NoError(t, err)
+	require.Equal(t, conflictPending, *got)
+
+	got, err = store.GetOperation(t.Context(), conflictCompleted.OpID)
+	require.NoError(t, err)
+	require.Equal(t, conflictCompleted, *got)
+}
+
+// TestRepairLegacyReceiveSkipsUnavailableSnapshot asserts boot repair never
+// rewrites local terminal history when the authoritative server view cannot be
+// obtained.
+func TestRepairLegacyReceiveSkipsUnavailableSnapshot(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	server, daemon := newFakeServer(), newFakeDaemon()
+	rec := legacyFailedReceive(t, "recv", "recv:key", "srv-recv")
+	store.ops[rec.OpID] = rec
+	server.listErr = errors.New("server unavailable")
+
+	behavior := &registryBehavior{
+		cfg: RegistryConfig{
+			Store:  store,
+			Server: server,
+			Daemon: daemon,
+		},
+		log:    btclog.Disabled,
+		active: make(map[string]*OpActor),
+	}
+	behavior.repairLegacyReceivePollCapFailures(t.Context())
+
+	got, err := store.GetOperation(t.Context(), rec.OpID)
+	require.NoError(t, err)
+	require.Equal(t, rec, *got)
+	require.Equal(t, 1, server.listCallCount())
+}
+
+// TestRestoreLegacyReceiveResumesSettlement proves the boot path reopens the
+// exact legacy false failure, respawns its durable child, and later completes
+// it from an authoritative credited state.
+func TestRestoreLegacyReceiveResumesSettlement(t *testing.T) {
+	t.Parallel()
+
+	store, delivery := newFakeStore(), newTestDelivery(t)
+	server, daemon := newFakeServer(), newFakeDaemon()
+	rec := legacyFailedReceive(t, "recv", "recv:key", "srv-recv")
+	store.ops[rec.OpID] = rec
+	server.addServerOp("srv-recv", ServerStateAwaitingPayment)
+
+	registry, err := NewRegistry(RegistryConfig{
+		Store:            store,
+		DeliveryStore:    delivery,
+		Server:           server,
+		Daemon:           daemon,
+		PollInterval:     50 * time.Millisecond,
+		MaxAwaitingPolls: 1,
+	})
+	require.NoError(t, err)
+	t.Cleanup(registry.Stop)
+
+	require.NoError(t, registry.RestoreNonTerminal(t.Context()))
+	waitForState(t, store, rec.OpID, StateAwaitingSettlement)
+
+	server.addServerOp("srv-recv", ServerStateCredited)
+	waitForState(t, store, rec.OpID, StateCompleted)
+}
+
 // TestRegistryReceiveAdmitTimeoutFallback verifies that the dedicated receive
 // timeout preserves the legacy AdmitTimeout override while using its shorter
 // default for callers that left both fields unset.
@@ -510,4 +709,5 @@ func findOp(ops []CreditOpSummary, opID string) (CreditOpSummary, bool) {
 // paying state without completing.
 type errContextStub struct{}
 
+// Error identifies the fake transient payment error.
 func (errContextStub) Error() string { return "stubbed transient pay error" }

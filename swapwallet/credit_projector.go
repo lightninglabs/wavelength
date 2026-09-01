@@ -4,6 +4,8 @@ package swapwallet
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -221,7 +223,12 @@ func (r *Runtime) pollCreditOps(projected map[string]credit.State) {
 		// class of bug). The store suppresses no-op re-projections, so
 		// the coarse re-poll of unchanged terminal rows appends no
 		// duplicate events.
-		if _, err := r.projectEmitLocked(r.rootCtx, entry); err != nil {
+		repairLegacyReceive := op.Kind == credit.KindReceive &&
+			!op.State.IsTerminal()
+		if _, err := r.projectCreditEntry(
+			r.rootCtx, entry, repairLegacyReceive,
+		); err != nil {
+
 			continue
 		}
 
@@ -236,6 +243,96 @@ func (r *Runtime) pollCreditOps(projected map[string]credit.State) {
 			r.trackPendingEntryWithoutTimeout(entry)
 		}
 	}
+}
+
+// projectCreditEntry projects one credit operation while preserving the
+// global project-and-emit ordering. A resumed receive gets one narrowly scoped
+// compatibility attempt to reopen an activity row carrying the exact legacy
+// poll-cap failure; all other rows use the ordinary monotonic projector.
+func (r *Runtime) projectCreditEntry(ctx context.Context,
+	entry *wavewalletrpc.WalletEntry, repairLegacyReceive bool) (int64,
+	error) {
+
+	if !repairLegacyReceive || r.deps == nil ||
+		r.deps.ActivityStore == nil {
+		return r.projectEmitLocked(ctx, entry)
+	}
+
+	r.projectMu.Lock()
+	defer r.projectMu.Unlock()
+
+	seq, effective, repaired, err := r.repairLegacyCreditReceiveActivity(
+		ctx, entry,
+	)
+	if err != nil {
+		r.deps.resolveLog().WarnS(
+			ctx,
+			"Legacy credit receive activity repair failed",
+			err,
+		)
+
+		return 0, err
+	}
+	if !repaired {
+		seq, effective, err = r.project(ctx, entry)
+		if err != nil {
+			return 0, err
+		}
+	}
+	if seq > 0 {
+		r.emit(seq, effective)
+	}
+
+	return seq, nil
+}
+
+// repairLegacyCreditReceiveActivity atomically reopens the user-visible
+// activity row only when it is a failed receive carrying the exact legacy
+// local poll-cap error. The store keeps the normal terminal-to-pending guard
+// for every other row and appends the corrective pending event to history.
+func (r *Runtime) repairLegacyCreditReceiveActivity(ctx context.Context,
+	entry *wavewalletrpc.WalletEntry) (int64, *wavewalletrpc.WalletEntry,
+	bool, error) {
+
+	existingRow, err := r.deps.ActivityStore.GetEntry(ctx, entry.GetId())
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return 0, entry, false, nil
+
+	case err != nil:
+		return 0, nil, false, fmt.Errorf("read legacy credit receive "+
+			"activity: %w", err)
+	}
+
+	existing, err := rowToWalletEntry(existingRow)
+	if err != nil {
+		return 0, nil, false, fmt.Errorf("decode legacy credit "+
+			"receive activity: %w", err)
+	}
+	if existing.GetKind() != wavewalletrpc.EntryKind_ENTRY_KIND_RECV ||
+		existing.GetStatus() != wavewalletrpc.
+			EntryStatus_ENTRY_STATUS_FAILED ||
+		existing.GetFailureReason() != credit.LegacyReceivePollCapError {
+		return 0, entry, false, nil
+	}
+
+	effective := mergeActivityContext(existing, entry)
+	projection, err := entryToProjection(effective)
+	if err != nil {
+		return 0, nil, false, fmt.Errorf("encode legacy credit "+
+			"receive activity: %w", err)
+	}
+
+	seq, err := r.deps.ActivityStore.RepairCreditReceivePollCap(
+		ctx, projection,
+		int64(wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED),
+		credit.LegacyReceivePollCapError,
+	)
+	if err != nil {
+		return 0, nil, false, err
+	}
+
+	return seq, effective, seq > 0, nil
 }
 
 // creditEntryFromSummary projects one credit-operation summary onto a

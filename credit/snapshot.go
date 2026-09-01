@@ -39,10 +39,10 @@ type opSnapshot struct {
 	// ops.
 	CreditOnly bool
 
-	// AwaitPolls counts how many reconciliation polls the current awaiting
-	// state has taken, so a configured MaxAwaitingPolls cap can terminal-
-	// fail an operation that the server never resolves. Reset to zero each
-	// time the FSM advances into a new awaiting state.
+	// AwaitPolls counts how many reconciliation polls the current capped
+	// awaiting state has taken. Receive settlement is uncapped because the
+	// server owns the invoice lifecycle. Reset to zero each time the FSM
+	// advances into a new awaiting state.
 	AwaitPolls uint32
 }
 
