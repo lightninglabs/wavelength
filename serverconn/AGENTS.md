@@ -103,6 +103,18 @@ background ingress polling with event routing.
   only when the caller leaves `RPCOptions.IdempotencyKey` empty, which is
   correct for a single-shot call and defeats deduplication for a retry.
 - Ingress loop checkpoints pull cursor and ack state; on restart, resumes from checkpoint.
+- **A mailbox outage warns once per episode, not once per retry.** `pullPhase`
+  carries a dedicated `pullFailCount` alongside the shared backoff `failCount`:
+  the first failure of an episode logs `WarnS` so the dependency outage still
+  pages, and every subsequent failure logs `DebugS` with a
+  `consecutive_failures` field. A successful pull resets the counter to zero,
+  so a later outage warns again. The counter is pull-specific on purpose —
+  sharing the backoff counter would let unrelated backoff activity suppress the
+  first warning of a genuine outage. Without this, one rollout produced ~8
+  alerts in ~20 seconds per client, all carrying the same cause and cursor.
+  Shutdown errors (`isIngressShutdownErr`) and permanent version errors
+  (`checkPermanentStatus`) are classified before this counter and exit the loop
+  instead.
 - `DurableUnaryQuery` values are handled generically in `ServerConnectionActor.Receive` via `buildDurableUnary`: the query is converted to a `SendUnaryRequest` using the configured `DurableUnaryRequestBuilder`. Adding a new durable indexer query type requires only implementing `DurableUnaryQuery` — no new `Receive` case is needed.
 - `DurableUnaryQuery` implementations must produce stable identity bytes in `BuildBody` so that `MsgID` and `IdempotencyKey` are deterministic across restarts (auto-derived via `mailboxconn.StableEventMsgID` / `StableEventIdempotencyKey` when the caller leaves them empty).
 - `ServerConnectionActor` runs a background heartbeat goroutine (`DefaultHeartbeatInterval` = 30s) to keep the mailbox session alive.

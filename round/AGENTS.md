@@ -169,6 +169,30 @@ state transitions and validation rules live under [Invariants](#invariants).
   signatures.
 - Primary FSM handles interactive phases (through `InputSigSent`); a
   dedicated FSM per round handles confirmation monitoring.
+- **Arm timeouts before fallible outbox effects.** `processOutbox` stops at the
+  first external effect that errors, so anything ordered after a fallible
+  effect may never run. `forfeitCollectionOutbox` therefore emits the
+  status-reconciliation `StartTimeoutReq` *before* both
+  `SubmitVTXOForfeitSigsToServer` and `RegisterConfirmationRequest`: a
+  transient submit failure would otherwise skip the timeout after the forfeit
+  signatures had already left the client, stranding the reserved inputs with no
+  reconciliation path. The stale forfeit-collection `CancelTimeoutReq` still
+  goes first — the two timers use distinct phase keys, so cancelling one does
+  not disturb the other. The remaining sequence (VTXO forfeit signatures →
+  optional boarding signatures → chain registration) is built by straight
+  appends rather than an insertion index, because the index's meaning shifted
+  depending on whether the optional timeout message was present.
+- **Exactly one commitment confirmation watch per round.** The FSM outbox owns
+  steady-state registration: it emits `RegisterConfirmationRequest` after the
+  durable `InputSigSent` checkpoint commits, using the validated batch-output
+  script and the operator's `MinConfirmations`. Checkpoint handling in
+  `processOutbox` only installs the `commitmentTxIndex` routing entry — it must
+  not register again. Registering in both places created two notifier
+  subscriptions for the same transaction under different caller IDs; both
+  delivered the confirmation, the first completed the round, and the second
+  then reported the transaction as no longer indexed. Restart recovery still
+  re-registers active rounds from durable state in `Start`, so crash recovery
+  is unaffected.
 - The round actor does **not** mark VTXOs as `PendingForfeit` — the
   wallet/manager admits VTXOs before sending `RegisterIntentMsg`.
 - A round that settles in the terminal `ClientFailedState` (admission

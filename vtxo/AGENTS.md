@@ -28,9 +28,9 @@ when the local wallet owns the receive script.
 - `ManagerConfig` — Configuration holding Store, Wallet, ChainSource,
   ActorSystem, ChainParams, ExpiryConfig, RoundActor ref, ChainResolver ref,
   optional `Log`, optional `LedgerSink fn.Option[ledger.Sink]`,
-  `ForfeitVTXOActorAskTimeout`, `RefreshFeeQuoter`, `FetchOperatorKey`,
-  `ForfeitParticipantSigner`, `TerminalVTXOObserver`, `ExitOutcomeResolver`,
-  and `ReservationStore`. Confirmed exit-cost accounting is emitted by unroll
+  `ForfeitVTXOActorAskTimeout`, `RefreshFeeQuoter`, `CriticalExitAssessor`,
+  `FetchOperatorKey`, `ForfeitParticipantSigner`, `TerminalVTXOObserver`,
+  `ExitOutcomeResolver`, and `ReservationStore`. Confirmed exit-cost accounting is emitted by unroll
   after final sweep confirmation. `ForfeitVTXOActorAskTimeout`
   (default 5 s) bounds forfeit and refresh child asks so a blocked child actor
   cannot monopolize the manager until the outer RPC deadline. Zero uses the
@@ -96,11 +96,22 @@ when the local wallet owns the receive script.
 - `VTXOsMaterializedNotification` — Manager-facing notification carrying already-persisted descriptors; the manager spawns one actor per descriptor without performing another store write. Used by both the OOR receive path and the new incoming round VTXO handler.
 - `LazyChainResolver` — Forwarding `TellOnlyRef[ExpiringNotification]` that buffers notifications until `Set()` wires the real chain-resolver target. Breaks the init-order dependency between the VTXO manager (which spawns `LazyChainResolver` at startup) and the unroll registry (which is wired after the VTXO manager starts). Buffered notifications are replayed in-order on `Set()`.
 - `RefreshFeeQuoter` — Function type `func(ctx, amount btcutil.Amount, remainingBlocks uint32) btcutil.Amount`. Optional hook on `VTXOActorConfig`; invoked as an **advisory preview** before each auto-refresh emission to estimate the per-input operator fee for UX surfaces. Under the seal-time fee handshake (#270) the server is the binding fee authority — the quoter's return value is no longer attached to the wire intent. Nil quoter (legacy and test paths) yields `OperatorFee=0` on the harness-local `RefreshVTXORequest`, which has no effect on the round protocol.
+- `CriticalExitAssessor` — Function type
+  `func(ctx, *Descriptor) (CriticalExitAssessment, error)`. Optional hook on
+  `ManagerConfig`, propagated to every spawned `VTXOActor`. Answers whether the
+  backing wallet can actually fund and execute the unilateral exit package at
+  the current fee rate, *before* a critical-expiry VTXO commits to that path.
+  `waved` wires it to `rpcServer.assessAutomaticCriticalExit`, the same
+  feasibility model the manual exit RPC uses, so automatic and manual exit
+  decisions cannot drift.
+- `CriticalExitAssessment` — `{Feasible bool, Reason string}`. `Reason` is a
+  short, stable diagnostic recorded in the "Automatic expiry decision" log when
+  `Feasible` is false; it is a log field, not a wire value.
 
 ## Relationships
 
 - **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/types` (`Ancestry`), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission and custom-forfeit message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `coinselect` (largest-first VTXO selection), `metrics` (optional `OORTransferReceivedMsg` sink), `ledger` (`Sink` type for compatibility with manager wiring), `unroll` (via `ExitOutcomeResolver` callback wired by `waved`).
-- **Depended on by**: `round` (triggers forfeit requests), `oor` (incoming VTXOs), `wallet` (admission gating), `db` (persistence), `waved` (wiring, owned-script adapters, incoming event route, and `CheckForfeitAdmission` for the leave filter and exit-plan advisory), `sdk/swaps` (forfeit sign-request conversion).
+- **Depended on by**: `round` (triggers forfeit requests), `oor` (incoming VTXOs), `wallet` (admission gating), `db` (persistence), `waved` (wiring, owned-script adapters, incoming event route, `CheckForfeitAdmission` for the leave filter and exit-plan advisory, and `assessAutomaticCriticalExit` supplying `CriticalExitAssessor`), `sdk/swaps` (forfeit sign-request conversion).
 - **Sends**:
   - → `round` (via manager relay): `RelayToRoundMsg` wrapping `ForfeitSignatureSubmission`
   - → `db` (via outbox): `VTXOStatusUpdate`
@@ -162,6 +173,30 @@ when the local wallet owns the receive script.
 - When the cached boundary fires, auto-refresh fetches fresh operator terms
   before reserving the VTXO. A later still-safe boundary leaves the VTXO live;
   a disabled or unsafe-late window preserves the ordinary paid refresh path.
+- **Critical expiry means "the unilateral time budget is now active", not
+  "exit now".** `ExpiryStatusCritical` used to escalate a `LiveState` or
+  `PendingForfeitState` VTXO straight to `UnilateralExitState`. It no longer
+  does unconditionally: `VTXOActor.preflightCriticalExit` intercepts the
+  `BlockEpochEvent` and consults `CriticalExitAssessor` first. An explicitly
+  infeasible verdict (the wallet cannot fund the exit package at the current
+  fee rate) is rewritten into the actor-local `criticalRefreshEvent`, which
+  starts cooperative refresh in `LiveState` and keeps `PendingForfeitState`
+  waiting on its in-flight round. Entering an exit the wallet cannot pay for
+  would abandon a still-available cooperative round for a recovery that cannot
+  make progress. `waverpc`'s `VTXO_EXPIRY_STATUS_CRITICAL` comment carries the
+  same weakened meaning; do not re-document it as an exit trigger.
+- **The viability preflight fails open, and re-runs every block.** A nil
+  `CriticalExitAssessor`, an assessor error, and a feasible verdict all leave
+  the `BlockEpochEvent` untouched, preserving the direct unilateral-exit
+  transition — an unavailable assessment must never suppress the safety path
+  (the error case logs at `Warn` precisely because it degrades a safety
+  decision). Because the check is redone on each block rather than latched into
+  a state, funding the wallet restores the unilateral path with no extra state
+  transition, and a permanently unfundable VTXO keeps retrying cooperative
+  refresh instead of spinning on an exit that cannot land.
+- `criticalRefreshEvent` is **actor-local** and deliberately unexported: it is
+  synthesized by the actor's own preflight, never sent across a package
+  boundary. External block notifications remain `BlockEpochEvent`.
 - Once ForfeitedState is reached, the old VTXO is unspendable; the new VTXO is available only after round confirmation.
 - SpendingState is persisted as VTXOStatusSpending and survives restarts.
 - OOR completion transitions VTXOs to SpentState through the VTXO actor FSM, not by direct store writes.
