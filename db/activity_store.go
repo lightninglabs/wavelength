@@ -20,6 +20,14 @@ type ActivityStore interface {
 	UpsertActivityEntry(ctx context.Context,
 		arg sqlc.UpsertActivityEntryParams) (int64, error)
 
+	// RepairCreditReceivePollCapActivity reopens only the exact legacy
+	// inbound credit-receive failure.
+	RepairCreditReceivePollCapActivity(ctx context.Context,
+		arg sqlc.RepairCreditReceivePollCapActivityParams) (
+		int64,
+		error,
+	)
+
 	// AppendActivityEvent records one immutable activity transition.
 	AppendActivityEvent(ctx context.Context,
 		arg sqlc.AppendActivityEventParams) (int64, error)
@@ -154,6 +162,63 @@ type ActivityProjection struct {
 type ActivityPersistenceStore struct {
 	db    BatchedActivityStore
 	clock clock.Clock
+}
+
+// RepairCreditReceivePollCap reopens only an inbound receive activity row
+// carrying the exact legacy poll-cap failure. The guarded current-state update
+// and corrective pending event commit atomically, preserving the append-only
+// event history without relaxing ProjectEntry's terminal-to-pending rule.
+func (s *ActivityPersistenceStore) RepairCreditReceivePollCap(
+	ctx context.Context, p ActivityProjection, failedStatus int64,
+	legacyFailureReason string) (int64, error) {
+
+	now := s.clock.Now().Unix()
+	updatedAt := p.UpdatedAtUnix
+	if updatedAt == 0 {
+		updatedAt = now
+	}
+
+	var eventSeq int64
+	err := s.db.ExecTx(ctx, WriteTxOption(), func(q ActivityStore) error {
+		eventSeq = 0
+
+		rows, err := q.RepairCreditReceivePollCapActivity(
+			ctx, sqlc.RepairCreditReceivePollCapActivityParams{
+				PendingStatus:       p.Status,
+				PendingPhase:        p.Phase,
+				PendingPhaseLabel:   p.PhaseLabel,
+				UpdatedAtUnix:       updatedAt,
+				CanonicalID:         p.CanonicalID,
+				ReceiveKind:         p.Kind,
+				FailedStatus:        failedStatus,
+				LegacyFailureReason: legacyFailureReason,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return nil
+		}
+
+		seq, err := q.AppendActivityEvent(
+			ctx, sqlc.AppendActivityEventParams{
+				CanonicalID:   p.CanonicalID,
+				Status:        p.Status,
+				Phase:         p.Phase,
+				EntryJson:     p.EntryJSON,
+				CreatedAtUnix: updatedAt,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		eventSeq = seq
+
+		return nil
+	})
+
+	return eventSeq, err
 }
 
 // NewActivityPersistenceStore creates an activity-log store using the

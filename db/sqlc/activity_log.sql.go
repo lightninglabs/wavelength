@@ -302,6 +302,52 @@ func (q *Queries) PullActivityEvents(ctx context.Context, arg PullActivityEvents
 	return items, nil
 }
 
+const RepairCreditReceivePollCapActivity = `-- name: RepairCreditReceivePollCapActivity :execrows
+UPDATE activity_entries SET
+    status          = $1,
+    phase           = $2,
+    phase_label     = $3,
+    failure_code    = 0,
+    failure_reason  = '',
+    updated_at_unix = $4
+WHERE canonical_id = $5
+    AND kind = $6
+    AND status = $7
+    AND failure_reason = $8
+`
+
+type RepairCreditReceivePollCapActivityParams struct {
+	PendingStatus       int64
+	PendingPhase        int64
+	PendingPhaseLabel   string
+	UpdatedAtUnix       int64
+	CanonicalID         string
+	ReceiveKind         int64
+	FailedStatus        int64
+	LegacyFailureReason string
+}
+
+// RepairCreditReceivePollCapActivity narrowly reopens an inbound credit
+// receive that an older client marked terminal after exhausting its local poll
+// budget. The exact kind, failed status, and legacy error guard prevent this
+// compatibility repair from weakening the normal terminal-to-pending rule.
+func (q *Queries) RepairCreditReceivePollCapActivity(ctx context.Context, arg RepairCreditReceivePollCapActivityParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, RepairCreditReceivePollCapActivity,
+		arg.PendingStatus,
+		arg.PendingPhase,
+		arg.PendingPhaseLabel,
+		arg.UpdatedAtUnix,
+		arg.CanonicalID,
+		arg.ReceiveKind,
+		arg.FailedStatus,
+		arg.LegacyFailureReason,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const UpsertActivityEntry = `-- name: UpsertActivityEntry :execrows
 
 INSERT INTO activity_entries (

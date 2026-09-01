@@ -145,7 +145,7 @@ var CreditTransitions = CreditTransitionTable{
 			}, {
 				Event:       &opDrive{},
 				ToState:     &failedState{},
-				Description: "receive failed or poll cap",
+				Description: "server reports receive failed",
 				IsTerminal:  true,
 			}},
 		},

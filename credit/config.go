@@ -262,11 +262,10 @@ type OpActorConfig struct {
 	// polls while awaiting a server or chain signal.
 	PollInterval time.Duration
 
-	// MaxAwaitingPolls caps how many reconciliation polls an awaiting state
-	// may take before the operation terminal-fails, a backstop against an
-	// operation parking forever when the server never reports a terminal
-	// state. Zero means unlimited: rely on the server-reported terminal
-	// states (expired/failed/released) to bound the wait.
+	// MaxAwaitingPolls caps how many reconciliation polls a pay top-up,
+	// credit-only pay, or redemption may take before the operation
+	// terminal-fails. Credit receives are excluded because the server-owned
+	// invoice lifecycle is their terminal authority. Zero means unlimited.
 	MaxAwaitingPolls uint32
 
 	// AutoRedeemEnabled turns on the receive-driven auto-redeem: a settled
@@ -319,9 +318,10 @@ type RegistryConfig struct {
 	// PollInterval is the backoff between reconciliation polls in children.
 	PollInterval time.Duration
 
-	// MaxAwaitingPolls caps reconciliation polls in an awaiting child state
-	// before it terminal-fails. Zero relies on server-reported terminal
-	// states to bound the wait.
+	// MaxAwaitingPolls caps reconciliation polls for pay top-ups,
+	// credit-only pays, and redemptions before they terminal-fail. Credit
+	// receives rely only on server-reported terminal states. Zero means
+	// unlimited.
 	MaxAwaitingPolls uint32
 
 	// AdmitTimeout bounds the synchronous server work an admission performs

@@ -305,6 +305,107 @@ func TestCreditProjectorTracksPendingForRestart(t *testing.T) {
 	)
 }
 
+// TestCreditProjectorReopensLegacyReceiveActivity proves the upgrade repair is
+// visible to users: a canonical FAILED row carrying the exact old poll-cap
+// error becomes PENDING with a corrective event, retains its invoice context,
+// and can later advance to COMPLETE. The global terminal-to-pending rule stays
+// unchanged for every other activity row.
+func TestCreditProjectorReopensLegacyReceiveActivity(t *testing.T) {
+	t.Parallel()
+
+	history, store := newStoreListFixture(t)
+	runtime := history.runtime
+
+	const opID = "legacy-receive"
+	failed := &wavewalletrpc.WalletEntry{
+		Id:            opID,
+		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
+		Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED,
+		AmountSat:     200,
+		Counterparty:  creditCounterparty,
+		Note:          "small receive",
+		FailureReason: credit.LegacyReceivePollCapError,
+		FailureCode: wavewalletrpc.
+			EntryFailureCode_ENTRY_FAILURE_CODE_FAILED.Enum(),
+		Request: &wavewalletrpc.WalletEntryRequest{
+			Request: &wavewalletrpc.
+				WalletEntryRequest_LightningInvoice{
+				LightningInvoice: &wavewalletrpc.
+					LightningInvoiceRequest{
+					Invoice: "lnbc-legacy",
+				},
+			},
+		},
+		Progress: &wavewalletrpc.WalletEntryProgress{
+			Phase: wavewalletrpc.
+				WalletEntryPhase_WALLET_ENTRY_PHASE_FAILED,
+			PhaseLabel: "failed",
+		},
+	}
+	runtime.projectAndEmit(t.Context(), failed)
+
+	op := credit.CreditOpSummary{
+		OpID:      opID,
+		OpKey:     "recv:legacy",
+		Kind:      credit.KindReceive,
+		State:     credit.StateAwaitingSettlement,
+		Pending:   true,
+		AmountSat: 200,
+	}
+	reg := &fakeCreditRegistry{
+		listResp: &credit.ListCreditOpsResponse{
+			Ops: []credit.CreditOpSummary{
+				op,
+			},
+		},
+	}
+	runtime.deps.CreditRegistry = reg
+
+	sub := runtime.subscribe()
+	t.Cleanup(func() { runtime.unsubscribe(sub) })
+	projected := make(map[string]credit.State)
+	runtime.pollCreditOps(projected)
+
+	row, err := store.GetEntry(t.Context(), opID)
+	require.NoError(t, err)
+	require.EqualValues(
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING, row.Status,
+	)
+	require.Empty(t, row.FailureReason)
+	require.Equal(t, "small receive", row.Note)
+	require.Contains(t, row.RequestJson, "lnbc-legacy")
+
+	updates := drainEntries(sub)
+	require.Len(t, updates, 1)
+	require.Equal(
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		updates[0].GetStatus(),
+	)
+	require.Equal(
+		t, "lnbc-legacy",
+		updates[0].GetRequest().GetLightningInvoice().GetInvoice(),
+	)
+
+	events, err := store.PullEvents(t.Context(), 0, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 2)
+	require.EqualValues(
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		events[1].Status,
+	)
+
+	op.State = credit.StateCompleted
+	op.Pending = false
+	reg.listResp.Ops[0] = op
+	runtime.pollCreditOps(projected)
+
+	row, err = store.GetEntry(t.Context(), opID)
+	require.NoError(t, err)
+	require.EqualValues(
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, row.Status,
+	)
+}
+
 // TestCreditProjectorRetriesFailedTerminalProjection verifies a transient
 // activity-store failure does not memoize terminal state or clear pending
 // tracking before the next poll durably records the transition.

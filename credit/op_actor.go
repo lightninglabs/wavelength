@@ -161,9 +161,10 @@ type opBehavior struct {
 	// a terminal row keeps the marker the wallet projector reads.
 	creditOnly bool
 
-	// awaitPolls counts reconciliation polls taken in the current awaiting
-	// state, checked against cfg.MaxAwaitingPolls. Reset to zero whenever
-	// the FSM advances into a different state.
+	// awaitPolls counts reconciliation polls taken in a capped awaiting
+	// state, checked against cfg.MaxAwaitingPolls. Receive settlement does
+	// not use this cap because the server owns the invoice lifecycle. Reset
+	// to zero whenever the FSM advances into a different state.
 	awaitPolls uint32
 
 	// acctKey caches the wallet identity pubkey that keys the credit

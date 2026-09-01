@@ -53,6 +53,15 @@ func (f *fakeActivityProjector) ProjectEntry(_ context.Context,
 	return int64(len(f.projected)), nil
 }
 
+// RepairCreditReceivePollCap satisfies waved.ActivityStore. The fake has no
+// durable terminal rows, so tests that need the guarded repair use the real
+// activity store.
+func (f *fakeActivityProjector) RepairCreditReceivePollCap(context.Context,
+	db.ActivityProjection, int64, string) (int64, error) {
+
+	return 0, nil
+}
+
 // GetEntry reports no existing row. Tests that need durable merge behavior use
 // a real ActivityPersistenceStore.
 func (f *fakeActivityProjector) GetEntry(context.Context, string) (
