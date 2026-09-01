@@ -14,8 +14,9 @@ default `--help` face:
 1. **Wallet verbs (group "Wallet", implicit, no parent)** — the everyday
    commands that map 1:1 to what a user does day-to-day. All are
    wavewalletrpc-backed.
-2. **Daemon introspection (group "Introspection")** — getinfo, schema, mcp
-   (the built-in `help` command is grouped here too).
+2. **Daemon introspection (group "Introspection")** — getinfo,
+   bakemacaroon, schema, mcp (the built-in `help` command is grouped here
+   too).
 3. **Advanced subtrees (`ark`, `dev`, `recovery`)** — raw
    waverpc/devrpc commands for power users and operator runbooks.
    Hidden from the default `--help` via cobra `Hidden` (not a build tag),
@@ -52,7 +53,8 @@ unchanged).
 | Command | RPC | Description |
 |---------|-----|-------------|
 | `getinfo` | `waverpc.GetInfo` | Daemon readiness, version, network, wallet state |
-| `schema` | (local) | JSON method registry — single source of truth for CLI commands and MCP tools |
+| `bakemacaroon` | `waverpc.BakeMacaroon` | Provision a scoped credential from known entity/action or exact URI permissions |
+| `schema` | (local) | JSON method registry for curated wallet/ark CLI commands and MCP tools |
 | `mcp` | (local) | MCP server exposing the schema as tools |
 
 ### `ark.*` advanced commands
@@ -109,7 +111,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
 - `snakeToKebabFlags()` — global flag normalizer: help and schemas use
   kebab-case while snake_case remains a silent compatibility alias.
 - `methodRegistry()` / `schemaMethod` / `schemaParam` —
-  machine-readable schema for all CLI commands; shared source of
+  machine-readable schema for curated wallet/ark commands; shared source of
   truth for `schema` and MCP tool definitions. Built from the
   `walletAdmin`/`walletPayment`/`walletQuery`/`arkBase`/`arkVTXO`/
   `arkSend`/`arkObservable` sub-registries. MCP-only methods use
