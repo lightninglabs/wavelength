@@ -54,6 +54,9 @@ const (
 	// entityActivity covers the unified ledger, transaction history, and
 	// activity inspection.
 	entityActivity = "activity"
+
+	// entityMacaroon covers privileged daemon credential creation.
+	entityMacaroon = "macaroon"
 )
 
 // wavedEntities is the full set of logical macaroon entities. The read-only
@@ -70,6 +73,7 @@ var wavedEntities = []string{
 	entityRecovery,
 	entityFees,
 	entityActivity,
+	entityMacaroon,
 }
 
 var wavedRPCPermissions = newWavedRPCPermissions()
@@ -92,6 +96,14 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 			}}
 		}
 	}
+
+	macaroonService := waverpc.MacaroonService_ServiceDesc.ServiceName
+	grant(
+		macaroonService, entityMacaroon, "generate", "BakeMacaroon",
+	)
+	grant(
+		macaroonService, entityInfo, "read", "ListPermissions",
+	)
 
 	daemon := waverpc.DaemonService_ServiceDesc.ServiceName
 	grant(daemon, entityInfo, "read",
@@ -245,22 +257,27 @@ func wavedReadOnlyPermissions() []bakery.Op {
 	return ops
 }
 
-// registeredRPCPermissions maps every registered gRPC method to the macaroon
-// permission it requires.
+// registeredRPCPermissions maps every known registered gRPC method to the
+// macaroon permission it requires and reports the first unprotected method.
 func registeredRPCPermissions(grpcServer *grpc.Server) (map[string][]bakery.Op,
 	error) {
 
 	info := grpcServer.GetServiceInfo()
 	permissions := make(map[string][]bakery.Op)
+	var permissionErr error
 
 	for serviceName, serviceInfo := range info {
 		for _, method := range serviceInfo.Methods {
 			fullMethod := "/" + serviceName + "/" + method.Name
 			ops, ok := wavedRPCPermissions[fullMethod]
 			if !ok {
-				return nil, fmt.Errorf("no macaroon "+
-					"permission registered for %s",
-					fullMethod)
+				if permissionErr == nil {
+					permissionErr = fmt.Errorf("no "+
+						"macaroon permission "+
+						"registered for %s", fullMethod)
+				}
+
+				continue
 			}
 
 			permissions[fullMethod] = append(
@@ -269,5 +286,5 @@ func registeredRPCPermissions(grpcServer *grpc.Server) (map[string][]bakery.Op,
 		}
 	}
 
-	return permissions, nil
+	return permissions, permissionErr
 }

@@ -1451,6 +1451,9 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 	waverpc.RegisterDaemonServiceServer(
 		s.grpcServer, s.rpcServer,
 	)
+	waverpc.RegisterMacaroonServiceServer(
+		s.grpcServer, s.rpcServer,
+	)
 	if cleanup := registerBtcwalletRPC(s.grpcServer, s); cleanup != nil {
 		defer cleanup()
 	}
@@ -1474,13 +1477,16 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 			defer cleanup()
 		}
 	}
-	if authService != nil {
-		if _, err := registeredRPCPermissions(
-			s.grpcServer,
-		); err != nil {
-			return err
-		}
+	activePermissions, err := registeredRPCPermissions(s.grpcServer)
+	// Preserve the no-auth development mode's support for custom services
+	// without daemon-defined permissions. When authentication is enabled,
+	// every registered method must remain covered and startup fails closed.
+	if err != nil && authService != nil {
+		return err
 	}
+	s.rpcServer.configureMacaroonManager(
+		authService, activePermissions,
+	)
 
 	// Register the DaemonService for mailbox RPC access. The
 	// ServeMux handles incoming KIND_REQUEST envelopes routed
