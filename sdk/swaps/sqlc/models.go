@@ -68,4 +68,7 @@ type ReceiveSwap struct {
 	AvailableCreditSat                   int64
 	AttachedCreditSat                    int64
 	DustLimitSat                         int64
+	ReservedScid                         []byte
+	ChannelBackingFeeSat                 int64
+	ChannelID                            []byte
 }
