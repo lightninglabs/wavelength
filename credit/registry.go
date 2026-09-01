@@ -584,9 +584,9 @@ func (b *registryBehavior) repairLegacyReceivePollCapFailures(
 		return
 	}
 
-	repairTimeout := b.cfg.AdmitTimeout
+	repairTimeout := b.cfg.ReceiveAdmitTimeout
 	if repairTimeout <= 0 {
-		repairTimeout = DefaultAdmitTimeout
+		repairTimeout = DefaultReceiveAdmitTimeout
 	}
 	repairCtx, cancel := context.WithTimeout(ctx, repairTimeout)
 	defer cancel()
@@ -672,7 +672,12 @@ func (b *registryBehavior) repairLegacyReceivePollCapFailures(
 			)
 			switch {
 			case lookupErr == nil && active.OpID != updated.OpID:
-				continue
+				// Keep failed; the newer row owns the key.
+				// Replace only the known-false verdict.
+				updated = rec
+				updated.LastError = supersededReceiveReason(
+					serverState,
+				)
 
 			case lookupErr != nil && !errors.Is(
 				lookupErr, db.ErrCreditOperationNotFound,
@@ -774,6 +779,13 @@ func repairLegacyReceiveRecord(rec db.CreditOperationRecord,
 	default:
 		return rec, false, nil
 	}
+}
+
+// supersededReceiveReason replaces the known-false legacy poll-cap verdict
+// when a newer local operation already owns the active operation key.
+func supersededReceiveReason(serverState ServerCreditState) string {
+	return fmt.Sprintf("legacy receive superseded while server state is %s",
+		serverState)
 }
 
 // handleList projects the stored operations into compact summaries. A
