@@ -1376,16 +1376,24 @@ func (m *Manager) confirmExitedVTXO(ctx context.Context,
 	}
 
 	// No live actor: persist the terminal spent status directly so a
-	// restarted daemon still records the on-chain spend. Only act on a VTXO
-	// still in the exit state so a re-delivered confirmation cannot stomp a
-	// VTXO that has since been reissued or recovered to live.
+	// restarted daemon still records the on-chain spend. Recovery-only
+	// descriptors are also eligible when a non-standard policy completed;
+	// they deliberately have no VTXO actor because their owning application
+	// FSM controls admission. The policy check prevents an ordinary timeout
+	// job from retiring an application-owned row.
 	descriptor, err := m.cfg.Store.GetVTXO(ctx, req.Outpoint)
 	if err != nil {
 		return fn.Err[ManagerResp](
 			fmt.Errorf("load vtxo for confirm: %w", err),
 		)
 	}
-	if descriptor == nil || descriptor.Status != VTXOStatusUnilateralExit {
+	if descriptor == nil {
+		return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+	}
+	isOrdinaryExit := descriptor.Status == VTXOStatusUnilateralExit
+	isRecoveryOnly := descriptor.Status == VTXOStatusRecoveryOnly &&
+		req.ExitPolicyKind.Valid()
+	if !isOrdinaryExit && !isRecoveryOnly {
 		return fn.Ok[ManagerResp](&ExitOutcomeResp{})
 	}
 
@@ -2200,7 +2208,7 @@ func (m *Manager) exactSpendUnavailableError(ctx context.Context,
 
 	case VTXOStatusForfeited, VTXOStatusSpent,
 		VTXOStatusUnilateralExit, VTXOStatusFailed,
-		VTXOStatusExpired:
+		VTXOStatusExpired, VTXOStatusRecoveryOnly:
 		return fmt.Errorf("%w: exact spend outpoint %s has status %s",
 			ErrInsufficientSpendableFunds, op, desc.Status)
 	}
@@ -2698,11 +2706,13 @@ func (m *Manager) handleCompleteSpend(ctx context.Context,
 	for _, op := range outpoints {
 		ref, ok := m.actors[op]
 		if !ok {
-			spent, err := m.isPersistedSpent(ctx, op)
+			completedWithoutActor, err := m.completePersistedSpend(
+				ctx, op,
+			)
 			if err != nil {
 				return fn.Err[ManagerResp](err)
 			}
-			if spent {
+			if completedWithoutActor {
 				m.dropReserved(op)
 				completed++
 
@@ -2739,15 +2749,17 @@ func (m *Manager) handleCompleteSpend(ctx context.Context,
 	})
 }
 
-// isPersistedSpent returns true when an actor was already cleaned up after
-// the spend status reached durable storage. It returns false with no error
-// when the VTXO is absent, and returns an error when the store cannot give a
-// definitive answer.
+// completePersistedSpend completes the two valid actorless spend cases. A
+// terminal Spent row means a previous attempt already completed. A
+// RecoveryOnly row deliberately has no VTXO actor because its application FSM
+// owns spend admission, so an accepted OOR spend retires it directly while
+// atomically releasing the durable spend reservation. Every other state still
+// requires its normal VTXO actor.
 //
 // This makes CompleteSpend idempotent across crashes that happen after the
 // VTXO status commit but before the OOR session checkpoints Completed.
-func (m *Manager) isPersistedSpent(ctx context.Context, op wire.OutPoint) (bool,
-	error) {
+func (m *Manager) completePersistedSpend(ctx context.Context,
+	op wire.OutPoint) (bool, error) {
 
 	if m.cfg.Store == nil {
 		return false, nil
@@ -2759,7 +2771,7 @@ func (m *Manager) isPersistedSpent(ctx context.Context, op wire.OutPoint) (bool,
 			return false, nil
 		}
 
-		return false, fmt.Errorf("load vtxo for spent check %s: %w", op,
+		return false, fmt.Errorf("load vtxo for completion %s: %w", op,
 			err)
 	}
 
@@ -2767,7 +2779,24 @@ func (m *Manager) isPersistedSpent(ctx context.Context, op wire.OutPoint) (bool,
 		return false, nil
 	}
 
-	return desc.Status == VTXOStatusSpent, nil
+	switch desc.Status {
+	case VTXOStatusSpent:
+		return true, nil
+
+	case VTXOStatusRecoveryOnly:
+		err := m.cfg.Store.UpdateVTXOStatusReleasingReservation(
+			ctx, op, VTXOStatusSpent,
+		)
+		if err != nil {
+			return false, fmt.Errorf("complete recovery-only vtxo "+
+				"%s: %w", op, err)
+		}
+
+		return true, nil
+
+	default:
+		return false, nil
+	}
 }
 
 // =============================================================================

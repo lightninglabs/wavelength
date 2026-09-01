@@ -1729,7 +1729,7 @@ func (b *behavior) proofSpendCallerID(outpoint wire.OutPoint) string {
 // when a proof output is consumed on chain, and we have to classify what we
 // are looking at before deciding whether the unroll job is dead.
 //
-// Four cases:
+// Five cases:
 //
 //  1. The spent output belongs to a known node in our recovery proof.
 //     That proves the parent transaction confirmed, even if txconfirm's
@@ -1742,7 +1742,11 @@ func (b *behavior) proofSpendCallerID(outpoint wire.OutPoint) string {
 //     recorded in planner state). Again benign — our sweep confirming is
 //     the goal — so just propagate the height.
 //
-//  4. Anything else: the watched output was spent by someone else. This can
+//  4. The exit policy has an immutable pre-signed final spend and that exact
+//     transaction spent the target. This is success even when the peer won
+//     the publication race.
+//
+//  5. Anything else: the watched output was spent by someone else. This can
 //     happen if the operator cooperatively claims it, if a fraud party
 //     beats us to a signed spend, or if a reorg replays a different
 //     history. In all cases the unroll job cannot finish; drive FailEvent
@@ -1796,7 +1800,21 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 		}
 	}
 
-	// Case 4: neither of the above. Someone else spent the watched output.
+	// Case 4: some policies, such as Ark channel materialization, bind the
+	// final transaction before the unroll starts. Either authorized party
+	// may publish it after CSV maturity. Recognize the exact pre-signed
+	// txid and record both its broadcast and confirmation so the durable
+	// actor converges regardless of which participant reached the chain
+	// first.
+	matched, err := b.ackPreSignedExitSpend(ctx, ax, msg)
+	if err != nil {
+		return fn.Err[Resp](err)
+	}
+	if matched {
+		return fn.Ok[Resp](&AckResp{})
+	}
+
+	// Case 5: neither of the above. Someone else spent the watched output.
 	// This happens if the operator cooperatively claimed the VTXO,
 	// if a reorg replaced history, or in fraud scenarios. There is
 	// no way for this unroll to proceed, so terminate with a
@@ -1811,6 +1829,118 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 		msg.SpendingHeight)
 
 	return b.handleEvent(ctx, ax, &FailEvent{Reason: reason})
+}
+
+// ackPreSignedExitSpend completes an unroll when another authorized party
+// publishes the exact immutable final spend supplied by the exit policy.
+func (b *behavior) ackPreSignedExitSpend(ctx context.Context,
+	ax actor.Exec[unrollTx], msg *SpendObservedMsg) (bool, error) {
+
+	spentOutpoint := msg.Outpoint
+	if spentOutpoint == (wire.OutPoint{}) {
+		spentOutpoint = b.cfg.TargetOutpoint
+	}
+	if spentOutpoint != b.cfg.TargetOutpoint {
+		return false, nil
+	}
+
+	policy, err := b.resolveExitSpendPolicy(ctx)
+	if err != nil {
+		return false, err
+	}
+	preSigned, ok := policy.(PreSignedExitSpendPolicy)
+	if !ok {
+		return false, nil
+	}
+
+	tx, err := preSigned.PreSignedSpendTx()
+	if err != nil {
+		return false, fmt.Errorf("load pre-signed exit spend: %w", err)
+	}
+	if tx == nil || tx.TxHash() != msg.SpendingTxid {
+		return false, nil
+	}
+	if !transactionSpendsOutpoint(tx, b.cfg.TargetOutpoint) {
+		return false, fmt.Errorf("pre-signed exit spend %s does not "+
+			"spend target %s", msg.SpendingTxid,
+			b.cfg.TargetOutpoint)
+	}
+
+	// Preserve the transaction itself, not only its txid. Checkpoint replay
+	// and exit-cost accounting both require the exact final transaction.
+	b.sweepTx = tx
+
+	state, err := b.currentState()
+	if err != nil {
+		return false, err
+	}
+	job := stateJob(state)
+	if !containsHash(
+		job.PlannerState.ConfirmedTxids, b.cfg.TargetOutpoint.Hash,
+	) {
+
+		err := b.driveEvent(ctx, ax, &TxConfirmedEvent{
+			Txid:   b.cfg.TargetOutpoint.Hash,
+			Height: msg.SpendingHeight,
+		})
+		if err != nil {
+			return false, err
+		}
+	}
+
+	state, err = b.currentState()
+	if err != nil {
+		return false, err
+	}
+	job = stateJob(state)
+	if job.PlannerState.Sweep.Txid.IsSome() {
+		if job.PlannerState.Sweep.Txid.UnsafeFromSome() !=
+			msg.SpendingTxid {
+			return false, fmt.Errorf("pre-signed exit spend %s "+
+				"conflicts with recorded sweep %s",
+				msg.SpendingTxid,
+				job.PlannerState.Sweep.Txid.UnsafeFromSome())
+		}
+	} else {
+		if err := b.driveEvent(ctx, ax, &SweepBroadcastedEvent{
+			Txid: msg.SpendingTxid,
+		}); err != nil {
+			return false, err
+		}
+	}
+
+	state, err = b.currentState()
+	if err != nil {
+		return false, err
+	}
+	job = stateJob(state)
+	if job.PlannerState.Sweep.Status !=
+		unrollplan.SweepStatusConfirmed {
+
+		if err := b.driveEvent(ctx, ax, &TxConfirmedEvent{
+			Txid:   msg.SpendingTxid,
+			Height: msg.SpendingHeight,
+		}); err != nil {
+			return false, err
+		}
+	}
+
+	return true, nil
+}
+
+// transactionSpendsOutpoint reports whether tx consumes the exact outpoint.
+func transactionSpendsOutpoint(tx *wire.MsgTx, outpoint wire.OutPoint) bool {
+	if tx == nil {
+		return false
+	}
+
+	for _, txIn := range tx.TxIn {
+		if txIn != nil && txIn.PreviousOutPoint == outpoint {
+			return true
+		}
+	}
+
+	return false
 }
 
 // ackProofOutputSpend records proof-output spend evidence and reports whether
