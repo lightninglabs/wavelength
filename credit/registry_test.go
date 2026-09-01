@@ -180,11 +180,21 @@ func TestRepairLegacyReceivePollCapFailures(t *testing.T) {
 
 	got, err = store.GetOperation(t.Context(), conflictPending.OpID)
 	require.NoError(t, err)
-	require.Equal(t, conflictPending, *got)
+	require.Equal(t, string(StateFailed), got.State)
+	require.Equal(t, db.CreditOpStatusFailed, got.Status)
+	require.Equal(
+		t, "legacy receive superseded while server state is "+
+			"awaiting_payment", got.LastError,
+	)
 
 	got, err = store.GetOperation(t.Context(), conflictCompleted.OpID)
 	require.NoError(t, err)
-	require.Equal(t, conflictCompleted, *got)
+	require.Equal(t, string(StateFailed), got.State)
+	require.Equal(t, db.CreditOpStatusFailed, got.Status)
+	require.Equal(
+		t, "legacy receive superseded while server state is credited",
+		got.LastError,
+	)
 }
 
 // TestRepairLegacyReceiveSkipsUnavailableSnapshot asserts boot repair never
