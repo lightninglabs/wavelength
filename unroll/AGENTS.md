@@ -203,7 +203,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   shared by every child of an unroll registry, so this fallback emits one
   warning per registry and process lifetime. Each affected target keeps Debug
   evidence. A restart creates a new deduper and warns again if the condition
-  persists.
+  persists. Once the daemon is ready, waved attempts a bounded repair from
+  authenticated indexed ancestry. Indexed heights must be no greater than the
+  local chain tip and, for single-fragment ancestry, the VTXO's known creation
+  height. Existing jobs retain the safe fallback; successful repairs apply to
+  later admissions and restarts.
 
 ## Relationships
 
