@@ -167,17 +167,31 @@ func (t *Tree) ExtractPathForIndices(leafIndices ...int) (*Tree, error) {
 	}, nil
 }
 
-// Verify recursively verifies that the tree structure is consistent.
-// It checks that each child's input correctly references the parent's
-// transaction at the expected output index.
+// Verify recursively verifies that the tree structure and values are
+// consistent. BatchOutput must be non-nil and contain the output spent by the
+// root. Callers accepting an untrusted tree must first bind BatchOutput to the
+// authoritative commitment transaction output. Each tree transaction must
+// spend its declared parent output and preserve that output's exact value.
 func (t *Tree) Verify() error {
-	// Verify root spends batch outpoint.
+	if t == nil {
+		return fmt.Errorf("tree is nil")
+	}
+	if t.Root == nil {
+		return fmt.Errorf("tree root is nil")
+	}
+
+	// Keep the established Tree.Verify error contract while the standalone
+	// value validator repeats this check for trust-boundary callers.
 	if t.Root.Input != t.BatchOutpoint {
 		return fmt.Errorf("root input does not match batch outpoint")
 	}
 
-	// Verify tree structure.
-	return t.Root.Verify()
+	// Reject hostile value flow while walking the structure.
+	if err := t.ValidateValueConservation(); err != nil {
+		return fmt.Errorf("value conservation failed: %w", err)
+	}
+
+	return nil
 }
 
 // VerifyVTXOPath verifies that the tree contains a valid path to a VTXO for
