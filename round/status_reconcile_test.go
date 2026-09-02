@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -424,5 +425,294 @@ func TestDeadStatusTerminalCodeRetiresJob(t *testing.T) {
 	require.Equal(t, []wire.OutPoint{op}, notify.ForfeitOutpoints)
 	require.Equal(
 		t, RoundFailureInsufficientOperatorFunds, notify.FailureCode,
+	)
+
+	// The disarm is cleanup and must trail the job drop. A rejected
+	// CancelTimeoutReq aborts the rest of the outbox, so a cancel sitting
+	// ahead of the notification would let a saturated timeout actor leave
+	// the pending intent in recoverable replay, which is exactly what
+	// retiring the job prevents.
+	cancelIdx := outboxIndexOf[*CancelTimeoutReq](outbox)
+	require.NotEqual(t, -1, cancelIdx, "dead answer left the clock armed")
+
+	notifyIdx := outboxIndexOf[*TerminalJobFailedNotification](outbox)
+	require.Less(
+		t, notifyIdx, cancelIdx, "disarm precedes the job drop, so "+
+			"a rejected cancel would suppress it",
+	)
+}
+
+// outboxIndexOf returns the position of the first outbox message of type T,
+// or -1 when the outbox carries none. Ordering assertions need the position
+// rather than mere presence: processOutbox abandons the rest of the outbox on
+// the first failing Tell, so whether a message is dispatched before or after a
+// fallible send decides what a mid-flight error can strand.
+func outboxIndexOf[T ClientOutMsg](outbox []ClientOutMsg) int {
+	for i, msg := range outbox {
+		if _, ok := msg.(T); ok {
+			return i
+		}
+	}
+
+	return -1
+}
+
+// TestBoardingOnlyReconcileTimeoutProbes pins the wavelength#1051 fix on the
+// timeout handler. A boarding-only round holds no forfeit reservations, so the
+// old forfeit-count gate self-looped its expiry as a defensive no-op. But the
+// probe is that round's sole exit from InputSigSentState once the operator has
+// rolled the round back before broadcast: no commitment can confirm and no
+// failure will ever be delivered. The expiry must therefore probe and re-arm
+// exactly as a forfeit-bearing round does.
+func TestBoardingOnlyReconcileTimeoutProbes(t *testing.T) {
+	t.Parallel()
+
+	roundID := reconcileRoundID(0xb1)
+	s := reconcileState(roundID, nil)
+
+	tr, err := s.ProcessEvent(
+		context.Background(), &StatusReconcileTimedOut{
+			RoundID: roundID,
+		},
+		reconcileEnv(),
+	)
+	require.NoError(t, err)
+
+	next, ok := tr.NextState.(*InputSigSentState)
+	require.True(t, ok, "expected InputSigSentState, got %T", tr.NextState)
+	require.Equal(t, uint32(1), next.ReconcileProbes)
+
+	outbox := tr.NewEvents.UnwrapOr(ClientEmittedEvent{}).Outbox
+
+	probe, ok := findOutbox[*QueryRoundStatusOutbox](outbox)
+	require.True(t, ok, "boarding-only round did not re-probe")
+	require.Equal(t, roundID, probe.RoundID)
+
+	timeoutReq, ok := findOutbox[*StartTimeoutReq](outbox)
+	require.True(t, ok, "boarding-only reconcile window not re-armed")
+	require.Equal(t, TimeoutPhaseStatusReconcile, timeoutReq.Phase)
+}
+
+// TestBoardingOnlyDeliveredFailureDisarms pins the disarm half of the
+// wavelength#1051 invariant: the clock is armed for the whole of
+// InputSigSentState, so every exit disarms it. The delivered-failure shortcut
+// still fails a boarding-only round immediately (it signed nothing away, so
+// nothing can strand), but it must now cancel the timer it armed on the way
+// in rather than leave a one-shot running against a terminal round.
+func TestBoardingOnlyDeliveredFailureDisarms(t *testing.T) {
+	t.Parallel()
+
+	roundID := reconcileRoundID(0xb2)
+	s := reconcileState(roundID, nil)
+
+	failure := &BoardingFailed{
+		Reason:      "operator rolled the round back",
+		Recoverable: true,
+	}
+
+	tr, err := s.ProcessEvent(context.Background(), failure, reconcileEnv())
+	require.NoError(t, err)
+
+	failed, ok := tr.NextState.(*ClientFailedState)
+	require.True(t, ok, "expected ClientFailedState, got %T", tr.NextState)
+	require.Equal(t, failure.Reason, failed.Reason)
+
+	outbox := tr.NewEvents.UnwrapOr(ClientEmittedEvent{}).Outbox
+
+	cancel, ok := findOutbox[*CancelTimeoutReq](outbox)
+	require.True(t, ok, "delivered failure left the reconcile clock armed")
+	require.Equal(t, TimeoutPhaseStatusReconcile, cancel.Phase)
+	require.Equal(t, RoundKeyStr(roundID.KeyString()), cancel.RoundKey)
+}
+
+// TestDeliveredFailureNoDisarmWhenReconcileDisabled pins the other side of
+// that gate: with the reconcile opted out no clock was ever armed, so the
+// failure path must not emit a cancel for a timer that does not exist.
+func TestDeliveredFailureNoDisarmWhenReconcileDisabled(t *testing.T) {
+	t.Parallel()
+
+	s := reconcileState(reconcileRoundID(0xb3), nil)
+
+	env := reconcileEnv()
+	env.StatusReconcileTimeout = 0
+
+	tr, err := s.ProcessEvent(context.Background(), &BoardingFailed{
+		Reason:      "round failed",
+		Recoverable: true,
+	}, env)
+	require.NoError(t, err)
+
+	_, ok := tr.NextState.(*ClientFailedState)
+	require.True(t, ok, "expected ClientFailedState, got %T", tr.NextState)
+
+	outbox := tr.NewEvents.UnwrapOr(ClientEmittedEvent{}).Outbox
+	_, cancelled := findOutbox[*CancelTimeoutReq](outbox)
+	require.False(t, cancelled, "cancelled a timer that was never armed")
+}
+
+// TestReconcileArmedBeforeFallibleSends pins the ordering the liveness clock
+// depends on. processOutbox abandons the rest of the outbox on the first
+// failing Tell, and the FSM has already checkpointed into InputSigSentState by
+// the time the outbox is dispatched. Arming after the server sends would
+// therefore let a mid-flight send error leave a checkpointed round with no
+// clock for the rest of the session, reopening the wavelength#1051 strand
+// through a different door.
+func TestReconcileArmedBeforeFallibleSends(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+	h.env.StatusReconcileTimeout = time.Minute
+
+	intent := h.newTestBoardingIntent()
+	state := h.newForfeitCollectingState(
+		testRoundIDTr("round-arm-order"), Intents{
+			Boarding: []BoardingIntent{intent},
+		},
+		nil,
+	)
+
+	outbox := state.forfeitCollectionOutbox(
+		h.env, nil, []*types.BoardingInputSignature{{}},
+	)
+
+	armIdx := outboxIndexOf[*StartTimeoutReq](outbox)
+	require.NotEqual(t, -1, armIdx, "reconcile clock never armed")
+
+	forfeitSigsIdx := outboxIndexOf[*SubmitVTXOForfeitSigsToServer](outbox)
+	boardingSigsIdx := outboxIndexOf[*SubmitForfeitSigRequest](outbox)
+	confRegIdx := outboxIndexOf[*RegisterConfirmationRequest](outbox)
+
+	fallible := map[string]int{
+		"SubmitVTXOForfeitSigsToServer": forfeitSigsIdx,
+		"SubmitForfeitSigRequest":       boardingSigsIdx,
+		"RegisterConfirmationRequest":   confRegIdx,
+	}
+
+	for name, idx := range fallible {
+		require.NotEqual(t, -1, idx, "%s missing from outbox", name)
+		require.Lessf(
+			t, armIdx, idx, "reconcile clock armed after %s, so "+
+				"a failed send strands the checkpointed round",
+			name,
+		)
+	}
+}
+
+// TestConfirmationDisarmTrailsNotifications pins the mirror-image ordering on
+// the way out. The confirmation resolves the round's fate, but the disarm is
+// cleanup and must never gate delivery: dispatching the cancel first lets a
+// saturated or down timeout actor short-circuit processOutbox before
+// VTXOCreatedNotification and RoundCompletedNotification, withholding
+// already-persisted VTXOs from the manager and leaving onRoundComplete
+// unfinalized. A cancel that never lands only leaks a one-shot timer, which
+// fires into a terminal state and self-loops.
+func TestConfirmationDisarmTrailsNotifications(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+	h.setupMockVTXOStoreForSave()
+	h.env.StatusReconcileTimeout = time.Minute
+
+	intent := h.newTestBoardingIntent()
+	state := h.newInputSigSentState(
+		testRoundIDTr("round-conf-order"), []BoardingIntent{intent},
+	)
+	h.withState(state)
+
+	_, err := h.sendEvent(&BoardingConfirmed{
+		TxID:          state.CommitmentTx.UnsignedTx.TxHash(),
+		BlockHeight:   101,
+		BlockHash:     chainhash.Hash{0x01, 0x02},
+		Confirmations: 6,
+	})
+	require.NoError(t, err)
+
+	cancelIdx := outboxIndexOf[*CancelTimeoutReq](h.outboxMessages)
+	require.NotEqual(t, -1, cancelIdx, "confirmation left the clock armed")
+
+	doneIdx := outboxIndexOf[*RoundCompletedNotification](h.outboxMessages)
+	require.NotEqual(t, -1, doneIdx, "no RoundCompletedNotification")
+
+	require.Less(
+		t, doneIdx, cancelIdx, "disarm precedes the terminal "+
+			"notifications, so a rejected cancel would "+
+			"withhold confirmed funds",
+	)
+}
+
+// TestDeadStatusAnnouncesRoundFailure pins the emission the durable
+// retirement hangs off. The actor retires a dead round's checkpoint row and
+// releases its deposits when it sees a RoundFailedNotification, so a dead
+// answer that fails the round in memory without announcing it leaves the row
+// active and the deposit adopted forever: the wavelength#1051 strand, moved
+// from the FSM into the database. Every other exit from InputSigSentState
+// stays silent on purpose, so this is the only site that closes it.
+func TestDeadStatusAnnouncesRoundFailure(t *testing.T) {
+	t.Parallel()
+
+	roundID := reconcileRoundID(0xc1)
+	s := reconcileState(roundID, nil)
+
+	tr, err := s.ProcessEvent(
+		context.Background(),
+		&RoundStatusReported{
+			RoundID: roundID,
+			Status:  roundpb.RoundLifecycleStatus_ROUND_STATUS_DEAD,
+			Detail:  "round unknown to operator",
+		},
+		reconcileEnv(),
+	)
+	require.NoError(t, err)
+
+	_, ok := tr.NextState.(*ClientFailedState)
+	require.True(t, ok, "expected ClientFailedState, got %T", tr.NextState)
+
+	outbox := tr.NewEvents.UnwrapOr(ClientEmittedEvent{}).Outbox
+
+	notify, ok := findOutbox[*RoundFailedNotification](outbox)
+	require.True(
+		t, ok, "dead answer did not announce the failure, so the "+
+			"round is never retired and its deposit stays adopted",
+	)
+	require.Equal(t, fn.Some(roundID), notify.RoundID)
+
+	// The announcement is a delivery, so the disarm trails it for the same
+	// reason it trails the release and the job drop.
+	notifyIdx := outboxIndexOf[*RoundFailedNotification](outbox)
+	cancelIdx := outboxIndexOf[*CancelTimeoutReq](outbox)
+	require.NotEqual(t, -1, cancelIdx, "dead answer left the clock armed")
+	require.Less(
+		t, notifyIdx, cancelIdx, "disarm precedes the "+
+			"announcement, so a rejected cancel would suppress "+
+			"the retirement",
+	)
+}
+
+// TestDeliveredFailureDoesNotAnnounce pins the deliberate silence on the
+// delivered-failure shortcut. handleCancelRound injects a synthetic
+// BoardingFailed onto this same branch, and a local cancel proves nothing
+// about the operator: the commitment may still broadcast. Announcing here
+// would retire the round and hand the deposit back to the boardable pool
+// while it can still be spent by that commitment.
+func TestDeliveredFailureDoesNotAnnounce(t *testing.T) {
+	t.Parallel()
+
+	s := reconcileState(reconcileRoundID(0xc2), nil)
+
+	tr, err := s.ProcessEvent(context.Background(), &BoardingFailed{
+		Reason:      "User requested cancellation",
+		Recoverable: true,
+	}, reconcileEnv())
+	require.NoError(t, err)
+
+	_, ok := tr.NextState.(*ClientFailedState)
+	require.True(t, ok, "expected ClientFailedState, got %T", tr.NextState)
+
+	outbox := tr.NewEvents.UnwrapOr(ClientEmittedEvent{}).Outbox
+	_, announced := findOutbox[*RoundFailedNotification](outbox)
+	require.False(
+		t, announced, "a delivered failure retired the round, "+
+			"which releases the deposit on a verdict that does "+
+			"not rule out the commitment",
 	)
 }

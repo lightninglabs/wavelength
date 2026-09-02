@@ -59,6 +59,40 @@ SET status = 'confirmed',
     last_update_time = $5
 WHERE round_id = $1;
 
+-- name: FailRound :execrows
+-- Retires a checkpointed round whose fate is known to be dead. Moving the row
+-- out of 'input_sig_sent' is what stops ListActiveRounds re-hydrating it on
+-- every start.
+--
+-- The status guard is load-bearing, not defensive: it is what makes the
+-- retirement unable to touch a round whose commitment confirmed. Only a round
+-- still sitting at the checkpoint can be retired, so a stale or misrouted call
+-- against a confirmed round reports zero rows and the caller leaves its
+-- deposits alone.
+UPDATE rounds
+SET status = 'failed',
+    last_update_time = $2
+WHERE round_id = $1 AND status = 'input_sig_sent';
+
+-- name: RevertRoundAdoptedBoardingIntents :exec
+-- Returns every boarding intent adopted by one dead round to 'confirmed'. The
+-- commitment never broadcast, so the UTXO is exactly as it was before the
+-- round: re-boardable, and sweepable again.
+--
+-- Two guards. The 'adopted' predicate means a sweep that has already moved an
+-- intent on is never clobbered. The EXISTS binds the revert to intents this
+-- round actually adopted, so a round can never release a deposit another round
+-- has since taken.
+UPDATE boarding_intents
+SET status = 'confirmed', last_update_time = $2
+WHERE status = 'adopted'
+  AND EXISTS (
+    SELECT 1 FROM round_boarding_intents rbi
+    WHERE rbi.round_id = $1
+      AND rbi.outpoint_hash = boarding_intents.outpoint_hash
+      AND rbi.outpoint_index = boarding_intents.outpoint_index
+  );
+
 -- Round boarding intents queries.
 
 -- name: InsertRoundBoardingIntent :exec

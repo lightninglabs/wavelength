@@ -55,6 +55,35 @@ func (q *Queries) DeleteVTXOAncestryPaths(ctx context.Context, arg DeleteVTXOAnc
 	return err
 }
 
+const FailRound = `-- name: FailRound :execrows
+UPDATE rounds
+SET status = 'failed',
+    last_update_time = $2
+WHERE round_id = $1 AND status = 'input_sig_sent'
+`
+
+type FailRoundParams struct {
+	RoundID        string
+	LastUpdateTime int64
+}
+
+// Retires a checkpointed round whose fate is known to be dead. Moving the row
+// out of 'input_sig_sent' is what stops ListActiveRounds re-hydrating it on
+// every start.
+//
+// The status guard is load-bearing, not defensive: it is what makes the
+// retirement unable to touch a round whose commitment confirmed. Only a round
+// still sitting at the checkpoint can be retired, so a stale or misrouted call
+// against a confirmed round reports zero rows and the caller leaves its
+// deposits alone.
+func (q *Queries) FailRound(ctx context.Context, arg FailRoundParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, FailRound, arg.RoundID, arg.LastUpdateTime)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const FinalizeRound = `-- name: FinalizeRound :exec
 UPDATE rounds
 SET status = 'confirmed',
@@ -1158,6 +1187,36 @@ type MarkVTXOSpentParams struct {
 // Also sets status = 4 (Spent) to keep status in sync with spent flag.
 func (q *Queries) MarkVTXOSpent(ctx context.Context, arg MarkVTXOSpentParams) error {
 	_, err := q.db.ExecContext(ctx, MarkVTXOSpent, arg.OutpointHash, arg.OutpointIndex, arg.LastUpdateTime)
+	return err
+}
+
+const RevertRoundAdoptedBoardingIntents = `-- name: RevertRoundAdoptedBoardingIntents :exec
+UPDATE boarding_intents
+SET status = 'confirmed', last_update_time = $2
+WHERE status = 'adopted'
+  AND EXISTS (
+    SELECT 1 FROM round_boarding_intents rbi
+    WHERE rbi.round_id = $1
+      AND rbi.outpoint_hash = boarding_intents.outpoint_hash
+      AND rbi.outpoint_index = boarding_intents.outpoint_index
+  )
+`
+
+type RevertRoundAdoptedBoardingIntentsParams struct {
+	RoundID        string
+	LastUpdateTime int64
+}
+
+// Returns every boarding intent adopted by one dead round to 'confirmed'. The
+// commitment never broadcast, so the UTXO is exactly as it was before the
+// round: re-boardable, and sweepable again.
+//
+// Two guards. The 'adopted' predicate means a sweep that has already moved an
+// intent on is never clobbered. The EXISTS binds the revert to intents this
+// round actually adopted, so a round can never release a deposit another round
+// has since taken.
+func (q *Queries) RevertRoundAdoptedBoardingIntents(ctx context.Context, arg RevertRoundAdoptedBoardingIntentsParams) error {
+	_, err := q.db.ExecContext(ctx, RevertRoundAdoptedBoardingIntents, arg.RoundID, arg.LastUpdateTime)
 	return err
 }
 

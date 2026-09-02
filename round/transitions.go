@@ -3124,11 +3124,26 @@ func (s *ForfeitSignaturesCollectingState) forfeitCollectionOutbox(
 	// wavelength#844 hazard window: from here on, a round failure (or a
 	// silent operator, the lumos#618 crash door) must resolve through a
 	// status reconcile before the reservations can be released. Arm the
-	// reconcile timeout so total silence still converges on a probe. A
-	// boarding-only round has no reservations to reconcile, so it skips
-	// the timer entirely, matching the forfeit-count gate every consumer
-	// of the timeout applies.
-	if len(s.Intents.Forfeits) > 0 && env.StatusReconcileTimeout > 0 {
+	// reconcile timeout so total silence still converges on a probe.
+	//
+	// Every round arms the clock, not only forfeit-bearing ones, because
+	// the probe serves two distinct purposes. A forfeit-bearing round
+	// needs it to gate the release on an authoritative dead answer. Any
+	// round at all needs it as the sole liveness clock in this state: a
+	// boarding-only round that skips the timer has no exit when the
+	// operator dies before broadcasting, since no commitment can confirm
+	// and no failure ever arrives, so the deposit strands until the CSV
+	// expires (wavelength#1051).
+	//
+	// The arm leads the fallible sends below deliberately. processOutbox
+	// abandons the rest of the outbox on the first failing Tell, and the
+	// FSM has already checkpointed into InputSigSentState by the time the
+	// outbox is dispatched, so arming last would let a mid-flight send
+	// error reopen the very strand this timer closes: a checkpointed round
+	// with no clock for the rest of the session. Arming first is the safe
+	// direction, since a later send failure merely means the timer fires
+	// and probes.
+	if env.StatusReconcileTimeout > 0 {
 		outboxMsgs = append(outboxMsgs, &StartTimeoutReq{
 			RoundKey: RoundKeyStr(s.RoundID.KeyString()),
 			Phase:    TimeoutPhaseStatusReconcile,
@@ -3136,10 +3151,6 @@ func (s *ForfeitSignaturesCollectingState) forfeitCollectionOutbox(
 		})
 	}
 
-	// The timeout must be armed before either fallible external effect.
-	// processOutbox stops on the first error, so placing it after the
-	// signature submission or chain registration could strand the round in
-	// forfeit collection with no reconciliation path.
 	outboxMsgs = append(outboxMsgs, &SubmitVTXOForfeitSigsToServer{
 		RoundID:    s.RoundID,
 		ForfeitTxs: forfeitTxs,
@@ -3594,7 +3605,32 @@ func (s *PartialSigsSentState) processEvent(ctx context.Context,
 			),
 		)
 
-		outboxMsgs := []ClientOutMsg{
+		// This is the boarding-only door into InputSigSentState: the
+		// round carried no forfeit mappings, so it never passed
+		// through forfeit collection and never saw the arming there.
+		// It still checkpoints at the same point of no return, which
+		// makes the reconcile clock its sole liveness timer. Without
+		// it, an operator that dies before broadcasting leaves a
+		// client that never restarts with no exit at all: no
+		// commitment can confirm, no failure ever arrives, and the
+		// deposit strands until the CSV expires (wavelength#1051).
+		//
+		// Arm before the requests go out, not after. processOutbox
+		// stops at the first failed Tell, so a mailbox hiccup on the
+		// sig or registration request would otherwise commit this
+		// state with no clock behind it, unarmed until a restart.
+		// Arming early is harmless: the probe answers in-flight or
+		// dead, and both are safe.
+		outboxMsgs := make([]ClientOutMsg, 0, 3)
+		if env.StatusReconcileTimeout > 0 {
+			outboxMsgs = append(outboxMsgs, &StartTimeoutReq{
+				RoundKey: RoundKeyStr(s.RoundID.KeyString()),
+				Phase:    TimeoutPhaseStatusReconcile,
+				Duration: env.StatusReconcileTimeout,
+			})
+		}
+		outboxMsgs = append(
+			outboxMsgs,
 			forfeitSigReq,
 			&RegisterConfirmationRequest{
 				CallerID:    callerID,
@@ -3603,7 +3639,7 @@ func (s *PartialSigsSentState) processEvent(ctx context.Context,
 				TargetConfs: env.OperatorTerms.MinConfirmations,
 				HeightHint:  env.StartHeight,
 			},
-		}
+		)
 
 		// Checkpoint the round state at the "point of no return".
 		// After sending boarding input signatures, the server may
@@ -4587,17 +4623,32 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 
 		// With no forfeit reservations at stake (a boarding-only
 		// round), nothing can strand and nothing was signed away, so
-		// the round fails immediately as before.
+		// the round fails immediately as before. A delivered failure
+		// carries the same authority a probe would return, so this
+		// round needs no reconcile; disarm the clock it armed on the
+		// way into this state.
+		//
+		// Deliberately no RoundFailedNotification, so the round is not
+		// retired durably here. handleCancelRound injects a synthetic
+		// BoardingFailed and lands on this same branch, and a local
+		// cancel proves nothing about the operator: the commitment may
+		// still broadcast. Returning the deposit to the boardable pool
+		// on that evidence would let it be spent into a second round
+		// while the first can still confirm. The round instead settles
+		// durably on the next dead answer, which is the only verdict
+		// that rules the commitment out.
 		if len(s.Intents.Forfeits) == 0 ||
 			env.StatusReconcileTimeout <= 0 {
-			return &ClientStateTransition{
-				NextState: &ClientFailedState{
-					Reason:      evt.Reason,
-					Error:       evt.Error,
-					Recoverable: evt.Recoverable,
-					FailureCode: evt.FailureCode,
-				},
-			}, nil
+			return appendReconcileDisarm(
+				&ClientStateTransition{
+					NextState: &ClientFailedState{
+						Reason:      evt.Reason,
+						Error:       evt.Error,
+						Recoverable: evt.Recoverable,
+						FailureCode: evt.FailureCode,
+					},
+				}, s.RoundID, env,
+			), nil
 		}
 
 		// Forfeit signatures are already out, so the notification alone
@@ -4631,10 +4682,9 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 		// failure resolution, and no status answer. Probe (again) and
 		// re-arm. The timeout alone never fails the round: with
 		// forfeit signatures out, only an authoritative dead answer
-		// makes the release safe. With no forfeits at stake the
-		// timeout should not even be armed; self-loop defensively.
-		if len(s.Intents.Forfeits) == 0 ||
-			env.StatusReconcileTimeout <= 0 {
+		// makes the release safe, and a boarding-only round needs that
+		// same answer to learn its deposit will never convert.
+		if env.StatusReconcileTimeout <= 0 {
 			return selfLoop(s), nil
 		}
 
@@ -4724,6 +4774,28 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 			slog.Int("forfeit_count", len(s.Intents.Forfeits)),
 		)
 
+		// This is the one exit from InputSigSentState that carries an
+		// authoritative verdict, so it is the one that announces the
+		// failure. The notification is what drives the actor's durable
+		// retirement: the checkpoint row moves out of input_sig_sent
+		// and the deposits this round adopted go back to the live
+		// pool. Neither is safe without the operator's dead answer,
+		// which is why the delivered-failure shortcut below does not
+		// announce (a user cancel reaches it through the same branch
+		// and proves nothing about the commitment) and the
+		// confirmation paths never do (their commitment confirmed, so
+		// the deposit is spent).
+		//
+		// Announcing here also closes an observability gap, since a
+		// checkpointed round reaching its terminal state previously
+		// went uncounted.
+		announce := &RoundFailedNotification{
+			RoundID:       fn.Some(s.RoundID),
+			Reason:        failure.Reason,
+			Recoverable:   failure.Recoverable,
+			OriginalError: failure.Error,
+		}
+
 		transition := &ClientStateTransition{
 			NextState: &ClientFailedState{
 				Reason:      failure.Reason,
@@ -4732,9 +4804,7 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 				FailureCode: failure.FailureCode,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
-				Outbox: []ClientOutMsg{
-					cancelStatusReconcileTimeout(s.RoundID),
-				},
+				Outbox: []ClientOutMsg{announce},
 			}),
 		}
 
@@ -4742,9 +4812,23 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 		// the pre-signing states: the commitment can never confirm.
 		// The wrapper also retires the originating job on a
 		// terminal-for-job failure code.
-		return releaseForfeitsOnFailure(
+		released, err := releaseForfeitsOnFailure(
 			transition, nil, fn.Some(s.RoundID), s.Intents.Forfeits,
 		)
+		if err != nil {
+			return released, err
+		}
+
+		// Disarm only once the wrapper has laid down the release and
+		// the job drop, so the cancel is genuinely last. Seeding it
+		// into the transition above would bury it mid-outbox: the
+		// wrapper prepends the release and appends the job-drop
+		// notification, and since a rejected cancel aborts the rest of
+		// the outbox while the release is fire-and-forget, that
+		// ordering would let a saturated timeout actor strand the
+		// pending intent in recoverable replay -- the one thing the
+		// job drop exists to prevent.
+		return appendReconcileDisarm(released, s.RoundID, env), nil
 
 	case *BoardingConfirmed:
 		env.Log.InfoS(ctx, "Commitment transaction confirmed",
@@ -4760,15 +4844,31 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 		)
 		if err != nil {
 
-			// Error carried into failed state.
-			return &ClientStateTransition{ //nolint:nilerr
-				NextState: &ClientFailedState{
-					Reason: "failed to build client " +
-						"VTXOs",
-					Error:       err,
-					Recoverable: false,
-				},
-			}, nil
+			// Error carried into failed state. It disarms but does
+			// not announce: the commitment confirmed on the way
+			// into this branch, so the boarding UTXO is spent.
+			// Retiring the round here would hand a spent deposit
+			// back to the boardable pool. The FSM failing while
+			// the round succeeded on-chain is a local bug to fix,
+			// not a dead round to reclaim.
+			//
+			// This is an exit from InputSigSentState like any
+			// other, so it disarms
+			// the reconcile clock too: the confirmation already
+			// resolved the round's fate, and leaving the one-shot
+			// armed would fire a probe at a round that has settled
+			// terminally.
+			//nolint:nilerr
+			return appendReconcileDisarm(
+				&ClientStateTransition{
+					NextState: &ClientFailedState{
+						Reason: "failed to build " +
+							"client VTXOs",
+						Error:       err,
+						Recoverable: false,
+					},
+				}, s.RoundID, env,
+			), nil
 		}
 
 		env.Log.InfoS(
@@ -4853,16 +4953,7 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 		outflows := roundLedgerOutflows(s.RoundID, s.Intents)
 
 		// Build outbox messages starting with standard notifications.
-		// The confirmation resolves the round's fate, so any armed
-		// status-reconcile probe is disarmed first.
 		outbox := make([]ClientOutMsg, 0, 3)
-		if len(s.Intents.Forfeits) > 0 &&
-			env.StatusReconcileTimeout > 0 {
-
-			outbox = append(
-				outbox, cancelStatusReconcileTimeout(s.RoundID),
-			)
-		}
 		if len(vtxos) > 0 || len(outflows) > 0 || operatorFee > 0 {
 			outbox = append(outbox, &VTXOCreatedNotification{
 				VTXOs:           vtxos,
@@ -4890,6 +4981,22 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 				CommitmentTxID: evt.TxID,
 				BlockHeight:    evt.BlockHeight,
 			})
+		}
+
+		// The confirmation resolves the round's fate, so any armed
+		// status-reconcile probe is disarmed here. The disarm trails
+		// the notifications above rather than leading them: since
+		// processOutbox abandons the rest of the outbox on the first
+		// failing Tell, a saturated or down timeout actor would
+		// otherwise withhold confirmed funds from the VTXO manager and
+		// leave onRoundComplete unfinalized, even though the VTXOs are
+		// already persisted. Cleanup must never gate delivery. A
+		// cancel that never lands only leaks a one-shot timer, which
+		// fires into a terminal state and self-loops.
+		if env.StatusReconcileTimeout > 0 {
+			outbox = append(
+				outbox, cancelStatusReconcileTimeout(s.RoundID),
+			)
 		}
 
 		return &ClientStateTransition{

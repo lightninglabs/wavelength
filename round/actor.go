@@ -1589,14 +1589,18 @@ func (a *RoundClientActor) Start(ctx context.Context) error {
 		}
 
 		// A reloaded round sits back in InputSigSentState with its
-		// forfeit signatures already out, so the wavelength#844
-		// hazard window reopens across the restart. Re-arm the
-		// status-reconcile timeout for forfeit-bearing rounds so a
-		// round whose failure raced the crash still converges on a
-		// QueryRoundStatus probe rather than stranding.
-		if len(round.Intents.Forfeits) > 0 &&
-			a.env.StatusReconcileTimeout > 0 {
-
+		// signatures already out, so the wavelength#844 hazard window
+		// reopens across the restart. Re-arm the status-reconcile
+		// timeout so a round whose failure raced the crash still
+		// converges on a QueryRoundStatus probe rather than stranding.
+		//
+		// Boarding-only rounds re-arm too. They hold no forfeit
+		// reservations, but the probe is still their only exit from
+		// InputSigSentState once the operator has rolled the round
+		// back before broadcast: no commitment can ever confirm and no
+		// failure will ever be delivered, so without the clock the
+		// deposit strands until the CSV expires (wavelength#1051).
+		if a.env.StatusReconcileTimeout > 0 {
 			if err := a.processOutbox(ctx, []ClientOutMsg{
 				&StartTimeoutReq{
 					RoundKey: RoundKeyStr(
@@ -2447,6 +2451,43 @@ func (a *RoundClientActor) handleCancelRound(ctx context.Context,
 	})
 }
 
+// retireFailedRound settles the durable side of a failed round: the
+// checkpoint row moves out of 'input_sig_sent' and the boarding intents it
+// adopted return to the live pool.
+//
+// Retirement rides RoundFailedNotification rather than being called from the
+// FSM exits directly, so the actor needs no knowledge of which failures are
+// retirable: the FSM announces only where it holds an authoritative verdict
+// that the commitment can never confirm. Every other emitter of that
+// notification is a pre-checkpoint failure with no round row to move, making
+// the call a no-op, and FailRound's own guards mean even a misrouted call
+// cannot release a deposit whose round confirmed or that a sweep has since
+// claimed.
+//
+// Failure to retire is logged rather than propagated. The round has already
+// failed and the client has already been told; a store error here means the
+// row is reclaimed on a later pass rather than that the failure is in doubt.
+func (a *RoundClientActor) retireFailedRound(ctx context.Context,
+	roundID RoundID) {
+
+	// Confirmation handling and failure delivery can both outlive the
+	// request that triggered them, so the write uses a detached context.
+	opCtx := context.WithoutCancel(ctx)
+
+	if err := a.cfg.RoundStore.FailRound(opCtx, roundID); err != nil {
+		a.log.WarnS(ctx, "Failed to retire dead round",
+			err,
+			slog.String("round_id", roundID.String()),
+		)
+
+		return
+	}
+
+	a.log.InfoS(ctx, "Retired dead round and released its deposits",
+		slog.String("round_id", roundID.String()),
+	)
+}
+
 // onRoundComplete is called when a round finishes successfully. This removes
 // the round from active tracking and archives the round data.
 func (a *RoundClientActor) onRoundComplete(ctx context.Context, roundID RoundID,
@@ -2964,6 +3005,16 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			// counter pairs with the confirmed branch above so an
 			// operator can track the join-to-completion ratio.
 			a.emitRoundCompleted(ctx, roundIDStr, "failed")
+
+			// Retire the durable side of the round. Reaping only
+			// drops the in-memory FSM, so without this the
+			// checkpoint row stays in ListActiveRounds and is
+			// re-hydrated on every start, and the deposits it
+			// adopted stay adopted: out of the sweep and pinned
+			// against the board limit for good.
+			m.RoundID.WhenSome(func(id RoundID) {
+				a.retireFailedRound(ctx, id)
+			})
 
 		case *TerminalJobFailedNotification:
 			// A terminal-for-job round failure (e.g. the operator
