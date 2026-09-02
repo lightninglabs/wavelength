@@ -127,6 +127,22 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   `vtxo.SpendingReservationStore`.
 - `SpendingReservationStore` / `BatchedSpendingReservationStore` — Internal
   sqlc-backed query interfaces for the reservation table.
+- `ActivityPersistenceStore` / `ActivityStore` — canonical activity-log store
+  + its sqlc-backed query interface. `ProjectEntry` is the monotonic
+  projector (it suppresses no-op re-projections and refuses
+  terminal-to-pending regressions); `GetEntry` reads one canonical row;
+  `AppendActivityEvent` extends the immutable event log.
+- `ActivityPersistenceStore.RepairCreditReceivePollCap(ctx, p, failedStatus,
+  legacyFailureReason)` — the single sanctioned exception to that monotonic
+  rule, for the false receive failure older clients wrote under the retired
+  credit poll cap. The guarded current-state update and the corrective
+  pending event commit in one transaction, so the reopen is *appended* to
+  history rather than erasing the failure. The SQL guard is what keeps the
+  exception narrow: the update matches only an inbound receive row whose
+  status and failure reason equal the caller-supplied legacy pair, so
+  `ProjectEntry`'s terminal-to-pending rule is never relaxed for any other
+  row. A zero row count is not an error — it means the row was already
+  repaired or never legacy — and the caller sees `eventSeq == 0`.
 
 ## Relationships
 
