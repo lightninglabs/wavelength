@@ -26,6 +26,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
 - `Config` — per-actor wiring. Notable: `TargetOutpoint`, `ActorID`,
   `DeliveryStore`, `ProofAssembler`, `VTXOStore`, `TxConfirmRef`,
   `ChainSource`, `Wallet` (`SweepWallet`),
+  `LegacyProofScanFloor` (earliest compatible commitment block for a known
+  operator; zero keeps block 1), `LegacyProofScanOperatorKey` (the matching
+  operator identity; nil or mismatch keeps block 1),
   `MaxSweepFeeRateSatPerVByte`, `FraudCheckpointSafetyMargin int32`
   (overrides the fraud-triggered unroll backstop margin in blocks;
   zero falls back to the default), `RegistryRef`.
@@ -59,6 +62,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
 - `RegistryConfig` — `Store`, `DeliveryStore`, `ProofAssembler`,
   `VTXOStore`, `TxConfirmRef`, `ChainSource`, `Wallet`,
   optional `LedgerSink`, `MaxSweepFeeRateSatPerVByte`,
+  `LegacyProofScanFloor` and `LegacyProofScanOperatorKey` (forwarded to every
+  child),
   `ExitSpendPolicyResolver` (optional; reconstructs the exit spend policy
   from `(ExitPolicyKind, ExitPolicyRef)` after restart; nil means every child
   uses the standard VTXO timeout), and optional `VTXOExitObserver`
@@ -160,38 +165,45 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
 - `safeTxOutPkScript(tx, index)` — bounds-checking helper used at
   every `tx.TxOut[i].PkScript` site; surfaces retryable errors for
   malformed proof artifacts instead of panicking the actor.
-- `ensureProofSpendWatches(ctx, txid, node)` — registers spend
+- `ensureProofSpendWatches(ctx, txid, node, heightHint)` — registers spend
   watches on proof-node outputs consumed by in-proof children.
-  Neutrino can miss direct confirmation under load; a spend of the
-  parent output proves parent confirmation. `proofSpendWatches` map
-  dedups.
+  `ensureNodeConfirmed` computes `heightHint` once with
+  `proofNodeConfHeightHint` and passes the same floor to these backup watches
+  and the direct confirmation watch. Neutrino can miss direct confirmation
+  under load; a spend of the parent output proves parent confirmation.
+  `proofSpendWatches` map dedups.
 - `watchDeferredCheckpoint(ctx, txid, node)` — registers confirmation
   watch for fraud-triggered checkpoints while the actor waits for
   operator confirmation of the proof node.
 - `behavior.proofNodeConfHeightHint(ctx, txid)` — confirmation-watch height
   floor for proof-graph nodes. Primary floor is `commitmentHeightFloor()`:
   `min(Descriptor.Ancestry[i].CommitmentHeight)`, but only when EVERY fragment
-  has a known (>0) height — a single unknown fragment returns 0 and defers to
-  the fallback (a min over only the known fragments would not bound an unknown
-  fragment's ancestor). Nothing in a VTXO's proof graph confirms before its
-  commitment tx, so once all fragments are known this is a tight, provable
-  floor (min, never max — a lower floor only widens the safe rescan window).
-  When no commitment height is known (legacy persisted VTXOs, empty-ancestry
-  round VTXOs, or a server not yet populating `commitment_height`), it falls
-  back to `proofNodeHeightHint(currentHeight)` =
-  `max(1, currentHeight - proofNodeHeightHintLookback)` (10000 blocks) —
-  identical to the pre-commitment-height behaviour. Roots/intermediate
-  ancestors can confirm before the target VTXO's creation height, so the
-  fallback anchors to tip minus a lookback (never `CreatedHeight`), bounding
-  the neutrino historical rescan instead of scanning to genesis
-  (wavelength#884). The fallback path warns when the VTXO's age exceeds the
-  lookback (the floor may then miss an already-confirmed ancestor). One
-  process-local `proofNodeFloorAlertDeduper` is shared by every child of an
-  unroll registry, so targets with the same proof ancestor produce one warning
-  per proof transaction and process lifetime. That warning carries the first
-  affected target's outpoint, age, and creation height. A Debug record retains
-  the same evidence for every target. A restart creates a new deduper and
-  warns again if the condition persists.
+  has a known (>0) height. A single unknown fragment returns 0 because a min
+  over only known fragments would not bound its ancestor. Nothing in a VTXO's
+  proof graph confirms before its commitment tx, so complete heights provide
+  a tight, provable floor. Without complete heights, `CreatedHeight` decides.
+  A single-fragment target created less than one lookback ago uses
+  `proofNodeHeightHint(currentHeight)` =
+  `max(1, currentHeight - proofNodeHeightHintLookback)` (10000 blocks) to
+  bound the neutrino rescan (wavelength#884). A configured operator deployment
+  floor may raise that fallback only when the target descriptor's stored
+  operator key matches `LegacyProofScanOperatorKey`. Every other legacy target
+  uses that matching deployment floor: an age of at least one lookback (that
+  bound can skip an earlier proof ancestor), an unknown `CreatedHeight`
+  (nothing proves the target is recent), or multiple ancestry fragments (one
+  scalar creation height cannot prove every contributing commitment is
+  recent). A missing or mismatched operator key, zero, block 1, or a floor
+  above the current tip safely resolves to block 1. This prevents a current
+  endpoint from imposing its deployment history on VTXOs from an older
+  operator.
+  Direct proof confirmations and their backup proof-output spend watches use
+  the same floor. The fallback scan can be expensive but cannot silently stall
+  the exit. One process-local
+  `proofNodeFloorAlertDeduper` is
+  shared by every child of an unroll registry, so this fallback emits one
+  warning per registry and process lifetime. Each affected target keeps Debug
+  evidence. A restart creates a new deduper and warns again if the condition
+  persists.
 
 ## Relationships
 
