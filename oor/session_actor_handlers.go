@@ -325,7 +325,8 @@ func (b *sessionBehavior) completeSpend(ctx context.Context,
 // FSM is already terminal Failed, so the startup sweep remains the backstop
 // for any reservation this path fails to clear.
 func (b *sessionBehavior) releaseSpend(ctx context.Context,
-	outpoints []wire.OutPoint) error {
+	outpoints []wire.OutPoint,
+	reserveEpochs map[wire.OutPoint]uint64) error {
 
 	if len(outpoints) == 0 {
 		return nil
@@ -356,7 +357,7 @@ func (b *sessionBehavior) releaseSpend(ctx context.Context,
 		return fmt.Errorf("no spend releaser configured")
 	}
 
-	return b.cfg.SpendReleaser(ctx, known)
+	return b.cfg.SpendReleaser(ctx, known, reserveEpochs)
 }
 
 // persistOutgoingPackage writes the finalized outgoing package and its input

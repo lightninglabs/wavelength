@@ -3266,10 +3266,14 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		outpoints := make(
 			[]wire.OutPoint, 0, len(locked.SelectedVTXOs),
 		)
+		reserveEpochs := make(
+			map[wire.OutPoint]uint64, len(locked.SelectedVTXOs),
+		)
 		for _, sv := range locked.SelectedVTXOs {
 			outpoints = append(
 				outpoints, sv.Outpoint,
 			)
+			reserveEpochs[sv.Outpoint] = sv.ReserveEpoch
 		}
 
 		phaseStart = time.Now()
@@ -3283,6 +3287,11 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 			return nil, status.Errorf(codes.Internal, "build "+
 				"transfer inputs: %v", err)
 		}
+
+		// Carry the manager's reservation epoch onto each input so the
+		// release path (on a pre-PONR failure) names the reservation it
+		// held; a superseded one is refused by the manager.
+		applyReserveEpochs(selectedInputs, reserveEpochs)
 	}
 
 	requestOORRecipients := append(

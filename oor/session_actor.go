@@ -909,7 +909,10 @@ func (b *sessionBehavior) driveOutboxEvents(ctx context.Context,
 		// redelivery loop. A failed release just leaves the startup
 		// sweep as the backstop it already is.
 		case *ReleaseInputsRequest:
-			if err := b.releaseSpend(ctx, m.Outpoints); err != nil {
+			if err := b.releaseSpend(
+				ctx, m.Outpoints, m.ReserveEpochs,
+			); err != nil {
+
 				b.logger(ctx).WarnS(ctx, "Failed to release "+
 					"reserved inputs after a "+
 					"terminal session failure; "+
@@ -1094,6 +1097,7 @@ func (b *sessionBehavior) commitAck(ctx context.Context,
 		if err := b.cfg.RegistryStore.UpsertSession(
 			txCtx, record,
 		); err != nil {
+
 			// On Postgres the resolveKeyDedup SELECT above can miss
 			// a concurrent same-key winner (the racing children do
 			// not serialize on oor_session_registry the way

@@ -54,6 +54,13 @@ type SelectedVTXO struct {
 	// Outpoint is the selected VTXO's outpoint.
 	Outpoint wire.OutPoint
 
+	// ReserveEpoch is the manager's monotonic reservation epoch for this
+	// VTXO, echoed back so the spend that carries it into its durable
+	// state can present it on release and have a superseded reservation
+	// refused (see vtxo.Manager.handleReleaseSpend). Zero for reservations
+	// that are not spend reservations (e.g. forfeit inputs).
+	ReserveEpoch uint64
+
 	// Amount is the value of this VTXO in satoshis.
 	Amount btcutil.Amount
 
@@ -81,6 +88,17 @@ type ReleaseSpendRequest struct {
 
 	// Outpoints identifies the VTXOs to release from spend reservation.
 	Outpoints []wire.OutPoint
+
+	// ReserveEpochs optionally names, per outpoint, the reservation epoch
+	// the releasing owner held. When an entry is present, the manager
+	// releases the VTXO only if its current reservation epoch still
+	// matches: a stale release from a session whose reservation was
+	// superseded (released and re-reserved by a newer session, e.g. after
+	// a rolled-back failure redelivered the release) is refused rather
+	// than returning a coin the newer session is spending to the live set.
+	// An absent entry (or a nil map) releases unconditionally, preserving
+	// the behaviour for callers that hold no epoch (e.g. a manual unlock).
+	ReserveEpochs map[wire.OutPoint]uint64
 }
 
 // VTXOManagerMsg implements VTXOManagerMsg marker interface.

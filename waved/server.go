@@ -842,13 +842,14 @@ func (s *Server) oorCompleteSpend(ctx context.Context,
 // path: a session that fails terminally before the server co-signs
 // releases its input reservation through the manager so each VTXO actor
 // transitions from SpendingState back to LiveState.
-func (s *Server) oorReleaseSpend(ctx context.Context,
-	outpoints []wire.OutPoint) error {
+func (s *Server) oorReleaseSpend(ctx context.Context, outpoints []wire.OutPoint,
+	reserveEpochs map[wire.OutPoint]uint64) error {
 
 	mgrKey := actormsg.VTXOManagerServiceKey()
 	result := mgrKey.Ref(s.actorSystem).Ask(
 		ctx, &actormsg.ReleaseSpendRequest{
-			Outpoints: outpoints,
+			Outpoints:     outpoints,
+			ReserveEpochs: reserveEpochs,
 		},
 	).Await(ctx)
 

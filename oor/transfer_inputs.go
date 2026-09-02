@@ -23,6 +23,18 @@ type TransferInput struct {
 	// VTXO is the descriptor for the input VTXO being transferred.
 	VTXO *vtxo.Descriptor
 
+	// ReserveEpoch is the monotonic epoch the VTXO manager stamped when it
+	// reserved this input for the spend (SelectAndReserveSpendResponse).
+	// It travels with the input into the durable snapshot so a release
+	// driven by a redelivered, rolled-back failure names the reservation
+	// it actually held: if the coin has since been released and
+	// re-reserved by a newer session, the manager refuses the stale
+	// release rather than returning a coin the newer session is spending
+	// to the live set. Zero means "no epoch known"; the manager then
+	// releases unconditionally, preserving the pre-epoch behaviour for
+	// callers (e.g. a manual unlock) that do not carry one.
+	ReserveEpoch uint64
+
 	// VTXOPolicyTemplate is the semantic arkscript policy
 	// encoding for the spent input VTXO. When empty, standard
 	// Ark ownership is derived from the descriptor's
