@@ -1210,6 +1210,18 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		}, nil
 
 	case *ForfeitReleasedEvent:
+		// Only the round this VTXO signed its forfeit for may release
+		// it. A release naming any other round is stale (that round
+		// failed and let go of the coin before the round recorded here
+		// claimed it), and honoring it would return a coin the
+		// operator is about to consume to LiveState.
+		if evt.RoundID != s.NewRoundID {
+			return nil, fmt.Errorf("%w (outpoint %s, reserved by "+
+				"round %q, release from round %q)",
+				ErrForfeitReleaseRoundMismatch, s.VTXO.Outpoint,
+				s.NewRoundID, evt.RoundID)
+		}
+
 		// A pre-signing round failure released this VTXO. We can land
 		// here, not just in PendingForfeitState, when the round fails
 		// during ForfeitSignaturesCollecting after this VTXO already

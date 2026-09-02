@@ -920,6 +920,12 @@ type ReleaseForfeitReservation struct {
 
 	// Outpoints identifies the VTXOs to release from pending-forfeit.
 	Outpoints []wire.OutPoint
+
+	// RoundID is the failed round releasing its reservation, empty when
+	// the round failed before the operator assigned it an ID. A VTXO
+	// that already signed its forfeit for a round only honors a release
+	// from that round (see vtxo.ErrForfeitReleaseRoundMismatch).
+	RoundID string
 }
 
 func (m *ReleaseForfeitReservation) clientOutMsgSealed() {}

@@ -162,6 +162,15 @@ type ReleaseForfeitRequest struct {
 
 	// Outpoints identifies the VTXOs to release from forfeit.
 	Outpoints []wire.OutPoint
+
+	// RoundID names the round releasing its reservation, in the string
+	// form the forfeit request stamped on the VTXO. A VTXO that already
+	// signed its forfeit for a round refuses a release from any other
+	// round, so a stale release from a round that failed earlier cannot
+	// return a coin the current round is forfeiting to the spendable set.
+	// Empty when the producer has no round ID yet: pre-admission
+	// failures, registration rollbacks, and manager-internal rollbacks.
+	RoundID string
 }
 
 // VTXOManagerMsg implements VTXOManagerMsg marker interface.
