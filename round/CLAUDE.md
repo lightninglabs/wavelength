@@ -213,8 +213,8 @@ state transitions and validation rules live under [Invariants](#invariants).
   fallible sends (`SubmitVTXOForfeitSigsToServer`,
   `SubmitForfeitSigRequest`, `RegisterConfirmationRequest`) — a mid-flight
   send error would otherwise commit the state with no clock. The disarm
-  (`CancelTimeoutReq`, via `reconcileDisarmEvents` /
-  `appendReconcileDisarm` in `fsm_timeouts.go`) must **trail** every
+  (`CancelTimeoutReq`, via `appendReconcileDisarm` in `fsm_timeouts.go`)
+  must **trail** every
   delivery on the exit paths — confirmation notifications, the forfeit
   release, and the terminal job drop — since cleanup must never gate
   delivery. A cancel that never lands only leaks a one-shot timer, which

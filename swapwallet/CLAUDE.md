@@ -128,6 +128,23 @@ default builds avoid the swap executor's dependency graph.
   **mixed** and the swap monitor loop stays the single terminal authority for
   the shared payment-hash row — the credit projector must never emit for a
   mixed pay.
+- **The legacy credit-receive activity repair is the one sanctioned
+  terminal-row rewrite.** `ProjectEntry`'s monotonic terminal-to-pending guard
+  otherwise makes a FAILED activity row immutable, which would permanently
+  strand a receive that an older client false-failed under the retired poll cap
+  (see `credit`'s server-authority invariant). `projectCreditEntry` grants one
+  narrowly scoped repair attempt, and only for a resumed non-terminal
+  `credit.KindReceive` op: `repairLegacyCreditReceiveActivity` reopens the row
+  only when the stored entry is RECV, FAILED, and carries a
+  `failure_reason` exactly equal to `credit.LegacyReceivePollCapError`. Any
+  other row — including a receive that failed for a real reason — falls through
+  to the ordinary projector untouched.
+- The repair takes `projectMu` itself and calls `project`/`emit` directly
+  rather than reusing `projectEmitLocked`, so the global project-then-emit
+  ordering still holds across both paths. The store's
+  `RepairCreditReceivePollCap` commits the guarded row update and the
+  corrective pending event in one transaction, so history stays append-only —
+  the reopen is recorded as an event, not by erasing the failure.
 - The credit projector polls on a coarse 5s tick
   (`creditProjectInterval`) and only re-emits an operation when its
   `credit.State` changed since the last poll, keyed by `OpID` in an
