@@ -35,6 +35,7 @@ func TestStartTransferPayloadTLVRoundTrip(t *testing.T) {
 					},
 					Index: 7,
 				},
+				ReserveEpoch:    42,
 				AmountSat:       1000,
 				ClientKeyFamily: 1,
 				ClientKeyIndex:  9,

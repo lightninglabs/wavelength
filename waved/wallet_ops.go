@@ -157,6 +157,21 @@ func BuildTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 	return inputs, nil
 }
 
+// applyReserveEpochs stamps each transfer input with the manager reservation
+// epoch its outpoint was reserved under, so a pre-point-of-no-return release
+// names the reservation it held and the manager can refuse a superseded one.
+func applyReserveEpochs(inputs []oor.TransferInput,
+	epochs map[wire.OutPoint]uint64) {
+
+	for i := range inputs {
+		if inputs[i].VTXO == nil {
+			continue
+		}
+
+		inputs[i].ReserveEpoch = epochs[inputs[i].VTXO.Outpoint]
+	}
+}
+
 // BuildCustomTransferInputs constructs OOR transfer inputs from
 // explicit custom input specifications. This bypasses wallet VTXO
 // selection for non-standard spend paths (e.g., vHTLC claims).

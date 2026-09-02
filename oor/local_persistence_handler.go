@@ -68,7 +68,7 @@ type SpendCompleter func(ctx context.Context,
 // no return (the server never locked the inputs), so the funds become
 // spendable again without waiting for a restart sweep.
 type SpendReleaser func(ctx context.Context,
-	outpoints []wire.OutPoint) error
+	outpoints []wire.OutPoint, reserveEpochs map[wire.OutPoint]uint64) error
 
 // IncomingVTXONotifier is called after incoming VTXOs are durably
 // materialized, allowing callers to spawn/manage VTXO actors for expiry and

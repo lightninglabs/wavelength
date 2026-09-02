@@ -277,6 +277,20 @@ func (m *Manager) markReserved(op wire.OutPoint) uint64 {
 	return m.reserveEpoch
 }
 
+// markReservedUnknown records an in-memory reservation with an unknown epoch
+// (0). The startup sweep uses it because the epoch counter restarts at 0, so
+// it cannot reconstruct the epoch a resumed session holds; a zero mark keeps
+// the coin out of admission (isReserved tests presence) without letting the
+// release guard refuse the resumed session's release. Nil-safe for test
+// fixtures that build a Manager literal.
+func (m *Manager) markReservedUnknown(op wire.OutPoint) {
+	if m.reserved == nil {
+		m.reserved = make(map[wire.OutPoint]uint64)
+	}
+
+	m.reserved[op] = 0
+}
+
 // dropReserved clears an in-memory spend reservation, if present. Used by the
 // synchronous, in-turn paths (rollback, release, completion, terminal
 // notification) where no concurrent re-reservation can have intervened.
@@ -1994,8 +2008,12 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 	}
 
 	// Reserve each selected VTXO via its actor. Track successfully
-	// reserved outpoints so we can roll back on partial failure.
+	// reserved outpoints so we can roll back on partial failure, and the
+	// per-outpoint reservation epoch so the response can echo it (the
+	// spend that owns it later presents it on release; see
+	// handleReleaseSpend).
 	var reserved []wire.OutPoint
+	epochs := make(map[wire.OutPoint]uint64)
 	for _, vtxo := range selected {
 		ref, ok := m.actors[vtxo.Outpoint]
 		if !ok {
@@ -2028,6 +2046,7 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 		// at signing/submit and retries through the normal machinery.
 		if p.detached {
 			epoch := m.markReserved(vtxo.Outpoint)
+			epochs[vtxo.Outpoint] = epoch
 			m.detachedReserve(
 				ctx, ref, vtxo.Outpoint, epoch, p.reserveEvent,
 				p.label,
@@ -2069,9 +2088,10 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 	)
 	for _, vtxo := range selected {
 		selectedVTXOs = append(selectedVTXOs, SelectedVTXO{
-			Outpoint: vtxo.Outpoint,
-			Amount:   vtxo.Amount,
-			PkScript: vtxo.PkScript,
+			Outpoint:     vtxo.Outpoint,
+			Amount:       vtxo.Amount,
+			PkScript:     vtxo.PkScript,
+			ReserveEpoch: epochs[vtxo.Outpoint],
 		})
 		totalSelected += vtxo.Amount
 	}
@@ -2414,7 +2434,16 @@ func (m *Manager) sweepOrphanedReservations(ctx context.Context) {
 			continue
 		}
 
-		m.markReserved(op)
+		// Re-mark with an UNKNOWN epoch (0), not a fresh one. The
+		// reservation epoch counter restarts at 0 on boot, so a fresh
+		// mark here would not match the epoch the resumed session
+		// persisted, and its later release would be wrongly refused as
+		// superseded and the coin stranded. Admission only tests
+		// presence (isReserved), and the sweep's Tell carries no
+		// failure hop-back, so nothing needs the real epoch here; the
+		// release guard treats a zero mark as "owner unknown, do not
+		// refuse".
+		m.markReservedUnknown(op)
 
 		if err := ref.Tell(ctx, &SpendReserveEvent{}); err != nil {
 			m.logger(ctx).WarnS(
@@ -2642,6 +2671,41 @@ func (m *Manager) handleReleaseSpend(ctx context.Context,
 		errs     []error
 	)
 	for _, op := range outpoints {
+		// Refuse a release only when a LIVE in-memory reservation names
+		// a DIFFERENT epoch than the one the caller held: that means
+		// this reservation was superseded (released and re-reserved by
+		// a newer owner in the same process), so honouring the stale
+		// release would return a coin the newer owner is spending to
+		// the live set. Everything else releases:
+		//
+		//   - a zero epoch is "unknown" (a pre-upgrade snapshot with no
+		//     epoch record, or a manual unlock), so it releases
+		//     unconditionally, matching the pre-epoch behaviour;
+		//   - no live reservation (!ok) means the manager restarted and
+		//     the in-memory map has not been repopulated for this coin
+		//     (the orphan sweep skips Spending rows), so a legitimate
+		//     resumed session's release must still be honoured rather
+		//     than stranding the coin in Spending forever.
+		if epoch := req.ReserveEpochs[op]; epoch != 0 {
+			if cur, ok := m.reserved[op]; ok && cur != 0 &&
+				cur != epoch {
+
+				m.logger(ctx).InfoS(ctx, "Refusing "+
+					"stale spend release; "+
+					"reservation superseded",
+					slog.String(
+						"outpoint", op.String(),
+					),
+					slog.Uint64(
+						"release_epoch", epoch,
+					),
+					slog.Uint64("current_epoch", cur),
+				)
+
+				continue
+			}
+		}
+
 		ref, ok := m.actors[op]
 		if !ok {
 			errs = append(

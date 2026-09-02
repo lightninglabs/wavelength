@@ -306,6 +306,16 @@ type ReleaseInputsRequest struct {
 
 	// Outpoints are the reserved input VTXO outpoints to release.
 	Outpoints []wire.OutPoint
+
+	// ReserveEpochs names, per outpoint, the manager reservation epoch
+	// this session held, so the manager can refuse a stale release whose
+	// reservation was superseded. It is an in-memory side channel:
+	// ToProto does not serialize it because this request is never a
+	// persisted transport message. It is rebuilt from the session's
+	// durable TransferInputs (which carry ReserveEpoch) every time the
+	// FSM re-enters the failure transition, so a release replayed after a
+	// rolled-back commit still carries the epoch it held.
+	ReserveEpochs map[wire.OutPoint]uint64
 }
 
 // outboxType returns a stable identifier for this outbox message.

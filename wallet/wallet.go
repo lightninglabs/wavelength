@@ -2689,9 +2689,10 @@ func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
 	selected := make([]SelectedVTXO, len(mgrResp.SelectedVTXOs))
 	for i, v := range mgrResp.SelectedVTXOs {
 		selected[i] = SelectedVTXO{
-			Outpoint: v.Outpoint,
-			Amount:   v.Amount,
-			PkScript: v.PkScript,
+			Outpoint:     v.Outpoint,
+			Amount:       v.Amount,
+			PkScript:     v.PkScript,
+			ReserveEpoch: v.ReserveEpoch,
 		}
 	}
 

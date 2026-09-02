@@ -551,6 +551,36 @@ func prePONRInputOutpoints(state State) []wire.OutPoint {
 	return outpoints
 }
 
+// prePONRReserveEpochs maps each pre-point-of-no-return input outpoint to the
+// manager reservation epoch it was reserved under, so the release names the
+// reservation it held and a superseded one is refused. Inputs reserved before
+// the epoch existed (a pre-upgrade snapshot) carry epoch zero and are omitted,
+// so the manager releases them unconditionally.
+func prePONRReserveEpochs(state State) map[wire.OutPoint]uint64 {
+	var inputs []TransferInput
+	switch s := state.(type) {
+	case *AwaitingArkSignatures:
+		inputs = s.TransferInputs
+
+	case *AwaitingSubmitAccepted:
+		inputs = s.TransferInputs
+
+	default:
+		return nil
+	}
+
+	epochs := make(map[wire.OutPoint]uint64, len(inputs))
+	for _, input := range inputs {
+		if input.VTXO == nil || input.ReserveEpoch == 0 {
+			continue
+		}
+
+		epochs[input.VTXO.Outpoint] = input.ReserveEpoch
+	}
+
+	return epochs
+}
+
 // handleOutboxError emits retry scheduling for retryable errors while keeping
 // the FSM in the current protocol state. Non-retryable errors drive the
 // session to terminal Failed; when the failure lands before the point of
@@ -566,14 +596,14 @@ func handleOutboxError(env *Environment, current State,
 
 	if !evt.Retryable {
 		newEvents := fn.None[EmittedEvent]()
-		if outpoints := prePONRInputOutpoints(
-			current,
-		); len(outpoints) > 0 {
-
+		outpoints := prePONRInputOutpoints(current)
+		if len(outpoints) > 0 {
+			epochs := prePONRReserveEpochs(current)
 			newEvents = fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
 					&ReleaseInputsRequest{
-						Outpoints: outpoints,
+						Outpoints:     outpoints,
+						ReserveEpochs: epochs,
 					},
 				},
 			})

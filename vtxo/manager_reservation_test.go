@@ -203,6 +203,175 @@ func TestReleaseSpendTransitionsToLive(t *testing.T) {
 	require.True(t, ok, "expected LiveState after release")
 }
 
+// TestReleaseSpendRefusesSupersededEpoch pins the ownership guard: a release
+// that names a reservation epoch other than the coin's current one is refused,
+// so a stale release (e.g. a rolled-back OOR failure redelivered after the
+// coin was released and re-reserved by a newer session) cannot return a coin
+// the newer owner is spending to the live set. A matching epoch, and an absent
+// epoch, both release as before.
+func TestReleaseSpendRefusesSupersededEpoch(t *testing.T) {
+	t.Parallel()
+
+	coin := makeDescriptor(t, 50000, 0)
+	mgr, _ := newSpendingManager(
+		t, []*Descriptor{coin}, &mockReservationStore{},
+	)
+
+	// The coin is reserved under epoch 5 (the newer owner).
+	mgr.reserved = map[wire.OutPoint]uint64{coin.Outpoint: 5}
+
+	// A stale release naming epoch 3 is refused: nothing released, the
+	// reservation and the Spending state stand.
+	result := mgr.Receive(t.Context(), &ReleaseSpendRequest{
+		Outpoints: []wire.OutPoint{coin.Outpoint},
+		ReserveEpochs: map[wire.OutPoint]uint64{
+			coin.Outpoint: 3,
+		},
+	})
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+	rr, ok := resp.(*ReleaseSpendResponse)
+	require.True(t, ok, "expected *ReleaseSpendResponse")
+	require.Equal(t, 0, rr.ReleasedCount)
+	_, ok = actorState(t, mgr, coin.Outpoint).(*SpendingState)
+	require.True(t, ok, "superseded release moved the coin")
+	require.Equal(
+		t, uint64(5), mgr.reserved[coin.Outpoint],
+		"superseded release dropped the current reservation",
+	)
+
+	// The current owner's release (epoch 5) is honoured.
+	result = mgr.Receive(t.Context(), &ReleaseSpendRequest{
+		Outpoints: []wire.OutPoint{coin.Outpoint},
+		ReserveEpochs: map[wire.OutPoint]uint64{
+			coin.Outpoint: 5,
+		},
+	})
+	resp, err = result.Unpack()
+	require.NoError(t, err)
+	rr, ok = resp.(*ReleaseSpendResponse)
+	require.True(t, ok, "expected *ReleaseSpendResponse")
+	require.Equal(t, 1, rr.ReleasedCount)
+	_, ok = actorState(t, mgr, coin.Outpoint).(*LiveState)
+	require.True(t, ok, "matching-epoch release did not free the coin")
+}
+
+// TestReleaseSpendReleasesWhenNoLiveReservation pins the restart-safety of
+// the guard: after a daemon restart the in-memory reserved map is empty for a
+// coin whose durable reservation row and Spending state survived, so a
+// legitimate resumed session's release (naming the epoch it held) must still
+// be honoured rather than refused and stranded. The guard only refuses on a
+// LIVE, differing reservation.
+func TestReleaseSpendReleasesWhenNoLiveReservation(t *testing.T) {
+	t.Parallel()
+
+	coin := makeDescriptor(t, 50000, 0)
+	mgr, _ := newSpendingManager(
+		t, []*Descriptor{coin}, &mockReservationStore{},
+	)
+
+	// No in-memory reservation (empty map), as after a restart.
+	require.Empty(t, mgr.reserved)
+
+	result := mgr.Receive(t.Context(), &ReleaseSpendRequest{
+		Outpoints: []wire.OutPoint{coin.Outpoint},
+		ReserveEpochs: map[wire.OutPoint]uint64{
+			coin.Outpoint: 7,
+		},
+	})
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+	rr, ok := resp.(*ReleaseSpendResponse)
+	require.True(t, ok, "expected *ReleaseSpendResponse")
+	require.Equal(t, 1, rr.ReleasedCount)
+	_, ok = actorState(t, mgr, coin.Outpoint).(*LiveState)
+	require.True(t, ok, "release with no live reservation was refused")
+}
+
+// TestReleaseSpendReleasesOnZeroEpoch pins the "zero epoch is unknown" rule: a
+// release naming epoch 0 (a pre-upgrade snapshot with no epoch record) is
+// honoured regardless of the coin's current reservation, so an in-flight
+// upgrade cannot strand it.
+func TestReleaseSpendReleasesOnZeroEpoch(t *testing.T) {
+	t.Parallel()
+
+	coin := makeDescriptor(t, 50000, 0)
+	mgr, _ := newSpendingManager(
+		t, []*Descriptor{coin}, &mockReservationStore{},
+	)
+	mgr.reserved = map[wire.OutPoint]uint64{coin.Outpoint: 4}
+
+	result := mgr.Receive(t.Context(), &ReleaseSpendRequest{
+		Outpoints: []wire.OutPoint{coin.Outpoint},
+		ReserveEpochs: map[wire.OutPoint]uint64{
+			coin.Outpoint: 0,
+		},
+	})
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+	rr, ok := resp.(*ReleaseSpendResponse)
+	require.True(t, ok, "expected *ReleaseSpendResponse")
+	require.Equal(t, 1, rr.ReleasedCount)
+	_, ok = actorState(t, mgr, coin.Outpoint).(*LiveState)
+	require.True(t, ok, "zero-epoch release was refused")
+}
+
+// TestReleaseSpendReleasesAgainstUnknownSweepMark pins the restart-sweep path:
+// after a boot the orphan sweep re-marks a reserved coin with epoch 0 (the
+// counter restarts at 0 and cannot reconstruct the epoch the resumed session
+// holds). A later release from that session, carrying its persisted non-zero
+// epoch, must be honoured rather than refused against the unknown mark.
+func TestReleaseSpendReleasesAgainstUnknownSweepMark(t *testing.T) {
+	t.Parallel()
+
+	coin := makeDescriptor(t, 50000, 0)
+	mgr, _ := newSpendingManager(
+		t, []*Descriptor{coin}, &mockReservationStore{},
+	)
+
+	// The sweep re-marked the coin with an unknown epoch.
+	mgr.markReservedUnknown(coin.Outpoint)
+	require.Equal(t, uint64(0), mgr.reserved[coin.Outpoint])
+
+	result := mgr.Receive(t.Context(), &ReleaseSpendRequest{
+		Outpoints: []wire.OutPoint{coin.Outpoint},
+		ReserveEpochs: map[wire.OutPoint]uint64{
+			coin.Outpoint: 11,
+		},
+	})
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+	rr, ok := resp.(*ReleaseSpendResponse)
+	require.True(t, ok, "expected *ReleaseSpendResponse")
+	require.Equal(t, 1, rr.ReleasedCount)
+	_, ok = actorState(t, mgr, coin.Outpoint).(*LiveState)
+	require.True(t, ok, "release against an unknown sweep mark was refused")
+}
+
+// TestReleaseSpendWithoutEpochReleasesUnconditionally pins the backward-
+// compatible path: a caller that supplies no epoch (a nil map, e.g. a manual
+// unlock) releases the coin regardless of its current reservation epoch.
+func TestReleaseSpendWithoutEpochReleasesUnconditionally(t *testing.T) {
+	t.Parallel()
+
+	coin := makeDescriptor(t, 50000, 0)
+	mgr, _ := newSpendingManager(
+		t, []*Descriptor{coin}, &mockReservationStore{},
+	)
+	mgr.reserved = map[wire.OutPoint]uint64{coin.Outpoint: 9}
+
+	result := mgr.Receive(t.Context(), &ReleaseSpendRequest{
+		Outpoints: []wire.OutPoint{coin.Outpoint},
+	})
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+	rr, ok := resp.(*ReleaseSpendResponse)
+	require.True(t, ok, "expected *ReleaseSpendResponse")
+	require.Equal(t, 1, rr.ReleasedCount)
+	_, ok = actorState(t, mgr, coin.Outpoint).(*LiveState)
+	require.True(t, ok, "unconditional release did not free the coin")
+}
+
 // TestCompleteSpendTransitionsToSpent verifies that completing a spend drives
 // the VTXO out of SpendingState to terminal SpentState. As with release, the
 // reservation row deletion is atomic with the status change in the actor, not
