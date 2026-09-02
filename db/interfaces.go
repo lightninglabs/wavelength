@@ -239,6 +239,15 @@ func NewTransactionExecutor[Querier any](db BatchedQuerier,
 	}
 }
 
+// isExpectedTxShutdownErr reports transaction errors caused by explicit
+// cancellation or database teardown. It inspects the transaction error rather
+// than the context so an unrelated failure that coincides with cancellation
+// remains visible. A deadline is not shutdown: it can indicate a slow backend
+// and must remain visible at warning level.
+func isExpectedTxShutdownErr(dbErr error) bool {
+	return errors.Is(dbErr, context.Canceled) || isDBClosedError(dbErr)
+}
+
 // ExecTx is a wrapper for txBody to abstract the creation and commit of a db
 // transaction. The db transaction is embedded in a `*Queries` that txBody
 // needs to use when executing each one of the queries that need to be applied
@@ -285,14 +294,14 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 			}
 
 			// During shutdown the underlying *sql.DB is closed
-			// before every actor's lease/poll loop has wound
-			// down, which produces a flood of "sql: database is
-			// closed" warnings at the tail of every itest. Treat
-			// that case as expected and demote to debug; real
-			// production failures (corrupt DB, disk full, …)
-			// still surface as WARN because the ctx is not
-			// cancelled in that path.
-			if ctx.Err() != nil || isDBClosedError(dbErr) {
+			// before every actor's lease/poll loop has wound down,
+			// which produces a flood of "sql: database is closed"
+			// warnings at the tail of every itest. Treat that case
+			// as expected and demote to debug; real production
+			// failures (corrupt DB, disk full, …) still surface as
+			// WARN because their error is not caused by
+			// cancellation or teardown.
+			if isExpectedTxShutdownErr(dbErr) {
 				t.log.DebugS(ctx, "Transaction begin failed "+
 					"during shutdown", "err", dbErr)
 
@@ -322,6 +331,17 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 				continue
 			}
 
+			// Explicit cancellation interrupts the body before
+			// commit. The transaction rolls back and the caller
+			// owns recovery, so the failure is lifecycle noise
+			// rather than an operational warning.
+			if isExpectedTxShutdownErr(dbErr) {
+				t.log.DebugS(ctx, "Transaction body failed "+
+					"during shutdown", "err", dbErr)
+
+				return dbErr
+			}
+
 			// A missing row is a normal negative lookup for several
 			// stores, for example when wallet UTXOs are checked
 			// against known boarding addresses. Let callers decide
@@ -347,6 +367,17 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 				waitBeforeRetry(i)
 
 				continue
+			}
+
+			if isExpectedTxShutdownErr(dbErr) {
+				// Unlike begin or body cancellation, reaching
+				// commit means the body completed work that is
+				// now discarded. Keep that event greppable
+				// without alerting during expected shutdown.
+				t.log.InfoS(ctx, "Transaction commit failed "+
+					"during shutdown", "err", dbErr)
+
+				return dbErr
 			}
 
 			t.log.WarnS(ctx, "Transaction commit failed", dbErr)
