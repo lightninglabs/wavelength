@@ -71,6 +71,11 @@ Body wrapped at 72 characters. Explain WHY, not just WHAT.
 8. Use early returns; do not nest error handling.
 9. Do not batch actor messages without backpressure.
 10. Comments explain WHY and HOW, not WHAT.
+11. **Keep private context out of this public repository.** Never expose a
+    private-repository name, URL, issue or pull request number, or internal
+    context in code, comments, tests, documentation, commit messages, branch
+    names, pull request titles, descriptions, comments, reviews, release notes,
+    or other metadata. Use standalone public wording.
 
 ## Review Skills
 

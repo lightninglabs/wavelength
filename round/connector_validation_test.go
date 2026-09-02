@@ -1,6 +1,7 @@
 package round
 
 import (
+	"math"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -331,5 +332,71 @@ func TestValidateConnectorAncestryRejects(t *testing.T) {
 				},
 			),
 		)
+	})
+
+	t.Run("underfunded connector root", func(t *testing.T) {
+		t.Parallel()
+
+		commitmentTx, infos := newConnectorFixture(
+			t, operatorKey, 5, 2, 0,
+		)
+		commitmentTx.TxOut[0].Value--
+
+		err := validateConnectorAncestry(
+			commitmentTx, operatorKey, mappingFrom(infos[2]),
+		)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "root output value")
+	})
+
+	t.Run("overfunded connector root", func(t *testing.T) {
+		t.Parallel()
+
+		commitmentTx, infos := newConnectorFixture(
+			t, operatorKey, 5, 2, 0,
+		)
+		commitmentTx.TxOut[0].Value++
+
+		err := validateConnectorAncestry(
+			commitmentTx, operatorKey, mappingFrom(infos[2]),
+		)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "root output value")
+	})
+
+	t.Run("connector funding multiplication overflows", func(t *testing.T) {
+		t.Parallel()
+
+		commitmentTx, infos := newConnectorFixture(
+			t, operatorKey, 5, 2, 0,
+		)
+		bad := mutate(infos[2], func(info *ConnectorLeafInfo) {
+			info.ConnectorAmount = math.MaxInt64
+		})
+
+		err := validateConnectorAncestry(
+			commitmentTx, operatorKey, mappingFrom(bad),
+		)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "overflow int64")
+	})
+
+	t.Run("connector amount exceeds money supply", func(t *testing.T) {
+		t.Parallel()
+
+		commitmentTx, infos := newConnectorFixture(
+			t, operatorKey, 1, 2, 0,
+		)
+		oversized := int64(btcutil.MaxSatoshi) + 1
+		commitmentTx.TxOut[0].Value = oversized
+		bad := mutate(infos[0], func(info *ConnectorLeafInfo) {
+			info.ConnectorAmount = oversized
+		})
+
+		err := validateConnectorAncestry(
+			commitmentTx, operatorKey, mappingFrom(bad),
+		)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "exceeds maximum")
 	})
 }

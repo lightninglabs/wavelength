@@ -724,7 +724,9 @@ func (n *Node) GetNonAnchorOutpoint() (*wire.OutPoint, error) {
 	return nil, fmt.Errorf("no non-anchor output found in leaf node")
 }
 
-// Verify recursively verifies that the node structure is consistent.
+// Verify recursively verifies only parent-child outpoint topology. It does not
+// validate values or bind the root to a funding output. Callers validating an
+// untrusted complete tree must use Tree.Verify.
 func (n *Node) Verify() error {
 	// Get this node's txid.
 	txHash, err := n.TXID()

@@ -204,6 +204,14 @@ state transitions and validation rules live under [Invariants](#invariants).
 - Each client sub-tree in the commitment tree must contain exactly one
   non-anchor leaf; `buildOwnedClientVTXOs` fails the transition
   otherwise.
+- **VTXO-tree value conservation is checked at commitment admission.**
+  `validateVTXOTreeBinding` first byte-binds the server tree's `BatchOutput`
+  to the real commitment output, then verifies that the root spends its
+  declared `BatchOutpoint` and every reachable node spends the expected parent
+  output while preserving its exact value. The zero-fee rule is required for
+  v3 ephemeral-anchor relay. The later quote-authoritative leaf check closes
+  the value chain from the committed root to the client's accepted amount
+  before nonces, signatures, or persistence.
 - **Seal-time fee handshake (#270)**: the server is the amount
   authority. When `QuoteReceivedState.Quote` is non-nil, it threads
   through `RoundJoinedState` → `CommitmentTxReceivedState`, which
