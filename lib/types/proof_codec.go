@@ -299,8 +299,16 @@ func DeserializeTxProof(data []byte) (*proof.TxProof, error) {
 		return nil, fmt.Errorf("create TLV stream: %w", err)
 	}
 
+	// The proof arrives from an untrusted peer (a client's boarding
+	// request carries it to the operator), so decode it through the
+	// P2P path. Only DecodeP2P enforces the per-record size cap; the
+	// plain Decode is meant for locally persisted data and hands a
+	// declared record length straight to an allocation, which lets a
+	// ten byte payload panic or exhaust memory. A boarding proof
+	// carries a single transaction, so the 65535 byte record cap is
+	// not a practical limit.
 	reader := bytes.NewReader(data)
-	if err := stream.Decode(reader); err != nil {
+	if err := stream.DecodeP2P(reader); err != nil {
 		return nil, fmt.Errorf("decode TxProof: %w", err)
 	}
 
