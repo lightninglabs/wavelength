@@ -97,6 +97,15 @@ func (g *gatewayServer) Start(ctx context.Context) error {
 
 		return fmt.Errorf("register daemon gateway handlers: %w", err)
 	}
+	if err := waverpc.RegisterMacaroonServiceHandlerFromEndpoint(
+		registerCtx, mux, endpoint, dialOpts,
+	); err != nil {
+
+		cancelRegister()
+		_ = listener.Close()
+
+		return fmt.Errorf("register macaroon gateway handlers: %w", err)
+	}
 
 	for _, registrar := range g.registrars {
 		if err := registrar(

@@ -81,11 +81,17 @@ const (
 	maxOORRecipients = 256
 )
 
-// RPCServer implements the daemon's gRPC DaemonService interface.
+// RPCServer implements the daemon's local gRPC daemon and macaroon services.
 type RPCServer struct {
 	waverpc.UnimplementedDaemonServiceServer
+	waverpc.UnimplementedMacaroonServiceServer
 
 	server *Server
+
+	// macaroonManager owns local macaroon baking and reports the active RPC
+	// permission map. It is configured after all optional gRPC services are
+	// registered, before the listener starts serving requests.
+	macaroonManager *macaroonManager
 
 	// customInputLocksMu guards customInputLocks. Together they form
 	// a lightweight in-memory mutex on custom OOR input outpoints
@@ -125,7 +131,10 @@ type RPCServer struct {
 // NewRPCServer creates a new RPCServer backed by the given Server.
 func NewRPCServer(server *Server) *RPCServer {
 	return &RPCServer{
-		server:             server,
+		server: server,
+		macaroonManager: newMacaroonManager(
+			nil, wavedRPCPermissions,
+		),
 		customInputLocks:   make(map[wire.OutPoint]struct{}),
 		receiveScriptLocks: make(map[string]*receiveScriptLock),
 	}

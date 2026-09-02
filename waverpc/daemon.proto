@@ -272,6 +272,21 @@ service DaemonService {
         returns (SignCreditAccountAuthorizationResponse);
 }
 
+// MacaroonService exposes local credential management for the daemon. It is
+// registered on the authenticated local gRPC/REST listener only, not on the
+// operator mailbox transport used by DaemonService.
+service MacaroonService {
+    // BakeMacaroon creates a new daemon macaroon with the requested scoped
+    // permissions. Callers may use known entity/action pairs or the special
+    // uri entity with a full registered RPC method as its action.
+    rpc BakeMacaroon (BakeMacaroonRequest) returns (BakeMacaroonResponse);
+
+    // ListPermissions returns every RPC method registered by this daemon and
+    // the entity/action permissions that authorize it.
+    rpc ListPermissions (ListPermissionsRequest)
+        returns (ListPermissionsResponse);
+}
+
 // WalletState mirrors the daemon's in-process wallet lifecycle enum:
 // callers should test the specific state they need. SYNCING and READY
 // both mean seed material is loaded, while only READY means wallet RPCs
@@ -2878,4 +2893,41 @@ message SignCreditAccountAuthorizationRequest {
 message SignCreditAccountAuthorizationResponse {
     // signature is the 64-byte BIP-340 Schnorr signature.
     bytes signature = 1;
+}
+
+// MacaroonPermission is one entity/action operation granted by a macaroon.
+// The special entity "uri" uses a full registered RPC method URI as action.
+message MacaroonPermission {
+    // entity is the logical permission domain, or "uri" for one exact RPC.
+    string entity = 1;
+
+    // action is the operation within the entity, or the full RPC method URI.
+    string action = 2;
+}
+
+message BakeMacaroonRequest {
+    // permissions is the non-empty set of operations to grant.
+    repeated MacaroonPermission permissions = 1;
+
+    // root_key_id selects the numeric macaroon root key. Zero uses the
+    // daemon's default root key.
+    uint64 root_key_id = 2;
+}
+
+message BakeMacaroonResponse {
+    // macaroon is the hex-encoded binary serialization of the new macaroon.
+    string macaroon = 1;
+}
+
+message MacaroonPermissionList {
+    repeated MacaroonPermission permissions = 1;
+}
+
+message ListPermissionsRequest {
+}
+
+message ListPermissionsResponse {
+    // method_permissions maps full RPC method URIs to their required
+    // entity/action operations.
+    map<string, MacaroonPermissionList> method_permissions = 1;
 }

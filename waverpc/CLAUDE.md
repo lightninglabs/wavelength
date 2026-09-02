@@ -16,6 +16,9 @@ helper file (`errors.go`) for structured wallet-lifecycle errors.
   server interfaces for the daemon API.
 - `DaemonServiceMailboxClient` / `DaemonServiceMailboxServer` — Generated
   mailbox-RPC client/server stubs (via `protoc-gen-mailboxrpc`).
+- `MacaroonServiceClient` / `MacaroonServiceServer` — Local authenticated
+  credential provisioning and active-permission discovery. The daemon does
+  not register this service on its operator mailbox transport.
 - `WalletNotReadyError(msg)` / `WalletNotReadyStateError(msg, state)` — Build a
   structured `FailedPrecondition` gRPC error carrying a stable `ErrorInfo`
   reason (`WalletNotReadyReason`) and optional `wallet_state` metadata.

@@ -104,6 +104,10 @@ func getDaemonConn(cmd *cobra.Command) (*grpc.ClientConn, error) {
 // overrides it.
 var getDaemonClient = defaultGetDaemonClient
 
+// getMacaroonClient is package-level indirection for command-wiring tests.
+// Production code uses defaultGetMacaroonClient.
+var getMacaroonClient = defaultGetMacaroonClient
+
 // defaultGetDaemonClient dials the daemon from the command's connection
 // flags.
 func defaultGetDaemonClient(cmd *cobra.Command) (waverpc.DaemonServiceClient,
@@ -115,6 +119,20 @@ func defaultGetDaemonClient(cmd *cobra.Command) (waverpc.DaemonServiceClient,
 	}
 
 	client := waverpc.NewDaemonServiceClient(conn)
+
+	return client, conn, nil
+}
+
+// defaultGetMacaroonClient dials the daemon's local credential service.
+func defaultGetMacaroonClient(cmd *cobra.Command) (
+	waverpc.MacaroonServiceClient, *grpc.ClientConn, error) {
+
+	conn, err := getDaemonConn(cmd)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	client := waverpc.NewMacaroonServiceClient(conn)
 
 	return client, conn, nil
 }
