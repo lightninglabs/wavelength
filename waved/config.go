@@ -144,6 +144,17 @@ const (
 	defaultSignetSwapServerRESTHost = "signet.swapd-rest." +
 		"lightning.finance"
 
+	// The legacy proof scan floors are rounded well below the first
+	// supported operator deployment on each public network. They are used
+	// only with the canonical Lightning Labs operator endpoint. The extra
+	// margin covers incomplete deployment history and operator database
+	// resets while still avoiding a scan of chain history in which that
+	// operator could not have created VTXOs.
+	defaultMainnetLegacyProofScanFloor uint32 = 950_000
+	testnet3LegacyProofScanFloor       uint32 = 4_940_000
+	testnet4LegacyProofScanFloor       uint32 = 140_000
+	signetLegacyProofScanFloor         uint32 = 300_000
+
 	// DefaultIndexerServerID is the canonical operator identifier used
 	// in signed indexer proofs.
 	DefaultIndexerServerID = "lumosd"
@@ -1569,6 +1580,42 @@ func (c *Config) ArkServerAddress() string {
 	}
 
 	return defaults.ark.forTransport(c.Server.Transport)
+}
+
+// legacyProofScanFloor returns the earliest block where the configured Ark
+// operator could have created a compatible commitment. The deployment-backed
+// floors apply only to the canonical Lightning Labs endpoints. A custom or
+// unknown operator retains block 1 because its deployment history is unknown.
+func (c *Config) legacyProofScanFloor() uint32 {
+	if c == nil || c.Server == nil {
+		return 1
+	}
+
+	defaults, ok := defaultNetworkEndpoints(c.Network)
+	if !ok {
+		return 1
+	}
+	canonical := defaults.ark.forTransport(c.Server.Transport)
+	if canonical == "" || c.ArkServerAddress() != canonical {
+		return 1
+	}
+
+	switch c.Network {
+	case "mainnet":
+		return defaultMainnetLegacyProofScanFloor
+
+	case "testnet":
+		return testnet3LegacyProofScanFloor
+
+	case "testnet4":
+		return testnet4LegacyProofScanFloor
+
+	case "signet":
+		return signetLegacyProofScanFloor
+
+	default:
+		return 1
+	}
 }
 
 // SwapServerAddress returns the configured swap server address, or the
