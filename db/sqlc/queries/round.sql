@@ -171,6 +171,17 @@ INSERT INTO vtxo_ancestry_paths (
     $1, $2, $3, $4, $5, $6, $7, $8
 );
 
+-- name: UpdateVTXOAncestryCommitmentHeight :execrows
+-- UpdateVTXOAncestryCommitmentHeight fills one legacy zero commitment height
+-- without rewriting the local commitment transaction, tree path, or other
+-- proof fields. The zero-height predicate prevents overwriting known data.
+UPDATE vtxo_ancestry_paths
+SET commitment_height = $4
+WHERE vtxo_outpoint_hash = $1
+  AND vtxo_outpoint_index = $2
+  AND path_order = $3
+  AND commitment_height = 0;
+
 -- name: DeleteVTXOAncestryPaths :exec
 -- DeleteVTXOAncestryPaths removes every ancestry row for the given VTXO.
 -- Used as the first half of an upsert when the VTXO manager fills in
