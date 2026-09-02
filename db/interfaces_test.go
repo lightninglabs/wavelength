@@ -1,8 +1,10 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btclog/v2"
@@ -10,6 +12,55 @@ import (
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/stretchr/testify/require"
 )
+
+// TestExpectedTxShutdownErr verifies that shutdown classification follows the
+// transaction error rather than an independently canceled caller context.
+func TestExpectedTxShutdownErr(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "canceled",
+			err:      context.Canceled,
+			expected: true,
+		},
+		{
+			name:     "wrapped canceled",
+			err:      fmt.Errorf("query: %w", context.Canceled),
+			expected: true,
+		},
+		{
+			name:     "closed connection",
+			err:      sql.ErrConnDone,
+			expected: true,
+		},
+		{
+			name:     "deadline",
+			err:      context.DeadlineExceeded,
+			expected: false,
+		},
+		{
+			name:     "unrelated database error",
+			err:      errors.New("disk full"),
+			expected: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(
+				t, test.expected,
+				isExpectedTxShutdownErr(test.err),
+			)
+		})
+	}
+}
 
 // TestTransactionExecutorUsesContextTx verifies that ExecTx participates in an
 // existing actor transaction when present in context.
