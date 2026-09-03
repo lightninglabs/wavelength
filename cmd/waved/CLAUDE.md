@@ -22,6 +22,11 @@ hands off to `waved.Main` to run the daemon.
 - `configureBitcoindSubmitter(v, cfg)` — opt-in direct bitcoind
   `submitpackage` wiring for V3 ephemeral-anchor package relay; a no-op
   when `bitcoind.host` is unset.
+- `registerOperatorFeeFlags(f, cfg)` / `registerMaxPaymentCLTVFlag(f, cfg)` /
+  `registerFeeEstimationFlags(...)` — grouped flag registrars called from
+  `newRootCmd`. `registerMaxPaymentCLTVFlag` owns `--maxpaymentcltv`, the
+  automatic-maintenance target for keeping enough VTXO lifetime available for
+  Lightning payments.
 
 ## Relationships
 
@@ -45,3 +50,8 @@ hands off to `waved.Main` to run the daemon.
 - `EagerRoundJoin`'s flag default comes from `waved.DefaultConfig()`,
   which is itself build-tag aware (true under `wavewalletrpc`, false
   otherwise); `--eagerroundjoin` still overrides it either way.
+- `--maxpaymentcltv`'s default is build-tag aware the same way: it reads
+  `cfg.MaxPaymentCLTV`, which `waved.DefaultConfig()` seeds from
+  `defaultMaxPaymentCLTV()` — 300 under `swapruntime`, zero otherwise. The
+  help text therefore differs between builds, and passing `0` explicitly
+  disables the payment reserve in a swap-enabled build.

@@ -1869,6 +1869,23 @@ func (m *Manager) respawnActorFromStore(ctx context.Context,
 func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 	VTXOActorRef, error) {
 
+	if !m.cfg.ExpiryConfig.CanReserveMaxPaymentCLTV(vtxo) {
+		logger := m.logger(ctx)
+		logger.InfoS(ctx, "Payment CLTV reserve exceeds useful "+
+			"batch lifetime; using base refresh policy",
+			slog.String("outpoint", vtxo.Outpoint.String()),
+			slog.Int(
+				"max_payment_cltv",
+				int(m.cfg.ExpiryConfig.MaxPaymentCLTV),
+			),
+			slog.Int(
+				"batch_lifetime", int(
+					vtxo.BatchExpiry-vtxo.CreatedHeight,
+				),
+			),
+		)
+	}
+
 	actorID := fmt.Sprintf("vtxo.%s", vtxo.Outpoint.String())
 	serviceKey := VTXOActorServiceKey(vtxo.Outpoint)
 
@@ -3150,6 +3167,8 @@ func (m *Manager) markCustomForfeitSynthetic(op wire.OutPoint, synthetic bool) {
 	m.customForfeitSynthetic[op] = synthetic
 }
 
+// customForfeitInputAlreadyActive reports whether the durable input identity
+// matches an actor that may already own the custom forfeit request.
 func (m *Manager) customForfeitInputAlreadyActive(ctx context.Context,
 	input CustomForfeitInput) (bool, error) {
 
@@ -3220,6 +3239,8 @@ func (m *Manager) customForfeitInputStoredMatch(ctx context.Context,
 	return true, synthetic, nil
 }
 
+// sameTaprootKey reports whether two public keys encode the same x-only
+// Taproot key. Nil keys never match.
 func sameTaprootKey(a, b *btcec.PublicKey) bool {
 	if a == nil || b == nil {
 		return false

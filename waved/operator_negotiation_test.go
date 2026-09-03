@@ -44,6 +44,27 @@ func TestVTXOExpiryConfigUsesLatestTerms(t *testing.T) {
 	require.Equal(t, int32(144), cfg.CalculateRefreshThreshold(desc))
 }
 
+// TestVTXOExpiryConfigReservesMaxPaymentCLTV verifies the daemon carries its
+// configured Lightning payment target into every VTXO actor's dynamic expiry
+// policy without letting the operator's fee waiver shorten the reserve.
+func TestVTXOExpiryConfigReservesMaxPaymentCLTV(t *testing.T) {
+	t.Parallel()
+
+	server := &Server{cfg: &Config{MaxPaymentCLTV: 300}}
+	server.storeOperatorTerms(&types.OperatorTerms{
+		FreeRefreshWindowBlocks: 144,
+	})
+	cfg := server.vtxoExpiryConfig()
+	desc := &vtxo.Descriptor{
+		RelativeExpiry: 144,
+		Ancestry: []vtxo.Ancestry{{
+			TreeDepth: 7,
+		}},
+	}
+
+	require.Equal(t, int32(558), cfg.CalculateRefreshThreshold(desc))
+}
+
 // activeArkPolicy builds an ACTIVE policy for the given version, used to
 // populate the operator's advertised policy list in fake GetInfo responses.
 func activeArkPolicy(version uint32) *arkrpc.ArkVersionPolicy {

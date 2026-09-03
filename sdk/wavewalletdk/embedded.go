@@ -45,6 +45,7 @@ func DefaultConfig() Config {
 		SwapServerInsecure:     cfg.Swap.ServerInsecure,
 		SwapDatabaseFileName:   cfg.Swap.DatabaseFileName,
 		MaxOperatorFeeSat:      cfg.MaxOperatorFeeSat,
+		MaxPaymentCLTV:         cfg.MaxPaymentCLTV,
 		AutoRefreshFeeFloorSat: cfg.AutoRefreshFeeFloorSat,
 		AutoRefreshFeeRatePPM:  cfg.AutoRefreshFeeRatePPM,
 		SigningWorkers:         cfg.SigningWorkers,
@@ -58,6 +59,7 @@ func DefaultConfig() Config {
 // would otherwise leave in place.
 type startOptions struct {
 	disableEagerRoundJoin bool
+	disableMaxPaymentCLTV bool
 }
 
 // Option mutates the embedded daemon configuration during Start. Functional
@@ -75,6 +77,15 @@ type Option func(*startOptions)
 func WithEagerRoundJoinDisabled() Option {
 	return func(o *startOptions) {
 		o.disableEagerRoundJoin = true
+	}
+}
+
+// WithMaxPaymentCLTVDisabled forces automatic maintenance to omit the
+// Lightning payment lifetime reserve. It provides an explicit zero for hosts
+// whose plain Config value would otherwise defer to the daemon default.
+func WithMaxPaymentCLTVDisabled() Option {
+	return func(o *startOptions) {
+		o.disableMaxPaymentCLTV = true
 	}
 }
 
@@ -103,6 +114,9 @@ func resolveDaemonConfig(cfg Config, opts ...Option) (*waved.Config, error) {
 
 	if o.disableEagerRoundJoin {
 		daemonCfg.EagerRoundJoin = false
+	}
+	if o.disableMaxPaymentCLTV {
+		daemonCfg.MaxPaymentCLTV = 0
 	}
 
 	return daemonCfg, nil
@@ -267,6 +281,9 @@ func applyConfigOverrides(daemonCfg *waved.Config, cfg Config) {
 	}
 	if cfg.MaxOperatorFeeSat != 0 {
 		daemonCfg.MaxOperatorFeeSat = cfg.MaxOperatorFeeSat
+	}
+	if cfg.MaxPaymentCLTV != 0 {
+		daemonCfg.MaxPaymentCLTV = cfg.MaxPaymentCLTV
 	}
 	if cfg.AutoRefreshFeeFloorSat != 0 {
 		daemonCfg.AutoRefreshFeeFloorSat = cfg.AutoRefreshFeeFloorSat

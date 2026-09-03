@@ -74,6 +74,33 @@ func TestAutoRefreshFeeOverrides(t *testing.T) {
 	})
 }
 
+// TestMaxPaymentCLTVOverride verifies embedded hosts can change the payment
+// lifetime target while a zero convenience value preserves a caller-owned
+// daemon policy.
+func TestMaxPaymentCLTVOverride(t *testing.T) {
+	t.Parallel()
+
+	t.Run("convenience override", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := DefaultConfig()
+		cfg.MaxPaymentCLTV = 400
+		daemonCfg, err := daemonConfig(cfg)
+		require.NoError(t, err)
+		require.Equal(t, int32(400), daemonCfg.MaxPaymentCLTV)
+	})
+
+	t.Run("zero preserves daemon config", func(t *testing.T) {
+		t.Parallel()
+
+		base := waved.DefaultConfig()
+		base.MaxPaymentCLTV = 250
+		daemonCfg, err := daemonConfig(Config{DaemonConfig: base})
+		require.NoError(t, err)
+		require.Equal(t, int32(250), daemonCfg.MaxPaymentCLTV)
+	})
+}
+
 // TestCloneDaemonConfigIsolation verifies that cloneDaemonConfig produces a
 // graph whose reference-typed fields can be mutated independently of the
 // original. This is the actual contract Start relies on when it injects its
