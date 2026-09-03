@@ -48,6 +48,8 @@ type fakeChainSourceRef struct {
 
 	broadcastErr error
 	packageErr   error
+	registerErr  error
+	subscribeErr error
 
 	// mempoolAcceptFn lets tests control the outcome of
 	// TestMempoolAcceptRequest. If nil, the fake returns
@@ -436,6 +438,22 @@ func (f *fakeChainSourceRef) unregisterConfCount() int {
 	return len(f.unregisterConfs)
 }
 
+// subscribeBlockCount returns the number of block subscription attempts.
+func (f *fakeChainSourceRef) subscribeBlockCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return len(f.subscribeBlocks)
+}
+
+// unsubscribeBlockCount returns the number of block subscription cleanups.
+func (f *fakeChainSourceRef) unsubscribeBlockCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return len(f.unsubscribeBlocks)
+}
+
 // ID returns the fake actor ID.
 func (f *fakeChainSourceRef) ID() string {
 	return "fake-chainsource"
@@ -526,6 +544,12 @@ func (f *fakeChainSourceRef) handleAsk(_ context.Context,
 				_ = notifyRef.Tell(context.Background(), event)
 			}
 		}
+		if f.registerErr != nil {
+			err := f.registerErr
+			f.registerErr = nil
+
+			return nil, err
+		}
 
 		return &chainsource.RegisterConfResponse{}, nil
 
@@ -543,6 +567,12 @@ func (f *fakeChainSourceRef) handleAsk(_ context.Context,
 	case *chainsource.SubscribeBlocksRequest:
 		f.subscribeBlocks = append(f.subscribeBlocks, req)
 		f.blockNotify = req.NotifyActor.UnwrapOr(nil)
+		if f.subscribeErr != nil {
+			err := f.subscribeErr
+			f.subscribeErr = nil
+
+			return nil, err
+		}
 
 		return &chainsource.SubscribeBlocksResponse{}, nil
 
@@ -1032,6 +1062,116 @@ func TestEnsureConfirmedDedupesTwoSubscribers(t *testing.T) {
 	mustEventually(t, func() bool {
 		return chain.unregisterConfCount() == 1
 	})
+}
+
+// TestEnsureConfirmedRetriesSetupFailures verifies that temporary chain
+// subscription errors remain request errors. The first attempt must not
+// broadcast or report TxFailed, and a retry must create fresh tracking,
+// register observation, broadcast once, and confirm normally.
+func TestEnsureConfirmedRetriesSetupFailures(t *testing.T) {
+	tests := []struct {
+		name              string
+		errorPrefix       string
+		subscribeErr      error
+		registerErr       error
+		firstSubscribes   int
+		firstUnsubscribes int
+		firstRegisters    int
+		firstUnregisters  int
+		retrySubscribes   int
+		retryRegisters    int
+	}{
+		{
+			name:              "subscribe blocks",
+			errorPrefix:       "subscribe blocks",
+			subscribeErr:      fmt.Errorf("backend unavailable"),
+			firstSubscribes:   1,
+			firstUnsubscribes: 1,
+			retrySubscribes:   2,
+			retryRegisters:    1,
+		},
+		{
+			name:             "register confirmation",
+			errorPrefix:      "register conf",
+			registerErr:      fmt.Errorf("backend unavailable"),
+			firstSubscribes:  1,
+			firstRegisters:   1,
+			firstUnregisters: 1,
+			retrySubscribes:  1,
+			retryRegisters:   2,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			chain := newFakeChainSourceRef(100)
+			chain.subscribeErr = test.subscribeErr
+			chain.registerErr = test.registerErr
+			ref, behavior := newTestActor(t, Config{
+				ChainSource: chain,
+			})
+
+			tx := makeTestTx(false)
+			txid := tx.TxHash()
+			sub := actor.NewChannelTellOnlyRef[Notification](
+				"sub-setup-retry", 4,
+			)
+			ctx, cancel := context.WithTimeout(
+				t.Context(), testTimeout,
+			)
+			_, err := ref.Ref().Ask(ctx, &EnsureConfirmedReq{
+				Tx:         tx,
+				Subscriber: sub,
+			}).Await(ctx).Unpack()
+			cancel()
+			require.Error(t, err)
+			require.Contains(t, err.Error(), test.errorPrefix)
+			require.Equal(t, 0, chain.broadcastCallCount())
+			mustHaveNoNotification(t, sub)
+			require.Empty(t, behavior.tracked)
+			require.Empty(t, behavior.broadcaster.parentStates)
+			require.Equal(
+				t, test.firstSubscribes,
+				chain.subscribeBlockCount(),
+			)
+			require.Equal(
+				t, test.firstUnsubscribes,
+				chain.unsubscribeBlockCount(),
+			)
+			require.Equal(
+				t, test.firstRegisters,
+				chain.registerConfCount(),
+			)
+			require.Equal(
+				t, test.firstUnregisters,
+				chain.unregisterConfCount(),
+			)
+
+			resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+				Tx:         tx,
+				Subscriber: sub,
+			})
+			require.True(t, resp.Created)
+			require.Equal(
+				t, TxStateAwaitingConfirmation, resp.State,
+			)
+			require.Equal(t, 1, chain.broadcastCallCount())
+			require.Equal(
+				t, test.retrySubscribes,
+				chain.subscribeBlockCount(),
+			)
+			require.Equal(
+				t, test.retryRegisters,
+				chain.registerConfCount(),
+			)
+
+			chain.emitConfirmation(t, txid, 101)
+			notification := mustAwaitNotification(t, sub)
+			confirmed, ok := notification.(*TxConfirmed)
+			require.True(t, ok)
+			require.Equal(t, txid, confirmed.Txid)
+		})
+	}
 }
 
 // TestLifecycleDeliveryRetriesAfterTellFailure verifies that a transient
