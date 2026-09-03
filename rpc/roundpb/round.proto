@@ -227,6 +227,10 @@ message ClientBatchInfo {
     // same value so both sides agree on how the round was conducted. Today
     // the only understood value is 1.
     uint32 flow_version = 10;
+
+    // asset_leaf_packages contains the sealed transfer package for each
+    // asset VTXO created for this client, keyed by VTXO outpoint.
+    map<string, bytes> asset_leaf_packages = 11;
 }
 
 // ClientAwaitingInputSigsResp notifies a client that the server is ready

@@ -226,6 +226,31 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 		}
 	}
 
+	if len(pb.AssetLeafPackages) != 0 {
+		e.AssetLeafPackages = make(
+			map[wire.OutPoint][]byte, len(pb.AssetLeafPackages),
+		)
+		for key, sealedPackage := range pb.AssetLeafPackages {
+			outpoint, err := roundpb.OutpointFromMapKey(key)
+			if err != nil {
+				return fmt.Errorf("asset_leaf_packages key "+
+					"%q: %w", key, err)
+			}
+			if roundpb.OutpointToMapKey(outpoint) != key {
+				return fmt.Errorf("asset_leaf_packages key %q "+
+					"is not canonical", key)
+			}
+			if len(sealedPackage) == 0 {
+				return fmt.Errorf("asset_leaf_packages[%q] "+
+					"is empty", key)
+			}
+
+			e.AssetLeafPackages[outpoint] = append(
+				[]byte(nil), sealedPackage...,
+			)
+		}
+	}
+
 	// Convert connector leaf map. The server sends ConnectorLeafInfo
 	// with LeafOutpoint and LeafOutput, which maps to the client's
 	// ConnectorLeafInfo with ConnectorOutpoint, ConnectorPkScript, and
