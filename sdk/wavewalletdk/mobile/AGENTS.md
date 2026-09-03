@@ -25,8 +25,15 @@ application-facing wallet API.
   stream, replacing the callback interfaces gomobile would otherwise require.
 - `mobileConfig` — unexported flat JSON config decoded by `parseConfig`/
   `applyMobileConfig` into a `wavewalletdk.Config`; validated (non-negative
-  durations/counts, `uint32`-safe recovery window) before merging onto
-  `wavewalletdk.DefaultConfig()`.
+  durations/counts, `uint32`-safe recovery window, `int32`-safe
+  `max_payment_cltv`) before merging onto `wavewalletdk.DefaultConfig()`.
+  Scalars are value-typed except `MaxPaymentCLTV *int64`, whose pointer
+  distinguishes an omitted key from an explicit JSON zero.
+- `mobileStartOptions(cfg)` — unexported bridge from an explicit zero-valued
+  mobile setting to the `wavewalletdk.Option` that overrides an enable-only
+  SDK convenience field. Its result is passed to `wavewalletdk.Start` and
+  `wavewalletdk.StartExternalSeedWalletWithContexts`; today it emits
+  `WithMaxPaymentCLTVDisabled()` and nothing else.
 - `mobileReceiveRequest` — unexported wire DTO carrying the SDK's current
   `AmountSat`/`Memo` fields plus the mobile-only `TimeoutSeconds`. It is
   projected onto `wavewalletdk.ReceiveRequest` after deadline validation.
@@ -84,6 +91,11 @@ application-facing wallet API.
   reach `wavewalletdk.Config`, since a negative `WalletPollIntervalSeconds` in
   particular panics the lwwallet tip poller's ticker in a background
   goroutine after startup.
+- `wavewalletdk.Config` convenience scalars are enable-only: zero defers to
+  the daemon default rather than forcing zero. A mobile zero that must win
+  needs both a pointer field in `mobileConfig` and a case in
+  `mobileStartOptions`. For `max_payment_cltv`, omission keeps the 300-block
+  swap default while explicit `0` disables the payment reserve.
 
 ## Deep Docs
 

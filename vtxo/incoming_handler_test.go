@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
@@ -94,6 +95,13 @@ func TestIncomingVTXOHandlerOwnedScript(t *testing.T) {
 	handler := NewIncomingVTXOHandler(IncomingVTXOHandlerConfig{
 		ScriptStore: lookup,
 		VTXOStore:   saver,
+		AncestryFetcher: func(context.Context, wire.OutPoint, []byte,
+			keychain.KeyDescriptor) (IncomingVTXOExtras, error) {
+
+			return IncomingVTXOExtras{
+				CreatedHeight: 799_500,
+			}, nil
+		},
 	})
 
 	var txid chainhash.Hash
@@ -114,7 +122,12 @@ func TestIncomingVTXOHandlerOwnedScript(t *testing.T) {
 	require.Equal(t, int64(50_000), int64(desc.Amount))
 	require.Equal(t, pkScript, desc.PkScript)
 	require.Equal(t, "round-1", desc.RoundID)
+	require.Equal(t, int32(799_500), desc.CreatedHeight)
 	require.Equal(t, VTXOStatusLive, desc.Status)
+
+	expiryCfg := DefaultExpiryConfig()
+	expiryCfg.MaxPaymentCLTV = 300
+	require.False(t, expiryCfg.CanReserveMaxPaymentCLTV(desc))
 }
 
 // TestIncomingVTXOHandlerUnownedScript verifies that a VTXO_CREATED

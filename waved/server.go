@@ -456,6 +456,8 @@ func NewServer(cfg *Config) (*Server, error) {
 	}, nil
 }
 
+// subLogger returns the configured subsystem logger, or a disabled logger
+// when logging has not been initialized or the requested tag is unknown.
 func (s *Server) subLogger(tag string) btclog.Logger {
 	if s.loggers == nil {
 		return btclog.Disabled
@@ -766,6 +768,9 @@ func (s *Server) storeOperatorTerms(terms *types.OperatorTerms) {
 // callback resolves the atomic snapshot when each VTXO evaluates a block.
 func (s *Server) vtxoExpiryConfig() *vtxo.ExpiryConfig {
 	cfg := vtxo.DefaultExpiryConfig()
+	if s.cfg != nil {
+		cfg.MaxPaymentCLTV = s.cfg.MaxPaymentCLTV
+	}
 	cfg.FreeRefreshWindow = func() uint32 {
 		terms := s.loadOperatorTerms()
 		if terms == nil {

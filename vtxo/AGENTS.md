@@ -166,6 +166,14 @@ when the local wallet owns the receive script.
 - VTXO actor state is the single source of truth for availability.
 - Forfeit transaction is not broadcast until the connector output's round confirms (atomic replacement).
 - Refresh is auto-triggered at configurable height before expiry.
+- `ExpiryConfig.MaxPaymentCLTV` reserves a total Lightning CLTV window above
+  the VTXO-specific critical threshold and `MinRefreshBuffer`. Zero disables
+  the payment reserve. The calculation saturates at `math.MaxInt32`, so an
+  extreme direct package configuration cannot wrap and postpone refresh. If
+  a round-direct VTXO's known batch lifetime cannot satisfy the requested
+  reserve plus one healthy retry buffer, the actor logs the mismatch at info
+  level when it starts and uses the base refresh policy. OOR descendants keep
+  the reserve because one refresh can mint a full-lifetime replacement.
 - Auto-refresh delays to an advertised fee-waiver boundary only when the
   boundary remains at least `MinRefreshBuffer` blocks above the dynamic
   critical threshold. An overly late window never weakens unilateral-exit or
