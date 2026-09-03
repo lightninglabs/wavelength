@@ -1,6 +1,8 @@
 package types
 
 import (
+	"fmt"
+
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -276,6 +278,12 @@ type VTXORequest struct {
 	// output is not eligible for the implicit-change exception.
 	FixedAmount bool
 
+	// AssetRef identifies the asset carried by this VTXO.
+	AssetRef string
+
+	// AssetAmount is the number of asset units carried by this VTXO.
+	AssetAmount uint64
+
 	// PolicyTemplate is the semantic arkscript policy for the requested
 	// output. This is the authoritative join-round representation.
 	PolicyTemplate []byte
@@ -320,6 +328,33 @@ type VTXORequest struct {
 	// output per automatic-refresh input even when siblings share the same
 	// effective pkScript. It is never serialized over the round wire.
 	RefreshSourceOutpoint *wire.OutPoint
+}
+
+// ValidateAssetFields checks the fields that distinguish an asset request.
+func (r *VTXORequest) ValidateAssetFields() error {
+	if r == nil {
+		return fmt.Errorf("VTXO request is required")
+	}
+
+	switch {
+	case r.AssetRef == "" && r.AssetAmount == 0:
+		return nil
+
+	case r.AssetRef == "":
+		return fmt.Errorf("asset reference is required")
+
+	case r.AssetAmount == 0:
+		return fmt.Errorf("asset amount is required")
+
+	case !r.FixedAmount:
+		return fmt.Errorf("asset VTXO amount must be fixed")
+
+	case r.IsChange:
+		return fmt.Errorf("asset VTXO cannot be change")
+
+	default:
+		return nil
+	}
 }
 
 // HasLocalOwner reports whether the request carries a local owner descriptor

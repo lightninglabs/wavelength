@@ -58,3 +58,79 @@ func TestOperatorTermsMinVTXOAmountFloor(t *testing.T) {
 		})
 	}
 }
+
+func TestVTXORequestValidateAssetFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		request *VTXORequest
+		errText string
+	}{
+		{
+			name:    "bitcoin request",
+			request: &VTXORequest{},
+		},
+		{
+			name: "asset request",
+			request: &VTXORequest{
+				AssetRef:    "asset",
+				AssetAmount: 1,
+				FixedAmount: true,
+			},
+		},
+		{
+			name: "missing reference",
+			request: &VTXORequest{
+				AssetAmount: 1,
+			},
+			errText: "asset reference is required",
+		},
+		{
+			name: "missing amount",
+			request: &VTXORequest{
+				AssetRef: "asset",
+			},
+			errText: "asset amount is required",
+		},
+		{
+			name: "variable amount",
+			request: &VTXORequest{
+				AssetRef:    "asset",
+				AssetAmount: 1,
+			},
+			errText: "asset VTXO amount must be fixed",
+		},
+		{
+			name: "change output",
+			request: &VTXORequest{
+				AssetRef:    "asset",
+				AssetAmount: 1,
+				FixedAmount: true,
+				IsChange:    true,
+			},
+			errText: "asset VTXO cannot be change",
+		},
+		{
+			name:    "nil request",
+			request: nil,
+			errText: "VTXO request is required",
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := test.request.ValidateAssetFields()
+			if test.errText == "" {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.ErrorContains(t, err, test.errText)
+		})
+	}
+}
