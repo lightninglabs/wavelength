@@ -192,16 +192,15 @@ func (h *LocalPersistenceOutboxHandler) validateMaterializeIncoming(
 		return fmt.Errorf("incoming recipients must be provided")
 	}
 
-	if h.PackageStore != nil {
-		root := packageArtifactForValidation(
-			msg.SessionID, msg.ArkPSBT, msg.FinalCheckpointPSBTs,
-		)
-		err := validateIncomingPackageGraph(
-			root, msg.AncestorPackages,
-		)
-		if err != nil {
-			return err
-		}
+	// Revalidate on every materialization attempt. A restored snapshot or
+	// replayed actor message must not bypass the ingress check, even when
+	// the optional OOR package store is disabled.
+	root := packageArtifactForValidation(
+		msg.SessionID, msg.ArkPSBT, msg.FinalCheckpointPSBTs,
+	)
+	err := validateIncomingPackageGraph(root, msg.AncestorPackages)
+	if err != nil {
+		return err
 	}
 
 	return nil
