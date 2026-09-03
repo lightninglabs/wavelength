@@ -34,6 +34,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
 - `ErrIdempotencyKeyConflict` — caller-visible outgoing admission conflict
   when a deterministic session cannot retain the supplied key; `waved` maps it
   to `codes.AlreadyExists` after releasing freshly selected inputs.
+- `TransferInput` / `TransferInputSnapshot` — an input VTXO being spent and its
+  durable TLV projection. `ReserveEpoch` carries the VTXO manager's reservation
+  epoch for the input (stamped by `waved.applyReserveEpochs` from
+  `SelectAndReserveSpendResponse`) so a pre-point-of-no-return release names the
+  reservation the session actually held. Persisted as TLV record type 18.
+- `ReleaseInputsRequest` — outbox event emitted when a session fails terminally
+  before the point of no return. `Outpoints` are the reserved inputs to release;
+  `ReserveEpochs` names the epoch held per outpoint. `SpendReleaser` (wired by
+  `waved` to `Server.oorReleaseSpend`) takes both and forwards them on
+  `actormsg.ReleaseSpendRequest`.
 
 ## Relationships
 
@@ -75,6 +85,22 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   actor's DB transaction; both phase-1 hint resolution and phase-2
   authoritative metadata lookup go through durable `serverconn` query
   messages and return as fresh events.
+- **`ReleaseInputsRequest.ReserveEpochs` is an in-memory side channel.**
+  `ToProto` deliberately does not serialize it, because this request is never a
+  persisted transport message. It is rebuilt by `prePONRReserveEpochs` from the
+  session's durable `TransferInputs` every time the FSM re-enters the failure
+  transition, so a release replayed after a rolled-back commit still carries the
+  epoch it held. Inputs whose `ReserveEpoch` is zero (a pre-upgrade snapshot)
+  are omitted from the map so the manager releases them unconditionally. If you
+  add a field here, decide the same way: rebuildable from durable state, or it
+  does not survive redelivery.
+- `transferInputReserveEpochRecordType` (TLV type 18) is appended last in
+  `encodeTransferInputSnapshot` so the encoded stream stays canonical
+  (ascending record type), and is always written. It needs no snapshot version
+  bump: a pre-existing snapshot simply decodes the epoch as zero, which the
+  manager reads as "owner unknown" and releases unconditionally. Any new
+  transfer-input record must likewise take the next-highest type and be
+  appended after it.
 - Snapshots are versioned per direction (`OutgoingSnapshot.Version = 5`,
   `IncomingSnapshot.Version = 1`); restore rejects a zero version. Outgoing
   v5 adds the `FirstRejectUnixNanos` record (bounded transient submit-reject

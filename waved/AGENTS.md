@@ -199,6 +199,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 - `SendOOR` with custom inputs serializes concurrent calls on the same
   outpoints via `reserveCustomInputs`; the release function is deferred on
   both success and failure.
+- `SendOOR` calls `applyReserveEpochs` (in `wallet_ops.go`) to stamp each
+  wallet-selected `oor.TransferInput` with the reservation epoch the VTXO
+  manager returned, so a pre-point-of-no-return release names the reservation
+  it held and the manager can refuse a superseded one. This runs only on the
+  wallet-selection branch: `BuildCustomTransferInputs` bypasses manager
+  selection, so custom inputs carry epoch zero and release unconditionally.
+  `Server.oorReleaseSpend` is the `oor.SpendReleaser` implementation and
+  forwards the epoch map onto `actormsg.ReleaseSpendRequest`; adding a new
+  transfer-input build path means deciding explicitly whether it can supply an
+  epoch.
 - `SendOOR` maps `oor.ErrIdempotencyKeyConflict` to `codes.AlreadyExists`
   after releasing the freshly selected VTXO locks, so it never reports success
   under a caller key the deterministic session cannot retain. This includes a

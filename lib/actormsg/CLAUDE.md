@@ -15,7 +15,12 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
 - `SelectAndReserveSpendRequest` / `SelectAndReserveSpendResponse` — Ask-message to select and lock VTXOs for OOR spend.
 - `SelectAndReserveForfeitRequest` / `SelectAndReserveForfeitResponse` — Ask-message to atomically select and reserve VTXOs for cooperative forfeit (directed sends). Combines coin selection and PendingForfeit reservation in one step to close a race window.
 - `ReserveForfeitRequest` / `ReleaseForfeitRequest` — Forfeit reservation admission messages.
-- `ReleaseSpendRequest` / `CompleteSpendRequest` — Spend lifecycle completion messages.
+- `ReleaseSpendRequest` / `CompleteSpendRequest` — Spend lifecycle completion
+  messages. `ReleaseSpendRequest.ReserveEpochs` optionally names, per outpoint,
+  the reservation epoch the releasing owner held, so the manager can refuse a
+  release whose reservation has since been superseded. An absent entry (or a
+  nil map) releases unconditionally, preserving the behaviour for callers that
+  hold no epoch (e.g. a manual unlock).
 - `ForceUnrollRequest` / `ForceUnrollResponse` — Ask-message that routes an operator or chain-resolver unroll trigger through the VTXO manager into the per-VTXO FSM. `ForceUnrollRequest.Trigger` (a `UnrollTrigger`) names *why* the coin is exiting, and `ForceUnrollRequest.ExitPolicy` (an `fn.Option[ExitPolicy]`) names *which* exit-spend policy the target unrolls under, so a single admission path carries manual, critical-expiry, fraud, and vHTLC-recovery intent through to the unroll registry. `ForceUnrollResponse.Accepted` is true when the request caused a state transition; when false, `Reason` distinguishes `"no such vtxo"` from `"already terminal"` so callers don't misread a silent self-loop as success.
 - `UnrollTrigger` — String-typed enum naming why a unilateral exit was started (`UnrollTriggerCriticalExpiry` is the empty-string zero value and preserves the historical critical-expiry admission, `UnrollTriggerManual`, `UnrollTriggerFraudSpend`). It mirrors the unroll package's `StartTrigger` so `vtxo` and `actormsg` can thread the trigger through `ForceUnroll` without importing `unroll` (which would form a cycle); the waved chain resolver bridge converts it back at the seam.
 - `ExitPolicyKind` / `ExitPolicyRef` / `ExitPolicy` — Durable exit-spend policy identity for a forced exit. `ExitPolicyKind` is a string-typed enum of the non-standard policies that ride `ForceUnroll` (`ExitPolicyVHTLCClaim`, `ExitPolicyVHTLCRefundWithoutReceiver`), with `Valid()` true only for those two vHTLC kinds; `ExitPolicyRef` is the policy-specific durable reference (e.g. a vHTLC recovery job id), kept a distinct type so `Kind` and `Ref` can't be transposed; `ExitPolicy` bundles the pair as one identity validated at the registry admission boundary. A `None` `ExitPolicy` selects the standard VTXO timeout policy.
@@ -25,7 +30,11 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
   (`true` for directed sends) or parks in `PendingRoundAssembly` for
   batching (`false` for refresh/leave flows).
 - `TriggerBoardMsg` — Carries VTXO amounts for boarding registration to round actor.
-- `SelectedVTXO` — Describes a VTXO selected for spend (outpoint, amount, pkscript).
+- `SelectedVTXO` — Describes a VTXO selected for spend (outpoint, amount,
+  pkscript, `ReserveEpoch`). `ReserveEpoch` echoes the manager's monotonic
+  reservation epoch back to the caller so the spend that carries it into its
+  durable state can present it on release; it is zero for reservations that are
+  not spend reservations (e.g. forfeit inputs).
 - `RoundActorServiceKey()` / `VTXOManagerServiceKey()` / `VTXOActorServiceKey(outpoint wire.OutPoint)` — Service key constructors for actor discovery. `VTXOActorServiceKey` encodes the target outpoint into the key so each per-VTXO actor gets a unique, deterministic key.
 
 ## Relationships
@@ -38,6 +47,14 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
 - All cross-boundary actor messages must implement the appropriate marker interface (`RoundReceivable`, `VTXOManagerMsg`, etc.) for type-safe actor routing.
 - Service key names are constants (`RoundActorServiceKeyName`, `VTXOManagerServiceKeyName`) shared across the codebase for consistent actor discovery.
 - `SelectedVTXO` intentionally duplicates minimal VTXO info to avoid `wallet` importing `vtxo.Descriptor`.
+- **A zero reservation epoch means "unknown", never "epoch 0".** Both
+  `SelectedVTXO.ReserveEpoch` and an omitted `ReleaseSpendRequest.ReserveEpochs`
+  entry are treated by the manager as "the releasing owner is unknown, do not
+  refuse", so a pre-upgrade durable snapshot and a manual unlock keep the
+  pre-epoch unconditional-release behaviour. Only a non-zero epoch that
+  disagrees with a live non-zero reservation is refused as superseded. Do not
+  redefine zero as a valid epoch value; the epoch counter is per-process and
+  restarts at zero on boot.
 
 ## Deep Docs
 
