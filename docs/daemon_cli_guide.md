@@ -145,6 +145,7 @@ waved \
 | `--rpc.tlskeypath` | | Custom TLS key for daemon RPC |
 | `--swap.serveraddress` | network default | Swap server address override for swapruntime builds |
 | `--swap.servertransport` | `grpc` | Swap server transport: `grpc` or `rest` |
+| `--maxpaymentcltv` | `300` in swap-enabled builds | Largest total Lightning payment CLTV reserved by automatic VTXO refresh; `0` disables the payment reserve |
 
 Empty Ark and swap addresses resolve from the selected network and transport.
 See [signet.md](signet.md) for the testnet3, testnet4, and signet endpoints and
@@ -481,6 +482,19 @@ default to zero, which leaves only the global cap in force. If an automatic
 quote is rejected while the VTXOs are still safe, the wallet waits six blocks
 before retrying. Critical or expired VTXOs bypass that cooldown so the wallet
 does not trade unilateral-exit safety for fee throttling.
+
+Swap-enabled builds also default `maxpaymentcltv` to 300 blocks. Automatic
+maintenance adds that payment window above each VTXO's dynamic unilateral-exit
+budget and 72-block refresh-retry buffer. For example, a VTXO with a 186-block
+critical threshold refreshes at `186 + 72 + 300 = 558` blocks remaining. Set
+the value to zero to keep only the ordinary exit-safety policy. This is a
+liquidity-readiness target, not an override of send-time expiry validation: a
+payment whose actual route needs more lifetime still fails safely. If a fresh,
+round-direct VTXO cannot provide the configured reserve plus one 72-block
+healthy window, the wallet logs the mismatch and keeps the ordinary refresh
+threshold. Repeated refreshes cannot extend an operator's batch lifetime, so
+they would only spend fees. An OOR descendant keeps the reserve because one
+refresh can replace its inherited partial lifetime with a new full batch.
 
 An interactive real refresh shows the estimate and asks for
 confirmation. On non-interactive stdin (agents, pipelines) the command

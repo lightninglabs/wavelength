@@ -26,6 +26,8 @@ type bestEffortWriter struct {
 	w io.Writer
 }
 
+// Write forwards the bytes when a sink is configured and always reports a
+// successful full write so optional log mirroring cannot stop the daemon.
 func (b bestEffortWriter) Write(p []byte) (int, error) {
 	if b.w != nil {
 		_, _ = b.w.Write(p)
@@ -34,6 +36,8 @@ func (b bestEffortWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// main executes the waved command and reports startup or runtime failures to
+// stderr before returning a non-zero process status.
 func main() {
 	root := newRootCmd()
 
@@ -192,6 +196,7 @@ func newRootCmd() *cobra.Command {
 	)
 
 	registerOperatorFeeFlags(f, cfg)
+	registerMaxPaymentCLTVFlag(f, cfg)
 
 	// Bound concurrent MuSig2 work. Zero lets the daemon choose a safe
 	// backend-aware default; one restores serial signing.
@@ -299,6 +304,17 @@ func registerOperatorFeeFlags(f *pflag.FlagSet, cfg *waved.Config) {
 	f.Uint32(
 		"autorefreshfeerateppm", cfg.AutoRefreshFeeRatePPM,
 		autoRefreshFeeRateHelp,
+	)
+}
+
+// registerMaxPaymentCLTVFlag registers the automatic-maintenance target for
+// keeping enough VTXO lifetime available for Lightning payments.
+func registerMaxPaymentCLTVFlag(f *pflag.FlagSet, cfg *waved.Config) {
+	f.Int32(
+		"maxpaymentcltv", cfg.MaxPaymentCLTV, "largest total "+
+			"Lightning payment CLTV that automatic VTXO "+
+			"maintenance reserves; zero disables the payment "+
+			"reserve",
 	)
 }
 

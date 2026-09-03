@@ -1781,6 +1781,8 @@ func TestVTXOPersistenceStoreMetadataPersistence(t *testing.T) {
 
 	// Create and save a VTXO with full metadata.
 	desc := createTestVTXODescriptor(t, roundID, 42)
+	desc.BatchExpiry = 1_108
+	desc.CreatedHeight = 100
 	err = vtxoStore.SaveVTXO(ctx, desc)
 	require.NoError(t, err)
 
@@ -1801,6 +1803,12 @@ func TestVTXOPersistenceStoreMetadataPersistence(t *testing.T) {
 	require.Equal(
 		t, desc.CreatedHeight, fetched.CreatedHeight,
 		"CreatedHeight should be persisted",
+	)
+	expiryCfg := vtxo.DefaultExpiryConfig()
+	expiryCfg.MaxPaymentCLTV = 800
+	require.False(
+		t, expiryCfg.CanReserveMaxPaymentCLTV(fetched),
+		"the payment reserve guard should survive store recovery",
 	)
 	require.Equal(
 		t, desc.CommitmentTxID, fetched.CommitmentTxID,

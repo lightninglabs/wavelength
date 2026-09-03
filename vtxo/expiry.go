@@ -101,6 +101,11 @@ type ExpiryConfig struct {
 	// requires broadcasting and confirming an additional transaction.
 	TreeDepthMultiplier int32
 
+	// MaxPaymentCLTV is the largest total Lightning payment CLTV that
+	// automatic maintenance reserves above the VTXO's unilateral-exit and
+	// cooperative-retry budgets. Zero disables the payment reserve.
+	MaxPaymentCLTV int32
+
 	// FreeRefreshWindow returns the operator-advertised number of blocks
 	// before batch expiry in which refresh fees are waived. A nil callback
 	// or zero window disables subsidy-aware scheduling. The callback lets a
@@ -244,8 +249,12 @@ func (c *ExpiryConfig) CalculateCriticalThreshold(vtxo *Descriptor) int32 {
 // CalculateRefreshThreshold returns the dynamic refresh threshold for a VTXO.
 func (c *ExpiryConfig) CalculateRefreshThreshold(vtxo *Descriptor) int32 {
 	criticalThreshold := c.CalculateCriticalThreshold(vtxo)
+	safetyFloor := c.effectiveRefreshSafetyFloor(
+		vtxo, criticalThreshold,
+	)
 	refreshThreshold := max(
-		c.RefreshThresholdBlocks, criticalThreshold+c.MinRefreshBuffer,
+		c.RefreshThresholdBlocks,
+		safetyFloor,
 	)
 
 	if c.FreeRefreshWindow == nil {
@@ -261,12 +270,89 @@ func (c *ExpiryConfig) CalculateRefreshThreshold(vtxo *Descriptor) int32 {
 	// Never trade away the configured retry buffer merely to chase a fee
 	// waiver. If the operator opens its free window later than the local
 	// safety floor, the wallet refreshes earlier and pays the normal fee.
-	safetyFloor := criticalThreshold + c.MinRefreshBuffer
 	if uint64(windowBlocks) < uint64(safetyFloor) {
 		return refreshThreshold
 	}
 
 	return int32(windowBlocks)
+}
+
+// CanReserveMaxPaymentCLTV reports whether a round-direct VTXO's known batch
+// lifetime can satisfy the configured payment reserve and leave one healthy
+// retry buffer. A missing creation height leaves the lifetime unknown. An OOR
+// descendant also retains the reserve because refreshing it can mint a
+// round-direct replacement with a new full batch lifetime.
+func (c *ExpiryConfig) CanReserveMaxPaymentCLTV(vtxo *Descriptor) bool {
+	if c == nil || vtxo == nil {
+		return true
+	}
+
+	criticalThreshold := c.CalculateCriticalThreshold(vtxo)
+
+	return c.canReserveMaxPaymentCLTV(vtxo, criticalThreshold)
+}
+
+// canReserveMaxPaymentCLTV applies the batch-lifetime guard using an already
+// calculated critical threshold.
+func (c *ExpiryConfig) canReserveMaxPaymentCLTV(vtxo *Descriptor,
+	criticalThreshold int32) bool {
+
+	if c.MaxPaymentCLTV <= 0 ||
+		vtxo.ChainDepth > 0 || vtxo.CreatedHeight <= 0 ||
+		vtxo.BatchExpiry <= vtxo.CreatedHeight {
+		return true
+	}
+
+	requestedFloor := c.refreshSafetyFloor(criticalThreshold)
+	batchLifetime := int64(vtxo.BatchExpiry) - int64(vtxo.CreatedHeight)
+	minimumUsefulLifetime := int64(requestedFloor) +
+		int64(max(c.MinRefreshBuffer, 0))
+
+	// A fresh round-direct VTXO must remain healthy for at least one retry
+	// buffer. Merely fitting the threshold would replace it again within a
+	// few blocks. OOR descendants skip this check above because refreshing
+	// them can mint a round-direct VTXO with a new full batch lifetime.
+	return minimumUsefulLifetime <= batchLifetime
+}
+
+// effectiveRefreshSafetyFloor returns the configured payment reserve when a
+// fresh VTXO can sustain it, and the ordinary exit-and-retry floor otherwise.
+func (c *ExpiryConfig) effectiveRefreshSafetyFloor(vtxo *Descriptor,
+	criticalThreshold int32) int32 {
+
+	if !c.canReserveMaxPaymentCLTV(vtxo, criticalThreshold) {
+		return c.baseRefreshSafetyFloor(criticalThreshold)
+	}
+
+	return c.refreshSafetyFloor(criticalThreshold)
+}
+
+// refreshSafetyFloor returns the earliest safe automatic-refresh boundary for
+// a VTXO with the given critical threshold. It saturates instead of wrapping
+// when a caller supplies an extreme policy value, because overflow would move
+// refresh later and silently discard the configured payment reserve.
+func (c *ExpiryConfig) refreshSafetyFloor(criticalThreshold int32) int32 {
+	maxPaymentCLTV := max(c.MaxPaymentCLTV, 0)
+	floor := int64(criticalThreshold) + int64(c.MinRefreshBuffer) +
+		int64(maxPaymentCLTV)
+	if floor > math.MaxInt32 {
+		return math.MaxInt32
+	}
+
+	return int32(floor)
+}
+
+// baseRefreshSafetyFloor returns the ordinary exit and cooperative-retry
+// boundary without a payment reserve. It is used when the known batch lifetime
+// cannot ever satisfy MaxPaymentCLTV, so refreshing cannot repair the policy
+// mismatch and must not create a paid refresh loop.
+func (c *ExpiryConfig) baseRefreshSafetyFloor(criticalThreshold int32) int32 {
+	floor := int64(criticalThreshold) + int64(c.MinRefreshBuffer)
+	if floor > math.MaxInt32 {
+		return math.MaxInt32
+	}
+
+	return int32(floor)
 }
 
 // ShouldWaitForFreeRefreshWindow reports whether a same-expiry cohort sibling
@@ -287,8 +373,10 @@ func (c *ExpiryConfig) ShouldWaitForFreeRefreshWindow(vtxo *Descriptor,
 		return false
 	}
 
-	safetyFloor := c.CalculateCriticalThreshold(vtxo) +
-		c.MinRefreshBuffer
+	criticalThreshold := c.CalculateCriticalThreshold(vtxo)
+	safetyFloor := c.effectiveRefreshSafetyFloor(
+		vtxo, criticalThreshold,
+	)
 	if uint64(window) < uint64(safetyFloor) {
 		return false
 	}
