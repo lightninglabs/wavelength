@@ -119,6 +119,12 @@ type ExitSpendPolicy interface {
 	// non-final transaction that the mempool will reject.
 	RequiredLockTime() uint32
 
+	// FeeEstimateFallbackSatPerVByte returns the emergency fixed fee rate
+	// to use when estimation is unavailable, or zero to defer construction.
+	// A policy should return a positive value only when another valid spend
+	// path can race it and waiting is less safe than using a low fee.
+	FeeEstimateFallbackSatPerVByte() int64
+
 	// ValidateTarget verifies this policy can spend the materialized target
 	// output.
 	ValidateTarget(target *wire.TxOut) error

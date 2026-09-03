@@ -432,7 +432,9 @@ func newRegistryHarnessWithSpawn(t *testing.T,
 			Wallet:                     cfg.Wallet,
 			RegistryRef:                registryActor.TellRef(),
 			MaxSweepFeeRateSatPerVByte: maxFee,
-			ExitSpendPolicyResolver:    cfg.ExitSpendPolicyResolver,
+			SweepFeeRateFallbackSatPerVByte: cfg.
+				SweepFeeRateFallbackSatPerVByte,
+			ExitSpendPolicyResolver: cfg.ExitSpendPolicyResolver,
 		}
 		childBehavior := &behavior{
 			cfg: childCfg,
@@ -2020,10 +2022,12 @@ func (r *recordingExitSpendPolicyResolver) ResolveExitSpendPolicy(
 // kind (e.g. vhtlc_claim) fails closed at sweep time.
 func TestRegistryForwardsExitSpendPolicyResolver(t *testing.T) {
 	resolver := &recordingExitSpendPolicyResolver{}
+	const fallbackFeeRate int64 = 2
 
 	r := &registryBehavior{
 		cfg: RegistryConfig{
-			ExitSpendPolicyResolver: resolver,
+			ExitSpendPolicyResolver:         resolver,
+			SweepFeeRateFallbackSatPerVByte: fallbackFeeRate,
 		},
 	}
 
@@ -2035,6 +2039,9 @@ func TestRegistryForwardsExitSpendPolicyResolver(t *testing.T) {
 		childCfg.ExitSpendPolicyResolver,
 	)
 	require.Equal(t, target, childCfg.TargetOutpoint)
+	require.Equal(
+		t, fallbackFeeRate, childCfg.SweepFeeRateFallbackSatPerVByte,
+	)
 }
 
 // TestRegistryChildResolverDefaultsToNil documents the safe default: when
