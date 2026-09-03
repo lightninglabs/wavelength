@@ -41,6 +41,10 @@ type Tree struct {
 	// For VTXO trees, this is the operator's sweep script.
 	// For connector trees, this is nil (no sweep script).
 	SweepTapscriptRoot []byte
+
+	// AssetContext contains the state of an asset tree. It is nil for
+	// Bitcoin-only trees.
+	AssetContext *AssetTreeContext
 }
 
 // NewTree constructs a transaction tree from the given leaves using BFS.
@@ -132,6 +136,7 @@ func (t *Tree) ExtractPathForCoSigners(targetKeys ...*btcec.PublicKey) (*Tree,
 		BatchOutpoint:      t.BatchOutpoint,
 		BatchOutput:        t.BatchOutput,
 		SweepTapscriptRoot: t.SweepTapscriptRoot,
+		AssetContext:       t.AssetContext,
 	}, nil
 }
 
@@ -164,6 +169,7 @@ func (t *Tree) ExtractPathForIndices(leafIndices ...int) (*Tree, error) {
 		BatchOutpoint:      t.BatchOutpoint,
 		BatchOutput:        t.BatchOutput,
 		SweepTapscriptRoot: t.SweepTapscriptRoot,
+		AssetContext:       t.AssetContext,
 	}, nil
 }
 
@@ -323,8 +329,6 @@ func (t *Tree) PrettyPrint() string {
 }
 
 // NewTreeSignerSession creates a TreeSignerSession for this tree.
-// This is a convenience wrapper that sets up the session with the tree's
-// context.
 func (t *Tree) NewTreeSignerSession(wallet input.MuSig2Signer,
 	signerKey *keychain.KeyDescriptor) (*SignerSession, error) {
 
@@ -335,8 +339,14 @@ func (t *Tree) NewTreeSignerSession(wallet input.MuSig2Signer,
 			"fetcher: %w", err)
 	}
 
-	return NewSignerSession(
+	var tweakLookup func(*Node) []byte
+	if t.AssetContext != nil {
+		tweakLookup = t.AssetContext.tweakLookup()
+	}
+
+	return newSignerSession(
 		wallet, signerKey, t.SweepTapscriptRoot, prevOutFetcher, t.Root,
+		tweakLookup,
 	)
 }
 
