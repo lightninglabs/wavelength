@@ -340,8 +340,17 @@ func TestSqliteMigrationBackup(t *testing.T) {
 	require.NoError(t, err)
 
 	// Now close and reopen the database. Since we're already at the latest
-	// version, no migration should run and no backup should be created.
+	// version, no migration should run. Leave a legacy backup beside the
+	// database to verify that the up-to-date path prunes backups left by an
+	// older release.
 	require.NoError(t, db.DB.Close())
+	legacyBackupPath := dbFileName + ".1234.backup"
+	require.NoError(
+		t,
+		os.WriteFile(
+			legacyBackupPath, []byte("legacy"), 0o600,
+		),
+	)
 
 	db2, err := NewSqliteStore(&SqliteConfig{
 		DatabaseFileName: dbFileName,
@@ -360,9 +369,9 @@ func TestSqliteMigrationBackup(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "regtest", chainName)
 
-	// Since we're already at the latest version, no backup should be
-	// created. This test verifies the backup logic works correctly by
-	// NOT creating a backup when unnecessary.
+	// Since we're already at the latest version, the old backup should be
+	// pruned and no new backup should be created.
+	require.NoFileExists(t, legacyBackupPath)
 	dbBackupFilePath := findDBBackupFilePath(t, dbFileName)
 	require.Empty(
 		t, dbBackupFilePath,
