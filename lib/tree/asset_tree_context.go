@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 )
 
@@ -93,6 +94,105 @@ func (c *AssetTreeContext) IsEmpty() bool {
 	return len(c.amountsByNode) == 0 && len(c.amountsByInput) == 0 &&
 		len(c.leafRootsByInput) == 0 && len(c.tweaksByInput) == 0 &&
 		len(c.packagesByInput) == 0 && c.assetRef == ""
+}
+
+// Validate checks that the context completely describes the given asset
+// tree.
+func (c *AssetTreeContext) Validate(root *Node) error {
+	if c == nil {
+		return nil
+	}
+	if root == nil {
+		return fmt.Errorf("asset tree root is required")
+	}
+	if c.assetRef == "" {
+		return fmt.Errorf("asset reference is required")
+	}
+
+	if err := validateUniqueAssetInputs(
+		root, make(map[wire.OutPoint]struct{}),
+	); err != nil {
+		return err
+	}
+
+	_, err := c.validateNode(root)
+
+	return err
+}
+
+// validateUniqueAssetInputs checks that outpoint-keyed metadata cannot
+// collide between nodes.
+func validateUniqueAssetInputs(node *Node,
+	seen map[wire.OutPoint]struct{}) error {
+
+	if node == nil {
+		return fmt.Errorf("asset tree node is required")
+	}
+	if _, ok := seen[node.Input]; ok {
+		return fmt.Errorf("input %s is used by multiple nodes",
+			node.Input)
+	}
+	seen[node.Input] = struct{}{}
+
+	for _, child := range node.Children {
+		if err := validateUniqueAssetInputs(child, seen); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateNode checks one subtree and returns its asset amount.
+func (c *AssetTreeContext) validateNode(node *Node) (uint64, error) {
+	if node == nil {
+		return 0, fmt.Errorf("asset tree node is required")
+	}
+
+	amount := c.NodeAssetAmount(node)
+	if amount == 0 {
+		return 0, fmt.Errorf("node %s has no asset amount", node.Input)
+	}
+
+	tweak := c.SigningTweak(node.Input)
+	if len(tweak) != chainhash.HashSize {
+		return 0, fmt.Errorf("node %s signing tweak must be %d bytes",
+			node.Input, chainhash.HashSize)
+	}
+
+	leafRoot := c.LeafAssetRoot(node.Input)
+	if len(node.Children) == 0 {
+		if len(leafRoot) != chainhash.HashSize {
+			return 0, fmt.Errorf("leaf %s asset commitment root "+
+				"must be %d bytes", node.Input,
+				chainhash.HashSize)
+		}
+
+		return amount, nil
+	}
+	if len(leafRoot) != 0 {
+		return 0, fmt.Errorf("branch %s has an asset commitment root",
+			node.Input)
+	}
+
+	var childTotal uint64
+	for _, child := range node.Children {
+		childAmount, err := c.validateNode(child)
+		if err != nil {
+			return 0, err
+		}
+		if childAmount > math.MaxUint64-childTotal {
+			return 0, fmt.Errorf("asset amount overflow at node %s",
+				node.Input)
+		}
+		childTotal += childAmount
+	}
+	if childTotal > amount {
+		return 0, fmt.Errorf("node %s child asset total %d exceeds "+
+			"parent amount %d", node.Input, childTotal, amount)
+	}
+
+	return amount, nil
 }
 
 // tweakLookup returns the signing tweak for a node's input.
