@@ -253,6 +253,13 @@ type trackedTx struct {
 	// means "no override pending".
 	pendingTargetFeeRate int64
 
+	// pendingFailureReason retains a terminal failure whose FSM transition
+	// could not be applied. Background retry paths
+	// attempt the transition again before any further broadcast, so a
+	// transient actor context failure cannot turn a structural rejection
+	// into endless relay attempts.
+	pendingFailureReason string
+
 	// sealed is set true the moment terminal delivery (TxFinalized /
 	// TxFailed) begins for this entry. Reversible deliveries
 	// (TxReorged / re-TxConfirmed) run on detached fire-and-forget
@@ -618,7 +625,7 @@ func (a *TxBroadcasterActor) handleEnsure(ctx context.Context,
 				Ref:              req.Subscriber,
 				pendingConfirmed: true,
 			},
-		), nil
+		)
 	}
 
 	if err := a.ensureBestHeight(ctx); err != nil {
@@ -673,9 +680,17 @@ func (a *TxBroadcasterActor) handleEnsure(ctx context.Context,
 	}
 
 	_, err = a.broadcastTrackedTx(ctx, entry, TxStateBroadcasting)
-	a.recordInitialBroadcastOutcome(ctx, entry, err)
+	state, err := a.recordInitialBroadcastOutcome(ctx, entry, err)
+	if err != nil {
+		// An Ask error never promises future notifications. Keep the
+		// tracker for reconciliation when broadcast acceptance is
+		// ambiguous, but require this caller to retry before attaching.
+		delete(entry.subscribers, req.Subscriber.ID())
 
-	return a.ensureResp(entry, true), nil
+		return nil, err
+	}
+
+	return a.ensureRespForState(entry, state, true), nil
 }
 
 // cleanupFailedBlockSubscription removes a block subscription actor whose
@@ -752,14 +767,18 @@ func (a *TxBroadcasterActor) discardIncompleteTrackedTx(ctx context.Context,
 //   - any other error on a non-anchor parent: a plain direct broadcast with no
 //     CPFP retry machinery. There is nothing to fee-bump and no fund-risk
 //     retry contract, so fail it terminally as before.
+//
+// The returned state is the outcome proven by a successful FSM transition.
+// This lets callers report the outcome without a second query, even if
+// terminal notification delivery already evicted the entry.
 func (a *TxBroadcasterActor) recordInitialBroadcastOutcome(ctx context.Context,
-	entry *trackedTx, err error) {
+	entry *trackedTx, err error) (TxState, error) {
 
 	a.maybeEnsureFeeInputSupply(ctx, err)
 
 	switch {
 	case err == nil:
-		return
+		return TxStateAwaitingConfirmation, nil
 
 	case errors.Is(err, ErrParentAlreadyBroadcast):
 		// A live parent exists on another path, so the conf watch can
@@ -769,7 +788,7 @@ func (a *TxBroadcasterActor) recordInitialBroadcastOutcome(ctx context.Context,
 			"txid", entry.data.Txid, slog.Any("err", err),
 		)
 
-		_ = a.advanceTrackedTxFSM(
+		err := a.advanceTrackedTxFSM(
 			ctx, entry, &trackedTxBroadcastAccepted{
 				Progress: trackedTxProgress{
 					LastBroadcastHeight: fn.Some(
@@ -779,26 +798,34 @@ func (a *TxBroadcasterActor) recordInitialBroadcastOutcome(ctx context.Context,
 			},
 		)
 
+		return TxStateAwaitingConfirmation, err
+
 	case isPermanentBroadcastError(err):
 		// The tx is structurally unacceptable (e.g. a non-TRUC parent);
 		// no amount of retrying will land it, so fail terminally.
-		a.failTrackedTx(
+		err := a.failTrackedTx(
 			ctx, entry, fmt.Sprintf("broadcast: %v", err),
 		)
+
+		return TxStateFailed, err
 
 	case findAnchorOutput(entry.data.Tx) >= 0:
 		// An anchor (CPFP) parent reached no mempool. The failure is
 		// plausibly transient and this is the fund-risk path, so stay
 		// in Broadcasting, re-attempt next interval, and escalate
 		// rather than give up.
-		a.recordBroadcastFailure(ctx, entry, err)
+		err := a.recordBroadcastFailure(ctx, entry, err)
+
+		return TxStateBroadcasting, err
 
 	default:
 		// A non-anchor direct broadcast failed and has no CPFP retry
 		// contract; fail terminally.
-		a.failTrackedTx(
+		err := a.failTrackedTx(
 			ctx, entry, fmt.Sprintf("broadcast: %v", err),
 		)
+
+		return TxStateFailed, err
 	}
 }
 
@@ -822,14 +849,11 @@ func isPermanentBroadcastError(err error) bool {
 // txs) must keep retrying until it lands, so the escalation is informational
 // rather than a give-up.
 func (a *TxBroadcasterActor) recordBroadcastFailure(ctx context.Context,
-	entry *trackedTx, cause error) {
+	entry *trackedTx, cause error) error {
 
 	currentState, stateErr := entry.currentFSMState()
 	if stateErr != nil {
-		a.log.WarnS(ctx, "Failed to read tracked tx state",
-			stateErr, "txid", entry.data.Txid)
-
-		return
+		return fmt.Errorf("read tracked tx state: %w", stateErr)
 	}
 
 	failures := trackedTxBroadcastFailures(currentState) + 1
@@ -845,7 +869,7 @@ func (a *TxBroadcasterActor) recordBroadcastFailure(ctx context.Context,
 		slog.Any("cause", cause),
 	)
 
-	_ = a.advanceTrackedTxFSM(
+	err := a.advanceTrackedTxFSM(
 		ctx, entry, &trackedTxBroadcastFailed{
 			Progress: trackedTxProgress{
 				LastBroadcastHeight: fn.Some(a.bestHeight),
@@ -853,6 +877,9 @@ func (a *TxBroadcasterActor) recordBroadcastFailure(ctx context.Context,
 			},
 		},
 	)
+	if err != nil {
+		return err
+	}
 
 	// Escalate once the failure count reaches the threshold. escalateLog
 	// edge-triggers on the first crossing and then emits at most one
@@ -871,6 +898,8 @@ func (a *TxBroadcasterActor) recordBroadcastFailure(ctx context.Context,
 			)
 		})
 	}
+
+	return nil
 }
 
 // handleCancel removes one subscriber from one tracked txid.
@@ -958,6 +987,20 @@ func (a *TxBroadcasterActor) handleBumpNow(ctx context.Context,
 			Txid:   req.Txid,
 			Bumped: false,
 			Reason: "transaction not tracked",
+		}, nil
+	}
+
+	if entry.pendingFailureReason != "" {
+		state, err := entry.currentTxState()
+		if err != nil {
+			return nil, err
+		}
+
+		return &BumpNowResp{
+			Txid:   req.Txid,
+			State:  state,
+			Bumped: false,
+			Reason: "transaction has a pending terminal transition",
 		}, nil
 	}
 
@@ -1051,9 +1094,12 @@ func (a *TxBroadcasterActor) handleBumpNow(ctx context.Context,
 		// (with the escalation counter ticking) or fails terminally on
 		// structural errors, identical to an interval retry.
 		if nextState == TxStateBroadcasting {
-			a.recordInitialBroadcastOutcome(ctx, entry, bumpErr)
-
-			bumpedState, _ := entry.currentTxState()
+			bumpedState, err := a.recordInitialBroadcastOutcome(
+				ctx, entry, bumpErr,
+			)
+			if err != nil {
+				return nil, err
+			}
 
 			return &BumpNowResp{
 				Txid:   req.Txid,
@@ -1074,7 +1120,7 @@ func (a *TxBroadcasterActor) handleBumpNow(ctx context.Context,
 		a.log.WarnS(ctx, "Forced fee bump failed", bumpErr,
 			"txid", entry.data.Txid)
 
-		_ = a.advanceTrackedTxFSM(
+		if err := a.advanceTrackedTxFSM(
 			ctx, entry, &trackedTxBroadcastAccepted{
 				Progress: trackedTxProgress{
 					LastBroadcastHeight: fn.Some(
@@ -1082,19 +1128,17 @@ func (a *TxBroadcasterActor) handleBumpNow(ctx context.Context,
 					),
 				},
 			},
-		)
-
-		bumpedState, _ := entry.currentTxState()
+		); err != nil {
+			return nil, err
+		}
 
 		return &BumpNowResp{
 			Txid:   req.Txid,
-			State:  bumpedState,
+			State:  TxStateAwaitingConfirmation,
 			Bumped: false,
 			Reason: fmt.Sprintf("fee bump failed: %v", bumpErr),
 		}, nil
 	}
-
-	bumpedState, _ := entry.currentTxState()
 
 	// A submission that produced no CPFP child did not actually bump
 	// anything: the ephemeral path's hail-mary fallback re-broadcasts the
@@ -1104,7 +1148,7 @@ func (a *TxBroadcasterActor) handleBumpNow(ctx context.Context,
 	if result.ChildTxid == nil {
 		return &BumpNowResp{
 			Txid:   req.Txid,
-			State:  bumpedState,
+			State:  TxStateAwaitingConfirmation,
 			Bumped: false,
 			Reason: "cpfp child unavailable; parent re-broadcast " +
 				"directly without a fee bump",
@@ -1116,7 +1160,7 @@ func (a *TxBroadcasterActor) handleBumpNow(ctx context.Context,
 	// exceeded the broadcaster's ceiling and was reduced.
 	return &BumpNowResp{
 		Txid:      req.Txid,
-		State:     bumpedState,
+		State:     TxStateAwaitingConfirmation,
 		Bumped:    true,
 		ChildTxid: copyHash(result.ChildTxid),
 
@@ -1169,6 +1213,8 @@ func (a *TxBroadcasterActor) handleConfirmationObserved(ctx context.Context,
 	// a reorg), but we tolerate it by re-delivering TxConfirmed rather
 	// than failing the FSM.
 	if state == TxStateConfirmed {
+		entry.pendingFailureReason = ""
+
 		a.notifyConfirmed(
 			ctx, entry, msg.blockHeight, msg.blockHash,
 			msg.numConfs,
@@ -1187,6 +1233,7 @@ func (a *TxBroadcasterActor) handleConfirmationObserved(ctx context.Context,
 
 		return
 	}
+	entry.pendingFailureReason = ""
 
 	a.notifyConfirmed(
 		ctx, entry, msg.blockHeight, msg.blockHash, msg.numConfs,
@@ -1367,6 +1414,10 @@ func (a *TxBroadcasterActor) handleBlockObserved(ctx context.Context,
 	}
 
 	for _, entry := range a.tracked {
+		if a.retryPendingFailure(ctx, entry) {
+			continue
+		}
+
 		state, err := entry.currentTxState()
 		if err != nil {
 			a.log.WarnS(ctx, "Failed to read tracked tx state",
@@ -1394,7 +1445,14 @@ func (a *TxBroadcasterActor) handleBlockObserved(ctx context.Context,
 			_, err := a.broadcastTrackedTx(
 				ctx, entry, TxStateBroadcasting,
 			)
-			a.recordInitialBroadcastOutcome(ctx, entry, err)
+			_, outcomeErr := a.recordInitialBroadcastOutcome(
+				ctx, entry, err,
+			)
+			if outcomeErr != nil {
+				a.log.WarnS(ctx, "Failed to record broadcast "+
+					"outcome",
+					outcomeErr, "txid", entry.data.Txid)
+			}
 
 		// A tx already in a mempool is fee-bumped.
 		case a.shouldFeeBump(entry):
@@ -1456,22 +1514,23 @@ func (a *TxBroadcasterActor) handleBlockObserved(ctx context.Context,
 
 // attachExistingSubscriber attaches a new subscriber to an already-tracked
 // txid or immediately replays a terminal result.
-func (a *TxBroadcasterActor) attachExistingSubscriber(
-	ctx context.Context, entry *trackedTx,
-	subscriber trackedSubscriber,
-) *EnsureConfirmedResp {
+func (a *TxBroadcasterActor) attachExistingSubscriber(ctx context.Context,
+	entry *trackedTx, subscriber trackedSubscriber) (*EnsureConfirmedResp,
+	error) {
 
 	state, err := entry.currentFSMState()
 	if err != nil {
-		a.notifyOneFailed(
-			ctx, subscriber.Ref, entry.data.Txid,
-			fmt.Sprintf("tracked tx state: %v", err),
-		)
+		return nil, fmt.Errorf("read tracked tx state: %w", err)
+	}
 
-		return &EnsureConfirmedResp{
-			Txid:  entry.data.Txid,
-			State: TxStateFailed,
-		}
+	// A previous Ask can leave a terminal transition queued when its
+	// context expires after an ambiguous broadcast result. Do not attach a
+	// new subscriber that would receive that stale request's TxFailed on
+	// the next actor tick. The caller can retry after the actor reconciles
+	// or a confirmation supersedes the pending transition.
+	if entry.pendingFailureReason != "" {
+		return nil, fmt.Errorf("transaction %v has a pending terminal "+
+			"transition", entry.data.Txid)
 	}
 
 	subID := subscriber.Ref.ID()
@@ -1537,17 +1596,15 @@ func (a *TxBroadcasterActor) attachExistingSubscriber(
 		entry.subscribers[subID] = subscriber
 	}
 
-	return a.ensureResp(entry, false)
+	return a.ensureRespForState(
+		entry, txStateFromTrackedState(state), false,
+	), nil
 }
 
-// ensureResp constructs one EnsureConfirmedResp from the current entry state.
-func (a *TxBroadcasterActor) ensureResp(entry *trackedTx,
+// ensureRespForState constructs an EnsureConfirmedResp when the actor has
+// already proven the state through a successful transition.
+func (a *TxBroadcasterActor) ensureRespForState(entry *trackedTx, state TxState,
 	created bool) *EnsureConfirmedResp {
-
-	state, err := entry.currentTxState()
-	if err != nil {
-		state = TxStateFailed
-	}
 
 	return &EnsureConfirmedResp{
 		Txid:    entry.data.Txid,
@@ -1586,7 +1643,12 @@ func (a *TxBroadcasterActor) newTrackedTx(ctx context.Context,
 		ParentFee:   req.ParentFee,
 	}
 	fsm := newTrackedTxStateMachine(fsmLog, data)
-	fsm.Start(ctx)
+
+	// The per-transaction FSM is actor-owned. Cancellation, terminal
+	// eviction, and actor shutdown stop it explicitly. It must not inherit
+	// the Ask caller's deadline or database transaction after admission.
+	fsmCtx := actor.WithoutTx(context.WithoutCancel(ctx))
+	fsm.Start(fsmCtx)
 
 	return &trackedTx{
 		data: data,
@@ -1951,8 +2013,11 @@ func (a *TxBroadcasterActor) broadcastIntervalElapsed(entry *trackedTx,
 // failTrackedTx moves one tracked txid into terminal failure and notifies all
 // current subscribers. The entry is retained if any terminal notification
 // cannot be delivered, so a later actor tick can retry the failed delivery.
+// It returns only after the FSM proves the terminal transition.
 func (a *TxBroadcasterActor) failTrackedTx(ctx context.Context,
-	entry *trackedTx, reason string) {
+	entry *trackedTx, reason string) error {
+
+	entry.pendingFailureReason = reason
 
 	if err := a.advanceTrackedTxFSM(ctx, entry, &trackedTxFailed{
 		Reason: reason,
@@ -1960,10 +2025,53 @@ func (a *TxBroadcasterActor) failTrackedTx(ctx context.Context,
 
 		a.log.WarnS(ctx, "Failed to move tracked tx into terminal state",
 			err, "txid", entry.data.Txid)
+
+		return fmt.Errorf("move tracked tx into terminal state: %w",
+			err)
 	}
+	entry.pendingFailureReason = ""
+
 	if a.notifyFailed(ctx, entry, reason) {
 		a.evictTerminal(ctx, entry)
 	}
+
+	return nil
+}
+
+// retryPendingFailure re-attempts a terminal transition that a background
+// path could not apply. It returns true whenever a failure is pending so the
+// caller never broadcasts the structurally invalid transaction again first.
+func (a *TxBroadcasterActor) retryPendingFailure(ctx context.Context,
+	entry *trackedTx) bool {
+
+	reason := entry.pendingFailureReason
+	if reason == "" {
+		return false
+	}
+
+	state, err := entry.currentTxState()
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to read pending-failure tx state",
+			err, "txid", entry.data.Txid)
+
+		return true
+	}
+
+	// Confirmation or any other forward progress supersedes an earlier
+	// ambiguous broadcast failure. Only a still-Broadcasting entry may be
+	// moved into Failed by this deferred transition.
+	if state != TxStateBroadcasting {
+		entry.pendingFailureReason = ""
+
+		return false
+	}
+
+	if err := a.failTrackedTx(ctx, entry, reason); err != nil {
+		a.log.WarnS(ctx, "Failed to retry tracked tx terminal state",
+			err, "txid", entry.data.Txid)
+	}
+
+	return true
 }
 
 // evictTerminal releases all resources held for one tracked tx that has
