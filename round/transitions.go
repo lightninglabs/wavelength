@@ -1980,6 +1980,7 @@ func (s *RoundJoinedState) processEvent(ctx context.Context, event ClientEvent,
 				CommitmentTx:         evt.Tx,
 				TxID:                 txid,
 				VTXOTreePaths:        evt.VTXOTreePaths,
+				AssetLeafPackages:    evt.AssetLeafPackages,
 				TreeCosignKey:        evt.TreeCosignKey,
 				ConnectorOperatorKey: evt.ConnectorOperatorKey,
 				SweepKey:             evt.SweepKey,
@@ -2396,17 +2397,6 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 		// originally requested are actually present in the VTXT trees
 		// that the server sent us.
 		for i, vtxoReq := range s.Intents.VTXOs {
-			pkScript, err := vtxoReq.EffectivePkScript()
-			if err != nil {
-				derivedErr := fmt.Errorf("derive pkScript for "+
-					"VTXO request %d: %w", i, err)
-
-				return failBeforeForfeitSigning(
-					"VTXT validation failed", derivedErr,
-					true, s.RoundID, s.Intents.Forfeits,
-				), nil
-			}
-
 			// The quote (when present) is the authoritative source
 			// for the amount each VTXO leaf carries — the client's
 			// intent target is a hint rather than a commitment
@@ -2414,20 +2404,13 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 			// for harness paths that bypass the quote handshake.
 			expectedAmount := quoteVTXOAmount(s.Quote, i, vtxoReq)
 
-			// Convert VTXORequest to LeafDescriptor for validation.
-			expectedLeaf := tree.LeafDescriptor{
-				Amount:      expectedAmount,
-				PkScript:    pkScript,
-				CoSignerKey: vtxoReq.SigningKey.PubKey,
-			}
-
 			// Search through all VTXO trees to find the one
 			// containing this VTXO request.
 			var clientTree *tree.Tree
 			var validateErr error
 			for _, vtxoTree := range s.VTXOTreePaths {
-				clientTree, validateErr = vtxoTree.ValidatePath(
-					vtxoReq.SigningKey.PubKey, expectedLeaf,
+				clientTree, validateErr = validateRequestedVTXO(
+					vtxoTree, vtxoReq, expectedAmount,
 					treeCosignKey,
 				)
 				if validateErr == nil {
@@ -2459,6 +2442,28 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 						"found"),
 					false,
 					s.RoundID,
+					s.Intents.Forfeits,
+				), nil
+			}
+
+			err := verifyRequestedAssetVTXO(
+				ctx, env.AssetVTXOVerifier, vtxoReq,
+				s.CommitmentTx.UnsignedTx, clientTree,
+				s.AssetLeafPackages,
+			)
+			if err != nil {
+				return failBeforeForfeitSigning(
+					"asset VTXO verification failed", err,
+					false, s.RoundID, s.Intents.Forfeits,
+				), nil
+			}
+			if err := registerRequestedAssetVTXO(
+				ctx, env.OwnedScriptRegistrar, vtxoReq,
+				clientTree,
+			); err != nil {
+				return failBeforeForfeitSigning(
+					"asset VTXO ownership registration "+
+						"failed", err, false, s.RoundID,
 					s.Intents.Forfeits,
 				), nil
 			}
@@ -2716,34 +2721,21 @@ func (s *CommitmentTxValidatedState) processEvent(ctx context.Context,
 			}
 			seenSignerKeys[signerKey] = struct{}{}
 
-			// Get the client tree for this signer key.
-			// The sweep tweak and batch output are
-			// properties of the tree that were set when
-			// the operator built it.
+			// Get the client tree for this signer key. The batch
+			// output and Taproot signing tweaks are properties of
+			// the tree that were set when the operator built it.
 			clientTree := s.ClientTrees[signerKey]
 			if clientTree == nil {
 				return nil, fmt.Errorf("no client tree for "+
 					"signer key %x", signerKey[:])
 			}
 
-			sweepTweak := clientTree.SweepTapscriptRoot
-			batchOut := clientTree.BatchOutput
-			root := clientTree.Root
-			prevOutFetcher, err := root.PrevOutputFetcher(batchOut)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create prev "+
-					"output fetcher for signer %x: %w",
-					signerKey[:], err)
-			}
-
 			sessionJobs = append(
 				sessionJobs, CreateSignerSessionJob{
-					SignerKey:          signerKey,
-					Signer:             env.Wallet,
-					SigningKey:         vtxoReq.SigningKey,
-					SweepTapscriptRoot: sweepTweak,
-					PrevOuts:           prevOutFetcher,
-					Root:               root,
+					SignerKey:  signerKey,
+					Signer:     env.Wallet,
+					SigningKey: vtxoReq.SigningKey,
+					Tree:       clientTree,
 				},
 			)
 		}
@@ -4134,6 +4126,149 @@ func connectorLeafOutput(leaf *tree.Node) (*wire.TxOut, error) {
 	return found, nil
 }
 
+func validateRequestedVTXO(vtxoTree *tree.Tree, request types.VTXORequest,
+	expectedAmount btcutil.Amount,
+	operatorKey *btcec.PublicKey) (*tree.Tree, error) {
+
+	pkScript, err := request.EffectivePkScript()
+	if err != nil {
+		return nil, fmt.Errorf("derive VTXO script: %w", err)
+	}
+	if request.AssetRef == "" {
+		return vtxoTree.ValidatePath(
+			request.SigningKey.PubKey, tree.LeafDescriptor{
+				Amount:      expectedAmount,
+				PkScript:    pkScript,
+				CoSignerKey: request.SigningKey.PubKey,
+			}, operatorKey,
+		)
+	}
+
+	if vtxoTree == nil || vtxoTree.AssetContext == nil {
+		return nil, fmt.Errorf("asset VTXO requires an asset tree")
+	}
+	if err := vtxoTree.AssetContext.Validate(vtxoTree.Root); err != nil {
+		return nil, fmt.Errorf("asset tree context: %w", err)
+	}
+	if vtxoTree.AssetContext.AssetRef() != request.AssetRef {
+		return nil, fmt.Errorf("tree asset %q does not match "+
+			"request %q", vtxoTree.AssetContext.AssetRef(),
+			request.AssetRef)
+	}
+
+	path, err := vtxoTree.ExtractPathForCoSigners(
+		request.SigningKey.PubKey,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("extract asset VTXO path: %w", err)
+	}
+	if path == nil {
+		return nil, fmt.Errorf("asset VTXO path not found")
+	}
+	leaves := path.Root.GetLeafNodes()
+	if len(leaves) != 1 {
+		return nil, fmt.Errorf("expected one asset VTXO leaf, got %d",
+			len(leaves))
+	}
+	leaf := leaves[0]
+	if amount := path.AssetContext.NodeAssetAmount(leaf); amount !=
+		request.AssetAmount {
+		return nil, fmt.Errorf("asset VTXO amount %d does not match "+
+			"request %d", amount, request.AssetAmount)
+	}
+
+	var assetRoot chainhash.Hash
+	copy(assetRoot[:], path.AssetContext.LeafAssetRoot(leaf.Input))
+	policy, err := request.DecodePolicyTemplate()
+	if err != nil {
+		return nil, fmt.Errorf("decode asset VTXO policy: %w", err)
+	}
+	compiled, err := policy.Compile()
+	if err != nil {
+		return nil, fmt.Errorf("compile asset VTXO policy: %w", err)
+	}
+	composed, err := arkscript.ComposeWithSiblingRoot(
+		compiled, assetRoot,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("compose asset VTXO policy: %w", err)
+	}
+	pkScript, err = txscript.PayToTaprootScript(composed.OutputKey())
+	if err != nil {
+		return nil, fmt.Errorf("derive composed VTXO script: %w", err)
+	}
+
+	return vtxoTree.ValidatePath(
+		request.SigningKey.PubKey, tree.LeafDescriptor{
+			Amount:      expectedAmount,
+			PkScript:    pkScript,
+			CoSignerKey: request.SigningKey.PubKey,
+		}, operatorKey,
+	)
+}
+
+func verifyRequestedAssetVTXO(ctx context.Context, verifier AssetVTXOVerifier,
+	request types.VTXORequest, commitmentTx *wire.MsgTx,
+	clientTree *tree.Tree, packages map[wire.OutPoint][]byte) error {
+
+	if request.AssetRef == "" {
+		return nil
+	}
+	if verifier == nil {
+		return fmt.Errorf("asset VTXO verifier is not configured")
+	}
+
+	leaf := clientTree.Root.GetLeafNodes()[0]
+	outpoint, err := leaf.GetNonAnchorOutpoint()
+	if err != nil {
+		return err
+	}
+	sealedPackage := packages[*outpoint]
+	if len(sealedPackage) == 0 {
+		return fmt.Errorf("asset VTXO %s has no sealed package",
+			outpoint)
+	}
+
+	if err := verifier.VerifyAssetVTXO(
+		ctx, request.AssetRef, request.AssetAmount, commitmentTx,
+		clientTree, sealedPackage,
+	); err != nil {
+		return err
+	}
+
+	clientTree.AssetContext.SetSealedPackage(leaf.Input, sealedPackage)
+
+	return nil
+}
+
+// registerRequestedAssetVTXO records the composed output script after the
+// asset tree and sealed package have been validated. The asset root is not
+// known when the client creates the request, so its final output script cannot
+// be registered at intent time.
+func registerRequestedAssetVTXO(ctx context.Context,
+	registrar OwnedScriptRegistrar, request types.VTXORequest,
+	clientTree *tree.Tree) error {
+
+	if request.AssetRef == "" || !request.HasLocalOwner() ||
+		registrar == nil {
+		return nil
+	}
+
+	leaves := clientTree.Root.GetLeafNodes()
+	if len(leaves) != 1 {
+		return fmt.Errorf("expected one asset VTXO leaf, got %d",
+			len(leaves))
+	}
+	leafOutput, err := leafNonAnchorOutput(leaves[0])
+	if err != nil {
+		return err
+	}
+
+	return registrar.RegisterOwnedScript(
+		ctx, leafOutput.PkScript, request.OwnerKey,
+	)
+}
+
 // validateVTXOTreeBinding proves that every operator-supplied VTXO tree is
 // rooted in this round's commitment tx. Internal tree self-consistency is not
 // enough: a tree's BatchOutpoint and BatchOutput come from the same untrusted
@@ -4150,7 +4285,7 @@ func connectorLeafOutput(leaf *tree.Node) (*wire.TxOut, error) {
 // that the index is in range, that the committed output byte-matches the
 // tree's BatchOutput, that every reachable transaction is funded by the
 // output it spends, and that the committed script equals the taproot script
-// recomputed from the tree root's cosigner set and sweep tapscript root (so a
+// recomputed from the tree root's cosigner set and signing tweak (so a
 // substituted-but-self-consistent script is rejected).
 func validateVTXOTreeBinding(commitmentTx *wire.MsgTx,
 	vtxoTrees map[int]*tree.Tree) error {
@@ -4181,7 +4316,7 @@ func validateVTXOTreeBinding(commitmentTx *wire.MsgTx,
 // commitment output named by outputIdx, that each reachable node conserves
 // value from that committed output, and that the committed output matches both
 // the tree's claimed BatchOutput and the taproot script recomputed from the
-// tree's declared cosigner set and sweep tapscript root.
+// tree's declared cosigner set and signing tweak.
 func verifyVTXOTreeRoot(commitmentTx *wire.MsgTx, commitmentTxID chainhash.Hash,
 	outputIdx int, vtxoTree *tree.Tree) error {
 
@@ -4240,17 +4375,28 @@ func verifyVTXOTreeRoot(commitmentTx *wire.MsgTx, commitmentTxID chainhash.Hash,
 			"batch output script")
 	}
 
+	rootTweak := vtxoTree.SweepTapscriptRoot
+	if vtxoTree.AssetContext != nil {
+		err := vtxoTree.AssetContext.Validate(vtxoTree.Root)
+		if err != nil {
+			return fmt.Errorf("asset tree context: %w", err)
+		}
+		rootTweak = vtxoTree.AssetContext.SigningTweak(
+			vtxoTree.Root.Input,
+		)
+	}
+
 	// Finally, recompute the root taproot script from the tree's declared
-	// cosigner set and sweep tapscript root and require it to equal the
-	// committed script. BatchOutput.PkScript is operator-supplied, so the
-	// byte-match above only proves the operator put the same bytes on-chain
-	// and in the tree; without this an operator could commit a taproot
-	// output whose key is not the aggregate of the declared cosigners,
-	// leaving the co-signed tree unable to ever spend it. We recompute from
-	// the declared parameters rather than trusting Root.FinalKey, which is
+	// cosigner set and signing tweak and require it to equal the committed
+	// script. BatchOutput.PkScript is operator-supplied, so the byte-match
+	// above only proves the operator put the same bytes on-chain and in the
+	// tree; without this an operator could commit a taproot output whose
+	// key is not the aggregate of the declared cosigners, leaving the
+	// co-signed tree unable to ever spend it. We recompute from the
+	// declared parameters rather than trusting Root.FinalKey, which is
 	// itself operator-supplied.
 	finalKey, err := tree.ComputeFinalKey(
-		vtxoTree.Root.CoSigners, vtxoTree.SweepTapscriptRoot,
+		vtxoTree.Root.CoSigners, rootTweak,
 	)
 	if err != nil {
 		return fmt.Errorf("recompute tree root key: %w", err)
@@ -4261,7 +4407,7 @@ func verifyVTXOTreeRoot(commitmentTx *wire.MsgTx, commitmentTxID chainhash.Hash,
 	}
 	if !bytes.Equal(rootScript, committed.PkScript) {
 		return fmt.Errorf("committed output script does not match " +
-			"script recomputed from tree cosigners and sweep root")
+			"the recomputed tree root")
 	}
 
 	// BatchOutput is operator-supplied, so validate values only after the
@@ -4387,8 +4533,8 @@ func computeClientOperatorFee(intents Intents, ownedVTXOs []*ClientVTXO) int64 {
 	// Amount is the pre-fee target — the server's quote residual is what
 	// actually seals into the leaf — so summing intent amounts cancels the
 	// inputs exactly and computes a zero fee for every fee-charging round.
-	// The built ClientVTXO carries the sealed leaf value
-	// (leafNonAnchorAmount), making input − output the true operator fee.
+	// The built ClientVTXO carries the sealed leaf value, making input −
+	// output the true operator fee.
 	// Foreign outputs (directed-send recipient slots) never materialize as
 	// owned VTXOs, so their intent amount remains the only local record of
 	// their value and is used as-is.
@@ -4493,24 +4639,46 @@ func roundOperatorFeeType(intents Intents) string {
 	return ledger.FeeTypeRefresh
 }
 
+// leafNonAnchorOutput returns the non-anchor output of a leaf node. Its value
+// contains the server's seal-time quote residual, and an asset leaf's script
+// contains its asset commitment root. Both are authoritative for persistence.
+func leafNonAnchorOutput(leaf *tree.Node) (*wire.TxOut, error) {
+	if leaf == nil {
+		return nil, fmt.Errorf("nil leaf node")
+	}
+
+	anchorScript := arkscript.AnchorOutput().PkScript
+	var found *wire.TxOut
+	for _, out := range leaf.Outputs {
+		if bytes.Equal(out.PkScript, anchorScript) {
+			continue
+		}
+		if found != nil {
+			return nil, fmt.Errorf("leaf node has multiple " +
+				"non-anchor outputs")
+		}
+		found = out
+	}
+	if found == nil {
+		return nil, fmt.Errorf("no non-anchor output found in leaf " +
+			"node")
+	}
+
+	return found, nil
+}
+
 // leafNonAnchorAmount returns the value of the non-anchor output of
 // a leaf Node. The leaf's tx has exactly two outputs: the VTXO (or
 // connector) output and the P2A anchor. Returns the VTXO/connector
 // amount, which under the #270 handshake reflects the server's
 // seal-time quote residual — authoritative for local persistence.
 func leafNonAnchorAmount(leaf *tree.Node) (btcutil.Amount, error) {
-	if leaf == nil {
-		return 0, fmt.Errorf("nil leaf node")
+	output, err := leafNonAnchorOutput(leaf)
+	if err != nil {
+		return 0, err
 	}
 
-	anchorScript := arkscript.AnchorOutput().PkScript
-	for _, out := range leaf.Outputs {
-		if !bytes.Equal(out.PkScript, anchorScript) {
-			return btcutil.Amount(out.Value), nil
-		}
-	}
-
-	return 0, fmt.Errorf("no non-anchor output found in leaf node")
+	return btcutil.Amount(output.Value), nil
 }
 
 // buildClientVTXOs constructs locally owned ClientVTXO instances from the
@@ -4525,25 +4693,6 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 	for _, req := range intents.VTXOs {
 		if !req.HasLocalOwner() {
 			continue
-		}
-
-		pkScript, err := req.EffectivePkScript()
-		if err != nil {
-			return nil, fmt.Errorf("derive VTXO pkScript: %w", err)
-		}
-
-		if checker != nil {
-			owned, err := checker.IsOwnedScript(
-				ctx, pkScript,
-			).Unpack()
-			if err != nil {
-				return nil, fmt.Errorf("check owned script: %w",
-					err)
-			}
-
-			if !owned {
-				continue
-			}
 		}
 
 		params, err := req.DecodeStandardPolicyTemplate()
@@ -4575,10 +4724,25 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 		// tree, so the leaf's non-anchor output carries the quoted
 		// value rather than the intent target (which is zero for
 		// change outputs). Reading req.Amount here would persist
-		// stale data.
-		leafAmount, err := leafNonAnchorAmount(leaf)
+		// stale data. The output script is authoritative too: asset
+		// VTXOs commit the asset root into the policy's Taproot tree.
+		leafOutput, err := leafNonAnchorOutput(leaf)
 		if err != nil {
-			return nil, fmt.Errorf("derive leaf amount: %w", err)
+			return nil, fmt.Errorf("derive leaf output: %w", err)
+		}
+
+		if checker != nil {
+			owned, err := checker.IsOwnedScript(
+				ctx, leafOutput.PkScript,
+			).Unpack()
+			if err != nil {
+				return nil, fmt.Errorf("check owned script: %w",
+					err)
+			}
+
+			if !owned {
+				continue
+			}
 		}
 
 		policyTemplate, _ := req.EffectivePolicyTemplate()
@@ -4595,9 +4759,9 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 
 		vtxo := &ClientVTXO{
 			Outpoint:       *outpoint,
-			Amount:         leafAmount,
+			Amount:         btcutil.Amount(leafOutput.Value),
 			PolicyTemplate: policyTemplate,
-			PkScript:       pkScript,
+			PkScript:       bytes.Clone(leafOutput.PkScript),
 			OwnerKey:       req.OwnerKey,
 			Ancestry:       ancestry,
 			RoundID:        fn.Some(roundID),
