@@ -9,10 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
+	"github.com/jrick/logrotate/rotator"
 	"github.com/lightninglabs/wavelength/build"
 	"github.com/lightninglabs/wavelength/chainbackends/bitcoindrpc"
 	"github.com/lightninglabs/wavelength/waved"
+	lndbuild "github.com/lightningnetwork/lnd/build"
 	"github.com/lightningnetwork/lnd/signal"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -26,6 +29,12 @@ type bestEffortWriter struct {
 	w io.Writer
 }
 
+type serializedLogWriter struct {
+	mu     sync.Mutex
+	writer io.Writer
+	closer io.Closer
+}
+
 // Write forwards the bytes when a sink is configured and always reports a
 // successful full write so optional log mirroring cannot stop the daemon.
 func (b bestEffortWriter) Write(p []byte) (int, error) {
@@ -34,6 +43,22 @@ func (b bestEffortWriter) Write(p []byte) (int, error) {
 	}
 
 	return len(p), nil
+}
+
+// Write serializes access to all configured log sinks.
+func (s *serializedLogWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.writer.Write(p)
+}
+
+// Close waits for any active write before closing the log rotator.
+func (s *serializedLogWriter) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.closer.Close()
 }
 
 // main executes the waved command and reports startup or runtime failures to
@@ -676,29 +701,46 @@ func run(cfg *waved.Config) error {
 // stdout and a persistent log file. Embedders that provide LogWriter keep full
 // control of the sink.
 func configureDaemonLogWriter(cfg *waved.Config,
-	stdout io.Writer) (*os.File, error) {
+	stdout io.Writer) (io.Closer, error) {
+
+	logConfig := lndbuild.DefaultLogConfig().File
+
+	return configureDaemonLogWriterWithConfig(
+		cfg, stdout, logConfig.MaxLogFileSize, logConfig.MaxLogFiles,
+	)
+}
+
+// configureDaemonLogWriterWithConfig configures standalone logging with the
+// supplied rotation limits.
+func configureDaemonLogWriterWithConfig(cfg *waved.Config, stdout io.Writer,
+	maxLogFileSize, maxLogFiles int) (io.Closer, error) {
 
 	if cfg.LogWriter != nil {
 		return nil, nil
 	}
 
-	logDir := cfg.LogDir()
-	if err := os.MkdirAll(logDir, 0o700); err != nil {
-		return nil, fmt.Errorf("create log directory %q: %w", logDir,
-			err)
+	logFilePath := filepath.Join(cfg.LogDir(), daemonLogFileName)
+	if err := os.MkdirAll(filepath.Dir(logFilePath), 0700); err != nil {
+		return nil, fmt.Errorf("create log directory: %w", err)
 	}
 
-	logFilePath := filepath.Join(logDir, daemonLogFileName)
-	logFile, err := os.OpenFile( //nolint:gosec // G304: operator log path.
-		logFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600,
+	// Match lnd's rotation setup. The lnd setting is expressed in MB while
+	// the rotator accepts a threshold in KB and enables gzip by default.
+	logRotator, err := rotator.New(
+		logFilePath, int64(maxLogFileSize)*1024, false, maxLogFiles,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("open log file %q: %w", logFilePath, err)
+		return nil, fmt.Errorf("initialize log rotator %q: %w",
+			logFilePath, err)
 	}
 
-	cfg.LogWriter = io.MultiWriter(bestEffortWriter{stdout}, logFile)
+	logWriter := &serializedLogWriter{
+		writer: io.MultiWriter(bestEffortWriter{stdout}, logRotator),
+		closer: logRotator,
+	}
+	cfg.LogWriter = logWriter
 
-	return logFile, nil
+	return logWriter, nil
 }
 
 // registerBitcoindFlags registers optional direct bitcoind package relay
