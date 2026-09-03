@@ -75,6 +75,30 @@ func (c *AssetTreeContext) SealedPackage(input wire.OutPoint) []byte {
 	return append([]byte(nil), c.packagesByInput[input]...)
 }
 
+// cloneForRoot copies the context used by an extracted tree path.
+func (c *AssetTreeContext) cloneForRoot(root *Node) *AssetTreeContext {
+	if c == nil {
+		return nil
+	}
+
+	clone := NewAssetTreeContext()
+	clone.SetAssetRef(c.assetRef)
+	for node := range root.NodesIter() {
+		clone.SetNodeAssetAmount(node, c.NodeAssetAmount(node))
+		clone.SetSigningTweak(
+			node.Input, c.SigningTweak(node.Input),
+		)
+		clone.SetLeafAssetRoot(
+			node.Input, c.LeafAssetRoot(node.Input),
+		)
+		if pkg := c.SealedPackage(node.Input); len(pkg) != 0 {
+			clone.SetSealedPackage(node.Input, pkg)
+		}
+	}
+
+	return clone
+}
+
 // SetAssetRef records the tree's asset reference.
 func (c *AssetTreeContext) SetAssetRef(ref string) {
 	c.assetRef = ref
