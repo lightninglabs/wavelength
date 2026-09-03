@@ -595,16 +595,23 @@ func testVTXOReader(descs map[wire.OutPoint]*VTXODescriptor) VTXOReader {
 }
 
 // TestRefreshReservesBeforeRoundRegistration verifies that the wallet
-// reserves forfeit inputs through the VTXO manager before sending
-// RegisterIntentMsg to the round actor.
+// reserves forfeit inputs before round registration, preserves the long-lived
+// owner key, and leaves the ephemeral signing key for the round to derive.
 func TestRefreshReservesBeforeRoundRegistration(t *testing.T) {
 	t.Parallel()
+
+	ownerPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	ownerKey := keychain.KeyDescriptor{
+		PubKey: ownerPriv.PubKey(),
+	}
 
 	op := testOutpoint(0)
 	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
 		op: {
-			Outpoint: op,
-			Amount:   50000,
+			Outpoint:  op,
+			Amount:    50000,
+			ClientKey: ownerKey,
 			PkScript: []byte{
 				0x51,
 				0x20,
@@ -640,6 +647,11 @@ func TestRefreshReservesBeforeRoundRegistration(t *testing.T) {
 
 	// Round should have received the intent.
 	require.Equal(t, 1, roundActor.registerCalls)
+	require.NotNil(t, roundActor.capturedIntent)
+	require.Len(t, roundActor.capturedIntent.VTXOs, 1)
+	request := roundActor.capturedIntent.VTXOs[0]
+	require.Equal(t, ownerKey, request.OwnerKey)
+	require.Nil(t, request.SigningKey.PubKey)
 }
 
 // TestCustomRefreshActivatesSignerWithoutLiveReservation verifies that the
