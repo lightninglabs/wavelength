@@ -17,6 +17,7 @@ const (
 	opTrueKeyDomain       = "wavelength/assets/optrue/v0/"
 	witnessBackendSigner  = tapsdk.CustomAssetWitnessBackendSigner
 	witnessCallerProvided = tapsdk.CustomAssetWitnessCallerProvided
+	scriptExternal        = tapsdk.CustomAssetScriptExternal
 )
 
 type expectedUnconfirmedAnchor struct {
@@ -127,7 +128,6 @@ func (s *assetSpendSource) appendTransition(output commitOutput,
 		path = s.proofPath.Clone()
 	} else {
 		path = &tapsdk.AssetProofPath{
-			Version: tapsdk.AssetProofPathVersionV0,
 			ConfirmedBaseProof: append(
 				[]byte(nil), s.proofFile...,
 			),

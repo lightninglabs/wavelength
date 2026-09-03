@@ -9,6 +9,9 @@ import (
 )
 
 type commitOutput struct {
+	logicalOutputID   string
+	packetIndex       uint32
+	packetRole        tapsdk.CustomAnchorPacketRole
 	anchorOutputIndex uint32
 	anchorOutpoint    tapsdk.Outpoint
 	anchorValueSat    int64
@@ -23,11 +26,20 @@ type commitOutput struct {
 }
 
 type commitInput struct {
-	logicalInputID string
-	anchorOutpoint tapsdk.Outpoint
-	assetRef       tapsdk.AssetRef
-	issuanceID     tapsdk.AssetID
-	amount         uint64
+	logicalInputID    string
+	packetIndex       uint32
+	packetRole        tapsdk.CustomAnchorPacketRole
+	virtualInputIndex uint32
+	anchorOutpoint    tapsdk.Outpoint
+	assetRef          tapsdk.AssetRef
+	issuanceID        tapsdk.AssetID
+	amount            uint64
+	proofSource       commitProofSource
+}
+
+type commitProofSource struct {
+	kind tapsdk.CustomAnchorProofSourceKind
+	blob []byte
 }
 
 type commitResult struct {
@@ -46,8 +58,87 @@ type assetTreeDriver interface {
 	DecodePackage([]byte) (*commitResult, error)
 }
 
+type outputCommitmentPreview struct {
+	logicalOutputID   string
+	anchorOutputIndex uint32
+	assetRoot         tapsdk.Hash
+	merkleRoot        tapsdk.Hash
+}
+
+type batchAnchorDriver interface {
+	assetTreeDriver
+
+	Preview(context.Context, *tapsdk.CustomAnchorRequest,
+		tapsdk.ConfirmedProofVerifier) (
+		[]outputCommitmentPreview,
+		error,
+	)
+
+	Publish(context.Context, []byte, []byte) error
+}
+
 type sdkDriver struct {
 	wallet *tapsdk.Wallet
+}
+
+// Preview returns the commitment roots produced by a custom-anchor request.
+func (d *sdkDriver) Preview(ctx context.Context,
+	request *tapsdk.CustomAnchorRequest,
+	verifier tapsdk.ConfirmedProofVerifier) ([]outputCommitmentPreview,
+	error) {
+
+	if d == nil || d.wallet == nil {
+		return nil, fmt.Errorf("tap-sdk wallet is required")
+	}
+
+	builder := d.wallet.NewCustomAnchorTxBuilder()
+	if verifier != nil {
+		builder.SetConfirmedProofVerifier(verifier)
+	}
+	plan, err := builder.Build(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	previews, err := plan.PreviewOutputCommitments()
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]outputCommitmentPreview, len(previews))
+	for idx := range previews {
+		preview := previews[idx]
+		result[idx] = outputCommitmentPreview{
+			logicalOutputID:   preview.LogicalOutputID,
+			anchorOutputIndex: preview.AnchorOutputIndex,
+			assetRoot:         preview.TaprootAssetRoot,
+			merkleRoot:        preview.TaprootMerkleRoot,
+		}
+	}
+
+	return result, nil
+}
+
+// Publish verifies and records a finalized custom-anchor transaction.
+func (d *sdkDriver) Publish(ctx context.Context, packageBytes,
+	finalPSBT []byte) error {
+
+	if d == nil || d.wallet == nil {
+		return fmt.Errorf("tap-sdk wallet is required")
+	}
+
+	var transfer tapsdk.CustomAnchorTransferPackage
+	if err := transfer.UnmarshalBinary(packageBytes); err != nil {
+		return fmt.Errorf("decode sealed transfer package: %w", err)
+	}
+	if err := transfer.VerifyFinalAnchorPSBT(finalPSBT); err != nil {
+		return fmt.Errorf("verify final anchor PSBT: %w", err)
+	}
+
+	_, err := d.wallet.PublishCustomAnchorTransfer(
+		ctx, &transfer, finalPSBT,
+	)
+
+	return err
 }
 
 // Commit builds, commits, verifies, and seals one SDK custom-anchor request.
@@ -133,11 +224,20 @@ func commitResultFromValidatedPackage(
 	for idx := range transfer.Inputs {
 		input := transfer.Inputs[idx]
 		result.inputs[idx] = commitInput{
-			logicalInputID: input.LogicalInputID,
-			anchorOutpoint: input.AnchorOutpoint,
-			assetRef:       input.AssetRef,
-			issuanceID:     input.IssuanceID,
-			amount:         input.Amount,
+			logicalInputID:    input.LogicalInputID,
+			packetIndex:       input.PacketIndex,
+			packetRole:        input.PacketRole,
+			virtualInputIndex: input.VirtualInputIndex,
+			anchorOutpoint:    input.AnchorOutpoint,
+			assetRef:          input.AssetRef,
+			issuanceID:        input.IssuanceID,
+			amount:            input.Amount,
+			proofSource: commitProofSource{
+				kind: input.ProofSource.Kind,
+				blob: append(
+					[]byte(nil), input.ProofSource.Blob...,
+				),
+			},
 		}
 	}
 
@@ -170,6 +270,9 @@ func commitResultFromValidatedPackage(
 		}
 
 		result.outputs[idx] = commitOutput{
+			logicalOutputID:   output.LogicalOutputID,
+			packetIndex:       output.PacketIndex,
+			packetRole:        output.PacketRole,
 			anchorOutputIndex: output.AnchorOutputIndex,
 			anchorOutpoint:    output.AnchorOutpoint,
 			anchorValueSat:    output.AnchorValueSat,
