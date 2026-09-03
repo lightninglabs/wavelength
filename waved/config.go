@@ -214,6 +214,12 @@ const (
 	// config knob.
 	DefaultMaxOperatorFeeSat int64 = 1_000_000
 
+	// DefaultMaxPaymentCLTV is the total Lightning payment CLTV reserved by
+	// automatic maintenance in swap-enabled builds. Three hundred blocks
+	// covers high-CLTV merchant invoices plus ordinary routing deltas while
+	// leaving substantial room inside a one-week Ark batch lifetime.
+	DefaultMaxPaymentCLTV int32 = 300
+
 	// RPCTransportGRPC selects native gRPC for daemon-owned outbound RPCs.
 	RPCTransportGRPC = "grpc"
 
@@ -406,6 +412,12 @@ type Config struct {
 	// automatic maintenance budget curve. Zero disables this component.
 	// When both components are zero, only MaxOperatorFeeSat applies.
 	AutoRefreshFeeRatePPM uint32 `mapstructure:"autorefreshfeerateppm"`
+
+	// MaxPaymentCLTV is the largest total Lightning payment CLTV that
+	// automatic VTXO maintenance keeps available above the dynamic
+	// unilateral-exit and refresh-retry budgets. Zero disables this extra
+	// reserve. Swap-enabled builds default to DefaultMaxPaymentCLTV.
+	MaxPaymentCLTV int32 `mapstructure:"maxpaymentcltv"`
 
 	// OOR configures off-band receive/send actor behavior.
 	OOR *OORConfig `mapstructure:"oor"`
@@ -1211,6 +1223,7 @@ func DefaultConfig() *Config {
 			VHTLCRecovery:   swapRecovery,
 		},
 		MaxOperatorFeeSat: DefaultMaxOperatorFeeSat,
+		MaxPaymentCLTV:    defaultMaxPaymentCLTV(),
 		SigningWorkers:    DefaultSigningWorkers,
 		OOR:               defaultOORConfig(),
 		FeeEstimation: &FeeEstimationConfig{
@@ -1261,6 +1274,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("autorefreshfeefloorsat must not exceed "+
 			"maxoperatorfeesat: floor=%d, max=%d",
 			c.AutoRefreshFeeFloorSat, c.MaxOperatorFeeSat)
+	}
+	if c.MaxPaymentCLTV < 0 {
+		return fmt.Errorf("maxpaymentcltv must be non-negative: got %d",
+			c.MaxPaymentCLTV)
 	}
 
 	if c.SigningWorkers < 0 {
