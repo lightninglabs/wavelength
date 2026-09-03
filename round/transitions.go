@@ -2363,13 +2363,12 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 			)
 		}
 
-		// Before trusting any tree's contents, prove that each
-		// operator-supplied VTXO tree is rooted in this round's
-		// commitment tx. The per-VTXO ValidatePath check below only
-		// proves internal self-consistency; without this binding a
-		// self-consistent tree rooted at the wrong commitment output
-		// would be co-signed, after which the client's new VTXOs are
-		// unrecoverable (wavelength#680).
+		// Before trusting any tree's contents, bind each operator-
+		// supplied VTXO tree to this round's real commitment output and
+		// prove every reachable transaction is funded. The per-VTXO
+		// ValidatePath check below binds each funded leaf to its
+		// accepted quote, but cannot establish that the server-supplied
+		// root value is the value actually committed on chain.
 		if err := validateVTXOTreeBinding(
 			s.CommitmentTx.UnsignedTx, s.VTXOTreePaths,
 		); err != nil {
@@ -4149,7 +4148,8 @@ func connectorLeafOutput(leaf *tree.Node) (*wire.TxOut, error) {
 // For each (outputIdx, tree) pair it asserts that the tree's BatchOutpoint
 // names this commitment tx, that outputIdx agrees with BatchOutpoint.Index,
 // that the index is in range, that the committed output byte-matches the
-// tree's BatchOutput, and that the committed script equals the taproot script
+// tree's BatchOutput, that every reachable transaction is funded by the
+// output it spends, and that the committed script equals the taproot script
 // recomputed from the tree root's cosigner set and sweep tapscript root (so a
 // substituted-but-self-consistent script is rejected).
 func validateVTXOTreeBinding(commitmentTx *wire.MsgTx,
@@ -4178,9 +4178,10 @@ func validateVTXOTreeBinding(commitmentTx *wire.MsgTx,
 }
 
 // verifyVTXOTreeRoot checks that a single VTXO tree's root spends the
-// commitment output named by outputIdx and that the committed output matches
-// both the tree's claimed BatchOutput and the taproot script recomputed from
-// the tree's declared cosigner set and sweep tapscript root.
+// commitment output named by outputIdx, that each reachable node conserves
+// value from that committed output, and that the committed output matches both
+// the tree's claimed BatchOutput and the taproot script recomputed from the
+// tree's declared cosigner set and sweep tapscript root.
 func verifyVTXOTreeRoot(commitmentTx *wire.MsgTx, commitmentTxID chainhash.Hash,
 	outputIdx int, vtxoTree *tree.Tree) error {
 
@@ -4261,6 +4262,14 @@ func verifyVTXOTreeRoot(commitmentTx *wire.MsgTx, commitmentTxID chainhash.Hash,
 	if !bytes.Equal(rootScript, committed.PkScript) {
 		return fmt.Errorf("committed output script does not match " +
 			"script recomputed from tree cosigners and sweep root")
+	}
+
+	// BatchOutput is operator-supplied, so validate values only after the
+	// byte comparison above has bound it to the real commitment output. The
+	// subsequent per-client ValidatePath call binds the funded path's leaf
+	// to the amount accepted in the client's quote.
+	if err := vtxoTree.ValidateValueConservation(); err != nil {
+		return fmt.Errorf("value conservation failed: %w", err)
 	}
 
 	return nil

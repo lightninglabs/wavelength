@@ -4,12 +4,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -74,6 +76,19 @@ func TestValidateVTXOTreeBindingRejects(t *testing.T) {
 			vtxtTree.BatchOutpoint.Hash = chainhash.Hash{
 				0xff,
 			}
+
+			return map[int]*tree.Tree{
+				0: vtxtTree,
+			}
+		},
+	}, {
+		// The tree metadata names the real commitment output, but the
+		// root transaction itself spends a different outpoint.
+		name: "root input disagrees with batch outpoint",
+		corrupt: func(t *testing.T, _ *wire.MsgTx, vtxtTree *tree.Tree,
+			_ *boardingTestHarness) map[int]*tree.Tree {
+
+			vtxtTree.Root.Input.Index++
 
 			return map[int]*tree.Tree{
 				0: vtxtTree,
@@ -190,6 +205,66 @@ func TestValidateVTXOTreeBindingRejects(t *testing.T) {
 			)
 		})
 	}
+}
+
+// relinkVTXOTree updates every reachable child input after a test mutates a
+// parent's outputs. This preserves structural validity so conservation, rather
+// than a stale txid link, is the reason the hostile fixture is rejected.
+func relinkVTXOTree(t *testing.T, node *tree.Node) {
+	t.Helper()
+
+	txid, err := node.TXID()
+	require.NoError(t, err)
+	for outputIdx, child := range node.Children {
+		child.Input = wire.OutPoint{
+			Hash:  txid,
+			Index: outputIdx,
+		}
+		relinkVTXOTree(t, child)
+	}
+}
+
+// TestValidateVTXOTreeBindingRejectsUnderfundedInterior proves that a child
+// cannot create more value than its parent output. The root remains exactly
+// conserved and all txid links are repaired, matching the report's case where
+// structure-only validation succeeds but an interior transaction is invalid.
+func TestValidateVTXOTreeBindingRejectsUnderfundedInterior(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+	vtxtTree, _ := h.newTestVTXOTree(4)
+	commitment := h.bindTreeToCommitment(
+		[]BoardingIntent{
+			h.newTestBoardingIntent(),
+			h.newTestBoardingIntent(),
+			h.newTestBoardingIntent(),
+			h.newTestBoardingIntent(),
+		},
+		vtxtTree,
+	)
+
+	require.Len(t, vtxtTree.Root.Outputs, 3)
+	require.Len(t, vtxtTree.Root.Children, 2)
+	require.False(t, vtxtTree.Root.Children[0].IsLeaf())
+
+	// Move one satoshi from the first child allocation to the second. The
+	// root still spends exactly its batch output, but the non-leaf child at
+	// index 0 now tries to create 100,000 sats from a 99,999-sat parent
+	// output.
+	vtxtTree.Root.Outputs[0].Value--
+	vtxtTree.Root.Outputs[1].Value++
+	relinkVTXOTree(t, vtxtTree.Root)
+
+	// The old topology-only verifier accepts the hostile tree. The round
+	// trust boundary must additionally reject its value flow.
+	require.NoError(t, vtxtTree.Root.Verify())
+	err := validateVTXOTreeBinding(
+		commitment.UnsignedTx, map[int]*tree.Tree{
+			0: vtxtTree,
+		},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "value conservation")
 }
 
 // TestConfirmationWatchScriptUsesBatchOutput builds a multi-output round whose
@@ -356,4 +431,122 @@ func TestCommitmentTxReceivedRejectsUnboundTree(t *testing.T) {
 
 	// The round must NOT have advanced toward signing.
 	require.NotContains(t, failedState.Reason, "validation failed")
+}
+
+// TestCommitmentTxReceivedRejectsCommitmentSiphon reproduces the source-
+// analyzed attack where the operator lowers both copies of the batch output
+// and diverts the missing value to a hidden commitment-tx change output. The
+// client's leaf still matches its accepted quote, so only end-to-end value
+// conservation binds that quote back to the real commitment output.
+func TestCommitmentTxReceivedRejectsCommitmentSiphon(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+	intent := h.newTestBoardingIntent()
+	vtxoReq := h.newTestVTXORequestForIntent(intent)
+	vtxoReq.IsChange = true
+
+	// Use the quote-authoritative residual rather than the intent target so
+	// the fixture exercises the production root-to-quote trust chain.
+	quotedAmount := int64(vtxoReq.Amount) - 1500
+	require.NotEqual(t, int64(vtxoReq.Amount), quotedAmount)
+	vtxoReqForTree := vtxoReq
+	vtxoReqForTree.Amount = btcutil.Amount(quotedAmount)
+	vtxtTree := h.newTestVTXOTreeForIntents(
+		[]types.VTXORequest{vtxoReqForTree},
+	)
+
+	const siphonedValue = int64(1000)
+	changeScript, err := txscript.PayToTaprootScript(h.operatorPubKey)
+	require.NoError(t, err)
+	commitment := h.bindTreeToCommitment(
+		[]BoardingIntent{intent}, vtxtTree, &wire.TxOut{
+			Value:    siphonedValue,
+			PkScript: changeScript,
+		},
+	)
+
+	batchOutput := commitment.UnsignedTx.TxOut[0]
+	batchOutput.Value -= siphonedValue
+	require.NoError(
+		t, psbt.VerifyInputOutputLen(commitment, true, true),
+	)
+
+	// Keep the tree's server-supplied BatchOutput equal to the lowered
+	// commitment output and re-root it at the changed commitment txid. The
+	// pre-fix binding compares these two hostile values and accepts them.
+	vtxtTree.BatchOutput = wire.NewTxOut(
+		batchOutput.Value,
+		append(
+			[]byte(nil), batchOutput.PkScript...,
+		),
+	)
+	vtxtTree.BatchOutpoint.Hash = commitment.UnsignedTx.TxHash()
+	vtxtTree.Root.Input = vtxtTree.BatchOutpoint
+
+	roundID := testRoundIDTr("round-commitment-siphon")
+	state := &CommitmentTxReceivedState{
+		RoundID:      roundID,
+		CommitmentTx: commitment,
+		TxID:         commitment.UnsignedTx.TxHash(),
+		SweepDelay:   1008,
+		VTXOTreePaths: map[int]*tree.Tree{
+			0: vtxtTree,
+		},
+		Intents: Intents{
+			Boarding: []BoardingIntent{
+				intent,
+			},
+			VTXOs: []types.VTXORequest{
+				vtxoReq,
+			},
+		},
+		ClientTrees: make(map[SignerKey]*tree.Tree),
+		Quote: &ClientQuote{
+			OperatorFeeSat: 1500,
+			VTXOQuotes: []VTXOQuoteEntry{{
+				AmountSat: quotedAmount,
+				PkScript:  vtxoReq.PkScript,
+				RecipientKey: vtxoReq.SigningKey.PubKey.
+					SerializeCompressed(),
+			}},
+		},
+	}
+	h.withState(state)
+
+	event := &CommitmentTxBuilt{
+		RoundID: roundID,
+		Tx:      commitment,
+		VTXOTreePaths: map[int]*tree.Tree{
+			0: vtxtTree,
+		},
+	}
+
+	transition, err := h.sendEvent(event)
+	require.NoError(t, err)
+	require.NotNil(t, transition)
+	transition.NewEvents.WhenSome(func(emitted ClientEmittedEvent) {
+		require.Empty(t, emitted.InternalEvent)
+	})
+	for _, msg := range h.outboxMessages {
+		_, submitsNonces := msg.(*SubmitNoncesRequest)
+		require.False(t, submitsNonces)
+	}
+	h.wallet.AssertNotCalled(
+		t, "MuSig2CreateSession", mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+	)
+	h.wallet.AssertNotCalled(
+		t, "SignOutputRaw", mock.Anything, mock.Anything,
+	)
+	h.roundStore.AssertNotCalled(
+		t, "CommitState", mock.Anything, mock.Anything, mock.Anything,
+	)
+	h.vtxoStore.AssertNotCalled(
+		t, "SaveVTXOs", mock.Anything, mock.Anything,
+	)
+
+	failedState := assertStateType[*ClientFailedState](h)
+	require.Contains(t, failedState.Reason, "binding")
+	require.Contains(t, failedState.Error.Error(), "value conservation")
 }
