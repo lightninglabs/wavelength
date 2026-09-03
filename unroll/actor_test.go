@@ -419,6 +419,7 @@ type fakeChainSourceRef struct {
 	bestHeight  int32
 	feeRate     int64
 	feeErr      error
+	feeRequests int
 	blockRef    actor.TellOnlyRef[chainsource.BlockEpoch]
 	spendRefs   map[wire.OutPoint]spendEventRef
 	spendRegs   []wire.OutPoint
@@ -487,17 +488,22 @@ func (f *fakeChainSourceRef) Ask(_ context.Context,
 		)
 
 	case *chainsource.FeeEstimateRequest:
-		if f.feeErr != nil {
+		f.mu.Lock()
+		feeRate := f.feeRate
+		feeErr := f.feeErr
+		f.feeRequests++
+		f.mu.Unlock()
+
+		if feeErr != nil {
 			promise.Complete(
 				fn.Err[chainsource.ChainSourceResp](
-					f.feeErr,
+					feeErr,
 				),
 			)
 
 			return promise.Future()
 		}
 
-		feeRate := f.feeRate
 		if feeRate == 0 {
 			feeRate = 5
 		}
@@ -606,6 +612,23 @@ func (f *fakeChainSourceRef) Ask(_ context.Context,
 	return promise.Future()
 }
 
+// setFeeEstimate updates the estimator result returned by subsequent Asks.
+func (f *fakeChainSourceRef) setFeeEstimate(feeRate int64, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.feeRate = feeRate
+	f.feeErr = err
+}
+
+// feeRequestCount returns how many fee estimates the actor requested.
+func (f *fakeChainSourceRef) feeRequestCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.feeRequests
+}
+
 // confWatchCount returns the number of registered confirmation watches.
 func (f *fakeChainSourceRef) confWatchCount() int {
 	f.mu.Lock()
@@ -709,11 +732,20 @@ func (f *fakeChainSourceRef) removedTxSnapshot() []chainhash.Hash {
 }
 
 // fakeSweepWallet is a minimal signer plus wallet-destination test double.
-type fakeSweepWallet struct{}
+type fakeSweepWallet struct {
+	pkScriptRequests atomic.Int64
+}
 
 // NewWalletPkScript returns a deterministic destination script.
 func (w *fakeSweepWallet) NewWalletPkScript(context.Context) ([]byte, error) {
+	w.pkScriptRequests.Add(1)
+
 	return []byte{txscript.OP_TRUE}, nil
+}
+
+// pkScriptRequestCount returns how many destination scripts were derived.
+func (w *fakeSweepWallet) pkScriptRequestCount() int64 {
+	return w.pkScriptRequests.Load()
 }
 
 // SignOutputRaw returns a dummy schnorr signature.
@@ -3156,7 +3188,7 @@ func TestResumeReissuesSweepConfirmation(t *testing.T) {
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 	sweepTx, err := buildSweepTx(
 		t.Context(), &fakeSweepWallet{}, &fakeChainSourceRef{}, proof,
-		desc, 0, 110, NewStandardVTXOExitSpendPolicy(desc),
+		desc, 0, 0, 110, NewStandardVTXOExitSpendPolicy(desc),
 	)
 	require.NoError(t, err)
 
@@ -3230,6 +3262,94 @@ func TestResumeReissuesSweepConfirmation(t *testing.T) {
 	}, testTimeout, 10*time.Millisecond)
 }
 
+// TestResumeRetriesDeferredSweepBuild verifies a checkpoint that has reached
+// sweep construction without persisting a transaction retries estimation on
+// restart instead of taking the persisted-sweep confirmation branch.
+func TestResumeRetriesDeferredSweepBuild(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	txconfirmRef := &fakeTxConfirmRef{}
+	store := newMemCheckpointStore()
+	chainSource := &fakeChainSourceRef{}
+	chainSource.setFeeEstimate(0, fmt.Errorf("estimator unavailable"))
+	wallet := &fakeSweepWallet{}
+
+	raw, err := encodeCheckpoint(&actorCheckpoint{
+		Version: checkpointVersion,
+		Height:  104,
+		Started: true,
+		Trigger: TriggerRestart,
+		State: unrollplan.State{
+			ConfirmedTxids: []chainhash.Hash{
+				proof.RootTxids()[0],
+				proof.TargetOutpoint().Hash,
+			},
+			TargetConfirmHeight: fn.Some[int32](102),
+		},
+	})
+	require.NoError(t, err)
+
+	err = store.SaveCheckpoint(t.Context(), actor.CheckpointParams{
+		ActorID:   "resume-deferred-sweep-test",
+		StateType: checkpointStateType,
+		StateData: raw,
+		Version:   checkpointVersion,
+	})
+	require.NoError(t, err)
+
+	cfg := Config{
+		TargetOutpoint: proof.TargetOutpoint(),
+		ActorID:        "resume-deferred-sweep-test",
+		DeliveryStore:  store,
+		ProofAssembler: &mockProofAssembler{
+			proof: proof,
+		},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
+		TxConfirmRef: txconfirmRef,
+		ChainSource:  chainSource,
+		Wallet:       wallet,
+		Log:          fn.Some(btclog.Disabled),
+	}
+	resumeBehavior := &behavior{cfg: cfg, log: btclog.Disabled}
+	err = resumeBehavior.restoreCheckpoint(t.Context())
+	require.NoError(t, err)
+
+	resumedActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
+		ID:          cfg.ActorID,
+		Behavior:    adaptTx(resumeBehavior),
+		MailboxSize: 64,
+	})
+	resumeBehavior.selfRef = resumedActor.TellRef()
+	resumedActor.Start()
+	t.Cleanup(resumedActor.Stop)
+
+	mustAsk(t, resumedActor.Ref(), &ResumeUnrollRequest{Height: 105})
+
+	stateResp, ok := mustAsk(
+		t, resumedActor.Ref(), &GetStateRequest{},
+	).(*GetStateResp)
+	require.True(t, ok)
+	require.Equal(t, PhaseSweepBroadcast, stateResp.Phase)
+	require.Equal(t, 1, chainSource.feeRequestCount())
+	require.Equal(t, int64(0), wallet.pkScriptRequestCount())
+	require.Equal(t, 0, txconfirmRef.requestCount())
+
+	checkpoint := mustDecodeCheckpoint(t, store, cfg.ActorID)
+	require.Nil(t, checkpoint.SweepTx)
+	require.Equal(t, 0, checkpoint.SweepAttempts)
+
+	chainSource.setFeeEstimate(7, nil)
+	mustAsk(t, resumedActor.Ref(), &HeightObservedMsg{Height: 106})
+
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() == 1
+	}, testTimeout, 10*time.Millisecond)
+	require.Equal(t, 2, chainSource.feeRequestCount())
+	require.Equal(t, int64(1), wallet.pkScriptRequestCount())
+}
+
 // TestBuildSweepTx verifies the copied sweep-construction helper works without
 // importing the legacy unroller package.
 func TestBuildSweepTx(t *testing.T) {
@@ -3238,7 +3358,7 @@ func TestBuildSweepTx(t *testing.T) {
 
 	sweepTx, err := buildSweepTx(
 		t.Context(), &fakeSweepWallet{}, &fakeChainSourceRef{}, proof,
-		desc, 0, 110, NewStandardVTXOExitSpendPolicy(desc),
+		desc, 0, 0, 110, NewStandardVTXOExitSpendPolicy(desc),
 	)
 	require.NoError(t, err)
 	require.Len(t, sweepTx.TxIn, 1)
@@ -3327,25 +3447,198 @@ func TestStandardExitSpendPolicyResolver(t *testing.T) {
 	require.Contains(t, err.Error(), "unknown exit policy kind")
 }
 
-// TestBuildSweepTxFallsBackWithoutFeeEstimate verifies the sweep builder uses
-// the regtest fallback fee when the backend has no estimate available yet.
-func TestBuildSweepTxFallsBackWithoutFeeEstimate(t *testing.T) {
+// TestBuildSweepTxUsesConfiguredFeeFallback verifies controlled regtest or
+// test callers can explicitly supply a fixed rate when the backend has no
+// estimate available yet.
+func TestBuildSweepTxUsesConfiguredFeeFallback(t *testing.T) {
 	proof := buildLinearProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	const fallbackFeeRateSatPerVByte int64 = 2
 
 	sweepTx, err := buildSweepTx(
 		t.Context(), &fakeSweepWallet{}, &fakeChainSourceRef{
 			feeErr: fmt.Errorf("no fee estimates available"),
-		}, proof, desc, 0, 110, NewStandardVTXOExitSpendPolicy(desc),
+		}, proof, desc, 0, fallbackFeeRateSatPerVByte, 110,
+		NewStandardVTXOExitSpendPolicy(desc),
 	)
 	require.NoError(t, err)
 
 	targetOutput, err := proof.TargetOutput()
 	require.NoError(t, err)
 
-	expectedFee := defaultSweepFallbackFeeRateSatPerVByte *
-		estimatedSweepVBytes
+	expectedFee := fallbackFeeRateSatPerVByte * estimatedSweepVBytes
 	require.Equal(t, targetOutput.Value-expectedFee, sweepTx.TxOut[0].Value)
+}
+
+// fallbackExitSpendPolicy models a policy whose spend competes with another
+// valid leaf and therefore must construct a transaction even when estimation
+// is temporarily unavailable.
+type fallbackExitSpendPolicy struct {
+	*StandardVTXOExitSpendPolicy
+}
+
+// Kind returns a non-standard durable policy identity.
+func (p *fallbackExitSpendPolicy) Kind() ExitPolicyKind {
+	return "test_race_sensitive"
+}
+
+// FeeEstimateFallbackSatPerVByte returns the policy-owned emergency rate.
+func (p *fallbackExitSpendPolicy) FeeEstimateFallbackSatPerVByte() int64 {
+	return 2
+}
+
+// fixedExitSpendPolicyResolver returns one policy for actor-boundary tests.
+type fixedExitSpendPolicyResolver struct {
+	policy ExitSpendPolicy
+}
+
+// ResolveExitSpendPolicy returns the configured policy.
+func (r *fixedExitSpendPolicyResolver) ResolveExitSpendPolicy(context.Context,
+	ExitSpendPolicyRequest) (ExitSpendPolicy, error) {
+
+	return r.policy, nil
+}
+
+// TestRaceSensitivePolicyUsesFeeEstimateFallback verifies a policy can opt
+// into an emergency rate when waiting would leave a competing spend path live.
+func TestRaceSensitivePolicyUsesFeeEstimateFallback(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, behavior, txconfirmRef, store := newActorHarness(
+		t, proof, desc,
+	)
+
+	standardPolicy := NewStandardVTXOExitSpendPolicy(desc)
+	policy := &fallbackExitSpendPolicy{standardPolicy}
+	behavior.cfg.ExitSpendPolicyResolver = &fixedExitSpendPolicyResolver{
+		policy: policy,
+	}
+	chainSource, ok := behavior.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+	chainSource.setFeeEstimate(0, fmt.Errorf("estimator unavailable"))
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:         100,
+		Trigger:        TriggerManual,
+		ExitPolicyKind: policy.Kind(),
+		ExitPolicyRef:  "race-sensitive-test",
+	})
+	txconfirmRef.emitConfirmed(t, 0, proof.RootTxids()[0], 101)
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() == 2
+	}, testTimeout, 10*time.Millisecond)
+	txconfirmRef.emitConfirmed(t, 1, proof.TargetOutpoint().Hash, 102)
+	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 104})
+
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() == 3
+	}, testTimeout, 10*time.Millisecond)
+	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	require.NotNil(t, checkpoint.SweepTx)
+	require.Equal(t, 0, checkpoint.SweepAttempts)
+}
+
+// TestSweepDefersWhenFeeEstimateUnavailable verifies a transient estimator
+// outage leaves the exit non-terminal without deriving, persisting, or
+// submitting an anchorless sweep. A later height retries estimation and builds
+// exactly one sweep after the estimator recovers.
+func TestSweepDefersWhenFeeEstimateUnavailable(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, behavior, txconfirmRef, store := newActorHarness(
+		t, proof, desc,
+	)
+
+	chainSource, ok := behavior.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+	chainSource.setFeeEstimate(0, fmt.Errorf("estimator unavailable"))
+
+	wallet, ok := behavior.cfg.Wallet.(*fakeSweepWallet)
+	require.True(t, ok)
+
+	var logBuf bytes.Buffer
+	logger := btclog.NewSLogger(btclog.NewDefaultHandler(&logBuf))
+	logger.SetLevel(btclog.LevelInfo)
+	behavior.log = logger
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+	txconfirmRef.emitConfirmed(t, 0, proof.RootTxids()[0], 101)
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() == 2
+	}, testTimeout, 10*time.Millisecond)
+	txconfirmRef.emitConfirmed(t, 1, proof.TargetOutpoint().Hash, 102)
+
+	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 104})
+
+	stateResp, ok := mustAsk(
+		t, unrollActor.Ref(), &GetStateRequest{},
+	).(*GetStateResp)
+	require.True(t, ok)
+	require.Equal(t, PhaseSweepBroadcast, stateResp.Phase)
+	require.Equal(t, 2, txconfirmRef.requestCount())
+	require.Equal(t, 1, chainSource.feeRequestCount())
+	require.Equal(t, int64(0), wallet.pkScriptRequestCount())
+	require.Contains(
+		t, logBuf.String(),
+		"Deferring unroll exit spend: fee estimate unavailable",
+	)
+
+	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	require.Nil(t, checkpoint.SweepTx)
+	require.Equal(t, 0, checkpoint.SweepAttempts)
+	require.Empty(t, checkpoint.Fail)
+
+	chainSource.setFeeEstimate(7, nil)
+	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 105})
+
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() == 3
+	}, testTimeout, 10*time.Millisecond)
+	require.Equal(t, 2, chainSource.feeRequestCount())
+	require.Equal(t, int64(1), wallet.pkScriptRequestCount())
+
+	checkpoint = mustDecodeCheckpoint(t, store, "unroll-test")
+	require.NotNil(t, checkpoint.SweepTx)
+	require.Equal(t, 0, checkpoint.SweepAttempts)
+}
+
+// TestSweepBroadcastRetryReusesCachedTxWithoutFeeEstimate verifies estimator
+// availability no longer matters after a sweep is persisted. A txconfirm
+// failure consumes the existing retry budget and resubmits the same txid
+// without deriving a new destination or asking for a replacement fee.
+func TestSweepBroadcastRetryReusesCachedTxWithoutFeeEstimate(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, behavior, txconfirmRef, store := newActorHarness(
+		t, proof, desc,
+	)
+
+	chainSource, ok := behavior.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+	wallet, ok := behavior.cfg.Wallet.(*fakeSweepWallet)
+	require.True(t, ok)
+
+	sweepTxid := driveLinearToSweep(
+		t, unrollActor.Ref(), txconfirmRef, store, proof,
+	)
+	require.Equal(t, 1, chainSource.feeRequestCount())
+	require.Equal(t, int64(1), wallet.pkScriptRequestCount())
+
+	chainSource.setFeeEstimate(0, fmt.Errorf("estimator unavailable"))
+	txconfirmRef.emitFailed(t, 2, sweepTxid, "broadcast rejected")
+
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() == 4
+	}, testTimeout, 10*time.Millisecond)
+	require.Equal(t, sweepTxid, txconfirmRef.lastRequest(t).Tx.TxHash())
+	require.Equal(t, 1, chainSource.feeRequestCount())
+	require.Equal(t, int64(1), wallet.pkScriptRequestCount())
+
+	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	require.Equal(t, 1, checkpoint.SweepAttempts)
 }
 
 // TestSweepConfirmationCompletesActor verifies that confirming the final sweep
@@ -4191,7 +4484,7 @@ func TestUnrollAdoptStagedSweepReusesPersisted(t *testing.T) {
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 	sweepTx, err := buildSweepTx(
 		t.Context(), &fakeSweepWallet{}, &fakeChainSourceRef{}, proof,
-		desc, 0, 110, NewStandardVTXOExitSpendPolicy(desc),
+		desc, 0, 0, 110, NewStandardVTXOExitSpendPolicy(desc),
 	)
 	require.NoError(t, err)
 	sweepTxid := sweepTx.TxHash()

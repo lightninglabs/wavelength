@@ -250,6 +250,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   resolves them from the committed attempt.
 - `Unroll` / `GetUnrollStatus` return `codes.Unavailable` (not `Internal`)
   when the unroll subsystem refs are not yet set, so clients can retry.
+- `initUnrollSubsystem` configures a fixed 2 sat/vB exit-sweep fallback only
+  on regtest and simnet. Public networks pass zero, so a standard-policy
+  estimator outage leaves the actor waiting for the next height instead of
+  caching an anchorless sweep that cannot be fee-bumped. Race-sensitive
+  policies can still declare their own emergency fallback.
 - `Unroll` must set `ForceUnrollRequest.Trigger` explicitly to
   `actormsg.UnrollTriggerManual`. The zero value admits as
   `UnrollTriggerCriticalExpiry`, so omitting it records a hand-typed unroll as

@@ -5893,6 +5893,8 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		),
 		Log:                        fn.Some(s.subLogger("UNRL")),
 		MaxSweepFeeRateSatPerVByte: s.unrollMaxFeeRate(),
+		SweepFeeRateFallbackSatPerVByte: s.
+			unrollSweepFeeRateFallback(),
 		ExitSpendPolicyResolver: unrollpolicy.ExitSpendPolicyResolver{
 			Jobs:     recoveryStore,
 			Preimage: preimages,
@@ -6372,6 +6374,22 @@ func (s *Server) unrollMaxFeeRate() int64 {
 	if s.cfg != nil && s.cfg.Unroll != nil &&
 		s.cfg.Unroll.MaxFeeRateSatPerVByte > 0 {
 		return s.cfg.Unroll.MaxFeeRateSatPerVByte
+	}
+
+	return 0
+}
+
+// unrollSweepFeeRateFallback returns a fixed estimator-error fallback only on
+// regtest and simnet, where the caller controls block production and can safely
+// confirm a low-fee transaction. Public networks return zero so standard sweep
+// construction waits for a real estimate instead of caching an anchorless
+// transaction that cannot be fee-bumped.
+func (s *Server) unrollSweepFeeRateFallback() int64 {
+	const localFeeRateSatPerVByte int64 = 2
+
+	if s.cfg != nil && (s.cfg.Network == "regtest" ||
+		s.cfg.Network == "simnet") {
+		return localFeeRateSatPerVByte
 	}
 
 	return 0
