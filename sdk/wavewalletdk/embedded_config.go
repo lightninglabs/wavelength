@@ -100,6 +100,12 @@ type Config struct {
 	// MaxOperatorFeeSat caps the per-round operator fee the daemon accepts.
 	MaxOperatorFeeSat int64
 
+	// MaxPaymentCLTV is the largest total Lightning payment CLTV that
+	// automatic VTXO maintenance reserves. Zero preserves the daemon
+	// configuration, including the swap-enabled default. Pass
+	// WithMaxPaymentCLTVDisabled to Start to force an explicit zero.
+	MaxPaymentCLTV int32
+
 	// AutoRefreshFeeFloorSat is the optional fixed allowance in the
 	// automatic-maintenance budget curve. Zero disables the floor.
 	AutoRefreshFeeFloorSat int64

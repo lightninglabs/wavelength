@@ -62,6 +62,7 @@ func StartExternalSeedWallet(reqJSON []byte) ([]byte, error) {
 		client, openResult, err :=
 			wavewalletdk.StartExternalSeedWalletWithContexts(
 				startCtx, operationCtx, cfg, req,
+				mobileStartOptions(cfg)...,
 			)
 		if err != nil {
 			return nil, fmt.Errorf("start external-seed wallet: %w",
