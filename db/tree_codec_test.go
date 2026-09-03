@@ -469,7 +469,7 @@ func TestTreeCodecRejectsHugeNumChildren(t *testing.T) {
 		0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 	}
 
-	_, err := deserializeChildren(payload, 2)
+	_, err := deserializeChildren(payload, 2, tree.NewAssetTreeContext())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "exceeds max")
 }
