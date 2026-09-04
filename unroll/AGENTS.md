@@ -28,7 +28,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   `ChainSource`, `Wallet` (`SweepWallet`),
   `LegacyProofScanFloor` (earliest compatible commitment block for the
   configured supported public network; zero keeps block 1),
-  `MaxSweepFeeRateSatPerVByte`, `FraudCheckpointSafetyMargin int32`
+  `MaxSweepFeeRateSatPerVByte`, `SweepFeeRateFallbackSatPerVByte`
+  (explicit caller fallback; zero defers unless the exit policy declares an
+  emergency rate for a competing spend),
+  `FraudCheckpointSafetyMargin int32`
   (overrides the fraud-triggered unroll backstop margin in blocks;
   zero falls back to the default), `RegistryRef`.
 - `behavior` — actor behavior implementing `actor.TxBehavior[Msg, Resp,
@@ -62,6 +65,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   `VTXOStore`, `TxConfirmRef`, `ChainSource`, `Wallet`,
   optional `LedgerSink`, `MaxSweepFeeRateSatPerVByte`,
   `LegacyProofScanFloor` (forwarded to every child),
+  `SweepFeeRateFallbackSatPerVByte`,
   `ExitSpendPolicyResolver` (optional; reconstructs the exit spend policy
   from `(ExitPolicyKind, ExitPolicyRef)` after restart; nil means every child
   uses the standard VTXO timeout), and optional `VTXOExitObserver`
@@ -269,6 +273,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   `b.sweepTx` is already set; every retry converges on the same
   sweep txid/pkScript and avoids burning BIP32 addresses on fee-spike
   retries.
+- **Estimate before construction.** A fee-estimator error leaves the actor in
+  `AwaitingSweepBroadcast` without deriving an address or consuming a sweep
+  attempt. The next height retries estimation. An explicitly configured local
+  network fallback or a policy-owned emergency rate permits construction
+  without a fresh estimate; vHTLC policies use the latter because another
+  valid leaf can race either recovery action.
 - **Reissue fails hard on missing state.** The
   `ReissueInFlightTransactions` and `ReissueSweepConfirmation`
   outbox branches return errors on a missing proof node or nil

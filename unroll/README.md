@@ -137,6 +137,14 @@ same sweep tx is restored, so:
 - A crash between build and broadcast cannot cause a third sweep to
   emerge from the ashes.
 
+Sweep construction starts only after chainsource returns a usable fee
+estimate. A temporary estimator failure leaves the actor in
+`AwaitingSweepBroadcast` with no sweep transaction and no consumed retry
+attempt; the next height retries. Regtest and simnet callers may opt into an
+explicit fixed fallback rate. A race-sensitive exit policy may also declare an
+emergency rate; vHTLC claim and refund policies do this because another valid
+leaf can spend the same output after its timing conditions mature.
+
 ```mermaid
 sequenceDiagram
     participant FSM

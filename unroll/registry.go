@@ -146,6 +146,11 @@ type RegistryConfig struct {
 	// MaxSweepFeeRateSatPerVByte clamps pathological fee estimates.
 	MaxSweepFeeRateSatPerVByte int64
 
+	// SweepFeeRateFallbackSatPerVByte is forwarded to child actors as an
+	// explicit estimator-error fallback. Zero lets each child's exit policy
+	// choose whether to defer or use its own emergency rate.
+	SweepFeeRateFallbackSatPerVByte int64
+
 	// ExitSpendPolicyResolver reconstructs the exit policy for each
 	// spawned child from the durable (ExitPolicyKind, ExitPolicyRef)
 	// identity persisted on the unroll job. If nil, every child uses
@@ -1485,16 +1490,18 @@ func (r *registryBehavior) validateResolverCoversRecords(
 // up a durable mailbox.
 func (r *registryBehavior) childConfig(target wire.OutPoint) Config {
 	return Config{
-		TargetOutpoint:              target,
-		DeliveryStore:               r.cfg.DeliveryStore,
-		ProofAssembler:              r.cfg.ProofAssembler,
-		VTXOStore:                   r.cfg.VTXOStore,
-		TxConfirmRef:                r.cfg.TxConfirmRef,
-		ChainSource:                 r.cfg.ChainSource,
-		Wallet:                      r.cfg.Wallet,
-		LedgerSink:                  r.cfg.LedgerSink,
-		Log:                         r.cfg.Log,
-		MaxSweepFeeRateSatPerVByte:  r.cfg.MaxSweepFeeRateSatPerVByte,
+		TargetOutpoint:             target,
+		DeliveryStore:              r.cfg.DeliveryStore,
+		ProofAssembler:             r.cfg.ProofAssembler,
+		VTXOStore:                  r.cfg.VTXOStore,
+		TxConfirmRef:               r.cfg.TxConfirmRef,
+		ChainSource:                r.cfg.ChainSource,
+		Wallet:                     r.cfg.Wallet,
+		LedgerSink:                 r.cfg.LedgerSink,
+		Log:                        r.cfg.Log,
+		MaxSweepFeeRateSatPerVByte: r.cfg.MaxSweepFeeRateSatPerVByte,
+		SweepFeeRateFallbackSatPerVByte: r.cfg.
+			SweepFeeRateFallbackSatPerVByte,
 		ExitSpendPolicyResolver:     r.cfg.ExitSpendPolicyResolver,
 		FraudCheckpointSafetyMargin: r.cfg.FraudCheckpointSafetyMargin,
 		LegacyProofScanFloor:        r.cfg.LegacyProofScanFloor,

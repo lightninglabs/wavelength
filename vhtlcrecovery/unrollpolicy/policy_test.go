@@ -187,6 +187,31 @@ func TestClaimExitSpendPolicyRequiredLockTimeZero(t *testing.T) {
 	require.Zero(t, policy.RequiredLockTime())
 }
 
+// TestVHTLCExitSpendPolicyDeclaresEmergencyFeeFallback verifies both recovery
+// actions retain a broadcast attempt when fee estimation is unavailable.
+func TestVHTLCExitSpendPolicyDeclaresEmergencyFeeFallback(t *testing.T) {
+	claimJob, preimage, _, _ := testPolicyJob(
+		t, vhtlcrecovery.ActionClaim,
+	)
+	claimPolicy, err := NewClaimExitSpendPolicy(claimJob, preimage)
+	require.NoError(t, err)
+
+	refundJob, _, _, _ := testPolicyJob(
+		t, vhtlcrecovery.ActionRefundWithoutReceiver,
+	)
+	refundPolicy, err := NewRefundWithoutReceiverExitSpendPolicy(
+		refundJob,
+	)
+	require.NoError(t, err)
+
+	require.Equal(
+		t, int64(2), claimPolicy.FeeEstimateFallbackSatPerVByte(),
+	)
+	require.Equal(
+		t, int64(2), refundPolicy.FeeEstimateFallbackSatPerVByte(),
+	)
+}
+
 // TestVHTLCExitSpendPolicyRejectsWrongTarget verifies the policy refuses to
 // spend a materialized output whose pkScript does not match the vHTLC recovered
 // from durable recovery columns.

@@ -63,6 +63,12 @@ type Config struct {
 	// MaxSweepFeeRateSatPerVByte clamps pathological fee estimates.
 	MaxSweepFeeRateSatPerVByte int64
 
+	// SweepFeeRateFallbackSatPerVByte is used only when fee estimation
+	// fails. Zero lets the exit policy choose whether to defer or use its
+	// own emergency rate. A positive value overrides the policy and is
+	// intended for controlled local networks.
+	SweepFeeRateFallbackSatPerVByte int64
+
 	// FraudCheckpointSafetyMargin overrides the recipient backstop
 	// margin (in blocks) for fraud-triggered unroll jobs. Zero falls
 	// back to defaultFraudCheckpointSafetyMargin. Plumbed onto the
@@ -476,10 +482,11 @@ func (b *behavior) driveEvent(ctx context.Context, ax actor.Exec[unrollTx],
 // transaction materializes from the checkpoint, txconfirm sees the same
 // txid it has been tracking, and the Ask resolves as a benign no-op.
 //
-// If buildSweepTx itself fails (fee estimation, signing, malformed
-// descriptor), we drive a SweepBuildFailedEvent through the FSM so the
-// retry budget is accounted for and we reach terminal Failed after
-// maxSweepAttempts.
+// A temporarily unavailable fee estimate defers construction until the next
+// height without consuming the retry budget. Other build failures (signing,
+// malformed descriptor, or an invalid estimate) drive a SweepBuildFailedEvent
+// through the FSM so the retry budget is accounted for and the job reaches
+// terminal Failed after maxSweepAttempts.
 func (b *behavior) startSweep(ctx context.Context,
 	ax actor.Exec[unrollTx]) error {
 
@@ -580,7 +587,8 @@ func (b *behavior) startSweep(ctx context.Context,
 
 		sweepTx, err := buildSweepTx(
 			ctx, b.cfg.Wallet, b.cfg.ChainSource, b.proof, b.desc,
-			b.cfg.MaxSweepFeeRateSatPerVByte, b.currentHeight(),
+			b.cfg.MaxSweepFeeRateSatPerVByte,
+			b.sweepFeeRateFallback(policy), b.currentHeight(),
 			policy,
 		)
 		if err != nil {
@@ -597,6 +605,24 @@ func (b *behavior) startSweep(ctx context.Context,
 						"target_outpoint",
 						b.cfg.TargetOutpoint.
 							String(),
+					),
+					slog.String("err", err.Error()),
+				)
+
+				return nil
+			}
+
+			// An estimator outage is not a failed sweep attempt: no
+			// transaction or wallet destination exists yet. Leave
+			// the planner in AwaitingSweepBroadcast so the next
+			// height asks for a fresh estimate.
+			var feeEstimateErr *sweepFeeEstimateUnavailableError
+			if errors.As(err, &feeEstimateErr) {
+				b.log.InfoS(ctx, "Deferring unroll exit spend: "+
+					"fee estimate unavailable",
+					slog.String(
+						"target_outpoint",
+						b.cfg.TargetOutpoint.String(),
 					),
 					slog.String("err", err.Error()),
 				)
@@ -660,6 +686,16 @@ func (b *behavior) startSweep(ctx context.Context,
 	}
 
 	return b.driveEvent(ctx, ax, &SweepBroadcastedEvent{Txid: sweepTxid})
+}
+
+// sweepFeeRateFallback prefers the daemon-level local-network fallback, then
+// lets a race-sensitive exit policy declare its own emergency rate.
+func (b *behavior) sweepFeeRateFallback(policy ExitSpendPolicy) int64 {
+	if b.cfg.SweepFeeRateFallbackSatPerVByte > 0 {
+		return b.cfg.SweepFeeRateFallbackSatPerVByte
+	}
+
+	return policy.FeeEstimateFallbackSatPerVByte()
 }
 
 // exitPolicyKind returns the durable policy kind for the current job.
