@@ -270,6 +270,7 @@ func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 	terms *libtypes.OperatorTerms, family keychain.KeyFamily, window uint32,
 	result *WalletRecoveryResult) error {
 
+	var firstExpiryErr error
 	for i := uint32(0); i < window; i++ {
 		keyDesc, err := r.server.proofKeyBackend.DeriveKey(
 			ctx, keychain.KeyLocator{
@@ -359,9 +360,19 @@ func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 					ctx, desc.Ancestry,
 				)
 				if err != nil {
-					return fmt.Errorf("authenticate VTXO "+
-						"%s expiry: %w", desc.Outpoint,
-						err)
+					if firstExpiryErr == nil {
+						firstExpiryErr = fmt.Errorf(
+							"authenticate VTXO %s "+
+								"expiry: %w",
+							desc.Outpoint, err)
+					}
+					r.server.log.WarnS(
+						ctx, "Skipping recovered VTXO with "+
+							"unauthenticated expiry", err,
+						"outpoint", desc.Outpoint.String(),
+					)
+
+					continue
 				}
 				desc.BatchExpiry = expiry
 
@@ -381,7 +392,7 @@ func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 		}
 	}
 
-	return nil
+	return firstExpiryErr
 }
 
 func recoveryDescriptorFromIndexer(indexed *arkrpc.VTXO,

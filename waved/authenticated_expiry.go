@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	expiryAuthenticationTimeout      = 30 * time.Second
-	expiryConfirmationCleanupTimeout = 5 * time.Second
+	expiryAuthenticationTimeout         = 30 * time.Second
+	incomingExpiryAuthenticationTimeout = 2 * time.Second
+	expiryConfirmationCleanupTimeout    = 5 * time.Second
 )
 
 type chainSourceRef = actor.ActorRef[

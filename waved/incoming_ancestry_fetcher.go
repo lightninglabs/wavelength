@@ -23,14 +23,36 @@ import (
 // runs with a broken dependency in production.
 //
 // The fetched ancestry travels through the same vtxo.AncestryFromRPC validator
-// the OOR receive path uses; structural errors (missing or over-cap paths)
-// surface as fetch failures and the handler then persists without ancestry
-// rather than dropping the VTXO entirely. This keeps cooperative spend paths
-// usable on the receiver even if the indexer is temporarily unhealthy — only
-// unilateral exit is degraded.
+// the OOR receive path uses. Structural or authentication errors keep the
+// durable incoming event pending for retry; no VTXO is accepted without the
+// expiry evidence needed to enforce its safety margins.
 func incomingAncestryFetcher(idx *indexer.Client,
 	signerFactory OORReceiveScriptSignerFactory,
-	authenticators ...oor.IncomingExpiryAuthenticator) (
+	authenticateExpiry oor.IncomingExpiryAuthenticator) (
+	vtxo.IncomingAncestryFetcher, error) {
+
+	if authenticateExpiry == nil {
+		return nil, fmt.Errorf("expiry authenticator not initialized")
+	}
+
+	return newIncomingAncestryFetcher(
+		idx, signerFactory, authenticateExpiry,
+	)
+}
+
+// incomingAncestryOnlyFetcher builds the fetch-only variant used by the
+// legacy commitment-height repair. New VTXO acceptance must use
+// incomingAncestryFetcher so expiry authentication cannot be omitted.
+func incomingAncestryOnlyFetcher(idx *indexer.Client,
+	signerFactory OORReceiveScriptSignerFactory) (
+	vtxo.IncomingAncestryFetcher, error) {
+
+	return newIncomingAncestryFetcher(idx, signerFactory, nil)
+}
+
+func newIncomingAncestryFetcher(idx *indexer.Client,
+	signerFactory OORReceiveScriptSignerFactory,
+	authenticateExpiry oor.IncomingExpiryAuthenticator) (
 	vtxo.IncomingAncestryFetcher, error) {
 
 	if idx == nil {
@@ -38,14 +60,6 @@ func incomingAncestryFetcher(idx *indexer.Client,
 	}
 	if signerFactory == nil {
 		return nil, fmt.Errorf("signer factory not initialized")
-	}
-	if len(authenticators) > 1 {
-		return nil, fmt.Errorf("at most one expiry authenticator is " +
-			"allowed")
-	}
-	var authenticateExpiry oor.IncomingExpiryAuthenticator
-	if len(authenticators) == 1 {
-		authenticateExpiry = authenticators[0]
 	}
 
 	return func(ctx context.Context, outpoint wire.OutPoint,

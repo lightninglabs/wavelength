@@ -159,7 +159,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   the confirmed transaction through `vtxo.AuthenticateBatchExpiry`, and
   unregisters each watch. Thin incoming events, OOR receives, indexed recovery,
   and custom refresh metadata use it before persistence or signing. Existing
-  live rows are deliberately left unchanged.
+  live rows are deliberately left unchanged. The single incoming-event actor
+  caps its authentication wait at 2 seconds and relies on durable redelivery;
+  other callers retain the 30-second lookup bound. Indexed recovery skips bad
+  entries so later VTXOs are examined, then returns the first authentication
+  error so a partial scan is never reported as complete.
 - `initUnrollSubsystem` boot ordering is policy-preserving.
   `recoverySvc.RestoreNonTerminal` (in-flight vHTLC recovery jobs, each
   carrying its durable exit policy) runs **before** the chain resolver is

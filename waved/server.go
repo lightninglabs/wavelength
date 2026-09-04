@@ -4889,31 +4889,42 @@ func (s *Server) initOORActor(ctx context.Context,
 	// IncomingVTXOEvent push notifications from the indexer and
 	// materializes VTXOs for registered receive scripts.
 	//
-	// The ancestry fetcher is wired so the materialized descriptor
-	// carries the round commit tree fragments needed for unilateral
-	// exit (bug-3 in BUGS_FOUND.md). A wiring failure (no indexer or
-	// no proof-key backend) is non-fatal: the handler runs without
-	// the fetcher, persisting incoming VTXOs without ancestry, which
-	// preserves the legacy degraded behavior (cooperative paths work,
-	// unilateral exit blocked) rather than dropping incoming events
-	// on the floor.
+	// The ancestry fetcher is wired so the materialized descriptor carries
+	// authenticated expiry evidence and the round commit tree fragments
+	// needed for unilateral exit. A wiring failure leaves relevant durable
+	// events pending rather than accepting incomplete safety metadata.
 	var ancestryFetcher vtxo.IncomingAncestryFetcher
 	incomingSignerFactory, fetcherErr := s.indexerProofSignerFactory()
 	if fetcherErr != nil {
 		s.log.WarnS(ctx,
-			"Incoming VTXO ancestry fetch disabled; received "+
-				"VTXOs will not be unilaterally exitable",
+			"Incoming VTXO acceptance disabled; ancestry fetch "+
+				"cannot be authenticated",
 			fetcherErr,
 		)
 	} else {
+		incomingExpiryAuthenticator := s.expiryAuthenticator
+		if incomingExpiryAuthenticator != nil {
+			authenticateExpiry := incomingExpiryAuthenticator
+			incomingExpiryAuthenticator = func(ctx context.Context,
+				ancestry []vtxo.Ancestry) (int32, error) {
+
+				ctx, cancel := context.WithTimeout(
+					ctx,
+					incomingExpiryAuthenticationTimeout,
+				)
+				defer cancel()
+
+				return authenticateExpiry(ctx, ancestry)
+			}
+		}
 		ancestryFetcher, fetcherErr = incomingAncestryFetcher(
-			s.indexer, incomingSignerFactory, s.expiryAuthenticator,
+			s.indexer, incomingSignerFactory,
+			incomingExpiryAuthenticator,
 		)
 		if fetcherErr != nil {
 			s.log.WarnS(ctx,
-				"Incoming VTXO ancestry fetch disabled; "+
-					"received VTXOs will not be "+
-					"unilaterally exitable",
+				"Incoming VTXO acceptance disabled; ancestry "+
+					"fetch cannot be authenticated",
 				fetcherErr,
 			)
 		}

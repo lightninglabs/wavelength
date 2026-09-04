@@ -107,12 +107,8 @@ type IncomingVTXOExtras struct {
 // descriptor carries full lineage from the first save.
 //
 // The handler routes per-script signing via clientKey so the
-// implementation can issue an indexer ListVTXOsByScripts query under
-// the owner's proof-of-control. A nil fetcher (legacy harnesses /
-// non-waved consumers) causes the handler to persist without
-// extras — the cooperative spend paths (refresh, OOR, leave) still
-// work; only unilateral exit is impossible until backfill. Production
-// wiring (see waved) supplies an indexer-backed implementation.
+// implementation can issue an indexer ListVTXOsByScripts query under the
+// owner's proof-of-control and authenticate the returned expiry evidence.
 type IncomingAncestryFetcher func(ctx context.Context,
 	outpoint wire.OutPoint, pkScript []byte,
 	clientKey keychain.KeyDescriptor) (IncomingVTXOExtras, error)
@@ -134,11 +130,9 @@ type IncomingVTXOHandlerConfig struct {
 	// actor, used to notify it of newly materialized VTXOs.
 	VTXOManager actor.TellOnlyRef[ManagerMsg]
 
-	// AncestryFetcher resolves the round commit tree fragments
-	// required to unilaterally exit each incoming VTXO. Nil falls
-	// back to persisting without ancestry; production must supply
-	// a non-nil implementation to keep the unilateral exit path
-	// usable for received VTXOs (see bug-3 in BUGS_FOUND.md).
+	// AncestryFetcher resolves the authenticated expiry and round commit
+	// tree fragments required to accept and unilaterally exit each incoming
+	// VTXO. A nil fetcher rejects relevant events for durable retry.
 	AncestryFetcher IncomingAncestryFetcher
 
 	// MetricsSink is an optional reference to the client-side metrics
