@@ -210,11 +210,19 @@ type RegisterVTXORequestsRequest struct {
 	actor.BaseMessage
 
 	Amounts []btcutil.Amount
+	Assets  []AssetVTXORequest
 
 	// ChangeIndex explicitly selects the request that receives the
 	// seal-time residual. Nil lets the client choose the largest non-fixed
 	// request when the composed intent is registered.
 	ChangeIndex *int
+}
+
+// AssetVTXORequest describes one asset output requested from a round.
+type AssetVTXORequest struct {
+	AmountSat   btcutil.Amount
+	AssetRef    string
+	AssetAmount uint64
 }
 
 // MessageType returns the message type name.

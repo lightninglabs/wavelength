@@ -406,6 +406,13 @@ message VTXORequest {
     // implicit-change exception is disabled and the intent must include a
     // separate fee-bearing change output if fees need to be paid.
     bool fixed_amount = 5;
+
+    // asset_ref identifies the asset requested for this VTXO. Empty for a
+    // Bitcoin VTXO.
+    string asset_ref = 6;
+
+    // asset_amount is the number of asset units requested.
+    uint64 asset_amount = 7;
 }
 
 // ForfeitRequest specifies a VTXO the client wants to forfeit.
