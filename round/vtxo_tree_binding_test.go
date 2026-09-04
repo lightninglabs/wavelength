@@ -347,12 +347,14 @@ func TestConfirmationWatchScriptUsesBatchOutput(t *testing.T) {
 			},
 		},
 	}
-	const targetConfs = 6
+	const minConfs = 6
+	const targetConfs = 1
 	const startHeight = 123
 	outbox := state.forfeitCollectionOutbox(
 		&ClientEnvironment{
 			OperatorTerms: &types.OperatorTerms{
-				MinConfirmations: targetConfs,
+				MinConfirmations:  minConfs,
+				VTXOConfirmations: targetConfs,
 			},
 			StartHeight:            startHeight,
 			StatusReconcileTimeout: time.Minute,

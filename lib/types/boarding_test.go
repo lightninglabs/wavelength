@@ -58,3 +58,46 @@ func TestOperatorTermsMinVTXOAmountFloor(t *testing.T) {
 		})
 	}
 }
+
+// TestOperatorTermsVTXOTargetConfirmations pins the legacy fallback and the
+// explicit split activation depth used by round confirmation watches.
+func TestOperatorTermsVTXOTargetConfirmations(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		terms *OperatorTerms
+		want  uint32
+	}{
+		{
+			name: "nil terms",
+			want: 0,
+		},
+		{
+			name: "legacy fallback",
+			terms: &OperatorTerms{
+				MinConfirmations: 6,
+			},
+			want: 6,
+		},
+		{
+			name: "explicit activation depth",
+			terms: &OperatorTerms{
+				MinConfirmations:  6,
+				VTXOConfirmations: 1,
+			},
+			want: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(
+				t, tc.want, tc.terms.VTXOTargetConfirmations(),
+			)
+		})
+	}
+}

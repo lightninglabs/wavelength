@@ -1305,7 +1305,7 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 		CallerID:    callerID,
 		Txid:        &txid,
 		PkScript:    pkScript,
-		TargetConfs: a.cfg.OperatorTerms.MinConfirmations,
+		TargetConfs: a.cfg.OperatorTerms.VTXOTargetConfirmations(),
 		HeightHint:  heightHint,
 		NotifyActor: fn.Some(mappedRef),
 	}

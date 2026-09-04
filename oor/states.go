@@ -1,6 +1,8 @@
 package oor
 
 import (
+	"time"
+
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/lightninglabs/wavelength/baselib/protofsm"
 	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
@@ -106,6 +108,12 @@ type AwaitingSubmitAccepted struct {
 
 	// DispatchRequestData is the normalized caller-recipient proof.
 	DispatchRequestData []byte
+
+	// RetryAfter and RetryReason describe the latest pending submit retry.
+	// They are persisted so operation status can expose a transient typed
+	// rejection without turning it into a terminal failure.
+	RetryAfter  time.Duration
+	RetryReason string
 
 	// FirstRejectUnixNanos is the Unix-nanosecond timestamp of the first
 	// transient submit rejection observed while awaiting submit acceptance,

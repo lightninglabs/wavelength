@@ -88,6 +88,8 @@ func TestHandleSubmitOutboxErrorReschedulesWithinBudget(t *testing.T) {
 	next, ok := transition.NextState.(*AwaitingSubmitAccepted)
 	require.True(t, ok)
 	require.Equal(t, start.UnixNano(), next.FirstRejectUnixNanos)
+	require.Equal(t, 15*time.Second, next.RetryAfter)
+	require.Equal(t, "input not spendable", next.RetryReason)
 
 	// The source state must not be mutated in place.
 	require.Zero(t, current.FirstRejectUnixNanos)
@@ -115,6 +117,8 @@ func TestHandleSubmitOutboxErrorReschedulesWithinBudget(t *testing.T) {
 	next2, ok := transition.NextState.(*AwaitingSubmitAccepted)
 	require.True(t, ok)
 	require.Equal(t, start.UnixNano(), next2.FirstRejectUnixNanos)
+	require.Equal(t, 15*time.Second, next2.RetryAfter)
+	require.Equal(t, "input not spendable", next2.RetryReason)
 	require.Len(t, transition.NewEvents.UnwrapOr(EmittedEvent{}).Outbox, 1)
 }
 

@@ -149,6 +149,8 @@ func TestOutgoingRegistryRecordSuppliesNormalizedReplayProof(t *testing.T) {
 	require.NoError(t, err)
 	awaiting, ok := submit.NextState.(*AwaitingSubmitAccepted)
 	require.True(t, ok)
+	awaiting.RetryAfter = 15 * time.Second
+	awaiting.RetryReason = "input not spendable"
 
 	sessionID, err := sessionIDFromArk(awaiting.ArkPSBT)
 	require.NoError(t, err)
@@ -159,6 +161,10 @@ func TestOutgoingRegistryRecordSuppliesNormalizedReplayProof(t *testing.T) {
 	proofRecord, err := outgoingRegistryRecord(sessionID, awaiting)
 	require.NoError(t, err)
 	require.NotEmpty(t, proofRecord.DispatchRequestData)
+	persisted, err := decodeOutgoingSnapshot(proofRecord.SnapshotData)
+	require.NoError(t, err)
+	require.Equal(t, 15*time.Second, persisted.RetryAfter)
+	require.Equal(t, "input not spendable", persisted.FailReason)
 
 	recipients, err := OutgoingReplayRecipients(
 		proofRecord.DispatchRequestData,
