@@ -150,6 +150,18 @@ type trackedTxFeeBumpStarted struct{}
 // trackedTxEventSealed marks trackedTxFeeBumpStarted as a tracked-tx event.
 func (e *trackedTxFeeBumpStarted) trackedTxEventSealed() {}
 
+// trackedTxFeeBumpFailed records that a fee-bump rebroadcast failed while the
+// original transaction remains live and awaiting confirmation.
+type trackedTxFeeBumpFailed struct {
+	// AttemptHeight is the chain height of the failed fee-bump attempt. It
+	// advances retry pacing without replacing the last successful broadcast
+	// metadata or incrementing the successful bump count.
+	AttemptHeight int32
+}
+
+// trackedTxEventSealed marks trackedTxFeeBumpFailed as a tracked-tx event.
+func (e *trackedTxFeeBumpFailed) trackedTxEventSealed() {}
+
 // trackedTxConfirmed records terminal confirmation of the tracked txid.
 type trackedTxConfirmed struct {
 	// BlockHeight is the block height where the tx confirmed.
