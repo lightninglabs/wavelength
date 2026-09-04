@@ -59,6 +59,145 @@ func (q *Queries) GetClientAccountBalance(ctx context.Context, accountID string)
 	return balance, err
 }
 
+const GetClientLedgerEntryByIdempotencyKey = `-- name: GetClientLedgerEntryByIdempotencyKey :one
+SELECT entry_id, debit_account, credit_account, amount_sat,
+       round_id, session_id, idempotency_key,
+       event_type, description, created_at,
+       chain_txid, chain_vout, confirmation_height, round_uuid
+FROM ledger_entries
+WHERE idempotency_key = $1
+  AND event_type = $2
+  AND debit_account = $3
+  AND credit_account = $4
+`
+
+type GetClientLedgerEntryByIdempotencyKeyParams struct {
+	IdempotencyKey []byte
+	EventType      string
+	DebitAccount   string
+	CreditAccount  string
+}
+
+func (q *Queries) GetClientLedgerEntryByIdempotencyKey(ctx context.Context, arg GetClientLedgerEntryByIdempotencyKeyParams) (LedgerEntry, error) {
+	row := q.db.QueryRowContext(ctx, GetClientLedgerEntryByIdempotencyKey,
+		arg.IdempotencyKey,
+		arg.EventType,
+		arg.DebitAccount,
+		arg.CreditAccount,
+	)
+	var i LedgerEntry
+	err := row.Scan(
+		&i.EntryID,
+		&i.DebitAccount,
+		&i.CreditAccount,
+		&i.AmountSat,
+		&i.RoundID,
+		&i.SessionID,
+		&i.IdempotencyKey,
+		&i.EventType,
+		&i.Description,
+		&i.CreatedAt,
+		&i.ChainTxid,
+		&i.ChainVout,
+		&i.ConfirmationHeight,
+		&i.RoundUuid,
+	)
+	return i, err
+}
+
+const GetClientLedgerEntryByRoundID = `-- name: GetClientLedgerEntryByRoundID :one
+SELECT entry_id, debit_account, credit_account, amount_sat,
+       round_id, session_id, idempotency_key,
+       event_type, description, created_at,
+       chain_txid, chain_vout, confirmation_height, round_uuid
+FROM ledger_entries
+WHERE round_id = $1
+  AND idempotency_key IS NULL
+  AND event_type = $2
+  AND debit_account = $3
+  AND credit_account = $4
+`
+
+type GetClientLedgerEntryByRoundIDParams struct {
+	RoundID       []byte
+	EventType     string
+	DebitAccount  string
+	CreditAccount string
+}
+
+func (q *Queries) GetClientLedgerEntryByRoundID(ctx context.Context, arg GetClientLedgerEntryByRoundIDParams) (LedgerEntry, error) {
+	row := q.db.QueryRowContext(ctx, GetClientLedgerEntryByRoundID,
+		arg.RoundID,
+		arg.EventType,
+		arg.DebitAccount,
+		arg.CreditAccount,
+	)
+	var i LedgerEntry
+	err := row.Scan(
+		&i.EntryID,
+		&i.DebitAccount,
+		&i.CreditAccount,
+		&i.AmountSat,
+		&i.RoundID,
+		&i.SessionID,
+		&i.IdempotencyKey,
+		&i.EventType,
+		&i.Description,
+		&i.CreatedAt,
+		&i.ChainTxid,
+		&i.ChainVout,
+		&i.ConfirmationHeight,
+		&i.RoundUuid,
+	)
+	return i, err
+}
+
+const GetClientLedgerEntryBySessionID = `-- name: GetClientLedgerEntryBySessionID :one
+SELECT entry_id, debit_account, credit_account, amount_sat,
+       round_id, session_id, idempotency_key,
+       event_type, description, created_at,
+       chain_txid, chain_vout, confirmation_height, round_uuid
+FROM ledger_entries
+WHERE session_id = $1
+  AND event_type = $2
+  AND debit_account = $3
+  AND credit_account = $4
+`
+
+type GetClientLedgerEntryBySessionIDParams struct {
+	SessionID     []byte
+	EventType     string
+	DebitAccount  string
+	CreditAccount string
+}
+
+func (q *Queries) GetClientLedgerEntryBySessionID(ctx context.Context, arg GetClientLedgerEntryBySessionIDParams) (LedgerEntry, error) {
+	row := q.db.QueryRowContext(ctx, GetClientLedgerEntryBySessionID,
+		arg.SessionID,
+		arg.EventType,
+		arg.DebitAccount,
+		arg.CreditAccount,
+	)
+	var i LedgerEntry
+	err := row.Scan(
+		&i.EntryID,
+		&i.DebitAccount,
+		&i.CreditAccount,
+		&i.AmountSat,
+		&i.RoundID,
+		&i.SessionID,
+		&i.IdempotencyKey,
+		&i.EventType,
+		&i.Description,
+		&i.CreatedAt,
+		&i.ChainTxid,
+		&i.ChainVout,
+		&i.ConfirmationHeight,
+		&i.RoundUuid,
+	)
+	return i, err
+}
+
 const GetClientLedgerStats = `-- name: GetClientLedgerStats :one
 SELECT CAST(COUNT(*) AS BIGINT) AS entry_count,
        CAST(COALESCE(MIN(created_at), 0) AS BIGINT) AS first_created_at,
@@ -88,8 +227,8 @@ WHERE event_type = 'onchain_fee_paid'
 
 // GetConfirmedExitCost returns the confirmed on-chain cost of a unilateral
 // exit: the onchain_fee_paid leg the ledger booked after the exit's final
-// sweep confirmed, keyed by the exit's outpoint-derived idempotency key
-// (ledger.ExitIdempotencyKey). Zero when the exit has not confirmed (or
+// sweep confirmed, keyed by the exit's fee-leg identity
+// (ledger.ExitFeeIdempotencyKey). Zero when the exit has not confirmed (or
 // predates exit-cost accounting).
 func (q *Queries) GetConfirmedExitCost(ctx context.Context, idempotencyKey []byte) (int64, error) {
 	row := q.db.QueryRowContext(ctx, GetConfirmedExitCost, idempotencyKey)
@@ -151,13 +290,11 @@ type InsertClientLedgerEntryParams struct {
 // every partial unique index on ledger_entries:
 //   - idx_client_ledger_idempotent_round covers per-round events
 //   - idx_client_ledger_idempotent_session covers per-OOR-session events
-//   - idx_client_ledger_idempotent_key covers outpoint-keyed events
-//     (unilateral exit send leg + fee leg share the same key)
+//   - idx_client_ledger_idempotent_key covers operation-and-leg-scoped events
 //
 // A redelivered durable-actor message that reprocesses an entry
-// already persisted in a committed tx becomes a silent no-op
-// instead of surfacing a constraint violation that would drive
-// an infinite nack-and-retry loop on a permanent condition.
+// already persisted in a committed tx becomes a no-op. The adapter reads the
+// winning row and rejects a replay whose accounting payload differs.
 func (q *Queries) InsertClientLedgerEntry(ctx context.Context, arg InsertClientLedgerEntryParams) error {
 	_, err := q.db.ExecContext(ctx, InsertClientLedgerEntry,
 		arg.DebitAccount,
@@ -441,6 +578,85 @@ func (q *Queries) ListLedgerRoundIDsMissingUuid(ctx context.Context) ([][]byte, 
 	return items, nil
 }
 
+const ListLegacyOutpointLedgerEntries = `-- name: ListLegacyOutpointLedgerEntries :many
+SELECT entry_id, debit_account, credit_account, amount_sat,
+       round_id, session_id, idempotency_key,
+       event_type, description, created_at,
+       chain_txid, chain_vout, confirmation_height, round_uuid
+FROM ledger_entries
+WHERE LENGTH(idempotency_key) = 36
+  AND (
+      (
+          event_type = 'vtxo_sent'
+          AND debit_account = 'transfers_out'
+          AND credit_account = 'vtxo_balance'
+          AND session_id IS NULL
+          AND (
+              round_id IS NULL
+              OR EXISTS (
+                  SELECT 1
+                  FROM ledger_entries AS received
+                  WHERE received.idempotency_key =
+                            ledger_entries.idempotency_key
+                    AND received.event_type = 'vtxo_received'
+                    AND received.debit_account = 'vtxo_balance'
+                    AND received.credit_account = 'transfers_out'
+                    AND received.round_id = ledger_entries.round_id
+              )
+          )
+      )
+      OR (
+          event_type = 'onchain_fee_paid'
+          AND debit_account = 'onchain_fees'
+          AND credit_account = 'vtxo_balance'
+          AND round_id IS NULL
+          AND session_id IS NULL
+      )
+  )
+ORDER BY entry_id
+`
+
+// Migration 19 rewrites only the legacy 36-byte outpoint identities used by
+// refresh sends and unilateral-exit legs. Other event types may also carry
+// 36-byte natural keys, so the account/event shapes are part of the filter.
+func (q *Queries) ListLegacyOutpointLedgerEntries(ctx context.Context) ([]LedgerEntry, error) {
+	rows, err := q.db.QueryContext(ctx, ListLegacyOutpointLedgerEntries)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LedgerEntry
+	for rows.Next() {
+		var i LedgerEntry
+		if err := rows.Scan(
+			&i.EntryID,
+			&i.DebitAccount,
+			&i.CreditAccount,
+			&i.AmountSat,
+			&i.RoundID,
+			&i.SessionID,
+			&i.IdempotencyKey,
+			&i.EventType,
+			&i.Description,
+			&i.CreatedAt,
+			&i.ChainTxid,
+			&i.ChainVout,
+			&i.ConfirmationHeight,
+			&i.RoundUuid,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListTransactionHistory = `-- name: ListTransactionHistory :many
 SELECT source, entry_id, txid, transaction_type, subtype,
        amount_sat, fee_sat, created_at, status, description,
@@ -462,6 +678,12 @@ FROM (
                WHEN le.event_type IN (
                    'boarding_fee_paid', 'wallet_utxo_created'
                ) THEN 'boarding'
+               WHEN le.event_type = 'vtxo_sent'
+                    AND le.round_id IS NULL
+                    AND le.session_id IS NULL
+                    AND le.chain_txid IS NOT NULL
+                    AND le.chain_vout IS NOT NULL
+               THEN 'sweep'
                WHEN le.event_type IN (
                    'onchain_fee_paid', 'boarding_sweep_fee_paid'
                ) THEN 'sweep'
@@ -477,6 +699,11 @@ FROM (
            END AS fee_sat,
            le.created_at,
            CASE
+               WHEN le.event_type = 'vtxo_sent'
+                    AND le.round_id IS NULL
+                    AND le.session_id IS NULL
+                    AND le.confirmation_height IS NOT NULL
+               THEN 'confirmed'
                WHEN le.event_type = 'wallet_utxo_created'
                     AND boarding_round.confirmed
                THEN 'confirmed'
@@ -756,4 +983,56 @@ func (q *Queries) ListTransactionHistory(ctx context.Context, arg ListTransactio
 		return nil, err
 	}
 	return items, nil
+}
+
+const UpdateLedgerEntryIdempotencyKey = `-- name: UpdateLedgerEntryIdempotencyKey :execrows
+UPDATE ledger_entries
+SET idempotency_key = $1
+WHERE entry_id = $2
+  AND idempotency_key = $3
+`
+
+type UpdateLedgerEntryIdempotencyKeyParams struct {
+	NewKey  []byte
+	EntryID int64
+	OldKey  []byte
+}
+
+func (q *Queries) UpdateLedgerEntryIdempotencyKey(ctx context.Context, arg UpdateLedgerEntryIdempotencyKeyParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, UpdateLedgerEntryIdempotencyKey, arg.NewKey, arg.EntryID, arg.OldKey)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const UpdateLegacyExitLedgerEntry = `-- name: UpdateLegacyExitLedgerEntry :execrows
+UPDATE ledger_entries
+SET idempotency_key = $1,
+    chain_txid = COALESCE(chain_txid, $2),
+    chain_vout = COALESCE(chain_vout, $3)
+WHERE entry_id = $4
+  AND idempotency_key = $5
+`
+
+type UpdateLegacyExitLedgerEntryParams struct {
+	NewKey    []byte
+	ChainTxid []byte
+	ChainVout sql.NullInt32
+	EntryID   int64
+	OldKey    []byte
+}
+
+func (q *Queries) UpdateLegacyExitLedgerEntry(ctx context.Context, arg UpdateLegacyExitLedgerEntryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, UpdateLegacyExitLedgerEntry,
+		arg.NewKey,
+		arg.ChainTxid,
+		arg.ChainVout,
+		arg.EntryID,
+		arg.OldKey,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

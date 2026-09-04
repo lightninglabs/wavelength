@@ -97,14 +97,17 @@ type Querier interface {
 	GetBoardingSweepByInput(ctx context.Context, arg GetBoardingSweepByInputParams) (BoardingSweep, error)
 	GetChainInfo(ctx context.Context, chainName string) (ChainInfo, error)
 	GetClientAccountBalance(ctx context.Context, accountID string) (int64, error)
+	GetClientLedgerEntryByIdempotencyKey(ctx context.Context, arg GetClientLedgerEntryByIdempotencyKeyParams) (LedgerEntry, error)
+	GetClientLedgerEntryByRoundID(ctx context.Context, arg GetClientLedgerEntryByRoundIDParams) (LedgerEntry, error)
+	GetClientLedgerEntryBySessionID(ctx context.Context, arg GetClientLedgerEntryBySessionIDParams) (LedgerEntry, error)
 	GetClientLedgerStats(ctx context.Context) (GetClientLedgerStatsRow, error)
 	GetClientTreeByTxid(ctx context.Context, txid []byte) (RoundClientTree, error)
 	GetClientTreeTxidInfo(ctx context.Context, txid []byte) (ClientTreeTxid, error)
 	GetClientTreeTxids(ctx context.Context, arg GetClientTreeTxidsParams) ([]GetClientTreeTxidsRow, error)
 	// GetConfirmedExitCost returns the confirmed on-chain cost of a unilateral
 	// exit: the onchain_fee_paid leg the ledger booked after the exit's final
-	// sweep confirmed, keyed by the exit's outpoint-derived idempotency key
-	// (ledger.ExitIdempotencyKey). Zero when the exit has not confirmed (or
+	// sweep confirmed, keyed by the exit's fee-leg identity
+	// (ledger.ExitFeeIdempotencyKey). Zero when the exit has not confirmed (or
 	// predates exit-cost accounting).
 	GetConfirmedExitCost(ctx context.Context, idempotencyKey []byte) (int64, error)
 	GetCreditOperation(ctx context.Context, opID string) (CreditOperation, error)
@@ -164,12 +167,10 @@ type Querier interface {
 	// every partial unique index on ledger_entries:
 	//   - idx_client_ledger_idempotent_round covers per-round events
 	//   - idx_client_ledger_idempotent_session covers per-OOR-session events
-	//   - idx_client_ledger_idempotent_key covers outpoint-keyed events
-	//     (unilateral exit send leg + fee leg share the same key)
+	//   - idx_client_ledger_idempotent_key covers operation-and-leg-scoped events
 	// A redelivered durable-actor message that reprocesses an entry
-	// already persisted in a committed tx becomes a silent no-op
-	// instead of surfacing a constraint violation that would drive
-	// an infinite nack-and-retry loop on a permanent condition.
+	// already persisted in a committed tx becomes a no-op. The adapter reads the
+	// winning row and rejects a replay whose accounting payload differs.
 	InsertClientLedgerEntry(ctx context.Context, arg InsertClientLedgerEntryParams) error
 	// Client tree txids queries.
 	InsertClientTreeTxid(ctx context.Context, arg InsertClientTreeTxidParams) error
@@ -245,6 +246,10 @@ type Querier interface {
 	// SQLite and Postgres, so the migration-015 post-step performs it in Go and
 	// writes the result back via BackfillLedgerRoundUuid.
 	ListLedgerRoundIDsMissingUuid(ctx context.Context) ([][]byte, error)
+	// Migration 19 rewrites only the legacy 36-byte outpoint identities used by
+	// refresh sends and unilateral-exit legs. Other event types may also carry
+	// 36-byte natural keys, so the account/event shapes are part of the filter.
+	ListLegacyOutpointLedgerEntries(ctx context.Context) ([]LedgerEntry, error)
 	// ListLiveVTXOAncestryPaths returns every ancestry row whose parent VTXO
 	// is non-terminal, mirroring the filter on ListLiveVTXOs. Used as a
 	// single batched companion query so descriptor materialization across
@@ -409,6 +414,8 @@ type Querier interface {
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
+	UpdateLedgerEntryIdempotencyKey(ctx context.Context, arg UpdateLedgerEntryIdempotencyKeyParams) (int64, error)
+	UpdateLegacyExitLedgerEntry(ctx context.Context, arg UpdateLegacyExitLedgerEntryParams) (int64, error)
 	UpdateRoundBoardingIntentSignature(ctx context.Context, arg UpdateRoundBoardingIntentSignatureParams) error
 	UpdateRoundStatus(ctx context.Context, arg UpdateRoundStatusParams) error
 	// UpdateVTXOStatus atomically updates a VTXO's status. This is the primary
