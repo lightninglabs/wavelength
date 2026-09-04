@@ -276,6 +276,10 @@ type CommitmentTxReceivedState struct {
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
 
+	// AssetLeafPackages contains the sealed package for each asset VTXO,
+	// keyed by the VTXO outpoint.
+	AssetLeafPackages map[wire.OutPoint][]byte
+
 	// TreeCosignKey is the operator's per-round VTXO-tree MuSig2 cosigner
 	// key delivered with the commitment tx. Used to validate the VTXO tree
 	// (and, via the extracted client trees, sign it) instead of the global

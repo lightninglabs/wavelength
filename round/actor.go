@@ -523,6 +523,7 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		Log:                    actorLog,
 		DisableJoinRequestAuth: cfg.DisableJoinRequestAuth,
 		OwnedScriptChecker:     cfg.OwnedScriptChecker,
+		OwnedScriptRegistrar:   cfg.OwnedScriptRegistrar,
 	}
 	if env.SigningExecutor == nil {
 		env.SigningExecutor = NewSigningExecutor(1)
@@ -946,6 +947,7 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 		StatusReconcileTimeout: a.env.StatusReconcileTimeout,
 		RoundKey:               RoundKeyStr(roundID.KeyString()),
 		OwnedScriptChecker:     a.cfg.OwnedScriptChecker,
+		OwnedScriptRegistrar:   a.cfg.OwnedScriptRegistrar,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -1022,6 +1024,7 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 		StatusReconcileTimeout: a.env.StatusReconcileTimeout,
 		RoundKey:               RoundKeyStr(tempKey.KeyString()),
 		OwnedScriptChecker:     a.cfg.OwnedScriptChecker,
+		OwnedScriptRegistrar:   a.cfg.OwnedScriptRegistrar,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -1886,7 +1889,7 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 			)
 		}
 
-		req, err := a.buildVTXORequest(
+		req, err := a.deriveVTXORequest(
 			ctx, asset.AmountSat, types.VTXOOriginUnknown,
 		)
 		if err != nil {
@@ -1983,13 +1986,43 @@ func (a *RoundClientActor) handleVTXORequestsReceived(ctx context.Context,
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }
 
-// buildVTXORequest derives a fresh owner key and constructs a locally owned
-// VTXO request for the provided amount. The round FSM derives the ephemeral
-// signing key later during registration. Origin is set by the caller so
+// buildVTXORequest derives and registers a locally owned VTXO request for the
+// provided amount. The round FSM derives the ephemeral signing key later
+// during registration. Origin is set by the caller so
 // the downstream ledger emission gets the right Source: boarding flows
 // pass VTXOOriginRoundBoarding, other in-round producers pass their
 // respective origin.
 func (a *RoundClientActor) buildVTXORequest(ctx context.Context,
+	amount btcutil.Amount, origin types.VTXOOrigin) (*types.VTXORequest,
+	error) {
+
+	req, err := a.deriveVTXORequest(ctx, amount, origin)
+	if err != nil {
+		return nil, err
+	}
+
+	if a.cfg.OwnedScriptRegistrar != nil {
+		pkScript, err := req.EffectivePkScript()
+		if err != nil {
+			return nil, fmt.Errorf("derive vtxo pkScript: %w", err)
+		}
+
+		regErr := a.cfg.OwnedScriptRegistrar.RegisterOwnedScript(
+			ctx, pkScript, req.OwnerKey,
+		)
+		if regErr != nil {
+			return nil, fmt.Errorf("register owned script: %w",
+				regErr)
+		}
+	}
+
+	return req, nil
+}
+
+// deriveVTXORequest constructs a locally owned request without registering
+// its output script. Asset requests use it because their final script depends
+// on the commitment root disclosed with the tree.
+func (a *RoundClientActor) deriveVTXORequest(ctx context.Context,
 	amount btcutil.Amount, origin types.VTXOOrigin) (*types.VTXORequest,
 	error) {
 
@@ -2015,21 +2048,6 @@ func (a *RoundClientActor) buildVTXORequest(ctx context.Context,
 		ClientKey:      keyDesc.PubKey,
 		OwnerKey:       *keyDesc,
 		Origin:         origin,
-	}
-
-	if a.cfg.OwnedScriptRegistrar != nil {
-		pkScript, err := req.EffectivePkScript()
-		if err != nil {
-			return nil, fmt.Errorf("derive vtxo pkScript: %w", err)
-		}
-
-		regErr := a.cfg.OwnedScriptRegistrar.RegisterOwnedScript(
-			ctx, pkScript, *keyDesc,
-		)
-		if regErr != nil {
-			return nil, fmt.Errorf("register owned script: %w",
-				regErr)
-		}
 	}
 
 	return req, nil

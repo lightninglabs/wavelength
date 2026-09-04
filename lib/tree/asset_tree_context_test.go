@@ -208,6 +208,7 @@ func TestAssetTreeContextAmountsAfterExtraction(t *testing.T) {
 	}).ExtractPathForCoSigners(key)
 	require.NoError(t, err)
 	require.NotSame(t, root, extracted.Root)
+	require.NotSame(t, assetCtx, extracted.AssetContext)
 	require.EqualValues(
 		t, 42, extracted.AssetContext.NodeAssetAmount(extracted.Root),
 	)
@@ -217,6 +218,9 @@ func TestAssetTreeContextAmountsAfterExtraction(t *testing.T) {
 	require.EqualValues(
 		t, 42, extracted.AssetContext.NodeAssetAmount(extractedLeaf),
 	)
+
+	extracted.AssetContext.SetSealedPackage(rootInput, []byte{1})
+	require.Empty(t, assetCtx.SealedPackage(rootInput))
 }
 
 // TestAssetTreeContextValidate tests asset tree context validation.

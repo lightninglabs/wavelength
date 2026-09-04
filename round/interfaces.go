@@ -559,10 +559,17 @@ type OwnedScriptChecker interface {
 	IsOwnedScript(ctx context.Context, pkScript []byte) fn.Result[bool]
 }
 
-// OwnedScriptRegistrar registers a pkScript as locally owned. The
-// round actor calls this when building VTXO intents (boarding,
-// refresh, change) so the OwnedScriptChecker can recognize them
-// when the round confirms.
+// AssetVTXOVerifier verifies the asset transition behind a VTXO before the
+// client signs its tree path.
+type AssetVTXOVerifier interface {
+	VerifyAssetVTXO(ctx context.Context, assetRef string,
+		assetAmount uint64, commitmentTx *wire.MsgTx,
+		clientTree *tree.Tree, sealedPackage []byte) error
+}
+
+// OwnedScriptRegistrar registers a pkScript as locally owned. Ordinary VTXO
+// intents are registered when they are built; asset VTXOs are registered after
+// their composed output scripts have been validated.
 type OwnedScriptRegistrar interface {
 	// RegisterOwnedScript persists a pkScript + owner key as
 	// locally owned.

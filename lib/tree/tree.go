@@ -136,7 +136,7 @@ func (t *Tree) ExtractPathForCoSigners(targetKeys ...*btcec.PublicKey) (*Tree,
 		BatchOutpoint:      t.BatchOutpoint,
 		BatchOutput:        t.BatchOutput,
 		SweepTapscriptRoot: t.SweepTapscriptRoot,
-		AssetContext:       t.AssetContext,
+		AssetContext:       t.AssetContext.cloneForRoot(extractedRoot),
 	}, nil
 }
 
@@ -169,7 +169,7 @@ func (t *Tree) ExtractPathForIndices(leafIndices ...int) (*Tree, error) {
 		BatchOutpoint:      t.BatchOutpoint,
 		BatchOutput:        t.BatchOutput,
 		SweepTapscriptRoot: t.SweepTapscriptRoot,
-		AssetContext:       t.AssetContext,
+		AssetContext:       t.AssetContext.cloneForRoot(extractedRoot),
 	}, nil
 }
 

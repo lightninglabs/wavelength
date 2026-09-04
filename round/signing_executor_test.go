@@ -423,11 +423,6 @@ func TestSigningExecutorRealMuSigManager(t *testing.T) {
 	})
 
 	vtxoTree, _ := h.newTestVTXOTree(8)
-	prevOuts, err := vtxoTree.Root.PrevOutputFetcher(
-		vtxoTree.BatchOutput,
-	)
-	require.NoError(t, err)
-
 	jobs := make([]CreateSignerSessionJob, 8)
 	for index := range jobs {
 		jobs[index] = CreateSignerSessionJob{
@@ -438,9 +433,7 @@ func TestSigningExecutorRealMuSigManager(t *testing.T) {
 			SigningKey: keychain.KeyDescriptor{
 				PubKey: h.clientPubKey,
 			},
-			SweepTapscriptRoot: vtxoTree.SweepTapscriptRoot,
-			PrevOuts:           prevOuts,
-			Root:               vtxoTree.Root,
+			Tree: vtxoTree,
 		}
 	}
 
