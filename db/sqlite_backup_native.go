@@ -16,6 +16,8 @@ import (
 	"github.com/btcsuite/btclog/v2"
 )
 
+const legacySqliteBackupTimestampLength = 19
+
 // sqliteMigrationBackupPath returns the stable backup path for a source schema
 // version.
 func sqliteMigrationBackupPath(dbFullFilePath string,
@@ -138,6 +140,8 @@ func isSqliteMigrationBackup(dbFileName, candidate string) bool {
 	}
 	if isVersioned {
 		identifier = strings.TrimPrefix(identifier, "v")
+	} else if len(identifier) != legacySqliteBackupTimestampLength {
+		return false
 	}
 
 	value, err := strconv.ParseInt(identifier, 10, 64)

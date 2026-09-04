@@ -103,12 +103,16 @@ func TestSqliteMigrationBackupPrunedAfterSuccess(t *testing.T) {
 	dbFileName := filepath.Join(t.TempDir(), "test.db")
 	store := newSqliteStoreWithoutMigrations(t, dbFileName)
 	require.NoError(t, store.ExecuteMigrations(TargetVersion(17)))
+	require.NoError(t, store.DB.Close())
 
-	legacyPath := fmt.Sprintf("%s.%d.backup", dbFileName, 1234)
+	legacyPath := fmt.Sprintf("%s.%d.backup", dbFileName,
+		int64(1763079012000000000))
 	stagingPath := sqliteMigrationBackupPath(dbFileName, 16) + ".tmp"
 	manualPath := dbFileName + ".manual.backup"
 	preservedPaths := []string{
 		manualPath,
+		dbFileName + ".1234.backup",
+		dbFileName + ".20260904.backup",
 		dbFileName + ".+1234.backup",
 		dbFileName + ".001234.backup",
 		dbFileName + ".1234.backup.tmp",
@@ -119,10 +123,16 @@ func TestSqliteMigrationBackupPrunedAfterSuccess(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte("test"), 0o600))
 	}
 
-	require.NoError(t, store.ExecuteMigrations(store.backupAndMigrate))
+	store, err := NewSqliteStore(&SqliteConfig{
+		DatabaseFileName: dbFileName,
+	}, btclog.Disabled)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, store.DB.Close())
+	})
 
 	var version int
-	err := store.QueryRow(
+	err = store.QueryRow(
 		`SELECT version FROM schema_migrations`,
 	).Scan(&version)
 	require.NoError(t, err)
@@ -134,6 +144,39 @@ func TestSqliteMigrationBackupPrunedAfterSuccess(t *testing.T) {
 	for _, path := range preservedPaths {
 		require.FileExists(t, path)
 	}
+}
+
+// TestSqliteMigrationBackupRetainedAfterActorMigrationFailure verifies that a
+// main-schema backup remains available until actor-delivery migrations also
+// complete.
+func TestSqliteMigrationBackupRetainedAfterActorMigrationFailure(t *testing.T) {
+	dbFileName := filepath.Join(t.TempDir(), "test.db")
+	store := newSqliteStoreWithoutMigrations(t, dbFileName)
+	require.NoError(t, store.ExecuteMigrations(TargetVersion(17)))
+
+	_, err := store.ExecContext(t.Context(), `
+		CREATE TABLE actor_delivery_schema_migrations (
+			version INTEGER NOT NULL,
+			dirty BOOLEAN NOT NULL
+		);
+		INSERT INTO actor_delivery_schema_migrations (version, dirty)
+		VALUES (1, TRUE);
+	`)
+	require.NoError(t, err)
+	require.NoError(t, store.DB.Close())
+
+	backupPath := sqliteMigrationBackupPath(dbFileName, 17)
+	for range 2 {
+		_, err = NewSqliteStore(&SqliteConfig{
+			DatabaseFileName: dbFileName,
+		}, btclog.Disabled)
+		require.ErrorContains(t, err, "database is in a dirty state")
+		require.FileExists(t, backupPath)
+	}
+
+	info, err := os.Stat(backupPath)
+	require.NoError(t, err)
+	require.Positive(t, info.Size())
 }
 
 // TestSqliteMigrationBackupRetainedAfterFailure verifies that a failed
