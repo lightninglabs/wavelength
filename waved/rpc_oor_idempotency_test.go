@@ -448,10 +448,14 @@ func TestSendOORReservesExactManagedCustomInputs(t *testing.T) {
 	require.NoError(t, vtxoStore.SaveVTXO(ctx, input1))
 	require.NoError(t, vtxoStore.SaveVTXO(ctx, input2))
 
+	selectedInput2 := selectedVTXOFromDescriptor(input2)
+	selectedInput2.ReserveEpoch = 41
+	selectedInput1 := selectedVTXOFromDescriptor(input1)
+	selectedInput1.ReserveEpoch = 42
 	testWallet := &sendOORTestWallet{
 		selections: [][]wallet.SelectedVTXO{{
-			selectedVTXOFromDescriptor(input2),
-			selectedVTXOFromDescriptor(input1),
+			selectedInput2,
+			selectedInput1,
 		}},
 	}
 
@@ -548,6 +552,8 @@ func TestSendOORReservesExactManagedCustomInputs(t *testing.T) {
 	require.Equal(
 		t, requestedOutpoints[1], requests[0].Inputs[1].VTXO.Outpoint,
 	)
+	require.Equal(t, uint64(41), requests[0].Inputs[0].ReserveEpoch)
+	require.Equal(t, uint64(42), requests[0].Inputs[1].ReserveEpoch)
 }
 
 // TestClassifyCustomOORInputsRejectsMixedModes verifies a request cannot
