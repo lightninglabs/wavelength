@@ -44,6 +44,12 @@ const (
 	// cadence from the (block-driven) retry interval so a permanently stuck
 	// tx does not flood the log.
 	broadcastEscalationReminder = 10 * time.Minute
+
+	// setupCleanupTimeout bounds cleanup after a subscription setup error.
+	// Cleanup must outlive the failed Ask context because that context may
+	// already be cancelled. Keep it within the actor's existing one-second
+	// blocking budget so backend failures cannot stall unrelated work.
+	setupCleanupTimeout = time.Second
 )
 
 var (
@@ -626,25 +632,90 @@ func (a *TxBroadcasterActor) handleEnsure(ctx context.Context,
 	a.tracked[txid] = entry
 
 	if err := a.ensureBlockSubscription(ctx); err != nil {
-		a.failTrackedTx(
-			ctx, entry, fmt.Sprintf("subscribe blocks: %v", err),
+		setupErr := fmt.Errorf("subscribe blocks: %w", err)
+		cleanupCtx, cancel := context.WithTimeout(
+			actor.WithoutTx(
+				context.WithoutCancel(ctx),
+			),
+			setupCleanupTimeout,
 		)
+		a.cleanupFailedBlockSubscription(cleanupCtx, entry.data.Txid)
+		a.discardIncompleteTrackedTx(cleanupCtx, entry)
+		cancel()
 
-		return a.ensureResp(entry, true), nil
+		return nil, setupErr
 	}
 
 	if err := a.registerConfWatch(ctx, entry); err != nil {
-		a.failTrackedTx(
-			ctx, entry, fmt.Sprintf("register conf: %v", err),
+		setupErr := fmt.Errorf("register conf: %w", err)
+		cleanupCtx, cancel := context.WithTimeout(
+			actor.WithoutTx(
+				context.WithoutCancel(ctx),
+			),
+			setupCleanupTimeout,
 		)
+		if cleanupErr := a.unregisterConfWatch(
+			cleanupCtx, entry,
+		); cleanupErr != nil {
 
-		return a.ensureResp(entry, true), nil
+			a.log.DebugS(cleanupCtx,
+				"Confirmation watch cleanup failed after setup "+
+					"error",
+				"txid", entry.data.Txid,
+				"caller_id", a.confCallerID(entry.data.Txid),
+				slog.Any("err", cleanupErr),
+			)
+		}
+		a.discardIncompleteTrackedTx(cleanupCtx, entry)
+		cancel()
+
+		return nil, setupErr
 	}
 
 	_, err = a.broadcastTrackedTx(ctx, entry, TxStateBroadcasting)
 	a.recordInitialBroadcastOutcome(ctx, entry, err)
 
 	return a.ensureResp(entry, true), nil
+}
+
+// cleanupFailedBlockSubscription removes a block subscription actor whose
+// setup did not return success. Chainsource creates the actor before asking its
+// backend to subscribe, so an error can leave that actor registered even though
+// txconfirm never marked the shared subscription active.
+func (a *TxBroadcasterActor) cleanupFailedBlockSubscription(ctx context.Context,
+	txid chainhash.Hash) {
+
+	_, err := a.cfg.ChainSource.Ask(
+		ctx, &chainsource.UnsubscribeBlocksRequest{
+			CallerID: a.blockCallerID(),
+		},
+	).Await(ctx).Unpack()
+	if err != nil {
+		a.log.DebugS(
+			ctx, "Block subscription cleanup failed after setup "+
+				"error",
+			"txid", txid,
+			"caller_id", a.blockCallerID(),
+			slog.Any("err", err),
+		)
+	}
+}
+
+// discardIncompleteTrackedTx releases an entry that never finished chain
+// subscription setup. The caller must separately remove any deterministic
+// chainsource subscription actor that the failed setup call may have created.
+func (a *TxBroadcasterActor) discardIncompleteTrackedTx(ctx context.Context,
+	entry *trackedTx) {
+
+	if entry.fsm != nil {
+		entry.fsm.Stop()
+	}
+
+	a.broadcaster.Evict(ctx, entry.data.Txid)
+	a.driveFeeBump(ctx, &feeBumpParentEvicted{
+		parentTxid: entry.data.Txid,
+	})
+	delete(a.tracked, entry.data.Txid)
 }
 
 // recordInitialBroadcastOutcome advances the FSM based on the result of an
