@@ -255,6 +255,15 @@ func NewSqliteStore(cfg *SqliteConfig,
 				"actor-delivery migrations: %w", err)
 		}
 
+		err = pruneSqliteMigrationBackups(cfg.DatabaseFileName)
+		if err != nil {
+			storeLog.WarnS(
+				ctx,
+				"Unable to prune SQLite migration backups",
+				err,
+			)
+		}
+
 		storeLog.InfoS(
 			ctx, "All SQLite migrations completed successfully",
 		)
@@ -347,7 +356,7 @@ func (s *SqliteStore) backupAndMigrate(mig *migrate.Migrate,
 			"max_migration_version", maxMigrationVersion,
 		)
 
-		return pruneSqliteMigrationBackups(s.cfg.DatabaseFileName)
+		return nil
 	}
 
 	// At this point, we know that a database migration is necessary. Create
@@ -375,12 +384,7 @@ func (s *SqliteStore) backupAndMigrate(mig *migrate.Migrate,
 
 	s.log.InfoS(context.Background(), "Applying migrations to database")
 
-	err := mig.Up()
-	if err != nil {
-		return err
-	}
-
-	return pruneSqliteMigrationBackups(s.cfg.DatabaseFileName)
+	return mig.Up()
 }
 
 // ExecuteMigrations runs migrations for the sqlite database, depending on the

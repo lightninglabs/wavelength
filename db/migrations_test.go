@@ -344,7 +344,7 @@ func TestSqliteMigrationBackup(t *testing.T) {
 	// database to verify that the up-to-date path prunes backups left by an
 	// older release.
 	require.NoError(t, db.DB.Close())
-	legacyBackupPath := dbFileName + ".1234.backup"
+	legacyBackupPath := dbFileName + ".1763079012000000000.backup"
 	require.NoError(
 		t,
 		os.WriteFile(
