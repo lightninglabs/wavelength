@@ -128,6 +128,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   (`initOORActor`). The VTXO manager is constructed with a
   `vtxo.LazyChainResolver` placeholder that `initUnrollSubsystem` fills in
   later; anything needing that seam must run after `initUnrollSubsystem`.
+  Because recovered VTXO actors can emit automatic refresh work as the manager
+  starts, production enables `DeferAutomaticRefreshUntilRoundReady` on the
+  manager. The post-round-start `ReconcileExpiryRequest` opens that gate before
+  releasing and re-driving urgent expiry work at the current tip. Non-critical
+  live refreshes retain their bounded retry cooldown. The gate does not cover
+  manual relays or any routing failure after the handshake.
 - After the daemon is ready,
   `repairLegacyCommitmentHeights` (`commitment_height_repair.go`) runs under
   one synchronous, whole-pass maintenance timeout. Both readiness signals are
