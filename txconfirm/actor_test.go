@@ -1585,6 +1585,51 @@ func TestEnsureBroadcastErrorDetachesBeforeConfirmation(t *testing.T) {
 	entry.fsm.Stop()
 }
 
+// TestConfirmationClearsPendingFailureBeforeTransition verifies that chain
+// confirmation remains authoritative when persisting its FSM transition
+// fails. A later block must not apply the stale broadcast failure to a mined
+// transaction.
+func TestConfirmationClearsPendingFailureBeforeTransition(t *testing.T) {
+	tx := makeTestTx(false)
+	entry := newTrackedTxForState(t, &trackedTxStateBroadcasting{
+		trackedTxData: trackedTxData{
+			Tx:   tx,
+			Txid: tx.TxHash(),
+		},
+	})
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub", 1)
+	entry.subscribers[sub.ID()] = trackedSubscriber{
+		Ref: sub,
+	}
+	entry.pendingFailureReason = "ambiguous broadcast failure"
+
+	behavior := NewTxBroadcasterActor(Config{})
+	behavior.tracked[tx.TxHash()] = entry
+
+	canceledCtx, cancel := context.WithCancel(t.Context())
+	cancel()
+	behavior.handleConfirmationObserved(
+		canceledCtx, &confirmationObservedMsg{
+			txid:        tx.TxHash(),
+			blockHeight: 101,
+			numConfs:    1,
+		},
+	)
+
+	state, err := entry.currentTxState()
+	require.NoError(t, err)
+	require.Equal(t, TxStateBroadcasting, state)
+	require.Empty(t, entry.pendingFailureReason)
+	mustHaveNoNotification(t, sub)
+
+	behavior.handleBlockObserved(t.Context(), &blockEpochObservedMsg{
+		height: 102,
+	})
+	require.Contains(t, behavior.tracked, tx.TxHash())
+	mustHaveNoNotification(t, sub)
+	entry.fsm.Stop()
+}
+
 // TestTerminalNotificationsDoNotInheritCallerContext verifies that terminal
 // delivery is independent of the txconfirm actor's transaction and cancellation
 // context.

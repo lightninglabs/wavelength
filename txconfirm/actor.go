@@ -1223,6 +1223,12 @@ func (a *TxBroadcasterActor) handleConfirmationObserved(ctx context.Context,
 		return
 	}
 
+	// Chain confirmation supersedes an earlier ambiguous broadcast
+	// failure even if persisting the confirmation transition fails. Leaving
+	// the reason latched would let the next block move a mined transaction
+	// into Failed while its FSM still reports Broadcasting.
+	entry.pendingFailureReason = ""
+
 	if err := a.advanceTrackedTxFSM(ctx, entry, &trackedTxConfirmed{
 		BlockHeight: msg.blockHeight,
 		BlockHash:   msg.blockHash,
@@ -1233,8 +1239,6 @@ func (a *TxBroadcasterActor) handleConfirmationObserved(ctx context.Context,
 
 		return
 	}
-	entry.pendingFailureReason = ""
-
 	a.notifyConfirmed(
 		ctx, entry, msg.blockHeight, msg.blockHash, msg.numConfs,
 	)
