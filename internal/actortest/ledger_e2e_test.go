@@ -97,8 +97,8 @@ func tryCount(store *db.LedgerStoreDB) (int64, bool) {
 
 // TestLedgerActorExitCostCommitsBothLegs drives a real ExitCostMsg through the
 // durable mailbox and asserts the two legs (send + fee) are booked atomically
-// in one fenced Commit, and that a replay is idempotent (the shared
-// outpoint-keyed legs dedup, so no double-booking through the real stack).
+// in one fenced Commit, and that a replay is idempotent (each separately
+// namespaced outpoint-keyed leg dedups through the real stack).
 func TestLedgerActorExitCostCommitsBothLegs(t *testing.T) {
 	t.Parallel()
 
@@ -131,9 +131,9 @@ func TestLedgerActorExitCostCommitsBothLegs(t *testing.T) {
 	requireBalance(t, store, ledger.AccountOnchainFees, msg.ExitCostSat)
 	requireBalance(t, store, ledger.AccountVTXOBalance, -msg.AmountSat)
 
-	// Replaying the same event is a no-op: both legs share the
-	// outpoint-derived idempotency key and dedup via ON CONFLICT DO
-	// NOTHING, so the row count never grows past two.
+	// Replaying the same event is a no-op: the separately namespaced
+	// outpoint identities dedup via ON CONFLICT DO NOTHING, so the row
+	// count never grows past two.
 	require.NoError(t, ledgerActor.Ref().Tell(t.Context(), msg))
 	require.Never(t, func() bool {
 		n, ok := tryCount(store)

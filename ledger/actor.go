@@ -19,7 +19,15 @@ import (
 // failures that don't wrap this sentinel are logged at warn
 // level because they're external triggers (DB locked, I/O, etc.)
 // and should not page on their own.
-var ErrInvalidMessage = errors.New("ledger: invalid message")
+var (
+	ErrInvalidMessage = errors.New("ledger: invalid message")
+
+	// ErrIdempotencyConflict is returned when an existing ledger identity
+	// is replayed with a different accounting payload. Treating that case
+	// as a successful duplicate would hide a lost or contradictory ledger
+	// leg.
+	ErrIdempotencyConflict = errors.New("ledger: idempotency conflict")
+)
 
 const (
 	// defaultActorID is the durable mailbox identifier for the
@@ -211,10 +219,10 @@ type LedgerStore interface {
 	// InsertLedgerEntry persists a single ledger leg. The call
 	// joins any outer actor transaction present in ctx so that
 	// multiple invocations within one handler commit atomically
-	// with the mailbox ack. Conflicts on the idempotency partial
-	// unique indexes (round_id / session_id / idempotency_key)
-	// are swallowed via ON CONFLICT DO NOTHING so redelivery of
-	// a partially-processed message is a silent no-op.
+	// with the mailbox ack. Conflicts on the idempotency partial unique
+	// indexes (round_id / session_id / idempotency_key) succeed only when
+	// the existing payload is identical. A different payload returns
+	// ErrIdempotencyConflict.
 	InsertLedgerEntry(
 		ctx context.Context, entry LedgerEntry,
 	) error
