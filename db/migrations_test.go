@@ -13,6 +13,7 @@ import (
 	admigration "github.com/lightninglabs/wavelength/db/actordelivery/migrations"
 	dbmigrate "github.com/lightninglabs/wavelength/db/migrate"
 	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -89,6 +90,141 @@ func TestMigrationDowngrade(t *testing.T) {
 	// less than the current version. This simulates downgrading.
 	err := db.ExecuteMigrations(TargetLatest, WithLatestVersion(0))
 	require.ErrorIs(t, err, dbmigrate.ErrMigrationDowngrade)
+}
+
+// TestOOROutgoingReplayMigrationFailsClosed verifies migration 18 binds each
+// legacy key to its session without treating an opaque snapshot as canonical
+// request data.
+func TestOOROutgoingReplayMigrationFailsClosed(t *testing.T) {
+	ctx := t.Context()
+	db := NewTestDBWithVersion(t, 17)
+
+	insertSession := transformByteLiterals(t, db.BaseDB, `
+		INSERT INTO oor_session_registry (
+			session_id, actor_id, direction, phase, idempotency_key,
+			status, snapshot_data, snapshot_version, flow_version,
+			created_at, updated_at
+		) VALUES
+			(
+				X'010201', 'ark-sign-actor', 1,
+				'ark_sign_requested', 'ark-sign-key', 0,
+				X'aa01', 4, 0, 10, 20
+			),
+			(
+				X'010202', 'submit-actor', 1, 'submit_sent',
+				'submit-key', 0, X'aa02', 4, 0,
+				10, 20
+			),
+			(
+				X'010203', 'cosigned-actor', 1, 'cosigned',
+				'cosigned-key', 0, X'aa03', 4, 0,
+				10, 20
+			),
+			(
+				X'010204', 'finalize-actor', 1, 'finalize_sent',
+				'finalize-key', 0, X'aa04', 4, 0,
+				10, 20
+			),
+			(
+				X'040506', 'terminal-actor', 1, 'completed',
+				'legacy-terminal-key', 1, X'ddeeff', 4, 0,
+				10, 20
+			),
+			(
+				X'070809', 'local-update-actor', 1,
+				'local_vtxo_update',
+				'legacy-local-update-key', 0,
+				X'112233', 4, 0, 10, 20
+			),
+			(
+				X'0a0b01', 'failed-reused-key-actor', 1,
+				'failed', 'legacy-reused-key', 2,
+				X'445501', 4, 0, 5, 20
+			),
+			(
+				X'0a0b02', 'live-reused-key-actor', 1,
+				'submit_sent', 'legacy-reused-key', 0,
+				X'445502', 4, 0, 10, 20
+			)
+	`)
+	_, err := db.ExecContext(ctx, insertSession)
+	require.NoError(t, err)
+
+	require.NoError(t, db.ExecuteMigrations(TargetLatest))
+
+	for _, key := range []string{
+		"ark-sign-key", "submit-key", "cosigned-key", "finalize-key",
+		"legacy-terminal-key", "legacy-local-update-key",
+	} {
+		var requestData []byte
+		err = db.QueryRowContext(
+			ctx, `SELECT request_data FROM oor_dispatch_attempts
+				WHERE idempotency_key = $1`, key,
+		).Scan(&requestData)
+		require.NoError(t, err)
+		require.Nil(t, requestData)
+	}
+
+	var reusedSessionID []byte
+	err = db.QueryRowContext(
+		ctx, `SELECT session_id FROM oor_dispatch_attempts
+			WHERE idempotency_key = 'legacy-reused-key'`,
+	).Scan(&reusedSessionID)
+	require.NoError(t, err)
+	require.Equal(t, []byte{0x0a, 0x0b, 0x02}, reusedSessionID)
+
+	var legacySnapshot []byte
+	err = db.QueryRowContext(
+		ctx, `SELECT snapshot_data
+			FROM oor_session_registry
+			WHERE idempotency_key = 'submit-key'`,
+	).Scan(&legacySnapshot)
+	require.NoError(t, err)
+	require.Equal(t, []byte{0xaa, 0x02}, legacySnapshot)
+}
+
+// TestOOROutgoingReplayDowngradePreservesSessions verifies migration 18 can
+// be removed without rewriting the existing mutable session registry.
+func TestOOROutgoingReplayDowngradePreservesSessions(t *testing.T) {
+	ctx := t.Context()
+	sqlDB := NewTestDB(t)
+	store := NewStore(
+		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(), btclog.Disabled,
+	).NewOORSessionRegistryStore(clock.NewDefaultClock())
+
+	const dispatchKey = "durable-dispatch-key"
+	sessionID := sessionHash(0x71)
+	record := OORSessionRegistryRecord{
+		SessionID:      sessionID,
+		ActorID:        "outgoing",
+		Direction:      OORSessionDirectionOutgoing,
+		Phase:          "submit_sent",
+		IdempotencyKey: dispatchKey,
+		Status:         OORSessionStatusPending,
+		SnapshotData: []byte{
+			0x01,
+		},
+		SnapshotVersion: 5,
+		DispatchRequestData: []byte{
+			0xaa,
+			0xbb,
+		},
+	}
+	require.NoError(t, store.UpsertSession(ctx, record))
+
+	require.NoError(t, sqlDB.ExecuteMigrations(TargetVersion(17)))
+
+	var key sql.NullString
+	err := sqlDB.QueryRowContext(
+		ctx, `SELECT idempotency_key FROM oor_session_registry
+			WHERE session_id = $1`, sessionID[:],
+	).Scan(&key)
+	require.NoError(t, err)
+	require.True(t, key.Valid)
+	require.Equal(t, dispatchKey, key.String)
+
+	_, err = sqlDB.ExecContext(ctx, `SELECT 1 FROM oor_dispatch_attempts`)
+	require.Error(t, err)
 }
 
 // findDBBackupFilePath walks the directory of the given database file path and

@@ -10,6 +10,40 @@ import (
 	"database/sql"
 )
 
+const GetOORDispatchAttemptByIdempotencyKey = `-- name: GetOORDispatchAttemptByIdempotencyKey :one
+SELECT idempotency_key, session_id, request_data, created_at FROM oor_dispatch_attempts
+WHERE idempotency_key = $1
+`
+
+func (q *Queries) GetOORDispatchAttemptByIdempotencyKey(ctx context.Context, idempotencyKey string) (OorDispatchAttempt, error) {
+	row := q.db.QueryRowContext(ctx, GetOORDispatchAttemptByIdempotencyKey, idempotencyKey)
+	var i OorDispatchAttempt
+	err := row.Scan(
+		&i.IdempotencyKey,
+		&i.SessionID,
+		&i.RequestData,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const GetOORDispatchAttemptBySessionID = `-- name: GetOORDispatchAttemptBySessionID :one
+SELECT idempotency_key, session_id, request_data, created_at FROM oor_dispatch_attempts
+WHERE session_id = $1
+`
+
+func (q *Queries) GetOORDispatchAttemptBySessionID(ctx context.Context, sessionID []byte) (OorDispatchAttempt, error) {
+	row := q.db.QueryRowContext(ctx, GetOORDispatchAttemptBySessionID, sessionID)
+	var i OorDispatchAttempt
+	err := row.Scan(
+		&i.IdempotencyKey,
+		&i.SessionID,
+		&i.RequestData,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const GetOORSessionRegistry = `-- name: GetOORSessionRegistry :one
 SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, flow_version, created_at, updated_at FROM oor_session_registry
 WHERE session_id = $1
@@ -33,6 +67,32 @@ func (q *Queries) GetOORSessionRegistry(ctx context.Context, sessionID []byte) (
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const InsertOORDispatchAttempt = `-- name: InsertOORDispatchAttempt :exec
+INSERT INTO oor_dispatch_attempts (
+    idempotency_key, session_id, request_data, created_at
+) VALUES (
+    $1, $2, $3, $4
+)
+ON CONFLICT DO NOTHING
+`
+
+type InsertOORDispatchAttemptParams struct {
+	IdempotencyKey string
+	SessionID      []byte
+	RequestData    []byte
+	CreatedAt      int64
+}
+
+func (q *Queries) InsertOORDispatchAttempt(ctx context.Context, arg InsertOORDispatchAttemptParams) error {
+	_, err := q.db.ExecContext(ctx, InsertOORDispatchAttempt,
+		arg.IdempotencyKey,
+		arg.SessionID,
+		arg.RequestData,
+		arg.CreatedAt,
+	)
+	return err
 }
 
 const ListAllOORSessionRegistry = `-- name: ListAllOORSessionRegistry :many
@@ -118,35 +178,6 @@ func (q *Queries) ListNonTerminalOORSessionRegistry(ctx context.Context) ([]OorS
 		return nil, err
 	}
 	return items, nil
-}
-
-const LookupActiveOORSessionRegistryByIdempotencyKey = `-- name: LookupActiveOORSessionRegistryByIdempotencyKey :one
-SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, flow_version, created_at, updated_at FROM oor_session_registry
-WHERE idempotency_key = $1 AND status != 2
-`
-
-// Status 2 = Failed (anchored to Go iota in
-// db/oor_session_registry_store.go OORSessionStatus). Failed sessions never
-// dedup a keyed retry, so the lookup skips them: only a pending or completed
-// session answers for an idempotency key.
-func (q *Queries) LookupActiveOORSessionRegistryByIdempotencyKey(ctx context.Context, idempotencyKey sql.NullString) (OorSessionRegistry, error) {
-	row := q.db.QueryRowContext(ctx, LookupActiveOORSessionRegistryByIdempotencyKey, idempotencyKey)
-	var i OorSessionRegistry
-	err := row.Scan(
-		&i.SessionID,
-		&i.ActorID,
-		&i.Direction,
-		&i.Phase,
-		&i.IdempotencyKey,
-		&i.Status,
-		&i.LastError,
-		&i.SnapshotData,
-		&i.SnapshotVersion,
-		&i.FlowVersion,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
 }
 
 const UpsertOORSessionRegistry = `-- name: UpsertOORSessionRegistry :exec
