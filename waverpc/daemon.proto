@@ -1055,6 +1055,13 @@ message SendOORRequest {
     // never selects inputs or admits a new transfer. This requires a non-empty
     // idempotency_key.
     bool existing_only = 6;
+
+    // max_vtxo_age_blocks limits wallet-managed inputs to VTXOs whose
+    // backing batch confirmed no more than this many blocks ago. Equality
+    // is accepted. A positive value also requires known, internally
+    // consistent batch creation/expiry metadata and a batch expiry above
+    // the current chain height. Zero preserves unbounded selection.
+    uint32 max_vtxo_age_blocks = 7;
 }
 
 // CustomOORInput specifies a VTXO to spend with an explicit semantic policy

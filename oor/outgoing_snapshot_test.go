@@ -214,7 +214,7 @@ func TestOutgoingRegistryRecordDoesNotDeriveProofAfterSubmit(t *testing.T) {
 }
 
 // TestOutgoingReplayRecipientsRejectsMalformedProof verifies replay accepts
-// only the versioned positional record written by newOutgoingReplayData.
+// only well-formed versioned positional records.
 func TestOutgoingReplayRecipientsRejectsMalformedProof(t *testing.T) {
 	t.Parallel()
 
@@ -236,7 +236,7 @@ func TestOutgoingReplayRecipientsRejectsMalformedProof(t *testing.T) {
 	require.Equal(t, recipients[0].PkScript, decoded[0].PkScript)
 
 	unknownVersion := append([]byte(nil), proof...)
-	unknownVersion[0]++
+	unknownVersion[0] = 0xff
 	_, err = OutgoingReplayRecipients(unknownVersion)
 	require.ErrorContains(t, err, "unknown outgoing replay proof version")
 
@@ -247,6 +247,91 @@ func TestOutgoingReplayRecipientsRejectsMalformedProof(t *testing.T) {
 	truncated := proof[:len(proof)-1]
 	_, err = OutgoingReplayRecipients(truncated)
 	require.ErrorContains(t, err, "pkScript is truncated")
+}
+
+// TestOutgoingReplayDataBindsMaxVTXOAgeBlocks verifies version-two request
+// identity round-trips the freshness limit and canonical exact input set while
+// legacy proofs decode as backward-compatible unconstrained requests.
+func TestOutgoingReplayDataBindsMaxVTXOAgeBlocks(t *testing.T) {
+	t.Parallel()
+
+	recipients := []oortx.RecipientOutput{
+		{
+			Value: 10_000,
+			PkScript: []byte{
+				0x51, 0x20, 0x01,
+			},
+		},
+	}
+	exactInputs := []wire.OutPoint{
+		{
+			Hash: [32]byte{
+				0x02,
+			},
+			Index: 2,
+		},
+		{
+			Hash: [32]byte{
+				0x01,
+			},
+			Index: 3,
+		},
+	}
+
+	proof, err := NewOutgoingReplayDataWithMaxVTXOAgeBlocks(
+		recipients, recipients, 144, exactInputs,
+	)
+	require.NoError(t, err)
+	reorderedProof, err := NewOutgoingReplayDataWithMaxVTXOAgeBlocks(
+		recipients, recipients, 144,
+		[]wire.OutPoint{exactInputs[1], exactInputs[0]},
+	)
+	require.NoError(t, err)
+	require.Equal(t, proof, reorderedProof)
+
+	decoded, err := DecodeOutgoingReplayData(proof)
+	require.NoError(t, err)
+	require.Equal(t, uint32(144), decoded.MaxVTXOAgeBlocks)
+	require.Equal(t, []wire.OutPoint{
+		exactInputs[1], exactInputs[0],
+	}, decoded.ExactInputOutpoints)
+	require.Len(t, decoded.Recipients, 1)
+	require.Equal(t, recipients[0].Value, decoded.Recipients[0].Value)
+	require.Equal(
+		t, recipients[0].PkScript, decoded.Recipients[0].PkScript,
+	)
+
+	legacyProof, err := NewOutgoingReplayData(recipients, recipients)
+	require.NoError(t, err)
+	legacy, err := DecodeOutgoingReplayData(legacyProof)
+	require.NoError(t, err)
+	require.Zero(t, legacy.MaxVTXOAgeBlocks)
+	require.Empty(t, legacy.ExactInputOutpoints)
+
+	_, err = DecodeOutgoingReplayData(proof[:outgoingReplayV2HeaderSize-1])
+	require.ErrorContains(t, err, "truncated")
+
+	nonCanonical := append([]byte(nil), proof...)
+	inputAStart := outgoingReplayV2HeaderSize
+	inputAEnd := inputAStart + outgoingReplayInputSize
+	inputA := append(
+		[]byte(nil),
+		nonCanonical[inputAStart:inputAEnd]...,
+	)
+	inputBOffset := outgoingReplayV2HeaderSize + outgoingReplayInputSize
+	copy(
+		nonCanonical[outgoingReplayV2HeaderSize:],
+		nonCanonical[inputBOffset:inputBOffset+outgoingReplayInputSize],
+	)
+	copy(nonCanonical[inputBOffset:], inputA)
+	_, err = DecodeOutgoingReplayData(nonCanonical)
+	require.ErrorContains(t, err, "not in canonical order")
+
+	_, err = NewOutgoingReplayDataWithMaxVTXOAgeBlocks(
+		recipients, recipients, 144,
+		[]wire.OutPoint{exactInputs[0], exactInputs[0]},
+	)
+	require.ErrorContains(t, err, "duplicate outgoing replay input")
 }
 
 // TestSnapshotRetryMetadataRoundTrip verifies that RetryAfter and retry

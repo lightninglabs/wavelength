@@ -96,9 +96,11 @@ func (m *MockVTXOStore) ListSelectionCandidatesByStatus(ctx context.Context,
 	candidates := make([]SelectedVTXO, 0, len(descs))
 	for _, desc := range descs {
 		candidates = append(candidates, SelectedVTXO{
-			Outpoint: desc.Outpoint,
-			Amount:   desc.Amount,
-			PkScript: desc.PkScript,
+			Outpoint:      desc.Outpoint,
+			Amount:        desc.Amount,
+			PkScript:      desc.PkScript,
+			BatchExpiry:   desc.BatchExpiry,
+			CreatedHeight: desc.CreatedHeight,
 		})
 	}
 

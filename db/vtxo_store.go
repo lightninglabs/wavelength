@@ -527,11 +527,11 @@ func (s *VTXOPersistenceStore) rowsToDescriptorsNoAncestry(ctx context.Context,
 }
 
 // ListSelectionCandidatesByStatus returns the lightweight projection coin
-// selection runs on: outpoint, amount, and pkScript per VTXO in the given
-// status. Selection happens on every payment and needs only these fields, so
-// this path skips the full descriptor decode (pubkey parsing, taproot script
-// reconstruction, policy template decode) and the batched ancestry query
-// entirely.
+// selection runs on: outpoint, amount, pkScript, and backing-batch timing per
+// VTXO in the given status. Selection happens on every payment and needs only
+// these fields, so this path skips the full descriptor decode (pubkey parsing,
+// taproot script reconstruction, policy template decode) and the batched
+// ancestry query entirely.
 func (s *VTXOPersistenceStore) ListSelectionCandidatesByStatus(
 	ctx context.Context, status vtxo.VTXOStatus) ([]vtxo.SelectedVTXO,
 	error) {
@@ -558,8 +558,10 @@ func (s *VTXOPersistenceStore) ListSelectionCandidatesByStatus(
 					Hash:  outpointHash,
 					Index: uint32(row.OutpointIndex),
 				},
-				Amount:   btcutil.Amount(row.Amount),
-				PkScript: row.PkScript,
+				Amount:        btcutil.Amount(row.Amount),
+				PkScript:      row.PkScript,
+				BatchExpiry:   row.BatchExpiry,
+				CreatedHeight: row.CreatedHeight,
 			})
 		}
 

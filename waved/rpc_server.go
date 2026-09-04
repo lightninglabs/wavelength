@@ -3104,10 +3104,21 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 			"admission_deadline_unix_nanos must not be negative")
 	}
 
+	customOutpoints, exactManagedInputs, err := classifyCustomOORInputs(
+		req.CustomInputs,
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	var exactInputOutpoints []wire.OutPoint
+	if exactManagedInputs {
+		exactInputOutpoints = customOutpoints
+	}
+
 	if req.GetIdempotencyKey() != "" && !req.DryRun {
 		phaseStart := time.Now()
 		replay, handled, err := r.replaySendOORByIdempotencyKey(
-			ctx, req, requestRecipients,
+			ctx, req, requestRecipients, exactInputOutpoints,
 		)
 		idempotencyDuration = time.Since(phaseStart)
 		if err != nil {
@@ -3144,17 +3155,16 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		return nil, err
 	}
 
-	customOutpoints, exactManagedInputs, err := classifyCustomOORInputs(
-		req.CustomInputs,
-	)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
-	}
-
 	if len(req.CustomInputs) > 0 && !exactManagedInputs &&
 		len(oorRecipients) != 1 {
 		return nil, status.Errorf(codes.InvalidArgument, "explicit "+
 			"custom inputs require exactly one recipient")
+	}
+	if req.GetMaxVtxoAgeBlocks() > 0 && len(req.CustomInputs) > 0 &&
+		!exactManagedInputs {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"max_vtxo_age_blocks applies only to wallet-managed "+
+				"inputs")
 	}
 
 	// For dry_run, return a preview before selecting wallet inputs or
@@ -3242,65 +3252,18 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 			return nil, err
 		}
 	} else {
-		// The standard path lets the wallet select inputs.
-		// Outpoint-only custom inputs use the same durable reservation
-		// path, but name the exact managed VTXOs that must be selected.
-		phaseStart = time.Now()
-		wRef := r.server.walletRef.UnsafeFromSome()
-
-		selectReq := &wallet.SelectAndLockVTXOsRequest{
-			TargetAmount:    targetAmt,
-			MinChangeAmount: terms.MinVTXOAmountFloor(),
-		}
-		if exactManagedInputs {
-			selectReq.Outpoints = customOutpoints
-		}
-		selectFuture := wRef.Ask(ctx, selectReq)
-		selectResult := selectFuture.Await(ctx)
-
-		selectResp, err := selectResult.Unpack()
+		managed, err := r.selectAndBuildManagedOORInputs(
+			ctx, targetAmt, terms.MinVTXOAmountFloor(),
+			req.GetMaxVtxoAgeBlocks(), exactInputOutpoints,
+		)
 		if err != nil {
-			return nil, status.Errorf(vtxoAdmissionCode(err),
-				"VTXO selection failed: %v", err)
+			return nil, err
 		}
 
-		var ok bool
-		locked, ok = selectResp.(*wallet.SelectAndLockVTXOsResponse)
-		if !ok {
-			return nil, status.Errorf(codes.Internal, "unexpected "+
-				"response type: %T", selectResp)
-		}
-		inputSelectDuration = time.Since(phaseStart)
-
-		outpoints := make(
-			[]wire.OutPoint, 0, len(locked.SelectedVTXOs),
-		)
-		reserveEpochs := make(
-			map[wire.OutPoint]uint64, len(locked.SelectedVTXOs),
-		)
-		for _, sv := range locked.SelectedVTXOs {
-			outpoints = append(
-				outpoints, sv.Outpoint,
-			)
-			reserveEpochs[sv.Outpoint] = sv.ReserveEpoch
-		}
-
-		phaseStart = time.Now()
-		selectedInputs, err = BuildTransferInputs(
-			ctx, r.server.vtxoStore, outpoints,
-		)
-		buildInputsDuration = time.Since(phaseStart)
-		if err != nil {
-			r.unlockSelectedVTXOsBestEffort(ctx, locked)
-
-			return nil, status.Errorf(codes.Internal, "build "+
-				"transfer inputs: %v", err)
-		}
-
-		// Carry the manager's reservation epoch onto each input so the
-		// release path (on a pre-PONR failure) names the reservation it
-		// held; a superseded one is refused by the manager.
-		applyReserveEpochs(selectedInputs, reserveEpochs)
+		selectedInputs = managed.inputs
+		locked = managed.locked
+		inputSelectDuration = managed.selectionDuration
+		buildInputsDuration = managed.buildDuration
 	}
 
 	requestOORRecipients := append(
@@ -3338,9 +3301,11 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 
 	var dispatchRequestData []byte
 	if req.GetIdempotencyKey() != "" {
-		dispatchRequestData, err = oor.NewOutgoingReplayData(
-			recipients, requestOORRecipients,
-		)
+		dispatchRequestData, err =
+			oor.NewOutgoingReplayDataWithMaxVTXOAgeBlocks(
+				recipients, requestOORRecipients,
+				req.GetMaxVtxoAgeBlocks(), exactInputOutpoints,
+			)
 		if err != nil {
 			r.unlockSelectedVTXOsBestEffort(ctx, locked)
 
@@ -3458,6 +3423,8 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 			recipientOutpoints, err = r.
 				resolveExistingOORRecipientOutpoints(
 					ctx, attempt, requestRecipients,
+					req.GetMaxVtxoAgeBlocks(),
+					exactInputOutpoints,
 				)
 			if err != nil {
 				return nil, err
@@ -3501,6 +3468,91 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		Status:             "submitted",
 		SessionId:          resp.SessionID.String(),
 		RecipientOutpoints: recipientOutpoints,
+	}, nil
+}
+
+type managedOORInputSelection struct {
+	inputs            []oor.TransferInput
+	locked            *wallet.SelectAndLockVTXOsResponse
+	selectionDuration time.Duration
+	buildDuration     time.Duration
+}
+
+// selectAndBuildManagedOORInputs obtains either a wallet-selected input set or
+// the caller's exact managed set through the same durable reservation path. It
+// releases a successful reservation if descriptor construction fails.
+func (r *RPCServer) selectAndBuildManagedOORInputs(ctx context.Context,
+	targetAmount, minChangeAmount btcutil.Amount, maxVTXOAgeBlocks uint32,
+	exactInputOutpoints []wire.OutPoint) (*managedOORInputSelection,
+	error) {
+
+	selectionStart := time.Now()
+	var currentHeight int32
+	if maxVTXOAgeBlocks > 0 {
+		var err error
+		currentHeight, err = r.currentBlockHeight(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if currentHeight <= 0 {
+			return nil, status.Error(
+				codes.Unavailable,
+				"current block height is unknown",
+			)
+		}
+	}
+
+	selectReq := &wallet.SelectAndLockVTXOsRequest{
+		TargetAmount:     targetAmount,
+		MinChangeAmount:  minChangeAmount,
+		MaxVTXOAgeBlocks: maxVTXOAgeBlocks,
+		CurrentHeight:    currentHeight,
+		Outpoints:        exactInputOutpoints,
+	}
+	wRef := r.server.walletRef.UnsafeFromSome()
+	selectResult := wRef.Ask(ctx, selectReq).Await(ctx)
+	selectResp, err := selectResult.Unpack()
+	if err != nil {
+		return nil, status.Errorf(vtxoAdmissionCode(err), "VTXO "+
+			"selection failed: %v", err)
+	}
+
+	locked, ok := selectResp.(*wallet.SelectAndLockVTXOsResponse)
+	if !ok {
+		return nil, status.Errorf(codes.Internal, "unexpected "+
+			"response type: %T", selectResp)
+	}
+	selectionDuration := time.Since(selectionStart)
+
+	outpoints := make([]wire.OutPoint, 0, len(locked.SelectedVTXOs))
+	reserveEpochs := make(
+		map[wire.OutPoint]uint64, len(locked.SelectedVTXOs),
+	)
+	for _, selected := range locked.SelectedVTXOs {
+		outpoints = append(outpoints, selected.Outpoint)
+		reserveEpochs[selected.Outpoint] = selected.ReserveEpoch
+	}
+
+	buildStart := time.Now()
+	inputs, err := BuildTransferInputs(ctx, r.server.vtxoStore, outpoints)
+	buildDuration := time.Since(buildStart)
+	if err != nil {
+		r.unlockSelectedVTXOsBestEffort(ctx, locked)
+
+		return nil, status.Errorf(codes.Internal, "build transfer "+
+			"inputs: %v", err)
+	}
+
+	// Carry the manager's reservation epoch onto each input so the release
+	// path names the reservation it held. The manager refuses a stale epoch
+	// after that outpoint has been reserved by a later spend.
+	applyReserveEpochs(inputs, reserveEpochs)
+
+	return &managedOORInputSelection{
+		inputs:            inputs,
+		locked:            locked,
+		selectionDuration: selectionDuration,
+		buildDuration:     buildDuration,
 	}, nil
 }
 
@@ -4064,8 +4116,9 @@ func (r *RPCServer) oorSigner() (input.Signer, error) {
 // input selection. handled is false only when ordinary fresh admission should
 // continue.
 func (r *RPCServer) replaySendOORByIdempotencyKey(ctx context.Context,
-	req *waverpc.SendOORRequest, requestRecipients []*waverpc.Output) (
-	*waverpc.SendOORResponse, bool, error) {
+	req *waverpc.SendOORRequest, requestRecipients []*waverpc.Output,
+	exactInputOutpoints []wire.OutPoint) (*waverpc.SendOORResponse, bool,
+	error) {
 
 	key := req.GetIdempotencyKey()
 	attempt, found, err := r.findOutgoingOORSessionByIdempotencyKey(
@@ -4097,6 +4150,7 @@ func (r *RPCServer) replaySendOORByIdempotencyKey(ctx context.Context,
 
 		outpoints, err := r.resolveExistingOORRecipientOutpoints(
 			ctx, attempt, requestRecipients,
+			req.GetMaxVtxoAgeBlocks(), exactInputOutpoints,
 		)
 		if err != nil {
 			return nil, true, err
@@ -4137,6 +4191,7 @@ func (r *RPCServer) replaySendOORByIdempotencyKey(ctx context.Context,
 		}
 		outpoints, err = r.resolveExistingOORRecipientOutpoints(
 			ctx, attempt, requestRecipients,
+			req.GetMaxVtxoAgeBlocks(), exactInputOutpoints,
 		)
 		if err != nil {
 			return nil, true, err
@@ -4240,10 +4295,12 @@ func (r *RPCServer) lookupOutgoingOORSessionByIdempotencyKey(
 //
 // A legacy attempt has no request data. It returns the stable session id with
 // no recipient outpoints so higher-level callers fail closed without sending
-// again. A new attempt rejects any changed amount, script, or recipient count.
+// again. A new attempt rejects any changed amount, script, recipient count, or
+// wallet input-selection constraint.
 func (r *RPCServer) resolveExistingOORRecipientOutpoints(ctx context.Context,
 	attempt *db.OORDispatchAttemptRecord,
-	requestRecipients []*waverpc.Output) ([]string, error) {
+	requestRecipients []*waverpc.Output, maxVTXOAgeBlocks uint32,
+	exactInputOutpoints []wire.OutPoint) ([]string, error) {
 
 	if attempt == nil || len(requestRecipients) == 0 {
 		return nil, nil
@@ -4254,7 +4311,7 @@ func (r *RPCServer) resolveExistingOORRecipientOutpoints(ctx context.Context,
 		return nil, nil
 	}
 
-	recipients, err := oor.OutgoingReplayRecipients(
+	replayData, err := oor.DecodeOutgoingReplayData(
 		attempt.RequestData,
 	)
 	if err != nil {
@@ -4265,6 +4322,18 @@ func (r *RPCServer) resolveExistingOORRecipientOutpoints(ctx context.Context,
 		return nil, status.Errorf(codes.DataLoss, "decode OOR "+
 			"dispatch request: %v", err)
 	}
+	if replayData.MaxVTXOAgeBlocks != maxVTXOAgeBlocks {
+		return nil, status.Errorf(codes.AlreadyExists, "idempotency "+
+			"key already identifies a different OOR request")
+	}
+	if !sameOutgoingReplayInputs(
+		replayData.ExactInputOutpoints, exactInputOutpoints,
+	) {
+		return nil, status.Errorf(codes.AlreadyExists, "idempotency "+
+			"key already identifies a different OOR request")
+	}
+
+	recipients := replayData.Recipients
 	if len(recipients) != len(requestRecipients) {
 		return nil, status.Errorf(codes.AlreadyExists, "idempotency "+
 			"key already identifies a different OOR request")
@@ -4312,6 +4381,27 @@ func (r *RPCServer) resolveExistingOORRecipientOutpoints(ctx context.Context,
 	}
 
 	return outpoints, nil
+}
+
+// sameOutgoingReplayInputs compares exact managed input sets without making
+// their caller-provided order part of the replay identity.
+func sameOutgoingReplayInputs(persisted, requested []wire.OutPoint) bool {
+	if len(persisted) != len(requested) {
+		return false
+	}
+
+	inputs := make(map[wire.OutPoint]struct{}, len(persisted))
+	for i := range persisted {
+		inputs[persisted[i]] = struct{}{}
+	}
+	for i := range requested {
+		if _, ok := inputs[requested[i]]; !ok {
+			return false
+		}
+		delete(inputs, requested[i])
+	}
+
+	return true
 }
 
 // buildOORChangeRecipient allocates and registers a wallet-owned receive

@@ -251,7 +251,8 @@ func (q *Queries) ListRecoverableVTXOs(ctx context.Context) ([]Vtxo, error) {
 }
 
 const ListVTXOSelectionCandidatesByStatus = `-- name: ListVTXOSelectionCandidatesByStatus :many
-SELECT outpoint_hash, outpoint_index, amount, pk_script
+SELECT outpoint_hash, outpoint_index, amount, pk_script,
+       batch_expiry, created_height
 FROM vtxos
 WHERE status = $1
 ORDER BY creation_time DESC
@@ -262,13 +263,15 @@ type ListVTXOSelectionCandidatesByStatusRow struct {
 	OutpointIndex int32
 	Amount        int64
 	PkScript      []byte
+	BatchExpiry   int32
+	CreatedHeight int32
 }
 
 // ListVTXOSelectionCandidatesByStatus returns the lightweight projection coin
-// selection runs on: outpoint, amount, and pkScript. Selection happens on
-// every payment and only needs these three fields, so this avoids decoding
-// full descriptors (pubkey parsing, taproot script reconstruction, policy
-// template decode) and the batched ancestry-path query on the hot path.
+// selection runs on: outpoint, amount, pkScript, and backing-batch timing.
+// This avoids decoding full descriptors (pubkey parsing, taproot script
+// reconstruction, policy template decode) and the batched ancestry-path query
+// on the hot path while supporting bounded-age selection.
 func (q *Queries) ListVTXOSelectionCandidatesByStatus(ctx context.Context, status int32) ([]ListVTXOSelectionCandidatesByStatusRow, error) {
 	rows, err := q.db.QueryContext(ctx, ListVTXOSelectionCandidatesByStatus, status)
 	if err != nil {
@@ -283,6 +286,8 @@ func (q *Queries) ListVTXOSelectionCandidatesByStatus(ctx context.Context, statu
 			&i.OutpointIndex,
 			&i.Amount,
 			&i.PkScript,
+			&i.BatchExpiry,
+			&i.CreatedHeight,
 		); err != nil {
 			return nil, err
 		}

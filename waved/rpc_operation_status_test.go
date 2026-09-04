@@ -1,8 +1,13 @@
 package waved
 
 import (
+	"sort"
 	"testing"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
+	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 )
@@ -139,6 +144,81 @@ func TestMergeOORSessionListsPrefersPersistedDirection(t *testing.T) {
 		},
 	)
 	require.Empty(t, pendingOnly)
+}
+
+// TestOORPackageToProtoRecoversOutgoingCustomInputs verifies the status
+// surface derives immutable spend evidence from finalized checkpoints when a
+// custom input has no local VTXO binding.
+func TestOORPackageToProtoRecoversOutgoingCustomInputs(t *testing.T) {
+	t.Parallel()
+
+	customOutpoint := wire.OutPoint{
+		Hash: chainhash.Hash{
+			0x01,
+		},
+		Index: 2,
+	}
+	boundOutpoint := wire.OutPoint{
+		Hash: chainhash.Hash{
+			0x02,
+		},
+		Index: 3,
+	}
+	createdOutpoint := wire.OutPoint{
+		Hash: chainhash.Hash{
+			0x03,
+		},
+		Index: 4,
+	}
+
+	checkpoint := func(outpoint wire.OutPoint) *psbt.Packet {
+		return &psbt.Packet{
+			UnsignedTx: &wire.MsgTx{
+				TxIn: []*wire.TxIn{
+					{
+						PreviousOutPoint: outpoint,
+					},
+				},
+			},
+		}
+	}
+	pkg := &db.OORPackageBundle{
+		Direction: db.OORPackageDirectionOutgoing,
+		FinalCheckpointPSBTs: []*psbt.Packet{
+			checkpoint(customOutpoint), checkpoint(boundOutpoint),
+		},
+		Bindings: []db.OORPackageBinding{
+			{
+				Outpoint: boundOutpoint,
+				LinkKind: db.OORPackageLinkKindConsumedInput,
+			},
+			{
+				Outpoint: createdOutpoint,
+				LinkKind: db.OORPackageLinkKindCreatedOutput,
+			},
+		},
+	}
+
+	expectedConsumed := []string{
+		customOutpoint.String(), boundOutpoint.String(),
+	}
+	sort.Strings(expectedConsumed)
+
+	info := oorPackageToProto(pkg)
+	require.Equal(t, expectedConsumed, info.GetConsumedOutpoints())
+	require.Equal(
+		t, []string{createdOutpoint.String()},
+		info.GetCreatedOutpoints(),
+	)
+
+	// Incoming checkpoints describe the remote sender's inputs, not VTXOs
+	// consumed by this wallet.
+	pkg.Direction = db.OORPackageDirectionIncoming
+	info = oorPackageToProto(pkg)
+	require.Equal(
+		t, []string{boundOutpoint.String()},
+		info.GetConsumedOutpoints(),
+	)
 }
 
 // TestPersistedOORPackageQueryPlanning verifies filtered OOR list requests
