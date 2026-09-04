@@ -165,6 +165,15 @@ type RegistryConfig struct {
 	// FSM Environment.
 	FraudCheckpointSafetyMargin int32
 
+<<<<<<< HEAD
+=======
+	// LegacyProofScanFloor is the earliest block where a supported
+	// deployment on the configured public network could have created a
+	// compatible commitment transaction. It is forwarded to every child
+	// unroll actor. Zero preserves the block-1 fallback.
+	LegacyProofScanFloor uint32
+
+>>>>>>> 950ee119 (unroll: use public-network proof scan floors)
 	// VTXOExitObserver, when set, receives an ExitOutcomeNotification each
 	// time a child unroll job reaches a terminal phase: a clean failure
 	// (no on-chain footprint) asks the VTXO manager to roll the VTXO back
@@ -1488,6 +1497,10 @@ func (r *registryBehavior) childConfig(target wire.OutPoint) Config {
 		MaxSweepFeeRateSatPerVByte:  r.cfg.MaxSweepFeeRateSatPerVByte,
 		ExitSpendPolicyResolver:     r.cfg.ExitSpendPolicyResolver,
 		FraudCheckpointSafetyMargin: r.cfg.FraudCheckpointSafetyMargin,
+<<<<<<< HEAD
+=======
+		LegacyProofScanFloor:        r.cfg.LegacyProofScanFloor,
+>>>>>>> 950ee119 (unroll: use public-network proof scan floors)
 		RegistryRef:                 r.selfRef,
 	}
 }

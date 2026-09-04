@@ -5837,6 +5837,10 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		ArtifactStore: oorStore,
 	}
 	s.proofAssembler = proofAssembler
+<<<<<<< HEAD
+=======
+	legacyProofScanFloor := s.cfg.legacyProofScanFloor()
+>>>>>>> 950ee119 (unroll: use public-network proof scan floors)
 
 	// Adapt the VTXO manager ref into a tell-only exit observer so the
 	// unroll registry can report each job's terminal outcome back to the
@@ -5868,7 +5872,12 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 			Jobs:     recoveryStore,
 			Preimage: preimages,
 		},
+<<<<<<< HEAD
 		VTXOExitObserver: exitObserver,
+=======
+		VTXOExitObserver:     exitObserver,
+		LegacyProofScanFloor: legacyProofScanFloor,
+>>>>>>> 950ee119 (unroll: use public-network proof scan floors)
 	})
 	s.unrollRegistry = registry
 	s.unrollRegistryRef = fn.Some(registry.Ref())

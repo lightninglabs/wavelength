@@ -112,7 +112,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   the external NLB and dual-SAN certificates cover only the gRPC names — so
   they stay dark pending the ingress work tracked in lightning-infra#3749.
   Changing a default here changes where an existing user's daemon dials on
+<<<<<<< HEAD
   restart; treat it as a deployment change, not a constant tweak.
+=======
+  restart; treat it as a deployment change, not a constant tweak. The same
+  table anchors legacy proof scans at a rounded floor below the first
+  supported deployment on each public network. No compatible operator existed
+  on mainnet, testnet3, testnet4, or signet before the chosen floor, so the
+  floor is independent of endpoint and operator identity. Regtest, simnet, and
+  unknown networks keep block 1.
+>>>>>>> 950ee119 (unroll: use public-network proof scan floors)
 - All sub-stores share the single `s.clk` clock assigned in `NewServer`; new
   code must not call `clock.NewDefaultClock()` directly, use `s.clk`.
 - Actor startup order in `startWalletDependentActors`: VTXO manager, then
@@ -120,6 +129,29 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   OOR actor (`initOORActor`). The VTXO manager is constructed with a
   `vtxo.LazyChainResolver` placeholder that `initUnrollSubsystem` fills in
   later; anything needing that seam must run after `initUnrollSubsystem`.
+<<<<<<< HEAD
+=======
+- After the daemon is ready,
+  `repairLegacyCommitmentHeights` (`commitment_height_repair.go`) runs under
+  one synchronous, whole-pass maintenance timeout. Both readiness signals are
+  published first, so it cannot delay a readiness boundary. A large legacy set
+  may converge across restarts. The repair covers recoverable plus
+  `VTXOStatusUnilateralExit` descriptors, and returns before building the
+  indexer proof signer or ancestry fetcher when no fragment is missing a
+  height. Each remaining candidate fetches authenticated indexed ancestry and
+  calls `db.BackfillVTXOCommitmentHeights`, which atomically fills only zero
+  heights whose exact local commitment/tree fragment matches. Before fetching,
+  the repair reads the local chain tip once; the store rejects every candidate
+  above that tip and, for single-fragment ancestry, a candidate above the
+  VTXO's known creation height. A per-target failure does not stop later
+  repairs; failures produce one non-fatal Info summary. The unroll registry
+  owns the single process-level Warning for block-1 fallback; bounded
+  deployment-floor fallback logs one Info per affected target. Mainnet,
+  testnet3, testnet4, and signet use their network floor for every operator.
+  Regtest, simnet, unknown networks, and a configured floor above the current
+  tip use block 1. Existing unroll jobs keep that fallback for this process,
+  while successful repairs apply to later admissions and restarts.
+>>>>>>> 950ee119 (unroll: use public-network proof scan floors)
 - `initUnrollSubsystem` boot ordering is policy-preserving.
   `recoverySvc.RestoreNonTerminal` (in-flight vHTLC recovery jobs, each
   carrying its durable exit policy) runs **before** the chain resolver is
