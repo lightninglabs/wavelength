@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,12 +23,15 @@ import (
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/chainsource"
+	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/db/actordelivery"
 	"github.com/lightninglabs/wavelength/ledger"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/recovery"
 	"github.com/lightninglabs/wavelength/txconfirm"
 	"github.com/lightninglabs/wavelength/unrollplan"
 	"github.com/lightninglabs/wavelength/vtxo"
+	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -74,6 +78,7 @@ func (m *mockVTXOStore) ListLiveVTXOs(context.Context) ([]*vtxo.Descriptor,
 	return nil, nil
 }
 
+// ListRecoverableVTXOs is unused in these tests.
 func (m *mockVTXOStore) ListRecoverableVTXOs(context.Context) (
 	[]*vtxo.Descriptor, error) {
 
@@ -101,6 +106,7 @@ func (m *mockVTXOStore) UpdateVTXOStatus(context.Context, wire.OutPoint,
 	return nil
 }
 
+// UpdateVTXOStatusReleasingReservation is unused in these tests.
 func (m *mockVTXOStore) UpdateVTXOStatusReleasingReservation(context.Context,
 	wire.OutPoint, vtxo.VTXOStatus) error {
 
@@ -141,6 +147,7 @@ type fakeTxConfirmRef struct {
 	responseStates map[chainhash.Hash]txconfirm.TxState
 	confirmHeights map[chainhash.Hash]int32
 	failureReasons map[chainhash.Hash]string
+	askFailures    map[chainhash.Hash]int
 
 	// onAsk, when set, is invoked with each EnsureConfirmedReq as it is
 	// recorded (outside the store lock). Tests use it to assert ordering
@@ -186,8 +193,13 @@ func (f *fakeTxConfirmRef) Ask(_ context.Context,
 
 	f.mu.Lock()
 	f.requests = append(f.requests, req)
-	state := f.responseStates[req.Tx.TxHash()]
-	height := f.confirmHeights[req.Tx.TxHash()]
+	txid := req.Tx.TxHash()
+	state := f.responseStates[txid]
+	height := f.confirmHeights[txid]
+	failures := f.askFailures[txid]
+	if failures > 0 {
+		f.askFailures[txid] = failures - 1
+	}
 	onAsk := f.onAsk
 	f.mu.Unlock()
 
@@ -196,6 +208,16 @@ func (f *fakeTxConfirmRef) Ask(_ context.Context,
 	// exact moment the unroll actor is doing its txconfirm IO.
 	if onAsk != nil {
 		onAsk(req)
+	}
+	if failures > 0 {
+		promise.Complete(
+			fn.Err[txconfirm.Resp](
+				fmt.Errorf("injected txconfirm ask "+
+					"failure for %s", txid),
+			),
+		)
+
+		return promise.Future()
 	}
 
 	if state == 0 {
@@ -234,6 +256,19 @@ func (f *fakeTxConfirmRef) Ask(_ context.Context,
 	)
 
 	return promise.Future()
+}
+
+// failNextAsks configures the next count asks for txid to fail before the
+// normal response logic runs.
+func (f *fakeTxConfirmRef) failNextAsks(txid chainhash.Hash, count int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.askFailures == nil {
+		f.askFailures = make(map[chainhash.Hash]int)
+	}
+
+	f.askFailures[txid] = count
 }
 
 // lastRequest returns the latest txconfirm request.
@@ -2961,6 +2996,78 @@ func TestConfirmedNodesAdvanceToSweep(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, PhaseSweepConfirmation, stateResp.Phase)
 	require.NotNil(t, stateResp.SweepTxid)
+}
+
+// TestUnrollTellRetryReissuesStagedInFlight verifies that a durable chain
+// notification replay reissues work which was staged as in-flight before a
+// transient txconfirm Ask failure.
+func TestUnrollTellRetryReissuesStagedInFlight(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	txconfirmRef := &fakeTxConfirmRef{}
+	targetTxid := proof.TargetOutpoint().Hash
+	txconfirmRef.failNextAsks(targetTxid, 1)
+
+	sqlDB := db.NewTestDB(t)
+	deliveryStore, err := actordelivery.NewTxAwareDeliveryStoreFromDB(
+		sqlDB.DB, sqlDB.Backend(), clock.NewDefaultClock(),
+		btclog.Disabled,
+	)
+	require.NoError(t, err)
+
+	const actorID = "unroll-tell-retry"
+	unrollActor, err := NewVTXOUnrollActor(Config{
+		TargetOutpoint: proof.TargetOutpoint(),
+		ActorID:        actorID,
+		DeliveryStore:  deliveryStore,
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   txconfirmRef,
+		ChainSource:    &fakeChainSourceRef{},
+		Wallet:         &fakeSweepWallet{},
+		Log:            fn.Some(btclog.Disabled),
+	})
+	require.NoError(t, err)
+	t.Cleanup(unrollActor.Stop)
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+	rootTxid := proof.RootTxids()[0]
+	require.Equal(t, 1, txconfirmRef.requestCountForTxid(rootTxid))
+
+	// The root notification is a durable Tell. It stages the target as
+	// in-flight, then the injected txconfirm Ask failure nacks the Tell.
+	txconfirmRef.emitConfirmedByTxid(t, rootTxid, 101)
+
+	// Redelivery must explicitly reissue the staged in-flight target.
+	// Merely applying the root confirmation again is idempotent and emits
+	// no work.
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(targetTxid) == 2
+	}, 6*time.Second, 20*time.Millisecond)
+
+	txconfirmRef.emitConfirmed(t, 2, targetTxid, 102)
+	require.Eventually(t, func() bool {
+		checkpoint, loadErr := deliveryStore.LoadCheckpoint(
+			t.Context(), actorID,
+		)
+		if loadErr != nil || checkpoint == nil {
+			return false
+		}
+
+		decoded, decodeErr := decodeCheckpoint(checkpoint.StateData)
+		if decodeErr != nil {
+			return false
+		}
+
+		return slices.Contains(decoded.State.ConfirmedTxids, targetTxid)
+	}, testTimeout, 10*time.Millisecond)
+
+	require.Equal(t, 1, txconfirmRef.requestCountForTxid(rootTxid))
+	require.Equal(t, 2, txconfirmRef.requestCountForTxid(targetTxid))
+	require.Equal(t, 3, txconfirmRef.requestCount())
 }
 
 // TestResumeReissuesInflightWork verifies that resume reattaches the actor to
