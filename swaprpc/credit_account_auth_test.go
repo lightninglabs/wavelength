@@ -47,6 +47,22 @@ func TestCreditAccountRequestDigestCommitsToRequest(t *testing.T) {
 			},
 		},
 		{
+			name: "create refresh swap",
+			req: &CreateRefreshSwapRequest{
+				ClientVhtlcPubkey: accountKey,
+				PaymentHash: []byte{
+					1,
+				},
+				AmountSat:        2,
+				MaxVtxoAgeBlocks: 6,
+			},
+			mutate: func(t *testing.T, req proto.Message) {
+				typed, ok := req.(*CreateRefreshSwapRequest)
+				require.True(t, ok)
+				typed.MaxVtxoAgeBlocks++
+			},
+		},
+		{
 			name: "quote in swap",
 			req: &QuoteInSwapRequest{
 				AccountPubkey: accountKey,

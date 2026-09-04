@@ -12,6 +12,9 @@ http:
     - selector: swaprpc.SwapService.QuoteInSwap
       post: /v1/swap/quote-in-swap
       body: "*"
+    - selector: swaprpc.SwapService.CreateRefreshSwap
+      post: /v1/swap/create-refresh-swap
+      body: "*"
     - selector: swaprpc.SwapService.CreateCredit
       post: /v1/swap/create-credit
       body: "*"

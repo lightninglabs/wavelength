@@ -596,6 +596,11 @@ func (s *paySession) createSwap(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("validate in-swap quote: %w", err)
 	}
+	if err := s.client.ensurePaymentHashOwnerAvailable(
+		ctx, cfg.PaymentHash, SwapDirectionPay,
+	); err != nil {
+		return err
+	}
 
 	if cfg.SettlementType == SettlementTypeCredit {
 		var creditAppliedSat uint64

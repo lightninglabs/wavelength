@@ -222,6 +222,42 @@ func (g *GRPCSwapServerConn) CreateInSwapWithCredits(ctx context.Context,
 	return inSwapConfigFromProto(resp)
 }
 
+// CreateRefreshSwap asks the swap server to create the client-funded leg of a
+// two-vHTLC refresh. The client identity key also authorizes the durable
+// refresh terms, so a transport replay cannot change the amount or age cap.
+func (g *GRPCSwapServerConn) CreateRefreshSwap(ctx context.Context,
+	paymentHash lntypes.Hash, amountSat btcutil.Amount,
+	clientVHTLCPubkey *btcec.PublicKey, maxVTXOAgeBlocks uint32) (
+	*RefreshSwapConfig, error) {
+
+	if clientVHTLCPubkey == nil {
+		return nil, fmt.Errorf("client vHTLC pubkey must be provided")
+	}
+	if err := validateSatoshiAmount(
+		amountSat, "refresh amount",
+	); err != nil {
+		return nil, err
+	}
+
+	req := &swaprpc.CreateRefreshSwapRequest{
+		PaymentHash: append([]byte(nil), paymentHash[:]...),
+		AmountSat:   uint64(amountSat),
+		ClientVhtlcPubkey: clientVHTLCPubkey.
+			SerializeCompressed(),
+		MaxVtxoAgeBlocks: maxVTXOAgeBlocks,
+	}
+	if err := g.authorizeCreditAccountRequest(ctx, req); err != nil {
+		return nil, err
+	}
+
+	resp, err := g.client.CreateRefreshSwap(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("CreateRefreshSwap RPC: %w", err)
+	}
+
+	return refreshSwapConfigFromProto(resp)
+}
+
 // QuoteInSwap previews one Ark-to-Lightning swap on the swap server without
 // creating durable state.
 func (g *GRPCSwapServerConn) QuoteInSwap(ctx context.Context, invoice string,
@@ -669,6 +705,12 @@ func inArkHtlcEventFromProto(event *swaprpc.InArkHtlcEvent) (*InArkHtlcEvent,
 	if err != nil {
 		return nil, err
 	}
+	settlementType, err := settlementTypeFromProto(
+		event.GetSettlementType(),
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	return &InArkHtlcEvent{
 		PaymentHash:        paymentHash,
@@ -679,6 +721,7 @@ func inArkHtlcEventFromProto(event *swaprpc.InArkHtlcEvent) (*InArkHtlcEvent,
 		VHTLCAmountSat:     int64(event.GetVhtlcAmountSat()),
 		RequestedAmountSat: event.GetRequestedAmountSat(),
 		AttachedCreditSat:  event.GetAttachedCreditSat(),
+		SettlementType:     settlementType,
 	}, nil
 }
 
@@ -939,6 +982,63 @@ func inSwapConfigFromProto(resp *swaprpc.CreateInSwapResponse) (*InSwapConfig,
 		Expiry:         expiryTime,
 		SettlementType: settlementType,
 		CreditQuote:    creditQuote,
+	}, nil
+}
+
+// refreshSwapConfigFromProto validates and converts the immutable refresh
+// terms returned by the swap server.
+func refreshSwapConfigFromProto(resp *swaprpc.CreateRefreshSwapResponse) (
+	*RefreshSwapConfig, error) {
+
+	if resp == nil {
+		return nil, fmt.Errorf("refresh-swap response must be provided")
+	}
+	if len(resp.GetPaymentHash()) != lntypes.HashSize {
+		return nil, fmt.Errorf("refresh-swap response payment hash "+
+			"must be %d bytes", lntypes.HashSize)
+	}
+	if resp.GetAmountSat() == 0 || resp.GetAmountSat() > math.MaxInt64 {
+		return nil, fmt.Errorf("refresh-swap response amount must " +
+			"fit positive int64")
+	}
+	if len(resp.GetServerPubkey()) == 0 {
+		return nil, fmt.Errorf("refresh-swap response missing server " +
+			"pubkey")
+	}
+	if resp.GetExpiry() == nil || resp.GetExpiry().AsTime().IsZero() {
+		return nil, fmt.Errorf("refresh-swap response missing expiry")
+	}
+
+	settlementType, err := settlementTypeFromProto(
+		resp.GetSettlementType(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	if settlementType != SettlementTypeRefresh {
+		return nil, fmt.Errorf("refresh-swap response has "+
+			"settlement type %q", settlementType)
+	}
+
+	serverPubkey, err := btcec.ParsePubKey(resp.GetServerPubkey())
+	if err != nil {
+		return nil, fmt.Errorf("parse refresh server pubkey: %w", err)
+	}
+	vhtlcConfig, err := vhtlcConfigFromProto(resp.GetVhtlcConfig())
+	if err != nil {
+		return nil, err
+	}
+
+	var paymentHash lntypes.Hash
+	copy(paymentHash[:], resp.GetPaymentHash())
+
+	return &RefreshSwapConfig{
+		PaymentHash:    paymentHash,
+		AmountSat:      int64(resp.GetAmountSat()),
+		ServerPubkey:   serverPubkey,
+		VHTLCConfig:    *vhtlcConfig,
+		Expiry:         resp.GetExpiry().AsTime(),
+		SettlementType: settlementType,
 	}, nil
 }
 
@@ -1242,6 +1342,9 @@ func settlementTypeFromProto(wireType swaprpc.SettlementType) (SettlementType,
 
 	case swaprpc.SettlementType_SETTLEMENT_TYPE_MIXED:
 		return SettlementTypeMixed, nil
+
+	case swaprpc.SettlementType_SETTLEMENT_TYPE_REFRESH:
+		return SettlementTypeRefresh, nil
 
 	default:
 		return "", fmt.Errorf("unknown settlement type %v", wireType)
