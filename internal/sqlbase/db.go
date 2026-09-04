@@ -101,16 +101,33 @@ var (
 	dbConnsMu sync.Mutex
 )
 
-// Init initializes the global set of database connections.
-func Init(maxConnections int) {
+// Init initializes the global set of database connections. Calling it
+// more than once with the same limit is a no-op, so every caller that
+// opens a database through this package can state the limit it needs.
+//
+// The set is process-global and its limit is fixed by whoever gets
+// there first, so a later call asking for a different limit cannot be
+// honored. It is refused rather than silently ignored: a caller that
+// asked for a single connection because its store assumes one writer
+// would otherwise run on a wider pool than it believes it has.
+func Init(maxConnections int) error {
 	dbConnsMu.Lock()
 	defer dbConnsMu.Unlock()
 
 	if dbConns != nil {
-		return
+		if dbConns.maxConnections != maxConnections {
+			return fmt.Errorf("connection set already "+
+				"initialized with a limit of %d connections, "+
+				"cannot re-initialize it with %d",
+				dbConns.maxConnections, maxConnections)
+		}
+
+		return nil
 	}
 
 	dbConns = newDbConnSet(maxConnections)
+
+	return nil
 }
 
 // NewSqlBackend returns a db object initialized with the passed backend

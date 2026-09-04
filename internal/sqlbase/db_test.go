@@ -27,7 +27,7 @@ func newTestDB(t *testing.T) (walletdb.DB, string) {
 	// The connection set is process-global and first-call-wins, so
 	// every test in this package shares the single-connection limit
 	// the wallet store asks for.
-	Init(1)
+	require.NoError(t, Init(1))
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	dsn := dbPath +
@@ -354,4 +354,17 @@ func TestUpdateRollback(t *testing.T) {
 			return nil
 		}, func() {}),
 	)
+}
+
+// TestInitConflictingLimit asserts a second Init asking for a
+// different connection limit is refused. The limit is process-global
+// and cannot be changed once set, so silently ignoring the second
+// caller would leave it running on a pool it did not ask for.
+func TestInitConflictingLimit(t *testing.T) {
+	// Deliberately not parallel: this asserts on process-global
+	// state. Whichever test initializes the set first uses a limit
+	// of one, so both expectations below hold in any order.
+	require.NoError(t, Init(1))
+	require.NoError(t, Init(1))
+	require.ErrorContains(t, Init(2), "already initialized")
 }
