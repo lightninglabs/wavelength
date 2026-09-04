@@ -13,6 +13,7 @@ import (
 type Msg interface {
 	actor.Message
 
+	// txConfirmMsgSealed restricts actor requests to this package.
 	txConfirmMsgSealed()
 }
 
@@ -20,6 +21,7 @@ type Msg interface {
 type Resp interface {
 	actor.Message
 
+	// txConfirmRespSealed restricts actor responses to this package.
 	txConfirmRespSealed()
 }
 
@@ -28,6 +30,8 @@ type Resp interface {
 type Notification interface {
 	actor.Message
 
+	// txConfirmNotificationSealed restricts lifecycle events to this
+	// package.
 	txConfirmNotificationSealed()
 }
 
@@ -107,7 +111,10 @@ func (s TxState) String() string {
 //
 // Deduplication is keyed by txid. If the same txid is already being tracked,
 // the actor attaches the supplied subscriber to the existing tracking state
-// instead of starting a second confirmation workflow.
+// instead of starting a second confirmation workflow. If the Ask returns an
+// error, the subscriber is not retained and receives no later notifications;
+// the caller must retry EnsureConfirmedReq to attach again. An immediate retry
+// can return another error while the actor reconciles an ambiguous broadcast.
 type EnsureConfirmedReq struct {
 	actor.BaseMessage
 

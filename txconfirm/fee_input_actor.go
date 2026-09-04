@@ -302,13 +302,23 @@ func (a *TxBroadcasterActor) handleFanoutConfirmed(ctx context.Context,
 // this is the point where it can finally build its CPFP child and land.
 func (a *TxBroadcasterActor) retryBroadcastingParents(ctx context.Context) {
 	for _, entry := range a.tracked {
+		if a.retryPendingFailure(ctx, entry) {
+			continue
+		}
+
 		state, err := entry.currentTxState()
 		if err != nil || state != TxStateBroadcasting {
 			continue
 		}
 
 		_, err = a.broadcastTrackedTx(ctx, entry, TxStateBroadcasting)
-		a.recordInitialBroadcastOutcome(ctx, entry, err)
+		_, outcomeErr := a.recordInitialBroadcastOutcome(
+			ctx, entry, err,
+		)
+		if outcomeErr != nil {
+			a.log.WarnS(ctx, "Failed to record broadcast outcome",
+				outcomeErr, "txid", entry.data.Txid)
+		}
 	}
 }
 
