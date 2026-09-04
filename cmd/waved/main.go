@@ -132,42 +132,7 @@ func newRootCmd() *cobra.Command {
 
 	registerArkServerFlags(f, cfg)
 
-	// Wallet backend flags.
-	f.String(
-		"wallet.type", cfg.Wallet.Type,
-		"wallet backend type (lnd, lwwallet, btcwallet)",
-	)
-	f.String(
-		"wallet.esploraurl", cfg.Wallet.EsploraURL,
-		"esplora REST API URL (required for lwwallet)",
-	)
-	f.String(
-		"wallet.feeurl", cfg.Wallet.FeeURL,
-		"fee-estimate JSON endpoint URL (required for btcwallet)",
-	)
-	f.String(
-		"wallet.btcwallet_blockheaderssource",
-		cfg.Wallet.BtcwBlockSource,
-		"block header import source for btcwallet fast sync",
-	)
-	f.String(
-		"wallet.btcwallet_filterheaderssource",
-		cfg.Wallet.BtcwFilterSource,
-		"filter header import source for btcwallet fast sync",
-	)
-	f.Duration(
-		"wallet.pollinterval", cfg.Wallet.PollInterval,
-		"chain poll interval for lwwallet backend",
-	)
-	f.Uint32(
-		"wallet.recoverywindow", cfg.Wallet.RecoveryWindow,
-		"address recovery look-ahead window for lwwallet",
-	)
-	f.String(
-		"wallet.password_file", cfg.Wallet.PasswordFile, "path to "+
-			"file containing wallet password for auto-unlock "+
-			"at startup (lwwallet/btcwallet)",
-	)
+	registerWalletFlags(f, cfg)
 
 	registerBitcoindFlags(f)
 
@@ -375,6 +340,50 @@ func registerDaemonRPCFlags(f *pflag.FlagSet, cfg *waved.Config) {
 	f.StringSlice(
 		"rpc.gateway.allowedorigins", cfg.RPC.Gateway.AllowedOrigins,
 		"trusted browser origins allowed to call the daemon gateway",
+	)
+}
+
+// registerWalletFlags registers the flags of the daemon's wallet
+// backends.
+func registerWalletFlags(f *pflag.FlagSet, cfg *waved.Config) {
+	f.String(
+		"wallet.type", cfg.Wallet.Type,
+		"wallet backend type (lnd, lwwallet, btcwallet)",
+	)
+	f.String(
+		"wallet.esploraurl", cfg.Wallet.EsploraURL,
+		"esplora REST API URL (required for lwwallet)",
+	)
+	f.String(
+		"wallet.dbbackend", cfg.Wallet.DBBackend,
+		"wallet database backend for lwwallet (bolt, sqlite)",
+	)
+	f.String(
+		"wallet.feeurl", cfg.Wallet.FeeURL,
+		"fee-estimate JSON endpoint URL (required for btcwallet)",
+	)
+	f.String(
+		"wallet.btcwallet_blockheaderssource",
+		cfg.Wallet.BtcwBlockSource,
+		"block header import source for btcwallet fast sync",
+	)
+	f.String(
+		"wallet.btcwallet_filterheaderssource",
+		cfg.Wallet.BtcwFilterSource,
+		"filter header import source for btcwallet fast sync",
+	)
+	f.Duration(
+		"wallet.pollinterval", cfg.Wallet.PollInterval,
+		"chain poll interval for lwwallet backend",
+	)
+	f.Uint32(
+		"wallet.recoverywindow", cfg.Wallet.RecoveryWindow,
+		"address recovery look-ahead window for lwwallet",
+	)
+	f.String(
+		"wallet.password_file", cfg.Wallet.PasswordFile, "path to "+
+			"file containing wallet password for auto-unlock "+
+			"at startup (lwwallet/btcwallet)",
 	)
 }
 

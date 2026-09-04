@@ -8,22 +8,18 @@ import (
 	"hash/fnv"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/btcsuite/btcwallet/walletdb"
 	_ "github.com/lightninglabs/go-wasmsqlite"
-	"github.com/lightninglabs/wavelength/internal/sqlbase"
 	"github.com/lightninglabs/wavelength/internal/wasmhost"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 )
 
 const (
 	wasmWalletDBDriverName      = "wasmsqlite"
-	wasmWalletDBTablePrefix     = "walletdb"
-	wasmWalletDBTimeout         = 30 * time.Second
-	wasmWalletDBBusyTimeoutMS   = "30000"
-	wasmWalletDBMaxConnections  = 1
 	wasmWalletDBFileNamePattern = "/wallet-%016x.db"
 
 	// nodeWalletDBFileName is the wallet store's name on a real filesystem,
@@ -83,19 +79,13 @@ func walletExists(cfg Config) (bool, error) {
 // openWASMWalletDB opens btcwallet's walletdb on top of the same browser
 // SQLite/OPFS driver used by the daemon and swap stores.
 func openWASMWalletDB(dbDir string) (walletdb.DB, error) {
-	sqlbase.Init(wasmWalletDBMaxConnections)
-
-	cfg := &sqlbase.Config{
-		DriverName:      wasmWalletDBDriverName,
-		Dsn:             wasmWalletDBDSN(dbDir),
-		Timeout:         wasmWalletDBTimeout,
-		TableNamePrefix: wasmWalletDBTablePrefix,
-		WithTxLevelLock: true,
-	}
+	dsn := wasmWalletDBDSN(dbDir)
 
 	var lastErr error
 	for attempt := 0; attempt < 25; attempt++ {
-		db, err := sqlbase.NewSqlBackend(context.Background(), cfg)
+		db, err := openSQLWalletDB(
+			context.Background(), wasmWalletDBDriverName, dsn,
+		)
 		if err == nil {
 			return db, nil
 		}
@@ -126,7 +116,12 @@ func wasmWalletDBDSN(dbDir string) string {
 		values.Set("file", wasmWalletDBFileName(dbDir))
 	}
 	values.Set("mode", "rwc")
-	values.Set("busy_timeout", wasmWalletDBBusyTimeoutMS)
+	values.Set(
+		"busy_timeout",
+		strconv.FormatInt(
+			sqlWalletDBBusyTimeout.Milliseconds(), 10,
+		),
+	)
 
 	// WAL survives here only because of the locking_mode=EXCLUSIVE pragma
 	// below. No wasm VFS implements xShmMap, so this is the WAL mode SQLite
