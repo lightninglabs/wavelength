@@ -90,6 +90,12 @@ background ingress polling with event routing.
 - `SendClientEventRequest` auto-derives `Service`/`Method` from `Message.ServiceMethod()` when callers leave them empty, preventing silent drops.
 - Idempotency keys are derived from message payload hash; same key on retry enables server deduplication.
 - Egress is at-least-once: on the Read/Commit path the `Edge.Send` is not atomic with the mailbox ack (it never was, even on the old Classic path), so a crash or a lost lease between a successful send and its Commit redelivers and re-sends. The server absorbs the duplicate via the stable `MsgId`/`IdempotencyKey`. Under `EgressWorkers > 1` a `SendClientEventRequest` carries the inner message's `CorrelationKey`, so same-session events keep per-key FIFO order across the worker pool while distinct sessions send in parallel. `SendUnaryRequest` and `SendRPCRequest` are intentionally **unkeyed** (the `BaseMessage` default), so distinct unary/RPC sends may reorder across workers; that is safe only because each is an independent request/response RPC matched by an explicit correlation ID, not a position in an ordered stream. Any new order-sensitive egress message MUST define a `CorrelationKey`, or it will silently reorder under the pool.
+- Every durable `Edge.Send` uses `sendEnvelope`, which preserves context values,
+  detaches from actor-turn cancellation, and applies the 30-second
+  `defaultSendEventTimeout`. A timeout returns before Commit, so the actor nacks
+  and retries the unchanged envelope with its stable identifiers. This bound
+  prevents black-holed sends from occupying all egress workers. The direct
+  `UnaryFacade` path remains caller-scoped.
 - The mailbox protocol has no cancel envelope kind (`RpcMeta_Kind` is
   REQUEST/RESPONSE/EVENT only), so a unary caller that gives up on its deadline
   cannot recall the request: the operator runs it to completion and the
