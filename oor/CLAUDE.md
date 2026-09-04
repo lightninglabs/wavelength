@@ -79,6 +79,23 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   `IncomingSnapshot.Version = 1`); restore rejects a zero version. Outgoing
   v5 adds the `FirstRejectUnixNanos` record (bounded transient submit-reject
   retry window); a pre-v5 snapshot decodes it to 0 (a fresh window).
+- Transfer-input records grow by appending TLV types in ascending order, which
+  keeps the encoded stream canonical without bumping the direction version:
+  `transferInputReserveEpochRecordType` (18) is the newest and is always
+  written, so an input encoded before the field decodes to a zero epoch.
+- **Input releases name the reservation they held.** `TransferInput.ReserveEpoch`
+  carries the monotonic epoch the VTXO manager stamped at
+  `SelectAndReserveSpendResponse` time, and it persists into
+  `TransferInputSnapshot`. `ReleaseInputsRequest.ReserveEpochs` is an
+  in-memory side channel — `ToProto` does not serialize it, because the
+  request is never a persisted transport message. `prePONRReserveEpochs`
+  rebuilds the map from the state's durable `TransferInputs` every time the FSM
+  re-enters the non-retryable failure transition, so a release replayed after a
+  rolled-back commit still presents the epoch it actually held and the manager
+  refuses it if a newer session has since re-reserved the coin. Inputs with a
+  zero epoch (a pre-upgrade snapshot) are omitted from the map entirely and so
+  release unconditionally, preserving the old behaviour. `SpendReleaser` takes
+  the epoch map alongside the outpoints.
 - `StartTransferRequest.IdempotencyKey` dedup reads
   `oor_dispatch_attempts`, not the mutable session row. The table has one row
   per caller key and one caller key per deterministic session id. Once the

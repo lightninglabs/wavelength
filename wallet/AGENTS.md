@@ -20,7 +20,7 @@ refresh, leave, OOR spend, and directed send flows.
 - `BoardingStore` — Interface for persisting boarding addresses and intents.
 - `VTXOReader` — Read-only interface for loading VTXO descriptors by outpoint. Wallet uses this to build intent packages without importing `vtxo` directly.
 - `VTXODescriptor` — Wallet-level VTXO descriptor (outpoint, amount, pkscript, tree, expiry). Avoids direct dependency on `vtxo.Descriptor`.
-- `SelectedVTXO` — Describes a VTXO selected and locked for use as a transfer input (outpoint, amount, pkscript). Breaks the vtxo → round → wallet import cycle.
+- `SelectedVTXO` — Describes a VTXO selected and locked for use as a transfer input (outpoint, amount, pkscript, `ReserveEpoch`). Breaks the vtxo → round → wallet import cycle. `handleSelectAndLockVTXOs` copies the manager's `ReserveEpoch` through verbatim so the OOR transfer that spends the coin can name the reservation on release; dropping it would silently downgrade every release to unconditional.
 - `CreateBoardingAddressRequest` / `CreateBoardingAddressResponse` — Ask-request for deriving new address.
 - `BlockEpochNotification` — Tell-message from chain source triggering UTXO polling.
 - `BoardingUtxoConfirmedEvent` — Tell-message sent when a VTXO confirms.

@@ -10,11 +10,14 @@ descriptors through branch nodes to the batch output.
 
 - `Tree` — Complete VTXO or connector tree: root outpoint, root output, node hierarchy, and traversal helpers. `Verify` checks structure plus value flow; `ValidateValueConservation` exposes the funding check separately for callers that have already bound `BatchOutput` to an authoritative prevout. Built via `BuildVTXOTree` or `BuildConnectorTree`.
 - `Node` — Single tree node representing a transaction in the tree (branch or leaf).
-- `LeafDescriptor` — Describes a single VTXO leaf: amount, owner pubkeys, cosigner keys, CSV delay.
+- `LeafDescriptor` — Describes a single VTXO leaf: amount, owner pubkeys, cosigner keys, CSV delay, and optional `AssetAmount` for asset trees.
 - `VTXODescriptor` — Interface for VTXO metadata needed by tree construction (amount, cosigners, owner key).
 - `ConnectorDescriptor` — Describes a connector output for forfeit transaction construction.
-- `Structure` — Intermediate tree layout built by `BuildStructure` before materialization.
+- `Structure` — Intermediate tree layout built by `BuildStructure` before materialization; carries an `AssetContext` when any leaf declared an `AssetAmount`.
 - `StructureConfig` — Configuration for tree building (radix, partition weight function).
+- `AssetTreeContext` — Side-table of per-tree asset state, kept out of `Node` so the Bitcoin tree stays asset-agnostic: subtree asset amounts, per-input taproot signing tweaks, sealed transfer packages, leaf asset commitment roots, and the tree's asset ref. `nil` on Bitcoin-only trees; `IsEmpty` reports a context carrying no asset data.
+- `BatchOutputSpec` / `BuildBatchOutputSpec` — Batch output plus the taproot material needed to commit an asset root to it (untweaked `InternalKey`, `SweepLeaf`, BIP-371 `TapTreeBytes`). `BuildBatchOutput` is the output-only wrapper.
+- `ComputeInternalKey` — Untweaked MuSig2 cosigner aggregate, used when the taproot tweak comes from somewhere other than the sweep root.
 - `SignerSession` — MuSig2 signing session for tree transactions, wrapping `input.MuSig2Signer`.
 - `Materializer` / `BTCMaterializer` — Interface and implementation for materializing tree nodes into actual Bitcoin transactions.
 - `TreeAssembler` — Two-pass builder (`BuildStructure` then `Materialize`) driven by `TreeConfig`.
@@ -23,7 +26,7 @@ descriptors through branch nodes to the batch output.
 ## Relationships
 
 - **Depends on**: `lib/arkscript` (taproot script construction, policy templates, `SpendInfo`).
-- **Depended on by**: `round` (tree construction/validation), `oor` (tree references), `db` (tree serialization).
+- **Depended on by**: `round` (tree construction/validation), `oor` (tree references), `db` (tree serialization), `tapassets` (asset tree materialization drives `BuildStructure`/`Materialize` and populates `AssetTreeContext`).
 
 ## Invariants
 
@@ -42,6 +45,19 @@ descriptors through branch nodes to the batch output.
   all outputs and recurses only into retained children. The traversal rejects
   cycles and nodes shared by multiple parents. `Node.Verify` checks only
   parent-child outpoint topology and is not a trust-boundary validator.
+- Cosigner slices are copied before every MuSig2 aggregation and before every
+  signer session: `musig2.AggregateKeys` and local signers sort their input in
+  place, so passing `Node.CoSigners` directly would silently reorder a node's
+  canonical cosigner set.
+- Asset trees sign under a **per-node** taproot tweak, not the shared sweep
+  tapscript root: `NewTreeSignerSession` switches to `AssetContext`'s tweak
+  lookup whenever the tree carries an asset context, and fails the session if
+  any node has no recorded tweak. Bitcoin-only trees keep using
+  `SweepTapscriptRoot` for every node.
+- `AssetTreeContext` indexes asset amounts by *both* node pointer and input
+  outpoint. Path extraction clones nodes but preserves their inputs, so the
+  outpoint index is what keeps extracted paths readable; the context itself is
+  shared by pointer with every extracted sub-tree.
 - **Cache-aliasing invariant**: a `*Tree` is effectively immutable once published from
   a builder or resolver. Multiple downstream consumers may share the same `*Tree`
   pointer through caches and ancestry-fragment slices. Silently mutating a shared

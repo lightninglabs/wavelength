@@ -30,6 +30,7 @@ package may import from a higher layer.
 | [`vhtlcrecovery`](vhtlcrecovery/) | Durable control-plane types for vHTLC on-chain recovery jobs (action, state, script parameters, swap linkage) |
 | [`credit`](credit/) | Client-side credit subsystem: supervisor/per-operation-actor pair driving fault-tolerant sub-floor pay, credit-receive, and redeem flows against the authoritative server ledger |
 | [`coinselect`](coinselect/) | Single coin-type-agnostic coin-selection algorithm shared across wallet backends |
+| [`tapassets`](tapassets/) | Taproot Assets adapter: seals tap-sdk custom-anchor transitions into a caller-funded Ark batch output and materializes an asset-carrying VTXO tree beneath it. Journal-backed; not yet wired into `waved` |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)
 
@@ -144,6 +145,11 @@ waved (orchestrator)
 └── db              │
     └── (SQLite | PostgreSQL)
 ```
+
+`tapassets` is deliberately absent from this tree: it depends on `lib/tree`,
+`lib/arkscript`, and `lib/tx/psbtutil`, but nothing in the daemon imports it
+yet. It is a self-contained Taproot Assets adapter reached only through its own
+exported surface.
 
 ## Architectural Patterns
 
