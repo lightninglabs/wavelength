@@ -411,6 +411,10 @@ type Querier interface {
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
 	UpdateRoundBoardingIntentSignature(ctx context.Context, arg UpdateRoundBoardingIntentSignatureParams) error
 	UpdateRoundStatus(ctx context.Context, arg UpdateRoundStatusParams) error
+	// UpdateVTXOAncestryCommitmentHeight fills one legacy zero commitment height
+	// without rewriting the local commitment transaction, tree path, or other
+	// proof fields. The zero-height predicate prevents overwriting known data.
+	UpdateVTXOAncestryCommitmentHeight(ctx context.Context, arg UpdateVTXOAncestryCommitmentHeightParams) (int64, error)
 	// UpdateVTXOStatus atomically updates a VTXO's status. This is the primary
 	// method for state transitions that don't require additional data.
 	UpdateVTXOStatus(ctx context.Context, arg UpdateVTXOStatusParams) error

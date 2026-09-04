@@ -2,38 +2,34 @@ package unroll
 
 import (
 	"sync"
-
-	"github.com/btcsuite/btcd/chainhash/v2"
 )
 
-// proofNodeFloorAlertDeduper limits the confirmation-floor warning to one
-// alert per proof transaction and process lifetime. Multiple target VTXOs can
-// share the same proof ancestor, so per-target warnings describe one recovery
-// condition and create redundant alert instances.
+// proofNodeFloorAlertDeduper limits the legacy fallback-scan warning to one
+// alert per unroll registry and process lifetime. The alert reports the shared
+// compatibility condition; per-target Debug logs retain the affected
+// outpoints without repeating an operator warning for every proof transaction.
 type proofNodeFloorAlertDeduper struct {
-	mu   sync.Mutex
-	seen map[chainhash.Hash]struct{}
+	mu     sync.Mutex
+	warned bool
 }
 
-// newProofNodeFloorAlertDeduper creates an empty process-local alert set.
+// newProofNodeFloorAlertDeduper creates an unused process-local alert gate.
 func newProofNodeFloorAlertDeduper() *proofNodeFloorAlertDeduper {
-	return &proofNodeFloorAlertDeduper{
-		seen: make(map[chainhash.Hash]struct{}),
-	}
+	return &proofNodeFloorAlertDeduper{}
 }
 
-// first reports whether txid has not produced a warning through this deduper.
-// It records txid before returning so concurrent child actors cannot both
-// claim the first alert.
-func (d *proofNodeFloorAlertDeduper) first(txid chainhash.Hash) bool {
+// first reports whether no child has produced the registry's fallback warning.
+// It records the claim before returning so concurrent children cannot both
+// emit it.
+func (d *proofNodeFloorAlertDeduper) first() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if _, ok := d.seen[txid]; ok {
+	if d.warned {
 		return false
 	}
 
-	d.seen[txid] = struct{}{}
+	d.warned = true
 
 	return true
 }

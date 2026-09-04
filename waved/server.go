@@ -1708,6 +1708,25 @@ func (s *Server) startWalletReadyServices(ctx context.Context,
 
 	s.markDaemonReady()
 
+	// Repair legacy confirmation floors as bounded post-ready maintenance.
+	// This call is synchronous, but both wallet-services and daemon
+	// readiness were published above, so the indexer cannot delay a
+	// readiness boundary. One 30-second context bounds the whole pass, not
+	// each target; a large legacy set may therefore converge across
+	// restarts. Restored jobs keep the configured safe fallback floor for
+	// this process, while successful backfills are durable for later
+	// admissions and restarts.
+	repairCtx, repairCancel := context.WithTimeout(
+		ctx, legacyCommitmentHeightRepairTimeout,
+	)
+	repairErr := s.repairLegacyCommitmentHeights(repairCtx)
+	repairCancel()
+	if repairErr != nil && ctx.Err() == nil {
+		s.log.InfoS(ctx, "Legacy VTXO commitment-height repair "+
+			"incomplete; old exits will use the safe fallback floor",
+			slog.String("error", repairErr.Error()))
+	}
+
 	return nil
 }
 
@@ -5846,6 +5865,13 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		ArtifactStore: oorStore,
 	}
 	s.proofAssembler = proofAssembler
+	legacyProofScanFloor := s.cfg.legacyProofScanFloor()
+	var legacyProofScanOperatorKey *btcec.PublicKey
+	if legacyProofScanFloor > 1 {
+		if terms := s.loadOperatorTerms(); terms != nil {
+			legacyProofScanOperatorKey = terms.PubKey
+		}
+	}
 
 	// Adapt the VTXO manager ref into a tell-only exit observer so the
 	// unroll registry can report each job's terminal outcome back to the
@@ -5877,7 +5903,9 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 			Jobs:     recoveryStore,
 			Preimage: preimages,
 		},
-		VTXOExitObserver: exitObserver,
+		VTXOExitObserver:           exitObserver,
+		LegacyProofScanFloor:       legacyProofScanFloor,
+		LegacyProofScanOperatorKey: legacyProofScanOperatorKey,
 	})
 	s.unrollRegistry = registry
 	s.unrollRegistryRef = fn.Some(registry.Ref())

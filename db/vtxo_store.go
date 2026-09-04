@@ -217,6 +217,153 @@ func (s *VTXOPersistenceStore) GetVTXO(ctx context.Context,
 	return result, err
 }
 
+// BackfillVTXOCommitmentHeights fills unknown ancestry commitment heights from
+// an indexed copy of the same VTXO. Fragment identity includes both the
+// commitment transaction and serialized tree path, so two leaves from one
+// commitment cannot be confused. Existing positive heights and all local proof
+// material remain authoritative and are never overwritten.
+//
+// The full repair is atomic. If any local fragment with an unknown height is
+// absent from indexedAncestry, the indexed copy also lacks a height, or a
+// candidate height exceeds the current local chain tip or, for single-fragment
+// ancestry, the VTXO's known creation height, no row is changed. The return
+// value is the number of local fragments repaired.
+func (s *VTXOPersistenceStore) BackfillVTXOCommitmentHeights(
+	ctx context.Context, outpoint wire.OutPoint,
+	indexedAncestry []vtxo.Ancestry, bestHeight int32) (int, error) {
+
+	if bestHeight <= 0 {
+		return 0, fmt.Errorf("invalid local best height %d", bestHeight)
+	}
+
+	type heightUpdate struct {
+		pathOrder int32
+		height    int32
+	}
+
+	writeTxOpts := WriteTxOption()
+	repairedCount := 0
+
+	err := s.db.ExecTx(ctx, writeTxOpts, func(q RoundStore) error {
+		txRepairedCount := 0
+		outpointIndex := int32(outpoint.Index)
+		vtxoRow, err := q.GetVTXO(ctx, sqlc.GetVTXOParams{
+			OutpointHash:  outpoint.Hash[:],
+			OutpointIndex: outpointIndex,
+		})
+		if err != nil {
+			return fmt.Errorf("load local VTXO: %w", err)
+		}
+
+		localAncestry, err := loadAncestryPaths(
+			ctx, q, outpoint.Hash[:], outpointIndex,
+		)
+		if err != nil {
+			return fmt.Errorf("load local ancestry: %w", err)
+		}
+		if len(localAncestry) == 0 {
+			return fmt.Errorf("local ancestry is empty")
+		}
+
+		heightCeiling := bestHeight
+		if len(localAncestry) == 1 && vtxoRow.CreatedHeight > 0 &&
+			vtxoRow.CreatedHeight < heightCeiling {
+
+			heightCeiling = vtxoRow.CreatedHeight
+		}
+
+		indexedHeights := make(map[[32]byte]int32, len(indexedAncestry))
+		for i, ancestry := range indexedAncestry {
+			key, err := AncestryFragmentKey(ancestry)
+			if err != nil {
+				return fmt.Errorf("index indexed "+
+					"ancestry[%d]: %w", i, err)
+			}
+			if _, ok := indexedHeights[key]; ok {
+				return fmt.Errorf("indexed ancestry[%d] "+
+					"duplicates a commitment/tree fragment",
+					i)
+			}
+
+			indexedHeights[key] = ancestry.CommitmentHeight
+		}
+
+		updates := make([]heightUpdate, 0, len(localAncestry))
+
+		for i, ancestry := range localAncestry {
+			if ancestry.CommitmentHeight > 0 {
+				continue
+			}
+
+			key, err := AncestryFragmentKey(ancestry)
+			if err != nil {
+				return fmt.Errorf("index local "+
+					"ancestry[%d]: %w", i, err)
+			}
+
+			height, ok := indexedHeights[key]
+			if !ok {
+				return fmt.Errorf("indexed ancestry missing "+
+					"local fragment[%d]", i)
+			}
+			if height <= 0 {
+				return fmt.Errorf("indexed ancestry "+
+					"fragment[%d] has unknown "+
+					"commitment height", i)
+			}
+			if height > heightCeiling {
+				return fmt.Errorf("indexed ancestry "+
+					"fragment[%d] commitment height %d "+
+					"exceeds local ceiling %d", i, height,
+					heightCeiling)
+			}
+
+			updates = append(updates, heightUpdate{
+				pathOrder: int32(i),
+				height:    height,
+			})
+		}
+
+		if len(updates) == 0 {
+			repairedCount = 0
+
+			return nil
+		}
+
+		for _, update := range updates {
+			params := sqlc.UpdateVTXOAncestryCommitmentHeightParams{
+				VtxoOutpointHash:  outpoint.Hash[:],
+				VtxoOutpointIndex: outpointIndex,
+				PathOrder:         update.pathOrder,
+				CommitmentHeight:  update.height,
+			}
+			rows, err := q.UpdateVTXOAncestryCommitmentHeight(
+				ctx, params,
+			)
+			if err != nil {
+				return fmt.Errorf("update ancestry path %d "+
+					"height: %w", update.pathOrder, err)
+			}
+			if rows != 1 {
+				return fmt.Errorf("update ancestry path %d "+
+					"height: updated %d rows, want 1",
+					update.pathOrder, rows)
+			}
+
+			txRepairedCount++
+		}
+
+		repairedCount = txRepairedCount
+
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	return repairedCount, nil
+}
+
 // ListLiveVTXOs returns all VTXOs not in a terminal state. Used during startup
 // to recover active VTXO actors after restart. Issues exactly two queries —
 // the parent VTXO list and a batched ancestry-paths fetch — so descriptor

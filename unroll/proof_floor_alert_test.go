@@ -5,23 +5,19 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 )
 
-// TestProofNodeFloorAlertDeduper verifies that targets sharing one proof
-// transaction produce one alert while an independent proof still alerts.
+// TestProofNodeFloorAlertDeduper verifies that one registry produces one
+// fallback warning even when many child actors reach it concurrently.
 func TestProofNodeFloorAlertDeduper(t *testing.T) {
 	t.Parallel()
 
 	deduper := newProofNodeFloorAlertDeduper()
-	firstProof := chainhash.Hash{1}
-	secondProof := chainhash.Hash{2}
-
-	require.True(t, deduper.first(firstProof))
-	require.False(t, deduper.first(firstProof))
-	require.True(t, deduper.first(secondProof))
+	require.True(t, deduper.first())
+	require.False(t, deduper.first())
 
 	// Concurrent children must not both claim the first warning.
 	concurrent := newProofNodeFloorAlertDeduper()
@@ -31,7 +27,7 @@ func TestProofNodeFloorAlertDeduper(t *testing.T) {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			if concurrent.first(firstProof) {
+			if concurrent.first() {
 				firstCount.Add(1)
 			}
 		}()
@@ -41,8 +37,12 @@ func TestProofNodeFloorAlertDeduper(t *testing.T) {
 
 	// Exercise the production registry constructor and spawn seam. Two real
 	// children must receive the same registry-lifetime deduper.
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
 	registry := NewUnrollRegistryActor(RegistryConfig{
-		DeliveryStore: newMemCheckpointStore(),
+		DeliveryStore:              newMemCheckpointStore(),
+		LegacyProofScanFloor:       123,
+		LegacyProofScanOperatorKey: operatorPriv.PubKey(),
 	})
 	t.Cleanup(registry.Stop)
 	require.NotNil(t, registry.behavior.proofNodeFloorAlerts)
@@ -69,5 +69,21 @@ func TestProofNodeFloorAlertDeduper(t *testing.T) {
 	require.Same(
 		t, registry.behavior.proofNodeFloorAlerts,
 		secondChild.behavior.cfg.proofNodeFloorAlerts,
+	)
+	require.Equal(
+		t, uint32(123), firstChild.behavior.cfg.LegacyProofScanFloor,
+	)
+	require.Equal(
+		t, uint32(123), secondChild.behavior.cfg.LegacyProofScanFloor,
+	)
+	require.True(
+		t, operatorPriv.PubKey().IsEqual(
+			firstChild.behavior.cfg.LegacyProofScanOperatorKey,
+		),
+	)
+	require.True(
+		t, operatorPriv.PubKey().IsEqual(
+			secondChild.behavior.cfg.LegacyProofScanOperatorKey,
+		),
 	)
 }
