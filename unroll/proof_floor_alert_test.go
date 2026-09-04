@@ -1,12 +1,15 @@
 package unroll
 
 import (
+	"bytes"
 	"sync"
 	"sync/atomic"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/stretchr/testify/require"
 )
 
@@ -37,12 +40,9 @@ func TestProofNodeFloorAlertDeduper(t *testing.T) {
 
 	// Exercise the production registry constructor and spawn seam. Two real
 	// children must receive the same registry-lifetime deduper.
-	operatorPriv, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
 	registry := NewUnrollRegistryActor(RegistryConfig{
-		DeliveryStore:              newMemCheckpointStore(),
-		LegacyProofScanFloor:       123,
-		LegacyProofScanOperatorKey: operatorPriv.PubKey(),
+		DeliveryStore:        newMemCheckpointStore(),
+		LegacyProofScanFloor: 1,
 	})
 	t.Cleanup(registry.Stop)
 	require.NotNil(t, registry.behavior.proofNodeFloorAlerts)
@@ -71,19 +71,42 @@ func TestProofNodeFloorAlertDeduper(t *testing.T) {
 		secondChild.behavior.cfg.proofNodeFloorAlerts,
 	)
 	require.Equal(
-		t, uint32(123), firstChild.behavior.cfg.LegacyProofScanFloor,
+		t, uint32(1), firstChild.behavior.cfg.LegacyProofScanFloor,
 	)
 	require.Equal(
-		t, uint32(123), secondChild.behavior.cfg.LegacyProofScanFloor,
+		t, uint32(1), secondChild.behavior.cfg.LegacyProofScanFloor,
 	)
-	require.True(
-		t, operatorPriv.PubKey().IsEqual(
-			firstChild.behavior.cfg.LegacyProofScanOperatorKey,
+	// Drive both spawned behaviors through the real warning site. The
+	// registry-wide deduper must allow only the first child to warn.
+	var buf bytes.Buffer
+	logger := btclog.NewSLogger(btclog.NewDefaultHandler(&buf))
+	logger.SetLevel(btclog.LevelInfo)
+	for _, child := range []*VTXOUnrollActor{firstChild, secondChild} {
+		child.behavior.desc = &vtxo.Descriptor{
+			CreatedHeight: 850_000,
+			Ancestry: []vtxo.Ancestry{{
+				CommitmentHeight: 0,
+			}},
+		}
+		child.behavior.pending = &actorCheckpoint{Height: 850_100}
+		child.behavior.log = logger
+		proofTxid := chainhash.Hash{
+			byte(child.behavior.cfg.TargetOutpoint.Index),
+		}
+		child.behavior.proofNodeConfHeightHint(
+			t.Context(), proofTxid,
+		)
+	}
+
+	require.Equal(
+		t, 1,
+		bytes.Count(
+			buf.Bytes(), []byte(
+				"Legacy proof commitment height "+
+					"unavailable; using safe fallback "+
+					"floor",
+			),
 		),
 	)
-	require.True(
-		t, operatorPriv.PubKey().IsEqual(
-			secondChild.behavior.cfg.LegacyProofScanOperatorKey,
-		),
-	)
+	require.Contains(t, buf.String(), "[WRN]")
 }
