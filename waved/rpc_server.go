@@ -5061,21 +5061,88 @@ func (r *RPCServer) preflightUnrollFeasibility(ctx context.Context,
 		return nil
 	}
 
-	walletSnapshot, err := r.walletExitFundingSnapshot(ctx)
+	verdict, err := r.assessUnrollFeasibility(ctx, desc)
 	if err != nil {
-		return status.Errorf(codes.Internal, "preflight wallet "+
-			"unspent: %v", err)
+		return status.Errorf(codes.Internal, "preflight exit: %v", err)
 	}
-	mat := r.resolveExitLineage(ctx, desc.Outpoint, desc)
-	plan := unroll.PlanExitFunding(
-		desc, mat, r.estimateUnrollFeeRate(ctx), walletSnapshot,
-	)
-	verdict := plan.Feasibility
 	if verdict.Feasible {
 		return nil
 	}
 
 	return unrollInfeasibleError(verdict)
+}
+
+// assessUnrollFeasibility gathers the current wallet, fee, and lineage inputs
+// for one unilateral package and returns the shared pure-model verdict. It is
+// used by both manual admission and automatic critical-expiry path selection
+// so they cannot disagree about whether the wallet can execute the exit.
+func (r *RPCServer) assessUnrollFeasibility(ctx context.Context,
+	desc *vtxo.Descriptor) (unroll.ExitFeasibility, error) {
+
+	walletSnapshot, err := r.walletExitFundingSnapshot(ctx)
+	if err != nil {
+		return unroll.ExitFeasibility{}, fmt.Errorf("wallet "+
+			"unspent: %w", err)
+	}
+
+	mat := r.resolveExitLineage(ctx, desc.Outpoint, desc)
+	plan := unroll.PlanExitFunding(
+		desc, mat, r.estimateUnrollFeeRate(ctx), walletSnapshot,
+	)
+
+	return plan.Feasibility, nil
+}
+
+// assessAutomaticCriticalExit adapts the shared unroll feasibility verdict to
+// the VTXO actor's cycle-free callback. The reason includes the concrete
+// wallet/package constraint so the automatic path decision is understandable
+// from one structured log entry.
+func (r *RPCServer) assessAutomaticCriticalExit(ctx context.Context,
+	desc *vtxo.Descriptor) (vtxo.CriticalExitAssessment, error) {
+
+	verdict, err := r.assessUnrollFeasibility(ctx, desc)
+	if err != nil {
+		return vtxo.CriticalExitAssessment{}, err
+	}
+
+	return vtxo.CriticalExitAssessment{
+		Feasible: verdict.Feasible,
+		Reason:   automaticExitDecisionReason(verdict),
+	}, nil
+}
+
+// automaticExitDecisionReason renders the first failed feasibility invariant
+// with the values a user needs to understand the path choice. Feasible
+// verdicts return a stable short label because the actor logs the action
+// separately.
+func automaticExitDecisionReason(f unroll.ExitFeasibility) string {
+	switch f.Reason {
+	case unroll.ExitFeasible:
+		return "exit funding is feasible"
+
+	case unroll.ExitSweepBelowDust:
+		return fmt.Sprintf("sweep_below_dust: net %d sat, dust "+
+			"limit %d sat", int64(f.NetRecoveredSat),
+			int64(f.DustLimitSat))
+
+	case unroll.ExitUneconomical:
+		return fmt.Sprintf("uneconomical: estimated cost %d sat, VTXO "+
+			"value %d sat", int64(f.TotalRecoveryCostSat),
+			int64(f.VTXOAmountSat))
+
+	case unroll.ExitWalletUnderfunded:
+		return fmt.Sprintf("wallet_underfunded: need %d sat for CPFP, "+
+			"have %d sat confirmed", int64(f.CPFPFeeTotalSat),
+			int64(f.WalletConfirmedSat))
+
+	case unroll.ExitWalletTooFewInputs:
+		return fmt.Sprintf("wallet_too_few_inputs: need %d usable fee "+
+			"inputs, have %d", f.RequiredWalletInputs,
+			f.WalletUsableInputs)
+
+	default:
+		return f.Reason.String()
+	}
 }
 
 // resolveExitLineage resolves the OOR lineage material for an exit target so

@@ -1693,3 +1693,49 @@ func TestUnrollInfeasibleError(t *testing.T) {
 		})
 	}
 }
+
+// TestAutomaticExitDecisionReason verifies the automatic critical-expiry log
+// names the exact failed funding invariant and its actionable values.
+func TestAutomaticExitDecisionReason(t *testing.T) {
+	t.Parallel()
+
+	underfunded := unroll.ExitWalletUnderfunded
+	tooFewInputs := unroll.ExitWalletTooFewInputs
+	tests := []struct {
+		name    string
+		verdict unroll.ExitFeasibility
+		want    string
+	}{
+		{
+			name: "wallet balance",
+			verdict: unroll.ExitFeasibility{
+				Reason:             underfunded,
+				CPFPFeeTotalSat:    1_850,
+				WalletConfirmedSat: 0,
+			},
+			want: "wallet_underfunded: need 1850 sat for CPFP, " +
+				"have 0 sat confirmed",
+		},
+		{
+			name: "fee input count",
+			verdict: unroll.ExitFeasibility{
+				Reason:               tooFewInputs,
+				RequiredWalletInputs: 2,
+				WalletUsableInputs:   0,
+			},
+			want: "wallet_too_few_inputs: need 2 usable " +
+				"fee inputs, have 0",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(
+				t, tc.want,
+				automaticExitDecisionReason(tc.verdict),
+			)
+		})
+	}
+}

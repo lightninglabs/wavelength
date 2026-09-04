@@ -12,8 +12,9 @@ const (
 	// ExpiryStatusNeedsRefresh indicates the VTXO should request refresh.
 	ExpiryStatusNeedsRefresh
 
-	// ExpiryStatusCritical indicates the VTXO must be sent to chain
-	// resolver.
+	// ExpiryStatusCritical indicates the unilateral time budget is active.
+	// Automatic handling assesses package viability before choosing between
+	// unilateral exit and continued cooperative refresh.
 	ExpiryStatusCritical
 
 	// ExpiryStatusExpired indicates the batch has already expired.
@@ -88,8 +89,9 @@ type ExpiryConfig struct {
 	RefreshThresholdBlocks int32
 
 	// CriticalThresholdBlocks is the base number of blocks before batch
-	// expiry at which the VTXO is escalated to the chain resolver for
-	// unilateral exit. Must be less than RefreshThresholdBlocks.
+	// expiry at which automatic handling assesses whether the VTXO's
+	// unilateral package is viable. Must be less than
+	// RefreshThresholdBlocks.
 	CriticalThresholdBlocks int32
 
 	// MinRefreshBuffer is the minimum buffer (blocks) between refresh and
