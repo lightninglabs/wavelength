@@ -351,6 +351,18 @@ func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 					continue
 				}
 
+				if r.server.expiryAuthenticator == nil {
+					return fmt.Errorf("expiry authenticator not " +
+						"initialized")
+				}
+				desc.BatchExpiry, err = r.server.expiryAuthenticator(
+					ctx, desc.Ancestry,
+				)
+				if err != nil {
+					return fmt.Errorf("authenticate VTXO %s "+
+						"expiry: %w", desc.Outpoint, err)
+				}
+
 				saved, err := r.saveRecoveredVTXO(ctx, desc)
 				if err != nil {
 					return err
@@ -451,7 +463,7 @@ func recoveryDescriptorFromIndexer(indexed *arkrpc.VTXO,
 		Ancestry:       ancestry,
 		RoundID:        indexed.GetRoundId(),
 		CommitmentTxID: *commitmentTxID,
-		BatchExpiry:    indexed.GetBatchExpiryHeight(),
+		BatchExpiry:    0,
 		RelativeExpiry: exitDelay,
 		ChainDepth:     int(indexed.GetChainDepth()),
 		CreatedHeight:  indexed.GetCreatedHeight(),
@@ -669,10 +681,11 @@ func (r *RPCServer) recoveryOORHandler(
 ) *oor.LocalPersistenceOutboxHandler {
 
 	return &oor.LocalPersistenceOutboxHandler{
-		Store:        r.server.vtxoStore,
-		PackageStore: packageStore,
-		OperatorKey:  terms.PubKey,
-		ExitDelay:    terms.VTXOExitDelay,
+		Store:                      r.server.vtxoStore,
+		PackageStore:               packageStore,
+		OperatorKey:                terms.PubKey,
+		ExitDelay:                  terms.VTXOExitDelay,
+		AuthenticateIncomingExpiry: r.server.expiryAuthenticator,
 		NotifyIncomingVTXOs: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
@@ -813,6 +826,18 @@ func (r *RPCServer) materializeRecoveredOOREvent(ctx context.Context,
 		if err != nil {
 			return err
 		}
+
+		if r.server.expiryAuthenticator == nil {
+			return fmt.Errorf("expiry authenticator not initialized")
+		}
+		metadata.BatchExpiry, err = r.server.expiryAuthenticator(
+			ctx, metadata.Ancestry,
+		)
+		if err != nil {
+			return fmt.Errorf("authenticate recovered OOR output %d "+
+				"expiry: %w", recipient.OutputIndex, err)
+		}
+		metadata.ExpiryAuthenticated = true
 
 		metadataMatches = append(metadataMatches,
 			oor.IncomingMetadataMatch{

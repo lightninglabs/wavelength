@@ -510,22 +510,28 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 	commitmentTxID := chainhash.Hash{11, 11, 11}
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
+	sweepKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
 
 	msg := &DriveEventRequest{
 		SessionID: sessionID,
 		Event: &IncomingMetadataResolvedEvent{
+			ExpiryAuthenticated: true,
 			Matches: []IncomingMetadataMatch{{
 				OutputIndex: 1,
 				Metadata: IncomingVTXOMetadata{
-					RoundID:        "mixed-lineage",
-					CommitmentTxID: commitmentTxID,
-					BatchExpiry:    144,
-					ChainDepth:     2,
-					CreatedHeight:  42,
-					OperatorKey:    operatorKey.PubKey(),
+					RoundID:             "mixed-lineage",
+					CommitmentTxID:      commitmentTxID,
+					BatchExpiry:         144,
+					ExpiryAuthenticated: true,
+					ChainDepth:          2,
+					CreatedHeight:       42,
+					OperatorKey:         operatorKey.PubKey(),
 					Ancestry: []vtxo.Ancestry{{
-						CommitmentTxID: commitmentTxID,
-						TreeDepth:      0,
+						CommitmentTxID:       commitmentTxID,
+						CommitmentHeight:     42,
+						CommitmentSweepDelay: 1024,
+						CommitmentSweepKey:   sweepKey.PubKey(),
 					}},
 				},
 			}},
@@ -542,6 +548,7 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 
 	metadataEvt, ok := decoded.Event.(*IncomingMetadataResolvedEvent)
 	require.True(t, ok)
+	require.True(t, metadataEvt.ExpiryAuthenticated)
 	require.Len(t, metadataEvt.Matches, 1)
 
 	match := metadataEvt.Matches[0]
@@ -549,6 +556,7 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 	require.Equal(t, "mixed-lineage", match.Metadata.RoundID)
 	require.Equal(t, commitmentTxID, match.Metadata.CommitmentTxID)
 	require.EqualValues(t, 144, match.Metadata.BatchExpiry)
+	require.True(t, match.Metadata.ExpiryAuthenticated)
 	require.EqualValues(t, 2, match.Metadata.ChainDepth)
 	require.EqualValues(t, 42, match.Metadata.CreatedHeight)
 	require.True(
@@ -561,6 +569,15 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 	require.Equal(
 		t, commitmentTxID, match.Metadata.Ancestry[0].CommitmentTxID,
 	)
+	require.EqualValues(
+		t, 42, match.Metadata.Ancestry[0].CommitmentHeight,
+	)
+	require.EqualValues(
+		t, 1024, match.Metadata.Ancestry[0].CommitmentSweepDelay,
+	)
+	require.True(t, match.Metadata.Ancestry[0].CommitmentSweepKey.IsEqual(
+		sweepKey.PubKey(),
+	))
 	require.Nil(t, match.Metadata.Ancestry[0].TreePath)
 }
 

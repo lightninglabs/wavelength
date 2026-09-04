@@ -432,6 +432,23 @@ func (m *QueryIncomingMetadataRequest) outboxType() string {
 // outboxSealed marks this as implementing the sealed OutboxEvent interface.
 func (m *QueryIncomingMetadataRequest) outboxSealed() {}
 
+// AuthenticateIncomingMetadataRequest asks the local chain boundary to
+// replace indexer expiry hints with authenticated absolute expiries before
+// materialization enters the durable database transaction.
+type AuthenticateIncomingMetadataRequest struct {
+	actor.BaseMessage
+
+	Matches []IncomingMetadataMatch
+}
+
+// outboxType returns a stable identifier for this outbox message.
+func (m *AuthenticateIncomingMetadataRequest) outboxType() string {
+	return "AuthenticateIncomingMetadataRequest"
+}
+
+// outboxSealed marks this as implementing the sealed OutboxEvent interface.
+func (m *AuthenticateIncomingMetadataRequest) outboxSealed() {}
+
 // MaterializeIncomingVTXOsRequest asks the wallet/state layer to materialize
 // the incoming transfer into local VTXO records.
 //

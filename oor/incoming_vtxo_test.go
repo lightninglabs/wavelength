@@ -393,7 +393,7 @@ func TestBuildIncomingVTXODescriptorPreservesMatchingPolicyTemplate(
 				PubKey: recipientKey.PubKey(),
 			},
 			OperatorKey:    operatorKey,
-			ExitDelay:      10,
+			ExitDelay:      11,
 			PolicyTemplate: template,
 			Metadata: IncomingVTXOMetadata{
 				RoundID:        "test-round",
@@ -409,6 +409,7 @@ func TestBuildIncomingVTXODescriptorPreservesMatchingPolicyTemplate(
 	)
 	require.NoError(t, err)
 	require.Equal(t, template, desc.PolicyTemplate)
+	require.Equal(t, uint32(10), desc.RelativeExpiry)
 }
 
 // TestBuildIncomingVTXODescriptorRejectsMismatchedPolicyTemplate verifies that

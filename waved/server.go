@@ -360,7 +360,12 @@ type Server struct {
 
 	actorSystem  *actor.ActorSystem
 	chainBackend chainsource.ChainBackend
-	walletRef    fn.Option[actor.ActorRef[
+
+	// expiryAuthenticator is published with the chain-source actor and
+	// reused by every new-VTXO acceptance path. Existing persisted VTXOs are
+	// intentionally left unchanged.
+	expiryAuthenticator oor.IncomingExpiryAuthenticator
+	walletRef           fn.Option[actor.ActorRef[
 		wallet.WalletMsg, wallet.WalletResp,
 	]]
 	oorRegistry        *oor.OORRegistryActor
@@ -2637,6 +2642,8 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	],
 	timeoutRef actor.TellOnlyRef[timeout.Msg]) error {
 
+	s.expiryAuthenticator = batchExpiryAuthenticator(chainSourceRef)
+
 	// -------------------------------------------------------
 	// 9. Register the wallet (boarding) actor.
 	// -------------------------------------------------------
@@ -4778,11 +4785,12 @@ func (s *Server) initOORActor(ctx context.Context,
 	// delegate of the local-persistence handler for retry scheduling.
 
 	outboxHandler := &oor.LocalPersistenceOutboxHandler{
-		Next:         signingHandler,
-		Store:        vtxoStore,
-		PackageStore: packageStore,
-		OperatorKey:  operatorTerms.PubKey,
-		ExitDelay:    operatorTerms.VTXOExitDelay,
+		Next:                       signingHandler,
+		Store:                      vtxoStore,
+		PackageStore:               packageStore,
+		OperatorKey:                operatorTerms.PubKey,
+		ExitDelay:                  operatorTerms.VTXOExitDelay,
+		AuthenticateIncomingExpiry: s.expiryAuthenticator,
 		NotifyIncomingVTXOs: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
@@ -4900,6 +4908,7 @@ func (s *Server) initOORActor(ctx context.Context,
 	} else {
 		ancestryFetcher, fetcherErr = incomingAncestryFetcher(
 			s.indexer, incomingSignerFactory,
+			s.expiryAuthenticator,
 		)
 		if fetcherErr != nil {
 			s.log.WarnS(ctx,

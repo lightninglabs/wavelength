@@ -41,6 +41,12 @@ type IncomingVTXOMetadata struct {
 	// across all contributing rounds).
 	BatchExpiry int32
 
+	// ExpiryAuthenticated records that BatchExpiry was derived from the
+	// locally confirmed commitment transaction and the sweep policy bound to
+	// each ancestry tree. It is transient receive-state, not persisted VTXO
+	// data.
+	ExpiryAuthenticated bool
+
 	// ChainDepth is the number of OOR checkpoint hops between this
 	// VTXO and the last on-chain commitment. This is distinct from
 	// per-Ancestry TreeDepth, which tracks position within a single
@@ -156,7 +162,7 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 
 	arkTxid := tx.TxHash()
 
-	policyTemplate, tapscript, err := incomingOutputPolicy(
+	policyTemplate, tapscript, relativeExpiry, err := incomingOutputPolicy(
 		out.PkScript, cfg,
 	)
 	if err != nil {
@@ -180,61 +186,65 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 		RoundID:        cfg.Metadata.RoundID,
 		CommitmentTxID: cfg.Metadata.CommitmentTxID,
 		BatchExpiry:    cfg.Metadata.BatchExpiry,
-		RelativeExpiry: cfg.ExitDelay,
+		RelativeExpiry: relativeExpiry,
 		ChainDepth:     cfg.Metadata.ChainDepth,
 		CreatedHeight:  cfg.Metadata.CreatedHeight,
 		Status:         vtxo.VTXOStatusLive,
 	}, nil
 }
 
+// incomingOutputPolicy authenticates and returns the incoming output policy,
+// optional standard tapscript, and committed relative expiry.
 func incomingOutputPolicy(pkScript []byte, cfg IncomingVTXOConfig) ([]byte,
-	*waddrmgr.Tapscript, error) {
+	*waddrmgr.Tapscript, uint32, error) {
 
 	if len(cfg.PolicyTemplate) > 0 {
 		template, err := arkscript.DecodePolicyTemplate(
 			cfg.PolicyTemplate,
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf("decode incoming VTXO "+
+			return nil, nil, 0, fmt.Errorf("decode incoming VTXO "+
 				"policy: %w", err)
 		}
 
 		if !template.MatchesPkScript(pkScript) {
-			return nil, nil, fmt.Errorf("incoming VTXO policy " +
+			return nil, nil, 0, fmt.Errorf("incoming VTXO policy " +
 				"does not match ark output pkscript")
 		}
 
-		tapscript, err := standardTapscriptIfApplicable(template)
+		tapscript, relativeExpiry, err := incomingPolicyExitDelay(
+			template, cfg.ClientKey.PubKey, cfg.OperatorKey,
+		)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, 0, err
 		}
 
 		return append(
 			[]byte(nil), cfg.PolicyTemplate...,
-		), tapscript, nil
+		), tapscript, relativeExpiry, nil
 	}
 
 	tapscript, err := arkscript.VTXOTapScript(
 		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("derive vtxo tapscript: %w", err)
+		return nil, nil, 0, fmt.Errorf("derive vtxo tapscript: %w", err)
 	}
 
 	tapKey, err := arkscript.VTXOTapKey(
 		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("derive vtxo tapkey: %w", err)
+		return nil, nil, 0, fmt.Errorf("derive vtxo tapkey: %w", err)
 	}
 
 	expectedPkScript, err := txscript.PayToTaprootScript(tapKey)
 	if err != nil {
-		return nil, nil, fmt.Errorf("derive vtxo pkscript: %w", err)
+		return nil, nil, 0, fmt.Errorf("derive vtxo pkscript: %w", err)
 	}
 
 	if !bytes.Equal(expectedPkScript, pkScript) {
-		return nil, nil, fmt.Errorf("ark output pkscript does not " +
+		return nil, nil, 0, fmt.Errorf("ark output pkscript does not " +
 			"match derived vtxo pkscript")
 	}
 
@@ -242,15 +252,18 @@ func incomingOutputPolicy(pkScript []byte, cfg IncomingVTXOConfig) ([]byte,
 		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("encode incoming VTXO policy: %w",
+		return nil, nil, 0, fmt.Errorf("encode incoming VTXO policy: %w",
 			err)
 	}
 
-	return policyTemplate, tapscript, nil
+	return policyTemplate, tapscript, cfg.ExitDelay, nil
 }
 
-func standardTapscriptIfApplicable(template *arkscript.PolicyTemplate) (
-	*waddrmgr.Tapscript, error) {
+// incomingPolicyExitDelay derives the earliest authenticated owner exit delay
+// from a matching standard or custom policy template.
+func incomingPolicyExitDelay(template *arkscript.PolicyTemplate,
+	clientKey, operatorKey *btcec.PublicKey) (*waddrmgr.Tapscript, uint32,
+	error) {
 
 	params, decodeErr := arkscript.DecodeStandardVTXOParams(template)
 	if decodeErr == nil {
@@ -258,14 +271,38 @@ func standardTapscriptIfApplicable(template *arkscript.PolicyTemplate) (
 			params.OwnerKey, params.OperatorKey, params.ExitDelay,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("derive standard vtxo "+
+			return nil, 0, fmt.Errorf("derive standard vtxo "+
 				"tapscript: %w", err)
 		}
 
-		return tapscript, nil
+		return tapscript, params.ExitDelay, nil
 	}
 
-	return nil, nil
+	pairs, err := template.SettlementPairsForParticipant(
+		clientKey, operatorKey,
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("derive incoming VTXO exit paths: %w",
+			err)
+	}
+
+	var earliest uint32
+	for _, pair := range pairs {
+		if pair.AuthPath == nil || pair.AuthPath.RequiredSequence == 0 ||
+			pair.AuthPath.RequiredSequence == wire.MaxTxInSequenceNum {
+
+			continue
+		}
+		if earliest == 0 || pair.AuthPath.RequiredSequence < earliest {
+			earliest = pair.AuthPath.RequiredSequence
+		}
+	}
+	if earliest == 0 {
+		return nil, 0, fmt.Errorf("incoming VTXO policy has no " +
+			"authenticated relative expiry")
+	}
+
+	return nil, earliest, nil
 }
 
 // validateIncomingAncestry runs the structural cross-checks that bind

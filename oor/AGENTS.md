@@ -75,6 +75,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   actor's DB transaction; both phase-1 hint resolution and phase-2
   authoritative metadata lookup go through durable `serverconn` query
   messages and return as fresh events.
+- Incoming batch expiry is authenticated by
+  `AuthenticateIncomingMetadataRequest` before materialization opens its DB
+  transaction. Indexer expiry scalars are discarded. Chain failures retry the
+  outbox; invalid sweep/tree evidence fails terminally. The descriptor's
+  relative expiry comes from its matching standard or custom policy template,
+  not from operator configuration.
 - Snapshots are versioned per direction (`OutgoingSnapshot.Version = 5`,
   `IncomingSnapshot.Version = 1`); restore rejects a zero version. Outgoing
   v5 adds the `FirstRejectUnixNanos` record (bounded transient submit-reject

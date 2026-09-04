@@ -28,6 +28,10 @@ type IncomingMetadataResolvedEvent struct {
 	// Matches contains metadata keyed by Ark output index for the current
 	// incoming transfer session.
 	Matches []IncomingMetadataMatch
+
+	// ExpiryAuthenticated is set only by the local chain-authentication
+	// outbox effect. Indexer response adapters leave it false.
+	ExpiryAuthenticated bool
 }
 
 // eventSealed marks this as implementing the sealed Event interface.
@@ -178,7 +182,7 @@ func incomingMetadataFromRPC(candidate *arkrpc.VTXO) (IncomingVTXOMetadata,
 	return IncomingVTXOMetadata{
 		RoundID:        candidate.GetRoundId(),
 		CommitmentTxID: commitmentTxID,
-		BatchExpiry:    candidate.GetBatchExpiryHeight(),
+		BatchExpiry:    0,
 		ChainDepth:     int(candidate.GetChainDepth()),
 		CreatedHeight:  candidate.GetCreatedHeight(),
 		OperatorKey:    operatorKey,

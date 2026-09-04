@@ -3,6 +3,7 @@ package vtxo
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -32,13 +33,71 @@ func (m *mockScriptLookup) LookupOwnedReceiveScript(_ context.Context,
 
 // mockVTXOSaver implements VTXOSaver for testing.
 type mockVTXOSaver struct {
-	saved []*Descriptor
+	saved    []*Descriptor
+	failures int
+	err      error
 }
 
 func (m *mockVTXOSaver) SaveVTXO(_ context.Context, desc *Descriptor) error {
+	if m.failures > 0 {
+		m.failures--
+
+		return m.err
+	}
 	m.saved = append(m.saved, desc)
 
 	return nil
+}
+
+// TestIncomingVTXOHandlerRetriesAuthenticatedExpiryWrite proves a failed save
+// does not consume the event or lose the authenticated scalar. Redelivery
+// recomputes the proof and persists the same expiry before notification.
+func TestIncomingVTXOHandlerRetriesAuthenticatedExpiryWrite(t *testing.T) {
+	t.Parallel()
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	pkScript := []byte{0x51, 0x20, 0xaa, 0xcc}
+	lookup := &mockScriptLookup{scripts: map[string]*OwnedReceiveScript{
+		string(pkScript): {
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: clientKey.PubKey(),
+			},
+			OperatorPubKey: operatorKey.PubKey(),
+			ExitDelay:      144,
+		},
+	}}
+	saveErr := errors.New("database unavailable")
+	saver := &mockVTXOSaver{failures: 1, err: saveErr}
+	fetches := 0
+	handler := NewIncomingVTXOHandler(IncomingVTXOHandlerConfig{
+		ScriptStore: lookup,
+		VTXOStore:   saver,
+		AncestryFetcher: func(context.Context, wire.OutPoint, []byte,
+			keychain.KeyDescriptor) (IncomingVTXOExtras, error) {
+
+			fetches++
+			return IncomingVTXOExtras{BatchExpiry: 800_144}, nil
+		},
+	})
+
+	var txid chainhash.Hash
+	txid[0] = 0x42
+	msg := IncomingVTXOMsg{Event: newTestEvent(
+		txid, 0, pkScript, 50_000, "round-retry",
+	)}
+
+	_, err = handler.Receive(t.Context(), msg).Unpack()
+	require.ErrorIs(t, err, saveErr)
+	require.Empty(t, saver.saved)
+
+	_, err = handler.Receive(t.Context(), msg).Unpack()
+	require.NoError(t, err)
+	require.Len(t, saver.saved, 1)
+	require.Equal(t, int32(800_144), saver.saved[0].BatchExpiry)
+	require.Equal(t, 2, fetches)
 }
 
 // newTestEvent creates an IncomingVTXOEvent with the given parameters.
@@ -100,6 +159,7 @@ func TestIncomingVTXOHandlerOwnedScript(t *testing.T) {
 
 			return IncomingVTXOExtras{
 				CreatedHeight: 799_500,
+				BatchExpiry:   800_000,
 			}, nil
 		},
 	})
@@ -183,12 +243,9 @@ func TestIncomingVTXOHandlerNonCreatedEvent(t *testing.T) {
 	require.Empty(t, saver.saved)
 }
 
-// TestIncomingVTXOHandlerUnusableBatchExpiry verifies that an event carrying
-// an expiry the wallet could never reason about is dropped rather than
-// materialized. Persisting it would stamp the bad expiry onto the descriptor
-// permanently, and every later expiry decision reads it back as a deadline
-// that has already passed.
-func TestIncomingVTXOHandlerUnusableBatchExpiry(t *testing.T) {
+// TestIncomingVTXOHandlerIgnoresEventBatchExpiry verifies that the thin push's
+// unauthenticated scalar is never copied onto the descriptor.
+func TestIncomingVTXOHandlerIgnoresEventBatchExpiry(t *testing.T) {
 	t.Parallel()
 
 	privKey, err := btcec.NewPrivateKey()
@@ -199,7 +256,6 @@ func TestIncomingVTXOHandlerUnusableBatchExpiry(t *testing.T) {
 
 	pkScript := []byte{0x51, 0x20, 0xaa, 0xbb}
 
-	// The script IS owned, so a drop here can only be the expiry guard.
 	newLookup := func() *mockScriptLookup {
 		return &mockScriptLookup{
 			scripts: map[string]*OwnedReceiveScript{
@@ -230,6 +286,15 @@ func TestIncomingVTXOHandlerUnusableBatchExpiry(t *testing.T) {
 				IncomingVTXOHandlerConfig{
 					ScriptStore: newLookup(),
 					VTXOStore:   saver,
+					AncestryFetcher: func(context.Context,
+						wire.OutPoint, []byte,
+						keychain.KeyDescriptor) (IncomingVTXOExtras,
+						error) {
+
+						return IncomingVTXOExtras{
+							BatchExpiry: 800_144,
+						}, nil
+					},
 				},
 			)
 
@@ -245,12 +310,46 @@ func TestIncomingVTXOHandlerUnusableBatchExpiry(t *testing.T) {
 			)
 			_, resultErr := result.Unpack()
 
-			// Dropping must stay silent: the handler cannot crash
-			// the actor or block the indexer push stream.
 			require.NoError(t, resultErr)
-			require.Empty(t, saver.saved)
+			require.Len(t, saver.saved, 1)
+			require.Equal(t, int32(800_144),
+				saver.saved[0].BatchExpiry)
+			require.Equal(
+				t, uint32(144), saver.saved[0].RelativeExpiry,
+			)
 		})
 	}
+}
+
+// TestIncomingVTXOHandlerRequiresAuthenticatedExpiry verifies that a thin
+// push cannot create a new live row without the local authentication path.
+func TestIncomingVTXOHandlerRequiresAuthenticatedExpiry(t *testing.T) {
+	t.Parallel()
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	pkScript := []byte{0x51, 0x20, 0xaa, 0xdd}
+	saver := &mockVTXOSaver{}
+	handler := NewIncomingVTXOHandler(IncomingVTXOHandlerConfig{
+		ScriptStore: &mockScriptLookup{scripts: map[string]*OwnedReceiveScript{
+			string(pkScript): {
+				ClientKey:      keychain.KeyDescriptor{PubKey: clientKey.PubKey()},
+				OperatorPubKey: operatorKey.PubKey(),
+				ExitDelay:      144,
+			},
+		}},
+		VTXOStore: saver,
+	})
+
+	var txid chainhash.Hash
+	txid[0] = 0x43
+	_, err = handler.Receive(t.Context(), IncomingVTXOMsg{
+		Event: newTestEvent(txid, 0, pkScript, 50_000, "round-auth"),
+	}).Unpack()
+	require.ErrorContains(t, err, "ancestry fetcher not configured")
+	require.Empty(t, saver.saved)
 }
 
 // TestIncomingVTXOHandlerNilEvent verifies that a nil event is

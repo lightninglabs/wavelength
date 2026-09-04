@@ -215,7 +215,9 @@ func TestSessionActorIncomingMaterializeFullFlow(t *testing.T) {
 
 	res := b.Receive(ctx, &DriveEventRequest{
 		SessionID: sid,
-		Event:     &IncomingMetadataResolvedEvent{},
+		Event: &IncomingMetadataResolvedEvent{
+			ExpiryAuthenticated: true,
+		},
 	}, ax)
 	require.True(t, res.IsOk(), res.Err())
 
@@ -384,7 +386,9 @@ func TestSessionActorIncomingReloadsAfterFailedCommit(t *testing.T) {
 	// terminal FSM standing on an uncommitted advance.
 	drive := &DriveEventRequest{
 		SessionID: sid,
-		Event:     &IncomingMetadataResolvedEvent{},
+		Event: &IncomingMetadataResolvedEvent{
+			ExpiryAuthenticated: true,
+		},
 	}
 	res := b.Receive(ctx, drive, ax)
 	require.True(t, res.IsErr())

@@ -93,6 +93,10 @@ type IncomingVTXOExtras struct {
 	// to which block its round commit confirmed in, or sweep
 	// scheduling has no reference point).
 	CreatedHeight int32
+
+	// BatchExpiry is derived from locally confirmed commitment
+	// transactions and the sweep policy authenticated by Ancestry.
+	BatchExpiry int32
 }
 
 // IncomingAncestryFetcher resolves the per-VTXO metadata the
@@ -222,30 +226,6 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 		return fn.Ok[IncomingVTXOResp](nil)
 	}
 
-	// The batch expiry is copied verbatim onto the persisted descriptor
-	// and every later expiry decision is derived from it, so refuse to
-	// materialize a VTXO we could never reason about. A non-positive
-	// expiry reads back as "expired by the entire height of the chain"
-	// and would route a brand-new VTXO straight to the expiry path.
-	//
-	// Dropping is the safer failure: the wallet still re-derives this
-	// VTXO from ListVTXOsByScripts, which reads the authoritative expiry
-	// off the server's round row, whereas a poisoned expiry persists
-	// locally and is never rewritten.
-	if evt.GetBatchExpiryHeight() <= 0 {
-		h.log.WarnS(ctx, "IncomingVTXOEvent has unusable batch "+
-			"expiry; not materializing", nil,
-			slog.Int(
-				"batch_expiry",
-				int(
-					evt.GetBatchExpiryHeight(),
-				),
-			),
-		)
-
-		return fn.Ok[IncomingVTXOResp](nil)
-	}
-
 	var outpoint wire.OutPoint
 	copy(outpoint.Hash[:], op.Txid)
 	outpoint.Index = op.Vout
@@ -347,38 +327,38 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 		TapScript:      tapscript,
 		RoundID:        evt.RoundId,
 		CommitmentTxID: commitTxID,
-		BatchExpiry:    evt.BatchExpiryHeight,
-		RelativeExpiry: evt.RelativeExpiry,
+		BatchExpiry:    0,
+		RelativeExpiry: exitDelay,
 		Status:         VTXOStatusLive,
 	}
 
-	// Resolve ancestry before persisting so the descriptor lands
-	// with full unilateral-exit material from the first write. The
-	// indexer push (IncomingVTXOEvent) is intentionally thin and
-	// carries no tree fragments; without this fetch the unroll
-	// path fails with "descriptor missing ancestry" on every
-	// in-round-received VTXO (see bug-3 in BUGS_FOUND.md). A nil
-	// fetcher preserves the legacy degraded behavior: cooperative
-	// spend paths still work, only unilateral exit is blocked.
-	// Fetch failures are warn-logged but do not block
-	// materialization, since the receive must still succeed for
-	// cooperative use.
-	if h.cfg.AncestryFetcher != nil {
-		extras, err := h.cfg.AncestryFetcher(
-			ctx, outpoint, pkScript, rec.ClientKey,
-		)
-		if err != nil {
-			h.log.WarnS(ctx, "Failed to fetch incoming VTXO "+
-				"ancestry; persisting without — unilateral "+
-				"exit will be unavailable until backfill",
-				err,
-				slog.String("outpoint", outpoint.String()),
-			)
-		} else {
-			desc.Ancestry = extras.Ancestry
-			desc.CreatedHeight = extras.CreatedHeight
-		}
+	// The indexer push is intentionally only a notification. Resolve the
+	// ancestry and chain-authenticated expiry before the first write. Returning
+	// an error keeps the durable event pending for retry instead of accepting a
+	// new live VTXO with unauthenticated safety metadata.
+	if h.cfg.AncestryFetcher == nil {
+		return fn.Err[IncomingVTXOResp](fmt.Errorf(
+			"authenticate incoming VTXO %s: ancestry fetcher not "+
+				"configured", outpoint.String(),
+		))
 	}
+	extras, err := h.cfg.AncestryFetcher(
+		ctx, outpoint, pkScript, rec.ClientKey,
+	)
+	if err != nil {
+		return fn.Err[IncomingVTXOResp](fmt.Errorf(
+			"authenticate incoming VTXO %s: %w", outpoint.String(), err,
+		))
+	}
+	if extras.BatchExpiry <= 0 {
+		return fn.Err[IncomingVTXOResp](fmt.Errorf(
+			"authenticate incoming VTXO %s: derived batch expiry "+
+				"must be positive", outpoint.String(),
+		))
+	}
+	desc.Ancestry = extras.Ancestry
+	desc.CreatedHeight = extras.CreatedHeight
+	desc.BatchExpiry = extras.BatchExpiry
 
 	// Persist the VTXO. A save failure signals a database or
 	// schema inconsistency that must be surfaced.

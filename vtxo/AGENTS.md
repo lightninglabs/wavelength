@@ -88,7 +88,12 @@ when the local wallet owns the receive script.
 - `FilterOptions` / `FilterDescriptors` — VTXO filtering by expiry status, spend state, etc.
 - `GetActiveVTXOCountRequest` / `GetActiveVTXOCountResponse` — Ask-message for querying active VTXO count from the manager.
 - `ManagerMsg` / `ManagerResp` — Type aliases for `actormsg.VTXOManagerMsg` / `actormsg.VTXOManagerResp` (admission types live in `lib/actormsg` to avoid import cycles).
-- `IncomingVTXOHandler` — Actor that consumes `arkrpc.IncomingVTXOEvent` push notifications, looks up the receive script in the owned-script store, builds a `Descriptor` (with tapscript derived via `lib/arkscript`), persists it via `VTXOSaver`, and tells the manager via `VTXOsMaterializedNotification`. Only `VTXO_EVENT_TYPE_CREATED` events are acted on; unknown event kinds and unowned scripts are silently ignored. Inputs are validated for outpoint shape, pkScript presence, and `int64`/`MaxSatoshi` value bounds before any DB write.
+- `IncomingVTXOHandler` — Actor that consumes `arkrpc.IncomingVTXOEvent` push
+  notifications, looks up the receive script, fetches ancestry, requires a
+  positive chain-authenticated batch expiry, persists the descriptor, and
+  tells the manager via `VTXOsMaterializedNotification`. The push's expiry and
+  relative-expiry scalars are not trusted. Only created events are acted on;
+  unknown event kinds and unowned scripts are silently ignored.
 - `IncomingVTXOMsg` / `IncomingVTXOResp` — Actor envelope wrapping an `arkrpc.IncomingVTXOEvent` and the `any`-typed response.
 - `IncomingVTXOServiceKey` — Well-known service key (`"incoming-vtxo-handler"`) used by `waved` to register the actor and by `serverconn.EventRouter` to dispatch routed events.
 - `OwnedReceiveScript` / `OwnedScriptLookup` — Read-only view of the owned receive scripts store used by the incoming handler. `LookupOwnedReceiveScript` returns `sql.ErrNoRows` for unknown scripts; the handler treats this as "not ours" and exits cleanly.
@@ -135,7 +140,9 @@ when the local wallet owns the receive script.
   commitment txid when the inputs sat at different leaves of one
   commitment tree — each leaf needs its own root-to-leaf path.
 - Each `Ancestry` carries `TreePath`, `CommitmentTxID`, `InputIndices`
-  (Ark tx input indices the fragment serves), and `TreeDepth`.
+  (Ark tx input indices the fragment serves), `TreeDepth`, the commitment
+  height hint, and the sweep key/delay evidence bound to the tree's sweep
+  tapscript root.
 - `Descriptor.MaxTreeDepth()` returns `max(TreeDepth)` across the
   ancestry slice for callers that need worst-case unilateral-exit
   timing (e.g. `expiry.go`).
@@ -145,6 +152,14 @@ when the local wallet owns the receive script.
   ancestry join and only load it when the unroller resolves an exit.
 
 ## Invariants
+
+- **New incoming expiry is authenticated before persistence.** The thin
+  indexer event is only a wake-up hint. `AuthenticateBatchExpiry` reconstructs
+  the sweep leaf, recomputes the tree-root output script, byte-matches that
+  output in a locally confirmed commitment transaction, and derives the
+  earliest `confirmation height + sweep delay` across ancestry fragments.
+  Lookup or save failures leave the durable event pending for retry. Existing
+  persisted rows are not rewritten by this path.
 
 - **Expiry is persisted and non-terminal.** `LiveState` + `ExpiryStatusExpired`
   transitions to `ExpiredState` and emits `VTXOStatusUpdate{Expired}`. It does

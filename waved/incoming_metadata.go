@@ -263,7 +263,7 @@ func incomingMetadataFromRPC(candidate *arkrpc.VTXO) (oor.IncomingVTXOMetadata,
 	return oor.IncomingVTXOMetadata{
 		RoundID:        candidate.GetRoundId(),
 		CommitmentTxID: commitmentTxID,
-		BatchExpiry:    candidate.GetBatchExpiryHeight(),
+		BatchExpiry:    0,
 		ChainDepth:     int(candidate.GetChainDepth()),
 		CreatedHeight:  candidate.GetCreatedHeight(),
 		Ancestry:       ancestry,

@@ -900,6 +900,26 @@ func (b *sessionBehavior) driveOutboxEvents(ctx context.Context,
 				return err
 			}
 
+		// Expiry authentication performs chain I/O before the durable
+		// materialization transaction starts. Its follow-up event carries
+		// only the derived scalar into the commit closure.
+		case *AuthenticateIncomingMetadataRequest:
+			if b.cfg.IncomingHandler == nil {
+				return fmt.Errorf("incoming handler must be provided")
+			}
+
+			followUps, err := b.cfg.IncomingHandler.Handle(
+				ctx, b.sessionID, m,
+			)
+			if err != nil {
+				return err
+			}
+			for _, followUp := range followUps {
+				if err := b.continueWith(ctx, followUp); err != nil {
+					return err
+				}
+			}
+
 		// Input-reservation release: a pre-point-of-no-return terminal
 		// failure (e.g. a typed submit rejection) returns the reserved
 		// inputs to LiveState. This is BEST-EFFORT and must never fail
