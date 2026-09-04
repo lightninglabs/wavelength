@@ -86,8 +86,8 @@ func incomingAncestryFetcher(idx *indexer.Client,
 			)
 			if err != nil {
 				return vtxo.IncomingVTXOExtras{}, fmt.Errorf(
-					"authenticate batch expiry: %w", err,
-				)
+					"authenticate batch "+
+						"expiry: %w", err)
 			}
 		}
 

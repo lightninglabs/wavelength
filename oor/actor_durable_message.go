@@ -524,8 +524,8 @@ func decodeAncestryListWithLimits(raw []byte,
 // encodeAncestryEntry encodes one vtxo.Ancestry into a TLV blob.
 func encodeAncestryEntry(a vtxo.Ancestry) ([]byte, error) {
 	if a.CommitmentHeight < 0 {
-		return nil, fmt.Errorf("ancestry commitment height must not be " +
-			"negative")
+		return nil, fmt.Errorf("ancestry commitment height must not " +
+			"be negative")
 	}
 
 	var treePath []byte
@@ -658,8 +658,8 @@ func decodeAncestryEntry(raw []byte) (vtxo.Ancestry, error) {
 		return vtxo.Ancestry{}, err
 	}
 	if commitmentHeight > math.MaxInt32 {
-		return vtxo.Ancestry{}, fmt.Errorf("ancestry commitment height " +
-			"overflows int32")
+		return vtxo.Ancestry{}, fmt.Errorf("ancestry commitment " +
+			"height overflows int32")
 	}
 
 	return vtxo.Ancestry{
@@ -844,8 +844,7 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 			&operatorKey,
 		),
 		tlv.MakePrimitiveRecord(
-			incomingMetadataMatchExpiryAuthRecordType,
-			&expiryAuth,
+			incomingMetadataMatchExpiryAuthRecordType, &expiryAuth,
 		),
 	}
 
@@ -864,8 +863,8 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 			"metadata commitment txid must be provided")
 	}
 	if expiryAuth > 1 {
-		return IncomingMetadataMatch{}, fmt.Errorf("incoming metadata " +
-			"expiry authentication flag must be 0 or 1")
+		return IncomingMetadataMatch{}, fmt.Errorf("incoming " +
+			"metadata expiry authentication flag must be 0 or 1")
 	}
 
 	decodedBatchExpiry, err := uint32ToInt32(
@@ -2388,6 +2387,8 @@ func encodeEventPayload(event Event) ([]byte, error) {
 
 // decodeEventPayloadWithLimits decodes an event payload and applies receive
 // limits to nested list-shaped event fields.
+//
+//nolint:funlen // One TLV switch owns the complete event wire format.
 func decodeEventPayloadWithLimits(raw []byte,
 	limits ReceiveLimits) (Event, error) {
 

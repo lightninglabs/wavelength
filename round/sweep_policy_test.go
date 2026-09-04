@@ -28,28 +28,50 @@ func TestValidateRoundSweepPolicy(t *testing.T) {
 	root := leaf.TapHash()
 
 	trees := map[int]*tree.Tree{
-		0: {SweepTapscriptRoot: root[:]},
-		1: {SweepTapscriptRoot: root[:]},
+		0: {
+			SweepTapscriptRoot: root[:],
+		},
+		1: {
+			SweepTapscriptRoot: root[:],
+		},
 	}
-	require.NoError(t, validateRoundSweepPolicy(
-		sweepKey.PubKey(), sweepDelay, trees,
-	))
+	require.NoError(
+		t,
+		validateRoundSweepPolicy(
+			sweepKey.PubKey(), sweepDelay, trees,
+		),
+	)
 
-	require.ErrorContains(t, validateRoundSweepPolicy(
-		nil, sweepDelay, trees,
-	), "sweep key must be provided")
-	require.ErrorContains(t, validateRoundSweepPolicy(
-		sweepKey.PubKey(), 0, trees,
-	), "sweep delay must be positive")
-	require.ErrorContains(t, validateRoundSweepPolicy(
-		otherKey.PubKey(), sweepDelay, trees,
-	), "does not match")
+	require.ErrorContains(
+		t, validateRoundSweepPolicy(
+			nil, sweepDelay, trees,
+		),
+		"sweep key must be provided",
+	)
+	require.ErrorContains(
+		t,
+		validateRoundSweepPolicy(
+			sweepKey.PubKey(), 0, trees,
+		),
+		"sweep delay must be positive",
+	)
+	require.ErrorContains(
+		t,
+		validateRoundSweepPolicy(
+			otherKey.PubKey(), sweepDelay, trees,
+		),
+		"does not match",
+	)
 
 	randomRoot := make([]byte, len(root))
 	_, err = rand.Read(randomRoot)
 	require.NoError(t, err)
 	trees[1] = &tree.Tree{SweepTapscriptRoot: randomRoot}
-	require.ErrorContains(t, validateRoundSweepPolicy(
-		sweepKey.PubKey(), sweepDelay, trees,
-	), "output 1")
+	require.ErrorContains(
+		t,
+		validateRoundSweepPolicy(
+			sweepKey.PubKey(), sweepDelay, trees,
+		),
+		"output 1",
+	)
 }

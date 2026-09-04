@@ -352,16 +352,18 @@ func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 				}
 
 				if r.server.expiryAuthenticator == nil {
-					return fmt.Errorf("expiry authenticator not " +
-						"initialized")
+					return fmt.Errorf("expiry " +
+						"authenticator not initialized")
 				}
-				desc.BatchExpiry, err = r.server.expiryAuthenticator(
+				expiry, err := r.server.expiryAuthenticator(
 					ctx, desc.Ancestry,
 				)
 				if err != nil {
-					return fmt.Errorf("authenticate VTXO %s "+
-						"expiry: %w", desc.Outpoint, err)
+					return fmt.Errorf("authenticate VTXO "+
+						"%s expiry: %w", desc.Outpoint,
+						err)
 				}
+				desc.BatchExpiry = expiry
 
 				saved, err := r.saveRecoveredVTXO(ctx, desc)
 				if err != nil {
@@ -828,14 +830,15 @@ func (r *RPCServer) materializeRecoveredOOREvent(ctx context.Context,
 		}
 
 		if r.server.expiryAuthenticator == nil {
-			return fmt.Errorf("expiry authenticator not initialized")
+			return fmt.Errorf("expiry authenticator not " +
+				"initialized")
 		}
 		metadata.BatchExpiry, err = r.server.expiryAuthenticator(
 			ctx, metadata.Ancestry,
 		)
 		if err != nil {
-			return fmt.Errorf("authenticate recovered OOR output %d "+
-				"expiry: %w", recipient.OutputIndex, err)
+			return fmt.Errorf("authenticate recovered OOR output "+
+				"%d expiry: %w", recipient.OutputIndex, err)
 		}
 		metadata.ExpiryAuthenticated = true
 

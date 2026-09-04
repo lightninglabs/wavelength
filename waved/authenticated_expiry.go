@@ -14,15 +14,36 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
-const expiryConfirmationCleanupTimeout = 5 * time.Second
+const (
+	expiryAuthenticationTimeout      = 30 * time.Second
+	expiryConfirmationCleanupTimeout = 5 * time.Second
+)
+
+type chainSourceRef = actor.ActorRef[
+	chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+]
+
+type confRef = actor.TellOnlyRef[chainsource.ConfirmationEvent]
+
+type confirmationRegistration = chainsource.RegisterConfResponse
 
 // batchExpiryAuthenticator adapts the chain-source actor's one-shot
 // confirmation API to the pure VTXO expiry verifier. A fresh caller id keeps
 // concurrent acceptance checks independent; each one-shot watch is removed
 // after its future resolves.
-func batchExpiryAuthenticator(chainSource actor.ActorRef[
-	chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
-]) oor.IncomingExpiryAuthenticator {
+func batchExpiryAuthenticator(
+	chainSource chainSourceRef) oor.IncomingExpiryAuthenticator {
+
+	return batchExpiryAuthenticatorWithTimeout(
+		chainSource, expiryAuthenticationTimeout,
+	)
+}
+
+// batchExpiryAuthenticatorWithTimeout builds the expiry authenticator with a
+// bounded chain lookup. Durable callers retry a timed-out lookup instead of
+// holding their actor turn and delivery lease indefinitely.
+func batchExpiryAuthenticatorWithTimeout(chainSource chainSourceRef,
+	timeout time.Duration) oor.IncomingExpiryAuthenticator {
 
 	return func(ctx context.Context, ancestry []vtxo.Ancestry) (int32,
 		error) {
@@ -30,13 +51,24 @@ func batchExpiryAuthenticator(chainSource actor.ActorRef[
 		if chainSource == nil {
 			return 0, fmt.Errorf("chain source must be provided")
 		}
+		if timeout <= 0 {
+			return 0, fmt.Errorf("expiry authentication timeout " +
+				"must be positive")
+		}
+
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
 
 		callerID := "expiry-auth-" + uuid.NewString()
+		noNotify := fn.None[confRef]()
+
 		return vtxo.AuthenticateBatchExpiry(
 			ctx, ancestry,
 			func(ctx context.Context, txid chainhash.Hash,
 				pkScript []byte, heightHint uint32) (
 				vtxo.CommitmentConfirmation, error) {
+
+				var empty vtxo.CommitmentConfirmation
 
 				request := &chainsource.RegisterConfRequest{
 					CallerID:    callerID,
@@ -44,31 +76,33 @@ func batchExpiryAuthenticator(chainSource actor.ActorRef[
 					PkScript:    pkScript,
 					TargetConfs: 1,
 					HeightHint:  heightHint,
-					NotifyActor: fn.None[actor.TellOnlyRef[chainsource.ConfirmationEvent]](),
+					NotifyActor: noNotify,
 				}
 
 				response, err := chainSource.Ask(
 					ctx, request,
 				).Await(ctx).Unpack()
 				if err != nil {
-					return vtxo.CommitmentConfirmation{}, err
+					return empty, err
 				}
 
-				registered, ok := response.(*chainsource.RegisterConfResponse)
+				registered, ok :=
+					response.(*confirmationRegistration)
 				if !ok || registered.Future == nil {
-					return vtxo.CommitmentConfirmation{}, fmt.Errorf(
-						"unexpected confirmation registration response %T",
-						response,
-					)
+					return empty, fmt.Errorf("unexpected "+
+						"response %T", response)
 				}
 
 				defer unregisterExpiryConfirmation(
-					chainSource, callerID, txid, pkScript,
+					ctx, chainSource, callerID, txid,
+					pkScript,
 				)
 
-				confirmation, err := registered.Future.Await(ctx).Unpack()
+				confirmation, err := registered.Future.
+					Await(ctx).
+					Unpack()
 				if err != nil {
-					return vtxo.CommitmentConfirmation{}, err
+					return empty, err
 				}
 
 				return vtxo.CommitmentConfirmation{
@@ -82,16 +116,16 @@ func batchExpiryAuthenticator(chainSource actor.ActorRef[
 
 // unregisterExpiryConfirmation releases a one-shot confirmation watch with a
 // cleanup deadline independent of the completed acceptance request.
-func unregisterExpiryConfirmation(chainSource actor.ActorRef[
-	chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
-], callerID string, txid chainhash.Hash, pkScript []byte) {
+func unregisterExpiryConfirmation(ctx context.Context,
+	chainSource chainSourceRef, callerID string, txid chainhash.Hash,
+	pkScript []byte) {
 
-	ctx, cancel := context.WithTimeout(
-		context.Background(), expiryConfirmationCleanupTimeout,
+	cleanupCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), expiryConfirmationCleanupTimeout,
 	)
 	defer cancel()
 
-	_ = chainSource.Tell(ctx, &chainsource.UnregisterConfRequest{
+	_ = chainSource.Tell(cleanupCtx, &chainsource.UnregisterConfRequest{
 		CallerID:    callerID,
 		Txid:        &txid,
 		PkScript:    pkScript,

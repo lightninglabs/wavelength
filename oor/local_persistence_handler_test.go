@@ -217,7 +217,9 @@ func (s *testVTXOStore) DeleteVTXO(_ context.Context,
 
 // TestLocalPersistenceOutboxHandlerAuthenticatesIncomingExpiry verifies the
 // indexer scalar is replaced before the materialization transaction.
-func TestLocalPersistenceOutboxHandlerAuthenticatesIncomingExpiry(t *testing.T) {
+func TestLocalPersistenceOutboxHandlerAuthenticatesIncomingExpiry(
+	t *testing.T) {
+
 	t.Parallel()
 
 	commitment := chainhash.Hash{1, 2, 3}
@@ -237,6 +239,7 @@ func TestLocalPersistenceOutboxHandlerAuthenticatesIncomingExpiry(t *testing.T) 
 			ancestry []vtxo.Ancestry) (int32, error) {
 
 			require.Len(t, ancestry, 1)
+
 			return 2048, nil
 		},
 	}
@@ -284,6 +287,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 			[]vtxo.Ancestry) (int32, error) {
 
 			authCalls++
+
 			return 1000, nil
 		},
 		NotifyIncomingVTXOs: func(_ context.Context,

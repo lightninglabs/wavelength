@@ -121,10 +121,9 @@ func (r *RPCServer) resolveCustomRefreshMetadata(ctx context.Context,
 			)
 			if err != nil {
 				return customRefreshMetadata{}, status.Errorf(
-					codes.FailedPrecondition, "custom refresh "+
-						"expiry authentication for %s: %v",
-					input.Outpoint, err,
-				)
+					codes.FailedPrecondition,
+					"authenticate refresh expiry for "+
+						"%s: %v", input.Outpoint, err)
 			}
 
 			return meta, nil

@@ -362,8 +362,8 @@ type Server struct {
 	chainBackend chainsource.ChainBackend
 
 	// expiryAuthenticator is published with the chain-source actor and
-	// reused by every new-VTXO acceptance path. Existing persisted VTXOs are
-	// intentionally left unchanged.
+	// reused by every new-VTXO acceptance path. Existing persisted VTXOs
+	// are intentionally left unchanged.
 	expiryAuthenticator oor.IncomingExpiryAuthenticator
 	walletRef           fn.Option[actor.ActorRef[
 		wallet.WalletMsg, wallet.WalletResp,
@@ -4907,8 +4907,7 @@ func (s *Server) initOORActor(ctx context.Context,
 		)
 	} else {
 		ancestryFetcher, fetcherErr = incomingAncestryFetcher(
-			s.indexer, incomingSignerFactory,
-			s.expiryAuthenticator,
+			s.indexer, incomingSignerFactory, s.expiryAuthenticator,
 		)
 		if fetcherErr != nil {
 			s.log.WarnS(ctx,

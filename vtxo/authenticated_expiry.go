@@ -17,9 +17,7 @@ import (
 // ErrInvalidBatchExpiryEvidence identifies malformed or conflicting expiry
 // evidence. Unlike a confirmation lookup failure, retrying the same evidence
 // cannot repair this error.
-var ErrInvalidBatchExpiryEvidence = errors.New(
-	"invalid batch expiry evidence",
-)
+var ErrInvalidBatchExpiryEvidence = errors.New("invalid batch expiry evidence")
 
 // CommitmentConfirmation is the chain-authenticated transaction and height
 // used to derive one commitment's absolute sweep expiry.
@@ -74,7 +72,8 @@ func AuthenticateBatchExpiry(ctx context.Context, ancestry []Ancestry,
 		group.fragments = append(group.fragments, fragment)
 		if fragment.CommitmentHeight > 0 &&
 			(group.heightHint == 0 ||
-				uint32(fragment.CommitmentHeight) < group.heightHint) {
+				uint32(fragment.CommitmentHeight) <
+					group.heightHint) {
 
 			group.heightHint = uint32(fragment.CommitmentHeight)
 		}
@@ -86,23 +85,26 @@ func AuthenticateBatchExpiry(ctx context.Context, ancestry []Ancestry,
 			ctx, txid, group.pkScript, group.heightHint,
 		)
 		if err != nil {
-			return 0, fmt.Errorf("resolve commitment %s: %w", txid, err)
+			return 0, fmt.Errorf("resolve commitment %s: %w", txid,
+				err)
 		}
 		if confirmation.Tx == nil {
 			return 0, invalidBatchExpiry(
-				"commitment %s confirmation has no transaction", txid,
+				"commitment %s confirmation has no transaction",
+				txid,
 			)
 		}
 		if confirmation.BlockHeight <= 0 {
 			return 0, invalidBatchExpiry(
-				"commitment %s has invalid confirmation height %d",
-				txid, confirmation.BlockHeight,
+				"commitment %s has invalid confirmation "+
+					"height %d", txid,
+				confirmation.BlockHeight,
 			)
 		}
 		if confirmation.Tx.TxHash() != txid {
 			return 0, invalidBatchExpiry(
-				"confirmation transaction does not match commitment %s",
-				txid,
+				"confirmation transaction does not match "+
+					"commitment %s", txid,
 			)
 		}
 
@@ -110,8 +112,8 @@ func AuthenticateBatchExpiry(ctx context.Context, ancestry []Ancestry,
 			idx := fragment.TreePath.BatchOutpoint.Index
 			if idx >= uint32(len(confirmation.Tx.TxOut)) {
 				return 0, invalidBatchExpiry(
-					"commitment %s output %d is out of range",
-					txid, idx,
+					"commitment %s output %d is out of "+
+						"range", txid, idx,
 				)
 			}
 
@@ -121,8 +123,8 @@ func AuthenticateBatchExpiry(ctx context.Context, ancestry []Ancestry,
 				claimed.PkScript, actual.PkScript,
 			) {
 				return 0, invalidBatchExpiry(
-					"commitment %s output %d does not match ancestry",
-					txid, idx,
+					"commitment %s output %d does not "+
+						"match ancestry", txid, idx,
 				)
 			}
 
@@ -130,7 +132,8 @@ func AuthenticateBatchExpiry(ctx context.Context, ancestry []Ancestry,
 				int64(fragment.CommitmentSweepDelay)
 			if expiry > math.MaxInt32 {
 				return 0, invalidBatchExpiry(
-					"commitment %s expiry overflows int32", txid,
+					"commitment %s expiry overflows int32",
+					txid,
 				)
 			}
 			if earliest == 0 || expiry < earliest {
@@ -150,7 +153,9 @@ func AuthenticateBatchExpiry(ctx context.Context, ancestry []Ancestry,
 // recomputed root output.
 func validateExpiryFragment(fragment Ancestry) error {
 	if fragment.TreePath == nil || fragment.TreePath.BatchOutput == nil {
-		return invalidBatchExpiry("tree path and batch output are required")
+		return invalidBatchExpiry(
+			"tree path and batch output are required",
+		)
 	}
 	if fragment.TreePath.Root == nil {
 		return invalidBatchExpiry("tree root is required")
@@ -193,8 +198,12 @@ func validateExpiryFragment(fragment Ancestry) error {
 	if err != nil {
 		return invalidBatchExpiry("recompute tree root script: %v", err)
 	}
-	if !bytes.Equal(expectedScript, fragment.TreePath.BatchOutput.PkScript) {
-		return invalidBatchExpiry("batch output does not match tree root")
+	if !bytes.Equal(
+		expectedScript, fragment.TreePath.BatchOutput.PkScript,
+	) {
+		return invalidBatchExpiry(
+			"batch output does not match tree root",
+		)
 	}
 
 	return nil
@@ -203,6 +212,6 @@ func validateExpiryFragment(fragment Ancestry) error {
 // invalidBatchExpiry wraps a permanent evidence failure with the public
 // classification sentinel.
 func invalidBatchExpiry(format string, args ...any) error {
-	return fmt.Errorf("%w: %s", ErrInvalidBatchExpiryEvidence,
-		fmt.Sprintf(format, args...))
+	return fmt.Errorf("%w: %s", ErrInvalidBatchExpiryEvidence, fmt.Sprintf(
+		format, args...))
 }

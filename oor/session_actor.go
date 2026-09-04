@@ -901,11 +901,12 @@ func (b *sessionBehavior) driveOutboxEvents(ctx context.Context,
 			}
 
 		// Expiry authentication performs chain I/O before the durable
-		// materialization transaction starts. Its follow-up event carries
-		// only the derived scalar into the commit closure.
+		// materialization transaction starts. Its follow-up event
+		// carries only the derived scalar into the commit closure.
 		case *AuthenticateIncomingMetadataRequest:
 			if b.cfg.IncomingHandler == nil {
-				return fmt.Errorf("incoming handler must be provided")
+				return fmt.Errorf("incoming handler must be " +
+					"provided")
 			}
 
 			followUps, err := b.cfg.IncomingHandler.Handle(
@@ -915,7 +916,9 @@ func (b *sessionBehavior) driveOutboxEvents(ctx context.Context,
 				return err
 			}
 			for _, followUp := range followUps {
-				if err := b.continueWith(ctx, followUp); err != nil {
+				if err := b.continueWith(
+					ctx, followUp,
+				); err != nil {
 					return err
 				}
 			}

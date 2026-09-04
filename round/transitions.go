@@ -4921,9 +4921,9 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 		if s.SweepDelay > 0 {
 			expiry := int64(evt.BlockHeight) + int64(s.SweepDelay)
 			if expiry > math.MaxInt32 {
-				return nil, fmt.Errorf("round batch expiry overflows "+
-					"int32: height=%d delay=%d", evt.BlockHeight,
-					s.SweepDelay)
+				return nil, fmt.Errorf("round batch expiry "+
+					"overflows int32: height=%d delay=%d",
+					evt.BlockHeight, s.SweepDelay)
 			}
 			batchExpiry = int32(expiry)
 		} else {

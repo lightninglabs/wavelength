@@ -42,9 +42,9 @@ type IncomingVTXOMetadata struct {
 	BatchExpiry int32
 
 	// ExpiryAuthenticated records that BatchExpiry was derived from the
-	// locally confirmed commitment transaction and the sweep policy bound to
-	// each ancestry tree. It is transient receive-state, not persisted VTXO
-	// data.
+	// locally confirmed commitment transaction and the sweep policy bound
+	// to each ancestry tree. It is transient receive-state, not persisted
+	// VTXO data.
 	ExpiryAuthenticated bool
 
 	// ChainDepth is the number of OOR checkpoint hops between this
@@ -252,8 +252,8 @@ func incomingOutputPolicy(pkScript []byte, cfg IncomingVTXOConfig) ([]byte,
 		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
 	)
 	if err != nil {
-		return nil, nil, 0, fmt.Errorf("encode incoming VTXO policy: %w",
-			err)
+		return nil, nil, 0, fmt.Errorf("encode incoming VTXO "+
+			"policy: %w", err)
 	}
 
 	return policyTemplate, tapscript, cfg.ExitDelay, nil
@@ -288,8 +288,10 @@ func incomingPolicyExitDelay(template *arkscript.PolicyTemplate,
 
 	var earliest uint32
 	for _, pair := range pairs {
-		if pair.AuthPath == nil || pair.AuthPath.RequiredSequence == 0 ||
-			pair.AuthPath.RequiredSequence == wire.MaxTxInSequenceNum {
+		if pair.AuthPath == nil ||
+			pair.AuthPath.RequiredSequence == 0 ||
+			pair.AuthPath.RequiredSequence ==
+				wire.MaxTxInSequenceNum {
 
 			continue
 		}

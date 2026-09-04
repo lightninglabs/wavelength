@@ -36,6 +36,7 @@ func TestAuthenticateBatchExpiryUsesEarliestCommitment(t *testing.T) {
 			_ uint32) (CommitmentConfirmation, error) {
 
 			resolveCalls[txid]++
+
 			return confirmations[txid], nil
 		},
 	)
@@ -91,11 +92,14 @@ func TestAuthenticateBatchExpiryRejectsInvalidEvidence(t *testing.T) {
 		require.NoError(t, err)
 		bad.TreePath = &tree.Tree{
 			Root: &tree.Node{
-				CoSigners: []*btcec.PublicKey{otherKey.PubKey()},
+				CoSigners: []*btcec.PublicKey{
+					otherKey.PubKey(),
+				},
 			},
-			BatchOutpoint:      fragment.TreePath.BatchOutpoint,
-			BatchOutput:        fragment.TreePath.BatchOutput,
-			SweepTapscriptRoot: fragment.TreePath.SweepTapscriptRoot,
+			BatchOutpoint: fragment.TreePath.BatchOutpoint,
+			BatchOutput:   fragment.TreePath.BatchOutput,
+			SweepTapscriptRoot: fragment.TreePath.
+				SweepTapscriptRoot,
 		}
 
 		_, err = AuthenticateBatchExpiry(
@@ -107,7 +111,9 @@ func TestAuthenticateBatchExpiryRejectsInvalidEvidence(t *testing.T) {
 			},
 		)
 		require.ErrorIs(t, err, ErrInvalidBatchExpiryEvidence)
-		require.ErrorContains(t, err, "batch output does not match tree root")
+		require.ErrorContains(
+			t, err, "batch output does not match tree root",
+		)
 	})
 
 	t.Run("overflow", func(t *testing.T) {
@@ -163,9 +169,13 @@ func testExpiryAncestry(t *testing.T, delay uint32,
 	require.NoError(t, err)
 
 	tx := wire.NewMsgTx(2)
-	tx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: wire.OutPoint{Hash: chainhash.Hash{byte(delay)}},
-	})
+	tx.AddTxIn(
+		&wire.TxIn{
+			PreviousOutPoint: wire.OutPoint{
+				Hash: chainhash.Hash{byte(delay)},
+			},
+		},
+	)
 	tx.AddTxOut(&wire.TxOut{
 		Value:    int64(delay) * 100,
 		PkScript: batchScript,
@@ -177,7 +187,9 @@ func testExpiryAncestry(t *testing.T, delay uint32,
 				Root: &tree.Node{
 					CoSigners: cosigners,
 				},
-				BatchOutpoint:      wire.OutPoint{Hash: txid},
+				BatchOutpoint: wire.OutPoint{
+					Hash: txid,
+				},
 				BatchOutput:        tx.TxOut[0],
 				SweepTapscriptRoot: sweepRoot[:],
 			},

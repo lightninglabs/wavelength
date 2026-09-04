@@ -32,14 +32,15 @@ func validateRoundSweepPolicy(sweepKey *btcec.PublicKey, sweepDelay uint32,
 
 	for outputIdx, vtxoTree := range vtxoTrees {
 		if vtxoTree == nil {
-			return fmt.Errorf("vtxo tree at output %d is nil", outputIdx)
+			return fmt.Errorf("vtxo tree at output %d is nil",
+				outputIdx)
 		}
 		if !bytes.Equal(
 			sweepRoot[:], vtxoTree.SweepTapscriptRoot,
 		) {
-			return fmt.Errorf("vtxo tree at output %d has a sweep root "+
-				"that does not match the advertised key and delay",
-				outputIdx)
+			return fmt.Errorf("vtxo tree at output %d has a sweep "+
+				"root that does not match the advertised key "+
+				"and delay", outputIdx)
 		}
 	}
 

@@ -333,28 +333,37 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 	}
 
 	// The indexer push is intentionally only a notification. Resolve the
-	// ancestry and chain-authenticated expiry before the first write. Returning
-	// an error keeps the durable event pending for retry instead of accepting a
-	// new live VTXO with unauthenticated safety metadata.
+	// ancestry and chain-authenticated expiry before the first write.
+	// Returning an error keeps the durable event pending for retry instead
+	// of accepting a new live VTXO with unauthenticated safety metadata.
 	if h.cfg.AncestryFetcher == nil {
-		return fn.Err[IncomingVTXOResp](fmt.Errorf(
-			"authenticate incoming VTXO %s: ancestry fetcher not "+
-				"configured", outpoint.String(),
-		))
+		return fn.Err[IncomingVTXOResp](
+			fmt.Errorf(
+				"authenticate incoming VTXO %s: ancestry "+
+					"fetcher not configured",
+				outpoint.String(),
+			),
+		)
 	}
 	extras, err := h.cfg.AncestryFetcher(
 		ctx, outpoint, pkScript, rec.ClientKey,
 	)
 	if err != nil {
-		return fn.Err[IncomingVTXOResp](fmt.Errorf(
-			"authenticate incoming VTXO %s: %w", outpoint.String(), err,
-		))
+		return fn.Err[IncomingVTXOResp](
+			fmt.Errorf(
+				"authenticate incoming VTXO %s: %w",
+				outpoint.String(), err,
+			),
+		)
 	}
 	if extras.BatchExpiry <= 0 {
-		return fn.Err[IncomingVTXOResp](fmt.Errorf(
-			"authenticate incoming VTXO %s: derived batch expiry "+
-				"must be positive", outpoint.String(),
-		))
+		return fn.Err[IncomingVTXOResp](
+			fmt.Errorf(
+				"authenticate incoming VTXO %s: derived "+
+					"batch expiry must be positive",
+				outpoint.String(),
+			),
+		)
 	}
 	desc.Ancestry = extras.Ancestry
 	desc.CreatedHeight = extras.CreatedHeight

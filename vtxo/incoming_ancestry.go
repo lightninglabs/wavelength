@@ -59,8 +59,8 @@ func AncestryFromRPC(paths []*arkrpc.AncestryPath) ([]Ancestry, error) {
 				err)
 		}
 		if p.GetCommitmentHeight() < 0 {
-			return nil, fmt.Errorf("path[%d] commitment height must "+
-				"not be negative", i)
+			return nil, fmt.Errorf("path[%d] commitment height "+
+				"must not be negative", i)
 		}
 
 		// Validate the indexer-supplied tree_depth against the
@@ -82,32 +82,36 @@ func AncestryFromRPC(paths []*arkrpc.AncestryPath) ([]Ancestry, error) {
 		var sweepKey *btcec.PublicKey
 		switch {
 		case sweepDelay == 0 && len(rawSweepKey) == 0:
-			// Older indexers omitted both additive fields. Conversion
-			// remains possible, but AuthenticateBatchExpiry rejects the
-			// missing evidence before any new descriptor is accepted.
+			// Older indexers omitted both additive fields.
+			// Conversion remains possible, but
+			// AuthenticateBatchExpiry rejects the missing evidence
+			// before any new descriptor is accepted.
 
 		case sweepDelay == 0 || len(rawSweepKey) == 0:
-			return nil, fmt.Errorf("path[%d] sweep key and delay must "+
-				"both be provided", i)
+			return nil, fmt.Errorf("path[%d] sweep key and delay "+
+				"must both be provided", i)
 
 		default:
 			sweepKey, err = btcec.ParsePubKey(rawSweepKey)
 			if err != nil {
-				return nil, fmt.Errorf("path[%d] sweep key: %w", i, err)
+				return nil, fmt.Errorf("path[%d] sweep key: %w",
+					i, err)
 			}
 
 			sweepLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
 				sweepKey, sweepDelay,
 			)
 			if err != nil {
-				return nil, fmt.Errorf("path[%d] sweep leaf: %w", i, err)
+				return nil, fmt.Errorf("path[%d] sweep "+
+					"leaf: %w", i, err)
 			}
 			sweepRoot := sweepLeaf.TapHash()
 			if !bytes.Equal(
 				sweepRoot[:], treePath.SweepTapscriptRoot,
 			) {
-				return nil, fmt.Errorf("path[%d] sweep key and delay do "+
-					"not match committed sweep root", i)
+				return nil, fmt.Errorf("path[%d] sweep key "+
+					"and delay do not match committed "+
+					"sweep root", i)
 			}
 		}
 

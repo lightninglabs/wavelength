@@ -119,7 +119,8 @@ type LocalPersistenceOutboxHandler struct {
 	ResolveIncomingMetadata IncomingMetadataResolver
 
 	// AuthenticateIncomingExpiry replaces the indexer's expiry hint with a
-	// locally derived value before materialization starts its DB transaction.
+	// locally derived value before materialization starts its DB
+	// transaction.
 	AuthenticateIncomingExpiry IncomingExpiryAuthenticator
 
 	// NotifyIncomingVTXOs is invoked after incoming VTXOs are persisted.
@@ -171,12 +172,12 @@ func (h *LocalPersistenceOutboxHandler) handleAuthenticateIncomingMetadata(
 	error) {
 
 	if msg == nil {
-		return nil, fmt.Errorf("incoming metadata authentication request " +
-			"must be provided")
+		return nil, fmt.Errorf("incoming metadata authentication " +
+			"request must be provided")
 	}
 	if h.AuthenticateIncomingExpiry == nil {
-		return nil, fmt.Errorf("incoming expiry authenticator must be " +
-			"provided")
+		return nil, fmt.Errorf("incoming expiry authenticator must " +
+			"be provided")
 	}
 
 	matches := make([]IncomingMetadataMatch, len(msg.Matches))
@@ -246,8 +247,9 @@ func (h *LocalPersistenceOutboxHandler) validateMaterializeIncoming(
 	for i := range msg.MetadataMatches {
 		metadata := msg.MetadataMatches[i].Metadata
 		if !metadata.ExpiryAuthenticated || metadata.BatchExpiry <= 0 {
-			return fmt.Errorf("incoming output %d batch expiry is not "+
-				"authenticated", msg.MetadataMatches[i].OutputIndex)
+			return fmt.Errorf("incoming output %d batch expiry is "+
+				"not authenticated",
+				msg.MetadataMatches[i].OutputIndex)
 		}
 	}
 
@@ -359,6 +361,8 @@ func (h *LocalPersistenceOutboxHandler) FilterIncomingMetadataRecipients(
 // materializeIncoming persists recipient VTXOs for an incoming transfer and
 // optionally notifies the VTXO manager directly when the caller is not
 // resuming the durable actor with a follow-up event.
+//
+//nolint:funlen // Keep the materialization transaction in one visible boundary.
 func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 	msg *MaterializeIncomingVTXOsRequest, notifyIncoming bool) ([]Event,
 	error) {
@@ -455,9 +459,9 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 		}
 		if !metadata.ExpiryAuthenticated {
 			if h.AuthenticateIncomingExpiry == nil {
-				return nil, fmt.Errorf("incoming output %d batch "+
-					"expiry authenticator must be provided",
-					recipient.OutputIndex)
+				return nil, fmt.Errorf("incoming output %d "+
+					"batch expiry authenticator must be "+
+					"provided", recipient.OutputIndex)
 			}
 
 			expiry, err := h.AuthenticateIncomingExpiry(
@@ -470,8 +474,9 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 			metadata.ExpiryAuthenticated = true
 		}
 		if metadata.BatchExpiry <= 0 {
-			return nil, fmt.Errorf("incoming output %d authenticated "+
-				"batch expiry must be positive", recipient.OutputIndex)
+			return nil, fmt.Errorf("incoming output %d "+
+				"authenticated batch expiry must be positive",
+				recipient.OutputIndex)
 		}
 
 		logger(ctx).DebugS(ctx, "Resolved incoming metadata",

@@ -512,6 +512,14 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 	require.NoError(t, err)
 	sweepKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
+	operatorPubKey := operatorKey.PubKey()
+	sweepPubKey := sweepKey.PubKey()
+	ancestry := []vtxo.Ancestry{{
+		CommitmentTxID:       commitmentTxID,
+		CommitmentHeight:     42,
+		CommitmentSweepDelay: 1024,
+		CommitmentSweepKey:   sweepPubKey,
+	}}
 
 	msg := &DriveEventRequest{
 		SessionID: sessionID,
@@ -526,13 +534,8 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 					ExpiryAuthenticated: true,
 					ChainDepth:          2,
 					CreatedHeight:       42,
-					OperatorKey:         operatorKey.PubKey(),
-					Ancestry: []vtxo.Ancestry{{
-						CommitmentTxID:       commitmentTxID,
-						CommitmentHeight:     42,
-						CommitmentSweepDelay: 1024,
-						CommitmentSweepKey:   sweepKey.PubKey(),
-					}},
+					OperatorKey:         operatorPubKey,
+					Ancestry:            ancestry,
 				},
 			}},
 		},
@@ -575,9 +578,12 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 	require.EqualValues(
 		t, 1024, match.Metadata.Ancestry[0].CommitmentSweepDelay,
 	)
-	require.True(t, match.Metadata.Ancestry[0].CommitmentSweepKey.IsEqual(
-		sweepKey.PubKey(),
-	))
+	require.True(
+		t,
+		match.Metadata.Ancestry[0].CommitmentSweepKey.IsEqual(
+			sweepKey.PubKey(),
+		),
+	)
 	require.Nil(t, match.Metadata.Ancestry[0].TreePath)
 }
 

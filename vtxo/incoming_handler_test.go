@@ -79,7 +79,10 @@ func TestIncomingVTXOHandlerRetriesAuthenticatedExpiryWrite(t *testing.T) {
 			keychain.KeyDescriptor) (IncomingVTXOExtras, error) {
 
 			fetches++
-			return IncomingVTXOExtras{BatchExpiry: 800_144}, nil
+
+			return IncomingVTXOExtras{
+				BatchExpiry: 800_144,
+			}, nil
 		},
 	})
 
@@ -288,8 +291,8 @@ func TestIncomingVTXOHandlerIgnoresEventBatchExpiry(t *testing.T) {
 					VTXOStore:   saver,
 					AncestryFetcher: func(context.Context,
 						wire.OutPoint, []byte,
-						keychain.KeyDescriptor) (IncomingVTXOExtras,
-						error) {
+						keychain.KeyDescriptor) (
+						IncomingVTXOExtras, error) {
 
 						return IncomingVTXOExtras{
 							BatchExpiry: 800_144,
@@ -312,8 +315,9 @@ func TestIncomingVTXOHandlerIgnoresEventBatchExpiry(t *testing.T) {
 
 			require.NoError(t, resultErr)
 			require.Len(t, saver.saved, 1)
-			require.Equal(t, int32(800_144),
-				saver.saved[0].BatchExpiry)
+			require.Equal(
+				t, int32(800_144), saver.saved[0].BatchExpiry,
+			)
 			require.Equal(
 				t, uint32(144), saver.saved[0].RelativeExpiry,
 			)
@@ -332,16 +336,25 @@ func TestIncomingVTXOHandlerRequiresAuthenticatedExpiry(t *testing.T) {
 	require.NoError(t, err)
 	pkScript := []byte{0x51, 0x20, 0xaa, 0xdd}
 	saver := &mockVTXOSaver{}
-	handler := NewIncomingVTXOHandler(IncomingVTXOHandlerConfig{
-		ScriptStore: &mockScriptLookup{scripts: map[string]*OwnedReceiveScript{
-			string(pkScript): {
-				ClientKey:      keychain.KeyDescriptor{PubKey: clientKey.PubKey()},
-				OperatorPubKey: operatorKey.PubKey(),
-				ExitDelay:      144,
+	handler := NewIncomingVTXOHandler(
+		IncomingVTXOHandlerConfig{
+			ScriptStore: &mockScriptLookup{
+				scripts: map[string]*OwnedReceiveScript{
+					string(pkScript): {
+						ClientKey: keychain.
+							KeyDescriptor{
+							PubKey: clientKey.
+								PubKey(),
+						},
+						OperatorPubKey: operatorKey.
+							PubKey(),
+						ExitDelay: 144,
+					},
+				},
 			},
-		}},
-		VTXOStore: saver,
-	})
+			VTXOStore: saver,
+		},
+	)
 
 	var txid chainhash.Hash
 	txid[0] = 0x43

@@ -202,8 +202,8 @@ func newRecoveryScanServer(t *testing.T, liveScript []byte,
 			btclog.Disabled,
 		).NewVTXOStore(clk),
 		proofKeyBackend: &recoveryKeyBackend{},
-		expiryAuthenticator: func(context.Context,
-			[]vtxo.Ancestry) (int32, error) {
+		expiryAuthenticator: func(context.Context, []vtxo.Ancestry) (
+			int32, error) {
 
 			return 965281, nil
 		},
