@@ -11,6 +11,7 @@ import (
 	"github.com/lightninglabs/wavelength/chainsource"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -26,6 +27,46 @@ type failingVTXOActorRef struct {
 	id    string
 	state VTXOState
 }
+
+// inlineVTXOActorRef runs a real VTXO actor synchronously. Manager tests use
+// it to observe the actor's manager-bound outbox before replaying that message
+// as the manager's next serialized turn.
+type inlineVTXOActorRef struct {
+	actor *VTXOActor
+}
+
+// ID returns the wrapped actor identifier.
+func (i *inlineVTXOActorRef) ID() string {
+	return i.actor.cfg.VTXO.Outpoint.String()
+}
+
+// Tell runs the wrapped actor without waiting for a typed response.
+func (i *inlineVTXOActorRef) Tell(ctx context.Context,
+	msg actormsg.VTXOActorMsg) error {
+
+	_, err := i.actor.Receive(ctx, msg).Unpack()
+
+	return err
+}
+
+// TryTell delegates to Tell because this test double has no mailbox.
+func (i *inlineVTXOActorRef) TryTell(ctx context.Context,
+	msg actormsg.VTXOActorMsg) error {
+
+	return i.Tell(ctx, msg)
+}
+
+// Ask completes a Future with the wrapped actor's real FSM result.
+func (i *inlineVTXOActorRef) Ask(ctx context.Context,
+	msg actormsg.VTXOActorMsg) actor.Future[actormsg.VTXOActorResp] {
+
+	promise := actor.NewPromise[actormsg.VTXOActorResp]()
+	promise.Complete(i.actor.Receive(ctx, msg))
+
+	return promise.Future()
+}
+
+var _ VTXOActorRef = (*inlineVTXOActorRef)(nil)
 
 // ID returns the test actor identifier.
 func (f *failingVTXOActorRef) ID() string {
@@ -131,9 +172,13 @@ func TestReconcileExpiryUsesCurrentTip(t *testing.T) {
 	).Return([]*Descriptor{}, nil)
 
 	mgr := NewManager(&ManagerConfig{
-		Store:       store,
-		ChainSource: &bestHeightRef{height: tip},
+		Store: store,
+		ChainSource: &bestHeightRef{
+			height: tip,
+		},
+		DeferAutomaticRefreshUntilRoundReady: true,
 	})
+	require.True(t, mgr.roundStartupPending)
 	mgr.actors = map[wire.OutPoint]VTXOActorRef{
 		expired.Outpoint: newMockVTXOActorRef(
 			expired.Outpoint.String(), &LiveState{
@@ -149,6 +194,7 @@ func TestReconcileExpiryUsesCurrentTip(t *testing.T) {
 
 	response, err := mgr.handleReconcileExpiry(t.Context()).Unpack()
 	require.NoError(t, err)
+	require.False(t, mgr.roundStartupPending)
 	reconcileResponse, ok := response.(*ReconcileExpiryResponse)
 	require.True(t, ok)
 	require.Equal(t, 2, reconcileResponse.Checked)
@@ -157,6 +203,79 @@ func TestReconcileExpiryUsesCurrentTip(t *testing.T) {
 	)
 	require.IsType(t, &LiveState{}, actorState(t, mgr, safe.Outpoint))
 	store.AssertExpectations(t)
+}
+
+// TestReconcileExpiryRetriesDeferredExpiredRefresh verifies the complete
+// startup handshake at one chain tip: the manager rolls an automatic refresh
+// back while the round actor is unavailable, the reconcile opens the gate and
+// re-drives the expired actor, and the actor's queued relay reaches round on
+// the manager's next serialized turn.
+func TestReconcileExpiryRetriesDeferredExpiredRefresh(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	desc := h.newTestDescriptor()
+	tip := desc.BatchExpiry
+	managerCapture := newMockManagerRef(t)
+	vtxoActor := newRefreshTestActor(h, desc, managerCapture, nil)
+	vtxoActor.state = &PendingForfeitState{
+		VTXO:              desc,
+		RequestedAtHeight: tip,
+	}
+	ref := &inlineVTXOActorRef{actor: vtxoActor}
+	roundActor := newMockRoundActorRef(t)
+	roundActor.tellErr = actor.ErrNoActorsAvailable
+
+	h.store.On(
+		"UpdateVTXOStatus", mock.Anything, desc.Outpoint,
+		VTXOStatusExpired,
+	).Return(nil).Once()
+	h.store.On(
+		"ListVTXOsByStatus", mock.Anything,
+		VTXOStatusPendingForfeit,
+	).Return([]*Descriptor{}, nil).Once()
+	h.store.On(
+		"ListVTXOsByStatus", mock.Anything, VTXOStatusForfeiting,
+	).Return([]*Descriptor{}, nil).Once()
+	h.store.On(
+		"UpdateVTXOStatus", mock.Anything, desc.Outpoint,
+		VTXOStatusPendingForfeit,
+	).Return(nil).Once()
+
+	mgr := NewManager(
+		&ManagerConfig{
+			Store: h.store,
+			ChainSource: &bestHeightRef{
+				height: tip,
+			},
+			RoundActor:                           roundActor,
+			DeferAutomaticRefreshUntilRoundReady: true,
+		},
+	)
+	mgr.actors[desc.Outpoint] = ref
+
+	request := autoRefreshLeaderRequest(desc, tip)
+	request.ExpandCohort = false
+	_, err := mgr.Receive(t.Context(), &RelayToRoundMsg{
+		Payload: request,
+	}).Unpack()
+	require.NoError(t, err)
+	require.Empty(t, roundActor.getMessages())
+	require.IsType(t, &ExpiredState{}, vtxoActor.state)
+
+	roundActor.tellErr = nil
+	_, err = mgr.handleReconcileExpiry(t.Context()).Unpack()
+	require.NoError(t, err)
+	require.False(t, mgr.roundStartupPending)
+
+	messages := managerCapture.getMessages()
+	require.Len(t, messages, 1)
+	relay, ok := messages[0].(*RelayToRoundMsg)
+	require.True(t, ok)
+	_, err = mgr.Receive(t.Context(), relay).Unpack()
+	require.NoError(t, err)
+	require.Len(t, roundActor.getMessages(), 1)
+	h.store.AssertExpectations(t)
 }
 
 // TestReconcileExpiryContinuesRecoveredExpired verifies a VTXO already
