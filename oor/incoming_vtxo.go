@@ -288,15 +288,18 @@ func incomingPolicyExitDelay(template *arkscript.PolicyTemplate,
 
 	var earliest uint32
 	for _, pair := range pairs {
-		if pair.AuthPath == nil ||
-			pair.AuthPath.RequiredSequence == 0 ||
-			pair.AuthPath.RequiredSequence ==
-				wire.MaxTxInSequenceNum {
+		if pair.AuthPath == nil {
+			continue
+		}
+
+		sequence := pair.AuthPath.RequiredSequence
+		if sequence == 0 ||
+			sequence > uint32(wire.SequenceLockTimeMask) {
 
 			continue
 		}
-		if earliest == 0 || pair.AuthPath.RequiredSequence < earliest {
-			earliest = pair.AuthPath.RequiredSequence
+		if earliest == 0 || sequence < earliest {
+			earliest = sequence
 		}
 	}
 	if earliest == 0 {

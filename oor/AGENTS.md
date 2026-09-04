@@ -80,7 +80,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   transaction. Indexer expiry scalars are discarded. Chain failures retry the
   outbox; invalid sweep/tree evidence fails terminally. The descriptor's
   relative expiry comes from its matching standard or custom policy template,
-  not from operator configuration.
+  not from operator configuration. Custom policies consider only canonical
+  block-mode CSV sequences; CLTV non-final sentinels are not block delays.
 - Snapshots are versioned per direction (`OutgoingSnapshot.Version = 5`,
   `IncomingSnapshot.Version = 1`); restore rejects a zero version. Outgoing
   v5 adds the `FirstRejectUnixNanos` record (bounded transient submit-reject

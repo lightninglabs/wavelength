@@ -11,6 +11,7 @@ import (
 	lib_tree "github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
 )
 
@@ -410,6 +411,37 @@ func TestBuildIncomingVTXODescriptorPreservesMatchingPolicyTemplate(
 	require.NoError(t, err)
 	require.Equal(t, template, desc.PolicyTemplate)
 	require.Equal(t, uint32(10), desc.RelativeExpiry)
+}
+
+// TestIncomingPolicyExitDelayUsesCustomBlockCSV verifies custom policies use
+// decoded block-mode CSV delays rather than raw non-final sequence sentinels.
+func TestIncomingPolicyExitDelayUsesCustomBlockCSV(t *testing.T) {
+	t.Parallel()
+
+	sender, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	receiver, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operator, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender:                               sender.PubKey(),
+		Receiver:                             receiver.PubKey(),
+		Server:                               operator.PubKey(),
+		PreimageHash:                         lntypes.Hash{1},
+		RefundLocktime:                       500,
+		UnilateralClaimDelay:                 30,
+		UnilateralRefundDelay:                20,
+		UnilateralRefundWithoutReceiverDelay: 10,
+	})
+	require.NoError(t, err)
+
+	_, delay, err := incomingPolicyExitDelay(
+		policy.Template, sender.PubKey(), operator.PubKey(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, uint32(10), delay)
 }
 
 // TestBuildIncomingVTXODescriptorRejectsMismatchedPolicyTemplate verifies that
