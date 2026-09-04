@@ -141,7 +141,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jessevdk/go-flags v1.6.1 // indirect
 	github.com/jonboulle/clockwork v0.2.2 // indirect
-	github.com/jrick/logrotate v1.1.2 // indirect
+	github.com/jrick/logrotate v1.1.2
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/kkdai/bstream v1.0.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
