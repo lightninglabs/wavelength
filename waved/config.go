@@ -145,11 +145,10 @@ const (
 		"lightning.finance"
 
 	// The legacy proof scan floors are rounded well below the first
-	// supported operator deployment on each public network. They are used
-	// only with the canonical Lightning Labs operator endpoint. The extra
+	// supported deployment on each public network. No compatible Ark
+	// operator existed on these networks before the floors. The extra
 	// margin covers incomplete deployment history and operator database
-	// resets while still avoiding a scan of chain history in which that
-	// operator could not have created VTXOs.
+	// resets while avoiding scans of earlier chain history.
 	defaultMainnetLegacyProofScanFloor uint32 = 950_000
 	testnet3LegacyProofScanFloor       uint32 = 4_940_000
 	testnet4LegacyProofScanFloor       uint32 = 140_000
@@ -1582,21 +1581,13 @@ func (c *Config) ArkServerAddress() string {
 	return defaults.ark.forTransport(c.Server.Transport)
 }
 
-// legacyProofScanFloor returns the earliest block where the configured Ark
-// operator could have created a compatible commitment. The deployment-backed
-// floors apply only to the canonical Lightning Labs endpoints. A custom or
-// unknown operator retains block 1 because its deployment history is unknown.
+// legacyProofScanFloor returns the earliest block where a supported deployment
+// could have created a compatible commitment on the configured public network.
+// The floor is network-wide and independent of operator identity because no
+// compatible deployment existed before it. Local and unknown networks use
+// block 1.
 func (c *Config) legacyProofScanFloor() uint32 {
-	if c == nil || c.Server == nil {
-		return 1
-	}
-
-	defaults, ok := defaultNetworkEndpoints(c.Network)
-	if !ok {
-		return 1
-	}
-	canonical := defaults.ark.forTransport(c.Server.Transport)
-	if canonical == "" || c.ArkServerAddress() != canonical {
+	if c == nil {
 		return 1
 	}
 

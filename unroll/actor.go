@@ -8,7 +8,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
@@ -70,18 +69,12 @@ type Config struct {
 	// FSM Environment.
 	FraudCheckpointSafetyMargin int32
 
-	// LegacyProofScanFloor is the earliest block at which the configured
-	// operator could have created a compatible commitment transaction. It
-	// bounds proof scans for legacy descriptors whose exact commitment
-	// height is unavailable. Zero, one, or a value above the current tip
-	// falls back to block 1.
+	// LegacyProofScanFloor is the earliest block at which a supported
+	// deployment on the configured public network could have created a
+	// compatible commitment transaction. It bounds proof scans for legacy
+	// descriptors whose exact commitment height is unavailable. Zero, one,
+	// or a value above the current tip falls back to block 1.
 	LegacyProofScanFloor uint32
-
-	// LegacyProofScanOperatorKey identifies the operator whose deployment
-	// history justifies LegacyProofScanFloor. The fallback floor applies
-	// only when the target descriptor carries this same key. A nil or
-	// mismatched key falls back to block 1.
-	LegacyProofScanOperatorKey *btcec.PublicKey
 
 	// RegistryRef receives terminal notifications from this actor when set.
 	RegistryRef actor.TellOnlyRef[RegistryMsg]
@@ -752,33 +745,6 @@ func safeTxOutPkScript(tx *wire.MsgTx, index uint32) ([]byte, error) {
 	return append([]byte(nil), tx.TxOut[index].PkScript...), nil
 }
 
-// proofNodeHeightHintLookback is the number of blocks below the actor's
-// current best height used as the confirmation-watch FALLBACK floor for
-// proof-graph transactions when no commitment height is known and a recent
-// single-fragment target proves that bounded scan is safe. A block-1 floor
-// forces neutrino's notifier to rescan every block from tip to block 1 (one
-// GetCFilter per block) when the watched tx never confirms, which is expensive
-// (wavelength#884). Older and less provable legacy targets use the separate
-// operator-bound fallback in proofNodeConfHeightHint.
-//
-// The lookback MUST comfortably exceed the maximum batch lifetime plus the
-// worst-case tree-depth + CSV exit window, because proof roots and
-// intermediate OOR checkpoint ancestors can confirm well before the target
-// descriptor's CreatedHeight — using the creation height as the floor would
-// miss an ancestor that already confirmed. A generous operator-configured max
-// batch lifetime is on the order of one month (~4320 blocks at 144
-// blocks/day); 10000 blocks (~10 weeks) is a safe multiple for a target whose
-// creation height proves it is inside that window.
-//
-// The primary, tight floor is the commitment-tx confirmation height carried
-// per fragment on Descriptor.Ancestry[i].CommitmentHeight: nothing in a
-// VTXO's proof graph can confirm before its commitment tx, so min() across
-// fragments is a provable lower bound for every proof ancestor. When that
-// height is unknown (zero), behavior.proofNodeConfHeightHint decides whether
-// this bounded lookback is provable or whether the target needs the matching
-// operator deployment floor or block 1.
-const proofNodeHeightHintLookback uint32 = 10000
-
 // removeAbandonedBroadcastTimeout bounds each best-effort wallet RemoveTx RPC
 // issued on the terminal-failure cleanup path. lnd's RemoveTransaction is a
 // fast local wallet mutation, so 30s is generous headroom for a heavily loaded
@@ -786,36 +752,14 @@ const proofNodeHeightHintLookback uint32 = 10000
 // the detached cleanup goroutine indefinitely (wavelength#609).
 const removeAbandonedBroadcastTimeout = 30 * time.Second
 
-// proofNodeHeightHint returns the earliest safe confirmation height hint for
-// proof-graph transactions given the actor's current best height. Roots and
-// intermediate OOR checkpoint ancestors can confirm before the target
-// descriptor's CreatedHeight, so proof watches must not use the target
-// creation height as a lower bound; instead we floor at a bounded lookback
-// below the current height (never below block 1). See
-// proofNodeHeightHintLookback for the sizing rationale. Callers that hold a
-// Descriptor should route through behavior.proofNodeConfHeightHint instead, so
-// the age-exceeds-lookback breadcrumb fires.
-func proofNodeHeightHint(currentHeight uint32) uint32 {
-	if currentHeight <= proofNodeHeightHintLookback {
-		return 1
-	}
-
-	return currentHeight - proofNodeHeightHintLookback
-}
-
-// legacyProofScanFloor returns the configured operator deployment floor when
-// it is usable at the current chain tip and belongs to the operator that
-// created the target. A missing or mismatched key, absent floor, or future
-// floor falls back to block 1. An endpoint migration therefore cannot apply
-// the new operator's deployment history to an older operator's VTXO.
+// legacyProofScanFloor returns the configured public-network deployment floor
+// when it is usable at the current chain tip. Supported public-network floors
+// are independent of operator identity: no compatible deployment existed on
+// those networks before the configured floor. Local and unknown networks set
+// the floor to 1.
 func (b *behavior) legacyProofScanFloor(currentHeight uint32) uint32 {
 	floor := b.cfg.LegacyProofScanFloor
 	if floor <= 1 || floor > currentHeight {
-		return 1
-	}
-	if b.desc == nil || b.desc.OperatorKey == nil ||
-		b.cfg.LegacyProofScanOperatorKey == nil ||
-		!b.desc.OperatorKey.IsEqual(b.cfg.LegacyProofScanOperatorKey) {
 		return 1
 	}
 
@@ -859,16 +803,11 @@ func (b *behavior) commitmentHeightFloor() int32 {
 // proofNodeConfHeightHint returns the confirmation-watch height floor for one
 // proof-graph node. When the target descriptor carries a known commitment
 // height it uses min(commitment height) across fragments as a tight, provable
-// floor (clamped to at least block 1). Otherwise it falls back to the bounded
-// lookback below the current height and leaves a breadcrumb when the target
-// VTXO is old enough that the fallback floor may have risen above a proof
-// ancestor's real confirmation height. On the fallback path the lookback keeps
-// the floor below every ancestor only while the VTXO's age (in blocks) stays
-// within proofNodeHeightHintLookback and its ancestry has one fragment. A
-// multi-fragment descriptor's scalar CreatedHeight cannot prove every
-// contributing commitment is recent. Past either boundary, legacy descriptors
-// fall back to the deployment floor for their matching operator key. A missing
-// or mismatched key, or an absent, invalid, or future floor becomes block 1.
+// floor (clamped to at least block 1). Otherwise it uses the configured
+// public-network deployment floor. CreatedHeight is not a safe substitute: an
+// OOR target can be created long after its commitment ancestor confirmed, and
+// the descriptor carries no maximum bound on that gap. Local and unknown
+// networks, and an absent, invalid, or future deployment floor, use block 1.
 // The wider scan is expensive but cannot skip an already-confirmed ancestor
 // and silently stall the exit.
 func (b *behavior) proofNodeConfHeightHint(ctx context.Context,
@@ -886,33 +825,19 @@ func (b *behavior) proofNodeConfHeightHint(ctx context.Context,
 		return uint32(floor)
 	}
 
-	// Fallback path: no commitment height is known. A recent target can use
-	// the fixed lookback safely. An older target must scan from the
-	// earliest block where the configured operator could have created a
-	// compatible commitment, because the bounded floor may already be above
-	// an ancestor's real confirmation height.
+	// Fallback path: no commitment height is known. Scan from the earliest
+	// block where a supported deployment on this public network could have
+	// created a compatible commitment. CreatedHeight cannot narrow this
+	// floor because an OOR descendant may have been created arbitrarily
+	// later than its on-chain commitment ancestor.
 	//
-	// currentHeightHint returns 0 only for an uninitialized job (no height
-	// observed yet), and proofNodeHeightHint(0) is the genesis floor (1) —
-	// the very rescan-to-genesis behaviour #884 fixes. That is not
-	// reachable on the real path: a proof watch is registered only while
-	// handling a Start/Resume/HeightUpdated event, all of which set
-	// b.pending.Height first, so currentHeightHint is non-zero here in
-	// practice.
+	// currentHeightHint returns 0 only for an uninitialized job. That is
+	// not reachable on the real path: a proof watch is registered only
+	// while handling a Start/Resume/HeightUpdated event, all of which set
+	// b.pending.Height first.
 	currentHeight := b.currentHeightHint()
-	hint := proofNodeHeightHint(currentHeight)
 	legacyFloor := b.legacyProofScanFloor(currentHeight)
-	if legacyFloor > hint {
-		hint = legacyFloor
-	}
 
-	// CreatedHeight is our proxy for deciding whether the bounded fallback
-	// is still sound. An unknown creation height cannot prove the target is
-	// recent. Nor can one scalar creation height prove every contributing
-	// commitment in a multi-fragment ancestry is recent. Once the known age
-	// reaches the lookback, use the operator deployment floor. This can
-	// make neutrino replay many compact filters, but a slow exit is
-	// preferable to one that silently misses a confirmed ancestor.
 	createdHeight := int32(0)
 	ancestryFragments := 0
 	if b.desc != nil {
@@ -923,45 +848,15 @@ func (b *behavior) proofNodeConfHeightHint(ctx context.Context,
 	if createdHeight > 0 {
 		age = int64(currentHeight) - int64(createdHeight)
 	}
-	if createdHeight <= 0 || ancestryFragments > 1 ||
-		age >= int64(proofNodeHeightHintLookback) {
+	if b.proofNodeFloorWarned {
+		return legacyFloor
+	}
 
-		if b.proofNodeFloorWarned {
-			return legacyFloor
-		}
-
-		b.proofNodeFloorWarned = true
-		firstAlert := b.cfg.proofNodeFloorAlerts == nil ||
-			b.cfg.proofNodeFloorAlerts.first()
-		if firstAlert {
-			b.log.WarnS(ctx, "Legacy proof commitment height "+
-				"unavailable; using safe fallback floor",
-				nil,
-				slog.String(
-					"target_outpoint",
-					b.cfg.TargetOutpoint.String(),
-				),
-				slog.String("proof_txid", txid.String()),
-				slog.Int64("vtxo_age_blocks", age),
-				slog.Uint64(
-					"lookback", uint64(
-						proofNodeHeightHintLookback,
-					),
-				),
-				slog.Uint64(
-					"height_hint", uint64(legacyFloor),
-				),
-				slog.Int64(
-					"created_height", int64(createdHeight),
-				),
-				slog.Int(
-					"ancestry_fragment_count",
-					ancestryFragments,
-				),
-			)
-		}
-
-		b.log.DebugS(ctx, "Legacy proof fallback-scan target",
+	b.proofNodeFloorWarned = true
+	firstAlert := legacyFloor > 1 || b.cfg.proofNodeFloorAlerts == nil ||
+		b.cfg.proofNodeFloorAlerts.first()
+	if firstAlert {
+		attrs := []any{
 			slog.String(
 				"target_outpoint",
 				b.cfg.TargetOutpoint.String(),
@@ -969,20 +864,47 @@ func (b *behavior) proofNodeConfHeightHint(ctx context.Context,
 			slog.String("proof_txid", txid.String()),
 			slog.Int64("vtxo_age_blocks", age),
 			slog.Uint64(
-				"lookback", uint64(proofNodeHeightHintLookback),
+				"configured_floor",
+				uint64(b.cfg.LegacyProofScanFloor),
+			),
+			slog.Uint64(
+				"current_height", uint64(currentHeight),
 			),
 			slog.Uint64("height_hint", uint64(legacyFloor)),
 			slog.Int64(
-				"created_height",
-				int64(createdHeight),
+				"created_height", int64(createdHeight),
 			),
-			slog.Int("ancestry_fragment_count", ancestryFragments),
-		)
-
-		return legacyFloor
+			slog.Int(
+				"ancestry_fragment_count", ancestryFragments,
+			),
+		}
+		msg := "Legacy proof commitment height unavailable; " +
+			"using safe fallback floor"
+		if legacyFloor == 1 {
+			b.log.WarnS(ctx, msg, nil, attrs...)
+		} else {
+			b.log.InfoS(ctx, msg, attrs...)
+		}
 	}
 
-	return hint
+	b.log.DebugS(ctx, "Legacy proof fallback-scan target",
+		slog.String(
+			"target_outpoint", b.cfg.TargetOutpoint.String(),
+		),
+		slog.String("proof_txid", txid.String()),
+		slog.Int64("vtxo_age_blocks", age),
+		slog.Uint64(
+			"configured_floor", uint64(
+				b.cfg.LegacyProofScanFloor,
+			),
+		),
+		slog.Uint64("current_height", uint64(currentHeight)),
+		slog.Uint64("height_hint", uint64(legacyFloor)),
+		slog.Int64("created_height", int64(createdHeight)),
+		slog.Int("ancestry_fragment_count", ancestryFragments),
+	)
+
+	return legacyFloor
 }
 
 // ensureNodeConfirmed hands one ready proof-graph node to txconfirm and

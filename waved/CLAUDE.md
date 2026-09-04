@@ -116,11 +116,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   lightning-infra#3749.
   Changing a default here changes where an existing user's daemon dials on
   restart; treat it as a deployment change, not a constant tweak. The same
-  table anchors legacy proof scans at a rounded floor below each canonical
-  operator's first supported deployment. The floor applies only when the
-  VTXO's stored operator key matches the key negotiated from that endpoint.
-  An explicit custom operator or key mismatch keeps block 1 because the
-  relevant deployment history is unknown.
+  table anchors legacy proof scans at a rounded floor below the first
+  supported deployment on each public network. No compatible operator existed
+  on mainnet, testnet3, testnet4, or signet before the chosen floor, so the
+  floor is independent of endpoint and operator identity. Regtest, simnet, and
+  unknown networks keep block 1.
 - All sub-stores share the single `s.clk` clock assigned in `NewServer`; new
   code must not call `clock.NewDefaultClock()` directly, use `s.clk`.
 - Actor startup order in `startWalletDependentActors`: VTXO manager, then
@@ -142,13 +142,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   above that tip and, for single-fragment ancestry, a candidate above the
   VTXO's known creation height. A per-target failure does not stop later
   repairs; failures produce one non-fatal Info summary. The unroll registry
-  owns the single process-level warning if an affected target needs the safe
-  fallback scan. Canonical Lightning Labs endpoints use the network's
-  deployment floor only for descriptors whose stored operator key matches the
-  negotiated endpoint key. Custom operators, operator-key mismatches, regtest,
-  simnet, unknown networks, and a configured floor above the current tip use
-  block 1. Existing unroll jobs keep that fallback for this process, while
-  successful repairs apply to later admissions and restarts.
+  owns the single process-level Warning for block-1 fallback; bounded
+  deployment-floor fallback logs one Info per affected target. Mainnet,
+  testnet3, testnet4, and signet use their network floor for every operator.
+  Regtest, simnet, unknown networks, and a configured floor above the current
+  tip use block 1. Existing unroll jobs keep that fallback for this process,
+  while successful repairs apply to later admissions and restarts.
 - `initUnrollSubsystem` boot ordering is policy-preserving.
   `recoverySvc.RestoreNonTerminal` (in-flight vHTLC recovery jobs, each
   carrying its durable exit policy) runs **before** the chain resolver is

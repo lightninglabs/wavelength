@@ -5866,12 +5866,6 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	}
 	s.proofAssembler = proofAssembler
 	legacyProofScanFloor := s.cfg.legacyProofScanFloor()
-	var legacyProofScanOperatorKey *btcec.PublicKey
-	if legacyProofScanFloor > 1 {
-		if terms := s.loadOperatorTerms(); terms != nil {
-			legacyProofScanOperatorKey = terms.PubKey
-		}
-	}
 
 	// Adapt the VTXO manager ref into a tell-only exit observer so the
 	// unroll registry can report each job's terminal outcome back to the
@@ -5903,9 +5897,8 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 			Jobs:     recoveryStore,
 			Preimage: preimages,
 		},
-		VTXOExitObserver:           exitObserver,
-		LegacyProofScanFloor:       legacyProofScanFloor,
-		LegacyProofScanOperatorKey: legacyProofScanOperatorKey,
+		VTXOExitObserver:     exitObserver,
+		LegacyProofScanFloor: legacyProofScanFloor,
 	})
 	s.unrollRegistry = registry
 	s.unrollRegistryRef = fn.Some(registry.Ref())

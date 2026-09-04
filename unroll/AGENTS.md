@@ -26,9 +26,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
 - `Config` — per-actor wiring. Notable: `TargetOutpoint`, `ActorID`,
   `DeliveryStore`, `ProofAssembler`, `VTXOStore`, `TxConfirmRef`,
   `ChainSource`, `Wallet` (`SweepWallet`),
-  `LegacyProofScanFloor` (earliest compatible commitment block for a known
-  operator; zero keeps block 1), `LegacyProofScanOperatorKey` (the matching
-  operator identity; nil or mismatch keeps block 1),
+  `LegacyProofScanFloor` (earliest compatible commitment block for the
+  configured supported public network; zero keeps block 1),
   `MaxSweepFeeRateSatPerVByte`, `FraudCheckpointSafetyMargin int32`
   (overrides the fraud-triggered unroll backstop margin in blocks;
   zero falls back to the default), `RegistryRef`.
@@ -62,8 +61,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
 - `RegistryConfig` — `Store`, `DeliveryStore`, `ProofAssembler`,
   `VTXOStore`, `TxConfirmRef`, `ChainSource`, `Wallet`,
   optional `LedgerSink`, `MaxSweepFeeRateSatPerVByte`,
-  `LegacyProofScanFloor` and `LegacyProofScanOperatorKey` (forwarded to every
-  child),
+  `LegacyProofScanFloor` (forwarded to every child),
   `ExitSpendPolicyResolver` (optional; reconstructs the exit spend policy
   from `(ExitPolicyKind, ExitPolicyRef)` after restart; nil means every child
   uses the standard VTXO timeout), and optional `VTXOExitObserver`
@@ -181,29 +179,23 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   has a known (>0) height. A single unknown fragment returns 0 because a min
   over only known fragments would not bound its ancestor. Nothing in a VTXO's
   proof graph confirms before its commitment tx, so complete heights provide
-  a tight, provable floor. Without complete heights, `CreatedHeight` decides.
-  A single-fragment target created less than one lookback ago uses
-  `proofNodeHeightHint(currentHeight)` =
-  `max(1, currentHeight - proofNodeHeightHintLookback)` (10000 blocks) to
-  bound the neutrino rescan (wavelength#884). A configured operator deployment
-  floor may raise that fallback only when the target descriptor's stored
-  operator key matches `LegacyProofScanOperatorKey`. Every other legacy target
-  uses that matching deployment floor: an age of at least one lookback (that
-  bound can skip an earlier proof ancestor), an unknown `CreatedHeight`
-  (nothing proves the target is recent), or multiple ancestry fragments (one
-  scalar creation height cannot prove every contributing commitment is
-  recent). A missing or mismatched operator key, zero, block 1, or a floor
-  above the current tip safely resolves to block 1. This prevents a current
-  endpoint from imposing its deployment history on VTXOs from an older
-  operator.
+  a tight, provable floor. Without complete heights, the configured public
+  network's deployment floor applies. This floor is independent of endpoint
+  and operator identity because no compatible operator existed on mainnet,
+  testnet3, testnet4, or signet before the chosen network floor.
+  `CreatedHeight` cannot safely narrow the scan because an OOR target can be
+  created long after its commitment ancestor confirmed, and the descriptor
+  carries no maximum bound on that gap. Regtest, simnet, unknown networks,
+  zero, block 1, or a floor above the current tip safely resolves to block 1.
   Direct proof confirmations and their backup proof-output spend watches use
   the same floor. The fallback scan can be expensive but cannot silently stall
   the exit. One process-local
-  `proofNodeFloorAlertDeduper` is
-  shared by every child of an unroll registry, so this fallback emits one
-  warning per registry and process lifetime. Each affected target keeps Debug
-  evidence. A restart creates a new deduper and warns again if the condition
-  persists. Once the daemon is ready, waved attempts a bounded repair from
+  `proofNodeFloorAlertDeduper` is shared by every child of an unroll registry,
+  so block-1 fallback emits one Warning per registry and process lifetime.
+  Bounded deployment-floor fallback emits one Info per affected target. Each
+  affected target also keeps Debug evidence. A restart creates a new deduper
+  and warns again if the condition persists.
+  Once the daemon is ready, waved attempts a bounded repair from
   authenticated indexed ancestry. Indexed heights must be no greater than the
   local chain tip and, for single-fragment ancestry, the VTXO's known creation
   height. Existing jobs retain the safe fallback; successful repairs apply to
