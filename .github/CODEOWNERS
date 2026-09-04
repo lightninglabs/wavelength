@@ -1,0 +1,14 @@
+# The core team can approve changes anywhere in the repository.
+* @bhandras @roasbeef @sputn1ck @darioAnongba
+
+# Taproot Assets changes can instead be approved by George. Keep the core team
+# on this rule so any core owner remains a valid fallback.
+/tapassets/ @GeorgeTsagk @bhandras @roasbeef @sputn1ck @darioAnongba
+
+# Documentation-only changes can instead be approved by the documentation bot.
+# Keep the core team on these rules as a fallback.
+/docs/ @litbot-9000 @bhandras @roasbeef @sputn1ck @darioAnongba
+README* @litbot-9000 @bhandras @roasbeef @sputn1ck @darioAnongba
+
+# Only the core team can change ownership rules or CI configuration.
+/.github/ @bhandras @roasbeef @sputn1ck @darioAnongba
