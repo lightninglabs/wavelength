@@ -195,6 +195,13 @@ type behavior struct {
 	// so a policy-gated sweep is not reported as imminent. None until the
 	// sweep phase resolves the policy.
 	requiredLockTime fn.Option[uint32]
+
+	// routeRetryPending records that the current FSM state was durably
+	// staged before an outbox effect failed. The next turn replays the
+	// checkpoint's in-flight work through ResumeEvent before applying its
+	// own message. This is in-memory only because process restart already
+	// enters through ResumeUnrollRequest.
+	routeRetryPending bool
 }
 
 // unrollTx is the transaction-scoped store handed to the unroll behavior inside
@@ -265,12 +272,20 @@ func (b *behavior) Receive(ctx context.Context, msg Msg,
 	// Run the FSM pipeline. Every checkpoint write inside is a short,
 	// lock-releasing Stage and the slow txconfirm IO runs with no writer
 	// transaction held; dispatch never commits.
+	if b.routeRetryPending {
+		if err := b.reissueStagedRoute(ctx, ax); err != nil {
+			return fn.Err[Resp](err)
+		}
+	}
+
 	res := b.dispatch(ctx, ax, msg)
 	if res.IsErr() {
 
-		// The behavior did not commit, so the framework nacks the
-		// message; it is redelivered and replayed against the durably
-		// Staged state.
+		// The behavior did not commit. Durable Tells are nacked for
+		// redelivery; Asks return the error to their caller. If route
+		// IO failed after Stage, routeRetryPending makes the next live
+		// turn reissue the checkpoint's in-flight work before it
+		// applies its own message.
 		return res
 	}
 
@@ -281,8 +296,26 @@ func (b *behavior) Receive(ctx context.Context, msg Msg,
 	if err := b.commitAck(ctx, ax); err != nil {
 		return fn.Err[Resp](err)
 	}
+	b.routeRetryPending = false
 
 	return res
+}
+
+// reissueStagedRoute replays every outbox effect implied by the current staged
+// checkpoint. A failed route has already advanced the FSM state, so applying
+// the original event again cannot rediscover work now classified as in-flight;
+// ResumeEvent is the explicit reissue path for that state.
+func (b *behavior) reissueStagedRoute(ctx context.Context,
+	ax actor.Exec[unrollTx]) error {
+
+	state, err := b.currentState()
+	if err != nil {
+		return err
+	}
+
+	return b.driveEvent(ctx, ax, &ResumeEvent{
+		Height: stateHeight(state),
+	})
 }
 
 // dispatch maps one durable message onto the FSM event surface and runs the
@@ -401,10 +434,12 @@ func (b *behavior) handleEvent(ctx context.Context, ax actor.Exec[unrollTx],
 //     so the txconfirm IO that follows never holds it. If the process
 //     crashes between the Stage and the outbox routing, restart restores
 //     the exact same state that was in memory and re-emits the outbox via
-//     the reissue path, so no work is lost and no work is duplicated
-//     beyond what txconfirm's txid-keyed dedup already collapses. The
-//     message itself is acked only once, by the single lease-fenced Commit
-//     in Receive after the whole (possibly recursive) pipeline settles.
+//     the reissue path. A live route failure arms the same reissue path for
+//     the next turn before the original event is reapplied. No work is lost
+//     and no work is duplicated beyond what txconfirm's txid-keyed dedup
+//     already collapses. The message itself is acked only once, by the
+//     single lease-fenced Commit in Receive after the whole (possibly
+//     recursive) pipeline settles.
 //
 //  3. Route: interpret each OutboxEvent as a real IO effect — submit
 //     ready proof nodes to txconfirm, re-arm in-flight subscriptions,
@@ -440,6 +475,8 @@ func (b *behavior) driveEvent(ctx context.Context, ax actor.Exec[unrollTx],
 	}
 
 	if err := b.routeOutbox(ctx, ax, outbox); err != nil {
+		b.routeRetryPending = true
+
 		return err
 	}
 
