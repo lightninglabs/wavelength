@@ -89,17 +89,13 @@ func AuthenticateBatchExpiry(ctx context.Context, ancestry []Ancestry,
 				err)
 		}
 		if confirmation.Tx == nil {
-			return 0, invalidBatchExpiry(
-				"commitment %s confirmation has no transaction",
-				txid,
-			)
+			return 0, fmt.Errorf("commitment %s confirmation has "+
+				"no transaction", txid)
 		}
 		if confirmation.BlockHeight <= 0 {
-			return 0, invalidBatchExpiry(
-				"commitment %s has invalid confirmation "+
-					"height %d", txid,
-				confirmation.BlockHeight,
-			)
+			return 0, fmt.Errorf("commitment %s has invalid "+
+				"confirmation height %d", txid,
+				confirmation.BlockHeight)
 		}
 		if confirmation.Tx.TxHash() != txid {
 			return 0, invalidBatchExpiry(

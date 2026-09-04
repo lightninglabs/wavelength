@@ -145,6 +145,32 @@ func TestAuthenticateBatchExpiryRejectsInvalidEvidence(t *testing.T) {
 		require.ErrorIs(t, err, resolverErr)
 		require.NotErrorIs(t, err, ErrInvalidBatchExpiryEvidence)
 	})
+
+	t.Run("incomplete confirmation remains retryable", func(t *testing.T) {
+		tests := []CommitmentConfirmation{
+			{
+				BlockHeight: confirmation.BlockHeight,
+			},
+			{
+				Tx: confirmation.Tx,
+			},
+		}
+		for _, incomplete := range tests {
+			_, err := AuthenticateBatchExpiry(
+				t.Context(), []Ancestry{fragment},
+				func(context.Context, chainhash.Hash, []byte,
+					uint32) (CommitmentConfirmation,
+					error) {
+
+					return incomplete, nil
+				},
+			)
+			require.Error(t, err)
+			require.NotErrorIs(
+				t, err, ErrInvalidBatchExpiryEvidence,
+			)
+		}
+	})
 }
 
 // testExpiryAncestry builds internally consistent tree and chain evidence.
