@@ -4608,7 +4608,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	ledgerSink := ledger.NewSink(s.actorSystem)
 	criticalExitAssessor := s.rpcServer.assessAutomaticCriticalExit
 
-	manager := vtxo.NewManager(&vtxo.ManagerConfig{
+	managerConfig := &vtxo.ManagerConfig{
 		Store:                    vtxoStore,
 		ReservationStore:         reservationStore,
 		Wallet:                   vtxoWallet,
@@ -4636,7 +4636,9 @@ func (s *Server) initVTXOManager(ctx context.Context,
 			return resolveExitOutcome(ctx, ueStore, outpoint)
 		},
 		HasForfeitRoundCheckpoint: roundStore.HasForfeitRoundCheckpoint,
-	})
+	}
+	managerConfig.DeferAutomaticRefreshUntilRoundReady = true
+	manager := vtxo.NewManager(managerConfig)
 	managerKey := actor.NewServiceKey[vtxo.ManagerMsg, vtxo.ManagerResp](
 		"vtxo-manager",
 	)
