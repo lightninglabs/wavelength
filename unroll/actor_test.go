@@ -1615,6 +1615,7 @@ func TestStartUnrollSubmitsInitialFrontier(t *testing.T) {
 	require.NotNil(t, checkpoint)
 }
 
+<<<<<<< HEAD
 // TestProofNodeHeightHintBoundedBelowTip verifies that at a realistic mainnet
 // height the proof-node confirmation watch is floored a bounded lookback below
 // the current tip, not at genesis (block 1). A genesis floor makes neutrino
@@ -1664,6 +1665,8 @@ func TestProofNodeHeightHintClampsToGenesis(t *testing.T) {
 	)
 }
 
+=======
+>>>>>>> 950ee119 (unroll: use public-network proof scan floors)
 // TestCommitmentHeightFloor verifies the commitment-height floor helper: it
 // returns the smallest height only when every fragment carries a known
 // positive height, and returns 0 (defer to the fallback floor) when any
@@ -1783,7 +1786,17 @@ func TestProofNodeHeightHintUsesCommitmentHeight(t *testing.T) {
 		},
 	}
 
+<<<<<<< HEAD
 	unrollActor, _, txconfirmRef, _ := newActorHarness(t, proof, desc)
+=======
+	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
+		t, proof, desc,
+	)
+
+	// Exact local ancestry remains authoritative even when it predates the
+	// configured fallback floor.
+	behavior.cfg.LegacyProofScanFloor = 750_000
+>>>>>>> 950ee119 (unroll: use public-network proof scan floors)
 
 	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
 		Height:  int32(startHeight),
@@ -1795,9 +1808,9 @@ func TestProofNodeHeightHintUsesCommitmentHeight(t *testing.T) {
 
 	// The tight commitment floor is used, not the lookback floor.
 	require.Equal(t, uint32(lowHeight), hint)
-	require.NotEqual(t, startHeight-proofNodeHeightHintLookback, hint)
 }
 
+<<<<<<< HEAD
 // TestProofNodeHeightHintFallsBackWithoutCommitmentHeight verifies that when
 // no fragment carries a commitment height (legacy/absent server field) the
 // hint falls back to exactly the bounded lookback floor — identical to the
@@ -1816,6 +1829,19 @@ func TestProofNodeHeightHintFallsBackWithoutCommitmentHeight(t *testing.T) {
 			CommitmentHeight: 0,
 		},
 	}
+=======
+// TestProofNodeHeightHintUsesGenesisForRecentLegacyVTXO verifies that a recent
+// CreatedHeight cannot narrow a missing commitment-height floor. An OOR target
+// may be recent even when its single commitment ancestor is much older.
+func TestProofNodeHeightHintUsesGenesisForRecentLegacyVTXO(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+
+	// One fragment does not prove the ancestor is recent. The same fragment
+	// can back an OOR descendant created long after the commitment
+	// confirmed.
+	desc.Ancestry = []vtxo.Ancestry{{CommitmentHeight: 0}}
+>>>>>>> 950ee119 (unroll: use public-network proof scan floors)
 
 	const startHeight uint32 = 850_000
 
@@ -1829,9 +1855,283 @@ func TestProofNodeHeightHintFallsBackWithoutCommitmentHeight(t *testing.T) {
 	require.Equal(t, 1, txconfirmRef.requestCount())
 	hint := txconfirmRef.lastRequest(t).HeightHint
 
-	require.Equal(t, startHeight-proofNodeHeightHintLookback, hint)
+	require.Equal(t, uint32(1), hint)
 }
 
+<<<<<<< HEAD
+=======
+// TestProofNodeHeightHintUsesGenesisForOldLegacyVTXO verifies that an old
+// target without a commitment height cannot use a floor that may sit above an
+// already-confirmed proof ancestor.
+func TestProofNodeHeightHintUsesGenesisForOldLegacyVTXO(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 1
+	desc.Ancestry = []vtxo.Ancestry{{CommitmentHeight: 0}}
+
+	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
+		t, proof, desc,
+	)
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  850_000,
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(t, uint32(1), txconfirmRef.lastRequest(t).HeightHint)
+	chainRef, ok := behavior.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+	rootOutpoint := wire.OutPoint{
+		Hash:  proof.RootTxids()[0],
+		Index: 0,
+	}
+	require.Equal(
+		t, uint32(1), chainRef.spendRequest(t, rootOutpoint).HeightHint,
+	)
+}
+
+// TestProofNodeHeightHintUsesConfiguredFloorForOldLegacyVTXO verifies that an
+// operator deployment floor bounds the expensive fallback scan without
+// restoring the unsound tip-relative lookback for an old target.
+func TestProofNodeHeightHintUsesConfiguredFloorForOldLegacyVTXO(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 1
+	desc.Ancestry = []vtxo.Ancestry{{CommitmentHeight: 0}}
+
+	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
+		t, proof, desc,
+	)
+	const deploymentFloor uint32 = 800_000
+	behavior.cfg.LegacyProofScanFloor = deploymentFloor
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  850_000,
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(
+		t, deploymentFloor, txconfirmRef.lastRequest(t).HeightHint,
+	)
+	chainRef, ok := behavior.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+	rootOutpoint := wire.OutPoint{
+		Hash:  proof.RootTxids()[0],
+		Index: 0,
+	}
+	require.Equal(
+		t, deploymentFloor,
+		chainRef.spendRequest(t, rootOutpoint).HeightHint,
+	)
+}
+
+// TestProofNodeHeightHintUsesConfiguredFloorForRecentLegacyVTXO verifies a
+// recent target with unknown commitment height uses the deployment floor even
+// when the former tip-relative lookback would have selected a later height.
+func TestProofNodeHeightHintUsesConfiguredFloorForRecentLegacyVTXO(
+	t *testing.T) {
+
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 849_900
+	desc.Ancestry = []vtxo.Ancestry{{CommitmentHeight: 0}}
+
+	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
+		t, proof, desc,
+	)
+	const deploymentFloor uint32 = 800_000
+	behavior.cfg.LegacyProofScanFloor = deploymentFloor
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  850_000,
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(
+		t, deploymentFloor, txconfirmRef.lastRequest(t).HeightHint,
+	)
+}
+
+// TestProofNodeHeightHintUsesConfiguredFloorWithoutOperatorIdentity verifies
+// the supported public-network floor does not depend on descriptor operator
+// identity.
+func TestProofNodeHeightHintUsesConfiguredFloorWithoutOperatorIdentity(
+	t *testing.T) {
+
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 1
+	desc.Ancestry = []vtxo.Ancestry{{CommitmentHeight: 0}}
+	desc.OperatorKey = nil
+
+	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
+		t, proof, desc,
+	)
+	behavior.cfg.LegacyProofScanFloor = 800_000
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  850_000,
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(
+		t, uint32(800_000), txconfirmRef.lastRequest(t).HeightHint,
+	)
+}
+
+// TestProofNodeHeightHintUsesConfiguredFloorForAnyOperator verifies an
+// operator rotation does not collapse a supported public network to block 1.
+func TestProofNodeHeightHintUsesConfiguredFloorForAnyOperator(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 1
+	desc.Ancestry = []vtxo.Ancestry{{CommitmentHeight: 0}}
+
+	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
+		t, proof, desc,
+	)
+	otherOperator, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	desc.OperatorKey = otherOperator.PubKey()
+	behavior.cfg.LegacyProofScanFloor = 800_000
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  850_000,
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(
+		t, uint32(800_000), txconfirmRef.lastRequest(t).HeightHint,
+	)
+	chainRef, ok := behavior.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+	rootOutpoint := wire.OutPoint{
+		Hash:  proof.RootTxids()[0],
+		Index: 0,
+	}
+	require.Equal(
+		t, uint32(800_000),
+		chainRef.spendRequest(t, rootOutpoint).HeightHint,
+	)
+}
+
+// TestProofNodeHeightHintRejectsConfiguredFloorAboveTip verifies stale or
+// mismatched network configuration cannot hand the notifier a future floor.
+func TestProofNodeHeightHintRejectsConfiguredFloorAboveTip(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 1
+	desc.Ancestry = []vtxo.Ancestry{{CommitmentHeight: 0}}
+
+	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
+		t, proof, desc,
+	)
+	behavior.cfg.LegacyProofScanFloor = 900_000
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  850_000,
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(t, uint32(1), txconfirmRef.lastRequest(t).HeightHint)
+}
+
+// TestProofNodeHeightHintUsesGenesisForMultiFragmentLegacyVTXO verifies one
+// recent scalar creation height cannot justify a bounded scan for every
+// commitment in a multi-fragment ancestry.
+func TestProofNodeHeightHintUsesGenesisForMultiFragmentLegacyVTXO(
+	t *testing.T) {
+
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 849_900
+	desc.Ancestry = []vtxo.Ancestry{
+		{
+			CommitmentHeight: 0,
+		},
+		{
+			CommitmentHeight: 849_950,
+		},
+	}
+
+	unrollActor, _, txconfirmRef, _ := newActorHarness(t, proof, desc)
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  850_000,
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(t, uint32(1), txconfirmRef.lastRequest(t).HeightHint)
+}
+
+// TestProofNodeHeightHintWarnsOncePerActor verifies an old VTXO without a
+// commitment height emits one operator warning even when several proof-node
+// watches ask for the same fallback floor.
+func TestProofNodeHeightHintWarnsOncePerActor(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 1
+
+	var buf bytes.Buffer
+	logger := btclog.NewSLogger(btclog.NewDefaultHandler(&buf))
+	logger.SetLevel(btclog.LevelInfo)
+
+	const startHeight uint32 = 850_000
+
+	unrollActor, behavior, _, _ := newActorHarness(t, proof, desc)
+	behavior.log = logger
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  int32(startHeight),
+		Trigger: TriggerManual,
+	})
+
+	behavior.proofNodeConfHeightHint(t.Context(), chainhash.Hash{1})
+	behavior.proofNodeConfHeightHint(t.Context(), chainhash.Hash{2})
+
+	require.Equal(
+		t, 1,
+		bytes.Count(
+			buf.Bytes(), []byte(
+				"Legacy proof commitment height "+
+					"unavailable; using safe fallback "+
+					"floor",
+			),
+		),
+	)
+	require.Contains(t, buf.String(), "[WRN]")
+}
+
+// TestProofNodeHeightHintLogsBoundedFallbackAtInfo verifies a configured,
+// network deployment floor is routine compatibility handling, not an operator
+// warning.
+func TestProofNodeHeightHintLogsBoundedFallbackAtInfo(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 1
+	desc.Ancestry = []vtxo.Ancestry{{CommitmentHeight: 0}}
+
+	var buf bytes.Buffer
+	logger := btclog.NewSLogger(btclog.NewDefaultHandler(&buf))
+	logger.SetLevel(btclog.LevelInfo)
+
+	unrollActor, behavior, _, _ := newActorHarness(t, proof, desc)
+	behavior.log = logger
+	behavior.cfg.LegacyProofScanFloor = 800_000
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  850_000,
+		Trigger: TriggerManual,
+	})
+
+	require.Contains(
+		t, buf.String(),
+		"Legacy proof commitment height unavailable; using safe "+
+			"fallback floor",
+	)
+	require.Contains(t, buf.String(), "[INF]")
+	require.NotContains(t, buf.String(), "[WRN]")
+}
+
+>>>>>>> 950ee119 (unroll: use public-network proof scan floors)
 // TestFraudTriggerDefersReadyCheckpoint verifies fraud-triggered recovery
 // watches a ready checkpoint before asking txconfirm to broadcast it.
 func TestFraudTriggerDefersReadyCheckpoint(t *testing.T) {
