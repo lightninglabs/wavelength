@@ -42,9 +42,12 @@ const (
 func openSQLWalletDB(ctx context.Context, driverName,
 	dsn string) (walletdb.DB, error) {
 
-	// The connection set is process-global and initialized exactly
-	// once; a later call with a different limit is a no-op.
-	sqlbase.Init(sqlWalletDBMaxConnections)
+	// The connection set is process-global and its limit is fixed by
+	// the first caller, so this fails rather than hand back a pool
+	// wider than the wallet store's single-writer assumption.
+	if err := sqlbase.Init(sqlWalletDBMaxConnections); err != nil {
+		return nil, err
+	}
 
 	return sqlbase.NewSqlBackend(ctx, &sqlbase.Config{
 		DriverName:      driverName,

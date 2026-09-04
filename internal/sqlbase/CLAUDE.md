@@ -23,8 +23,12 @@ native builds.
   buckets are simulated as rows in a single `<prefix>_kv` table, with each
   row's `parent_id` self-referencing the row of the bucket it belongs to
   (`NULL` for the top-level bucket).
-- `Init(maxConnections int)` — initializes the process-global connection
-  pool (`dbConnSet`) that dedups connections by DSN across callers.
+- `Init(maxConnections int) error` — initializes the process-global connection
+  pool (`dbConnSet`) that dedups connections by DSN across callers. Repeating
+  the same limit is a no-op; a *different* limit is refused, because the limit
+  is fixed by whoever calls first and a caller that asked for one connection
+  because its store assumes a single writer must not silently end up on a
+  wider pool.
 
 ## Relationships
 
