@@ -2390,6 +2390,17 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 			), nil
 		}
 
+		// Bind the advertised key and delay to every tree's committed
+		// sweep root before any nonce or signature leaves the client.
+		if err := validateRoundSweepPolicy(
+			s.SweepKey, s.SweepDelay, s.VTXOTreePaths,
+		); err != nil {
+			return failBeforeForfeitSigning(
+				"invalid round sweep policy", err, false,
+				s.RoundID, s.Intents.Forfeits,
+			), nil
+		}
+
 		clientTrees := make(map[SignerKey]*tree.Tree)
 
 		// Next, we'll make sure that each of the VTXO requests that we
@@ -4906,10 +4917,15 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 		// ExpiryStatusUnknown — the VTXO stays live and spendable,
 		// only expiry monitoring is disabled, and the authoritative
 		// expiry can still be recovered from the operator's indexer.
-		sweepDelay := int32(s.SweepDelay)
 		batchExpiry := int32(0)
-		if sweepDelay > 0 {
-			batchExpiry = evt.BlockHeight + sweepDelay
+		if s.SweepDelay > 0 {
+			expiry := int64(evt.BlockHeight) + int64(s.SweepDelay)
+			if expiry > math.MaxInt32 {
+				return nil, fmt.Errorf("round batch expiry overflows "+
+					"int32: height=%d delay=%d", evt.BlockHeight,
+					s.SweepDelay)
+			}
+			batchExpiry = int32(expiry)
 		} else {
 			env.Log.ErrorS(ctx, "Round has no recorded sweep "+
 				"delay; leaving batch expiry unstamped",

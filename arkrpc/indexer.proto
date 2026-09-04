@@ -317,6 +317,16 @@ message AncestryPath {
     // tx anchoring this fragment. Zero means unknown (legacy/unconfirmed),
     // in which case the client falls back to a bounded lookback floor.
     int32 commitment_height = 5;
+
+    // commitment_sweep_delay is the CSV delay committed by this tree's sweep
+    // tapscript root. New indexers must supply a positive value.
+    uint32 commitment_sweep_delay = 6;
+
+    // commitment_sweep_key is the compressed public key committed by this
+    // tree's sweep tapscript root. Together with commitment_sweep_delay it
+    // lets clients authenticate the absolute expiry derived from the
+    // commitment transaction's confirmation height.
+    bytes commitment_sweep_key = 7;
 }
 
 // ScriptScope selects a pkScript and carries a proof-of-control for that
