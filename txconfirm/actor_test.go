@@ -1564,6 +1564,19 @@ func TestEnsureBroadcastErrorDetachesBeforeConfirmation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, TxStateConfirmed, state)
 	require.Empty(t, entry.pendingFailureReason)
+
+	retryResp, retryErr = behavior.handleEnsure(
+		t.Context(), &EnsureConfirmedReq{
+			Tx:         tx,
+			Subscriber: retrySub,
+		},
+	)
+	require.NoError(t, retryErr)
+	require.Equal(t, TxStateConfirmed, retryResp.State)
+	require.False(t, retryResp.Created)
+	require.IsType(t, &TxConfirmed{}, mustAwaitNotification(t, retrySub))
+	require.Contains(t, entry.subscribers, retrySub.ID())
+
 	behavior.handleBlockObserved(t.Context(), &blockEpochObservedMsg{
 		height: 102,
 	})
