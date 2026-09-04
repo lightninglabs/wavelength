@@ -155,11 +155,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   tip use block 1. Existing unroll jobs keep that fallback for this process,
   while successful repairs apply to later admissions and restarts.
 - `batchExpiryAuthenticator` is the shared acceptance boundary for new indexed
-  VTXOs. It uses one-shot chain-source confirmation futures, validates the
-  confirmed transaction through `vtxo.AuthenticateBatchExpiry`, and unregisters
-  each watch. Thin incoming events, OOR receives, indexed recovery, and custom
-  refresh metadata use it before persistence or signing. Existing live rows
-  are deliberately left unchanged.
+  VTXOs. It uses bounded one-shot chain-source confirmation futures, validates
+  the confirmed transaction through `vtxo.AuthenticateBatchExpiry`, and
+  unregisters each watch. Thin incoming events, OOR receives, indexed recovery,
+  and custom refresh metadata use it before persistence or signing. Existing
+  live rows are deliberately left unchanged.
 - `initUnrollSubsystem` boot ordering is policy-preserving.
   `recoverySvc.RestoreNonTerminal` (in-flight vHTLC recovery jobs, each
   carrying its durable exit policy) runs **before** the chain resolver is
