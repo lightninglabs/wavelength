@@ -861,6 +861,15 @@ func arkVTXOMethodRegistry() []schemaMethod {
 					Type:        "int64",
 					Description: "minimum amount in sats",
 				},
+				{
+					Name: "show-all",
+					Type: "bool",
+					Description: "show every VTXO " +
+						"regardless of status, " +
+						"including forfeited and " +
+						"spent ones; mutually " +
+						"exclusive with status",
+				},
 			}, listOutputParams()...),
 			RequestType:  "ListVTXOsRequest",
 			ResponseType: "ListVTXOsResponse",

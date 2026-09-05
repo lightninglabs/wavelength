@@ -770,7 +770,9 @@ message VTXOSettlement {
 
 message ListVTXOsRequest {
     // status_filter restricts the response to VTXOs matching this status.
-    // If VTXO_STATUS_UNSPECIFIED (default), all statuses are returned.
+    // If VTXO_STATUS_UNSPECIFIED (default), every VTXO except
+    // VTXO_STATUS_FORFEITED and VTXO_STATUS_SPENT is returned; set show_all
+    // to include those too.
     VTXOStatus status_filter = 1;
 
     // min_amount_sat excludes VTXOs below this value.
@@ -782,6 +784,11 @@ message ListVTXOsRequest {
     // consumers (balance views, coin selection) that never inspect the
     // PSBTs. The default keeps the full response for compatibility.
     bool exclude_checkpoint_psbts = 3;
+
+    // show_all returns every VTXO regardless of status, including
+    // VTXO_STATUS_FORFEITED and VTXO_STATUS_SPENT. Mutually exclusive with
+    // status_filter.
+    bool show_all = 4;
 }
 
 message ListVTXOsResponse {
