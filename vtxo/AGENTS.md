@@ -164,6 +164,23 @@ when the local wallet owns the receive script.
   actors from. Coin selection is already `VTXOStatusLive`-scoped via
   `ListSelectionCandidatesByStatus`, so it excludes them by construction.
 - VTXO actor state is the single source of truth for availability.
+- **A spend release is scoped to the reservation it names.** `markReserved`
+  stamps a monotonic `reserveEpoch` per outpoint, echoed back through
+  `SelectedVTXO.ReserveEpoch` so the spend that owns the coin can present it on
+  `ReleaseSpendRequest.ReserveEpochs`. `handleReleaseSpend` refuses a release
+  only when a *live* in-memory reservation names a *different* non-zero epoch:
+  that reservation was superseded (released and re-reserved by a newer owner in
+  the same process), so honouring the stale release would return to the live
+  set a coin the newer owner is spending. Everything else releases — a zero
+  epoch is "unknown" (pre-upgrade snapshot, or a manual unlock) and releases
+  unconditionally, and a missing live reservation means the manager restarted
+  without repopulating the map, where refusing would strand the coin in
+  `Spending` forever.
+- The startup orphan sweep re-marks with `markReservedUnknown` (epoch 0), not a
+  fresh epoch. The epoch counter restarts at 0 on boot, so a fresh mark would
+  not match the epoch a resumed session persisted and its later release would
+  be wrongly refused. Admission only tests presence (`isReserved`), so nothing
+  on that path needs the real epoch.
 - Forfeit transaction is not broadcast until the connector output's round confirms (atomic replacement).
 - Refresh is auto-triggered at configurable height before expiry.
 - `ExpiryConfig.MaxPaymentCLTV` reserves a total Lightning CLTV window above
