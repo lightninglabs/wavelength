@@ -9,14 +9,19 @@ import (
 )
 
 type Querier interface {
+	ClaimSwapHashOwner(ctx context.Context, arg ClaimSwapHashOwnerParams) (string, error)
 	GetPaySwap(ctx context.Context, paymentHash []byte) (PaySwap, error)
 	GetReceiveSwap(ctx context.Context, paymentHash []byte) (ReceiveSwap, error)
+	GetRefreshSwap(ctx context.Context, paymentHash []byte) (RefreshSwap, error)
 	ListPaySwaps(ctx context.Context) ([]PaySwap, error)
 	ListPendingPaySwaps(ctx context.Context) ([]PaySwap, error)
 	ListPendingReceiveSwaps(ctx context.Context) ([]ReceiveSwap, error)
+	ListPendingRefreshSwaps(ctx context.Context) ([]RefreshSwap, error)
 	ListReceiveSwaps(ctx context.Context) ([]ReceiveSwap, error)
+	ListRefreshSwaps(ctx context.Context) ([]RefreshSwap, error)
 	UpsertPaySwap(ctx context.Context, arg UpsertPaySwapParams) error
 	UpsertReceiveSwap(ctx context.Context, arg UpsertReceiveSwapParams) error
+	UpsertRefreshSwap(ctx context.Context, arg UpsertRefreshSwapParams) (int64, error)
 }
 
 var _ Querier = (*Queries)(nil)

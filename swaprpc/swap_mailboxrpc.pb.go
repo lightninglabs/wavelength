@@ -30,6 +30,8 @@ type SwapServiceMailboxServer interface {
 	CreateInSwap(ctx context.Context, req *CreateInSwapRequest) (*CreateInSwapResponse, error)
 	// QuoteInSwap handles QuoteInSwap.
 	QuoteInSwap(ctx context.Context, req *QuoteInSwapRequest) (*QuoteInSwapResponse, error)
+	// CreateRefreshSwap handles CreateRefreshSwap.
+	CreateRefreshSwap(ctx context.Context, req *CreateRefreshSwapRequest) (*CreateRefreshSwapResponse, error)
 	// CreateCredit handles CreateCredit.
 	CreateCredit(ctx context.Context, req *CreateCreditRequest) (*CreateCreditResponse, error)
 	// RedeemCredit handles RedeemCredit.
@@ -77,6 +79,16 @@ func RegisterSwapServiceMailboxServer(r rpc.Router, impl SwapServiceMailboxServe
 		}
 
 		return impl.QuoteInSwap(ctx, req)
+	})
+	r.Handle("swaprpc.SwapService", "CreateRefreshSwap", func() proto.Message {
+		return &CreateRefreshSwapRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*CreateRefreshSwapRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.CreateRefreshSwap(ctx, req)
 	})
 	r.Handle("swaprpc.SwapService", "CreateCredit", func() proto.Message {
 		return &CreateCreditRequest{}
@@ -212,6 +224,29 @@ func (c *SwapServiceMailboxClient) QuoteInSwap(ctx context.Context, req *QuoteIn
 	}
 
 	resp := new(QuoteInSwapResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// CreateRefreshSwap calls the CreateRefreshSwap RPC.
+func (c *SwapServiceMailboxClient) CreateRefreshSwap(ctx context.Context, req *CreateRefreshSwapRequest, opts ...rpc.RPCOptions) (*CreateRefreshSwapResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "swaprpc.SwapService",
+		Method:  "CreateRefreshSwap",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(CreateRefreshSwapResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

@@ -2,6 +2,7 @@ package swaps
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -30,6 +31,9 @@ const (
 	// SwapDirectionReceive identifies a Lightning-to-Ark receive session
 	// created by ReceiveViaLightning.
 	SwapDirectionReceive SwapDirection = "receive"
+
+	// SwapDirectionRefresh identifies a two-vHTLC VTXO refresh session.
+	SwapDirectionRefresh SwapDirection = "refresh"
 )
 
 // SettlementType identifies the settlement path selected by the swap server.
@@ -51,6 +55,10 @@ const (
 	// SettlementTypeMixed means the invoice is funded by both a vHTLC and
 	// a reserved credit balance.
 	SettlementTypeMixed SettlementType = "mixed"
+
+	// SettlementTypeRefresh means one old client VTXO is exchanged for a
+	// server-funded VTXO using two vHTLCs with the same hashlock.
+	SettlementTypeRefresh SettlementType = "refresh"
 )
 
 // CreditQuote describes how a pay quote uses wallet credits.
@@ -317,6 +325,77 @@ type PayResult struct {
 	FeeSat uint64
 }
 
+// RefreshSwapRequest defines one immutable VTXO refresh intent. The caller
+// owns the preimage and supplies its hash explicitly so accidental
+// preimage/hash mismatches are rejected before any remote state is created.
+type RefreshSwapRequest struct {
+	// Preimage unlocks the server-funded output leg.
+	Preimage lntypes.Preimage
+
+	// PaymentHash must equal SHA256(Preimage) and identifies both vHTLCs.
+	PaymentHash lntypes.Hash
+
+	// AmountSat is the exact value expected in both vHTLC legs.
+	AmountSat btcutil.Amount
+
+	// SourceOutpoint is the exact managed VTXO used to fund the input leg.
+	SourceOutpoint string
+
+	// MaxVTXOAgeBlocks is the required positive backing-batch age cap for
+	// the server-funded output.
+	MaxVTXOAgeBlocks uint32
+}
+
+// RefreshSwapConfig is the immutable first-leg policy returned by the swap
+// server after it accepts a refresh request.
+type RefreshSwapConfig struct {
+	// PaymentHash is the shared hashlock for both vHTLC legs.
+	PaymentHash lntypes.Hash
+
+	// AmountSat is the exact value locked in each leg.
+	AmountSat int64
+
+	// ServerPubkey receives the client-funded leg and sends the output leg.
+	ServerPubkey *btcec.PublicKey
+
+	// VHTLCConfig describes the client-funded input leg.
+	VHTLCConfig VHTLCConfig
+
+	// Expiry is the latest wall-clock time for admitting input funding.
+	Expiry time.Time
+
+	// SettlementType must be SettlementTypeRefresh.
+	SettlementType SettlementType
+}
+
+// RefreshResult contains the durable identifiers for a completed two-leg
+// VTXO refresh.
+type RefreshResult struct {
+	// PaymentHash identifies the completed refresh.
+	PaymentHash lntypes.Hash
+
+	// SourceOutpoint is the exact VTXO selected by the caller.
+	SourceOutpoint string
+
+	// InputVHTLCOutpoint is the client-funded vHTLC claimed by the server.
+	InputVHTLCOutpoint string
+
+	// OutputVHTLCOutpoint is the server-funded vHTLC claimed by the client.
+	OutputVHTLCOutpoint string
+
+	// AmountSat is the value exchanged between both vHTLC legs.
+	AmountSat int64
+
+	// FundingSessionID identifies the daemon OOR that funded the input leg.
+	FundingSessionID string
+
+	// ClaimSessionID identifies the daemon OOR that claimed the output leg.
+	ClaimSessionID string
+
+	// ServerClaimTxID is the indexed spend that claimed the input leg.
+	ServerClaimTxID string
+}
+
 // InvoiceCreator creates signed Lightning invoices for out-swaps.
 type InvoiceCreator interface {
 	// CreateInvoice builds one signed invoice using the provided route
@@ -509,6 +588,10 @@ type InArkHtlcEvent struct {
 	// AttachedCreditSat is the reserved credit amount added to the vHTLC
 	// on top of RequestedAmountSat.
 	AttachedCreditSat uint64
+
+	// SettlementType identifies the protocol that created this vHTLC.
+	// Refresh sessions only accept events marked SettlementTypeRefresh.
+	SettlementType SettlementType
 }
 
 // IncomingVHTLCNotification carries either a Lightning-backed out-swap event
@@ -898,6 +981,12 @@ type SwapClient struct {
 	store      *Store
 	log        btclog.Logger
 
+	// refreshSessionLocks serializes the external side effects of separate
+	// session objects resumed through this client. Durable state-version
+	// checks still reject stale objects across separate client processes.
+	refreshSessionLocksMu sync.Mutex
+	refreshSessionLocks   map[lntypes.Hash]*sync.Mutex
+
 	waitPollInterval         time.Duration
 	overdueReceivePollWindow time.Duration
 	fundingResumeGracePeriod time.Duration
@@ -957,6 +1046,7 @@ func NewSwapClientWithStore(server SwapServerConn, daemon DaemonConn,
 		outEvents:                outEvents,
 		store:                    store,
 		log:                      log,
+		refreshSessionLocks:      make(map[lntypes.Hash]*sync.Mutex),
 		waitPollInterval:         2 * time.Second,
 		overdueReceivePollWindow: defaultOverdueReceiveMailboxPollWindow,
 		fundingResumeGracePeriod: defaultFundingResumeGracePeriod,
@@ -981,6 +1071,21 @@ func (c *SwapClient) SetRecoveryPolicy(policy RecoveryPolicy) {
 	}
 
 	c.recoveryPolicy = policy.WithDefaults()
+}
+
+// lockRefreshSession keeps two resumed objects in the same SDK client from
+// racing preimage-revealing claims against refund or recovery actions.
+func (c *SwapClient) lockRefreshSession(paymentHash lntypes.Hash) func() {
+	c.refreshSessionLocksMu.Lock()
+	lock := c.refreshSessionLocks[paymentHash]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		c.refreshSessionLocks[paymentHash] = lock
+	}
+	c.refreshSessionLocksMu.Unlock()
+	lock.Lock()
+
+	return lock.Unlock
 }
 
 // invoiceCreatorChainParams returns the chain params carried by the built-in

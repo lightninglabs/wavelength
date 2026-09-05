@@ -38,6 +38,16 @@ type SelectAndReserveSpendRequest struct {
 	// reserve instead of running coin selection. The requested order is
 	// preserved in the response.
 	Outpoints []wire.OutPoint
+
+	// MaxVTXOAgeBlocks, when positive, admits only VTXOs whose backing
+	// batch age is at most this many blocks. Zero preserves unbounded
+	// selection.
+	MaxVTXOAgeBlocks uint32
+
+	// CurrentHeight is the chain height used to evaluate a positive
+	// MaxVTXOAgeBlocks constraint. It must be positive whenever the
+	// constraint is enabled.
+	CurrentHeight int32
 }
 
 // VTXOManagerMsg implements VTXOManagerMsg marker interface.
@@ -66,6 +76,12 @@ type SelectedVTXO struct {
 
 	// PkScript is the output script for this VTXO.
 	PkScript []byte
+
+	// BatchExpiry is the absolute backing-batch expiry height.
+	BatchExpiry int32
+
+	// CreatedHeight is the backing batch's confirmation height.
+	CreatedHeight int32
 }
 
 // SelectAndReserveSpendResponse returns the VTXOs that were selected and

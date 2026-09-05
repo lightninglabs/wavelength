@@ -665,7 +665,7 @@ func TestVTXODescriptorDecodeMemoization(t *testing.T) {
 
 // TestListSelectionCandidatesByStatus verifies the lightweight selection
 // projection agrees with the full descriptor listing on outpoint, amount,
-// and pkScript.
+// pkScript, and backing-batch timing.
 func TestListSelectionCandidatesByStatus(t *testing.T) {
 	t.Parallel()
 
@@ -706,6 +706,8 @@ func TestListSelectionCandidatesByStatus(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, desc.Amount, candidate.Amount)
 		require.Equal(t, desc.PkScript, candidate.PkScript)
+		require.Equal(t, desc.BatchExpiry, candidate.BatchExpiry)
+		require.Equal(t, desc.CreatedHeight, candidate.CreatedHeight)
 	}
 
 	// A status the projection was not asked for stays invisible.

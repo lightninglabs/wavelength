@@ -2674,9 +2674,11 @@ func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
 
 	resp, err := a.askManager(
 		ctx, &actormsg.SelectAndReserveSpendRequest{
-			TargetAmount:    req.TargetAmount,
-			MinChangeAmount: req.MinChangeAmount,
-			Outpoints:       req.Outpoints,
+			TargetAmount:     req.TargetAmount,
+			MinChangeAmount:  req.MinChangeAmount,
+			Outpoints:        req.Outpoints,
+			MaxVTXOAgeBlocks: req.MaxVTXOAgeBlocks,
+			CurrentHeight:    req.CurrentHeight,
 		},
 	)
 	if err != nil {

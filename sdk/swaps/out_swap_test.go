@@ -2064,6 +2064,8 @@ type testDaemonConn struct {
 	escalateErr       error
 	cancelResp        *waverpc.CancelVHTLCRecoveryResponse
 	cancelErr         error
+	cancelHook        func(*waverpc.CancelVHTLCRecoveryRequest) (
+		*waverpc.CancelVHTLCRecoveryResponse, error)
 	statusResp        *waverpc.GetVHTLCRecoveryStatusResponse
 	statusErr         error
 	armRecoveryCalls  int
@@ -2241,6 +2243,9 @@ func (d *testDaemonConn) CancelVHTLCRecovery(_ context.Context,
 
 	d.cancelCalls++
 	d.lastCancel = req
+	if d.cancelHook != nil {
+		return d.cancelHook(req)
+	}
 	if d.cancelErr != nil {
 		return nil, d.cancelErr
 	}

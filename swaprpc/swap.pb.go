@@ -40,6 +40,10 @@ const (
 	// SETTLEMENT_TYPE_MIXED means the invoice is funded by both a vHTLC and
 	// a reserved credit balance.
 	SettlementType_SETTLEMENT_TYPE_MIXED SettlementType = 4
+	// SETTLEMENT_TYPE_REFRESH means value is exchanged between an existing
+	// client-funded vHTLC and a swap-server-funded vHTLC with the same payment
+	// hash, without crossing the Lightning network.
+	SettlementType_SETTLEMENT_TYPE_REFRESH SettlementType = 5
 )
 
 // Enum value maps for SettlementType.
@@ -50,6 +54,7 @@ var (
 		2: "SETTLEMENT_TYPE_IN_ARK",
 		3: "SETTLEMENT_TYPE_CREDIT",
 		4: "SETTLEMENT_TYPE_MIXED",
+		5: "SETTLEMENT_TYPE_REFRESH",
 	}
 	SettlementType_value = map[string]int32{
 		"SETTLEMENT_TYPE_UNSPECIFIED": 0,
@@ -57,6 +62,7 @@ var (
 		"SETTLEMENT_TYPE_IN_ARK":      2,
 		"SETTLEMENT_TYPE_CREDIT":      3,
 		"SETTLEMENT_TYPE_MIXED":       4,
+		"SETTLEMENT_TYPE_REFRESH":     5,
 	}
 )
 
@@ -902,8 +908,12 @@ type InArkHtlcEvent struct {
 	// attached_credit_sat is the reserved credit amount added to the vHTLC
 	// on top of requested_amount_sat.
 	AttachedCreditSat uint64 `protobuf:"varint,8,opt,name=attached_credit_sat,json=attachedCreditSat,proto3" json:"attached_credit_sat,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// settlement_type identifies the protocol flow that created this vHTLC.
+	// Refresh receivers require SETTLEMENT_TYPE_REFRESH before accepting and
+	// claiming the swap-server-funded leg.
+	SettlementType SettlementType `protobuf:"varint,9,opt,name=settlement_type,json=settlementType,proto3,enum=swaprpc.SettlementType" json:"settlement_type,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *InArkHtlcEvent) Reset() {
@@ -990,6 +1000,13 @@ func (x *InArkHtlcEvent) GetAttachedCreditSat() uint64 {
 		return x.AttachedCreditSat
 	}
 	return 0
+}
+
+func (x *InArkHtlcEvent) GetSettlementType() SettlementType {
+	if x != nil {
+		return x.SettlementType
+	}
+	return SettlementType_SETTLEMENT_TYPE_UNSPECIFIED
 }
 
 // RouteHint describes one hop hint for a Lightning invoice route.
@@ -1425,6 +1442,185 @@ func (x *CreateInSwapResponse) GetPreimage() []byte {
 	return nil
 }
 
+// CreateRefreshSwapRequest starts one VTXO refresh swap. The client generates
+// and retains the preimage, then funds the first vHTLC using the returned
+// policy.
+type CreateRefreshSwapRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// payment_hash is the SHA-256 hash shared by both vHTLC legs.
+	PaymentHash []byte `protobuf:"bytes,1,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	// amount_sat is the exact amount locked in each vHTLC.
+	AmountSat uint64 `protobuf:"varint,2,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	// client_vhtlc_pubkey is the client sender key in the first leg and the
+	// receiver key in the swap-server-funded second leg.
+	ClientVhtlcPubkey []byte `protobuf:"bytes,3,opt,name=client_vhtlc_pubkey,json=clientVhtlcPubkey,proto3" json:"client_vhtlc_pubkey,omitempty"`
+	// max_vtxo_age_blocks is the maximum backing-batch age, in blocks,
+	// accepted for the swap-server VTXO that funds the second leg.
+	MaxVtxoAgeBlocks uint32 `protobuf:"varint,4,opt,name=max_vtxo_age_blocks,json=maxVtxoAgeBlocks,proto3" json:"max_vtxo_age_blocks,omitempty"`
+	// account_authorization proves control of client_vhtlc_pubkey for this
+	// exact request.
+	AccountAuthorization *CreditAccountAuthorization `protobuf:"bytes,5,opt,name=account_authorization,json=accountAuthorization,proto3" json:"account_authorization,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *CreateRefreshSwapRequest) Reset() {
+	*x = CreateRefreshSwapRequest{}
+	mi := &file_swap_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateRefreshSwapRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateRefreshSwapRequest) ProtoMessage() {}
+
+func (x *CreateRefreshSwapRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_swap_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateRefreshSwapRequest.ProtoReflect.Descriptor instead.
+func (*CreateRefreshSwapRequest) Descriptor() ([]byte, []int) {
+	return file_swap_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *CreateRefreshSwapRequest) GetPaymentHash() []byte {
+	if x != nil {
+		return x.PaymentHash
+	}
+	return nil
+}
+
+func (x *CreateRefreshSwapRequest) GetAmountSat() uint64 {
+	if x != nil {
+		return x.AmountSat
+	}
+	return 0
+}
+
+func (x *CreateRefreshSwapRequest) GetClientVhtlcPubkey() []byte {
+	if x != nil {
+		return x.ClientVhtlcPubkey
+	}
+	return nil
+}
+
+func (x *CreateRefreshSwapRequest) GetMaxVtxoAgeBlocks() uint32 {
+	if x != nil {
+		return x.MaxVtxoAgeBlocks
+	}
+	return 0
+}
+
+func (x *CreateRefreshSwapRequest) GetAccountAuthorization() *CreditAccountAuthorization {
+	if x != nil {
+		return x.AccountAuthorization
+	}
+	return nil
+}
+
+// CreateRefreshSwapResponse returns the immutable terms for the client-funded
+// first leg of a refresh swap.
+type CreateRefreshSwapResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// payment_hash is the SHA-256 hash shared by both vHTLC legs.
+	PaymentHash []byte `protobuf:"bytes,1,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	// amount_sat is the exact amount locked in each vHTLC.
+	AmountSat uint64 `protobuf:"varint,2,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	// server_pubkey is the swap server receiver key in the first leg.
+	ServerPubkey []byte `protobuf:"bytes,3,opt,name=server_pubkey,json=serverPubkey,proto3" json:"server_pubkey,omitempty"`
+	// vhtlc_config contains the first leg's negotiated vHTLC parameters.
+	VhtlcConfig *VHTLCConfig `protobuf:"bytes,4,opt,name=vhtlc_config,json=vhtlcConfig,proto3" json:"vhtlc_config,omitempty"`
+	// expiry is the wall-clock deadline by which the first leg must be funded.
+	Expiry *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=expiry,proto3" json:"expiry,omitempty"`
+	// settlement_type is SETTLEMENT_TYPE_REFRESH.
+	SettlementType SettlementType `protobuf:"varint,6,opt,name=settlement_type,json=settlementType,proto3,enum=swaprpc.SettlementType" json:"settlement_type,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *CreateRefreshSwapResponse) Reset() {
+	*x = CreateRefreshSwapResponse{}
+	mi := &file_swap_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateRefreshSwapResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateRefreshSwapResponse) ProtoMessage() {}
+
+func (x *CreateRefreshSwapResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_swap_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateRefreshSwapResponse.ProtoReflect.Descriptor instead.
+func (*CreateRefreshSwapResponse) Descriptor() ([]byte, []int) {
+	return file_swap_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *CreateRefreshSwapResponse) GetPaymentHash() []byte {
+	if x != nil {
+		return x.PaymentHash
+	}
+	return nil
+}
+
+func (x *CreateRefreshSwapResponse) GetAmountSat() uint64 {
+	if x != nil {
+		return x.AmountSat
+	}
+	return 0
+}
+
+func (x *CreateRefreshSwapResponse) GetServerPubkey() []byte {
+	if x != nil {
+		return x.ServerPubkey
+	}
+	return nil
+}
+
+func (x *CreateRefreshSwapResponse) GetVhtlcConfig() *VHTLCConfig {
+	if x != nil {
+		return x.VhtlcConfig
+	}
+	return nil
+}
+
+func (x *CreateRefreshSwapResponse) GetExpiry() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Expiry
+	}
+	return nil
+}
+
+func (x *CreateRefreshSwapResponse) GetSettlementType() SettlementType {
+	if x != nil {
+		return x.SettlementType
+	}
+	return SettlementType_SETTLEMENT_TYPE_UNSPECIFIED
+}
+
 // QuoteInSwapRequest previews one Ark-to-Lightning invoice send.
 type QuoteInSwapRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1449,7 +1645,7 @@ type QuoteInSwapRequest struct {
 
 func (x *QuoteInSwapRequest) Reset() {
 	*x = QuoteInSwapRequest{}
-	mi := &file_swap_proto_msgTypes[13]
+	mi := &file_swap_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1461,7 +1657,7 @@ func (x *QuoteInSwapRequest) String() string {
 func (*QuoteInSwapRequest) ProtoMessage() {}
 
 func (x *QuoteInSwapRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[13]
+	mi := &file_swap_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1474,7 +1670,7 @@ func (x *QuoteInSwapRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuoteInSwapRequest.ProtoReflect.Descriptor instead.
 func (*QuoteInSwapRequest) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{13}
+	return file_swap_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *QuoteInSwapRequest) GetInvoice() string {
@@ -1540,7 +1736,7 @@ type QuoteInSwapResponse struct {
 
 func (x *QuoteInSwapResponse) Reset() {
 	*x = QuoteInSwapResponse{}
-	mi := &file_swap_proto_msgTypes[14]
+	mi := &file_swap_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1552,7 +1748,7 @@ func (x *QuoteInSwapResponse) String() string {
 func (*QuoteInSwapResponse) ProtoMessage() {}
 
 func (x *QuoteInSwapResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[14]
+	mi := &file_swap_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1565,7 +1761,7 @@ func (x *QuoteInSwapResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuoteInSwapResponse.ProtoReflect.Descriptor instead.
 func (*QuoteInSwapResponse) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{14}
+	return file_swap_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *QuoteInSwapResponse) GetPaymentHash() []byte {
@@ -1647,7 +1843,7 @@ type CreditQuote struct {
 
 func (x *CreditQuote) Reset() {
 	*x = CreditQuote{}
-	mi := &file_swap_proto_msgTypes[15]
+	mi := &file_swap_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1659,7 +1855,7 @@ func (x *CreditQuote) String() string {
 func (*CreditQuote) ProtoMessage() {}
 
 func (x *CreditQuote) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[15]
+	mi := &file_swap_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1672,7 +1868,7 @@ func (x *CreditQuote) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreditQuote.ProtoReflect.Descriptor instead.
 func (*CreditQuote) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{15}
+	return file_swap_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *CreditQuote) GetMustUseCredit() bool {
@@ -1726,7 +1922,7 @@ type CreditAccountAuthorization struct {
 
 func (x *CreditAccountAuthorization) Reset() {
 	*x = CreditAccountAuthorization{}
-	mi := &file_swap_proto_msgTypes[16]
+	mi := &file_swap_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1738,7 +1934,7 @@ func (x *CreditAccountAuthorization) String() string {
 func (*CreditAccountAuthorization) ProtoMessage() {}
 
 func (x *CreditAccountAuthorization) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[16]
+	mi := &file_swap_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1751,7 +1947,7 @@ func (x *CreditAccountAuthorization) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreditAccountAuthorization.ProtoReflect.Descriptor instead.
 func (*CreditAccountAuthorization) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{16}
+	return file_swap_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *CreditAccountAuthorization) GetExpiresAtUnix() int64 {
@@ -1796,7 +1992,7 @@ type CreateCreditRequest struct {
 
 func (x *CreateCreditRequest) Reset() {
 	*x = CreateCreditRequest{}
-	mi := &file_swap_proto_msgTypes[17]
+	mi := &file_swap_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1808,7 +2004,7 @@ func (x *CreateCreditRequest) String() string {
 func (*CreateCreditRequest) ProtoMessage() {}
 
 func (x *CreateCreditRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[17]
+	mi := &file_swap_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1821,7 +2017,7 @@ func (x *CreateCreditRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCreditRequest.ProtoReflect.Descriptor instead.
 func (*CreateCreditRequest) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{17}
+	return file_swap_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *CreateCreditRequest) GetAccountPubkey() []byte {
@@ -1886,7 +2082,7 @@ type CreateCreditResponse struct {
 
 func (x *CreateCreditResponse) Reset() {
 	*x = CreateCreditResponse{}
-	mi := &file_swap_proto_msgTypes[18]
+	mi := &file_swap_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1898,7 +2094,7 @@ func (x *CreateCreditResponse) String() string {
 func (*CreateCreditResponse) ProtoMessage() {}
 
 func (x *CreateCreditResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[18]
+	mi := &file_swap_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1911,7 +2107,7 @@ func (x *CreateCreditResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCreditResponse.ProtoReflect.Descriptor instead.
 func (*CreateCreditResponse) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{18}
+	return file_swap_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *CreateCreditResponse) GetOperationId() string {
@@ -1978,7 +2174,7 @@ type RedeemCreditRequest struct {
 
 func (x *RedeemCreditRequest) Reset() {
 	*x = RedeemCreditRequest{}
-	mi := &file_swap_proto_msgTypes[19]
+	mi := &file_swap_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1990,7 +2186,7 @@ func (x *RedeemCreditRequest) String() string {
 func (*RedeemCreditRequest) ProtoMessage() {}
 
 func (x *RedeemCreditRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[19]
+	mi := &file_swap_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2003,7 +2199,7 @@ func (x *RedeemCreditRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RedeemCreditRequest.ProtoReflect.Descriptor instead.
 func (*RedeemCreditRequest) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{19}
+	return file_swap_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *RedeemCreditRequest) GetAccountPubkey() []byte {
@@ -2054,7 +2250,7 @@ type RedeemCreditResponse struct {
 
 func (x *RedeemCreditResponse) Reset() {
 	*x = RedeemCreditResponse{}
-	mi := &file_swap_proto_msgTypes[20]
+	mi := &file_swap_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2066,7 +2262,7 @@ func (x *RedeemCreditResponse) String() string {
 func (*RedeemCreditResponse) ProtoMessage() {}
 
 func (x *RedeemCreditResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[20]
+	mi := &file_swap_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2079,7 +2275,7 @@ func (x *RedeemCreditResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RedeemCreditResponse.ProtoReflect.Descriptor instead.
 func (*RedeemCreditResponse) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{20}
+	return file_swap_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *RedeemCreditResponse) GetOperationId() string {
@@ -2130,7 +2326,7 @@ type ListCreditsRequest struct {
 
 func (x *ListCreditsRequest) Reset() {
 	*x = ListCreditsRequest{}
-	mi := &file_swap_proto_msgTypes[21]
+	mi := &file_swap_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2142,7 +2338,7 @@ func (x *ListCreditsRequest) String() string {
 func (*ListCreditsRequest) ProtoMessage() {}
 
 func (x *ListCreditsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[21]
+	mi := &file_swap_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2155,7 +2351,7 @@ func (x *ListCreditsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCreditsRequest.ProtoReflect.Descriptor instead.
 func (*ListCreditsRequest) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{21}
+	return file_swap_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ListCreditsRequest) GetAccountPubkey() []byte {
@@ -2192,7 +2388,7 @@ type ListCreditsResponse struct {
 
 func (x *ListCreditsResponse) Reset() {
 	*x = ListCreditsResponse{}
-	mi := &file_swap_proto_msgTypes[22]
+	mi := &file_swap_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2204,7 +2400,7 @@ func (x *ListCreditsResponse) String() string {
 func (*ListCreditsResponse) ProtoMessage() {}
 
 func (x *ListCreditsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[22]
+	mi := &file_swap_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2217,7 +2413,7 @@ func (x *ListCreditsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCreditsResponse.ProtoReflect.Descriptor instead.
 func (*ListCreditsResponse) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{22}
+	return file_swap_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ListCreditsResponse) GetFinalizedSat() uint64 {
@@ -2275,7 +2471,7 @@ type CreditOperation struct {
 
 func (x *CreditOperation) Reset() {
 	*x = CreditOperation{}
-	mi := &file_swap_proto_msgTypes[23]
+	mi := &file_swap_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2287,7 +2483,7 @@ func (x *CreditOperation) String() string {
 func (*CreditOperation) ProtoMessage() {}
 
 func (x *CreditOperation) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[23]
+	mi := &file_swap_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2300,7 +2496,7 @@ func (x *CreditOperation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreditOperation.ProtoReflect.Descriptor instead.
 func (*CreditOperation) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{23}
+	return file_swap_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CreditOperation) GetOperationId() string {
@@ -2400,7 +2596,7 @@ type CreditLedgerEntry struct {
 
 func (x *CreditLedgerEntry) Reset() {
 	*x = CreditLedgerEntry{}
-	mi := &file_swap_proto_msgTypes[24]
+	mi := &file_swap_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2412,7 +2608,7 @@ func (x *CreditLedgerEntry) String() string {
 func (*CreditLedgerEntry) ProtoMessage() {}
 
 func (x *CreditLedgerEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[24]
+	mi := &file_swap_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2425,7 +2621,7 @@ func (x *CreditLedgerEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreditLedgerEntry.ProtoReflect.Descriptor instead.
 func (*CreditLedgerEntry) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{24}
+	return file_swap_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *CreditLedgerEntry) GetEntryId() string {
@@ -2483,7 +2679,7 @@ type AuthorizeInSwapRefundRequest struct {
 
 func (x *AuthorizeInSwapRefundRequest) Reset() {
 	*x = AuthorizeInSwapRefundRequest{}
-	mi := &file_swap_proto_msgTypes[25]
+	mi := &file_swap_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2495,7 +2691,7 @@ func (x *AuthorizeInSwapRefundRequest) String() string {
 func (*AuthorizeInSwapRefundRequest) ProtoMessage() {}
 
 func (x *AuthorizeInSwapRefundRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[25]
+	mi := &file_swap_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2508,7 +2704,7 @@ func (x *AuthorizeInSwapRefundRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthorizeInSwapRefundRequest.ProtoReflect.Descriptor instead.
 func (*AuthorizeInSwapRefundRequest) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{25}
+	return file_swap_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *AuthorizeInSwapRefundRequest) GetPaymentHash() []byte {
@@ -2566,7 +2762,7 @@ type AuthorizeInSwapRefundResponse struct {
 
 func (x *AuthorizeInSwapRefundResponse) Reset() {
 	*x = AuthorizeInSwapRefundResponse{}
-	mi := &file_swap_proto_msgTypes[26]
+	mi := &file_swap_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2578,7 +2774,7 @@ func (x *AuthorizeInSwapRefundResponse) String() string {
 func (*AuthorizeInSwapRefundResponse) ProtoMessage() {}
 
 func (x *AuthorizeInSwapRefundResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[26]
+	mi := &file_swap_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2591,7 +2787,7 @@ func (x *AuthorizeInSwapRefundResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthorizeInSwapRefundResponse.ProtoReflect.Descriptor instead.
 func (*AuthorizeInSwapRefundResponse) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{26}
+	return file_swap_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *AuthorizeInSwapRefundResponse) GetSignature() *TaprootScriptSignature {
@@ -2642,7 +2838,7 @@ type ForfeitSignaturePayload struct {
 
 func (x *ForfeitSignaturePayload) Reset() {
 	*x = ForfeitSignaturePayload{}
-	mi := &file_swap_proto_msgTypes[27]
+	mi := &file_swap_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2654,7 +2850,7 @@ func (x *ForfeitSignaturePayload) String() string {
 func (*ForfeitSignaturePayload) ProtoMessage() {}
 
 func (x *ForfeitSignaturePayload) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[27]
+	mi := &file_swap_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2667,7 +2863,7 @@ func (x *ForfeitSignaturePayload) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForfeitSignaturePayload.ProtoReflect.Descriptor instead.
 func (*ForfeitSignaturePayload) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{27}
+	return file_swap_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ForfeitSignaturePayload) GetRequestId() []byte {
@@ -2768,7 +2964,7 @@ type ForfeitParticipantSignature struct {
 
 func (x *ForfeitParticipantSignature) Reset() {
 	*x = ForfeitParticipantSignature{}
-	mi := &file_swap_proto_msgTypes[28]
+	mi := &file_swap_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2780,7 +2976,7 @@ func (x *ForfeitParticipantSignature) String() string {
 func (*ForfeitParticipantSignature) ProtoMessage() {}
 
 func (x *ForfeitParticipantSignature) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[28]
+	mi := &file_swap_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2793,7 +2989,7 @@ func (x *ForfeitParticipantSignature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForfeitParticipantSignature.ProtoReflect.Descriptor instead.
 func (*ForfeitParticipantSignature) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{28}
+	return file_swap_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ForfeitParticipantSignature) GetPubkey() []byte {
@@ -2820,7 +3016,7 @@ type SignInSwapForfeitRequest struct {
 
 func (x *SignInSwapForfeitRequest) Reset() {
 	*x = SignInSwapForfeitRequest{}
-	mi := &file_swap_proto_msgTypes[29]
+	mi := &file_swap_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2832,7 +3028,7 @@ func (x *SignInSwapForfeitRequest) String() string {
 func (*SignInSwapForfeitRequest) ProtoMessage() {}
 
 func (x *SignInSwapForfeitRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[29]
+	mi := &file_swap_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2845,7 +3041,7 @@ func (x *SignInSwapForfeitRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignInSwapForfeitRequest.ProtoReflect.Descriptor instead.
 func (*SignInSwapForfeitRequest) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{29}
+	return file_swap_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *SignInSwapForfeitRequest) GetPayload() *ForfeitSignaturePayload {
@@ -2865,7 +3061,7 @@ type SignInSwapForfeitResponse struct {
 
 func (x *SignInSwapForfeitResponse) Reset() {
 	*x = SignInSwapForfeitResponse{}
-	mi := &file_swap_proto_msgTypes[30]
+	mi := &file_swap_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2877,7 +3073,7 @@ func (x *SignInSwapForfeitResponse) String() string {
 func (*SignInSwapForfeitResponse) ProtoMessage() {}
 
 func (x *SignInSwapForfeitResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[30]
+	mi := &file_swap_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2890,7 +3086,7 @@ func (x *SignInSwapForfeitResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignInSwapForfeitResponse.ProtoReflect.Descriptor instead.
 func (*SignInSwapForfeitResponse) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{30}
+	return file_swap_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *SignInSwapForfeitResponse) GetSignature() *ForfeitParticipantSignature {
@@ -2910,7 +3106,7 @@ type OutSwapForfeitSignatureRequest struct {
 
 func (x *OutSwapForfeitSignatureRequest) Reset() {
 	*x = OutSwapForfeitSignatureRequest{}
-	mi := &file_swap_proto_msgTypes[31]
+	mi := &file_swap_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2922,7 +3118,7 @@ func (x *OutSwapForfeitSignatureRequest) String() string {
 func (*OutSwapForfeitSignatureRequest) ProtoMessage() {}
 
 func (x *OutSwapForfeitSignatureRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[31]
+	mi := &file_swap_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2935,7 +3131,7 @@ func (x *OutSwapForfeitSignatureRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutSwapForfeitSignatureRequest.ProtoReflect.Descriptor instead.
 func (*OutSwapForfeitSignatureRequest) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{31}
+	return file_swap_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *OutSwapForfeitSignatureRequest) GetPayload() *ForfeitSignaturePayload {
@@ -2958,7 +3154,7 @@ type SubmitOutSwapForfeitSignatureRequest struct {
 
 func (x *SubmitOutSwapForfeitSignatureRequest) Reset() {
 	*x = SubmitOutSwapForfeitSignatureRequest{}
-	mi := &file_swap_proto_msgTypes[32]
+	mi := &file_swap_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2970,7 +3166,7 @@ func (x *SubmitOutSwapForfeitSignatureRequest) String() string {
 func (*SubmitOutSwapForfeitSignatureRequest) ProtoMessage() {}
 
 func (x *SubmitOutSwapForfeitSignatureRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[32]
+	mi := &file_swap_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2983,7 +3179,7 @@ func (x *SubmitOutSwapForfeitSignatureRequest) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use SubmitOutSwapForfeitSignatureRequest.ProtoReflect.Descriptor instead.
 func (*SubmitOutSwapForfeitSignatureRequest) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{32}
+	return file_swap_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *SubmitOutSwapForfeitSignatureRequest) GetPayload() *ForfeitSignaturePayload {
@@ -3008,7 +3204,7 @@ type SubmitOutSwapForfeitSignatureResponse struct {
 
 func (x *SubmitOutSwapForfeitSignatureResponse) Reset() {
 	*x = SubmitOutSwapForfeitSignatureResponse{}
-	mi := &file_swap_proto_msgTypes[33]
+	mi := &file_swap_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3020,7 +3216,7 @@ func (x *SubmitOutSwapForfeitSignatureResponse) String() string {
 func (*SubmitOutSwapForfeitSignatureResponse) ProtoMessage() {}
 
 func (x *SubmitOutSwapForfeitSignatureResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[33]
+	mi := &file_swap_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3033,7 +3229,7 @@ func (x *SubmitOutSwapForfeitSignatureResponse) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use SubmitOutSwapForfeitSignatureResponse.ProtoReflect.Descriptor instead.
 func (*SubmitOutSwapForfeitSignatureResponse) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{33}
+	return file_swap_proto_rawDescGZIP(), []int{35}
 }
 
 // TaprootScriptSignature carries one externally produced tapscript signature.
@@ -3055,7 +3251,7 @@ type TaprootScriptSignature struct {
 
 func (x *TaprootScriptSignature) Reset() {
 	*x = TaprootScriptSignature{}
-	mi := &file_swap_proto_msgTypes[34]
+	mi := &file_swap_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3067,7 +3263,7 @@ func (x *TaprootScriptSignature) String() string {
 func (*TaprootScriptSignature) ProtoMessage() {}
 
 func (x *TaprootScriptSignature) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[34]
+	mi := &file_swap_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3080,7 +3276,7 @@ func (x *TaprootScriptSignature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaprootScriptSignature.ProtoReflect.Descriptor instead.
 func (*TaprootScriptSignature) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{34}
+	return file_swap_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *TaprootScriptSignature) GetPubkey() []byte {
@@ -3158,7 +3354,7 @@ const file_swap_proto_rawDesc = "" +
 	"\rout_swap_htlc\x18\x01 \x01(\v2\x19.swaprpc.OutSwapHtlcEventH\x00R\voutSwapHtlc\x129\n" +
 	"\vin_ark_htlc\x18\x02 \x01(\v2\x17.swaprpc.InArkHtlcEventH\x00R\tinArkHtlc\x12u\n" +
 	"\"out_swap_forfeit_signature_request\x18\x03 \x01(\v2'.swaprpc.OutSwapForfeitSignatureRequestH\x00R\x1eoutSwapForfeitSignatureRequestB\a\n" +
-	"\x05event\"\xe3\x02\n" +
+	"\x05event\"\xa5\x03\n" +
 	"\x0eInArkHtlcEvent\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12\x1d\n" +
 	"\n" +
@@ -3168,7 +3364,8 @@ const file_swap_proto_rawDesc = "" +
 	"\x0evhtlc_outpoint\x18\x05 \x01(\tR\rvhtlcOutpoint\x12(\n" +
 	"\x10vhtlc_amount_sat\x18\x06 \x01(\x04R\x0evhtlcAmountSat\x120\n" +
 	"\x14requested_amount_sat\x18\a \x01(\x04R\x12requestedAmountSat\x12.\n" +
-	"\x13attached_credit_sat\x18\b \x01(\x04R\x11attachedCreditSat\"\xc5\x01\n" +
+	"\x13attached_credit_sat\x18\b \x01(\x04R\x11attachedCreditSat\x12@\n" +
+	"\x0fsettlement_type\x18\t \x01(\x0e2\x17.swaprpc.SettlementTypeR\x0esettlementType\"\xc5\x01\n" +
 	"\tRouteHint\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\fR\x06nodeId\x12\x1d\n" +
 	"\n" +
@@ -3201,7 +3398,22 @@ const file_swap_proto_rawDesc = "" +
 	"\x06expiry\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x06expiry\x12@\n" +
 	"\x0fsettlement_type\x18\a \x01(\x0e2\x17.swaprpc.SettlementTypeR\x0esettlementType\x127\n" +
 	"\fcredit_quote\x18\b \x01(\v2\x14.swaprpc.CreditQuoteR\vcreditQuote\x12\x1a\n" +
-	"\bpreimage\x18\t \x01(\fR\bpreimage\"\xf5\x01\n" +
+	"\bpreimage\x18\t \x01(\fR\bpreimage\"\x95\x02\n" +
+	"\x18CreateRefreshSwapRequest\x12!\n" +
+	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\x02 \x01(\x04R\tamountSat\x12.\n" +
+	"\x13client_vhtlc_pubkey\x18\x03 \x01(\fR\x11clientVhtlcPubkey\x12-\n" +
+	"\x13max_vtxo_age_blocks\x18\x04 \x01(\rR\x10maxVtxoAgeBlocks\x12X\n" +
+	"\x15account_authorization\x18\x05 \x01(\v2#.swaprpc.CreditAccountAuthorizationR\x14accountAuthorization\"\xb1\x02\n" +
+	"\x19CreateRefreshSwapResponse\x12!\n" +
+	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\x02 \x01(\x04R\tamountSat\x12#\n" +
+	"\rserver_pubkey\x18\x03 \x01(\fR\fserverPubkey\x127\n" +
+	"\fvhtlc_config\x18\x04 \x01(\v2\x14.swaprpc.VHTLCConfigR\vvhtlcConfig\x122\n" +
+	"\x06expiry\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x06expiry\x12@\n" +
+	"\x0fsettlement_type\x18\x06 \x01(\x0e2\x17.swaprpc.SettlementTypeR\x0esettlementType\"\xf5\x01\n" +
 	"\x12QuoteInSwapRequest\x12\x18\n" +
 	"\ainvoice\x18\x01 \x01(\tR\ainvoice\x12\x1e\n" +
 	"\vmax_fee_sat\x18\x02 \x01(\x04R\tmaxFeeSat\x12%\n" +
@@ -3342,13 +3554,14 @@ const file_swap_proto_rawDesc = "" +
 	"\x06pubkey\x18\x01 \x01(\fR\x06pubkey\x12%\n" +
 	"\x0ewitness_script\x18\x02 \x01(\fR\rwitnessScript\x12\x1c\n" +
 	"\tsignature\x18\x03 \x01(\fR\tsignature\x12\x18\n" +
-	"\asighash\x18\x04 \x01(\rR\asighash*\xa3\x01\n" +
+	"\asighash\x18\x04 \x01(\rR\asighash*\xc0\x01\n" +
 	"\x0eSettlementType\x12\x1f\n" +
 	"\x1bSETTLEMENT_TYPE_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19SETTLEMENT_TYPE_LIGHTNING\x10\x01\x12\x1a\n" +
 	"\x16SETTLEMENT_TYPE_IN_ARK\x10\x02\x12\x1a\n" +
 	"\x16SETTLEMENT_TYPE_CREDIT\x10\x03\x12\x19\n" +
-	"\x15SETTLEMENT_TYPE_MIXED\x10\x04*\x8e\x01\n" +
+	"\x15SETTLEMENT_TYPE_MIXED\x10\x04\x12\x1b\n" +
+	"\x17SETTLEMENT_TYPE_REFRESH\x10\x05*\x8e\x01\n" +
 	"\x13CreditFundingSource\x12%\n" +
 	"!CREDIT_FUNDING_SOURCE_UNSPECIFIED\x10\x00\x12+\n" +
 	"'CREDIT_FUNDING_SOURCE_LIGHTNING_RECEIVE\x10\x01\x12#\n" +
@@ -3372,11 +3585,12 @@ const file_swap_proto_rawDesc = "" +
 	"\x1fCREDIT_OPERATION_STATE_RELEASED\x10\t\x12\"\n" +
 	"\x1eCREDIT_OPERATION_STATE_EXPIRED\x10\n" +
 	"\x12!\n" +
-	"\x1dCREDIT_OPERATION_STATE_FAILED\x10\v2\x90\a\n" +
+	"\x1dCREDIT_OPERATION_STATE_FAILED\x10\v2\xec\a\n" +
 	"\vSwapService\x12W\n" +
 	"\x10RequestChannelId\x12 .swaprpc.RequestChannelIdRequest\x1a!.swaprpc.RequestChannelIdResponse\x12K\n" +
 	"\fCreateInSwap\x12\x1c.swaprpc.CreateInSwapRequest\x1a\x1d.swaprpc.CreateInSwapResponse\x12H\n" +
-	"\vQuoteInSwap\x12\x1b.swaprpc.QuoteInSwapRequest\x1a\x1c.swaprpc.QuoteInSwapResponse\x12K\n" +
+	"\vQuoteInSwap\x12\x1b.swaprpc.QuoteInSwapRequest\x1a\x1c.swaprpc.QuoteInSwapResponse\x12Z\n" +
+	"\x11CreateRefreshSwap\x12!.swaprpc.CreateRefreshSwapRequest\x1a\".swaprpc.CreateRefreshSwapResponse\x12K\n" +
 	"\fCreateCredit\x12\x1c.swaprpc.CreateCreditRequest\x1a\x1d.swaprpc.CreateCreditResponse\x12K\n" +
 	"\fRedeemCredit\x12\x1c.swaprpc.RedeemCreditRequest\x1a\x1d.swaprpc.RedeemCreditResponse\x12H\n" +
 	"\vListCredits\x12\x1b.swaprpc.ListCreditsRequest\x1a\x1c.swaprpc.ListCreditsResponse\x12f\n" +
@@ -3398,7 +3612,7 @@ func file_swap_proto_rawDescGZIP() []byte {
 }
 
 var file_swap_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_swap_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
+var file_swap_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
 var file_swap_proto_goTypes = []any{
 	(SettlementType)(0),                           // 0: swaprpc.SettlementType
 	(CreditFundingSource)(0),                      // 1: swaprpc.CreditFundingSource
@@ -3417,96 +3631,105 @@ var file_swap_proto_goTypes = []any{
 	(*VHTLCConfig)(nil),                           // 14: swaprpc.VHTLCConfig
 	(*CreateInSwapRequest)(nil),                   // 15: swaprpc.CreateInSwapRequest
 	(*CreateInSwapResponse)(nil),                  // 16: swaprpc.CreateInSwapResponse
-	(*QuoteInSwapRequest)(nil),                    // 17: swaprpc.QuoteInSwapRequest
-	(*QuoteInSwapResponse)(nil),                   // 18: swaprpc.QuoteInSwapResponse
-	(*CreditQuote)(nil),                           // 19: swaprpc.CreditQuote
-	(*CreditAccountAuthorization)(nil),            // 20: swaprpc.CreditAccountAuthorization
-	(*CreateCreditRequest)(nil),                   // 21: swaprpc.CreateCreditRequest
-	(*CreateCreditResponse)(nil),                  // 22: swaprpc.CreateCreditResponse
-	(*RedeemCreditRequest)(nil),                   // 23: swaprpc.RedeemCreditRequest
-	(*RedeemCreditResponse)(nil),                  // 24: swaprpc.RedeemCreditResponse
-	(*ListCreditsRequest)(nil),                    // 25: swaprpc.ListCreditsRequest
-	(*ListCreditsResponse)(nil),                   // 26: swaprpc.ListCreditsResponse
-	(*CreditOperation)(nil),                       // 27: swaprpc.CreditOperation
-	(*CreditLedgerEntry)(nil),                     // 28: swaprpc.CreditLedgerEntry
-	(*AuthorizeInSwapRefundRequest)(nil),          // 29: swaprpc.AuthorizeInSwapRefundRequest
-	(*AuthorizeInSwapRefundResponse)(nil),         // 30: swaprpc.AuthorizeInSwapRefundResponse
-	(*ForfeitSignaturePayload)(nil),               // 31: swaprpc.ForfeitSignaturePayload
-	(*ForfeitParticipantSignature)(nil),           // 32: swaprpc.ForfeitParticipantSignature
-	(*SignInSwapForfeitRequest)(nil),              // 33: swaprpc.SignInSwapForfeitRequest
-	(*SignInSwapForfeitResponse)(nil),             // 34: swaprpc.SignInSwapForfeitResponse
-	(*OutSwapForfeitSignatureRequest)(nil),        // 35: swaprpc.OutSwapForfeitSignatureRequest
-	(*SubmitOutSwapForfeitSignatureRequest)(nil),  // 36: swaprpc.SubmitOutSwapForfeitSignatureRequest
-	(*SubmitOutSwapForfeitSignatureResponse)(nil), // 37: swaprpc.SubmitOutSwapForfeitSignatureResponse
-	(*TaprootScriptSignature)(nil),                // 38: swaprpc.TaprootScriptSignature
-	(*timestamppb.Timestamp)(nil),                 // 39: google.protobuf.Timestamp
+	(*CreateRefreshSwapRequest)(nil),              // 17: swaprpc.CreateRefreshSwapRequest
+	(*CreateRefreshSwapResponse)(nil),             // 18: swaprpc.CreateRefreshSwapResponse
+	(*QuoteInSwapRequest)(nil),                    // 19: swaprpc.QuoteInSwapRequest
+	(*QuoteInSwapResponse)(nil),                   // 20: swaprpc.QuoteInSwapResponse
+	(*CreditQuote)(nil),                           // 21: swaprpc.CreditQuote
+	(*CreditAccountAuthorization)(nil),            // 22: swaprpc.CreditAccountAuthorization
+	(*CreateCreditRequest)(nil),                   // 23: swaprpc.CreateCreditRequest
+	(*CreateCreditResponse)(nil),                  // 24: swaprpc.CreateCreditResponse
+	(*RedeemCreditRequest)(nil),                   // 25: swaprpc.RedeemCreditRequest
+	(*RedeemCreditResponse)(nil),                  // 26: swaprpc.RedeemCreditResponse
+	(*ListCreditsRequest)(nil),                    // 27: swaprpc.ListCreditsRequest
+	(*ListCreditsResponse)(nil),                   // 28: swaprpc.ListCreditsResponse
+	(*CreditOperation)(nil),                       // 29: swaprpc.CreditOperation
+	(*CreditLedgerEntry)(nil),                     // 30: swaprpc.CreditLedgerEntry
+	(*AuthorizeInSwapRefundRequest)(nil),          // 31: swaprpc.AuthorizeInSwapRefundRequest
+	(*AuthorizeInSwapRefundResponse)(nil),         // 32: swaprpc.AuthorizeInSwapRefundResponse
+	(*ForfeitSignaturePayload)(nil),               // 33: swaprpc.ForfeitSignaturePayload
+	(*ForfeitParticipantSignature)(nil),           // 34: swaprpc.ForfeitParticipantSignature
+	(*SignInSwapForfeitRequest)(nil),              // 35: swaprpc.SignInSwapForfeitRequest
+	(*SignInSwapForfeitResponse)(nil),             // 36: swaprpc.SignInSwapForfeitResponse
+	(*OutSwapForfeitSignatureRequest)(nil),        // 37: swaprpc.OutSwapForfeitSignatureRequest
+	(*SubmitOutSwapForfeitSignatureRequest)(nil),  // 38: swaprpc.SubmitOutSwapForfeitSignatureRequest
+	(*SubmitOutSwapForfeitSignatureResponse)(nil), // 39: swaprpc.SubmitOutSwapForfeitSignatureResponse
+	(*TaprootScriptSignature)(nil),                // 40: swaprpc.TaprootScriptSignature
+	(*timestamppb.Timestamp)(nil),                 // 41: google.protobuf.Timestamp
 }
 var file_swap_proto_depIdxs = []int32{
-	20, // 0: swaprpc.RequestChannelIdRequest.account_authorization:type_name -> swaprpc.CreditAccountAuthorization
+	22, // 0: swaprpc.RequestChannelIdRequest.account_authorization:type_name -> swaprpc.CreditAccountAuthorization
 	0,  // 1: swaprpc.RequestChannelIdResponse.settlement_type:type_name -> swaprpc.SettlementType
 	13, // 2: swaprpc.RequestChannelIdResponse.route_hint_paths:type_name -> swaprpc.RouteHintPath
 	14, // 3: swaprpc.OutSwapHtlcEvent.vhtlc_config:type_name -> swaprpc.VHTLCConfig
 	9,  // 4: swaprpc.OutSwapHtlcEvent.parts:type_name -> swaprpc.OutSwapHtlcPart
 	8,  // 5: swaprpc.SwapMailboxEvent.out_swap_htlc:type_name -> swaprpc.OutSwapHtlcEvent
 	11, // 6: swaprpc.SwapMailboxEvent.in_ark_htlc:type_name -> swaprpc.InArkHtlcEvent
-	35, // 7: swaprpc.SwapMailboxEvent.out_swap_forfeit_signature_request:type_name -> swaprpc.OutSwapForfeitSignatureRequest
+	37, // 7: swaprpc.SwapMailboxEvent.out_swap_forfeit_signature_request:type_name -> swaprpc.OutSwapForfeitSignatureRequest
 	14, // 8: swaprpc.InArkHtlcEvent.vhtlc_config:type_name -> swaprpc.VHTLCConfig
-	12, // 9: swaprpc.RouteHintPath.hops:type_name -> swaprpc.RouteHint
-	20, // 10: swaprpc.CreateInSwapRequest.account_authorization:type_name -> swaprpc.CreditAccountAuthorization
-	14, // 11: swaprpc.CreateInSwapResponse.vhtlc_config:type_name -> swaprpc.VHTLCConfig
-	39, // 12: swaprpc.CreateInSwapResponse.expiry:type_name -> google.protobuf.Timestamp
-	0,  // 13: swaprpc.CreateInSwapResponse.settlement_type:type_name -> swaprpc.SettlementType
-	19, // 14: swaprpc.CreateInSwapResponse.credit_quote:type_name -> swaprpc.CreditQuote
-	20, // 15: swaprpc.QuoteInSwapRequest.account_authorization:type_name -> swaprpc.CreditAccountAuthorization
-	0,  // 16: swaprpc.QuoteInSwapResponse.settlement_type:type_name -> swaprpc.SettlementType
-	39, // 17: swaprpc.QuoteInSwapResponse.expiry:type_name -> google.protobuf.Timestamp
-	19, // 18: swaprpc.QuoteInSwapResponse.credit_quote:type_name -> swaprpc.CreditQuote
-	1,  // 19: swaprpc.CreateCreditRequest.source:type_name -> swaprpc.CreditFundingSource
-	20, // 20: swaprpc.CreateCreditRequest.account_authorization:type_name -> swaprpc.CreditAccountAuthorization
-	3,  // 21: swaprpc.CreateCreditResponse.state:type_name -> swaprpc.CreditOperationState
-	39, // 22: swaprpc.CreateCreditResponse.expires_at:type_name -> google.protobuf.Timestamp
-	20, // 23: swaprpc.RedeemCreditRequest.account_authorization:type_name -> swaprpc.CreditAccountAuthorization
-	3,  // 24: swaprpc.RedeemCreditResponse.state:type_name -> swaprpc.CreditOperationState
-	20, // 25: swaprpc.ListCreditsRequest.account_authorization:type_name -> swaprpc.CreditAccountAuthorization
-	27, // 26: swaprpc.ListCreditsResponse.operations:type_name -> swaprpc.CreditOperation
-	28, // 27: swaprpc.ListCreditsResponse.ledger_entries:type_name -> swaprpc.CreditLedgerEntry
-	2,  // 28: swaprpc.CreditOperation.type:type_name -> swaprpc.CreditOperationType
-	3,  // 29: swaprpc.CreditOperation.state:type_name -> swaprpc.CreditOperationState
-	39, // 30: swaprpc.CreditOperation.created_at:type_name -> google.protobuf.Timestamp
-	39, // 31: swaprpc.CreditOperation.updated_at:type_name -> google.protobuf.Timestamp
-	39, // 32: swaprpc.CreditOperation.completed_at:type_name -> google.protobuf.Timestamp
-	39, // 33: swaprpc.CreditLedgerEntry.created_at:type_name -> google.protobuf.Timestamp
-	38, // 34: swaprpc.AuthorizeInSwapRefundResponse.signature:type_name -> swaprpc.TaprootScriptSignature
-	31, // 35: swaprpc.SignInSwapForfeitRequest.payload:type_name -> swaprpc.ForfeitSignaturePayload
-	32, // 36: swaprpc.SignInSwapForfeitResponse.signature:type_name -> swaprpc.ForfeitParticipantSignature
-	31, // 37: swaprpc.OutSwapForfeitSignatureRequest.payload:type_name -> swaprpc.ForfeitSignaturePayload
-	31, // 38: swaprpc.SubmitOutSwapForfeitSignatureRequest.payload:type_name -> swaprpc.ForfeitSignaturePayload
-	32, // 39: swaprpc.SubmitOutSwapForfeitSignatureRequest.signature:type_name -> swaprpc.ForfeitParticipantSignature
-	4,  // 40: swaprpc.SwapService.RequestChannelId:input_type -> swaprpc.RequestChannelIdRequest
-	15, // 41: swaprpc.SwapService.CreateInSwap:input_type -> swaprpc.CreateInSwapRequest
-	17, // 42: swaprpc.SwapService.QuoteInSwap:input_type -> swaprpc.QuoteInSwapRequest
-	21, // 43: swaprpc.SwapService.CreateCredit:input_type -> swaprpc.CreateCreditRequest
-	23, // 44: swaprpc.SwapService.RedeemCredit:input_type -> swaprpc.RedeemCreditRequest
-	25, // 45: swaprpc.SwapService.ListCredits:input_type -> swaprpc.ListCreditsRequest
-	29, // 46: swaprpc.SwapService.AuthorizeInSwapRefund:input_type -> swaprpc.AuthorizeInSwapRefundRequest
-	6,  // 47: swaprpc.SwapService.AcknowledgeOutSwapHtlc:input_type -> swaprpc.AcknowledgeOutSwapHtlcRequest
-	33, // 48: swaprpc.SwapService.SignInSwapForfeit:input_type -> swaprpc.SignInSwapForfeitRequest
-	36, // 49: swaprpc.SwapService.SubmitOutSwapForfeitSignature:input_type -> swaprpc.SubmitOutSwapForfeitSignatureRequest
-	5,  // 50: swaprpc.SwapService.RequestChannelId:output_type -> swaprpc.RequestChannelIdResponse
-	16, // 51: swaprpc.SwapService.CreateInSwap:output_type -> swaprpc.CreateInSwapResponse
-	18, // 52: swaprpc.SwapService.QuoteInSwap:output_type -> swaprpc.QuoteInSwapResponse
-	22, // 53: swaprpc.SwapService.CreateCredit:output_type -> swaprpc.CreateCreditResponse
-	24, // 54: swaprpc.SwapService.RedeemCredit:output_type -> swaprpc.RedeemCreditResponse
-	26, // 55: swaprpc.SwapService.ListCredits:output_type -> swaprpc.ListCreditsResponse
-	30, // 56: swaprpc.SwapService.AuthorizeInSwapRefund:output_type -> swaprpc.AuthorizeInSwapRefundResponse
-	7,  // 57: swaprpc.SwapService.AcknowledgeOutSwapHtlc:output_type -> swaprpc.AcknowledgeOutSwapHtlcResponse
-	34, // 58: swaprpc.SwapService.SignInSwapForfeit:output_type -> swaprpc.SignInSwapForfeitResponse
-	37, // 59: swaprpc.SwapService.SubmitOutSwapForfeitSignature:output_type -> swaprpc.SubmitOutSwapForfeitSignatureResponse
-	50, // [50:60] is the sub-list for method output_type
-	40, // [40:50] is the sub-list for method input_type
-	40, // [40:40] is the sub-list for extension type_name
-	40, // [40:40] is the sub-list for extension extendee
-	0,  // [0:40] is the sub-list for field type_name
+	0,  // 9: swaprpc.InArkHtlcEvent.settlement_type:type_name -> swaprpc.SettlementType
+	12, // 10: swaprpc.RouteHintPath.hops:type_name -> swaprpc.RouteHint
+	22, // 11: swaprpc.CreateInSwapRequest.account_authorization:type_name -> swaprpc.CreditAccountAuthorization
+	14, // 12: swaprpc.CreateInSwapResponse.vhtlc_config:type_name -> swaprpc.VHTLCConfig
+	41, // 13: swaprpc.CreateInSwapResponse.expiry:type_name -> google.protobuf.Timestamp
+	0,  // 14: swaprpc.CreateInSwapResponse.settlement_type:type_name -> swaprpc.SettlementType
+	21, // 15: swaprpc.CreateInSwapResponse.credit_quote:type_name -> swaprpc.CreditQuote
+	22, // 16: swaprpc.CreateRefreshSwapRequest.account_authorization:type_name -> swaprpc.CreditAccountAuthorization
+	14, // 17: swaprpc.CreateRefreshSwapResponse.vhtlc_config:type_name -> swaprpc.VHTLCConfig
+	41, // 18: swaprpc.CreateRefreshSwapResponse.expiry:type_name -> google.protobuf.Timestamp
+	0,  // 19: swaprpc.CreateRefreshSwapResponse.settlement_type:type_name -> swaprpc.SettlementType
+	22, // 20: swaprpc.QuoteInSwapRequest.account_authorization:type_name -> swaprpc.CreditAccountAuthorization
+	0,  // 21: swaprpc.QuoteInSwapResponse.settlement_type:type_name -> swaprpc.SettlementType
+	41, // 22: swaprpc.QuoteInSwapResponse.expiry:type_name -> google.protobuf.Timestamp
+	21, // 23: swaprpc.QuoteInSwapResponse.credit_quote:type_name -> swaprpc.CreditQuote
+	1,  // 24: swaprpc.CreateCreditRequest.source:type_name -> swaprpc.CreditFundingSource
+	22, // 25: swaprpc.CreateCreditRequest.account_authorization:type_name -> swaprpc.CreditAccountAuthorization
+	3,  // 26: swaprpc.CreateCreditResponse.state:type_name -> swaprpc.CreditOperationState
+	41, // 27: swaprpc.CreateCreditResponse.expires_at:type_name -> google.protobuf.Timestamp
+	22, // 28: swaprpc.RedeemCreditRequest.account_authorization:type_name -> swaprpc.CreditAccountAuthorization
+	3,  // 29: swaprpc.RedeemCreditResponse.state:type_name -> swaprpc.CreditOperationState
+	22, // 30: swaprpc.ListCreditsRequest.account_authorization:type_name -> swaprpc.CreditAccountAuthorization
+	29, // 31: swaprpc.ListCreditsResponse.operations:type_name -> swaprpc.CreditOperation
+	30, // 32: swaprpc.ListCreditsResponse.ledger_entries:type_name -> swaprpc.CreditLedgerEntry
+	2,  // 33: swaprpc.CreditOperation.type:type_name -> swaprpc.CreditOperationType
+	3,  // 34: swaprpc.CreditOperation.state:type_name -> swaprpc.CreditOperationState
+	41, // 35: swaprpc.CreditOperation.created_at:type_name -> google.protobuf.Timestamp
+	41, // 36: swaprpc.CreditOperation.updated_at:type_name -> google.protobuf.Timestamp
+	41, // 37: swaprpc.CreditOperation.completed_at:type_name -> google.protobuf.Timestamp
+	41, // 38: swaprpc.CreditLedgerEntry.created_at:type_name -> google.protobuf.Timestamp
+	40, // 39: swaprpc.AuthorizeInSwapRefundResponse.signature:type_name -> swaprpc.TaprootScriptSignature
+	33, // 40: swaprpc.SignInSwapForfeitRequest.payload:type_name -> swaprpc.ForfeitSignaturePayload
+	34, // 41: swaprpc.SignInSwapForfeitResponse.signature:type_name -> swaprpc.ForfeitParticipantSignature
+	33, // 42: swaprpc.OutSwapForfeitSignatureRequest.payload:type_name -> swaprpc.ForfeitSignaturePayload
+	33, // 43: swaprpc.SubmitOutSwapForfeitSignatureRequest.payload:type_name -> swaprpc.ForfeitSignaturePayload
+	34, // 44: swaprpc.SubmitOutSwapForfeitSignatureRequest.signature:type_name -> swaprpc.ForfeitParticipantSignature
+	4,  // 45: swaprpc.SwapService.RequestChannelId:input_type -> swaprpc.RequestChannelIdRequest
+	15, // 46: swaprpc.SwapService.CreateInSwap:input_type -> swaprpc.CreateInSwapRequest
+	19, // 47: swaprpc.SwapService.QuoteInSwap:input_type -> swaprpc.QuoteInSwapRequest
+	17, // 48: swaprpc.SwapService.CreateRefreshSwap:input_type -> swaprpc.CreateRefreshSwapRequest
+	23, // 49: swaprpc.SwapService.CreateCredit:input_type -> swaprpc.CreateCreditRequest
+	25, // 50: swaprpc.SwapService.RedeemCredit:input_type -> swaprpc.RedeemCreditRequest
+	27, // 51: swaprpc.SwapService.ListCredits:input_type -> swaprpc.ListCreditsRequest
+	31, // 52: swaprpc.SwapService.AuthorizeInSwapRefund:input_type -> swaprpc.AuthorizeInSwapRefundRequest
+	6,  // 53: swaprpc.SwapService.AcknowledgeOutSwapHtlc:input_type -> swaprpc.AcknowledgeOutSwapHtlcRequest
+	35, // 54: swaprpc.SwapService.SignInSwapForfeit:input_type -> swaprpc.SignInSwapForfeitRequest
+	38, // 55: swaprpc.SwapService.SubmitOutSwapForfeitSignature:input_type -> swaprpc.SubmitOutSwapForfeitSignatureRequest
+	5,  // 56: swaprpc.SwapService.RequestChannelId:output_type -> swaprpc.RequestChannelIdResponse
+	16, // 57: swaprpc.SwapService.CreateInSwap:output_type -> swaprpc.CreateInSwapResponse
+	20, // 58: swaprpc.SwapService.QuoteInSwap:output_type -> swaprpc.QuoteInSwapResponse
+	18, // 59: swaprpc.SwapService.CreateRefreshSwap:output_type -> swaprpc.CreateRefreshSwapResponse
+	24, // 60: swaprpc.SwapService.CreateCredit:output_type -> swaprpc.CreateCreditResponse
+	26, // 61: swaprpc.SwapService.RedeemCredit:output_type -> swaprpc.RedeemCreditResponse
+	28, // 62: swaprpc.SwapService.ListCredits:output_type -> swaprpc.ListCreditsResponse
+	32, // 63: swaprpc.SwapService.AuthorizeInSwapRefund:output_type -> swaprpc.AuthorizeInSwapRefundResponse
+	7,  // 64: swaprpc.SwapService.AcknowledgeOutSwapHtlc:output_type -> swaprpc.AcknowledgeOutSwapHtlcResponse
+	36, // 65: swaprpc.SwapService.SignInSwapForfeit:output_type -> swaprpc.SignInSwapForfeitResponse
+	39, // 66: swaprpc.SwapService.SubmitOutSwapForfeitSignature:output_type -> swaprpc.SubmitOutSwapForfeitSignatureResponse
+	56, // [56:67] is the sub-list for method output_type
+	45, // [45:56] is the sub-list for method input_type
+	45, // [45:45] is the sub-list for extension type_name
+	45, // [45:45] is the sub-list for extension extendee
+	0,  // [0:45] is the sub-list for field type_name
 }
 
 func init() { file_swap_proto_init() }
@@ -3525,7 +3748,7 @@ func file_swap_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_swap_proto_rawDesc), len(file_swap_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   35,
+			NumMessages:   37,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

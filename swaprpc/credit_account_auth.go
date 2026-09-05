@@ -29,12 +29,13 @@ const (
 )
 
 const (
-	requestChannelIDMethod = "/swaprpc.SwapService/RequestChannelId"
-	createInSwapMethod     = "/swaprpc.SwapService/CreateInSwap"
-	quoteInSwapMethod      = "/swaprpc.SwapService/QuoteInSwap"
-	accountCreateMethod    = "/swaprpc.SwapService/CreateCredit"
-	accountRedeemMethod    = "/swaprpc.SwapService/RedeemCredit"
-	accountListMethod      = "/swaprpc.SwapService/ListCredits"
+	requestChannelIDMethod  = "/swaprpc.SwapService/RequestChannelId"
+	createInSwapMethod      = "/swaprpc.SwapService/CreateInSwap"
+	createRefreshSwapMethod = "/swaprpc.SwapService/CreateRefreshSwap"
+	quoteInSwapMethod       = "/swaprpc.SwapService/QuoteInSwap"
+	accountCreateMethod     = "/swaprpc.SwapService/CreateCredit"
+	accountRedeemMethod     = "/swaprpc.SwapService/RedeemCredit"
+	accountListMethod       = "/swaprpc.SwapService/ListCredits"
 )
 
 // CreditAccountRequestDigest returns the canonical digest and account key for
@@ -107,6 +108,9 @@ func CreditAccountAuthorizationForRequest(req proto.Message) (
 	case *CreateInSwapRequest:
 		return typed.GetAccountAuthorization(), nil
 
+	case *CreateRefreshSwapRequest:
+		return typed.GetAccountAuthorization(), nil
+
 	case *QuoteInSwapRequest:
 		return typed.GetAccountAuthorization(), nil
 
@@ -135,6 +139,9 @@ func SetCreditAccountAuthorization(req proto.Message,
 		typed.AccountAuthorization = auth
 
 	case *CreateInSwapRequest:
+		typed.AccountAuthorization = auth
+
+	case *CreateRefreshSwapRequest:
 		typed.AccountAuthorization = auth
 
 	case *QuoteInSwapRequest:
@@ -174,6 +181,10 @@ func unsignedCreditAccountRequest(req proto.Message) (string, []byte,
 	case *CreateInSwapRequest:
 		method = createInSwapMethod
 		accountKey = typed.GetAccountPubkey()
+
+	case *CreateRefreshSwapRequest:
+		method = createRefreshSwapMethod
+		accountKey = typed.GetClientVhtlcPubkey()
 
 	case *QuoteInSwapRequest:
 		method = quoteInSwapMethod

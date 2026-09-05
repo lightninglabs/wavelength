@@ -26,6 +26,11 @@ enum SettlementType {
     // SETTLEMENT_TYPE_MIXED means the invoice is funded by both a vHTLC and
     // a reserved credit balance.
     SETTLEMENT_TYPE_MIXED = 4;
+
+    // SETTLEMENT_TYPE_REFRESH means value is exchanged between an existing
+    // client-funded vHTLC and a swap-server-funded vHTLC with the same payment
+    // hash, without crossing the Lightning network.
+    SETTLEMENT_TYPE_REFRESH = 5;
 }
 
 // CreditFundingSource identifies how value enters a credit account.
@@ -76,6 +81,12 @@ service SwapService {
     // QuoteInSwap previews how an invoice send would settle without creating
     // durable swap state or notifying a same-Ark receiver.
     rpc QuoteInSwap (QuoteInSwapRequest) returns (QuoteInSwapResponse);
+
+    // CreateRefreshSwap creates the client-funded leg of a refresh swap. Once
+    // that leg is funded, the swap server funds a matching vHTLC whose backing
+    // VTXO satisfies the caller's maximum-age constraint.
+    rpc CreateRefreshSwap (CreateRefreshSwapRequest)
+        returns (CreateRefreshSwapResponse);
 
     // CreateCredit creates a durable credit funding operation. Lightning
     // receives return a server-owned invoice; Ark top-ups return a
@@ -309,6 +320,11 @@ message InArkHtlcEvent {
     // attached_credit_sat is the reserved credit amount added to the vHTLC
     // on top of requested_amount_sat.
     uint64 attached_credit_sat = 8;
+
+    // settlement_type identifies the protocol flow that created this vHTLC.
+    // Refresh receivers require SETTLEMENT_TYPE_REFRESH before accepting and
+    // claiming the swap-server-funded leg.
+    SettlementType settlement_type = 9;
 }
 
 // RouteHint describes one hop hint for a Lightning invoice route.
@@ -416,6 +432,51 @@ message CreateInSwapResponse {
     // preimage is set for credit-only pays after the swap server has already
     // paid the Lightning invoice from reserved credits.
     bytes preimage = 9;
+}
+
+// CreateRefreshSwapRequest starts one VTXO refresh swap. The client generates
+// and retains the preimage, then funds the first vHTLC using the returned
+// policy.
+message CreateRefreshSwapRequest {
+    // payment_hash is the SHA-256 hash shared by both vHTLC legs.
+    bytes payment_hash = 1;
+
+    // amount_sat is the exact amount locked in each vHTLC.
+    uint64 amount_sat = 2;
+
+    // client_vhtlc_pubkey is the client sender key in the first leg and the
+    // receiver key in the swap-server-funded second leg.
+    bytes client_vhtlc_pubkey = 3;
+
+    // max_vtxo_age_blocks is the maximum backing-batch age, in blocks,
+    // accepted for the swap-server VTXO that funds the second leg.
+    uint32 max_vtxo_age_blocks = 4;
+
+    // account_authorization proves control of client_vhtlc_pubkey for this
+    // exact request.
+    CreditAccountAuthorization account_authorization = 5;
+}
+
+// CreateRefreshSwapResponse returns the immutable terms for the client-funded
+// first leg of a refresh swap.
+message CreateRefreshSwapResponse {
+    // payment_hash is the SHA-256 hash shared by both vHTLC legs.
+    bytes payment_hash = 1;
+
+    // amount_sat is the exact amount locked in each vHTLC.
+    uint64 amount_sat = 2;
+
+    // server_pubkey is the swap server receiver key in the first leg.
+    bytes server_pubkey = 3;
+
+    // vhtlc_config contains the first leg's negotiated vHTLC parameters.
+    VHTLCConfig vhtlc_config = 4;
+
+    // expiry is the wall-clock deadline by which the first leg must be funded.
+    google.protobuf.Timestamp expiry = 5;
+
+    // settlement_type is SETTLEMENT_TYPE_REFRESH.
+    SettlementType settlement_type = 6;
 }
 
 // QuoteInSwapRequest previews one Ark-to-Lightning invoice send.

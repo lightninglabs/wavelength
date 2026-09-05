@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -43,6 +44,11 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
+)
+
+const (
+	refreshWorkerRetryBaseDelay = 200 * time.Millisecond
+	refreshWorkerRetryMaxDelay  = 30 * time.Second
 )
 
 // swapClientService owns the daemon-side SwapClientService implementation.
@@ -95,10 +101,10 @@ type swapClientService struct {
 	// resumePending.
 	mu sync.Mutex
 
-	// active is the set of payment-hash hex strings currently owned by a
-	// background worker in this daemon process. It deduplicates concurrent
-	// start/resume calls so a single payment hash is never driven by two
-	// goroutines at once.
+	// active is the set of role-scoped payment-hash strings currently owned
+	// by a background worker in this daemon process. It deduplicates
+	// concurrent start/resume calls for one swap role without blocking a
+	// legitimate opposite-role swap that uses the same payment hash.
 	active map[string]struct{}
 
 	// subscribers is the set of live SubscribeSwaps streams. Each channel
@@ -124,6 +130,12 @@ type swapClientService struct {
 	// and duplicate in-flight checks before swap creation mutates remote
 	// swapdk-server state.
 	chainParams *chaincfg.Params
+
+	// refreshRetryDelay controls the bounded exponential delay before a
+	// refresh worker reloads durable state after a non-terminal Wait error.
+	// Production uses refreshWorkerRetryDelay; tests inject a short delay
+	// so retry liveness can be asserted without slowing the suite.
+	refreshRetryDelay func(uint32) time.Duration
 }
 
 // operatorPubKeyFetcher returns the current Ark operator pubkey. It exists so
@@ -201,6 +213,18 @@ type swapRuntimeClient interface {
 	ResumeReceiveViaLightning(context.Context,
 		lntypes.Hash) (receiveSwapSession, error)
 
+	// ResumeRefreshSwap reloads a persisted composite refresh swap after a
+	// non-terminal Wait error so its worker can continue making progress.
+	ResumeRefreshSwap(context.Context,
+		lntypes.Hash) (refreshSwapSession, error)
+
+	// ListPendingRefreshSessions returns the durable refresh sessions that
+	// need a background worker after daemon startup.
+	ListPendingRefreshSessions(context.Context) (
+		[]refreshSwapSession,
+		error,
+	)
+
 	// GetSwapSummary reads one durable pay or receive swap summary by its
 	// Lightning payment hash.
 	GetSwapSummary(context.Context, lntypes.Hash) (swaps.SwapSummary, error)
@@ -240,6 +264,23 @@ type receiveSwapSession interface {
 	Wait(context.Context) (*swaps.ReceiveResult, error)
 }
 
+// refreshSwapSession is the subset of a refresh swap FSM that the daemon
+// executor drives. Refresh creation is currently an SDK-only operation; this
+// interface lets the daemon assume ownership of those durable sessions after
+// startup without adding a new public RPC.
+type refreshSwapSession interface {
+	// PaymentHash returns the shared hashlock used to deduplicate workers.
+	PaymentHash() lntypes.Hash
+
+	// State returns the latest durable composite state. Workers use it to
+	// distinguish a terminal result from a transient Wait interruption.
+	State() swaps.RefreshState
+
+	// Wait drives or observes both refresh legs until the composite FSM
+	// reaches terminal state or the daemon-root context is canceled.
+	Wait(context.Context) (*swaps.RefreshResult, error)
+}
+
 // swapClientAdapter adapts sdk/swaps.SwapClient to the narrow
 // swapRuntimeClient interface used by the subserver. It is intentionally thin:
 // all state transitions, persistence, timeout handling, and claim/refund logic
@@ -270,6 +311,14 @@ type receiveSessionAdapter struct {
 	// session is the concrete SDK receive session returned by a new or
 	// resumed receive swap.
 	session *swaps.ReceiveSession
+}
+
+// refreshSessionAdapter presents sdk/swaps.RefreshSession through the narrow
+// daemon worker interface used by production code and tests.
+type refreshSessionAdapter struct {
+	// session is the concrete SDK refresh session loaded from durable
+	// state.
+	session *swaps.RefreshSession
 }
 
 // Register installs the optional SwapClientService on the daemon gRPC server.
@@ -449,7 +498,6 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 		return nil, nil, err
 	}
 
-	rootCtx, cancel := context.WithCancel(ctx)
 	daemonConn := daemonWithLiveOperatorKey(
 		arkClient, rpcServer.OperatorPubKey,
 	)
@@ -506,6 +554,7 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 
 		return vtxoMinAmountSat(info.ServerInfo)
 	}
+	rootCtx, cancel := context.WithCancel(ctx)
 
 	service := &swapClientService{
 		client: &swapClientAdapter{
@@ -520,9 +569,10 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 		subscribers: make(
 			map[chan *swapclientrpc.SwapSummary]struct{},
 		),
-		receiveMinAmount: minAmount,
-		payMinAmount:     minAmount,
-		chainParams:      chainParams,
+		receiveMinAmount:  minAmount,
+		payMinAmount:      minAmount,
+		chainParams:       chainParams,
+		refreshRetryDelay: refreshWorkerRetryDelay,
 	}
 
 	cleanup := func() {
@@ -569,9 +619,7 @@ func installVTXOForfeitParticipantSigner(rpcServer *waved.RPCServer,
 			req *vtxo.ForfeitParticipantSignRequest) (
 			[]*types.ForfeitParticipantSig, error) {
 
-			payload, err := swaps.ForfeitSignaturePayloadFromVTXORequest(
-				req,
-			)
+			payload, err := forfeitSignaturePayload(req)
 			if err != nil {
 				return nil, err
 			}
@@ -598,6 +646,14 @@ func installVTXOForfeitParticipantSigner(rpcServer *waved.RPCServer,
 			}}, nil
 		},
 	)
+}
+
+// forfeitSignaturePayload keeps the deeply nested signer callback readable
+// while delegating the exact transcript conversion to sdk/swaps.
+func forfeitSignaturePayload(req *vtxo.ForfeitParticipantSignRequest) (
+	*swaps.ForfeitSignaturePayload, error) {
+
+	return swaps.ForfeitSignaturePayloadFromVTXORequest(req)
 }
 
 // newSwapServerClients builds the swapdk-server clients for the configured
@@ -752,6 +808,41 @@ func (a *swapClientAdapter) ResumeReceiveViaLightning(ctx context.Context,
 	return &receiveSessionAdapter{session: session}, nil
 }
 
+// ResumeRefreshSwap reloads a persisted composite refresh session and adapts
+// it for the daemon's retrying background worker.
+func (a *swapClientAdapter) ResumeRefreshSwap(ctx context.Context,
+	hash lntypes.Hash) (refreshSwapSession, error) {
+
+	session, err := a.client.ResumeRefreshSwap(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+
+	return &refreshSessionAdapter{session: session}, nil
+}
+
+// ListPendingRefreshSessions loads the durable refresh sessions that need a
+// daemon worker and adapts them without interpreting their FSM state locally.
+func (a *swapClientAdapter) ListPendingRefreshSessions(ctx context.Context) (
+	[]refreshSwapSession, error) {
+
+	sessions, err := a.client.ListPendingRefreshSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]refreshSwapSession, 0, len(sessions))
+	for _, session := range sessions {
+		result = append(
+			result, &refreshSessionAdapter{
+				session: session,
+			},
+		)
+	}
+
+	return result, nil
+}
+
 // GetSwapSummary forwards direct payment-hash lookups to sdk/swaps so the
 // daemon RPC layer does not scan every persisted session on hot paths.
 func (a *swapClientAdapter) GetSwapSummary(ctx context.Context,
@@ -783,6 +874,25 @@ func (r *receiveSessionAdapter) Invoice() string {
 // Wait blocks until the wrapped receive session reaches a terminal state or
 // the caller cancels the provided context.
 func (r *receiveSessionAdapter) Wait(ctx context.Context) (*swaps.ReceiveResult,
+	error) {
+
+	return r.session.Wait(ctx)
+}
+
+// PaymentHash returns the shared hashlock associated with the wrapped refresh
+// session.
+func (r *refreshSessionAdapter) PaymentHash() lntypes.Hash {
+	return r.session.PaymentHash()
+}
+
+// State returns the wrapped refresh session's latest durable state.
+func (r *refreshSessionAdapter) State() swaps.RefreshState {
+	return r.session.State()
+}
+
+// Wait blocks until the wrapped composite refresh session reaches a terminal
+// state or the caller cancels the provided context.
+func (r *refreshSessionAdapter) Wait(ctx context.Context) (*swaps.RefreshResult,
 	error) {
 
 	return r.session.Wait(ctx)
@@ -972,7 +1082,7 @@ func swapServerOperationWaitsForReady(method string) bool {
 		swaprpc.SwapService_AuthorizeInSwapRefund_FullMethodName,
 		swaprpc.SwapService_AcknowledgeOutSwapHtlc_FullMethodName,
 		swaprpc.SwapService_SignInSwapForfeit_FullMethodName,
-		swaprpc.SwapService_SubmitOutSwapForfeitSignature_FullMethodName:
+		swaprpc.SwapService_SubmitOutSwapForfeitSignature_FullMethodName: //nolint:ll
 		return true
 
 	default:
@@ -1493,6 +1603,9 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 			"idempotency_key is reserved for future use",
 		)
 	}
+	if err := s.validateReceiveAmount(ctx, req.GetAmountSat()); err != nil {
+		return nil, err
+	}
 	session, err := s.client.StartReceiveViaLightning(
 		ctx,
 		btcutil.Amount(
@@ -1667,7 +1780,12 @@ func (s *swapClientService) pendingSwapForInvoice(ctx context.Context,
 	decoded, err := zpay32.Decode(
 		strings.TrimSpace(invoice), s.chainParams,
 	)
-	if err != nil || decoded.PaymentHash == nil {
+	if err != nil {
+
+		// Invalid placeholder invoices still flow to SDK validation.
+		return nil, false, nil //nolint:nilerr
+	}
+	if decoded.PaymentHash == nil {
 		return nil, false, nil
 	}
 
@@ -1751,6 +1869,12 @@ func (s *swapClientService) ListSwaps(ctx context.Context,
 		Swaps: make([]*swapclientrpc.SwapSummary, 0, len(summaries)),
 	}
 	for i := range summaries {
+		// Refresh is SDK-started until the public RPC gains explicit
+		// direction, state, and request messages for the composite FSM.
+		if summaries[i].Direction == swaps.SwapDirectionRefresh {
+			continue
+		}
+
 		summary := swapSummaryToProto(summaries[i])
 		resp.Swaps = append(resp.Swaps, summary)
 	}
@@ -1833,15 +1957,13 @@ func (s *swapClientService) SubscribeSwaps(
 }
 
 // resumePending starts background workers for every persisted non-terminal
-// swap reported by sdk/swaps. This is the restart-resume hook: when a
-// swapruntime daemon starts, the store is scanned before the RPC server begins
-// accepting control calls.
+// swap reported by sdk/swaps. Pay and receive swaps are discovered through
+// summaries, while refresh swaps use their dedicated durable session list so
+// the daemon can hand the restored composite FSM directly to its worker.
 func (s *swapClientService) resumePending(ctx context.Context) {
 	summaries, err := s.client.ListSwapSummaries(ctx, true)
 	if err != nil {
-		s.log.Warnf("unable to list pending swaps on startup: %v", err)
-
-		return
+		s.log.WarnS(ctx, "Unable to list pending swaps on startup", err)
 	}
 
 	for _, summary := range summaries {
@@ -1851,7 +1973,27 @@ func (s *swapClientService) resumePending(ctx context.Context) {
 
 		case swaps.SwapDirectionReceive:
 			s.startReceiveWorker(summary.PaymentHash)
+
+		case swaps.SwapDirectionRefresh:
+			// The scan below hands the loaded composite FSM to its
+			// worker.
+			continue
 		}
+	}
+
+	refreshSessions, err := s.client.ListPendingRefreshSessions(ctx)
+	if err != nil {
+		s.log.WarnS(
+			ctx,
+			"Unable to list pending refresh swaps on startup",
+			err,
+		)
+
+		return
+	}
+
+	for _, session := range refreshSessions {
+		s.startRefreshWorker(session)
 	}
 }
 
@@ -1860,7 +2002,7 @@ func (s *swapClientService) resumePending(ctx context.Context) {
 // same payment hash return immediately, so one daemon process has at most one
 // active pay driver per hash.
 func (s *swapClientService) startPayWorker(hash lntypes.Hash) {
-	key := hex.EncodeToString(hash[:])
+	key := "pay:" + hex.EncodeToString(hash[:])
 	if !s.markActive(key) {
 		return
 	}
@@ -1889,7 +2031,7 @@ func (s *swapClientService) startPayWorker(hash lntypes.Hash) {
 // the same payment hash return immediately, preserving one active receive
 // driver per hash.
 func (s *swapClientService) startReceiveWorker(hash lntypes.Hash) {
-	key := hex.EncodeToString(hash[:])
+	key := "receive:" + hex.EncodeToString(hash[:])
 	if !s.markActive(key) {
 		return
 	}
@@ -1915,9 +2057,134 @@ func (s *swapClientService) startReceiveWorker(hash lntypes.Hash) {
 	}()
 }
 
+// startRefreshWorker claims process-local ownership for a composite refresh
+// FSM and waits on the restored sdk/swaps session in a goroutine. A
+// non-terminal Wait error triggers a bounded exponential delay followed by a
+// fresh durable reload, keeping the worker alive through transient transport or
+// storage failures without spinning on a stale session.
+func (s *swapClientService) startRefreshWorker(session refreshSwapSession) {
+	hash := session.PaymentHash()
+	key := "refresh:" + hex.EncodeToString(hash[:])
+	if !s.markActive(key) {
+		return
+	}
+
+	go func() {
+		defer s.markInactive(key)
+
+		retryDelay := refreshWorkerRetryDelay
+		if s.refreshRetryDelay != nil {
+			retryDelay = s.refreshRetryDelay
+		}
+
+		var retryAttempt uint32
+		for {
+			_, err := session.Wait(s.rootCtx)
+			if err == nil || s.rootCtx.Err() != nil {
+				return
+			}
+
+			state := session.State()
+			if state.IsTerminal() {
+				s.log.InfoS(
+					s.rootCtx,
+					"Refresh swap stopped in terminal state",
+					btclog.Hex("hash", hash[:]),
+					slog.String("state", state.String()),
+					slog.String("error", err.Error()),
+				)
+
+				return
+			}
+
+			retryAttempt++
+			delay := retryDelay(retryAttempt)
+			s.log.InfoS(
+				s.rootCtx,
+				"Refresh swap wait interrupted; retrying",
+				btclog.Hex("hash", hash[:]),
+				slog.String("state", state.String()),
+				slog.String("error", err.Error()),
+				slog.Uint64("attempt", uint64(retryAttempt)),
+				slog.Duration("retry_delay", delay),
+			)
+			if !waitRefreshWorkerRetry(s.rootCtx, delay) {
+				return
+			}
+
+			for {
+				resumed, resumeErr :=
+					s.client.ResumeRefreshSwap(
+						s.rootCtx, hash,
+					)
+				if resumeErr == nil {
+					session = resumed
+					break
+				}
+				if s.rootCtx.Err() != nil {
+					return
+				}
+
+				retryAttempt++
+				delay = retryDelay(retryAttempt)
+				s.log.DebugS(
+					s.rootCtx,
+					"Unable to reload refresh swap; "+
+						"retrying",
+					btclog.Hex("hash", hash[:]),
+					slog.String("error", resumeErr.Error()),
+					slog.Uint64(
+						"attempt", uint64(retryAttempt),
+					),
+					slog.Duration("retry_delay", delay),
+				)
+				if !waitRefreshWorkerRetry(s.rootCtx, delay) {
+					return
+				}
+			}
+		}
+	}()
+}
+
+// refreshWorkerRetryDelay returns a deterministic exponential retry delay
+// capped at 30 seconds. The cap keeps long outages responsive to recovery while
+// the non-zero floor prevents a failed refresh session from hot-looping.
+func refreshWorkerRetryDelay(attempt uint32) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+
+	delay := refreshWorkerRetryBaseDelay
+	for current := uint32(1); current < attempt; current++ {
+		if delay >= refreshWorkerRetryMaxDelay/2 {
+			return refreshWorkerRetryMaxDelay
+		}
+
+		delay *= 2
+	}
+
+	return delay
+}
+
+// waitRefreshWorkerRetry sleeps for one refresh retry interval while allowing
+// daemon shutdown to stop the worker immediately.
+func waitRefreshWorkerRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+
+	case <-timer.C:
+		return true
+	}
+}
+
 // markActive records that the daemon has an in-process worker responsible for
-// a payment hash. It returns false when another goroutine already owns that
-// hash, which is the worker-deduplication gate used by start/resume paths.
+// one role-scoped payment hash. It returns false when another goroutine already
+// owns the same role and hash, which is the worker-deduplication gate used by
+// start/resume paths.
 func (s *swapClientService) markActive(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1999,6 +2266,9 @@ func (s *swapClientService) summaryByHash(ctx context.Context,
 
 		return nil, status.Errorf(codes.Internal, "get swap "+
 			"summary: %v", err)
+	}
+	if summary.Direction == swaps.SwapDirectionRefresh {
+		return nil, status.Error(codes.NotFound, "swap not found")
 	}
 
 	return swapSummaryToProto(summary), nil
@@ -2252,7 +2522,7 @@ func creditStateToProto(
 
 	case swaps.CreditStateAwaitingPayment:
 		return swapclientrpc.
-			CreditOperationState_CREDIT_OPERATION_STATE_AWAITING_PAYMENT
+			CreditOperationState_CREDIT_OPERATION_STATE_AWAITING_PAYMENT //nolint:ll
 
 	case swaps.CreditStateCredited:
 		return swapclientrpc.
@@ -2264,7 +2534,7 @@ func creditStateToProto(
 
 	case swaps.CreditStatePayingLightning:
 		return swapclientrpc.
-			CreditOperationState_CREDIT_OPERATION_STATE_PAYING_LIGHTNING
+			CreditOperationState_CREDIT_OPERATION_STATE_PAYING_LIGHTNING //nolint:ll
 
 	case swaps.CreditStateDebited:
 		return swapclientrpc.
@@ -2373,14 +2643,14 @@ func swapSettlementTypeToProto(
 			SwapSettlementType_SWAP_SETTLEMENT_TYPE_LIGHTNING
 
 	case swaps.SettlementTypeInArk:
-		return swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_IN_ARK
+		return swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_IN_ARK //nolint:ll
 
 	case swaps.SettlementTypeCredit:
 		return swapclientrpc.
 			SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT
 
 	case swaps.SettlementTypeMixed:
-		return swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_MIXED
+		return swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_MIXED //nolint:ll
 
 	default:
 		return swapclientrpc.

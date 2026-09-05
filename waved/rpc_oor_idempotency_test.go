@@ -448,10 +448,14 @@ func TestSendOORReservesExactManagedCustomInputs(t *testing.T) {
 	require.NoError(t, vtxoStore.SaveVTXO(ctx, input1))
 	require.NoError(t, vtxoStore.SaveVTXO(ctx, input2))
 
+	selectedInput2 := selectedVTXOFromDescriptor(input2)
+	selectedInput2.ReserveEpoch = 41
+	selectedInput1 := selectedVTXOFromDescriptor(input1)
+	selectedInput1.ReserveEpoch = 42
 	testWallet := &sendOORTestWallet{
 		selections: [][]wallet.SelectedVTXO{{
-			selectedVTXOFromDescriptor(input2),
-			selectedVTXOFromDescriptor(input1),
+			selectedInput2,
+			selectedInput1,
 		}},
 	}
 
@@ -548,6 +552,8 @@ func TestSendOORReservesExactManagedCustomInputs(t *testing.T) {
 	require.Equal(
 		t, requestedOutpoints[1], requests[0].Inputs[1].VTXO.Outpoint,
 	)
+	require.Equal(t, uint64(41), requests[0].Inputs[0].ReserveEpoch)
+	require.Equal(t, uint64(42), requests[0].Inputs[1].ReserveEpoch)
 }
 
 // TestClassifyCustomOORInputsRejectsMixedModes verifies a request cannot
@@ -751,6 +757,8 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 		totalAmount    = amountA + amountB
 		inputAmount    = totalAmount + 2000
 		exitDelay      = uint32(10)
+		maxVTXOAge     = uint32(10)
+		currentHeight  = int32(510)
 		idempotencyKey = "rpc-send-oor-idempotency-key"
 	)
 
@@ -807,6 +815,9 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 
 	walletReady := make(chan struct{})
 	close(walletReady)
+	heightBackend := &heightOnlyChainBackend{
+		height: currentHeight,
+	}
 
 	server := &Server{
 		cfg:         &Config{},
@@ -823,6 +834,7 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 			},
 		}),
 		actorSystem:     system,
+		chainBackend:    heightBackend,
 		vtxoStore:       vtxoStore,
 		walletRef:       fn.Some(walletRef),
 		oorSessionStore: registryStore,
@@ -852,6 +864,22 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 		t, recipientKeyB.PubKey(), operatorKey.PubKey(), exitDelay,
 		amountB,
 	)
+	exactInputs := []*waverpc.CustomOORInput{
+		{
+			Outpoint: firstDesc.Outpoint.String(),
+		},
+	}
+
+	// A positive age constraint cannot be evaluated against an unknown
+	// chain height. Fail before asking the wallet so no input is reserved.
+	heightBackend.height = 0
+	_, err = rpcServer.SendOOR(ctx, &waverpc.SendOORRequest{
+		Recipients:       []*waverpc.Output{recipientA, recipientB},
+		MaxVtxoAgeBlocks: maxVTXOAge,
+	})
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, 0, testWallet.selectCount())
+	heightBackend.height = currentHeight
 
 	// A failed session row carrying the same key must not dedup the send:
 	// the pre-flight lookup skips failed sessions, so the first call below
@@ -874,8 +902,10 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 	)
 
 	firstResp, err := rpcServer.SendOOR(ctx, &waverpc.SendOORRequest{
-		Recipients:     []*waverpc.Output{recipientA, recipientB},
-		IdempotencyKey: idempotencyKey,
+		Recipients:       []*waverpc.Output{recipientA, recipientB},
+		CustomInputs:     exactInputs,
+		IdempotencyKey:   idempotencyKey,
+		MaxVtxoAgeBlocks: maxVTXOAge,
 	})
 	require.NoError(t, err)
 	require.Equal(t, "submitted", firstResp.Status)
@@ -895,6 +925,11 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 		t, btcutil.Amount(totalAmount), selectReqs[0].TargetAmount,
 	)
 	require.Equal(t, btcutil.Amount(1), selectReqs[0].MinChangeAmount)
+	require.Equal(t, maxVTXOAge, selectReqs[0].MaxVTXOAgeBlocks)
+	require.Equal(t, currentHeight, selectReqs[0].CurrentHeight)
+	require.Equal(
+		t, []wire.OutPoint{firstDesc.Outpoint}, selectReqs[0].Outpoints,
+	)
 
 	// A sender can ingest its own OOR change under the same session id. The
 	// incoming lifecycle must advance independently without hiding the
@@ -920,6 +955,13 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 				firstResp.SessionId, recipient.OutputIndex),
 		)
 	}
+	replayData, err := oor.DecodeOutgoingReplayData(attempt.RequestData)
+	require.NoError(t, err)
+	require.Equal(t, maxVTXOAge, replayData.MaxVTXOAgeBlocks)
+	require.Equal(
+		t, []wire.OutPoint{firstDesc.Outpoint},
+		replayData.ExactInputOutpoints,
+	)
 
 	// The real terminal outgoing bridge intentionally emits a minimal
 	// snapshot with no Ark PSBT. Model that persisted update and verify the
@@ -980,7 +1022,9 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 			Recipients: []*waverpc.Output{
 				recipientB, recipientA,
 			},
-			IdempotencyKey: idempotencyKey,
+			CustomInputs:     exactInputs,
+			IdempotencyKey:   idempotencyKey,
+			MaxVtxoAgeBlocks: maxVTXOAge,
 			AdmissionDeadlineUnixNanos: time.Now().
 				Add(-time.Second).
 				UnixNano(),
@@ -998,6 +1042,51 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 	require.Equal(t, 1, testWallet.selectCount())
 	require.Empty(t, testWallet.unlockBatches())
 
+	differentInput := firstDesc.Outpoint
+	differentInput.Index++
+	_, err = restartedRPCServer.SendOOR(
+		ctx, &waverpc.SendOORRequest{
+			Recipients: []*waverpc.Output{
+				recipientB, recipientA,
+			},
+			CustomInputs: []*waverpc.CustomOORInput{
+				{Outpoint: differentInput.String()},
+			},
+			IdempotencyKey:   idempotencyKey,
+			ExistingOnly:     true,
+			MaxVtxoAgeBlocks: maxVTXOAge,
+		},
+	)
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
+	require.Equal(t, 1, testWallet.selectCount())
+
+	_, err = restartedRPCServer.SendOOR(
+		ctx, &waverpc.SendOORRequest{
+			Recipients: []*waverpc.Output{
+				recipientB, recipientA,
+			},
+			IdempotencyKey:   idempotencyKey,
+			ExistingOnly:     true,
+			MaxVtxoAgeBlocks: maxVTXOAge,
+		},
+	)
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
+	require.Equal(t, 1, testWallet.selectCount())
+
+	_, err = restartedRPCServer.SendOOR(
+		ctx, &waverpc.SendOORRequest{
+			Recipients: []*waverpc.Output{
+				recipientB, recipientA,
+			},
+			CustomInputs:     exactInputs,
+			IdempotencyKey:   idempotencyKey,
+			ExistingOnly:     true,
+			MaxVtxoAgeBlocks: maxVTXOAge - 1,
+		},
+	)
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
+	require.Equal(t, 1, testWallet.selectCount())
+
 	amountMismatch := sendOORPolicyRecipient(
 		t, recipientKeyA.PubKey(), operatorKey.PubKey(), exitDelay,
 		amountA+1,
@@ -1007,8 +1096,10 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 			Recipients: []*waverpc.Output{
 				amountMismatch, recipientB,
 			},
-			IdempotencyKey: idempotencyKey,
-			ExistingOnly:   true,
+			CustomInputs:     exactInputs,
+			IdempotencyKey:   idempotencyKey,
+			ExistingOnly:     true,
+			MaxVtxoAgeBlocks: maxVTXOAge,
 		},
 	)
 	require.Equal(t, codes.AlreadyExists, status.Code(err))
@@ -1024,8 +1115,10 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 			Recipients: []*waverpc.Output{
 				scriptMismatch, recipientB,
 			},
-			IdempotencyKey: idempotencyKey,
-			ExistingOnly:   true,
+			CustomInputs:     exactInputs,
+			IdempotencyKey:   idempotencyKey,
+			ExistingOnly:     true,
+			MaxVtxoAgeBlocks: maxVTXOAge,
 		},
 	)
 	require.Equal(t, codes.AlreadyExists, status.Code(err))
