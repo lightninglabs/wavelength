@@ -193,3 +193,51 @@ func TestLeaveVTXOsDryRunRejectsCommitted(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 }
+
+// TestSweepAllTargetsSkipsCommitted asserts a sweep_all SendOnChain drops the
+// VTXOs it cannot forfeit rather than failing the whole sweep. This is the
+// SendOnChain twin of TestAdmitLeaveTargetsAllSkipsCommitted: a VTXO the
+// automatic refresh had just committed to a round sank an otherwise valid
+// "exit my whole balance" request with the manager's raw reservation error.
+func TestSweepAllTargetsSkipsCommitted(t *testing.T) {
+	t.Parallel()
+
+	r, store := newLeaveAdmissionServer(t)
+
+	live := saveVTXOWithStatus(t, store, 0x41, vtxo.VTXOStatusLive)
+	saveVTXOWithStatus(t, store, 0x42, vtxo.VTXOStatusForfeiting)
+	saveVTXOWithStatus(t, store, 0x43, vtxo.VTXOStatusPendingForfeit)
+
+	targets, err := r.sweepAllTargets(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, []wire.OutPoint{live.Outpoint}, targets)
+}
+
+// TestSweepAllTargetsAllCommitted asserts that a wallet whose every coin is
+// committed to a round answers FailedPrecondition rather than "no live VTXOs":
+// the caller should retry once the rounds confirm, not conclude the wallet is
+// empty.
+func TestSweepAllTargetsAllCommitted(t *testing.T) {
+	t.Parallel()
+
+	r, store := newLeaveAdmissionServer(t)
+	saveVTXOWithStatus(t, store, 0x51, vtxo.VTXOStatusForfeiting)
+
+	_, err := r.sweepAllTargets(t.Context())
+	require.Error(t, err)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Contains(t, err.Error(), "skipped (committed to a round")
+}
+
+// TestSweepAllTargetsEmptyWallet keeps the pre-existing empty-wallet answer
+// distinct from the all-committed one.
+func TestSweepAllTargetsEmptyWallet(t *testing.T) {
+	t.Parallel()
+
+	r, _ := newLeaveAdmissionServer(t)
+
+	_, err := r.sweepAllTargets(t.Context())
+	require.Error(t, err)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Contains(t, err.Error(), "no live VTXOs to sweep")
+}
