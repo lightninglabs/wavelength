@@ -28,12 +28,13 @@ type confRef = actor.TellOnlyRef[chainsource.ConfirmationEvent]
 
 type confirmationRegistration = chainsource.RegisterConfResponse
 
-// batchExpiryAuthenticator adapts the chain-source actor's one-shot
+// NewBatchExpiryAuthenticator adapts the chain-source actor's one-shot
 // confirmation API to the pure VTXO expiry verifier. A fresh caller id keeps
 // concurrent acceptance checks independent; each one-shot watch is removed
 // after its future resolves.
-func batchExpiryAuthenticator(
-	chainSource chainSourceRef) oor.IncomingExpiryAuthenticator {
+func NewBatchExpiryAuthenticator(chainSource actor.ActorRef[
+	chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+]) oor.IncomingExpiryAuthenticator {
 
 	return batchExpiryAuthenticatorWithTimeout(
 		chainSource, expiryAuthenticationTimeout,
