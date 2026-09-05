@@ -218,3 +218,53 @@ func TestAssetTreeContextAmountsAfterExtraction(t *testing.T) {
 		t, 42, extracted.AssetContext.NodeAssetAmount(extractedLeaf),
 	)
 }
+
+// TestAssetTreeContextValidate tests asset tree context validation.
+func TestAssetTreeContextValidate(t *testing.T) {
+	t.Parallel()
+
+	newContext := func() (*AssetTreeContext, *Node, *Node) {
+		rootInput := wire.OutPoint{Index: 1}
+		rootInput.Hash[0] = 0x01
+		leafInput := wire.OutPoint{Index: 2}
+		leafInput.Hash[0] = 0x02
+
+		leaf := &Node{
+			Input:    leafInput,
+			Children: make(map[uint32]*Node),
+		}
+		root := &Node{
+			Input: rootInput,
+			Children: map[uint32]*Node{
+				0: leaf,
+			},
+		}
+
+		ctx := NewAssetTreeContext()
+		ctx.SetAssetRef("asset")
+		ctx.SetSigningTweak(rootInput, bytes.Repeat([]byte{1}, 32))
+		ctx.SetSigningTweak(leafInput, bytes.Repeat([]byte{2}, 32))
+		ctx.SetNodeAssetAmount(root, 10)
+		ctx.SetNodeAssetAmount(leaf, 10)
+		ctx.SetLeafAssetRoot(leafInput, bytes.Repeat([]byte{3}, 32))
+
+		return ctx, root, leaf
+	}
+
+	t.Run("valid", func(t *testing.T) {
+		ctx, root, _ := newContext()
+		require.NoError(t, ctx.Validate(root))
+	})
+
+	t.Run("duplicate input", func(t *testing.T) {
+		ctx, root, leaf := newContext()
+		leaf.Input = root.Input
+		require.ErrorContains(t, ctx.Validate(root), "multiple nodes")
+	})
+
+	t.Run("child exceeds parent", func(t *testing.T) {
+		ctx, root, leaf := newContext()
+		ctx.SetNodeAssetAmount(leaf, 11)
+		require.ErrorContains(t, ctx.Validate(root), "exceeds")
+	})
+}

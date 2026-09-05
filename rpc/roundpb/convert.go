@@ -15,6 +15,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	tapsdk "github.com/lightninglabs/tap-sdk"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/types"
 )
@@ -229,6 +230,9 @@ func TreeToProto(t *tree.Tree) (*VTXOTree, error) {
 	if t == nil {
 		return nil, nil
 	}
+	if err := validateAssetTree(t); err != nil {
+		return nil, err
+	}
 
 	// Flatten nodes in pre-order.
 	var nodes []*TreeNode
@@ -239,12 +243,28 @@ func TreeToProto(t *tree.Tree) (*VTXOTree, error) {
 		return nil, err
 	}
 
-	return &VTXOTree{
+	pt := &VTXOTree{
 		Nodes:              nodes,
 		BatchOutpoint:      OutpointToProto(t.BatchOutpoint),
 		BatchOutput:        TxOutToProto(t.BatchOutput),
 		SweepTapscriptRoot: t.SweepTapscriptRoot,
-	}, nil
+	}
+
+	if t.AssetContext != nil {
+		pt.AssetRef = t.AssetContext.AssetRef()
+		for node, idx := range nodeIndex {
+			pn := nodes[idx]
+			pn.SigningTweak = t.AssetContext.SigningTweak(
+				node.Input,
+			)
+			pn.AssetAmount = t.AssetContext.NodeAssetAmount(node)
+			pn.AssetCommitmentRoot = t.AssetContext.LeafAssetRoot(
+				node.Input,
+			)
+		}
+	}
+
+	return pt, nil
 }
 
 // flattenNode recursively flattens a tree node into the nodes slice.
@@ -338,9 +358,7 @@ func WithMaxTreeNodes(maxNodes int) TreeFromProtoOption {
 // TreeFromProto converts a proto VTXOTree back to a tree.Tree by
 // reconstructing the recursive node structure.
 //
-// NOTE: The returned tree nodes will have a nil FinalKey. Callers that
-// need the aggregated taproot key must run Materialize on the tree to
-// recompute FinalKey from CoSigners and the sweep tapscript root.
+// FinalKey is recomputed from each node's cosigners and taproot tweak.
 func TreeFromProto(pt *VTXOTree,
 	opts ...TreeFromProtoOption) (*tree.Tree, error) {
 
@@ -454,15 +472,25 @@ func TreeFromProto(pt *VTXOTree,
 			"multiple roots", len(pt.Nodes), len(parentOf))
 	}
 
+	assetCtx, err := assetContextFromProto(pt, goNodes)
+	if err != nil {
+		return nil, err
+	}
+
 	// Compute FinalKey for each node now that we have the
 	// sweep tapscript root. The constructors (NewLeafNode,
 	// NewBranchNode) normally do this, but proto deserialization
 	// bypasses them. Without FinalKey, signature verification
 	// in VerifySigned will fail. Nodes without cosigners (e.g.
 	// certain connector nodes) are skipped.
-	for _, node := range goNodes {
+	for i, node := range goNodes {
 		if len(node.CoSigners) == 0 {
 			continue
+		}
+
+		taprootTweak := pt.SweepTapscriptRoot
+		if assetCtx != nil {
+			taprootTweak = assetCtx.SigningTweak(node.Input)
 		}
 
 		// Copy cosigners before computing the final key
@@ -475,10 +503,11 @@ func TreeFromProto(pt *VTXOTree,
 		copy(csCopy, node.CoSigners)
 
 		fk, fkErr := tree.ComputeFinalKey(
-			csCopy, pt.SweepTapscriptRoot,
+			csCopy, taprootTweak,
 		)
 		if fkErr != nil {
-			return nil, fmt.Errorf("compute final key: %w", fkErr)
+			return nil, fmt.Errorf("node[%d] compute final key: %w",
+				i, fkErr)
 		}
 
 		node.FinalKey = fk
@@ -499,7 +528,77 @@ func TreeFromProto(pt *VTXOTree,
 		BatchOutpoint:      batchOP,
 		BatchOutput:        batchOut,
 		SweepTapscriptRoot: pt.SweepTapscriptRoot,
+		AssetContext:       assetCtx,
 	}, nil
+}
+
+// assetContextFromProto validates and rebuilds a tree's asset context.
+func assetContextFromProto(pt *VTXOTree,
+	nodes []*tree.Node) (*tree.AssetTreeContext, error) {
+
+	hasAssetFields := false
+	for _, node := range pt.Nodes {
+		if len(node.SigningTweak) != 0 || node.AssetAmount != 0 ||
+			len(node.AssetCommitmentRoot) != 0 {
+
+			hasAssetFields = true
+			break
+		}
+	}
+
+	if pt.AssetRef == "" {
+		if hasAssetFields {
+			return nil, fmt.Errorf("asset tree fields require " +
+				"asset_ref")
+		}
+
+		return nil, nil
+	}
+
+	assetRef, err := tapsdk.ParseAssetRef(pt.AssetRef)
+	if err != nil {
+		return nil, fmt.Errorf("asset_ref: %w", err)
+	}
+	if assetRef.String() != pt.AssetRef {
+		return nil, fmt.Errorf("asset_ref must use canonical encoding")
+	}
+
+	assetCtx := tree.NewAssetTreeContext()
+	assetCtx.SetAssetRef(pt.AssetRef)
+	for i, node := range pt.Nodes {
+		goNode := nodes[i]
+
+		assetCtx.SetSigningTweak(goNode.Input, node.SigningTweak)
+		assetCtx.SetNodeAssetAmount(goNode, node.AssetAmount)
+		assetCtx.SetLeafAssetRoot(
+			goNode.Input, node.AssetCommitmentRoot,
+		)
+	}
+	if err := assetCtx.Validate(nodes[0]); err != nil {
+		return nil, fmt.Errorf("asset tree: %w", err)
+	}
+
+	return assetCtx, nil
+}
+
+// validateAssetTree checks the asset reference and per-node context.
+func validateAssetTree(t *tree.Tree) error {
+	if t.AssetContext == nil {
+		return nil
+	}
+	if err := t.AssetContext.Validate(t.Root); err != nil {
+		return fmt.Errorf("asset tree: %w", err)
+	}
+
+	assetRef, err := tapsdk.ParseAssetRef(t.AssetContext.AssetRef())
+	if err != nil {
+		return fmt.Errorf("asset_ref: %w", err)
+	}
+	if assetRef.String() != t.AssetContext.AssetRef() {
+		return fmt.Errorf("asset_ref must use canonical encoding")
+	}
+
+	return nil
 }
 
 // treeNodeFromProto converts a single proto TreeNode to a tree.Node.

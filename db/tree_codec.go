@@ -20,6 +20,7 @@ type (
 	tlvTreeBatchOutput   = tlv.TlvType1
 	tlvTreeSweepRoot     = tlv.TlvType2
 	tlvTreeRootNode      = tlv.TlvType3
+	tlvTreeAssetRef      = tlv.TlvType4
 )
 
 // Tree-decode safety bounds. The wire layer feeds DeserializeTree from
@@ -46,12 +47,16 @@ const (
 
 // TLV type aliases for Node serialization.
 type (
-	tlvNodeInput     = tlv.TlvType0
-	tlvNodeOutputs   = tlv.TlvType1
-	tlvNodeCoSigners = tlv.TlvType2
-	tlvNodeSignature = tlv.TlvType3
-	tlvNodeFinalKey  = tlv.TlvType4
-	tlvNodeChildren  = tlv.TlvType5
+	tlvNodeInput         = tlv.TlvType0
+	tlvNodeOutputs       = tlv.TlvType1
+	tlvNodeCoSigners     = tlv.TlvType2
+	tlvNodeSignature     = tlv.TlvType3
+	tlvNodeFinalKey      = tlv.TlvType4
+	tlvNodeChildren      = tlv.TlvType5
+	tlvNodeSigningTweak  = tlv.TlvType6
+	tlvNodeSealedPackage = tlv.TlvType7
+	tlvNodeAssetAmount   = tlv.TlvType8
+	tlvNodeLeafAssetRoot = tlv.TlvType9
 )
 
 // outpointRecord is a TLV record for wire.OutPoint. It implements
@@ -491,6 +496,9 @@ type tlvTree struct {
 	// RootNodeData is the serialized root node. Uses tlv.Blob (primitive
 	// []byte) directly.
 	RootNodeData tlv.RecordT[tlvTreeRootNode, tlv.Blob]
+
+	// AssetRef identifies the asset carried by the tree.
+	AssetRef tlv.RecordT[tlvTreeAssetRef, tlv.Blob]
 }
 
 // newTlvTree creates a new tlvTree with initialized RecordT fields.
@@ -506,22 +514,38 @@ func newTlvTree() *tlvTree {
 		RootNodeData: tlv.NewPrimitiveRecord[tlvTreeRootNode, tlv.Blob](
 			nil,
 		),
+		AssetRef: tlv.NewPrimitiveRecord[
+			tlvTreeAssetRef, tlv.Blob,
+		](
+			nil,
+		),
 	}
 }
 
 // EncodeRecords returns the TLV records for encoding.
 func (t *tlvTree) EncodeRecords() []tlv.Record {
-	return []tlv.Record{
+	records := []tlv.Record{
 		t.BatchOutpoint.Record(),
 		t.BatchOutput.Record(),
 		t.SweepRoot.Record(),
 		t.RootNodeData.Record(),
 	}
+	if len(t.AssetRef.Val) != 0 {
+		records = append(records, t.AssetRef.Record())
+	}
+
+	return records
 }
 
 // DecodeRecords returns the TLV records for decoding.
 func (t *tlvTree) DecodeRecords() []tlv.Record {
-	return t.EncodeRecords()
+	return []tlv.Record{
+		t.BatchOutpoint.Record(),
+		t.BatchOutput.Record(),
+		t.SweepRoot.Record(),
+		t.RootNodeData.Record(),
+		t.AssetRef.Record(),
+	}
 }
 
 // Encode serializes the tlvTree to a writer.
@@ -563,6 +587,18 @@ type tlvNode struct {
 
 	// Children is the serialized children data.
 	Children tlv.RecordT[tlvNodeChildren, childrenDataRecord]
+
+	// SigningTweak is the node's taproot tweak in an asset tree.
+	SigningTweak tlv.RecordT[tlvNodeSigningTweak, tlv.Blob]
+
+	// SealedPackage is the node's asset transition package.
+	SealedPackage tlv.RecordT[tlvNodeSealedPackage, tlv.Blob]
+
+	// AssetAmount is the number of asset units in this subtree.
+	AssetAmount tlv.RecordT[tlvNodeAssetAmount, uint64]
+
+	// LeafAssetRoot is the asset commitment root created by a leaf.
+	LeafAssetRoot tlv.RecordT[tlvNodeLeafAssetRoot, tlv.Blob]
 }
 
 // newTlvNode creates a new tlvNode with initialized RecordT fields.
@@ -579,6 +615,26 @@ func newTlvNode() *tlvNode {
 		FinalKey:  tlv.NewRecordT[tlvNodeFinalKey](pubKeyRecord{}),
 		Children: tlv.NewRecordT[tlvNodeChildren](
 			childrenDataRecord{},
+		),
+		SigningTweak: tlv.NewPrimitiveRecord[
+			tlvNodeSigningTweak, tlv.Blob,
+		](
+			nil,
+		),
+		SealedPackage: tlv.NewPrimitiveRecord[
+			tlvNodeSealedPackage, tlv.Blob,
+		](
+			nil,
+		),
+		AssetAmount: tlv.NewPrimitiveRecord[
+			tlvNodeAssetAmount, uint64,
+		](
+			0,
+		),
+		LeafAssetRoot: tlv.NewPrimitiveRecord[
+			tlvNodeLeafAssetRoot, tlv.Blob,
+		](
+			nil,
 		),
 	}
 }
@@ -600,6 +656,18 @@ func (n *tlvNode) EncodeRecords() []tlv.Record {
 	}
 
 	records = append(records, n.Children.Record())
+	if len(n.SigningTweak.Val) != 0 {
+		records = append(records, n.SigningTweak.Record())
+	}
+	if len(n.SealedPackage.Val) != 0 {
+		records = append(records, n.SealedPackage.Record())
+	}
+	if n.AssetAmount.Val != 0 {
+		records = append(records, n.AssetAmount.Record())
+	}
+	if len(n.LeafAssetRoot.Val) != 0 {
+		records = append(records, n.LeafAssetRoot.Record())
+	}
 
 	return records
 }
@@ -615,6 +683,10 @@ func (n *tlvNode) DecodeRecords() []tlv.Record {
 		n.Signature.Record(),
 		n.FinalKey.Record(),
 		n.Children.Record(),
+		n.SigningTweak.Record(),
+		n.SealedPackage.Record(),
+		n.AssetAmount.Record(),
+		n.LeafAssetRoot.Record(),
 	}
 }
 
@@ -648,6 +720,11 @@ func SerializeTree(t *tree.Tree) ([]byte, error) {
 	if t == nil {
 		return nil, fmt.Errorf("cannot serialize nil tree")
 	}
+	if t.AssetContext != nil {
+		if err := t.AssetContext.Validate(t.Root); err != nil {
+			return nil, fmt.Errorf("asset tree: %w", err)
+		}
+	}
 
 	tlvT := newTlvTree()
 
@@ -661,10 +738,13 @@ func SerializeTree(t *tree.Tree) ([]byte, error) {
 
 	// Set SweepRoot.
 	tlvT.SweepRoot.Val = t.SweepTapscriptRoot
+	if t.AssetContext != nil {
+		tlvT.AssetRef.Val = []byte(t.AssetContext.AssetRef())
+	}
 
 	// Serialize RootNode recursively.
 	if t.Root != nil {
-		rootData, err := serializeNode(t.Root)
+		rootData, err := serializeNode(t.Root, t.AssetContext)
 		if err != nil {
 			return nil, fmt.Errorf("serialize root node: %w", err)
 		}
@@ -706,11 +786,18 @@ func DeserializeTree(data []byte) (*tree.Tree, error) {
 		}
 	}
 
+	assetCtx := tree.NewAssetTreeContext()
+	if len(tlvT.AssetRef.Val) != 0 {
+		assetCtx.SetAssetRef(string(tlvT.AssetRef.Val))
+	}
+
 	// Deserialize root node. Depth starts at 1 so a root with no
 	// children still counts as depth 1, matching the convention used
 	// by tree.Node.Depth.
 	if len(tlvT.RootNodeData.Val) > 0 {
-		rootNode, err := deserializeNode(tlvT.RootNodeData.Val, 1)
+		rootNode, err := deserializeNode(
+			tlvT.RootNodeData.Val, 1, assetCtx,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("deserialize root node: %w", err)
 		}
@@ -718,11 +805,20 @@ func DeserializeTree(data []byte) (*tree.Tree, error) {
 		t.Root = rootNode
 	}
 
+	if !assetCtx.IsEmpty() {
+		if err := assetCtx.Validate(t.Root); err != nil {
+			return nil, fmt.Errorf("asset tree: %w", err)
+		}
+		t.AssetContext = assetCtx
+	}
+
 	return t, nil
 }
 
 // serializeNode serializes a tree.Node to bytes using TLV encoding.
-func serializeNode(n *tree.Node) ([]byte, error) {
+func serializeNode(n *tree.Node,
+	assetCtx *tree.AssetTreeContext) ([]byte, error) {
+
 	if n == nil {
 		return nil, fmt.Errorf("cannot serialize nil node")
 	}
@@ -747,9 +843,15 @@ func serializeNode(n *tree.Node) ([]byte, error) {
 	if n.FinalKey != nil {
 		tlvN.FinalKey.Val.Key = n.FinalKey
 	}
+	if assetCtx != nil {
+		tlvN.SigningTweak.Val = assetCtx.SigningTweak(n.Input)
+		tlvN.SealedPackage.Val = assetCtx.SealedPackage(n.Input)
+		tlvN.AssetAmount.Val = assetCtx.NodeAssetAmount(n)
+		tlvN.LeafAssetRoot.Val = assetCtx.LeafAssetRoot(n.Input)
+	}
 
 	// Serialize children recursively.
-	childrenData, err := serializeChildren(n.Children)
+	childrenData, err := serializeChildren(n.Children, assetCtx)
 	if err != nil {
 		return nil, fmt.Errorf("serialize children: %w", err)
 	}
@@ -768,7 +870,9 @@ func serializeNode(n *tree.Node) ([]byte, error) {
 // encoding. depth is the current recursion depth (1 for the root) and
 // is enforced against MaxTreeDeserializeDepth to prevent untrusted
 // blobs from triggering goroutine stack overflow.
-func deserializeNode(data []byte, depth int) (*tree.Node, error) {
+func deserializeNode(data []byte, depth int,
+	assetCtx *tree.AssetTreeContext) (*tree.Node, error) {
+
 	if len(data) == 0 {
 		return nil, fmt.Errorf("cannot deserialize empty node data")
 	}
@@ -799,10 +903,24 @@ func deserializeNode(data []byte, depth int) (*tree.Node, error) {
 	if tlvN.FinalKey.Val.Key != nil {
 		n.FinalKey = tlvN.FinalKey.Val.Key
 	}
+	if len(tlvN.SigningTweak.Val) != 0 {
+		assetCtx.SetSigningTweak(n.Input, tlvN.SigningTweak.Val)
+	}
+	if len(tlvN.SealedPackage.Val) != 0 {
+		assetCtx.SetSealedPackage(n.Input, tlvN.SealedPackage.Val)
+	}
+	if tlvN.AssetAmount.Val != 0 {
+		assetCtx.SetNodeAssetAmount(n, tlvN.AssetAmount.Val)
+	}
+	if len(tlvN.LeafAssetRoot.Val) != 0 {
+		assetCtx.SetLeafAssetRoot(n.Input, tlvN.LeafAssetRoot.Val)
+	}
 
 	// Deserialize children with depth+1 so a deep chain is rejected
 	// well before the goroutine stack grows.
-	children, err := deserializeChildren(tlvN.Children.Val.Data, depth+1)
+	children, err := deserializeChildren(
+		tlvN.Children.Val.Data, depth+1, assetCtx,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("deserialize children: %w", err)
 	}
@@ -813,7 +931,9 @@ func deserializeNode(data []byte, depth int) (*tree.Node, error) {
 }
 
 // serializeChildren serializes a map of children nodes.
-func serializeChildren(children map[uint32]*tree.Node) ([]byte, error) {
+func serializeChildren(children map[uint32]*tree.Node,
+	assetCtx *tree.AssetTreeContext) ([]byte, error) {
+
 	var buf bytes.Buffer
 	var scratch [8]byte
 
@@ -844,7 +964,7 @@ func serializeChildren(children map[uint32]*tree.Node) ([]byte, error) {
 		}
 
 		// Serialize the child node.
-		childData, err := serializeNode(child)
+		childData, err := serializeNode(child, assetCtx)
 		if err != nil {
 			return nil, fmt.Errorf("serialize child at index "+
 				"%d: %w", idx, err)
@@ -873,8 +993,8 @@ func serializeChildren(children map[uint32]*tree.Node) ([]byte, error) {
 // the recursion depth at which these children sit (i.e. the parent's
 // depth+1) and is forwarded to deserializeNode so a deep linear chain
 // is rejected before the goroutine stack grows.
-func deserializeChildren(data []byte,
-	depth int) (map[uint32]*tree.Node, error) {
+func deserializeChildren(data []byte, depth int,
+	assetCtx *tree.AssetTreeContext) (map[uint32]*tree.Node, error) {
 
 	if len(data) == 0 {
 		return make(map[uint32]*tree.Node), nil
@@ -929,7 +1049,7 @@ func deserializeChildren(data []byte,
 		}
 
 		// Deserialize the child node.
-		child, err := deserializeNode(nodeData, depth)
+		child, err := deserializeNode(nodeData, depth, assetCtx)
 		if err != nil {
 			return nil, fmt.Errorf("deserialize child at index "+
 				"%d: %w", idx, err)

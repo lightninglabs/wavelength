@@ -345,9 +345,18 @@ type TreeNode struct {
 	Amount int64 `protobuf:"varint,5,opt,name=amount,proto3" json:"amount,omitempty"`
 	// signature is the final aggregated MuSig2 schnorr signature (64 bytes)
 	// for the input. Empty if unsigned.
-	Signature     []byte `protobuf:"bytes,6,opt,name=signature,proto3" json:"signature,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Signature []byte `protobuf:"bytes,6,opt,name=signature,proto3" json:"signature,omitempty"`
+	// signing_tweak is the node's taproot tweak for an asset tree. Empty for
+	// Bitcoin-only trees, which use sweep_tapscript_root.
+	SigningTweak []byte `protobuf:"bytes,7,opt,name=signing_tweak,json=signingTweak,proto3" json:"signing_tweak,omitempty"`
+	// asset_amount is the number of asset units carried by this subtree.
+	// Zero for Bitcoin-only trees.
+	AssetAmount uint64 `protobuf:"varint,8,opt,name=asset_amount,json=assetAmount,proto3" json:"asset_amount,omitempty"`
+	// asset_commitment_root is set on asset leaves so the owner can verify
+	// and persist the composed VTXO output.
+	AssetCommitmentRoot []byte `protobuf:"bytes,9,opt,name=asset_commitment_root,json=assetCommitmentRoot,proto3" json:"asset_commitment_root,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *TreeNode) Reset() {
@@ -422,6 +431,27 @@ func (x *TreeNode) GetSignature() []byte {
 	return nil
 }
 
+func (x *TreeNode) GetSigningTweak() []byte {
+	if x != nil {
+		return x.SigningTweak
+	}
+	return nil
+}
+
+func (x *TreeNode) GetAssetAmount() uint64 {
+	if x != nil {
+		return x.AssetAmount
+	}
+	return 0
+}
+
+func (x *TreeNode) GetAssetCommitmentRoot() []byte {
+	if x != nil {
+		return x.AssetCommitmentRoot
+	}
+	return nil
+}
+
 // VTXOTree is a flattened representation of a VTXO or connector tree.
 // The root node is always at index 0.
 type VTXOTree struct {
@@ -437,8 +467,11 @@ type VTXOTree struct {
 	// sweep_tapscript_root is the tapscript root hash for tweaking branch
 	// outputs. Empty for connector trees.
 	SweepTapscriptRoot []byte `protobuf:"bytes,4,opt,name=sweep_tapscript_root,json=sweepTapscriptRoot,proto3" json:"sweep_tapscript_root,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// asset_ref identifies the asset carried by the tree. Empty for
+	// Bitcoin-only trees.
+	AssetRef      string `protobuf:"bytes,5,opt,name=asset_ref,json=assetRef,proto3" json:"asset_ref,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *VTXOTree) Reset() {
@@ -497,6 +530,13 @@ func (x *VTXOTree) GetSweepTapscriptRoot() []byte {
 		return x.SweepTapscriptRoot
 	}
 	return nil
+}
+
+func (x *VTXOTree) GetAssetRef() string {
+	if x != nil {
+		return x.AssetRef
+	}
+	return ""
 }
 
 // ConnectorLeafInfo contains information about a connector leaf assigned to a
@@ -2832,7 +2872,7 @@ const file_round_proto_rawDesc = "" +
 	"\foutput_index\x18\x02 \x01(\rR\voutputIndex\":\n" +
 	"\x05TxOut\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\x03R\x05value\x12\x1b\n" +
-	"\tpk_script\x18\x02 \x01(\fR\bpkScript\"\xaf\x02\n" +
+	"\tpk_script\x18\x02 \x01(\fR\bpkScript\"\xab\x03\n" +
 	"\bTreeNode\x12(\n" +
 	"\x05input\x18\x01 \x01(\v2\x12.round.v1.OutpointR\x05input\x12)\n" +
 	"\aoutputs\x18\x02 \x03(\v2\x0f.round.v1.TxOutR\aoutputs\x12\x1d\n" +
@@ -2840,15 +2880,19 @@ const file_round_proto_rawDesc = "" +
 	"co_signers\x18\x03 \x03(\fR\tcoSigners\x12<\n" +
 	"\bchildren\x18\x04 \x03(\v2 .round.v1.TreeNode.ChildrenEntryR\bchildren\x12\x16\n" +
 	"\x06amount\x18\x05 \x01(\x03R\x06amount\x12\x1c\n" +
-	"\tsignature\x18\x06 \x01(\fR\tsignature\x1a;\n" +
+	"\tsignature\x18\x06 \x01(\fR\tsignature\x12#\n" +
+	"\rsigning_tweak\x18\a \x01(\fR\fsigningTweak\x12!\n" +
+	"\fasset_amount\x18\b \x01(\x04R\vassetAmount\x122\n" +
+	"\x15asset_commitment_root\x18\t \x01(\fR\x13assetCommitmentRoot\x1a;\n" +
 	"\rChildrenEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\rR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\rR\x05value:\x028\x01\"\xd5\x01\n" +
+	"\x05value\x18\x02 \x01(\rR\x05value:\x028\x01\"\xf2\x01\n" +
 	"\bVTXOTree\x12(\n" +
 	"\x05nodes\x18\x01 \x03(\v2\x12.round.v1.TreeNodeR\x05nodes\x129\n" +
 	"\x0ebatch_outpoint\x18\x02 \x01(\v2\x12.round.v1.OutpointR\rbatchOutpoint\x122\n" +
 	"\fbatch_output\x18\x03 \x01(\v2\x0f.round.v1.TxOutR\vbatchOutput\x120\n" +
-	"\x14sweep_tapscript_root\x18\x04 \x01(\fR\x12sweepTapscriptRoot\"\xfe\x01\n" +
+	"\x14sweep_tapscript_root\x18\x04 \x01(\fR\x12sweepTapscriptRoot\x12\x1b\n" +
+	"\tasset_ref\x18\x05 \x01(\tR\bassetRef\"\xfe\x01\n" +
 	"\x11ConnectorLeafInfo\x127\n" +
 	"\rleaf_outpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\fleafOutpoint\x120\n" +
 	"\vleaf_output\x18\x02 \x01(\v2\x0f.round.v1.TxOutR\n" +
