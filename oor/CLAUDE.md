@@ -75,6 +75,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   actor's DB transaction; both phase-1 hint resolution and phase-2
   authoritative metadata lookup go through durable `serverconn` query
   messages and return as fresh events.
+- Incoming batch expiry is authenticated by
+  `AuthenticateIncomingMetadataRequest` before materialization opens its DB
+  transaction. Indexer expiry scalars are discarded. Chain failures retry the
+  outbox; invalid sweep/tree evidence fails terminally. The descriptor's
+  relative expiry comes from its matching standard or custom policy template,
+  not from operator configuration. Custom policies consider only canonical
+  block-mode CSV sequences; CLTV non-final sentinels are not block delays.
 - Snapshots are versioned per direction (`OutgoingSnapshot.Version = 5`,
   `IncomingSnapshot.Version = 1`); restore rejects a zero version. Outgoing
   v5 adds the `FirstRejectUnixNanos` record (bounded transient submit-reject
@@ -151,6 +158,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
 - Terminal rows (completed and failed) are retained in
   `oor_session_registry` for status/diagnostics; reaping only removes the
   in-memory child, never the row.
+- Pending submit retries persist their delay and typed rejection reason in the
+  outgoing snapshot. `GetOORSession` exposes the reason while status remains
+  pending, so callers can distinguish a recoverable chain pause from failure.
 - Outgoing finalize ordering: input-spend completion runs inline with no OOR
   writer transaction held, because its write commits in the VTXO manager's
   own transaction; awaiting that second writer under a held OOR writer lock

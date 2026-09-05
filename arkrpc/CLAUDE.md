@@ -22,6 +22,9 @@ Proto source: `arkrpc/ark.proto`, `arkrpc/indexer.proto`.
   PSBTs that `IncomingOOREvent` intentionally omits.
 - `VTXO` — Phase 2 query response from `ListVTXOsByScripts`. Carries
   authoritative lineage metadata including the structured `TreePath`.
+- `AncestryPath.commitment_sweep_key` / `commitment_sweep_delay` — Additive
+  evidence that lets clients reconstruct the tree sweep leaf and authenticate
+  an absolute expiry against a locally confirmed commitment transaction.
 
 ## Relationships
 

@@ -1330,6 +1330,7 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 				VTXOs:    vtxos,
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
+			SweepKey:    h.operatorPubKey,
 			SweepDelay:  1008,
 		}
 		h.withState(state)
@@ -1391,6 +1392,7 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 				},
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
+			SweepKey:    h.operatorPubKey,
 			SweepDelay:  1008,
 		}
 		h.withState(state)
@@ -1460,6 +1462,7 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 				VTXOs:    vtxos,
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
+			SweepKey:    h.operatorPubKey,
 			SweepDelay:  1008,
 			Quote: &ClientQuote{
 				OperatorFeeSat: 1500,
@@ -1538,6 +1541,7 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 				VTXOs:    vtxos,
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
+			SweepKey:    h.operatorPubKey,
 			SweepDelay:  1008,
 			Quote: &ClientQuote{
 				OperatorFeeSat: 1500,
@@ -1628,6 +1632,7 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 				Leaves:   leaves,
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
+			SweepKey:    h.operatorPubKey,
 			SweepDelay:  1008,
 			Quote: &ClientQuote{
 				OperatorFeeSat: 1500,
@@ -1917,6 +1922,8 @@ func TestPartialSigsSentState(t *testing.T) {
 
 		h.setupMockWalletForBoardingSigning()
 		h.setupMockRoundStoreForCommit()
+		h.env.OperatorTerms.MinConfirmations = 6
+		h.env.OperatorTerms.VTXOConfirmations = 1
 		h.withState(state)
 
 		event := &OperatorSigned{
@@ -1937,6 +1944,11 @@ func TestPartialSigsSentState(t *testing.T) {
 
 		h.assertOutboxContainsType("*round.SubmitForfeitSigRequest")
 		h.assertOutboxContainsType("*round.RegisterConfirmationRequest")
+		registration, ok := findOutbox[*RegisterConfirmationRequest](
+			h.outboxMessages,
+		)
+		require.True(t, ok)
+		require.Equal(t, uint32(1), registration.TargetConfs)
 	})
 
 	t.Run("OperatorSigned_propagates_sigs_to_extracted_client_tree",
@@ -3655,6 +3667,7 @@ func TestRefreshOnlyRoundValidation(t *testing.T) {
 		},
 		Intents:     emptyIntents,
 		ClientTrees: make(map[SignerKey]*tree.Tree),
+		SweepKey:    h.operatorPubKey,
 		SweepDelay:  1008,
 	}
 	h.withState(state)

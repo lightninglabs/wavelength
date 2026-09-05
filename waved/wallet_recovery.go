@@ -270,6 +270,7 @@ func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 	terms *libtypes.OperatorTerms, family keychain.KeyFamily, window uint32,
 	result *WalletRecoveryResult) error {
 
+	var firstExpiryErr error
 	for i := uint32(0); i < window; i++ {
 		keyDesc, err := r.server.proofKeyBackend.DeriveKey(
 			ctx, keychain.KeyLocator{
@@ -351,6 +352,30 @@ func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 					continue
 				}
 
+				if r.server.expiryAuthenticator == nil {
+					return fmt.Errorf("expiry " +
+						"authenticator not initialized")
+				}
+				expiry, err := r.server.expiryAuthenticator(
+					ctx, desc.Ancestry,
+				)
+				if err != nil {
+					if firstExpiryErr == nil {
+						firstExpiryErr = fmt.Errorf(
+							"authenticate VTXO %s "+
+								"expiry: %w",
+							desc.Outpoint, err)
+					}
+					r.server.log.WarnS(
+						ctx, "Skipping recovered VTXO with "+
+							"unauthenticated expiry", err,
+						"outpoint", desc.Outpoint.String(),
+					)
+
+					continue
+				}
+				desc.BatchExpiry = expiry
+
 				saved, err := r.saveRecoveredVTXO(ctx, desc)
 				if err != nil {
 					return err
@@ -367,7 +392,7 @@ func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 		}
 	}
 
-	return nil
+	return firstExpiryErr
 }
 
 func recoveryDescriptorFromIndexer(indexed *arkrpc.VTXO,
@@ -451,7 +476,7 @@ func recoveryDescriptorFromIndexer(indexed *arkrpc.VTXO,
 		Ancestry:       ancestry,
 		RoundID:        indexed.GetRoundId(),
 		CommitmentTxID: *commitmentTxID,
-		BatchExpiry:    indexed.GetBatchExpiryHeight(),
+		BatchExpiry:    0,
 		RelativeExpiry: exitDelay,
 		ChainDepth:     int(indexed.GetChainDepth()),
 		CreatedHeight:  indexed.GetCreatedHeight(),
@@ -669,10 +694,11 @@ func (r *RPCServer) recoveryOORHandler(
 ) *oor.LocalPersistenceOutboxHandler {
 
 	return &oor.LocalPersistenceOutboxHandler{
-		Store:        r.server.vtxoStore,
-		PackageStore: packageStore,
-		OperatorKey:  terms.PubKey,
-		ExitDelay:    terms.VTXOExitDelay,
+		Store:                      r.server.vtxoStore,
+		PackageStore:               packageStore,
+		OperatorKey:                terms.PubKey,
+		ExitDelay:                  terms.VTXOExitDelay,
+		AuthenticateIncomingExpiry: r.server.expiryAuthenticator,
 		NotifyIncomingVTXOs: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
@@ -813,6 +839,19 @@ func (r *RPCServer) materializeRecoveredOOREvent(ctx context.Context,
 		if err != nil {
 			return err
 		}
+
+		if r.server.expiryAuthenticator == nil {
+			return fmt.Errorf("expiry authenticator not " +
+				"initialized")
+		}
+		metadata.BatchExpiry, err = r.server.expiryAuthenticator(
+			ctx, metadata.Ancestry,
+		)
+		if err != nil {
+			return fmt.Errorf("authenticate recovered OOR output "+
+				"%d expiry: %w", recipient.OutputIndex, err)
+		}
+		metadata.ExpiryAuthenticated = true
 
 		metadataMatches = append(metadataMatches,
 			oor.IncomingMetadataMatch{

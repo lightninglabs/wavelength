@@ -360,10 +360,18 @@ type Server struct {
 
 	actorSystem  *actor.ActorSystem
 	chainBackend chainsource.ChainBackend
-	walletRef    fn.Option[actor.ActorRef[
+
+	// expiryAuthenticator is published with the chain-source actor and
+	// reused by every new-VTXO acceptance path. Existing persisted VTXOs
+	// are intentionally left unchanged.
+	expiryAuthenticator oor.IncomingExpiryAuthenticator
+	walletRef           fn.Option[actor.ActorRef[
 		wallet.WalletMsg, wallet.WalletResp,
 	]]
-	oorRegistry        *oor.OORRegistryActor
+	oorRegistry       *oor.OORRegistryActor
+	incomingVTXOActor *actor.DurableActor[
+		*vtxo.IncomingVTXOMsg, vtxo.IncomingVTXOResp,
+	]
 	creditRegistry     *credit.Registry
 	vhtlcRecoveryStore *db.VHTLCRecoveryStoreDB
 	vhtlcRecovery      *coordinator.Service
@@ -1278,6 +1286,15 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 
 		if s.oorRegistry != nil {
 			s.oorRegistry.Stop()
+		}
+
+		if s.incomingVTXOActor != nil {
+			//nolint:contextcheck // bounded shutdown
+			err := s.incomingVTXOActor.StopAndWait(shutdownCtx)
+			if err != nil {
+				s.log.WarnS(ctx, "Incoming VTXO actor shutdown "+
+					"failed", err)
+			}
 		}
 
 		if s.creditRegistry != nil {
@@ -2637,6 +2654,8 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	],
 	timeoutRef actor.TellOnlyRef[timeout.Msg]) error {
 
+	s.expiryAuthenticator = NewBatchExpiryAuthenticator(chainSourceRef)
+
 	// -------------------------------------------------------
 	// 9. Register the wallet (boarding) actor.
 	// -------------------------------------------------------
@@ -3153,7 +3172,7 @@ func (s *Server) registerIncomingVTXOEventRoute(
 	vtxoKey := vtxo.IncomingVTXOServiceKey()
 
 	serverconn.AddRoute(router, serverconn.EventRouteConfig[
-		vtxo.IncomingVTXOMsg, vtxo.IncomingVTXOResp,
+		*vtxo.IncomingVTXOMsg, vtxo.IncomingVTXOResp,
 	]{
 		Service: arkServiceName,
 		Method:  MethodIncomingVTXO,
@@ -3161,7 +3180,7 @@ func (s *Server) registerIncomingVTXOEventRoute(
 			return &arkrpc.IncomingVTXOEvent{}
 		},
 		Key: vtxoKey,
-		Adapt: func(p proto.Message) (vtxo.IncomingVTXOMsg, error) {
+		Adapt: func(p proto.Message) (*vtxo.IncomingVTXOMsg, error) {
 			evt, ok := p.(*arkrpc.IncomingVTXOEvent)
 			if !ok {
 				// A malformed push never reaches the handler,
@@ -3174,7 +3193,7 @@ func (s *Server) registerIncomingVTXOEventRoute(
 					},
 				)
 
-				return vtxo.IncomingVTXOMsg{},
+				return nil,
 					fmt.Errorf("expected "+
 						"IncomingVTXOEvent, got %T", p)
 			}
@@ -3185,7 +3204,7 @@ func (s *Server) registerIncomingVTXOEventRoute(
 			// relevant and the save succeeded. Counting here at
 			// adapt time would report a materialization before the
 			// handler verified ownership and persisted the VTXO.
-			return vtxo.IncomingVTXOMsg{
+			return &vtxo.IncomingVTXOMsg{
 				Event: evt,
 			}, nil
 		},
@@ -4608,7 +4627,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	ledgerSink := ledger.NewSink(s.actorSystem)
 	criticalExitAssessor := s.rpcServer.assessAutomaticCriticalExit
 
-	manager := vtxo.NewManager(&vtxo.ManagerConfig{
+	managerConfig := &vtxo.ManagerConfig{
 		Store:                    vtxoStore,
 		ReservationStore:         reservationStore,
 		Wallet:                   vtxoWallet,
@@ -4636,7 +4655,9 @@ func (s *Server) initVTXOManager(ctx context.Context,
 			return resolveExitOutcome(ctx, ueStore, outpoint)
 		},
 		HasForfeitRoundCheckpoint: roundStore.HasForfeitRoundCheckpoint,
-	})
+	}
+	managerConfig.DeferAutomaticRefreshUntilRoundReady = true
+	manager := vtxo.NewManager(managerConfig)
 	managerKey := actor.NewServiceKey[vtxo.ManagerMsg, vtxo.ManagerResp](
 		"vtxo-manager",
 	)
@@ -4776,11 +4797,12 @@ func (s *Server) initOORActor(ctx context.Context,
 	// delegate of the local-persistence handler for retry scheduling.
 
 	outboxHandler := &oor.LocalPersistenceOutboxHandler{
-		Next:         signingHandler,
-		Store:        vtxoStore,
-		PackageStore: packageStore,
-		OperatorKey:  operatorTerms.PubKey,
-		ExitDelay:    operatorTerms.VTXOExitDelay,
+		Next:                       signingHandler,
+		Store:                      vtxoStore,
+		PackageStore:               packageStore,
+		OperatorKey:                operatorTerms.PubKey,
+		ExitDelay:                  operatorTerms.VTXOExitDelay,
+		AuthenticateIncomingExpiry: s.expiryAuthenticator,
 		NotifyIncomingVTXOs: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
@@ -4879,56 +4901,80 @@ func (s *Server) initOORActor(ctx context.Context,
 	// IncomingVTXOEvent push notifications from the indexer and
 	// materializes VTXOs for registered receive scripts.
 	//
-	// The ancestry fetcher is wired so the materialized descriptor
-	// carries the round commit tree fragments needed for unilateral
-	// exit (bug-3 in BUGS_FOUND.md). A wiring failure (no indexer or
-	// no proof-key backend) is non-fatal: the handler runs without
-	// the fetcher, persisting incoming VTXOs without ancestry, which
-	// preserves the legacy degraded behavior (cooperative paths work,
-	// unilateral exit blocked) rather than dropping incoming events
-	// on the floor.
+	// The ancestry fetcher is wired so the materialized descriptor carries
+	// authenticated expiry evidence and the round commit tree fragments
+	// needed for unilateral exit. A wiring failure leaves relevant durable
+	// events pending rather than accepting incomplete safety metadata.
 	var ancestryFetcher vtxo.IncomingAncestryFetcher
 	incomingSignerFactory, fetcherErr := s.indexerProofSignerFactory()
 	if fetcherErr != nil {
 		s.log.WarnS(ctx,
-			"Incoming VTXO ancestry fetch disabled; received "+
-				"VTXOs will not be unilaterally exitable",
+			"Incoming VTXO acceptance disabled; ancestry fetch "+
+				"cannot be authenticated",
 			fetcherErr,
 		)
 	} else {
 		ancestryFetcher, fetcherErr = incomingAncestryFetcher(
-			s.indexer, incomingSignerFactory,
+			s.indexer, incomingSignerFactory, s.expiryAuthenticator,
 		)
 		if fetcherErr != nil {
 			s.log.WarnS(ctx,
-				"Incoming VTXO ancestry fetch disabled; "+
-					"received VTXOs will not be "+
-					"unilaterally exitable",
+				"Incoming VTXO acceptance disabled; ancestry "+
+					"fetch cannot be authenticated",
 				fetcherErr,
+			)
+		} else {
+			ancestryFetcher = incomingAncestryFetcherWithTimeout(
+				ancestryFetcher,
+				incomingExpiryAuthenticationTimeout,
 			)
 		}
 	}
 
 	incomingVTXOStore := dbStore.NewVTXOStore(s.clk)
-	incomingHandler := vtxo.NewIncomingVTXOHandler(
-		vtxo.IncomingVTXOHandlerConfig{
-			Log: fn.Some(s.subLogger(Subsystem)),
-			ScriptStore: &ownedScriptLookupAdapter{
-				store: packageStore,
-			},
-			VTXOStore:       incomingVTXOStore,
-			VTXOManager:     vtxoManagerRef,
-			AncestryFetcher: ancestryFetcher,
-			MetricsSink:     s.metricsSink,
+	err = s.startIncomingVTXOActor(vtxo.IncomingVTXOHandlerConfig{
+		Log: fn.Some(s.subLogger(Subsystem)),
+		ScriptStore: &ownedScriptLookupAdapter{
+			store: packageStore,
 		},
-	)
-	incomingKey := vtxo.IncomingVTXOServiceKey()
-	actor.RegisterWithSystem(
-		s.actorSystem, "incoming-vtxo-handler", incomingKey,
-		incomingHandler,
-	)
+		VTXOStore:       incomingVTXOStore,
+		VTXOManager:     vtxoManagerRef,
+		AncestryFetcher: ancestryFetcher,
+		MetricsSink:     s.metricsSink,
+	})
+	if err != nil {
+		return err
+	}
 
 	s.log.InfoS(ctx, "Incoming VTXO handler started")
+
+	return nil
+}
+
+// startIncomingVTXOActor starts and registers the durable incoming-event
+// consumer. The server retains it for ordered shutdown before the actor system.
+func (s *Server) startIncomingVTXOActor(
+	cfg vtxo.IncomingVTXOHandlerConfig) error {
+
+	incomingActor, err := vtxo.NewIncomingVTXODurableActor(
+		cfg, s.deliveryStore,
+	)
+	if err != nil {
+		return fmt.Errorf("create incoming VTXO actor: %w", err)
+	}
+	incomingActor.Start()
+	s.incomingVTXOActor = incomingActor
+
+	incomingKey := vtxo.IncomingVTXOServiceKey()
+	if err := actor.RegisterWithReceptionist(
+		s.actorSystem.Receptionist(), incomingKey, incomingActor.Ref(),
+	); err != nil {
+
+		incomingActor.Stop()
+		s.incomingVTXOActor = nil
+
+		return fmt.Errorf("register incoming VTXO actor: %w", err)
+	}
 
 	return nil
 }

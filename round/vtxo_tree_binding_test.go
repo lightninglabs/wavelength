@@ -347,12 +347,14 @@ func TestConfirmationWatchScriptUsesBatchOutput(t *testing.T) {
 			},
 		},
 	}
-	const targetConfs = 6
+	const minConfs = 6
+	const targetConfs = 1
 	const startHeight = 123
 	outbox := state.forfeitCollectionOutbox(
 		&ClientEnvironment{
 			OperatorTerms: &types.OperatorTerms{
-				MinConfirmations: targetConfs,
+				MinConfirmations:  minConfs,
+				VTXOConfirmations: targetConfs,
 			},
 			StartHeight:            startHeight,
 			StatusReconcileTimeout: time.Minute,
@@ -402,6 +404,7 @@ func TestCommitmentTxReceivedRejectsUnboundTree(t *testing.T) {
 		RoundID:      roundID,
 		CommitmentTx: commitmentTx,
 		TxID:         commitmentTx.UnsignedTx.TxHash(),
+		SweepKey:     h.operatorPubKey,
 		SweepDelay:   1008,
 		VTXOTreePaths: map[int]*tree.Tree{
 			0: vtxtTree,
@@ -489,6 +492,7 @@ func TestCommitmentTxReceivedRejectsCommitmentSiphon(t *testing.T) {
 		RoundID:      roundID,
 		CommitmentTx: commitment,
 		TxID:         commitment.UnsignedTx.TxHash(),
+		SweepKey:     h.operatorPubKey,
 		SweepDelay:   1008,
 		VTXOTreePaths: map[int]*tree.Tree{
 			0: vtxtTree,

@@ -1498,8 +1498,16 @@ type AncestryPath struct {
 	// tx anchoring this fragment. Zero means unknown (legacy/unconfirmed),
 	// in which case the client falls back to a bounded lookback floor.
 	CommitmentHeight int32 `protobuf:"varint,5,opt,name=commitment_height,json=commitmentHeight,proto3" json:"commitment_height,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// commitment_sweep_delay is the CSV delay committed by this tree's sweep
+	// tapscript root. New indexers must supply a positive value.
+	CommitmentSweepDelay uint32 `protobuf:"varint,6,opt,name=commitment_sweep_delay,json=commitmentSweepDelay,proto3" json:"commitment_sweep_delay,omitempty"`
+	// commitment_sweep_key is the compressed public key committed by this
+	// tree's sweep tapscript root. Together with commitment_sweep_delay it
+	// lets clients authenticate the absolute expiry derived from the
+	// commitment transaction's confirmation height.
+	CommitmentSweepKey []byte `protobuf:"bytes,7,opt,name=commitment_sweep_key,json=commitmentSweepKey,proto3" json:"commitment_sweep_key,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *AncestryPath) Reset() {
@@ -1565,6 +1573,20 @@ func (x *AncestryPath) GetCommitmentHeight() int32 {
 		return x.CommitmentHeight
 	}
 	return 0
+}
+
+func (x *AncestryPath) GetCommitmentSweepDelay() uint32 {
+	if x != nil {
+		return x.CommitmentSweepDelay
+	}
+	return 0
+}
+
+func (x *AncestryPath) GetCommitmentSweepKey() []byte {
+	if x != nil {
+		return x.CommitmentSweepKey
+	}
+	return nil
 }
 
 // ScriptScope selects a pkScript and carries a proof-of-control for that
@@ -2803,14 +2825,16 @@ const file_indexer_proto_rawDesc = "" +
 	"\x05nodes\x18\x01 \x03(\v2\x14.arkrpc.TreePathNodeR\x05nodes\x127\n" +
 	"\x0ebatch_outpoint\x18\x02 \x01(\v2\x10.arkrpc.OutPointR\rbatchOutpoint\x120\n" +
 	"\fbatch_output\x18\x03 \x01(\v2\r.arkrpc.TxOutR\vbatchOutput\x120\n" +
-	"\x14sweep_tapscript_root\x18\x04 \x01(\fR\x12sweepTapscriptRoot\"\xd7\x01\n" +
+	"\x14sweep_tapscript_root\x18\x04 \x01(\fR\x12sweepTapscriptRoot\"\xbf\x02\n" +
 	"\fAncestryPath\x12-\n" +
 	"\ttree_path\x18\x01 \x01(\v2\x10.arkrpc.TreePathR\btreePath\x12'\n" +
 	"\x0fcommitment_txid\x18\x02 \x01(\fR\x0ecommitmentTxid\x12#\n" +
 	"\rinput_indices\x18\x03 \x03(\rR\finputIndices\x12\x1d\n" +
 	"\n" +
 	"tree_depth\x18\x04 \x01(\rR\ttreeDepth\x12+\n" +
-	"\x11commitment_height\x18\x05 \x01(\x05R\x10commitmentHeight\"\xaa\x01\n" +
+	"\x11commitment_height\x18\x05 \x01(\x05R\x10commitmentHeight\x124\n" +
+	"\x16commitment_sweep_delay\x18\x06 \x01(\rR\x14commitmentSweepDelay\x120\n" +
+	"\x14commitment_sweep_key\x18\a \x01(\fR\x12commitmentSweepKey\"\xaa\x01\n" +
 	"\vScriptScope\x12\x1b\n" +
 	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x12F\n" +
 	"\x0ftaproot_schnorr\x18\n" +

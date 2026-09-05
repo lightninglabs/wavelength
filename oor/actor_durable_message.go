@@ -152,6 +152,7 @@ const (
 	incomingMetadataMatchCreatedHeightRecordType  tlv.Type = 13
 	incomingMetadataMatchAncestryPathsRecordType  tlv.Type = 17
 	incomingMetadataMatchOperatorKeyRecordType    tlv.Type = 19
+	incomingMetadataMatchExpiryAuthRecordType     tlv.Type = 21
 )
 
 type startTransferPayload struct {
@@ -472,6 +473,9 @@ const (
 	ancestryPathCommitmentTxIDRecordType tlv.Type = 3
 	ancestryPathInputIndicesRecordType   tlv.Type = 5
 	ancestryPathTreeDepthRecordType      tlv.Type = 7
+	ancestryPathCommitmentHeightType     tlv.Type = 9
+	ancestryPathSweepDelayRecordType     tlv.Type = 11
+	ancestryPathSweepKeyRecordType       tlv.Type = 13
 )
 
 // encodeAncestryList encodes []vtxo.Ancestry as a length-prefixed blob
@@ -519,6 +523,11 @@ func decodeAncestryListWithLimits(raw []byte,
 
 // encodeAncestryEntry encodes one vtxo.Ancestry into a TLV blob.
 func encodeAncestryEntry(a vtxo.Ancestry) ([]byte, error) {
+	if a.CommitmentHeight < 0 {
+		return nil, fmt.Errorf("ancestry commitment height must not " +
+			"be negative")
+	}
+
 	var treePath []byte
 	if a.TreePath != nil {
 		var err error
@@ -533,6 +542,9 @@ func encodeAncestryEntry(a vtxo.Ancestry) ([]byte, error) {
 	// Serialize input_indices as a length-prefixed list of uint32.
 	indices := encodeUint32List(a.InputIndices)
 	treeDepth := a.TreeDepth
+	commitmentHeight := uint32(a.CommitmentHeight)
+	sweepDelay := a.CommitmentSweepDelay
+	sweepKey := encodeOptionalPubKey(a.CommitmentSweepKey)
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -546,6 +558,15 @@ func encodeAncestryEntry(a vtxo.Ancestry) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			ancestryPathTreeDepthRecordType, &treeDepth,
+		),
+		tlv.MakePrimitiveRecord(
+			ancestryPathCommitmentHeightType, &commitmentHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			ancestryPathSweepDelayRecordType, &sweepDelay,
+		),
+		tlv.MakePrimitiveRecord(
+			ancestryPathSweepKeyRecordType, &sweepKey,
 		),
 	}
 
@@ -565,10 +586,13 @@ func encodeAncestryEntry(a vtxo.Ancestry) ([]byte, error) {
 // decodeAncestryEntry is the inverse of encodeAncestryEntry.
 func decodeAncestryEntry(raw []byte) (vtxo.Ancestry, error) {
 	var (
-		treePath       []byte
-		commitmentTxID []byte
-		indicesRaw     []byte
-		treeDepth      uint32
+		treePath         []byte
+		commitmentTxID   []byte
+		indicesRaw       []byte
+		treeDepth        uint32
+		commitmentHeight uint32
+		sweepDelay       uint32
+		sweepKey         []byte
 	)
 
 	records := []tlv.Record{
@@ -583,6 +607,15 @@ func decodeAncestryEntry(raw []byte) (vtxo.Ancestry, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			ancestryPathTreeDepthRecordType, &treeDepth,
+		),
+		tlv.MakePrimitiveRecord(
+			ancestryPathCommitmentHeightType, &commitmentHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			ancestryPathSweepDelayRecordType, &sweepDelay,
+		),
+		tlv.MakePrimitiveRecord(
+			ancestryPathSweepKeyRecordType, &sweepKey,
 		),
 	}
 
@@ -618,11 +651,25 @@ func decodeAncestryEntry(raw []byte) (vtxo.Ancestry, error) {
 		}
 	}
 
+	decodedSweepKey, err := decodeOptionalPubKey(
+		sweepKey, "ancestry sweep key",
+	)
+	if err != nil {
+		return vtxo.Ancestry{}, err
+	}
+	if commitmentHeight > math.MaxInt32 {
+		return vtxo.Ancestry{}, fmt.Errorf("ancestry commitment " +
+			"height overflows int32")
+	}
+
 	return vtxo.Ancestry{
-		TreePath:       decodedTreePath,
-		CommitmentTxID: decodedCommitmentTxID,
-		InputIndices:   indices,
-		TreeDepth:      treeDepth,
+		TreePath:             decodedTreePath,
+		CommitmentTxID:       decodedCommitmentTxID,
+		InputIndices:         indices,
+		TreeDepth:            treeDepth,
+		CommitmentHeight:     int32(commitmentHeight),
+		CommitmentSweepDelay: sweepDelay,
+		CommitmentSweepKey:   decodedSweepKey,
 	}, nil
 }
 
@@ -688,6 +735,10 @@ func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 	chainDepth := uint32(match.Metadata.ChainDepth)
 	createdHeight := uint32(match.Metadata.CreatedHeight)
 	operatorKey := encodeOptionalPubKey(match.Metadata.OperatorKey)
+	var expiryAuthenticated uint8
+	if match.Metadata.ExpiryAuthenticated {
+		expiryAuthenticated = 1
+	}
 
 	ancestryBytes, err := encodeAncestryList(match.Metadata.Ancestry)
 	if err != nil {
@@ -725,6 +776,10 @@ func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 			incomingMetadataMatchOperatorKeyRecordType,
 			&operatorKey,
 		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchExpiryAuthRecordType,
+			&expiryAuthenticated,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -754,6 +809,7 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 		createdHeight  uint32
 		ancestryBytes  []byte
 		operatorKey    []byte
+		expiryAuth     uint8
 	)
 
 	records := []tlv.Record{
@@ -787,6 +843,9 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 			incomingMetadataMatchOperatorKeyRecordType,
 			&operatorKey,
 		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchExpiryAuthRecordType, &expiryAuth,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -802,6 +861,10 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 	if len(commitmentTxID) != chainhash.HashSize {
 		return IncomingMetadataMatch{}, fmt.Errorf("incoming " +
 			"metadata commitment txid must be provided")
+	}
+	if expiryAuth > 1 {
+		return IncomingMetadataMatch{}, fmt.Errorf("incoming " +
+			"metadata expiry authentication flag must be 0 or 1")
 	}
 
 	decodedBatchExpiry, err := uint32ToInt32(
@@ -843,13 +906,14 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 	return IncomingMetadataMatch{
 		OutputIndex: outputIndex,
 		Metadata: IncomingVTXOMetadata{
-			RoundID:        string(roundID),
-			CommitmentTxID: decodedCommitmentTxID,
-			BatchExpiry:    decodedBatchExpiry,
-			ChainDepth:     int(decodedChainDepth),
-			CreatedHeight:  decodedCreatedHeight,
-			OperatorKey:    decodedOperatorKey,
-			Ancestry:       ancestry,
+			RoundID:             string(roundID),
+			CommitmentTxID:      decodedCommitmentTxID,
+			BatchExpiry:         decodedBatchExpiry,
+			ExpiryAuthenticated: expiryAuth == 1,
+			ChainDepth:          int(decodedChainDepth),
+			CreatedHeight:       decodedCreatedHeight,
+			OperatorKey:         decodedOperatorKey,
+			Ancestry:            ancestry,
 		},
 	}, nil
 }
@@ -2323,6 +2387,8 @@ func encodeEventPayload(event Event) ([]byte, error) {
 
 // decodeEventPayloadWithLimits decodes an event payload and applies receive
 // limits to nested list-shaped event fields.
+//
+//nolint:funlen // One TLV switch owns the complete event wire format.
 func decodeEventPayloadWithLimits(raw []byte,
 	limits ReceiveLimits) (Event, error) {
 
@@ -2505,9 +2571,17 @@ func decodeEventPayloadWithLimits(raw []byte,
 		if err != nil {
 			return nil, err
 		}
+		expiryAuthenticated := len(matches) > 0
+		for i := range matches {
+			if !matches[i].Metadata.ExpiryAuthenticated {
+				expiryAuthenticated = false
+				break
+			}
+		}
 
 		return &IncomingMetadataResolvedEvent{
-			Matches: matches,
+			Matches:             matches,
+			ExpiryAuthenticated: expiryAuthenticated,
 		}, nil
 
 	case eventKindIncomingAckSent:

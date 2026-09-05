@@ -16,6 +16,7 @@ import (
 	libtree "github.com/lightninglabs/wavelength/lib/tree"
 	libtypes "github.com/lightninglabs/wavelength/lib/types"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -201,6 +202,11 @@ func newRecoveryScanServer(t *testing.T, liveScript []byte,
 			btclog.Disabled,
 		).NewVTXOStore(clk),
 		proofKeyBackend: &recoveryKeyBackend{},
+		expiryAuthenticator: func(context.Context, []vtxo.Ancestry) (
+			int32, error) {
+
+			return 965281, nil
+		},
 		indexer: indexer.New(
 			stub, nil, "test-server", "client:test",
 			fn.None[btclog.Logger](),

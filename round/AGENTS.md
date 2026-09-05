@@ -288,6 +288,11 @@ state transitions and validation rules live under [Invariants](#invariants).
   v3 ephemeral-anchor relay. The later quote-authoritative leaf check closes
   the value chain from the committed root to the client's accepted amount
   before nonces, signatures, or persistence.
+- **Round sweep policy is authenticated before signing.** After the commitment
+  output/tree binding check, `validateRoundSweepPolicy` reconstructs the sweep
+  leaf from the advertised key and delay and requires its tap hash to match
+  every VTXO tree's sweep root. Confirmation persists the absolute expiry as
+  `height + delay` with overflow rejection.
 - **Seal-time fee handshake (#270)**: the server is the amount
   authority. When `QuoteReceivedState.Quote` is non-nil, it threads
   through `RoundJoinedState` → `CommitmentTxReceivedState`, which

@@ -433,6 +433,10 @@ message ServerInfo {
     // free_refresh_window_blocks is the operator's late-lifetime refresh
     // waiver window. Zero disables the policy.
     uint32 free_refresh_window_blocks = 15;
+
+    // vtxo_confirmations is the confirmation depth at which new round VTXOs
+    // become available for off-chain spending.
+    uint32 vtxo_confirmations = 16;
 }
 
 message GenSeedRequest {

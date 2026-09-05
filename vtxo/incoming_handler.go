@@ -1,12 +1,15 @@
 package vtxo
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -19,6 +22,8 @@ import (
 	"github.com/lightninglabs/wavelength/metrics"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/tlv"
+	"google.golang.org/protobuf/proto"
 )
 
 // OwnedReceiveScript holds the metadata returned when looking up a
@@ -51,6 +56,15 @@ type VTXOSaver interface {
 	SaveVTXO(ctx context.Context, desc *Descriptor) error
 }
 
+// IncomingVTXOStore persists and reloads materialized descriptors. Reloading
+// makes durable redelivery idempotent across the save-before-ack crash window.
+type IncomingVTXOStore interface {
+	VTXOSaver
+
+	GetVTXO(ctx context.Context,
+		outpoint wire.OutPoint) (*Descriptor, error)
+}
+
 // IncomingVTXOMsg wraps an IncomingVTXOEvent for the handler actor.
 type IncomingVTXOMsg struct {
 	actor.BaseMessage
@@ -58,8 +72,50 @@ type IncomingVTXOMsg struct {
 }
 
 // MessageType returns a human-readable message identifier.
-func (m IncomingVTXOMsg) MessageType() string {
+func (m *IncomingVTXOMsg) MessageType() string {
 	return fmt.Sprintf("IncomingVTXOMsg(event_id=%d)", m.Event.GetEventId())
+}
+
+const (
+	incomingVTXOMsgTLVType   tlv.Type = 0
+	incomingVTXORedriveDelay          = 30 * time.Second
+)
+
+// TLVType returns the durable-mailbox type identifier for an incoming event.
+func (m *IncomingVTXOMsg) TLVType() tlv.Type {
+	return incomingVTXOMsgTLVType
+}
+
+// Encode serializes the pushed protobuf for durable redelivery.
+func (m *IncomingVTXOMsg) Encode(w io.Writer) error {
+	if m.Event == nil {
+		return fmt.Errorf("incoming VTXO event must be provided")
+	}
+
+	raw, err := (proto.MarshalOptions{Deterministic: true}).Marshal(m.Event)
+	if err != nil {
+		return fmt.Errorf("marshal incoming VTXO event: %w", err)
+	}
+
+	_, err = w.Write(raw)
+
+	return err
+}
+
+// Decode restores a pushed protobuf from the durable mailbox.
+func (m *IncomingVTXOMsg) Decode(r io.Reader) error {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+
+	event := &arkrpc.IncomingVTXOEvent{}
+	if err := proto.Unmarshal(raw, event); err != nil {
+		return fmt.Errorf("unmarshal incoming VTXO event: %w", err)
+	}
+	m.Event = event
+
+	return nil
 }
 
 // IncomingVTXOResp is the handler's response type.
@@ -70,11 +126,22 @@ const incomingVTXOServiceKeyName = "incoming-vtxo-handler"
 // IncomingVTXOServiceKey returns the well-known service key for the
 // incoming VTXO handler actor.
 func IncomingVTXOServiceKey() actor.ServiceKey[
-	IncomingVTXOMsg, IncomingVTXOResp] {
+	*IncomingVTXOMsg, IncomingVTXOResp] {
 
-	return actor.NewServiceKey[IncomingVTXOMsg, IncomingVTXOResp](
+	return actor.NewServiceKey[*IncomingVTXOMsg, IncomingVTXOResp](
 		incomingVTXOServiceKeyName,
 	)
+}
+
+// NewIncomingVTXOCodec builds the codec used by the durable incoming-event
+// mailbox.
+func NewIncomingVTXOCodec() *actor.MessageCodec {
+	codec := actor.NewMessageCodec()
+	codec.MustRegister(incomingVTXOMsgTLVType, func() actor.TLVMessage {
+		return &IncomingVTXOMsg{}
+	})
+
+	return codec
 }
 
 // IncomingVTXOExtras carries the descriptor fields the unilateral-exit
@@ -93,6 +160,10 @@ type IncomingVTXOExtras struct {
 	// to which block its round commit confirmed in, or sweep
 	// scheduling has no reference point).
 	CreatedHeight int32
+
+	// BatchExpiry is derived from locally confirmed commitment
+	// transactions and the sweep policy authenticated by Ancestry.
+	BatchExpiry int32
 }
 
 // IncomingAncestryFetcher resolves the per-VTXO metadata the
@@ -103,12 +174,8 @@ type IncomingVTXOExtras struct {
 // descriptor carries full lineage from the first save.
 //
 // The handler routes per-script signing via clientKey so the
-// implementation can issue an indexer ListVTXOsByScripts query under
-// the owner's proof-of-control. A nil fetcher (legacy harnesses /
-// non-waved consumers) causes the handler to persist without
-// extras — the cooperative spend paths (refresh, OOR, leave) still
-// work; only unilateral exit is impossible until backfill. Production
-// wiring (see waved) supplies an indexer-backed implementation.
+// implementation can issue an indexer ListVTXOsByScripts query under the
+// owner's proof-of-control and authenticate the returned expiry evidence.
 type IncomingAncestryFetcher func(ctx context.Context,
 	outpoint wire.OutPoint, pkScript []byte,
 	clientKey keychain.KeyDescriptor) (IncomingVTXOExtras, error)
@@ -124,17 +191,15 @@ type IncomingVTXOHandlerConfig struct {
 
 	// VTXOStore is the persistence store used to save materialized
 	// VTXO descriptors.
-	VTXOStore VTXOSaver
+	VTXOStore IncomingVTXOStore
 
 	// VTXOManager is a tell-only reference to the VTXO manager
 	// actor, used to notify it of newly materialized VTXOs.
 	VTXOManager actor.TellOnlyRef[ManagerMsg]
 
-	// AncestryFetcher resolves the round commit tree fragments
-	// required to unilaterally exit each incoming VTXO. Nil falls
-	// back to persisting without ancestry; production must supply
-	// a non-nil implementation to keep the unilateral exit path
-	// usable for received VTXOs (see bug-3 in BUGS_FOUND.md).
+	// AncestryFetcher resolves the authenticated expiry and round commit
+	// tree fragments required to accept and unilaterally exit each incoming
+	// VTXO. A nil fetcher rejects relevant events for durable retry.
 	AncestryFetcher IncomingAncestryFetcher
 
 	// MetricsSink is an optional reference to the client-side metrics
@@ -187,13 +252,15 @@ func (h *IncomingVTXOHandler) emitReceived(ctx context.Context, status string) {
 	})
 }
 
-// Receive processes IncomingVTXOEvent messages.
-func (h *IncomingVTXOHandler) Receive(ctx context.Context,
-	msg IncomingVTXOMsg) fn.Result[IncomingVTXOResp] {
+// prepare validates an incoming event and builds its authenticated descriptor.
+// It performs no persistence writes or manager notifications, so a durable
+// caller can keep its slow proof I/O outside the acknowledgement transaction.
+func (h *IncomingVTXOHandler) prepare(ctx context.Context,
+	msg *IncomingVTXOMsg) fn.Result[*Descriptor] {
 
 	evt := msg.Event
 	if evt == nil {
-		return fn.Ok[IncomingVTXOResp](nil)
+		return fn.Ok[*Descriptor](nil)
 	}
 
 	// We only handle VTXO_CREATED events. Log unexpected types
@@ -203,7 +270,7 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 			slog.Int("type", int(evt.Type)),
 		)
 
-		return fn.Ok[IncomingVTXOResp](nil)
+		return fn.Ok[*Descriptor](nil)
 	}
 
 	op := evt.GetOutpoint()
@@ -211,7 +278,7 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 		h.log.WarnS(ctx, "IncomingVTXOEvent has invalid "+
 			"or missing outpoint", nil)
 
-		return fn.Ok[IncomingVTXOResp](nil)
+		return fn.Ok[*Descriptor](nil)
 	}
 
 	pkScript := evt.GetPkScript()
@@ -219,31 +286,7 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 		h.log.WarnS(ctx, "IncomingVTXOEvent has empty "+
 			"pkScript", nil)
 
-		return fn.Ok[IncomingVTXOResp](nil)
-	}
-
-	// The batch expiry is copied verbatim onto the persisted descriptor
-	// and every later expiry decision is derived from it, so refuse to
-	// materialize a VTXO we could never reason about. A non-positive
-	// expiry reads back as "expired by the entire height of the chain"
-	// and would route a brand-new VTXO straight to the expiry path.
-	//
-	// Dropping is the safer failure: the wallet still re-derives this
-	// VTXO from ListVTXOsByScripts, which reads the authoritative expiry
-	// off the server's round row, whereas a poisoned expiry persists
-	// locally and is never rewritten.
-	if evt.GetBatchExpiryHeight() <= 0 {
-		h.log.WarnS(ctx, "IncomingVTXOEvent has unusable batch "+
-			"expiry; not materializing", nil,
-			slog.Int(
-				"batch_expiry",
-				int(
-					evt.GetBatchExpiryHeight(),
-				),
-			),
-		)
-
-		return fn.Ok[IncomingVTXOResp](nil)
+		return fn.Ok[*Descriptor](nil)
 	}
 
 	var outpoint wire.OutPoint
@@ -257,7 +300,7 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 	)
 
 	if h.cfg.ScriptStore == nil {
-		return fn.Ok[IncomingVTXOResp](nil)
+		return fn.Ok[*Descriptor](nil)
 	}
 
 	// Look up the pkScript in owned receive scripts.
@@ -269,14 +312,15 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 		// Any other error is a real store failure that
 		// should be surfaced.
 		if errors.Is(err, sql.ErrNoRows) {
-			return fn.Ok[IncomingVTXOResp](nil)
+			return fn.Ok[*Descriptor](nil)
 		}
 
-		// A real store failure means we could not process an
-		// incoming event; count it as a failed receive.
-		h.emitReceived(ctx, "failed")
+		h.log.WarnS(ctx, "Failed to look up incoming VTXO script",
+			err,
+			slog.String("outpoint", outpoint.String()),
+		)
 
-		return fn.Err[IncomingVTXOResp](
+		return fn.Err[*Descriptor](
 			fmt.Errorf("lookup owned receive script: %w", err),
 		)
 	}
@@ -286,7 +330,7 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 			"client pubkey", nil,
 			slog.String("outpoint", outpoint.String()))
 
-		return fn.Ok[IncomingVTXOResp](nil)
+		return fn.Ok[*Descriptor](nil)
 	}
 
 	// Reject server-provided values that would overflow int64
@@ -299,7 +343,7 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 			slog.String("outpoint", outpoint.String()),
 			slog.Uint64("value_sat", evt.ValueSat))
 
-		return fn.Ok[IncomingVTXOResp](nil)
+		return fn.Ok[*Descriptor](nil)
 	}
 
 	// Build the tapscript for the descriptor.
@@ -314,7 +358,7 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 			"for incoming VTXO", err,
 			slog.String("outpoint", outpoint.String()))
 
-		return fn.Ok[IncomingVTXOResp](nil)
+		return fn.Ok[*Descriptor](nil)
 	}
 
 	// Use the commitment tx ID from the event, which references
@@ -334,7 +378,7 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 			slog.String("outpoint", outpoint.String()),
 		)
 
-		return fn.Ok[IncomingVTXOResp](nil)
+		return fn.Ok[*Descriptor](nil)
 	}
 
 	desc := &Descriptor{
@@ -347,54 +391,122 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 		TapScript:      tapscript,
 		RoundID:        evt.RoundId,
 		CommitmentTxID: commitTxID,
-		BatchExpiry:    evt.BatchExpiryHeight,
-		RelativeExpiry: evt.RelativeExpiry,
+		BatchExpiry:    0,
+		RelativeExpiry: exitDelay,
 		Status:         VTXOStatusLive,
 	}
 
-	// Resolve ancestry before persisting so the descriptor lands
-	// with full unilateral-exit material from the first write. The
-	// indexer push (IncomingVTXOEvent) is intentionally thin and
-	// carries no tree fragments; without this fetch the unroll
-	// path fails with "descriptor missing ancestry" on every
-	// in-round-received VTXO (see bug-3 in BUGS_FOUND.md). A nil
-	// fetcher preserves the legacy degraded behavior: cooperative
-	// spend paths still work, only unilateral exit is blocked.
-	// Fetch failures are warn-logged but do not block
-	// materialization, since the receive must still succeed for
-	// cooperative use.
-	if h.cfg.AncestryFetcher != nil {
-		extras, err := h.cfg.AncestryFetcher(
-			ctx, outpoint, pkScript, rec.ClientKey,
+	// The indexer push is intentionally only a notification. Resolve the
+	// ancestry and chain-authenticated expiry before the first write.
+	// Returning an error keeps the durable event pending for retry instead
+	// of accepting a new live VTXO with unauthenticated safety metadata.
+	if h.cfg.AncestryFetcher == nil {
+		h.log.WarnS(ctx, "Cannot authenticate incoming VTXO expiry",
+			nil,
+			slog.String("outpoint", outpoint.String()),
 		)
-		if err != nil {
-			h.log.WarnS(ctx, "Failed to fetch incoming VTXO "+
-				"ancestry; persisting without — unilateral "+
-				"exit will be unavailable until backfill",
-				err,
-				slog.String("outpoint", outpoint.String()),
-			)
-		} else {
-			desc.Ancestry = extras.Ancestry
-			desc.CreatedHeight = extras.CreatedHeight
-		}
-	}
 
-	// Persist the VTXO. A save failure signals a database or
-	// schema inconsistency that must be surfaced.
-	if h.cfg.VTXOStore != nil {
-		saveErr := h.cfg.VTXOStore.SaveVTXO(ctx, desc)
-		if saveErr != nil {
+		return fn.Err[*Descriptor](
+			fmt.Errorf(
+				"authenticate incoming VTXO %s: ancestry "+
+					"fetcher not configured",
+				outpoint.String(),
+			),
+		)
+	}
+	extras, err := h.cfg.AncestryFetcher(
+		ctx, outpoint, pkScript, rec.ClientKey,
+	)
+	if err != nil {
+		h.log.WarnS(ctx, "Failed to authenticate incoming VTXO expiry",
+			err,
+			slog.String("outpoint", outpoint.String()),
+		)
+		if errors.Is(err, ErrInvalidBatchExpiryEvidence) {
 			h.emitReceived(ctx, "failed")
-
-			return fn.Err[IncomingVTXOResp](
-				fmt.Errorf(
-					"save incoming VTXO %s: %w",
-					outpoint.String(), saveErr,
-				),
-			)
 		}
+
+		return fn.Err[*Descriptor](
+			fmt.Errorf(
+				"authenticate incoming VTXO %s: %w",
+				outpoint.String(), err,
+			),
+		)
 	}
+	if extras.BatchExpiry <= 0 {
+		err := fmt.Errorf("%w: derived batch expiry must be positive",
+			ErrInvalidBatchExpiryEvidence)
+		h.log.WarnS(ctx, "Failed to authenticate incoming VTXO expiry",
+			err,
+			slog.String("outpoint", outpoint.String()),
+		)
+		h.emitReceived(ctx, "failed")
+
+		return fn.Err[*Descriptor](
+			fmt.Errorf(
+				"authenticate incoming VTXO %s: %w",
+				outpoint.String(), err,
+			),
+		)
+	}
+	desc.Ancestry = extras.Ancestry
+	desc.CreatedHeight = extras.CreatedHeight
+	desc.BatchExpiry = extras.BatchExpiry
+
+	return fn.Ok(desc)
+}
+
+// persist stores the authenticated descriptor, then reloads the canonical
+// row. This closes the save-before-ack crash window without reviving a VTXO
+// whose status changed before redelivery.
+func (h *IncomingVTXOHandler) persist(ctx context.Context, desc *Descriptor) (
+	*Descriptor, error) {
+
+	if h.cfg.VTXOStore == nil {
+		return desc, nil
+	}
+
+	saveErr := h.cfg.VTXOStore.SaveVTXO(ctx, desc)
+	existing, loadErr := h.cfg.VTXOStore.GetVTXO(ctx, desc.Outpoint)
+	if loadErr == nil && sameIncomingVTXO(existing, desc) {
+		return existing, nil
+	}
+	if saveErr != nil {
+		return nil, fmt.Errorf("save incoming VTXO %s: %w",
+			desc.Outpoint.String(), saveErr)
+	}
+	if loadErr != nil {
+		return nil, fmt.Errorf("reload incoming VTXO %s: %w",
+			desc.Outpoint.String(), loadErr)
+	}
+
+	return nil, fmt.Errorf("reloaded incoming VTXO %s does not match event",
+		desc.Outpoint.String())
+}
+
+// sameIncomingVTXO proves persistence found the row for this event. The
+// immutable script, round, chain anchor, and
+// authenticated expiry must all match before the duplicate is accepted.
+func sameIncomingVTXO(existing, incoming *Descriptor) bool {
+	if existing == nil || incoming == nil {
+		return false
+	}
+
+	return existing.Outpoint == incoming.Outpoint &&
+		existing.Amount == incoming.Amount &&
+		bytes.Equal(existing.PolicyTemplate, incoming.PolicyTemplate) &&
+		bytes.Equal(existing.PkScript, incoming.PkScript) &&
+		existing.RoundID == incoming.RoundID &&
+		existing.CommitmentTxID == incoming.CommitmentTxID &&
+		existing.BatchExpiry == incoming.BatchExpiry &&
+		existing.RelativeExpiry == incoming.RelativeExpiry &&
+		existing.CreatedHeight == incoming.CreatedHeight &&
+		len(existing.Ancestry) > 0
+}
+
+// notifyMaterialized publishes best-effort effects after persistence commits.
+func (h *IncomingVTXOHandler) notifyMaterialized(ctx context.Context,
+	desc *Descriptor) {
 
 	// The owned incoming VTXO is now persisted: count it as a
 	// materialized receive. This is the authoritative success point —
@@ -417,10 +529,145 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 	}
 
 	h.log.InfoS(ctx, "Materialized incoming VTXO",
-		slog.String("outpoint", outpoint.String()),
+		slog.String("outpoint", desc.Outpoint.String()),
 		slog.Int64("amount", int64(desc.Amount)),
-		slog.String("round_id", evt.RoundId),
+		slog.String("round_id", desc.RoundID),
 	)
+}
+
+// Receive processes an incoming event outside a durable mailbox. Production
+// uses incomingVTXODurableBehavior; this direct entry point remains useful to
+// focused tests and callers that own their own retry boundary.
+func (h *IncomingVTXOHandler) Receive(ctx context.Context,
+	msg *IncomingVTXOMsg) fn.Result[IncomingVTXOResp] {
+
+	desc, err := h.prepare(ctx, msg).Unpack()
+	if err != nil {
+		return fn.Err[IncomingVTXOResp](err)
+	}
+	if desc == nil {
+		return fn.Ok[IncomingVTXOResp](nil)
+	}
+
+	persisted, err := h.persist(ctx, desc)
+	if err != nil {
+		h.log.WarnS(ctx, "Failed to persist incoming VTXO",
+			err,
+			slog.String("outpoint", desc.Outpoint.String()),
+		)
+		h.emitReceived(ctx, "failed")
+
+		return fn.Err[IncomingVTXOResp](err)
+	}
+	if persisted.Status == VTXOStatusLive {
+		h.notifyMaterialized(ctx, persisted)
+	}
 
 	return fn.Ok[IncomingVTXOResp](nil)
+}
+
+// incomingVTXODurableBehavior keeps slow indexer and chain I/O outside the
+// delivery-store writer transaction. Persistence and manager notification are
+// replay-safe, then one short Commit consumes the durable event. Transient
+// failures are postponed without spending the mailbox attempt budget.
+type incomingVTXODurableBehavior struct {
+	handler *IncomingVTXOHandler
+}
+
+func (b *incomingVTXODurableBehavior) Receive(ctx context.Context,
+	msg *IncomingVTXOMsg,
+	ax actor.Exec[struct{}]) fn.Result[IncomingVTXOResp] {
+
+	desc, err := b.handler.prepare(ctx, msg).Unpack()
+	if err != nil {
+		if errors.Is(err, ErrInvalidBatchExpiryEvidence) {
+			return fn.Err[IncomingVTXOResp](err)
+		}
+
+		return fn.Err[IncomingVTXOResp](
+			fmt.Errorf(
+				"%w: %w", err,
+				actor.Postpone(incomingVTXORedriveDelay),
+			),
+		)
+	}
+
+	var persisted *Descriptor
+	if desc != nil {
+		persisted, err = b.handler.persist(ctx, desc)
+		if err != nil {
+			b.handler.log.WarnS(
+				ctx,
+				"Failed to persist incoming VTXO",
+				err,
+				slog.String("outpoint", desc.Outpoint.String()),
+			)
+			postpone := actor.Postpone(incomingVTXORedriveDelay)
+
+			return fn.Err[IncomingVTXOResp](
+				fmt.Errorf("%w: %w", err, postpone),
+			)
+		}
+
+		if persisted.Status == VTXOStatusLive {
+			b.handler.notifyMaterialized(ctx, persisted)
+		}
+	}
+
+	err = ax.Commit(ctx, func(context.Context, struct{}) error {
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, actor.ErrLeaseLost) {
+			return fn.Err[IncomingVTXOResp](err)
+		}
+		b.handler.log.WarnS(ctx, "Failed to acknowledge incoming VTXO",
+			err,
+		)
+
+		return fn.Err[IncomingVTXOResp](
+			fmt.Errorf(
+				"%w: %w", err,
+				actor.Postpone(incomingVTXORedriveDelay),
+			),
+		)
+	}
+
+	return fn.Ok[IncomingVTXOResp](nil)
+}
+
+// NewIncomingVTXODurableActor creates the crash-safe incoming-event consumer.
+// The caller owns Start, Stop, and receptionist registration.
+func NewIncomingVTXODurableActor(cfg IncomingVTXOHandlerConfig,
+	store actor.DeliveryStore) (*actor.DurableActor[
+	*IncomingVTXOMsg, IncomingVTXOResp], error) {
+
+	if store == nil {
+		return nil, fmt.Errorf("delivery store must be provided")
+	}
+
+	behavior := &incomingVTXODurableBehavior{
+		handler: NewIncomingVTXOHandler(cfg),
+	}
+	durableCfg := actor.DefaultDurableTxActorConfig[
+		*IncomingVTXOMsg, IncomingVTXOResp, struct{},
+	](
+		incomingVTXOServiceKeyName, behavior,
+		func(context.Context, actor.DeliveryStore) struct{} {
+			return struct{}{}
+		},
+		store, NewIncomingVTXOCodec(),
+	)
+	durableCfg.Log = cfg.Log
+	durableCfg.TellRetryPolicy = func(err error, attempts int) (bool,
+		time.Duration) {
+
+		if errors.Is(err, ErrInvalidBatchExpiryEvidence) {
+			return false, 0
+		}
+
+		return actor.DefaultTellRetryPolicy(err, attempts)
+	}
+
+	return actor.NewDurableActor(durableCfg).Unpack()
 }

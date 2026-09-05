@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
@@ -631,6 +632,30 @@ func TestActorConfirmation(t *testing.T) {
 // lifecycle events, and server communication.
 func TestActorProcessOutbox(t *testing.T) {
 	t.Parallel()
+
+	t.Run("commitment uses VTXO activation depth", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+		h.operatorTerms.MinConfirmations = 6
+		h.operatorTerms.VTXOConfirmations = 1
+
+		err := h.start()
+		require.NoError(t, err)
+
+		h.chainSource.registrations = nil
+		txid := chainhash.HashH([]byte("split-confirmation-depth"))
+		h.actor.registerCommitmentConfirmation(
+			h.ctx, txid, fn.None[*psbt.Packet](), nil,
+		)
+
+		require.Len(t, h.chainSource.registrations, 1)
+		require.Equal(
+			t, uint32(1),
+			h.chainSource.registrations[0].TargetConfs,
+		)
+	})
 
 	t.Run("register_confirmation_request", func(t *testing.T) {
 		t.Parallel()

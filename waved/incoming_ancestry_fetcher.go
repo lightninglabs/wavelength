@@ -3,6 +3,7 @@ package waved
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
@@ -11,6 +12,23 @@ import (
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
 )
+
+// incomingAncestryFetcherWithTimeout bounds the complete indexer-and-chain
+// lookup. A stalled indexer must release the durable actor turn so the pending
+// event can be postponed and retried.
+func incomingAncestryFetcherWithTimeout(fetcher vtxo.IncomingAncestryFetcher,
+	timeout time.Duration) vtxo.IncomingAncestryFetcher {
+
+	return func(ctx context.Context, outpoint wire.OutPoint,
+		pkScript []byte, clientKey keychain.KeyDescriptor) (
+		vtxo.IncomingVTXOExtras, error) {
+
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+
+		return fetcher(ctx, outpoint, pkScript, clientKey)
+	}
+}
 
 // incomingAncestryFetcher returns a vtxo.IncomingAncestryFetcher that resolves
 // the round commit tree fragments needed for the unilateral exit unroll CPFP
@@ -23,13 +41,36 @@ import (
 // runs with a broken dependency in production.
 //
 // The fetched ancestry travels through the same vtxo.AncestryFromRPC validator
-// the OOR receive path uses; structural errors (missing or over-cap paths)
-// surface as fetch failures and the handler then persists without ancestry
-// rather than dropping the VTXO entirely. This keeps cooperative spend paths
-// usable on the receiver even if the indexer is temporarily unhealthy — only
-// unilateral exit is degraded.
+// the OOR receive path uses. Structural or authentication errors keep the
+// durable incoming event pending for retry; no VTXO is accepted without the
+// expiry evidence needed to enforce its safety margins.
 func incomingAncestryFetcher(idx *indexer.Client,
+	signerFactory OORReceiveScriptSignerFactory,
+	authenticateExpiry oor.IncomingExpiryAuthenticator) (
+	vtxo.IncomingAncestryFetcher, error) {
+
+	if authenticateExpiry == nil {
+		return nil, fmt.Errorf("expiry authenticator not initialized")
+	}
+
+	return newIncomingAncestryFetcher(
+		idx, signerFactory, authenticateExpiry,
+	)
+}
+
+// incomingAncestryOnlyFetcher builds the fetch-only variant used by the
+// legacy commitment-height repair. New VTXO acceptance must use
+// incomingAncestryFetcher so expiry authentication cannot be omitted.
+func incomingAncestryOnlyFetcher(idx *indexer.Client,
 	signerFactory OORReceiveScriptSignerFactory) (
+	vtxo.IncomingAncestryFetcher, error) {
+
+	return newIncomingAncestryFetcher(idx, signerFactory, nil)
+}
+
+func newIncomingAncestryFetcher(idx *indexer.Client,
+	signerFactory OORReceiveScriptSignerFactory,
+	authenticateExpiry oor.IncomingExpiryAuthenticator) (
 	vtxo.IncomingAncestryFetcher, error) {
 
 	if idx == nil {
@@ -62,10 +103,26 @@ func incomingAncestryFetcher(idx *indexer.Client,
 			)
 		}
 
-		return vtxo.ResolveIncomingAncestry(
+		extras, err := vtxo.ResolveIncomingAncestry(
 			ctx, query, outpoint, pkScript,
 			vtxo.DefaultIncomingAncestryIndexPageSize,
 			uint64(oor.DefaultMaxVTXOMatches),
 		)
+		if err != nil {
+			return vtxo.IncomingVTXOExtras{}, err
+		}
+
+		if authenticateExpiry != nil {
+			extras.BatchExpiry, err = authenticateExpiry(
+				ctx, extras.Ancestry,
+			)
+			if err != nil {
+				return vtxo.IncomingVTXOExtras{}, fmt.Errorf(
+					"authenticate batch "+
+						"expiry: %w", err)
+			}
+		}
+
+		return extras, nil
 	}, nil
 }

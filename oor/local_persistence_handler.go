@@ -45,6 +45,11 @@ type IncomingMetadataResolver func(ctx context.Context, sessionID SessionID,
 	recipient ArkRecipientOutput, ark *psbt.Packet,
 	finalCheckpoints []*psbt.Packet) (IncomingVTXOMetadata, error)
 
+// IncomingExpiryAuthenticator derives one metadata record's batch expiry from
+// authenticated ancestry and local chain confirmation evidence.
+type IncomingExpiryAuthenticator func(ctx context.Context,
+	ancestry []vtxo.Ancestry) (int32, error)
+
 // IncomingMetadataRecipientFilter filters an incoming Ark package down to the
 // recipient outputs controlled by the local wallet.
 type IncomingMetadataRecipientFilter interface {
@@ -113,6 +118,11 @@ type LocalPersistenceOutboxHandler struct {
 	// metadata for each incoming recipient output.
 	ResolveIncomingMetadata IncomingMetadataResolver
 
+	// AuthenticateIncomingExpiry replaces the indexer's expiry hint with a
+	// locally derived value before materialization starts its DB
+	// transaction.
+	AuthenticateIncomingExpiry IncomingExpiryAuthenticator
+
 	// NotifyIncomingVTXOs is invoked after incoming VTXOs are persisted.
 	// Production wiring should use this to notify the VTXO manager so newly
 	// received OOR VTXOs are actively monitored when the handler is used
@@ -137,6 +147,9 @@ func (h *LocalPersistenceOutboxHandler) Handle(ctx context.Context,
 	case *QueryIncomingMetadataRequest:
 		return h.handleQueryIncomingMetadata(ctx, msg)
 
+	case *AuthenticateIncomingMetadataRequest:
+		return h.handleAuthenticateIncomingMetadata(ctx, msg)
+
 	case *MaterializeIncomingVTXOsRequest:
 		return h.handleMaterializeIncoming(ctx, msg)
 
@@ -150,6 +163,45 @@ func (h *LocalPersistenceOutboxHandler) Handle(ctx context.Context,
 
 		return h.Next.Handle(ctx, sessionID, outbox)
 	}
+}
+
+// handleAuthenticateIncomingMetadata performs chain I/O before the durable
+// materialization transaction begins.
+func (h *LocalPersistenceOutboxHandler) handleAuthenticateIncomingMetadata(
+	ctx context.Context, msg *AuthenticateIncomingMetadataRequest) ([]Event,
+	error) {
+
+	if msg == nil {
+		return nil, fmt.Errorf("incoming metadata authentication " +
+			"request must be provided")
+	}
+	if h.AuthenticateIncomingExpiry == nil {
+		return nil, fmt.Errorf("incoming expiry authenticator must " +
+			"be provided")
+	}
+
+	matches := make([]IncomingMetadataMatch, len(msg.Matches))
+	copy(matches, msg.Matches)
+	for i := range matches {
+		expiry, err := h.AuthenticateIncomingExpiry(
+			ctx, matches[i].Metadata.Ancestry,
+		)
+		if err != nil {
+			if errors.Is(err, vtxo.ErrInvalidBatchExpiryEvidence) {
+				return nil, &terminalOutboxError{cause: err}
+			}
+
+			return nil, err
+		}
+
+		matches[i].Metadata.BatchExpiry = expiry
+		matches[i].Metadata.ExpiryAuthenticated = true
+	}
+
+	return []Event{&IncomingMetadataResolvedEvent{
+		Matches:             matches,
+		ExpiryAuthenticated: true,
+	}}, nil
 }
 
 // handleMaterializeIncoming persists recipient VTXOs for an incoming transfer
@@ -190,6 +242,15 @@ func (h *LocalPersistenceOutboxHandler) validateMaterializeIncoming(
 
 	if len(msg.Recipients) == 0 {
 		return fmt.Errorf("incoming recipients must be provided")
+	}
+
+	for i := range msg.MetadataMatches {
+		metadata := msg.MetadataMatches[i].Metadata
+		if !metadata.ExpiryAuthenticated || metadata.BatchExpiry <= 0 {
+			return fmt.Errorf("incoming output %d batch expiry is "+
+				"not authenticated",
+				msg.MetadataMatches[i].OutputIndex)
+		}
 	}
 
 	if h.PackageStore != nil {
@@ -300,6 +361,8 @@ func (h *LocalPersistenceOutboxHandler) FilterIncomingMetadataRecipients(
 // materializeIncoming persists recipient VTXOs for an incoming transfer and
 // optionally notifies the VTXO manager directly when the caller is not
 // resuming the durable actor with a follow-up event.
+//
+//nolint:funlen // Keep the materialization transaction in one visible boundary.
 func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 	msg *MaterializeIncomingVTXOsRequest, notifyIncoming bool) ([]Event,
 	error) {
@@ -393,6 +456,27 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 					recipient.OutputIndex),
 				defaultRetryDelay,
 			)
+		}
+		if !metadata.ExpiryAuthenticated {
+			if h.AuthenticateIncomingExpiry == nil {
+				return nil, fmt.Errorf("incoming output %d "+
+					"batch expiry authenticator must be "+
+					"provided", recipient.OutputIndex)
+			}
+
+			expiry, err := h.AuthenticateIncomingExpiry(
+				ctx, metadata.Ancestry,
+			)
+			if err != nil {
+				return nil, err
+			}
+			metadata.BatchExpiry = expiry
+			metadata.ExpiryAuthenticated = true
+		}
+		if metadata.BatchExpiry <= 0 {
+			return nil, fmt.Errorf("incoming output %d "+
+				"authenticated batch expiry must be positive",
+				recipient.OutputIndex)
 		}
 
 		logger(ctx).DebugS(ctx, "Resolved incoming metadata",

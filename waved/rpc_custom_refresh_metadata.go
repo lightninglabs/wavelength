@@ -110,6 +110,22 @@ func (r *RPCServer) resolveCustomRefreshMetadata(ctx context.Context,
 					input.Outpoint, err)
 			}
 
+			if r.server.expiryAuthenticator == nil {
+				return customRefreshMetadata{}, status.Error(
+					codes.Unavailable,
+					"expiry authenticator not initialized",
+				)
+			}
+			meta.BatchExpiry, err = r.server.expiryAuthenticator(
+				ctx, meta.Ancestry,
+			)
+			if err != nil {
+				return customRefreshMetadata{}, status.Errorf(
+					codes.FailedPrecondition,
+					"authenticate refresh expiry for "+
+						"%s: %v", input.Outpoint, err)
+			}
+
 			return meta, nil
 		}
 
@@ -164,7 +180,7 @@ func customRefreshMetadataFromRPC(candidate *arkrpc.VTXO) (
 	return customRefreshMetadata{
 		RoundID:        candidate.GetRoundId(),
 		CommitmentTxID: commitmentTxID,
-		BatchExpiry:    candidate.GetBatchExpiryHeight(),
+		BatchExpiry:    0,
 		ChainDepth:     int(candidate.GetChainDepth()),
 		CreatedHeight:  candidate.GetCreatedHeight(),
 		Ancestry:       ancestry,
