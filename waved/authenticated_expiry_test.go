@@ -46,8 +46,35 @@ func TestBatchExpiryAuthenticatorTimesOut(t *testing.T) {
 	}
 }
 
+// TestBatchExpiryAuthenticatorRegistrationTimeoutUnregisters proves cleanup
+// is armed before the registration Ask resolves. The chain-source actor may
+// still create the watch after the caller's deadline.
+func TestBatchExpiryAuthenticatorRegistrationTimeoutUnregisters(t *testing.T) {
+	t.Parallel()
+
+	chainSource := &blockingExpiryChainSource{
+		unregistered:        make(chan struct{}, 1),
+		registrationBlocked: true,
+	}
+	authenticate := batchExpiryAuthenticatorWithTimeout(
+		chainSource, 10*time.Millisecond,
+	)
+
+	_, err := authenticate(t.Context(), []vtxo.Ancestry{
+		testExpiryAuthenticationAncestry(t),
+	})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	select {
+	case <-chainSource.unregistered:
+	case <-time.After(time.Second):
+		t.Fatal("timed-out registration was not unregistered")
+	}
+}
+
 type blockingExpiryChainSource struct {
-	unregistered chan struct{}
+	unregistered        chan struct{}
+	registrationBlocked bool
 }
 
 func (b *blockingExpiryChainSource) ID() string {
@@ -84,6 +111,9 @@ func (b *blockingExpiryChainSource) Ask(_ context.Context,
 			),
 		)
 
+		return response.Future()
+	}
+	if b.registrationBlocked {
 		return response.Future()
 	}
 

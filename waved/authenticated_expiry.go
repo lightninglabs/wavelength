@@ -79,6 +79,10 @@ func batchExpiryAuthenticatorWithTimeout(chainSource chainSourceRef,
 					HeightHint:  heightHint,
 					NotifyActor: noNotify,
 				}
+				defer unregisterExpiryConfirmation(
+					ctx, chainSource, callerID, txid,
+					pkScript,
+				)
 
 				response, err := chainSource.Ask(
 					ctx, request,
@@ -93,11 +97,6 @@ func batchExpiryAuthenticatorWithTimeout(chainSource chainSourceRef,
 					return empty, fmt.Errorf("unexpected "+
 						"response %T", response)
 				}
-
-				defer unregisterExpiryConfirmation(
-					ctx, chainSource, callerID, txid,
-					pkScript,
-				)
 
 				confirmation, err := registered.Future.
 					Await(ctx).
