@@ -35,9 +35,10 @@ func (m *mockScriptLookup) LookupOwnedReceiveScript(_ context.Context,
 
 // mockVTXOSaver implements VTXOSaver for testing.
 type mockVTXOSaver struct {
-	saved    []*Descriptor
-	failures int
-	err      error
+	saved                  []*Descriptor
+	failures               int
+	err                    error
+	succeedOnDuplicateSave bool
 }
 
 type recordingIncomingExec struct {
@@ -79,6 +80,10 @@ func (m *mockVTXOSaver) SaveVTXO(_ context.Context, desc *Descriptor) error {
 	}
 	for _, saved := range m.saved {
 		if saved.Outpoint == desc.Outpoint {
+			if m.succeedOnDuplicateSave {
+				return nil
+			}
+
 			return errors.New("duplicate VTXO")
 		}
 	}
@@ -131,6 +136,9 @@ func TestIncomingVTXOHandlerRetriesAuthenticatedExpiryWrite(t *testing.T) {
 			fetches++
 
 			return IncomingVTXOExtras{
+				Ancestry: []Ancestry{
+					{},
+				},
 				BatchExpiry: 800_144,
 			}, nil
 		},
@@ -225,6 +233,72 @@ func TestIncomingVTXODurableBehaviorPostponesAuthenticationFailure(
 	require.Equal(t, int32(900_144), saver.saved[0].BatchExpiry)
 }
 
+// TestIncomingVTXODurableBehaviorReloadsTerminatedReplay proves a production
+// upsert followed by redelivery uses the stored status and does not notify the
+// manager to revive a VTXO that terminated after the first delivery.
+func TestIncomingVTXODurableBehaviorReloadsTerminatedReplay(t *testing.T) {
+	t.Parallel()
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	pkScript := []byte{0x51, 0x20, 0xbc, 0xcd}
+	saver := &mockVTXOSaver{succeedOnDuplicateSave: true}
+	manager := &capturingManagerRef{}
+	ownedScript := &OwnedReceiveScript{
+		ClientKey: keychain.KeyDescriptor{
+			PubKey: clientKey.PubKey(),
+		},
+		OperatorPubKey: operatorKey.PubKey(),
+		ExitDelay:      144,
+	}
+	handler := NewIncomingVTXOHandler(
+		IncomingVTXOHandlerConfig{
+			ScriptStore: &mockScriptLookup{
+				scripts: map[string]*OwnedReceiveScript{
+					string(pkScript): ownedScript,
+				},
+			},
+			VTXOStore:   saver,
+			VTXOManager: manager,
+			AncestryFetcher: func(context.Context, wire.OutPoint,
+				[]byte, keychain.KeyDescriptor) (
+				IncomingVTXOExtras, error) {
+
+				return IncomingVTXOExtras{
+					Ancestry: []Ancestry{
+						{},
+					},
+					BatchExpiry: 900_144,
+				}, nil
+			},
+		},
+	)
+	behavior := &incomingVTXODurableBehavior{handler: handler}
+	exec := &recordingIncomingExec{
+		failures: 1,
+		err:      errors.New("ack transaction unavailable"),
+	}
+
+	var txid chainhash.Hash
+	txid[0] = 0x54
+	msg := &IncomingVTXOMsg{Event: newTestEvent(
+		txid, 0, pkScript, 50_000, "round-terminated-replay",
+	)}
+
+	_, err = behavior.Receive(t.Context(), msg, exec).Unpack()
+	require.ErrorIs(t, err, actor.ErrPostponed)
+	require.Len(t, manager.captured(), 1)
+	require.Len(t, saver.saved, 1)
+
+	saver.saved[0].Status = VTXOStatusSpent
+	_, err = behavior.Receive(t.Context(), msg, exec).Unpack()
+	require.NoError(t, err)
+	require.Len(t, manager.captured(), 1)
+	require.Equal(t, VTXOStatusSpent, saver.saved[0].Status)
+}
+
 // TestIncomingVTXOCodecRoundTrip proves the complete push event survives the
 // durable-mailbox encoding used for restart redelivery.
 func TestIncomingVTXOCodecRoundTrip(t *testing.T) {
@@ -306,6 +380,9 @@ func TestIncomingVTXOHandlerOwnedScript(t *testing.T) {
 			return IncomingVTXOExtras{
 				CreatedHeight: 799_500,
 				BatchExpiry:   800_000,
+				Ancestry: []Ancestry{
+					{},
+				},
 			}, nil
 		},
 	})
@@ -438,6 +515,9 @@ func TestIncomingVTXOHandlerIgnoresEventBatchExpiry(t *testing.T) {
 						IncomingVTXOExtras, error) {
 
 						return IncomingVTXOExtras{
+							Ancestry: []Ancestry{
+								{},
+							},
 							BatchExpiry: 800_144,
 						}, nil
 					},

@@ -456,33 +456,36 @@ func (h *IncomingVTXOHandler) prepare(ctx context.Context,
 	return fn.Ok(desc)
 }
 
-// persist stores the authenticated descriptor and recognizes a matching row
-// from an earlier delivery. This closes the save-before-ack crash window.
+// persist stores the authenticated descriptor, then reloads the canonical
+// row. This closes the save-before-ack crash window without reviving a VTXO
+// whose status changed before redelivery.
 func (h *IncomingVTXOHandler) persist(ctx context.Context, desc *Descriptor) (
 	*Descriptor, error) {
 
-	// Persist the VTXO. A save failure signals a database or
-	// schema inconsistency that must be surfaced.
-	if h.cfg.VTXOStore != nil {
-		saveErr := h.cfg.VTXOStore.SaveVTXO(ctx, desc)
-		if saveErr != nil {
-			existing, loadErr := h.cfg.VTXOStore.GetVTXO(
-				ctx, desc.Outpoint,
-			)
-			if loadErr == nil && sameIncomingVTXO(existing, desc) {
-				return existing, nil
-			}
-
-			return nil, fmt.Errorf("save incoming VTXO %s: %w",
-				desc.Outpoint.String(), saveErr)
-		}
+	if h.cfg.VTXOStore == nil {
+		return desc, nil
 	}
 
-	return desc, nil
+	saveErr := h.cfg.VTXOStore.SaveVTXO(ctx, desc)
+	existing, loadErr := h.cfg.VTXOStore.GetVTXO(ctx, desc.Outpoint)
+	if loadErr == nil && sameIncomingVTXO(existing, desc) {
+		return existing, nil
+	}
+	if saveErr != nil {
+		return nil, fmt.Errorf("save incoming VTXO %s: %w",
+			desc.Outpoint.String(), saveErr)
+	}
+	if loadErr != nil {
+		return nil, fmt.Errorf("reload incoming VTXO %s: %w",
+			desc.Outpoint.String(), loadErr)
+	}
+
+	return nil, fmt.Errorf("reloaded incoming VTXO %s does not match event",
+		desc.Outpoint.String())
 }
 
-// sameIncomingVTXO proves a failed insert found the row written by an earlier
-// delivery of this event. The immutable script, round, chain anchor, and
+// sameIncomingVTXO proves persistence found the row for this event. The
+// immutable script, round, chain anchor, and
 // authenticated expiry must all match before the duplicate is accepted.
 func sameIncomingVTXO(existing, incoming *Descriptor) bool {
 	if existing == nil || incoming == nil {
