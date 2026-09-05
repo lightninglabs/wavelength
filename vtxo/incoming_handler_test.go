@@ -11,8 +11,10 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 // mockScriptLookup implements OwnedScriptLookup for testing.
@@ -38,15 +40,63 @@ type mockVTXOSaver struct {
 	err      error
 }
 
+type recordingIncomingExec struct {
+	commits  int
+	failures int
+	err      error
+}
+
+func (e *recordingIncomingExec) Read(ctx context.Context,
+	fn func(context.Context, struct{}) error) error {
+
+	return fn(ctx, struct{}{})
+}
+
+func (e *recordingIncomingExec) Stage(ctx context.Context,
+	fn func(context.Context, struct{}) error) error {
+
+	return fn(ctx, struct{}{})
+}
+
+func (e *recordingIncomingExec) Commit(ctx context.Context,
+	fn func(context.Context, struct{}) error) error {
+
+	if e.failures > 0 {
+		e.failures--
+
+		return e.err
+	}
+	e.commits++
+
+	return fn(ctx, struct{}{})
+}
+
 func (m *mockVTXOSaver) SaveVTXO(_ context.Context, desc *Descriptor) error {
 	if m.failures > 0 {
 		m.failures--
 
 		return m.err
 	}
+	for _, saved := range m.saved {
+		if saved.Outpoint == desc.Outpoint {
+			return errors.New("duplicate VTXO")
+		}
+	}
 	m.saved = append(m.saved, desc)
 
 	return nil
+}
+
+func (m *mockVTXOSaver) GetVTXO(_ context.Context, outpoint wire.OutPoint) (
+	*Descriptor, error) {
+
+	for _, saved := range m.saved {
+		if saved.Outpoint == outpoint {
+			return saved, nil
+		}
+	}
+
+	return nil, ErrVTXONotFound
 }
 
 // TestIncomingVTXOHandlerRetriesAuthenticatedExpiryWrite proves a failed save
@@ -88,7 +138,7 @@ func TestIncomingVTXOHandlerRetriesAuthenticatedExpiryWrite(t *testing.T) {
 
 	var txid chainhash.Hash
 	txid[0] = 0x42
-	msg := IncomingVTXOMsg{Event: newTestEvent(
+	msg := &IncomingVTXOMsg{Event: newTestEvent(
 		txid, 0, pkScript, 50_000, "round-retry",
 	)}
 
@@ -101,6 +151,99 @@ func TestIncomingVTXOHandlerRetriesAuthenticatedExpiryWrite(t *testing.T) {
 	require.Len(t, saver.saved, 1)
 	require.Equal(t, int32(800_144), saver.saved[0].BatchExpiry)
 	require.Equal(t, 2, fetches)
+}
+
+// TestIncomingVTXODurableBehaviorPostponesAuthenticationFailure proves a
+// transient proof failure leaves the durable event unconsumed. A later retry
+// persists the VTXO and commits the mailbox acknowledgement.
+func TestIncomingVTXODurableBehaviorPostponesAuthenticationFailure(
+	t *testing.T) {
+
+	t.Parallel()
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	pkScript := []byte{0x51, 0x20, 0xbb, 0xcc}
+	lookup := &mockScriptLookup{scripts: map[string]*OwnedReceiveScript{
+		string(pkScript): {
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: clientKey.PubKey(),
+			},
+			OperatorPubKey: operatorKey.PubKey(),
+			ExitDelay:      144,
+		},
+	}}
+	saver := &mockVTXOSaver{}
+	fetches := 0
+	handler := NewIncomingVTXOHandler(IncomingVTXOHandlerConfig{
+		ScriptStore: lookup,
+		VTXOStore:   saver,
+		AncestryFetcher: func(context.Context, wire.OutPoint, []byte,
+			keychain.KeyDescriptor) (IncomingVTXOExtras, error) {
+
+			fetches++
+			if fetches == 1 {
+				return IncomingVTXOExtras{},
+					errors.New("chain backend catching up")
+			}
+
+			return IncomingVTXOExtras{
+				Ancestry: []Ancestry{
+					{},
+				},
+				BatchExpiry: 900_144,
+			}, nil
+		},
+	})
+	behavior := &incomingVTXODurableBehavior{handler: handler}
+	exec := &recordingIncomingExec{}
+
+	var txid chainhash.Hash
+	txid[0] = 0x52
+	msg := &IncomingVTXOMsg{Event: newTestEvent(
+		txid, 0, pkScript, 50_000, "round-durable-retry",
+	)}
+
+	_, err = behavior.Receive(t.Context(), msg, exec).Unpack()
+	require.ErrorIs(t, err, actor.ErrPostponed)
+	require.Zero(t, exec.commits)
+	require.Empty(t, saver.saved)
+
+	exec.failures = 1
+	exec.err = errors.New("ack transaction unavailable")
+	_, err = behavior.Receive(t.Context(), msg, exec).Unpack()
+	require.ErrorIs(t, err, actor.ErrPostponed)
+	require.Zero(t, exec.commits)
+	require.Len(t, saver.saved, 1)
+
+	_, err = behavior.Receive(t.Context(), msg, exec).Unpack()
+	require.NoError(t, err)
+	require.Equal(t, 1, exec.commits)
+	require.Len(t, saver.saved, 1)
+	require.Equal(t, int32(900_144), saver.saved[0].BatchExpiry)
+}
+
+// TestIncomingVTXOCodecRoundTrip proves the complete push event survives the
+// durable-mailbox encoding used for restart redelivery.
+func TestIncomingVTXOCodecRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	var txid chainhash.Hash
+	txid[0] = 0x53
+	msg := &IncomingVTXOMsg{Event: newTestEvent(
+		txid, 3, []byte{0x51, 0x20, 0xdd}, 75_000, "round-codec",
+	)}
+	codec := NewIncomingVTXOCodec()
+
+	raw, err := codec.Encode(msg)
+	require.NoError(t, err)
+	decoded, err := codec.Decode(raw)
+	require.NoError(t, err)
+	decodedMsg, ok := decoded.(*IncomingVTXOMsg)
+	require.True(t, ok)
+	require.True(t, proto.Equal(msg.Event, decodedMsg.Event))
 }
 
 // newTestEvent creates an IncomingVTXOEvent with the given parameters.
@@ -171,7 +314,7 @@ func TestIncomingVTXOHandlerOwnedScript(t *testing.T) {
 	txid[0] = 0x01
 
 	evt := newTestEvent(txid, 0, pkScript, 50_000, "round-1")
-	msg := IncomingVTXOMsg{Event: evt}
+	msg := &IncomingVTXOMsg{Event: evt}
 
 	result := handler.Receive(t.Context(), msg)
 	_, resultErr := result.Unpack()
@@ -214,7 +357,7 @@ func TestIncomingVTXOHandlerUnownedScript(t *testing.T) {
 	evt := newTestEvent(
 		txid, 0, []byte{0x51, 0x20, 0xff}, 10_000, "round-2",
 	)
-	msg := IncomingVTXOMsg{Event: evt}
+	msg := &IncomingVTXOMsg{Event: evt}
 
 	result := handler.Receive(t.Context(), msg)
 	_, resultErr := result.Unpack()
@@ -237,7 +380,7 @@ func TestIncomingVTXOHandlerNonCreatedEvent(t *testing.T) {
 		EventId: 2,
 		Type:    arkrpc.VTXOEventType_VTXO_EVENT_TYPE_STATUS_CHANGED,
 	}
-	msg := IncomingVTXOMsg{Event: evt}
+	msg := &IncomingVTXOMsg{Event: evt}
 
 	result := handler.Receive(t.Context(), msg)
 	_, resultErr := result.Unpack()
@@ -307,7 +450,7 @@ func TestIncomingVTXOHandlerIgnoresEventBatchExpiry(t *testing.T) {
 			evt.BatchExpiryHeight = expiry
 
 			result := handler.Receive(
-				t.Context(), IncomingVTXOMsg{
+				t.Context(), &IncomingVTXOMsg{
 					Event: evt,
 				},
 			)
@@ -358,7 +501,7 @@ func TestIncomingVTXOHandlerRequiresAuthenticatedExpiry(t *testing.T) {
 
 	var txid chainhash.Hash
 	txid[0] = 0x43
-	_, err = handler.Receive(t.Context(), IncomingVTXOMsg{
+	_, err = handler.Receive(t.Context(), &IncomingVTXOMsg{
 		Event: newTestEvent(txid, 0, pkScript, 50_000, "round-auth"),
 	}).Unpack()
 	require.ErrorContains(t, err, "ancestry fetcher not configured")
@@ -372,7 +515,7 @@ func TestIncomingVTXOHandlerNilEvent(t *testing.T) {
 
 	handler := NewIncomingVTXOHandler(IncomingVTXOHandlerConfig{})
 
-	msg := IncomingVTXOMsg{Event: nil}
+	msg := &IncomingVTXOMsg{Event: nil}
 
 	result := handler.Receive(t.Context(), msg)
 	_, resultErr := result.Unpack()

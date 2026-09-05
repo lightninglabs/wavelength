@@ -368,7 +368,10 @@ type Server struct {
 	walletRef           fn.Option[actor.ActorRef[
 		wallet.WalletMsg, wallet.WalletResp,
 	]]
-	oorRegistry        *oor.OORRegistryActor
+	oorRegistry       *oor.OORRegistryActor
+	incomingVTXOActor *actor.DurableActor[
+		*vtxo.IncomingVTXOMsg, vtxo.IncomingVTXOResp,
+	]
 	creditRegistry     *credit.Registry
 	vhtlcRecoveryStore *db.VHTLCRecoveryStoreDB
 	vhtlcRecovery      *coordinator.Service
@@ -1283,6 +1286,15 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 
 		if s.oorRegistry != nil {
 			s.oorRegistry.Stop()
+		}
+
+		if s.incomingVTXOActor != nil {
+			//nolint:contextcheck // bounded shutdown
+			err := s.incomingVTXOActor.StopAndWait(shutdownCtx)
+			if err != nil {
+				s.log.WarnS(ctx, "Incoming VTXO actor shutdown "+
+					"failed", err)
+			}
 		}
 
 		if s.creditRegistry != nil {
@@ -3160,7 +3172,7 @@ func (s *Server) registerIncomingVTXOEventRoute(
 	vtxoKey := vtxo.IncomingVTXOServiceKey()
 
 	serverconn.AddRoute(router, serverconn.EventRouteConfig[
-		vtxo.IncomingVTXOMsg, vtxo.IncomingVTXOResp,
+		*vtxo.IncomingVTXOMsg, vtxo.IncomingVTXOResp,
 	]{
 		Service: arkServiceName,
 		Method:  MethodIncomingVTXO,
@@ -3168,7 +3180,7 @@ func (s *Server) registerIncomingVTXOEventRoute(
 			return &arkrpc.IncomingVTXOEvent{}
 		},
 		Key: vtxoKey,
-		Adapt: func(p proto.Message) (vtxo.IncomingVTXOMsg, error) {
+		Adapt: func(p proto.Message) (*vtxo.IncomingVTXOMsg, error) {
 			evt, ok := p.(*arkrpc.IncomingVTXOEvent)
 			if !ok {
 				// A malformed push never reaches the handler,
@@ -3181,7 +3193,7 @@ func (s *Server) registerIncomingVTXOEventRoute(
 					},
 				)
 
-				return vtxo.IncomingVTXOMsg{},
+				return nil,
 					fmt.Errorf("expected "+
 						"IncomingVTXOEvent, got %T", p)
 			}
@@ -3192,7 +3204,7 @@ func (s *Server) registerIncomingVTXOEventRoute(
 			// relevant and the save succeeded. Counting here at
 			// adapt time would report a materialization before the
 			// handler verified ownership and persisted the VTXO.
-			return vtxo.IncomingVTXOMsg{
+			return &vtxo.IncomingVTXOMsg{
 				Event: evt,
 			}, nil
 		},
@@ -4931,25 +4943,49 @@ func (s *Server) initOORActor(ctx context.Context,
 	}
 
 	incomingVTXOStore := dbStore.NewVTXOStore(s.clk)
-	incomingHandler := vtxo.NewIncomingVTXOHandler(
-		vtxo.IncomingVTXOHandlerConfig{
-			Log: fn.Some(s.subLogger(Subsystem)),
-			ScriptStore: &ownedScriptLookupAdapter{
-				store: packageStore,
-			},
-			VTXOStore:       incomingVTXOStore,
-			VTXOManager:     vtxoManagerRef,
-			AncestryFetcher: ancestryFetcher,
-			MetricsSink:     s.metricsSink,
+	err = s.startIncomingVTXOActor(vtxo.IncomingVTXOHandlerConfig{
+		Log: fn.Some(s.subLogger(Subsystem)),
+		ScriptStore: &ownedScriptLookupAdapter{
+			store: packageStore,
 		},
-	)
-	incomingKey := vtxo.IncomingVTXOServiceKey()
-	actor.RegisterWithSystem(
-		s.actorSystem, "incoming-vtxo-handler", incomingKey,
-		incomingHandler,
-	)
+		VTXOStore:       incomingVTXOStore,
+		VTXOManager:     vtxoManagerRef,
+		AncestryFetcher: ancestryFetcher,
+		MetricsSink:     s.metricsSink,
+	})
+	if err != nil {
+		return err
+	}
 
 	s.log.InfoS(ctx, "Incoming VTXO handler started")
+
+	return nil
+}
+
+// startIncomingVTXOActor starts and registers the durable incoming-event
+// consumer. The server retains it for ordered shutdown before the actor system.
+func (s *Server) startIncomingVTXOActor(
+	cfg vtxo.IncomingVTXOHandlerConfig) error {
+
+	incomingActor, err := vtxo.NewIncomingVTXODurableActor(
+		cfg, s.deliveryStore,
+	)
+	if err != nil {
+		return fmt.Errorf("create incoming VTXO actor: %w", err)
+	}
+	incomingActor.Start()
+	s.incomingVTXOActor = incomingActor
+
+	incomingKey := vtxo.IncomingVTXOServiceKey()
+	if err := actor.RegisterWithReceptionist(
+		s.actorSystem.Receptionist(), incomingKey, incomingActor.Ref(),
+	); err != nil {
+
+		incomingActor.Stop()
+		s.incomingVTXOActor = nil
+
+		return fmt.Errorf("register incoming VTXO actor: %w", err)
+	}
 
 	return nil
 }
