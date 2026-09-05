@@ -2636,29 +2636,17 @@ func (r *RPCServer) SendOnChain(ctx context.Context,
 			"terms: %v", err)
 	}
 
-	// For sweep_all, enumerate live VTXOs up front. We do this at
-	// the RPC layer (not in the wallet actor) so the dry_run path
-	// can echo the planned outpoint set without reserving anything,
-	// and so the wallet does not need its own live-set listing seam.
+	// For sweep_all, enumerate the sweepable VTXOs up front. We do
+	// this at the RPC layer (not in the wallet actor) so the dry_run
+	// path can echo the planned outpoint set without reserving
+	// anything, and so the wallet does not need its own live-set
+	// listing seam. The enumeration drops coins already committed to
+	// a round; see sweepAllTargets for why.
 	var sweepOutpoints []wire.OutPoint
 	if sweepAll {
-		if r.server.vtxoStore == nil {
-			return nil, status.Errorf(codes.Internal, "vtxo "+
-				"store not initialized")
-		}
-
-		liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(ctx)
+		sweepOutpoints, err = r.sweepAllTargets(ctx)
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "list live "+
-				"VTXOs: %v", err)
-		}
-		if len(liveVTXOs) == 0 {
-			return nil, status.Errorf(codes.FailedPrecondition,
-				"no live VTXOs to sweep")
-		}
-
-		for _, v := range liveVTXOs {
-			sweepOutpoints = append(sweepOutpoints, v.Outpoint)
+			return nil, err
 		}
 	}
 
