@@ -348,7 +348,7 @@ func (a *LedgerActor) handleVTXOSent(ctx context.Context, msg *VTXOSentMsg,
 		idempotencyKey = msg.IdempotencyKey
 
 	case !msg.Outpoint.Hash.IsEqual(&zeroHash):
-		idempotencyKey = walletUTXOIdempotencyKey(
+		idempotencyKey = refreshSendIdempotencyKey(
 			msg.Outpoint.Hash, msg.Outpoint.Index,
 		)
 	}
@@ -392,10 +392,10 @@ var zeroHash chainhash.Hash
 // a possibly-successful first insert) rolls back. Redelivery of
 // a committed message cannot happen because Ack/MarkProcessed
 // land in the same tx; defensive protection against out-of-band
-// replays is provided by the shared outpoint-derived
-// IdempotencyKey on both legs, which hits the partial unique
-// index idx_client_ledger_idempotent_key and is swallowed by the
-// adapter's ON CONFLICT DO NOTHING.
+// replays is provided by separate, versioned operation-and-leg
+// identities. Both hit the partial unique index
+// idx_client_ledger_idempotent_key; the adapter accepts an
+// identical winner and rejects a conflicting payload.
 //
 // On-chain wallet-side balance movement is intentionally not booked
 // here: this handler records the VTXO-funded exit value and confirmed
@@ -441,9 +441,12 @@ func (a *LedgerActor) handleExitCost(ctx context.Context, msg *ExitCostMsg,
 
 	now := a.clk.Now().Unix()
 	netAmount := msg.AmountSat - msg.ExitCostSat
-	idempotencyKey := exitIdempotencyKey(
+	chainVout := int32(msg.OutpointIndex)
+	confirmationHeight := int32(msg.BlockHeight)
+	sendKey := exitSendIdempotencyKey(
 		msg.OutpointHash, msg.OutpointIndex,
 	)
+	feeKey := exitFeeIdempotencyKey(msg.OutpointHash, msg.OutpointIndex)
 
 	sendLeg := LedgerEntry{
 		DebitAccount:  AccountTransfersOut,
@@ -456,8 +459,11 @@ func (a *LedgerActor) handleExitCost(ctx context.Context, msg *ExitCostMsg,
 			msg.OutpointHash, msg.OutpointIndex,
 			msg.BlockHeight,
 		),
-		CreatedAt:      now,
-		IdempotencyKey: idempotencyKey,
+		CreatedAt:          now,
+		IdempotencyKey:     sendKey,
+		ChainTxid:          msg.OutpointHash[:],
+		ChainVout:          &chainVout,
+		ConfirmationHeight: &confirmationHeight,
 	}
 
 	feeLeg := LedgerEntry{
@@ -471,18 +477,19 @@ func (a *LedgerActor) handleExitCost(ctx context.Context, msg *ExitCostMsg,
 			msg.OutpointIndex,
 			msg.BlockHeight,
 		),
-		CreatedAt:      now,
-		IdempotencyKey: idempotencyKey,
+		CreatedAt:          now,
+		IdempotencyKey:     feeKey,
+		ChainTxid:          msg.OutpointHash[:],
+		ChainVout:          &chainVout,
+		ConfirmationHeight: &confirmationHeight,
 	}
 
 	// Book the send leg and the fee leg via two InsertLedgerEntry
 	// calls inside ONE Commit. Both join the same lease-fenced writer
 	// transaction, so a crash or error between them rolls back both
 	// writes and the mailbox ack together -- no partial-write window.
-	// The shared outpoint-derived IdempotencyKey makes an out-of-band
-	// replay resolve to a silent no-op via the partial unique index
-	// idx_client_ledger_idempotent_key and the ON CONFLICT DO NOTHING
-	// clause on the insert query.
+	// The separately namespaced outpoint identities make an out-of-band
+	// replay resolve to the same two rows via the partial unique index.
 	return a.commit(ctx, ax, errMsg, func(ctx context.Context,
 		q ledgerTx) error {
 
@@ -498,13 +505,19 @@ func (a *LedgerActor) handleExitCost(ctx context.Context, msg *ExitCostMsg,
 	})
 }
 
-// exitIdempotencyKey derives the outpoint-scoped dedup key used on
-// ExitCost ledger entries. Packing hash (32 bytes) and index (4
-// bytes) into a single BLOB lets both exit legs share a key and
-// share the idempotency index, while staying distinct across
-// outpoints that only differ in the index (same tx, different
-// output).
-func exitIdempotencyKey(hash [32]byte, index uint32) []byte {
+const ledgerIdempotencyVersion = "ledger:v1:"
+
+const (
+	operationRoundRefresh   = "round_refresh"
+	operationUnilateralExit = "unilateral_exit"
+	legSend                 = "send"
+	legFee                  = "fee"
+)
+
+// outpointIdempotencyPayload returns the stable natural identity shared by
+// outpoint-scoped operations. Refresh and exit handlers always store it under
+// a versioned operation-and-leg prefix.
+func outpointIdempotencyPayload(hash [32]byte, index uint32) []byte {
 	out := make([]byte, 32+4)
 	copy(out[:32], hash[:])
 	out[32] = byte(index >> 24)
@@ -515,12 +528,63 @@ func exitIdempotencyKey(hash [32]byte, index uint32) []byte {
 	return out
 }
 
-// ExitIdempotencyKey exposes the exit-leg dedup key derivation to read-side
-// consumers: the unilateral exit send and fee legs booked by handleExitCost
-// share this outpoint-derived key, so a store can look up the confirmed exit
-// cost for a given VTXO outpoint without text-parsing descriptions.
+// ledgerIdempotencyKey scopes a natural identity by a versioned business
+// operation and ledger leg. The textual prefix is stable and human-readable
+// while the payload remains opaque binary data.
+func ledgerIdempotencyKey(operation, leg string, payload []byte) []byte {
+	prefix := ledgerIdempotencyVersion + operation + ":" + leg + ":"
+	key := make([]byte, 0, len(prefix)+len(payload))
+	key = append(key, prefix...)
+
+	return append(key, payload...)
+}
+
+// refreshSendIdempotencyKey derives the identity of the synthetic send leg
+// paired with a replacement VTXO created by a refresh round.
+func refreshSendIdempotencyKey(hash [32]byte, index uint32) []byte {
+	return ledgerIdempotencyKey(
+		operationRoundRefresh, legSend,
+		outpointIdempotencyPayload(hash, index),
+	)
+}
+
+// RefreshSendIdempotencyKey exposes refresh-send key derivation to migration
+// code that rewrites legacy outpoint-only ledger identities.
+func RefreshSendIdempotencyKey(hash [32]byte, index uint32) []byte {
+	return refreshSendIdempotencyKey(hash, index)
+}
+
+// exitSendIdempotencyKey derives the unilateral exit's net-value send leg.
+func exitSendIdempotencyKey(hash [32]byte, index uint32) []byte {
+	return ledgerIdempotencyKey(
+		operationUnilateralExit, legSend,
+		outpointIdempotencyPayload(hash, index),
+	)
+}
+
+// ExitSendIdempotencyKey exposes exit-send key derivation to migration code.
+func ExitSendIdempotencyKey(hash [32]byte, index uint32) []byte {
+	return exitSendIdempotencyKey(hash, index)
+}
+
+// exitFeeIdempotencyKey derives the unilateral exit's on-chain fee leg.
+func exitFeeIdempotencyKey(hash [32]byte, index uint32) []byte {
+	return ledgerIdempotencyKey(
+		operationUnilateralExit, legFee,
+		outpointIdempotencyPayload(hash, index),
+	)
+}
+
+// ExitFeeIdempotencyKey exposes the fee-leg identity to read-side consumers
+// and migration code.
+func ExitFeeIdempotencyKey(hash [32]byte, index uint32) []byte {
+	return exitFeeIdempotencyKey(hash, index)
+}
+
+// ExitIdempotencyKey returns the unilateral exit fee identity used by the
+// confirmed-cost read path.
 func ExitIdempotencyKey(hash [32]byte, index uint32) []byte {
-	return exitIdempotencyKey(hash, index)
+	return exitFeeIdempotencyKey(hash, index)
 }
 
 // handleUTXOCreated records a new wallet UTXO in two places:
@@ -643,14 +707,7 @@ func (a *LedgerActor) handleUTXOCreated(ctx context.Context,
 // change to one scheme (e.g. collision domain split) doesn't
 // silently affect the other.
 func walletUTXOIdempotencyKey(hash [32]byte, index uint32) []byte {
-	out := make([]byte, 32+4)
-	copy(out[:32], hash[:])
-	out[32] = byte(index >> 24)
-	out[33] = byte(index >> 16)
-	out[34] = byte(index >> 8)
-	out[35] = byte(index)
-
-	return out
+	return outpointIdempotencyPayload(hash, index)
 }
 
 // handleUTXOSpent records a spent wallet UTXO in the audit log.

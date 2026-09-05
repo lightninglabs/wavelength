@@ -64,8 +64,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   before the first transport enqueue and remains authoritative after the
   mutable session row becomes terminal or changes direction.
 - `LedgerStoreDB` — implements `ledger.LedgerStore`. Wraps
-  `sqlc.InsertClientLedgerEntry` (ON CONFLICT DO NOTHING for replay
-  idempotency). Joins the outer actor transaction via
+  `sqlc.InsertClientLedgerEntry` (ON CONFLICT DO NOTHING followed by an exact
+  winner-payload comparison, so contradictory key reuse fails). Joins the
+  outer actor transaction via
   `actor.TxFromContext`. Read API:
   `GetAccountBalance`/`GetTotalOperatorFeesPaid`/`ListLedgerEntries[…]`/
   `CountLedgerEntries`/`ListAccounts`.
@@ -356,6 +357,11 @@ when adding one.
   duplicate send but cannot recover recipient outpoints. If legacy failed and
   non-failed rows reused one key, the non-failed row wins deterministically.
   The down migration only drops the new table.
+- `000019_ledger_idempotency_domains` — rewrites legacy 36-byte refresh-send
+  and unilateral-exit keys into versioned operation-and-leg domains. Its Go
+  post-step detects the old refresh/exit collision and reconstructs the
+  missing net exit-send row from the surviving refresh-send and exit-fee rows,
+  repairing the overstated VTXO balance atomically with the key rewrite.
 
 ## Deep Docs
 
