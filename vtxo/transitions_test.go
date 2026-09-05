@@ -1670,7 +1670,9 @@ func TestForfeitReleasedFromForfeiting(t *testing.T) {
 		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusLive,
 	).Return(nil)
 
-	_, err := h.sendEvent(&round.ForfeitReleasedEvent{})
+	_, err := h.sendEvent(&round.ForfeitReleasedEvent{
+		RoundID: "round-123",
+	})
 	require.NoError(t, err)
 
 	state := assertState[*LiveState](h)
@@ -1678,6 +1680,44 @@ func TestForfeitReleasedFromForfeiting(t *testing.T) {
 
 	su := assertOutboxContains[*VTXOStatusUpdate](h)
 	require.Equal(t, VTXOStatusLive, su.NewStatus)
+}
+
+// TestForfeitReleasedFromForfeitingOtherRoundRefused pins the round scope of
+// a forfeit release: once a VTXO has signed its forfeit for a round, only that
+// round may hand the coin back. A release naming another round is stale (that
+// round failed and let go of the coin before the current round claimed it) and
+// must be refused, or a dead round resurrected on restart could return a coin
+// the operator is about to consume to the spendable set. The refusal is a
+// typed error and the VTXO stays in ForfeitingState.
+func TestForfeitReleasedFromForfeitingOtherRoundRefused(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&ForfeitingState{
+		VTXO:       vtxo,
+		NewRoundID: "round-123",
+	})
+
+	for _, stale := range []string{"round-122", "round-124", ""} {
+		_, err := h.sendEvent(&round.ForfeitReleasedEvent{
+			RoundID: stale,
+		})
+		require.ErrorIs(t, err, ErrForfeitReleaseRoundMismatch)
+	}
+
+	// The refusals left the reservation intact: the owning round's own
+	// release still lands and returns the coin to LiveState.
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusLive,
+	).Return(nil)
+
+	_, err := h.sendEvent(&round.ForfeitReleasedEvent{
+		RoundID: "round-123",
+	})
+	require.NoError(t, err)
+	assertState[*LiveState](h)
 }
 
 // TestSpendingStateResumeStaysInSpending verifies that SpendingState stays in

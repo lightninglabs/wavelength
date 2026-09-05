@@ -2632,7 +2632,9 @@ func (m *Manager) releasePreCheckpointForfeits(ctx context.Context) {
 		}
 
 		result := m.askForfeitVTXOActor(
-			ctx, ref, &ForfeitReleasedEvent{},
+			ctx, ref, &ForfeitReleasedEvent{
+				RoundID: desc.ForfeitRoundID,
+			},
 		)
 		if _, err := result.Unpack(); err != nil {
 			m.logger(ctx).WarnS(
@@ -2963,7 +2965,9 @@ func (m *Manager) handleReleaseForfeit(ctx context.Context,
 		}
 
 		result := m.askForfeitVTXOActor(
-			ctx, ref, &ForfeitReleasedEvent{},
+			ctx, ref, &ForfeitReleasedEvent{
+				RoundID: req.RoundID,
+			},
 		)
 		if _, err := result.Unpack(); err != nil {
 			m.logger(ctx).WarnS(ctx, "Forfeit release failed",
