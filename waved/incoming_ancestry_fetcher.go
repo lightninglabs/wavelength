@@ -3,6 +3,7 @@ package waved
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
@@ -11,6 +12,23 @@ import (
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
 )
+
+// incomingAncestryFetcherWithTimeout bounds the complete indexer-and-chain
+// lookup. A stalled indexer must release the durable actor turn so the pending
+// event can be postponed and retried.
+func incomingAncestryFetcherWithTimeout(fetcher vtxo.IncomingAncestryFetcher,
+	timeout time.Duration) vtxo.IncomingAncestryFetcher {
+
+	return func(ctx context.Context, outpoint wire.OutPoint,
+		pkScript []byte, clientKey keychain.KeyDescriptor) (
+		vtxo.IncomingVTXOExtras, error) {
+
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+
+		return fetcher(ctx, outpoint, pkScript, clientKey)
+	}
+}
 
 // incomingAncestryFetcher returns a vtxo.IncomingAncestryFetcher that resolves
 // the round commit tree fragments needed for the unilateral exit unroll CPFP

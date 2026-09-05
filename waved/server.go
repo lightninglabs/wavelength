@@ -4914,30 +4914,19 @@ func (s *Server) initOORActor(ctx context.Context,
 			fetcherErr,
 		)
 	} else {
-		incomingExpiryAuthenticator := s.expiryAuthenticator
-		if incomingExpiryAuthenticator != nil {
-			authenticateExpiry := incomingExpiryAuthenticator
-			incomingExpiryAuthenticator = func(ctx context.Context,
-				ancestry []vtxo.Ancestry) (int32, error) {
-
-				ctx, cancel := context.WithTimeout(
-					ctx,
-					incomingExpiryAuthenticationTimeout,
-				)
-				defer cancel()
-
-				return authenticateExpiry(ctx, ancestry)
-			}
-		}
 		ancestryFetcher, fetcherErr = incomingAncestryFetcher(
-			s.indexer, incomingSignerFactory,
-			incomingExpiryAuthenticator,
+			s.indexer, incomingSignerFactory, s.expiryAuthenticator,
 		)
 		if fetcherErr != nil {
 			s.log.WarnS(ctx,
 				"Incoming VTXO acceptance disabled; ancestry "+
 					"fetch cannot be authenticated",
 				fetcherErr,
+			)
+		} else {
+			ancestryFetcher = incomingAncestryFetcherWithTimeout(
+				ancestryFetcher,
+				incomingExpiryAuthenticationTimeout,
 			)
 		}
 	}
