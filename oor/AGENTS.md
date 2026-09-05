@@ -148,6 +148,15 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
 - Witness/script decode bounds mirror consensus limits:
   `maxConditionWitnessItems = 64` items of at most 520 bytes each (Bitcoin's
   `MAX_SCRIPT_ELEMENT_SIZE`), enforced on both encode and decode.
+- `TransferInput.ReserveEpoch` carries the VTXO manager's reservation epoch for
+  each spend input, persisted in `TransferInputSnapshot` (TLV record type 18,
+  appended last so the stream stays canonical; a pre-upgrade snapshot decodes
+  it to 0). `ReleaseInputsRequest.ReserveEpochs` is rebuilt from those durable
+  inputs every time the FSM re-enters the failure transition, so a release
+  replayed after a rolled-back commit still names the reservation it held and
+  the manager refuses it if a newer session has since re-reserved the coin.
+  `ReserveEpochs` is an in-memory side channel only — `ToProto` does not
+  serialize it, because the request is never a persisted transport message.
 - Terminal rows (completed and failed) are retained in
   `oor_session_registry` for status/diagnostics; reaping only removes the
   in-memory child, never the row.
