@@ -30,6 +30,7 @@ package may import from a higher layer.
 | [`vhtlcrecovery`](vhtlcrecovery/) | Durable control-plane types for vHTLC on-chain recovery jobs (action, state, script parameters, swap linkage) |
 | [`credit`](credit/) | Client-side credit subsystem: supervisor/per-operation-actor pair driving fault-tolerant sub-floor pay, credit-receive, and redeem flows against the authoritative server ledger |
 | [`coinselect`](coinselect/) | Single coin-type-agnostic coin-selection algorithm shared across wallet backends |
+| [`tapassets`](tapassets/) | tap-sdk custom-anchor adapter: seals caller-funded Taproot Asset batch outputs and materializes asset-carrying VTXO trees beneath them, journaling each sealed transition for crash-safe replay |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)
 
@@ -213,6 +214,8 @@ corresponding state transition being durable.
 | `Backend` | proofkeys | Wallet key derivation and proof signing interface |
 | `Node` | lib/arkscript | Sealed AST node interface for tapscript compilation |
 | `VTXOPolicy` | lib/arkscript | Compiled VTXO taproot policy with collab/exit spend paths |
+| `AssetTreeContext` | lib/tree | Asset-tree side state hung off `Tree`: per-node subtree asset amounts, taproot signing tweaks, sealed transfer packages, and per-leaf asset commitment roots. Nil for Bitcoin-only trees; populated by `tapassets` |
+| `BatchAnchorCommitter` | tapassets | Derives, seals, and publishes caller-funded Taproot Asset batch outputs via tap-sdk custom anchors |
 
 ## State Machines
 

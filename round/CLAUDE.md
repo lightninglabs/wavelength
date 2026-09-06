@@ -266,6 +266,14 @@ state transitions and validation rules live under [Invariants](#invariants).
 - Persisted VTXO ownership uses `OwnerKey` (not `SigningKey`). For
   directed sends, the sender's signing key participates in MuSig2 tree
   construction but the recipient's owner key determines ownership.
+- `ensureVTXOSigningKeys` (run at intent registration) fills any
+  `types.VTXORequest` whose `SigningKey.PubKey` is nil by deriving a fresh
+  key from `ClientWallet.DeriveNextKey(types.VTXOSigningKeyFamily)`; an
+  already-populated signing key is preserved. This is why callers such as
+  `wallet.handleRefreshVTXOs` deliberately leave `SigningKey` zero rather
+  than reusing the forfeited VTXO's owner descriptor — a legacy VTXO can
+  carry the pubkey without its key locator, and the tree signer needs the
+  locator.
 - Local-balance persistence on confirmation is driven by
   `OwnedScriptChecker.IsOwnedScript(pkScript)` — `buildOwnedClientVTXOs`
   skips any VTXO whose pkScript the checker does not recognize. The

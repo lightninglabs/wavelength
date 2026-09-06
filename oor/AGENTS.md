@@ -31,6 +31,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
 - `ReceiveLimits` / `DefaultReceiveLimits` — defense-in-depth bounds on
   incoming receive (`MaxCheckpoints`, `MaxVTXOMatches`, `MaxMailboxItems`,
   `MaxMailboxScriptBytes`, `MaxConcurrentIncomingSessions`).
+- `TransferInput` / `TransferInputSnapshot` — an input VTXO plus the signing
+  material the session needs, and its durable TLV projection. Both carry
+  `ReserveEpoch`, the VTXO manager's reservation epoch for the input.
+- `ReleaseInputsRequest` — outbox request releasing reserved inputs back to
+  the manager. Its `ReserveEpochs` map is an **in-memory side channel**:
+  `ToProto` deliberately does not serialize it.
 - `ErrIdempotencyKeyConflict` — caller-visible outgoing admission conflict
   when a deterministic session cannot retain the supplied key; `waved` maps it
   to `codes.AlreadyExists` after releasing freshly selected inputs.
@@ -75,6 +81,23 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   actor's DB transaction; both phase-1 hint resolution and phase-2
   authoritative metadata lookup go through durable `serverconn` query
   messages and return as fresh events.
+- **A released input names the reservation it held.** `TransferInput.ReserveEpoch`
+  is stamped by the VTXO manager at `SelectAndReserveSpendResponse` time and
+  persisted in `TransferInputSnapshot` (TLV record type 18, appended last so
+  the encoded stream stays canonically ascending; always written, and a zero
+  value means the input predates the field or carries no reservation).
+  `handleOutboxError`'s non-retryable, pre-point-of-no-return release calls
+  `prePONRReserveEpochs(current)` to rebuild
+  `ReleaseInputsRequest.ReserveEpochs` from the state's durable
+  `TransferInputs` (`AwaitingArkSignatures` / `AwaitingSubmitAccepted`) on
+  **every** re-entry, so a release replayed after a rolled-back commit still
+  presents the epoch it actually held and the manager can refuse it as
+  superseded rather than returning a coin a newer session is spending.
+  Zero-epoch inputs are omitted from the map so they release
+  unconditionally. Keeping `ReserveEpochs` out of `ToProto` is
+  deliberate — the request is never a persisted transport message, and the
+  epoch is reconstructed rather than transported. See
+  [lib/actormsg/CLAUDE.md](../lib/actormsg/CLAUDE.md) for the whole chain.
 - Snapshots are versioned per direction (`OutgoingSnapshot.Version = 5`,
   `IncomingSnapshot.Version = 1`); restore rejects a zero version. Outgoing
   v5 adds the `FirstRejectUnixNanos` record (bounded transient submit-reject

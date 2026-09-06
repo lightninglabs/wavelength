@@ -20,7 +20,7 @@ refresh, leave, OOR spend, and directed send flows.
 - `BoardingStore` — Interface for persisting boarding addresses and intents.
 - `VTXOReader` — Read-only interface for loading VTXO descriptors by outpoint. Wallet uses this to build intent packages without importing `vtxo` directly.
 - `VTXODescriptor` — Wallet-level VTXO descriptor (outpoint, amount, pkscript, tree, expiry). Avoids direct dependency on `vtxo.Descriptor`.
-- `SelectedVTXO` — Describes a VTXO selected and locked for use as a transfer input (outpoint, amount, pkscript). Breaks the vtxo → round → wallet import cycle.
+- `SelectedVTXO` — Describes a VTXO selected and locked for use as a transfer input (outpoint, amount, pkscript, `ReserveEpoch`). Breaks the vtxo → round → wallet import cycle.
 - `CreateBoardingAddressRequest` / `CreateBoardingAddressResponse` — Ask-request for deriving new address.
 - `BlockEpochNotification` — Tell-message from chain source triggering UTXO polling.
 - `BoardingUtxoConfirmedEvent` — Tell-message sent when a VTXO confirms.
@@ -105,6 +105,8 @@ refresh, leave, OOR spend, and directed send flows.
 - `handleSendVTXOs` uses a `defer`-based release rather than a `releaseAndFail` helper: any error path (including dry-run) falls through to the deferred release, and the `committed` flag is set only after the round actor accepts the intent. Context is preserved via `context.WithoutCancel` so cleanup is not dropped when the caller disconnects.
 - `handleSendVTXOs` rejects pre-flight any directed send with multiple recipients and exactly-zero change residual under the #270 seal-time fee handshake. The server is the amount authority and absorbs the operator fee out of the designated `IsChange=true` slot; if there is no residual to absorb the fee against, the server has no slack to deduct fees without silently shifting them onto a recipient leg. The wallet refuses the request rather than letting the server pick the loser.
 - `VTXOReader` / `VTXODescriptor` / `SelectedVTXO` break the vtxo → round → wallet import cycle by providing wallet-level types that don't reference `vtxo.Descriptor` directly.
+- **Refresh outputs leave `SigningKey` empty on purpose.** `handleRefreshVTXOs` sets only `OwnerKey` from the forfeited VTXO's `ClientKey`; `round.ensureVTXOSigningKeys` then derives a fresh `VTXOSigningKeyFamily` key for the MuSig2 tree. Copying the old owner descriptor into `SigningKey` looks equivalent but is not: a legacy VTXO can retain the pubkey without its LND key locator, and the signer needs the locator to sign the tree path. Do not "restore" the assignment.
+- `handleSelectAndLockVTXOs` copies `ReserveEpoch` from the manager's response onto each `SelectedVTXO` so the OOR session that spends the coin can name the reservation on release. Dropping it silently downgrades the manager's stale-release guard to unconditional release — see [lib/actormsg/CLAUDE.md](../lib/actormsg/CLAUDE.md).
 - The wallet tracks, in memory, boarding outpoints already handed to the round
   actor via `TriggerBoardMsg` that have not yet left the confirmed set, and
   excludes them from later triggers. This keeps a second per-block trigger
