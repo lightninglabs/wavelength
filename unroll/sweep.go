@@ -22,13 +22,26 @@ const (
 	// timeout-path sweep spend.
 	estimatedSweepVBytes = 200
 
-	// defaultSweepFallbackFeeRateSatPerVByte is used when fee estimation is
-	// temporarily unavailable on regtest or a cold backend.
-	defaultSweepFallbackFeeRateSatPerVByte int64 = 2
-
 	// defaultMaxSweepFeeRateSatPerVByte clamps pathological fee estimates.
 	defaultMaxSweepFeeRateSatPerVByte int64 = 100
 )
+
+// sweepFeeEstimateUnavailableError marks a temporary estimator failure.
+// Callers must defer construction unless they explicitly supplied a fallback
+// rate, because an anchorless sweep cannot be fee-bumped later.
+type sweepFeeEstimateUnavailableError struct {
+	cause error
+}
+
+// Error describes the estimator failure that prevented sweep construction.
+func (e *sweepFeeEstimateUnavailableError) Error() string {
+	return fmt.Sprintf("sweep fee estimate unavailable: %v", e.cause)
+}
+
+// Unwrap exposes the original chainsource error for diagnostics.
+func (e *sweepFeeEstimateUnavailableError) Unwrap() error {
+	return e.cause
+}
 
 // StandardVTXOExitSpendPolicy builds the normal timeout-path sweep used by
 // standard Ark VTXOs.
@@ -95,6 +108,12 @@ func (p *StandardVTXOExitSpendPolicy) CSVDelay() uint32 {
 // RequiredLockTime returns zero. The standard timeout-path sweep has no
 // absolute locktime gate.
 func (p *StandardVTXOExitSpendPolicy) RequiredLockTime() uint32 {
+	return 0
+}
+
+// FeeEstimateFallbackSatPerVByte returns zero so an estimator outage defers a
+// standard timeout sweep. No competing spend path can claim that output.
+func (p *StandardVTXOExitSpendPolicy) FeeEstimateFallbackSatPerVByte() int64 {
 	return 0
 }
 
@@ -227,15 +246,18 @@ func (p *StandardVTXOExitSpendPolicy) BuildSpendTx(ctx context.Context,
 	return sweepTx, nil
 }
 
-// estimateSweepFeeRate asks chainsource for a 6-block fee estimate and
-// clamps it to a sane range.
+// estimateSweepFeeRate asks chainsource for a 6-block fee estimate and clamps
+// it to a sane range. An estimator error is classified as temporarily
+// unavailable unless fallbackFeeRate is positive. The explicit fallback is
+// intended for controlled tests and regtest environments where blocks can be
+// mined on demand; production callers leave it zero so they can retry later.
 //
 // Three failure modes are handled:
 //
-//   - Ask error (chainsource unavailable or estimator cold): fall back
-//     to a small fixed rate so regtest / fresh-sync daemons can still
-//     produce a plausible sweep. This fallback is clamped so it never
-//     exceeds maxFeeRate.
+//   - Ask error (chainsource unavailable or estimator cold): use a positive,
+//     explicitly configured fallback or return
+//     sweepFeeEstimateUnavailableError. A configured fallback is clamped so
+//     it never exceeds maxFeeRate.
 //
 //   - Non-positive estimate: reject with an error. A zero-rate sweep
 //     would be rejected by every node, so pretending is worse than
@@ -248,7 +270,7 @@ func (p *StandardVTXOExitSpendPolicy) BuildSpendTx(ctx context.Context,
 func estimateSweepFeeRate(ctx context.Context,
 	chainSource actor.ActorRef[
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
-	], maxFeeRate int64) (int64, error) {
+	], maxFeeRate, fallbackFeeRate int64) (int64, error) {
 
 	if maxFeeRate <= 0 {
 		maxFeeRate = defaultMaxSweepFeeRateSatPerVByte
@@ -258,7 +280,12 @@ func estimateSweepFeeRate(ctx context.Context,
 		ctx, &chainsource.FeeEstimateRequest{TargetConf: 6},
 	).Await(ctx).Unpack()
 	if err != nil {
-		fallbackFeeRate := defaultSweepFallbackFeeRateSatPerVByte
+		if fallbackFeeRate <= 0 {
+			return 0, &sweepFeeEstimateUnavailableError{
+				cause: err,
+			}
+		}
+
 		if fallbackFeeRate > maxFeeRate {
 			fallbackFeeRate = maxFeeRate
 		}
@@ -289,8 +316,8 @@ func buildSweepTx(ctx context.Context, wallet SweepWallet,
 	chainSource actor.ActorRef[
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
 	], proof *recovery.Proof,
-	desc *vtxo.Descriptor, maxFeeRate int64, currentHeight int32,
-	policy ExitSpendPolicy) (*wire.MsgTx, error) {
+	desc *vtxo.Descriptor, maxFeeRate, fallbackFeeRate int64,
+	currentHeight int32, policy ExitSpendPolicy) (*wire.MsgTx, error) {
 
 	if wallet == nil {
 		return nil, fmt.Errorf("sweep wallet must be provided")
@@ -317,7 +344,9 @@ func buildSweepTx(ctx context.Context, wallet SweepWallet,
 		return nil, err
 	}
 
-	feeRate, err := estimateSweepFeeRate(ctx, chainSource, maxFeeRate)
+	feeRate, err := estimateSweepFeeRate(
+		ctx, chainSource, maxFeeRate, fallbackFeeRate,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("estimate fee: %w", err)
 	}
