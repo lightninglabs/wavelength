@@ -42,6 +42,7 @@ package may import from a higher layer.
 | [`chainbackends/lndsubmitter`](chainbackends/lndsubmitter/) | `chainbackends.PackageSubmitter` over lnd's WalletKit; the default LND package-relay submitter |
 | [`chainfees`](chainfees/) | Reusable `chainfee.Estimator` implementations and combinators for pricing transactions |
 | [`chain`](chain/) | Bitcoind RPC utilities (package relay, `SubmitPackage`) |
+| [`tapassets`](tapassets/) | tap-sdk custom-anchor adapter for asset-carrying Ark trees: caller-funded batch anchors plus a `lib/tree` `Materializer` that commits one asset transition per node, journaled for crash resume. Not yet wired into the daemon |
 | [`txconfirm`](txconfirm/) | Generic "broadcast + CPFP fee-bump + notify on confirm" actor with per-parent fee-input reservations and BIP-125 Rule 3/4 enforcement |
 | [`unroll`](unroll/) | Durable per-target unilateral-exit actor + thin registry: owns proof assembly, materialization, CSV maturity, final sweep build, persist-before-broadcast, and control-plane record persistence |
 | [`lndbackend`](lndbackend/) | `BoardingBackend` implementation via LND's wallet kit |

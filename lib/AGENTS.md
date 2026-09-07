@@ -9,9 +9,14 @@ message interfaces, and core Ark types.
 ## Sub-Packages
 
 ### lib/tree
-- `Tree` — Root node plus batch outpoint/output (encapsulates VTXO Merkle tree).
+- `Tree` — Root node plus batch outpoint/output (encapsulates VTXO Merkle tree),
+  and the optional `AssetContext` for asset-carrying trees.
 - `Node` — Individual tree node with children and outputs.
 - `LeafDescriptor` — VTXO or connector output to include in tree construction.
+- `Materializer` / `MaterializeParams` — Seam for filling a tree structure with
+  transaction data; `tapassets` implements it for Taproot Assets trees.
+- `BatchOutputSpec` — Batch output plus its taproot material (untweaked
+  aggregate key, sweep leaf) for BIP-371 metadata and asset commitments.
 
 ### lib/arkscript
 - `Node` — Sealed AST interface for tapscript spending conditions (Multisig, CSV, Condition, etc.).
@@ -43,6 +48,10 @@ message interfaces, and core Ark types.
 - `VTXOActorServiceKey()`, `VTXOManagerServiceKey()`, `RoundActorServiceKey()` — Deterministic actor lookup.
 - `TriggerBoardMsg`, `RegisterIntentMsg` — Cross-package messages from wallet→round.
 - `SelectAndReserveSpendRequest`, `ReserveForfeitRequest`, etc. — VTXO manager admission types.
+- `SelectedVTXO.ReserveEpoch` / `ReleaseSpendRequest.ReserveEpochs` — the
+  manager's monotonic spend-reservation epoch, echoed back on release so a
+  superseded reservation's stale release is refused. Zero / absent means
+  "unknown" and releases unconditionally.
 
 ### lib/recovery
 - `Proof` — Immutable unilateral-exit recovery graph for one target outpoint.
@@ -57,7 +66,7 @@ message interfaces, and core Ark types.
 - **Depends on**: `baselib/actor` (actormsg only, for ServiceKey).
 - **Depended on by**: nearly every client subsystem (`round`, `vtxo`, `oor`,
   `wallet`, `unroll`, `unrollplan`, `txconfirm`, `fraud`, `db`, `sdk`,
-  `vhtlcrecovery`, `swapclientserver`, `waved`, `rpc`/`arkrpc`) — `lib`
+  `vhtlcrecovery`, `swapclientserver`, `tapassets`, `waved`, `rpc`/`arkrpc`) — `lib`
   holds the shared domain types the rest of the client builds on.
 
 ## Deep Docs

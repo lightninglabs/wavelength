@@ -145,6 +145,19 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   `dead_letters`; operators should watch the age of non-terminal outgoing OOR
   sessions and inspect that mailbox when one is stuck. The registry uses the
   default Tell retry policy for every other failure.
+- A pre-point-of-no-return input release names the reservation it held.
+  `TransferInput.ReserveEpoch` records the epoch the VTXO manager stamped when
+  it reserved the input (`SelectAndReserveSpendResponse`), and it travels into
+  the durable snapshot as an optional TLV record (`ReserveEpoch`, type 18 on the
+  transfer-input encoding — optional, so `OutgoingSnapshot.Version` stays at 5
+  and a pre-upgrade snapshot decodes it to 0). On a non-retryable failure,
+  `handleOutboxError` builds `ReleaseInputsRequest` with
+  `prePONRReserveEpochs(state)`, so a release driven by a *redelivered*,
+  rolled-back failure is refused by the manager when the coin has since been
+  released and re-reserved by a newer session. Inputs with epoch zero are
+  omitted from the map and release unconditionally, preserving the pre-epoch
+  behaviour. See the epoch invariants in [`vtxo/CLAUDE.md`](../vtxo/CLAUDE.md);
+  the manager is the authority, `oor` only echoes what it was given.
 - Witness/script decode bounds mirror consensus limits:
   `maxConditionWitnessItems = 64` items of at most 520 bytes each (Bitcoin's
   `MAX_SCRIPT_ELEMENT_SIZE`), enforced on both encode and decode.
