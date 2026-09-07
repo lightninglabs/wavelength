@@ -65,15 +65,17 @@ func newOORListCmd() *cobra.Command {
 func newOORReceiveCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "receive",
-		Short: "Allocate a fresh receive script",
-		Long: "Allocates a fresh wallet key, registers the matching " +
-			"taproot receive script with the indexer, and " +
-			"prints the resulting destination details.",
+		Short: "Allocate or replay a receive script",
+		Long: "Allocates and registers a taproot receive script, " +
+			"or returns an exact allocation when an idempotency " +
+			"key is replayed.",
 		RunE: oorReceive,
 	}
 
 	cmd.Flags().String("label", "",
 		"optional label stored with the receive-script registration")
+	cmd.Flags().String("idempotency-key", "",
+		"retry key that returns the same receive script")
 
 	return cmd
 }
@@ -176,6 +178,8 @@ func oorReceive(cmd *cobra.Command, _ []string) error {
 	if err := parseRequest(cmd, req, func() error {
 		label, _ := cmd.Flags().GetString("label")
 		req.Label = label
+		idempotencyKey, _ := cmd.Flags().GetString("idempotency-key")
+		req.IdempotencyKey = idempotencyKey
 
 		return nil
 	}); err != nil {

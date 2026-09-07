@@ -163,8 +163,8 @@ subquery selected, which stays safe under `REPEATABLE READ`.
 ### Partial unique indexes
 
 A conflict target that does not match a partial index predicate will not fire,
-and the upsert silently degrades to a plain insert. The schema has six partial
-unique indexes, so any new `ON CONFLICT` needs checking against this list.
+and the upsert silently degrades to a plain insert. Any new `ON CONFLICT` needs
+checking against this list of partial unique indexes.
 
 | Index | Table | Predicate |
 |-------|-------|-----------|
@@ -174,6 +174,7 @@ unique indexes, so any new `ON CONFLICT` needs checking against this list.
 | `idx_client_ledger_idempotent_session` | `ledger_entries` | `session_id IS NOT NULL` |
 | `idx_client_ledger_idempotent_key` | `ledger_entries` | `idempotency_key IS NOT NULL` |
 | `idx_credit_operations_op_key` | `credit_operations` | `status != 2` |
+| `idx_owned_receive_scripts_idempotency_key` | `owned_receive_scripts` | `idempotency_key IS NOT NULL` |
 
 A targetless `ON CONFLICT DO NOTHING` arbitrates over every unique index,
 partial ones included, which is why the ledger insert in
