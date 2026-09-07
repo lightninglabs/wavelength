@@ -102,12 +102,20 @@ func TestSqliteMigrationBackupReuse(t *testing.T) {
 func TestSqliteMigrationBackupPrunedAfterSuccess(t *testing.T) {
 	dbFileName := filepath.Join(t.TempDir(), "test.db")
 	store := newSqliteStoreWithoutMigrations(t, dbFileName)
-	require.NoError(t, store.ExecuteMigrations(TargetVersion(17)))
+	preMigrationVersion := LatestMigrationVersion - 1
+	require.NoError(
+		t,
+		store.ExecuteMigrations(
+			TargetVersion(preMigrationVersion),
+		),
+	)
 	require.NoError(t, store.DB.Close())
 
 	legacyPath := fmt.Sprintf("%s.%d.backup", dbFileName,
 		int64(1763079012000000000))
-	stagingPath := sqliteMigrationBackupPath(dbFileName, 16) + ".tmp"
+	stagingPath := sqliteMigrationBackupPath(
+		dbFileName, int(preMigrationVersion-1),
+	) + ".tmp"
 	manualPath := dbFileName + ".manual.backup"
 	preservedPaths := []string{
 		manualPath,
@@ -140,7 +148,12 @@ func TestSqliteMigrationBackupPrunedAfterSuccess(t *testing.T) {
 
 	require.NoFileExists(t, legacyPath)
 	require.NoFileExists(t, stagingPath)
-	require.NoFileExists(t, sqliteMigrationBackupPath(dbFileName, 17))
+	require.NoFileExists(
+		t,
+		sqliteMigrationBackupPath(
+			dbFileName, int(preMigrationVersion),
+		),
+	)
 	for _, path := range preservedPaths {
 		require.FileExists(t, path)
 	}
@@ -152,7 +165,13 @@ func TestSqliteMigrationBackupPrunedAfterSuccess(t *testing.T) {
 func TestSqliteMigrationBackupRetainedAfterActorMigrationFailure(t *testing.T) {
 	dbFileName := filepath.Join(t.TempDir(), "test.db")
 	store := newSqliteStoreWithoutMigrations(t, dbFileName)
-	require.NoError(t, store.ExecuteMigrations(TargetVersion(17)))
+	preMigrationVersion := LatestMigrationVersion - 1
+	require.NoError(
+		t,
+		store.ExecuteMigrations(
+			TargetVersion(preMigrationVersion),
+		),
+	)
 
 	_, err := store.ExecContext(t.Context(), `
 		CREATE TABLE actor_delivery_schema_migrations (
@@ -165,7 +184,9 @@ func TestSqliteMigrationBackupRetainedAfterActorMigrationFailure(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, store.DB.Close())
 
-	backupPath := sqliteMigrationBackupPath(dbFileName, 17)
+	backupPath := sqliteMigrationBackupPath(
+		dbFileName, int(preMigrationVersion),
+	)
 	for range 2 {
 		_, err = NewSqliteStore(&SqliteConfig{
 			DatabaseFileName: dbFileName,
@@ -184,11 +205,19 @@ func TestSqliteMigrationBackupRetainedAfterActorMigrationFailure(t *testing.T) {
 func TestSqliteMigrationBackupRetainedAfterFailure(t *testing.T) {
 	dbFileName := filepath.Join(t.TempDir(), "test.db")
 	store := newSqliteStoreWithoutMigrations(t, dbFileName)
-	require.NoError(t, store.ExecuteMigrations(TargetVersion(17)))
+	preMigrationVersion := LatestMigrationVersion - 1
+	require.NoError(
+		t,
+		store.ExecuteMigrations(
+			TargetVersion(preMigrationVersion),
+		),
+	)
 
 	testErr := errors.New("post-migration check failed")
 	checks := map[uint]postMigrationCheck{
-		18: func(_ context.Context, _ sqlc.Querier) error {
+		LatestMigrationVersion: func(_ context.Context,
+			_ sqlc.Querier) error {
+
 			return testErr
 		},
 	}
@@ -201,7 +230,9 @@ func TestSqliteMigrationBackupRetainedAfterFailure(t *testing.T) {
 	)
 	require.ErrorIs(t, err, testErr)
 
-	backupPath := sqliteMigrationBackupPath(dbFileName, 17)
+	backupPath := sqliteMigrationBackupPath(
+		dbFileName, int(preMigrationVersion),
+	)
 	require.FileExists(t, backupPath)
 	info, err := os.Stat(backupPath)
 	require.NoError(t, err)
