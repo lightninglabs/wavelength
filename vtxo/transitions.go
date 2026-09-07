@@ -491,6 +491,10 @@ func (s *LiveState) handleForfeitRequest(ctx context.Context,
 func resolveForfeitSpendPath(vtxo *Descriptor,
 	evt *ForfeitRequestEvent) (*arkscript.SpendPath, error) {
 
+	if vtxo.TaprootAssetRoot != nil {
+		return nil, ErrAssetVTXORequiresTransition
+	}
+
 	if evt != nil && evt.ForfeitSpend != nil {
 		err := evt.ForfeitSpend.Validate()
 		if err != nil {

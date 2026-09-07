@@ -37,7 +37,7 @@ func (s *testCustomInputStore) GetVTXO(_ context.Context,
 	s.lookups = append(s.lookups, outpoint)
 
 	if s.desc == nil {
-		return nil, fmt.Errorf("vtxo not found")
+		return nil, vtxo.ErrVTXONotFound
 	}
 
 	return s.desc, nil
@@ -190,7 +190,7 @@ func TestBuildCustomTransferInputsExternalVHTLCClaim(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Len(t, inputs, 1)
-	require.Empty(t, store.lookups)
+	require.Equal(t, []wire.OutPoint{outpoint}, store.lookups)
 
 	input := inputs[0]
 	require.Equal(t, outpoint, input.VTXO.Outpoint)
@@ -544,4 +544,29 @@ func TestBuildTransferInputsRejectsAssetCarrier(t *testing.T) {
 	)
 	require.ErrorIs(t, err, vtxo.ErrAssetVTXORequiresTransition)
 	require.Empty(t, inputs)
+}
+
+// TestCustomTransferInputsCannotHideAssetState rejects a known asset whether
+// the custom request resolves its descriptor or supplies replacement fields.
+func TestCustomTransferInputsCannotHideAssetState(t *testing.T) {
+	t.Parallel()
+	root := chainhash.Hash{1}
+	for _, supplied := range []bool{false, true} {
+		store := &testCustomInputStore{desc: &vtxo.Descriptor{
+			TaprootAssetRoot: &root,
+		}}
+		ci := &waverpc.CustomOORInput{
+			Outpoint: testWalletOpsOutpoint(1).String(),
+		}
+		if supplied {
+			ci.AmountSat = 1000
+			ci.PkScript = []byte{1}
+		}
+		inputs, err := BuildCustomTransferInputs(
+			t.Context(), store, []*waverpc.CustomOORInput{ci},
+			keychain.KeyDescriptor{}, nil, 0,
+		)
+		require.ErrorIs(t, err, vtxo.ErrAssetVTXORequiresTransition)
+		require.Empty(t, inputs)
+	}
 }

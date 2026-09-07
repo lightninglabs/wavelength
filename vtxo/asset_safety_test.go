@@ -118,3 +118,17 @@ func TestAssetCriticalExpiryBypassesBitcoinFeeAssessment(t *testing.T) {
 	event := &BlockEpochEvent{Height: desc.BatchExpiry - 1}
 	require.Same(t, event, a.preflightCriticalExit(h.ctx, event))
 }
+
+// TestPendingAssetVTXORejectsForfeit protects recovered pending descriptors
+// even when their reservation predates the current process.
+func TestPendingAssetVTXORejectsForfeit(t *testing.T) {
+	t.Parallel()
+	h := newVTXOTestHarness(t)
+	desc := h.newTestDescriptor()
+	root := chainhash.Hash{1}
+	desc.TaprootAssetRoot = &root
+	h.withState(&PendingForfeitState{VTXO: desc})
+	_, err := h.sendEvent(&ForfeitRequestEvent{})
+	require.ErrorIs(t, err, ErrAssetVTXORequiresTransition)
+	require.Empty(t, h.outboxMessages)
+}

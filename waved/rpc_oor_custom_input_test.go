@@ -14,7 +14,6 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/chainsource"
-	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightninglabs/wavelength/oor"
@@ -65,6 +64,7 @@ func newCustomOORRPCFixture(t *testing.T) *customOORRPCFixture {
 		},
 	}
 
+	vtxoStore, _, _, _, _ := newSendOORTestStores(t)
 	server := &Server{
 		cfg: &Config{
 			Wallet: &WalletConfig{
@@ -72,7 +72,7 @@ func newCustomOORRPCFixture(t *testing.T) *customOORRPCFixture {
 			},
 		},
 		walletReady: ready,
-		vtxoStore:   &db.VTXOPersistenceStore{},
+		vtxoStore:   vtxoStore,
 		clientKeyDesc: keychain.KeyDescriptor{
 			PubKey: receiverPriv.PubKey(),
 			KeyLocator: keychain.KeyLocator{
