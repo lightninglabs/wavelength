@@ -4,7 +4,7 @@
 
 Durable actor integration tests using real DB backends (SQLite, Postgres).
 Verifies at-least-once delivery, exactly-once deduplication, FIFO ordering,
-priority ordering, dead-letter queue invariants, DurableAsk/outbox-delivered
+priority ordering, dead-letter and retry-ceiling invariants, DurableAsk/outbox-delivered
 responses, concurrent senders/asks, recovery/restart scenarios, and atomic
 state+outbox checkpointing.
 
@@ -12,7 +12,8 @@ state+outbox checkpointing.
 
 - `testHarness` / `newTestHarness` — Central test scaffolding: sets up a
   per-test in-memory SQLite DB, `actor.ActorSystem`, and TX-aware actor
-  delivery store; tests create their own `actor.OutboxPublisher` per case.
+  delivery store, plus raw SQL queries for mailbox-row assertions; tests create
+  their own `actor.OutboxPublisher` per case.
 - `CounterBehavior` / `CounterMessage` (`IncrementMsg`, `DecrementMsg`,
   `GetCountMsg`, `ForwardMsg`) — Demo durable actor and TLV-coded messages
   used to drive the e2e scenarios.

@@ -33,6 +33,7 @@ type testHarness struct {
 
 	cancel      context.CancelFunc
 	store       *actordelivery.TxAwareActorDeliveryStore
+	queries     *adsqlc.Queries
 	codec       *actor.MessageCodec
 	clock       *clock.TestClock
 	actorSystem *actor.ActorSystem
@@ -89,6 +90,7 @@ func newTestHarness(t *testing.T) *testHarness {
 		ctx:         ctx,
 		cancel:      cancel,
 		store:       store,
+		queries:     actorQueries,
 		codec:       codec,
 		clock:       testClock,
 		actorSystem: actorSystem,
@@ -171,6 +173,119 @@ func eventuallyWithOutboxPublish(t *testing.T, publisher *actor.OutboxPublisher,
 
 		return condition()
 	})
+}
+
+// TestClassicTxRetryCeiling verifies that a retry policy cannot requeue a
+// classic actor's Tell after the durable mailbox attempt budget is exhausted.
+// The dead-letter insert and mailbox-row removal must commit together.
+func TestClassicTxRetryCeiling(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+	actorID := uniqueID("tx-retry-ceiling")
+	behavior := NewCounterBehavior(actorID, h.store, h.codec)
+	behavior.SetForceError(errors.New("permanent failure"))
+
+	var policyCalls atomic.Int32
+	var lastAttempt atomic.Int32
+	cfg := actor.DefaultDurableActorConfig[CounterMessage, CounterResult](
+		actorID, behavior, h.store, h.codec,
+	)
+	cfg.Clock = fn.Some[clock.Clock](h.clock)
+	cfg.PollInterval = 10 * time.Millisecond
+	cfg.MaxAttempts = 3
+	cfg.TellRetryPolicy = func(_ error, attempts int) (bool,
+		time.Duration) {
+
+		policyCalls.Add(1)
+		lastAttempt.Store(int32(attempts))
+
+		return true, 0
+	}
+
+	durable := actor.NewDurableActor(cfg).UnwrapOrFail(t)
+	message := &IncrementMsg{Amount: 1}
+	require.NoError(t, durable.Ref().Tell(h.ctx, message))
+
+	rows, err := h.queries.ListMailboxMessagesByActor(h.ctx, actorID)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	messageID := rows[0].ID
+
+	durable.Start()
+	defer durable.Stop()
+
+	eventually(t, 2*time.Second, func() bool {
+		deadLetter, err := h.store.GetDeadLetter(h.ctx, messageID)
+
+		return err == nil && deadLetter != nil
+	})
+
+	deadLetter, err := h.store.GetDeadLetter(h.ctx, messageID)
+	require.NoError(t, err)
+	require.NotNil(t, deadLetter)
+	require.Equal(t, cfg.MaxAttempts, deadLetter.Attempts)
+	require.Contains(t, deadLetter.FailureReason, "max attempts reached")
+	require.Equal(t, int32(cfg.MaxAttempts), policyCalls.Load())
+	require.Equal(t, int32(cfg.MaxAttempts), lastAttempt.Load())
+
+	_, err = h.queries.GetMailboxMessage(h.ctx, messageID)
+	require.ErrorIs(t, err, sql.ErrNoRows)
+}
+
+// TestClassicTxRetryBeforeCeiling verifies that a failed Tell is nacked and
+// redelivered while retry budget remains, then consumed once it succeeds.
+func TestClassicTxRetryBeforeCeiling(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+	actorID := uniqueID("tx-retry-before-ceiling")
+	behavior := NewCounterBehavior(actorID, h.store, h.codec)
+	behavior.SetForceError(errors.New("transient failure"))
+
+	var policyCalls atomic.Int32
+	cfg := actor.DefaultDurableActorConfig[CounterMessage, CounterResult](
+		actorID, behavior, h.store, h.codec,
+	)
+	cfg.Clock = fn.Some[clock.Clock](h.clock)
+	cfg.PollInterval = 10 * time.Millisecond
+	cfg.MaxAttempts = 3
+	cfg.TellRetryPolicy = func(_ error, attempts int) (bool,
+		time.Duration) {
+
+		policyCalls.Add(1)
+		behavior.SetForceError(nil)
+
+		return true, 0
+	}
+
+	durable := actor.NewDurableActor(cfg).UnwrapOrFail(t)
+	message := &IncrementMsg{Amount: 1}
+	require.NoError(t, durable.Ref().Tell(h.ctx, message))
+
+	rows, err := h.queries.ListMailboxMessagesByActor(h.ctx, actorID)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	messageID := rows[0].ID
+
+	durable.Start()
+	defer durable.Stop()
+
+	eventually(t, 2*time.Second, func() bool {
+		_, err := h.queries.GetMailboxMessage(h.ctx, messageID)
+
+		return errors.Is(err, sql.ErrNoRows) && behavior.Count() == 1 &&
+			policyCalls.Load() == 1
+	})
+
+	require.Equal(t, int32(1), policyCalls.Load())
+
+	deadLetter, err := h.store.GetDeadLetter(h.ctx, messageID)
+	require.NoError(t, err)
+	require.Nil(t, deadLetter)
+
+	_, err = h.queries.GetMailboxMessage(h.ctx, messageID)
+	require.ErrorIs(t, err, sql.ErrNoRows)
 }
 
 // durableAskResponseTimeout is a shared timeout budget for DurableAsk response

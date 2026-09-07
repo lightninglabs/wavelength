@@ -646,6 +646,55 @@ func TestDurableActorTellRetryPolicy(t *testing.T) {
 	}, 500*time.Millisecond, 10*time.Millisecond)
 }
 
+// TestNonTxTellRetryCeiling verifies that the plain-store path keeps the
+// durable attempt ceiling independent of a retry policy that never gives up.
+func TestNonTxTellRetryCeiling(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newActorTestCodec()
+	behavior := newMockBehavior(
+		fn.Err[int](
+			errors.New("permanent failure"),
+		),
+	)
+
+	cfg := DefaultDurableActorConfig(
+		"non-tx-retry-ceiling", behavior, store, codec,
+	)
+	cfg.PollInterval = 10 * time.Millisecond
+	cfg.MaxAttempts = 3
+	cfg.TellRetryPolicy = func(_ error, _ int) (bool, time.Duration) {
+		return true, 0
+	}
+
+	durable := NewDurableActor(cfg).UnwrapOrFail(t)
+	durable.Start()
+	defer durable.Stop()
+
+	message := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+	}
+	require.NoError(t, durable.Ref().Tell(t.Context(), message))
+
+	require.Eventually(t, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+
+		return len(store.deadLetters) == 1 && len(store.messages) == 0
+	}, time.Second, 10*time.Millisecond)
+
+	require.Equal(t, cfg.MaxAttempts, behavior.callCount())
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for _, deadLetter := range store.deadLetters {
+		require.Equal(t, cfg.MaxAttempts, deadLetter.Attempts)
+		require.Contains(
+			t, deadLetter.FailureReason, "max attempts reached",
+		)
+	}
+}
+
 // TestDurableActorTransactionWrapping tests that processing uses transactions
 // when store supports it.
 func TestDurableActorTransactionWrapping(t *testing.T) {

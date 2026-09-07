@@ -15,7 +15,8 @@ import (
 )
 
 // TellRetryPolicy determines whether a failed Tell message should be retried
-// and how long to wait before the next attempt.
+// and how long to wait before the next attempt. A policy may stop retries
+// early, but it cannot extend the durable MaxAttempts ceiling.
 type TellRetryPolicy func(err error, attempts int) (retry bool, delay time.Duration)
 
 // DefaultTellRetryPolicy provides exponential backoff for transient errors.
@@ -80,7 +81,8 @@ type DurableActorConfig[M TLVMessage, R any] struct {
 	Wg *sync.WaitGroup
 
 	// TellRetryPolicy determines retry behavior for failed Tell messages.
-	// If nil, DefaultTellRetryPolicy is used.
+	// A policy may stop retries early, but it cannot extend MaxAttempts. If
+	// nil, DefaultTellRetryPolicy is used.
 	TellRetryPolicy TellRetryPolicy
 
 	// LeaseDuration is how long a message is leased to the actor.
@@ -111,7 +113,7 @@ type DurableActorConfig[M TLVMessage, R any] struct {
 	// Default: 30s.
 	MaxPollInterval time.Duration
 
-	// MaxAttempts is the default maximum delivery attempts.
+	// MaxAttempts is the hard maximum number of durable delivery attempts.
 	// Default: 10.
 	MaxAttempts int
 
@@ -1170,7 +1172,12 @@ func (a *DurableActor[M, R]) handleResultInTx(
 
 		// Apply Tell retry policy.
 		retry, delay := a.tellRetryPolicy(err, effectiveAttempts)
-		if retry {
+		// The policy may stop retries before the mailbox budget is
+		// exhausted, but it cannot extend that durable ceiling.
+		// Otherwise the nack below can leave attempts >= max_attempts
+		// in the mailbox, where the claim query will never select the
+		// row again.
+		if retry && !delivery.ShouldDeadLetter() {
 			// Don't mark as processed - we want retry to work.
 			// nackMessage routes a leaseless (empty-token) delivery
 			// to the by-ID nack, which increments attempts.
@@ -1190,7 +1197,12 @@ func (a *DurableActor[M, R]) handleResultInTx(
 			return fmt.Errorf("mark processed: %w", err)
 		}
 
-		return store.MoveToDeadLetter(ctx, delivery.ID, err.Error())
+		reason := err.Error()
+		if delivery.ShouldDeadLetter() {
+			reason = fmt.Sprintf("max attempts reached: %v", err)
+		}
+
+		return store.MoveToDeadLetter(ctx, delivery.ID, reason)
 	}
 
 	// Success - mark as processed and Ack the message.
