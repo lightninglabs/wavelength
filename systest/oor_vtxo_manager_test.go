@@ -21,13 +21,16 @@ import (
 	"github.com/lightninglabs/wavelength/db/actordelivery"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tree"
+	libtx "github.com/lightninglabs/wavelength/lib/tx"
 	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/lndbackend"
 	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
@@ -466,28 +469,18 @@ func buildSystemTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 
 	recipientKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
+	inputOwnerKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
 
 	inputValue := btcutil.Amount(10000)
+	checkpointInput, checkpoint := buildSystemTestSignedCheckpoint(
+		t, policy, operatorKey, inputOwnerKey, wire.OutPoint{
+			Hash:  [32]byte{0x11},
+			Index: 0,
+		}, inputValue,
+	)
 	inputs := []oortx.CheckpointInput{
-		{
-			SpentVTXO: oortx.SpentVTXORef{
-				Outpoint: wire.OutPoint{
-					Hash: [32]byte{
-						0x11,
-					},
-					Index: 0,
-				},
-				Output: &wire.TxOut{
-					Value: int64(inputValue),
-					PkScript: systemTestTaprootPkScript(
-						t, operatorKey.PubKey(),
-					),
-				},
-			},
-			OwnerLeafScript: []byte{
-				0x51,
-			},
-		},
+		checkpointInput,
 	}
 
 	vtxoTapKey, err := arkscript.VTXOTapKey(
@@ -505,8 +498,6 @@ func buildSystemTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 		},
 	}
 
-	checkpoint, err := oortx.BuildCheckpointPSBT(policy, inputs[0])
-	require.NoError(t, err)
 	checkpointTxHash := checkpoint.PSBT.UnsignedTx.TxHash()
 	checkpointTxOut := checkpoint.PSBT.UnsignedTx.TxOut[0]
 
@@ -582,33 +573,22 @@ func buildSystemTestChangeMaterialization(t *testing.T) (*psbt.Packet,
 
 	changeKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
+	inputOwnerKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
 
 	const (
 		externalValue btcutil.Amount = 6_000
 		changeValue   btcutil.Amount = 4_000
 	)
 	inputValue := externalValue + changeValue
-
+	checkpointInput, checkpoint := buildSystemTestSignedCheckpoint(
+		t, policy, operatorKey, inputOwnerKey, wire.OutPoint{
+			Hash:  [32]byte{0x22},
+			Index: 0,
+		}, inputValue,
+	)
 	inputs := []oortx.CheckpointInput{
-		{
-			SpentVTXO: oortx.SpentVTXORef{
-				Outpoint: wire.OutPoint{
-					Hash: [32]byte{
-						0x22,
-					},
-					Index: 0,
-				},
-				Output: &wire.TxOut{
-					Value: int64(inputValue),
-					PkScript: systemTestTaprootPkScript(
-						t, operatorKey.PubKey(),
-					),
-				},
-			},
-			OwnerLeafScript: []byte{
-				0x51,
-			},
-		},
+		checkpointInput,
 	}
 
 	externalPkScript := systemTestVTXOPkScript(
@@ -629,8 +609,6 @@ func buildSystemTestChangeMaterialization(t *testing.T) (*psbt.Packet,
 		},
 	}
 
-	checkpoint, err := oortx.BuildCheckpointPSBT(policy, inputs[0])
-	require.NoError(t, err)
 	checkpointTxHash := checkpoint.PSBT.UnsignedTx.TxHash()
 	checkpointTxOut := checkpoint.PSBT.UnsignedTx.TxOut[0]
 
@@ -695,6 +673,117 @@ func buildSystemTestChangeMaterialization(t *testing.T) (*psbt.Packet,
 		changeRecipient, metadata, changeKey, operatorKey.PubKey()
 }
 
+// buildSystemTestSignedCheckpoint constructs a checkpoint with both
+// collaborative-path signatures so system tests exercise the production
+// incoming-package validation boundary.
+func buildSystemTestSignedCheckpoint(t *testing.T,
+	policy arkscript.CheckpointPolicy,
+	operatorKey, inputOwnerKey *btcec.PrivateKey,
+	spentOutpoint wire.OutPoint, amount btcutil.Amount) (
+	oortx.CheckpointInput, *oortx.CheckpointArtifact) {
+
+	t.Helper()
+
+	inputTapScript, err := arkscript.VTXOTapScript(
+		inputOwnerKey.PubKey(), operatorKey.PubKey(), policy.CSVDelay,
+	)
+	require.NoError(t, err)
+
+	inputTapKey, err := arkscript.VTXOTapKey(
+		inputOwnerKey.PubKey(), operatorKey.PubKey(), policy.CSVDelay,
+	)
+	require.NoError(t, err)
+
+	inputPkScript, err := txscript.PayToTaprootScript(inputTapKey)
+	require.NoError(t, err)
+
+	ownerLeaf, err := arkscript.MultiSigCollabTapLeaf(
+		inputOwnerKey.PubKey(), operatorKey.PubKey(),
+	)
+	require.NoError(t, err)
+
+	checkpointInput := oortx.CheckpointInput{
+		SpentVTXO: oortx.SpentVTXORef{
+			Outpoint: spentOutpoint,
+			Output: &wire.TxOut{
+				Value:    int64(amount),
+				PkScript: inputPkScript,
+			},
+		},
+		OwnerLeafScript: ownerLeaf.Script,
+	}
+	checkpoint, err := oortx.BuildCheckpointPSBT(
+		policy, checkpointInput,
+	)
+	require.NoError(t, err)
+
+	transferInput := oor.TransferInput{
+		VTXO: &vtxo.Descriptor{
+			Outpoint: spentOutpoint,
+			Amount:   amount,
+			PkScript: inputPkScript,
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: inputOwnerKey.PubKey(),
+			},
+			OperatorKey:    operatorKey.PubKey(),
+			TapScript:      inputTapScript,
+			RelativeExpiry: policy.CSVDelay,
+		},
+		OwnerLeafScript: ownerLeaf.Script,
+	}
+
+	prevOut := checkpoint.PSBT.Inputs[0].WitnessUtxo
+	require.NotNil(t, prevOut)
+	prevFetcher := txscript.NewCannedPrevOutputFetcher(
+		prevOut.PkScript, prevOut.Value,
+	)
+	sigHashes := txscript.NewTxSigHashes(
+		checkpoint.PSBT.UnsignedTx, prevFetcher,
+	)
+	signDesc, spendInfo, err := libtx.NewVTXOCollabSignDescriptor(
+		&libtx.VTXOSpendContext{
+			Outpoint:  spentOutpoint,
+			Output:    prevOut,
+			TapScript: inputTapScript,
+		}, keychain.KeyDescriptor{
+			PubKey: operatorKey.PubKey(),
+		}, 0, sigHashes, prevFetcher,
+	)
+	require.NoError(t, err)
+
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
+	operatorSig, err := operatorSigner.SignOutputRaw(
+		checkpoint.PSBT.UnsignedTx, signDesc,
+	)
+	require.NoError(t, err)
+
+	err = psbtutil.AddTapLeafScript(
+		&checkpoint.PSBT.Inputs[0], spendInfo,
+	)
+	require.NoError(t, err)
+	err = psbtutil.AddTaprootScriptSpendSig(
+		&checkpoint.PSBT.Inputs[0], operatorKey.PubKey(),
+		spendInfo.WitnessScript, operatorSig.Serialize(),
+		signDesc.HashType,
+	)
+	require.NoError(t, err)
+
+	ownerSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{inputOwnerKey}, nil,
+	)
+	err = oor.SignCheckpointPSBTs(
+		ownerSigner, []oor.TransferInput{transferInput},
+		[]*psbt.Packet{checkpoint.PSBT},
+	)
+	require.NoError(t, err)
+
+	return checkpointInput, checkpoint
+}
+
+// systemTestVTXOPkScript derives the standard VTXO output script used by
+// incoming-materialization fixtures.
 func systemTestVTXOPkScript(t *testing.T,
 	clientKey, operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
 
@@ -706,17 +795,6 @@ func systemTestVTXOPkScript(t *testing.T,
 	require.NoError(t, err)
 
 	pkScript, err := txscript.PayToTaprootScript(vtxoTapKey)
-	require.NoError(t, err)
-
-	return pkScript
-}
-
-// systemTestTaprootPkScript returns a valid P2TR pkScript for systest
-// fixtures.
-func systemTestTaprootPkScript(t *testing.T, key *btcec.PublicKey) []byte {
-	t.Helper()
-
-	pkScript, err := txscript.PayToTaprootScript(key)
 	require.NoError(t, err)
 
 	return pkScript
