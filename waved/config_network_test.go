@@ -406,6 +406,113 @@ func TestConfigEndpointDefaultsPreserveOverrides(t *testing.T) {
 	require.Equal(t, "localhost:11030", cfg.SwapServerAddress())
 }
 
+// TestLegacyProofScanFloor verifies deployment-backed floors apply only to
+// the canonical operator for each public network. Custom operators retain the
+// block-1 fallback because their earliest compatible commitment is unknown.
+func TestLegacyProofScanFloor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		network   string
+		transport string
+		host      string
+		want      uint32
+	}{
+		{
+			name:      "mainnet grpc",
+			network:   "mainnet",
+			transport: RPCTransportGRPC,
+			want:      defaultMainnetLegacyProofScanFloor,
+		},
+		{
+			name:      "mainnet rest",
+			network:   "mainnet",
+			transport: RPCTransportREST,
+			want:      defaultMainnetLegacyProofScanFloor,
+		},
+		{
+			name:      "testnet3 grpc",
+			network:   "testnet",
+			transport: RPCTransportGRPC,
+			want:      testnet3LegacyProofScanFloor,
+		},
+		{
+			name:      "testnet3 rest",
+			network:   "testnet",
+			transport: RPCTransportREST,
+			want:      testnet3LegacyProofScanFloor,
+		},
+		{
+			name:      "testnet4 grpc",
+			network:   "testnet4",
+			transport: RPCTransportGRPC,
+			want:      testnet4LegacyProofScanFloor,
+		},
+		{
+			name:      "testnet4 rest",
+			network:   "testnet4",
+			transport: RPCTransportREST,
+			want:      testnet4LegacyProofScanFloor,
+		},
+		{
+			name:      "signet grpc",
+			network:   "signet",
+			transport: RPCTransportGRPC,
+			want:      signetLegacyProofScanFloor,
+		},
+		{
+			name:      "signet rest",
+			network:   "signet",
+			transport: RPCTransportREST,
+			want:      signetLegacyProofScanFloor,
+		},
+		{
+			name:    "custom public operator",
+			network: "testnet",
+			host:    "ark.example.com:443",
+			want:    1,
+		},
+		{
+			name:    "explicit canonical operator",
+			network: "signet",
+			host:    defaultSignetServerGRPCHost,
+			want:    signetLegacyProofScanFloor,
+		},
+		{
+			name:    "regtest",
+			network: "regtest",
+			want:    1,
+		},
+		{
+			name:    "simnet",
+			network: "simnet",
+			want:    1,
+		},
+		{
+			name:    "unknown network",
+			network: "unknown",
+			want:    1,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := DefaultConfig()
+			cfg.Network = tc.network
+			cfg.Server.Transport = tc.transport
+			cfg.Server.Host = tc.host
+
+			require.Equal(t, tc.want, cfg.legacyProofScanFloor())
+		})
+	}
+
+	require.Equal(t, uint32(1), (*Config)(nil).legacyProofScanFloor())
+}
+
 // TestNetworkToChainParams verifies network strings map to their exact btcd
 // chain parameters.
 func TestNetworkToChainParams(t *testing.T) {

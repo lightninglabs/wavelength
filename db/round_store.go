@@ -182,6 +182,12 @@ type RoundStore interface {
 	InsertVTXOAncestryPath(ctx context.Context,
 		arg sqlc.InsertVTXOAncestryPathParams) error
 
+	UpdateVTXOAncestryCommitmentHeight(ctx context.Context,
+		arg sqlc.UpdateVTXOAncestryCommitmentHeightParams) (
+		int64,
+		error,
+	)
+
 	DeleteVTXOAncestryPaths(ctx context.Context,
 		arg sqlc.DeleteVTXOAncestryPathsParams) error
 

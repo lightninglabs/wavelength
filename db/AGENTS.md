@@ -65,6 +65,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   committed). `groupAncestryRowsWithCache` /
   `loadAncestryPathsWithCache` accept the cache to avoid
   re-deserializing the same fragment across `ListLiveVTXOs` batches.
+- `BackfillVTXOCommitmentHeights` — atomically fills legacy zero heights from
+  indexed ancestry. Fragments are matched by `AncestryFragmentKey` (commitment
+  transaction plus serialized tree path), then a height-only update changes
+  the matching row without rewriting any local proof columns. It never
+  overwrites a known height. The caller supplies the current local chain tip;
+  the store rejects a candidate above that tip. For single-fragment ancestry,
+  it also rejects a candidate above the VTXO's known creation height. Any
+  missing, duplicate, heightless, or out-of-bounds indexed fragment aborts the
+  full repair, and empty local ancestry is an error rather than a silent no-op.
+  Returns the number of local fragments repaired.
 - `isDBClosedError(err) bool` — classifies teardown-path errors for
   demotion to debug-level logging.
 - `MaxTreeDeserializeDepth = 32` / `MaxTreeChildrenPerNode = 64` —

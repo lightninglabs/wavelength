@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"database/sql"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
+	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightninglabs/wavelength/ledger"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
@@ -137,6 +139,323 @@ func createTestVTXODescriptor(
 		CreatedHeight:  500 + int32(idx*10),
 		Status:         vtxo.VTXOStatusLive,
 	}
+}
+
+// TestBackfillVTXOCommitmentHeights verifies that legacy zero heights are
+// filled only from an exact indexed fragment match. A mismatched tree leaves
+// the local proof and height untouched.
+func TestBackfillVTXOCommitmentHeights(t *testing.T) {
+	t.Parallel()
+
+	store, _, baseDB := newVTXOStoreForTest(t)
+	desc := createTestVTXODescriptor(
+		t, testRoundIDDB("commitment-height-backfill"), 41,
+	)
+
+	// Use a multi-child proof tree so the local database decoder and the
+	// indexer RPC decoder exercise independent, non-trivial encodings
+	// before the exact fragment match.
+	left := &tree.Node{
+		Input: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0xa1,
+			},
+			Index: 1,
+		},
+		Outputs: []*wire.TxOut{{
+			Value: 40_000,
+			PkScript: []byte{
+				0x51,
+			},
+		}},
+		CoSigners: []*btcec.PublicKey{
+			desc.OperatorKey,
+		},
+		Children: map[uint32]*tree.Node{},
+		Amount:   40_000,
+	}
+	right := &tree.Node{
+		Input: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0xa2,
+			},
+			Index: 2,
+		},
+		Outputs: []*wire.TxOut{{
+			Value: 60_000,
+			PkScript: []byte{
+				0x51,
+				0x20,
+			},
+		}},
+		CoSigners: []*btcec.PublicKey{
+			desc.OperatorKey,
+		},
+		Children: map[uint32]*tree.Node{},
+		Amount:   60_000,
+	}
+	desc.Ancestry[0].TreePath = &tree.Tree{
+		Root: &tree.Node{
+			Input: wire.OutPoint{
+				Hash: desc.CommitmentTxID,
+			},
+			Outputs: []*wire.TxOut{
+				{
+					Value: 40_000,
+					PkScript: []byte{
+						0x51,
+					},
+				},
+				{
+					Value: 60_000,
+					PkScript: []byte{
+						0x51,
+						0x20,
+					},
+				},
+			},
+			CoSigners: []*btcec.PublicKey{
+				desc.OperatorKey,
+			},
+			Children: map[uint32]*tree.Node{
+				0: left,
+				1: right,
+			},
+			Amount: 100_000,
+		},
+		BatchOutpoint: wire.OutPoint{
+			Hash: desc.CommitmentTxID,
+		},
+		BatchOutput: &wire.TxOut{
+			Value: 100_000,
+			PkScript: []byte{
+				0x51,
+			},
+		},
+		SweepTapscriptRoot: bytes.Repeat([]byte{0x03}, 32),
+	}
+	desc.Ancestry[0].InputIndices = []uint32{0, 3}
+	desc.Ancestry[0].TreeDepth = 2
+	require.Zero(t, desc.Ancestry[0].CommitmentHeight)
+	require.NoError(t, store.SaveVTXO(t.Context(), desc))
+
+	rowKey := sqlc.ListVTXOAncestryPathsParams{
+		VtxoOutpointHash:  desc.Outpoint.Hash[:],
+		VtxoOutpointIndex: int32(desc.Outpoint.Index),
+	}
+	before, err := baseDB.ListVTXOAncestryPaths(t.Context(), rowKey)
+	require.NoError(t, err)
+	require.Len(t, before, 1)
+
+	rpcPath, err := arkrpc.AncestryPathFromTree(
+		desc.Ancestry[0].TreePath, desc.Ancestry[0].CommitmentTxID,
+		desc.Ancestry[0].InputIndices,
+	)
+	require.NoError(t, err)
+	rpcPath.CommitmentHeight = 321
+	indexed, err := vtxo.AncestryFromRPC([]*arkrpc.AncestryPath{rpcPath})
+	require.NoError(t, err)
+
+	repaired, err := store.BackfillVTXOCommitmentHeights(
+		t.Context(), desc.Outpoint, indexed, 1000,
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, repaired)
+
+	stored, err := store.GetVTXO(t.Context(), desc.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, int32(321), stored.Ancestry[0].CommitmentHeight)
+	wantKey, err := AncestryFragmentKey(desc.Ancestry[0])
+	require.NoError(t, err)
+	gotKey, err := AncestryFragmentKey(stored.Ancestry[0])
+	require.NoError(t, err)
+	require.Equal(t, wantKey, gotKey)
+
+	after, err := baseDB.ListVTXOAncestryPaths(t.Context(), rowKey)
+	require.NoError(t, err)
+	require.Len(t, after, 1)
+	require.Equal(t, int32(321), after[0].CommitmentHeight)
+	after[0].CommitmentHeight = before[0].CommitmentHeight
+	require.Equal(
+		t, before[0], after[0],
+		"height repair must not rewrite local proof columns",
+	)
+
+	// A later indexed value cannot overwrite the known durable height.
+	indexed[0].CommitmentHeight = 999
+	repaired, err = store.BackfillVTXOCommitmentHeights(
+		t.Context(), desc.Outpoint, indexed, 1000,
+	)
+	require.NoError(t, err)
+	require.Zero(t, repaired)
+
+	stored, err = store.GetVTXO(t.Context(), desc.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, int32(321), stored.Ancestry[0].CommitmentHeight)
+}
+
+// TestBackfillVTXOCommitmentHeightsIsAtomic verifies that an indexed fragment
+// mismatch does not partially alter local ancestry.
+func TestBackfillVTXOCommitmentHeightsIsAtomic(t *testing.T) {
+	t.Parallel()
+
+	store, _, _ := newVTXOStoreForTest(t)
+	desc := createTestVTXODescriptor(
+		t, testRoundIDDB("commitment-height-backfill-atomic"), 42,
+	)
+	require.NoError(t, store.SaveVTXO(t.Context(), desc))
+
+	indexed := make([]vtxo.Ancestry, len(desc.Ancestry))
+	copy(indexed, desc.Ancestry)
+	indexed[0].TreePath = &tree.Tree{
+		Root: &tree.Node{},
+		BatchOutpoint: wire.OutPoint{
+			Hash:  desc.CommitmentTxID,
+			Index: 99,
+		},
+	}
+	indexed[0].CommitmentHeight = 321
+
+	repaired, err := store.BackfillVTXOCommitmentHeights(
+		t.Context(), desc.Outpoint, indexed, 1000,
+	)
+	require.Error(t, err)
+	require.Zero(t, repaired)
+
+	stored, getErr := store.GetVTXO(t.Context(), desc.Outpoint)
+	require.NoError(t, getErr)
+	require.Zero(t, stored.Ancestry[0].CommitmentHeight)
+}
+
+// TestBackfillVTXOCommitmentHeightsEnforcesLocalCeiling verifies that an
+// indexed height cannot replace the safe fallback when it exceeds either the
+// local chain tip or a single-fragment VTXO's known creation height.
+func TestBackfillVTXOCommitmentHeightsEnforcesLocalCeiling(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		createdHeight   int32
+		bestHeight      int32
+		indexedHeight   int32
+		wantErr         bool
+		wantRepairCount int
+	}{
+		{
+			name:          "invalid local tip",
+			createdHeight: 500,
+			bestHeight:    0,
+			indexedHeight: 400,
+			wantErr:       true,
+		},
+		{
+			name:          "above local tip",
+			createdHeight: 0,
+			bestHeight:    500,
+			indexedHeight: 501,
+			wantErr:       true,
+		},
+		{
+			name:          "above creation height",
+			createdHeight: 450,
+			bestHeight:    500,
+			indexedHeight: 451,
+			wantErr:       true,
+		},
+		{
+			name:            "at local tip",
+			createdHeight:   0,
+			bestHeight:      500,
+			indexedHeight:   500,
+			wantRepairCount: 1,
+		},
+		{
+			name:            "at creation height",
+			createdHeight:   450,
+			bestHeight:      500,
+			indexedHeight:   450,
+			wantRepairCount: 1,
+		},
+	}
+
+	for i, test := range tests {
+		i := i
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			store, _, _ := newVTXOStoreForTest(t)
+			desc := createTestVTXODescriptor(
+				t, testRoundIDDB(test.name), 50+i,
+			)
+			desc.CreatedHeight = test.createdHeight
+			require.NoError(t, store.SaveVTXO(t.Context(), desc))
+
+			indexed := make([]vtxo.Ancestry, len(desc.Ancestry))
+			copy(indexed, desc.Ancestry)
+			indexed[0].CommitmentHeight = test.indexedHeight
+
+			repaired, err := store.BackfillVTXOCommitmentHeights(
+				t.Context(), desc.Outpoint, indexed,
+				test.bestHeight,
+			)
+			if test.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, test.wantRepairCount, repaired)
+
+			stored, err := store.GetVTXO(t.Context(), desc.Outpoint)
+			require.NoError(t, err)
+			if test.wantErr {
+				require.Zero(
+					t, stored.Ancestry[0].CommitmentHeight,
+				)
+
+				return
+			}
+
+			require.Equal(
+				t, test.indexedHeight,
+				stored.Ancestry[0].CommitmentHeight,
+			)
+		})
+	}
+}
+
+// TestBackfillVTXOCommitmentHeightsUsesTipForMultiFragment verifies that one
+// scalar VTXO creation height does not reject a valid height for a different
+// contributing commitment. The local chain tip still bounds every fragment.
+func TestBackfillVTXOCommitmentHeightsUsesTipForMultiFragment(t *testing.T) {
+	t.Parallel()
+
+	store, _, _ := newVTXOStoreForTest(t)
+	desc := createTestVTXODescriptor(
+		t, testRoundIDDB("multi-fragment-height-ceiling"), 70,
+	)
+	other := createTestVTXODescriptor(
+		t, testRoundIDDB("other-multi-fragment-height-ceiling"), 71,
+	)
+	desc.Ancestry = append(desc.Ancestry, other.Ancestry[0])
+	desc.CreatedHeight = 450
+	require.NoError(t, store.SaveVTXO(t.Context(), desc))
+
+	indexed := make([]vtxo.Ancestry, len(desc.Ancestry))
+	copy(indexed, desc.Ancestry)
+	indexed[0].CommitmentHeight = 440
+	indexed[1].CommitmentHeight = 475
+
+	repaired, err := store.BackfillVTXOCommitmentHeights(
+		t.Context(), desc.Outpoint, indexed, 500,
+	)
+	require.NoError(t, err)
+	require.Equal(t, 2, repaired)
+
+	stored, err := store.GetVTXO(t.Context(), desc.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, int32(440), stored.Ancestry[0].CommitmentHeight)
+	require.Equal(t, int32(475), stored.Ancestry[1].CommitmentHeight)
 }
 
 // testOddParityPubKey returns a deterministic odd-parity public key for

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
@@ -165,6 +166,17 @@ type RegistryConfig struct {
 	// FSM Environment.
 	FraudCheckpointSafetyMargin int32
 
+	// LegacyProofScanFloor is the earliest block where the configured
+	// operator could have created a compatible commitment transaction.
+	// It is forwarded to every child unroll actor. Zero preserves the
+	// block-1 fallback.
+	LegacyProofScanFloor uint32
+
+	// LegacyProofScanOperatorKey identifies the operator whose deployment
+	// history justifies LegacyProofScanFloor. It is forwarded to every
+	// child unroll actor. A nil key preserves the block-1 fallback.
+	LegacyProofScanOperatorKey *btcec.PublicKey
+
 	// VTXOExitObserver, when set, receives an ExitOutcomeNotification each
 	// time a child unroll job reaches a terminal phase: a clean failure
 	// (no on-chain footprint) asks the VTXO manager to roll the VTXO back
@@ -231,11 +243,12 @@ func (a *UnrollRegistryActor) Stop() {
 // NewUnrollRegistryActor creates and starts the thin unroll registry actor.
 func NewUnrollRegistryActor(cfg RegistryConfig) *UnrollRegistryActor {
 	behavior := &registryBehavior{
-		cfg:        cfg,
-		log:        cfg.Log.UnwrapOr(btclog.Disabled),
-		active:     make(map[wire.OutPoint]*VTXOUnrollActor),
-		pending:    make(map[wire.OutPoint]RegistryRecord),
-		persisting: make(map[wire.OutPoint]RegistryRecord),
+		cfg:                  cfg,
+		log:                  cfg.Log.UnwrapOr(btclog.Disabled),
+		active:               make(map[wire.OutPoint]*VTXOUnrollActor),
+		pending:              make(map[wire.OutPoint]RegistryRecord),
+		persisting:           make(map[wire.OutPoint]RegistryRecord),
+		proofNodeFloorAlerts: newProofNodeFloorAlertDeduper(),
 	}
 
 	registry := actor.NewActor(actor.ActorConfig[RegistryMsg, RegistryResp]{
@@ -263,6 +276,8 @@ type registryBehavior struct {
 	active     map[wire.OutPoint]*VTXOUnrollActor
 	pending    map[wire.OutPoint]RegistryRecord
 	persisting map[wire.OutPoint]RegistryRecord
+
+	proofNodeFloorAlerts *proofNodeFloorAlertDeduper
 
 	spawnFunc func(context.Context, wire.OutPoint) (*VTXOUnrollActor, error)
 }
@@ -1488,7 +1503,10 @@ func (r *registryBehavior) childConfig(target wire.OutPoint) Config {
 		MaxSweepFeeRateSatPerVByte:  r.cfg.MaxSweepFeeRateSatPerVByte,
 		ExitSpendPolicyResolver:     r.cfg.ExitSpendPolicyResolver,
 		FraudCheckpointSafetyMargin: r.cfg.FraudCheckpointSafetyMargin,
+		LegacyProofScanFloor:        r.cfg.LegacyProofScanFloor,
+		LegacyProofScanOperatorKey:  r.cfg.LegacyProofScanOperatorKey,
 		RegistryRef:                 r.selfRef,
+		proofNodeFloorAlerts:        r.proofNodeFloorAlerts,
 	}
 }
 
