@@ -506,6 +506,9 @@ func (a *ServerConnectionActor) pullBatch(ctx context.Context, cursor uint64) (
 	if sErr := edgeResponseError("Pull", resp, err); sErr != nil {
 		return nil, 0, sErr
 	}
+	if err := validatePullCursor(cursor, resp); err != nil {
+		return nil, 0, err
+	}
 
 	return resp.Envelopes, resp.NextCursor, nil
 }
