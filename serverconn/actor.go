@@ -660,6 +660,12 @@ type ServerConnectionActor struct {
 	// cfg holds all dependencies and tuning knobs for the connector.
 	cfg ConnectorConfig
 
+	// sendTimeout bounds durable Edge.Send calls after they detach from the
+	// actor turn's cancellation. Production uses defaultSendEventTimeout;
+	// tests shorten it to exercise black-holed sends without waiting 30
+	// seconds.
+	sendTimeout time.Duration
+
 	log btclog.Logger
 
 	// responseRegistry maps correlation IDs to unary RPC waiters and
@@ -719,8 +725,9 @@ func NewServerConnectionActor(
 	)
 
 	return &ServerConnectionActor{
-		cfg: cfg,
-		log: cfg.Log.UnwrapOr(btclog.Disabled),
+		cfg:         cfg,
+		sendTimeout: defaultSendEventTimeout,
+		log:         cfg.Log.UnwrapOr(btclog.Disabled),
 		responseRegistry: mailboxconn.NewResponseRegistry(
 			cfg.ResponseWaiterTTL,
 		),
@@ -798,7 +805,7 @@ func (a *ServerConnectionActor) Receive(ctx context.Context, msg ServerConnMsg,
 }
 
 // handleSendClientEvent converts a client FSM outbox message to a proto
-// message and sends it to the server via the mailbox edge.
+// message and sends it to the server through the bounded durable-send context.
 func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 	req *SendClientEventRequest,
 	ax actor.Exec[egressTx]) fn.Result[ServerConnResp] {
@@ -870,17 +877,7 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 		},
 	}
 
-	// Use a detached context for the gRPC call so that parent
-	// cancellation does not abort the outbound send, while
-	// preserving trace/logging context values.
-	sendCtx, sendCancel := context.WithTimeout(
-		context.WithoutCancel(ctx), defaultSendEventTimeout,
-	)
-	defer sendCancel()
-
-	resp, err := a.cfg.Edge.Send(sendCtx, &mailboxpb.SendRequest{
-		Envelope: envelope,
-	})
+	resp, err := a.sendEnvelope(ctx, envelope)
 	if sErr := edgeResponseError(
 		"send client event", resp, err,
 	); sErr != nil {
@@ -1012,8 +1009,9 @@ func (a *ServerConnectionActor) buildDurableUnary(ctx context.Context,
 	}, nil
 }
 
-// sendUnaryEnvelope sends one durable unary request envelope via the mailbox
-// edge using the given routing metadata and stable identifiers.
+// sendUnaryEnvelope sends one durable unary request envelope through the
+// bounded durable-send context using the given routing metadata and stable
+// identifiers.
 func (a *ServerConnectionActor) sendUnaryEnvelope(ctx context.Context,
 	ax actor.Exec[egressTx], body *anypb.Any, service string, method string,
 	correlationID string, msgID string,
@@ -1040,14 +1038,7 @@ func (a *ServerConnectionActor) sendUnaryEnvelope(ctx context.Context,
 		},
 	}
 
-	sendCtx, sendCancel := context.WithTimeout(
-		context.WithoutCancel(ctx), defaultSendEventTimeout,
-	)
-	defer sendCancel()
-
-	resp, err := a.cfg.Edge.Send(sendCtx, &mailboxpb.SendRequest{
-		Envelope: envelope,
-	})
+	resp, err := a.sendEnvelope(ctx, envelope)
 	if sErr := edgeResponseError(
 		"send unary request", resp, err,
 	); sErr != nil {
@@ -1096,8 +1087,9 @@ func eventRoutingMetadata(req *SendClientEventRequest) (string, string) {
 	return service, method
 }
 
-// handleSendRPCRequest sends a pre-built unary RPC envelope via the mailbox
-// edge.
+// handleSendRPCRequest sends a pre-built unary RPC envelope through the bounded
+// durable-send context. A timeout returns an error without committing, so the
+// durable actor nacks and retries the unchanged envelope.
 func (a *ServerConnectionActor) handleSendRPCRequest(ctx context.Context,
 	req *SendRPCRequest,
 	ax actor.Exec[egressTx]) fn.Result[ServerConnResp] {
@@ -1106,9 +1098,7 @@ func (a *ServerConnectionActor) handleSendRPCRequest(ctx context.Context,
 		return fn.Err[ServerConnResp](ce)
 	}
 
-	resp, err := a.cfg.Edge.Send(ctx, &mailboxpb.SendRequest{
-		Envelope: req.Envelope,
-	})
+	resp, err := a.sendEnvelope(ctx, req.Envelope)
 	if sErr := edgeResponseError(
 		"send rpc request", resp, err,
 	); sErr != nil {
@@ -1126,6 +1116,24 @@ func (a *ServerConnectionActor) handleSendRPCRequest(ctx context.Context,
 
 	return fn.Ok[ServerConnResp](&SendRPCResponse{
 		Success: true,
+	})
+}
+
+// sendEnvelope owns one durable Edge.Send past cancellation of the actor turn,
+// while bounding it so a black-holed transport cannot occupy an egress worker
+// forever. The detached context preserves trace and logging values. Every
+// durable send path uses this helper so events and both unary envelope forms
+// share one deadline policy.
+func (a *ServerConnectionActor) sendEnvelope(ctx context.Context,
+	envelope *mailboxpb.Envelope) (*mailboxpb.SendResponse, error) {
+
+	sendCtx, sendCancel := context.WithTimeout(
+		context.WithoutCancel(ctx), a.sendTimeout,
+	)
+	defer sendCancel()
+
+	return a.cfg.Edge.Send(sendCtx, &mailboxpb.SendRequest{
+		Envelope: envelope,
 	})
 }
 
