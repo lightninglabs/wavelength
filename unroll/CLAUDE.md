@@ -355,3 +355,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
 - [lib/recovery/CLAUDE.md](../lib/recovery/CLAUDE.md) — immutable
   proof graph.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — system-wide package map.
+
+## Asset carrier safety
+
+Asset-bearing VTXOs require an asset-aware transition. Bitcoin spending,
+forfeit signing, automatic refresh, and expired reclaim refuse them. An
+unroll can materialize its presigned path, but its final Bitcoin sweep is
+withheld, including a sweep restored from a checkpoint.

@@ -59,7 +59,8 @@ func SumBalance(descs []*Descriptor) btcutil.Amount {
 // spendable subset of descriptors. Only Live VTXOs can fund a spend;
 // the other non-terminal states (PendingForfeit, Forfeiting, Spending)
 // are still "live" for actor-recovery purposes but cannot back a spend,
-// so they are excluded here. Callers reporting a spendable balance must
+// so they are excluded here. Asset carriers are also excluded because
+// they cannot fund Bitcoin payments. Callers reporting a spendable balance must
 // use this rather than SumBalance over a recovery-oriented VTXO set,
 // otherwise the figure overstates spendable liquidity.
 func SumSpendableBalance(descs []*Descriptor) btcutil.Amount {
@@ -68,7 +69,14 @@ func SumSpendableBalance(descs []*Descriptor) btcutil.Amount {
 		StatusSet: true,
 	})
 
-	return SumBalance(spendable)
+	var total btcutil.Amount
+	for _, desc := range spendable {
+		if desc.TaprootAssetRoot == nil {
+			total += desc.Amount
+		}
+	}
+
+	return total
 }
 
 // SumPendingBalance sums VTXOs in a non-terminal, non-spendable state

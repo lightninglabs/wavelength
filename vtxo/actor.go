@@ -284,7 +284,7 @@ func (a *VTXOActor) preflightAutoRefresh(ctx context.Context, event VTXOEvent) (
 	}
 
 	liveState, ok := a.state.(*LiveState)
-	if !ok {
+	if !ok || liveState.VTXO.TaprootAssetRoot != nil {
 		return nil, false, nil
 	}
 
@@ -345,6 +345,12 @@ func (a *VTXOActor) preflightCriticalExit(ctx context.Context,
 		desc = state.VTXO
 
 	default:
+		return event
+	}
+
+	// Asset exits materialize the leaf without a Bitcoin sweep. Its
+	// carrier cannot be assessed against the Bitcoin sweep fee budget.
+	if desc.TaprootAssetRoot != nil {
 		return event
 	}
 

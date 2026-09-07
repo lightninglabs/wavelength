@@ -136,6 +136,10 @@ func BuildTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 			return nil, fmt.Errorf("look up VTXO %s: %w", op, err)
 		}
 
+		if desc.TaprootAssetRoot != nil {
+			return nil, vtxo.ErrAssetVTXORequiresTransition
+		}
+
 		// The checkpoint output collab path is a 2-of-2 multisig
 		// between the VTXO owner and the operator, matching the
 		// VTXO's own collaborative spend path. This ensures both

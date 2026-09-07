@@ -3,6 +3,11 @@ package vtxo
 import "errors"
 
 var (
+	// ErrAssetVTXORequiresTransition rejects Bitcoin operations on asset
+	// carriers.
+	ErrAssetVTXORequiresTransition = errors.New("asset VTXO requires an " +
+		"asset-aware transition")
+
 	// ErrInsufficientSpendableFunds means live VTXOs cannot cover the
 	// requested amount.
 	ErrInsufficientSpendableFunds = errors.New("insufficient spendable " +

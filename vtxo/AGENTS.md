@@ -235,3 +235,10 @@ when the local wallet owns the receive script.
 ## Deep Docs
 
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
+
+## Asset carrier safety
+
+Asset-bearing VTXOs require an asset-aware transition. Bitcoin spending,
+forfeit signing, automatic refresh, and expired reclaim refuse them. An
+unroll can materialize its presigned path, but its final Bitcoin sweep is
+withheld, including a sweep restored from a checkpoint.

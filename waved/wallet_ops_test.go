@@ -530,3 +530,18 @@ func TestFindSettlementOwnerLeafWithConditions(t *testing.T) {
 	require.Equal(t, claimPath.WitnessScript, ownerLeaf)
 	require.NotEmpty(t, ownerLeafPolicy)
 }
+
+// TestBuildTransferInputsRejectsAssetCarrier refuses explicit Bitcoin sends
+// even when the caller bypasses wallet coin selection.
+func TestBuildTransferInputsRejectsAssetCarrier(t *testing.T) {
+	t.Parallel()
+	root := chainhash.Hash{1}
+	store := &testCustomInputStore{desc: &vtxo.Descriptor{
+		TaprootAssetRoot: &root,
+	}}
+	inputs, err := BuildTransferInputs(
+		t.Context(), store, []wire.OutPoint{{}},
+	)
+	require.ErrorIs(t, err, vtxo.ErrAssetVTXORequiresTransition)
+	require.Empty(t, inputs)
+}

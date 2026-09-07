@@ -1649,6 +1649,7 @@ func (m *Manager) coordinateAutoRefreshCohort(ctx context.Context,
 	addCandidates := func(candidates []*Descriptor, pending bool) {
 		for _, candidate := range candidates {
 			if candidate == nil ||
+				candidate.TaprootAssetRoot != nil ||
 				candidate.Outpoint == req.VTXOOutpoint ||
 				candidate.BatchExpiry != req.BatchExpiry ||
 				m.isReserved(candidate.Outpoint) {
@@ -2266,6 +2267,10 @@ func (m *Manager) exactSpendUnavailableError(ctx context.Context,
 			err)
 	}
 
+	if desc.TaprootAssetRoot != nil {
+		return ErrAssetVTXORequiresTransition
+	}
+
 	switch desc.Status {
 	case VTXOStatusLive, VTXOStatusPendingForfeit,
 		VTXOStatusForfeiting, VTXOStatusSpending:
@@ -2298,7 +2303,7 @@ func (m *Manager) insufficientLiquidityError(ctx context.Context,
 
 	var lockedTotal btcutil.Amount
 	for _, desc := range nonTerminal {
-		if desc == nil {
+		if desc == nil || desc.TaprootAssetRoot != nil {
 			continue
 		}
 
@@ -3311,6 +3316,9 @@ func (m *Manager) customForfeitInputStoredMatch(ctx context.Context,
 	if desc == nil {
 		return false, false, fmt.Errorf("load existing custom forfeit "+
 			"input %s: nil descriptor", input.Outpoint)
+	}
+	if desc.TaprootAssetRoot != nil {
+		return false, false, ErrAssetVTXORequiresTransition
 	}
 	synthetic := desc.Status == VTXOStatusPendingForfeit
 	if desc.Amount != input.Amount {

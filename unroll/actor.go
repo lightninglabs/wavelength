@@ -553,6 +553,12 @@ func (b *behavior) driveEvent(ctx context.Context, ax actor.Exec[unrollTx],
 func (b *behavior) startSweep(ctx context.Context,
 	ax actor.Exec[unrollTx]) error {
 
+	// Check before adopting any staged sweep: a restored Bitcoin sweep
+	// must never consume an output now known to carry assets.
+	if b.desc != nil && b.desc.TaprootAssetRoot != nil {
+		return vtxo.ErrAssetVTXORequiresTransition
+	}
+
 	// Idempotency guard against a lost-in-memory sweep. Before deriving a
 	// fresh sweep -- which burns a new BIP32 wallet address and yields a
 	// new txid -- reconcile against the durably Staged checkpoint via a
@@ -803,6 +809,10 @@ func (b *behavior) currentHeightHint() uint32 {
 // resolveExitSpendPolicy reconstructs the exit policy for this job.
 func (b *behavior) resolveExitSpendPolicy(ctx context.Context) (ExitSpendPolicy,
 	error) {
+
+	if b.desc != nil && b.desc.TaprootAssetRoot != nil {
+		return nil, vtxo.ErrAssetVTXORequiresTransition
+	}
 
 	req := ExitSpendPolicyRequest{
 		Kind:               b.exitPolicyKind(),
