@@ -3178,14 +3178,25 @@ func TestRestoredStartReissuesAfterPriorMessage(t *testing.T) {
 	mustAsk(t, actorInstance.Ref(), &HeightObservedMsg{Height: 111})
 	require.Equal(t, 0, txconfirmRef.requestCount())
 
-	// The later Start is the registry's re-admission message. It must
-	// retain Resume semantics even though the prior height update loaded
-	// the FSM.
+	// The later Start is the registry's re-admission message. Its first
+	// route attempt fails after arming the actor's normal live-route retry.
+	// The next Start must let that retry perform the restored reissue once,
+	// rather than translating the same message into a second Resume.
+	txconfirmRef.failNextAsks(rootTxid, 1)
+	_, err = actorInstance.Ref().Ask(
+		t.Context(), &StartUnrollRequest{
+			Height:  112,
+			Trigger: TriggerManual,
+		},
+	).Await(t.Context()).Unpack()
+	require.ErrorContains(t, err, "injected txconfirm ask failure")
+	require.Equal(t, 1, txconfirmRef.requestCountForTxid(rootTxid))
+
 	mustAsk(t, actorInstance.Ref(), &StartUnrollRequest{
 		Height:  112,
 		Trigger: TriggerManual,
 	})
-	require.Equal(t, 1, txconfirmRef.requestCountForTxid(rootTxid))
+	require.Equal(t, 2, txconfirmRef.requestCountForTxid(rootTxid))
 
 	// Once admission commits, a live duplicate Start remains idempotent and
 	// does not reissue the root again.
@@ -3193,7 +3204,7 @@ func TestRestoredStartReissuesAfterPriorMessage(t *testing.T) {
 		Height:  113,
 		Trigger: TriggerManual,
 	})
-	require.Equal(t, 1, txconfirmRef.requestCountForTxid(rootTxid))
+	require.Equal(t, 2, txconfirmRef.requestCountForTxid(rootTxid))
 }
 
 // TestStartUnrollMultiParentSubmitsAllRoots verifies that the initial planner
