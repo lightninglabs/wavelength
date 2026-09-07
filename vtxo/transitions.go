@@ -86,6 +86,11 @@ func (s *LiveState) ProcessEvent(ctx context.Context, event VTXOEvent,
 	case *BlockEpochEvent:
 		return s.handleBlockEpoch(ctx, evt, env)
 
+	case *criticalRefreshEvent:
+		s.LastCheckedHeight = evt.Height
+
+		return s.autoRefreshTransition(evt.Height, false), nil
+
 	case *CohortRefreshEvent:
 		return s.handleCohortRefresh(evt, env)
 
@@ -775,51 +780,10 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		}, nil
 
 	case *BlockEpochEvent:
-		// Check if we've hit critical expiry while waiting for
-		// forfeit details.
-		expiryStatus := env.ExpiryConfig.CheckExpiry(s.VTXO, evt.Height)
+		return s.handleBlockEpoch(evt, env), nil
 
-		// Only critical expiry escalates. Past the deadline a
-		// unilateral exit can no longer complete — it would have to
-		// confirm the whole ancestry and then wait out the exit CSV
-		// while racing an already-spendable operator sweep — and
-		// escalating would abort the in-flight cooperative spend that
-		// IS the recovery. Staying put lets it finish.
-		if expiryStatus == ExpiryStatusCritical {
-			blocksRemaining := BlocksUntilExpiry(s.VTXO, evt.Height)
-
-			// Non-terminal exit: no VTXOTerminatedNotification, so
-			// a failed unroll can recover the VTXO
-			// (wavelength#602).
-			outbox := []VTXOOutMsg{
-				&ExpiringNotification{
-					VTXO:            s.VTXO,
-					BlocksRemaining: blocksRemaining,
-					Reason:          "forfeit timeout",
-				},
-				&VTXOStatusUpdate{
-					Outpoint:  s.VTXO.Outpoint,
-					NewStatus: VTXOStatusUnilateralExit,
-				},
-			}
-
-			return &VTXOStateTransition{
-				NextState: &UnilateralExitState{
-					VTXO: s.VTXO,
-					Reason: "critical expiry pending " +
-						"forfeit",
-					LastCheckedHeight: evt.Height,
-				},
-				NewEvents: fn.Some(VTXOEmittedEvent{
-					Outbox: outbox,
-				}),
-			}, nil
-		}
-
-		// Still waiting, stay in this state.
-		return &VTXOStateTransition{
-			NextState: s,
-		}, nil
+	case *criticalRefreshEvent:
+		return s.handleCriticalRefresh(), nil
 
 	case *ForceUnrollEvent:
 		// Client requested unilateral exit while forfeit is
@@ -1003,6 +967,52 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		return nil, fmt.Errorf("pending_forfeit: unexpected event: %T",
 			event)
 	}
+}
+
+// handleBlockEpoch escalates a pending cooperative reservation only inside
+// the critical window. Past expiry it keeps waiting because an exit can no
+// longer complete its ancestry and CSV delay before an operator sweep, while
+// the cooperative recovery can still finish.
+func (s *PendingForfeitState) handleBlockEpoch(evt *BlockEpochEvent,
+	env *VTXOEnvironment) *VTXOStateTransition {
+
+	expiryStatus := env.ExpiryConfig.CheckExpiry(s.VTXO, evt.Height)
+	if expiryStatus != ExpiryStatusCritical {
+		return &VTXOStateTransition{NextState: s}
+	}
+
+	blocksRemaining := BlocksUntilExpiry(s.VTXO, evt.Height)
+	outbox := []VTXOOutMsg{
+		&ExpiringNotification{
+			VTXO:            s.VTXO,
+			BlocksRemaining: blocksRemaining,
+			Reason:          "forfeit timeout",
+		},
+		&VTXOStatusUpdate{
+			Outpoint:  s.VTXO.Outpoint,
+			NewStatus: VTXOStatusUnilateralExit,
+		},
+	}
+
+	return &VTXOStateTransition{
+		NextState: &UnilateralExitState{
+			VTXO: s.VTXO,
+			Reason: "critical expiry pending " +
+				"forfeit",
+			LastCheckedHeight: evt.Height,
+		},
+		NewEvents: fn.Some(VTXOEmittedEvent{
+			Outbox: outbox,
+		}),
+	}
+}
+
+// handleCriticalRefresh keeps the cooperative reservation alive while the
+// backing wallet cannot execute the unilateral package. The actor reassesses
+// on every critical block and restores the normal BlockEpochEvent as soon as
+// the exit becomes viable.
+func (s *PendingForfeitState) handleCriticalRefresh() *VTXOStateTransition {
+	return &VTXOStateTransition{NextState: s}
 }
 
 // forfeitSignatureIssued reports whether this VTXO's forfeit signature has

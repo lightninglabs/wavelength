@@ -62,6 +62,28 @@ type (
 	ForfeitReleasedEvent = round.ForfeitReleasedEvent
 )
 
+// criticalRefreshEvent tells LiveState or PendingForfeitState that the actor
+// established that the automatic unilateral path is not currently viable.
+// LiveState starts cooperative refresh; PendingForfeitState keeps waiting for
+// that round. It is actor-local: external block notifications remain
+// BlockEpochEvent, and a funded or unassessed critical VTXO follows the
+// existing unilateral-exit transition.
+type criticalRefreshEvent struct {
+	actor.BaseMessage
+
+	// Height is the critical block height used for the durable automatic
+	// refresh reservation and repeated funding assessment.
+	Height int32
+}
+
+// VTXOActorMsg implements actormsg.VTXOActorMsg.
+func (e *criticalRefreshEvent) VTXOActorMsg() {}
+
+// MessageType returns the message type used by actor diagnostics.
+func (e *criticalRefreshEvent) MessageType() string {
+	return "criticalRefreshEvent"
+}
+
 // CohortRefreshEvent asks an eligible sibling VTXO to join an automatic
 // refresh already triggered by another VTXO from the same batch. The manager
 // sends these requests with bounded Ask backpressure before forwarding the

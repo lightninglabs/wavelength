@@ -1,6 +1,7 @@
 package vtxo
 
 import (
+	"context"
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg/v2"
@@ -70,10 +71,10 @@ func TestAutomaticRefreshCooldownSuppressesBlockRetries(t *testing.T) {
 	h.store.AssertExpectations(t)
 }
 
-// TestAutomaticRefreshCooldownNeverBlocksCriticalExit verifies a critical
-// block inside the six-block cooldown clears it and immediately hands the VTXO
-// to the unilateral-exit path.
-func TestAutomaticRefreshCooldownNeverBlocksCriticalExit(t *testing.T) {
+// TestAutomaticRefreshCooldownNeverBlocksFundedCriticalExit verifies a
+// critical block inside the six-block cooldown clears it and immediately
+// hands a funded VTXO to the unilateral-exit path.
+func TestAutomaticRefreshCooldownNeverBlocksFundedCriticalExit(t *testing.T) {
 	t.Parallel()
 
 	h := newVTXOTestHarness(t)
@@ -105,6 +106,11 @@ func TestAutomaticRefreshCooldownNeverBlocksCriticalExit(t *testing.T) {
 	resolver := newMockChainResolverRef(t)
 	actor := newRefreshTestActor(h, desc, manager, nil)
 	actor.cfg.ChainResolver = resolver
+	actor.cfg.CriticalExitAssessor = func(context.Context, *Descriptor) (
+		CriticalExitAssessment, error) {
+
+		return CriticalExitAssessment{Feasible: true}, nil
+	}
 
 	_, err := actor.Receive(
 		h.ctx, h.newBlockEpochEvent(firstHeight),
@@ -122,6 +128,78 @@ func TestAutomaticRefreshCooldownNeverBlocksCriticalExit(t *testing.T) {
 	require.Zero(t, actor.autoRefreshRetryHeight)
 	require.Len(t, resolver.getMessages(), 1)
 	require.Len(t, manager.getMessages(), 1)
+	h.store.AssertExpectations(t)
+}
+
+// TestCriticalUnderfundedExitUsesCooperativeRefresh pins the incident shape
+// from wavelength#1212: a live VTXO first observed 187 blocks before expiry
+// cannot fund its unilateral package, so it stays on cooperative refresh until
+// a later block observes that the wallet can execute the exit.
+func TestCriticalUnderfundedExitUsesCooperativeRefresh(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	desc := h.newTestDescriptor()
+	desc.BatchExpiry = 1_000
+	desc.RelativeExpiry = 0
+
+	expiryCfg := &ExpiryConfig{
+		RefreshThresholdBlocks:  264,
+		CriticalThresholdBlocks: 192,
+		TreeDepthMultiplier:     0,
+	}
+	h.withExpiryConfig(expiryCfg)
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, desc.Outpoint,
+		VTXOStatusPendingForfeit,
+	).Return(nil).Once()
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, desc.Outpoint,
+		VTXOStatusUnilateralExit,
+	).Return(nil).Once()
+
+	manager := newMockManagerRef(t)
+	resolver := newMockChainResolverRef(t)
+	actor := newRefreshTestActor(h, desc, manager, nil)
+	actor.cfg.ChainResolver = resolver
+	exitFeasible := false
+	actor.cfg.CriticalExitAssessor = func(context.Context, *Descriptor) (
+		CriticalExitAssessment, error) {
+
+		return CriticalExitAssessment{
+			Feasible: exitFeasible,
+			Reason: "wallet_too_few_inputs: need 2 usable " +
+				"fee inputs, have 0",
+		}, nil
+	}
+
+	_, err := actor.Receive(
+		h.ctx, h.newBlockEpochEvent(813),
+	).Unpack()
+	require.NoError(t, err)
+	pending, ok := actor.state.(*PendingForfeitState)
+	require.True(t, ok)
+	require.Equal(t, int32(813), pending.RequestedAtHeight)
+	require.Len(t, manager.getMessages(), 1)
+	require.Empty(t, resolver.getMessages())
+
+	_, err = actor.Receive(
+		h.ctx, h.newBlockEpochEvent(814),
+	).Unpack()
+	require.NoError(t, err)
+	require.IsType(t, &PendingForfeitState{}, actor.state)
+	require.Len(t, manager.getMessages(), 1)
+	require.Empty(t, resolver.getMessages())
+
+	exitFeasible = true
+	_, err = actor.Receive(
+		h.ctx, h.newBlockEpochEvent(815),
+	).Unpack()
+	require.NoError(t, err)
+	require.IsType(t, &UnilateralExitState{}, actor.state)
+	require.Len(t, manager.getMessages(), 1)
+	require.Len(t, resolver.getMessages(), 1)
 	h.store.AssertExpectations(t)
 }
 
