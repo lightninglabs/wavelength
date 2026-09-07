@@ -904,6 +904,17 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(ctx context.Context,
 		operatorPubkey = desc.OperatorKey.SerializeCompressed()
 	}
 
+	assetRef, assetAmount, err := encodeTaprootAssetMetadata(desc)
+	if err != nil {
+		return InsertVTXOParams{}, err
+	}
+	if err := validateAssetVTXOReplay(ctx, q, desc); err != nil {
+		return InsertVTXOParams{}, err
+	}
+	var assetRoot []byte
+	if desc.TaprootAssetRoot != nil {
+		assetRoot = desc.TaprootAssetRoot.CloneBytes()
+	}
 	nowUnix := s.clock.Now().Unix()
 
 	// Register the local-ownership (client) key in the shared internal_keys
@@ -947,6 +958,12 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(ctx context.Context,
 		// immutable, so the InsertVTXO upsert never updates it on
 		// conflict.
 		ConstructionVersion: int32(desc.ConstructionVersion),
+		TaprootAssetRoot:    assetRoot,
+		TaprootAssetRef:     assetRef,
+		TaprootAssetAmount:  assetAmount,
+		TaprootAssetSealedPackage: bytes.Clone(
+			desc.TaprootAssetSealedPackage,
+		),
 	}, nil
 }
 
@@ -973,6 +990,11 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 		Index: uint32(row.OutpointIndex),
 	}
 
+	assetDesc, assetErr := decodeAssetVTXOState(row)
+	if assetErr != nil {
+		return nil, assetErr
+	}
+
 	// Hydrate the client key descriptor (pubkey + locator) from the
 	// internal_keys registry via the client_key_id FK. The FK is NULL on a
 	// minimal round-created row the VTXO manager has not yet healed; in
@@ -996,7 +1018,7 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 	// map to different derived values; only the mutable row state below
 	// is read fresh on every call.
 	derived, ok := s.descriptorCache.get(outpoint)
-	if !ok {
+	if !ok || assetDesc.TaprootAssetRoot != nil {
 		var err error
 		derived, err = s.deriveDescriptorParts(ctx, row, outpoint)
 		if err != nil {
@@ -1048,10 +1070,15 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 	}
 
 	return &vtxo.Descriptor{
-		Outpoint:       outpoint,
-		Amount:         btcutil.Amount(row.Amount),
-		PolicyTemplate: derived.policyTemplate,
-		PkScript:       row.PkScript,
+		Outpoint:                  outpoint,
+		Amount:                    btcutil.Amount(row.Amount),
+		PolicyTemplate:            derived.policyTemplate,
+		PkScript:                  row.PkScript,
+		TaprootAssetRoot:          assetDesc.TaprootAssetRoot,
+		TaprootAssetRef:           assetDesc.TaprootAssetRef,
+		TaprootAssetAmount:        assetDesc.TaprootAssetAmount,
+		TaprootAssetSealedPackage: assetDesc.TaprootAssetSealedPackage,
+
 		ClientKey:      clientKey,
 		OperatorKey:    derived.operatorPubkey,
 		TapScript:      derived.tapscript,
@@ -1098,7 +1125,7 @@ func (s *VTXOPersistenceStore) deriveDescriptorParts(ctx context.Context,
 	// policies keep TapScript nil and rely on explicit spend
 	// paths instead.
 	var tapscript *waddrmgr.Tapscript
-	if len(policyTemplate) > 0 {
+	if len(policyTemplate) > 0 && row.TaprootAssetRoot == nil {
 		desc := &vtxo.Descriptor{PolicyTemplate: policyTemplate}
 		ts, err := desc.StandardTapScript()
 		if err == nil {

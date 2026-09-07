@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 )
@@ -52,7 +53,28 @@ func (d *Descriptor) EffectivePkScript() ([]byte, error) {
 		return nil, err
 	}
 
-	return template.PkScript()
+	if d.TaprootAssetRoot == nil {
+		return template.PkScript()
+	}
+
+	compiled, err := template.Compile()
+	if err != nil {
+		return nil, fmt.Errorf("compile VTXO policy: %w", err)
+	}
+
+	composed, err := arkscript.ComposeWithSiblingRoot(
+		compiled, *d.TaprootAssetRoot,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("compose Taproot Asset root: %w", err)
+	}
+
+	pkScript, err := txscript.PayToTaprootScript(composed.OutputKey())
+	if err != nil {
+		return nil, fmt.Errorf("derive composed VTXO pkscript: %w", err)
+	}
+
+	return pkScript, nil
 }
 
 // DecodeStandardPolicyTemplate extracts the standard VTXO parameters when this
@@ -120,6 +142,10 @@ func (d *Descriptor) RefreshOutputTemplate(
 // StandardTapScript derives the standard tapscript for descriptors that use
 // the default Ark policy shape.
 func (d *Descriptor) StandardTapScript() (*waddrmgr.Tapscript, error) {
+	if d != nil && d.TaprootAssetRoot != nil {
+		return nil, fmt.Errorf("asset VTXO requires a composed spend " +
+			"path")
+	}
 	params, err := d.DecodeStandardPolicyTemplate()
 	if err != nil {
 		return nil, err

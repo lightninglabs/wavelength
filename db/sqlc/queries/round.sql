@@ -176,10 +176,11 @@ INSERT INTO vtxos (
     policy_template, client_key_id,
     operator_pubkey, batch_expiry, chain_depth,
     created_height, commitment_txid, spent, creation_time, last_update_time,
-    construction_version
+    construction_version, taproot_asset_root, taproot_asset_ref,
+    taproot_asset_amount, taproot_asset_sealed_package
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17
+    $17, $18, $19, $20, $21
 )
 ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     pk_script = CASE WHEN excluded.pk_script IS NOT NULL AND length(excluded.pk_script) > 0 THEN excluded.pk_script ELSE vtxos.pk_script END,
@@ -191,6 +192,10 @@ ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     chain_depth = CASE WHEN excluded.chain_depth != 0 THEN excluded.chain_depth ELSE vtxos.chain_depth END,
     created_height = CASE WHEN excluded.created_height != 0 THEN excluded.created_height ELSE vtxos.created_height END,
     commitment_txid = CASE WHEN excluded.commitment_txid IS NOT NULL AND length(excluded.commitment_txid) > 0 THEN excluded.commitment_txid ELSE vtxos.commitment_txid END,
+    taproot_asset_root = COALESCE(vtxos.taproot_asset_root, excluded.taproot_asset_root),
+    taproot_asset_ref = COALESCE(vtxos.taproot_asset_ref, excluded.taproot_asset_ref),
+    taproot_asset_amount = COALESCE(vtxos.taproot_asset_amount, excluded.taproot_asset_amount),
+    taproot_asset_sealed_package = COALESCE(vtxos.taproot_asset_sealed_package, excluded.taproot_asset_sealed_package),
     last_update_time = excluded.last_update_time;
 
 -- name: InsertVTXOAncestryPath :exec

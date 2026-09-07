@@ -43,9 +43,10 @@ ORDER BY vtxos.creation_time DESC;
 -- every payment and only needs these three fields, so this avoids decoding
 -- full descriptors (pubkey parsing, taproot script reconstruction, policy
 -- template decode) and the batched ancestry-path query on the hot path.
+-- Asset carriers cannot fund Bitcoin payments and are excluded here.
 SELECT outpoint_hash, outpoint_index, amount, pk_script
 FROM vtxos
-WHERE status = $1
+WHERE status = $1 AND taproot_asset_root IS NULL
 ORDER BY creation_time DESC;
 
 -- name: ListLiveVTXOs :many

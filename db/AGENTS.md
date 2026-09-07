@@ -112,7 +112,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 18` — current schema version.
+- `LatestMigrationVersion = 20` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -167,6 +167,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   interfaces), `waved` (wires DB backends).
 
 ## Invariants
+
+- Asset VTXO rows persist the commitment root, opaque asset reference,
+  uint64 units, and optional sealed leaf package. These fields are one
+  identity: writes and reads reject incomplete state or a composed-script
+  mismatch. Minimal replays preserve the identity; conflicting replays fail.
+  Bitcoin selection omits asset rows. Asset descriptors do not expose a
+  plain standard-policy `TapScript`.
 
 - **Never write raw SQL in Go** — add queries to `db/queries/`,
   regenerate with `make sqlc`.

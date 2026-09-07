@@ -357,6 +357,9 @@ func (s VTXOStatus) String() string {
 // alias keeps the legacy vtxo.Ancestry symbol working for callers.
 type Ancestry = types.Ancestry
 
+// MaxTaprootAssetRefBytes bounds the opaque asset reference in storage.
+const MaxTaprootAssetRefBytes = 512
+
 // Descriptor contains all information needed to track and spend a VTXO. This
 // is the canonical representation persisted to storage and passed between
 // actors.
@@ -376,6 +379,27 @@ type Descriptor struct {
 	// PkScript is the output script for this VTXO (taproot with
 	// collaborative and timeout spend paths).
 	PkScript []byte
+
+	// TaprootAssetRoot is the optional root of the Taproot Asset commitment
+	// composed beside PolicyTemplate. When set, PkScript commits to
+	// TapBranch(policy_root, taproot_asset_root), and all Ark spend paths
+	// must include this root as the final control-block sibling.
+	TaprootAssetRoot *chainhash.Hash
+
+	// TaprootAssetRef is the opaque tap-sdk asset identity carried by this
+	// VTXO. It is intentionally a string so the wallet domain does not
+	// depend on tap-sdk or taproot-assets types.
+	TaprootAssetRef string
+
+	// TaprootAssetAmount is the number of Taproot Asset units carried by
+	// this VTXO. Amount remains the separate Bitcoin carrier value.
+	TaprootAssetAmount uint64
+
+	// TaprootAssetSealedPackage is the sealed tap-sdk package that
+	// created this VTXO, present only for an asset leaf received from a
+	// round. Spending it out of round rebuilds the compact proof path
+	// and the OP_TRUE witness from it.
+	TaprootAssetSealedPackage []byte
 
 	// ClientKey is the client's key descriptor for this VTXO.
 	ClientKey keychain.KeyDescriptor
