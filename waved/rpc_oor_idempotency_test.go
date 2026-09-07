@@ -1109,7 +1109,6 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 	)
 
 	signer := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
-	packageStore, reservationStore := newSendOORChildStores(t)
 	oorRegistry, err := oor.NewOORRegistryActor(oor.OORRegistryConfig{
 		Log:              fn.Some[btclog.Logger](btclog.Disabled),
 		Signer:           signer,
@@ -1205,7 +1204,7 @@ func TestSendOORReturnsPendingKeyedSessionBeforeAttemptCommit(t *testing.T) {
 		exitDelay = uint32(10)
 	)
 
-	vtxoStore, _, registryStore := newSendOORTestStores(t)
+	vtxoStore, _, registryStore, _, _ := newSendOORTestStores(t)
 	desc, _ := newSendOORTestVTXO(
 		t, operatorKey.PubKey(), 0x35, btcutil.Amount(amountSat),
 	)
@@ -1312,7 +1311,8 @@ func TestSendOORRejectsDifferentKeyForExistingSession(t *testing.T) {
 		exitDelay = uint32(10)
 	)
 
-	vtxoStore, deliveryStore, registryStore := newSendOORTestStores(t)
+	vtxoStore, deliveryStore, registryStore, packageStore,
+		reservationStore := newSendOORTestStores(t)
 
 	desc, clientKey := newSendOORTestVTXO(
 		t, operatorKey.PubKey(), 0x31, btcutil.Amount(amountSat),
@@ -1460,7 +1460,8 @@ func TestSendOORRejectsNewKeyForDispatchedFailedSession(t *testing.T) {
 		exitDelay = uint32(10)
 	)
 
-	vtxoStore, deliveryStore, registryStore := newSendOORTestStores(t)
+	vtxoStore, deliveryStore, registryStore, packageStore,
+		reservationStore := newSendOORTestStores(t)
 	desc, clientKey := newSendOORTestVTXO(
 		t, operatorKey.PubKey(), 0x32, btcutil.Amount(amountSat),
 	)
@@ -1563,7 +1564,6 @@ func TestSendOORRejectsNewKeyForDispatchedFailedSession(t *testing.T) {
 		),
 	)
 
-	packageStore, reservationStore := newSendOORChildStores(t)
 	oorRegistry, err := oor.NewOORRegistryActor(
 		oor.OORRegistryConfig{
 			Log: fn.Some[btclog.Logger](
