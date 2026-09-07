@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/db/sqlc"
@@ -60,6 +61,9 @@ func (r *Runtime) project(ctx context.Context,
 		effectiveEntry = mergeActivityContext(
 			existingEntry, effectiveEntry,
 		)
+		stampLateTransition(
+			effectiveEntry, existingRow.UpdatedAtUnix, time.Now(),
+		)
 
 	case errors.Is(err, sql.ErrNoRows):
 	default:
@@ -84,6 +88,25 @@ func (r *Runtime) project(ctx context.Context,
 	}
 
 	return seq, effectiveEntry, nil
+}
+
+// stampLateTransition advances a projection's update time past the stored
+// row's when the derived value does not: ledger-derived transitions carry
+// their source row's creation time, which would otherwise hide the change
+// from recency ordering, pollers, and subscriber payloads. The stamp never
+// regresses a stored value under a stepped-back clock.
+func stampLateTransition(entry *wavewalletrpc.WalletEntry,
+	storedUpdatedAt int64, now time.Time) {
+
+	if entry.GetUpdatedAtUnix() > storedUpdatedAt {
+		return
+	}
+
+	ts := now.Unix()
+	if ts < storedUpdatedAt {
+		ts = storedUpdatedAt
+	}
+	entry.UpdatedAtUnix = ts
 }
 
 // mergeActivityContext carries immutable request and correlation context from
