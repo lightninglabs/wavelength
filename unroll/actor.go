@@ -163,7 +163,13 @@ type behavior struct {
 	session *Session
 	pending *actorCheckpoint
 
-	sweepTx                    *wire.MsgTx
+	sweepTx *wire.MsgTx
+
+	// restoredCheckpointPending keeps the first admission message on a
+	// newly constructed actor responsible for reissuing restored work, even
+	// if an older durable notification reaches the actor first.
+	restoredCheckpointPending bool
+
 	blockSubActive             bool
 	spendWatchActive           bool
 	proofSpendWatches          map[wire.OutPoint]struct{}
@@ -271,6 +277,11 @@ func (b *behavior) Receive(ctx context.Context, msg Msg,
 		if err := b.reissueStagedRoute(ctx, ax); err != nil {
 			return fn.Err[Resp](err)
 		}
+
+		// The retry just reissued every effect from the restored
+		// checkpoint. Do not translate a following Start into a second
+		// Resume during the same turn.
+		b.restoredCheckpointPending = false
 	}
 
 	res := b.dispatch(ctx, ax, msg)
@@ -292,6 +303,10 @@ func (b *behavior) Receive(ctx context.Context, msg Msg,
 		return fn.Err[Resp](err)
 	}
 	b.routeRetryPending = false
+	switch msg.(type) {
+	case *StartUnrollRequest, *ResumeUnrollRequest:
+		b.restoredCheckpointPending = false
+	}
 
 	return res
 }
@@ -324,6 +339,17 @@ func (b *behavior) dispatch(ctx context.Context, ax actor.Exec[unrollTx],
 
 	switch m := msg.(type) {
 	case *StartUnrollRequest:
+		// A new actor can receive Start with an existing checkpoint
+		// when the registry re-admits a job after an initial route
+		// error stopped its prior child. Resume that staged work before
+		// treating any later Start as the normal idempotent live-actor
+		// duplicate.
+		if b.restoredCheckpointPending {
+			return b.handleEvent(ctx, ax, &ResumeEvent{
+				Height: m.Height,
+			})
+		}
+
 		return b.handleEvent(ctx, ax, &StartEvent{
 			Height:         m.Height,
 			Trigger:        m.Trigger,
@@ -1460,6 +1486,7 @@ func (b *behavior) restoreCheckpoint(ctx context.Context) error {
 
 	b.pending = decoded
 	b.sweepTx = copyTx(decoded.SweepTx)
+	b.restoredCheckpointPending = decoded.Started
 
 	return nil
 }

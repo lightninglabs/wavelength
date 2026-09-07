@@ -3114,6 +3114,88 @@ func TestResumeReissuesInflightWork(t *testing.T) {
 	)
 }
 
+// TestRestoredStartReissuesAfterPriorMessage verifies that a message queued
+// ahead of registry re-admission cannot hide the restored checkpoint from the
+// later Start request. The first successful admission request must still use
+// Resume semantics and restore the staged txconfirm subscription.
+func TestRestoredStartReissuesAfterPriorMessage(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	txconfirmRef := &fakeTxConfirmRef{}
+	store := newMemCheckpointStore()
+	rootTxid := proof.RootTxids()[0]
+
+	raw, err := encodeCheckpoint(&actorCheckpoint{
+		Version: checkpointVersion,
+		Height:  110,
+		Started: true,
+		Trigger: TriggerManual,
+		State: unrollplan.State{
+			InFlightTxids: []chainhash.Hash{rootTxid},
+		},
+	})
+	require.NoError(t, err)
+
+	const actorID = "restored-start-after-message"
+	err = store.SaveCheckpoint(t.Context(), actor.CheckpointParams{
+		ActorID:   actorID,
+		StateType: checkpointStateType,
+		StateData: raw,
+		Version:   checkpointVersion,
+	})
+	require.NoError(t, err)
+
+	behavior := &behavior{
+		cfg: Config{
+			TargetOutpoint: proof.TargetOutpoint(),
+			ActorID:        actorID,
+			DeliveryStore:  store,
+			ProofAssembler: &mockProofAssembler{
+				proof: proof,
+			},
+			VTXOStore: &mockVTXOStore{
+				desc: desc,
+			},
+			TxConfirmRef: txconfirmRef,
+			ChainSource:  &fakeChainSourceRef{},
+			Wallet:       &fakeSweepWallet{},
+		},
+		log: btclog.Disabled,
+	}
+	require.NoError(t, behavior.restoreCheckpoint(t.Context()))
+
+	actorInstance := actor.NewActor(actor.ActorConfig[Msg, Resp]{
+		ID:          actorID,
+		Behavior:    adaptTx(behavior),
+		MailboxSize: 64,
+	})
+	behavior.selfRef = actorInstance.TellRef()
+	actorInstance.Start()
+	t.Cleanup(actorInstance.Stop)
+
+	// A queued height update loads and advances the restored FSM, but it
+	// cannot reissue the already in-flight root by itself.
+	mustAsk(t, actorInstance.Ref(), &HeightObservedMsg{Height: 111})
+	require.Equal(t, 0, txconfirmRef.requestCount())
+
+	// The later Start is the registry's re-admission message. It must
+	// retain Resume semantics even though the prior height update loaded
+	// the FSM.
+	mustAsk(t, actorInstance.Ref(), &StartUnrollRequest{
+		Height:  112,
+		Trigger: TriggerManual,
+	})
+	require.Equal(t, 1, txconfirmRef.requestCountForTxid(rootTxid))
+
+	// Once admission commits, a live duplicate Start remains idempotent and
+	// does not reissue the root again.
+	mustAsk(t, actorInstance.Ref(), &StartUnrollRequest{
+		Height:  113,
+		Trigger: TriggerManual,
+	})
+	require.Equal(t, 1, txconfirmRef.requestCountForTxid(rootTxid))
+}
+
 // TestStartUnrollMultiParentSubmitsAllRoots verifies that the initial planner
 // frontier contains every independent root transaction.
 func TestStartUnrollMultiParentSubmitsAllRoots(t *testing.T) {

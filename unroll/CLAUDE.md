@@ -36,7 +36,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   retries and replays converge on a single sweep txid / pkScript under
   `txconfirm`'s txid-keyed dedup. The `dispatch` method runs the full
   FSM pipeline including Stage writes; `Receive` owns the single
-  lease-fenced Commit.
+  lease-fenced Commit. It also tracks whether a restored checkpoint still
+  needs its first reissue after re-admission.
 - `Msg` / `Resp` / `Event` / `OutboxEvent` — sealed durable-mailbox,
   response, FSM event, and FSM outbox interfaces.
 - Mailbox messages: `StartUnrollRequest`, `ResumeUnrollRequest`,
@@ -274,6 +275,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   outbox branches return errors on a missing proof node or nil
   `sweepTx`. A silent `continue` would strand the FSM with no
   pending `txconfirm` subscription.
+- **Re-admission resumes restored work.** `restoreCheckpoint` arms an
+  actor-lifetime marker when the checkpoint is started. The first admission
+  `Start` then uses `Resume` semantics to reissue staged work. The marker
+  survives unrelated queued messages and clears only after a successful
+  admission commit or an existing live-route retry performs the reissue.
+  Later duplicate `Start` messages remain idempotent.
 - **Registry dedup covers the whole trail.** `handleEnsure` checks
   `r.active`, `r.pending`, AND `Store.GetRecord` before spawning so
   a repeat for an already-terminal outpoint returns the historical
