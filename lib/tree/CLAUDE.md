@@ -8,7 +8,7 @@ descriptors through branch nodes to the batch output.
 
 ## Key Types
 
-- `Tree` — Complete VTXO or connector tree: root outpoint, root output, node hierarchy, and traversal helpers. Built via `BuildVTXOTree` or `BuildConnectorTree`.
+- `Tree` — Complete VTXO or connector tree: root outpoint, root output, node hierarchy, and traversal helpers. `Verify` checks structure plus value flow; `ValidateValueConservation` exposes the funding check separately for callers that have already bound `BatchOutput` to an authoritative prevout. Built via `BuildVTXOTree` or `BuildConnectorTree`.
 - `Node` — Single tree node representing a transaction in the tree (branch or leaf).
 - `LeafDescriptor` — Describes a single VTXO leaf: amount, owner pubkeys, cosigner keys, CSV delay.
 - `VTXODescriptor` — Interface for VTXO metadata needed by tree construction (amount, cosigners, owner key).
@@ -32,6 +32,16 @@ descriptors through branch nodes to the batch output.
 - Cosigner keys must be deduplicated (`UniqueCosigners`) before computing the final MuSig2 key.
 - Tree materialization is deterministic given the same leaf descriptors and operator key.
 - `ValidateVTXODescriptors` / `ValidateConnectorDescriptor` must pass before tree construction.
+- `Tree.Verify` requires a non-nil `BatchOutput`, checks that every reachable
+  node spends its declared parent output, enforces monetary bounds, and
+  requires each node to preserve the parent's exact value. Tree transactions
+  pay zero fee for v3 ephemeral-anchor relay. Callers accepting an untrusted
+  tree must bind `BatchOutput` to the authoritative commitment output before
+  calling `Verify` or `ValidateValueConservation`. Extracted client paths retain
+  every node output but prune unrelated child nodes, so value validation sums
+  all outputs and recurses only into retained children. The traversal rejects
+  cycles and nodes shared by multiple parents. `Node.Verify` checks only
+  parent-child outpoint topology and is not a trust-boundary validator.
 - **Cache-aliasing invariant**: a `*Tree` is effectively immutable once published from
   a builder or resolver. Multiple downstream consumers may share the same `*Tree`
   pointer through caches and ancestry-fragment slices. Silently mutating a shared
