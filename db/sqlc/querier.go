@@ -333,6 +333,7 @@ type Querier interface {
 	// every payment and only needs these three fields, so this avoids decoding
 	// full descriptors (pubkey parsing, taproot script reconstruction, policy
 	// template decode) and the batched ancestry-path query on the hot path.
+	// Asset carriers cannot fund Bitcoin payments and are excluded here.
 	ListVTXOSelectionCandidatesByStatus(ctx context.Context, status int32) ([]ListVTXOSelectionCandidatesByStatusRow, error)
 	ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error)
 	// VTXO status and lifecycle queries.

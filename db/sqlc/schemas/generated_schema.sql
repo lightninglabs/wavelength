@@ -1712,7 +1712,18 @@ CREATE TABLE vtxos (
     -- zero-indexed, so the only understood value today is 0 (V1); a future,
     -- genuinely different construction is added additively (V2 == 1, and so
     -- on). NOT NULL DEFAULT 0 keeps every row a valid V1 object.
-    construction_version INTEGER NOT NULL DEFAULT 0,
+    construction_version INTEGER NOT NULL DEFAULT 0, taproot_asset_root BLOB
+    CHECK (taproot_asset_root IS NULL OR length(taproot_asset_root) = 32), taproot_asset_ref TEXT
+    CHECK (taproot_asset_ref IS NULL OR length(taproot_asset_ref) BETWEEN 1 AND 512), taproot_asset_amount BLOB
+    CHECK (taproot_asset_amount IS NULL OR length(taproot_asset_amount) = 8), taproot_asset_sealed_package BLOB
+    CHECK (
+        (taproot_asset_root IS NULL AND taproot_asset_ref IS NULL
+         AND taproot_asset_amount IS NULL
+         AND taproot_asset_sealed_package IS NULL)
+        OR
+        (taproot_asset_root IS NOT NULL AND taproot_asset_ref IS NOT NULL
+         AND taproot_asset_amount IS NOT NULL)
+    ),
 
     PRIMARY KEY (outpoint_hash, outpoint_index),
     FOREIGN KEY (round_id) REFERENCES rounds(round_id)

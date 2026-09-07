@@ -354,7 +354,7 @@ func (q *Queries) GetRoundVtxoRequests(ctx context.Context, roundID string) ([]R
 }
 
 const GetVTXO = `-- name: GetVTXO :one
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version, taproot_asset_root, taproot_asset_ref, taproot_asset_amount, taproot_asset_sealed_package FROM vtxos
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 `
 
@@ -390,6 +390,10 @@ func (q *Queries) GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error) 
 		&i.LastUpdateTime,
 		&i.ChainDepth,
 		&i.ConstructionVersion,
+		&i.TaprootAssetRoot,
+		&i.TaprootAssetRef,
+		&i.TaprootAssetAmount,
+		&i.TaprootAssetSealedPackage,
 	)
 	return i, err
 }
@@ -586,10 +590,11 @@ INSERT INTO vtxos (
     policy_template, client_key_id,
     operator_pubkey, batch_expiry, chain_depth,
     created_height, commitment_txid, spent, creation_time, last_update_time,
-    construction_version
+    construction_version, taproot_asset_root, taproot_asset_ref,
+    taproot_asset_amount, taproot_asset_sealed_package
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17
+    $17, $18, $19, $20, $21
 )
 ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     pk_script = CASE WHEN excluded.pk_script IS NOT NULL AND length(excluded.pk_script) > 0 THEN excluded.pk_script ELSE vtxos.pk_script END,
@@ -601,27 +606,35 @@ ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     chain_depth = CASE WHEN excluded.chain_depth != 0 THEN excluded.chain_depth ELSE vtxos.chain_depth END,
     created_height = CASE WHEN excluded.created_height != 0 THEN excluded.created_height ELSE vtxos.created_height END,
     commitment_txid = CASE WHEN excluded.commitment_txid IS NOT NULL AND length(excluded.commitment_txid) > 0 THEN excluded.commitment_txid ELSE vtxos.commitment_txid END,
+    taproot_asset_root = COALESCE(vtxos.taproot_asset_root, excluded.taproot_asset_root),
+    taproot_asset_ref = COALESCE(vtxos.taproot_asset_ref, excluded.taproot_asset_ref),
+    taproot_asset_amount = COALESCE(vtxos.taproot_asset_amount, excluded.taproot_asset_amount),
+    taproot_asset_sealed_package = COALESCE(vtxos.taproot_asset_sealed_package, excluded.taproot_asset_sealed_package),
     last_update_time = excluded.last_update_time
 `
 
 type InsertVTXOParams struct {
-	OutpointHash        []byte
-	OutpointIndex       int32
-	RoundID             string
-	Amount              int64
-	PkScript            []byte
-	Expiry              int32
-	PolicyTemplate      []byte
-	ClientKeyID         sql.NullInt64
-	OperatorPubkey      []byte
-	BatchExpiry         int32
-	ChainDepth          int32
-	CreatedHeight       int32
-	CommitmentTxid      []byte
-	Spent               bool
-	CreationTime        int64
-	LastUpdateTime      int64
-	ConstructionVersion int32
+	OutpointHash              []byte
+	OutpointIndex             int32
+	RoundID                   string
+	Amount                    int64
+	PkScript                  []byte
+	Expiry                    int32
+	PolicyTemplate            []byte
+	ClientKeyID               sql.NullInt64
+	OperatorPubkey            []byte
+	BatchExpiry               int32
+	ChainDepth                int32
+	CreatedHeight             int32
+	CommitmentTxid            []byte
+	Spent                     bool
+	CreationTime              int64
+	LastUpdateTime            int64
+	ConstructionVersion       int32
+	TaprootAssetRoot          []byte
+	TaprootAssetRef           sql.NullString
+	TaprootAssetAmount        []byte
+	TaprootAssetSealedPackage []byte
 }
 
 // VTXO queries.
@@ -648,6 +661,10 @@ func (q *Queries) InsertVTXO(ctx context.Context, arg InsertVTXOParams) error {
 		arg.CreationTime,
 		arg.LastUpdateTime,
 		arg.ConstructionVersion,
+		arg.TaprootAssetRoot,
+		arg.TaprootAssetRef,
+		arg.TaprootAssetAmount,
+		arg.TaprootAssetSealedPackage,
 	)
 	return err
 }
@@ -731,7 +748,7 @@ func (q *Queries) ListActiveRounds(ctx context.Context) ([]Round, error) {
 }
 
 const ListAllVTXOs = `-- name: ListAllVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version FROM vtxos ORDER BY creation_time DESC
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version, taproot_asset_root, taproot_asset_ref, taproot_asset_amount, taproot_asset_sealed_package FROM vtxos ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListAllVTXOs(ctx context.Context) ([]Vtxo, error) {
@@ -767,6 +784,10 @@ func (q *Queries) ListAllVTXOs(ctx context.Context) ([]Vtxo, error) {
 			&i.LastUpdateTime,
 			&i.ChainDepth,
 			&i.ConstructionVersion,
+			&i.TaprootAssetRoot,
+			&i.TaprootAssetRef,
+			&i.TaprootAssetAmount,
+			&i.TaprootAssetSealedPackage,
 		); err != nil {
 			return nil, err
 		}
@@ -977,7 +998,7 @@ func (q *Queries) ListUnspentVTXOAncestryPaths(ctx context.Context) ([]VtxoAnces
 }
 
 const ListUnspentVTXOs = `-- name: ListUnspentVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version, taproot_asset_root, taproot_asset_ref, taproot_asset_amount, taproot_asset_sealed_package FROM vtxos
 WHERE spent = FALSE
     AND status != 4
 ORDER BY creation_time DESC
@@ -1017,6 +1038,10 @@ func (q *Queries) ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error) {
 			&i.LastUpdateTime,
 			&i.ChainDepth,
 			&i.ConstructionVersion,
+			&i.TaprootAssetRoot,
+			&i.TaprootAssetRef,
+			&i.TaprootAssetAmount,
+			&i.TaprootAssetSealedPackage,
 		); err != nil {
 			return nil, err
 		}
@@ -1123,7 +1148,7 @@ func (q *Queries) ListVTXOAncestryPathsByStatus(ctx context.Context, status int3
 }
 
 const ListVTXOsByRound = `-- name: ListVTXOsByRound :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version FROM vtxos WHERE round_id = $1 ORDER BY creation_time DESC
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version, taproot_asset_root, taproot_asset_ref, taproot_asset_amount, taproot_asset_sealed_package FROM vtxos WHERE round_id = $1 ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error) {
@@ -1159,6 +1184,10 @@ func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo,
 			&i.LastUpdateTime,
 			&i.ChainDepth,
 			&i.ConstructionVersion,
+			&i.TaprootAssetRoot,
+			&i.TaprootAssetRef,
+			&i.TaprootAssetAmount,
+			&i.TaprootAssetSealedPackage,
 		); err != nil {
 			return nil, err
 		}
