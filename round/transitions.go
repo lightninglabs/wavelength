@@ -4767,6 +4767,11 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 			RoundID:        fn.Some(roundID),
 			Origin:         req.Origin,
 		}
+		if err := setClientVTXOAssetState(
+			vtxo, req, clientTree, leaf,
+		); err != nil {
+			return nil, err
+		}
 		if isStandard {
 			vtxo.Expiry = params.ExitDelay
 			vtxo.OperatorKey = params.OperatorKey

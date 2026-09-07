@@ -501,6 +501,21 @@ type ClientVTXO struct {
 
 	PkScript []byte
 
+	// TaprootAssetRoot is the commitment composed beside this leaf's
+	// policy.
+	TaprootAssetRoot *chainhash.Hash
+
+	// TaprootAssetRef identifies the asset independently of carrier
+	// satoshis.
+	TaprootAssetRef string
+
+	// TaprootAssetAmount counts asset units, separately from Amount.
+	TaprootAssetAmount uint64
+
+	// TaprootAssetSealedPackage preserves the verified leaf transition for
+	// subsequent asset spends and claims after restart.
+	TaprootAssetSealedPackage []byte
+
 	// Expiry is the CSV delay for the unilateral exit path.
 	Expiry uint32
 

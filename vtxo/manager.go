@@ -3572,7 +3572,7 @@ func clientVTXOToDescriptor(cv *round.ClientVTXO,
 	// carry their semantic template and explicit spend paths
 	// instead of a derived standard tapscript.
 	var tapscript *waddrmgr.Tapscript
-	if len(cv.PolicyTemplate) > 0 {
+	if len(cv.PolicyTemplate) > 0 && cv.TaprootAssetRoot == nil {
 		desc := &Descriptor{PolicyTemplate: cv.PolicyTemplate}
 		ts, err := desc.StandardTapScript()
 		if err == nil {
@@ -3590,11 +3590,23 @@ func clientVTXOToDescriptor(cv *round.ClientVTXO,
 	ancestry := make([]Ancestry, len(cv.Ancestry))
 	copy(ancestry, cv.Ancestry)
 
+	var assetRoot *chainhash.Hash
+	if cv.TaprootAssetRoot != nil {
+		root := *cv.TaprootAssetRoot
+		assetRoot = &root
+	}
+
 	return fn.Ok(&Descriptor{
-		Outpoint:       cv.Outpoint,
-		Amount:         cv.Amount,
-		PolicyTemplate: cv.PolicyTemplate,
-		PkScript:       cv.PkScript,
+		Outpoint:           cv.Outpoint,
+		Amount:             cv.Amount,
+		PolicyTemplate:     cv.PolicyTemplate,
+		PkScript:           cv.PkScript,
+		TaprootAssetRoot:   assetRoot,
+		TaprootAssetRef:    cv.TaprootAssetRef,
+		TaprootAssetAmount: cv.TaprootAssetAmount,
+		TaprootAssetSealedPackage: bytes.Clone(
+			cv.TaprootAssetSealedPackage,
+		),
 		ClientKey:      cv.OwnerKey,
 		OperatorKey:    cv.OperatorKey,
 		TapScript:      tapscript,

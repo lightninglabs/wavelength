@@ -231,6 +231,23 @@ func TestCommitmentTxReceivedVerifiesAssetVTXO(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, vtxos, 1)
 	require.Equal(t, leafOutput.PkScript, vtxos[0].PkScript)
+	require.Equal(t, fixture.request.AssetRef, vtxos[0].TaprootAssetRef)
+	require.Equal(
+		t, fixture.request.AssetAmount, vtxos[0].TaprootAssetAmount,
+	)
+	require.Equal(
+		t, clientTree.AssetContext.LeafAssetRoot(leaf.Input),
+		vtxos[0].TaprootAssetRoot[:],
+	)
+	require.Equal(
+		t, fixture.sealedPackage, vtxos[0].TaprootAssetSealedPackage,
+	)
+	vtxos[0].TaprootAssetSealedPackage[0] ^= 1
+	require.Equal(
+		t, fixture.sealedPackage,
+		clientTree.AssetContext.SealedPackage(leaf.Input),
+	)
+
 }
 
 func TestValidateRequestedAssetVTXO(t *testing.T) {

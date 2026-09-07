@@ -22,6 +22,7 @@ import (
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/round"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -1719,16 +1720,16 @@ func dbVtxoRequestRowToVTXORequest(ctx context.Context, q RoundStore,
 // upsertRoundClientVTXOAncestry alongside InsertVTXO inside the same
 // transaction.
 func (s *RoundPersistenceStore) domainVTXOToInsertParams(ctx context.Context,
-	q RoundStore, vtxo *round.ClientVTXO) (InsertVTXOParams, error) {
+	q RoundStore, cv *round.ClientVTXO) (InsertVTXOParams, error) {
 
 	roundIDStr := ""
-	vtxo.RoundID.WhenSome(func(rid round.RoundID) {
+	cv.RoundID.WhenSome(func(rid round.RoundID) {
 		roundIDStr = rid.String()
 	})
 
 	var operatorPubkey []byte
-	if vtxo.OperatorKey != nil {
-		operatorPubkey = vtxo.OperatorKey.SerializeCompressed()
+	if cv.OperatorKey != nil {
+		operatorPubkey = cv.OperatorKey.SerializeCompressed()
 	}
 
 	nowUnix := s.clock.Now().Unix()
@@ -1738,8 +1739,8 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(ctx context.Context,
 	// owner pubkey yet; in that case the FK stays NULL until the VTXO
 	// manager heals the row with the full descriptor.
 	var clientKeyID sql.NullInt64
-	if vtxo.OwnerKey.PubKey != nil {
-		id, err := RegisterInternalKeyTx(ctx, q, nowUnix, vtxo.OwnerKey)
+	if cv.OwnerKey.PubKey != nil {
+		id, err := RegisterInternalKeyTx(ctx, q, nowUnix, cv.OwnerKey)
 		if err != nil {
 			return InsertVTXOParams{}, fmt.Errorf("register "+
 				"owner key: %w", err)
@@ -1748,12 +1749,12 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(ctx context.Context,
 		clientKeyID = sql.NullInt64{Int64: id, Valid: true}
 	}
 
-	policyTemplate := bytes.Clone(vtxo.PolicyTemplate)
-	if len(policyTemplate) == 0 && vtxo.OwnerKey.PubKey != nil &&
-		vtxo.OperatorKey != nil && vtxo.Expiry != 0 {
+	policyTemplate := bytes.Clone(cv.PolicyTemplate)
+	if len(policyTemplate) == 0 && cv.OwnerKey.PubKey != nil &&
+		cv.OperatorKey != nil && cv.Expiry != 0 {
 
 		encodedPolicy, err := arkscript.EncodeStandardVTXOTemplate(
-			vtxo.OwnerKey.PubKey, vtxo.OperatorKey, vtxo.Expiry,
+			cv.OwnerKey.PubKey, cv.OperatorKey, cv.Expiry,
 		)
 		if err != nil {
 			return InsertVTXOParams{}, fmt.Errorf("encode client "+
@@ -1763,20 +1764,41 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(ctx context.Context,
 		policyTemplate = encodedPolicy
 	}
 
+	assetDesc := &vtxo.Descriptor{
+		Outpoint:                  cv.Outpoint,
+		PolicyTemplate:            policyTemplate,
+		PkScript:                  cv.PkScript,
+		TaprootAssetRoot:          cv.TaprootAssetRoot,
+		TaprootAssetRef:           cv.TaprootAssetRef,
+		TaprootAssetAmount:        cv.TaprootAssetAmount,
+		TaprootAssetSealedPackage: cv.TaprootAssetSealedPackage,
+	}
+	assetRef, assetAmount, err := encodeTaprootAssetMetadata(assetDesc)
+	if err != nil {
+		return InsertVTXOParams{}, err
+	}
+	if err := validateAssetVTXOReplay(ctx, q, assetDesc); err != nil {
+		return InsertVTXOParams{}, err
+	}
+	var assetRoot []byte
+	if cv.TaprootAssetRoot != nil {
+		assetRoot = cv.TaprootAssetRoot.CloneBytes()
+	}
+
 	return InsertVTXOParams{
-		OutpointHash:   vtxo.Outpoint.Hash[:],
-		OutpointIndex:  int32(vtxo.Outpoint.Index),
+		OutpointHash:   cv.Outpoint.Hash[:],
+		OutpointIndex:  int32(cv.Outpoint.Index),
 		RoundID:        roundIDStr,
-		Amount:         int64(vtxo.Amount),
-		PkScript:       vtxo.PkScript,
-		Expiry:         int32(vtxo.Expiry),
+		Amount:         int64(cv.Amount),
+		PkScript:       cv.PkScript,
+		Expiry:         int32(cv.Expiry),
 		PolicyTemplate: policyTemplate,
 		ClientKeyID:    clientKeyID,
 		OperatorPubkey: operatorPubkey,
-		BatchExpiry:    vtxo.BatchExpiry,
+		BatchExpiry:    cv.BatchExpiry,
 		ChainDepth:     0,
-		CreatedHeight:  vtxo.CreatedHeight,
-		CommitmentTxid: vtxo.CommitmentTxID[:],
+		CreatedHeight:  cv.CreatedHeight,
+		CommitmentTxid: cv.CommitmentTxID[:],
 		Spent:          false,
 		CreationTime:   nowUnix,
 		LastUpdateTime: nowUnix,
@@ -1787,6 +1809,12 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(ctx context.Context,
 		// descriptor-heal path so the write-once construction_version
 		// is set deliberately at creation rather than defaulted.
 		ConstructionVersion: int32(arkrpc.ConstructionVersionV1),
+		TaprootAssetRoot:    assetRoot,
+		TaprootAssetRef:     assetRef,
+		TaprootAssetAmount:  assetAmount,
+		TaprootAssetSealedPackage: bytes.Clone(
+			cv.TaprootAssetSealedPackage,
+		),
 	}, nil
 }
 
@@ -1931,19 +1959,28 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(ctx context.Context,
 		copy(commitmentTxID[:], dbVTXO.CommitmentTxid)
 	}
 
+	assetDesc, assetErr := decodeAssetVTXOState(dbVTXO)
+	if assetErr != nil {
+		return nil, assetErr
+	}
+
 	return &round.ClientVTXO{
-		Outpoint:       outpoint,
-		Amount:         btcutil.Amount(dbVTXO.Amount),
-		PolicyTemplate: policyTemplate,
-		PkScript:       dbVTXO.PkScript,
-		Expiry:         expiry,
-		OwnerKey:       ownerKey,
-		OperatorKey:    operatorPubkey,
-		Ancestry:       ancestry,
-		RoundID:        roundIDOpt,
-		CommitmentTxID: commitmentTxID,
-		BatchExpiry:    dbVTXO.BatchExpiry,
-		CreatedHeight:  dbVTXO.CreatedHeight,
+		Outpoint:                  outpoint,
+		Amount:                    btcutil.Amount(dbVTXO.Amount),
+		PolicyTemplate:            policyTemplate,
+		PkScript:                  dbVTXO.PkScript,
+		TaprootAssetRoot:          assetDesc.TaprootAssetRoot,
+		TaprootAssetRef:           assetDesc.TaprootAssetRef,
+		TaprootAssetAmount:        assetDesc.TaprootAssetAmount,
+		TaprootAssetSealedPackage: assetDesc.TaprootAssetSealedPackage,
+		Expiry:                    expiry,
+		OwnerKey:                  ownerKey,
+		OperatorKey:               operatorPubkey,
+		Ancestry:                  ancestry,
+		RoundID:                   roundIDOpt,
+		CommitmentTxID:            commitmentTxID,
+		BatchExpiry:               dbVTXO.BatchExpiry,
+		CreatedHeight:             dbVTXO.CreatedHeight,
 	}, nil
 }
 

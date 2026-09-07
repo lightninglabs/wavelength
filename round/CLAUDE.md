@@ -338,3 +338,10 @@ state transitions and validation rules live under [Invariants](#invariants).
 - [round/README.md](README.md) — Full state machine walkthrough with
   diagrams.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
+
+## Asset leaf persistence
+
+Locally owned asset leaves retain their verified reference, amount,
+commitment root, and sealed package in `ClientVTXO`. Confirmation writes persist that identity before notifying the VTXO
+manager, and both round recovery and manager notification preserve it. Missing or mismatched tree
+metadata prevents a leaf from entering wallet inventory.
