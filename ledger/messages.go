@@ -651,9 +651,9 @@ func (m *VTXOSentMsg) Decode(r io.Reader) error {
 	return nil
 }
 
-// ExitCostMsg is sent when the client pays an on-chain exit
-// cost (e.g. unilateral exit). The ledger actor records the
-// on-chain fee expense.
+// ExitCostMsg is sent after a unilateral exit's final sweep confirms. The
+// ledger actor records the exited VTXO as the stable chain subject and books
+// both its net value and the final on-chain fee expense.
 type ExitCostMsg struct {
 	actor.BaseMessage
 
@@ -671,8 +671,8 @@ type ExitCostMsg struct {
 	// ExitCostSat is the on-chain fee cost of the exit.
 	ExitCostSat int64
 
-	// BlockHeight is the block height at which the exit was
-	// confirmed.
+	// BlockHeight is the height of the final sweep confirmation that
+	// completed the exit. It does not confirm OutpointHash itself.
 	BlockHeight uint32
 }
 

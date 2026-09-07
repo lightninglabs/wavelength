@@ -99,7 +99,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/ledger.<
 - `ExitCostMsg` — unilateral exit as two ledger entries: send leg
   (`transfers_out` ⇐⇒ `vtxo_balance` net-of-fee) + fee leg
   (`onchain_fees` ⇐⇒ `vtxo_balance` miner fee). Wallet-side movement
-  is covered separately by the `wallet_utxo_log` audit trail.
+  is covered separately by the `wallet_utxo_log` audit trail. Both rows
+  retain the exited VTXO outpoint as their stable chain identity, while
+  `ConfirmationHeight` is the final sweep height that completed the exit.
 - `UTXOCreatedMsg` — wallet UTXO confirmations with classification.
   `handleUTXOCreated` writes TWO rows: `wallet_utxo_log` audit row
   AND a ledger row keyed by an outpoint-derived idempotency key.
@@ -173,7 +175,9 @@ or balance reconciliation. Required emission pairs:
 - Every ledger entry is double-entry: debit and credit must differ.
 - Handlers reject non-positive `AmountSat` with `ErrInvalidMessage`
   so a malformed TLV dead-letters cleanly instead of hitting
-  `CHECK (amount_sat > 0)` and driving infinite nack-retry.
+  `CHECK (amount_sat > 0)`. The ledger retry policy immediately
+  dead-letters `ErrInvalidMessage` and `ErrIdempotencyConflict`; transient
+  storage and runtime failures retain the durable actor's bounded backoff.
 - Unknown fee types and VTXO sources error out (no silent
   misclassification). Use the exported `FeeType*`/`Source*`/
   `Classification*` constants, not string literals.

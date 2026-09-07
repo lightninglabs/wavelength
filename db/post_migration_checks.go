@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"fmt"
+	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database"
 	"github.com/google/uuid"
+	"github.com/lightninglabs/wavelength/build"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightninglabs/wavelength/ledger"
 )
@@ -60,7 +63,7 @@ func reconcileLedgerIdempotencyKeys(ctx context.Context, q sqlc.Querier) error {
 	groups := make(map[string]*legacyLedgerGroup)
 	orderedGroups := make([]*legacyLedgerGroup, 0)
 	for i := range rows {
-		row := rows[i]
+		row := &rows[i]
 		group := groups[string(row.IdempotencyKey)]
 		if group == nil {
 			group = &legacyLedgerGroup{}
@@ -76,25 +79,39 @@ func reconcileLedgerIdempotencyKeys(ctx context.Context, q sqlc.Querier) error {
 				return fmt.Errorf("duplicate legacy refresh " +
 					"send identity")
 			}
-			group.refreshSend = &row
+			group.refreshSend = row
 
 		case row.EventType == ledger.EventVTXOSent:
 			if group.exitSend != nil {
 				return fmt.Errorf("duplicate legacy exit " +
 					"send identity")
 			}
-			group.exitSend = &row
+			group.exitSend = row
 
 		case row.EventType == ledger.EventOnchainFeePaid:
 			if group.exitFee != nil {
 				return fmt.Errorf("duplicate legacy exit fee " +
 					"identity")
 			}
-			group.exitFee = &row
+			group.exitFee = row
 		}
 	}
 
 	for _, group := range orderedGroups {
+		var (
+			exitDescription    string
+			confirmationHeight *int32
+		)
+		if group.exitFee != nil {
+			description, height, ok := legacyExitMetadata(
+				group.exitFee.Description,
+			)
+			if ok {
+				exitDescription = description
+				confirmationHeight = &height
+			}
+		}
+
 		for _, row := range []*sqlc.LedgerEntry{
 			group.refreshSend, group.exitSend, group.exitFee,
 		} {
@@ -129,7 +146,7 @@ func reconcileLedgerIdempotencyKeys(ctx context.Context, q sqlc.Querier) error {
 
 			updated, err := rewriteLegacyLedgerIdentity(
 				ctx, q, row, newKey, hash, index,
-				row == group.refreshSend,
+				row == group.refreshSend, confirmationHeight,
 			)
 			if err != nil {
 				return fmt.Errorf("rewrite ledger identity "+
@@ -148,10 +165,13 @@ func reconcileLedgerIdempotencyKeys(ctx context.Context, q sqlc.Querier) error {
 			continue
 		}
 
-		if group.exitFee.AmountSat >= group.refreshSend.AmountSat {
-			return fmt.Errorf("legacy exit fee %d is not below "+
-				"VTXO amount %d", group.exitFee.AmountSat,
-				group.refreshSend.AmountSat)
+		if confirmationHeight == nil {
+			logSkippedLegacyExitRepair(
+				ctx, group.exitFee.EntryID,
+				"unrecognized fee description",
+			)
+
+			continue
 		}
 
 		hash, index, err := decodeLegacyLedgerOutpoint(
@@ -161,33 +181,44 @@ func reconcileLedgerIdempotencyKeys(ctx context.Context, q sqlc.Querier) error {
 			return err
 		}
 
-		const feeDescriptionPrefix = "exit cost for "
-		if !strings.HasPrefix(
-			group.exitFee.Description, feeDescriptionPrefix,
-		) {
-			return fmt.Errorf("legacy exit fee %d has unknown "+
-				"description", group.exitFee.EntryID)
+		refreshFeeSat, err := q.GetRefreshFeePaidByRoundID(
+			ctx, group.refreshSend.RoundID,
+		)
+		if err != nil {
+			return fmt.Errorf("load legacy refresh fee: %w", err)
 		}
-		description := "unilateral exit net value for " +
-			strings.TrimPrefix(
-				group.exitFee.Description, feeDescriptionPrefix,
+
+		grossAmount := group.refreshSend.AmountSat
+		if refreshFeeSat >= grossAmount || group.exitFee.AmountSat >=
+			grossAmount-refreshFeeSat {
+
+			logSkippedLegacyExitRepair(
+				ctx, group.exitFee.EntryID,
+				"fees consume the full VTXO value",
 			)
+
+			continue
+		}
+		netAmount := grossAmount - refreshFeeSat -
+			group.exitFee.AmountSat
 
 		chainVout := int32(index)
 		err = q.InsertClientLedgerEntry(
 			ctx, sqlc.InsertClientLedgerEntryParams{
 				DebitAccount:  ledger.AccountTransfersOut,
 				CreditAccount: ledger.AccountVTXOBalance,
-				AmountSat: group.refreshSend.AmountSat -
-					group.exitFee.AmountSat,
+				AmountSat:     netAmount,
 				IdempotencyKey: ledger.ExitSendIdempotencyKey(
 					hash, index,
 				),
 				EventType:   ledger.EventVTXOSent,
-				Description: description,
+				Description: exitDescription,
 				CreatedAt:   group.exitFee.CreatedAt,
 				ChainTxid:   hash[:],
 				ChainVout:   sqlInt32Ptr(&chainVout),
+				ConfirmationHeight: sqlInt32Ptr(
+					confirmationHeight,
+				),
 			},
 		)
 		if err != nil {
@@ -198,12 +229,53 @@ func reconcileLedgerIdempotencyKeys(ctx context.Context, q sqlc.Querier) error {
 	return nil
 }
 
+// legacyExitMetadata parses the exit-completion height embedded by the old
+// ledger writer and derives the corresponding send-leg description.
+func legacyExitMetadata(description string) (string, int32, bool) {
+	const (
+		feeDescriptionPrefix = "exit cost for "
+		heightMarker         = " at height "
+	)
+
+	if !strings.HasPrefix(description, feeDescriptionPrefix) {
+		return "", 0, false
+	}
+
+	exitTarget := strings.TrimPrefix(description, feeDescriptionPrefix)
+	heightIndex := strings.LastIndex(exitTarget, heightMarker)
+	if heightIndex < 0 {
+		return "", 0, false
+	}
+
+	heightValue := exitTarget[heightIndex+len(heightMarker):]
+	height, err := strconv.ParseUint(heightValue, 10, 31)
+	if err != nil || height == 0 {
+		return "", 0, false
+	}
+
+	return "unilateral exit net value for " + exitTarget,
+		int32(height), true
+}
+
+// logSkippedLegacyExitRepair records an unreconstructible historical row
+// without aborting the migration or guessing at accounting data.
+func logSkippedLegacyExitRepair(ctx context.Context, entryID int64,
+	reason string) {
+
+	build.LoggerFromContext(ctx).InfoS(
+		ctx,
+		"Skipping legacy exit ledger repair",
+		slog.Int64("entry_id", entryID),
+		slog.String("reason", reason),
+	)
+}
+
 // rewriteLegacyLedgerIdentity applies the namespaced key and adds structured
 // outpoint metadata to unilateral-exit rows. Refresh sends keep their existing
 // chain metadata because their paired receive already identifies the output.
 func rewriteLegacyLedgerIdentity(ctx context.Context, q sqlc.Querier,
 	row *sqlc.LedgerEntry, newKey []byte, hash [32]byte, index uint32,
-	refresh bool) (int64, error) {
+	refresh bool, confirmationHeight *int32) (int64, error) {
 
 	if refresh {
 		return q.UpdateLedgerEntryIdempotencyKey(
@@ -219,11 +291,12 @@ func rewriteLegacyLedgerIdentity(ctx context.Context, q sqlc.Querier,
 
 	return q.UpdateLegacyExitLedgerEntry(
 		ctx, sqlc.UpdateLegacyExitLedgerEntryParams{
-			NewKey:    newKey,
-			ChainTxid: hash[:],
-			ChainVout: sqlInt32Ptr(&chainVout),
-			EntryID:   row.EntryID,
-			OldKey:    row.IdempotencyKey,
+			NewKey:             newKey,
+			ChainTxid:          hash[:],
+			ChainVout:          sqlInt32Ptr(&chainVout),
+			ConfirmationHeight: sqlInt32Ptr(confirmationHeight),
+			EntryID:            row.EntryID,
+			OldKey:             row.IdempotencyKey,
 		},
 	)
 }
@@ -304,7 +377,7 @@ func makePostStepCallbacks(db DatabaseBackend, log btclog.Logger,
 	checks map[uint]postMigrationCheck) map[uint]migrate.PostStepCallback {
 
 	var (
-		ctx  = context.Background()
+		ctx  = build.ContextWithLogger(context.Background(), log)
 		txDB = NewTransactionExecutor(
 			db, func(tx *sql.Tx) sqlc.Querier {
 				return db.WithTx(tx)

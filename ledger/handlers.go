@@ -448,6 +448,10 @@ func (a *LedgerActor) handleExitCost(ctx context.Context, msg *ExitCostMsg,
 	)
 	feeKey := exitFeeIdempotencyKey(msg.OutpointHash, msg.OutpointIndex)
 
+	// The exited VTXO outpoint is the stable identity shared by both
+	// accounting legs. ConfirmationHeight intentionally records the final
+	// sweep height that completed the exit, not a confirmation of that
+	// outpoint transaction.
 	sendLeg := LedgerEntry{
 		DebitAccount:  AccountTransfersOut,
 		CreditAccount: AccountVTXOBalance,

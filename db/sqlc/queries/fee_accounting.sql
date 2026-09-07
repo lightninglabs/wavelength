@@ -115,6 +115,22 @@ FROM (
            le.event_type AS subtype,
            le.amount_sat,
            CASE
+               WHEN le.event_type = 'vtxo_sent'
+                    AND le.round_id IS NULL
+                    AND le.session_id IS NULL
+                    AND le.chain_txid IS NOT NULL
+                    AND le.chain_vout IS NOT NULL
+               THEN CAST(COALESCE((
+                   SELECT SUM(exit_fee.amount_sat)
+                   FROM ledger_entries AS exit_fee
+                   WHERE exit_fee.event_type = 'onchain_fee_paid'
+                     AND exit_fee.debit_account = 'onchain_fees'
+                     AND exit_fee.credit_account = 'vtxo_balance'
+                     AND exit_fee.round_id IS NULL
+                     AND exit_fee.session_id IS NULL
+                     AND exit_fee.chain_txid = le.chain_txid
+                     AND exit_fee.chain_vout = le.chain_vout
+               ), 0) AS BIGINT)
                WHEN le.event_type = 'wallet_utxo_created'
                     AND boarding_round.fee_sat > 0
                THEN boarding_round.fee_sat
@@ -395,6 +411,16 @@ FROM ledger_entries
 WHERE event_type = 'onchain_fee_paid'
   AND idempotency_key = $1;
 
+-- name: GetRefreshFeePaidByRoundID :one
+-- GetRefreshFeePaidByRoundID returns the operator fee carved out of VTXO
+-- value in a refresh round. Zero when the round had no operator fee.
+SELECT CAST(COALESCE(SUM(amount_sat), 0) AS BIGINT) AS refresh_fee_sat
+FROM ledger_entries
+WHERE round_id = $1
+  AND event_type = 'refresh_fee_paid'
+  AND debit_account = 'fees_paid'
+  AND credit_account = 'vtxo_balance';
+
 -- name: ListLedgerRoundIDsMissingUuid :many
 -- ListLedgerRoundIDsMissingUuid returns the distinct raw round_id BLOBs that
 -- have not yet been mirrored into the round_uuid TEXT column. The BLOB-to-UUID
@@ -466,6 +492,9 @@ WHERE entry_id = sqlc.arg(entry_id)
 UPDATE ledger_entries
 SET idempotency_key = sqlc.arg(new_key),
     chain_txid = COALESCE(chain_txid, sqlc.arg(chain_txid)),
-    chain_vout = COALESCE(chain_vout, sqlc.arg(chain_vout))
+    chain_vout = COALESCE(chain_vout, sqlc.arg(chain_vout)),
+    confirmation_height = COALESCE(
+        confirmation_height, sqlc.arg(confirmation_height)
+    )
 WHERE entry_id = sqlc.arg(entry_id)
   AND idempotency_key = sqlc.arg(old_key);

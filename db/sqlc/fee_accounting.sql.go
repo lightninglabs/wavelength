@@ -237,6 +237,24 @@ func (q *Queries) GetConfirmedExitCost(ctx context.Context, idempotencyKey []byt
 	return exit_cost_sat, err
 }
 
+const GetRefreshFeePaidByRoundID = `-- name: GetRefreshFeePaidByRoundID :one
+SELECT CAST(COALESCE(SUM(amount_sat), 0) AS BIGINT) AS refresh_fee_sat
+FROM ledger_entries
+WHERE round_id = $1
+  AND event_type = 'refresh_fee_paid'
+  AND debit_account = 'fees_paid'
+  AND credit_account = 'vtxo_balance'
+`
+
+// GetRefreshFeePaidByRoundID returns the operator fee carved out of VTXO
+// value in a refresh round. Zero when the round had no operator fee.
+func (q *Queries) GetRefreshFeePaidByRoundID(ctx context.Context, roundID []byte) (int64, error) {
+	row := q.db.QueryRowContext(ctx, GetRefreshFeePaidByRoundID, roundID)
+	var refresh_fee_sat int64
+	err := row.Scan(&refresh_fee_sat)
+	return refresh_fee_sat, err
+}
+
 const GetTotalOperatorFeesPaid = `-- name: GetTotalOperatorFeesPaid :one
 SELECT CAST(COALESCE(SUM(amount_sat), 0) AS BIGINT) AS total_fees
 FROM ledger_entries
@@ -692,6 +710,22 @@ FROM (
            le.event_type AS subtype,
            le.amount_sat,
            CASE
+               WHEN le.event_type = 'vtxo_sent'
+                    AND le.round_id IS NULL
+                    AND le.session_id IS NULL
+                    AND le.chain_txid IS NOT NULL
+                    AND le.chain_vout IS NOT NULL
+               THEN CAST(COALESCE((
+                   SELECT SUM(exit_fee.amount_sat)
+                   FROM ledger_entries AS exit_fee
+                   WHERE exit_fee.event_type = 'onchain_fee_paid'
+                     AND exit_fee.debit_account = 'onchain_fees'
+                     AND exit_fee.credit_account = 'vtxo_balance'
+                     AND exit_fee.round_id IS NULL
+                     AND exit_fee.session_id IS NULL
+                     AND exit_fee.chain_txid = le.chain_txid
+                     AND exit_fee.chain_vout = le.chain_vout
+               ), 0) AS BIGINT)
                WHEN le.event_type = 'wallet_utxo_created'
                     AND boarding_round.fee_sat > 0
                THEN boarding_round.fee_sat
@@ -1010,17 +1044,21 @@ const UpdateLegacyExitLedgerEntry = `-- name: UpdateLegacyExitLedgerEntry :execr
 UPDATE ledger_entries
 SET idempotency_key = $1,
     chain_txid = COALESCE(chain_txid, $2),
-    chain_vout = COALESCE(chain_vout, $3)
-WHERE entry_id = $4
-  AND idempotency_key = $5
+    chain_vout = COALESCE(chain_vout, $3),
+    confirmation_height = COALESCE(
+        confirmation_height, $4
+    )
+WHERE entry_id = $5
+  AND idempotency_key = $6
 `
 
 type UpdateLegacyExitLedgerEntryParams struct {
-	NewKey    []byte
-	ChainTxid []byte
-	ChainVout sql.NullInt32
-	EntryID   int64
-	OldKey    []byte
+	NewKey             []byte
+	ChainTxid          []byte
+	ChainVout          sql.NullInt32
+	ConfirmationHeight sql.NullInt32
+	EntryID            int64
+	OldKey             []byte
 }
 
 func (q *Queries) UpdateLegacyExitLedgerEntry(ctx context.Context, arg UpdateLegacyExitLedgerEntryParams) (int64, error) {
@@ -1028,6 +1066,7 @@ func (q *Queries) UpdateLegacyExitLedgerEntry(ctx context.Context, arg UpdateLeg
 		arg.NewKey,
 		arg.ChainTxid,
 		arg.ChainVout,
+		arg.ConfirmationHeight,
 		arg.EntryID,
 		arg.OldKey,
 	)

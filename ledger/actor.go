@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
@@ -196,9 +197,11 @@ type LedgerEntry struct {
 	// Nil means this ledger entry is not tied to a concrete output.
 	ChainVout *int32
 
-	// ConfirmationHeight optionally records the block height that
-	// confirmed the on-chain transaction. Nil means the height is
-	// unknown or the ledger entry has no chain transaction.
+	// ConfirmationHeight optionally records the relevant confirmation
+	// height. For unilateral-exit rows, ChainTxid and ChainVout identify
+	// the exited VTXO while this field records the final sweep height that
+	// completed the exit. Nil means the height is unknown or the ledger
+	// entry has no chain transaction.
 	ConfirmationHeight *int32
 }
 
@@ -392,6 +395,7 @@ func (a *LedgerActor) Start(ctx context.Context) error {
 	](
 		a.actorID, a, a.bindStores, a.cfg.DeliveryStore, codec,
 	)
+	durableCfg.TellRetryPolicy = ledgerTellRetryPolicy
 	durable, err := actor.NewDurableActor(durableCfg).Unpack()
 	if err != nil {
 		return fmt.Errorf("build ledger durable actor: %w", err)
@@ -420,6 +424,18 @@ func (a *LedgerActor) Start(ctx context.Context) error {
 	)
 
 	return nil
+}
+
+// ledgerTellRetryPolicy immediately dead-letters permanent caller and
+// accounting-identity failures while retaining the default transient retry
+// behavior for storage and runtime errors.
+func ledgerTellRetryPolicy(err error, attempts int) (bool, time.Duration) {
+	if errors.Is(err, ErrInvalidMessage) ||
+		errors.Is(err, ErrIdempotencyConflict) {
+		return false, 0
+	}
+
+	return actor.DefaultTellRetryPolicy(err, attempts)
 }
 
 // Stop stops the durable ledger actor.

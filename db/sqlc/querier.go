@@ -120,6 +120,9 @@ type Querier interface {
 	// Fetch one intent header by id, exposing the terminal-failure columns so
 	// callers (and tests) can assert send-failure state without raw SQL.
 	GetPendingIntentByID(ctx context.Context, intentID []byte) (GetPendingIntentByIDRow, error)
+	// GetRefreshFeePaidByRoundID returns the operator fee carved out of VTXO
+	// value in a refresh round. Zero when the round had no operator fee.
+	GetRefreshFeePaidByRoundID(ctx context.Context, roundID []byte) (int64, error)
 	GetRound(ctx context.Context, roundID string) (Round, error)
 	GetRoundBoardingIntents(ctx context.Context, roundID string) ([]RoundBoardingIntent, error)
 	GetRoundByCommitmentTxid(ctx context.Context, commitmentTxid []byte) (Round, error)
