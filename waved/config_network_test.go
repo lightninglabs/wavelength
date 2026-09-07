@@ -406,9 +406,9 @@ func TestConfigEndpointDefaultsPreserveOverrides(t *testing.T) {
 	require.Equal(t, "localhost:11030", cfg.SwapServerAddress())
 }
 
-// TestLegacyProofScanFloor verifies deployment-backed floors apply only to
-// the canonical operator for each public network. Custom operators retain the
-// block-1 fallback because their earliest compatible commitment is unknown.
+// TestLegacyProofScanFloor verifies deployment-backed floors apply to every
+// operator on each supported public network. No compatible operator existed
+// before these floors. Local and unknown networks retain block 1.
 func TestLegacyProofScanFloor(t *testing.T) {
 	t.Parallel()
 
@@ -471,7 +471,7 @@ func TestLegacyProofScanFloor(t *testing.T) {
 			name:    "custom public operator",
 			network: "testnet",
 			host:    "ark.example.com:443",
-			want:    1,
+			want:    testnet3LegacyProofScanFloor,
 		},
 		{
 			name:    "explicit canonical operator",
@@ -511,6 +511,10 @@ func TestLegacyProofScanFloor(t *testing.T) {
 	}
 
 	require.Equal(t, uint32(1), (*Config)(nil).legacyProofScanFloor())
+	require.Equal(
+		t, defaultMainnetLegacyProofScanFloor,
+		(&Config{Network: "mainnet"}).legacyProofScanFloor(),
+	)
 }
 
 // TestNetworkToChainParams verifies network strings map to their exact btcd

@@ -5,7 +5,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -37,12 +36,9 @@ func TestProofNodeFloorAlertDeduper(t *testing.T) {
 
 	// Exercise the production registry constructor and child configuration.
 	// Two children must receive the same registry-lifetime deduper.
-	operatorPriv, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
 	registry := NewUnrollRegistryActor(RegistryConfig{
-		DeliveryStore:              newMemCheckpointStore(),
-		LegacyProofScanFloor:       123,
-		LegacyProofScanOperatorKey: operatorPriv.PubKey(),
+		DeliveryStore:        newMemCheckpointStore(),
+		LegacyProofScanFloor: 1,
 	})
 	t.Cleanup(registry.Stop)
 	require.NotNil(t, registry.behavior.proofNodeFloorAlerts)
@@ -59,19 +55,9 @@ func TestProofNodeFloorAlertDeduper(t *testing.T) {
 		secondChild.proofNodeFloorAlerts,
 	)
 	require.Equal(
-		t, uint32(123), firstChild.LegacyProofScanFloor,
+		t, uint32(1), firstChild.LegacyProofScanFloor,
 	)
 	require.Equal(
-		t, uint32(123), secondChild.LegacyProofScanFloor,
-	)
-	require.True(
-		t, operatorPriv.PubKey().IsEqual(
-			firstChild.LegacyProofScanOperatorKey,
-		),
-	)
-	require.True(
-		t, operatorPriv.PubKey().IsEqual(
-			secondChild.LegacyProofScanOperatorKey,
-		),
+		t, uint32(1), secondChild.LegacyProofScanFloor,
 	)
 }

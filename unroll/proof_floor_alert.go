@@ -4,10 +4,10 @@ import (
 	"sync"
 )
 
-// proofNodeFloorAlertDeduper limits the legacy fallback-scan warning to one
-// alert per unroll registry and process lifetime. The alert reports the shared
-// compatibility condition; per-target Debug logs retain the affected
-// outpoints without repeating an operator warning for every proof transaction.
+// proofNodeFloorAlertDeduper limits the legacy block-1 fallback warning to one
+// per unroll registry and process lifetime. Per-target Debug logs retain the
+// affected outpoints without repeating the warning for every proof
+// transaction.
 type proofNodeFloorAlertDeduper struct {
 	mu     sync.Mutex
 	warned bool

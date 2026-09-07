@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
@@ -166,16 +165,11 @@ type RegistryConfig struct {
 	// FSM Environment.
 	FraudCheckpointSafetyMargin int32
 
-	// LegacyProofScanFloor is the earliest block where the configured
-	// operator could have created a compatible commitment transaction.
-	// It is forwarded to every child unroll actor. Zero preserves the
-	// block-1 fallback.
+	// LegacyProofScanFloor is the earliest block where a supported
+	// deployment on the configured public network could have created a
+	// compatible commitment transaction. It is forwarded to every child
+	// unroll actor. Zero preserves the block-1 fallback.
 	LegacyProofScanFloor uint32
-
-	// LegacyProofScanOperatorKey identifies the operator whose deployment
-	// history justifies LegacyProofScanFloor. It is forwarded to every
-	// child unroll actor. A nil key preserves the block-1 fallback.
-	LegacyProofScanOperatorKey *btcec.PublicKey
 
 	// VTXOExitObserver, when set, receives an ExitOutcomeNotification each
 	// time a child unroll job reaches a terminal phase: a clean failure
@@ -1504,7 +1498,6 @@ func (r *registryBehavior) childConfig(target wire.OutPoint) Config {
 		ExitSpendPolicyResolver:     r.cfg.ExitSpendPolicyResolver,
 		FraudCheckpointSafetyMargin: r.cfg.FraudCheckpointSafetyMargin,
 		LegacyProofScanFloor:        r.cfg.LegacyProofScanFloor,
-		LegacyProofScanOperatorKey:  r.cfg.LegacyProofScanOperatorKey,
 		RegistryRef:                 r.selfRef,
 		proofNodeFloorAlerts:        r.proofNodeFloorAlerts,
 	}
