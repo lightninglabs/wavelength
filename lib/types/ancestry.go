@@ -1,6 +1,7 @@
 package types
 
 import (
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/lib/tree"
 )
@@ -51,6 +52,14 @@ type Ancestry struct {
 	// which case callers fall back to a bounded lookback floor rather than
 	// trusting this value.
 	CommitmentHeight int32
+
+	// CommitmentSweepDelay is the positive CSV delay authenticated against
+	// TreePath.SweepTapscriptRoot at the indexer ingress boundary.
+	CommitmentSweepDelay uint32
+
+	// CommitmentSweepKey is the sweep key authenticated together with
+	// CommitmentSweepDelay against TreePath.SweepTapscriptRoot.
+	CommitmentSweepKey *btcec.PublicKey
 }
 
 // MaxAncestryTreeDepth returns the largest TreeDepth across the given

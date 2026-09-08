@@ -1498,8 +1498,16 @@ type AncestryPath struct {
 	// tx anchoring this fragment. Zero means unknown (legacy/unconfirmed),
 	// in which case the client falls back to a bounded lookback floor.
 	CommitmentHeight int32 `protobuf:"varint,5,opt,name=commitment_height,json=commitmentHeight,proto3" json:"commitment_height,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// commitment_sweep_delay is the CSV delay committed by this tree's sweep
+	// tapscript root. New indexers must supply a positive value.
+	CommitmentSweepDelay uint32 `protobuf:"varint,6,opt,name=commitment_sweep_delay,json=commitmentSweepDelay,proto3" json:"commitment_sweep_delay,omitempty"`
+	// commitment_sweep_key is the compressed public key committed by this
+	// tree's sweep tapscript root. Together with commitment_sweep_delay it
+	// lets clients authenticate the absolute expiry derived from the
+	// commitment transaction's confirmation height.
+	CommitmentSweepKey []byte `protobuf:"bytes,7,opt,name=commitment_sweep_key,json=commitmentSweepKey,proto3" json:"commitment_sweep_key,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *AncestryPath) Reset() {
@@ -1565,6 +1573,20 @@ func (x *AncestryPath) GetCommitmentHeight() int32 {
 		return x.CommitmentHeight
 	}
 	return 0
+}
+
+func (x *AncestryPath) GetCommitmentSweepDelay() uint32 {
+	if x != nil {
+		return x.CommitmentSweepDelay
+	}
+	return 0
+}
+
+func (x *AncestryPath) GetCommitmentSweepKey() []byte {
+	if x != nil {
+		return x.CommitmentSweepKey
+	}
+	return nil
 }
 
 // ScriptScope selects a pkScript and carries a proof-of-control for that
@@ -1729,8 +1751,12 @@ type VTXO struct {
 	// IncomingVTXOEvent) does not yet carry this field and adopts it as a
 	// fast-follow. Today the only understood value is 1.
 	ConstructionVersion uint32 `protobuf:"varint,20,opt,name=construction_version,json=constructionVersion,proto3" json:"construction_version,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// ancestry_packages connects round-tree leaves to this OOR output.
+	// Packages are finalized and ordered ancestor-first, with the creating
+	// session last. Round-direct VTXOs leave this empty.
+	AncestryPackages []*OORSessionPackage `protobuf:"bytes,21,rep,name=ancestry_packages,json=ancestryPackages,proto3" json:"ancestry_packages,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *VTXO) Reset() {
@@ -1887,6 +1913,13 @@ func (x *VTXO) GetConstructionVersion() uint32 {
 		return x.ConstructionVersion
 	}
 	return 0
+}
+
+func (x *VTXO) GetAncestryPackages() []*OORSessionPackage {
+	if x != nil {
+		return x.AncestryPackages
+	}
+	return nil
 }
 
 type ListVTXOsByScriptsRequest struct {
@@ -2803,20 +2836,22 @@ const file_indexer_proto_rawDesc = "" +
 	"\x05nodes\x18\x01 \x03(\v2\x14.arkrpc.TreePathNodeR\x05nodes\x127\n" +
 	"\x0ebatch_outpoint\x18\x02 \x01(\v2\x10.arkrpc.OutPointR\rbatchOutpoint\x120\n" +
 	"\fbatch_output\x18\x03 \x01(\v2\r.arkrpc.TxOutR\vbatchOutput\x120\n" +
-	"\x14sweep_tapscript_root\x18\x04 \x01(\fR\x12sweepTapscriptRoot\"\xd7\x01\n" +
+	"\x14sweep_tapscript_root\x18\x04 \x01(\fR\x12sweepTapscriptRoot\"\xbf\x02\n" +
 	"\fAncestryPath\x12-\n" +
 	"\ttree_path\x18\x01 \x01(\v2\x10.arkrpc.TreePathR\btreePath\x12'\n" +
 	"\x0fcommitment_txid\x18\x02 \x01(\fR\x0ecommitmentTxid\x12#\n" +
 	"\rinput_indices\x18\x03 \x03(\rR\finputIndices\x12\x1d\n" +
 	"\n" +
 	"tree_depth\x18\x04 \x01(\rR\ttreeDepth\x12+\n" +
-	"\x11commitment_height\x18\x05 \x01(\x05R\x10commitmentHeight\"\xaa\x01\n" +
+	"\x11commitment_height\x18\x05 \x01(\x05R\x10commitmentHeight\x124\n" +
+	"\x16commitment_sweep_delay\x18\x06 \x01(\rR\x14commitmentSweepDelay\x120\n" +
+	"\x14commitment_sweep_key\x18\a \x01(\fR\x12commitmentSweepKey\"\xaa\x01\n" +
 	"\vScriptScope\x12\x1b\n" +
 	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x12F\n" +
 	"\x0ftaproot_schnorr\x18\n" +
 	" \x01(\v2\x1b.arkrpc.TaprootSchnorrProofH\x00R\x0etaprootSchnorr\x12-\n" +
 	"\x06bip322\x18\v \x01(\v2\x13.arkrpc.BIP322ProofH\x00R\x06bip322B\a\n" +
-	"\x05proof\"\xe2\x05\n" +
+	"\x05proof\"\xaa\x06\n" +
 	"\x04VTXO\x12,\n" +
 	"\boutpoint\x18\x01 \x01(\v2\x10.arkrpc.OutPointR\boutpoint\x12\x1b\n" +
 	"\tvalue_sat\x18\x02 \x01(\x04R\bvalueSat\x12\x1b\n" +
@@ -2838,7 +2873,8 @@ const file_indexer_proto_rawDesc = "" +
 	"\rspent_by_txid\x18\x11 \x01(\fR\vspentByTxid\x12;\n" +
 	"\x0eancestry_paths\x18\x12 \x03(\v2\x14.arkrpc.AncestryPathR\rancestryPaths\x12'\n" +
 	"\x0foperator_pubkey\x18\x13 \x01(\fR\x0eoperatorPubkey\x121\n" +
-	"\x14construction_version\x18\x14 \x01(\rR\x13constructionVersion\"\xb1\x01\n" +
+	"\x14construction_version\x18\x14 \x01(\rR\x13constructionVersion\x12F\n" +
+	"\x11ancestry_packages\x18\x15 \x03(\v2\x19.arkrpc.OORSessionPackageR\x10ancestryPackages\"\xb1\x01\n" +
 	"\x19ListVTXOsByScriptsRequest\x12-\n" +
 	"\ascripts\x18\x01 \x03(\v2\x13.arkrpc.ScriptScopeR\ascripts\x127\n" +
 	"\rstatus_filter\x18\x02 \x03(\x0e2\x12.arkrpc.VTXOStatusR\fstatusFilter\x12\x16\n" +
@@ -3006,45 +3042,46 @@ var file_indexer_proto_depIdxs = []int32{
 	17, // 18: arkrpc.VTXO.outpoint:type_name -> arkrpc.OutPoint
 	0,  // 19: arkrpc.VTXO.status:type_name -> arkrpc.VTXOStatus
 	21, // 20: arkrpc.VTXO.ancestry_paths:type_name -> arkrpc.AncestryPath
-	22, // 21: arkrpc.ListVTXOsByScriptsRequest.scripts:type_name -> arkrpc.ScriptScope
-	0,  // 22: arkrpc.ListVTXOsByScriptsRequest.status_filter:type_name -> arkrpc.VTXOStatus
-	23, // 23: arkrpc.ListVTXOsByScriptsResponse.vtxos:type_name -> arkrpc.VTXO
-	22, // 24: arkrpc.GetOORSessionByTxidRequest.script:type_name -> arkrpc.ScriptScope
-	17, // 25: arkrpc.TreeNode.input:type_name -> arkrpc.OutPoint
-	22, // 26: arkrpc.GetSubtreeByScriptsRequest.scripts:type_name -> arkrpc.ScriptScope
-	23, // 27: arkrpc.GetSubtreeByScriptsResponse.vtxos:type_name -> arkrpc.VTXO
-	28, // 28: arkrpc.GetSubtreeByScriptsResponse.nodes:type_name -> arkrpc.TreeNode
-	29, // 29: arkrpc.GetSubtreeByScriptsResponse.edges:type_name -> arkrpc.TreeEdge
-	1,  // 30: arkrpc.VTXOEvent.type:type_name -> arkrpc.VTXOEventType
-	17, // 31: arkrpc.VTXOEvent.outpoint:type_name -> arkrpc.OutPoint
-	0,  // 32: arkrpc.VTXOEvent.status:type_name -> arkrpc.VTXOStatus
-	22, // 33: arkrpc.ListVTXOEventsByScriptsRequest.scripts:type_name -> arkrpc.ScriptScope
-	32, // 34: arkrpc.ListVTXOEventsByScriptsResponse.events:type_name -> arkrpc.VTXOEvent
-	1,  // 35: arkrpc.IncomingVTXOEvent.type:type_name -> arkrpc.VTXOEventType
-	17, // 36: arkrpc.IncomingVTXOEvent.outpoint:type_name -> arkrpc.OutPoint
-	0,  // 37: arkrpc.IncomingVTXOEvent.status:type_name -> arkrpc.VTXOStatus
-	2,  // 38: arkrpc.IncomingVTXOEvent.origin:type_name -> arkrpc.VTXOOrigin
-	3,  // 39: arkrpc.IndexerService.RegisterReceiveScript:input_type -> arkrpc.RegisterReceiveScriptRequest
-	8,  // 40: arkrpc.IndexerService.ListMyReceiveScripts:input_type -> arkrpc.ListMyReceiveScriptsRequest
-	7,  // 41: arkrpc.IndexerService.UnregisterReceiveScript:input_type -> arkrpc.UnregisterReceiveScriptRequest
-	12, // 42: arkrpc.IndexerService.ListOORRecipientEventsByScript:input_type -> arkrpc.ListOORRecipientEventsByScriptRequest
-	24, // 43: arkrpc.IndexerService.ListVTXOsByScripts:input_type -> arkrpc.ListVTXOsByScriptsRequest
-	26, // 44: arkrpc.IndexerService.GetOORSessionByTxid:input_type -> arkrpc.GetOORSessionByTxidRequest
-	30, // 45: arkrpc.IndexerService.GetSubtreeByScripts:input_type -> arkrpc.GetSubtreeByScriptsRequest
-	33, // 46: arkrpc.IndexerService.ListVTXOEventsByScripts:input_type -> arkrpc.ListVTXOEventsByScriptsRequest
-	6,  // 47: arkrpc.IndexerService.RegisterReceiveScript:output_type -> arkrpc.RegisterReceiveScriptResponse
-	9,  // 48: arkrpc.IndexerService.ListMyReceiveScripts:output_type -> arkrpc.ListMyReceiveScriptsResponse
-	11, // 49: arkrpc.IndexerService.UnregisterReceiveScript:output_type -> arkrpc.UnregisterReceiveScriptResponse
-	13, // 50: arkrpc.IndexerService.ListOORRecipientEventsByScript:output_type -> arkrpc.ListOORRecipientEventsByScriptResponse
-	25, // 51: arkrpc.IndexerService.ListVTXOsByScripts:output_type -> arkrpc.ListVTXOsByScriptsResponse
-	27, // 52: arkrpc.IndexerService.GetOORSessionByTxid:output_type -> arkrpc.GetOORSessionByTxidResponse
-	31, // 53: arkrpc.IndexerService.GetSubtreeByScripts:output_type -> arkrpc.GetSubtreeByScriptsResponse
-	34, // 54: arkrpc.IndexerService.ListVTXOEventsByScripts:output_type -> arkrpc.ListVTXOEventsByScriptsResponse
-	47, // [47:55] is the sub-list for method output_type
-	39, // [39:47] is the sub-list for method input_type
-	39, // [39:39] is the sub-list for extension type_name
-	39, // [39:39] is the sub-list for extension extendee
-	0,  // [0:39] is the sub-list for field type_name
+	15, // 21: arkrpc.VTXO.ancestry_packages:type_name -> arkrpc.OORSessionPackage
+	22, // 22: arkrpc.ListVTXOsByScriptsRequest.scripts:type_name -> arkrpc.ScriptScope
+	0,  // 23: arkrpc.ListVTXOsByScriptsRequest.status_filter:type_name -> arkrpc.VTXOStatus
+	23, // 24: arkrpc.ListVTXOsByScriptsResponse.vtxos:type_name -> arkrpc.VTXO
+	22, // 25: arkrpc.GetOORSessionByTxidRequest.script:type_name -> arkrpc.ScriptScope
+	17, // 26: arkrpc.TreeNode.input:type_name -> arkrpc.OutPoint
+	22, // 27: arkrpc.GetSubtreeByScriptsRequest.scripts:type_name -> arkrpc.ScriptScope
+	23, // 28: arkrpc.GetSubtreeByScriptsResponse.vtxos:type_name -> arkrpc.VTXO
+	28, // 29: arkrpc.GetSubtreeByScriptsResponse.nodes:type_name -> arkrpc.TreeNode
+	29, // 30: arkrpc.GetSubtreeByScriptsResponse.edges:type_name -> arkrpc.TreeEdge
+	1,  // 31: arkrpc.VTXOEvent.type:type_name -> arkrpc.VTXOEventType
+	17, // 32: arkrpc.VTXOEvent.outpoint:type_name -> arkrpc.OutPoint
+	0,  // 33: arkrpc.VTXOEvent.status:type_name -> arkrpc.VTXOStatus
+	22, // 34: arkrpc.ListVTXOEventsByScriptsRequest.scripts:type_name -> arkrpc.ScriptScope
+	32, // 35: arkrpc.ListVTXOEventsByScriptsResponse.events:type_name -> arkrpc.VTXOEvent
+	1,  // 36: arkrpc.IncomingVTXOEvent.type:type_name -> arkrpc.VTXOEventType
+	17, // 37: arkrpc.IncomingVTXOEvent.outpoint:type_name -> arkrpc.OutPoint
+	0,  // 38: arkrpc.IncomingVTXOEvent.status:type_name -> arkrpc.VTXOStatus
+	2,  // 39: arkrpc.IncomingVTXOEvent.origin:type_name -> arkrpc.VTXOOrigin
+	3,  // 40: arkrpc.IndexerService.RegisterReceiveScript:input_type -> arkrpc.RegisterReceiveScriptRequest
+	8,  // 41: arkrpc.IndexerService.ListMyReceiveScripts:input_type -> arkrpc.ListMyReceiveScriptsRequest
+	7,  // 42: arkrpc.IndexerService.UnregisterReceiveScript:input_type -> arkrpc.UnregisterReceiveScriptRequest
+	12, // 43: arkrpc.IndexerService.ListOORRecipientEventsByScript:input_type -> arkrpc.ListOORRecipientEventsByScriptRequest
+	24, // 44: arkrpc.IndexerService.ListVTXOsByScripts:input_type -> arkrpc.ListVTXOsByScriptsRequest
+	26, // 45: arkrpc.IndexerService.GetOORSessionByTxid:input_type -> arkrpc.GetOORSessionByTxidRequest
+	30, // 46: arkrpc.IndexerService.GetSubtreeByScripts:input_type -> arkrpc.GetSubtreeByScriptsRequest
+	33, // 47: arkrpc.IndexerService.ListVTXOEventsByScripts:input_type -> arkrpc.ListVTXOEventsByScriptsRequest
+	6,  // 48: arkrpc.IndexerService.RegisterReceiveScript:output_type -> arkrpc.RegisterReceiveScriptResponse
+	9,  // 49: arkrpc.IndexerService.ListMyReceiveScripts:output_type -> arkrpc.ListMyReceiveScriptsResponse
+	11, // 50: arkrpc.IndexerService.UnregisterReceiveScript:output_type -> arkrpc.UnregisterReceiveScriptResponse
+	13, // 51: arkrpc.IndexerService.ListOORRecipientEventsByScript:output_type -> arkrpc.ListOORRecipientEventsByScriptResponse
+	25, // 52: arkrpc.IndexerService.ListVTXOsByScripts:output_type -> arkrpc.ListVTXOsByScriptsResponse
+	27, // 53: arkrpc.IndexerService.GetOORSessionByTxid:output_type -> arkrpc.GetOORSessionByTxidResponse
+	31, // 54: arkrpc.IndexerService.GetSubtreeByScripts:output_type -> arkrpc.GetSubtreeByScriptsResponse
+	34, // 55: arkrpc.IndexerService.ListVTXOEventsByScripts:output_type -> arkrpc.ListVTXOEventsByScriptsResponse
+	48, // [48:56] is the sub-list for method output_type
+	40, // [40:48] is the sub-list for method input_type
+	40, // [40:40] is the sub-list for extension type_name
+	40, // [40:40] is the sub-list for extension extendee
+	0,  // [0:40] is the sub-list for field type_name
 }
 
 func init() { file_indexer_proto_init() }
