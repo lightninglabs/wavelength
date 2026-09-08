@@ -22,12 +22,14 @@ func (r *RPCServer) PrepareArkChannelOOR(ctx context.Context,
 
 	terms, err := lnruntime.ChannelTermsFromRPC(req.GetTerms())
 	if err != nil {
-		return nil, err
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if terms.Funder != arkchannel.PartyHub ||
 		terms.Kind != arkchannel.KindReceiveIntent {
-		return nil, fmt.Errorf("daemon channel OOR must fund a " +
-			"receive intent")
+		return nil, status.Error(
+			codes.InvalidArgument,
+			"daemon channel OOR must fund a receive intent",
+		)
 	}
 	binding, err := r.server.prepareArkChannelOOR(
 		ctx, terms, arkchannel.DefaultBackingFee,
@@ -37,7 +39,8 @@ func (r *RPCServer) PrepareArkChannelOOR(ctx context.Context,
 			return nil, status.Error(codes.Aborted, err.Error())
 		}
 
-		return nil, err
+		return nil, status.Errorf(codes.FailedPrecondition, "prepare "+
+			"channel OOR: %v", err)
 	}
 
 	return &waverpc.PrepareArkChannelOORResponse{
@@ -53,18 +56,21 @@ func (r *RPCServer) LookupPreparedArkChannelOOR(ctx context.Context,
 
 	terms, err := lnruntime.ChannelTermsFromRPC(req.GetTerms())
 	if err != nil {
-		return nil, err
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if terms.Funder != arkchannel.PartyHub ||
 		terms.Kind != arkchannel.KindReceiveIntent {
-		return nil, fmt.Errorf("daemon channel OOR must fund a " +
-			"receive intent")
+		return nil, status.Error(
+			codes.InvalidArgument,
+			"daemon channel OOR must fund a receive intent",
+		)
 	}
 	lookup, err := r.server.lookupArkChannelOOR(
 		ctx, terms, arkchannel.DefaultBackingFee,
 	)
 	if err != nil {
-		return nil, err
+		return nil, status.Errorf(codes.Unavailable, "lookup "+
+			"channel OOR: %v", err)
 	}
 
 	response := &waverpc.LookupPreparedArkChannelOORResponse{}
@@ -76,14 +82,10 @@ func (r *RPCServer) LookupPreparedArkChannelOOR(ctx context.Context,
 
 	case oorbridge.PreparationAccepted:
 	default:
-		return nil, fmt.Errorf("unknown channel OOR preparation "+
-			"status %d", lookup.Status)
+		return nil, status.Errorf(codes.Internal, "unknown channel "+
+			"OOR preparation status %d", lookup.Status)
 	}
-	// The RPC enum reserves zero for unspecified while the internal
-	// statuses are the same contiguous sequence starting at zero.
-	response.Status = waverpc.ArkChannelOORPreparationStatus(
-		int32(lookup.Status) + 1,
-	)
+	response.Status = channelOORPreparationStatus(lookup.Status)
 
 	return response, nil
 }
@@ -97,16 +99,18 @@ func (r *RPCServer) ValidatePreparedArkChannelOOR(ctx context.Context,
 		req.GetTerms(), req.GetBinding(),
 	)
 	if err != nil {
-		return nil, err
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	controller, err := oorbridge.New(r.server.actorSystem)
 	if err != nil {
-		return nil, err
+		return nil, status.Errorf(codes.Unavailable, "initialize "+
+			"channel OOR: %v", err)
 	}
 	if err := controller.ValidatePreparedOOR(
 		ctx, terms, binding,
 	); err != nil {
-		return nil, err
+		return nil, status.Errorf(codes.FailedPrecondition, "validate "+
+			"channel OOR: %v", err)
 	}
 
 	return &waverpc.ValidatePreparedArkChannelOORResponse{Valid: true}, nil
@@ -122,20 +126,23 @@ func (r *RPCServer) CommitPreparedArkChannelOOR(ctx context.Context,
 		req.GetChannelId(), req.GetTerms(), req.GetBinding(),
 	)
 	if err != nil {
-		return nil, err
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	controller, err := oorbridge.New(r.server.actorSystem)
 	if err != nil {
-		return nil, err
+		return nil, status.Errorf(codes.Unavailable, "initialize "+
+			"channel OOR: %v", err)
 	}
 	result, err := controller.CommitPreparedOORResult(
 		ctx, id, terms, binding,
 	)
 	if err != nil {
-		return nil, err
+		return nil, status.Errorf(codes.FailedPrecondition, "commit "+
+			"channel OOR: %v", err)
 	}
 	if err := result.Validate(); err != nil {
-		return nil, err
+		return nil, status.Errorf(codes.Internal, "invalid channel "+
+			"OOR result: %v", err)
 	}
 
 	return &waverpc.CommitPreparedArkChannelOORResponse{
@@ -151,32 +158,72 @@ func (r *RPCServer) AbortPreparedArkChannelOOR(ctx context.Context,
 	*waverpc.AbortPreparedArkChannelOORResponse, error) {
 
 	if req.GetReason() == "" {
-		return nil, fmt.Errorf("channel OOR abort reason is required")
+		return nil, status.Error(
+			codes.InvalidArgument,
+			"channel OOR abort reason is required",
+		)
 	}
 	id, terms, binding, err := r.channelOORControlRequest(
 		req.GetChannelId(), req.GetTerms(), req.GetBinding(),
 	)
 	if err != nil {
-		return nil, err
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	controller, err := oorbridge.New(r.server.actorSystem)
 	if err != nil {
-		return nil, err
+		return nil, status.Errorf(codes.Unavailable, "initialize "+
+			"channel OOR: %v", err)
 	}
 	result, err := controller.AbortPreparedOORResult(
 		ctx, id, terms, binding, req.GetReason(),
 	)
 	if err != nil {
-		return nil, err
+		return nil, status.Errorf(codes.FailedPrecondition, "abort "+
+			"channel OOR: %v", err)
 	}
 	if err := result.Validate(); err != nil {
-		return nil, err
+		return nil, status.Errorf(codes.Internal, "invalid channel "+
+			"OOR result: %v", err)
 	}
 
 	return &waverpc.AbortPreparedArkChannelOORResponse{
 		Aborted: result.Aborted, Reason: result.Reason,
 		Finalized: result.Finalized,
 	}, nil
+}
+
+// arkChannelOORStatus shortens the generated protocol type.
+type arkChannelOORStatus = waverpc.ArkChannelOORPreparationStatus
+
+// channelOORPreparationStatus maps every internal state explicitly so future
+// enum insertions cannot silently change the mailbox protocol.
+func channelOORPreparationStatus(
+	preparation oorbridge.PreparationStatus) arkChannelOORStatus {
+
+	const (
+		unspecified waverpc.ArkChannelOORPreparationStatus = 0
+		absent      waverpc.ArkChannelOORPreparationStatus = 1
+		pending     waverpc.ArkChannelOORPreparationStatus = 2
+		prepared    waverpc.ArkChannelOORPreparationStatus = 3
+		accepted    waverpc.ArkChannelOORPreparationStatus = 4
+	)
+
+	switch preparation {
+	case oorbridge.PreparationAbsent:
+		return absent
+
+	case oorbridge.PreparationPending:
+		return pending
+
+	case oorbridge.PreparationPrepared:
+		return prepared
+
+	case oorbridge.PreparationAccepted:
+		return accepted
+
+	default:
+		return unspecified
+	}
 }
 
 // channelOORRequest parses one immutable terms and binding pair.

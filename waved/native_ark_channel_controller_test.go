@@ -1,11 +1,15 @@
 package waved
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
+	"github.com/lightninglabs/wavelength/lnruntime"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,6 +21,26 @@ type recordingArkChannelBackingRestorer struct {
 type recordingArkChannelForceCloseResumer struct {
 	failPoint wire.OutPoint
 	resumed   []wire.OutPoint
+}
+
+type recordingProcessPaymentPeer struct {
+	lnruntime.ProcessPaymentPeer
+
+	cancelContextErr error
+	cancelHash       lntypes.Hash
+	cancelReason     string
+	cancelErr        error
+}
+
+// CancelOutgoingPayment records the cleanup context and requested failure.
+func (p *recordingProcessPaymentPeer) CancelOutgoingPayment(ctx context.Context,
+	hash lntypes.Hash, reason string) error {
+
+	p.cancelContextErr = ctx.Err()
+	p.cancelHash = hash
+	p.cancelReason = reason
+
+	return p.cancelErr
 }
 
 // ResumeForceCloseChannel records each independent on-chain reconciliation.
@@ -340,4 +364,28 @@ func TestShouldResumeOnchainArkChannel(t *testing.T) {
 			)
 		})
 	}
+}
+
+// TestCancelOutgoingPaymentDetachesFromRequest proves every successful
+// preparation gets a cleanup attempt even after its request is canceled.
+func TestCancelOutgoingPaymentDetachesFromRequest(t *testing.T) {
+	t.Parallel()
+
+	requestCtx, cancel := context.WithCancel(t.Context())
+	cancel()
+	cause := errors.New("private payment failed")
+	hash := lntypes.Hash{1, 2, 3}
+	peer := &recordingProcessPaymentPeer{}
+	controller := &NativeArkChannelController{paymentPeer: peer}
+
+	err := controller.cancelOutgoingPayment(requestCtx, hash, cause)
+	require.ErrorIs(t, err, cause)
+	require.NoError(t, peer.cancelContextErr)
+	require.Equal(t, hash, peer.cancelHash)
+	require.Equal(t, cause.Error(), peer.cancelReason)
+
+	peer.cancelErr = errors.New("cleanup failed")
+	err = controller.cancelOutgoingPayment(requestCtx, hash, cause)
+	require.ErrorIs(t, err, cause)
+	require.ErrorIs(t, err, peer.cancelErr)
 }

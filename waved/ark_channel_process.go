@@ -361,7 +361,8 @@ func (s *Server) initArkChannelProcess(ctx context.Context) error {
 	if s.cfg.Swap == nil || s.cfg.Swap.ArkChannelMailbox == nil {
 		return nil
 	}
-	if s.clientKeyDesc.PubKey == nil {
+	identityDesc := s.loadClientKeyDesc()
+	if identityDesc.PubKey == nil {
 		return fmt.Errorf("Ark channel runtime requires client " +
 			"identity")
 	}
@@ -369,7 +370,7 @@ func (s *Server) initArkChannelProcess(ctx context.Context) error {
 		return fmt.Errorf("Ark channel store is not initialized")
 	}
 
-	localMailbox := serverconn.PubKeyMailboxID(s.clientKeyDesc.PubKey)
+	localMailbox := serverconn.PubKeyMailboxID(identityDesc.PubKey)
 	replyMailbox := lnruntime.ArkChannelClientMailboxID(localMailbox)
 	remoteMailbox := lnruntime.ArkChannelHubMailboxID(localMailbox)
 	connCfg := serverconn.DefaultConnectorConfig()
@@ -406,7 +407,7 @@ func (s *Server) initArkChannelProcess(ctx context.Context) error {
 		return err
 	}
 	controller, err := s.newClientArkChannelController(
-		ctx, peer, runtime.Unary(), peerSender,
+		ctx, identityDesc, peer, runtime.Unary(), peerSender,
 	)
 	if err != nil {
 		runtime.Stop()
@@ -448,6 +449,7 @@ func (s *Server) initArkChannelProcess(ctx context.Context) error {
 // newClientArkChannelController composes the wallet, chain, OOR, and recovery
 // dependencies behind the client channel controller.
 func (s *Server) newClientArkChannelController(ctx context.Context,
+	identityDesc keychain.KeyDescriptor,
 	peer lnruntime.ProcessCooperativeClosePeer,
 	peerRPC mailboxrpc.RPCClient, peerSender lnruntime.PeerEventSender) (
 	*NativeArkChannelController, error) {
@@ -506,8 +508,8 @@ func (s *Server) newClientArkChannelController(ctx context.Context,
 			OOR:            oorController,
 			Materializer:   materializer,
 			Recovery:       recovery,
-			IdentityKey:    s.clientKeyDesc,
-			OORDestination: s.clientKeyDesc.PubKey,
+			IdentityKey:    identityDesc,
+			OORDestination: identityDesc.PubKey,
 			NetParams:      s.chainParams,
 			ChannelDataDir: filepath.Join(
 				s.cfg.DataDir, "ark-channels",
@@ -567,8 +569,9 @@ func (s *Server) ensureArkChannelCloseDelivery(ctx context.Context,
 		return fmt.Errorf("initialize Ark channel close signer: %w",
 			err)
 	}
+	identityDesc := s.loadClientKeyDesc()
 	_, err = RegisterOwnedOORReceiveScript(
-		ctx, s.indexer, store, s.clientKeyDesc, signerFactory,
+		ctx, s.indexer, store, identityDesc, signerFactory,
 		operatorTerms.PubKey, operatorTerms.VTXOExitDelay,
 		arkChannelCloseReceiveScriptLabel,
 	)
@@ -609,12 +612,15 @@ func (s *Server) getArkChannelController() ArkChannelController {
 	return s.arkChannelController
 }
 
-// getArkChannelMailboxRuntime returns the initialized swap-server transport.
-func (s *Server) getArkChannelMailboxRuntime() *serverconn.Runtime {
-	s.arkChannelMu.RLock()
-	defer s.arkChannelMu.RUnlock()
+// takeArkChannelMailboxRuntime transfers shutdown ownership to one caller.
+func (s *Server) takeArkChannelMailboxRuntime() *serverconn.Runtime {
+	s.arkChannelMu.Lock()
+	defer s.arkChannelMu.Unlock()
 
-	return s.arkChannelMailboxRuntime
+	runtime := s.arkChannelMailboxRuntime
+	s.arkChannelMailboxRuntime = nil
+
+	return runtime
 }
 
 // PrepareArkChannelIncomingPayment installs the deterministic native invoice

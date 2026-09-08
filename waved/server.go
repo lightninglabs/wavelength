@@ -1318,7 +1318,7 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 				)
 			}
 		}
-		if runtime := s.getArkChannelMailboxRuntime(); runtime != nil {
+		if runtime := s.takeArkChannelMailboxRuntime(); runtime != nil {
 			//nolint:contextcheck // bounded shutdown
 			if err := runtime.StopAndWait(shutdownCtx); err != nil {
 				s.log.WarnS(
@@ -1533,13 +1533,19 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 	// runs first.
 	//nolint:contextcheck // Shutdown requires a fresh bounded context.
 	defer func() {
-		if runtime := s.getArkChannelMailboxRuntime(); runtime != nil {
+		if runtime := s.takeArkChannelMailboxRuntime(); runtime != nil {
 			shutdownCtx, cancel := context.WithTimeout(
 				context.Background(), DefaultShutdownTimeout,
 			)
 			defer cancel()
 
-			_ = runtime.StopAndWait(shutdownCtx)
+			if err := runtime.StopAndWait(shutdownCtx); err != nil {
+				s.log.WarnS(
+					shutdownCtx,
+					"Ark channel mailbox shutdown failed",
+					err,
+				)
+			}
 		}
 	}()
 	activePermissions, err := registeredRPCPermissions(s.grpcServer)

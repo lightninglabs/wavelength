@@ -2,10 +2,11 @@ package waved
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/lightninglabs/wavelength/lnruntime"
 	"github.com/lightninglabs/wavelength/waverpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // ExportOORRecoveryPackage returns the immutable local lineage for one exact
@@ -15,21 +16,27 @@ func (r *RPCServer) ExportOORRecoveryPackage(ctx context.Context,
 	*waverpc.ExportOORRecoveryPackageResponse, error) {
 
 	if r == nil || r.server == nil || r.server.vtxoStore == nil {
-		return nil, fmt.Errorf("OOR recovery exporter is unavailable")
+		return nil, status.Error(
+			codes.Unavailable,
+			"OOR recovery exporter is unavailable",
+		)
 	}
 	source, err := lnruntime.OORRecoverySourceFromRPC(
 		req.GetSource(),
 	)
 	if err != nil {
-		return nil, err
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	packages := r.newLocalOORArtifactStore()
 	if packages == nil {
-		return nil, fmt.Errorf("OOR artifact store is unavailable")
+		return nil, status.Error(
+			codes.Unavailable, "OOR artifact store is unavailable",
+		)
 	}
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("fetch Ark operator terms: %w", err)
+		return nil, status.Errorf(codes.Unavailable, "fetch Ark "+
+			"operator terms: %v", err)
 	}
 	exporter := &arkChannelRecoveryArchive{
 		vtxos: r.server.vtxoStore, packages: packages,
@@ -38,11 +45,13 @@ func (r *RPCServer) ExportOORRecoveryPackage(ctx context.Context,
 		ctx, source, terms.PubKey,
 	)
 	if err != nil {
-		return nil, err
+		return nil, status.Errorf(codes.Internal, "export OOR "+
+			"recovery package: %v", err)
 	}
 	message, err := lnruntime.ChannelRecoveryToRPC(recovery)
 	if err != nil {
-		return nil, err
+		return nil, status.Errorf(codes.Internal, "encode OOR "+
+			"recovery package: %v", err)
 	}
 
 	return &waverpc.ExportOORRecoveryPackageResponse{

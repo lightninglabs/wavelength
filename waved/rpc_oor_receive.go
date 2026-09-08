@@ -136,7 +136,7 @@ func (r *RPCServer) NewReceiveScript(ctx context.Context,
 	var keyDesc *keychain.KeyDescriptor
 	var pkScript []byte
 	if req.GetIdentityKey() {
-		identityKey := r.server.clientKeyDesc
+		identityKey := r.server.loadClientKeyDesc()
 		if identityKey.PubKey == nil {
 			return nil, status.Errorf(codes.Internal, "missing "+
 				"daemon identity key")

@@ -41,9 +41,10 @@ var (
 )
 
 const (
-	arkChannelArkKeyFamily     keychain.KeyFamily = 220
-	arkChannelBackingKeyFamily keychain.KeyFamily = 221
-	arkChannelFunderKeyFamily  keychain.KeyFamily = 223
+	arkChannelArkKeyFamily          keychain.KeyFamily = 220
+	arkChannelBackingKeyFamily      keychain.KeyFamily = 221
+	arkChannelFunderKeyFamily       keychain.KeyFamily = 223
+	arkChannelPaymentCleanupTimeout                    = 30 * time.Second
 )
 
 // HubArkChannelControllerConfig contains the hub-only signer, publisher, and
@@ -1316,31 +1317,31 @@ func (c *NativeArkChannelController) PayLightningInvoice(ctx context.Context,
 	}
 	record, err := c.service.GetChannel(ctx, preparation.ChannelID)
 	if err != nil {
-		return LightningPaymentResult{}, err
+		return LightningPaymentResult{}, c.cancelOutgoingPayment(
+			ctx, preparation.PaymentHash, err,
+		)
 	}
 	if record.Snapshot.Terms.ReservedSCID != preparation.ReservedSCID {
-		return LightningPaymentResult{}, fmt.Errorf("payment " +
-			"preparation changed channel SCID")
+		err := fmt.Errorf("payment preparation changed channel SCID")
+
+		return LightningPaymentResult{}, c.cancelOutgoingPayment(
+			ctx, preparation.PaymentHash, err,
+		)
 	}
 	preimage, err := c.node.PayInvoiceResult(
 		ctx, record, preparation.PaymentHash, preparation.PrivateAmount,
 	)
 	if err != nil {
-		cancelErr := c.paymentPeer.CancelOutgoingPayment(
-			ctx, preparation.PaymentHash, err.Error(),
+		return LightningPaymentResult{}, c.cancelOutgoingPayment(
+			ctx, preparation.PaymentHash, err,
 		)
-		if cancelErr != nil {
-			return LightningPaymentResult{}, errors.Join(
-				err, fmt.Errorf("cancel outgoing payment: %w",
-					cancelErr),
-			)
-		}
-
-		return LightningPaymentResult{}, err
 	}
 	if preimage.Hash() != preparation.PaymentHash {
-		return LightningPaymentResult{}, fmt.Errorf("payment " +
-			"preimage does not match preparation")
+		err := fmt.Errorf("payment preimage does not match preparation")
+
+		return LightningPaymentResult{}, c.cancelOutgoingPayment(
+			ctx, preparation.PaymentHash, err,
+		)
 	}
 
 	return LightningPaymentResult{
@@ -1348,6 +1349,28 @@ func (c *NativeArkChannelController) PayLightningInvoice(ctx context.Context,
 		PrivateAmount: preparation.PrivateAmount, Fee: preparation.Fee,
 		ChannelID: preparation.ChannelID,
 	}, nil
+}
+
+// cancelOutgoingPayment releases a prepared public-payment reservation even
+// when the request that detected the failure has already been canceled.
+func (c *NativeArkChannelController) cancelOutgoingPayment(ctx context.Context,
+	hash lntypes.Hash, cause error) error {
+
+	cleanupCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), arkChannelPaymentCleanupTimeout,
+	)
+	defer cancel()
+
+	err := c.paymentPeer.CancelOutgoingPayment(
+		cleanupCtx, hash, cause.Error(),
+	)
+	if err != nil {
+		return errors.Join(
+			cause, fmt.Errorf("cancel outgoing payment: %w", err),
+		)
+	}
+
+	return cause
 }
 
 // PrepareIncomingPayment installs the known-preimage native invoice before a

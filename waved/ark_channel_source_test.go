@@ -1,6 +1,8 @@
 package waved
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -170,6 +172,71 @@ func TestShouldRestoreArkChannelSourceWatch(t *testing.T) {
 			)
 		})
 	}
+}
+
+// TestRestoreArkChannelSourceWatchesIsolatesFailures proves a corrupt source
+// does not prevent later channels from restoring their chain protection.
+func TestRestoreArkChannelSourceWatchesIsolatesFailures(t *testing.T) {
+	t.Parallel()
+
+	firstID := arkchannel.ID{1}
+	secondID := arkchannel.ID{2}
+	records := []arkchannel.Record{
+		{
+			Snapshot: arkchannel.Snapshot{
+				Terms: arkchannel.Terms{
+					ID: firstID,
+				},
+				Phase: arkchannel.PhaseActive,
+				Source: &arkchannel.VTXOBinding{
+					OutPoint: wire.OutPoint{
+						Index: 1,
+					},
+				},
+				RecoveryReady: true,
+			},
+		},
+		{
+			Snapshot: arkchannel.Snapshot{
+				Terms: arkchannel.Terms{
+					ID: secondID,
+				},
+				Phase: arkchannel.PhaseActive,
+				Source: &arkchannel.VTXOBinding{
+					OutPoint: wire.OutPoint{
+						Index: 2,
+					},
+				},
+				RecoveryReady: true,
+			},
+		},
+	}
+	tracked := make([]arkchannel.ID, 0, 1)
+	err := restoreArkChannelSourceWatches(
+		t.Context(), records,
+		func(_ context.Context, outpoint wire.OutPoint) (
+			*vtxo.Descriptor, error) {
+
+			if outpoint.Index == 1 {
+				return nil, errors.New("corrupt source")
+			}
+
+			return &vtxo.Descriptor{}, nil
+		},
+		func(_ context.Context, id arkchannel.ID,
+			_ *vtxo.Descriptor) error {
+
+			tracked = append(tracked, id)
+
+			return nil
+		},
+	)
+
+	var failures *arkchannel.ResumeFailures
+	require.ErrorAs(t, err, &failures)
+	require.Len(t, failures.Failures, 1)
+	require.Equal(t, firstID, failures.Failures[0].ChannelID)
+	require.Equal(t, []arkchannel.ID{secondID}, tracked)
 }
 
 // TestReceiveIntentTermsAreDeterministic proves invoice replay derives the same

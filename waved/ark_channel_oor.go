@@ -85,7 +85,7 @@ func (s *Server) prepareArkChannelOOR(ctx context.Context,
 	}
 	rpcServer := &RPCServer{server: s}
 	fail := func(err error) (arkchannel.VTXOBinding, error) {
-		rpcServer.unlockSelectedVTXOsBestEffort(ctx, locked)
+		unlockArkChannelSelectedVTXOs(ctx, rpcServer, locked)
 
 		return arkchannel.VTXOBinding{}, err
 	}
@@ -171,9 +171,8 @@ func (s *Server) prepareArkChannelOOR(ctx context.Context,
 					lookup.InputOutpoints, outpoints,
 				) {
 
-					rpcServer.unlockSelectedVTXOsBestEffort(
-						context.WithoutCancel(ctx),
-						locked,
+					unlockArkChannelSelectedVTXOs(
+						ctx, rpcServer, locked,
 					)
 				}
 
@@ -194,9 +193,8 @@ func (s *Server) prepareArkChannelOOR(ctx context.Context,
 						outpoints,
 					) {
 
-					rpcServer.unlockSelectedVTXOsBestEffort(
-						context.WithoutCancel(ctx),
-						locked,
+					unlockArkChannelSelectedVTXOs(
+						ctx, rpcServer, locked,
 					)
 				}
 
@@ -207,10 +205,23 @@ func (s *Server) prepareArkChannelOOR(ctx context.Context,
 		return fail(err)
 	}
 	if prepared.Existing {
-		rpcServer.unlockSelectedVTXOsBestEffort(ctx, locked)
+		unlockArkChannelSelectedVTXOs(ctx, rpcServer, locked)
 	}
 
 	return prepared.Binding, nil
+}
+
+// unlockArkChannelSelectedVTXOs releases a losing selection even after the
+// request that created it has been canceled.
+func unlockArkChannelSelectedVTXOs(ctx context.Context, rpcServer *RPCServer,
+	locked *wallet.SelectAndLockVTXOsResponse) {
+
+	unlockCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), submittedOORUnlockTimeout,
+	)
+	defer cancel()
+
+	rpcServer.unlockSelectedVTXOsBestEffort(unlockCtx, locked)
 }
 
 // reconcileArkChannelPreparation owns a canceled caller's selected locks until

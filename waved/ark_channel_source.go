@@ -297,21 +297,53 @@ func (a *arkChannelRecoveryArchive) InstallRecoveryPackage(ctx context.Context,
 func (a *arkChannelRecoveryArchive) RestoreWatches(ctx context.Context,
 	records []arkchannel.Record) error {
 
+	return restoreArkChannelSourceWatches(
+		ctx, records, a.vtxos.GetVTXO, a.watcher.Track,
+	)
+}
+
+// arkChannelSourceWatchTracker arms source watches for one durable channel.
+type arkChannelSourceWatchTracker func(context.Context, arkchannel.ID,
+	*vtxo.Descriptor) error
+
+// restoreArkChannelSourceWatches restores every eligible source independently
+// so one damaged record cannot suppress protection for healthy channels.
+func restoreArkChannelSourceWatches(ctx context.Context,
+	records []arkchannel.Record,
+	load func(context.Context, wire.OutPoint) (*vtxo.Descriptor, error),
+	track arkChannelSourceWatchTracker) error {
+
+	failures := make([]arkchannel.ResumeFailure, 0)
 	for i := range records {
 		snapshot := records[i].Snapshot
 		if !shouldRestoreArkChannelSourceWatch(snapshot) {
 			continue
 		}
-		desc, err := a.vtxos.GetVTXO(ctx, snapshot.Source.OutPoint)
+		desc, err := load(ctx, snapshot.Source.OutPoint)
 		if err != nil {
-			return fmt.Errorf("restore Ark channel recovery "+
-				"source %x: %w", snapshot.Terms.ID[:4], err)
+			failures = append(failures, arkchannel.ResumeFailure{
+				ChannelID: snapshot.Terms.ID,
+				Err: fmt.Errorf(
+					"load recovery source: %w", err,
+				),
+			})
+
+			continue
 		}
-		if err := a.watcher.Track(
+		if err := track(
 			ctx, snapshot.Terms.ID, desc,
 		); err != nil {
-			return err
+
+			failures = append(failures, arkchannel.ResumeFailure{
+				ChannelID: snapshot.Terms.ID,
+				Err: fmt.Errorf(
+					"restore source watch: %w", err,
+				),
+			})
 		}
+	}
+	if len(failures) > 0 {
+		return &arkchannel.ResumeFailures{Failures: failures}
 	}
 
 	return nil
