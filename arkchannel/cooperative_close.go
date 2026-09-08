@@ -59,8 +59,10 @@ func (r CooperativeCloseRequest) Validate() error {
 	return nil
 }
 
-// CooperativeCloseProposal is the exact unsigned OOR checkpoint and the clean
-// lnd commitment state from which its replacement VTXO amounts were derived.
+// CooperativeCloseProposal is the exact unsigned OOR checkpoint and the
+// full-capacity role balance allocation used for its replacement VTXO
+// amounts. ClientBalance and HubBalance must already sum exactly to
+// Terms.Capacity; core does not infer or redistribute a missing balance.
 type CooperativeCloseProposal struct {
 	Transaction      []byte
 	CommitmentHeight uint64
@@ -228,8 +230,8 @@ type CooperativeCloseTemplate struct {
 	recipients  []oortx.RecipientOutput
 }
 
-// NewCooperativeCloseTemplate builds an OOR transfer from the same clean
-// commitment height and balance allocation observed by both lnd endpoints.
+// NewCooperativeCloseTemplate builds an OOR transfer from full-capacity role
+// balances supplied by the runtime at the same clean commitment height.
 func NewCooperativeCloseTemplate(terms Terms, source VTXOBinding,
 	request CooperativeCloseRequest,
 	clientBalance, hubBalance btcutil.Amount, commitmentHeight uint64) (
@@ -401,7 +403,7 @@ type cooperativeCloseArtifacts struct {
 }
 
 // buildCooperativeCloseProposal derives OOR outputs only from immutable
-// channel facts and lnd's clean balance allocation.
+// channel facts and a full-capacity role balance allocation.
 func buildCooperativeCloseProposal(terms Terms, source VTXOBinding,
 	request CooperativeCloseRequest,
 	clientBalance, hubBalance btcutil.Amount, commitmentHeight uint64) (

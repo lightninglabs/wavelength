@@ -15,8 +15,8 @@ import (
 )
 
 // TestCooperativeCloseBuildsThreePartyOOR proves the no-delay 3-of-3 policy
-// authorizes an ordinary OOR transfer that preserves lnd balances and never
-// spends the unpublished channel point.
+// authorizes an ordinary OOR transfer that preserves full-capacity role
+// balances and never spends the unpublished channel point.
 func TestCooperativeCloseBuildsThreePartyOOR(t *testing.T) {
 	t.Parallel()
 
@@ -101,7 +101,7 @@ func TestCooperativeCloseBuildsThreePartyOOR(t *testing.T) {
 }
 
 // TestCooperativeCloseReturnsReserveToHubFunder verifies the backing reserve
-// never changes the lnd balance allocation and follows the original funder.
+// never changes the full-capacity role allocation and follows the funder.
 func TestCooperativeCloseReturnsReserveToHubFunder(t *testing.T) {
 	t.Parallel()
 
@@ -115,6 +115,20 @@ func TestCooperativeCloseReturnsReserveToHubFunder(t *testing.T) {
 	proposal := template.Proposal()
 	require.EqualValues(t, 25_000, proposal.ClientOutput)
 	require.Equal(t, btcutil.Amount(79_000), proposal.HubOutput)
+}
+
+// TestCooperativeCloseRequiresFullCapacityRoleBalances proves core neither
+// infers nor assigns a balance shortfall supplied by the runtime.
+func TestCooperativeCloseRequiresFullCapacityRoleBalances(t *testing.T) {
+	t.Parallel()
+
+	terms, source, request, _, _, _ := testCooperativeCloseFixture(
+		t, KindPromotion, 2_000,
+	)
+	_, err := NewCooperativeCloseTemplate(
+		terms, source, request, 39_000, 60_000, 4,
+	)
+	require.ErrorContains(t, err, "do not match capacity")
 }
 
 // TestCooperativeCloseRejectsUnsafeSettlement verifies peers cannot alter a
