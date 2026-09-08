@@ -352,9 +352,6 @@ func receiveSummaryFromRow(row swapsqlc.ReceiveSwap) (SwapSummary, error) {
 	if err != nil {
 		return SwapSummary{}, err
 	}
-	if row.ChannelBackingFeeSat < 0 {
-		return SwapSummary{}, fmt.Errorf("negative channel backing fee")
-	}
 	if len(row.ReservedScid) != 0 && len(row.ReservedScid) != 8 {
 		return SwapSummary{}, fmt.Errorf("invalid reserved channel " +
 			"SCID")
@@ -519,20 +516,20 @@ func (s *ReceiveSession) persist(ctx context.Context) error {
 		PendingHtlcAckCursor: int64(
 			s.pendingHTLCAckCursor,
 		),
-		ClaimReceivePubkey:   cloneBytesOrEmpty(s.claimReceivePubKey),
-		ClaimReceivePkscript: cloneBytesOrEmpty(s.claimReceiveScript),
-		ClaimSessionID:       s.claimSessionID,
-		ClaimRecoveryID:      s.claimRecoveryID,
-		InterventionReason:   s.interventionReason,
-		RequestedAmountSat:   int64(s.requestedAmountSat),
-		AvailableCreditSat:   int64(s.availableCreditSat),
-		AttachedCreditSat:    int64(s.attachedCreditSat),
-		DustLimitSat:         int64(s.dustLimitSat),
-		ReservedScid:         encodeReceiveSCID(s.reservedSCID),
-		ChannelBackingFeeSat: 0,
-		ChannelID:            append([]byte(nil), s.channelID[:]...),
-		CreatedAtUnix:        s.createdAt.Unix(),
-		UpdatedAtUnix:        now,
+		ClaimReceivePubkey:    cloneBytesOrEmpty(s.claimReceivePubKey),
+		ClaimReceivePkscript:  cloneBytesOrEmpty(s.claimReceiveScript),
+		ClaimSessionID:        s.claimSessionID,
+		ClaimRecoveryID:       s.claimRecoveryID,
+		InterventionReason:    s.interventionReason,
+		RequestedAmountSat:    int64(s.requestedAmountSat),
+		AvailableCreditSat:    int64(s.availableCreditSat),
+		AttachedCreditSat:     int64(s.attachedCreditSat),
+		DustLimitSat:          int64(s.dustLimitSat),
+		ReservedScid:          encodeReceiveSCID(s.reservedSCID),
+		ChannelReceiveEnabled: s.channelReceiveEnabled,
+		ChannelID:             append([]byte(nil), s.channelID[:]...),
+		CreatedAtUnix:         s.createdAt.Unix(),
+		UpdatedAtUnix:         now,
 	}
 
 	if s.createdAt.IsZero() {
@@ -728,9 +725,6 @@ func receiveSessionFromRow(c *SwapClient,
 	if err != nil {
 		return nil, err
 	}
-	if row.ChannelBackingFeeSat < 0 {
-		return nil, fmt.Errorf("negative channel backing fee")
-	}
 	if len(row.ReservedScid) != 0 && len(row.ReservedScid) != 8 {
 		return nil, fmt.Errorf("invalid reserved channel SCID")
 	}
@@ -839,18 +833,19 @@ func receiveSessionFromRow(c *SwapClient,
 		claimReceiveScript: append(
 			[]byte(nil), row.ClaimReceivePkscript...,
 		),
-		claimSessionID:     row.ClaimSessionID,
-		claimRecoveryID:    row.ClaimRecoveryID,
-		interventionReason: row.InterventionReason,
-		clientPubKey:       clientKey,
-		operatorPubKey:     operatorKey,
-		swapServerPubKey:   swapServerKey,
-		settlementType:     SettlementType(row.SettlementType),
-		reservedSCID:       decodeReceiveSCID(row.ReservedScid),
-		channelID:          receiveChannelID(row.ChannelID),
-		paymentAddr:        paymentAddr,
-		createdAt:          time.Unix(row.CreatedAtUnix, 0),
-		updatedAt:          time.Unix(row.UpdatedAtUnix, 0),
+		claimSessionID:        row.ClaimSessionID,
+		claimRecoveryID:       row.ClaimRecoveryID,
+		interventionReason:    row.InterventionReason,
+		clientPubKey:          clientKey,
+		operatorPubKey:        operatorKey,
+		swapServerPubKey:      swapServerKey,
+		settlementType:        SettlementType(row.SettlementType),
+		reservedSCID:          decodeReceiveSCID(row.ReservedScid),
+		channelReceiveEnabled: row.ChannelReceiveEnabled,
+		channelID:             receiveChannelID(row.ChannelID),
+		paymentAddr:           paymentAddr,
+		createdAt:             time.Unix(row.CreatedAtUnix, 0),
+		updatedAt:             time.Unix(row.UpdatedAtUnix, 0),
 	}, nil
 }
 
@@ -860,8 +855,7 @@ func receiveExpectedVHTLCSat(row swapsqlc.ReceiveSwap) uint64 {
 		requestedAmountSat = uint64(row.AmountSat)
 	}
 
-	return requestedAmountSat + uint64(row.AttachedCreditSat) +
-		uint64(row.ChannelBackingFeeSat)
+	return requestedAmountSat + uint64(row.AttachedCreditSat)
 }
 
 func encodeReceiveSCID(scid uint64) []byte {

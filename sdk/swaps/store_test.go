@@ -169,6 +169,50 @@ func TestPaySessionPersistAllowsCreditOnlyWithoutVHTLC(t *testing.T) {
 	require.Empty(t, resumed.vhtlcPolicyTemplate)
 }
 
+// TestReceiveChannelRailOwnershipPersists verifies restart recovery remembers
+// whether this receive still owns the private hold invoice and channel intent.
+func TestReceiveChannelRailOwnershipPersists(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := newTestSwapStore(t)
+	client := NewSwapClientWithStore(nil, nil, nil, nil, store)
+
+	key, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+
+	now := time.Now()
+	session := &ReceiveSession{
+		Invoice:               "ln-channel-receive",
+		Preimage:              preimage,
+		PaymentHash:           preimage.Hash(),
+		client:                client,
+		amountSat:             21_000,
+		requestedAmountSat:    21_000,
+		attachedCreditSat:     1_000,
+		expectedVHTLCSat:      22_000,
+		reservedSCID:          99,
+		channelReceiveEnabled: true,
+		state:                 ReceiveStateInvoiceCreated,
+		deadline:              now.Add(time.Hour),
+		clientPubKey:          key.PubKey(),
+		operatorPubKey:        key.PubKey(),
+		settlementType:        SettlementTypeLightning,
+		createdAt:             now,
+	}
+	require.NoError(t, session.persist(ctx))
+
+	resumed, err := client.ResumeReceiveViaLightning(
+		ctx, session.PaymentHash,
+	)
+	require.NoError(t, err)
+	require.True(t, resumed.channelReceiveEnabled)
+	require.Equal(t, uint64(99), resumed.reservedSCID)
+	require.Equal(t, uint64(22_000), resumed.expectedVHTLCSat)
+}
+
 // TestReceiveAuthKeyDerivesAcrossRestart verifies receive-auth keys come from
 // the wallet-backed daemon derivation and are not stored in the swap DB.
 func TestReceiveAuthKeyDerivesAcrossRestart(t *testing.T) {

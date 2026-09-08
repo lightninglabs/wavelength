@@ -255,23 +255,24 @@ type ReceiveSession struct {
 	// PaymentHash is the Lightning payment hash for this receive flow.
 	PaymentHash lntypes.Hash
 
-	client             *SwapClient
-	amountSat          btcutil.Amount
-	memo               string
-	payerFeeMsat       uint64
-	requestedAmountSat uint64
-	availableCreditSat uint64
-	attachedCreditSat  uint64
-	expectedVHTLCSat   uint64
-	dustLimitSat       uint64
-	reservedSCID       uint64
-	channelID          [32]byte
-	state              ReceiveState
-	deadline           time.Time
-	createdAt          time.Time
-	updatedAt          time.Time
-	clientPubKey       *btcec.PublicKey
-	operatorPubKey     *btcec.PublicKey
+	client                *SwapClient
+	amountSat             btcutil.Amount
+	memo                  string
+	payerFeeMsat          uint64
+	requestedAmountSat    uint64
+	availableCreditSat    uint64
+	attachedCreditSat     uint64
+	expectedVHTLCSat      uint64
+	dustLimitSat          uint64
+	reservedSCID          uint64
+	channelReceiveEnabled bool
+	channelID             [32]byte
+	state                 ReceiveState
+	deadline              time.Time
+	createdAt             time.Time
+	updatedAt             time.Time
+	clientPubKey          *btcec.PublicKey
+	operatorPubKey        *btcec.PublicKey
 	// swapServerPubKey is the remote sender in the accepted vHTLC policy.
 	// For Lightning-backed receives this is the swap server key; for
 	// direct same-Ark receives this is the paying client's sender key.

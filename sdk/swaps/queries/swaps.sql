@@ -31,7 +31,7 @@ INSERT INTO receive_swaps (
 	attached_credit_sat,
 	dust_limit_sat,
 	reserved_scid,
-	channel_backing_fee_sat,
+	channel_receive_enabled,
 	channel_id,
 	created_at_unix,
 	updated_at_unix
@@ -72,7 +72,7 @@ ON CONFLICT (payment_hash) DO UPDATE SET
 	attached_credit_sat = EXCLUDED.attached_credit_sat,
 	dust_limit_sat = EXCLUDED.dust_limit_sat,
 	reserved_scid = EXCLUDED.reserved_scid,
-	channel_backing_fee_sat = EXCLUDED.channel_backing_fee_sat,
+	channel_receive_enabled = EXCLUDED.channel_receive_enabled,
 	channel_id = EXCLUDED.channel_id,
 	updated_at_unix = EXCLUDED.updated_at_unix;
 

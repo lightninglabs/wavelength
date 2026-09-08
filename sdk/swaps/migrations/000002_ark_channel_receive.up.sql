@@ -1,10 +1,10 @@
--- Persist the future-channel identity and legacy fee reserve needed to resume
--- direct private settlement after restart.
+-- Persist the future-channel identity and ownership needed to resume direct
+-- private settlement after restart.
 ALTER TABLE receive_swaps
     ADD COLUMN reserved_scid BLOB;
 
 ALTER TABLE receive_swaps
-    ADD COLUMN channel_backing_fee_sat BIGINT NOT NULL DEFAULT 0;
+    ADD COLUMN channel_receive_enabled BOOLEAN NOT NULL DEFAULT FALSE;
 
 ALTER TABLE receive_swaps
     ADD COLUMN channel_id BLOB;
