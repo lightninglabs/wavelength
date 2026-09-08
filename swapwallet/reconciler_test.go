@@ -44,6 +44,95 @@ func newReconcileFixture(t *testing.T) (*Runtime, *db.ActivityPersistenceStore,
 	return runtime, store, rpc
 }
 
+// TestRecoveredSettledPayProjectsOnceOnStartup verifies the wallet surfaces a
+// restart-reconciled pay as COMPLETE exactly once. The negative control proves
+// an authoritative failed pay remains FAILED through the same startup backfill.
+func TestRecoveredSettledPayProjectsOnceOnStartup(t *testing.T) {
+	t.Parallel()
+
+	const (
+		paymentHash = "b960600a4e03672eefd18d12604a1e5b" +
+			"932c57dc2670f62ffb6ac17a4c6b31f2"
+		failedHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		paymentAmount = int64(1001)
+	)
+
+	ctx := t.Context()
+	runtime, store, _ := newReconcileFixture(t)
+	swap, ok := runtime.deps.SwapService.(*fakeSwapService)
+	require.True(t, ok)
+
+	settled := &swapclientrpc.SwapSummary{
+		PaymentHash: paymentHash,
+		Direction: swapclientrpc.
+			SwapDirection_SWAP_DIRECTION_PAY,
+		State:     swapclientrpc.SwapState_SWAP_STATE_COMPLETED,
+		AmountSat: paymentAmount,
+		FeeSat:    1,
+		Preimage:  "authoritative-settlement-preimage",
+	}
+	require.NoError(
+		t,
+		runtime.fanOutSwapUpdate(
+			&swapclientrpc.SubscribeSwapsResponse{
+				Swap: settled,
+			},
+		),
+	)
+
+	// A daemon restart replays persisted swaps through ListSwaps and the
+	// startup backfill. The canonical store must suppress the duplicate
+	// terminal transition event.
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			settled,
+		},
+	}
+	runtime.backfillActivity(ctx)
+
+	entry, err := store.GetEntry(ctx, paymentHash)
+	require.NoError(t, err)
+	require.Equal(
+		t, int64(wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE),
+		entry.Status,
+	)
+	require.Equal(t, -paymentAmount, entry.AmountSat)
+	require.Equal(t, int64(1), entry.FeeSat)
+
+	events, err := store.PullEvents(ctx, 0, 100)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.Equal(t, paymentHash, events[0].CanonicalID)
+
+	failed := &swapclientrpc.SwapSummary{
+		PaymentHash: failedHash,
+		Direction: swapclientrpc.
+			SwapDirection_SWAP_DIRECTION_PAY,
+		State:     swapclientrpc.SwapState_SWAP_STATE_FAILED,
+		AmountSat: paymentAmount,
+	}
+	swap.listSwapsResp.Swaps = append(swap.listSwapsResp.Swaps, failed)
+	runtime.backfillActivity(ctx)
+
+	failedEntry, err := store.GetEntry(ctx, failedHash)
+	require.NoError(t, err)
+	require.Equal(
+		t, int64(wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED),
+		failedEntry.Status,
+	)
+
+	events, err = store.PullEvents(ctx, 0, 100)
+	require.NoError(t, err)
+	require.Len(t, events, 2)
+
+	// A repeated startup pass must suppress both terminal rows.
+	runtime.backfillActivity(ctx)
+	events, err = store.PullEvents(ctx, 0, 100)
+	require.NoError(t, err)
+	require.Len(t, events, 2)
+}
+
 // TestReconcileActivityFlipsDepositLive verifies the reconciler lands a
 // confirmed boarding deposit's PENDING -> COMPLETE transition into the store
 // live (no restart), and that a second pass is a no-op (ProjectEntry
