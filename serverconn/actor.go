@@ -876,10 +876,11 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 		Headers:         a.cfg.mergeAuthHeaders(nil),
 		Body:            body,
 		Rpc: &mailboxpb.RpcMeta{
-			Kind:    mailboxpb.RpcMeta_KIND_EVENT,
-			Service: service,
-			Method:  method,
-			ReplyTo: a.cfg.replyMailboxID(),
+			Kind:          mailboxpb.RpcMeta_KIND_EVENT,
+			Service:       service,
+			Method:        method,
+			CorrelationId: req.CorrelationKey(),
+			ReplyTo:       a.cfg.replyMailboxID(),
 		},
 	}
 
