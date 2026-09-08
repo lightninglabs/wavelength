@@ -317,6 +317,10 @@ func (t Terms) Validate() error {
 	if reservedSCID.BlockHeight == 0 {
 		return fmt.Errorf("channel requires a reserved virtual SCID")
 	}
+	if reservedSCID.TxPosition != 0 {
+		return fmt.Errorf("channel funding output position must be " +
+			"zero")
+	}
 	if _, _, err := t.VTXO.Artifacts(); err != nil {
 		return err
 	}

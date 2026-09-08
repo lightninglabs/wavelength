@@ -1102,6 +1102,20 @@ func TestReceiveIntentRejectsUnsafeTerms(t *testing.T) {
 	require.ErrorContains(t, err, "hub funded")
 }
 
+// TestChannelTermsRejectNonZeroFundingPosition keeps the advertised alias
+// consistent with the single output in every channel backing transaction.
+func TestChannelTermsRejectNonZeroFundingPosition(t *testing.T) {
+	t.Parallel()
+
+	terms := testTerms(t, KindPromotion)
+	scid := lnwire.NewShortChanIDFromInt(terms.ReservedSCID)
+	scid.TxPosition = 1
+	terms.ReservedSCID = scid.ToUint64()
+
+	_, err := NewState(terms)
+	require.ErrorContains(t, err, "funding output position must be zero")
+}
+
 // TestChannelTermsRejectUnsafeRefundDelay verifies a funder cannot reclaim the
 // VTXO before the channel parties have the configured reaction window.
 func TestChannelTermsRejectUnsafeRefundDelay(t *testing.T) {
