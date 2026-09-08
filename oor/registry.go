@@ -730,6 +730,32 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 			return fn.Err[ActorResp](err)
 		}
 
+		prepared, err := store.GetUnfailedSessionByIdempotencyKey(
+			ctx, req.IdempotencyKey,
+		)
+		switch {
+		case err == nil:
+			if prepared.Direction !=
+				clientdb.OORSessionDirectionOutgoing {
+				return fn.Err[ActorResp](
+					fmt.Errorf("%w: key %q belongs to a "+
+						"non-outgoing session",
+						ErrIdempotencyKeyConflict,
+						req.IdempotencyKey),
+				)
+			}
+
+			delete(r.pendingOutgoingKeys, req.IdempotencyKey)
+
+			return fn.Ok[ActorResp](&StartTransferResponse{
+				SessionID: SessionID(prepared.SessionID),
+				Existing:  true,
+			})
+
+		case !errors.Is(err, clientdb.ErrOORSessionNotFound):
+			return fn.Err[ActorResp](err)
+		}
+
 		pendingID, pending := r.pendingOutgoingKeys[req.IdempotencyKey]
 		if pending {
 			if _, active := r.active[pendingID]; active {
@@ -905,9 +931,15 @@ func (r *oorRegistryBehavior) validateOutgoingDispatchIdentity(
 	switch {
 	case err == nil && record.Direction ==
 		clientdb.OORSessionDirectionOutgoing &&
-		record.Status == clientdb.OORSessionStatusFailed:
+		record.Status == clientdb.OORSessionStatusFailed &&
+		(record.IdempotencyKey == "" || record.IdempotencyKey == key):
 
 		replaceFailed = true
+
+	case err == nil && record.Direction ==
+		clientdb.OORSessionDirectionOutgoing &&
+		record.IdempotencyKey == key:
+		return false, nil
 
 	case err == nil:
 		return false, fmt.Errorf("%w: session %s",
@@ -960,6 +992,32 @@ func (r *oorRegistryBehavior) handleLookupTransfer(ctx context.Context,
 		})
 
 	case !errors.Is(err, clientdb.ErrOORDispatchAttemptNotFound):
+		return fn.Err[ActorResp](err)
+	}
+
+	prepared, err := r.cfg.RegistryStore.
+		GetUnfailedSessionByIdempotencyKey(
+			ctx, req.IdempotencyKey,
+		)
+	switch {
+	case err == nil:
+		if prepared.Direction != clientdb.OORSessionDirectionOutgoing {
+			return fn.Err[ActorResp](
+				fmt.Errorf("%w: key %q belongs to a "+
+					"non-outgoing session",
+					ErrIdempotencyKeyConflict,
+					req.IdempotencyKey),
+			)
+		}
+
+		delete(r.pendingOutgoingKeys, req.IdempotencyKey)
+
+		return fn.Ok[ActorResp](&LookupTransferResponse{
+			SessionID: SessionID(prepared.SessionID),
+			Found:     true,
+		})
+
+	case !errors.Is(err, clientdb.ErrOORSessionNotFound):
 		return fn.Err[ActorResp](err)
 	}
 
