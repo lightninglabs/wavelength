@@ -64,6 +64,8 @@ type boundAssetVTXOFixture struct {
 	sealedPackage []byte
 }
 
+// newBoundAssetVTXOFixture binds asset policy data and the advertised sweep
+// policy so transition tests reach the asset-verification boundary.
 func newBoundAssetVTXOFixture(t *testing.T,
 	h *boardingTestHarness) *boundAssetVTXOFixture {
 
@@ -120,7 +122,11 @@ func newBoundAssetVTXOFixture(t *testing.T,
 		},
 	}
 
-	sweepRoot := chainhash.HashH([]byte("sweep"))
+	sweepLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
+		h.operatorPubKey, 1008,
+	)
+	require.NoError(t, err)
+	sweepRoot := sweepLeaf.TapHash()
 	assetTree, err := tree.NewTree(
 		wire.OutPoint{Hash: commitment.TxHash()}, commitment.TxOut[0],
 		[]tree.LeafDescriptor{{
@@ -150,6 +156,8 @@ func newBoundAssetVTXOFixture(t *testing.T,
 	}
 }
 
+// TestCommitmentTxReceivedVerifiesAssetVTXO checks asset verification and
+// owned-script registration after the round sweep policy is authenticated.
 func TestCommitmentTxReceivedVerifiesAssetVTXO(t *testing.T) {
 	t.Parallel()
 
@@ -165,6 +173,7 @@ func TestCommitmentTxReceivedVerifiesAssetVTXO(t *testing.T) {
 		CommitmentTx: fixture.commitmentTx,
 		TxID:         fixture.commitmentTx.UnsignedTx.TxHash(),
 		SweepDelay:   1008,
+		SweepKey:     h.operatorPubKey,
 		VTXOTreePaths: map[int]*tree.Tree{
 			0: fixture.tree,
 		},
@@ -278,6 +287,8 @@ func TestValidateVTXOTreeBindingUsesAssetRoot(t *testing.T) {
 	)
 }
 
+// TestCommitmentTxReceivedRejectsUnverifiedAssetVTXO ensures a valid sweep
+// policy cannot bypass missing asset verification or sealed package data.
 func TestCommitmentTxReceivedRejectsUnverifiedAssetVTXO(t *testing.T) {
 	t.Parallel()
 
@@ -312,6 +323,7 @@ func TestCommitmentTxReceivedRejectsUnverifiedAssetVTXO(t *testing.T) {
 				TxID: fixture.commitmentTx.UnsignedTx.
 					TxHash(),
 				SweepDelay: 1008,
+				SweepKey:   h.operatorPubKey,
 				VTXOTreePaths: map[int]*tree.Tree{
 					0: fixture.tree,
 				},

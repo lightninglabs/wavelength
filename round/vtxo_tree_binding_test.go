@@ -404,6 +404,7 @@ func TestCommitmentTxReceivedRejectsUnboundTree(t *testing.T) {
 		RoundID:      roundID,
 		CommitmentTx: commitmentTx,
 		TxID:         commitmentTx.UnsignedTx.TxHash(),
+		SweepKey:     h.operatorPubKey,
 		SweepDelay:   1008,
 		VTXOTreePaths: map[int]*tree.Tree{
 			0: vtxtTree,
@@ -491,6 +492,7 @@ func TestCommitmentTxReceivedRejectsCommitmentSiphon(t *testing.T) {
 		RoundID:      roundID,
 		CommitmentTx: commitment,
 		TxID:         commitment.UnsignedTx.TxHash(),
+		SweepKey:     h.operatorPubKey,
 		SweepDelay:   1008,
 		VTXOTreePaths: map[int]*tree.Tree{
 			0: vtxtTree,
