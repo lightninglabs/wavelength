@@ -246,7 +246,7 @@ func (p *MailboxFundingPeer) GetFundingChannel(ctx context.Context,
 	response, err := p.client.GetFundingChannel(
 		ctx, &arkchannelrpc.GetFundingChannelRequest{
 			ChannelId: id[:],
-		}, fundingRPCOptions(id, "get-funding-channel"),
+		},
 	)
 	if err != nil {
 		return FundingChannelState{}, err
