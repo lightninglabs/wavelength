@@ -119,12 +119,6 @@ type DurableUnaryQuery interface {
 // connection actor. The connector is the single boundary for all mailbox
 // traffic between the client and the remote server.
 type ConnectorConfig struct {
-	// RuntimeID namespaces the durable actor and ingress checkpoint when
-	// one process maintains independent mailbox connections to multiple
-	// remote services with the same local identity. Empty preserves the
-	// historical ID derived from LocalMailboxID.
-	RuntimeID string
-
 	// Edge is the gRPC client for the remote mailbox edge service,
 	// providing Send, Pull, and AckUpTo operations.
 	Edge mailboxpb.MailboxServiceClient
@@ -134,10 +128,10 @@ type ConnectorConfig struct {
 	// mailbox when ReplyMailboxID is empty.
 	LocalMailboxID string
 
-	// ReplyMailboxID optionally isolates this connector's inbound traffic
-	// from other connectors using the same authenticated identity. Replies
-	// name this mailbox, and ingress pulls and acknowledges it. Empty uses
-	// LocalMailboxID for backward compatibility.
+	// ReplyMailboxID isolates this connector's inbound traffic from other
+	// connectors using the same authenticated identity. Replies name this
+	// mailbox, ingress pulls and acknowledges it, and its value derives the
+	// durable runtime and checkpoint ID. Empty uses LocalMailboxID.
 	ReplyMailboxID string
 
 	// RemoteMailboxID is the remote server's mailbox identifier. Outbound

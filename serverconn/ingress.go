@@ -772,6 +772,15 @@ func (a *ServerConnectionActor) loadCheckpoint(ctx context.Context) (AckState,
 	if checkpoint == nil {
 		return AckState{}, nil
 	}
+	if checkpoint.ActorID != actorID {
+		return AckState{}, fmt.Errorf("checkpoint actor ID %q does "+
+			"not match ingress runtime %q", checkpoint.ActorID,
+			actorID)
+	}
+	if checkpoint.StateType != ackStateType {
+		return AckState{}, fmt.Errorf("checkpoint state type %q does "+
+			"not match %q", checkpoint.StateType, ackStateType)
+	}
 
 	var state AckState
 	stateReader := bytes.NewReader(checkpoint.StateData)

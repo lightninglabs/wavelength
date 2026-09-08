@@ -328,6 +328,30 @@ func TestLoadCheckpoint_Errors(t *testing.T) {
 
 	_, err = decodeErrActor.loadCheckpoint(t.Context())
 	require.Error(t, err)
+
+	wrongActor := newErrorPathActor(
+		edge, &checkpointLoadStore{
+			memCheckpointStore: newMemCheckpointStore(),
+			loadCheckpoint: &actor.Checkpoint{
+				ActorID:   "serverconn-another-mailbox",
+				StateType: ackStateType,
+			},
+		},
+	)
+	_, err = wrongActor.loadCheckpoint(t.Context())
+	require.ErrorContains(t, err, "does not match ingress runtime")
+
+	wrongType := newErrorPathActor(
+		edge, &checkpointLoadStore{
+			memCheckpointStore: newMemCheckpointStore(),
+			loadCheckpoint: &actor.Checkpoint{
+				ActorID:   "serverconn-client-1",
+				StateType: "AnotherState",
+			},
+		},
+	)
+	_, err = wrongType.loadCheckpoint(t.Context())
+	require.ErrorContains(t, err, "does not match \"AckState\"")
 }
 
 // TestSaveCheckpoint_Error verifies saveCheckpoint surfaces store save errors.

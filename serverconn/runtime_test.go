@@ -120,27 +120,31 @@ func TestNewRuntime_DefaultCodec(t *testing.T) {
 	)
 }
 
-// TestNewRuntimeRuntimeIDNamespace verifies two independent remote services can
-// use the same local mailbox identity without sharing a durable actor ID.
-func TestNewRuntimeRuntimeIDNamespace(t *testing.T) {
+// TestNewRuntimeReplyMailboxNamespace verifies two independent remote services
+// derive distinct durable state from their distinct ingress mailboxes.
+func TestNewRuntimeReplyMailboxNamespace(t *testing.T) {
 	t.Parallel()
 
 	mb := newInMemoryMailbox()
 	baseCfg := newTestConnectorConfig(mb, newMemCheckpointStore())
-	baseCfg.RuntimeID = "serverconn-lumos-client-1"
+	baseCfg.ReplyMailboxID = "lumos-client-1"
 
 	lumosRuntime, err := NewRuntime(baseCfg)
 	require.NoError(t, err)
 	require.Equal(
-		t, baseCfg.RuntimeID, lumosRuntime.Ref().ID(),
+		t, DurableActorID(baseCfg.ReplyMailboxID),
+		lumosRuntime.Ref().ID(),
 	)
 
 	swapCfg := baseCfg
-	swapCfg.RuntimeID = "serverconn-swap-client-1"
+	swapCfg.ReplyMailboxID = "swap-client-1"
 	swapCfg.RemoteMailboxID = "swap-server-1"
 	swapRuntime, err := NewRuntime(swapCfg)
 	require.NoError(t, err)
-	require.Equal(t, swapCfg.RuntimeID, swapRuntime.Ref().ID())
+	require.Equal(
+		t, DurableActorID(swapCfg.ReplyMailboxID),
+		swapRuntime.Ref().ID(),
+	)
 	require.NotEqual(t, lumosRuntime.Ref().ID(), swapRuntime.Ref().ID())
 }
 

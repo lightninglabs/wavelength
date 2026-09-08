@@ -709,14 +709,10 @@ type ServerConnectionActor struct {
 	ingressCancel atomic.Pointer[context.CancelFunc]
 }
 
-// runtimeID returns the caller-provided persistence namespace or the legacy
-// identity-derived value when only one connector exists in the process.
+// runtimeID binds durable egress and ingress checkpoint state to the mailbox
+// whose delivery cursor that state advances.
 func (a *ServerConnectionActor) runtimeID() string {
-	if a.cfg.RuntimeID != "" {
-		return a.cfg.RuntimeID
-	}
-
-	return DurableActorID(a.cfg.LocalMailboxID)
+	return DurableActorID(a.cfg.replyMailboxID())
 }
 
 // NewServerConnectionActor creates a new server connection actor with the
