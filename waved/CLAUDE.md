@@ -46,6 +46,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 
 ## Invariants
 
+- Indexed VTXOs pass `vtxo.IndexedAncestryFromRPC` before new acceptance.
+  It verifies signed tree/transaction paths to the exact target outpoint,
+  value, and script. OOR inventory includes `ancestry_packages` to connect
+  round leaves to the target. Sweep expiry is then derived separately from
+  locally confirmed batch outputs. A valid unrelated batch cannot authorize
+  a received target. Existing persisted live rows are outside this check.
+
 - The lnd wallet account (`lnd.account`, empty = lnd's `default`) bounds what
   this daemon may **spend**: `ListWalletUnspent` (fee inputs and the exit
   preflight), `NewWalletAddress` (the deposit address), and the
@@ -154,6 +161,17 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   Regtest, simnet, unknown networks, and a configured floor above the current
   tip use block 1. Existing unroll jobs keep that fallback for this process,
   while successful repairs apply to later admissions and restarts.
+- `batchExpiryAuthenticator` is the shared acceptance boundary for new indexed
+  VTXOs. It uses bounded one-shot chain-source confirmation futures, validates
+  the confirmed transaction through `vtxo.AuthenticateBatchExpiry`, and
+  unregisters each watch. Thin incoming events, OOR receives, indexed recovery,
+  and custom refresh metadata use it before persistence or signing. Existing
+  live rows are deliberately left unchanged. The single incoming-event actor
+  caps its complete indexer-and-chain evidence lookup at 2 seconds and relies
+  on durable redelivery; other callers retain the 30-second lookup bound.
+  Indexed recovery skips bad
+  entries so later VTXOs are examined, then returns the first authentication
+  error so a partial scan is never reported as complete.
 - `initUnrollSubsystem` boot ordering is policy-preserving.
   `recoverySvc.RestoreNonTerminal` (in-flight vHTLC recovery jobs, each
   carrying its durable exit policy) runs **before** the chain resolver is

@@ -57,6 +57,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
 
 ## Invariants
 
+- Indexed VTXOs pass `vtxo.IndexedAncestryFromRPC` before new acceptance.
+  It verifies signed tree/transaction paths to the exact target outpoint,
+  value, and script. OOR inventory includes `ancestry_packages` to connect
+  round leaves to the target. Sweep expiry is then derived separately from
+  locally confirmed batch outputs. A valid unrelated batch cannot authorize
+  a received target. Existing persisted live rows are outside this check.
+
 - Checkpoint collab output is 2-of-2
   (`arkscript.MultiSigCollabTapLeaf(clientKey, operatorKey)`), never
   single-sig; resumed custom-spend inputs are re-verified against the VTXO
@@ -75,6 +82,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   actor's DB transaction; both phase-1 hint resolution and phase-2
   authoritative metadata lookup go through durable `serverconn` query
   messages and return as fresh events.
+- Incoming batch expiry is authenticated by
+  `AuthenticateIncomingMetadataRequest` before materialization opens its DB
+  transaction. Indexer expiry scalars are discarded. Chain failures retry the
+  outbox; invalid sweep/tree evidence fails terminally. The descriptor's
+  relative expiry comes from its matching standard or custom policy template,
+  not from operator configuration. Custom policies consider only canonical
+  block-mode CSV sequences; CLTV non-final sentinels are not block delays.
 - Snapshots are versioned per direction (`OutgoingSnapshot.Version = 5`,
   `IncomingSnapshot.Version = 1`); restore rejects a zero version. Outgoing
   v5 adds the `FirstRejectUnixNanos` record (bounded transient submit-reject
