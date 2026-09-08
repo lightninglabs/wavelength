@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
@@ -1326,10 +1327,8 @@ func testTerms(t *testing.T, kind Kind) Terms {
 	require.NoError(t, err)
 	hubKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
-	newPolicyKey := func() [33]byte {
-		key, err := btcec.NewPrivateKey()
-		require.NoError(t, err)
-
+	newPolicyKey := func(role byte) [33]byte {
+		key := testPolicyPrivateKey(kind, role)
 		var serialized [33]byte
 		copy(serialized[:], key.PubKey().SerializeCompressed())
 
@@ -1361,12 +1360,12 @@ func testTerms(t *testing.T, kind Kind) Terms {
 		ClientNodeKey: clientNodeKey,
 		HubNodeKey:    hubNodeKey,
 		VTXO: VTXOTerms{
-			ClientArkKey:     newPolicyKey(),
-			HubArkKey:        newPolicyKey(),
-			ArkOperatorKey:   newPolicyKey(),
-			ClientChannelKey: newPolicyKey(),
-			HubChannelKey:    newPolicyKey(),
-			FunderKey:        newPolicyKey(),
+			ClientArkKey:     newPolicyKey(1),
+			HubArkKey:        newPolicyKey(2),
+			ArkOperatorKey:   newPolicyKey(3),
+			ClientChannelKey: newPolicyKey(4),
+			HubChannelKey:    newPolicyKey(5),
+			FunderKey:        newPolicyKey(6),
 			ChannelDelay:     144,
 			FunderDelay:      576,
 			MinExitDelay:     144,
@@ -1378,6 +1377,16 @@ func testTerms(t *testing.T, kind Kind) Terms {
 	}
 
 	return terms
+}
+
+// testPolicyPrivateKey returns stable channel-policy keys so generic lifecycle
+// fixtures can construct real signed backing transactions.
+func testPolicyPrivateKey(kind Kind, role byte) *btcec.PrivateKey {
+	seed := bytes.Repeat([]byte{role}, 32)
+	seed[0] ^= byte(kind)
+	key, _ := btcec.PrivKeyFromBytes(seed)
+
+	return key
 }
 
 // testBinding creates one exact prepared OOR output for channel terms.
@@ -1419,23 +1428,25 @@ func testBinding(terms Terms) VTXOBinding {
 func testBacking(t *testing.T, terms Terms, binding VTXOBinding) Backing {
 	t.Helper()
 
-	tx := wire.NewMsgTx(2)
-	tx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: binding.OutPoint,
-		Witness:          wire.TxWitness{bytes.Repeat([]byte{1}, 64)},
-	})
-	tx.AddTxOut(&wire.TxOut{
+	packet, err := psbt.New(nil, []*wire.TxOut{{
 		Value:    int64(terms.Capacity),
 		PkScript: []byte{0x51, 0x20, 1},
-	})
+	}}, 2, 0, nil)
+	require.NoError(t, err)
+	template, err := NewBackingTemplate(packet, terms, binding)
+	require.NoError(t, err)
+	clientSig := signBacking(
+		t, template, terms, PartyClient,
+		testPolicyPrivateKey(terms.Kind, 4),
+	)
+	hubSig := signBacking(
+		t, template, terms, PartyHub,
+		testPolicyPrivateKey(terms.Kind, 5),
+	)
+	backing, err := template.Complete(terms, binding, clientSig, hubSig)
+	require.NoError(t, err)
 
-	return Backing{
-		Transaction: serializeTx(t, tx),
-		ChannelPoint: wire.OutPoint{
-			Hash:  tx.TxHash(),
-			Index: 0,
-		},
-	}
+	return backing
 }
 
 // serializeTx serializes one witness transaction for a test fixture.

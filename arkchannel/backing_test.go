@@ -54,6 +54,17 @@ func TestBackingTemplateCompletesChannelSpend(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, backing.Validate(terms, source))
 	require.Equal(t, template.ChannelPoint(), backing.ChannelPoint)
+
+	// A non-empty witness is not sufficient. Every accepted or restored
+	// backing must authenticate both channel-policy signers.
+	corrupt := backing.Clone()
+	tx := mustDecodeTransaction(t, corrupt.Transaction)
+	tx.TxIn[0].Witness[0][0] ^= 1
+	corrupt.Transaction = serializeTx(t, tx)
+	require.ErrorContains(
+		t, corrupt.Validate(terms, source),
+		"verify channel backing signatures",
+	)
 }
 
 // TestBackingTemplateRejectsDifferentFundingOutput proves a peer cannot be

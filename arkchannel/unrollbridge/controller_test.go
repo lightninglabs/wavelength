@@ -9,11 +9,14 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/unroll"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
 )
@@ -308,24 +311,23 @@ func channelRecordWithKeys(t *testing.T) (arkchannel.Record,
 		PolicyTemplate: policy,
 		PkScript:       pkScript,
 	}
-	backingTx := wire.NewMsgTx(2)
-	backingTx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: source.OutPoint,
-		Sequence:         terms.VTXO.ChannelDelay,
-		Witness:          wire.TxWitness{bytes.Repeat([]byte{1}, 64)},
-	})
-	backingTx.AddTxOut(&wire.TxOut{
+	packet, err := psbt.New(nil, []*wire.TxOut{{
 		Value:    int64(terms.Capacity),
 		PkScript: []byte{0x51, 0x20, 1},
-	})
-	var rawBacking bytes.Buffer
-	require.NoError(t, backingTx.Serialize(&rawBacking))
-	backing := arkchannel.Backing{
-		Transaction: rawBacking.Bytes(),
-		ChannelPoint: wire.OutPoint{
-			Hash: backingTx.TxHash(),
-		},
-	}
+	}}, 2, 0, nil)
+	require.NoError(t, err)
+	template, err := arkchannel.NewBackingTemplate(packet, terms, source)
+	require.NoError(t, err)
+	clientSig := signChannelBacking(
+		t, template, terms, arkchannel.PartyClient, keys[5],
+	)
+	hubSig := signChannelBacking(
+		t, template, terms, arkchannel.PartyHub, keys[6],
+	)
+	backing, err := template.Complete(
+		terms, source, clientSig, hubSig,
+	)
+	require.NoError(t, err)
 
 	return arkchannel.Record{
 		Revision: 5,
@@ -337,6 +339,27 @@ func channelRecordWithKeys(t *testing.T) (arkchannel.Record,
 			OORFinalized: true,
 		},
 	}, keys
+}
+
+// signChannelBacking signs one endpoint's channel-policy branch.
+func signChannelBacking(t *testing.T, template *arkchannel.BackingTemplate,
+	terms arkchannel.Terms, party arkchannel.Party,
+	key *btcec.PrivateKey) input.Signature {
+
+	t.Helper()
+
+	desc, err := template.SignDescriptor(
+		terms, party, keychain.KeyDescriptor{
+			PubKey: key.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	sig, err := input.NewMockSigner(
+		[]*btcec.PrivateKey{key}, nil,
+	).SignOutputRaw(template.Packet().UnsignedTx, desc)
+	require.NoError(t, err)
+
+	return sig
 }
 
 // channelRef returns the durable hexadecimal channel policy reference.

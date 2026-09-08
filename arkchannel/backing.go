@@ -207,22 +207,6 @@ func (t *BackingTemplate) Complete(terms Terms, source VTXOBinding,
 	}
 	tx := t.packet.UnsignedTx.Copy()
 	tx.TxIn[0].Witness = witness
-	prevFetcher := txscript.NewCannedPrevOutputFetcher(
-		t.previousOut.PkScript, t.previousOut.Value,
-	)
-	sigHashes := txscript.NewTxSigHashes(tx, prevFetcher)
-	engine, err := txscript.NewEngine(
-		t.previousOut.PkScript, tx, 0, txscript.StandardVerifyFlags,
-		nil, sigHashes, t.previousOut.Value, prevFetcher,
-	)
-	if err != nil {
-		return Backing{}, fmt.Errorf("construct channel backing "+
-			"verifier: %w", err)
-	}
-	if err := engine.Execute(); err != nil {
-		return Backing{}, fmt.Errorf("verify channel backing "+
-			"signatures: %w", err)
-	}
 
 	var raw bytes.Buffer
 	if err := tx.Serialize(&raw); err != nil {
@@ -238,6 +222,48 @@ func (t *BackingTemplate) Complete(terms Terms, source VTXOBinding,
 	}
 
 	return backing, nil
+}
+
+// verifyBackingWitness executes the canonical channel spend path against the
+// exact source output. Reconstructing the policy from semantic terms prevents a
+// peer or persisted artifact from substituting witness script material.
+func verifyBackingWitness(tx *wire.MsgTx, terms Terms,
+	source VTXOBinding) error {
+
+	policy, err := channelPolicy(terms.VTXO)
+	if err != nil {
+		return err
+	}
+	spendPath, err := policy.ChannelSpendPath()
+	if err != nil {
+		return fmt.Errorf("derive channel materialization path: %w",
+			err)
+	}
+	if err := spendPath.VerifyBindsToPkScript(source.PkScript); err != nil {
+		return fmt.Errorf("validate channel materialization path: %w",
+			err)
+	}
+
+	previousOut := &wire.TxOut{
+		Value:    int64(source.Amount),
+		PkScript: bytes.Clone(source.PkScript),
+	}
+	prevFetcher := txscript.NewCannedPrevOutputFetcher(
+		previousOut.PkScript, previousOut.Value,
+	)
+	sigHashes := txscript.NewTxSigHashes(tx, prevFetcher)
+	engine, err := txscript.NewEngine(
+		previousOut.PkScript, tx, 0, txscript.StandardVerifyFlags, nil,
+		sigHashes, previousOut.Value, prevFetcher,
+	)
+	if err != nil {
+		return fmt.Errorf("construct channel backing verifier: %w", err)
+	}
+	if err := engine.Execute(); err != nil {
+		return fmt.Errorf("verify channel backing signatures: %w", err)
+	}
+
+	return nil
 }
 
 // channelPolicy reconstructs the channel-policy tree from durable semantic

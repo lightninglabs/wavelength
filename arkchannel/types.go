@@ -442,16 +442,27 @@ func (b Backing) Clone() Backing {
 	return b
 }
 
-// Validate proves the signed transaction spends only the bound VTXO and
-// creates the exact lnd channel point.
+// Validate proves the signed transaction spends only the bound VTXO, executes
+// the reconstructed channel spend path, and creates the expected-capacity lnd
+// channel point. The funding output script is local lnd state and is not
+// derivable from channel terms, so each endpoint must separately call
+// BackingTemplate.ValidateFundingOutput before finalizing its reservation.
 func (b Backing) Validate(terms Terms, source VTXOBinding) error {
 	if len(b.Transaction) == 0 {
 		return fmt.Errorf("signed backing transaction is required")
 	}
+	if err := source.Validate(terms); err != nil {
+		return err
+	}
 
 	tx := wire.NewMsgTx(2)
-	if err := tx.Deserialize(bytes.NewReader(b.Transaction)); err != nil {
+	reader := bytes.NewReader(b.Transaction)
+	if err := tx.Deserialize(reader); err != nil {
 		return fmt.Errorf("decode backing transaction: %w", err)
+	}
+	if reader.Len() != 0 {
+		return fmt.Errorf("backing transaction has %d trailing bytes",
+			reader.Len())
 	}
 	if len(tx.TxIn) != 1 {
 		return fmt.Errorf("backing transaction must have one input")
@@ -480,6 +491,9 @@ func (b Backing) Validate(terms Terms, source VTXOBinding) error {
 		return fmt.Errorf("reserved SCID output %d does not match "+
 			"channel point output %d", reservedSCID.TxPosition,
 			b.ChannelPoint.Index)
+	}
+	if err := verifyBackingWitness(tx, terms, source); err != nil {
+		return err
 	}
 
 	return nil
