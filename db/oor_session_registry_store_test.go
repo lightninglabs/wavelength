@@ -97,6 +97,51 @@ func TestOORSessionRegistryGetNotFound(t *testing.T) {
 	require.ErrorIs(t, err, ErrOORSessionNotFound)
 }
 
+// TestOORSessionRegistryLookupPreparedIdentity verifies that the caller key is
+// queryable before the first dispatch attempt is persisted. This is the
+// durable identity boundary for prepare-only OOR sessions across restarts.
+func TestOORSessionRegistryLookupPreparedIdentity(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newOORSessionRegistryStoreForTest(t)
+	sid := sessionHash(0x03)
+	record := OORSessionRegistryRecord{
+		SessionID:      sid,
+		ActorID:        "actor-" + sid.String(),
+		Direction:      OORSessionDirectionOutgoing,
+		Phase:          "prepared",
+		IdempotencyKey: "prepared-key",
+		Status:         OORSessionStatusPending,
+		SnapshotData: []byte{
+			0x01,
+		},
+		SnapshotVersion: 1,
+	}
+	require.NoError(t, store.UpsertSession(ctx, record))
+
+	got, err := store.GetUnfailedSessionByIdempotencyKey(
+		ctx, record.IdempotencyKey,
+	)
+	require.NoError(t, err)
+	require.Equal(t, sid, got.SessionID)
+	require.Equal(t, "prepared", got.Phase)
+
+	_, err = store.GetDispatchAttemptByIdempotencyKey(
+		ctx, record.IdempotencyKey,
+	)
+	require.ErrorIs(t, err, ErrOORDispatchAttemptNotFound)
+
+	record.Status = OORSessionStatusFailed
+	record.Phase = "failed"
+	require.NoError(t, store.UpsertSession(ctx, record))
+
+	_, err = store.GetUnfailedSessionByIdempotencyKey(
+		ctx, record.IdempotencyKey,
+	)
+	require.ErrorIs(t, err, ErrOORSessionNotFound)
+}
+
 // TestOORSessionRegistryUpsertUpdates verifies a second upsert advances the
 // mutable fields while preserving the original created_at.
 func TestOORSessionRegistryUpsertUpdates(t *testing.T) {
