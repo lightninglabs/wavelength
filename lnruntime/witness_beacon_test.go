@@ -10,47 +10,38 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestWitnessBeaconDeliversBeyondSubscriberBuffer verifies a slow resolver
-// receives every persisted preimage in order without blocking the producer.
-func TestWitnessBeaconDeliversBeyondSubscriberBuffer(t *testing.T) {
+// TestWitnessBeaconPrioritizesSubscribedPreimage verifies unrelated witnesses
+// cannot fill a resolver's bounded notification channel and hide its preimage.
+func TestWitnessBeaconPrioritizesSubscribedPreimage(t *testing.T) {
 	t.Parallel()
 
 	db := channeldb.OpenForTesting(t, t.TempDir())
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 	beacon, err := NewWitnessBeacon(db)
 	require.NoError(t, err)
+	target := lntypes.Preimage{255, 1}
 	subscription, err := beacon.SubscribeUpdates(
-		lnwire.ShortChannelID{}, nil, nil, nil,
+		lnwire.ShortChannelID{}, &channeldb.HTLC{
+			RHash: target.Hash(),
+		}, nil, nil,
 	)
 	require.NoError(t, err)
 	t.Cleanup(subscription.CancelSubscription)
 
-	const count = 64
-	preimages := make([]lntypes.Preimage, 0, count)
-	for i := 0; i < count; i++ {
+	const unrelatedCount = 64
+	preimages := make([]lntypes.Preimage, 0, unrelatedCount+1)
+	for i := 0; i < unrelatedCount; i++ {
 		preimages = append(preimages, lntypes.Preimage{byte(i + 1)})
 	}
+	preimages = append(preimages, target)
 
-	added := make(chan error, 1)
-	go func() {
-		added <- beacon.AddPreimages(preimages...)
-	}()
+	require.NoError(t, beacon.AddPreimages(preimages...))
 	select {
-	case err := <-added:
-		require.NoError(t, err)
+	case actual := <-subscription.WitnessUpdates:
+		require.Equal(t, target, actual)
 
 	case <-time.After(5 * time.Second):
-		t.Fatal("preimage persistence blocked on a slow subscriber")
-	}
-
-	for _, expected := range preimages {
-		select {
-		case actual := <-subscription.WitnessUpdates:
-			require.Equal(t, expected, actual)
-
-		case <-time.After(5 * time.Second):
-			t.Fatal("subscriber missed a persisted preimage")
-		}
+		t.Fatal("subscriber missed its persisted preimage")
 	}
 }
 
@@ -63,12 +54,14 @@ func TestWitnessBeaconCancellationClosesSubscriber(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 	beacon, err := NewWitnessBeacon(db)
 	require.NoError(t, err)
+	preimage := lntypes.Preimage{9, 8, 7}
 	subscription, err := beacon.SubscribeUpdates(
-		lnwire.ShortChannelID{}, nil, nil, nil,
+		lnwire.ShortChannelID{}, &channeldb.HTLC{
+			RHash: preimage.Hash(),
+		}, nil, nil,
 	)
 	require.NoError(t, err)
 
-	preimage := lntypes.Preimage{9, 8, 7}
 	start := make(chan struct{})
 	added := make(chan error, 1)
 	go func() {
