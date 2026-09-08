@@ -770,21 +770,10 @@ func (s *FundingPeerRPCServer) SignBacking(ctx context.Context,
 	request *arkchannelrpc.SignBackingRequest) (
 	*arkchannelrpc.SignBackingResponse, error) {
 
-	id, err := rpcChannelID(request.GetChannelId())
-	if err != nil {
-		return nil, err
-	}
-	terms, err := channelTermsFromRPC(request.GetTerms())
-	if err != nil {
-		return nil, err
-	}
-	if id != terms.ID {
-		return nil, fmt.Errorf("channel ID does not match terms")
-	}
-	if err := s.validateTerms(terms); err != nil {
-		return nil, err
-	}
-	binding, err := channelBindingFromRPC(request.GetBinding())
+	id, terms, binding, err := s.fundingRequest(
+		ctx, request.GetChannelId(), request.GetTerms(),
+		request.GetBinding(),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -814,27 +803,22 @@ func (s *FundingPeerRPCServer) InstallBacking(ctx context.Context,
 	request *arkchannelrpc.InstallBackingRequest) (
 	*arkchannelrpc.InstallBackingResponse, error) {
 
-	id, err := rpcChannelID(request.GetChannelId())
-	if err != nil {
-		return nil, err
-	}
-	terms, err := channelTermsFromRPC(request.GetTerms())
-	if err != nil {
-		return nil, err
-	}
-	if id != terms.ID {
-		return nil, fmt.Errorf("channel ID does not match terms")
-	}
-	if err := s.validateTerms(terms); err != nil {
-		return nil, err
-	}
-	binding, err := channelBindingFromRPC(request.GetBinding())
+	id, terms, binding, record, err := s.fundingRequestRecord(
+		ctx, request.GetChannelId(), request.GetTerms(),
+		request.GetBinding(),
+	)
 	if err != nil {
 		return nil, err
 	}
 	backing, err := channelBackingFromRPC(request.GetBacking())
 	if err != nil {
 		return nil, err
+	}
+	if record.Snapshot.Backing != nil && !sameFundingBacking(
+		*record.Snapshot.Backing, backing,
+	) {
+		return nil, fmt.Errorf("funding backing does not match " +
+			"channel FSM")
 	}
 	if err := s.cfg.Funding.InstallBacking(
 		ctx, id, terms, binding, backing,
@@ -851,21 +835,10 @@ func (s *FundingPeerRPCServer) InstallRecoveryPackage(ctx context.Context,
 	request *arkchannelrpc.InstallRecoveryPackageRequest) (
 	*arkchannelrpc.InstallRecoveryPackageResponse, error) {
 
-	id, err := rpcChannelID(request.GetChannelId())
-	if err != nil {
-		return nil, err
-	}
-	terms, err := channelTermsFromRPC(request.GetTerms())
-	if err != nil {
-		return nil, err
-	}
-	if id != terms.ID {
-		return nil, fmt.Errorf("channel ID does not match terms")
-	}
-	if err := s.validateTerms(terms); err != nil {
-		return nil, err
-	}
-	binding, err := channelBindingFromRPC(request.GetBinding())
+	id, terms, binding, err := s.fundingRequest(
+		ctx, request.GetChannelId(), request.GetTerms(),
+		request.GetBinding(),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -934,7 +907,7 @@ func (s *FundingPeerRPCServer) FundingFinalized(ctx context.Context,
 	request *arkchannelrpc.FundingStatusRequest) (
 	*arkchannelrpc.FundingStatusResponse, error) {
 
-	terms, backing, err := s.fundingStatus(request)
+	terms, backing, err := s.fundingStatus(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -951,7 +924,7 @@ func (s *FundingPeerRPCServer) ChannelActive(ctx context.Context,
 	request *arkchannelrpc.FundingStatusRequest) (
 	*arkchannelrpc.FundingStatusResponse, error) {
 
-	terms, backing, err := s.fundingStatus(request)
+	terms, backing, err := s.fundingStatus(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -1141,7 +1114,7 @@ func (s *FundingPeerRPCServer) RegisterIncomingPayment(ctx context.Context,
 }
 
 // fundingStatus parses and validates one status query.
-func (s *FundingPeerRPCServer) fundingStatus(
+func (s *FundingPeerRPCServer) fundingStatus(ctx context.Context,
 	request *arkchannelrpc.FundingStatusRequest) (arkchannel.Terms,
 	arkchannel.Backing, error) {
 
@@ -1149,15 +1122,69 @@ func (s *FundingPeerRPCServer) fundingStatus(
 	if err != nil {
 		return arkchannel.Terms{}, arkchannel.Backing{}, err
 	}
-	if err := s.validateTerms(terms); err != nil {
-		return arkchannel.Terms{}, arkchannel.Backing{}, err
-	}
 	backing, err := channelBackingFromRPC(request.GetBacking())
 	if err != nil {
 		return arkchannel.Terms{}, arkchannel.Backing{}, err
 	}
+	_, record, err := s.channel(ctx, terms.ID[:])
+	if err != nil {
+		return arkchannel.Terms{}, arkchannel.Backing{}, err
+	}
+	if err := validateFundingStatusRecord(
+		record, terms, backing,
+	); err != nil {
+		return arkchannel.Terms{}, arkchannel.Backing{}, err
+	}
 
-	return terms, backing, nil
+	return record.Snapshot.Terms.Clone(),
+		record.Snapshot.Backing.Clone(), nil
+}
+
+// fundingRequest binds caller-supplied funding inputs to the channel's
+// immutable durable record before any native lnd component sees them.
+func (s *FundingPeerRPCServer) fundingRequest(ctx context.Context, rawID []byte,
+	termsRPC *arkchannelrpc.ChannelTerms,
+	bindingRPC *arkchannelrpc.ChannelVTXOBinding) (arkchannel.ID,
+	arkchannel.Terms, arkchannel.VTXOBinding, error) {
+
+	id, terms, binding, _, err := s.fundingRequestRecord(
+		ctx, rawID, termsRPC, bindingRPC,
+	)
+
+	return id, terms, binding, err
+}
+
+// fundingRequestRecord additionally returns the matched record for handlers
+// that must compare a proposed artifact on idempotent replay.
+func (s *FundingPeerRPCServer) fundingRequestRecord(ctx context.Context,
+	rawID []byte, termsRPC *arkchannelrpc.ChannelTerms,
+	bindingRPC *arkchannelrpc.ChannelVTXOBinding) (arkchannel.ID,
+	arkchannel.Terms, arkchannel.VTXOBinding, arkchannel.Record, error) {
+
+	id, record, err := s.channel(ctx, rawID)
+	if err != nil {
+		return arkchannel.ID{}, arkchannel.Terms{},
+			arkchannel.VTXOBinding{}, arkchannel.Record{}, err
+	}
+	terms, err := channelTermsFromRPC(termsRPC)
+	if err != nil {
+		return arkchannel.ID{}, arkchannel.Terms{},
+			arkchannel.VTXOBinding{}, arkchannel.Record{}, err
+	}
+	binding, err := channelBindingFromRPC(bindingRPC)
+	if err != nil {
+		return arkchannel.ID{}, arkchannel.Terms{},
+			arkchannel.VTXOBinding{}, arkchannel.Record{}, err
+	}
+	if err := validateFundingRequestRecord(
+		record, id, terms, binding,
+	); err != nil {
+		return arkchannel.ID{}, arkchannel.Terms{},
+			arkchannel.VTXOBinding{}, arkchannel.Record{}, err
+	}
+
+	return id, record.Snapshot.Terms.Clone(),
+		record.Snapshot.Source.Clone(), record, nil
 }
 
 // channel loads one channel and enforces authenticated ownership.

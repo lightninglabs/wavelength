@@ -433,15 +433,15 @@ func (c *FundingWireServerConfig) fundingRequest(ctx context.Context,
 		return arkchannel.ID{}, arkchannel.Terms{},
 			arkchannel.VTXOBinding{}, err
 	}
-	if id != terms.ID || record.Snapshot.Terms != terms ||
-		record.Snapshot.Source == nil ||
-		!sameFundingWireBinding(*record.Snapshot.Source, binding) {
+	if err := validateFundingRequestRecord(
+		record, id, terms, binding,
+	); err != nil {
 		return arkchannel.ID{}, arkchannel.Terms{},
-			arkchannel.VTXOBinding{}, fmt.Errorf("funding " +
-				"request does not match channel FSM")
+			arkchannel.VTXOBinding{}, err
 	}
 
-	return id, terms, binding, nil
+	return id, record.Snapshot.Terms.Clone(),
+		record.Snapshot.Source.Clone(), nil
 }
 
 func (c *FundingWireServerConfig) fundingStatus(ctx context.Context,
@@ -460,26 +460,51 @@ func (c *FundingWireServerConfig) fundingStatus(ctx context.Context,
 	if err != nil {
 		return arkchannel.Terms{}, arkchannel.Backing{}, err
 	}
-	if record.Snapshot.Terms != terms || record.Snapshot.Backing == nil ||
-		record.Snapshot.Backing.ChannelPoint != backing.ChannelPoint ||
-		!bytes.Equal(
-			record.Snapshot.Backing.Transaction,
-			backing.Transaction,
-		) {
-		return arkchannel.Terms{}, arkchannel.Backing{}, fmt.Errorf(
-			"funding status does not match channel " +
-				"FSM")
+	if err := validateFundingStatusRecord(
+		record, terms, backing,
+	); err != nil {
+		return arkchannel.Terms{}, arkchannel.Backing{}, err
 	}
 
-	return terms, backing, nil
+	return record.Snapshot.Terms.Clone(),
+		record.Snapshot.Backing.Clone(), nil
 }
 
-func sameFundingWireBinding(a, b arkchannel.VTXOBinding) bool {
+func validateFundingRequestRecord(record arkchannel.Record, id arkchannel.ID,
+	terms arkchannel.Terms, binding arkchannel.VTXOBinding) error {
+
+	if id != terms.ID || record.Snapshot.Terms != terms ||
+		record.Snapshot.Source == nil ||
+		!sameFundingBinding(*record.Snapshot.Source, binding) {
+		return fmt.Errorf("funding request does not match channel FSM")
+	}
+
+	return nil
+}
+
+func validateFundingStatusRecord(record arkchannel.Record,
+	terms arkchannel.Terms, backing arkchannel.Backing) error {
+
+	if record.Snapshot.Terms != terms || record.Snapshot.Backing == nil ||
+		!sameFundingBacking(*record.Snapshot.Backing, backing) {
+		return fmt.Errorf("funding status does not match channel FSM")
+	}
+
+	return nil
+}
+
+func sameFundingBinding(a, b arkchannel.VTXOBinding) bool {
 	return a.OORSessionID == b.OORSessionID && a.OutPoint == b.OutPoint &&
 		a.Amount == b.Amount && bytes.Equal(
 		a.ArkTransaction, b.ArkTransaction,
 	) && bytes.Equal(a.PolicyTemplate,
 		b.PolicyTemplate) && bytes.Equal(a.PkScript, b.PkScript)
+}
+
+func sameFundingBacking(a, b arkchannel.Backing) bool {
+	return a.ChannelPoint == b.ChannelPoint && bytes.Equal(
+		a.Transaction, b.Transaction,
+	)
 }
 
 func fundingWireRequestID(raw []byte) ([32]byte, error) {
