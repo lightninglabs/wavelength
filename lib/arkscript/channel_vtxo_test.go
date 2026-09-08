@@ -78,6 +78,9 @@ func TestValidateChannelVTXOTemplate(t *testing.T) {
 
 	template, err := DecodePolicyTemplate(raw)
 	require.NoError(t, err)
+	derivedPkScript, err := template.PkScript()
+	require.NoError(t, err)
+	require.Equal(t, pkScript, derivedPkScript)
 	require.NoError(t, ValidateChannelVTXOTemplate(template, params))
 
 	otherKey, err := btcec.NewPrivateKey()
