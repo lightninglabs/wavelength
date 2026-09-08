@@ -41,6 +41,12 @@ type OORTransferController interface {
 	AbortPreparedOOR(context.Context, ID, Terms, VTXOBinding, string) error
 }
 
+// ReceiveIntentAbortRequester asks the endpoint that owns a receive intent's
+// prepared OOR to complete its durable pre-PONR cleanup.
+type ReceiveIntentAbortRequester interface {
+	FailReceiveIntent(context.Context, ID, string) error
+}
+
 // ValidatePreparedOOR proves that a binding names an output in the exact
 // prepared OOR package before it can enter the durable channel FSM.
 func (e *NativeExecutor) ValidatePreparedOOR(ctx context.Context, terms Terms,
@@ -109,6 +115,7 @@ type NativeExecutor struct {
 	funding      VirtualFundingActivator
 	negotiator   FundingNegotiator
 	oor          OORTransferController
+	receiveAbort ReceiveIntentAbortRequester
 	materializer ChannelMaterializer
 	handoff      ChannelOnchainHandoff
 	forceCloser  ChannelForceCloser
@@ -118,6 +125,7 @@ type NativeExecutor struct {
 // NewNativeExecutor constructs the thin native subsystem adapter.
 func NewNativeExecutor(localParty Party, funding VirtualFundingActivator,
 	negotiator FundingNegotiator, oor OORTransferController,
+	receiveAbort ReceiveIntentAbortRequester,
 	materializer ChannelMaterializer, handoff ChannelOnchainHandoff,
 	forceCloser ChannelForceCloser,
 	closer ChannelCooperativeCloser) (*NativeExecutor, error) {
@@ -146,6 +154,7 @@ func NewNativeExecutor(localParty Party, funding VirtualFundingActivator,
 		funding:      funding,
 		negotiator:   negotiator,
 		oor:          oor,
+		receiveAbort: receiveAbort,
 		materializer: materializer,
 		handoff:      handoff,
 		forceCloser:  forceCloser,
@@ -184,7 +193,13 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 
 	case *AbortOOR:
 		if action.Terms.Funder != e.localParty {
-			return nil
+			if action.Terms.Kind != KindReceiveIntent {
+				return nil
+			}
+
+			return e.requestReceiveIntentAbort(
+				ctx, id, action.Reason,
+			)
 		}
 		if e.oor == nil {
 			return fmt.Errorf("local OOR transfer controller is " +
@@ -193,6 +208,17 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 
 		return e.oor.AbortPreparedOOR(
 			ctx, id, action.Terms, action.Source, action.Reason,
+		)
+
+	case *RequestReceiveIntentAbort:
+		if action.Terms.Funder == e.localParty ||
+			action.Terms.Kind != KindReceiveIntent {
+			return fmt.Errorf("receive intent abort request " +
+				"belongs to the non-funding client")
+		}
+
+		return e.requestReceiveIntentAbort(
+			ctx, id, action.Reason,
 		)
 
 	case *ActivateChannel:
@@ -245,6 +271,20 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 	default:
 		return fmt.Errorf("unknown Ark channel action %T", action)
 	}
+}
+
+// requestReceiveIntentAbort delivers one replayable request to the OOR owner.
+func (e *NativeExecutor) requestReceiveIntentAbort(ctx context.Context, id ID,
+	reason string) error {
+
+	if e.receiveAbort == nil {
+		return fmt.Errorf("receive intent abort requester is " +
+			"unavailable")
+	}
+
+	return e.receiveAbort.FailReceiveIntent(
+		ctx, id, reason,
+	)
 }
 
 // BindChannelEventSink connects native funding and OOR terminal observations

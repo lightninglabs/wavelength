@@ -621,6 +621,15 @@ func (n *ChannelNegotiator) CancelChannel(ctx context.Context, id arkchannel.ID,
 	terms arkchannel.Terms, source arkchannel.VTXOBinding,
 	backing *arkchannel.Backing, reason string) error {
 
+	var channelPoint *wire.OutPoint
+	if backing != nil {
+		channelPoint = &backing.ChannelPoint
+	}
+	if err := n.local.funding.CancelBacking(
+		terms.PendingChannelID, channelPoint,
+	); err != nil {
+		return err
+	}
 	if terms.Funder == n.local.party {
 		if _, err := n.remote.ApplyChannelEvent(
 			ctx, id, &arkchannel.OORAborted{
@@ -630,16 +639,6 @@ func (n *ChannelNegotiator) CancelChannel(ctx context.Context, id arkchannel.ID,
 		); err != nil {
 			return fmt.Errorf("confirm remote OOR abort: %w", err)
 		}
-	}
-
-	var channelPoint *wire.OutPoint
-	if backing != nil {
-		channelPoint = &backing.ChannelPoint
-	}
-	if err := n.local.funding.CancelBacking(
-		terms.PendingChannelID, channelPoint,
-	); err != nil {
-		return err
 	}
 	_, err := n.local.applyLocalEvent(
 		ctx, id, &arkchannel.FundingCanceled{},

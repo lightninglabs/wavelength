@@ -1182,8 +1182,8 @@ func (c *NativeArkChannelController) newService(node *lnruntime.NativeNode,
 		node: node, log: log,
 	}
 	executor, err := arkchannel.NewNativeExecutor(
-		c.party, node.FundingActivator(), negotiator, oor, materializer,
-		node, forceCloser, closer,
+		c.party, node.FundingActivator(), negotiator, oor, c.remote,
+		materializer, node, forceCloser, closer,
 	)
 	if err != nil {
 		return nil, err
@@ -1918,10 +1918,8 @@ func (c *NativeArkChannelController) syncReceiveIntent(ctx context.Context,
 			if reason == "" {
 				reason = "hub receive channel is cancelling"
 			}
-			if _, err := c.remote.ApplyChannelEvent(
-				ctx, id, &arkchannel.Fail{
-					Reason: reason,
-				},
+			if err := c.remote.FailReceiveIntent(
+				ctx, id, reason,
 			); err != nil {
 
 				if err := c.waitReceiveIntentSyncRetry(
@@ -1965,7 +1963,9 @@ func (c *NativeArkChannelController) syncReceiveIntent(ctx context.Context,
 				},
 			)
 			if err != nil {
-				failErr := c.failReceiveIntent(ctx, id, err)
+				failErr := c.failReceiveIntentDetached(
+					ctx, id, err,
+				)
 				if errors.Is(
 					failErr, ErrReceiveChannelFallback,
 				) {
@@ -2023,6 +2023,52 @@ func (c *NativeArkChannelController) syncReceiveIntent(ctx context.Context,
 		case <-ticker.C:
 		}
 	}
+}
+
+// receiveIntentFundingOutcome is the funder's authoritative durable result.
+// Endpoint phases may lag because their peer notification is replayable.
+type receiveIntentFundingOutcome uint8
+
+const (
+	receiveIntentFundingPending receiveIntentFundingOutcome = iota
+	receiveIntentFundingAborted
+	receiveIntentFundingFinalized
+)
+
+// receiveIntentFunderOutcome reads OOR terminal evidence only from the
+// endpoint named as the immutable channel funder.
+func receiveIntentFunderOutcome(localParty arkchannel.Party,
+	local arkchannel.Snapshot,
+	remote lnruntime.FundingChannelState) (receiveIntentFundingOutcome,
+	error) {
+
+	var finalized, aborted bool
+	var source *arkchannel.VTXOBinding
+	var phase arkchannel.Phase
+	if local.Terms.Funder == localParty {
+		finalized = local.OORFinalized
+		aborted = local.OORAborted
+		source = local.Source
+		phase = local.Phase
+	} else {
+		finalized = remote.OORFinalized
+		aborted = remote.OORAborted
+		source = remote.Source
+		phase = remote.Phase
+	}
+	if finalized && aborted {
+		return receiveIntentFundingPending, fmt.Errorf("receive " +
+			"intent funder reports both finalized and aborted " +
+			"OOR funding")
+	}
+	if finalized {
+		return receiveIntentFundingFinalized, nil
+	}
+	if aborted || (source == nil && phase == arkchannel.PhaseFailed) {
+		return receiveIntentFundingAborted, nil
+	}
+
+	return receiveIntentFundingPending, nil
 }
 
 // receiveIntentNeedsPeerReady identifies the paired requested-state barrier.
@@ -2139,16 +2185,57 @@ func (c *NativeArkChannelController) failReceiveIntent(ctx context.Context,
 
 	var lastErr error
 	for {
-		local, err := c.service.GetChannel(ctx, id)
-		if err == nil {
+		local, localErr := c.service.GetChannel(ctx, id)
+		var operationErr error
+		if localErr == nil {
 			switch local.Snapshot.Phase {
 			case arkchannel.PhaseRequested,
 				arkchannel.PhaseNegotiating,
 				arkchannel.PhaseCancelling,
 				arkchannel.PhaseFailed:
 
-				err = c.driveReceiveIntentFailure(
+				operationErr = c.driveReceiveIntentFailure(
 					ctx, id, local, reason,
+				)
+
+			case arkchannel.PhaseBackingReady:
+				var remote lnruntime.FundingChannelState
+				if local.Snapshot.Terms.Funder != c.party {
+					remote, operationErr =
+						c.remote.GetFundingChannel(
+							ctx, id,
+						)
+					if operationErr != nil {
+						break
+					}
+				}
+				outcome, err := receiveIntentFunderOutcome(
+					c.party, local.Snapshot, remote,
+				)
+				if err != nil {
+					return errors.Join(cause, err)
+				}
+				if outcome != receiveIntentFundingAborted ||
+					local.Snapshot.Source == nil {
+					return errors.Join(
+						cause,
+						fmt.Errorf("receive intent "+
+							"crossed its funding "+
+							"safety "+
+							"boundary at %s",
+							local.Snapshot.Phase),
+					)
+				}
+				abortReason := remote.Failure
+				if abortReason == "" {
+					abortReason = reason
+				}
+				source := local.Snapshot.Source
+				_, operationErr = c.service.ApplyPeerEvent(
+					ctx, id, &arkchannel.OORAborted{
+						SessionID: source.OORSessionID,
+						Reason:    abortReason,
+					},
 				)
 
 			default:
@@ -2159,26 +2246,33 @@ func (c *NativeArkChannelController) failReceiveIntent(ctx context.Context,
 						local.Snapshot.Phase),
 				)
 			}
+		} else {
+			operationErr = localErr
 		}
-		if err != nil {
-			lastErr = err
+		if operationErr != nil {
+			lastErr = operationErr
 		}
 
-		local, localErr := c.service.GetChannel(ctx, id)
+		local, localErr = c.service.GetChannel(ctx, id)
 		remote, remoteErr := c.remote.GetFundingChannel(ctx, id)
 		if localErr == nil && remoteErr == nil {
-			localSourceAborted := local.Snapshot.Source == nil ||
-				local.Snapshot.OORAborted
-			remoteSourceAborted := remote.Source == nil ||
-				remote.OORAborted
+			outcome, err := receiveIntentFunderOutcome(
+				c.party, local.Snapshot, remote,
+			)
+			if err != nil {
+				return errors.Join(cause, err)
+			}
 			if local.Snapshot.Phase == arkchannel.PhaseFailed &&
 				remote.Phase == arkchannel.PhaseFailed &&
-				localSourceAborted && remoteSourceAborted {
+				outcome == receiveIntentFundingAborted {
 				return fmt.Errorf("%w: %w",
 					ErrReceiveChannelFallback, cause)
 			}
-			if receiveIntentIsCommitting(remote.Phase) ||
-				receiveIntentIsRetained(remote.Phase) {
+			remoteCrossedBoundary := receiveIntentIsCommitting(
+				remote.Phase,
+			) && outcome != receiveIntentFundingAborted
+			if receiveIntentIsRetained(remote.Phase) ||
+				remoteCrossedBoundary {
 				return errors.Join(
 					cause, fmt.Errorf("remote receive "+
 						"intent crossed its funding "+
@@ -2208,18 +2302,19 @@ func (c *NativeArkChannelController) driveReceiveIntentFailure(
 	if local.Snapshot.Failure != "" {
 		reason = local.Snapshot.Failure
 	}
-	if _, err := c.service.ApplyLocalEvent(
-		ctx, id, &arkchannel.Fail{
+	var event arkchannel.Event = &arkchannel.Fail{Reason: reason}
+	if local.Snapshot.Source == nil &&
+		local.Snapshot.Terms.Kind == arkchannel.KindReceiveIntent &&
+		local.Snapshot.Terms.Funder != c.party {
+
+		event = &arkchannel.ReceiveIntentAbortRequested{
 			Reason: reason,
-		},
-	); err != nil {
-		return err
-	}
-	if local.Snapshot.Terms.Funder == c.party {
-		return nil
+		}
 	}
 
-	return c.remote.FailReceiveIntent(ctx, id, reason)
+	_, err := c.service.ApplyLocalEvent(ctx, id, event)
+
+	return err
 }
 
 // failReceiveIntentDetached gives pre-PONR cleanup a bounded process-owned
