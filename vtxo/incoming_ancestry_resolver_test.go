@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/internal/expiryfixture"
 	"github.com/lightninglabs/wavelength/internal/indexerlimits"
 	lib_tree "github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/stretchr/testify/require"
@@ -19,10 +20,11 @@ import (
 func TestResolveIncomingAncestryMatchesPaginatedOutpoint(t *testing.T) {
 	t.Parallel()
 
-	target := wire.OutPoint{
-		Hash:  testAncestryTxID(1),
-		Index: 7,
-	}
+	candidate, _ := expiryfixture.Round(
+		t, 1000, testAncestryPkScript, 50, 42, 1,
+	)
+	var target wire.OutPoint
+	copy(target.Hash[:], candidate.Outpoint.Txid)
 	query := newScriptedAncestryQuery(
 		testIncomingAncestryResponse(
 			[]byte("next"), &arkrpc.VTXO{
@@ -33,7 +35,7 @@ func TestResolveIncomingAncestryMatchesPaginatedOutpoint(t *testing.T) {
 			},
 		),
 		testIncomingAncestryResponse(
-			nil, testIncomingAncestryVTXO(target, 42),
+			nil, candidate,
 		),
 	)
 

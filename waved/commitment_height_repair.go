@@ -70,7 +70,7 @@ func (s *Server) repairLegacyCommitmentHeights(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("build indexer proof signer: %w", err)
 	}
-	fetcher, err := incomingAncestryFetcher(s.indexer, signerFactory)
+	fetcher, err := incomingAncestryOnlyFetcher(s.indexer, signerFactory)
 	if err != nil {
 		return fmt.Errorf("build ancestry fetcher: %w", err)
 	}
