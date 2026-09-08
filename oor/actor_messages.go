@@ -120,6 +120,11 @@ type StartTransferRequest struct {
 	// new transfer may be admitted. Existing keyed winners remain readable
 	// after this deadline. Zero leaves admission unbounded.
 	AdmissionDeadlineUnixNanos int64
+
+	// PrepareOnly persists the deterministic package and input reservations
+	// without signing or submitting it. A later CommitPreparedEvent
+	// releases the ordinary OOR flow.
+	PrepareOnly bool
 }
 
 // MessageType returns the type of this message.
@@ -142,6 +147,7 @@ func (m *StartTransferRequest) Encode(w io.Writer) error {
 		IdempotencyKey:             m.IdempotencyKey,
 		DispatchRequestData:        m.DispatchRequestData,
 		AdmissionDeadlineUnixNanos: m.AdmissionDeadlineUnixNanos,
+		PrepareOnly:                m.PrepareOnly,
 		Recipients: make(
 			[]recipientPayload, 0, len(m.Recipients),
 		),
@@ -211,6 +217,7 @@ func (m *StartTransferRequest) Decode(r io.Reader) error {
 	m.IdempotencyKey = payload.IdempotencyKey
 	m.DispatchRequestData = payload.DispatchRequestData
 	m.AdmissionDeadlineUnixNanos = payload.AdmissionDeadlineUnixNanos
+	m.PrepareOnly = payload.PrepareOnly
 
 	m.Inputs = make([]TransferInput, 0, len(payload.Inputs))
 	for i := range payload.Inputs {

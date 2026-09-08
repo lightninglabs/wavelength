@@ -142,6 +142,7 @@ type Querier interface {
 	// Returns cumulative Ark protocol fees paid to the operator (fees_paid
 	// account only). Does not include L1 chain/miner fees (onchain_fees).
 	GetTotalOperatorFeesPaid(ctx context.Context) (int64, error)
+	GetUnfailedOORSessionRegistryByIdempotencyKey(ctx context.Context, idempotencyKey sql.NullString) (OorSessionRegistry, error)
 	GetUnilateralExitJob(ctx context.Context, arg GetUnilateralExitJobParams) (UnilateralExitJob, error)
 	GetVHTLCRecoveryJob(ctx context.Context, id string) (VhtlcRecoveryJob, error)
 	GetVHTLCRecoveryJobByRequestID(ctx context.Context, requestID string) (VhtlcRecoveryJob, error)
@@ -414,6 +415,9 @@ type Querier interface {
 	// round actually adopted, so a round can never release a deposit another round
 	// has since taken.
 	RevertRoundAdoptedBoardingIntents(ctx context.Context, arg RevertRoundAdoptedBoardingIntentsParams) error
+	// Selects the exact final-spend delay for an application-owned recovery row.
+	// Ordinary wallet VTXOs can never be modified through this query.
+	SetRecoveryOnlyVTXORelativeExpiry(ctx context.Context, arg SetRecoveryOnlyVTXORelativeExpiryParams) (int64, error)
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
