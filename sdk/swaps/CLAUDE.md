@@ -86,7 +86,14 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/swap
   DTOs. `SwapSummary` — flat list view for persisted sessions.
 - `RecoveryPolicy` / `DefaultRecoveryPolicy` — governs auto-escalation
   from cooperative vHTLC retry to daemon-owned on-chain recovery
-  (arm/escalate/cancel via `DaemonConn`'s VHTLC recovery RPCs).
+  (arm/escalate/cancel via `DaemonConn`'s VHTLC recovery RPCs). Also
+  supplies the receive-side timing admission budget:
+  `ExitAncestryDelayBlocks` (default
+  `DefaultRecoveryExitAncestryDelayBlocks` = 72 — the conservative
+  block budget for confirming the vHTLC's commitment-tree and OOR
+  ancestry before its own claim CSV starts) and
+  `MinRecoveryMarginBlocks` (default `DefaultRecoveryMinMarginBlocks`
+  = 12). `WithDefaults()` fills any zero field.
 - `ForfeitSignaturePayload` / `ForfeitParticipantSignature` /
   `OutSwapForfeitSignatureReceiver` / `OutSwapForfeitSignatureNotification`
   — server-pushed out-swap vHTLC refresh signing requests.
@@ -110,7 +117,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/swap
 ## Relationships
 
 - **Depends on**: `lib/arkscript` (vHTLC policy + claim/refund
-  tapscript paths), `sdk/ark` (type aliases), `swaprpc` (gRPC stubs),
+  tapscript paths, plus the shared `VHTLCTiming` admission model),
+  `sdk/ark` (type aliases), `swaprpc` (gRPC stubs),
   `vtxo` (forfeit sign-request conversion), `mailbox/pb` (edge
   pull/ack), `serverconn` + `serverconn/mailboxpull` (`CompoundMailboxID`,
   `PubKeyMailboxID`, mailbox pull backoff), `db` + `db/migrate` +
@@ -176,6 +184,34 @@ result into an `IncomingVHTLCNotification`.
 - `RecoveryPolicy.MaxFeeRateSatPerKW` is captured at arm time and
   stored on the recovery row, so a later, looser default cannot
   silently raise the exit-spend fee cap for an already-armed job.
+- **vHTLC timing is validated at the admission boundary, via
+  `lib/arkscript`.** `vhtlcTiming(VHTLCConfig)` projects the wire DTO into
+  `arkscript.VHTLCTiming`. Pay-side `createSwap` calls `ValidateOrder()`
+  before it will fund. Receive-side `validateReceiveClaimWindow` calls
+  `ValidateClaimWindow` with the current daemon height and the recovery
+  policy's `ExitAncestryDelayBlocks` / `MinRecoveryMarginBlocks`, at the
+  moment a server event first asks the receiver to accept a policy. Never
+  re-derive these thresholds locally — the shared model is the one place
+  the branch ordering and window arithmetic live.
+- **A retryable backend failure must not durably reject a swap.**
+  `validateReceiveClaimWindow` wraps `BlockHeight` errors (and a missing
+  daemon conn) in `newRetryableActionError`, and
+  `failReceiveTimingAdmission` returns those untouched instead of calling
+  `failTerminal`. Only a timing tuple actually evaluated against chain state
+  fails the session. A node that cannot reach its backend is not a node
+  holding a bad vHTLC.
+- **Pre-funded in-Ark claims are warned about, not rejected.** For a
+  credit-shaped `InArkHtlcEvent` (`RequestedAmountSat > 0 ||
+  AttachedCreditSat > 0`) a bad claim window fails the session, because the
+  rejection lands *before* the ACK that triggers server-side funding. For a
+  legacy direct-p2p in-Ark event the sender has already funded the vHTLC, so
+  refusing it cannot undo the exposure and would only forfeit a still-available
+  cooperative claim: the session logs `Receive vHTLC has limited recovery
+  window` at warn (or debug when the window could not be evaluated) and
+  proceeds. Out-swap HTLC events always fail closed — nothing is funded yet.
+- `SwapClient.waitForVHTLC` returns the full `*VTXOInfo` (not a detached
+  outpoint/amount pair) so funding validation sees the whole observed VTXO;
+  `validateReceiveFunding` requires it to be non-nil.
 - **Account-scoped requests are signed, and the signature is per request.**
   `authorizeCreditAccountRequest` stamps a fresh `CreditAccountAuthorization`
   (1 min TTL, 32 bytes of `crypto/rand` nonce) onto `RequestChannelId`,

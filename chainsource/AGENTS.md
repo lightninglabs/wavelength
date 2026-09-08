@@ -45,6 +45,13 @@ communication alongside the raw registration API.
 - Confirmation sub-actors support two notification modes: Future-based (blocking
   await) and actor-based (async `Tell` via `NotifyActor`). Callers use the actor
   mode when blocking inside a durable actor transaction is unsafe.
+- **An actor-mode subscription dies with its notify target.** In actor mode the
+  `NotifyActor` ref *is* the subscription's owner, so when a `Tell` fails with
+  `actor.ErrActorTerminated` or `actor.ErrMailboxClosed`, `BlockEpochActor`
+  cancels its own component-owned context and returns instead of logging a
+  warning per block forever. Transient `Tell` errors are still only logged and
+  retried on the next epoch — only the two "this ref can never accept
+  anything again" sentinels end the subscription.
 
 ## Deep Docs
 

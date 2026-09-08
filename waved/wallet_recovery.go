@@ -41,6 +41,16 @@ const (
 	recoveryIndexerRetryMax      = 5 * time.Second
 )
 
+// recoveryIndexedVTXOFamilies lists the key families seed recovery scans
+// against the operator's indexer. OOR receive scripts must be included: a
+// VTXO settled into a round after an OOR receive stays on its OOR receive
+// script, and the mailbox replay pass never learns whether the operator
+// still holds it.
+var recoveryIndexedVTXOFamilies = []keychain.KeyFamily{
+	libtypes.VTXOOwnerKeyFamily,
+	oorReceiveKeyFamily,
+}
+
 // WalletRecoveryResult reports the state discovered by one idempotent wallet
 // recovery scan. Counters describe artifacts found and persisted during that
 // scan; on a retry, some artifacts may already have existed locally.
@@ -141,10 +151,13 @@ func (r *RPCServer) recoverWalletState(ctx context.Context, window uint32) (
 	); err != nil {
 		return nil, fmt.Errorf("recover boarding keys: %w", err)
 	}
-	if err := r.recoverIndexedVTXOs(
-		ctx, terms, window, &result,
-	); err != nil {
-		return nil, fmt.Errorf("recover indexed VTXOs: %w", err)
+	for _, family := range recoveryIndexedVTXOFamilies {
+		if err := r.recoverIndexedVTXOs(
+			ctx, terms, family, window, &result,
+		); err != nil {
+			return nil, fmt.Errorf("recover indexed VTXOs for key "+
+				"family %d: %w", family, err)
+		}
 	}
 	if err := r.recoverOORReceiveScripts(
 		ctx, terms, window, &result,
@@ -254,13 +267,13 @@ func (s *Server) recoveryBoardingBackend() (wallet.BoardingBackend, error) {
 }
 
 func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
-	terms *libtypes.OperatorTerms, window uint32,
+	terms *libtypes.OperatorTerms, family keychain.KeyFamily, window uint32,
 	result *WalletRecoveryResult) error {
 
 	for i := uint32(0); i < window; i++ {
 		keyDesc, err := r.server.proofKeyBackend.DeriveKey(
 			ctx, keychain.KeyLocator{
-				Family: libtypes.VTXOOwnerKeyFamily,
+				Family: family,
 				Index:  i,
 			},
 		)
@@ -395,10 +408,11 @@ func recoveryDescriptorFromIndexer(indexed *arkrpc.VTXO,
 		}
 	}
 
-	exitDelay := indexed.GetRelativeExpiry()
-	if exitDelay == 0 {
-		exitDelay = terms.VTXOExitDelay
-	}
+	// The indexer's relative_expiry is the batch's relative expiry, not
+	// the script's exit delay. The matched pk script was derived with
+	// terms.VTXOExitDelay, so the tapscript must use the same delay or the
+	// operator rejects every join naming this VTXO.
+	exitDelay := terms.VTXOExitDelay
 
 	tapscript, err := arkscript.VTXOTapScript(
 		keyDesc.PubKey, operatorKey, exitDelay,

@@ -118,6 +118,14 @@ type ClientEnvironment struct {
 	// the owned receive scripts store.
 	OwnedScriptChecker OwnedScriptChecker
 
+	// OwnedScriptRegistrar records the composed script of a locally owned
+	// asset VTXO once the client has validated its tree path.
+	OwnedScriptRegistrar OwnedScriptRegistrar
+
+	// AssetVTXOVerifier verifies asset VTXOs before signing. It is only
+	// required for rounds containing asset requests.
+	AssetVTXOVerifier AssetVTXOVerifier
+
 	// Now returns the current wall-clock time. evaluateQuote
 	// uses this to enforce the server-advertised
 	// `quote_expires_at`; a nil value falls back to time.Now so

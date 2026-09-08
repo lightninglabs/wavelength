@@ -52,6 +52,8 @@ const (
 	joinRoundAuthVTXOSigningKeyRecordType  tlv.Type = 3
 	joinRoundAuthVTXOIsChangeRecordType    tlv.Type = 4
 	joinRoundAuthVTXOFixedAmountRecordType tlv.Type = 5
+	joinRoundAuthVTXOAssetRefRecordType    tlv.Type = 6
+	joinRoundAuthVTXOAssetAmountRecordType tlv.Type = 7
 )
 
 const (
@@ -108,8 +110,8 @@ type JoinRoundAuth struct {
 //	| type  | field                                     |
 //	+-------+-------------------------------------------+
 //	|   1   | version   (uint64, currently 3)           |
-//	|   2   | domain    ("wavelength-join-round-auth")   |
-//	|   3   | identifier (33-byte compressed pubkey)    |
+//	|   2   | domain    ("wavelength-join-round-auth") |
+//	|   3   | identifier (33-byte compressed pubkey)   |
 //	|   4   | boarding  (blob list)                     |
 //	|   5   | vtxos     (blob list)                     |
 //	|   6   | forfeits  (blob list)                     |
@@ -122,13 +124,16 @@ type JoinRoundAuth struct {
 //
 // Boarding entry TLV:
 //
-//	1: outpoint hash  |  2: outpoint index
-//	3: client key     |  4: operator key   |  5: exit delay
+//	1: outpoint hash  |  2: outpoint index  |  3: policy template
 //
 // VTXO entry TLV:
 //
-//	1: amount      |  2: pkScript   |  3: expiry
-//	4: client key  |  5: operator key  |  6: signing key
+//	1: amount       |  2: policy template  |  3: signing key
+//	4: is change    |  5: fixed amount
+//	6: asset ref    |  7: asset amount
+//
+// Asset reference and amount are omitted together for Bitcoin VTXOs, which
+// preserves the existing canonical encoding for those requests.
 //
 // Forfeit entry TLV:
 //
@@ -137,7 +142,7 @@ type JoinRoundAuth struct {
 //
 // Leave entry TLV:
 //
-//	1: value  |  2: pkScript
+//	1: value  |  2: pkScript  |  3: is change
 func JoinRoundAuthMessage(req *JoinRoundRequest) ([]byte, error) {
 	if req == nil {
 		return nil, fmt.Errorf("join round request must be provided")
@@ -493,11 +498,13 @@ func decodeJoinAuthVTXORequests(raw []byte) ([]*VTXORequest, error) {
 // decodeJoinAuthVTXORequest parses one VTXO request entry.
 func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 	var (
-		amount     uint64
-		policy     []byte
-		signingKey []byte
-		isChange   uint8
-		fixedAmt   uint8
+		amount      uint64
+		policy      []byte
+		signingKey  []byte
+		isChange    uint8
+		fixedAmt    uint8
+		assetRef    []byte
+		assetAmount uint64
 	)
 
 	stream, err := tlv.NewStream(
@@ -515,6 +522,12 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthVTXOFixedAmountRecordType, &fixedAmt,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthVTXOAssetRefRecordType, &assetRef,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthVTXOAssetAmountRecordType, &assetAmount,
 		),
 	)
 	if err != nil {
@@ -551,6 +564,12 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 	if err != nil {
 		return nil, err
 	}
+	_, hasAssetRef := parsedTypes[joinRoundAuthVTXOAssetRefRecordType]
+	_, hasAssetAmount := parsedTypes[joinRoundAuthVTXOAssetAmountRecordType]
+	if hasAssetRef != hasAssetAmount {
+		return nil, fmt.Errorf("asset reference and amount records " +
+			"must appear together")
+	}
 
 	if amount > math.MaxInt64 {
 		return nil, fmt.Errorf("vtxo amount %d exceeds int64", amount)
@@ -571,9 +590,14 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 		IsChange:       isChange != 0,
 		FixedAmount:    fixedAmt != 0,
 		PolicyTemplate: bytes.Clone(policy),
+		AssetRef:       string(assetRef),
+		AssetAmount:    assetAmount,
 		SigningKey: keychain.KeyDescriptor{
 			PubKey: signingPubKey,
 		},
+	}
+	if err := req.ValidateAssetFields(); err != nil {
+		return nil, err
 	}
 
 	_, err = req.DecodePolicyTemplate()
@@ -931,6 +955,9 @@ func encodeJoinAuthVTXORequests(requests []*VTXORequest) ([]byte, error) {
 
 // encodeJoinAuthVTXORequest serializes one VTXO request as TLV.
 func encodeJoinAuthVTXORequest(req *VTXORequest) ([]byte, error) {
+	if err := req.ValidateAssetFields(); err != nil {
+		return nil, err
+	}
 	if req.Amount < 0 {
 		return nil, fmt.Errorf("amount must be non-negative")
 	}
@@ -954,6 +981,8 @@ func encodeJoinAuthVTXORequest(req *VTXORequest) ([]byte, error) {
 	if req.FixedAmount {
 		fixedAmt = 1
 	}
+	assetRef := []byte(req.AssetRef)
+	assetAmount := req.AssetAmount
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -971,6 +1000,17 @@ func encodeJoinAuthVTXORequest(req *VTXORequest) ([]byte, error) {
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthVTXOFixedAmountRecordType, &fixedAmt,
 		),
+	}
+	if req.AssetRef != "" {
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				joinRoundAuthVTXOAssetRefRecordType, &assetRef,
+			),
+			tlv.MakePrimitiveRecord(
+				joinRoundAuthVTXOAssetAmountRecordType,
+				&assetAmount,
+			),
+		)
 	}
 
 	return encodeJoinAuthTLV(records)

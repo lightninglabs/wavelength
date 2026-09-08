@@ -499,22 +499,35 @@ func (r *router) prepareOnchain(ctx context.Context, addr string,
 		previewAmount = selectedTotal
 	}
 
-	feeQuote := r.estimateOnchainFee(
-		ctx, previewAmount, len(res.Selected), sweepAll, terms,
+	feeQuote, err := r.estimateOnchainFee(
+		ctx, res.Selected, sweepAll, terms,
 	)
+	if err != nil {
+		return nil, err
+	}
 
 	// Guard the preview's coherence: a bounded send must not report an
 	// outflow its own selected funds cannot cover. The daemon re-selects
 	// for the real send, but the preview should reject an unaffordable
 	// amount + fee here rather than confirm a stale, unfundable quote
-	// that the SendOnChain path will later fail. A sweep moves the whole
-	// balance, so it is affordable by construction.
+	// that the SendOnChain path will later fail. A sweep absorbs the fee
+	// into its leave output, which must remain positive and meet the
+	// operator's advertised output floor.
 	if !sweepAll {
 		needed := int64(amtSat) + feeQuote.feeSat
 		if selectedTotal < needed {
 			return nil, fmt.Errorf("%w: live VTXOs cover %d sat, "+
 				"need %d sat (amount plus fee)",
 				ErrAmountRequired, selectedTotal, needed)
+		}
+	} else {
+		remaining := selectedTotal - feeQuote.feeSat
+		minOutput := max(int64(terms.dustLimit), 1)
+		if remaining < minOutput {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"sweep leaves %d sat after fees, below the "+
+					"minimum output of %d sat", remaining,
+				minOutput)
 		}
 	}
 

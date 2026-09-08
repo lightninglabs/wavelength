@@ -1674,3 +1674,94 @@ func (c *DaemonServiceMailboxClient) SignCreditAccountAuthorization(ctx context.
 
 	return resp, nil
 }
+
+// MacaroonServiceMailboxClient is a typed mailbox RPC client for MacaroonService.
+type MacaroonServiceMailboxClient struct {
+	// C is the underlying RPC-over-mailbox runtime client.
+	C rpc.RPCClient
+}
+
+// NewMacaroonServiceMailboxClient creates a typed mailbox client.
+func NewMacaroonServiceMailboxClient(c rpc.RPCClient) *MacaroonServiceMailboxClient {
+	return &MacaroonServiceMailboxClient{
+		C: c,
+	}
+}
+
+// MacaroonServiceMailboxServer is the mailbox server interface for MacaroonService.
+type MacaroonServiceMailboxServer interface {
+	// BakeMacaroon handles BakeMacaroon.
+	BakeMacaroon(ctx context.Context, req *BakeMacaroonRequest) (*BakeMacaroonResponse, error)
+	// ListPermissions handles ListPermissions.
+	ListPermissions(ctx context.Context, req *ListPermissionsRequest) (*ListPermissionsResponse, error)
+}
+
+// RegisterMacaroonServiceMailboxServer registers handlers for MacaroonService.
+func RegisterMacaroonServiceMailboxServer(r rpc.Router, impl MacaroonServiceMailboxServer) {
+	r.Handle("waverpc.MacaroonService", "BakeMacaroon", func() proto.Message {
+		return &BakeMacaroonRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*BakeMacaroonRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.BakeMacaroon(ctx, req)
+	})
+	r.Handle("waverpc.MacaroonService", "ListPermissions", func() proto.Message {
+		return &ListPermissionsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListPermissionsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListPermissions(ctx, req)
+	})
+}
+
+// BakeMacaroon calls the BakeMacaroon RPC.
+func (c *MacaroonServiceMailboxClient) BakeMacaroon(ctx context.Context, req *BakeMacaroonRequest, opts ...rpc.RPCOptions) (*BakeMacaroonResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.MacaroonService",
+		Method:  "BakeMacaroon",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(BakeMacaroonResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListPermissions calls the ListPermissions RPC.
+func (c *MacaroonServiceMailboxClient) ListPermissions(ctx context.Context, req *ListPermissionsRequest, opts ...rpc.RPCOptions) (*ListPermissionsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.MacaroonService",
+		Method:  "ListPermissions",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListPermissionsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}

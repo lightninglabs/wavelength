@@ -10,8 +10,19 @@ by `sqlc` from `db/actordelivery/queries/mailbox.sql`; regenerate with
 ## Key Types
 
 - `Queries` / `Querier` — generated query struct and interface (enqueue,
-  lease, peek, ack/nack, extend, expire, outbox claim/complete/fail,
-  dedup, FSM checkpoints, dead letters).
+  lease, peek, ack/nack, postpone, extend, expire, outbox
+  claim/complete/fail, dedup, FSM checkpoints, dead letters).
+- `PostponeMailboxMessage` / `PostponeMailboxMessageByID` — the
+  attempt-preserving release pair behind `actor.Postpone(delay)`, for a
+  behavior that cannot handle a message *yet* rather than one that failed.
+  Both set a new `available_at`; they differ in how they treat `attempts`,
+  and the asymmetry is deliberate. The fenced variant validates
+  `lease_token` and *decrements* attempts, compensating the increment the
+  leased claim already applied, clamped by `CASE WHEN attempts > 0` so a
+  corrupt row cannot wrap negative. The by-id variant is unfenced and
+  leaves attempts untouched, because the leaseless peek never incremented
+  them. Either way the retry budget after the release is byte-identical to
+  what it was before the delivery.
 - `MailboxMessage`, `OutboxMessage`, `AskResult`, `FsmCheckpoint`,
   `DeadLetter`, `ProcessedMessage` — row models for the actor-delivery
   tables.

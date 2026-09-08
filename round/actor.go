@@ -523,6 +523,7 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		Log:                    actorLog,
 		DisableJoinRequestAuth: cfg.DisableJoinRequestAuth,
 		OwnedScriptChecker:     cfg.OwnedScriptChecker,
+		OwnedScriptRegistrar:   cfg.OwnedScriptRegistrar,
 	}
 	if env.SigningExecutor == nil {
 		env.SigningExecutor = NewSigningExecutor(1)
@@ -946,6 +947,7 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 		StatusReconcileTimeout: a.env.StatusReconcileTimeout,
 		RoundKey:               RoundKeyStr(roundID.KeyString()),
 		OwnedScriptChecker:     a.cfg.OwnedScriptChecker,
+		OwnedScriptRegistrar:   a.cfg.OwnedScriptRegistrar,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -1022,6 +1024,7 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 		StatusReconcileTimeout: a.env.StatusReconcileTimeout,
 		RoundKey:               RoundKeyStr(tempKey.KeyString()),
 		OwnedScriptChecker:     a.cfg.OwnedScriptChecker,
+		OwnedScriptRegistrar:   a.cfg.OwnedScriptRegistrar,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -1305,7 +1308,7 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 		CallerID:    callerID,
 		Txid:        &txid,
 		PkScript:    pkScript,
-		TargetConfs: a.cfg.OperatorTerms.MinConfirmations,
+		TargetConfs: a.cfg.OperatorTerms.VTXOTargetConfirmations(),
 		HeightHint:  heightHint,
 		NotifyActor: fn.Some(mappedRef),
 	}
@@ -1813,9 +1816,9 @@ func buildBoardingIntentFromWallet(walletIntent *wallet.BoardingIntent) (
 func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 	msg *RegisterVTXORequestsRequest) fn.Result[actormsg.RoundActorResp] {
 
-	if len(msg.Amounts) == 0 {
+	if len(msg.Amounts) == 0 && len(msg.Assets) == 0 {
 		return fn.Err[actormsg.RoundActorResp](
-			fmt.Errorf("VTXO request amounts are empty"),
+			fmt.Errorf("VTXO requests are empty"),
 		)
 	}
 	if msg.ChangeIndex != nil &&
@@ -1826,7 +1829,9 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 		)
 	}
 
-	requests := make([]types.VTXORequest, 0, len(msg.Amounts))
+	requests := make(
+		[]types.VTXORequest, 0, len(msg.Amounts)+len(msg.Assets),
+	)
 	for i, amount := range msg.Amounts {
 		if amount <= 0 {
 			return fn.Err[actormsg.RoundActorResp](
@@ -1861,6 +1866,41 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 		// that marker centrally via designateChangeMarker over
 		// the fully-composed intent, so this loop leaves
 		// IsChange unset.
+
+		requests = append(requests, *req)
+	}
+
+	for i, asset := range msg.Assets {
+		if asset.AmountSat <= 0 {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("asset VTXO amount %d is "+
+					"invalid: %v", i, asset.AmountSat),
+			)
+		}
+		candidate := &types.VTXORequest{
+			Amount:      asset.AmountSat,
+			AssetRef:    asset.AssetRef,
+			AssetAmount: asset.AssetAmount,
+			FixedAmount: true,
+		}
+		if err := validateAssetRequest(candidate); err != nil {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("asset VTXO request %d: %w", i, err),
+			)
+		}
+
+		req, err := a.deriveVTXORequest(
+			ctx, asset.AmountSat, types.VTXOOriginUnknown,
+		)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("build asset VTXO request %d: %w",
+					i, err),
+			)
+		}
+		req.AssetRef = asset.AssetRef
+		req.AssetAmount = asset.AssetAmount
+		req.FixedAmount = true
 
 		requests = append(requests, *req)
 	}
@@ -1946,13 +1986,43 @@ func (a *RoundClientActor) handleVTXORequestsReceived(ctx context.Context,
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }
 
-// buildVTXORequest derives a fresh owner key and constructs a locally owned
-// VTXO request for the provided amount. The round FSM derives the ephemeral
-// signing key later during registration. Origin is set by the caller so
+// buildVTXORequest derives and registers a locally owned VTXO request for the
+// provided amount. The round FSM derives the ephemeral signing key later
+// during registration. Origin is set by the caller so
 // the downstream ledger emission gets the right Source: boarding flows
 // pass VTXOOriginRoundBoarding, other in-round producers pass their
 // respective origin.
 func (a *RoundClientActor) buildVTXORequest(ctx context.Context,
+	amount btcutil.Amount, origin types.VTXOOrigin) (*types.VTXORequest,
+	error) {
+
+	req, err := a.deriveVTXORequest(ctx, amount, origin)
+	if err != nil {
+		return nil, err
+	}
+
+	if a.cfg.OwnedScriptRegistrar != nil {
+		pkScript, err := req.EffectivePkScript()
+		if err != nil {
+			return nil, fmt.Errorf("derive vtxo pkScript: %w", err)
+		}
+
+		regErr := a.cfg.OwnedScriptRegistrar.RegisterOwnedScript(
+			ctx, pkScript, req.OwnerKey,
+		)
+		if regErr != nil {
+			return nil, fmt.Errorf("register owned script: %w",
+				regErr)
+		}
+	}
+
+	return req, nil
+}
+
+// deriveVTXORequest constructs a locally owned request without registering
+// its output script. Asset requests use it because their final script depends
+// on the commitment root disclosed with the tree.
+func (a *RoundClientActor) deriveVTXORequest(ctx context.Context,
 	amount btcutil.Amount, origin types.VTXOOrigin) (*types.VTXORequest,
 	error) {
 
@@ -1978,21 +2048,6 @@ func (a *RoundClientActor) buildVTXORequest(ctx context.Context,
 		ClientKey:      keyDesc.PubKey,
 		OwnerKey:       *keyDesc,
 		Origin:         origin,
-	}
-
-	if a.cfg.OwnedScriptRegistrar != nil {
-		pkScript, err := req.EffectivePkScript()
-		if err != nil {
-			return nil, fmt.Errorf("derive vtxo pkScript: %w", err)
-		}
-
-		regErr := a.cfg.OwnedScriptRegistrar.RegisterOwnedScript(
-			ctx, pkScript, *keyDesc,
-		)
-		if regErr != nil {
-			return nil, fmt.Errorf("register owned script: %w",
-				regErr)
-		}
 	}
 
 	return req, nil
@@ -2337,8 +2392,10 @@ func (a *RoundClientActor) handleGetState(ctx context.Context,
 	for keyStr, roundFSM := range a.rounds {
 		roundState, err := fsmState(scanCtx, roundFSM.FSM)
 		if err != nil {
-			a.log.WarnS(ctx, "Failed to get FSM state for round",
-				err,
+			a.log.DebugS(
+				ctx,
+				"Skipped round with unreadable FSM state",
+				slog.Any("err", err),
 				slog.String("key", string(keyStr)),
 			)
 
@@ -2964,12 +3021,13 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				inputSigState.CommitmentTx,
 			)
 
-			// Index for confirmation routing and register.
+			// Index the transaction before the confirmation request
+			// emitted by the FSM can be delivered. The FSM outbox
+			// owns the steady-state registration; registering again
+			// here creates two notifier subscriptions for the same
+			// tx. A restarted actor still re-registers active
+			// rounds in Start.
 			a.commitmentTxIndex[txid] = keyStr
-			a.registerCommitmentConfirmation(
-				ctx, txid, roundFSM.CommitmentTx,
-				inputSigState.VTXOTreePaths,
-			)
 
 			a.log.InfoS(ctx, "Round checkpoint processed",
 				slog.String("round_id", m.RoundID.String()),

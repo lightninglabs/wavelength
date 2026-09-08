@@ -251,8 +251,12 @@ type GetInfoResponse struct {
 	// The number of blocks before batch expiry in which a pure refresh
 	// qualifies for a complete fee waiver. Zero disables the waiver.
 	FreeRefreshWindowBlocks uint32 `protobuf:"varint,23,opt,name=free_refresh_window_blocks,json=freeRefreshWindowBlocks,proto3" json:"free_refresh_window_blocks,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// The confirmations required before clients may use VTXOs created by a
+	// round. This is independent of min_confirmations, which protects the
+	// on-chain boarding inputs consumed by a new round.
+	VtxoConfirmations uint32 `protobuf:"varint,24,opt,name=vtxo_confirmations,json=vtxoConfirmations,proto3" json:"vtxo_confirmations,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *GetInfoResponse) Reset() {
@@ -421,6 +425,13 @@ func (x *GetInfoResponse) GetArkVersionPolicies() []*ArkVersionPolicy {
 func (x *GetInfoResponse) GetFreeRefreshWindowBlocks() uint32 {
 	if x != nil {
 		return x.FreeRefreshWindowBlocks
+	}
+	return 0
+}
+
+func (x *GetInfoResponse) GetVtxoConfirmations() uint32 {
+	if x != nil {
+		return x.VtxoConfirmations
 	}
 	return 0
 }
@@ -611,7 +622,7 @@ const file_ark_proto_rawDesc = "" +
 	"\x05State\x12\x15\n" +
 	"\x11STATE_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fSTATE_ACTIVE\x10\x01\x12\x12\n" +
-	"\x0eSTATE_DISABLED\x10\x02\"\xd3\x06\n" +
+	"\x0eSTATE_DISABLED\x10\x02\"\x82\a\n" +
 	"\x0fGetInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06pubkey\x18\x02 \x01(\fR\x06pubkey\x12\x18\n" +
@@ -635,7 +646,8 @@ const file_ark_proto_rawDesc = "" +
 	"\x10max_user_balance\x18\x14 \x01(\x03R\x0emaxUserBalance\x120\n" +
 	"\x14selected_ark_version\x18\x15 \x01(\rR\x12selectedArkVersion\x12J\n" +
 	"\x14ark_version_policies\x18\x16 \x03(\v2\x18.arkrpc.ArkVersionPolicyR\x12arkVersionPolicies\x12;\n" +
-	"\x1afree_refresh_window_blocks\x18\x17 \x01(\rR\x17freeRefreshWindowBlocks\"\x7f\n" +
+	"\x1afree_refresh_window_blocks\x18\x17 \x01(\rR\x17freeRefreshWindowBlocks\x12-\n" +
+	"\x12vtxo_confirmations\x18\x18 \x01(\rR\x11vtxoConfirmations\"\x7f\n" +
 	"\x12EstimateFeeRequest\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x01 \x01(\x03R\tamountSat\x12\x1f\n" +

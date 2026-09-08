@@ -22,6 +22,11 @@ type TransferInputSnapshot struct {
 	// Outpoint identifies the input VTXO being transferred.
 	Outpoint wire.OutPoint
 
+	// ReserveEpoch is the VTXO manager's reservation epoch for this input,
+	// persisted so a release replayed after a rolled-back failure names
+	// the reservation it held (see TransferInput.ReserveEpoch).
+	ReserveEpoch uint64
+
 	// AmountSat is the input VTXO amount in satoshis.
 	AmountSat int64
 
@@ -100,6 +105,7 @@ func (i *TransferInput) ToSnapshot() (*TransferInputSnapshot, error) {
 
 	snap := &TransferInputSnapshot{
 		Outpoint:           i.VTXO.Outpoint,
+		ReserveEpoch:       i.ReserveEpoch,
 		AmountSat:          int64(i.VTXO.Amount),
 		ClientKeyFamily:    int32(i.VTXO.ClientKey.KeyLocator.Family),
 		ClientKeyIndex:     i.VTXO.ClientKey.KeyLocator.Index,
@@ -216,6 +222,7 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 
 	result := TransferInput{
 		VTXO:               desc,
+		ReserveEpoch:       snap.ReserveEpoch,
 		OwnerLeafScript:    snap.OwnerLeafScript,
 		OwnerLeafPolicy:    snap.OwnerLeafPolicy,
 		VTXOPolicyTemplate: snap.VTXOPolicyTemplate,

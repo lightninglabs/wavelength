@@ -190,7 +190,8 @@ wavecli --network=regtest activity                            # all activity
 wavecli --network=regtest activity --pending --kind send,recv # filter
 wavecli --network=regtest activity --format json              # JSON output
 # VTXO inventory and on-chain history are not part of the activity feed;
-# use the `ark` subtree: `ark vtxos list` (live VTXOs),
+# use the `ark` subtree: `ark vtxos list` (inventory; `--status live` for
+# spendable, `--all` for every status),
 # `ark listtransactions` (raw tx / onchain history),
 # `ark sweep list` (boarding-timeout sweep records).
 

@@ -1917,6 +1917,8 @@ func TestPartialSigsSentState(t *testing.T) {
 
 		h.setupMockWalletForBoardingSigning()
 		h.setupMockRoundStoreForCommit()
+		h.env.OperatorTerms.MinConfirmations = 6
+		h.env.OperatorTerms.VTXOConfirmations = 1
 		h.withState(state)
 
 		event := &OperatorSigned{
@@ -1937,6 +1939,11 @@ func TestPartialSigsSentState(t *testing.T) {
 
 		h.assertOutboxContainsType("*round.SubmitForfeitSigRequest")
 		h.assertOutboxContainsType("*round.RegisterConfirmationRequest")
+		registration, ok := findOutbox[*RegisterConfirmationRequest](
+			h.outboxMessages,
+		)
+		require.True(t, ok)
+		require.Equal(t, uint32(1), registration.TargetConfs)
 	})
 
 	t.Run("OperatorSigned_propagates_sigs_to_extracted_client_tree",

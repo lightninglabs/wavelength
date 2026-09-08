@@ -164,6 +164,10 @@ type ServerInfo struct {
 	// inputs.
 	MinConfirmations uint32
 
+	// VTXOConfirmations is the confirmation depth at which VTXOs created by
+	// a round become available for off-chain spending.
+	VTXOConfirmations uint32
+
 	// MaxUserBalance is the maximum total balance in satoshis a single
 	// user should hold in the system. A value of zero means no cap.
 	MaxUserBalance uint64
@@ -470,6 +474,7 @@ func (c *Client) GetInfo(ctx context.Context) (*Info, error) {
 			MinOperatorFee:          serverInfo.MinOperatorFee,
 			FreeRefreshWindowBlocks: freeRefreshWindow,
 			MinConfirmations:        serverInfo.MinConfirmations,
+			VTXOConfirmations:       serverInfo.VtxoConfirmations,
 			MaxUserBalance:          serverInfo.MaxUserBalance,
 		}
 	}
@@ -645,7 +650,8 @@ func (c *Client) GetBalance(ctx context.Context) (*waverpc.GetBalanceResponse,
 }
 
 // ListVTXOs returns the daemon's known VTXOs using the supplied filter
-// request. Passing nil uses the daemon defaults with no extra filters.
+// request. Passing nil lists the inventory set: every VTXO except forfeited
+// and spent ones, newest first, of which only live entries are spendable.
 func (c *Client) ListVTXOs(ctx context.Context, req *waverpc.ListVTXOsRequest) (
 	*waverpc.ListVTXOsResponse, error) {
 

@@ -847,13 +847,14 @@ func (s *Server) oorCompleteSpend(ctx context.Context,
 // path: a session that fails terminally before the server co-signs
 // releases its input reservation through the manager so each VTXO actor
 // transitions from SpendingState back to LiveState.
-func (s *Server) oorReleaseSpend(ctx context.Context,
-	outpoints []wire.OutPoint) error {
+func (s *Server) oorReleaseSpend(ctx context.Context, outpoints []wire.OutPoint,
+	reserveEpochs map[wire.OutPoint]uint64) error {
 
 	mgrKey := actormsg.VTXOManagerServiceKey()
 	result := mgrKey.Ref(s.actorSystem).Ask(
 		ctx, &actormsg.ReleaseSpendRequest{
-			Outpoints: outpoints,
+			Outpoints:     outpoints,
+			ReserveEpochs: reserveEpochs,
 		},
 	).Await(ctx)
 
@@ -1456,6 +1457,9 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 	waverpc.RegisterDaemonServiceServer(
 		s.grpcServer, s.rpcServer,
 	)
+	waverpc.RegisterMacaroonServiceServer(
+		s.grpcServer, s.rpcServer,
+	)
 	if cleanup := registerBtcwalletRPC(s.grpcServer, s); cleanup != nil {
 		defer cleanup()
 	}
@@ -1479,13 +1483,16 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 			defer cleanup()
 		}
 	}
-	if authService != nil {
-		if _, err := registeredRPCPermissions(
-			s.grpcServer,
-		); err != nil {
-			return err
-		}
+	activePermissions, err := registeredRPCPermissions(s.grpcServer)
+	// Preserve the no-auth development mode's support for custom services
+	// without daemon-defined permissions. When authentication is enabled,
+	// every registered method must remain covered and startup fails closed.
+	if err != nil && authService != nil {
+		return err
 	}
+	s.rpcServer.configureMacaroonManager(
+		authService, activePermissions,
+	)
 
 	// Register the DaemonService for mailbox RPC access. The
 	// ServeMux handles incoming KIND_REQUEST envelopes routed

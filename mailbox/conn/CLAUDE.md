@@ -82,3 +82,11 @@ delivery.
 - [docs/mailbox_architecture.md](../../docs/mailbox_architecture.md) — Full three-layer mailbox architecture.
 - [docs/RPC_MAILBOX_CONTRACT.md](../../docs/RPC_MAILBOX_CONTRACT.md) — Envelope semantics and ack watermarks.
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) — System-wide package map.
+
+## Ingress evidence
+
+See [mailbox ingress safety](../../docs/mailbox_ingress_safety.md) for the
+occurrence-ID, 30-day receipt and bounded poison-quarantine contracts. Receipts
+are consumed at durable inbox insertion, not at an in-memory Tell. Quarantine
+uses per-lane reservations inside a global bound and is never aged out;
+recovery removes it only with a durable handoff.

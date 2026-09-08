@@ -81,11 +81,17 @@ const (
 	maxOORRecipients = 256
 )
 
-// RPCServer implements the daemon's gRPC DaemonService interface.
+// RPCServer implements the daemon's local gRPC daemon and macaroon services.
 type RPCServer struct {
 	waverpc.UnimplementedDaemonServiceServer
+	waverpc.UnimplementedMacaroonServiceServer
 
 	server *Server
+
+	// macaroonManager owns local macaroon baking and reports the active RPC
+	// permission map. It is configured after all optional gRPC services are
+	// registered, before the listener starts serving requests.
+	macaroonManager *macaroonManager
 
 	// customInputLocksMu guards customInputLocks. Together they form
 	// a lightweight in-memory mutex on custom OOR input outpoints
@@ -125,7 +131,10 @@ type RPCServer struct {
 // NewRPCServer creates a new RPCServer backed by the given Server.
 func NewRPCServer(server *Server) *RPCServer {
 	return &RPCServer{
-		server:             server,
+		server: server,
+		macaroonManager: newMacaroonManager(
+			nil, wavedRPCPermissions,
+		),
 		customInputLocks:   make(map[wire.OutPoint]struct{}),
 		receiveScriptLocks: make(map[string]*receiveScriptLock),
 	}
@@ -745,6 +754,7 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *waverpc.GetInfoRequest) (
 			FeeRate:           uint64(terms.FeeRate),
 			MinOperatorFee:    uint64(terms.MinOperatorFee),
 			MinConfirmations:  terms.MinConfirmations,
+			VtxoConfirmations: terms.VTXOTargetConfirmations(),
 			MinVtxoAmountSat:  uint64(minVTXOAmount),
 			MaxUserBalance:    uint64(terms.MaxUserBalance),
 		}
@@ -1279,12 +1289,10 @@ func roundStateLabel(s waverpc.RoundState) string {
 	return strings.ToLower(strings.TrimPrefix(s.String(), "ROUND_STATE_"))
 }
 
-// ListVTXOs returns the set of VTXOs known to the wallet, optionally
-// filtered by status and minimum amount. The VTXO_STATUS_PENDING_ROUND
-// filter is special: it bypasses the on-disk store and projects each
-// upcoming VTXO from the live round actor as a synthetic VTXO entry,
-// giving callers a way to see the outputs they have signed for but
-// which have not yet been created by an on-chain commitment.
+// ListVTXOs returns the VTXOs known to the wallet, newest first, in the
+// requested statuses or in vtxo.InventoryStatuses when none are given.
+// VTXO_STATUS_PENDING_ROUND entries are projected from the live round actor
+// instead of read from the store.
 func (r *RPCServer) ListVTXOs(ctx context.Context,
 	req *waverpc.ListVTXOsRequest) (*waverpc.ListVTXOsResponse, error) {
 
@@ -1292,46 +1300,89 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 		return nil, err
 	}
 
-	if req.StatusFilter ==
-		waverpc.VTXOStatus_VTXO_STATUS_PENDING_ROUND {
-		return r.listPendingRoundVTXOs(ctx, req)
+	persisted, includePending, err := requestedVTXOStatuses(req)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
+
+	protoVTXOs := make([]*waverpc.VTXO, 0)
+	if includePending {
+		pending, err := r.listPendingRoundVTXOs(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+
+		protoVTXOs = append(protoVTXOs, pending...)
+	}
+
+	if len(persisted) > 0 {
+		stored, err := r.listStoredVTXOs(ctx, req, persisted)
+		if err != nil {
+			return nil, err
+		}
+
+		protoVTXOs = append(protoVTXOs, stored...)
+	}
+
+	return &waverpc.ListVTXOsResponse{
+		Vtxos: protoVTXOs,
+	}, nil
+}
+
+// requestedVTXOStatuses returns the persisted statuses to read and whether
+// pending-round projections are wanted.
+func requestedVTXOStatuses(req *waverpc.ListVTXOsRequest) ([]vtxo.VTXOStatus,
+	bool, error) {
+
+	selected := make([]waverpc.VTXOStatus, 0, len(req.Statuses)+1)
+	selected = append(selected, req.Statuses...)
+	if req.StatusFilter != waverpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED {
+		selected = append(selected, req.StatusFilter)
+	}
+
+	if len(selected) == 0 {
+		return vtxo.InventoryStatuses(), false, nil
+	}
+
+	var (
+		persisted      []vtxo.VTXOStatus
+		includePending bool
+	)
+	for _, s := range selected {
+		if s == waverpc.VTXOStatus_VTXO_STATUS_PENDING_ROUND {
+			includePending = true
+
+			continue
+		}
+
+		domainStatus, err := protoStatusToDomain(s)
+		if err != nil {
+			return nil, false, fmt.Errorf("invalid status "+
+				"filter: %w", err)
+		}
+
+		persisted = append(persisted, domainStatus)
+	}
+
+	return persisted, includePending, nil
+}
+
+// listStoredVTXOs lists the persisted VTXOs in the given statuses.
+func (r *RPCServer) listStoredVTXOs(ctx context.Context,
+	req *waverpc.ListVTXOsRequest, statuses []vtxo.VTXOStatus) (
+	[]*waverpc.VTXO, error) {
 
 	if r.server.vtxoStore == nil {
 		return nil, status.Errorf(codes.Internal, "vtxo store not "+
 			"initialized")
 	}
 
-	// Fetch VTXOs from the store. When a specific status filter
-	// is provided, query the DB directly for that status so
-	// terminal states (spent, forfeited) are reachable. When
-	// unspecified, return all non-terminal (live) VTXOs.
-	var (
-		dbVTXOs []*vtxo.Descriptor
-		err     error
+	// The listing response never carries ancestry, so the light variant
+	// skips the ancestry side-table join (whose TLV tree fragments grow
+	// with OOR chain depth) entirely.
+	dbVTXOs, err := r.server.vtxoStore.ListVTXOsByStatusesLight(
+		ctx, statuses,
 	)
-
-	if req.StatusFilter !=
-		waverpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED {
-
-		domainStatus, sErr := protoStatusToDomain(
-			req.StatusFilter,
-		)
-		if sErr != nil {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"invalid status filter: %v", sErr)
-		}
-
-		// The listing response never carries ancestry, so the light
-		// variants skip the ancestry side-table join (whose TLV tree
-		// fragments grow with OOR chain depth) entirely.
-		dbVTXOs, err = r.server.vtxoStore.ListVTXOsByStatusLight(
-			ctx, domainStatus,
-		)
-	} else {
-		dbVTXOs, err = r.server.vtxoStore.ListLiveVTXOsLight(ctx)
-	}
-
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "unable to list "+
 			"VTXOs: %v", err)
@@ -1376,18 +1427,21 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 				ctx, packageStore, v, protoVTXO,
 			)
 			if err != nil {
-				return nil, status.Errorf(codes.Internal,
-					"populate package checkpoint psbts: %v",
-					err)
+				// An unreadable package only costs this entry
+				// its PSBTs.
+				r.server.log.DebugS(ctx, "Skipping checkpoint "+
+					"PSBTs for VTXO",
+					slog.String(
+						"outpoint", v.Outpoint.String(),
+					),
+					btclog.Fmt("err", "%v", err))
 			}
 		}
 
 		protoVTXOs = append(protoVTXOs, protoVTXO)
 	}
 
-	return &waverpc.ListVTXOsResponse{
-		Vtxos: protoVTXOs,
-	}, nil
+	return protoVTXOs, nil
 }
 
 // listPendingRoundVTXOs projects the upcoming VTXOs from every live
@@ -1398,7 +1452,7 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 // precise leaf outpoint inside the VTXO tree is not finalised until
 // the commitment transaction confirms.
 func (r *RPCServer) listPendingRoundVTXOs(ctx context.Context,
-	req *waverpc.ListVTXOsRequest) (*waverpc.ListVTXOsResponse, error) {
+	req *waverpc.ListVTXOsRequest) ([]*waverpc.VTXO, error) {
 
 	rounds, err := r.queryRoundStates(ctx)
 	if err != nil {
@@ -1436,9 +1490,7 @@ func (r *RPCServer) listPendingRoundVTXOs(ctx context.Context,
 		}
 	}
 
-	return &waverpc.ListVTXOsResponse{
-		Vtxos: protoVTXOs,
-	}, nil
+	return protoVTXOs, nil
 }
 
 // protoStatusToDomain converts a proto VTXOStatus enum to the domain
@@ -1467,6 +1519,9 @@ func protoStatusToDomain(s waverpc.VTXOStatus) (vtxo.VTXOStatus, error) {
 
 	case waverpc.VTXOStatus_VTXO_STATUS_FAILED:
 		return vtxo.VTXOStatusFailed, nil
+
+	case waverpc.VTXOStatus_VTXO_STATUS_SPENDING:
+		return vtxo.VTXOStatusSpending, nil
 
 	case waverpc.VTXOStatus_VTXO_STATUS_EXPIRED:
 		return vtxo.VTXOStatusExpired, nil
@@ -3266,10 +3321,14 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		outpoints := make(
 			[]wire.OutPoint, 0, len(locked.SelectedVTXOs),
 		)
+		reserveEpochs := make(
+			map[wire.OutPoint]uint64, len(locked.SelectedVTXOs),
+		)
 		for _, sv := range locked.SelectedVTXOs {
 			outpoints = append(
 				outpoints, sv.Outpoint,
 			)
+			reserveEpochs[sv.Outpoint] = sv.ReserveEpoch
 		}
 
 		phaseStart = time.Now()
@@ -3283,6 +3342,11 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 			return nil, status.Errorf(codes.Internal, "build "+
 				"transfer inputs: %v", err)
 		}
+
+		// Carry the manager's reservation epoch onto each input so the
+		// release path (on a pre-PONR failure) names the reservation it
+		// held; a superseded one is refused by the manager.
+		applyReserveEpochs(selectedInputs, reserveEpochs)
 	}
 
 	requestOORRecipients := append(

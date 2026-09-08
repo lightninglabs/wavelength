@@ -28,18 +28,37 @@ log.InfoS(ctx, "Channel open performed",
 - Lines can exceed 80 chars for structured logging.
 - Closing `)` stays on the same line as the last attribute.
 
-## Error Log Levels
+## Production Severity Contract
 
-**CRITICAL**: Only use `error` level for **internal errors never expected during
-normal operation**.
+Production `Warn`, `Error`, and `Critical` logs alert a human. Choose the
+level from the action the operator must take, not from whether a Go call
+returned an error.
 
 | Scenario | Level |
 |----------|-------|
-| Internal bug, impossible state | `error` |
-| RPC failure to external service | `warn` |
-| Chain backend disconnection | `warn` |
-| Peer disconnect | `info` or `debug` |
-| User-triggered condition | `info` or `debug` |
+| Immediate funds, security, or process-integrity threat | `critical` |
+| Internal invariant, durable-state failure, or exhausted recovery that requires intervention | `error` |
+| Actionable degradation or first occurrence of a dependency failure | `warn` |
+| Expected lifecycle, policy rejection, safe fallback, or recovery | `info` |
+| Repeated retry, high-volume protocol detail, or diagnostic state | `debug` |
 
-**Rule of thumb:** if a user or external system could cause it, it is not an
-error-level log.
+Client validation failures, capacity admission, idempotent duplicates, stale
+requests, peer behavior, and a fallback that repairs the condition in the same
+call are not alerts. Keep them at `Info` or `Debug`.
+
+For recurring work:
+
+1. Warn on the first actionable failure.
+2. Warn again if the failure cause changes materially.
+3. Log identical retries at debug.
+4. Log recovery at info.
+5. Escalate to error only at an explicit retry, time, or safety threshold.
+
+Every new `WarnS`, `ErrorS`, or `CriticalS` must have a bounded trigger and
+an operator action. Explain both in the commit message or PR description.
+Static messages define alert identity; put variable values in attributes so
+one incident cannot create unbounded alert groups.
+
+Do not add unit tests that only pin a log level or message. Explain pure
+severity changes in the commit and PR. Add tests when the change introduces
+classification, retry, threshold, or recovery logic.

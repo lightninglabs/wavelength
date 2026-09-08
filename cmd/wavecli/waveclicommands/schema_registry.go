@@ -839,12 +839,14 @@ func arkVTXOMethodRegistry() []schemaMethod {
 	return []schemaMethod{
 		{
 			Method:      "ark.vtxos.list",
-			Description: "List VTXOs with optional filters",
+			Description: "List VTXOs with optional status filters",
 			Params: append([]schemaParam{
 				{
-					Name:        "status",
-					Type:        "enum",
-					Description: "filter by VTXO status",
+					Name:     "status",
+					Type:     "enum",
+					FlagType: "stringSlice",
+					Description: "filter by VTXO status, " +
+						"repeatable",
 					Values: []string{
 						"live",
 						"pending_forfeit",
@@ -854,7 +856,16 @@ func arkVTXOMethodRegistry() []schemaMethod {
 						"unilateral_exit",
 						"failed",
 						"spending",
+						"pending_round",
+						"expired",
 					},
+				},
+				{
+					Name: "all",
+					Type: "bool",
+					Description: "list every status; " +
+						"checkpoint PSBTs only with " +
+						"--fields",
 				},
 				{
 					Name:        "min-amount",

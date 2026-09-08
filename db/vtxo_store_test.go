@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -785,10 +786,6 @@ func TestListVTXOsLightSkipsAncestry(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assertLight(light)
-
-	liveLight, err := vtxoStore.ListLiveVTXOsLight(ctx)
-	require.NoError(t, err)
-	assertLight(liveLight)
 }
 
 // addAncestryFragment appends a synthetic ancestry fragment to a
@@ -2336,5 +2333,154 @@ func TestVTXOStoreExpiredExcludedFromLiveSet(t *testing.T) {
 		outpoints(recoverable),
 		"an expired VTXO's actor must still be restored so its "+
 			"value can be reclaimed",
+	)
+}
+
+// TestVTXOPersistenceStoreListVTXOsByStatusesLight covers status selection,
+// cross-status ordering, deduplication, the spent-flag guard and settlement
+// stamping.
+func TestVTXOPersistenceStoreListVTXOsByStatusesLight(t *testing.T) {
+	t.Parallel()
+
+	testDB := NewTestDB(t)
+	roundDB := NewTransactionExecutor(
+		testDB.BaseDB,
+		func(tx *sql.Tx) RoundStore {
+			return testDB.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+	roundStore := NewRoundPersistenceStore(
+		roundDB, &chaincfg.RegressionNetParams, clock.NewDefaultClock(),
+	)
+	testClock := clock.NewTestClock(time.Unix(1_700_000_000, 0))
+	vtxoStore := NewVTXOPersistenceStore(roundDB, testClock)
+	ctx := t.Context()
+
+	commitRound := func(id round.RoundID) {
+		r := createTestRound(t, id)
+		state := &round.InputSigSentState{
+			RoundID:     r.RoundID,
+			ClientTrees: make(map[round.SignerKey]*tree.Tree),
+		}
+		require.NoError(t, roundStore.CommitState(ctx, r, state))
+	}
+
+	createRoundID := testRoundIDDB("by-statuses-create-round")
+	commitRound(createRoundID)
+
+	// The confirmed round the forfeiting VTXO settles in.
+	settleRoundID := testRoundIDDB("by-statuses-settle-round")
+	commitRound(settleRoundID)
+	settlementTxid := chainhash.HashH([]byte("by-statuses-settlement"))
+	const settlementHeight = int32(812345)
+	require.NoError(
+		t,
+		roundStore.FinalizeRound(
+			ctx, settleRoundID, settlementTxid, round.ConfInfo{
+				Height: settlementHeight,
+				BlockHash: chainhash.HashH(
+					[]byte("by-statuses-block"),
+				),
+			},
+		),
+	)
+
+	// One VTXO per status, saved a second apart.
+	statuses := []vtxo.VTXOStatus{
+		vtxo.VTXOStatusLive, vtxo.VTXOStatusPendingForfeit,
+		vtxo.VTXOStatusForfeiting, vtxo.VTXOStatusForfeited,
+		vtxo.VTXOStatusSpent, vtxo.VTXOStatusUnilateralExit,
+		vtxo.VTXOStatusFailed, vtxo.VTXOStatusSpending,
+		vtxo.VTXOStatusExpired,
+	}
+	byStatus := make(map[vtxo.VTXOStatus]wire.OutPoint, len(statuses))
+	for i, status := range statuses {
+		testClock.SetTime(testClock.Now().Add(time.Second))
+		desc := createTestVTXODescriptor(t, createRoundID, i+1)
+		require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
+
+		if status == vtxo.VTXOStatusForfeiting {
+			require.NoError(
+				t,
+				vtxoStore.MarkForfeiting(
+					ctx, desc.Outpoint,
+					settleRoundID.String(), nil,
+				),
+			)
+		} else {
+			require.NoError(
+				t, vtxoStore.UpdateVTXOStatus(
+					ctx, desc.Outpoint, status,
+				),
+			)
+		}
+
+		byStatus[status] = desc.Outpoint
+	}
+
+	outpoints := func(descs []*vtxo.Descriptor) []wire.OutPoint {
+		out := make([]wire.OutPoint, len(descs))
+		for i, d := range descs {
+			out[i] = d.Outpoint
+		}
+
+		return out
+	}
+
+	inventory, err := vtxoStore.ListVTXOsByStatusesLight(
+		ctx, vtxo.InventoryStatuses(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, []wire.OutPoint{
+		byStatus[vtxo.VTXOStatusExpired],
+		byStatus[vtxo.VTXOStatusSpending],
+		byStatus[vtxo.VTXOStatusFailed],
+		byStatus[vtxo.VTXOStatusUnilateralExit],
+		byStatus[vtxo.VTXOStatusForfeiting],
+		byStatus[vtxo.VTXOStatusPendingForfeit],
+		byStatus[vtxo.VTXOStatusLive],
+	}, outpoints(inventory))
+
+	for _, desc := range inventory {
+		require.Nil(t, desc.Ancestry)
+
+		if desc.Status != vtxo.VTXOStatusForfeiting {
+			require.True(t, desc.Settlement.IsNone(), desc.Status)
+
+			continue
+		}
+
+		settle := desc.Settlement.UnwrapOrFail(t)
+		require.Equal(t, settlementTxid, settle.TxID)
+		require.Equal(t, settlementHeight, settle.Height)
+	}
+
+	consumed, err := vtxoStore.ListVTXOsByStatusesLight(
+		ctx, []vtxo.VTXOStatus{
+			vtxo.VTXOStatusSpent, vtxo.VTXOStatusForfeited,
+			vtxo.VTXOStatusSpent,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, []wire.OutPoint{
+		byStatus[vtxo.VTXOStatusSpent],
+		byStatus[vtxo.VTXOStatusForfeited],
+	}, outpoints(consumed))
+
+	// A status rewrite keeps the spent flag; the row stays hidden.
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, byStatus[vtxo.VTXOStatusSpent],
+			vtxo.VTXOStatusLive,
+		),
+	)
+	live, err := vtxoStore.ListVTXOsByStatusesLight(
+		ctx, []vtxo.VTXOStatus{vtxo.VTXOStatusLive},
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, []wire.OutPoint{byStatus[vtxo.VTXOStatusLive]},
+		outpoints(live),
 	)
 }

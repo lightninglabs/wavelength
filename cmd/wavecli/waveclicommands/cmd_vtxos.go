@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/lightninglabs/wavelength/waverpc"
@@ -38,23 +39,30 @@ func newVTXOsCmd() *cobra.Command {
 var validStatuses = []string{
 	"live", "pending_forfeit", "forfeiting",
 	"forfeited", "spent", "unilateral_exit", "failed",
-	"spending",
+	"spending", "pending_round", "expired",
 }
+
+// checkpointPSBTsField is the --fields name of the OOR checkpoint PSBTs.
+const checkpointPSBTsField = "oor_final_checkpoint_psbts"
 
 // newVTXOsListCmd creates the vtxos list subcommand.
 func newVTXOsListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List VTXOs",
-		Long: "Returns VTXOs known to the wallet, " +
-			"optionally filtered by status and " +
-			"minimum amount.",
+		Long: "Returns VTXOs known to the wallet, newest first. " +
+			"Without --status, every VTXO except forfeited and " +
+			"spent ones is listed.",
 		RunE: vtxosList,
 	}
 
-	cmd.Flags().String("status", "",
-		"filter by status: "+
+	cmd.Flags().StringSlice("status", nil,
+		"filter by status, repeatable: "+
 			strings.Join(validStatuses, ", "))
+
+	cmd.Flags().Bool("all", false,
+		"list every status; checkpoint PSBTs only with --fields "+
+			checkpointPSBTsField)
 
 	cmd.Flags().Int64("min-amount", 0,
 		"minimum amount in sats")
@@ -74,13 +82,19 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 
 	req := &waverpc.ListVTXOsRequest{}
 	if err := parseRequest(cmd, req, func() error {
-		statusStr, _ := cmd.Flags().GetString("status")
+		statusStrs, _ := cmd.Flags().GetStringSlice("status")
+		all, _ := cmd.Flags().GetBool("all")
 		minAmount, _ := cmd.Flags().GetInt64("min-amount")
 
-		if statusStr != "" {
-			statusFilter, ok := parseVTXOStatus(
-				statusStr,
+		if all && len(statusStrs) > 0 {
+			return PrintError(
+				"INVALID_ARGS",
+				"--all and --status are mutually exclusive",
 			)
+		}
+
+		for _, statusStr := range statusStrs {
+			statusFilter, ok := parseVTXOStatus(statusStr)
 			if !ok {
 				return PrintError(
 					"INVALID_STATUS",
@@ -93,10 +107,15 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 				)
 			}
 
-			req.StatusFilter = statusFilter
+			req.Statuses = append(req.Statuses, statusFilter)
+		}
+
+		if all {
+			req.Statuses = allVTXOStatuses()
 		}
 
 		req.MinAmountSat = minAmount
+		req.ExcludeCheckpointPsbts = !wantsCheckpointPSBTs(cmd, all)
 
 		return nil
 	}); err != nil {
@@ -119,7 +138,25 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 	return renderListOutput(cmd, resp, items)
 }
 
-// parseVTXOStatus converts a status string to the proto enum.
+// wantsCheckpointPSBTs reports whether to request OOR checkpoint PSBTs: when
+// --fields names them, or when neither --fields nor --all is set.
+func wantsCheckpointPSBTs(cmd *cobra.Command, all bool) bool {
+	fieldsStr, _ := cmd.Flags().GetString("fields")
+	if fieldsStr == "" {
+		return !all
+	}
+
+	for _, field := range strings.Split(fieldsStr, ",") {
+		if strings.TrimSpace(field) == checkpointPSBTsField {
+			return true
+		}
+	}
+
+	return false
+}
+
+// parseVTXOStatus converts a status string to the proto enum, rejecting
+// UNSPECIFIED.
 func parseVTXOStatus(s string) (waverpc.VTXOStatus, bool) {
 	normalized := strings.ToUpper(s)
 	if !strings.HasPrefix(normalized, "VTXO_STATUS_") {
@@ -127,11 +164,29 @@ func parseVTXOStatus(s string) (waverpc.VTXOStatus, bool) {
 	}
 
 	val, ok := waverpc.VTXOStatus_value[normalized]
-	if !ok {
+	if !ok || val == int32(waverpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED) {
 		return 0, false
 	}
 
 	return waverpc.VTXOStatus(val), true
+}
+
+// allVTXOStatuses returns every status except UNSPECIFIED in enum order.
+func allVTXOStatuses() []waverpc.VTXOStatus {
+	values := make([]int32, 0, len(waverpc.VTXOStatus_name))
+	for val := range waverpc.VTXOStatus_name {
+		if val != int32(waverpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED) {
+			values = append(values, val)
+		}
+	}
+	slices.Sort(values)
+
+	statuses := make([]waverpc.VTXOStatus, len(values))
+	for i, val := range values {
+		statuses[i] = waverpc.VTXOStatus(val)
+	}
+
+	return statuses
 }
 
 // newVTXOsRefreshCmd creates the vtxos refresh subcommand.

@@ -1,0 +1,391 @@
+package actor
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/tlv"
+	"github.com/stretchr/testify/require"
+)
+
+// TestPostponeDelayMatchesWrapChain pins the detection contract: a
+// PostponeError is recognized bare, wrapped, and via errors.Is on the
+// sentinel, and an ordinary error is not.
+func TestPostponeDelayMatchesWrapChain(t *testing.T) {
+	t.Parallel()
+
+	bare := Postpone(5 * time.Second)
+	delay, ok := postponeDelay(bare)
+	require.True(t, ok)
+	require.Equal(t, 5*time.Second, delay)
+	require.ErrorIs(t, bare, ErrPostponed)
+
+	wrapped := fmt.Errorf("over cap: %w", Postpone(time.Minute))
+	delay, ok = postponeDelay(wrapped)
+	require.True(t, ok)
+	require.Equal(t, time.Minute, delay)
+
+	_, ok = postponeDelay(errors.New("real failure"))
+	require.False(t, ok)
+}
+
+// TestDeliveryPostponeLeased verifies the fenced delivery-level postpone:
+// the lease clears, the attempt the lease burned is restored, and a second
+// postpone on the same delivery reports ErrAlreadyAcked.
+func TestDeliveryPostponeLeased(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	ctx := context.Background()
+
+	require.NoError(
+		t,
+		store.EnqueueMessage(
+			ctx, EnqueueParams{
+				ID:          "pp-1",
+				MailboxID:   "mb",
+				MessageType: "t",
+				Payload:     []byte{1},
+				MaxAttempts: 3,
+			},
+		),
+	)
+
+	leased, err := store.LeaseNextMessage(ctx, "mb", "tok", time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, 1, leased.Attempts)
+
+	d := &Delivery[*durableTestMsg, int]{
+		ID:         "pp-1",
+		LeaseToken: "tok",
+		Attempts:   leased.Attempts,
+		store:      store,
+	}
+
+	require.NoError(t, d.Postpone(ctx, time.Second))
+
+	store.mu.Lock()
+	msg := store.messages["pp-1"]
+	require.Zero(t, msg.Attempts)
+	require.Empty(t, msg.LeaseToken)
+	store.mu.Unlock()
+
+	require.ErrorIs(t, d.Postpone(ctx, time.Second), ErrAlreadyAcked)
+}
+
+// TestDeliveryPostponeLeaseless verifies the unfenced postpone leaves the
+// attempts budget of a peeked (empty-token) delivery untouched.
+func TestDeliveryPostponeLeaseless(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	ctx := context.Background()
+
+	require.NoError(
+		t,
+		store.EnqueueMessage(
+			ctx, EnqueueParams{
+				ID:          "pp-2",
+				MailboxID:   "mb",
+				MessageType: "t",
+				Payload:     []byte{1},
+				MaxAttempts: 3,
+			},
+		),
+	)
+
+	d := &Delivery[*durableTestMsg, int]{
+		ID:        "pp-2",
+		leaseless: true,
+		store:     store,
+	}
+
+	require.NoError(t, d.Postpone(ctx, time.Second))
+
+	store.mu.Lock()
+	require.Zero(t, store.messages["pp-2"].Attempts)
+	store.mu.Unlock()
+}
+
+// TestDurableActorPostponeDoesNotBurnAttempts drives a full actor: the
+// behavior postpones the first two deliveries and succeeds on the third. The
+// message must redeliver past the point where the retry policy would have
+// dead-lettered a nacked message, the retry policy must never be consulted,
+// and the message must end processed rather than dead-lettered.
+func TestDurableActorPostponeDoesNotBurnAttempts(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newActorTestCodec()
+
+	var deliveries atomic.Int32
+	behavior := newMockBehavior(fn.Err[int](Postpone(time.Millisecond)))
+	behavior.onReceive = func(ctx context.Context, msg *actorTestMsg) {
+		// Succeed on the third delivery. A nack-based retry with the
+		// policy below would have dead-lettered after the first.
+		if deliveries.Add(1) >= 3 {
+			behavior.setResult(fn.Ok(42))
+		}
+	}
+
+	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
+	cfg.PollInterval = 10 * time.Millisecond
+
+	// A policy that never retries AND fails the test if consulted with a
+	// postpone: postpones are control flow and must bypass it entirely.
+	cfg.TellRetryPolicy = func(err error, attempts int) (bool,
+		time.Duration) {
+
+		if _, ok := postponeDelay(err); ok {
+			t.Errorf("retry policy consulted for a postpone")
+		}
+
+		return false, 0
+	}
+
+	a := NewDurableActor(cfg).UnwrapOrFail(t)
+	a.Start()
+	defer a.Stop()
+
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(7)),
+	}
+	require.NoError(t, a.Ref().Tell(context.Background(), msg))
+
+	// The message survives two postponed deliveries and completes on the
+	// third: consumed from the mailbox with nothing dead-lettered.
+	require.Eventually(t, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+
+		return len(store.messages) == 0 && len(store.deadLetters) == 0
+	}, 5*time.Second, 10*time.Millisecond)
+
+	require.GreaterOrEqual(t, deliveries.Load(), int32(3))
+
+	// The attempts budget was never burned: every redelivery re-leased at
+	// attempt 1, so the message completed normally -- a dedup entry
+	// exists and no dead letter was written, even though a nack-based
+	// loop under this never-retry policy would have dead-lettered on the
+	// first failure.
+	store.mu.Lock()
+	require.Empty(t, store.deadLetters)
+	require.NotEmpty(t, store.processed)
+	store.mu.Unlock()
+}
+
+// TestDurableActorPostponeInTransaction covers the postpone branch of
+// handleResultInTx, the path a classic behavior takes when the actor has a
+// tx-aware store. That branch is a separate implementation from the non-tx
+// tail exercised above, so a regression in it would otherwise pass the suite:
+// it must release the message without marking it processed, without burning an
+// attempt, and without consulting the retry policy.
+func TestDurableActorPostponeInTransaction(t *testing.T) {
+	t.Parallel()
+
+	store := newMockTxAwareStore()
+	codec := newActorTestCodec()
+
+	var deliveries atomic.Int32
+	behavior := newMockBehavior(fn.Err[int](Postpone(time.Millisecond)))
+	behavior.onReceive = func(ctx context.Context, msg *actorTestMsg) {
+		// Succeed on the third delivery. Under the never-retry policy
+		// below a nack would have dead-lettered on the first.
+		if deliveries.Add(1) >= 3 {
+			behavior.setResult(fn.Ok(11))
+		}
+	}
+
+	// Passing the tx-aware store as the delivery store is what selects the
+	// transaction path: construction type-asserts it up to
+	// TxAwareDeliveryStore.
+	cfg := DefaultDurableActorConfig(
+		"tx-postpone-actor", behavior, store, codec,
+	)
+	cfg.PollInterval = 10 * time.Millisecond
+
+	// Fail the test if the retry policy is consulted for a postpone: the
+	// tx path must detect it first, exactly as the non-tx tail does.
+	cfg.TellRetryPolicy = func(err error, attempts int) (bool,
+		time.Duration) {
+
+		if _, ok := postponeDelay(err); ok {
+			t.Errorf("retry policy consulted for a postpone")
+		}
+
+		return false, 0
+	}
+
+	a := NewDurableActor(cfg).UnwrapOrFail(t)
+	a.Start()
+	defer a.Stop()
+
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(11)),
+	}
+	require.NoError(t, a.Ref().Tell(context.Background(), msg))
+
+	// The message survives two postponed deliveries on the transaction
+	// path and completes on the third.
+	require.Eventually(t, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+
+		return len(store.messages) == 0 && len(store.deadLetters) == 0
+	}, 5*time.Second, 10*time.Millisecond)
+
+	require.GreaterOrEqual(t, deliveries.Load(), int32(3))
+	require.True(t, store.txExecuted.Load())
+
+	// A postpone is not a nack: the tx path must never have taken the nack
+	// branch, and nothing dead-lettered despite a policy that would have
+	// dead-lettered a nack on the very first failure.
+	require.False(t, store.nackCalled.Load())
+
+	store.mu.Lock()
+	require.Empty(t, store.deadLetters)
+	require.NotEmpty(t, store.processed)
+	store.mu.Unlock()
+}
+
+// TestPostponeRollsBackAfterLostLease verifies the transaction path abandons a
+// turn whose lease was stolen while the behavior ran, rather than committing
+// under a row it no longer owns.
+//
+// The fenced postpone matches no rows once the lease token has changed, which
+// is the only signal that another consumer took over. The turn must then roll
+// back so the behavior's writes vanish, and it must NOT fall through to
+// Delivery.Nack: that path dead-letters once the attempt budget is spent, and
+// its dead-letter arm runs MoveToDeadLetter and DeleteMessage by ID with no
+// lease check, so a stale consumer could delete a message its legitimate owner
+// is actively processing.
+func TestPostponeRollsBackAfterLostLease(t *testing.T) {
+	t.Parallel()
+
+	store := newMockTxAwareStore()
+	codec := newActorTestCodec()
+
+	// Put the delivery on its final attempt so a nack would dead-letter
+	// immediately. That makes the "no nack" assertion meaningful: if the
+	// lost lease leaked into the nack path, the row would be gone.
+	const maxAttempts = 1
+
+	var deliveries atomic.Int32
+	behavior := newMockBehavior(fn.Err[int](Postpone(time.Hour)))
+	behavior.onReceive = func(ctx context.Context, msg *actorTestMsg) {
+		deliveries.Add(1)
+
+		// The behavior writes durable state, which must not survive a
+		// rolled-back turn.
+		store.recordTxWrite("write-from-stale-consumer")
+
+		// Steal the lease mid-turn, exactly as an expiry followed by
+		// another consumer's claim would: the row is still there, but
+		// its token no longer matches the one this delivery holds.
+		store.mu.Lock()
+		for id := range store.messages {
+			store.messages[id].LeaseToken = "stolen-by-other"
+		}
+		store.mu.Unlock()
+	}
+
+	cfg := DefaultDurableActorConfig(
+		"lost-lease-actor", behavior, store, codec,
+	)
+	cfg.PollInterval = 10 * time.Millisecond
+	cfg.MaxAttempts = maxAttempts
+
+	a := NewDurableActor(cfg).UnwrapOrFail(t)
+	a.Start()
+	defer a.Stop()
+
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(21)),
+	}
+	require.NoError(t, a.Ref().Tell(context.Background(), msg))
+
+	// Wait for the turn that loses the lease to run.
+	require.Eventually(t, func() bool {
+		return deliveries.Load() >= 1
+	}, 5*time.Second, 10*time.Millisecond)
+
+	// Give the consume path room to do the wrong thing if it is going to.
+	time.Sleep(200 * time.Millisecond)
+
+	// The behavior's writes rolled back with the transaction: nothing it
+	// staged under the stolen row may survive.
+	require.Empty(t, store.committedTxWrites())
+
+	// The row still belongs to its new owner: not dead-lettered, not
+	// deleted, and still carrying the thief's lease token.
+	store.mu.Lock()
+	require.Len(t, store.messages, 1)
+	for _, queued := range store.messages {
+		require.Equal(t, "stolen-by-other", queued.LeaseToken)
+	}
+	require.Empty(t, store.deadLetters)
+
+	// Nor was it marked processed: dedup must not swallow the redelivery
+	// the legitimate owner is about to perform.
+	require.Empty(t, store.processed)
+	store.mu.Unlock()
+
+	// And the stale consumer never nacked, which is what would have
+	// dead-lettered the row at this attempt count.
+	require.False(t, store.nackCalled.Load())
+}
+
+// TestDeliveryEnqueuedAtFromContext verifies the enqueue timestamp a
+// postponing behavior uses to bound its own horizon is plumbed from the
+// durable row onto the processing context, and that absence is distinguishable
+// from a zero time. A behavior that could not tell those apart would treat
+// every store that omits the timestamp as reporting an infinitely old message.
+func TestDeliveryEnqueuedAtFromContext(t *testing.T) {
+	t.Parallel()
+
+	// No delivery in scope: no timestamp, and the zero value is not
+	// mistaken for a real one.
+	_, ok := DeliveryEnqueuedAt(context.Background())
+	require.False(t, ok)
+
+	// A zero enqueue time is not stamped, so it still reports absence
+	// rather than an epoch-aged message.
+	zeroCtx := withDeliveryEnqueuedAt(context.Background(), time.Time{})
+	_, ok = DeliveryEnqueuedAt(zeroCtx)
+	require.False(t, ok)
+
+	enqueuedAt := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+	ctx := withDeliveryEnqueuedAt(context.Background(), enqueuedAt)
+
+	got, ok := DeliveryEnqueuedAt(ctx)
+	require.True(t, ok)
+	require.True(t, enqueuedAt.Equal(got))
+}
+
+// TestDeliveryCarriesEnqueuedAt verifies newDelivery copies the mailbox row's
+// creation time onto the delivery. That timestamp is the horizon reference for
+// every postponing behavior, and unlike attempts it must survive redelivery
+// untouched, so it has to come from the row rather than from the claim.
+func TestDeliveryCarriesEnqueuedAt(t *testing.T) {
+	t.Parallel()
+
+	createdAt := time.Date(2026, 8, 7, 9, 30, 0, 0, time.UTC)
+	leased := &LeasedMessage{
+		ID:          "enq-1",
+		MailboxID:   "actor-enq",
+		LeaseToken:  "token-enq",
+		Attempts:    1,
+		MaxAttempts: 10,
+		CreatedAt:   createdAt,
+	}
+
+	delivery := newDelivery[*actorTestMsg, int](
+		leased, &actorTestMsg{}, nil, nil, newMockDeliveryStore(),
+	)
+	require.True(t, createdAt.Equal(delivery.EnqueuedAt))
+}

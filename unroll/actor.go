@@ -96,9 +96,10 @@ type Config struct {
 
 // VTXOUnrollActor wraps one durable per-target unroll actor.
 type VTXOUnrollActor struct {
-	ref     actor.ActorRef[Msg, Resp]
-	durable *actor.DurableActor[Msg, Resp]
-	stop    func()
+	ref      actor.ActorRef[Msg, Resp]
+	durable  *actor.DurableActor[Msg, Resp]
+	stop     func()
+	behavior *behavior
 }
 
 // Ref returns the public actor reference.
@@ -128,6 +129,9 @@ func NewVTXOUnrollActor(cfg Config) (*VTXOUnrollActor, error) {
 	if cfg.ActorID == "" {
 		cfg.ActorID = actorIDForTarget(cfg.TargetOutpoint)
 	}
+	if cfg.proofNodeFloorAlerts == nil {
+		cfg.proofNodeFloorAlerts = newProofNodeFloorAlertDeduper()
+	}
 
 	behavior := &behavior{
 		cfg: cfg,
@@ -151,9 +155,10 @@ func NewVTXOUnrollActor(cfg Config) (*VTXOUnrollActor, error) {
 	durable.Start()
 
 	return &VTXOUnrollActor{
-		ref:     durable.Ref(),
-		durable: durable,
-		stop:    durable.Stop,
+		ref:      durable.Ref(),
+		durable:  durable,
+		stop:     durable.Stop,
+		behavior: behavior,
 	}, nil
 }
 

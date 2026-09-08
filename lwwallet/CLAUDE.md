@@ -42,6 +42,12 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
   cumulative serialized byte size (see `esplora_cache.go`). Mutable live data
   (tip height, UTXOs, fee estimates) is never cached. Cache integrity: every
   response is verified to hash to the requested key before insertion.
+- `DefaultEsploraURL(params)` (`defaults.go`) — resolves the network's default
+  Esplora REST endpoint from the `DefaultEsploraURL{Mainnet,Testnet3,Testnet4,
+  Signet}` constants, all of which point at Lightning Labs-operated mempool
+  instances (the `chainfees` mempool.space fee defaults mirror the same hosts).
+  Networks without a default error out rather than returning an empty URL, so a
+  regtest/simnet setup must supply `Config.EsploraURL` explicitly.
 - `EsploraChainService` — `chain.Interface` adapter over `EsploraClient`,
   driven by a shared `TipPoller`. Feeds btcwallet's internal address-credit
   pipeline. Constructor: `NewEsploraChainService(esplora, tipPoller, logger)`.

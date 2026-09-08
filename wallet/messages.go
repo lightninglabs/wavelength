@@ -583,6 +583,11 @@ type SelectedVTXO struct {
 	// Outpoint is the selected VTXO's outpoint.
 	Outpoint wire.OutPoint
 
+	// ReserveEpoch is the manager reservation epoch for this VTXO, carried
+	// so the OOR transfer that spends it can name the reservation on
+	// release (see oor.TransferInput.ReserveEpoch).
+	ReserveEpoch uint64
+
 	// Amount is the value of this VTXO in satoshis.
 	Amount btcutil.Amount
 

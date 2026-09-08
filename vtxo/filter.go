@@ -93,3 +93,14 @@ func SumPendingBalance(descs []*Descriptor) btcutil.Amount {
 
 	return total
 }
+
+// InventoryStatuses returns the statuses a listing covers without a filter:
+// every status except Forfeited and Spent, whose value has moved to another
+// output.
+func InventoryStatuses() []VTXOStatus {
+	return []VTXOStatus{
+		VTXOStatusLive, VTXOStatusPendingForfeit, VTXOStatusForfeiting,
+		VTXOStatusSpending, VTXOStatusUnilateralExit, VTXOStatusFailed,
+		VTXOStatusExpired,
+	}
+}

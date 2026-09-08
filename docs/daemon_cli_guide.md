@@ -259,6 +259,39 @@ otherwise `wavecli` looks under `~/.waved/data/mainnet/` and fails with
 wavecli --network=signet --datadir=~/.waved-signet getinfo
 ```
 
+The daemon also writes `readonly.macaroon` beside the admin credential. Use
+the admin macaroon only for administration and provisioning. An admin client
+can create a least-privilege credential with `wavecli bakemacaroon`; the
+command accepts either a known `entity:action` permission or an exact
+`uri:/package.Service/Method` grant. Exact URI grants are useful when one
+method shares a broader write permission with unrelated operations.
+
+For example, this payment credential can inspect balances and activity and
+spend through the two-phase send flow, including a full-balance on-chain send.
+It cannot call Deposit, SweepWallet, Exit, wallet-signing, recovery, or
+administrative RPCs:
+
+```bash
+wavecli bakemacaroon \
+  --save-to ~/.waved/payment.macaroon \
+  --valid-for 3600 \
+  uri:/wavewalletrpc.WalletService/Balance \
+  uri:/wavewalletrpc.WalletService/List \
+  uri:/wavewalletrpc.WalletService/PrepareSend \
+  uri:/wavewalletrpc.WalletService/Send \
+  uri:/wavewalletrpc.WalletInspectionService/InspectActivity
+```
+
+The saved file contains the binary macaroon with mode `0600`. Point the
+integration at it with `--macaroonpath ~/.waved/payment.macaroon`. Omitting
+`--save-to` prints the hex-encoded macaroon as JSON. `BakeMacaroon` requires
+the admin-only `macaroon:generate` permission. A credential carrying that
+permission, or the exact BakeMacaroon URI, can mint any supported permission
+and must also be treated as an admin credential. Root key ID `0` uses the
+same default root key as `admin.macaroon` and `readonly.macaroon`.
+`ListPermissions` exposes the active RPC-to-permission map to authenticated
+clients.
+
 A macaroon cannot ride an unencrypted connection, so `--no-tls` and the
 macaroon are mutually exclusive. There are two working modes:
 
@@ -296,6 +329,7 @@ verbs is unchanged.
 ```
 wavecli
 ├── getinfo                   — daemon status (no wavewalletrpc)
+├── bakemacaroon              — provision a scoped daemon credential
 ├── balance                   — wallet balances (wavewalletrpc)
 ├── create / unlock           — wallet bring-up (wavewalletrpc)
 ├── recv                      — boarding address / Lightning invoice (wavewalletrpc)
@@ -353,6 +387,23 @@ Display daemon status information.
 
 ```bash
 wavecli getinfo
+```
+
+### `bakemacaroon`
+
+Bake a daemon macaroon from one or more known `entity:action` or exact
+`uri:/package.Service/Method` permissions. The caller must authenticate with
+a credential authorized to call `BakeMacaroon`.
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--save-to` | string | Write the binary macaroon to this path with mode `0600` |
+| `--root-key-id` | uint64 | Numeric macaroon root key ID (default `0`) |
+| `--valid-for` | uint64 | Add an expiry caveat for this many seconds; `0` does not expire |
+
+```bash
+wavecli bakemacaroon --save-to ./info.macaroon --valid-for 3600 info:read
+wavecli bakemacaroon uri:/waverpc.DaemonService/GetInfo
 ```
 
 ### `balance` (wavewalletrpc) / `dev daemon GetBalance` (no wavewalletrpc)
@@ -425,21 +476,30 @@ List VTXOs known to the wallet with optional filters.
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--status` | string | Filter: live, pending_forfeit, forfeiting, forfeited, spent, unilateral_exit, failed, spending |
+| `--status` | string, repeatable | Filter by status: live, pending_forfeit, forfeiting, forfeited, spent, unilateral_exit, failed, spending, pending_round, expired. Default: every status except forfeited and spent |
+| `--all` | bool | List every status; checkpoint PSBTs only with `--fields oor_final_checkpoint_psbts` |
 | `--min-amount` | int64 | Minimum amount in sats |
 | `--fields` | string | Comma-separated field names to include |
 | `--ndjson` | bool | Emit one JSON object per VTXO (newline-delimited) |
 
+Only live VTXOs are spendable; use `balance` for balances.
+
 ```bash
-# All VTXOs
+# VTXO inventory: every status except forfeited and spent
 wavecli ark vtxos list
+
+# Every VTXO the wallet has ever held
+wavecli ark vtxos list --all
 
 # Live VTXOs above 10k sats, only outpoint and amount
 wavecli ark vtxos list --status live --min-amount 10000 \
   --fields outpoint,amount_sat
 
+# Consumed VTXOs only
+wavecli ark vtxos list --status forfeited,spent
+
 # Streaming NDJSON for piping to jq
-wavecli ark vtxos list --ndjson | jq '.amount_sat'
+wavecli ark vtxos list --status live --ndjson | jq '.amount_sat'
 ```
 
 ### `ark vtxos refresh`
@@ -685,7 +745,7 @@ The VTXO inventory and onchain history are not part of the activity feed.
 Use the `ark` subtree for those:
 
 ```bash
-wavecli ark vtxos list          # live VTXO inventory
+wavecli ark vtxos list          # VTXO inventory (all but forfeited/spent)
 wavecli ark listtransactions    # raw transaction / onchain history
 wavecli ark sweep list          # boarding-timeout sweep records
 ```
