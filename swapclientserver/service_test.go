@@ -831,6 +831,20 @@ func TestNewSwapClientServiceRequiresRecoveryPreimageRegistry(t *testing.T) {
 	require.Nil(t, cleanup)
 }
 
+// TestBindArkChannelMailbox verifies the swap subserver publishes its
+// authenticated mailbox for the channel process for exactly its own lifetime.
+func TestBindArkChannelMailbox(t *testing.T) {
+	t.Parallel()
+
+	cfg := &waved.SwapConfig{}
+	client := mailboxpb.NewMailboxServiceClient(nil)
+	release := bindArkChannelMailbox(cfg, client)
+	require.Equal(t, client, cfg.ArkChannelMailbox)
+
+	release()
+	require.Nil(t, cfg.ArkChannelMailbox)
+}
+
 // TestDaemonWithLiveOperatorKeyUsesLiveFetcher verifies the daemon-hosted swap
 // runtime bypasses the Ark SDK facade's cached operator key.
 func TestDaemonWithLiveOperatorKeyUsesLiveFetcher(t *testing.T) {
