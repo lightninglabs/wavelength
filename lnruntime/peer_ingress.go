@@ -270,6 +270,13 @@ func peerMessageLane(actorID string, message lnwire.Message) (string, bool) {
 	case *lnwire.ChannelReady:
 		return peerMessageChannelLane(actorID, message.ChanID), true
 
+	case *lnwire.Custom:
+		if message.Type == fundingWireMessageType {
+			return actorID + ":funding", true
+		}
+
+		return "", false
+
 	case lnwire.LinkUpdater:
 		return peerMessageChannelLane(
 			actorID, message.TargetChanID(),

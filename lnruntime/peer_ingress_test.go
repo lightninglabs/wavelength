@@ -359,6 +359,28 @@ func TestPeerMessageLaneRejectsUnsupportedMessages(t *testing.T) {
 	require.Empty(t, lane)
 }
 
+// TestPeerMessageLaneRoutesFundingWire verifies reverse funding RPCs stay in
+// FIFO order with the ordinary channel-opening exchange.
+func TestPeerMessageLaneRoutesFundingWire(t *testing.T) {
+	t.Parallel()
+
+	fundingMessage, err := lnwire.NewCustom(
+		fundingWireMessageType, []byte{1},
+	)
+	require.NoError(t, err)
+	lane, supported := peerMessageLane("test-peer", fundingMessage)
+	require.True(t, supported)
+	require.Equal(t, "test-peer:funding", lane)
+
+	otherMessage, err := lnwire.NewCustom(
+		fundingWireMessageType+1, []byte{1},
+	)
+	require.NoError(t, err)
+	lane, supported = peerMessageLane("test-peer", otherMessage)
+	require.False(t, supported)
+	require.Empty(t, lane)
+}
+
 // TestPeerMessageRetryPolicyNeverAdvances verifies the production policy
 // always parks, including after attempt counts that previously dead-lettered.
 func TestPeerMessageRetryPolicyNeverAdvances(t *testing.T) {
