@@ -28,7 +28,7 @@ package may import from a higher layer.
 | [`lib/recovery`](lib/recovery/) | Immutable recovery proof graph, session state machine, TLV codec for unilateral exit |
 | [`unrollplan`](unrollplan/) | Pure dependency-resolution planner driving unilateral-exit broadcast/sweep ordering |
 | [`vhtlcrecovery`](vhtlcrecovery/) | Durable control-plane types for vHTLC on-chain recovery jobs (action, state, script parameters, swap linkage) |
-| [`credit`](credit/) | Client-side credit subsystem: supervisor/per-operation-actor pair driving fault-tolerant sub-dust pay, credit-receive, and redeem flows against the authoritative server ledger |
+| [`credit`](credit/) | Client-side credit subsystem: supervisor/per-operation-actor pair driving fault-tolerant sub-floor pay, credit-receive, and redeem flows against the authoritative server ledger |
 | [`coinselect`](coinselect/) | Single coin-type-agnostic coin-selection algorithm shared across wallet backends |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)

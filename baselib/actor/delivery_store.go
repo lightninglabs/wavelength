@@ -60,6 +60,24 @@ type DeliveryStore interface {
 	NackMessageByID(ctx context.Context, id string,
 		retryAfter time.Duration) (int64, error)
 
+	// PostponeMessage releases a message for redelivery after the
+	// specified delay WITHOUT burning a delivery attempt: it decrements
+	// attempts to compensate the increment the lease took at claim, so
+	// the message's retry budget is exactly what it was before this
+	// delivery. Validates the lease token to prevent stale postpones.
+	// This is the attempt-preserving counterpart to NackMessage, used
+	// when a behavior returns a PostponeError ("not now") rather than a
+	// failure.
+	PostponeMessage(ctx context.Context, id, leaseToken string,
+		retryAfter time.Duration) (int64, error)
+
+	// PostponeMessageByID is the leaseless single-worker counterpart to
+	// PostponeMessage: it releases the message by ID without validating
+	// a lease token and leaves attempts UNTOUCHED, because the leaseless
+	// peek never incremented it. Returns the number of rows affected.
+	PostponeMessageByID(ctx context.Context, id string,
+		retryAfter time.Duration) (int64, error)
+
 	// ExtendLease extends the lease for long-running message processing.
 	// Validates the lease token to prevent stale extensions.
 	ExtendLease(ctx context.Context, id, leaseToken string,

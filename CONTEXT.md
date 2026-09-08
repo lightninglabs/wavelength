@@ -175,7 +175,7 @@ wavecli-bob ark vtxos list   # bob's new VTXO appears within seconds
 ### Unilateral exit
 
 ```bash
-VTXO=$(wavecli ark vtxos list | jq -r '.vtxos[0].outpoint')
+VTXO=$(wavecli ark vtxos list --status live | jq -r '.vtxos[0].outpoint')
 wavecli exit --outpoint "$VTXO"
 # mine through the CSV delay
 wavecli exit status --outpoint "$VTXO"   # eventually COMPLETED

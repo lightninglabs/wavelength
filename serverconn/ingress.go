@@ -62,6 +62,11 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 
 	var failCount int
 
+	// pullFailCount scopes alert suppression to one remote pull outage.
+	// failCount is shared by every transport and checkpoint backoff, so it
+	// cannot identify whether a pull failure is the first in its episode.
+	var pullFailCount int
+
 	// When the delivery store supports transactions, each pulled batch is
 	// dispatched and checkpointed in ONE write transaction below. The
 	// ack watermark then rides along with the next dispatch checkpoint
@@ -69,6 +74,9 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 	// advance until some checkpoint persists it.
 	txStore, txOK := a.cfg.Store.(actor.TxAwareDeliveryStore)
 	var ackDirty bool
+	if txOK {
+		a.retryQuarantinedIngress(ctx, txStore)
+	}
 
 	// episode tracks an open backpressure episode, so a target that has
 	// stopped draining is logged on an interval rather than on every
@@ -94,6 +102,11 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 	// redelivery is the documented behaviour.
 	var redrive redriveState
 
+	// Physical receipt cleanup opens a write transaction. Run it once on
+	// startup and then hourly so backpressure redrives do not contend for
+	// the SQLite writer lock. Admission enforces expiry independently.
+	var nextReceiptPrune time.Time
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -114,9 +127,13 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 			continue
 		}
 
+		nextReceiptPrune = a.pruneIngressReceiptsIfDue(
+			ctx, time.Now(), nextReceiptPrune,
+		)
+
 		// Step 2: Pull a batch of envelopes from the remote mailbox.
 		envelopes, nextCursor, exit, retry := a.pullPhase(
-			ctx, &state, &ackDirty, &failCount,
+			ctx, &state, &ackDirty, &failCount, &pullFailCount,
 		)
 		if exit {
 			return
@@ -392,15 +409,16 @@ func (a *ServerConnectionActor) ackPhase(ctx context.Context, state *AckState,
 
 // pullPhase pulls the next batch of envelopes from the remote mailbox and
 // absorbs the two outcomes that are not a batch to dispatch: a failed pull and
-// an empty long-poll. It mutates state, ackDirty and failCount in place and
-// returns (envelopes, nextCursor, exit, retry) on the same convention as
-// ackPhase — exit is true when the loop must stop (local shutdown or a
-// permanent version error), and retry is true when the caller should continue
-// without dispatching. Both booleans are false only when envelopes holds a
-// non-empty batch, and any backoff a retry needs has already been slept here.
+// an empty long-poll. It mutates state, ackDirty, the shared backoff counter,
+// and the pull-only failure counter in place. It returns (envelopes,
+// nextCursor, exit, retry) on the same convention as ackPhase — exit is true
+// when the loop must stop (local shutdown or a permanent version error), and
+// retry is true when the caller should continue without dispatching. Both
+// booleans are false only when envelopes holds a non-empty batch, and any
+// backoff a retry needs has already been slept here.
 func (a *ServerConnectionActor) pullPhase(ctx context.Context, state *AckState,
-	ackDirty *bool, failCount *int) ([]*mailboxpb.Envelope, uint64, bool,
-	bool) {
+	ackDirty *bool, failCount, pullFailCount *int) ([]*mailboxpb.Envelope,
+	uint64, bool, bool) {
 
 	envelopes, nextCursor, err := a.pullBatch(ctx, state.PullCursor)
 	if err != nil {
@@ -416,15 +434,28 @@ func (a *ServerConnectionActor) pullPhase(ctx context.Context, state *AckState,
 			return nil, 0, true, false
 		}
 
-		a.log.WarnS(ctx, "Pull failed, retrying",
-			err,
-			slog.Uint64("cursor", state.PullCursor),
-		)
+		if *pullFailCount == 0 {
+			a.log.WarnS(ctx, "Pull failed, retrying",
+				err,
+				slog.Uint64("cursor", state.PullCursor),
+			)
+		} else {
+			a.log.DebugS(ctx, "Pull retry failed",
+				slog.Any("err", err),
+				slog.Uint64("cursor", state.PullCursor),
+				slog.Int(
+					"consecutive_failures",
+					*pullFailCount+1,
+				),
+			)
+		}
 
+		*pullFailCount++
 		a.sleepBackoff(ctx, failCount)
 
 		return nil, 0, false, true
 	}
+	*pullFailCount = 0
 
 	// The pull returned, so the one goroutine that consumes the remote
 	// mailbox is still running its loop. Stamping here rather than after
@@ -634,7 +665,11 @@ func (a *ServerConnectionActor) dispatchBatch(ctx context.Context,
 			}
 
 			if err := dispatcher(ctx, env); err != nil {
-				return lastCommitted, err
+				if err := a.quarantinePoison(
+					ctx, env, err,
+				); err != nil {
+					return lastCommitted, err
+				}
 			}
 
 			if delivery == mailboxconn.DeliveryBuffered {
@@ -674,7 +709,11 @@ func (a *ServerConnectionActor) dispatchBatch(ctx context.Context,
 				// Dispatch failed. Stop processing the
 				// batch and return the last committed
 				// cursor.
-				return lastCommitted, err
+				if err := a.quarantinePoison(
+					ctx, env, err,
+				); err != nil {
+					return lastCommitted, err
+				}
 			}
 
 		default:
@@ -856,6 +895,10 @@ func (a *ServerConnectionActor) runFoldedDispatch(ctx context.Context,
 	// skip it. Everything else in the closure derives from the caller's
 	// state and is safe to redo.
 	ctx = withDeliveredOutsideTx(ctx)
+	ctx = context.WithValue(ctx, ingressScopeKey{}, ingressScope{
+		local:  a.cfg.LocalMailboxID,
+		remote: a.cfg.RemoteMailboxID,
+	})
 
 	var (
 		newState AckState
@@ -869,6 +912,7 @@ func (a *ServerConnectionActor) runFoldedDispatch(ctx context.Context,
 		// previous attempt's advance into this one.
 		newState = state
 		deferral = nil
+		txCtx = context.WithValue(txCtx, ingressQuarantineKey{}, store)
 
 		cursor := nextCursor
 		if len(durables) > 0 {

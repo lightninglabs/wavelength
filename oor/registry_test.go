@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1161,6 +1162,14 @@ func TestOORRegistrySelfTransferParkAndRedrive(t *testing.T) {
 	require.ErrorIs(t, res.Err(), errSelfTransferDeferred)
 	require.Len(t, b.parkedSelfHints, 1)
 	require.Empty(t, rec.recorded())
+
+	// The defer is a postpone on the long self-transfer backoff, not a
+	// nack: the durable copy is the crash-safety net for a wait with no
+	// bound, so it must keep its attempt budget for as long as the
+	// outgoing session runs.
+	var deferPostpone *actor.PostponeError
+	require.ErrorAs(t, res.Err(), &deferPostpone)
+	require.Equal(t, selfHintRedeliveryBackoff, deferPostpone.Delay)
 
 	// A terminal notification before the row flips is a no-op for the
 	// park: admission re-checks the row on the redriven copy, so the
@@ -2392,4 +2401,305 @@ func TestNewOORRegistryActorValidatesRequiredDeps(t *testing.T) {
 			require.ErrorContains(t, err, tc.wantErr)
 		})
 	}
+}
+
+// countingRecipientFilter owns every recipient it is shown and counts how many
+// times the registry consulted it. Admission validation runs once per delivery
+// of an incoming hint, before the concurrency cap is consulted, so the count is
+// a delivery counter for a hint that never gets past the cap.
+type countingRecipientFilter struct {
+	calls atomic.Int64
+}
+
+// Handle satisfies OutboxHandler; admission validation never invokes it.
+func (f *countingRecipientFilter) Handle(context.Context, SessionID,
+	OutboxEvent) ([]Event, error) {
+
+	return nil, nil
+}
+
+// FilterIncomingMetadataRecipients records the call and owns every recipient.
+func (f *countingRecipientFilter) FilterIncomingMetadataRecipients(
+	_ context.Context, recipients []ArkRecipientOutput) (
+	[]ArkRecipientOutput, error) {
+
+	f.calls.Add(1)
+
+	return recipients, nil
+}
+
+// TestOORRegistryOverCapAdmissionPostpones verifies an over-cap incoming
+// admission asks the durable consume path to postpone rather than fail. The
+// rejection must still match errIncomingAdmissionCapped (boot restore's skip
+// check keys off that sentinel), must carry the configured backoff, and must
+// clear the moment a slot frees.
+func TestOORRegistryOverCapAdmissionPostpones(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	b, rec := newTestRegistryBehavior(newFakeRegistryStore())
+	b.cfg.IncomingHandler = &fakeRecipientFilter{owned: true}
+	b.cfg.Limits.MaxConcurrentIncomingSessions = 1
+	b.capBackoff = 3 * time.Second
+
+	ownedScript := []byte{0x51, 0x20, 0xaa, 0xbb}
+	admit := func(seed byte) fn.Result[ActorResp] {
+		return b.Receive(ctx, &ResolveIncomingTransferRequest{
+			SessionID:         oorSessionID(seed),
+			RecipientPkScript: ownedScript,
+		}, fakeExec{})
+	}
+
+	// The first hint takes the only incoming slot.
+	require.True(t, admit(0x01).IsOk())
+	require.Equal(t, 1, rec.spawns)
+
+	// The second is over cap: a postpone request, not a plain failure.
+	res := admit(0x02)
+	require.True(t, res.IsErr())
+	require.Equal(t, 1, rec.spawns)
+
+	err := res.Err()
+	require.ErrorIs(t, err, errIncomingAdmissionCapped)
+	require.ErrorIs(t, err, actor.ErrPostponed)
+
+	var postpone *actor.PostponeError
+	require.ErrorAs(t, err, &postpone)
+	require.Equal(t, 3*time.Second, postpone.Delay)
+
+	// Reaping the resident session frees the slot, so the same hint admits
+	// on its next redelivery.
+	resident := oorSessionID(0x01)
+	b.dropChild(resident, b.active[resident])
+
+	require.True(t, admit(0x02).IsOk())
+	require.Equal(t, 2, rec.spawns)
+}
+
+// TestOORRegistryDefaultCapBackoff verifies the over-cap postpone falls back to
+// the package default when a behavior leaves the backoff unset, so production
+// never postpones with a zero delay (which would busy-loop the registry against
+// a cap that has not moved).
+func TestOORRegistryDefaultCapBackoff(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	b, _ := newTestRegistryBehavior(newFakeRegistryStore())
+	require.Equal(t, incomingCapBackoff, b.capPostponeBackoff())
+	require.Positive(t, b.capPostponeBackoff())
+	require.Equal(t, overCapPostponeHorizon, b.capPostponeHorizon())
+	require.Positive(t, b.capPostponeHorizon())
+
+	// A non-cap error passes through untouched: only the cap is a not-now
+	// condition.
+	other := errors.New("boom")
+	require.Equal(t, other, b.postponeOverCap(ctx, other))
+	require.NotErrorIs(t, b.postponeOverCap(ctx, other), actor.ErrPostponed)
+}
+
+// TestOORRegistryOverCapPostponeHorizon verifies the registry bounds its own
+// postpone horizon, which postpone requires of every adopter: because a
+// postponed message never climbs toward max_attempts, nothing else will ever
+// give up on it. A capped hint younger than the horizon postpones, one that has
+// been waiting past it fails with the plain sentinel so the ordinary nack path
+// dead-letters it. Without this bound an operator streaming fabricated session
+// ids would pin a churn queue on the single-worker registry forever.
+func TestOORRegistryOverCapPostponeHorizon(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+
+	const horizon = 10 * time.Minute
+
+	b, rec := newTestRegistryBehavior(newFakeRegistryStore())
+	b.cfg.IncomingHandler = &fakeRecipientFilter{owned: true}
+	b.cfg.Limits.MaxConcurrentIncomingSessions = 1
+	b.cfg.Clock = clock.NewTestClock(now)
+	b.capHorizon = horizon
+
+	ownedScript := []byte{0x51, 0x20, 0xaa, 0xbb}
+	admit := func(ctx context.Context, seed byte) fn.Result[ActorResp] {
+		return b.Receive(ctx, &ResolveIncomingTransferRequest{
+			SessionID:         oorSessionID(seed),
+			RecipientPkScript: ownedScript,
+		}, fakeExec{})
+	}
+
+	// Fill the only incoming slot so every later admission is over cap.
+	require.True(t, admit(t.Context(), 0x01).IsOk())
+	require.Equal(t, 1, rec.spawns)
+
+	// A hint enqueued one minute ago is still inside the horizon, so it
+	// postpones and keeps its attempt budget.
+	fresh := actor.WithDeliveryEnqueuedAtForTest(
+		t.Context(), now.Add(-time.Minute),
+	)
+	res := admit(fresh, 0x02)
+	require.True(t, res.IsErr())
+	require.ErrorIs(t, res.Err(), errIncomingAdmissionCapped)
+	require.ErrorIs(t, res.Err(), actor.ErrPostponed)
+
+	// Exactly at the horizon the postpone stops: the hint has had its wait
+	// and now fails for real so the nack path can dead-letter it.
+	atHorizon := actor.WithDeliveryEnqueuedAtForTest(
+		t.Context(), now.Add(-horizon),
+	)
+	res = admit(atHorizon, 0x03)
+	require.True(t, res.IsErr())
+	require.ErrorIs(t, res.Err(), errIncomingAdmissionCapped)
+	require.NotErrorIs(t, res.Err(), actor.ErrPostponed)
+
+	// Well past the horizon behaves the same way.
+	stale := actor.WithDeliveryEnqueuedAtForTest(
+		t.Context(), now.Add(-2*horizon),
+	)
+	res = admit(stale, 0x04)
+	require.True(t, res.IsErr())
+	require.NotErrorIs(t, res.Err(), actor.ErrPostponed)
+
+	// A delivery with no enqueue timestamp carries no horizon information,
+	// so it postpones rather than being treated as infinitely old.
+	res = admit(t.Context(), 0x05)
+	require.True(t, res.IsErr())
+	require.ErrorIs(t, res.Err(), actor.ErrPostponed)
+
+	// None of the rejected hints spawned a child.
+	require.Equal(t, 1, rec.spawns)
+}
+
+// TestOORRegistryOverCapHintKeepsAttempts drives an over-cap incoming hint
+// through the registry's real durable mailbox and verifies the postpone
+// contract end to end: the hint is redelivered repeatedly with its attempt
+// budget untouched, nothing is dead-lettered, and it admits once the resident
+// session terminates and frees a slot. A nack-based rejection would have
+// counted every one of those redeliveries toward max_attempts instead.
+func TestOORRegistryOverCapHintKeepsAttempts(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	system := actor.NewActorSystem()
+	defer func() {
+		require.NoError(t, system.Shutdown(context.Background()))
+	}()
+
+	filter := &countingRecipientFilter{}
+	store := newFakeRegistryStore()
+	deliveryStore := newTestDeliveryStore(t)
+
+	registry, err := NewOORRegistryActor(OORRegistryConfig{
+		RegistryStore:    store,
+		DeliveryStore:    deliveryStore,
+		ServerConn:       fakeServerConnRef{},
+		Signer:           testSigner(t),
+		IncomingHandler:  filter,
+		PackageStore:     &fakePackageStore{},
+		ReservationStore: &countingReservationStore{},
+		ActorSystem:      system,
+		Limits: ReceiveLimits{
+			MaxConcurrentIncomingSessions: 1,
+		},
+	})
+	require.NoError(t, err)
+	defer registry.Stop()
+
+	// Shrink the over-cap backoff so a capped hint becomes claim-eligible
+	// again well inside the mailbox's idle poll interval, which is what
+	// paces the redeliveries this test counts.
+	registry.behavior.capBackoff = 20 * time.Millisecond
+
+	ownedScript := []byte{0x51, 0x20, 0xaa, 0xbb}
+	tellHint := func(sessionID SessionID) {
+		require.NoError(
+			t,
+			registry.Ref().Tell(
+				ctx, &ResolveIncomingTransferRequest{
+					SessionID:         sessionID,
+					RecipientPkScript: ownedScript,
+					RecipientEventID:  1,
+				},
+			),
+		)
+	}
+
+	incoming := clientdb.OORSessionDirectionIncoming
+	admitted := func(sessionID SessionID) bool {
+		record, gErr := store.GetSession(ctx, chainHashOf(sessionID))
+
+		return gErr == nil && record.Direction == incoming
+	}
+
+	// The first hint takes the single incoming slot.
+	resident := oorSessionID(0x90)
+	tellHint(resident)
+	require.Eventually(t, func() bool {
+		return admitted(resident)
+	}, 10*time.Second, 20*time.Millisecond)
+
+	// The second hint is over cap. It postpones, so it keeps coming back.
+	const wantRedeliveries = 3
+	baseline := filter.calls.Load()
+
+	capped := oorSessionID(0x91)
+	tellHint(capped)
+
+	require.Eventually(t, func() bool {
+		return filter.calls.Load()-baseline >= wantRedeliveries
+	}, 60*time.Second, 20*time.Millisecond)
+
+	// The hint is still queued, and its attempt budget is exactly what it
+	// was when it was enqueued. The registry is a single-worker leaseless
+	// consumer, so a nack would have run it up to wantRedeliveries here.
+	var queued *actor.LeasedMessage
+	require.Eventually(t, func() bool {
+		msg, pErr := deliveryStore.PeekNextMessage(
+			ctx, OORActorServiceKeyName,
+		)
+		if pErr != nil || msg == nil {
+			return false
+		}
+
+		queued = msg
+
+		return true
+	}, 10*time.Second, 5*time.Millisecond)
+	require.Zero(t, queued.Attempts)
+
+	// Nothing dead-lettered, and the capped session never became resident.
+	letters, err := deliveryStore.ListDeadLetters(
+		ctx, OORActorServiceKeyName, 10,
+	)
+	require.NoError(t, err)
+	require.Empty(t, letters)
+
+	_, err = store.GetSession(ctx, chainHashOf(capped))
+	require.ErrorIs(t, err, clientdb.ErrOORSessionNotFound)
+
+	// Free the slot: mark the resident session terminal and reap its child.
+	record, err := store.GetSession(ctx, chainHashOf(resident))
+	require.NoError(t, err)
+
+	record.Status = clientdb.OORSessionStatusCompleted
+	require.NoError(t, store.UpsertSession(ctx, *record))
+	require.NoError(
+		t,
+		registry.Ref().Tell(
+			ctx, &SessionTerminalNotification{
+				SessionID: resident,
+			},
+		),
+	)
+
+	// With a slot free the postponed hint admits on its next redelivery.
+	require.Eventually(t, func() bool {
+		return admitted(capped)
+	}, 60*time.Second, 20*time.Millisecond)
+
+	letters, err = deliveryStore.ListDeadLetters(
+		ctx, OORActorServiceKeyName, 10,
+	)
+	require.NoError(t, err)
+	require.Empty(t, letters)
 }

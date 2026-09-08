@@ -1,6 +1,8 @@
 package types
 
 import (
+	"fmt"
+
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -79,6 +81,10 @@ type OperatorTerms struct {
 	// MinConfirmations is the minimum confs required on boarding inputs.
 	MinConfirmations uint32
 
+	// VTXOConfirmations is the confirmation depth at which VTXOs created by
+	// a round become available for off-chain spending.
+	VTXOConfirmations uint32
+
 	// MaxOORLineageVBytes is the operator-published cap on the
 	// cumulative on-chain virtual bytes a recipient must publish to
 	// claim a VTXO produced by an OOR submit unilaterally. Clients
@@ -102,6 +108,21 @@ func (t *OperatorTerms) MinVTXOAmountFloor() btcutil.Amount {
 	}
 
 	return t.MinVTXOAmount
+}
+
+// VTXOTargetConfirmations returns the depth at which round VTXOs become
+// available. A zero split field preserves the legacy policy that reused the
+// boarding-input minimum for commitment outputs.
+func (t *OperatorTerms) VTXOTargetConfirmations() uint32 {
+	if t == nil {
+		return 0
+	}
+
+	if t.VTXOConfirmations == 0 {
+		return t.MinConfirmations
+	}
+
+	return t.VTXOConfirmations
 }
 
 // JoinRoundRequest represents a participant's request to join a round.
@@ -276,6 +297,12 @@ type VTXORequest struct {
 	// output is not eligible for the implicit-change exception.
 	FixedAmount bool
 
+	// AssetRef identifies the asset carried by this VTXO.
+	AssetRef string
+
+	// AssetAmount is the number of asset units carried by this VTXO.
+	AssetAmount uint64
+
 	// PolicyTemplate is the semantic arkscript policy for the requested
 	// output. This is the authoritative join-round representation.
 	PolicyTemplate []byte
@@ -320,6 +347,33 @@ type VTXORequest struct {
 	// output per automatic-refresh input even when siblings share the same
 	// effective pkScript. It is never serialized over the round wire.
 	RefreshSourceOutpoint *wire.OutPoint
+}
+
+// ValidateAssetFields checks the fields that distinguish an asset request.
+func (r *VTXORequest) ValidateAssetFields() error {
+	if r == nil {
+		return fmt.Errorf("VTXO request is required")
+	}
+
+	switch {
+	case r.AssetRef == "" && r.AssetAmount == 0:
+		return nil
+
+	case r.AssetRef == "":
+		return fmt.Errorf("asset reference is required")
+
+	case r.AssetAmount == 0:
+		return fmt.Errorf("asset amount is required")
+
+	case !r.FixedAmount:
+		return fmt.Errorf("asset VTXO amount must be fixed")
+
+	case r.IsChange:
+		return fmt.Errorf("asset VTXO cannot be change")
+
+	default:
+		return nil
+	}
 }
 
 // HasLocalOwner reports whether the request carries a local owner descriptor

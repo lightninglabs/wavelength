@@ -13,8 +13,8 @@ generic `db/migrate` orchestration layer.
   `"actor_delivery_schema_migrations"`), `DatabaseName` (default
   `"actor_delivery"`), `LatestVersion` (downgrade guard, default
   `LatestMigrationVersion`), optional `Log btclog.Logger`.
-- `LatestMigrationVersion = 1` — Current schema version; bump when adding a
-  new SQL migration file. The single `000001_durable_mailbox` migration
+- `LatestMigrationVersion = 3` — Current schema version; bump when adding a
+  new SQL migration file. The `000001_durable_mailbox` migration
   already includes the nullable `correlation_key` column on
   `mailbox_messages` and the filtered composite index that backs the
   per-correlation-key FIFO anti-join in `LeaseNextMailboxMessage`.
@@ -43,3 +43,6 @@ generic `db/migrate` orchestration layer.
 
 - [db/migrate/CLAUDE.md](../../migrate/CLAUDE.md) — Generic migration runner.
 - [ARCHITECTURE.md](../../../ARCHITECTURE.md) — System-wide package map.
+
+Migrations 2 and 3 add ingress occurrence receipts and non-expiring poison
+quarantine. They preserve existing inbox, checkpoint and processed rows.

@@ -655,7 +655,8 @@ func TestSessionActorReleaseInputsBestEffort(t *testing.T) {
 		cfg: SessionActorConfig{
 			VTXOStore: store,
 			SpendReleaser: func(_ context.Context,
-				ops []wire.OutPoint) error {
+				ops []wire.OutPoint,
+				_ map[wire.OutPoint]uint64) error {
 
 				released = append(released, ops...)
 
@@ -668,7 +669,7 @@ func TestSessionActorReleaseInputsBestEffort(t *testing.T) {
 	require.NoError(
 		t,
 		b.releaseSpend(
-			ctx, []wire.OutPoint{local, foreign},
+			ctx, []wire.OutPoint{local, foreign}, nil,
 		),
 	)
 	require.Equal(t, []wire.OutPoint{local}, released)
@@ -677,7 +678,9 @@ func TestSessionActorReleaseInputsBestEffort(t *testing.T) {
 	// fail the turn. Returning the error here would re-drive the terminal
 	// transition that emitted the release and wedge the session in a
 	// redelivery loop, the exact regression this case guards against.
-	b.cfg.SpendReleaser = func(context.Context, []wire.OutPoint) error {
+	b.cfg.SpendReleaser = func(context.Context, []wire.OutPoint,
+		map[wire.OutPoint]uint64) error {
+
 		return errFilterBroken
 	}
 	release := &ReleaseInputsRequest{

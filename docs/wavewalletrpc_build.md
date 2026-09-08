@@ -73,7 +73,7 @@ When the daemon is started from a `wavewalletrpc`-tagged build:
 - The CLI exposes top-level wallet verbs: `send`, `recv`, `activity`,
   `balance`, `create`, `unlock`, `exit`, `wallet-sweep`, and `mcp serve`.
   Raw transaction / onchain
-  history is available via `ark listtransactions`, the live VTXO set via
+  history is available via `ark listtransactions`, the VTXO inventory via
   `ark vtxos list`, and boarding-timeout sweep records via `ark sweep list`.
   Subscriptions are available from the
   `wavewalletrpc.WalletService.SubscribeWallet` RPC.

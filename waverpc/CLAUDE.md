@@ -3,9 +3,12 @@
 ## Purpose
 
 Daemon gRPC API definitions for wallet, boarding, round, OOR, unroll, and
-VHTLC-recovery operations. Proto source: `waverpc/daemon.proto`. Generated
-gRPC, REST-gateway, and mailbox-RPC stubs plus one hand-written helper file
-(`errors.go`) for structured wallet-lifecycle errors.
+VHTLC-recovery operations, plus the `Sign*` family through which other
+subsystems borrow the daemon identity key (`SignReceiveAuthMessage[Compact]`,
+`SignOORCustomInput`, `SignVTXOForfeit`, `SignOutSwapHtlcAck`,
+`SignCreditAccountAuthorization`). Proto source: `waverpc/daemon.proto`.
+Generated gRPC, REST-gateway, and mailbox-RPC stubs plus one hand-written
+helper file (`errors.go`) for structured wallet-lifecycle errors.
 
 ## Key Types
 
@@ -13,6 +16,9 @@ gRPC, REST-gateway, and mailbox-RPC stubs plus one hand-written helper file
   server interfaces for the daemon API.
 - `DaemonServiceMailboxClient` / `DaemonServiceMailboxServer` — Generated
   mailbox-RPC client/server stubs (via `protoc-gen-mailboxrpc`).
+- `MacaroonServiceClient` / `MacaroonServiceServer` — Local authenticated
+  credential provisioning and active-permission discovery. The daemon does
+  not register this service on its operator mailbox transport.
 - `WalletNotReadyError(msg)` / `WalletNotReadyStateError(msg, state)` — Build a
   structured `FailedPrecondition` gRPC error carrying a stable `ErrorInfo`
   reason (`WalletNotReadyReason`) and optional `wallet_state` metadata.
@@ -39,3 +45,9 @@ gRPC, REST-gateway, and mailbox-RPC stubs plus one hand-written helper file
 - `errors.go` is hand-written and not regenerated; callers must match wallet
   lifecycle errors via `IsWalletNotReadyError`/`WalletNotReadyState`, never by
   parsing the error message string.
+- `NewReceiveScriptRequest.idempotency_key` is an API-level contract, not just
+  an implementation detail: the key namespace is **global to one daemon**, so
+  callers sharing a daemon must prefix keys with an application or tenant
+  identity or they will be handed each other's receive scripts. An empty key
+  keeps the legacy allocate-a-fresh-script behavior; repeating a non-empty key
+  with a *different* label is rejected rather than silently reallocated.

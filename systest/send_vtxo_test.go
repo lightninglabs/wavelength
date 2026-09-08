@@ -30,6 +30,7 @@ import (
 	"github.com/lightninglabs/wavelength/round"
 	"github.com/lightninglabs/wavelength/rpc/oorpb"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
+	"github.com/lightninglabs/wavelength/rpcauth"
 	"github.com/lightninglabs/wavelength/serverconn"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waved"
@@ -639,18 +640,63 @@ func (f *directedSendFixture) launch() {
 	f.serverCancel = cancel
 	f.serverErrChan = errChan
 
-	conn, err := grpc.NewClient(
-		f.rpcAddr,
-		grpc.WithTransportCredentials(
-			insecure.NewCredentials(),
-		),
-	)
+	conn, err := f.dial(f.cfg.RPC.MacaroonPath)
 	require.NoError(t, err)
 
 	f.conn = conn
 	f.client = waverpc.NewDaemonServiceClient(conn)
 
 	waitForDaemonReady(t, f.client)
+}
+
+// dial connects to the daemon using the fixture's configured transport and
+// the macaroon at macaroonPath when authentication is enabled.
+func (f *directedSendFixture) dial(macaroonPath string) (*grpc.ClientConn,
+	error) {
+
+	var opts []grpc.DialOption
+	if f.cfg.RPC.NoTLS {
+		opts = append(
+			opts,
+			grpc.WithTransportCredentials(
+				insecure.NewCredentials(),
+			),
+		)
+	} else {
+		waitForFixtureFile(f.t, f.cfg.RPC.TLSCertPath)
+
+		creds, err := rpcauth.ClientTLSCredentials(
+			f.cfg.RPC.TLSCertPath,
+		)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, grpc.WithTransportCredentials(creds))
+	}
+
+	if !f.cfg.RPC.NoMacaroons {
+		waitForFixtureFile(f.t, macaroonPath)
+
+		macaroonOpt, err := rpcauth.DialOptionFromFile(macaroonPath)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, macaroonOpt)
+	}
+
+	return grpc.NewClient(f.rpcAddr, opts...)
+}
+
+// waitForFixtureFile waits for a daemon credential file to be created during
+// asynchronous startup.
+func waitForFixtureFile(t *testing.T, path string) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(path)
+
+		return err == nil
+	}, 15*time.Second, 50*time.Millisecond, "file %s", path)
 }
 
 // shutdown stops the currently running daemon and closes its client connection,
@@ -776,6 +822,18 @@ func newLoopbackAddr(t *testing.T) string {
 func seedLiveVTXO(t *testing.T, cfg *waved.Config, operatorKey *btcec.PublicKey,
 	amount btcutil.Amount) wire.OutPoint {
 
+	return seedVTXO(
+		t, cfg, operatorKey, amount, "seeded-vtxo", vtxo.VTXOStatusLive,
+	)
+}
+
+// seedVTXO inserts one VTXO with the given status into the daemon database
+// while the daemon is not running. The label keeps outpoints distinct across
+// calls.
+func seedVTXO(t *testing.T, cfg *waved.Config, operatorKey *btcec.PublicKey,
+	amount btcutil.Amount, label string,
+	status vtxo.VTXOStatus) wire.OutPoint {
+
 	t.Helper()
 
 	networkDir := cfg.NetworkDir()
@@ -815,10 +873,12 @@ func seedLiveVTXO(t *testing.T, cfg *waved.Config, operatorKey *btcec.PublicKey,
 	require.NoError(t, err)
 
 	outpoint := wire.OutPoint{
-		Hash:  chainhash.HashH([]byte(t.Name() + "-seeded-vtxo")),
+		Hash:  chainhash.HashH([]byte(t.Name() + "-" + label)),
 		Index: 0,
 	}
-	commitmentTxID := chainhash.HashH([]byte(t.Name() + "-commitment"))
+	commitmentTxID := chainhash.HashH(
+		[]byte(t.Name() + "-" + label + "-commitment"),
+	)
 	treePath := &tree.Tree{
 		BatchOutpoint: outpoint,
 		Root: &tree.Node{
@@ -860,8 +920,10 @@ func seedLiveVTXO(t *testing.T, cfg *waved.Config, operatorKey *btcec.PublicKey,
 		roundID,
 		commitmentTx.TxHash(),
 		round.ConfInfo{
-			Height:    1,
-			BlockHash: chainhash.HashH([]byte(t.Name() + "-block")),
+			Height: 1,
+			BlockHash: chainhash.HashH(
+				[]byte(t.Name() + "-" + label + "-block"),
+			),
 		},
 	)
 	require.NoError(t, err)
@@ -893,6 +955,11 @@ func seedLiveVTXO(t *testing.T, cfg *waved.Config, operatorKey *btcec.PublicKey,
 		Status:         vtxo.VTXOStatusLive,
 	})
 	require.NoError(t, err)
+
+	if status != vtxo.VTXOStatusLive {
+		err = vtxoStore.UpdateVTXOStatus(t.Context(), outpoint, status)
+		require.NoError(t, err)
+	}
 
 	return outpoint
 }

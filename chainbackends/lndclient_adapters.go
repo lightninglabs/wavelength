@@ -2,6 +2,7 @@ package chainbackends
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -15,6 +16,8 @@ import (
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // lndRegistrationTimeout bounds how long a conf/spend registration call into
@@ -26,6 +29,19 @@ import (
 // above lnd's normal under-load response time yet short enough that a
 // genuinely wedged backend surfaces as an error rather than a silent hang.
 const lndRegistrationTimeout = 15 * time.Second
+
+// isBlockEpochShutdownError reports whether an LND call only failed because
+// the owning block-epoch subscription is shutting down. The context check is
+// required so an independent Canceled status from a live backend remains an
+// actionable warning.
+func isBlockEpochShutdownError(ctx context.Context, err error) bool {
+	if ctx.Err() == nil {
+		return false
+	}
+
+	return errors.Is(err, context.Canceled) ||
+		status.Code(err) == codes.Canceled
+}
 
 // LndClientTxBroadcaster implements TxBroadcaster using
 // lndclient.WalletKitClient.
@@ -507,6 +523,20 @@ func (n *LndClientChainNotifier) RegisterBlockEpochNtfn(
 					ctx, int64(height),
 				)
 				if err != nil {
+					if isBlockEpochShutdownError(ctx, err) {
+						log.DebugS(ctx, "Block hash "+
+							"lookup cancelled during "+
+							"subscription shutdown",
+							slog.Any("err", err),
+							slog.Int(
+								"height",
+								int(height),
+							),
+						)
+
+						continue
+					}
+
 					log.WarnS(
 						ctx,
 						"Failed to get block hash",
@@ -535,7 +565,18 @@ func (n *LndClientChainNotifier) RegisterBlockEpochNtfn(
 
 			case err, ok := <-errChan:
 				if ok && err != nil {
-					log.WarnS(ctx, "Block epoch error", err)
+					if isBlockEpochShutdownError(ctx, err) {
+						log.DebugS(ctx, "Block epoch "+
+							"subscription cancelled",
+							slog.Any("err", err),
+						)
+					} else {
+						log.WarnS(
+							ctx,
+							"Block epoch error",
+							err,
+						)
+					}
 				}
 
 				return

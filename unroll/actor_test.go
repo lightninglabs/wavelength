@@ -867,6 +867,15 @@ type memCheckpointStore struct {
 	checkpoints map[string]*actor.Checkpoint
 }
 
+// ExecTx lets durable actor tests exercise the transaction-aware path. The
+// in-memory methods take their own locks, so the callback can use this store
+// directly without a separate transaction handle.
+func (s *memCheckpointStore) ExecTx(ctx context.Context, _ bool,
+	fn actor.TxFunc) error {
+
+	return fn(ctx, s)
+}
+
 // newMemCheckpointStore creates a new in-memory checkpoint store.
 func newMemCheckpointStore() *memCheckpointStore {
 	return &memCheckpointStore{
@@ -965,6 +974,20 @@ func (s *memCheckpointStore) NackMessage(context.Context, string, string,
 
 // NackMessageByID is unused in these tests.
 func (s *memCheckpointStore) NackMessageByID(context.Context, string,
+	time.Duration) (int64, error) {
+
+	return 1, nil
+}
+
+// PostponeMessage is unused in these tests.
+func (s *memCheckpointStore) PostponeMessage(context.Context, string, string,
+	time.Duration) (int64, error) {
+
+	return 1, nil
+}
+
+// PostponeMessageByID is unused in these tests.
+func (s *memCheckpointStore) PostponeMessageByID(context.Context, string,
 	time.Duration) (int64, error) {
 
 	return 1, nil

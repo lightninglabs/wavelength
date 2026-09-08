@@ -24,6 +24,7 @@ func TestWavedRPCPermissionsMapsReadMethods(t *testing.T) {
 		waverpc.DaemonService_WatchRounds_FullMethodName,
 		waverpc.DaemonService_EstimateFee_FullMethodName,
 		waverpc.DaemonService_GetBalance_FullMethodName,
+		waverpc.MacaroonService_ListPermissions_FullMethodName,
 	} {
 		ops, ok := wavedRPCPermissions[fullMethod]
 		require.True(t, ok, fullMethod)
@@ -64,6 +65,20 @@ func TestWavedRPCPermissionsMapsMutatingMethods(t *testing.T) {
 			fullMethod,
 		)
 	}
+}
+
+// TestWavedRPCPermissionsProtectsMacaroonBaking verifies only the dedicated
+// generate operation authorizes credential creation.
+func TestWavedRPCPermissionsProtectsMacaroonBaking(t *testing.T) {
+	t.Parallel()
+
+	fullMethod := waverpc.MacaroonService_BakeMacaroon_FullMethodName
+	ops, ok := wavedRPCPermissions[fullMethod]
+	require.True(t, ok, fullMethod)
+	require.Equal(t, []bakery.Op{{
+		Entity: entityMacaroon,
+		Action: "generate",
+	}}, ops)
 }
 
 // TestWavedRPCPermissionsCoversBtcwallet verifies btcwallet's public RPC
@@ -212,6 +227,9 @@ func TestWavedRPCPermissionsCoverDaemonServices(t *testing.T) {
 
 	waverpc.RegisterDaemonServiceServer(
 		grpcServer, &waverpc.UnimplementedDaemonServiceServer{},
+	)
+	waverpc.RegisterMacaroonServiceServer(
+		grpcServer, &waverpc.UnimplementedMacaroonServiceServer{},
 	)
 	swapclientrpc.RegisterSwapClientServiceServer(
 		grpcServer,

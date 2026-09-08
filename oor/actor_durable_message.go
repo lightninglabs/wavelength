@@ -133,6 +133,7 @@ const (
 	transferInputRequiredSequenceRecordType   tlv.Type = 15
 	transferInputRequiredLockTimeRecordType   tlv.Type = 16
 	transferInputExternalSignaturesRecordType tlv.Type = 17
+	transferInputReserveEpochRecordType       tlv.Type = 18
 )
 
 const (
@@ -1145,6 +1146,7 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 
 	outpoint := outPointBytes(input.Outpoint)
 	amountSat := uint64(input.AmountSat)
+	reserveEpoch := input.ReserveEpoch
 	clientFamily := uint32(input.ClientKeyFamily)
 	clientIndex := input.ClientKeyIndex
 	clientPubKey := input.ClientPubKey
@@ -1282,6 +1284,15 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 		)
 	}
 
+	// Type 18: appended last so the encoded stream stays canonical
+	// (ascending record type). Always present; a zero epoch means the
+	// input predates the field or carries no reservation.
+	records = append(
+		records, tlv.MakePrimitiveRecord(
+			transferInputReserveEpochRecordType, &reserveEpoch,
+		),
+	)
+
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
 		return nil, err
@@ -1314,6 +1325,7 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		externalSigBlob    []byte
 		requiredSequence   uint32
 		requiredLockTime   uint32
+		reserveEpoch       uint64
 	)
 
 	records := []tlv.Record{
@@ -1374,6 +1386,9 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 			transferInputExternalSignaturesRecordType,
 			&externalSigBlob,
 		),
+		tlv.MakePrimitiveRecord(
+			transferInputReserveEpochRecordType, &reserveEpoch,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -1405,6 +1420,7 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 
 	snap := &TransferInputSnapshot{
 		Outpoint:           outpoint,
+		ReserveEpoch:       reserveEpoch,
 		AmountSat:          decodedAmountSat,
 		ClientKeyFamily:    decodedClientFamily,
 		ClientKeyIndex:     clientIndex,

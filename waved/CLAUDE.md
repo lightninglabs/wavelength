@@ -17,7 +17,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   mailbox auth signature memo, behind `mailboxAuthSigsMu`), and a single
   `clk` (`clock.Clock`) shared by all sub-stores for deterministic time
   injection.
-- `RPCServer` — implements the gRPC `DaemonService`. Most write RPCs
+- `RPCServer` — implements the local gRPC `DaemonService` and
+  `MacaroonService`. Most write RPCs
   (`Board`, `SendVTXO`, `SendOOR`, `SweepBoardingUTXOs`, `SendOnChain`)
   validate input locally then `Ask` the relevant actor; `GetRound` and
   `ListVTXOs` merge live actor state with persisted SQL rows, while

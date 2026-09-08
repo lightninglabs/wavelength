@@ -443,3 +443,80 @@ func TestCommitmentTxBuiltFromProtoSigningKeys(t *testing.T) {
 	var gotBad CommitmentTxBuilt
 	require.Error(t, gotBad.FromProto(pbBad))
 }
+
+func TestCommitmentTxBuiltFromProtoAssetPackages(t *testing.T) {
+	t.Parallel()
+
+	roundID := [16]byte{1}
+	outpoint := wire.OutPoint{
+		Hash: chainhash.Hash{
+			2,
+		},
+		Index: 3,
+	}
+	key := roundpb.OutpointToMapKey(outpoint)
+	pkg := []byte{4, 5, 6}
+	pb := &roundpb.ClientBatchInfo{
+		RoundId:   roundID[:],
+		BatchPsbt: validPSBTBytes(t),
+		AssetLeafPackages: map[string][]byte{
+			key: pkg,
+		},
+	}
+
+	var event CommitmentTxBuilt
+	require.NoError(t, event.FromProto(pb))
+	require.Equal(t, pkg, event.AssetLeafPackages[outpoint])
+
+	// The event owns its package bytes.
+	pkg[0] = 0xff
+	require.Equal(t, byte(4), event.AssetLeafPackages[outpoint][0])
+}
+
+func TestCommitmentTxBuiltFromProtoRejectsInvalidAssetPackages(t *testing.T) {
+	t.Parallel()
+
+	roundID := [16]byte{1}
+	newEvent := func(packages map[string][]byte) error {
+		var event CommitmentTxBuilt
+
+		return event.FromProto(&roundpb.ClientBatchInfo{
+			RoundId:           roundID[:],
+			BatchPsbt:         validPSBTBytes(t),
+			AssetLeafPackages: packages,
+		})
+	}
+
+	require.ErrorContains(
+		t,
+		newEvent(
+			map[string][]byte{
+				"not-an-outpoint": {1},
+			},
+		),
+		"asset_leaf_packages key",
+	)
+
+	outpoint := wire.OutPoint{Hash: chainhash.Hash{2}, Index: 3}
+	key := roundpb.OutpointToMapKey(outpoint)
+	require.ErrorContains(
+		t,
+		newEvent(
+			map[string][]byte{
+				key: nil,
+			},
+		),
+		"is empty",
+	)
+
+	nonCanonical := outpoint.Hash.String() + ":03"
+	require.ErrorContains(
+		t,
+		newEvent(
+			map[string][]byte{
+				nonCanonical: {1},
+			},
+		),
+		"is not canonical",
+	)
+}

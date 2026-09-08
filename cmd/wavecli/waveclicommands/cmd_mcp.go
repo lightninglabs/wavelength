@@ -250,29 +250,44 @@ func registerMCPTools(s *mcp.Server, client waverpc.DaemonServiceClient) {
 
 	// vtxos_list — with optional filters.
 	type vtxosListArgs struct {
-		StatusFilter string `json:"status_filter,omitempty" jsonschema:"VTXO status filter (live, pending_forfeit, unilateral_exit, etc.)"` //nolint:ll
-		MinAmountSat int64  `json:"min_amount_sat,omitempty" jsonschema:"minimum amount in sats"`                                           //nolint:ll
+		StatusFilter string   `json:"status_filter,omitempty" jsonschema:"single VTXO status"`                                                    //nolint:ll
+		Statuses     []string `json:"statuses,omitempty" jsonschema:"VTXO statuses to list; empty lists every status except forfeited and spent"` //nolint:ll
+		All          bool     `json:"all,omitempty" jsonschema:"list every status"`                                                               //nolint:ll
+		MinAmountSat int64    `json:"min_amount_sat,omitempty" jsonschema:"minimum amount in sats"`                                               //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ark.vtxos.list",
-		Description: "List VTXOs with optional filters",
+		Description: "List VTXOs with optional status filters",
 	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		args vtxosListArgs) (*mcp.CallToolResult, any, error) {
 
-		rpcReq := &waverpc.ListVTXOsRequest{
-			MinAmountSat: args.MinAmountSat,
+		names := args.Statuses
+		if args.StatusFilter != "" {
+			names = append(names, args.StatusFilter)
 		}
 
-		if args.StatusFilter != "" {
-			status, ok := parseVTXOStatus(
-				args.StatusFilter,
-			)
+		if args.All && len(names) > 0 {
+			return nil, nil, fmt.Errorf("all and statuses are " +
+				"mutually exclusive")
+		}
+
+		rpcReq := &waverpc.ListVTXOsRequest{
+			MinAmountSat:           args.MinAmountSat,
+			ExcludeCheckpointPsbts: args.All,
+		}
+
+		for _, name := range names {
+			status, ok := parseVTXOStatus(name)
 			if !ok {
 				return nil, nil, fmt.Errorf("invalid "+
-					"status: %s", args.StatusFilter)
+					"status: %s", name)
 			}
 
-			rpcReq.StatusFilter = status
+			rpcReq.Statuses = append(rpcReq.Statuses, status)
+		}
+
+		if args.All {
+			rpcReq.Statuses = allVTXOStatuses()
 		}
 
 		resp, err := client.ListVTXOs(ctx, rpcReq)

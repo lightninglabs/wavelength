@@ -36,7 +36,9 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   in-process Ark/daemon facade to the `credit` package's `CreditServer` /
   `CreditDaemon` interfaces, so the credit durable-actor subsystem reuses this
   package's account-key resolution, payment-hash dedup, and worker registry
-  instead of duplicating them.
+  instead of duplicating them. `creditDaemonBridge.VTXOFloor` forwards to
+  `waved.RPCServer.OperatorVTXOFloor` — a live, authenticated operator-terms
+  refresh, not the daemon's bootstrap `GetInfo` snapshot.
 - `Register(ctx, grpcServer, rpcServer, cfg)` — Top-level entry point called
   by a `swapruntime`-tagged `waved` binary. Opens the daemon-owned SQLite
   swap store, dials `swapdk-server`, creates an in-process Ark SDK facade over
@@ -106,6 +108,13 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `CreateCredit`/`RedeemCredit`/`ListCredits` type-assert `s.client` for the
   optional credit methods and return `Unimplemented` if the underlying
   `swapRuntimeClient` does not support credits.
+- `creditDaemonBridge.VTXOFloor` **fails closed**: it returns an error rather
+  than a zero floor when the operator terms cannot be refreshed. The credit
+  actor treats that as "do not materialize", so a stalled or unreachable
+  operator suppresses redemption instead of minting a VTXO below the live
+  minimum. Do not add a zero/dust fallback here — the effective floor is
+  `max(dust_limit, min_vtxo_amount_sat)` and it can be raised by the operator
+  at any time.
 - `newSwapServerClients` wires **two** independent daemon-backed signers into
   every swap-server transport: `RPCServer.SignMailboxAuth` for the mailbox
   edge's `x-mailbox-auth-sig` header, and `RPCServer.SignCreditAccountAuth`

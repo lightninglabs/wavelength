@@ -27,7 +27,7 @@ into specific topics below.
 | [mailbox_durable_actor_layer.md](mailbox_durable_actor_layer.md) | The durable mailbox and durable actor: leases, dedup, transactional outbox, DurableAsk, and the classic vs. Read/Commit (`TxBehavior`/`Exec[S]`) execution paths |
 | [mailbox_transport_serverconn_clientconn.md](mailbox_transport_serverconn_clientconn.md) | The RPC-over-mailbox transport relating this client's `serverconn` to the operator's `clientconn`: envelope, edge API, shared `mailbox/conn` primitives, ack watermark, identity/auth/liveness, and the wire contract |
 | [RPC_MAILBOX_CONTRACT.md](RPC_MAILBOX_CONTRACT.md) | Envelope semantics, at-least-once delivery, ack watermarks |
-| [credit_durable_actor_design.md](credit_durable_actor_design.md) | Credit subsystem durable-actor design: supervisor + per-operation actors driving fault-tolerant sub-dust pay, credit-receive, and redeem flows against the authoritative server ledger |
+| [credit_durable_actor_design.md](credit_durable_actor_design.md) | Credit subsystem durable-actor design: supervisor + per-operation actors driving fault-tolerant sub-floor pay, credit-receive, and redeem flows against the authoritative server ledger |
 | [wavewalletdk_mobile.md](wavewalletdk_mobile.md) | gomobile-safe `sdk/wavewalletdk/mobile` facade: drives an embedded in-process `waved` wallet from Android/iOS over the private bufconn transport (bytes-out API, no daemon binary) |
 
 ## Development

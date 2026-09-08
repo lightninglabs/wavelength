@@ -312,6 +312,12 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		[]*roundpb.VTXORequest, len(m.VTXORequests),
 	)
 	for i, req := range m.VTXORequests {
+		if err := validateAssetRequest(&req); err != nil {
+			return fn.Err[proto.Message](
+				fmt.Errorf("vtxo request %d: %w", i, err),
+			)
+		}
+
 		policyTemplate, err := req.EffectivePolicyTemplate()
 		if err != nil {
 			return fn.Err[proto.Message](
@@ -325,6 +331,8 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 			IsChange:        req.IsChange,
 			FixedAmount:     req.FixedAmount,
 			PolicyTemplate:  policyTemplate,
+			AssetRef:        req.AssetRef,
+			AssetAmount:     req.AssetAmount,
 		}
 		if req.SigningKey.PubKey != nil {
 			vr.SigningKey = req.SigningKey.PubKey.

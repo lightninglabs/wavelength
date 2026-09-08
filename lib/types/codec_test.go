@@ -69,12 +69,57 @@ func TestJoinRoundAuthMessageBindsForfeitSpendPaths(t *testing.T) {
 	require.NotEqual(t, baseline, differentForfeit)
 }
 
+func TestJoinRoundAuthMessageBindsAssetFields(t *testing.T) {
+	t.Parallel()
+
+	req := testJoinRoundAuthRequest(t)
+	req.VTXOReqs[0].AssetRef = "asset-a"
+	req.VTXOReqs[0].AssetAmount = 100
+	req.VTXOReqs[0].FixedAmount = true
+
+	baseline, err := JoinRoundAuthMessage(req)
+	require.NoError(t, err)
+
+	differentRef := testJoinRoundAuthRequest(t)
+	differentRef.VTXOReqs[0].AssetRef = "asset-b"
+	differentRef.VTXOReqs[0].AssetAmount = 100
+	differentRef.VTXOReqs[0].FixedAmount = true
+	refChanged, err := JoinRoundAuthMessage(differentRef)
+	require.NoError(t, err)
+	require.NotEqual(t, baseline, refChanged)
+
+	differentAmount := testJoinRoundAuthRequest(t)
+	differentAmount.VTXOReqs[0].AssetRef = "asset-a"
+	differentAmount.VTXOReqs[0].AssetAmount = 101
+	differentAmount.VTXOReqs[0].FixedAmount = true
+	amountChanged, err := JoinRoundAuthMessage(differentAmount)
+	require.NoError(t, err)
+	require.NotEqual(t, baseline, amountChanged)
+}
+
 // TestDecodeJoinRoundAuthMessageRoundTrip asserts decode reconstructs join
 // requests from canonical message bytes.
 func TestDecodeJoinRoundAuthMessageRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	req := testJoinRoundAuthRequest(t)
+
+	raw, err := JoinRoundAuthMessage(req)
+	require.NoError(t, err)
+
+	decodedReq, err := DecodeJoinRoundAuthMessage(raw)
+	require.NoError(t, err)
+
+	requireJoinRoundAuthRequestEqual(t, req, decodedReq)
+}
+
+func TestDecodeJoinRoundAuthMessageAssetRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	req := testJoinRoundAuthRequest(t)
+	req.VTXOReqs[0].AssetRef = "asset-a"
+	req.VTXOReqs[0].AssetAmount = 100
+	req.VTXOReqs[0].FixedAmount = true
 
 	raw, err := JoinRoundAuthMessage(req)
 	require.NoError(t, err)
@@ -350,6 +395,8 @@ func requireJoinRoundAuthRequestEqual(t *testing.T, expected *JoinRoundRequest,
 		require.NotNil(t, actualReq)
 
 		require.Equal(t, expectedReq.Amount, actualReq.Amount)
+		require.Equal(t, expectedReq.AssetRef, actualReq.AssetRef)
+		require.Equal(t, expectedReq.AssetAmount, actualReq.AssetAmount)
 		require.Equal(t, expectedReq.FixedAmount, actualReq.FixedAmount)
 		require.Equal(
 			t, expectedReq.PolicyTemplate, actualReq.PolicyTemplate,

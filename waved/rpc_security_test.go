@@ -47,6 +47,16 @@ func TestBakeReadOnlyMacaroon(t *testing.T) {
 		),
 	)
 
+	// Credential creation is not a read operation and must remain reserved
+	// for the admin macaroon.
+	bakeMacaroon := waverpc.MacaroonService_BakeMacaroon_FullMethodName
+	require.Error(
+		t, authService.CheckMacAuth(
+			ctx, macBytes, wavedRPCPermissions[bakeMacaroon],
+			bakeMacaroon,
+		),
+	)
+
 	// Baking again is a no-op that leaves the existing file untouched, so a
 	// previously distributed copy stays valid.
 	require.NoError(t, bakeReadOnlyMacaroon(ctx, authService, adminPath))
