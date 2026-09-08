@@ -266,10 +266,14 @@ func (s *Server) recoveryBoardingBackend() (wallet.BoardingBackend, error) {
 	}
 }
 
+// recoverIndexedVTXOs scans one key family and accepts outputs only after
+// target-proof and expiry authentication. Invalid entries do not stop later
+// recovery; the first error is returned so an incomplete scan can be retried.
 func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 	terms *libtypes.OperatorTerms, family keychain.KeyFamily, window uint32,
 	result *WalletRecoveryResult) error {
 
+	var firstExpiryErr error
 	for i := uint32(0); i < window; i++ {
 		keyDesc, err := r.server.proofKeyBackend.DeriveKey(
 			ctx, keychain.KeyLocator{
@@ -344,12 +348,42 @@ func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 					indexed, *keyDesc, terms,
 				)
 				if err != nil {
-					return fmt.Errorf("convert VTXO for "+
-						"key %d: %w", i, err)
+					if firstExpiryErr == nil {
+						firstExpiryErr = fmt.Errorf(
+							"convert VTXO for key "+
+								"%d: %w",
+							i, err)
+					}
+
+					continue
 				}
 				if !ok {
 					continue
 				}
+
+				if r.server.expiryAuthenticator == nil {
+					return fmt.Errorf("expiry " +
+						"authenticator not initialized")
+				}
+				expiry, err := r.server.expiryAuthenticator(
+					ctx, desc.Ancestry,
+				)
+				if err != nil {
+					if firstExpiryErr == nil {
+						firstExpiryErr = fmt.Errorf(
+							"authenticate VTXO %s "+
+								"expiry: %w",
+							desc.Outpoint, err)
+					}
+					r.server.log.WarnS(
+						ctx, "Skipping recovered VTXO with "+
+							"unauthenticated expiry", err,
+						"outpoint", desc.Outpoint.String(),
+					)
+
+					continue
+				}
+				desc.BatchExpiry = expiry
 
 				saved, err := r.saveRecoveredVTXO(ctx, desc)
 				if err != nil {
@@ -367,9 +401,12 @@ func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 		}
 	}
 
-	return nil
+	return firstExpiryErr
 }
 
+// recoveryDescriptorFromIndexer binds the indexed output to signed ancestry
+// and reconstructs its local receive policy. The caller must authenticate the
+// batch confirmation before persisting the descriptor.
 func recoveryDescriptorFromIndexer(indexed *arkrpc.VTXO,
 	keyDesc keychain.KeyDescriptor, terms *libtypes.OperatorTerms) (
 	*vtxo.Descriptor, bool, error) {
@@ -428,7 +465,7 @@ func recoveryDescriptorFromIndexer(indexed *arkrpc.VTXO,
 		return nil, false, fmt.Errorf("encode policy: %w", err)
 	}
 
-	ancestry, err := vtxo.AncestryFromRPC(indexed.GetAncestryPaths())
+	ancestry, err := vtxo.IndexedAncestryFromRPC(indexed)
 	if err != nil {
 		return nil, false, fmt.Errorf("convert ancestry: %w", err)
 	}
@@ -451,7 +488,7 @@ func recoveryDescriptorFromIndexer(indexed *arkrpc.VTXO,
 		Ancestry:       ancestry,
 		RoundID:        indexed.GetRoundId(),
 		CommitmentTxID: *commitmentTxID,
-		BatchExpiry:    indexed.GetBatchExpiryHeight(),
+		BatchExpiry:    0,
 		RelativeExpiry: exitDelay,
 		ChainDepth:     int(indexed.GetChainDepth()),
 		CreatedHeight:  indexed.GetCreatedHeight(),
@@ -663,16 +700,19 @@ func (r *RPCServer) recoverOORReceiveScripts(ctx context.Context,
 	return nil
 }
 
+// recoveryOORHandler wires the same expiry and persistence boundaries used
+// by live OOR receive into the indexed event replay path.
 func (r *RPCServer) recoveryOORHandler(
 	terms *libtypes.OperatorTerms,
 	packageStore *db.OORArtifactPersistenceStore,
 ) *oor.LocalPersistenceOutboxHandler {
 
 	return &oor.LocalPersistenceOutboxHandler{
-		Store:        r.server.vtxoStore,
-		PackageStore: packageStore,
-		OperatorKey:  terms.PubKey,
-		ExitDelay:    terms.VTXOExitDelay,
+		Store:                      r.server.vtxoStore,
+		PackageStore:               packageStore,
+		OperatorKey:                terms.PubKey,
+		ExitDelay:                  terms.VTXOExitDelay,
+		AuthenticateIncomingExpiry: r.server.expiryAuthenticator,
 		NotifyIncomingVTXOs: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
@@ -756,6 +796,9 @@ func (r *RPCServer) recoverOOREventsForScript(ctx context.Context,
 	return nil
 }
 
+// materializeRecoveredOOREvent replays a recovered package with freshly
+// authenticated target ancestry and expiry. Existing package and descriptor
+// persistence keep redelivery idempotent.
 func (r *RPCServer) materializeRecoveredOOREvent(ctx context.Context,
 	idx *indexer.Client, event *arkrpc.OORRecipientEvent,
 	handler *oor.LocalPersistenceOutboxHandler) error {
@@ -813,6 +856,19 @@ func (r *RPCServer) materializeRecoveredOOREvent(ctx context.Context,
 		if err != nil {
 			return err
 		}
+
+		if r.server.expiryAuthenticator == nil {
+			return fmt.Errorf("expiry authenticator not " +
+				"initialized")
+		}
+		metadata.BatchExpiry, err = r.server.expiryAuthenticator(
+			ctx, metadata.Ancestry,
+		)
+		if err != nil {
+			return fmt.Errorf("authenticate recovered OOR output "+
+				"%d expiry: %w", recipient.OutputIndex, err)
+		}
+		metadata.ExpiryAuthenticated = true
 
 		metadataMatches = append(metadataMatches,
 			oor.IncomingMetadataMatch{

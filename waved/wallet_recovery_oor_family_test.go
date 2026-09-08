@@ -7,15 +7,14 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/indexer"
-	libtree "github.com/lightninglabs/wavelength/lib/tree"
+	"github.com/lightninglabs/wavelength/internal/expiryfixture"
 	libtypes "github.com/lightninglabs/wavelength/lib/types"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -26,28 +25,6 @@ import (
 // recoveryTestExitDelay is the operator's VTXO exit delay used to build the
 // receive scripts under test.
 const recoveryTestExitDelay = 144
-
-// recoveryTestAncestryPath builds the minimal valid ancestry path an indexer
-// VTXO needs to survive recovery's conversion step.
-func recoveryTestAncestryPath(t *testing.T,
-	commitmentTxID chainhash.Hash) *arkrpc.AncestryPath {
-
-	t.Helper()
-
-	tree := &libtree.Tree{
-		Root: &libtree.Node{},
-		BatchOutpoint: wire.OutPoint{
-			Hash: commitmentTxID,
-		},
-	}
-
-	path, err := arkrpc.AncestryPathFromTree(
-		tree, commitmentTxID, []uint32{0},
-	)
-	require.NoError(t, err)
-
-	return path
-}
 
 // recoveryKeyBackend derives a distinct deterministic key per key locator so a
 // test can tell the families recovery scans apart by the scripts they produce.
@@ -201,6 +178,11 @@ func newRecoveryScanServer(t *testing.T, liveScript []byte,
 			btclog.Disabled,
 		).NewVTXOStore(clk),
 		proofKeyBackend: &recoveryKeyBackend{},
+		expiryAuthenticator: func(context.Context, []vtxo.Ancestry) (
+			int32, error) {
+
+			return 965281, nil
+		},
 		indexer: indexer.New(
 			stub, nil, "test-server", "client:test",
 			fn.None[btclog.Logger](),
@@ -232,25 +214,10 @@ func TestRecoverIndexedVTXOsCoversOORReceiveScripts(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	commitmentTxID := chainhash.Hash{0xaa}
-	outpointTxID := chainhash.Hash{0xbb}
-	live := &arkrpc.VTXO{
-		Outpoint: &arkrpc.OutPoint{
-			Txid: outpointTxID[:],
-			Vout: 0,
-		},
-		ValueSat:          28674,
-		PkScript:          oorScript,
-		Status:            arkrpc.VTXOStatus_VTXO_STATUS_LIVE,
-		RoundId:           "round-1",
-		CommitmentTxid:    commitmentTxID[:],
-		CreatedHeight:     964273,
-		BatchExpiryHeight: 965281,
-		RelativeExpiry:    recoveryTestExitDelay,
-		AncestryPaths: []*arkrpc.AncestryPath{
-			recoveryTestAncestryPath(t, commitmentTxID),
-		},
-	}
+	live, _ := expiryfixture.Round(t, 28674, oorScript,
+		1008, 964273, 2)
+	live.BatchExpiryHeight = 965281
+	live.RelativeExpiry = recoveryTestExitDelay
 
 	// The VTXO-owner family alone never queries the OOR receive script.
 	ownerOnly, ownerStub := newRecoveryScanServer(t, oorScript, live)
@@ -286,4 +253,59 @@ func TestRecoverIndexedVTXOsCoversOORReceiveScripts(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, saved)
 	require.Equal(t, oorScript, saved.PkScript)
+}
+
+// TestRecoveryContinuesAfterForgedTarget proves one unrelated ancestry response
+// leaves its target uncredited while later valid outputs remain recoverable.
+func TestRecoveryContinuesAfterForgedTarget(t *testing.T) {
+	t.Parallel()
+	operatorKey := testKeyDescriptor(t, 201)
+	terms := &libtypes.OperatorTerms{
+		PubKey:        operatorKey.PubKey,
+		VTXOExitDelay: recoveryTestExitDelay,
+	}
+	backend := &recoveryKeyBackend{}
+	var scripts [][]byte
+	var entries []*arkrpc.VTXO
+	for i := uint32(0); i < 2; i++ {
+		key, err := backend.DeriveKey(
+			t.Context(), keychain.KeyLocator{
+				Family: oorReceiveKeyFamily,
+				Index:  i,
+			},
+		)
+		require.NoError(t, err)
+		script, err := BuildPubKeyVTXOReceiveScript(
+			key.PubKey, terms.PubKey, terms.VTXOExitDelay,
+		)
+		require.NoError(t, err)
+		entry, _ := expiryfixture.Round(
+			t, 10000, script, 50, 100, byte(i+20),
+		)
+		scripts = append(scripts, script)
+		entries = append(entries, entry)
+	}
+	// Keep the queried outpoint and script, but substitute a valid tree
+	// belonging to the other output.
+	entries[0].AncestryPaths = entries[1].AncestryPaths
+	rpc, stub := newRecoveryScanServer(t, scripts[0], entries[0])
+	stub.byScript[string(scripts[1])] = entries[1]
+	var result WalletRecoveryResult
+	err := rpc.recoverIndexedVTXOs(
+		t.Context(), terms, oorReceiveKeyFamily, 2, &result,
+	)
+	require.ErrorIs(t, err, vtxo.ErrInvalidBatchExpiryEvidence)
+	require.Equal(t, uint32(1), result.VTXOs)
+	for i, entry := range entries {
+		op, err := recoveryOutpoint(entry.Outpoint)
+		require.NoError(t, err)
+		saved, err := rpc.server.vtxoStore.GetVTXO(t.Context(), op)
+		if i == 0 {
+			require.Error(t, err)
+			require.Nil(t, saved)
+			continue
+		}
+		require.NoError(t, err)
+		require.Equal(t, op, saved.Outpoint)
+	}
 }
