@@ -285,6 +285,15 @@ func TestServicePromotesAndMaterializesVTXO(t *testing.T) {
 	require.Equal(t, 1, executor.counts["*arkchannel.CommitOOR"])
 	require.Equal(t, 1, executor.counts["*arkchannel.ActivateChannel"])
 
+	record, err = service.PromoteVTXO(
+		t.Context(), terms, testBinding(terms),
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseActive, record.Snapshot.Phase)
+	require.Equal(t, 1, executor.counts["*arkchannel.NegotiateFunding"])
+	require.Equal(t, 1, executor.counts["*arkchannel.CommitOOR"])
+	require.Equal(t, 1, executor.counts["*arkchannel.ActivateChannel"])
+
 	record, err = service.Materialize(t.Context(), terms.ID)
 	require.NoError(t, err)
 	require.Equal(t, PhaseOnChain, record.Snapshot.Phase)
@@ -552,7 +561,7 @@ func TestServiceResumeIsolatesChannelFailures(t *testing.T) {
 	second := testTerms(t, KindPromotion)
 	second.ID[0] = 2
 	second.PendingChannelID[0] = 6
-	second.ReservedSCID++
+	second.ReservedSCID += 1 << 16
 	for _, terms := range []Terms{first, second} {
 		_, err := coordinator.Request(t.Context(), terms)
 		require.NoError(t, err)

@@ -37,6 +37,31 @@ type recordingProcessPaymentPeer struct {
 	cancelErr        error
 }
 
+type recordingPromotionPeer struct {
+	lnruntime.ProcessFundingPeer
+
+	boundSources []arkchannel.VTXOBinding
+}
+
+type noOpPromotionActionExecutor struct{}
+
+// Execute accepts action-free requested-state replay in this test.
+func (noOpPromotionActionExecutor) Execute(context.Context, arkchannel.ID,
+	arkchannel.Action) error {
+
+	return nil
+}
+
+// BindPreparedOOR records one idempotent source replay.
+func (p *recordingPromotionPeer) BindPreparedOOR(_ context.Context,
+	_ arkchannel.ID, source arkchannel.VTXOBinding) (arkchannel.Record,
+	error) {
+
+	p.boundSources = append(p.boundSources, source)
+
+	return arkchannel.Record{}, nil
+}
+
 // CancelOutgoingPayment records the cleanup context and requested failure.
 func (p *recordingProcessPaymentPeer) CancelOutgoingPayment(ctx context.Context,
 	hash lntypes.Hash, reason string) error {
@@ -554,4 +579,59 @@ func TestNewPromotionTermsRequiresIdempotencyKey(t *testing.T) {
 	controller := &NativeArkChannelController{}
 	_, err := controller.newPromotionTerms(100_000, "")
 	require.ErrorContains(t, err, "idempotency key is required")
+}
+
+// TestResumeBoundPromotionReturnsActiveRecord verifies an RPC replay does not
+// re-enter the prepared-OOR admission path after channel activation.
+func TestResumeBoundPromotionReturnsActiveRecord(t *testing.T) {
+	t.Parallel()
+
+	record := arkchannel.Record{Snapshot: arkchannel.Snapshot{
+		Terms: arkchannel.Terms{
+			ID: arkchannel.ID{
+				1,
+			},
+		},
+		Phase: arkchannel.PhaseActive,
+	}}
+	controller := &NativeArkChannelController{}
+
+	actual, err := controller.resumeBoundPromotion(t.Context(), record)
+	require.NoError(t, err)
+	require.Equal(t, record, actual)
+}
+
+// TestResumeBoundPromotionReplaysRequestedPeerBind verifies a crash after the
+// local source commit can still prompt the peer readiness handshake.
+func TestResumeBoundPromotionReplaysRequestedPeerBind(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(40_000, 0).UTC()
+	controller, coordinator, terms, closeStore := testPrePONRController(
+		t, now, oorbridge.PreparationLookup{},
+	)
+	t.Cleanup(closeStore)
+	_, err := coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	binding := testPrePONRBinding(t, terms)
+	record, _, err := coordinator.Apply(
+		t.Context(), terms.ID, &arkchannel.BindVTXO{
+			Binding: binding,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, arkchannel.PhaseRequested, record.Snapshot.Phase)
+
+	service, err := arkchannel.NewService(
+		controller.party, coordinator, noOpPromotionActionExecutor{},
+	)
+	require.NoError(t, err)
+	remote := &recordingPromotionPeer{}
+	controller.service = service
+	controller.remote = remote
+
+	actual, err := controller.resumeBoundPromotion(t.Context(), record)
+	require.NoError(t, err)
+	require.Equal(t, arkchannel.PhaseRequested, actual.Snapshot.Phase)
+	require.Equal(t, []arkchannel.VTXOBinding{binding}, remote.boundSources)
 }

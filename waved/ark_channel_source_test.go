@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/wavelength/lnruntime"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -291,12 +292,15 @@ func TestReceiveIntentTermsAreDeterministic(t *testing.T) {
 	)
 
 	hash := lntypes.Hash{9}
+	reservedSCID := lnwire.ShortChannelID{
+		BlockHeight: 1 << 23, TxIndex: 42,
+	}.ToUint64()
 	first, err := controller.newReceiveIntentTerms(
-		hash, 1<<63|42, btcutil.Amount(50_000),
+		hash, reservedSCID, btcutil.Amount(50_000),
 	)
 	require.NoError(t, err)
 	second, err := controller.newReceiveIntentTerms(
-		hash, 1<<63|42, btcutil.Amount(50_000),
+		hash, reservedSCID, btcutil.Amount(50_000),
 	)
 	require.NoError(t, err)
 	require.Equal(t, first, second)
@@ -304,10 +308,13 @@ func TestReceiveIntentTermsAreDeterministic(t *testing.T) {
 	require.Equal(t, arkchannel.PartyHub, first.Funder)
 	require.Equal(t, controller.peerInfo.HubFunderKey, first.VTXO.FunderKey)
 	require.Equal(t, hash, lntypes.Hash(first.PaymentHash))
-	require.Equal(t, uint64(1<<63|42), first.ReservedSCID)
+	require.Equal(t, reservedSCID, first.ReservedSCID)
 
+	otherSCID := lnwire.ShortChannelID{
+		BlockHeight: 1 << 23, TxIndex: 43,
+	}.ToUint64()
 	other, err := controller.newReceiveIntentTerms(
-		lntypes.Hash{10}, 1<<63|43, btcutil.Amount(50_000),
+		lntypes.Hash{10}, otherSCID, btcutil.Amount(50_000),
 	)
 	require.NoError(t, err)
 	require.NotEqual(t, first.ID, other.ID)

@@ -1225,6 +1225,9 @@ func (c *NativeArkChannelController) PromoteVTXO(ctx context.Context,
 	if err != nil && !errors.Is(err, arkchannel.ErrNotFound) {
 		return arkchannel.Record{}, err
 	}
+	if err == nil && existing.Snapshot.Source != nil {
+		return c.resumeBoundPromotion(ctx, existing)
+	}
 	if _, err := c.remote.RegisterPromotion(ctx, terms); err != nil {
 		return arkchannel.Record{}, err
 	}
@@ -1252,6 +1255,36 @@ func (c *NativeArkChannelController) PromoteVTXO(ctx context.Context,
 	}
 
 	return c.service.GetChannel(ctx, terms.ID)
+}
+
+// resumeBoundPromotion resumes only channel-creation work. A later channel
+// phase must be reported as-is instead of revalidating the finalized OOR.
+func (c *NativeArkChannelController) resumeBoundPromotion(ctx context.Context,
+	record arkchannel.Record) (arkchannel.Record, error) {
+
+	switch record.Snapshot.Phase {
+	case arkchannel.PhaseRequested:
+		_, err := c.remote.BindPreparedOOR(
+			ctx, record.Snapshot.Terms.ID,
+			record.Snapshot.Source.Clone(),
+		)
+		if err != nil {
+			return arkchannel.Record{}, err
+		}
+
+		return c.service.ResumeChannelAction(
+			ctx, record.Snapshot.Terms.ID,
+		)
+
+	case arkchannel.PhaseNegotiating, arkchannel.PhaseBackingReady,
+		arkchannel.PhaseActivating, arkchannel.PhaseCancelling:
+		return c.service.ResumeChannelAction(
+			ctx, record.Snapshot.Terms.ID,
+		)
+
+	default:
+		return record, nil
+	}
 }
 
 // newPromotionTerms creates stable protocol identifiers and binds every key
