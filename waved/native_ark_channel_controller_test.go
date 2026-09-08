@@ -52,6 +52,39 @@ func (noOpPromotionActionExecutor) Execute(context.Context, arkchannel.ID,
 	return nil
 }
 
+type recordingProcessFundingPeer struct {
+	lnruntime.ProcessFundingPeer
+
+	state   lnruntime.FundingChannelState
+	applied []arkchannel.Event
+}
+
+// GetFundingChannel returns the configured remote receive-intent state.
+func (p *recordingProcessFundingPeer) GetFundingChannel(context.Context,
+	arkchannel.ID) (lnruntime.FundingChannelState, error) {
+
+	return p.state, nil
+}
+
+// ApplyChannelEvent records the remote cancellation and advances its fixture.
+func (p *recordingProcessFundingPeer) ApplyChannelEvent(_ context.Context,
+	_ arkchannel.ID, event arkchannel.Event) (arkchannel.Record, error) {
+
+	p.applied = append(p.applied, event)
+	p.state.Phase = arkchannel.PhaseFailed
+
+	return arkchannel.Record{}, nil
+}
+
+type noOpArkChannelActionExecutor struct{}
+
+// Execute accepts action-free requested-intent transitions in tests.
+func (noOpArkChannelActionExecutor) Execute(context.Context, arkchannel.ID,
+	arkchannel.Action) error {
+
+	return nil
+}
+
 // BindPreparedOOR records one idempotent source replay.
 func (p *recordingPromotionPeer) BindPreparedOOR(_ context.Context,
 	_ arkchannel.ID, source arkchannel.VTXOBinding) (arkchannel.Record,
@@ -418,6 +451,127 @@ func TestCancelOutgoingPaymentDetachesFromRequest(t *testing.T) {
 	err = controller.cancelOutgoingPayment(requestCtx, hash, cause)
 	require.ErrorIs(t, err, cause)
 	require.ErrorIs(t, err, peer.cancelErr)
+}
+
+// TestWaitIncomingPaymentReadyJoinsBothBarriers verifies an accepted invoice
+// cannot win before the matching channel has also become active.
+func TestWaitIncomingPaymentReadyJoinsBothBarriers(t *testing.T) {
+	t.Parallel()
+
+	invoiceReady := make(chan struct{})
+	channelReady := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		result <- waitIncomingPaymentReady(
+			t.Context(),
+			func(context.Context) error {
+				<-invoiceReady
+
+				return nil
+			},
+			func(context.Context) error {
+				<-channelReady
+
+				return nil
+			},
+		)
+	}()
+
+	close(invoiceReady)
+	select {
+	case err := <-result:
+		t.Fatalf("returned before channel activation: %v", err)
+
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(channelReady)
+	require.NoError(t, <-result)
+}
+
+// TestWaitIncomingPaymentReadyPropagatesSyncFailure verifies a definitive
+// channel failure reaches the SDK instead of silently disabling
+// synchronization.
+func TestWaitIncomingPaymentReadyPropagatesSyncFailure(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("channel failed")
+	err := waitIncomingPaymentReady(
+		t.Context(),
+		func(ctx context.Context) error {
+			<-ctx.Done()
+
+			return ctx.Err()
+		},
+		func(context.Context) error {
+			return wantErr
+		},
+	)
+	require.ErrorIs(t, err, wantErr)
+}
+
+// TestReceiveIntentEndpointAgreement verifies only fully pre-PONR or fully
+// retained endpoint pairs can be canceled or kept without an unsafe split.
+func TestReceiveIntentEndpointAgreement(t *testing.T) {
+	t.Parallel()
+
+	require.False(
+		t, receiveIntentEndpointsDisagree(
+			false, arkchannel.PhaseRequested, false,
+			arkchannel.PhaseNegotiating,
+		),
+	)
+	require.False(
+		t, receiveIntentEndpointsDisagree(
+			false, arkchannel.PhaseActive, false,
+			arkchannel.PhaseActive,
+		),
+	)
+	require.True(
+		t, receiveIntentEndpointsDisagree(
+			false, arkchannel.PhaseActive, false,
+			arkchannel.PhaseRequested,
+		),
+	)
+}
+
+// TestCancelReceiveIntentTerminatesBothRequestedEndpoints verifies another
+// winning rail cannot leave a requested channel record live at either endpoint.
+func TestCancelReceiveIntentTerminatesBothRequestedEndpoints(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(35_000, 0).UTC()
+	controller, coordinator, terms, closeStore := testPrePONRController(
+		t, now, oorbridge.PreparationLookup{},
+	)
+	t.Cleanup(closeStore)
+	hash := lntypes.Hash{4, 5, 6}
+	terms.ID = arkchannel.ReceiveIntentID(hash)
+	terms.PaymentHash = hash
+	_, err := coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	service, err := arkchannel.NewService(
+		controller.party, coordinator, noOpArkChannelActionExecutor{},
+	)
+	require.NoError(t, err)
+	remote := &recordingProcessFundingPeer{
+		state: lnruntime.FundingChannelState{
+			Phase: arkchannel.PhaseRequested,
+		},
+	}
+	controller.service = service
+	controller.remote = remote
+
+	err = controller.cancelReceiveIntent(
+		t.Context(), hash, "vHTLC rail won",
+	)
+	require.NoError(t, err)
+	require.Len(t, remote.applied, 1)
+	_, ok := remote.applied[0].(*arkchannel.Fail)
+	require.True(t, ok)
+	record, err := service.GetChannel(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, arkchannel.PhaseFailed, record.Snapshot.Phase)
 }
 
 // TestEnsureClientStartedSharesProcessAttempt proves one canceled request does

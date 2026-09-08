@@ -83,6 +83,10 @@ type ArkChannelPaymentController interface {
 
 	WaitIncomingPayment(context.Context,
 		lntypes.Hash) (arkchannel.ID, error)
+
+	SettleIncomingPayment(context.Context, lntypes.Preimage) error
+
+	CancelIncomingPayment(context.Context, lntypes.Hash, string) error
 }
 
 // ArkChannelController is the complete local process boundary exposed through
@@ -813,6 +817,32 @@ func (r *RPCServer) WaitArkChannelIncomingPayment(ctx context.Context,
 	}
 
 	return controller.WaitIncomingPayment(ctx, hash)
+}
+
+// SettleArkChannelIncomingPayment releases the private hold invoice only after
+// the swap SDK selects the channel rail as the winner.
+func (r *RPCServer) SettleArkChannelIncomingPayment(ctx context.Context,
+	preimage lntypes.Preimage) error {
+
+	controller, err := r.waitArkChannelController(ctx)
+	if err != nil {
+		return err
+	}
+
+	return controller.SettleIncomingPayment(ctx, preimage)
+}
+
+// CancelArkChannelIncomingPayment cancels the private hold invoice and safely
+// abandons its pre-PONR receive intent when another settlement rail wins.
+func (r *RPCServer) CancelArkChannelIncomingPayment(ctx context.Context,
+	hash lntypes.Hash, reason string) error {
+
+	controller, err := r.waitArkChannelController(ctx)
+	if err != nil {
+		return err
+	}
+
+	return controller.CancelIncomingPayment(ctx, hash, reason)
 }
 
 // waitArkChannelController bridges optional subserver construction, which

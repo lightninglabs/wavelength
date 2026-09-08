@@ -32,11 +32,25 @@ func (b *arkChannelPaymentBridge) RegisterIncomingPayment(ctx context.Context,
 	)
 }
 
-// WaitIncomingPayment waits for private lnd settlement.
+// WaitIncomingPayment waits for private lnd acceptance and channel activation.
 func (b *arkChannelPaymentBridge) WaitIncomingPayment(ctx context.Context,
 	hash lntypes.Hash) (arkchannel.ID, error) {
 
 	return b.rpc.WaitArkChannelIncomingPayment(ctx, hash)
+}
+
+// SettleIncomingPayment releases the selected private hold invoice.
+func (b *arkChannelPaymentBridge) SettleIncomingPayment(ctx context.Context,
+	preimage lntypes.Preimage) error {
+
+	return b.rpc.SettleArkChannelIncomingPayment(ctx, preimage)
+}
+
+// CancelIncomingPayment fails the private hold invoice and pending intent.
+func (b *arkChannelPaymentBridge) CancelIncomingPayment(ctx context.Context,
+	hash lntypes.Hash, reason string) error {
+
+	return b.rpc.CancelArkChannelIncomingPayment(ctx, hash, reason)
 }
 
 var _ swaps.ArkChannelPaymentBridge = (*arkChannelPaymentBridge)(nil)

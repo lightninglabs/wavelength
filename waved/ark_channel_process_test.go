@@ -97,6 +97,20 @@ func (s *arkChannelControllerStub) WaitIncomingPayment(context.Context,
 	return arkchannel.ID{}, s.err
 }
 
+// SettleIncomingPayment is not used by close RPC tests.
+func (s *arkChannelControllerStub) SettleIncomingPayment(context.Context,
+	lntypes.Preimage) error {
+
+	return s.err
+}
+
+// CancelIncomingPayment is not used by close RPC tests.
+func (s *arkChannelControllerStub) CancelIncomingPayment(context.Context,
+	lntypes.Hash, string) error {
+
+	return s.err
+}
+
 // MaterializeAndForceClose is not used by close RPC tests.
 func (s *arkChannelControllerStub) MaterializeAndForceClose(context.Context,
 	arkchannel.ID) (arkchannel.Record, chainhash.Hash, chainhash.Hash,

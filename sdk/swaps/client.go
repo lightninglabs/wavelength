@@ -772,6 +772,10 @@ type ArkChannelPaymentBridge interface {
 
 	WaitIncomingPayment(context.Context,
 		lntypes.Hash) (arkchannel.ID, error)
+
+	SettleIncomingPayment(context.Context, lntypes.Preimage) error
+
+	CancelIncomingPayment(context.Context, lntypes.Hash, string) error
 }
 
 // DaemonConn abstracts the connection to the client's own daemon for wallet

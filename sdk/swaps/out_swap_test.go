@@ -1159,6 +1159,20 @@ func (b *testArkChannelPaymentBridge) WaitIncomingPayment(ctx context.Context,
 	return b.waitChannelID, b.waitErr
 }
 
+// SettleIncomingPayment accepts the channel result in tests.
+func (b *testArkChannelPaymentBridge) SettleIncomingPayment(context.Context,
+	lntypes.Preimage) error {
+
+	return nil
+}
+
+// CancelIncomingPayment releases the unused channel rail in tests.
+func (b *testArkChannelPaymentBridge) CancelIncomingPayment(context.Context,
+	lntypes.Hash, string) error {
+
+	return nil
+}
+
 type testIncomingEventReceiver struct {
 	notification *IncomingVHTLCNotification
 }
