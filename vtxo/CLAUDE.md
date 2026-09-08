@@ -155,6 +155,13 @@ when the local wallet owns the receive script.
 
 ## Invariants
 
+- Indexed VTXOs pass `vtxo.IndexedAncestryFromRPC` before new acceptance.
+  It verifies signed tree/transaction paths to the exact target outpoint,
+  value, and script. OOR inventory includes `ancestry_packages` to connect
+  round leaves to the target. Sweep expiry is then derived separately from
+  locally confirmed batch outputs. A valid unrelated batch cannot authorize
+  a received target. Existing persisted live rows are outside this check.
+
 - **New incoming expiry is authenticated before persistence.** The thin
   indexer event is only a wake-up hint. `AuthenticateBatchExpiry` reconstructs
   the sweep leaf, recomputes the tree-root output script, byte-matches that

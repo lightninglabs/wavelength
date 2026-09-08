@@ -61,6 +61,8 @@ type VTXOSaver interface {
 type IncomingVTXOStore interface {
 	VTXOSaver
 
+	// GetVTXO reloads the canonical descriptor, including terminal state,
+	// before a replay notifies the manager about materialization.
 	GetVTXO(ctx context.Context,
 		outpoint wire.OutPoint) (*Descriptor, error)
 }
