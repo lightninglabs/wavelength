@@ -83,6 +83,8 @@ service ArkChannelFundingPeerService {
         returns (RegisterReceiveIntentResponse);
     rpc GetFundingChannel (GetFundingChannelRequest)
         returns (GetFundingChannelResponse);
+    rpc FailReceiveIntent (FailReceiveIntentRequest)
+        returns (FailReceiveIntentResponse);
     rpc BindPreparedOOR (BindPreparedOORRequest)
         returns (BindPreparedOORResponse);
     rpc SignBacking (SignBackingRequest) returns (SignBackingResponse);
@@ -568,4 +570,13 @@ message CooperativeClose {
     CooperativeCloseProposal proposal = 1;
     bytes transaction = 2;
     bytes txid = 3;
+}
+
+message FailReceiveIntentRequest {
+    bytes channel_id = 1;
+    string reason = 2;
+}
+
+message FailReceiveIntentResponse {
+    bool failed = 1;
 }
