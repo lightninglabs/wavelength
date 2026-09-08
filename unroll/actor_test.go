@@ -4836,17 +4836,6 @@ func TestPreSignedExitSpendPublishedByPeerCompletesActor(t *testing.T) {
 			proof.TargetOutpoint().Hash,
 		) == 1
 	}, testTimeout, 10*time.Millisecond)
-	txconfirmRef.emitConfirmed(
-		t, 1, proof.TargetOutpoint().Hash, 102,
-	)
-	require.Eventually(t, func() bool {
-		state, ok := mustAsk(
-			t, unrollActor.Ref(), &GetStateRequest{},
-		).(*GetStateResp)
-		require.True(t, ok)
-
-		return state.Phase == PhaseCSVPending
-	}, testTimeout, 10*time.Millisecond)
 
 	chainSource.emitSpendForOutpoint(
 		t, proof.TargetOutpoint(), exitTx.TxHash(), 110,
@@ -4867,6 +4856,46 @@ func TestPreSignedExitSpendPublishedByPeerCompletesActor(t *testing.T) {
 	require.Equal(
 		t, exitTx.TxHash(),
 		checkpoint.State.Sweep.Txid.UnsafeFromSome(),
+	)
+	require.Equal(
+		t, int32(110)-int32(policy.CSVDelay()),
+		checkpoint.State.TargetConfirmHeight.UnwrapOrFail(t),
+	)
+}
+
+// TestConfirmedFinalSpendCompletesActor verifies the target spend watch can
+// finish a locally broadcast exit when its direct confirmation is delayed.
+func TestConfirmedFinalSpendCompletesActor(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, behavior, txconfirmRef, store, _ := newActorHarnessExec(
+		t, proof, desc,
+	)
+	sweepTxid := driveLinearToSweep(
+		t, unrollActor.Ref(), txconfirmRef, store, proof,
+	)
+	chainSource, ok := behavior.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+
+	// Withhold txconfirm's direct confirmation. The confirmed target
+	// spend is independent evidence of the exact persisted exit tx.
+	chainSource.emitSpendForOutpoint(
+		t, proof.TargetOutpoint(), sweepTxid, 110,
+	)
+	require.Eventually(t, func() bool {
+		state, ok := mustAsk(
+			t, unrollActor.Ref(), &GetStateRequest{},
+		).(*GetStateResp)
+		require.True(t, ok)
+
+		return state.Phase == PhaseCompleted
+	}, testTimeout, 10*time.Millisecond)
+
+	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	require.Equal(t, sweepTxid, checkpoint.SweepTx.TxHash())
+	require.Equal(
+		t, int32(110),
+		checkpoint.State.Sweep.ConfirmHeight.UnwrapOrFail(t),
 	)
 }
 
