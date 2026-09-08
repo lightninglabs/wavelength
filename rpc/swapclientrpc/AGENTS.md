@@ -14,6 +14,12 @@ credit funding/redemption/listing). Registered only in swapruntime builds.
 - Request/response messages (`QuotePayRequest`, `StartPayRequest`,
   `CreateCreditRequest`, `ListCreditsRequest`, etc.) and enums
   (`SwapState`, `SwapDirection`, `CreditOperationState`, ...).
+- `SwapSettlementType` — Identifies the completed settlement rail. In addition
+  to `LIGHTNING`, `IN_ARK`, `CREDIT`, and `MIXED`, `ARK_CHANNEL` means a
+  receive completed through an Ark-backed native Lightning channel.
+- `SwapSummary` — Flat durable view of one swap. Receive summaries expose
+  `channel_id` when channel settlement manifested a channel and
+  `reserved_scid` for the future virtual SCID advertised in the invoice.
 
 ## Relationships
 
@@ -25,6 +31,9 @@ credit funding/redemption/listing). Registered only in swapruntime builds.
 
 - Generated from `swap_client.proto` via `make rpc`; do not hand-edit any
   `.pb.go` / `.pb.gw.go` file.
+- `SwapSummary` field 29 is reserved under the retired name
+  `channel_backing_fee_sat`. Reserved field numbers and names are part of the
+  wire contract and must never be reused.
 
 ## Deep Docs
 

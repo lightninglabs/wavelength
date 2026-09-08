@@ -67,6 +67,12 @@ id; unlike `List` it may leak internal correlators, so it is kept out of
 - `ExitMode` — which of the two exits an `Exit` call actually ran
   (`COOPERATIVE` / `UNILATERAL`). `EXIT_MODE_UNSPECIFIED` is what an older
   daemon sends; clients must treat it as "unknown", not as a default.
+- `ActivitySwapTrace` — `InspectActivity`'s per-swap drill-down. It includes
+  the internal channel correlators that `List` omits: `channel_id` identifies
+  the manifested Ark-backed Lightning channel when a receive completed over
+  the channel rail, and `reserved_scid` is the virtual SCID advertised in the
+  invoice. Field 23 is reserved under the retired name
+  `channel_backing_fee_sat`.
 - `FailureDomain` / `Reason*` constants (`failure_reasons.go`) — the
   `google.rpc.ErrorInfo` domain/reason wire contract for failed wallet
   RPCs; existing reason values MUST NOT be renamed.

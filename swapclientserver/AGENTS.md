@@ -32,6 +32,10 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `receiveSessionAdapter` — Adds method accessors over
   `sdk/swaps.ReceiveSession` so both production code and tests share the same
   interface without exposing struct fields.
+- `arkChannelPaymentBridge` — Adapts the SDK's channel-payment boundary to the
+  daemon-owned native lnd controller through direct `waved.RPCServer` calls.
+  It prepares, registers, waits, settles, and cancels incoming channel
+  payments without an in-process gRPC loop.
 - `creditServerBridge` / `creditDaemonBridge` — Adapt the subserver and the
   in-process Ark/daemon facade to the `credit` package's `CreditServer` /
   `CreditDaemon` interfaces, so the credit durable-actor subsystem reuses this
@@ -46,6 +50,9 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   `MailboxOutSwapEventReceiver` (empty mailbox ID — receiver derives the
   per-swap mailbox from client identity + payment hash) on the
   `SwapClient` so out-swap HTLC events flow over the mailbox transport,
+  installs the `arkChannelPaymentBridge`, and publishes the authenticated
+  swap-server mailbox as `cfg.Swap.ArkChannelMailbox` for the daemon-owned
+  channel process. Cleanup clears that mailbox handle,
   publishes `cfg.Swap.Backend`/`CreditServer`/`CreditDaemon` bridges,
   registers the gRPC subserver, calls `resumePending` (unless
   `cfg.Swap.SuppressResume`), and returns a cleanup function.
@@ -69,6 +76,8 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 
 - **Depends on**: `sdk/swaps` (swap FSM, `SwapClient`, `Store`, session,
   credit types), `sdk/ark` (`WrapDaemonServer`, in-process Ark facade),
+  `arkchannel` (channel IDs returned by the payment bridge), `mailbox/pb`
+  (method identities used by reconnect admission),
   `waved` (`RPCServer`, `Config`, `SwapConfig`, `SwapSubsystem`), `credit`
   (`CreditServer`/`CreditDaemon` interfaces bridged for the credit actor
   subsystem), `rpc/swapclientrpc` (generated gRPC stubs + proto types).
@@ -88,6 +97,13 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - Worker ownership is process-local and mutex-guarded: at most one goroutine
   drives a given payment hash at any time. `markActive` is the admission gate;
   `markInactive` releases it on goroutine exit.
+- A process-local resume or `Wait` error is not itself terminal. The worker
+  reads the durable summary and retries while the FSM remains pending; it
+  releases ownership only after terminal state, successful completion, missing
+  durable state, or daemon shutdown. `runSwapWorker` is the shared retry loop
+  for both directions; `workerRetryDelay` defaults to one second and remains a
+  service field so tests can shorten it without moving retry policy into the
+  swap FSM.
 - The daemon uses `rootCtx` (not the individual RPC contexts) for all
   `ResumePayViaLightning` / `ResumeReceiveViaLightning` calls. A CLI
   disconnect does not cancel an admitted swap.
@@ -128,6 +144,15 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   "no filesystem here". It mirrors `waved.ensureDataDir`; keep the two in
   step, since a Node host given an unwritable path should fail there rather
   than at the first database open.
+- `swapServerOperationWaitsForReady` enables gRPC reconnect waiting only for
+  methods that create or advance durable protocol state. Mailbox `Send` is
+  included because a receive acknowledgement must survive a reconnect;
+  mailbox `Pull`, quote RPCs, and credit snapshots remain fail-fast. New
+  state-changing RPCs must be classified explicitly.
+- `SetArkChannelPaymentBridge` and `SetOutSwapEventReceiver` must both run
+  before `resumePending`. Resumed receives use the bridge to reconcile the
+  channel rail and the event receiver to reconcile the vHTLC rail; installing
+  either after workers start would strand that rail on restart.
 - `SetOutSwapEventReceiver` must run before any receive worker is started:
   `SwapClient` captures the receiver into the per-swap worker at start time,
   so a late install would leave already-running workers using whatever
