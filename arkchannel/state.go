@@ -600,6 +600,9 @@ func applySourceSpent(next *Snapshot, outpoint wire.OutPoint,
 func applyOORAborted(next *Snapshot, sessionID [32]byte,
 	reason string) (bool, error) {
 
+	if next.Source == nil && next.Phase == PhaseFailed {
+		return false, nil
+	}
 	if next.Source == nil {
 		return false, fmt.Errorf("cannot abort OOR before VTXO binding")
 	}
@@ -614,7 +617,8 @@ func applyOORAborted(next *Snapshot, sessionID [32]byte,
 	if next.OORAborted {
 		return false, nil
 	}
-	if next.Phase != PhaseCancelling && next.Phase != PhaseBackingReady {
+	if next.Phase != PhaseNegotiating && next.Phase != PhaseCancelling &&
+		next.Phase != PhaseBackingReady {
 		return false, fmt.Errorf("cannot abort OOR from %s", next.Phase)
 	}
 	if next.Failure == "" {

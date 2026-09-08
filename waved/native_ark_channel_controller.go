@@ -46,6 +46,7 @@ const (
 	arkChannelBackingKeyFamily        keychain.KeyFamily = 221
 	arkChannelFunderKeyFamily         keychain.KeyFamily = 223
 	arkChannelPaymentCleanupTimeout                      = 30 * time.Second
+	arkChannelReceiveCleanupTimeout                      = 30 * time.Second
 	maxArkChannelIdempotencyKeyLength                    = 128
 )
 
@@ -2127,29 +2128,149 @@ func (c *NativeArkChannelController) waitReceiveIntentSyncRetry(
 	}
 }
 
-// failReceiveIntent abandons both prepared channel records only while their
-// common FSM still proves that the hub OOR can be aborted safely.
+// failReceiveIntent abandons the funder's prepared OOR and waits until its
+// authoritative abort has driven both endpoint FSMs through lnd cleanup.
 func (c *NativeArkChannelController) failReceiveIntent(ctx context.Context,
 	id arkchannel.ID, cause error) error {
 
 	reason := cause.Error()
-	if _, err := c.remote.ApplyChannelEvent(
+	ticker := time.NewTicker(arkChannelControllerPollInterval)
+	defer ticker.Stop()
+
+	var lastErr error
+	for {
+		local, err := c.service.GetChannel(ctx, id)
+		if err == nil {
+			switch local.Snapshot.Phase {
+			case arkchannel.PhaseRequested,
+				arkchannel.PhaseNegotiating,
+				arkchannel.PhaseCancelling,
+				arkchannel.PhaseFailed:
+
+				err = c.driveReceiveIntentFailure(
+					ctx, id, local, reason,
+				)
+
+			default:
+				return errors.Join(
+					cause, fmt.Errorf("receive intent "+
+						"crossed its funding safety "+
+						"boundary at %s",
+						local.Snapshot.Phase),
+				)
+			}
+		}
+		if err != nil {
+			lastErr = err
+		}
+
+		local, localErr := c.service.GetChannel(ctx, id)
+		remote, remoteErr := c.remote.GetFundingChannel(ctx, id)
+		if localErr == nil && remoteErr == nil {
+			localSourceAborted := local.Snapshot.Source == nil ||
+				local.Snapshot.OORAborted
+			remoteSourceAborted := remote.Source == nil ||
+				remote.OORAborted
+			if local.Snapshot.Phase == arkchannel.PhaseFailed &&
+				remote.Phase == arkchannel.PhaseFailed &&
+				localSourceAborted && remoteSourceAborted {
+				return fmt.Errorf("%w: %w",
+					ErrReceiveChannelFallback, cause)
+			}
+			if receiveIntentIsCommitting(remote.Phase) ||
+				receiveIntentIsRetained(remote.Phase) {
+				return errors.Join(
+					cause, fmt.Errorf("remote receive "+
+						"intent crossed its funding "+
+						"safety boundary at %s",
+						remote.Phase),
+				)
+			}
+		} else {
+			lastErr = errors.Join(localErr, remoteErr)
+		}
+
+		select {
+		case <-ctx.Done():
+			return errors.Join(cause, lastErr, ctx.Err())
+
+		case <-ticker.C:
+		}
+	}
+}
+
+// driveReceiveIntentFailure first makes the observing endpoint terminal or
+// cancelling, then asks the endpoint that funded the source to abort it.
+func (c *NativeArkChannelController) driveReceiveIntentFailure(
+	ctx context.Context, id arkchannel.ID, local arkchannel.Record,
+	reason string) error {
+
+	if local.Snapshot.Failure != "" {
+		reason = local.Snapshot.Failure
+	}
+	if _, err := c.service.ApplyLocalEvent(
 		ctx, id, &arkchannel.Fail{
 			Reason: reason,
 		},
 	); err != nil {
-		return errors.Join(cause, err)
+		return err
 	}
-	_, err := c.service.ApplyLocalEvent(
-		ctx, id, &arkchannel.Fail{
-			Reason: reason,
-		},
-	)
-	if err != nil {
-		return errors.Join(cause, err)
+	if local.Snapshot.Terms.Funder == c.party {
+		return nil
 	}
 
-	return fmt.Errorf("%w: %w", ErrReceiveChannelFallback, cause)
+	return c.remote.FailReceiveIntent(ctx, id, reason)
+}
+
+// failReceiveIntentDetached gives pre-PONR cleanup a bounded process-owned
+// lifetime after the intercepted-payment request has ended.
+func (c *NativeArkChannelController) failReceiveIntentDetached(
+	ctx context.Context, id arkchannel.ID, cause error) error {
+
+	cleanupCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), arkChannelReceiveCleanupTimeout,
+	)
+	defer cancel()
+
+	return c.failReceiveIntent(cleanupCtx, id, cause)
+}
+
+// receiveNegotiationFailureIsReplayable protects outcomes that may already
+// have produced durable work. Only explicit peer rejections and local errors
+// are definitive enough to abandon a still-negotiating channel.
+func receiveNegotiationFailureIsReplayable(err error) bool {
+	if errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, lnruntime.ErrFundingNegotiationAmbiguous) {
+		return true
+	}
+	grpcStatus, ok := status.FromError(err)
+	if !ok {
+		return false
+	}
+
+	switch grpcStatus.Code() {
+	case codes.InvalidArgument, codes.NotFound, codes.AlreadyExists,
+		codes.PermissionDenied, codes.Unauthenticated,
+		codes.FailedPrecondition, codes.OutOfRange,
+		codes.Unimplemented:
+		return false
+
+	default:
+		return true
+	}
+}
+
+// handleReceiveNegotiationFailure converts only a definitive failure whose
+// durable source remains pre-PONR into the vHTLC fallback signal.
+func (c *NativeArkChannelController) handleReceiveNegotiationFailure(
+	ctx context.Context, id arkchannel.ID, cause error) error {
+
+	if receiveNegotiationFailureIsReplayable(cause) {
+		return cause
+	}
+
+	return c.failReceiveIntentDetached(ctx, id, cause)
 }
 
 // mirrorReceiveIntentFailure applies the hub's terminal pre-PONR failure to
@@ -2295,7 +2416,10 @@ func (c *NativeArkChannelController) ManifestIncomingChannel(
 		case arkchannel.PhaseNegotiating:
 			_, err = c.service.ResumeChannelAction(ctx, id)
 			if err != nil {
-				return arkchannel.Record{}, err
+				return arkchannel.Record{},
+					c.handleReceiveNegotiationFailure(
+						ctx, id, err,
+					)
 			}
 
 			continue
