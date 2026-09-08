@@ -22,6 +22,12 @@ const (
 	// in the durable unroll registry.
 	ExitPolicyKind unroll.ExitPolicyKind = "ark_channel_backing"
 
+	// fallbackChannelExitFeeRateSatPerVByte lets the unroller continue when
+	// fee estimation is unavailable. The backing transaction's fee is
+	// immutable, but its publication eventually races the longer funder
+	// refund path, so deferring the attempt is less safe.
+	fallbackChannelExitFeeRateSatPerVByte int64 = 2
+
 	defaultPollInterval = 100 * time.Millisecond
 )
 
@@ -270,6 +276,13 @@ func (p *channelExitPolicy) RequiredLockTime() uint32 {
 	}
 
 	return tx.LockTime
+}
+
+// FeeEstimateFallbackSatPerVByte returns the emergency rate used to keep a
+// race-sensitive channel materialization moving through the common unroller.
+// The immutable backing transaction ignores the resulting estimate.
+func (p *channelExitPolicy) FeeEstimateFallbackSatPerVByte() int64 {
+	return fallbackChannelExitFeeRateSatPerVByte
 }
 
 // ValidateTarget binds the materialized output to the channel source.

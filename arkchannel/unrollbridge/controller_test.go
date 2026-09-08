@@ -176,6 +176,10 @@ func TestChannelExitPolicyReturnsSignedBacking(t *testing.T) {
 	require.Equal(
 		t, record.Snapshot.Terms.VTXO.ChannelDelay, policy.CSVDelay(),
 	)
+	require.Equal(
+		t, fallbackChannelExitFeeRateSatPerVByte,
+		policy.FeeEstimateFallbackSatPerVByte(),
+	)
 	preSigned, ok := policy.(unroll.PreSignedExitSpendPolicy)
 	require.True(t, ok)
 	preSignedTx, err := preSigned.PreSignedSpendTx()
