@@ -80,8 +80,23 @@ type NativeArkChannelController struct {
 	hubClose      *lnruntime.HubCooperativeCloseProcess
 	fundingWire   *lnruntime.FundingWire
 	paymentBridge lnruntime.PaymentBridgeCoordinator
-	reaperCancel  context.CancelFunc
-	reaperWG      sync.WaitGroup
+	startAttempt  *arkChannelStartAttempt
+	stopped       bool
+
+	lifecycleCtx    context.Context //nolint:containedctx // process owned
+	lifecycleCancel context.CancelFunc
+	lifecycleWG     sync.WaitGroup
+	workersOnce     sync.Once
+	stopOnce        sync.Once
+	stopErr         error
+
+	clientStarter func(context.Context) error
+}
+
+// arkChannelStartAttempt is one shared client endpoint startup result.
+type arkChannelStartAttempt struct {
+	done chan struct{}
+	err  error
 }
 
 var _ contractcourt.AuxChannelLifecycle = (*NativeArkChannelController)(nil)
@@ -208,7 +223,7 @@ func NewClientArkChannelController(ctx context.Context,
 		coordinator: coordinator, remote: remote,
 		fundingPeer: remote, paymentPeer: remote, keys: keys,
 	}
-	controller.startPrePONRReaper(ctx)
+	controller.initLifecycle(ctx)
 
 	return controller, nil
 }
@@ -264,15 +279,28 @@ func NewHubArkChannelController(ctx context.Context,
 		coordinator: coordinator, peerInfo: cfg.Info, keys: keys,
 		paymentBridge: cfg.PaymentBridge, remoteNode: cfg.RemoteNode,
 	}
+	controller.initLifecycle(ctx)
 	if err := controller.startHub(
 		ctx, cfg.RemoteNode, cfg.PeerSender, cfg.CloseObserver,
 		cfg.CloseDefender,
 	); err != nil {
+
+		controller.lifecycleCancel()
+
 		return nil, err
 	}
-	controller.startPrePONRReaper(ctx)
+	//nolint:contextcheck // controller owns its process-lifetime context
+	controller.Start()
 
 	return controller, nil
+}
+
+// initLifecycle creates the process-owned cancellation root used by startup,
+// recovery, and maintenance workers.
+func (c *NativeArkChannelController) initLifecycle(parent context.Context) {
+	c.lifecycleCtx, c.lifecycleCancel = context.WithCancel(
+		context.WithoutCancel(parent),
+	)
 }
 
 // validateArkChannelProcessConfig rejects incomplete process composition.
@@ -378,10 +406,69 @@ func (c *NativeArkChannelController) ensureClientStarted(
 	ctx context.Context) error {
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.node != nil {
+		c.mu.Unlock()
+
 		return nil
 	}
+	if c.stopped {
+		c.mu.Unlock()
+
+		return fmt.Errorf("Ark channel controller is stopped")
+	}
+	if c.lifecycleCtx == nil {
+		c.mu.Unlock()
+
+		return fmt.Errorf("Ark channel controller is not started")
+	}
+	attempt := c.startAttempt
+	if attempt == nil {
+		attempt = &arkChannelStartAttempt{done: make(chan struct{})}
+		c.startAttempt = attempt
+		c.lifecycleWG.Add(1)
+		//nolint:contextcheck // startup uses the controller lifecycle
+		go c.runClientStart(attempt)
+	}
+	c.mu.Unlock()
+
+	select {
+	case <-attempt.done:
+		return attempt.err
+
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// runClientStart executes one bounded process-owned startup attempt.
+func (c *NativeArkChannelController) runClientStart(
+	attempt *arkChannelStartAttempt) {
+
+	defer c.lifecycleWG.Done()
+	startCtx, cancel := context.WithTimeout(
+		c.lifecycleCtx, defaultArkChannelClientStartTimeout,
+	)
+	defer cancel()
+
+	starter := c.startClient
+	if c.clientStarter != nil {
+		starter = c.clientStarter
+	}
+	err := starter(startCtx)
+
+	c.mu.Lock()
+	attempt.err = err
+	if c.startAttempt == attempt {
+		c.startAttempt = nil
+	}
+	close(attempt.done)
+	c.mu.Unlock()
+}
+
+// startClient loads hub policy and composes the local native endpoint.
+//
+//nolint:funlen // Composition keeps all provisional resources in one owner.
+func (c *NativeArkChannelController) startClient(ctx context.Context) error {
 	peerInfo, err := c.remote.GetPeerInfo(ctx)
 	if err != nil {
 		return fmt.Errorf("load Ark channel hub policy: %w", err)
@@ -455,13 +542,29 @@ func (c *NativeArkChannelController) ensureClientStarted(
 
 		return err
 	}
-	c.service = service
-	c.fundingWire = fundingWire
-	cleanup := func() {
-		c.service = nil
-		c.fundingWire = nil
+	c.mu.Lock()
+	if c.stopped {
+		c.mu.Unlock()
 		fundingWire.Close()
 		_ = node.Stop()
+
+		return fmt.Errorf("Ark channel controller is stopped")
+	}
+	c.service = service
+	c.fundingWire = fundingWire
+	c.mu.Unlock()
+	cleanup := func() {
+		fundingWire.Close()
+		_ = node.Stop()
+
+		c.mu.Lock()
+		if c.service == service {
+			c.service = nil
+		}
+		if c.fundingWire == fundingWire {
+			c.fundingWire = nil
+		}
+		c.mu.Unlock()
 	}
 	if err := tolerateNativeArkChannelFailures(
 		ctx, restoreNativeArkChannelBackings(ctx, node, service),
@@ -477,7 +580,11 @@ func (c *NativeArkChannelController) ensureClientStarted(
 
 		return err
 	}
-	if err := c.restoreRecoveryWatches(ctx, service); err != nil {
+	if err := tolerateNativeArkChannelFailures(
+		ctx, c.restoreRecoveryWatches(ctx, service), c.cfg.Log,
+		"Ark channel recovery watch restore failed",
+	); err != nil {
+
 		cleanup()
 
 		return err
@@ -508,9 +615,17 @@ func (c *NativeArkChannelController) ensureClientStarted(
 
 		return err
 	}
+	c.mu.Lock()
+	if c.stopped {
+		c.mu.Unlock()
+		cleanup()
+
+		return fmt.Errorf("Ark channel controller is stopped")
+	}
 	c.peerInfo = peerInfo
 	c.node = node
 	c.clientClose = clientClose
+	c.mu.Unlock()
 
 	return nil
 }
@@ -599,7 +714,11 @@ func (c *NativeArkChannelController) startHub(ctx context.Context,
 
 		return err
 	}
-	if err := c.restoreRecoveryWatches(ctx, service); err != nil {
+	if err := tolerateNativeArkChannelFailures(
+		ctx, c.restoreRecoveryWatches(ctx, service), c.cfg.Log,
+		"Ark channel recovery watch restore failed",
+	); err != nil {
+
 		cleanup()
 
 		return err
@@ -2129,32 +2248,38 @@ func (c *NativeArkChannelController) CooperativeClosePeerService(
 
 // Stop releases native lnd state before the owning wallet and database stop.
 func (c *NativeArkChannelController) Stop() error {
-	c.mu.Lock()
-	cancel := c.reaperCancel
-	c.reaperCancel = nil
-	c.mu.Unlock()
+	c.stopOnce.Do(func() {
+		c.mu.Lock()
+		c.stopped = true
+		cancel := c.lifecycleCancel
+		c.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		c.lifecycleWG.Wait()
 
-	if cancel != nil {
-		cancel()
-	}
-	c.reaperWG.Wait()
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	var err error
-	if c.fundingWire != nil {
-		c.fundingWire.Close()
+		c.mu.Lock()
+		fundingWire := c.fundingWire
+		node := c.node
 		c.fundingWire = nil
-	}
-	if c.node != nil {
-		err = c.node.Stop()
 		c.node = nil
-	}
-	if c.cfg.Recovery != nil {
-		c.cfg.Recovery.Stop()
-	}
+		c.service = nil
+		c.clientClose = nil
+		c.hubClose = nil
+		c.mu.Unlock()
 
-	return err
+		if fundingWire != nil {
+			fundingWire.Close()
+		}
+		if node != nil {
+			c.stopErr = node.Stop()
+		}
+		if c.cfg.Recovery != nil {
+			c.cfg.Recovery.Stop()
+		}
+	})
+
+	return c.stopErr
 }
 
 // arkChannelCloseDelivery returns the ordinary Ark account key that owns this

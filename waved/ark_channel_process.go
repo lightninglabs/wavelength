@@ -442,6 +442,8 @@ func (s *Server) initArkChannelProcess(ctx context.Context) error {
 	}
 
 	s.setArkChannelProcess(runtime, controller, peerIngress)
+	//nolint:contextcheck // controller owns its process-lifetime context
+	controller.Start()
 
 	return nil
 }
