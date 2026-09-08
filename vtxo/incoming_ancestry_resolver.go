@@ -79,16 +79,20 @@ func ResolveIncomingAncestry(ctx context.Context, query IncomingAncestryQuery,
 				continue
 			}
 
-			ancestry, err := AncestryFromRPC(
-				candidate.GetAncestryPaths(),
-			)
+			ancestry, err := IndexedAncestryFromRPC(candidate)
 			if err != nil {
 				return IncomingVTXOExtras{}, fmt.Errorf(
 					"convert ancestry paths: %w", err)
 			}
 
 			return IncomingVTXOExtras{
-				Ancestry:      ancestry,
+				Ancestry: ancestry,
+				Output: &wire.TxOut{
+					Value: int64(candidate.GetValueSat()),
+					PkScript: bytes.Clone(
+						candidate.GetPkScript(),
+					),
+				},
 				CreatedHeight: candidate.GetCreatedHeight(),
 			}, nil
 		}

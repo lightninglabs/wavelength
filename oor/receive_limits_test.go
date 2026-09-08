@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/internal/expiryfixture"
 	lib_tree "github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/stretchr/testify/require"
@@ -84,17 +85,13 @@ func TestIncomingMetadataMatchesFromResponseUsesConfiguredMatchLimit(
 
 	t.Parallel()
 
-	sessionID := SessionID(chainhash.Hash{1, 2, 3})
-	commitmentTxID := chainhash.Hash{4, 5, 6}
-
+	candidate, _ := expiryfixture.Merge(t, false)
+	var sessionID SessionID
+	copy(sessionID[:], candidate.Outpoint.Txid)
 	resp := &arkrpc.ListVTXOsByScriptsResponse{
 		Vtxos: []*arkrpc.VTXO{
-			testIncomingMetadataVTXO(
-				sessionID, commitmentTxID, 0,
-			),
-			testIncomingMetadataVTXO(
-				sessionID, commitmentTxID, 1,
-			),
+			candidate,
+			candidate,
 		},
 	}
 
@@ -149,24 +146,6 @@ func TestDecodeLengthPrefixedBlobListUsesConfiguredCountLimit(t *testing.T) {
 		},
 	)
 	require.ErrorContains(t, err, "blob list count 2 exceeds limit 1")
-}
-
-// testIncomingMetadataVTXO builds a minimal RPC VTXO that can be converted
-// into an IncomingMetadataMatch by the response adapter.
-func testIncomingMetadataVTXO(sessionID SessionID,
-	commitmentTxID chainhash.Hash, outputIndex uint32) *arkrpc.VTXO {
-
-	return &arkrpc.VTXO{
-		Outpoint: &arkrpc.OutPoint{
-			Txid: sessionID[:],
-			Vout: outputIndex,
-		},
-		RoundId:        "round-configured-limit",
-		CommitmentTxid: commitmentTxID[:],
-		AncestryPaths: []*arkrpc.AncestryPath{
-			testValidAncestryPath(commitmentTxID),
-		},
-	}
 }
 
 // testValidAncestryPath returns an AncestryPath whose reconstructed

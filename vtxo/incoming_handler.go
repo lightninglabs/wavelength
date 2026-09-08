@@ -148,6 +148,9 @@ func NewIncomingVTXOCodec() *actor.MessageCodec {
 // unroll path needs but the lightweight IncomingVTXOEvent push doesn't
 // carry. Resolved synchronously by IncomingAncestryFetcher.
 type IncomingVTXOExtras struct {
+	// Output is the target output authenticated by the fetched proof.
+	Output *wire.TxOut
+
 	// Ancestry is the set of rooted commitment-tree fragments
 	// required to claim this VTXO unilaterally on-chain. Empty
 	// fails the validateProofDescriptorShape gate; the unroll FSM
@@ -433,6 +436,15 @@ func (h *IncomingVTXOHandler) prepare(ctx context.Context,
 			),
 		)
 	}
+	if extras.Output == nil || extras.Output.Value != int64(desc.Amount) ||
+		!bytes.Equal(extras.Output.PkScript, desc.PkScript) {
+		return fn.Err[*Descriptor](
+			invalidBatchExpiry(
+				"incoming event output does not match " +
+					"authenticated target",
+			),
+		)
+	}
 	if extras.BatchExpiry <= 0 {
 		err := fmt.Errorf("%w: derived batch expiry must be positive",
 			ErrInvalidBatchExpiryEvidence)
@@ -574,6 +586,8 @@ type incomingVTXODurableBehavior struct {
 	handler *IncomingVTXOHandler
 }
 
+// Receive validates and materializes an incoming event. Retriable failures
+// retain the delivery; a replay reloads the canonical persisted descriptor.
 func (b *incomingVTXODurableBehavior) Receive(ctx context.Context,
 	msg *IncomingVTXOMsg,
 	ax actor.Exec[struct{}]) fn.Result[IncomingVTXOResp] {

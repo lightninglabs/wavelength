@@ -163,7 +163,7 @@ func incomingMetadataFromRPC(candidate *arkrpc.VTXO) (IncomingVTXOMetadata,
 			"missing commitment txid")
 	}
 
-	ancestry, err := vtxo.AncestryFromRPC(candidate.GetAncestryPaths())
+	ancestry, err := vtxo.IndexedAncestryFromRPC(candidate)
 	if err != nil {
 		return IncomingVTXOMetadata{}, fmt.Errorf("convert ancestry "+
 			"paths: %w", err)

@@ -47,18 +47,21 @@ type recordingIncomingExec struct {
 	err      error
 }
 
+// Read executes the durable test read callback.
 func (e *recordingIncomingExec) Read(ctx context.Context,
 	fn func(context.Context, struct{}) error) error {
 
 	return fn(ctx, struct{}{})
 }
 
+// Stage records the pending test write callback.
 func (e *recordingIncomingExec) Stage(ctx context.Context,
 	fn func(context.Context, struct{}) error) error {
 
 	return fn(ctx, struct{}{})
 }
 
+// Commit injects an acknowledgement failure or applies the staged callback.
 func (e *recordingIncomingExec) Commit(ctx context.Context,
 	fn func(context.Context, struct{}) error) error {
 
@@ -72,6 +75,7 @@ func (e *recordingIncomingExec) Commit(ctx context.Context,
 	return fn(ctx, struct{}{})
 }
 
+// SaveVTXO injects a write failure before retaining a descriptor copy.
 func (m *mockVTXOSaver) SaveVTXO(_ context.Context, desc *Descriptor) error {
 	if m.failures > 0 {
 		m.failures--
@@ -92,6 +96,7 @@ func (m *mockVTXOSaver) SaveVTXO(_ context.Context, desc *Descriptor) error {
 	return nil
 }
 
+// GetVTXO returns the canonical test row for crash-window redelivery.
 func (m *mockVTXOSaver) GetVTXO(_ context.Context, outpoint wire.OutPoint) (
 	*Descriptor, error) {
 
@@ -136,6 +141,10 @@ func TestIncomingVTXOHandlerRetriesAuthenticatedExpiryWrite(t *testing.T) {
 			fetches++
 
 			return IncomingVTXOExtras{
+				Output: &wire.TxOut{
+					Value:    50_000,
+					PkScript: pkScript,
+				},
 				Ancestry: []Ancestry{
 					{},
 				},
@@ -198,6 +207,10 @@ func TestIncomingVTXODurableBehaviorPostponesAuthenticationFailure(
 			}
 
 			return IncomingVTXOExtras{
+				Output: &wire.TxOut{
+					Value:    50_000,
+					PkScript: pkScript,
+				},
 				Ancestry: []Ancestry{
 					{},
 				},
@@ -267,6 +280,10 @@ func TestIncomingVTXODurableBehaviorReloadsTerminatedReplay(t *testing.T) {
 				IncomingVTXOExtras, error) {
 
 				return IncomingVTXOExtras{
+					Output: &wire.TxOut{
+						Value:    50_000,
+						PkScript: pkScript,
+					},
 					Ancestry: []Ancestry{
 						{},
 					},
@@ -378,6 +395,10 @@ func TestIncomingVTXOHandlerOwnedScript(t *testing.T) {
 			keychain.KeyDescriptor) (IncomingVTXOExtras, error) {
 
 			return IncomingVTXOExtras{
+				Output: &wire.TxOut{
+					Value:    50_000,
+					PkScript: pkScript,
+				},
 				CreatedHeight: 799_500,
 				BatchExpiry:   800_000,
 				Ancestry: []Ancestry{
@@ -479,6 +500,7 @@ func TestIncomingVTXOHandlerIgnoresEventBatchExpiry(t *testing.T) {
 
 	pkScript := []byte{0x51, 0x20, 0xaa, 0xbb}
 
+	output := &wire.TxOut{Value: 50_000, PkScript: pkScript}
 	newLookup := func() *mockScriptLookup {
 		return &mockScriptLookup{
 			scripts: map[string]*OwnedReceiveScript{
@@ -515,6 +537,7 @@ func TestIncomingVTXOHandlerIgnoresEventBatchExpiry(t *testing.T) {
 						IncomingVTXOExtras, error) {
 
 						return IncomingVTXOExtras{
+							Output: output,
 							Ancestry: []Ancestry{
 								{},
 							},
