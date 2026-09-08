@@ -89,6 +89,33 @@ func TestValidateChannelVTXOTemplate(t *testing.T) {
 	require.Error(t, ValidateChannelVTXOTemplate(template, params))
 }
 
+// TestValidateChannelVTXOPolicy verifies admission can recognize the
+// canonical policy without trusting caller-supplied channel terms.
+func TestValidateChannelVTXOPolicy(t *testing.T) {
+	t.Parallel()
+
+	params := testChannelVTXOParams(t)
+	raw, _, err := EncodeChannelVTXOArtifacts(params)
+	require.NoError(t, err)
+	template, err := DecodePolicyTemplate(raw)
+	require.NoError(t, err)
+
+	// Leaf order does not affect the Taproot policy or its classification.
+	template.Leaves[0], template.Leaves[2] =
+		template.Leaves[2], template.Leaves[0]
+	err = ValidateChannelVTXOPolicy(
+		template, params.ArkOperatorKey, params.MinExitDelay,
+	)
+	require.NoError(t, err)
+
+	otherOperator, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	err = ValidateChannelVTXOPolicy(
+		template, otherOperator.PubKey(), params.MinExitDelay,
+	)
+	require.ErrorContains(t, err, "does not match expected key roles")
+}
+
 // testChannelVTXOParams returns independent keys and valid channel delays.
 func testChannelVTXOParams(t *testing.T) ChannelVTXOParams {
 	t.Helper()
