@@ -466,6 +466,11 @@ message VTXO {
     // IncomingVTXOEvent) does not yet carry this field and adopts it as a
     // fast-follow. Today the only understood value is 1.
     uint32 construction_version = 20;
+
+    // ancestry_packages connects round-tree leaves to this OOR output.
+    // Packages are finalized and ordered ancestor-first, with the creating
+    // session last. Round-direct VTXOs leave this empty.
+    repeated OORSessionPackage ancestry_packages = 21;
 }
 
 message ListVTXOsByScriptsRequest {
