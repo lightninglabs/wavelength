@@ -1,8 +1,11 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/google/uuid"
@@ -48,41 +51,161 @@ func NewLedgerStoreDB(store *Store) *LedgerStoreDB {
 // TransactionExecutor.ExecTx joins that outer tx rather than opening
 // a fresh one, so multiple invocations from within a single actor
 // handler commit atomically alongside the mailbox ack. The underlying
-// InsertClientLedgerEntry query uses ON CONFLICT DO NOTHING against
-// the partial unique indexes on round_id, session_id, and
-// idempotency_key so redelivery of an already-persisted message
-// silently dedupes instead of raising a constraint violation.
+// InsertClientLedgerEntry query uses ON CONFLICT DO NOTHING against the
+// partial unique indexes on round_id, session_id, and idempotency_key. The
+// winning row is then compared with the requested payload: an identical replay
+// succeeds, while a conflicting reuse returns ledger.ErrIdempotencyConflict.
 func (s *LedgerStoreDB) InsertLedgerEntry(ctx context.Context,
 	entry ledger.LedgerEntry) error {
 
 	return s.ExecTx(
 		ctx, WriteTxOption(),
 		func(qtx *sqlc.Queries) error {
-			return qtx.InsertClientLedgerEntry(
-				ctx, sqlc.InsertClientLedgerEntryParams{
-					DebitAccount:  entry.DebitAccount,
-					CreditAccount: entry.CreditAccount,
-					AmountSat:     entry.AmountSat,
-					RoundID:       entry.RoundID,
-					RoundUuid: roundUUIDText(
-						entry.RoundID,
-					),
-					SessionID:      entry.SessionID,
-					EventType:      entry.EventType,
-					Description:    entry.Description,
-					CreatedAt:      entry.CreatedAt,
-					IdempotencyKey: entry.IdempotencyKey,
-					ChainTxid:      entry.ChainTxid,
-					ChainVout: sqlInt32Ptr(
-						entry.ChainVout,
-					),
-					ConfirmationHeight: sqlInt32Ptr(
-						entry.ConfirmationHeight,
-					),
-				},
-			)
+			params := sqlc.InsertClientLedgerEntryParams{
+				DebitAccount:  entry.DebitAccount,
+				CreditAccount: entry.CreditAccount,
+				AmountSat:     entry.AmountSat,
+				RoundID:       entry.RoundID,
+				RoundUuid: roundUUIDText(
+					entry.RoundID,
+				),
+				SessionID:      entry.SessionID,
+				EventType:      entry.EventType,
+				Description:    entry.Description,
+				CreatedAt:      entry.CreatedAt,
+				IdempotencyKey: entry.IdempotencyKey,
+				ChainTxid:      entry.ChainTxid,
+				ChainVout: sqlInt32Ptr(
+					entry.ChainVout,
+				),
+				ConfirmationHeight: sqlInt32Ptr(
+					entry.ConfirmationHeight,
+				),
+			}
+
+			if err := qtx.InsertClientLedgerEntry(
+				ctx, params,
+			); err != nil {
+				return err
+			}
+
+			return verifyLedgerEntryReplay(ctx, qtx, params)
 		},
 	)
+}
+
+// verifyLedgerEntryReplay proves every applicable unique identity resolves to
+// the same payload that was requested. InsertClientLedgerEntry deliberately
+// suppresses unique violations, so reading the winner is what distinguishes a
+// harmless at-least-once replay from contradictory accounting data.
+func verifyLedgerEntryReplay(ctx context.Context, q *sqlc.Queries,
+	want sqlc.InsertClientLedgerEntryParams) error {
+
+	// Some audit-style ledger rows intentionally have no natural replay
+	// identity. They are not covered by any partial unique index, so a
+	// successful insert has no winner to compare and retains the historical
+	// append-only behavior.
+	hasIdentity := len(want.IdempotencyKey) > 0 ||
+		len(want.SessionID) > 0 || len(want.RoundID) > 0
+	if !hasIdentity {
+		return nil
+	}
+
+	var winners []sqlc.LedgerEntry
+	appendWinner := func(row sqlc.LedgerEntry, err error) error {
+		switch {
+		case err == nil:
+			winners = append(winners, row)
+
+			return nil
+
+		case errors.Is(err, sql.ErrNoRows):
+			return nil
+
+		default:
+			return err
+		}
+	}
+
+	if len(want.IdempotencyKey) > 0 {
+		row, err := q.GetClientLedgerEntryByIdempotencyKey(
+			ctx, sqlc.GetClientLedgerEntryByIdempotencyKeyParams{
+				IdempotencyKey: want.IdempotencyKey,
+				EventType:      want.EventType,
+				DebitAccount:   want.DebitAccount,
+				CreditAccount:  want.CreditAccount,
+			},
+		)
+		if err := appendWinner(row, err); err != nil {
+			return err
+		}
+	}
+
+	if len(want.SessionID) > 0 {
+		row, err := q.GetClientLedgerEntryBySessionID(
+			ctx, sqlc.GetClientLedgerEntryBySessionIDParams{
+				SessionID:     want.SessionID,
+				EventType:     want.EventType,
+				DebitAccount:  want.DebitAccount,
+				CreditAccount: want.CreditAccount,
+			},
+		)
+		if err := appendWinner(row, err); err != nil {
+			return err
+		}
+	}
+
+	if len(want.RoundID) > 0 && len(want.IdempotencyKey) == 0 {
+		row, err := q.GetClientLedgerEntryByRoundID(
+			ctx, sqlc.GetClientLedgerEntryByRoundIDParams{
+				RoundID:       want.RoundID,
+				EventType:     want.EventType,
+				DebitAccount:  want.DebitAccount,
+				CreditAccount: want.CreditAccount,
+			},
+		)
+		if err := appendWinner(row, err); err != nil {
+			return err
+		}
+	}
+
+	if len(winners) == 0 {
+		return fmt.Errorf("%w: no row for ledger identity",
+			ledger.ErrIdempotencyConflict)
+	}
+
+	for _, winner := range winners {
+		if ledgerPayloadEqual(winner, want) {
+			continue
+		}
+
+		return fmt.Errorf("%w: event=%s debit=%s credit=%s",
+			ledger.ErrIdempotencyConflict, want.EventType,
+			want.DebitAccount, want.CreditAccount)
+	}
+
+	return nil
+}
+
+// ledgerPayloadEqual compares the durable accounting payload while ignoring
+// CreatedAt. The same message can be retried after the wall clock advances;
+// every field that changes money, provenance, or user-visible description must
+// still match exactly.
+func ledgerPayloadEqual(got sqlc.LedgerEntry,
+	want sqlc.InsertClientLedgerEntryParams) bool {
+
+	return got.DebitAccount == want.DebitAccount &&
+		got.CreditAccount == want.CreditAccount &&
+		got.AmountSat == want.AmountSat &&
+		bytes.Equal(got.RoundID, want.RoundID) &&
+		bytes.Equal(got.SessionID, want.SessionID) &&
+		bytes.Equal(got.IdempotencyKey, want.IdempotencyKey) &&
+		got.EventType == want.EventType &&
+		got.Description == want.Description &&
+		bytes.Equal(got.ChainTxid, want.ChainTxid) &&
+		got.ChainVout == want.ChainVout &&
+		got.ConfirmationHeight == want.ConfirmationHeight &&
+		got.RoundUuid == want.RoundUuid
 }
 
 // roundUUIDText mirrors a raw 16-byte ledger round_id into the canonical
@@ -123,7 +246,7 @@ func sqlInt32Ptr(v *int32) sql.NullInt32 {
 func (s *LedgerStoreDB) GetConfirmedExitCost(ctx context.Context,
 	outpoint wire.OutPoint) (int64, error) {
 
-	key := ledger.ExitIdempotencyKey(outpoint.Hash, outpoint.Index)
+	key := ledger.ExitFeeIdempotencyKey(outpoint.Hash, outpoint.Index)
 
 	var cost int64
 	err := s.ExecTx(

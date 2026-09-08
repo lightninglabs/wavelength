@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
@@ -19,7 +20,15 @@ import (
 // failures that don't wrap this sentinel are logged at warn
 // level because they're external triggers (DB locked, I/O, etc.)
 // and should not page on their own.
-var ErrInvalidMessage = errors.New("ledger: invalid message")
+var (
+	ErrInvalidMessage = errors.New("ledger: invalid message")
+
+	// ErrIdempotencyConflict is returned when an existing ledger identity
+	// is replayed with a different accounting payload. Treating that case
+	// as a successful duplicate would hide a lost or contradictory ledger
+	// leg.
+	ErrIdempotencyConflict = errors.New("ledger: idempotency conflict")
+)
 
 const (
 	// defaultActorID is the durable mailbox identifier for the
@@ -188,9 +197,11 @@ type LedgerEntry struct {
 	// Nil means this ledger entry is not tied to a concrete output.
 	ChainVout *int32
 
-	// ConfirmationHeight optionally records the block height that
-	// confirmed the on-chain transaction. Nil means the height is
-	// unknown or the ledger entry has no chain transaction.
+	// ConfirmationHeight optionally records the relevant confirmation
+	// height. For unilateral-exit rows, ChainTxid and ChainVout identify
+	// the exited VTXO while this field records the final sweep height that
+	// completed the exit. Nil means the height is unknown or the ledger
+	// entry has no chain transaction.
 	ConfirmationHeight *int32
 }
 
@@ -211,10 +222,10 @@ type LedgerStore interface {
 	// InsertLedgerEntry persists a single ledger leg. The call
 	// joins any outer actor transaction present in ctx so that
 	// multiple invocations within one handler commit atomically
-	// with the mailbox ack. Conflicts on the idempotency partial
-	// unique indexes (round_id / session_id / idempotency_key)
-	// are swallowed via ON CONFLICT DO NOTHING so redelivery of
-	// a partially-processed message is a silent no-op.
+	// with the mailbox ack. Conflicts on the idempotency partial unique
+	// indexes (round_id / session_id / idempotency_key) succeed only when
+	// the existing payload is identical. A different payload returns
+	// ErrIdempotencyConflict.
 	InsertLedgerEntry(
 		ctx context.Context, entry LedgerEntry,
 	) error
@@ -384,6 +395,7 @@ func (a *LedgerActor) Start(ctx context.Context) error {
 	](
 		a.actorID, a, a.bindStores, a.cfg.DeliveryStore, codec,
 	)
+	durableCfg.TellRetryPolicy = ledgerTellRetryPolicy
 	durable, err := actor.NewDurableActor(durableCfg).Unpack()
 	if err != nil {
 		return fmt.Errorf("build ledger durable actor: %w", err)
@@ -412,6 +424,18 @@ func (a *LedgerActor) Start(ctx context.Context) error {
 	)
 
 	return nil
+}
+
+// ledgerTellRetryPolicy immediately dead-letters permanent caller and
+// accounting-identity failures while retaining the default transient retry
+// behavior for storage and runtime errors.
+func ledgerTellRetryPolicy(err error, attempts int) (bool, time.Duration) {
+	if errors.Is(err, ErrInvalidMessage) ||
+		errors.Is(err, ErrIdempotencyConflict) {
+		return false, 0
+	}
+
+	return actor.DefaultTellRetryPolicy(err, attempts)
 }
 
 // Stop stops the durable ledger actor.

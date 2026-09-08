@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"fmt"
 	"testing"
 	"time"
@@ -280,8 +281,8 @@ func TestLedgerStoreInsertStampsRoundUUID(t *testing.T) {
 
 // TestLedgerStoreGetConfirmedExitCost proves the exit-cost lookup returns
 // exactly the onchain_fee_paid leg keyed by the exited VTXO's outpoint: the
-// send leg sharing the same idempotency key and a fee leg for a different
-// outpoint contribute nothing, and an unknown outpoint reads zero.
+// separately namespaced send leg and a fee leg for a different outpoint
+// contribute nothing, and an unknown outpoint reads zero.
 func TestLedgerStoreGetConfirmedExitCost(t *testing.T) {
 	t.Parallel()
 
@@ -299,9 +300,15 @@ func TestLedgerStoreGetConfirmedExitCost(t *testing.T) {
 		entry := makeLedgerEntry(
 			debit, credit, amount, eventType, nil, 1_000,
 		)
-		entry.IdempotencyKey = ledger.ExitIdempotencyKey(
-			op.Hash, op.Index,
-		)
+		if eventType == ledger.EventOnchainFeePaid {
+			entry.IdempotencyKey = ledger.ExitFeeIdempotencyKey(
+				op.Hash, op.Index,
+			)
+		} else {
+			entry.IdempotencyKey = ledger.ExitSendIdempotencyKey(
+				op.Hash, op.Index,
+			)
+		}
 		require.NoError(t, store.InsertLedgerEntry(ctx, entry))
 	}
 
@@ -320,6 +327,324 @@ func TestLedgerStoreGetConfirmedExitCost(t *testing.T) {
 	cost, err = store.GetConfirmedExitCost(ctx, unknown)
 	require.NoError(t, err)
 	require.Zero(t, cost)
+}
+
+// TestLedgerStoreReplayRejectsConflictingPayloads verifies all three ledger
+// identity classes accept an identical retry after time advances but reject a
+// different amount under the same key. The original row remains authoritative
+// in every case.
+func TestLedgerStoreReplayRejectsConflictingPayloads(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		apply func(*ledger.LedgerEntry)
+	}{
+		{
+			name: "idempotency key",
+			apply: func(entry *ledger.LedgerEntry) {
+				entry.IdempotencyKey = testBytes(48, 0x11)
+			},
+		},
+		{
+			name: "session id",
+			apply: func(entry *ledger.LedgerEntry) {
+				entry.SessionID = testBytes(32, 0x22)
+			},
+		},
+		{
+			name: "round id",
+			apply: func(entry *ledger.LedgerEntry) {
+				entry.RoundID = testBytes(16, 0x33)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			store := newLedgerStoreForTest(t)
+			entry := makeLedgerEntry(
+				ledger.AccountTransfersOut,
+				ledger.AccountVTXOBalance, 50_000,
+				ledger.EventVTXOSent, nil, 1_000,
+			)
+			test.apply(&entry)
+
+			require.NoError(t, store.InsertLedgerEntry(ctx, entry))
+
+			replay := entry
+			replay.CreatedAt++
+			require.NoError(t, store.InsertLedgerEntry(ctx, replay))
+
+			conflict := replay
+			conflict.AmountSat++
+			err := store.InsertLedgerEntry(ctx, conflict)
+			require.ErrorIs(t, err, ledger.ErrIdempotencyConflict)
+
+			count, err := store.CountLedgerEntries(ctx)
+			require.NoError(t, err)
+			require.Equal(t, int64(1), count)
+		})
+	}
+}
+
+// TestLedgerIdempotencyMigrationRepairsRefreshExitCollision verifies the
+// version-19 post-step recognizes the surviving legacy shape, separates the
+// refresh and exit domains, and restores the missing net exit-send row.
+func TestLedgerIdempotencyMigrationRepairsRefreshExitCollision(t *testing.T) {
+	ctx := t.Context()
+	database := NewTestDBWithVersion(t, 18)
+
+	var hash [32]byte
+	copy(hash[:], testBytes(32, 0x41))
+	const index = uint32(7)
+	legacyKey := make([]byte, 36)
+	copy(legacyKey, hash[:])
+	binary.BigEndian.PutUint32(legacyKey[32:], index)
+
+	roundID := uuid.New()
+	roundUUID := sql.NullString{
+		String: roundID.String(),
+		Valid:  true,
+	}
+	insert := func(params sqlc.InsertClientLedgerEntryParams) {
+		require.NoError(
+			t, database.InsertClientLedgerEntry(ctx, params),
+		)
+	}
+
+	insert(sqlc.InsertClientLedgerEntryParams{
+		DebitAccount:   ledger.AccountVTXOBalance,
+		CreditAccount:  ledger.AccountTransfersOut,
+		AmountSat:      50_000,
+		RoundID:        roundID[:],
+		IdempotencyKey: legacyKey,
+		EventType:      ledger.EventVTXOReceived,
+		Description:    "replacement VTXO received",
+		CreatedAt:      100,
+		RoundUuid:      roundUUID,
+	})
+	insert(sqlc.InsertClientLedgerEntryParams{
+		DebitAccount:   ledger.AccountTransfersOut,
+		CreditAccount:  ledger.AccountVTXOBalance,
+		AmountSat:      50_000,
+		RoundID:        roundID[:],
+		IdempotencyKey: legacyKey,
+		EventType:      ledger.EventVTXOSent,
+		Description:    fmt.Sprintf("VTXO sent in round %x", roundID),
+		CreatedAt:      100,
+		RoundUuid:      roundUUID,
+	})
+	insert(sqlc.InsertClientLedgerEntryParams{
+		DebitAccount:  ledger.AccountFeesPaid,
+		CreditAccount: ledger.AccountVTXOBalance,
+		AmountSat:     750,
+		RoundID:       roundID[:],
+		EventType:     ledger.EventRefreshFeePaid,
+		Description:   "refresh operator fee",
+		CreatedAt:     100,
+		RoundUuid:     roundUUID,
+	})
+	insert(sqlc.InsertClientLedgerEntryParams{
+		DebitAccount:   ledger.AccountOnchainFees,
+		CreditAccount:  ledger.AccountVTXOBalance,
+		AmountSat:      2_000,
+		IdempotencyKey: legacyKey,
+		EventType:      ledger.EventOnchainFeePaid,
+		Description: fmt.Sprintf(
+			"exit cost for %x:%d at height %d", hash, index, 800,
+		),
+		CreatedAt: 200,
+	})
+
+	before, err := database.GetClientAccountBalance(
+		ctx, ledger.AccountVTXOBalance,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(-2_750), before)
+
+	require.NoError(
+		t,
+		database.ExecuteMigrations(
+			TargetLatest,
+			WithPostStepCallbacks(
+				makePostStepCallbacks(
+					database, btclog.Disabled,
+					postMigrationChecks,
+				),
+			),
+		),
+	)
+
+	after, err := database.GetClientAccountBalance(
+		ctx, ledger.AccountVTXOBalance,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(-50_000), after)
+
+	rows, err := database.ListClientLedgerEntries(
+		ctx, sqlc.ListClientLedgerEntriesParams{
+			Limit: 10,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, rows, 5)
+
+	keys := make(map[string]sqlc.LedgerEntry)
+	for _, row := range rows {
+		keys[string(row.IdempotencyKey)] = row
+	}
+
+	refreshKey := ledger.RefreshSendIdempotencyKey(hash, index)
+	exitSendKey := ledger.ExitSendIdempotencyKey(hash, index)
+	exitFeeKey := ledger.ExitFeeIdempotencyKey(hash, index)
+	require.Equal(t, int64(50_000), keys[string(refreshKey)].AmountSat)
+	require.Equal(t, int64(47_250), keys[string(exitSendKey)].AmountSat)
+	require.Equal(t, int64(2_000), keys[string(exitFeeKey)].AmountSat)
+	for _, key := range [][]byte{exitSendKey, exitFeeKey} {
+		row := keys[string(key)]
+		require.Equal(t, hash[:], row.ChainTxid)
+		require.True(t, row.ChainVout.Valid)
+		require.Equal(t, int32(index), row.ChainVout.Int32)
+		require.True(t, row.ConfirmationHeight.Valid)
+		require.Equal(t, int32(800), row.ConfirmationHeight.Int32)
+	}
+	require.Contains(
+		t, keys[string(exitSendKey)].Description,
+		"unilateral exit net value",
+	)
+
+	// The receive side is not part of the conflicting send identity and
+	// keeps its existing key. Re-running reconciliation is a no-op.
+	require.Equal(
+		t, ledger.EventVTXOReceived, keys[string(legacyKey)].EventType,
+	)
+	require.NoError(
+		t, reconcileLedgerIdempotencyKeys(ctx, database.Queries),
+	)
+	count, err := database.CountClientLedgerEntries(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(5), count)
+
+	history, err := database.ListTransactionHistory(
+		ctx, sqlc.ListTransactionHistoryParams{
+			TypeFilter: "sweep",
+			FromUnixS:  int64(0),
+			ToUnixS:    int64(0),
+			PageLimit:  10,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, history, 2)
+
+	var exitSend sqlc.ListTransactionHistoryRow
+	for _, row := range history {
+		if row.Subtype == ledger.EventVTXOSent {
+			exitSend = row
+			break
+		}
+	}
+	require.Equal(t, int64(47_250), exitSend.AmountSat)
+	require.Equal(t, int64(2_000), exitSend.FeeSat)
+	require.Equal(t, "confirmed", exitSend.Status)
+	require.Equal(t, int32(800), exitSend.ConfirmationHeight)
+}
+
+// TestLedgerIdempotencyMigrationSkipsUnknownExitShape verifies an unfamiliar
+// legacy description does not strand the database at a dirty migration while
+// the unambiguous identity-domain rewrites still complete.
+func TestLedgerIdempotencyMigrationSkipsUnknownExitShape(t *testing.T) {
+	ctx := t.Context()
+	database := NewTestDBWithVersion(t, 18)
+
+	hash := testHash32(0x62)
+	const index = uint32(3)
+	legacyKey := make([]byte, legacyLedgerOutpointKeyLen)
+	copy(legacyKey, hash[:])
+	binary.BigEndian.PutUint32(legacyKey[32:], index)
+
+	roundID := uuid.New()
+	insert := func(params sqlc.InsertClientLedgerEntryParams) {
+		require.NoError(
+			t, database.InsertClientLedgerEntry(ctx, params),
+		)
+	}
+	insert(sqlc.InsertClientLedgerEntryParams{
+		DebitAccount:   ledger.AccountVTXOBalance,
+		CreditAccount:  ledger.AccountTransfersOut,
+		AmountSat:      25_000,
+		RoundID:        roundID[:],
+		IdempotencyKey: legacyKey,
+		EventType:      ledger.EventVTXOReceived,
+		Description:    "legacy refresh receive",
+		CreatedAt:      100,
+	})
+	insert(sqlc.InsertClientLedgerEntryParams{
+		DebitAccount:   ledger.AccountTransfersOut,
+		CreditAccount:  ledger.AccountVTXOBalance,
+		AmountSat:      25_000,
+		RoundID:        roundID[:],
+		IdempotencyKey: legacyKey,
+		EventType:      ledger.EventVTXOSent,
+		Description:    "legacy refresh send",
+		CreatedAt:      100,
+	})
+	insert(sqlc.InsertClientLedgerEntryParams{
+		DebitAccount:   ledger.AccountOnchainFees,
+		CreditAccount:  ledger.AccountVTXOBalance,
+		AmountSat:      1_000,
+		IdempotencyKey: legacyKey,
+		EventType:      ledger.EventOnchainFeePaid,
+		Description:    "unrecognized historical exit cost",
+		CreatedAt:      200,
+	})
+
+	require.NoError(
+		t,
+		database.ExecuteMigrations(
+			TargetLatest,
+			WithPostStepCallbacks(
+				makePostStepCallbacks(
+					database, btclog.Disabled,
+					postMigrationChecks,
+				),
+			),
+		),
+	)
+
+	rows, err := database.ListClientLedgerEntries(
+		ctx, sqlc.ListClientLedgerEntriesParams{
+			Limit: 10,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, rows, 3)
+
+	keys := make(map[string]sqlc.LedgerEntry, len(rows))
+	for _, row := range rows {
+		keys[string(row.IdempotencyKey)] = row
+	}
+	require.Contains(
+		t, keys,
+		string(
+			ledger.RefreshSendIdempotencyKey(hash, index),
+		),
+	)
+	require.Contains(
+		t, keys,
+		string(
+			ledger.ExitFeeIdempotencyKey(hash, index),
+		),
+	)
+	require.NotContains(
+		t, keys,
+		string(
+			ledger.ExitSendIdempotencyKey(hash, index),
+		),
+	)
 }
 
 // TestBackfillLedgerRoundUUIDs proves the migration-15 post-step converts

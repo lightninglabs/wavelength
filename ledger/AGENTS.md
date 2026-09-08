@@ -62,10 +62,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/ledger.<
   The db adapter additionally mirrors a 16-byte `RoundID` into the
   `round_uuid` TEXT column (migration 000015) so ledger rows join
   against `rounds.round_id` / `vtxos.forfeit_round_id` in portable SQL.
-- `exitIdempotencyKey(hash, index)` / `walletUTXOIdempotencyKey` —
-  derive 36-byte `outpoint_hash || outpoint_index` dedup keys
-  distinct from round-keyed and session-keyed entries (separate
-  `idx_client_ledger_idempotent_key` partial unique index).
+- `RefreshSendIdempotencyKey` / `ExitSendIdempotencyKey` /
+  `ExitFeeIdempotencyKey` — derive versioned operation-and-leg keys over the
+  36-byte `outpoint_hash || outpoint_index` identity. Refresh and exit sends
+  for the same VTXO therefore cannot collide in
+  `idx_client_ledger_idempotent_key`.
 - `UTXOAuditStore` / `UTXOAuditEntry` — UTXO audit log persistence
   (outpoint, amount, event, block height, classification). Implemented
   by `db.UTXOAuditStoreDB`.
@@ -98,7 +99,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/ledger.<
 - `ExitCostMsg` — unilateral exit as two ledger entries: send leg
   (`transfers_out` ⇐⇒ `vtxo_balance` net-of-fee) + fee leg
   (`onchain_fees` ⇐⇒ `vtxo_balance` miner fee). Wallet-side movement
-  is covered separately by the `wallet_utxo_log` audit trail.
+  is covered separately by the `wallet_utxo_log` audit trail. Both rows
+  retain the exited VTXO outpoint as their stable chain identity, while
+  `ConfirmationHeight` is the final sweep height that completed the exit.
 - `UTXOCreatedMsg` — wallet UTXO confirmations with classification.
   `handleUTXOCreated` writes TWO rows: `wallet_utxo_log` audit row
   AND a ledger row keyed by an outpoint-derived idempotency key.
@@ -172,7 +175,9 @@ or balance reconciliation. Required emission pairs:
 - Every ledger entry is double-entry: debit and credit must differ.
 - Handlers reject non-positive `AmountSat` with `ErrInvalidMessage`
   so a malformed TLV dead-letters cleanly instead of hitting
-  `CHECK (amount_sat > 0)` and driving infinite nack-retry.
+  `CHECK (amount_sat > 0)`. The ledger retry policy immediately
+  dead-letters `ErrInvalidMessage` and `ErrIdempotencyConflict`; transient
+  storage and runtime failures retain the durable actor's bounded backoff.
 - Unknown fee types and VTXO sources error out (no silent
   misclassification). Use the exported `FeeType*`/`Source*`/
   `Classification*` constants, not string literals.
@@ -194,11 +199,13 @@ or balance reconciliation. Required emission pairs:
 - UTXO audit inserts are idempotent on
   `(outpoint_hash, outpoint_index, event)` via
   `ON CONFLICT DO NOTHING`.
-- **Replay safety**: `InsertClientLedgerEntry` uses
-  `ON CONFLICT DO NOTHING` against every partial unique index
-  (`idx_client_ledger_idempotent_round`, `_session`, `_key`). Crash
-  atomicity for multi-leg events (ExitCost) comes from the durable
-  actor's outer tx: handlers run inside
+- **Replay safety**: `InsertClientLedgerEntry` uses `ON CONFLICT DO NOTHING`
+  against every partial unique index (`idx_client_ledger_idempotent_round`,
+  `_session`, `_key`), then reads the winner and accepts it only when the
+  accounting payload matches (the retry timestamp is ignored). Conflicting
+  reuse returns
+  `ErrIdempotencyConflict`. Crash atomicity for multi-leg events (ExitCost)
+  comes from the durable actor's outer tx: handlers run inside
   `TxAwareDeliveryStore.ExecTx`; `db.TransactionExecutor.ExecTx`
   joins via `actor.TxFromContext` so two `InsertLedgerEntry` calls
   commit atomically with the mailbox ack.
