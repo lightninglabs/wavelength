@@ -293,6 +293,10 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 	); err != nil {
 		return startTransferPayload{}, err
 	}
+	if prepareOnly > 1 {
+		return startTransferPayload{}, fmt.Errorf("prepare-only flag " +
+			"must be 0 or 1")
+	}
 
 	inputs, err := decodeTransferInputSnapshotsWithLimits(
 		inputsRaw, limits,
