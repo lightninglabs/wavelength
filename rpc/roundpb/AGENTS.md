@@ -24,7 +24,13 @@ All `*.pb.go` files are generated — never edit directly; regenerate with
   `MethodSubmitVTXOForfeitSigs` (VTXO forfeit sigs).
 - `TreeFromProto` / `TreeToProto` — Convert between `*VTXOTree` proto and
   `lib/tree.Tree`; `TreeFromProto` takes `WithMaxTreeNodes` to bound the
-  deserialized node count (`DefaultMaxTreeNodes` = 50,000).
+  deserialized node count (`DefaultMaxTreeNodes` = 50,000). Both directions
+  carry the tree's optional asset context: `VTXOTree.asset_ref` plus the
+  per-node `TreeNode.signing_tweak`, `asset_amount`, and
+  `asset_commitment_root` fields map onto `lib/tree.AssetTreeContext`.
+- `assetContextFromProto` / `validateAssetTree` — the asset half of the
+  tree codec, split out so both the decode and the encode path share one
+  set of admission rules.
 - `OutpointFromProto`/`ToProto`, `TxOutFromProto`/`ToProto`,
   `PSBTFromBytes`/`ToBytes`, `MsgTxFromBytes`/`ToBytes`,
   `SchnorrSigFromBytes`/`ToBytes` — wire/proto ⇄ Go conversions for the
@@ -73,6 +79,23 @@ distinction.
 - `ValidateFlowVersion` must reject any `FlowVersion` other than the
   versions this build implements (currently only `FlowVersionV1`); never
   make it permissive by default.
+- **A tree is asset-bearing only if it says so.** `assetContextFromProto`
+  scans every node for a non-empty `signing_tweak`, non-zero `asset_amount`,
+  or non-empty `asset_commitment_root`; if any is present but
+  `VTXOTree.asset_ref` is empty, decoding fails rather than silently
+  dropping the asset data into a Bitcoin-only tree. A tree with neither
+  decodes to a nil `AssetContext`.
+- **`asset_ref` must be canonically encoded.** Both
+  `assetContextFromProto` and `validateAssetTree` parse it with
+  `tapsdk.ParseAssetRef` and require the re-serialized form to match the
+  input byte for byte, so two distinct encodings of the same asset cannot
+  produce two trees that compare unequal.
+- The rebuilt context is run through `AssetTreeContext.Validate(root)`,
+  which requires an asset reference, rejects duplicate asset inputs across
+  the tree, and checks that every node's asset amount is completely
+  described. Do not relax this into a best-effort populate: the signing
+  tweak it carries is what the client tweaks its MuSig2 key with, so an
+  incompletely described context produces signatures against the wrong key.
 
 ## Deep Docs
 

@@ -63,7 +63,17 @@ state transitions and validation rules live under [Invariants](#invariants).
   store in production; `nil` in tests treats every VTXO as owned.
 - `OwnedScriptRegistrar` — `RegisterOwnedScript(ctx, pkScript, ownerKey)`.
   Called at intent-build time for change/refresh outputs and inside
-  `handleRegisterIntent` for entries with a non-zero `KeyLocator`.
+  `handleRegisterIntent` for entries with a non-zero `KeyLocator`. For an
+  asset VTXO it is called *late* — see `registerRequestedAssetVTXO` and the
+  asset invariants below.
+- `AssetVTXOVerifier` —
+  `VerifyAssetVTXO(ctx, assetRef, assetAmount, commitmentTx, clientTree, sealedPackage)`.
+  Verifies the Taproot Assets transition behind a requested VTXO before the
+  client signs its tree path. Wired on `ClientEnvironment.AssetVTXOVerifier`
+  and required only for rounds that carry asset requests; production backs it
+  with the `tapassets` adapter.
+- `AssetVTXORequest` — one asset output requested from a round
+  (`AmountSat`, `AssetRef`, `AssetAmount`).
 - `VTXOStore`, `RoundStore` — VTXO and round FSM persistence.
   `RoundStore.FailRound(ctx, roundID)` is the terminal-failure
   counterpart to `FinalizeRound`: it retires a checkpointed round's row
@@ -288,6 +298,34 @@ state transitions and validation rules live under [Invariants](#invariants).
   v3 ephemeral-anchor relay. The later quote-authoritative leaf check closes
   the value chain from the committed root to the client's accepted amount
   before nonces, signatures, or persistence.
+- **Asset VTXOs are verified before the client signs, not after.** In
+  `CommitmentTxReceivedState`, for each `types.VTXORequest` with a non-empty
+  `AssetRef`: `validateRequestedVTXOPath` requires the server tree to carry
+  an `AssetContext` whose `AssetRef` matches the request and whose
+  `Validate` passes, extracts the client's single-leaf path, cross-checks
+  `NodeAssetAmount(leaf)` against `AssetAmount`, then derives the **composed**
+  leaf script by folding the leaf's asset commitment root into the compiled
+  policy via `arkscript.ComposeWithSiblingRoot` before calling
+  `ValidatePath`. A Bitcoin request keeps the original uncomposed path check.
+  `verifyRequestedAssetVTXO` then requires a sealed transfer package for the
+  leaf outpoint from `ClientBatchInfo.asset_leaf_packages` (threaded onto
+  `CommitmentTxReceivedState.AssetLeafPackages`) and hands it to
+  `AssetVTXOVerifier`; a missing package or an unconfigured verifier fails
+  the round before any forfeit is signed.
+- **An asset VTXO's owned script is registered late.** The asset commitment
+  root is not known when the client builds its intent, so the final output
+  script cannot exist at intent-build time. `registerRequestedAssetVTXO`
+  registers the composed script only after the tree path and sealed package
+  have both validated, and only for a request with a local owner. Do not
+  move this back to intent time — the script registered there would be the
+  uncomposed one, and confirmation-time ownership detection would miss the
+  VTXO.
+- **Asset tree signing tweaks the root with the asset context, not the
+  sweep root.** When `vtxoTree.AssetContext != nil` the signing path
+  re-runs `AssetContext.Validate` and takes the root tweak from
+  `AssetContext.SigningTweak(...)` instead of `SweepTapscriptRoot`. The two
+  are not interchangeable: signing an asset tree under the Bitcoin-only
+  tweak produces valid-looking signatures against the wrong output key.
 - **Seal-time fee handshake (#270)**: the server is the amount
   authority. When `QuoteReceivedState.Quote` is non-nil, it threads
   through `RoundJoinedState` → `CommitmentTxReceivedState`, which
@@ -337,4 +375,6 @@ state transitions and validation rules live under [Invariants](#invariants).
 
 - [round/README.md](README.md) — Full state machine walkthrough with
   diagrams.
+- [tapassets/CLAUDE.md](../tapassets/CLAUDE.md) — The asset-tree adapter
+  behind `AssetVTXOVerifier`.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.

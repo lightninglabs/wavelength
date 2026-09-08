@@ -75,6 +75,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   actor's DB transaction; both phase-1 hint resolution and phase-2
   authoritative metadata lookup go through durable `serverconn` query
   messages and return as fresh events.
+- `TransferInput.ReserveEpoch` carries the VTXO manager's reservation epoch
+  for each selected input and is persisted in the input snapshot (TLV record
+  type 18, always emitted last so the stream stays canonically ascending; a
+  zero value means the input predates the field or holds no reservation).
+  `ReleaseInputsRequest.ReserveEpochs` is rebuilt from those durable inputs
+  every time the FSM re-enters the failure transition, so a release replayed
+  after a rolled-back commit still names the reservation it actually held and
+  the manager refuses it if a newer session has since re-reserved the coin.
+  `ReserveEpochs` is an in-memory side channel only — `ToProto` does not
+  serialize it, because the request is never a persisted transport message.
 - Snapshots are versioned per direction (`OutgoingSnapshot.Version = 5`,
   `IncomingSnapshot.Version = 1`); restore rejects a zero version. Outgoing
   v5 adds the `FirstRejectUnixNanos` record (bounded transient submit-reject

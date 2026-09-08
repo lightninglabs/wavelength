@@ -26,6 +26,7 @@ package may import from a higher layer.
 | [`lib/tx/oor`](lib/tx/oor/) | OOR submit/finalize package builders and validators |
 | [`lib/tx/psbtutil`](lib/tx/psbtutil/) | PSBT encoding, decoding, and signature attachment helpers |
 | [`lib/recovery`](lib/recovery/) | Immutable recovery proof graph, session state machine, TLV codec for unilateral exit |
+| [`tapassets`](tapassets/) | Taproot Assets adapter: seals tap-sdk custom-anchor transitions into a caller-funded batch output and materializes the asset transitions for every node of the VTXO tree spending it |
 | [`unrollplan`](unrollplan/) | Pure dependency-resolution planner driving unilateral-exit broadcast/sweep ordering |
 | [`vhtlcrecovery`](vhtlcrecovery/) | Durable control-plane types for vHTLC on-chain recovery jobs (action, state, script parameters, swap linkage) |
 | [`credit`](credit/) | Client-side credit subsystem: supervisor/per-operation-actor pair driving fault-tolerant sub-floor pay, credit-receive, and redeem flows against the authoritative server ledger |

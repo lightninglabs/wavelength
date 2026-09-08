@@ -15,7 +15,12 @@ server during round participation. These types are used across `round`, `vtxo`,
 - `VTXORequest` — Describes a new VTXO to create in a round (amount, policy
   template, owner key, signing key). `IsChange bool` (TLV record 4) marks the
   output that absorbs the server-computed fee residual under the #270
-  seal-time handshake; serialized into `JoinRoundAuth`.
+  seal-time handshake; serialized into `JoinRoundAuth`. `AssetRef string`
+  (TLV record 6) and `AssetAmount uint64` (TLV record 7) request a Taproot
+  Assets VTXO instead of a Bitcoin-only one; both are omitted together for a
+  Bitcoin VTXO, which preserves the pre-asset canonical encoding.
+- `VTXORequest.ValidateAssetFields` — the single admission rule for the asset
+  fields, enforced on both encode and decode of the join-auth TLV.
 - `ForfeitRequest` — Describes a VTXO being forfeited: `VTXOOutpoint`,
   local-only `Amount`, plus optional `AuthSpend *arkscript.SpendPath`
   (proof-of-control path for custom-script join-auth construction) and
@@ -63,6 +68,20 @@ server during round participation. These types are used across `round`, `vtxo`,
 - `VTXOOwnerKeyFamily` (44) is the HD key family used for deriving VTXO owner signing keys.
 - `VTXOSigningKeyFamily` (45) is the HD key family used for per-round VTXO MuSig2 signing keys.
 - `JoinRoundAuthMessage` produces a deterministic, versioned TLV byte encoding that the client signs (and the server verifies) via BIP-322.
+- **Asset VTXO request fields are all-or-nothing, and validated on both
+  sides of the codec.** `VTXORequest.ValidateAssetFields` accepts either a
+  fully Bitcoin request (empty `AssetRef` **and** zero `AssetAmount`) or a
+  complete asset request; a half-populated pair is an error. A complete asset
+  request additionally requires `FixedAmount` (an asset VTXO's value cannot
+  float with the seal-time fee handshake) and forbids `IsChange` (the fee
+  residual must not be absorbed out of an asset output). Both
+  `encodeJoinAuthVTXORequest` and `decodeJoinAuthVTXORequest` call it, and
+  the decoder separately rejects a stream carrying record 6 without record 7
+  or vice versa — so a peer cannot smuggle a partially-specified asset
+  request past the signed message.
+- The asset records are appended only when `AssetRef` is non-empty, keeping
+  the signed byte encoding for Bitcoin-only requests identical to the
+  pre-asset format.
 
 ## Deep Docs
 

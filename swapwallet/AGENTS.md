@@ -182,6 +182,37 @@ default builds avoid the swap executor's dependency graph.
   ledger's confirmed onchain_fee_paid exit leg) becomes `fee_sat` and is
   netted out of the row's gross VTXO amount. Zero cost (old daemon, or
   an exit predating exit-cost accounting) leaves the row untouched.
+- **The on-chain leave fee is quoted per input, not per destination
+  amount.** `quoteOnchainInputs` calls `EstimateFee` once per distinct
+  `(amount_sat, remaining_blocks)` pair across the selected VTXOs and sums
+  the results, because every forfeited input pays its own fixed components
+  even when all inputs belong to one wallet. Quoting the destination amount
+  once undercounts those charges and prices the wrong principal whenever a
+  bounded send returns change. `remaining_blocks` comes from
+  `batch_expiry - block_height` clamped to a minimum of 1 (zero means "full
+  default lifetime" to the operator, so an expiring input must not send
+  zero), which is why the quote needs the chain height from the same
+  `GetInfo` call that supplies operator policy (`onchainTerms.blockHeight`).
+- **The remote quote is all-or-nothing.** Any missing timing context, zero
+  amount, nil/failed `EstimateFee`, or overflow discards the *entire* remote
+  estimate and falls back to the `LOCAL_ONLY` batch-size-1 floor, so a
+  partial sum can never be reported as a `COMPLETE` quote. The one exception
+  is an economic verdict: a `below_dust_warning` on any input returns
+  `codes.FailedPrecondition` and rejects the preview outright, because
+  substituting a local floor there would hide an operator quote already
+  known to exceed the input's value.
+- **Sweep-all previews check the leave output floor.** A sweep absorbs the
+  fee into its leave output, so `prepareOnchain` verifies
+  `selectedTotal - fee >= max(dustLimit, 1)` and fails with
+  `codes.FailedPrecondition` otherwise. A sweep is *not* affordable by
+  construction — the earlier "moves the whole balance" reasoning was wrong
+  once fees came out of the leave output.
+- **Late transitions get a fresh update stamp.** `stampLateTransition`
+  advances a projection's `updated_at_unix` past the stored row's whenever
+  the derived value does not, because a ledger-derived transition carries
+  its *source row's* creation time and would otherwise be invisible to
+  recency ordering, pollers, and subscriber payloads. It never regresses a
+  stored value, so a stepped-back wall clock cannot rewind a row.
 - **Onchain SEND is a one-shot**: after the intent is accepted the router
   immediately calls `JoinNextRound` so the queued leave intent is committed
   to the next round without a separate CLI step. If the implicit join fails,

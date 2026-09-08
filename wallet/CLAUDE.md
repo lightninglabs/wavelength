@@ -105,6 +105,16 @@ refresh, leave, OOR spend, and directed send flows.
 - `handleSendVTXOs` uses a `defer`-based release rather than a `releaseAndFail` helper: any error path (including dry-run) falls through to the deferred release, and the `committed` flag is set only after the round actor accepts the intent. Context is preserved via `context.WithoutCancel` so cleanup is not dropped when the caller disconnects.
 - `handleSendVTXOs` rejects pre-flight any directed send with multiple recipients and exactly-zero change residual under the #270 seal-time fee handshake. The server is the amount authority and absorbs the operator fee out of the designated `IsChange=true` slot; if there is no residual to absorb the fee against, the server has no slack to deduct fees without silently shifting them onto a recipient leg. The wallet refuses the request rather than letting the server pick the loser.
 - `VTXOReader` / `VTXODescriptor` / `SelectedVTXO` break the vtxo → round → wallet import cycle by providing wallet-level types that don't reference `vtxo.Descriptor` directly.
+- `handleSelectAndLockVTXOs` copies the manager's per-outpoint reservation
+  epoch onto `SelectedVTXO.ReserveEpoch`. The wallet is a pure pass-through
+  here: the OOR session persists the epoch with its transfer input and
+  presents it back on release so a stale release cannot return a coin a newer
+  session has since re-reserved. Dropping the field on this hop silently
+  disables that guard — see `lib/actormsg/CLAUDE.md`.
+- Refresh outputs composed by `handleRefreshVTXOs` deliberately leave
+  `SigningKey` **empty**. Round registration derives a fresh locator-backed
+  key for the MuSig2 tree; reusing the input's owner descriptor breaks for
+  legacy VTXOs that retain the pubkey but not its LND key locator.
 - The wallet tracks, in memory, boarding outpoints already handed to the round
   actor via `TriggerBoardMsg` that have not yet left the confirmed set, and
   excludes them from later triggers. This keeps a second per-block trigger
