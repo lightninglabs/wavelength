@@ -4426,6 +4426,102 @@ func (x *CooperativeClose) GetTxid() []byte {
 	return nil
 }
 
+type FailReceiveIntentRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ChannelId     []byte                 `protobuf:"bytes,1,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FailReceiveIntentRequest) Reset() {
+	*x = FailReceiveIntentRequest{}
+	mi := &file_ark_channel_proto_msgTypes[71]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FailReceiveIntentRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FailReceiveIntentRequest) ProtoMessage() {}
+
+func (x *FailReceiveIntentRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ark_channel_proto_msgTypes[71]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FailReceiveIntentRequest.ProtoReflect.Descriptor instead.
+func (*FailReceiveIntentRequest) Descriptor() ([]byte, []int) {
+	return file_ark_channel_proto_rawDescGZIP(), []int{71}
+}
+
+func (x *FailReceiveIntentRequest) GetChannelId() []byte {
+	if x != nil {
+		return x.ChannelId
+	}
+	return nil
+}
+
+func (x *FailReceiveIntentRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+type FailReceiveIntentResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Failed        bool                   `protobuf:"varint,1,opt,name=failed,proto3" json:"failed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FailReceiveIntentResponse) Reset() {
+	*x = FailReceiveIntentResponse{}
+	mi := &file_ark_channel_proto_msgTypes[72]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FailReceiveIntentResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FailReceiveIntentResponse) ProtoMessage() {}
+
+func (x *FailReceiveIntentResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ark_channel_proto_msgTypes[72]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FailReceiveIntentResponse.ProtoReflect.Descriptor instead.
+func (*FailReceiveIntentResponse) Descriptor() ([]byte, []int) {
+	return file_ark_channel_proto_rawDescGZIP(), []int{72}
+}
+
+func (x *FailReceiveIntentResponse) GetFailed() bool {
+	if x != nil {
+		return x.Failed
+	}
+	return false
+}
+
 var File_ark_channel_proto protoreflect.FileDescriptor
 
 const file_ark_channel_proto_rawDesc = "" +
@@ -4756,7 +4852,13 @@ const file_ark_channel_proto_rawDesc = "" +
 	"\x10CooperativeClose\x12C\n" +
 	"\bproposal\x18\x01 \x01(\v2'.arkchannelrpc.CooperativeCloseProposalR\bproposal\x12 \n" +
 	"\vtransaction\x18\x02 \x01(\fR\vtransaction\x12\x12\n" +
-	"\x04txid\x18\x03 \x01(\fR\x04txid*s\n" +
+	"\x04txid\x18\x03 \x01(\fR\x04txid\"Q\n" +
+	"\x18FailReceiveIntentRequest\x12\x1d\n" +
+	"\n" +
+	"channel_id\x18\x01 \x01(\fR\tchannelId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"3\n" +
+	"\x19FailReceiveIntentResponse\x12\x16\n" +
+	"\x06failed\x18\x01 \x01(\bR\x06failed*s\n" +
 	"\x0fFundingWireKind\x12!\n" +
 	"\x1dFUNDING_WIRE_KIND_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19FUNDING_WIRE_KIND_REQUEST\x10\x01\x12\x1e\n" +
@@ -4794,12 +4896,13 @@ const file_ark_channel_proto_rawDesc = "" +
 	"\x18CompleteCooperativeClose\x12..arkchannelrpc.CompleteCooperativeCloseRequest\x1a/.arkchannelrpc.CompleteCooperativeCloseResponse\x12\x84\x01\n" +
 	"\x1bAcknowledgeCooperativeClose\x121.arkchannelrpc.AcknowledgeCooperativeCloseRequest\x1a2.arkchannelrpc.AcknowledgeCooperativeCloseResponse\x12x\n" +
 	"\x17PublishCooperativeClose\x12-.arkchannelrpc.PublishCooperativeCloseRequest\x1a..arkchannelrpc.PublishCooperativeCloseResponse\x12r\n" +
-	"\x15AbortCooperativeClose\x12+.arkchannelrpc.AbortCooperativeCloseRequest\x1a,.arkchannelrpc.AbortCooperativeCloseResponse2\xf5\r\n" +
+	"\x15AbortCooperativeClose\x12+.arkchannelrpc.AbortCooperativeCloseRequest\x1a,.arkchannelrpc.AbortCooperativeCloseResponse2\xdd\x0e\n" +
 	"\x1cArkChannelFundingPeerService\x12T\n" +
 	"\vGetPeerInfo\x12!.arkchannelrpc.GetPeerInfoRequest\x1a\".arkchannelrpc.GetPeerInfoResponse\x12f\n" +
 	"\x11RegisterPromotion\x12'.arkchannelrpc.RegisterPromotionRequest\x1a(.arkchannelrpc.RegisterPromotionResponse\x12r\n" +
 	"\x15RegisterReceiveIntent\x12+.arkchannelrpc.RegisterReceiveIntentRequest\x1a,.arkchannelrpc.RegisterReceiveIntentResponse\x12f\n" +
-	"\x11GetFundingChannel\x12'.arkchannelrpc.GetFundingChannelRequest\x1a(.arkchannelrpc.GetFundingChannelResponse\x12`\n" +
+	"\x11GetFundingChannel\x12'.arkchannelrpc.GetFundingChannelRequest\x1a(.arkchannelrpc.GetFundingChannelResponse\x12f\n" +
+	"\x11FailReceiveIntent\x12'.arkchannelrpc.FailReceiveIntentRequest\x1a(.arkchannelrpc.FailReceiveIntentResponse\x12`\n" +
 	"\x0fBindPreparedOOR\x12%.arkchannelrpc.BindPreparedOORRequest\x1a&.arkchannelrpc.BindPreparedOORResponse\x12T\n" +
 	"\vSignBacking\x12!.arkchannelrpc.SignBackingRequest\x1a\".arkchannelrpc.SignBackingResponse\x12]\n" +
 	"\x0eInstallBacking\x12$.arkchannelrpc.InstallBackingRequest\x1a%.arkchannelrpc.InstallBackingResponse\x12u\n" +
@@ -4828,7 +4931,7 @@ func file_ark_channel_proto_rawDescGZIP() []byte {
 }
 
 var file_ark_channel_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_ark_channel_proto_msgTypes = make([]protoimpl.MessageInfo, 71)
+var file_ark_channel_proto_msgTypes = make([]protoimpl.MessageInfo, 73)
 var file_ark_channel_proto_goTypes = []any{
 	(FundingWireKind)(0),                        // 0: arkchannelrpc.FundingWireKind
 	(FundingWireMethod)(0),                      // 1: arkchannelrpc.FundingWireMethod
@@ -4905,6 +5008,8 @@ var file_ark_channel_proto_goTypes = []any{
 	(*CleanChannelState)(nil),                   // 72: arkchannelrpc.CleanChannelState
 	(*CooperativeCloseProposal)(nil),            // 73: arkchannelrpc.CooperativeCloseProposal
 	(*CooperativeClose)(nil),                    // 74: arkchannelrpc.CooperativeClose
+	(*FailReceiveIntentRequest)(nil),            // 75: arkchannelrpc.FailReceiveIntentRequest
+	(*FailReceiveIntentResponse)(nil),           // 76: arkchannelrpc.FailReceiveIntentResponse
 }
 var file_ark_channel_proto_depIdxs = []int32{
 	0,  // 0: arkchannelrpc.FundingWireEnvelope.kind:type_name -> arkchannelrpc.FundingWireKind
@@ -4968,51 +5073,53 @@ var file_ark_channel_proto_depIdxs = []int32{
 	15, // 58: arkchannelrpc.ArkChannelFundingPeerService.RegisterPromotion:input_type -> arkchannelrpc.RegisterPromotionRequest
 	17, // 59: arkchannelrpc.ArkChannelFundingPeerService.RegisterReceiveIntent:input_type -> arkchannelrpc.RegisterReceiveIntentRequest
 	19, // 60: arkchannelrpc.ArkChannelFundingPeerService.GetFundingChannel:input_type -> arkchannelrpc.GetFundingChannelRequest
-	21, // 61: arkchannelrpc.ArkChannelFundingPeerService.BindPreparedOOR:input_type -> arkchannelrpc.BindPreparedOORRequest
-	23, // 62: arkchannelrpc.ArkChannelFundingPeerService.SignBacking:input_type -> arkchannelrpc.SignBackingRequest
-	25, // 63: arkchannelrpc.ArkChannelFundingPeerService.InstallBacking:input_type -> arkchannelrpc.InstallBackingRequest
-	27, // 64: arkchannelrpc.ArkChannelFundingPeerService.InstallRecoveryPackage:input_type -> arkchannelrpc.InstallRecoveryPackageRequest
-	29, // 65: arkchannelrpc.ArkChannelFundingPeerService.ExportRecoveryPackage:input_type -> arkchannelrpc.ExportRecoveryPackageRequest
-	36, // 66: arkchannelrpc.ArkChannelFundingPeerService.FundingFinalized:input_type -> arkchannelrpc.FundingStatusRequest
-	36, // 67: arkchannelrpc.ArkChannelFundingPeerService.ChannelActive:input_type -> arkchannelrpc.FundingStatusRequest
-	38, // 68: arkchannelrpc.ArkChannelFundingPeerService.ApplyChannelEvent:input_type -> arkchannelrpc.ApplyChannelEventRequest
-	40, // 69: arkchannelrpc.ArkChannelFundingPeerService.CreateInvoice:input_type -> arkchannelrpc.PeerInvoiceRequest
-	42, // 70: arkchannelrpc.ArkChannelFundingPeerService.PayInvoice:input_type -> arkchannelrpc.PeerPayInvoiceRequest
-	44, // 71: arkchannelrpc.ArkChannelFundingPeerService.PrepareOutgoingPayment:input_type -> arkchannelrpc.PrepareOutgoingPaymentRequest
-	46, // 72: arkchannelrpc.ArkChannelFundingPeerService.CancelOutgoingPayment:input_type -> arkchannelrpc.CancelOutgoingPaymentRequest
-	48, // 73: arkchannelrpc.ArkChannelFundingPeerService.RegisterIncomingPayment:input_type -> arkchannelrpc.RegisterIncomingPaymentRequest
-	6,  // 74: arkchannelrpc.ArkChannelService.PromoteVTXO:output_type -> arkchannelrpc.PromoteVTXOResponse
-	8,  // 75: arkchannelrpc.ArkChannelService.SendPayment:output_type -> arkchannelrpc.ChannelPaymentResponse
-	8,  // 76: arkchannelrpc.ArkChannelService.ReceivePayment:output_type -> arkchannelrpc.ChannelPaymentResponse
-	10, // 77: arkchannelrpc.ArkChannelService.PayLightningInvoice:output_type -> arkchannelrpc.PayLightningInvoiceResponse
-	12, // 78: arkchannelrpc.ArkChannelService.MaterializeAndForceClose:output_type -> arkchannelrpc.MaterializeAndForceCloseResponse
-	55, // 79: arkchannelrpc.ArkChannelService.RefreshChannel:output_type -> arkchannelrpc.RefreshChannelResponse
-	57, // 80: arkchannelrpc.ArkChannelService.GetChannel:output_type -> arkchannelrpc.GetChannelResponse
-	59, // 81: arkchannelrpc.ArkChannelService.ListChannels:output_type -> arkchannelrpc.ListChannelsResponse
-	62, // 82: arkchannelrpc.ArkChannelPeerService.BeginCooperativeClose:output_type -> arkchannelrpc.BeginCooperativeCloseResponse
-	64, // 83: arkchannelrpc.ArkChannelPeerService.CompleteCooperativeClose:output_type -> arkchannelrpc.CompleteCooperativeCloseResponse
-	66, // 84: arkchannelrpc.ArkChannelPeerService.AcknowledgeCooperativeClose:output_type -> arkchannelrpc.AcknowledgeCooperativeCloseResponse
-	68, // 85: arkchannelrpc.ArkChannelPeerService.PublishCooperativeClose:output_type -> arkchannelrpc.PublishCooperativeCloseResponse
-	70, // 86: arkchannelrpc.ArkChannelPeerService.AbortCooperativeClose:output_type -> arkchannelrpc.AbortCooperativeCloseResponse
-	14, // 87: arkchannelrpc.ArkChannelFundingPeerService.GetPeerInfo:output_type -> arkchannelrpc.GetPeerInfoResponse
-	16, // 88: arkchannelrpc.ArkChannelFundingPeerService.RegisterPromotion:output_type -> arkchannelrpc.RegisterPromotionResponse
-	18, // 89: arkchannelrpc.ArkChannelFundingPeerService.RegisterReceiveIntent:output_type -> arkchannelrpc.RegisterReceiveIntentResponse
-	20, // 90: arkchannelrpc.ArkChannelFundingPeerService.GetFundingChannel:output_type -> arkchannelrpc.GetFundingChannelResponse
-	22, // 91: arkchannelrpc.ArkChannelFundingPeerService.BindPreparedOOR:output_type -> arkchannelrpc.BindPreparedOORResponse
-	24, // 92: arkchannelrpc.ArkChannelFundingPeerService.SignBacking:output_type -> arkchannelrpc.SignBackingResponse
-	26, // 93: arkchannelrpc.ArkChannelFundingPeerService.InstallBacking:output_type -> arkchannelrpc.InstallBackingResponse
-	28, // 94: arkchannelrpc.ArkChannelFundingPeerService.InstallRecoveryPackage:output_type -> arkchannelrpc.InstallRecoveryPackageResponse
-	30, // 95: arkchannelrpc.ArkChannelFundingPeerService.ExportRecoveryPackage:output_type -> arkchannelrpc.ExportRecoveryPackageResponse
-	37, // 96: arkchannelrpc.ArkChannelFundingPeerService.FundingFinalized:output_type -> arkchannelrpc.FundingStatusResponse
-	37, // 97: arkchannelrpc.ArkChannelFundingPeerService.ChannelActive:output_type -> arkchannelrpc.FundingStatusResponse
-	39, // 98: arkchannelrpc.ArkChannelFundingPeerService.ApplyChannelEvent:output_type -> arkchannelrpc.ApplyChannelEventResponse
-	41, // 99: arkchannelrpc.ArkChannelFundingPeerService.CreateInvoice:output_type -> arkchannelrpc.PeerInvoiceResponse
-	43, // 100: arkchannelrpc.ArkChannelFundingPeerService.PayInvoice:output_type -> arkchannelrpc.PeerPayInvoiceResponse
-	45, // 101: arkchannelrpc.ArkChannelFundingPeerService.PrepareOutgoingPayment:output_type -> arkchannelrpc.PrepareOutgoingPaymentResponse
-	47, // 102: arkchannelrpc.ArkChannelFundingPeerService.CancelOutgoingPayment:output_type -> arkchannelrpc.CancelOutgoingPaymentResponse
-	49, // 103: arkchannelrpc.ArkChannelFundingPeerService.RegisterIncomingPayment:output_type -> arkchannelrpc.RegisterIncomingPaymentResponse
-	74, // [74:104] is the sub-list for method output_type
-	44, // [44:74] is the sub-list for method input_type
+	75, // 61: arkchannelrpc.ArkChannelFundingPeerService.FailReceiveIntent:input_type -> arkchannelrpc.FailReceiveIntentRequest
+	21, // 62: arkchannelrpc.ArkChannelFundingPeerService.BindPreparedOOR:input_type -> arkchannelrpc.BindPreparedOORRequest
+	23, // 63: arkchannelrpc.ArkChannelFundingPeerService.SignBacking:input_type -> arkchannelrpc.SignBackingRequest
+	25, // 64: arkchannelrpc.ArkChannelFundingPeerService.InstallBacking:input_type -> arkchannelrpc.InstallBackingRequest
+	27, // 65: arkchannelrpc.ArkChannelFundingPeerService.InstallRecoveryPackage:input_type -> arkchannelrpc.InstallRecoveryPackageRequest
+	29, // 66: arkchannelrpc.ArkChannelFundingPeerService.ExportRecoveryPackage:input_type -> arkchannelrpc.ExportRecoveryPackageRequest
+	36, // 67: arkchannelrpc.ArkChannelFundingPeerService.FundingFinalized:input_type -> arkchannelrpc.FundingStatusRequest
+	36, // 68: arkchannelrpc.ArkChannelFundingPeerService.ChannelActive:input_type -> arkchannelrpc.FundingStatusRequest
+	38, // 69: arkchannelrpc.ArkChannelFundingPeerService.ApplyChannelEvent:input_type -> arkchannelrpc.ApplyChannelEventRequest
+	40, // 70: arkchannelrpc.ArkChannelFundingPeerService.CreateInvoice:input_type -> arkchannelrpc.PeerInvoiceRequest
+	42, // 71: arkchannelrpc.ArkChannelFundingPeerService.PayInvoice:input_type -> arkchannelrpc.PeerPayInvoiceRequest
+	44, // 72: arkchannelrpc.ArkChannelFundingPeerService.PrepareOutgoingPayment:input_type -> arkchannelrpc.PrepareOutgoingPaymentRequest
+	46, // 73: arkchannelrpc.ArkChannelFundingPeerService.CancelOutgoingPayment:input_type -> arkchannelrpc.CancelOutgoingPaymentRequest
+	48, // 74: arkchannelrpc.ArkChannelFundingPeerService.RegisterIncomingPayment:input_type -> arkchannelrpc.RegisterIncomingPaymentRequest
+	6,  // 75: arkchannelrpc.ArkChannelService.PromoteVTXO:output_type -> arkchannelrpc.PromoteVTXOResponse
+	8,  // 76: arkchannelrpc.ArkChannelService.SendPayment:output_type -> arkchannelrpc.ChannelPaymentResponse
+	8,  // 77: arkchannelrpc.ArkChannelService.ReceivePayment:output_type -> arkchannelrpc.ChannelPaymentResponse
+	10, // 78: arkchannelrpc.ArkChannelService.PayLightningInvoice:output_type -> arkchannelrpc.PayLightningInvoiceResponse
+	12, // 79: arkchannelrpc.ArkChannelService.MaterializeAndForceClose:output_type -> arkchannelrpc.MaterializeAndForceCloseResponse
+	55, // 80: arkchannelrpc.ArkChannelService.RefreshChannel:output_type -> arkchannelrpc.RefreshChannelResponse
+	57, // 81: arkchannelrpc.ArkChannelService.GetChannel:output_type -> arkchannelrpc.GetChannelResponse
+	59, // 82: arkchannelrpc.ArkChannelService.ListChannels:output_type -> arkchannelrpc.ListChannelsResponse
+	62, // 83: arkchannelrpc.ArkChannelPeerService.BeginCooperativeClose:output_type -> arkchannelrpc.BeginCooperativeCloseResponse
+	64, // 84: arkchannelrpc.ArkChannelPeerService.CompleteCooperativeClose:output_type -> arkchannelrpc.CompleteCooperativeCloseResponse
+	66, // 85: arkchannelrpc.ArkChannelPeerService.AcknowledgeCooperativeClose:output_type -> arkchannelrpc.AcknowledgeCooperativeCloseResponse
+	68, // 86: arkchannelrpc.ArkChannelPeerService.PublishCooperativeClose:output_type -> arkchannelrpc.PublishCooperativeCloseResponse
+	70, // 87: arkchannelrpc.ArkChannelPeerService.AbortCooperativeClose:output_type -> arkchannelrpc.AbortCooperativeCloseResponse
+	14, // 88: arkchannelrpc.ArkChannelFundingPeerService.GetPeerInfo:output_type -> arkchannelrpc.GetPeerInfoResponse
+	16, // 89: arkchannelrpc.ArkChannelFundingPeerService.RegisterPromotion:output_type -> arkchannelrpc.RegisterPromotionResponse
+	18, // 90: arkchannelrpc.ArkChannelFundingPeerService.RegisterReceiveIntent:output_type -> arkchannelrpc.RegisterReceiveIntentResponse
+	20, // 91: arkchannelrpc.ArkChannelFundingPeerService.GetFundingChannel:output_type -> arkchannelrpc.GetFundingChannelResponse
+	76, // 92: arkchannelrpc.ArkChannelFundingPeerService.FailReceiveIntent:output_type -> arkchannelrpc.FailReceiveIntentResponse
+	22, // 93: arkchannelrpc.ArkChannelFundingPeerService.BindPreparedOOR:output_type -> arkchannelrpc.BindPreparedOORResponse
+	24, // 94: arkchannelrpc.ArkChannelFundingPeerService.SignBacking:output_type -> arkchannelrpc.SignBackingResponse
+	26, // 95: arkchannelrpc.ArkChannelFundingPeerService.InstallBacking:output_type -> arkchannelrpc.InstallBackingResponse
+	28, // 96: arkchannelrpc.ArkChannelFundingPeerService.InstallRecoveryPackage:output_type -> arkchannelrpc.InstallRecoveryPackageResponse
+	30, // 97: arkchannelrpc.ArkChannelFundingPeerService.ExportRecoveryPackage:output_type -> arkchannelrpc.ExportRecoveryPackageResponse
+	37, // 98: arkchannelrpc.ArkChannelFundingPeerService.FundingFinalized:output_type -> arkchannelrpc.FundingStatusResponse
+	37, // 99: arkchannelrpc.ArkChannelFundingPeerService.ChannelActive:output_type -> arkchannelrpc.FundingStatusResponse
+	39, // 100: arkchannelrpc.ArkChannelFundingPeerService.ApplyChannelEvent:output_type -> arkchannelrpc.ApplyChannelEventResponse
+	41, // 101: arkchannelrpc.ArkChannelFundingPeerService.CreateInvoice:output_type -> arkchannelrpc.PeerInvoiceResponse
+	43, // 102: arkchannelrpc.ArkChannelFundingPeerService.PayInvoice:output_type -> arkchannelrpc.PeerPayInvoiceResponse
+	45, // 103: arkchannelrpc.ArkChannelFundingPeerService.PrepareOutgoingPayment:output_type -> arkchannelrpc.PrepareOutgoingPaymentResponse
+	47, // 104: arkchannelrpc.ArkChannelFundingPeerService.CancelOutgoingPayment:output_type -> arkchannelrpc.CancelOutgoingPaymentResponse
+	49, // 105: arkchannelrpc.ArkChannelFundingPeerService.RegisterIncomingPayment:output_type -> arkchannelrpc.RegisterIncomingPaymentResponse
+	75, // [75:106] is the sub-list for method output_type
+	44, // [44:75] is the sub-list for method input_type
 	44, // [44:44] is the sub-list for extension type_name
 	44, // [44:44] is the sub-list for extension extendee
 	0,  // [0:44] is the sub-list for field type_name
@@ -5029,7 +5136,7 @@ func file_ark_channel_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ark_channel_proto_rawDesc), len(file_ark_channel_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   71,
+			NumMessages:   73,
 			NumExtensions: 0,
 			NumServices:   3,
 		},

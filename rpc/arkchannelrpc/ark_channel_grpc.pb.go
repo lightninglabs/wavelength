@@ -711,6 +711,7 @@ const (
 	ArkChannelFundingPeerService_RegisterPromotion_FullMethodName       = "/arkchannelrpc.ArkChannelFundingPeerService/RegisterPromotion"
 	ArkChannelFundingPeerService_RegisterReceiveIntent_FullMethodName   = "/arkchannelrpc.ArkChannelFundingPeerService/RegisterReceiveIntent"
 	ArkChannelFundingPeerService_GetFundingChannel_FullMethodName       = "/arkchannelrpc.ArkChannelFundingPeerService/GetFundingChannel"
+	ArkChannelFundingPeerService_FailReceiveIntent_FullMethodName       = "/arkchannelrpc.ArkChannelFundingPeerService/FailReceiveIntent"
 	ArkChannelFundingPeerService_BindPreparedOOR_FullMethodName         = "/arkchannelrpc.ArkChannelFundingPeerService/BindPreparedOOR"
 	ArkChannelFundingPeerService_SignBacking_FullMethodName             = "/arkchannelrpc.ArkChannelFundingPeerService/SignBacking"
 	ArkChannelFundingPeerService_InstallBacking_FullMethodName          = "/arkchannelrpc.ArkChannelFundingPeerService/InstallBacking"
@@ -738,6 +739,7 @@ type ArkChannelFundingPeerServiceClient interface {
 	RegisterPromotion(ctx context.Context, in *RegisterPromotionRequest, opts ...grpc.CallOption) (*RegisterPromotionResponse, error)
 	RegisterReceiveIntent(ctx context.Context, in *RegisterReceiveIntentRequest, opts ...grpc.CallOption) (*RegisterReceiveIntentResponse, error)
 	GetFundingChannel(ctx context.Context, in *GetFundingChannelRequest, opts ...grpc.CallOption) (*GetFundingChannelResponse, error)
+	FailReceiveIntent(ctx context.Context, in *FailReceiveIntentRequest, opts ...grpc.CallOption) (*FailReceiveIntentResponse, error)
 	BindPreparedOOR(ctx context.Context, in *BindPreparedOORRequest, opts ...grpc.CallOption) (*BindPreparedOORResponse, error)
 	SignBacking(ctx context.Context, in *SignBackingRequest, opts ...grpc.CallOption) (*SignBackingResponse, error)
 	InstallBacking(ctx context.Context, in *InstallBackingRequest, opts ...grpc.CallOption) (*InstallBackingResponse, error)
@@ -798,6 +800,16 @@ func (c *arkChannelFundingPeerServiceClient) GetFundingChannel(ctx context.Conte
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetFundingChannelResponse)
 	err := c.cc.Invoke(ctx, ArkChannelFundingPeerService_GetFundingChannel_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *arkChannelFundingPeerServiceClient) FailReceiveIntent(ctx context.Context, in *FailReceiveIntentRequest, opts ...grpc.CallOption) (*FailReceiveIntentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FailReceiveIntentResponse)
+	err := c.cc.Invoke(ctx, ArkChannelFundingPeerService_FailReceiveIntent_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -946,6 +958,7 @@ type ArkChannelFundingPeerServiceServer interface {
 	RegisterPromotion(context.Context, *RegisterPromotionRequest) (*RegisterPromotionResponse, error)
 	RegisterReceiveIntent(context.Context, *RegisterReceiveIntentRequest) (*RegisterReceiveIntentResponse, error)
 	GetFundingChannel(context.Context, *GetFundingChannelRequest) (*GetFundingChannelResponse, error)
+	FailReceiveIntent(context.Context, *FailReceiveIntentRequest) (*FailReceiveIntentResponse, error)
 	BindPreparedOOR(context.Context, *BindPreparedOORRequest) (*BindPreparedOORResponse, error)
 	SignBacking(context.Context, *SignBackingRequest) (*SignBackingResponse, error)
 	InstallBacking(context.Context, *InstallBackingRequest) (*InstallBackingResponse, error)
@@ -983,6 +996,9 @@ func (UnimplementedArkChannelFundingPeerServiceServer) RegisterReceiveIntent(con
 }
 func (UnimplementedArkChannelFundingPeerServiceServer) GetFundingChannel(context.Context, *GetFundingChannelRequest) (*GetFundingChannelResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetFundingChannel not implemented")
+}
+func (UnimplementedArkChannelFundingPeerServiceServer) FailReceiveIntent(context.Context, *FailReceiveIntentRequest) (*FailReceiveIntentResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FailReceiveIntent not implemented")
 }
 func (UnimplementedArkChannelFundingPeerServiceServer) BindPreparedOOR(context.Context, *BindPreparedOORRequest) (*BindPreparedOORResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method BindPreparedOOR not implemented")
@@ -1113,6 +1129,24 @@ func _ArkChannelFundingPeerService_GetFundingChannel_Handler(srv interface{}, ct
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ArkChannelFundingPeerServiceServer).GetFundingChannel(ctx, req.(*GetFundingChannelRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ArkChannelFundingPeerService_FailReceiveIntent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FailReceiveIntentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArkChannelFundingPeerServiceServer).FailReceiveIntent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArkChannelFundingPeerService_FailReceiveIntent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArkChannelFundingPeerServiceServer).FailReceiveIntent(ctx, req.(*FailReceiveIntentRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1373,6 +1407,10 @@ var ArkChannelFundingPeerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetFundingChannel",
 			Handler:    _ArkChannelFundingPeerService_GetFundingChannel_Handler,
+		},
+		{
+			MethodName: "FailReceiveIntent",
+			Handler:    _ArkChannelFundingPeerService_FailReceiveIntent_Handler,
 		},
 		{
 			MethodName: "BindPreparedOOR",

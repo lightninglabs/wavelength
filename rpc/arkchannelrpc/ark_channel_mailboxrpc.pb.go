@@ -529,6 +529,8 @@ type ArkChannelFundingPeerServiceMailboxServer interface {
 	RegisterReceiveIntent(ctx context.Context, req *RegisterReceiveIntentRequest) (*RegisterReceiveIntentResponse, error)
 	// GetFundingChannel handles GetFundingChannel.
 	GetFundingChannel(ctx context.Context, req *GetFundingChannelRequest) (*GetFundingChannelResponse, error)
+	// FailReceiveIntent handles FailReceiveIntent.
+	FailReceiveIntent(ctx context.Context, req *FailReceiveIntentRequest) (*FailReceiveIntentResponse, error)
 	// BindPreparedOOR handles BindPreparedOOR.
 	BindPreparedOOR(ctx context.Context, req *BindPreparedOORRequest) (*BindPreparedOORResponse, error)
 	// SignBacking handles SignBacking.
@@ -598,6 +600,16 @@ func RegisterArkChannelFundingPeerServiceMailboxServer(r rpc.Router, impl ArkCha
 		}
 
 		return impl.GetFundingChannel(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "FailReceiveIntent", func() proto.Message {
+		return &FailReceiveIntentRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*FailReceiveIntentRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.FailReceiveIntent(ctx, req)
 	})
 	r.Handle("arkchannelrpc.ArkChannelFundingPeerService", "BindPreparedOOR", func() proto.Message {
 		return &BindPreparedOORRequest{}
@@ -816,6 +828,29 @@ func (c *ArkChannelFundingPeerServiceMailboxClient) GetFundingChannel(ctx contex
 	}
 
 	resp := new(GetFundingChannelResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// FailReceiveIntent calls the FailReceiveIntent RPC.
+func (c *ArkChannelFundingPeerServiceMailboxClient) FailReceiveIntent(ctx context.Context, req *FailReceiveIntentRequest, opts ...rpc.RPCOptions) (*FailReceiveIntentResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelFundingPeerService",
+		Method:  "FailReceiveIntent",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(FailReceiveIntentResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
