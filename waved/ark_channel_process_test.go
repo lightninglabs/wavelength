@@ -30,6 +30,8 @@ type arkChannelControllerStub struct {
 	localBalance  btcutil.Amount
 	remoteBalance btcutil.Amount
 	balanceErr    error
+	sendResult    ArkChannelPaymentResult
+	receiveResult ArkChannelPaymentResult
 }
 
 // PromoteVTXO is not used by close RPC tests.
@@ -55,16 +57,16 @@ func (s *arkChannelControllerStub) ChannelBalance(context.Context,
 
 // SendPayment is not used by close RPC tests.
 func (s *arkChannelControllerStub) SendPayment(context.Context, arkchannel.ID,
-	btcutil.Amount) (lntypes.Hash, error) {
+	btcutil.Amount) (ArkChannelPaymentResult, error) {
 
-	return lntypes.Hash{}, s.err
+	return s.sendResult, s.err
 }
 
 // ReceivePayment is not used by close RPC tests.
 func (s *arkChannelControllerStub) ReceivePayment(context.Context,
-	arkchannel.ID, btcutil.Amount) (lntypes.Hash, error) {
+	arkchannel.ID, btcutil.Amount) (ArkChannelPaymentResult, error) {
 
-	return lntypes.Hash{}, s.err
+	return s.receiveResult, s.err
 }
 
 // PayLightningInvoice is not used by close RPC tests.
@@ -342,6 +344,46 @@ func TestRunRetriedArkChannelStartupStops(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("channel startup did not stop")
 	}
+}
+
+// TestChannelPaymentRPCPropagatesSettlement verifies the RPC response reflects
+// the controller's authoritative lnd result instead of assuming success means
+// settled.
+func TestChannelPaymentRPCPropagatesSettlement(t *testing.T) {
+	t.Parallel()
+
+	id := arkchannel.ID{1}
+	sendHash := lntypes.Hash{2}
+	receiveHash := lntypes.Hash{3}
+	controller := &arkChannelControllerStub{
+		sendResult: ArkChannelPaymentResult{
+			PaymentHash: sendHash,
+		},
+		receiveResult: ArkChannelPaymentResult{
+			PaymentHash: receiveHash, Settled: true,
+		},
+	}
+	rpcServer := &arkChannelRPCServer{server: &Server{
+		arkChannelController: controller,
+	}}
+
+	send, err := rpcServer.SendPayment(
+		t.Context(), &arkchannelrpc.ChannelPaymentRequest{
+			ChannelId: id[:], AmountSat: 1_000,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, sendHash[:], send.GetPaymentHash())
+	require.False(t, send.GetSettled())
+
+	receive, err := rpcServer.ReceivePayment(
+		t.Context(), &arkchannelrpc.ChannelPaymentRequest{
+			ChannelId: id[:], AmountSat: 1_000,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, receiveHash[:], receive.GetPaymentHash())
+	require.True(t, receive.GetSettled())
 }
 
 var _ ArkChannelController = (*arkChannelControllerStub)(nil)

@@ -67,10 +67,10 @@ type ArkChannelLifecycleController interface {
 // ArkChannelPaymentController owns the private/public payment bridge surface.
 type ArkChannelPaymentController interface {
 	SendPayment(context.Context, arkchannel.ID,
-		btcutil.Amount) (lntypes.Hash, error)
+		btcutil.Amount) (ArkChannelPaymentResult, error)
 
 	ReceivePayment(context.Context, arkchannel.ID,
-		btcutil.Amount) (lntypes.Hash, error)
+		btcutil.Amount) (ArkChannelPaymentResult, error)
 
 	PayLightningInvoice(context.Context, string,
 		btcutil.Amount) (LightningPaymentResult, error)
@@ -287,11 +287,11 @@ func (s *arkChannelRPCServer) channelPayment(ctx context.Context,
 			codes.Unavailable, "Ark channel runtime is not ready",
 		)
 	}
-	var hash lntypes.Hash
+	var result ArkChannelPaymentResult
 	if receive {
-		hash, err = controller.ReceivePayment(ctx, id, amount)
+		result, err = controller.ReceivePayment(ctx, id, amount)
 	} else {
-		hash, err = controller.SendPayment(ctx, id, amount)
+		result, err = controller.SendPayment(ctx, id, amount)
 	}
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "channel "+
@@ -299,7 +299,7 @@ func (s *arkChannelRPCServer) channelPayment(ctx context.Context,
 	}
 
 	return &arkchannelrpc.ChannelPaymentResponse{
-		PaymentHash: hash[:], Settled: true,
+		PaymentHash: result.PaymentHash[:], Settled: result.Settled,
 	}, nil
 }
 

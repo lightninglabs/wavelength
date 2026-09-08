@@ -151,6 +151,13 @@ type LightningPaymentResult struct {
 	ChannelID     arkchannel.ID
 }
 
+// ArkChannelPaymentResult reports the payment hash and terminal state observed
+// in lnd's authoritative payment or invoice store.
+type ArkChannelPaymentResult struct {
+	PaymentHash lntypes.Hash
+	Settled     bool
+}
+
 // NewHubFundingPeerInfo derives the immutable channel policy advertised by a
 // real operator Wavelength process. The key roles share the same deterministic
 // locators used when the hub endpoint is restored after restart.
@@ -1392,61 +1399,73 @@ func (c *NativeArkChannelController) newReceiveIntentTerms(
 
 // SendPayment creates a hub invoice and pays it through native lnd.
 func (c *NativeArkChannelController) SendPayment(ctx context.Context,
-	id arkchannel.ID, amount btcutil.Amount) (lntypes.Hash, error) {
+	id arkchannel.ID, amount btcutil.Amount) (ArkChannelPaymentResult,
+	error) {
 
 	if c.party != arkchannel.PartyClient {
-		return lntypes.Hash{}, fmt.Errorf("client payment RPC is not " +
-			"available on the hub endpoint")
+		return ArkChannelPaymentResult{}, fmt.Errorf("client payment " +
+			"RPC is not available on the hub endpoint")
 	}
 	if err := c.ensureClientStarted(ctx); err != nil {
-		return lntypes.Hash{}, err
+		return ArkChannelPaymentResult{}, err
 	}
 	record, err := c.service.GetChannel(ctx, id)
 	if err != nil {
-		return lntypes.Hash{}, err
+		return ArkChannelPaymentResult{}, err
 	}
 	hash, err := c.paymentPeer.CreateInvoice(ctx, id, amount)
 	if err != nil {
-		return lntypes.Hash{}, err
+		return ArkChannelPaymentResult{}, err
 	}
-	if err := c.node.PayInvoice(ctx, record, hash, amount); err != nil {
-		return lntypes.Hash{}, err
+	preimage, err := c.node.PayInvoiceResult(ctx, record, hash, amount)
+	if err != nil {
+		return ArkChannelPaymentResult{}, err
+	}
+	settled := preimage.Hash() == hash
+	if !settled {
+		return ArkChannelPaymentResult{}, fmt.Errorf("native client " +
+			"payment returned the wrong preimage")
 	}
 
-	return hash, nil
+	return ArkChannelPaymentResult{
+		PaymentHash: hash, Settled: settled,
+	}, nil
 }
 
 // ReceivePayment creates a local invoice and asks the hub to pay it.
 func (c *NativeArkChannelController) ReceivePayment(ctx context.Context,
-	id arkchannel.ID, amount btcutil.Amount) (lntypes.Hash, error) {
+	id arkchannel.ID, amount btcutil.Amount) (ArkChannelPaymentResult,
+	error) {
 
 	if c.party != arkchannel.PartyClient {
-		return lntypes.Hash{}, fmt.Errorf("client payment RPC is not " +
-			"available on the hub endpoint")
+		return ArkChannelPaymentResult{}, fmt.Errorf("client payment " +
+			"RPC is not available on the hub endpoint")
 	}
 	if err := c.ensureClientStarted(ctx); err != nil {
-		return lntypes.Hash{}, err
+		return ArkChannelPaymentResult{}, err
 	}
 	if _, err := c.service.GetChannel(ctx, id); err != nil {
-		return lntypes.Hash{}, err
+		return ArkChannelPaymentResult{}, err
 	}
 	_, hash, err := c.node.AddInvoice(ctx, amount)
 	if err != nil {
-		return lntypes.Hash{}, err
+		return ArkChannelPaymentResult{}, err
 	}
 	if err := c.paymentPeer.PayInvoice(ctx, id, hash, amount); err != nil {
-		return lntypes.Hash{}, err
+		return ArkChannelPaymentResult{}, err
 	}
 	settled, err := c.node.InvoiceSettled(ctx, hash)
 	if err != nil {
-		return lntypes.Hash{}, err
+		return ArkChannelPaymentResult{}, err
 	}
 	if !settled {
-		return lntypes.Hash{}, fmt.Errorf("native client invoice did " +
-			"not settle")
+		return ArkChannelPaymentResult{}, fmt.Errorf("native client " +
+			"invoice did not settle")
 	}
 
-	return hash, nil
+	return ArkChannelPaymentResult{
+		PaymentHash: hash, Settled: settled,
+	}, nil
 }
 
 // PayLightningInvoice asks the hub to dispatch one public invoice only after
