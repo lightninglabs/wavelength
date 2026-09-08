@@ -374,6 +374,7 @@ type Server struct {
 	arkChannelController     ArkChannelController
 	arkChannelMailboxRuntime *serverconn.Runtime
 	arkChannelPeerIngress    *lnruntime.PeerMessageIngress
+	arkChannelStartupWg      sync.WaitGroup
 	vhtlcRecovery            *coordinator.Service
 	vhtlcRecoveryTarget      *vhtlcRecoveryTargetMaterializer
 	vhtlcPreimages           *unrollpolicy.PreimageResolverRegistry
@@ -1533,6 +1534,8 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 	// runs first.
 	//nolint:contextcheck // Shutdown requires a fresh bounded context.
 	defer func() {
+		s.arkChannelStartupWg.Wait()
+
 		if runtime := s.takeArkChannelMailboxRuntime(); runtime != nil {
 			shutdownCtx, cancel := context.WithTimeout(
 				context.Background(), DefaultShutdownTimeout,
@@ -1760,16 +1763,7 @@ func (s *Server) startWalletReadyServices(ctx context.Context,
 		return refreshErr
 	}
 
-	closeRegistrationCtx, closeRegistrationCancel := context.WithTimeout(
-		ctx, operatorTermsRefreshTimeout,
-	)
-	closeRegistrationErr := s.ensureConfiguredArkChannelCloseDelivery(
-		closeRegistrationCtx,
-	)
-	closeRegistrationCancel()
-	if closeRegistrationErr != nil {
-		return closeRegistrationErr
-	}
+	s.startArkChannelProcessSupervisor(ctx)
 
 	if err := s.replayPendingIntents(
 		ctx, s.walletRef.UnsafeFromSome(),
@@ -2795,13 +2789,6 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	// subserver registrar above) are ready.
 	// -------------------------------------------------------
 	if err := s.initCreditRegistry(ctx); err != nil {
-		return err
-	}
-
-	// The channel controller is last because it requires the durable
-	// channel store, swap-server mailbox, and all wallet-owned native
-	// dependencies.
-	if err := s.initArkChannelProcess(ctx); err != nil {
 		return err
 	}
 

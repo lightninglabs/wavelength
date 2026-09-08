@@ -2,8 +2,11 @@ package waved
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
@@ -268,6 +271,77 @@ func TestArkChannelRPCPreservesRetryablePromotionStatus(t *testing.T) {
 		},
 	)
 	require.Equal(t, codes.Unavailable, status.Code(err))
+}
+
+// TestRunRetriedArkChannelStartupRecovers verifies a transient optional
+// channel failure cannot permanently strand the process after wallet unlock.
+func TestRunRetriedArkChannelStartupRecovers(t *testing.T) {
+	t.Parallel()
+
+	var attempts atomic.Int32
+	var failures atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+
+		runRetriedArkChannelStartup(
+			t.Context(), time.Millisecond,
+			func(context.Context) error {
+				if attempts.Add(1) == 1 {
+					return errors.New("indexer " +
+						"temporarily offline")
+				}
+
+				return nil
+			},
+			func(error) {
+				failures.Add(1)
+			},
+		)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("channel startup did not recover")
+	}
+	require.EqualValues(t, 2, attempts.Load())
+	require.EqualValues(t, 1, failures.Load())
+}
+
+// TestRunRetriedArkChannelStartupStops verifies shutdown interrupts the retry
+// delay instead of racing daemon resource teardown.
+func TestRunRetriedArkChannelStartupStops(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	failed := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+
+		runRetriedArkChannelStartup(
+			ctx, time.Hour,
+			func(context.Context) error {
+				return errors.New("operator offline")
+			},
+			func(error) {
+				close(failed)
+			},
+		)
+	}()
+
+	select {
+	case <-failed:
+	case <-time.After(time.Second):
+		t.Fatal("channel startup did not attempt")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("channel startup did not stop")
+	}
 }
 
 var _ ArkChannelController = (*arkChannelControllerStub)(nil)

@@ -37,6 +37,8 @@ const arkChannelPeerIngressPrefix = "arkchannel-peer-ingress-"
 
 const arkChannelControllerPollInterval = 25 * time.Millisecond
 
+const arkChannelStartupRetryInterval = time.Second
+
 const arkChannelCloseReceiveScriptLabel = "ark channel cooperative close"
 
 // ArkChannelLifecycleController owns channel creation, inspection, and close.
@@ -441,6 +443,9 @@ func (s *Server) initArkChannelProcess(ctx context.Context) error {
 	if s.cfg.Swap == nil || s.cfg.Swap.ArkChannelMailbox == nil {
 		return nil
 	}
+	if s.getArkChannelController() != nil {
+		return nil
+	}
 	identityDesc := s.loadClientKeyDesc()
 	if identityDesc.PubKey == nil {
 		return fmt.Errorf("Ark channel runtime requires client " +
@@ -525,6 +530,72 @@ func (s *Server) initArkChannelProcess(ctx context.Context) error {
 	controller.Start()
 
 	return nil
+}
+
+// startArkChannelProcessSupervisor starts the optional channel subsystem
+// independently from ordinary wallet-ready services. A transient channel or
+// indexer failure therefore cannot strand unrelated actors until restart.
+func (s *Server) startArkChannelProcessSupervisor(ctx context.Context) {
+	if s.cfg.Swap == nil || s.cfg.Swap.ArkChannelMailbox == nil {
+		return
+	}
+
+	s.arkChannelStartupWg.Add(1)
+	go func() {
+		defer s.arkChannelStartupWg.Done()
+
+		runRetriedArkChannelStartup(
+			ctx, arkChannelStartupRetryInterval,
+			s.ensureArkChannelProcessStarted,
+			func(err error) {
+				s.log.WarnS(
+					ctx,
+					"Ark channel startup incomplete; "+
+						"retrying",
+					err,
+				)
+			},
+		)
+	}()
+}
+
+// ensureArkChannelProcessStarted advances the independently retryable channel
+// startup stages without rebuilding a controller that is already online.
+func (s *Server) ensureArkChannelProcessStarted(ctx context.Context) error {
+	if err := s.initArkChannelProcess(ctx); err != nil {
+		return err
+	}
+
+	return s.ensureConfiguredArkChannelCloseDelivery(ctx)
+}
+
+// runRetriedArkChannelStartup retries an idempotent channel startup function
+// until it succeeds or the daemon context is canceled.
+func runRetriedArkChannelStartup(ctx context.Context,
+	retryInterval time.Duration, start func(context.Context) error,
+	onFailure func(error)) {
+
+	for {
+		if err := start(ctx); err == nil {
+			return
+		} else if ctx.Err() != nil {
+			return
+		} else if onFailure != nil {
+			onFailure(err)
+		}
+
+		timer := time.NewTimer(retryInterval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+
+			return
+
+		case <-timer.C:
+		}
+	}
 }
 
 // newClientArkChannelController composes the wallet, chain, OOR, and recovery
