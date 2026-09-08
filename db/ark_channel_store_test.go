@@ -138,7 +138,7 @@ func TestArkChannelStoreRejectsDuplicateProtocolBindings(t *testing.T) {
 		second := first.Clone()
 		second.ID[0]++
 		second.PendingChannelID[0]++
-		second.ReservedSCID++
+		second.ReservedSCID += 1 << 16
 
 		_, err = coordinator.Request(t.Context(), first)
 		require.NoError(t, err)
