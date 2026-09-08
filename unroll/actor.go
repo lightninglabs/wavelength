@@ -1866,14 +1866,17 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 	// Compare against the sweep txid recorded in planner state
 	// (SweepBroadcastedEvent populates that) rather than b.sweepTx,
 	// so we catch the late-arriving spend notification even if the
-	// behavior has already cleared its in-memory cache.
+	// behavior has already cleared its in-memory cache. Record the
+	// confirmation, not just the height: the direct confirmation watch
+	// may lag behind this confirmed-spend notification.
 	state, err := b.currentState()
 	if err == nil {
 		job := stateJob(state)
 		if job.PlannerState.Sweep.Txid.IsSome() &&
 			job.PlannerState.Sweep.Txid.UnsafeFromSome() ==
 				msg.SpendingTxid {
-			return b.handleEvent(ctx, ax, &HeightUpdatedEvent{
+			return b.handleEvent(ctx, ax, &TxConfirmedEvent{
+				Txid:   msg.SpendingTxid,
 				Height: msg.SpendingHeight,
 			})
 		}
@@ -1958,9 +1961,21 @@ func (b *behavior) ackPreSignedExitSpend(ctx context.Context,
 		job.PlannerState.ConfirmedTxids, b.cfg.TargetOutpoint.Hash,
 	) {
 
+		// A CSV-delayed spend confirmed at H proves its parent
+		// confirmed no later than H-CSV. Record that conservative upper
+		// bound instead of H, which would make the already-confirmed
+		// spend appear immature.
+		parentHeight := int64(msg.SpendingHeight) -
+			int64(policy.CSVDelay())
+		if parentHeight < 0 {
+			return false, fmt.Errorf("pre-signed exit spend "+
+				"height %d cannot satisfy CSV delay %d",
+				msg.SpendingHeight, policy.CSVDelay())
+		}
+
 		err := b.driveEvent(ctx, ax, &TxConfirmedEvent{
 			Txid:   b.cfg.TargetOutpoint.Hash,
-			Height: msg.SpendingHeight,
+			Height: int32(parentHeight),
 		})
 		if err != nil {
 			return false, err
