@@ -32,7 +32,14 @@ const (
 	fundingWireApplyChannelEvent = arkchannelrpc.FundingWireMethod_FUNDING_WIRE_METHOD_APPLY_CHANNEL_EVENT //nolint:ll
 )
 
-var errFundingWireClosed = errors.New("funding wire is closed")
+var (
+	errFundingWireClosed = errors.New("funding wire is closed")
+
+	// errFundingWireRequestRejected proves the peer returned an error
+	// response. Unlike a send or wait failure, its outcome is definitive.
+	errFundingWireRequestRejected = errors.New("funding wire request " +
+		"rejected")
+)
 
 // FundingWireServerConfig contains the client-local objects exposed to the
 // hub's funding coordinator over the authenticated peer transport.
@@ -249,7 +256,8 @@ func (w *FundingWire) deliverResponse(requestID [32]byte,
 		body: append([]byte(nil), envelope.GetBody()...),
 	}
 	if envelope.GetError() != "" {
-		response.err = errors.New(envelope.GetError())
+		response.err = fmt.Errorf("%w: %s",
+			errFundingWireRequestRejected, envelope.GetError())
 	}
 	select {
 	case result <- response:
