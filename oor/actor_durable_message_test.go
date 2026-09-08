@@ -98,6 +98,23 @@ func TestStartTransferPayloadTLVRoundTrip(t *testing.T) {
 	require.Equal(t, payload.Inputs[0], decoded.Inputs[0])
 }
 
+// TestStartTransferPayloadRejectsNonCanonicalBool verifies durable messages do
+// not silently reinterpret malformed boolean values across implementations.
+func TestStartTransferPayloadRejectsNonCanonicalBool(t *testing.T) {
+	t.Parallel()
+
+	raw, err := encodeStartTransferPayload(startTransferPayload{
+		PrepareOnly: true,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, raw)
+
+	// PrepareOnly is the final, one-byte TLV record in this payload.
+	raw[len(raw)-1] = 2
+	_, err = decodeStartTransferPayload(raw)
+	require.ErrorContains(t, err, "prepare-only flag must be 0 or 1")
+}
+
 // TestDriveEventRequestRoundTripPreparedEvents verifies the two-phase OOR
 // control events survive the durable mailbox codec.
 func TestDriveEventRequestRoundTripPreparedEvents(t *testing.T) {

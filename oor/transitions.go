@@ -66,8 +66,21 @@ func unexpectedEvent(state State) *StateTransition {
 func failedState(reason string, current State) *Failed {
 	return &Failed{
 		Reason:         reason,
-		PrePONR:        len(prePONRInputOutpoints(current)) > 0,
+		PrePONR:        isPrePONRState(current),
 		IdempotencyKey: stateIdempotencyKey(current),
+	}
+}
+
+// isPrePONRState reports whether the operator has not yet co-signed the
+// checkpoints. This is a protocol-phase property and must not depend on
+// whether a corrupt or partially restored state retained its input pointers.
+func isPrePONRState(state State) bool {
+	switch state.(type) {
+	case *Prepared, *AwaitingArkSignatures, *AwaitingSubmitAccepted:
+		return true
+
+	default:
+		return false
 	}
 }
 
