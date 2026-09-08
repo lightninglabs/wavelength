@@ -516,6 +516,13 @@ CREATE UNIQUE INDEX idx_ark_channels_channel_point
 CREATE INDEX idx_ark_channels_phase_created
     ON ark_channels(phase, created_at ASC);
 
+CREATE UNIQUE INDEX idx_ark_channels_reserved_scid
+    ON ark_channels(reserved_scid);
+
+CREATE UNIQUE INDEX idx_ark_channels_source
+    ON ark_channels(oor_session_id, source_index)
+    WHERE oor_session_id IS NOT NULL AND source_index IS NOT NULL;
+
 CREATE INDEX idx_ask_results_expires
     ON ask_results(expires_at);
 

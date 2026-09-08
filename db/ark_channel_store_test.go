@@ -110,6 +110,57 @@ func TestArkChannelStoreRoundTrip(t *testing.T) {
 	require.Equal(t, terms.ID, records[0].Snapshot.Terms.ID)
 }
 
+// TestArkChannelStoreRejectsDuplicateProtocolBindings proves a virtual SCID
+// and prepared OOR output cannot identify more than one channel.
+func TestArkChannelStoreRejectsDuplicateProtocolBindings(t *testing.T) {
+	t.Parallel()
+
+	t.Run("reserved SCID", func(t *testing.T) {
+		store := newArkChannelStoreForTest(t)
+		coordinator, err := arkchannel.NewCoordinator(store)
+		require.NoError(t, err)
+		first := testArkChannelTerms(t, arkchannel.KindPromotion, 20)
+		second := testArkChannelTerms(t, arkchannel.KindPromotion, 21)
+		second.ReservedSCID = first.ReservedSCID
+
+		_, err = coordinator.Request(t.Context(), first)
+		require.NoError(t, err)
+		_, err = coordinator.Request(t.Context(), second)
+		require.Error(t, err)
+		require.True(t, IsUniqueConstraintViolation(err), err)
+	})
+
+	t.Run("prepared source", func(t *testing.T) {
+		store := newArkChannelStoreForTest(t)
+		coordinator, err := arkchannel.NewCoordinator(store)
+		require.NoError(t, err)
+		first := testArkChannelTerms(t, arkchannel.KindPromotion, 22)
+		second := first.Clone()
+		second.ID[0]++
+		second.PendingChannelID[0]++
+		second.ReservedSCID++
+
+		_, err = coordinator.Request(t.Context(), first)
+		require.NoError(t, err)
+		_, err = coordinator.Request(t.Context(), second)
+		require.NoError(t, err)
+		binding := testArkChannelBinding(first)
+		_, _, err = coordinator.Apply(
+			t.Context(), first.ID, &arkchannel.BindVTXO{
+				Binding: binding,
+			},
+		)
+		require.NoError(t, err)
+		_, _, err = coordinator.Apply(
+			t.Context(), second.ID, &arkchannel.BindVTXO{
+				Binding: binding,
+			},
+		)
+		require.Error(t, err)
+		require.True(t, IsUniqueConstraintViolation(err), err)
+	})
+}
+
 // TestArkChannelStoreCooperativeCloseRoundTrip verifies the compact SQL facts
 // reconstruct and validate the exact hub-authorized OOR close.
 func TestArkChannelStoreCooperativeCloseRoundTrip(t *testing.T) {
