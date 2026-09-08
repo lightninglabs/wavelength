@@ -176,6 +176,17 @@ func TestReceiveSessionAcksAfterHandled(t *testing.T) {
 	result := fut.Await(ctx)
 	require.False(t, result.IsErr())
 
+	authOutbox := result.UnwrapOr(nil)
+	require.Len(t, authOutbox, 1)
+	require.IsType(
+		t, &AuthenticateIncomingMetadataRequest{}, authOutbox[0],
+	)
+
+	fut = sess.FSM.AskEvent(ctx, &IncomingMetadataResolvedEvent{
+		ExpiryAuthenticated: true,
+	})
+	result = fut.Await(ctx)
+	require.False(t, result.IsErr())
 	materializeOutbox := result.UnwrapOr(nil)
 	require.Len(t, materializeOutbox, 1)
 	require.IsType(
@@ -215,7 +226,9 @@ func TestReceiveSessionRetriesMetadataAfterRetryableMaterializationFailure(
 	sess, _, err := DriveIncomingTransfer(ctx, sessionID, arkPSBT)
 	require.NoError(t, err)
 
-	fut := sess.FSM.AskEvent(ctx, &IncomingMetadataResolvedEvent{})
+	fut := sess.FSM.AskEvent(ctx, &IncomingMetadataResolvedEvent{
+		ExpiryAuthenticated: true,
+	})
 	result := fut.Await(ctx)
 	require.False(t, result.IsErr())
 

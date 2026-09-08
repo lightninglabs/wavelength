@@ -49,6 +49,10 @@ type OutboxHandlerConfig struct {
 	// ResolveIncomingMetadata resolves lineage metadata for
 	// incoming VTXOs.
 	ResolveIncomingMetadata IncomingMetadataResolver
+
+	// AuthenticateIncomingExpiry derives the batch expiry from confirmed
+	// ancestry before incoming VTXOs are materialized.
+	AuthenticateIncomingExpiry IncomingExpiryAuthenticator
 }
 
 // NewOutboxHandler constructs the standard two-layer outbox handler chain from
@@ -65,13 +69,14 @@ func NewOutboxHandler(cfg OutboxHandlerConfig) *LocalPersistenceOutboxHandler {
 	}
 
 	return &LocalPersistenceOutboxHandler{
-		Next:                     signingHandler,
-		Store:                    cfg.Store,
-		PackageStore:             cfg.PackageStore,
-		OperatorKey:              cfg.OperatorKey,
-		ExitDelay:                cfg.ExitDelay,
-		NotifyIncomingVTXOs:      cfg.NotifyIncomingVTXOs,
-		ResolveIncomingClientKey: cfg.ResolveIncomingClientKey,
-		ResolveIncomingMetadata:  cfg.ResolveIncomingMetadata,
+		Next:                       signingHandler,
+		Store:                      cfg.Store,
+		PackageStore:               cfg.PackageStore,
+		OperatorKey:                cfg.OperatorKey,
+		ExitDelay:                  cfg.ExitDelay,
+		NotifyIncomingVTXOs:        cfg.NotifyIncomingVTXOs,
+		ResolveIncomingClientKey:   cfg.ResolveIncomingClientKey,
+		ResolveIncomingMetadata:    cfg.ResolveIncomingMetadata,
+		AuthenticateIncomingExpiry: cfg.AuthenticateIncomingExpiry,
 	}
 }

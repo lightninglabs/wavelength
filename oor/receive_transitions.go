@@ -462,6 +462,21 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 
 	switch evt := event.(type) {
 	case *IncomingMetadataResolvedEvent:
+		if !evt.ExpiryAuthenticated {
+			authenticate := &AuthenticateIncomingMetadataRequest{
+				Matches: evt.Matches,
+			}
+
+			return &StateTransition{
+				NextState: s,
+				NewEvents: fn.Some(EmittedEvent{
+					Outbox: []OutboxEvent{
+						authenticate,
+					},
+				}),
+			}, nil
+		}
+
 		recipients := CloneArkRecipients(s.Recipients)
 		if len(recipients) == 0 {
 			extracted, err := ExtractArkRecipients(s.ArkPSBT)
