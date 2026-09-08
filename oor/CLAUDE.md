@@ -57,6 +57,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
 
 ## Invariants
 
+- Indexed VTXOs pass `vtxo.IndexedAncestryFromRPC` before new acceptance.
+  It verifies signed tree/transaction paths to the exact target outpoint,
+  value, and script. OOR inventory includes `ancestry_packages` to connect
+  round leaves to the target. Sweep expiry is then derived separately from
+  locally confirmed batch outputs. A valid unrelated batch cannot authorize
+  a received target. Existing persisted live rows are outside this check.
+
 - Checkpoint collab output is 2-of-2
   (`arkscript.MultiSigCollabTapLeaf(clientKey, operatorKey)`), never
   single-sig; resumed custom-spend inputs are re-verified against the VTXO

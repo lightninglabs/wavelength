@@ -46,6 +46,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 
 ## Invariants
 
+- Indexed VTXOs pass `vtxo.IndexedAncestryFromRPC` before new acceptance.
+  It verifies signed tree/transaction paths to the exact target outpoint,
+  value, and script. OOR inventory includes `ancestry_packages` to connect
+  round leaves to the target. Sweep expiry is then derived separately from
+  locally confirmed batch outputs. A valid unrelated batch cannot authorize
+  a received target. Existing persisted live rows are outside this check.
+
 - The lnd wallet account (`lnd.account`, empty = lnd's `default`) bounds what
   this daemon may **spend**: `ListWalletUnspent` (fee inputs and the exit
   preflight), `NewWalletAddress` (the deposit address), and the

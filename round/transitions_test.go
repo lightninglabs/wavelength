@@ -1303,6 +1303,8 @@ func TestRoundJoinedState(t *testing.T) {
 	})
 }
 
+// TestCommitmentTxReceivedState verifies commitment, tree, and sweep-policy
+// validation before the client advances toward round signing.
 func TestCommitmentTxReceivedState(t *testing.T) {
 	t.Parallel()
 

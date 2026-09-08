@@ -727,6 +727,8 @@ func decodeUint32List(raw []byte) ([]uint32, error) {
 	return out, nil
 }
 
+// encodeIncomingMetadataMatch persists the locally authenticated expiry flag
+// with its ancestry so durable redelivery preserves the acceptance decision.
 func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 	outputIndex := match.OutputIndex
 	roundID := []byte(match.Metadata.RoundID)
