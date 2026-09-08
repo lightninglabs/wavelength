@@ -28,6 +28,7 @@ var fundingPeerMethods = map[string]struct{}{
 	"RegisterPromotion":       {},
 	"RegisterReceiveIntent":   {},
 	"GetFundingChannel":       {},
+	"FailReceiveIntent":       {},
 	"BindPreparedOOR":         {},
 	"SignBacking":             {},
 	"InstallBacking":          {},
@@ -115,6 +116,8 @@ type ProcessFundingPeer interface {
 
 	GetFundingChannel(context.Context,
 		arkchannel.ID) (FundingChannelState, error)
+
+	FailReceiveIntent(context.Context, arkchannel.ID, string) error
 
 	BindPreparedOOR(context.Context, arkchannel.ID,
 		arkchannel.VTXOBinding) (arkchannel.Record, error)
@@ -285,6 +288,29 @@ func (p *MailboxFundingPeer) GetFundingChannel(ctx context.Context,
 	}
 
 	return state, nil
+}
+
+// FailReceiveIntent asks the endpoint that funded a receive intent to record
+// the failure and authoritatively abort its prepared OOR.
+func (p *MailboxFundingPeer) FailReceiveIntent(ctx context.Context,
+	id arkchannel.ID, reason string) error {
+
+	if reason == "" {
+		return fmt.Errorf("receive intent failure reason is required")
+	}
+	response, err := p.client.FailReceiveIntent(
+		ctx, &arkchannelrpc.FailReceiveIntentRequest{
+			ChannelId: id[:], Reason: reason,
+		}, fundingRPCOptions(id, "fail-receive-intent"),
+	)
+	if err != nil {
+		return err
+	}
+	if !response.GetFailed() {
+		return fmt.Errorf("receive intent did not reach failed state")
+	}
+
+	return nil
 }
 
 // BindPreparedOOR installs the exact prepared output at the responder before
@@ -707,6 +733,40 @@ func (s *FundingPeerRPCServer) GetFundingChannel(ctx context.Context,
 	}
 
 	return response, nil
+}
+
+// FailReceiveIntent records a client-observed failure at the hub that owns
+// the prepared OOR, then drives its authoritative abort and lnd cleanup.
+func (s *FundingPeerRPCServer) FailReceiveIntent(ctx context.Context,
+	request *arkchannelrpc.FailReceiveIntentRequest) (
+	*arkchannelrpc.FailReceiveIntentResponse, error) {
+
+	if request.GetReason() == "" {
+		return nil, fmt.Errorf("receive intent failure reason is " +
+			"required")
+	}
+	id, record, err := s.channel(ctx, request.GetChannelId())
+	if err != nil {
+		return nil, err
+	}
+	if record.Snapshot.Terms.Kind != arkchannel.KindReceiveIntent ||
+		record.Snapshot.Terms.Funder != arkchannel.PartyHub {
+		return nil, fmt.Errorf("channel is not a hub-funded receive " +
+			"intent")
+	}
+	record, err = s.cfg.Service.ApplyLocalEvent(
+		ctx, id, &arkchannel.Fail{
+			Reason: request.GetReason(),
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &arkchannelrpc.FailReceiveIntentResponse{
+		Failed: record.Snapshot.Phase == arkchannel.PhaseFailed &&
+			record.Snapshot.OORAborted,
+	}, nil
 }
 
 // RegisterPromotion registers immutable terms for the authenticated client.
