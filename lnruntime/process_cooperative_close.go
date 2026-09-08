@@ -290,7 +290,7 @@ func (p *ClientCooperativeCloseProcess) NegotiateCooperativeClose(
 		return fmt.Errorf("validate hub cooperative close: %w", err)
 	}
 
-	if _, err := service.RecordChannelEvent(
+	if _, err := service.RecordLocalEvent(
 		ctx, id, &arkchannel.CooperativeCloseSigned{
 			Close: settlement.Clone(),
 			Party: arkchannel.PartyClient,
@@ -303,7 +303,7 @@ func (p *ClientCooperativeCloseProcess) NegotiateCooperativeClose(
 	); err != nil {
 		return err
 	}
-	if _, err := service.RecordChannelEvent(
+	if _, err := service.RecordPeerEvent(
 		ctx, id, &arkchannel.CooperativeCloseSigned{
 			Close: settlement.Clone(), Party: arkchannel.PartyHub,
 		},
@@ -386,7 +386,7 @@ func (p *ClientCooperativeCloseProcess) publishAndFinalize(ctx context.Context,
 	if err != nil {
 		return err
 	}
-	if _, err := service.RecordChannelEvent(
+	if _, err := service.RecordLocalEvent(
 		ctx, id, &arkchannel.CooperativeClosePublished{
 			TxID: settlement.TxID,
 		},
@@ -402,7 +402,7 @@ func (p *ClientCooperativeCloseProcess) publishAndFinalize(ctx context.Context,
 	if txID != settlement.TxID {
 		return fmt.Errorf("hub observed another cooperative close")
 	}
-	if _, err := service.RecordChannelEvent(
+	if _, err := service.RecordPeerEvent(
 		ctx, id, &arkchannel.CooperativeCloseFinalized{
 			Party: arkchannel.PartyHub,
 		},
@@ -432,7 +432,7 @@ func (p *ClientCooperativeCloseProcess) finalizeClient(ctx context.Context,
 	if err != nil {
 		return err
 	}
-	if _, err := service.RecordChannelEvent(
+	if _, err := service.RecordLocalEvent(
 		ctx, id, &arkchannel.CooperativeCloseFinalized{
 			Party: arkchannel.PartyClient,
 		},
@@ -451,7 +451,7 @@ func (p *ClientCooperativeCloseProcess) abort(ctx context.Context,
 	p.local.ResumeCooperativeClose(backing)
 	service, serviceErr := p.stateService()
 	if serviceErr == nil {
-		_, serviceErr = service.RecordChannelEvent(
+		_, serviceErr = service.RecordLocalEvent(
 			ctx, id, &arkchannel.CooperativeCloseAborted{},
 		)
 	}
@@ -579,8 +579,10 @@ func (p *HubCooperativeCloseProcess) BeginCooperativeClose(ctx context.Context,
 			),
 			HubDeliveryScript: append([]byte(nil), hubScript...),
 		}
-		if _, err := service.RequestCooperativeClose(
-			ctx, id, request,
+		if _, err := service.ApplyPeerEvent(
+			ctx, id, &arkchannel.RequestCooperativeClose{
+				Request: request,
+			},
 		); err != nil {
 			return arkchannel.CooperativeCloseRequest{},
 				CleanChannelState{}, nil, err
@@ -656,7 +658,7 @@ func (p *HubCooperativeCloseProcess) AcknowledgeCooperativeCloseSigned(
 	if err != nil {
 		return err
 	}
-	_, err = service.RecordChannelEvent(
+	_, err = service.RecordPeerEvent(
 		ctx, id, &arkchannel.CooperativeCloseSigned{
 			Close: settlement, Party: arkchannel.PartyClient,
 		},
@@ -700,7 +702,7 @@ func (p *HubCooperativeCloseProcess) PublishCooperativeClose(
 		}
 	}
 	if record.Snapshot.Phase == arkchannel.PhaseCoopCloseSigned {
-		if _, err := service.RecordChannelEvent(
+		if _, err := service.RecordPeerEvent(
 			ctx, id, &arkchannel.CooperativeClosePublished{
 				TxID: txID,
 			},
@@ -732,7 +734,7 @@ func (p *HubCooperativeCloseProcess) AcknowledgeCooperativeCloseFinalized(
 	if err != nil {
 		return err
 	}
-	_, err = service.RecordChannelEvent(
+	_, err = service.RecordPeerEvent(
 		ctx, id, &arkchannel.CooperativeCloseFinalized{
 			Party: arkchannel.PartyClient,
 		},
@@ -763,7 +765,7 @@ func (p *HubCooperativeCloseProcess) AbortCooperativeClose(ctx context.Context,
 		return fmt.Errorf("hub cooperative close backing is missing")
 	}
 	p.local.ResumeCooperativeClose(*record.Snapshot.Backing)
-	_, err = service.RecordChannelEvent(
+	_, err = service.RecordPeerEvent(
 		ctx, id, &arkchannel.CooperativeCloseAborted{},
 	)
 
@@ -800,7 +802,7 @@ func (p *HubCooperativeCloseProcess) FinalizeCooperativeClose(
 	if err != nil {
 		return err
 	}
-	_, err = service.RecordChannelEvent(
+	_, err = service.RecordLocalEvent(
 		ctx, id, &arkchannel.CooperativeCloseFinalized{
 			Party: arkchannel.PartyHub,
 		},

@@ -21,10 +21,16 @@ import (
 type CooperativeCloseStateSink interface {
 	arkchannel.ChannelEventSink
 
+	ApplyPeerEvent(context.Context, arkchannel.ID,
+		arkchannel.Event) (arkchannel.Record, error)
+
 	RequestCooperativeClose(context.Context, arkchannel.ID,
 		arkchannel.CooperativeCloseRequest) (arkchannel.Record, error)
 
-	RecordChannelEvent(context.Context, arkchannel.ID,
+	RecordLocalEvent(context.Context, arkchannel.ID,
+		arkchannel.Event) (arkchannel.Record, error)
+
+	RecordPeerEvent(context.Context, arkchannel.ID,
 		arkchannel.Event) (arkchannel.Record, error)
 
 	ResumeChannelAction(context.Context,
@@ -282,8 +288,9 @@ func (e *NativeCooperativeCloseEndpoint) ResumeCooperativeClose(
 	e.runtime.ResumeChannel(backing.ChannelPoint)
 }
 
-// RecordChannelEvent persists one barrier fact through the bound service.
-func (e *NativeCooperativeCloseEndpoint) RecordChannelEvent(ctx context.Context,
+// RecordLocalEvent persists one locally owned barrier through the bound
+// service.
+func (e *NativeCooperativeCloseEndpoint) RecordLocalEvent(ctx context.Context,
 	id arkchannel.ID, event arkchannel.Event) (arkchannel.Record, error) {
 
 	sink, err := e.stateSink()
@@ -291,7 +298,7 @@ func (e *NativeCooperativeCloseEndpoint) RecordChannelEvent(ctx context.Context,
 		return arkchannel.Record{}, err
 	}
 
-	return sink.RecordChannelEvent(ctx, id, event)
+	return sink.RecordLocalEvent(ctx, id, event)
 }
 
 // ResumeChannelAction executes this endpoint's already durable close action.
@@ -420,7 +427,7 @@ func completeCooperativeClose(ctx context.Context,
 		return arkchannel.CooperativeClose{}, fmt.Errorf("complete "+
 			"cooperative close: %w", err)
 	}
-	_, err = local.RecordChannelEvent(
+	_, err = local.RecordLocalEvent(
 		ctx, id, &arkchannel.CooperativeCloseSigned{
 			Close: settlement,
 			Party: arkchannel.PartyHub,

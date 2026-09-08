@@ -97,7 +97,16 @@ type NativeFundingEndpoint struct {
 	keyDesc keychain.KeyDescriptor
 
 	mu   sync.RWMutex
-	sink arkchannel.ChannelEventSink
+	sink fundingEventSink
+}
+
+// fundingEventSink distinguishes local lnd observations from authenticated
+// peer barriers before either is admitted to the durable channel FSM.
+type fundingEventSink interface {
+	arkchannel.ChannelEventSink
+
+	ApplyPeerEvent(context.Context, arkchannel.ID,
+		arkchannel.Event) (arkchannel.Record, error)
 }
 
 // NewNativeFundingEndpoint constructs one local or remotely adapted endpoint.
@@ -133,12 +142,17 @@ func (e *NativeFundingEndpoint) BindChannelEventSink(
 	if sink == nil {
 		return fmt.Errorf("channel event sink is required")
 	}
+	fundingSink, ok := sink.(fundingEventSink)
+	if !ok {
+		return fmt.Errorf("channel event sink cannot record peer " +
+			"events")
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.sink != nil {
 		return nil
 	}
-	e.sink = sink
+	e.sink = fundingSink
 
 	return nil
 }
@@ -198,9 +212,14 @@ func (e *NativeFundingEndpoint) InstallBacking(ctx context.Context,
 	if err := e.funding.RegisterBacking(funding); err != nil {
 		return err
 	}
-	_, err = e.ApplyChannelEvent(ctx, id, &arkchannel.BackingSigned{
+	event := &arkchannel.BackingSigned{
 		Backing: backing,
-	})
+	}
+	if terms.Funder == e.party {
+		_, err = e.applyLocalEvent(ctx, id, event)
+	} else {
+		_, err = e.ApplyChannelEvent(ctx, id, event)
+	}
 
 	return err
 }
@@ -209,7 +228,15 @@ func (e *NativeFundingEndpoint) InstallBacking(ctx context.Context,
 func (e *NativeFundingEndpoint) FundingFinalized(ctx context.Context,
 	terms arkchannel.Terms, backing arkchannel.Backing) (bool, error) {
 
-	return e.funding.FundingFinalized(ctx, terms, backing)
+	ready, err := e.funding.FundingFinalized(ctx, terms, backing)
+	if err != nil || !ready {
+		return ready, err
+	}
+	_, err = e.applyLocalEvent(ctx, terms.ID, &arkchannel.FundingFinalized{
+		Party: e.party,
+	})
+
+	return err == nil, err
 }
 
 // ChannelActive reports whether native lnd moved the exact channel out of its
@@ -217,7 +244,16 @@ func (e *NativeFundingEndpoint) FundingFinalized(ctx context.Context,
 func (e *NativeFundingEndpoint) ChannelActive(ctx context.Context,
 	terms arkchannel.Terms, backing arkchannel.Backing) (bool, error) {
 
-	return e.funding.ChannelActive(ctx, terms, backing)
+	active, err := e.funding.ChannelActive(ctx, terms, backing)
+	if err != nil || !active {
+		return active, err
+	}
+	_, err = e.applyLocalEvent(ctx, terms.ID, &arkchannel.ChannelActive{
+		ChannelPointHash:  backing.ChannelPoint.Hash,
+		ChannelPointIndex: backing.ChannelPoint.Index,
+	})
+
+	return err == nil, err
 }
 
 // ApplyChannelEvent records a peer-observed fact in this endpoint's durable
@@ -233,7 +269,23 @@ func (e *NativeFundingEndpoint) ApplyChannelEvent(ctx context.Context,
 			"is not bound")
 	}
 
-	return sink.Apply(ctx, id, event)
+	return sink.ApplyPeerEvent(ctx, id, event)
+}
+
+// applyLocalEvent records evidence produced by this endpoint's native lnd
+// subsystems.
+func (e *NativeFundingEndpoint) applyLocalEvent(ctx context.Context,
+	id arkchannel.ID, event arkchannel.Event) (arkchannel.Record, error) {
+
+	e.mu.RLock()
+	sink := e.sink
+	e.mu.RUnlock()
+	if sink == nil {
+		return arkchannel.Record{}, fmt.Errorf("channel event sink " +
+			"is not bound")
+	}
+
+	return sink.ApplyLocalEvent(ctx, id, event)
 }
 
 // ChannelNegotiator coordinates only the cross-system funding barriers. lnd
@@ -382,25 +434,20 @@ func (n *ChannelNegotiator) NegotiateChannel(ctx context.Context,
 		return err
 	}
 
-	var localRecord arkchannel.Record
-	for _, party := range []arkchannel.Party{
-		arkchannel.PartyClient, arkchannel.PartyHub,
-	} {
-		if _, err := n.remote.ApplyChannelEvent(
-			ctx, id, &arkchannel.FundingFinalized{
-				Party: party,
-			},
-		); err != nil {
-			return err
-		}
-		localRecord, err = n.local.ApplyChannelEvent(
-			ctx, id, &arkchannel.FundingFinalized{
-				Party: party,
-			},
-		)
-		if err != nil {
-			return err
-		}
+	if _, err := n.remote.ApplyChannelEvent(
+		ctx, id, &arkchannel.FundingFinalized{
+			Party: n.local.party,
+		},
+	); err != nil {
+		return err
+	}
+	localRecord, err := n.local.ApplyChannelEvent(
+		ctx, id, &arkchannel.FundingFinalized{
+			Party: otherChannelParty(n.local.party),
+		},
+	)
+	if err != nil {
+		return err
 	}
 	if terms.Funder == n.local.party {
 		if !localRecord.Snapshot.OORFinalized {
@@ -430,18 +477,8 @@ func (n *ChannelNegotiator) NegotiateChannel(ctx context.Context,
 	if err := n.waitForChannelActive(ctx, terms, backing); err != nil {
 		return err
 	}
-	activeEvent := &arkchannel.ChannelActive{
-		ChannelPointHash:  backing.ChannelPoint.Hash,
-		ChannelPointIndex: backing.ChannelPoint.Index,
-	}
-	if _, err := n.remote.ApplyChannelEvent(
-		ctx, id, activeEvent,
-	); err != nil {
-		return err
-	}
-	_, err = n.local.ApplyChannelEvent(ctx, id, activeEvent)
 
-	return err
+	return nil
 }
 
 // PrepareChannelRecovery copies the finalized source package to both
@@ -480,6 +517,17 @@ func (n *ChannelNegotiator) PrepareChannelRecovery(ctx context.Context,
 	); err != nil {
 		return fmt.Errorf("install local channel recovery: %w", err)
 	}
+	localEvent := &arkchannel.RecoveryPackageInstalled{
+		Party: n.local.party,
+	}
+	if _, err := n.local.applyLocalEvent(ctx, id, localEvent); err != nil {
+		return err
+	}
+	if _, err := n.remote.ApplyChannelEvent(
+		ctx, id, localEvent,
+	); err != nil {
+		return err
+	}
 	remote, ok := n.remote.(RecoveryCounterparty)
 	if !ok {
 		if terms.Funder == n.local.party {
@@ -499,11 +547,11 @@ func (n *ChannelNegotiator) PrepareChannelRecovery(ctx context.Context,
 	); err != nil {
 		return fmt.Errorf("install remote channel recovery: %w", err)
 	}
-	event := &arkchannel.RecoveryPackageInstalled{}
-	if _, err := n.remote.ApplyChannelEvent(ctx, id, event); err != nil {
-		return err
-	}
-	_, err = n.local.ApplyChannelEvent(ctx, id, event)
+	_, err = n.local.ApplyChannelEvent(
+		ctx, id, &arkchannel.RecoveryPackageInstalled{
+			Party: otherChannelParty(n.local.party),
+		},
+	)
 
 	return err
 }
@@ -515,14 +563,6 @@ func (n *ChannelNegotiator) CancelChannel(ctx context.Context, id arkchannel.ID,
 	backing *arkchannel.Backing, reason string) error {
 
 	if terms.Funder == n.local.party {
-		if _, err := n.remote.ApplyChannelEvent(
-			ctx, id, &arkchannel.Fail{
-				Reason: reason,
-			},
-		); err != nil {
-			return fmt.Errorf("fail remote channel funding: %w",
-				err)
-		}
 		if _, err := n.remote.ApplyChannelEvent(
 			ctx, id, &arkchannel.OORAborted{
 				SessionID: source.OORSessionID,
@@ -542,7 +582,7 @@ func (n *ChannelNegotiator) CancelChannel(ctx context.Context, id arkchannel.ID,
 	); err != nil {
 		return err
 	}
-	_, err := n.local.ApplyChannelEvent(
+	_, err := n.local.applyLocalEvent(
 		ctx, id, &arkchannel.FundingCanceled{},
 	)
 

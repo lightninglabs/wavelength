@@ -147,15 +147,16 @@ type ProcessPaymentPeer interface {
 // FundingChannelState is the minimal remote channel-FSM view needed to bind a
 // hub-prepared source and mirror terminal pre-commit failure.
 type FundingChannelState struct {
-	Terms         arkchannel.Terms
-	Source        *arkchannel.VTXOBinding
-	Backing       *arkchannel.Backing
-	Phase         arkchannel.Phase
-	OORFinalized  bool
-	OORAborted    bool
-	RecoveryReady bool
-	Failure       string
-	Revision      uint64
+	Terms               arkchannel.Terms
+	Source              *arkchannel.VTXOBinding
+	Backing             *arkchannel.Backing
+	Phase               arkchannel.Phase
+	OORFinalized        bool
+	OORAborted          bool
+	ClientRecoveryReady bool
+	HubRecoveryReady    bool
+	Failure             string
+	Revision            uint64
 }
 
 // IsFundingPeerRoute reports whether one mailbox route belongs to the channel
@@ -259,13 +260,14 @@ func (p *MailboxFundingPeer) GetFundingChannel(ctx context.Context,
 			"returned another channel")
 	}
 	state := FundingChannelState{
-		Terms:         terms,
-		Phase:         arkchannel.Phase(response.GetPhase()),
-		OORFinalized:  response.GetOorFinalized(),
-		OORAborted:    response.GetOorAborted(),
-		RecoveryReady: response.GetRecoveryReady(),
-		Failure:       response.GetFailure(),
-		Revision:      response.GetRevision(),
+		Terms:               terms,
+		Phase:               arkchannel.Phase(response.GetPhase()),
+		OORFinalized:        response.GetOorFinalized(),
+		OORAborted:          response.GetOorAborted(),
+		ClientRecoveryReady: response.GetClientRecoveryReady(),
+		HubRecoveryReady:    response.GetHubRecoveryReady(),
+		Failure:             response.GetFailure(),
+		Revision:            response.GetRevision(),
 	}
 	if response.GetBinding() != nil {
 		binding, err := channelBindingFromRPC(response.GetBinding())
@@ -688,12 +690,14 @@ func (s *FundingPeerRPCServer) GetFundingChannel(ctx context.Context,
 	}
 	snapshot := record.Snapshot
 	response := &arkchannelrpc.GetFundingChannelResponse{
-		Terms:         channelTermsToRPC(snapshot.Terms),
-		Phase:         uint32(snapshot.Phase),
-		OorFinalized:  snapshot.OORFinalized,
-		OorAborted:    snapshot.OORAborted,
-		RecoveryReady: snapshot.RecoveryReady,
-		Failure:       snapshot.Failure, Revision: record.Revision,
+		Terms:               channelTermsToRPC(snapshot.Terms),
+		Phase:               uint32(snapshot.Phase),
+		OorFinalized:        snapshot.OORFinalized,
+		OorAborted:          snapshot.OORAborted,
+		ClientRecoveryReady: snapshot.ClientRecoveryReady,
+		HubRecoveryReady:    snapshot.HubRecoveryReady,
+		Failure:             snapshot.Failure,
+		Revision:            record.Revision,
 	}
 	if snapshot.Source != nil {
 		response.Binding = channelBindingToRPC(*snapshot.Source)
@@ -743,7 +747,15 @@ func (s *FundingPeerRPCServer) BindPreparedOOR(ctx context.Context,
 	if err := binding.Validate(record.Snapshot.Terms); err != nil {
 		return nil, err
 	}
-	record, err = s.cfg.Service.BindPreparedOOR(ctx, id, binding)
+	if record.Snapshot.Terms.Funder == s.cfg.Funding.party {
+		return nil, fmt.Errorf("peer cannot bind the local funder's " +
+			"OOR")
+	}
+	record, err = s.cfg.Service.ApplyPeerEvent(
+		ctx, id, &arkchannel.BindVTXO{
+			Binding: binding,
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -868,6 +880,13 @@ func (s *FundingPeerRPCServer) InstallRecoveryPackage(ctx context.Context,
 	); err != nil {
 		return nil, err
 	}
+	if _, err := s.cfg.Service.ApplyLocalEvent(
+		ctx, id, &arkchannel.RecoveryPackageInstalled{
+			Party: s.cfg.Funding.party,
+		},
+	); err != nil {
+		return nil, err
+	}
 
 	return &arkchannelrpc.InstallRecoveryPackageResponse{}, nil
 }
@@ -959,11 +978,8 @@ func (s *FundingPeerRPCServer) ApplyChannelEvent(ctx context.Context,
 	}
 	var record arkchannel.Record
 	switch event.(type) {
-	case *arkchannel.Materialize:
-		record, err = s.cfg.Service.Materialize(ctx, id)
-
 	case *arkchannel.FundingPeerReady:
-		record, err = s.cfg.Service.RecordChannelEvent(ctx, id, event)
+		record, err = s.cfg.Service.RecordPeerEvent(ctx, id, event)
 
 	default:
 		record, err = s.cfg.Funding.ApplyChannelEvent(ctx, id, event)
@@ -1519,40 +1535,9 @@ func channelEventToRPC(id arkchannel.ID, event arkchannel.Event) (
 
 	case *arkchannel.RecoveryPackageInstalled:
 		request.EventType = recoveryPackageInstalledEvent
+		request.Party = uint32(event.Party)
 
 		return request, "recovery-package-installed", nil
-
-	case *arkchannel.ChannelActive:
-		request.EventType = arkchannelrpc.
-			ChannelEventType_CHANNEL_EVENT_TYPE_CHANNEL_ACTIVE
-		request.ChannelPointTxid = event.ChannelPointHash[:]
-		request.ChannelPointIndex = event.ChannelPointIndex
-
-		return request, "channel-active", nil
-
-	case *arkchannel.Materialize:
-		request.EventType = arkchannelrpc.
-			ChannelEventType_CHANNEL_EVENT_TYPE_MATERIALIZE
-
-		return request, "materialize", nil
-
-	case *arkchannel.BackingPublished:
-		request.EventType = arkchannelrpc.
-			ChannelEventType_CHANNEL_EVENT_TYPE_BACKING_PUBLISHED
-		request.ChannelPointTxid = event.TxID[:]
-
-		return request, "backing-published", nil
-
-	case *arkchannel.Fail:
-		if event.Reason == "" {
-			return nil, "", fmt.Errorf("channel failure reason " +
-				"is required")
-		}
-		request.EventType = arkchannelrpc.
-			ChannelEventType_CHANNEL_EVENT_TYPE_FAILED
-		request.FailureReason = event.Reason
-
-		return request, "fail", nil
 
 	default:
 		return nil, "", fmt.Errorf("unsupported remote channel "+
@@ -1609,43 +1594,15 @@ func channelEventFromRPC(request *arkchannelrpc.ApplyChannelEventRequest) (
 
 	case arkchannelrpc.
 		ChannelEventType_CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED:
-		return &arkchannel.RecoveryPackageInstalled{}, nil
 
-	case arkchannelrpc.ChannelEventType_CHANNEL_EVENT_TYPE_CHANNEL_ACTIVE:
-		hash, err := rpcHash(
-			"channel point txid", request.GetChannelPointTxid(),
-		)
-		if err != nil {
-			return nil, err
+		party := arkchannel.Party(request.GetParty())
+		if party != arkchannel.PartyClient &&
+			party != arkchannel.PartyHub {
+			return nil, fmt.Errorf("invalid recovery party %d",
+				party)
 		}
 
-		return &arkchannel.ChannelActive{
-			ChannelPointHash:  hash,
-			ChannelPointIndex: request.GetChannelPointIndex(),
-		}, nil
-
-	case arkchannelrpc.ChannelEventType_CHANNEL_EVENT_TYPE_MATERIALIZE:
-		return &arkchannel.Materialize{}, nil
-
-	case arkchannelrpc.
-		ChannelEventType_CHANNEL_EVENT_TYPE_BACKING_PUBLISHED:
-
-		hash, err := rpcHash(
-			"channel point txid", request.GetChannelPointTxid(),
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		return &arkchannel.BackingPublished{TxID: hash}, nil
-
-	case arkchannelrpc.ChannelEventType_CHANNEL_EVENT_TYPE_FAILED:
-		if request.GetFailureReason() == "" {
-			return nil, fmt.Errorf("channel failure reason is " +
-				"required")
-		}
-
-		return &arkchannel.Fail{Reason: request.GetFailureReason()}, nil
+		return &arkchannel.RecoveryPackageInstalled{Party: party}, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported channel event type %d",

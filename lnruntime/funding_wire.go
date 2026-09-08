@@ -386,7 +386,7 @@ func (c *FundingWireServerConfig) handle(ctx context.Context,
 		}
 		var record arkchannel.Record
 		if _, ready := event.(*arkchannel.FundingPeerReady); ready {
-			record, err = c.Service.RecordChannelEvent(
+			record, err = c.Service.RecordPeerEvent(
 				ctx, id, event,
 			)
 		} else {
