@@ -314,9 +314,18 @@ func newChainArbitrator(runtime *Runtime, cfg OnchainConfig,
 			ShouldWatchChannel: func(
 				channel *chanstate.OpenChannel) (bool, error) {
 
-				return cfg.ShouldWatchChannel(
+				watch, err := cfg.ShouldWatchChannel(
 					channel.FundingOutpoint,
 				)
+				if err != nil {
+
+					// RestorePeerLinks retries admission
+					// and reports this channel without
+					// aborting every peer link.
+					return false, nil //nolint:nilerr
+				}
+
+				return watch, nil
 			},
 		}, runtime.cfg.DB,
 	)

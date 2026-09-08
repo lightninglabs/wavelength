@@ -103,6 +103,7 @@ type NativeNodeConfig struct {
 
 	OnChannelOpened            func(*chanstate.OpenChannel)
 	OnChannelFailure           LinkFailureHandler
+	OnChannelRestoreFailure    func(wire.OutPoint, error)
 	ShouldWatchChannel         func(wire.OutPoint) (bool, error)
 	ShouldDisableChannelAdds   func(wire.OutPoint) (bool, error)
 	BeforeCommitmentPublish    func(wire.OutPoint) error
@@ -121,9 +122,10 @@ type NativeNode struct {
 	peer            *Peer
 	fundingEndpoint *NativeFundingEndpoint
 
-	mu      sync.Mutex
-	started bool
-	stopped bool
+	mu         sync.Mutex
+	started    bool
+	stopped    bool
+	restoreErr error
 }
 
 // NewNativeNode composes one endpoint without starting its lnd goroutines.
@@ -366,23 +368,46 @@ func openNativeChannelDB(dataDir string) (*channeldb.DB, error) {
 // Start starts the native lnd channel and payment subsystems.
 func (n *NativeNode) Start() error {
 	n.mu.Lock()
-	defer n.mu.Unlock()
 	if n.started {
+		n.mu.Unlock()
+
 		return nil
 	}
 	if n.stopped {
+		n.mu.Unlock()
+
 		return fmt.Errorf("native channel node already stopped")
 	}
 	if err := n.runtime.Start(); err != nil {
+		n.mu.Unlock()
+
 		return err
 	}
 	_, err := n.runtime.RestorePeerLinks(n.peer, n.restoredLinkConfig)
 	if err != nil {
-		_ = n.runtime.Stop()
+		var restoreErr *PeerLinkRestoreError
+		if !errors.As(err, &restoreErr) {
+			_ = n.runtime.Stop()
+			n.mu.Unlock()
 
-		return fmt.Errorf("restore native channel links: %w", err)
+			return fmt.Errorf("restore native channel links: %w",
+				err)
+		}
+		n.restoreErr = restoreErr
 	}
 	n.started = true
+	restoreErr := n.restoreErr
+	reportFailure := n.cfg.OnChannelRestoreFailure
+	n.mu.Unlock()
+
+	if reportFailure != nil && restoreErr != nil {
+		var failures *PeerLinkRestoreError
+		if errors.As(restoreErr, &failures) {
+			for _, failure := range failures.Failures {
+				reportFailure(failure.ChannelPoint, failure.Err)
+			}
+		}
+	}
 
 	return nil
 }
@@ -400,6 +425,9 @@ func (n *NativeNode) restoredLinkConfig(state *chanstate.OpenChannel) (
 		return LinkConfig{}, fmt.Errorf("active channel %v is not "+
 			"admitted to the on-chain lifecycle",
 			state.FundingOutpoint)
+	}
+	if err := n.runtime.WatchChannel(state); err != nil {
+		return LinkConfig{}, err
 	}
 
 	linkConfig, err := n.runtime.NewOnchainLinkConfig(
@@ -419,6 +447,14 @@ func (n *NativeNode) restoredLinkConfig(state *chanstate.OpenChannel) (
 	}
 
 	return linkConfig, nil
+}
+
+// RestoreError returns the per-channel failures retained during startup.
+func (n *NativeNode) RestoreError() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	return n.restoreErr
 }
 
 // Stop stops native lnd state before closing a node-owned channel database.

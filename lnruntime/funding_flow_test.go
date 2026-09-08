@@ -908,6 +908,73 @@ func TestNativeFundingFlowRestoresQuiescedLinks(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond)
 }
 
+// TestRestorePeerLinksIsolatesChannelFailures verifies one channel's broken
+// application config does not roll back another restored link for its peer.
+func TestRestorePeerLinksIsolatesChannelFailures(t *testing.T) {
+	t.Parallel()
+
+	hub := newFundingFlowNode(t, arkchannel.PartyHub)
+	client := newFundingFlowNode(t, arkchannel.PartyClient)
+	connectFundingFlowNodes(t, hub, client)
+	require.NoError(t, hub.runtime.Start())
+	require.NoError(t, client.runtime.Start())
+	t.Cleanup(func() {
+		require.NoError(t, hub.runtime.Stop())
+		require.NoError(t, client.runtime.Stop())
+	})
+
+	first := activateFundingFlowChannel(
+		t, hub, client,
+		fundingIntentRecord(
+			t, hub, client, lndfunding.PendingChanID{4, 1},
+		),
+	)
+	_ = awaitFinalized(t, hub, nil)
+	_ = awaitFinalized(t, client, nil)
+	secondRecord := fundingIntentRecord(
+		t, hub, client, lndfunding.PendingChanID{4, 2},
+	)
+	secondRecord.Snapshot.Terms.ID[0] = 2
+	secondRecord.Snapshot.Terms.ReservedSCID = lnwire.ShortChannelID{
+		BlockHeight: 16_000_001,
+		TxIndex:     2,
+	}.ToUint64()
+	secondRecord.Snapshot.Source = testIntentBinding(
+		t, secondRecord.Snapshot.Terms, testFundingCapacity+1_000, 1,
+	)
+	second := activateFundingFlowChannel(t, hub, client, secondRecord)
+
+	failedPoint := first.clientChannel.FundingOutpoint
+	healthyPoint := second.clientChannel.FundingOutpoint
+	client.runtime.RemoveLink(failedPoint)
+	client.runtime.RemoveLink(healthyPoint)
+
+	restored, err := client.runtime.RestorePeerLinks(
+		client.peer,
+		func(state *chanstate.OpenChannel) (LinkConfig, error) {
+			if state.FundingOutpoint == failedPoint {
+				return LinkConfig{}, fmt.Errorf("damaged " +
+					"channel config")
+			}
+
+			return testLinkConfig(client.peer, client.failures), nil
+		},
+	)
+	var restoreErr *PeerLinkRestoreError
+	require.ErrorAs(t, err, &restoreErr)
+	require.Len(t, restoreErr.Failures, 1)
+	require.Equal(t, failedPoint, restoreErr.Failures[0].ChannelPoint)
+	require.Len(t, restored, 1)
+	require.Equal(
+		t, healthyPoint, restored[0].StateSnapshot().ChannelPoint,
+	)
+
+	_, err = client.runtime.GetLink(second.clientChannel.ShortChanID())
+	require.NoError(t, err)
+	_, err = client.runtime.GetLink(first.clientChannel.ShortChanID())
+	require.ErrorIs(t, err, htlcswitch.ErrChannelLinkNotFound)
+}
+
 // TestNativeFundingFlowInArkCooperativeClose proves an active unpublished
 // channel can carry payments in both directions and then settle its clean lnd
 // balances with an ordinary OOR package over the channel VTXO's 3-of-3 path.

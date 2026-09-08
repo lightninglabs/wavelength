@@ -16,6 +16,51 @@ import (
 // callbacks while restoring a channel from lnd's database.
 type LinkConfigSource func(*chanstate.OpenChannel) (LinkConfig, error)
 
+// ChannelLinkRestoreError identifies one persisted channel that could not be
+// restored without affecting its peer's other channels.
+type ChannelLinkRestoreError struct {
+	ChannelPoint wire.OutPoint
+	Err          error
+}
+
+// Error returns the failed channel and its restore error.
+func (e ChannelLinkRestoreError) Error() string {
+	return fmt.Sprintf("restore lnd channel %v: %v", e.ChannelPoint, e.Err)
+}
+
+// Unwrap exposes the underlying per-channel failure.
+func (e ChannelLinkRestoreError) Unwrap() error {
+	return e.Err
+}
+
+// PeerLinkRestoreError aggregates independent channel restore failures.
+type PeerLinkRestoreError struct {
+	Failures []ChannelLinkRestoreError
+}
+
+// Error summarizes the partial peer restore.
+func (e *PeerLinkRestoreError) Error() string {
+	if e == nil {
+		return "restore lnd peer channels"
+	}
+
+	return fmt.Sprintf("restore %d lnd peer channel(s)", len(e.Failures))
+}
+
+// Unwrap exposes each failed channel to errors.Is and errors.As.
+func (e *PeerLinkRestoreError) Unwrap() []error {
+	if e == nil {
+		return nil
+	}
+
+	errs := make([]error, 0, len(e.Failures))
+	for i := range e.Failures {
+		errs = append(errs, e.Failures[i])
+	}
+
+	return errs
+}
+
 // RestorePeerLinks rebuilds every non-pending channel for one peer from lnd's
 // database and enables the normal channel-reestablishment exchange. Existing
 // links are left intact, making repeated recovery calls idempotent.
@@ -37,12 +82,7 @@ func (r *Runtime) RestorePeerLinks(peer lnpeer.Peer,
 	}
 
 	restored := make([]*lnwallet.LightningChannel, 0, len(states))
-	restoredPoints := make([]wire.OutPoint, 0, len(states))
-	rollback := func() {
-		for _, channelPoint := range restoredPoints {
-			r.RemoveLink(channelPoint)
-		}
-	}
+	failures := make([]ChannelLinkRestoreError, 0)
 
 	for _, state := range states {
 		if state.IsPending {
@@ -55,29 +95,42 @@ func (r *Runtime) RestorePeerLinks(peer lnpeer.Peer,
 		if _, err := r.switcher.GetLink(channelID); err == nil {
 			continue
 		} else if !errors.Is(err, htlcswitch.ErrChannelLinkNotFound) {
-			rollback()
+			failures = append(failures, ChannelLinkRestoreError{
+				ChannelPoint: state.FundingOutpoint,
+				Err: fmt.Errorf("inspect lnd channel link: %w",
+					err),
+			})
 
-			return nil, fmt.Errorf("inspect lnd channel link: %w",
-				err)
+			continue
 		}
 
 		linkConfig, err := configSource(state)
 		if err != nil {
-			rollback()
+			failures = append(failures, ChannelLinkRestoreError{
+				ChannelPoint: state.FundingOutpoint,
+				Err: fmt.Errorf("build lnd link "+
+					"config: %w", err),
+			})
 
-			return nil, fmt.Errorf("build lnd link config: %w", err)
+			continue
 		}
 		linkConfig.Peer = peer
 		linkConfig.SyncStates = true
 
 		channel, err := r.AddLink(state, linkConfig)
 		if err != nil {
-			rollback()
+			failures = append(failures, ChannelLinkRestoreError{
+				ChannelPoint: state.FundingOutpoint,
+				Err:          err,
+			})
 
-			return nil, err
+			continue
 		}
 		restored = append(restored, channel)
-		restoredPoints = append(restoredPoints, state.FundingOutpoint)
+	}
+
+	if len(failures) != 0 {
+		return restored, &PeerLinkRestoreError{Failures: failures}
 	}
 
 	return restored, nil
