@@ -1,14 +1,24 @@
 package waveclicommands
 
 import (
+	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+const (
+	channelCreateKeyPrefix = "wavecli-channel-"
+	channelCreateRetryWait = 250 * time.Millisecond
 )
 
 // getArkChannelClient is replaceable by command wiring tests.
@@ -61,22 +71,32 @@ func newChannelCreateCmd() *cobra.Command {
 			idempotencyKey, _ := cmd.Flags().GetString(
 				"idempotency-key",
 			)
+			if idempotencyKey == "" {
+				idempotencyKey, err = newChannelCreateKey()
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(
+					cmd.ErrOrStderr(),
+					"Channel creation idempotency key: "+
+						"%s\n", idempotencyKey,
+				)
+			}
 			client, conn, err := getArkChannelClient(cmd)
 			if err != nil {
 				return err
 			}
 			defer conn.Close()
-			ctx, cancel := rpcContext(cmd)
-			defer cancel()
-
-			resp, err := client.PromoteVTXO(
-				ctx, &arkchannelrpc.PromoteVTXORequest{
+			resp, err := promoteVTXOWithRetry(
+				cmd, client, &arkchannelrpc.PromoteVTXORequest{
 					AmountSat:      amount,
 					IdempotencyKey: idempotencyKey,
 				},
 			)
 			if err != nil {
-				return err
+				return fmt.Errorf("create channel with "+
+					"idempotency key %q: %w",
+					idempotencyKey, err)
 			}
 
 			return printJSON(resp)
@@ -88,6 +108,72 @@ func newChannelCreateCmd() *cobra.Command {
 		"approve promoting wallet funds into a channel")
 
 	return cmd
+}
+
+// newChannelCreateKey returns the retry identity used for one CLI invocation.
+func newChannelCreateKey() (string, error) {
+	var entropy [16]byte
+	if _, err := rand.Read(entropy[:]); err != nil {
+		return "", fmt.Errorf("generate channel creation key: %w", err)
+	}
+
+	return channelCreateKeyPrefix + hex.EncodeToString(entropy[:]), nil
+}
+
+// promoteVTXOWithRetry keeps one logical channel creation alive across finite
+// RPC attempt deadlines and transient transport loss. The command context
+// remains the overall cancellation boundary.
+func promoteVTXOWithRetry(cmd *cobra.Command,
+	client arkchannelrpc.ArkChannelServiceClient,
+	req *arkchannelrpc.PromoteVTXORequest) (
+	*arkchannelrpc.PromoteVTXOResponse, error) {
+
+	ctx := commandContext(cmd)
+	for {
+		attemptCtx, cancel := rpcContextFrom(cmd, ctx)
+		response, err := client.PromoteVTXO(attemptCtx, req)
+		cancel()
+		if err == nil {
+			return response, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if !retryChannelCreateError(err) {
+			return nil, err
+		}
+		if err := waitChannelCreateRetry(ctx); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// retryChannelCreateError reports transport outcomes that can be retried with
+// the same mandatory idempotency key.
+func retryChannelCreateError(err error) bool {
+	switch status.Code(err) {
+	case codes.Aborted, codes.DeadlineExceeded, codes.ResourceExhausted,
+		codes.Unavailable:
+		return true
+
+	default:
+		return false
+	}
+}
+
+// waitChannelCreateRetry applies bounded backoff without obscuring command
+// cancellation.
+func waitChannelCreateRetry(ctx context.Context) error {
+	timer := time.NewTimer(channelCreateRetryWait)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+
+	case <-timer.C:
+		return nil
+	}
 }
 
 // newChannelGetCmd returns one durable channel snapshot.

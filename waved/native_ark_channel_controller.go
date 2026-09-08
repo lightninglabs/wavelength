@@ -3,7 +3,6 @@ package waved
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -1197,6 +1196,10 @@ func (c *NativeArkChannelController) PromoteVTXO(ctx context.Context,
 		return arkchannel.Record{}, fmt.Errorf("channel amount must " +
 			"be positive")
 	}
+	if idempotencyKey == "" {
+		return arkchannel.Record{}, fmt.Errorf("idempotency key is " +
+			"required")
+	}
 	if len(idempotencyKey) > maxArkChannelIdempotencyKeyLength {
 		return arkchannel.Record{}, fmt.Errorf("idempotency key "+
 			"exceeds %d bytes", maxArkChannelIdempotencyKeyLength)
@@ -1204,7 +1207,7 @@ func (c *NativeArkChannelController) PromoteVTXO(ctx context.Context,
 	if err := c.ensureClientStarted(ctx); err != nil {
 		return arkchannel.Record{}, err
 	}
-	terms, err := c.newPromotionTerms(ctx, amount, idempotencyKey)
+	terms, err := c.newPromotionTerms(amount, idempotencyKey)
 	if err != nil {
 		return arkchannel.Record{}, err
 	}
@@ -1245,49 +1248,16 @@ func (c *NativeArkChannelController) PromoteVTXO(ctx context.Context,
 	return c.service.GetChannel(ctx, terms.ID)
 }
 
-// newPromotionTerms creates unique protocol identifiers and binds every key
+// newPromotionTerms creates stable protocol identifiers and binds every key
 // role to the two endpoint wallets.
-func (c *NativeArkChannelController) newPromotionTerms(ctx context.Context,
-	amount btcutil.Amount, idempotencyKey string) (arkchannel.Terms,
-	error) {
+func (c *NativeArkChannelController) newPromotionTerms(amount btcutil.Amount,
+	idempotencyKey string) (arkchannel.Terms, error) {
 
-	if idempotencyKey != "" {
-		id, pending, scid := c.promotionIdentifiers(idempotencyKey)
-
-		return c.newClientFundedTerms(
-			id, pending, scid, amount, arkchannel.KindPromotion,
-			lntypes.Hash{},
-		)
+	if idempotencyKey == "" {
+		return arkchannel.Terms{}, fmt.Errorf("idempotency key is " +
+			"required")
 	}
-
-	var id arkchannel.ID
-	if _, err := rand.Read(id[:]); err != nil {
-		return arkchannel.Terms{}, err
-	}
-	var pending [32]byte
-	if _, err := rand.Read(pending[:]); err != nil {
-		return arkchannel.Terms{}, err
-	}
-	var txIndexBytes [4]byte
-	if _, err := rand.Read(txIndexBytes[:3]); err != nil {
-		return arkchannel.Terms{}, err
-	}
-	_, height, err := c.cfg.Wallet.BtcWallet.GetBestBlock()
-	if err != nil {
-		return arkchannel.Terms{}, err
-	}
-	if height < 0 {
-		return arkchannel.Terms{}, fmt.Errorf("invalid channel chain " +
-			"height")
-	}
-	txIndex := binary.BigEndian.Uint32(txIndexBytes[:]) & 0x00ffffff
-	if txIndex == 0 {
-		txIndex = 1
-	}
-	scid := lnwire.ShortChannelID{
-		BlockHeight: uint32(height) + 1,
-		TxIndex:     txIndex, TxPosition: 0,
-	}.ToUint64()
+	id, pending, scid := c.promotionIdentifiers(idempotencyKey)
 
 	return c.newClientFundedTerms(
 		id, pending, scid, amount, arkchannel.KindPromotion,

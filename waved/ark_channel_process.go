@@ -164,6 +164,11 @@ func (s *arkChannelRPCServer) PromoteVTXO(ctx context.Context,
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	if req.GetIdempotencyKey() == "" {
+		return nil, status.Error(
+			codes.InvalidArgument, "idempotency key is required",
+		)
+	}
 	if len(req.GetIdempotencyKey()) > maxArkChannelIdempotencyKeyLength {
 		return nil, status.Errorf(codes.InvalidArgument, "idempotency "+
 			"key exceeds %d bytes",
@@ -179,6 +184,18 @@ func (s *arkChannelRPCServer) PromoteVTXO(ctx context.Context,
 		ctx, amount, req.GetIdempotencyKey(),
 	)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, status.FromContextError(ctx.Err()).Err()
+		}
+		switch status.Code(err) {
+		case codes.Aborted, codes.DeadlineExceeded,
+			codes.ResourceExhausted, codes.Unavailable:
+			return nil, status.Errorf(status.Code(err), "promote "+
+				"VTXO: %v", err)
+
+		default:
+		}
+
 		return nil, status.Errorf(codes.FailedPrecondition, "promote "+
 			"VTXO: %v", err)
 	}

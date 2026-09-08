@@ -237,4 +237,37 @@ func TestArkChannelRPCRejectsLongIdempotencyKey(t *testing.T) {
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 }
 
+// TestArkChannelRPCRequiresIdempotencyKey verifies every funding request has a
+// stable recovery identity before the daemon can select wallet inputs.
+func TestArkChannelRPCRequiresIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	rpcServer := &arkChannelRPCServer{server: &Server{}}
+	_, err := rpcServer.PromoteVTXO(
+		t.Context(), &arkchannelrpc.PromoteVTXORequest{
+			AmountSat: 1_000,
+		},
+	)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+}
+
+// TestArkChannelRPCPreservesRetryablePromotionStatus verifies the CLI can
+// distinguish a resumable transport failure from a terminal funding error.
+func TestArkChannelRPCPreservesRetryablePromotionStatus(t *testing.T) {
+	t.Parallel()
+
+	controller := &arkChannelControllerStub{
+		err: status.Error(codes.Unavailable, "operator offline"),
+	}
+	rpcServer := &arkChannelRPCServer{server: &Server{
+		arkChannelController: controller,
+	}}
+	_, err := rpcServer.PromoteVTXO(
+		t.Context(), &arkchannelrpc.PromoteVTXORequest{
+			AmountSat: 1_000, IdempotencyKey: "create-44",
+		},
+	)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+}
+
 var _ ArkChannelController = (*arkChannelControllerStub)(nil)

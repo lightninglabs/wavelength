@@ -1,14 +1,47 @@
 package waveclicommands
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+type retryArkChannelClient struct {
+	arkchannelrpc.ArkChannelServiceClient
+
+	mu       sync.Mutex
+	requests []*arkchannelrpc.PromoteVTXORequest
+	errors   []error
+}
+
+// PromoteVTXO records retries and returns configured failures before success.
+func (c *retryArkChannelClient) PromoteVTXO(_ context.Context,
+	req *arkchannelrpc.PromoteVTXORequest, _ ...grpc.CallOption) (
+	*arkchannelrpc.PromoteVTXOResponse, error) {
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.requests = append(c.requests, req)
+	if len(c.errors) > 0 {
+		err := c.errors[0]
+		c.errors = c.errors[1:]
+
+		return nil, err
+	}
+
+	return &arkchannelrpc.PromoteVTXOResponse{}, nil
+}
 
 // TestParseChannelIDAcceptsCLIEncodings verifies command chaining works with
 // both the protobuf JSON response and the canonical hexadecimal identifier.
@@ -147,4 +180,59 @@ func TestChannelCommandRecoveryFlags(t *testing.T) {
 	maxFee, err := pay.Flags().GetUint64("max-fee-sat")
 	require.NoError(t, err)
 	require.Equal(t, uint64(1_000), maxFee)
+}
+
+// TestNewChannelCreateKey verifies the default CLI path always supplies a
+// compact non-empty daemon idempotency key.
+func TestNewChannelCreateKey(t *testing.T) {
+	t.Parallel()
+
+	first, err := newChannelCreateKey()
+	require.NoError(t, err)
+	second, err := newChannelCreateKey()
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(first, channelCreateKeyPrefix))
+	require.LessOrEqual(t, len(first), 128)
+	require.NotEqual(t, first, second)
+}
+
+// TestPromoteVTXOWithRetryReusesRequest verifies a timed-out funding call is
+// resumed with the exact same logical intent instead of minting another
+// channel.
+func TestPromoteVTXOWithRetryReusesRequest(t *testing.T) {
+	t.Parallel()
+
+	client := &retryArkChannelClient{errors: []error{
+		status.Error(codes.DeadlineExceeded, "still activating"),
+	}}
+	request := &arkchannelrpc.PromoteVTXORequest{
+		AmountSat: 100_000, IdempotencyKey: "create-42",
+	}
+	response, err := promoteVTXOWithRetry(
+		&cobra.Command{}, client, request,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.Len(t, client.requests, 2)
+	require.Same(t, client.requests[0], client.requests[1])
+}
+
+// TestPromoteVTXOWithRetryHonorsCancellation verifies an interrupted command
+// returns its caller's cancellation instead of starting another RPC attempt.
+func TestPromoteVTXOWithRetryHonorsCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	cmd := &cobra.Command{}
+	cmd.SetContext(ctx)
+	client := &retryArkChannelClient{errors: []error{
+		status.Error(codes.Unavailable, "operator offline"),
+	}}
+	_, err := promoteVTXOWithRetry(
+		cmd, client, &arkchannelrpc.PromoteVTXORequest{
+			AmountSat: 100_000, IdempotencyKey: "create-43",
+		},
+	)
+	require.ErrorIs(t, err, context.Canceled)
 }

@@ -541,3 +541,13 @@ func TestPromotionIdentifiersAreStableAndScoped(t *testing.T) {
 	require.NotEqual(t, firstID, otherKeyID)
 	require.NotEqual(t, firstID, otherIdentityID)
 }
+
+// TestNewPromotionTermsRequiresIdempotencyKey verifies the controller cannot
+// reintroduce an unrecoverable random channel identity below the RPC layer.
+func TestNewPromotionTermsRequiresIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	controller := &NativeArkChannelController{}
+	_, err := controller.newPromotionTerms(100_000, "")
+	require.ErrorContains(t, err, "idempotency key is required")
+}
