@@ -20,6 +20,8 @@ import (
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lnruntime"
 	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
+	"github.com/lightningnetwork/lnd/chanstate"
+	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -80,6 +82,8 @@ type NativeArkChannelController struct {
 	reaperCancel  context.CancelFunc
 	reaperWG      sync.WaitGroup
 }
+
+var _ contractcourt.AuxChannelLifecycle = (*NativeArkChannelController)(nil)
 
 // nativeArkChannelKeys are fixed wallet roles restored by locator on restart.
 type nativeArkChannelKeys struct {
@@ -828,17 +832,6 @@ func (c *NativeArkChannelController) newNode(ctx context.Context,
 			btclog.Fmt("scid", "%v", scid),
 		)
 	}
-	shouldWatchChannel := func(channelPoint wire.OutPoint) (bool, error) {
-		record, err := c.coordinator.FindByChannelPoint(
-			logCtx, channelPoint,
-		)
-		if err != nil {
-			return false, fmt.Errorf("load Ark channel "+
-				"lifecycle: %w", err)
-		}
-
-		return shouldWatchArkChannel(record.Snapshot.Phase), nil
-	}
 	shouldDisableChannelAdds := func(channelPoint wire.OutPoint) (bool,
 		error) {
 
@@ -854,16 +847,6 @@ func (c *NativeArkChannelController) newNode(ctx context.Context,
 			record.Snapshot.Phase,
 		), nil
 	}
-	recordChannelFullyResolved := func(channelPoint wire.OutPoint) error {
-		return c.recordFullyResolvedChannel(
-			logCtx, channelPoint,
-		)
-	}
-	beforeCommitmentPublish := func(channelPoint wire.OutPoint) error {
-		return c.materializeBeforeCommitment(
-			logCtx, channelPoint,
-		)
-	}
 
 	return lnruntime.NewNativeNode(lnruntime.NativeNodeConfig{
 		DataDir: c.cfg.ChannelDataDir, Party: party,
@@ -877,11 +860,70 @@ func (c *NativeArkChannelController) newNode(ctx context.Context,
 		IdentityKey: c.cfg.IdentityKey, BackingKey: c.keys.backing,
 		RemoteNodeKey: remoteKey, Transport: transport,
 		Intents: c.coordinator, OnChannelFailure: onChannelFailure,
-		ShouldWatchChannel:         shouldWatchChannel,
-		ShouldDisableChannelAdds:   shouldDisableChannelAdds,
-		BeforeCommitmentPublish:    beforeCommitmentPublish,
-		RecordChannelFullyResolved: recordChannelFullyResolved,
+		ChannelLifecycle:         c,
+		ShouldDisableChannelAdds: shouldDisableChannelAdds,
 	})
+}
+
+// ChainWatchOwner reports whether lnd or the Ark lifecycle currently owns
+// chain observation for a channel.
+func (c *NativeArkChannelController) ChainWatchOwner(ctx context.Context,
+	channel *chanstate.OpenChannel) (contractcourt.ChainWatchOwner, error) {
+
+	record, err := c.coordinator.FindByChannelPoint(
+		ctx, channel.FundingOutpoint,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("load Ark channel lifecycle: %w", err)
+	}
+
+	if shouldWatchArkChannel(record.Snapshot.Phase) {
+		return contractcourt.ChainWatchOwnerLnd, nil
+	}
+
+	return contractcourt.ChainWatchOwnerAux, nil
+}
+
+// PrepareCommitmentPublish materializes the Ark backing before lnd publishes
+// a commitment transaction.
+func (c *NativeArkChannelController) PrepareCommitmentPublish(
+	ctx context.Context, channelPoint wire.OutPoint) error {
+
+	return c.materializeBeforeCommitment(ctx, channelPoint)
+}
+
+const arkChannelFinalizationRetry = time.Second
+
+// WaitForChannelFinalization durably records lnd's terminal channel state.
+// The Ark owner retains retry policy so lnd only provides the cancellation and
+// ordering boundary.
+func (c *NativeArkChannelController) WaitForChannelFinalization(
+	ctx context.Context, channelPoint wire.OutPoint) error {
+
+	for {
+		err := c.recordFullyResolvedChannel(ctx, channelPoint)
+		if err == nil {
+			return nil
+		}
+
+		if c.cfg.Log != nil {
+			c.cfg.Log.WarnS(ctx, "Unable to finalize Ark channel",
+				err,
+				btclog.Fmt("channel_point", "%v", channelPoint),
+			)
+		}
+
+		timer := time.NewTimer(arkChannelFinalizationRetry)
+		select {
+		case <-timer.C:
+			continue
+
+		case <-ctx.Done():
+			timer.Stop()
+
+			return ctx.Err()
+		}
+	}
 }
 
 // materializeBeforeCommitment blocks lnd's local commitment publication until
