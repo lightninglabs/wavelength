@@ -244,6 +244,22 @@ func TestPreparedSessionCommitAndAbort(t *testing.T) {
 	require.True(t, failure.PrePONR)
 }
 
+// TestFailedStateDerivesPrePONRFromPhase verifies malformed input metadata
+// cannot turn a pre-signature failure into post-PONR evidence.
+func TestFailedStateDerivesPrePONRFromPhase(t *testing.T) {
+	t.Parallel()
+
+	failure := failedState("missing input", &Prepared{
+		TransferInputs: []TransferInput{{}},
+	})
+	require.True(t, failure.PrePONR)
+
+	failure = failedState(
+		"operator co-signed", &AwaitingCheckpointSignatures{},
+	)
+	require.False(t, failure.PrePONR)
+}
+
 // TestSessionMultiInputHappyPath verifies the outgoing transfer FSM with
 // multiple VTXO inputs. This exercises the multi-input Ark signing path
 // where BIP-341 sighash commits to ALL prevouts, requiring a
