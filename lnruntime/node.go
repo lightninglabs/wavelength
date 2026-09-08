@@ -19,6 +19,7 @@ import (
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/chanstate"
+	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/graph/db/models"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/invoices"
@@ -101,13 +102,11 @@ type NativeNodeConfig struct {
 	Transport        MessageTransport
 	Intents          ChannelIntentSource
 
-	OnChannelOpened            func(*chanstate.OpenChannel)
-	OnChannelFailure           LinkFailureHandler
-	OnChannelRestoreFailure    func(wire.OutPoint, error)
-	ShouldWatchChannel         func(wire.OutPoint) (bool, error)
-	ShouldDisableChannelAdds   func(wire.OutPoint) (bool, error)
-	BeforeCommitmentPublish    func(wire.OutPoint) error
-	RecordChannelFullyResolved func(wire.OutPoint) error
+	OnChannelOpened          func(*chanstate.OpenChannel)
+	OnChannelFailure         LinkFailureHandler
+	OnChannelRestoreFailure  func(wire.OutPoint, error)
+	ChannelLifecycle         contractcourt.AuxChannelLifecycle
+	ShouldDisableChannelAdds func(wire.OutPoint) (bool, error)
 }
 
 // NativeNode owns one persistent channel database and the native lnd runtime,
@@ -211,9 +210,7 @@ func NewNativeNode(cfg NativeNodeConfig) (*NativeNode, error) {
 			},
 		},
 		Onchain: &OnchainConfig{
-			ShouldWatchChannel:      cfg.ShouldWatchChannel,
-			BeforeCommitmentPublish: cfg.BeforeCommitmentPublish,
-			RecordFullyResolved:     cfg.RecordChannelFullyResolved,
+			ChannelLifecycle: cfg.ChannelLifecycle,
 		},
 	})
 	if err != nil {
@@ -327,14 +324,8 @@ func validateNativeNodeConfig(cfg NativeNodeConfig) error {
 	case cfg.Intents == nil:
 		return fmt.Errorf("channel intent source is required")
 
-	case cfg.ShouldWatchChannel == nil:
-		return fmt.Errorf("on-chain channel admission is required")
-
-	case cfg.BeforeCommitmentPublish == nil:
-		return fmt.Errorf("commitment publication barrier is required")
-
-	case cfg.RecordChannelFullyResolved == nil:
-		return fmt.Errorf("channel resolution recorder is required")
+	case cfg.ChannelLifecycle == nil:
+		return fmt.Errorf("auxiliary channel lifecycle is required")
 
 	default:
 		return nil
@@ -417,14 +408,16 @@ func (n *NativeNode) Start() error {
 func (n *NativeNode) restoredLinkConfig(state *chanstate.OpenChannel) (
 	LinkConfig, error) {
 
-	watch, err := n.cfg.ShouldWatchChannel(state.FundingOutpoint)
+	owner, err := n.cfg.ChannelLifecycle.ChainWatchOwner(
+		context.Background(), state,
+	)
 	if err != nil {
 		return LinkConfig{}, err
 	}
-	if !watch {
+	if owner != contractcourt.ChainWatchOwnerLnd {
 		return LinkConfig{}, fmt.Errorf("active channel %v is not "+
-			"admitted to the on-chain lifecycle",
-			state.FundingOutpoint)
+			"owned by lnd's on-chain lifecycle (owner=%v)",
+			state.FundingOutpoint, owner)
 	}
 	if err := n.runtime.WatchChannel(state); err != nil {
 		return LinkConfig{}, err

@@ -118,6 +118,10 @@ func TestRuntimeStartsNativeFunding(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, runtime.Funding())
+	walletController := runtime.Funding().wallet.WalletController
+	wrapper, ok := walletController.(lnwallet.WalletControllerWrapper)
+	require.True(t, ok)
+	require.Same(t, controller, wrapper.UnwrapWalletController())
 	require.NoError(t, runtime.Start())
 	require.NoError(t, runtime.Stop())
 	require.Zero(t, controller.starts.Load())

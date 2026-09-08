@@ -85,6 +85,29 @@ type FundingFlow struct {
 	Errors           <-chan error
 }
 
+// nonOwningWallet lets lnd use an already-running wallet without
+// taking ownership of its process lifecycle. All wallet operations except
+// Start and Stop are delegated to the embedded controller.
+type nonOwningWallet struct {
+	lnwallet.WalletController
+}
+
+// Start leaves startup to the process that owns the wrapped controller.
+func (*nonOwningWallet) Start() error {
+	return nil
+}
+
+// Stop leaves shutdown to the process that owns the wrapped controller.
+func (*nonOwningWallet) Stop() error {
+	return nil
+}
+
+// UnwrapWalletController exposes optional capabilities implemented by the
+// wrapped controller.
+func (c *nonOwningWallet) UnwrapWalletController() lnwallet.WalletController {
+	return c.WalletController
+}
+
 // FundingRuntime owns lnd's LightningWallet reservation worker and funding
 // manager without owning the embedding process's base wallet lifecycle.
 type FundingRuntime struct {
@@ -123,17 +146,18 @@ func newFundingRuntime(runtimeCfg RuntimeConfig, switcher *htlcswitch.Switch,
 	}
 
 	lightningWallet, err := lnwallet.NewLightningWallet(lnwallet.Config{
-		Database:         runtimeCfg.DB.ChannelStateDB(),
-		Notifier:         virtualNotifier,
-		SecretKeyRing:    cfg.KeyRing,
-		WalletController: cfg.WalletController,
-		Signer:           runtimeCfg.Signer,
-		FeeEstimator:     runtimeCfg.FeeEstimator,
-		ChainIO:          runtimeCfg.Chain,
-		NetParams:        *cfg.NetParams,
+		Database:      runtimeCfg.DB.ChannelStateDB(),
+		Notifier:      virtualNotifier,
+		SecretKeyRing: cfg.KeyRing,
+		WalletController: &nonOwningWallet{
+			WalletController: cfg.WalletController,
+		},
+		Signer:       runtimeCfg.Signer,
+		FeeEstimator: runtimeCfg.FeeEstimator,
+		ChainIO:      runtimeCfg.Chain,
+		NetParams:    *cfg.NetParams,
 		CoinSelectionStrategy: basewallet.
 			CoinSelectionLargest,
-		ExternallyManagedWalletController: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create lnd lightning wallet: %w", err)
@@ -423,22 +447,12 @@ func (f *FundingRuntime) OpenChannel(req FundingOpenRequest) (*FundingFlow,
 func (f *FundingRuntime) ExpectedFundingOutput(
 	pendingID lndfunding.PendingChanID) (*wire.TxOut, error) {
 
-	for _, reservation := range f.wallet.ActiveReservations() {
-		if reservation.PendingChanID() != pendingID {
-			continue
-		}
-
-		output, err := reservation.FundingOutput()
-		if err != nil {
-			return nil, fmt.Errorf("read lnd funding output: %w",
-				err)
-		}
-
-		return output, nil
+	output, err := f.wallet.PendingFundingOutput(pendingID)
+	if err != nil {
+		return nil, fmt.Errorf("read lnd funding output: %w", err)
 	}
 
-	return nil, fmt.Errorf("lnd funding reservation %x not found",
-		pendingID[:])
+	return output, nil
 }
 
 // FinalizeBacking verifies lnd's negotiated funding output, registers the
@@ -598,7 +612,7 @@ func (f *FundingRuntime) ProcessMessageSync(ctx context.Context,
 	case *lnwire.OpenChannel, *lnwire.AcceptChannel,
 		*lnwire.FundingCreated, *lnwire.FundingSigned,
 		*lnwire.ChannelReady, *lnwire.Warning, *lnwire.Error:
-		return f.manager.ProcessFundingMsgSync(ctx, message, peer)
+		return f.manager.ProcessFundingMsgAndWait(ctx, message, peer)
 
 	default:
 		return fmt.Errorf("unsupported funding message %T", message)

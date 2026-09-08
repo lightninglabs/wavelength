@@ -31,9 +31,7 @@ type (
 type OnchainConfig struct {
 	Mempool chainntnfs.MempoolWatcher
 
-	ShouldWatchChannel      func(wire.OutPoint) (bool, error)
-	BeforeCommitmentPublish func(wire.OutPoint) error
-	RecordFullyResolved     func(wire.OutPoint) error
+	ChannelLifecycle contractcourt.AuxChannelLifecycle
 }
 
 // OnchainRuntime composes lnd's chain arbitrator, breach handling, nursery,
@@ -66,15 +64,8 @@ func newOnchainRuntime(runtime *Runtime,
 		return nil, fmt.Errorf("on-chain lifecycle requires lnd " +
 			"funding wallet")
 	}
-	if cfg.ShouldWatchChannel == nil {
-		return nil, fmt.Errorf("on-chain channel admission is required")
-	}
-	if cfg.BeforeCommitmentPublish == nil {
-		return nil, fmt.Errorf("commitment publication barrier is " +
-			"required")
-	}
-	if cfg.RecordFullyResolved == nil {
-		return nil, fmt.Errorf("channel resolution recorder is " +
+	if cfg.ChannelLifecycle == nil {
+		return nil, fmt.Errorf("auxiliary channel lifecycle is " +
 			"required")
 	}
 
@@ -209,6 +200,9 @@ func newChainArbitrator(runtime *Runtime, cfg OnchainConfig,
 	noAuxCloser := fn.None[contractcourt.AuxChanCloser]()
 	noCloseConfs := fn.None[uint32]()
 	noCustomHtlcChecker := fn.None[contractcourt.CustomHtlcChecker]()
+	auxLifecycle := fn.Some[contractcourt.AuxChannelLifecycle](
+		cfg.ChannelLifecycle,
+	)
 	processResolution := runtime.switcher.ProcessContractResolution
 
 	return contractcourt.NewChainArbitrator(
@@ -228,8 +222,6 @@ func newChainArbitrator(runtime *Runtime, cfg OnchainConfig,
 				return addr.DeliveryAddress, nil
 			},
 			PublishTx: lightningWallet.PublishTransaction,
-			BeforeCommitmentPublish: cfg.
-				BeforeCommitmentPublish,
 			DeliverResolutionMsg: func(
 				messages ...contractcourt.ResolutionMsg) error {
 
@@ -285,8 +277,7 @@ func newChainArbitrator(runtime *Runtime, cfg OnchainConfig,
 			NotifyEarlyClosedChannel: func(
 				*channeldb.ChannelCloseSummary) {
 			},
-			BeforeFullyResolvedChannel: cfg.RecordFullyResolved,
-			OnionProcessor:             runtime.onionProcessor,
+			OnionProcessor: runtime.onionProcessor,
 			IsForwardedHTLC: runtime.switcher.
 				IsForwardedHTLC,
 			Clock: runtime.cfg.Clock,
@@ -306,27 +297,12 @@ func newChainArbitrator(runtime *Runtime, cfg OnchainConfig,
 
 				return &circuit.Incoming
 			},
-			AuxLeafStore:      noAuxLeafStore,
-			AuxSigner:         noAuxSigner,
-			AuxResolver:       noAuxResolver,
-			AuxCloser:         noAuxCloser,
-			ChannelCloseConfs: noCloseConfs,
-			ShouldWatchChannel: func(
-				channel *chanstate.OpenChannel) (bool, error) {
-
-				watch, err := cfg.ShouldWatchChannel(
-					channel.FundingOutpoint,
-				)
-				if err != nil {
-
-					// RestorePeerLinks retries admission
-					// and reports this channel without
-					// aborting every peer link.
-					return false, nil //nolint:nilerr
-				}
-
-				return watch, nil
-			},
+			AuxLeafStore:        noAuxLeafStore,
+			AuxSigner:           noAuxSigner,
+			AuxResolver:         noAuxResolver,
+			AuxCloser:           noAuxCloser,
+			AuxChannelLifecycle: auxLifecycle,
+			ChannelCloseConfs:   noCloseConfs,
 		}, runtime.cfg.DB,
 	)
 }
