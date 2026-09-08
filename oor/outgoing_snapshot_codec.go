@@ -250,6 +250,10 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 	if err != nil {
 		return nil, err
 	}
+	if decodedVersion > outgoingSnapshotVersion {
+		return nil, fmt.Errorf("unknown outgoing snapshot version %d",
+			decodedVersion)
+	}
 
 	decodedRetryAfter, err := decodeUint64ToDuration(
 		retryAfterNanos, "snapshot retry_after nanos",

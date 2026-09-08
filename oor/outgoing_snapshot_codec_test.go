@@ -167,6 +167,20 @@ func TestDecodeOutgoingSnapshotRejectsVersionOverflow(t *testing.T) {
 	require.ErrorContains(t, err, "snapshot version overflows uint8")
 }
 
+// TestDecodeOutgoingSnapshotRejectsFutureVersion verifies this binary fails
+// closed instead of interpreting fields from an unknown snapshot schema.
+func TestDecodeOutgoingSnapshotRejectsFutureVersion(t *testing.T) {
+	t.Parallel()
+
+	raw, err := encodeSnapshotRawForDecodeTest(
+		uint64(outgoingSnapshotVersion)+1, 0,
+	)
+	require.NoError(t, err)
+
+	_, err = decodeOutgoingSnapshot(raw)
+	require.ErrorContains(t, err, "unknown outgoing snapshot version")
+}
+
 func TestDecodeOutgoingSnapshotRejectsRetryAfterOverflow(t *testing.T) {
 	t.Parallel()
 
