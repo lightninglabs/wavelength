@@ -43,7 +43,8 @@ const arkChannelCloseReceiveScriptLabel = "ark channel cooperative close"
 
 // ArkChannelLifecycleController owns channel creation, inspection, and close.
 type ArkChannelLifecycleController interface {
-	PromoteVTXO(context.Context, btcutil.Amount) (arkchannel.Record, error)
+	PromoteVTXO(context.Context, btcutil.Amount,
+		string) (arkchannel.Record, error)
 
 	MaterializeAndForceClose(context.Context, arkchannel.ID) (
 		arkchannel.Record, chainhash.Hash, chainhash.Hash, error)
@@ -52,6 +53,11 @@ type ArkChannelLifecycleController interface {
 		arkchannel.ID) (arkchannel.Record, error)
 
 	GetChannel(context.Context, arkchannel.ID) (arkchannel.Record, error)
+
+	ListChannels(context.Context) ([]arkchannel.Record, error)
+
+	ChannelBalance(context.Context, arkchannel.ID) (btcutil.Amount,
+		btcutil.Amount, error)
 
 	PeerMessageHandler() lnruntime.PeerEventHandler
 
@@ -160,20 +166,27 @@ func (s *arkChannelRPCServer) PromoteVTXO(ctx context.Context,
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	if len(req.GetIdempotencyKey()) > maxArkChannelIdempotencyKeyLength {
+		return nil, status.Errorf(codes.InvalidArgument, "idempotency "+
+			"key exceeds %d bytes",
+			maxArkChannelIdempotencyKeyLength)
+	}
 	controller := s.server.getArkChannelController()
 	if controller == nil {
 		return nil, status.Error(
 			codes.Unavailable, "Ark channel runtime is not ready",
 		)
 	}
-	record, err := controller.PromoteVTXO(ctx, amount)
+	record, err := controller.PromoteVTXO(
+		ctx, amount, req.GetIdempotencyKey(),
+	)
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "promote "+
 			"VTXO: %v", err)
 	}
 
 	return &arkchannelrpc.PromoteVTXOResponse{
-		Channel: lnruntime.ArkChannelRecordToRPC(record),
+		Channel: arkChannelRecordToRPC(ctx, controller, record),
 	}, nil
 }
 
@@ -351,8 +364,60 @@ func (s *arkChannelRPCServer) GetChannel(ctx context.Context,
 	}
 
 	return &arkchannelrpc.GetChannelResponse{
-		Channel: lnruntime.ArkChannelRecordToRPC(record),
+		Channel: arkChannelRecordToRPC(ctx, controller, record),
 	}, nil
+}
+
+// ListChannels returns every locally recoverable channel in stable store
+// order, including pending creations whose initiating RPC timed out.
+func (s *arkChannelRPCServer) ListChannels(ctx context.Context,
+	_ *arkchannelrpc.ListChannelsRequest) (
+	*arkchannelrpc.ListChannelsResponse, error) {
+
+	controller := s.server.getArkChannelController()
+	if controller == nil {
+		return nil, status.Error(
+			codes.Unavailable, "Ark channel runtime is not ready",
+		)
+	}
+	records, err := controller.ListChannels(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list Ark "+
+			"channels: %v", err)
+	}
+	channels := make([]*arkchannelrpc.ArkChannel, 0, len(records))
+	for _, record := range records {
+		channels = append(
+			channels,
+			arkChannelRecordToRPC(ctx, controller, record),
+		)
+	}
+
+	return &arkchannelrpc.ListChannelsResponse{Channels: channels}, nil
+}
+
+// arkChannelRecordToRPC appends live lnd balances when an active endpoint is
+// available without hiding durable state when it is not.
+func arkChannelRecordToRPC(ctx context.Context, controller ArkChannelController,
+	record arkchannel.Record) *arkchannelrpc.ArkChannel {
+
+	channel := lnruntime.ArkChannelRecordToRPC(record)
+	if record.Snapshot.Phase != arkchannel.PhaseActive {
+		return channel
+	}
+	local, remote, err := controller.ChannelBalance(
+		ctx, record.Snapshot.Terms.ID,
+	)
+	if err != nil {
+		channel.BalanceError = err.Error()
+
+		return channel
+	}
+	channel.LocalBalanceSat = int64(local)
+	channel.RemoteBalanceSat = int64(remote)
+	channel.BalanceAvailable = true
+
+	return channel
 }
 
 // initArkChannelProcess builds the client channel runtime whenever the swap

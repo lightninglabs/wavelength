@@ -515,3 +515,29 @@ func TestArkChannelControllerStartsForExistingState(t *testing.T) {
 	}
 	require.NoError(t, controller.Stop())
 }
+
+// TestPromotionIdentifiersAreStableAndScoped verifies a retried creation gets
+// the same protocol identity without colliding across daemon identities.
+func TestPromotionIdentifiersAreStableAndScoped(t *testing.T) {
+	t.Parallel()
+
+	first := &NativeArkChannelController{cfg: ArkChannelControllerConfig{
+		IdentityKey: testKeyDescriptor(t, 70),
+	}}
+	second := &NativeArkChannelController{cfg: ArkChannelControllerConfig{
+		IdentityKey: testKeyDescriptor(t, 71),
+	}}
+
+	firstID, firstPending, firstSCID :=
+		first.promotionIdentifiers("invoice-42")
+	retryID, retryPending, retrySCID :=
+		first.promotionIdentifiers("invoice-42")
+	require.Equal(t, firstID, retryID)
+	require.Equal(t, firstPending, retryPending)
+	require.Equal(t, firstSCID, retrySCID)
+
+	otherKeyID, _, _ := first.promotionIdentifiers("invoice-43")
+	otherIdentityID, _, _ := second.promotionIdentifiers("invoice-42")
+	require.NotEqual(t, firstID, otherKeyID)
+	require.NotEqual(t, firstID, otherIdentityID)
+}

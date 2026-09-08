@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -41,10 +42,11 @@ var (
 )
 
 const (
-	arkChannelArkKeyFamily          keychain.KeyFamily = 220
-	arkChannelBackingKeyFamily      keychain.KeyFamily = 221
-	arkChannelFunderKeyFamily       keychain.KeyFamily = 223
-	arkChannelPaymentCleanupTimeout                    = 30 * time.Second
+	arkChannelArkKeyFamily            keychain.KeyFamily = 220
+	arkChannelBackingKeyFamily        keychain.KeyFamily = 221
+	arkChannelFunderKeyFamily         keychain.KeyFamily = 223
+	arkChannelPaymentCleanupTimeout                      = 30 * time.Second
+	maxArkChannelIdempotencyKeyLength                    = 128
 )
 
 // HubArkChannelControllerConfig contains the hub-only signer, publisher, and
@@ -1184,7 +1186,8 @@ func (c *NativeArkChannelController) newService(node *lnruntime.NativeNode,
 
 // PromoteVTXO prepares and activates one client-funded OOR channel.
 func (c *NativeArkChannelController) PromoteVTXO(ctx context.Context,
-	amount btcutil.Amount) (arkchannel.Record, error) {
+	amount btcutil.Amount, idempotencyKey string) (arkchannel.Record,
+	error) {
 
 	if c.party != arkchannel.PartyClient {
 		return arkchannel.Record{}, fmt.Errorf("only a client can " +
@@ -1194,11 +1197,23 @@ func (c *NativeArkChannelController) PromoteVTXO(ctx context.Context,
 		return arkchannel.Record{}, fmt.Errorf("channel amount must " +
 			"be positive")
 	}
+	if len(idempotencyKey) > maxArkChannelIdempotencyKeyLength {
+		return arkchannel.Record{}, fmt.Errorf("idempotency key "+
+			"exceeds %d bytes", maxArkChannelIdempotencyKeyLength)
+	}
 	if err := c.ensureClientStarted(ctx); err != nil {
 		return arkchannel.Record{}, err
 	}
-	terms, err := c.newPromotionTerms(ctx, amount)
+	terms, err := c.newPromotionTerms(ctx, amount, idempotencyKey)
 	if err != nil {
+		return arkchannel.Record{}, err
+	}
+	existing, err := c.coordinator.Get(ctx, terms.ID)
+	if err == nil && existing.Snapshot.Terms != terms {
+		return arkchannel.Record{}, fmt.Errorf("idempotency key is " +
+			"already bound to different channel terms")
+	}
+	if err != nil && !errors.Is(err, arkchannel.ErrNotFound) {
 		return arkchannel.Record{}, err
 	}
 	if _, err := c.remote.RegisterPromotion(ctx, terms); err != nil {
@@ -1233,7 +1248,17 @@ func (c *NativeArkChannelController) PromoteVTXO(ctx context.Context,
 // newPromotionTerms creates unique protocol identifiers and binds every key
 // role to the two endpoint wallets.
 func (c *NativeArkChannelController) newPromotionTerms(ctx context.Context,
-	amount btcutil.Amount) (arkchannel.Terms, error) {
+	amount btcutil.Amount, idempotencyKey string) (arkchannel.Terms,
+	error) {
+
+	if idempotencyKey != "" {
+		id, pending, scid := c.promotionIdentifiers(idempotencyKey)
+
+		return c.newClientFundedTerms(
+			id, pending, scid, amount, arkchannel.KindPromotion,
+			lntypes.Hash{},
+		)
+	}
 
 	var id arkchannel.ID
 	if _, err := rand.Read(id[:]); err != nil {
@@ -1268,6 +1293,49 @@ func (c *NativeArkChannelController) newPromotionTerms(ctx context.Context,
 		id, pending, scid, amount, arkchannel.KindPromotion,
 		lntypes.Hash{},
 	)
+}
+
+// promotionIdentifiers derives every retry-sensitive protocol identifier from
+// the daemon identity and caller-provided idempotency key.
+func (c *NativeArkChannelController) promotionIdentifiers(
+	idempotencyKey string) (arkchannel.ID, [32]byte, uint64) {
+
+	derive := func(label string) [32]byte {
+		hash := sha256.New()
+		_, _ = hash.Write(
+			[]byte("wavelength/ark-channel/promotion/v1/"),
+		)
+		_, _ = hash.Write([]byte(label))
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write(
+			c.cfg.IdentityKey.PubKey.SerializeCompressed(),
+		)
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(idempotencyKey))
+		var result [32]byte
+		copy(result[:], hash.Sum(nil))
+
+		return result
+	}
+	id := arkchannel.ID(derive("channel-id"))
+	pending := derive("pending-channel-id")
+	scidSeed := derive("reserved-scid")
+	blockHeight := uint32(scidSeed[0])<<16 |
+		uint32(scidSeed[1])<<8 | uint32(scidSeed[2])
+	txIndex := uint32(scidSeed[3])<<16 |
+		uint32(scidSeed[4])<<8 | uint32(scidSeed[5])
+	if blockHeight == 0 {
+		blockHeight = 1
+	}
+	if txIndex == 0 {
+		txIndex = 1
+	}
+	scid := lnwire.ShortChannelID{
+		BlockHeight: blockHeight, TxIndex: txIndex,
+		TxPosition: binary.BigEndian.Uint16(scidSeed[6:8]),
+	}.ToUint64()
+
+	return id, pending, scid
 }
 
 // newClientFundedTerms binds deterministic or random protocol identifiers to
@@ -2036,13 +2104,39 @@ func (c *NativeArkChannelController) RequestCooperativeClose(
 func (c *NativeArkChannelController) GetChannel(ctx context.Context,
 	id arkchannel.ID) (arkchannel.Record, error) {
 
+	return c.coordinator.Get(ctx, id)
+}
+
+// ListChannels returns every channel that still needs recovery, observation,
+// or operator action without requiring the native endpoint to be online.
+func (c *NativeArkChannelController) ListChannels(ctx context.Context) (
+	[]arkchannel.Record, error) {
+
+	return c.coordinator.ListNonTerminal(ctx)
+}
+
+// ChannelBalance returns lnd's authoritative active-channel balances.
+func (c *NativeArkChannelController) ChannelBalance(ctx context.Context,
+	id arkchannel.ID) (btcutil.Amount, btcutil.Amount, error) {
+
 	if c.party == arkchannel.PartyClient {
 		if err := c.ensureClientStarted(ctx); err != nil {
-			return arkchannel.Record{}, err
+			return 0, 0, err
 		}
 	}
+	c.mu.RLock()
+	node := c.node
+	c.mu.RUnlock()
+	if node == nil {
+		return 0, 0, fmt.Errorf("native Ark channel endpoint is not " +
+			"ready")
+	}
+	record, err := c.coordinator.Get(ctx, id)
+	if err != nil {
+		return 0, 0, err
+	}
 
-	return c.service.GetChannel(ctx, id)
+	return node.ChannelBalance(record)
 }
 
 // SelectActiveChannel finds an ordinary native channel with enough balance on

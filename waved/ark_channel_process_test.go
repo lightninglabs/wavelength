@@ -2,6 +2,7 @@ package waved
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -19,16 +20,34 @@ import (
 // arkChannelControllerStub records local RPC calls and returns a configured
 // durable channel record.
 type arkChannelControllerStub struct {
-	record arkchannel.Record
-	err    error
-	id     arkchannel.ID
+	record        arkchannel.Record
+	records       []arkchannel.Record
+	err           error
+	id            arkchannel.ID
+	localBalance  btcutil.Amount
+	remoteBalance btcutil.Amount
+	balanceErr    error
 }
 
 // PromoteVTXO is not used by close RPC tests.
-func (s *arkChannelControllerStub) PromoteVTXO(context.Context,
-	btcutil.Amount) (arkchannel.Record, error) {
+func (s *arkChannelControllerStub) PromoteVTXO(context.Context, btcutil.Amount,
+	string) (arkchannel.Record, error) {
 
 	return s.record, s.err
+}
+
+// ListChannels returns configured durable records.
+func (s *arkChannelControllerStub) ListChannels(context.Context) (
+	[]arkchannel.Record, error) {
+
+	return s.records, s.err
+}
+
+// ChannelBalance returns configured live channel balances.
+func (s *arkChannelControllerStub) ChannelBalance(context.Context,
+	arkchannel.ID) (btcutil.Amount, btcutil.Amount, error) {
+
+	return s.localBalance, s.remoteBalance, s.balanceErr
 }
 
 // SendPayment is not used by close RPC tests.
@@ -165,6 +184,57 @@ func TestArkChannelRPCUnavailable(t *testing.T) {
 		},
 	)
 	require.Equal(t, codes.Unavailable, status.Code(err))
+}
+
+// TestArkChannelRPCListIncludesBalances verifies durable listing remains the
+// primary result while active lnd balances are included when available.
+func TestArkChannelRPCListIncludesBalances(t *testing.T) {
+	t.Parallel()
+
+	id := arkchannel.ID{4, 5, 6}
+	record := arkchannel.Record{
+		Snapshot: arkchannel.Snapshot{
+			Terms: arkchannel.Terms{
+				ID: id, Capacity: 50_000,
+			},
+			Phase: arkchannel.PhaseActive,
+		},
+	}
+	controller := &arkChannelControllerStub{
+		records: []arkchannel.Record{
+			record,
+		},
+		localBalance: 20_000, remoteBalance: 30_000,
+	}
+	rpcServer := &arkChannelRPCServer{server: &Server{
+		arkChannelController: controller,
+	}}
+
+	response, err := rpcServer.ListChannels(
+		t.Context(), &arkchannelrpc.ListChannelsRequest{},
+	)
+	require.NoError(t, err)
+	require.Len(t, response.GetChannels(), 1)
+	channel := response.GetChannels()[0]
+	require.Equal(t, id[:], channel.GetChannelId())
+	require.True(t, channel.GetBalanceAvailable())
+	require.EqualValues(t, 20_000, channel.GetLocalBalanceSat())
+	require.EqualValues(t, 30_000, channel.GetRemoteBalanceSat())
+}
+
+// TestArkChannelRPCRejectsLongIdempotencyKey verifies malformed retry keys are
+// rejected before channel startup or wallet selection.
+func TestArkChannelRPCRejectsLongIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	rpcServer := &arkChannelRPCServer{server: &Server{}}
+	_, err := rpcServer.PromoteVTXO(
+		t.Context(), &arkchannelrpc.PromoteVTXORequest{
+			AmountSat:      1_000,
+			IdempotencyKey: strings.Repeat("a", 129),
+		},
+	)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
 }
 
 var _ ArkChannelController = (*arkChannelControllerStub)(nil)
