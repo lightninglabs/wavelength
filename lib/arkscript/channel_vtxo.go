@@ -159,6 +159,110 @@ func EncodeChannelVTXOArtifacts(params ChannelVTXOParams) ([]byte, []byte,
 	return template, pkScript, nil
 }
 
+// ValidateChannelVTXOPolicy recognizes the canonical three-leaf channel VTXO
+// policy using the admitting operator's key and minimum exit delay. It does
+// not assign client and hub labels to the two symmetric endpoint key pairs.
+func ValidateChannelVTXOPolicy(template *PolicyTemplate,
+	operatorKey *btcec.PublicKey, minExitDelay uint32) error {
+
+	if template == nil {
+		return fmt.Errorf("channel VTXO template is required")
+	}
+	if operatorKey == nil {
+		return fmt.Errorf("channel VTXO operator key is required")
+	}
+	if minExitDelay == 0 {
+		return fmt.Errorf("channel VTXO minimum exit delay is required")
+	}
+	if len(template.Leaves) != 3 {
+		return fmt.Errorf("channel VTXO policy must contain exactly " +
+			"3 leaves")
+	}
+
+	var (
+		cooperativeKeys []*btcec.PublicKey
+		channelKeys     []*btcec.PublicKey
+		funderKey       *btcec.PublicKey
+		channelDelay    uint32
+		funderDelay     uint32
+	)
+	for i := range template.Leaves {
+		switch node := template.Leaves[i].Node.(type) {
+		case *Multisig:
+			if len(node.Keys) != 3 || cooperativeKeys != nil {
+				return fmt.Errorf("channel VTXO leaf %d is "+
+					"not the unique 3-of-3 "+
+					"cooperative path", i)
+			}
+
+			cooperativeKeys = node.Keys
+
+		case *CSV:
+			if err := validateCSVLock(node.Lock); err != nil {
+				return fmt.Errorf("channel VTXO leaf %d has "+
+					"invalid CSV: %w", i, err)
+			}
+
+			multisig, ok := node.Inner.(*Multisig)
+			if !ok {
+				return fmt.Errorf("channel VTXO leaf %d is "+
+					"not CSV-gated multisig", i)
+			}
+
+			delay := node.Lock & uint32(wire.SequenceLockTimeMask)
+			switch len(multisig.Keys) {
+			case 2:
+				if channelKeys != nil {
+					return fmt.Errorf("channel VTXO has " +
+						"multiple 2-of-2 " +
+						"materialization paths")
+				}
+
+				channelKeys = multisig.Keys
+				channelDelay = delay
+
+			case 1:
+				if funderKey != nil {
+					return fmt.Errorf("channel VTXO has " +
+						"multiple funder refund paths")
+				}
+
+				funderKey = multisig.Keys[0]
+				funderDelay = delay
+
+			default:
+				return fmt.Errorf("channel VTXO leaf %d has "+
+					"%d signing keys", i, len(
+					multisig.Keys,
+				))
+			}
+
+		default:
+			return fmt.Errorf("channel VTXO leaf %d has an "+
+				"unsupported shape", i)
+		}
+	}
+
+	if cooperativeKeys == nil || channelKeys == nil || funderKey == nil {
+		return fmt.Errorf("channel VTXO policy is missing a required " +
+			"path")
+	}
+
+	params := ChannelVTXOParams{
+		ClientArkKey:     cooperativeKeys[0],
+		HubArkKey:        cooperativeKeys[1],
+		ArkOperatorKey:   operatorKey,
+		ClientChannelKey: channelKeys[0],
+		HubChannelKey:    channelKeys[1],
+		FunderKey:        funderKey,
+		ChannelDelay:     channelDelay,
+		FunderDelay:      funderDelay,
+		MinExitDelay:     minExitDelay,
+	}
+
+	return ValidateChannelVTXOTemplate(template, params)
+}
+
 // ValidateChannelVTXOTemplate verifies that an untrusted template has the
 // exact key roles and delays expected by a channel intent.
 func ValidateChannelVTXOTemplate(template *PolicyTemplate,
