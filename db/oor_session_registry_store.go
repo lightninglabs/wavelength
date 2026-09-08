@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -17,6 +18,16 @@ var (
 	// ErrOORSessionNotFound indicates the OOR session registry row does not
 	// exist.
 	ErrOORSessionNotFound = errors.New("oor session registry row not found")
+
+	// ErrOORDispatchAttemptNotFound indicates that no durable outgoing
+	// dispatch is bound to the requested key or session.
+	ErrOORDispatchAttemptNotFound = errors.New("oor dispatch attempt not " +
+		"found")
+
+	// ErrOORDispatchAttemptConflict indicates that a dispatch key or
+	// session is already bound to different canonical request data.
+	ErrOORDispatchAttemptConflict = errors.New("oor dispatch attempt " +
+		"conflict")
 )
 
 // OORSessionDirection records whether a registered OOR session was locally
@@ -87,6 +98,12 @@ type OORSessionRegistryRecord struct {
 	// SnapshotVersion is the encoding version of SnapshotData.
 	SnapshotVersion int32
 
+	// DispatchRequestData is the canonical outgoing request and result map
+	// written at the first submit-capable checkpoint. UpsertSession stores
+	// it in the immutable dispatch-attempt table, not the mutable session
+	// row. Later checkpoints and every incoming lifecycle leave it empty.
+	DispatchRequestData []byte
+
 	// FlowVersion is the permanent OOR flow version this session was
 	// conducted under (distinct from SnapshotVersion, which versions only
 	// the resume blob's encoding). Stamped at creation and validated on
@@ -98,6 +115,25 @@ type OORSessionRegistryRecord struct {
 
 	// UpdatedAt is when the row was last updated.
 	UpdatedAt time.Time
+}
+
+// OORDispatchAttemptRecord binds one caller key to the exact outgoing request
+// that was durably admitted for transport. The record is immutable and remains
+// authoritative after the session row changes direction or becomes terminal.
+type OORDispatchAttemptRecord struct {
+	// IdempotencyKey is the caller-owned global dispatch identity.
+	IdempotencyKey string
+
+	// SessionID is the deterministic OOR transaction identity.
+	SessionID chainhash.Hash
+
+	// RequestData is the normalized recipient request plus output
+	// positions. Legacy backfilled records leave it empty and therefore
+	// fail closed when a caller needs exact recipient reconciliation.
+	RequestData []byte
+
+	// CreatedAt is when the binding became durable.
+	CreatedAt time.Time
 }
 
 // OORSessionRegistryStoreDB bridges the OOR session registry control-plane to
@@ -142,41 +178,100 @@ func (s *OORSessionRegistryStoreDB) UpsertSession(ctx context.Context,
 		createdAt = nowUnix
 	}
 
+	params := sqlc.UpsertOORSessionRegistryParams{
+		SessionID: record.SessionID[:],
+		ActorID:   record.ActorID,
+		Direction: int32(record.Direction),
+		Phase:     record.Phase,
+		IdempotencyKey: sql.NullString{
+			String: record.IdempotencyKey,
+			Valid:  record.IdempotencyKey != "",
+		},
+		Status: int32(record.Status),
+		LastError: sql.NullString{
+			String: record.LastError,
+			Valid:  record.LastError != "",
+		},
+		SnapshotData:    record.SnapshotData,
+		SnapshotVersion: record.SnapshotVersion,
+		CreatedAt:       createdAt,
+		UpdatedAt:       nowUnix,
+
+		// flow_version is write-once (not in the ON CONFLICT update
+		// set); the oor package stamps the value and applies the load
+		// guard, since db cannot import oor.
+		FlowVersion: int32(record.FlowVersion),
+	}
+
 	return s.ExecTx(
 		ctx, WriteTxOption(),
 		func(q *sqlc.Queries) error {
-			return q.UpsertOORSessionRegistry(
-				ctx,
-				sqlc.UpsertOORSessionRegistryParams{
-					SessionID: record.SessionID[:],
-					ActorID:   record.ActorID,
-					Direction: int32(record.Direction),
-					Phase:     record.Phase,
-					IdempotencyKey: sql.NullString{
-						String: record.IdempotencyKey,
-						Valid: record.IdempotencyKey !=
-							"",
-					},
-					Status: int32(record.Status),
-					LastError: sql.NullString{
-						String: record.LastError,
-						Valid:  record.LastError != "",
-					},
-					SnapshotData:    record.SnapshotData,
-					SnapshotVersion: record.SnapshotVersion,
-					CreatedAt:       createdAt,
-					UpdatedAt:       nowUnix,
+			if err := q.UpsertOORSessionRegistry(
+				ctx, params,
+			); err != nil {
+				return err
+			}
 
-					// flow_version is write-once (not in
-					// the ON CONFLICT update set); the oor
-					// package stamps the value and applies
-					// the load guard, since db cannot
-					// import oor.
-					FlowVersion: int32(record.FlowVersion),
-				},
+			if record.Direction != OORSessionDirectionOutgoing ||
+				record.IdempotencyKey == "" ||
+				len(record.DispatchRequestData) == 0 {
+				return nil
+			}
+
+			return ensureOORDispatchAttempt(
+				ctx, q, record.IdempotencyKey, record.SessionID,
+				record.DispatchRequestData, nowUnix,
 			)
 		},
 	)
+}
+
+// ensureOORDispatchAttempt inserts the immutable dispatch binding or proves
+// that an idempotent redelivery matches the row that already won. The insert
+// and comparison run inside the session checkpoint transaction, so a conflict
+// rolls back both the session advance and its transport enqueue.
+func ensureOORDispatchAttempt(ctx context.Context, q *sqlc.Queries, key string,
+	sessionID chainhash.Hash, requestData []byte, createdAt int64) error {
+
+	err := q.InsertOORDispatchAttempt(
+		ctx, sqlc.InsertOORDispatchAttemptParams{
+			IdempotencyKey: key,
+			SessionID:      sessionID[:],
+			RequestData:    requestData,
+			CreatedAt:      createdAt,
+		},
+	)
+	if err != nil {
+		return err
+	}
+
+	winner, err := q.GetOORDispatchAttemptByIdempotencyKey(ctx, key)
+	if errors.Is(err, sql.ErrNoRows) {
+		// The insert can lose on the unique session_id constraint while
+		// the requested key remains absent. Report the same typed
+		// conflict as a key collision instead of leaking sql.ErrNoRows.
+		winnerBySession, sessionErr :=
+			q.GetOORDispatchAttemptBySessionID(ctx, sessionID[:])
+		if sessionErr == nil {
+			return fmt.Errorf("%w: session %s is already bound "+
+				"to key %q", ErrOORDispatchAttemptConflict,
+				sessionID.String(),
+				winnerBySession.IdempotencyKey)
+		}
+		if !errors.Is(sessionErr, sql.ErrNoRows) {
+			return sessionErr
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(winner.SessionID, sessionID[:]) ||
+		!bytes.Equal(winner.RequestData, requestData) {
+		return fmt.Errorf("%w: idempotency key %q",
+			ErrOORDispatchAttemptConflict, key)
+	}
+
+	return nil
 }
 
 // GetSession loads one OOR session registry row by session id.
@@ -216,32 +311,24 @@ func (s *OORSessionRegistryStoreDB) GetSession(ctx context.Context,
 	return record, nil
 }
 
-// LookupActiveSessionByIdempotencyKey loads the non-failed OOR session
-// registry row carrying the given outgoing idempotency key, if any. Failed
-// sessions are excluded so a keyed retry after a failure admits a fresh
-// session instead of deduping against the dead one; pending and completed
-// sessions still answer for the key.
-func (s *OORSessionRegistryStoreDB) LookupActiveSessionByIdempotencyKey(
-	ctx context.Context, key string) (*OORSessionRegistryRecord, error) {
+// GetDispatchAttemptByIdempotencyKey loads the immutable outgoing dispatch
+// bound to key. Unlike the mutable session lookup, it remains valid across
+// terminal and incoming lifecycle updates.
+func (s *OORSessionRegistryStoreDB) GetDispatchAttemptByIdempotencyKey(
+	ctx context.Context, key string) (*OORDispatchAttemptRecord, error) {
 
 	if key == "" {
-		return nil, ErrOORSessionNotFound
+		return nil, ErrOORDispatchAttemptNotFound
 	}
 
-	var record *OORSessionRegistryRecord
-
+	var record *OORDispatchAttemptRecord
 	readFn := func(q *sqlc.Queries) error {
-		row, err := q.LookupActiveOORSessionRegistryByIdempotencyKey(
-			ctx, sql.NullString{
-				String: key,
-				Valid:  true,
-			},
-		)
+		row, err := q.GetOORDispatchAttemptByIdempotencyKey(ctx, key)
 		if err != nil {
 			return err
 		}
 
-		converted, err := oorSessionRecordFromRow(row)
+		converted, err := oorDispatchAttemptFromRow(row)
 		if err != nil {
 			return err
 		}
@@ -253,7 +340,43 @@ func (s *OORSessionRegistryStoreDB) LookupActiveSessionByIdempotencyKey(
 
 	err := s.ExecTx(ctx, ReadTxOption(), readFn)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrOORSessionNotFound
+		return nil, ErrOORDispatchAttemptNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return record, nil
+}
+
+// GetDispatchAttemptBySessionID loads the immutable outgoing dispatch for one
+// deterministic OOR session.
+func (s *OORSessionRegistryStoreDB) GetDispatchAttemptBySessionID(
+	ctx context.Context, sessionID chainhash.Hash) (
+	*OORDispatchAttemptRecord, error) {
+
+	var record *OORDispatchAttemptRecord
+	readFn := func(q *sqlc.Queries) error {
+		row, err := q.GetOORDispatchAttemptBySessionID(
+			ctx, sessionID[:],
+		)
+		if err != nil {
+			return err
+		}
+
+		converted, err := oorDispatchAttemptFromRow(row)
+		if err != nil {
+			return err
+		}
+
+		record = &converted
+
+		return nil
+	}
+
+	err := s.ExecTx(ctx, ReadTxOption(), readFn)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrOORDispatchAttemptNotFound
 	}
 	if err != nil {
 		return nil, err
@@ -362,4 +485,24 @@ func oorSessionRecordFromRow(row sqlc.OorSessionRegistry) (
 	}
 
 	return record, nil
+}
+
+// oorDispatchAttemptFromRow validates and converts one generated dispatch row.
+func oorDispatchAttemptFromRow(row sqlc.OorDispatchAttempt) (
+	OORDispatchAttemptRecord, error) {
+
+	if len(row.SessionID) != chainhash.HashSize {
+		return OORDispatchAttemptRecord{}, fmt.Errorf("unexpected "+
+			"dispatch session id length %d", len(row.SessionID))
+	}
+
+	var sessionID chainhash.Hash
+	copy(sessionID[:], row.SessionID)
+
+	return OORDispatchAttemptRecord{
+		IdempotencyKey: row.IdempotencyKey,
+		SessionID:      sessionID,
+		RequestData:    row.RequestData,
+		CreatedAt:      time.Unix(row.CreatedAt, 0),
+	}, nil
 }

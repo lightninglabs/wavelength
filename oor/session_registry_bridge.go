@@ -29,11 +29,18 @@ type SessionRegistryStore interface {
 		error,
 	)
 
-	// LookupActiveSessionByIdempotencyKey loads the non-failed outgoing
-	// session carrying the given idempotency key, if any. Failed sessions
-	// never dedup a keyed retry.
-	LookupActiveSessionByIdempotencyKey(ctx context.Context,
-		key string) (*clientdb.OORSessionRegistryRecord, error)
+	// GetDispatchAttemptByIdempotencyKey loads the immutable outgoing
+	// dispatch carrying the given caller key.
+	GetDispatchAttemptByIdempotencyKey(ctx context.Context,
+		key string) (*clientdb.OORDispatchAttemptRecord, error)
+
+	// GetDispatchAttemptBySessionID loads the immutable outgoing dispatch
+	// for one deterministic OOR session.
+	GetDispatchAttemptBySessionID(ctx context.Context,
+		sessionID chainhash.Hash) (
+		*clientdb.OORDispatchAttemptRecord,
+		error,
+	)
 
 	// ListNonTerminal loads every non-terminal session row for boot
 	// restore.
@@ -105,7 +112,7 @@ func outgoingRegistryRecord(sessionID SessionID,
 		lastError = snapshot.FailReason
 	}
 
-	return clientdb.OORSessionRegistryRecord{
+	record := clientdb.OORSessionRegistryRecord{
 		SessionID:       chainhash.Hash(sessionID),
 		ActorID:         ActorIDForSession(sessionID),
 		Direction:       clientdb.OORSessionDirectionOutgoing,
@@ -127,7 +134,18 @@ func outgoingRegistryRecord(sessionID SessionID,
 		// be mis-stamped V1 unless the session's own version is
 		// threaded through here (and its incoming twin below).
 		FlowVersion: oorpb.FlowVersionV1,
-	}, nil
+	}
+
+	// The first submit-capable state carries the proof built where the
+	// caller recipients and wallet change output were both known. It is
+	// committed atomically with the first transport enqueue.
+	if s, ok := state.(*AwaitingSubmitAccepted); ok {
+		record.DispatchRequestData = append(
+			[]byte(nil), s.DispatchRequestData...,
+		)
+	}
+
+	return record, nil
 }
 
 // incomingRegistryRecord builds a registry record from a live incoming FSM

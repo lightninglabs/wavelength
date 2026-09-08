@@ -40,6 +40,10 @@ type StartTransferEvent struct {
 	// retries. Empty preserves the historical deterministic-session
 	// behavior.
 	IdempotencyKey string
+
+	// DispatchRequestData is the normalized caller-recipient proof that
+	// must become durable before submit transport is enqueued.
+	DispatchRequestData []byte
 }
 
 // eventSealed marks this as implementing the sealed Event interface.

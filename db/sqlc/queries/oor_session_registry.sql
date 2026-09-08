@@ -25,15 +25,6 @@ SELECT * FROM oor_session_registry
 WHERE session_id = $1
 ;
 
--- name: LookupActiveOORSessionRegistryByIdempotencyKey :one
--- Status 2 = Failed (anchored to Go iota in
--- db/oor_session_registry_store.go OORSessionStatus). Failed sessions never
--- dedup a keyed retry, so the lookup skips them: only a pending or completed
--- session answers for an idempotency key.
-SELECT * FROM oor_session_registry
-WHERE idempotency_key = $1 AND status != 2
-;
-
 -- name: ListNonTerminalOORSessionRegistry :many
 -- Status 1 = Completed, 2 = Failed (anchored to Go iota in
 -- db/oor_session_registry_store.go OORSessionStatus).
@@ -45,4 +36,23 @@ ORDER BY created_at ASC
 -- name: ListAllOORSessionRegistry :many
 SELECT * FROM oor_session_registry
 ORDER BY created_at ASC
+;
+
+-- name: InsertOORDispatchAttempt :exec
+INSERT INTO oor_dispatch_attempts (
+    idempotency_key, session_id, request_data, created_at
+) VALUES (
+    $1, $2, $3, $4
+)
+ON CONFLICT DO NOTHING
+;
+
+-- name: GetOORDispatchAttemptByIdempotencyKey :one
+SELECT * FROM oor_dispatch_attempts
+WHERE idempotency_key = $1
+;
+
+-- name: GetOORDispatchAttemptBySessionID :one
+SELECT * FROM oor_dispatch_attempts
+WHERE session_id = $1
 ;

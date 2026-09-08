@@ -54,7 +54,7 @@ durable registry, which owns admission, the ownership gate, and the
 self-transfer invariant; incoming hints always take the registry path for the
 same reason.
 
-## The session row is the single source of truth
+## Durable lifecycle and dispatch identity
 
 Every session has one row in `oor_session_registry`. The row carries two kinds
 of fields. The first kind is queryable control-plane state: the direction
@@ -69,12 +69,32 @@ important part of that blob is the operator's co-signed checkpoint PSBTs, which
 the client cannot recompute on its own and must persist verbatim once it has
 them.
 
-Because the row holds the full durable state, the OOR actor does **not** use the
+Keyed outgoing replay has a separate immutable row in
+`oor_dispatch_attempts`. It binds the caller key and deterministic session id
+to a normalized record of each caller recipient's canonical output index,
+value, and pkScript. `SendOOR` builds that record after adding optional wallet
+change, while both the caller subset and full output list are known. The first
+submit-capable checkpoint inserts it in the same transaction that enqueues
+transport. Terminal failure and a later incoming self-transfer cannot release
+or replace it.
+
+Migration 18 cannot normalize an opaque pre-migration snapshot in SQL. It
+therefore backfills one conservative key-to-session binding with no canonical
+request data. A keyed replay can still return that session id, but it returns
+no recipient outpoint and never starts a new send. Restored snapshots do not
+carry the pre-dispatch canonical recipient list, so later checkpoints cannot
+repair the missing data. If old failed and non-failed rows reused one key, the
+non-failed row wins deterministically. These legacy cases fail closed instead
+of parsing the Ark PSBT or maintaining a second proof format.
+
+Because the session row holds the full lifecycle state, the OOR actor does
+**not** use the
 generic actor-delivery `fsm_checkpoints` blob at all. The durable-actor
 framework never checkpoints on its own; checkpointing is the behavior's job, and
 this behavior writes its own row instead. One row per session, written in the
 same transaction that consumes the message, with no second source of truth that
-could drift from it.
+could drift from it. The dispatch-attempt row has a narrower job: it is the
+permanent identity and replay record for a keyed remote side effect.
 
 ### No legacy migration
 
@@ -133,7 +153,10 @@ into `serverconn` that commits atomically with the turn.
 A `StartTransferRequest` admits a new outgoing session. The actor builds the
 deterministic submit package, signs the Ark inputs inline, and commits the
 `AwaitingSubmitAccepted` snapshot together with one spending-reservation row per
-input and the submit message on the outbox. It then waits.
+input, the immutable keyed dispatch attempt, and the submit message on the
+outbox. It then waits. If that transaction rolls back, none of them exist. If
+it commits and the response is lost, a restart finds the attempt and returns
+the same session and recipient outpoints without another send.
 
 The operator co-signs and its response returns as a fresh turn. The actor signs
 the checkpoints inline and commits the `AwaitingFinalizeAccepted` snapshot —
@@ -167,6 +190,14 @@ crash before a commit redelivers the message, and the actor replays it against
 the last durably committed snapshot. Because each advance is idempotent —
 monotonic FSM state, deterministic reconstruction, downstream dedup on outbox
 ids — replay converges rather than double-spends or double-sends.
+
+For a keyed outgoing send, the first submit commit also includes the canonical
+dispatch attempt. Exact replay may reorder the same recipient set; the RPC maps
+each request recipient back to its original distinct output. A changed count,
+amount, or script is rejected. The key remains bound after terminal failure,
+because response loss cannot be distinguished from remote acceptance. A replay
+whose current outgoing row is known failed reports `failed` instead of claiming
+that the original outputs exist.
 
 ## Concurrency
 

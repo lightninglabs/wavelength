@@ -195,6 +195,13 @@ type Macaroon struct {
 	RootKey []byte
 }
 
+type OorDispatchAttempt struct {
+	IdempotencyKey string
+	SessionID      []byte
+	RequestData    []byte
+	CreatedAt      int64
+}
+
 type OorPackage struct {
 	SessionID []byte
 	Direction int32

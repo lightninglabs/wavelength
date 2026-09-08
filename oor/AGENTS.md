@@ -31,6 +31,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
 - `ReceiveLimits` / `DefaultReceiveLimits` — defense-in-depth bounds on
   incoming receive (`MaxCheckpoints`, `MaxVTXOMatches`, `MaxMailboxItems`,
   `MaxMailboxScriptBytes`, `MaxConcurrentIncomingSessions`).
+- `ErrIdempotencyKeyConflict` — caller-visible outgoing admission conflict
+  when a deterministic session cannot retain the supplied key; `waved` maps it
+  to `codes.AlreadyExists` after releasing freshly selected inputs.
 
 ## Relationships
 
@@ -76,9 +79,26 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   `IncomingSnapshot.Version = 1`); restore rejects a zero version. Outgoing
   v5 adds the `FirstRejectUnixNanos` record (bounded transient submit-reject
   retry window); a pre-v5 snapshot decodes it to 0 (a fresh window).
-- `StartTransferRequest.IdempotencyKey` dedup relies on a partial UNIQUE
-  index on `oor_session_registry` (at most one live-or-completed row per
-  key); a failed session never blocks a keyed retry.
+- `StartTransferRequest.IdempotencyKey` dedup reads
+  `oor_dispatch_attempts`, not the mutable session row. The table has one row
+  per caller key and one caller key per deterministic session id. Once the
+  first submit is durably queued, terminal failure and incoming self-transfer
+  progress cannot release or replace that identity.
+- After deterministic session construction, `handleStartTransfer` rejects a
+  non-empty caller key when the same session id is pending or durably bound
+  under another key, or when a durable keyless session already owns that id.
+  It rejects before forwarding to the child so a caller never receives success
+  under a key that exact replay cannot find. The narrow exception is a failed
+  outgoing legacy/keyless row with no immutable attempt: a keyed retry rebuilds
+  the same deterministic session, and its first new submit checkpoint binds
+  the key and request before transport enqueue.
+- `SendOOR` builds `DispatchRequestData` where both caller recipients and the
+  optional wallet change output are known. The proof binds only caller
+  recipients to their positions in the full canonical output list, then rides
+  the durable start message and snapshot to the first submit-capable state.
+  `UpsertSession` inserts it with the immutable attempt in the same transaction
+  as the snapshot and first transport enqueue. Exact replay rejects a changed
+  caller count, amount, or script. Later states cannot replace the proof.
 - `MaxConcurrentIncomingSessions` (default 1024) is enforced in the
   registry's `ensureChild` choke point, the only path that makes a session
   resident, so every admission path (RPC, routed message, boot restore)
@@ -99,10 +119,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   keys off that wrapped context's error, not the raw caller ctx, so a
   timed-out wait is treated as a benign hang-up and never reaps a
   still-signing session.
-- Idempotency-key dedup on Postgres is a commit-race, not a pre-check: losing
-  children collide on the partial UNIQUE index in `commitAck`, roll back, and
-  redeliver; the redelivered `resolveKeyDedup` then sees the winner's
-  committed row and consumes cleanly as `Existing`.
+- Idempotency-key dedup on Postgres is a commit-race, not only a pre-check:
+  losing children collide on a unique identity constraint in `commitAck`,
+  roll back, and redeliver. The redelivered `resolveKeyDedup` sees the
+  immutable winner and consumes cleanly as `Existing`.
 - `handleStartTransfer` answers `Existing: true` for a resident outgoing
   child only after confirming a durable row via `GetSession`; a row-less
   phantom (pending async reap via `SessionTerminalNotification`) is dropped

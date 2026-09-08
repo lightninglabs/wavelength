@@ -29,6 +29,10 @@ const (
 	// 5+). A pre-v5 snapshot omits this record, so it decodes to 0 (a fresh
 	// window) rather than failing.
 	snapshotFirstRejectNanosRecordType tlv.Type = 23
+
+	// snapshotDispatchRequestDataRecordType retains the normalized caller
+	// proof until the first submit-capable checkpoint.
+	snapshotDispatchRequestDataRecordType tlv.Type = 25
 )
 
 func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
@@ -57,6 +61,7 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 	failReason := []byte(snapshot.FailReason)
 	idempotencyKey := []byte(snapshot.IdempotencyKey)
 	firstRejectNanos := uint64(snapshot.FirstRejectUnixNanos)
+	dispatchRequestData := snapshot.DispatchRequestData
 
 	version := uint64(snapshot.Version)
 	records := []tlv.Record{
@@ -84,6 +89,10 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 		tlv.MakePrimitiveRecord(
 			snapshotFirstRejectNanosRecordType, &firstRejectNanos,
 		),
+		tlv.MakePrimitiveRecord(
+			snapshotDispatchRequestDataRecordType,
+			&dispatchRequestData,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -109,16 +118,17 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 	limits ReceiveLimits) (*OutgoingSnapshot, error) {
 
 	var (
-		version            uint64
-		sessionBytes       []byte
-		phaseBytes         []byte
-		arkPSBT            []byte
-		checkpointPSBTsRaw []byte
-		inputSnapshotsRaw  []byte
-		retryAfterNanos    uint64
-		failReasonRaw      []byte
-		idempotencyKeyRaw  []byte
-		firstRejectNanos   uint64
+		version             uint64
+		sessionBytes        []byte
+		phaseBytes          []byte
+		arkPSBT             []byte
+		checkpointPSBTsRaw  []byte
+		inputSnapshotsRaw   []byte
+		retryAfterNanos     uint64
+		failReasonRaw       []byte
+		idempotencyKeyRaw   []byte
+		firstRejectNanos    uint64
+		dispatchRequestData []byte
 	)
 
 	records := []tlv.Record{
@@ -145,6 +155,10 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotFirstRejectNanosRecordType, &firstRejectNanos,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotDispatchRequestDataRecordType,
+			&dispatchRequestData,
 		),
 	}
 
@@ -186,6 +200,9 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 	if len(arkPSBT) == 0 {
 		arkPSBT = nil
 	}
+	if len(dispatchRequestData) == 0 {
+		dispatchRequestData = nil
+	}
 
 	decodedVersion, err := decodeUint64ToUint8(version, "snapshot version")
 	if err != nil {
@@ -217,6 +234,7 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		FailReason:             string(failReasonRaw),
 		IdempotencyKey:         string(idempotencyKeyRaw),
 		FirstRejectUnixNanos:   decodedFirstReject,
+		DispatchRequestData:    dispatchRequestData,
 	}, nil
 }
 

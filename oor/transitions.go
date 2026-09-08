@@ -122,6 +122,15 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 		canonicalRecipients := oortx.CanonicalRecipientOutputs(
 			evt.RecipientOutputs,
 		)
+		dispatchRequestData := evt.DispatchRequestData
+		if evt.IdempotencyKey != "" && len(dispatchRequestData) == 0 {
+			dispatchRequestData, err = newOutgoingReplayData(
+				canonicalRecipients,
+			)
+			if err != nil {
+				return nil, err
+			}
+		}
 
 		// Build a deterministic submit package:
 		// - checkpoint txs convert VTXOs into checkpoints
@@ -183,6 +192,9 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 				TransferInputs:   evt.VTXOInputs,
 				RecipientOutputs: canonicalRecipients,
 				IdempotencyKey:   evt.IdempotencyKey,
+				DispatchRequestData: append(
+					[]byte(nil), dispatchRequestData...,
+				),
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
@@ -249,6 +261,9 @@ func (s *AwaitingArkSignatures) ProcessEvent(ctx context.Context, event Event,
 			TransferInputs:   s.TransferInputs,
 			RecipientOutputs: s.RecipientOutputs,
 			IdempotencyKey:   s.IdempotencyKey,
+			DispatchRequestData: append(
+				[]byte(nil), s.DispatchRequestData...,
+			),
 		}
 
 		return &StateTransition{
