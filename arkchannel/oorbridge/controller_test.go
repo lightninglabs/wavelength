@@ -48,7 +48,7 @@ type controllerTestSink struct {
 }
 
 // Apply records one channel event.
-func (s *controllerTestSink) Apply(_ context.Context, _ arkchannel.ID,
+func (s *controllerTestSink) ApplyLocalEvent(_ context.Context, _ arkchannel.ID,
 	event arkchannel.Event) (arkchannel.Record, error) {
 
 	s.event = event

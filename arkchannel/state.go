@@ -109,11 +109,10 @@ func (s *channelState) ProcessEvent(_ context.Context, event Event,
 		return nil, err
 	}
 	_, sourceSpent := event.(*SourceSpent)
-	_, recoveryInstalled := event.(*RecoveryPackageInstalled)
 	_, oorFinalized := event.(*OORFinalized)
 	_, oorAborted := event.(*OORAborted)
-	if next.Phase == previousPhase && !sourceSpent &&
-		!recoveryInstalled && !oorFinalized && !oorAborted {
+	if next.Phase == previousPhase && !sourceSpent && !oorFinalized &&
+		!oorAborted {
 
 		action = nil
 	}
@@ -138,7 +137,7 @@ func PendingAction(snapshot Snapshot) (Action, error) {
 		}, nil
 
 	case PhaseBackingReady:
-		if snapshot.OORFinalized && !snapshot.RecoveryReady {
+		if snapshot.OORFinalized {
 			return &PrepareRecovery{
 				Terms:  snapshot.Terms.Clone(),
 				Source: snapshot.Source.Clone(),
@@ -276,7 +275,7 @@ func applyEvent(next *Snapshot, event Event) (bool, error) {
 		return applyOORFinalized(next, event.SessionID)
 
 	case *RecoveryPackageInstalled:
-		return applyRecoveryPackageInstalled(next)
+		return applyRecoveryPackageInstalled(next, event.Party)
 
 	case *OORAborted:
 		return applyOORAborted(
@@ -514,7 +513,7 @@ func applyOORFinalized(next *Snapshot, sessionID [32]byte) (bool, error) {
 // applyRecoveryPackageInstalled records the symmetric recovery barrier. It is
 // valid before the remote OOR-finalized acknowledgement arrives because the
 // package itself can only be exported after actual OOR completion.
-func applyRecoveryPackageInstalled(next *Snapshot) (bool, error) {
+func applyRecoveryPackageInstalled(next *Snapshot, party Party) (bool, error) {
 	if next.Source == nil || next.Backing == nil || !backingReady(*next) {
 		return false, fmt.Errorf("cannot install channel recovery " +
 			"before finalized backing")
@@ -524,10 +523,22 @@ func applyRecoveryPackageInstalled(next *Snapshot) (bool, error) {
 		return false, fmt.Errorf("cannot install recovery for " +
 			"abandoned channel")
 	}
-	if next.RecoveryReady {
-		return false, nil
+	switch party {
+	case PartyClient:
+		if next.ClientRecoveryReady {
+			return false, nil
+		}
+		next.ClientRecoveryReady = true
+
+	case PartyHub:
+		if next.HubRecoveryReady {
+			return false, nil
+		}
+		next.HubRecoveryReady = true
+
+	default:
+		return false, fmt.Errorf("unknown recovery party %d", party)
 	}
-	next.RecoveryReady = true
 
 	return true, nil
 }
@@ -543,7 +554,7 @@ func applySourceSpent(next *Snapshot, outpoint wire.OutPoint,
 	if next.SourceConflict != nil {
 		return false, nil
 	}
-	if !next.RecoveryReady || !next.OORFinalized {
+	if !next.RecoveryReady() || !next.OORFinalized {
 		return false, fmt.Errorf("cannot handle source spend before " +
 			"recovery is ready")
 	}
@@ -873,6 +884,9 @@ func applyCooperativeCloseAborted(next *Snapshot) (bool, error) {
 // replayable. The phase check is applied against the CAS-reloaded state, not
 // the record that the expiry scan originally observed.
 func applyPrePONRExpiry(next *Snapshot, reason string) (bool, error) {
+	if reason == "" {
+		return false, fmt.Errorf("expiry reason is required")
+	}
 	if next.Phase != PhaseRequested && next.Phase != PhaseNegotiating {
 		return false, nil
 	}
@@ -938,7 +952,7 @@ func advance(next *Snapshot) (Action, error) {
 		}, nil
 
 	case PhaseBackingReady:
-		if next.OORFinalized && next.RecoveryReady {
+		if next.OORFinalized && next.RecoveryReady() {
 			next.Phase = PhaseActivating
 
 			return &ActivateChannel{
@@ -1082,7 +1096,8 @@ func validateSnapshot(snapshot Snapshot) error {
 	if snapshot.Source == nil && (snapshot.Backing != nil ||
 		snapshot.ClientFinalized || snapshot.HubFinalized ||
 		snapshot.OORFinalized || snapshot.OORAborted ||
-		snapshot.RecoveryReady || snapshot.SourceConflict != nil) {
+		snapshot.ClientRecoveryReady || snapshot.HubRecoveryReady ||
+		snapshot.SourceConflict != nil) {
 		return fmt.Errorf("funding facts require a bound VTXO")
 	}
 	if snapshot.Backing == nil && (snapshot.ClientFinalized ||
@@ -1110,10 +1125,11 @@ func validateSnapshot(snapshot Snapshot) error {
 		return fmt.Errorf("OOR transfer cannot be finalized and " +
 			"aborted")
 	}
-	if snapshot.RecoveryReady && !backingReady(snapshot) {
+	if (snapshot.ClientRecoveryReady || snapshot.HubRecoveryReady) &&
+		!backingReady(snapshot) {
 		return fmt.Errorf("channel recovery requires finalized backing")
 	}
-	if snapshot.SourceConflict != nil && (!snapshot.RecoveryReady ||
+	if snapshot.SourceConflict != nil && (!snapshot.RecoveryReady() ||
 		!snapshot.OORFinalized) {
 		return fmt.Errorf("source conflict requires ready recovery")
 	}
@@ -1143,7 +1159,8 @@ func validateSnapshot(snapshot Snapshot) error {
 		}
 		if snapshot.Backing != nil || snapshot.ClientFinalized ||
 			snapshot.HubFinalized || snapshot.OORFinalized ||
-			snapshot.OORAborted || snapshot.RecoveryReady ||
+			snapshot.OORAborted || snapshot.ClientRecoveryReady ||
+			snapshot.HubRecoveryReady ||
 			snapshot.SourceConflict != nil ||
 			snapshot.BackingPublished {
 			return fmt.Errorf("requested channel has advanced " +
@@ -1156,7 +1173,8 @@ func validateSnapshot(snapshot Snapshot) error {
 				"VTXO")
 		}
 		if snapshot.OORFinalized || snapshot.OORAborted ||
-			snapshot.RecoveryReady ||
+			snapshot.ClientRecoveryReady ||
+			snapshot.HubRecoveryReady ||
 			snapshot.SourceConflict != nil {
 			return fmt.Errorf("negotiating channel has terminal " +
 				"OOR facts")
@@ -1167,13 +1185,17 @@ func validateSnapshot(snapshot Snapshot) error {
 			return fmt.Errorf("backing-ready channel has " +
 				"terminal OOR facts")
 		}
+		if snapshot.OORFinalized && snapshot.RecoveryReady() {
+			return fmt.Errorf("recovery-ready channel must be " +
+				"activating")
+		}
 
 	case PhaseActivating, PhaseActive, PhaseMaterializing, PhaseOnChain,
 		PhaseClosed, PhaseCoopClosing, PhaseCoopCloseSigned,
 		PhaseCoopClosePublished:
 
 		if !snapshot.OORFinalized || snapshot.OORAborted ||
-			!snapshot.RecoveryReady {
+			!snapshot.RecoveryReady() {
 			return fmt.Errorf("channel advanced before OOR " +
 				"finalization and recovery installation")
 		}

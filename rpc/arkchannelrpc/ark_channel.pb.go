@@ -134,11 +134,7 @@ const (
 	ChannelEventType_CHANNEL_EVENT_TYPE_UNSPECIFIED                ChannelEventType = 0
 	ChannelEventType_CHANNEL_EVENT_TYPE_FUNDING_FINALIZED          ChannelEventType = 1
 	ChannelEventType_CHANNEL_EVENT_TYPE_OOR_FINALIZED              ChannelEventType = 2
-	ChannelEventType_CHANNEL_EVENT_TYPE_CHANNEL_ACTIVE             ChannelEventType = 3
-	ChannelEventType_CHANNEL_EVENT_TYPE_MATERIALIZE                ChannelEventType = 4
-	ChannelEventType_CHANNEL_EVENT_TYPE_BACKING_PUBLISHED          ChannelEventType = 5
 	ChannelEventType_CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED ChannelEventType = 6
-	ChannelEventType_CHANNEL_EVENT_TYPE_FAILED                     ChannelEventType = 7
 	ChannelEventType_CHANNEL_EVENT_TYPE_FUNDING_PEER_READY         ChannelEventType = 8
 	ChannelEventType_CHANNEL_EVENT_TYPE_OOR_ABORTED                ChannelEventType = 9
 )
@@ -149,11 +145,7 @@ var (
 		0: "CHANNEL_EVENT_TYPE_UNSPECIFIED",
 		1: "CHANNEL_EVENT_TYPE_FUNDING_FINALIZED",
 		2: "CHANNEL_EVENT_TYPE_OOR_FINALIZED",
-		3: "CHANNEL_EVENT_TYPE_CHANNEL_ACTIVE",
-		4: "CHANNEL_EVENT_TYPE_MATERIALIZE",
-		5: "CHANNEL_EVENT_TYPE_BACKING_PUBLISHED",
 		6: "CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED",
-		7: "CHANNEL_EVENT_TYPE_FAILED",
 		8: "CHANNEL_EVENT_TYPE_FUNDING_PEER_READY",
 		9: "CHANNEL_EVENT_TYPE_OOR_ABORTED",
 	}
@@ -161,11 +153,7 @@ var (
 		"CHANNEL_EVENT_TYPE_UNSPECIFIED":                0,
 		"CHANNEL_EVENT_TYPE_FUNDING_FINALIZED":          1,
 		"CHANNEL_EVENT_TYPE_OOR_FINALIZED":              2,
-		"CHANNEL_EVENT_TYPE_CHANNEL_ACTIVE":             3,
-		"CHANNEL_EVENT_TYPE_MATERIALIZE":                4,
-		"CHANNEL_EVENT_TYPE_BACKING_PUBLISHED":          5,
 		"CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED": 6,
-		"CHANNEL_EVENT_TYPE_FAILED":                     7,
 		"CHANNEL_EVENT_TYPE_FUNDING_PEER_READY":         8,
 		"CHANNEL_EVENT_TYPE_OOR_ABORTED":                9,
 	}
@@ -1106,18 +1094,19 @@ func (x *GetFundingChannelRequest) GetChannelId() []byte {
 }
 
 type GetFundingChannelResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Terms         *ChannelTerms          `protobuf:"bytes,1,opt,name=terms,proto3" json:"terms,omitempty"`
-	Binding       *ChannelVTXOBinding    `protobuf:"bytes,2,opt,name=binding,proto3" json:"binding,omitempty"`
-	Backing       *ChannelBacking        `protobuf:"bytes,3,opt,name=backing,proto3" json:"backing,omitempty"`
-	Phase         uint32                 `protobuf:"varint,4,opt,name=phase,proto3" json:"phase,omitempty"`
-	OorFinalized  bool                   `protobuf:"varint,5,opt,name=oor_finalized,json=oorFinalized,proto3" json:"oor_finalized,omitempty"`
-	RecoveryReady bool                   `protobuf:"varint,6,opt,name=recovery_ready,json=recoveryReady,proto3" json:"recovery_ready,omitempty"`
-	Failure       string                 `protobuf:"bytes,7,opt,name=failure,proto3" json:"failure,omitempty"`
-	Revision      uint64                 `protobuf:"varint,8,opt,name=revision,proto3" json:"revision,omitempty"`
-	OorAborted    bool                   `protobuf:"varint,9,opt,name=oor_aborted,json=oorAborted,proto3" json:"oor_aborted,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	Terms               *ChannelTerms          `protobuf:"bytes,1,opt,name=terms,proto3" json:"terms,omitempty"`
+	Binding             *ChannelVTXOBinding    `protobuf:"bytes,2,opt,name=binding,proto3" json:"binding,omitempty"`
+	Backing             *ChannelBacking        `protobuf:"bytes,3,opt,name=backing,proto3" json:"backing,omitempty"`
+	Phase               uint32                 `protobuf:"varint,4,opt,name=phase,proto3" json:"phase,omitempty"`
+	OorFinalized        bool                   `protobuf:"varint,5,opt,name=oor_finalized,json=oorFinalized,proto3" json:"oor_finalized,omitempty"`
+	ClientRecoveryReady bool                   `protobuf:"varint,6,opt,name=client_recovery_ready,json=clientRecoveryReady,proto3" json:"client_recovery_ready,omitempty"`
+	Failure             string                 `protobuf:"bytes,7,opt,name=failure,proto3" json:"failure,omitempty"`
+	Revision            uint64                 `protobuf:"varint,8,opt,name=revision,proto3" json:"revision,omitempty"`
+	OorAborted          bool                   `protobuf:"varint,9,opt,name=oor_aborted,json=oorAborted,proto3" json:"oor_aborted,omitempty"`
+	HubRecoveryReady    bool                   `protobuf:"varint,10,opt,name=hub_recovery_ready,json=hubRecoveryReady,proto3" json:"hub_recovery_ready,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *GetFundingChannelResponse) Reset() {
@@ -1185,9 +1174,9 @@ func (x *GetFundingChannelResponse) GetOorFinalized() bool {
 	return false
 }
 
-func (x *GetFundingChannelResponse) GetRecoveryReady() bool {
+func (x *GetFundingChannelResponse) GetClientRecoveryReady() bool {
 	if x != nil {
-		return x.RecoveryReady
+		return x.ClientRecoveryReady
 	}
 	return false
 }
@@ -1209,6 +1198,13 @@ func (x *GetFundingChannelResponse) GetRevision() uint64 {
 func (x *GetFundingChannelResponse) GetOorAborted() bool {
 	if x != nil {
 		return x.OorAborted
+	}
+	return false
+}
+
+func (x *GetFundingChannelResponse) GetHubRecoveryReady() bool {
+	if x != nil {
+		return x.HubRecoveryReady
 	}
 	return false
 }
@@ -4373,18 +4369,20 @@ const file_ark_channel_proto_rawDesc = "" +
 	"\achannel\x18\x01 \x01(\v2\x19.arkchannelrpc.ArkChannelR\achannel\"9\n" +
 	"\x18GetFundingChannelRequest\x12\x1d\n" +
 	"\n" +
-	"channel_id\x18\x01 \x01(\fR\tchannelId\"\xfd\x02\n" +
+	"channel_id\x18\x01 \x01(\fR\tchannelId\"\xb8\x03\n" +
 	"\x19GetFundingChannelResponse\x121\n" +
 	"\x05terms\x18\x01 \x01(\v2\x1b.arkchannelrpc.ChannelTermsR\x05terms\x12;\n" +
 	"\abinding\x18\x02 \x01(\v2!.arkchannelrpc.ChannelVTXOBindingR\abinding\x127\n" +
 	"\abacking\x18\x03 \x01(\v2\x1d.arkchannelrpc.ChannelBackingR\abacking\x12\x14\n" +
 	"\x05phase\x18\x04 \x01(\rR\x05phase\x12#\n" +
-	"\roor_finalized\x18\x05 \x01(\bR\foorFinalized\x12%\n" +
-	"\x0erecovery_ready\x18\x06 \x01(\bR\rrecoveryReady\x12\x18\n" +
+	"\roor_finalized\x18\x05 \x01(\bR\foorFinalized\x122\n" +
+	"\x15client_recovery_ready\x18\x06 \x01(\bR\x13clientRecoveryReady\x12\x18\n" +
 	"\afailure\x18\a \x01(\tR\afailure\x12\x1a\n" +
 	"\brevision\x18\b \x01(\x04R\brevision\x12\x1f\n" +
 	"\voor_aborted\x18\t \x01(\bR\n" +
-	"oorAborted\"t\n" +
+	"oorAborted\x12,\n" +
+	"\x12hub_recovery_ready\x18\n" +
+	" \x01(\bR\x10hubRecoveryReady\"t\n" +
 	"\x16BindPreparedOORRequest\x12\x1d\n" +
 	"\n" +
 	"channel_id\x18\x01 \x01(\fR\tchannelId\x12;\n" +
@@ -4641,18 +4639,14 @@ const file_ark_channel_proto_rawDesc = "" +
 	"#FUNDING_WIRE_METHOD_INSTALL_BACKING\x10\x02\x12)\n" +
 	"%FUNDING_WIRE_METHOD_FUNDING_FINALIZED\x10\x03\x12&\n" +
 	"\"FUNDING_WIRE_METHOD_CHANNEL_ACTIVE\x10\x04\x12+\n" +
-	"'FUNDING_WIRE_METHOD_APPLY_CHANNEL_EVENT\x10\x05*\x9c\x03\n" +
+	"'FUNDING_WIRE_METHOD_APPLY_CHANNEL_EVENT\x10\x05*\xa0\x02\n" +
 	"\x10ChannelEventType\x12\"\n" +
 	"\x1eCHANNEL_EVENT_TYPE_UNSPECIFIED\x10\x00\x12(\n" +
 	"$CHANNEL_EVENT_TYPE_FUNDING_FINALIZED\x10\x01\x12$\n" +
-	" CHANNEL_EVENT_TYPE_OOR_FINALIZED\x10\x02\x12%\n" +
-	"!CHANNEL_EVENT_TYPE_CHANNEL_ACTIVE\x10\x03\x12\"\n" +
-	"\x1eCHANNEL_EVENT_TYPE_MATERIALIZE\x10\x04\x12(\n" +
-	"$CHANNEL_EVENT_TYPE_BACKING_PUBLISHED\x10\x05\x121\n" +
-	"-CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED\x10\x06\x12\x1d\n" +
-	"\x19CHANNEL_EVENT_TYPE_FAILED\x10\a\x12)\n" +
+	" CHANNEL_EVENT_TYPE_OOR_FINALIZED\x10\x02\x121\n" +
+	"-CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED\x10\x06\x12)\n" +
 	"%CHANNEL_EVENT_TYPE_FUNDING_PEER_READY\x10\b\x12\"\n" +
-	"\x1eCHANNEL_EVENT_TYPE_OOR_ABORTED\x10\t*\xc1\x01\n" +
+	"\x1eCHANNEL_EVENT_TYPE_OOR_ABORTED\x10\t\"\x04\b\x03\x10\x03\"\x04\b\x04\x10\x04\"\x04\b\x05\x10\x05\"\x04\b\a\x10\a*\xc1\x01\n" +
 	"\x1fCooperativeCloseAcknowledgement\x121\n" +
 	"-COOPERATIVE_CLOSE_ACKNOWLEDGEMENT_UNSPECIFIED\x10\x00\x123\n" +
 	"/COOPERATIVE_CLOSE_ACKNOWLEDGEMENT_CLIENT_SIGNED\x10\x01\x126\n" +

@@ -68,9 +68,11 @@ type OORFinalized struct {
 
 func (*OORFinalized) eventSealed() {}
 
-// RecoveryPackageInstalled records that the complete source ancestry and OOR
-// package chain are installed and watched at both channel endpoints.
-type RecoveryPackageInstalled struct{}
+// RecoveryPackageInstalled records that one endpoint installed and watches the
+// complete source ancestry and OOR package chain.
+type RecoveryPackageInstalled struct {
+	Party Party
+}
 
 func (*RecoveryPackageInstalled) eventSealed() {}
 

@@ -60,10 +60,10 @@ func (e *NativeExecutor) ValidatePreparedOOR(ctx context.Context, terms Terms,
 	return e.oor.ValidatePreparedOOR(ctx, terms, source)
 }
 
-// ChannelEventSink records an external subsystem completion back into the
+// ChannelEventSink records trusted local subsystem completion back into the
 // durable channel state machine.
 type ChannelEventSink interface {
-	Apply(context.Context, ID, Event) (Record, error)
+	ApplyLocalEvent(context.Context, ID, Event) (Record, error)
 }
 
 // ChannelEventSinkBinder wires an executor to its owning service after both

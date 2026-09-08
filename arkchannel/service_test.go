@@ -14,6 +14,7 @@ import (
 type serviceExecutor struct {
 	t           *testing.T
 	service     *Service
+	localParty  Party
 	counts      map[string]int
 	failPublish int
 }
@@ -60,6 +61,18 @@ func (*serviceExecutor) ValidatePreparedOOR(context.Context, Terms,
 	return nil
 }
 
+// applyPartyEvent routes one simulated endpoint callback through the matching
+// local or authenticated-peer service boundary.
+func (e *serviceExecutor) applyPartyEvent(ctx context.Context, id ID,
+	party Party, event Event) (Record, error) {
+
+	if party == e.localParty {
+		return e.service.ApplyLocalEvent(ctx, id, event)
+	}
+
+	return e.service.ApplyPeerEvent(ctx, id, event)
+}
+
 // FundingFinalized returns one fixed lnd database observation.
 func (s *staticFundingFinalizationSource) FundingFinalized(context.Context,
 	Terms, Backing) (bool, error) {
@@ -76,48 +89,70 @@ func (e *serviceExecutor) Execute(ctx context.Context, id ID,
 	switch action := action.(type) {
 	case *NegotiateFunding:
 		backing := testBacking(e.t, action.Terms, action.Source)
-		for _, event := range []Event{
-			&BackingSigned{
-				Backing: backing,
+		for _, fact := range []struct {
+			party Party
+			event Event
+		}{
+			{
+				action.Terms.Funder,
+				&BackingSigned{
+					Backing: backing,
+				},
 			},
-			&FundingFinalized{
-				Party: PartyClient,
+			{
+				PartyClient,
+				&FundingFinalized{
+					Party: PartyClient,
+				},
 			},
-			&FundingFinalized{
-				Party: PartyHub,
+			{
+				PartyHub,
+				&FundingFinalized{
+					Party: PartyHub,
+				},
 			},
 		} {
-			if _, err := e.service.Apply(
-				ctx, id, event,
+			if _, err := e.applyPartyEvent(
+				ctx, id, fact.party, fact.event,
 			); err != nil {
 				return err
 			}
 		}
 
 	case *CommitOOR:
-		_, err := e.service.Apply(ctx, id, &OORFinalized{
-			SessionID: action.Source.OORSessionID,
-		})
-
-		return err
-
-	case *PrepareRecovery:
-		_, err := e.service.Apply(
-			ctx, id, &RecoveryPackageInstalled{},
+		_, err := e.applyPartyEvent(
+			ctx, id, action.Terms.Funder, &OORFinalized{
+				SessionID: action.Source.OORSessionID,
+			},
 		)
 
 		return err
 
+	case *PrepareRecovery:
+		for _, party := range []Party{PartyClient, PartyHub} {
+			if _, err := e.applyPartyEvent(
+				ctx, id, party, &RecoveryPackageInstalled{
+					Party: party,
+				},
+			); err != nil {
+				return err
+			}
+		}
+
+		return nil
+
 	case *AbortOOR:
-		_, err := e.service.Apply(ctx, id, &OORAborted{
-			SessionID: action.Source.OORSessionID,
-			Reason:    action.Reason,
-		})
+		_, err := e.applyPartyEvent(
+			ctx, id, action.Terms.Funder, &OORAborted{
+				SessionID: action.Source.OORSessionID,
+				Reason:    action.Reason,
+			},
+		)
 
 		return err
 
 	case *ActivateChannel:
-		_, err := e.service.Apply(ctx, id, &ChannelActive{
+		_, err := e.service.ApplyLocalEvent(ctx, id, &ChannelActive{
 			ChannelPointHash:  action.Backing.ChannelPoint.Hash,
 			ChannelPointIndex: action.Backing.ChannelPoint.Index,
 		})
@@ -125,7 +160,7 @@ func (e *serviceExecutor) Execute(ctx context.Context, id ID,
 		return err
 
 	case *CancelFunding:
-		_, err := e.service.Apply(ctx, id, &FundingCanceled{})
+		_, err := e.service.ApplyLocalEvent(ctx, id, &FundingCanceled{})
 
 		return err
 
@@ -135,7 +170,7 @@ func (e *serviceExecutor) Execute(ctx context.Context, id ID,
 
 			return fmt.Errorf("injected handoff failure")
 		}
-		_, err := e.service.Apply(ctx, id, &BackingPublished{
+		_, err := e.service.ApplyLocalEvent(ctx, id, &BackingPublished{
 			TxID: action.Backing.ChannelPoint.Hash,
 		})
 
@@ -161,9 +196,10 @@ func TestServiceReplaysSourceConflictAction(t *testing.T) {
 	executor := &serviceExecutor{
 		t: t, counts: make(map[string]int), failPublish: 1,
 	}
-	service, err := NewService(coordinator, executor)
+	service, err := NewService(PartyClient, coordinator, executor)
 	require.NoError(t, err)
 	executor.service = service
+	executor.localParty = PartyClient
 	terms := testTerms(t, KindPromotion)
 	binding := testBinding(terms)
 	_, err = service.PromoteVTXO(t.Context(), terms, binding)
@@ -175,13 +211,13 @@ func TestServiceReplaysSourceConflictAction(t *testing.T) {
 			44,
 		},
 	}
-	_, err = service.Apply(t.Context(), terms.ID, conflict)
+	_, err = service.ApplyLocalEvent(t.Context(), terms.ID, conflict)
 	require.ErrorContains(t, err, "injected handoff failure")
 	record, err := service.GetChannel(t.Context(), terms.ID)
 	require.NoError(t, err)
 	require.Equal(t, PhaseMaterializing, record.Snapshot.Phase)
 
-	record, err = service.Apply(t.Context(), terms.ID, conflict)
+	record, err = service.ApplyLocalEvent(t.Context(), terms.ID, conflict)
 	require.NoError(t, err)
 	require.Equal(t, PhaseOnChain, record.Snapshot.Phase)
 	require.Equal(t, 2, executor.counts["*arkchannel.PublishChannel"])
@@ -199,9 +235,10 @@ func TestServiceResumesMaterializationAction(t *testing.T) {
 	executor := &serviceExecutor{
 		t: t, counts: make(map[string]int),
 	}
-	service, err := NewService(coordinator, executor)
+	service, err := NewService(PartyClient, coordinator, executor)
 	require.NoError(t, err)
 	executor.service = service
+	executor.localParty = PartyClient
 
 	terms := testTerms(t, KindPromotion)
 	_, err = service.PromoteVTXO(
@@ -233,9 +270,10 @@ func TestServicePromotesAndMaterializesVTXO(t *testing.T) {
 		t:      t,
 		counts: make(map[string]int),
 	}
-	service, err := NewService(coordinator, executor)
+	service, err := NewService(PartyClient, coordinator, executor)
 	require.NoError(t, err)
 	executor.service = service
+	executor.localParty = PartyClient
 
 	terms := testTerms(t, KindPromotion)
 	record, err := service.PromoteVTXO(
@@ -263,9 +301,10 @@ func TestServiceSeparatesPromotionRegistrationFromBinding(t *testing.T) {
 		t:      t,
 		counts: make(map[string]int),
 	}
-	service, err := NewService(coordinator, executor)
+	service, err := NewService(PartyClient, coordinator, executor)
 	require.NoError(t, err)
 	executor.service = service
+	executor.localParty = PartyClient
 	terms := testTerms(t, KindPromotion)
 
 	record, err := service.RegisterPromotion(t.Context(), terms)
@@ -292,9 +331,10 @@ func TestServiceRegistersReceiveIntentWithoutFunding(t *testing.T) {
 		t:      t,
 		counts: make(map[string]int),
 	}
-	service, err := NewService(coordinator, executor)
+	service, err := NewService(PartyHub, coordinator, executor)
 	require.NoError(t, err)
 	executor.service = service
+	executor.localParty = PartyHub
 	terms := testTerms(t, KindReceiveIntent)
 
 	record, err := service.RegisterReceiveIntent(t.Context(), terms)
@@ -309,7 +349,7 @@ func TestServiceRegistersReceiveIntentWithoutFunding(t *testing.T) {
 	require.NotNil(t, record.Snapshot.Source)
 	require.Empty(t, executor.counts)
 
-	record, err = service.Apply(
+	record, err = service.ApplyPeerEvent(
 		t.Context(), terms.ID, &FundingPeerReady{},
 	)
 	require.NoError(t, err)
@@ -324,7 +364,9 @@ func TestServiceReconcilesFundingByChannelPoint(t *testing.T) {
 
 	coordinator, err := NewCoordinator(newMemoryStore())
 	require.NoError(t, err)
-	service, err := NewService(coordinator, &noOpActionExecutor{})
+	service, err := NewService(
+		PartyClient, coordinator, &noOpActionExecutor{},
+	)
 	require.NoError(t, err)
 	terms := testTerms(t, KindPromotion)
 	_, err = service.RegisterPromotion(t.Context(), terms)
@@ -333,7 +375,7 @@ func TestServiceReconcilesFundingByChannelPoint(t *testing.T) {
 	_, err = service.BindPreparedOOR(t.Context(), terms.ID, binding)
 	require.NoError(t, err)
 	backing := testBacking(t, terms, binding)
-	_, err = service.Apply(t.Context(), terms.ID, &BackingSigned{
+	_, err = service.ApplyLocalEvent(t.Context(), terms.ID, &BackingSigned{
 		Backing: backing,
 	})
 	require.NoError(t, err)
@@ -341,12 +383,12 @@ func TestServiceReconcilesFundingByChannelPoint(t *testing.T) {
 	source := &staticFundingFinalizationSource{finalized: true}
 	require.NoError(
 		t,
-		service.ReconcileFunding(
-			t.Context(), PartyClient, source,
-		),
+		service.ReconcileFunding(t.Context(), source),
 	)
-	record, err := service.ObserveFundingFinalized(
-		t.Context(), PartyHub, backing.ChannelPoint,
+	record, err := service.ApplyPeerEvent(
+		t.Context(), terms.ID, &FundingFinalized{
+			Party: PartyHub,
+		},
 	)
 	require.NoError(t, err)
 	require.True(t, record.Snapshot.ClientFinalized)
@@ -355,11 +397,145 @@ func TestServiceReconcilesFundingByChannelPoint(t *testing.T) {
 	require.True(t, record.Snapshot.ReadyToCommitOOR())
 
 	_, err = service.ObserveFundingFinalized(
-		t.Context(), PartyHub, wire.OutPoint{
+		t.Context(), wire.OutPoint{
 			Hash: [32]byte{99},
 		},
 	)
 	require.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestServiceEventAuthorityMatrix pins the owner of every durable event class.
+// Party-bearing evidence may only be asserted by that authenticated side, and
+// local subsystem observations never cross the peer ingress boundary.
+func TestServiceEventAuthorityMatrix(t *testing.T) {
+	t.Parallel()
+
+	newService := func(localParty Party, terms Terms) *Service {
+		coordinator, err := NewCoordinator(newMemoryStore())
+		require.NoError(t, err)
+		_, err = coordinator.Request(t.Context(), terms)
+		require.NoError(t, err)
+		service, err := NewService(
+			localParty, coordinator, &noOpActionExecutor{},
+		)
+		require.NoError(t, err)
+
+		return service
+	}
+
+	promotion := testTerms(t, KindPromotion)
+	clientService := newService(PartyClient, promotion)
+	receive := testTerms(t, KindReceiveIntent)
+	hubService := newService(PartyHub, receive)
+
+	tests := []struct {
+		name    string
+		service *Service
+		id      ID
+		event   Event
+		origin  eventOrigin
+	}{
+		{"prepare OOR", clientService, promotion.ID,
+			&OORPreparationStarted{}, eventOriginLocal},
+		{"bind VTXO", clientService, promotion.ID,
+			&BindVTXO{}, eventOriginLocal},
+		{"install backing", clientService, promotion.ID,
+			&BackingSigned{}, eventOriginLocal},
+		{"finalize OOR", clientService, promotion.ID,
+			&OORFinalized{}, eventOriginLocal},
+		{"abort OOR", clientService, promotion.ID,
+			&OORAborted{}, eventOriginLocal},
+		{"funding peer ready", hubService, receive.ID,
+			&FundingPeerReady{}, eventOriginPeer},
+		{"client funding finalized", clientService, promotion.ID,
+			&FundingFinalized{
+				Party: PartyClient,
+			}, eventOriginLocal},
+		{"hub funding finalized", clientService, promotion.ID,
+			&FundingFinalized{
+				Party: PartyHub,
+			}, eventOriginPeer},
+		{"client recovery ready", clientService, promotion.ID,
+			&RecoveryPackageInstalled{
+				Party: PartyClient,
+			},
+			eventOriginLocal},
+		{"hub recovery ready", clientService, promotion.ID,
+			&RecoveryPackageInstalled{
+				Party: PartyHub,
+			}, eventOriginPeer},
+		{"request close", clientService, promotion.ID,
+			&RequestCooperativeClose{}, eventOriginLocal},
+		{"publish close", clientService, promotion.ID,
+			&CooperativeClosePublished{}, eventOriginLocal},
+		{"abort close", clientService, promotion.ID,
+			&CooperativeCloseAborted{}, eventOriginLocal},
+		{"client close signed", clientService, promotion.ID,
+			&CooperativeCloseSigned{
+				Party: PartyClient,
+			},
+			eventOriginLocal},
+		{"hub close signed", clientService, promotion.ID,
+			&CooperativeCloseSigned{
+				Party: PartyHub,
+			}, eventOriginPeer},
+		{"client close finalized", clientService, promotion.ID,
+			&CooperativeCloseFinalized{
+				Party: PartyClient,
+			},
+			eventOriginLocal},
+		{"hub close finalized", clientService, promotion.ID,
+			&CooperativeCloseFinalized{
+				Party: PartyHub,
+			}, eventOriginPeer},
+		{"expire", clientService, promotion.ID,
+			&ExpirePrePONR{}, eventOriginLocal},
+		{"cancel funding", clientService, promotion.ID,
+			&FundingCanceled{}, eventOriginLocal},
+		{"activate", clientService, promotion.ID,
+			&ChannelActive{}, eventOriginLocal},
+		{"materialize", clientService, promotion.ID,
+			&Materialize{}, eventOriginLocal},
+		{"source spent", clientService, promotion.ID,
+			&SourceSpent{}, eventOriginLocal},
+		{"backing published", clientService, promotion.ID,
+			&BackingPublished{}, eventOriginLocal},
+		{"backing observed", clientService, promotion.ID,
+			&BackingObserved{}, eventOriginLocal},
+		{"channel closed", clientService, promotion.ID,
+			&ChannelClosed{}, eventOriginLocal},
+		{
+			"fail",
+			clientService,
+			promotion.ID,
+			&Fail{},
+			eventOriginLocal,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require.NoError(
+				t,
+				test.service.authorizeEvent(
+					t.Context(), test.id, test.event,
+					test.origin,
+				),
+			)
+
+			wrongOrigin := eventOriginLocal
+			if test.origin == eventOriginLocal {
+				wrongOrigin = eventOriginPeer
+			}
+			require.Error(
+				t,
+				test.service.authorizeEvent(
+					t.Context(), test.id, test.event,
+					wrongOrigin,
+				),
+			)
+		})
+	}
 }
 
 // TestServiceResumeIsolatesChannelFailures proves one corrupt or unavailable
@@ -387,7 +563,7 @@ func TestServiceResumeIsolatesChannelFailures(t *testing.T) {
 	}
 
 	executor := &recordingResumeExecutor{failID: first.ID}
-	service, err := NewService(coordinator, executor)
+	service, err := NewService(PartyClient, coordinator, executor)
 	require.NoError(t, err)
 	err = service.Resume(t.Context())
 

@@ -246,7 +246,8 @@ type arkChannelMutableFields struct {
 	hubFinalized             bool
 	oorFinalized             bool
 	oorAborted               bool
-	recoveryReady            bool
+	clientRecoveryReady      bool
+	hubRecoveryReady         bool
 	sourceSpentOutpointID    []byte
 	sourceSpentOutpointIndex sql.NullInt64
 	sourceSpendingTxID       []byte
@@ -277,7 +278,8 @@ func mutableArkChannelFields(snapshot arkchannel.Snapshot) (
 		hubFinalized:         snapshot.HubFinalized,
 		oorFinalized:         snapshot.OORFinalized,
 		oorAborted:           snapshot.OORAborted,
-		recoveryReady:        snapshot.RecoveryReady,
+		clientRecoveryReady:  snapshot.ClientRecoveryReady,
+		hubRecoveryReady:     snapshot.HubRecoveryReady,
 		backingPublished:     snapshot.BackingPublished,
 		clientCloseSigned:    snapshot.ClientCloseSigned,
 		hubCloseSigned:       snapshot.HubCloseSigned,
@@ -413,7 +415,8 @@ func insertArkChannelParams(snapshot arkchannel.Snapshot,
 		HubFinalized:             fields.hubFinalized,
 		OorFinalized:             fields.oorFinalized,
 		OorAborted:               fields.oorAborted,
-		RecoveryReady:            fields.recoveryReady,
+		ClientRecoveryReady:      fields.clientRecoveryReady,
+		HubRecoveryReady:         fields.hubRecoveryReady,
 		SourceSpentOutpointTxid:  fields.sourceSpentOutpointID,
 		SourceSpentOutpointIndex: fields.sourceSpentOutpointIndex,
 		SourceSpendingTxid:       fields.sourceSpendingTxID,
@@ -435,7 +438,9 @@ func insertArkChannelParams(snapshot arkchannel.Snapshot,
 		Revision:                 initialArkChannelRevision,
 		CreatedAt:                now,
 		UpdatedAt:                now,
-		PrePonrStarted:           arkChannelPrePONRStarted(snapshot),
+		PrePonrStartedAt: arkChannelPrePONRStartedAt(
+			snapshot, now,
+		),
 	}, nil
 }
 
@@ -463,7 +468,8 @@ func compareAndSwapArkChannelParams(snapshot arkchannel.Snapshot, revision,
 		HubFinalized:             fields.hubFinalized,
 		OorFinalized:             fields.oorFinalized,
 		OorAborted:               fields.oorAborted,
-		RecoveryReady:            fields.recoveryReady,
+		ClientRecoveryReady:      fields.clientRecoveryReady,
+		HubRecoveryReady:         fields.hubRecoveryReady,
 		SourceSpentOutpointTxid:  fields.sourceSpentOutpointID,
 		SourceSpentOutpointIndex: fields.sourceSpentOutpointIndex,
 		SourceSpendingTxid:       fields.sourceSpendingTxID,
@@ -483,19 +489,20 @@ func compareAndSwapArkChannelParams(snapshot arkchannel.Snapshot, revision,
 		HubCloseFinalized:        fields.hubCloseFinalized,
 		Failure:                  fields.failure,
 		UpdatedAt:                now,
-		PrePonrStarted:           arkChannelPrePONRStarted(snapshot),
+		PrePonrStartedAt: arkChannelPrePONRStartedAt(
+			snapshot, now,
+		),
 	}, nil
 }
 
-// arkChannelPrePONRStarted encodes the durable preparation fact for SQLite's
-// integer boolean representation.
-func arkChannelPrePONRStarted(snapshot arkchannel.Snapshot) sql.NullInt64 {
-	var value int64
-	if snapshot.OORPreparationStarted || snapshot.Source != nil {
-		value = 1
-	}
+// arkChannelPrePONRStartedAt returns the first timestamp candidate only after
+// preparation is durably armed. SQL preserves any earlier timestamp.
+func arkChannelPrePONRStartedAt(snapshot arkchannel.Snapshot,
+	now int64) sql.NullInt64 {
 
-	return sql.NullInt64{Int64: value, Valid: true}
+	started := snapshot.OORPreparationStarted || snapshot.Source != nil
+
+	return sql.NullInt64{Int64: now, Valid: started}
 }
 
 // arkChannelRecordFromRow validates one SQL row before exposing it.
@@ -594,7 +601,8 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 		HubFinalized:          row.HubFinalized,
 		OORFinalized:          row.OorFinalized,
 		OORAborted:            row.OorAborted,
-		RecoveryReady:         row.RecoveryReady,
+		ClientRecoveryReady:   row.ClientRecoveryReady,
+		HubRecoveryReady:      row.HubRecoveryReady,
 		BackingPublished:      row.BackingPublished,
 		ClientCloseSigned:     row.ClientCloseSigned,
 		HubCloseSigned:        row.HubCloseSigned,

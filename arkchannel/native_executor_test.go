@@ -298,8 +298,8 @@ func TestNativeExecutorFencesOORActionsToFunder(t *testing.T) {
 // harnessSink accepts callback events for executor wiring tests.
 type harnessSink struct{}
 
-// Apply accepts one callback event.
-func (harnessSink) Apply(context.Context, ID, Event) (Record, error) {
+// ApplyLocalEvent accepts one trusted local callback event.
+func (harnessSink) ApplyLocalEvent(context.Context, ID, Event) (Record, error) {
 	return Record{}, nil
 }
 

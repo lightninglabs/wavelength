@@ -703,6 +703,9 @@ type ArkChannelFundingPeerServiceClient interface {
 	ExportRecoveryPackage(ctx context.Context, in *ExportRecoveryPackageRequest, opts ...grpc.CallOption) (*ExportRecoveryPackageResponse, error)
 	FundingFinalized(ctx context.Context, in *FundingStatusRequest, opts ...grpc.CallOption) (*FundingStatusResponse, error)
 	ChannelActive(ctx context.Context, in *FundingStatusRequest, opts ...grpc.CallOption) (*FundingStatusResponse, error)
+	// ApplyChannelEvent accepts only peer-owned facts. The receiver must bind
+	// party-bearing events to the authenticated mailbox party and reject
+	// local lnd, chain, or publication evidence.
 	ApplyChannelEvent(ctx context.Context, in *ApplyChannelEventRequest, opts ...grpc.CallOption) (*ApplyChannelEventResponse, error)
 	CreateInvoice(ctx context.Context, in *PeerInvoiceRequest, opts ...grpc.CallOption) (*PeerInvoiceResponse, error)
 	PayInvoice(ctx context.Context, in *PeerPayInvoiceRequest, opts ...grpc.CallOption) (*PeerPayInvoiceResponse, error)
@@ -908,6 +911,9 @@ type ArkChannelFundingPeerServiceServer interface {
 	ExportRecoveryPackage(context.Context, *ExportRecoveryPackageRequest) (*ExportRecoveryPackageResponse, error)
 	FundingFinalized(context.Context, *FundingStatusRequest) (*FundingStatusResponse, error)
 	ChannelActive(context.Context, *FundingStatusRequest) (*FundingStatusResponse, error)
+	// ApplyChannelEvent accepts only peer-owned facts. The receiver must bind
+	// party-bearing events to the authenticated mailbox party and reject
+	// local lnd, chain, or publication evidence.
 	ApplyChannelEvent(context.Context, *ApplyChannelEventRequest) (*ApplyChannelEventResponse, error)
 	CreateInvoice(context.Context, *PeerInvoiceRequest) (*PeerInvoiceResponse, error)
 	PayInvoice(context.Context, *PeerPayInvoiceRequest) (*PeerPayInvoiceResponse, error)

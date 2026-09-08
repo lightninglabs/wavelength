@@ -104,7 +104,7 @@ func TestOORChannelLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
 	require.IsType(t, &PrepareRecovery{}, requireOneAction(t, actions))
-	require.False(t, record.Snapshot.RecoveryReady)
+	require.False(t, record.Snapshot.RecoveryReady())
 
 	_, _, err = coordinator.Apply(
 		t.Context(), terms.ID, &Fail{
@@ -114,12 +114,37 @@ func TestOORChannelLifecycle(t *testing.T) {
 	require.ErrorContains(t, err, "after safety boundary")
 
 	record, actions, err = coordinator.Apply(
-		t.Context(), terms.ID, &RecoveryPackageInstalled{},
+		t.Context(), terms.ID, &RecoveryPackageInstalled{
+			Party: PartyClient,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
+	require.Empty(t, actions)
+	require.True(t, record.Snapshot.ClientRecoveryReady)
+	require.False(t, record.Snapshot.HubRecoveryReady)
+	recoveryRevision := record.Revision
+
+	// Retrying the stored acknowledgement after package installation failed
+	// must re-run the remaining recovery action.
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &RecoveryPackageInstalled{
+			Party: PartyClient,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, recoveryRevision, record.Revision)
+	require.IsType(t, &PrepareRecovery{}, requireOneAction(t, actions))
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &RecoveryPackageInstalled{
+			Party: PartyHub,
+		},
 	)
 	require.NoError(t, err)
 	require.Equal(t, PhaseActivating, record.Snapshot.Phase)
 	require.IsType(t, &ActivateChannel{}, requireOneAction(t, actions))
-	require.True(t, record.Snapshot.RecoveryReady)
+	require.True(t, record.Snapshot.RecoveryReady())
 
 	_, resumed, err := coordinator.Resume(t.Context(), terms.ID)
 	require.NoError(t, err)
@@ -238,7 +263,12 @@ func TestSourceConflictDuringActivationFinishesActivationFirst(t *testing.T) {
 		&OORFinalized{
 			SessionID: source.OORSessionID,
 		},
-		&RecoveryPackageInstalled{},
+		&RecoveryPackageInstalled{
+			Party: PartyClient,
+		},
+		&RecoveryPackageInstalled{
+			Party: PartyHub,
+		},
 	} {
 		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
 		require.NoError(t, err)
@@ -845,7 +875,18 @@ func TestPromotionWaitsForOORFinalization(t *testing.T) {
 	require.IsType(t, &PrepareRecovery{}, requireOneAction(t, actions))
 
 	record, actions, err = coordinator.Apply(
-		t.Context(), terms.ID, &RecoveryPackageInstalled{},
+		t.Context(), terms.ID, &RecoveryPackageInstalled{
+			Party: PartyClient,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
+	require.Empty(t, actions)
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &RecoveryPackageInstalled{
+			Party: PartyHub,
+		},
 	)
 	require.NoError(t, err)
 	require.Equal(t, PhaseActivating, record.Snapshot.Phase)
@@ -1311,7 +1352,12 @@ func activeCooperativeChannel(t *testing.T, terms Terms,
 		&OORFinalized{
 			SessionID: source.OORSessionID,
 		},
-		&RecoveryPackageInstalled{},
+		&RecoveryPackageInstalled{
+			Party: PartyClient,
+		},
+		&RecoveryPackageInstalled{
+			Party: PartyHub,
+		},
 		&ChannelActive{
 			ChannelPointHash:  backing.ChannelPoint.Hash,
 			ChannelPointIndex: backing.ChannelPoint.Index,

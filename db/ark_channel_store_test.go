@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
@@ -147,7 +148,12 @@ func TestArkChannelStoreCooperativeCloseRoundTrip(t *testing.T) {
 		&arkchannel.OORFinalized{
 			SessionID: binding.OORSessionID,
 		},
-		&arkchannel.RecoveryPackageInstalled{},
+		&arkchannel.RecoveryPackageInstalled{
+			Party: arkchannel.PartyClient,
+		},
+		&arkchannel.RecoveryPackageInstalled{
+			Party: arkchannel.PartyHub,
+		},
 		&arkchannel.ChannelActive{
 			ChannelPointHash:  backing.ChannelPoint.Hash,
 			ChannelPointIndex: backing.ChannelPoint.Index,
@@ -278,10 +284,8 @@ func testArkChannelTerms(t *testing.T, kind arkchannel.Kind,
 	require.NoError(t, err)
 	hubKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
-	newPolicyKey := func() [33]byte {
-		key, err := btcec.NewPrivateKey()
-		require.NoError(t, err)
-
+	newPolicyKey := func(role byte) [33]byte {
+		key := testArkChannelPolicyKey(seed, role)
 		var serialized [33]byte
 		copy(serialized[:], key.PubKey().SerializeCompressed())
 
@@ -311,12 +315,12 @@ func testArkChannelTerms(t *testing.T, kind arkchannel.Kind,
 		ClientNodeKey: clientNodeKey,
 		HubNodeKey:    hubNodeKey,
 		VTXO: arkchannel.VTXOTerms{
-			ClientArkKey:     newPolicyKey(),
-			HubArkKey:        newPolicyKey(),
-			ArkOperatorKey:   newPolicyKey(),
-			ClientChannelKey: newPolicyKey(),
-			HubChannelKey:    newPolicyKey(),
-			FunderKey:        newPolicyKey(),
+			ClientArkKey:     newPolicyKey(1),
+			HubArkKey:        newPolicyKey(2),
+			ArkOperatorKey:   newPolicyKey(3),
+			ClientChannelKey: newPolicyKey(4),
+			HubChannelKey:    newPolicyKey(5),
+			FunderKey:        newPolicyKey(6),
 			ChannelDelay:     144,
 			FunderDelay:      576,
 			MinExitDelay:     144,
@@ -330,6 +334,16 @@ func testArkChannelTerms(t *testing.T, kind arkchannel.Kind,
 	}
 
 	return terms
+}
+
+// testArkChannelPolicyKey returns a deterministic policy key for one SQL
+// fixture role.
+func testArkChannelPolicyKey(seed, role byte) *btcec.PrivateKey {
+	keyBytes := bytes.Repeat([]byte{role}, 32)
+	keyBytes[0] ^= seed
+	key, _ := btcec.PrivKeyFromBytes(keyBytes)
+
+	return key
 }
 
 // testArkChannelBinding creates an exact VTXO binding fixture.
@@ -380,25 +394,47 @@ func testArkChannelBacking(t *testing.T, terms arkchannel.Terms,
 	binding arkchannel.VTXOBinding) arkchannel.Backing {
 
 	t.Helper()
-	tx := wire.NewMsgTx(2)
-	tx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: binding.OutPoint,
-		Witness:          wire.TxWitness{bytes.Repeat([]byte{1}, 64)},
-	})
-	tx.AddTxOut(&wire.TxOut{
+	packet, err := psbt.New(nil, []*wire.TxOut{{
 		Value:    int64(terms.Capacity),
 		PkScript: []byte{0x51, 0x20, 7},
-	})
+	}}, 2, 0, nil)
+	require.NoError(t, err)
+	template, err := arkchannel.NewBackingTemplate(packet, terms, binding)
+	require.NoError(t, err)
+	clientSig := testArkChannelBackingSignature(
+		t, template, terms, arkchannel.PartyClient,
+		testArkChannelPolicyKey(terms.ID[0], 4),
+	)
+	hubSig := testArkChannelBackingSignature(
+		t, template, terms, arkchannel.PartyHub,
+		testArkChannelPolicyKey(terms.ID[0], 5),
+	)
+	backing, err := template.Complete(
+		terms, binding, clientSig, hubSig,
+	)
+	require.NoError(t, err)
 
-	var encoded bytes.Buffer
-	require.NoError(t, tx.Serialize(&encoded))
+	return backing
+}
 
-	return arkchannel.Backing{
-		Transaction: encoded.Bytes(),
-		ChannelPoint: wire.OutPoint{
-			Hash: tx.TxHash(),
+// testArkChannelBackingSignature signs one endpoint's backing branch.
+func testArkChannelBackingSignature(t *testing.T,
+	template *arkchannel.BackingTemplate, terms arkchannel.Terms,
+	party arkchannel.Party, key *btcec.PrivateKey) input.Signature {
+
+	t.Helper()
+	desc, err := template.SignDescriptor(
+		terms, party, keychain.KeyDescriptor{
+			PubKey: key.PubKey(),
 		},
-	}
+	)
+	require.NoError(t, err)
+	sig, err := input.NewMockSigner(
+		[]*btcec.PrivateKey{key}, nil,
+	).SignOutputRaw(template.Packet().UnsignedTx, desc)
+	require.NoError(t, err)
+
+	return sig
 }
 
 // testArkChannelCompressedKey encodes one policy key.

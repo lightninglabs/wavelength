@@ -510,7 +510,8 @@ type Snapshot struct {
 	HubFinalized            bool
 	OORFinalized            bool
 	OORAborted              bool
-	RecoveryReady           bool
+	ClientRecoveryReady     bool
+	HubRecoveryReady        bool
 	SourceConflict          *SourceConflict
 	BackingPublished        bool
 	CooperativeCloseRequest *CooperativeCloseRequest
@@ -563,6 +564,12 @@ func (s Snapshot) ReadyToCommitOOR() bool {
 	return s.Source != nil && s.Backing != nil && s.ClientFinalized &&
 		s.HubFinalized && s.Phase == PhaseBackingReady &&
 		!s.OORFinalized && !s.OORAborted
+}
+
+// RecoveryReady reports whether both endpoints independently installed the
+// recovery package needed before virtual channel activation.
+func (s Snapshot) RecoveryReady() bool {
+	return s.ClientRecoveryReady && s.HubRecoveryReady
 }
 
 // validateNodeKey checks a compressed secp256k1 node key.

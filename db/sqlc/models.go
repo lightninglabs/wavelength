@@ -110,7 +110,8 @@ type ArkChannel struct {
 	Revision                 int64
 	CreatedAt                int64
 	UpdatedAt                int64
-	RecoveryReady            bool
+	ClientRecoveryReady      bool
+	HubRecoveryReady         bool
 	SourceSpentOutpointTxid  []byte
 	SourceSpentOutpointIndex sql.NullInt64
 	SourceSpendingTxid       []byte

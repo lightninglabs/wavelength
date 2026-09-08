@@ -602,7 +602,7 @@ func (c *Controller) apply(ctx context.Context, id arkchannel.ID,
 		return fmt.Errorf("channel event sink is not bound")
 	}
 
-	_, err := sink.Apply(ctx, id, event)
+	_, err := sink.ApplyLocalEvent(ctx, id, event)
 
 	return err
 }

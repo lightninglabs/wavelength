@@ -16,9 +16,19 @@ type FundingFinalizationSource interface {
 // Service is the small application boundary for promotion and receive intent
 // coordination. Native lnd remains behind the ActionExecutor.
 type Service struct {
+	localParty  Party
 	coordinator *Coordinator
 	executor    ActionExecutor
 }
+
+// eventOrigin identifies whether a fact came from this endpoint or its
+// authenticated channel peer.
+type eventOrigin uint8
+
+const (
+	eventOriginLocal eventOrigin = iota + 1
+	eventOriginPeer
+)
 
 // ResumeFailure identifies one channel whose already-durable action could not
 // be replayed during process startup.
@@ -63,9 +73,12 @@ func (e *ResumeFailures) Unwrap() []error {
 }
 
 // NewService constructs an Ark channel coordination service.
-func NewService(coordinator *Coordinator,
+func NewService(localParty Party, coordinator *Coordinator,
 	executor ActionExecutor) (*Service, error) {
 
+	if localParty != PartyClient && localParty != PartyHub {
+		return nil, fmt.Errorf("local channel party is required")
+	}
 	if coordinator == nil {
 		return nil, fmt.Errorf("channel coordinator is required")
 	}
@@ -74,6 +87,7 @@ func NewService(coordinator *Coordinator,
 	}
 
 	service := &Service{
+		localParty:  localParty,
 		coordinator: coordinator,
 		executor:    executor,
 	}
@@ -114,7 +128,7 @@ func (s *Service) RegisterPromotion(ctx context.Context, terms Terms) (Record,
 func (s *Service) StartOORPreparation(ctx context.Context, id ID) (Record,
 	error) {
 
-	return s.Apply(ctx, id, &OORPreparationStarted{})
+	return s.ApplyLocalEvent(ctx, id, &OORPreparationStarted{})
 }
 
 // RecordPreparedOOR validates and durably attaches the exact prepared OOR
@@ -139,9 +153,9 @@ func (s *Service) RecordPreparedOOR(ctx context.Context, id ID,
 		return Record{}, fmt.Errorf("validate prepared OOR: %w", err)
 	}
 
-	record, _, err = s.coordinator.Apply(ctx, id, &BindVTXO{
+	record, err = s.recordEvent(ctx, id, &BindVTXO{
 		Binding: binding,
-	})
+	}, eventOriginLocal)
 
 	return record, err
 }
@@ -176,9 +190,30 @@ func (s *Service) PromoteVTXO(ctx context.Context, terms Terms,
 	return s.coordinator.Get(ctx, terms.ID)
 }
 
-// Apply records one callback fact before executing any resulting action.
-func (s *Service) Apply(ctx context.Context, id ID, event Event) (Record,
-	error) {
+// ApplyLocalEvent records a trusted local callback before executing any
+// resulting action.
+func (s *Service) ApplyLocalEvent(ctx context.Context, id ID, event Event) (
+	Record, error) {
+
+	return s.applyEvent(ctx, id, event, eventOriginLocal)
+}
+
+// ApplyPeerEvent records a fact received from the authenticated channel peer
+// before executing any resulting action.
+func (s *Service) ApplyPeerEvent(ctx context.Context, id ID, event Event) (
+	Record, error) {
+
+	return s.applyEvent(ctx, id, event, eventOriginPeer)
+}
+
+// applyEvent validates event authority, persists the fact, and executes the
+// action derived from the resulting durable state.
+func (s *Service) applyEvent(ctx context.Context, id ID, event Event,
+	origin eventOrigin) (Record, error) {
+
+	if err := s.authorizeEvent(ctx, id, event, origin); err != nil {
+		return Record{}, err
+	}
 
 	record, actions, err := s.coordinator.Apply(ctx, id, event)
 	if err != nil {
@@ -194,11 +229,31 @@ func (s *Service) Apply(ctx context.Context, id ID, event Event) (Record,
 	return record, nil
 }
 
-// RecordChannelEvent persists one fact without executing its resulting action.
-// Paired endpoint protocols use this as a barrier so both databases contain an
-// irreversible close artifact before either side publishes or archives it.
-func (s *Service) RecordChannelEvent(ctx context.Context, id ID, event Event) (
+// RecordLocalEvent persists a local fact without executing its resulting
+// action. Paired endpoint protocols use this as a durable barrier.
+func (s *Service) RecordLocalEvent(ctx context.Context, id ID, event Event) (
 	Record, error) {
+
+	return s.recordEvent(ctx, id, event, eventOriginLocal)
+}
+
+// RecordPeerEvent persists an authenticated peer fact without executing its
+// resulting action. Paired protocols use this only after binding the mailbox
+// identity to the channel peer.
+func (s *Service) RecordPeerEvent(ctx context.Context, id ID, event Event) (
+	Record, error) {
+
+	return s.recordEvent(ctx, id, event, eventOriginPeer)
+}
+
+// recordEvent validates event authority and stores the fact without executing
+// the resulting action.
+func (s *Service) recordEvent(ctx context.Context, id ID, event Event,
+	origin eventOrigin) (Record, error) {
+
+	if err := s.authorizeEvent(ctx, id, event, origin); err != nil {
+		return Record{}, err
+	}
 
 	record, _, err := s.coordinator.Apply(ctx, id, event)
 
@@ -229,7 +284,11 @@ func (s *Service) ResumeChannelAction(ctx context.Context, id ID) (Record,
 func (s *Service) RequestCooperativeClose(ctx context.Context, id ID,
 	request CooperativeCloseRequest) (Record, error) {
 
-	return s.Apply(ctx, id, &RequestCooperativeClose{Request: request})
+	return s.ApplyLocalEvent(
+		ctx, id, &RequestCooperativeClose{
+			Request: request,
+		},
+	)
 }
 
 // GetChannel returns the latest durable channel record without executing its
@@ -256,13 +315,13 @@ func (s *Service) Materialize(ctx context.Context, id ID) (Record, error) {
 		return s.ResumeChannelAction(ctx, id)
 	}
 
-	return s.Apply(ctx, id, &Materialize{})
+	return s.ApplyLocalEvent(ctx, id, &Materialize{})
 }
 
 // ObserveFundingFinalized records lnd's existing pending-open notification by
 // its durable channel point. A missed notification can be recovered through
 // ReconcileFunding.
-func (s *Service) ObserveFundingFinalized(ctx context.Context, party Party,
+func (s *Service) ObserveFundingFinalized(ctx context.Context,
 	channelPoint wire.OutPoint) (Record, error) {
 
 	record, err := s.coordinator.FindByChannelPoint(ctx, channelPoint)
@@ -270,21 +329,20 @@ func (s *Service) ObserveFundingFinalized(ctx context.Context, party Party,
 		return Record{}, err
 	}
 
-	return s.Apply(ctx, record.Snapshot.Terms.ID, &FundingFinalized{
-		Party: party,
-	})
+	return s.ApplyLocalEvent(
+		ctx, record.Snapshot.Terms.ID, &FundingFinalized{
+			Party: s.localParty,
+		},
+	)
 }
 
 // ReconcileFunding repairs missed pending-open notifications from lnd's
 // authoritative channel database.
-func (s *Service) ReconcileFunding(ctx context.Context, party Party,
+func (s *Service) ReconcileFunding(ctx context.Context,
 	source FundingFinalizationSource) error {
 
 	if source == nil {
 		return fmt.Errorf("funding finalization source is required")
-	}
-	if party != PartyClient && party != PartyHub {
-		return fmt.Errorf("local channel party is required")
 	}
 	records, err := s.coordinator.ListNonTerminal(ctx)
 	if err != nil {
@@ -292,7 +350,8 @@ func (s *Service) ReconcileFunding(ctx context.Context, party Party,
 	}
 	for _, record := range records {
 		snapshot := record.Snapshot
-		if snapshot.Backing == nil || partyFinalized(snapshot, party) ||
+		if snapshot.Backing == nil ||
+			partyFinalized(snapshot, s.localParty) ||
 			snapshot.Phase == PhaseCancelling ||
 			snapshot.Phase == PhaseFailed {
 
@@ -307,9 +366,9 @@ func (s *Service) ReconcileFunding(ctx context.Context, party Party,
 		if !finalized {
 			continue
 		}
-		if _, err := s.Apply(
+		if _, err := s.ApplyLocalEvent(
 			ctx, snapshot.Terms.ID, &FundingFinalized{
-				Party: party,
+				Party: s.localParty,
 			},
 		); err != nil {
 			return err
@@ -317,6 +376,92 @@ func (s *Service) ReconcileFunding(ctx context.Context, party Party,
 	}
 
 	return nil
+}
+
+// authorizeEvent enforces which authenticated side owns every event class.
+// Cryptographically complete artifacts still need an origin because the
+// origin controls when a local side effect becomes replayable.
+func (s *Service) authorizeEvent(ctx context.Context, id ID, event Event,
+	origin eventOrigin) error {
+
+	if event == nil {
+		return fmt.Errorf("channel event is required")
+	}
+	record, err := s.coordinator.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	terms := record.Snapshot.Terms
+
+	switch event := event.(type) {
+	case *OORPreparationStarted, *BindVTXO, *BackingSigned,
+		*OORFinalized, *OORAborted:
+		return s.requireOriginParty(origin, terms.Funder, event)
+
+	case *FundingPeerReady:
+		if s.localParty != PartyHub || origin != eventOriginPeer {
+			return fmt.Errorf("%T requires authenticated "+
+				"client origin", event)
+		}
+
+		return nil
+
+	case *FundingFinalized:
+		return s.requireOriginParty(origin, event.Party, event)
+
+	case *RecoveryPackageInstalled:
+		return s.requireOriginParty(origin, event.Party, event)
+
+	case *RequestCooperativeClose, *CooperativeClosePublished,
+		*CooperativeCloseAborted:
+		return s.requireOriginParty(origin, PartyClient, event)
+
+	case *CooperativeCloseSigned:
+		return s.requireOriginParty(origin, event.Party, event)
+
+	case *CooperativeCloseFinalized:
+		return s.requireOriginParty(origin, event.Party, event)
+
+	case *ExpirePrePONR, *FundingCanceled, *ChannelActive, *Materialize,
+		*SourceSpent, *BackingPublished, *BackingObserved,
+		*ChannelClosed, *Fail:
+
+		if origin != eventOriginLocal {
+			return fmt.Errorf("%T requires local subsystem "+
+				"evidence", event)
+		}
+
+		return nil
+
+	default:
+		return fmt.Errorf("unknown channel event %T", event)
+	}
+}
+
+// requireOriginParty verifies that an event came from the side whose evidence
+// it claims to carry.
+func (s *Service) requireOriginParty(origin eventOrigin, expected Party,
+	event Event) error {
+
+	actual := s.localParty
+	if origin == eventOriginPeer {
+		actual = otherParty(s.localParty)
+	}
+	if actual != expected {
+		return fmt.Errorf("%T from %s cannot assert %s evidence", event,
+			actual, expected)
+	}
+
+	return nil
+}
+
+// otherParty returns the only authenticated counterparty for one endpoint.
+func otherParty(local Party) Party {
+	if local == PartyClient {
+		return PartyHub
+	}
+
+	return PartyClient
 }
 
 // partyFinalized reports the local acknowledgement stored in one snapshot.

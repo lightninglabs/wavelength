@@ -90,6 +90,9 @@ service ArkChannelFundingPeerService {
         returns (ExportRecoveryPackageResponse);
     rpc FundingFinalized (FundingStatusRequest) returns (FundingStatusResponse);
     rpc ChannelActive (FundingStatusRequest) returns (FundingStatusResponse);
+    // ApplyChannelEvent accepts only peer-owned facts. The receiver must bind
+    // party-bearing events to the authenticated mailbox party and reject
+    // local lnd, chain, or publication evidence.
     rpc ApplyChannelEvent (ApplyChannelEventRequest)
         returns (ApplyChannelEventResponse);
     rpc CreateInvoice (PeerInvoiceRequest) returns (PeerInvoiceResponse);
@@ -208,10 +211,11 @@ message GetFundingChannelResponse {
     ChannelBacking backing = 3;
     uint32 phase = 4;
     bool oor_finalized = 5;
-    bool recovery_ready = 6;
+    bool client_recovery_ready = 6;
     string failure = 7;
     uint64 revision = 8;
     bool oor_aborted = 9;
+    bool hub_recovery_ready = 10;
 }
 
 message BindPreparedOORRequest {
@@ -313,13 +317,11 @@ enum ChannelEventType {
     CHANNEL_EVENT_TYPE_UNSPECIFIED = 0;
     CHANNEL_EVENT_TYPE_FUNDING_FINALIZED = 1;
     CHANNEL_EVENT_TYPE_OOR_FINALIZED = 2;
-    CHANNEL_EVENT_TYPE_CHANNEL_ACTIVE = 3;
-    CHANNEL_EVENT_TYPE_MATERIALIZE = 4;
-    CHANNEL_EVENT_TYPE_BACKING_PUBLISHED = 5;
     CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED = 6;
-    CHANNEL_EVENT_TYPE_FAILED = 7;
     CHANNEL_EVENT_TYPE_FUNDING_PEER_READY = 8;
     CHANNEL_EVENT_TYPE_OOR_ABORTED = 9;
+
+    reserved 3, 4, 5, 7;
 }
 
 message ApplyChannelEventRequest {

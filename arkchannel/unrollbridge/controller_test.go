@@ -151,7 +151,7 @@ type materializerSink struct {
 }
 
 // Apply captures the materialization event.
-func (s *materializerSink) Apply(_ context.Context, _ arkchannel.ID,
+func (s *materializerSink) ApplyLocalEvent(_ context.Context, _ arkchannel.ID,
 	event arkchannel.Event) (arkchannel.Record, error) {
 
 	s.event, _ = event.(*arkchannel.BackingPublished)
