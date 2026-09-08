@@ -101,8 +101,19 @@ type Runtime struct {
 	reestablishMu       sync.Mutex
 	awaitingReestablish map[lnwire.ChannelID]struct{}
 
+	channelMu    sync.RWMutex
+	liveChannels map[wire.OutPoint]liveChannel
+
 	forceCloseMu    sync.Mutex
 	forceCloseCalls map[wire.OutPoint]*forceCloseCall
+}
+
+// liveChannel keeps the authoritative in-memory channel together with the
+// immutable fields needed to derive an external cooperative-close snapshot.
+type liveChannel struct {
+	channel     *lnwallet.LightningChannel
+	channelType chanstate.ChannelType
+	localFunder bool
 }
 
 // forceCloseCall owns one in-process force-close result. LND's force-close
@@ -253,6 +264,7 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 		funding:             fundingRuntime,
 		sigPool:             lnwallet.NewSigPool(1, cfg.Signer),
 		awaitingReestablish: make(map[lnwire.ChannelID]struct{}),
+		liveChannels:        make(map[wire.OutPoint]liveChannel),
 		forceCloseCalls:     make(map[wire.OutPoint]*forceCloseCall),
 	}
 	if cfg.Onchain != nil {
@@ -541,8 +553,10 @@ func (r *Runtime) AddLink(state *chanstate.OpenChannel, cfg LinkConfig) (
 	}
 	channelID := lnwire.NewChanIDFromOutPoint(state.FundingOutpoint)
 	r.setAwaitingReestablish(channelID, cfg.SyncStates)
+	r.setLiveChannel(state, channel)
 	if err := r.switcher.AddLink(link); err != nil {
 		r.setAwaitingReestablish(channelID, false)
+		r.deleteLiveChannel(state.FundingOutpoint, channel)
 
 		return nil, fmt.Errorf("add lnd channel link: %w", err)
 	}
@@ -766,6 +780,49 @@ func (r *Runtime) RemoveLink(channelPoint wire.OutPoint) {
 	channelID := lnwire.NewChanIDFromOutPoint(channelPoint)
 	r.setAwaitingReestablish(channelID, false)
 	r.switcher.RemoveLink(channelID)
+	r.deleteLiveChannel(channelPoint, nil)
+}
+
+// setLiveChannel records the link's authoritative channel state.
+func (r *Runtime) setLiveChannel(state *chanstate.OpenChannel,
+	channel *lnwallet.LightningChannel) {
+
+	r.channelMu.Lock()
+	defer r.channelMu.Unlock()
+
+	r.liveChannels[state.FundingOutpoint] = liveChannel{
+		channel:     channel,
+		channelType: state.ChanType,
+		localFunder: state.IsInitiator,
+	}
+}
+
+// getLiveChannel returns the channel currently owned by an installed link.
+func (r *Runtime) getLiveChannel(channelPoint wire.OutPoint) (liveChannel,
+	bool) {
+
+	r.channelMu.RLock()
+	defer r.channelMu.RUnlock()
+
+	channel, ok := r.liveChannels[channelPoint]
+
+	return channel, ok
+}
+
+// deleteLiveChannel forgets an installed channel. When expected is non-nil,
+// the entry is removed only if it still names that channel instance.
+func (r *Runtime) deleteLiveChannel(channelPoint wire.OutPoint,
+	expected *lnwallet.LightningChannel) {
+
+	r.channelMu.Lock()
+	defer r.channelMu.Unlock()
+
+	channel, ok := r.liveChannels[channelPoint]
+	if !ok || expected != nil && channel.channel != expected {
+		return
+	}
+
+	delete(r.liveChannels, channelPoint)
 }
 
 // WatchChannel admits an active channel to lnd's standard chain and contract

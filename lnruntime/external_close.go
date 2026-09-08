@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/chanstate"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -108,10 +109,17 @@ func (r *Runtime) resumeChannelLink(channelPoint wire.OutPoint) {
 	link.EnableAdds(htlcswitch.Outgoing)
 }
 
-// cleanChannelState reconstructs lnd's channel state and returns the exact
-// zero-fee cooperative balances once both commitment chains are synchronized.
+// cleanChannelState returns the exact zero-fee cooperative balances once both
+// commitment chains are synchronized.
 func (r *Runtime) cleanChannelState(channelPoint wire.OutPoint) (
 	CleanChannelState, bool, error) {
+
+	if live, ok := r.getLiveChannel(channelPoint); ok {
+		return cleanChannelSnapshot(
+			channelPoint, live.channel, live.channelType,
+			live.localFunder,
+		)
+	}
 
 	state, err := r.cfg.DB.ChannelStateDB().FetchChannel(channelPoint)
 	if err != nil {
@@ -136,30 +144,44 @@ func (r *Runtime) cleanChannelState(channelPoint wire.OutPoint) (
 		state.RemoteCommitment.CommitHeight {
 		return CleanChannelState{}, false, nil
 	}
+
+	return cleanChannelSnapshot(
+		channelPoint, channel, state.ChanType, state.IsInitiator,
+	)
+}
+
+// cleanChannelSnapshot derives one coherent balance snapshot from lnd's live
+// channel state.
+func cleanChannelSnapshot(channelPoint wire.OutPoint,
+	channel *lnwallet.LightningChannel, channelType chanstate.ChannelType,
+	localFunder bool) (CleanChannelState, bool, error) {
+
+	if !channel.IsChannelClean() {
+		return CleanChannelState{}, false, nil
+	}
+	snapshot := channel.StateSnapshot()
 	localBalance, remoteBalance, err := lnwallet.CoopCloseBalance(
-		state.ChanType, state.IsInitiator, 0,
-		state.LocalCommitment.LocalBalance.ToSatoshis(),
-		state.LocalCommitment.RemoteBalance.ToSatoshis(),
-		state.LocalCommitment.CommitFee,
+		channelType, localFunder, 0, snapshot.LocalBalance.ToSatoshis(),
+		snapshot.RemoteBalance.ToSatoshis(), snapshot.CommitFee,
 		fn.None[lntypes.ChannelParty](),
 	)
 	if err != nil {
 		return CleanChannelState{}, false, fmt.Errorf("derive "+
 			"cooperative close balances: %w", err)
 	}
-	if localBalance+remoteBalance != state.Capacity {
+	if localBalance+remoteBalance != snapshot.Capacity {
 		return CleanChannelState{}, false, fmt.Errorf("cooperative "+
 			"balances %d + %d do not match capacity %d",
-			localBalance, remoteBalance, state.Capacity)
+			localBalance, remoteBalance, snapshot.Capacity)
 	}
 
 	return CleanChannelState{
 		ChannelPoint:     channelPoint,
 		LocalBalance:     localBalance,
 		RemoteBalance:    remoteBalance,
-		Capacity:         state.Capacity,
-		CommitmentHeight: state.LocalCommitment.CommitHeight,
-		LocalInitiator:   state.IsInitiator,
+		Capacity:         snapshot.Capacity,
+		CommitmentHeight: snapshot.CommitHeight,
+		LocalInitiator:   localFunder,
 	}, true, nil
 }
 

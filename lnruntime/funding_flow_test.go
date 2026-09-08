@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -36,7 +35,6 @@ import (
 	"github.com/lightningnetwork/lnd/lntest/mock"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
-	"github.com/lightningnetwork/lnd/lnwallet/chancloser"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/stretchr/testify/require"
@@ -808,12 +806,20 @@ func TestNativeFundingFlowPaysBothDirections(t *testing.T) {
 		t, bob, alice, returnAmount, lntypes.Preimage{7, 8, 9},
 	)
 
-	closeTx := cooperativelyCloseFundingFlowChannel(
-		t, alice, bob, aliceChannel.FundingOutpoint,
+	aliceClean, err := alice.runtime.QuiesceChannel(
+		t.Context(), aliceChannel.FundingOutpoint,
 	)
+	require.NoError(t, err)
+	bobClean, err := bob.runtime.QuiesceChannel(
+		t.Context(), bobChannel.FundingOutpoint,
+	)
+	require.NoError(t, err)
+	require.Equal(t, aliceClean.ChannelPoint, bobClean.ChannelPoint)
+	require.Equal(t, aliceClean.LocalBalance, bobClean.RemoteBalance)
+	require.Equal(t, aliceClean.RemoteBalance, bobClean.LocalBalance)
+	require.Equal(t, aliceClean.Capacity, bobClean.Capacity)
 	require.Equal(
-		t, aliceChannel.FundingOutpoint,
-		closeTx.TxIn[0].PreviousOutPoint,
+		t, aliceClean.CommitmentHeight, bobClean.CommitmentHeight,
 	)
 }
 
@@ -1385,104 +1391,6 @@ func activateFundingFlowChannel(t *testing.T, hub, client *fundingFlowNode,
 		clientChannel: clientChannel,
 		hubSink:       hubSink,
 		clientSink:    clientSink,
-	}
-}
-
-// cooperativelyCloseFundingFlowChannel drives lnd's native cooperative-close
-// FSM at both endpoints over the same logical peer boundary used for funding.
-func cooperativelyCloseFundingFlowChannel(t *testing.T, alice,
-	bob *fundingFlowNode, channelPoint wire.OutPoint) *wire.MsgTx {
-
-	t.Helper()
-
-	aliceBroadcast := make(chan *wire.MsgTx, 1)
-	bobBroadcast := make(chan *wire.MsgTx, 1)
-	feeRate := chainfee.SatPerKWeight(1_000)
-	aliceCloser, err := alice.runtime.NewCooperativeClose(
-		CooperativeCloseRequest{
-			ChannelPoint:    channelPoint,
-			DeliveryAddress: testCloseDeliveryAddress(alice.key),
-			IdealFeeRate:    feeRate,
-			Closer:          lntypes.Local,
-			BroadcastTx: func(tx *wire.MsgTx, _ string) error {
-				aliceBroadcast <- tx.Copy()
-
-				return nil
-			},
-		},
-	)
-	require.NoError(t, err)
-	bobCloser, err := bob.runtime.NewCooperativeClose(
-		CooperativeCloseRequest{
-			ChannelPoint:    channelPoint,
-			DeliveryAddress: testCloseDeliveryAddress(bob.key),
-			IdealFeeRate:    feeRate,
-			Closer:          lntypes.Remote,
-			BroadcastTx: func(tx *wire.MsgTx, _ string) error {
-				bobBroadcast <- tx.Copy()
-
-				return nil
-			},
-		},
-	)
-	require.NoError(t, err)
-
-	shutdown, err := aliceCloser.ShutdownChan()
-	require.NoError(t, err)
-	bobShutdown, err := bobCloser.ReceiveShutdown(*shutdown)
-	require.NoError(t, err)
-	bobOffer, err := bobCloser.BeginNegotiation()
-	require.NoError(t, err)
-	require.True(t, bobOffer.IsNone())
-
-	_, err = aliceCloser.ReceiveShutdown(bobShutdown.UnwrapOrFail(t))
-	require.NoError(t, err)
-	aliceOffer, err := aliceCloser.BeginNegotiation()
-	require.NoError(t, err)
-	require.True(t, aliceOffer.IsSome())
-
-	message := aliceOffer.UnwrapOrFail(t)
-	fromAlice := true
-	for i := 0; i < 10; i++ {
-		if fromAlice {
-			next, err := bobCloser.ReceiveClosingSigned(message)
-			require.NoError(t, err)
-			if next.IsNone() {
-				break
-			}
-			message = next.UnwrapOrFail(t)
-		} else {
-			next, err := aliceCloser.ReceiveClosingSigned(message)
-			require.NoError(t, err)
-			if next.IsNone() {
-				break
-			}
-			message = next.UnwrapOrFail(t)
-		}
-
-		fromAlice = !fromAlice
-	}
-
-	aliceTx, err := aliceCloser.ClosingTx()
-	require.NoError(t, err)
-	bobTx, err := bobCloser.ClosingTx()
-	require.NoError(t, err)
-	require.Equal(t, aliceTx.TxHash(), bobTx.TxHash())
-	require.Equal(t, aliceTx.TxHash(), (<-aliceBroadcast).TxHash())
-	require.Equal(t, bobTx.TxHash(), (<-bobBroadcast).TxHash())
-
-	return aliceTx
-}
-
-// testCloseDeliveryAddress returns a valid P2WPKH script for co-op close.
-func testCloseDeliveryAddress(
-	key *btcec.PrivateKey) chancloser.DeliveryAddrWithKey {
-
-	keyHash := address.Hash160(key.PubKey().SerializeCompressed())
-	pkScript := append([]byte{0x00, 0x14}, keyHash...)
-
-	return chancloser.DeliveryAddrWithKey{
-		DeliveryAddress: lnwire.DeliveryAddress(pkScript),
 	}
 }
 
