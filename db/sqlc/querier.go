@@ -142,6 +142,7 @@ type Querier interface {
 	// Returns cumulative Ark protocol fees paid to the operator (fees_paid
 	// account only). Does not include L1 chain/miner fees (onchain_fees).
 	GetTotalOperatorFeesPaid(ctx context.Context) (int64, error)
+	GetUnfailedOORSessionRegistryByIdempotencyKey(ctx context.Context, idempotencyKey sql.NullString) (OorSessionRegistry, error)
 	GetUnilateralExitJob(ctx context.Context, arg GetUnilateralExitJobParams) (UnilateralExitJob, error)
 	GetVHTLCRecoveryJob(ctx context.Context, id string) (VhtlcRecoveryJob, error)
 	GetVHTLCRecoveryJobByRequestID(ctx context.Context, requestID string) (VhtlcRecoveryJob, error)
