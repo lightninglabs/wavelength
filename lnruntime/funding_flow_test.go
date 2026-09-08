@@ -34,6 +34,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnpeer"
 	"github.com/lightningnetwork/lnd/lntest/mock"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
@@ -821,6 +822,126 @@ func TestNativeFundingFlowPaysBothDirections(t *testing.T) {
 	require.Equal(
 		t, aliceClean.CommitmentHeight, bobClean.CommitmentHeight,
 	)
+}
+
+// TestCleanChannelSnapshotRestoresFunderCommitmentFee verifies a zero-fee Ark
+// close returns lnd's reserved commitment fee and anchors to the Ark funder.
+func TestCleanChannelSnapshotRestoresFunderCommitmentFee(t *testing.T) {
+	tests := []struct {
+		name   string
+		funder arkchannel.Party
+	}{
+		{
+			name:   "hub funded",
+			funder: arkchannel.PartyHub,
+		},
+		{
+			name:   "client funded",
+			funder: arkchannel.PartyClient,
+		},
+	}
+
+	for i, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			hub := newFundingFlowNode(t, arkchannel.PartyHub)
+			client := newFundingFlowNode(
+				t, arkchannel.PartyClient,
+			)
+			connectFundingFlowNodes(t, hub, client)
+			require.NoError(t, hub.runtime.Start())
+			require.NoError(t, client.runtime.Start())
+			t.Cleanup(func() {
+				require.NoError(t, hub.runtime.Stop())
+				require.NoError(t, client.runtime.Stop())
+			})
+
+			record := fundingIntentRecord(
+				t, hub, client,
+				lndfunding.PendingChanID{9, 1, byte(i + 1)},
+			)
+			if test.funder == arkchannel.PartyClient {
+				terms := &record.Snapshot.Terms
+				terms.Kind = arkchannel.KindPromotion
+				terms.Funder = arkchannel.PartyClient
+				terms.PaymentHash = [32]byte{}
+				record.Snapshot.Source = testIntentBinding(
+					t, *terms, testFundingCapacity+1_000, 1,
+				)
+			}
+			flow := activateFundingFlowChannel(
+				t, hub, client, record,
+			)
+
+			hubClean, err := hub.runtime.QuiesceChannel(
+				t.Context(), flow.hubChannel.FundingOutpoint,
+			)
+			require.NoError(t, err)
+			clientClean, err := client.runtime.QuiesceChannel(
+				t.Context(), flow.clientChannel.FundingOutpoint,
+			)
+			require.NoError(t, err)
+
+			assertCleanChannelAllocation(
+				t, hub.runtime, flow.hubChannel, hubClean,
+			)
+			assertCleanChannelAllocation(
+				t, client.runtime, flow.clientChannel,
+				clientClean,
+			)
+			require.Equal(
+				t, hubClean.LocalBalance,
+				clientClean.RemoteBalance,
+			)
+			require.Equal(
+				t, hubClean.RemoteBalance,
+				clientClean.LocalBalance,
+			)
+
+			if test.funder == arkchannel.PartyHub {
+				require.Equal(
+					t, testFundingCapacity,
+					hubClean.LocalBalance,
+				)
+				require.Zero(t, hubClean.RemoteBalance)
+
+				return
+			}
+			require.Zero(t, hubClean.LocalBalance)
+			require.Equal(
+				t, testFundingCapacity, hubClean.RemoteBalance,
+			)
+		})
+	}
+}
+
+// assertCleanChannelAllocation pins lnd's commitment accounting against the
+// zero-fee balances returned to Ark.
+func assertCleanChannelAllocation(t *testing.T, runtime *Runtime,
+	state *chanstate.OpenChannel, clean CleanChannelState) {
+
+	t.Helper()
+
+	live, ok := runtime.getLiveChannel(state.FundingOutpoint)
+	require.True(t, ok)
+	require.Equal(t, state.IsInitiator, live.localFunder)
+	require.True(t, live.channelType.HasAnchors())
+	snapshot := live.channel.StateSnapshot()
+	require.Positive(t, snapshot.CommitFee)
+	funderCredit := snapshot.CommitFee + 2*lnwallet.AnchorSize
+	expectedLocal := snapshot.LocalBalance.ToSatoshis()
+	expectedRemote := snapshot.RemoteBalance.ToSatoshis()
+	if live.localFunder {
+		expectedLocal += funderCredit
+	} else {
+		expectedRemote += funderCredit
+	}
+
+	require.Equal(t, expectedLocal, clean.LocalBalance)
+	require.Equal(t, expectedRemote, clean.RemoteBalance)
+	require.Equal(t, snapshot.Capacity, clean.Capacity)
+	require.Equal(t, clean.Capacity,
+		clean.LocalBalance+clean.RemoteBalance)
+	require.Equal(t, live.localFunder, clean.LocalInitiator)
 }
 
 // TestNativeFundingFlowRestoresQuiescedLinks proves a restart in any durable
