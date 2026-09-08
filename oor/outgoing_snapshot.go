@@ -12,6 +12,8 @@ import (
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 )
 
+const outgoingSnapshotVersion uint8 = 8
+
 // OutgoingPhase identifies the coarse stage of an outgoing client transfer.
 //
 // This is intentionally more stable than Go state type names to keep snapshot
@@ -180,7 +182,7 @@ func NewOutgoingSnapshot(sessionID SessionID,
 		// Version 8 keeps upstream's failure marker at record 27 and
 		// moves prepared recipients to record 31. Version 7 used record
 		// 27 for recipients and record 29 for the failure marker.
-		Version:   8,
+		Version:   outgoingSnapshotVersion,
 		SessionID: sessionID,
 	}
 
@@ -365,6 +367,10 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 
 	if snapshot.Version == 0 {
 		return nil, fmt.Errorf("snapshot version must be provided")
+	}
+	if snapshot.Version > outgoingSnapshotVersion {
+		return nil, fmt.Errorf("unknown outgoing snapshot version %d",
+			snapshot.Version)
 	}
 
 	switch snapshot.Phase {
