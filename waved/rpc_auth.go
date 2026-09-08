@@ -184,7 +184,9 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 	)
 
 	arkChannel := arkchannelrpc.ArkChannelService_ServiceDesc.ServiceName
-	grant(arkChannel, entityChannel, "read", "GetChannel")
+	grant(
+		arkChannel, entityChannel, "read", "GetChannel", "ListChannels",
+	)
 	grant(
 		arkChannel, entityChannel, "write", "PromoteVTXO",
 		"SendPayment", "ReceivePayment", "PayLightningInvoice",

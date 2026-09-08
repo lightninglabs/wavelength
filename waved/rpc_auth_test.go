@@ -26,6 +26,8 @@ func TestWavedRPCPermissionsMapsReadMethods(t *testing.T) {
 		waverpc.DaemonService_EstimateFee_FullMethodName,
 		waverpc.DaemonService_GetBalance_FullMethodName,
 		waverpc.MacaroonService_ListPermissions_FullMethodName,
+		arkchannelrpc.ArkChannelService_GetChannel_FullMethodName,
+		arkchannelrpc.ArkChannelService_ListChannels_FullMethodName,
 	} {
 		ops, ok := wavedRPCPermissions[fullMethod]
 		require.True(t, ok, fullMethod)
@@ -47,6 +49,11 @@ func TestWavedRPCPermissionsMapsMutatingMethods(t *testing.T) {
 		return "/" + waverpc.DaemonService_ServiceDesc.ServiceName +
 			"/" + method
 	}
+	arkChannelService :=
+		arkchannelrpc.ArkChannelService_ServiceDesc.ServiceName
+	fullArkChannelMethod := func(method string) string {
+		return "/" + arkChannelService + "/" + method
+	}
 
 	for _, fullMethod := range []string{
 		waverpc.DaemonService_GenSeed_FullMethodName,
@@ -55,8 +62,12 @@ func TestWavedRPCPermissionsMapsMutatingMethods(t *testing.T) {
 		waverpc.DaemonService_RefreshVTXOs_FullMethodName,
 		waverpc.DaemonService_SignReceiveAuthMessage_FullMethodName,
 		waverpc.DaemonService_SignOutSwapHtlcAck_FullMethodName,
-		arkchannelrpc.
-			ArkChannelService_PayLightningInvoice_FullMethodName,
+		fullArkChannelMethod("PromoteVTXO"),
+		fullArkChannelMethod("SendPayment"),
+		fullArkChannelMethod("ReceivePayment"),
+		fullArkChannelMethod("PayLightningInvoice"),
+		fullArkChannelMethod("MaterializeAndForceClose"),
+		fullArkChannelMethod("RequestCooperativeClose"),
 		fullDaemonMethod("SubmitForfeitParticipantSignatures"),
 	} {
 		ops, ok := wavedRPCPermissions[fullMethod]
@@ -219,9 +230,8 @@ func TestWavedReadOnlyPermissions(t *testing.T) {
 // TestWavedRPCPermissionsCoverDaemonServices registers every service the
 // swapruntime/wavewalletrpc daemon serves and asserts the permission map covers
 // all their methods, via the exact check the startup validator runs. Without
-// this, an RPC added without a grant — as happened with the credit RPCs
-// (CreateCredit/RedeemCredit/ListCredits) — only fails when the daemon refuses
-// to boot, not in CI.
+// this, an RPC added without a grant only fails when the daemon refuses to
+// boot, not in CI.
 func TestWavedRPCPermissionsCoverDaemonServices(t *testing.T) {
 	t.Parallel()
 
@@ -233,6 +243,10 @@ func TestWavedRPCPermissionsCoverDaemonServices(t *testing.T) {
 	)
 	waverpc.RegisterMacaroonServiceServer(
 		grpcServer, &waverpc.UnimplementedMacaroonServiceServer{},
+	)
+	arkchannelrpc.RegisterArkChannelServiceServer(
+		grpcServer,
+		&arkchannelrpc.UnimplementedArkChannelServiceServer{},
 	)
 	swapclientrpc.RegisterSwapClientServiceServer(
 		grpcServer,
