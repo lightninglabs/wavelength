@@ -63,6 +63,21 @@ const (
 	// negotiated refund locktime so the client does not start or continue a
 	// swap when the refund path is already imminent.
 	defaultRefundLocktimeBuffer = uint32(1)
+
+	// defaultArkChannelReceiveSetupTimeout bounds the optional channel rail
+	// so daemon or hub unavailability cannot block ordinary vHTLC invoice
+	// setup.
+	defaultArkChannelReceiveSetupTimeout = 5 * time.Second
+
+	// defaultArkChannelReceiveResolutionTimeout bounds detached settlement
+	// or cancellation after the caller's request context has ended.
+	defaultArkChannelReceiveResolutionTimeout = 30 * time.Second
+
+	arkChannelReceiveSetupFailureReason = "Ark channel receive setup failed"
+	arkChannelReceiveVHTLCWinnerReason  = "vHTLC receive rail won"
+	arkChannelReceiveFailureReason      = "Ark channel receive rail failed"
+	arkChannelReceiveExpiryReason       = "receive invoice expired"
+	arkChannelReceiveTerminalReason     = "receive swap terminated"
 )
 
 type outSwapOnionDecoder func(ReceiveAuthKey, lntypes.Hash,
@@ -358,6 +373,11 @@ func (s *ReceiveSession) failTerminal(ctx context.Context, reason string,
 	if s == nil {
 		return newFailureError(reason, cause)
 	}
+	if err := s.disableArkChannelReceive(
+		ctx, arkChannelReceiveTerminalReason,
+	); err != nil {
+		return newRetryableActionError(errors.Join(cause, err))
+	}
 
 	s.client.log.WarnS(ctx, "Receive swap failed",
 		cause,
@@ -490,6 +510,11 @@ func (s *ReceiveSession) Claim(ctx context.Context, outpoint string,
 	}
 
 	if s.state == ReceiveStateHTLCEventAccepted {
+		if err := s.disableArkChannelReceive(
+			ctx, arkChannelReceiveVHTLCWinnerReason,
+		); err != nil {
+			return nil, newRetryableActionError(err)
+		}
 		err := s.validateReceiveFunding(ctx, &VTXOInfo{
 			Outpoint:  outpoint,
 			AmountSat: amount,
@@ -683,14 +708,6 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	// invoice deadline.
 	_, supportsInArkCredit :=
 		s.client.outEvents.(IncomingVHTLCEventReceiver)
-	if s.client.channelBridge != nil {
-		if err := s.client.channelBridge.PrepareIncomingPayment(
-			ctx, preimage, s.amountSat,
-		); err != nil {
-			return fmt.Errorf("prepare incoming Ark channel "+
-				"payment: %w", err)
-		}
-	}
 	quote, err := s.client.server.RequestChannelID(
 		ctx, clientKey, paymentHash, s.amountSat,
 		defaultReceiveExpirySeconds, supportsInArkCredit,
@@ -749,14 +766,9 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 			expectedVHTLCSat, requestedAmountSat,
 			quote.AttachedCreditSat)
 	}
-	if s.client.channelBridge != nil {
-		if err := s.client.channelBridge.RegisterIncomingPayment(
-			ctx, paymentHash, s.amountSat, finalHop.ChannelID,
-		); err != nil {
-			return fmt.Errorf("register incoming Ark channel "+
-				"payment: %w", err)
-		}
-	}
+	channelReceiveEnabled := s.prepareArkChannelReceive(
+		ctx, preimage, paymentHash, finalHop.ChannelID,
+	)
 
 	s.client.log.InfoS(ctx, "Received route hint from swap server",
 		slog.Uint64("channel_id", finalHop.ChannelID),
@@ -773,10 +785,16 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 			&preimage,
 		)
 	if err != nil {
-		return fmt.Errorf("create invoice: %w", err)
+		return s.abortPreparedArkChannelReceive(
+			ctx, paymentHash, channelReceiveEnabled,
+			fmt.Errorf("create invoice: %w", err),
+		)
 	}
 	if hash != paymentHash {
-		return fmt.Errorf("invoice hash does not match route hash")
+		return s.abortPreparedArkChannelReceive(
+			ctx, paymentHash, channelReceiveEnabled,
+			fmt.Errorf("invoice hash does not match route hash"),
+		)
 	}
 
 	s.client.log.InfoS(ctx, "Invoice created for out-swap",
@@ -788,7 +806,7 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 		),
 	)
 
-	return s.mutateAndPersist(ctx, func() error {
+	err = s.mutateAndPersist(ctx, func() error {
 		s.Invoice = string(inv.PaymentRequest)
 		s.Preimage = preimage
 		s.PaymentHash = hash
@@ -799,6 +817,7 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 		s.expectedVHTLCSat = expectedVHTLCSat
 		s.dustLimitSat = quote.DustLimitSat
 		s.reservedSCID = finalHop.ChannelID
+		s.channelReceiveEnabled = channelReceiveEnabled
 		s.settlementType = quote.SettlementType
 		s.deadline = s.client.currentTime().Add(expiry)
 		if s.createdAt.IsZero() {
@@ -816,6 +835,68 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 
 		return s.transition(receiveEventInvoiceCreated)
 	})
+	if err != nil {
+		return s.abortPreparedArkChannelReceive(
+			ctx, paymentHash, channelReceiveEnabled, err,
+		)
+	}
+
+	return nil
+}
+
+// prepareArkChannelReceive attempts the optional private channel rail without
+// making route-hint or vHTLC availability depend on the daemon or hub runtime.
+func (s *ReceiveSession) prepareArkChannelReceive(ctx context.Context,
+	preimage lntypes.Preimage, hash lntypes.Hash,
+	reservedSCID uint64) bool {
+
+	bridge := s.client.channelBridge
+	if bridge == nil {
+		return false
+	}
+	setupCtx, cancel := context.WithTimeout(
+		ctx, defaultArkChannelReceiveSetupTimeout,
+	)
+	err := bridge.PrepareIncomingPayment(setupCtx, preimage, s.amountSat)
+	if err == nil {
+		err = bridge.RegisterIncomingPayment(
+			setupCtx, hash, s.amountSat, reservedSCID,
+		)
+	}
+	cancel()
+	if err == nil {
+		return true
+	}
+
+	cancelErr := s.cancelIncomingChannelPayment(
+		ctx, hash, arkChannelReceiveSetupFailureReason,
+		defaultArkChannelReceiveSetupTimeout,
+	)
+	s.client.log.WarnS(ctx, "Ark channel receive setup failed; continuing "+
+		"with vHTLC", errors.Join(err, cancelErr),
+		btclog.Hex("payment_hash", hash[:]),
+	)
+
+	return false
+}
+
+// abortPreparedArkChannelReceive cancels external channel state when invoice
+// construction cannot durably publish the prepared receive session.
+func (s *ReceiveSession) abortPreparedArkChannelReceive(ctx context.Context,
+	hash lntypes.Hash, enabled bool, cause error) error {
+
+	if !enabled {
+		return cause
+	}
+	err := s.cancelIncomingChannelPayment(
+		ctx, hash, arkChannelReceiveSetupFailureReason,
+		defaultArkChannelReceiveSetupTimeout,
+	)
+	if err != nil {
+		return errors.Join(cause, err)
+	}
+
+	return cause
 }
 
 // validateClaimReceiveInfo checks that the allocated vHTLC claim destination
@@ -834,6 +915,16 @@ func validateClaimReceiveInfo(info *ReceiveInfo) error {
 // waitForHTLCEvent waits until the swap server delivers the HTLC event,
 // validates it, then persists the accepted event before acking the mailbox.
 func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
+	if s.channelReceiveEnabled && s.channelID != (arkchannel.ID{}) {
+		if s.client.channelBridge == nil {
+			return newRetryableActionError(
+				fmt.Errorf("Ark channel payment bridge is " +
+					"unavailable"),
+			)
+		}
+
+		return s.completeArkChannelReceive(ctx, s.channelID)
+	}
 	if s.client.outEvents == nil {
 		return fmt.Errorf("out-swap event receiver is not configured")
 	}
@@ -845,7 +936,14 @@ func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
 
 	waitCtx, cancel := s.invoiceDeadlineContext(ctx)
 	defer cancel()
-	if s.client.channelBridge != nil {
+	if s.channelReceiveEnabled {
+		if s.client.channelBridge == nil {
+			return newRetryableActionError(
+				fmt.Errorf("Ark channel payment bridge is " +
+					"unavailable"),
+			)
+		}
+
 		return s.waitForChannelOrVHTLC(waitCtx, ctx, authKey)
 	}
 
@@ -881,9 +979,8 @@ type incomingChannelWaitResult struct {
 	err       error
 }
 
-// waitForChannelOrVHTLC races lnd's durable private invoice against the
-// ordinary mailbox vHTLC rail. Exactly one rail can reveal the shared
-// preimage; cancellation only stops the losing local subscription.
+// waitForChannelOrVHTLC races lnd's durable private hold invoice against the
+// ordinary mailbox vHTLC rail and durably resolves the losing rail first.
 func (s *ReceiveSession) waitForChannelOrVHTLC(
 	waitCtx, parentCtx context.Context, authKey ReceiveAuthKey) error {
 
@@ -902,8 +999,8 @@ func (s *ReceiveSession) waitForChannelOrVHTLC(
 	}()
 	vhtlcResult := make(chan incomingVHTLCWaitResult, 1)
 	go func() {
-		notification, err := s.waitIncomingVHTLCNotification(
-			bridgeCtx, authKey,
+		notification, err := s.receiveIncomingVHTLCNotification(
+			bridgeCtx,
 		)
 		vhtlcResult <- incomingVHTLCWaitResult{
 			notification: notification, err: err,
@@ -915,60 +1012,231 @@ func (s *ReceiveSession) waitForChannelOrVHTLC(
 		case result := <-channelResult:
 			if result.err != nil {
 				if bridgeCtx.Err() != nil {
-					return s.receiveWaitError(
+					return s.resolveReceiveWaitError(
 						parentCtx, waitCtx, result.err,
 					)
 				}
+				if err := s.disableArkChannelReceive(
+					parentCtx,
+					arkChannelReceiveFailureReason,
+				); err != nil {
+					return newRetryableActionError(
+						errors.Join(
+							result.err, err,
+						),
+					)
+				}
+				s.client.log.WarnS(parentCtx, "Ark channel receive rail "+
+					"failed; continuing with vHTLC", result.err,
+					btclog.Hex(
+						"payment_hash",
+						s.PaymentHash[:],
+					),
+				)
+				channelResult = nil
 
+				continue
+			}
+			if result.channelID == (arkchannel.ID{}) {
+				result.err = fmt.Errorf("incoming Ark " +
+					"channel ID is empty")
+				if err := s.disableArkChannelReceive(
+					parentCtx,
+					arkChannelReceiveFailureReason,
+				); err != nil {
+					return newRetryableActionError(
+						errors.Join(
+							result.err, err,
+						),
+					)
+				}
 				channelResult = nil
 
 				continue
 			}
 
-			return s.mutateAndPersist(parentCtx, func() error {
-				s.settlementType = SettlementTypeArkChannel
-				s.channelID = result.channelID
+			cancel()
+			vhtlc := <-vhtlcResult
+			if vhtlc.err == nil {
+				return s.acceptWinningVHTLC(
+					parentCtx, vhtlc.notification, authKey,
+				)
+			}
 
-				return s.transition(receiveEventCompleted)
-			})
+			return s.completeArkChannelReceive(
+				parentCtx, result.channelID,
+			)
 
 		case result := <-vhtlcResult:
+			cancel()
 			if result.err != nil {
-				return s.receiveWaitError(
+				return s.resolveReceiveWaitError(
 					parentCtx, waitCtx, result.err,
 				)
 			}
-			if result.notification == nil {
-				return fmt.Errorf("incoming vHTLC " +
-					"notification must be provided")
-			}
-			if result.notification.Ack != nil &&
-				result.notification.AckCursor == 0 {
-				return fmt.Errorf("incoming vHTLC ack cursor " +
-					"must be provided")
-			}
 
-			return s.ackAcceptedHTLCEvent(
-				parentCtx, result.notification.Ack,
+			return s.acceptWinningVHTLC(
+				parentCtx, result.notification, authKey,
 			)
 
 		case <-waitCtx.Done():
-			return s.receiveWaitError(
+			return s.resolveReceiveWaitError(
 				parentCtx, waitCtx, waitCtx.Err(),
 			)
 		}
 	}
 
-	result := <-vhtlcResult
-	if result.err != nil {
-		return s.receiveWaitError(parentCtx, waitCtx, result.err)
+	select {
+	case result := <-vhtlcResult:
+		if result.err != nil {
+			return s.resolveReceiveWaitError(
+				parentCtx, waitCtx, result.err,
+			)
+		}
+
+		return s.acceptWinningVHTLC(
+			parentCtx, result.notification, authKey,
+		)
+
+	case <-waitCtx.Done():
+		return s.resolveReceiveWaitError(
+			parentCtx, waitCtx, waitCtx.Err(),
+		)
 	}
-	if result.notification == nil {
-		return fmt.Errorf("incoming vHTLC notification must be " +
-			"provided")
+}
+
+// acceptWinningVHTLC durably accepts the event, cancels the private rail, and
+// only then acknowledges the mailbox delivery that commits the vHTLC rail.
+func (s *ReceiveSession) acceptWinningVHTLC(ctx context.Context,
+	notification *IncomingVHTLCNotification, authKey ReceiveAuthKey) error {
+
+	accepted, err := s.acceptIncomingVHTLCNotification(
+		ctx, notification, authKey,
+	)
+	if err != nil {
+		return err
+	}
+	if err := s.disableArkChannelReceive(
+		ctx, arkChannelReceiveVHTLCWinnerReason,
+	); err != nil {
+		return newRetryableActionError(err)
 	}
 
-	return s.ackAcceptedHTLCEvent(parentCtx, result.notification.Ack)
+	return s.ackAcceptedHTLCEvent(ctx, accepted.Ack)
+}
+
+// completeArkChannelReceive releases the hold invoice and persists its nonzero
+// channel identity in one bounded reconciliation attempt.
+func (s *ReceiveSession) completeArkChannelReceive(ctx context.Context,
+	id arkchannel.ID) error {
+
+	if id == (arkchannel.ID{}) {
+		return fmt.Errorf("incoming Ark channel ID is empty")
+	}
+	resolutionCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		defaultArkChannelReceiveResolutionTimeout,
+	)
+	defer cancel()
+	if s.channelID != (arkchannel.ID{}) && s.channelID != id {
+		return fmt.Errorf("incoming Ark channel ID changed")
+	}
+	if s.channelID == (arkchannel.ID{}) {
+		err := s.mutateAndPersist(resolutionCtx, func() error {
+			s.settlementType = SettlementTypeArkChannel
+			s.channelID = id
+
+			return nil
+		})
+		if err != nil {
+			return newRetryableActionError(err)
+		}
+	}
+	if err := s.client.channelBridge.SettleIncomingPayment(
+		resolutionCtx, s.Preimage,
+	); err != nil {
+		return newRetryableActionError(
+			fmt.Errorf("settle incoming Ark channel payment: %w",
+				err),
+		)
+	}
+
+	err := s.mutateAndPersist(resolutionCtx, func() error {
+		s.channelReceiveEnabled = false
+
+		return s.transition(receiveEventCompleted)
+	})
+	if err != nil {
+		return newRetryableActionError(err)
+	}
+
+	return nil
+}
+
+// disableArkChannelReceive cancels the hold invoice and pre-PONR intent before
+// durably releasing this session's ownership of the channel rail.
+func (s *ReceiveSession) disableArkChannelReceive(ctx context.Context,
+	reason string) error {
+
+	if !s.channelReceiveEnabled {
+		return nil
+	}
+	if err := s.cancelIncomingChannelPayment(
+		ctx, s.PaymentHash, reason,
+		defaultArkChannelReceiveResolutionTimeout,
+	); err != nil {
+		return err
+	}
+	resolutionCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		defaultArkChannelReceiveResolutionTimeout,
+	)
+	defer cancel()
+
+	return s.mutateAndPersist(resolutionCtx, func() error {
+		s.channelReceiveEnabled = false
+
+		return nil
+	})
+}
+
+// cancelIncomingChannelPayment uses a detached bounded context so an RPC
+// cancellation cannot strand a known-preimage hold invoice or receive intent.
+func (s *ReceiveSession) cancelIncomingChannelPayment(ctx context.Context,
+	hash lntypes.Hash, reason string, timeout time.Duration) error {
+
+	if s.client == nil || s.client.channelBridge == nil {
+		return fmt.Errorf("Ark channel payment bridge is unavailable")
+	}
+	resolutionCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), timeout,
+	)
+	defer cancel()
+
+	if err := s.client.channelBridge.CancelIncomingPayment(
+		resolutionCtx, hash, reason,
+	); err != nil {
+		return fmt.Errorf("cancel incoming Ark channel payment: %w",
+			err)
+	}
+
+	return nil
+}
+
+// resolveReceiveWaitError cancels the private rail before invoice expiry can be
+// persisted as a terminal non-channel result.
+func (s *ReceiveSession) resolveReceiveWaitError(
+	parentCtx, waitCtx context.Context, err error) error {
+
+	if invoiceDeadlineExceeded(parentCtx, waitCtx, err) {
+		if cancelErr := s.disableArkChannelReceive(
+			parentCtx, arkChannelReceiveExpiryReason,
+		); cancelErr != nil {
+			return newRetryableActionError(cancelErr)
+		}
+	}
+
+	return s.receiveWaitError(parentCtx, waitCtx, err)
 }
 
 // receiveWaitError preserves the invoice-expiry classification used by the
@@ -1017,6 +1285,11 @@ func invoiceDeadlineExceeded(parent, waitCtx context.Context, err error) bool {
 
 // waitForFunding waits until the expected accepted vHTLC is indexed as live.
 func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
+	if err := s.disableArkChannelReceive(
+		ctx, arkChannelReceiveVHTLCWinnerReason,
+	); err != nil {
+		return newRetryableActionError(err)
+	}
 	if err := s.ackAcceptedHTLCEvent(ctx, nil); err != nil {
 		return err
 	}
@@ -1059,10 +1332,23 @@ func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
 	return s.ensureReceiveClaimRecoveryArmed(ctx)
 }
 
-// waitIncomingVHTLCNotification waits for and validates the server notification
-// that tells this receiver which vHTLC script should be funded.
+// waitIncomingVHTLCNotification receives, validates, and durably accepts the
+// server notification that tells this receiver which vHTLC should be funded.
 func (s *ReceiveSession) waitIncomingVHTLCNotification(ctx context.Context,
 	authKey ReceiveAuthKey) (*IncomingVHTLCNotification, error) {
+
+	notification, err := s.receiveIncomingVHTLCNotification(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.acceptIncomingVHTLCNotification(ctx, notification, authKey)
+}
+
+// receiveIncomingVHTLCNotification waits for a mailbox event without mutating
+// the session so channel and vHTLC arbitration stays single-threaded.
+func (s *ReceiveSession) receiveIncomingVHTLCNotification(ctx context.Context) (
+	*IncomingVHTLCNotification, error) {
 
 	if receiver, ok := s.client.outEvents.(IncomingVHTLCEventReceiver); ok {
 		notification, err := receiver.WaitIncomingVHTLC(
@@ -1076,9 +1362,7 @@ func (s *ReceiveSession) waitIncomingVHTLCNotification(ctx context.Context,
 			return nil, err
 		}
 
-		return s.acceptIncomingVHTLCNotification(
-			ctx, notification, authKey,
-		)
+		return notification, nil
 	}
 
 	notification, err := s.client.outEvents.WaitOutSwapHtlc(
@@ -1101,7 +1385,7 @@ func (s *ReceiveSession) waitIncomingVHTLCNotification(ctx context.Context,
 		return nil, err
 	}
 
-	return s.acceptIncomingVHTLCNotification(ctx, incoming, authKey)
+	return incoming, nil
 }
 
 // validateIncomingVHTLCAck checks mailbox ack metadata before the notification
@@ -1739,6 +2023,21 @@ func (s *ReceiveSession) validateReceiveFunding(ctx context.Context,
 			"vHTLC amount %d does not match "+
 			"expected vHTLC amount %d",
 			funding.AmountSat, expectedAmountSat), nil, func() {
+			s.vhtlcOutpoint = funding.Outpoint
+			s.vhtlcAmount = funding.AmountSat
+		})
+	}
+
+	height, err := s.client.daemon.BlockHeight(ctx)
+	if err != nil {
+		return fmt.Errorf("get block height: %w", err)
+	}
+	if height+s.client.refundLocktimeBuffer >=
+		s.vhtlcConfig.RefundLocktime {
+		return s.failTerminal(ctx, fmt.Sprintf("funded "+
+			"vHTLC observed too close to refund "+
+			"locktime %d at height %d",
+			s.vhtlcConfig.RefundLocktime, height), nil, func() {
 			s.vhtlcOutpoint = funding.Outpoint
 			s.vhtlcAmount = funding.AmountSat
 		})

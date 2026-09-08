@@ -10,6 +10,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/arkchannel"
 	swapsqlc "github.com/lightninglabs/wavelength/sdk/swaps/sqlc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
@@ -211,6 +212,36 @@ func TestReceiveChannelRailOwnershipPersists(t *testing.T) {
 	require.True(t, resumed.channelReceiveEnabled)
 	require.Equal(t, uint64(99), resumed.reservedSCID)
 	require.Equal(t, uint64(22_000), resumed.expectedVHTLCSat)
+
+	channelID := arkchannel.ID{1, 2, 3}
+	lostResponseErr := errors.New("settlement response lost")
+	bridge := &testArkChannelPaymentBridge{
+		waitChannelID: channelID,
+		settleErr:     lostResponseErr,
+	}
+	client.SetArkChannelPaymentBridge(bridge)
+	client.SetOutSwapEventReceiver(&blockingOutSwapEventReceiver{})
+	err = resumed.waitForChannelOrVHTLC(
+		ctx, ctx, nil,
+	)
+	require.ErrorIs(t, err, lostResponseErr)
+	require.Equal(t, 1, bridge.settleCalls)
+	require.Equal(t, ReceiveStateInvoiceCreated, resumed.State())
+	require.True(t, resumed.channelReceiveEnabled)
+	require.Equal(t, [32]byte(channelID), resumed.channelID)
+
+	reconciled, err := client.ResumeReceiveViaLightning(
+		ctx, session.PaymentHash,
+	)
+	require.NoError(t, err)
+	bridge = &testArkChannelPaymentBridge{}
+	client.SetArkChannelPaymentBridge(bridge)
+	client.SetOutSwapEventReceiver(nil)
+	require.NoError(t, reconciled.waitForHTLCEvent(ctx))
+	require.Equal(t, ReceiveStateCompleted, reconciled.State())
+	require.False(t, reconciled.channelReceiveEnabled)
+	require.Equal(t, [32]byte(channelID), reconciled.channelID)
+	require.Equal(t, 1, bridge.settleCalls)
 }
 
 // TestReceiveAuthKeyDerivesAcrossRestart verifies receive-auth keys come from
