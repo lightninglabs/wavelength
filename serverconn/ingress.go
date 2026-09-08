@@ -904,10 +904,9 @@ func (a *ServerConnectionActor) runFoldedDispatch(ctx context.Context,
 	// skip it. Everything else in the closure derives from the caller's
 	// state and is safe to redo.
 	ctx = withDeliveredOutsideTx(ctx)
-	ctx = context.WithValue(ctx, ingressScopeKey{}, ingressScope{
-		local:  a.cfg.LocalMailboxID,
-		remote: a.cfg.RemoteMailboxID,
-	})
+	ctx = context.WithValue(
+		ctx, ingressScopeKey{}, a.ingressEvidenceScope(),
+	)
 
 	var (
 		newState AckState
