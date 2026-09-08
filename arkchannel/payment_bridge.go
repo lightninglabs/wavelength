@@ -319,7 +319,8 @@ type PaymentSourceFailed struct{}
 
 func (*PaymentSourceFailed) paymentBridgeEventSealed() {}
 
-// PaymentFallbackSelected hands an incoming payment to the vHTLC lifecycle.
+// PaymentFallbackSelected hands an incoming payment to the vHTLC lifecycle
+// before destination dispatch starts.
 type PaymentFallbackSelected struct {
 	Reason string
 }
@@ -782,8 +783,7 @@ func applyPaymentFallbackSelected(next *PaymentBridgeSnapshot,
 		return false, fmt.Errorf("fallback reason changed")
 	}
 	if next.Phase != PaymentRegistered &&
-		next.Phase != PaymentSourceLocked &&
-		next.Phase != PaymentDestinationInFlight {
+		next.Phase != PaymentSourceLocked {
 		return false, fmt.Errorf("cannot select fallback from %s",
 			next.Phase)
 	}

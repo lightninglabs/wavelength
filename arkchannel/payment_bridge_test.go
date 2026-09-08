@@ -135,9 +135,9 @@ func TestSamePaymentBridgeTerms(t *testing.T) {
 	require.False(t, SamePaymentBridgeTerms(snapshot, advanced))
 }
 
-// TestPaymentBridgeIncomingDispatchFallback proves a private liquidity race
-// can return to the vHTLC rail until either destination reveals a preimage.
-func TestPaymentBridgeIncomingDispatchFallback(t *testing.T) {
+// TestPaymentBridgeRejectsFallbackAfterDestinationDispatch proves fallback
+// cannot double-pay while a destination payment may still settle.
+func TestPaymentBridgeRejectsFallbackAfterDestinationDispatch(t *testing.T) {
 	snapshot, _ := testPaymentBridgeSnapshot(t, PaymentIncoming)
 	state, err := NewPaymentBridgeState(snapshot)
 	require.NoError(t, err)
@@ -151,11 +151,16 @@ func TestPaymentBridgeIncomingDispatchFallback(t *testing.T) {
 	state = applyPaymentEvent(t, state, &PaymentDestinationStarted{
 		ChannelID: ID{2}, DestinationSCID: 43,
 	})
-	state = applyPaymentEvent(t, state, &PaymentFallbackSelected{
-		Reason: "private channel liquidity changed",
-	})
+	_, err = state.ProcessEvent(
+		t.Context(), &PaymentFallbackSelected{
+			Reason: "private channel liquidity changed",
+		}, &PaymentBridgeEnvironment{
+			PaymentHash: snapshot.PaymentHash,
+		},
+	)
 
-	require.Equal(t, PaymentVHTLCFallback, state.Snapshot().Phase)
+	require.ErrorContains(t, err, "cannot select fallback")
+	require.Equal(t, PaymentDestinationInFlight, state.Snapshot().Phase)
 	require.Equal(t, snapshot.ReservedSCID, state.Snapshot().ReservedSCID)
 }
 
