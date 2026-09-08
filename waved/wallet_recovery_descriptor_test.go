@@ -3,9 +3,8 @@ package waved
 import (
 	"testing"
 
-	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
-	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/internal/expiryfixture"
 	libtypes "github.com/lightninglabs/wavelength/lib/types"
 	"github.com/stretchr/testify/require"
 )
@@ -33,25 +32,11 @@ func TestRecoveryDescriptorFromIndexerRebuildsIndexerScript(t *testing.T) {
 		t, uint32(batchRelativeExpiry), terms.VTXOExitDelay,
 	)
 
-	commitmentTxID := chainhash.Hash{0xcc}
-	outpointTxID := chainhash.Hash{0xdd}
-	indexed := &arkrpc.VTXO{
-		Outpoint: &arkrpc.OutPoint{
-			Txid: outpointTxID[:],
-			Vout: 0,
-		},
-		ValueSat:          28674,
-		PkScript:          pkScript,
-		Status:            arkrpc.VTXOStatus_VTXO_STATUS_LIVE,
-		RoundId:           "round-1",
-		CommitmentTxid:    commitmentTxID[:],
-		CreatedHeight:     964273,
-		BatchExpiryHeight: 965281,
-		RelativeExpiry:    batchRelativeExpiry,
-		AncestryPaths: []*arkrpc.AncestryPath{
-			recoveryTestAncestryPath(t, commitmentTxID),
-		},
-	}
+	indexed, _ := expiryfixture.Round(
+		t, 28674, pkScript, batchRelativeExpiry, 964273, 1,
+	)
+	indexed.BatchExpiryHeight = 965281
+	indexed.RelativeExpiry = batchRelativeExpiry
 
 	desc, ok, err := recoveryDescriptorFromIndexer(
 		indexed, clientKey, terms,

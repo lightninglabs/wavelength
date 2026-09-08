@@ -56,6 +56,9 @@ func (r *RPCServer) enrichCustomRefreshInputs(ctx context.Context,
 	return nil
 }
 
+// resolveCustomRefreshMetadata requires the indexed input to match the
+// requested output and verifies its target proof and locally confirmed expiry
+// before the caller can sign a custom refresh.
 func (r *RPCServer) resolveCustomRefreshMetadata(ctx context.Context,
 	input wallet.CustomRefreshInput) (customRefreshMetadata, error) {
 
@@ -150,6 +153,8 @@ type customRefreshMetadata struct {
 	Ancestry       []vtxo.Ancestry
 }
 
+// customRefreshMetadataFromRPC validates the indexed target proof and
+// converts lineage metadata without trusting the advertised batch expiry.
 func customRefreshMetadataFromRPC(candidate *arkrpc.VTXO) (
 	customRefreshMetadata, error) {
 
@@ -168,7 +173,7 @@ func customRefreshMetadataFromRPC(candidate *arkrpc.VTXO) (
 			"missing commitment txid")
 	}
 
-	ancestry, err := vtxo.AncestryFromRPC(candidate.GetAncestryPaths())
+	ancestry, err := vtxo.IndexedAncestryFromRPC(candidate)
 	if err != nil {
 		return customRefreshMetadata{}, fmt.Errorf("convert ancestry "+
 			"paths: %w", err)

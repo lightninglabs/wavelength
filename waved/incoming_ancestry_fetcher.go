@@ -68,6 +68,9 @@ func incomingAncestryOnlyFetcher(idx *indexer.Client,
 	return newIncomingAncestryFetcher(idx, signerFactory, nil)
 }
 
+// newIncomingAncestryFetcher binds indexed ancestry to the requested target
+// and optionally derives expiry from local confirmations. The fetch-only form
+// remains reserved for the existing commitment-height repair.
 func newIncomingAncestryFetcher(idx *indexer.Client,
 	signerFactory OORReceiveScriptSignerFactory,
 	authenticateExpiry oor.IncomingExpiryAuthenticator) (

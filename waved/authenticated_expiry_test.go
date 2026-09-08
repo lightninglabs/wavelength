@@ -77,10 +77,12 @@ type blockingExpiryChainSource struct {
 	registrationBlocked bool
 }
 
+// ID supplies a stable identity for the confirmation actor stub.
 func (b *blockingExpiryChainSource) ID() string {
 	return "blocking-expiry-chain-source"
 }
 
+// Tell records confirmation-watch cleanup requests.
 func (b *blockingExpiryChainSource) Tell(_ context.Context,
 	msg chainsource.ChainSourceMsg) error {
 
@@ -94,12 +96,14 @@ func (b *blockingExpiryChainSource) Tell(_ context.Context,
 	return nil
 }
 
+// TryTell delegates nonblocking test delivery to Tell.
 func (b *blockingExpiryChainSource) TryTell(ctx context.Context,
 	msg chainsource.ChainSourceMsg) error {
 
 	return b.Tell(ctx, msg)
 }
 
+// Ask supplies the scripted one-shot confirmation registration.
 func (b *blockingExpiryChainSource) Ask(_ context.Context,
 	msg chainsource.ChainSourceMsg) testChainFuture {
 
@@ -129,6 +133,8 @@ func (b *blockingExpiryChainSource) Ask(_ context.Context,
 	return response.Future()
 }
 
+// testExpiryAuthenticationAncestry constructs sweep evidence for testing
+// bounded chain waits and cleanup independently of target-proof validation.
 func testExpiryAuthenticationAncestry(t *testing.T) vtxo.Ancestry {
 	t.Helper()
 
