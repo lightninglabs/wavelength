@@ -199,6 +199,20 @@ func ValidateChannelVTXOTemplate(template *PolicyTemplate,
 		}
 	}
 
+	actualPkScript, err := template.PkScript()
+	if err != nil {
+		return fmt.Errorf("compile channel VTXO output: %w", err)
+	}
+	expectedPkScript, err := expected.Template.PkScript()
+	if err != nil {
+		return fmt.Errorf("compile expected channel VTXO output: %w",
+			err)
+	}
+	if !bytes.Equal(actualPkScript, expectedPkScript) {
+		return fmt.Errorf("channel VTXO output does not match " +
+			"expected key roles and delays")
+	}
+
 	return nil
 }
 
