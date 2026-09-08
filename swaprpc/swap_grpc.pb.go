@@ -22,6 +22,7 @@ const (
 	SwapService_RequestChannelId_FullMethodName              = "/swaprpc.SwapService/RequestChannelId"
 	SwapService_CreateInSwap_FullMethodName                  = "/swaprpc.SwapService/CreateInSwap"
 	SwapService_QuoteInSwap_FullMethodName                   = "/swaprpc.SwapService/QuoteInSwap"
+	SwapService_CreateRefreshSwap_FullMethodName             = "/swaprpc.SwapService/CreateRefreshSwap"
 	SwapService_CreateCredit_FullMethodName                  = "/swaprpc.SwapService/CreateCredit"
 	SwapService_RedeemCredit_FullMethodName                  = "/swaprpc.SwapService/RedeemCredit"
 	SwapService_ListCredits_FullMethodName                   = "/swaprpc.SwapService/ListCredits"
@@ -47,6 +48,10 @@ type SwapServiceClient interface {
 	// QuoteInSwap previews how an invoice send would settle without creating
 	// durable swap state or notifying a same-Ark receiver.
 	QuoteInSwap(ctx context.Context, in *QuoteInSwapRequest, opts ...grpc.CallOption) (*QuoteInSwapResponse, error)
+	// CreateRefreshSwap creates the client-funded leg of a refresh swap. Once
+	// that leg is funded, the swap server funds a matching vHTLC whose backing
+	// VTXO satisfies the caller's maximum-age constraint.
+	CreateRefreshSwap(ctx context.Context, in *CreateRefreshSwapRequest, opts ...grpc.CallOption) (*CreateRefreshSwapResponse, error)
 	// CreateCredit creates a durable credit funding operation. Lightning
 	// receives return a server-owned invoice; Ark top-ups return a
 	// server-owned OOR destination.
@@ -106,6 +111,16 @@ func (c *swapServiceClient) QuoteInSwap(ctx context.Context, in *QuoteInSwapRequ
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(QuoteInSwapResponse)
 	err := c.cc.Invoke(ctx, SwapService_QuoteInSwap_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *swapServiceClient) CreateRefreshSwap(ctx context.Context, in *CreateRefreshSwapRequest, opts ...grpc.CallOption) (*CreateRefreshSwapResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateRefreshSwapResponse)
+	err := c.cc.Invoke(ctx, SwapService_CreateRefreshSwap_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -198,6 +213,10 @@ type SwapServiceServer interface {
 	// QuoteInSwap previews how an invoice send would settle without creating
 	// durable swap state or notifying a same-Ark receiver.
 	QuoteInSwap(context.Context, *QuoteInSwapRequest) (*QuoteInSwapResponse, error)
+	// CreateRefreshSwap creates the client-funded leg of a refresh swap. Once
+	// that leg is funded, the swap server funds a matching vHTLC whose backing
+	// VTXO satisfies the caller's maximum-age constraint.
+	CreateRefreshSwap(context.Context, *CreateRefreshSwapRequest) (*CreateRefreshSwapResponse, error)
 	// CreateCredit creates a durable credit funding operation. Lightning
 	// receives return a server-owned invoice; Ark top-ups return a
 	// server-owned OOR destination.
@@ -241,6 +260,9 @@ func (UnimplementedSwapServiceServer) CreateInSwap(context.Context, *CreateInSwa
 }
 func (UnimplementedSwapServiceServer) QuoteInSwap(context.Context, *QuoteInSwapRequest) (*QuoteInSwapResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method QuoteInSwap not implemented")
+}
+func (UnimplementedSwapServiceServer) CreateRefreshSwap(context.Context, *CreateRefreshSwapRequest) (*CreateRefreshSwapResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateRefreshSwap not implemented")
 }
 func (UnimplementedSwapServiceServer) CreateCredit(context.Context, *CreateCreditRequest) (*CreateCreditResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateCredit not implemented")
@@ -334,6 +356,24 @@ func _SwapService_QuoteInSwap_Handler(srv interface{}, ctx context.Context, dec 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(SwapServiceServer).QuoteInSwap(ctx, req.(*QuoteInSwapRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SwapService_CreateRefreshSwap_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateRefreshSwapRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwapServiceServer).CreateRefreshSwap(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SwapService_CreateRefreshSwap_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwapServiceServer).CreateRefreshSwap(ctx, req.(*CreateRefreshSwapRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -482,6 +522,10 @@ var SwapService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "QuoteInSwap",
 			Handler:    _SwapService_QuoteInSwap_Handler,
+		},
+		{
+			MethodName: "CreateRefreshSwap",
+			Handler:    _SwapService_CreateRefreshSwap_Handler,
 		},
 		{
 			MethodName: "CreateCredit",

@@ -44,6 +44,7 @@ func TestResumePendingStartsWorkersAndDedupes(t *testing.T) {
 
 	payHash := testHash(1)
 	receiveHash := testHash(2)
+	refreshSession := newFakeRefreshSession(testHash(3))
 	fakeClient := newFakeSwapRuntime(
 		swaps.SwapSummary{
 			Direction:   swaps.SwapDirectionPay,
@@ -58,12 +59,16 @@ func TestResumePendingStartsWorkersAndDedupes(t *testing.T) {
 			Pending:     true,
 		},
 	)
+	fakeClient.pendingRefreshSessions = []refreshSwapSession{
+		refreshSession,
+	}
 	service := newTestSwapClientService(fakeClient)
 	defer service.cancel()
 
 	service.resumePending(t.Context())
 	fakeClient.awaitPayResume(t, payHash)
 	fakeClient.awaitReceiveResume(t, receiveHash)
+	refreshSession.awaitWait(t)
 
 	_, err := service.ResumeSwap(
 		t.Context(), &swapclientrpc.ResumeSwapRequest{
@@ -74,9 +79,102 @@ func TestResumePendingStartsWorkersAndDedupes(t *testing.T) {
 	)
 	require.NoError(t, err)
 
+	// A repeated startup sweep must find the durable refresh again without
+	// starting a second FSM driver while the first worker remains active.
+	service.resumePending(t.Context())
+
 	require.Equal(t, 1, fakeClient.payResumeCount(payHash))
 	require.Equal(t, 1, fakeClient.receiveResumeCount(receiveHash))
+	require.Equal(t, 1, refreshSession.waitCount())
 	require.True(t, fakeClient.sawPendingOnlyList())
+	require.Equal(t, 2, fakeClient.pendingRefreshListCount())
+}
+
+// TestResumePendingScopesWorkerOwnershipByRole verifies a pay and receive swap
+// may use the same hash without suppressing either startup worker. Repeating
+// the sweep must still deduplicate each role independently.
+func TestResumePendingScopesWorkerOwnershipByRole(t *testing.T) {
+	t.Parallel()
+
+	sharedHash := testHash(4)
+	fakeClient := newFakeSwapRuntime(
+		swaps.SwapSummary{
+			Direction:   swaps.SwapDirectionPay,
+			PaymentHash: sharedHash,
+			State:       "funding",
+			Pending:     true,
+		},
+		swaps.SwapSummary{
+			Direction:   swaps.SwapDirectionReceive,
+			PaymentHash: sharedHash,
+			State:       "invoice_created",
+			Pending:     true,
+		},
+	)
+	service := newTestSwapClientService(fakeClient)
+	defer service.cancel()
+
+	service.resumePending(t.Context())
+	fakeClient.awaitPayResume(t, sharedHash)
+	fakeClient.awaitReceiveResume(t, sharedHash)
+
+	service.resumePending(t.Context())
+
+	require.Equal(t, 1, fakeClient.payResumeCount(sharedHash))
+	require.Equal(t, 1, fakeClient.receiveResumeCount(sharedHash))
+}
+
+// TestRefreshWorkerRetriesTransientWaitAndDedupes verifies a transient Wait
+// error cannot silently orphan a non-terminal refresh. The worker reloads the
+// durable session, keeps ownership across the retry, and exits after the
+// resumed session succeeds.
+func TestRefreshWorkerRetriesTransientWaitAndDedupes(t *testing.T) {
+	t.Parallel()
+
+	hash := testHash(5)
+	initial := newFakeRefreshSession(hash)
+	initial.waitFn = func(context.Context) (*swaps.RefreshResult, error) {
+		return nil, errors.New("transient wait failure")
+	}
+
+	resumed := newFakeRefreshSession(hash)
+	release := make(chan struct{})
+	resumed.waitFn = func(ctx context.Context) (*swaps.RefreshResult,
+		error) {
+
+		select {
+		case <-release:
+			resumed.setState(swaps.RefreshStateCompleted)
+
+			return &swaps.RefreshResult{}, nil
+
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	fakeClient := newFakeSwapRuntime()
+	fakeClient.refreshResumeSessions[hash] = resumed
+	service := newTestSwapClientService(fakeClient)
+	defer service.cancel()
+
+	service.startRefreshWorker(initial)
+	initial.awaitWait(t)
+	fakeClient.awaitRefreshResume(t, hash)
+	resumed.awaitWait(t)
+
+	// Ownership remains held while the reloaded session is running, so
+	// a duplicate observation cannot launch the original handle again.
+	service.startRefreshWorker(initial)
+	require.Equal(t, 1, initial.waitCount())
+	require.Equal(t, 1, resumed.waitCount())
+	require.Equal(t, 1, fakeClient.refreshResumeCount(hash))
+
+	close(release)
+	require.Eventually(t, func() bool {
+		return service.activeWorkerCount() == 0
+	}, 2*time.Second, time.Millisecond)
+	require.Equal(t, 1, fakeClient.refreshResumeCount(hash))
 }
 
 // TestChainParamsForNetworkAcceptsTestNet4 verifies the swapruntime daemon
@@ -251,6 +349,35 @@ func TestStartPayReturnsSummaryAndStartsWorker(t *testing.T) {
 	fakeClient.awaitPayResume(t, payHash)
 	require.Equal(t, 1, fakeClient.startPayCount())
 	require.Equal(t, 1, fakeClient.payResumeCount(payHash))
+}
+
+// TestPublicSwapQueriesHideRefreshSummaries verifies SDK-owned refresh state
+// is not serialized as UNSPECIFIED through the older public swap RPC schema.
+func TestPublicSwapQueriesHideRefreshSummaries(t *testing.T) {
+	t.Parallel()
+
+	refreshHash := testHash(58)
+	fakeClient := newFakeSwapRuntime(swaps.SwapSummary{
+		Direction:   swaps.SwapDirectionRefresh,
+		PaymentHash: refreshHash,
+		State:       swaps.RefreshStateOutputVHTLCFunded.String(),
+		Pending:     true,
+	})
+	service := newTestSwapClientService(fakeClient)
+	defer service.cancel()
+
+	listed, err := service.ListSwaps(
+		t.Context(), &swapclientrpc.ListSwapsRequest{},
+	)
+	require.NoError(t, err)
+	require.Empty(t, listed.GetSwaps())
+
+	_, err = service.GetSwap(
+		t.Context(), &swapclientrpc.GetSwapRequest{
+			PaymentHash: hex.EncodeToString(refreshHash[:]),
+		},
+	)
+	require.Equal(t, codes.NotFound, status.Code(err))
 }
 
 // TestQuotePayReturnsRemotePreview verifies the local swap client RPC exposes
@@ -567,7 +694,7 @@ func TestCreateCreditForwardsLightningReceive(t *testing.T) {
 		t.Context(), &swapclientrpc.CreateCreditRequest{
 			IdempotencyKey: "idem-recv",
 			Source: swapclientrpc.
-				CreditFundingSource_CREDIT_FUNDING_SOURCE_LIGHTNING_RECEIVE,
+				CreditFundingSource_CREDIT_FUNDING_SOURCE_LIGHTNING_RECEIVE, //nolint:ll
 			AmountSat: 123,
 			Memo:      "dust receive",
 		},
@@ -1204,13 +1331,13 @@ func TestSwapServerOperationWaitsForReady(t *testing.T) {
 		{
 			name: "authorize refund",
 			method: swaprpc.
-				SwapService_AuthorizeInSwapRefund_FullMethodName,
+				SwapService_AuthorizeInSwapRefund_FullMethodName, //nolint:ll
 			wait: true,
 		},
 		{
 			name: "acknowledge out swap",
 			method: swaprpc.
-				SwapService_AcknowledgeOutSwapHtlc_FullMethodName,
+				SwapService_AcknowledgeOutSwapHtlc_FullMethodName, //nolint:ll
 			wait: true,
 		},
 		{
@@ -1222,7 +1349,7 @@ func TestSwapServerOperationWaitsForReady(t *testing.T) {
 		{
 			name: "submit out swap forfeit",
 			method: swaprpc.
-				SwapService_SubmitOutSwapForfeitSignature_FullMethodName,
+				SwapService_SubmitOutSwapForfeitSignature_FullMethodName, //nolint:ll
 			wait: true,
 		},
 		{
@@ -1358,13 +1485,27 @@ func newTestSwapClientService(client swapRuntimeClient) *swapClientService {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &swapClientService{
-		client:      client,
-		log:         btclog.Disabled,
-		rootCtx:     ctx,
-		cancel:      cancel,
-		active:      make(map[string]struct{}),
-		subscribers: make(map[chan *swapclientrpc.SwapSummary]struct{}),
+		client:  client,
+		log:     btclog.Disabled,
+		rootCtx: ctx,
+		cancel:  cancel,
+		active:  make(map[string]struct{}),
+		subscribers: make(
+			map[chan *swapclientrpc.SwapSummary]struct{},
+		),
+		refreshRetryDelay: func(uint32) time.Duration {
+			return time.Millisecond
+		},
 	}
+}
+
+// activeWorkerCount returns the number of role-scoped worker leases held by
+// the test service.
+func (s *swapClientService) activeWorkerCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return len(s.active)
 }
 
 // testStartPayInvoice returns a signed regtest invoice for StartPay tests that
@@ -1434,7 +1575,8 @@ func testSwapPayInvoice(t *testing.T, amountSat btcutil.Amount) string {
 type fakeSwapRuntime struct {
 	mu sync.Mutex
 
-	summaries []swaps.SwapSummary
+	summaries              []swaps.SwapSummary
+	pendingRefreshSessions []refreshSwapSession
 
 	startPaySession     paySwapSession
 	startReceiveSession receiveSwapSession
@@ -1448,26 +1590,30 @@ type fakeSwapRuntime struct {
 	listCreditsResp     *swaps.CreditSnapshot
 	listCreditsErr      error
 
-	quotePayCalls      int
-	quotePayInvoice    string
-	quotePayMaxFeeSat  uint64
-	startPayMaxFeeSat  uint64
-	startPayCalls      int
-	startReceiveCalls  int
-	startReceiveMemo   string
-	createCreditCalls  int
-	createCreditReq    swaps.CreateCreditRequest
-	redeemCreditCalls  int
-	redeemCreditReq    swaps.RedeemCreditRequest
-	listCreditsCalls   int
-	listCreditsLimit   uint32
-	getSummaryCalls    int
-	listPendingOnly    []bool
-	payResumeCalls     map[lntypes.Hash]int
-	receiveResumeCalls map[lntypes.Hash]int
+	quotePayCalls         int
+	quotePayInvoice       string
+	quotePayMaxFeeSat     uint64
+	startPayMaxFeeSat     uint64
+	startPayCalls         int
+	startReceiveCalls     int
+	startReceiveMemo      string
+	createCreditCalls     int
+	createCreditReq       swaps.CreateCreditRequest
+	redeemCreditCalls     int
+	redeemCreditReq       swaps.RedeemCreditRequest
+	listCreditsCalls      int
+	listCreditsLimit      uint32
+	getSummaryCalls       int
+	listPendingOnly       []bool
+	pendingRefreshLists   int
+	payResumeCalls        map[lntypes.Hash]int
+	receiveResumeCalls    map[lntypes.Hash]int
+	refreshResumeCalls    map[lntypes.Hash]int
+	refreshResumeSessions map[lntypes.Hash]refreshSwapSession
 
 	payResumeCh     chan lntypes.Hash
 	receiveResumeCh chan lntypes.Hash
+	refreshResumeCh chan lntypes.Hash
 }
 
 func newFakeSwapRuntime(summaries ...swaps.SwapSummary) *fakeSwapRuntime {
@@ -1475,8 +1621,13 @@ func newFakeSwapRuntime(summaries ...swaps.SwapSummary) *fakeSwapRuntime {
 		summaries:          summaries,
 		payResumeCalls:     make(map[lntypes.Hash]int),
 		receiveResumeCalls: make(map[lntypes.Hash]int),
-		payResumeCh:        make(chan lntypes.Hash, 8),
-		receiveResumeCh:    make(chan lntypes.Hash, 8),
+		refreshResumeCalls: make(map[lntypes.Hash]int),
+		refreshResumeSessions: make(
+			map[lntypes.Hash]refreshSwapSession,
+		),
+		payResumeCh:     make(chan lntypes.Hash, 8),
+		receiveResumeCh: make(chan lntypes.Hash, 8),
+		refreshResumeCh: make(chan lntypes.Hash, 8),
 	}
 }
 
@@ -1554,6 +1705,24 @@ func (f *fakeSwapRuntime) ResumeReceiveViaLightning(_ context.Context,
 	f.receiveResumeCh <- hash
 
 	return &fakeReceiveSession{hash: hash}, nil
+}
+
+// ResumeRefreshSwap returns the configured replacement handle for retry tests.
+func (f *fakeSwapRuntime) ResumeRefreshSwap(_ context.Context,
+	hash lntypes.Hash) (refreshSwapSession, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.refreshResumeCalls[hash]++
+	f.refreshResumeCh <- hash
+
+	session, ok := f.refreshResumeSessions[hash]
+	if !ok {
+		return nil, errors.New("refresh resume session not configured")
+	}
+
+	return session, nil
 }
 
 func (f *fakeSwapRuntime) CreateCredit(_ context.Context,
@@ -1637,6 +1806,21 @@ func (f *fakeSwapRuntime) ListSwapSummaries(_ context.Context,
 	return summaries, nil
 }
 
+// ListPendingRefreshSessions returns the fake durable refresh set used by the
+// daemon startup-owner tests.
+func (f *fakeSwapRuntime) ListPendingRefreshSessions(_ context.Context) (
+	[]refreshSwapSession, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.pendingRefreshLists++
+
+	return append(
+		[]refreshSwapSession(nil), f.pendingRefreshSessions...,
+	), nil
+}
+
 func (f *fakeSwapRuntime) awaitPayResume(t *testing.T, hash lntypes.Hash) {
 	t.Helper()
 
@@ -1658,6 +1842,19 @@ func (f *fakeSwapRuntime) awaitReceiveResume(t *testing.T, hash lntypes.Hash) {
 
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timed out waiting for receive resume")
+	}
+}
+
+// awaitRefreshResume blocks until the refresh worker reloads durable state.
+func (f *fakeSwapRuntime) awaitRefreshResume(t *testing.T, hash lntypes.Hash) {
+	t.Helper()
+
+	select {
+	case got := <-f.refreshResumeCh:
+		require.Equal(t, hash, got)
+
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for refresh resume")
 	}
 }
 
@@ -1689,6 +1886,14 @@ func (f *fakeSwapRuntime) receiveResumeCount(hash lntypes.Hash) int {
 	return f.receiveResumeCalls[hash]
 }
 
+// refreshResumeCount returns how many durable reloads one refresh worker made.
+func (f *fakeSwapRuntime) refreshResumeCount(hash lntypes.Hash) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.refreshResumeCalls[hash]
+}
+
 func (f *fakeSwapRuntime) sawPendingOnlyList() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1700,6 +1905,15 @@ func (f *fakeSwapRuntime) sawPendingOnlyList() bool {
 	}
 
 	return false
+}
+
+// pendingRefreshListCount returns how often daemon resume queried the SDK's
+// dedicated pending-refresh list.
+func (f *fakeSwapRuntime) pendingRefreshListCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.pendingRefreshLists
 }
 
 type fakePaySession struct {
@@ -1735,4 +1949,87 @@ func (f *fakeReceiveSession) Wait(ctx context.Context) (*swaps.ReceiveResult,
 	<-ctx.Done()
 
 	return nil, ctx.Err()
+}
+
+type fakeRefreshSession struct {
+	hash lntypes.Hash
+
+	mu        sync.Mutex
+	state     swaps.RefreshState
+	waitCalls int
+	waitCh    chan struct{}
+	waitFn    func(context.Context) (*swaps.RefreshResult, error)
+}
+
+// newFakeRefreshSession creates a blocking refresh session whose Wait calls
+// can be observed without racing the daemon worker.
+func newFakeRefreshSession(hash lntypes.Hash) *fakeRefreshSession {
+	return &fakeRefreshSession{
+		hash:   hash,
+		waitCh: make(chan struct{}, 1),
+	}
+}
+
+// PaymentHash returns the fake refresh session's durable identity.
+func (f *fakeRefreshSession) PaymentHash() lntypes.Hash {
+	return f.hash
+}
+
+// State returns the fake session's current composite refresh state.
+func (f *fakeRefreshSession) State() swaps.RefreshState {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.state
+}
+
+// setState updates the fake's durable state for scripted terminal results.
+func (f *fakeRefreshSession) setState(state swaps.RefreshState) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.state = state
+}
+
+// Wait records worker admission and then blocks for the daemon worker
+// context, matching the lifetime of the pay and receive test sessions.
+func (f *fakeRefreshSession) Wait(ctx context.Context) (*swaps.RefreshResult,
+	error) {
+
+	f.mu.Lock()
+	f.waitCalls++
+	waitFn := f.waitFn
+	f.mu.Unlock()
+
+	select {
+	case f.waitCh <- struct{}{}:
+	default:
+	}
+
+	if waitFn != nil {
+		return waitFn(ctx)
+	}
+
+	<-ctx.Done()
+
+	return nil, ctx.Err()
+}
+
+// awaitWait blocks until the refresh session has an active daemon worker.
+func (f *fakeRefreshSession) awaitWait(t *testing.T) {
+	t.Helper()
+
+	select {
+	case <-f.waitCh:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for refresh worker")
+	}
+}
+
+// waitCount returns the number of refresh FSM drivers admitted by the daemon.
+func (f *fakeRefreshSession) waitCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.waitCalls
 }

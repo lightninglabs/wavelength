@@ -173,6 +173,10 @@ func validateInSwapPreview(invoice string, quote *InSwapQuote,
 				"credit quote")
 		}
 		expectedAmountSat = quote.CreditQuote.ArkFundingSat
+
+	case SettlementTypeRefresh:
+		return fmt.Errorf("refresh settlement type is invalid for an " +
+			"in-swap quote")
 	}
 
 	if quote.AmountSat != expectedAmountSat {
@@ -249,6 +253,10 @@ func validateInSwapQuote(invoice string, maxFeeSat uint64, cfg *InSwapConfig,
 				"credit quote")
 		}
 		expectedAmountSat = cfg.CreditQuote.ArkFundingSat
+
+	case SettlementTypeRefresh:
+		return fmt.Errorf("refresh settlement type is invalid for an " +
+			"in-swap config")
 	}
 
 	if uint64(cfg.AmountSat) != expectedAmountSat {

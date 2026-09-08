@@ -985,7 +985,8 @@ type OORSendResult struct {
 	RecipientOutpoint string
 }
 
-// OORSendOptions controls idempotent admission and read-only reconciliation.
+// OORSendOptions controls input selection, idempotent admission, and read-only
+// reconciliation.
 type OORSendOptions struct {
 	// IdempotencyKey identifies one caller intent across retries.
 	IdempotencyKey string
@@ -997,6 +998,14 @@ type OORSendOptions struct {
 	// ExistingOnly returns an existing keyed winner or NotFound without
 	// selecting inputs or admitting a transfer.
 	ExistingOnly bool
+
+	// MaxVTXOAgeBlocks, when positive, limits wallet-managed inputs to
+	// VTXOs backed by a batch no older than this many blocks.
+	MaxVTXOAgeBlocks uint32
+
+	// ExactInputOutpoints, when non-empty, identifies the exact managed
+	// wallet VTXOs that must fund the transfer.
+	ExactInputOutpoints []string
 }
 
 // SendOORWithPolicy sends one OOR transfer to a semantic policy-backed
@@ -1064,6 +1073,20 @@ func (c *Client) SendOORWithPolicyOptionsDetails(ctx context.Context,
 	if !opts.AdmissionDeadline.IsZero() {
 		admissionDeadlineUnixNanos = opts.AdmissionDeadline.UnixNano()
 	}
+	var customInputs []*waverpc.CustomOORInput
+	if len(opts.ExactInputOutpoints) > 0 {
+		customInputs = make(
+			[]*waverpc.CustomOORInput, 0,
+			len(opts.ExactInputOutpoints),
+		)
+		for _, outpoint := range opts.ExactInputOutpoints {
+			customInputs = append(
+				customInputs, &waverpc.CustomOORInput{
+					Outpoint: outpoint,
+				},
+			)
+		}
+	}
 
 	resp, err := c.SendOOR(ctx, &waverpc.SendOORRequest{
 		Recipients: []*waverpc.Output{
@@ -1080,6 +1103,8 @@ func (c *Client) SendOORWithPolicyOptionsDetails(ctx context.Context,
 		IdempotencyKey:             opts.IdempotencyKey,
 		AdmissionDeadlineUnixNanos: admissionDeadlineUnixNanos,
 		ExistingOnly:               opts.ExistingOnly,
+		MaxVtxoAgeBlocks:           opts.MaxVTXOAgeBlocks,
+		CustomInputs:               customInputs,
 	})
 	if err != nil {
 		return nil, err

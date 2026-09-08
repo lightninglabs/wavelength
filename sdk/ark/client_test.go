@@ -798,13 +798,22 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 	require.Equal(t, "session-123", oorResult.SessionID)
 	require.Equal(t, "session-123:0", oorResult.RecipientOutpoint)
 
+	service.mu.Lock()
+	legacyPolicyReq := service.lastSendOORReq
+	service.mu.Unlock()
+	require.NotNil(t, legacyPolicyReq)
+	require.Nil(t, legacyPolicyReq.CustomInputs)
+	require.Zero(t, legacyPolicyReq.GetMaxVtxoAgeBlocks())
+
 	admissionDeadline := time.Unix(1_700_000_000, 123)
 	oorResult, err = client.SendOORWithPolicyOptionsDetails(
 		context.Background(), 42_000, []byte{0xaa, 0xbb},
 		OORSendOptions{
-			IdempotencyKey:    "funding-key",
-			AdmissionDeadline: admissionDeadline,
-			ExistingOnly:      true,
+			IdempotencyKey:      "funding-key",
+			AdmissionDeadline:   admissionDeadline,
+			ExistingOnly:        true,
+			MaxVTXOAgeBlocks:    144,
+			ExactInputOutpoints: []string{"funding:1", "funding:2"},
 		},
 	)
 	require.NoError(t, err)
@@ -829,6 +838,11 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 		policyReq.GetAdmissionDeadlineUnixNanos(),
 	)
 	require.True(t, policyReq.GetExistingOnly())
+	require.Equal(t, uint32(144), policyReq.GetMaxVtxoAgeBlocks())
+	require.Equal(t, []*waverpc.CustomOORInput{
+		{Outpoint: "funding:1"},
+		{Outpoint: "funding:2"},
+	}, policyReq.GetCustomInputs())
 
 	sessionID, err = client.SendOORWithCustomInputs(
 		context.Background(), []byte{0x11, 0x22}, 21_000,

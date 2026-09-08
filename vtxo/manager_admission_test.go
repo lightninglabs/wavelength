@@ -882,6 +882,132 @@ func TestSelectAndReserveSpendSuccess(t *testing.T) {
 	require.True(t, ok, "expected SpendingState, got %T", ref.state)
 }
 
+// TestSelectAndReserveSpendMaxVTXOAge verifies automatic selection excludes a
+// higher-value VTXO whose backing batch exceeds the caller's age limit.
+func TestSelectAndReserveSpendMaxVTXOAge(t *testing.T) {
+	t.Parallel()
+
+	oldVTXO := makeDescriptor(t, 50_000, 0)
+	oldVTXO.CreatedHeight = 100
+	oldVTXO.BatchExpiry = 200
+
+	freshVTXO := makeDescriptor(t, 30_000, 1)
+	freshVTXO.CreatedHeight = 108
+	freshVTXO.BatchExpiry = 200
+
+	mgr, store := newTestManager(t, []*Descriptor{
+		oldVTXO, freshVTXO,
+	})
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{oldVTXO, freshVTXO}, nil)
+
+	result := mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
+		TargetAmount:     25_000,
+		MaxVTXOAgeBlocks: 5,
+		CurrentHeight:    110,
+	})
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+
+	spendResp, ok := resp.(*SelectAndReserveSpendResponse)
+	require.True(t, ok)
+	require.Len(t, spendResp.SelectedVTXOs, 1)
+	require.Equal(
+		t, freshVTXO.Outpoint, spendResp.SelectedVTXOs[0].Outpoint,
+	)
+	oldRef, ok := mgr.actors[oldVTXO.Outpoint].(*mockVTXOActorRef)
+	require.True(t, ok)
+	require.IsType(t, &LiveState{}, oldRef.state)
+
+	freshRef, ok := mgr.actors[freshVTXO.Outpoint].(*mockVTXOActorRef)
+	require.True(t, ok)
+	require.IsType(t, &SpendingState{}, freshRef.state)
+}
+
+// TestSelectAndReserveSpendExactMaxVTXOAge verifies exact selection accepts
+// the inclusive age boundary and refuses a named input one block beyond it.
+func TestSelectAndReserveSpendExactMaxVTXOAge(t *testing.T) {
+	t.Parallel()
+
+	t.Run("equal boundary", func(t *testing.T) {
+		t.Parallel()
+
+		candidate := makeDescriptor(t, 50_000, 0)
+		candidate.CreatedHeight = 100
+		candidate.BatchExpiry = 200
+
+		mgr, store := newTestManager(t, []*Descriptor{candidate})
+		store.On(
+			"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+		).Return([]*Descriptor{candidate}, nil)
+
+		result := mgr.Receive(
+			t.Context(), &SelectAndReserveSpendRequest{
+				TargetAmount: 40_000,
+				Outpoints: []wire.OutPoint{
+					candidate.Outpoint,
+				},
+				MaxVTXOAgeBlocks: 10,
+				CurrentHeight:    110,
+			},
+		)
+		_, err := result.Unpack()
+		require.NoError(t, err)
+	})
+
+	t.Run("too old", func(t *testing.T) {
+		t.Parallel()
+
+		candidate := makeDescriptor(t, 50_000, 0)
+		candidate.CreatedHeight = 99
+		candidate.BatchExpiry = 200
+
+		mgr, store := newTestManager(t, []*Descriptor{candidate})
+		store.On(
+			"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+		).Return([]*Descriptor{candidate}, nil)
+
+		result := mgr.Receive(
+			t.Context(), &SelectAndReserveSpendRequest{
+				TargetAmount: 40_000,
+				Outpoints: []wire.OutPoint{
+					candidate.Outpoint,
+				},
+				MaxVTXOAgeBlocks: 10,
+				CurrentHeight:    110,
+			},
+		)
+		_, err := result.Unpack()
+		require.ErrorIs(t, err, ErrInsufficientSpendableFunds)
+		require.ErrorContains(t, err, "age 11 exceeds maximum 10")
+		ref, ok := mgr.actors[candidate.Outpoint].(*mockVTXOActorRef)
+		require.True(t, ok)
+		require.IsType(t, &LiveState{}, ref.state)
+	})
+}
+
+// TestSelectAndReserveSpendZeroMaxAgePreservesLegacySelection verifies an
+// unbounded request does not start requiring timing metadata from old rows.
+func TestSelectAndReserveSpendZeroMaxAgePreservesLegacySelection(t *testing.T) {
+	t.Parallel()
+
+	candidate := makeDescriptor(t, 50_000, 0)
+	candidate.CreatedHeight = 0
+	candidate.BatchExpiry = 0
+
+	mgr, store := newTestManager(t, []*Descriptor{candidate})
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{candidate}, nil)
+
+	result := mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
+		TargetAmount: 40_000,
+	})
+	_, err := result.Unpack()
+	require.NoError(t, err)
+}
+
 // TestSelectAndReserveSpendExactOutpoints verifies an exact-input request
 // reserves only the named managed VTXOs, preserves their order, and permits an
 // exact spend even when each input is individually below the change floor.

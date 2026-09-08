@@ -3583,9 +3583,15 @@ type SendOORRequest struct {
 	// reconciliation. The daemon returns an existing winner or NotFound and
 	// never selects inputs or admits a new transfer. This requires a non-empty
 	// idempotency_key.
-	ExistingOnly  bool `protobuf:"varint,6,opt,name=existing_only,json=existingOnly,proto3" json:"existing_only,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ExistingOnly bool `protobuf:"varint,6,opt,name=existing_only,json=existingOnly,proto3" json:"existing_only,omitempty"`
+	// max_vtxo_age_blocks limits wallet-managed inputs to VTXOs whose
+	// backing batch confirmed no more than this many blocks ago. Equality
+	// is accepted. A positive value also requires known, internally
+	// consistent batch creation/expiry metadata and a batch expiry above
+	// the current chain height. Zero preserves unbounded selection.
+	MaxVtxoAgeBlocks uint32 `protobuf:"varint,7,opt,name=max_vtxo_age_blocks,json=maxVtxoAgeBlocks,proto3" json:"max_vtxo_age_blocks,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *SendOORRequest) Reset() {
@@ -3658,6 +3664,13 @@ func (x *SendOORRequest) GetExistingOnly() bool {
 		return x.ExistingOnly
 	}
 	return false
+}
+
+func (x *SendOORRequest) GetMaxVtxoAgeBlocks() uint32 {
+	if x != nil {
+		return x.MaxVtxoAgeBlocks
+	}
+	return 0
 }
 
 // CustomOORInput specifies a VTXO to spend with an explicit semantic policy
@@ -10913,7 +10926,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\bround_id\x18\x02 \x01(\tR\aroundId\x12(\n" +
 	"\x10total_amount_sat\x18\x03 \x01(\x03R\x0etotalAmountSat\x12*\n" +
 	"\x11change_amount_sat\x18\x04 \x01(\x03R\x0fchangeAmountSat\x12%\n" +
-	"\x0eselected_count\x18\x05 \x01(\x05R\rselectedCount\"\xa9\x02\n" +
+	"\x0eselected_count\x18\x05 \x01(\x05R\rselectedCount\"\xd8\x02\n" +
 	"\x0eSendOORRequest\x12/\n" +
 	"\n" +
 	"recipients\x18\x01 \x03(\v2\x0f.waverpc.OutputR\n" +
@@ -10922,7 +10935,8 @@ const file_daemon_proto_rawDesc = "" +
 	"\rcustom_inputs\x18\x03 \x03(\v2\x17.waverpc.CustomOORInputR\fcustomInputs\x12'\n" +
 	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\x12A\n" +
 	"\x1dadmission_deadline_unix_nanos\x18\x05 \x01(\x03R\x1aadmissionDeadlineUnixNanos\x12#\n" +
-	"\rexisting_only\x18\x06 \x01(\bR\fexistingOnly\"\x8b\x02\n" +
+	"\rexisting_only\x18\x06 \x01(\bR\fexistingOnly\x12-\n" +
+	"\x13max_vtxo_age_blocks\x18\a \x01(\rR\x10maxVtxoAgeBlocks\"\x8b\x02\n" +
 	"\x0eCustomOORInput\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x120\n" +
 	"\x14vtxo_policy_template\x18\x02 \x01(\fR\x12vtxoPolicyTemplate\x12\x1d\n" +

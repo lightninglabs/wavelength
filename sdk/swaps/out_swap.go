@@ -644,6 +644,11 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 		return fmt.Errorf("generate preimage: %w", err)
 	}
 	paymentHash := preimage.Hash()
+	if err := s.client.ensurePaymentHashOwnerAvailable(
+		ctx, paymentHash, SwapDirectionReceive,
+	); err != nil {
+		return err
+	}
 
 	authKey, err := s.client.receiveAuthKey(ctx, paymentHash)
 	if err != nil {

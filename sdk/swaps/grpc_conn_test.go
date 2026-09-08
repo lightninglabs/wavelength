@@ -15,20 +15,34 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type testSwapServiceClient struct {
 	swaprpc.SwapServiceClient
 
-	authorizeErr     error
-	ackErr           error
-	signForfeitResp  *swaprpc.SignInSwapForfeitResponse
-	signForfeitErr   error
-	submitForfeitErr error
-	lastAckReq       *swaprpc.AcknowledgeOutSwapHtlcRequest
-	lastSignReq      *swaprpc.SignInSwapForfeitRequest
-	lastSubmitSigReq *swaprpc.SubmitOutSwapForfeitSignatureRequest
-	listCreditReqs   []*swaprpc.ListCreditsRequest
+	authorizeErr      error
+	ackErr            error
+	signForfeitResp   *swaprpc.SignInSwapForfeitResponse
+	signForfeitErr    error
+	submitForfeitErr  error
+	lastAckReq        *swaprpc.AcknowledgeOutSwapHtlcRequest
+	lastSignReq       *swaprpc.SignInSwapForfeitRequest
+	lastSubmitSigReq  *swaprpc.SubmitOutSwapForfeitSignatureRequest
+	listCreditReqs    []*swaprpc.ListCreditsRequest
+	createRefreshResp *swaprpc.CreateRefreshSwapResponse
+	createRefreshErr  error
+	lastCreateRefresh *swaprpc.CreateRefreshSwapRequest
+}
+
+// CreateRefreshSwap records the authenticated refresh request.
+func (c *testSwapServiceClient) CreateRefreshSwap(_ context.Context,
+	req *swaprpc.CreateRefreshSwapRequest, _ ...grpc.CallOption) (
+	*swaprpc.CreateRefreshSwapResponse, error) {
+
+	c.lastCreateRefresh = req
+
+	return c.createRefreshResp, c.createRefreshErr
 }
 
 func (c *testSwapServiceClient) AuthorizeInSwapRefund(context.Context,
@@ -194,6 +208,84 @@ func TestCreditAccountRPCUsesFreshAuthorization(t *testing.T) {
 		client.listCreditReqs[0].GetAccountAuthorization().GetNonce(),
 		client.listCreditReqs[1].GetAccountAuthorization().GetNonce(),
 	)
+}
+
+// TestCreateRefreshSwapMapsAuthenticatedTerms verifies the transport binds the
+// shared hash, exact amount, client key, and maximum age into the signed
+// request and validates the REFRESH response.
+func TestCreateRefreshSwapMapsAuthenticatedTerms(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	paymentHash := preimage.Hash()
+	expiry := time.Unix(1_800_000_600, 0)
+
+	wireClient := &testSwapServiceClient{
+		createRefreshResp: &swaprpc.CreateRefreshSwapResponse{
+			PaymentHash: paymentHash[:],
+			AmountSat:   42_000,
+			ServerPubkey: serverPriv.PubKey().
+				SerializeCompressed(),
+			VhtlcConfig: &swaprpc.VHTLCConfig{
+				RefundLocktime:                       320,
+				UnilateralClaimDelay:                 12,
+				UnilateralRefundDelay:                24,
+				UnilateralRefundWithoutReceiverDelay: 36,
+				SwapserverPubkey: serverPriv.PubKey().
+					SerializeCompressed(),
+			},
+			Expiry: expiryProto(expiry),
+			SettlementType: swaprpc.
+				SettlementType_SETTLEMENT_TYPE_REFRESH,
+		},
+	}
+	conn := newSwapServerConn(wireClient)
+	conn.authRand = bytes.NewReader(bytes.Repeat([]byte{3}, 32))
+	conn.creditAccountSigner = func(_ context.Context, accountKey []byte,
+		requestDigest [32]byte, expiresAtUnix int64,
+		nonce [creditAccountNonceSize]byte) (*schnorr.Signature,
+		error) {
+
+		clientKey := clientPriv.PubKey().SerializeCompressed()
+		require.Equal(
+			t, clientKey, accountKey,
+		)
+		digest := swaprpc.CreditAccountAuthDigest(
+			accountKey, requestDigest, expiresAtUnix, nonce[:],
+		)
+
+		return schnorr.Sign(clientPriv, digest[:])
+	}
+
+	cfg, err := conn.CreateRefreshSwap(
+		t.Context(), paymentHash, 42_000, clientPriv.PubKey(), 6,
+	)
+	require.NoError(t, err)
+	require.Equal(t, paymentHash, cfg.PaymentHash)
+	require.EqualValues(t, 42_000, cfg.AmountSat)
+	require.Equal(t, SettlementTypeRefresh, cfg.SettlementType)
+	require.True(t, expiry.Equal(cfg.Expiry))
+
+	req := wireClient.lastCreateRefresh
+	require.NotNil(t, req)
+	require.Equal(t, paymentHash[:], req.GetPaymentHash())
+	require.EqualValues(t, 42_000, req.GetAmountSat())
+	require.EqualValues(t, 6, req.GetMaxVtxoAgeBlocks())
+	require.Equal(
+		t, clientPriv.PubKey().SerializeCompressed(),
+		req.GetClientVhtlcPubkey(),
+	)
+	require.NotNil(t, req.GetAccountAuthorization())
+}
+
+// expiryProto keeps refresh transport fixtures explicit and valid.
+func expiryProto(expiry time.Time) *timestamppb.Timestamp {
+	return timestamppb.New(expiry)
 }
 
 // TestRouteHintPathsFromProto verifies alternative route-hint paths convert

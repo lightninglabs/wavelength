@@ -1989,12 +1989,14 @@ func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 // selectAndReserveVTXOs so the shared coin-selection + reservation
 // logic does not need to be duplicated.
 type reserveParams struct {
-	targetAmount    btcutil.Amount
-	minChangeAmount btcutil.Amount
-	exactOutpoints  []wire.OutPoint
-	reserveEvent    actormsg.VTXOActorMsg
-	rollback        func(ctx context.Context, ops []wire.OutPoint)
-	ask             func(context.Context, VTXOActorRef,
+	targetAmount     btcutil.Amount
+	minChangeAmount  btcutil.Amount
+	exactOutpoints   []wire.OutPoint
+	maxVTXOAgeBlocks uint32
+	currentHeight    int32
+	reserveEvent     actormsg.VTXOActorMsg
+	rollback         func(ctx context.Context, ops []wire.OutPoint)
+	ask              func(context.Context, VTXOActorRef,
 		actormsg.VTXOActorMsg) fn.Result[actormsg.VTXOActorResp]
 	label string
 
@@ -2017,15 +2019,19 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 	if p.targetAmount <= 0 {
 		return nil, 0, fmt.Errorf("target amount must be positive")
 	}
+	if p.maxVTXOAgeBlocks > 0 && p.currentHeight <= 0 {
+		return nil, 0, fmt.Errorf("%w: current chain height %d "+
+			"is unknown", ErrInsufficientSpendableFunds,
+			p.currentHeight)
+	}
 
 	// List live candidates from the store via the lightweight selection
-	// projection: selection only consumes outpoint, amount, and pkScript,
-	// so there is no reason to decode full descriptors (taproot script
+	// projection: selection consumes outpoint, amount, pkScript, and the
+	// backing-batch timing needed for an optional age constraint, so there
+	// is no reason to decode full descriptors (taproot script
 	// reconstruction, policy decode, ancestry load) on this per-payment
 	// path. The projection rows are wrapped as minimal descriptors so the
-	// shared largest-first machinery below stays unchanged; these partial
-	// descriptors never escape this function (the response carries
-	// SelectedVTXO projections built from the same three fields).
+	// shared largest-first machinery below stays unchanged.
 	rows, err := m.cfg.Store.ListSelectionCandidatesByStatus(
 		ctx, VTXOStatusLive,
 	)
@@ -2049,16 +2055,31 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 		}
 
 		candidates = append(candidates, &Descriptor{
-			Outpoint: row.Outpoint,
-			Amount:   row.Amount,
-			PkScript: row.PkScript,
-			Status:   VTXOStatusLive,
+			Outpoint:      row.Outpoint,
+			Amount:        row.Amount,
+			PkScript:      row.PkScript,
+			BatchExpiry:   row.BatchExpiry,
+			CreatedHeight: row.CreatedHeight,
+			Status:        VTXOStatusLive,
 		})
 	}
 
 	selected, err := m.selectReservationCandidates(ctx, candidates, p)
 	if err != nil {
 		return nil, 0, err
+	}
+
+	// Recheck the final set at the reservation boundary. This keeps exact
+	// selection and future selector implementations from bypassing the
+	// freshness policy even if their earlier candidate filtering changes.
+	for _, candidate := range selected {
+		if err := validateBackingBatchAge(
+			candidate, p.currentHeight, p.maxVTXOAgeBlocks,
+		); err != nil {
+			return nil, 0, fmt.Errorf("%w: selected VTXO %s is "+
+				"ineligible: %v", ErrInsufficientSpendableFunds,
+				candidate.Outpoint, err)
+		}
 	}
 
 	// Reserve each selected VTXO via its actor. Track successfully
@@ -2142,10 +2163,12 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 	)
 	for _, vtxo := range selected {
 		selectedVTXOs = append(selectedVTXOs, SelectedVTXO{
-			Outpoint:     vtxo.Outpoint,
-			Amount:       vtxo.Amount,
-			PkScript:     vtxo.PkScript,
-			ReserveEpoch: epochs[vtxo.Outpoint],
+			Outpoint:      vtxo.Outpoint,
+			Amount:        vtxo.Amount,
+			PkScript:      vtxo.PkScript,
+			ReserveEpoch:  epochs[vtxo.Outpoint],
+			BatchExpiry:   vtxo.BatchExpiry,
+			CreatedHeight: vtxo.CreatedHeight,
 		})
 		totalSelected += vtxo.Amount
 	}
@@ -2168,13 +2191,26 @@ func (m *Manager) selectReservationCandidates(ctx context.Context,
 		return m.selectExactReservationCandidates(ctx, candidates, p)
 	}
 
+	eligible := candidates
+	if p.maxVTXOAgeBlocks > 0 {
+		eligible = make([]*Descriptor, 0, len(candidates))
+		for _, candidate := range candidates {
+			if validateBackingBatchAge(
+				candidate, p.currentHeight, p.maxVTXOAgeBlocks,
+			) == nil {
+
+				eligible = append(eligible, candidate)
+			}
+		}
+	}
+
 	// Run largest-first selection through the shared selector. Map its
 	// typed outcomes back onto the manager's liquidity diagnostics: a
 	// dust-change rejection is reported verbatim, while any shortfall
 	// (including an empty candidate set) is refined into the
 	// locked-vs-absent distinction.
 	res, err := coinselect.LargestFirst(
-		candidates, func(d *Descriptor) btcutil.Amount {
+		eligible, func(d *Descriptor) btcutil.Amount {
 			return d.Amount
 		}, coinselect.Request{
 			Target:    p.targetAmount,
@@ -2190,7 +2226,7 @@ func (m *Manager) selectReservationCandidates(ctx context.Context,
 
 	case errors.Is(err, coinselect.ErrSelectionShortfall),
 		errors.Is(err, coinselect.ErrNoCandidates):
-		return nil, m.insufficientLiquidityError(ctx, candidates, p)
+		return nil, m.insufficientLiquidityError(ctx, eligible, p)
 
 	case err != nil:
 		return nil, err
@@ -2228,6 +2264,13 @@ func (m *Manager) selectExactReservationCandidates(ctx context.Context,
 		candidate, ok := byOutpoint[op]
 		if !ok {
 			return nil, m.exactSpendUnavailableError(ctx, op)
+		}
+		if err := validateBackingBatchAge(
+			candidate, p.currentHeight, p.maxVTXOAgeBlocks,
+		); err != nil {
+			return nil, fmt.Errorf("%w: exact spend outpoint %s "+
+				"is ineligible: %w",
+				ErrInsufficientSpendableFunds, op, err)
 		}
 
 		selected = append(selected, candidate)
@@ -2325,14 +2368,16 @@ func (m *Manager) handleSelectAndReserveSpend(ctx context.Context,
 	req *SelectAndReserveSpendRequest) fn.Result[ManagerResp] {
 
 	vtxos, total, err := m.selectAndReserveVTXOs(ctx, reserveParams{
-		targetAmount:    req.TargetAmount,
-		minChangeAmount: req.MinChangeAmount,
-		exactOutpoints:  req.Outpoints,
-		reserveEvent:    &SpendReserveEvent{},
-		rollback:        m.rollbackSpend,
-		ask:             m.askVTXOActor,
-		label:           "spend",
-		detached:        true,
+		targetAmount:     req.TargetAmount,
+		minChangeAmount:  req.MinChangeAmount,
+		exactOutpoints:   req.Outpoints,
+		maxVTXOAgeBlocks: req.MaxVTXOAgeBlocks,
+		currentHeight:    req.CurrentHeight,
+		reserveEvent:     &SpendReserveEvent{},
+		rollback:         m.rollbackSpend,
+		ask:              m.askVTXOActor,
+		label:            "spend",
+		detached:         true,
 	})
 	if err != nil {
 		return fn.Err[ManagerResp](err)

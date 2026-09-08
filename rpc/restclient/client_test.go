@@ -177,6 +177,67 @@ func TestSwapServiceClientPost(t *testing.T) {
 	)
 }
 
+// TestSwapServiceClientCreateRefreshSwapPost verifies the refresh request is
+// forwarded to its grpc-gateway route without losing the client's age bound.
+func TestSwapServiceClientCreateRefreshSwapPost(t *testing.T) {
+	type refreshResponse = swaprpc.CreateRefreshSwapResponse
+
+	server := httptest.NewServer(
+		http.HandlerFunc(
+			func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(
+					t, "/v1/swap/create-refresh-swap",
+					r.URL.Path,
+				)
+
+				body, err := io.ReadAll(r.Body)
+				require.NoError(t, err)
+				req := new(swaprpc.CreateRefreshSwapRequest)
+				require.NoError(
+					t, protojson.Unmarshal(body, req),
+				)
+				maxAge := req.GetMaxVtxoAgeBlocks()
+				require.Equal(
+					t, uint32(144), maxAge,
+				)
+
+				settlementType := swaprpc.
+					SettlementType_SETTLEMENT_TYPE_REFRESH
+				refreshResp := new(refreshResponse)
+				refreshResp.PaymentHash = make([]byte, 32)
+				refreshResp.AmountSat = 1000
+				refreshResp.SettlementType = settlementType
+				resp, err := protojson.Marshal(
+					refreshResp,
+				)
+				require.NoError(t, err)
+
+				w.Header().Set(
+					"Content-Type", "application/json",
+				)
+				_, err = w.Write(resp)
+				require.NoError(t, err)
+			},
+		),
+	)
+	defer server.Close()
+
+	client := NewSwapServiceClient(server.URL)
+	resp, err := client.CreateRefreshSwap(
+		t.Context(), &swaprpc.CreateRefreshSwapRequest{
+			PaymentHash:      make([]byte, 32),
+			AmountSat:        1000,
+			MaxVtxoAgeBlocks: 144,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1000), resp.GetAmountSat())
+	require.Equal(
+		t, swaprpc.SettlementType_SETTLEMENT_TYPE_REFRESH,
+		resp.GetSettlementType(),
+	)
+}
+
 // TestGatewayStatusError verifies grpc-gateway error envelopes are converted
 // back into gRPC status errors.
 func TestGatewayStatusError(t *testing.T) {

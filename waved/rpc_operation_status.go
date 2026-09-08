@@ -532,14 +532,12 @@ func oorPackageToProto(pkg *db.OORPackageBundle) *waverpc.OORSessionInfo {
 		CreatedAt: pkg.CreatedAt.Unix(),
 		UpdatedAt: pkg.UpdatedAt.Unix(),
 	}
+	consumed := make(map[string]struct{})
 
 	for _, binding := range pkg.Bindings {
 		switch binding.LinkKind {
 		case db.OORPackageLinkKindConsumedInput:
-			info.ConsumedOutpoints = append(
-				info.ConsumedOutpoints,
-				binding.Outpoint.String(),
-			)
+			consumed[binding.Outpoint.String()] = struct{}{}
 
 		case db.OORPackageLinkKindCreatedOutput:
 			info.CreatedOutpoints = append(
@@ -547,6 +545,35 @@ func oorPackageToProto(pkg *db.OORPackageBundle) *waverpc.OORSessionInfo {
 				binding.Outpoint.String(),
 			)
 		}
+	}
+
+	// An outgoing custom input need not belong to this wallet, so the local
+	// VTXO table cannot always satisfy the foreign key required for a
+	// consumed binding. The finalized checkpoint package is immutable spend
+	// evidence and carries every actual VTXO prevout, including those
+	// external inputs. Incoming checkpoints describe the sender's inputs
+	// and must not be reported as locally consumed.
+	if pkg.Direction == db.OORPackageDirectionOutgoing {
+		for _, checkpoint := range pkg.FinalCheckpointPSBTs {
+			if checkpoint == nil || checkpoint.UnsignedTx == nil {
+				continue
+			}
+
+			for _, txIn := range checkpoint.UnsignedTx.TxIn {
+				if txIn == nil {
+					continue
+				}
+
+				outpoint := txIn.PreviousOutPoint.String()
+				consumed[outpoint] = struct{}{}
+			}
+		}
+	}
+
+	for outpoint := range consumed {
+		info.ConsumedOutpoints = append(
+			info.ConsumedOutpoints, outpoint,
+		)
 	}
 
 	sort.Strings(info.ConsumedOutpoints)

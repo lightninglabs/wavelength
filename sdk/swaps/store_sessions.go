@@ -59,10 +59,9 @@ func (c *SwapClient) ResumePayViaLightning(ctx context.Context,
 	return paySessionFromRow(c, row)
 }
 
-// GetSwapSummary returns one persisted pay or receive swap summary by payment
-// hash. Pay swaps are checked first because payment hashes are globally unique
-// for the daemon-owned swap store, and the second lookup is only needed when
-// the hash belongs to a receive swap.
+// GetSwapSummary returns one persisted pay, receive, or refresh swap summary
+// by payment hash. Pay takes precedence when the complementary standard roles
+// coexist; callers that need both roles can use ListSwapSummaries.
 func (c *SwapClient) GetSwapSummary(ctx context.Context,
 	paymentHash lntypes.Hash) (SwapSummary, error) {
 
@@ -82,15 +81,26 @@ func (c *SwapClient) GetSwapSummary(ctx context.Context,
 	if err == nil {
 		return receiveSummaryFromRow(receiveRow)
 	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return SwapSummary{}, fmt.Errorf("load receive summary: %w",
+			err)
+	}
+
+	refreshRow, err := c.store.queries.GetRefreshSwap(
+		ctx, paymentHash[:],
+	)
+	if err == nil {
+		return refreshSummaryFromRow(refreshRow)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return SwapSummary{}, ErrSwapSummaryNotFound
 	}
 
-	return SwapSummary{}, fmt.Errorf("load receive summary: %w", err)
+	return SwapSummary{}, fmt.Errorf("load refresh summary: %w", err)
 }
 
-// ListSwapSummaries returns persisted pay and receive sessions in creation
-// order. When pendingOnly is true, terminal sessions are omitted.
+// ListSwapSummaries returns persisted pay, receive, and refresh sessions in
+// creation order. When pendingOnly is true, terminal sessions are omitted.
 func (c *SwapClient) ListSwapSummaries(ctx context.Context, pendingOnly bool) (
 	[]SwapSummary, error) {
 
@@ -101,6 +111,7 @@ func (c *SwapClient) ListSwapSummaries(ctx context.Context, pendingOnly bool) (
 	var (
 		payRows     []swapsqlc.PaySwap
 		receiveRows []swapsqlc.ReceiveSwap
+		refreshRows []swapsqlc.RefreshSwap
 		err         error
 	)
 
@@ -121,12 +132,29 @@ func (c *SwapClient) ListSwapSummaries(ctx context.Context, pendingOnly bool) (
 	if err != nil {
 		return nil, fmt.Errorf("list receive sessions: %w", err)
 	}
+	if pendingOnly {
+		refreshRows, err = c.store.queries.ListPendingRefreshSwaps(ctx)
+	} else {
+		refreshRows, err = c.store.queries.ListRefreshSwaps(ctx)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list refresh sessions: %w", err)
+	}
 
 	summaries := make(
-		[]SwapSummary, 0, len(payRows)+len(receiveRows),
+		[]SwapSummary, 0,
+		len(payRows)+len(receiveRows)+len(refreshRows),
 	)
 	for i := range payRows {
 		summary, err := paySummaryFromRow(payRows[i])
+		if err != nil {
+			return nil, err
+		}
+
+		summaries = append(summaries, summary)
+	}
+	for i := range refreshRows {
+		summary, err := refreshSummaryFromRow(refreshRows[i])
 		if err != nil {
 			return nil, err
 		}
@@ -147,6 +175,122 @@ func (c *SwapClient) ListSwapSummaries(ctx context.Context, pendingOnly bool) (
 	})
 
 	return summaries, nil
+}
+
+// ensurePaymentHashOwnerAvailable rejects a hash reserved by an incompatible
+// durable swap kind. Pay and receive are complementary roles in one in-Ark
+// transfer, while refresh exclusively owns both of its internal legs.
+func (c *SwapClient) ensurePaymentHashOwnerAvailable(ctx context.Context,
+	paymentHash lntypes.Hash, owner SwapDirection) error {
+
+	if c == nil || c.store == nil || c.store.queries == nil {
+		return nil
+	}
+
+	checks := []struct {
+		direction SwapDirection
+		load      func() error
+	}{
+		{
+			direction: SwapDirectionPay,
+			load: func() error {
+				_, err := c.store.queries.GetPaySwap(
+					ctx, paymentHash[:],
+				)
+
+				return err
+			},
+		},
+		{
+			direction: SwapDirectionReceive,
+			load: func() error {
+				_, err := c.store.queries.GetReceiveSwap(
+					ctx, paymentHash[:],
+				)
+
+				return err
+			},
+		},
+		{
+			direction: SwapDirectionRefresh,
+			load: func() error {
+				_, err := c.store.queries.GetRefreshSwap(
+					ctx, paymentHash[:],
+				)
+
+				return err
+			},
+		},
+	}
+	for _, check := range checks {
+		if !paymentHashOwnersConflict(owner, check.direction) {
+			continue
+		}
+
+		err := check.load()
+		if err == nil {
+			return fmt.Errorf("%w: hash %s belongs to a %s swap",
+				ErrSwapPaymentHashOwned, paymentHash,
+				check.direction)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("check %s payment-hash ownership: %w",
+				check.direction, err)
+		}
+	}
+
+	return nil
+}
+
+// paymentHashOwnerClass maps complementary pay and receive roles onto their
+// shared durable class while keeping composite refresh sessions exclusive.
+func paymentHashOwnerClass(owner SwapDirection) string {
+	if owner == SwapDirectionRefresh {
+		return string(SwapDirectionRefresh)
+	}
+
+	return "standard"
+}
+
+// paymentHashOwnersConflict reports whether two session roles cannot safely
+// coexist under one payment hash.
+func paymentHashOwnersConflict(a, b SwapDirection) bool {
+	if a == b {
+		return false
+	}
+
+	return a == SwapDirectionRefresh || b == SwapDirectionRefresh
+}
+
+// claimPaymentHashOwner serializes refresh against the established pay and
+// receive roles. A no-row result means the incompatible class won first.
+func (c *SwapClient) claimPaymentHashOwner(ctx context.Context,
+	paymentHash lntypes.Hash, owner SwapDirection) error {
+
+	if c == nil || c.store == nil || c.store.queries == nil {
+		return nil
+	}
+	ownerClass := paymentHashOwnerClass(owner)
+	direction, err := c.store.queries.ClaimSwapHashOwner(
+		ctx, swapsqlc.ClaimSwapHashOwnerParams{
+			PaymentHash: paymentHash[:],
+			Direction:   ownerClass,
+		},
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: %s", ErrSwapPaymentHashOwned,
+			paymentHash)
+	}
+	if err != nil {
+		return fmt.Errorf("claim %s payment-hash ownership: %w", owner,
+			err)
+	}
+	if direction != ownerClass {
+		return fmt.Errorf("payment hash %s owner is %q, expected %q",
+			paymentHash, direction, ownerClass)
+	}
+
+	return nil
 }
 
 // ListPaySessions returns every persisted pay session from the isolated swap
@@ -259,8 +403,7 @@ func (c *SwapClient) ListPendingPaySessions(ctx context.Context) ([]*PaySession,
 
 // ResolvePreimage loads the swap-owned raw preimage for daemon claim recovery.
 // The vHTLC recovery row stores only preimage_hash plus swap_id; sdk/swaps uses
-// the Lightning payment hash as swap_id, so this resolver verifies both
-// identifiers before returning the durable receive-session preimage.
+// the payment hash as swap_id for both receive and refresh claim jobs.
 func (s *Store) ResolvePreimage(ctx context.Context, swapID []byte,
 	preimageHash lntypes.Hash) (lntypes.Preimage, error) {
 
@@ -274,22 +417,39 @@ func (s *Store) ResolvePreimage(ctx context.Context, swapID []byte,
 	}
 
 	row, err := s.queries.GetReceiveSwap(ctx, preimageHash[:])
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+	if err == nil {
+		preimage, err := preimageFromBytes(row.Preimage)
+		if err != nil {
+			return lntypes.Preimage{}, err
+		}
+		if !preimage.Matches(preimageHash) {
 			return lntypes.Preimage{}, fmt.Errorf("receive swap " +
-				"preimage not found")
+				"preimage does not match requested hash")
 		}
 
+		return preimage, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
 		return lntypes.Preimage{}, fmt.Errorf("load receive swap "+
 			"preimage: %w", err)
 	}
 
-	preimage, err := preimageFromBytes(row.Preimage)
+	refresh, err := s.queries.GetRefreshSwap(ctx, preimageHash[:])
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return lntypes.Preimage{}, fmt.Errorf("swap preimage " +
+				"not found")
+		}
+
+		return lntypes.Preimage{}, fmt.Errorf("load refresh swap "+
+			"preimage: %w", err)
+	}
+	preimage, err := preimageFromBytes(refresh.Preimage)
 	if err != nil {
 		return lntypes.Preimage{}, err
 	}
 	if !preimage.Matches(preimageHash) {
-		return lntypes.Preimage{}, fmt.Errorf("receive swap preimage " +
+		return lntypes.Preimage{}, fmt.Errorf("refresh swap preimage " +
 			"does not match requested hash")
 	}
 
@@ -394,6 +554,52 @@ func receiveSummaryFromRow(row swapsqlc.ReceiveSwap) (SwapSummary, error) {
 	}, nil
 }
 
+// refreshSummaryFromRow converts one two-leg refresh row into the stable list
+// view, preferring the server-funded output once it has been observed.
+func refreshSummaryFromRow(row swapsqlc.RefreshSwap) (SwapSummary, error) {
+	state, err := parseRefreshState(row.State)
+	if err != nil {
+		return SwapSummary{}, err
+	}
+	paymentHash, err := hashFromBytes(row.PaymentHash)
+	if err != nil {
+		return SwapSummary{}, err
+	}
+	senderPubKey, err := optionalPubKeyFromBytes(
+		row.OutputSenderPubkey, "refresh output sender pubkey",
+	)
+	if err != nil {
+		return SwapSummary{}, err
+	}
+
+	outpoint := row.OutputVhtlcOutpoint
+	amount := row.OutputVhtlcAmount
+	if outpoint == "" {
+		outpoint = row.InputVhtlcOutpoint
+		amount = row.InputVhtlcAmount
+	}
+
+	return SwapSummary{
+		Direction:        SwapDirectionRefresh,
+		PaymentHash:      paymentHash,
+		State:            state.String(),
+		Pending:          !state.IsTerminal(),
+		AmountSat:        row.AmountSat,
+		VHTLCOutpoint:    outpoint,
+		VHTLCAmountSat:   amount,
+		FundingSessionID: row.FundingSessionID,
+		ClaimSessionID:   row.OutputClaimSessionID,
+		RefundSessionID:  row.InputRefundSessionID,
+		SettlementType:   SettlementTypeRefresh,
+		SenderPubkey:     senderPubKey,
+		TerminalReason:   row.InterventionReason,
+		CreatedAt:        time.Unix(row.CreatedAtUnix, 0),
+		UpdatedAt:        time.Unix(row.UpdatedAtUnix, 0),
+		Deadline:         time.Unix(row.ExpiryUnix, 0),
+		RefundLocktime:   uint32(row.InputRefundLocktime),
+	}, nil
+}
+
 // rememberReceiveFunding updates the live vHTLC funding details and persists
 // them when swap-store durability is enabled.
 func (s *ReceiveSession) rememberReceiveFunding(ctx context.Context,
@@ -472,6 +678,11 @@ func (s *ReceiveSession) persist(ctx context.Context) error {
 			s.payerFeeMsat)
 	}
 
+	if err := s.client.claimPaymentHashOwner(
+		ctx, s.PaymentHash, SwapDirectionReceive,
+	); err != nil {
+		return err
+	}
 	params := swapsqlc.UpsertReceiveSwapParams{
 		PaymentHash:  append([]byte(nil), s.PaymentHash[:]...),
 		AmountSat:    int64(s.amountSat),
@@ -643,6 +854,11 @@ func (s *paySession) persist(ctx context.Context) error {
 
 	now := s.client.currentTime().Unix()
 
+	if err := s.client.claimPaymentHashOwner(
+		ctx, s.cfg.PaymentHash, SwapDirectionPay,
+	); err != nil {
+		return err
+	}
 	params := swapsqlc.UpsertPaySwapParams{
 		PaymentHash: append([]byte(nil), s.cfg.PaymentHash[:]...),
 		Invoice:     s.invoice,

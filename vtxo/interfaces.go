@@ -552,10 +552,9 @@ type VTXOStore interface {
 	ListVTXOsByStatus(ctx context.Context,
 		status VTXOStatus) ([]*Descriptor, error)
 
-	// ListSelectionCandidatesByStatus returns the lightweight
-	// (outpoint, amount, pkScript) projection coin selection runs on.
-	// Selection happens on every payment and needs only these fields,
-	// so this avoids decoding full descriptors on the hot path.
+	// ListSelectionCandidatesByStatus returns the lightweight (outpoint,
+	// amount, pkScript, and backing-batch timing) projection coin selection
+	// runs on. This avoids decoding full descriptors on the hot path.
 	ListSelectionCandidatesByStatus(ctx context.Context,
 		status VTXOStatus) ([]SelectedVTXO, error)
 

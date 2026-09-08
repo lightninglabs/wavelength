@@ -69,3 +69,57 @@ type ReceiveSwap struct {
 	AttachedCreditSat                    int64
 	DustLimitSat                         int64
 }
+
+type RefreshSwap struct {
+	PaymentHash                                []byte
+	Preimage                                   []byte
+	AmountSat                                  int64
+	SourceOutpoint                             string
+	MaxVtxoAgeBlocks                           int64
+	State                                      string
+	StateVersion                               int64
+	ExpiryUnix                                 int64
+	ClientPubkey                               []byte
+	OperatorPubkey                             []byte
+	ServerPubkey                               []byte
+	SettlementType                             string
+	InputRefundLocktime                        int64
+	InputUnilateralClaimDelay                  int64
+	InputUnilateralRefundDelay                 int64
+	InputUnilateralRefundWithoutReceiverDelay  int64
+	InputVhtlcPkscript                         []byte
+	InputVhtlcPolicyTemplate                   []byte
+	InputVhtlcOutpoint                         string
+	InputVhtlcAmount                           int64
+	FundingSessionID                           string
+	InputRefundReceivePubkey                   []byte
+	InputRefundReceivePkscript                 []byte
+	InputRefundSessionID                       string
+	InputRefundRecoveryID                      string
+	OutputSenderPubkey                         []byte
+	OutputRefundLocktime                       int64
+	OutputUnilateralClaimDelay                 int64
+	OutputUnilateralRefundDelay                int64
+	OutputUnilateralRefundWithoutReceiverDelay int64
+	OutputVhtlcPkscript                        []byte
+	OutputVhtlcPolicyTemplate                  []byte
+	OutputVhtlcOutpoint                        string
+	OutputVhtlcAmount                          int64
+	OutputObservedHeight                       int64
+	OutputCreatedHeight                        int64
+	OutputBatchExpiry                          int64
+	PendingHtlcAckCursor                       int64
+	OutputClaimReceivePubkey                   []byte
+	OutputClaimReceivePkscript                 []byte
+	OutputClaimSessionID                       string
+	OutputClaimRecoveryID                      string
+	InputClaimTxid                             string
+	InterventionReason                         string
+	CreatedAtUnix                              int64
+	UpdatedAtUnix                              int64
+}
+
+type SwapHashOwner struct {
+	PaymentHash []byte
+	Direction   string
+}

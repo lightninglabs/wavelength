@@ -180,6 +180,18 @@ func (c *SwapServiceClient) CreateInSwap(ctx context.Context,
 	return out, err
 }
 
+// CreateRefreshSwap starts one vHTLC-to-vHTLC refresh swap with the swap
+// server.
+func (c *SwapServiceClient) CreateRefreshSwap(ctx context.Context,
+	in *swaprpc.CreateRefreshSwapRequest, _ ...grpc.CallOption) (
+	*swaprpc.CreateRefreshSwapResponse, error) {
+
+	out := new(swaprpc.CreateRefreshSwapResponse)
+	err := c.client.Post(ctx, "/v1/swap/create-refresh-swap", in, out)
+
+	return out, err
+}
+
 // QuoteInSwap previews one Ark-to-Lightning swap with the swap server.
 func (c *SwapServiceClient) QuoteInSwap(ctx context.Context,
 	in *swaprpc.QuoteInSwapRequest, _ ...grpc.CallOption) (

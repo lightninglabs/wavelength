@@ -28,6 +28,18 @@ var (
 	// ErrSwapSummaryNotFound is returned when no persisted pay or receive
 	// swap summary exists for a requested payment hash.
 	ErrSwapSummaryNotFound = errors.New("swap summary not found")
+
+	// ErrRefreshSessionStale is returned when another resumed refresh
+	// session has already advanced the same durable payment-hash identity.
+	// Callers should discard the stale object and resume the latest
+	// snapshot.
+	ErrRefreshSessionStale = errors.New("refresh session changed; resume " +
+		"the latest durable snapshot")
+
+	// ErrSwapPaymentHashOwned is returned when another durable swap kind
+	// already owns the same payment hash.
+	ErrSwapPaymentHashOwned = errors.New("payment hash is already owned " +
+		"by another swap")
 )
 
 // errSwapExpired is kept as an internal alias for older tests and helpers.

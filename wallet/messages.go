@@ -565,6 +565,15 @@ type SelectAndLockVTXOsRequest struct {
 	// lock instead of running coin selection. The requested order is
 	// preserved in the response.
 	Outpoints []wire.OutPoint
+
+	// MaxVTXOAgeBlocks, when positive, admits only VTXOs whose backing
+	// batch age is at most this many blocks. Zero preserves unbounded
+	// selection.
+	MaxVTXOAgeBlocks uint32
+
+	// CurrentHeight is the chain height used to evaluate a positive
+	// MaxVTXOAgeBlocks constraint.
+	CurrentHeight int32
 }
 
 // MessageType returns the message type identifier for logging and debugging.
