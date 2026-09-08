@@ -94,7 +94,9 @@ type ChannelActive struct {
 
 func (*ChannelActive) eventSealed() {}
 
-// Materialize requests publication of the VTXO ancestry and backing.
+// Materialize requests publication of the VTXO ancestry and backing. It may
+// supersede a cooperative close only before both endpoints acknowledge the
+// close artifact; after that point only exact backing chain evidence may do so.
 type Materialize struct{}
 
 func (*Materialize) eventSealed() {}

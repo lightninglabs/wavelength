@@ -293,7 +293,12 @@ func applyEvent(next *Snapshot, event Event) (bool, error) {
 			next.Phase == PhaseOnChain {
 			return false, nil
 		}
-		if next.Phase != PhaseActive {
+		switch next.Phase {
+		case PhaseActive:
+		case PhaseCoopClosing:
+			clearCooperativeClose(next)
+
+		default:
 			return false, fmt.Errorf("cannot materialize "+
 				"channel from %s", next.Phase)
 		}
@@ -566,18 +571,18 @@ func applySourceSpent(next *Snapshot, outpoint wire.OutPoint,
 	case PhaseActive:
 		next.Phase = PhaseMaterializing
 
-	case PhaseCoopClosing, PhaseCoopCloseSigned:
-		// Until the OOR transfer itself is finalized, the hub signature
-		// is only an authorization and cannot supersede independently
-		// observed on-chain ancestry. Discard the pending close and
-		// hand the already signed backing transaction to lnd.
-		next.CooperativeCloseRequest = nil
-		next.CooperativeClose = nil
-		next.ClientCloseSigned = false
-		next.HubCloseSigned = false
-		next.ClientCloseFinalized = false
-		next.HubCloseFinalized = false
+	case PhaseCoopClosing:
+		// Before both endpoint acknowledgements, no honest actor can
+		// have crossed the close OOR commit gate. The backing path may
+		// still win.
+		clearCooperativeClose(next)
 		next.Phase = PhaseMaterializing
+
+	case PhaseCoopCloseSigned:
+		// Both acknowledgements make PublishCooperativeClose
+		// replayable, so it may already have committed at the operator.
+		// Preserve that sole resolution. Only BackingObserved can prove
+		// the competing backing transaction won and safely replace it.
 
 	case PhaseActivating, PhaseMaterializing, PhaseOnChain,
 		PhaseCoopClosePublished, PhaseClosed:
@@ -699,16 +704,22 @@ func applyBackingObserved(next *Snapshot, txID [32]byte) (bool, error) {
 			next.Phase)
 	}
 
+	clearCooperativeClose(next)
+	next.BackingPublished = true
+	next.Phase = PhaseOnChain
+
+	return true, nil
+}
+
+// clearCooperativeClose removes an attempt only while the backing resolution
+// is proven to be the sole remaining path.
+func clearCooperativeClose(next *Snapshot) {
 	next.CooperativeCloseRequest = nil
 	next.CooperativeClose = nil
 	next.ClientCloseSigned = false
 	next.HubCloseSigned = false
 	next.ClientCloseFinalized = false
 	next.HubCloseFinalized = false
-	next.BackingPublished = true
-	next.Phase = PhaseOnChain
-
-	return true, nil
 }
 
 // applyCooperativeCloseRequest fixes all payout terms before either endpoint
