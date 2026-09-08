@@ -955,6 +955,7 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 		MinOperatorFee:          btcutil.Amount(34),
 		FreeRefreshWindowBlocks: 72,
 		MinConfirmations:        2,
+		VTXOConfirmations:       1,
 	})
 	r := &RPCServer{server: server}
 
@@ -984,6 +985,7 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 		t, uint32(72), resp.ServerInfo.FreeRefreshWindowBlocks,
 	)
 	require.Equal(t, uint32(2), resp.ServerInfo.MinConfirmations)
+	require.Equal(t, uint32(1), resp.ServerInfo.VtxoConfirmations)
 }
 
 // TestGetInfoUsesCachedIdentityKey verifies ordinary status reads do not
