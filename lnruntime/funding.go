@@ -35,9 +35,14 @@ import (
 
 const (
 	defaultFundingTargetConfs = uint32(6)
-	defaultMaxLocalCSVDelay   = uint16(2016)
 	defaultMaxPendingChannels = 10
+	nativeChannelCSVDelay     = lndfunding.MinBtcRemoteDelay
+	nativeChannelMaxHTLCs     = uint16(input.MaxHTLCNumber / 2)
+	nativeChannelMinHTLC      = lnwire.MilliSatoshi(1)
 )
+
+const nativeChannelCommitmentType = chanstate.SingleFunderTweaklessBit |
+	chanstate.AnchorOutputsBit | chanstate.ZeroHtlcTxFeeBit
 
 // FundingConfig contains the application-owned dependencies needed by lnd's
 // native funding manager. Protocol defaults remain private and opinionated so
@@ -184,19 +189,19 @@ func newFundingRuntime(runtimeCfg RuntimeConfig, switcher *htlcswitch.Switch,
 			)
 		},
 		DefaultRoutingPolicy: cfg.RoutingPolicy,
-		DefaultMinHtlcIn:     1,
+		DefaultMinHtlcIn:     nativeChannelMinHTLC,
 		NumRequiredConfs: func(btcutil.Amount,
 			lnwire.MilliSatoshi) uint16 {
 
 			return 1
 		},
 		RequiredRemoteDelay: func(btcutil.Amount) uint16 {
-			return lndfunding.MinBtcRemoteDelay
+			return nativeChannelCSVDelay
 		},
 		RequiredRemoteChanReserve: defaultRemoteReserve,
 		RequiredRemoteMaxValue:    defaultRemoteMaxValue,
 		RequiredRemoteMaxHTLCs: func(btcutil.Amount) uint16 {
-			return uint16(input.MaxHTLCNumber / 2)
+			return nativeChannelMaxHTLCs
 		},
 		WatchNewChannel:       cfg.WatchNewChannel,
 		ReportShortChanID:     optionalReportSCID(cfg),
@@ -207,7 +212,7 @@ func newFundingRuntime(runtimeCfg RuntimeConfig, switcher *htlcswitch.Switch,
 		MaxChanSize:                   maxChanSize,
 		MaxPendingChannels:            defaultMaxPendingChannels,
 		RejectPush:                    false,
-		MaxLocalCSVDelay:              defaultMaxLocalCSVDelay,
+		MaxLocalCSVDelay:              nativeChannelCSVDelay,
 		NotifyOpenChannelEvent:        optionalNotifyOpen(cfg),
 		OpenChannelPredicate:          cfg.ChannelAcceptor,
 		NotifyPendingOpenChannelEvent: cfg.NotifyPendingOpen,
@@ -394,12 +399,13 @@ func (f *FundingRuntime) OpenChannel(req FundingOpenRequest) (*FundingFlow,
 		),
 		FundingFeePerKw:  feeRate,
 		Private:          true,
-		MinHtlcIn:        1,
-		MaxValueInFlight: lnwire.NewMSatFromSatoshis(req.Capacity),
-		MaxHtlcs:         uint16(input.MaxHTLCNumber / 2),
-		MaxLocalCsv:      defaultMaxLocalCSVDelay,
+		MinHtlcIn:        nativeChannelMinHTLC,
+		MaxValueInFlight: defaultRemoteMaxValue(req.Capacity),
+		MaxHtlcs:         nativeChannelMaxHTLCs,
+		MaxLocalCsv:      nativeChannelCSVDelay,
 		ChanFunder:       assembler,
 		PendingChanID:    req.PendingChannelID,
+		ChannelType:      nativeChannelType(),
 		Updates:          updates,
 		Err:              errors,
 	})
@@ -642,11 +648,46 @@ func defaultRemoteReserve(capacity, dustLimit btcutil.Amount) btcutil.Amount {
 	return reserve
 }
 
-// defaultRemoteMaxValue allows all remote liquidity except its reserve.
+// defaultRemoteMaxValue allows all remote liquidity except the exact reserve.
 func defaultRemoteMaxValue(capacity btcutil.Amount) lnwire.MilliSatoshi {
-	reserve := lnwire.NewMSatFromSatoshis(capacity / 100)
+	reserve := defaultRemoteReserve(
+		capacity, lnwallet.DustLimitUnknownWitness(),
+	)
 
-	return lnwire.NewMSatFromSatoshis(capacity) - reserve
+	return lnwire.NewMSatFromSatoshis(capacity - reserve)
+}
+
+// nativeChannelType returns the only commitment type admitted by this runtime.
+func nativeChannelType() *lnwire.ChannelType {
+	return (*lnwire.ChannelType)(lnwire.NewRawFeatureVector(
+		lnwire.StaticRemoteKeyRequired,
+		lnwire.AnchorsZeroFeeHtlcTxRequired,
+	),
+	)
+}
+
+// nativeChannelDBType returns lnd's exact persisted channel type. The external
+// funding assembler means only the initiator records that it has no funding
+// transaction to publish.
+func nativeChannelDBType(initiator bool) chanstate.ChannelType {
+	channelType := nativeChannelCommitmentType
+	if initiator {
+		channelType |= chanstate.NoFundingTxBit
+	}
+
+	return channelType
+}
+
+// isNativeChannelType reports whether an explicit wire type is exactly the
+// static-remote-key zero-fee-anchor commitment type.
+func isNativeChannelType(channelType *lnwire.ChannelType) bool {
+	if channelType == nil {
+		return false
+	}
+
+	return (*lnwire.RawFeatureVector)(channelType).Equals(
+		(*lnwire.RawFeatureVector)(nativeChannelType()),
+	)
 }
 
 // rejectInternalFundingPublish makes accidental use of lnd's wallet-funded

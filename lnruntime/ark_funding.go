@@ -7,11 +7,13 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightningnetwork/lnd/channeldb"
 	lndfunding "github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/htlcswitch"
+	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -55,6 +57,22 @@ func (f *FundingRuntime) FundingFinalized(ctx context.Context,
 		channel.Capacity != terms.Capacity {
 		return false, fmt.Errorf("finalized lnd channel does not " +
 			"match Ark backing")
+	}
+	expectedType := nativeChannelDBType(channel.IsInitiator)
+	if channel.ChanType != expectedType {
+		return false, fmt.Errorf("finalized lnd channel has "+
+			"commitment type %v, expected %v", channel.ChanType,
+			expectedType)
+	}
+	if err := validateNativeChannelConfig(
+		"local", channel.LocalChanCfg, terms.Capacity,
+	); err != nil {
+		return false, err
+	}
+	if err := validateNativeChannelConfig(
+		"remote", channel.RemoteChanCfg, terms.Capacity,
+	); err != nil {
+		return false, err
 	}
 
 	localParty, remoteKey, err := f.channelParties(terms)
@@ -114,7 +132,7 @@ func (f *FundingRuntime) ChannelActive(ctx context.Context,
 	if channel.IsPending {
 		return false, nil
 	}
-	_, err = f.switcher.GetLinkByShortID(
+	link, err := f.switcher.GetLinkByShortID(
 		lnwire.NewShortChanIDFromInt(terms.ReservedSCID),
 	)
 	if errors.Is(err, htlcswitch.ErrChannelLinkNotFound) {
@@ -124,8 +142,51 @@ func (f *FundingRuntime) ChannelActive(ctx context.Context,
 		return false, fmt.Errorf("find active lnd channel link: %w",
 			err)
 	}
+	if !link.EligibleToForward() {
+		return false, nil
+	}
 
 	return true, nil
+}
+
+// validateNativeChannelConfig verifies lnd persisted every security-relevant
+// commitment bound negotiated by the native runtime.
+func validateNativeChannelConfig(side string, cfg channeldb.ChannelConfig,
+	capacity btcutil.Amount) error {
+
+	expectedDust := lnwallet.DustLimitUnknownWitness()
+	expectedReserve := defaultRemoteReserve(capacity, expectedDust)
+	expectedMaxValue := defaultRemoteMaxValue(capacity)
+	switch {
+	case cfg.CsvDelay != nativeChannelCSVDelay:
+		return fmt.Errorf("finalized lnd %s CSV delay %d does not "+
+			"match %d", side, cfg.CsvDelay, nativeChannelCSVDelay)
+
+	case cfg.DustLimit != expectedDust:
+		return fmt.Errorf("finalized lnd %s dust limit %d does not "+
+			"match %d", side, cfg.DustLimit, expectedDust)
+
+	case cfg.ChanReserve != expectedReserve:
+		return fmt.Errorf("finalized lnd %s reserve %d does not "+
+			"match %d", side, cfg.ChanReserve, expectedReserve)
+
+	case cfg.MaxPendingAmount != expectedMaxValue:
+		return fmt.Errorf("finalized lnd %s in-flight limit %d does "+
+			"not match %d", side, cfg.MaxPendingAmount,
+			expectedMaxValue)
+
+	case cfg.MinHTLC != nativeChannelMinHTLC:
+		return fmt.Errorf("finalized lnd %s minimum HTLC %d does not "+
+			"match %d", side, cfg.MinHTLC, nativeChannelMinHTLC)
+
+	case cfg.MaxAcceptedHtlcs != nativeChannelMaxHTLCs:
+		return fmt.Errorf("finalized lnd %s HTLC limit %d does not "+
+			"match %d", side, cfg.MaxAcceptedHtlcs,
+			nativeChannelMaxHTLCs)
+
+	default:
+		return nil
+	}
 }
 
 // channelParties resolves this runtime's role and expected remote identity.

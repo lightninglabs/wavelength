@@ -727,6 +727,25 @@ func TestNativeFundingFlowPaysBothDirections(t *testing.T) {
 	require.Equal(
 		t, aliceChannel.FundingOutpoint, bobChannel.FundingOutpoint,
 	)
+	for _, channel := range []*chanstate.OpenChannel{
+		aliceChannel, bobChannel,
+	} {
+		require.Equal(
+			t, nativeChannelDBType(channel.IsInitiator),
+			channel.ChanType,
+		)
+		require.NoError(
+			t, validateNativeChannelConfig(
+				"local", channel.LocalChanCfg, channel.Capacity,
+			),
+		)
+		require.NoError(
+			t, validateNativeChannelConfig(
+				"remote", channel.RemoteChanCfg,
+				channel.Capacity,
+			),
+		)
+	}
 	require.False(t, aliceChannel.IsPending)
 	require.False(t, bobChannel.IsPending)
 	require.Positive(t, aliceChannel.LocalCommitment.LocalBalance)
@@ -860,6 +879,26 @@ func TestNativeFundingFlowRestoresQuiescedLinks(t *testing.T) {
 		}
 
 		return true
+	}, 5*time.Second, 10*time.Millisecond)
+
+	active, err = client.runtime.Funding().ChannelActive(
+		t.Context(), flow.clientSink.record.Snapshot.Terms,
+		*flow.clientSink.record.Snapshot.Backing,
+	)
+	require.NoError(t, err)
+	require.False(
+		t, active,
+		"a quiesced link is registered but not forwarding-eligible",
+	)
+
+	client.runtime.ResumeChannel(flow.clientChannel.FundingOutpoint)
+	require.Eventually(t, func() bool {
+		active, err := client.runtime.Funding().ChannelActive(
+			t.Context(), flow.clientSink.record.Snapshot.Terms,
+			*flow.clientSink.record.Snapshot.Backing,
+		)
+
+		return err == nil && active
 	}, 5*time.Second, 10*time.Millisecond)
 }
 

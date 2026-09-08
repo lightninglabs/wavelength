@@ -67,10 +67,10 @@ func NewPeer(cfg PeerConfig) (*Peer, error) {
 		cfg.Address = &net.TCPAddr{IP: net.IPv4zero}
 	}
 	if cfg.LocalFeatures == nil {
-		cfg.LocalFeatures = emptyFeatureVector()
+		cfg.LocalFeatures = nativePeerFeatureVector()
 	}
 	if cfg.RemoteFeatures == nil {
-		cfg.RemoteFeatures = emptyFeatureVector()
+		cfg.RemoteFeatures = nativePeerFeatureVector()
 	}
 
 	return &Peer{
@@ -218,6 +218,19 @@ func (p *Peer) Disconnect(reason error) {
 // emptyFeatureVector returns a feature vector with no optional behavior.
 func emptyFeatureVector() *lnwire.FeatureVector {
 	return lnwire.NewFeatureVector(lnwire.NewRawFeatureVector(), nil)
+}
+
+// nativePeerFeatureVector advertises the capabilities required to negotiate
+// this runtime's explicit static-remote-key anchor channel type.
+func nativePeerFeatureVector() *lnwire.FeatureVector {
+	return lnwire.NewFeatureVector(
+		lnwire.NewRawFeatureVector(
+			lnwire.StaticRemoteKeyOptional,
+			lnwire.AnchorsZeroFeeHtlcTxOptional,
+			lnwire.ExplicitChannelTypeOptional,
+		),
+		lnwire.Features,
+	)
 }
 
 var _ lnpeer.Peer = (*Peer)(nil)

@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightningnetwork/lnd/chanacceptor"
+	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
 )
@@ -46,21 +47,52 @@ func TestIntentAcceptorRejectsUnregisteredFunding(t *testing.T) {
 	require.NoError(t, err)
 
 	validRequest := func() *chanacceptor.ChannelAcceptRequest {
+		capacity := record.Snapshot.Terms.Capacity
+		dustLimit := lnwallet.DustLimitUnknownWitness()
+
 		return &chanacceptor.ChannelAcceptRequest{
 			Node: hubKey,
 			OpenChanMsg: &lnwire.OpenChannel{
 				PendingChannelID: record.Snapshot.Terms.
 					PendingChannelID,
-				FundingAmount: record.Snapshot.Terms.Capacity,
+				FundingAmount: capacity,
 				PushAmount: lnwire.NewMSatFromSatoshis(
 					record.Snapshot.Terms.
 						InitialPushAmount(),
 				),
+				DustLimit: dustLimit,
+				MaxValueInFlight: defaultRemoteMaxValue(
+					capacity,
+				),
+				ChannelReserve: defaultRemoteReserve(
+					capacity, dustLimit,
+				),
+				HtlcMinimum:      nativeChannelMinHTLC,
+				CsvDelay:         nativeChannelCSVDelay,
+				MaxAcceptedHTLCs: nativeChannelMaxHTLCs,
+				ChannelType:      nativeChannelType(),
 			},
 		}
 	}
 
-	require.False(t, acceptor.Accept(validRequest()).RejectChannel())
+	response := acceptor.Accept(validRequest())
+	require.False(t, response.RejectChannel())
+	require.Equal(t, nativeChannelCSVDelay, response.CSVDelay)
+	require.Equal(t, nativeChannelMaxHTLCs, response.HtlcLimit)
+	require.Equal(t, uint16(1), response.MinAcceptDepth)
+	require.Equal(
+		t,
+		defaultRemoteReserve(
+			record.Snapshot.Terms.Capacity,
+			lnwallet.DustLimitUnknownWitness(),
+		),
+		response.Reserve,
+	)
+	require.Equal(
+		t, defaultRemoteMaxValue(record.Snapshot.Terms.Capacity),
+		response.InFlightTotal,
+	)
+	require.Equal(t, nativeChannelMinHTLC, response.MinHtlcIn)
 
 	tests := []struct {
 		name   string
@@ -97,6 +129,48 @@ func TestIntentAcceptorRejectsUnregisteredFunding(t *testing.T) {
 			mutate: func(req *chanacceptor.ChannelAcceptRequest) {
 				req.OpenChanMsg.ChannelFlags =
 					lnwire.FFAnnounceChannel
+			},
+		},
+		{
+			name: "legacy commitment type",
+			mutate: func(req *chanacceptor.ChannelAcceptRequest) {
+				req.OpenChanMsg.ChannelType = nil
+			},
+		},
+		{
+			name: "wrong dust limit",
+			mutate: func(req *chanacceptor.ChannelAcceptRequest) {
+				req.OpenChanMsg.DustLimit++
+			},
+		},
+		{
+			name: "wrong CSV delay",
+			mutate: func(req *chanacceptor.ChannelAcceptRequest) {
+				req.OpenChanMsg.CsvDelay++
+			},
+		},
+		{
+			name: "wrong reserve",
+			mutate: func(req *chanacceptor.ChannelAcceptRequest) {
+				req.OpenChanMsg.ChannelReserve++
+			},
+		},
+		{
+			name: "wrong in-flight limit",
+			mutate: func(req *chanacceptor.ChannelAcceptRequest) {
+				req.OpenChanMsg.MaxValueInFlight++
+			},
+		},
+		{
+			name: "wrong minimum HTLC",
+			mutate: func(req *chanacceptor.ChannelAcceptRequest) {
+				req.OpenChanMsg.HtlcMinimum++
+			},
+		},
+		{
+			name: "wrong HTLC limit",
+			mutate: func(req *chanacceptor.ChannelAcceptRequest) {
+				req.OpenChanMsg.MaxAcceptedHTLCs++
 			},
 		},
 	}

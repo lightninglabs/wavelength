@@ -7,6 +7,7 @@ import (
 
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightningnetwork/lnd/chanacceptor"
+	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -49,25 +50,21 @@ func NewIntentAcceptor(localParty arkchannel.Party,
 func (a *IntentAcceptor) Accept(
 	req *chanacceptor.ChannelAcceptRequest) *channelAcceptResponse {
 
-	err := a.validate(req)
+	terms, err := a.terms(req)
 	if err != nil {
 		return chanacceptor.NewChannelAcceptResponse(
 			false, err, nil, 0, 0, 0, 0, 0, 0, false,
 		)
 	}
+	reserve := defaultRemoteReserve(
+		terms.Capacity, lnwallet.DustLimitUnknownWitness(),
+	)
 
 	return chanacceptor.NewChannelAcceptResponse(
-		true, nil, nil, 0, 0, 1, 0, 0, 0, false,
+		true, nil, nil, nativeChannelCSVDelay, nativeChannelMaxHTLCs, 1,
+		reserve, defaultRemoteMaxValue(terms.Capacity),
+		nativeChannelMinHTLC, false,
 	)
-}
-
-// validate checks the cross-system facts lnd cannot infer by itself.
-func (a *IntentAcceptor) validate(
-	req *chanacceptor.ChannelAcceptRequest) error {
-
-	_, err := a.terms(req)
-
-	return err
 }
 
 // terms validates an inbound request and returns its durable channel terms.
@@ -134,6 +131,43 @@ func (a *IntentAcceptor) terms(req *chanacceptor.ChannelAcceptRequest) (
 	if open.ChannelFlags&lnwire.FFAnnounceChannel != 0 {
 		return arkchannel.Terms{}, fmt.Errorf("Ark channel must be " +
 			"private")
+	}
+	if !isNativeChannelType(open.ChannelType) {
+		return arkchannel.Terms{}, fmt.Errorf("Ark channel requires " +
+			"the static-remote-key anchor commitment type")
+	}
+	expectedDust := lnwallet.DustLimitUnknownWitness()
+	if open.DustLimit != expectedDust {
+		return arkchannel.Terms{}, fmt.Errorf("channel dust limit %d "+
+			"does not match required %d", open.DustLimit,
+			expectedDust)
+	}
+	if open.CsvDelay != nativeChannelCSVDelay {
+		return arkchannel.Terms{}, fmt.Errorf("channel CSV delay %d "+
+			"does not match required %d", open.CsvDelay,
+			nativeChannelCSVDelay)
+	}
+	expectedReserve := defaultRemoteReserve(terms.Capacity, expectedDust)
+	if open.ChannelReserve != expectedReserve {
+		return arkchannel.Terms{}, fmt.Errorf("channel reserve %d "+
+			"does not match required %d", open.ChannelReserve,
+			expectedReserve)
+	}
+	expectedMaxValue := defaultRemoteMaxValue(terms.Capacity)
+	if open.MaxValueInFlight != expectedMaxValue {
+		return arkchannel.Terms{}, fmt.Errorf("channel in-flight "+
+			"limit %d does not match required %d",
+			open.MaxValueInFlight, expectedMaxValue)
+	}
+	if open.HtlcMinimum != nativeChannelMinHTLC {
+		return arkchannel.Terms{}, fmt.Errorf("channel minimum HTLC "+
+			"%d does not match required %d", open.HtlcMinimum,
+			nativeChannelMinHTLC)
+	}
+	if open.MaxAcceptedHTLCs != nativeChannelMaxHTLCs {
+		return arkchannel.Terms{}, fmt.Errorf("channel HTLC limit %d "+
+			"does not match required %d", open.MaxAcceptedHTLCs,
+			nativeChannelMaxHTLCs)
 	}
 
 	return terms, nil
