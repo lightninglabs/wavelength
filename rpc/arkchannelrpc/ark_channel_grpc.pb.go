@@ -24,7 +24,7 @@ const (
 	ArkChannelService_ReceivePayment_FullMethodName           = "/arkchannelrpc.ArkChannelService/ReceivePayment"
 	ArkChannelService_PayLightningInvoice_FullMethodName      = "/arkchannelrpc.ArkChannelService/PayLightningInvoice"
 	ArkChannelService_MaterializeAndForceClose_FullMethodName = "/arkchannelrpc.ArkChannelService/MaterializeAndForceClose"
-	ArkChannelService_RequestCooperativeClose_FullMethodName  = "/arkchannelrpc.ArkChannelService/RequestCooperativeClose"
+	ArkChannelService_RefreshChannel_FullMethodName           = "/arkchannelrpc.ArkChannelService/RefreshChannel"
 	ArkChannelService_GetChannel_FullMethodName               = "/arkchannelrpc.ArkChannelService/GetChannel"
 	ArkChannelService_ListChannels_FullMethodName             = "/arkchannelrpc.ArkChannelService/ListChannels"
 )
@@ -51,9 +51,9 @@ type ArkChannelServiceClient interface {
 	// MaterializeAndForceClose publishes the Ark ancestry, exact channel
 	// backing, and lnd's latest commitment transaction.
 	MaterializeAndForceClose(ctx context.Context, in *MaterializeAndForceCloseRequest, opts ...grpc.CallOption) (*MaterializeAndForceCloseResponse, error)
-	// RequestCooperativeClose asks the client to settle one clean channel
-	// directly from its channel-policy VTXO.
-	RequestCooperativeClose(ctx context.Context, in *RequestCooperativeCloseRequest, opts ...grpc.CallOption) (*RequestCooperativeCloseResponse, error)
+	// RefreshChannel settles one clean channel into ordinary replacement
+	// VTXOs without materializing its Lightning channel point.
+	RefreshChannel(ctx context.Context, in *RefreshChannelRequest, opts ...grpc.CallOption) (*RefreshChannelResponse, error)
 	// GetChannel returns the durable Ark lifecycle state for one channel.
 	GetChannel(ctx context.Context, in *GetChannelRequest, opts ...grpc.CallOption) (*GetChannelResponse, error)
 	// ListChannels returns every channel that still needs recovery,
@@ -119,10 +119,10 @@ func (c *arkChannelServiceClient) MaterializeAndForceClose(ctx context.Context, 
 	return out, nil
 }
 
-func (c *arkChannelServiceClient) RequestCooperativeClose(ctx context.Context, in *RequestCooperativeCloseRequest, opts ...grpc.CallOption) (*RequestCooperativeCloseResponse, error) {
+func (c *arkChannelServiceClient) RefreshChannel(ctx context.Context, in *RefreshChannelRequest, opts ...grpc.CallOption) (*RefreshChannelResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RequestCooperativeCloseResponse)
-	err := c.cc.Invoke(ctx, ArkChannelService_RequestCooperativeClose_FullMethodName, in, out, cOpts...)
+	out := new(RefreshChannelResponse)
+	err := c.cc.Invoke(ctx, ArkChannelService_RefreshChannel_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -171,9 +171,9 @@ type ArkChannelServiceServer interface {
 	// MaterializeAndForceClose publishes the Ark ancestry, exact channel
 	// backing, and lnd's latest commitment transaction.
 	MaterializeAndForceClose(context.Context, *MaterializeAndForceCloseRequest) (*MaterializeAndForceCloseResponse, error)
-	// RequestCooperativeClose asks the client to settle one clean channel
-	// directly from its channel-policy VTXO.
-	RequestCooperativeClose(context.Context, *RequestCooperativeCloseRequest) (*RequestCooperativeCloseResponse, error)
+	// RefreshChannel settles one clean channel into ordinary replacement
+	// VTXOs without materializing its Lightning channel point.
+	RefreshChannel(context.Context, *RefreshChannelRequest) (*RefreshChannelResponse, error)
 	// GetChannel returns the durable Ark lifecycle state for one channel.
 	GetChannel(context.Context, *GetChannelRequest) (*GetChannelResponse, error)
 	// ListChannels returns every channel that still needs recovery,
@@ -204,8 +204,8 @@ func (UnimplementedArkChannelServiceServer) PayLightningInvoice(context.Context,
 func (UnimplementedArkChannelServiceServer) MaterializeAndForceClose(context.Context, *MaterializeAndForceCloseRequest) (*MaterializeAndForceCloseResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method MaterializeAndForceClose not implemented")
 }
-func (UnimplementedArkChannelServiceServer) RequestCooperativeClose(context.Context, *RequestCooperativeCloseRequest) (*RequestCooperativeCloseResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method RequestCooperativeClose not implemented")
+func (UnimplementedArkChannelServiceServer) RefreshChannel(context.Context, *RefreshChannelRequest) (*RefreshChannelResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RefreshChannel not implemented")
 }
 func (UnimplementedArkChannelServiceServer) GetChannel(context.Context, *GetChannelRequest) (*GetChannelResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetChannel not implemented")
@@ -324,20 +324,20 @@ func _ArkChannelService_MaterializeAndForceClose_Handler(srv interface{}, ctx co
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ArkChannelService_RequestCooperativeClose_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RequestCooperativeCloseRequest)
+func _ArkChannelService_RefreshChannel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RefreshChannelRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ArkChannelServiceServer).RequestCooperativeClose(ctx, in)
+		return srv.(ArkChannelServiceServer).RefreshChannel(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ArkChannelService_RequestCooperativeClose_FullMethodName,
+		FullMethod: ArkChannelService_RefreshChannel_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ArkChannelServiceServer).RequestCooperativeClose(ctx, req.(*RequestCooperativeCloseRequest))
+		return srv.(ArkChannelServiceServer).RefreshChannel(ctx, req.(*RefreshChannelRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -406,8 +406,8 @@ var ArkChannelService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ArkChannelService_MaterializeAndForceClose_Handler,
 		},
 		{
-			MethodName: "RequestCooperativeClose",
-			Handler:    _ArkChannelService_RequestCooperativeClose_Handler,
+			MethodName: "RefreshChannel",
+			Handler:    _ArkChannelService_RefreshChannel_Handler,
 		},
 		{
 			MethodName: "GetChannel",

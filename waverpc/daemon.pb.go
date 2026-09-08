@@ -2430,7 +2430,7 @@ type NewReceiveScriptRequest struct {
 	IdempotencyKey string `protobuf:"bytes,2,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
 	// identity_key registers the daemon's durable identity key instead of
 	// deriving a fresh receive key. This is reserved for restart-stable
-	// protocol destinations such as Ark channel cooperative-close payouts.
+	// protocol destinations such as Ark channel refresh payouts.
 	IdentityKey   bool `protobuf:"varint,3,opt,name=identity_key,json=identityKey,proto3" json:"identity_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

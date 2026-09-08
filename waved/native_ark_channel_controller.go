@@ -505,7 +505,7 @@ func (c *NativeArkChannelController) startClient(ctx context.Context) error {
 
 		return err
 	}
-	delivery := newArkChannelCloseDelivery(c.cfg.OORDestination)
+	delivery := newArkChannelRefreshDelivery(c.cfg.OORDestination)
 	closeEndpoint, err := lnruntime.NewNativeCooperativeCloseEndpoint(
 		arkchannel.PartyClient, node.Runtime(), nil,
 		keychain.KeyDescriptor{}, delivery,
@@ -670,7 +670,7 @@ func (c *NativeArkChannelController) startHub(ctx context.Context,
 
 		return err
 	}
-	delivery := newArkChannelCloseDelivery(c.cfg.OORDestination)
+	delivery := newArkChannelRefreshDelivery(c.cfg.OORDestination)
 	closeEndpoint, err := lnruntime.NewNativeCooperativeCloseEndpoint(
 		arkchannel.PartyHub, node.Runtime(), c.cfg.Wallet.BtcWallet,
 		c.keys.ark, delivery,
@@ -968,7 +968,7 @@ func (c *NativeArkChannelController) newNode(ctx context.Context,
 			logCtx, channelPoint,
 		)
 		if err != nil {
-			return false, fmt.Errorf("load Ark channel close "+
+			return false, fmt.Errorf("load Ark channel refresh "+
 				"lifecycle: %w", err)
 		}
 
@@ -2443,13 +2443,13 @@ func (c *NativeArkChannelController) MaterializeAndForceClose(
 	return record, backing.ChannelPoint.Hash, closeTxID, nil
 }
 
-// RequestCooperativeClose starts the client-owned 3-of-3 OOR close process.
-func (c *NativeArkChannelController) RequestCooperativeClose(
-	ctx context.Context, id arkchannel.ID) (arkchannel.Record, error) {
+// RefreshChannel starts the client-owned 3-of-3 in-Ark refresh process.
+func (c *NativeArkChannelController) RefreshChannel(ctx context.Context,
+	id arkchannel.ID) (arkchannel.Record, error) {
 
 	if c.party != arkchannel.PartyClient {
 		return arkchannel.Record{}, fmt.Errorf("only a client can " +
-			"request cooperative close")
+			"refresh a channel in Ark")
 	}
 	if err := c.ensureClientStarted(ctx); err != nil {
 		return arkchannel.Record{}, err
@@ -2733,26 +2733,25 @@ func (c *NativeArkChannelController) Stop() error {
 	return c.stopErr
 }
 
-// arkChannelCloseDelivery returns the ordinary Ark account key that owns this
-// endpoint's replacement VTXO after an in-Ark cooperative close.
-type arkChannelCloseDelivery struct {
+// arkChannelRefreshDelivery returns the ordinary Ark account key that owns
+// this endpoint's replacement VTXO after an in-Ark refresh.
+type arkChannelRefreshDelivery struct {
 	owner *btcec.PublicKey
 }
 
-// newArkChannelCloseDelivery constructs a fixed OOR owner-key source.
-func newArkChannelCloseDelivery(
-	owner *btcec.PublicKey) *arkChannelCloseDelivery {
+// newArkChannelRefreshDelivery constructs a fixed OOR owner-key source.
+func newArkChannelRefreshDelivery(
+	owner *btcec.PublicKey) *arkChannelRefreshDelivery {
 
-	return &arkChannelCloseDelivery{owner: owner}
+	return &arkChannelRefreshDelivery{owner: owner}
 }
 
 // CooperativeCloseDelivery returns the compressed replacement VTXO owner key.
-func (d *arkChannelCloseDelivery) CooperativeCloseDelivery(_ context.Context,
+func (d *arkChannelRefreshDelivery) CooperativeCloseDelivery(_ context.Context,
 	_ arkchannel.ID) ([]byte, error) {
 
 	if d == nil || d.owner == nil {
-		return nil, fmt.Errorf("cooperative close OOR owner is " +
-			"required")
+		return nil, fmt.Errorf("channel refresh OOR owner is required")
 	}
 
 	return d.owner.SerializeCompressed(), nil
@@ -2760,7 +2759,7 @@ func (d *arkChannelCloseDelivery) CooperativeCloseDelivery(_ context.Context,
 
 // ValidateCooperativeCloseDelivery proves the replacement VTXO is assigned to
 // this endpoint's ordinary Ark account.
-func (d *arkChannelCloseDelivery) ValidateCooperativeCloseDelivery(
+func (d *arkChannelRefreshDelivery) ValidateCooperativeCloseDelivery(
 	ctx context.Context, id arkchannel.ID, owner []byte) error {
 
 	expected, err := d.CooperativeCloseDelivery(ctx, id)
@@ -2768,16 +2767,16 @@ func (d *arkChannelCloseDelivery) ValidateCooperativeCloseDelivery(
 		return err
 	}
 	if !bytes.Equal(expected, owner) {
-		return fmt.Errorf("cooperative close owner is not the " +
+		return fmt.Errorf("channel refresh owner is not the " +
 			"configured Ark account")
 	}
 
 	return nil
 }
 
-var _ ArkChannelController = (*NativeArkChannelController)(nil)
-
-var _ lnruntime.CooperativeCloseDeliverySource = (*arkChannelCloseDelivery)(nil)
-
-//nolint:ll // Keeping the complete delivery contract explicit aids API audits.
-var _ lnruntime.CooperativeCloseDeliveryValidator = (*arkChannelCloseDelivery)(nil)
+//nolint:ll // Keep the complete delivery contract explicit for API audits.
+var (
+	_ ArkChannelController                        = (*NativeArkChannelController)(nil)
+	_ lnruntime.CooperativeCloseDeliverySource    = (*arkChannelRefreshDelivery)(nil)
+	_ lnruntime.CooperativeCloseDeliveryValidator = (*arkChannelRefreshDelivery)(nil)
+)

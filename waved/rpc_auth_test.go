@@ -67,7 +67,7 @@ func TestWavedRPCPermissionsMapsMutatingMethods(t *testing.T) {
 		fullArkChannelMethod("ReceivePayment"),
 		fullArkChannelMethod("PayLightningInvoice"),
 		fullArkChannelMethod("MaterializeAndForceClose"),
-		fullArkChannelMethod("RequestCooperativeClose"),
+		fullArkChannelMethod("RefreshChannel"),
 		fullDaemonMethod("SubmitForfeitParticipantSignatures"),
 	} {
 		ops, ok := wavedRPCPermissions[fullMethod]

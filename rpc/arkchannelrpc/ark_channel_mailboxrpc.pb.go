@@ -34,8 +34,8 @@ type ArkChannelServiceMailboxServer interface {
 	PayLightningInvoice(ctx context.Context, req *PayLightningInvoiceRequest) (*PayLightningInvoiceResponse, error)
 	// MaterializeAndForceClose handles MaterializeAndForceClose.
 	MaterializeAndForceClose(ctx context.Context, req *MaterializeAndForceCloseRequest) (*MaterializeAndForceCloseResponse, error)
-	// RequestCooperativeClose handles RequestCooperativeClose.
-	RequestCooperativeClose(ctx context.Context, req *RequestCooperativeCloseRequest) (*RequestCooperativeCloseResponse, error)
+	// RefreshChannel handles RefreshChannel.
+	RefreshChannel(ctx context.Context, req *RefreshChannelRequest) (*RefreshChannelResponse, error)
 	// GetChannel handles GetChannel.
 	GetChannel(ctx context.Context, req *GetChannelRequest) (*GetChannelResponse, error)
 	// ListChannels handles ListChannels.
@@ -94,15 +94,15 @@ func RegisterArkChannelServiceMailboxServer(r rpc.Router, impl ArkChannelService
 
 		return impl.MaterializeAndForceClose(ctx, req)
 	})
-	r.Handle("arkchannelrpc.ArkChannelService", "RequestCooperativeClose", func() proto.Message {
-		return &RequestCooperativeCloseRequest{}
+	r.Handle("arkchannelrpc.ArkChannelService", "RefreshChannel", func() proto.Message {
+		return &RefreshChannelRequest{}
 	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
-		req, ok := msg.(*RequestCooperativeCloseRequest)
+		req, ok := msg.(*RefreshChannelRequest)
 		if !ok {
 			return nil, fmt.Errorf("unexpected request type: %T", msg)
 		}
 
-		return impl.RequestCooperativeClose(ctx, req)
+		return impl.RefreshChannel(ctx, req)
 	})
 	r.Handle("arkchannelrpc.ArkChannelService", "GetChannel", func() proto.Message {
 		return &GetChannelRequest{}
@@ -241,8 +241,8 @@ func (c *ArkChannelServiceMailboxClient) MaterializeAndForceClose(ctx context.Co
 	return resp, nil
 }
 
-// RequestCooperativeClose calls the RequestCooperativeClose RPC.
-func (c *ArkChannelServiceMailboxClient) RequestCooperativeClose(ctx context.Context, req *RequestCooperativeCloseRequest, opts ...rpc.RPCOptions) (*RequestCooperativeCloseResponse, error) {
+// RefreshChannel calls the RefreshChannel RPC.
+func (c *ArkChannelServiceMailboxClient) RefreshChannel(ctx context.Context, req *RefreshChannelRequest, opts ...rpc.RPCOptions) (*RefreshChannelResponse, error) {
 	var opt rpc.RPCOptions
 	if len(opts) > 0 {
 		opt = opts[0]
@@ -250,13 +250,13 @@ func (c *ArkChannelServiceMailboxClient) RequestCooperativeClose(ctx context.Con
 
 	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
 		Service: "arkchannelrpc.ArkChannelService",
-		Method:  "RequestCooperativeClose",
+		Method:  "RefreshChannel",
 	}, req, opt)
 	if err != nil {
 		return nil, err
 	}
 
-	resp := new(RequestCooperativeCloseResponse)
+	resp := new(RefreshChannelResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

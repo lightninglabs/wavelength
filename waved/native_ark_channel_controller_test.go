@@ -212,7 +212,7 @@ func TestShouldWatchArkChannel(t *testing.T) {
 }
 
 // TestShouldRestoreArkChannelAddsDisabled verifies only an in-progress
-// cooperative close restores its lnd link in the quiesced state.
+// in-Ark refresh restores its lnd link in the quiesced state.
 func TestShouldRestoreArkChannelAddsDisabled(t *testing.T) {
 	t.Parallel()
 

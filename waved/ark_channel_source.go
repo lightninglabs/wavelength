@@ -293,7 +293,7 @@ func (a *arkChannelRecoveryArchive) InstallRecoveryPackage(ctx context.Context,
 }
 
 // RestoreWatches re-arms every channel whose Ark source still secures either
-// an open channel or the replacement VTXOs from a cooperative close.
+// an open channel or the replacement VTXOs from an in-Ark refresh.
 func (a *arkChannelRecoveryArchive) RestoreWatches(ctx context.Context,
 	records []arkchannel.Record) error {
 
@@ -662,7 +662,7 @@ func recoveryDescriptor(terms arkchannel.Terms, source arkchannel.VTXOBinding,
 		// The non-interactive fallback is the pre-signed client+hub
 		// channel path. Persist its delay before watches are armed so a
 		// confirmed ancestor cannot race proof assembly against a later
-		// mutable update. Cooperative close uses the ordinary OOR actor
+		// mutable update. In-Ark refresh uses the ordinary OOR actor
 		// and never enters the unroller.
 		RelativeExpiry: terms.VTXO.ChannelDelay,
 		ChainDepth:     recovery.ChainDepth,

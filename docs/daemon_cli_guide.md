@@ -441,7 +441,8 @@ wavecli dev daemon NewAddress
 ### `channel` (development)
 
 Promote wallet VTXO value into an unpublished native Lightning channel, use it
-for private or public payments, and choose cooperative or unilateral closure.
+for private or public payments, and either refresh it inside Ark or materialize
+and force-close it on chain.
 Creation intentionally takes only the desired channel capacity; the daemon
 owns OOR preparation, backing reserve, private-channel policy, and activation.
 Channel IDs accept either the base64 value printed by protobuf JSON or 32-byte
@@ -453,7 +454,7 @@ wavecli channel get <channel-id>
 wavecli channel send <channel-id> 10000
 wavecli channel receive <channel-id> 5000
 wavecli channel pay <bolt11> --max-fee-sat 1000
-wavecli channel close <channel-id>
+wavecli channel refresh <channel-id>
 wavecli channel force-close <channel-id>
 ```
 

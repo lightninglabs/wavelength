@@ -100,7 +100,7 @@ func TestRecoveryDescriptorUsesBackingDelay(t *testing.T) {
 	require.ErrorContains(t, err, "unsupported")
 }
 
-// TestShouldRestoreArkChannelSourceWatch verifies a cooperative close remains
+// TestShouldRestoreArkChannelSourceWatch verifies an in-Ark refresh remains
 // protected after its lnd channel has been archived.
 func TestShouldRestoreArkChannelSourceWatch(t *testing.T) {
 	t.Parallel()

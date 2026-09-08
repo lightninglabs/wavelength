@@ -190,7 +190,7 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 	grant(
 		arkChannel, entityChannel, "write", "PromoteVTXO",
 		"SendPayment", "ReceivePayment", "PayLightningInvoice",
-		"MaterializeAndForceClose", "RequestCooperativeClose",
+		"MaterializeAndForceClose", "RefreshChannel",
 	)
 
 	swap := swapclientrpc.SwapClientService_ServiceDesc.ServiceName

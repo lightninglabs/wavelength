@@ -3229,7 +3229,7 @@ func (x *ChannelBacking) GetChannelPointIndex() uint32 {
 	return 0
 }
 
-type RequestCooperativeCloseRequest struct {
+type RefreshChannelRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// channel_id is the 32-byte durable Ark channel identifier.
 	ChannelId     []byte `protobuf:"bytes,1,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
@@ -3237,20 +3237,20 @@ type RequestCooperativeCloseRequest struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *RequestCooperativeCloseRequest) Reset() {
-	*x = RequestCooperativeCloseRequest{}
+func (x *RefreshChannelRequest) Reset() {
+	*x = RefreshChannelRequest{}
 	mi := &file_ark_channel_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *RequestCooperativeCloseRequest) String() string {
+func (x *RefreshChannelRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*RequestCooperativeCloseRequest) ProtoMessage() {}
+func (*RefreshChannelRequest) ProtoMessage() {}
 
-func (x *RequestCooperativeCloseRequest) ProtoReflect() protoreflect.Message {
+func (x *RefreshChannelRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_ark_channel_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -3262,39 +3262,39 @@ func (x *RequestCooperativeCloseRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use RequestCooperativeCloseRequest.ProtoReflect.Descriptor instead.
-func (*RequestCooperativeCloseRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use RefreshChannelRequest.ProtoReflect.Descriptor instead.
+func (*RefreshChannelRequest) Descriptor() ([]byte, []int) {
 	return file_ark_channel_proto_rawDescGZIP(), []int{50}
 }
 
-func (x *RequestCooperativeCloseRequest) GetChannelId() []byte {
+func (x *RefreshChannelRequest) GetChannelId() []byte {
 	if x != nil {
 		return x.ChannelId
 	}
 	return nil
 }
 
-type RequestCooperativeCloseResponse struct {
+type RefreshChannelResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Channel       *ArkChannel            `protobuf:"bytes,1,opt,name=channel,proto3" json:"channel,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *RequestCooperativeCloseResponse) Reset() {
-	*x = RequestCooperativeCloseResponse{}
+func (x *RefreshChannelResponse) Reset() {
+	*x = RefreshChannelResponse{}
 	mi := &file_ark_channel_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *RequestCooperativeCloseResponse) String() string {
+func (x *RefreshChannelResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*RequestCooperativeCloseResponse) ProtoMessage() {}
+func (*RefreshChannelResponse) ProtoMessage() {}
 
-func (x *RequestCooperativeCloseResponse) ProtoReflect() protoreflect.Message {
+func (x *RefreshChannelResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_ark_channel_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -3306,12 +3306,12 @@ func (x *RequestCooperativeCloseResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use RequestCooperativeCloseResponse.ProtoReflect.Descriptor instead.
-func (*RequestCooperativeCloseResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use RefreshChannelResponse.ProtoReflect.Descriptor instead.
+func (*RefreshChannelResponse) Descriptor() ([]byte, []int) {
 	return file_ark_channel_proto_rawDescGZIP(), []int{51}
 }
 
-func (x *RequestCooperativeCloseResponse) GetChannel() *ArkChannel {
+func (x *RefreshChannelResponse) GetChannel() *ArkChannel {
 	if x != nil {
 		return x.Channel
 	}
@@ -3487,23 +3487,23 @@ func (x *ListChannelsResponse) GetChannels() []*ArkChannel {
 }
 
 type ArkChannel struct {
-	state                protoimpl.MessageState `protogen:"open.v1"`
-	ChannelId            []byte                 `protobuf:"bytes,1,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
-	Kind                 string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
-	Phase                string                 `protobuf:"bytes,3,opt,name=phase,proto3" json:"phase,omitempty"`
-	Funder               string                 `protobuf:"bytes,4,opt,name=funder,proto3" json:"funder,omitempty"`
-	CapacitySat          int64                  `protobuf:"varint,5,opt,name=capacity_sat,json=capacitySat,proto3" json:"capacity_sat,omitempty"`
-	SourceOutpoint       string                 `protobuf:"bytes,6,opt,name=source_outpoint,json=sourceOutpoint,proto3" json:"source_outpoint,omitempty"`
-	ChannelPoint         string                 `protobuf:"bytes,7,opt,name=channel_point,json=channelPoint,proto3" json:"channel_point,omitempty"`
-	CooperativeCloseTxid []byte                 `protobuf:"bytes,8,opt,name=cooperative_close_txid,json=cooperativeCloseTxid,proto3" json:"cooperative_close_txid,omitempty"`
-	Revision             uint64                 `protobuf:"varint,9,opt,name=revision,proto3" json:"revision,omitempty"`
-	ReservedScid         uint64                 `protobuf:"varint,10,opt,name=reserved_scid,json=reservedScid,proto3" json:"reserved_scid,omitempty"`
-	LocalBalanceSat      int64                  `protobuf:"varint,11,opt,name=local_balance_sat,json=localBalanceSat,proto3" json:"local_balance_sat,omitempty"`
-	RemoteBalanceSat     int64                  `protobuf:"varint,12,opt,name=remote_balance_sat,json=remoteBalanceSat,proto3" json:"remote_balance_sat,omitempty"`
-	BalanceAvailable     bool                   `protobuf:"varint,13,opt,name=balance_available,json=balanceAvailable,proto3" json:"balance_available,omitempty"`
-	BalanceError         string                 `protobuf:"bytes,14,opt,name=balance_error,json=balanceError,proto3" json:"balance_error,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	ChannelId        []byte                 `protobuf:"bytes,1,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
+	Kind             string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	Phase            string                 `protobuf:"bytes,3,opt,name=phase,proto3" json:"phase,omitempty"`
+	Funder           string                 `protobuf:"bytes,4,opt,name=funder,proto3" json:"funder,omitempty"`
+	CapacitySat      int64                  `protobuf:"varint,5,opt,name=capacity_sat,json=capacitySat,proto3" json:"capacity_sat,omitempty"`
+	SourceOutpoint   string                 `protobuf:"bytes,6,opt,name=source_outpoint,json=sourceOutpoint,proto3" json:"source_outpoint,omitempty"`
+	ChannelPoint     string                 `protobuf:"bytes,7,opt,name=channel_point,json=channelPoint,proto3" json:"channel_point,omitempty"`
+	RefreshOorTxid   []byte                 `protobuf:"bytes,8,opt,name=refresh_oor_txid,json=refreshOorTxid,proto3" json:"refresh_oor_txid,omitempty"`
+	Revision         uint64                 `protobuf:"varint,9,opt,name=revision,proto3" json:"revision,omitempty"`
+	ReservedScid     uint64                 `protobuf:"varint,10,opt,name=reserved_scid,json=reservedScid,proto3" json:"reserved_scid,omitempty"`
+	LocalBalanceSat  int64                  `protobuf:"varint,11,opt,name=local_balance_sat,json=localBalanceSat,proto3" json:"local_balance_sat,omitempty"`
+	RemoteBalanceSat int64                  `protobuf:"varint,12,opt,name=remote_balance_sat,json=remoteBalanceSat,proto3" json:"remote_balance_sat,omitempty"`
+	BalanceAvailable bool                   `protobuf:"varint,13,opt,name=balance_available,json=balanceAvailable,proto3" json:"balance_available,omitempty"`
+	BalanceError     string                 `protobuf:"bytes,14,opt,name=balance_error,json=balanceError,proto3" json:"balance_error,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ArkChannel) Reset() {
@@ -3585,9 +3585,9 @@ func (x *ArkChannel) GetChannelPoint() string {
 	return ""
 }
 
-func (x *ArkChannel) GetCooperativeCloseTxid() []byte {
+func (x *ArkChannel) GetRefreshOorTxid() []byte {
 	if x != nil {
-		return x.CooperativeCloseTxid
+		return x.RefreshOorTxid
 	}
 	return nil
 }
@@ -4663,11 +4663,11 @@ const file_ark_channel_proto_rawDesc = "" +
 	"\x0eChannelBacking\x12 \n" +
 	"\vtransaction\x18\x01 \x01(\fR\vtransaction\x12,\n" +
 	"\x12channel_point_txid\x18\x02 \x01(\fR\x10channelPointTxid\x12.\n" +
-	"\x13channel_point_index\x18\x03 \x01(\rR\x11channelPointIndex\"Z\n" +
-	"\x1eRequestCooperativeCloseRequest\x12\x1d\n" +
+	"\x13channel_point_index\x18\x03 \x01(\rR\x11channelPointIndex\"Q\n" +
+	"\x15RefreshChannelRequest\x12\x1d\n" +
 	"\n" +
-	"channel_id\x18\x01 \x01(\fR\tchannelIdJ\x04\b\x02\x10\x03R\x13fee_rate_sat_per_kw\"V\n" +
-	"\x1fRequestCooperativeCloseResponse\x123\n" +
+	"channel_id\x18\x01 \x01(\fR\tchannelIdJ\x04\b\x02\x10\x03R\x13fee_rate_sat_per_kw\"M\n" +
+	"\x16RefreshChannelResponse\x123\n" +
 	"\achannel\x18\x01 \x01(\v2\x19.arkchannelrpc.ArkChannelR\achannel\"2\n" +
 	"\x11GetChannelRequest\x12\x1d\n" +
 	"\n" +
@@ -4676,7 +4676,7 @@ const file_ark_channel_proto_rawDesc = "" +
 	"\achannel\x18\x01 \x01(\v2\x19.arkchannelrpc.ArkChannelR\achannel\"\x15\n" +
 	"\x13ListChannelsRequest\"M\n" +
 	"\x14ListChannelsResponse\x125\n" +
-	"\bchannels\x18\x01 \x03(\v2\x19.arkchannelrpc.ArkChannelR\bchannels\"\x81\x04\n" +
+	"\bchannels\x18\x01 \x03(\v2\x19.arkchannelrpc.ArkChannelR\bchannels\"\xf5\x03\n" +
 	"\n" +
 	"ArkChannel\x12\x1d\n" +
 	"\n" +
@@ -4686,8 +4686,8 @@ const file_ark_channel_proto_rawDesc = "" +
 	"\x06funder\x18\x04 \x01(\tR\x06funder\x12!\n" +
 	"\fcapacity_sat\x18\x05 \x01(\x03R\vcapacitySat\x12'\n" +
 	"\x0fsource_outpoint\x18\x06 \x01(\tR\x0esourceOutpoint\x12#\n" +
-	"\rchannel_point\x18\a \x01(\tR\fchannelPoint\x124\n" +
-	"\x16cooperative_close_txid\x18\b \x01(\fR\x14cooperativeCloseTxid\x12\x1a\n" +
+	"\rchannel_point\x18\a \x01(\tR\fchannelPoint\x12(\n" +
+	"\x10refresh_oor_txid\x18\b \x01(\fR\x0erefreshOorTxid\x12\x1a\n" +
 	"\brevision\x18\t \x01(\x04R\brevision\x12#\n" +
 	"\rreserved_scid\x18\n" +
 	" \x01(\x04R\freservedScid\x12*\n" +
@@ -4778,14 +4778,14 @@ const file_ark_channel_proto_rawDesc = "" +
 	"\x1fCooperativeCloseAcknowledgement\x121\n" +
 	"-COOPERATIVE_CLOSE_ACKNOWLEDGEMENT_UNSPECIFIED\x10\x00\x123\n" +
 	"/COOPERATIVE_CLOSE_ACKNOWLEDGEMENT_CLIENT_SIGNED\x10\x01\x126\n" +
-	"2COOPERATIVE_CLOSE_ACKNOWLEDGEMENT_CLIENT_FINALIZED\x10\x022\xb5\x06\n" +
+	"2COOPERATIVE_CLOSE_ACKNOWLEDGEMENT_CLIENT_FINALIZED\x10\x022\x9a\x06\n" +
 	"\x11ArkChannelService\x12T\n" +
 	"\vPromoteVTXO\x12!.arkchannelrpc.PromoteVTXORequest\x1a\".arkchannelrpc.PromoteVTXOResponse\x12Z\n" +
 	"\vSendPayment\x12$.arkchannelrpc.ChannelPaymentRequest\x1a%.arkchannelrpc.ChannelPaymentResponse\x12]\n" +
 	"\x0eReceivePayment\x12$.arkchannelrpc.ChannelPaymentRequest\x1a%.arkchannelrpc.ChannelPaymentResponse\x12l\n" +
 	"\x13PayLightningInvoice\x12).arkchannelrpc.PayLightningInvoiceRequest\x1a*.arkchannelrpc.PayLightningInvoiceResponse\x12{\n" +
-	"\x18MaterializeAndForceClose\x12..arkchannelrpc.MaterializeAndForceCloseRequest\x1a/.arkchannelrpc.MaterializeAndForceCloseResponse\x12x\n" +
-	"\x17RequestCooperativeClose\x12-.arkchannelrpc.RequestCooperativeCloseRequest\x1a..arkchannelrpc.RequestCooperativeCloseResponse\x12Q\n" +
+	"\x18MaterializeAndForceClose\x12..arkchannelrpc.MaterializeAndForceCloseRequest\x1a/.arkchannelrpc.MaterializeAndForceCloseResponse\x12]\n" +
+	"\x0eRefreshChannel\x12$.arkchannelrpc.RefreshChannelRequest\x1a%.arkchannelrpc.RefreshChannelResponse\x12Q\n" +
 	"\n" +
 	"GetChannel\x12 .arkchannelrpc.GetChannelRequest\x1a!.arkchannelrpc.GetChannelResponse\x12W\n" +
 	"\fListChannels\x12\".arkchannelrpc.ListChannelsRequest\x1a#.arkchannelrpc.ListChannelsResponse2\xfd\x04\n" +
@@ -4884,8 +4884,8 @@ var file_ark_channel_proto_goTypes = []any{
 	(*ChannelVTXOTerms)(nil),                    // 51: arkchannelrpc.ChannelVTXOTerms
 	(*ChannelVTXOBinding)(nil),                  // 52: arkchannelrpc.ChannelVTXOBinding
 	(*ChannelBacking)(nil),                      // 53: arkchannelrpc.ChannelBacking
-	(*RequestCooperativeCloseRequest)(nil),      // 54: arkchannelrpc.RequestCooperativeCloseRequest
-	(*RequestCooperativeCloseResponse)(nil),     // 55: arkchannelrpc.RequestCooperativeCloseResponse
+	(*RefreshChannelRequest)(nil),               // 54: arkchannelrpc.RefreshChannelRequest
+	(*RefreshChannelResponse)(nil),              // 55: arkchannelrpc.RefreshChannelResponse
 	(*GetChannelRequest)(nil),                   // 56: arkchannelrpc.GetChannelRequest
 	(*GetChannelResponse)(nil),                  // 57: arkchannelrpc.GetChannelResponse
 	(*ListChannelsRequest)(nil),                 // 58: arkchannelrpc.ListChannelsRequest
@@ -4938,7 +4938,7 @@ var file_ark_channel_proto_depIdxs = []int32{
 	2,  // 28: arkchannelrpc.ApplyChannelEventRequest.event_type:type_name -> arkchannelrpc.ChannelEventType
 	60, // 29: arkchannelrpc.ApplyChannelEventResponse.channel:type_name -> arkchannelrpc.ArkChannel
 	51, // 30: arkchannelrpc.ChannelTerms.vtxo:type_name -> arkchannelrpc.ChannelVTXOTerms
-	60, // 31: arkchannelrpc.RequestCooperativeCloseResponse.channel:type_name -> arkchannelrpc.ArkChannel
+	60, // 31: arkchannelrpc.RefreshChannelResponse.channel:type_name -> arkchannelrpc.ArkChannel
 	60, // 32: arkchannelrpc.GetChannelResponse.channel:type_name -> arkchannelrpc.ArkChannel
 	60, // 33: arkchannelrpc.ListChannelsResponse.channels:type_name -> arkchannelrpc.ArkChannel
 	71, // 34: arkchannelrpc.BeginCooperativeCloseResponse.request:type_name -> arkchannelrpc.CooperativeCloseRequest
@@ -4956,7 +4956,7 @@ var file_ark_channel_proto_depIdxs = []int32{
 	7,  // 46: arkchannelrpc.ArkChannelService.ReceivePayment:input_type -> arkchannelrpc.ChannelPaymentRequest
 	9,  // 47: arkchannelrpc.ArkChannelService.PayLightningInvoice:input_type -> arkchannelrpc.PayLightningInvoiceRequest
 	11, // 48: arkchannelrpc.ArkChannelService.MaterializeAndForceClose:input_type -> arkchannelrpc.MaterializeAndForceCloseRequest
-	54, // 49: arkchannelrpc.ArkChannelService.RequestCooperativeClose:input_type -> arkchannelrpc.RequestCooperativeCloseRequest
+	54, // 49: arkchannelrpc.ArkChannelService.RefreshChannel:input_type -> arkchannelrpc.RefreshChannelRequest
 	56, // 50: arkchannelrpc.ArkChannelService.GetChannel:input_type -> arkchannelrpc.GetChannelRequest
 	58, // 51: arkchannelrpc.ArkChannelService.ListChannels:input_type -> arkchannelrpc.ListChannelsRequest
 	61, // 52: arkchannelrpc.ArkChannelPeerService.BeginCooperativeClose:input_type -> arkchannelrpc.BeginCooperativeCloseRequest
@@ -4986,7 +4986,7 @@ var file_ark_channel_proto_depIdxs = []int32{
 	8,  // 76: arkchannelrpc.ArkChannelService.ReceivePayment:output_type -> arkchannelrpc.ChannelPaymentResponse
 	10, // 77: arkchannelrpc.ArkChannelService.PayLightningInvoice:output_type -> arkchannelrpc.PayLightningInvoiceResponse
 	12, // 78: arkchannelrpc.ArkChannelService.MaterializeAndForceClose:output_type -> arkchannelrpc.MaterializeAndForceCloseResponse
-	55, // 79: arkchannelrpc.ArkChannelService.RequestCooperativeClose:output_type -> arkchannelrpc.RequestCooperativeCloseResponse
+	55, // 79: arkchannelrpc.ArkChannelService.RefreshChannel:output_type -> arkchannelrpc.RefreshChannelResponse
 	57, // 80: arkchannelrpc.ArkChannelService.GetChannel:output_type -> arkchannelrpc.GetChannelResponse
 	59, // 81: arkchannelrpc.ArkChannelService.ListChannels:output_type -> arkchannelrpc.ListChannelsResponse
 	62, // 82: arkchannelrpc.ArkChannelPeerService.BeginCooperativeClose:output_type -> arkchannelrpc.BeginCooperativeCloseResponse
