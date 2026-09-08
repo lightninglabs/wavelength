@@ -171,11 +171,27 @@ func newOnchainRuntime(runtime *Runtime,
 		runtime, cfg, onchain, lightningWallet, contractBreaches,
 		budget, genSweepScript,
 	)
-	onchain.dispatcher.RegisterQueue([]chainio.Consumer{
-		onchain.chainArbitrator, utxoSweeper, txPublisher,
-	})
+	registerOnchainBlockConsumers(
+		onchain.dispatcher, onchain.chainArbitrator, utxoSweeper,
+		txPublisher,
+	)
 
 	return onchain, nil
+}
+
+// blockbeatQueueRegistrar captures the queue boundary used by lnd's blockbeat
+// dispatcher.
+type blockbeatQueueRegistrar interface {
+	RegisterQueue([]chainio.Consumer)
+}
+
+// registerOnchainBlockConsumers isolates the chain arbitrator's potentially
+// long materialization barrier while retaining sweeper-before-publisher order.
+func registerOnchainBlockConsumers(registrar blockbeatQueueRegistrar,
+	chainArbitrator, utxoSweeper, txPublisher chainio.Consumer) {
+
+	registrar.RegisterQueue([]chainio.Consumer{chainArbitrator})
+	registrar.RegisterQueue([]chainio.Consumer{utxoSweeper, txPublisher})
 }
 
 // newChainArbitrator composes lnd's contract owner around the already-created
