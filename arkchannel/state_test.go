@@ -84,6 +84,17 @@ func TestOORChannelLifecycle(t *testing.T) {
 	require.IsType(t, &CommitOOR{}, requireOneAction(t, actions))
 	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
 	require.True(t, record.Snapshot.ReadyToCommitOOR())
+	commitRevision := record.Revision
+
+	// A retry after CommitOOR failed must replay that durable action.
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &FundingFinalized{
+			Party: PartyHub,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, commitRevision, record.Revision)
+	require.IsType(t, &CommitOOR{}, requireOneAction(t, actions))
 
 	record, actions, err = coordinator.Apply(
 		t.Context(), terms.ID, &OORFinalized{
@@ -439,7 +450,9 @@ func TestCooperativeCloseLifecycle(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
-	require.Empty(t, actions)
+	require.IsType(
+		t, &PublishCooperativeClose{}, requireOneAction(t, actions),
+	)
 	require.Equal(t, PhaseCoopCloseSigned, record.Snapshot.Phase)
 
 	record, actions, err = coordinator.Apply(
@@ -708,7 +721,7 @@ func TestBackingReadyRejectsGenericFailure(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
-	require.Empty(t, actions)
+	require.IsType(t, &CommitOOR{}, requireOneAction(t, actions))
 
 	_, resumed, err := coordinator.Resume(t.Context(), terms.ID)
 	require.NoError(t, err)
@@ -777,7 +790,7 @@ func TestPrePONRExpiryLosesCommitGateCASRace(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
-	require.Empty(t, actions)
+	require.IsType(t, &CommitOOR{}, requireOneAction(t, actions))
 	_, actions, err = staleCoordinator.Resume(t.Context(), terms.ID)
 	require.NoError(t, err)
 	require.IsType(t, &CommitOOR{}, requireOneAction(t, actions))
@@ -865,7 +878,7 @@ func TestFundingFinalizationRequiresBacking(t *testing.T) {
 }
 
 // TestCoordinatorIdempotency verifies duplicate facts do not advance the
-// store revision or re-emit an action.
+// store revision or invent work when the durable state has no pending action.
 func TestCoordinatorIdempotency(t *testing.T) {
 	t.Parallel()
 

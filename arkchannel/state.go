@@ -96,19 +96,12 @@ func (s *channelState) ProcessEvent(_ context.Context, event Event,
 		return nil, err
 	}
 	if !changed {
-		switch event.(type) {
-		case *SourceSpent, *RecoveryPackageInstalled, *OORFinalized,
-			*OORAborted:
-
-			action, err := PendingAction(next)
-			if err != nil {
-				return nil, err
-			}
-
-			return transitionTo(next, action), nil
+		action, err := PendingAction(next)
+		if err != nil {
+			return nil, err
 		}
 
-		return transitionTo(next, nil), nil
+		return transitionTo(next, action), nil
 	}
 
 	action, err := advance(&next)
