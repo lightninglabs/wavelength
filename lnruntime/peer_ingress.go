@@ -11,6 +11,7 @@ import (
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/lightninglabs/wavelength/serverconn"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/tlv"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
@@ -18,6 +19,7 @@ import (
 const (
 	peerMessageMaxRetryDelay = time.Minute
 	peerMessageMaxAttempts   = 1<<31 - 1
+	peerMessageWorkers       = 4
 )
 
 const (
@@ -43,6 +45,7 @@ type PeerMessageIngressConfig struct {
 type PeerMessageIngress struct {
 	actorID string
 	durable *actor.DurableActor[*peerMessageIngressMsg, struct{}]
+	log     btclog.Logger
 }
 
 // peerMessageIngressMsg is one ordered BOLT message in the durable ingress
@@ -59,7 +62,7 @@ func (*peerMessageIngressMsg) MessageType() string {
 	return "lnruntime.PeerMessageIngress"
 }
 
-// CorrelationKey keeps every message for the logical peer in FIFO order.
+// CorrelationKey keeps every message within its protocol lane in FIFO order.
 func (m *peerMessageIngressMsg) CorrelationKey() string {
 	return m.Lane
 }
@@ -198,6 +201,7 @@ func newPeerMessageIngress(cfg PeerMessageIngressConfig,
 	}
 	durableCfg.TellRetryPolicy = retryPolicy
 	durableCfg.MaxAttempts = peerMessageMaxAttempts
+	durableCfg.NumWorkers = peerMessageWorkers
 	durable, err := actor.NewDurableActor(durableCfg).Unpack()
 	if err != nil {
 		return nil, fmt.Errorf("create peer ingress actor: %w", err)
@@ -207,6 +211,7 @@ func newPeerMessageIngress(cfg PeerMessageIngressConfig,
 	return &PeerMessageIngress{
 		actorID: cfg.ActorID,
 		durable: durable,
+		log:     cfg.Log,
 	}, nil
 }
 
@@ -226,15 +231,65 @@ func (i *PeerMessageIngress) Dispatcher() serverconn.EnvelopeDispatcher {
 		if err := env.Body.UnmarshalTo(body); err != nil {
 			return fmt.Errorf("decode lnd peer event body: %w", err)
 		}
-		if _, err := UnmarshalPeerMessage(body.Value); err != nil {
+		message, err := UnmarshalPeerMessage(body.Value)
+		if err != nil {
 			return fmt.Errorf("decode lnd peer message: %w", err)
+		}
+		lane, supported := peerMessageLane(i.actorID, message)
+		if !supported {
+			if i.log != nil {
+				i.log.WarnS(
+					ctx, "Ignoring unsupported lnd peer "+
+						"message",
+					nil, btclog.Fmt(
+						"message_type", "%T", message,
+					),
+				)
+			}
+
+			return nil
 		}
 
 		return i.durable.Ref().Tell(ctx, &peerMessageIngressMsg{
 			Payload: append([]byte(nil), body.Value...),
-			Lane:    i.actorID,
+			Lane:    lane,
 		})
 	}
+}
+
+// peerMessageLane returns the FIFO boundary for one message the native runtime
+// owns. Funding stays peer-ordered while established channels progress
+// independently.
+func peerMessageLane(actorID string, message lnwire.Message) (string, bool) {
+	switch message := message.(type) {
+	case *lnwire.OpenChannel, *lnwire.AcceptChannel,
+		*lnwire.FundingCreated, *lnwire.FundingSigned,
+		*lnwire.Warning, *lnwire.Error:
+		return actorID + ":funding", true
+
+	case *lnwire.ChannelReady:
+		return peerMessageChannelLane(actorID, message.ChanID), true
+
+	case lnwire.LinkUpdater:
+		return peerMessageChannelLane(
+			actorID, message.TargetChanID(),
+		), true
+
+	case *lnwire.ChannelReestablish:
+		return peerMessageChannelLane(actorID, message.ChanID), true
+
+	case *lnwire.Ping, *lnwire.Pong, *lnwire.NodeAnnouncement1,
+		*lnwire.ChannelAnnouncement1, *lnwire.ChannelUpdate1:
+		return actorID + ":control", true
+
+	default:
+		return "", false
+	}
+}
+
+// peerMessageChannelLane returns one stable per-channel FIFO key.
+func peerMessageChannelLane(actorID string, channelID lnwire.ChannelID) string {
+	return actorID + ":channel:" + channelID.String()
 }
 
 // StopAndWait stops the durable ingress actor and waits for its worker.

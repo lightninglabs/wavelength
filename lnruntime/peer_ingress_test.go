@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,7 +64,6 @@ func TestPeerMessageIngressDefersLNDUntilCommit(t *testing.T) {
 
 		require.NoError(t, ingress.StopAndWait(ctx))
 	})
-
 	payload, err := MarshalPeerMessage(lnwire.NewPing(11))
 	require.NoError(t, err)
 	body, err := anypb.New(&wrapperspb.BytesValue{Value: payload})
@@ -185,7 +185,6 @@ func TestPeerMessageIngressParksOrderedLane(t *testing.T) {
 
 		require.NoError(t, ingress.StopAndWait(ctx))
 	})
-
 	dispatch := ingress.Dispatcher()
 	for _, pongBytes := range []uint16{11, 12} {
 		payload, err := MarshalPeerMessage(lnwire.NewPing(pongBytes))
@@ -223,6 +222,141 @@ func TestPeerMessageIngressParksOrderedLane(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Empty(t, deadLetters)
+}
+
+// TestPeerMessageIngressIsolatesChannelLanes proves a blocked channel keeps
+// its own FIFO order without delaying another channel on the same peer.
+func TestPeerMessageIngressIsolatesChannelLanes(t *testing.T) {
+	t.Parallel()
+
+	rawStore := db.NewTestDB(t)
+	actorQueries := adsqlc.New(rawStore.DB)
+	actorDB := db.NewTransactionExecutor(
+		rawStore.BaseDB,
+		func(tx *sql.Tx) actordelivery.ActorDeliveryQueries {
+			return actorQueries.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+	store := actordelivery.NewTxAwareActorDeliveryStore(
+		actorDB, rawStore.BaseDB, clock.NewDefaultClock(),
+	)
+
+	channelA := lnwire.ChannelID{1}
+	channelB := lnwire.ChannelID{2}
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	handled := make(chan *lnwire.UpdateFee, 3)
+	var blockOnce sync.Once
+	ingress, err := newPeerMessageIngress(
+		PeerMessageIngressConfig{
+			ActorID: "test-peer-ingress-lanes",
+			Store:   store,
+			Handler: func(_ context.Context,
+				message lnwire.Message) error {
+
+				update, ok := message.(*lnwire.UpdateFee)
+				if !ok {
+					return nil
+				}
+				if update.ChanID == channelA &&
+					update.FeePerKw == 1 {
+
+					blockOnce.Do(func() { close(blocked) })
+					<-release
+				}
+				handled <- update
+
+				return nil
+			},
+		},
+		func(error, int) (bool, time.Duration) {
+			return true, time.Millisecond
+		},
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer cancel()
+
+		require.NoError(t, ingress.StopAndWait(ctx))
+	})
+	var releaseOnce sync.Once
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+	})
+
+	dispatch := ingress.Dispatcher()
+	dispatchUpdate := func(channelID lnwire.ChannelID, fee uint32) {
+		payload, err := MarshalPeerMessage(&lnwire.UpdateFee{
+			ChanID: channelID, FeePerKw: fee,
+		})
+		require.NoError(t, err)
+		body, err := anypb.New(&wrapperspb.BytesValue{Value: payload})
+		require.NoError(t, err)
+		require.NoError(
+			t,
+			store.ExecTx(
+				t.Context(), false,
+				func(txCtx context.Context,
+					_ actor.DeliveryStore) error {
+
+					return dispatch(
+						txCtx, &mailboxpb.Envelope{
+							Body: body,
+						},
+					)
+				},
+			),
+		)
+	}
+
+	dispatchUpdate(channelA, 1)
+	select {
+	case <-blocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first channel did not enter its blocked handler")
+	}
+	dispatchUpdate(channelA, 2)
+	dispatchUpdate(channelB, 3)
+
+	select {
+	case update := <-handled:
+		require.Equal(t, channelB, update.ChanID)
+		require.EqualValues(t, 3, update.FeePerKw)
+
+	case <-time.After(5 * time.Second):
+		t.Fatal("independent channel was blocked by its peer")
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	for _, expectedFee := range []uint32{1, 2} {
+		select {
+		case update := <-handled:
+			require.Equal(t, channelA, update.ChanID)
+			require.Equal(t, expectedFee, update.FeePerKw)
+
+		case <-time.After(5 * time.Second):
+			t.Fatal("channel FIFO did not resume")
+		}
+	}
+}
+
+// TestPeerMessageLaneRejectsUnsupportedMessages verifies a decoded BOLT
+// message outside the modular runtime is classified for immediate discard.
+func TestPeerMessageLaneRejectsUnsupportedMessages(t *testing.T) {
+	t.Parallel()
+
+	lane, supported := peerMessageLane(
+		"test-peer",
+		lnwire.NewShutdown(
+			lnwire.ChannelID{1}, lnwire.DeliveryAddress{0x51},
+		),
+	)
+	require.False(t, supported)
+	require.Empty(t, lane)
 }
 
 // TestPeerMessageRetryPolicyNeverAdvances verifies the production policy
