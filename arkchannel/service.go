@@ -399,12 +399,7 @@ func (s *Service) authorizeEvent(ctx context.Context, id ID, event Event,
 		return s.requireOriginParty(origin, terms.Funder, event)
 
 	case *FundingPeerReady:
-		if s.localParty != PartyHub || origin != eventOriginPeer {
-			return fmt.Errorf("%T requires authenticated "+
-				"client origin", event)
-		}
-
-		return nil
+		return s.requireOriginParty(origin, PartyClient, event)
 
 	case *FundingFinalized:
 		return s.requireOriginParty(origin, event.Party, event)

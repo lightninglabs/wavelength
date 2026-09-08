@@ -33,9 +33,9 @@ type BindVTXO struct {
 
 func (*BindVTXO) eventSealed() {}
 
-// FundingPeerReady records that the authenticated peer has durably bound the
-// same prepared source. Hub-funded receive channels do not start native lnd
-// negotiation until this barrier is present.
+// FundingPeerReady records that the client has durably bound the prepared
+// source. The client records its local evidence and the hub records the same
+// fact only after receiving it over the authenticated peer transport.
 type FundingPeerReady struct{}
 
 func (*FundingPeerReady) eventSealed() {}
