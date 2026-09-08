@@ -107,6 +107,12 @@ type fundingEventSink interface {
 
 	ApplyPeerEvent(context.Context, arkchannel.ID,
 		arkchannel.Event) (arkchannel.Record, error)
+
+	RecordLocalEvent(context.Context, arkchannel.ID,
+		arkchannel.Event) (arkchannel.Record, error)
+
+	ResumeChannelAction(context.Context,
+		arkchannel.ID) (arkchannel.Record, error)
 }
 
 // NewNativeFundingEndpoint constructs one local or remotely adapted endpoint.
@@ -232,7 +238,7 @@ func (e *NativeFundingEndpoint) FundingFinalized(ctx context.Context,
 	if err != nil || !ready {
 		return ready, err
 	}
-	_, err = e.applyLocalEvent(ctx, terms.ID, &arkchannel.FundingFinalized{
+	_, err = e.recordLocalEvent(ctx, terms.ID, &arkchannel.FundingFinalized{
 		Party: e.party,
 	})
 
@@ -248,7 +254,7 @@ func (e *NativeFundingEndpoint) ChannelActive(ctx context.Context,
 	if err != nil || !active {
 		return active, err
 	}
-	_, err = e.applyLocalEvent(ctx, terms.ID, &arkchannel.ChannelActive{
+	_, err = e.recordLocalEvent(ctx, terms.ID, &arkchannel.ChannelActive{
 		ChannelPointHash:  backing.ChannelPoint.Hash,
 		ChannelPointIndex: backing.ChannelPoint.Index,
 	})
@@ -286,6 +292,38 @@ func (e *NativeFundingEndpoint) applyLocalEvent(ctx context.Context,
 	}
 
 	return sink.ApplyLocalEvent(ctx, id, event)
+}
+
+// recordLocalEvent persists local native-lnd evidence without recursively
+// dispatching an action already being executed by the channel service.
+func (e *NativeFundingEndpoint) recordLocalEvent(ctx context.Context,
+	id arkchannel.ID, event arkchannel.Event) (arkchannel.Record, error) {
+
+	e.mu.RLock()
+	sink := e.sink
+	e.mu.RUnlock()
+	if sink == nil {
+		return arkchannel.Record{}, fmt.Errorf("channel event sink " +
+			"is not bound")
+	}
+
+	return sink.RecordLocalEvent(ctx, id, event)
+}
+
+// resumeChannelAction dispatches the action implied by already-durable channel
+// evidence after its paired peer barrier has completed.
+func (e *NativeFundingEndpoint) resumeChannelAction(ctx context.Context,
+	id arkchannel.ID) (arkchannel.Record, error) {
+
+	e.mu.RLock()
+	sink := e.sink
+	e.mu.RUnlock()
+	if sink == nil {
+		return arkchannel.Record{}, fmt.Errorf("channel event sink " +
+			"is not bound")
+	}
+
+	return sink.ResumeChannelAction(ctx, id)
 }
 
 // ChannelNegotiator coordinates only the cross-system funding barriers. lnd
@@ -520,12 +558,18 @@ func (n *ChannelNegotiator) PrepareChannelRecovery(ctx context.Context,
 	localEvent := &arkchannel.RecoveryPackageInstalled{
 		Party: n.local.party,
 	}
-	if _, err := n.local.applyLocalEvent(ctx, id, localEvent); err != nil {
+	localRecord, err := n.local.recordLocalEvent(ctx, id, localEvent)
+	if err != nil {
 		return err
 	}
 	if _, err := n.remote.ApplyChannelEvent(
 		ctx, id, localEvent,
 	); err != nil {
+		return err
+	}
+	if localRecord.Snapshot.Phase == arkchannel.PhaseActivating {
+		_, err := n.local.resumeChannelAction(ctx, id)
+
 		return err
 	}
 	remote, ok := n.remote.(RecoveryCounterparty)
