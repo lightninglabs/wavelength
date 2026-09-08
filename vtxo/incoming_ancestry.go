@@ -1,10 +1,13 @@
 package vtxo
 
 import (
+	"bytes"
 	"fmt"
 	"slices"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 )
 
 // MaxAncestryPaths bounds the per-VTXO ancestry slice the indexer is
@@ -55,6 +58,10 @@ func AncestryFromRPC(paths []*arkrpc.AncestryPath) ([]Ancestry, error) {
 			return nil, fmt.Errorf("path[%d] commitment: %w", i,
 				err)
 		}
+		if p.GetCommitmentHeight() < 0 {
+			return nil, fmt.Errorf("path[%d] commitment height "+
+				"must not be negative", i)
+		}
 
 		// Validate the indexer-supplied tree_depth against the
 		// reconstructed path before it can be persisted. A zero or
@@ -70,12 +77,52 @@ func AncestryFromRPC(paths []*arkrpc.AncestryPath) ([]Ancestry, error) {
 			return nil, fmt.Errorf("path[%d] depth: %w", i, err)
 		}
 
+		sweepDelay := p.GetCommitmentSweepDelay()
+		rawSweepKey := p.GetCommitmentSweepKey()
+		var sweepKey *btcec.PublicKey
+		switch {
+		case sweepDelay == 0 && len(rawSweepKey) == 0:
+			// Older indexers omitted both additive fields.
+			// Conversion remains possible, but
+			// AuthenticateBatchExpiry rejects the missing evidence
+			// before any new descriptor is accepted.
+
+		case sweepDelay == 0 || len(rawSweepKey) == 0:
+			return nil, fmt.Errorf("path[%d] sweep key and delay "+
+				"must both be provided", i)
+
+		default:
+			sweepKey, err = btcec.ParsePubKey(rawSweepKey)
+			if err != nil {
+				return nil, fmt.Errorf("path[%d] sweep key: %w",
+					i, err)
+			}
+
+			sweepLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
+				sweepKey, sweepDelay,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("path[%d] sweep "+
+					"leaf: %w", i, err)
+			}
+			sweepRoot := sweepLeaf.TapHash()
+			if !bytes.Equal(
+				sweepRoot[:], treePath.SweepTapscriptRoot,
+			) {
+				return nil, fmt.Errorf("path[%d] sweep key "+
+					"and delay do not match committed "+
+					"sweep root", i)
+			}
+		}
+
 		out = append(out, Ancestry{
-			TreePath:         treePath,
-			CommitmentTxID:   commitmentTxID,
-			InputIndices:     slices.Clone(p.GetInputIndices()),
-			TreeDepth:        p.GetTreeDepth(),
-			CommitmentHeight: p.GetCommitmentHeight(),
+			TreePath:             treePath,
+			CommitmentTxID:       commitmentTxID,
+			InputIndices:         slices.Clone(p.GetInputIndices()),
+			TreeDepth:            p.GetTreeDepth(),
+			CommitmentHeight:     p.GetCommitmentHeight(),
+			CommitmentSweepDelay: sweepDelay,
+			CommitmentSweepKey:   sweepKey,
 		})
 	}
 
