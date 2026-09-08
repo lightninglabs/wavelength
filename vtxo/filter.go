@@ -18,6 +18,9 @@ type FilterOptions struct {
 	// MinAmount filters to VTXOs with at least this amount in
 	// satoshis. Zero means no minimum.
 	MinAmount btcutil.Amount
+
+	// AssetRef restricts results to one canonical asset reference.
+	AssetRef string
 }
 
 // FilterDescriptors returns the subset of descriptors matching the
@@ -34,6 +37,10 @@ func FilterDescriptors(descs []*Descriptor, opts FilterOptions) []*Descriptor {
 
 		// Apply minimum amount filter.
 		if opts.MinAmount > 0 && d.Amount < opts.MinAmount {
+			continue
+		}
+
+		if opts.AssetRef != "" && d.TaprootAssetRef != opts.AssetRef {
 			continue
 		}
 
