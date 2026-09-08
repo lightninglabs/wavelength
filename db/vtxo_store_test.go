@@ -2526,6 +2526,23 @@ func TestVTXOStoreRecoveryOnlyExcludedFromWalletSets(t *testing.T) {
 		"exceeds storage range",
 	)
 
+	// Channel registration sets the materialization delay after the row is
+	// first saved. Replaying source preparation must preserve that selected
+	// value instead of mistaking it for an outpoint collision.
+	selectedExpiry := desc.RelativeExpiry + 10
+	require.NoError(
+		t, vtxoStore.SetRecoveryOnlyVTXORelativeExpiry(
+			ctx, desc.Outpoint, selectedExpiry,
+		),
+	)
+	require.NoError(t, vtxoStore.SaveRecoveryOnlyVTXO(ctx, desc))
+	storedRow, err := vtxoStore.db.GetVTXO(ctx, sqlc.GetVTXOParams{
+		OutpointHash:  desc.Outpoint.Hash[:],
+		OutpointIndex: int32(desc.Outpoint.Index),
+	})
+	require.NoError(t, err)
+	require.Equal(t, int32(selectedExpiry), storedRow.Expiry)
+
 	candidates, err := vtxoStore.ListSelectionCandidatesByStatus(
 		ctx, vtxo.VTXOStatusLive,
 	)
@@ -2541,5 +2558,24 @@ func TestVTXOStoreRecoveryOnlyExcludedFromWalletSets(t *testing.T) {
 	require.ErrorContains(
 		t, vtxoStore.SaveRecoveryOnlyVTXO(ctx, &mismatch),
 		"descriptor mismatch",
+	)
+
+	// The setter must not repurpose an ordinary wallet VTXO as channel
+	// recovery state.
+	liveDescriptor := createTestVTXODescriptor(
+		t, testRoundIDDB("test-round-live-expiry-guard"), 22,
+	)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, liveDescriptor))
+	require.ErrorContains(
+		t, vtxoStore.SetRecoveryOnlyVTXORelativeExpiry(
+			ctx, liveDescriptor.Outpoint,
+			liveDescriptor.RelativeExpiry+10,
+		),
+		"not found",
+	)
+	storedLive, err := vtxoStore.GetVTXO(ctx, liveDescriptor.Outpoint)
+	require.NoError(t, err)
+	require.Equal(
+		t, liveDescriptor.RelativeExpiry, storedLive.RelativeExpiry,
 	)
 }

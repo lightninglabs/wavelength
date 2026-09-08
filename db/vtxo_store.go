@@ -219,7 +219,8 @@ func (s *VTXOPersistenceStore) SetRecoveryOnlyVTXORelativeExpiry(
 }
 
 // validateRecoveryOnlyVTXORow rejects an outpoint collision or a replay after
-// another subsystem has taken ownership of the same VTXO.
+// another subsystem has taken ownership of the same VTXO. Relative expiry is
+// excluded because channel recovery selects it after registration.
 func validateRecoveryOnlyVTXORow(row VTXORow, desc *vtxo.Descriptor) error {
 	status := vtxo.VTXOStatus(row.Status)
 	if status != vtxo.VTXOStatusRecoveryOnly &&
@@ -230,7 +231,6 @@ func validateRecoveryOnlyVTXORow(row VTXORow, desc *vtxo.Descriptor) error {
 	if row.RoundID != desc.RoundID || row.Amount != int64(desc.Amount) ||
 		!bytes.Equal(row.PkScript, desc.PkScript) ||
 		!bytes.Equal(row.PolicyTemplate, desc.PolicyTemplate) ||
-		row.Expiry != int32(desc.RelativeExpiry) ||
 		row.BatchExpiry != desc.BatchExpiry ||
 		row.ChainDepth != int32(desc.ChainDepth) ||
 		row.CreatedHeight != desc.CreatedHeight ||
