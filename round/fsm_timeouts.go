@@ -1,5 +1,9 @@
 package round
 
+import (
+	fn "github.com/lightningnetwork/lnd/fn/v2"
+)
+
 // TimeoutPhase identifies which FSM phase owns a timeout.
 type TimeoutPhase string
 
@@ -22,11 +26,13 @@ const (
 
 	// TimeoutPhaseStatusReconcile is the timeout phase for
 	// InputSigSentState's round-status reconcile (wavelength#844). It is
-	// armed when the forfeit signatures leave the box and re-armed on
-	// every reconcile probe, so both a received round failure and total
-	// operator silence (the lumos#618 crash door) eventually drive a
-	// QueryRoundStatus. The reservation is released only on an
-	// authoritative dead answer, never on the timeout alone.
+	// armed on entry to InputSigSentState — for every checkpointed round,
+	// including a boarding-only one that submits no forfeit signatures
+	// (wavelength#1051) — and re-armed on every reconcile probe, so both a
+	// received round failure and total operator silence (the lumos#618
+	// crash door) eventually drive a QueryRoundStatus. The reservation is
+	// released only on an authoritative dead answer, never on the timeout
+	// alone.
 	TimeoutPhaseStatusReconcile TimeoutPhase = "status-reconcile"
 )
 
@@ -76,11 +82,39 @@ func statusReconcileProbeOutbox(roundID RoundID, env *ClientEnvironment,
 }
 
 // cancelStatusReconcileTimeout builds the outbox message that disarms the
-// status-reconcile timeout, for the paths that resolve the round's fate
-// (confirmation, or an authoritative dead answer).
+// status-reconcile timeout, for the paths that resolve the round's fate: a
+// confirmation, an authoritative dead answer, or a failure the operator
+// delivered directly (which carries the same authority a probe would return).
 func cancelStatusReconcileTimeout(roundID RoundID) ClientOutMsg {
 	return &CancelTimeoutReq{
 		RoundKey: RoundKeyStr(roundID.KeyString()),
 		Phase:    TimeoutPhaseStatusReconcile,
 	}
+}
+
+// appendReconcileDisarm adds the status-reconcile disarm to the end of a
+// transition's outbox. The clock is armed for the whole of InputSigSentState,
+// so every exit disarms it, and the gate mirrors the arm sites so no cancel is
+// emitted for a timer that was never scheduled.
+//
+// The disarm always goes last, even on an exit whose outbox is otherwise
+// empty. processOutbox abandons the rest of the outbox on the first failing
+// Tell, and a cancel is one of the few entries that can fail, so a cancel
+// sitting ahead of a notification lets a saturated timeout actor suppress it.
+// Trailing costs nothing, since a cancel that never lands only leaks a
+// one-shot timer, which fires into a terminal state and self-loops.
+func appendReconcileDisarm(transition *ClientStateTransition, roundID RoundID,
+	env *ClientEnvironment) *ClientStateTransition {
+
+	if env.StatusReconcileTimeout <= 0 {
+		return transition
+	}
+
+	emitted := transition.NewEvents.UnwrapOr(ClientEmittedEvent{})
+	emitted.Outbox = append(
+		emitted.Outbox, cancelStatusReconcileTimeout(roundID),
+	)
+	transition.NewEvents = fn.Some(emitted)
+
+	return transition
 }
