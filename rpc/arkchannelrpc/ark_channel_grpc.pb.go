@@ -26,6 +26,7 @@ const (
 	ArkChannelService_MaterializeAndForceClose_FullMethodName = "/arkchannelrpc.ArkChannelService/MaterializeAndForceClose"
 	ArkChannelService_RequestCooperativeClose_FullMethodName  = "/arkchannelrpc.ArkChannelService/RequestCooperativeClose"
 	ArkChannelService_GetChannel_FullMethodName               = "/arkchannelrpc.ArkChannelService/GetChannel"
+	ArkChannelService_ListChannels_FullMethodName             = "/arkchannelrpc.ArkChannelService/ListChannels"
 )
 
 // ArkChannelServiceClient is the client API for ArkChannelService service.
@@ -55,6 +56,9 @@ type ArkChannelServiceClient interface {
 	RequestCooperativeClose(ctx context.Context, in *RequestCooperativeCloseRequest, opts ...grpc.CallOption) (*RequestCooperativeCloseResponse, error)
 	// GetChannel returns the durable Ark lifecycle state for one channel.
 	GetChannel(ctx context.Context, in *GetChannelRequest, opts ...grpc.CallOption) (*GetChannelResponse, error)
+	// ListChannels returns every channel that still needs recovery,
+	// observation, or operator action.
+	ListChannels(ctx context.Context, in *ListChannelsRequest, opts ...grpc.CallOption) (*ListChannelsResponse, error)
 }
 
 type arkChannelServiceClient struct {
@@ -135,6 +139,16 @@ func (c *arkChannelServiceClient) GetChannel(ctx context.Context, in *GetChannel
 	return out, nil
 }
 
+func (c *arkChannelServiceClient) ListChannels(ctx context.Context, in *ListChannelsRequest, opts ...grpc.CallOption) (*ListChannelsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListChannelsResponse)
+	err := c.cc.Invoke(ctx, ArkChannelService_ListChannels_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ArkChannelServiceServer is the server API for ArkChannelService service.
 // All implementations must embed UnimplementedArkChannelServiceServer
 // for forward compatibility.
@@ -162,6 +176,9 @@ type ArkChannelServiceServer interface {
 	RequestCooperativeClose(context.Context, *RequestCooperativeCloseRequest) (*RequestCooperativeCloseResponse, error)
 	// GetChannel returns the durable Ark lifecycle state for one channel.
 	GetChannel(context.Context, *GetChannelRequest) (*GetChannelResponse, error)
+	// ListChannels returns every channel that still needs recovery,
+	// observation, or operator action.
+	ListChannels(context.Context, *ListChannelsRequest) (*ListChannelsResponse, error)
 	mustEmbedUnimplementedArkChannelServiceServer()
 }
 
@@ -192,6 +209,9 @@ func (UnimplementedArkChannelServiceServer) RequestCooperativeClose(context.Cont
 }
 func (UnimplementedArkChannelServiceServer) GetChannel(context.Context, *GetChannelRequest) (*GetChannelResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetChannel not implemented")
+}
+func (UnimplementedArkChannelServiceServer) ListChannels(context.Context, *ListChannelsRequest) (*ListChannelsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListChannels not implemented")
 }
 func (UnimplementedArkChannelServiceServer) mustEmbedUnimplementedArkChannelServiceServer() {}
 func (UnimplementedArkChannelServiceServer) testEmbeddedByValue()                           {}
@@ -340,6 +360,24 @@ func _ArkChannelService_GetChannel_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ArkChannelService_ListChannels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListChannelsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArkChannelServiceServer).ListChannels(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArkChannelService_ListChannels_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArkChannelServiceServer).ListChannels(ctx, req.(*ListChannelsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ArkChannelService_ServiceDesc is the grpc.ServiceDesc for ArkChannelService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -374,6 +412,10 @@ var ArkChannelService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetChannel",
 			Handler:    _ArkChannelService_GetChannel_Handler,
+		},
+		{
+			MethodName: "ListChannels",
+			Handler:    _ArkChannelService_ListChannels_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
