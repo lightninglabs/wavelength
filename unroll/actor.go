@@ -1958,9 +1958,21 @@ func (b *behavior) ackPreSignedExitSpend(ctx context.Context,
 		job.PlannerState.ConfirmedTxids, b.cfg.TargetOutpoint.Hash,
 	) {
 
+		// A CSV-delayed spend confirmed at H proves its parent
+		// confirmed no later than H-CSV. Record that conservative upper
+		// bound instead of H, which would make the already-confirmed
+		// spend appear immature.
+		parentHeight := int64(msg.SpendingHeight) -
+			int64(policy.CSVDelay())
+		if parentHeight < 0 {
+			return false, fmt.Errorf("pre-signed exit spend "+
+				"height %d cannot satisfy CSV delay %d",
+				msg.SpendingHeight, policy.CSVDelay())
+		}
+
 		err := b.driveEvent(ctx, ax, &TxConfirmedEvent{
 			Txid:   b.cfg.TargetOutpoint.Hash,
-			Height: msg.SpendingHeight,
+			Height: int32(parentHeight),
 		})
 		if err != nil {
 			return false, err

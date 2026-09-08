@@ -4531,17 +4531,6 @@ func TestPreSignedExitSpendPublishedByPeerCompletesActor(t *testing.T) {
 			proof.TargetOutpoint().Hash,
 		) == 1
 	}, testTimeout, 10*time.Millisecond)
-	txconfirmRef.emitConfirmed(
-		t, 1, proof.TargetOutpoint().Hash, 102,
-	)
-	require.Eventually(t, func() bool {
-		state, ok := mustAsk(
-			t, unrollActor.Ref(), &GetStateRequest{},
-		).(*GetStateResp)
-		require.True(t, ok)
-
-		return state.Phase == PhaseCSVPending
-	}, testTimeout, 10*time.Millisecond)
 
 	chainSource.emitSpendForOutpoint(
 		t, proof.TargetOutpoint(), exitTx.TxHash(), 110,
@@ -4562,6 +4551,10 @@ func TestPreSignedExitSpendPublishedByPeerCompletesActor(t *testing.T) {
 	require.Equal(
 		t, exitTx.TxHash(),
 		checkpoint.State.Sweep.Txid.UnsafeFromSome(),
+	)
+	require.Equal(
+		t, int32(110)-int32(policy.CSVDelay()),
+		checkpoint.State.TargetConfirmHeight.UnwrapOrFail(t),
 	)
 }
 
