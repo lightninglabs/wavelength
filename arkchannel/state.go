@@ -156,6 +156,12 @@ func PendingAction(snapshot Snapshot) (Action, error) {
 		}, nil
 
 	case PhaseCancelling:
+		if snapshot.Source == nil {
+			return &RequestReceiveIntentAbort{
+				Terms:  snapshot.Terms.Clone(),
+				Reason: snapshot.Failure,
+			}, nil
+		}
 		if !snapshot.OORAborted {
 			return &AbortOOR{
 				Terms:  snapshot.Terms.Clone(),
@@ -281,6 +287,9 @@ func applyEvent(next *Snapshot, event Event) (bool, error) {
 		return applyOORAborted(
 			next, event.SessionID, event.Reason,
 		)
+
+	case *ReceiveIntentAbortRequested:
+		return applyReceiveIntentAbortRequested(next, event.Reason)
 
 	case *ChannelActive:
 		return applyChannelActive(next, wire.OutPoint{
@@ -600,11 +609,32 @@ func applySourceSpent(next *Snapshot, outpoint wire.OutPoint,
 func applyOORAborted(next *Snapshot, sessionID [32]byte,
 	reason string) (bool, error) {
 
-	if next.Source == nil && next.Phase == PhaseFailed {
-		return false, nil
-	}
 	if next.Source == nil {
-		return false, fmt.Errorf("cannot abort OOR before VTXO binding")
+		if next.Terms.Kind != KindReceiveIntent ||
+			(next.Phase != PhaseCancelling &&
+				next.Phase != PhaseFailed) {
+			return false, fmt.Errorf("cannot abort OOR before " +
+				"VTXO binding")
+		}
+		if sessionID == ([32]byte{}) {
+			return false, fmt.Errorf("aborted OOR session is " +
+				"required")
+		}
+		if next.Failure == "" {
+			if reason == "" {
+				return false, fmt.Errorf("OOR abort reason " +
+					"is required")
+			}
+			next.Failure = reason
+		}
+		if next.OORAborted {
+			return false, nil
+		}
+
+		next.OORAborted = true
+		next.Phase = PhaseFailed
+
+		return true, nil
 	}
 	if next.Source.OORSessionID != sessionID {
 		return false, fmt.Errorf("aborted OOR session does not match " +
@@ -629,6 +659,38 @@ func applyOORAborted(next *Snapshot, sessionID [32]byte,
 	}
 
 	next.OORAborted = true
+	next.Phase = PhaseCancelling
+
+	return true, nil
+}
+
+// applyReceiveIntentAbortRequested persists a source-less client's cleanup
+// request before any RPC is allowed to reach the hub that owns the OOR.
+func applyReceiveIntentAbortRequested(next *Snapshot,
+	reason string) (bool, error) {
+
+	if next.Terms.Kind != KindReceiveIntent || next.Source != nil {
+		return false, fmt.Errorf("receive intent abort request " +
+			"requires an unbound receive channel")
+	}
+	if reason == "" {
+		return false, fmt.Errorf("receive intent abort reason is " +
+			"required")
+	}
+	if next.Phase == PhaseFailed || next.Phase == PhaseCancelling {
+		if next.Failure == reason {
+			return false, nil
+		}
+
+		return false, fmt.Errorf("receive intent already abandoned " +
+			"for another reason")
+	}
+	if next.Phase != PhaseRequested {
+		return false, fmt.Errorf("cannot request receive intent "+
+			"abort from %s", next.Phase)
+	}
+
+	next.Failure = reason
 	next.Phase = PhaseCancelling
 
 	return true, nil
@@ -1041,6 +1103,12 @@ func advance(next *Snapshot) (Action, error) {
 		}
 
 	case PhaseCancelling:
+		if next.Source == nil {
+			return &RequestReceiveIntentAbort{
+				Terms:  next.Terms.Clone(),
+				Reason: next.Failure,
+			}, nil
+		}
 		if !next.OORAborted {
 			return &AbortOOR{
 				Terms:  next.Terms.Clone(),
@@ -1108,9 +1176,13 @@ func validateSnapshot(snapshot Snapshot) error {
 			return err
 		}
 	}
+	sourceLessReceiveAbort := snapshot.Source == nil &&
+		snapshot.Terms.Kind == KindReceiveIntent &&
+		snapshot.Phase == PhaseFailed
 	if snapshot.Source == nil && (snapshot.Backing != nil ||
 		snapshot.ClientFinalized || snapshot.HubFinalized ||
-		snapshot.OORFinalized || snapshot.OORAborted ||
+		snapshot.OORFinalized ||
+		(snapshot.OORAborted && !sourceLessReceiveAbort) ||
 		snapshot.ClientRecoveryReady || snapshot.HubRecoveryReady ||
 		snapshot.SourceConflict != nil) {
 		return fmt.Errorf("funding facts require a bound VTXO")
@@ -1216,7 +1288,8 @@ func validateSnapshot(snapshot Snapshot) error {
 		}
 
 	case PhaseCancelling:
-		if snapshot.Source == nil {
+		if snapshot.Source == nil &&
+			snapshot.Terms.Kind != KindReceiveIntent {
 			return fmt.Errorf("cancelling channel has no bound " +
 				"VTXO")
 		}
