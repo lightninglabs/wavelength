@@ -868,6 +868,11 @@ func (r *RPCServer) GetBalance(ctx context.Context,
 			return nil, status.Errorf(codes.Internal, "fetch vtxo "+
 				"balance: %v", err)
 		}
+		resp.AssetBalances, err = liveAssetBalances(liveVTXOs)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "fetch "+
+				"asset balances: %v", err)
+		}
 		resp.VtxoBalanceSat = int64(vtxo.SumSpendableBalance(liveVTXOs))
 		resp.VtxoPendingSat = int64(vtxo.SumPendingBalance(liveVTXOs))
 
@@ -1295,6 +1300,10 @@ func roundStateLabel(s waverpc.RoundState) string {
 func (r *RPCServer) ListVTXOs(ctx context.Context,
 	req *waverpc.ListVTXOsRequest) (*waverpc.ListVTXOsResponse, error) {
 
+	if err := validateAssetRefFilter(req.AssetRef); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
@@ -1392,6 +1401,7 @@ func (r *RPCServer) listStoredVTXOs(ctx context.Context,
 	// logic is reusable by a future SDK.
 	filterOpts := vtxo.FilterOptions{
 		MinAmount: btcutil.Amount(req.MinAmountSat),
+		AssetRef:  req.AssetRef,
 	}
 
 	filtered := vtxo.FilterDescriptors(dbVTXOs, filterOpts)
@@ -1475,12 +1485,17 @@ func (r *RPCServer) listPendingRoundVTXOs(ctx context.Context,
 
 		for _, v := range info.Vtxos {
 			amount := btcutil.Amount(v.AmountSat)
-			if amount < minAmount {
+			if amount < minAmount ||
+				(req.AssetRef != "" &&
+					req.AssetRef != v.AssetRef) {
+
 				continue
 			}
 
 			protoVTXOs = append(protoVTXOs, &waverpc.VTXO{
 				AmountSat:      v.AmountSat,
+				AssetRef:       v.AssetRef,
+				AssetAmount:    v.AssetAmount,
 				Status:         pendingRoundStatus,
 				RoundId:        info.RoundId,
 				CommitmentTxid: info.CommitmentTxid,
@@ -1580,6 +1595,11 @@ func descriptorToProto(v *vtxo.Descriptor) *waverpc.VTXO {
 		PkScript:       hex.EncodeToString(v.PkScript),
 		CommitmentTxid: v.CommitmentTxID.String(),
 		ChainDepth:     uint32(v.ChainDepth),
+		AssetRef:       v.TaprootAssetRef,
+		AssetAmount:    v.TaprootAssetAmount,
+	}
+	if v.TaprootAssetRoot != nil {
+		proto.AssetRoot = hex.EncodeToString(v.TaprootAssetRoot[:])
 	}
 
 	// Settlement remains private until the VTXO reaches its terminal
@@ -6079,7 +6099,9 @@ func liveRoundDetails(state round.ClientState) (string,
 				continue
 			}
 			out = append(out, &waverpc.RoundVTXOInfo{
-				AmountSat: int64(v.Amount),
+				AmountSat:   int64(v.Amount),
+				AssetRef:    v.AssetRef,
+				AssetAmount: v.AssetAmount,
 			})
 		}
 
@@ -6111,7 +6133,9 @@ func liveRoundDetails(state round.ClientState) (string,
 					"%s:%d", v.Outpoint.Hash,
 					v.Outpoint.Index,
 				),
-				AmountSat: int64(v.Amount),
+				AmountSat:   int64(v.Amount),
+				AssetRef:    v.TaprootAssetRef,
+				AssetAmount: v.TaprootAssetAmount,
 			})
 		}
 

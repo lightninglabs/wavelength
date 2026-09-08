@@ -580,6 +580,17 @@ message GetBalanceResponse {
     // total_confirmed_sat; reappears under onchain_wallet_confirmed_sat
     // once the sweep confirms.
     int64 vtxo_unilateral_exit_sat = 10;
+
+    // asset_balances reports live asset holdings separately from spendable
+    // Bitcoin. Carrier satoshis are excluded from vtxo_balance_sat.
+    repeated AssetBalance asset_balances = 11;
+}
+
+// AssetBalance is a confirmed live holding, not a claim of spend availability.
+message AssetBalance {
+    string asset_ref = 1;
+    uint64 amount = 2;
+    int64 carrier_sat = 3;
 }
 
 // VTXOStatus represents the lifecycle state of a virtual transaction
@@ -750,6 +761,15 @@ message VTXO {
     // only for FORFEITED VTXOs whose forfeit round is known, and unset
     // otherwise, so absence is explicit rather than a zero-value sentinel.
     VTXOSettlement settlement = 14;
+
+    // asset_ref is the canonical SDK asset reference; empty for Bitcoin.
+    string asset_ref = 15;
+
+    // asset_amount is measured in asset units, independently of amount_sat.
+    uint64 asset_amount = 16;
+
+    // asset_root is the 32-byte asset commitment root, hex-encoded.
+    string asset_root = 17;
 }
 
 message VTXOSettlement {
@@ -788,6 +808,10 @@ message ListVTXOsRequest {
     // VTXO_STATUS_SPENT is returned. VTXO_STATUS_PENDING_ROUND entries are
     // only included when listed.
     repeated VTXOStatus statuses = 4;
+
+    // asset_ref restricts results to one canonical SDK asset reference.
+    // Empty includes both Bitcoin and asset VTXOs.
+    string asset_ref = 5;
 }
 
 message ListVTXOsResponse {
@@ -1975,6 +1999,10 @@ message RoundVTXOInfo {
 
     // amount_sat is the value of this VTXO in satoshis.
     int64 amount_sat = 2;
+
+    // Asset units remain separate from the Bitcoin carrier amount.
+    string asset_ref = 3;
+    uint64 asset_amount = 4;
 }
 
 // RoundInfo describes the current state of a single round FSM
