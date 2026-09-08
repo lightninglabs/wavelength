@@ -353,7 +353,7 @@ func restoreArkChannelSourceWatches(ctx context.Context,
 // still require a durable channel action. Once conflict evidence is stored,
 // Service.Resume owns retries and another chain registration is unnecessary.
 func shouldRestoreArkChannelSourceWatch(snapshot arkchannel.Snapshot) bool {
-	if !snapshot.RecoveryReady || snapshot.Source == nil ||
+	if !snapshot.RecoveryReady() || snapshot.Source == nil ||
 		snapshot.SourceConflict != nil {
 		return false
 	}

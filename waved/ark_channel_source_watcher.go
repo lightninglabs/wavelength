@@ -161,7 +161,7 @@ func (w *arkChannelSourceWatcher) handleSpend(id arkchannel.ID,
 	cancelSpendRegistrations(registrations)
 	attempts := 0
 	for {
-		_, err := sink.Apply(w.ctx, id, event)
+		_, err := sink.ApplyLocalEvent(w.ctx, id, event)
 		if err == nil {
 			if attempts > 0 {
 				w.log.InfoS(

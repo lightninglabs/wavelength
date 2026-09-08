@@ -33,8 +33,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const arkChannelMailboxRuntimePrefix = "arkchannel-serverconn-"
-
 const arkChannelPeerIngressPrefix = "arkchannel-peer-ingress-"
 
 const arkChannelControllerPollInterval = 25 * time.Millisecond
@@ -439,7 +437,6 @@ func (s *Server) initArkChannelProcess(ctx context.Context) error {
 	replyMailbox := lnruntime.ArkChannelClientMailboxID(localMailbox)
 	remoteMailbox := lnruntime.ArkChannelHubMailboxID(localMailbox)
 	connCfg := serverconn.DefaultConnectorConfig()
-	connCfg.RuntimeID = arkChannelMailboxRuntimePrefix + localMailbox
 	connCfg.Edge = s.cfg.Swap.ArkChannelMailbox
 	connCfg.LocalMailboxID = localMailbox
 	connCfg.ReplyMailboxID = replyMailbox

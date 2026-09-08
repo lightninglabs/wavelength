@@ -118,33 +118,37 @@ func TestShouldRestoreArkChannelSourceWatch(t *testing.T) {
 		{
 			name: "active",
 			snapshot: arkchannel.Snapshot{
-				Phase:  arkchannel.PhaseActive,
-				Source: source, RecoveryReady: true,
+				Phase: arkchannel.PhaseActive, Source: source,
+				ClientRecoveryReady: true,
+				HubRecoveryReady:    true,
 			},
 			restore: true,
 		},
 		{
 			name: "cooperatively closed",
 			snapshot: arkchannel.Snapshot{
-				Phase:  arkchannel.PhaseClosed,
-				Source: source, RecoveryReady: true,
-				CooperativeClose: cooperativeClose,
+				Phase: arkchannel.PhaseClosed, Source: source,
+				ClientRecoveryReady: true,
+				HubRecoveryReady:    true,
+				CooperativeClose:    cooperativeClose,
 			},
 			restore: true,
 		},
 		{
 			name: "ordinary closed",
 			snapshot: arkchannel.Snapshot{
-				Phase:  arkchannel.PhaseClosed,
-				Source: source, RecoveryReady: true,
+				Phase: arkchannel.PhaseClosed, Source: source,
+				ClientRecoveryReady: true,
+				HubRecoveryReady:    true,
 			},
 		},
 		{
 			name: "conflict already durable",
 			snapshot: arkchannel.Snapshot{
-				Phase:  arkchannel.PhaseClosed,
-				Source: source, RecoveryReady: true,
-				CooperativeClose: cooperativeClose,
+				Phase: arkchannel.PhaseClosed, Source: source,
+				ClientRecoveryReady: true,
+				HubRecoveryReady:    true,
+				CooperativeClose:    cooperativeClose,
 				SourceConflict: &arkchannel.SourceConflict{
 					OutPoint: wire.OutPoint{
 						Index: 2,
@@ -193,7 +197,8 @@ func TestRestoreArkChannelSourceWatchesIsolatesFailures(t *testing.T) {
 						Index: 1,
 					},
 				},
-				RecoveryReady: true,
+				ClientRecoveryReady: true,
+				HubRecoveryReady:    true,
 			},
 		},
 		{
@@ -207,7 +212,8 @@ func TestRestoreArkChannelSourceWatchesIsolatesFailures(t *testing.T) {
 						Index: 2,
 					},
 				},
-				RecoveryReady: true,
+				ClientRecoveryReady: true,
+				HubRecoveryReady:    true,
 			},
 		},
 	}

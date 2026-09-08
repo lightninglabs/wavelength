@@ -68,8 +68,9 @@ func (b *sourceWatcherBackend) RegisterSpend(_ context.Context,
 	}, nil
 }
 
-// Apply records one watcher event and injects transient failures when asked.
-func (s *sourceWatcherSink) Apply(_ context.Context, id arkchannel.ID,
+// ApplyLocalEvent records one watcher event and injects transient failures
+// when asked.
+func (s *sourceWatcherSink) ApplyLocalEvent(_ context.Context, id arkchannel.ID,
 	event arkchannel.Event) (arkchannel.Record, error) {
 
 	s.mu.Lock()

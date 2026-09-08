@@ -1181,7 +1181,7 @@ func (c *NativeArkChannelController) newService(node *lnruntime.NativeNode,
 		return nil, err
 	}
 
-	return arkchannel.NewService(c.coordinator, executor)
+	return arkchannel.NewService(c.party, c.coordinator, executor)
 }
 
 // PromoteVTXO prepares and activates one client-funded OOR channel.
@@ -1702,8 +1702,10 @@ func (c *NativeArkChannelController) syncReceiveIntent(ctx context.Context,
 			return nil
 		}
 		if remote.Source != nil && local.Snapshot.Source == nil {
-			_, err := c.service.BindPreparedOOR(
-				ctx, id, *remote.Source,
+			_, err := c.service.ApplyPeerEvent(
+				ctx, id, &arkchannel.BindVTXO{
+					Binding: *remote.Source,
+				},
 			)
 			if err != nil {
 				return c.failReceiveIntent(ctx, id, err)
@@ -1717,7 +1719,7 @@ func (c *NativeArkChannelController) syncReceiveIntent(ctx context.Context,
 
 			event := &arkchannel.FundingPeerReady{}
 			if local.Snapshot.Phase == arkchannel.PhaseRequested {
-				if _, err := c.service.RecordChannelEvent(
+				if _, err := c.service.RecordLocalEvent(
 					ctx, id, event,
 				); err != nil {
 					return c.failReceiveIntent(ctx, id, err)
@@ -1733,7 +1735,7 @@ func (c *NativeArkChannelController) syncReceiveIntent(ctx context.Context,
 
 			continue
 		}
-		if remote.OORFinalized && !local.Snapshot.RecoveryReady {
+		if remote.OORFinalized && !local.Snapshot.ClientRecoveryReady {
 			if local.Snapshot.Source == nil ||
 				local.Snapshot.Backing == nil {
 				return fmt.Errorf("finalized receive channel " +
@@ -1749,13 +1751,15 @@ func (c *NativeArkChannelController) syncReceiveIntent(ctx context.Context,
 			); err != nil {
 				return err
 			}
-			event := &arkchannel.RecoveryPackageInstalled{}
+			event := &arkchannel.RecoveryPackageInstalled{
+				Party: arkchannel.PartyClient,
+			}
 			if _, err := c.remote.ApplyChannelEvent(
 				ctx, id, event,
 			); err != nil {
 				return err
 			}
-			if _, err := c.service.Apply(
+			if _, err := c.service.ApplyLocalEvent(
 				ctx, id, event,
 			); err != nil {
 				return err
@@ -1786,7 +1790,11 @@ func (c *NativeArkChannelController) failReceiveIntent(ctx context.Context,
 	); err != nil {
 		return errors.Join(cause, err)
 	}
-	_, err := c.service.Apply(ctx, id, &arkchannel.Fail{Reason: reason})
+	_, err := c.service.ApplyLocalEvent(
+		ctx, id, &arkchannel.Fail{
+			Reason: reason,
+		},
+	)
 	if err != nil {
 		return errors.Join(cause, err)
 	}
@@ -1812,7 +1820,7 @@ func (c *NativeArkChannelController) mirrorReceiveIntentFailure(
 		local.Snapshot.Phase == arkchannel.PhaseNegotiating {
 
 		var err error
-		record, err = c.service.Apply(
+		record, err = c.service.ApplyLocalEvent(
 			ctx, local.Snapshot.Terms.ID, &arkchannel.Fail{
 				Reason: reason,
 			},
@@ -1825,7 +1833,7 @@ func (c *NativeArkChannelController) mirrorReceiveIntentFailure(
 		(record.Snapshot.Phase == arkchannel.PhaseCancelling ||
 			record.Snapshot.Phase == arkchannel.PhaseBackingReady) {
 
-		_, err := c.service.Apply(
+		_, err := c.service.ApplyPeerEvent(
 			ctx, local.Snapshot.Terms.ID, &arkchannel.OORAborted{
 				SessionID: record.Snapshot.Source.OORSessionID,
 				Reason:    reason,
@@ -1864,7 +1872,7 @@ func (c *NativeArkChannelController) prepareIncomingChannelSource(
 		if !errors.Is(err, ErrReceiveChannelFallback) {
 			return err
 		}
-		_, failErr := c.service.Apply(
+		_, failErr := c.service.ApplyLocalEvent(
 			ctx, snapshot.Terms.ID, &arkchannel.Fail{
 				Reason: err.Error(),
 			},
@@ -1887,7 +1895,7 @@ func (c *NativeArkChannelController) prepareIncomingChannelSource(
 		return fmt.Errorf("reconcile ambiguous receive channel OOR: %w",
 			err)
 	}
-	_, failErr := c.service.Apply(
+	_, failErr := c.service.ApplyLocalEvent(
 		ctx, snapshot.Terms.ID, &arkchannel.Fail{
 			Reason: err.Error(),
 		},
@@ -2005,7 +2013,7 @@ func (c *NativeArkChannelController) AbandonReceiveIntent(ctx context.Context,
 	}
 	switch record.Snapshot.Phase {
 	case arkchannel.PhaseRequested:
-		_, err := c.service.Apply(
+		_, err := c.service.ApplyLocalEvent(
 			ctx, id, &arkchannel.Fail{
 				Reason: reason,
 			},
