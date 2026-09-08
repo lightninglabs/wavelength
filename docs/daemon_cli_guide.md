@@ -145,6 +145,7 @@ waved \
 | `--rpc.tlskeypath` | | Custom TLS key for daemon RPC |
 | `--swap.serveraddress` | network default | Swap server address override for swapruntime builds |
 | `--swap.servertransport` | `grpc` | Swap server transport: `grpc` or `rest` |
+| `--swap.arkchannelreceiveenabled` | `false` | Opt into direct Ark-channel settlement for Lightning receives; disabled receives use only vHTLC |
 | `--maxpaymentcltv` | `300` in swap-enabled builds | Largest total Lightning payment CLTV reserved by automatic VTXO refresh; `0` disables the payment reserve |
 
 Empty Ark and swap addresses resolve from the selected network and transport.

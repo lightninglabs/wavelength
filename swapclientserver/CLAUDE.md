@@ -50,9 +50,10 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   `MailboxOutSwapEventReceiver` (empty mailbox ID — receiver derives the
   per-swap mailbox from client identity + payment hash) on the
   `SwapClient` so out-swap HTLC events flow over the mailbox transport,
-  installs the `arkChannelPaymentBridge`, and publishes the authenticated
-  swap-server mailbox as `cfg.Swap.ArkChannelMailbox` for the daemon-owned
-  channel process. Cleanup clears that mailbox handle,
+  conditionally installs the `arkChannelPaymentBridge` when
+  `SwapConfig.ArkChannelReceiveEnabled` is true, and publishes the
+  authenticated swap-server mailbox as `cfg.Swap.ArkChannelMailbox` for the
+  daemon-owned channel process. Cleanup clears that mailbox handle,
   publishes `cfg.Swap.Backend`/`CreditServer`/`CreditDaemon` bridges,
   registers the gRPC subserver, calls `resumePending` (unless
   `cfg.Swap.SuppressResume`), and returns a cleanup function.
@@ -149,10 +150,12 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   included because a receive acknowledgement must survive a reconnect;
   mailbox `Pull`, quote RPCs, and credit snapshots remain fail-fast. New
   state-changing RPCs must be classified explicitly.
-- `SetArkChannelPaymentBridge` and `SetOutSwapEventReceiver` must both run
-  before `resumePending`. Resumed receives use the bridge to reconcile the
-  channel rail and the event receiver to reconcile the vHTLC rail; installing
-  either after workers start would strand that rail on restart.
+- Direct Ark-channel receives are a positive opt-in. When
+  `SwapConfig.ArkChannelReceiveEnabled` is false, `Register` leaves the SDK
+  bridge unset, so receive invoice creation performs no channel preparation
+  and uses only the vHTLC rail. When enabled, `SetArkChannelPaymentBridge`
+  runs before `resumePending`; resumed receives can then reconcile the channel
+  rail before workers start.
 - `SetOutSwapEventReceiver` must run before any receive worker is started:
   `SwapClient` captures the receiver into the per-swap worker at start time,
   so a late install would leave already-running workers using whatever

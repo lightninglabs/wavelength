@@ -889,6 +889,40 @@ func TestBindArkChannelMailbox(t *testing.T) {
 	require.Nil(t, cfg.ArkChannelMailbox)
 }
 
+// recordingArkChannelBridgeSetter records whether daemon wiring exposes the
+// optional direct receive bridge to the swap SDK.
+type recordingArkChannelBridgeSetter struct {
+	bridge swaps.ArkChannelPaymentBridge
+	calls  int
+}
+
+// SetArkChannelPaymentBridge records one bridge installation.
+func (s *recordingArkChannelBridgeSetter) SetArkChannelPaymentBridge(
+	bridge swaps.ArkChannelPaymentBridge) {
+
+	s.bridge = bridge
+	s.calls++
+}
+
+// TestConfigureArkChannelReceiveBridgeRequiresOptIn verifies disabled receive
+// mode leaves the SDK bridge unset while the explicit opt-in installs it.
+func TestConfigureArkChannelReceiveBridgeRequiresOptIn(t *testing.T) {
+	t.Parallel()
+
+	rpcServer := waved.NewRPCServer(nil)
+	disabled := &recordingArkChannelBridgeSetter{}
+	configureArkChannelReceiveBridge(disabled, rpcServer, false)
+	require.Zero(t, disabled.calls)
+	require.Nil(t, disabled.bridge)
+
+	enabled := &recordingArkChannelBridgeSetter{}
+	configureArkChannelReceiveBridge(enabled, rpcServer, true)
+	require.Equal(t, 1, enabled.calls)
+	bridge, ok := enabled.bridge.(*arkChannelPaymentBridge)
+	require.True(t, ok)
+	require.Same(t, rpcServer, bridge.rpc)
+}
+
 // TestDaemonWithLiveOperatorKeyUsesLiveFetcher verifies the daemon-hosted swap
 // runtime bypasses the Ark SDK facade's cached operator key.
 func TestDaemonWithLiveOperatorKeyUsesLiveFetcher(t *testing.T) {
