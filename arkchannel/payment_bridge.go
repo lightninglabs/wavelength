@@ -53,8 +53,8 @@ const (
 	// and held while the destination is dispatched.
 	PaymentSourceLocked
 
-	// PaymentDestinationInFlight means lnd owns a durable destination
-	// payment attempt for the same payment hash.
+	// PaymentDestinationInFlight means the destination is durably selected
+	// and lnd dispatch is pending or owns an attempt for the same hash.
 	PaymentDestinationInFlight
 
 	// PaymentPreimageKnown means the destination settled and the exact
@@ -301,6 +301,15 @@ type PaymentDestinationSettled struct {
 }
 
 func (*PaymentDestinationSettled) paymentBridgeEventSealed() {}
+
+// PaymentDestinationUnavailable records authoritative payment-system proof
+// that the selected destination cannot later reveal a preimage. This permits
+// an incoming payment to use the vHTLC fallback after dispatch was requested.
+type PaymentDestinationUnavailable struct {
+	Reason string
+}
+
+func (*PaymentDestinationUnavailable) paymentBridgeEventSealed() {}
 
 // PaymentSourceSettled records release of the source with the preimage.
 type PaymentSourceSettled struct{}
@@ -557,6 +566,9 @@ func applyPaymentBridgeEvent(next *PaymentBridgeSnapshot,
 	case *PaymentDestinationSettled:
 		return applyPaymentDestinationSettled(next, event)
 
+	case *PaymentDestinationUnavailable:
+		return applyPaymentDestinationUnavailable(next, event)
+
 	case *PaymentSourceSettled:
 		return applyPaymentSourceSettled(next)
 
@@ -708,6 +720,34 @@ func applyPaymentDestinationSettled(next *PaymentBridgeSnapshot,
 	preimage := event.Preimage
 	next.Preimage = &preimage
 	next.Phase = PaymentPreimageKnown
+
+	return true, nil
+}
+
+// applyPaymentDestinationUnavailable selects the mature receive rail only
+// after lnd proves the selected destination cannot settle in the future.
+func applyPaymentDestinationUnavailable(next *PaymentBridgeSnapshot,
+	event *PaymentDestinationUnavailable) (bool, error) {
+
+	if next.Direction != PaymentIncoming {
+		return false, fmt.Errorf("only incoming payment can fall back")
+	}
+	if next.Phase == PaymentVHTLCFallback {
+		if next.Failure == event.Reason {
+			return false, nil
+		}
+
+		return false, fmt.Errorf("fallback reason changed")
+	}
+	if next.Phase != PaymentDestinationInFlight {
+		return false, fmt.Errorf("destination is not in flight from %s",
+			next.Phase)
+	}
+	if event.Reason == "" {
+		return false, fmt.Errorf("fallback reason required")
+	}
+	next.Failure = event.Reason
+	next.Phase = PaymentVHTLCFallback
 
 	return true, nil
 }

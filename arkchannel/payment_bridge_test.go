@@ -164,6 +164,34 @@ func TestPaymentBridgeRejectsFallbackAfterDestinationDispatch(t *testing.T) {
 	require.Equal(t, snapshot.ReservedSCID, state.Snapshot().ReservedSCID)
 }
 
+// TestPaymentBridgeDestinationUnavailableFallback proves only authoritative
+// destination failure can select the vHTLC rail after dispatch was requested.
+func TestPaymentBridgeDestinationUnavailableFallback(t *testing.T) {
+	snapshot, _ := testPaymentBridgeSnapshot(t, PaymentIncoming)
+	state, err := NewPaymentBridgeState(snapshot)
+	require.NoError(t, err)
+
+	state = applyPaymentEvent(t, state, &PaymentSourceHTLCLocked{
+		Circuit: &PaymentCircuit{
+			IncomingChannelID: 1, IncomingHTLCID: 2,
+			OutgoingSCID: snapshot.ReservedSCID,
+		},
+	})
+	state = applyPaymentEvent(t, state, &PaymentDestinationStarted{
+		ChannelID: ID{2}, DestinationSCID: 43,
+	})
+	state = applyPaymentEvent(t, state, &PaymentDestinationUnavailable{
+		Reason: "control tower reports no payment attempt",
+	})
+
+	require.True(t, state.IsTerminal())
+	require.Equal(t, PaymentVHTLCFallback, state.Snapshot().Phase)
+	require.Equal(
+		t, "control tower reports no payment attempt",
+		state.Snapshot().Failure,
+	)
+}
+
 func applyPaymentEvent(t *testing.T, state PaymentBridgeState,
 	event PaymentBridgeEvent) PaymentBridgeState {
 
