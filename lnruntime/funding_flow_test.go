@@ -1279,6 +1279,7 @@ func TestNativeFundingFlowInArkCooperativeClose(t *testing.T) {
 		ProcessCooperativeClosePeer: mailboxPeer,
 		loseBegin:                   true,
 		loseComplete:                true,
+		failPublish:                 true,
 	}
 	clientDelivery := &stableCooperativeCloseDelivery{
 		script: request.ClientDeliveryScript,
@@ -1385,11 +1386,31 @@ func TestNativeFundingFlowInArkCooperativeClose(t *testing.T) {
 	close(publisher.confirm)
 	select {
 	case err := <-closeResult:
-		require.NoError(t, err)
+		require.ErrorContains(t, err, "publish interruption")
 
 	case <-time.After(10 * time.Second):
 		t.Fatal("timeout finalizing cooperative OOR close")
 	}
+	clientPublished, err := clientStore.Get(
+		t.Context(), record.Snapshot.Terms.ID,
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, arkchannel.PhaseCoopClosePublished,
+		clientPublished.Snapshot.Phase,
+	)
+	hubWaiting, err := hubStore.Get(
+		t.Context(), record.Snapshot.Terms.ID,
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, arkchannel.PhaseCoopCloseSigned, hubWaiting.Snapshot.Phase,
+	)
+	for _, node := range []*fundingFlowNode{hub, client} {
+		_, err := node.db.ChannelStateDB().FetchChannel(channelPoint)
+		require.NoError(t, err)
+	}
+
 	require.Equal(t, 2, clientDelivery.callCount())
 	closed, err := clientClose.RequestCooperativeClose(
 		t.Context(), record.Snapshot.Terms.ID,

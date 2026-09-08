@@ -351,7 +351,7 @@ func (p *ClientCooperativeCloseProcess) FinalizeCooperativeClose(
 	request arkchannel.CooperativeCloseRequest,
 	settlement arkchannel.CooperativeClose) error {
 
-	return p.finalizeClient(
+	return p.finalizePublishedClose(
 		ctx, id, terms, backing, source, request, settlement,
 	)
 }
@@ -391,6 +391,24 @@ func (p *ClientCooperativeCloseProcess) publishAndFinalize(ctx context.Context,
 			TxID: settlement.TxID,
 		},
 	); err != nil {
+		return err
+	}
+
+	return p.finalizePublishedClose(
+		ctx, id, terms, backing, source, request, settlement,
+	)
+}
+
+// finalizePublishedClose makes the hub publication barrier replayable before
+// either endpoint archives its lnd channel.
+func (p *ClientCooperativeCloseProcess) finalizePublishedClose(
+	ctx context.Context, id arkchannel.ID, terms arkchannel.Terms,
+	backing arkchannel.Backing, source arkchannel.VTXOBinding,
+	request arkchannel.CooperativeCloseRequest,
+	settlement arkchannel.CooperativeClose) error {
+
+	service, err := p.stateService()
+	if err != nil {
 		return err
 	}
 	txID, err := p.peer.PublishCooperativeClose(

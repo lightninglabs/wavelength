@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"google.golang.org/protobuf/proto"
@@ -98,6 +99,7 @@ type lossyCooperativeClosePeer struct {
 	mu           sync.Mutex
 	loseBegin    bool
 	loseComplete bool
+	failPublish  bool
 }
 
 // BeginCooperativeClose can lose one response after the hub persisted it.
@@ -148,6 +150,25 @@ func (p *lossyCooperativeClosePeer) CompleteCooperativeClose(
 	}
 
 	return settlement, nil
+}
+
+// PublishCooperativeClose can fail before the hub observes the durable OOR
+// settlement, modeling a client crash at that exact replay boundary.
+func (p *lossyCooperativeClosePeer) PublishCooperativeClose(ctx context.Context,
+	id arkchannel.ID, txID chainhash.Hash) (chainhash.Hash, error) {
+
+	p.mu.Lock()
+	fail := p.failPublish
+	p.failPublish = false
+	p.mu.Unlock()
+	if fail {
+		return chainhash.Hash{}, fmt.Errorf("injected publish " +
+			"interruption")
+	}
+
+	return p.ProcessCooperativeClosePeer.PublishCooperativeClose(
+		ctx, id, txID,
+	)
 }
 
 type stableCooperativeCloseDelivery struct {
