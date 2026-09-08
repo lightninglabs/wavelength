@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -1309,7 +1308,7 @@ func (c *NativeArkChannelController) promotionIdentifiers(
 	}
 	scid := lnwire.ShortChannelID{
 		BlockHeight: blockHeight, TxIndex: txIndex,
-		TxPosition: binary.BigEndian.Uint16(scidSeed[6:8]),
+		TxPosition: 0,
 	}.ToUint64()
 
 	return id, pending, scid

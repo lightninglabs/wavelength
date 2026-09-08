@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/wavelength/arkchannel/oorbridge"
 	"github.com/lightninglabs/wavelength/lnruntime"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -535,6 +536,9 @@ func TestPromotionIdentifiersAreStableAndScoped(t *testing.T) {
 	require.Equal(t, firstID, retryID)
 	require.Equal(t, firstPending, retryPending)
 	require.Equal(t, firstSCID, retrySCID)
+	reservedSCID := lnwire.NewShortChanIDFromInt(firstSCID)
+	require.NotZero(t, reservedSCID.BlockHeight)
+	require.Zero(t, reservedSCID.TxPosition)
 
 	otherKeyID, _, _ := first.promotionIdentifiers("invoice-43")
 	otherIdentityID, _, _ := second.promotionIdentifiers("invoice-42")
