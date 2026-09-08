@@ -3,7 +3,7 @@ package chainbackends
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
+	"sync"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -16,7 +16,22 @@ import (
 // the embedding wallet owns that lifecycle.
 type BackendChainNotifier struct {
 	backend chainsource.ChainBackend
-	started atomic.Bool
+
+	mu            sync.Mutex
+	started       bool
+	stopped       bool
+	nextID        uint64
+	registrations map[uint64]*backendNotifierRegistration
+	wg            sync.WaitGroup
+}
+
+// backendNotifierRegistration owns both sides of one adapted registration.
+type backendNotifierRegistration struct {
+	mu sync.Mutex
+
+	canceled      bool
+	cancelContext context.CancelFunc
+	cancelBackend func()
 }
 
 // NewBackendChainNotifier constructs a notifier over an already-running chain
@@ -28,8 +43,13 @@ func NewBackendChainNotifier(backend chainsource.ChainBackend) (
 		return nil, fmt.Errorf("chain backend is required")
 	}
 
-	notifier := &BackendChainNotifier{backend: backend}
-	notifier.started.Store(true)
+	notifier := &BackendChainNotifier{
+		backend: backend,
+		started: true,
+		registrations: make(
+			map[uint64]*backendNotifierRegistration,
+		),
+	}
 
 	return notifier, nil
 }
@@ -46,22 +66,41 @@ func (n *BackendChainNotifier) RegisterConfirmationsNtfn(txid *chainhash.Hash,
 		opt(notifierOpts)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, id, owned, err := n.beginRegistration()
+	if err != nil {
+		return nil, err
+	}
+	heightHint, err = n.clampHeightHint(ctx, heightHint)
+	if err != nil {
+		n.finishRegistration(id, owned)
+
+		return nil, err
+	}
 	registration, err := n.backend.RegisterConf(
 		ctx, txid, pkScript, numConfs, heightHint,
 		notifierOpts.IncludeBlock,
 	)
 	if err != nil {
-		cancel()
+		n.finishRegistration(id, owned)
 
 		return nil, err
 	}
+	owned.setBackendCancel(registration.Cancel)
+	if err := ctx.Err(); err != nil {
+		n.finishRegistration(id, owned)
+
+		return nil, fmt.Errorf("backend chain notifier stopped: %w",
+			err)
+	}
 
 	event := chainntnfs.NewConfirmationEvent(numConfs, func() {
-		cancel()
-		registration.Cancel()
+		owned.cancel()
 	})
-	go forwardBackendConfirmations(ctx, registration, event)
+	go func() {
+		defer n.finishRegistration(id, owned)
+
+		forwardBackendConfirmations(ctx, registration, event)
+	}()
 
 	return event, nil
 }
@@ -71,21 +110,40 @@ func (n *BackendChainNotifier) RegisterConfirmationsNtfn(txid *chainhash.Hash,
 func (n *BackendChainNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 	pkScript []byte, heightHint uint32) (*chainntnfs.SpendEvent, error) {
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, id, owned, err := n.beginRegistration()
+	if err != nil {
+		return nil, err
+	}
+	heightHint, err = n.clampHeightHint(ctx, heightHint)
+	if err != nil {
+		n.finishRegistration(id, owned)
+
+		return nil, err
+	}
 	registration, err := n.backend.RegisterSpend(
 		ctx, outpoint, pkScript, heightHint,
 	)
 	if err != nil {
-		cancel()
+		n.finishRegistration(id, owned)
 
 		return nil, err
 	}
+	owned.setBackendCancel(registration.Cancel)
+	if err := ctx.Err(); err != nil {
+		n.finishRegistration(id, owned)
+
+		return nil, fmt.Errorf("backend chain notifier stopped: %w",
+			err)
+	}
 
 	event := chainntnfs.NewSpendEvent(func() {
-		cancel()
-		registration.Cancel()
+		owned.cancel()
 	})
-	go forwardBackendSpends(ctx, registration, event)
+	go func() {
+		defer n.finishRegistration(id, owned)
+
+		forwardBackendSpends(ctx, registration, event)
+	}()
 
 	return event, nil
 }
@@ -96,28 +154,39 @@ func (n *BackendChainNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 func (n *BackendChainNotifier) RegisterBlockEpochNtfn(
 	bestBlock *chainntnfs.BlockEpoch) (*chainntnfs.BlockEpochEvent, error) {
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, id, owned, err := n.beginRegistration()
+	if err != nil {
+		return nil, err
+	}
 	registration, err := n.backend.RegisterBlocks(ctx)
 	if err != nil {
-		cancel()
+		n.finishRegistration(id, owned)
 
 		return nil, err
 	}
+	owned.setBackendCancel(registration.Cancel)
 	height, hash, err := n.backend.BestBlock(ctx)
 	if err != nil {
-		cancel()
-		registration.Cancel()
+		n.finishRegistration(id, owned)
 
 		return nil, fmt.Errorf("read block epoch registration tip: %w",
+			err)
+	}
+	if err := ctx.Err(); err != nil {
+		n.finishRegistration(id, owned)
+
+		return nil, fmt.Errorf("backend chain notifier stopped: %w",
 			err)
 	}
 
 	epochs := make(chan *chainntnfs.BlockEpoch, 10)
 	go func() {
+		defer n.finishRegistration(id, owned)
 		defer close(epochs)
 
 		lastHeight := height
 		lastHash := hash
+		registrationHeight := height
 		seedTip := bestBlock == nil || bestBlock.Hash == nil ||
 			bestBlock.Height != height || *bestBlock.Hash != hash
 		if seedTip {
@@ -135,6 +204,9 @@ func (n *BackendChainNotifier) RegisterBlockEpochNtfn(
 			case epoch, ok := <-registration.Epochs:
 				if !ok {
 					return
+				}
+				if epoch.Height < registrationHeight {
+					continue
 				}
 				if epoch.Height == lastHeight &&
 					epoch.Hash == lastHash {
@@ -161,8 +233,7 @@ func (n *BackendChainNotifier) RegisterBlockEpochNtfn(
 	return &chainntnfs.BlockEpochEvent{
 		Epochs: epochs,
 		Cancel: func() {
-			cancel()
-			registration.Cancel()
+			owned.cancel()
 		},
 	}, nil
 }
@@ -170,21 +241,140 @@ func (n *BackendChainNotifier) RegisterBlockEpochNtfn(
 // Start records notifier availability. The chain backend remains owned by the
 // embedding Wavelength wallet.
 func (n *BackendChainNotifier) Start() error {
-	n.started.Store(true)
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if n.stopped {
+		return fmt.Errorf("backend chain notifier already stopped")
+	}
+	n.started = true
 
 	return nil
 }
 
 // Started reports whether the adapter accepts registrations.
 func (n *BackendChainNotifier) Started() bool {
-	return n.started.Load()
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	return n.started
 }
 
-// Stop marks the adapter stopped without stopping the shared chain backend.
+// Stop cancels adapter-owned registrations without stopping the shared backend.
 func (n *BackendChainNotifier) Stop() error {
-	n.started.Store(false)
+	n.mu.Lock()
+	if n.stopped {
+		n.mu.Unlock()
+
+		return nil
+	}
+	n.started = false
+	n.stopped = true
+	registrations := make(
+		[]*backendNotifierRegistration, 0, len(n.registrations),
+	)
+	for _, registration := range n.registrations {
+		registrations = append(registrations, registration)
+	}
+	n.mu.Unlock()
+
+	for _, registration := range registrations {
+		registration.cancel()
+	}
+	n.wg.Wait()
 
 	return nil
+}
+
+// beginRegistration reserves lifecycle ownership before calling the backend.
+func (n *BackendChainNotifier) beginRegistration() (context.Context, uint64,
+	*backendNotifierRegistration, error) {
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if !n.started || n.stopped {
+		return nil, 0, nil, fmt.Errorf("backend chain notifier is " +
+			"stopped")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	n.nextID++
+	id := n.nextID
+	registration := &backendNotifierRegistration{
+		cancelContext: cancel,
+	}
+	n.registrations[id] = registration
+	n.wg.Add(1)
+
+	return ctx, id, registration, nil
+}
+
+// finishRegistration releases one lifecycle reservation exactly once.
+func (n *BackendChainNotifier) finishRegistration(id uint64,
+	registration *backendNotifierRegistration) {
+
+	registration.cancel()
+	n.mu.Lock()
+	if n.registrations[id] == registration {
+		delete(n.registrations, id)
+		n.wg.Done()
+	}
+	n.mu.Unlock()
+}
+
+// clampHeightHint prevents virtual SCID heights above tip from suppressing a
+// backend's historical confirmation or spend scan.
+func (n *BackendChainNotifier) clampHeightHint(ctx context.Context,
+	heightHint uint32) (uint32, error) {
+
+	if heightHint == 0 {
+		return 0, nil
+	}
+	height, _, err := n.backend.BestBlock(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("read notifier height-hint tip: %w", err)
+	}
+	if height < 0 {
+		return 0, fmt.Errorf("invalid notifier tip height %d", height)
+	}
+	if heightHint > uint32(height) {
+		return uint32(height), nil
+	}
+
+	return heightHint, nil
+}
+
+// setBackendCancel installs the backend half of a registration cancellation.
+func (r *backendNotifierRegistration) setBackendCancel(cancel func()) {
+	r.mu.Lock()
+	if !r.canceled {
+		r.cancelBackend = cancel
+		r.mu.Unlock()
+
+		return
+	}
+	r.mu.Unlock()
+
+	cancel()
+}
+
+// cancel releases both the adapter context and backend registration once.
+func (r *backendNotifierRegistration) cancel() {
+	r.mu.Lock()
+	if r.canceled {
+		r.mu.Unlock()
+
+		return
+	}
+	r.canceled = true
+	cancelContext := r.cancelContext
+	cancelBackend := r.cancelBackend
+	r.mu.Unlock()
+
+	cancelContext()
+	if cancelBackend != nil {
+		cancelBackend()
+	}
 }
 
 // forwardBackendConfirmations preserves each backend lifecycle on the lnd
@@ -193,11 +383,15 @@ func forwardBackendConfirmations(ctx context.Context,
 	registration *chainsource.ConfRegistration,
 	event *chainntnfs.ConfirmationEvent) {
 
+	var lastSeq uint64
 	for {
 		select {
 		case confirmation, ok := <-registration.Confirmed:
 			if !ok {
 				return
+			}
+			if !applyBackendSequence(confirmation.Seq, &lastSeq) {
+				continue
 			}
 			select {
 			case event.Confirmed <- &chainntnfs.TxConfirmation{
@@ -211,12 +405,15 @@ func forwardBackendConfirmations(ctx context.Context,
 				return
 			}
 
-		case _, ok := <-registration.Reorged:
+		case seq, ok := <-registration.Reorged:
 			if !ok {
 				return
 			}
+			if !applyBackendSequence(seq, &lastSeq) {
+				continue
+			}
 			select {
-			case event.NegativeConf <- 0:
+			case event.NegativeConf <- 1:
 			case <-ctx.Done():
 				return
 			}
@@ -244,11 +441,15 @@ func forwardBackendSpends(ctx context.Context,
 	registration *chainsource.SpendRegistration,
 	event *chainntnfs.SpendEvent) {
 
+	var lastSeq uint64
 	for {
 		select {
 		case spend, ok := <-registration.Spend:
 			if !ok {
 				return
+			}
+			if !applyBackendSequence(spend.Seq, &lastSeq) {
+				continue
 			}
 			select {
 			case event.Spend <- &chainntnfs.SpendDetail{
@@ -262,9 +463,12 @@ func forwardBackendSpends(ctx context.Context,
 				return
 			}
 
-		case _, ok := <-registration.Reorged:
+		case seq, ok := <-registration.Reorged:
 			if !ok {
 				return
+			}
+			if !applyBackendSequence(seq, &lastSeq) {
+				continue
 			}
 			select {
 			case event.Reorg <- struct{}{}:
@@ -287,6 +491,20 @@ func forwardBackendSpends(ctx context.Context,
 			return
 		}
 	}
+}
+
+// applyBackendSequence rejects an event that lost ordering across two ready
+// backend channels. Sequence zero denotes a backend without reorg ordering.
+func applyBackendSequence(seq uint64, lastSeq *uint64) bool {
+	if seq == 0 {
+		return true
+	}
+	if seq <= *lastSeq {
+		return false
+	}
+	*lastSeq = seq
+
+	return true
 }
 
 var _ chainntnfs.ChainNotifier = (*BackendChainNotifier)(nil)
