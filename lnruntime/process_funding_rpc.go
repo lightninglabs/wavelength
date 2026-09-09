@@ -42,6 +42,7 @@ var fundingPeerMethods = map[string]struct{}{
 	"PrepareOutgoingPayment":  {},
 	"CancelOutgoingPayment":   {},
 	"RegisterIncomingPayment": {},
+	"CancelIncomingPayment":   {},
 }
 
 // OutgoingPaymentPreparation fixes the private source amount and active
@@ -65,6 +66,9 @@ type PaymentBridgeCoordinator interface {
 
 	RegisterIncomingPayment(context.Context, [33]byte, lntypes.Hash,
 		btcutil.Amount, uint64) (btcutil.Amount, error)
+
+	CancelIncomingPayment(context.Context, [33]byte, lntypes.Hash,
+		string) error
 }
 
 // FundingPeerInfo contains immutable hub policy needed to construct a client
@@ -145,6 +149,8 @@ type ProcessPaymentPeer interface {
 
 	RegisterIncomingPayment(context.Context, lntypes.Hash, btcutil.Amount,
 		uint64) (btcutil.Amount, error)
+
+	CancelIncomingPayment(context.Context, lntypes.Hash, string) error
 }
 
 // FundingChannelState is the minimal remote channel-FSM view needed to bind a
@@ -626,6 +632,33 @@ func (p *MailboxFundingPeer) RegisterIncomingPayment(ctx context.Context,
 	}
 
 	return capacity, nil
+}
+
+// CancelIncomingPayment releases a registered future-SCID receive before its
+// invoice is published or a public source HTLC is accepted.
+func (p *MailboxFundingPeer) CancelIncomingPayment(ctx context.Context,
+	hash lntypes.Hash, reason string) error {
+
+	if reason == "" {
+		return fmt.Errorf("incoming payment cancellation reason is " +
+			"required")
+	}
+	response, err := p.client.CancelIncomingPayment(
+		ctx, &arkchannelrpc.CancelIncomingPaymentRequest{
+			PaymentHash: hash[:], Reason: reason,
+		}, fundingRPCOptions(
+			arkchannel.ID(hash),
+			"cancel-incoming-payment",
+		),
+	)
+	if err != nil {
+		return err
+	}
+	if !response.GetCancelled() {
+		return fmt.Errorf("incoming payment was not cancelled")
+	}
+
+	return nil
 }
 
 // FundingPeerRPCServerConfig contains one authenticated remote endpoint and
@@ -1170,6 +1203,34 @@ func (s *FundingPeerRPCServer) RegisterIncomingPayment(ctx context.Context,
 
 	return &arkchannelrpc.RegisterIncomingPaymentResponse{
 		Registered: true, ChannelCapacitySat: int64(capacity),
+	}, nil
+}
+
+// CancelIncomingPayment terminates a future-SCID reservation that cannot be
+// exposed in a durable client invoice.
+func (s *FundingPeerRPCServer) CancelIncomingPayment(ctx context.Context,
+	request *arkchannelrpc.CancelIncomingPaymentRequest) (
+	*arkchannelrpc.CancelIncomingPaymentResponse, error) {
+
+	if s.cfg.Bridge == nil {
+		return nil, fmt.Errorf("payment bridge is not configured")
+	}
+	hash, err := rpcPaymentHash(request.GetPaymentHash())
+	if err != nil {
+		return nil, err
+	}
+	if request.GetReason() == "" || len(request.GetReason()) > 256 {
+		return nil, fmt.Errorf("valid payment cancellation reason is " +
+			"required")
+	}
+	if err := s.cfg.Bridge.CancelIncomingPayment(
+		ctx, s.cfg.RemoteNode, hash, request.GetReason(),
+	); err != nil {
+		return nil, err
+	}
+
+	return &arkchannelrpc.CancelIncomingPaymentResponse{
+		Cancelled: true,
 	}, nil
 }
 
