@@ -725,6 +725,7 @@ const (
 	ArkChannelFundingPeerService_PrepareOutgoingPayment_FullMethodName  = "/arkchannelrpc.ArkChannelFundingPeerService/PrepareOutgoingPayment"
 	ArkChannelFundingPeerService_CancelOutgoingPayment_FullMethodName   = "/arkchannelrpc.ArkChannelFundingPeerService/CancelOutgoingPayment"
 	ArkChannelFundingPeerService_RegisterIncomingPayment_FullMethodName = "/arkchannelrpc.ArkChannelFundingPeerService/RegisterIncomingPayment"
+	ArkChannelFundingPeerService_CancelIncomingPayment_FullMethodName   = "/arkchannelrpc.ArkChannelFundingPeerService/CancelIncomingPayment"
 )
 
 // ArkChannelFundingPeerServiceClient is the client API for ArkChannelFundingPeerService service.
@@ -756,6 +757,7 @@ type ArkChannelFundingPeerServiceClient interface {
 	PrepareOutgoingPayment(ctx context.Context, in *PrepareOutgoingPaymentRequest, opts ...grpc.CallOption) (*PrepareOutgoingPaymentResponse, error)
 	CancelOutgoingPayment(ctx context.Context, in *CancelOutgoingPaymentRequest, opts ...grpc.CallOption) (*CancelOutgoingPaymentResponse, error)
 	RegisterIncomingPayment(ctx context.Context, in *RegisterIncomingPaymentRequest, opts ...grpc.CallOption) (*RegisterIncomingPaymentResponse, error)
+	CancelIncomingPayment(ctx context.Context, in *CancelIncomingPaymentRequest, opts ...grpc.CallOption) (*CancelIncomingPaymentResponse, error)
 }
 
 type arkChannelFundingPeerServiceClient struct {
@@ -946,6 +948,16 @@ func (c *arkChannelFundingPeerServiceClient) RegisterIncomingPayment(ctx context
 	return out, nil
 }
 
+func (c *arkChannelFundingPeerServiceClient) CancelIncomingPayment(ctx context.Context, in *CancelIncomingPaymentRequest, opts ...grpc.CallOption) (*CancelIncomingPaymentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CancelIncomingPaymentResponse)
+	err := c.cc.Invoke(ctx, ArkChannelFundingPeerService_CancelIncomingPayment_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ArkChannelFundingPeerServiceServer is the server API for ArkChannelFundingPeerService service.
 // All implementations must embed UnimplementedArkChannelFundingPeerServiceServer
 // for forward compatibility.
@@ -975,6 +987,7 @@ type ArkChannelFundingPeerServiceServer interface {
 	PrepareOutgoingPayment(context.Context, *PrepareOutgoingPaymentRequest) (*PrepareOutgoingPaymentResponse, error)
 	CancelOutgoingPayment(context.Context, *CancelOutgoingPaymentRequest) (*CancelOutgoingPaymentResponse, error)
 	RegisterIncomingPayment(context.Context, *RegisterIncomingPaymentRequest) (*RegisterIncomingPaymentResponse, error)
+	CancelIncomingPayment(context.Context, *CancelIncomingPaymentRequest) (*CancelIncomingPaymentResponse, error)
 	mustEmbedUnimplementedArkChannelFundingPeerServiceServer()
 }
 
@@ -1038,6 +1051,9 @@ func (UnimplementedArkChannelFundingPeerServiceServer) CancelOutgoingPayment(con
 }
 func (UnimplementedArkChannelFundingPeerServiceServer) RegisterIncomingPayment(context.Context, *RegisterIncomingPaymentRequest) (*RegisterIncomingPaymentResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RegisterIncomingPayment not implemented")
+}
+func (UnimplementedArkChannelFundingPeerServiceServer) CancelIncomingPayment(context.Context, *CancelIncomingPaymentRequest) (*CancelIncomingPaymentResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CancelIncomingPayment not implemented")
 }
 func (UnimplementedArkChannelFundingPeerServiceServer) mustEmbedUnimplementedArkChannelFundingPeerServiceServer() {
 }
@@ -1385,6 +1401,24 @@ func _ArkChannelFundingPeerService_RegisterIncomingPayment_Handler(srv interface
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ArkChannelFundingPeerService_CancelIncomingPayment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelIncomingPaymentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArkChannelFundingPeerServiceServer).CancelIncomingPayment(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArkChannelFundingPeerService_CancelIncomingPayment_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArkChannelFundingPeerServiceServer).CancelIncomingPayment(ctx, req.(*CancelIncomingPaymentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ArkChannelFundingPeerService_ServiceDesc is the grpc.ServiceDesc for ArkChannelFundingPeerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1463,6 +1497,10 @@ var ArkChannelFundingPeerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RegisterIncomingPayment",
 			Handler:    _ArkChannelFundingPeerService_RegisterIncomingPayment_Handler,
+		},
+		{
+			MethodName: "CancelIncomingPayment",
+			Handler:    _ArkChannelFundingPeerService_CancelIncomingPayment_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
