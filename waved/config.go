@@ -711,6 +711,11 @@ type SwapConfig struct {
 	// DB.
 	DatabaseFileName string `mapstructure:"databasefilename"`
 
+	// ArkChannelReceiveEnabled allows a Lightning receive to prepare a
+	// direct Ark-backed channel before exposing its invoice. It is off by
+	// default; disabled receives use only the ordinary vHTLC rail.
+	ArkChannelReceiveEnabled bool `mapstructure:"arkchannelreceiveenabled"`
+
 	// VHTLCRecovery controls when the daemon-owned swap runtime escalates
 	// an already-armed vHTLC recovery row from cooperative retry into
 	// on-chain unroll.

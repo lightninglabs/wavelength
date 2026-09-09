@@ -86,6 +86,14 @@ type OORAborted struct {
 
 func (*OORAborted) eventSealed() {}
 
+// ReceiveIntentAbortRequested records that a client without the prepared OOR
+// binding requires the hub to abandon its receive-channel funding.
+type ReceiveIntentAbortRequested struct {
+	Reason string
+}
+
+func (*ReceiveIntentAbortRequested) eventSealed() {}
+
 // ChannelActive records that native lnd activated the expected channel point.
 type ChannelActive struct {
 	ChannelPointHash  chainhash.Hash
@@ -219,6 +227,15 @@ type AbortOOR struct {
 }
 
 func (*AbortOOR) actionSealed() {}
+
+// RequestReceiveIntentAbort asks the hub that owns a receive intent's OOR
+// source to finish its durable pre-PONR cleanup.
+type RequestReceiveIntentAbort struct {
+	Terms  Terms
+	Reason string
+}
+
+func (*RequestReceiveIntentAbort) actionSealed() {}
 
 // ActivateChannel asks the virtual notifier to confirm the backing to lnd.
 type ActivateChannel struct {

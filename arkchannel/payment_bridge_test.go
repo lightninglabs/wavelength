@@ -133,6 +133,9 @@ func TestSamePaymentBridgeTerms(t *testing.T) {
 	require.True(t, SamePaymentBridgeTerms(snapshot, advanced))
 	advanced.SourceAmount++
 	require.False(t, SamePaymentBridgeTerms(snapshot, advanced))
+	advanced = snapshot.Clone()
+	advanced.PrivateCLTVDeltaBlocks++
+	require.False(t, SamePaymentBridgeTerms(snapshot, advanced))
 }
 
 // TestPaymentBridgeRejectsFallbackAfterDestinationDispatch proves fallback
@@ -162,6 +165,34 @@ func TestPaymentBridgeRejectsFallbackAfterDestinationDispatch(t *testing.T) {
 	require.ErrorContains(t, err, "cannot select fallback")
 	require.Equal(t, PaymentDestinationInFlight, state.Snapshot().Phase)
 	require.Equal(t, snapshot.ReservedSCID, state.Snapshot().ReservedSCID)
+}
+
+// TestPaymentBridgeDestinationUnavailableFallback proves only authoritative
+// destination failure can select the vHTLC rail after dispatch was requested.
+func TestPaymentBridgeDestinationUnavailableFallback(t *testing.T) {
+	snapshot, _ := testPaymentBridgeSnapshot(t, PaymentIncoming)
+	state, err := NewPaymentBridgeState(snapshot)
+	require.NoError(t, err)
+
+	state = applyPaymentEvent(t, state, &PaymentSourceHTLCLocked{
+		Circuit: &PaymentCircuit{
+			IncomingChannelID: 1, IncomingHTLCID: 2,
+			OutgoingSCID: snapshot.ReservedSCID,
+		},
+	})
+	state = applyPaymentEvent(t, state, &PaymentDestinationStarted{
+		ChannelID: ID{2}, DestinationSCID: 43,
+	})
+	state = applyPaymentEvent(t, state, &PaymentDestinationUnavailable{
+		Reason: "control tower reports no payment attempt",
+	})
+
+	require.True(t, state.IsTerminal())
+	require.Equal(t, PaymentVHTLCFallback, state.Snapshot().Phase)
+	require.Equal(
+		t, "control tower reports no payment attempt",
+		state.Snapshot().Failure,
+	)
 }
 
 func applyPaymentEvent(t *testing.T, state PaymentBridgeState,
@@ -202,6 +233,7 @@ func testPaymentBridgeSnapshot(t *testing.T,
 		snapshot.PublicInvoice = "lnbcrt1test"
 	} else {
 		snapshot.SourceAmount = snapshot.DestinationAmount
+		snapshot.PrivateCLTVDeltaBlocks = 616
 		snapshot.ServerFee = 0
 		snapshot.RoutingFeeBudget = 0
 	}

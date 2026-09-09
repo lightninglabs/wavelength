@@ -235,11 +235,23 @@ func (m *receiveLoopFSM) fail(
 		m.session.state == ReceiveStateExpired,
 		m.session.state == ReceiveStateNeedsIntervention,
 		func(ctx context.Context) error {
+			if err := m.session.disableArkChannelReceive(
+				ctx, arkChannelReceiveExpiryReason,
+			); err != nil {
+				return err
+			}
+
 			return m.session.mutateAndPersist(ctx, func() error {
 				return m.session.transition(receiveEventExpired)
 			})
 		}, receiveEventExpired,
 		func(ctx context.Context, reason string) error {
+			if err := m.session.disableArkChannelReceive(
+				ctx, arkChannelReceiveTerminalReason,
+			); err != nil {
+				return err
+			}
+
 			return m.session.mutateAndPersist(ctx, func() error {
 				m.session.interventionReason = reason
 
@@ -249,6 +261,12 @@ func (m *receiveLoopFSM) fail(
 			})
 		}, receiveEventNeedsIntervention,
 		func(ctx context.Context, reason string) error {
+			if err := m.session.disableArkChannelReceive(
+				ctx, arkChannelReceiveTerminalReason,
+			); err != nil {
+				return err
+			}
+
 			return m.session.mutateAndPersist(ctx, func() error {
 				m.session.interventionReason = reason
 				if m.session.state == ReceiveStateFailed {

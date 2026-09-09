@@ -11,18 +11,29 @@ import (
 
 // nativeExecutorHarness implements each thin native boundary.
 type nativeExecutorHarness struct {
-	confirmed    chainhash.Hash
-	negotiatedID ID
-	committedID  ID
-	abortedID    ID
-	cancelledID  ID
-	publishedID  ID
-	recoveryID   ID
-	handedOff    wire.OutPoint
-	forceClosed  wire.OutPoint
-	closeID      ID
-	boundSinks   int
-	validations  int
+	confirmed     chainhash.Hash
+	negotiatedID  ID
+	committedID   ID
+	abortedID     ID
+	cancelledID   ID
+	publishedID   ID
+	recoveryID    ID
+	handedOff     wire.OutPoint
+	forceClosed   wire.OutPoint
+	closeID       ID
+	abortRequests int
+	boundSinks    int
+	validations   int
+}
+
+// FailReceiveIntent records delivery to the receive intent's OOR owner.
+func (h *nativeExecutorHarness) FailReceiveIntent(_ context.Context, id ID,
+	_ string) error {
+
+	h.abortRequests++
+	h.abortedID = id
+
+	return nil
 }
 
 // HandoffChannel records transfer to lnd's on-chain lifecycle.
@@ -157,7 +168,7 @@ func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
 	harness := &nativeExecutorHarness{}
 	executor, err := NewNativeExecutor(
 		PartyClient, harness, harness, harness, harness, harness,
-		harness, harness,
+		harness, harness, harness,
 	)
 	require.NoError(t, err)
 	require.NoError(t, executor.BindChannelEventSink(harnessSink{}))
@@ -245,7 +256,7 @@ func TestNativeExecutorFencesOORActionsToFunder(t *testing.T) {
 	harness := &nativeExecutorHarness{}
 	executor, err := NewNativeExecutor(
 		PartyHub, harness, harness, harness, harness, harness, harness,
-		harness,
+		harness, harness,
 	)
 	require.NoError(t, err)
 	terms := testTerms(t, KindPromotion)
@@ -295,6 +306,45 @@ func TestNativeExecutorFencesOORActionsToFunder(t *testing.T) {
 	require.Equal(t, terms.ID, harness.publishedID)
 }
 
+// TestNativeExecutorRoutesReceiveAbortToFunder proves a non-funding client
+// delivers both bound and source-less cleanup through the OOR owner.
+func TestNativeExecutorRoutesReceiveAbortToFunder(t *testing.T) {
+	t.Parallel()
+
+	harness := &nativeExecutorHarness{}
+	executor, err := NewNativeExecutor(
+		PartyClient, harness, harness, nil, harness, nil, harness,
+		harness, harness,
+	)
+	require.NoError(t, err)
+	require.NoError(t, executor.BindChannelEventSink(harnessSink{}))
+	terms := testTerms(t, KindReceiveIntent)
+	source := testBinding(terms)
+
+	require.NoError(
+		t,
+		executor.Execute(
+			t.Context(), terms.ID, &AbortOOR{
+				Terms:  terms,
+				Source: source,
+				Reason: "bound abort",
+			},
+		),
+	)
+	require.Equal(t, 1, harness.abortRequests)
+
+	require.NoError(
+		t,
+		executor.Execute(
+			t.Context(), terms.ID, &RequestReceiveIntentAbort{
+				Terms:  terms,
+				Reason: "source-less abort",
+			},
+		),
+	)
+	require.Equal(t, 2, harness.abortRequests)
+}
+
 // harnessSink accepts callback events for executor wiring tests.
 type harnessSink struct{}
 
@@ -304,13 +354,14 @@ func (harnessSink) ApplyLocalEvent(context.Context, ID, Event) (Record, error) {
 }
 
 var (
-	_ VirtualFundingActivator  = (*nativeExecutorHarness)(nil)
-	_ FundingNegotiator        = (*nativeExecutorHarness)(nil)
-	_ OORTransferController    = (*nativeExecutorHarness)(nil)
-	_ ChannelMaterializer      = (*nativeExecutorHarness)(nil)
-	_ ChannelOnchainHandoff    = (*nativeExecutorHarness)(nil)
-	_ ChannelForceCloser       = (*nativeExecutorHarness)(nil)
-	_ ChannelCooperativeCloser = (*nativeExecutorHarness)(nil)
-	_ ChannelEventSinkBinder   = (*nativeExecutorHarness)(nil)
-	_ ChannelEventSink         = harnessSink{}
+	_ VirtualFundingActivator     = (*nativeExecutorHarness)(nil)
+	_ FundingNegotiator           = (*nativeExecutorHarness)(nil)
+	_ OORTransferController       = (*nativeExecutorHarness)(nil)
+	_ ChannelMaterializer         = (*nativeExecutorHarness)(nil)
+	_ ChannelOnchainHandoff       = (*nativeExecutorHarness)(nil)
+	_ ChannelForceCloser          = (*nativeExecutorHarness)(nil)
+	_ ChannelCooperativeCloser    = (*nativeExecutorHarness)(nil)
+	_ ChannelEventSinkBinder      = (*nativeExecutorHarness)(nil)
+	_ ReceiveIntentAbortRequester = (*nativeExecutorHarness)(nil)
+	_ ChannelEventSink            = harnessSink{}
 )

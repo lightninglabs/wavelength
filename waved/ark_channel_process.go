@@ -39,9 +39,10 @@ const arkChannelControllerPollInterval = 25 * time.Millisecond
 
 const arkChannelStartupRetryInterval = time.Second
 
-const arkChannelCloseReceiveScriptLabel = "ark channel cooperative close"
+const arkChannelRefreshReceiveScriptLabel = "ark channel refresh"
 
-// ArkChannelLifecycleController owns channel creation, inspection, and close.
+// ArkChannelLifecycleController owns channel creation, inspection, refresh,
+// and on-chain close.
 type ArkChannelLifecycleController interface {
 	PromoteVTXO(context.Context, btcutil.Amount,
 		string) (arkchannel.Record, error)
@@ -49,7 +50,7 @@ type ArkChannelLifecycleController interface {
 	MaterializeAndForceClose(context.Context, arkchannel.ID) (
 		arkchannel.Record, chainhash.Hash, chainhash.Hash, error)
 
-	RequestCooperativeClose(context.Context,
+	RefreshChannel(context.Context,
 		arkchannel.ID) (arkchannel.Record, error)
 
 	GetChannel(context.Context, arkchannel.ID) (arkchannel.Record, error)
@@ -79,10 +80,14 @@ type ArkChannelPaymentController interface {
 		btcutil.Amount) error
 
 	RegisterIncomingPayment(context.Context, lntypes.Hash, btcutil.Amount,
-		uint64) error
+		uint64) (uint32, error)
 
-	WaitIncomingPayment(context.Context,
-		lntypes.Hash) (arkchannel.ID, error)
+	WaitIncomingPayment(context.Context, lntypes.Hash) (arkchannel.ID, bool,
+		error)
+
+	SettleIncomingPayment(context.Context, lntypes.Preimage) error
+
+	CancelIncomingPayment(context.Context, lntypes.Hash, string) error
 }
 
 // ArkChannelController is the complete local process boundary exposed through
@@ -333,10 +338,10 @@ func (s *arkChannelRPCServer) MaterializeAndForceClose(ctx context.Context,
 	}, nil
 }
 
-// RequestCooperativeClose starts or resumes the client-owned close process.
-func (s *arkChannelRPCServer) RequestCooperativeClose(ctx context.Context,
-	req *arkchannelrpc.RequestCooperativeCloseRequest) (
-	*arkchannelrpc.RequestCooperativeCloseResponse, error) {
+// RefreshChannel starts or resumes the client-owned in-Ark refresh process.
+func (s *arkChannelRPCServer) RefreshChannel(ctx context.Context,
+	req *arkchannelrpc.RefreshChannelRequest) (
+	*arkchannelrpc.RefreshChannelResponse, error) {
 
 	id, err := arkChannelID(req.GetChannelId())
 	if err != nil {
@@ -348,13 +353,13 @@ func (s *arkChannelRPCServer) RequestCooperativeClose(ctx context.Context,
 			codes.Unavailable, "Ark channel runtime is not ready",
 		)
 	}
-	record, err := controller.RequestCooperativeClose(ctx, id)
+	record, err := controller.RefreshChannel(ctx, id)
 	if err != nil {
-		return nil, status.Errorf(codes.FailedPrecondition, "request "+
-			"cooperative close: %v", err)
+		return nil, status.Errorf(codes.FailedPrecondition, "refresh "+
+			"channel in Ark: %v", err)
 	}
 
-	return &arkchannelrpc.RequestCooperativeCloseResponse{
+	return &arkchannelrpc.RefreshChannelResponse{
 		Channel: lnruntime.ArkChannelRecordToRPC(record),
 	}, nil
 }
@@ -566,7 +571,7 @@ func (s *Server) ensureArkChannelProcessStarted(ctx context.Context) error {
 		return err
 	}
 
-	return s.ensureConfiguredArkChannelCloseDelivery(ctx)
+	return s.ensureConfiguredArkChannelRefreshDelivery(ctx)
 }
 
 // runRetriedArkChannelStartup retries an idempotent channel startup function
@@ -682,10 +687,10 @@ func (s *Server) newClientArkChannelController(ctx context.Context,
 	return controller, nil
 }
 
-// ensureConfiguredArkChannelCloseDelivery registers the close destination
+// ensureConfiguredArkChannelRefreshDelivery registers the refresh destination
 // once the main mailbox ingress is running. Registration is an indexer RPC and
 // therefore cannot run while wallet-dependent actors are still being built.
-func (s *Server) ensureConfiguredArkChannelCloseDelivery(
+func (s *Server) ensureConfiguredArkChannelRefreshDelivery(
 	ctx context.Context) error {
 
 	if s.cfg.Swap == nil || s.cfg.Swap.ArkChannelMailbox == nil {
@@ -693,43 +698,43 @@ func (s *Server) ensureConfiguredArkChannelCloseDelivery(
 	}
 	operatorTerms, err := s.fetchOperatorTerms(ctx)
 	if err != nil {
-		return fmt.Errorf("fetch Ark channel close terms: %w", err)
+		return fmt.Errorf("fetch Ark channel refresh terms: %w", err)
 	}
 
-	return s.ensureArkChannelCloseDelivery(ctx, operatorTerms)
+	return s.ensureArkChannelRefreshDelivery(ctx, operatorTerms)
 }
 
-// ensureArkChannelCloseDelivery registers the durable identity-backed VTXO
-// script before a close request can advertise it. The ordinary incoming OOR
+// ensureArkChannelRefreshDelivery registers the durable identity-backed VTXO
+// script before a refresh request can advertise it. The ordinary incoming OOR
 // actor then owns materialization and fraud recovery for the replacement.
-func (s *Server) ensureArkChannelCloseDelivery(ctx context.Context,
+func (s *Server) ensureArkChannelRefreshDelivery(ctx context.Context,
 	operatorTerms *types.OperatorTerms) error {
 
 	if s.indexer == nil {
-		return fmt.Errorf("Ark channel close requires the indexer")
+		return fmt.Errorf("Ark channel refresh requires the indexer")
 	}
 	if operatorTerms == nil || operatorTerms.PubKey == nil {
-		return fmt.Errorf("Ark channel close requires operator terms")
+		return fmt.Errorf("Ark channel refresh requires operator terms")
 	}
 	store, err := (&RPCServer{server: s}).newOORReceiveScriptStore()
 	if err != nil {
-		return fmt.Errorf("initialize Ark channel close receive "+
+		return fmt.Errorf("initialize Ark channel refresh receive "+
 			"store: %w", err)
 	}
 	signerFactory, err := s.indexerProofSignerFactory()
 	if err != nil {
-		return fmt.Errorf("initialize Ark channel close signer: %w",
+		return fmt.Errorf("initialize Ark channel refresh signer: %w",
 			err)
 	}
 	identityDesc := s.loadClientKeyDesc()
 	_, err = RegisterOwnedOORReceiveScript(
 		ctx, s.indexer, store, identityDesc, signerFactory,
 		operatorTerms.PubKey, operatorTerms.VTXOExitDelay,
-		arkChannelCloseReceiveScriptLabel,
+		arkChannelRefreshReceiveScriptLabel,
 	)
 	if err != nil {
-		return fmt.Errorf("register Ark channel close destination: %w",
-			err)
+		return fmt.Errorf("register Ark channel refresh "+
+			"destination: %w", err)
 	}
 
 	return nil
@@ -789,13 +794,16 @@ func (r *RPCServer) PrepareArkChannelIncomingPayment(ctx context.Context,
 }
 
 // RegisterArkChannelIncomingPayment binds a public future SCID to the
-// authenticated client endpoint after its private invoice is durable.
+// authenticated client endpoint after its private invoice is durable. It
+// returns the minimum CLTV delta in blocks required by the private channel
+// payment.
 func (r *RPCServer) RegisterArkChannelIncomingPayment(ctx context.Context,
-	hash lntypes.Hash, amount btcutil.Amount, reservedSCID uint64) error {
+	hash lntypes.Hash, amount btcutil.Amount, reservedSCID uint64) (uint32,
+	error) {
 
 	controller, err := r.waitArkChannelController(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	return controller.RegisterIncomingPayment(
@@ -805,14 +813,40 @@ func (r *RPCServer) RegisterArkChannelIncomingPayment(ctx context.Context,
 
 // WaitArkChannelIncomingPayment waits on lnd's durable private invoice.
 func (r *RPCServer) WaitArkChannelIncomingPayment(ctx context.Context,
-	hash lntypes.Hash) (arkchannel.ID, error) {
+	hash lntypes.Hash) (arkchannel.ID, bool, error) {
 
 	controller, err := r.waitArkChannelController(ctx)
 	if err != nil {
-		return arkchannel.ID{}, err
+		return arkchannel.ID{}, false, err
 	}
 
 	return controller.WaitIncomingPayment(ctx, hash)
+}
+
+// SettleArkChannelIncomingPayment releases the private hold invoice only after
+// the swap SDK selects the channel rail as the winner.
+func (r *RPCServer) SettleArkChannelIncomingPayment(ctx context.Context,
+	preimage lntypes.Preimage) error {
+
+	controller, err := r.waitArkChannelController(ctx)
+	if err != nil {
+		return err
+	}
+
+	return controller.SettleIncomingPayment(ctx, preimage)
+}
+
+// CancelArkChannelIncomingPayment cancels the private hold invoice and safely
+// abandons its pre-PONR receive intent when another settlement rail wins.
+func (r *RPCServer) CancelArkChannelIncomingPayment(ctx context.Context,
+	hash lntypes.Hash, reason string) error {
+
+	controller, err := r.waitArkChannelController(ctx)
+	if err != nil {
+		return err
+	}
+
+	return controller.CancelIncomingPayment(ctx, hash, reason)
 }
 
 // waitArkChannelController bridges optional subserver construction, which

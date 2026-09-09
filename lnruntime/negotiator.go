@@ -3,6 +3,7 @@ package lnruntime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -13,6 +14,16 @@ import (
 	lndfunding "github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+var (
+	// ErrFundingNegotiationAmbiguous means a remote negotiation step may
+	// have completed even though its caller did not receive a result. The
+	// durable channel action must remain replayable.
+	ErrFundingNegotiationAmbiguous = errors.New("funding negotiation " +
+		"outcome is ambiguous")
 )
 
 const defaultFundingPollInterval = 25 * time.Millisecond
@@ -434,7 +445,9 @@ func (n *ChannelNegotiator) NegotiateChannel(ctx context.Context,
 		ctx, id, terms, source, basePacket,
 	)
 	if err != nil {
-		return err
+		return remoteFundingNegotiationError(
+			"sign remote channel backing", err,
+		)
 	}
 
 	var clientSig, hubSig input.Signature
@@ -452,7 +465,9 @@ func (n *ChannelNegotiator) NegotiateChannel(ctx context.Context,
 	if err := n.remote.InstallBacking(
 		ctx, id, terms, source, backing,
 	); err != nil {
-		return err
+		return remoteFundingNegotiationError(
+			"install remote channel backing", err,
+		)
 	}
 	if err := n.local.InstallBacking(
 		ctx, id, terms, source, backing,
@@ -606,6 +621,15 @@ func (n *ChannelNegotiator) CancelChannel(ctx context.Context, id arkchannel.ID,
 	terms arkchannel.Terms, source arkchannel.VTXOBinding,
 	backing *arkchannel.Backing, reason string) error {
 
+	var channelPoint *wire.OutPoint
+	if backing != nil {
+		channelPoint = &backing.ChannelPoint
+	}
+	if err := n.local.funding.CancelBacking(
+		terms.PendingChannelID, channelPoint,
+	); err != nil {
+		return err
+	}
 	if terms.Funder == n.local.party {
 		if _, err := n.remote.ApplyChannelEvent(
 			ctx, id, &arkchannel.OORAborted{
@@ -615,16 +639,6 @@ func (n *ChannelNegotiator) CancelChannel(ctx context.Context, id arkchannel.ID,
 		); err != nil {
 			return fmt.Errorf("confirm remote OOR abort: %w", err)
 		}
-	}
-
-	var channelPoint *wire.OutPoint
-	if backing != nil {
-		channelPoint = &backing.ChannelPoint
-	}
-	if err := n.local.funding.CancelBacking(
-		terms.PendingChannelID, channelPoint,
-	); err != nil {
-		return err
 	}
 	_, err := n.local.applyLocalEvent(
 		ctx, id, &arkchannel.FundingCanceled{},
@@ -713,6 +727,56 @@ func awaitNegotiatedPSBT(ctx context.Context,
 			return nil, ctx.Err()
 		}
 	}
+}
+
+// remoteFundingNegotiationError preserves explicit peer rejections while
+// marking transport-shaped outcomes for durable replay. Plain remote errors
+// are ambiguous because the mailbox may have admitted the request before its
+// response was lost.
+func remoteFundingNegotiationError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if fundingRPCErrorIsDefinitive(err) {
+		return fmt.Errorf("%s: %w", operation, err)
+	}
+
+	return ambiguousFundingNegotiationError(operation, err)
+}
+
+// fundingRPCErrorIsDefinitive recognizes only received funding-wire errors or
+// gRPC statuses that prove the peer rejected the request. Retry and transport
+// statuses remain ambiguous.
+func fundingRPCErrorIsDefinitive(err error) bool {
+	if errors.Is(err, errFundingWireRequestRejected) {
+		return true
+	}
+	if errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	grpcStatus, ok := status.FromError(err)
+	if !ok {
+		return false
+	}
+
+	switch grpcStatus.Code() {
+	case codes.InvalidArgument, codes.NotFound, codes.AlreadyExists,
+		codes.PermissionDenied, codes.Unauthenticated,
+		codes.FailedPrecondition, codes.OutOfRange,
+		codes.Unimplemented:
+		return true
+
+	default:
+		return false
+	}
+}
+
+// ambiguousFundingNegotiationError marks an error whose side effects must be
+// reconciled from durable state before the receive rail can fall back.
+func ambiguousFundingNegotiationError(operation string, err error) error {
+	return fmt.Errorf("%w: %s: %w", ErrFundingNegotiationAmbiguous,
+		operation, err)
 }
 
 // cloneFundingPSBT isolates endpoint validation from caller mutation.

@@ -164,6 +164,10 @@ func validateInSwapPreview(invoice string, quote *InSwapQuote,
 	expectedAmountSat := expectedInvoiceSat + quote.FeeSat
 	switch quote.SettlementType {
 	case "", SettlementTypeLightning, SettlementTypeInArk:
+	case SettlementTypeArkChannel:
+		return fmt.Errorf("ark channel settlement is not valid for " +
+			"pay quotes")
+
 	case SettlementTypeCredit:
 		expectedAmountSat = 0
 
@@ -232,6 +236,10 @@ func validateInSwapQuote(invoice string, maxFeeSat uint64, cfg *InSwapConfig,
 	expectedAmountSat := amountSat + cfg.FeeSat
 	switch cfg.SettlementType {
 	case "", SettlementTypeLightning, SettlementTypeInArk:
+	case SettlementTypeArkChannel:
+		return fmt.Errorf("ark channel settlement is not valid for " +
+			"pay quotes")
+
 	case SettlementTypeCredit:
 		if cfg.Preimage == nil {
 			return fmt.Errorf("credit in-swap config missing " +

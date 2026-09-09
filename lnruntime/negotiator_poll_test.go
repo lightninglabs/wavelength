@@ -36,6 +36,7 @@ type statusPollFundingBackend struct {
 	openCalls atomic.Int32
 	finalized atomic.Bool
 	active    atomic.Bool
+	cancelled atomic.Bool
 }
 
 // newStatusPollFundingBackend creates one deterministic external-funding PSBT.
@@ -143,8 +144,10 @@ func (b *statusPollFundingBackend) ChannelActive(context.Context,
 }
 
 // CancelBacking accepts the unused cancellation edge.
-func (*statusPollFundingBackend) CancelBacking(lndfunding.PendingChanID,
+func (b *statusPollFundingBackend) CancelBacking(lndfunding.PendingChanID,
 	*wire.OutPoint) error {
+
+	b.cancelled.Store(true)
 
 	return nil
 }
@@ -161,6 +164,8 @@ type statusPollCounterparty struct {
 	localService     *arkchannel.Service
 	peerRecoverySet  bool
 	recoveryInstalls int
+	cancelBackend    *statusPollFundingBackend
+	abortAfterCancel bool
 }
 
 // SignBacking signs the exact remote channel-policy path.
@@ -235,6 +240,43 @@ func (p *statusPollCounterparty) ApplyChannelEvent(ctx context.Context,
 		}
 		p.peerRecoverySet = true
 	}
+	if _, ok := event.(*arkchannel.OORAborted); ok &&
+		p.cancelBackend != nil {
+
+		p.abortAfterCancel = p.cancelBackend.cancelled.Load()
+	}
+
+	return arkchannel.Record{}, nil
+}
+
+// cancellationSink accepts terminal native funding callbacks for ordering
+// tests without introducing another channel state machine.
+type cancellationSink struct{}
+
+// ApplyLocalEvent accepts local funding cancellation evidence.
+func (*cancellationSink) ApplyLocalEvent(context.Context, arkchannel.ID,
+	arkchannel.Event) (arkchannel.Record, error) {
+
+	return arkchannel.Record{}, nil
+}
+
+// ApplyPeerEvent accepts authenticated peer evidence.
+func (*cancellationSink) ApplyPeerEvent(context.Context, arkchannel.ID,
+	arkchannel.Event) (arkchannel.Record, error) {
+
+	return arkchannel.Record{}, nil
+}
+
+// RecordLocalEvent accepts local evidence without action dispatch.
+func (*cancellationSink) RecordLocalEvent(context.Context, arkchannel.ID,
+	arkchannel.Event) (arkchannel.Record, error) {
+
+	return arkchannel.Record{}, nil
+}
+
+// ResumeChannelAction accepts action replay requests.
+func (*cancellationSink) ResumeChannelAction(context.Context, arkchannel.ID) (
+	arkchannel.Record, error) {
 
 	return arkchannel.Record{}, nil
 }
@@ -262,6 +304,14 @@ func (p *statusPollCounterparty) recoveryInstallCount() int {
 	defer p.mu.Unlock()
 
 	return p.recoveryInstalls
+}
+
+// abortObservedAfterCancel reports the order seen at the peer boundary.
+func (p *statusPollCounterparty) abortObservedAfterCancel() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.abortAfterCancel
 }
 
 // statusPollRecoveryManager detects recursive preparation after local evidence
@@ -474,6 +524,51 @@ func TestFundingStatusPollingDoesNotReopenChannel(t *testing.T) {
 	require.Equal(t, int32(1), edges.activations.Load())
 }
 
+// TestCancelChannelNotifiesAfterLocalCleanup proves an authenticated OOR abort
+// reaches the peer only after this endpoint removed its native lnd reservation.
+func TestCancelChannelNotifiesAfterLocalCleanup(t *testing.T) {
+	t.Parallel()
+
+	terms, source, clientKey, _ := statusPollChannel(t)
+	backend := newStatusPollFundingBackend(
+		t, terms.PendingChannelID, terms.Capacity,
+	)
+	endpoint, err := NewNativeFundingEndpoint(
+		arkchannel.PartyClient, backend,
+		input.NewMockSigner(
+			[]*btcec.PrivateKey{clientKey}, nil,
+		),
+		keychain.KeyDescriptor{
+			PubKey: clientKey.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	remote := &statusPollCounterparty{
+		party: arkchannel.PartyHub, key: statusPollKey(t),
+		cancelBackend: backend,
+	}
+	negotiator, err := NewChannelNegotiator(
+		endpoint, remote, &Peer{}, &statusPollRecoveryManager{},
+	)
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		negotiator.BindChannelEventSink(
+			&cancellationSink{},
+		),
+	)
+
+	require.NoError(
+		t,
+		negotiator.CancelChannel(
+			t.Context(), terms.ID, terms, source, nil,
+			"funding rejected",
+		),
+	)
+	require.True(t, backend.cancelled.Load())
+	require.True(t, remote.abortObservedAfterCancel())
+}
+
 // TestRecoveryResumeDoesNotRecursivelyPrepare proves a restart from only local
 // recovery readiness completes the peer barrier without re-entering the same
 // PrepareRecovery action.
@@ -578,7 +673,7 @@ func statusPollService(t *testing.T, coordinator *arkchannel.Coordinator,
 	oor := &statusPollOORController{}
 	edges := &statusPollNativeEdges{backend: backend}
 	executor, err := arkchannel.NewNativeExecutor(
-		arkchannel.PartyClient, edges, negotiator, oor, nil, edges,
+		arkchannel.PartyClient, edges, negotiator, oor, nil, nil, edges,
 		edges, edges,
 	)
 	require.NoError(t, err)

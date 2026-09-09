@@ -476,6 +476,8 @@ func TestServiceEventAuthorityMatrix(t *testing.T) {
 			&RecoveryPackageInstalled{
 				Party: PartyHub,
 			}, eventOriginPeer},
+		{"request receive abort", clientReceiveService, receive.ID,
+			&ReceiveIntentAbortRequested{}, eventOriginLocal},
 		{"request close", clientService, promotion.ID,
 			&RequestCooperativeClose{}, eventOriginLocal},
 		{"publish close", clientService, promotion.ID,

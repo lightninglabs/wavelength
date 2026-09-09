@@ -21,6 +21,7 @@ import (
 	"github.com/lightningnetwork/lnd/chanstate"
 	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/graph/db/models"
+	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -35,10 +36,21 @@ import (
 )
 
 const (
-	channelDBFileName       = "channel.db"
-	channelDBTimeout        = 30 * time.Second
-	privatePaymentCLTVDelta = uint32(40)
-	maximumBlockHeight      = ^uint32(0)
+	channelDBFileName  = "channel.db"
+	channelDBTimeout   = 30 * time.Second
+	maximumBlockHeight = ^uint32(0)
+
+	// arkChannelPaymentCLTVMarginBlocks is the ordinary Lightning reaction
+	// margin added after the complete Ark source-recovery delay.
+	arkChannelPaymentCLTVMarginBlocks = uint32(40)
+)
+
+var (
+	// ErrPrivatePaymentExpiryNotNested means a private Ark-channel HTLC
+	// cannot expire strictly before the public HTLC safety boundary that
+	// funds it.
+	ErrPrivatePaymentExpiryNotNested = errors.New("private payment " +
+		"expiry is not nested inside public payment")
 )
 
 // TerminalPaymentError means lnd's control tower has durably terminated a
@@ -686,11 +698,28 @@ func validateNativeInvoice(invoice invoices.Invoice, amount btcutil.Amount,
 func (n *NativeNode) WaitInvoiceAccepted(ctx context.Context,
 	hash lntypes.Hash) error {
 
-	return n.waitInvoiceState(ctx, hash, func(invoice *invoices.Invoice) (
+	_, err := n.WaitInvoiceAcceptedChannel(ctx, hash)
+
+	return err
+}
+
+// WaitInvoiceAcceptedChannel waits for a hold invoice and returns the one
+// native channel that delivered its accepted HTLCs.
+func (n *NativeNode) WaitInvoiceAcceptedChannel(ctx context.Context,
+	hash lntypes.Hash) (lnwire.ShortChannelID, error) {
+
+	var channelID lnwire.ShortChannelID
+	err := n.waitInvoiceState(ctx, hash, func(invoice *invoices.Invoice) (
 		bool, error) {
 
 		switch invoice.State {
 		case invoices.ContractAccepted, invoices.ContractSettled:
+			var err error
+			channelID, err = acceptedInvoiceChannel(invoice)
+			if err != nil {
+				return false, err
+			}
+
 			return true, nil
 
 		case invoices.ContractCanceled:
@@ -700,6 +729,49 @@ func (n *NativeNode) WaitInvoiceAccepted(ctx context.Context,
 			return false, nil
 		}
 	})
+	if err != nil {
+		return lnwire.ShortChannelID{}, err
+	}
+
+	return channelID, nil
+}
+
+// acceptedInvoiceChannel rejects local, missing, or multi-channel delivery so
+// callers can bind settlement to one active channel record.
+func acceptedInvoiceChannel(invoice *invoices.Invoice) (lnwire.ShortChannelID,
+	error) {
+
+	if invoice == nil {
+		return lnwire.ShortChannelID{}, fmt.Errorf("native invoice " +
+			"is nil")
+	}
+
+	var channelID lnwire.ShortChannelID
+	found := false
+	for circuit, htlc := range invoice.Htlcs {
+		if htlc == nil || (htlc.State != invoices.HtlcStateAccepted &&
+			htlc.State != invoices.HtlcStateSettled) {
+
+			continue
+		}
+		if circuit.ChanID == (lnwire.ShortChannelID{}) {
+			return lnwire.ShortChannelID{}, fmt.Errorf("native " +
+				"invoice HTLC has no incoming channel")
+		}
+		if found && channelID != circuit.ChanID {
+			return lnwire.ShortChannelID{}, fmt.Errorf("native " +
+				"invoice HTLCs use multiple channels")
+		}
+
+		channelID = circuit.ChanID
+		found = true
+	}
+	if !found {
+		return lnwire.ShortChannelID{}, fmt.Errorf("native invoice " +
+			"has no accepted channel HTLC")
+	}
+
+	return channelID, nil
 }
 
 // WaitInvoiceSettled waits until the native invoice registry has accepted a
@@ -820,6 +892,34 @@ func (n *NativeNode) PayInvoiceResult(ctx context.Context,
 	record arkchannel.Record, hash lntypes.Hash, amount btcutil.Amount) (
 	lntypes.Preimage, error) {
 
+	return n.payInvoiceResult(ctx, record, hash, amount, 0)
+}
+
+// PayInvoiceResultBefore sends or resumes one fixed one-hop payment, but
+// refuses a new attempt whose absolute CLTV expiry height would exceed
+// maxExpiryHeight. Existing attempts remain authoritative because they may
+// already reveal the preimage.
+func (n *NativeNode) PayInvoiceResultBefore(ctx context.Context,
+	record arkchannel.Record, hash lntypes.Hash, amount btcutil.Amount,
+	maxExpiryHeight uint32) (lntypes.Preimage, error) {
+
+	if maxExpiryHeight == 0 {
+		return lntypes.Preimage{}, fmt.Errorf("maximum private " +
+			"payment expiry is required")
+	}
+
+	return n.payInvoiceResult(
+		ctx, record, hash, amount, maxExpiryHeight,
+	)
+}
+
+// payInvoiceResult owns common replay and dispatch handling. A zero absolute
+// expiry height retains the unconstrained behavior used by ordinary private
+// payments.
+func (n *NativeNode) payInvoiceResult(ctx context.Context,
+	record arkchannel.Record, hash lntypes.Hash, amount btcutil.Amount,
+	maxExpiryHeight uint32) (lntypes.Preimage, error) {
+
 	preimage, found, err := n.existingPaymentResult(ctx, hash)
 	if err != nil {
 		return lntypes.Preimage{}, err
@@ -828,7 +928,9 @@ func (n *NativeNode) PayInvoiceResult(ctx context.Context,
 		return preimage, nil
 	}
 
-	attempt, err := n.sendInvoiceAttempt(ctx, record, hash, amount)
+	attempt, err := n.sendInvoiceAttempt(
+		ctx, record, hash, amount, maxExpiryHeight,
+	)
 	if err == nil && attempt.Settle != nil {
 		return attempt.Settle.Preimage, nil
 	}
@@ -914,8 +1016,8 @@ func terminalPaymentPreimage(payment paymentsdb.DBMPPayment) (lntypes.Preimage,
 
 // sendInvoiceAttempt constructs and dispatches one private one-hop route.
 func (n *NativeNode) sendInvoiceAttempt(ctx context.Context,
-	record arkchannel.Record, hash lntypes.Hash, amount btcutil.Amount) (
-	*paymentsdb.HTLCAttempt, error) {
+	record arkchannel.Record, hash lntypes.Hash, amount btcutil.Amount,
+	maxExpiryHeight uint32) (*paymentsdb.HTLCAttempt, error) {
 
 	if record.Snapshot.Phase != arkchannel.PhaseActive ||
 		record.Snapshot.Backing == nil {
@@ -938,7 +1040,7 @@ func (n *NativeNode) sendInvoiceAttempt(ctx context.Context,
 		remoteNode = terms.ClientNodeKey
 	}
 	lockTime, err := arkChannelPaymentLockTime(
-		uint32(height), terms.VTXO,
+		uint32(height), terms.VTXO, maxExpiryHeight,
 	)
 	if err != nil {
 		return nil, err
@@ -966,23 +1068,65 @@ func (n *NativeNode) sendInvoiceAttempt(ctx context.Context,
 // source follows its non-interactive recovery path onto the chain. The funder
 // delay contains both the channel materialization delay and its reaction
 // window, so the ordinary Lightning margin starts after that entire horizon.
-func arkChannelPaymentLockTime(height uint32,
-	terms arkchannel.VTXOTerms) (uint32, error) {
+func arkChannelPaymentLockTime(height uint32, terms arkchannel.VTXOTerms,
+	maxExpiryHeight uint32) (uint32, error) {
 
+	delta, err := ArkChannelPaymentCLTVDelta(terms)
+	if err != nil {
+		return 0, err
+	}
+	if height > maximumBlockHeight-delta {
+		return 0, fmt.Errorf("channel payment locktime overflows")
+	}
+	lockTime := height + delta
+	if maxExpiryHeight != 0 && lockTime > maxExpiryHeight {
+		return 0, fmt.Errorf("%w: required expiry %d exceeds "+
+			"maximum %d", ErrPrivatePaymentExpiryNotNested,
+			lockTime, maxExpiryHeight)
+	}
+
+	return lockTime, nil
+}
+
+// ArkChannelPaymentCLTVDelta returns the complete relative lifetime in blocks
+// required by a private Ark-channel HTLC: source recovery followed by the
+// Lightning reaction margin.
+func ArkChannelPaymentCLTVDelta(terms arkchannel.VTXOTerms) (uint32, error) {
 	if terms.FunderDelay < terms.ChannelDelay {
 		return 0, fmt.Errorf("channel funder delay %d is shorter than "+
 			"materialization delay %d", terms.FunderDelay,
 			terms.ChannelDelay)
 	}
-	if terms.FunderDelay > maximumBlockHeight-privatePaymentCLTVDelta {
+	if terms.FunderDelay >
+		maximumBlockHeight-arkChannelPaymentCLTVMarginBlocks {
 		return 0, fmt.Errorf("channel payment CLTV delta overflows")
 	}
-	delta := terms.FunderDelay + privatePaymentCLTVDelta
-	if height > maximumBlockHeight-delta {
-		return 0, fmt.Errorf("channel payment locktime overflows")
+
+	deltaBlocks := terms.FunderDelay + arkChannelPaymentCLTVMarginBlocks
+	if deltaBlocks > htlcswitch.DefaultMaxOutgoingCltvExpiry {
+		return 0, fmt.Errorf("channel payment CLTV delta %d exceeds "+
+			"lnd maximum %d", deltaBlocks,
+			htlcswitch.DefaultMaxOutgoingCltvExpiry)
 	}
 
-	return height + delta, nil
+	return deltaBlocks, nil
+}
+
+// MaxNestedPrivateCLTVExpiry returns the latest absolute private HTLC expiry
+// height that is strictly earlier than the public HTLC's settlement boundary.
+// The extra block makes the relationship strict rather than racing both
+// decisions at the same height.
+func MaxNestedPrivateCLTVExpiry(publicExpiryHeight,
+	settlementMarginBlocks uint32) (uint32, error) {
+
+	if publicExpiryHeight <= settlementMarginBlocks ||
+		publicExpiryHeight-settlementMarginBlocks <= 1 {
+		return 0, fmt.Errorf("%w: public expiry %d leaves no "+
+			"private window", ErrPrivatePaymentExpiryNotNested,
+			publicExpiryHeight)
+	}
+
+	return publicExpiryHeight - settlementMarginBlocks - 1, nil
 }
 
 // PayInvoice sends one fixed one-hop payment over an active Ark channel.

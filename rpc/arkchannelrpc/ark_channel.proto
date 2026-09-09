@@ -29,10 +29,9 @@ service ArkChannelService {
     rpc MaterializeAndForceClose (MaterializeAndForceCloseRequest)
         returns (MaterializeAndForceCloseResponse);
 
-    // RequestCooperativeClose asks the client to settle one clean channel
-    // directly from its channel-policy VTXO.
-    rpc RequestCooperativeClose (RequestCooperativeCloseRequest)
-        returns (RequestCooperativeCloseResponse);
+    // RefreshChannel settles one clean channel into ordinary replacement
+    // VTXOs without materializing its Lightning channel point.
+    rpc RefreshChannel (RefreshChannelRequest) returns (RefreshChannelResponse);
 
     // GetChannel returns the durable Ark lifecycle state for one channel.
     rpc GetChannel (GetChannelRequest) returns (GetChannelResponse);
@@ -84,6 +83,8 @@ service ArkChannelFundingPeerService {
         returns (RegisterReceiveIntentResponse);
     rpc GetFundingChannel (GetFundingChannelRequest)
         returns (GetFundingChannelResponse);
+    rpc FailReceiveIntent (FailReceiveIntentRequest)
+        returns (FailReceiveIntentResponse);
     rpc BindPreparedOOR (BindPreparedOORRequest)
         returns (BindPreparedOORResponse);
     rpc SignBacking (SignBackingRequest) returns (SignBackingResponse);
@@ -107,6 +108,8 @@ service ArkChannelFundingPeerService {
         returns (CancelOutgoingPaymentResponse);
     rpc RegisterIncomingPayment (RegisterIncomingPaymentRequest)
         returns (RegisterIncomingPaymentResponse);
+    rpc CancelIncomingPayment (CancelIncomingPaymentRequest)
+        returns (CancelIncomingPaymentResponse);
 }
 
 // FundingWireEnvelope carries the small reverse funding protocol over the
@@ -395,6 +398,15 @@ message RegisterIncomingPaymentResponse {
     int64 channel_capacity_sat = 2;
 }
 
+message CancelIncomingPaymentRequest {
+    bytes payment_hash = 1;
+    string reason = 2;
+}
+
+message CancelIncomingPaymentResponse {
+    bool cancelled = 1;
+}
+
 message ChannelTerms {
     bytes channel_id = 1;
     uint32 kind = 2;
@@ -436,14 +448,14 @@ message ChannelBacking {
     uint32 channel_point_index = 3;
 }
 
-message RequestCooperativeCloseRequest {
+message RefreshChannelRequest {
     // channel_id is the 32-byte durable Ark channel identifier.
     bytes channel_id = 1;
     reserved 2;
     reserved "fee_rate_sat_per_kw";
 }
 
-message RequestCooperativeCloseResponse {
+message RefreshChannelResponse {
     ArkChannel channel = 1;
 }
 
@@ -470,7 +482,7 @@ message ArkChannel {
     int64 capacity_sat = 5;
     string source_outpoint = 6;
     string channel_point = 7;
-    bytes cooperative_close_txid = 8;
+    bytes refresh_oor_txid = 8;
     uint64 revision = 9;
     uint64 reserved_scid = 10;
     int64 local_balance_sat = 11;
@@ -569,4 +581,13 @@ message CooperativeClose {
     CooperativeCloseProposal proposal = 1;
     bytes transaction = 2;
     bytes txid = 3;
+}
+
+message FailReceiveIntentRequest {
+    bytes channel_id = 1;
+    string reason = 2;
+}
+
+message FailReceiveIntentResponse {
+    bool failed = 1;
 }

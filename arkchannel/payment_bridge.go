@@ -53,8 +53,8 @@ const (
 	// and held while the destination is dispatched.
 	PaymentSourceLocked
 
-	// PaymentDestinationInFlight means lnd owns a durable destination
-	// payment attempt for the same payment hash.
+	// PaymentDestinationInFlight means the destination is durably selected
+	// and lnd dispatch is pending or owns an attempt for the same hash.
 	PaymentDestinationInFlight
 
 	// PaymentPreimageKnown means the destination settled and the exact
@@ -145,12 +145,16 @@ type PaymentBridgeSnapshot struct {
 	SourceAmount      btcutil.Amount
 	DestinationAmount btcutil.Amount
 	ChannelCapacity   btcutil.Amount
-	ServerFee         btcutil.Amount
-	RoutingFeeBudget  btcutil.Amount
-	PublicInvoice     string
-	Circuit           *PaymentCircuit
-	Preimage          *lntypes.Preimage
-	Failure           string
+	// PrivateCLTVDeltaBlocks freezes the block-denominated channel policy
+	// advertised in an incoming invoice. Missing persisted policy fails
+	// validation instead of being re-derived from mutable runtime config.
+	PrivateCLTVDeltaBlocks uint32
+	ServerFee              btcutil.Amount
+	RoutingFeeBudget       btcutil.Amount
+	PublicInvoice          string
+	Circuit                *PaymentCircuit
+	Preimage               *lntypes.Preimage
+	Failure                string
 }
 
 // Clone returns a snapshot without pointer aliases.
@@ -192,6 +196,10 @@ func (s PaymentBridgeSnapshot) Validate() error {
 			return fmt.Errorf("outgoing bridge cannot reserve " +
 				"channel capacity")
 		}
+		if s.PrivateCLTVDeltaBlocks != 0 {
+			return fmt.Errorf("outgoing bridge cannot reserve a " +
+				"private CLTV delta")
+		}
 		if s.PublicInvoice == "" {
 			return fmt.Errorf("outgoing bridge requires public " +
 				"invoice")
@@ -222,6 +230,10 @@ func (s PaymentBridgeSnapshot) Validate() error {
 		if s.ReservedSCID == 0 {
 			return fmt.Errorf("incoming bridge requires reserved " +
 				"SCID")
+		}
+		if s.PrivateCLTVDeltaBlocks == 0 {
+			return fmt.Errorf("incoming bridge requires a " +
+				"private CLTV delta")
 		}
 		if s.ServerFee != 0 || s.RoutingFeeBudget != 0 ||
 			s.SourceAmount != s.DestinationAmount {
@@ -301,6 +313,15 @@ type PaymentDestinationSettled struct {
 }
 
 func (*PaymentDestinationSettled) paymentBridgeEventSealed() {}
+
+// PaymentDestinationUnavailable records authoritative payment-system proof
+// that the selected destination cannot later reveal a preimage. This permits
+// an incoming payment to use the vHTLC fallback after dispatch was requested.
+type PaymentDestinationUnavailable struct {
+	Reason string
+}
+
+func (*PaymentDestinationUnavailable) paymentBridgeEventSealed() {}
 
 // PaymentSourceSettled records release of the source with the preimage.
 type PaymentSourceSettled struct{}
@@ -423,6 +444,7 @@ func SamePaymentBridgeTerms(a, b PaymentBridgeSnapshot) bool {
 		a.SourceAmount != b.SourceAmount ||
 		a.DestinationAmount != b.DestinationAmount ||
 		a.ChannelCapacity != b.ChannelCapacity ||
+		a.PrivateCLTVDeltaBlocks != b.PrivateCLTVDeltaBlocks ||
 		a.ServerFee != b.ServerFee ||
 		a.RoutingFeeBudget != b.RoutingFeeBudget ||
 		a.PublicInvoice != b.PublicInvoice {
@@ -556,6 +578,9 @@ func applyPaymentBridgeEvent(next *PaymentBridgeSnapshot,
 
 	case *PaymentDestinationSettled:
 		return applyPaymentDestinationSettled(next, event)
+
+	case *PaymentDestinationUnavailable:
+		return applyPaymentDestinationUnavailable(next, event)
 
 	case *PaymentSourceSettled:
 		return applyPaymentSourceSettled(next)
@@ -708,6 +733,34 @@ func applyPaymentDestinationSettled(next *PaymentBridgeSnapshot,
 	preimage := event.Preimage
 	next.Preimage = &preimage
 	next.Phase = PaymentPreimageKnown
+
+	return true, nil
+}
+
+// applyPaymentDestinationUnavailable selects the mature receive rail only
+// after lnd proves the selected destination cannot settle in the future.
+func applyPaymentDestinationUnavailable(next *PaymentBridgeSnapshot,
+	event *PaymentDestinationUnavailable) (bool, error) {
+
+	if next.Direction != PaymentIncoming {
+		return false, fmt.Errorf("only incoming payment can fall back")
+	}
+	if next.Phase == PaymentVHTLCFallback {
+		if next.Failure == event.Reason {
+			return false, nil
+		}
+
+		return false, fmt.Errorf("fallback reason changed")
+	}
+	if next.Phase != PaymentDestinationInFlight {
+		return false, fmt.Errorf("destination is not in flight from %s",
+			next.Phase)
+	}
+	if event.Reason == "" {
+		return false, fmt.Errorf("fallback reason required")
+	}
+	next.Failure = event.Reason
+	next.Phase = PaymentVHTLCFallback
 
 	return true, nil
 }

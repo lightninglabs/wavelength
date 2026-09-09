@@ -85,19 +85,33 @@ func (s *arkChannelControllerStub) PrepareIncomingPayment(context.Context,
 
 // RegisterIncomingPayment is not used by close RPC tests.
 func (s *arkChannelControllerStub) RegisterIncomingPayment(context.Context,
-	lntypes.Hash, btcutil.Amount, uint64) error {
+	lntypes.Hash, btcutil.Amount, uint64) (uint32, error) {
 
-	return s.err
+	return 0, s.err
 }
 
 // WaitIncomingPayment is not used by close RPC tests.
 func (s *arkChannelControllerStub) WaitIncomingPayment(context.Context,
-	lntypes.Hash) (arkchannel.ID, error) {
+	lntypes.Hash) (arkchannel.ID, bool, error) {
 
-	return arkchannel.ID{}, s.err
+	return arkchannel.ID{}, false, s.err
 }
 
-// MaterializeAndForceClose is not used by close RPC tests.
+// SettleIncomingPayment is not used by lifecycle RPC tests.
+func (s *arkChannelControllerStub) SettleIncomingPayment(context.Context,
+	lntypes.Preimage) error {
+
+	return s.err
+}
+
+// CancelIncomingPayment is not used by lifecycle RPC tests.
+func (s *arkChannelControllerStub) CancelIncomingPayment(context.Context,
+	lntypes.Hash, string) error {
+
+	return s.err
+}
+
+// MaterializeAndForceClose is not used by refresh RPC tests.
 func (s *arkChannelControllerStub) MaterializeAndForceClose(context.Context,
 	arkchannel.ID) (arkchannel.Record, chainhash.Hash, chainhash.Hash,
 	error) {
@@ -105,8 +119,8 @@ func (s *arkChannelControllerStub) MaterializeAndForceClose(context.Context,
 	return s.record, chainhash.Hash{}, chainhash.Hash{}, s.err
 }
 
-// RequestCooperativeClose records the parsed public request.
-func (s *arkChannelControllerStub) RequestCooperativeClose(_ context.Context,
+// RefreshChannel records the parsed public request.
+func (s *arkChannelControllerStub) RefreshChannel(_ context.Context,
 	id arkchannel.ID) (arkchannel.Record, error) {
 
 	s.id = id
@@ -137,9 +151,9 @@ func (*arkChannelControllerStub) Stop() error {
 	return nil
 }
 
-// TestArkChannelRPCRequestCooperativeClose verifies fixed-width ID parsing and
+// TestArkChannelRPCRefreshChannel verifies fixed-width ID parsing and
 // controller dispatch on the local authenticated RPC surface.
-func TestArkChannelRPCRequestCooperativeClose(t *testing.T) {
+func TestArkChannelRPCRefreshChannel(t *testing.T) {
 	t.Parallel()
 
 	id := arkchannel.ID{1, 2, 3}
@@ -157,8 +171,8 @@ func TestArkChannelRPCRequestCooperativeClose(t *testing.T) {
 	server := &Server{arkChannelController: controller}
 	rpcServer := &arkChannelRPCServer{server: server}
 
-	response, err := rpcServer.RequestCooperativeClose(
-		t.Context(), &arkchannelrpc.RequestCooperativeCloseRequest{
+	response, err := rpcServer.RefreshChannel(
+		t.Context(), &arkchannelrpc.RefreshChannelRequest{
 			ChannelId: id[:],
 		},
 	)
@@ -167,8 +181,8 @@ func TestArkChannelRPCRequestCooperativeClose(t *testing.T) {
 	require.Equal(t, id[:], response.GetChannel().GetChannelId())
 	require.Equal(t, uint64(4), response.GetChannel().GetRevision())
 
-	_, err = rpcServer.RequestCooperativeClose(
-		t.Context(), &arkchannelrpc.RequestCooperativeCloseRequest{
+	_, err = rpcServer.RefreshChannel(
+		t.Context(), &arkchannelrpc.RefreshChannelRequest{
 			ChannelId: []byte{1},
 		},
 	)

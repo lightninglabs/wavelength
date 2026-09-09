@@ -132,8 +132,8 @@ func TestChannelMoneyCommandsRequireConfirmation(t *testing.T) {
 			},
 		},
 		{
-			name: "close",
-			cmd:  newChannelCloseCmd(),
+			name: "refresh",
+			cmd:  newChannelRefreshCmd(),
 			args: []string{
 				id,
 			},
@@ -171,6 +171,11 @@ func TestChannelCommandRecoveryFlags(t *testing.T) {
 	list, _, err := root.Find([]string{"list"})
 	require.NoError(t, err)
 	require.Equal(t, "list", list.Name())
+	refresh, _, err := root.Find([]string{"refresh"})
+	require.NoError(t, err)
+	require.Equal(t, "refresh", refresh.Name())
+	_, _, err = root.Find([]string{"close"})
+	require.ErrorContains(t, err, "unknown command")
 
 	send := newChannelSendCmd()
 	receive := newChannelReceiveCmd()

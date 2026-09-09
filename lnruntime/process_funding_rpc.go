@@ -28,6 +28,7 @@ var fundingPeerMethods = map[string]struct{}{
 	"RegisterPromotion":       {},
 	"RegisterReceiveIntent":   {},
 	"GetFundingChannel":       {},
+	"FailReceiveIntent":       {},
 	"BindPreparedOOR":         {},
 	"SignBacking":             {},
 	"InstallBacking":          {},
@@ -41,6 +42,7 @@ var fundingPeerMethods = map[string]struct{}{
 	"PrepareOutgoingPayment":  {},
 	"CancelOutgoingPayment":   {},
 	"RegisterIncomingPayment": {},
+	"CancelIncomingPayment":   {},
 }
 
 // OutgoingPaymentPreparation fixes the private source amount and active
@@ -64,6 +66,9 @@ type PaymentBridgeCoordinator interface {
 
 	RegisterIncomingPayment(context.Context, [33]byte, lntypes.Hash,
 		btcutil.Amount, uint64) (btcutil.Amount, error)
+
+	CancelIncomingPayment(context.Context, [33]byte, lntypes.Hash,
+		string) error
 }
 
 // FundingPeerInfo contains immutable hub policy needed to construct a client
@@ -116,6 +121,8 @@ type ProcessFundingPeer interface {
 	GetFundingChannel(context.Context,
 		arkchannel.ID) (FundingChannelState, error)
 
+	FailReceiveIntent(context.Context, arkchannel.ID, string) error
+
 	BindPreparedOOR(context.Context, arkchannel.ID,
 		arkchannel.VTXOBinding) (arkchannel.Record, error)
 
@@ -142,6 +149,8 @@ type ProcessPaymentPeer interface {
 
 	RegisterIncomingPayment(context.Context, lntypes.Hash, btcutil.Amount,
 		uint64) (btcutil.Amount, error)
+
+	CancelIncomingPayment(context.Context, lntypes.Hash, string) error
 }
 
 // FundingChannelState is the minimal remote channel-FSM view needed to bind a
@@ -246,7 +255,7 @@ func (p *MailboxFundingPeer) GetFundingChannel(ctx context.Context,
 	response, err := p.client.GetFundingChannel(
 		ctx, &arkchannelrpc.GetFundingChannelRequest{
 			ChannelId: id[:],
-		}, fundingRPCOptions(id, "get-funding-channel"),
+		},
 	)
 	if err != nil {
 		return FundingChannelState{}, err
@@ -285,6 +294,29 @@ func (p *MailboxFundingPeer) GetFundingChannel(ctx context.Context,
 	}
 
 	return state, nil
+}
+
+// FailReceiveIntent asks the endpoint that funded a receive intent to record
+// the failure and authoritatively abort its prepared OOR.
+func (p *MailboxFundingPeer) FailReceiveIntent(ctx context.Context,
+	id arkchannel.ID, reason string) error {
+
+	if reason == "" {
+		return fmt.Errorf("receive intent failure reason is required")
+	}
+	response, err := p.client.FailReceiveIntent(
+		ctx, &arkchannelrpc.FailReceiveIntentRequest{
+			ChannelId: id[:], Reason: reason,
+		}, fundingRPCOptions(id, "fail-receive-intent"),
+	)
+	if err != nil {
+		return err
+	}
+	if !response.GetFailed() {
+		return fmt.Errorf("receive intent did not reach failed state")
+	}
+
+	return nil
 }
 
 // BindPreparedOOR installs the exact prepared output at the responder before
@@ -602,6 +634,33 @@ func (p *MailboxFundingPeer) RegisterIncomingPayment(ctx context.Context,
 	return capacity, nil
 }
 
+// CancelIncomingPayment releases a registered future-SCID receive before its
+// invoice is published or a public source HTLC is accepted.
+func (p *MailboxFundingPeer) CancelIncomingPayment(ctx context.Context,
+	hash lntypes.Hash, reason string) error {
+
+	if reason == "" {
+		return fmt.Errorf("incoming payment cancellation reason is " +
+			"required")
+	}
+	response, err := p.client.CancelIncomingPayment(
+		ctx, &arkchannelrpc.CancelIncomingPaymentRequest{
+			PaymentHash: hash[:], Reason: reason,
+		}, fundingRPCOptions(
+			arkchannel.ID(hash),
+			"cancel-incoming-payment",
+		),
+	)
+	if err != nil {
+		return err
+	}
+	if !response.GetCancelled() {
+		return fmt.Errorf("incoming payment was not cancelled")
+	}
+
+	return nil
+}
+
 // FundingPeerRPCServerConfig contains one authenticated remote endpoint and
 // the local native lnd process it may coordinate with.
 type FundingPeerRPCServerConfig struct {
@@ -707,6 +766,40 @@ func (s *FundingPeerRPCServer) GetFundingChannel(ctx context.Context,
 	}
 
 	return response, nil
+}
+
+// FailReceiveIntent records a client-observed failure at the hub that owns
+// the prepared OOR, then drives its authoritative abort and lnd cleanup.
+func (s *FundingPeerRPCServer) FailReceiveIntent(ctx context.Context,
+	request *arkchannelrpc.FailReceiveIntentRequest) (
+	*arkchannelrpc.FailReceiveIntentResponse, error) {
+
+	if request.GetReason() == "" {
+		return nil, fmt.Errorf("receive intent failure reason is " +
+			"required")
+	}
+	id, record, err := s.channel(ctx, request.GetChannelId())
+	if err != nil {
+		return nil, err
+	}
+	if record.Snapshot.Terms.Kind != arkchannel.KindReceiveIntent ||
+		record.Snapshot.Terms.Funder != arkchannel.PartyHub {
+		return nil, fmt.Errorf("channel is not a hub-funded receive " +
+			"intent")
+	}
+	record, err = s.cfg.Service.ApplyLocalEvent(
+		ctx, id, &arkchannel.Fail{
+			Reason: request.GetReason(),
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &arkchannelrpc.FailReceiveIntentResponse{
+		Failed: record.Snapshot.Phase == arkchannel.PhaseFailed &&
+			record.Snapshot.OORAborted,
+	}, nil
 }
 
 // RegisterPromotion registers immutable terms for the authenticated client.
@@ -1110,6 +1203,34 @@ func (s *FundingPeerRPCServer) RegisterIncomingPayment(ctx context.Context,
 
 	return &arkchannelrpc.RegisterIncomingPaymentResponse{
 		Registered: true, ChannelCapacitySat: int64(capacity),
+	}, nil
+}
+
+// CancelIncomingPayment terminates a future-SCID reservation that cannot be
+// exposed in a durable client invoice.
+func (s *FundingPeerRPCServer) CancelIncomingPayment(ctx context.Context,
+	request *arkchannelrpc.CancelIncomingPaymentRequest) (
+	*arkchannelrpc.CancelIncomingPaymentResponse, error) {
+
+	if s.cfg.Bridge == nil {
+		return nil, fmt.Errorf("payment bridge is not configured")
+	}
+	hash, err := rpcPaymentHash(request.GetPaymentHash())
+	if err != nil {
+		return nil, err
+	}
+	if request.GetReason() == "" || len(request.GetReason()) > 256 {
+		return nil, fmt.Errorf("valid payment cancellation reason is " +
+			"required")
+	}
+	if err := s.cfg.Bridge.CancelIncomingPayment(
+		ctx, s.cfg.RemoteNode, hash, request.GetReason(),
+	); err != nil {
+		return nil, err
+	}
+
+	return &arkchannelrpc.CancelIncomingPaymentResponse{
+		Cancelled: true,
 	}, nil
 }
 

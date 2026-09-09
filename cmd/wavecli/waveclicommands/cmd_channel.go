@@ -45,7 +45,7 @@ func newChannelCmd() *cobra.Command {
 	cmd.AddCommand(
 		newChannelCreateCmd(), newChannelGetCmd(), newChannelListCmd(),
 		newChannelSendCmd(), newChannelReceiveCmd(), newChannelPayCmd(),
-		newChannelCloseCmd(), newChannelForceCloseCmd(),
+		newChannelRefreshCmd(), newChannelForceCloseCmd(),
 	)
 
 	return cmd
@@ -309,19 +309,19 @@ func newChannelPayCmd() *cobra.Command {
 	return cmd
 }
 
-// newChannelCloseCmd cooperatively closes one clean channel.
-func newChannelCloseCmd() *cobra.Command {
+// newChannelRefreshCmd settles one clean channel into replacement VTXOs.
+func newChannelRefreshCmd() *cobra.Command {
 	return channelIDCommand(
-		"close <channel-id>", "Cooperatively close one channel",
-		"cooperatively close Ark channel", func(cmd *cobra.Command,
+		"refresh <channel-id>", "Refresh one channel inside Ark",
+		"refresh Ark channel", func(cmd *cobra.Command,
 			client arkchannelrpc.ArkChannelServiceClient,
 			channelID []byte) error {
 
 			ctx, cancel := rpcContext(cmd)
 			defer cancel()
-			resp, err := client.RequestCooperativeClose(
+			resp, err := client.RefreshChannel(
 				ctx,
-				&arkchannelrpc.RequestCooperativeCloseRequest{
+				&arkchannelrpc.RefreshChannelRequest{
 					ChannelId: channelID,
 				},
 			)
@@ -445,7 +445,7 @@ func channelIDCommand(use, short, action string,
 		},
 	}
 	if action != "" {
-		cmd.Flags().Bool("yes", false, "approve the channel close")
+		cmd.Flags().Bool("yes", false, "approve the channel action")
 	}
 
 	return cmd

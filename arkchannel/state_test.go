@@ -1234,6 +1234,42 @@ func TestOORPreparationStartedIsIdempotent(t *testing.T) {
 	require.Equal(t, revision, record.Revision)
 }
 
+// TestSourceLessReceiveAbortWaitsForFunderConfirmation proves the client keeps
+// a replayable action until the hub's authenticated abort fact is durable.
+func TestSourceLessReceiveAbortWaitsForFunderConfirmation(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	terms := testTerms(t, KindReceiveIntent)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+
+	reason := "client rejected the prepared source"
+	record, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, &ReceiveIntentAbortRequested{
+			Reason: reason,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseCancelling, record.Snapshot.Phase)
+	require.Nil(t, record.Snapshot.Source)
+	require.False(t, record.Snapshot.OORAborted)
+	require.IsType(
+		t, &RequestReceiveIntentAbort{}, requireOneAction(t, actions),
+	)
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &OORAborted{
+			SessionID: [32]byte{9}, Reason: reason,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseFailed, record.Snapshot.Phase)
+	require.True(t, record.Snapshot.OORAborted)
+	require.Empty(t, actions)
+}
+
 // TestPartialFundingFactsDoNotRestartNegotiation verifies callback progress
 // stays within one native lnd funding attempt.
 func TestPartialFundingFactsDoNotRestartNegotiation(t *testing.T) {

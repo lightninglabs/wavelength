@@ -407,6 +407,9 @@ func (s *Service) authorizeEvent(ctx context.Context, id ID, event Event,
 	case *RecoveryPackageInstalled:
 		return s.requireOriginParty(origin, event.Party, event)
 
+	case *ReceiveIntentAbortRequested:
+		return s.requireOriginParty(origin, PartyClient, event)
+
 	case *RequestCooperativeClose, *CooperativeClosePublished,
 		*CooperativeCloseAborted:
 		return s.requireOriginParty(origin, PartyClient, event)

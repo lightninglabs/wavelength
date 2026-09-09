@@ -24,7 +24,7 @@ const (
 	ArkChannelService_ReceivePayment_FullMethodName           = "/arkchannelrpc.ArkChannelService/ReceivePayment"
 	ArkChannelService_PayLightningInvoice_FullMethodName      = "/arkchannelrpc.ArkChannelService/PayLightningInvoice"
 	ArkChannelService_MaterializeAndForceClose_FullMethodName = "/arkchannelrpc.ArkChannelService/MaterializeAndForceClose"
-	ArkChannelService_RequestCooperativeClose_FullMethodName  = "/arkchannelrpc.ArkChannelService/RequestCooperativeClose"
+	ArkChannelService_RefreshChannel_FullMethodName           = "/arkchannelrpc.ArkChannelService/RefreshChannel"
 	ArkChannelService_GetChannel_FullMethodName               = "/arkchannelrpc.ArkChannelService/GetChannel"
 	ArkChannelService_ListChannels_FullMethodName             = "/arkchannelrpc.ArkChannelService/ListChannels"
 )
@@ -51,9 +51,9 @@ type ArkChannelServiceClient interface {
 	// MaterializeAndForceClose publishes the Ark ancestry, exact channel
 	// backing, and lnd's latest commitment transaction.
 	MaterializeAndForceClose(ctx context.Context, in *MaterializeAndForceCloseRequest, opts ...grpc.CallOption) (*MaterializeAndForceCloseResponse, error)
-	// RequestCooperativeClose asks the client to settle one clean channel
-	// directly from its channel-policy VTXO.
-	RequestCooperativeClose(ctx context.Context, in *RequestCooperativeCloseRequest, opts ...grpc.CallOption) (*RequestCooperativeCloseResponse, error)
+	// RefreshChannel settles one clean channel into ordinary replacement
+	// VTXOs without materializing its Lightning channel point.
+	RefreshChannel(ctx context.Context, in *RefreshChannelRequest, opts ...grpc.CallOption) (*RefreshChannelResponse, error)
 	// GetChannel returns the durable Ark lifecycle state for one channel.
 	GetChannel(ctx context.Context, in *GetChannelRequest, opts ...grpc.CallOption) (*GetChannelResponse, error)
 	// ListChannels returns every channel that still needs recovery,
@@ -119,10 +119,10 @@ func (c *arkChannelServiceClient) MaterializeAndForceClose(ctx context.Context, 
 	return out, nil
 }
 
-func (c *arkChannelServiceClient) RequestCooperativeClose(ctx context.Context, in *RequestCooperativeCloseRequest, opts ...grpc.CallOption) (*RequestCooperativeCloseResponse, error) {
+func (c *arkChannelServiceClient) RefreshChannel(ctx context.Context, in *RefreshChannelRequest, opts ...grpc.CallOption) (*RefreshChannelResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RequestCooperativeCloseResponse)
-	err := c.cc.Invoke(ctx, ArkChannelService_RequestCooperativeClose_FullMethodName, in, out, cOpts...)
+	out := new(RefreshChannelResponse)
+	err := c.cc.Invoke(ctx, ArkChannelService_RefreshChannel_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -171,9 +171,9 @@ type ArkChannelServiceServer interface {
 	// MaterializeAndForceClose publishes the Ark ancestry, exact channel
 	// backing, and lnd's latest commitment transaction.
 	MaterializeAndForceClose(context.Context, *MaterializeAndForceCloseRequest) (*MaterializeAndForceCloseResponse, error)
-	// RequestCooperativeClose asks the client to settle one clean channel
-	// directly from its channel-policy VTXO.
-	RequestCooperativeClose(context.Context, *RequestCooperativeCloseRequest) (*RequestCooperativeCloseResponse, error)
+	// RefreshChannel settles one clean channel into ordinary replacement
+	// VTXOs without materializing its Lightning channel point.
+	RefreshChannel(context.Context, *RefreshChannelRequest) (*RefreshChannelResponse, error)
 	// GetChannel returns the durable Ark lifecycle state for one channel.
 	GetChannel(context.Context, *GetChannelRequest) (*GetChannelResponse, error)
 	// ListChannels returns every channel that still needs recovery,
@@ -204,8 +204,8 @@ func (UnimplementedArkChannelServiceServer) PayLightningInvoice(context.Context,
 func (UnimplementedArkChannelServiceServer) MaterializeAndForceClose(context.Context, *MaterializeAndForceCloseRequest) (*MaterializeAndForceCloseResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method MaterializeAndForceClose not implemented")
 }
-func (UnimplementedArkChannelServiceServer) RequestCooperativeClose(context.Context, *RequestCooperativeCloseRequest) (*RequestCooperativeCloseResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method RequestCooperativeClose not implemented")
+func (UnimplementedArkChannelServiceServer) RefreshChannel(context.Context, *RefreshChannelRequest) (*RefreshChannelResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RefreshChannel not implemented")
 }
 func (UnimplementedArkChannelServiceServer) GetChannel(context.Context, *GetChannelRequest) (*GetChannelResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetChannel not implemented")
@@ -324,20 +324,20 @@ func _ArkChannelService_MaterializeAndForceClose_Handler(srv interface{}, ctx co
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ArkChannelService_RequestCooperativeClose_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RequestCooperativeCloseRequest)
+func _ArkChannelService_RefreshChannel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RefreshChannelRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ArkChannelServiceServer).RequestCooperativeClose(ctx, in)
+		return srv.(ArkChannelServiceServer).RefreshChannel(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ArkChannelService_RequestCooperativeClose_FullMethodName,
+		FullMethod: ArkChannelService_RefreshChannel_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ArkChannelServiceServer).RequestCooperativeClose(ctx, req.(*RequestCooperativeCloseRequest))
+		return srv.(ArkChannelServiceServer).RefreshChannel(ctx, req.(*RefreshChannelRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -406,8 +406,8 @@ var ArkChannelService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ArkChannelService_MaterializeAndForceClose_Handler,
 		},
 		{
-			MethodName: "RequestCooperativeClose",
-			Handler:    _ArkChannelService_RequestCooperativeClose_Handler,
+			MethodName: "RefreshChannel",
+			Handler:    _ArkChannelService_RefreshChannel_Handler,
 		},
 		{
 			MethodName: "GetChannel",
@@ -711,6 +711,7 @@ const (
 	ArkChannelFundingPeerService_RegisterPromotion_FullMethodName       = "/arkchannelrpc.ArkChannelFundingPeerService/RegisterPromotion"
 	ArkChannelFundingPeerService_RegisterReceiveIntent_FullMethodName   = "/arkchannelrpc.ArkChannelFundingPeerService/RegisterReceiveIntent"
 	ArkChannelFundingPeerService_GetFundingChannel_FullMethodName       = "/arkchannelrpc.ArkChannelFundingPeerService/GetFundingChannel"
+	ArkChannelFundingPeerService_FailReceiveIntent_FullMethodName       = "/arkchannelrpc.ArkChannelFundingPeerService/FailReceiveIntent"
 	ArkChannelFundingPeerService_BindPreparedOOR_FullMethodName         = "/arkchannelrpc.ArkChannelFundingPeerService/BindPreparedOOR"
 	ArkChannelFundingPeerService_SignBacking_FullMethodName             = "/arkchannelrpc.ArkChannelFundingPeerService/SignBacking"
 	ArkChannelFundingPeerService_InstallBacking_FullMethodName          = "/arkchannelrpc.ArkChannelFundingPeerService/InstallBacking"
@@ -724,6 +725,7 @@ const (
 	ArkChannelFundingPeerService_PrepareOutgoingPayment_FullMethodName  = "/arkchannelrpc.ArkChannelFundingPeerService/PrepareOutgoingPayment"
 	ArkChannelFundingPeerService_CancelOutgoingPayment_FullMethodName   = "/arkchannelrpc.ArkChannelFundingPeerService/CancelOutgoingPayment"
 	ArkChannelFundingPeerService_RegisterIncomingPayment_FullMethodName = "/arkchannelrpc.ArkChannelFundingPeerService/RegisterIncomingPayment"
+	ArkChannelFundingPeerService_CancelIncomingPayment_FullMethodName   = "/arkchannelrpc.ArkChannelFundingPeerService/CancelIncomingPayment"
 )
 
 // ArkChannelFundingPeerServiceClient is the client API for ArkChannelFundingPeerService service.
@@ -738,6 +740,7 @@ type ArkChannelFundingPeerServiceClient interface {
 	RegisterPromotion(ctx context.Context, in *RegisterPromotionRequest, opts ...grpc.CallOption) (*RegisterPromotionResponse, error)
 	RegisterReceiveIntent(ctx context.Context, in *RegisterReceiveIntentRequest, opts ...grpc.CallOption) (*RegisterReceiveIntentResponse, error)
 	GetFundingChannel(ctx context.Context, in *GetFundingChannelRequest, opts ...grpc.CallOption) (*GetFundingChannelResponse, error)
+	FailReceiveIntent(ctx context.Context, in *FailReceiveIntentRequest, opts ...grpc.CallOption) (*FailReceiveIntentResponse, error)
 	BindPreparedOOR(ctx context.Context, in *BindPreparedOORRequest, opts ...grpc.CallOption) (*BindPreparedOORResponse, error)
 	SignBacking(ctx context.Context, in *SignBackingRequest, opts ...grpc.CallOption) (*SignBackingResponse, error)
 	InstallBacking(ctx context.Context, in *InstallBackingRequest, opts ...grpc.CallOption) (*InstallBackingResponse, error)
@@ -754,6 +757,7 @@ type ArkChannelFundingPeerServiceClient interface {
 	PrepareOutgoingPayment(ctx context.Context, in *PrepareOutgoingPaymentRequest, opts ...grpc.CallOption) (*PrepareOutgoingPaymentResponse, error)
 	CancelOutgoingPayment(ctx context.Context, in *CancelOutgoingPaymentRequest, opts ...grpc.CallOption) (*CancelOutgoingPaymentResponse, error)
 	RegisterIncomingPayment(ctx context.Context, in *RegisterIncomingPaymentRequest, opts ...grpc.CallOption) (*RegisterIncomingPaymentResponse, error)
+	CancelIncomingPayment(ctx context.Context, in *CancelIncomingPaymentRequest, opts ...grpc.CallOption) (*CancelIncomingPaymentResponse, error)
 }
 
 type arkChannelFundingPeerServiceClient struct {
@@ -798,6 +802,16 @@ func (c *arkChannelFundingPeerServiceClient) GetFundingChannel(ctx context.Conte
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetFundingChannelResponse)
 	err := c.cc.Invoke(ctx, ArkChannelFundingPeerService_GetFundingChannel_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *arkChannelFundingPeerServiceClient) FailReceiveIntent(ctx context.Context, in *FailReceiveIntentRequest, opts ...grpc.CallOption) (*FailReceiveIntentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FailReceiveIntentResponse)
+	err := c.cc.Invoke(ctx, ArkChannelFundingPeerService_FailReceiveIntent_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -934,6 +948,16 @@ func (c *arkChannelFundingPeerServiceClient) RegisterIncomingPayment(ctx context
 	return out, nil
 }
 
+func (c *arkChannelFundingPeerServiceClient) CancelIncomingPayment(ctx context.Context, in *CancelIncomingPaymentRequest, opts ...grpc.CallOption) (*CancelIncomingPaymentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CancelIncomingPaymentResponse)
+	err := c.cc.Invoke(ctx, ArkChannelFundingPeerService_CancelIncomingPayment_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ArkChannelFundingPeerServiceServer is the server API for ArkChannelFundingPeerService service.
 // All implementations must embed UnimplementedArkChannelFundingPeerServiceServer
 // for forward compatibility.
@@ -946,6 +970,7 @@ type ArkChannelFundingPeerServiceServer interface {
 	RegisterPromotion(context.Context, *RegisterPromotionRequest) (*RegisterPromotionResponse, error)
 	RegisterReceiveIntent(context.Context, *RegisterReceiveIntentRequest) (*RegisterReceiveIntentResponse, error)
 	GetFundingChannel(context.Context, *GetFundingChannelRequest) (*GetFundingChannelResponse, error)
+	FailReceiveIntent(context.Context, *FailReceiveIntentRequest) (*FailReceiveIntentResponse, error)
 	BindPreparedOOR(context.Context, *BindPreparedOORRequest) (*BindPreparedOORResponse, error)
 	SignBacking(context.Context, *SignBackingRequest) (*SignBackingResponse, error)
 	InstallBacking(context.Context, *InstallBackingRequest) (*InstallBackingResponse, error)
@@ -962,6 +987,7 @@ type ArkChannelFundingPeerServiceServer interface {
 	PrepareOutgoingPayment(context.Context, *PrepareOutgoingPaymentRequest) (*PrepareOutgoingPaymentResponse, error)
 	CancelOutgoingPayment(context.Context, *CancelOutgoingPaymentRequest) (*CancelOutgoingPaymentResponse, error)
 	RegisterIncomingPayment(context.Context, *RegisterIncomingPaymentRequest) (*RegisterIncomingPaymentResponse, error)
+	CancelIncomingPayment(context.Context, *CancelIncomingPaymentRequest) (*CancelIncomingPaymentResponse, error)
 	mustEmbedUnimplementedArkChannelFundingPeerServiceServer()
 }
 
@@ -983,6 +1009,9 @@ func (UnimplementedArkChannelFundingPeerServiceServer) RegisterReceiveIntent(con
 }
 func (UnimplementedArkChannelFundingPeerServiceServer) GetFundingChannel(context.Context, *GetFundingChannelRequest) (*GetFundingChannelResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetFundingChannel not implemented")
+}
+func (UnimplementedArkChannelFundingPeerServiceServer) FailReceiveIntent(context.Context, *FailReceiveIntentRequest) (*FailReceiveIntentResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FailReceiveIntent not implemented")
 }
 func (UnimplementedArkChannelFundingPeerServiceServer) BindPreparedOOR(context.Context, *BindPreparedOORRequest) (*BindPreparedOORResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method BindPreparedOOR not implemented")
@@ -1022,6 +1051,9 @@ func (UnimplementedArkChannelFundingPeerServiceServer) CancelOutgoingPayment(con
 }
 func (UnimplementedArkChannelFundingPeerServiceServer) RegisterIncomingPayment(context.Context, *RegisterIncomingPaymentRequest) (*RegisterIncomingPaymentResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RegisterIncomingPayment not implemented")
+}
+func (UnimplementedArkChannelFundingPeerServiceServer) CancelIncomingPayment(context.Context, *CancelIncomingPaymentRequest) (*CancelIncomingPaymentResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CancelIncomingPayment not implemented")
 }
 func (UnimplementedArkChannelFundingPeerServiceServer) mustEmbedUnimplementedArkChannelFundingPeerServiceServer() {
 }
@@ -1113,6 +1145,24 @@ func _ArkChannelFundingPeerService_GetFundingChannel_Handler(srv interface{}, ct
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ArkChannelFundingPeerServiceServer).GetFundingChannel(ctx, req.(*GetFundingChannelRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ArkChannelFundingPeerService_FailReceiveIntent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FailReceiveIntentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArkChannelFundingPeerServiceServer).FailReceiveIntent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArkChannelFundingPeerService_FailReceiveIntent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArkChannelFundingPeerServiceServer).FailReceiveIntent(ctx, req.(*FailReceiveIntentRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1351,6 +1401,24 @@ func _ArkChannelFundingPeerService_RegisterIncomingPayment_Handler(srv interface
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ArkChannelFundingPeerService_CancelIncomingPayment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelIncomingPaymentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArkChannelFundingPeerServiceServer).CancelIncomingPayment(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArkChannelFundingPeerService_CancelIncomingPayment_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArkChannelFundingPeerServiceServer).CancelIncomingPayment(ctx, req.(*CancelIncomingPaymentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ArkChannelFundingPeerService_ServiceDesc is the grpc.ServiceDesc for ArkChannelFundingPeerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1373,6 +1441,10 @@ var ArkChannelFundingPeerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetFundingChannel",
 			Handler:    _ArkChannelFundingPeerService_GetFundingChannel_Handler,
+		},
+		{
+			MethodName: "FailReceiveIntent",
+			Handler:    _ArkChannelFundingPeerService_FailReceiveIntent_Handler,
 		},
 		{
 			MethodName: "BindPreparedOOR",
@@ -1425,6 +1497,10 @@ var ArkChannelFundingPeerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RegisterIncomingPayment",
 			Handler:    _ArkChannelFundingPeerService_RegisterIncomingPayment_Handler,
+		},
+		{
+			MethodName: "CancelIncomingPayment",
+			Handler:    _ArkChannelFundingPeerService_CancelIncomingPayment_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

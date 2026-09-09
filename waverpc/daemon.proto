@@ -855,7 +855,7 @@ message NewReceiveScriptRequest {
 
     // identity_key registers the daemon's durable identity key instead of
     // deriving a fresh receive key. This is reserved for restart-stable
-    // protocol destinations such as Ark channel cooperative-close payouts.
+    // protocol destinations such as Ark channel refresh payouts.
     bool identity_key = 3;
 }
 

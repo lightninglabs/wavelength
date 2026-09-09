@@ -25,6 +25,8 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var (
@@ -44,6 +46,7 @@ const (
 	arkChannelBackingKeyFamily        keychain.KeyFamily = 221
 	arkChannelFunderKeyFamily         keychain.KeyFamily = 223
 	arkChannelPaymentCleanupTimeout                      = 30 * time.Second
+	arkChannelReceiveCleanupTimeout                      = 30 * time.Second
 	maxArkChannelIdempotencyKeyLength                    = 128
 )
 
@@ -503,7 +506,7 @@ func (c *NativeArkChannelController) startClient(ctx context.Context) error {
 
 		return err
 	}
-	delivery := newArkChannelCloseDelivery(c.cfg.OORDestination)
+	delivery := newArkChannelRefreshDelivery(c.cfg.OORDestination)
 	closeEndpoint, err := lnruntime.NewNativeCooperativeCloseEndpoint(
 		arkchannel.PartyClient, node.Runtime(), nil,
 		keychain.KeyDescriptor{}, delivery,
@@ -668,7 +671,7 @@ func (c *NativeArkChannelController) startHub(ctx context.Context,
 
 		return err
 	}
-	delivery := newArkChannelCloseDelivery(c.cfg.OORDestination)
+	delivery := newArkChannelRefreshDelivery(c.cfg.OORDestination)
 	closeEndpoint, err := lnruntime.NewNativeCooperativeCloseEndpoint(
 		arkchannel.PartyHub, node.Runtime(), c.cfg.Wallet.BtcWallet,
 		c.keys.ark, delivery,
@@ -966,7 +969,7 @@ func (c *NativeArkChannelController) newNode(ctx context.Context,
 			logCtx, channelPoint,
 		)
 		if err != nil {
-			return false, fmt.Errorf("load Ark channel close "+
+			return false, fmt.Errorf("load Ark channel refresh "+
 				"lifecycle: %w", err)
 		}
 
@@ -1179,8 +1182,8 @@ func (c *NativeArkChannelController) newService(node *lnruntime.NativeNode,
 		node: node, log: log,
 	}
 	executor, err := arkchannel.NewNativeExecutor(
-		c.party, node.FundingActivator(), negotiator, oor, materializer,
-		node, forceCloser, closer,
+		c.party, node.FundingActivator(), negotiator, oor, c.remote,
+		materializer, node, forceCloser, closer,
 	)
 	if err != nil {
 		return nil, err
@@ -1226,7 +1229,11 @@ func (c *NativeArkChannelController) PromoteVTXO(ctx context.Context,
 		return arkchannel.Record{}, err
 	}
 	if err == nil && existing.Snapshot.Source != nil {
-		return c.resumeBoundPromotion(ctx, existing)
+		if _, err := c.resumeBoundPromotion(ctx, existing); err != nil {
+			return arkchannel.Record{}, err
+		}
+
+		return c.waitPromotionCompletion(ctx, terms.ID)
 	}
 	if _, err := c.remote.RegisterPromotion(ctx, terms); err != nil {
 		return arkchannel.Record{}, err
@@ -1254,7 +1261,52 @@ func (c *NativeArkChannelController) PromoteVTXO(ctx context.Context,
 		return arkchannel.Record{}, err
 	}
 
-	return c.service.GetChannel(ctx, terms.ID)
+	return c.waitPromotionCompletion(ctx, terms.ID)
+}
+
+// waitPromotionCompletion preserves the blocking promotion contract across
+// idempotent retries while the durable channel FSM finishes asynchronously.
+func (c *NativeArkChannelController) waitPromotionCompletion(
+	ctx context.Context, id arkchannel.ID) (arkchannel.Record, error) {
+
+	ticker := time.NewTicker(arkChannelControllerPollInterval)
+	defer ticker.Stop()
+
+	for {
+		record, err := c.service.GetChannel(ctx, id)
+		if err != nil {
+			return arkchannel.Record{}, err
+		}
+		switch record.Snapshot.Phase {
+		case arkchannel.PhaseActive:
+			return record, nil
+
+		case arkchannel.PhaseFailed:
+			return arkchannel.Record{}, fmt.Errorf("channel "+
+				"promotion failed: %s", record.Snapshot.Failure)
+
+		case arkchannel.PhaseRequested,
+			arkchannel.PhaseNegotiating,
+			arkchannel.PhaseBackingReady,
+			arkchannel.PhaseActivating,
+			arkchannel.PhaseCancelling:
+
+			// A peer callback or replayable channel action still
+			// owns the next durable transition.
+
+		default:
+			// Preserve idempotent lookup after the channel has
+			// moved beyond its active creation lifecycle.
+			return record, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return arkchannel.Record{}, ctx.Err()
+
+		case <-ticker.C:
+		}
+	}
 }
 
 // resumeBoundPromotion resumes only channel-creation work. A later channel
@@ -1597,104 +1649,356 @@ func (c *NativeArkChannelController) PrepareIncomingPayment(ctx context.Context,
 }
 
 // RegisterIncomingPayment binds the advertised future SCID to this
-// authenticated endpoint after the private invoice is durable.
+// authenticated endpoint after the private invoice is durable. It returns the
+// minimum CLTV delta required by the private channel payment.
 func (c *NativeArkChannelController) RegisterIncomingPayment(
 	ctx context.Context, hash lntypes.Hash, amount btcutil.Amount,
-	reservedSCID uint64) error {
+	reservedSCID uint64) (uint32, error) {
 
 	if c.party != arkchannel.PartyClient {
-		return fmt.Errorf("incoming payment registration is client " +
-			"only")
+		return 0, fmt.Errorf("incoming payment registration is " +
+			"client only")
 	}
 	if err := c.ensureClientStarted(ctx); err != nil {
-		return err
+		return 0, err
 	}
 
 	capacity, err := c.paymentPeer.RegisterIncomingPayment(
 		ctx, hash, amount, reservedSCID,
 	)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	terms, err := c.newReceiveIntentTerms(
 		hash, reservedSCID, capacity,
 	)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if _, err := c.remote.RegisterReceiveIntent(ctx, terms); err != nil {
-		return err
+		return 0, err
 	}
-	_, err = c.service.RegisterReceiveIntent(ctx, terms)
+	if _, err := c.service.RegisterReceiveIntent(ctx, terms); err != nil {
+		return 0, err
+	}
 
-	return err
+	return c.IncomingPaymentCLTVDeltaBlocks()
 }
 
-// WaitIncomingPayment waits for the known-preimage private invoice to settle.
+// IncomingPaymentCLTVDeltaBlocks returns the private payment lifetime derived
+// from the immutable channel policy advertised by this endpoint. The hub uses
+// the same value to bind public-HTLC admission to the client's invoice hint.
+func (c *NativeArkChannelController) IncomingPaymentCLTVDeltaBlocks() (uint32,
+	error) {
+
+	return lnruntime.ArkChannelPaymentCLTVDelta(
+		arkchannel.VTXOTerms{
+			ChannelDelay: c.peerInfo.ChannelDelay,
+			FunderDelay:  c.peerInfo.FunderDelay,
+		},
+	)
+}
+
+// WaitIncomingPayment waits for the private hold invoice and returns the active
+// channel that delivered it without releasing the shared preimage.
 func (c *NativeArkChannelController) WaitIncomingPayment(ctx context.Context,
-	hash lntypes.Hash) (arkchannel.ID, error) {
+	hash lntypes.Hash) (arkchannel.ID, bool, error) {
 
 	if c.party != arkchannel.PartyClient {
-		return arkchannel.ID{}, fmt.Errorf("incoming payment wait is " +
-			"client only")
+		return arkchannel.ID{}, false, fmt.Errorf("incoming payment " +
+			"wait is client only")
 	}
 	if err := c.ensureClientStarted(ctx); err != nil {
-		return arkchannel.ID{}, err
+		return arkchannel.ID{}, false, err
 	}
 
-	invoiceResult := make(chan error, 1)
+	incomingSCID, err := waitIncomingPaymentReady(
+		ctx,
+		func(ctx context.Context) (lnwire.ShortChannelID, error) {
+			return c.node.WaitInvoiceAcceptedChannel(ctx, hash)
+		},
+		func(ctx context.Context) error {
+			return c.syncReceiveIntent(ctx, hash)
+		},
+	)
+	if err != nil {
+		return arkchannel.ID{}, false, err
+	}
+
+	record, err := c.activeChannelBySCID(ctx, incomingSCID)
+	if err != nil {
+		return arkchannel.ID{}, false, err
+	}
+	id := record.Snapshot.Terms.ID
+	manifested := id == arkchannel.ReceiveIntentID(hash)
+	if manifested &&
+		(record.Snapshot.Terms.Kind != arkchannel.KindReceiveIntent ||
+			record.Snapshot.Terms.PaymentHash != hash) {
+		return arkchannel.ID{}, false, fmt.Errorf("manifested " +
+			"receive channel does not match payment")
+	}
+
+	return id, manifested, nil
+}
+
+// activeChannelBySCID binds an accepted native invoice HTLC to one durable
+// active channel instead of trusting the public route reservation.
+func (c *NativeArkChannelController) activeChannelBySCID(ctx context.Context,
+	scid lnwire.ShortChannelID) (arkchannel.Record, error) {
+
+	if scid == (lnwire.ShortChannelID{}) {
+		return arkchannel.Record{}, fmt.Errorf("incoming payment " +
+			"channel SCID is empty")
+	}
+	records, err := c.service.ListChannels(ctx)
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+
+	var selected *arkchannel.Record
+	for i := range records {
+		record := records[i]
+		if record.Snapshot.Phase != arkchannel.PhaseActive ||
+			record.Snapshot.Terms.ReservedSCID != scid.ToUint64() {
+
+			continue
+		}
+		if selected != nil {
+			return arkchannel.Record{}, fmt.Errorf("multiple "+
+				"active channels use SCID %d", scid.ToUint64())
+		}
+
+		selected = &record
+	}
+	if selected == nil {
+		return arkchannel.Record{}, fmt.Errorf("no active channel "+
+			"uses SCID %d", scid.ToUint64())
+	}
+
+	return *selected, nil
+}
+
+// waitIncomingPaymentReady joins the two independent durable readiness
+// barriers. Returning after only one would either expose an unusable channel or
+// release the preimage before its channel exists.
+func waitIncomingPaymentReady(ctx context.Context,
+	waitInvoice func(context.Context) (lnwire.ShortChannelID, error),
+	syncIntent func(context.Context) error) (lnwire.ShortChannelID, error) {
+
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type invoiceWaitResult struct {
+		channelID lnwire.ShortChannelID
+		err       error
+	}
+	invoiceResult := make(chan invoiceWaitResult, 1)
 	go func() {
-		invoiceResult <- c.WaitInvoiceSettled(ctx, hash)
+		channelID, err := waitInvoice(waitCtx)
+		invoiceResult <- invoiceWaitResult{
+			channelID: channelID,
+			err:       err,
+		}
 	}()
 	syncResult := make(chan error, 1)
 	go func() {
-		syncResult <- c.syncReceiveIntent(ctx, hash)
+		syncResult <- syncIntent(waitCtx)
 	}()
 
-	for {
+	var incomingSCID lnwire.ShortChannelID
+	for invoiceResult != nil || syncResult != nil {
 		select {
-		case err := <-invoiceResult:
-			if err != nil {
-				return arkchannel.ID{}, err
+		case result := <-invoiceResult:
+			invoiceResult = nil
+			if result.err != nil {
+				return lnwire.ShortChannelID{}, fmt.Errorf(
+					"wait for incoming hold invoice: %w",
+					result.err)
 			}
-
-			id := arkchannel.ReceiveIntentID(hash)
-			record, getErr := c.service.GetChannel(ctx, id)
-			if getErr != nil {
-				if c.cfg.Log != nil {
-					c.cfg.Log.WarnS(ctx, "Receive channel result "+
-						"lookup failed", getErr,
-						btclog.Hex(
-							"payment_hash", hash[:],
-						),
-					)
-				}
-
-				return arkchannel.ID{}, nil
-			}
-			if record.Snapshot.Phase != arkchannel.PhaseActive ||
-				record.Snapshot.Terms.Kind !=
-					arkchannel.KindReceiveIntent {
-				return arkchannel.ID{}, nil
-			}
-
-			return id, nil
+			incomingSCID = result.channelID
 
 		case err := <-syncResult:
-			if err != nil && c.cfg.Log != nil {
-				c.cfg.Log.WarnS(
-					ctx,
-					"Receive channel intent stopped",
-					err,
-					btclog.Hex("payment_hash", hash[:]),
-				)
-			}
 			syncResult = nil
+			if err != nil && !errors.Is(
+				err, ErrReceiveChannelFallback,
+			) {
+				return lnwire.ShortChannelID{}, fmt.Errorf(
+					"synchronize receive channel: %w", err)
+			}
 
-		case <-ctx.Done():
-			return arkchannel.ID{}, ctx.Err()
+		case <-waitCtx.Done():
+			return lnwire.ShortChannelID{}, waitCtx.Err()
 		}
 	}
+
+	if incomingSCID == (lnwire.ShortChannelID{}) {
+		return lnwire.ShortChannelID{}, fmt.Errorf("incoming payment " +
+			"channel SCID is empty")
+	}
+
+	return incomingSCID, nil
+}
+
+// SettleIncomingPayment releases the private hold invoice after the SDK
+// durably chooses the channel rail as the winner.
+func (c *NativeArkChannelController) SettleIncomingPayment(ctx context.Context,
+	preimage lntypes.Preimage) error {
+
+	if c.party != arkchannel.PartyClient {
+		return fmt.Errorf("incoming payment settlement is client only")
+	}
+	if err := c.ensureClientStarted(ctx); err != nil {
+		return err
+	}
+
+	return c.SettleHoldInvoice(ctx, preimage)
+}
+
+// CancelIncomingPayment prevents private settlement and abandons any paired
+// receive intent that remains before the channel funding point of no return.
+func (c *NativeArkChannelController) CancelIncomingPayment(ctx context.Context,
+	hash lntypes.Hash, reason string) error {
+
+	if c.party != arkchannel.PartyClient {
+		return fmt.Errorf("incoming payment cancellation is client " +
+			"only")
+	}
+	if reason == "" {
+		return fmt.Errorf("incoming payment cancellation reason is " +
+			"required")
+	}
+	if err := c.ensureClientStarted(ctx); err != nil {
+		return err
+	}
+	if err := c.paymentPeer.CancelIncomingPayment(
+		ctx, hash, reason,
+	); err != nil {
+		return fmt.Errorf("cancel hub incoming payment: %w", err)
+	}
+	if err := c.CancelInvoice(ctx, hash); err != nil {
+		return fmt.Errorf("cancel incoming hold invoice: %w", err)
+	}
+
+	return c.cancelReceiveIntent(ctx, hash, reason)
+}
+
+// cancelReceiveIntent applies the same pre-PONR failure to every existing
+// endpoint. Intermediate post-PONR states must finish activation before the
+// caller can safely commit another winning rail.
+func (c *NativeArkChannelController) cancelReceiveIntent(ctx context.Context,
+	hash lntypes.Hash, reason string) error {
+
+	id := arkchannel.ReceiveIntentID(hash)
+	remote, remoteErr := c.remote.GetFundingChannel(ctx, id)
+	remoteMissing := isArkChannelNotFound(remoteErr)
+	if remoteErr != nil && !remoteMissing {
+		return fmt.Errorf("load remote receive intent: %w", remoteErr)
+	}
+	local, localErr := c.service.GetChannel(ctx, id)
+	localMissing := isArkChannelNotFound(localErr)
+	if localErr != nil && !localMissing {
+		return fmt.Errorf("load local receive intent: %w", localErr)
+	}
+	if remoteMissing && localMissing {
+		return nil
+	}
+	if !localMissing && (local.Snapshot.Terms.Kind !=
+		arkchannel.KindReceiveIntent ||
+		local.Snapshot.Terms.PaymentHash != hash) {
+		return fmt.Errorf("channel is not this payment's receive " +
+			"intent")
+	}
+	if (!remoteMissing && !receiveIntentPhaseKnown(remote.Phase)) ||
+		(!localMissing &&
+			!receiveIntentPhaseKnown(local.Snapshot.Phase)) {
+		return fmt.Errorf("receive channel has an unknown phase")
+	}
+
+	if (!remoteMissing && receiveIntentIsCommitting(remote.Phase)) ||
+		(!localMissing &&
+			receiveIntentIsCommitting(local.Snapshot.Phase)) {
+		return fmt.Errorf("receive channel is crossing its funding " +
+			"safety boundary")
+	}
+	if receiveIntentEndpointsDisagree(
+		remoteMissing, remote.Phase, localMissing, local.Snapshot.Phase,
+	) {
+		return fmt.Errorf("receive channel endpoints have not " +
+			"converged")
+	}
+
+	event := &arkchannel.Fail{Reason: reason}
+	if !remoteMissing && receiveIntentCanFail(remote.Phase) {
+		if _, err := c.remote.ApplyChannelEvent(
+			ctx, id, event,
+		); err != nil {
+			return fmt.Errorf("cancel remote receive intent: %w",
+				err)
+		}
+	}
+	if !localMissing && receiveIntentCanFail(local.Snapshot.Phase) {
+		if _, err := c.service.ApplyLocalEvent(
+			ctx, id, event,
+		); err != nil {
+			return fmt.Errorf("cancel local receive intent: %w",
+				err)
+		}
+	}
+
+	return nil
+}
+
+// isArkChannelNotFound recognizes local and transport-preserved missing rows.
+func isArkChannelNotFound(err error) bool {
+	return errors.Is(err, arkchannel.ErrNotFound) ||
+		status.Code(err) == codes.NotFound
+}
+
+// receiveIntentCanFail identifies states where replaying Fail is safe.
+func receiveIntentCanFail(phase arkchannel.Phase) bool {
+	return phase == arkchannel.PhaseRequested ||
+		phase == arkchannel.PhaseNegotiating ||
+		phase == arkchannel.PhaseCancelling
+}
+
+// receiveIntentIsCommitting identifies the short post-PONR activation window.
+func receiveIntentIsCommitting(phase arkchannel.Phase) bool {
+	return phase == arkchannel.PhaseBackingReady ||
+		phase == arkchannel.PhaseActivating
+}
+
+// receiveIntentIsRetained identifies reusable or later channel lifecycle
+// states.
+func receiveIntentIsRetained(phase arkchannel.Phase) bool {
+	switch phase {
+	case arkchannel.PhaseActive, arkchannel.PhaseMaterializing,
+		arkchannel.PhaseOnChain, arkchannel.PhaseClosed,
+		arkchannel.PhaseCoopClosing, arkchannel.PhaseCoopCloseSigned,
+		arkchannel.PhaseCoopClosePublished:
+		return true
+
+	default:
+		return false
+	}
+}
+
+// receiveIntentPhaseKnown rejects corrupt or future phase values
+// conservatively.
+func receiveIntentPhaseKnown(phase arkchannel.Phase) bool {
+	return receiveIntentCanFail(phase) ||
+		receiveIntentIsCommitting(phase) ||
+		receiveIntentIsRetained(phase) ||
+		phase == arkchannel.PhaseFailed
+}
+
+// receiveIntentEndpointsDisagree detects a retained/pre-PONR split.
+func receiveIntentEndpointsDisagree(remoteMissing bool, remote arkchannel.Phase,
+	localMissing bool, local arkchannel.Phase) bool {
+
+	remoteRetained := !remoteMissing && receiveIntentIsRetained(remote)
+	localRetained := !localMissing && receiveIntentIsRetained(local)
+
+	return remoteRetained != localRetained
 }
 
 // syncReceiveIntent binds a hub-prepared source locally and lets the common
@@ -1708,16 +2012,68 @@ func (c *NativeArkChannelController) syncReceiveIntent(ctx context.Context,
 	for {
 		remote, err := c.remote.GetFundingChannel(ctx, id)
 		if err != nil {
-			return err
+			if err := c.waitReceiveIntentSyncRetry(
+				ctx, ticker, hash, "load remote intent", err,
+			); err != nil {
+				return err
+			}
+
+			continue
 		}
 		local, err := c.service.GetChannel(ctx, id)
 		if err != nil {
-			return err
+			if err := c.waitReceiveIntentSyncRetry(
+				ctx, ticker, hash, "load local intent", err,
+			); err != nil {
+				return err
+			}
+
+			continue
 		}
 		if remote.Phase == arkchannel.PhaseFailed {
 			return c.mirrorReceiveIntentFailure(
 				ctx, local, remote,
 			)
+		}
+		if remote.Phase == arkchannel.PhaseCancelling {
+			reason := remote.Failure
+			if reason == "" {
+				reason = "hub receive channel is cancelling"
+			}
+			if err := c.remote.FailReceiveIntent(
+				ctx, id, reason,
+			); err != nil {
+
+				if err := c.waitReceiveIntentSyncRetry(
+					ctx, ticker, hash, "resume remote "+
+						"intent cancellation", err,
+				); err != nil {
+					return err
+				}
+			}
+
+			continue
+		}
+		if local.Snapshot.Phase == arkchannel.PhaseCancelling {
+			reason := local.Snapshot.Failure
+			if reason == "" {
+				reason = "local receive channel is cancelling"
+			}
+			if _, err := c.service.ApplyLocalEvent(
+				ctx, id, &arkchannel.Fail{
+					Reason: reason,
+				},
+			); err != nil {
+
+				if err := c.waitReceiveIntentSyncRetry(
+					ctx, ticker, hash, "resume local "+
+						"intent cancellation", err,
+				); err != nil {
+					return err
+				}
+			}
+
+			continue
 		}
 		if local.Snapshot.Phase == arkchannel.PhaseActive {
 			return nil
@@ -1729,61 +2085,54 @@ func (c *NativeArkChannelController) syncReceiveIntent(ctx context.Context,
 				},
 			)
 			if err != nil {
-				return c.failReceiveIntent(ctx, id, err)
-			}
-
-			continue
-		}
-		if remote.Source != nil && local.Snapshot.Source != nil &&
-			(local.Snapshot.Phase == arkchannel.PhaseRequested ||
-				remote.Phase == arkchannel.PhaseRequested) {
-
-			event := &arkchannel.FundingPeerReady{}
-			if local.Snapshot.Phase == arkchannel.PhaseRequested {
-				if _, err := c.service.RecordLocalEvent(
-					ctx, id, event,
-				); err != nil {
-					return c.failReceiveIntent(ctx, id, err)
+				failErr := c.failReceiveIntentDetached(
+					ctx, id, err,
+				)
+				if errors.Is(
+					failErr, ErrReceiveChannelFallback,
+				) {
+					return failErr
 				}
-			}
-			if remote.Phase == arkchannel.PhaseRequested {
-				if _, err := c.remote.ApplyChannelEvent(
-					ctx, id, event,
-				); err != nil {
-					return c.failReceiveIntent(ctx, id, err)
+				if retryErr := c.waitReceiveIntentSyncRetry(
+					ctx, ticker, hash, "bind prepared "+
+						"source", failErr,
+				); retryErr != nil {
+					return retryErr
 				}
 			}
 
 			continue
 		}
-		if remote.OORFinalized && !local.Snapshot.ClientRecoveryReady {
-			if local.Snapshot.Source == nil ||
-				local.Snapshot.Backing == nil {
-				return fmt.Errorf("finalized receive channel " +
-					"is missing funding artifacts")
-			}
-			recovery, err := c.remote.ExportRecoveryPackage(ctx, id)
+		if receiveIntentNeedsPeerReady(remote, local) {
+			err := c.syncReceiveIntentPeerReady(
+				ctx, id, remote, local,
+			)
 			if err != nil {
-				return err
+				if err := c.waitReceiveIntentSyncRetry(
+					ctx, ticker, hash, "record peer "+
+						"readiness", err,
+				); err != nil {
+					return err
+				}
 			}
-			if err := c.cfg.Recovery.InstallRecoveryPackage(
-				ctx, id, local.Snapshot.Terms,
-				*local.Snapshot.Source, recovery,
-			); err != nil {
-				return err
-			}
-			event := &arkchannel.RecoveryPackageInstalled{
-				Party: arkchannel.PartyClient,
-			}
-			if _, err := c.remote.ApplyChannelEvent(
-				ctx, id, event,
-			); err != nil {
-				return err
-			}
-			if _, err := c.service.ApplyLocalEvent(
-				ctx, id, event,
-			); err != nil {
-				return err
+
+			continue
+		}
+		if receiveIntentRecoveryInvalid(remote, local) {
+			return fmt.Errorf("finalized receive channel is " +
+				"missing funding artifacts")
+		}
+		if receiveIntentNeedsRecovery(remote, local) {
+			err := c.installReceiveIntentRecovery(
+				ctx, id, remote, local,
+			)
+			if err != nil {
+				if err := c.waitReceiveIntentSyncRetry(
+					ctx, ticker, hash, "install "+
+						"recovery package", err,
+				); err != nil {
+					return err
+				}
 			}
 
 			continue
@@ -1798,29 +2147,347 @@ func (c *NativeArkChannelController) syncReceiveIntent(ctx context.Context,
 	}
 }
 
-// failReceiveIntent abandons both prepared channel records only while their
-// common FSM still proves that the hub OOR can be aborted safely.
+// receiveIntentFundingOutcome is the funder's authoritative durable result.
+// Endpoint phases may lag because their peer notification is replayable.
+type receiveIntentFundingOutcome uint8
+
+const (
+	receiveIntentFundingPending receiveIntentFundingOutcome = iota
+	receiveIntentFundingAborted
+	receiveIntentFundingFinalized
+)
+
+// receiveIntentFunderOutcome reads OOR terminal evidence only from the
+// endpoint named as the immutable channel funder.
+func receiveIntentFunderOutcome(localParty arkchannel.Party,
+	local arkchannel.Snapshot,
+	remote lnruntime.FundingChannelState) (receiveIntentFundingOutcome,
+	error) {
+
+	var finalized, aborted bool
+	var source *arkchannel.VTXOBinding
+	var phase arkchannel.Phase
+	if local.Terms.Funder == localParty {
+		finalized = local.OORFinalized
+		aborted = local.OORAborted
+		source = local.Source
+		phase = local.Phase
+	} else {
+		finalized = remote.OORFinalized
+		aborted = remote.OORAborted
+		source = remote.Source
+		phase = remote.Phase
+	}
+	if finalized && aborted {
+		return receiveIntentFundingPending, fmt.Errorf("receive " +
+			"intent funder reports both finalized and aborted " +
+			"OOR funding")
+	}
+	if finalized {
+		return receiveIntentFundingFinalized, nil
+	}
+	if aborted || (source == nil && phase == arkchannel.PhaseFailed) {
+		return receiveIntentFundingAborted, nil
+	}
+
+	return receiveIntentFundingPending, nil
+}
+
+// receiveIntentNeedsPeerReady identifies the paired requested-state barrier.
+func receiveIntentNeedsPeerReady(remote lnruntime.FundingChannelState,
+	local arkchannel.Record) bool {
+
+	return remote.Source != nil && local.Snapshot.Source != nil &&
+		(local.Snapshot.Phase == arkchannel.PhaseRequested ||
+			remote.Phase == arkchannel.PhaseRequested)
+}
+
+// syncReceiveIntentPeerReady records peer readiness at both endpoints.
+func (c *NativeArkChannelController) syncReceiveIntentPeerReady(
+	ctx context.Context, id arkchannel.ID,
+	remote lnruntime.FundingChannelState, local arkchannel.Record) error {
+
+	event := &arkchannel.FundingPeerReady{}
+	if local.Snapshot.Phase == arkchannel.PhaseRequested {
+		if _, err := c.service.RecordLocalEvent(
+			ctx, id, event,
+		); err != nil {
+			return fmt.Errorf("record local peer readiness: %w",
+				err)
+		}
+	}
+	if remote.Phase == arkchannel.PhaseRequested {
+		if _, err := c.remote.ApplyChannelEvent(
+			ctx, id, event,
+		); err != nil {
+			return fmt.Errorf("record remote peer readiness: %w",
+				err)
+		}
+	}
+
+	return nil
+}
+
+// receiveIntentNeedsRecovery identifies a finalized source not yet protected by
+// the client's recovery package.
+func receiveIntentNeedsRecovery(remote lnruntime.FundingChannelState,
+	local arkchannel.Record) bool {
+
+	return remote.OORFinalized && !local.Snapshot.ClientRecoveryReady
+}
+
+// receiveIntentRecoveryInvalid detects a finalized source missing
+// prerequisites.
+func receiveIntentRecoveryInvalid(remote lnruntime.FundingChannelState,
+	local arkchannel.Record) bool {
+
+	return receiveIntentNeedsRecovery(remote, local) &&
+		(local.Snapshot.Source == nil || local.Snapshot.Backing == nil)
+}
+
+// installReceiveIntentRecovery imports the finalized source and records the
+// paired recovery barrier.
+func (c *NativeArkChannelController) installReceiveIntentRecovery(
+	ctx context.Context, id arkchannel.ID,
+	remote lnruntime.FundingChannelState, local arkchannel.Record) error {
+
+	recovery, err := c.remote.ExportRecoveryPackage(ctx, id)
+	if err != nil {
+		return fmt.Errorf("export recovery package: %w", err)
+	}
+	if err := c.cfg.Recovery.InstallRecoveryPackage(
+		ctx, id, local.Snapshot.Terms, *local.Snapshot.Source, recovery,
+	); err != nil {
+		return fmt.Errorf("install recovery package: %w", err)
+	}
+	event := &arkchannel.RecoveryPackageInstalled{
+		Party: arkchannel.PartyClient,
+	}
+	if _, err := c.remote.ApplyChannelEvent(ctx, id, event); err != nil {
+		return fmt.Errorf("record remote recovery package: %w", err)
+	}
+	if _, err := c.service.ApplyLocalEvent(ctx, id, event); err != nil {
+		return fmt.Errorf("record local recovery package: %w", err)
+	}
+
+	return nil
+}
+
+// waitReceiveIntentSyncRetry keeps transient mailbox, store, and recovery
+// failures from permanently disabling channel synchronization.
+func (c *NativeArkChannelController) waitReceiveIntentSyncRetry(
+	ctx context.Context, ticker *time.Ticker, hash lntypes.Hash,
+	operation string, err error) error {
+
+	if c.cfg.Log != nil {
+		c.cfg.Log.WarnS(ctx, "Receive channel synchronization failed; "+
+			"retrying", err,
+			btclog.Hex("payment_hash", hash[:]),
+			btclog.Fmt("operation", "%s", operation),
+		)
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+
+	case <-ticker.C:
+		return nil
+	}
+}
+
+// failReceiveIntent abandons the funder's prepared OOR and waits until its
+// authoritative abort has driven both endpoint FSMs through lnd cleanup.
 func (c *NativeArkChannelController) failReceiveIntent(ctx context.Context,
 	id arkchannel.ID, cause error) error {
 
 	reason := cause.Error()
-	if _, err := c.remote.ApplyChannelEvent(
-		ctx, id, &arkchannel.Fail{
-			Reason: reason,
-		},
-	); err != nil {
-		return errors.Join(cause, err)
+	ticker := time.NewTicker(arkChannelControllerPollInterval)
+	defer ticker.Stop()
+
+	var lastErr error
+	for {
+		local, localErr := c.service.GetChannel(ctx, id)
+		var operationErr error
+		if localErr == nil {
+			switch local.Snapshot.Phase {
+			case arkchannel.PhaseRequested,
+				arkchannel.PhaseNegotiating,
+				arkchannel.PhaseCancelling,
+				arkchannel.PhaseFailed:
+
+				operationErr = c.driveReceiveIntentFailure(
+					ctx, id, local, reason,
+				)
+
+			case arkchannel.PhaseBackingReady:
+				var remote lnruntime.FundingChannelState
+				if local.Snapshot.Terms.Funder != c.party {
+					remote, operationErr =
+						c.remote.GetFundingChannel(
+							ctx, id,
+						)
+					if operationErr != nil {
+						break
+					}
+				}
+				outcome, err := receiveIntentFunderOutcome(
+					c.party, local.Snapshot, remote,
+				)
+				if err != nil {
+					return errors.Join(cause, err)
+				}
+				if outcome != receiveIntentFundingAborted ||
+					local.Snapshot.Source == nil {
+					return errors.Join(
+						cause,
+						fmt.Errorf("receive intent "+
+							"crossed its funding "+
+							"safety "+
+							"boundary at %s",
+							local.Snapshot.Phase),
+					)
+				}
+				abortReason := remote.Failure
+				if abortReason == "" {
+					abortReason = reason
+				}
+				source := local.Snapshot.Source
+				_, operationErr = c.service.ApplyPeerEvent(
+					ctx, id, &arkchannel.OORAborted{
+						SessionID: source.OORSessionID,
+						Reason:    abortReason,
+					},
+				)
+
+			default:
+				return errors.Join(
+					cause, fmt.Errorf("receive intent "+
+						"crossed its funding safety "+
+						"boundary at %s",
+						local.Snapshot.Phase),
+				)
+			}
+		} else {
+			operationErr = localErr
+		}
+		if operationErr != nil {
+			lastErr = operationErr
+		}
+
+		local, localErr = c.service.GetChannel(ctx, id)
+		remote, remoteErr := c.remote.GetFundingChannel(ctx, id)
+		if localErr == nil && remoteErr == nil {
+			outcome, err := receiveIntentFunderOutcome(
+				c.party, local.Snapshot, remote,
+			)
+			if err != nil {
+				return errors.Join(cause, err)
+			}
+			if local.Snapshot.Phase == arkchannel.PhaseFailed &&
+				remote.Phase == arkchannel.PhaseFailed &&
+				outcome == receiveIntentFundingAborted {
+				return fmt.Errorf("%w: %w",
+					ErrReceiveChannelFallback, cause)
+			}
+			remoteCrossedBoundary := receiveIntentIsCommitting(
+				remote.Phase,
+			) && outcome != receiveIntentFundingAborted
+			if receiveIntentIsRetained(remote.Phase) ||
+				remoteCrossedBoundary {
+				return errors.Join(
+					cause, fmt.Errorf("remote receive "+
+						"intent crossed its funding "+
+						"safety boundary at %s",
+						remote.Phase),
+				)
+			}
+		} else {
+			lastErr = errors.Join(localErr, remoteErr)
+		}
+
+		select {
+		case <-ctx.Done():
+			return errors.Join(cause, lastErr, ctx.Err())
+
+		case <-ticker.C:
+		}
 	}
-	_, err := c.service.ApplyLocalEvent(
-		ctx, id, &arkchannel.Fail{
+}
+
+// driveReceiveIntentFailure first makes the observing endpoint terminal or
+// cancelling, then asks the endpoint that funded the source to abort it.
+func (c *NativeArkChannelController) driveReceiveIntentFailure(
+	ctx context.Context, id arkchannel.ID, local arkchannel.Record,
+	reason string) error {
+
+	if local.Snapshot.Failure != "" {
+		reason = local.Snapshot.Failure
+	}
+	var event arkchannel.Event = &arkchannel.Fail{Reason: reason}
+	if local.Snapshot.Source == nil &&
+		local.Snapshot.Terms.Kind == arkchannel.KindReceiveIntent &&
+		local.Snapshot.Terms.Funder != c.party {
+
+		event = &arkchannel.ReceiveIntentAbortRequested{
 			Reason: reason,
-		},
-	)
-	if err != nil {
-		return errors.Join(cause, err)
+		}
 	}
 
-	return cause
+	_, err := c.service.ApplyLocalEvent(ctx, id, event)
+
+	return err
+}
+
+// failReceiveIntentDetached gives pre-PONR cleanup a bounded process-owned
+// lifetime after the intercepted-payment request has ended.
+func (c *NativeArkChannelController) failReceiveIntentDetached(
+	ctx context.Context, id arkchannel.ID, cause error) error {
+
+	cleanupCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), arkChannelReceiveCleanupTimeout,
+	)
+	defer cancel()
+
+	return c.failReceiveIntent(cleanupCtx, id, cause)
+}
+
+// receiveNegotiationFailureIsReplayable protects outcomes that may already
+// have produced durable work. Only explicit peer rejections and local errors
+// are definitive enough to abandon a still-negotiating channel.
+func receiveNegotiationFailureIsReplayable(err error) bool {
+	if errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, lnruntime.ErrFundingNegotiationAmbiguous) {
+		return true
+	}
+	grpcStatus, ok := status.FromError(err)
+	if !ok {
+		return false
+	}
+
+	switch grpcStatus.Code() {
+	case codes.InvalidArgument, codes.NotFound, codes.AlreadyExists,
+		codes.PermissionDenied, codes.Unauthenticated,
+		codes.FailedPrecondition, codes.OutOfRange,
+		codes.Unimplemented:
+		return false
+
+	default:
+		return true
+	}
+}
+
+// handleReceiveNegotiationFailure converts only a definitive failure whose
+// durable source remains pre-PONR into the vHTLC fallback signal.
+func (c *NativeArkChannelController) handleReceiveNegotiationFailure(
+	ctx context.Context, id arkchannel.ID, cause error) error {
+
+	if receiveNegotiationFailureIsReplayable(cause) {
+		return cause
+	}
+
+	return c.failReceiveIntentDetached(ctx, id, cause)
 }
 
 // mirrorReceiveIntentFailure applies the hub's terminal pre-PONR failure to
@@ -1966,7 +2633,10 @@ func (c *NativeArkChannelController) ManifestIncomingChannel(
 		case arkchannel.PhaseNegotiating:
 			_, err = c.service.ResumeChannelAction(ctx, id)
 			if err != nil {
-				return arkchannel.Record{}, err
+				return arkchannel.Record{},
+					c.handleReceiveNegotiationFailure(
+						ctx, id, err,
+					)
 			}
 
 			continue
@@ -2114,13 +2784,13 @@ func (c *NativeArkChannelController) MaterializeAndForceClose(
 	return record, backing.ChannelPoint.Hash, closeTxID, nil
 }
 
-// RequestCooperativeClose starts the client-owned 3-of-3 OOR close process.
-func (c *NativeArkChannelController) RequestCooperativeClose(
-	ctx context.Context, id arkchannel.ID) (arkchannel.Record, error) {
+// RefreshChannel starts the client-owned 3-of-3 in-Ark refresh process.
+func (c *NativeArkChannelController) RefreshChannel(ctx context.Context,
+	id arkchannel.ID) (arkchannel.Record, error) {
 
 	if c.party != arkchannel.PartyClient {
 		return arkchannel.Record{}, fmt.Errorf("only a client can " +
-			"request cooperative close")
+			"refresh a channel in Ark")
 	}
 	if err := c.ensureClientStarted(ctx); err != nil {
 		return arkchannel.Record{}, err
@@ -2229,7 +2899,7 @@ func (c *NativeArkChannelController) AddHoldInvoice(ctx context.Context,
 	return c.node.AddHoldInvoice(ctx, hash, amount)
 }
 
-// AddInvoiceWithPreimage registers the private destination for an incoming
+// AddInvoiceWithPreimage registers the private hold destination for an incoming
 // bridge before its BOLT 11 invoice is exposed to a payer.
 func (c *NativeArkChannelController) AddInvoiceWithPreimage(ctx context.Context,
 	preimage lntypes.Preimage, amount btcutil.Amount) error {
@@ -2240,13 +2910,13 @@ func (c *NativeArkChannelController) AddInvoiceWithPreimage(ctx context.Context,
 		}
 	}
 	_, err := c.node.AddInvoiceWithPreimage(
-		ctx, amount, preimage, false,
+		ctx, amount, preimage, true,
 	)
 
 	return err
 }
 
-// WaitInvoiceAccepted waits for the private outgoing source HTLC.
+// WaitInvoiceAccepted waits for a private hold invoice HTLC.
 func (c *NativeArkChannelController) WaitInvoiceAccepted(ctx context.Context,
 	hash lntypes.Hash) error {
 
@@ -2260,15 +2930,14 @@ func (c *NativeArkChannelController) WaitInvoiceSettled(ctx context.Context,
 	return c.node.WaitInvoiceSettled(ctx, hash)
 }
 
-// SettleHoldInvoice releases the private outgoing source with the public
-// destination preimage.
+// SettleHoldInvoice releases a private hold invoice with its shared preimage.
 func (c *NativeArkChannelController) SettleHoldInvoice(ctx context.Context,
 	preimage lntypes.Preimage) error {
 
 	return c.node.SettleHoldInvoice(ctx, preimage)
 }
 
-// CancelInvoice fails a private source before a preimage is known.
+// CancelInvoice fails a private hold invoice before its preimage is released.
 func (c *NativeArkChannelController) CancelInvoice(ctx context.Context,
 	hash lntypes.Hash) error {
 
@@ -2276,10 +2945,11 @@ func (c *NativeArkChannelController) CancelInvoice(ctx context.Context,
 }
 
 // PayHash sends or resumes one same-hash payment over a selected private
-// channel and returns the destination preimage.
+// channel and returns the destination preimage. A new attempt must expire no
+// later than maxExpiryHeight.
 func (c *NativeArkChannelController) PayHash(ctx context.Context,
-	id arkchannel.ID, hash lntypes.Hash, amount btcutil.Amount) (
-	lntypes.Preimage, error) {
+	id arkchannel.ID, hash lntypes.Hash, amount btcutil.Amount,
+	maxExpiryHeight uint32) (lntypes.Preimage, error) {
 
 	if c.party == arkchannel.PartyClient {
 		if err := c.ensureClientStarted(ctx); err != nil {
@@ -2291,7 +2961,9 @@ func (c *NativeArkChannelController) PayHash(ctx context.Context,
 		return lntypes.Preimage{}, err
 	}
 
-	return c.node.PayInvoiceResult(ctx, record, hash, amount)
+	return c.node.PayInvoiceResultBefore(
+		ctx, record, hash, amount, maxExpiryHeight,
+	)
 }
 
 // PeerMessageHandler dispatches authenticated BOLT messages into native lnd.
@@ -2405,26 +3077,25 @@ func (c *NativeArkChannelController) Stop() error {
 	return c.stopErr
 }
 
-// arkChannelCloseDelivery returns the ordinary Ark account key that owns this
-// endpoint's replacement VTXO after an in-Ark cooperative close.
-type arkChannelCloseDelivery struct {
+// arkChannelRefreshDelivery returns the ordinary Ark account key that owns
+// this endpoint's replacement VTXO after an in-Ark refresh.
+type arkChannelRefreshDelivery struct {
 	owner *btcec.PublicKey
 }
 
-// newArkChannelCloseDelivery constructs a fixed OOR owner-key source.
-func newArkChannelCloseDelivery(
-	owner *btcec.PublicKey) *arkChannelCloseDelivery {
+// newArkChannelRefreshDelivery constructs a fixed OOR owner-key source.
+func newArkChannelRefreshDelivery(
+	owner *btcec.PublicKey) *arkChannelRefreshDelivery {
 
-	return &arkChannelCloseDelivery{owner: owner}
+	return &arkChannelRefreshDelivery{owner: owner}
 }
 
 // CooperativeCloseDelivery returns the compressed replacement VTXO owner key.
-func (d *arkChannelCloseDelivery) CooperativeCloseDelivery(_ context.Context,
+func (d *arkChannelRefreshDelivery) CooperativeCloseDelivery(_ context.Context,
 	_ arkchannel.ID) ([]byte, error) {
 
 	if d == nil || d.owner == nil {
-		return nil, fmt.Errorf("cooperative close OOR owner is " +
-			"required")
+		return nil, fmt.Errorf("channel refresh OOR owner is required")
 	}
 
 	return d.owner.SerializeCompressed(), nil
@@ -2432,7 +3103,7 @@ func (d *arkChannelCloseDelivery) CooperativeCloseDelivery(_ context.Context,
 
 // ValidateCooperativeCloseDelivery proves the replacement VTXO is assigned to
 // this endpoint's ordinary Ark account.
-func (d *arkChannelCloseDelivery) ValidateCooperativeCloseDelivery(
+func (d *arkChannelRefreshDelivery) ValidateCooperativeCloseDelivery(
 	ctx context.Context, id arkchannel.ID, owner []byte) error {
 
 	expected, err := d.CooperativeCloseDelivery(ctx, id)
@@ -2440,16 +3111,16 @@ func (d *arkChannelCloseDelivery) ValidateCooperativeCloseDelivery(
 		return err
 	}
 	if !bytes.Equal(expected, owner) {
-		return fmt.Errorf("cooperative close owner is not the " +
+		return fmt.Errorf("channel refresh owner is not the " +
 			"configured Ark account")
 	}
 
 	return nil
 }
 
-var _ ArkChannelController = (*NativeArkChannelController)(nil)
-
-var _ lnruntime.CooperativeCloseDeliverySource = (*arkChannelCloseDelivery)(nil)
-
-//nolint:ll // Keeping the complete delivery contract explicit aids API audits.
-var _ lnruntime.CooperativeCloseDeliveryValidator = (*arkChannelCloseDelivery)(nil)
+//nolint:ll // Keep the complete delivery contract explicit for API audits.
+var (
+	_ ArkChannelController                        = (*NativeArkChannelController)(nil)
+	_ lnruntime.CooperativeCloseDeliverySource    = (*arkChannelRefreshDelivery)(nil)
+	_ lnruntime.CooperativeCloseDeliveryValidator = (*arkChannelRefreshDelivery)(nil)
+)
