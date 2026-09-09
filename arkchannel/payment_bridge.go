@@ -145,12 +145,16 @@ type PaymentBridgeSnapshot struct {
 	SourceAmount      btcutil.Amount
 	DestinationAmount btcutil.Amount
 	ChannelCapacity   btcutil.Amount
-	ServerFee         btcutil.Amount
-	RoutingFeeBudget  btcutil.Amount
-	PublicInvoice     string
-	Circuit           *PaymentCircuit
-	Preimage          *lntypes.Preimage
-	Failure           string
+	// PrivateCLTVDeltaBlocks freezes the block-denominated channel policy
+	// advertised in an incoming invoice. Missing persisted policy fails
+	// validation instead of being re-derived from mutable runtime config.
+	PrivateCLTVDeltaBlocks uint32
+	ServerFee              btcutil.Amount
+	RoutingFeeBudget       btcutil.Amount
+	PublicInvoice          string
+	Circuit                *PaymentCircuit
+	Preimage               *lntypes.Preimage
+	Failure                string
 }
 
 // Clone returns a snapshot without pointer aliases.
@@ -192,6 +196,10 @@ func (s PaymentBridgeSnapshot) Validate() error {
 			return fmt.Errorf("outgoing bridge cannot reserve " +
 				"channel capacity")
 		}
+		if s.PrivateCLTVDeltaBlocks != 0 {
+			return fmt.Errorf("outgoing bridge cannot reserve a " +
+				"private CLTV delta")
+		}
 		if s.PublicInvoice == "" {
 			return fmt.Errorf("outgoing bridge requires public " +
 				"invoice")
@@ -222,6 +230,10 @@ func (s PaymentBridgeSnapshot) Validate() error {
 		if s.ReservedSCID == 0 {
 			return fmt.Errorf("incoming bridge requires reserved " +
 				"SCID")
+		}
+		if s.PrivateCLTVDeltaBlocks == 0 {
+			return fmt.Errorf("incoming bridge requires a " +
+				"private CLTV delta")
 		}
 		if s.ServerFee != 0 || s.RoutingFeeBudget != 0 ||
 			s.SourceAmount != s.DestinationAmount {
@@ -432,6 +444,7 @@ func SamePaymentBridgeTerms(a, b PaymentBridgeSnapshot) bool {
 		a.SourceAmount != b.SourceAmount ||
 		a.DestinationAmount != b.DestinationAmount ||
 		a.ChannelCapacity != b.ChannelCapacity ||
+		a.PrivateCLTVDeltaBlocks != b.PrivateCLTVDeltaBlocks ||
 		a.ServerFee != b.ServerFee ||
 		a.RoutingFeeBudget != b.RoutingFeeBudget ||
 		a.PublicInvoice != b.PublicInvoice {

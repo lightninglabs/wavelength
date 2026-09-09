@@ -133,6 +133,9 @@ func TestSamePaymentBridgeTerms(t *testing.T) {
 	require.True(t, SamePaymentBridgeTerms(snapshot, advanced))
 	advanced.SourceAmount++
 	require.False(t, SamePaymentBridgeTerms(snapshot, advanced))
+	advanced = snapshot.Clone()
+	advanced.PrivateCLTVDeltaBlocks++
+	require.False(t, SamePaymentBridgeTerms(snapshot, advanced))
 }
 
 // TestPaymentBridgeRejectsFallbackAfterDestinationDispatch proves fallback
@@ -230,6 +233,7 @@ func testPaymentBridgeSnapshot(t *testing.T,
 		snapshot.PublicInvoice = "lnbcrt1test"
 	} else {
 		snapshot.SourceAmount = snapshot.DestinationAmount
+		snapshot.PrivateCLTVDeltaBlocks = 616
 		snapshot.ServerFee = 0
 		snapshot.RoutingFeeBudget = 0
 	}
