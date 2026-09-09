@@ -118,16 +118,16 @@ type loggedArkChannelForceCloser struct {
 	log  btclog.Logger
 }
 
-// ResumeForceCloseChannel records entry and completion around lnd's durable
-// commitment-publication edge.
-func (c *loggedArkChannelForceCloser) ResumeForceCloseChannel(
+// EnsureForceCloseChannel resumes an interrupted close or starts the peer's
+// close after source-spend recovery materializes the channel.
+func (c *loggedArkChannelForceCloser) EnsureForceCloseChannel(
 	channelPoint wire.OutPoint) error {
 
 	ctx := context.Background()
-	c.log.InfoS(ctx, "Resuming Ark channel force close",
+	c.log.InfoS(ctx, "Ensuring Ark channel force close",
 		btclog.Fmt("channel_point", "%v", channelPoint),
 	)
-	err := c.node.ResumeForceCloseChannel(channelPoint)
+	err := c.node.EnsureForceCloseChannel(channelPoint)
 	if err != nil {
 		c.log.WarnS(ctx, "Ark channel force close failed",
 			err,
@@ -136,7 +136,7 @@ func (c *loggedArkChannelForceCloser) ResumeForceCloseChannel(
 
 		return err
 	}
-	c.log.InfoS(ctx, "Ark channel force close resumed",
+	c.log.InfoS(ctx, "Ark channel force close ensured",
 		btclog.Fmt("channel_point", "%v", channelPoint),
 	)
 

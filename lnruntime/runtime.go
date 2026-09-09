@@ -939,6 +939,42 @@ func (r *Runtime) ResumeForceCloseChannel(channelPoint wire.OutPoint) error {
 	return nil
 }
 
+// EnsureForceCloseChannel resumes an interrupted local force close, or starts
+// a new one when this endpoint learned about materialization from its peer.
+// The caller must only invoke this after the durable Ark FSM has recorded both
+// backing publication and the source conflict that requires channel closure.
+func (r *Runtime) EnsureForceCloseChannel(channelPoint wire.OutPoint) error {
+	return ensureForceClose(
+		func() error {
+			return r.ResumeForceCloseChannel(channelPoint)
+		},
+		func() error {
+			if _, err := r.ForceCloseChannel(
+				channelPoint,
+			); err != nil {
+				return fmt.Errorf("start lnd force close: %w",
+					err)
+			}
+
+			return nil
+		},
+	)
+}
+
+// ensureForceClose preserves resume-only behavior unless lnd proves that this
+// endpoint has no interrupted force close to continue.
+func ensureForceClose(resume, start func() error) error {
+	err := resume()
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, contractcourt.ErrNoForceCloseToResume) {
+		return err
+	}
+
+	return start()
+}
+
 // runForceClose coalesces concurrent close requests for one channel point. A
 // successful close stays cached for the runtime lifetime, while a failed close
 // is removed so the durable lifecycle can retry it.

@@ -549,6 +549,12 @@ func (n *NativeNode) ResumeForceCloseChannel(channelPoint wire.OutPoint) error {
 	return n.runtime.ResumeForceCloseChannel(channelPoint)
 }
 
+// EnsureForceCloseChannel resumes an interrupted close or initiates one after
+// the durable Ark FSM observes peer-driven materialization.
+func (n *NativeNode) EnsureForceCloseChannel(channelPoint wire.OutPoint) error {
+	return n.runtime.EnsureForceCloseChannel(channelPoint)
+}
+
 // NewNegotiator constructs the funder-side coordinator for this node.
 func (n *NativeNode) NewNegotiator(remote FundingCounterparty,
 	recovery ChannelRecoveryManager) (*ChannelNegotiator, error) {

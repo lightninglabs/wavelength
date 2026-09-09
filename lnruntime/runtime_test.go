@@ -129,6 +129,38 @@ func TestForceCloseSingleFlight(t *testing.T) {
 	require.False(t, runtime.forceCloseIsActive(channelPoint))
 }
 
+// TestEnsureForceCloseStartsOnlyWhenMissing verifies peer-driven
+// materialization initiates a close without changing resume-only retries.
+func TestEnsureForceCloseStartsOnlyWhenMissing(t *testing.T) {
+	t.Parallel()
+
+	startCalls := 0
+	start := func() error {
+		startCalls++
+
+		return nil
+	}
+	err := ensureForceClose(func() error {
+		return nil
+	}, start)
+	require.NoError(t, err)
+	require.Zero(t, startCalls)
+
+	err = ensureForceClose(func() error {
+		return fmt.Errorf("resume: %w",
+			contractcourt.ErrNoForceCloseToResume)
+	}, start)
+	require.NoError(t, err)
+	require.Equal(t, 1, startCalls)
+
+	resumeErr := fmt.Errorf("resume unavailable")
+	err = ensureForceClose(func() error {
+		return resumeErr
+	}, start)
+	require.ErrorIs(t, err, resumeErr)
+	require.Equal(t, 1, startCalls)
+}
+
 // TestForceCloseSummaryTxID accepts only an exact local or remote force-close
 // record as proof that a competing endpoint completed the close.
 func TestForceCloseSummaryTxID(t *testing.T) {

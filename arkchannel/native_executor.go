@@ -90,10 +90,10 @@ type ChannelOnchainHandoff interface {
 	HandoffChannel(wire.OutPoint) error
 }
 
-// ChannelForceCloser resumes native lnd's commitment publication from a
-// durable Ark channel action.
+// ChannelForceCloser ensures native lnd publishes its latest commitment after
+// the Ark channel FSM has proved that the backing is on chain.
 type ChannelForceCloser interface {
-	ResumeForceCloseChannel(wire.OutPoint) error
+	EnsureForceCloseChannel(wire.OutPoint) error
 }
 
 // ChannelCooperativeCloser coordinates clean lnd state, a 3-of-3 OOR close,
@@ -247,7 +247,7 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 		)
 
 	case *ForceCloseChannel:
-		return e.forceCloser.ResumeForceCloseChannel(
+		return e.forceCloser.EnsureForceCloseChannel(
 			action.Backing.ChannelPoint,
 		)
 

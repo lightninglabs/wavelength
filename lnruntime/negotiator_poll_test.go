@@ -423,8 +423,8 @@ func (*statusPollNativeEdges) HandoffChannel(wire.OutPoint) error {
 	return nil
 }
 
-// ResumeForceCloseChannel accepts the unused force-close edge.
-func (*statusPollNativeEdges) ResumeForceCloseChannel(wire.OutPoint) error {
+// EnsureForceCloseChannel accepts the unused force-close edge.
+func (*statusPollNativeEdges) EnsureForceCloseChannel(wire.OutPoint) error {
 	return nil
 }
 

@@ -113,8 +113,8 @@ func (h *nativeExecutorHarness) PrepareChannelRecovery(_ context.Context, id ID,
 	return nil
 }
 
-// ResumeForceCloseChannel records commitment publication through lnd.
-func (h *nativeExecutorHarness) ResumeForceCloseChannel(
+// EnsureForceCloseChannel records commitment publication through lnd.
+func (h *nativeExecutorHarness) EnsureForceCloseChannel(
 	channelPoint wire.OutPoint) error {
 
 	h.forceClosed = channelPoint
