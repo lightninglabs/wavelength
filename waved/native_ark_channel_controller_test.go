@@ -460,14 +460,19 @@ func TestWaitIncomingPaymentReadyJoinsBothBarriers(t *testing.T) {
 
 	invoiceReady := make(chan struct{})
 	channelReady := make(chan struct{})
-	result := make(chan error, 1)
+	type readinessResult struct {
+		channelID lnwire.ShortChannelID
+		err       error
+	}
+	result := make(chan readinessResult, 1)
+	wantChannelID := lnwire.NewShortChanIDFromInt(42)
 	go func() {
-		result <- waitIncomingPaymentReady(
+		channelID, err := waitIncomingPaymentReady(
 			t.Context(),
-			func(context.Context) error {
+			func(context.Context) (lnwire.ShortChannelID, error) {
 				<-invoiceReady
 
-				return nil
+				return wantChannelID, nil
 			},
 			func(context.Context) error {
 				<-channelReady
@@ -475,18 +480,21 @@ func TestWaitIncomingPaymentReadyJoinsBothBarriers(t *testing.T) {
 				return nil
 			},
 		)
+		result <- readinessResult{channelID: channelID, err: err}
 	}()
 
 	close(invoiceReady)
 	select {
-	case err := <-result:
-		t.Fatalf("returned before channel activation: %v", err)
+	case result := <-result:
+		t.Fatalf("returned before channel activation: %v", result.err)
 
 	case <-time.After(25 * time.Millisecond):
 	}
 
 	close(channelReady)
-	require.NoError(t, <-result)
+	actual := <-result
+	require.NoError(t, actual.err)
+	require.Equal(t, wantChannelID, actual.channelID)
 }
 
 // TestWaitIncomingPaymentReadyPropagatesSyncFailure verifies a definitive
@@ -496,18 +504,37 @@ func TestWaitIncomingPaymentReadyPropagatesSyncFailure(t *testing.T) {
 	t.Parallel()
 
 	wantErr := errors.New("channel failed")
-	err := waitIncomingPaymentReady(
+	_, err := waitIncomingPaymentReady(
 		t.Context(),
-		func(ctx context.Context) error {
+		func(ctx context.Context) (lnwire.ShortChannelID, error) {
 			<-ctx.Done()
 
-			return ctx.Err()
+			return lnwire.ShortChannelID{}, ctx.Err()
 		},
 		func(context.Context) error {
 			return wantErr
 		},
 	)
 	require.ErrorIs(t, err, wantErr)
+}
+
+// TestWaitIncomingPaymentReadyAcceptsReusedChannel verifies intentional
+// receive-intent abandonment still waits for the private HTLC's channel.
+func TestWaitIncomingPaymentReadyAcceptsReusedChannel(t *testing.T) {
+	t.Parallel()
+
+	wantChannelID := lnwire.NewShortChanIDFromInt(43)
+	actual, err := waitIncomingPaymentReady(
+		t.Context(),
+		func(context.Context) (lnwire.ShortChannelID, error) {
+			return wantChannelID, nil
+		},
+		func(context.Context) error {
+			return ErrReceiveChannelFallback
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, wantChannelID, actual)
 }
 
 // TestReceiveIntentEndpointAgreement verifies only fully pre-PONR or fully

@@ -964,7 +964,7 @@ func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
 			)
 		}
 
-		return s.completeArkChannelReceive(ctx, s.channelID)
+		return s.completeArkChannelReceive(ctx, s.channelID, true)
 	}
 	if s.client.outEvents == nil {
 		return fmt.Errorf("out-swap event receiver is not configured")
@@ -1016,8 +1016,9 @@ type incomingVHTLCWaitResult struct {
 }
 
 type incomingChannelWaitResult struct {
-	channelID arkchannel.ID
-	err       error
+	channelID  arkchannel.ID
+	manifested bool
+	err        error
 }
 
 // waitForChannelOrVHTLC races lnd's durable private hold invoice against the
@@ -1030,12 +1031,14 @@ func (s *ReceiveSession) waitForChannelOrVHTLC(
 
 	channelResult := make(chan incomingChannelWaitResult, 1)
 	go func() {
-		channelID, err := s.client.channelBridge.WaitIncomingPayment(
-			bridgeCtx, s.PaymentHash,
-		)
+		channelID, manifested, err := s.client.channelBridge.
+			WaitIncomingPayment(
+				bridgeCtx, s.PaymentHash,
+			)
 		channelResult <- incomingChannelWaitResult{
-			channelID: channelID,
-			err:       err,
+			channelID:  channelID,
+			manifested: manifested,
+			err:        err,
 		}
 	}()
 	vhtlcResult := make(chan incomingVHTLCWaitResult, 1)
@@ -1105,7 +1108,7 @@ func (s *ReceiveSession) waitForChannelOrVHTLC(
 			}
 
 			return s.completeArkChannelReceive(
-				parentCtx, result.channelID,
+				parentCtx, result.channelID, result.manifested,
 			)
 
 		case result := <-vhtlcResult:
@@ -1166,10 +1169,10 @@ func (s *ReceiveSession) acceptWinningVHTLC(ctx context.Context,
 	return s.ackAcceptedHTLCEvent(ctx, accepted.Ack)
 }
 
-// completeArkChannelReceive releases the hold invoice and persists its nonzero
-// channel identity in one bounded reconciliation attempt.
+// completeArkChannelReceive records channel settlement, retains a newly
+// manifested channel identity, and releases the hold invoice.
 func (s *ReceiveSession) completeArkChannelReceive(ctx context.Context,
-	id arkchannel.ID) error {
+	id arkchannel.ID, manifested bool) error {
 
 	if id == (arkchannel.ID{}) {
 		return fmt.Errorf("incoming Ark channel ID is empty")
@@ -1182,10 +1185,15 @@ func (s *ReceiveSession) completeArkChannelReceive(ctx context.Context,
 	if s.channelID != (arkchannel.ID{}) && s.channelID != id {
 		return fmt.Errorf("incoming Ark channel ID changed")
 	}
+	if !manifested && s.channelID != (arkchannel.ID{}) {
+		return fmt.Errorf("incoming Ark channel manifestation changed")
+	}
 	if s.channelID == (arkchannel.ID{}) {
 		err := s.mutateAndPersist(resolutionCtx, func() error {
 			s.settlementType = SettlementTypeArkChannel
-			s.channelID = id
+			if manifested {
+				s.channelID = id
+			}
 
 			return nil
 		})

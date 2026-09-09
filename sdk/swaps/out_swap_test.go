@@ -232,7 +232,7 @@ func TestArkChannelReceiveSettlesDirectly(t *testing.T) {
 	}}
 	channelID := arkchannel.ID{1, 2, 3}
 	bridge := &testArkChannelPaymentBridge{
-		waitChannelID: channelID,
+		waitChannelID: channelID, waitManifested: true,
 	}
 	client := NewSwapClient(
 		serverConn, &testDaemonConn{
@@ -266,6 +266,38 @@ func TestArkChannelReceiveSettlesDirectly(t *testing.T) {
 	require.Equal(t, 1, bridge.settleCalls)
 	require.Equal(t, session.Preimage, bridge.settlePreimage)
 	require.Zero(t, bridge.cancelCalls)
+}
+
+// TestArkChannelReceiveReusesExistingChannel proves direct settlement records
+// the channel rail without claiming that this receive manifested a channel.
+func TestArkChannelReceiveReusesExistingChannel(t *testing.T) {
+	t.Parallel()
+
+	channelID := arkchannel.ID{4, 5, 6}
+	bridge := &testArkChannelPaymentBridge{
+		waitChannelID: channelID,
+	}
+	session := &ReceiveSession{
+		client: &SwapClient{
+			channelBridge: bridge,
+		},
+		Preimage: lntypes.Preimage{
+			7,
+			8,
+			9,
+		},
+		state:                 ReceiveStateInvoiceCreated,
+		channelReceiveEnabled: true,
+	}
+
+	err := session.completeArkChannelReceive(
+		t.Context(), channelID, false,
+	)
+	require.NoError(t, err)
+	require.Equal(t, SettlementTypeArkChannel, session.settlementType)
+	require.Equal(t, [32]byte{}, session.channelID)
+	require.Equal(t, ReceiveStateCompleted, session.State())
+	require.Equal(t, 1, bridge.settleCalls)
 }
 
 // TestArkChannelReceiveInvoiceFailureCancelsRegistration proves a successful
@@ -443,7 +475,7 @@ func TestArkChannelReceiveRejectsEmptyChannelID(t *testing.T) {
 	}
 
 	err := session.completeArkChannelReceive(
-		t.Context(), arkchannel.ID{},
+		t.Context(), arkchannel.ID{}, true,
 	)
 	require.ErrorContains(t, err, "channel ID is empty")
 	require.Zero(t, bridge.settleCalls)
@@ -1503,6 +1535,7 @@ type testArkChannelPaymentBridge struct {
 	registerCLTV     uint32
 	registerErr      error
 	waitChannelID    arkchannel.ID
+	waitManifested   bool
 	waitErr          error
 	wait             <-chan struct{}
 	settlePreimage   lntypes.Preimage
@@ -1540,18 +1573,18 @@ func (b *testArkChannelPaymentBridge) RegisterIncomingPayment(_ context.Context,
 }
 
 func (b *testArkChannelPaymentBridge) WaitIncomingPayment(ctx context.Context,
-	_ lntypes.Hash) (arkchannel.ID, error) {
+	_ lntypes.Hash) (arkchannel.ID, bool, error) {
 
 	if b.wait != nil {
 		select {
 		case <-ctx.Done():
-			return arkchannel.ID{}, ctx.Err()
+			return arkchannel.ID{}, false, ctx.Err()
 
 		case <-b.wait:
 		}
 	}
 
-	return b.waitChannelID, b.waitErr
+	return b.waitChannelID, b.waitManifested, b.waitErr
 }
 
 // SettleIncomingPayment records the selected channel result in tests.

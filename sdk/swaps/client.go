@@ -773,8 +773,10 @@ type ArkChannelPaymentBridge interface {
 	RegisterIncomingPayment(context.Context, lntypes.Hash, btcutil.Amount,
 		uint64) (uint32, error)
 
-	WaitIncomingPayment(context.Context,
-		lntypes.Hash) (arkchannel.ID, error)
+	// WaitIncomingPayment returns the active channel that delivered the
+	// private HTLC and whether this receive manifested that channel.
+	WaitIncomingPayment(context.Context, lntypes.Hash) (arkchannel.ID, bool,
+		error)
 
 	SettleIncomingPayment(context.Context, lntypes.Preimage) error
 

@@ -698,11 +698,28 @@ func validateNativeInvoice(invoice invoices.Invoice, amount btcutil.Amount,
 func (n *NativeNode) WaitInvoiceAccepted(ctx context.Context,
 	hash lntypes.Hash) error {
 
-	return n.waitInvoiceState(ctx, hash, func(invoice *invoices.Invoice) (
+	_, err := n.WaitInvoiceAcceptedChannel(ctx, hash)
+
+	return err
+}
+
+// WaitInvoiceAcceptedChannel waits for a hold invoice and returns the one
+// native channel that delivered its accepted HTLCs.
+func (n *NativeNode) WaitInvoiceAcceptedChannel(ctx context.Context,
+	hash lntypes.Hash) (lnwire.ShortChannelID, error) {
+
+	var channelID lnwire.ShortChannelID
+	err := n.waitInvoiceState(ctx, hash, func(invoice *invoices.Invoice) (
 		bool, error) {
 
 		switch invoice.State {
 		case invoices.ContractAccepted, invoices.ContractSettled:
+			var err error
+			channelID, err = acceptedInvoiceChannel(invoice)
+			if err != nil {
+				return false, err
+			}
+
 			return true, nil
 
 		case invoices.ContractCanceled:
@@ -712,6 +729,49 @@ func (n *NativeNode) WaitInvoiceAccepted(ctx context.Context,
 			return false, nil
 		}
 	})
+	if err != nil {
+		return lnwire.ShortChannelID{}, err
+	}
+
+	return channelID, nil
+}
+
+// acceptedInvoiceChannel rejects local, missing, or multi-channel delivery so
+// callers can bind settlement to one active channel record.
+func acceptedInvoiceChannel(invoice *invoices.Invoice) (lnwire.ShortChannelID,
+	error) {
+
+	if invoice == nil {
+		return lnwire.ShortChannelID{}, fmt.Errorf("native invoice " +
+			"is nil")
+	}
+
+	var channelID lnwire.ShortChannelID
+	found := false
+	for circuit, htlc := range invoice.Htlcs {
+		if htlc == nil || (htlc.State != invoices.HtlcStateAccepted &&
+			htlc.State != invoices.HtlcStateSettled) {
+
+			continue
+		}
+		if circuit.ChanID == (lnwire.ShortChannelID{}) {
+			return lnwire.ShortChannelID{}, fmt.Errorf("native " +
+				"invoice HTLC has no incoming channel")
+		}
+		if found && channelID != circuit.ChanID {
+			return lnwire.ShortChannelID{}, fmt.Errorf("native " +
+				"invoice HTLCs use multiple channels")
+		}
+
+		channelID = circuit.ChanID
+		found = true
+	}
+	if !found {
+		return lnwire.ShortChannelID{}, fmt.Errorf("native invoice " +
+			"has no accepted channel HTLC")
+	}
+
+	return channelID, nil
 }
 
 // WaitInvoiceSettled waits until the native invoice registry has accepted a

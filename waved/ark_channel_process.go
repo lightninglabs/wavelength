@@ -82,8 +82,8 @@ type ArkChannelPaymentController interface {
 	RegisterIncomingPayment(context.Context, lntypes.Hash, btcutil.Amount,
 		uint64) (uint32, error)
 
-	WaitIncomingPayment(context.Context,
-		lntypes.Hash) (arkchannel.ID, error)
+	WaitIncomingPayment(context.Context, lntypes.Hash) (arkchannel.ID, bool,
+		error)
 
 	SettleIncomingPayment(context.Context, lntypes.Preimage) error
 
@@ -813,11 +813,11 @@ func (r *RPCServer) RegisterArkChannelIncomingPayment(ctx context.Context,
 
 // WaitArkChannelIncomingPayment waits on lnd's durable private invoice.
 func (r *RPCServer) WaitArkChannelIncomingPayment(ctx context.Context,
-	hash lntypes.Hash) (arkchannel.ID, error) {
+	hash lntypes.Hash) (arkchannel.ID, bool, error) {
 
 	controller, err := r.waitArkChannelController(ctx)
 	if err != nil {
-		return arkchannel.ID{}, err
+		return arkchannel.ID{}, false, err
 	}
 
 	return controller.WaitIncomingPayment(ctx, hash)

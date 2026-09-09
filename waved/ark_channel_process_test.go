@@ -92,9 +92,9 @@ func (s *arkChannelControllerStub) RegisterIncomingPayment(context.Context,
 
 // WaitIncomingPayment is not used by close RPC tests.
 func (s *arkChannelControllerStub) WaitIncomingPayment(context.Context,
-	lntypes.Hash) (arkchannel.ID, error) {
+	lntypes.Hash) (arkchannel.ID, bool, error) {
 
-	return arkchannel.ID{}, s.err
+	return arkchannel.ID{}, false, s.err
 }
 
 // SettleIncomingPayment is not used by lifecycle RPC tests.

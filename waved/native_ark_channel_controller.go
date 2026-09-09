@@ -1650,93 +1650,144 @@ func (c *NativeArkChannelController) IncomingPaymentCLTVDeltaBlocks() (uint32,
 	)
 }
 
-// WaitIncomingPayment waits for the private hold invoice to be accepted and its
-// receive channel to become active without releasing the shared preimage.
+// WaitIncomingPayment waits for the private hold invoice and returns the active
+// channel that delivered it without releasing the shared preimage.
 func (c *NativeArkChannelController) WaitIncomingPayment(ctx context.Context,
-	hash lntypes.Hash) (arkchannel.ID, error) {
+	hash lntypes.Hash) (arkchannel.ID, bool, error) {
 
 	if c.party != arkchannel.PartyClient {
-		return arkchannel.ID{}, fmt.Errorf("incoming payment wait is " +
-			"client only")
+		return arkchannel.ID{}, false, fmt.Errorf("incoming payment " +
+			"wait is client only")
 	}
 	if err := c.ensureClientStarted(ctx); err != nil {
-		return arkchannel.ID{}, err
+		return arkchannel.ID{}, false, err
 	}
 
-	err := waitIncomingPaymentReady(
+	incomingSCID, err := waitIncomingPaymentReady(
 		ctx,
-		func(ctx context.Context) error {
-			return c.WaitInvoiceAccepted(ctx, hash)
+		func(ctx context.Context) (lnwire.ShortChannelID, error) {
+			return c.node.WaitInvoiceAcceptedChannel(ctx, hash)
 		},
 		func(ctx context.Context) error {
 			return c.syncReceiveIntent(ctx, hash)
 		},
 	)
 	if err != nil {
-		return arkchannel.ID{}, err
+		return arkchannel.ID{}, false, err
 	}
 
-	id := arkchannel.ReceiveIntentID(hash)
-	if id == (arkchannel.ID{}) {
-		return arkchannel.ID{}, fmt.Errorf("receive channel ID is " +
-			"empty")
-	}
-	record, err := c.service.GetChannel(ctx, id)
+	record, err := c.activeChannelBySCID(ctx, incomingSCID)
 	if err != nil {
-		return arkchannel.ID{}, fmt.Errorf("load active receive "+
-			"channel: %w", err)
+		return arkchannel.ID{}, false, err
 	}
-	if record.Snapshot.Phase != arkchannel.PhaseActive ||
-		record.Snapshot.Terms.Kind != arkchannel.KindReceiveIntent ||
-		record.Snapshot.Terms.PaymentHash != hash {
-		return arkchannel.ID{}, fmt.Errorf("receive channel %x is "+
-			"not active", id[:4])
+	id := record.Snapshot.Terms.ID
+	manifested := id == arkchannel.ReceiveIntentID(hash)
+	if manifested &&
+		(record.Snapshot.Terms.Kind != arkchannel.KindReceiveIntent ||
+			record.Snapshot.Terms.PaymentHash != hash) {
+		return arkchannel.ID{}, false, fmt.Errorf("manifested " +
+			"receive channel does not match payment")
 	}
 
-	return id, nil
+	return id, manifested, nil
+}
+
+// activeChannelBySCID binds an accepted native invoice HTLC to one durable
+// active channel instead of trusting the public route reservation.
+func (c *NativeArkChannelController) activeChannelBySCID(ctx context.Context,
+	scid lnwire.ShortChannelID) (arkchannel.Record, error) {
+
+	if scid == (lnwire.ShortChannelID{}) {
+		return arkchannel.Record{}, fmt.Errorf("incoming payment " +
+			"channel SCID is empty")
+	}
+	records, err := c.service.ListChannels(ctx)
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+
+	var selected *arkchannel.Record
+	for i := range records {
+		record := records[i]
+		if record.Snapshot.Phase != arkchannel.PhaseActive ||
+			record.Snapshot.Terms.ReservedSCID != scid.ToUint64() {
+
+			continue
+		}
+		if selected != nil {
+			return arkchannel.Record{}, fmt.Errorf("multiple "+
+				"active channels use SCID %d", scid.ToUint64())
+		}
+
+		selected = &record
+	}
+	if selected == nil {
+		return arkchannel.Record{}, fmt.Errorf("no active channel "+
+			"uses SCID %d", scid.ToUint64())
+	}
+
+	return *selected, nil
 }
 
 // waitIncomingPaymentReady joins the two independent durable readiness
 // barriers. Returning after only one would either expose an unusable channel or
 // release the preimage before its channel exists.
 func waitIncomingPaymentReady(ctx context.Context,
-	waitInvoice func(context.Context) error,
-	syncIntent func(context.Context) error) error {
+	waitInvoice func(context.Context) (lnwire.ShortChannelID, error),
+	syncIntent func(context.Context) error) (lnwire.ShortChannelID, error) {
 
 	waitCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	invoiceResult := make(chan error, 1)
+	type invoiceWaitResult struct {
+		channelID lnwire.ShortChannelID
+		err       error
+	}
+	invoiceResult := make(chan invoiceWaitResult, 1)
 	go func() {
-		invoiceResult <- waitInvoice(waitCtx)
+		channelID, err := waitInvoice(waitCtx)
+		invoiceResult <- invoiceWaitResult{
+			channelID: channelID,
+			err:       err,
+		}
 	}()
 	syncResult := make(chan error, 1)
 	go func() {
 		syncResult <- syncIntent(waitCtx)
 	}()
 
+	var incomingSCID lnwire.ShortChannelID
 	for invoiceResult != nil || syncResult != nil {
 		select {
-		case err := <-invoiceResult:
+		case result := <-invoiceResult:
 			invoiceResult = nil
-			if err != nil {
-				return fmt.Errorf("wait for incoming hold "+
-					"invoice: %w", err)
+			if result.err != nil {
+				return lnwire.ShortChannelID{}, fmt.Errorf(
+					"wait for incoming hold invoice: %w",
+					result.err)
 			}
+			incomingSCID = result.channelID
 
 		case err := <-syncResult:
 			syncResult = nil
-			if err != nil {
-				return fmt.Errorf("synchronize receive "+
-					"channel: %w", err)
+			if err != nil && !errors.Is(
+				err, ErrReceiveChannelFallback,
+			) {
+				return lnwire.ShortChannelID{}, fmt.Errorf(
+					"synchronize receive channel: %w", err)
 			}
 
 		case <-waitCtx.Done():
-			return waitCtx.Err()
+			return lnwire.ShortChannelID{}, waitCtx.Err()
 		}
 	}
 
-	return nil
+	if incomingSCID == (lnwire.ShortChannelID{}) {
+		return lnwire.ShortChannelID{}, fmt.Errorf("incoming payment " +
+			"channel SCID is empty")
+	}
+
+	return incomingSCID, nil
 }
 
 // SettleIncomingPayment releases the private hold invoice after the SDK

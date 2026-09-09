@@ -209,10 +209,11 @@ channel readiness barrier against the mailbox vHTLC notification.
 - **The SDK resolves the losing receive rail before committing the winner.**
   A vHTLC notification is validated and persisted, then the channel invoice
   and pre-point-of-no-return intent are canceled before the mailbox ACK can
-  authorize vHTLC funding. A channel-ready result records its nonzero channel
-  ID and `SettlementTypeArkChannel` before releasing the hold invoice. If a
-  vHTLC notification arrived concurrently, it takes precedence and the
-  channel rail is canceled.
+  authorize vHTLC funding. A channel-ready result records
+  `SettlementTypeArkChannel` before releasing the hold invoice, and records a
+  channel ID only when this receive manifested that channel. If a vHTLC
+  notification arrived concurrently, it takes precedence and the channel rail
+  is canceled.
 - Channel settlement and cancellation use detached, bounded contexts. A
   failure remains retryable and does not discard `channel_receive_enabled` or
   the recorded channel ID. On restart, a receive with a channel ID retries

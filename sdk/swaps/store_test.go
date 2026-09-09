@@ -216,8 +216,9 @@ func TestReceiveChannelRailOwnershipPersists(t *testing.T) {
 	channelID := arkchannel.ID{1, 2, 3}
 	lostResponseErr := errors.New("settlement response lost")
 	bridge := &testArkChannelPaymentBridge{
-		waitChannelID: channelID,
-		settleErr:     lostResponseErr,
+		waitChannelID:  channelID,
+		waitManifested: true,
+		settleErr:      lostResponseErr,
 	}
 	client.SetArkChannelPaymentBridge(bridge)
 	client.SetOutSwapEventReceiver(&blockingOutSwapEventReceiver{})

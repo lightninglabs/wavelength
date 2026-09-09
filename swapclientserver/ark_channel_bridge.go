@@ -36,7 +36,7 @@ func (b *arkChannelPaymentBridge) RegisterIncomingPayment(ctx context.Context,
 
 // WaitIncomingPayment waits for private lnd acceptance and channel activation.
 func (b *arkChannelPaymentBridge) WaitIncomingPayment(ctx context.Context,
-	hash lntypes.Hash) (arkchannel.ID, error) {
+	hash lntypes.Hash) (arkchannel.ID, bool, error) {
 
 	return b.rpc.WaitArkChannelIncomingPayment(ctx, hash)
 }
