@@ -6,7 +6,7 @@ go 1.26.0
 replace github.com/golang-migrate/migrate/v4 => github.com/lightninglabs/migrate/v4 v4.18.2-9023d66a-fork-pr-2
 
 // Build the modular channel runtime against the reviewed lnd fork commit.
-replace github.com/lightningnetwork/lnd => github.com/sputn1ck/lnd v0.4.2-beta.0.20260908095249-05d0ea4417d4
+replace github.com/lightningnetwork/lnd => github.com/sputn1ck/lnd v0.4.2-beta.0.20260909100457-26c322052355
 
 require (
 	github.com/btcsuite/btcd v0.26.0
