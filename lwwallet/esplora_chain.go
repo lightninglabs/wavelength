@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -1214,10 +1215,34 @@ func (s *EsploraChainService) TestMempoolAccept(txns []*wire.MsgTx,
 	return results, nil
 }
 
-// MapRPCErr passes through errors unchanged since the Esplora backend
-// does not use RPC error codes.
-func (s *EsploraChainService) MapRPCErr(err error) error {
-	return err
+// MapRPCErr maps Bitcoin Core reject reasons returned by Esplora to the
+// sentinel errors expected by btcwallet and lnd.
+func (s *EsploraChainService) MapRPCErr(rpcErr error) error {
+	for code := chain.ErrMissingInputsOrSpent; code <=
+		chain.ErrBadWitnessNonStandard; code++ {
+
+		if chainErrorMatches(rpcErr, code.Error()) {
+			return code
+		}
+	}
+
+	for message, mappedErr := range chain.Bitcoind28ErrMap {
+		if chainErrorMatches(rpcErr, message) {
+			return mappedErr
+		}
+	}
+
+	return fmt.Errorf("%w: %w", chain.ErrUndefined, rpcErr)
+}
+
+// chainErrorMatches normalizes Core's dashed reject reasons before matching.
+func chainErrorMatches(err error, pattern string) bool {
+	errText := strings.ReplaceAll(err.Error(), "-", " ")
+	pattern = strings.ReplaceAll(pattern, "-", " ")
+
+	return strings.Contains(
+		strings.ToLower(errText), strings.ToLower(pattern),
+	)
 }
 
 // handleChainEvents drains the unified chain stream and translates

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,35 @@ import (
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/stretchr/testify/require"
 )
+
+// TestEsploraChainServiceMapRPCErr verifies that Esplora's textual Core
+// reject reasons retain the error identities consumed by lnd's sweeper.
+func TestEsploraChainServiceMapRPCErr(t *testing.T) {
+	t.Parallel()
+
+	service := &EsploraChainService{}
+	require.ErrorIs(
+		t,
+		service.MapRPCErr(
+			errors.New("missing-inputs"),
+		),
+		chain.ErrMissingInputs,
+	)
+	require.ErrorIs(
+		t,
+		service.MapRPCErr(
+			errors.New("mempool script verify flag failed"),
+		),
+		chain.ErrNonMandatoryScriptVerifyFlag,
+	)
+	require.ErrorIs(
+		t,
+		service.MapRPCErr(
+			errors.New("unknown rejection"),
+		),
+		chain.ErrUndefined,
+	)
+}
 
 // TestEsploraChainServiceStopCancelsRequestContext verifies that Stop cancels
 // the context used by chain.Interface methods. Btcwallet waits for its recovery
