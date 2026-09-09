@@ -139,10 +139,19 @@ func (n *BackendChainNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 	event := chainntnfs.NewSpendEvent(func() {
 		owned.cancel()
 	})
+	var lastSeq uint64
+	select {
+	case spend, ok := <-registration.Spend:
+		if ok && applyBackendSequence(spend.Seq, &lastSeq) {
+			event.Spend <- lndSpendDetail(spend)
+		}
+
+	default:
+	}
 	go func() {
 		defer n.finishRegistration(id, owned)
 
-		forwardBackendSpends(ctx, registration, event)
+		forwardBackendSpends(ctx, registration, event, lastSeq)
 	}()
 
 	return event, nil
@@ -439,9 +448,8 @@ func forwardBackendConfirmations(ctx context.Context,
 // event returned to native channel components.
 func forwardBackendSpends(ctx context.Context,
 	registration *chainsource.SpendRegistration,
-	event *chainntnfs.SpendEvent) {
+	event *chainntnfs.SpendEvent, lastSeq uint64) {
 
-	var lastSeq uint64
 	for {
 		select {
 		case spend, ok := <-registration.Spend:
@@ -452,13 +460,7 @@ func forwardBackendSpends(ctx context.Context,
 				continue
 			}
 			select {
-			case event.Spend <- &chainntnfs.SpendDetail{
-				SpentOutPoint:     spend.SpentOutPoint,
-				SpenderTxHash:     spend.SpenderTxHash,
-				SpendingTx:        spend.SpendingTx,
-				SpenderInputIndex: spend.SpenderInputIndex,
-				SpendingHeight:    spend.SpendingHeight,
-			}:
+			case event.Spend <- lndSpendDetail(spend):
 			case <-ctx.Done():
 				return
 			}
@@ -490,6 +492,17 @@ func forwardBackendSpends(ctx context.Context,
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// lndSpendDetail converts a backend spend into lnd's notifier event shape.
+func lndSpendDetail(spend *chainsource.SpendDetail) *chainntnfs.SpendDetail {
+	return &chainntnfs.SpendDetail{
+		SpentOutPoint:     spend.SpentOutPoint,
+		SpenderTxHash:     spend.SpenderTxHash,
+		SpendingTx:        spend.SpendingTx,
+		SpenderInputIndex: spend.SpenderInputIndex,
+		SpendingHeight:    spend.SpendingHeight,
 	}
 }
 

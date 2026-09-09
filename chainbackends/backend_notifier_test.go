@@ -30,6 +30,7 @@ type backendNotifierTestBackend struct {
 	spendCanceled atomic.Bool
 	confContext   chan context.Context
 	spendContext  chan context.Context
+	initialSpend  *chainsource.SpendDetail
 }
 
 // BestBlock returns the fixed registration tip.
@@ -82,14 +83,52 @@ func (b *backendNotifierTestBackend) RegisterSpend(ctx context.Context,
 		b.spendContext <- ctx
 	}
 
+	spends := make(chan *chainsource.SpendDetail, 1)
+	if b.initialSpend != nil {
+		spends <- b.initialSpend
+	}
+
 	return &chainsource.SpendRegistration{
-		Spend:   make(chan *chainsource.SpendDetail),
+		Spend:   spends,
 		Reorged: make(chan uint64),
 		Done:    make(chan struct{}),
 		Cancel: func() {
 			b.spendCanceled.Store(true)
 		},
 	}, nil
+}
+
+// TestBackendChainNotifierPreloadsHistoricalSpend verifies lnd can inspect an
+// already-confirmed input spend synchronously during fee-bump classification.
+func TestBackendChainNotifierPreloadsHistoricalSpend(t *testing.T) {
+	t.Parallel()
+
+	outpoint := &wire.OutPoint{Hash: chainhash.Hash{1}, Index: 3}
+	spenderHash := chainhash.Hash{2}
+	backend := &backendNotifierTestBackend{
+		height: 144,
+		initialSpend: &chainsource.SpendDetail{
+			SpentOutPoint:  outpoint,
+			SpenderTxHash:  &spenderHash,
+			SpendingHeight: 143,
+		},
+	}
+	notifier, err := NewBackendChainNotifier(backend)
+	require.NoError(t, err)
+
+	event, err := notifier.RegisterSpendNtfn(outpoint, nil, 100)
+	require.NoError(t, err)
+	t.Cleanup(event.Cancel)
+
+	select {
+	case spend := <-event.Spend:
+		require.Equal(t, outpoint, spend.SpentOutPoint)
+		require.Equal(t, spenderHash, *spend.SpenderTxHash)
+		require.Equal(t, int32(143), spend.SpendingHeight)
+
+	default:
+		t.Fatal("historical spend was not available on return")
+	}
 }
 
 // TestBackendChainNotifierSeedsCurrentTip verifies lnd can use registration as
@@ -304,7 +343,7 @@ func TestForwardBackendSpendsOrdersReorgs(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	event := chainntnfs.NewSpendEvent(cancel)
-	go forwardBackendSpends(ctx, registration, event)
+	go forwardBackendSpends(ctx, registration, event, 0)
 
 	spends <- &chainsource.SpendDetail{Seq: 3}
 	require.NotNil(t, <-event.Spend)
