@@ -816,3 +816,28 @@ func TestResumeBoundPromotionReplaysRequestedPeerBind(t *testing.T) {
 	require.Equal(t, arkchannel.PhaseRequested, actual.Snapshot.Phase)
 	require.Equal(t, []arkchannel.VTXOBinding{binding}, remote.boundSources)
 }
+
+// TestWaitPromotionCompletionBlocksTransitionalRecord verifies idempotent RPC
+// replay cannot report successful creation while the durable FSM is pending.
+func TestWaitPromotionCompletionBlocksTransitionalRecord(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(41_000, 0).UTC()
+	controller, coordinator, terms, closeStore := testPrePONRController(
+		t, now, oorbridge.PreparationLookup{},
+	)
+	t.Cleanup(closeStore)
+	_, err := coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+
+	service, err := arkchannel.NewService(
+		controller.party, coordinator, noOpPromotionActionExecutor{},
+	)
+	require.NoError(t, err)
+	controller.service = service
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err = controller.waitPromotionCompletion(ctx, terms.ID)
+	require.ErrorIs(t, err, context.Canceled)
+}

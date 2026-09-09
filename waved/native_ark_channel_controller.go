@@ -1229,7 +1229,11 @@ func (c *NativeArkChannelController) PromoteVTXO(ctx context.Context,
 		return arkchannel.Record{}, err
 	}
 	if err == nil && existing.Snapshot.Source != nil {
-		return c.resumeBoundPromotion(ctx, existing)
+		if _, err := c.resumeBoundPromotion(ctx, existing); err != nil {
+			return arkchannel.Record{}, err
+		}
+
+		return c.waitPromotionCompletion(ctx, terms.ID)
 	}
 	if _, err := c.remote.RegisterPromotion(ctx, terms); err != nil {
 		return arkchannel.Record{}, err
@@ -1257,7 +1261,52 @@ func (c *NativeArkChannelController) PromoteVTXO(ctx context.Context,
 		return arkchannel.Record{}, err
 	}
 
-	return c.service.GetChannel(ctx, terms.ID)
+	return c.waitPromotionCompletion(ctx, terms.ID)
+}
+
+// waitPromotionCompletion preserves the blocking promotion contract across
+// idempotent retries while the durable channel FSM finishes asynchronously.
+func (c *NativeArkChannelController) waitPromotionCompletion(
+	ctx context.Context, id arkchannel.ID) (arkchannel.Record, error) {
+
+	ticker := time.NewTicker(arkChannelControllerPollInterval)
+	defer ticker.Stop()
+
+	for {
+		record, err := c.service.GetChannel(ctx, id)
+		if err != nil {
+			return arkchannel.Record{}, err
+		}
+		switch record.Snapshot.Phase {
+		case arkchannel.PhaseActive:
+			return record, nil
+
+		case arkchannel.PhaseFailed:
+			return arkchannel.Record{}, fmt.Errorf("channel "+
+				"promotion failed: %s", record.Snapshot.Failure)
+
+		case arkchannel.PhaseRequested,
+			arkchannel.PhaseNegotiating,
+			arkchannel.PhaseBackingReady,
+			arkchannel.PhaseActivating,
+			arkchannel.PhaseCancelling:
+
+			// A peer callback or replayable channel action still
+			// owns the next durable transition.
+
+		default:
+			// Preserve idempotent lookup after the channel has
+			// moved beyond its active creation lifecycle.
+			return record, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return arkchannel.Record{}, ctx.Err()
+
+		case <-ticker.C:
+		}
+	}
 }
 
 // resumeBoundPromotion resumes only channel-creation work. A later channel
