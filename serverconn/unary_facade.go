@@ -96,16 +96,16 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 		}
 	}
 
-	// Defaulting the correlation ID to the idempotency key means a retry
-	// reuses the abandoned attempt's correlation ID too. That is
-	// deliberate: SendRPC registers the waiter before it sends, so an
-	// answer to the abandoned attempt that lands after the retry is on the
-	// wire is delivered to the retry's waiter instead of being acked into
-	// the void. Retries of one logical request are sequential by
-	// construction, so the shared ID never spans two live waiters.
+	// Correlation identifies one transport attempt, while idempotency
+	// identifies the logical operation across attempts. Reusing the
+	// idempotency key here would also reuse the server response's mailbox
+	// message ID. Once an earlier response has been acknowledged, the
+	// mailbox tombstone would suppress that cached response and leave the
+	// retry waiting forever. The request message ID is already fresh for
+	// every send, so it is also a suitable default correlation ID.
 	correlationID := opts.CorrelationID
 	if correlationID == "" {
-		correlationID = idempotencyKey
+		correlationID = msgID
 	}
 
 	// Pre-register the response waiter before sending so a fast response
