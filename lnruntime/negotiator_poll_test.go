@@ -163,6 +163,7 @@ type statusPollCounterparty struct {
 	mu               sync.Mutex
 	localService     *arkchannel.Service
 	peerRecoverySet  bool
+	recoveryExports  int
 	recoveryInstalls int
 	cancelBackend    *statusPollFundingBackend
 	abortAfterCancel bool
@@ -249,6 +250,17 @@ func (p *statusPollCounterparty) ApplyChannelEvent(ctx context.Context,
 	return arkchannel.Record{}, nil
 }
 
+// ExportRecoveryPackage returns the remote funder's finalized test package.
+func (p *statusPollCounterparty) ExportRecoveryPackage(context.Context,
+	arkchannel.ID) (arkchannel.RecoveryPackage, error) {
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.recoveryExports++
+
+	return arkchannel.RecoveryPackage{}, nil
+}
+
 // cancellationSink accepts terminal native funding callbacks for ordering
 // tests without introducing another channel state machine.
 type cancellationSink struct{}
@@ -304,6 +316,14 @@ func (p *statusPollCounterparty) recoveryInstallCount() int {
 	defer p.mu.Unlock()
 
 	return p.recoveryInstalls
+}
+
+// recoveryExportCount returns the number of fetched remote packages.
+func (p *statusPollCounterparty) recoveryExportCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.recoveryExports
 }
 
 // abortObservedAfterCancel reports the order seen at the peer boundary.
@@ -468,17 +488,13 @@ func (s *fundingNegotiationSink) ResumeChannelAction(context.Context,
 	return s.record, nil
 }
 
-// RecordLocalEvent records backing in the real service and mirrors other native
-// funding facts in the component-test sink.
+// RecordLocalEvent persists a native lnd fact without recursively dispatching
+// the service action, then mirrors it in the component-test sink.
 func (s *fundingWireTestSink) RecordLocalEvent(ctx context.Context,
 	id arkchannel.ID, event arkchannel.Event) (arkchannel.Record, error) {
 
-	if _, ok := event.(*arkchannel.BackingSigned); ok {
-		if _, err := s.service.RecordLocalEvent(
-			ctx, id, event,
-		); err != nil {
-			return arkchannel.Record{}, err
-		}
+	if _, err := s.service.RecordLocalEvent(ctx, id, event); err != nil {
+		return arkchannel.Record{}, err
 	}
 
 	return s.mirror.Apply(ctx, id, event)
@@ -642,6 +658,90 @@ func TestRecoveryResumeDoesNotRecursivelyPrepare(t *testing.T) {
 	require.Equal(t, int32(1), recovery.exports.Load())
 	require.Equal(t, int32(1), recovery.installs.Load())
 	require.Equal(t, 1, remote.recoveryInstallCount())
+	require.True(t, record.Snapshot.RecoveryReady())
+	require.Equal(t, arkchannel.PhaseActivating, record.Snapshot.Phase)
+	require.Equal(t, int32(1), edges.activations.Load())
+}
+
+// TestReceiveClientResumesRecoveryFromRemoteFunder proves the non-initiating
+// client executes its durable recovery action after a hub-funded OOR commits.
+func TestReceiveClientResumesRecoveryFromRemoteFunder(t *testing.T) {
+	t.Parallel()
+
+	terms, _, clientKey, hubKey := statusPollChannel(t)
+	terms.Kind = arkchannel.KindReceiveIntent
+	terms.Funder = arkchannel.PartyHub
+	terms.PaymentHash = [32]byte{9, 4, 2}
+	terms.ID = arkchannel.ReceiveIntentID(terms.PaymentHash)
+	terms.PendingChannelID = arkchannel.ReceiveIntentPendingID(
+		terms.PaymentHash,
+	)
+	source := *testIntentBinding(
+		t, terms, terms.Capacity+arkchannel.DefaultBackingFee, 0,
+	)
+	backing := statusPollBacking(t, terms, source, clientKey, hubKey)
+	coordinator := statusPollCoordinator(t)
+	bootstrap, err := arkchannel.NewService(
+		arkchannel.PartyClient, coordinator,
+		&statusPollBootstrapExecutor{},
+	)
+	require.NoError(t, err)
+	_, err = bootstrap.RegisterReceiveIntent(t.Context(), terms)
+	require.NoError(t, err)
+	_, err = bootstrap.RecordPeerEvent(
+		t.Context(), terms.ID, &arkchannel.BindVTXO{
+			Binding: source,
+		},
+	)
+	require.NoError(t, err)
+	_, err = bootstrap.RecordLocalEvent(
+		t.Context(), terms.ID, &arkchannel.FundingPeerReady{},
+	)
+	require.NoError(t, err)
+	_, err = bootstrap.RecordPeerEvent(
+		t.Context(), terms.ID, &arkchannel.BackingSigned{
+			Backing: backing,
+		},
+	)
+	require.NoError(t, err)
+	_, err = bootstrap.RecordLocalEvent(
+		t.Context(), terms.ID, &arkchannel.FundingFinalized{
+			Party: arkchannel.PartyClient,
+		},
+	)
+	require.NoError(t, err)
+	for _, event := range []arkchannel.Event{
+		&arkchannel.FundingFinalized{
+			Party: arkchannel.PartyHub,
+		},
+		&arkchannel.OORFinalized{
+			SessionID: source.OORSessionID,
+		},
+		&arkchannel.RecoveryPackageInstalled{
+			Party: arkchannel.PartyHub,
+		},
+	} {
+		_, err = bootstrap.RecordPeerEvent(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+
+	backend := newStatusPollFundingBackend(
+		t, terms.PendingChannelID, terms.Capacity,
+	)
+	remote := &statusPollCounterparty{
+		party: arkchannel.PartyHub, key: hubKey, readyAfter: 1,
+	}
+	recovery := &statusPollRecoveryManager{}
+	service, edges := statusPollService(
+		t, coordinator, terms, clientKey, backend, remote, recovery,
+	)
+	remote.localService = service
+
+	record, err := service.ResumeChannelAction(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1, remote.recoveryExportCount())
+	require.Zero(t, recovery.exports.Load())
+	require.Equal(t, int32(1), recovery.installs.Load())
 	require.True(t, record.Snapshot.RecoveryReady())
 	require.Equal(t, arkchannel.PhaseActivating, record.Snapshot.Phase)
 	require.Equal(t, int32(1), edges.activations.Load())
@@ -814,7 +914,8 @@ func statusPollCompressedKey(key *btcec.PrivateKey) [33]byte {
 }
 
 var (
-	_ NativeFundingBackend   = (*statusPollFundingBackend)(nil)
-	_ RecoveryCounterparty   = (*statusPollCounterparty)(nil)
-	_ ChannelRecoveryManager = (*statusPollRecoveryManager)(nil)
+	_ NativeFundingBackend       = (*statusPollFundingBackend)(nil)
+	_ RecoveryCounterparty       = (*statusPollCounterparty)(nil)
+	_ RecoveryExportCounterparty = (*statusPollCounterparty)(nil)
+	_ ChannelRecoveryManager     = (*statusPollRecoveryManager)(nil)
 )

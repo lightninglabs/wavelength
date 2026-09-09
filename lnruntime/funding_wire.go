@@ -392,16 +392,11 @@ func (c *FundingWireServerConfig) handle(ctx context.Context,
 		if err != nil {
 			return nil, err
 		}
-		var record arkchannel.Record
-		if _, ready := event.(*arkchannel.FundingPeerReady); ready {
-			record, err = c.Service.RecordPeerEvent(
-				ctx, id, event,
-			)
-		} else {
-			record, err = c.Funding.ApplyChannelEvent(
-				ctx, id, event,
-			)
-		}
+		// Funding-wire delivery is an ingress barrier. Persist peer
+		// evidence here and let the controller replay any resulting
+		// action outside this handler, where it can safely call back to
+		// the peer over the process mailbox.
+		record, err := c.Service.RecordPeerEvent(ctx, id, event)
 		if err != nil {
 			return nil, err
 		}

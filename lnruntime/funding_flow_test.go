@@ -73,40 +73,31 @@ type fundingNegotiationSink struct {
 	record arkchannel.Record
 }
 
-// fundingWireTestSink keeps the service's backing fact current for wire-side
-// validation while the existing funding sink models the remaining barriers.
+// fundingWireTestSink keeps the service's durable funding facts current while
+// the existing funding sink models native lnd callbacks for this component
+// test.
 type fundingWireTestSink struct {
 	service *arkchannel.Service
 	mirror  *fundingNegotiationSink
 }
 
-// ApplyLocalEvent records local immutable backing in the service queried by
-// FundingWire and delegates the remaining barriers to the test sink.
+// ApplyLocalEvent records a local fact and mirrors its native lnd effect.
 func (s *fundingWireTestSink) ApplyLocalEvent(ctx context.Context,
 	id arkchannel.ID, event arkchannel.Event) (arkchannel.Record, error) {
 
-	if _, ok := event.(*arkchannel.BackingSigned); ok {
-		if _, err := s.service.ApplyLocalEvent(
-			ctx, id, event,
-		); err != nil {
-			return arkchannel.Record{}, err
-		}
+	if _, err := s.service.RecordLocalEvent(ctx, id, event); err != nil {
+		return arkchannel.Record{}, err
 	}
 
 	return s.mirror.Apply(ctx, id, event)
 }
 
-// ApplyPeerEvent records authenticated peer backing in the service queried by
-// FundingWire and delegates the remaining barriers to the test sink.
+// ApplyPeerEvent records a peer fact and mirrors its native lnd effect.
 func (s *fundingWireTestSink) ApplyPeerEvent(ctx context.Context,
 	id arkchannel.ID, event arkchannel.Event) (arkchannel.Record, error) {
 
-	if _, ok := event.(*arkchannel.BackingSigned); ok {
-		if _, err := s.service.ApplyPeerEvent(
-			ctx, id, event,
-		); err != nil {
-			return arkchannel.Record{}, err
-		}
+	if _, err := s.service.RecordPeerEvent(ctx, id, event); err != nil {
+		return arkchannel.Record{}, err
 	}
 
 	return s.mirror.Apply(ctx, id, event)
@@ -562,6 +553,107 @@ func TestFundingWireRecordsPeerReadiness(t *testing.T) {
 	require.Equal(t, arkchannel.PhaseNegotiating, stored.Snapshot.Phase)
 }
 
+// TestFundingWireRecordsRecoveryBarrierWithoutDispatch proves an incoming lnd
+// wire event cannot synchronously execute an action that calls back through
+// the process mailbox serving the same client.
+func TestFundingWireRecordsRecoveryBarrierWithoutDispatch(t *testing.T) {
+	t.Parallel()
+
+	hub := newFundingFlowNode(t, arkchannel.PartyHub)
+	client := newFundingFlowNode(t, arkchannel.PartyClient)
+	connectFundingFlowNodes(t, hub, client)
+
+	rawStore := clientdb.NewTestDB(t)
+	store := clientdb.NewStore(
+		rawStore.DB, rawStore.Queries, rawStore.Backend(),
+		btclog.Disabled,
+	).NewArkChannelStore(clock.NewDefaultClock())
+	coordinator, err := arkchannel.NewCoordinator(store)
+	require.NoError(t, err)
+	service, err := arkchannel.NewService(
+		arkchannel.PartyClient, coordinator,
+		&noOpFundingActionExecutor{},
+	)
+	require.NoError(t, err)
+
+	record := fundingIntentRecord(
+		t, hub, client, lndfunding.PendingChanID{2, 4, 6, 7},
+	)
+	terms := record.Snapshot.Terms
+	source := *record.Snapshot.Source
+	backing := statusPollBacking(t, terms, source, client.key, hub.key)
+	_, err = service.RegisterReceiveIntent(t.Context(), terms)
+	require.NoError(t, err)
+	_, err = service.RecordPeerEvent(
+		t.Context(), terms.ID, &arkchannel.BindVTXO{
+			Binding: source,
+		},
+	)
+	require.NoError(t, err)
+	_, err = service.RecordLocalEvent(
+		t.Context(), terms.ID, &arkchannel.FundingPeerReady{},
+	)
+	require.NoError(t, err)
+	_, err = service.RecordPeerEvent(
+		t.Context(), terms.ID, &arkchannel.BackingSigned{
+			Backing: backing,
+		},
+	)
+	require.NoError(t, err)
+	_, err = service.RecordLocalEvent(
+		t.Context(), terms.ID, &arkchannel.FundingFinalized{
+			Party: arkchannel.PartyClient,
+		},
+	)
+	require.NoError(t, err)
+	_, err = service.RecordPeerEvent(
+		t.Context(), terms.ID, &arkchannel.FundingFinalized{
+			Party: arkchannel.PartyHub,
+		},
+	)
+	require.NoError(t, err)
+
+	clientEndpoint, err := NewNativeFundingEndpoint(
+		arkchannel.PartyClient, client.runtime.Funding(),
+		input.NewMockSigner(
+			[]*btcec.PrivateKey{client.key}, nil,
+		),
+		keychain.KeyDescriptor{
+			PubKey: client.key.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	clientWire, err := NewFundingWire(client.peer)
+	require.NoError(t, err)
+	client.fundingWire = clientWire
+	t.Cleanup(clientWire.Close)
+	require.NoError(
+		t,
+		clientWire.BindServer(
+			FundingWireServerConfig{
+				Service: service,
+				Funding: clientEndpoint,
+			},
+		),
+	)
+	hubWire, err := NewFundingWire(hub.peer)
+	require.NoError(t, err)
+	hub.fundingWire = hubWire
+	t.Cleanup(hubWire.Close)
+
+	_, err = hubWire.Counterparty().ApplyChannelEvent(
+		t.Context(), terms.ID, &arkchannel.OORFinalized{
+			SessionID: source.OORSessionID,
+		},
+	)
+	require.NoError(t, err)
+	stored, err := service.GetChannel(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.True(t, stored.Snapshot.OORFinalized)
+	require.False(t, stored.Snapshot.ClientRecoveryReady)
+	require.Equal(t, arkchannel.PhaseBackingReady, stored.Snapshot.Phase)
+}
+
 // TestFundingWireNegotiatesHubFundedChannel proves the production reverse
 // transport supports the complete hub-initiated lnd funding exchange.
 func TestFundingWireNegotiatesHubFundedChannel(t *testing.T) {
@@ -672,12 +764,45 @@ func TestFundingWireNegotiatesHubFundedChannel(t *testing.T) {
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	require.NoError(
-		t, negotiator.NegotiateChannel(
+	negotiated := make(chan error, 1)
+	go func() {
+		negotiated <- negotiator.NegotiateChannel(
 			ctx, record.Snapshot.Terms.ID, record.Snapshot.Terms,
 			*record.Snapshot.Source,
+		)
+	}()
+	require.Eventually(t, func() bool {
+		stored, err := service.GetChannel(
+			t.Context(), record.Snapshot.Terms.ID,
+		)
+
+		return err == nil && stored.Snapshot.OORFinalized
+	}, 5*time.Second, 10*time.Millisecond)
+	stored, err := service.GetChannel(
+		t.Context(), record.Snapshot.Terms.ID,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, stored.Snapshot.Backing)
+	_, err = service.RecordLocalEvent(
+		t.Context(), record.Snapshot.Terms.ID,
+		&arkchannel.RecoveryPackageInstalled{
+			Party: arkchannel.PartyClient,
+		},
+	)
+	require.NoError(t, err)
+	_, err = service.RecordPeerEvent(
+		t.Context(), record.Snapshot.Terms.ID,
+		&arkchannel.RecoveryPackageInstalled{
+			Party: arkchannel.PartyHub,
+		},
+	)
+	require.NoError(t, err)
+	require.NoError(
+		t, client.runtime.Funding().ConfirmBacking(
+			stored.Snapshot.Backing.ChannelPoint.Hash,
 		),
 	)
+	require.NoError(t, <-negotiated)
 
 	require.Equal(t, arkchannel.PhaseActive, hubSink.record.Snapshot.Phase)
 	require.Equal(
@@ -1339,8 +1464,10 @@ func TestNativeFundingFlowInArkCooperativeClose(t *testing.T) {
 	)
 	require.ErrorContains(t, err, "lost begin response")
 	require.Equal(t, 1, clientDelivery.callCount())
-	require.Zero(t, hubActionExecutor.negotiations.Load(),
-		"begin must persist the request without replaying its action")
+	require.Zero(
+		t, hubActionExecutor.negotiations.Load(),
+		"begin must persist the request without replaying its action",
+	)
 
 	_, err = clientClose.RequestCooperativeClose(
 		t.Context(), record.Snapshot.Terms.ID,

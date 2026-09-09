@@ -536,8 +536,8 @@ func (n *ChannelNegotiator) NegotiateChannel(ctx context.Context,
 
 // PrepareChannelRecovery copies the finalized source package to both
 // endpoints before recording the activation barrier. The lnd opener drives
-// this exchange and fetches the package from the remote endpoint when the hub
-// owns the OOR source.
+// the exchange. For a hub-funded receive, the client replays the same durable
+// action to fetch and install its own copy over the authenticated control RPC.
 func (n *ChannelNegotiator) PrepareChannelRecovery(ctx context.Context,
 	id arkchannel.ID, terms arkchannel.Terms,
 	source arkchannel.VTXOBinding) error {
@@ -545,12 +545,16 @@ func (n *ChannelNegotiator) PrepareChannelRecovery(ctx context.Context,
 	if err := validateFundingRequest(ctx, id, terms, source); err != nil {
 		return err
 	}
-	if terms.FundingInitiator() != n.local.party {
+	initiator := terms.FundingInitiator() == n.local.party
+	receiveClient := terms.Kind == arkchannel.KindReceiveIntent &&
+		terms.Funder == arkchannel.PartyHub &&
+		n.local.party == arkchannel.PartyClient
+	if !initiator && !receiveClient {
 		return nil
 	}
 	var recovery arkchannel.RecoveryPackage
 	var err error
-	if terms.Funder == n.local.party {
+	if initiator && terms.Funder == n.local.party {
 		recovery, err = n.recovery.ExportRecoveryPackage(
 			ctx, id, terms, source,
 		)
@@ -586,6 +590,9 @@ func (n *ChannelNegotiator) PrepareChannelRecovery(ctx context.Context,
 		_, err := n.local.resumeChannelAction(ctx, id)
 
 		return err
+	}
+	if !initiator {
+		return nil
 	}
 	remote, ok := n.remote.(RecoveryCounterparty)
 	if !ok {
