@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -287,6 +288,77 @@ type receiveFailureFixture struct {
 	binding           arkchannel.VTXOBinding
 	backing           arkchannel.Backing
 	hash              lntypes.Hash
+}
+
+// receiveResumeExecutor completes the two replayable actions exercised by the
+// receive synchronizer without replacing its durable SQL-backed FSM.
+type receiveResumeExecutor struct {
+	service     *arkchannel.Service
+	recoveries  atomic.Int32
+	activations atomic.Int32
+}
+
+// Execute records the same durable events produced by native recovery and lnd
+// activation after their side effects complete.
+func (e *receiveResumeExecutor) Execute(ctx context.Context, id arkchannel.ID,
+	action arkchannel.Action) error {
+
+	switch action := action.(type) {
+	case *arkchannel.PrepareRecovery:
+		e.recoveries.Add(1)
+		record, err := e.service.RecordLocalEvent(
+			ctx, id, &arkchannel.RecoveryPackageInstalled{
+				Party: arkchannel.PartyClient,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		if record.Snapshot.Phase != arkchannel.PhaseActivating {
+			return nil
+		}
+		_, err = e.service.ResumeChannelAction(ctx, id)
+
+		return err
+
+	case *arkchannel.ActivateChannel:
+		e.activations.Add(1)
+		_, err := e.service.RecordLocalEvent(
+			ctx, id, &arkchannel.ChannelActive{
+				ChannelPointHash: action.
+					Backing.
+					ChannelPoint.
+					Hash,
+				ChannelPointIndex: action.
+					Backing.
+					ChannelPoint.
+					Index,
+			},
+		)
+
+		return err
+
+	default:
+		return fmt.Errorf("unexpected receive resume action %T", action)
+	}
+}
+
+// unavailableReceivePeer detects any unnecessary remote poll after local
+// durable state already contains everything needed to finish activation.
+type unavailableReceivePeer struct {
+	lnruntime.ProcessFundingPeer
+
+	gets atomic.Int32
+}
+
+// GetFundingChannel rejects remote state reads in the local-first replay test.
+func (p *unavailableReceivePeer) GetFundingChannel(context.Context,
+	arkchannel.ID) (lnruntime.FundingChannelState, error) {
+
+	p.gets.Add(1)
+
+	return lnruntime.FundingChannelState{}, fmt.Errorf("remote funding " +
+		"state is unavailable")
 }
 
 // testReceiveFailureBacking creates a real signed VTXO-to-channel transaction
@@ -703,6 +775,52 @@ func TestSyncReceiveIntentReplaysRemoteCancellation(t *testing.T) {
 		require.NoError(t, loadErr)
 		require.Equal(t, arkchannel.PhaseFailed, record.Snapshot.Phase)
 	}
+}
+
+// TestSyncReceiveIntentResumesLocalRecoveryBeforePollingHub proves a busy
+// process mailbox cannot strand a hub-funded channel at backing-ready after
+// the funding-wire barriers are already durable on the client.
+func TestSyncReceiveIntentResumesLocalRecoveryBeforePollingHub(t *testing.T) {
+	t.Parallel()
+
+	fixture := newReceiveFailureFixture(t, nil, true)
+	fixture.advanceBackingReady(t)
+	for _, event := range []arkchannel.Event{
+		&arkchannel.OORFinalized{
+			SessionID: fixture.binding.OORSessionID,
+		},
+		&arkchannel.RecoveryPackageInstalled{
+			Party: arkchannel.PartyHub,
+		},
+	} {
+		_, _, err := fixture.clientCoordinator.Apply(
+			t.Context(), fixture.terms.ID, event,
+		)
+		require.NoError(t, err)
+	}
+	executor := &receiveResumeExecutor{}
+	service, err := arkchannel.NewService(
+		arkchannel.PartyClient, fixture.clientCoordinator, executor,
+	)
+	require.NoError(t, err)
+	executor.service = service
+	remote := &unavailableReceivePeer{}
+	controller := &NativeArkChannelController{
+		party: arkchannel.PartyClient, service: service, remote: remote,
+	}
+
+	require.NoError(
+		t,
+		controller.syncReceiveIntent(
+			t.Context(), fixture.hash,
+		),
+	)
+	require.Zero(t, remote.gets.Load())
+	require.Equal(t, int32(1), executor.recoveries.Load())
+	require.Equal(t, int32(1), executor.activations.Load())
+	record, err := service.GetChannel(t.Context(), fixture.terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, arkchannel.PhaseActive, record.Snapshot.Phase)
 }
 
 // TestSyncReceiveIntentDetachesCleanupFromCancelledRequest proves the real

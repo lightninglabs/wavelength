@@ -2010,20 +2010,57 @@ func (c *NativeArkChannelController) syncReceiveIntent(ctx context.Context,
 	ticker := time.NewTicker(arkChannelControllerPollInterval)
 	defer ticker.Stop()
 	for {
-		remote, err := c.remote.GetFundingChannel(ctx, id)
+		local, err := c.service.GetChannel(ctx, id)
 		if err != nil {
 			if err := c.waitReceiveIntentSyncRetry(
-				ctx, ticker, hash, "load remote intent", err,
+				ctx, ticker, hash, "load local intent", err,
 			); err != nil {
 				return err
 			}
 
 			continue
 		}
-		local, err := c.service.GetChannel(ctx, id)
+		if local.Snapshot.Phase == arkchannel.PhaseCancelling {
+			reason := local.Snapshot.Failure
+			if reason == "" {
+				reason = "local receive channel is cancelling"
+			}
+			if _, err := c.service.ApplyLocalEvent(
+				ctx, id, &arkchannel.Fail{
+					Reason: reason,
+				},
+			); err != nil {
+
+				if err := c.waitReceiveIntentSyncRetry(
+					ctx, ticker, hash, "resume local "+
+						"intent cancellation", err,
+				); err != nil {
+					return err
+				}
+			}
+
+			continue
+		}
+		if local.Snapshot.Phase == arkchannel.PhaseActive {
+			return nil
+		}
+		if receiveIntentNeedsLocalRecovery(local.Snapshot) {
+			_, err := c.service.ResumeChannelAction(ctx, id)
+			if err != nil {
+				if err := c.waitReceiveIntentSyncRetry(
+					ctx, ticker, hash, "resume local "+
+						"recovery", err,
+				); err != nil {
+					return err
+				}
+			}
+
+			continue
+		}
+		remote, err := c.remote.GetFundingChannel(ctx, id)
 		if err != nil {
 			if err := c.waitReceiveIntentSyncRetry(
-				ctx, ticker, hash, "load local intent", err,
+				ctx, ticker, hash, "load remote intent", err,
 			); err != nil {
 				return err
 			}
@@ -2053,30 +2090,6 @@ func (c *NativeArkChannelController) syncReceiveIntent(ctx context.Context,
 			}
 
 			continue
-		}
-		if local.Snapshot.Phase == arkchannel.PhaseCancelling {
-			reason := local.Snapshot.Failure
-			if reason == "" {
-				reason = "local receive channel is cancelling"
-			}
-			if _, err := c.service.ApplyLocalEvent(
-				ctx, id, &arkchannel.Fail{
-					Reason: reason,
-				},
-			); err != nil {
-
-				if err := c.waitReceiveIntentSyncRetry(
-					ctx, ticker, hash, "resume local "+
-						"intent cancellation", err,
-				); err != nil {
-					return err
-				}
-			}
-
-			continue
-		}
-		if local.Snapshot.Phase == arkchannel.PhaseActive {
-			return nil
 		}
 		if remote.Source != nil && local.Snapshot.Source == nil {
 			_, err := c.service.ApplyPeerEvent(
@@ -2122,14 +2135,26 @@ func (c *NativeArkChannelController) syncReceiveIntent(ctx context.Context,
 			return fmt.Errorf("finalized receive channel is " +
 				"missing funding artifacts")
 		}
-		if receiveIntentNeedsRecovery(remote, local) {
-			err := c.installReceiveIntentRecovery(
-				ctx, id, remote, local,
-			)
+		advanced, err := c.syncReceiveIntentRecoveryBarriers(
+			ctx, id, remote, local,
+		)
+		if err != nil {
+			if err := c.waitReceiveIntentSyncRetry(
+				ctx, ticker, hash, "synchronize recovery "+
+					"barriers", err,
+			); err != nil {
+				return err
+			}
+		}
+		if advanced {
+			continue
+		}
+		if local.Snapshot.Phase == arkchannel.PhaseActivating {
+			_, err := c.service.ResumeChannelAction(ctx, id)
 			if err != nil {
 				if err := c.waitReceiveIntentSyncRetry(
-					ctx, ticker, hash, "install "+
-						"recovery package", err,
+					ctx, ticker, hash, "resume channel "+
+						"activation", err,
 				); err != nil {
 					return err
 				}
@@ -2137,7 +2162,6 @@ func (c *NativeArkChannelController) syncReceiveIntent(ctx context.Context,
 
 			continue
 		}
-
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -2145,6 +2169,47 @@ func (c *NativeArkChannelController) syncReceiveIntent(ctx context.Context,
 		case <-ticker.C:
 		}
 	}
+}
+
+// syncReceiveIntentRecoveryBarriers mirrors durable recovery evidence that
+// can be lost only at a transport response boundary. At most one endpoint is
+// advanced per call so the next loop always reloads authoritative state.
+func (c *NativeArkChannelController) syncReceiveIntentRecoveryBarriers(
+	ctx context.Context, id arkchannel.ID,
+	remote lnruntime.FundingChannelState, local arkchannel.Record) (bool,
+	error) {
+
+	if remote.OORFinalized && !local.Snapshot.OORFinalized {
+		_, err := c.service.RecordPeerEvent(
+			ctx, id, &arkchannel.OORFinalized{
+				SessionID: local.Snapshot.Source.OORSessionID,
+			},
+		)
+
+		return true, err
+	}
+	if remote.HubRecoveryReady && !local.Snapshot.HubRecoveryReady {
+		_, err := c.service.RecordPeerEvent(
+			ctx, id, &arkchannel.RecoveryPackageInstalled{
+				Party: arkchannel.PartyHub,
+			},
+		)
+
+		return true, err
+	}
+	if local.Snapshot.ClientRecoveryReady &&
+		!remote.ClientRecoveryReady {
+
+		_, err := c.remote.ApplyChannelEvent(
+			ctx, id, &arkchannel.RecoveryPackageInstalled{
+				Party: arkchannel.PartyClient,
+			},
+		)
+
+		return true, err
+	}
+
+	return false, nil
 }
 
 // receiveIntentFundingOutcome is the funder's authoritative durable result.
@@ -2228,12 +2293,12 @@ func (c *NativeArkChannelController) syncReceiveIntentPeerReady(
 	return nil
 }
 
-// receiveIntentNeedsRecovery identifies a finalized source not yet protected by
-// the client's recovery package.
-func receiveIntentNeedsRecovery(remote lnruntime.FundingChannelState,
-	local arkchannel.Record) bool {
-
-	return remote.OORFinalized && !local.Snapshot.ClientRecoveryReady
+// receiveIntentNeedsLocalRecovery identifies a durable client action that can
+// run without first polling the hub. This avoids coupling recovery replay to a
+// busy process mailbox.
+func receiveIntentNeedsLocalRecovery(snapshot arkchannel.Snapshot) bool {
+	return snapshot.Phase == arkchannel.PhaseBackingReady &&
+		snapshot.OORFinalized && !snapshot.ClientRecoveryReady
 }
 
 // receiveIntentRecoveryInvalid detects a finalized source missing
@@ -2241,36 +2306,8 @@ func receiveIntentNeedsRecovery(remote lnruntime.FundingChannelState,
 func receiveIntentRecoveryInvalid(remote lnruntime.FundingChannelState,
 	local arkchannel.Record) bool {
 
-	return receiveIntentNeedsRecovery(remote, local) &&
+	return remote.OORFinalized &&
 		(local.Snapshot.Source == nil || local.Snapshot.Backing == nil)
-}
-
-// installReceiveIntentRecovery imports the finalized source and records the
-// paired recovery barrier.
-func (c *NativeArkChannelController) installReceiveIntentRecovery(
-	ctx context.Context, id arkchannel.ID,
-	remote lnruntime.FundingChannelState, local arkchannel.Record) error {
-
-	recovery, err := c.remote.ExportRecoveryPackage(ctx, id)
-	if err != nil {
-		return fmt.Errorf("export recovery package: %w", err)
-	}
-	if err := c.cfg.Recovery.InstallRecoveryPackage(
-		ctx, id, local.Snapshot.Terms, *local.Snapshot.Source, recovery,
-	); err != nil {
-		return fmt.Errorf("install recovery package: %w", err)
-	}
-	event := &arkchannel.RecoveryPackageInstalled{
-		Party: arkchannel.PartyClient,
-	}
-	if _, err := c.remote.ApplyChannelEvent(ctx, id, event); err != nil {
-		return fmt.Errorf("record remote recovery package: %w", err)
-	}
-	if _, err := c.service.ApplyLocalEvent(ctx, id, event); err != nil {
-		return fmt.Errorf("record local recovery package: %w", err)
-	}
-
-	return nil
 }
 
 // waitReceiveIntentSyncRetry keeps transient mailbox, store, and recovery
