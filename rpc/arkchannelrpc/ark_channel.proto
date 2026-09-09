@@ -36,6 +36,10 @@ service ArkChannelService {
 
     // GetChannel returns the durable Ark lifecycle state for one channel.
     rpc GetChannel (GetChannelRequest) returns (GetChannelResponse);
+
+    // ListChannels returns every channel that still needs recovery,
+    // observation, or operator action.
+    rpc ListChannels (ListChannelsRequest) returns (ListChannelsResponse);
 }
 
 // ArkChannelPeerService is the authenticated client-to-hub control protocol.
@@ -132,6 +136,7 @@ enum FundingWireMethod {
 
 message PromoteVTXORequest {
     int64 amount_sat = 1;
+    string idempotency_key = 2;
 }
 
 message PromoteVTXOResponse {
@@ -450,6 +455,13 @@ message GetChannelResponse {
     ArkChannel channel = 1;
 }
 
+message ListChannelsRequest {
+}
+
+message ListChannelsResponse {
+    repeated ArkChannel channels = 1;
+}
+
 message ArkChannel {
     bytes channel_id = 1;
     string kind = 2;
@@ -461,6 +473,10 @@ message ArkChannel {
     bytes cooperative_close_txid = 8;
     uint64 revision = 9;
     uint64 reserved_scid = 10;
+    int64 local_balance_sat = 11;
+    int64 remote_balance_sat = 12;
+    bool balance_available = 13;
+    string balance_error = 14;
 }
 
 message BeginCooperativeCloseRequest {

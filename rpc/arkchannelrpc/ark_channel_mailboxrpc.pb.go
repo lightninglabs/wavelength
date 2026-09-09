@@ -38,6 +38,8 @@ type ArkChannelServiceMailboxServer interface {
 	RequestCooperativeClose(ctx context.Context, req *RequestCooperativeCloseRequest) (*RequestCooperativeCloseResponse, error)
 	// GetChannel handles GetChannel.
 	GetChannel(ctx context.Context, req *GetChannelRequest) (*GetChannelResponse, error)
+	// ListChannels handles ListChannels.
+	ListChannels(ctx context.Context, req *ListChannelsRequest) (*ListChannelsResponse, error)
 }
 
 // RegisterArkChannelServiceMailboxServer registers handlers for ArkChannelService.
@@ -111,6 +113,16 @@ func RegisterArkChannelServiceMailboxServer(r rpc.Router, impl ArkChannelService
 		}
 
 		return impl.GetChannel(ctx, req)
+	})
+	r.Handle("arkchannelrpc.ArkChannelService", "ListChannels", func() proto.Message {
+		return &ListChannelsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListChannelsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListChannels(ctx, req)
 	})
 }
 
@@ -268,6 +280,29 @@ func (c *ArkChannelServiceMailboxClient) GetChannel(ctx context.Context, req *Ge
 	}
 
 	resp := new(GetChannelResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListChannels calls the ListChannels RPC.
+func (c *ArkChannelServiceMailboxClient) ListChannels(ctx context.Context, req *ListChannelsRequest, opts ...rpc.RPCOptions) (*ListChannelsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkchannelrpc.ArkChannelService",
+		Method:  "ListChannels",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListChannelsResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

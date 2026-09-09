@@ -94,7 +94,7 @@ func TestAdvancedCommandsHiddenByDefault(t *testing.T) {
 	t.Parallel()
 
 	root := newRootCmd(false)
-	for _, name := range []string{"ark", "dev", "recovery"} {
+	for _, name := range []string{"ark", "channel", "dev", "recovery"} {
 		sub := findRootCommand(t, root, name)
 		require.Truef(t, sub.Hidden, "%q should be hidden", name)
 		require.Emptyf(
@@ -113,7 +113,7 @@ func TestAdvancedCommandsGroupedUnderDevMode(t *testing.T) {
 	root := newRootCmd(true)
 	require.Contains(t, rootGroupIDs(root), groupAdvanced)
 
-	for _, name := range []string{"ark", "dev", "recovery"} {
+	for _, name := range []string{"ark", "channel", "dev", "recovery"} {
 		sub := findRootCommand(t, root, name)
 		require.Falsef(t, sub.Hidden, "%q should be visible", name)
 		require.Equalf(

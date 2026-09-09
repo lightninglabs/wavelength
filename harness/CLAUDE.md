@@ -48,6 +48,10 @@ helpers for end-to-end tests.
   primary LND node resyncs to the new tip.
 - `LNDRequireInterceptor` only applies to the primary LND node; additional
   nodes started via `StartAdditionalLND*` never set it.
+- `SetupChannelBetween` explicitly opens announced channels
+  (`Private: false`). Multi-node tests need the link in the public graph,
+  and spelling out the setting prevents an lnd default change from making
+  those routes private.
 - Container teardown (`Stop`) is guarded by `sync.Once`; a signal handler
   also calls `Stop` as a safety net against orphaned containers.
 

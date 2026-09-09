@@ -14,7 +14,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   server, and `ActorSystem`. Caches `localMailboxID` (pubkey-derived),
   `authSigHex` (Schnorr auth), `clientKeyDesc` (the stable daemon identity
   descriptor, behind `clientKeyDescMu`), `mailboxAuthSigs` (per-recipient
-  mailbox auth signature memo, behind `mailboxAuthSigsMu`), and a single
+  mailbox auth signature memo, behind `mailboxAuthSigsMu`), the Ark channel
+  process (`arkChannelController`, `arkChannelMailboxRuntime`, and
+  `arkChannelPeerIngress`, behind `arkChannelMu`), and a single
   `clk` (`clock.Clock`) shared by all sub-stores for deterministic time
   injection.
 - `RPCServer` — implements the local gRPC `DaemonService` and
@@ -23,7 +25,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   validate input locally then `Ask` the relevant actor; `GetRound` and
   `ListVTXOs` merge live actor state with persisted SQL rows, while
   `GetFeeHistory` and `ListTransactions` are pure SQL reads
-  (`rpc_fees.go`).
+  (`rpc_fees.go`). The Ark channel funding RPCs in
+  `rpc_ark_channel_oor.go` reserve, reconcile, validate, commit, or abort a
+  channel OOR. `ExportOORRecoveryPackage` in
+  `rpc_ark_channel_recovery.go` exports its immutable recovery lineage.
 - `Config` — daemon configuration: wallet backend selection, mailbox/chain
   backend wiring, `OORConfig`/`OORLimitsConfig` (receive safety caps),
   `UnrollConfig` (unilateral-exit fee-bump cadence and cap), and
@@ -34,6 +39,20 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   post-unlock recovery hook.
 - `UnrollConfig` / `OORConfig` — subsystem tunables; see `Config.Validate()`
   for the invariants each enforces.
+- `ArkChannelController` — Process boundary served through
+  `arkchannelrpc.ArkChannelService`. It combines channel creation,
+  inspection, close, payment, and incoming-payment operations.
+- `NativeArkChannelController` — Concrete client or hub endpoint. It owns
+  one durable `arkchannel` state machine and one modular lnd channel and
+  payment endpoint.
+- `ArkChannelControllerConfig` — Wallet, store, chain, OOR, unroll,
+  authenticated peer-transport, identity-key, and process-lifecycle
+  dependencies for one native endpoint.
+- `ArkChannelRecoveryController` — Endpoint-local archive, spend watcher,
+  and unroll-preparation boundary used when a virtual channel must be put on
+  chain.
+- `ArkChannelRecoveryRuntime` — The same recovery boundary composed for a
+  host, such as the hub, that owns its database, chain backend, and wallet.
 
 ## Relationships
 
@@ -41,7 +60,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `chainsource`, `lib/actormsg`, `db`, `ledger`, `round`, `txconfirm`,
   `unroll`, `vtxo`, `wallet`, `walletcore`, `oor`, `serverconn`, `indexer`,
   `arkrpc`, `lndbackend`, `fraud`, `gateway`, `rpc/restclient`,
-  `vhtlcrecovery`, `vhtlcrecovery/coordinator`, `vhtlcrecovery/unrollpolicy`.
+  `vhtlcrecovery`, `vhtlcrecovery/coordinator`, `vhtlcrecovery/unrollpolicy`,
+  `arkchannel`, `arkchannel/oorbridge`, `arkchannel/unrollbridge`,
+  `lnruntime`, `rpc/arkchannelrpc`, `chainfees`.
 - **Depended on by**: `cmd/waved`.
 
 ## Invariants
@@ -134,6 +155,42 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   releasing and re-driving urgent expiry work at the current tip. Non-critical
   live refreshes retain their bounded retry cooldown. The gate does not cover
   manual relays or any routing failure after the handshake.
+- Ark channel startup runs under an independent supervisor after the wallet
+  actors, authenticated mailbox ingress, and operator terms are ready. It is
+  enabled only when the swap registrar supplies `SwapConfig.ArkChannelMailbox`;
+  the field cannot come from a config file. A transient channel or indexer
+  failure is retried without blocking unrelated wallet services.
+- `initArkChannelProcess` starts a dedicated durable `serverconn.Runtime`,
+  constructs the native controller, starts its peer-message ingress, and
+  publishes all three together under `arkChannelMu`. Only then does
+  `NativeArkChannelController.Start` launch restart recovery and abandoned
+  preparation maintenance.
+- Shutdown stops channel peer ingress, the controller, and the channel
+  mailbox runtime in that order, before the ordinary mailbox runtime and
+  actor system. The channel runtime borrows the swap registrar's transport,
+  so its deferred cleanup also runs before registrar cleanup.
+- `arkChannelRPCServer` serves `arkchannelrpc.ArkChannelService` on the same
+  authenticated local gRPC listener as `DaemonService`. Its methods return
+  `Unavailable` until the controller is published. Swap subservers use
+  `waitArkChannelController` because they are registered before the optional
+  channel process starts.
+- The `channel` macaroon entity gates both channel surfaces. `channel:read`
+  covers prepared-OOR lookup plus channel inspection; `channel:write` covers
+  OOR preparation control and every channel mutation.
+- `NewReceiveScript(identity_key=true)` registers `clientKeyDesc` as a
+  restart-stable destination and rejects an accompanying `idempotency_key`.
+  Channel startup uses this form for cooperative-close replacement VTXOs so
+  the ordinary OOR receive path can recognize them after restart.
+- The unroll subsystem resolves vHTLC policy first and Ark channel policy
+  second. Channel-policy VTXOs are recovery-only: wallet balance, coin
+  selection, refresh, and ordinary VTXO recovery do not treat them as live
+  wallet coins.
+- The controller scans every 30 seconds for local OOR preparations that
+  remain before the signing point of no return for 10 minutes. It reconciles
+  the deterministic preparation key before aborting, then records the abort
+  before asking lnd to clean up.
+- `setupLoggers` installs the lnd channel, switch, invoice, routing, contract,
+  sweep, database, and chain-I/O subsystem loggers into waved's logger set.
 - After the daemon is ready,
   `repairLegacyCommitmentHeights` (`commitment_height_repair.go`) runs under
   one synchronous, whole-pass maintenance timeout. Both readiness signals are

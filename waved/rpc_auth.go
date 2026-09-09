@@ -3,6 +3,7 @@ package waved
 import (
 	"fmt"
 
+	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
@@ -57,6 +58,9 @@ const (
 
 	// entityMacaroon covers privileged daemon credential creation.
 	entityMacaroon = "macaroon"
+
+	// entityChannel covers the lifecycle of Ark-backed Lightning channels.
+	entityChannel = "channel"
 )
 
 // wavedEntities is the full set of logical macaroon entities. The read-only
@@ -74,6 +78,7 @@ var wavedEntities = []string{
 	entityFees,
 	entityActivity,
 	entityMacaroon,
+	entityChannel,
 }
 
 var wavedRPCPermissions = newWavedRPCPermissions()
@@ -134,11 +139,19 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 	)
 	grant(
 		daemon, entityOOR, "read", "GetIndexedOORSessionByTxid",
-		"ListOORSessions", "GetOORSession",
+		"ListOORSessions", "GetOORSession", "ExportOORRecoveryPackage",
 	)
 	grant(
 		daemon, entityOOR, "write", "SendOOR", "PrepareOOR",
 		"SignOORCustomInput",
+	)
+	grant(
+		daemon, entityChannel, "read", "LookupPreparedArkChannelOOR",
+	)
+	grant(
+		daemon, entityChannel, "write", "PrepareArkChannelOOR",
+		"ValidatePreparedArkChannelOOR", "CommitPreparedArkChannelOOR",
+		"AbortPreparedArkChannelOOR",
 	)
 	grant(
 		daemon, entityOnChain, "read", "ListBoardingSweeps",
@@ -168,6 +181,16 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 	grant(
 		daemon, entityRecovery, "write", "ArmVHTLCRecovery",
 		"EscalateVHTLCRecovery", "CancelVHTLCRecovery",
+	)
+
+	arkChannel := arkchannelrpc.ArkChannelService_ServiceDesc.ServiceName
+	grant(
+		arkChannel, entityChannel, "read", "GetChannel", "ListChannels",
+	)
+	grant(
+		arkChannel, entityChannel, "write", "PromoteVTXO",
+		"SendPayment", "ReceivePayment", "PayLightningInvoice",
+		"MaterializeAndForceClose", "RequestCooperativeClose",
 	)
 
 	swap := swapclientrpc.SwapClientService_ServiceDesc.ServiceName
