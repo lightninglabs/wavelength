@@ -36,6 +36,7 @@ import (
 type testInvoiceCreator struct {
 	invoice       *invoices.Invoice
 	paymentHash   lntypes.Hash
+	createErr     error
 	lastAuthKey   keychain.SingleKeyMessageSigner
 	lastMemo      string
 	authKeys      []keychain.SingleKeyMessageSigner
@@ -54,7 +55,7 @@ func (c *testInvoiceCreator) CreateInvoice(_ context.Context, _ btcutil.Amount,
 		)
 	}
 
-	return c.invoice, c.paymentHash, nil
+	return c.invoice, c.paymentHash, c.createErr
 }
 
 // CreateInvoiceWithKey returns the preconfigured invoice and payment hash.
@@ -211,7 +212,8 @@ func TestStartReceiveDerivesReceiveAuthKeyPerPaymentHash(t *testing.T) {
 }
 
 // TestArkChannelReceiveSettlesDirectly proves invoice creation installs and
-// registers the private destination before the returned invoice can settle.
+// registers the private destination before publication, and raises the final
+// route-hint delta so the hub's incoming HTLC can nest private delivery.
 func TestArkChannelReceiveSettlesDirectly(t *testing.T) {
 	t.Parallel()
 
@@ -250,6 +252,10 @@ func TestArkChannelReceiveSettlesDirectly(t *testing.T) {
 	require.Equal(t, session.PaymentHash, bridge.registerHash)
 	require.Equal(t, uint64(99), bridge.registerSCID)
 	require.True(t, session.channelReceiveEnabled)
+	require.Len(t, creator.lastHintPaths, 1)
+	require.Equal(
+		t, uint32(616), creator.lastHintPaths[0][0].CltvExpiryDelta,
+	)
 
 	result, err := session.Wait(t.Context())
 	require.NoError(t, err)
@@ -260,6 +266,88 @@ func TestArkChannelReceiveSettlesDirectly(t *testing.T) {
 	require.Equal(t, 1, bridge.settleCalls)
 	require.Equal(t, session.Preimage, bridge.settlePreimage)
 	require.Zero(t, bridge.cancelCalls)
+}
+
+// TestArkChannelReceiveInvoiceFailureCancelsRegistration proves a successful
+// channel registration cannot survive failure before invoice publication.
+func TestArkChannelReceiveInvoiceFailureCancelsRegistration(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	createErr := errors.New("invoice publication failed")
+	creator := &testInvoiceCreator{createErr: createErr}
+	serverConn := &testSwapServerConn{hint: &RouteHint{
+		NodeID:    serverPriv.PubKey().SerializeCompressed(),
+		ChannelID: 99, CltvExpiryDelta: 40,
+	}}
+	bridge := &testArkChannelPaymentBridge{}
+	client := NewSwapClient(
+		serverConn, &testDaemonConn{
+			identityKey: clientPriv.PubKey(),
+			operatorKey: operatorPriv.PubKey(),
+		}, nil, creator,
+	)
+	client.SetArkChannelPaymentBridge(bridge)
+
+	_, err = client.StartReceiveViaLightning(
+		t.Context(), btcutil.Amount(42_000),
+	)
+	require.ErrorIs(t, err, createErr)
+	require.NotZero(t, bridge.registerSCID)
+	require.Equal(t, 1, bridge.cancelCalls)
+	require.Equal(t, bridge.registerHash, bridge.cancelHash)
+	require.Equal(
+		t, arkChannelReceiveSetupFailureReason, bridge.cancelReason,
+	)
+}
+
+// TestRaiseFinalRouteHintCLTV proves channel receive raises only final virtual
+// hops, retains an already safer delta, and rejects values BOLT 11 cannot
+// encode.
+func TestRaiseFinalRouteHintCLTV(t *testing.T) {
+	t.Parallel()
+
+	paths := [][]*RouteHint{
+		{
+			{
+				ChannelID:       1,
+				CltvExpiryDelta: 20,
+			},
+			{
+				ChannelID:       99,
+				CltvExpiryDelta: 40,
+			},
+		},
+		{
+			{
+				ChannelID:       99,
+				CltvExpiryDelta: 700,
+			},
+		},
+	}
+	require.NoError(t, raiseFinalRouteHintCLTV(paths, 616))
+	require.Equal(t, uint32(20), paths[0][0].CltvExpiryDelta)
+	require.Equal(t, uint32(616), paths[0][1].CltvExpiryDelta)
+	require.Equal(t, uint32(700), paths[1][0].CltvExpiryDelta)
+
+	require.Error(t, raiseFinalRouteHintCLTV(paths, 0))
+	require.Error(t, raiseFinalRouteHintCLTV(paths, 1<<16))
+
+	invalid := [][]*RouteHint{
+		{
+			{
+				CltvExpiryDelta: 40,
+			},
+		},
+		{},
+	}
+	require.Error(t, raiseFinalRouteHintCLTV(invalid, 616))
+	require.Equal(t, uint32(40), invalid[0][0].CltvExpiryDelta)
 }
 
 // TestArkChannelReceiveSetupFailuresRemainAdvisory verifies optional daemon or
@@ -1412,6 +1500,7 @@ type testArkChannelPaymentBridge struct {
 	registerHash     lntypes.Hash
 	registerAmount   btcutil.Amount
 	registerSCID     uint64
+	registerCLTV     uint32
 	registerErr      error
 	waitChannelID    arkchannel.ID
 	waitErr          error
@@ -1436,13 +1525,18 @@ func (b *testArkChannelPaymentBridge) PrepareIncomingPayment(_ context.Context,
 }
 
 func (b *testArkChannelPaymentBridge) RegisterIncomingPayment(_ context.Context,
-	hash lntypes.Hash, amount btcutil.Amount, scid uint64) error {
+	hash lntypes.Hash, amount btcutil.Amount, scid uint64) (uint32, error) {
 
 	b.registerHash = hash
 	b.registerAmount = amount
 	b.registerSCID = scid
 
-	return b.registerErr
+	delta := b.registerCLTV
+	if delta == 0 {
+		delta = 616
+	}
+
+	return delta, b.registerErr
 }
 
 func (b *testArkChannelPaymentBridge) WaitIncomingPayment(ctx context.Context,

@@ -85,9 +85,9 @@ func (s *arkChannelControllerStub) PrepareIncomingPayment(context.Context,
 
 // RegisterIncomingPayment is not used by close RPC tests.
 func (s *arkChannelControllerStub) RegisterIncomingPayment(context.Context,
-	lntypes.Hash, btcutil.Amount, uint64) error {
+	lntypes.Hash, btcutil.Amount, uint64) (uint32, error) {
 
-	return s.err
+	return 0, s.err
 }
 
 // WaitIncomingPayment is not used by close RPC tests.

@@ -1600,37 +1600,54 @@ func (c *NativeArkChannelController) PrepareIncomingPayment(ctx context.Context,
 }
 
 // RegisterIncomingPayment binds the advertised future SCID to this
-// authenticated endpoint after the private invoice is durable.
+// authenticated endpoint after the private invoice is durable. It returns the
+// minimum CLTV delta required by the private channel payment.
 func (c *NativeArkChannelController) RegisterIncomingPayment(
 	ctx context.Context, hash lntypes.Hash, amount btcutil.Amount,
-	reservedSCID uint64) error {
+	reservedSCID uint64) (uint32, error) {
 
 	if c.party != arkchannel.PartyClient {
-		return fmt.Errorf("incoming payment registration is client " +
-			"only")
+		return 0, fmt.Errorf("incoming payment registration is " +
+			"client only")
 	}
 	if err := c.ensureClientStarted(ctx); err != nil {
-		return err
+		return 0, err
 	}
 
 	capacity, err := c.paymentPeer.RegisterIncomingPayment(
 		ctx, hash, amount, reservedSCID,
 	)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	terms, err := c.newReceiveIntentTerms(
 		hash, reservedSCID, capacity,
 	)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if _, err := c.remote.RegisterReceiveIntent(ctx, terms); err != nil {
-		return err
+		return 0, err
 	}
-	_, err = c.service.RegisterReceiveIntent(ctx, terms)
+	if _, err := c.service.RegisterReceiveIntent(ctx, terms); err != nil {
+		return 0, err
+	}
 
-	return err
+	return c.IncomingPaymentCLTVDeltaBlocks()
+}
+
+// IncomingPaymentCLTVDeltaBlocks returns the private payment lifetime derived
+// from the immutable channel policy advertised by this endpoint. The hub uses
+// the same value to bind public-HTLC admission to the client's invoice hint.
+func (c *NativeArkChannelController) IncomingPaymentCLTVDeltaBlocks() (uint32,
+	error) {
+
+	return lnruntime.ArkChannelPaymentCLTVDelta(
+		arkchannel.VTXOTerms{
+			ChannelDelay: c.peerInfo.ChannelDelay,
+			FunderDelay:  c.peerInfo.FunderDelay,
+		},
+	)
 }
 
 // WaitIncomingPayment waits for the private hold invoice to be accepted and its
@@ -1752,6 +1769,11 @@ func (c *NativeArkChannelController) CancelIncomingPayment(ctx context.Context,
 	}
 	if err := c.ensureClientStarted(ctx); err != nil {
 		return err
+	}
+	if err := c.paymentPeer.CancelIncomingPayment(
+		ctx, hash, reason,
+	); err != nil {
+		return fmt.Errorf("cancel hub incoming payment: %w", err)
 	}
 	if err := c.CancelInvoice(ctx, hash); err != nil {
 		return fmt.Errorf("cancel incoming hold invoice: %w", err)
@@ -2823,10 +2845,11 @@ func (c *NativeArkChannelController) CancelInvoice(ctx context.Context,
 }
 
 // PayHash sends or resumes one same-hash payment over a selected private
-// channel and returns the destination preimage.
+// channel and returns the destination preimage. A new attempt must expire no
+// later than maxExpiryHeight.
 func (c *NativeArkChannelController) PayHash(ctx context.Context,
-	id arkchannel.ID, hash lntypes.Hash, amount btcutil.Amount) (
-	lntypes.Preimage, error) {
+	id arkchannel.ID, hash lntypes.Hash, amount btcutil.Amount,
+	maxExpiryHeight uint32) (lntypes.Preimage, error) {
 
 	if c.party == arkchannel.PartyClient {
 		if err := c.ensureClientStarted(ctx); err != nil {
@@ -2838,7 +2861,9 @@ func (c *NativeArkChannelController) PayHash(ctx context.Context,
 		return lntypes.Preimage{}, err
 	}
 
-	return c.node.PayInvoiceResult(ctx, record, hash, amount)
+	return c.node.PayInvoiceResultBefore(
+		ctx, record, hash, amount, maxExpiryHeight,
+	)
 }
 
 // PeerMessageHandler dispatches authenticated BOLT messages into native lnd.

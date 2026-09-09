@@ -23,9 +23,11 @@ func (b *arkChannelPaymentBridge) PrepareIncomingPayment(ctx context.Context,
 	return b.rpc.PrepareArkChannelIncomingPayment(ctx, preimage, amount)
 }
 
-// RegisterIncomingPayment binds the public future SCID at the hub.
+// RegisterIncomingPayment binds the public future SCID at the hub and returns
+// the minimum CLTV delta in blocks required by its private channel payment.
 func (b *arkChannelPaymentBridge) RegisterIncomingPayment(ctx context.Context,
-	hash lntypes.Hash, amount btcutil.Amount, reservedSCID uint64) error {
+	hash lntypes.Hash, amount btcutil.Amount, reservedSCID uint64) (uint32,
+	error) {
 
 	return b.rpc.RegisterArkChannelIncomingPayment(
 		ctx, hash, amount, reservedSCID,

@@ -767,7 +767,7 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 			quote.AttachedCreditSat)
 	}
 	channelReceiveEnabled := s.prepareArkChannelReceive(
-		ctx, preimage, paymentHash, finalHop.ChannelID,
+		ctx, preimage, paymentHash, finalHop.ChannelID, hintPaths,
 	)
 
 	s.client.log.InfoS(ctx, "Received route hint from swap server",
@@ -847,8 +847,8 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 // prepareArkChannelReceive attempts the optional private channel rail without
 // making route-hint or vHTLC availability depend on the daemon or hub runtime.
 func (s *ReceiveSession) prepareArkChannelReceive(ctx context.Context,
-	preimage lntypes.Preimage, hash lntypes.Hash,
-	reservedSCID uint64) bool {
+	preimage lntypes.Preimage, hash lntypes.Hash, reservedSCID uint64,
+	hintPaths [][]*RouteHint) bool {
 
 	bridge := s.client.channelBridge
 	if bridge == nil {
@@ -859,9 +859,15 @@ func (s *ReceiveSession) prepareArkChannelReceive(ctx context.Context,
 	)
 	err := bridge.PrepareIncomingPayment(setupCtx, preimage, s.amountSat)
 	if err == nil {
-		err = bridge.RegisterIncomingPayment(
+		var minimumCLTVDelta uint32
+		minimumCLTVDelta, err = bridge.RegisterIncomingPayment(
 			setupCtx, hash, s.amountSat, reservedSCID,
 		)
+		if err == nil {
+			err = raiseFinalRouteHintCLTV(
+				hintPaths, minimumCLTVDelta,
+			)
+		}
 	}
 	cancel()
 	if err == nil {
@@ -878,6 +884,41 @@ func (s *ReceiveSession) prepareArkChannelReceive(ctx context.Context,
 	)
 
 	return false
+}
+
+// raiseFinalRouteHintCLTV makes every alternative route reserve enough public
+// lifetime for the private Ark-channel HTLC. Validation completes before any
+// mutation, so a failed optional setup leaves the ordinary vHTLC hints intact.
+// Only the final virtual hop changes; ingress prefixes retain their policy.
+func raiseFinalRouteHintCLTV(hintPaths [][]*RouteHint,
+	minimumDelta uint32) error {
+
+	if minimumDelta == 0 {
+		return fmt.Errorf("private payment CLTV delta is required")
+	}
+	if minimumDelta > uint32(^uint16(0)) {
+		return fmt.Errorf("private payment CLTV delta %d "+
+			"exceeds BOLT 11", minimumDelta)
+	}
+	for i, hintPath := range hintPaths {
+		if len(hintPath) == 0 {
+			return fmt.Errorf("route hint path %d is empty", i)
+		}
+		finalHop := hintPath[len(hintPath)-1]
+		if finalHop == nil {
+			return fmt.Errorf("route hint path %d has no final hop",
+				i)
+		}
+	}
+
+	for _, hintPath := range hintPaths {
+		finalHop := hintPath[len(hintPath)-1]
+		if finalHop.CltvExpiryDelta < minimumDelta {
+			finalHop.CltvExpiryDelta = minimumDelta
+		}
+	}
+
+	return nil
 }
 
 // abortPreparedArkChannelReceive cancels external channel state when invoice

@@ -80,7 +80,7 @@ type ArkChannelPaymentController interface {
 		btcutil.Amount) error
 
 	RegisterIncomingPayment(context.Context, lntypes.Hash, btcutil.Amount,
-		uint64) error
+		uint64) (uint32, error)
 
 	WaitIncomingPayment(context.Context,
 		lntypes.Hash) (arkchannel.ID, error)
@@ -794,13 +794,16 @@ func (r *RPCServer) PrepareArkChannelIncomingPayment(ctx context.Context,
 }
 
 // RegisterArkChannelIncomingPayment binds a public future SCID to the
-// authenticated client endpoint after its private invoice is durable.
+// authenticated client endpoint after its private invoice is durable. It
+// returns the minimum CLTV delta in blocks required by the private channel
+// payment.
 func (r *RPCServer) RegisterArkChannelIncomingPayment(ctx context.Context,
-	hash lntypes.Hash, amount btcutil.Amount, reservedSCID uint64) error {
+	hash lntypes.Hash, amount btcutil.Amount, reservedSCID uint64) (uint32,
+	error) {
 
 	controller, err := r.waitArkChannelController(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	return controller.RegisterIncomingPayment(

@@ -767,8 +767,11 @@ type ArkChannelPaymentBridge interface {
 	PrepareIncomingPayment(context.Context, lntypes.Preimage,
 		btcutil.Amount) error
 
+	// RegisterIncomingPayment returns the minimum CLTV delta in blocks that
+	// the final public route-hint hop must reserve for the private channel
+	// payment.
 	RegisterIncomingPayment(context.Context, lntypes.Hash, btcutil.Amount,
-		uint64) error
+		uint64) (uint32, error)
 
 	WaitIncomingPayment(context.Context,
 		lntypes.Hash) (arkchannel.ID, error)
