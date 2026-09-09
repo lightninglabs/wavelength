@@ -597,7 +597,7 @@ func (p *HubCooperativeCloseProcess) BeginCooperativeClose(ctx context.Context,
 			),
 			HubDeliveryScript: append([]byte(nil), hubScript...),
 		}
-		if _, err := service.ApplyPeerEvent(
+		if _, err := service.RecordPeerEvent(
 			ctx, id, &arkchannel.RequestCooperativeClose{
 				Request: request,
 			},

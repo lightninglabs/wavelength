@@ -144,7 +144,8 @@ type activeFundingFlow struct {
 // cooperativeCloseActionExecutor keeps this composed test focused on the
 // direct-close actions while using the production process and services.
 type cooperativeCloseActionExecutor struct {
-	closer arkchannel.ChannelCooperativeCloser
+	closer       arkchannel.ChannelCooperativeCloser
+	negotiations atomic.Uint32
 }
 
 // BindChannelEventSink connects the local endpoint to its durable service.
@@ -166,6 +167,8 @@ func (e *cooperativeCloseActionExecutor) Execute(ctx context.Context,
 
 	switch action := action.(type) {
 	case *arkchannel.NegotiateCooperativeClose:
+		e.negotiations.Add(1)
+
 		return e.closer.NegotiateCooperativeClose(
 			ctx, id, action.Terms, action.Source, action.Backing,
 			action.Request,
@@ -1293,10 +1296,11 @@ func TestNativeFundingFlowInArkCooperativeClose(t *testing.T) {
 	hubExecutor := &HubCooperativeCloseExecutor{
 		HubCooperativeCloseProcess: hubClose,
 	}
+	hubActionExecutor := &cooperativeCloseActionExecutor{
+		closer: hubExecutor,
+	}
 	hubService, err := arkchannel.NewService(
-		arkchannel.PartyHub, hubFSM, &cooperativeCloseActionExecutor{
-			closer: hubExecutor,
-		},
+		arkchannel.PartyHub, hubFSM, hubActionExecutor,
 	)
 	require.NoError(t, err)
 	hubRPC, err := NewCooperativeClosePeerRPCServer(
@@ -1335,6 +1339,8 @@ func TestNativeFundingFlowInArkCooperativeClose(t *testing.T) {
 	)
 	require.ErrorContains(t, err, "lost begin response")
 	require.Equal(t, 1, clientDelivery.callCount())
+	require.Zero(t, hubActionExecutor.negotiations.Load(),
+		"begin must persist the request without replaying its action")
 
 	_, err = clientClose.RequestCooperativeClose(
 		t.Context(), record.Snapshot.Terms.ID,
