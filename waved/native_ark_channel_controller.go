@@ -2787,30 +2787,32 @@ func (c *NativeArkChannelController) MaterializeAndForceClose(
 			fmt.Errorf("materialized channel backing is missing")
 	}
 	backing := record.Snapshot.Backing.Clone()
-	closeTx, err := c.node.ForceCloseChannel(backing.ChannelPoint)
-	var closeTxID chainhash.Hash
-	if err == nil {
+	closeTx, forceErr := c.node.ForceCloseChannel(backing.ChannelPoint)
+	if forceErr == nil {
 		if closeTx == nil {
 			return arkchannel.Record{}, chainhash.Hash{},
 				chainhash.Hash{}, fmt.Errorf("lnd returned " +
 					"no force-close transaction")
 		}
-		closeTxID = closeTx.TxHash()
-	} else {
-		// Both endpoints watch the unpublished channel point before Ark
-		// materializes it. Either endpoint may therefore win the
-		// commitment publication race. Only lnd's durable close summary
-		// can turn the losing broadcast error into success.
-		var waitErr error
-		closeTxID, waitErr = c.node.WaitForceCloseResult(
-			ctx, backing.ChannelPoint,
-		)
-		if waitErr != nil {
+	}
+
+	// Both endpoints watch the unpublished channel point before Ark
+	// materializes it. Either commitment may therefore win publication,
+	// even when the local ForceCloseChannel call itself succeeds. Return
+	// only the transaction lnd durably classified as the channel close.
+	closeTxID, waitErr := c.node.WaitForceCloseResult(
+		ctx, backing.ChannelPoint,
+	)
+	if waitErr != nil {
+		if forceErr != nil {
 			return arkchannel.Record{}, chainhash.Hash{},
 				chainhash.Hash{}, fmt.Errorf("force close "+
 					"channel: %w; reconcile peer close: %v",
-					err, waitErr)
+					forceErr, waitErr)
 		}
+
+		return arkchannel.Record{}, chainhash.Hash{}, chainhash.Hash{},
+			fmt.Errorf("reconcile force close: %w", waitErr)
 	}
 	record, err = c.service.GetChannel(ctx, id)
 	if err != nil {
