@@ -24,11 +24,19 @@ All `*.pb.go` files are generated — never edit directly; regenerate with
   `MethodSubmitVTXOForfeitSigs` (VTXO forfeit sigs).
 - `TreeFromProto` / `TreeToProto` — Convert between `*VTXOTree` proto and
   `lib/tree.Tree`; `TreeFromProto` takes `WithMaxTreeNodes` to bound the
-  deserialized node count (`DefaultMaxTreeNodes` = 50,000).
+  deserialized node count (`DefaultMaxTreeNodes` = 50,000). Both carry the
+  asset-tree fields: `VTXOTree.asset_ref` plus per-node `signing_tweak`,
+  `asset_amount`, and `asset_commitment_root`, which round-trip through
+  `lib/tree.AssetTreeContext`.
 - `OutpointFromProto`/`ToProto`, `TxOutFromProto`/`ToProto`,
   `PSBTFromBytes`/`ToBytes`, `MsgTxFromBytes`/`ToBytes`,
   `SchnorrSigFromBytes`/`ToBytes` — wire/proto ⇄ Go conversions for the
   round protocol's payload types.
+- Asset-round proto surface: `VTXORequest.asset_ref` / `asset_amount` name the
+  Taproot Asset a client is requesting (mirroring `lib/types.VTXORequest`), and
+  `ClientBatchInfo.asset_leaf_packages` returns the sealed transfer package for
+  each asset VTXO created for that client, keyed by VTXO outpoint. All are
+  empty/absent for Bitcoin-only rounds.
 - `FlowVersion` / `FlowVersionV1` / `ValidateFlowVersion` — the per-round
   choreography version stamped by the operator and validated by the
   client; fails closed on any version this build does not understand.

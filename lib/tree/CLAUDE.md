@@ -10,7 +10,9 @@ descriptors through branch nodes to the batch output.
 
 - `Tree` — Complete VTXO or connector tree: root outpoint, root output, node hierarchy, and traversal helpers. `Verify` checks structure plus value flow; `ValidateValueConservation` exposes the funding check separately for callers that have already bound `BatchOutput` to an authoritative prevout. Built via `BuildVTXOTree` or `BuildConnectorTree`.
 - `Node` — Single tree node representing a transaction in the tree (branch or leaf).
-- `LeafDescriptor` — Describes a single VTXO leaf: amount, owner pubkeys, cosigner keys, CSV delay.
+- `LeafDescriptor` — Describes a single VTXO leaf: amount, owner pubkeys, cosigner keys, CSV delay, and `AssetAmount` (zero for Bitcoin-only leaves).
+- `AssetTreeContext` — Per-tree asset state populated by builders before the tree is shared: asset ref, per-node asset amounts, per-input signing tweaks, per-leaf asset commitment roots, and the sealed transfer package for each node input. `Validate(root)` checks the context against the materialized tree. `Tree.AssetContext` is nil for Bitcoin-only trees.
+- `BatchOutputSpec` — A batch output plus its taproot tree (`Output`, untweaked `InternalKey`, operator `SweepLeaf`), built by `BuildBatchOutputSpec`. `TapTreeBytes` exposes the encoded tree for callers that must compose an asset commitment into the same output.
 - `VTXODescriptor` — Interface for VTXO metadata needed by tree construction (amount, cosigners, owner key).
 - `ConnectorDescriptor` — Describes a connector output for forfeit transaction construction.
 - `Structure` — Intermediate tree layout built by `BuildStructure` before materialization.
@@ -23,7 +25,7 @@ descriptors through branch nodes to the batch output.
 ## Relationships
 
 - **Depends on**: `lib/arkscript` (taproot script construction, policy templates, `SpendInfo`).
-- **Depended on by**: `round` (tree construction/validation), `oor` (tree references), `db` (tree serialization).
+- **Depended on by**: `round` (tree construction/validation), `oor` (tree references), `db` (tree serialization, including the asset context), `tapassets` (asset tree structure and materialization), `rpc/roundpb` (`TreeFromProto`/`TreeToProto`).
 
 ## Invariants
 
@@ -42,6 +44,12 @@ descriptors through branch nodes to the batch output.
   all outputs and recurses only into retained children. The traversal rejects
   cycles and nodes shared by multiple parents. `Node.Verify` checks only
   parent-child outpoint topology and is not a trust-boundary validator.
+- Asset trees carry a per-node `SigningTweak` in `AssetTreeContext` instead of
+  deriving the branch tweak from `SweepTapscriptRoot` alone: the tweak must also
+  commit to the node's Taproot Asset commitment root. Bitcoin-only trees leave
+  the context nil and keep using `SweepTapscriptRoot`. A tree that has an
+  `AssetContext` must pass `AssetContext.Validate(Root)` — asset amounts must
+  flow through the node hierarchy the same way carrier values do.
 - **Cache-aliasing invariant**: a `*Tree` is effectively immutable once published from
   a builder or resolver. Multiple downstream consumers may share the same `*Tree`
   pointer through caches and ancestry-fragment slices. Silently mutating a shared

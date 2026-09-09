@@ -48,3 +48,7 @@ Proto source: `arkrpc/ark.proto`, `arkrpc/indexer.proto`.
   These mirror `roundpb.TreeFromProto`; keep the two decoders in step.
 - Child iteration during flattening is sorted by output index for
   deterministic serialization.
+- `GetInfoResponse.vtxo_confirmations` is the depth clients must wait before
+  spending VTXOs a round created, and is deliberately separate from
+  `min_confirmations`, which protects the on-chain boarding inputs a new round
+  consumes. Conflating the two either strands fresh VTXOs or admits them early.

@@ -45,6 +45,20 @@ helper file (`errors.go`) for structured wallet-lifecycle errors.
 - `errors.go` is hand-written and not regenerated; callers must match wallet
   lifecycle errors via `IsWalletNotReadyError`/`WalletNotReadyState`, never by
   parsing the error message string.
+- `ListVTXOsRequest` has two status selectors and they are not
+  interchangeable at the default. `status_filter` (singular, legacy) is
+  equivalent to one entry in the repeated `statuses` field. When **both** are
+  unset the response is the *inventory* set — every VTXO except
+  `VTXO_STATUS_FORFEITED` and `VTXO_STATUS_SPENT` — not "all statuses" as the
+  older comment claimed. `VTXO_STATUS_PENDING_ROUND` entries are returned only
+  when explicitly listed. Callers that want a spendable-balance view must
+  filter to live entries themselves; the default deliberately includes
+  non-spendable inventory so a VTXO never silently vanishes from a listing.
+- `ServerInfo.vtxo_confirmations` is the depth at which new round VTXOs become
+  spendable off-chain, and is **independent of** `min_confirmations`, which
+  governs the on-chain boarding inputs a new round consumes. Zero means the
+  operator does not advertise the split field; consumers fall back to
+  `min_confirmations` (see `lib/types.OperatorTerms.VTXOTargetConfirmations`).
 - `NewReceiveScriptRequest.idempotency_key` is an API-level contract, not just
   an implementation detail: the key namespace is **global to one daemon**, so
   callers sharing a daemon must prefix keys with an application or tenant

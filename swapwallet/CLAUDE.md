@@ -169,6 +169,30 @@ default builds avoid the swap executor's dependency graph.
   calls `listLiveVTXOsForLeave` for sweep-all enumeration.
 - `SendResponse.actual_amount_sat` carries the true outflow for sweep-all
   sends and SHOULD be echoed back before the send is treated as confirmed.
+- **The onchain send preview quotes every selected VTXO, not the destination
+  amount.** `quoteOnchainInputs` calls `EstimateFee` once per distinct
+  (amount, remaining-blocks) pair across the selected inputs and sums the
+  results, because each forfeit pays its own fixed operator components.
+  Quoting the destination amount once undercounts those charges and prices the
+  wrong principal when a bounded send returns change. Remaining lifetime comes
+  from `batch_expiry` minus the `GetInfo` block height, clamped to at least one
+  block. Quotes assume batch size one; the binding fee is set from actual round
+  occupancy when the round seals.
+- **A partial remote sum must never be reported as COMPLETE.** Any missing
+  timing context (zero block height, absent `batch_expiry`), unreachable
+  operator, or overflowing total discards the *entire* remote estimate and
+  falls back to `localOnchainFeeFloor` as `LOCAL_ONLY`. The one case that does
+  not fall back is an operator quote returning `below_dust_warning`: that is an
+  input the operator has already priced as uneconomic, so the preview is
+  rejected with `FailedPrecondition` rather than being papered over with a
+  cheaper-looking local floor.
+- `fetchOnchainTerms` carries the chain height alongside the operator policy
+  from one `GetInfo` call; a nil `ServerInfo` yields zero policy values (via the
+  nil-safe generated getters) rather than aborting, so the preview still
+  renders.
+- `stampLateTransition` records observation time on activity transitions that
+  arrive after the stored row's `UpdatedAtUnix`, so a late projection is
+  distinguishable from an in-order one.
 - **Cooperative-leave EXIT fee**: at completion
   (`applyCooperativeLeaveForfeited`), the forfeited source VTXO's
   settlement carries the forfeit round's operator fee (from the daemon

@@ -25,7 +25,7 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
   (`true` for directed sends) or parks in `PendingRoundAssembly` for
   batching (`false` for refresh/leave flows).
 - `TriggerBoardMsg` — Carries VTXO amounts for boarding registration to round actor.
-- `SelectedVTXO` — Describes a VTXO selected for spend (outpoint, amount, pkscript).
+- `SelectedVTXO` — Describes a VTXO selected for spend (outpoint, amount, pkscript, `ReserveEpoch`).
 - `RoundActorServiceKey()` / `VTXOManagerServiceKey()` / `VTXOActorServiceKey(outpoint wire.OutPoint)` — Service key constructors for actor discovery. `VTXOActorServiceKey` encodes the target outpoint into the key so each per-VTXO actor gets a unique, deterministic key.
 
 ## Relationships
@@ -38,6 +38,15 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
 - All cross-boundary actor messages must implement the appropriate marker interface (`RoundReceivable`, `VTXOManagerMsg`, etc.) for type-safe actor routing.
 - Service key names are constants (`RoundActorServiceKeyName`, `VTXOManagerServiceKeyName`) shared across the codebase for consistent actor discovery.
 - `SelectedVTXO` intentionally duplicates minimal VTXO info to avoid `wallet` importing `vtxo.Descriptor`.
+- **Spend releases are epoch-fenced.** The manager stamps a monotonic
+  `ReserveEpoch` on each spend reservation and echoes it in `SelectedVTXO`. The
+  owning session carries that epoch into its durable state and names it in
+  `ReleaseSpendRequest.ReserveEpochs`, so `vtxo.Manager.handleReleaseSpend`
+  refuses a release whose epoch no longer matches. Without the fence, a
+  redelivered release from a rolled-back session returns a coin that a newer
+  session has already re-reserved and is actively spending. An absent entry (or
+  a nil map) releases unconditionally, which is what callers holding no epoch
+  — a manual unlock, a forfeit-input reservation — need.
 
 ## Deep Docs
 
