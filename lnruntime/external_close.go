@@ -44,19 +44,6 @@ func (r *Runtime) QuiesceChannel(ctx context.Context,
 		link.DisableAdds(htlcswitch.Incoming)
 		link.DisableAdds(htlcswitch.Outgoing)
 
-		flushed := make(chan struct{}, 1)
-		link.OnFlushedOnce(func() {
-			flushed <- struct{}{}
-		})
-		select {
-		case <-ctx.Done():
-			r.resumeChannelLink(channelPoint)
-
-			return CleanChannelState{}, ctx.Err()
-
-		case <-flushed:
-		}
-
 	case errors.Is(err, htlcswitch.ErrChannelLinkNotFound):
 		// A restart may replay the close before links are restored.
 		// With no live link, the persisted channel cannot accept new

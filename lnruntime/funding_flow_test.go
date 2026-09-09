@@ -980,6 +980,40 @@ func assertCleanChannelAllocation(t *testing.T, runtime *Runtime,
 	require.Equal(t, live.localFunder, clean.LocalInitiator)
 }
 
+// TestQuiesceChannelWithStoppedLink proves cooperative close does not depend
+// on a link callback after the link has stopped servicing callback requests.
+func TestQuiesceChannelWithStoppedLink(t *testing.T) {
+	t.Parallel()
+
+	hub := newFundingFlowNode(t, arkchannel.PartyHub)
+	client := newFundingFlowNode(t, arkchannel.PartyClient)
+	connectFundingFlowNodes(t, hub, client)
+	require.NoError(t, hub.runtime.Start())
+	require.NoError(t, client.runtime.Start())
+	t.Cleanup(func() {
+		require.NoError(t, hub.runtime.Stop())
+		require.NoError(t, client.runtime.Stop())
+	})
+
+	record := fundingIntentRecord(
+		t, hub, client, lndfunding.PendingChanID{7, 3, 1, 8},
+	)
+	flow := activateFundingFlowChannel(t, hub, client, record)
+	link, err := hub.runtime.GetLink(flow.hubChannel.ShortChanID())
+	require.NoError(t, err)
+	stoppable, ok := link.(interface{ Stop() })
+	require.True(t, ok)
+	stoppable.Stop()
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	clean, err := hub.runtime.QuiesceChannel(
+		ctx, flow.hubChannel.FundingOutpoint,
+	)
+	require.NoError(t, err)
+	require.Equal(t, flow.hubChannel.Capacity, clean.Capacity)
+}
+
 // TestNativeFundingFlowRestoresQuiescedLinks proves a restart in any durable
 // cooperative-close phase installs both links with new HTLC adds disabled.
 func TestNativeFundingFlowRestoresQuiescedLinks(t *testing.T) {
