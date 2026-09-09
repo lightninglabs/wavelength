@@ -108,6 +108,8 @@ service ArkChannelFundingPeerService {
         returns (CancelOutgoingPaymentResponse);
     rpc RegisterIncomingPayment (RegisterIncomingPaymentRequest)
         returns (RegisterIncomingPaymentResponse);
+    rpc CancelIncomingPayment (CancelIncomingPaymentRequest)
+        returns (CancelIncomingPaymentResponse);
 }
 
 // FundingWireEnvelope carries the small reverse funding protocol over the
@@ -394,6 +396,15 @@ message RegisterIncomingPaymentRequest {
 message RegisterIncomingPaymentResponse {
     bool registered = 1;
     int64 channel_capacity_sat = 2;
+}
+
+message CancelIncomingPaymentRequest {
+    bytes payment_hash = 1;
+    string reason = 2;
+}
+
+message CancelIncomingPaymentResponse {
+    bool cancelled = 1;
 }
 
 message ChannelTerms {
