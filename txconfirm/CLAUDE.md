@@ -135,6 +135,14 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   fee-input retry paths apply that transition before attempting another
   broadcast. Confirmation or other forward progress clears the stale reason;
   only a transaction still in `Broadcasting` may be failed by the retry.
+- **A chain confirmation supersedes a latched pending failure, even if
+  persisting the confirmation fails.** `handleConfirmationObserved` clears
+  `pendingFailureReason` *before* advancing the FSM, not after. Clearing it
+  only on a successful transition left the reason latched when the write
+  failed, so the next block could move an already-mined transaction into
+  `Failed` while its FSM still reported `Broadcasting`. The chain is the
+  authority here: an earlier ambiguous broadcast result cannot outrank a
+  transaction that is demonstrably in a block.
 - **The per-txid FSM outlives the creating Ask.** `newTrackedTx` starts the
   state machine without the caller's cancellation or database transaction.
   Explicit setup cleanup, terminal eviction, cancellation, and actor shutdown

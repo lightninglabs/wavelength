@@ -26,6 +26,7 @@ package may import from a higher layer.
 | [`lib/tx/oor`](lib/tx/oor/) | OOR submit/finalize package builders and validators |
 | [`lib/tx/psbtutil`](lib/tx/psbtutil/) | PSBT encoding, decoding, and signature attachment helpers |
 | [`lib/recovery`](lib/recovery/) | Immutable recovery proof graph, session state machine, TLV codec for unilateral exit |
+| [`tapassets`](tapassets/) | Adapts tap-sdk custom-anchor asset transitions to Ark: caller-funded asset batch outputs and asset-aware VTXO tree materialization, journaled so a restart replays the sealed package instead of re-committing |
 | [`unrollplan`](unrollplan/) | Pure dependency-resolution planner driving unilateral-exit broadcast/sweep ordering |
 | [`vhtlcrecovery`](vhtlcrecovery/) | Durable control-plane types for vHTLC on-chain recovery jobs (action, state, script parameters, swap linkage) |
 | [`credit`](credit/) | Client-side credit subsystem: supervisor/per-operation-actor pair driving fault-tolerant sub-floor pay, credit-receive, and redeem flows against the authoritative server ledger |
@@ -213,6 +214,9 @@ corresponding state transition being durable.
 | `Backend` | proofkeys | Wallet key derivation and proof signing interface |
 | `Node` | lib/arkscript | Sealed AST node interface for tapscript compilation |
 | `VTXOPolicy` | lib/arkscript | Compiled VTXO taproot policy with collab/exit spend paths |
+| `AssetTreeContext` | lib/tree | Per-tree asset sidecar (node amounts, leaf commitment roots, signing tweaks, sealed packages); nil for Bitcoin-only trees |
+| `AssetVTXOVerifier` | round | Verifies an asset VTXO's identity, amount, composed scripts, and sealed package before the client signs its tree path |
+| `Store` | tapassets | Durable journal for sealed tap-sdk transfer packages, so a restart replays a commit instead of repeating it |
 
 ## State Machines
 

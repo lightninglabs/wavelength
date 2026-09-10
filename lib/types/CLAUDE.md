@@ -15,7 +15,12 @@ server during round participation. These types are used across `round`, `vtxo`,
 - `VTXORequest` — Describes a new VTXO to create in a round (amount, policy
   template, owner key, signing key). `IsChange bool` (TLV record 4) marks the
   output that absorbs the server-computed fee residual under the #270
-  seal-time handshake; serialized into `JoinRoundAuth`.
+  seal-time handshake; serialized into `JoinRoundAuth`. `AssetRef string`
+  (TLV record 6) and `AssetAmount uint64` (TLV record 7) identify the Taproot
+  Asset carried by the output and are likewise bound into the join
+  authorization. `ValidateAssetFields()` enforces the asset-request shape:
+  either both asset fields are unset, or both are set and the request is
+  `FixedAmount` and not `IsChange`.
 - `ForfeitRequest` — Describes a VTXO being forfeited: `VTXOOutpoint`,
   local-only `Amount`, plus optional `AuthSpend *arkscript.SpendPath`
   (proof-of-control path for custom-script join-auth construction) and
@@ -36,6 +41,10 @@ server during round participation. These types are used across `round`, `vtxo`,
   cap on the cumulative on-chain vbytes a recipient must publish to claim a
   VTXO produced by an OOR submit unilaterally. Zero means no cap enforced
   server-side (clients fall back to a conservative local default).
+  `VTXOConfirmations uint32` is the confirmation depth at which VTXOs created
+  by a round become available for off-chain spending, read through
+  `VTXOTargetConfirmations()`; it is deliberately separate from
+  `MinConfirmations`, which stays scoped to boarding-input maturity.
 - `Ancestry` — One rooted commitment-tree fragment contributing ancestry to a VTXO (defined in `lib/types/ancestry.go`). Fields: `TreePath *tree.Tree` (extracted root-to-leaf path), `CommitmentTxID chainhash.Hash`, `InputIndices []uint32` (Ark tx input indices this fragment serves; empty for round-direct VTXOs), `TreeDepth uint32`. Round-direct VTXOs carry a single-element slice; multi-input OOR VTXOs carry one entry per distinct (commitment tx, tree path) pair — entries may share a commitment txid when inputs sat at different leaves of one commitment tree.
 - `MaxAncestryTreeDepth([]Ancestry) int` — Returns the largest `TreeDepth` across a slice; drives worst-case unilateral-exit timing calculations.
 - `ClientBatchInfo` — Client's view of batch output info after tree construction.
@@ -63,6 +72,19 @@ server during round participation. These types are used across `round`, `vtxo`,
 - `VTXOOwnerKeyFamily` (44) is the HD key family used for deriving VTXO owner signing keys.
 - `VTXOSigningKeyFamily` (45) is the HD key family used for per-round VTXO MuSig2 signing keys.
 - `JoinRoundAuthMessage` produces a deterministic, versioned TLV byte encoding that the client signs (and the server verifies) via BIP-322.
+- **Asset identity and amount are authenticated, not advisory.** The VTXO
+  entry TLV carries `AssetRef` (6) and `AssetAmount` (7), so an asset output's
+  identity and quantity are covered by the BIP-322 join signature and the
+  server cannot substitute either. TLV record types are append-only: a new
+  field takes the next unused number so an older encoder's stream stays
+  canonical.
+- **An asset VTXO amount is always fixed.** `ValidateAssetFields` refuses an
+  asset request that is not `FixedAmount` or that is marked `IsChange`: the
+  seal-time residual must land on a Bitcoin-only output, since an asset output
+  whose carrier value moved would no longer match its committed asset amount.
+- `OperatorTerms.VTXOTargetConfirmations()` falls back to `MinConfirmations`
+  when `VTXOConfirmations` is zero, which is what keeps persisted terms and
+  older servers on the legacy coupled policy.
 
 ## Deep Docs
 

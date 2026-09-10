@@ -65,7 +65,7 @@ who want direct access.
 
 | Command | RPC | Description |
 |---------|-----|-------------|
-| `ark vtxos {list,refresh,leave}` | `ListVTXOs` / `RefreshVTXOs` / `LeaveVTXOs` | VTXO inventory and lifecycle |
+| `ark vtxos {list,refresh,leave}` | `ListVTXOs` / `RefreshVTXOs` / `LeaveVTXOs` | VTXO inventory and lifecycle; `list --status` is repeatable and `--all` expands to every status. Without `--status`, the listing covers `vtxo.InventoryStatuses()` — every VTXO except forfeited and spent ones — newest first |
 | `ark rounds {get,join,list,watch}` | `GetRound` / (join) / `ListRounds` / `WatchRounds` | Round FSM state; `join` commits queued intents into the next round (`vtxos refresh`/`leave` call it automatically); `watch --max-events`/`--for` bounds streams for machines |
 | `ark oor {receive,get,list}` | `NewReceiveScript` / `GetOORSession` / `ListOORSessions` | Receive-script allocation and OOR session inspection; `receive --idempotency-key` replays the allocation already made for that key |
 | `ark board` | `Board` | Trigger boarding with confirmed UTXOs |
@@ -159,6 +159,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   interactive prompt.
 - Global `--no-input` and `CI=true` disable interactive prompts without
   suppressing command output. Explicit password sources still work.
+- **`ark vtxos list --all` withholds checkpoint PSBTs unless asked.** The OOR
+  checkpoint PSBTs (`oor_final_checkpoint_psbts`) are large and are only
+  included when `--fields` names them, so widening the status selection to
+  every status does not silently turn the listing into a bulk PSBT dump. The
+  CLI's `validStatuses` list, the MCP tool, and the schema registry must all
+  expose the same selection as the RPC enum; a status missing from one of
+  them is unreachable rather than merely undocumented.
 - JSON output (`stdout`) and diagnostic output (`stderr`) are kept on
   separate streams so shell pipelines can consume the JSON body while
   a human reading the terminal sees informative warnings.

@@ -86,6 +86,13 @@ when the local wallet owns the receive script.
 - `VTXOEvent` — Inbound events (BlockEpochEvent, ForfeitRequest, ForfeitConfirmed, SpendReserveEvent, SpendCompletedEvent, etc.).
 - `VTXOOutMsg` — Outbound messages (ForfeitRequest, ExpiringNotify, StatusUpdate, Terminated).
 - `FilterOptions` / `FilterDescriptors` — VTXO filtering by expiry status, spend state, etc.
+- `InventoryStatuses()` — The statuses an unfiltered listing covers: every
+  status except `Forfeited` and `Spent`, whose value has already moved to
+  another output. This is the default status set behind the `ListVTXOs` RPC
+  and the `ark vtxos list` CLI, and it is deliberately wider than the
+  spendable set (`SumSpendableBalance`) or the recovery set
+  (`ListRecoverableVTXOs`) — a caller listing inventory wants to see failed,
+  expired, and exiting coins, not just the ones that can fund a spend.
 - `GetActiveVTXOCountRequest` / `GetActiveVTXOCountResponse` — Ask-message for querying active VTXO count from the manager.
 - `ManagerMsg` / `ManagerResp` — Type aliases for `actormsg.VTXOManagerMsg` / `actormsg.VTXOManagerResp` (admission types live in `lib/actormsg` to avoid import cycles).
 - `IncomingVTXOHandler` — Actor that consumes `arkrpc.IncomingVTXOEvent` push notifications, looks up the receive script in the owned-script store, builds a `Descriptor` (with tapscript derived via `lib/arkscript`), persists it via `VTXOSaver`, and tells the manager via `VTXOsMaterializedNotification`. Only `VTXO_EVENT_TYPE_CREATED` events are acted on; unknown event kinds and unowned scripts are silently ignored. Inputs are validated for outpoint shape, pkScript presence, and `int64`/`MaxSatoshi` value bounds before any DB write.

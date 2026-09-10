@@ -96,6 +96,14 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   committed). `groupAncestryRowsWithCache` /
   `loadAncestryPathsWithCache` accept the cache to avoid
   re-deserializing the same fragment across `ListLiveVTXOs` batches.
+- `ListVTXOsByStatusesLight` — descriptors in any of the given statuses,
+  newest first, with the ancestry join skipped. It runs one indexed
+  `ListVTXOsByStatus` per status inside a single read transaction (a
+  parameterised `IN` list is not portable across the SQLite/Postgres dialect
+  subset), deduplicates repeated statuses, and sorts the union by creation
+  time. Backs the `ListVTXOs` RPC, which passes `vtxo.InventoryStatuses()`
+  when the caller supplies no filter. It replaced the single-status
+  `ListLiveVTXOsLight`, which had no remaining callers.
 - `BackfillVTXOCommitmentHeights` — atomically fills legacy zero heights from
   indexed ancestry. Fragments are matched by `AncestryFragmentKey` (commitment
   transaction plus serialized tree path), then a height-only update changes
@@ -112,7 +120,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 18` — current schema version.
+- `LatestMigrationVersion = 19` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -170,6 +178,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
 
 - **Never write raw SQL in Go** — add queries to `db/queries/`,
   regenerate with `make sqlc`.
+- **A legacy `spent=true` row is only ever reported as `Spent`.**
+  `ListVTXOsByStatusesLight` drops any row whose `spent` flag is set but whose
+  status column says otherwise. Older rows carry both the boolean and the
+  status enum, and a multi-status listing that trusted the enum alone would
+  surface an already-consumed coin under `Live` or `Spending`.
 - Transaction atomicity: entire checkpoint succeeds or none.
 - Boarding intents persist from registration until round completion
   or failure.

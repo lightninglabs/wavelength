@@ -13,8 +13,10 @@ descriptors through branch nodes to the batch output.
 - `LeafDescriptor` — Describes a single VTXO leaf: amount, owner pubkeys, cosigner keys, CSV delay.
 - `VTXODescriptor` — Interface for VTXO metadata needed by tree construction (amount, cosigners, owner key).
 - `ConnectorDescriptor` — Describes a connector output for forfeit transaction construction.
-- `Structure` — Intermediate tree layout built by `BuildStructure` before materialization.
+- `Structure` — Intermediate tree layout built by `BuildStructure` before materialization. Carries an `AssetContext` when the leaves declare asset amounts.
 - `StructureConfig` — Configuration for tree building (radix, partition weight function).
+- `AssetTreeContext` — Side-table of per-tree asset state, keyed by node input outpoint: subtree asset amounts (`NodeAssetAmount`), leaf commitment roots (`LeafAssetRoot`), per-node taproot tweaks (`SigningTweak`), sealed tap-sdk transfer packages (`SealedPackage`), and the tree's `AssetRef`. `Validate(root)` checks the context completely describes the tree; `IsEmpty` reports a Bitcoin-only tree. Populated by `tapassets` during materialization and hung off `Tree.AssetContext` (nil for Bitcoin-only trees).
+- `BatchOutputSpec` / `BuildBatchOutputSpec` — Batch output plus the taproot material behind it (`Output`, untweaked `InternalKey`, operator `SweepLeaf`, and `TapTreeBytes()`). Exposed so asset callers can compose the batch output script themselves instead of only receiving the finished `*wire.TxOut` that `BuildBatchOutput` returns.
 - `SignerSession` — MuSig2 signing session for tree transactions, wrapping `input.MuSig2Signer`.
 - `Materializer` / `BTCMaterializer` — Interface and implementation for materializing tree nodes into actual Bitcoin transactions.
 - `TreeAssembler` — Two-pass builder (`BuildStructure` then `Materialize`) driven by `TreeConfig`.
@@ -23,7 +25,7 @@ descriptors through branch nodes to the batch output.
 ## Relationships
 
 - **Depends on**: `lib/arkscript` (taproot script construction, policy templates, `SpendInfo`).
-- **Depended on by**: `round` (tree construction/validation), `oor` (tree references), `db` (tree serialization).
+- **Depended on by**: `round` (tree construction/validation), `oor` (tree references), `db` (tree serialization and `AssetTreeContext` persistence), `tapassets` (implements `Materializer` for asset trees and populates `AssetTreeContext`).
 
 ## Invariants
 
@@ -42,6 +44,17 @@ descriptors through branch nodes to the batch output.
   all outputs and recurses only into retained children. The traversal rejects
   cycles and nodes shared by multiple parents. `Node.Verify` checks only
   parent-child outpoint topology and is not a trust-boundary validator.
+- **An extracted path gets its own asset context.**
+  `ExtractPathForCoSigners` and `ExtractPathForIndices` clone the
+  `AssetContext` down to the retained root rather than aliasing the source
+  tree's. The extracted path is where a client attaches its own validated
+  sealed package, and sharing the context would let that write mutate the
+  operator-supplied tree every other reader still holds.
+- **An asset tree's context must be complete before it is shared.**
+  `AssetTreeContext.Validate(root)` is the check that every node has its
+  amount, tweak, and package, and every leaf its commitment root. Builders
+  populate the context during materialization; a tree published with a partial
+  context cannot be signed.
 - **Cache-aliasing invariant**: a `*Tree` is effectively immutable once published from
   a builder or resolver. Multiple downstream consumers may share the same `*Tree`
   pointer through caches and ancestry-fragment slices. Silently mutating a shared

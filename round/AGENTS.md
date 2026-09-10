@@ -23,6 +23,8 @@ state transitions and validation rules live under [Invariants](#invariants).
   `RecoveryInitiatedState`.
 - `ClientEvent` — sealed inbound event interface. Notable members:
   `JoinRoundQuoteReceived` (carries reseal `SealPass`), `QuoteAccepted`,
+  `CommitmentTxBuilt` (carries `AssetLeafPackages map[wire.OutPoint][]byte`,
+  the sealed tap-sdk transfer package per asset VTXO),
   `QuoteRejected`, `ForfeitCollectionTimedOut`, `ForfeitSignatureResponse`,
   `ConnectorLeafInfo`, `IntentPackage` (atomic delivery of all intent
   types).
@@ -63,7 +65,16 @@ state transitions and validation rules live under [Invariants](#invariants).
   store in production; `nil` in tests treats every VTXO as owned.
 - `OwnedScriptRegistrar` — `RegisterOwnedScript(ctx, pkScript, ownerKey)`.
   Called at intent-build time for change/refresh outputs and inside
-  `handleRegisterIntent` for entries with a non-zero `KeyLocator`.
+  `handleRegisterIntent` for entries with a non-zero `KeyLocator`. Asset VTXOs
+  are the exception: their composed output script is not known until the tree
+  path validates, so they are registered afterwards. Also carried on
+  `ClientEnvironment` for that path.
+- `AssetVTXOVerifier` —
+  `VerifyAssetVTXO(ctx, assetRef, assetAmount, commitmentTx, clientTree, sealedPackage) error`.
+  Verifies the asset transition behind a VTXO — identity, amount, composed
+  scripts, sealed package, and commitment roots — before the client signs its
+  tree path. Set on `ClientEnvironment`; only required for rounds that contain
+  asset requests.
 - `VTXOStore`, `RoundStore` — VTXO and round FSM persistence.
   `RoundStore.FailRound(ctx, roundID)` is the terminal-failure
   counterpart to `FinalizeRound`: it retires a checkpointed round's row
@@ -82,6 +93,10 @@ state transitions and validation rules live under [Invariants](#invariants).
 - `GetClientStateRequest/Response`, `CancelRoundRequest/Response`,
   `RegisterVTXORequestsRequest/Response`, `RegisterIntentRequest` —
   introspection and command messages.
+  `RegisterVTXORequestsRequest.Assets []AssetVTXORequest` enqueues fixed asset
+  outputs alongside the plain `Amounts`.
+- `AssetVTXORequest` — one requested asset output: `AmountSat` (the Bitcoin
+  carrier value), `AssetRef`, `AssetAmount`.
 - `RefreshVTXORequest` — per-VTXO refresh. Under the seal-time fee
   handshake (#270) `OperatorFee` is **advisory only**: the FSM does NOT
   subtract it from `Amount`. The actor's `designateChangeMarker` stamps
@@ -142,7 +157,8 @@ state transitions and validation rules live under [Invariants](#invariants).
   (mailbox marker interfaces), `lib/tree`, `lib/types`, `lib/arkscript`,
   `lib/bip322` (join-round BIP-322 auth signing), `rpc/roundpb` (wire proto
   types via `FromProto`), `wallet`, `ledger` (`Sink` + `VTXOReceivedMsg` /
-  `Source*` constants), `timeout`, `google/uuid`.
+  `Source*` constants), `timeout`, `google/uuid`,
+  `lightninglabs/tap-sdk` (canonical `AssetRef` parsing for asset requests).
 - **Depended on by**: `vtxo`, `db`, `waved`.
 - **Sends → `serverconn`**: `JoinRoundRequest`,
   `JoinRoundAcceptOutbox`, `JoinRoundRejectOutbox`,
@@ -280,6 +296,25 @@ state transitions and validation rules live under [Invariants](#invariants).
 - Each client sub-tree in the commitment tree must contain exactly one
   non-anchor leaf; `buildOwnedClientVTXOs` fails the transition
   otherwise.
+- **Asset VTXOs are verified before they are signed, and registered after.**
+  `CommitmentTxReceivedState` carries `AssetLeafPackages` keyed by VTXO
+  outpoint; each asset leaf is checked through `AssetVTXOVerifier` — asset
+  identity and amount, the composed output scripts, the sealed transfer
+  package, and the commitment roots — against the real commitment transaction
+  and the extracted client tree, before nonces or partial signatures leave the
+  client. Only then is the composed leaf script handed to
+  `OwnedScriptRegistrar` and persisted. `FromProto` rejects malformed,
+  non-canonical, or empty package entries before validation starts, and
+  `validateAssetRequest` requires `AssetRef` in canonical `tapsdk.AssetRef`
+  encoding.
+- **Commitment confirmation watches use the VTXO activation depth.** The
+  commitment watch registers at `OperatorTerms.VTXOTargetConfirmations()`, not
+  `MinConfirmations`: the operator's boarding-input maturity policy and the
+  depth at which new round VTXOs become spendable are separate horizons, so
+  one-confirmation off-chain activity does not require weakening input
+  maturity. The helper falls back to `MinConfirmations` when the operator
+  advertises no separate depth, so persisted and older terms keep their
+  previous behavior.
 - **VTXO-tree value conservation is checked at commitment admission.**
   `validateVTXOTreeBinding` first byte-binds the server tree's `BatchOutput`
   to the real commitment output, then verifies that the root spends its

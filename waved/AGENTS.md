@@ -23,7 +23,14 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   validate input locally then `Ask` the relevant actor; `GetRound` and
   `ListVTXOs` merge live actor state with persisted SQL rows, while
   `GetFeeHistory` and `ListTransactions` are pure SQL reads
-  (`rpc_fees.go`).
+  (`rpc_fees.go`). `ListVTXOs` answers newest-first over the statuses the
+  request selects — `req.Statuses` (a set) unioned with the legacy scalar
+  `req.StatusFilter` — falling back to `vtxo.InventoryStatuses()` when the
+  caller selects none. `VTXO_STATUS_PENDING_ROUND` is not a stored status:
+  `requestedVTXOStatuses` splits it out and `listPendingRoundVTXOs` projects
+  those entries from the live round actor, so pending-round projections appear
+  only when explicitly requested. `VTXO_STATUS_SPENDING` maps to the domain
+  `Spending` status.
 - `Config` — daemon configuration: wallet backend selection, mailbox/chain
   backend wiring, `OORConfig`/`OORLimitsConfig` (receive safety caps),
   `UnrollConfig` (unilateral-exit fee-bump cadence and cap), and
@@ -315,6 +322,18 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   so the bound survives restarts.
 - `operatorTermsFromResponse` and daemon `GetInfo` must preserve
   `FreeRefreshWindowBlocks` end to end.
+- **Boarding-input maturity and VTXO activation are two separate depths.**
+  `operatorTermsFromResponse` carries the operator's optional
+  `VTXOConfirmations` alongside `MinConfirmations`, and daemon `GetInfo`
+  exposes both so a caller can explain the different safety and availability
+  horizons. An older operator that omits the field leaves it zero, and
+  `OperatorTerms.VTXOTargetConfirmations()` then falls back to
+  `MinConfirmations` — do not collapse the two fields back together.
+- **An unreadable OOR package costs one listing entry its PSBTs, not the
+  call.** `listStoredVTXOs` logs a failed checkpoint-PSBT lookup at `Debug`
+  and returns the entry without them. It repeats on every poll, so a higher
+  level would be pure noise, and failing the whole `ListVTXOs` response would
+  hide every healthy VTXO behind one bad package.
 - `RPCServer.OperatorVTXOFloor` refreshes authenticated operator terms for
   each credit materialization decision and bounds that refresh with
   `operatorTermsRefreshTimeout` (30 s). Its callers use daemon/actor lifetime

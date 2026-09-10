@@ -12,6 +12,10 @@ message interfaces, and core Ark types.
 - `Tree` — Root node plus batch outpoint/output (encapsulates VTXO Merkle tree).
 - `Node` — Individual tree node with children and outputs.
 - `LeafDescriptor` — VTXO or connector output to include in tree construction.
+- `AssetTreeContext` — Per-tree asset state (node amounts, leaf commitment
+  roots, signing tweaks, sealed packages); nil for Bitcoin-only trees.
+- `BatchOutputSpec` — Batch output plus its taproot material, for callers that
+  compose the output script themselves.
 
 ### lib/arkscript
 - `Node` — Sealed AST interface for tapscript spending conditions (Multisig, CSV, Condition, etc.).
@@ -31,8 +35,10 @@ message interfaces, and core Ark types.
 
 ### lib/types
 - `OperatorTerms` — Server-published terms (key, delays, fee rate, dust limit).
+  `VTXOTargetConfirmations()` reads the separate VTXO activation depth.
 - `JoinRoundRequest` — Primary round participation message.
 - `VTXORequest`, `BoardingRequest`, `LeaveRequest`, `ForfeitRequest` — Sub-requests.
+  `VTXORequest.AssetRef`/`AssetAmount` bind asset identity into join auth.
 
 ### lib/bip322
 - `Intent` — Application payload with ValidFrom/ValidUntil block height range.

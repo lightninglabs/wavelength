@@ -182,6 +182,35 @@ default builds avoid the swap executor's dependency graph.
   ledger's confirmed onchain_fee_paid exit leg) becomes `fee_sat` and is
   netted out of the row's gross VTXO amount. Zero cost (old daemon, or
   an exit predating exit-cost accounting) leaves the row untouched.
+- **The onchain fee preview is priced per selected input, not per
+  destination.** `quoteOnchainInputs` asks the operator for a quote per
+  `(amount, remaining lifetime)` pair across every selected VTXO and sums
+  them, reusing the answer for identical pairs. Each forfeited input pays its
+  own fixed components, so quoting the destination amount once both misses
+  those charges and prices the wrong principal when a bounded send returns
+  change. Quotes assume batch size one; the binding fee uses actual round
+  occupancy at seal time.
+- **A partial operator estimate is discarded, never summed.** Missing timing
+  context (zero chain height, non-positive batch expiry or amount) or an
+  invalid quote for any single input throws away the whole remote estimate and
+  falls back to `localOnchainFeeFloor` under
+  `SEND_QUOTE_STATUS_LOCAL_ONLY` with an explicit warning. A partial sum
+  presented as `COMPLETE` would understate the cost.
+- **An explicit economic warning rejects the preview instead of downgrading
+  it.** A per-input economic warning is a failed precondition, not a reason to
+  substitute the local floor: the floor is lower, so falling back would hide
+  an operator quote already known to be costly. A sweep must additionally
+  leave a positive output meeting the advertised dust floor after fees before
+  a send intent is created.
+- **A derive-on-read transition stamps its observation time.** The projector
+  sets the observation time on a terminal transition it notices late (a
+  deposit or leave completing on round confirmation) before the entry is
+  serialized, so the stored row, the replayable event payload, and the live
+  emit agree. Without it the projection inherited its source row's creation
+  time and the change stayed invisible to recency ordering, pollers, and
+  subscriber payloads. The stamp never regresses the stored value under a
+  stepped-back clock, and same-second transitions share their second, matching
+  the live path.
 - **Onchain SEND is a one-shot**: after the intent is accepted the router
   immediately calls `JoinNextRound` so the queued leave intent is committed
   to the next round without a separate CLI step. If the implicit join fails,

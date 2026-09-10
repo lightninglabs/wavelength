@@ -24,7 +24,10 @@ All `*.pb.go` files are generated — never edit directly; regenerate with
   `MethodSubmitVTXOForfeitSigs` (VTXO forfeit sigs).
 - `TreeFromProto` / `TreeToProto` — Convert between `*VTXOTree` proto and
   `lib/tree.Tree`; `TreeFromProto` takes `WithMaxTreeNodes` to bound the
-  deserialized node count (`DefaultMaxTreeNodes` = 50,000).
+  deserialized node count (`DefaultMaxTreeNodes` = 50,000). Both directions
+  also carry the optional asset sidecar: `VTXOTree.AssetRef` plus per-node
+  `SigningTweak`, `AssetAmount`, and `AssetCommitmentRoot` are projected from
+  (and rebuilt into) a `tree.AssetTreeContext`.
 - `OutpointFromProto`/`ToProto`, `TxOutFromProto`/`ToProto`,
   `PSBTFromBytes`/`ToBytes`, `MsgTxFromBytes`/`ToBytes`,
   `SchnorrSigFromBytes`/`ToBytes` — wire/proto ⇄ Go conversions for the
@@ -41,7 +44,8 @@ distinction.
 ## Relationships
 
 - **Depends on**: `lib/tree`, `lib/types` (conversion targets in
-  `convert.go`); otherwise generated proto types only.
+  `convert.go`), `lightninglabs/tap-sdk` (canonical `AssetRef` parsing);
+  otherwise generated proto types only.
 - **Depended on by**: `round` (outbox routing, proto conversions, flow
   version), `db` (persisting round/VTXO proto blobs), `waved` (proto
   conversion, flow version).
@@ -73,6 +77,16 @@ distinction.
 - `ValidateFlowVersion` must reject any `FlowVersion` other than the
   versions this build implements (currently only `FlowVersionV1`); never
   make it permissive by default.
+- **The asset sidecar is all-or-nothing, and canonically encoded.**
+  `assetContextFromProto` rejects a tree carrying any per-node asset field
+  (`SigningTweak`, `AssetAmount`, `AssetCommitmentRoot`) without a top-level
+  `AssetRef`, requires `AssetRef` to round-trip through
+  `tapsdk.ParseAssetRef` in canonical form, and runs
+  `AssetTreeContext.Validate` on the rebuilt context before returning it.
+  `TreeToProto` applies the same two checks on the way out. This matters
+  because the per-node signing tweak feeds final-key derivation: a tree with
+  a partial or non-canonical asset context would derive keys the operator
+  never committed to.
 
 ## Deep Docs
 
