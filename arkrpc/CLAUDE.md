@@ -8,6 +8,11 @@ Proto source: `arkrpc/ark.proto`, `arkrpc/indexer.proto`.
 
 ## Key Types
 
+- `BatchScheduleInfo` — UTC timetable discovery in `GetInfoResponse`, with
+  immutable version/index slot identity and the next registration window.
+  Presence alone does not enable scheduled service: clients must check
+  `admission_enabled`. Start means membership close, not broadcast.
+
 - `TreePath` / `TreePathNode` / `TxOut` — Structured proto messages for the
   VTXO commitment tree path.
 - `TreePathFromTree` / `TreePathToTree` — Lossless conversion between
