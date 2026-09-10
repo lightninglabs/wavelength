@@ -1,7 +1,9 @@
 package tree
 
 import (
+	"bytes"
 	"fmt"
+	"sort"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -1070,12 +1072,10 @@ func TestNodeConstructors(t *testing.T) {
 		require.Equal(t, leaf.PkScript, node.Outputs[0].PkScript)
 		require.Equal(t, int64(0), node.Outputs[1].Value)
 
-		// Verify cosigners (owner and operator).
-		// Note: musig2.AggregateKeys sorts keys, so we can't
-		// assume order.
-		require.Len(t, node.CoSigners, 2)
-		require.Contains(t, node.CoSigners, ownerKey)
-		require.Contains(t, node.CoSigners, operatorKey)
+		require.Equal(
+			t, []*btcec.PublicKey{ownerKey, operatorKey},
+			node.CoSigners,
+		)
 
 		// Verify it's a leaf.
 		require.True(t, node.IsLeaf())
@@ -1495,4 +1495,33 @@ func TestPrettyPrint(t *testing.T) {
 		require.Contains(t, output, "K0")
 		require.Contains(t, output, "K1")
 	})
+}
+
+// TestComputeKeysDoNotReorderCosigners tests cosigner slice ownership.
+func TestComputeKeysDoNotReorderCosigners(t *testing.T) {
+	t.Parallel()
+
+	// Three keys whose serialized order is deliberately not sorted.
+	var cosigners []*btcec.PublicKey
+	for len(cosigners) < 3 {
+		key, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+		cosigners = append(cosigners, key.PubKey())
+	}
+	sort.Slice(cosigners, func(i, j int) bool {
+		return bytes.Compare(
+			cosigners[i].SerializeCompressed(),
+			cosigners[j].SerializeCompressed(),
+		) > 0
+	})
+
+	original := append([]*btcec.PublicKey(nil), cosigners...)
+
+	_, err := ComputeInternalKey(cosigners)
+	require.NoError(t, err)
+	require.Equal(t, original, cosigners, "internal key reordered the set")
+
+	_, err = ComputeFinalKey(cosigners, make([]byte, 32))
+	require.NoError(t, err)
+	require.Equal(t, original, cosigners, "final key reordered the set")
 }

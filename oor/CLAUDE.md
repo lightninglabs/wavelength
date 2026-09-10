@@ -151,6 +151,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
 - Terminal rows (completed and failed) are retained in
   `oor_session_registry` for status/diagnostics; reaping only removes the
   in-memory child, never the row.
+- Pending submit retries persist their delay and typed rejection reason in the
+  outgoing snapshot. `GetOORSession` exposes the reason while status remains
+  pending, so callers can distinguish a recoverable chain pause from failure.
 - Outgoing finalize ordering: input-spend completion runs inline with no OOR
   writer transaction held, because its write commits in the VTXO manager's
   own transaction; awaiting that second writer under a held OOR writer lock

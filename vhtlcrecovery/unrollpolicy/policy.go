@@ -24,6 +24,12 @@ const (
 	// before broadcast, so exact fee accounting can be refined in a later
 	// worker pass without changing restart safety.
 	estimatedVHTLCExitVBytes = 260
+
+	// fallbackVHTLCExitFeeRateSatPerVByte preserves a broadcast attempt
+	// when the estimator is unavailable. Both vHTLC recovery actions race
+	// another valid leaf after their timing conditions mature, so waiting
+	// is less safe than using the historical low-fee fallback.
+	fallbackVHTLCExitFeeRateSatPerVByte int64 = 2
 )
 
 // RecoveryJobLoader loads a durable recovery job by id.
@@ -323,6 +329,13 @@ func (p *VHTLCExitSpendPolicy) RequiredLockTime() uint32 {
 	}
 
 	return p.spendPath.RequiredLockTime
+}
+
+// FeeEstimateFallbackSatPerVByte returns the emergency rate used when the
+// estimator is unavailable. Both the receiver claim and sender refund actions
+// race another valid vHTLC leaf, so they must attempt broadcast once spendable.
+func (p *VHTLCExitSpendPolicy) FeeEstimateFallbackSatPerVByte() int64 {
+	return fallbackVHTLCExitFeeRateSatPerVByte
 }
 
 // ValidateTarget verifies the materialized output matches the vHTLC policy.

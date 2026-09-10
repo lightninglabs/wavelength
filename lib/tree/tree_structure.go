@@ -26,6 +26,9 @@ type Structure struct {
 	// Root is the root node of the tree structure.
 	Root *Node
 
+	// AssetContext contains subtree amounts for an asset tree.
+	AssetContext *AssetTreeContext
+
 	// LeafScriptMap maps leaf node pointers to their output scripts
 	// (pkscript). This is populated during structure building and used by
 	// the BTC materializer. We keep BTC leaf data out of Node to keep the
@@ -62,18 +65,35 @@ func BuildStructure(leaves []LeafDescriptor,
 	// Create leaf scripts map for BTC path (maps leaf nodes to pkscripts).
 	leafScripts := make(map[*Node][]byte)
 
+	// Track asset amounts separately from the Bitcoin tree nodes.
+	leafAssets := make(map[*Node]uint64)
+
 	// Build recursively from leaves up.
 	root, err := buildStructureRecursive(
 		leaves, cfg.OperatorKey, cfg.Radix, weightFn, leafScripts,
+		leafAssets,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Structure{
+	structure := &Structure{
 		Root:          root,
 		LeafScriptMap: leafScripts,
-	}, nil
+	}
+
+	if len(leafAssets) > 0 {
+		assetCtx := NewAssetTreeContext()
+		if _, err := aggregateAssetAmounts(
+			root, leafAssets, assetCtx,
+		); err != nil {
+			return nil, err
+		}
+
+		structure.AssetContext = assetCtx
+	}
+
+	return structure, nil
 }
 
 // buildStructureRecursive recursively builds the tree structure. For a single
@@ -81,11 +101,14 @@ func BuildStructure(leaves []LeafDescriptor,
 // creates a branch node with children built recursively.
 func buildStructureRecursive(leaves []LeafDescriptor,
 	operatorKey *btcec.PublicKey, radix int, weightFn PartitionWeightFunc,
-	leafScripts map[*Node][]byte) (*Node, error) {
+	leafScripts map[*Node][]byte,
+	leafAssets map[*Node]uint64) (*Node, error) {
 
 	// Base case: single leaf becomes a leaf node.
 	if len(leaves) == 1 {
-		return buildLeafStructure(leaves[0], operatorKey, leafScripts)
+		return buildLeafStructure(
+			leaves[0], operatorKey, leafScripts, leafAssets,
+		)
 	}
 
 	// Partition leaves into groups.
@@ -103,6 +126,7 @@ func buildStructureRecursive(leaves []LeafDescriptor,
 
 		child, err := buildStructureRecursive(
 			group, operatorKey, radix, weightFn, leafScripts,
+			leafAssets,
 		)
 		if err != nil {
 			return nil, err
@@ -135,7 +159,8 @@ func buildStructureRecursive(leaves []LeafDescriptor,
 // buildLeafStructure creates the structure for a leaf node and populates
 // the leafScripts map (for BTC trees).
 func buildLeafStructure(leaf LeafDescriptor, operatorKey *btcec.PublicKey,
-	leafScripts map[*Node][]byte) (*Node, error) {
+	leafScripts map[*Node][]byte,
+	leafAssets map[*Node]uint64) (*Node, error) {
 
 	if leaf.CoSignerKey == nil {
 		return nil, fmt.Errorf("leaf cosigner key cannot be nil")
@@ -160,6 +185,10 @@ func buildLeafStructure(leaf LeafDescriptor, operatorKey *btcec.PublicKey,
 	// This keeps BTC and asset concerns separate.
 	if leafScripts != nil && len(leaf.PkScript) > 0 {
 		leafScripts[node] = leaf.PkScript
+	}
+
+	if leafAssets != nil && leaf.AssetAmount > 0 {
+		leafAssets[node] = leaf.AssetAmount
 	}
 
 	return node, nil

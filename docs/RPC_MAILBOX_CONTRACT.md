@@ -100,6 +100,11 @@ Ordering constraints apply only within the scope of a single mailbox stream:
 - The RPC layer MUST NOT require strict ordering between requests and responses
   beyond correlation.
 
+Within one `Pull` response, envelopes are strictly increasing in `event_seq`.
+The pre-existing [`PullResponse.next_cursor` wire definition](../mailbox/pb/mailbox.proto)
+is the highest returned sequence plus one. This does not imply causal ordering
+between different producers or contiguous sequence allocation.
+
 ## Ack watermark
 
 Acking is described as advancing a watermark rather than deleting individual
@@ -164,3 +169,28 @@ The mailbox transport and RPC overlay MUST be designed for evolution:
 Generated RPC-over-mailbox stubs should be treated as a convenience layer; they
 MUST NOT prevent using the underlying transport for experimental or
 operator-specific payloads.
+
+## Client cursor validation and omission limits
+
+Before dispatching any part of a pull response, `serverconn` validates the
+whole response. Each returned sequence must be nonzero, at least the requested
+cursor, and strictly greater than the preceding returned sequence. For a
+nonempty response, `next_cursor` must equal the final sequence plus one without
+overflow. An invalid response is retried without dispatch or cursor advancement.
+An empty response may return zero (legacy behavior) or echo the requested
+cursor; it never advances local state.
+
+Sequence numbers need not be contiguous or begin exactly at the requested
+cursor. A mailbox store may allocate them globally across recipients, and a
+rolled-back insert may consume a sequence. For example, a client requesting
+cursor 10 may legitimately receive sequences 13, 18, and 21 with next cursor 22.
+Requiring 10, 11, and 12 would reject such a healthy server.
+
+This validates the returned rows, not the completeness of the server's history.
+A server can omit an envelope between two returned rows or consistently relabel
+sequences. The current protocol supplies no independently verifiable evidence
+that distinguishes omission from legitimate gaps. Detecting that requires a
+separate authenticated history protocol. Cursor validation does prevent a
+server from returning sequences 13 and 18 while asking the client to acknowledge
+through cursor 1000. Durable dispatch and the validated cursor still commit in
+one transaction; rollback preserves the old cursor for redelivery.

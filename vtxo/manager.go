@@ -110,6 +110,14 @@ type ManagerConfig struct {
 	// import cycles.
 	RoundActor actor.TellOnlyRef[actormsg.RoundReceivable]
 
+	// DeferAutomaticRefreshUntilRoundReady closes the startup window where
+	// recovered VTXO actors can emit automatic refresh work before the
+	// round actor has registered. ReconcileExpiryRequest opens the gate
+	// once the server has started the round actor. Manual relays and every
+	// relay after that handshake keep the ordinary routing-failure
+	// behavior.
+	DeferAutomaticRefreshUntilRoundReady bool
+
 	// ChainResolver receives expiring notifications for unilateral exit.
 	// Passed through to spawned VTXO actors.
 	ChainResolver actor.TellOnlyRef[ExpiringNotification]
@@ -238,6 +246,13 @@ type Manager struct {
 	// outpoint from being mistaken for the adopted delivery.
 	adoptedAutoRefreshRelays map[wire.OutPoint]int32
 
+	// roundStartupPending is true only between manager recovery and the
+	// post-round-start ReconcileExpiryRequest handshake. During this
+	// window, automatic refresh reservations are rolled back for the
+	// reconcile pass to retry instead of being sent to an unregistered
+	// service key.
+	roundStartupPending bool
+
 	// liveDescriptors snapshots the live VTXO descriptors recovered
 	// from the store during Start. The list is the source of truth for
 	// daemon-local subsystems that need to re-arm per-VTXO state on
@@ -252,12 +267,14 @@ func NewManager(cfg *ManagerConfig) *Manager {
 	if cfg.ExpiryConfig == nil {
 		cfg.ExpiryConfig = DefaultExpiryConfig()
 	}
+	roundStartupPending := cfg.DeferAutomaticRefreshUntilRoundReady
 
 	return &Manager{
 		cfg:                    cfg,
 		actors:                 make(map[wire.OutPoint]VTXOActorRef),
 		customForfeitSynthetic: make(map[wire.OutPoint]bool),
 		reserved:               make(map[wire.OutPoint]uint64),
+		roundStartupPending:    roundStartupPending,
 	}
 }
 
@@ -715,6 +732,12 @@ func (m *Manager) Receive(ctx context.Context,
 // emits nothing until the next block.
 func (m *Manager) handleReconcileExpiry(
 	ctx context.Context) fn.Result[ManagerResp] {
+
+	// The server sends this request only after the round actor has
+	// registered and started. Open the gate before any fallible reconcile
+	// work so a best height lookup failure cannot leave later relays
+	// classified as startup.
+	m.roundStartupPending = false
 
 	// A recovered Expired actor may have received a subscription epoch
 	// while the round actor was still starting. Release that startup
@@ -1458,7 +1481,9 @@ func (m *Manager) handleVTXOTerminated(ctx context.Context,
 // wallet reaction time or on entering an exit that cannot make progress.
 // Auto-expiry forfeits intentionally bypass admission gating because
 // the VTXO actor has already determined that cooperative action is
-// urgent. Delaying relay would risk missing the expiry window.
+// urgent. The only deferral is during round-actor startup: the manager rolls
+// back the reservation and the post-start reconcile re-drives urgent expiry
+// work. Non-critical live refreshes retain their bounded retry cooldown.
 func (m *Manager) handleRelayToRound(ctx context.Context,
 	msg *RelayToRoundMsg) fn.Result[ManagerResp] {
 
@@ -1469,6 +1494,18 @@ func (m *Manager) handleRelayToRound(ctx context.Context,
 		m.logger(ctx).DebugS(
 			ctx,
 			"Suppressed adopted automatic refresh leader relay",
+			slog.String("outpoint", req.VTXOOutpoint.String()),
+			slog.Int("trigger_height", int(req.TriggerHeight)),
+		)
+
+		return fn.Ok[ManagerResp](&RelayToRoundResp{})
+	}
+	if refresh && req.Automatic && m.roundStartupPending {
+		m.rollbackForfeit(ctx, []wire.OutPoint{req.VTXOOutpoint})
+		m.logger(ctx).DebugS(
+			ctx,
+			"Deferred automatic refresh until round actor startup "+
+				"completes",
 			slog.String("outpoint", req.VTXOOutpoint.String()),
 			slog.Int("trigger_height", int(req.TriggerHeight)),
 		)
@@ -1890,6 +1927,23 @@ func (m *Manager) respawnActorFromStore(ctx context.Context,
 // start failure removes the actor registration before returning.
 func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 	VTXOActorRef, error) {
+
+	if !m.cfg.ExpiryConfig.CanReserveMaxPaymentCLTV(vtxo) {
+		logger := m.logger(ctx)
+		logger.InfoS(ctx, "Payment CLTV reserve exceeds useful "+
+			"batch lifetime; using base refresh policy",
+			slog.String("outpoint", vtxo.Outpoint.String()),
+			slog.Int(
+				"max_payment_cltv",
+				int(m.cfg.ExpiryConfig.MaxPaymentCLTV),
+			),
+			slog.Int(
+				"batch_lifetime", int(
+					vtxo.BatchExpiry-vtxo.CreatedHeight,
+				),
+			),
+		)
+	}
 
 	actorID := fmt.Sprintf("vtxo.%s", vtxo.Outpoint.String())
 	serviceKey := VTXOActorServiceKey(vtxo.Outpoint)
@@ -3223,6 +3277,8 @@ func (m *Manager) markCustomForfeitSynthetic(op wire.OutPoint, synthetic bool) {
 	m.customForfeitSynthetic[op] = synthetic
 }
 
+// customForfeitInputAlreadyActive reports whether the durable input identity
+// matches an actor that may already own the custom forfeit request.
 func (m *Manager) customForfeitInputAlreadyActive(ctx context.Context,
 	input CustomForfeitInput) (bool, error) {
 
@@ -3293,6 +3349,8 @@ func (m *Manager) customForfeitInputStoredMatch(ctx context.Context,
 	return true, synthetic, nil
 }
 
+// sameTaprootKey reports whether two public keys encode the same x-only
+// Taproot key. Nil keys never match.
 func sameTaprootKey(a, b *btcec.PublicKey) bool {
 	if a == nil || b == nil {
 		return false

@@ -456,6 +456,8 @@ func NewServer(cfg *Config) (*Server, error) {
 	}, nil
 }
 
+// subLogger returns the configured subsystem logger, or a disabled logger
+// when logging has not been initialized or the requested tag is unknown.
 func (s *Server) subLogger(tag string) btclog.Logger {
 	if s.loggers == nil {
 		return btclog.Disabled
@@ -766,6 +768,9 @@ func (s *Server) storeOperatorTerms(terms *types.OperatorTerms) {
 // callback resolves the atomic snapshot when each VTXO evaluates a block.
 func (s *Server) vtxoExpiryConfig() *vtxo.ExpiryConfig {
 	cfg := vtxo.DefaultExpiryConfig()
+	if s.cfg != nil {
+		cfg.MaxPaymentCLTV = s.cfg.MaxPaymentCLTV
+	}
 	cfg.FreeRefreshWindow = func() uint32 {
 		terms := s.loadOperatorTerms()
 		if terms == nil {
@@ -1702,6 +1707,25 @@ func (s *Server) startWalletReadyServices(ctx context.Context,
 	}
 
 	s.markDaemonReady()
+
+	// Repair legacy confirmation floors as bounded post-ready maintenance.
+	// This call is synchronous, but both wallet-services and daemon
+	// readiness were published above, so the indexer cannot delay a
+	// readiness boundary. One 30-second context bounds the whole pass, not
+	// each target; a large legacy set may therefore converge across
+	// restarts. Restored jobs keep the configured safe fallback floor for
+	// this process, while successful backfills are durable for later
+	// admissions and restarts.
+	repairCtx, repairCancel := context.WithTimeout(
+		ctx, legacyCommitmentHeightRepairTimeout,
+	)
+	repairErr := s.repairLegacyCommitmentHeights(repairCtx)
+	repairCancel()
+	if repairErr != nil && ctx.Err() == nil {
+		s.log.InfoS(ctx, "Legacy VTXO commitment-height repair "+
+			"incomplete; old exits will use the safe fallback floor",
+			slog.String("error", repairErr.Error()))
+	}
 
 	return nil
 }
@@ -4584,7 +4608,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	ledgerSink := ledger.NewSink(s.actorSystem)
 	criticalExitAssessor := s.rpcServer.assessAutomaticCriticalExit
 
-	manager := vtxo.NewManager(&vtxo.ManagerConfig{
+	managerConfig := &vtxo.ManagerConfig{
 		Store:                    vtxoStore,
 		ReservationStore:         reservationStore,
 		Wallet:                   vtxoWallet,
@@ -4612,7 +4636,9 @@ func (s *Server) initVTXOManager(ctx context.Context,
 			return resolveExitOutcome(ctx, ueStore, outpoint)
 		},
 		HasForfeitRoundCheckpoint: roundStore.HasForfeitRoundCheckpoint,
-	})
+	}
+	managerConfig.DeferAutomaticRefreshUntilRoundReady = true
+	manager := vtxo.NewManager(managerConfig)
 	managerKey := actor.NewServiceKey[vtxo.ManagerMsg, vtxo.ManagerResp](
 		"vtxo-manager",
 	)
@@ -5841,6 +5867,7 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		ArtifactStore: oorStore,
 	}
 	s.proofAssembler = proofAssembler
+	legacyProofScanFloor := s.cfg.legacyProofScanFloor()
 
 	// Adapt the VTXO manager ref into a tell-only exit observer so the
 	// unroll registry can report each job's terminal outcome back to the
@@ -5868,11 +5895,14 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		),
 		Log:                        fn.Some(s.subLogger("UNRL")),
 		MaxSweepFeeRateSatPerVByte: s.unrollMaxFeeRate(),
+		SweepFeeRateFallbackSatPerVByte: s.
+			unrollSweepFeeRateFallback(),
 		ExitSpendPolicyResolver: unrollpolicy.ExitSpendPolicyResolver{
 			Jobs:     recoveryStore,
 			Preimage: preimages,
 		},
-		VTXOExitObserver: exitObserver,
+		VTXOExitObserver:     exitObserver,
+		LegacyProofScanFloor: legacyProofScanFloor,
 	})
 	s.unrollRegistry = registry
 	s.unrollRegistryRef = fn.Some(registry.Ref())
@@ -6346,6 +6376,22 @@ func (s *Server) unrollMaxFeeRate() int64 {
 	if s.cfg != nil && s.cfg.Unroll != nil &&
 		s.cfg.Unroll.MaxFeeRateSatPerVByte > 0 {
 		return s.cfg.Unroll.MaxFeeRateSatPerVByte
+	}
+
+	return 0
+}
+
+// unrollSweepFeeRateFallback returns a fixed estimator-error fallback only on
+// regtest and simnet, where the caller controls block production and can safely
+// confirm a low-fee transaction. Public networks return zero so standard sweep
+// construction waits for a real estimate instead of caching an anchorless
+// transaction that cannot be fee-bumped.
+func (s *Server) unrollSweepFeeRateFallback() int64 {
+	const localFeeRateSatPerVByte int64 = 2
+
+	if s.cfg != nil && (s.cfg.Network == "regtest" ||
+		s.cfg.Network == "simnet") {
+		return localFeeRateSatPerVByte
 	}
 
 	return 0

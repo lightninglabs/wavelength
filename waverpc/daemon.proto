@@ -433,6 +433,10 @@ message ServerInfo {
     // free_refresh_window_blocks is the operator's late-lifetime refresh
     // waiver window. Zero disables the policy.
     uint32 free_refresh_window_blocks = 15;
+
+    // vtxo_confirmations is the confirmation depth at which new round VTXOs
+    // become available for off-chain spending.
+    uint32 vtxo_confirmations = 16;
 }
 
 message GenSeedRequest {
@@ -769,8 +773,8 @@ message VTXOSettlement {
 }
 
 message ListVTXOsRequest {
-    // status_filter restricts the response to VTXOs matching this status.
-    // If VTXO_STATUS_UNSPECIFIED (default), all statuses are returned.
+    // status_filter restricts the response to VTXOs in this status. It is
+    // equivalent to a single entry in statuses.
     VTXOStatus status_filter = 1;
 
     // min_amount_sat excludes VTXOs below this value.
@@ -782,6 +786,12 @@ message ListVTXOsRequest {
     // consumers (balance views, coin selection) that never inspect the
     // PSBTs. The default keeps the full response for compatibility.
     bool exclude_checkpoint_psbts = 3;
+
+    // statuses restricts the response to VTXOs in any of these statuses.
+    // When empty, every VTXO except VTXO_STATUS_FORFEITED and
+    // VTXO_STATUS_SPENT is returned. VTXO_STATUS_PENDING_ROUND entries are
+    // only included when listed.
+    repeated VTXOStatus statuses = 4;
 }
 
 message ListVTXOsResponse {

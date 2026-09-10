@@ -255,6 +255,15 @@ func NewSqliteStore(cfg *SqliteConfig,
 				"actor-delivery migrations: %w", err)
 		}
 
+		err = pruneSqliteMigrationBackups(cfg.DatabaseFileName)
+		if err != nil {
+			storeLog.WarnS(
+				ctx,
+				"Unable to prune SQLite migration backups",
+				err,
+			)
+		}
+
 		storeLog.InfoS(
 			ctx, "All SQLite migrations completed successfully",
 		)
@@ -296,25 +305,13 @@ func resolveSqliteSynchronous(value string) (string, error) {
 	}
 }
 
-// backupSqliteDatabase creates a backup of the given SQLite database. The
-// function uses the store's resolved logger for progress messages.
-func backupSqliteDatabase(srcDB *sql.DB, dbFullFilePath string,
-	backupLog btclog.Logger) error {
+// vacuumSqliteDatabase copies the source database to the given backup path.
+func vacuumSqliteDatabase(srcDB *sql.DB, dbFullFilePath,
+	backupFullFilePath string, backupLog btclog.Logger) error {
 
 	if srcDB == nil {
 		return fmt.Errorf("backup source database is nil")
 	}
-
-	// Create a database backup file full path from the given source
-	// database full file path.
-	//
-	// Get the current time and format it as a Unix timestamp in
-	// nanoseconds.
-	timestamp := time.Now().UnixNano()
-
-	// Add the timestamp to the backup name.
-	backupFullFilePath := fmt.Sprintf("%s.%d.backup", dbFullFilePath,
-		timestamp)
 
 	backupLog.InfoS(
 		context.Background(),
@@ -362,8 +359,8 @@ func (s *SqliteStore) backupAndMigrate(mig *migrate.Migrate,
 		return nil
 	}
 
-	// At this point, we know that a database migration is necessary.
-	// Create a backup of the database before starting the migration.
+	// At this point, we know that a database migration is necessary. Create
+	// a backup of the database before starting the migration.
 	if !s.cfg.SkipMigrationDBBackup {
 		s.log.InfoS(
 			context.Background(),
@@ -371,8 +368,8 @@ func (s *SqliteStore) backupAndMigrate(mig *migrate.Migrate,
 				"migration(s))",
 		)
 
-		err := backupSqliteDatabase(
-			s.DB, s.cfg.DatabaseFileName, s.log,
+		err := prepareSqliteMigrationBackup(
+			s.DB, s.cfg.DatabaseFileName, currentDBVersion, s.log,
 		)
 		if err != nil {
 			return err

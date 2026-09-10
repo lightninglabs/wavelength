@@ -144,6 +144,16 @@ const (
 	defaultSignetSwapServerRESTHost = "signet.swapd-rest." +
 		"lightning.finance"
 
+	// The legacy proof scan floors are rounded well below the first
+	// supported deployment on each public network. No compatible Ark
+	// operator existed on these networks before the floors. The extra
+	// margin covers incomplete deployment history and operator database
+	// resets while avoiding scans of earlier chain history.
+	defaultMainnetLegacyProofScanFloor uint32 = 950_000
+	testnet3LegacyProofScanFloor       uint32 = 4_940_000
+	testnet4LegacyProofScanFloor       uint32 = 140_000
+	signetLegacyProofScanFloor         uint32 = 300_000
+
 	// DefaultIndexerServerID is the canonical operator identifier used
 	// in signed indexer proofs.
 	DefaultIndexerServerID = "lumosd"
@@ -213,6 +223,12 @@ const (
 	// need a stricter cap override via the `maxoperatorfeesat`
 	// config knob.
 	DefaultMaxOperatorFeeSat int64 = 1_000_000
+
+	// DefaultMaxPaymentCLTV is the total Lightning payment CLTV reserved by
+	// automatic maintenance in swap-enabled builds. Three hundred blocks
+	// covers high-CLTV merchant invoices plus ordinary routing deltas while
+	// leaving substantial room inside a one-week Ark batch lifetime.
+	DefaultMaxPaymentCLTV int32 = 300
 
 	// RPCTransportGRPC selects native gRPC for daemon-owned outbound RPCs.
 	RPCTransportGRPC = "grpc"
@@ -406,6 +422,12 @@ type Config struct {
 	// automatic maintenance budget curve. Zero disables this component.
 	// When both components are zero, only MaxOperatorFeeSat applies.
 	AutoRefreshFeeRatePPM uint32 `mapstructure:"autorefreshfeerateppm"`
+
+	// MaxPaymentCLTV is the largest total Lightning payment CLTV that
+	// automatic VTXO maintenance keeps available above the dynamic
+	// unilateral-exit and refresh-retry budgets. Zero disables this extra
+	// reserve. Swap-enabled builds default to DefaultMaxPaymentCLTV.
+	MaxPaymentCLTV int32 `mapstructure:"maxpaymentcltv"`
 
 	// OOR configures off-band receive/send actor behavior.
 	OOR *OORConfig `mapstructure:"oor"`
@@ -1211,6 +1233,7 @@ func DefaultConfig() *Config {
 			VHTLCRecovery:   swapRecovery,
 		},
 		MaxOperatorFeeSat: DefaultMaxOperatorFeeSat,
+		MaxPaymentCLTV:    defaultMaxPaymentCLTV(),
 		SigningWorkers:    DefaultSigningWorkers,
 		OOR:               defaultOORConfig(),
 		FeeEstimation: &FeeEstimationConfig{
@@ -1261,6 +1284,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("autorefreshfeefloorsat must not exceed "+
 			"maxoperatorfeesat: floor=%d, max=%d",
 			c.AutoRefreshFeeFloorSat, c.MaxOperatorFeeSat)
+	}
+	if c.MaxPaymentCLTV < 0 {
+		return fmt.Errorf("maxpaymentcltv must be non-negative: got %d",
+			c.MaxPaymentCLTV)
 	}
 
 	if c.SigningWorkers < 0 {
@@ -1552,6 +1579,34 @@ func (c *Config) ArkServerAddress() string {
 	}
 
 	return defaults.ark.forTransport(c.Server.Transport)
+}
+
+// legacyProofScanFloor returns the earliest block where a supported deployment
+// could have created a compatible commitment on the configured public network.
+// The floor is network-wide and independent of operator identity because no
+// compatible deployment existed before it. Local and unknown networks use
+// block 1.
+func (c *Config) legacyProofScanFloor() uint32 {
+	if c == nil {
+		return 1
+	}
+
+	switch c.Network {
+	case "mainnet":
+		return defaultMainnetLegacyProofScanFloor
+
+	case "testnet":
+		return testnet3LegacyProofScanFloor
+
+	case "testnet4":
+		return testnet4LegacyProofScanFloor
+
+	case "signet":
+		return signetLegacyProofScanFloor
+
+	default:
+		return 1
+	}
 }
 
 // SwapServerAddress returns the configured swap server address, or the

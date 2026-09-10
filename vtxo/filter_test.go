@@ -165,3 +165,24 @@ func TestSumPendingBalanceEmpty(t *testing.T) {
 	require.Zero(t, SumPendingBalance(nil))
 	require.Zero(t, SumPendingBalance([]*Descriptor{}))
 }
+
+// TestInventoryStatusesHidesConsumedOnly verifies that only Forfeited and
+// Spent are missing from the inventory set.
+func TestInventoryStatusesHidesConsumedOnly(t *testing.T) {
+	t.Parallel()
+
+	hidden := map[VTXOStatus]bool{
+		VTXOStatusForfeited: true,
+		VTXOStatusSpent:     true,
+	}
+
+	listed := make(map[VTXOStatus]bool)
+	for _, s := range InventoryStatuses() {
+		require.False(t, listed[s], "duplicate status %v", s)
+		listed[s] = true
+	}
+
+	for s := VTXOStatusLive; s <= VTXOStatusExpired; s++ {
+		require.Equal(t, !hidden[s], listed[s], "status %v", s)
+	}
+}

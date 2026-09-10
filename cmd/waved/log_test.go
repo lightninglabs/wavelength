@@ -5,11 +5,15 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lightninglabs/wavelength/waved"
+	lndbuild "github.com/lightningnetwork/lnd/build"
 	"github.com/stretchr/testify/require"
 )
+
+const testLogFileSize = 1000 * 1024
 
 var errStdoutWrite = errors.New("stdout write failed")
 
@@ -114,4 +118,56 @@ func TestConfigureDaemonLogWriterKeepsInjectedWriter(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, logFile)
 	require.Same(t, &injected, cfg.LogWriter)
+}
+
+// TestConfigureDaemonLogWriterRotatesFile verifies standalone daemon logs do
+// not grow one persistent file without bound.
+func TestConfigureDaemonLogWriterRotatesFile(t *testing.T) {
+	t.Parallel()
+
+	logDir := t.TempDir()
+	cfg := waved.DefaultConfig()
+	cfg.LogDirPath = logDir
+	stdout := &bytes.Buffer{}
+	logConfig := lndbuild.DefaultLogConfig().File
+	require.Equal(
+		t, lndbuild.DefaultMaxLogFileSize, logConfig.MaxLogFileSize,
+	)
+	require.Equal(t, lndbuild.DefaultMaxLogFiles, logConfig.MaxLogFiles)
+	require.Equal(t, lndbuild.Gzip, logConfig.Compressor)
+	logConfig.MaxLogFileSize = 1
+
+	closer, err := configureDaemonLogWriterWithConfig(
+		cfg, stdout, 1, logConfig.MaxLogFiles,
+	)
+	require.NoError(t, err)
+
+	logLine := []byte(strings.Repeat("a", testLogFileSize/2-1) + "\n")
+	start := make(chan struct{})
+	writeErrs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			_, err := cfg.LogWriter.Write(logLine)
+			writeErrs <- err
+		}()
+	}
+	close(start)
+
+	for range 2 {
+		require.NoError(t, <-writeErrs)
+	}
+	require.NoError(t, closer.Close())
+
+	backupFiles, err := filepath.Glob(filepath.Join(logDir, "waved.log.*"))
+	require.NoError(t, err)
+	require.Equal(
+		t, []string{
+			filepath.Join(logDir, "waved.log.1.gz"),
+		}, backupFiles,
+	)
+
+	activeInfo, err := os.Stat(filepath.Join(logDir, daemonLogFileName))
+	require.NoError(t, err)
+	require.Zero(t, activeInfo.Size())
 }

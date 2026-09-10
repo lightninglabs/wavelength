@@ -1,27 +1,26 @@
 package unroll
 
 import (
+	"bytes"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/stretchr/testify/require"
 )
 
-// TestProofNodeFloorAlertDeduper verifies that targets sharing one proof
-// transaction produce one alert while an independent proof still alerts.
+// TestProofNodeFloorAlertDeduper verifies that one registry produces one
+// fallback warning even when many child actors reach it concurrently.
 func TestProofNodeFloorAlertDeduper(t *testing.T) {
 	t.Parallel()
 
 	deduper := newProofNodeFloorAlertDeduper()
-	firstProof := chainhash.Hash{1}
-	secondProof := chainhash.Hash{2}
-
-	require.True(t, deduper.first(firstProof))
-	require.False(t, deduper.first(firstProof))
-	require.True(t, deduper.first(secondProof))
+	require.True(t, deduper.first())
+	require.False(t, deduper.first())
 
 	// Concurrent children must not both claim the first warning.
 	concurrent := newProofNodeFloorAlertDeduper()
@@ -31,7 +30,7 @@ func TestProofNodeFloorAlertDeduper(t *testing.T) {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			if concurrent.first(firstProof) {
+			if concurrent.first() {
 				firstCount.Add(1)
 			}
 		}()
@@ -42,7 +41,8 @@ func TestProofNodeFloorAlertDeduper(t *testing.T) {
 	// Exercise the production registry constructor and spawn seam. Two real
 	// children must receive the same registry-lifetime deduper.
 	registry := NewUnrollRegistryActor(RegistryConfig{
-		DeliveryStore: newMemCheckpointStore(),
+		DeliveryStore:        newMemCheckpointStore(),
+		LegacyProofScanFloor: 1,
 	})
 	t.Cleanup(registry.Stop)
 	require.NotNil(t, registry.behavior.proofNodeFloorAlerts)
@@ -70,4 +70,43 @@ func TestProofNodeFloorAlertDeduper(t *testing.T) {
 		t, registry.behavior.proofNodeFloorAlerts,
 		secondChild.behavior.cfg.proofNodeFloorAlerts,
 	)
+	require.Equal(
+		t, uint32(1), firstChild.behavior.cfg.LegacyProofScanFloor,
+	)
+	require.Equal(
+		t, uint32(1), secondChild.behavior.cfg.LegacyProofScanFloor,
+	)
+	// Drive both spawned behaviors through the real warning site. The
+	// registry-wide deduper must allow only the first child to warn.
+	var buf bytes.Buffer
+	logger := btclog.NewSLogger(btclog.NewDefaultHandler(&buf))
+	logger.SetLevel(btclog.LevelInfo)
+	for _, child := range []*VTXOUnrollActor{firstChild, secondChild} {
+		child.behavior.desc = &vtxo.Descriptor{
+			CreatedHeight: 850_000,
+			Ancestry: []vtxo.Ancestry{{
+				CommitmentHeight: 0,
+			}},
+		}
+		child.behavior.pending = &actorCheckpoint{Height: 850_100}
+		child.behavior.log = logger
+		proofTxid := chainhash.Hash{
+			byte(child.behavior.cfg.TargetOutpoint.Index),
+		}
+		child.behavior.proofNodeConfHeightHint(
+			t.Context(), proofTxid,
+		)
+	}
+
+	require.Equal(
+		t, 1,
+		bytes.Count(
+			buf.Bytes(), []byte(
+				"Legacy proof commitment height "+
+					"unavailable; using safe fallback "+
+					"floor",
+			),
+		),
+	)
+	require.Contains(t, buf.String(), "[WRN]")
 }

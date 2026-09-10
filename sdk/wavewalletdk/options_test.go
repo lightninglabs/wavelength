@@ -98,3 +98,47 @@ func TestResolveDaemonConfigEagerRoundJoin(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveDaemonConfigMaxPaymentCLTV verifies the explicit disable option
+// wins over both the swap-enabled default and a caller-owned daemon policy.
+func TestResolveDaemonConfigMaxPaymentCLTV(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		buildCfg func() Config
+		want     int32
+	}{
+		{
+			name: "option overrides build default",
+			buildCfg: func() Config {
+				return DefaultConfig()
+			},
+			want: 0,
+		},
+		{
+			name: "option overrides caller daemon config",
+			buildCfg: func() Config {
+				daemonCfg := waved.DefaultConfig()
+				daemonCfg.MaxPaymentCLTV = 450
+
+				return Config{
+					DaemonConfig: daemonCfg,
+				}
+			},
+			want: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			daemonCfg, err := resolveDaemonConfig(
+				tc.buildCfg(), WithMaxPaymentCLTVDisabled(),
+			)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, daemonCfg.MaxPaymentCLTV)
+		})
+	}
+}

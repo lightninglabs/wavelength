@@ -19,4 +19,7 @@ type LeafDescriptor struct {
 	// CoSignerKey is the public key of the leaf owner who must participate
 	// in signing this leaf's transaction along with the operator.
 	CoSignerKey *btcec.PublicKey
+
+	// AssetAmount is the number of asset units in the leaf output.
+	AssetAmount uint64
 }

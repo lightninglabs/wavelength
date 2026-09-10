@@ -303,6 +303,44 @@ func BuildConnectorTree(batchOutpoint wire.OutPoint, batchOutput *wire.TxOut,
 func BuildBatchOutput(vtxos []VTXODescriptor, operatorMuSigKey *btcec.PublicKey,
 	sweepKey *btcec.PublicKey, sweepDelay uint32) (*wire.TxOut, error) {
 
+	spec, err := BuildBatchOutputSpec(
+		vtxos, operatorMuSigKey, sweepKey, sweepDelay,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return spec.Output, nil
+}
+
+// BatchOutputSpec contains a batch output and its taproot tree.
+type BatchOutputSpec struct {
+	// Output is the batch output.
+	Output *wire.TxOut
+
+	// InternalKey is the untweaked MuSig2 aggregate key.
+	InternalKey *btcec.PublicKey
+
+	// SweepLeaf is the operator's timeout path.
+	SweepLeaf txscript.TapLeaf
+}
+
+// TapTreeBytes returns the BIP-371 PSBT output tap tree.
+func (s *BatchOutputSpec) TapTreeBytes() []byte {
+	var buf bytes.Buffer
+	buf.WriteByte(0) // Depth: the sweep leaf is the whole tree.
+	buf.WriteByte(byte(s.SweepLeaf.LeafVersion))
+	_ = wire.WriteVarInt(&buf, 0, uint64(len(s.SweepLeaf.Script)))
+	buf.Write(s.SweepLeaf.Script)
+
+	return buf.Bytes()
+}
+
+// BuildBatchOutputSpec builds a batch output and its taproot data.
+func BuildBatchOutputSpec(vtxos []VTXODescriptor,
+	operatorMuSigKey *btcec.PublicKey, sweepKey *btcec.PublicKey,
+	sweepDelay uint32) (*BatchOutputSpec, error) {
+
 	if len(vtxos) == 0 {
 		return nil, fmt.Errorf("batch output requires at least one " +
 			"VTXO")
@@ -378,9 +416,13 @@ func BuildBatchOutput(vtxos []VTXODescriptor, operatorMuSigKey *btcec.PublicKey,
 			err)
 	}
 
-	return &wire.TxOut{
-		Value:    int64(totalAmount),
-		PkScript: pkScript,
+	return &BatchOutputSpec{
+		Output: &wire.TxOut{
+			Value:    int64(totalAmount),
+			PkScript: pkScript,
+		},
+		InternalKey: aggKey.PreTweakedKey,
+		SweepLeaf:   sweepTapLeaf,
 	}, nil
 }
 

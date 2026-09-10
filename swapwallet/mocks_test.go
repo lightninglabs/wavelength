@@ -105,6 +105,8 @@ type fakeRPCServer struct {
 	estimateFeeErr     error
 	estimateFeeCalls   int
 	estimateFeeLastReq *waverpc.EstimateFeeRequest
+	estimateFeeFn      func(*waverpc.EstimateFeeRequest) (
+		*waverpc.EstimateFeeResponse, error)
 }
 
 func (f *fakeRPCServer) LeaveVTXOs(_ context.Context,
@@ -170,6 +172,9 @@ func (f *fakeRPCServer) EstimateFee(_ context.Context,
 
 	f.estimateFeeCalls++
 	f.estimateFeeLastReq = req
+	if f.estimateFeeFn != nil {
+		return f.estimateFeeFn(req)
+	}
 
 	return f.estimateFeeResp, f.estimateFeeErr
 }

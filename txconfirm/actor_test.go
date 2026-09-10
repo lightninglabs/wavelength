@@ -18,6 +18,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
 	"github.com/lightninglabs/wavelength/chainbackends"
 	"github.com/lightninglabs/wavelength/chainsource"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
@@ -48,6 +49,8 @@ type fakeChainSourceRef struct {
 
 	broadcastErr error
 	packageErr   error
+	registerErr  error
+	subscribeErr error
 
 	// mempoolAcceptFn lets tests control the outcome of
 	// TestMempoolAcceptRequest. If nil, the fake returns
@@ -436,6 +439,22 @@ func (f *fakeChainSourceRef) unregisterConfCount() int {
 	return len(f.unregisterConfs)
 }
 
+// subscribeBlockCount returns the number of block subscription attempts.
+func (f *fakeChainSourceRef) subscribeBlockCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return len(f.subscribeBlocks)
+}
+
+// unsubscribeBlockCount returns the number of block subscription cleanups.
+func (f *fakeChainSourceRef) unsubscribeBlockCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return len(f.unsubscribeBlocks)
+}
+
 // ID returns the fake actor ID.
 func (f *fakeChainSourceRef) ID() string {
 	return "fake-chainsource"
@@ -526,6 +545,12 @@ func (f *fakeChainSourceRef) handleAsk(_ context.Context,
 				_ = notifyRef.Tell(context.Background(), event)
 			}
 		}
+		if f.registerErr != nil {
+			err := f.registerErr
+			f.registerErr = nil
+
+			return nil, err
+		}
 
 		return &chainsource.RegisterConfResponse{}, nil
 
@@ -543,6 +568,12 @@ func (f *fakeChainSourceRef) handleAsk(_ context.Context,
 	case *chainsource.SubscribeBlocksRequest:
 		f.subscribeBlocks = append(f.subscribeBlocks, req)
 		f.blockNotify = req.NotifyActor.UnwrapOr(nil)
+		if f.subscribeErr != nil {
+			err := f.subscribeErr
+			f.subscribeErr = nil
+
+			return nil, err
+		}
 
 		return &chainsource.SubscribeBlocksResponse{}, nil
 
@@ -1034,6 +1065,116 @@ func TestEnsureConfirmedDedupesTwoSubscribers(t *testing.T) {
 	})
 }
 
+// TestEnsureConfirmedRetriesSetupFailures verifies that temporary chain
+// subscription errors remain request errors. The first attempt must not
+// broadcast or report TxFailed, and a retry must create fresh tracking,
+// register observation, broadcast once, and confirm normally.
+func TestEnsureConfirmedRetriesSetupFailures(t *testing.T) {
+	tests := []struct {
+		name              string
+		errorPrefix       string
+		subscribeErr      error
+		registerErr       error
+		firstSubscribes   int
+		firstUnsubscribes int
+		firstRegisters    int
+		firstUnregisters  int
+		retrySubscribes   int
+		retryRegisters    int
+	}{
+		{
+			name:              "subscribe blocks",
+			errorPrefix:       "subscribe blocks",
+			subscribeErr:      fmt.Errorf("backend unavailable"),
+			firstSubscribes:   1,
+			firstUnsubscribes: 1,
+			retrySubscribes:   2,
+			retryRegisters:    1,
+		},
+		{
+			name:             "register confirmation",
+			errorPrefix:      "register conf",
+			registerErr:      fmt.Errorf("backend unavailable"),
+			firstSubscribes:  1,
+			firstRegisters:   1,
+			firstUnregisters: 1,
+			retrySubscribes:  1,
+			retryRegisters:   2,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			chain := newFakeChainSourceRef(100)
+			chain.subscribeErr = test.subscribeErr
+			chain.registerErr = test.registerErr
+			ref, behavior := newTestActor(t, Config{
+				ChainSource: chain,
+			})
+
+			tx := makeTestTx(false)
+			txid := tx.TxHash()
+			sub := actor.NewChannelTellOnlyRef[Notification](
+				"sub-setup-retry", 4,
+			)
+			ctx, cancel := context.WithTimeout(
+				t.Context(), testTimeout,
+			)
+			_, err := ref.Ref().Ask(ctx, &EnsureConfirmedReq{
+				Tx:         tx,
+				Subscriber: sub,
+			}).Await(ctx).Unpack()
+			cancel()
+			require.Error(t, err)
+			require.Contains(t, err.Error(), test.errorPrefix)
+			require.Equal(t, 0, chain.broadcastCallCount())
+			mustHaveNoNotification(t, sub)
+			require.Empty(t, behavior.tracked)
+			require.Empty(t, behavior.broadcaster.parentStates)
+			require.Equal(
+				t, test.firstSubscribes,
+				chain.subscribeBlockCount(),
+			)
+			require.Equal(
+				t, test.firstUnsubscribes,
+				chain.unsubscribeBlockCount(),
+			)
+			require.Equal(
+				t, test.firstRegisters,
+				chain.registerConfCount(),
+			)
+			require.Equal(
+				t, test.firstUnregisters,
+				chain.unregisterConfCount(),
+			)
+
+			resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+				Tx:         tx,
+				Subscriber: sub,
+			})
+			require.True(t, resp.Created)
+			require.Equal(
+				t, TxStateAwaitingConfirmation, resp.State,
+			)
+			require.Equal(t, 1, chain.broadcastCallCount())
+			require.Equal(
+				t, test.retrySubscribes,
+				chain.subscribeBlockCount(),
+			)
+			require.Equal(
+				t, test.retryRegisters,
+				chain.registerConfCount(),
+			)
+
+			chain.emitConfirmation(t, txid, 101)
+			notification := mustAwaitNotification(t, sub)
+			confirmed, ok := notification.(*TxConfirmed)
+			require.True(t, ok)
+			require.Equal(t, txid, confirmed.Txid)
+		})
+	}
+}
+
 // TestLifecycleDeliveryRetriesAfterTellFailure verifies that a transient
 // subscriber delivery failure does not permanently drop a lifecycle
 // notification. Both the initial TxConfirmed and the terminal
@@ -1124,12 +1265,13 @@ func TestLateFinalizedSubscriberRetrySkipsConfirmed(t *testing.T) {
 
 	behavior := NewTxBroadcasterActor(Config{})
 	sub := newRetryNotifyRef("late-finalized", 1)
-	resp := behavior.attachExistingSubscriber(
+	resp, err := behavior.attachExistingSubscriber(
 		t.Context(), entry, trackedSubscriber{
 			Ref:              sub,
 			pendingConfirmed: true,
 		},
 	)
+	require.NoError(t, err)
 	require.Equal(t, TxStateFinalized, resp.State)
 	require.Equal(t, 1, sub.attemptsCount())
 	require.Len(t, entry.subscribers, 1)
@@ -1146,6 +1288,346 @@ func TestLateFinalizedSubscriberRetrySkipsConfirmed(t *testing.T) {
 
 	unexpected, ok := sub.awaitMessage(100 * time.Millisecond)
 	require.False(t, ok, "unexpected extra notification: %T", unexpected)
+}
+
+// TestEnsureConfirmedPropagatesStateQueryError verifies that an unavailable
+// FSM state cannot be reported or delivered as a proven transaction failure.
+// The caller can retry the returned error without driving its own state
+// machine into a false terminal state.
+func TestEnsureConfirmedPropagatesStateQueryError(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	ref, behavior := newTestActor(t, Config{
+		ChainSource: chain,
+	})
+
+	tx := makeTestTx(false)
+	subA := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+	subB := actor.NewChannelTellOnlyRef[Notification]("sub-b", 4)
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: subA,
+	})
+	require.Equal(t, TxStateAwaitingConfirmation, resp.State)
+
+	entry := behavior.tracked[tx.TxHash()]
+	require.NotNil(t, entry)
+	entry.fsm.Stop()
+
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
+	defer cancel()
+
+	_, err := ref.Ref().Ask(ctx, &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: subB,
+	}).Await(ctx).Unpack()
+	require.ErrorIs(t, err, protofsm.ErrStateMachineShutdown)
+	require.NotContains(t, entry.subscribers, subB.ID())
+	mustHaveNoNotification(t, subB)
+}
+
+// TestFailTrackedTxPropagatesTransitionError verifies that a failed terminal
+// transition returns an error without sending a false TxFailed notification.
+func TestFailTrackedTxPropagatesTransitionError(t *testing.T) {
+	tx := makeTestTx(false)
+	entry := newTrackedTxForState(t, &trackedTxStateAwaitingConfirmation{
+		trackedTxData: trackedTxData{
+			Tx:   tx,
+			Txid: tx.TxHash(),
+		},
+	})
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub", 1)
+	entry.subscribers[sub.ID()] = trackedSubscriber{
+		Ref: sub,
+	}
+	entry.fsm.Stop()
+
+	behavior := NewTxBroadcasterActor(Config{})
+	err := behavior.failTrackedTx(t.Context(), entry, "broadcast failed")
+	require.ErrorIs(t, err, protofsm.ErrStateMachineShutdown)
+	require.Contains(t, entry.subscribers, sub.ID())
+	mustHaveNoNotification(t, sub)
+}
+
+// TestEnsureCanceledSetupCleanupAllowsRetry verifies that cleanup does not
+// inherit cancellation from a failed setup request. The incomplete entry is
+// removed, and a retry creates a working tracker instead of attaching to an
+// orphan.
+func TestEnsureCanceledSetupCleanupAllowsRetry(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub", 4)
+	tx := makeTestTx(false)
+	var subscribeCalls int
+
+	chain := &staticChainSourceRef{
+		handler: func(_ context.Context,
+			msg chainsource.ChainSourceMsg) (
+			chainsource.ChainSourceResp, error) {
+
+			switch req := msg.(type) {
+			case *chainsource.BestHeightRequest:
+				return &chainsource.BestHeightResponse{
+					Height: 100,
+				}, nil
+
+			case *chainsource.SubscribeBlocksRequest:
+				subscribeCalls++
+				if subscribeCalls == 1 {
+					cancel()
+
+					return nil, fmt.Errorf("subscribe " +
+						"failed")
+				}
+
+				resp := &chainsource.SubscribeBlocksResponse{}
+
+				return resp, nil
+
+			case *chainsource.RegisterConfRequest:
+				return &chainsource.RegisterConfResponse{}, nil
+
+			case *chainsource.BroadcastTxRequest:
+				return &chainsource.BroadcastTxResponse{
+					Txid: req.Tx.TxHash(),
+				}, nil
+
+			default:
+				return nil, fmt.Errorf("unexpected request %T",
+					msg)
+			}
+		},
+	}
+	behavior := NewTxBroadcasterActor(Config{
+		ChainSource: chain,
+	})
+	behavior.SetSelfRef(actor.NewChannelTellOnlyRef[Msg]("self", 4))
+
+	resp, err := behavior.handleEnsure(ctx, &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+	require.ErrorContains(t, err, "subscribe blocks: subscribe failed")
+	require.Nil(t, resp)
+	require.NotContains(t, behavior.tracked, tx.TxHash())
+	mustHaveNoNotification(t, sub)
+
+	resp, err = behavior.handleEnsure(t.Context(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+	require.NoError(t, err)
+	require.True(t, resp.Created)
+	require.Equal(t, TxStateAwaitingConfirmation, resp.State)
+	require.Equal(t, 2, subscribeCalls)
+
+	entry := behavior.tracked[tx.TxHash()]
+	require.NotNil(t, entry)
+	entry.fsm.Stop()
+}
+
+// TestPendingFailureRetriesBeforeBroadcast verifies that a canceled background
+// transition is retried on the next tick without broadcasting a structurally
+// invalid transaction again. Subscribers are notified only after that retry
+// proves the terminal state.
+func TestPendingFailureRetriesBeforeBroadcast(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	behavior := NewTxBroadcasterActor(Config{
+		ChainSource: chain,
+	})
+	tx := makeTestTx(false)
+	entry := newTrackedTxForState(t, &trackedTxStateBroadcasting{
+		trackedTxData: trackedTxData{
+			Tx:   tx,
+			Txid: tx.TxHash(),
+		},
+	})
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub", 1)
+	entry.subscribers[sub.ID()] = trackedSubscriber{
+		Ref: sub,
+	}
+	behavior.tracked[tx.TxHash()] = entry
+
+	canceledCtx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err := behavior.failTrackedTx(
+		canceledCtx, entry, "structural broadcast failure",
+	)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(
+		t, "structural broadcast failure", entry.pendingFailureReason,
+	)
+	mustHaveNoNotification(t, sub)
+
+	bumpResp, err := behavior.handleBumpNow(t.Context(), &BumpNowReq{
+		Txid: tx.TxHash(),
+	})
+	require.NoError(t, err)
+	require.False(t, bumpResp.Bumped)
+	require.Equal(t, TxStateBroadcasting, bumpResp.State)
+	require.Contains(t, bumpResp.Reason, "pending terminal transition")
+	require.Zero(t, chain.broadcastCallCount())
+	mustHaveNoNotification(t, sub)
+
+	behavior.handleBlockObserved(t.Context(), &blockEpochObservedMsg{
+		height: 101,
+	})
+
+	failed := mustAwaitNotification(t, sub)
+	failedMsg, ok := failed.(*TxFailed)
+	require.True(t, ok)
+	require.Equal(
+		t, "structural broadcast failure", failedMsg.Reason,
+	)
+	require.NotContains(t, behavior.tracked, tx.TxHash())
+	require.Zero(t, chain.broadcastCallCount())
+}
+
+// TestEnsureBroadcastErrorDetachesBeforeConfirmation verifies that an
+// ambiguous broadcast error keeps the tracker but does not retain the caller's
+// subscriber after returning an Ask error. A later confirmation supersedes the
+// pending failure and cannot be followed by a false TxFailed notification.
+func TestEnsureBroadcastErrorDetachesBeforeConfirmation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub", 4)
+	tx := makeTestTx(false)
+	chain := &staticChainSourceRef{
+		handler: func(_ context.Context,
+			msg chainsource.ChainSourceMsg) (
+			chainsource.ChainSourceResp, error) {
+
+			switch req := msg.(type) {
+			case *chainsource.BestHeightRequest:
+				return &chainsource.BestHeightResponse{
+					Height: 100,
+				}, nil
+
+			case *chainsource.SubscribeBlocksRequest:
+				resp := &chainsource.SubscribeBlocksResponse{}
+
+				return resp, nil
+
+			case *chainsource.RegisterConfRequest:
+				return &chainsource.RegisterConfResponse{}, nil
+
+			case *chainsource.BroadcastTxRequest:
+				cancel()
+
+				return nil, context.Canceled
+
+			default:
+				return nil, fmt.Errorf("unexpected request %T",
+					req)
+			}
+		},
+	}
+	behavior := NewTxBroadcasterActor(Config{
+		ChainSource: chain,
+	})
+	behavior.SetSelfRef(actor.NewChannelTellOnlyRef[Msg]("self", 4))
+
+	resp, err := behavior.handleEnsure(ctx, &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, resp)
+
+	entry := behavior.tracked[tx.TxHash()]
+	require.NotNil(t, entry)
+	require.NotContains(t, entry.subscribers, sub.ID())
+	require.NotEmpty(t, entry.pendingFailureReason)
+	mustHaveNoNotification(t, sub)
+
+	// A durable caller can retry immediately after the Ask error. It must
+	// not attach to the stale pending transition and receive TxFailed for a
+	// broadcast whose acceptance is unknown.
+	retrySub := actor.NewChannelTellOnlyRef[Notification]("retry-sub", 4)
+	retryResp, retryErr := behavior.handleEnsure(
+		t.Context(), &EnsureConfirmedReq{
+			Tx:         tx,
+			Subscriber: retrySub,
+		},
+	)
+	require.ErrorContains(t, retryErr, "pending terminal transition")
+	require.Nil(t, retryResp)
+	require.NotContains(t, entry.subscribers, retrySub.ID())
+	mustHaveNoNotification(t, retrySub)
+
+	behavior.handleConfirmationObserved(
+		t.Context(), &confirmationObservedMsg{
+			txid:        tx.TxHash(),
+			blockHeight: 101,
+			numConfs:    1,
+		},
+	)
+
+	state, err := entry.currentTxState()
+	require.NoError(t, err)
+	require.Equal(t, TxStateConfirmed, state)
+	require.Empty(t, entry.pendingFailureReason)
+
+	retryResp, retryErr = behavior.handleEnsure(
+		t.Context(), &EnsureConfirmedReq{
+			Tx:         tx,
+			Subscriber: retrySub,
+		},
+	)
+	require.NoError(t, retryErr)
+	require.Equal(t, TxStateConfirmed, retryResp.State)
+	require.False(t, retryResp.Created)
+	require.IsType(t, &TxConfirmed{}, mustAwaitNotification(t, retrySub))
+	require.Contains(t, entry.subscribers, retrySub.ID())
+
+	behavior.handleBlockObserved(t.Context(), &blockEpochObservedMsg{
+		height: 102,
+	})
+	mustHaveNoNotification(t, sub)
+	mustHaveNoNotification(t, retrySub)
+	entry.fsm.Stop()
+}
+
+// TestConfirmationClearsPendingFailureBeforeTransition verifies that chain
+// confirmation remains authoritative when persisting its FSM transition
+// fails. A later block must not apply the stale broadcast failure to a mined
+// transaction.
+func TestConfirmationClearsPendingFailureBeforeTransition(t *testing.T) {
+	tx := makeTestTx(false)
+	entry := newTrackedTxForState(t, &trackedTxStateBroadcasting{
+		trackedTxData: trackedTxData{
+			Tx:   tx,
+			Txid: tx.TxHash(),
+		},
+	})
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub", 1)
+	entry.subscribers[sub.ID()] = trackedSubscriber{
+		Ref: sub,
+	}
+	entry.pendingFailureReason = "ambiguous broadcast failure"
+
+	behavior := NewTxBroadcasterActor(Config{})
+	behavior.tracked[tx.TxHash()] = entry
+
+	canceledCtx, cancel := context.WithCancel(t.Context())
+	cancel()
+	behavior.handleConfirmationObserved(
+		canceledCtx, &confirmationObservedMsg{
+			txid:        tx.TxHash(),
+			blockHeight: 101,
+			numConfs:    1,
+		},
+	)
+
+	state, err := entry.currentTxState()
+	require.NoError(t, err)
+	require.Equal(t, TxStateBroadcasting, state)
+	require.Empty(t, entry.pendingFailureReason)
+	mustHaveNoNotification(t, sub)
+
+	behavior.handleBlockObserved(t.Context(), &blockEpochObservedMsg{
+		height: 102,
+	})
+	require.Contains(t, behavior.tracked, tx.TxHash())
+	mustHaveNoNotification(t, sub)
+	entry.fsm.Stop()
 }
 
 // TestTerminalNotificationsDoNotInheritCallerContext verifies that terminal

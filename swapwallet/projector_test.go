@@ -162,6 +162,103 @@ func sampleWalletEntry() *wavewalletrpc.WalletEntry {
 	}
 }
 
+// TestStampLateTransition verifies the update-time stamping rules: a newer
+// derived time is kept, a stale one is stamped with the observation time, a
+// same-second transition shares its second, and a stepped-back clock never
+// regresses the stored value.
+func TestStampLateTransition(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		derived int64
+		stored  int64
+		now     int64
+		want    int64
+	}{
+		{
+			name:    "newer derived time kept",
+			derived: 200,
+			stored:  100,
+			now:     5000,
+			want:    200,
+		},
+		{
+			name:    "stale derived time stamped",
+			derived: 100,
+			stored:  100,
+			now:     5000,
+			want:    5000,
+		},
+		{
+			name:    "same-second transition shares the second",
+			derived: 100,
+			stored:  5000,
+			now:     5000,
+			want:    5000,
+		},
+		{
+			name:    "regressed clock never rolls back",
+			derived: 100,
+			stored:  5000,
+			now:     4000,
+			want:    5000,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			entry := &wavewalletrpc.WalletEntry{
+				UpdatedAtUnix: tc.derived,
+			}
+			stampLateTransition(
+				entry, tc.stored, time.Unix(tc.now, 0),
+			)
+			require.Equal(t, tc.want, entry.GetUpdatedAtUnix())
+		})
+	}
+}
+
+// TestProjectStampsLateTransition verifies that a material transition carrying
+// a stale derived update time lands with an advanced updated_at everywhere a
+// consumer reads it: the current-state row and the replayable event payload.
+func TestProjectStampsLateTransition(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	runtime, _, _, store := newDualWriteFixture(t)
+
+	pending := sampleWalletEntry()
+	runtime.projectAndEmit(ctx, pending)
+
+	// Complete the entry while carrying the pending row's timestamp, the
+	// shape a ledger-derived reconcile pass produces.
+	before := time.Now().Unix()
+	complete := sampleWalletEntry()
+	complete.Status = wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE
+	runtime.projectAndEmit(ctx, complete)
+
+	row, err := store.GetEntry(ctx, pending.GetId())
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, row.UpdatedAtUnix, before)
+	require.Equal(
+		t, int64(100), row.CreatedAtUnix, "created_at preserved",
+	)
+
+	events, err := store.PullEvents(ctx, 0, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 2)
+
+	replayed, err := walletEntryFromEventJSON(events[1].EntryJson)
+	require.NoError(t, err)
+	require.Equal(
+		t, row.UpdatedAtUnix, replayed.GetUpdatedAtUnix(),
+		"replay payload carries the stamped time",
+	)
+}
+
 // TestEntryToProjection verifies the WalletEntry → projection mapping: enum
 // integers, signed amount, hex-decoded handles, the confirmation-height
 // pointer, and a lossless entry_json round-trip.

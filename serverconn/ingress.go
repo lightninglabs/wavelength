@@ -74,6 +74,9 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 	// advance until some checkpoint persists it.
 	txStore, txOK := a.cfg.Store.(actor.TxAwareDeliveryStore)
 	var ackDirty bool
+	if txOK {
+		a.retryQuarantinedIngress(ctx, txStore)
+	}
 
 	// episode tracks an open backpressure episode, so a target that has
 	// stopped draining is logged on an interval rather than on every
@@ -99,6 +102,11 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 	// redelivery is the documented behaviour.
 	var redrive redriveState
 
+	// Physical receipt cleanup opens a write transaction. Run it once on
+	// startup and then hourly so backpressure redrives do not contend for
+	// the SQLite writer lock. Admission enforces expiry independently.
+	var nextReceiptPrune time.Time
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -118,6 +126,10 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 		} else if retry {
 			continue
 		}
+
+		nextReceiptPrune = a.pruneIngressReceiptsIfDue(
+			ctx, time.Now(), nextReceiptPrune,
+		)
 
 		// Step 2: Pull a batch of envelopes from the remote mailbox.
 		envelopes, nextCursor, exit, retry := a.pullPhase(
@@ -525,6 +537,9 @@ func (a *ServerConnectionActor) pullBatch(ctx context.Context, cursor uint64) (
 	if sErr := edgeResponseError("Pull", resp, err); sErr != nil {
 		return nil, 0, sErr
 	}
+	if err := validatePullCursor(cursor, resp); err != nil {
+		return nil, 0, err
+	}
 
 	return resp.Envelopes, resp.NextCursor, nil
 }
@@ -650,7 +665,11 @@ func (a *ServerConnectionActor) dispatchBatch(ctx context.Context,
 			}
 
 			if err := dispatcher(ctx, env); err != nil {
-				return lastCommitted, err
+				if err := a.quarantinePoison(
+					ctx, env, err,
+				); err != nil {
+					return lastCommitted, err
+				}
 			}
 
 			if delivery == mailboxconn.DeliveryBuffered {
@@ -690,7 +709,11 @@ func (a *ServerConnectionActor) dispatchBatch(ctx context.Context,
 				// Dispatch failed. Stop processing the
 				// batch and return the last committed
 				// cursor.
-				return lastCommitted, err
+				if err := a.quarantinePoison(
+					ctx, env, err,
+				); err != nil {
+					return lastCommitted, err
+				}
 			}
 
 		default:
@@ -872,6 +895,10 @@ func (a *ServerConnectionActor) runFoldedDispatch(ctx context.Context,
 	// skip it. Everything else in the closure derives from the caller's
 	// state and is safe to redo.
 	ctx = withDeliveredOutsideTx(ctx)
+	ctx = context.WithValue(ctx, ingressScopeKey{}, ingressScope{
+		local:  a.cfg.LocalMailboxID,
+		remote: a.cfg.RemoteMailboxID,
+	})
 
 	var (
 		newState AckState
@@ -885,6 +912,7 @@ func (a *ServerConnectionActor) runFoldedDispatch(ctx context.Context,
 		// previous attempt's advance into this one.
 		newState = state
 		deferral = nil
+		txCtx = context.WithValue(txCtx, ingressQuarantineKey{}, store)
 
 		cursor := nextCursor
 		if len(durables) > 0 {

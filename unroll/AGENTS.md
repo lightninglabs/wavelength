@@ -26,7 +26,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
 - `Config` — per-actor wiring. Notable: `TargetOutpoint`, `ActorID`,
   `DeliveryStore`, `ProofAssembler`, `VTXOStore`, `TxConfirmRef`,
   `ChainSource`, `Wallet` (`SweepWallet`),
-  `MaxSweepFeeRateSatPerVByte`, `FraudCheckpointSafetyMargin int32`
+  `LegacyProofScanFloor` (earliest compatible commitment block for the
+  configured supported public network; zero keeps block 1),
+  `MaxSweepFeeRateSatPerVByte`, `SweepFeeRateFallbackSatPerVByte`
+  (explicit caller fallback; zero defers unless the exit policy declares an
+  emergency rate for a competing spend),
+  `FraudCheckpointSafetyMargin int32`
   (overrides the fraud-triggered unroll backstop margin in blocks;
   zero falls back to the default), `RegistryRef`.
 - `behavior` — actor behavior implementing `actor.TxBehavior[Msg, Resp,
@@ -34,7 +39,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   retries and replays converge on a single sweep txid / pkScript under
   `txconfirm`'s txid-keyed dedup. The `dispatch` method runs the full
   FSM pipeline including Stage writes; `Receive` owns the single
-  lease-fenced Commit.
+  lease-fenced Commit. It also tracks whether a restored checkpoint still
+  needs its first reissue after re-admission.
 - `Msg` / `Resp` / `Event` / `OutboxEvent` — sealed durable-mailbox,
   response, FSM event, and FSM outbox interfaces.
 - Mailbox messages: `StartUnrollRequest`, `ResumeUnrollRequest`,
@@ -59,6 +65,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
 - `RegistryConfig` — `Store`, `DeliveryStore`, `ProofAssembler`,
   `VTXOStore`, `TxConfirmRef`, `ChainSource`, `Wallet`,
   optional `LedgerSink`, `MaxSweepFeeRateSatPerVByte`,
+  `LegacyProofScanFloor` (forwarded to every child),
+  `SweepFeeRateFallbackSatPerVByte`,
   `ExitSpendPolicyResolver` (optional; reconstructs the exit spend policy
   from `(ExitPolicyKind, ExitPolicyRef)` after restart; nil means every child
   uses the standard VTXO timeout), and optional `VTXOExitObserver`
@@ -160,38 +168,43 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
 - `safeTxOutPkScript(tx, index)` — bounds-checking helper used at
   every `tx.TxOut[i].PkScript` site; surfaces retryable errors for
   malformed proof artifacts instead of panicking the actor.
-- `ensureProofSpendWatches(ctx, txid, node)` — registers spend
+- `ensureProofSpendWatches(ctx, txid, node, heightHint)` — registers spend
   watches on proof-node outputs consumed by in-proof children.
-  Neutrino can miss direct confirmation under load; a spend of the
-  parent output proves parent confirmation. `proofSpendWatches` map
-  dedups.
+  `ensureNodeConfirmed` computes `heightHint` once with
+  `proofNodeConfHeightHint` and passes the same floor to these backup watches
+  and the direct confirmation watch. Neutrino can miss direct confirmation
+  under load; a spend of the parent output proves parent confirmation.
+  `proofSpendWatches` map dedups.
 - `watchDeferredCheckpoint(ctx, txid, node)` — registers confirmation
   watch for fraud-triggered checkpoints while the actor waits for
   operator confirmation of the proof node.
 - `behavior.proofNodeConfHeightHint(ctx, txid)` — confirmation-watch height
   floor for proof-graph nodes. Primary floor is `commitmentHeightFloor()`:
   `min(Descriptor.Ancestry[i].CommitmentHeight)`, but only when EVERY fragment
-  has a known (>0) height — a single unknown fragment returns 0 and defers to
-  the fallback (a min over only the known fragments would not bound an unknown
-  fragment's ancestor). Nothing in a VTXO's proof graph confirms before its
-  commitment tx, so once all fragments are known this is a tight, provable
-  floor (min, never max — a lower floor only widens the safe rescan window).
-  When no commitment height is known (legacy persisted VTXOs, empty-ancestry
-  round VTXOs, or a server not yet populating `commitment_height`), it falls
-  back to `proofNodeHeightHint(currentHeight)` =
-  `max(1, currentHeight - proofNodeHeightHintLookback)` (10000 blocks) —
-  identical to the pre-commitment-height behaviour. Roots/intermediate
-  ancestors can confirm before the target VTXO's creation height, so the
-  fallback anchors to tip minus a lookback (never `CreatedHeight`), bounding
-  the neutrino historical rescan instead of scanning to genesis
-  (wavelength#884). The fallback path warns when the VTXO's age exceeds the
-  lookback (the floor may then miss an already-confirmed ancestor). One
-  process-local `proofNodeFloorAlertDeduper` is shared by every child of an
-  unroll registry, so targets with the same proof ancestor produce one warning
-  per proof transaction and process lifetime. That warning carries the first
-  affected target's outpoint, age, and creation height. A Debug record retains
-  the same evidence for every target. A restart creates a new deduper and
-  warns again if the condition persists.
+  has a known (>0) height. A single unknown fragment returns 0 because a min
+  over only known fragments would not bound its ancestor. Nothing in a VTXO's
+  proof graph confirms before its commitment tx, so complete heights provide
+  a tight, provable floor. Without complete heights, the configured public
+  network's deployment floor applies. This floor is independent of endpoint
+  and operator identity because no compatible operator existed on mainnet,
+  testnet3, testnet4, or signet before the chosen network floor.
+  `CreatedHeight` cannot safely narrow the scan because an OOR target can be
+  created long after its commitment ancestor confirmed, and the descriptor
+  carries no maximum bound on that gap. Regtest, simnet, unknown networks,
+  zero, block 1, or a floor above the current tip safely resolves to block 1.
+  Direct proof confirmations and their backup proof-output spend watches use
+  the same floor. The fallback scan can be expensive but cannot silently stall
+  the exit. One process-local
+  `proofNodeFloorAlertDeduper` is shared by every child of an unroll registry,
+  so block-1 fallback emits one Warning per registry and process lifetime.
+  Bounded deployment-floor fallback emits one Info per affected target. Each
+  affected target also keeps Debug evidence. A restart creates a new deduper
+  and warns again if the condition persists.
+  Once the daemon is ready, waved attempts a bounded repair from
+  authenticated indexed ancestry. Indexed heights must be no greater than the
+  local chain tip and, for single-fragment ancestry, the VTXO's known creation
+  height. Existing jobs retain the safe fallback; successful repairs apply to
+  later admissions and restarts.
 
 ## Relationships
 
@@ -261,11 +274,23 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   `b.sweepTx` is already set; every retry converges on the same
   sweep txid/pkScript and avoids burning BIP32 addresses on fee-spike
   retries.
+- **Estimate before construction.** A fee-estimator error leaves the actor in
+  `AwaitingSweepBroadcast` without deriving an address or consuming a sweep
+  attempt. The next height retries estimation. An explicitly configured local
+  network fallback or a policy-owned emergency rate permits construction
+  without a fresh estimate; vHTLC policies use the latter because another
+  valid leaf can race either recovery action.
 - **Reissue fails hard on missing state.** The
   `ReissueInFlightTransactions` and `ReissueSweepConfirmation`
   outbox branches return errors on a missing proof node or nil
   `sweepTx`. A silent `continue` would strand the FSM with no
   pending `txconfirm` subscription.
+- **Re-admission resumes restored work.** `restoreCheckpoint` arms an
+  actor-lifetime marker when the checkpoint is started. The first admission
+  `Start` then uses `Resume` semantics to reissue staged work. The marker
+  survives unrelated queued messages and clears only after a successful
+  admission commit or an existing live-route retry performs the reissue.
+  Later duplicate `Start` messages remain idempotent.
 - **Registry dedup covers the whole trail.** `handleEnsure` checks
   `r.active`, `r.pending`, AND `Store.GetRecord` before spawning so
   a repeat for an already-terminal outpoint returns the historical

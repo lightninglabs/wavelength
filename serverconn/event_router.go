@@ -213,9 +213,11 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 			// encodes the gRPC status in the envelope headers.
 			// A nil body without an encoded status is malformed.
 			if mailboxrpc.DecodeErrorHeaders(env.Headers) == nil {
-				return fmt.Errorf("nil envelope body without "+
-					"encoded error for %s/%s", cfg.Service,
-					cfg.Method)
+				return &poisonEnvelopeError{err: fmt.Errorf(
+					"nil envelope body without encoded "+
+						"error for %s/%s", cfg.Service,
+					cfg.Method,
+				)}
 			}
 		} else {
 			event = cfg.NewEvent()
@@ -230,8 +232,10 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 				env.Body.Value,
 				event,
 			); err != nil {
-				return fmt.Errorf("unmarshal %s/%s event: %w",
-					cfg.Service, cfg.Method, err)
+				return &poisonEnvelopeError{err: fmt.Errorf(
+					"unmarshal %s/%s event: %w",
+					cfg.Service, cfg.Method, err,
+				)}
 			}
 		}
 
@@ -241,8 +245,17 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 				return nil
 			}
 
-			return fmt.Errorf("adapt %s/%s event: %w", cfg.Service,
-				cfg.Method, err)
+			return &poisonEnvelopeError{err: fmt.Errorf("adapt "+
+				"%s/%s event: %w", cfg.Service,
+				cfg.Method, err)}
+		}
+
+		// The durable store consumes this identity only if Tell
+		// actually inserts into a durable inbox. In-memory delivery
+		// gets no receipt.
+		ctx, err = withEventReceipt(ctx, env)
+		if err != nil {
+			return err
 		}
 
 		// Fast path: when the message resolves to a more specific key

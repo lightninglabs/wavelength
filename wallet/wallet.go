@@ -1740,14 +1740,17 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 			PolicyTemplate: policyTemplate,
 			Amount:         vtxo.Amount,
 			OwnerKey:       vtxo.ClientKey,
-			SigningKey:     vtxo.ClientKey,
+			// Leave SigningKey empty. Round registration derives a
+			// fresh locator-backed key for the MuSig2 tree. Reusing
+			// an old owner descriptor breaks when legacy VTXOs
+			// retain the pubkey but not its LND key locator.
+
 			// Refresh output: the new VTXO is funded by the
-			// client's own forfeited VTXO (not by wallet or
-			// an external party). Origin drives the ledger
-			// emission to SourceRoundRefresh so the
-			// VTXOReceived credit cancels the paired VTXOSent
-			// debit on transfers_out, leaving only the
-			// operator fee as the net vtxo_balance change.
+			// client's own forfeited VTXO (not by wallet or an
+			// external party). Origin drives the ledger emission to
+			// SourceRoundRefresh so the VTXOReceived credit cancels
+			// the paired VTXOSent debit on transfers_out, leaving
+			// only the operator fee as the net vtxo_balance change.
 			Origin: types.VTXOOriginRoundRefresh,
 		})
 	}

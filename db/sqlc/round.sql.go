@@ -1274,3 +1274,35 @@ func (q *Queries) UpdateRoundStatus(ctx context.Context, arg UpdateRoundStatusPa
 	_, err := q.db.ExecContext(ctx, UpdateRoundStatus, arg.RoundID, arg.Status, arg.LastUpdateTime)
 	return err
 }
+
+const UpdateVTXOAncestryCommitmentHeight = `-- name: UpdateVTXOAncestryCommitmentHeight :execrows
+UPDATE vtxo_ancestry_paths
+SET commitment_height = $4
+WHERE vtxo_outpoint_hash = $1
+  AND vtxo_outpoint_index = $2
+  AND path_order = $3
+  AND commitment_height = 0
+`
+
+type UpdateVTXOAncestryCommitmentHeightParams struct {
+	VtxoOutpointHash  []byte
+	VtxoOutpointIndex int32
+	PathOrder         int32
+	CommitmentHeight  int32
+}
+
+// UpdateVTXOAncestryCommitmentHeight fills one legacy zero commitment height
+// without rewriting the local commitment transaction, tree path, or other
+// proof fields. The zero-height predicate prevents overwriting known data.
+func (q *Queries) UpdateVTXOAncestryCommitmentHeight(ctx context.Context, arg UpdateVTXOAncestryCommitmentHeightParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, UpdateVTXOAncestryCommitmentHeight,
+		arg.VtxoOutpointHash,
+		arg.VtxoOutpointIndex,
+		arg.PathOrder,
+		arg.CommitmentHeight,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}

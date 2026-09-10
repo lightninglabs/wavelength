@@ -892,14 +892,11 @@ func (d *dedupLedgerStore) getEntries() []LedgerEntry {
 	return append([]LedgerEntry{}, d.entries...)
 }
 
-// TestHandleExitCostWritesBothLegsWithSharedKey verifies that
-// handleExitCost emits the send leg and the fee leg with the
-// correct account sides and that both carry the same
-// outpoint-derived IdempotencyKey. The durable actor's outer tx
-// provides crash atomicity for the two writes; the shared
-// idempotency key is what makes an out-of-band replay safe via
-// idx_client_ledger_idempotent_key + ON CONFLICT DO NOTHING.
-func TestHandleExitCostWritesBothLegsWithSharedKey(t *testing.T) {
+// TestHandleExitCostNamespacesBothLegs verifies that handleExitCost emits the
+// send and fee entries under distinct operation-and-leg identities. Both keys
+// retain the same outpoint payload, while the namespace prevents either leg
+// from colliding with a refresh send for that outpoint.
+func TestHandleExitCostNamespacesBothLegs(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
@@ -937,13 +934,22 @@ func TestHandleExitCostWritesBothLegsWithSharedKey(t *testing.T) {
 	require.Equal(t, int64(3_500), entries[1].AmountSat)
 	require.Equal(t, EventOnchainFeePaid, entries[1].EventType)
 
-	// Both legs must carry the same outpoint-scoped
-	// IdempotencyKey so the partial unique index
-	// idx_client_ledger_idempotent_key dedups a replay.
-	key := exitIdempotencyKey(msg.OutpointHash, msg.OutpointIndex)
-	require.Equal(t, key, entries[0].IdempotencyKey)
-	require.Equal(t, key, entries[1].IdempotencyKey)
-	require.Len(t, key, 36)
+	sendKey := exitSendIdempotencyKey(
+		msg.OutpointHash, msg.OutpointIndex,
+	)
+	feeKey := exitFeeIdempotencyKey(msg.OutpointHash, msg.OutpointIndex)
+	require.Equal(t, sendKey, entries[0].IdempotencyKey)
+	require.Equal(t, feeKey, entries[1].IdempotencyKey)
+	require.NotEqual(t, sendKey, feeKey)
+	require.Contains(t, string(sendKey), "ledger:v1:unilateral_exit:send:")
+	require.Contains(t, string(feeKey), "ledger:v1:unilateral_exit:fee:")
+	for _, entry := range entries {
+		require.Equal(t, msg.OutpointHash[:], entry.ChainTxid)
+		require.Equal(t, int32(msg.OutpointIndex), *entry.ChainVout)
+		require.Equal(
+			t, int32(msg.BlockHeight), *entry.ConfirmationHeight,
+		)
+	}
 }
 
 // TestHandleExitCostReplayIsIdempotent simulates an at-least-once
@@ -952,7 +958,7 @@ func TestHandleExitCostWritesBothLegsWithSharedKey(t *testing.T) {
 // four. This validates the combined contract of:
 //
 //   - two handleExitCost invocations produce four insert calls
-//   - the shared outpoint-derived IdempotencyKey puts every
+//   - each namespaced outpoint-derived IdempotencyKey puts its
 //     leg under the partial unique index
 //     idx_client_ledger_idempotent_key
 //   - ON CONFLICT DO NOTHING at the DB adapter layer turns the
@@ -1007,22 +1013,37 @@ func TestHandleExitCostReplayIsIdempotent(t *testing.T) {
 	)
 }
 
-// TestExitIdempotencyKeyDistinguishesOutputs confirms the key
-// derivation distinguishes outputs that share a txid but differ
-// in the output index -- the scenario where two exit legs on the
-// same tx must not collide in the unique index.
-func TestExitIdempotencyKeyDistinguishesOutputs(t *testing.T) {
+// TestExitFeeIdempotencyKeyDistinguishesOutputs confirms two exited VTXOs that
+// share a transaction hash but differ in output index receive distinct fee-leg
+// identities.
+func TestExitFeeIdempotencyKeyDistinguishesOutputs(t *testing.T) {
 	t.Parallel()
 
 	hash := [32]byte{0xde, 0xad}
 
-	k0 := exitIdempotencyKey(hash, 0)
-	k1 := exitIdempotencyKey(hash, 1)
-	kMax := exitIdempotencyKey(hash, 1<<31)
+	k0 := exitFeeIdempotencyKey(hash, 0)
+	k1 := exitFeeIdempotencyKey(hash, 1)
+	kMax := exitFeeIdempotencyKey(hash, 1<<31)
 
 	require.NotEqual(t, k0, k1)
 	require.NotEqual(t, k1, kMax)
 	require.NotEqual(t, k0, kMax)
+}
+
+// TestLedgerIdempotencyKeysSeparateOperations confirms the exact collision
+// domain that refresh and unilateral-exit sends share at the database index is
+// split before either row reaches persistence.
+func TestLedgerIdempotencyKeysSeparateOperations(t *testing.T) {
+	t.Parallel()
+
+	hash := [32]byte{0xde, 0xad}
+	refresh := refreshSendIdempotencyKey(hash, 7)
+	exitSend := exitSendIdempotencyKey(hash, 7)
+	exitFee := exitFeeIdempotencyKey(hash, 7)
+
+	require.NotEqual(t, refresh, exitSend)
+	require.NotEqual(t, refresh, exitFee)
+	require.NotEqual(t, exitSend, exitFee)
 }
 
 // TestHandleExitCostInvalidAmounts verifies non-positive inputs

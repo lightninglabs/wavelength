@@ -68,6 +68,15 @@ func TestClientVTXOToDescriptorChainDepthZero(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 0, desc.ChainDepth)
 	require.Equal(t, "round-1", desc.RoundID)
+	require.Equal(t, int32(700), desc.CreatedHeight)
+
+	// Exercise the useful-lifetime guard through the production conversion
+	// path. Round creation supplies the height needed to prove this
+	// 300-block lifetime is too short for the default payment reserve.
+	expiryCfg := DefaultExpiryConfig()
+	expiryCfg.MaxPaymentCLTV = 300
+	require.False(t, expiryCfg.CanReserveMaxPaymentCLTV(desc))
+	require.Equal(t, int32(144), expiryCfg.CalculateRefreshThreshold(desc))
 }
 
 // TestClientVTXOToDescriptorBuildsStandardTapScriptFromPolicyTemplate

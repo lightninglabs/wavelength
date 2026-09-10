@@ -226,6 +226,31 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 		}
 	}
 
+	if len(pb.AssetLeafPackages) != 0 {
+		e.AssetLeafPackages = make(
+			map[wire.OutPoint][]byte, len(pb.AssetLeafPackages),
+		)
+		for key, sealedPackage := range pb.AssetLeafPackages {
+			outpoint, err := roundpb.OutpointFromMapKey(key)
+			if err != nil {
+				return fmt.Errorf("asset_leaf_packages key "+
+					"%q: %w", key, err)
+			}
+			if roundpb.OutpointToMapKey(outpoint) != key {
+				return fmt.Errorf("asset_leaf_packages key %q "+
+					"is not canonical", key)
+			}
+			if len(sealedPackage) == 0 {
+				return fmt.Errorf("asset_leaf_packages[%q] "+
+					"is empty", key)
+			}
+
+			e.AssetLeafPackages[outpoint] = append(
+				[]byte(nil), sealedPackage...,
+			)
+		}
+	}
+
 	// Convert connector leaf map. The server sends ConnectorLeafInfo
 	// with LeafOutpoint and LeafOutput, which maps to the client's
 	// ConnectorLeafInfo with ConnectorOutpoint, ConnectorPkScript, and
@@ -556,6 +581,8 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 			IsChange:       vr.IsChange,
 			FixedAmount:    vr.FixedAmount,
 			PolicyTemplate: bytes.Clone(vr.PolicyTemplate),
+			AssetRef:       vr.AssetRef,
+			AssetAmount:    vr.AssetAmount,
 		}
 
 		if len(vr.SigningKey) > 0 {
@@ -575,6 +602,9 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 		if err != nil {
 			return fmt.Errorf(
 				"vtxo_requests[%d].policy_template: %w", i, err)
+		}
+		if err := validateAssetRequest(&req); err != nil {
+			return fmt.Errorf("vtxo_requests[%d]: %w", i, err)
 		}
 
 		m.VTXORequests[i] = req

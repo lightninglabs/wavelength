@@ -2,6 +2,7 @@ package unroll
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"sync"
@@ -10,9 +11,13 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/db/actordelivery"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/vtxo"
+	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -553,4 +558,137 @@ func TestRegistryReadmitsTargetAfterRecoverableFailureAcrossRestart(
 		t, post.RecoverableFailure,
 		"re-admission must overwrite the stale recoverable record",
 	)
+}
+
+// TestRegistryReadmissionReissuesStagedRoot verifies that a failed initial
+// root submission does not strand the restored checkpoint when the recovered
+// VTXO is admitted again. The test uses the real registry, durable child, and
+// SQLite delivery store so the checkpoint survives each stopped child.
+func TestRegistryReadmissionReissuesStagedRoot(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	target := proof.TargetOutpoint()
+	rootTxid := proof.RootTxids()[0]
+
+	sqlDB := db.NewTestDB(t)
+	deliveryStore, err := actordelivery.NewTxAwareDeliveryStoreFromDB(
+		sqlDB.DB, sqlDB.Backend(), clock.NewDefaultClock(),
+		btclog.Disabled,
+	)
+	require.NoError(t, err)
+
+	exitDB := db.NewTransactionExecutor(
+		sqlDB.BaseDB,
+		func(tx *sql.Tx) db.UnilateralExitStore {
+			return sqlDB.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+	registryStore := &DBRegistryStore{
+		UEStore: db.NewUnilateralExitPersistenceStore(
+			exitDB, clock.NewDefaultClock(),
+		),
+	}
+	txconfirmRef := &fakeTxConfirmRef{}
+	txconfirmRef.failNextAsks(rootTxid, 2)
+
+	cfg := RegistryConfig{
+		Store:         registryStore,
+		DeliveryStore: deliveryStore,
+		ProofAssembler: &mockProofAssembler{
+			proof: proof,
+		},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
+		TxConfirmRef: txconfirmRef,
+		ChainSource: &fakeRegistryChainSourceRef{
+			height: 200,
+		},
+		Wallet: &fakeSweepWallet{},
+		Log:    fn.Some(btclog.Disabled),
+	}
+
+	registry := NewUnrollRegistryActor(cfg)
+	t.Cleanup(registry.Stop)
+
+	ensure := func() (*EnsureUnrollResp, error) {
+		t.Helper()
+
+		resp, err := registry.Ref().Ask(
+			t.Context(), &EnsureUnrollRequest{
+				Outpoint: target,
+				Trigger:  TriggerManual,
+			},
+		).Await(t.Context()).Unpack()
+		if err != nil {
+			return nil, err
+		}
+
+		ensureResp, ok := resp.(*EnsureUnrollResp)
+		require.True(t, ok)
+
+		return ensureResp, nil
+	}
+
+	// The first submission is staged before txconfirm returns the injected
+	// error. The registry stops the child and records a recoverable
+	// failure, but the child checkpoint must retain the exact root
+	// transaction.
+	_, err = ensure()
+	require.ErrorContains(t, err, "injected txconfirm ask failure")
+	require.Equal(t, 1, txconfirmRef.requestCountForTxid(rootTxid))
+
+	actorID := actorIDForTarget(target)
+	checkpoint, err := deliveryStore.LoadCheckpoint(t.Context(), actorID)
+	require.NoError(t, err)
+	require.NotNil(t, checkpoint)
+
+	decoded, err := decodeCheckpoint(checkpoint.StateData)
+	require.NoError(t, err)
+	require.True(t, decoded.Started)
+	require.Equal(
+		t, []chainhash.Hash{rootTxid}, decoded.State.InFlightTxids,
+	)
+
+	failed, err := registryStore.GetRecord(t.Context(), target)
+	require.NoError(t, err)
+	require.NotNil(t, failed)
+	require.Equal(t, PhaseFailed, failed.Phase)
+	require.True(t, failed.RecoverableFailure)
+
+	// Re-admission restores the staged checkpoint. A second injected error
+	// proves it reissues the root instead of silently accepting a non-idle
+	// Start, and that another recovery attempt remains possible.
+	_, err = ensure()
+	require.ErrorContains(t, err, "injected txconfirm ask failure")
+	require.Equal(t, 2, txconfirmRef.requestCountForTxid(rootTxid))
+
+	// The third admission succeeds with the same actor and transaction
+	// identity. A normal duplicate Ensure while it is active must not
+	// submit a second exit.
+	admitted, err := ensure()
+	require.NoError(t, err)
+	require.True(t, admitted.Created)
+	require.Equal(t, actorID, admitted.ActorID)
+	require.Equal(t, 3, txconfirmRef.requestCountForTxid(rootTxid))
+	require.Equal(t, 3, txconfirmRef.requestCount())
+
+	duplicate, err := ensure()
+	require.NoError(t, err)
+	require.False(t, duplicate.Created)
+	require.Equal(t, actorID, duplicate.ActorID)
+	require.Equal(t, 3, txconfirmRef.requestCount())
+
+	// Restart recovery uses Resume and reissues the same staged root once.
+	registry.Stop()
+	restarted := NewUnrollRegistryActor(cfg)
+	t.Cleanup(restarted.Stop)
+	require.NoError(t, restarted.RestoreNonTerminal(t.Context()))
+
+	require.Equal(t, 4, txconfirmRef.requestCountForTxid(rootTxid))
+	require.Equal(t, 4, txconfirmRef.requestCount())
+	for _, txid := range txconfirmRef.requestedTxids() {
+		require.Equal(t, rootTxid, txid)
+	}
 }

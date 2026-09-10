@@ -8,6 +8,8 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Local cooperative-leave fee-floor sizing. These virtual sizes drive the
@@ -44,20 +46,18 @@ type onchainFeeQuote struct {
 	warning     string
 }
 
-// onchainTerms holds the operator-policy values the preview needs from a
-// single GetInfo call: the target feerate plus the minimum-operator-fee
-// and dust-limit headroom the daemon selects against. All zero when GetInfo
-// or its ServerInfo is unavailable, which degrades the preview to a
-// zero-headroom, zero-floor estimate rather than failing outright.
+// onchainTerms holds the chain height and operator policy from one GetInfo
+// call. Missing operator terms leave selection headroom and the local floor
+// at zero; missing height prevents a complete lifetime-aware operator quote.
 type onchainTerms struct {
+	blockHeight    uint32
 	feeRate        btcutil.Amount
 	minOperatorFee btcutil.Amount
 	dustLimit      btcutil.Amount
 }
 
-// fetchOnchainTerms reads the daemon's cached operator terms once so the
-// caller can size both the coin-selection headroom and the local fee floor
-// from a single lookup. A failed lookup (or a nil response/ServerInfo)
+// fetchOnchainTerms reads the chain height and cached operator terms once
+// for coin selection and fee estimation. A failed lookup or nil response
 // yields a zero-valued struct so the preview still renders.
 func (r *router) fetchOnchainTerms(ctx context.Context) onchainTerms {
 	info, err := r.deps.RPCServer.GetInfo(
@@ -68,11 +68,9 @@ func (r *router) fetchOnchainTerms(ctx context.Context) onchainTerms {
 	}
 
 	server := info.GetServerInfo()
-	if server == nil {
-		return onchainTerms{}
-	}
 
 	return onchainTerms{
+		blockHeight:    info.GetBlockHeight(),
 		feeRate:        btcutil.Amount(server.GetFeeRate()),
 		minOperatorFee: btcutil.Amount(server.GetMinOperatorFee()),
 		dustLimit:      btcutil.Amount(server.GetDustLimit()),
@@ -84,32 +82,23 @@ func (r *router) fetchOnchainTerms(ctx context.Context) onchainTerms {
 // (which folds in the on-chain share, liquidity, and margin the server
 // charges at seal time) and falls back to a purely local batch-size-1
 // floor when the operator is unreachable, so a preview is still produced
-// offline. amountSat is the leave amount; numInputs and sweepAll size the
-// local fallback's on-chain footprint; terms supplies the floor's feerate
-// and minimum-fee inputs.
-func (r *router) estimateOnchainFee(ctx context.Context, amountSat int64,
-	numInputs int, sweepAll bool, terms onchainTerms) onchainFeeQuote {
+// offline. inputs contains the selected VTXOs, whose values and remaining
+// lifetimes determine the operator's per-forfeit charges. sweepAll sizes
+// the local fallback's outputs; terms supplies the chain height and policy.
+func (r *router) estimateOnchainFee(ctx context.Context, inputs []*waverpc.VTXO,
+	sweepAll bool, terms onchainTerms) (onchainFeeQuote, error) {
 
-	// Prefer the operator's dynamic quote. RemainingBlocks is zero: a
-	// leave exits the funds now, so there is no residual lock time to
-	// price the time-value component against. A successful quote backs
-	// every fee field, so the preview is COMPLETE. The feeResp nil guard
-	// is belt-and-suspenders: the generated getter is nil-safe, but the
-	// explicit check keeps the intent obvious at the call site.
-	feeResp, err := r.deps.RPCServer.EstimateFee(
-		ctx, &waverpc.EstimateFeeRequest{
-			AmountSat:       amountSat,
-			IsBoarding:      false,
-			RemainingBlocks: 0,
-		},
-	)
-	if err == nil && feeResp != nil && feeResp.GetTotalFeeSat() > 0 {
+	fee, ok, err := r.quoteOnchainInputs(ctx, inputs, terms.blockHeight)
+	if err != nil {
+		return onchainFeeQuote{}, err
+	}
+	if ok {
 		return onchainFeeQuote{
-			feeSat:   feeResp.GetTotalFeeSat(),
+			feeSat:   fee,
 			feeKnown: true,
 			quoteStatus: wavewalletrpc.
 				SendQuoteStatus_SEND_QUOTE_STATUS_COMPLETE,
-		}
+		}, nil
 	}
 
 	// Operator quote unavailable: fall back to a local floor derived
@@ -117,7 +106,7 @@ func (r *router) estimateOnchainFee(ctx context.Context, amountSat int64,
 	// at batch size 1 plus the operator's minimum fee, but cannot see
 	// the operator's liquidity/congestion components, so it is a lower
 	// bound the caller must treat as LOCAL_ONLY.
-	floor := localOnchainFeeFloor(numInputs, sweepAll, terms)
+	floor := localOnchainFeeFloor(len(inputs), sweepAll, terms)
 
 	return onchainFeeQuote{
 		feeSat:   floor,
@@ -125,9 +114,84 @@ func (r *router) estimateOnchainFee(ctx context.Context, amountSat int64,
 		quoteStatus: wavewalletrpc.
 			SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
 		warning: "fee is a local estimate assuming a batch size of " +
-			"one; the operator quote was unavailable and the " +
-			"binding fee is set when the round seals",
+			"one; a complete per-input operator quote was " +
+			"unavailable; the binding fee is set when the round " +
+			"seals",
+	}, nil
+}
+
+// onchainQuoteKey identifies VTXOs that can reuse the same operator quote.
+type onchainQuoteKey struct {
+	amountSat       int64
+	remainingBlocks uint32
+}
+
+// quoteOnchainInputs sums the operator's per-forfeit fees for a leave.
+// Each input pays its own fixed components, even when all inputs belong to
+// one wallet. Quoting the destination amount once misses those charges and
+// also prices the wrong principal when a bounded send returns change.
+// Quotes assume batch size one; the binding fee uses actual round occupancy.
+// Any missing timing context or invalid quote discards the entire remote
+// estimate, so a partial sum can never masquerade as a complete quote.
+// An explicit economic warning instead rejects the preview: substituting a
+// local floor would hide an operator quote that is already known to be costly.
+func (r *router) quoteOnchainInputs(ctx context.Context, inputs []*waverpc.VTXO,
+	height uint32) (int64, bool, error) {
+
+	if height == 0 || len(inputs) == 0 {
+		return 0, false, nil
 	}
+
+	quotes := make(map[onchainQuoteKey]int64)
+	var total int64
+	for _, input := range inputs {
+		if input.GetBatchExpiry() <= 0 || input.GetAmountSat() <= 0 {
+			return 0, false, nil
+		}
+
+		// Zero means "use the full default lifetime" to the operator.
+		// Clamp expiring inputs to one block, as in refresh previews.
+		remaining := max(int64(input.GetBatchExpiry())-int64(height), 1)
+		key := onchainQuoteKey{
+			amountSat:       input.GetAmountSat(),
+			remainingBlocks: uint32(remaining),
+		}
+		fee, ok := quotes[key]
+		if !ok {
+			resp, err := r.deps.RPCServer.EstimateFee(
+				ctx, &waverpc.EstimateFeeRequest{
+					AmountSat:       key.amountSat,
+					RemainingBlocks: key.remainingBlocks,
+				},
+			)
+			if err != nil || resp == nil {
+
+				//nolint:nilerr // Use the local floor.
+				return 0, false, nil
+			}
+			if resp.GetBelowDustWarning() {
+				const reason = "uneconomic input %s: " +
+					"amount=%d sat, fee=%d sat"
+
+				return 0, false, status.Errorf(
+					codes.FailedPrecondition, reason,
+					input.GetOutpoint(),
+					input.GetAmountSat(),
+					resp.GetTotalFeeSat())
+			}
+
+			fee = resp.GetTotalFeeSat()
+			quotes[key] = fee
+		}
+
+		// Bound the addition before accumulating untrusted totals.
+		if fee < 0 || fee > int64(btcutil.MaxSatoshi)-total {
+			return 0, false, nil
+		}
+		total += fee
+	}
+
+	return total, true, nil
 }
 
 // localOnchainFeeFloor computes a batch-size-1 fee lower bound from the

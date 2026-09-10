@@ -133,6 +133,9 @@ func TestParseConfigEmptyUsesDefaults(t *testing.T) {
 		t.Fatalf("wallet type = %q, want default %q", got.WalletType,
 			want.WalletType)
 	}
+	if opts := mobileStartOptions(got); len(opts) != 0 {
+		t.Fatalf("default config produced %d start options", len(opts))
+	}
 }
 
 // TestParseConfigOverlaysSetFields verifies that only the fields the host set
@@ -147,6 +150,7 @@ func TestParseConfigOverlaysSetFields(t *testing.T) {
 		"wallet_poll_interval_seconds": 5,
 		"wallet_recovery_window": 250,
 		"max_operator_fee_sat": 1000,
+		"max_payment_cltv": 400,
 		"auto_refresh_fee_floor_sat": 750,
 		"auto_refresh_fee_rate_ppm": 25000,
 		"signing_workers": 1,
@@ -179,6 +183,9 @@ func TestParseConfigOverlaysSetFields(t *testing.T) {
 	if got.MaxOperatorFeeSat != 1000 {
 		t.Fatalf("max operator fee = %d", got.MaxOperatorFeeSat)
 	}
+	if got.MaxPaymentCLTV != 400 {
+		t.Fatalf("max payment CLTV = %d", got.MaxPaymentCLTV)
+	}
 	if got.AutoRefreshFeeFloorSat != 750 {
 		t.Fatalf("auto refresh fee floor = %d",
 			got.AutoRefreshFeeFloorSat)
@@ -192,6 +199,24 @@ func TestParseConfigOverlaysSetFields(t *testing.T) {
 	}
 	if got.BufferSize != 4096 {
 		t.Fatalf("buffer size = %d", got.BufferSize)
+	}
+}
+
+// TestParseConfigDisablesMaxPaymentCLTV verifies an explicit JSON zero wins
+// over the swap-enabled default instead of being mistaken for an omitted
+// convenience field.
+func TestParseConfigDisablesMaxPaymentCLTV(t *testing.T) {
+	got, err := parseConfig(`{"max_payment_cltv": 0}`)
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if got.MaxPaymentCLTV != 0 {
+		t.Fatalf("max payment CLTV = %d, want disabled",
+			got.MaxPaymentCLTV)
+	}
+	if opts := mobileStartOptions(got); len(opts) != 1 {
+		t.Fatalf("explicit zero produced %d start options, want 1",
+			len(opts))
 	}
 }
 
@@ -211,6 +236,7 @@ func TestParseConfigRejectsNegativeScalars(t *testing.T) {
 		"poll interval":    `{"wallet_poll_interval_seconds": -1}`,
 		"recovery window":  `{"wallet_recovery_window": -5}`,
 		"max operator fee": `{"max_operator_fee_sat": -1000}`,
+		"max payment CLTV": `{"max_payment_cltv": -1}`,
 		"auto fee floor":   `{"auto_refresh_fee_floor_sat": -1}`,
 		"auto fee rate":    `{"auto_refresh_fee_rate_ppm": -1}`,
 		"signing workers":  `{"signing_workers": -1}`,
@@ -220,6 +246,17 @@ func TestParseConfigRejectsNegativeScalars(t *testing.T) {
 		if _, err := parseConfig(cfgJSON); err == nil {
 			t.Fatalf("%s: expected error for negative value", name)
 		}
+	}
+}
+
+// TestParseConfigRejectsOverflowMaxPaymentCLTV verifies the mobile boundary
+// rejects a value that would wrap when narrowed to the daemon's int32 policy.
+func TestParseConfigRejectsOverflowMaxPaymentCLTV(t *testing.T) {
+	if _, err := parseConfig(
+		`{"max_payment_cltv": 2147483648}`,
+	); err == nil {
+
+		t.Fatal("expected error for max payment CLTV above int32 max")
 	}
 }
 

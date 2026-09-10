@@ -822,6 +822,18 @@ func newLoopbackAddr(t *testing.T) string {
 func seedLiveVTXO(t *testing.T, cfg *waved.Config, operatorKey *btcec.PublicKey,
 	amount btcutil.Amount) wire.OutPoint {
 
+	return seedVTXO(
+		t, cfg, operatorKey, amount, "seeded-vtxo", vtxo.VTXOStatusLive,
+	)
+}
+
+// seedVTXO inserts one VTXO with the given status into the daemon database
+// while the daemon is not running. The label keeps outpoints distinct across
+// calls.
+func seedVTXO(t *testing.T, cfg *waved.Config, operatorKey *btcec.PublicKey,
+	amount btcutil.Amount, label string,
+	status vtxo.VTXOStatus) wire.OutPoint {
+
 	t.Helper()
 
 	networkDir := cfg.NetworkDir()
@@ -861,10 +873,12 @@ func seedLiveVTXO(t *testing.T, cfg *waved.Config, operatorKey *btcec.PublicKey,
 	require.NoError(t, err)
 
 	outpoint := wire.OutPoint{
-		Hash:  chainhash.HashH([]byte(t.Name() + "-seeded-vtxo")),
+		Hash:  chainhash.HashH([]byte(t.Name() + "-" + label)),
 		Index: 0,
 	}
-	commitmentTxID := chainhash.HashH([]byte(t.Name() + "-commitment"))
+	commitmentTxID := chainhash.HashH(
+		[]byte(t.Name() + "-" + label + "-commitment"),
+	)
 	treePath := &tree.Tree{
 		BatchOutpoint: outpoint,
 		Root: &tree.Node{
@@ -906,8 +920,10 @@ func seedLiveVTXO(t *testing.T, cfg *waved.Config, operatorKey *btcec.PublicKey,
 		roundID,
 		commitmentTx.TxHash(),
 		round.ConfInfo{
-			Height:    1,
-			BlockHash: chainhash.HashH([]byte(t.Name() + "-block")),
+			Height: 1,
+			BlockHash: chainhash.HashH(
+				[]byte(t.Name() + "-" + label + "-block"),
+			),
 		},
 	)
 	require.NoError(t, err)
@@ -939,6 +955,11 @@ func seedLiveVTXO(t *testing.T, cfg *waved.Config, operatorKey *btcec.PublicKey,
 		Status:         vtxo.VTXOStatusLive,
 	})
 	require.NoError(t, err)
+
+	if status != vtxo.VTXOStatusLive {
+		err = vtxoStore.UpdateVTXOStatus(t.Context(), outpoint, status)
+		require.NoError(t, err)
+	}
 
 	return outpoint
 }

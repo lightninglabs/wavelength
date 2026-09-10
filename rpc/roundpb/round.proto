@@ -54,6 +54,18 @@ message TreeNode {
     // signature is the final aggregated MuSig2 schnorr signature (64 bytes)
     // for the input. Empty if unsigned.
     bytes signature = 6;
+
+    // signing_tweak is the node's taproot tweak for an asset tree. Empty for
+    // Bitcoin-only trees, which use sweep_tapscript_root.
+    bytes signing_tweak = 7;
+
+    // asset_amount is the number of asset units carried by this subtree.
+    // Zero for Bitcoin-only trees.
+    uint64 asset_amount = 8;
+
+    // asset_commitment_root is set on asset leaves so the owner can verify
+    // and persist the composed VTXO output.
+    bytes asset_commitment_root = 9;
 }
 
 // VTXOTree is a flattened representation of a VTXO or connector tree.
@@ -73,6 +85,10 @@ message VTXOTree {
     // sweep_tapscript_root is the tapscript root hash for tweaking branch
     // outputs. Empty for connector trees.
     bytes sweep_tapscript_root = 4;
+
+    // asset_ref identifies the asset carried by the tree. Empty for
+    // Bitcoin-only trees.
+    string asset_ref = 5;
 }
 
 // --------------------------------------------------------------------------
@@ -211,6 +227,10 @@ message ClientBatchInfo {
     // same value so both sides agree on how the round was conducted. Today
     // the only understood value is 1.
     uint32 flow_version = 10;
+
+    // asset_leaf_packages contains the sealed transfer package for each
+    // asset VTXO created for this client, keyed by VTXO outpoint.
+    map<string, bytes> asset_leaf_packages = 11;
 }
 
 // ClientAwaitingInputSigsResp notifies a client that the server is ready
@@ -390,6 +410,13 @@ message VTXORequest {
     // implicit-change exception is disabled and the intent must include a
     // separate fee-bearing change output if fees need to be paid.
     bool fixed_amount = 5;
+
+    // asset_ref identifies the asset requested for this VTXO. Empty for a
+    // Bitcoin VTXO.
+    string asset_ref = 6;
+
+    // asset_amount is the number of asset units requested.
+    uint64 asset_amount = 7;
 }
 
 // ForfeitRequest specifies a VTXO the client wants to forfeit.

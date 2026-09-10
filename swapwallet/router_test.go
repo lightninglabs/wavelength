@@ -569,11 +569,14 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 		Status: "submitted",
 	}
 
-	// The operator returns a dynamic fee quote, so the preview is a
-	// COMPLETE quote: net outflow is the amount delivered plus the fee,
-	// not the gross VTXO bundle selected to cover it.
+	// Both selected inputs have timing context and a 250 sat operator
+	// quote, so the complete preview includes their combined 500 sat fee.
+	for _, input := range rpc.listVTXOsResp.Vtxos {
+		input.BatchExpiry = 1200
+	}
+	rpc.getInfoResp = &waverpc.GetInfoResponse{BlockHeight: 1000}
 	rpc.estimateFeeResp = &waverpc.EstimateFeeResponse{
-		TotalFeeSat: 500,
+		TotalFeeSat: 250,
 	}
 
 	prepareResp, err := r.PrepareSend(
@@ -597,6 +600,11 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 	require.True(t, prepareResp.GetFeeKnown())
 	require.Equal(
 		t, int64(500), prepareResp.GetExpectedFeeSat(),
+	)
+	require.Equal(t, 2, rpc.estimateFeeCalls)
+	require.Equal(t, int64(5000), rpc.estimateFeeLastReq.GetAmountSat())
+	require.Equal(
+		t, uint32(200), rpc.estimateFeeLastReq.GetRemainingBlocks(),
 	)
 
 	// Net outflow is amount + fee (10000 + 500); the ~2000 sat residual
@@ -686,8 +694,9 @@ func TestRouterSendOnchainFeeFallsBackToLocalFloor(t *testing.T) {
 	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
 		Vtxos: []*waverpc.VTXO{
 			{
-				Outpoint:  "tx1:0",
-				AmountSat: 10000,
+				Outpoint:    "tx1:0",
+				AmountSat:   10000,
+				BatchExpiry: 1200,
 			},
 		},
 	}
@@ -701,6 +710,7 @@ func TestRouterSendOnchainFeeFallsBackToLocalFloor(t *testing.T) {
 	// exceeds the 300 sat minimum operator fee.
 	rpc.getInfoResp = &waverpc.GetInfoResponse{
 		WalletState: waverpc.WalletState_WALLET_STATE_READY,
+		BlockHeight: 1000,
 		ServerInfo: &waverpc.ServerInfo{
 			FeeRate:        10,
 			MinOperatorFee: 300,
@@ -727,6 +737,7 @@ func TestRouterSendOnchainFeeFallsBackToLocalFloor(t *testing.T) {
 		t, int64(7040), prepareResp.GetExpectedTotalOutflowSat(),
 	)
 	require.NotEmpty(t, prepareResp.GetWarning())
+	require.Equal(t, 1, rpc.estimateFeeCalls)
 }
 
 // TestRouterSendOnchainRejectsWhenFundsCannotCoverFee verifies that a

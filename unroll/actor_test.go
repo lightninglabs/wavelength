@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,12 +23,15 @@ import (
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/chainsource"
+	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/db/actordelivery"
 	"github.com/lightninglabs/wavelength/ledger"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/recovery"
 	"github.com/lightninglabs/wavelength/txconfirm"
 	"github.com/lightninglabs/wavelength/unrollplan"
 	"github.com/lightninglabs/wavelength/vtxo"
+	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -74,6 +78,7 @@ func (m *mockVTXOStore) ListLiveVTXOs(context.Context) ([]*vtxo.Descriptor,
 	return nil, nil
 }
 
+// ListRecoverableVTXOs is unused in these tests.
 func (m *mockVTXOStore) ListRecoverableVTXOs(context.Context) (
 	[]*vtxo.Descriptor, error) {
 
@@ -101,6 +106,7 @@ func (m *mockVTXOStore) UpdateVTXOStatus(context.Context, wire.OutPoint,
 	return nil
 }
 
+// UpdateVTXOStatusReleasingReservation is unused in these tests.
 func (m *mockVTXOStore) UpdateVTXOStatusReleasingReservation(context.Context,
 	wire.OutPoint, vtxo.VTXOStatus) error {
 
@@ -141,6 +147,7 @@ type fakeTxConfirmRef struct {
 	responseStates map[chainhash.Hash]txconfirm.TxState
 	confirmHeights map[chainhash.Hash]int32
 	failureReasons map[chainhash.Hash]string
+	askFailures    map[chainhash.Hash]int
 
 	// onAsk, when set, is invoked with each EnsureConfirmedReq as it is
 	// recorded (outside the store lock). Tests use it to assert ordering
@@ -186,8 +193,13 @@ func (f *fakeTxConfirmRef) Ask(_ context.Context,
 
 	f.mu.Lock()
 	f.requests = append(f.requests, req)
-	state := f.responseStates[req.Tx.TxHash()]
-	height := f.confirmHeights[req.Tx.TxHash()]
+	txid := req.Tx.TxHash()
+	state := f.responseStates[txid]
+	height := f.confirmHeights[txid]
+	failures := f.askFailures[txid]
+	if failures > 0 {
+		f.askFailures[txid] = failures - 1
+	}
 	onAsk := f.onAsk
 	f.mu.Unlock()
 
@@ -196,6 +208,16 @@ func (f *fakeTxConfirmRef) Ask(_ context.Context,
 	// exact moment the unroll actor is doing its txconfirm IO.
 	if onAsk != nil {
 		onAsk(req)
+	}
+	if failures > 0 {
+		promise.Complete(
+			fn.Err[txconfirm.Resp](
+				fmt.Errorf("injected txconfirm ask "+
+					"failure for %s", txid),
+			),
+		)
+
+		return promise.Future()
 	}
 
 	if state == 0 {
@@ -234,6 +256,19 @@ func (f *fakeTxConfirmRef) Ask(_ context.Context,
 	)
 
 	return promise.Future()
+}
+
+// failNextAsks configures the next count asks for txid to fail before the
+// normal response logic runs.
+func (f *fakeTxConfirmRef) failNextAsks(txid chainhash.Hash, count int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.askFailures == nil {
+		f.askFailures = make(map[chainhash.Hash]int)
+	}
+
+	f.askFailures[txid] = count
 }
 
 // lastRequest returns the latest txconfirm request.
@@ -419,9 +454,11 @@ type fakeChainSourceRef struct {
 	bestHeight  int32
 	feeRate     int64
 	feeErr      error
+	feeRequests int
 	blockRef    actor.TellOnlyRef[chainsource.BlockEpoch]
 	spendRefs   map[wire.OutPoint]spendEventRef
 	spendRegs   []wire.OutPoint
+	spendReqs   map[wire.OutPoint]*spendReq
 	removedTxes []chainhash.Hash
 	confRefs    map[chainhash.Hash]confRef
 	confReqs    map[chainhash.Hash]*confReq
@@ -429,6 +466,9 @@ type fakeChainSourceRef struct {
 
 // spendEventRef is the fake chain-source spend notification actor reference.
 type spendEventRef = actor.TellOnlyRef[chainsource.SpendEvent]
+
+// spendReq aliases the chainsource spend request captured by the fake.
+type spendReq = chainsource.RegisterSpendRequest
 
 // ID returns the fake actor ID.
 func (f *fakeChainSourceRef) ID() string {
@@ -483,17 +523,22 @@ func (f *fakeChainSourceRef) Ask(_ context.Context,
 		)
 
 	case *chainsource.FeeEstimateRequest:
-		if f.feeErr != nil {
+		f.mu.Lock()
+		feeRate := f.feeRate
+		feeErr := f.feeErr
+		f.feeRequests++
+		f.mu.Unlock()
+
+		if feeErr != nil {
 			promise.Complete(
 				fn.Err[chainsource.ChainSourceResp](
-					f.feeErr,
+					feeErr,
 				),
 			)
 
 			return promise.Future()
 		}
 
-		feeRate := f.feeRate
 		if feeRate == 0 {
 			feeRate = 5
 		}
@@ -542,6 +587,14 @@ func (f *fakeChainSourceRef) Ask(_ context.Context,
 		}
 		f.spendRefs[outpoint] = msg.NotifyActor.UnwrapOr(nil)
 		f.spendRegs = append(f.spendRegs, outpoint)
+		if f.spendReqs == nil {
+			f.spendReqs = make(map[wire.OutPoint]*spendReq)
+		}
+		reqCopy := *msg
+		outpointCopy := outpoint
+		reqCopy.Outpoint = &outpointCopy
+		reqCopy.PkScript = append([]byte(nil), msg.PkScript...)
+		f.spendReqs[outpoint] = &reqCopy
 		f.mu.Unlock()
 		promise.Complete(
 			fn.Ok[chainsource.ChainSourceResp](
@@ -592,6 +645,23 @@ func (f *fakeChainSourceRef) Ask(_ context.Context,
 	}
 
 	return promise.Future()
+}
+
+// setFeeEstimate updates the estimator result returned by subsequent Asks.
+func (f *fakeChainSourceRef) setFeeEstimate(feeRate int64, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.feeRate = feeRate
+	f.feeErr = err
+}
+
+// feeRequestCount returns how many fee estimates the actor requested.
+func (f *fakeChainSourceRef) feeRequestCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.feeRequests
 }
 
 // confWatchCount returns the number of registered confirmation watches.
@@ -672,6 +742,21 @@ func (f *fakeChainSourceRef) spendRegistrations() []wire.OutPoint {
 	return append([]wire.OutPoint(nil), f.spendRegs...)
 }
 
+// spendRequest returns the registered spend request for outpoint.
+func (f *fakeChainSourceRef) spendRequest(t *testing.T,
+	outpoint wire.OutPoint) *spendReq {
+
+	t.Helper()
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	req := f.spendReqs[outpoint]
+	require.NotNil(t, req)
+
+	return req
+}
+
 // removedTxSnapshot returns the txids the actor asked to remove from the wallet
 // via RemoveTxRequest.
 func (f *fakeChainSourceRef) removedTxSnapshot() []chainhash.Hash {
@@ -682,11 +767,20 @@ func (f *fakeChainSourceRef) removedTxSnapshot() []chainhash.Hash {
 }
 
 // fakeSweepWallet is a minimal signer plus wallet-destination test double.
-type fakeSweepWallet struct{}
+type fakeSweepWallet struct {
+	pkScriptRequests atomic.Int64
+}
 
 // NewWalletPkScript returns a deterministic destination script.
 func (w *fakeSweepWallet) NewWalletPkScript(context.Context) ([]byte, error) {
+	w.pkScriptRequests.Add(1)
+
 	return []byte{txscript.OP_TRUE}, nil
+}
+
+// pkScriptRequestCount returns how many destination scripts were derived.
+func (w *fakeSweepWallet) pkScriptRequestCount() int64 {
+	return w.pkScriptRequests.Load()
 }
 
 // SignOutputRaw returns a dummy schnorr signature.
@@ -1638,55 +1732,6 @@ func TestStartUnrollSubmitsInitialFrontier(t *testing.T) {
 	require.NotNil(t, checkpoint)
 }
 
-// TestProofNodeHeightHintBoundedBelowTip verifies that at a realistic mainnet
-// height the proof-node confirmation watch is floored a bounded lookback below
-// the current tip, not at genesis (block 1). A genesis floor makes neutrino
-// rescan every block to block 1 for a tx that never confirms
-// (wavelength#884); the bounded floor caps the rescan window while staying
-// low enough that a proof ancestor confirming before the target's creation
-// height is still covered.
-func TestProofNodeHeightHintBoundedBelowTip(t *testing.T) {
-	proof := buildLinearProof(t)
-	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
-	unrollActor, _, txconfirmRef, _ := newActorHarness(t, proof, desc)
-
-	// A mainnet-scale height comfortably above the lookback so the floor
-	// is (height - lookback), not the genesis clamp.
-	const startHeight uint32 = 850_000
-
-	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
-		Height:  int32(startHeight),
-		Trigger: TriggerManual,
-	})
-
-	require.Equal(t, 1, txconfirmRef.requestCount())
-	hint := txconfirmRef.lastRequest(t).HeightHint
-
-	// The hint must not be the genesis floor, and must be exactly the
-	// bounded lookback below the observed height.
-	require.Greater(t, hint, uint32(1))
-	require.Equal(t, startHeight-proofNodeHeightHintLookback, hint)
-}
-
-// TestProofNodeHeightHintClampsToGenesis verifies the helper never returns a
-// height below block 1, even when the current height is at or below the
-// configured lookback window.
-func TestProofNodeHeightHintClampsToGenesis(t *testing.T) {
-	require.Equal(t, uint32(1), proofNodeHeightHint(0))
-	require.Equal(t, uint32(1), proofNodeHeightHint(1))
-	require.Equal(
-		t, uint32(1), proofNodeHeightHint(proofNodeHeightHintLookback),
-	)
-	require.Equal(
-		t, uint32(1),
-		proofNodeHeightHint(proofNodeHeightHintLookback-1),
-	)
-	require.Equal(
-		t, uint32(2),
-		proofNodeHeightHint(proofNodeHeightHintLookback+2),
-	)
-}
-
 // TestCommitmentHeightFloor verifies the commitment-height floor helper: it
 // returns the smallest height only when every fragment carries a known
 // positive height, and returns 0 (defer to the fallback floor) when any
@@ -1806,7 +1851,13 @@ func TestProofNodeHeightHintUsesCommitmentHeight(t *testing.T) {
 		},
 	}
 
-	unrollActor, _, txconfirmRef, _ := newActorHarness(t, proof, desc)
+	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
+		t, proof, desc,
+	)
+
+	// Exact local ancestry remains authoritative even when it predates the
+	// configured fallback floor.
+	behavior.cfg.LegacyProofScanFloor = 750_000
 
 	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
 		Height:  int32(startHeight),
@@ -1818,29 +1869,22 @@ func TestProofNodeHeightHintUsesCommitmentHeight(t *testing.T) {
 
 	// The tight commitment floor is used, not the lookback floor.
 	require.Equal(t, uint32(lowHeight), hint)
-	require.NotEqual(t, startHeight-proofNodeHeightHintLookback, hint)
 }
 
-// TestProofNodeHeightHintFallsBackWithoutCommitmentHeight verifies that when
-// no fragment carries a commitment height (legacy/absent server field) the
-// hint falls back to exactly the bounded lookback floor — identical to the
-// pre-commitment-height behaviour.
-func TestProofNodeHeightHintFallsBackWithoutCommitmentHeight(t *testing.T) {
+// TestProofNodeHeightHintUsesGenesisForRecentLegacyVTXO verifies that a recent
+// CreatedHeight cannot narrow a missing commitment-height floor. An OOR target
+// may be recent even when its single commitment ancestor is much older.
+func TestProofNodeHeightHintUsesGenesisForRecentLegacyVTXO(t *testing.T) {
 	proof := buildLinearProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 
-	// Ancestry present but all commitment heights unknown (zero): the floor
-	// must fall back to the lookback, just like today.
-	desc.Ancestry = []vtxo.Ancestry{
-		{
-			CommitmentHeight: 0,
-		},
-		{
-			CommitmentHeight: 0,
-		},
-	}
+	// One fragment does not prove the ancestor is recent. The same fragment
+	// can back an OOR descendant created long after the commitment
+	// confirmed.
+	desc.Ancestry = []vtxo.Ancestry{{CommitmentHeight: 0}}
 
 	const startHeight uint32 = 850_000
+	desc.CreatedHeight = int32(startHeight - 100)
 
 	unrollActor, _, txconfirmRef, _ := newActorHarness(t, proof, desc)
 
@@ -1852,7 +1896,209 @@ func TestProofNodeHeightHintFallsBackWithoutCommitmentHeight(t *testing.T) {
 	require.Equal(t, 1, txconfirmRef.requestCount())
 	hint := txconfirmRef.lastRequest(t).HeightHint
 
-	require.Equal(t, startHeight-proofNodeHeightHintLookback, hint)
+	require.Equal(t, uint32(1), hint)
+}
+
+// TestProofNodeHeightHintUsesGenesisForOldLegacyVTXO verifies that an old
+// target without a commitment height cannot use a floor that may sit above an
+// already-confirmed proof ancestor.
+func TestProofNodeHeightHintUsesGenesisForOldLegacyVTXO(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 1
+	desc.Ancestry = []vtxo.Ancestry{{CommitmentHeight: 0}}
+
+	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
+		t, proof, desc,
+	)
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  850_000,
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(t, uint32(1), txconfirmRef.lastRequest(t).HeightHint)
+	chainRef, ok := behavior.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+	rootOutpoint := wire.OutPoint{
+		Hash:  proof.RootTxids()[0],
+		Index: 0,
+	}
+	require.Equal(
+		t, uint32(1), chainRef.spendRequest(t, rootOutpoint).HeightHint,
+	)
+}
+
+// TestProofNodeHeightHintUsesConfiguredFloorForOldLegacyVTXO verifies that an
+// operator deployment floor bounds the expensive fallback scan without
+// restoring the unsound tip-relative lookback for an old target.
+func TestProofNodeHeightHintUsesConfiguredFloorForOldLegacyVTXO(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 1
+	desc.Ancestry = []vtxo.Ancestry{{CommitmentHeight: 0}}
+
+	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
+		t, proof, desc,
+	)
+	const deploymentFloor uint32 = 800_000
+	behavior.cfg.LegacyProofScanFloor = deploymentFloor
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  850_000,
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(
+		t, deploymentFloor, txconfirmRef.lastRequest(t).HeightHint,
+	)
+	chainRef, ok := behavior.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+	rootOutpoint := wire.OutPoint{
+		Hash:  proof.RootTxids()[0],
+		Index: 0,
+	}
+	require.Equal(
+		t, deploymentFloor,
+		chainRef.spendRequest(t, rootOutpoint).HeightHint,
+	)
+}
+
+// TestProofNodeHeightHintUsesConfiguredFloorForRecentLegacyVTXO verifies a
+// recent target with unknown commitment height uses the deployment floor even
+// when the former tip-relative lookback would have selected a later height.
+func TestProofNodeHeightHintUsesConfiguredFloorForRecentLegacyVTXO(
+	t *testing.T) {
+
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 849_900
+	desc.Ancestry = []vtxo.Ancestry{{CommitmentHeight: 0}}
+
+	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
+		t, proof, desc,
+	)
+	const deploymentFloor uint32 = 800_000
+	behavior.cfg.LegacyProofScanFloor = deploymentFloor
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  850_000,
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(
+		t, deploymentFloor, txconfirmRef.lastRequest(t).HeightHint,
+	)
+}
+
+// TestProofNodeHeightHintUsesConfiguredFloorWithoutOperatorIdentity verifies
+// the supported public-network floor does not depend on descriptor operator
+// identity.
+func TestProofNodeHeightHintUsesConfiguredFloorWithoutOperatorIdentity(
+	t *testing.T) {
+
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 1
+	desc.Ancestry = []vtxo.Ancestry{{CommitmentHeight: 0}}
+	desc.OperatorKey = nil
+
+	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
+		t, proof, desc,
+	)
+	behavior.cfg.LegacyProofScanFloor = 800_000
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  850_000,
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(
+		t, uint32(800_000), txconfirmRef.lastRequest(t).HeightHint,
+	)
+}
+
+// TestProofNodeHeightHintUsesConfiguredFloorForAnyOperator verifies an
+// operator rotation does not collapse a supported public network to block 1.
+func TestProofNodeHeightHintUsesConfiguredFloorForAnyOperator(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 1
+	desc.Ancestry = []vtxo.Ancestry{{CommitmentHeight: 0}}
+
+	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
+		t, proof, desc,
+	)
+	otherOperator, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	desc.OperatorKey = otherOperator.PubKey()
+	behavior.cfg.LegacyProofScanFloor = 800_000
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  850_000,
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(
+		t, uint32(800_000), txconfirmRef.lastRequest(t).HeightHint,
+	)
+	chainRef, ok := behavior.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+	rootOutpoint := wire.OutPoint{
+		Hash:  proof.RootTxids()[0],
+		Index: 0,
+	}
+	require.Equal(
+		t, uint32(800_000),
+		chainRef.spendRequest(t, rootOutpoint).HeightHint,
+	)
+}
+
+// TestProofNodeHeightHintRejectsConfiguredFloorAboveTip verifies stale or
+// mismatched network configuration cannot hand the notifier a future floor.
+func TestProofNodeHeightHintRejectsConfiguredFloorAboveTip(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 1
+	desc.Ancestry = []vtxo.Ancestry{{CommitmentHeight: 0}}
+
+	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
+		t, proof, desc,
+	)
+	behavior.cfg.LegacyProofScanFloor = 900_000
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  850_000,
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(t, uint32(1), txconfirmRef.lastRequest(t).HeightHint)
+}
+
+// TestProofNodeHeightHintUsesGenesisForMultiFragmentLegacyVTXO verifies one
+// recent scalar creation height cannot justify a bounded scan for every
+// commitment in a multi-fragment ancestry.
+func TestProofNodeHeightHintUsesGenesisForMultiFragmentLegacyVTXO(
+	t *testing.T) {
+
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 849_900
+	desc.Ancestry = []vtxo.Ancestry{
+		{
+			CommitmentHeight: 0,
+		},
+		{
+			CommitmentHeight: 849_950,
+		},
+	}
+
+	unrollActor, _, txconfirmRef, _ := newActorHarness(t, proof, desc)
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  850_000,
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(t, uint32(1), txconfirmRef.lastRequest(t).HeightHint)
 }
 
 // TestProofNodeHeightHintWarnsOncePerActor verifies an old VTXO without a
@@ -1884,11 +2130,44 @@ func TestProofNodeHeightHintWarnsOncePerActor(t *testing.T) {
 		t, 1,
 		bytes.Count(
 			buf.Bytes(), []byte(
-				"Proof-node confirmation floor may exceed "+
-					"ancestor height",
+				"Legacy proof commitment height "+
+					"unavailable; using safe fallback "+
+					"floor",
 			),
 		),
 	)
+	require.Contains(t, buf.String(), "[WRN]")
+}
+
+// TestProofNodeHeightHintLogsBoundedFallbackAtInfo verifies a configured,
+// network deployment floor is routine compatibility handling, not an operator
+// warning.
+func TestProofNodeHeightHintLogsBoundedFallbackAtInfo(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 1
+	desc.Ancestry = []vtxo.Ancestry{{CommitmentHeight: 0}}
+
+	var buf bytes.Buffer
+	logger := btclog.NewSLogger(btclog.NewDefaultHandler(&buf))
+	logger.SetLevel(btclog.LevelInfo)
+
+	unrollActor, behavior, _, _ := newActorHarness(t, proof, desc)
+	behavior.log = logger
+	behavior.cfg.LegacyProofScanFloor = 800_000
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  850_000,
+		Trigger: TriggerManual,
+	})
+
+	require.Contains(
+		t, buf.String(),
+		"Legacy proof commitment height unavailable; using safe "+
+			"fallback floor",
+	)
+	require.Contains(t, buf.String(), "[INF]")
+	require.NotContains(t, buf.String(), "[WRN]")
 }
 
 // TestFraudTriggerDefersReadyCheckpoint verifies fraud-triggered recovery
@@ -2751,6 +3030,78 @@ func TestConfirmedNodesAdvanceToSweep(t *testing.T) {
 	require.NotNil(t, stateResp.SweepTxid)
 }
 
+// TestUnrollTellRetryReissuesStagedInFlight verifies that a durable chain
+// notification replay reissues work which was staged as in-flight before a
+// transient txconfirm Ask failure.
+func TestUnrollTellRetryReissuesStagedInFlight(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	txconfirmRef := &fakeTxConfirmRef{}
+	targetTxid := proof.TargetOutpoint().Hash
+	txconfirmRef.failNextAsks(targetTxid, 1)
+
+	sqlDB := db.NewTestDB(t)
+	deliveryStore, err := actordelivery.NewTxAwareDeliveryStoreFromDB(
+		sqlDB.DB, sqlDB.Backend(), clock.NewDefaultClock(),
+		btclog.Disabled,
+	)
+	require.NoError(t, err)
+
+	const actorID = "unroll-tell-retry"
+	unrollActor, err := NewVTXOUnrollActor(Config{
+		TargetOutpoint: proof.TargetOutpoint(),
+		ActorID:        actorID,
+		DeliveryStore:  deliveryStore,
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   txconfirmRef,
+		ChainSource:    &fakeChainSourceRef{},
+		Wallet:         &fakeSweepWallet{},
+		Log:            fn.Some(btclog.Disabled),
+	})
+	require.NoError(t, err)
+	t.Cleanup(unrollActor.Stop)
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+	rootTxid := proof.RootTxids()[0]
+	require.Equal(t, 1, txconfirmRef.requestCountForTxid(rootTxid))
+
+	// The root notification is a durable Tell. It stages the target as
+	// in-flight, then the injected txconfirm Ask failure nacks the Tell.
+	txconfirmRef.emitConfirmedByTxid(t, rootTxid, 101)
+
+	// Redelivery must explicitly reissue the staged in-flight target.
+	// Merely applying the root confirmation again is idempotent and emits
+	// no work.
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(targetTxid) == 2
+	}, 6*time.Second, 20*time.Millisecond)
+
+	txconfirmRef.emitConfirmed(t, 2, targetTxid, 102)
+	require.Eventually(t, func() bool {
+		checkpoint, loadErr := deliveryStore.LoadCheckpoint(
+			t.Context(), actorID,
+		)
+		if loadErr != nil || checkpoint == nil {
+			return false
+		}
+
+		decoded, decodeErr := decodeCheckpoint(checkpoint.StateData)
+		if decodeErr != nil {
+			return false
+		}
+
+		return slices.Contains(decoded.State.ConfirmedTxids, targetTxid)
+	}, testTimeout, 10*time.Millisecond)
+
+	require.Equal(t, 1, txconfirmRef.requestCountForTxid(rootTxid))
+	require.Equal(t, 2, txconfirmRef.requestCountForTxid(targetTxid))
+	require.Equal(t, 3, txconfirmRef.requestCount())
+}
+
 // TestResumeReissuesInflightWork verifies that resume reattaches the actor to
 // in-flight proof txs without importing the old unroller subsystem.
 func TestResumeReissuesInflightWork(t *testing.T) {
@@ -2816,6 +3167,99 @@ func TestResumeReissuesInflightWork(t *testing.T) {
 		t, proof.RootTxids()[0],
 		txconfirmRef.lastRequest(t).Tx.TxHash(),
 	)
+}
+
+// TestRestoredStartReissuesAfterPriorMessage verifies that a message queued
+// ahead of registry re-admission cannot hide the restored checkpoint from the
+// later Start request. The first successful admission request must still use
+// Resume semantics and restore the staged txconfirm subscription.
+func TestRestoredStartReissuesAfterPriorMessage(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	txconfirmRef := &fakeTxConfirmRef{}
+	store := newMemCheckpointStore()
+	rootTxid := proof.RootTxids()[0]
+
+	raw, err := encodeCheckpoint(&actorCheckpoint{
+		Version: checkpointVersion,
+		Height:  110,
+		Started: true,
+		Trigger: TriggerManual,
+		State: unrollplan.State{
+			InFlightTxids: []chainhash.Hash{rootTxid},
+		},
+	})
+	require.NoError(t, err)
+
+	const actorID = "restored-start-after-message"
+	err = store.SaveCheckpoint(t.Context(), actor.CheckpointParams{
+		ActorID:   actorID,
+		StateType: checkpointStateType,
+		StateData: raw,
+		Version:   checkpointVersion,
+	})
+	require.NoError(t, err)
+
+	behavior := &behavior{
+		cfg: Config{
+			TargetOutpoint: proof.TargetOutpoint(),
+			ActorID:        actorID,
+			DeliveryStore:  store,
+			ProofAssembler: &mockProofAssembler{
+				proof: proof,
+			},
+			VTXOStore: &mockVTXOStore{
+				desc: desc,
+			},
+			TxConfirmRef: txconfirmRef,
+			ChainSource:  &fakeChainSourceRef{},
+			Wallet:       &fakeSweepWallet{},
+		},
+		log: btclog.Disabled,
+	}
+	require.NoError(t, behavior.restoreCheckpoint(t.Context()))
+
+	actorInstance := actor.NewActor(actor.ActorConfig[Msg, Resp]{
+		ID:          actorID,
+		Behavior:    adaptTx(behavior),
+		MailboxSize: 64,
+	})
+	behavior.selfRef = actorInstance.TellRef()
+	actorInstance.Start()
+	t.Cleanup(actorInstance.Stop)
+
+	// A queued height update loads and advances the restored FSM, but it
+	// cannot reissue the already in-flight root by itself.
+	mustAsk(t, actorInstance.Ref(), &HeightObservedMsg{Height: 111})
+	require.Equal(t, 0, txconfirmRef.requestCount())
+
+	// The later Start is the registry's re-admission message. Its first
+	// route attempt fails after arming the actor's normal live-route retry.
+	// The next Start must let that retry perform the restored reissue once,
+	// rather than translating the same message into a second Resume.
+	txconfirmRef.failNextAsks(rootTxid, 1)
+	_, err = actorInstance.Ref().Ask(
+		t.Context(), &StartUnrollRequest{
+			Height:  112,
+			Trigger: TriggerManual,
+		},
+	).Await(t.Context()).Unpack()
+	require.ErrorContains(t, err, "injected txconfirm ask failure")
+	require.Equal(t, 1, txconfirmRef.requestCountForTxid(rootTxid))
+
+	mustAsk(t, actorInstance.Ref(), &StartUnrollRequest{
+		Height:  112,
+		Trigger: TriggerManual,
+	})
+	require.Equal(t, 2, txconfirmRef.requestCountForTxid(rootTxid))
+
+	// Once admission commits, a live duplicate Start remains idempotent and
+	// does not reissue the root again.
+	mustAsk(t, actorInstance.Ref(), &StartUnrollRequest{
+		Height:  113,
+		Trigger: TriggerManual,
+	})
+	require.Equal(t, 2, txconfirmRef.requestCountForTxid(rootTxid))
 }
 
 // TestStartUnrollMultiParentSubmitsAllRoots verifies that the initial planner
@@ -2944,7 +3388,7 @@ func TestResumeReissuesSweepConfirmation(t *testing.T) {
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 	sweepTx, err := buildSweepTx(
 		t.Context(), &fakeSweepWallet{}, &fakeChainSourceRef{}, proof,
-		desc, 0, 110, NewStandardVTXOExitSpendPolicy(desc),
+		desc, 0, 0, 110, NewStandardVTXOExitSpendPolicy(desc),
 	)
 	require.NoError(t, err)
 
@@ -3018,6 +3462,94 @@ func TestResumeReissuesSweepConfirmation(t *testing.T) {
 	}, testTimeout, 10*time.Millisecond)
 }
 
+// TestResumeRetriesDeferredSweepBuild verifies a checkpoint that has reached
+// sweep construction without persisting a transaction retries estimation on
+// restart instead of taking the persisted-sweep confirmation branch.
+func TestResumeRetriesDeferredSweepBuild(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	txconfirmRef := &fakeTxConfirmRef{}
+	store := newMemCheckpointStore()
+	chainSource := &fakeChainSourceRef{}
+	chainSource.setFeeEstimate(0, fmt.Errorf("estimator unavailable"))
+	wallet := &fakeSweepWallet{}
+
+	raw, err := encodeCheckpoint(&actorCheckpoint{
+		Version: checkpointVersion,
+		Height:  104,
+		Started: true,
+		Trigger: TriggerRestart,
+		State: unrollplan.State{
+			ConfirmedTxids: []chainhash.Hash{
+				proof.RootTxids()[0],
+				proof.TargetOutpoint().Hash,
+			},
+			TargetConfirmHeight: fn.Some[int32](102),
+		},
+	})
+	require.NoError(t, err)
+
+	err = store.SaveCheckpoint(t.Context(), actor.CheckpointParams{
+		ActorID:   "resume-deferred-sweep-test",
+		StateType: checkpointStateType,
+		StateData: raw,
+		Version:   checkpointVersion,
+	})
+	require.NoError(t, err)
+
+	cfg := Config{
+		TargetOutpoint: proof.TargetOutpoint(),
+		ActorID:        "resume-deferred-sweep-test",
+		DeliveryStore:  store,
+		ProofAssembler: &mockProofAssembler{
+			proof: proof,
+		},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
+		TxConfirmRef: txconfirmRef,
+		ChainSource:  chainSource,
+		Wallet:       wallet,
+		Log:          fn.Some(btclog.Disabled),
+	}
+	resumeBehavior := &behavior{cfg: cfg, log: btclog.Disabled}
+	err = resumeBehavior.restoreCheckpoint(t.Context())
+	require.NoError(t, err)
+
+	resumedActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
+		ID:          cfg.ActorID,
+		Behavior:    adaptTx(resumeBehavior),
+		MailboxSize: 64,
+	})
+	resumeBehavior.selfRef = resumedActor.TellRef()
+	resumedActor.Start()
+	t.Cleanup(resumedActor.Stop)
+
+	mustAsk(t, resumedActor.Ref(), &ResumeUnrollRequest{Height: 105})
+
+	stateResp, ok := mustAsk(
+		t, resumedActor.Ref(), &GetStateRequest{},
+	).(*GetStateResp)
+	require.True(t, ok)
+	require.Equal(t, PhaseSweepBroadcast, stateResp.Phase)
+	require.Equal(t, 1, chainSource.feeRequestCount())
+	require.Equal(t, int64(0), wallet.pkScriptRequestCount())
+	require.Equal(t, 0, txconfirmRef.requestCount())
+
+	checkpoint := mustDecodeCheckpoint(t, store, cfg.ActorID)
+	require.Nil(t, checkpoint.SweepTx)
+	require.Equal(t, 0, checkpoint.SweepAttempts)
+
+	chainSource.setFeeEstimate(7, nil)
+	mustAsk(t, resumedActor.Ref(), &HeightObservedMsg{Height: 106})
+
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() == 1
+	}, testTimeout, 10*time.Millisecond)
+	require.Equal(t, 2, chainSource.feeRequestCount())
+	require.Equal(t, int64(1), wallet.pkScriptRequestCount())
+}
+
 // TestBuildSweepTx verifies the copied sweep-construction helper works without
 // importing the legacy unroller package.
 func TestBuildSweepTx(t *testing.T) {
@@ -3026,7 +3558,7 @@ func TestBuildSweepTx(t *testing.T) {
 
 	sweepTx, err := buildSweepTx(
 		t.Context(), &fakeSweepWallet{}, &fakeChainSourceRef{}, proof,
-		desc, 0, 110, NewStandardVTXOExitSpendPolicy(desc),
+		desc, 0, 0, 110, NewStandardVTXOExitSpendPolicy(desc),
 	)
 	require.NoError(t, err)
 	require.Len(t, sweepTx.TxIn, 1)
@@ -3115,25 +3647,198 @@ func TestStandardExitSpendPolicyResolver(t *testing.T) {
 	require.Contains(t, err.Error(), "unknown exit policy kind")
 }
 
-// TestBuildSweepTxFallsBackWithoutFeeEstimate verifies the sweep builder uses
-// the regtest fallback fee when the backend has no estimate available yet.
-func TestBuildSweepTxFallsBackWithoutFeeEstimate(t *testing.T) {
+// TestBuildSweepTxUsesConfiguredFeeFallback verifies controlled regtest or
+// test callers can explicitly supply a fixed rate when the backend has no
+// estimate available yet.
+func TestBuildSweepTxUsesConfiguredFeeFallback(t *testing.T) {
 	proof := buildLinearProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	const fallbackFeeRateSatPerVByte int64 = 2
 
 	sweepTx, err := buildSweepTx(
 		t.Context(), &fakeSweepWallet{}, &fakeChainSourceRef{
 			feeErr: fmt.Errorf("no fee estimates available"),
-		}, proof, desc, 0, 110, NewStandardVTXOExitSpendPolicy(desc),
+		}, proof, desc, 0, fallbackFeeRateSatPerVByte, 110,
+		NewStandardVTXOExitSpendPolicy(desc),
 	)
 	require.NoError(t, err)
 
 	targetOutput, err := proof.TargetOutput()
 	require.NoError(t, err)
 
-	expectedFee := defaultSweepFallbackFeeRateSatPerVByte *
-		estimatedSweepVBytes
+	expectedFee := fallbackFeeRateSatPerVByte * estimatedSweepVBytes
 	require.Equal(t, targetOutput.Value-expectedFee, sweepTx.TxOut[0].Value)
+}
+
+// fallbackExitSpendPolicy models a policy whose spend competes with another
+// valid leaf and therefore must construct a transaction even when estimation
+// is temporarily unavailable.
+type fallbackExitSpendPolicy struct {
+	*StandardVTXOExitSpendPolicy
+}
+
+// Kind returns a non-standard durable policy identity.
+func (p *fallbackExitSpendPolicy) Kind() ExitPolicyKind {
+	return "test_race_sensitive"
+}
+
+// FeeEstimateFallbackSatPerVByte returns the policy-owned emergency rate.
+func (p *fallbackExitSpendPolicy) FeeEstimateFallbackSatPerVByte() int64 {
+	return 2
+}
+
+// fixedExitSpendPolicyResolver returns one policy for actor-boundary tests.
+type fixedExitSpendPolicyResolver struct {
+	policy ExitSpendPolicy
+}
+
+// ResolveExitSpendPolicy returns the configured policy.
+func (r *fixedExitSpendPolicyResolver) ResolveExitSpendPolicy(context.Context,
+	ExitSpendPolicyRequest) (ExitSpendPolicy, error) {
+
+	return r.policy, nil
+}
+
+// TestRaceSensitivePolicyUsesFeeEstimateFallback verifies a policy can opt
+// into an emergency rate when waiting would leave a competing spend path live.
+func TestRaceSensitivePolicyUsesFeeEstimateFallback(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, behavior, txconfirmRef, store := newActorHarness(
+		t, proof, desc,
+	)
+
+	standardPolicy := NewStandardVTXOExitSpendPolicy(desc)
+	policy := &fallbackExitSpendPolicy{standardPolicy}
+	behavior.cfg.ExitSpendPolicyResolver = &fixedExitSpendPolicyResolver{
+		policy: policy,
+	}
+	chainSource, ok := behavior.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+	chainSource.setFeeEstimate(0, fmt.Errorf("estimator unavailable"))
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:         100,
+		Trigger:        TriggerManual,
+		ExitPolicyKind: policy.Kind(),
+		ExitPolicyRef:  "race-sensitive-test",
+	})
+	txconfirmRef.emitConfirmed(t, 0, proof.RootTxids()[0], 101)
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() == 2
+	}, testTimeout, 10*time.Millisecond)
+	txconfirmRef.emitConfirmed(t, 1, proof.TargetOutpoint().Hash, 102)
+	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 104})
+
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() == 3
+	}, testTimeout, 10*time.Millisecond)
+	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	require.NotNil(t, checkpoint.SweepTx)
+	require.Equal(t, 0, checkpoint.SweepAttempts)
+}
+
+// TestSweepDefersWhenFeeEstimateUnavailable verifies a transient estimator
+// outage leaves the exit non-terminal without deriving, persisting, or
+// submitting an anchorless sweep. A later height retries estimation and builds
+// exactly one sweep after the estimator recovers.
+func TestSweepDefersWhenFeeEstimateUnavailable(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, behavior, txconfirmRef, store := newActorHarness(
+		t, proof, desc,
+	)
+
+	chainSource, ok := behavior.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+	chainSource.setFeeEstimate(0, fmt.Errorf("estimator unavailable"))
+
+	wallet, ok := behavior.cfg.Wallet.(*fakeSweepWallet)
+	require.True(t, ok)
+
+	var logBuf bytes.Buffer
+	logger := btclog.NewSLogger(btclog.NewDefaultHandler(&logBuf))
+	logger.SetLevel(btclog.LevelInfo)
+	behavior.log = logger
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+	txconfirmRef.emitConfirmed(t, 0, proof.RootTxids()[0], 101)
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() == 2
+	}, testTimeout, 10*time.Millisecond)
+	txconfirmRef.emitConfirmed(t, 1, proof.TargetOutpoint().Hash, 102)
+
+	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 104})
+
+	stateResp, ok := mustAsk(
+		t, unrollActor.Ref(), &GetStateRequest{},
+	).(*GetStateResp)
+	require.True(t, ok)
+	require.Equal(t, PhaseSweepBroadcast, stateResp.Phase)
+	require.Equal(t, 2, txconfirmRef.requestCount())
+	require.Equal(t, 1, chainSource.feeRequestCount())
+	require.Equal(t, int64(0), wallet.pkScriptRequestCount())
+	require.Contains(
+		t, logBuf.String(),
+		"Deferring unroll exit spend: fee estimate unavailable",
+	)
+
+	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	require.Nil(t, checkpoint.SweepTx)
+	require.Equal(t, 0, checkpoint.SweepAttempts)
+	require.Empty(t, checkpoint.Fail)
+
+	chainSource.setFeeEstimate(7, nil)
+	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 105})
+
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() == 3
+	}, testTimeout, 10*time.Millisecond)
+	require.Equal(t, 2, chainSource.feeRequestCount())
+	require.Equal(t, int64(1), wallet.pkScriptRequestCount())
+
+	checkpoint = mustDecodeCheckpoint(t, store, "unroll-test")
+	require.NotNil(t, checkpoint.SweepTx)
+	require.Equal(t, 0, checkpoint.SweepAttempts)
+}
+
+// TestSweepBroadcastRetryReusesCachedTxWithoutFeeEstimate verifies estimator
+// availability no longer matters after a sweep is persisted. A txconfirm
+// failure consumes the existing retry budget and resubmits the same txid
+// without deriving a new destination or asking for a replacement fee.
+func TestSweepBroadcastRetryReusesCachedTxWithoutFeeEstimate(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, behavior, txconfirmRef, store := newActorHarness(
+		t, proof, desc,
+	)
+
+	chainSource, ok := behavior.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+	wallet, ok := behavior.cfg.Wallet.(*fakeSweepWallet)
+	require.True(t, ok)
+
+	sweepTxid := driveLinearToSweep(
+		t, unrollActor.Ref(), txconfirmRef, store, proof,
+	)
+	require.Equal(t, 1, chainSource.feeRequestCount())
+	require.Equal(t, int64(1), wallet.pkScriptRequestCount())
+
+	chainSource.setFeeEstimate(0, fmt.Errorf("estimator unavailable"))
+	txconfirmRef.emitFailed(t, 2, sweepTxid, "broadcast rejected")
+
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() == 4
+	}, testTimeout, 10*time.Millisecond)
+	require.Equal(t, sweepTxid, txconfirmRef.lastRequest(t).Tx.TxHash())
+	require.Equal(t, 1, chainSource.feeRequestCount())
+	require.Equal(t, int64(1), wallet.pkScriptRequestCount())
+
+	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	require.Equal(t, 1, checkpoint.SweepAttempts)
 }
 
 // TestSweepConfirmationCompletesActor verifies that confirming the final sweep
@@ -3979,7 +4684,7 @@ func TestUnrollAdoptStagedSweepReusesPersisted(t *testing.T) {
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 	sweepTx, err := buildSweepTx(
 		t.Context(), &fakeSweepWallet{}, &fakeChainSourceRef{}, proof,
-		desc, 0, 110, NewStandardVTXOExitSpendPolicy(desc),
+		desc, 0, 0, 110, NewStandardVTXOExitSpendPolicy(desc),
 	)
 	require.NoError(t, err)
 	sweepTxid := sweepTx.TxHash()

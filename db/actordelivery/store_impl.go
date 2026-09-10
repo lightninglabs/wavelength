@@ -11,6 +11,7 @@ import (
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/db"
 	adsqlc "github.com/lightninglabs/wavelength/db/actordelivery/sqlc"
+	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
 	"github.com/lightningnetwork/lnd/clock"
 )
 
@@ -109,6 +110,38 @@ type ActorDeliveryQueries interface {
 
 	MarkMessageProcessed(ctx context.Context, arg MarkProcessedParams) error
 
+	// AdmitIngressReceipt inserts or replaces an expired network receipt.
+	AdmitIngressReceipt(context.Context,
+		adsqlc.AdmitIngressReceiptParams) (int64, error)
+
+	// GetIngressReceipt reads immutable consumption evidence for
+	// comparison.
+	GetIngressReceipt(context.Context,
+		string) (adsqlc.IngressReceipt, error)
+
+	// PruneIngressReceipts removes only a bounded batch of expired
+	// receipts.
+	PruneIngressReceipts(context.Context,
+		adsqlc.PruneIngressReceiptsParams) (int64, error)
+
+	// GetIngressQuarantine reads an envelope retained for recovery.
+	GetIngressQuarantine(context.Context,
+		string) (adsqlc.GetIngressQuarantineRow, error)
+
+	// InsertIngressQuarantine preserves bounded poison evidence.
+	InsertIngressQuarantine(context.Context,
+		adsqlc.InsertIngressQuarantineParams) (int64, error)
+
+	// ListIngressQuarantine lists one connection's pending evidence.
+	ListIngressQuarantine(context.Context,
+		string) ([]adsqlc.ListIngressQuarantineRow, error)
+
+	// NoteIngressQuarantineAttempt counts one startup recovery attempt.
+	NoteIngressQuarantineAttempt(context.Context, string) error
+
+	// DeleteIngressQuarantine removes durably recovered evidence.
+	DeleteIngressQuarantine(context.Context, string) error
+
 	// FSM checkpoint operations.
 	SaveFSMCheckpoint(ctx context.Context, arg SaveCheckpointParams) error
 
@@ -189,6 +222,12 @@ func (s *Store) EnqueueMessage(
 
 	err := s.db.ExecTx(ctx, writeTxOpts,
 		func(q ActorDeliveryQueries) error {
+			accepted, err := admitIngressDelivery(
+				ctx, q, params, s.clock.Now(),
+			)
+			if err != nil || !accepted {
+				return err
+			}
 			createdAt := s.clock.Now().Unix()
 
 			return q.EnqueueMailboxMessage(
@@ -228,6 +267,7 @@ func (s *Store) EnqueueMessage(
 	// post-commit wake at exactly that mailbox. The tx-scoped
 	// TxActorDeliveryStore records the same set directly; this covers the
 	// join path that bypasses it. Outside an ExecTx this is a no-op.
+	mailboxconn.NoteIngressReceiptHandoff(ctx)
 	noteMailboxEnqueued(ctx, params.MailboxID)
 
 	return nil
@@ -1235,6 +1275,18 @@ func (s *TxActorDeliveryStore) EnqueueMessage(
 	ctx context.Context, params actor.EnqueueParams,
 ) error {
 
+	accepted, err := admitIngressDelivery(
+		ctx, s.querier, params, s.clock.Now(),
+	)
+	if err != nil {
+		return err
+	}
+	if !accepted {
+		mailboxconn.NoteIngressReceiptHandoff(ctx)
+
+		return nil
+	}
+
 	if err := s.querier.EnqueueMailboxMessage(ctx, EnqueueMailboxParams{
 		ID:              params.ID,
 		MailboxID:       params.MailboxID,
@@ -1257,6 +1309,7 @@ func (s *TxActorDeliveryStore) EnqueueMessage(
 	// invisible to the consumer until commit, so the in-process wake from
 	// DurableMailbox.Send cannot rouse it; this is the signal that restores
 	// immediate same-process delivery.
+	mailboxconn.NoteIngressReceiptHandoff(ctx)
 	noteMailboxEnqueued(ctx, params.MailboxID)
 
 	return nil

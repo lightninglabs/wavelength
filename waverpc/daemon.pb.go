@@ -1079,8 +1079,11 @@ type ServerInfo struct {
 	// free_refresh_window_blocks is the operator's late-lifetime refresh
 	// waiver window. Zero disables the policy.
 	FreeRefreshWindowBlocks uint32 `protobuf:"varint,15,opt,name=free_refresh_window_blocks,json=freeRefreshWindowBlocks,proto3" json:"free_refresh_window_blocks,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// vtxo_confirmations is the confirmation depth at which new round VTXOs
+	// become available for off-chain spending.
+	VtxoConfirmations uint32 `protobuf:"varint,16,opt,name=vtxo_confirmations,json=vtxoConfirmations,proto3" json:"vtxo_confirmations,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *ServerInfo) Reset() {
@@ -1193,6 +1196,13 @@ func (x *ServerInfo) GetMaxUserBalance() uint64 {
 func (x *ServerInfo) GetFreeRefreshWindowBlocks() uint32 {
 	if x != nil {
 		return x.FreeRefreshWindowBlocks
+	}
+	return 0
+}
+
+func (x *ServerInfo) GetVtxoConfirmations() uint32 {
+	if x != nil {
+		return x.VtxoConfirmations
 	}
 	return 0
 }
@@ -2145,8 +2155,8 @@ func (x *VTXOSettlement) GetFeeSat() int64 {
 
 type ListVTXOsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// status_filter restricts the response to VTXOs matching this status.
-	// If VTXO_STATUS_UNSPECIFIED (default), all statuses are returned.
+	// status_filter restricts the response to VTXOs in this status. It is
+	// equivalent to a single entry in statuses.
 	StatusFilter VTXOStatus `protobuf:"varint,1,opt,name=status_filter,json=statusFilter,proto3,enum=waverpc.VTXOStatus" json:"status_filter,omitempty"`
 	// min_amount_sat excludes VTXOs below this value.
 	MinAmountSat int64 `protobuf:"varint,2,opt,name=min_amount_sat,json=minAmountSat,proto3" json:"min_amount_sat,omitempty"`
@@ -2156,8 +2166,13 @@ type ListVTXOsRequest struct {
 	// consumers (balance views, coin selection) that never inspect the
 	// PSBTs. The default keeps the full response for compatibility.
 	ExcludeCheckpointPsbts bool `protobuf:"varint,3,opt,name=exclude_checkpoint_psbts,json=excludeCheckpointPsbts,proto3" json:"exclude_checkpoint_psbts,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// statuses restricts the response to VTXOs in any of these statuses.
+	// When empty, every VTXO except VTXO_STATUS_FORFEITED and
+	// VTXO_STATUS_SPENT is returned. VTXO_STATUS_PENDING_ROUND entries are
+	// only included when listed.
+	Statuses      []VTXOStatus `protobuf:"varint,4,rep,packed,name=statuses,proto3,enum=waverpc.VTXOStatus" json:"statuses,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ListVTXOsRequest) Reset() {
@@ -2209,6 +2224,13 @@ func (x *ListVTXOsRequest) GetExcludeCheckpointPsbts() bool {
 		return x.ExcludeCheckpointPsbts
 	}
 	return false
+}
+
+func (x *ListVTXOsRequest) GetStatuses() []VTXOStatus {
+	if x != nil {
+		return x.Statuses
+	}
+	return nil
 }
 
 type ListVTXOsResponse struct {
@@ -10741,7 +10763,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fidentity_pubkey\x18\n" +
 	" \x01(\tR\x0eidentityPubkey\x124\n" +
 	"\vserver_info\x18\v \x01(\v2\x13.waverpc.ServerInfoR\n" +
-	"serverInfo\"\x8c\x04\n" +
+	"serverInfo\"\xbb\x04\n" +
 	"\n" +
 	"ServerInfo\x12'\n" +
 	"\x0foperator_pubkey\x18\x01 \x01(\fR\x0eoperatorPubkey\x12.\n" +
@@ -10757,7 +10779,8 @@ const file_daemon_proto_rawDesc = "" +
 	"\x11min_confirmations\x18\f \x01(\rR\x10minConfirmations\x12-\n" +
 	"\x13min_vtxo_amount_sat\x18\r \x01(\x04R\x10minVtxoAmountSat\x12(\n" +
 	"\x10max_user_balance\x18\x0e \x01(\x04R\x0emaxUserBalance\x12;\n" +
-	"\x1afree_refresh_window_blocks\x18\x0f \x01(\rR\x17freeRefreshWindowBlocks\"9\n" +
+	"\x1afree_refresh_window_blocks\x18\x0f \x01(\rR\x17freeRefreshWindowBlocks\x12-\n" +
+	"\x12vtxo_confirmations\x18\x10 \x01(\rR\x11vtxoConfirmations\"9\n" +
 	"\x0eGenSeedRequest\x12'\n" +
 	"\x0fseed_passphrase\x18\x01 \x01(\fR\x0eseedPassphrase\"V\n" +
 	"\x0fGenSeedResponse\x12\x1a\n" +
@@ -10829,11 +10852,12 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0eVTXOSettlement\x12\x12\n" +
 	"\x04txid\x18\x01 \x01(\tR\x04txid\x12\x16\n" +
 	"\x06height\x18\x02 \x01(\x05R\x06height\x12\x17\n" +
-	"\afee_sat\x18\x03 \x01(\x03R\x06feeSat\"\xac\x01\n" +
+	"\afee_sat\x18\x03 \x01(\x03R\x06feeSat\"\xdd\x01\n" +
 	"\x10ListVTXOsRequest\x128\n" +
 	"\rstatus_filter\x18\x01 \x01(\x0e2\x13.waverpc.VTXOStatusR\fstatusFilter\x12$\n" +
 	"\x0emin_amount_sat\x18\x02 \x01(\x03R\fminAmountSat\x128\n" +
-	"\x18exclude_checkpoint_psbts\x18\x03 \x01(\bR\x16excludeCheckpointPsbts\"8\n" +
+	"\x18exclude_checkpoint_psbts\x18\x03 \x01(\bR\x16excludeCheckpointPsbts\x12/\n" +
+	"\bstatuses\x18\x04 \x03(\x0e2\x13.waverpc.VTXOStatusR\bstatuses\"8\n" +
 	"\x11ListVTXOsResponse\x12#\n" +
 	"\x05vtxos\x18\x01 \x03(\v2\r.waverpc.VTXOR\x05vtxos\"\x13\n" +
 	"\x11NewAddressRequest\".\n" +
@@ -11766,175 +11790,176 @@ var file_daemon_proto_depIdxs = []int32{
 	22,  // 4: waverpc.VTXO.expiry_info:type_name -> waverpc.VTXOExpiryInfo
 	24,  // 5: waverpc.VTXO.settlement:type_name -> waverpc.VTXOSettlement
 	1,   // 6: waverpc.ListVTXOsRequest.status_filter:type_name -> waverpc.VTXOStatus
-	23,  // 7: waverpc.ListVTXOsResponse.vtxos:type_name -> waverpc.VTXO
-	1,   // 8: waverpc.GetIndexedVTXOByPkScriptRequest.status_filter:type_name -> waverpc.VTXOStatus
-	23,  // 9: waverpc.GetIndexedVTXOByPkScriptResponse.vtxo:type_name -> waverpc.VTXO
-	1,   // 10: waverpc.GetVTXOExpiryInfoRequest.status_filter:type_name -> waverpc.VTXOStatus
-	22,  // 11: waverpc.GetVTXOExpiryInfoResponse.expiry_info:type_name -> waverpc.VTXOExpiryInfo
-	23,  // 12: waverpc.GetVTXOExpiryInfoResponse.vtxo:type_name -> waverpc.VTXO
-	45,  // 13: waverpc.SendVTXORequest.recipients:type_name -> waverpc.Output
-	45,  // 14: waverpc.SendOORRequest.recipients:type_name -> waverpc.Output
-	49,  // 15: waverpc.SendOORRequest.custom_inputs:type_name -> waverpc.CustomOORInput
-	50,  // 16: waverpc.CustomOORInput.external_signatures:type_name -> waverpc.TaprootScriptSignature
-	45,  // 17: waverpc.PrepareOORRequest.recipient:type_name -> waverpc.Output
-	49,  // 18: waverpc.PrepareOORRequest.custom_inputs:type_name -> waverpc.CustomOORInput
-	53,  // 19: waverpc.PrepareOORResponse.custom_inputs:type_name -> waverpc.PreparedOORCustomInput
-	49,  // 20: waverpc.SignOORCustomInputRequest.custom_input:type_name -> waverpc.CustomOORInput
-	50,  // 21: waverpc.SignOORCustomInputResponse.signature:type_name -> waverpc.TaprootScriptSignature
-	3,   // 22: waverpc.ForfeitSigningContext.signing_route:type_name -> waverpc.ForfeitSigningRoute
-	60,  // 23: waverpc.RefreshVTXOsRequest.outpoints:type_name -> waverpc.OutpointSelection
-	63,  // 24: waverpc.RefreshVTXOsResponse.fee_estimate:type_name -> waverpc.RefreshFeeEstimate
-	64,  // 25: waverpc.RefreshFeeEstimate.outpoints:type_name -> waverpc.OutpointFeeEstimate
-	59,  // 26: waverpc.CustomRefreshVTXOInput.forfeit_signing_context:type_name -> waverpc.ForfeitSigningContext
-	65,  // 27: waverpc.RefreshCustomVTXOsRequest.inputs:type_name -> waverpc.CustomRefreshVTXOInput
-	66,  // 28: waverpc.RefreshCustomVTXOsRequest.outputs:type_name -> waverpc.CustomRefreshVTXOOutput
-	3,   // 29: waverpc.PendingForfeitParticipantSignatureRequest.signing_route:type_name -> waverpc.ForfeitSigningRoute
-	69,  // 30: waverpc.ListPendingForfeitParticipantSignatureRequestsResponse.requests:type_name -> waverpc.PendingForfeitParticipantSignatureRequest
-	72,  // 31: waverpc.SubmitForfeitParticipantSignaturesRequest.signatures:type_name -> waverpc.ForfeitParticipantSignature
-	60,  // 32: waverpc.LeaveVTXOsRequest.outpoints:type_name -> waverpc.OutpointSelection
-	75,  // 33: waverpc.LeaveVTXOsRequest.default_destination:type_name -> waverpc.LeaveDestination
-	140, // 34: waverpc.LeaveVTXOsRequest.destinations:type_name -> waverpc.LeaveVTXOsRequest.DestinationsEntry
-	75,  // 35: waverpc.SendOnChainRequest.destination:type_name -> waverpc.LeaveDestination
-	85,  // 36: waverpc.SweepBoardingUTXOsResponse.sweepable_outputs:type_name -> waverpc.BoardingSweepOutput
-	88,  // 37: waverpc.BoardingSweep.inputs:type_name -> waverpc.BoardingSweepInput
-	89,  // 38: waverpc.ListBoardingSweepsResponse.sweeps:type_name -> waverpc.BoardingSweep
-	4,   // 39: waverpc.RoundInfo.state:type_name -> waverpc.RoundState
-	91,  // 40: waverpc.RoundInfo.vtxos:type_name -> waverpc.RoundVTXOInfo
-	4,   // 41: waverpc.ListRoundsRequest.state_filter:type_name -> waverpc.RoundState
-	92,  // 42: waverpc.GetRoundResponse.round:type_name -> waverpc.RoundInfo
-	92,  // 43: waverpc.ListRoundsResponse.rounds:type_name -> waverpc.RoundInfo
-	92,  // 44: waverpc.WatchRoundsResponse.round:type_name -> waverpc.RoundInfo
-	5,   // 45: waverpc.OORSessionInfo.direction:type_name -> waverpc.OORSessionDirection
-	6,   // 46: waverpc.OORSessionInfo.status:type_name -> waverpc.OORSessionStatus
-	5,   // 47: waverpc.ListOORSessionsRequest.direction_filter:type_name -> waverpc.OORSessionDirection
-	6,   // 48: waverpc.ListOORSessionsRequest.status_filter:type_name -> waverpc.OORSessionStatus
-	99,  // 49: waverpc.ListOORSessionsResponse.sessions:type_name -> waverpc.OORSessionInfo
-	99,  // 50: waverpc.GetOORSessionResponse.session:type_name -> waverpc.OORSessionInfo
-	107, // 51: waverpc.GetFeeHistoryResponse.entries:type_name -> waverpc.FeeHistoryEntry
-	110, // 52: waverpc.ListTransactionsResponse.transactions:type_name -> waverpc.TransactionHistoryEntry
-	7,   // 53: waverpc.GetUnrollStatusResponse.status:type_name -> waverpc.UnrollJobStatus
-	115, // 54: waverpc.GetUnrollStatusResponse.progress:type_name -> waverpc.UnrollProgress
-	116, // 55: waverpc.GetUnrollStatusResponse.csv:type_name -> waverpc.UnrollCSV
-	117, // 56: waverpc.GetUnrollStatusResponse.fees:type_name -> waverpc.UnrollFees
-	8,   // 57: waverpc.ArmVHTLCRecoveryRequest.direction:type_name -> waverpc.VHTLCRecoveryDirection
-	9,   // 58: waverpc.ArmVHTLCRecoveryRequest.action:type_name -> waverpc.VHTLCRecoveryAction
-	129, // 59: waverpc.ArmVHTLCRecoveryResponse.status:type_name -> waverpc.VHTLCRecoveryStatus
-	129, // 60: waverpc.EscalateVHTLCRecoveryResponse.status:type_name -> waverpc.VHTLCRecoveryStatus
-	129, // 61: waverpc.CancelVHTLCRecoveryResponse.status:type_name -> waverpc.VHTLCRecoveryStatus
-	129, // 62: waverpc.GetVHTLCRecoveryStatusResponse.status:type_name -> waverpc.VHTLCRecoveryStatus
-	129, // 63: waverpc.ListVHTLCRecoveriesResponse.statuses:type_name -> waverpc.VHTLCRecoveryStatus
-	8,   // 64: waverpc.VHTLCRecoveryStatus.direction:type_name -> waverpc.VHTLCRecoveryDirection
-	9,   // 65: waverpc.VHTLCRecoveryStatus.action:type_name -> waverpc.VHTLCRecoveryAction
-	10,  // 66: waverpc.VHTLCRecoveryStatus.state:type_name -> waverpc.VHTLCRecoveryState
-	7,   // 67: waverpc.VHTLCRecoveryStatus.unroll_status:type_name -> waverpc.UnrollJobStatus
-	134, // 68: waverpc.BakeMacaroonRequest.permissions:type_name -> waverpc.MacaroonPermission
-	134, // 69: waverpc.MacaroonPermissionList.permissions:type_name -> waverpc.MacaroonPermission
-	141, // 70: waverpc.ListPermissionsResponse.method_permissions:type_name -> waverpc.ListPermissionsResponse.MethodPermissionsEntry
-	75,  // 71: waverpc.LeaveVTXOsRequest.DestinationsEntry.value:type_name -> waverpc.LeaveDestination
-	137, // 72: waverpc.ListPermissionsResponse.MethodPermissionsEntry.value:type_name -> waverpc.MacaroonPermissionList
-	11,  // 73: waverpc.DaemonService.GetInfo:input_type -> waverpc.GetInfoRequest
-	14,  // 74: waverpc.DaemonService.GenSeed:input_type -> waverpc.GenSeedRequest
-	16,  // 75: waverpc.DaemonService.InitWallet:input_type -> waverpc.InitWalletRequest
-	18,  // 76: waverpc.DaemonService.UnlockWallet:input_type -> waverpc.UnlockWalletRequest
-	20,  // 77: waverpc.DaemonService.GetBalance:input_type -> waverpc.GetBalanceRequest
-	25,  // 78: waverpc.DaemonService.ListVTXOs:input_type -> waverpc.ListVTXOsRequest
-	27,  // 79: waverpc.DaemonService.NewAddress:input_type -> waverpc.NewAddressRequest
-	29,  // 80: waverpc.DaemonService.NewReceiveScript:input_type -> waverpc.NewReceiveScriptRequest
-	31,  // 81: waverpc.DaemonService.ReceiveAuthKey:input_type -> waverpc.ReceiveAuthKeyRequest
-	33,  // 82: waverpc.DaemonService.SignReceiveAuthMessage:input_type -> waverpc.SignReceiveAuthMessageRequest
-	35,  // 83: waverpc.DaemonService.SignReceiveAuthMessageCompact:input_type -> waverpc.SignReceiveAuthMessageCompactRequest
-	37,  // 84: waverpc.DaemonService.ReceiveAuthECDH:input_type -> waverpc.ReceiveAuthECDHRequest
-	39,  // 85: waverpc.DaemonService.GetIndexedVTXOByPkScript:input_type -> waverpc.GetIndexedVTXOByPkScriptRequest
-	41,  // 86: waverpc.DaemonService.GetVTXOExpiryInfo:input_type -> waverpc.GetVTXOExpiryInfoRequest
-	43,  // 87: waverpc.DaemonService.GetIndexedOORSessionByTxid:input_type -> waverpc.GetIndexedOORSessionByTxidRequest
-	46,  // 88: waverpc.DaemonService.SendVTXO:input_type -> waverpc.SendVTXORequest
-	48,  // 89: waverpc.DaemonService.SendOOR:input_type -> waverpc.SendOORRequest
-	52,  // 90: waverpc.DaemonService.PrepareOOR:input_type -> waverpc.PrepareOORRequest
-	55,  // 91: waverpc.DaemonService.SignOORCustomInput:input_type -> waverpc.SignOORCustomInputRequest
-	57,  // 92: waverpc.DaemonService.SignVTXOForfeit:input_type -> waverpc.SignVTXOForfeitRequest
-	61,  // 93: waverpc.DaemonService.RefreshVTXOs:input_type -> waverpc.RefreshVTXOsRequest
-	67,  // 94: waverpc.DaemonService.RefreshCustomVTXOs:input_type -> waverpc.RefreshCustomVTXOsRequest
-	70,  // 95: waverpc.DaemonService.ListPendingForfeitParticipantSignatureRequests:input_type -> waverpc.ListPendingForfeitParticipantSignatureRequestsRequest
-	73,  // 96: waverpc.DaemonService.SubmitForfeitParticipantSignatures:input_type -> waverpc.SubmitForfeitParticipantSignaturesRequest
-	76,  // 97: waverpc.DaemonService.LeaveVTXOs:input_type -> waverpc.LeaveVTXOsRequest
-	78,  // 98: waverpc.DaemonService.SendOnChain:input_type -> waverpc.SendOnChainRequest
-	80,  // 99: waverpc.DaemonService.Board:input_type -> waverpc.BoardRequest
-	82,  // 100: waverpc.DaemonService.JoinNextRound:input_type -> waverpc.JoinNextRoundRequest
-	84,  // 101: waverpc.DaemonService.SweepBoardingUTXOs:input_type -> waverpc.SweepBoardingUTXOsRequest
-	87,  // 102: waverpc.DaemonService.ListBoardingSweeps:input_type -> waverpc.ListBoardingSweepsRequest
-	93,  // 103: waverpc.DaemonService.ListRounds:input_type -> waverpc.ListRoundsRequest
-	94,  // 104: waverpc.DaemonService.GetRound:input_type -> waverpc.GetRoundRequest
-	97,  // 105: waverpc.DaemonService.WatchRounds:input_type -> waverpc.WatchRoundsRequest
-	100, // 106: waverpc.DaemonService.ListOORSessions:input_type -> waverpc.ListOORSessionsRequest
-	102, // 107: waverpc.DaemonService.GetOORSession:input_type -> waverpc.GetOORSessionRequest
-	104, // 108: waverpc.DaemonService.EstimateFee:input_type -> waverpc.EstimateFeeRequest
-	106, // 109: waverpc.DaemonService.GetFeeHistory:input_type -> waverpc.GetFeeHistoryRequest
-	109, // 110: waverpc.DaemonService.ListTransactions:input_type -> waverpc.ListTransactionsRequest
-	112, // 111: waverpc.DaemonService.Unroll:input_type -> waverpc.UnrollRequest
-	114, // 112: waverpc.DaemonService.GetUnrollStatus:input_type -> waverpc.GetUnrollStatusRequest
-	119, // 113: waverpc.DaemonService.ArmVHTLCRecovery:input_type -> waverpc.ArmVHTLCRecoveryRequest
-	121, // 114: waverpc.DaemonService.EscalateVHTLCRecovery:input_type -> waverpc.EscalateVHTLCRecoveryRequest
-	123, // 115: waverpc.DaemonService.CancelVHTLCRecovery:input_type -> waverpc.CancelVHTLCRecoveryRequest
-	125, // 116: waverpc.DaemonService.GetVHTLCRecoveryStatus:input_type -> waverpc.GetVHTLCRecoveryStatusRequest
-	127, // 117: waverpc.DaemonService.ListVHTLCRecoveries:input_type -> waverpc.ListVHTLCRecoveriesRequest
-	130, // 118: waverpc.DaemonService.SignOutSwapHtlcAck:input_type -> waverpc.SignOutSwapHtlcAckRequest
-	132, // 119: waverpc.DaemonService.SignCreditAccountAuthorization:input_type -> waverpc.SignCreditAccountAuthorizationRequest
-	135, // 120: waverpc.MacaroonService.BakeMacaroon:input_type -> waverpc.BakeMacaroonRequest
-	138, // 121: waverpc.MacaroonService.ListPermissions:input_type -> waverpc.ListPermissionsRequest
-	12,  // 122: waverpc.DaemonService.GetInfo:output_type -> waverpc.GetInfoResponse
-	15,  // 123: waverpc.DaemonService.GenSeed:output_type -> waverpc.GenSeedResponse
-	17,  // 124: waverpc.DaemonService.InitWallet:output_type -> waverpc.InitWalletResponse
-	19,  // 125: waverpc.DaemonService.UnlockWallet:output_type -> waverpc.UnlockWalletResponse
-	21,  // 126: waverpc.DaemonService.GetBalance:output_type -> waverpc.GetBalanceResponse
-	26,  // 127: waverpc.DaemonService.ListVTXOs:output_type -> waverpc.ListVTXOsResponse
-	28,  // 128: waverpc.DaemonService.NewAddress:output_type -> waverpc.NewAddressResponse
-	30,  // 129: waverpc.DaemonService.NewReceiveScript:output_type -> waverpc.NewReceiveScriptResponse
-	32,  // 130: waverpc.DaemonService.ReceiveAuthKey:output_type -> waverpc.ReceiveAuthKeyResponse
-	34,  // 131: waverpc.DaemonService.SignReceiveAuthMessage:output_type -> waverpc.SignReceiveAuthMessageResponse
-	36,  // 132: waverpc.DaemonService.SignReceiveAuthMessageCompact:output_type -> waverpc.SignReceiveAuthMessageCompactResponse
-	38,  // 133: waverpc.DaemonService.ReceiveAuthECDH:output_type -> waverpc.ReceiveAuthECDHResponse
-	40,  // 134: waverpc.DaemonService.GetIndexedVTXOByPkScript:output_type -> waverpc.GetIndexedVTXOByPkScriptResponse
-	42,  // 135: waverpc.DaemonService.GetVTXOExpiryInfo:output_type -> waverpc.GetVTXOExpiryInfoResponse
-	44,  // 136: waverpc.DaemonService.GetIndexedOORSessionByTxid:output_type -> waverpc.GetIndexedOORSessionByTxidResponse
-	47,  // 137: waverpc.DaemonService.SendVTXO:output_type -> waverpc.SendVTXOResponse
-	51,  // 138: waverpc.DaemonService.SendOOR:output_type -> waverpc.SendOORResponse
-	54,  // 139: waverpc.DaemonService.PrepareOOR:output_type -> waverpc.PrepareOORResponse
-	56,  // 140: waverpc.DaemonService.SignOORCustomInput:output_type -> waverpc.SignOORCustomInputResponse
-	58,  // 141: waverpc.DaemonService.SignVTXOForfeit:output_type -> waverpc.SignVTXOForfeitResponse
-	62,  // 142: waverpc.DaemonService.RefreshVTXOs:output_type -> waverpc.RefreshVTXOsResponse
-	68,  // 143: waverpc.DaemonService.RefreshCustomVTXOs:output_type -> waverpc.RefreshCustomVTXOsResponse
-	71,  // 144: waverpc.DaemonService.ListPendingForfeitParticipantSignatureRequests:output_type -> waverpc.ListPendingForfeitParticipantSignatureRequestsResponse
-	74,  // 145: waverpc.DaemonService.SubmitForfeitParticipantSignatures:output_type -> waverpc.SubmitForfeitParticipantSignaturesResponse
-	77,  // 146: waverpc.DaemonService.LeaveVTXOs:output_type -> waverpc.LeaveVTXOsResponse
-	79,  // 147: waverpc.DaemonService.SendOnChain:output_type -> waverpc.SendOnChainResponse
-	81,  // 148: waverpc.DaemonService.Board:output_type -> waverpc.BoardResponse
-	83,  // 149: waverpc.DaemonService.JoinNextRound:output_type -> waverpc.JoinNextRoundResponse
-	86,  // 150: waverpc.DaemonService.SweepBoardingUTXOs:output_type -> waverpc.SweepBoardingUTXOsResponse
-	90,  // 151: waverpc.DaemonService.ListBoardingSweeps:output_type -> waverpc.ListBoardingSweepsResponse
-	96,  // 152: waverpc.DaemonService.ListRounds:output_type -> waverpc.ListRoundsResponse
-	95,  // 153: waverpc.DaemonService.GetRound:output_type -> waverpc.GetRoundResponse
-	98,  // 154: waverpc.DaemonService.WatchRounds:output_type -> waverpc.WatchRoundsResponse
-	101, // 155: waverpc.DaemonService.ListOORSessions:output_type -> waverpc.ListOORSessionsResponse
-	103, // 156: waverpc.DaemonService.GetOORSession:output_type -> waverpc.GetOORSessionResponse
-	105, // 157: waverpc.DaemonService.EstimateFee:output_type -> waverpc.EstimateFeeResponse
-	108, // 158: waverpc.DaemonService.GetFeeHistory:output_type -> waverpc.GetFeeHistoryResponse
-	111, // 159: waverpc.DaemonService.ListTransactions:output_type -> waverpc.ListTransactionsResponse
-	113, // 160: waverpc.DaemonService.Unroll:output_type -> waverpc.UnrollResponse
-	118, // 161: waverpc.DaemonService.GetUnrollStatus:output_type -> waverpc.GetUnrollStatusResponse
-	120, // 162: waverpc.DaemonService.ArmVHTLCRecovery:output_type -> waverpc.ArmVHTLCRecoveryResponse
-	122, // 163: waverpc.DaemonService.EscalateVHTLCRecovery:output_type -> waverpc.EscalateVHTLCRecoveryResponse
-	124, // 164: waverpc.DaemonService.CancelVHTLCRecovery:output_type -> waverpc.CancelVHTLCRecoveryResponse
-	126, // 165: waverpc.DaemonService.GetVHTLCRecoveryStatus:output_type -> waverpc.GetVHTLCRecoveryStatusResponse
-	128, // 166: waverpc.DaemonService.ListVHTLCRecoveries:output_type -> waverpc.ListVHTLCRecoveriesResponse
-	131, // 167: waverpc.DaemonService.SignOutSwapHtlcAck:output_type -> waverpc.SignOutSwapHtlcAckResponse
-	133, // 168: waverpc.DaemonService.SignCreditAccountAuthorization:output_type -> waverpc.SignCreditAccountAuthorizationResponse
-	136, // 169: waverpc.MacaroonService.BakeMacaroon:output_type -> waverpc.BakeMacaroonResponse
-	139, // 170: waverpc.MacaroonService.ListPermissions:output_type -> waverpc.ListPermissionsResponse
-	122, // [122:171] is the sub-list for method output_type
-	73,  // [73:122] is the sub-list for method input_type
-	73,  // [73:73] is the sub-list for extension type_name
-	73,  // [73:73] is the sub-list for extension extendee
-	0,   // [0:73] is the sub-list for field type_name
+	1,   // 7: waverpc.ListVTXOsRequest.statuses:type_name -> waverpc.VTXOStatus
+	23,  // 8: waverpc.ListVTXOsResponse.vtxos:type_name -> waverpc.VTXO
+	1,   // 9: waverpc.GetIndexedVTXOByPkScriptRequest.status_filter:type_name -> waverpc.VTXOStatus
+	23,  // 10: waverpc.GetIndexedVTXOByPkScriptResponse.vtxo:type_name -> waverpc.VTXO
+	1,   // 11: waverpc.GetVTXOExpiryInfoRequest.status_filter:type_name -> waverpc.VTXOStatus
+	22,  // 12: waverpc.GetVTXOExpiryInfoResponse.expiry_info:type_name -> waverpc.VTXOExpiryInfo
+	23,  // 13: waverpc.GetVTXOExpiryInfoResponse.vtxo:type_name -> waverpc.VTXO
+	45,  // 14: waverpc.SendVTXORequest.recipients:type_name -> waverpc.Output
+	45,  // 15: waverpc.SendOORRequest.recipients:type_name -> waverpc.Output
+	49,  // 16: waverpc.SendOORRequest.custom_inputs:type_name -> waverpc.CustomOORInput
+	50,  // 17: waverpc.CustomOORInput.external_signatures:type_name -> waverpc.TaprootScriptSignature
+	45,  // 18: waverpc.PrepareOORRequest.recipient:type_name -> waverpc.Output
+	49,  // 19: waverpc.PrepareOORRequest.custom_inputs:type_name -> waverpc.CustomOORInput
+	53,  // 20: waverpc.PrepareOORResponse.custom_inputs:type_name -> waverpc.PreparedOORCustomInput
+	49,  // 21: waverpc.SignOORCustomInputRequest.custom_input:type_name -> waverpc.CustomOORInput
+	50,  // 22: waverpc.SignOORCustomInputResponse.signature:type_name -> waverpc.TaprootScriptSignature
+	3,   // 23: waverpc.ForfeitSigningContext.signing_route:type_name -> waverpc.ForfeitSigningRoute
+	60,  // 24: waverpc.RefreshVTXOsRequest.outpoints:type_name -> waverpc.OutpointSelection
+	63,  // 25: waverpc.RefreshVTXOsResponse.fee_estimate:type_name -> waverpc.RefreshFeeEstimate
+	64,  // 26: waverpc.RefreshFeeEstimate.outpoints:type_name -> waverpc.OutpointFeeEstimate
+	59,  // 27: waverpc.CustomRefreshVTXOInput.forfeit_signing_context:type_name -> waverpc.ForfeitSigningContext
+	65,  // 28: waverpc.RefreshCustomVTXOsRequest.inputs:type_name -> waverpc.CustomRefreshVTXOInput
+	66,  // 29: waverpc.RefreshCustomVTXOsRequest.outputs:type_name -> waverpc.CustomRefreshVTXOOutput
+	3,   // 30: waverpc.PendingForfeitParticipantSignatureRequest.signing_route:type_name -> waverpc.ForfeitSigningRoute
+	69,  // 31: waverpc.ListPendingForfeitParticipantSignatureRequestsResponse.requests:type_name -> waverpc.PendingForfeitParticipantSignatureRequest
+	72,  // 32: waverpc.SubmitForfeitParticipantSignaturesRequest.signatures:type_name -> waverpc.ForfeitParticipantSignature
+	60,  // 33: waverpc.LeaveVTXOsRequest.outpoints:type_name -> waverpc.OutpointSelection
+	75,  // 34: waverpc.LeaveVTXOsRequest.default_destination:type_name -> waverpc.LeaveDestination
+	140, // 35: waverpc.LeaveVTXOsRequest.destinations:type_name -> waverpc.LeaveVTXOsRequest.DestinationsEntry
+	75,  // 36: waverpc.SendOnChainRequest.destination:type_name -> waverpc.LeaveDestination
+	85,  // 37: waverpc.SweepBoardingUTXOsResponse.sweepable_outputs:type_name -> waverpc.BoardingSweepOutput
+	88,  // 38: waverpc.BoardingSweep.inputs:type_name -> waverpc.BoardingSweepInput
+	89,  // 39: waverpc.ListBoardingSweepsResponse.sweeps:type_name -> waverpc.BoardingSweep
+	4,   // 40: waverpc.RoundInfo.state:type_name -> waverpc.RoundState
+	91,  // 41: waverpc.RoundInfo.vtxos:type_name -> waverpc.RoundVTXOInfo
+	4,   // 42: waverpc.ListRoundsRequest.state_filter:type_name -> waverpc.RoundState
+	92,  // 43: waverpc.GetRoundResponse.round:type_name -> waverpc.RoundInfo
+	92,  // 44: waverpc.ListRoundsResponse.rounds:type_name -> waverpc.RoundInfo
+	92,  // 45: waverpc.WatchRoundsResponse.round:type_name -> waverpc.RoundInfo
+	5,   // 46: waverpc.OORSessionInfo.direction:type_name -> waverpc.OORSessionDirection
+	6,   // 47: waverpc.OORSessionInfo.status:type_name -> waverpc.OORSessionStatus
+	5,   // 48: waverpc.ListOORSessionsRequest.direction_filter:type_name -> waverpc.OORSessionDirection
+	6,   // 49: waverpc.ListOORSessionsRequest.status_filter:type_name -> waverpc.OORSessionStatus
+	99,  // 50: waverpc.ListOORSessionsResponse.sessions:type_name -> waverpc.OORSessionInfo
+	99,  // 51: waverpc.GetOORSessionResponse.session:type_name -> waverpc.OORSessionInfo
+	107, // 52: waverpc.GetFeeHistoryResponse.entries:type_name -> waverpc.FeeHistoryEntry
+	110, // 53: waverpc.ListTransactionsResponse.transactions:type_name -> waverpc.TransactionHistoryEntry
+	7,   // 54: waverpc.GetUnrollStatusResponse.status:type_name -> waverpc.UnrollJobStatus
+	115, // 55: waverpc.GetUnrollStatusResponse.progress:type_name -> waverpc.UnrollProgress
+	116, // 56: waverpc.GetUnrollStatusResponse.csv:type_name -> waverpc.UnrollCSV
+	117, // 57: waverpc.GetUnrollStatusResponse.fees:type_name -> waverpc.UnrollFees
+	8,   // 58: waverpc.ArmVHTLCRecoveryRequest.direction:type_name -> waverpc.VHTLCRecoveryDirection
+	9,   // 59: waverpc.ArmVHTLCRecoveryRequest.action:type_name -> waverpc.VHTLCRecoveryAction
+	129, // 60: waverpc.ArmVHTLCRecoveryResponse.status:type_name -> waverpc.VHTLCRecoveryStatus
+	129, // 61: waverpc.EscalateVHTLCRecoveryResponse.status:type_name -> waverpc.VHTLCRecoveryStatus
+	129, // 62: waverpc.CancelVHTLCRecoveryResponse.status:type_name -> waverpc.VHTLCRecoveryStatus
+	129, // 63: waverpc.GetVHTLCRecoveryStatusResponse.status:type_name -> waverpc.VHTLCRecoveryStatus
+	129, // 64: waverpc.ListVHTLCRecoveriesResponse.statuses:type_name -> waverpc.VHTLCRecoveryStatus
+	8,   // 65: waverpc.VHTLCRecoveryStatus.direction:type_name -> waverpc.VHTLCRecoveryDirection
+	9,   // 66: waverpc.VHTLCRecoveryStatus.action:type_name -> waverpc.VHTLCRecoveryAction
+	10,  // 67: waverpc.VHTLCRecoveryStatus.state:type_name -> waverpc.VHTLCRecoveryState
+	7,   // 68: waverpc.VHTLCRecoveryStatus.unroll_status:type_name -> waverpc.UnrollJobStatus
+	134, // 69: waverpc.BakeMacaroonRequest.permissions:type_name -> waverpc.MacaroonPermission
+	134, // 70: waverpc.MacaroonPermissionList.permissions:type_name -> waverpc.MacaroonPermission
+	141, // 71: waverpc.ListPermissionsResponse.method_permissions:type_name -> waverpc.ListPermissionsResponse.MethodPermissionsEntry
+	75,  // 72: waverpc.LeaveVTXOsRequest.DestinationsEntry.value:type_name -> waverpc.LeaveDestination
+	137, // 73: waverpc.ListPermissionsResponse.MethodPermissionsEntry.value:type_name -> waverpc.MacaroonPermissionList
+	11,  // 74: waverpc.DaemonService.GetInfo:input_type -> waverpc.GetInfoRequest
+	14,  // 75: waverpc.DaemonService.GenSeed:input_type -> waverpc.GenSeedRequest
+	16,  // 76: waverpc.DaemonService.InitWallet:input_type -> waverpc.InitWalletRequest
+	18,  // 77: waverpc.DaemonService.UnlockWallet:input_type -> waverpc.UnlockWalletRequest
+	20,  // 78: waverpc.DaemonService.GetBalance:input_type -> waverpc.GetBalanceRequest
+	25,  // 79: waverpc.DaemonService.ListVTXOs:input_type -> waverpc.ListVTXOsRequest
+	27,  // 80: waverpc.DaemonService.NewAddress:input_type -> waverpc.NewAddressRequest
+	29,  // 81: waverpc.DaemonService.NewReceiveScript:input_type -> waverpc.NewReceiveScriptRequest
+	31,  // 82: waverpc.DaemonService.ReceiveAuthKey:input_type -> waverpc.ReceiveAuthKeyRequest
+	33,  // 83: waverpc.DaemonService.SignReceiveAuthMessage:input_type -> waverpc.SignReceiveAuthMessageRequest
+	35,  // 84: waverpc.DaemonService.SignReceiveAuthMessageCompact:input_type -> waverpc.SignReceiveAuthMessageCompactRequest
+	37,  // 85: waverpc.DaemonService.ReceiveAuthECDH:input_type -> waverpc.ReceiveAuthECDHRequest
+	39,  // 86: waverpc.DaemonService.GetIndexedVTXOByPkScript:input_type -> waverpc.GetIndexedVTXOByPkScriptRequest
+	41,  // 87: waverpc.DaemonService.GetVTXOExpiryInfo:input_type -> waverpc.GetVTXOExpiryInfoRequest
+	43,  // 88: waverpc.DaemonService.GetIndexedOORSessionByTxid:input_type -> waverpc.GetIndexedOORSessionByTxidRequest
+	46,  // 89: waverpc.DaemonService.SendVTXO:input_type -> waverpc.SendVTXORequest
+	48,  // 90: waverpc.DaemonService.SendOOR:input_type -> waverpc.SendOORRequest
+	52,  // 91: waverpc.DaemonService.PrepareOOR:input_type -> waverpc.PrepareOORRequest
+	55,  // 92: waverpc.DaemonService.SignOORCustomInput:input_type -> waverpc.SignOORCustomInputRequest
+	57,  // 93: waverpc.DaemonService.SignVTXOForfeit:input_type -> waverpc.SignVTXOForfeitRequest
+	61,  // 94: waverpc.DaemonService.RefreshVTXOs:input_type -> waverpc.RefreshVTXOsRequest
+	67,  // 95: waverpc.DaemonService.RefreshCustomVTXOs:input_type -> waverpc.RefreshCustomVTXOsRequest
+	70,  // 96: waverpc.DaemonService.ListPendingForfeitParticipantSignatureRequests:input_type -> waverpc.ListPendingForfeitParticipantSignatureRequestsRequest
+	73,  // 97: waverpc.DaemonService.SubmitForfeitParticipantSignatures:input_type -> waverpc.SubmitForfeitParticipantSignaturesRequest
+	76,  // 98: waverpc.DaemonService.LeaveVTXOs:input_type -> waverpc.LeaveVTXOsRequest
+	78,  // 99: waverpc.DaemonService.SendOnChain:input_type -> waverpc.SendOnChainRequest
+	80,  // 100: waverpc.DaemonService.Board:input_type -> waverpc.BoardRequest
+	82,  // 101: waverpc.DaemonService.JoinNextRound:input_type -> waverpc.JoinNextRoundRequest
+	84,  // 102: waverpc.DaemonService.SweepBoardingUTXOs:input_type -> waverpc.SweepBoardingUTXOsRequest
+	87,  // 103: waverpc.DaemonService.ListBoardingSweeps:input_type -> waverpc.ListBoardingSweepsRequest
+	93,  // 104: waverpc.DaemonService.ListRounds:input_type -> waverpc.ListRoundsRequest
+	94,  // 105: waverpc.DaemonService.GetRound:input_type -> waverpc.GetRoundRequest
+	97,  // 106: waverpc.DaemonService.WatchRounds:input_type -> waverpc.WatchRoundsRequest
+	100, // 107: waverpc.DaemonService.ListOORSessions:input_type -> waverpc.ListOORSessionsRequest
+	102, // 108: waverpc.DaemonService.GetOORSession:input_type -> waverpc.GetOORSessionRequest
+	104, // 109: waverpc.DaemonService.EstimateFee:input_type -> waverpc.EstimateFeeRequest
+	106, // 110: waverpc.DaemonService.GetFeeHistory:input_type -> waverpc.GetFeeHistoryRequest
+	109, // 111: waverpc.DaemonService.ListTransactions:input_type -> waverpc.ListTransactionsRequest
+	112, // 112: waverpc.DaemonService.Unroll:input_type -> waverpc.UnrollRequest
+	114, // 113: waverpc.DaemonService.GetUnrollStatus:input_type -> waverpc.GetUnrollStatusRequest
+	119, // 114: waverpc.DaemonService.ArmVHTLCRecovery:input_type -> waverpc.ArmVHTLCRecoveryRequest
+	121, // 115: waverpc.DaemonService.EscalateVHTLCRecovery:input_type -> waverpc.EscalateVHTLCRecoveryRequest
+	123, // 116: waverpc.DaemonService.CancelVHTLCRecovery:input_type -> waverpc.CancelVHTLCRecoveryRequest
+	125, // 117: waverpc.DaemonService.GetVHTLCRecoveryStatus:input_type -> waverpc.GetVHTLCRecoveryStatusRequest
+	127, // 118: waverpc.DaemonService.ListVHTLCRecoveries:input_type -> waverpc.ListVHTLCRecoveriesRequest
+	130, // 119: waverpc.DaemonService.SignOutSwapHtlcAck:input_type -> waverpc.SignOutSwapHtlcAckRequest
+	132, // 120: waverpc.DaemonService.SignCreditAccountAuthorization:input_type -> waverpc.SignCreditAccountAuthorizationRequest
+	135, // 121: waverpc.MacaroonService.BakeMacaroon:input_type -> waverpc.BakeMacaroonRequest
+	138, // 122: waverpc.MacaroonService.ListPermissions:input_type -> waverpc.ListPermissionsRequest
+	12,  // 123: waverpc.DaemonService.GetInfo:output_type -> waverpc.GetInfoResponse
+	15,  // 124: waverpc.DaemonService.GenSeed:output_type -> waverpc.GenSeedResponse
+	17,  // 125: waverpc.DaemonService.InitWallet:output_type -> waverpc.InitWalletResponse
+	19,  // 126: waverpc.DaemonService.UnlockWallet:output_type -> waverpc.UnlockWalletResponse
+	21,  // 127: waverpc.DaemonService.GetBalance:output_type -> waverpc.GetBalanceResponse
+	26,  // 128: waverpc.DaemonService.ListVTXOs:output_type -> waverpc.ListVTXOsResponse
+	28,  // 129: waverpc.DaemonService.NewAddress:output_type -> waverpc.NewAddressResponse
+	30,  // 130: waverpc.DaemonService.NewReceiveScript:output_type -> waverpc.NewReceiveScriptResponse
+	32,  // 131: waverpc.DaemonService.ReceiveAuthKey:output_type -> waverpc.ReceiveAuthKeyResponse
+	34,  // 132: waverpc.DaemonService.SignReceiveAuthMessage:output_type -> waverpc.SignReceiveAuthMessageResponse
+	36,  // 133: waverpc.DaemonService.SignReceiveAuthMessageCompact:output_type -> waverpc.SignReceiveAuthMessageCompactResponse
+	38,  // 134: waverpc.DaemonService.ReceiveAuthECDH:output_type -> waverpc.ReceiveAuthECDHResponse
+	40,  // 135: waverpc.DaemonService.GetIndexedVTXOByPkScript:output_type -> waverpc.GetIndexedVTXOByPkScriptResponse
+	42,  // 136: waverpc.DaemonService.GetVTXOExpiryInfo:output_type -> waverpc.GetVTXOExpiryInfoResponse
+	44,  // 137: waverpc.DaemonService.GetIndexedOORSessionByTxid:output_type -> waverpc.GetIndexedOORSessionByTxidResponse
+	47,  // 138: waverpc.DaemonService.SendVTXO:output_type -> waverpc.SendVTXOResponse
+	51,  // 139: waverpc.DaemonService.SendOOR:output_type -> waverpc.SendOORResponse
+	54,  // 140: waverpc.DaemonService.PrepareOOR:output_type -> waverpc.PrepareOORResponse
+	56,  // 141: waverpc.DaemonService.SignOORCustomInput:output_type -> waverpc.SignOORCustomInputResponse
+	58,  // 142: waverpc.DaemonService.SignVTXOForfeit:output_type -> waverpc.SignVTXOForfeitResponse
+	62,  // 143: waverpc.DaemonService.RefreshVTXOs:output_type -> waverpc.RefreshVTXOsResponse
+	68,  // 144: waverpc.DaemonService.RefreshCustomVTXOs:output_type -> waverpc.RefreshCustomVTXOsResponse
+	71,  // 145: waverpc.DaemonService.ListPendingForfeitParticipantSignatureRequests:output_type -> waverpc.ListPendingForfeitParticipantSignatureRequestsResponse
+	74,  // 146: waverpc.DaemonService.SubmitForfeitParticipantSignatures:output_type -> waverpc.SubmitForfeitParticipantSignaturesResponse
+	77,  // 147: waverpc.DaemonService.LeaveVTXOs:output_type -> waverpc.LeaveVTXOsResponse
+	79,  // 148: waverpc.DaemonService.SendOnChain:output_type -> waverpc.SendOnChainResponse
+	81,  // 149: waverpc.DaemonService.Board:output_type -> waverpc.BoardResponse
+	83,  // 150: waverpc.DaemonService.JoinNextRound:output_type -> waverpc.JoinNextRoundResponse
+	86,  // 151: waverpc.DaemonService.SweepBoardingUTXOs:output_type -> waverpc.SweepBoardingUTXOsResponse
+	90,  // 152: waverpc.DaemonService.ListBoardingSweeps:output_type -> waverpc.ListBoardingSweepsResponse
+	96,  // 153: waverpc.DaemonService.ListRounds:output_type -> waverpc.ListRoundsResponse
+	95,  // 154: waverpc.DaemonService.GetRound:output_type -> waverpc.GetRoundResponse
+	98,  // 155: waverpc.DaemonService.WatchRounds:output_type -> waverpc.WatchRoundsResponse
+	101, // 156: waverpc.DaemonService.ListOORSessions:output_type -> waverpc.ListOORSessionsResponse
+	103, // 157: waverpc.DaemonService.GetOORSession:output_type -> waverpc.GetOORSessionResponse
+	105, // 158: waverpc.DaemonService.EstimateFee:output_type -> waverpc.EstimateFeeResponse
+	108, // 159: waverpc.DaemonService.GetFeeHistory:output_type -> waverpc.GetFeeHistoryResponse
+	111, // 160: waverpc.DaemonService.ListTransactions:output_type -> waverpc.ListTransactionsResponse
+	113, // 161: waverpc.DaemonService.Unroll:output_type -> waverpc.UnrollResponse
+	118, // 162: waverpc.DaemonService.GetUnrollStatus:output_type -> waverpc.GetUnrollStatusResponse
+	120, // 163: waverpc.DaemonService.ArmVHTLCRecovery:output_type -> waverpc.ArmVHTLCRecoveryResponse
+	122, // 164: waverpc.DaemonService.EscalateVHTLCRecovery:output_type -> waverpc.EscalateVHTLCRecoveryResponse
+	124, // 165: waverpc.DaemonService.CancelVHTLCRecovery:output_type -> waverpc.CancelVHTLCRecoveryResponse
+	126, // 166: waverpc.DaemonService.GetVHTLCRecoveryStatus:output_type -> waverpc.GetVHTLCRecoveryStatusResponse
+	128, // 167: waverpc.DaemonService.ListVHTLCRecoveries:output_type -> waverpc.ListVHTLCRecoveriesResponse
+	131, // 168: waverpc.DaemonService.SignOutSwapHtlcAck:output_type -> waverpc.SignOutSwapHtlcAckResponse
+	133, // 169: waverpc.DaemonService.SignCreditAccountAuthorization:output_type -> waverpc.SignCreditAccountAuthorizationResponse
+	136, // 170: waverpc.MacaroonService.BakeMacaroon:output_type -> waverpc.BakeMacaroonResponse
+	139, // 171: waverpc.MacaroonService.ListPermissions:output_type -> waverpc.ListPermissionsResponse
+	123, // [123:172] is the sub-list for method output_type
+	74,  // [74:123] is the sub-list for method input_type
+	74,  // [74:74] is the sub-list for extension type_name
+	74,  // [74:74] is the sub-list for extension extendee
+	0,   // [0:74] is the sub-list for field type_name
 }
 
 func init() { file_daemon_proto_init() }

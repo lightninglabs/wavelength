@@ -955,6 +955,7 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 		MinOperatorFee:          btcutil.Amount(34),
 		FreeRefreshWindowBlocks: 72,
 		MinConfirmations:        2,
+		VTXOConfirmations:       1,
 	})
 	r := &RPCServer{server: server}
 
@@ -984,6 +985,7 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 		t, uint32(72), resp.ServerInfo.FreeRefreshWindowBlocks,
 	)
 	require.Equal(t, uint32(2), resp.ServerInfo.MinConfirmations)
+	require.Equal(t, uint32(1), resp.ServerInfo.VtxoConfirmations)
 }
 
 // TestGetInfoUsesCachedIdentityKey verifies ordinary status reads do not
@@ -1737,5 +1739,32 @@ func TestAutomaticExitDecisionReason(t *testing.T) {
 				automaticExitDecisionReason(tc.verdict),
 			)
 		})
+	}
+}
+
+// TestVTXOStatusProtoRoundTrip verifies that every persisted status maps
+// between the proto and domain enums in both directions.
+func TestVTXOStatusProtoRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	unmapped := map[waverpc.VTXOStatus]bool{
+		waverpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED:   true,
+		waverpc.VTXOStatus_VTXO_STATUS_PENDING_ROUND: true,
+	}
+
+	for val, name := range waverpc.VTXOStatus_name {
+		protoStatus := waverpc.VTXOStatus(val)
+		if unmapped[protoStatus] {
+			_, err := protoStatusToDomain(protoStatus)
+			require.Error(t, err, name)
+
+			continue
+		}
+
+		domainStatus, err := protoStatusToDomain(protoStatus)
+		require.NoError(t, err, name)
+		require.Equal(
+			t, protoStatus, vtxoStatusToProto(domainStatus), name,
+		)
 	}
 }

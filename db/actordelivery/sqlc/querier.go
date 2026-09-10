@@ -20,6 +20,7 @@ type Querier interface {
 	// intact for re-peek. MUST NOT be used by the multi-worker (NumWorkers > 1)
 	// path, which relies on lease_token fencing via AckMailboxMessage.
 	AckMailboxMessageByID(ctx context.Context, id string) (int64, error)
+	AdmitIngressReceipt(ctx context.Context, arg AdmitIngressReceiptParams) (int64, error)
 	// Claim a batch of pending outbox messages for delivery. Sets a claim token
 	// and expiry to prevent concurrent publishers from processing the same messages.
 	// Only selects rows that are unclaimed or whose claim has expired.
@@ -45,6 +46,7 @@ type Querier interface {
 	DeleteDeadLetter(ctx context.Context, id string) error
 	// Delete an FSM checkpoint (e.g., when actor terminates normally).
 	DeleteFSMCheckpoint(ctx context.Context, actorID string) error
+	DeleteIngressQuarantine(ctx context.Context, id string) error
 	// Delete a mailbox message by ID (used after moving to dead letter).
 	DeleteMailboxMessage(ctx context.Context, id string) error
 	// Durable mailbox queries.
@@ -86,6 +88,8 @@ type Querier interface {
 	GetDeadLetter(ctx context.Context, id string) (DeadLetter, error)
 	// Load an FSM checkpoint for an actor.
 	GetFSMCheckpoint(ctx context.Context, actorID string) (FsmCheckpoint, error)
+	GetIngressQuarantine(ctx context.Context, id string) (GetIngressQuarantineRow, error)
+	GetIngressReceipt(ctx context.Context, id string) (IngressReceipt, error)
 	// Get a specific mailbox message by ID.
 	GetMailboxMessage(ctx context.Context, id string) (MailboxMessage, error)
 	// Get a specific outbox message by ID.
@@ -95,6 +99,7 @@ type Querier interface {
 	// =============================================================================
 	// Store the result of an Ask message for caller retrieval.
 	InsertAskResult(ctx context.Context, arg InsertAskResultParams) error
+	InsertIngressQuarantine(ctx context.Context, arg InsertIngressQuarantineParams) (int64, error)
 	// Check if a message has already been processed.
 	IsMessageProcessed(ctx context.Context, id string) (bool, error)
 	// Atomically claim the next available message for processing.
@@ -154,6 +159,7 @@ type Querier interface {
 	ListDeadLettersBySource(ctx context.Context, arg ListDeadLettersBySourceParams) ([]DeadLetter, error)
 	// List all FSM checkpoints (for debugging/admin).
 	ListFSMCheckpoints(ctx context.Context) ([]FsmCheckpoint, error)
+	ListIngressQuarantine(ctx context.Context, lane string) ([]ListIngressQuarantineRow, error)
 	// List all messages for an actor's mailbox (for debugging).
 	ListMailboxMessagesByActor(ctx context.Context, mailboxID string) ([]MailboxMessage, error)
 	// List pending outbox messages for a specific target actor.
@@ -184,6 +190,7 @@ type Querier interface {
 	// Any stale expired lease metadata is cleared so the persisted row matches the
 	// leaseless state machine after a retry decision.
 	NackMailboxMessageByID(ctx context.Context, arg NackMailboxMessageByIDParams) (int64, error)
+	NoteIngressQuarantineAttempt(ctx context.Context, id string) error
 	// Read-only claim of the next available message WITHOUT taking a lease.
 	// This is the leaseless fast path for single-worker (NumWorkers == 1) actors:
 	// with no competing consumer, the lease_token's only purpose -- fencing the
@@ -224,6 +231,7 @@ type Querier interface {
 	// lease metadata is cleared so the persisted row matches the leaseless state
 	// machine, mirroring NackMailboxMessageByID.
 	PostponeMailboxMessageByID(ctx context.Context, arg PostponeMailboxMessageByIDParams) (int64, error)
+	PruneIngressReceipts(ctx context.Context, arg PruneIngressReceiptsParams) (int64, error)
 	// =============================================================================
 	// FSM Checkpoints
 	// =============================================================================

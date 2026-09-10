@@ -11,8 +11,10 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
+	tapsdk "github.com/lightninglabs/tap-sdk"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/baselib/protofsm"
 	"github.com/lightninglabs/wavelength/internal/testutils"
@@ -353,6 +355,71 @@ func TestActorStart(t *testing.T) {
 		require.False(t, assembly.VTXOs[0].IsChange)
 		require.True(t, assembly.VTXOs[1].IsChange)
 	})
+
+	t.Run("registers_asset_vtxo_request", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+		require.NoError(t, h.start())
+
+		ownerKey := &keychain.KeyDescriptor{
+			PubKey: h.clientPubKey,
+			KeyLocator: keychain.KeyLocator{
+				Family: types.VTXOOwnerKeyFamily,
+				Index:  0,
+			},
+		}
+		h.wallet.On(
+			"DeriveNextKey", mock.Anything,
+			types.VTXOOwnerKeyFamily,
+		).Return(ownerKey, nil).Once()
+
+		assetRef := tapsdk.AssetRefFromAssetID(
+			tapsdk.AssetID{1},
+		).String()
+		result := h.receive(&RegisterVTXORequestsRequest{
+			Assets: []AssetVTXORequest{{
+				AmountSat:   330,
+				AssetRef:    assetRef,
+				AssetAmount: 100,
+			}},
+		})
+		require.True(t, result.IsOk())
+
+		states := h.queryState()
+		tempState, found := h.findTempState(states)
+		require.True(t, found)
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok)
+		require.Len(t, assembly.VTXOs, 1)
+
+		request := assembly.VTXOs[0]
+		require.Equal(t, btcutil.Amount(330), request.Amount)
+		require.Equal(t, assetRef, request.AssetRef)
+		require.Equal(t, uint64(100), request.AssetAmount)
+		require.True(t, request.FixedAmount)
+		require.False(t, request.IsChange)
+	})
+
+	t.Run("rejects_invalid_asset_vtxo_request", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+		require.NoError(t, h.start())
+
+		result := h.receive(&RegisterVTXORequestsRequest{
+			Assets: []AssetVTXORequest{{
+				AmountSat:   330,
+				AssetRef:    "invalid",
+				AssetAmount: 100,
+			}},
+		})
+		require.True(t, result.IsErr())
+		require.ErrorContains(t, result.Err(), "asset reference")
+		require.Empty(t, h.queryState())
+	})
 }
 
 // TestActorRecovery validates that the actor can restore its state after a
@@ -631,6 +698,30 @@ func TestActorConfirmation(t *testing.T) {
 // lifecycle events, and server communication.
 func TestActorProcessOutbox(t *testing.T) {
 	t.Parallel()
+
+	t.Run("commitment uses VTXO activation depth", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+		h.operatorTerms.MinConfirmations = 6
+		h.operatorTerms.VTXOConfirmations = 1
+
+		err := h.start()
+		require.NoError(t, err)
+
+		h.chainSource.registrations = nil
+		txid := chainhash.HashH([]byte("split-confirmation-depth"))
+		h.actor.registerCommitmentConfirmation(
+			h.ctx, txid, fn.None[*psbt.Packet](), nil,
+		)
+
+		require.Len(t, h.chainSource.registrations, 1)
+		require.Equal(
+			t, uint32(1),
+			h.chainSource.registrations[0].TargetConfs,
+		)
+	})
 
 	t.Run("register_confirmation_request", func(t *testing.T) {
 		t.Parallel()

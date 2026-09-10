@@ -40,12 +40,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   coordination.
 - `EnsureConfirmedReq` / `EnsureConfirmedResp` — public Ask API:
   register interest in a txid with `TargetConfs`, `ConfirmationPkScript`,
-  and a subscriber.
+  and a subscriber. An Ask error means the subscriber was not retained:
+  no later notification arrives and the caller must re-send
+  `EnsureConfirmedReq` to attach.
 - `CancelInterestReq` / `CancelInterestResp` — drop a subscriber; the
   last subscriber's cancel tears down tracking.
 - `BumpNowReq` / `BumpNowResp` — operator "bump this stuck tx now" Ask:
   forces an immediate CPFP bump at a supplied fee rate (clamped to the
-  broadcaster's max) instead of waiting for the next interval.
+  broadcaster's max) instead of waiting for the next interval. An entry
+  holding an unapplied terminal transition answers `Bumped: false` instead
+  of broadcasting again.
 - `TxConfirmed` / `TxFailed` — terminal `Notification` types delivered
   to each subscriber.
 - `NewServiceKey` / `LookupRef` — actor-system service-key helpers
@@ -79,7 +83,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   `waved` (wiring/registration).
 - **Sends → `chainsource`** (Ask): `BestHeightRequest`,
   `SubscribeBlocksRequest`, `RegisterConfRequest`,
-  `UnregisterConfRequest`, `BroadcastTxRequest`,
+  `UnsubscribeBlocksRequest`, `UnregisterConfRequest`, `BroadcastTxRequest`,
   `SubmitPackageRequest`, `TestMempoolAcceptRequest`,
   `FeeEstimateRequest`.
 - **Sends → `Wallet`** (direct): `ListUnspent`, `NewWalletPkScript`,
@@ -109,6 +113,32 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   must agree on `TargetConfs` and `ConfirmationPkScript`; mismatches
   return `ErrEnsureParamsMismatch` rather than silently reusing the
   existing watch.
+- **Setup errors stay retryable.** Block-subscription and confirmation-watch
+  errors unwind the incomplete tracker and return an Ask error before any
+  broadcast. Cleanup uses a detached, one-second context because the failed
+  request may already be cancelled. If confirmation registration is
+  ambiguous, cleanup unregisters the deterministic watch; an existing shared
+  block subscription stays active.
+- **An Ask error never promises a notification.** State-read and broadcast
+  errors return through the Ask after removing that request's subscriber.
+  The caller must retry `EnsureConfirmedReq` to attach again. After an
+  ambiguous broadcast result, the detached tracker keeps its confirmation
+  watch until confirmation arrives or the next actor tick reconciles its
+  pending terminal transition. An immediate retry returns another Ask error
+  rather than attaching to that pending transition.
+- **Reported state is proven, never guessed.** Response paths use the state
+  established by a successful FSM transition. They never substitute
+  `TxStateFailed` when a state query fails, and they do not perform a second
+  query after a successful submission merely to build the response.
+- **Failed terminal transitions are retried before broadcast.** A background
+  path retains the terminal reason when its FSM transition fails. Block and
+  fee-input retry paths apply that transition before attempting another
+  broadcast. Confirmation or other forward progress clears the stale reason;
+  only a transaction still in `Broadcasting` may be failed by the retry.
+- **The per-txid FSM outlives the creating Ask.** `newTrackedTx` starts the
+  state machine without the caller's cancellation or database transaction.
+  Explicit setup cleanup, terminal eviction, cancellation, and actor shutdown
+  stop it.
 - **TRUC version gate**: `CPFPBroadcaster.Submit` rejects parents whose
   `Tx.Version != arktx.TxVersion` (v3). Pattern-based anchor detection
   on non-v3 parents is structurally unsafe.

@@ -35,6 +35,23 @@ type FsmCheckpoint struct {
 	UpdatedAt int64
 }
 
+type IngressQuarantine struct {
+	ID        string
+	Lane      string
+	Envelope  []byte
+	Reason    string
+	Attempts  int64
+	CreatedAt int64
+}
+
+type IngressReceipt struct {
+	ID          string
+	PayloadHash []byte
+	MailboxID   string
+	ConsumedAt  int64
+	ExpiresAt   int64
+}
+
 type MailboxMessage struct {
 	ID              string
 	MailboxID       string

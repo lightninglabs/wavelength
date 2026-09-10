@@ -159,6 +159,7 @@ Common knobs:
 | `--server.host`            | network default    | Ark operator address override.           |
 | `--server.transport`       | `grpc`             | Ark operator transport: `grpc` or `rest`. |
 | `--swap.serveraddress`     | network default    | Swap server address override.            |
+| `--maxpaymentcltv`         | `300` with swaps   | Payment CLTV reserved by refresh.        |
 | `--rpc.listenaddr`         | `localhost:10029`  | Daemon gRPC listen address.              |
 
 ---

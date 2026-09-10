@@ -1,6 +1,7 @@
 package oor
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/btcsuite/btcd/psbt/v2"
@@ -8,8 +9,10 @@ import (
 	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 )
 
-// validateIncomingPackage validates the finalized OOR package shape before
-// any untrusted incoming artifact is persisted for future recovery.
+// validateIncomingPackage executes every finalized checkpoint spend before any
+// untrusted incoming artifact enters the receive state machine or recovery
+// store. Structural validation alone accepts correctly sized garbage
+// signatures, which would defer failure until unilateral exit.
 func validateIncomingPackage(label string, sessionID SessionID,
 	ark *psbt.Packet, checkpoints []*psbt.Packet) error {
 
@@ -27,7 +30,7 @@ func validateIncomingPackage(label string, sessionID SessionID,
 			label)
 	}
 
-	err := oortx.ValidateFinalizePackage(ark, checkpoints)
+	err := oortx.ValidateFinalizePackageSigned(ark, checkpoints)
 	if err != nil {
 		return fmt.Errorf("%s finalize package invalid: %w", label, err)
 	}
@@ -105,7 +108,7 @@ func walkPackageAncestors(pkg PackageArtifact,
 		}
 
 		// Finalized OOR checkpoints are single-input collab spends.
-		// oortx.ValidateFinalizePackage enforces that invariant
+		// oortx.ValidateFinalizePackageSigned enforces that invariant
 		// before this graph walk, so TxIn[0] is the only ancestry
 		// edge to follow.
 		prevOut := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
@@ -115,7 +118,10 @@ func walkPackageAncestors(pkg PackageArtifact,
 			continue
 		}
 
-		if !validAncestorOutput(ancestor.ArkPSBT, prevOut.Index) {
+		if !validAncestorOutput(
+			ancestor.ArkPSBT, checkpoint, prevOut.Index,
+		) {
+
 			continue
 		}
 
@@ -128,10 +134,14 @@ func walkPackageAncestors(pkg PackageArtifact,
 	}
 }
 
-// validAncestorOutput reports whether an ancestor checkpoint input references a
-// real non-anchor Ark output in the referenced ancestor package.
-func validAncestorOutput(ark *psbt.Packet, outputIndex uint32) bool {
-	if ark == nil || ark.UnsignedTx == nil {
+// validAncestorOutput reports whether a checkpoint input's declared witness
+// UTXO equals the real non-anchor Ark output in the referenced ancestor.
+func validAncestorOutput(ark, checkpoint *psbt.Packet,
+	outputIndex uint32) bool {
+
+	if ark == nil || ark.UnsignedTx == nil || checkpoint == nil ||
+		len(checkpoint.Inputs) != 1 ||
+		checkpoint.Inputs[0].WitnessUtxo == nil {
 		return false
 	}
 
@@ -140,7 +150,15 @@ func validAncestorOutput(ark *psbt.Packet, outputIndex uint32) bool {
 		return false
 	}
 
-	return !arktx.IsAnchorOutput(tx.TxOut[outputIndex])
+	ancestorOutput := tx.TxOut[outputIndex]
+	if ancestorOutput == nil || arktx.IsAnchorOutput(ancestorOutput) {
+		return false
+	}
+
+	witnessUtxo := checkpoint.Inputs[0].WitnessUtxo
+
+	return ancestorOutput.Value == witnessUtxo.Value &&
+		bytes.Equal(ancestorOutput.PkScript, witnessUtxo.PkScript)
 }
 
 // packageArtifactForValidation projects package fields into the common

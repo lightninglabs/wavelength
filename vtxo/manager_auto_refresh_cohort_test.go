@@ -375,6 +375,60 @@ func TestManagerAutoRefreshRelayFailureReleasesWholeCohort(t *testing.T) {
 	store.AssertExpectations(t)
 }
 
+// TestManagerAutoRefreshDefersOnlyDuringRoundStartup verifies the known
+// manager-before-round startup window rolls back automatic work locally, while
+// the same router failure after readiness still surfaces through the ordinary
+// warning path.
+func TestManagerAutoRefreshDefersOnlyDuringRoundStartup(t *testing.T) {
+	t.Parallel()
+
+	const (
+		batchExpiry = int32(1_000)
+		height      = int32(800)
+	)
+	leader := deterministicCohortDescriptor(t, 0, batchExpiry)
+	newPendingLeader := func() *cohortActorRef {
+		return newCohortActorRef(leader, &PendingForfeitState{
+			VTXO:              leader,
+			RequestedAtHeight: height,
+		})
+	}
+
+	roundActor := newMockRoundActorRef(t)
+	roundActor.tellErr = actor.ErrNoActorsAvailable
+	mgr := NewManager(&ManagerConfig{
+		RoundActor:                           roundActor,
+		DeferAutomaticRefreshUntilRoundReady: true,
+	})
+	leaderRef := newPendingLeader()
+	mgr.actors[leader.Outpoint] = leaderRef
+	request := autoRefreshLeaderRequest(leader, height)
+	request.ExpandCohort = false
+
+	_, err := mgr.Receive(t.Context(), &RelayToRoundMsg{
+		Payload: request,
+	}).Unpack()
+	require.NoError(t, err)
+	require.Empty(t, roundActor.getMessages())
+	state, _, releases := leaderRef.snapshot()
+	require.IsType(t, &LiveState{}, state)
+	require.Equal(t, 1, releases)
+
+	// ReconcileExpiryRequest opens this gate after round registration.
+	// Model that completed handshake and prove the same error is no longer
+	// hidden.
+	mgr.roundStartupPending = false
+	leaderRef = newPendingLeader()
+	mgr.actors[leader.Outpoint] = leaderRef
+	_, err = mgr.Receive(t.Context(), &RelayToRoundMsg{
+		Payload: request,
+	}).Unpack()
+	require.ErrorIs(t, err, actor.ErrNoActorsAvailable)
+	state, _, releases = leaderRef.snapshot()
+	require.IsType(t, &LiveState{}, state)
+	require.Equal(t, 1, releases)
+}
+
 // TestManagerAutoRefreshCohortCapIsDeterministic verifies overflow stays live
 // and DB iteration order cannot decide which 31 siblings join the leader.
 func TestManagerAutoRefreshCohortCapIsDeterministic(t *testing.T) {

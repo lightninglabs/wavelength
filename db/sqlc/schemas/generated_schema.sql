@@ -627,6 +627,27 @@ CREATE INDEX idx_vtxos_spent
 CREATE INDEX idx_vtxos_status
     ON vtxos(status);
 
+CREATE TABLE ingress_quarantine (
+    id TEXT PRIMARY KEY,
+    lane TEXT NOT NULL,
+    envelope BLOB NOT NULL,
+    reason TEXT NOT NULL,
+    attempts BIGINT NOT NULL DEFAULT 0,
+    created_at BIGINT NOT NULL
+);
+
+CREATE INDEX ingress_quarantine_lane ON ingress_quarantine(lane, created_at, id);
+
+CREATE TABLE ingress_receipts (
+    id TEXT PRIMARY KEY,
+    payload_hash BLOB NOT NULL,
+    mailbox_id TEXT NOT NULL,
+    consumed_at BIGINT NOT NULL,
+    expires_at BIGINT NOT NULL
+);
+
+CREATE INDEX ingress_receipts_expiry ON ingress_receipts(expires_at, id);
+
 CREATE TABLE internal_keys (
     -- id is the monotonically increasing surrogate key referenced by
     -- consumer tables' *_key_id foreign keys.

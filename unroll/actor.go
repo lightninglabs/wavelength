@@ -63,11 +63,24 @@ type Config struct {
 	// MaxSweepFeeRateSatPerVByte clamps pathological fee estimates.
 	MaxSweepFeeRateSatPerVByte int64
 
+	// SweepFeeRateFallbackSatPerVByte is used only when fee estimation
+	// fails. Zero lets the exit policy choose whether to defer or use its
+	// own emergency rate. A positive value overrides the policy and is
+	// intended for controlled local networks.
+	SweepFeeRateFallbackSatPerVByte int64
+
 	// FraudCheckpointSafetyMargin overrides the recipient backstop
 	// margin (in blocks) for fraud-triggered unroll jobs. Zero falls
 	// back to defaultFraudCheckpointSafetyMargin. Plumbed onto the
 	// FSM Environment.
 	FraudCheckpointSafetyMargin int32
+
+	// LegacyProofScanFloor is the earliest block at which a supported
+	// deployment on the configured public network could have created a
+	// compatible commitment transaction. It bounds proof scans for legacy
+	// descriptors whose exact commitment height is unavailable. Zero, one,
+	// or a value above the current tip falls back to block 1.
+	LegacyProofScanFloor uint32
 
 	// RegistryRef receives terminal notifications from this actor when set.
 	RegistryRef actor.TellOnlyRef[RegistryMsg]
@@ -76,8 +89,8 @@ type Config struct {
 	// final sweep has confirmed.
 	LedgerSink fn.Option[ledger.Sink]
 
-	// proofNodeFloorAlerts is shared by every child of one registry so
-	// targets with the same proof ancestor produce one operator alert.
+	// proofNodeFloorAlerts is shared by every child of one registry so all
+	// legacy fallback scans produce one operator alert.
 	proofNodeFloorAlerts *proofNodeFloorAlertDeduper
 }
 
@@ -161,7 +174,13 @@ type behavior struct {
 	session *Session
 	pending *actorCheckpoint
 
-	sweepTx                    *wire.MsgTx
+	sweepTx *wire.MsgTx
+
+	// restoredCheckpointPending keeps the first admission message on a
+	// newly constructed actor responsible for reissuing restored work, even
+	// if an older durable notification reaches the actor first.
+	restoredCheckpointPending bool
+
 	blockSubActive             bool
 	spendWatchActive           bool
 	proofSpendWatches          map[wire.OutPoint]struct{}
@@ -188,6 +207,13 @@ type behavior struct {
 	// so a policy-gated sweep is not reported as imminent. None until the
 	// sweep phase resolves the policy.
 	requiredLockTime fn.Option[uint32]
+
+	// routeRetryPending records that the current FSM state was durably
+	// staged before an outbox effect failed. The next turn replays the
+	// checkpoint's in-flight work through ResumeEvent before applying its
+	// own message. This is in-memory only because process restart already
+	// enters through ResumeUnrollRequest.
+	routeRetryPending bool
 }
 
 // unrollTx is the transaction-scoped store handed to the unroll behavior inside
@@ -258,12 +284,25 @@ func (b *behavior) Receive(ctx context.Context, msg Msg,
 	// Run the FSM pipeline. Every checkpoint write inside is a short,
 	// lock-releasing Stage and the slow txconfirm IO runs with no writer
 	// transaction held; dispatch never commits.
+	if b.routeRetryPending {
+		if err := b.reissueStagedRoute(ctx, ax); err != nil {
+			return fn.Err[Resp](err)
+		}
+
+		// The retry just reissued every effect from the restored
+		// checkpoint. Do not translate a following Start into a second
+		// Resume during the same turn.
+		b.restoredCheckpointPending = false
+	}
+
 	res := b.dispatch(ctx, ax, msg)
 	if res.IsErr() {
 
-		// The behavior did not commit, so the framework nacks the
-		// message; it is redelivered and replayed against the durably
-		// Staged state.
+		// The behavior did not commit. Durable Tells are nacked for
+		// redelivery; Asks return the error to their caller. If route
+		// IO failed after Stage, routeRetryPending makes the next live
+		// turn reissue the checkpoint's in-flight work before it
+		// applies its own message.
 		return res
 	}
 
@@ -274,8 +313,30 @@ func (b *behavior) Receive(ctx context.Context, msg Msg,
 	if err := b.commitAck(ctx, ax); err != nil {
 		return fn.Err[Resp](err)
 	}
+	b.routeRetryPending = false
+	switch msg.(type) {
+	case *StartUnrollRequest, *ResumeUnrollRequest:
+		b.restoredCheckpointPending = false
+	}
 
 	return res
+}
+
+// reissueStagedRoute replays every outbox effect implied by the current staged
+// checkpoint. A failed route has already advanced the FSM state, so applying
+// the original event again cannot rediscover work now classified as in-flight;
+// ResumeEvent is the explicit reissue path for that state.
+func (b *behavior) reissueStagedRoute(ctx context.Context,
+	ax actor.Exec[unrollTx]) error {
+
+	state, err := b.currentState()
+	if err != nil {
+		return err
+	}
+
+	return b.driveEvent(ctx, ax, &ResumeEvent{
+		Height: stateHeight(state),
+	})
 }
 
 // dispatch maps one durable message onto the FSM event surface and runs the
@@ -289,6 +350,17 @@ func (b *behavior) dispatch(ctx context.Context, ax actor.Exec[unrollTx],
 
 	switch m := msg.(type) {
 	case *StartUnrollRequest:
+		// A new actor can receive Start with an existing checkpoint
+		// when the registry re-admits a job after an initial route
+		// error stopped its prior child. Resume that staged work before
+		// treating any later Start as the normal idempotent live-actor
+		// duplicate.
+		if b.restoredCheckpointPending {
+			return b.handleEvent(ctx, ax, &ResumeEvent{
+				Height: m.Height,
+			})
+		}
+
 		return b.handleEvent(ctx, ax, &StartEvent{
 			Height:         m.Height,
 			Trigger:        m.Trigger,
@@ -394,10 +466,12 @@ func (b *behavior) handleEvent(ctx context.Context, ax actor.Exec[unrollTx],
 //     so the txconfirm IO that follows never holds it. If the process
 //     crashes between the Stage and the outbox routing, restart restores
 //     the exact same state that was in memory and re-emits the outbox via
-//     the reissue path, so no work is lost and no work is duplicated
-//     beyond what txconfirm's txid-keyed dedup already collapses. The
-//     message itself is acked only once, by the single lease-fenced Commit
-//     in Receive after the whole (possibly recursive) pipeline settles.
+//     the reissue path. A live route failure arms the same reissue path for
+//     the next turn before the original event is reapplied. No work is lost
+//     and no work is duplicated beyond what txconfirm's txid-keyed dedup
+//     already collapses. The message itself is acked only once, by the
+//     single lease-fenced Commit in Receive after the whole (possibly
+//     recursive) pipeline settles.
 //
 //  3. Route: interpret each OutboxEvent as a real IO effect — submit
 //     ready proof nodes to txconfirm, re-arm in-flight subscriptions,
@@ -433,6 +507,8 @@ func (b *behavior) driveEvent(ctx context.Context, ax actor.Exec[unrollTx],
 	}
 
 	if err := b.routeOutbox(ctx, ax, outbox); err != nil {
+		b.routeRetryPending = true
+
 		return err
 	}
 
@@ -469,10 +545,11 @@ func (b *behavior) driveEvent(ctx context.Context, ax actor.Exec[unrollTx],
 // transaction materializes from the checkpoint, txconfirm sees the same
 // txid it has been tracking, and the Ask resolves as a benign no-op.
 //
-// If buildSweepTx itself fails (fee estimation, signing, malformed
-// descriptor), we drive a SweepBuildFailedEvent through the FSM so the
-// retry budget is accounted for and we reach terminal Failed after
-// maxSweepAttempts.
+// A temporarily unavailable fee estimate defers construction until the next
+// height without consuming the retry budget. Other build failures (signing,
+// malformed descriptor, or an invalid estimate) drive a SweepBuildFailedEvent
+// through the FSM so the retry budget is accounted for and the job reaches
+// terminal Failed after maxSweepAttempts.
 func (b *behavior) startSweep(ctx context.Context,
 	ax actor.Exec[unrollTx]) error {
 
@@ -573,7 +650,8 @@ func (b *behavior) startSweep(ctx context.Context,
 
 		sweepTx, err := buildSweepTx(
 			ctx, b.cfg.Wallet, b.cfg.ChainSource, b.proof, b.desc,
-			b.cfg.MaxSweepFeeRateSatPerVByte, b.currentHeight(),
+			b.cfg.MaxSweepFeeRateSatPerVByte,
+			b.sweepFeeRateFallback(policy), b.currentHeight(),
 			policy,
 		)
 		if err != nil {
@@ -590,6 +668,24 @@ func (b *behavior) startSweep(ctx context.Context,
 						"target_outpoint",
 						b.cfg.TargetOutpoint.
 							String(),
+					),
+					slog.String("err", err.Error()),
+				)
+
+				return nil
+			}
+
+			// An estimator outage is not a failed sweep attempt: no
+			// transaction or wallet destination exists yet. Leave
+			// the planner in AwaitingSweepBroadcast so the next
+			// height asks for a fresh estimate.
+			var feeEstimateErr *sweepFeeEstimateUnavailableError
+			if errors.As(err, &feeEstimateErr) {
+				b.log.InfoS(ctx, "Deferring unroll exit spend: "+
+					"fee estimate unavailable",
+					slog.String(
+						"target_outpoint",
+						b.cfg.TargetOutpoint.String(),
 					),
 					slog.String("err", err.Error()),
 				)
@@ -653,6 +749,16 @@ func (b *behavior) startSweep(ctx context.Context,
 	}
 
 	return b.driveEvent(ctx, ax, &SweepBroadcastedEvent{Txid: sweepTxid})
+}
+
+// sweepFeeRateFallback prefers the daemon-level local-network fallback, then
+// lets a race-sensitive exit policy declare its own emergency rate.
+func (b *behavior) sweepFeeRateFallback(policy ExitSpendPolicy) int64 {
+	if b.cfg.SweepFeeRateFallbackSatPerVByte > 0 {
+		return b.cfg.SweepFeeRateFallbackSatPerVByte
+	}
+
+	return policy.FeeEstimateFallbackSatPerVByte()
 }
 
 // exitPolicyKind returns the durable policy kind for the current job.
@@ -738,34 +844,6 @@ func safeTxOutPkScript(tx *wire.MsgTx, index uint32) ([]byte, error) {
 	return append([]byte(nil), tx.TxOut[index].PkScript...), nil
 }
 
-// proofNodeHeightHintLookback is the number of blocks below the actor's
-// current best height used as the confirmation-watch FALLBACK floor for
-// proof-graph transactions when no commitment height is known. A genesis
-// floor (height 1) forces neutrino's notifier to rescan every block from tip
-// to block 1 (one GetCFilter per block) when the watched tx never confirms,
-// which floods logs and never terminates (wavelength#884). We therefore
-// bound the rescan window to a fixed lookback below the current height.
-//
-// The lookback MUST comfortably exceed the maximum batch lifetime plus the
-// worst-case tree-depth + CSV exit window, because proof roots and
-// intermediate OOR checkpoint ancestors can confirm well before the target
-// descriptor's CreatedHeight — using the creation height as the floor would
-// miss an ancestor that already confirmed. A generous operator-configured max
-// batch lifetime is on the order of one month (~4320 blocks at 144
-// blocks/day); 10000 blocks (~10 weeks) is a safe multiple that keeps the
-// floor below any ancestor's real confirmation height while still capping the
-// neutrino rescan at a bounded window instead of scanning to genesis.
-//
-// The primary, tight floor is the commitment-tx confirmation height carried
-// per fragment on Descriptor.Ancestry[i].CommitmentHeight: nothing in a
-// VTXO's proof graph can confirm before its commitment tx, so min() across
-// fragments is a provable lower bound for every proof ancestor. When that
-// height is unknown (zero) — legacy persisted VTXOs, empty-ancestry incoming
-// round VTXOs, or a server that does not yet populate the field — we fall
-// back to this bounded lookback, preserving the pre-commitment-height
-// behaviour exactly.
-const proofNodeHeightHintLookback uint32 = 10000
-
 // removeAbandonedBroadcastTimeout bounds each best-effort wallet RemoveTx RPC
 // issued on the terminal-failure cleanup path. lnd's RemoveTransaction is a
 // fast local wallet mutation, so 30s is generous headroom for a heavily loaded
@@ -773,21 +851,18 @@ const proofNodeHeightHintLookback uint32 = 10000
 // the detached cleanup goroutine indefinitely (wavelength#609).
 const removeAbandonedBroadcastTimeout = 30 * time.Second
 
-// proofNodeHeightHint returns the earliest safe confirmation height hint for
-// proof-graph transactions given the actor's current best height. Roots and
-// intermediate OOR checkpoint ancestors can confirm before the target
-// descriptor's CreatedHeight, so proof watches must not use the target
-// creation height as a lower bound; instead we floor at a bounded lookback
-// below the current height (never below block 1). See
-// proofNodeHeightHintLookback for the sizing rationale. Callers that hold a
-// Descriptor should route through behavior.proofNodeConfHeightHint instead, so
-// the age-exceeds-lookback breadcrumb fires.
-func proofNodeHeightHint(currentHeight uint32) uint32 {
-	if currentHeight <= proofNodeHeightHintLookback {
+// legacyProofScanFloor returns the configured public-network deployment floor
+// when it is usable at the current chain tip. Supported public-network floors
+// are independent of operator identity: no compatible deployment existed on
+// those networks before the configured floor. Local and unknown networks set
+// the floor to 1.
+func (b *behavior) legacyProofScanFloor(currentHeight uint32) uint32 {
+	floor := b.cfg.LegacyProofScanFloor
+	if floor <= 1 || floor > currentHeight {
 		return 1
 	}
 
-	return currentHeight - proofNodeHeightHintLookback
+	return floor
 }
 
 // commitmentHeightFloor returns the tight, provable confirmation-watch floor
@@ -827,14 +902,13 @@ func (b *behavior) commitmentHeightFloor() int32 {
 // proofNodeConfHeightHint returns the confirmation-watch height floor for one
 // proof-graph node. When the target descriptor carries a known commitment
 // height it uses min(commitment height) across fragments as a tight, provable
-// floor (clamped to at least block 1). Otherwise it falls back to the bounded
-// lookback below the current height and leaves a breadcrumb when the target
-// VTXO is old enough that the fallback floor may have risen above a proof
-// ancestor's real confirmation height. On the fallback path the lookback keeps
-// the floor below every ancestor only while the VTXO's age (in blocks) stays
-// within proofNodeHeightHintLookback; past that the neutrino historical rescan
-// can start too late, miss the ancestor's confirmation, and silently stall the
-// exit — so we warn rather than fail.
+// floor (clamped to at least block 1). Otherwise it uses the configured
+// public-network deployment floor. CreatedHeight is not a safe substitute: an
+// OOR target can be created long after its commitment ancestor confirmed, and
+// the descriptor carries no maximum bound on that gap. Local and unknown
+// networks, and an absent, invalid, or future deployment floor, use block 1.
+// The wider scan is expensive but cannot skip an already-confirmed ancestor
+// and silently stall the exit.
 func (b *behavior) proofNodeConfHeightHint(ctx context.Context,
 	txid chainhash.Hash) uint32 {
 
@@ -850,79 +924,86 @@ func (b *behavior) proofNodeConfHeightHint(ctx context.Context,
 		return uint32(floor)
 	}
 
-	// Fallback path: no commitment height known, so bound the rescan with
-	// the fixed lookback and warn if the VTXO is old enough that the floor
-	// may have risen above an ancestor's real confirmation height.
+	// Fallback path: no commitment height is known. Scan from the earliest
+	// block where a supported deployment on this public network could have
+	// created a compatible commitment. CreatedHeight cannot narrow this
+	// floor because an OOR descendant may have been created arbitrarily
+	// later than its on-chain commitment ancestor.
 	//
-	// currentHeightHint returns 0 only for an uninitialized job (no height
-	// observed yet), and proofNodeHeightHint(0) is the genesis floor (1) —
-	// the very rescan-to-genesis behaviour #884 fixes. That is not
-	// reachable on the real path: a proof watch is registered only while
-	// handling a Start/Resume/HeightUpdated event, all of which set
-	// b.pending.Height first, so currentHeightHint is non-zero here in
-	// practice.
+	// currentHeightHint returns 0 only for an uninitialized job. That is
+	// not reachable on the real path: a proof watch is registered only
+	// while handling a Start/Resume/HeightUpdated event, all of which set
+	// b.pending.Height first.
 	currentHeight := b.currentHeightHint()
-	hint := proofNodeHeightHint(currentHeight)
+	legacyFloor := b.legacyProofScanFloor(currentHeight)
 
-	// CreatedHeight is our proxy for the earliest proof-ancestor
-	// confirmation height. Once the VTXO's age reaches the lookback the
-	// floor sits at or above it, so an ancestor that confirmed earlier can
-	// escape the rescan window.
-	if !b.proofNodeFloorWarned && b.desc != nil &&
-		b.desc.CreatedHeight > 0 {
+	createdHeight := int32(0)
+	ancestryFragments := 0
+	if b.desc != nil {
+		createdHeight = b.desc.CreatedHeight
+		ancestryFragments = len(b.desc.Ancestry)
+	}
+	age := int64(-1)
+	if createdHeight > 0 {
+		age = int64(currentHeight) - int64(createdHeight)
+	}
+	if b.proofNodeFloorWarned {
+		return legacyFloor
+	}
 
-		age := int64(currentHeight) - int64(b.desc.CreatedHeight)
-		if age >= int64(proofNodeHeightHintLookback) {
-			b.proofNodeFloorWarned = true
-			firstAlert := b.cfg.proofNodeFloorAlerts == nil ||
-				b.cfg.proofNodeFloorAlerts.first(txid)
-			if firstAlert {
-				b.log.WarnS(ctx, "Proof-node confirmation "+
-					"floor may exceed ancestor height; "+
-					"exits could stall",
-					nil,
-					slog.String(
-						"target_outpoint",
-						b.cfg.TargetOutpoint.String(),
-					),
-					slog.String("proof_txid", txid.String()),
-					slog.Int64("vtxo_age_blocks", age),
-					slog.Uint64(
-						"lookback", uint64(
-							proofNodeHeightHintLookback,
-						),
-					),
-					slog.Uint64(
-						"height_hint", uint64(hint),
-					),
-					slog.Int64(
-						"created_height",
-						int64(b.desc.CreatedHeight),
-					),
-				)
-			}
-
-			b.log.DebugS(ctx, "Proof-node confirmation floor target",
-				slog.String(
-					"target_outpoint",
-					b.cfg.TargetOutpoint.String(),
-				),
-				slog.String("proof_txid", txid.String()),
-				slog.Int64("vtxo_age_blocks", age),
-				slog.Uint64(
-					"lookback",
-					uint64(proofNodeHeightHintLookback),
-				),
-				slog.Uint64("height_hint", uint64(hint)),
-				slog.Int64(
-					"created_height",
-					int64(b.desc.CreatedHeight),
-				),
-			)
+	b.proofNodeFloorWarned = true
+	firstAlert := legacyFloor > 1 || b.cfg.proofNodeFloorAlerts == nil ||
+		b.cfg.proofNodeFloorAlerts.first()
+	if firstAlert {
+		attrs := []any{
+			slog.String(
+				"target_outpoint",
+				b.cfg.TargetOutpoint.String(),
+			),
+			slog.String("proof_txid", txid.String()),
+			slog.Int64("vtxo_age_blocks", age),
+			slog.Uint64(
+				"configured_floor",
+				uint64(b.cfg.LegacyProofScanFloor),
+			),
+			slog.Uint64(
+				"current_height", uint64(currentHeight),
+			),
+			slog.Uint64("height_hint", uint64(legacyFloor)),
+			slog.Int64(
+				"created_height", int64(createdHeight),
+			),
+			slog.Int(
+				"ancestry_fragment_count", ancestryFragments,
+			),
+		}
+		msg := "Legacy proof commitment height unavailable; " +
+			"using safe fallback floor"
+		if legacyFloor == 1 {
+			b.log.WarnS(ctx, msg, nil, attrs...)
+		} else {
+			b.log.InfoS(ctx, msg, attrs...)
 		}
 	}
 
-	return hint
+	b.log.DebugS(ctx, "Legacy proof fallback-scan target",
+		slog.String(
+			"target_outpoint", b.cfg.TargetOutpoint.String(),
+		),
+		slog.String("proof_txid", txid.String()),
+		slog.Int64("vtxo_age_blocks", age),
+		slog.Uint64(
+			"configured_floor", uint64(
+				b.cfg.LegacyProofScanFloor,
+			),
+		),
+		slog.Uint64("current_height", uint64(currentHeight)),
+		slog.Uint64("height_hint", uint64(legacyFloor)),
+		slog.Int64("created_height", int64(createdHeight)),
+		slog.Int("ancestry_fragment_count", ancestryFragments),
+	)
+
+	return legacyFloor
 }
 
 // ensureNodeConfirmed hands one ready proof-graph node to txconfirm and
@@ -953,11 +1034,13 @@ func (b *behavior) ensureNodeConfirmed(ctx context.Context,
 		return fmt.Errorf("proof node %s: %w", txid, err)
 	}
 
-	if err := b.ensureProofSpendWatches(ctx, txid, node); err != nil {
+	heightHint := b.proofNodeConfHeightHint(ctx, txid)
+	if err := b.ensureProofSpendWatches(
+		ctx, txid, node, heightHint,
+	); err != nil {
 		return err
 	}
 
-	heightHint := b.proofNodeConfHeightHint(ctx, txid)
 	resp, err := b.cfg.TxConfirmRef.Ask(ctx, &txconfirm.EnsureConfirmedReq{
 		Tx:                   node.Tx,
 		ConfirmationPkScript: pkScript,
@@ -1444,6 +1527,7 @@ func (b *behavior) restoreCheckpoint(ctx context.Context) error {
 
 	b.pending = decoded
 	b.sweepTx = copyTx(decoded.SweepTx)
+	b.restoredCheckpointPending = decoded.Started
 
 	return nil
 }
@@ -1580,7 +1664,7 @@ func (b *behavior) spendCallerID() string {
 // confirmation notification under load, but a spend of one of these outputs
 // still proves the parent proof transaction confirmed.
 func (b *behavior) ensureProofSpendWatches(ctx context.Context,
-	txid chainhash.Hash, node *recovery.Node) error {
+	txid chainhash.Hash, node *recovery.Node, heightHint uint32) error {
 
 	if node == nil {
 		return fmt.Errorf("proof node %s missing", txid)
@@ -1595,11 +1679,6 @@ func (b *behavior) ensureProofSpendWatches(ctx context.Context,
 	}
 	if len(outpoints) > 0 && b.proofSpendWatches == nil {
 		b.proofSpendWatches = make(map[wire.OutPoint]struct{})
-	}
-
-	heightHint := uint32(0)
-	if b.desc != nil && b.desc.CreatedHeight > 0 {
-		heightHint = uint32(b.desc.CreatedHeight)
 	}
 
 	for _, outpoint := range outpoints {

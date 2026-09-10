@@ -51,8 +51,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/wave
   Options apply **after** the `Config`/`DaemonConfig` merge and after
   `configureSwapRuntime` / `configureWalletRPC`, so they can override
   values seeded by `waved.DefaultConfig` or carried on a caller-owned
-  `DaemonConfig`. First option: `WithEagerRoundJoinDisabled()` forces
-  `daemonCfg.EagerRoundJoin = false`.
+  `DaemonConfig`. Current options: `WithEagerRoundJoinDisabled()` forces
+  `daemonCfg.EagerRoundJoin = false`, and
+  `WithMaxPaymentCLTVDisabled()` forces `daemonCfg.MaxPaymentCLTV = 0`.
+  Both exist because the matching `Config` fields are enable-only.
 - DTOs (wrapper-owned, isolated from proto enums): `Info` / `ServerInfo`
   (including the advisory free-refresh window), `Balance`,
   `CreateWalletResult`, `UnlockWalletResult`, `ReceiveRequest`/`Result`
@@ -160,6 +162,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/wave
   `//nolint:contextcheck` on `Start` guards this).
 - `Start` blocks until either gRPC reports `Ready`, the daemon exits
   early with an error, or the caller's startup `ctx` cancels.
+- `Config.MaxPaymentCLTV` is the embedded/mobile convenience override for the
+  daemon's automatic-refresh payment reserve. Zero preserves a caller-owned
+  daemon value and the swap-enabled 300-block default. To force an explicit
+  zero, pass `wavewalletdk.WithMaxPaymentCLTVDisabled()` to `Start`; the mobile
+  JSON adapter does this when `max_payment_cltv` is present with value zero.
 - A caller-supplied `DaemonConfig` is deep-copied via
   `cloneDaemonConfig` before mutation (`RPC.Listener` is replaced;
   `RPCServiceRegistrars` may be appended). New reference-typed fields

@@ -143,6 +143,7 @@ func newFakeDaemonService() *fakeDaemonService {
 				MinOperatorFee:          20,
 				FreeRefreshWindowBlocks: 120,
 				MinConfirmations:        2,
+				VtxoConfirmations:       1,
 			},
 		},
 		listVtxosResp: &waverpc.ListVTXOsResponse{
@@ -685,6 +686,8 @@ func TestDialRemoteGetInfo(t *testing.T) {
 	require.Equal(t, uint32(120),
 		info.ServerInfo.FreeRefreshWindowBlocks,
 	)
+	require.Equal(t, uint32(2), info.ServerInfo.MinConfirmations)
+	require.Equal(t, uint32(1), info.ServerInfo.VTXOConfirmations)
 }
 
 // TestDialRemoteCoversFacadeMethods verifies the thin SDK wrappers beyond

@@ -3,14 +3,20 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"fmt"
+	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database"
 	"github.com/google/uuid"
+	"github.com/lightninglabs/wavelength/build"
 	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightninglabs/wavelength/ledger"
 )
 
 // postMigrationCheck is a function type for a function that performs a
@@ -27,8 +33,288 @@ var (
 		// raw round_id BLOB; the string conversion itself is only
 		// expressible in Go.
 		15: backfillLedgerRoundUUIDs,
+
+		// Migration 19 replaces ambiguous outpoint-only refresh and
+		// exit keys with versioned operation-and-leg identities. It
+		// also repairs the missing exit send row left by the legacy
+		// collision.
+		19: reconcileLedgerIdempotencyKeys,
 	}
 )
+
+const legacyLedgerOutpointKeyLen = 36
+
+type legacyLedgerGroup struct {
+	refreshSend *sqlc.LedgerEntry
+	exitSend    *sqlc.LedgerEntry
+	exitFee     *sqlc.LedgerEntry
+}
+
+// reconcileLedgerIdempotencyKeys rewrites legacy refresh and unilateral-exit
+// identities into separate versioned domains. When the old shared identity
+// suppressed an exit send, the surviving refresh send and exit fee contain
+// enough information to reconstruct the missing net-value leg exactly.
+func reconcileLedgerIdempotencyKeys(ctx context.Context, q sqlc.Querier) error {
+	rows, err := q.ListLegacyOutpointLedgerEntries(ctx)
+	if err != nil {
+		return fmt.Errorf("list legacy ledger identities: %w", err)
+	}
+
+	groups := make(map[string]*legacyLedgerGroup)
+	orderedGroups := make([]*legacyLedgerGroup, 0)
+	for i := range rows {
+		row := &rows[i]
+		group := groups[string(row.IdempotencyKey)]
+		if group == nil {
+			group = &legacyLedgerGroup{}
+			groups[string(row.IdempotencyKey)] = group
+			orderedGroups = append(orderedGroups, group)
+		}
+
+		switch {
+		case row.EventType == ledger.EventVTXOSent &&
+			len(row.RoundID) > 0:
+
+			if group.refreshSend != nil {
+				return fmt.Errorf("duplicate legacy refresh " +
+					"send identity")
+			}
+			group.refreshSend = row
+
+		case row.EventType == ledger.EventVTXOSent:
+			if group.exitSend != nil {
+				return fmt.Errorf("duplicate legacy exit " +
+					"send identity")
+			}
+			group.exitSend = row
+
+		case row.EventType == ledger.EventOnchainFeePaid:
+			if group.exitFee != nil {
+				return fmt.Errorf("duplicate legacy exit fee " +
+					"identity")
+			}
+			group.exitFee = row
+		}
+	}
+
+	for _, group := range orderedGroups {
+		var (
+			exitDescription    string
+			confirmationHeight *int32
+		)
+		if group.exitFee != nil {
+			description, height, ok := legacyExitMetadata(
+				group.exitFee.Description,
+			)
+			if ok {
+				exitDescription = description
+				confirmationHeight = &height
+			}
+		}
+
+		for _, row := range []*sqlc.LedgerEntry{
+			group.refreshSend, group.exitSend, group.exitFee,
+		} {
+			if row == nil {
+				continue
+			}
+
+			hash, index, err := decodeLegacyLedgerOutpoint(
+				row.IdempotencyKey,
+			)
+			if err != nil {
+				return err
+			}
+
+			var newKey []byte
+			switch {
+			case row == group.refreshSend:
+				newKey = ledger.RefreshSendIdempotencyKey(
+					hash, index,
+				)
+
+			case row == group.exitSend:
+				newKey = ledger.ExitSendIdempotencyKey(
+					hash, index,
+				)
+
+			case row == group.exitFee:
+				newKey = ledger.ExitFeeIdempotencyKey(
+					hash, index,
+				)
+			}
+
+			updated, err := rewriteLegacyLedgerIdentity(
+				ctx, q, row, newKey, hash, index,
+				row == group.refreshSend, confirmationHeight,
+			)
+			if err != nil {
+				return fmt.Errorf("rewrite ledger identity "+
+					"%d: %w", row.EntryID, err)
+			}
+			if updated != 1 {
+				return fmt.Errorf("rewrite ledger identity "+
+					"%d: updated %d rows", row.EntryID,
+					updated)
+			}
+		}
+
+		if group.refreshSend == nil || group.exitFee == nil ||
+			group.exitSend != nil {
+
+			continue
+		}
+
+		if confirmationHeight == nil {
+			logSkippedLegacyExitRepair(
+				ctx, group.exitFee.EntryID,
+				"unrecognized fee description",
+			)
+
+			continue
+		}
+
+		hash, index, err := decodeLegacyLedgerOutpoint(
+			group.exitFee.IdempotencyKey,
+		)
+		if err != nil {
+			return err
+		}
+
+		refreshFeeSat, err := q.GetRefreshFeePaidByRoundID(
+			ctx, group.refreshSend.RoundID,
+		)
+		if err != nil {
+			return fmt.Errorf("load legacy refresh fee: %w", err)
+		}
+
+		grossAmount := group.refreshSend.AmountSat
+		if refreshFeeSat >= grossAmount || group.exitFee.AmountSat >=
+			grossAmount-refreshFeeSat {
+
+			logSkippedLegacyExitRepair(
+				ctx, group.exitFee.EntryID,
+				"fees consume the full VTXO value",
+			)
+
+			continue
+		}
+		netAmount := grossAmount - refreshFeeSat -
+			group.exitFee.AmountSat
+
+		chainVout := int32(index)
+		err = q.InsertClientLedgerEntry(
+			ctx, sqlc.InsertClientLedgerEntryParams{
+				DebitAccount:  ledger.AccountTransfersOut,
+				CreditAccount: ledger.AccountVTXOBalance,
+				AmountSat:     netAmount,
+				IdempotencyKey: ledger.ExitSendIdempotencyKey(
+					hash, index,
+				),
+				EventType:   ledger.EventVTXOSent,
+				Description: exitDescription,
+				CreatedAt:   group.exitFee.CreatedAt,
+				ChainTxid:   hash[:],
+				ChainVout:   sqlInt32Ptr(&chainVout),
+				ConfirmationHeight: sqlInt32Ptr(
+					confirmationHeight,
+				),
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("repair missing exit send: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// legacyExitMetadata parses the exit-completion height embedded by the old
+// ledger writer and derives the corresponding send-leg description.
+func legacyExitMetadata(description string) (string, int32, bool) {
+	const (
+		feeDescriptionPrefix = "exit cost for "
+		heightMarker         = " at height "
+	)
+
+	if !strings.HasPrefix(description, feeDescriptionPrefix) {
+		return "", 0, false
+	}
+
+	exitTarget := strings.TrimPrefix(description, feeDescriptionPrefix)
+	heightIndex := strings.LastIndex(exitTarget, heightMarker)
+	if heightIndex < 0 {
+		return "", 0, false
+	}
+
+	heightValue := exitTarget[heightIndex+len(heightMarker):]
+	height, err := strconv.ParseUint(heightValue, 10, 31)
+	if err != nil || height == 0 {
+		return "", 0, false
+	}
+
+	return "unilateral exit net value for " + exitTarget,
+		int32(height), true
+}
+
+// logSkippedLegacyExitRepair records an unreconstructible historical row
+// without aborting the migration or guessing at accounting data.
+func logSkippedLegacyExitRepair(ctx context.Context, entryID int64,
+	reason string) {
+
+	build.LoggerFromContext(ctx).InfoS(
+		ctx,
+		"Skipping legacy exit ledger repair",
+		slog.Int64("entry_id", entryID),
+		slog.String("reason", reason),
+	)
+}
+
+// rewriteLegacyLedgerIdentity applies the namespaced key and adds structured
+// outpoint metadata to unilateral-exit rows. Refresh sends keep their existing
+// chain metadata because their paired receive already identifies the output.
+func rewriteLegacyLedgerIdentity(ctx context.Context, q sqlc.Querier,
+	row *sqlc.LedgerEntry, newKey []byte, hash [32]byte, index uint32,
+	refresh bool, confirmationHeight *int32) (int64, error) {
+
+	if refresh {
+		return q.UpdateLedgerEntryIdempotencyKey(
+			ctx, sqlc.UpdateLedgerEntryIdempotencyKeyParams{
+				NewKey:  newKey,
+				EntryID: row.EntryID,
+				OldKey:  row.IdempotencyKey,
+			},
+		)
+	}
+
+	chainVout := int32(index)
+
+	return q.UpdateLegacyExitLedgerEntry(
+		ctx, sqlc.UpdateLegacyExitLedgerEntryParams{
+			NewKey:             newKey,
+			ChainTxid:          hash[:],
+			ChainVout:          sqlInt32Ptr(&chainVout),
+			ConfirmationHeight: sqlInt32Ptr(confirmationHeight),
+			EntryID:            row.EntryID,
+			OldKey:             row.IdempotencyKey,
+		},
+	)
+}
+
+// decodeLegacyLedgerOutpoint decodes the old 32-byte hash plus big-endian
+// uint32 output-index identity.
+func decodeLegacyLedgerOutpoint(key []byte) ([32]byte, uint32, error) {
+	var hash [32]byte
+	if len(key) != legacyLedgerOutpointKeyLen {
+		return hash, 0, fmt.Errorf("legacy ledger key has length %d",
+			len(key))
+	}
+
+	copy(hash[:], key[:32])
+	index := binary.BigEndian.Uint32(key[32:])
+
+	return hash, index, nil
+}
 
 // backfillLedgerRoundUUIDs mirrors every distinct raw 16-byte round_id in
 // ledger_entries into the round_uuid TEXT column added by migration 15, using
@@ -91,7 +377,7 @@ func makePostStepCallbacks(db DatabaseBackend, log btclog.Logger,
 	checks map[uint]postMigrationCheck) map[uint]migrate.PostStepCallback {
 
 	var (
-		ctx  = context.Background()
+		ctx  = build.ContextWithLogger(context.Background(), log)
 		txDB = NewTransactionExecutor(
 			db, func(tx *sql.Tx) sqlc.Querier {
 				return db.WithTx(tx)

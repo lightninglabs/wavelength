@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
-	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -25,14 +24,9 @@ type CreateSignerSessionJob struct {
 	// SigningKey is the private-key locator for this VTXO path.
 	SigningKey keychain.KeyDescriptor
 
-	// SweepTapscriptRoot tweaks the VTXO tree key-spend path.
-	SweepTapscriptRoot []byte
-
-	// PrevOuts provides the outputs spent by transactions in the path.
-	PrevOuts txscript.PrevOutputFetcher
-
-	// Root is the root of the VTXO tree containing the signer path.
-	Root *tree.Node
+	// Tree keeps the batch prevout and per-node Taproot signing tweaks
+	// together for this validated path.
+	Tree *tree.Tree
 }
 
 // SignerSessionResult is an index-stable signer session and its public
@@ -98,9 +92,12 @@ func NewSigningExecutor(maxWorkers int) SigningExecutor {
 		createSession: func(job CreateSignerSessionJob) (
 			*tree.SignerSession, error) {
 
-			return tree.NewSignerSession(
+			if job.Tree == nil {
+				return nil, fmt.Errorf("tree is required")
+			}
+
+			return job.Tree.NewTreeSignerSession(
 				job.Signer, &job.SigningKey,
-				job.SweepTapscriptRoot, job.PrevOuts, job.Root,
 			)
 		},
 		getNonces: func(

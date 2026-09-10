@@ -82,7 +82,9 @@ func Start(cfgJSON string) error {
 			return nil, fmt.Errorf("parse config: %w", err)
 		}
 
-		client, err := wavewalletdk.Start(startCtx, cfg)
+		client, err := wavewalletdk.Start(
+			startCtx, cfg, mobileStartOptions(cfg)...,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("start embedded wallet: %w", err)
 		}

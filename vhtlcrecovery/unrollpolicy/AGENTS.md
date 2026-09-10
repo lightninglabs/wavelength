@@ -52,6 +52,10 @@ parent package.
   `ExitSpendRequest.CurrentHeight` has not reached `RequiredLockTime`; the
   failure is signaled with `unroll.ErrExitSpendNotMatured` so the unroll FSM
   can defer broadcast instead of looping on a non-final transaction.
+- `FeeEstimateFallbackSatPerVByte` returns the historical 2 sat/vB emergency
+  rate. Both vHTLC recovery actions race another valid leaf after their timing
+  conditions mature, so attempting broadcast is safer than waiting for an
+  estimator indefinitely.
 - The wrapping VTXO descriptor's `RelativeExpiry` must be greater than or
   equal to the policy's `CSVDelay` for the leaf being spent. Violated invariant
   causes the unroll actor to fail fast.

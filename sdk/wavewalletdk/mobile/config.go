@@ -49,12 +49,13 @@ type mobileConfig struct {
 	SwapServerInsecure    bool   `json:"swap_server_insecure"`
 	SwapDatabaseFileName  string `json:"swap_database_file_name"`
 
-	MaxOperatorFeeSat      int64 `json:"max_operator_fee_sat"`
-	AutoRefreshFeeFloorSat int64 `json:"auto_refresh_fee_floor_sat"`
-	AutoRefreshFeeRatePPM  int64 `json:"auto_refresh_fee_rate_ppm"`
-	SigningWorkers         int64 `json:"signing_workers"`
-	EagerRoundJoin         bool  `json:"eager_round_join"`
-	BufferSize             int   `json:"buffer_size"`
+	MaxOperatorFeeSat      int64  `json:"max_operator_fee_sat"`
+	MaxPaymentCLTV         *int64 `json:"max_payment_cltv"`
+	AutoRefreshFeeFloorSat int64  `json:"auto_refresh_fee_floor_sat"`
+	AutoRefreshFeeRatePPM  int64  `json:"auto_refresh_fee_rate_ppm"`
+	SigningWorkers         int64  `json:"signing_workers"`
+	EagerRoundJoin         bool   `json:"eager_round_join"`
+	BufferSize             int    `json:"buffer_size"`
 }
 
 // parseConfig decodes the host JSON config into a wavewalletdk.Config. An empty
@@ -79,6 +80,20 @@ func parseConfig(cfgJSON string) (wavewalletdk.Config, error) {
 	applyMobileConfig(&cfg, mc)
 
 	return cfg, nil
+}
+
+// mobileStartOptions converts explicit zero-valued mobile settings into the
+// functional options needed to override enable-only SDK convenience fields.
+// An omitted max_payment_cltv retains the non-zero swap-enabled default, so a
+// zero Config value here can only come from an explicit JSON zero.
+func mobileStartOptions(cfg wavewalletdk.Config) []wavewalletdk.Option {
+	if cfg.MaxPaymentCLTV != 0 {
+		return nil
+	}
+
+	return []wavewalletdk.Option{
+		wavewalletdk.WithMaxPaymentCLTVDisabled(),
+	}
 }
 
 // validate rejects malformed scalar config before it reaches the daemon. The
@@ -129,6 +144,10 @@ func (mc mobileConfig) validate() error {
 		return fmt.Errorf("buffer_size must not be negative: %d",
 			mc.BufferSize)
 	}
+	if mc.MaxPaymentCLTV != nil && *mc.MaxPaymentCLTV < 0 {
+		return fmt.Errorf("max_payment_cltv must not be negative: %d",
+			*mc.MaxPaymentCLTV)
+	}
 
 	// The recovery window is narrowed to uint32 in applyMobileConfig, so an
 	// absurdly large positive value would silently wrap. Reject it here to
@@ -136,6 +155,10 @@ func (mc mobileConfig) validate() error {
 	if mc.WalletRecoveryWindow > math.MaxUint32 {
 		return fmt.Errorf("wallet_recovery_window exceeds "+
 			"uint32 max: %d", mc.WalletRecoveryWindow)
+	}
+	if mc.MaxPaymentCLTV != nil && *mc.MaxPaymentCLTV > math.MaxInt32 {
+		return fmt.Errorf("max_payment_cltv exceeds int32 max: %d",
+			*mc.MaxPaymentCLTV)
 	}
 	if mc.SigningWorkers > int64(wavewalletdk.MaxSigningWorkers) {
 		return fmt.Errorf("signing_workers exceeds maximum %d: %d",
@@ -228,6 +251,9 @@ func applyMobileConfig(cfg *wavewalletdk.Config, mc mobileConfig) {
 
 	if mc.MaxOperatorFeeSat != 0 {
 		cfg.MaxOperatorFeeSat = mc.MaxOperatorFeeSat
+	}
+	if mc.MaxPaymentCLTV != nil {
+		cfg.MaxPaymentCLTV = int32(*mc.MaxPaymentCLTV)
 	}
 	if mc.AutoRefreshFeeFloorSat != 0 {
 		cfg.AutoRefreshFeeFloorSat = mc.AutoRefreshFeeFloorSat
