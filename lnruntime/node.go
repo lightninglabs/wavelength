@@ -251,6 +251,13 @@ func NewNativeNode(cfg NativeNodeConfig) (*NativeNode, error) {
 			if err != nil {
 				return err
 			}
+
+			// funding.Manager calls AddNewChannel only after the
+			// fresh channel_ready exchange. Reestablishment is
+			// reserved for links reconstructed from disk; enabling
+			// it here can race a redundant channel_reestablish
+			// against this initial link installation.
+			linkConfig.SyncStates = false
 			if _, err := runtime.AddLink(
 				channel.OpenChannel, linkConfig,
 			); err != nil {
