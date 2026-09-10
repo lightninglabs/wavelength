@@ -287,6 +287,18 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		}
 
 		br := &roundpb.BoardingRequest{
+			AssetRef:    req.AssetRef,
+			AssetAmount: req.AssetAmount,
+			AssetDigest: bytes.Clone(req.AssetDigest),
+			AssetProof: bytes.Clone(
+				req.AssetProof,
+			),
+			AssetCommitmentLeafHash: bytes.Clone(
+				req.AssetCommitmentLeafHash,
+			),
+			AssetWitness: cloneAssetWitness(
+				req.AssetWitness,
+			),
 			PolicyTemplate: policyTemplate,
 		}
 		if req.Outpoint != nil {
@@ -1035,4 +1047,15 @@ func (m *QueryRoundStatusOutbox) ToProto() fn.Result[proto.Message] {
 	return fn.Ok[proto.Message](&roundpb.QueryRoundStatusRequest{
 		RoundId: append([]byte(nil), m.RoundID[:]...),
 	})
+}
+
+// cloneAssetWitness transfers ownership of a boarding disclosure to its wire
+// message.
+func cloneAssetWitness(witness [][]byte) [][]byte {
+	result := make([][]byte, len(witness))
+	for idx := range witness {
+		result[idx] = bytes.Clone(witness[idx])
+	}
+
+	return result
 }

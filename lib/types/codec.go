@@ -57,6 +57,13 @@ const (
 )
 
 const (
+	joinRoundAuthBoardAssetRefRecordType    tlv.Type = 4
+	joinRoundAuthBoardAssetAmountRecordType tlv.Type = 5
+	joinRoundAuthBoardAssetDigestRecordType tlv.Type = 6
+	joinRoundAuthBoardAssetLeafRecordType   tlv.Type = 7
+)
+
+const (
 	joinRoundAuthLeaveValueRecordType    tlv.Type = 1
 	joinRoundAuthLeaveScriptRecordType   tlv.Type = 2
 	joinRoundAuthLeaveIsChangeRecordType tlv.Type = 3
@@ -401,9 +408,13 @@ func decodeJoinAuthBoardingRequests(raw []byte) ([]*BoardingRequest, error) {
 // decodeJoinAuthBoardingRequest parses one boarding request entry.
 func decodeJoinAuthBoardingRequest(raw []byte) (*BoardingRequest, error) {
 	var (
-		hash   []byte
-		index  uint64
-		policy []byte
+		hash        []byte
+		index       uint64
+		policy      []byte
+		assetRef    []byte
+		assetAmount uint64
+		assetDigest []byte
+		assetLeaf   []byte
 	)
 
 	stream, err := tlv.NewStream(
@@ -415,6 +426,18 @@ func decodeJoinAuthBoardingRequest(raw []byte) (*BoardingRequest, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthBoardPolicyRecordType, &policy,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthBoardAssetRefRecordType, &assetRef,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthBoardAssetAmountRecordType, &assetAmount,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthBoardAssetDigestRecordType, &assetDigest,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthBoardAssetLeafRecordType, &assetLeaf,
 		),
 	)
 	if err != nil {
@@ -460,8 +483,12 @@ func decodeJoinAuthBoardingRequest(raw []byte) (*BoardingRequest, error) {
 	}
 
 	req := &BoardingRequest{
-		Outpoint:       outpoint,
-		PolicyTemplate: bytes.Clone(policy),
+		Outpoint:                outpoint,
+		PolicyTemplate:          bytes.Clone(policy),
+		AssetRef:                string(assetRef),
+		AssetAmount:             assetAmount,
+		AssetDigest:             bytes.Clone(assetDigest),
+		AssetCommitmentLeafHash: bytes.Clone(assetLeaf),
 	}
 
 	_, err = req.DecodePolicyTemplate()
@@ -926,6 +953,35 @@ func encodeJoinAuthBoardingRequest(req *BoardingRequest) ([]byte, error) {
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthBoardPolicyRecordType, &policyTemplate,
 		),
+	}
+
+	// Asset boarding binds the asset identity, amount, OP_TRUE digest,
+	// and the commitment leaf hash into the auth digest so the operator
+	// cannot alter any of them. The proof file itself is
+	// chain-authenticated and stays outside the signature. Bitcoin-only
+	// boarding keeps the historical record set, preserving its digests.
+	if req.AssetRef != "" {
+		assetRef := []byte(req.AssetRef)
+		assetAmount := req.AssetAmount
+		assetDigest := req.AssetDigest
+		assetLeaf := req.AssetCommitmentLeafHash
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				joinRoundAuthBoardAssetRefRecordType, &assetRef,
+			),
+			tlv.MakePrimitiveRecord(
+				joinRoundAuthBoardAssetAmountRecordType,
+				&assetAmount,
+			),
+			tlv.MakePrimitiveRecord(
+				joinRoundAuthBoardAssetDigestRecordType,
+				&assetDigest,
+			),
+			tlv.MakePrimitiveRecord(
+				joinRoundAuthBoardAssetLeafRecordType,
+				&assetLeaf,
+			),
+		)
 	}
 
 	return encodeJoinAuthTLV(records)
