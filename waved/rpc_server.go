@@ -1063,13 +1063,13 @@ func (r *RPCServer) walletBalanceFetchers() []onchainWalletConfirmedFetcher {
 		fetchers = append(fetchers, func(ctx context.Context) (
 			btcutil.Amount, error) {
 
-			wb, err := lndSvc.Client.WalletBalance(ctx)
+			wb, err := r.server.lndWalletBalance(ctx, lndSvc.Client)
 			if err != nil {
 				return 0, fmt.Errorf("lnd wallet balance: %w",
 					err)
 			}
 
-			return wb.Confirmed, nil
+			return btcutil.Amount(wb.ConfirmedBalance), nil
 		})
 	})
 
@@ -1146,14 +1146,14 @@ func (r *RPCServer) metricsWalletBalance(ctx context.Context) (int64, int64,
 	)
 	r.server.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
 		found = true
-		wb, balErr := lndSvc.Client.WalletBalance(ctx)
+		wb, balErr := r.server.lndWalletBalance(ctx, lndSvc.Client)
 		if balErr != nil {
 			qErr = fmt.Errorf("lnd wallet balance: %w", balErr)
 
 			return
 		}
-		confirmed = int64(wb.Confirmed)
-		unconfirmed = int64(wb.Unconfirmed)
+		confirmed = wb.ConfirmedBalance
+		unconfirmed = wb.UnconfirmedBalance
 	})
 	r.server.lwWallet.WhenSome(func(w *lwwallet.Wallet) {
 		found = true

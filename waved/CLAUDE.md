@@ -57,6 +57,15 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   and belong to no wallet account. Scoping that dispatcher empties both, and
   does so even with no account configured, since lnd reads an empty account
   as *every* account but `"default"` as a real filter.
+- `GetBalance.onchain_wallet_confirmed_sat` and both wallet balance metrics
+  use `Server.lndWalletBalance`, with the same normalized account as spending.
+  Its raw LND call preserves lndclient authentication and RPC timeout. Empty
+  config selects `"default"`, never LND's all-accounts balance. Local-wallet
+  balance semantics and imported-script observation remain unchanged. The
+  LND account balance excludes imported boarding-script outputs as well as
+  co-tenant funds; those outputs retain their separate boarding balance
+  fields. Existing LND wallet gauges can therefore decrease on upgrade even
+  when `lnd.account` is empty.
 - `validateLndAccount` refuses to start on a configured account that is
   missing, not taproot-scoped, or watch-only. Without it each of those fails
   later and worse — a missing account silently filters every UTXO away, a
