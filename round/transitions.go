@@ -129,7 +129,7 @@ func releaseForfeitsOnFailure(transition *ClientStateTransition, err error,
 	roundID fn.Option[RoundID],
 	forfeits []types.ForfeitRequest) (*ClientStateTransition, error) {
 
-	rollback := rollbackOutbox(forfeits)
+	rollback := rollbackOutbox(roundID, forfeits)
 
 	// A raw inner error has no transition for the FSM to land on;
 	// synthesize a failure transition so the release below has somewhere to
@@ -230,14 +230,20 @@ func forfeitOutpoints(forfeits []types.ForfeitRequest) []wire.OutPoint {
 }
 
 // rollbackOutbox builds local rollback messages for a round that failed before
-// connector-bound forfeit signatures were sent.
-func rollbackOutbox(forfeits []types.ForfeitRequest) []ClientOutMsg {
+// connector-bound forfeit signatures were sent. The release carries the
+// failed round's ID (when the operator assigned one) so a VTXO that has
+// already signed its forfeit for a different, newer round refuses it.
+func rollbackOutbox(roundID fn.Option[RoundID],
+	forfeits []types.ForfeitRequest) []ClientOutMsg {
+
 	standard, custom := forfeitRollbackOutpoints(forfeits)
+	roundIDStr := fn.MapOptionZ(roundID, RoundID.String)
 
 	outbox := make([]ClientOutMsg, 0, 2)
 	if len(standard) > 0 {
 		outbox = append(outbox, &ReleaseForfeitReservation{
 			Outpoints: standard,
+			RoundID:   roundIDStr,
 		})
 	}
 	if len(custom) > 0 {
@@ -283,7 +289,7 @@ func failureOutbox(reason string, err error, recoverable bool,
 			OriginalError: err,
 		},
 	}
-	outbox = append(outbox, rollbackOutbox(forfeits)...)
+	outbox = append(outbox, rollbackOutbox(roundID, forfeits)...)
 
 	return outbox
 }
@@ -1870,18 +1876,10 @@ func (s *QuoteReceivedState) processEvent(ctx context.Context,
 			QuoteID: evt.QuoteID,
 			Reason:  evt.Reason,
 		}
-		outbox := []ClientOutMsg{reject}
-		standard, custom := forfeitRollbackOutpoints(s.Intents.Forfeits)
-		if len(standard) > 0 {
-			outbox = append(outbox, &ReleaseForfeitReservation{
-				Outpoints: standard,
-			})
-		}
-		if len(custom) > 0 {
-			outbox = append(outbox, &DropCustomForfeitReservation{
-				Outpoints: custom,
-			})
-		}
+		rollback := rollbackOutbox(
+			fn.Some(s.RoundID), s.Intents.Forfeits,
+		)
+		outbox := append([]ClientOutMsg{reject}, rollback...)
 
 		return &ClientStateTransition{
 			NextState: &ClientFailedState{

@@ -186,6 +186,10 @@ func TestDeadStatusFailsAndReleases(t *testing.T) {
 	require.True(t, ok, "no ReleaseForfeitReservation emitted")
 	require.Equal(t, []wire.OutPoint{op}, release.Outpoints)
 
+	// The release names the dead round so a VTXO that has since signed
+	// its forfeit for a newer round refuses it.
+	require.Equal(t, roundID.String(), release.RoundID)
+
 	cancel, ok := findOutbox[*CancelTimeoutReq](outbox)
 	require.True(t, ok, "no CancelTimeoutReq emitted")
 	require.Equal(t, TimeoutPhaseStatusReconcile, cancel.Phase)
