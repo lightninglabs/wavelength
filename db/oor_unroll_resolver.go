@@ -56,15 +56,72 @@ type unrollPackageNode struct {
 func (s *OORArtifactPersistenceStore) ResolveUnrollPackages(ctx context.Context,
 	outpoint wire.OutPoint) (*OORUnrollPackages, error) {
 
+	return s.resolveUnrollPackages(
+		ctx, outpoint,
+		func(ctx context.Context, q OORArtifactStore) (
+			*OORPackageBundle, error) {
+
+			return loadPackageBundleByOutpoint(ctx, q, outpoint)
+		},
+	)
+}
+
+// ResolveUnrollPackagesBySessionID resolves a package chain before the local
+// endpoint has installed an outpoint binding. OOR senders use this while
+// promoting a recipient output into shared channel recovery state.
+func (s *OORArtifactPersistenceStore) ResolveUnrollPackagesBySessionID(
+	ctx context.Context, outpoint wire.OutPoint, sessionID chainhash.Hash) (
+	*OORUnrollPackages, error) {
+
+	if sessionID != outpoint.Hash {
+		return nil, fmt.Errorf("target outpoint %s does not match OOR "+
+			"session %s", outpoint, sessionID)
+	}
+
+	return s.resolveUnrollPackages(
+		ctx, outpoint,
+		func(ctx context.Context, q OORArtifactStore) (
+			*OORPackageBundle, error) {
+
+			pkg, err := loadPackageBundleBySessionID(
+				ctx, q, sessionID,
+			)
+			if err != nil {
+				return nil, err
+			}
+			if !packageProducesAncestorOutput(
+				pkg, outpoint.Hash, outpoint.Index,
+			) {
+				return nil, fmt.Errorf("OOR session %s does "+
+					"not create target outpoint %s",
+					sessionID, outpoint)
+			}
+
+			return pkg, nil
+		},
+	)
+}
+
+// resolveUnrollPackages traverses one package chain from a caller-selected
+// target loader. The target outpoint remains part of the result even when the
+// first package is known only by session ID.
+func (s *OORArtifactPersistenceStore) resolveUnrollPackages(ctx context.Context,
+	outpoint wire.OutPoint,
+	loadTarget func(context.Context, OORArtifactStore) (*OORPackageBundle,
+		error)) (*OORUnrollPackages, error) {
+
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("store must be provided")
+	}
+	if loadTarget == nil {
+		return nil, fmt.Errorf("target package loader must be provided")
 	}
 
 	readTx := ReadTxOption()
 	var result *OORUnrollPackages
 
 	err := s.db.ExecTx(ctx, readTx, func(q OORArtifactStore) error {
-		targetPkg, err := loadPackageBundleByOutpoint(ctx, q, outpoint)
+		targetPkg, err := loadTarget(ctx, q)
 		if err != nil {
 			return err
 		}

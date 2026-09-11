@@ -408,13 +408,18 @@ const (
 	// vhtlcrecovery.ExitPolicyKindRefundWithoutReceiver.
 	ExitPolicyVHTLCRefundWithoutReceiver ExitPolicyKind = "vhtlc_" +
 		"refund_without_receiver"
+
+	// ExitPolicyArkChannelBacking identifies a pre-signed channel
+	// materialization spend from a recovery-only channel-policy VTXO.
+	ExitPolicyArkChannelBacking ExitPolicyKind = "ark_channel_backing"
 )
 
 // Valid reports whether the exit policy kind is one of the known non-standard
 // policies that can ride the ForceUnroll path.
 func (k ExitPolicyKind) Valid() bool {
 	switch k {
-	case ExitPolicyVHTLCClaim, ExitPolicyVHTLCRefundWithoutReceiver:
+	case ExitPolicyVHTLCClaim, ExitPolicyVHTLCRefundWithoutReceiver,
+		ExitPolicyArkChannelBacking:
 		return true
 
 	default:

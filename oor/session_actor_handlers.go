@@ -90,7 +90,7 @@ func (b *sessionBehavior) handleStartTransfer(ctx context.Context,
 
 	session, outbox, err := newSessionWithDispatchRequest(
 		ctx, req.Policy, req.Inputs, req.Recipients, req.IdempotencyKey,
-		req.DispatchRequestData, b.envConfig(),
+		req.DispatchRequestData, req.PrepareOnly, b.envConfig(),
 	)
 	if err != nil {
 		return fn.Err[ActorResp](err)
