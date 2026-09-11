@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/protofsm"
 	"github.com/lightninglabs/wavelength/lib/recovery"
+	"github.com/lightninglabs/wavelength/txconfirm"
 	"github.com/lightninglabs/wavelength/unrollplan"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -112,6 +113,17 @@ type JobState struct {
 	// SweepAttempts counts sweep build or broadcast failures so the actor
 	// can retry up to maxSweepAttempts before giving up.
 	SweepAttempts int
+
+	// RejectedSweep identifies the candidate awaiting fee replacement.
+	// Retaining its identity makes repeated failure delivery idempotent.
+	RejectedSweep fn.Option[chainhash.Hash]
+
+	// RepriceAfter defers fee recovery until a later observed block.
+	RepriceAfter int32
+
+	// RetrySame preserves ambiguous candidates while awaiting spend
+	// evidence.
+	RetrySame bool
 }
 
 // Copy returns a deep copy of the job state.
@@ -131,6 +143,9 @@ func (j *JobState) Copy() *JobState {
 		FailReason:          j.FailReason,
 		Conflicted:          j.Conflicted,
 		SweepAttempts:       j.SweepAttempts,
+		RejectedSweep:       j.RejectedSweep,
+		RepriceAfter:        j.RepriceAfter,
+		RetrySame:           j.RetrySame,
 	}
 
 	return copyState
@@ -149,6 +164,7 @@ type DeferredCheckpoint struct {
 
 // Event is the sealed input event surface accepted by the unroll FSM.
 type Event interface {
+	// eventSealed restricts events to this state machine.
 	eventSealed()
 }
 
@@ -208,6 +224,13 @@ type TxFailedEvent struct {
 
 	// Reason is the stable human-readable failure reason.
 	Reason string
+
+	// Class distinguishes explicit fee rejection from unknown failure.
+	Class txconfirm.BroadcastFailureClass
+
+	// RetrySame keeps earlier candidates observable after replacement
+	// races.
+	RetrySame bool
 }
 
 // eventSealed marks TxFailedEvent as an FSM event.
@@ -251,6 +274,7 @@ func (e *SweepBuildFailedEvent) eventSealed() {}
 
 // OutboxEvent is the sealed outbox side-effect surface emitted by the FSM.
 type OutboxEvent interface {
+	// outboxEventSealed restricts side effects to the unroll actor.
 	outboxEventSealed()
 }
 
@@ -302,6 +326,7 @@ func (o *ReissueSweepConfirmation) outboxEventSealed() {}
 type State interface {
 	protofsm.State[Event, OutboxEvent, *Environment]
 
+	// stateSealed restricts states to this lifecycle.
 	stateSealed()
 }
 

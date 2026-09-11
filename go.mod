@@ -87,7 +87,7 @@ require (
 	github.com/btcsuite/btcd/v2transport v1.0.1 // indirect
 	github.com/btcsuite/btclog v1.0.0 // indirect
 	github.com/btcsuite/btcwallet/wallet/txauthor v1.4.0 // indirect
-	github.com/btcsuite/btcwallet/wallet/txrules v1.3.0 // indirect
+	github.com/btcsuite/btcwallet/wallet/txrules v1.3.0
 	github.com/btcsuite/btcwallet/wallet/txsizes v1.3.0 // indirect
 	github.com/btcsuite/go-socks v0.0.0-20170105172521-4720035b7bfd // indirect
 	github.com/btcsuite/websocket v0.0.0-20150119174127-31079b680792 // indirect

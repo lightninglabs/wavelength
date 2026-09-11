@@ -50,20 +50,23 @@
 // tracked entry only while a terminal notification still needs retry
 // delivery.
 //
-// For anchor parents and requests with RetryUntilAccepted, an initial
-// broadcast whose acceptance is unproven does NOT advance to
+// Explicit direct fee or structural rejection returns a classified TxFailed
+// before RetryUntilAccepted is considered: the signing owner must change a
+// fee-rejected candidate. Anchor package fee rejection keeps its CPFP path.
+//
+// For other errors on anchor parents and requests with RetryUntilAccepted, an
+// initial broadcast whose acceptance is unproven does NOT advance to
 // AwaitingConfirmation. It stays in Broadcasting and self-loops there,
-// re-attempting every fee-bump interval, and is never failed
-// automatically — only a structurally permanent error (a non-TRUC
-// parent) is terminal. Transient conditions such as a missing confirmed
-// fee input, a min-relay-fee rejection of the zero-fee anchor parent, or
-// a mempool-full backend keep retrying. After
-// Config.BroadcastFailureAlertThreshold consecutive failures the actor
-// emits a rate-limited operator escalation, because a fund-risk tx (e.g.
-// a fraud-response checkpoint) must eventually land rather than be
-// silently abandoned. Ordinary anchorless requests retain terminal failure
-// by default. Deduplicated requests must agree on RetryUntilAccepted. The
-// tracker is in memory; callers must reassert the policy after restart.
+// re-attempting every fee-bump interval, and is never failed automatically —
+// only a structurally permanent error (a non-TRUC parent) is terminal.
+// Transient conditions such as a missing confirmed fee input, a min-relay-fee
+// rejection of the zero-fee anchor parent, or a mempool-full backend keep
+// retrying. After Config.BroadcastFailureAlertThreshold consecutive failures
+// the actor emits a rate-limited operator escalation, because a fund-risk tx
+// (e.g. a fraud-response checkpoint) must eventually land rather than be
+// silently abandoned. Ordinary anchorless requests retain terminal failure by
+// default. Deduplicated requests must agree on RetryUntilAccepted. The tracker
+// is in memory; callers must reassert the policy after restart.
 //
 // # CPFP correctness
 //

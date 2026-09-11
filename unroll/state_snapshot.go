@@ -41,6 +41,9 @@ func checkpointFromState(state State, sweepTx *wire.MsgTx) *actorCheckpoint {
 	checkpoint.Fail = job.FailReason
 	checkpoint.Conflicted = job.Conflicted
 	checkpoint.SweepAttempts = job.SweepAttempts
+	checkpoint.RejectedSweep = job.RejectedSweep
+	checkpoint.RepriceAfter = job.RepriceAfter
+	checkpoint.RetrySame = job.RetrySame
 
 	return checkpoint
 }
@@ -112,6 +115,9 @@ func stateFromCheckpoint(checkpoint *actorCheckpoint) State {
 		FailReason:          checkpoint.Fail,
 		Conflicted:          checkpoint.Conflicted,
 		SweepAttempts:       checkpoint.SweepAttempts,
+		RejectedSweep:       checkpoint.RejectedSweep,
+		RepriceAfter:        checkpoint.RepriceAfter,
+		RetrySame:           checkpoint.RetrySame,
 	}
 
 	switch phaseFromPlannerState(job) {

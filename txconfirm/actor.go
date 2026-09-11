@@ -753,6 +753,10 @@ func (a *TxBroadcasterActor) discardIncompleteTrackedTx(ctx context.Context,
 //     never be accepted as submitted, so retrying is pointless. Fail it
 //     terminally and notify subscribers.
 //
+//   - explicit fee or structural rejection on an anchorless candidate: fail
+//     this candidate with its class so the signing owner can act. A fee change
+//     requires a new transaction, even when RetryUntilAccepted was requested.
+//
 //   - any other error on an opted-in tx or anchor (CPFP) parent: acceptance
 //     is unproven and retrying the same transaction is safe. For example,
 //     a transient backend failure, a missing confirmed fee input
@@ -776,6 +780,8 @@ func (a *TxBroadcasterActor) recordInitialBroadcastOutcome(ctx context.Context,
 	entry *trackedTx, err error) (TxState, error) {
 
 	a.maybeEnsureFeeInputSupply(ctx, err)
+	directRejection := findAnchorOutput(entry.data.Tx) < 0 &&
+		ClassifyBroadcastFailure(err) != BroadcastFailureUnknown
 
 	switch {
 	case err == nil:
@@ -801,9 +807,12 @@ func (a *TxBroadcasterActor) recordInitialBroadcastOutcome(ctx context.Context,
 
 		return TxStateAwaitingConfirmation, err
 
-	case isPermanentBroadcastError(err):
-		// The tx is structurally unacceptable (e.g. a non-TRUC parent);
-		// no amount of retrying will land it, so fail terminally.
+	case isPermanentBroadcastError(err) || directRejection:
+		// Structural errors cannot succeed unchanged. An explicit
+		// direct fee rejection also needs the signing owner to change
+		// the candidate, before any opt-in retry contract can resubmit
+		// the same bytes. Anchor packages keep their existing CPFP
+		// recovery path.
 		err := a.failTrackedTx(
 			ctx, entry, fmt.Sprintf("broadcast: %v", err),
 		)
@@ -2633,6 +2642,9 @@ func (a *TxBroadcasterActor) notifyOneFailed(ctx context.Context,
 			return subscriber.Tell(notifyCtx, &TxFailed{
 				Txid:   txid,
 				Reason: reason,
+				Class: ClassifyBroadcastFailure(
+					errors.New(reason),
+				),
 			})
 		},
 	)

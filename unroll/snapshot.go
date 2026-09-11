@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/unrollplan"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
@@ -45,7 +47,10 @@ import (
 
 const (
 	checkpointStateType = "unroll.vtxo"
-	checkpointVersion   = 1
+	// Version 2 retains replacement history. Version 1 remains readable,
+	// but older binaries must refuse new checkpoints instead of forgetting
+	// an earlier candidate that can still confirm.
+	checkpointVersion = 2
 )
 
 // Outer record types for the actor checkpoint TLV stream. Odd type values are
@@ -100,6 +105,13 @@ const (
 	// entirely when false so a non-conflicted checkpoint encodes to the
 	// same bytes it did before this field existed (wavelength#1050).
 	checkpointConflictedRecordType tlv.Type = 23
+
+	// Repricing records preserve rejected identity, pacing, and all
+	// candidates.
+	checkpointRejectedSweepRecordType  tlv.Type = 25
+	checkpointRepriceAfterRecordType   tlv.Type = 27
+	checkpointReplacedSweepsRecordType tlv.Type = 29
+	checkpointRetrySameRecordType      tlv.Type = 31
 )
 
 // actorCheckpoint is the durable checkpoint shape for one VTXO unroll actor.
@@ -112,6 +124,10 @@ type actorCheckpoint struct {
 	ExitPolicyKind      ExitPolicyKind
 	ExitPolicyRef       string
 	SweepTx             *wire.MsgTx
+	RejectedSweep       fn.Option[chainhash.Hash]
+	RepriceAfter        int32
+	RetrySame           bool
+	ReplacedSweeps      []*wire.MsgTx
 	Fail                string
 	Conflicted          bool
 	SweepAttempts       int
@@ -234,15 +250,50 @@ func encodeCheckpoint(value *actorCheckpoint) ([]byte, error) {
 		)
 	}
 
-	// Conflicted (type 23) is the highest record type, so it is appended
-	// last to keep records in the ascending order tlv.NewStream requires.
-	// It is emitted only when true, so a non-conflicted checkpoint is
-	// byte-for- byte identical to one written before this field existed.
+	// Conflicted is emitted only when true. Optional recovery fields
+	// follow it in the ascending order required by tlv.NewStream.
 	if value.Conflicted {
 		conflicted := uint8(1)
 		records = append(
 			records, tlv.MakePrimitiveRecord(
 				checkpointConflictedRecordType, &conflicted,
+			),
+		)
+	}
+
+	if value.RejectedSweep.IsSome() {
+		rejected := [32]byte(value.RejectedSweep.UnsafeFromSome())
+		after := uint32(value.RepriceAfter)
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				checkpointRejectedSweepRecordType, &rejected,
+			),
+			tlv.MakePrimitiveRecord(
+				checkpointRepriceAfterRecordType, &after,
+			),
+		)
+	}
+	if len(value.ReplacedSweeps) > 0 {
+		var candidates bytes.Buffer
+		for _, candidate := range value.ReplacedSweeps {
+			if err := candidate.Serialize(&candidates); err != nil {
+				return nil, fmt.Errorf("serialize replaced "+
+					"sweep: %w", err)
+			}
+		}
+		raw := candidates.Bytes()
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				checkpointReplacedSweepsRecordType, &raw,
+			),
+		)
+	}
+
+	if value.RetrySame {
+		retrySame := uint8(1)
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				checkpointRetrySameRecordType, &retrySame,
 			),
 		)
 	}
@@ -276,18 +327,22 @@ func encodeCheckpoint(value *actorCheckpoint) ([]byte, error) {
 // truncated state.
 func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 	var (
-		version       uint8
-		height        uint32
-		started       uint8
-		trigger       uint32
-		stateBytes    []byte
-		sweepBytes    []byte
-		failBytes     []byte
-		attempts      uint32
-		deferredBytes []byte
-		policyKind    []byte
-		policyRef     []byte
-		conflicted    uint8
+		version        uint8
+		height         uint32
+		started        uint8
+		trigger        uint32
+		stateBytes     []byte
+		sweepBytes     []byte
+		failBytes      []byte
+		attempts       uint32
+		deferredBytes  []byte
+		policyKind     []byte
+		policyRef      []byte
+		conflicted     uint8
+		rejected       [32]byte
+		after          uint32
+		candidateBytes []byte
+		retrySame      uint8
 	)
 
 	stream, err := tlv.NewStream(
@@ -327,6 +382,18 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 		tlv.MakePrimitiveRecord(
 			checkpointConflictedRecordType, &conflicted,
 		),
+		tlv.MakePrimitiveRecord(
+			checkpointRejectedSweepRecordType, &rejected,
+		),
+		tlv.MakePrimitiveRecord(
+			checkpointRepriceAfterRecordType, &after,
+		),
+		tlv.MakePrimitiveRecord(
+			checkpointReplacedSweepsRecordType, &candidateBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			checkpointRetrySameRecordType, &retrySame,
+		),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create checkpoint stream: %w", err)
@@ -340,7 +407,7 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 	if _, ok := parsed[checkpointVersionRecordType]; !ok {
 		return nil, fmt.Errorf("checkpoint missing version record")
 	}
-	if version != checkpointVersion {
+	if version != checkpointVersion && version != 1 {
 		return nil, fmt.Errorf("unsupported checkpoint version %d "+
 			"(expected %d)", version, checkpointVersion)
 	}
@@ -394,6 +461,23 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 				"checkpoints: %w", err)
 		}
 		checkpoint.DeferredCheckpoints = checkpoints
+	}
+
+	if _, ok := parsed[checkpointRejectedSweepRecordType]; ok {
+		checkpoint.RejectedSweep = fn.Some(chainhash.Hash(rejected))
+		checkpoint.RepriceAfter = int32(after)
+		checkpoint.RetrySame = retrySame != 0
+	}
+	candidates := bytes.NewReader(candidateBytes)
+	for candidates.Len() > 0 {
+		candidate := wire.NewMsgTx(0)
+		if err := candidate.Deserialize(candidates); err != nil {
+			return nil, fmt.Errorf("deserialize replaced sweep: %w",
+				err)
+		}
+		checkpoint.ReplacedSweeps = append(
+			checkpoint.ReplacedSweeps, candidate,
+		)
 	}
 
 	return checkpoint, nil

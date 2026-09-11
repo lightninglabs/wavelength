@@ -282,6 +282,10 @@ type registryBehavior struct {
 	pending    map[wire.OutPoint]RegistryRecord
 	persisting map[wire.OutPoint]RegistryRecord
 
+	// feeFailureDrains prevents legacy readmission before the old durable
+	// mailbox owner has acknowledged its terminal message and stopped.
+	feeFailureDrains map[wire.OutPoint]<-chan struct{}
+
 	proofNodeFloorAlerts *proofNodeFloorAlertDeduper
 
 	spawnFunc func(context.Context, wire.OutPoint) (*VTXOUnrollActor, error)
@@ -479,6 +483,10 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		})
 	}
 
+	if err := r.feeReadmissionReady(req.Outpoint); err != nil {
+		return fn.Err[RegistryResp](err)
+	}
+
 	// Terminal records leave the active map before their persistence
 	// write completes, so fall back to the in-memory pending cache and
 	// the durable store. Re-spawning a fresh actor on top of an existing
@@ -502,6 +510,12 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		return fn.Err[RegistryResp](
 			fmt.Errorf("lookup existing record: %w", err),
 		)
+	}
+	if existing != nil && feeRejectedRecord(*existing) {
+		err := r.prepareFeeReadmission(ctx, existing, req)
+		if err != nil {
+			return fn.Err[RegistryResp](err)
+		}
 	}
 	if existing != nil {
 		// A durable record exists but no child is live for it. Two
@@ -1019,7 +1033,15 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 
 		// Terminal child drain uses its own bounded cleanup context.
 		//nolint:contextcheck
-		stopChildAfterDrain(child)
+		drained := stopChildAfterDrain(child)
+		if feeRejectedRecord(record) {
+			if r.feeFailureDrains == nil {
+				r.feeFailureDrains = make(
+					map[wire.OutPoint]<-chan struct{},
+				)
+			}
+			r.feeFailureDrains[req.Outpoint] = drained
+		}
 		delete(r.active, req.Outpoint)
 	}
 
@@ -1117,12 +1139,16 @@ func (r *registryBehavior) notifyVTXOExit(ctx context.Context,
 
 // stopChildAfterDrain stops a terminal child only after a queued status probe
 // has had a chance to run behind the currently-processing terminal message.
-func stopChildAfterDrain(child *VTXOUnrollActor) {
+func stopChildAfterDrain(child *VTXOUnrollActor) <-chan struct{} {
+	drained := make(chan struct{})
 	if child == nil || child.Ref() == nil {
-		return
+		close(drained)
+
+		return drained
 	}
 
 	go func() {
+		defer close(drained)
 		defer child.Stop()
 
 		ctx, cancel := context.WithTimeout(
@@ -1137,6 +1163,8 @@ func stopChildAfterDrain(child *VTXOUnrollActor) {
 		// been acked.
 		_ = child.Ref().Ask(ctx, &GetStateRequest{}).Await(ctx)
 	}()
+
+	return drained
 }
 
 // handleRestoreNonTerminal is the daemon's boot entry point for the
