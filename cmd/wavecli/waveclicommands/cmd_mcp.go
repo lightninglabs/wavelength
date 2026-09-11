@@ -254,6 +254,7 @@ func registerMCPTools(s *mcp.Server, client waverpc.DaemonServiceClient) {
 		Statuses     []string `json:"statuses,omitempty" jsonschema:"VTXO statuses to list; empty lists every status except forfeited and spent"` //nolint:ll
 		All          bool     `json:"all,omitempty" jsonschema:"list every status"`                                                               //nolint:ll
 		MinAmountSat int64    `json:"min_amount_sat,omitempty" jsonschema:"minimum amount in sats"`                                               //nolint:ll
+		AssetRef     string   `json:"asset_ref,omitempty" jsonschema:"filter by canonical asset reference"`                                       //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ark.vtxos.list",
@@ -274,6 +275,7 @@ func registerMCPTools(s *mcp.Server, client waverpc.DaemonServiceClient) {
 		rpcReq := &waverpc.ListVTXOsRequest{
 			MinAmountSat:           args.MinAmountSat,
 			ExcludeCheckpointPsbts: args.All,
+			AssetRef:               args.AssetRef,
 		}
 
 		for _, name := range names {

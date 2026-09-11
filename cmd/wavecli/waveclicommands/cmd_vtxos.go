@@ -66,6 +66,8 @@ func newVTXOsListCmd() *cobra.Command {
 
 	cmd.Flags().Int64("min-amount", 0,
 		"minimum amount in sats")
+	cmd.Flags().String("asset-ref", "", "filter by canonical asset "+
+		"reference")
 
 	addListOutputFlags(cmd, "VTXO")
 
@@ -114,6 +116,7 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 			req.Statuses = allVTXOStatuses()
 		}
 
+		req.AssetRef, _ = cmd.Flags().GetString("asset-ref")
 		req.MinAmountSat = minAmount
 		req.ExcludeCheckpointPsbts = !wantsCheckpointPSBTs(cmd, all)
 
