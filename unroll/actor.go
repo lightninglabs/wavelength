@@ -176,6 +176,9 @@ type behavior struct {
 
 	sweepTx *wire.MsgTx
 
+	// replacedSweeps retains signed candidates that can still confirm.
+	replacedSweeps []*wire.MsgTx
+
 	// restoredCheckpointPending keeps the first admission message on a
 	// newly constructed actor responsible for reissuing restored work, even
 	// if an older durable notification reaches the actor first.
@@ -390,17 +393,23 @@ func (b *behavior) dispatch(ctx context.Context, ax actor.Exec[unrollTx],
 		})
 
 	case *TxConfirmedMsg:
-		return b.handleEvent(ctx, ax, &TxConfirmedEvent{
-			Txid:   m.Txid,
-			Height: m.Height,
-		})
+		return b.confirmSweepCandidate(ctx, ax, m.Txid, m.Height)
 
 	case *TxFailedMsg:
+		// A replaced candidate may have a terminal notification queued
+		// before its interest was cancelled. It cannot fail the new
+		// one.
+		if b.sweepTx != nil && m.Txid != b.sweepTx.TxHash() &&
+			b.sweepCandidate(m.Txid) != nil {
+			return fn.Ok[Resp](&AckResp{})
+		}
 		b.recordFailedBroadcast(m.Txid)
 
 		return b.handleEvent(ctx, ax, &TxFailedEvent{
-			Txid:   m.Txid,
-			Reason: b.failureReasonForTx(m.Txid, m.Reason),
+			Txid:      m.Txid,
+			Reason:    b.failureReasonForTx(m.Txid, m.Reason),
+			Class:     m.Class,
+			RetrySame: len(b.replacedSweeps) > 0,
 		})
 
 	case *SpendObservedMsg:
@@ -533,39 +542,15 @@ func (b *behavior) driveEvent(ctx context.Context, ax actor.Exec[unrollTx],
 	return nil
 }
 
-// startSweep constructs the final timeout-path sweep, persists it, and
-// hands it to txconfirm for broadcast-and-wait-for-confirmation.
+// startSweep stages the signed final spend before asking txconfirm to submit
+// it. Ordinary retries reuse the same bytes. An explicit fee rejection permits
+// a higher-fee candidate for the same input and wallet destination; the old
+// candidate remains in the checkpoint so either transaction can fulfill the
+// obligation. A staged replacement is reused after restart or a failed route.
 //
-// Ordering here is load-bearing. The guiding rule is: never cross the
-// actor-boundary with a fresh sweep that the checkpoint has not yet
-// seen. Three consequences of breaking that rule make the order
-// non-obvious:
-//
-//  1. The sweep destination comes from a new BIP32 wallet address. A
-//     second, freshly-derived sweep after a retry burns a new address
-//     and races the first on chain. If both land we leak data about the
-//     wallet's key derivation.
-//
-//  2. txconfirm dedups by txid. If the re-submitted sweep has a
-//     different txid (even one output byte differs: new pkScript, new
-//     fee) the dedup misses and we double-broadcast.
-//
-//  3. A crash between "sign new sweep" and "broadcast new sweep" that
-//     happens AFTER the on-chain broadcast of an earlier attempt means
-//     restart has no trail of the broadcast sweep at all — it would
-//     build a third sweep.
-//
-// The fix is to reuse b.sweepTx (possibly restored from the checkpoint
-// via restoreCheckpoint) when it is already set, and to persist the
-// checkpoint BEFORE asking txconfirm to broadcast. On restart the same
-// transaction materializes from the checkpoint, txconfirm sees the same
-// txid it has been tracking, and the Ask resolves as a benign no-op.
-//
-// A temporarily unavailable fee estimate defers construction until the next
-// height without consuming the retry budget. Other build failures (signing,
-// malformed descriptor, or an invalid estimate) drive a SweepBuildFailedEvent
-// through the FSM so the retry budget is accounted for and the job reaches
-// terminal Failed after maxSweepAttempts.
+// Fee-estimator outages defer construction. Repricing waits for a later block
+// and a usable estimate without consuming the terminal sweep-attempt budget.
+// Other initial build failures retain the existing bounded retry behavior.
 func (b *behavior) startSweep(ctx context.Context,
 	ax actor.Exec[unrollTx]) error {
 
@@ -589,6 +574,31 @@ func (b *behavior) startSweep(ctx context.Context,
 	if b.sweepTx == nil {
 		if err := b.adoptStagedSweep(ctx, ax); err != nil {
 			return err
+		}
+	}
+
+	// An explicit rejection keeps the obligation active. Rebuild only if
+	// the stored candidate is still the rejected one; a different cached
+	// candidate was already prepared before a crash or route retry.
+	state, err := b.currentState()
+	if err != nil {
+		return err
+	}
+	rejected := stateJob(state).RejectedSweep
+	if rejected.IsSome() && !stateJob(state).RetrySame &&
+		b.sweepTx != nil &&
+		b.sweepTx.TxHash() == rejected.UnsafeFromSome() {
+
+		improved, err := b.repriceSweep(ctx)
+		if err != nil {
+			b.log.InfoS(ctx, "Deferring rejected sweep replacement",
+				slog.String("err", err.Error()),
+			)
+
+			return nil
+		}
+		if !improved {
+			return nil
 		}
 	}
 
@@ -742,6 +752,16 @@ func (b *behavior) startSweep(ctx context.Context,
 	// the EnsureConfirmedReq Ask below runs with no writer held.
 	if err := b.persistCheckpoint(ctx, ax); err != nil {
 		return err
+	}
+
+	if rejected.IsSome() &&
+		b.sweepTx.TxHash() != rejected.UnsafeFromSome() {
+
+		if err := b.stopRejectedSweep(
+			ctx, rejected.UnsafeFromSome(),
+		); err != nil {
+			return err
+		}
 	}
 
 	sweepPkScript, err := safeTxOutPkScript(b.sweepTx, 0)
@@ -1554,13 +1574,15 @@ func (b *behavior) restoreCheckpoint(ctx context.Context) error {
 		return err
 	}
 
-	if decoded.Version != checkpointVersion {
+	if decoded.Version != checkpointVersion &&
+		decoded.Version != 1 {
 		return fmt.Errorf("unknown checkpoint version %d",
 			decoded.Version)
 	}
 
 	b.pending = decoded
 	b.sweepTx = copyTx(decoded.SweepTx)
+	b.replacedSweeps = copySweepCandidates(decoded.ReplacedSweeps)
 	b.restoredCheckpointPending = decoded.Started
 
 	return nil
@@ -2021,9 +2043,9 @@ func (b *behavior) sourceSpendCallerID(outpoint wire.OutPoint) string {
 //  2. The spender is a known node in our recovery proof. That means an
 //     ancestor just confirmed; this is normal materialization traffic.
 //
-//  3. The spender is our own final sweep (matched by the sweep txid
-//     recorded in planner state). Again benign — our sweep confirming is
-//     the goal — so just propagate the height.
+//  3. The spender is a retained signed sweep candidate. Select its exact
+//     transaction for fee accounting and complete the exit, including when
+//     an earlier candidate wins the replacement race.
 //
 //  4. Anything else: the watched output was spent by someone else. This can
 //     happen if the operator cooperatively claims it, if a fraud party
@@ -2061,22 +2083,13 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 		}
 	}
 
-	// Case 3: the spender is our own sweep. Same benign outcome — we
-	// are watching our own success from a different vantage point.
-	// Compare against the sweep txid recorded in planner state
-	// (SweepBroadcastedEvent populates that) rather than b.sweepTx,
-	// so we catch the late-arriving spend notification even if the
-	// behavior has already cleared its in-memory cache.
-	state, err := b.currentState()
-	if err == nil {
-		job := stateJob(state)
-		if job.PlannerState.Sweep.Txid.IsSome() &&
-			job.PlannerState.Sweep.Txid.UnsafeFromSome() ==
-				msg.SpendingTxid {
-			return b.handleEvent(ctx, ax, &HeightUpdatedEvent{
-				Height: msg.SpendingHeight,
-			})
-		}
+	// Any retained candidate can win the replacement race. The spend
+	// notification is confirmed-chain evidence, so select its exact bytes
+	// for terminal accounting before completing the obligation.
+	if b.sweepCandidate(msg.SpendingTxid) != nil {
+		return b.confirmSweepCandidate(
+			ctx, ax, msg.SpendingTxid, msg.SpendingHeight,
+		)
 	}
 
 	// Case 4: neither of the above. Someone else spent the watched output.
@@ -2181,6 +2194,7 @@ func (b *behavior) checkpointWrite() (*actorCheckpoint,
 	}
 
 	checkpoint := checkpointFromState(state, b.sweepTx)
+	checkpoint.ReplacedSweeps = copySweepCandidates(b.replacedSweeps)
 	raw, err := encodeCheckpoint(checkpoint)
 	if err != nil {
 		return nil, nil, err
@@ -2270,13 +2284,17 @@ func (b *behavior) adoptStagedSweep(ctx context.Context,
 			return err
 		}
 
-		if decoded.Version != checkpointVersion {
+		if decoded.Version != checkpointVersion &&
+			decoded.Version != 1 {
 			return fmt.Errorf("unknown checkpoint version %d",
 				decoded.Version)
 		}
 
 		if decoded.SweepTx != nil {
 			b.sweepTx = copyTx(decoded.SweepTx)
+			b.replacedSweeps = copySweepCandidates(
+				decoded.ReplacedSweeps,
+			)
 		}
 
 		return nil

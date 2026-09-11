@@ -6,6 +6,7 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/lib/recovery"
+	"github.com/lightninglabs/wavelength/txconfirm"
 	"github.com/lightninglabs/wavelength/unrollplan"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -92,6 +93,9 @@ func processEventWithJob(ctx context.Context, job *JobState, event Event,
 		applyFailedEvent(nextJob, e)
 
 	case *SweepBroadcastedEvent:
+		nextJob.RejectedSweep = fn.None[chainhash.Hash]()
+		nextJob.RepriceAfter = 0
+		nextJob.RetrySame = false
 		nextJob.PlannerState.Sweep.Status =
 			unrollplan.SweepStatusBroadcasted
 		nextJob.PlannerState.Sweep.Txid = fn.Some(e.Txid)
@@ -275,7 +279,9 @@ func deriveStateTransition(ctx context.Context, job *JobState, env *Environment,
 		// Target confirmed + CSV matured = it is time to build
 		// and broadcast the sweep. The RequestSweepBuild outbox
 		// event is what triggers startSweep in the actor behavior.
-		outbox = append(outbox, &RequestSweepBuild{})
+		if job.RejectedSweep.IsNone() || job.Height > job.RepriceAfter {
+			outbox = append(outbox, &RequestSweepBuild{})
+		}
 
 		return transitionWithOutbox(
 			&AwaitingSweepBroadcast{
@@ -403,28 +409,43 @@ func applyConfirmedEvent(job *JobState, event *TxConfirmedEvent,
 	}
 }
 
-// applyFailedEvent records a single txconfirm failure. Proof-node
-// failures and sweep failures have different semantics:
-//
-//   - A proof-graph transaction failing is terminal. There is no way
-//     for the client to rebuild or replace an operator-signed proof
-//     node, so the only option is to surface the reason and stop.
-//
-//   - A sweep failing is often recoverable (fee too low, mempool
-//     contention, fee-spike eviction). applySweepBuildFailed bumps a
-//     retry counter and, if the budget is not exhausted, clears the
-//     planner's sweep state so deriveStateTransition will emit a fresh
-//     RequestSweepBuild. The actor's cached sweepTx also gets cleared
-//     on the next attempt because the FSM state carries
-//     SweepStatusPending again.
+// applyFailedEvent distinguishes immutable proof failure from sweep failure.
+// A fee-rejected sweep remains a live obligation and retries on a later block.
+// Its separate rejected identity makes repeated failure delivery idempotent.
+// Initial non-fee failures retain bounded retries. Once a replacement exists,
+// its failure cannot prove an earlier candidate will never confirm, so the
+// obligation stays pending. Immutable proof failures remain terminal.
 func applyFailedEvent(job *JobState, event *TxFailedEvent) {
 	if job == nil || event == nil {
+		return
+	}
+
+	// The rejected candidate is already scheduled for recovery. Replaying
+	// its failure cannot consume an attempt or move the retry deadline.
+	if job.RejectedSweep.IsSome() &&
+		job.RejectedSweep.UnsafeFromSome() == event.Txid {
 		return
 	}
 
 	// Detect sweep-tx failure by matching against the recorded sweep txid.
 	if job.PlannerState.Sweep.Txid.IsSome() &&
 		job.PlannerState.Sweep.Txid.UnsafeFromSome() == event.Txid {
+
+		if event.Class == txconfirm.BroadcastFailureFee ||
+			event.RetrySame {
+
+			if job.RejectedSweep.IsNone() {
+				job.RejectedSweep = fn.Some(event.Txid)
+				job.RepriceAfter = job.Height
+				job.RetrySame = event.Class !=
+					txconfirm.BroadcastFailureFee
+			}
+			job.PlannerState.Sweep.Status =
+				unrollplan.SweepStatusPending
+			job.PlannerState.Sweep.Txid = fn.None[chainhash.Hash]()
+
+			return
+		}
 
 		applySweepBuildFailed(job, event.Reason)
 

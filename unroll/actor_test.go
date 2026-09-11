@@ -181,6 +181,16 @@ func (f *fakeTxConfirmRef) Ask(_ context.Context,
 
 	promise := actor.NewPromise[txconfirm.Resp]()
 
+	if _, ok := msg.(*txconfirm.CancelInterestReq); ok {
+		promise.Complete(
+			fn.Ok[txconfirm.Resp](
+				&txconfirm.CancelInterestResp{},
+			),
+		)
+
+		return promise.Future()
+	}
+
 	req, ok := msg.(*txconfirm.EnsureConfirmedReq)
 	if !ok {
 		promise.Complete(
