@@ -85,6 +85,8 @@ linters:
         - github.com/btcsuite/btcwallet
         # Build the modular channel runtime from the reviewed lnd fork.
         - github.com/lightningnetwork/lnd
+        # Use the same fork's portable SQL backend.
+        - github.com/lightningnetwork/lnd/kvdb
   disable:
     # We instead use our own custom line length linter called `ll` since
     # then we can ignore log lines.

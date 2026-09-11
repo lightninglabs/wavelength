@@ -154,7 +154,7 @@ require (
 	github.com/lightningnetwork/lnd/cert v1.2.2
 	github.com/lightningnetwork/lnd/healthcheck v1.2.6 // indirect
 	github.com/lightningnetwork/lnd/queue v1.2.0 // indirect
-	github.com/lightningnetwork/lnd/sqldb v1.0.13
+	github.com/lightningnetwork/lnd/sqldb v1.0.13 // indirect
 	github.com/lightningnetwork/lnd/ticker v1.1.1
 	github.com/lightningnetwork/lnd/tor v1.2.0 // indirect
 	github.com/ltcsuite/ltcd v0.0.0-20190101042124-f37f8bf35796 // indirect
@@ -206,7 +206,7 @@ require (
 	go.etcd.io/etcd/server/v3 v3.5.12 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.61.0 // indirect
-	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 // indirect
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0 // indirect
 	go.opentelemetry.io/otel v1.44.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.29.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.20.0 // indirect
@@ -241,3 +241,5 @@ replace google.golang.org/protobuf => github.com/lightninglabs/protobuf-go-hex-d
 
 // Use local baselib for development and CI.
 replace github.com/lightninglabs/wavelength/baselib => ./baselib
+
+replace github.com/lightningnetwork/lnd/kvdb => github.com/sputn1ck/lnd/kvdb v0.0.0-20260911125155-c0b4900630b1

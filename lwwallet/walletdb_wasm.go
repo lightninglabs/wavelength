@@ -13,8 +13,8 @@ import (
 
 	"github.com/btcsuite/btcwallet/walletdb"
 	_ "github.com/lightninglabs/go-wasmsqlite"
-	"github.com/lightninglabs/wavelength/internal/sqlbase"
 	"github.com/lightninglabs/wavelength/internal/wasmhost"
+	"github.com/lightningnetwork/lnd/kvdb/sqlbase"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 )
 
