@@ -116,3 +116,77 @@ func (r *RPCServer) admitLeaveTargets(ctx context.Context,
 
 	return admitted, skipped, nil
 }
+
+// sweepAllTargets enumerates the VTXOs a sweep_all SendOnChain can forfeit.
+// It is the sweep-all counterpart of the selection=all branch in LeaveVTXOs
+// and applies the same admission check, because the two RPCs share the
+// failure it guards against: ListLiveVTXOs returns every non-terminal VTXO,
+// PendingForfeit and Forfeiting included, and the wallet reserves the sweep
+// set strictly, so one coin sitting in an unconfirmed round (an automatic
+// refresh that fired moments earlier, say) would otherwise fail the whole
+// sweep with the VTXO manager's raw reservation error.
+//
+// An empty admitted set is reported as FailedPrecondition and distinguishes
+// "nothing to sweep" from "everything is committed to a round", since the
+// second resolves on its own once that round confirms and the first does
+// not.
+func (r *RPCServer) sweepAllTargets(ctx context.Context) ([]wire.OutPoint,
+	error) {
+
+	if r.server.vtxoStore == nil {
+		return nil, status.Errorf(codes.Internal, "vtxo store not "+
+			"initialized")
+	}
+
+	liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list live VTXOs: %v",
+			err)
+	}
+	if len(liveVTXOs) == 0 {
+		return nil, status.Errorf(codes.FailedPrecondition, "no live "+
+			"VTXOs to sweep")
+	}
+
+	// ListLiveVTXOs already returned hydrated descriptors, so the
+	// admission check runs on those rather than re-reading each row
+	// through admitLeaveTargets; on a large wallet that round trip is
+	// one extra transaction plus an ancestry query per coin.
+	var skipped int
+	admitted := make([]wire.OutPoint, 0, len(liveVTXOs))
+	for _, desc := range liveVTXOs {
+		admitErr := vtxo.CheckForfeitAdmission(desc)
+		if admitErr == nil {
+			admitted = append(admitted, desc.Outpoint)
+
+			continue
+		}
+
+		skipped++
+
+		// The admission error names what holds the coin, so the
+		// line says which coin was left out of the sweep and what
+		// has to resolve before a retry can include it.
+		r.server.log.InfoS(ctx, "Skipping sweep-all target: not "+
+			"admissible for forfeit",
+			slog.String("outpoint", desc.Outpoint.String()),
+			slog.String("status", desc.Status.String()),
+			slog.String("reason", admitErr.Error()),
+		)
+	}
+
+	if skipped > 0 {
+		r.server.log.InfoS(ctx, "Sweep-all targets skipped",
+			slog.Int("skipped_count", skipped),
+			slog.Int("remaining_count", len(admitted)),
+		)
+	}
+
+	if len(admitted) == 0 {
+		return nil, status.Errorf(codes.FailedPrecondition, "no "+
+			"sweepable VTXOs: %d skipped (committed to a round or "+
+			"spend-reserved); retry once they resolve", skipped)
+	}
+
+	return admitted, nil
+}
