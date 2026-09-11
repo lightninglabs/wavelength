@@ -56,8 +56,9 @@
 // re-attempting every fee-bump interval, and is never failed
 // automatically — only a structurally permanent error (a non-TRUC
 // parent) is terminal. Transient conditions such as a missing confirmed
-// fee input, a min-relay-fee rejection of the zero-fee anchor parent, or
-// a mempool-full backend keep retrying. After
+// fee input, a min-relay-fee rejection of the zero-fee anchor parent, a
+// mempool-full backend, or a conflicting child with a reported replacement
+// fee floor keep retrying. After
 // Config.BroadcastFailureAlertThreshold consecutive failures the actor
 // emits a rate-limited operator escalation, because a fund-risk tx (e.g.
 // a fraud-response checkpoint) must eventually land rather than be
@@ -82,9 +83,12 @@
 //     enforces BIP-125 Rule 4 (strictly higher feerate) and Rule 3
 //     (strictly higher absolute fee, by at least
 //     IncrementalRelayFeeSatPerVByte * packageVSize) against the last
-//     successful submission for the same parent txid. Without this, a
-//     flat or dipping fee estimator would regenerate byte-identical or
-//     lower-fee packages that the mempool rejects.
+//     successful submission for the same parent txid. Foreign-child fee
+//     constraints use separate state and are clamped to the configured cap
+//     before wallet input selection, so retries stay bounded and still reach
+//     Core to detect a disappeared conflict. Without this, a flat or dipping
+//     fee estimator would regenerate lower-fee packages that the mempool
+//     rejects.
 //
 //  3. Fee-input reservation. Each parent txid reserves the wallet
 //     UTXO(s) it has committed to across its submission history.

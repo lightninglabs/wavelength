@@ -106,7 +106,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   fee input spent mid-submit) — the conditions CPFP retry exists to
   overcome. Only a structurally permanent error
   (`isPermanentBroadcastError`, currently `ErrNonTRUCParent`) fails
-  terminally; `ErrParentAlreadyBroadcast` advances to
+  terminally. A rejected child with a reported replacement fee floor stays
+  in `Broadcasting` and retries above that floor;
+  `ErrParentAlreadyBroadcast` advances to
   `AwaitingConfirmation` (a live parent exists on another path). Rationale:
   a fraud-response checkpoint must land before the counterparty's
   CSV-timeout path, so the actor escalates to operators rather than
@@ -150,7 +152,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   BIP-125 Rule 4 (strictly higher feerate) and Rule 3 (strictly higher
   absolute fee by at least `IncrementalRelayFeeSatPerVByte *
   packageVSize`) against the last successful submission for the same
-  parent txid.
+  parent txid. Fee constraints learned from a foreign child use separate
+  fields and are clamped to `MaxFeeRateSatPerVByte` before wallet input
+  selection. This keeps fees bounded while retries continue to reach Core
+  and detect when the conflict disappears.
 - **Per-parent fee-input reservation**: each parent txid reserves the
   wallet UTXO(s) it has committed to. Reservations survive block
   boundaries and release only on eviction (terminal state) or when
@@ -210,11 +215,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   keeps `pendingConfirmed` set for the next tick. The same split applies on
   the deferred `handleTerminalNotifyResult` path, where a post-timeout stop
   is logged at debug and cancelled rather than warned.
-- **`ErrParentAlreadyBroadcast` is a race outcome, not a failure.** An initial
-  package attempt can lose to an existing broadcast path once the parent
-  reaches a mempool; the duplicate child is rejected, but the parent stays
-  under its confirmation watch, so the entry still advances to
-  `AwaitingConfirmation` and no operator action is possible. Both
+- **Classify an existing-parent child failure by recovery action.** If Core
+  reports a replacement fee constraint, retain the strongest floor and keep
+  the entry in `Broadcasting`; the next interval must construct a bounded
+  replacement. `ErrParentAlreadyBroadcast` is reserved for a spent or missing
+  anchor where no actionable floor exists, so the entry advances to
+  `AwaitingConfirmation`. Both
   `recordInitialBroadcastOutcome` and the later fee-bump path log this sentinel
   at debug — keep the two consistent if either is touched. Log severity here is
   deliberately **not** pinned by a unit test: the initial-package test asserts

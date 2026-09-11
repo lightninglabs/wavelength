@@ -1056,6 +1056,46 @@ func TestCPFPBumpFailsClosedAtFeeRateCap(t *testing.T) {
 		require.NotErrorIs(t, err, ErrFeeRateCapReached)
 		require.Equal(t, 1, chain.packageCallCount())
 	})
+
+	t.Run("absolute fee above cap fails closed", func(t *testing.T) {
+		t.Parallel()
+
+		chain := newFakeChainSourceRef(100)
+		chain.feeRate = 5
+		utxo := makeWalletUTXOWithAmount(10_000_000, 0xdd)
+		w := &fakeWallet{
+			utxos: []*walletcore.Utxo{
+				utxo,
+			},
+		}
+		b := NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource:           chain,
+			Wallet:                w,
+			MaxFeeRateSatPerVByte: feeCap,
+		})
+
+		_, err := b.Submit(t.Context(), 99, &BroadcastRequest{
+			Tx: parent, Label: "initial-package",
+		})
+		require.NoError(t, err)
+
+		// A foreign child may have a low nominal feerate but a high
+		// absolute fee. The replacement floor must still respect the
+		// operator's package-fee ceiling.
+		b.parentStates[txid].LastPackageFee = 1_000_000
+
+		_, err = b.Submit(t.Context(), 100, &BroadcastRequest{
+			Tx: parent, Label: "absolute-cap", IsFeeBump: true,
+		})
+		require.ErrorIs(t, err, ErrFeeRateCapReached)
+		require.Equal(t, 1, chain.packageCallCount())
+		require.Zero(t, chain.broadcastCallCount())
+		require.Contains(
+			t, b.parentStates[txid].UsedFeeOutpoints, utxo.Outpoint,
+		)
+		releaseCalls, _ := w.releaseSnapshot()
+		require.NotContains(t, releaseCalls, utxo.Outpoint)
+	})
 }
 
 // TestCPFPReselectReleasesAbandonedFeeInput reproduces wavelength#664: when the
@@ -1871,7 +1911,7 @@ func TestApplyReplacementFloor(t *testing.T) {
 		b := newBroadcaster(1)
 
 		feeRate, totalFee := b.applyReplacementFloor(
-			parent, txid, 7, btcutil.Amount(7*packageVSize),
+			parent, txid, 7, btcutil.Amount(7*packageVSize), 0,
 			childVSize,
 		)
 		require.Equal(t, int64(7), feeRate)
@@ -1890,7 +1930,7 @@ func TestApplyReplacementFloor(t *testing.T) {
 
 		feeRate, totalFee := b.applyReplacementFloor(
 			parent, txid, prevFeeRate,
-			btcutil.Amount(prevFeeRate*packageVSize), childVSize,
+			btcutil.Amount(prevFeeRate*packageVSize), 0, childVSize,
 		)
 
 		require.Equal(
@@ -1914,7 +1954,7 @@ func TestApplyReplacementFloor(t *testing.T) {
 		}
 
 		feeRate, totalFee := b.applyReplacementFloor(
-			parent, txid, 3, btcutil.Amount(3*packageVSize),
+			parent, txid, 3, btcutil.Amount(3*packageVSize), 0,
 			childVSize,
 		)
 
@@ -1950,6 +1990,7 @@ func TestApplyReplacementFloor(t *testing.T) {
 				parent, txid, prevFeeRate+1, btcutil.Amount(
 					(prevFeeRate+1)*packageVSize,
 				),
+				0,
 				childVSize,
 			)
 
@@ -1976,7 +2017,7 @@ func TestApplyReplacementFloor(t *testing.T) {
 
 		_, totalFee := b.applyReplacementFloor(
 			parent, txid, prevFeeRate, // flat estimator
-			btcutil.Amount(prevFeeRate*packageVSize), childVSize,
+			btcutil.Amount(prevFeeRate*packageVSize), 0, childVSize,
 		)
 
 		minAdditional := irf * packageVSize
@@ -2004,7 +2045,7 @@ func TestApplyReplacementFloor(t *testing.T) {
 			)
 
 			_, totalFee := b.applyReplacementFloor(
-				parent, txid, prevFeeRate, large, childVSize,
+				parent, txid, prevFeeRate, large, 0, childVSize,
 			)
 			require.Equal(
 				t, large, totalFee, "applyReplacementFloor "+
@@ -2539,6 +2580,346 @@ func TestCPFPBroadcasterFeeBumpReplacementFloor(t *testing.T) {
 				"estimator",
 		)
 	})
+}
+
+// TestCPFPBroadcasterLearnsForeignChildFloor verifies that a package retry
+// uses Core's reported replacement constraint instead of repeating the same
+// underpriced child.
+func TestCPFPBroadcasterLearnsForeignChildFloor(t *testing.T) {
+	t.Parallel()
+
+	chain := newFakeChainSourceRef(100)
+	chain.feeRate = 5
+	parent := makeTestTx(true)
+	parentTxid := parent.TxHash()
+	foreignFee := btcutil.Amount(10_000)
+	parentFee := btcutil.Amount(500)
+	feeUTXO := makeWalletUTXOWithAmount(10_000_000, 0xee)
+	chain.packageErr = errors.Join(
+		chainbackends.NewPackageTxError(
+			"parent", parentTxid, "txn-already-known",
+		),
+		chainbackends.NewPackageTxError(
+			"child", chainhash.Hash{0xee}, "insufficient fee, "+
+				"rejecting replacement tx, less fees than "+
+				"conflicting txs; 0.00001 < 0.0001",
+		),
+	)
+
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet: &fakeWallet{
+			utxos: []*walletcore.Utxo{feeUTXO},
+		},
+		IncrementalRelayFeeSatPerVByte: 1,
+	})
+
+	_, err := b.Submit(t.Context(), 100, &BroadcastRequest{
+		Tx: parent, ParentFee: parentFee, Label: "foreign-child",
+	})
+	require.ErrorIs(t, err, ErrConflictingChildRejected)
+	require.Equal(
+		t, foreignFee, b.parentStates[parentTxid].ForeignChildFeeFloor,
+	)
+
+	chain.mu.Lock()
+	chain.packageErr = nil
+	chain.mu.Unlock()
+
+	result, err := b.Submit(t.Context(), 101, &BroadcastRequest{
+		Tx: parent, ParentFee: parentFee, Label: "foreign-child-retry",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result.ChildTxid)
+	require.Greater(
+		t, b.parentStates[parentTxid].LastPackageFee, foreignFee,
+	)
+	require.Zero(t, b.parentStates[parentTxid].ForeignChildFeeFloor)
+	require.Equal(t, 2, chain.packageCallCount())
+
+	chain.mu.Lock()
+	replacementChild := chain.packageCalls[1].Child.Copy()
+	chain.mu.Unlock()
+	childInputValue := feeUTXO.Amount + btcutil.Amount(
+		parent.TxOut[findAnchorOutput(parent)].Value,
+	)
+	var childOutputValue btcutil.Amount
+	for _, output := range replacementChild.TxOut {
+		childOutputValue += btcutil.Amount(output.Value)
+	}
+	require.Greater(
+		t, childInputValue-childOutputValue, foreignFee, "the "+
+			"replacement child itself must clear Core's child "+
+			"fee floor",
+	)
+}
+
+// TestCPFPBroadcasterRelearnsForeignFloorAfterRestart verifies that the
+// backend diagnostic restores the in-memory floor after process state is lost.
+func TestCPFPBroadcasterRelearnsForeignFloorAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	parent := makeTestTx(true)
+	parentTxid := parent.TxHash()
+	foreignFee := btcutil.Amount(10_000)
+	newChain := func() *fakeChainSourceRef {
+		chain := newFakeChainSourceRef(100)
+		chain.feeRate = 5
+		chain.packageErr = errors.Join(
+			chainbackends.NewPackageTxError(
+				"parent", parentTxid, "txn-already-known",
+			),
+			chainbackends.NewPackageTxError(
+				"child", chainhash.Hash{0xef}, "insufficient"+
+					" fee, rejecting replacement tx, "+
+					"less fees than conflicting txs; "+
+					"0.00001 < 0.0001",
+			),
+		)
+
+		return chain
+	}
+	newBroadcaster := func(chain *fakeChainSourceRef,
+		seed byte) *CPFPBroadcaster {
+
+		return NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource: chain,
+			Wallet: &fakeWallet{
+				utxos: []*walletcore.Utxo{
+					makeWalletUTXOWithAmount(
+						10_000_000, seed,
+					),
+				},
+			},
+		})
+	}
+
+	firstChain := newChain()
+	first := newBroadcaster(firstChain, 0xe1)
+	_, err := first.Submit(t.Context(), 100, &BroadcastRequest{
+		Tx: parent, Label: "before-restart",
+	})
+	require.ErrorIs(t, err, ErrConflictingChildRejected)
+	require.Equal(
+		t, foreignFee,
+		first.parentStates[parentTxid].ForeignChildFeeFloor,
+	)
+
+	// A new broadcaster has no parent state. Core reports the same live
+	// conflict, allowing it to reconstruct the floor before retrying.
+	restartChain := newChain()
+	restarted := newBroadcaster(restartChain, 0xe2)
+	_, err = restarted.Submit(t.Context(), 101, &BroadcastRequest{
+		Tx: parent, Label: "after-restart",
+	})
+	require.ErrorIs(t, err, ErrConflictingChildRejected)
+	require.Equal(
+		t, foreignFee,
+		restarted.parentStates[parentTxid].ForeignChildFeeFloor,
+	)
+
+	restartChain.mu.Lock()
+	restartChain.packageErr = nil
+	restartChain.mu.Unlock()
+	_, err = restarted.Submit(t.Context(), 102, &BroadcastRequest{
+		Tx: parent, Label: "after-restart-retry",
+	})
+	require.NoError(t, err)
+	require.Greater(
+		t, restarted.parentStates[parentTxid].LastPackageFee,
+		foreignFee,
+	)
+	require.Zero(
+		t, restarted.parentStates[parentTxid].ForeignChildFeeFloor,
+	)
+}
+
+// TestCPFPBroadcasterClampsForeignFloor verifies that an unpayable foreign
+// constraint cannot prevent retries from reaching Core. A retry at the local
+// cap is required to detect that the foreign child has disappeared.
+func TestCPFPBroadcasterClampsForeignFloor(t *testing.T) {
+	t.Parallel()
+
+	const feeCap = 10
+
+	parent := makeTestTx(true)
+	parentTxid := parent.TxHash()
+	chain := newFakeChainSourceRef(100)
+	chain.feeRate = 5
+	chain.packageErr = errors.Join(
+		chainbackends.NewPackageTxError(
+			"parent", parentTxid, "txn-already-known",
+		),
+		chainbackends.NewPackageTxError(
+			"child", chainhash.Hash{0xf0}, "insufficient fee, "+
+				"rejecting replacement tx, less fees than "+
+				"conflicting txs; 0.00001 < 1.00000000; "+
+				"new feerate 0.00004 BTC/kvB <= old "+
+				"feerate 0.01000 BTC/kvB",
+		),
+	)
+
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet: &fakeWallet{
+			utxos: []*walletcore.Utxo{
+				makeWalletUTXOWithAmount(10_000_000, 0xf0),
+			},
+		},
+		MaxFeeRateSatPerVByte: feeCap,
+	})
+	req := &BroadcastRequest{Tx: parent, Label: "foreign-cap"}
+
+	_, err := b.Submit(t.Context(), 100, req)
+	require.ErrorIs(t, err, ErrConflictingChildRejected)
+	require.Equal(
+		t, btcutil.Amount(100_000_000),
+		b.parentStates[parentTxid].ForeignChildFeeFloor,
+	)
+	require.Equal(
+		t, int64(1_000), b.parentStates[parentTxid].ForeignFeeRateFloor,
+	)
+
+	// The learned values exceed both local caps. The retry must still
+	// submit a bounded package instead of failing fee selection or cap
+	// validation before it reaches Core.
+	_, err = b.Submit(t.Context(), 101, req)
+	require.ErrorIs(t, err, ErrConflictingChildRejected)
+	require.Equal(t, 2, chain.packageCallCount())
+
+	chain.mu.Lock()
+	chain.packageErr = nil
+	chain.mu.Unlock()
+	result, err := b.Submit(t.Context(), 102, req)
+	require.NoError(t, err)
+	require.Equal(t, int64(feeCap), result.FeeRate)
+	require.Equal(t, 3, chain.packageCallCount())
+	require.Zero(t, b.parentStates[parentTxid].ForeignChildFeeFloor)
+	require.Zero(t, b.parentStates[parentTxid].ForeignFeeRateFloor)
+}
+
+// TestCPFPBroadcasterPreservesLiveChildInputOnForeignConflict verifies that a
+// failed replacement does not release the fee input spent by our live child.
+func TestCPFPBroadcasterPreservesLiveChildInputOnForeignConflict(t *testing.T) {
+	t.Parallel()
+
+	parent := makeTestTx(true)
+	parentTxid := parent.TxHash()
+	utxo := makeWalletUTXOWithAmount(10_000_000, 0xf1)
+	wallet := &fakeWallet{utxos: []*walletcore.Utxo{utxo}}
+	chain := newFakeChainSourceRef(100)
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet:      wallet,
+	})
+	req := &BroadcastRequest{Tx: parent, Label: "preserve-input"}
+
+	_, err := b.Submit(t.Context(), 100, req)
+	require.NoError(t, err)
+	require.Contains(
+		t, b.parentStates[parentTxid].UsedFeeOutpoints, utxo.Outpoint,
+	)
+
+	chain.mu.Lock()
+	chain.packageErr = errors.Join(
+		chainbackends.NewPackageTxError(
+			"parent", parentTxid, "txn-already-known",
+		),
+		chainbackends.NewPackageTxError(
+			"child", chainhash.Hash{0xf1}, "insufficient fee, "+
+				"rejecting replacement tx, less fees than "+
+				"conflicting txs; 0.00001 < 0.0001",
+		),
+	)
+	chain.mu.Unlock()
+
+	_, err = b.Submit(t.Context(), 101, req)
+	require.ErrorIs(t, err, ErrConflictingChildRejected)
+	require.Contains(
+		t, b.parentStates[parentTxid].UsedFeeOutpoints, utxo.Outpoint,
+	)
+	require.Contains(
+		t, b.parentStates[parentTxid].UsedFeeInputs, utxo.Outpoint,
+	)
+	releaseCalls, _ := wallet.releaseSnapshot()
+	require.NotContains(t, releaseCalls, utxo.Outpoint)
+}
+
+// TestCPFPBroadcasterDoesNotLearnFromFatalParent verifies that a child fee
+// diagnostic is ignored unless Core also proves the parent is already known.
+func TestCPFPBroadcasterDoesNotLearnFromFatalParent(t *testing.T) {
+	t.Parallel()
+
+	parent := makeTestTx(true)
+	parentTxid := parent.TxHash()
+	chain := newFakeChainSourceRef(100)
+	chain.packageErr = errors.Join(
+		chainbackends.NewPackageTxError(
+			"parent", parentTxid, "bad-witness",
+		),
+		chainbackends.NewPackageTxError(
+			"child", chainhash.Hash{0xf2}, "insufficient fee, "+
+				"rejecting replacement tx, less fees than "+
+				"conflicting txs; 0.00001 < 0.0001",
+		),
+	)
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet: &fakeWallet{
+			utxos: []*walletcore.Utxo{
+				makeWalletUTXOWithAmount(10_000_000, 0xf2),
+			},
+		},
+	})
+
+	_, err := b.Submit(t.Context(), 100, &BroadcastRequest{
+		Tx: parent, Label: "fatal-parent",
+	})
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrConflictingChildRejected)
+	require.Nil(t, b.parentStates[parentTxid])
+}
+
+// TestLearnReplacementFloor verifies that repeated policy diagnostics only
+// ratchet the remembered floor upward.
+func TestLearnReplacementFloor(t *testing.T) {
+	t.Parallel()
+
+	state := &parentBumpState{}
+	first := chainbackends.NewPackageTxError(
+		"child", chainhash.Hash{1},
+		"less fees than conflicting txs; 0.00001 < 0.0001",
+	)
+	require.True(t, learnReplacementFloor(state, first, 1_000))
+	require.Equal(
+		t, btcutil.Amount(10_000), state.ForeignChildFeeFloor,
+	)
+
+	deficit := chainbackends.NewPackageTxError(
+		"child", chainhash.Hash{1},
+		"not enough additional fees to relay; 0.00000001 < 0.00000016",
+	)
+	require.True(t, learnReplacementFloor(state, deficit, 10_001))
+	require.Equal(
+		t, btcutil.Amount(10_016), state.ForeignChildFeeFloor,
+	)
+
+	feeRate := chainbackends.NewPackageTxError(
+		"child", chainhash.Hash{1},
+		"new feerate 0.00004 BTC/kvB <= old feerate 0.00207 BTC/kvB",
+	)
+	require.True(t, learnReplacementFloor(state, feeRate, 1_000))
+	require.Equal(t, int64(207), state.ForeignFeeRateFloor)
+
+	require.False(
+		t,
+		learnReplacementFloor(
+			state, errors.New("unrelated"), 50_000,
+		),
+	)
+	require.Equal(
+		t, btcutil.Amount(10_016), state.ForeignChildFeeFloor,
+	)
 }
 
 // TestSignCPFPChildHandlesWalletInputRewrites exercises signCPFPChild with

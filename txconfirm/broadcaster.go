@@ -103,24 +103,28 @@ var (
 
 	// ErrParentAlreadyBroadcast indicates that the SubmitPackage RPC
 	// reported the parent transaction as already known to the network
-	// while our CPFP child failed to land (e.g. RBF-replaced by a
-	// higher-fee child or its anchor input was already spent). The
+	// while our CPFP child failed to land because its anchor input was
+	// already spent or otherwise unavailable. The
 	// parent will confirm via whichever fee-bump won the race, so the
 	// caller should keep watching for confirmation rather than treat
 	// this as a terminal broadcast failure.
 	ErrParentAlreadyBroadcast = errors.New("parent already broadcast by " +
 		"another path; cpfp child rejected")
 
-	// ErrFeeRateCapReached indicates that satisfying the BIP-125 Rule 4
-	// replacement floor (a strictly higher feerate than the prior
-	// submission) would push the package above the configured
-	// MaxFeeRateSatPerVByte ceiling. The estimator is clamped to the cap,
-	// but the replacement floor ratchets past it once a prior bump already
-	// sat at the cap, so we fail the bump closed rather than pay above the
-	// operator's safety limit. The prior submission stays live, so callers
-	// treat this as a benign no-op (Bumped=false): the tx keeps its last
-	// in-cap fee and can still confirm; only the over-cap replacement is
-	// refused (wavelength#403).
+	// ErrConflictingChildRejected indicates that the parent is already in
+	// the mempool but the submitted CPFP child could not replace a
+	// conflicting child. The broadcaster records any fee floor reported by
+	// the backend before returning this error, so callers should keep the
+	// transaction in the initial broadcast retry loop.
+	ErrConflictingChildRejected = errors.New("parent accepted but cpfp " +
+		"child rejected by a conflicting child")
+
+	// ErrFeeRateCapReached indicates that replacing our own prior package
+	// would require a feerate or absolute fee above the configured
+	// MaxFeeRateSatPerVByte ceiling. Our prior submission stays live, so
+	// callers treat this as a benign no-op (Bumped=false). Constraints
+	// learned from a foreign child are instead clamped to the ceiling so a
+	// retry still reaches Core and detects when that conflict disappears.
 	ErrFeeRateCapReached = errors.New("replacement feerate floor exceeds " +
 		"the configured max fee rate cap")
 )
@@ -317,6 +321,16 @@ type parentBumpState struct {
 	// sats) paid by the most recent successful submission for this
 	// parent.
 	LastPackageFee btcutil.Amount
+
+	// ForeignFeeRateFloor is the strongest feerate reported for a
+	// conflicting child that we did not submit. It is kept separate from
+	// LastFeeRate because it may exceed our configured fee cap.
+	ForeignFeeRateFloor int64
+
+	// ForeignChildFeeFloor is the strongest absolute fee reported for a
+	// conflicting child that we did not submit. It is
+	// clamped to the configured cap when constructing each retry.
+	ForeignChildFeeFloor btcutil.Amount
 
 	// UsedFeeOutpoints is the set of wallet UTXOs this parent's child
 	// packages have consumed across the parent's submission history.
@@ -571,6 +585,8 @@ func (b *CPFPBroadcaster) releaseFeeOutpoint(ctx context.Context,
 	// drop the empty entry entirely so parentStates does not accumulate
 	// zero-value shells.
 	if state.LastFeeRate == 0 && state.LastPackageFee == 0 &&
+		state.ForeignFeeRateFloor == 0 &&
+		state.ForeignChildFeeFloor == 0 &&
 		len(state.UsedFeeOutpoints) == 0 &&
 		len(state.UsedFeeInputs) == 0 &&
 		len(state.PredictedFeeInputs) == 0 {
@@ -833,33 +849,11 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 		return nil, fmt.Errorf("estimate fee: %w", err)
 	}
 
-	totalFee, err := computePackageFee(
-		req.Tx, btcutil.Amount(feeRate), childVSize,
+	feeRate, totalFee, err := b.boundedPackageFee(
+		req.Tx, txid, feeRate, req.ParentFee, childVSize,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("estimate package fee: %w", err)
-	}
-
-	feeRate, totalFee = b.applyReplacementFloor(
-		req.Tx, txid, feeRate, totalFee, childVSize,
-	)
-
-	// The estimator (and any operator target) is clamped to
-	// MaxFeeRateSatPerVByte, but the replacement floor above ratchets the
-	// feerate to prev.LastFeeRate + 1 to satisfy BIP-125 Rule 4 without
-	// re-checking that ceiling. Once a prior bump already sat at the cap,
-	// each subsequent bump would escalate one sat/vB above it indefinitely,
-	// making the wallet pay fees over the configured safety limit. The cap
-	// is a hard ceiling, so fail closed here rather than pay past it: no
-	// compliant replacement exists within the cap once the prior submission
-	// is already at it. The bump is a benign no-op -- the prior tx stays
-	// live and can still confirm at its last in-cap fee -- so the actor's
-	// fee-bump-error path recovers to AwaitingConfirmation and retries
-	// (wavelength#403).
-	if feeRate > b.cfg.MaxFeeRateSatPerVByte {
-		return nil, fmt.Errorf("%w: replacement requires %d sat/vB, "+
-			"above the %d sat/vB cap", ErrFeeRateCapReached,
-			feeRate, b.cfg.MaxFeeRateSatPerVByte)
+		return nil, err
 	}
 
 	// A funded parent may already pay the whole package target on its own
@@ -959,6 +953,10 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 				)
 			}
 			if reselected.Outpoint != feeInput.Outpoint {
+				reselectedCarriedOver := b.feeOutpointReserved(
+					txid, reselected.Outpoint,
+				)
+
 				// The child will spend the reselected input, so
 				// release the abandoned original's reservation
 				// and wallet lease -- otherwise it stays locked
@@ -974,9 +972,22 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 				}
 
 				feeInput = reselected
+				feeInputCarriedOver = reselectedCarriedOver
 				b.reserveFeeInput(ctx, txid, feeInput)
 			}
 		}
+	}
+
+	// Mixed-script wallets can make the precise child estimate smaller than
+	// the conservative pre-selection estimate. The broadcaster never lowers
+	// totalFee in that case, so use the same conservative size for the cap.
+	err = b.validateFeeCap(
+		req.Tx, max(childVSize, preciseChildVSize), feeRate, totalFee,
+	)
+	if err != nil {
+		b.releaseNewFeeInput(ctx, txid, feeInput, feeInputCarriedOver)
+
+		return nil, err
 	}
 
 	child, err := BuildCPFPChild(
@@ -1023,6 +1034,15 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 		},
 	).Await(ctx).Unpack()
 	if pkgErr != nil {
+		parentKnown := isParentKnownChildFailed(txid, pkgErr)
+		learnedFloor := false
+		if parentKnown {
+			learnedFloor = learnReplacementFloor(
+				b.parentState(txid), pkgErr,
+				childFeeFromPackageFee(totalFee, req.ParentFee),
+			)
+		}
+
 		switch {
 		case IsIgnorableBroadcastError(pkgErr):
 			b.log.DebugS(
@@ -1043,7 +1063,21 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 					err)
 			}
 
-		case isParentKnownChildFailed(txid, pkgErr):
+		case learnedFloor:
+			// Core rejected this child against a live conflicting
+			// child and reported the fee constraint that failed.
+			// Keep that floor after releasing the unused wallet
+			// input so the next retry constructs a bounded
+			// replacement instead of repeating the same underpriced
+			// package.
+			b.releaseNewFeeInput(
+				ctx, txid, feeInput, feeInputCarriedOver,
+			)
+
+			return nil, fmt.Errorf("%w: %w",
+				ErrConflictingChildRejected, pkgErr)
+
+		case parentKnown:
 			// The parent is already in mempool or chain via
 			// another CPFP attempt, but our child was rejected
 			// (RBF replacement of a higher-fee child, or its
@@ -1067,22 +1101,155 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 		}
 	}
 
-	childTxid := child.TxHash()
+	return b.successfulPackageResult(
+		txid, child.TxHash(), feeRate, totalFee,
+	), nil
+}
 
-	// Record the submission so the next fee bump for this parent can
-	// enforce BIP-125 Rule 3/4 against it. The parentStates entry was
-	// already created (or updated) by reserveFeeOutpoint above, so we
-	// update the fee-history fields in place to preserve the
-	// UsedFeeOutpoints reservation accumulated over all prior bumps.
-	state := b.parentStates[txid]
+// boundedPackageFee computes the initial package fee, applies every local and
+// foreign replacement floor, and enforces the operator cap before the caller
+// selects or leases a wallet input.
+func (b *CPFPBroadcaster) boundedPackageFee(parent *wire.MsgTx,
+	parentTxid chainhash.Hash, feeRate int64, parentFee btcutil.Amount,
+	childVSize int64) (int64, btcutil.Amount, error) {
+
+	totalFee, err := computePackageFee(
+		parent, btcutil.Amount(feeRate), childVSize,
+	)
+	if err != nil {
+		return 0, 0, fmt.Errorf("estimate package fee: %w", err)
+	}
+
+	feeRate, totalFee = b.applyReplacementFloor(
+		parent, parentTxid, feeRate, totalFee, parentFee, childVSize,
+	)
+
+	// A foreign child can force an absolute-fee floor above the cap without
+	// forcing the nominal package feerate above it, so check both values.
+	if err := b.validateFeeCap(
+		parent, childVSize, feeRate, totalFee,
+	); err != nil {
+		return 0, 0, err
+	}
+
+	return feeRate, totalFee, nil
+}
+
+// successfulPackageResult records an accepted package and returns its public
+// result. The successful local fee history replaces any foreign constraint
+// learned while reaching this submission.
+func (b *CPFPBroadcaster) successfulPackageResult(
+	parentTxid, childTxid chainhash.Hash, feeRate int64,
+	totalFee btcutil.Amount) *BroadcastResult {
+
+	// The parentStates entry already exists because fee-input reservation
+	// precedes submission. Update it in place to preserve every outpoint
+	// committed across prior bumps.
+	state := b.parentStates[parentTxid]
 	state.LastFeeRate = feeRate
 	state.LastPackageFee = totalFee
+	state.ForeignFeeRateFloor = 0
+	state.ForeignChildFeeFloor = 0
 
 	return &BroadcastResult{
-		Txid:      txid,
+		Txid:      parentTxid,
 		ChildTxid: &childTxid,
 		FeeRate:   feeRate,
-	}, nil
+	}
+}
+
+// validateFeeRateCap refuses a replacement whose nominal feerate exceeds the
+// configured ceiling.
+func (b *CPFPBroadcaster) validateFeeRateCap(feeRate int64) error {
+	if feeRate <= b.cfg.MaxFeeRateSatPerVByte {
+		return nil
+	}
+
+	return fmt.Errorf("%w: replacement requires %d sat/vB, above the %d "+
+		"sat/vB cap", ErrFeeRateCapReached, feeRate,
+		b.cfg.MaxFeeRateSatPerVByte)
+}
+
+// validateFeeCap refuses a replacement whose nominal feerate or absolute
+// package fee exceeds the configured ceiling. Callers pass the child-size
+// estimate that produced totalFee.
+func (b *CPFPBroadcaster) validateFeeCap(parent *wire.MsgTx, childVSize,
+	feeRate int64, totalFee btcutil.Amount) error {
+
+	if err := b.validateFeeRateCap(feeRate); err != nil {
+		return err
+	}
+
+	parentVSize := (EstimateWeight(parent) + 3) / 4
+	maxFee := btcutil.Amount(parentVSize+childVSize) *
+		btcutil.Amount(b.cfg.MaxFeeRateSatPerVByte)
+	if totalFee > maxFee {
+		return fmt.Errorf("%w: replacement requires %d sat, above the "+
+			"%d sat package cap", ErrFeeRateCapReached, totalFee,
+			maxFee)
+	}
+
+	return nil
+}
+
+// releaseNewFeeInput releases an input selected for the failed attempt while
+// preserving an input that the currently live child already spends.
+func (b *CPFPBroadcaster) releaseNewFeeInput(ctx context.Context,
+	parentTxid chainhash.Hash, feeInput *FeeInput, carriedOver bool) {
+
+	if carriedOver {
+		return
+	}
+
+	b.releaseFeeOutpoint(ctx, parentTxid, feeInput.Outpoint)
+}
+
+// learnReplacementFloor records the strongest foreign replacement constraint
+// in a package rejection. It returns true only when the backend exposed a fee
+// floor, which proves that a conflicting child is live and the next submission
+// should remain on the retry path.
+func learnReplacementFloor(state *parentBumpState, err error,
+	attemptedFee btcutil.Amount) bool {
+
+	if state == nil || err == nil {
+		return false
+	}
+
+	found := false
+	chainbackends.WalkPackageTxErrors(
+		err, func(packageErr *chainbackends.PackageTxError) {
+			constraints := packageErr.ReplacementConstraints()
+			if constraints == nil {
+				return
+			}
+
+			found = true
+			conflictingFee := constraints.ConflictingFee
+			if conflictingFee != nil &&
+				*conflictingFee > state.ForeignChildFeeFloor {
+
+				state.ForeignChildFeeFloor = *conflictingFee
+			}
+
+			if constraints.AdditionalFeeDeficit != nil {
+				required := attemptedFee +
+					*constraints.AdditionalFeeDeficit
+				if required > state.ForeignChildFeeFloor {
+					state.ForeignChildFeeFloor = required
+				}
+			}
+
+			conflictingRate :=
+				constraints.ConflictingFeeRateSatPerVByte
+			if conflictingRate != nil &&
+				*conflictingRate > state.ForeignFeeRateFloor {
+
+				state.ForeignFeeRateFloor = *conflictingRate
+			}
+		},
+	)
+
+	return found
 }
 
 // applyReplacementFloor returns feerate and totalFee values adjusted so
@@ -1097,7 +1264,7 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 // details this helper does not have visibility into.
 func (b *CPFPBroadcaster) applyReplacementFloor(parent *wire.MsgTx,
 	txid chainhash.Hash, feeRate int64, totalFee btcutil.Amount,
-	childVSize int64) (int64, btcutil.Amount) {
+	parentFee btcutil.Amount, childVSize int64) (int64, btcutil.Amount) {
 
 	prev, havePrev := b.parentStates[txid]
 	if !havePrev {
@@ -1109,6 +1276,19 @@ func (b *CPFPBroadcaster) applyReplacementFloor(parent *wire.MsgTx,
 	// value, ratchet the feerate up by one sat/vB.
 	if feeRate <= prev.LastFeeRate {
 		feeRate = prev.LastFeeRate + 1
+	}
+
+	// A foreign child may report a feerate above our configured cap. Retry
+	// at the cap so a disappeared conflict can still be detected without
+	// poisoning every later attempt with an impossible local floor.
+	foreignFeeRate := prev.ForeignFeeRateFloor
+	if foreignFeeRate >= b.cfg.MaxFeeRateSatPerVByte {
+		foreignFeeRate = b.cfg.MaxFeeRateSatPerVByte
+	} else if foreignFeeRate > 0 {
+		foreignFeeRate++
+	}
+	if feeRate < foreignFeeRate {
+		feeRate = foreignFeeRate
 	}
 
 	// Recompute totalFee at the (possibly bumped) feerate so the
@@ -1133,6 +1313,34 @@ func (b *CPFPBroadcaster) applyReplacementFloor(parent *wire.MsgTx,
 	minRequired := prev.LastPackageFee + minAdditional
 	if totalFee < minRequired {
 		totalFee = minRequired
+	}
+
+	// Core reports replacement constraints for the child because the parent
+	// is already known. Convert that child floor back into a package target
+	// by adding the parent's fee. Keeping the raw observation in state lets
+	// retries recompute the bounded target when their child size changes.
+	maxFee := btcutil.Amount(packageVSize) *
+		btcutil.Amount(b.cfg.MaxFeeRateSatPerVByte)
+	foreignChildRequired := prev.ForeignChildFeeFloor
+	foreignRateFee := btcutil.Amount(foreignFeeRate) *
+		btcutil.Amount(childVSize)
+	if foreignChildRequired < foreignRateFee {
+		foreignChildRequired = foreignRateFee
+	}
+	if foreignChildRequired > 0 {
+		childAdditional := btcutil.Amount(
+			b.cfg.IncrementalRelayFeeSatPerVByte * childVSize,
+		)
+		extra := parentFee + childAdditional
+		foreignPackageRequired := foreignChildRequired
+		if foreignPackageRequired >= maxFee-min(extra, maxFee) {
+			foreignPackageRequired = maxFee
+		} else {
+			foreignPackageRequired += extra
+		}
+		if totalFee < foreignPackageRequired {
+			totalFee = foreignPackageRequired
+		}
 	}
 
 	return feeRate, totalFee

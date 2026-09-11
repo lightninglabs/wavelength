@@ -2560,6 +2560,67 @@ func TestEnsureConfirmedDefersToExistingParentBroadcast(t *testing.T) {
 	mustHaveNoNotification(t, sub)
 }
 
+// TestEnsureConfirmedRetriesConflictingChild verifies that a live foreign
+// child does not make the actor wait passively for the parent. The tx remains
+// in Broadcasting and the next interval submits a replacement above Core's
+// reported fee floor.
+func TestEnsureConfirmedRetriesConflictingChild(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	tx := makeTestTx(true)
+	foreignFee := btcutil.Amount(10_000)
+	chain.packageErr = errors.Join(
+		chainbackends.NewPackageTxError(
+			"parent", tx.TxHash(),
+			"txn-already-known",
+		),
+		chainbackends.NewPackageTxError(
+			"child", chainhash.Hash{0xab}, "insufficient fee, "+
+				"rejecting replacement tx, less fees than "+
+				"conflicting txs; 0.00001 < 0.0001",
+		),
+	)
+
+	ref, behavior := newTestActor(t, Config{
+		ChainSource: chain,
+		Wallet: &fakeWallet{
+			utxos: []*walletcore.Utxo{
+				makeWalletUTXOWithAmount(10_000_000, 0xab),
+			},
+		},
+		FeeBumpIntervalBlocks: 1,
+	})
+
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx: tx, Subscriber: sub,
+	})
+	require.Equal(t, TxStateBroadcasting, resp.State)
+	require.Equal(
+		t, foreignFee, behavior.broadcaster.parentStates[tx.TxHash()].
+			ForeignChildFeeFloor,
+	)
+	mustHaveNoNotification(t, sub)
+
+	chain.mu.Lock()
+	chain.packageErr = nil
+	chain.mu.Unlock()
+	chain.emitBlock(t, 101)
+
+	require.Equal(
+		t, TxStateAwaitingConfirmation,
+		mustTrackedState(
+			t, ref.Ref(), tx, sub,
+		),
+	)
+	require.Equal(t, 2, chain.packageCallCount())
+	require.Greater(
+		t,
+		behavior.broadcaster.parentStates[tx.TxHash()].LastPackageFee,
+		foreignFee,
+	)
+	mustHaveNoNotification(t, sub)
+}
+
 // TestFeeBumpExistingParentLogsAtDebug verifies that a later fee bump does
 // not warn when another path already placed the parent in the mempool. The
 // original transaction remains live and the actor keeps its confirmation

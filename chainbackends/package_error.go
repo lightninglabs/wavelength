@@ -3,10 +3,49 @@ package chainbackends
 import (
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/rpcclient"
 )
+
+var (
+	btcAmountPattern = `([0-9]+(?:\.[0-9]+)?)`
+
+	conflictingFeeRE = regexp.MustCompile(
+		`less fees than conflicting txs; ` + btcAmountPattern +
+			` < ` + btcAmountPattern,
+	)
+	additionalFeeRE = regexp.MustCompile(
+		`not enough additional fees to relay; ` + btcAmountPattern +
+			` < ` + btcAmountPattern,
+	)
+	conflictingFeeRateRE = regexp.MustCompile(
+		`new feerate ` + btcAmountPattern +
+			` BTC/kvB <= old feerate ` + btcAmountPattern +
+			` BTC/kvB`,
+	)
+)
+
+// ReplacementFeeConstraints contains fee information that Bitcoin Core
+// reports when a replacement child cannot evict a conflicting transaction.
+// Nil fields mean that the backend did not report that constraint.
+type ReplacementFeeConstraints struct {
+	// ConflictingFee is the total fee paid by the transactions that the
+	// replacement must evict.
+	ConflictingFee *btcutil.Amount
+
+	// AdditionalFeeDeficit is the extra fee the attempted replacement
+	// needed to satisfy the node's incremental relay fee.
+	AdditionalFeeDeficit *btcutil.Amount
+
+	// ConflictingFeeRateSatPerVByte is the integer part of the highest
+	// conflicting feerate. A replacement must pay at least one sat/vByte
+	// above this value to be strictly greater.
+	ConflictingFeeRateSatPerVByte *int64
+}
 
 // PackageTxError is one per-tx result error from a `SubmitPackage` response.
 // It preserves the original wtxid / txid / reject reason for diagnostics, and
@@ -32,6 +71,11 @@ type PackageTxError struct {
 	// It is `rpcclient.ErrUndefined` (wrapping the raw string) when no
 	// known sentinel matches.
 	mapped error
+
+	// replacement contains structured fee constraints parsed from stable
+	// Bitcoin Core replacement-policy diagnostics. It remains nil for
+	// unrelated or unrecognized rejection reasons.
+	replacement *ReplacementFeeConstraints
 }
 
 // NewPackageTxError builds a `PackageTxError` from a per-tx package result.
@@ -41,11 +85,113 @@ func NewPackageTxError(wtxid string, txid chainhash.Hash,
 	reason string) *PackageTxError {
 
 	return &PackageTxError{
-		Wtxid:  wtxid,
-		Txid:   txid,
-		Reason: reason,
-		mapped: rpcclient.MapRPCErr(errors.New(reason)),
+		Wtxid:       wtxid,
+		Txid:        txid,
+		Reason:      reason,
+		mapped:      rpcclient.MapRPCErr(errors.New(reason)),
+		replacement: parseReplacementFeeConstraints(reason),
 	}
+}
+
+// ReplacementConstraints returns the structured replacement-policy fee
+// information carried by this per-transaction rejection. The returned value
+// is a copy and is nil when the backend did not expose a recognized floor.
+func (e *PackageTxError) ReplacementConstraints() *ReplacementFeeConstraints {
+	if e == nil || e.replacement == nil {
+		return nil
+	}
+
+	constraints := *e.replacement
+	constraints.ConflictingFee = copyAmount(e.replacement.ConflictingFee)
+	constraints.AdditionalFeeDeficit = copyAmount(
+		e.replacement.AdditionalFeeDeficit,
+	)
+	if e.replacement.ConflictingFeeRateSatPerVByte != nil {
+		value := *e.replacement.ConflictingFeeRateSatPerVByte
+		constraints.ConflictingFeeRateSatPerVByte = &value
+	}
+
+	return &constraints
+}
+
+// parseReplacementFeeConstraints extracts fee floors from Bitcoin Core's
+// replacement-policy diagnostics. Core 28 through 31 use these messages for
+// total-fee and incremental-relay failures; Core 28 through 30 also report the
+// conflicting feerate before cluster mempool replaced that check.
+func parseReplacementFeeConstraints(reason string) *ReplacementFeeConstraints {
+	constraints := &ReplacementFeeConstraints{}
+	found := false
+
+	if match := conflictingFeeRE.FindStringSubmatch(
+		reason,
+	); len(match) == 3 {
+
+		if amount, ok := parseBTCAmount(match[2]); ok {
+			constraints.ConflictingFee = &amount
+			found = true
+		}
+	}
+
+	if match := additionalFeeRE.FindStringSubmatch(
+		reason,
+	); len(match) == 3 {
+
+		paid, paidOK := parseBTCAmount(match[1])
+		required, requiredOK := parseBTCAmount(match[2])
+		if paidOK && requiredOK && required > paid {
+			deficit := required - paid
+			constraints.AdditionalFeeDeficit = &deficit
+			found = true
+		}
+	}
+
+	if match := conflictingFeeRateRE.FindStringSubmatch(
+		reason,
+	); len(match) == 3 {
+
+		satsPerKvB, ok := parseBTCAmount(match[2])
+		if ok && satsPerKvB > 0 {
+			// One BTC/kvB equals 100,000 sat/vByte. Keep the
+			// integer floor because the broadcaster adds one
+			// sat/vByte when enforcing a strict replacement
+			// increase.
+			rate := int64(satsPerKvB) / 1000
+			constraints.ConflictingFeeRateSatPerVByte = &rate
+			found = true
+		}
+	}
+
+	if !found {
+		return nil
+	}
+
+	return constraints
+}
+
+// parseBTCAmount converts Core's fixed-point BTC diagnostic value to sats.
+func parseBTCAmount(value string) (btcutil.Amount, bool) {
+	btc, err := strconv.ParseFloat(value, 64)
+	if err != nil || btc < 0 {
+		return 0, false
+	}
+
+	amount, err := btcutil.NewAmount(btc)
+	if err != nil {
+		return 0, false
+	}
+
+	return amount, true
+}
+
+// copyAmount copies an optional amount without sharing its pointer.
+func copyAmount(amount *btcutil.Amount) *btcutil.Amount {
+	if amount == nil {
+		return nil
+	}
+
+	value := *amount
+
+	return &value
 }
 
 // Error implements the `error` interface and preserves the legacy
