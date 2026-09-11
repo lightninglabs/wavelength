@@ -216,6 +216,52 @@ func (s *testVTXOStore) DeleteVTXO(_ context.Context,
 	return nil
 }
 
+// TestLocalPersistenceOutboxHandlerAuthenticatesIncomingExpiry verifies the
+// indexer scalar is replaced before the materialization transaction.
+func TestLocalPersistenceOutboxHandlerAuthenticatesIncomingExpiry(
+	t *testing.T) {
+
+	t.Parallel()
+
+	commitment := chainhash.Hash{1, 2, 3}
+	matches := []IncomingMetadataMatch{{
+		OutputIndex: 2,
+		Metadata: IncomingVTXOMetadata{
+			RoundID:        "round-auth",
+			CommitmentTxID: commitment,
+			BatchExpiry:    999999,
+			Ancestry: []vtxo.Ancestry{{
+				CommitmentTxID: commitment,
+			}},
+		},
+	}}
+	handler := &LocalPersistenceOutboxHandler{
+		AuthenticateIncomingExpiry: func(_ context.Context,
+			ancestry []vtxo.Ancestry) (int32, error) {
+
+			require.Len(t, ancestry, 1)
+
+			return 2048, nil
+		},
+	}
+
+	events, err := handler.Handle(
+		t.Context(), SessionID{}, &AuthenticateIncomingMetadataRequest{
+			Matches: matches,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	event, ok := events[0].(*IncomingMetadataResolvedEvent)
+	require.True(t, ok)
+	require.True(t, event.ExpiryAuthenticated)
+	require.Len(t, event.Matches, 1)
+	require.Equal(t, int32(2048), event.Matches[0].Metadata.BatchExpiry)
+	require.True(t, event.Matches[0].Metadata.ExpiryAuthenticated)
+	require.Equal(t, int32(999999), matches[0].Metadata.BatchExpiry)
+}
+
 // TestLocalPersistenceOutboxHandlerMaterializeIncoming asserts incoming
 // materialization persists recipient VTXOs and emits IncomingHandledEvent.
 func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
@@ -232,11 +278,19 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	packageStore := &testPackageStore{}
 
 	notifyCalls := 0
+	authCalls := 0
 	handler := &LocalPersistenceOutboxHandler{
 		Store:        store,
 		PackageStore: packageStore,
 		OperatorKey:  operatorKey,
 		ExitDelay:    10,
+		AuthenticateIncomingExpiry: func(context.Context,
+			[]vtxo.Ancestry) (int32, error) {
+
+			authCalls++
+
+			return 1000, nil
+		},
 		NotifyIncomingVTXOs: func(_ context.Context,
 			_ []*vtxo.Descriptor) error {
 
@@ -269,7 +323,6 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 			return IncomingVTXOMetadata{
 				RoundID:        "round-incoming",
 				CommitmentTxID: parentCommitment,
-				BatchExpiry:    1000,
 				Ancestry: validTestIncomingAncestry(
 					parentCommitment,
 				),
@@ -290,6 +343,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	require.Len(t, events, 1)
 	require.IsType(t, &IncomingHandledEvent{}, events[0])
 	require.Equal(t, 1, notifyCalls)
+	require.Equal(t, 1, authCalls)
 
 	handledEvt, ok := events[0].(*IncomingHandledEvent)
 	require.True(t, ok)
@@ -315,6 +369,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	require.Equal(t, 2, packageStore.bindingCalls)
 	require.Equal(t, PackageDirectionIncoming, packageStore.lastDirection)
 	require.Equal(t, chainhash.Hash(sessionID), packageStore.lastSessionID)
+	require.Equal(t, 2, authCalls)
 }
 
 // TestLocalPersistenceOutboxHandlerRejectsInvalidAncestorPackage asserts
@@ -560,10 +615,11 @@ func TestLocalPersistenceOutboxHandlerUsesMetadataOperatorKey(t *testing.T) {
 		MetadataMatches: []IncomingMetadataMatch{{
 			OutputIndex: recipients[0].OutputIndex,
 			Metadata: IncomingVTXOMetadata{
-				RoundID:        "round-incoming",
-				CommitmentTxID: parentCommitment,
-				BatchExpiry:    1000,
-				OperatorKey:    operatorKey,
+				RoundID:             "round-incoming",
+				CommitmentTxID:      parentCommitment,
+				BatchExpiry:         1000,
+				ExpiryAuthenticated: true,
+				OperatorKey:         operatorKey,
 				Ancestry: validTestIncomingAncestry(
 					parentCommitment,
 				),
@@ -647,9 +703,10 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingSkipsNotOwned(
 			metadataCalls++
 
 			return IncomingVTXOMetadata{
-				RoundID:        "round-incoming",
-				CommitmentTxID: parentCommitment,
-				BatchExpiry:    1000,
+				RoundID:             "round-incoming",
+				CommitmentTxID:      parentCommitment,
+				BatchExpiry:         1000,
+				ExpiryAuthenticated: true,
 				Ancestry: validTestIncomingAncestry(
 					parentCommitment,
 				),
@@ -787,9 +844,10 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingNotifierFailure(
 			_ = finalCheckpoints
 
 			return IncomingVTXOMetadata{
-				RoundID:        "round-incoming",
-				CommitmentTxID: parentCommitment,
-				BatchExpiry:    1000,
+				RoundID:             "round-incoming",
+				CommitmentTxID:      parentCommitment,
+				BatchExpiry:         1000,
+				ExpiryAuthenticated: true,
 				Ancestry: validTestIncomingAncestry(
 					parentCommitment,
 				),
@@ -853,9 +911,10 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresNotifier(
 			_ = finalCheckpoints
 
 			return IncomingVTXOMetadata{
-				RoundID:        "round-incoming",
-				CommitmentTxID: parentCommitment,
-				BatchExpiry:    1000,
+				RoundID:             "round-incoming",
+				CommitmentTxID:      parentCommitment,
+				BatchExpiry:         1000,
+				ExpiryAuthenticated: true,
 				Ancestry: validTestIncomingAncestry(
 					parentCommitment,
 				),
@@ -1001,9 +1060,10 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingSelfTransferPackageReus
 			_ = finalCheckpoints
 
 			return IncomingVTXOMetadata{
-				RoundID:        "round-incoming",
-				CommitmentTxID: parentCommitment,
-				BatchExpiry:    1000,
+				RoundID:             "round-incoming",
+				CommitmentTxID:      parentCommitment,
+				BatchExpiry:         1000,
+				ExpiryAuthenticated: true,
 				Ancestry: validTestIncomingAncestry(
 					parentCommitment,
 				),

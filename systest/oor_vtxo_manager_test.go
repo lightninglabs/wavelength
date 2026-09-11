@@ -124,9 +124,10 @@ func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
 	require.NoError(t, err)
 
 	handler := &oor.LocalPersistenceOutboxHandler{
-		Store:       f.vtxoStore,
-		OperatorKey: operatorKey,
-		ExitDelay:   10,
+		Store:                      f.vtxoStore,
+		OperatorKey:                operatorKey,
+		ExitDelay:                  10,
+		AuthenticateIncomingExpiry: authenticateSystemTestExpiry,
 		NotifyIncomingVTXOs: func(_ context.Context,
 			_ []*vtxo.Descriptor) error {
 
@@ -221,9 +222,10 @@ func TestOORSelfChangeMaterializationSkipsExternalRecipient(t *testing.T) {
 	require.NoError(t, err)
 
 	handler := &oor.LocalPersistenceOutboxHandler{
-		Store:       f.vtxoStore,
-		OperatorKey: operatorKey,
-		ExitDelay:   10,
+		Store:                      f.vtxoStore,
+		OperatorKey:                operatorKey,
+		ExitDelay:                  10,
+		AuthenticateIncomingExpiry: authenticateSystemTestExpiry,
 		NotifyIncomingVTXOs: func(_ context.Context,
 			_ []*vtxo.Descriptor) error {
 
@@ -362,7 +364,9 @@ func driveIncomingOutbox(ctx context.Context, session *oor.ReceiveSession,
 				}
 			}
 
-		case *oor.QueryIncomingMetadataRequest:
+		case *oor.QueryIncomingMetadataRequest,
+			*oor.AuthenticateIncomingMetadataRequest:
+
 			followUps, err := handler.Handle(
 				ctx, sessionID, typedMsg,
 			)
@@ -429,6 +433,18 @@ func activeVTXOCount(ctx context.Context,
 	}
 
 	return countResp.Count, nil
+}
+
+// authenticateSystemTestExpiry stands in for the chain-authentication
+// boundary in materialization-focused system tests.
+func authenticateSystemTestExpiry(_ context.Context,
+	ancestry []vtxo.Ancestry) (int32, error) {
+
+	if len(ancestry) == 0 {
+		return 0, fmt.Errorf("expiry ancestry must be provided")
+	}
+
+	return 1000, nil
 }
 
 // seedIncomingRound inserts the round row referenced by the incoming VTXO
@@ -875,10 +891,12 @@ func TestOORConcurrentIncomingMaterialization(t *testing.T) {
 
 		recvMetadata := metadata
 		recvKey := recipientKey
+		authExpiry := authenticateSystemTestExpiry
 		handler := &oor.LocalPersistenceOutboxHandler{
-			Store:       f.vtxoStore,
-			OperatorKey: operatorKey,
-			ExitDelay:   10,
+			Store:                      f.vtxoStore,
+			OperatorKey:                operatorKey,
+			ExitDelay:                  10,
+			AuthenticateIncomingExpiry: authExpiry,
 			NotifyIncomingVTXOs: func(_ context.Context,
 				_ []*vtxo.Descriptor) error {
 

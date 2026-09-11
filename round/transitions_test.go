@@ -1303,6 +1303,8 @@ func TestRoundJoinedState(t *testing.T) {
 	})
 }
 
+// TestCommitmentTxReceivedState verifies commitment, tree, and sweep-policy
+// validation before the client advances toward round signing.
 func TestCommitmentTxReceivedState(t *testing.T) {
 	t.Parallel()
 
@@ -1330,6 +1332,7 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 				VTXOs:    vtxos,
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
+			SweepKey:    h.operatorPubKey,
 			SweepDelay:  1008,
 		}
 		h.withState(state)
@@ -1391,6 +1394,7 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 				},
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
+			SweepKey:    h.operatorPubKey,
 			SweepDelay:  1008,
 		}
 		h.withState(state)
@@ -1460,6 +1464,7 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 				VTXOs:    vtxos,
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
+			SweepKey:    h.operatorPubKey,
 			SweepDelay:  1008,
 			Quote: &ClientQuote{
 				OperatorFeeSat: 1500,
@@ -1538,6 +1543,7 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 				VTXOs:    vtxos,
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
+			SweepKey:    h.operatorPubKey,
 			SweepDelay:  1008,
 			Quote: &ClientQuote{
 				OperatorFeeSat: 1500,
@@ -1628,6 +1634,7 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 				Leaves:   leaves,
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
+			SweepKey:    h.operatorPubKey,
 			SweepDelay:  1008,
 			Quote: &ClientQuote{
 				OperatorFeeSat: 1500,
@@ -3662,6 +3669,7 @@ func TestRefreshOnlyRoundValidation(t *testing.T) {
 		},
 		Intents:     emptyIntents,
 		ClientTrees: make(map[SignerKey]*tree.Tree),
+		SweepKey:    h.operatorPubKey,
 		SweepDelay:  1008,
 	}
 	h.withState(state)

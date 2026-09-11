@@ -12,6 +12,7 @@ import (
 	btclog "github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/indexer"
+	"github.com/lightninglabs/wavelength/internal/expiryfixture"
 	"github.com/lightninglabs/wavelength/internal/indexerlimits"
 	lib_tree "github.com/lightninglabs/wavelength/lib/tree"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
@@ -187,7 +188,9 @@ func TestResolveIncomingMetadataFromIndexerAllowsMatchAtScanLimit(
 
 	t.Parallel()
 
-	sessionID := oor.SessionID(testTxID(1))
+	candidate, _ := expiryfixture.Merge(t, false)
+	var sessionID oor.SessionID
+	copy(sessionID[:], candidate.Outpoint.Txid)
 	idx, rpcClient, recipient, _ := newTestIncomingMetadataIndexer(
 		t,
 		testIncomingMetadataResponse(
@@ -197,9 +200,10 @@ func TestResolveIncomingMetadataFromIndexerAllowsMatchAtScanLimit(
 					Vout: 0,
 				},
 			},
-			testIncomingVTXO(sessionID, recipientIndex),
+			candidate,
 		),
 	)
+	recipient.OutputIndex = candidate.Outpoint.Vout
 
 	metadata, err := ResolveIncomingMetadataFromIndexerWithLimits(
 		t.Context(), idx, sessionID, recipient, oor.ReceiveLimits{
@@ -207,7 +211,7 @@ func TestResolveIncomingMetadataFromIndexerAllowsMatchAtScanLimit(
 		},
 	)
 	require.NoError(t, err)
-	require.Equal(t, testTxID(10).String(), metadata.RoundID)
+	require.Equal(t, candidate.RoundId, metadata.RoundID)
 	require.Equal(t, 1, rpcClient.sendCount())
 }
 
@@ -223,18 +227,16 @@ func TestResolveIncomingMetadataFromIndexerAllowsMatchAtScanLimit(
 func TestResolveIncomingMetadataSameCommitmentMultiLeaf(t *testing.T) {
 	t.Parallel()
 
-	sessionID := oor.SessionID(testTxID(1))
-	commitment := testTxID(13)
-
-	candidate := testIncomingVTXO(sessionID, recipientIndex)
-	candidate.AncestryPaths = []*arkrpc.AncestryPath{
-		testAncestryPathAtIndex(commitment, 0, []uint32{0}),
-		testAncestryPathAtIndex(commitment, 1, []uint32{1}),
-	}
+	candidate, _ := expiryfixture.Merge(t, true)
+	var sessionID oor.SessionID
+	copy(sessionID[:], candidate.Outpoint.Txid)
+	var commitment chainhash.Hash
+	copy(commitment[:], candidate.CommitmentTxid)
 
 	idx, _, recipient, _ := newTestIncomingMetadataIndexer(
 		t, testIncomingMetadataResponse(nil, candidate),
 	)
+	recipient.OutputIndex = candidate.Outpoint.Vout
 
 	metadata, err := ResolveIncomingMetadataFromIndexerWithLimits(
 		t.Context(), idx, sessionID, recipient, oor.ReceiveLimits{
@@ -266,13 +268,15 @@ func TestResolveIncomingMetadataSameCommitmentMultiLeaf(t *testing.T) {
 func TestResolveIncomingMetadataRecoveryRetriesShedPage(t *testing.T) {
 	t.Parallel()
 
-	sessionID := oor.SessionID(testTxID(1))
+	candidate, _ := expiryfixture.Merge(t, false)
+	var sessionID oor.SessionID
+	copy(sessionID[:], candidate.Outpoint.Txid)
 	idx, rpcClient, recipient, _ := newTestIncomingMetadataIndexer(
-		t,
-		testIncomingMetadataResponse(
-			nil, testIncomingVTXO(sessionID, recipientIndex),
+		t, testIncomingMetadataResponse(
+			nil, candidate,
 		),
 	)
+	recipient.OutputIndex = candidate.Outpoint.Vout
 
 	// The operator sheds the first two attempts, then serves the page.
 	rpcClient.shedFirst = 2
@@ -284,7 +288,7 @@ func TestResolveIncomingMetadataRecoveryRetriesShedPage(t *testing.T) {
 		retryRecoveryIndexerRPC,
 	)
 	require.NoError(t, err)
-	require.Equal(t, testTxID(10).String(), metadata.RoundID)
+	require.Equal(t, candidate.RoundId, metadata.RoundID)
 
 	// Every attempt at the page has to carry the same key, or the operator
 	// bills three separate scans for the one page we asked for.

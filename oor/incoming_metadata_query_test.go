@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/internal/expiryfixture"
 	"github.com/stretchr/testify/require"
 )
 
@@ -42,15 +43,9 @@ func TestIncomingMetadataFromRPCOperatorKey(t *testing.T) {
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	commitmentTxID := chainhash.Hash{1, 2, 3}
-	meta, err := incomingMetadataFromRPC(&arkrpc.VTXO{
-		RoundId:        "round-keyed",
-		CommitmentTxid: commitmentTxID[:],
-		OperatorPubkey: operatorKey.PubKey().SerializeCompressed(),
-		AncestryPaths: []*arkrpc.AncestryPath{
-			testValidAncestryPath(commitmentTxID),
-		},
-	})
+	candidate, _ := expiryfixture.Round(t, 1000, []byte{0x51}, 50, 100, 1)
+	candidate.OperatorPubkey = operatorKey.PubKey().SerializeCompressed()
+	meta, err := incomingMetadataFromRPC(candidate)
 	require.NoError(t, err)
 	require.NotNil(t, meta.OperatorKey)
 	require.True(t, meta.OperatorKey.IsEqual(operatorKey.PubKey()))
@@ -61,14 +56,8 @@ func TestIncomingMetadataFromRPCOperatorKey(t *testing.T) {
 func TestIncomingMetadataFromRPCLegacyOperatorKey(t *testing.T) {
 	t.Parallel()
 
-	commitmentTxID := chainhash.Hash{4, 5, 6}
-	meta, err := incomingMetadataFromRPC(&arkrpc.VTXO{
-		RoundId:        "round-legacy",
-		CommitmentTxid: commitmentTxID[:],
-		AncestryPaths: []*arkrpc.AncestryPath{
-			testValidAncestryPath(commitmentTxID),
-		},
-	})
+	candidate, _ := expiryfixture.Round(t, 1000, []byte{0x51}, 50, 100, 2)
+	meta, err := incomingMetadataFromRPC(candidate)
 	require.NoError(t, err)
 	require.Nil(t, meta.OperatorKey)
 }
@@ -78,15 +67,9 @@ func TestIncomingMetadataFromRPCLegacyOperatorKey(t *testing.T) {
 func TestIncomingMetadataFromRPCRejectsInvalidOperatorKey(t *testing.T) {
 	t.Parallel()
 
-	commitmentTxID := chainhash.Hash{7, 8, 9}
-	_, err := incomingMetadataFromRPC(&arkrpc.VTXO{
-		RoundId:        "round-invalid-key",
-		CommitmentTxid: commitmentTxID[:],
-		OperatorPubkey: []byte{0x02},
-		AncestryPaths: []*arkrpc.AncestryPath{
-			testValidAncestryPath(commitmentTxID),
-		},
-	})
+	candidate, _ := expiryfixture.Round(t, 1000, []byte{0x51}, 50, 100, 3)
+	candidate.OperatorPubkey = []byte{0x02}
+	_, err := incomingMetadataFromRPC(candidate)
 	require.ErrorContains(t, err, "parse indexer vtxo operator pubkey")
 }
 
