@@ -135,6 +135,16 @@ type EnsureConfirmedReq struct {
 	// TargetConfs is the required confirmation count. Zero defaults to one.
 	TargetConfs uint32
 
+	// RetryUntilAccepted keeps transient initial broadcast failures in
+	// Broadcasting and retries the same signed transaction at the
+	// configured block interval, with operator escalation after repeated
+	// failures. Permanent structural errors still fail. False preserves the
+	// default: anchor parents retry, ordinary anchorless transactions fail
+	// terminally. Callers must restore this policy when reissuing after
+	// restart; txconfirm tracking is in memory. Requests for the same txid
+	// must agree.
+	RetryUntilAccepted bool
+
 	// ParentFee is the absolute miner fee, in satoshis, that Tx already
 	// pays. It is used only for a funded-anchor parent so a later CPFP fee
 	// bump subtracts the parent's own fee and lands the combined fee on the

@@ -27,11 +27,13 @@ type trackedTxState interface {
 		trackedTxEvent, trackedTxOutboxEvent, *trackedTxEnvironment,
 	]
 
+	// trackedTxStateSealed limits implementations to this package.
 	trackedTxStateSealed()
 }
 
 // trackedTxEvent is the sealed event surface accepted by the tracked-tx FSM.
 type trackedTxEvent interface {
+	// trackedTxEventSealed limits implementations to this package.
 	trackedTxEventSealed()
 }
 
@@ -41,6 +43,7 @@ type trackedTxEvent interface {
 // events. The sealed interface still exists so the package follows the same
 // protofsm shape as the rest of the codebase.
 type trackedTxOutboxEvent interface {
+	// trackedTxOutboxEventSealed limits implementations to this package.
 	trackedTxOutboxEventSealed()
 }
 
@@ -71,6 +74,9 @@ type trackedTxData struct {
 
 	// TargetConfs is the required confirmation count.
 	TargetConfs uint32
+
+	// RetryUntilAccepted is the caller's initial-broadcast retry contract.
+	RetryUntilAccepted bool
 
 	// ParentFee is the absolute miner fee, in satoshis, that the tracked
 	// transaction already pays on its own. It is used only for a funded-

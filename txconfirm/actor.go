@@ -71,7 +71,7 @@ var (
 
 // ErrEnsureParamsMismatch is returned by EnsureConfirmedReq when a second
 // caller asks to confirm a txid that is already being tracked, but with
-// different confirmation parameters (TargetConfs or ConfirmationPkScript)
+// different confirmation parameters or initial-broadcast retry policy
 // than the in-flight tracker. Silently reusing the existing entry would
 // cause one subscriber to receive a notification that does not match the
 // criteria it asked for, so the second request is rejected outright and
@@ -1641,10 +1641,11 @@ func (a *TxBroadcasterActor) newTrackedTx(ctx context.Context,
 		ConfirmationPkScript: append(
 			[]byte(nil), confirmationPkScript...,
 		),
-		Label:       req.Label,
-		HeightHint:  heightHint,
-		TargetConfs: targetConfs,
-		ParentFee:   req.ParentFee,
+		Label:              req.Label,
+		HeightHint:         heightHint,
+		TargetConfs:        targetConfs,
+		ParentFee:          req.ParentFee,
+		RetryUntilAccepted: req.RetryUntilAccepted,
 	}
 	fsm := newTrackedTxStateMachine(fsmLog, data)
 
@@ -1694,9 +1695,14 @@ func normalizeTargetConfs(req *EnsureConfirmedReq) uint32 {
 // validateEnsureMatch checks that an incoming EnsureConfirmedReq is
 // compatible with the already-tracked entry for the same txid. Two
 // callers that share a txid must also agree on TargetConfs and
-// ConfirmationPkScript, otherwise the confirmation notification one of
+// ConfirmationPkScript and RetryUntilAccepted, otherwise the lifecycle one of
 // them receives would not match the criteria it asked for.
 func validateEnsureMatch(req *EnsureConfirmedReq, existing *trackedTx) error {
+	if req.RetryUntilAccepted != existing.data.RetryUntilAccepted {
+		return fmt.Errorf("%w: txid=%s retry policy mismatch",
+			ErrEnsureParamsMismatch, existing.data.Txid)
+	}
+
 	reqConfs := normalizeTargetConfs(req)
 	if reqConfs != existing.data.TargetConfs {
 		return fmt.Errorf("%w: txid=%s existing=%d incoming=%d",
