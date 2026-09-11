@@ -762,6 +762,7 @@ func (b *behavior) startSweep(ctx context.Context,
 
 	_, err = b.cfg.TxConfirmRef.Ask(ctx, &txconfirm.EnsureConfirmedReq{
 		Tx:                   b.sweepTx,
+		RetryUntilAccepted:   true,
 		ConfirmationPkScript: sweepPkScript,
 		Label:                sweepLabel,
 		Subscriber:           b.notificationRef(),
@@ -2408,6 +2409,7 @@ func (b *behavior) routeOutbox(ctx context.Context, ax actor.Exec[unrollTx],
 			_, err = b.cfg.TxConfirmRef.Ask(
 				ctx, &txconfirm.EnsureConfirmedReq{
 					Tx:                   b.sweepTx,
+					RetryUntilAccepted:   true,
 					ConfirmationPkScript: sweepPkScript,
 					Label: "unroll-sweep-" +
 						b.cfg.TargetOutpoint.String(),
