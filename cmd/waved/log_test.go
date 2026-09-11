@@ -41,6 +41,7 @@ func TestConfigureDaemonLogWriterWritesStdoutAndDefaultFile(t *testing.T) {
 
 	_, err = cfg.LogWriter.Write([]byte("hello logs\n"))
 	require.NoError(t, err)
+	require.NoError(t, logFile.Close())
 
 	require.Equal(t, "hello logs\n", stdout.String())
 
@@ -72,6 +73,7 @@ func TestConfigureDaemonLogWriterUsesExplicitLogDir(t *testing.T) {
 
 	_, err = cfg.LogWriter.Write([]byte("custom logs\n"))
 	require.NoError(t, err)
+	require.NoError(t, logFile.Close())
 
 	logBytes, err := os.ReadFile(filepath.Join(logDir, daemonLogFileName))
 	require.NoError(t, err)
@@ -96,6 +98,7 @@ func TestConfigureDaemonLogWriterKeepsFileLoggingWhenStdoutFails(t *testing.T) {
 
 	_, err = cfg.LogWriter.Write([]byte("still persisted\n"))
 	require.NoError(t, err)
+	require.NoError(t, logFile.Close())
 
 	logPath := filepath.Join(
 		cfg.DataDir, "logs", "regtest", daemonLogFileName,
@@ -138,7 +141,7 @@ func TestConfigureDaemonLogWriterRotatesFile(t *testing.T) {
 	logConfig.MaxLogFileSize = 1
 
 	closer, err := configureDaemonLogWriterWithConfig(
-		cfg, stdout, 1, logConfig.MaxLogFiles,
+		cfg, stdout, logConfig,
 	)
 	require.NoError(t, err)
 

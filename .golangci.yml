@@ -83,6 +83,8 @@ linters:
         # Allow btcwallet to follow the 0.21 lnd/lndclient stack while
         # taproot-assets still requires the released v0.16.17 tag.
         - github.com/btcsuite/btcwallet
+        # Allow the lnd log rotator concurrency fix until it is released.
+        - github.com/lightningnetwork/lnd
   disable:
     # We instead use our own custom line length linter called `ll` since
     # then we can ignore log lines.
