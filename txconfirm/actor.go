@@ -71,7 +71,7 @@ var (
 
 // ErrEnsureParamsMismatch is returned by EnsureConfirmedReq when a second
 // caller asks to confirm a txid that is already being tracked, but with
-// different confirmation parameters (TargetConfs or ConfirmationPkScript)
+// different confirmation parameters or initial-broadcast retry policy
 // than the in-flight tracker. Silently reusing the existing entry would
 // cause one subscriber to receive a notification that does not match the
 // criteria it asked for, so the second request is rejected outright and
@@ -753,8 +753,9 @@ func (a *TxBroadcasterActor) discardIncompleteTrackedTx(ctx context.Context,
 //     never be accepted as submitted, so retrying is pointless. Fail it
 //     terminally and notify subscribers.
 //
-//   - any other error on an anchor (CPFP) parent: the tx reached no mempool but
-//     the failure is plausibly transient — a missing confirmed fee input
+//   - any other error on an opted-in tx or anchor (CPFP) parent: acceptance
+//     is unproven and retrying the same transaction is safe. For example,
+//     a transient backend failure, a missing confirmed fee input
 //     (ErrCPFPFeeInputUnavailable), a min-relay-fee rejection of the zero-fee
 //     anchor parent, a mempool-full condition, or a fee input spent out from
 //     under us. These are exactly the conditions CPFP retry exists to overcome,
@@ -764,7 +765,7 @@ func (a *TxBroadcasterActor) discardIncompleteTrackedTx(ctx context.Context,
 //     gives up on such a tx: a fraud-response checkpoint must land before the
 //     counterparty's CSV-timeout path can win.
 //
-//   - any other error on a non-anchor parent: a plain direct broadcast with no
+//   - any other error on a non-opted-in anchorless tx: direct broadcast with no
 //     CPFP retry machinery. There is nothing to fee-bump and no fund-risk
 //     retry contract, so fail it terminally as before.
 //
@@ -809,9 +810,11 @@ func (a *TxBroadcasterActor) recordInitialBroadcastOutcome(ctx context.Context,
 
 		return TxStateFailed, err
 
-	case findAnchorOutput(entry.data.Tx) >= 0:
-		// An anchor (CPFP) parent reached no mempool. The failure is
-		// plausibly transient and this is the fund-risk path, so stay
+	case entry.data.RetryUntilAccepted ||
+		findAnchorOutput(entry.data.Tx) >= 0:
+
+		// The caller or anchor contract requires continued submission.
+		// Acceptance is unproven, so keep the same signed transaction
 		// in Broadcasting, re-attempt next interval, and escalate
 		// rather than give up.
 		err := a.recordBroadcastFailure(ctx, entry, err)
@@ -830,7 +833,7 @@ func (a *TxBroadcasterActor) recordInitialBroadcastOutcome(ctx context.Context,
 }
 
 // isPermanentBroadcastError reports whether a broadcast error is structural and
-// can never succeed on retry, so an anchor-bearing tracked tx should fail
+// can never succeed on retry, so even a retry-enabled tracked tx must fail
 // terminally rather than spin in the Broadcasting retry loop. Transient
 // conditions on an anchor parent are kept retryable, because on a fund-risk
 // path (e.g. a fraud-response checkpoint) it is safer to keep trying and alert
@@ -1641,10 +1644,11 @@ func (a *TxBroadcasterActor) newTrackedTx(ctx context.Context,
 		ConfirmationPkScript: append(
 			[]byte(nil), confirmationPkScript...,
 		),
-		Label:       req.Label,
-		HeightHint:  heightHint,
-		TargetConfs: targetConfs,
-		ParentFee:   req.ParentFee,
+		Label:              req.Label,
+		HeightHint:         heightHint,
+		TargetConfs:        targetConfs,
+		ParentFee:          req.ParentFee,
+		RetryUntilAccepted: req.RetryUntilAccepted,
 	}
 	fsm := newTrackedTxStateMachine(fsmLog, data)
 
@@ -1694,9 +1698,14 @@ func normalizeTargetConfs(req *EnsureConfirmedReq) uint32 {
 // validateEnsureMatch checks that an incoming EnsureConfirmedReq is
 // compatible with the already-tracked entry for the same txid. Two
 // callers that share a txid must also agree on TargetConfs and
-// ConfirmationPkScript, otherwise the confirmation notification one of
+// ConfirmationPkScript and RetryUntilAccepted, otherwise the lifecycle one of
 // them receives would not match the criteria it asked for.
 func validateEnsureMatch(req *EnsureConfirmedReq, existing *trackedTx) error {
+	if req.RetryUntilAccepted != existing.data.RetryUntilAccepted {
+		return fmt.Errorf("%w: txid=%s retry policy mismatch",
+			ErrEnsureParamsMismatch, existing.data.Txid)
+	}
+
 	reqConfs := normalizeTargetConfs(req)
 	if reqConfs != existing.data.TargetConfs {
 		return fmt.Errorf("%w: txid=%s existing=%d incoming=%d",

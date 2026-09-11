@@ -3743,6 +3743,8 @@ func TestResumeReissuesSweepConfirmation(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return txconfirmRef.requestCountForTxid(sweepTxid) == 1
 	}, testTimeout, 10*time.Millisecond)
+	require.True(t, txconfirmRef.lastRequest(t).RetryUntilAccepted)
+	requireSameSweep(t, sweepTx, txconfirmRef.lastRequest(t).Tx)
 }
 
 // TestResumeRetriesDeferredSweepBuild verifies a checkpoint that has reached
@@ -4109,6 +4111,16 @@ func TestSweepBroadcastRetryReusesCachedTxWithoutFeeEstimate(t *testing.T) {
 	)
 	require.Equal(t, 1, chainSource.feeRequestCount())
 	require.Equal(t, int64(1), wallet.pkScriptRequestCount())
+
+	require.True(t, txconfirmRef.lastRequest(t).RetryUntilAccepted)
+	for _, txid := range []chainhash.Hash{
+		proof.RootTxids()[0], proof.TargetOutpoint().Hash,
+	} {
+		require.False(
+			t,
+			txconfirmRef.requestByTxid(t, txid).RetryUntilAccepted,
+		)
+	}
 
 	chainSource.setFeeEstimate(0, fmt.Errorf("estimator unavailable"))
 	txconfirmRef.emitFailed(t, 2, sweepTxid, "broadcast rejected")

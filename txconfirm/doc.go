@@ -50,7 +50,8 @@
 // tracked entry only while a terminal notification still needs retry
 // delivery.
 //
-// A broadcast that reaches no mempool at all does NOT advance to
+// For anchor parents and requests with RetryUntilAccepted, an initial
+// broadcast whose acceptance is unproven does NOT advance to
 // AwaitingConfirmation. It stays in Broadcasting and self-loops there,
 // re-attempting every fee-bump interval, and is never failed
 // automatically — only a structurally permanent error (a non-TRUC
@@ -60,7 +61,9 @@
 // Config.BroadcastFailureAlertThreshold consecutive failures the actor
 // emits a rate-limited operator escalation, because a fund-risk tx (e.g.
 // a fraud-response checkpoint) must eventually land rather than be
-// silently abandoned.
+// silently abandoned. Ordinary anchorless requests retain terminal failure
+// by default. Deduplicated requests must agree on RetryUntilAccepted. The
+// tracker is in memory; callers must reassert the policy after restart.
 //
 // # CPFP correctness
 //

@@ -160,6 +160,20 @@ sequenceDiagram
     Behavior->>FSM: SweepBroadcastedEvent
 ```
 
+The final sweep sets `RetryUntilAccepted` on both first submission and
+restart reissue. A transient backend error keeps txconfirm in `Broadcasting`
+and retries the same signed transaction at its existing block interval,
+with operator escalation after repeated failures. Unroll keeps waiting for
+confirmation without consuming its three-attempt build/terminal-failure
+budget. The existing `ErrNonTRUCParent` gate still reports `TxFailed` for
+non-v3 ephemeral-anchor parents. Other backend rejections keep retrying;
+this change adds no backend rejection classification.
+
+Txconfirm tracking is in memory. The retry flag is reconstructed by the
+sweep caller, so existing checkpoints need no migration. Boarding sweeps
+already carry a funded anchor and retain their existing retry behavior;
+ordinary anchorless wallet transactions retain their terminal default.
+
 ### 2. Fail-closed admission
 
 `UnrollRegistryActor.handleEnsure` calls `Store.UpsertRecord` synchronously
