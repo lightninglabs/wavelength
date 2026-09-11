@@ -4527,6 +4527,8 @@ func (s *Server) initRoundActor(ctx context.Context,
 		ForfeitCollectionTimeout: s.cfg.
 			ForfeitCollectionTimeout,
 		RegistrationTimeout: s.cfg.RegistrationTimeout,
+		AdmissionTimeout:    s.cfg.AdmissionTimeout,
+		Now:                 s.clk.Now,
 	}
 
 	roundActor, err := round.NewRoundClientActor(

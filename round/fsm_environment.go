@@ -15,7 +15,7 @@ import (
 // where the environment contains all dependencies needed for state transitions.
 //
 // Note: Boarding address and intent persistence is handled by the wallet actor.
-// The FSM only needs RoundStore for round checkpointing.
+// The FSM uses RoundStore for admission budgets and signature checkpoints.
 type ClientEnvironment struct {
 	// RoundStore provides persistence for round coordination and
 	// checkpointing.
@@ -90,6 +90,12 @@ type ClientEnvironment struct {
 	// ForfeitCollectionTimeout is the timeout used while waiting for
 	// forfeit signatures from VTXO actors.
 	ForfeitCollectionTimeout time.Duration
+
+	// AdmissionTimeout bounds the accepted pre-checkpoint ceremony.
+	AdmissionTimeout time.Duration
+
+	// admission is owned exclusively by this FSM's serialized event loop.
+	admission *admissionBudget
 
 	// RegistrationTimeout is the timeout used while parked in
 	// IntentSentState waiting for the server's RoundJoined admission

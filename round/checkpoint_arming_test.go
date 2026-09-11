@@ -201,6 +201,17 @@ func TestBoardingDoorArmsReconcileClock(t *testing.T) {
 
 	h.setupMockWalletForBoardingSigning()
 	h.setupMockRoundStoreForCommit()
+	now := time.Now()
+	h.env.Now = func() time.Time { return now }
+	require.NoError(
+		t,
+		h.env.constrainAdmission(
+			t.Context(), roundID, now.Add(defaultAdmissionTimeout),
+		),
+	)
+	// A slow ceremony can still cross the signature checkpoint after
+	// the old five-minute default, within the full admission budget.
+	now = now.Add(6 * time.Minute)
 	h.withState(state)
 
 	transition, err := h.sendEvent(&OperatorSigned{

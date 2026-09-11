@@ -10,6 +10,7 @@ import (
 )
 
 type Querier interface {
+	AbandonRoundAdmissionDeadlines(ctx context.Context) error
 	// AppendActivityEvent records one immutable lifecycle-transition row and
 	// returns the event_seq the database assigned (monotonic, not necessarily
 	// contiguous). Callers use it as the resumable-subscribe cursor for the update.
@@ -21,7 +22,9 @@ type Querier interface {
 	BackfillLedgerRoundUuid(ctx context.Context, arg BackfillLedgerRoundUuidParams) error
 	CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) (int64, error)
 	ClearPendingIntentAnchorByOutpoint(ctx context.Context, arg ClearPendingIntentAnchorByOutpointParams) error
+	CloseRoundAdmissionDeadline(ctx context.Context, roundID string) error
 	CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTLCRecoveryJobParams) (int64, error)
+	ConstrainRoundAdmissionDeadline(ctx context.Context, arg ConstrainRoundAdmissionDeadlineParams) error
 	// CountActivityEntriesByStatus returns the number of current-state rows in the
 	// given status. It backs the wallet status summary's pending count, which must
 	// reflect the whole feed rather than a single paginated page.
@@ -134,6 +137,7 @@ type Querier interface {
 	// value in a refresh round. Zero when the round had no operator fee.
 	GetRefreshFeePaidByRoundID(ctx context.Context, roundID []byte) (int64, error)
 	GetRound(ctx context.Context, roundID string) (Round, error)
+	GetRoundAdmissionDeadline(ctx context.Context, roundID string) (GetRoundAdmissionDeadlineRow, error)
 	GetRoundBoardingIntents(ctx context.Context, roundID string) ([]RoundBoardingIntent, error)
 	GetRoundByCommitmentTxid(ctx context.Context, commitmentTxid []byte) (Round, error)
 	GetRoundClientTree(ctx context.Context, arg GetRoundClientTreeParams) (RoundClientTree, error)

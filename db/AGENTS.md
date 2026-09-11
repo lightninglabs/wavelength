@@ -112,7 +112,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 20` — current schema version.
+- `LatestMigrationVersion = 21` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -369,6 +369,13 @@ when adding one.
   post-step detects the old refresh/exit collision and reconstructs the
   missing net exit-send row from the surviving refresh-send and exit-fee rows,
   repairing the overstated VTXO balance atomically with the key rewrite.
+
+- `000021_round_admission_deadlines` — records accepted attempt expiry and
+  closure separately from signature checkpoints. Deadline constraints only
+  shorten the saved budget. Startup closes interrupted admissions without
+  changing checkpoints or releasing reservations; the existing VTXO recovery
+  boundary remains authoritative. `CommitState` closes admission atomically
+  with its signature-bearing checkpoint.
 
 ## Deep Docs
 

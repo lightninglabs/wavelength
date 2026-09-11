@@ -33,6 +33,7 @@ import (
 // MockRoundStore implements RoundStore using mock.Mock for testing.
 type MockRoundStore struct {
 	mock.Mock
+	memoryAdmissionStore
 }
 
 func (m *MockRoundStore) CommitState(ctx context.Context, round *Round,
