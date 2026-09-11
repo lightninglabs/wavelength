@@ -2633,6 +2633,9 @@ func (a *TxBroadcasterActor) notifyOneFailed(ctx context.Context,
 			return subscriber.Tell(notifyCtx, &TxFailed{
 				Txid:   txid,
 				Reason: reason,
+				Class: ClassifyBroadcastFailure(
+					errors.New(reason),
+				),
 			})
 		},
 	)

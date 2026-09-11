@@ -1520,6 +1520,7 @@ func mapTxconfirmNotification(msg txconfirm.Notification) (Msg, bool) {
 		return &TxFailedMsg{
 			Txid:   m.Txid,
 			Reason: m.Reason,
+			Class:  m.Class,
 		}, true
 
 	default:

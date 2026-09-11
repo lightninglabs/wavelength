@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/txconfirm"
 	"github.com/lightninglabs/wavelength/unrollplan"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -72,6 +73,7 @@ const (
 
 	txFailedTxidRecType   tlv.Type = 1
 	txFailedReasonRecType tlv.Type = 3
+	txFailedClassRecType  tlv.Type = 5
 
 	spendObservedTxidRecType     tlv.Type = 1
 	spendObservedHeightRecType   tlv.Type = 3
@@ -463,6 +465,9 @@ type TxFailedMsg struct {
 
 	// Reason is the stable human-readable failure reason.
 	Reason string
+
+	// Class is optional in old messages; absence keeps the failure unknown.
+	Class txconfirm.BroadcastFailureClass
 }
 
 // MessageType returns the stable message type identifier.
@@ -484,10 +489,12 @@ func (m *TxFailedMsg) Priority() int {
 func (m *TxFailedMsg) Encode(w io.Writer) error {
 	txid := [32]byte(m.Txid)
 	reason := []byte(m.Reason)
+	class := uint8(m.Class)
 
 	stream, err := tlv.NewStream(
 		tlv.MakePrimitiveRecord(txFailedTxidRecType, &txid),
 		tlv.MakePrimitiveRecord(txFailedReasonRecType, &reason),
+		tlv.MakePrimitiveRecord(txFailedClassRecType, &class),
 	)
 	if err != nil {
 		return fmt.Errorf("create stream: %w", err)
@@ -501,11 +508,13 @@ func (m *TxFailedMsg) Decode(r io.Reader) error {
 	var (
 		txid   [32]byte
 		reason []byte
+		class  uint8
 	)
 
 	stream, err := tlv.NewStream(
 		tlv.MakePrimitiveRecord(txFailedTxidRecType, &txid),
 		tlv.MakePrimitiveRecord(txFailedReasonRecType, &reason),
+		tlv.MakePrimitiveRecord(txFailedClassRecType, &class),
 	)
 	if err != nil {
 		return fmt.Errorf("create stream: %w", err)
@@ -517,6 +526,7 @@ func (m *TxFailedMsg) Decode(r io.Reader) error {
 
 	m.Txid = chainhash.Hash(txid)
 	m.Reason = string(reason)
+	m.Class = txconfirm.BroadcastFailureClass(class)
 
 	return nil
 }

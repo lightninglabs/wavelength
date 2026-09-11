@@ -413,6 +413,9 @@ type TxFailed struct {
 
 	// Reason is a stable human-readable failure reason.
 	Reason string
+
+	// Class preserves the rejection disposition independently of the text.
+	Class BroadcastFailureClass
 }
 
 // MessageType returns the stable message type identifier.
