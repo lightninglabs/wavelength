@@ -15,7 +15,14 @@ server during round participation. These types are used across `round`, `vtxo`,
 - `VTXORequest` — Describes a new VTXO to create in a round (amount, policy
   template, owner key, signing key). `IsChange bool` (TLV record 4) marks the
   output that absorbs the server-computed fee residual under the #270
-  seal-time handshake; serialized into `JoinRoundAuth`.
+  seal-time handshake; serialized into `JoinRoundAuth`. `AssetRef string` /
+  `AssetAmount uint64` optionally carry a Taproot Asset payload, validated by
+  `ValidateAssetFields`.
+- `VTXORequest.ValidateAssetFields` — Checks the fields that distinguish an
+  asset request. Both asset fields empty is a valid satoshi-only request; one
+  set without the other is an error; an asset VTXO must set `FixedAmount` and
+  must not be change (it cannot absorb the fee residual, and its amount is
+  fixed by the asset it carries).
 - `ForfeitRequest` — Describes a VTXO being forfeited: `VTXOOutpoint`,
   local-only `Amount`, plus optional `AuthSpend *arkscript.SpendPath`
   (proof-of-control path for custom-script join-auth construction) and
@@ -32,6 +39,11 @@ server during round participation. These types are used across `round`, `vtxo`,
 - `OperatorTerms` — Server-published round parameters (fee rates, expiry
   config, connector dust amount). `FreeRefreshWindowBlocks uint32` advertises
   the optional late-refresh fee-waiver window.
+  `VTXOConfirmations uint32` is the confirmation depth at which round-created
+  VTXOs become available for off-chain spending, read through
+  `VTXOTargetConfirmations()` — a zero field falls back to `MinConfirmations`,
+  preserving the legacy policy that reused the boarding-input minimum for
+  commitment outputs.
   `MaxOORLineageVBytes uint32` carries the operator-published
   cap on the cumulative on-chain vbytes a recipient must publish to claim a
   VTXO produced by an OOR submit unilaterally. Zero means no cap enforced

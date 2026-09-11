@@ -23,6 +23,7 @@ refresh, leave, OOR spend, and directed send flows.
 - `SelectedVTXO` — Describes a VTXO selected and locked for use as a transfer input (outpoint, amount, pkscript). Breaks the vtxo → round → wallet import cycle.
 - `CreateBoardingAddressRequest` / `CreateBoardingAddressResponse` — Ask-request for deriving new address.
 - `BlockEpochNotification` — Tell-message from chain source triggering UTXO polling.
+- `SelectedVTXO` — Selected spend input. Carries `ReserveEpoch uint64`, copied verbatim from the VTXO manager's `actormsg.SelectedVTXO` in `handleSelectAndLockVTXOs`, so the OOR transfer that spends the coin can name the reservation it held on release (see `oor.TransferInput.ReserveEpoch`). The wallet only forwards this value; it never derives or compares it.
 - `BoardingUtxoConfirmedEvent` — Tell-message sent when a VTXO confirms.
 - `BoardRequest` / `BoardResponse` — Ask-request from RPC to trigger boarding flow.
 - `GetBoardingBalanceResponse` — Balance breakdown with fields: `Balance` (confirmed), `UtxoCount`, `UnconfirmedBalance` (zero-conf), `UnconfirmedUtxoCount`, `AdoptedBalance` (accepted into round, VTXOs not yet live), `PendingSweepBalance`, `SweepPendingCount`.

@@ -25,7 +25,8 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
   (`true` for directed sends) or parks in `PendingRoundAssembly` for
   batching (`false` for refresh/leave flows).
 - `TriggerBoardMsg` — Carries VTXO amounts for boarding registration to round actor.
-- `SelectedVTXO` — Describes a VTXO selected for spend (outpoint, amount, pkscript).
+- `SelectedVTXO` — Describes a VTXO selected for spend (outpoint, amount, pkscript) plus `ReserveEpoch uint64`, the manager's monotonic reservation epoch echoed back so the spend that carries it can name the reservation on release. Zero for reservations that are not spend reservations (e.g. forfeit inputs).
+- `ReleaseSpendRequest.ReserveEpochs map[wire.OutPoint]uint64` — Optionally names, per outpoint, the reservation epoch the releasing owner held, so a superseded reservation is refused instead of returning a coin a newer session is spending. An absent entry (or a nil map) releases unconditionally, preserving behaviour for callers that hold no epoch (e.g. a manual unlock).
 - `RoundActorServiceKey()` / `VTXOManagerServiceKey()` / `VTXOActorServiceKey(outpoint wire.OutPoint)` — Service key constructors for actor discovery. `VTXOActorServiceKey` encodes the target outpoint into the key so each per-VTXO actor gets a unique, deterministic key.
 
 ## Relationships
@@ -38,6 +39,7 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
 - All cross-boundary actor messages must implement the appropriate marker interface (`RoundReceivable`, `VTXOManagerMsg`, etc.) for type-safe actor routing.
 - Service key names are constants (`RoundActorServiceKeyName`, `VTXOManagerServiceKeyName`) shared across the codebase for consistent actor discovery.
 - `SelectedVTXO` intentionally duplicates minimal VTXO info to avoid `wallet` importing `vtxo.Descriptor`.
+- **The reservation epoch is an ABA guard, and zero means "unknown".** The epoch travels `vtxo` manager → `wallet.SelectedVTXO` → `oor.TransferInput` → back as `ReleaseSpendRequest.ReserveEpochs`. A zero epoch must keep releasing unconditionally: it is what a pre-upgrade durable snapshot and a manual unlock both present, so treating zero as a mismatch would strand those coins in `Spending` forever. Only a *present, differing* epoch is refused.
 
 ## Deep Docs
 

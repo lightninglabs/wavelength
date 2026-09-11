@@ -65,7 +65,7 @@ who want direct access.
 
 | Command | RPC | Description |
 |---------|-----|-------------|
-| `ark vtxos {list,refresh,leave}` | `ListVTXOs` / `RefreshVTXOs` / `LeaveVTXOs` | VTXO inventory and lifecycle |
+| `ark vtxos {list,refresh,leave}` | `ListVTXOs` / `RefreshVTXOs` / `LeaveVTXOs` | VTXO inventory and lifecycle; `list --status` is repeatable and `--all` selects every status (mutually exclusive) |
 | `ark rounds {get,join,list,watch}` | `GetRound` / (join) / `ListRounds` / `WatchRounds` | Round FSM state; `join` commits queued intents into the next round (`vtxos refresh`/`leave` call it automatically); `watch --max-events`/`--for` bounds streams for machines |
 | `ark oor {receive,get,list}` | `NewReceiveScript` / `GetOORSession` / `ListOORSessions` | Receive-script allocation and OOR session inspection; `receive --idempotency-key` replays the allocation already made for that key |
 | `ark board` | `Board` | Trigger boarding with confirmed UTXOs |
@@ -116,6 +116,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   `walletAdmin`/`walletPayment`/`walletQuery`/`arkBase`/`arkVTXO`/
   `arkSend`/`arkObservable` sub-registries. MCP-only methods use
   `mcp_only`; tools whose arguments differ from the CLI use `mcp_params`.
+  `schemaParam.FlagType` records the exact pflag type whenever `Type` uses a
+  semantic name instead (e.g. `ark vtxos list --status` is declared
+  `Type: "enum"` with `FlagType: "stringSlice"` because it is repeatable), and
+  the parity test checks against `FlagType` when it is set.
 - `schema_parity_test.go` walks the real cobra tree and an in-memory real MCP
   server. Every visible local flag on the curated wallet/ark surface must
   match the registry name and type, and `MCPTool` must match the exact live

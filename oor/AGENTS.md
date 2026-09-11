@@ -75,6 +75,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   actor's DB transaction; both phase-1 hint resolution and phase-2
   authoritative metadata lookup go through durable `serverconn` query
   messages and return as fresh events.
+- **Pre-PONR input releases name their reservation epoch.**
+  `TransferInput.ReserveEpoch` carries the epoch the VTXO manager stamped when
+  it reserved the input, persisted as an optional TLV record (type 18) inside
+  the existing outgoing snapshot version, so a pre-upgrade snapshot decodes it
+  to zero. When a non-retryable outbox error before the point of no return
+  releases the reserved inputs, `prePONRReserveEpochs` builds the
+  `ReleaseInputsRequest.ReserveEpochs` map from those inputs, **omitting**
+  zero-epoch entries so the manager releases them unconditionally. This is what
+  stops a rolled-back failure whose release is redelivered from clawing back a
+  coin that a newer session has since reserved and is spending.
 - Snapshots are versioned per direction (`OutgoingSnapshot.Version = 5`,
   `IncomingSnapshot.Version = 1`); restore rejects a zero version. Outgoing
   v5 adds the `FirstRejectUnixNanos` record (bounded transient submit-reject

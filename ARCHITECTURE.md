@@ -30,6 +30,7 @@ package may import from a higher layer.
 | [`vhtlcrecovery`](vhtlcrecovery/) | Durable control-plane types for vHTLC on-chain recovery jobs (action, state, script parameters, swap linkage) |
 | [`credit`](credit/) | Client-side credit subsystem: supervisor/per-operation-actor pair driving fault-tolerant sub-floor pay, credit-receive, and redeem flows against the authoritative server ledger |
 | [`coinselect`](coinselect/) | Single coin-type-agnostic coin-selection algorithm shared across wallet backends |
+| [`tapassets`](tapassets/) | Adapts tap-sdk custom-anchor transitions to Ark trees: caller-funded asset batch outputs and asset-aware VTXO tree materialization, journaled for crash-safe resume. No in-repo consumer yet |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)
 
@@ -137,6 +138,9 @@ waved (orchestrator)
 ├── serverconn      │
 │   ├── mailbox     │ (protocol primitives)
 │   └── db          │ (durable delivery store)
+├── tapassets       │ (tap-sdk custom-anchor → Ark tree adapter; no
+│   │               │  consumer wired yet, Store unimplemented)
+│   └── lib         │ (tree, arkscript, tx/psbtutil)
 ├── proofkeys       │ (wallet key derivation for indexer proofs)
 │   └── walletcore / lndbackend (implementations)
 ├── chainsource     │
@@ -211,6 +215,7 @@ corresponding state transition being durable.
 | `SelectedVTXO` | wallet | Locked VTXO descriptor for transfer inputs (breaks import cycle) |
 | `TxInfo` | wallet | Confirmed transaction with block hash and height |
 | `Backend` | proofkeys | Wallet key derivation and proof signing interface |
+| `Store` | tapassets | Atomic-replace journal for sealed asset transition packages; no production implementation yet |
 | `Node` | lib/arkscript | Sealed AST node interface for tapscript compilation |
 | `VTXOPolicy` | lib/arkscript | Compiled VTXO taproot policy with collab/exit spend paths |
 

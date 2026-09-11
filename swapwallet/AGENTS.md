@@ -169,6 +169,29 @@ default builds avoid the swap executor's dependency graph.
   calls `listLiveVTXOsForLeave` for sweep-all enumeration.
 - `SendResponse.actual_amount_sat` carries the true outflow for sweep-all
   sends and SHOULD be echoed back before the send is treated as confirmed.
+- **The cooperative-leave fee preview quotes each input, not the destination
+  amount.** `quoteOnchainInputs` calls `EstimateFee` once per selected VTXO and
+  sums the results, because every forfeited input pays its own fixed
+  components even when all inputs belong to one wallet. Quoting the
+  destination amount once both misses those per-input charges and prices the
+  wrong principal when a bounded send returns change. Identical
+  `(amountSat, remainingBlocks)` pairs share one quote via `onchainQuoteKey`.
+  `RemainingBlocks` is derived from each input's `BatchExpiry` minus the chain
+  height from the same `GetInfo` snapshot, clamped to a floor of 1 block as in
+  refresh previews (zero would mean "full default lifetime" to the operator).
+- **A partial per-input sum is never reported as a complete quote.** Any
+  missing timing context — zero chain height, no inputs, a non-positive
+  `BatchExpiry` or amount, an `EstimateFee` error, or an overflow-bounded total
+  — discards the *entire* remote estimate and falls back to the local
+  batch-size-1 floor as `LOCAL_ONLY`. The one case that does **not** fall back
+  is `below_dust_warning`: that is an explicit economic verdict, so
+  `estimateOnchainFee` propagates a `FailedPrecondition` error naming the
+  uneconomic outpoint rather than substituting a local floor that would hide an
+  operator quote already known to be costly.
+- `onchainTerms` now carries `blockHeight` alongside the policy values, and
+  `fetchOnchainTerms` no longer bails out on a nil `ServerInfo` — the generated
+  getters are nil-safe, so a missing `ServerInfo` leaves selection headroom and
+  the local floor at zero while the height still supports a quote.
 - **Cooperative-leave EXIT fee**: at completion
   (`applyCooperativeLeaveForfeited`), the forfeited source VTXO's
   settlement carries the forfeit round's operator fee (from the daemon
