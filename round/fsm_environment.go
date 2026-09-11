@@ -15,7 +15,7 @@ import (
 // where the environment contains all dependencies needed for state transitions.
 //
 // Note: Boarding address and intent persistence is handled by the wallet actor.
-// The FSM only needs RoundStore for round checkpointing.
+// The FSM uses RoundStore for admission budgets and signature checkpoints.
 type ClientEnvironment struct {
 	// RoundStore provides persistence for round coordination and
 	// checkpointing.

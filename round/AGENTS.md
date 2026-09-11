@@ -172,6 +172,24 @@ state transitions and validation rules live under [Invariants](#invariants).
 
 ## Invariants
 
+- **Accepted attempts have a durable deadline.** Admission persists an absolute
+  expiry in `round_admission_deadlines` before cancelling registration's timer.
+  `AdmissionTimeout` defaults to 30 minutes. Quote expiry only bounds the
+  acceptance decision; it never shortens the later signing budget.
+  `processPreCheckpointEvent` enforces it across all nine accepted states,
+  including internal signing events, and an independent one-second wakeup
+  checks for expiry without operator traffic. The process-local monotonic
+  cutoff prevents a backward clock correction extending a live attempt;
+  absolute checks detect forward corrections. Expiry uses the existing failure
+  and reservation rollback path. `InputSigSentState` is outside this boundary.
+- **Restart aborts pre-checkpoint signing; it does not resume lost nonces.**
+  Startup closes admission records before wallet replay. The VTXO manager's
+  existing checkpoint-aware sweep owns safe release. A new authorized attempt
+  gets a new round ID; an old admission cannot reopen or renew its deadline.
+  Signature checkpoints close admission in the same transaction and retain the
+  existing restart/reconciliation behavior. Admission rows must never satisfy
+  `HasForfeitRoundCheckpoint`.
+
 - Tree signatures are validated **before** boarding input signatures
   are released (security checkpoint at `InputSigSent`).
 - Forfeit signatures are collected **after** VTXO tree signing
