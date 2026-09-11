@@ -71,6 +71,22 @@ type ListRoundsQuery struct {
 //
 //nolint:interfacebloat
 type RoundStore interface {
+	// ConstrainRoundAdmissionDeadline persists the earliest accepted
+	// budget.
+	ConstrainRoundAdmissionDeadline(ctx context.Context,
+		arg sqlc.ConstrainRoundAdmissionDeadlineParams) error
+
+	// GetRoundAdmissionDeadline reads the budget and terminal fence.
+	GetRoundAdmissionDeadline(ctx context.Context,
+		roundID string) (sqlc.GetRoundAdmissionDeadlineRow, error)
+
+	// CloseRoundAdmissionDeadline prevents one attempt from being revived.
+	CloseRoundAdmissionDeadline(ctx context.Context, roundID string) error
+
+	// AbandonRoundAdmissionDeadlines fences lost ephemeral signing
+	// sessions.
+	AbandonRoundAdmissionDeadlines(ctx context.Context) error
+
 	// InternalKeyQuerier lets the round and VTXO stores register and
 	// hydrate wallet keys via the shared internal_keys registry within
 	// their own transactions.

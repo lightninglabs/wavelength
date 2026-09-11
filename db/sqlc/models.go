@@ -328,6 +328,12 @@ type Round struct {
 	SweepDelay            int32
 }
 
+type RoundAdmissionDeadline struct {
+	RoundID   string
+	ExpiresAt int64
+	Closed    bool
+}
+
 type RoundBoardingIntent struct {
 	RoundID        string
 	OutpointHash   []byte

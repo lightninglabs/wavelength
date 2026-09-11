@@ -1176,6 +1176,12 @@ CREATE TABLE processed_messages (
     expires_at BIGINT NOT NULL
 );
 
+CREATE TABLE round_admission_deadlines (
+    round_id TEXT PRIMARY KEY,
+    expires_at BIGINT NOT NULL,
+    closed BOOLEAN NOT NULL DEFAULT FALSE
+);
+
 CREATE TABLE round_boarding_intents (
     -- round_id links to the parent round.
     round_id TEXT NOT NULL,
