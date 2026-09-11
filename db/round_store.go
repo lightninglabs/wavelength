@@ -402,6 +402,13 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 			return fmt.Errorf("insert round: %w", err)
 		}
 
+		if err := q.CloseRoundAdmissionDeadline(
+			ctx, r.RoundID.String(),
+		); err != nil {
+			return fmt.Errorf("close checkpointed admission: %w",
+				err)
+		}
+
 		// Extract InputSigSentState to access input signatures. This is
 		// required since we only persist at the "point of no return".
 		inputSigState, ok := state.(*round.InputSigSentState)

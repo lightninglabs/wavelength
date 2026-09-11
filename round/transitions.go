@@ -828,10 +828,9 @@ func (s *IntentSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 	// returns forfeit-reserved inputs to LiveState; see
 	// releaseForfeitsOnFailure. Idempotent with the admission-timeout path,
 	// which already releases explicitly.
-	transition, err := s.processEvent(ctx, event, env)
-
-	return releaseForfeitsOnFailure(
-		transition, err, fn.Some(s.AdmittedRoundID), s.Intents.Forfeits,
+	return processPreCheckpointEvent(
+		ctx, s, event, env, s.AdmittedRoundID, s.Intents.Forfeits,
+		s.processEvent,
 	)
 }
 
@@ -866,9 +865,32 @@ func (s *IntentSentState) processEvent(ctx context.Context, event ClientEvent,
 			slog.Int("vtxo_intent_count", len(s.Intents.VTXOs)),
 		)
 
-		// Admission arrived, so cancel the registration timeout. The
-		// post-admission wait for the seal-time quote is governed by
-		// the quote's own expiry, not this watermark timer.
+		// Persist the entire ceremony budget before cancelling the
+		// earlier timer. No further operator event is needed to enforce
+		// expiry.
+		var admissionOutbox []ClientOutMsg
+		if env.AdmissionTimeout > 0 {
+			err := env.constrainAdmission(
+				ctx, evt.RoundID,
+				env.now().Add(env.AdmissionTimeout),
+			)
+			if err != nil {
+				return failWithNotification(
+					"cannot persist round admission", err,
+					true, fn.Some(evt.RoundID),
+				), nil
+			}
+			if env.admission.expired(env.now()) {
+				return failWithNotification(
+					"round admission already expired", nil,
+					true, fn.Some(evt.RoundID),
+				), nil
+			}
+			admissionOutbox = append(
+				admissionOutbox, admissionWakeup(evt.RoundID),
+			)
+		}
+
 		cancelReg := []ClientOutMsg{
 			&CancelTimeoutReq{
 				RoundKey: env.RoundKey,
@@ -882,7 +904,7 @@ func (s *IntentSentState) processEvent(ctx context.Context, event ClientEvent,
 				AdmittedRoundID: evt.RoundID,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
-				Outbox: cancelReg,
+				Outbox: append(admissionOutbox, cancelReg...),
 			}),
 		}, nil
 
@@ -1718,10 +1740,9 @@ func (s *QuoteReceivedState) ProcessEvent(ctx context.Context,
 	// Any transition into ClientFailedState from this pre-signing state
 	// returns forfeit-reserved inputs to LiveState; see
 	// releaseForfeitsOnFailure.
-	transition, err := s.processEvent(ctx, event, env)
-
-	return releaseForfeitsOnFailure(
-		transition, err, fn.Some(s.RoundID), s.Intents.Forfeits,
+	return processPreCheckpointEvent(
+		ctx, s, event, env, s.RoundID, s.Intents.Forfeits,
+		s.processEvent,
 	)
 }
 
@@ -1774,6 +1795,17 @@ func (s *QuoteReceivedState) processEvent(ctx context.Context,
 		}, nil
 
 	case *QuoteAccepted:
+		// Quote expiry bounds the acceptance decision, not the later
+		// signing ceremony. Recheck here because this internal event
+		// can be processed after the initial quote evaluation.
+		if s.Quote.QuoteExpiresAt > 0 &&
+			env.now().Unix() >= s.Quote.QuoteExpiresAt {
+			return failWithNotification(
+				"round quote acceptance expired", nil, true,
+				fn.Some(s.RoundID),
+			), nil
+		}
+
 		autoValue, automatic := autoRefreshValue(s.Intents)
 		autoBudget, budgetEnabled := autoRefreshFeeBudget(
 			env.MaxOperatorFee, env.AutoRefreshFeeFloor,
@@ -1920,10 +1952,9 @@ func (s *RoundJoinedState) ProcessEvent(ctx context.Context, event ClientEvent,
 	// Any transition into ClientFailedState from this pre-signing state
 	// returns forfeit-reserved inputs to LiveState; see
 	// releaseForfeitsOnFailure.
-	transition, err := s.processEvent(ctx, event, env)
-
-	return releaseForfeitsOnFailure(
-		transition, err, fn.Some(s.RoundID), s.Intents.Forfeits,
+	return processPreCheckpointEvent(
+		ctx, s, event, env, s.RoundID, s.Intents.Forfeits,
+		s.processEvent,
 	)
 }
 
@@ -2220,10 +2251,9 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 	// Any transition into ClientFailedState from this pre-signing state
 	// returns forfeit-reserved inputs to LiveState; see
 	// releaseForfeitsOnFailure.
-	transition, err := s.processEvent(ctx, event, env)
-
-	return releaseForfeitsOnFailure(
-		transition, err, fn.Some(s.RoundID), s.Intents.Forfeits,
+	return processPreCheckpointEvent(
+		ctx, s, event, env, s.RoundID, s.Intents.Forfeits,
+		s.processEvent,
 	)
 }
 
@@ -2577,10 +2607,9 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 	// Any transition into ClientFailedState from this pre-signing state
 	// returns forfeit-reserved inputs to LiveState; see
 	// releaseForfeitsOnFailure.
-	transition, err := s.processEvent(ctx, event, env)
-
-	return releaseForfeitsOnFailure(
-		transition, err, fn.Some(s.RoundID), s.Intents.Forfeits,
+	return processPreCheckpointEvent(
+		ctx, s, event, env, s.RoundID, s.Intents.Forfeits,
+		s.processEvent,
 	)
 }
 
@@ -2828,10 +2857,9 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(ctx context.Context,
 	// InputSigSentState (SubmitVTXOForfeitSigsToServer), so any transition
 	// into ClientFailedState may safely return forfeit-reserved inputs to
 	// LiveState; see releaseForfeitsOnFailure.
-	transition, err := s.processEvent(ctx, event, env)
-
-	return releaseForfeitsOnFailure(
-		transition, err, fn.Some(s.RoundID), s.Intents.Forfeits,
+	return processPreCheckpointEvent(
+		ctx, s, event, env, s.RoundID, s.Intents.Forfeits,
+		s.processEvent,
 	)
 }
 
@@ -3209,10 +3237,9 @@ func (s *NoncesSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 	// Any transition into ClientFailedState from this pre-signing state
 	// returns forfeit-reserved inputs to LiveState; see
 	// releaseForfeitsOnFailure.
-	transition, err := s.processEvent(ctx, event, env)
-
-	return releaseForfeitsOnFailure(
-		transition, err, fn.Some(s.RoundID), s.Intents.Forfeits,
+	return processPreCheckpointEvent(
+		ctx, s, event, env, s.RoundID, s.Intents.Forfeits,
+		s.processEvent,
 	)
 }
 
@@ -3316,10 +3343,9 @@ func (s *NoncesAggregatedState) ProcessEvent(ctx context.Context,
 	// Any transition into ClientFailedState from this pre-signing state
 	// returns forfeit-reserved inputs to LiveState; see
 	// releaseForfeitsOnFailure.
-	transition, err := s.processEvent(ctx, event, env)
-
-	return releaseForfeitsOnFailure(
-		transition, err, fn.Some(s.RoundID), s.Intents.Forfeits,
+	return processPreCheckpointEvent(
+		ctx, s, event, env, s.RoundID, s.Intents.Forfeits,
+		s.processEvent,
 	)
 }
 
@@ -3454,10 +3480,9 @@ func (s *PartialSigsSentState) ProcessEvent(ctx context.Context,
 	// transitions to InputSigSentState). Any transition into
 	// ClientFailedState may safely return forfeit-reserved inputs to
 	// LiveState; see releaseForfeitsOnFailure.
-	transition, err := s.processEvent(ctx, event, env)
-
-	return releaseForfeitsOnFailure(
-		transition, err, fn.Some(s.RoundID), s.Intents.Forfeits,
+	return processPreCheckpointEvent(
+		ctx, s, event, env, s.RoundID, s.Intents.Forfeits,
+		s.processEvent,
 	)
 }
 

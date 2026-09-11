@@ -438,6 +438,14 @@ type RoundClientConfig struct {
 	// If zero, a conservative default is used.
 	ForfeitCollectionTimeout time.Duration
 
+	// AdmissionTimeout bounds the entire accepted pre-checkpoint ceremony.
+	// Non-positive values select the 30-minute default.
+	AdmissionTimeout time.Duration
+
+	// Now supplies the wall/monotonic clock for deadline checks. A nil
+	// function uses time.Now. Tests may inject a deterministic clock.
+	Now func() time.Time
+
 	// RegistrationTimeout is the max wall-clock duration to wait in
 	// IntentSentState for the server's RoundJoined admission watermark
 	// before failing the round (recoverable) and releasing any
@@ -510,6 +518,7 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 	// to 0 here and will be set per-round when FSMs are created.
 	env := &ClientEnvironment{
 		RoundStore:      cfg.RoundStore,
+		Now:             cfg.Now,
 		VTXOStore:       cfg.VTXOStore,
 		Wallet:          cfg.Wallet,
 		SigningExecutor: cfg.SigningExecutor,
@@ -547,6 +556,10 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		forfeitTimeout = defaultForfeitCollectionTimeout
 	}
 	env.ForfeitCollectionTimeout = forfeitTimeout
+	env.AdmissionTimeout = cfg.AdmissionTimeout
+	if env.AdmissionTimeout <= 0 {
+		env.AdmissionTimeout = defaultAdmissionTimeout
+	}
 
 	// A zero value selects the default; a negative value is an explicit
 	// opt-out (wait for admission indefinitely). Only the zero case is
@@ -926,13 +939,15 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:      a.cfg.RoundStore,
-		VTXOStore:       a.cfg.VTXOStore,
-		Wallet:          a.cfg.Wallet,
-		SigningExecutor: a.env.SigningExecutor,
-		OperatorTerms:   a.cfg.OperatorTerms,
-		ChainParams:     a.cfg.ChainParams,
-		MaxOperatorFee:  a.cfg.MaxOperatorFee,
+		RoundStore:       a.cfg.RoundStore,
+		AdmissionTimeout: a.env.AdmissionTimeout,
+		Now:              a.env.Now,
+		VTXOStore:        a.cfg.VTXOStore,
+		Wallet:           a.cfg.Wallet,
+		SigningExecutor:  a.env.SigningExecutor,
+		OperatorTerms:    a.cfg.OperatorTerms,
+		ChainParams:      a.cfg.ChainParams,
+		MaxOperatorFee:   a.cfg.MaxOperatorFee,
 		AutoRefreshFeeFloor: a.cfg.
 			AutoRefreshFeeFloor,
 		AutoRefreshFeeRatePPM: a.cfg.
@@ -1003,13 +1018,15 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:      a.cfg.RoundStore,
-		VTXOStore:       a.cfg.VTXOStore,
-		Wallet:          a.cfg.Wallet,
-		SigningExecutor: a.env.SigningExecutor,
-		OperatorTerms:   a.cfg.OperatorTerms,
-		ChainParams:     a.cfg.ChainParams,
-		MaxOperatorFee:  a.cfg.MaxOperatorFee,
+		RoundStore:       a.cfg.RoundStore,
+		AdmissionTimeout: a.env.AdmissionTimeout,
+		Now:              a.env.Now,
+		VTXOStore:        a.cfg.VTXOStore,
+		Wallet:           a.cfg.Wallet,
+		SigningExecutor:  a.env.SigningExecutor,
+		OperatorTerms:    a.cfg.OperatorTerms,
+		ChainParams:      a.cfg.ChainParams,
+		MaxOperatorFee:   a.cfg.MaxOperatorFee,
 		AutoRefreshFeeFloor: a.cfg.
 			AutoRefreshFeeFloor,
 		AutoRefreshFeeRatePPM: a.cfg.
@@ -1488,6 +1505,13 @@ func (a *RoundClientActor) startRoundFSM(ctx context.Context,
 // This should be called once after actor creation to restore state.
 func (a *RoundClientActor) Start(ctx context.Context) error {
 	a.runCtx = ctx
+
+	// Pre-checkpoint MuSig2 sessions cannot survive restart. Fence their
+	// admission records before wallet replay can create fresh attempts.
+	// The VTXO manager's existing checkpoint-aware sweep owns release.
+	if err := a.cfg.RoundStore.AbandonAdmissionDeadlines(ctx); err != nil {
+		return fmt.Errorf("abandon interrupted admissions: %w", err)
+	}
 
 	a.log.InfoS(ctx, "Starting round client actor",
 		slog.String("name", a.cfg.Name),
@@ -2749,6 +2773,9 @@ func (a *RoundClientActor) handleTimeout(ctx context.Context,
 		timeoutEvt = &ForfeitCollectionTimedOut{
 			RoundID: roundID,
 		}
+
+	case TimeoutPhaseAdmission:
+		timeoutEvt = &AdmissionTimedOut{RoundID: roundFSM.RoundID}
 
 	case TimeoutPhaseRegistration:
 		timeoutEvt = &RegistrationTimedOut{}

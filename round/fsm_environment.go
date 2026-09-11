@@ -91,6 +91,12 @@ type ClientEnvironment struct {
 	// forfeit signatures from VTXO actors.
 	ForfeitCollectionTimeout time.Duration
 
+	// AdmissionTimeout bounds the accepted pre-checkpoint ceremony.
+	AdmissionTimeout time.Duration
+
+	// admission is owned exclusively by this FSM's serialized event loop.
+	admission *admissionBudget
+
 	// RegistrationTimeout is the timeout used while parked in
 	// IntentSentState waiting for the server's RoundJoined admission
 	// watermark. A non-positive value disables arming the registration

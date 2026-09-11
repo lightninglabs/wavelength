@@ -77,6 +77,12 @@ var BoardingClientTransitions = ClientTransitionTable{
 			FromState: &IntentSentState{},
 			Transitions: []ClientTransitionEntry{
 				{
+					Event:       &AdmissionTimedOut{},
+					ToState:     &ClientFailedState{},
+					Description: "Admission deadline expired before checkpoint",
+					IsTerminal:  true,
+				},
+				{
 					Event:       &RoundJoined{},
 					ToState:     &IntentSentState{},
 					Description: "Admission watermark; park for quote",
@@ -101,6 +107,12 @@ var BoardingClientTransitions = ClientTransitionTable{
 		{
 			FromState: &QuoteReceivedState{},
 			Transitions: []ClientTransitionEntry{
+				{
+					Event:       &AdmissionTimedOut{},
+					ToState:     &ClientFailedState{},
+					Description: "Admission deadline expired before checkpoint",
+					IsTerminal:  true,
+				},
 				{
 					Event:       &JoinRoundQuoteReceived{},
 					ToState:     &QuoteReceivedState{},
@@ -131,6 +143,12 @@ var BoardingClientTransitions = ClientTransitionTable{
 			FromState: &RoundJoinedState{},
 			Transitions: []ClientTransitionEntry{
 				{
+					Event:       &AdmissionTimedOut{},
+					ToState:     &ClientFailedState{},
+					Description: "Admission deadline expired before checkpoint",
+					IsTerminal:  true,
+				},
+				{
 					Event:       &CommitmentTxBuilt{},
 					ToState:     &CommitmentTxReceivedState{},
 					Description: "Received commitment tx and VTXT",
@@ -155,6 +173,12 @@ var BoardingClientTransitions = ClientTransitionTable{
 			FromState: &CommitmentTxReceivedState{},
 			Transitions: []ClientTransitionEntry{
 				{
+					Event:       &AdmissionTimedOut{},
+					ToState:     &ClientFailedState{},
+					Description: "Admission deadline expired before checkpoint",
+					IsTerminal:  true,
+				},
+				{
 					Event:       &CommitmentTxValidated{},
 					ToState:     &CommitmentTxValidatedState{},
 					Description: "Commitment tx and VTXT validated",
@@ -172,6 +196,12 @@ var BoardingClientTransitions = ClientTransitionTable{
 		{
 			FromState: &CommitmentTxValidatedState{},
 			Transitions: []ClientTransitionEntry{
+				{
+					Event:       &AdmissionTimedOut{},
+					ToState:     &ClientFailedState{},
+					Description: "Admission deadline expired before checkpoint",
+					IsTerminal:  true,
+				},
 				{
 					Event:       &GenerateNonces{},
 					ToState:     &NoncesSentState{},
@@ -194,6 +224,12 @@ var BoardingClientTransitions = ClientTransitionTable{
 			FromState: &NoncesSentState{},
 			Transitions: []ClientTransitionEntry{
 				{
+					Event:       &AdmissionTimedOut{},
+					ToState:     &ClientFailedState{},
+					Description: "Admission deadline expired before checkpoint",
+					IsTerminal:  true,
+				},
+				{
 					Event:       &NoncesAggregated{},
 					ToState:     &NoncesAggregatedState{},
 					Description: "Received aggregated nonces",
@@ -211,6 +247,12 @@ var BoardingClientTransitions = ClientTransitionTable{
 		{
 			FromState: &NoncesAggregatedState{},
 			Transitions: []ClientTransitionEntry{
+				{
+					Event:       &AdmissionTimedOut{},
+					ToState:     &ClientFailedState{},
+					Description: "Admission deadline expired before checkpoint",
+					IsTerminal:  true,
+				},
 				{
 					Event:       &GeneratePartialSigs{},
 					ToState:     &PartialSigsSentState{},
@@ -232,6 +274,12 @@ var BoardingClientTransitions = ClientTransitionTable{
 		{
 			FromState: &PartialSigsSentState{},
 			Transitions: []ClientTransitionEntry{
+				{
+					Event:       &AdmissionTimedOut{},
+					ToState:     &ClientFailedState{},
+					Description: "Admission deadline expired before checkpoint",
+					IsTerminal:  true,
+				},
 				{
 					Event:       &OperatorSigned{},
 					ToState:     &InputSigSentState{},

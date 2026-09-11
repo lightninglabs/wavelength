@@ -424,6 +424,10 @@ type Round struct {
 // emitting signatures that let the server broadcast the commitment
 // transaction. The durable checkpoint is the recovery safety fence.
 type RoundStore interface {
+	// AdmissionDeadlineStore fences accepted attempts across redelivery
+	// and restart without making them signature-bearing checkpoints.
+	AdmissionDeadlineStore
+
 	// CommitState atomically persists both the round data and FSM state.
 	// This must be called at the "point of no return" before the client
 	// emits partial or forfeit signatures that let the server broadcast.
