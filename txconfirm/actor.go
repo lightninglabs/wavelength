@@ -753,8 +753,9 @@ func (a *TxBroadcasterActor) discardIncompleteTrackedTx(ctx context.Context,
 //     never be accepted as submitted, so retrying is pointless. Fail it
 //     terminally and notify subscribers.
 //
-//   - any other error on an anchor (CPFP) parent: the tx reached no mempool but
-//     the failure is plausibly transient — a missing confirmed fee input
+//   - any other error on an opted-in tx or anchor (CPFP) parent: acceptance
+//     is unproven and retrying the same transaction is safe. For example,
+//     a transient backend failure, a missing confirmed fee input
 //     (ErrCPFPFeeInputUnavailable), a min-relay-fee rejection of the zero-fee
 //     anchor parent, a mempool-full condition, or a fee input spent out from
 //     under us. These are exactly the conditions CPFP retry exists to overcome,
@@ -764,7 +765,7 @@ func (a *TxBroadcasterActor) discardIncompleteTrackedTx(ctx context.Context,
 //     gives up on such a tx: a fraud-response checkpoint must land before the
 //     counterparty's CSV-timeout path can win.
 //
-//   - any other error on a non-anchor parent: a plain direct broadcast with no
+//   - any other error on a non-opted-in anchorless tx: direct broadcast with no
 //     CPFP retry machinery. There is nothing to fee-bump and no fund-risk
 //     retry contract, so fail it terminally as before.
 //
@@ -809,9 +810,11 @@ func (a *TxBroadcasterActor) recordInitialBroadcastOutcome(ctx context.Context,
 
 		return TxStateFailed, err
 
-	case findAnchorOutput(entry.data.Tx) >= 0:
-		// An anchor (CPFP) parent reached no mempool. The failure is
-		// plausibly transient and this is the fund-risk path, so stay
+	case entry.data.RetryUntilAccepted ||
+		findAnchorOutput(entry.data.Tx) >= 0:
+
+		// The caller or anchor contract requires continued submission.
+		// Acceptance is unproven, so keep the same signed transaction
 		// in Broadcasting, re-attempt next interval, and escalate
 		// rather than give up.
 		err := a.recordBroadcastFailure(ctx, entry, err)
@@ -830,7 +833,7 @@ func (a *TxBroadcasterActor) recordInitialBroadcastOutcome(ctx context.Context,
 }
 
 // isPermanentBroadcastError reports whether a broadcast error is structural and
-// can never succeed on retry, so an anchor-bearing tracked tx should fail
+// can never succeed on retry, so even a retry-enabled tracked tx must fail
 // terminally rather than spin in the Broadcasting retry loop. Transient
 // conditions on an anchor parent are kept retryable, because on a fund-risk
 // path (e.g. a fraud-response checkpoint) it is safer to keep trying and alert

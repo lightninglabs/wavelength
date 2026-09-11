@@ -96,10 +96,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
 
 ## Invariants
 
-- **Never give up on a no-mempool tx**: a tx whose broadcast reached no
-  mempool stays in `Broadcasting` and is re-attempted every
+- **Retry by contract**: an anchor parent or a request opting into
+  `RetryUntilAccepted` stays in `Broadcasting` when acceptance is unproven
+  and is re-attempted every
   `FeeBumpIntervalBlocks`, never transitioning to terminal `Failed`. This
-  covers `ErrCPFPFeeInputUnavailable` and transient package-relay
+  preserves terminal failure for ordinary anchorless requests and covers
+  `ErrCPFPFeeInputUnavailable` and transient package-relay
   rejections (min-relay-fee on the zero-fee anchor parent, mempool-full,
   fee input spent mid-submit) — the conditions CPFP retry exists to
   overcome. Only a structurally permanent error
@@ -110,7 +112,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   CSV-timeout path, so the actor escalates to operators rather than
   silently aborting.
 - **Strict dedup check**: two `EnsureConfirmedReq` for the same txid
-  must agree on `TargetConfs` and `ConfirmationPkScript`; mismatches
+  must agree on `TargetConfs`, `ConfirmationPkScript`, and
+  `RetryUntilAccepted`; mismatches
   return `ErrEnsureParamsMismatch` rather than silently reusing the
   existing watch.
 - **Setup errors stay retryable.** Block-subscription and confirmation-watch
