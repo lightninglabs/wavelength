@@ -1886,7 +1886,8 @@ func newFundingFlowNode(t *testing.T,
 
 	nodeKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
-	db := channeldb.OpenForTesting(t, t.TempDir())
+	db, err := clientdb.OpenChannelDB(t.TempDir())
+	require.NoError(t, err)
 	t.Cleanup(func() {
 		require.NoError(t, db.Close())
 	})

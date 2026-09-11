@@ -24,6 +24,7 @@ import (
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
 	"github.com/lightninglabs/wavelength/serverconn"
+	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -127,25 +128,29 @@ type ArkChannelReceiveCapitalReserver func(context.Context,
 // ArkChannelControllerConfig contains the process-owned dependencies supplied
 // after wallet, database, and authenticated swap-server transport startup.
 type ArkChannelControllerConfig struct {
-	Log                   btclog.Logger
-	Store                 *db.ArkChannelStoreDB
-	Peer                  lnruntime.ProcessCooperativeClosePeer
-	PeerRPC               mailboxrpc.RPCClient
-	PeerSender            lnruntime.PeerEventSender
-	Wallet                *lwwallet.Wallet
-	ChainBackend          chainsource.ChainBackend
-	ChainNotifier         *chainbackends.BackendChainNotifier
-	FeeEstimator          *chainfees.BackendEstimator
-	OOR                   *oorbridge.Controller
-	FundingOOR            arkchannel.OORTransferController
-	Materializer          *unrollbridge.Controller
-	Recovery              ArkChannelRecoveryController
-	OperatorTerms         *types.OperatorTerms
-	IdentityKey           keychain.KeyDescriptor
-	OORDestination        *btcec.PublicKey
-	KeyIndex              uint32
-	NetParams             *chaincfg.Params
-	ChannelDataDir        string
+	Log            btclog.Logger
+	Store          *db.ArkChannelStoreDB
+	Peer           lnruntime.ProcessCooperativeClosePeer
+	PeerRPC        mailboxrpc.RPCClient
+	PeerSender     lnruntime.PeerEventSender
+	Wallet         *lwwallet.Wallet
+	ChainBackend   chainsource.ChainBackend
+	ChainNotifier  *chainbackends.BackendChainNotifier
+	FeeEstimator   *chainfees.BackendEstimator
+	OOR            *oorbridge.Controller
+	FundingOOR     arkchannel.OORTransferController
+	Materializer   *unrollbridge.Controller
+	Recovery       ArkChannelRecoveryController
+	OperatorTerms  *types.OperatorTerms
+	IdentityKey    keychain.KeyDescriptor
+	OORDestination *btcec.PublicKey
+	KeyIndex       uint32
+	NetParams      *chaincfg.Params
+	ChannelDataDir string
+
+	// OpenChannelDB returns a database owned by this endpoint. Nil uses
+	// the application SQL backend, including persistent SQLite in WASM.
+	OpenChannelDB         func(string) (*channeldb.DB, error)
 	PrepareOOR            ArkChannelOORPreparer
 	LookupOOR             ArkChannelOORLookup
 	ReserveReceiveCapital ArkChannelReceiveCapitalReserver

@@ -5,8 +5,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -25,7 +23,6 @@ import (
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/lnpeer"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
@@ -36,8 +33,6 @@ import (
 )
 
 const (
-	channelDBFileName  = "channel.db"
-	channelDBTimeout   = 30 * time.Second
 	maximumBlockHeight = ^uint32(0)
 
 	// arkChannelPaymentCLTVMarginBlocks is the ordinary Lightning reaction
@@ -97,8 +92,11 @@ func (e *PaymentNotStartedError) Unwrap() error {
 // NativeNodeConfig contains the process-owned dependencies for one modular
 // lnd channel endpoint.
 type NativeNodeConfig struct {
-	DataDir string
-	DB      *channeldb.DB
+	DB *channeldb.DB
+
+	// OwnsDB transfers cleanup responsibility to the node, including
+	// constructor failure. Otherwise the caller retains ownership.
+	OwnsDB bool
 
 	Party            arkchannel.Party
 	Chain            lnwallet.BlockChainIO
@@ -142,19 +140,15 @@ type NativeNode struct {
 // NewNativeNode composes one endpoint without starting its lnd goroutines.
 func NewNativeNode(cfg NativeNodeConfig) (*NativeNode, error) {
 	if err := validateNativeNodeConfig(cfg); err != nil {
+		if cfg.OwnsDB && cfg.DB != nil {
+			_ = cfg.DB.Close()
+		}
+
 		return nil, err
 	}
 
 	db := cfg.DB
-	closeDB := false
-	if db == nil {
-		var err error
-		db, err = openNativeChannelDB(cfg.DataDir)
-		if err != nil {
-			return nil, err
-		}
-		closeDB = true
-	}
+	closeDB := cfg.OwnsDB
 
 	notifier, err := NewVirtualFundingNotifier(cfg.Notifier)
 	if err != nil {
@@ -304,8 +298,8 @@ func validateNativeNodeConfig(cfg NativeNodeConfig) error {
 		cfg.Party != arkchannel.PartyHub:
 		return fmt.Errorf("channel party is required")
 
-	case cfg.DB == nil && cfg.DataDir == "":
-		return fmt.Errorf("channel data directory is required")
+	case cfg.DB == nil:
+		return fmt.Errorf("channel database is required")
 
 	case cfg.Chain == nil:
 		return fmt.Errorf("channel chain IO is required")
@@ -349,30 +343,6 @@ func validateNativeNodeConfig(cfg NativeNodeConfig) error {
 	default:
 		return nil
 	}
-}
-
-// openNativeChannelDB opens the persistent lnd state owned by one Wavelength
-// channel endpoint.
-func openNativeChannelDB(dataDir string) (*channeldb.DB, error) {
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return nil, fmt.Errorf("create channel data directory: %w", err)
-	}
-	backend, err := kvdb.GetBoltBackend(&kvdb.BoltBackendConfig{
-		DBPath:     filepath.Clean(dataDir),
-		DBFileName: channelDBFileName,
-		DBTimeout:  channelDBTimeout,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("open channel database backend: %w", err)
-	}
-	db, err := channeldb.CreateWithBackend(backend)
-	if err != nil {
-		_ = backend.Close()
-
-		return nil, fmt.Errorf("open channel database: %w", err)
-	}
-
-	return db, nil
 }
 
 // Start starts the native lnd channel and payment subsystems.

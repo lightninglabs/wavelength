@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
+	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lnruntime"
 	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
@@ -978,8 +979,17 @@ func (c *NativeArkChannelController) newNode(ctx context.Context,
 		), nil
 	}
 
+	opener := c.cfg.OpenChannelDB
+	if opener == nil {
+		opener = db.OpenChannelDB
+	}
+	channelDB, err := opener(c.cfg.ChannelDataDir)
+	if err != nil {
+		return nil, err
+	}
+
 	return lnruntime.NewNativeNode(lnruntime.NativeNodeConfig{
-		DataDir: c.cfg.ChannelDataDir, Party: party,
+		DB: channelDB, OwnsDB: true, Party: party,
 		Chain: c.cfg.Wallet.BtcWallet, Notifier: c.cfg.ChainNotifier,
 		WalletController: c.cfg.Wallet.BtcWallet,
 		KeyRing:          c.cfg.Wallet.KeyRing(), Signer: c.
