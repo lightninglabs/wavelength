@@ -427,6 +427,7 @@ func TestServiceEventAuthorityMatrix(t *testing.T) {
 	clientService := newService(PartyClient, promotion)
 	receive := testTerms(t, KindReceiveIntent)
 	hubService := newService(PartyHub, receive)
+	clientReceiveService := newService(PartyClient, receive)
 
 	tests := []struct {
 		name    string
@@ -447,6 +448,8 @@ func TestServiceEventAuthorityMatrix(t *testing.T) {
 			&OORAborted{}, eventOriginLocal},
 		{"funding peer ready", hubService, receive.ID,
 			&FundingPeerReady{}, eventOriginPeer},
+		{"local funding readiness", clientReceiveService, receive.ID,
+			&FundingPeerReady{}, eventOriginLocal},
 		{"client funding finalized", clientService, promotion.ID,
 			&FundingFinalized{
 				Party: PartyClient,

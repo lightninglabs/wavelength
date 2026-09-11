@@ -957,6 +957,12 @@ func TestRescanUsesIndexAndOrdersDependencies(t *testing.T) {
 		t, svc.notifications,
 	)
 	require.Equal(t, meta.Hash, wtxmgr.BlockMeta(connected).Hash)
+
+	finished := requireNotification[*chain.RescanFinished](
+		t, svc.notifications,
+	)
+	require.Equal(t, meta.Hash, *finished.Hash)
+	require.Equal(t, meta.Height, finished.Height)
 	require.Zero(t, idx.rawBlockFetches)
 }
 
