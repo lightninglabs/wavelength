@@ -73,21 +73,36 @@ func TestDirectBroadcastFailureCarriesClass(t *testing.T) {
 	for _, tc := range []struct {
 		reason string
 		class  BroadcastFailureClass
+		retry  bool
 	}{
 		{
 			"min relay fee not met",
+			BroadcastFailureFee, false,
+		},
+		{
+			"mandatory-script-verify-flag-failed",
+			BroadcastFailurePermanent, false,
+		},
+		{
+			"connection reset by peer",
+			BroadcastFailureUnknown, false,
+		},
+		{
+			"min relay fee not met",
 			BroadcastFailureFee,
+			true,
 		},
 		{
 			"mandatory-script-verify-flag-failed",
 			BroadcastFailurePermanent,
-		},
-		{
-			"connection reset by peer",
-			BroadcastFailureUnknown,
+			true,
 		},
 	} {
-		t.Run(tc.reason, func(t *testing.T) {
+		name := tc.reason
+		if tc.retry {
+			name += "/retry"
+		}
+		t.Run(name, func(t *testing.T) {
 			chain := newFakeChainSourceRef(100)
 			chain.broadcastErr = errors.New(tc.reason)
 			ref, _ := newTestActor(t, Config{
@@ -99,6 +114,7 @@ func TestDirectBroadcastFailureCarriesClass(t *testing.T) {
 			)
 			resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
 				Tx: makeTestTx(false), Subscriber: sub,
+				RetryUntilAccepted: tc.retry,
 			})
 			require.Equal(t, TxStateFailed, resp.State)
 			failed, ok := mustAwaitNotification(t, sub).(*TxFailed)

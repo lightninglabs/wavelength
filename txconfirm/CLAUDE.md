@@ -40,7 +40,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   coordination.
 - `EnsureConfirmedReq` / `EnsureConfirmedResp` — public Ask API:
   register interest in a txid with `TargetConfs`, `ConfirmationPkScript`,
-  and a subscriber. An Ask error means the subscriber was not retained:
+  `RetryUntilAccepted`, and a subscriber. An Ask error means the subscriber was not retained:
   no later notification arrives and the caller must re-send
   `EnsureConfirmedReq` to attach.
 - `CancelInterestReq` / `CancelInterestResp` — drop a subscriber; the
@@ -51,7 +51,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   holding an unapplied terminal transition answers `Bumped: false` instead
   of broadcasting again.
 - `TxConfirmed` / `TxFailed` — terminal `Notification` types delivered
-  to each subscriber.
+  to each subscriber. `TxFailed.Class` carries a `BroadcastFailureClass`:
+  unknown, explicit fee rejection, or permanent invalidity. The conservative
+  `ClassifyBroadcastFailure` helper recognizes RPC/HTTP reason strings;
+  known/accepted outcomes must be handled first.
 - `NewServiceKey` / `LookupRef` — actor-system service-key helpers
   (`ServiceKeyName = "txconfirm"`) so callers resolve the shared actor
   ref via the receptionist instead of holding a direct reference.
@@ -96,21 +99,19 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
 
 ## Invariants
 
-- **Retry by contract**: an anchor parent or a request opting into
-  `RetryUntilAccepted` stays in `Broadcasting` when acceptance is unproven
-  and is re-attempted every
-  `FeeBumpIntervalBlocks`, never transitioning to terminal `Failed`. This
-  preserves terminal failure for ordinary anchorless requests and covers
-  `ErrCPFPFeeInputUnavailable` and transient package-relay
-  rejections (min-relay-fee on the zero-fee anchor parent, mempool-full,
-  fee input spent mid-submit) — the conditions CPFP retry exists to
-  overcome. Only a structurally permanent error
-  (`isPermanentBroadcastError`, currently `ErrNonTRUCParent`) fails
-  terminally; `ErrParentAlreadyBroadcast` advances to
-  `AwaitingConfirmation` (a live parent exists on another path). Rationale:
-  a fraud-response checkpoint must land before the counterparty's
-  CSV-timeout path, so the actor escalates to operators rather than
-  silently aborting.
+- **Direct rejection classification.** Explicit fee or structural rejection
+  of an anchorless candidate produces `TxFailed` even with
+  `RetryUntilAccepted`. The signing owner can reprice a fee-rejected candidate;
+  unchanged-byte retry cannot repair it. `TxFailed.Class` is recomputed from
+  the stable stored reason on notification redelivery. Known/accepted outcomes
+  are handled before classification.
+- **Retry by contract.** Other errors on an anchor parent or a request with
+  `RetryUntilAccepted` keep it in `Broadcasting` and retry at
+  `FeeBumpIntervalBlocks`, with operator escalation after repeated failure.
+  Anchor package fee rejection keeps its CPFP recovery path. A structural
+  `ErrNonTRUCParent` still fails; `ErrParentAlreadyBroadcast` advances to
+  `AwaitingConfirmation`. Ordinary anchorless requests retain terminal failure
+  by default.
 - **Strict dedup check**: two `EnsureConfirmedReq` for the same txid
   must agree on `TargetConfs`, `ConfirmationPkScript`, and
   `RetryUntilAccepted`; mismatches

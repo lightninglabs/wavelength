@@ -97,7 +97,7 @@ stateDiagram-v2
     AwaitingSweepBroadcast --> Failed: SweepBuildFailed<br/>(budget exhausted)
 
     AwaitingSweepConfirmation --> Completed: TxConfirmed on sweep
-    AwaitingSweepConfirmation --> AwaitingSweepBroadcast: TxFailed on sweep<br/>(retry budget remaining)
+    AwaitingSweepConfirmation --> AwaitingSweepBroadcast: TxFailed on sweep<br/>(fee rejection or retry budget remaining)
     AwaitingSweepConfirmation --> Failed: TxFailed on sweep<br/>(budget exhausted)
 
     AwaitingMaterialization --> Failed: TxFailed on proof node
@@ -123,19 +123,33 @@ Notes:
 
 ## Durability invariants
 
-Two ordering rules are load-bearing.
+Two ordering rules preserve the exit obligation.
 
 ### 1. Persist before broadcast
 
-`startSweep` writes the sweep tx to the checkpoint BEFORE asking txconfirm
-to broadcast it. On any retry (same actor lifetime or post-restart) the
-same sweep tx is restored, so:
+`startSweep` stages the signed candidate before asking txconfirm to broadcast
+it. A route retry or restart reuses those exact bytes and the same wallet
+address. An explicit relay-fee rejection leaves the exit pending. A later
+block with a higher usable estimate permits a replacement with the same input,
+destination, sequence and locktime. Both absolute fee and feerate must increase
+within the existing cap. Unavailable or uneconomic estimates leave it pending.
 
-- txconfirm's txid-keyed dedup absorbs the re-submit.
-- We never burn a new BIP32 wallet address on a retry, which would
-  otherwise race the original sweep on chain.
-- A crash between build and broadcast cannot cause a third sweep to
-  emerge from the ashes.
+The replacement and prior signed candidates are checkpointed before cancelling
+old broadcaster interest and attempting wallet removal. Broadcaster cancellation
+errors retry the same staged replacement. Wallet removal is best-effort: errors
+are logged and do not block submission or prove the old candidate is absent.
+Either candidate can still confirm; the target spend watch recognizes both and
+completion accounts for the actual winner. Even permanent rejection of a
+replacement cannot prove the prior candidate will never confirm, so the exit
+stays pending. Initial unknown errors and permanent invalidity retain bounded
+retries.
+
+Checkpoint version 2 preserves this candidate history. Version 1 remains
+readable; old binaries refuse version 2. A legacy terminal relay-fee failure
+can be re-admitted through `EnsureUnrollRequest` after its checkpoint, target
+and policy are validated. The same registry row and actor ID resume. The old
+owner must finish draining and persisting before readmission. The daemon's
+existing scan of VTXOs in unilateral exit supplies these requests on restart.
 
 Sweep construction starts only after chainsource returns a usable fee
 estimate. A temporary estimator failure leaves the actor in
@@ -165,12 +179,13 @@ restart reissue. A transient backend error keeps txconfirm in `Broadcasting`
 and retries the same signed transaction at its existing block interval,
 with operator escalation after repeated failures. Unroll keeps waiting for
 confirmation without consuming its three-attempt build/terminal-failure
-budget. The existing `ErrNonTRUCParent` gate still reports `TxFailed` for
-non-v3 ephemeral-anchor parents. Other backend rejections keep retrying;
-this change adds no backend rejection classification.
+budget. Explicit direct fee or structural rejection takes precedence over
+that retry flag and returns a classified `TxFailed` to the signing owner.
+The `ErrNonTRUCParent` gate still rejects non-v3 ephemeral-anchor parents.
 
 Txconfirm tracking is in memory. The retry flag is reconstructed by the
-sweep caller, so existing checkpoints need no migration. Boarding sweeps
+sweep caller; it needs no separate persisted field. Candidate replacement
+history uses the version-2 checkpoint described above. Boarding sweeps
 already carry a funded anchor and retain their existing retry behavior;
 ordinary anchorless wallet transactions retain their terminal default.
 

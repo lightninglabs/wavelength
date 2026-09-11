@@ -1580,6 +1580,7 @@ func (b *behavior) restoreCheckpoint(ctx context.Context) error {
 			decoded.Version)
 	}
 
+	reviveRejectedSweep(decoded)
 	b.pending = decoded
 	b.sweepTx = copyTx(decoded.SweepTx)
 	b.replacedSweeps = copySweepCandidates(decoded.ReplacedSweeps)

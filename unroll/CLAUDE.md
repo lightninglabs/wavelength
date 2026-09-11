@@ -36,8 +36,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   zero falls back to the default), `RegistryRef`.
 - `behavior` — actor behavior implementing `actor.TxBehavior[Msg, Resp,
   unrollTx]`. Holds `b.sweepTx` (restored from checkpoint on boot) so
-  retries and replays converge on a single sweep txid / pkScript under
-  `txconfirm`'s txid-keyed dedup. The `dispatch` method runs the full
+  retries and replays reuse the staged candidate under
+  `txconfirm`'s txid-keyed dedup. Explicit fee rejection permits a signed
+  replacement to the same destination; prior candidates remain checkpointed.
+  The `dispatch` method runs the full
   FSM pipeline including Stage writes; `Receive` owns the single
   lease-fenced Commit. It also tracks whether a restored checkpoint still
   needs its first reissue after re-admission.
@@ -54,7 +56,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   `PhaseMaterializing`, `PhaseCSVPending`, `PhaseSweepBroadcast`,
   `PhaseSweepConfirmation`, `PhaseCompleted`, `PhaseFailed`.
 - `JobState` — durable FSM state (height, trigger, planner state,
-  `FailReason`, `SweepAttempts`).
+  `FailReason`, `SweepAttempts`, `RejectedSweep`, `RepriceAfter`, `RetrySame`).
+  Rejected identity and height pace fee retries; `RetrySame` preserves a
+  candidate while waiting for spend evidence after replacement failure.
 
 ### Registry
 
@@ -105,7 +109,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   `validateExitPolicyIdentity` checks consistency at admit time. Dedup
   runs against `r.active`, `r.pending`, AND `Store.GetRecord` so a
   repeat after termination returns `Created=false` with the historical
-  `ActorID`, never clobbering the sweep txid / failure reason. The one
+  `ActorID`, never clobbering the sweep txid / failure reason. One
   exception is a **recoverable** terminal failure
   (`RecoverableFailure`): the prior exit failed cleanly with no on-chain
   footprint and the VTXO was rolled back to live (wavelength#602), so
@@ -113,7 +117,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   overwriting the stale record) instead of deduping — otherwise a
   recovered VTXO could never be unrolled again. Any existing unroll job
   for the same target must carry the same `(ExitPolicyKind,
-  ExitPolicyRef)`; mismatches fail closed.
+  ExitPolicyRef)`; mismatches fail closed. A legacy terminal fee rejection
+  is also resumable after validating the saved candidate and policy. Its
+  registry row becomes non-terminal before the same actor ID is restored.
 - `ExitSpendPolicyResolver` — interface for looking up the final spend
   policy by `(ExitPolicyKind, ExitPolicyRef)`. Implemented by
   `vhtlcrecovery/unrollpolicy.ExitSpendPolicyResolver`.
@@ -222,7 +228,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   counterparty spend racing our forfeit).
 - **Sends**:
   - → `txconfirm` (Ask): `EnsureConfirmedReq` per proof node and for
-    the final sweep; txid dedup makes retries idempotent.
+    the final sweep; txid dedup makes retries idempotent. Final sweeps set
+    `RetryUntilAccepted` on first submit and reissue. Transient failures retry
+    unchanged bytes; explicit direct fee rejection returns to the signing owner.
   - → `chainsource` (Ask): `RegisterSpendRequest` on the target
     outpoint to catch external spends, `BestHeightRequest`,
     `FeeEstimateRequest`.
@@ -264,16 +272,25 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
 
 ## Invariants
 
-- **Persist-before-broadcast.** `startSweep` calls
-  `persistCheckpoint` (writing `b.sweepTx` into the TLV checkpoint)
-  BEFORE `txconfirm.Ask`. Any handler retry or restart restores the
-  same sweep tx, and `txconfirm`'s txid-keyed dedup makes the
-  resubmit a benign no-op — never a second sweep with a freshly
-  derived wallet pkScript racing the first on-chain.
-- **Sweep tx reuse.** `startSweep` skips `buildSweepTx` when
-  `b.sweepTx` is already set; every retry converges on the same
-  sweep txid/pkScript and avoids burning BIP32 addresses on fee-spike
-  retries.
+- **Persist-before-broadcast.** `startSweep` stages the signed candidate and
+  prior candidate history before cleanup or `txconfirm.Ask`. A restart or
+  route retry reuses that staged transaction and wallet destination.
+- **Reprice only explicit fee rejection.** `TxFailedMsg.Class` distinguishes
+  fee rejection from permanent invalidity and unknown errors. Fee rejection
+  records the rejected txid and height without consuming `SweepAttempts`.
+  A later block and a higher usable estimate permit a new signed candidate
+  with the same input, destination, sequence and locktime. The absolute fee
+  and feerate must increase within the existing cap; dust, unavailable or
+  uneconomic estimates leave the obligation pending. Replacement estimates
+  never use the emergency fallback.
+- **Either candidate may confirm.** Cancel the old txconfirm interest before
+  submitting a replacement, and attempt wallet removal as best-effort
+  housekeeping. Removal errors are logged and do not block submission.
+  Retain the old candidate's signed bytes. Confirmed spend evidence selects
+  the winning candidate for completion and fee accounting. A replacement's
+  failure, even permanent invalidity, cannot prove an earlier candidate
+  will never confirm. Keep the obligation pending while that evidence
+  arrives. Initial permanent and unknown failures retain bounded retries.
 - **Estimate before construction.** A fee-estimator error leaves the actor in
   `AwaitingSweepBroadcast` without deriving an address or consuming a sweep
   attempt. The next height retries estimation. An explicitly configured local
@@ -298,7 +315,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   A **recoverable** terminal failure is the deliberate exception: the
   VTXO was rolled back to live (wavelength#602), so `handleEnsure`
   falls through both the `r.pending` and `Store.GetRecord` arms to
-  re-admit a fresh exit rather than strand the recovered coin.
+  re-admit a fresh exit rather than strand the recovered coin. Legacy
+  terminal fee failures resume the same obligation after checkpoint and
+  policy validation. Readmission waits for the old child to stop and its
+  terminal persistence to finish, then persists a non-terminal row before
+  spawning. The daemon's existing scan of VTXOs in unilateral exit supplies
+  the boot-time Ensure request, including for historical terminal rows.
 - **Fail-closed on restore gaps.** `handleEnsure` validates restorable
   non-terminal records via `validateRestorableRecords` before re-admitting
   them; a record with an unrecognized `ExitPolicyKind` or missing ref fails
@@ -320,7 +342,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   The checkpoint codec in `snapshot.go` is also TLV.
 - **Checkpoint persists the sweep tx** via `wire.MsgTx.Serialize`
   under `checkpointSweepTxRecordType` so restore produces the exact
-  same `b.sweepTx` as the pre-broadcast commit.
+  same `b.sweepTx` as the pre-broadcast commit. Version 2 also persists
+  rejected-candidate identity, retry height and prior signed candidates.
+  Version 1 remains readable; older binaries refuse version 2, so downgrade
+  requires an explicit recovery plan for these jobs.
 - **Phase ↔ DB status mapping is lossless.** `PhaseSweepBroadcast`
   maps to `UnilateralExitJobStatusSweepBroadcasting` (=6) and
   `PhaseSweepConfirmation` to `UnilateralExitJobStatusSweeping` (=3)
