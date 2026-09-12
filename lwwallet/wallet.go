@@ -80,10 +80,10 @@ var ErrWalletNotFound = errors.New("no wallet database found")
 var ErrWalletExists = errors.New("wallet database already exists")
 
 // WalletExists reports whether a wallet database has already been
-// created for the given configuration. Only ChainParams, RecoveryWindow
-// and DBDir are consulted. Callers use this to decide between the
-// create (seed) and open (password-only) paths before constructing the
-// wallet.
+// created for the given configuration. Only ChainParams, RecoveryWindow,
+// DBDir and DBBackend are consulted. Callers use this to decide between
+// the create (seed) and open (password-only) paths before constructing
+// the wallet.
 func WalletExists(cfg Config) (bool, error) {
 	return walletExists(cfg)
 }
@@ -120,8 +120,8 @@ func checkWalletInvariants(cfg Config) error {
 
 // New creates a new lightweight wallet from the given configuration.
 // The caller must provide a DBDir for btcwallet's wallet database. Native
-// builds use that path for btcwallet's bbolt database, while browser builds
-// derive a stable OPFS SQLite database name from it.
+// builds put the database there under a name chosen by Config.DBBackend,
+// while browser builds derive a stable OPFS SQLite database name from it.
 func New(cfg Config) (*Wallet, error) {
 	// Constructors run before a contextual logger is guaranteed,
 	// so default to a disabled logger when one was not explicitly
@@ -185,8 +185,9 @@ func New(cfg Config) (*Wallet, error) {
 	}, blockCache)
 	if err != nil {
 		// On failure the wallet never adopted the loader's
-		// database handle, so release it here (a no-op natively,
-		// an OPFS handle close in browser builds).
+		// database handle, so release it here (a no-op for the
+		// BoltDB backend, which btcwallet's loader opens and
+		// closes itself, and a handle close for the SQL ones).
 		loaderCleanup()
 
 		return nil, fmt.Errorf("create btcwallet: %w", err)
@@ -252,8 +253,9 @@ func (w *Wallet) Start() error {
 
 	// New opened the wallet database, so a failed start must close
 	// it again or a retried unlock deadlocks on the database's
-	// exclusive lock (bbolt flock natively, EXCLUSIVE OPFS locking
-	// in browser builds). This matters in particular for a wrong
+	// exclusive lock (the BoltDB flock, the SQLite write lock, or
+	// EXCLUSIVE OPFS locking in browser builds). This matters in
+	// particular for a wrong
 	// wallet passphrase, which surfaces from BtcWallet.Start below.
 	// Appended first so the reverse-order unwind runs it last, after
 	// the subsystems armed below have been rolled back.

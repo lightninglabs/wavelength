@@ -1884,7 +1884,7 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 	// Probe for an existing wallet database. This decides between
 	// the create path (seed required) and the open path (password
 	// only).
-	exists, err := s.selfManagedWalletExists()
+	exists, err := s.selfManagedWalletExists(ctx)
 	if err != nil {
 		s.log.ErrorS(ctx, "Failed to probe wallet database", err)
 
@@ -2024,6 +2024,7 @@ func (s *Server) startLwwallet(ctx context.Context, seed []byte,
 		PollInterval:   pollInterval,
 		RecoveryWindow: recoveryWindow,
 		DBDir:          networkDir,
+		DBBackend:      s.cfg.Wallet.DBBackend,
 		Log:            fn.Some(s.subLogger(lwwallet.Subsystem)),
 	})
 	if err != nil {
@@ -2099,7 +2100,7 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
 	// Probe for an existing wallet database. This decides between
 	// the create path (seed required) and the open path (password
 	// only).
-	exists, err := s.selfManagedWalletExists()
+	exists, err := s.selfManagedWalletExists(ctx)
 	if err != nil {
 		s.log.ErrorS(ctx, "Failed to probe wallet database", err)
 
