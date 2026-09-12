@@ -150,6 +150,9 @@ type RoundStore interface {
 		ctx context.Context, arg sqlc.UpdateVTXOStatusParams,
 	) error
 
+	SetRecoveryOnlyVTXORelativeExpiry(ctx context.Context,
+		arg sqlc.SetRecoveryOnlyVTXORelativeExpiryParams) (int64, error)
+
 	// DeleteSpendingReservation removes a spending-reservation row so the
 	// VTXO store can atomically update a VTXO's status and drop its
 	// reservation in the same transaction when it leaves SpendingState.

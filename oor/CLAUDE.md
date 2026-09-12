@@ -75,10 +75,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   actor's DB transaction; both phase-1 hint resolution and phase-2
   authoritative metadata lookup go through durable `serverconn` query
   messages and return as fresh events.
-- Snapshots are versioned per direction (`OutgoingSnapshot.Version = 5`,
-  `IncomingSnapshot.Version = 1`); restore rejects a zero version. Outgoing
-  v5 adds the `FirstRejectUnixNanos` record (bounded transient submit-reject
-  retry window); a pre-v5 snapshot decodes it to 0 (a fresh window).
+- Snapshots are versioned per direction (`OutgoingSnapshot.Version = 7`,
+  `IncomingSnapshot.Version = 1`); restore rejects zero and unknown future
+  versions. Outgoing v5 adds `FirstRejectUnixNanos`; v7 adds the pre-PONR
+  terminal-failure marker. Older snapshots decode absent optional records to
+  their conservative zero values.
 - `StartTransferRequest.IdempotencyKey` dedup reads
   `oor_dispatch_attempts`, not the mutable session row. The table has one row
   per caller key and one caller key per deterministic session id. Once the

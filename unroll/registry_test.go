@@ -2225,6 +2225,25 @@ func TestRegistryRestoreSkipsCheckWhenResolverHasNoKindSupport(t *testing.T) {
 	require.NoError(t, r.validateResolverCoversRecords(records))
 }
 
+// TestPolicyResolversPreservesLegacyResolver verifies wrapping an older
+// resolver in the composite neither hides its advertised coverage nor skips
+// it when the policy is reconstructed.
+func TestPolicyResolversPreservesLegacyResolver(t *testing.T) {
+	legacy := &recordingExitSpendPolicyResolver{}
+	resolvers := PolicyResolvers{legacy}
+	kind := ExitPolicyKind("legacy-kind")
+
+	require.True(t, resolvers.SupportsKind(kind))
+	_, err := resolvers.ResolveExitSpendPolicy(
+		t.Context(), ExitSpendPolicyRequest{
+			Kind: kind,
+		},
+	)
+	require.ErrorContains(t, err, "recording resolver")
+	require.Len(t, legacy.requests, 1)
+	require.Equal(t, kind, legacy.requests[0].Kind)
+}
+
 var _ RegistryStore = (*memRegistryStore)(nil)
 var _ RegistryStore = (*flakyRegistryStore)(nil)
 var _ RegistryStore = (*terminalFlakyRegistryStore)(nil)
