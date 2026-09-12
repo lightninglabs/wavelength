@@ -15,6 +15,12 @@ linters:
   default: all
   settings:
     custom:
+      framework:
+        type: "module"
+        description: >-
+          Semantic checks for durable actor messages, actor transaction
+          lifecycles, and protofsm transition tables.
+
       ll:
         type: "module"
         description: "Custom lll linter with log line exclusion."
