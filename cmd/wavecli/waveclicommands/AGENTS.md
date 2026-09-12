@@ -65,7 +65,7 @@ who want direct access.
 
 | Command | RPC | Description |
 |---------|-----|-------------|
-| `ark vtxos {list,refresh,leave}` | `ListVTXOs` / `RefreshVTXOs` / `LeaveVTXOs` | VTXO inventory and lifecycle |
+| `ark vtxos {list,refresh,leave}` | `ListVTXOs` / `RefreshVTXOs` / `LeaveVTXOs` | VTXO inventory and lifecycle; `list` takes a repeatable `--status` or a mutually exclusive `--all` |
 | `ark rounds {get,join,list,watch}` | `GetRound` / (join) / `ListRounds` / `WatchRounds` | Round FSM state; `join` commits queued intents into the next round (`vtxos refresh`/`leave` call it automatically); `watch --max-events`/`--for` bounds streams for machines |
 | `ark oor {receive,get,list}` | `NewReceiveScript` / `GetOORSession` / `ListOORSessions` | Receive-script allocation and OOR session inspection; `receive --idempotency-key` replays the allocation already made for that key |
 | `ark board` | `Board` | Trigger boarding with confirmed UTXOs |
@@ -172,6 +172,18 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   cannot dispatch that payment without first previewing it. The raw
   `ark.send.*` advanced MCP tools are NOT two-phase — they move funds in one
   call, gated only by their optional `dry_run` flag.
+- `ark vtxos list` defaults to the daemon's inventory set — every VTXO except
+  forfeited and spent ones, newest first. `--status` is a repeatable string
+  slice (each value must be a known status; `UNSPECIFIED` is rejected rather
+  than treated as "no filter"), and `--all` expands to every status in enum
+  order. The two are mutually exclusive, because `--all` overwrites the
+  accumulated `--status` set rather than adding to it, so accepting both would
+  silently discard the narrower request.
+- `ark vtxos list` suppresses OOR checkpoint PSBTs
+  (`ExcludeCheckpointPsbts`) unless `--fields` names
+  `oor_final_checkpoint_psbts`, or neither `--fields` nor `--all` was given.
+  This keeps a broad `--all` listing from dragging every checkpoint PSBT blob
+  through the wire by default; a caller that wants them must ask by field.
 - `exit` defaults to a cooperative leave; it only starts a unilateral
   on-chain unroll when `--force-unroll-ack` matches the literal string
   `I_KNOW_WHAT_I_AM_DOING`, and that flag is mutually exclusive with

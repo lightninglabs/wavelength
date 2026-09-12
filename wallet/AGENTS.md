@@ -20,7 +20,7 @@ refresh, leave, OOR spend, and directed send flows.
 - `BoardingStore` — Interface for persisting boarding addresses and intents.
 - `VTXOReader` — Read-only interface for loading VTXO descriptors by outpoint. Wallet uses this to build intent packages without importing `vtxo` directly.
 - `VTXODescriptor` — Wallet-level VTXO descriptor (outpoint, amount, pkscript, tree, expiry). Avoids direct dependency on `vtxo.Descriptor`.
-- `SelectedVTXO` — Describes a VTXO selected and locked for use as a transfer input (outpoint, amount, pkscript). Breaks the vtxo → round → wallet import cycle.
+- `SelectedVTXO` — Describes a VTXO selected and locked for use as a transfer input (outpoint, amount, pkscript). Breaks the vtxo → round → wallet import cycle. Also carries the manager's `ReserveEpoch` for the reservation, so the OOR transfer that spends it can name the reservation on release (see `oor.TransferInput.ReserveEpoch`).
 - `CreateBoardingAddressRequest` / `CreateBoardingAddressResponse` — Ask-request for deriving new address.
 - `BlockEpochNotification` — Tell-message from chain source triggering UTXO polling.
 - `BoardingUtxoConfirmedEvent` — Tell-message sent when a VTXO confirms.
@@ -70,10 +70,17 @@ refresh, leave, OOR spend, and directed send flows.
 - `SendOnChainStatus` — Terminal outcome enum: `SendOnChainStatusSubmitted` (intent queued for next round), `SendOnChainStatusPreview` (dry-run preview, no commitment).
 - `GetConfirmedBoardingIntentsRequest` / `GetConfirmedBoardingIntentsResponse` — Ask-request to retrieve currently confirmed boarding intents (used by the RPC/CLI layer to report boarding balance with policy metadata).
 - `VTXODescriptor.EffectivePolicyTemplate` — Decodes the serialized `PolicyTemplate` field on the wallet-level VTXO descriptor using `lib/arkscript`.
+- `BoardingChainInfo.TxProof` — `fn.Option[types.TxProof]`: the Bitcoin
+  inclusion proof for a confirmed boarding input, giving the server the block
+  header and output construction details it needs without querying its own
+  chain source. `None` when the proof has not been constructed yet (e.g. block
+  data unavailable). The type is owned by `lib/types`, **not**
+  `taproot-assets/proof` — the wallet no longer imports the tapd proof package
+  on this path.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications), `lib/actormsg` (VTXO manager / round admission types, incl. custom-forfeit activation), `lib/arkscript` (custom-refresh spend paths), `lib/types` (`Ancestry`, `LeaveRequest`, `OperatorTerms`), `lib/tx/arktx` (tx version constant), `walletcore` (`LockID`/`OutputLeaser` aliases, `Utxo`), `txconfirm` (boarding-sweep confirmation tracking), `ledger` (`Sink` alias for emission + `UTXOCreatedMsg` / `ClassificationDeposit` constants), `metrics` (optional background-task-error sink).
+- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications), `lib/actormsg` (VTXO manager / round admission types, incl. custom-forfeit activation), `lib/arkscript` (custom-refresh spend paths), `lib/types` (`Ancestry`, `LeaveRequest`, `OperatorTerms`, `TxProof` / `NewTxMerkleProof` for boarding inclusion proofs), `lib/tx/arktx` (tx version constant), `walletcore` (`LockID`/`OutputLeaser` aliases, `Utxo`), `txconfirm` (boarding-sweep confirmation tracking), `ledger` (`Sink` alias for emission + `UTXOCreatedMsg` / `ClassificationDeposit` constants), `metrics` (optional background-task-error sink).
 - **Depended on by**: `round` (boarding intents, types: `BoardingAddress`, `SelectedVTXO`), `db` (persistence), `waved` (wiring).
 - **Sends**:
   - → `round` (via registered notifier): `BoardingUtxoConfirmedEvent`
@@ -104,6 +111,14 @@ refresh, leave, OOR spend, and directed send flows.
 - Local ownership of a round-produced VTXO is no longer tracked with a per-intent `IsOwner` flag. `types.VTXORequest` / `round.VTXOIntent` no longer carry `IsOwner`; at round confirmation time the round FSM asks a `round.OwnedScriptChecker` (backed in production by the OOR owned-receive-scripts store) which pkScripts to persist as local balance. The wallet's only job is to supply the correct `OwnerKey` per intent — local-origin owner keys keep their populated `KeyLocator` so `handleRegisterIntent` registers them via `OwnedScriptRegistrar`, while remote recipients carry a zero `KeyLocator` and are intentionally left unregistered.
 - `handleSendVTXOs` uses a `defer`-based release rather than a `releaseAndFail` helper: any error path (including dry-run) falls through to the deferred release, and the `committed` flag is set only after the round actor accepts the intent. Context is preserved via `context.WithoutCancel` so cleanup is not dropped when the caller disconnects.
 - `handleSendVTXOs` rejects pre-flight any directed send with multiple recipients and exactly-zero change residual under the #270 seal-time fee handshake. The server is the amount authority and absorbs the operator fee out of the designated `IsChange=true` slot; if there is no residual to absorb the fee against, the server has no slack to deduct fees without silently shifting them onto a recipient leg. The wallet refuses the request rather than letting the server pick the loser.
+- Refresh intents leave `SigningKey` empty rather than reusing the VTXO's
+  `ClientKey`. Round registration derives a fresh locator-backed key for the
+  MuSig2 tree; reusing the old owner descriptor breaks for legacy VTXOs that
+  retain the pubkey but not its LND key locator.
+- `handleSelectAndLockVTXOs` propagates the VTXO manager's `ReserveEpoch` onto
+  each `SelectedVTXO`. Dropping it strands the spender with no way to name its
+  reservation on release, which is what lets a superseded session return a coin
+  a newer session is actively spending.
 - `VTXOReader` / `VTXODescriptor` / `SelectedVTXO` break the vtxo → round → wallet import cycle by providing wallet-level types that don't reference `vtxo.Descriptor` directly.
 - The wallet tracks, in memory, boarding outpoints already handed to the round
   actor via `TriggerBoardMsg` that have not yet left the confirmed set, and

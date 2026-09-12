@@ -23,6 +23,13 @@ scheduling live downstream in `unrollplan` and `unroll`.
   Optional fields use `fn.Option` instead of nilable pointers.
 - `ComputeMaturityHeight` — Overflow-safe `targetConfirmHeight + csvDelay`
   helper shared with `unrollplan`.
+- `Proof.RootExternalInputs()` — The outpoints consumed by root transactions
+  that no node in the proof produces: the external funding inputs the whole
+  recovery graph hangs off of. For a round-direct VTXO that is the
+  batch/commitment output the tree root spends; for an OOR-chained or fan-in
+  VTXO it is every distinct commitment output rooting a local lineage fragment.
+  Callers arm spend watches on these so a competing confirmed spend fails the
+  exit terminally instead of retrying a tree that can never confirm.
 
 ## Relationships
 
@@ -53,6 +60,10 @@ scheduling live downstream in `unrollplan` and `unroll`.
   helpers assume the caller already holds the lock.
 - The TLV codec is canonical (sorted by raw hash bytes) and carries an
   explicit version byte; version mismatch is a hard decode error.
+- `RootExternalInputs` is deduplicated and sorted deterministically (by hash,
+  then index), so two proofs built from the same node set yield byte-identical
+  output regardless of map iteration order. Downstream watch registration keys
+  off this ordering; do not make it map-order dependent.
 - `parseHash` via `chainhash.NewHashFromStr` is intentionally absent: raw
   32-byte hashes are encoded directly to avoid the short-form / zero-pad
   attack surface that JSON shipping with `chainhash.Hash.String()` would open.
