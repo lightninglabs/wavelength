@@ -24,11 +24,25 @@ All `*.pb.go` files are generated — never edit directly; regenerate with
   `MethodSubmitVTXOForfeitSigs` (VTXO forfeit sigs).
 - `TreeFromProto` / `TreeToProto` — Convert between `*VTXOTree` proto and
   `lib/tree.Tree`; `TreeFromProto` takes `WithMaxTreeNodes` to bound the
-  deserialized node count (`DefaultMaxTreeNodes` = 50,000).
+  deserialized node count (`DefaultMaxTreeNodes` = 50,000). Both round-trip a
+  `tree.AssetTreeContext` when the tree carries one. `TreeFromProto` now
+  recomputes each node's `FinalKey` from its cosigners and taproot tweak —
+  callers no longer have to run `Materialize` to populate it.
 - `OutpointFromProto`/`ToProto`, `TxOutFromProto`/`ToProto`,
   `PSBTFromBytes`/`ToBytes`, `MsgTxFromBytes`/`ToBytes`,
   `SchnorrSigFromBytes`/`ToBytes` — wire/proto ⇄ Go conversions for the
   round protocol's payload types.
+- Asset-aware tree fields — `VTXOTree.asset_ref` names the asset a tree
+  carries (empty for Bitcoin-only trees), and each `TreeNode` carries
+  `signing_tweak` (the node's taproot tweak for an asset tree; Bitcoin-only
+  trees use `sweep_tapscript_root` instead), `asset_amount` (asset units in
+  the subtree), and `asset_commitment_root` (set on asset leaves so the owner
+  can verify and persist the composed VTXO output).
+- Asset request/response fields — `VTXORequest.asset_ref` /
+  `VTXORequest.asset_amount` let a client request an asset VTXO (both empty /
+  zero for a Bitcoin VTXO), and `ClientBatchInfo.asset_leaf_packages` returns
+  the sealed transfer package for each asset VTXO created for that client,
+  keyed by VTXO outpoint.
 - `FlowVersion` / `FlowVersionV1` / `ValidateFlowVersion` — the per-round
   choreography version stamped by the operator and validated by the
   client; fails closed on any version this build does not understand.
@@ -41,7 +55,8 @@ distinction.
 ## Relationships
 
 - **Depends on**: `lib/tree`, `lib/types` (conversion targets in
-  `convert.go`); otherwise generated proto types only.
+  `convert.go`), `github.com/lightninglabs/tap-sdk` (`ParseAssetRef` for
+  canonical `asset_ref` validation); otherwise generated proto types only.
 - **Depended on by**: `round` (outbox routing, proto conversions, flow
   version), `db` (persisting round/VTXO proto blobs), `waved` (proto
   conversion, flow version).
@@ -70,6 +85,23 @@ distinction.
   the sibling decoder on the untrusted indexer receive path. Keep the
   two in step: a shape rejected by one and accepted by the other is a
   gap, not a difference in trust level.
+- **The taproot tweak a node's `FinalKey` is computed under depends on
+  whether the tree is an asset tree.** Bitcoin-only trees tweak with
+  `VTXOTree.sweep_tapscript_root`; asset trees tweak with the node's own
+  `TreeNode.signing_tweak` from the asset context. Using the wrong one yields a
+  key that fails signature verification for every node in the tree.
+- Asset fields and `asset_ref` are all-or-nothing: `assetContextFromProto`
+  rejects a tree that sets any per-node asset field (`signing_tweak`,
+  `asset_amount`, `asset_commitment_root`) without also setting
+  `VTXOTree.asset_ref`. A half-populated asset tree is a decode error, not a
+  Bitcoin-only tree with stray fields.
+- `asset_ref` must round-trip through `tapsdk.ParseAssetRef` to the *same*
+  string on both the encode (`validateAssetTree`) and decode
+  (`assetContextFromProto`) sides. Accepting a non-canonical encoding would let
+  two spellings of one asset ref key different contexts.
+- Both directions run `AssetContext.Validate(root)` before the tree is handed
+  on, so a tree whose per-node asset amounts do not reconcile against its root
+  never reaches the caller.
 - `ValidateFlowVersion` must reject any `FlowVersion` other than the
   versions this build implements (currently only `FlowVersionV1`); never
   make it permissive by default.
