@@ -169,6 +169,40 @@ default builds avoid the swap executor's dependency graph.
   calls `listLiveVTXOsForLeave` for sweep-all enumeration.
 - `SendResponse.actual_amount_sat` carries the true outflow for sweep-all
   sends and SHOULD be echoed back before the send is treated as confirmed.
+- **The on-chain preview quotes per input, not per destination amount.**
+  `quoteOnchainInputs` calls `EstimateFee` once per distinct
+  `(amount_sat, remaining_blocks)` pair across the selected VTXOs and sums the
+  results, because each forfeited input pays its own fixed operator components
+  even when every input belongs to one wallet. Quoting the destination amount
+  once undercounts those charges and also prices the wrong principal when a
+  bounded send returns change. Remaining lifetime is
+  `max(batch_expiry - block_height, 1)`: zero would mean "use the full default
+  lifetime" to the operator, so expiring inputs are clamped to one block as in
+  refresh previews.
+- **A partial per-input sum must never masquerade as a complete quote.** Any
+  missing timing context (zero chain height, non-positive `batch_expiry` or
+  `amount_sat`), a failed/nil `EstimateFee`, or an overflow-bounded total
+  discards the *entire* remote estimate and falls back to the LOCAL_ONLY floor.
+  The one exception is an input the operator flags `below_dust_warning`: that
+  fails the preview with `FailedPrecondition` rather than degrading, because
+  substituting a local floor would hide an operator quote already known to be
+  uneconomic.
+- **A sweep is not affordable by construction.** `prepareOnchain` checks that
+  `selectedTotal - fee` leaves at least `max(dust_limit, 1)` in the leave
+  output and rejects the preview with `FailedPrecondition` otherwise. The
+  sweep's fee is absorbed by its own output, so an unchecked sweep can price
+  itself below the operator's advertised output floor.
+- `fetchOnchainTerms` reads `block_height` alongside the operator policy from a
+  single `GetInfo`. Missing operator terms leave selection headroom and the
+  local floor at zero; a missing height alone prevents a complete
+  lifetime-aware operator quote. Both degrade the preview rather than failing
+  it.
+- **Ledger-derived projections stamp a late transition time.**
+  `stampLateTransition` advances a projection's `updated_at_unix` past the
+  stored row's whenever the derived value does not, because such transitions
+  carry their *source row's* creation time and would otherwise be invisible to
+  recency ordering, pollers, and subscriber payloads. The stamp never regresses
+  a stored value under a stepped-back clock.
 - **Cooperative-leave EXIT fee**: at completion
   (`applyCooperativeLeaveForfeited`), the forfeited source VTXO's
   settlement carries the forfeit round's operator fee (from the daemon

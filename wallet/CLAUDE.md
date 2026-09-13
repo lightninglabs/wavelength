@@ -20,7 +20,7 @@ refresh, leave, OOR spend, and directed send flows.
 - `BoardingStore` — Interface for persisting boarding addresses and intents.
 - `VTXOReader` — Read-only interface for loading VTXO descriptors by outpoint. Wallet uses this to build intent packages without importing `vtxo` directly.
 - `VTXODescriptor` — Wallet-level VTXO descriptor (outpoint, amount, pkscript, tree, expiry). Avoids direct dependency on `vtxo.Descriptor`.
-- `SelectedVTXO` — Describes a VTXO selected and locked for use as a transfer input (outpoint, amount, pkscript). Breaks the vtxo → round → wallet import cycle.
+- `SelectedVTXO` — Describes a VTXO selected and locked for use as a transfer input (outpoint, amount, pkscript). Breaks the vtxo → round → wallet import cycle. Also carries `ReserveEpoch`, the manager reservation epoch, so the OOR transfer that spends the coin can name that reservation on release (`oor.TransferInput.ReserveEpoch`).
 - `CreateBoardingAddressRequest` / `CreateBoardingAddressResponse` — Ask-request for deriving new address.
 - `BlockEpochNotification` — Tell-message from chain source triggering UTXO polling.
 - `BoardingUtxoConfirmedEvent` — Tell-message sent when a VTXO confirms.
@@ -73,7 +73,7 @@ refresh, leave, OOR spend, and directed send flows.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications), `lib/actormsg` (VTXO manager / round admission types, incl. custom-forfeit activation), `lib/arkscript` (custom-refresh spend paths), `lib/types` (`Ancestry`, `LeaveRequest`, `OperatorTerms`), `lib/tx/arktx` (tx version constant), `walletcore` (`LockID`/`OutputLeaser` aliases, `Utxo`), `txconfirm` (boarding-sweep confirmation tracking), `ledger` (`Sink` alias for emission + `UTXOCreatedMsg` / `ClassificationDeposit` constants), `metrics` (optional background-task-error sink).
+- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications), `lib/actormsg` (VTXO manager / round admission types, incl. custom-forfeit activation), `lib/arkscript` (custom-refresh spend paths), `lib/types` (`Ancestry`, `LeaveRequest`, `OperatorTerms`, and `TxProof` — `BoardingChainInfo.TxProof` is `fn.Option[types.TxProof]`, so the boarding path carries the repo's own proof type rather than importing `taproot-assets/proof`), `lib/tx/arktx` (tx version constant), `walletcore` (`LockID`/`OutputLeaser` aliases, `Utxo`), `txconfirm` (boarding-sweep confirmation tracking), `ledger` (`Sink` alias for emission + `UTXOCreatedMsg` / `ClassificationDeposit` constants), `metrics` (optional background-task-error sink).
 - **Depended on by**: `round` (boarding intents, types: `BoardingAddress`, `SelectedVTXO`), `db` (persistence), `waved` (wiring).
 - **Sends**:
   - → `round` (via registered notifier): `BoardingUtxoConfirmedEvent`

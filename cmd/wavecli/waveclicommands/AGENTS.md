@@ -65,7 +65,7 @@ who want direct access.
 
 | Command | RPC | Description |
 |---------|-----|-------------|
-| `ark vtxos {list,refresh,leave}` | `ListVTXOs` / `RefreshVTXOs` / `LeaveVTXOs` | VTXO inventory and lifecycle |
+| `ark vtxos {list,refresh,leave}` | `ListVTXOs` / `RefreshVTXOs` / `LeaveVTXOs` | VTXO inventory and lifecycle; `list --status` is repeatable and `--all` lists every status (the two are mutually exclusive) |
 | `ark rounds {get,join,list,watch}` | `GetRound` / (join) / `ListRounds` / `WatchRounds` | Round FSM state; `join` commits queued intents into the next round (`vtxos refresh`/`leave` call it automatically); `watch --max-events`/`--for` bounds streams for machines |
 | `ark oor {receive,get,list}` | `NewReceiveScript` / `GetOORSession` / `ListOORSessions` | Receive-script allocation and OOR session inspection; `receive --idempotency-key` replays the allocation already made for that key |
 | `ark board` | `Board` | Trigger boarding with confirmed UTXOs |
@@ -172,6 +172,19 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   cannot dispatch that payment without first previewing it. The raw
   `ark.send.*` advanced MCP tools are NOT two-phase — they move funds in one
   call, gated only by their optional `dry_run` flag.
+- `ark vtxos list` with no `--status` is **not** an unfiltered dump: the daemon
+  lists every VTXO except forfeited and spent ones, newest first. `--status`
+  takes a repeatable list (`parseVTXOStatus` rejects `UNSPECIFIED`), and
+  `--all` expands to every status in enum order; supplying both is an
+  `INVALID_ARGS` failure rather than a silent precedence rule. The same shape
+  is mirrored by the `ark.vtxos.list` MCP tool (`statuses` / `all`, with the
+  legacy scalar `status_filter` folded into `statuses`) and by the schema
+  registry, so the three surfaces must be changed together.
+- OOR checkpoint PSBTs are opt-in on wide listings. `wantsCheckpointPSBTs`
+  requests them when `--fields` names `oor_final_checkpoint_psbts`, or when
+  neither `--fields` nor `--all` is set; otherwise the request sets
+  `exclude_checkpoint_psbts` so an every-status listing does not haul large
+  PSBT blobs the caller did not ask for.
 - `exit` defaults to a cooperative leave; it only starts a unilateral
   on-chain unroll when `--force-unroll-ack` matches the literal string
   `I_KNOW_WHAT_I_AM_DOING`, and that flag is mutually exclusive with

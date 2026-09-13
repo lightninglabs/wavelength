@@ -30,6 +30,7 @@ package may import from a higher layer.
 | [`vhtlcrecovery`](vhtlcrecovery/) | Durable control-plane types for vHTLC on-chain recovery jobs (action, state, script parameters, swap linkage) |
 | [`credit`](credit/) | Client-side credit subsystem: supervisor/per-operation-actor pair driving fault-tolerant sub-floor pay, credit-receive, and redeem flows against the authoritative server ledger |
 | [`coinselect`](coinselect/) | Single coin-type-agnostic coin-selection algorithm shared across wallet backends |
+| [`tapassets`](tapassets/) | Adapter from tap-sdk custom-anchor asset transitions to Ark shapes: caller-funded asset batch outputs and asset-committing VTXO tree materialization. Not yet wired into the daemon |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)
 
