@@ -364,6 +364,42 @@ func TestValidateInSwapPreviewAllowsCreditOnlyZeroAmount(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestInSwapValidationRejectsArkChannelSettlement verifies the receive-only
+// settlement result cannot be supplied as a pay-side quote.
+func TestInSwapValidationRejectsArkChannelSettlement(t *testing.T) {
+	t.Parallel()
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+
+	quote := &InSwapQuote{
+		PaymentHash:      preimage.Hash(),
+		InvoiceAmountSat: testInSwapInvoiceSat,
+		AmountSat:        testInSwapAmountSat,
+		FeeSat:           testInSwapFeeSat,
+		Expiry:           time.Now().Add(time.Minute),
+		SettlementType:   SettlementTypeArkChannel,
+	}
+	err = validateInSwapPreview(
+		invoice, quote, 0, &chaincfg.RegressionNetParams,
+	)
+	require.ErrorContains(t, err, "unknown in-swap settlement type")
+
+	cfg := testInSwapConfig(
+		serverPriv.PubKey(), preimage, time.Now().Add(time.Minute),
+	)
+	cfg.SettlementType = SettlementTypeArkChannel
+	err = validateInSwapQuote(
+		invoice, testInSwapFeeSat, 0, cfg,
+		&chaincfg.RegressionNetParams,
+	)
+	require.ErrorContains(t, err, "unknown in-swap settlement type")
+}
+
 // TestValidateInSwapQuoteRejectsServerMismatches verifies the client treats
 // the swap server response as a quote that must match the caller's invoice.
 func TestValidateInSwapQuoteRejectsServerMismatches(t *testing.T) {
