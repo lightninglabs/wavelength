@@ -28,7 +28,9 @@ server during round participation. These types are used across `round`, `vtxo`,
   `PolicyTemplate` (authoritative join-round policy), `ClientKey` /
   `OperatorKey`, and `ExitDelay`. `TxProof fn.Option[TxProof]` carries
   an optional SPV merkle inclusion proof for server-side verification of
-  boarding UTXOs without requiring the server's own chain source.
+  boarding UTXOs without requiring the server's own chain source. Asset
+  boarding additionally carries the asset reference, amount, digest, commitment
+  leaf hash, confirmed proof, and OP_TRUE witness.
 - `OperatorTerms` — Server-published round parameters (fee rates, expiry
   config, connector dust amount). `FreeRefreshWindowBlocks uint32` advertises
   the optional late-refresh fee-waiver window.
@@ -63,6 +65,10 @@ server during round participation. These types are used across `round`, `vtxo`,
 - `VTXOOwnerKeyFamily` (44) is the HD key family used for deriving VTXO owner signing keys.
 - `VTXOSigningKeyFamily` (45) is the HD key family used for per-round VTXO MuSig2 signing keys.
 - `JoinRoundAuthMessage` produces a deterministic, versioned TLV byte encoding that the client signs (and the server verifies) via BIP-322.
+
+- Asset boarding authenticates the reference, amount, digest, and commitment
+  leaf hash. Proofs and witnesses are verified separately. Empty `AssetRef`
+  retains the Bitcoin-only join-auth encoding.
 
 ## Deep Docs
 

@@ -547,6 +547,14 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 	for i, br := range pb.BoardingRequests {
 		req := types.BoardingRequest{
 			PolicyTemplate: bytes.Clone(br.PolicyTemplate),
+			AssetRef:       br.AssetRef,
+			AssetAmount:    br.AssetAmount,
+			AssetDigest:    bytes.Clone(br.AssetDigest),
+			AssetProof:     bytes.Clone(br.AssetProof),
+			AssetCommitmentLeafHash: bytes.Clone(
+				br.AssetCommitmentLeafHash,
+			),
+			AssetWitness: cloneAssetWitness(br.AssetWitness),
 		}
 
 		if br.Outpoint != nil {
