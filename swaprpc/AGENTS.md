@@ -88,6 +88,14 @@ because they are part of the wire contract, not of either side's logic.
 - `SettlementType.SETTLEMENT_TYPE_UNSPECIFIED` (0) is treated as Lightning
   for backward compatibility with older server responses; do not repurpose
   the zero value.
+- The final hop returned by `RequestChannelId` is the reserved virtual SCID
+  shared by the optional Ark-channel rail and the ordinary vHTLC rail. The
+  server quote does not claim that the channel rail won; that outcome is
+  reported later by the daemon's `swapclientrpc` settlement type.
+- `RequestChannelIdRequest` field 7 and `RequestChannelIdResponse` field 10
+  are reserved under the retired name `channel_backing_fee_sat`. Receives no
+  longer negotiate that legacy fee reserve on the wire. Never reuse reserved
+  field numbers or names.
 - `SwapMailboxEvent` is a proto oneof: read the populated variant, don't
   assume `OutSwapHtlcEvent` is the only case as new event kinds are added.
 
