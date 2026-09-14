@@ -17,15 +17,16 @@ default `--help` face:
 2. **Daemon introspection (group "Introspection")** — getinfo,
    bakemacaroon, schema, mcp (the built-in `help` command is grouped here
    too).
-3. **Advanced subtrees (`ark`, `dev`, `recovery`)** — raw
-   waverpc/devrpc commands for power users and operator runbooks.
+3. **Advanced subtrees (`ark`, `channel`, `dev`, `recovery`)** — raw
+   waverpc/arkchannelrpc/devrpc commands for power users and operator
+   runbooks.
    Hidden from the default `--help` via cobra `Hidden` (not a build tag),
    so they stay compiled and fully runnable in the shipped binary;
    `WAVELENGTH_DEV=1` reveals them under an "Advanced" group. The env var only
    changes visibility — it never gates execution. `ark.*` stays on the
    `schema`/MCP surfaces; `dev` is reachable only as the generated (hidden)
-   CLI subtree — it is not registered in `schema`/MCP — and `recovery` is
-   exposed on neither.
+   CLI subtree — it is not registered in `schema`/MCP — and `channel` and
+   `recovery` are exposed on neither.
 
 The `swap.*` verbs were retired: `send`/`recv --offchain` and `activity`
 cover them (the swapruntime daemon runtime that powers those verbs is
@@ -73,6 +74,23 @@ who want direct access.
 | `ark fees {estimate,history}` | `EstimateFee` / `GetFeeHistory` | Fee estimation and history |
 | `ark listtransactions` | `ListTransactions` | Raw paginated transaction history |
 | `ark send {inround,oor}` | `SendVTXO` / `SendOOR` | Raw in-round / OOR send; real transfers require interactive approval or `--yes` |
+
+### `channel.*` advanced commands
+
+Development control surface for native Ark-backed Lightning channels,
+served by `arkchannelrpc.ArkChannelService` on the daemon's local listener.
+Every command prints the raw protobuf JSON response.
+
+| Command | RPC | Description |
+|---------|-----|-------------|
+| `channel create <amount-sat>` | `PromoteVTXO` | Promote wallet value into a channel; the daemon derives the protocol terms from capacity |
+| `channel get <channel-id>` | `GetChannel` | Show one durable channel snapshot and live balances when available |
+| `channel list` | `ListChannels` | List channels that still need recovery, observation, or operator action |
+| `channel send <channel-id> <amount-sat>` | `SendPayment` | Move local channel balance to the hub |
+| `channel receive <channel-id> <amount-sat>` | `ReceivePayment` | Move hub balance into the local channel balance |
+| `channel pay <bolt11>` | `PayLightningInvoice` | Hold the private channel leg while the hub pays a public Lightning invoice; `--max-fee-sat` defaults to 1,000 |
+| `channel close <channel-id>` | `RequestCooperativeClose` | Start or resume the client-owned cooperative close |
+| `channel force-close <channel-id>` | `MaterializeAndForceClose` | Publish the Ark ancestry, signed backing, and latest commitment |
 
 ### `recovery.*` advanced commands
 
@@ -138,6 +156,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   - `rpc/wavewalletrpc` (generated stubs for the top-level wallet verbs;
     `WalletService` / `WalletInspectionService` clients).
   - `waverpc` (generated stubs for `ark.*`, `recovery.*`, getinfo).
+  - `rpc/arkchannelrpc` (generated `ArkChannelService` stubs for
+    `channel.*`).
   - `cmd/wavecli/waveclicommands/devrpc` (the generated `dev`
     subtree; its registry references `swapclientrpc` service
     descriptors).
@@ -184,6 +204,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   which flag to drop and why, since stating the constraint alone invites
   dropping `--onchain-address` and silently getting the more dangerous
   unilateral exit (`swapwallet.forceUnroll` carries the same wording).
+- `channel.*` dials `ArkChannelService` through the same `getDaemonConn`
+  transport as the other local commands. `parseChannelID` accepts either
+  32-byte hex or the base64 representation printed by protobuf JSON;
+  amounts must be positive signed 64-bit integers.
+- Every channel mutation (`create`, `send`, `receive`, `pay`, `close`, and
+  `force-close`) requires interactive confirmation or `--yes`. These
+  development commands remain outside the `schema` and MCP surfaces.
+- `channel create` sends a mandatory idempotency key. The caller may supply
+  `--idempotency-key`; otherwise the CLI generates one, prints it on stderr,
+  and reuses it while retrying transient transport and admission failures.
 - `recovery escalate` refuses to run on non-interactive stdin unless
   `--yes` is passed — it never blocks on a y/N prompt an agent can't
   answer.
