@@ -229,18 +229,24 @@ func (m *vhtlcRecoveryTargetMaterializer) buildRecoveryDescriptor(
 	}
 
 	chainDepth := recoveryChainDepth(roots, 1)
+	constructionVersion, err := recoveryConstructionVersion(roots)
+	if err != nil {
+		return nil, err
+	}
+	pkScript := append([]byte(nil), targetOutput.PkScript...)
 
 	return recoveryDescriptor(job, &vtxo.Descriptor{
-		Outpoint:       target,
-		Amount:         btcutil.Amount(targetOutput.Value),
-		PkScript:       append([]byte(nil), targetOutput.PkScript...),
-		OperatorKey:    operatorKey,
-		Ancestry:       ancestry,
-		RoundID:        roundID,
-		CommitmentTxID: commitmentTxID,
-		BatchExpiry:    batchExpiry,
-		ChainDepth:     chainDepth,
-		CreatedHeight:  createdHeight,
+		Outpoint:            target,
+		Amount:              btcutil.Amount(targetOutput.Value),
+		PkScript:            pkScript,
+		OperatorKey:         operatorKey,
+		Ancestry:            ancestry,
+		RoundID:             roundID,
+		CommitmentTxID:      commitmentTxID,
+		BatchExpiry:         batchExpiry,
+		ChainDepth:          chainDepth,
+		CreatedHeight:       createdHeight,
+		ConstructionVersion: constructionVersion,
 	})
 }
 
