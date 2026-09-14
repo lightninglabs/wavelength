@@ -378,3 +378,8 @@ func (s *Store) NewOORSessionRegistryStore(
 
 	return NewOORSessionRegistryStore(s, clk)
 }
+
+// NewArkChannelStore builds the durable Ark-to-lnd coordination store.
+func (s *Store) NewArkChannelStore(clk clock.Clock) *ArkChannelStoreDB {
+	return NewArkChannelStore(s, clk)
+}
