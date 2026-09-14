@@ -135,6 +135,16 @@ state transitions and validation rules live under [Invariants](#invariants).
   Σ(cooperative leave outputs), clamped to zero. Carried on
   `VTXOCreatedNotification.OperatorFeeSat`.
 
+### Taproot Assets
+
+- `AssetVTXORequest` — one asset output requested from a round:
+  `AmountSat` (the Bitcoin carrier value), `AssetRef`, and `AssetAmount`.
+- `AssetVTXOVerifier` — verifies the asset transition behind a VTXO
+  (`VerifyAssetVTXO(ctx, assetRef, assetAmount, commitmentTx, clientTree,
+  sealedPackage)`) *before* the client signs its tree path. Supplied on the
+  round config; when absent, asset requests cannot be verified and are
+  rejected rather than trusted.
+
 ## Relationships
 
 - **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor

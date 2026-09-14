@@ -15,7 +15,9 @@ server during round participation. These types are used across `round`, `vtxo`,
 - `VTXORequest` — Describes a new VTXO to create in a round (amount, policy
   template, owner key, signing key). `IsChange bool` (TLV record 4) marks the
   output that absorbs the server-computed fee residual under the #270
-  seal-time handshake; serialized into `JoinRoundAuth`.
+  seal-time handshake; serialized into `JoinRoundAuth`. `AssetRef string` and
+  `AssetAmount uint64` optionally carry Taproot Asset identity; the pair is
+  validated by `ValidateAssetFields` (both set or both unset).
 - `ForfeitRequest` — Describes a VTXO being forfeited: `VTXOOutpoint`,
   local-only `Amount`, plus optional `AuthSpend *arkscript.SpendPath`
   (proof-of-control path for custom-script join-auth construction) and
@@ -29,9 +31,26 @@ server during round participation. These types are used across `round`, `vtxo`,
   `OperatorKey`, and `ExitDelay`. `TxProof fn.Option[TxProof]` carries
   an optional SPV merkle inclusion proof for server-side verification of
   boarding UTXOs without requiring the server's own chain source.
+- `TxProof` — Binds a boarding outpoint to a transaction, a block, and the
+  Taproot construction of the claimed output (`MsgTx`, `BlockHeader`,
+  `BlockHeight`, `MerkleProof`, `ClaimedOutPoint`, `InternalKey`,
+  `MerkleRoot`). Carries no Taproot Asset state — asset identity travels
+  separately on `VTXORequest`. `Verify` takes a `HeaderVerifier` and a
+  `MerkleVerifier` so callers supply their own chain authority.
+- `TxMerkleProof` — SPV inclusion proof for one transaction in a block:
+  `Nodes` (siblings up to the root) plus `Bits` (true when the sibling is on
+  the right). Built by `NewTxMerkleProof`; `Encode`/`Decode` use the existing
+  boarding wire layout (node count, sibling hashes, packed direction bits).
+- `HeaderVerifier` / `MerkleVerifier` — Function types the caller injects to
+  authenticate a block header at its claimed height and to check merkle
+  inclusion. `DefaultMerkleVerifier` is the standard implementation.
+- `SerializeTxProof` / `DeserializeTxProof` — Durable codec for `TxProof`.
 - `OperatorTerms` — Server-published round parameters (fee rates, expiry
   config, connector dust amount). `FreeRefreshWindowBlocks uint32` advertises
   the optional late-refresh fee-waiver window.
+  `VTXOTargetConfirmations()` returns the depth at which round VTXOs become
+  available; a zero split field falls back to the legacy policy that reused
+  the boarding-input minimum for commitment outputs.
   `MaxOORLineageVBytes uint32` carries the operator-published
   cap on the cumulative on-chain vbytes a recipient must publish to claim a
   VTXO produced by an OOR submit unilaterally. Zero means no cap enforced

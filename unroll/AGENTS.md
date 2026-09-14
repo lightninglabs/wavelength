@@ -117,6 +117,19 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
 - `ExitSpendPolicyResolver` — interface for looking up the final spend
   policy by `(ExitPolicyKind, ExitPolicyRef)`. Implemented by
   `vhtlcrecovery/unrollpolicy.ExitSpendPolicyResolver`.
+- `ExitSpendPolicy.FeeEstimateFallbackSatPerVByte() int64` — the emergency
+  fixed fee rate to use when estimation is unavailable, or zero to defer
+  construction. A policy returns a positive value only when another valid
+  spend path can race it and waiting is less safe than paying a low fee.
+  `StandardVTXOExitSpendPolicy` returns zero (a timeout sweep has no
+  competitor, so it defers); `unrollpolicy.VHTLCExitSpendPolicy` returns a
+  positive rate because another vHTLC leaf can race either recovery action.
+- `ConflictedFailure` (on the registry record) / `Conflicted` (on the job) —
+  marks a terminal failure caused by a *confirmed* foreign spend of a
+  commitment output the exit depends on: the operator swept a source batch.
+  Persisted as the distinct `db.UnilateralExitJobStatusFailedConflicted`
+  status so it survives restart as its own outcome rather than collapsing
+  into a generic failure.
 
 ### Feasibility & Funding
 
@@ -299,6 +312,22 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   VTXO was rolled back to live (wavelength#602), so `handleEnsure`
   falls through both the `r.pending` and `Store.GetRecord` arms to
   re-admit a fresh exit rather than strand the recovered coin.
+- **A conflicted exit is not a recoverable one.** `notifyVTXOExit` maps a
+  terminal phase to exactly one `vtxo.ExitOutcome`: `PhaseCompleted` →
+  `ExitOutcomeConfirmed`; `PhaseFailed` **with** `Conflicted` →
+  `ExitOutcomeConflicted` (the operator swept a source batch, so the lineage
+  is dead and the coin must be reclaimed through a refresh, wavelength#1050);
+  `PhaseFailed` with no on-chain footprint → `ExitOutcomeRecoverable`
+  (roll back to live); `PhaseFailed` with a footprint and no conflict → no
+  notification, leaving the VTXO in unilateral-exit. Order matters: the
+  conflict arm is checked before the footprint arm, because a conflicted exit
+  that never broadcast would otherwise be misread as cleanly recoverable and
+  rolled back onto a lineage that can no longer be spent.
+- **Exit notification is best-effort, reconciliation is the backstop.** A
+  failed `Tell` to the VTXO manager is logged, not retried. The manager's
+  startup reconciliation re-derives the same outcome from the persisted
+  terminal record, so a dropped notification delays re-convergence to the
+  next restart rather than losing funds.
 - **Fail-closed on restore gaps.** `handleEnsure` validates restorable
   non-terminal records via `validateRestorableRecords` before re-admitting
   them; a record with an unrecognized `ExitPolicyKind` or missing ref fails

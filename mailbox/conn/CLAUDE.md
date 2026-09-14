@@ -42,6 +42,29 @@ delivery.
   buffered response cleanup.
 - `ErrWaiterExpired` / `ErrWaiterCancelled` — Sentinel errors signaled to
   blocked `AwaitRPC` callers when a waiter is pruned or explicitly removed.
+- `IngressQuarantine` — A retained envelope that could not be adapted for
+  local delivery: `ID`, `Lane` (hash of the configured local and remote
+  mailbox identities), the original serialized `Envelope` bytes, the first
+  adaptation `Reason`, and an `Attempts` counter of process-start recovery
+  tries. Never expired automatically — transport ACK is not completion.
+- `IngressQuarantineStore` — Durable evidence storage used by ingress
+  (`QuarantineIngress`, `ListIngressQuarantine`,
+  `NoteIngressQuarantineAttempt`, `DeleteIngressQuarantine`). Calls made with
+  a transaction context must join that transaction.
+- `WithIngressReceipt` / `IngressReceiptFromContext` — Attach and read the
+  scoped network occurrence identity for one inbound event, carried only as
+  far as the first durable inbox insert. Ordinary actor and outbox deliveries
+  carry none.
+- `NoteIngressReceiptHandoff` / `IngressReceiptHandedOff` — Record and report
+  that *this* dispatch inserted into a durable inbox (or matched its retained
+  payload). A retry gets a fresh token, so an earlier attempt cannot prove the
+  current handoff.
+- `IsDeliveryOccurrenceID` — Recognizes a `delivery-v1:` occurrence identity
+  minted once before producer enqueue and reused across transport retries.
+- `ErrIngressReceiptMismatch` — A consumed occurrence was reused for a
+  different durable payload.
+- `IngressReceiptRetention` — Bounds transport replay protection after a
+  durable local handoff.
 - `StatusError` — Wraps a non-OK `mailboxpb.Status` from a Send/Pull/AckUpTo
   call, preserving the op, message, code, and advertised supported versions.
   `IsPermanentVersion()` / package-level `IsPermanentVersionError(err)`
@@ -74,6 +97,17 @@ delivery.
 - `WrappedProto` callers must use `tlv.NewRecordT` to assign the real TLV
   type; calling `Record()` directly yields type 0 and would silently conflict
   with other type-0 records.
+- An ingress receipt is consumed at the *durable inbox insert*, not at an
+  in-memory `Tell`. Call `NoteIngressReceiptHandoff` only after the enqueue
+  succeeds, and only when the enclosing transaction still has to commit —
+  marking handoff earlier would let an uncommitted attempt suppress a replay.
+- Replays do not extend the original consumption timestamp, so
+  `IngressReceiptRetention` is measured from first consumption.
+- Reusing an occurrence identity for a different adapted payload is a
+  contradiction that must be preserved in quarantine
+  (`ErrIngressReceiptMismatch`), never dropped.
+- Quarantine evidence is deleted only after a proven durable handoff. It is
+  bounded by capacity, not aged out.
 
 ## Deep Docs
 

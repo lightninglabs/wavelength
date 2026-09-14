@@ -55,11 +55,21 @@ when the local wallet owns the receive script.
   non-local participant must sign, and the hook that supplies those
   signatures for custom VTXO policies.
 - `ExitOutcomeResolution` — Terminal result for an exiting VTXO: `Outcome`
-  (`ExitOutcomeRecoverable` or `ExitOutcomeConfirmed`), `Reason`, and
+  (`ExitOutcomeRecoverable`, `ExitOutcomeConfirmed`, or
+  `ExitOutcomeConflicted`), `Reason`, and
   `ExitPolicyKind` (`actormsg.ExitPolicyKind`) — the exit-spend policy the
   unroll job ran under, so boot reconciliation can tell a recovery-only target
   (a non-standard policy such as a vHTLC refund) apart from a normal wallet coin
   and avoid reliving the former.
+- `ExitOutcome` — Classifies an unroll job's terminal outcome:
+  `ExitOutcomeRecoverable` (failed with no on-chain footprint; roll the VTXO
+  back to `LiveState`), `ExitOutcomeConfirmed` (swept and confirmed; retire to
+  terminal `SpentState`), and `ExitOutcomeConflicted` (a confirmed foreign
+  spend defeated the exit). Conflicted is neither success nor loss: the
+  operator can only sweep that output past batch expiry, so the VTXO routes to
+  the **non-terminal** `ExpiredState` — quarantined from coin selection, then
+  reclaimed by the next block epoch through an ordinary refresh — rather than
+  a terminal `FailedState` (wavelength#1050, wavelength#1000).
 - `ExitOutcomeResolver` — Function type
   `func(ctx, wire.OutPoint) (fn.Option[ExitOutcomeResolution], error)`.
   Returns `None` when the job has no terminal result yet.
@@ -83,6 +93,22 @@ when the local wallet owns the receive script.
 - `ErrForfeitInFlight` / `ErrExitInFlight` / `ErrVTXOTerminal` /
   `ErrVTXOLiquidityLocked` (`admission_errors.go`) — admission sentinels;
   match with `errors.Is`.
+- `ExitConflictedEvent` — Delivered to a VTXO actor in `UnilateralExitState`
+  when the downstream unroll job terminated because a confirmed foreign spend
+  conflicts with the recovery tree (the operator swept a source batch
+  commitment output the exit depends on, wavelength#1050). Carries a `Reason`.
+  The VTXO moves to the non-terminal `ExpiredState`, not back to `LiveState`:
+  the old lineage is unusable, but the actor stays alive so the value can be
+  recovered through an ordinary refresh.
+- `InventoryStatuses() []VTXOStatus` — The statuses an unfiltered listing
+  covers: every status except `Forfeited` and `Spent`, whose value has already
+  moved to another output. Backs the daemon's default `ListVTXOs` behavior.
+- `ExpiryConfig.CanReserveMaxPaymentCLTV(vtxo)` — Reports whether a VTXO's
+  known batch lifetime can satisfy the configured payment CLTV reserve and
+  still leave one healthy retry buffer. A missing creation height means the
+  lifetime is unknown. An OOR descendant also retains the reserve, because
+  refreshing it can mint a round-direct replacement with a full new batch
+  lifetime.
 - `VTXOEvent` — Inbound events (BlockEpochEvent, ForfeitRequest, ForfeitConfirmed, SpendReserveEvent, SpendCompletedEvent, etc.).
 - `VTXOOutMsg` — Outbound messages (ForfeitRequest, ExpiringNotify, StatusUpdate, Terminated).
 - `FilterOptions` / `FilterDescriptors` — VTXO filtering by expiry status, spend state, etc.

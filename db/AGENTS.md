@@ -369,6 +369,13 @@ when adding one.
   post-step detects the old refresh/exit collision and reconstructs the
   missing net exit-send row from the surviving refresh-send and exit-fee rows,
   repairing the overstated VTXO balance atomically with the key rewrite.
+- `000020_taproot_asset_vtxo_state` — adds the Taproot Asset identity columns
+  to `vtxos`: `taproot_asset_root` (32 bytes), `taproot_asset_ref` (1–512
+  chars), `taproot_asset_amount` (an eight-byte BLOB, because neither SQLite
+  nor Postgres has an integer type covering the full uint64 range), and the
+  optional `taproot_asset_sealed_package`. A table CHECK enforces that the
+  root, ref, and amount are all NULL or all set, so the asset identity cannot
+  be half-written at the schema level rather than only in Go.
 
 ## Deep Docs
 

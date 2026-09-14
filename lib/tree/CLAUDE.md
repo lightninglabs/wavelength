@@ -18,12 +18,15 @@ descriptors through branch nodes to the batch output.
 - `SignerSession` — MuSig2 signing session for tree transactions, wrapping `input.MuSig2Signer`.
 - `Materializer` / `BTCMaterializer` — Interface and implementation for materializing tree nodes into actual Bitcoin transactions.
 - `TreeAssembler` — Two-pass builder (`BuildStructure` then `Materialize`) driven by `TreeConfig`.
+- `AssetTreeContext` — Side-table carrying the Taproot Asset state needed to materialize and sign an asset-aware tree: per-node asset amounts, per-input signing tweaks, sealed transition packages, leaf asset roots, and the tree's single `AssetRef`. Builders populate it before publishing the tree; `Validate(root)` checks the whole graph. `Tree.LeafAssetRoot` reads a leaf's asset root through the attached context.
+- `BatchOutputSpec` — Batch output plus its taproot data: `Output`, the untweaked MuSig2 `InternalKey`, and the operator's `SweepLeaf`. Built by `BuildBatchOutputSpec`; `TapTreeBytes` serializes the tree.
+- `ComputeInternalKey` — Returns the untweaked MuSig2 aggregate key for a cosigner set.
 - `Queue[T]` — Generic queue used internally for BFS tree traversal.
 
 ## Relationships
 
 - **Depends on**: `lib/arkscript` (taproot script construction, policy templates, `SpendInfo`).
-- **Depended on by**: `round` (tree construction/validation), `oor` (tree references), `db` (tree serialization).
+- **Depended on by**: `round` (tree construction/validation), `oor` (tree references), `db` (tree serialization, `AssetTreeContext` persistence), `rpc/roundpb` (proto conversion of trees and asset context), `tapassets` (asset-aware materialization below a batch output).
 
 ## Invariants
 
@@ -42,6 +45,12 @@ descriptors through branch nodes to the batch output.
   all outputs and recurses only into retained children. The traversal rejects
   cycles and nodes shared by multiple parents. `Node.Verify` checks only
   parent-child outpoint topology and is not a trust-boundary validator.
+- `AssetTreeContext.Validate` requires a non-empty `AssetRef`, rejects
+  outpoint-keyed metadata shared between nodes (each asset input belongs to
+  exactly one node), and checks that every node's asset amount equals the sum
+  of its children's. A nil context validates trivially — asset validation is
+  opt-in per tree, so callers handling untrusted asset trees must confirm a
+  context is actually present before trusting asset amounts.
 - **Cache-aliasing invariant**: a `*Tree` is effectively immutable once published from
   a builder or resolver. Multiple downstream consumers may share the same `*Tree`
   pointer through caches and ancestry-fragment slices. Silently mutating a shared

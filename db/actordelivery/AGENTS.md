@@ -60,6 +60,13 @@ other services can reuse durable actor storage without pulling unrelated tables.
   *yet* releases it for redelivery with its retry budget byte-identical to
   what it was before the delivery, rather than spending an attempt on a
   transient not-now condition.
+- **Ingress receipts and quarantine** — `Store` and `TxActorDeliveryStore`
+  both implement `conn.IngressQuarantineStore`: `QuarantineIngress`,
+  `ListIngressQuarantine(lane)`, `NoteIngressQuarantineAttempt`, and
+  `DeleteIngressQuarantine`. The receipt half admits an inbound network
+  occurrence in the same transaction as the durable inbox insert, and
+  `PruneIngressReceipts(ctx, limit)` bounds retention. See
+  [mailbox ingress safety](../../docs/mailbox_ingress_safety.md).
 - `BatchedActorDeliveryQueries` — Batched transaction wrapper for
   `ActorDeliveryQueries`.
 - `MigrationOption` — Functional options for migration configuration

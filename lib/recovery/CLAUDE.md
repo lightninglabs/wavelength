@@ -21,6 +21,14 @@ scheduling live downstream in `unrollplan` and `unroll`.
   block height, including CSV maturity and ready/blocked frontiers.
 - `SessionState` — Durable caller-owned state suitable for TLV persistence.
   Optional fields use `fn.Option` instead of nilable pointers.
+- `Proof.RootExternalInputs()` — The outpoints consumed by root transactions
+  that no node in the proof produces: the external funding the whole recovery
+  graph hangs off. For a round-direct VTXO that is the batch/commitment output
+  the tree root spends; for an OOR-chained or multi-input fan-in VTXO it is
+  every distinct commitment output rooting a local lineage fragment. Callers
+  arm spend watches on these (`unroll.ensureSourceSpendWatches`). Deduplicated
+  and sorted by hash then index, so two proofs over the same node set yield
+  identical output regardless of map iteration order.
 - `ComputeMaturityHeight` — Overflow-safe `targetConfirmHeight + csvDelay`
   helper shared with `unrollplan`.
 
@@ -49,6 +57,12 @@ scheduling live downstream in `unrollplan` and `unroll`.
   different height. A same-height re-confirmation is idempotent.
 - `MarkFailed` refuses to overwrite an existing terminal failure so the root
   cause survives across a restart.
+- A confirmed foreign spend of *any* outpoint in `RootExternalInputs` makes
+  every root depending on it — and therefore the whole proof — permanently
+  unbroadcastable. This is what a competing party (an operator sweeping an
+  expired batch, a fraud spend) can take out from under an exit, so unroll
+  watches these outpoints and fails the exit terminally rather than retrying a
+  tree that can never confirm (wavelength#1050).
 - `Session` methods are safe for concurrent use under `RWMutex`; internal
   helpers assume the caller already holds the lock.
 - The TLV codec is canonical (sorted by raw hash bytes) and carries an
