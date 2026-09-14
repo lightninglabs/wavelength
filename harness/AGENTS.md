@@ -67,6 +67,10 @@ helpers for end-to-end tests.
   branches, incomplete custom-account reconstruction, and spending restored
   default-account coins. The custom fixture is watch-only because the pinned
   image predates native custom-account creation.
+- `SetupChannelBetween` explicitly opens announced channels
+  (`Private: false`). Multi-node tests need the link in the public graph,
+  and spelling out the setting prevents an lnd default change from making
+  those routes private.
 - Container teardown (`Stop`) is guarded by `sync.Once`; a signal handler
   also calls `Stop` as a safety net against orphaned containers.
 
