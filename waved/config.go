@@ -711,6 +711,11 @@ type SwapConfig struct {
 	// DB.
 	DatabaseFileName string `mapstructure:"databasefilename"`
 
+	// ArkChannelReceiveEnabled allows a Lightning receive to prepare a
+	// direct Ark-backed channel before exposing its invoice. It is off by
+	// default; disabled receives use only the ordinary vHTLC rail.
+	ArkChannelReceiveEnabled bool `mapstructure:"arkchannelreceiveenabled"`
+
 	// VHTLCRecovery controls when the daemon-owned swap runtime escalates
 	// an already-armed vHTLC recovery row from cooperative retry into
 	// on-chain unroll.
@@ -762,6 +767,11 @@ type SwapConfig struct {
 	// pending credit-backed send is about to spend. Nil in builds without
 	// the credit subsystem; set programmatically, never from config files.
 	CreditEarmarkSetter func(credit.EarmarkFunc) `mapstructure:"-"`
+
+	// ArkChannelMailbox is the authenticated swapdk-server mailbox edge
+	// published by swapclientserver for the channel control runtime. It is
+	// process wiring, never user configuration.
+	ArkChannelMailbox mailboxpb.MailboxServiceClient `mapstructure:"-"`
 }
 
 // CreditConfig configures the daemon-owned credit subsystem.
