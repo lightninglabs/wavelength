@@ -10,10 +10,10 @@ import (
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 )
 
-// DurableActorID returns the durable actor mailbox ID used for serverconn
-// ingress checkpointing and egress mailbox persistence.
-func DurableActorID(localMailboxID string) string {
-	return "serverconn-" + localMailboxID
+// DurableActorID returns the durable actor ID bound to the effective ingress
+// mailbox used for checkpointing and egress persistence.
+func DurableActorID(replyMailboxID string) string {
+	return "serverconn-" + replyMailboxID
 }
 
 // Runtime embeds a DurableActor for serverconn egress and wires it together
@@ -69,8 +69,8 @@ func NewRuntime(cfg ConnectorConfig) (*Runtime, error) {
 	durableCfg := actor.DefaultDurableTxActorConfig[
 		ServerConnMsg, ServerConnResp, egressTx,
 	](
-		DurableActorID(cfg.LocalMailboxID), connector,
-		connector.bindStores, cfg.Store, cfg.Codec,
+		connector.runtimeID(), connector, connector.bindStores,
+		cfg.Store, cfg.Codec,
 	)
 	durableCfg.Log = cfg.Log
 

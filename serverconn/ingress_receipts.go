@@ -19,8 +19,18 @@ const ingressReceiptPruneInterval = time.Hour
 // identities. Only the transactional ingress path installs this scope.
 type ingressScopeKey struct{}
 
-// ingressScope fixes local trust-domain routing independently of peer fields.
-type ingressScope struct{ local, remote string }
+// ingressScope fixes reply and remote trust-domain routing independently of
+// peer-controlled envelope fields.
+type ingressScope struct{ reply, remote string }
+
+// ingressEvidenceScope binds receipts and quarantine to the mailbox stream
+// whose cursor the connector advances.
+func (a *ServerConnectionActor) ingressEvidenceScope() ingressScope {
+	return ingressScope{
+		reply:  a.cfg.replyMailboxID(),
+		remote: a.cfg.RemoteMailboxID,
+	}
+}
 
 // withEventReceipt attaches a producer-persisted delivery occurrence ID to
 // asynchronous events. Legacy body-derived IDs and operation idempotency keys
@@ -38,7 +48,7 @@ func withEventReceipt(ctx context.Context,
 		return ctx, nil
 	}
 	fields := []string{
-		"ingress-event/v1", scope.local, scope.remote, env.Sender,
+		"ingress-event/v1", scope.reply, scope.remote, env.Sender,
 		env.Rpc.Service, env.Rpc.Method, env.MsgId,
 	}
 	encoded, err := json.Marshal(fields)

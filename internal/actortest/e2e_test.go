@@ -460,20 +460,22 @@ func TestDurableCounter_ForwardWritesToOutbox(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Wait for processing.
+	// The behavior counter advances before its transaction commits. Wait
+	// for the persisted outbox entry rather than that in-memory signal.
+	var batch []actor.OutboxMessage
 	eventually(t, 2*time.Second, func() bool {
-		return behavior.ForwardCount() == 1
-	})
+		batch, err = h.store.ClaimOutboxBatch(
+			h.ctx, actor.OutboxClaimParams{
+				Limit:         10,
+				ClaimToken:    "test-claim",
+				ClaimDuration: 30 * time.Second,
+			},
+		)
+		require.NoError(t, err)
 
-	// Verify message is in outbox by claiming with a test token.
-	batch, err := h.store.ClaimOutboxBatch(
-		h.ctx, actor.OutboxClaimParams{
-			Limit:         10,
-			ClaimToken:    "test-claim",
-			ClaimDuration: 30 * time.Second,
-		},
-	)
-	require.NoError(t, err)
+		return len(batch) == 1
+	})
+	require.Equal(t, int64(1), behavior.ForwardCount())
 	require.Len(t, batch, 1)
 	require.Equal(t, actorID, batch[0].SourceActorID)
 	require.Equal(t, "target-counter", batch[0].TargetActorID)
