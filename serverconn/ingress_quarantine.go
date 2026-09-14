@@ -31,12 +31,13 @@ func (e *poisonEnvelopeError) Unwrap() error { return e.err }
 // ingressQuarantineKey exposes only the active fold's evidence store.
 type ingressQuarantineKey struct{}
 
-// quarantineLane identifies the configured peer and local mailbox without
+// quarantineLane identifies the configured peer and reply mailbox without
 // relying on untrusted envelope routing fields.
 func (a *ServerConnectionActor) quarantineLane() string {
+	ingressScope := a.ingressEvidenceScope()
 	scope := fmt.Appendf(
-		nil, "%d:%s%s", len(a.cfg.LocalMailboxID), a.cfg.LocalMailboxID,
-		a.cfg.RemoteMailboxID,
+		nil, "%d:%s%s", len(ingressScope.reply), ingressScope.reply,
+		ingressScope.remote,
 	)
 	digest := sha256.Sum256(scope)
 
@@ -161,10 +162,8 @@ func (a *ServerConnectionActor) retryQuarantinedIngress(ctx context.Context,
 						"is unavailable")
 				}
 				txCtx = context.WithValue(
-					txCtx, ingressScopeKey{}, ingressScope{
-						local:  a.cfg.LocalMailboxID,
-						remote: a.cfg.RemoteMailboxID,
-					},
+					txCtx, ingressScopeKey{},
+					a.ingressEvidenceScope(),
 				)
 				txCtx, err := withEventReceipt(txCtx, env)
 				if err != nil {
