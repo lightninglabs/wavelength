@@ -385,6 +385,39 @@ func TestStartReceiveReleasesReservationOnCreationFailure(t *testing.T) {
 	require.True(t, service.reserveReceiveWorker())
 }
 
+// TestReceiveWorkerRetriesWhileDurableSwapIsPending verifies a transient
+// process-local Wait failure does not strand a resumable receive FSM until the
+// daemon restarts. The worker keeps ownership across the retry and resumes the
+// same payment hash once more.
+func TestReceiveWorkerRetriesWhileDurableSwapIsPending(t *testing.T) {
+	t.Parallel()
+
+	receiveHash := testHash(3)
+	fakeClient := newFakeSwapRuntime(swaps.SwapSummary{
+		Direction:   swaps.SwapDirectionReceive,
+		PaymentHash: receiveHash,
+		State:       "claim_initiated",
+		Pending:     true,
+	})
+	fakeClient.receiveResumeSessions = []receiveSwapSession{
+		&fakeReceiveSession{
+			hash:    receiveHash,
+			waitErr: errors.New("temporary mailbox disconnect"),
+		},
+		&fakeReceiveSession{
+			hash: receiveHash,
+		},
+	}
+	service := newTestSwapClientService(fakeClient)
+	service.workerRetryDelay = 10 * time.Millisecond
+	defer service.cancel()
+
+	service.startReceiveWorker(receiveHash)
+	fakeClient.awaitReceiveResume(t, receiveHash)
+	fakeClient.awaitReceiveResume(t, receiveHash)
+	require.Equal(t, 2, fakeClient.receiveResumeCount(receiveHash))
+}
+
 // TestChainParamsForNetworkAcceptsTestNet4 verifies the swapruntime daemon
 // subserver accepts every network string the main daemon config advertises.
 func TestChainParamsForNetworkAcceptsTestNet4(t *testing.T) {
@@ -1076,7 +1109,9 @@ func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 		UpdatedAt:        updatedAt,
 		Deadline:         deadline,
 		RefundLocktime:   42,
-		SettlementType:   swaps.SettlementTypeInArk,
+		SettlementType:   swaps.SettlementTypeArkChannel,
+		ChannelID:        [32]byte{7},
+		ReservedSCID:     99,
 		SenderPubkey:     senderPubKey,
 	})
 
@@ -1104,9 +1139,18 @@ func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 	require.Equal(t, deadline.Unix(), got.GetDeadlineUnix())
 	require.Equal(t, uint32(42), got.GetRefundLocktime())
 	require.Equal(
-		t, swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_IN_ARK,
+		t,
+		swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_ARK_CHANNEL,
 		got.GetSettlementType(),
 	)
+	require.Equal(
+		t,
+		append(
+			[]byte{7}, make([]byte, 31)...,
+		),
+		got.GetChannelId(),
+	)
+	require.Equal(t, uint64(99), got.GetReservedScid())
 	require.Equal(t, senderPubKeyHex, got.GetSenderPubkey())
 }
 
@@ -1149,6 +1193,40 @@ func TestBindArkChannelMailbox(t *testing.T) {
 
 	release()
 	require.Nil(t, cfg.ArkChannelMailbox)
+}
+
+// recordingArkChannelBridgeSetter records whether daemon wiring exposes the
+// optional direct receive bridge to the swap SDK.
+type recordingArkChannelBridgeSetter struct {
+	bridge swaps.ArkChannelPaymentBridge
+	calls  int
+}
+
+// SetArkChannelPaymentBridge records one bridge installation.
+func (s *recordingArkChannelBridgeSetter) SetArkChannelPaymentBridge(
+	bridge swaps.ArkChannelPaymentBridge) {
+
+	s.bridge = bridge
+	s.calls++
+}
+
+// TestConfigureArkChannelReceiveBridgeRequiresOptIn verifies disabled receive
+// mode leaves the SDK bridge unset while the explicit opt-in installs it.
+func TestConfigureArkChannelReceiveBridgeRequiresOptIn(t *testing.T) {
+	t.Parallel()
+
+	rpcServer := waved.NewRPCServer(nil)
+	disabled := &recordingArkChannelBridgeSetter{}
+	configureArkChannelReceiveBridge(disabled, rpcServer, false)
+	require.Zero(t, disabled.calls)
+	require.Nil(t, disabled.bridge)
+
+	enabled := &recordingArkChannelBridgeSetter{}
+	configureArkChannelReceiveBridge(enabled, rpcServer, true)
+	require.Equal(t, 1, enabled.calls)
+	bridge, ok := enabled.bridge.(*arkChannelPaymentBridge)
+	require.True(t, ok)
+	require.Same(t, rpcServer, bridge.rpc)
 }
 
 // TestDaemonWithLiveOperatorKeyUsesLiveFetcher verifies the daemon-hosted swap
@@ -1554,8 +1632,13 @@ func TestSwapServerOperationWaitsForReady(t *testing.T) {
 			method: swaprpc.SwapService_ListCredits_FullMethodName,
 		},
 		{
-			name:   "mailbox",
-			method: "/mailboxrpc.MailboxService/Pull",
+			name:   "mailbox send",
+			method: mailboxpb.MailboxService_Send_FullMethodName,
+			wait:   true,
+		},
+		{
+			name:   "mailbox pull",
+			method: mailboxpb.MailboxService_Pull_FullMethodName,
 		},
 		{
 			name:   "future swap method",
@@ -1774,26 +1857,27 @@ type fakeSwapRuntime struct {
 	listCreditsResp     *swaps.CreditSnapshot
 	listCreditsErr      error
 
-	quotePayCalls      int
-	quotePayInvoice    string
-	quotePayMaxFeeSat  uint64
-	startPayMaxFeeSat  uint64
-	startPayCalls      int
-	startReceiveCalls  int
-	startReceiveMemo   string
-	startReceiveHook   func()
-	createCreditCalls  int
-	createCreditReq    swaps.CreateCreditRequest
-	redeemCreditCalls  int
-	redeemCreditReq    swaps.RedeemCreditRequest
-	listCreditsCalls   int
-	listCreditsLimit   uint32
-	getSummaryCalls    int
-	listPendingOnly    []bool
-	listSummaryErrs    []error
-	payResumeCalls     map[lntypes.Hash]int
-	receiveResumeCalls map[lntypes.Hash]int
-	receiveDone        map[lntypes.Hash]chan struct{}
+	quotePayCalls         int
+	quotePayInvoice       string
+	quotePayMaxFeeSat     uint64
+	startPayMaxFeeSat     uint64
+	startPayCalls         int
+	startReceiveCalls     int
+	startReceiveMemo      string
+	startReceiveHook      func()
+	createCreditCalls     int
+	createCreditReq       swaps.CreateCreditRequest
+	redeemCreditCalls     int
+	redeemCreditReq       swaps.RedeemCreditRequest
+	listCreditsCalls      int
+	listCreditsLimit      uint32
+	getSummaryCalls       int
+	listPendingOnly       []bool
+	listSummaryErrs       []error
+	payResumeCalls        map[lntypes.Hash]int
+	receiveResumeCalls    map[lntypes.Hash]int
+	receiveDone           map[lntypes.Hash]chan struct{}
+	receiveResumeSessions []receiveSwapSession
 
 	payResumeCh     chan lntypes.Hash
 	receiveResumeCh chan lntypes.Hash
@@ -1885,6 +1969,10 @@ func (f *fakeSwapRuntime) ResumeReceiveViaLightning(_ context.Context,
 
 	f.receiveResumeCalls[hash]++
 	f.receiveResumeCh <- hash
+	resumeIndex := f.receiveResumeCalls[hash] - 1
+	if resumeIndex < len(f.receiveResumeSessions) {
+		return f.receiveResumeSessions[resumeIndex], nil
+	}
 
 	return &fakeReceiveSession{hash: hash, done: f.receiveDone[hash]}, nil
 }
@@ -2067,6 +2155,7 @@ type fakeReceiveSession struct {
 	done    <-chan struct{}
 	hash    lntypes.Hash
 	invoice string
+	waitErr error
 }
 
 func (f *fakeReceiveSession) PaymentHash() lntypes.Hash {
@@ -2081,9 +2170,13 @@ func (f *fakeReceiveSession) Invoice() string {
 func (f *fakeReceiveSession) Wait(ctx context.Context) (*swaps.ReceiveResult,
 	error) {
 
+	if f.waitErr != nil {
+		return nil, f.waitErr
+	}
+
 	select {
 	case <-f.done:
-		return nil, errors.New("temporary receive failure")
+		return nil, nil
 
 	case <-ctx.Done():
 	}
