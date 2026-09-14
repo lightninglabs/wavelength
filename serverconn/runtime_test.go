@@ -120,6 +120,34 @@ func TestNewRuntime_DefaultCodec(t *testing.T) {
 	)
 }
 
+// TestNewRuntimeReplyMailboxNamespace verifies two independent remote services
+// derive distinct durable state from their distinct ingress mailboxes.
+func TestNewRuntimeReplyMailboxNamespace(t *testing.T) {
+	t.Parallel()
+
+	mb := newInMemoryMailbox()
+	baseCfg := newTestConnectorConfig(mb, newMemCheckpointStore())
+	baseCfg.ReplyMailboxID = "lumos-client-1"
+
+	lumosRuntime, err := NewRuntime(baseCfg)
+	require.NoError(t, err)
+	require.Equal(
+		t, DurableActorID(baseCfg.ReplyMailboxID),
+		lumosRuntime.Ref().ID(),
+	)
+
+	swapCfg := baseCfg
+	swapCfg.ReplyMailboxID = "swap-client-1"
+	swapCfg.RemoteMailboxID = "swap-server-1"
+	swapRuntime, err := NewRuntime(swapCfg)
+	require.NoError(t, err)
+	require.Equal(
+		t, DurableActorID(swapCfg.ReplyMailboxID),
+		swapRuntime.Ref().ID(),
+	)
+	require.NotEqual(t, lumosRuntime.Ref().ID(), swapRuntime.Ref().ID())
+}
+
 // TestRuntime_StartStop verifies runtime lifecycle methods run and return
 // promptly when the parent context is cancelled.
 func TestRuntime_StartStop(t *testing.T) {
