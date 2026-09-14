@@ -709,6 +709,12 @@ type ServerConnectionActor struct {
 	ingressCancel atomic.Pointer[context.CancelFunc]
 }
 
+// runtimeID binds durable egress and ingress checkpoint state to the mailbox
+// whose delivery cursor that state advances.
+func (a *ServerConnectionActor) runtimeID() string {
+	return DurableActorID(a.cfg.replyMailboxID())
+}
+
 // NewServerConnectionActor creates a new server connection actor with the
 // given configuration. The actor must be started via its DurableActor wrapper
 // and the ingress loop must be started separately via StartIngress.
@@ -870,10 +876,11 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 		Headers:         a.cfg.mergeAuthHeaders(nil),
 		Body:            body,
 		Rpc: &mailboxpb.RpcMeta{
-			Kind:    mailboxpb.RpcMeta_KIND_EVENT,
-			Service: service,
-			Method:  method,
-			ReplyTo: a.cfg.LocalMailboxID,
+			Kind:          mailboxpb.RpcMeta_KIND_EVENT,
+			Service:       service,
+			Method:        method,
+			CorrelationId: req.CorrelationKey(),
+			ReplyTo:       a.cfg.replyMailboxID(),
 		},
 	}
 
@@ -1034,7 +1041,7 @@ func (a *ServerConnectionActor) sendUnaryEnvelope(ctx context.Context,
 			Service:       service,
 			Method:        method,
 			CorrelationId: correlationID,
-			ReplyTo:       a.cfg.LocalMailboxID,
+			ReplyTo:       a.cfg.replyMailboxID(),
 		},
 	}
 

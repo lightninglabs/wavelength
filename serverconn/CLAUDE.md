@@ -9,10 +9,25 @@ background ingress polling with event routing.
 ## Key Types
 
 - `Runtime` — Main entry point wrapping DurableActor, ServerConnectionActor, and UnaryFacade. The egress DurableActor runs on the Read/Commit (`TxBehavior`) path: each handler builds its envelope and calls `Edge.Send` with NO SQLite writer held, then a short lease-fenced Commit folds the ack + dedup. It runs as a competing-consumer pool of `ConnectorConfig.EgressWorkers` worker loops, so the round and out-of-round actors' sends proceed concurrently; the single ingress puller is separate and unaffected.
+- `DurableActorID(replyMailboxID)` — Derives the durable actor ID
+  (`serverconn-<replyMailboxID>`) shared by the egress mailbox and ingress
+  checkpoint. The effective reply mailbox, rather than the authenticated
+  sender identity, keys the ID so two connectors on one identity get separate
+  runtimes and delivery cursors.
 - `ServerConnectionActor` — Core behavior handling egress messages and the ingress loop. Dispatches `DurableUnaryQuery` values generically via `buildDurableUnary`.
 - `ArkVersionNegotiator` — Single home for Ark protocol version selection (`ark_version.go`). `Bootstrap` performs the one bootstrap `GetInfo` over the operator's **direct** ArkService connection (`ArkVersionGetInfoClient`, never the mailbox edge) and returns the response + selected version; the daemon parses domain terms from the same response. The free function `ValidateRefreshSelection(resp, boundVersion)` enforces that a refresh-only `GetInfo` keeps the runtime bound (returns a permanent `*StatusError` on drift/disable). Enabled versions are derived from the response's ACTIVE `ArkVersionPolicy` entries.
 - `UnaryFacade` — Implements `mailboxrpc.RPCClient` for generated RPC stubs (low-latency path). Bounded waits come from the caller's context plus the response registry TTL; there is no separate timeout entry point. `SendRPC` gates on `ConnectorConfig.MaxInFlightUnary` and fails a send that would exceed it with `codes.ResourceExhausted`.
 - `ConnectorConfig` — Wiring configuration (edge address, mailbox IDs, dispatchers, store, durable unary builder, `EgressWorkers`, `MaxInFlightUnary`). `EgressWorkers` sizes the egress worker pool (default `DefaultEgressWorkers` = 4); `<= 1` keeps the legacy single sender. The `DurableUnaryBuilder` field must be set to handle `DurableUnaryQuery` message types; otherwise those messages are rejected. The `AuthSignature` field holds the Schnorr auth sig injected into every outbound envelope via `mergeAuthHeaders` (auth header always wins over caller-provided headers).
+- `LocalMailboxID` and `ReplyMailboxID` on `ConnectorConfig` —
+  `LocalMailboxID` is the authenticated identity stamped as the sender of
+  outbound envelopes. Optional `ReplyMailboxID` names the mailbox in every
+  `RpcMeta.ReplyTo`, the stream that ingress pulls and acknowledges, the
+  durable runtime and checkpoint, and the namespace for ingress receipts and
+  poison quarantine. An empty value uses `LocalMailboxID`. A distinct reply
+  mailbox lets several connectors share one transport and identity key without
+  sharing service registrations or delivery cursors. Ingress and reply call
+  sites use `ConnectorConfig.replyMailboxID()` rather than reading
+  `LocalMailboxID` directly.
 - `PubKeyMailboxID` — Derives canonical mailbox ID from a public key (hex-encoded compressed SEC). Panics on nil.
 - `MailboxAuthDigest` / `MailboxAuthMessage` — BIP-340 tagged hash digest construction for mailbox auth signatures. Uses `chainhash.TaggedHash` with the `MailboxAuthTagStr` domain separator over `senderCompressedPubKey || recipientMailboxID`. **Do not read this as preventing cross-server replay on its own** — see the invariant below for which callers get that property and which do not.
 - `SignMailboxAuth` / `VerifyMailboxAuth` / `ParseMailboxPubKey` — Schnorr sign/verify helpers for pubkey-derived mailbox identity.
@@ -49,7 +64,10 @@ background ingress polling with event routing.
   replaces the concrete inner message with a `rawServerMessage` that no
   longer implements `CorrelationKey()`. This ensures the durable mailbox
   enqueues events into the correct per-key FIFO lane (e.g. `oor/<session>`,
-  `round/<id>`) even after a crash-replay decode cycle.
+  `round/<id>`) even after a crash-replay decode cycle. The actor also stamps
+  this key into the outbound KIND_EVENT envelope's `RpcMeta.CorrelationId`, so
+  the peer admits the event under the same lane identity used for local
+  ordering.
 
 ## Relationships
 
@@ -75,14 +93,30 @@ background ingress polling with event routing.
   it addresses, but only `Send` gets the strong version: it passes the
   compound `operator:client` recipient, which embeds the operator's
   pubkey-derived ID, so a `Send` signature is useless at any other operator.
-  `Pull` and `AckUpTo` pass the client's own **plain** mailbox ID (from
-  `ConnectorConfig.LocalMailboxID`), which carries no operator component — so
-  that digest is identical at every operator, and one `Pull`/`Ack` signature
-  authorizes that client's mailbox at every operator its identity key is known
-  to. Identity keys are a deterministic derivation, so a wallet driving two
-  operators presents the same credential to both. Closing the `Pull`/`Ack`
-  case means folding a server identity into the digest, which is a wire change
-  on both sides.
+  `Pull` and `AckUpTo` pass the client's own **plain** mailbox ID (the effective
+  reply mailbox from `ConnectorConfig.replyMailboxID()`), which carries no
+  operator component. The digest is therefore identical at every operator,
+  and one `Pull`/`Ack` signature authorizes that client's mailbox wherever its
+  identity key is known. Identity keys are deterministic, so a wallet driving
+  two operators presents the same credential to both. Closing the `Pull`/`Ack`
+  case requires folding a server identity into the digest, which is a wire
+  change on both sides.
+- **All ingress-owned durable state is keyed by the reply mailbox, never the
+  authenticated sender identity.** The durable runtime ID, ack checkpoint,
+  receipt occurrence ID (`ingress-event/v1` field list), and poison-quarantine
+  lane digest all derive from `ConnectorConfig.replyMailboxID()`. Keying any of
+  them by `LocalMailboxID` would let connectors sharing one identity also share
+  a delivery cursor, receipt namespace, and quarantine reservation. One
+  runtime could then acknowledge an envelope that another never dispatched,
+  or one stream's poison traffic could exhaust another's recovery capacity.
+- `loadCheckpoint` rejects a checkpoint whose `ActorID` differs from this
+  runtime's ID or whose `StateType` is not `ackStateType` before decoding
+  `StateData`. A cursor from another ingress stream is a wrong-stream fault,
+  not a decoding problem.
+- `validateInboundEnvelope` rejects any non-empty `Recipient` that differs
+  from the effective reply mailbox. An empty recipient remains valid because
+  the wire field is optional; an explicit mismatch fails before replay,
+  receipt, or dispatch processing.
 - Ack watermark only advances AFTER durable local dispatch commit (prevents message loss on crash).
 - The ingress fold never holds the database writer across network IO. `runFoldedDispatch` runs waiter-backed responses and the `ConnectorConfig.NonTxRoutes` requests BEFORE opening the write transaction; only durable enqueues and the cursor checkpoint go inside it. A route is hoisted only when it is listed in `NonTxRoutes` AND the envelope is a `KIND_REQUEST`, so a durable actor `Tell` can never escape the fold. An envelope of any other kind arriving on a marked route is skip-warned by `dispatchBatch` rather than dispatched, because the mux bridge ignores `env.Rpc.Kind` and would otherwise serve a sender-mislabeled envelope over the network with the writer held. Any new dispatcher that terminates in `Edge.Send` rather than a durable enqueue MUST be added to `NonTxRoutes` at wiring time (see `waved.Server.buildRPCDispatchers`), otherwise it pins the SQLite global writer lock (production opens with `_txlock=immediate`) or a SERIALIZABLE Postgres snapshot for the length of a round trip to the operator.
 - Pre-transaction dispatch happens before the commit, never after. A crash in between re-pulls the batch and redelivers, which is the at-least-once contract; committing first would advance the cursor past a request that was never answered.
@@ -153,3 +187,8 @@ occurrence-ID, 30-day receipt and bounded poison-quarantine contracts. Receipts
 are consumed at durable inbox insertion, not at an in-memory Tell. Quarantine
 uses per-lane reservations inside a global bound and is never aged out;
 recovery removes it only with a durable handoff.
+
+`ingressScope{reply, remote}` is the trust-domain pair used by receipts and
+quarantine. `ServerConnectionActor.ingressEvidenceScope()` derives it from
+local configuration for both transactional ingress and quarantine retry; it
+does not trust peer-controlled envelope routing fields.
