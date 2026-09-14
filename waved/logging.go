@@ -17,6 +17,16 @@ import (
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/wallet"
 	lndbuild "github.com/lightningnetwork/lnd/build"
+	"github.com/lightningnetwork/lnd/chainio"
+	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/contractcourt"
+	"github.com/lightningnetwork/lnd/funding"
+	"github.com/lightningnetwork/lnd/htlcswitch"
+	"github.com/lightningnetwork/lnd/invoices"
+	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chanfunding"
+	"github.com/lightningnetwork/lnd/routing"
+	"github.com/lightningnetwork/lnd/sweep"
 )
 
 // SubLoggers maps subsystem tags to their registered btclog instances.
@@ -48,6 +58,18 @@ var allSubsystems = []string{
 	"TXCF",
 	"UNRL",
 	VHTLCRecoverySubsystem,
+	funding.Subsystem,
+	"CHFD",
+	"LNWL",
+	"HSWC",
+	"INVC",
+	routing.Subsystem,
+	"CNCT",
+	"BRAR",
+	"UTXN",
+	"SWPR",
+	"CHDB",
+	chainio.Subsystem,
 }
 
 const (
@@ -99,6 +121,19 @@ func setupLoggers(root *lndbuild.SubLoggerManager,
 		root.RegisterSubLogger(sub, logger)
 		loggers[sub] = logger
 	}
+
+	funding.UseLogger(loggers[funding.Subsystem])
+	chanfunding.UseLogger(loggers["CHFD"])
+	lnwallet.UseLogger(loggers["LNWL"])
+	htlcswitch.UseLogger(loggers["HSWC"])
+	invoices.UseLogger(loggers["INVC"])
+	routing.UseLogger(loggers[routing.Subsystem])
+	contractcourt.UseLogger(loggers["CNCT"])
+	contractcourt.UseBreachLogger(loggers["BRAR"])
+	contractcourt.UseNurseryLogger(loggers["UTXN"])
+	sweep.UseLogger(loggers["SWPR"])
+	channeldb.UseLogger(loggers["CHDB"])
+	chainio.UseLogger(loggers[chainio.Subsystem])
 
 	return loggers
 }
