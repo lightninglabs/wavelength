@@ -81,7 +81,7 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
   also used by `btcwbackend`), `chainsource` (implements `ChainBackend`),
   `wallet` (implements `BoardingBackend`), `chainbackends` (typed
   `PackageTxError` for package-relay results), and — on `js && wasm` builds
-  only — `internal/sqlbase` (walletdb-compatible SQL backend) plus
+  only — `lnd/kvdb/sqlbase` (walletdb-compatible SQL backend) plus
   `internal/wasmhost` (which durable SQLite VFS the host offers).
 - **Depended on by**: `waved` (alternative to LND-backed wallet), `sdk`
   (embedded-wallet config references).
