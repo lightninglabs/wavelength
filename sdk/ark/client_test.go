@@ -862,6 +862,29 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 		t, "custom:0", customReq.GetCustomInputs()[0].GetOutpoint(),
 	)
 
+	// Exact-address custom claims must not reinterpret the address's
+	// output key as an owner key and derive a different destination.
+	_, err = client.SendOORWithCustomInputsToAddress(
+		t.Context(), "external-ark-address", 21_000,
+		[]CustomOORInput{{
+			Outpoint: "custom:0", AmountSat: 21_000,
+			PkScript: []byte{0x51}, SpendPath: []byte{0x02},
+			VTXOPolicyTemplate: []byte{0x01},
+		}},
+	)
+	require.NoError(t, err)
+	service.mu.Lock()
+	addressReq := service.lastSendOORReq
+	service.mu.Unlock()
+	require.Equal(
+		t, "external-ark-address",
+		addressReq.GetRecipients()[0].GetAddress(),
+	)
+	require.Empty(t, addressReq.GetRecipients()[0].GetPubkey())
+	require.Equal(
+		t, customReq.GetCustomInputs(), addressReq.GetCustomInputs(),
+	)
+
 	liveVTXOs, err := client.ListLiveVTXOs(context.Background())
 	require.NoError(t, err)
 	require.Len(t, liveVTXOs, 1)

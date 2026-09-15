@@ -1036,6 +1036,7 @@ func testReceiveForfeitSignaturePayload(
 }
 
 type testSwapServerConn struct {
+	routeQuote     *OutSwapQuote
 	hint           *RouteHint
 	hintPaths      [][]*RouteHint
 	payerFeeMsat   uint64
@@ -1116,6 +1117,9 @@ func (c *testSwapServerConn) RequestChannelID(_ context.Context,
 	c.lastVhtlcPubkey = vhtlcPubkey
 	c.lastAmountSat = amountSat
 	c.lastSupportsInArkCredit = supportsInArkCredit
+	if c.routeQuote != nil {
+		return c.routeQuote, nil
+	}
 
 	hintPaths := c.hintPaths
 	if hintPaths == nil {
@@ -2056,6 +2060,7 @@ type testDaemonConn struct {
 	spentLookupCalls  int
 	lastSendPolicy    []byte
 	lastClaimPubKey   []byte
+	lastClaimAddress  string
 	lastClaimInput    []CustomInput
 	lastOORSessionID  string
 	armRecoveryResp   *waverpc.ArmVHTLCRecoveryResponse
@@ -4677,6 +4682,7 @@ func TestReceiveSessionClaimReturnsLastSendError(t *testing.T) {
 		schnorr.SerializePubKey(
 			receiverPriv.PubKey(),
 		),
+		nil,
 	)
 	require.ErrorIs(t, err, sendErr)
 	require.ErrorContains(t, err, "claim vHTLC")
