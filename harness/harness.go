@@ -2811,6 +2811,7 @@ func (h *Harness) SetupChannelBetween(local *LndInstance, peer *LndInstance,
 		NodePubkey:         peerInfo.IdentityPubkey[:],
 		LocalFundingAmount: capacitySat,
 		PushSat:            pushAmt,
+		Private:            false,
 	})
 	require.NoError(
 		t, err, "OpenChannel failed for %s -> %s", local.Name,

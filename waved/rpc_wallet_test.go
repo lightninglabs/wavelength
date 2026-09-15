@@ -128,32 +128,30 @@ func TestSignOutSwapHtlcAckSignsTerms(t *testing.T) {
 func TestSignCreditAccountAuthorizationValidatesEnvelope(t *testing.T) {
 	t.Parallel()
 
-	now := time.Now()
-	tooFarExpiry := now.Add(
-		swaprpc.CreditAccountMaxAuthTTL + time.Minute,
-	).Unix()
 	tests := []struct {
-		name string
-		req  *waverpc.SignCreditAccountAuthorizationRequest
+		name      string
+		expiresIn time.Duration
+		req       *waverpc.SignCreditAccountAuthorizationRequest
 	}{
 		{
-			name: "request digest",
+			name:      "request digest",
+			expiresIn: time.Minute,
 			req: &waverpc.SignCreditAccountAuthorizationRequest{
 				Nonce: make(
 					[]byte, swaprpc.CreditAccountNonceSize,
 				),
-				ExpiresAtUnix: now.Add(time.Minute).Unix(),
 			},
 		},
 		{
-			name: "nonce",
+			name:      "nonce",
+			expiresIn: time.Minute,
 			req: &waverpc.SignCreditAccountAuthorizationRequest{
 				RequestDigest: make([]byte, 32),
-				ExpiresAtUnix: now.Add(time.Minute).Unix(),
 			},
 		},
 		{
-			name: "expired",
+			name:      "expired",
+			expiresIn: -time.Minute,
 			req: &waverpc.SignCreditAccountAuthorizationRequest{
 				AccountPubkey: make(
 					[]byte, btcec.PubKeyBytesLenCompressed,
@@ -162,11 +160,12 @@ func TestSignCreditAccountAuthorizationValidatesEnvelope(t *testing.T) {
 				Nonce: make(
 					[]byte, swaprpc.CreditAccountNonceSize,
 				),
-				ExpiresAtUnix: now.Add(-time.Minute).Unix(),
 			},
 		},
 		{
 			name: "too far",
+			expiresIn: swaprpc.CreditAccountMaxAuthTTL +
+				time.Minute,
 			req: &waverpc.SignCreditAccountAuthorizationRequest{
 				AccountPubkey: make(
 					[]byte, btcec.PubKeyBytesLenCompressed,
@@ -175,7 +174,6 @@ func TestSignCreditAccountAuthorizationValidatesEnvelope(t *testing.T) {
 				Nonce: make(
 					[]byte, swaprpc.CreditAccountNonceSize,
 				),
-				ExpiresAtUnix: tooFarExpiry,
 			},
 		},
 	}
@@ -184,6 +182,12 @@ func TestSignCreditAccountAuthorizationValidatesEnvelope(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
+
+			// Parallel scheduling must not consume the expiry
+			// margin.
+			test.req.ExpiresAtUnix = time.Now().Add(
+				test.expiresIn,
+			).Unix()
 
 			_, err := (&RPCServer{}).SignCreditAccountAuthorization(
 				t.Context(),
