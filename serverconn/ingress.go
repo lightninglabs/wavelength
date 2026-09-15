@@ -54,8 +54,6 @@ type redriveState struct {
 func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 	state AckState) {
 
-	defer a.wg.Done()
-
 	a.log.InfoS(ctx, "Ingress loop starting",
 		slog.String("mailbox_id", a.cfg.LocalMailboxID),
 	)
@@ -526,12 +524,19 @@ func isIngressShutdownErr(ctx context.Context, err error) bool {
 func (a *ServerConnectionActor) pullBatch(ctx context.Context, cursor uint64) (
 	[]*mailboxpb.Envelope, uint64, error) {
 
-	waitMs := uint32(a.cfg.PullWaitTimeout.Milliseconds())
+	return a.pullBatchWithWait(ctx, cursor, a.cfg.PullWaitTimeout)
+}
+
+// pullBatchWithWait shares cursor validation between foreground long-polls
+// and bounded pumps, whose zero wait asks the edge for currently queued work.
+func (a *ServerConnectionActor) pullBatchWithWait(ctx context.Context,
+	cursor uint64, wait time.Duration) ([]*mailboxpb.Envelope, uint64,
+	error) {
 
 	resp, err := a.cfg.Edge.Pull(ctx, &mailboxpb.PullRequest{
 		MailboxId:     a.cfg.LocalMailboxID,
 		MaxEnvelopes:  a.cfg.PullMaxEnvelopes,
-		WaitTimeoutMs: waitMs,
+		WaitTimeoutMs: uint32(wait.Milliseconds()),
 		Cursor:        cursor,
 	})
 	if sErr := edgeResponseError("Pull", resp, err); sErr != nil {
