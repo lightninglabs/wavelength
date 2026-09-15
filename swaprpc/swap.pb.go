@@ -3116,7 +3116,7 @@ var File_swap_proto protoreflect.FileDescriptor
 const file_swap_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"swap.proto\x12\aswaprpc\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc1\x02\n" +
+	"swap.proto\x12\aswaprpc\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe0\x02\n" +
 	"\x17RequestChannelIdRequest\x12%\n" +
 	"\x0eexpiry_seconds\x18\x01 \x01(\rR\rexpirySeconds\x12.\n" +
 	"\x13client_vhtlc_pubkey\x18\x02 \x01(\fR\x11clientVhtlcPubkey\x12!\n" +
@@ -3124,7 +3124,7 @@ const file_swap_proto_rawDesc = "" +
 	"\n" +
 	"amount_sat\x18\x04 \x01(\x04R\tamountSat\x123\n" +
 	"\x16supports_in_ark_credit\x18\x05 \x01(\bR\x13supportsInArkCredit\x12X\n" +
-	"\x15account_authorization\x18\x06 \x01(\v2#.swaprpc.CreditAccountAuthorizationR\x14accountAuthorization\"\xbf\x03\n" +
+	"\x15account_authorization\x18\x06 \x01(\v2#.swaprpc.CreditAccountAuthorizationR\x14accountAuthorizationJ\x04\b\a\x10\bR\x17channel_backing_fee_sat\"\xde\x03\n" +
 	"\x18RequestChannelIdResponse\x12$\n" +
 	"\x0epayer_fee_msat\x18\x02 \x01(\x04R\fpayerFeeMsat\x120\n" +
 	"\x14requested_amount_sat\x18\x03 \x01(\x04R\x12requestedAmountSat\x120\n" +
@@ -3133,7 +3133,8 @@ const file_swap_proto_rawDesc = "" +
 	"\x10vhtlc_amount_sat\x18\x06 \x01(\x04R\x0evhtlcAmountSat\x12$\n" +
 	"\x0edust_limit_sat\x18\a \x01(\x04R\fdustLimitSat\x12@\n" +
 	"\x0fsettlement_type\x18\b \x01(\x0e2\x17.swaprpc.SettlementTypeR\x0esettlementType\x12@\n" +
-	"\x10route_hint_paths\x18\t \x03(\v2\x16.swaprpc.RouteHintPathR\x0erouteHintPathsJ\x04\b\x01\x10\x02R\x0froute_hint_path\"\xaf\x01\n" +
+	"\x10route_hint_paths\x18\t \x03(\v2\x16.swaprpc.RouteHintPathR\x0erouteHintPathsJ\x04\b\x01\x10\x02J\x04\b\n" +
+	"\x10\vR\x0froute_hint_pathR\x17channel_backing_fee_sat\"\xaf\x01\n" +
 	"\x1dAcknowledgeOutSwapHtlcRequest\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12.\n" +
 	"\x13client_vhtlc_pubkey\x18\x02 \x01(\fR\x11clientVhtlcPubkey\x12;\n" +
