@@ -139,6 +139,21 @@ func (r *Runtime) StartIngress(ctx context.Context) error {
 	return r.connector.StartIngress(ctx)
 }
 
+// PumpIngress runs bounded mailbox ingress without starting foreground
+// polling or changing durable egress's independent lifetime. See
+// ServerConnectionActor.PumpIngress for limits and completion semantics.
+func (r *Runtime) PumpIngress(ctx context.Context, maxBatches uint32) (
+	IngressPumpResult, error) {
+
+	return r.connector.PumpIngress(ctx, maxBatches)
+}
+
+// PauseIngress cancels and joins foreground polling or an active pump, while
+// leaving ingress available for the host's next mode or wake.
+func (r *Runtime) PauseIngress() {
+	r.connector.PauseIngress()
+}
+
 // Stop shuts down ingress polling and durable egress processing.
 func (r *Runtime) Stop() {
 	r.connector.StopIngress()
