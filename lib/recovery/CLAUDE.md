@@ -23,6 +23,11 @@ scheduling live downstream in `unrollplan` and `unroll`.
   Optional fields use `fn.Option` instead of nilable pointers.
 - `ComputeMaturityHeight` — Overflow-safe `targetConfirmHeight + csvDelay`
   helper shared with `unrollplan`.
+- `Proof.RootExternalInputs` — The outpoints root transactions consume that no
+  node in the proof produces: the external funding inputs the whole graph hangs
+  off of. One commitment output for a round-direct VTXO; one per local lineage
+  fragment for an OOR-chained or multi-input fan-in VTXO. Deduplicated and
+  sorted by hash then index, so the same node set always yields the same list.
 
 ## Relationships
 
@@ -42,6 +47,12 @@ scheduling live downstream in `unrollplan` and `unroll`.
   validation against adversarial inputs.
 - Every node in a `Proof` is reachable (via parents) from the target outpoint;
   unreachable nodes fail construction.
+- `RootExternalInputs` names exactly the outpoints a competing party (an
+  operator sweeping an expired batch, a fraud spend) can consume out from under
+  the exit. A confirmed foreign spend of any one of them makes every root that
+  depends on it — and therefore the whole proof — permanently unbroadcastable.
+  Callers arm spend watches on them so such a conflict fails the exit
+  terminally, rather than spinning forever on a tree that can never confirm.
 - Parent/child reachability traversal uses an iterative BFS (`tree.Queue`), so
   a deeply-adversarial graph cannot blow the goroutine stack.
 - Every `MarkConfirmed` call requires prior `MarkBroadcasted`, all parents

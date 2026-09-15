@@ -169,6 +169,29 @@ default builds avoid the swap executor's dependency graph.
   calls `listLiveVTXOsForLeave` for sweep-all enumeration.
 - `SendResponse.actual_amount_sat` carries the true outflow for sweep-all
   sends and SHOULD be echoed back before the send is treated as confirmed.
+- **The on-chain fee preview quotes every selected input, not the destination
+  amount.** `quoteOnchainInputs` asks the operator for one `EstimateFee` per
+  distinct `(amount_sat, remaining_blocks)` input class and sums the results,
+  because each forfeited input pays its own fixed components even when all
+  inputs belong to one wallet. Quoting the destination amount once undercounts
+  those charges and prices the wrong principal when a bounded send returns
+  change. Remaining lifetime comes from `batch_expiry - block_height`, clamped
+  to a minimum of one block for already-expiring inputs (zero would mean "full
+  default lifetime" to the operator). Quotes assume batch size one; the binding
+  fee is set from actual round occupancy when the round seals.
+- **A partial operator quote is discarded whole.** Any missing chain height,
+  missing per-input timing, failed `EstimateFee`, or overflow in the running
+  total drops the entire remote estimate back to the local `LOCAL_ONLY` floor.
+  A partially summed total must never be reported as a COMPLETE quote. The one
+  exception is `below_dust_warning`: that raises `FailedPrecondition` naming
+  the uneconomic outpoint rather than falling back, because substituting a
+  local floor would hide an operator quote already known to exceed the input's
+  value.
+- `stampLateTransition` advances a projected row's `updated_at_unix` past the
+  stored row's when the derived value would not. Ledger-derived transitions
+  inherit their source row's creation time, which would otherwise hide the
+  change from recency ordering, pollers, and subscriber payloads. The stamp
+  clamps to the stored value so a stepped-back clock can never regress it.
 - **Cooperative-leave EXIT fee**: at completion
   (`applyCooperativeLeaveForfeited`), the forfeited source VTXO's
   settlement carries the forfeit round's operator fee (from the daemon

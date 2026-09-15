@@ -38,6 +38,17 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
 - All cross-boundary actor messages must implement the appropriate marker interface (`RoundReceivable`, `VTXOManagerMsg`, etc.) for type-safe actor routing.
 - Service key names are constants (`RoundActorServiceKeyName`, `VTXOManagerServiceKeyName`) shared across the codebase for consistent actor discovery.
 - `SelectedVTXO` intentionally duplicates minimal VTXO info to avoid `wallet` importing `vtxo.Descriptor`.
+- **Spend releases are epoch-guarded.** `SelectedVTXO.ReserveEpoch` carries the
+  manager's monotonic reservation epoch back to the spender, which echoes it in
+  `ReleaseSpendRequest.ReserveEpochs`. The manager releases an outpoint only
+  when the named epoch still matches its current one, so a stale release from a
+  session whose reservation was already superseded — released and re-reserved
+  by a newer session, e.g. after a rolled-back failure redelivered the release
+  — is refused instead of returning a coin the newer session is actively
+  spending to the live set. An absent entry or nil map releases
+  unconditionally, preserving behaviour for callers that hold no epoch (a
+  manual unlock). `ReserveEpoch` is zero for reservations that are not spend
+  reservations, such as forfeit inputs.
 
 ## Deep Docs
 

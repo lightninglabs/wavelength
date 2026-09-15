@@ -18,6 +18,12 @@ descriptors through branch nodes to the batch output.
 - `SignerSession` — MuSig2 signing session for tree transactions, wrapping `input.MuSig2Signer`.
 - `Materializer` / `BTCMaterializer` — Interface and implementation for materializing tree nodes into actual Bitcoin transactions.
 - `TreeAssembler` — Two-pass builder (`BuildStructure` then `Materialize`) driven by `TreeConfig`.
+- `AssetTreeContext` — Side-table of the asset data needed to materialize and
+  sign an asset-carrying tree: the tree's `AssetRef`, plus per-node signing
+  tweak, asset amount, leaf asset commitment root, and sealed transition
+  package, all keyed by node `Input` outpoint. `nil` on a pure-Bitcoin tree;
+  `Validate(root)` checks it against the node hierarchy. Populated by builders
+  (see [`tapassets`](../../tapassets/CLAUDE.md)) before the tree is shared.
 - `Queue[T]` — Generic queue used internally for BFS tree traversal.
 
 ## Relationships
@@ -42,6 +48,20 @@ descriptors through branch nodes to the batch output.
   all outputs and recurses only into retained children. The traversal rejects
   cycles and nodes shared by multiple parents. `Node.Verify` checks only
   parent-child outpoint topology and is not a trust-boundary validator.
+- `AssetTreeContext` is keyed by node `Input` outpoint, so `Validate` first
+  rejects any tree where two nodes share an input — otherwise one node's asset
+  amount, signing tweak, or commitment root would silently read as another's.
+  It then checks each subtree's asset amounts conserve, mirroring the Bitcoin
+  value-conservation check.
+- An asset tree's signing tweak, not `SweepTapscriptRoot`, is the taproot tweak
+  fed to `ComputeFinalKey` for nodes carrying one. A decoder that ignores the
+  asset context computes the wrong `FinalKey` and every signature verification
+  fails.
+- `ExtractPathForCoSigners` / `ExtractPathForIndices` **clone** the asset
+  context down to the extracted root rather than aliasing it. Attaching a
+  validated sealed package to a signer path must not mutate the shared
+  operator-supplied tree — this is the asset-side counterpart of the
+  cache-aliasing invariant below.
 - **Cache-aliasing invariant**: a `*Tree` is effectively immutable once published from
   a builder or resolver. Multiple downstream consumers may share the same `*Tree`
   pointer through caches and ancestry-fragment slices. Silently mutating a shared

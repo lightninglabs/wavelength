@@ -24,7 +24,10 @@ All `*.pb.go` files are generated — never edit directly; regenerate with
   `MethodSubmitVTXOForfeitSigs` (VTXO forfeit sigs).
 - `TreeFromProto` / `TreeToProto` — Convert between `*VTXOTree` proto and
   `lib/tree.Tree`; `TreeFromProto` takes `WithMaxTreeNodes` to bound the
-  deserialized node count (`DefaultMaxTreeNodes` = 50,000).
+  deserialized node count (`DefaultMaxTreeNodes` = 50,000). Both carry a
+  `lib/tree.AssetTreeContext` across the wire when the tree has one, via the
+  `VTXOTree.asset_ref` field and the per-node `signing_tweak`, `asset_amount`,
+  and `asset_commitment_root` fields.
 - `OutpointFromProto`/`ToProto`, `TxOutFromProto`/`ToProto`,
   `PSBTFromBytes`/`ToBytes`, `MsgTxFromBytes`/`ToBytes`,
   `SchnorrSigFromBytes`/`ToBytes` — wire/proto ⇄ Go conversions for the
@@ -70,6 +73,21 @@ distinction.
   the sibling decoder on the untrusted indexer receive path. Keep the
   two in step: a shape rejected by one and accepted by the other is a
   gap, not a difference in trust level.
+- **`FinalKey` is now recomputed at decode time, including for asset trees.**
+  `TreeFromProto` no longer returns nodes with a nil `FinalKey`; it derives one
+  per node from the node's cosigners and its taproot tweak. For an asset tree
+  the tweak is the node's `signing_tweak`, **not** `sweep_tapscript_root` —
+  using the sweep root there produces a key every signature check rejects.
+- **Asset fields and `asset_ref` are all-or-nothing.** A `VTXOTree` carrying
+  any per-node `signing_tweak`, `asset_amount`, or `asset_commitment_root`
+  without an `asset_ref` is rejected, so a sender cannot smuggle asset metadata
+  past the context validator by omitting the reference. `asset_ref` must also
+  round-trip through `tapsdk.ParseAssetRef` to a byte-identical string —
+  a non-canonical encoding is refused rather than normalized, since two
+  spellings of one asset would otherwise key distinct trees. Both directions
+  run `AssetTreeContext.Validate` against the decoded root, so a tree whose
+  asset amounts do not conserve never crosses the boundary in either
+  direction.
 - `ValidateFlowVersion` must reject any `FlowVersion` other than the
   versions this build implements (currently only `FlowVersionV1`); never
   make it permissive by default.

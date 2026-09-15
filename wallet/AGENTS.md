@@ -105,6 +105,21 @@ refresh, leave, OOR spend, and directed send flows.
 - `handleSendVTXOs` uses a `defer`-based release rather than a `releaseAndFail` helper: any error path (including dry-run) falls through to the deferred release, and the `committed` flag is set only after the round actor accepts the intent. Context is preserved via `context.WithoutCancel` so cleanup is not dropped when the caller disconnects.
 - `handleSendVTXOs` rejects pre-flight any directed send with multiple recipients and exactly-zero change residual under the #270 seal-time fee handshake. The server is the amount authority and absorbs the operator fee out of the designated `IsChange=true` slot; if there is no residual to absorb the fee against, the server has no slack to deduct fees without silently shifting them onto a recipient leg. The wallet refuses the request rather than letting the server pick the loser.
 - `VTXOReader` / `VTXODescriptor` / `SelectedVTXO` break the vtxo → round → wallet import cycle by providing wallet-level types that don't reference `vtxo.Descriptor` directly.
+- `SelectedVTXO.ReserveEpoch` is carried through from the VTXO manager's
+  selection response so the OOR transfer that spends the coin can name the
+  reservation on release (`oor.TransferInput.ReserveEpoch`). Dropping it makes
+  the release unconditional, which lets a stale release return a coin a newer
+  session is already spending — see `lib/actormsg`'s epoch-guard invariant.
+- **Refresh intents leave `SigningKey` empty.** Round registration derives a
+  fresh locator-backed key for the MuSig2 tree; reusing the old owner
+  descriptor breaks on legacy VTXOs that retain the pubkey but not its LND key
+  locator. This is the opposite of the directed-send path above, which does
+  derive an explicit ephemeral `SigningKey`.
+- `BoardingChainInfo.TxProof` is `fn.Option[types.TxProof]`, the repo's own
+  proof type in `lib/types` — not `taproot-assets/proof.TxProof`. The wallet
+  builds it (`buildBoardingTxProof`) with `types.NewTxMerkleProof`, and
+  degrades to `fn.None` on any missing block data rather than failing the
+  boarding flow.
 - The wallet tracks, in memory, boarding outpoints already handed to the round
   actor via `TriggerBoardMsg` that have not yet left the confirmed set, and
   excludes them from later triggers. This keeps a second per-block trigger

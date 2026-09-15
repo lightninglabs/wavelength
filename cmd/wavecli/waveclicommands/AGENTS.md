@@ -184,6 +184,21 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   which flag to drop and why, since stating the constraint alone invites
   dropping `--onchain-address` and silently getting the more dangerous
   unilateral exit (`swapwallet.forceUnroll` carries the same wording).
+- `ark vtxos list` defaults to the **inventory** set: without `--status` it
+  lists every VTXO except forfeited and spent ones, newest first. `--status`
+  is repeatable (`StringSlice`) and maps onto the plural
+  `ListVTXOsRequest.statuses`; `--all` widens to every status and is mutually
+  exclusive with `--status`. `pending_round` and `expired` are valid status
+  names alongside the original seven. The MCP `ark.vtxos.list` tool mirrors
+  this exactly — `statuses` plus `all`, same mutual exclusion — so a status
+  accepted by one and rejected by the other is a bug, not a surface
+  difference.
+- **Checkpoint PSBTs are opt-in on wide listings.** `--all` sets
+  `exclude_checkpoint_psbts` unless `--fields` explicitly names
+  `oor_final_checkpoint_psbts`, because every OOR VTXO carries a PSBT blob and
+  a full-inventory listing that ships them all is large enough to matter. A
+  listing with neither `--fields` nor `--all` still includes them, so the
+  narrow default case is unchanged.
 - `recovery escalate` refuses to run on non-interactive stdin unless
   `--yes` is passed — it never blocks on a y/N prompt an agent can't
   answer.

@@ -77,7 +77,14 @@ transport, without duplicating Ark runtime behavior.
   tears down only the private transport.
 - `ServerInfo` is a bootstrap-time operator-terms snapshot, including the
   advisory `FreeRefreshWindowBlocks`; refresh after reconnect is not wired
-  through yet.
+  through yet. `MinConfirmations` is the depth required of boarding inputs;
+  `VTXOConfirmations` is the separate depth at which round-created VTXOs become
+  spendable off-chain. They are distinct operator knobs — do not read one for
+  the other.
+- `ListVTXOs(ctx, nil)` lists the **inventory** set — every VTXO except
+  forfeited and spent ones, newest first — not the spendable set. Only live
+  entries are spendable, so a caller sizing a spend must filter rather than
+  treat the default listing as available funds.
 - Pre-1.0, some methods intentionally return `waverpc` protobuf types
   directly. Those passthrough APIs are not yet treated as stable SDK-owned
   models.

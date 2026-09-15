@@ -60,6 +60,7 @@ package may import from a higher layer.
 | [`metrics`](metrics/) | Prometheus instrumentation namespaced under `waved_`: event-driven counter actor pool plus a scrape-time `SystemCollector` for live gauges, and an opt-in `/metrics` HTTP server |
 | [`internal/sqlbase`](internal/sqlbase/) | `walletdb`-compatible key/value backend over `database/sql` (js/wasm walletdb storage for `lwwallet` browser builds) |
 | [`internal/wasmhost`](internal/wasmhost/) | js/wasm host detection (browser vs Node) and the durable SQLite VFS name that follows from it; imported by `db`, `lwwallet`, and `cmd/wavewalletdk-wasm` |
+| [`tapassets`](tapassets/) | Adapter over the external `tap-sdk`: derives and commits caller-funded asset batch anchor outputs, and materializes asset-aware VTXO trees beneath them. Journals every custom-anchor commit for restart-safe replay. Not yet wired into the daemon |
 
 ### Layer 3: Application & Orchestration
 
@@ -213,6 +214,8 @@ corresponding state transition being durable.
 | `Backend` | proofkeys | Wallet key derivation and proof signing interface |
 | `Node` | lib/arkscript | Sealed AST node interface for tapscript compilation |
 | `VTXOPolicy` | lib/arkscript | Compiled VTXO taproot policy with collab/exit spend paths |
+| `AssetTreeContext` | lib/tree | Per-node asset metadata (signing tweak, asset amount, commitment root, sealed package) attached to an asset-carrying tree; nil on pure-Bitcoin trees |
+| `Store` | tapassets | Journal for completed custom-anchor transition packages, keyed for restart-safe replay |
 
 ## State Machines
 
