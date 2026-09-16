@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/lib/batchschedule"
 	"github.com/lightninglabs/wavelength/lib/types"
 )
 
@@ -17,6 +18,10 @@ import (
 // Note: Boarding address and intent persistence is handled by the wallet actor.
 // The FSM uses RoundStore for admission budgets and signature checkpoints.
 type ClientEnvironment struct {
+	// scheduledSlot is fixed on the first registration request for this
+	// attempt.
+	scheduledSlot *batchschedule.Selection
+
 	// RoundStore provides persistence for round coordination and
 	// checkpointing.
 	RoundStore RoundStore
