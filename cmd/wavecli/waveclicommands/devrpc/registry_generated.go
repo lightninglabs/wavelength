@@ -24,6 +24,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "GetInfo returns basic status information about the running daemon\nincluding version, network, lnd connection state, and server\nconnection state.",
 				},
 				{
+					Name:     "GetBatchSchedule",
+					Aliases:  []string{"get-batch-schedule"},
+					Input:    "waverpc.GetBatchScheduleRequest",
+					Output:   "waverpc.GetBatchScheduleResponse",
+					Comments: "GetBatchSchedule queries the operator's current timetable and server\ntime. This is a live discovery request, not cached bootstrap terms.",
+				},
+				{
 					Name:     "GenSeed",
 					Aliases:  []string{"gen-seed"},
 					Input:    "waverpc.GenSeedRequest",

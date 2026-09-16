@@ -208,7 +208,7 @@ func (q *Queries) GetPendingIntentByID(ctx context.Context, intentID []byte) (Ge
 const ListPendingBoardIntents = `-- name: ListPendingBoardIntents :many
 SELECT
     i.intent_id, i.requested_at_unix,
-    b.target_vtxo_count
+    b.target_vtxo_count, b.service_authorization
 FROM pending_intents i
 JOIN pending_board_intents b ON b.intent_id = i.intent_id
 WHERE i.kind = 'board' AND i.status = 'pending'
@@ -216,9 +216,10 @@ ORDER BY i.requested_at_unix ASC, i.intent_id ASC
 `
 
 type ListPendingBoardIntentsRow struct {
-	IntentID        []byte
-	RequestedAtUnix int64
-	TargetVtxoCount int32
+	IntentID             []byte
+	RequestedAtUnix      int64
+	TargetVtxoCount      int32
+	ServiceAuthorization []byte
 }
 
 // Only status = 'pending' rows replay; a 'failed' intent is terminally
@@ -232,7 +233,12 @@ func (q *Queries) ListPendingBoardIntents(ctx context.Context) ([]ListPendingBoa
 	var items []ListPendingBoardIntentsRow
 	for rows.Next() {
 		var i ListPendingBoardIntentsRow
-		if err := rows.Scan(&i.IntentID, &i.RequestedAtUnix, &i.TargetVtxoCount); err != nil {
+		if err := rows.Scan(
+			&i.IntentID,
+			&i.RequestedAtUnix,
+			&i.TargetVtxoCount,
+			&i.ServiceAuthorization,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -371,19 +377,22 @@ func (q *Queries) MarkPendingSendIntentFailedByOutpoint(ctx context.Context, arg
 const UpsertPendingBoardIntent = `-- name: UpsertPendingBoardIntent :exec
 INSERT INTO pending_board_intents (
     intent_id,
-    target_vtxo_count
-) VALUES ($1, $2)
+    target_vtxo_count,
+    service_authorization
+) VALUES ($1, $2, $3)
 ON CONFLICT (intent_id) DO UPDATE
-SET target_vtxo_count = excluded.target_vtxo_count
+SET target_vtxo_count = excluded.target_vtxo_count,
+    service_authorization = excluded.service_authorization
 `
 
 type UpsertPendingBoardIntentParams struct {
-	IntentID        []byte
-	TargetVtxoCount int32
+	IntentID             []byte
+	TargetVtxoCount      int32
+	ServiceAuthorization []byte
 }
 
 func (q *Queries) UpsertPendingBoardIntent(ctx context.Context, arg UpsertPendingBoardIntentParams) error {
-	_, err := q.db.ExecContext(ctx, UpsertPendingBoardIntent, arg.IntentID, arg.TargetVtxoCount)
+	_, err := q.db.ExecContext(ctx, UpsertPendingBoardIntent, arg.IntentID, arg.TargetVtxoCount, arg.ServiceAuthorization)
 	return err
 }
 
