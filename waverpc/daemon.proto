@@ -2,6 +2,9 @@ syntax = "proto3";
 
 package waverpc;
 
+import "rpc/roundpb/round.proto";
+import "arkrpc/ark.proto";
+
 option go_package = "github.com/lightninglabs/wavelength/waverpc";
 
 // DaemonService is the client daemon's own gRPC API. External tools such as
@@ -12,6 +15,11 @@ service DaemonService {
     // including version, network, lnd connection state, and server
     // connection state.
     rpc GetInfo (GetInfoRequest) returns (GetInfoResponse);
+
+    // GetBatchSchedule queries the operator's current timetable and server
+    // time. This is a live discovery request, not cached bootstrap terms.
+    rpc GetBatchSchedule (GetBatchScheduleRequest)
+        returns (GetBatchScheduleResponse);
 
     // GenSeed generates a new aezeed cipher seed mnemonic. This is the
     // first step when creating a new lwwallet-backed wallet. The returned
@@ -312,6 +320,14 @@ enum WalletState {
     // WALLET_STATE_SYNCING indicates the wallet is unlocked and the
     // backing chain source is catching up before wallet RPCs are safe.
     WALLET_STATE_SYNCING = 4;
+}
+
+message GetBatchScheduleRequest {
+}
+
+message GetBatchScheduleResponse {
+    // schedule is absent when the operator does not publish this capability.
+    arkrpc.BatchScheduleInfo schedule = 1;
 }
 
 message GetInfoRequest {
@@ -1309,6 +1325,9 @@ message RefreshVTXOsRequest {
 
     // dry_run validates the request without queuing the refresh.
     bool dry_run = 3;
+    // service explicitly selects execution, expiry, and fee authorization.
+    // Omit it to retain legacy round participation.
+    round.v1.ServiceRequest service = 4;
 }
 
 message RefreshVTXOsResponse {
@@ -1628,6 +1647,9 @@ message LeaveVTXOsRequest {
 
     // dry_run validates the request without queuing the leave.
     bool dry_run = 5;
+    // service explicitly selects execution, expiry, and fee authorization.
+    // Omit it to retain legacy round participation.
+    round.v1.ServiceRequest service = 6;
 }
 
 message LeaveVTXOsResponse {
@@ -1721,6 +1743,9 @@ message BoardRequest {
     // the Board through the wallet's self-Tell on startup until the
     // round adopts or the user fires a fresh Board.
     bool no_persist = 2;
+    // service explicitly selects execution, expiry, and fee authorization.
+    // Omit it to retain legacy round participation.
+    round.v1.ServiceRequest service = 3;
 }
 
 message BoardResponse {
@@ -2035,6 +2060,13 @@ message RoundInfo {
     // failure_reason contains the live FSM failure reason when available.
     // Historical failed rounds loaded only from persistence leave this empty.
     string failure_reason = 11;
+    // admission is the latest typed service assignment or rejection observed
+    // by the live client. It is not proof of a remote terminal outcome.
+    round.v1.ServiceAdmission admission = 12;
+
+    // Latest authenticated ownership report observed by the live client.
+    // Absence means no report has been observed, not that ownership is free.
+    round.v1.OperationStatus operation = 13;
 }
 
 message ListRoundsRequest {
