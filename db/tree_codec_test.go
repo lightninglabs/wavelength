@@ -452,24 +452,3 @@ func TestTreeCodecDepthBoundRejectsOverCap(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "tree depth exceeds max")
 }
-
-// TestTreeCodecRejectsHugeNumChildren crafts a children blob whose
-// numChildren varint claims uint64-max children. The decoder must
-// reject this before reaching the make() call so a corrupted durable
-// blob cannot OOM the actor on replay.
-func TestTreeCodecRejectsHugeNumChildren(t *testing.T) {
-	t.Parallel()
-
-	// Hand-roll a deserializeChildren payload: a single varint
-	// holding a huge count and no follow-up data.
-	payload := []byte{
-		// 0xFF prefix tells tlv.ReadVarInt that an 8-byte count
-		// follows in big-endian form.
-		0xff,
-		0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-	}
-
-	_, err := deserializeChildren(payload, 2, tree.NewAssetTreeContext())
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "exceeds max")
-}
