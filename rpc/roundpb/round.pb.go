@@ -154,6 +154,199 @@ func (RoundLifecycleStatus) EnumDescriptor() ([]byte, []int) {
 	return file_round_proto_rawDescGZIP(), []int{1}
 }
 
+// OperationPhase records durable execution ownership. Unknown and missing
+// answers never authorize releasing a checkpointed signing reservation.
+type OperationPhase int32
+
+const (
+	OperationPhase_OPERATION_UNKNOWN      OperationPhase = 0
+	OperationPhase_OPERATION_NOT_ADMITTED OperationPhase = 1
+	OperationPhase_OPERATION_ADMITTED     OperationPhase = 2
+	OperationPhase_OPERATION_SIGNING      OperationPhase = 3
+	OperationPhase_OPERATION_FINALIZED    OperationPhase = 4
+	OperationPhase_OPERATION_COMPLETED    OperationPhase = 5
+	OperationPhase_OPERATION_FAILED       OperationPhase = 6
+	OperationPhase_OPERATION_UNCERTAIN    OperationPhase = 7
+)
+
+// Enum value maps for OperationPhase.
+var (
+	OperationPhase_name = map[int32]string{
+		0: "OPERATION_UNKNOWN",
+		1: "OPERATION_NOT_ADMITTED",
+		2: "OPERATION_ADMITTED",
+		3: "OPERATION_SIGNING",
+		4: "OPERATION_FINALIZED",
+		5: "OPERATION_COMPLETED",
+		6: "OPERATION_FAILED",
+		7: "OPERATION_UNCERTAIN",
+	}
+	OperationPhase_value = map[string]int32{
+		"OPERATION_UNKNOWN":      0,
+		"OPERATION_NOT_ADMITTED": 1,
+		"OPERATION_ADMITTED":     2,
+		"OPERATION_SIGNING":      3,
+		"OPERATION_FINALIZED":    4,
+		"OPERATION_COMPLETED":    5,
+		"OPERATION_FAILED":       6,
+		"OPERATION_UNCERTAIN":    7,
+	}
+)
+
+func (x OperationPhase) Enum() *OperationPhase {
+	p := new(OperationPhase)
+	*p = x
+	return p
+}
+
+func (x OperationPhase) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (OperationPhase) Descriptor() protoreflect.EnumDescriptor {
+	return file_round_proto_enumTypes[2].Descriptor()
+}
+
+func (OperationPhase) Type() protoreflect.EnumType {
+	return &file_round_proto_enumTypes[2]
+}
+
+func (x OperationPhase) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use OperationPhase.Descriptor instead.
+func (OperationPhase) EnumDescriptor() ([]byte, []int) {
+	return file_round_proto_rawDescGZIP(), []int{2}
+}
+
+// ServiceMode selects execution explicitly; omission retains legacy behavior.
+type ServiceMode int32
+
+const (
+	ServiceMode_SERVICE_UNSPECIFIED ServiceMode = 0
+	ServiceMode_SERVICE_SCHEDULED   ServiceMode = 1
+	ServiceMode_SERVICE_IMMEDIATE   ServiceMode = 2
+)
+
+// Enum value maps for ServiceMode.
+var (
+	ServiceMode_name = map[int32]string{
+		0: "SERVICE_UNSPECIFIED",
+		1: "SERVICE_SCHEDULED",
+		2: "SERVICE_IMMEDIATE",
+	}
+	ServiceMode_value = map[string]int32{
+		"SERVICE_UNSPECIFIED": 0,
+		"SERVICE_SCHEDULED":   1,
+		"SERVICE_IMMEDIATE":   2,
+	}
+)
+
+func (x ServiceMode) Enum() *ServiceMode {
+	p := new(ServiceMode)
+	*p = x
+	return p
+}
+
+func (x ServiceMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ServiceMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_round_proto_enumTypes[3].Descriptor()
+}
+
+func (ServiceMode) Type() protoreflect.EnumType {
+	return &file_round_proto_enumTypes[3]
+}
+
+func (x ServiceMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ServiceMode.Descriptor instead.
+func (ServiceMode) EnumDescriptor() ([]byte, []int) {
+	return file_round_proto_rawDescGZIP(), []int{3}
+}
+
+// AdmissionCode distinguishes rejection from an accepted execution attempt.
+type AdmissionCode int32
+
+const (
+	AdmissionCode_ADMISSION_UNSPECIFIED  AdmissionCode = 0
+	AdmissionCode_ADMISSION_ACCEPTED     AdmissionCode = 1
+	AdmissionCode_ADMISSION_NOT_OPEN     AdmissionCode = 2
+	AdmissionCode_ADMISSION_CLOSED       AdmissionCode = 3
+	AdmissionCode_ADMISSION_FULL         AdmissionCode = 4
+	AdmissionCode_ADMISSION_UNAUTHORIZED AdmissionCode = 5
+	AdmissionCode_ADMISSION_BUSY         AdmissionCode = 6
+	AdmissionCode_ADMISSION_EXPIRED      AdmissionCode = 7
+	AdmissionCode_ADMISSION_CONFLICT     AdmissionCode = 8
+	AdmissionCode_ADMISSION_UNAVAILABLE  AdmissionCode = 9
+	AdmissionCode_ADMISSION_UNCERTAIN    AdmissionCode = 10
+	AdmissionCode_ADMISSION_FAILED       AdmissionCode = 11
+)
+
+// Enum value maps for AdmissionCode.
+var (
+	AdmissionCode_name = map[int32]string{
+		0:  "ADMISSION_UNSPECIFIED",
+		1:  "ADMISSION_ACCEPTED",
+		2:  "ADMISSION_NOT_OPEN",
+		3:  "ADMISSION_CLOSED",
+		4:  "ADMISSION_FULL",
+		5:  "ADMISSION_UNAUTHORIZED",
+		6:  "ADMISSION_BUSY",
+		7:  "ADMISSION_EXPIRED",
+		8:  "ADMISSION_CONFLICT",
+		9:  "ADMISSION_UNAVAILABLE",
+		10: "ADMISSION_UNCERTAIN",
+		11: "ADMISSION_FAILED",
+	}
+	AdmissionCode_value = map[string]int32{
+		"ADMISSION_UNSPECIFIED":  0,
+		"ADMISSION_ACCEPTED":     1,
+		"ADMISSION_NOT_OPEN":     2,
+		"ADMISSION_CLOSED":       3,
+		"ADMISSION_FULL":         4,
+		"ADMISSION_UNAUTHORIZED": 5,
+		"ADMISSION_BUSY":         6,
+		"ADMISSION_EXPIRED":      7,
+		"ADMISSION_CONFLICT":     8,
+		"ADMISSION_UNAVAILABLE":  9,
+		"ADMISSION_UNCERTAIN":    10,
+		"ADMISSION_FAILED":       11,
+	}
+)
+
+func (x AdmissionCode) Enum() *AdmissionCode {
+	p := new(AdmissionCode)
+	*p = x
+	return p
+}
+
+func (x AdmissionCode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AdmissionCode) Descriptor() protoreflect.EnumDescriptor {
+	return file_round_proto_enumTypes[4].Descriptor()
+}
+
+func (AdmissionCode) Type() protoreflect.EnumType {
+	return &file_round_proto_enumTypes[4]
+}
+
+func (x AdmissionCode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AdmissionCode.Descriptor instead.
+func (AdmissionCode) EnumDescriptor() ([]byte, []int) {
+	return file_round_proto_rawDescGZIP(), []int{4}
+}
+
 // QuoteReason classifies why a JoinRoundQuote failed to admit the
 // client's intent. When reject_reason != QUOTE_OK the quote's
 // vtxo_quotes / leave_quotes lists are empty and the client is
@@ -200,11 +393,11 @@ func (x QuoteReason) String() string {
 }
 
 func (QuoteReason) Descriptor() protoreflect.EnumDescriptor {
-	return file_round_proto_enumTypes[2].Descriptor()
+	return file_round_proto_enumTypes[5].Descriptor()
 }
 
 func (QuoteReason) Type() protoreflect.EnumType {
-	return &file_round_proto_enumTypes[2]
+	return &file_round_proto_enumTypes[5]
 }
 
 func (x QuoteReason) Number() protoreflect.EnumNumber {
@@ -213,7 +406,7 @@ func (x QuoteReason) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use QuoteReason.Descriptor instead.
 func (QuoteReason) EnumDescriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{2}
+	return file_round_proto_rawDescGZIP(), []int{5}
 }
 
 // Outpoint identifies a transaction output by its transaction hash and output
@@ -737,8 +930,10 @@ type ClientSuccessResp struct {
 	AcceptedBoardingOutpoints []*Outpoint `protobuf:"bytes,2,rep,name=accepted_boarding_outpoints,json=acceptedBoardingOutpoints,proto3" json:"accepted_boarding_outpoints,omitempty"`
 	// accepted_vtxo_outpoints lists VTXO outpoints involved in the round.
 	AcceptedVtxoOutpoints []*Outpoint `protobuf:"bytes,3,rep,name=accepted_vtxo_outpoints,json=acceptedVtxoOutpoints,proto3" json:"accepted_vtxo_outpoints,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// Exact durable assignment for explicitly requested execution.
+	Admission     *ServiceAdmission `protobuf:"bytes,4,opt,name=admission,proto3" json:"admission,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ClientSuccessResp) Reset() {
@@ -788,6 +983,13 @@ func (x *ClientSuccessResp) GetAcceptedBoardingOutpoints() []*Outpoint {
 func (x *ClientSuccessResp) GetAcceptedVtxoOutpoints() []*Outpoint {
 	if x != nil {
 		return x.AcceptedVtxoOutpoints
+	}
+	return nil
+}
+
+func (x *ClientSuccessResp) GetAdmission() *ServiceAdmission {
+	if x != nil {
+		return x.Admission
 	}
 	return nil
 }
@@ -1191,7 +1393,9 @@ func (x *ClientRoundFailedResp) GetFailureCode() RoundFailureCode {
 type ClientErrorResp struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// error_msg is the error message.
-	ErrorMsg      string `protobuf:"bytes,1,opt,name=error_msg,json=errorMsg,proto3" json:"error_msg,omitempty"`
+	ErrorMsg string `protobuf:"bytes,1,opt,name=error_msg,json=errorMsg,proto3" json:"error_msg,omitempty"`
+	// Typed admission failure and the next published opportunity, if any.
+	Admission     *ServiceAdmission `protobuf:"bytes,2,opt,name=admission,proto3" json:"admission,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1233,6 +1437,98 @@ func (x *ClientErrorResp) GetErrorMsg() string {
 	return ""
 }
 
+func (x *ClientErrorResp) GetAdmission() *ServiceAdmission {
+	if x != nil {
+		return x.Admission
+	}
+	return nil
+}
+
+// OperationStatus is visible only to the authenticated operation principal.
+type OperationStatus struct {
+	state                     protoimpl.MessageState `protogen:"open.v1"`
+	OperationId               []byte                 `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	Attempt                   uint64                 `protobuf:"varint,2,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	RoundId                   []byte                 `protobuf:"bytes,3,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
+	Mode                      ServiceMode            `protobuf:"varint,4,opt,name=mode,proto3,enum=round.v1.ServiceMode" json:"mode,omitempty"`
+	Phase                     OperationPhase         `protobuf:"varint,5,opt,name=phase,proto3,enum=round.v1.OperationPhase" json:"phase,omitempty"`
+	ParticipationDeadlineUnix uint64                 `protobuf:"varint,6,opt,name=participation_deadline_unix,json=participationDeadlineUnix,proto3" json:"participation_deadline_unix,omitempty"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
+}
+
+func (x *OperationStatus) Reset() {
+	*x = OperationStatus{}
+	mi := &file_round_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OperationStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OperationStatus) ProtoMessage() {}
+
+func (x *OperationStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_round_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OperationStatus.ProtoReflect.Descriptor instead.
+func (*OperationStatus) Descriptor() ([]byte, []int) {
+	return file_round_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *OperationStatus) GetOperationId() []byte {
+	if x != nil {
+		return x.OperationId
+	}
+	return nil
+}
+
+func (x *OperationStatus) GetAttempt() uint64 {
+	if x != nil {
+		return x.Attempt
+	}
+	return 0
+}
+
+func (x *OperationStatus) GetRoundId() []byte {
+	if x != nil {
+		return x.RoundId
+	}
+	return nil
+}
+
+func (x *OperationStatus) GetMode() ServiceMode {
+	if x != nil {
+		return x.Mode
+	}
+	return ServiceMode_SERVICE_UNSPECIFIED
+}
+
+func (x *OperationStatus) GetPhase() OperationPhase {
+	if x != nil {
+		return x.Phase
+	}
+	return OperationPhase_OPERATION_UNKNOWN
+}
+
+func (x *OperationStatus) GetParticipationDeadlineUnix() uint64 {
+	if x != nil {
+		return x.ParticipationDeadlineUnix
+	}
+	return 0
+}
+
 // ClientRoundStatusReport answers a QueryRoundStatusRequest with the
 // operator's authoritative view of a round's lifecycle state. The
 // client uses ROUND_STATUS_DEAD as the proof-of-death that makes a
@@ -1245,14 +1541,16 @@ type ClientRoundStatusReport struct {
 	Status RoundLifecycleStatus `protobuf:"varint,2,opt,name=status,proto3,enum=round.v1.RoundLifecycleStatus" json:"status,omitempty"`
 	// detail is a free-form diagnostic string (e.g. the failure reason
 	// for a dead round).
-	Detail        string `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
+	Detail string `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
+	// Present only when the query selected an operation ID.
+	Operation     *OperationStatus `protobuf:"bytes,4,opt,name=operation,proto3" json:"operation,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ClientRoundStatusReport) Reset() {
 	*x = ClientRoundStatusReport{}
-	mi := &file_round_proto_msgTypes[13]
+	mi := &file_round_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1264,7 +1562,7 @@ func (x *ClientRoundStatusReport) String() string {
 func (*ClientRoundStatusReport) ProtoMessage() {}
 
 func (x *ClientRoundStatusReport) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[13]
+	mi := &file_round_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1277,7 +1575,7 @@ func (x *ClientRoundStatusReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClientRoundStatusReport.ProtoReflect.Descriptor instead.
 func (*ClientRoundStatusReport) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{13}
+	return file_round_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ClientRoundStatusReport) GetRoundId() []byte {
@@ -1301,6 +1599,13 @@ func (x *ClientRoundStatusReport) GetDetail() string {
 	return ""
 }
 
+func (x *ClientRoundStatusReport) GetOperation() *OperationStatus {
+	if x != nil {
+		return x.Operation
+	}
+	return nil
+}
+
 // BoardingRequest represents a request to board the Ark via a UTXO.
 type BoardingRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1318,7 +1623,7 @@ type BoardingRequest struct {
 
 func (x *BoardingRequest) Reset() {
 	*x = BoardingRequest{}
-	mi := &file_round_proto_msgTypes[14]
+	mi := &file_round_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1330,7 +1635,7 @@ func (x *BoardingRequest) String() string {
 func (*BoardingRequest) ProtoMessage() {}
 
 func (x *BoardingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[14]
+	mi := &file_round_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1343,7 +1648,7 @@ func (x *BoardingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardingRequest.ProtoReflect.Descriptor instead.
 func (*BoardingRequest) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{14}
+	return file_round_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *BoardingRequest) GetOutpoint() *Outpoint {
@@ -1418,7 +1723,7 @@ type VTXORequest struct {
 
 func (x *VTXORequest) Reset() {
 	*x = VTXORequest{}
-	mi := &file_round_proto_msgTypes[15]
+	mi := &file_round_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1430,7 +1735,7 @@ func (x *VTXORequest) String() string {
 func (*VTXORequest) ProtoMessage() {}
 
 func (x *VTXORequest) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[15]
+	mi := &file_round_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1443,7 +1748,7 @@ func (x *VTXORequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VTXORequest.ProtoReflect.Descriptor instead.
 func (*VTXORequest) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{15}
+	return file_round_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *VTXORequest) GetTargetAmountSat() int64 {
@@ -1517,7 +1822,7 @@ type ForfeitRequest struct {
 
 func (x *ForfeitRequest) Reset() {
 	*x = ForfeitRequest{}
-	mi := &file_round_proto_msgTypes[16]
+	mi := &file_round_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1529,7 +1834,7 @@ func (x *ForfeitRequest) String() string {
 func (*ForfeitRequest) ProtoMessage() {}
 
 func (x *ForfeitRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[16]
+	mi := &file_round_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1542,7 +1847,7 @@ func (x *ForfeitRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForfeitRequest.ProtoReflect.Descriptor instead.
 func (*ForfeitRequest) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{16}
+	return file_round_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ForfeitRequest) GetVtxoOutpoint() *Outpoint {
@@ -1590,7 +1895,7 @@ type LeaveRequest struct {
 
 func (x *LeaveRequest) Reset() {
 	*x = LeaveRequest{}
-	mi := &file_round_proto_msgTypes[17]
+	mi := &file_round_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1602,7 +1907,7 @@ func (x *LeaveRequest) String() string {
 func (*LeaveRequest) ProtoMessage() {}
 
 func (x *LeaveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[17]
+	mi := &file_round_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1615,7 +1920,7 @@ func (x *LeaveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaveRequest.ProtoReflect.Descriptor instead.
 func (*LeaveRequest) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{17}
+	return file_round_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *LeaveRequest) GetPkScript() []byte {
@@ -1657,7 +1962,7 @@ type JoinRoundAuth struct {
 
 func (x *JoinRoundAuth) Reset() {
 	*x = JoinRoundAuth{}
-	mi := &file_round_proto_msgTypes[18]
+	mi := &file_round_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1669,7 +1974,7 @@ func (x *JoinRoundAuth) String() string {
 func (*JoinRoundAuth) ProtoMessage() {}
 
 func (x *JoinRoundAuth) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[18]
+	mi := &file_round_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1682,7 +1987,7 @@ func (x *JoinRoundAuth) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinRoundAuth.ProtoReflect.Descriptor instead.
 func (*JoinRoundAuth) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{18}
+	return file_round_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *JoinRoundAuth) GetMessage() []byte {
@@ -1738,14 +2043,16 @@ type JoinRoundRequest struct {
 	RoundId string `protobuf:"bytes,6,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
 	// auth contains the BIP-322 authorization payload. Nil when join
 	// request auth is disabled.
-	Auth          *JoinRoundAuth `protobuf:"bytes,7,opt,name=auth,proto3" json:"auth,omitempty"`
+	Auth *JoinRoundAuth `protobuf:"bytes,7,opt,name=auth,proto3" json:"auth,omitempty"`
+	// Explicit execution authorization, included in the join-auth payload.
+	Service       *ServiceRequest `protobuf:"bytes,8,opt,name=service,proto3" json:"service,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *JoinRoundRequest) Reset() {
 	*x = JoinRoundRequest{}
-	mi := &file_round_proto_msgTypes[19]
+	mi := &file_round_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1757,7 +2064,7 @@ func (x *JoinRoundRequest) String() string {
 func (*JoinRoundRequest) ProtoMessage() {}
 
 func (x *JoinRoundRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[19]
+	mi := &file_round_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1770,7 +2077,7 @@ func (x *JoinRoundRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinRoundRequest.ProtoReflect.Descriptor instead.
 func (*JoinRoundRequest) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{19}
+	return file_round_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *JoinRoundRequest) GetIdentifier() []byte {
@@ -1822,6 +2129,281 @@ func (x *JoinRoundRequest) GetAuth() *JoinRoundAuth {
 	return nil
 }
 
+func (x *JoinRoundRequest) GetService() *ServiceRequest {
+	if x != nil {
+		return x.Service
+	}
+	return nil
+}
+
+// ServiceRequest binds execution, lifetime, and fee limits to an operation.
+type ServiceRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Client-generated nonzero random identity, exactly 32 bytes.
+	OperationId     []byte      `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	Mode            ServiceMode `protobuf:"varint,2,opt,name=mode,proto3,enum=round.v1.ServiceMode" json:"mode,omitempty"`
+	ScheduleVersion uint64      `protobuf:"varint,3,opt,name=schedule_version,json=scheduleVersion,proto3" json:"schedule_version,omitempty"`
+	SlotIndex       uint64      `protobuf:"varint,4,opt,name=slot_index,json=slotIndex,proto3" json:"slot_index,omitempty"`
+	// Absolute operation expiry in whole UTC Unix seconds.
+	ExpiresAtUnix uint64 `protobuf:"varint,5,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
+	// Maximum accepted operator quote; zero permits only a zero-fee quote.
+	FeeLimitSat uint64 `protobuf:"varint,6,opt,name=fee_limit_sat,json=feeLimitSat,proto3" json:"fee_limit_sat,omitempty"`
+	// Permission to switch after safe failure; does not grant service access.
+	AllowFallback bool `protobuf:"varint,7,opt,name=allow_fallback,json=allowFallback,proto3" json:"allow_fallback,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ServiceRequest) Reset() {
+	*x = ServiceRequest{}
+	mi := &file_round_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServiceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServiceRequest) ProtoMessage() {}
+
+func (x *ServiceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_round_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServiceRequest.ProtoReflect.Descriptor instead.
+func (*ServiceRequest) Descriptor() ([]byte, []int) {
+	return file_round_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *ServiceRequest) GetOperationId() []byte {
+	if x != nil {
+		return x.OperationId
+	}
+	return nil
+}
+
+func (x *ServiceRequest) GetMode() ServiceMode {
+	if x != nil {
+		return x.Mode
+	}
+	return ServiceMode_SERVICE_UNSPECIFIED
+}
+
+func (x *ServiceRequest) GetScheduleVersion() uint64 {
+	if x != nil {
+		return x.ScheduleVersion
+	}
+	return 0
+}
+
+func (x *ServiceRequest) GetSlotIndex() uint64 {
+	if x != nil {
+		return x.SlotIndex
+	}
+	return 0
+}
+
+func (x *ServiceRequest) GetExpiresAtUnix() uint64 {
+	if x != nil {
+		return x.ExpiresAtUnix
+	}
+	return 0
+}
+
+func (x *ServiceRequest) GetFeeLimitSat() uint64 {
+	if x != nil {
+		return x.FeeLimitSat
+	}
+	return 0
+}
+
+func (x *ServiceRequest) GetAllowFallback() bool {
+	if x != nil {
+		return x.AllowFallback
+	}
+	return false
+}
+
+// SlotOpportunity describes timing, without promising admission or funds.
+type SlotOpportunity struct {
+	state                     protoimpl.MessageState `protogen:"open.v1"`
+	ScheduleVersion           uint64                 `protobuf:"varint,1,opt,name=schedule_version,json=scheduleVersion,proto3" json:"schedule_version,omitempty"`
+	SlotIndex                 uint64                 `protobuf:"varint,2,opt,name=slot_index,json=slotIndex,proto3" json:"slot_index,omitempty"`
+	RegistrationOpenUnix      int64                  `protobuf:"varint,3,opt,name=registration_open_unix,json=registrationOpenUnix,proto3" json:"registration_open_unix,omitempty"`
+	RegistrationCloseUnix     int64                  `protobuf:"varint,4,opt,name=registration_close_unix,json=registrationCloseUnix,proto3" json:"registration_close_unix,omitempty"`
+	ParticipationDeadlineUnix int64                  `protobuf:"varint,5,opt,name=participation_deadline_unix,json=participationDeadlineUnix,proto3" json:"participation_deadline_unix,omitempty"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
+}
+
+func (x *SlotOpportunity) Reset() {
+	*x = SlotOpportunity{}
+	mi := &file_round_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SlotOpportunity) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SlotOpportunity) ProtoMessage() {}
+
+func (x *SlotOpportunity) ProtoReflect() protoreflect.Message {
+	mi := &file_round_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SlotOpportunity.ProtoReflect.Descriptor instead.
+func (*SlotOpportunity) Descriptor() ([]byte, []int) {
+	return file_round_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *SlotOpportunity) GetScheduleVersion() uint64 {
+	if x != nil {
+		return x.ScheduleVersion
+	}
+	return 0
+}
+
+func (x *SlotOpportunity) GetSlotIndex() uint64 {
+	if x != nil {
+		return x.SlotIndex
+	}
+	return 0
+}
+
+func (x *SlotOpportunity) GetRegistrationOpenUnix() int64 {
+	if x != nil {
+		return x.RegistrationOpenUnix
+	}
+	return 0
+}
+
+func (x *SlotOpportunity) GetRegistrationCloseUnix() int64 {
+	if x != nil {
+		return x.RegistrationCloseUnix
+	}
+	return 0
+}
+
+func (x *SlotOpportunity) GetParticipationDeadlineUnix() int64 {
+	if x != nil {
+		return x.ParticipationDeadlineUnix
+	}
+	return 0
+}
+
+// ServiceAdmission carries either a durable assignment or a typed rejection.
+// A retry cannot extend the deadline of an accepted attempt.
+type ServiceAdmission struct {
+	state                     protoimpl.MessageState `protogen:"open.v1"`
+	Code                      AdmissionCode          `protobuf:"varint,1,opt,name=code,proto3,enum=round.v1.AdmissionCode" json:"code,omitempty"`
+	OperationId               []byte                 `protobuf:"bytes,2,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	Attempt                   uint64                 `protobuf:"varint,3,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Mode                      ServiceMode            `protobuf:"varint,4,opt,name=mode,proto3,enum=round.v1.ServiceMode" json:"mode,omitempty"`
+	AssignedSlot              *SlotOpportunity       `protobuf:"bytes,5,opt,name=assigned_slot,json=assignedSlot,proto3" json:"assigned_slot,omitempty"`
+	ParticipationDeadlineUnix int64                  `protobuf:"varint,6,opt,name=participation_deadline_unix,json=participationDeadlineUnix,proto3" json:"participation_deadline_unix,omitempty"`
+	NextSlot                  *SlotOpportunity       `protobuf:"bytes,7,opt,name=next_slot,json=nextSlot,proto3" json:"next_slot,omitempty"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
+}
+
+func (x *ServiceAdmission) Reset() {
+	*x = ServiceAdmission{}
+	mi := &file_round_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServiceAdmission) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServiceAdmission) ProtoMessage() {}
+
+func (x *ServiceAdmission) ProtoReflect() protoreflect.Message {
+	mi := &file_round_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServiceAdmission.ProtoReflect.Descriptor instead.
+func (*ServiceAdmission) Descriptor() ([]byte, []int) {
+	return file_round_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *ServiceAdmission) GetCode() AdmissionCode {
+	if x != nil {
+		return x.Code
+	}
+	return AdmissionCode_ADMISSION_UNSPECIFIED
+}
+
+func (x *ServiceAdmission) GetOperationId() []byte {
+	if x != nil {
+		return x.OperationId
+	}
+	return nil
+}
+
+func (x *ServiceAdmission) GetAttempt() uint64 {
+	if x != nil {
+		return x.Attempt
+	}
+	return 0
+}
+
+func (x *ServiceAdmission) GetMode() ServiceMode {
+	if x != nil {
+		return x.Mode
+	}
+	return ServiceMode_SERVICE_UNSPECIFIED
+}
+
+func (x *ServiceAdmission) GetAssignedSlot() *SlotOpportunity {
+	if x != nil {
+		return x.AssignedSlot
+	}
+	return nil
+}
+
+func (x *ServiceAdmission) GetParticipationDeadlineUnix() int64 {
+	if x != nil {
+		return x.ParticipationDeadlineUnix
+	}
+	return 0
+}
+
+func (x *ServiceAdmission) GetNextSlot() *SlotOpportunity {
+	if x != nil {
+		return x.NextSlot
+	}
+	return nil
+}
+
 // FeeBreakdown decomposes the operator fee a JoinRoundQuote
 // charges so the client can verify the fee against its
 // user-facing cap and log the decomposition for observability.
@@ -1848,7 +2430,7 @@ type FeeBreakdown struct {
 
 func (x *FeeBreakdown) Reset() {
 	*x = FeeBreakdown{}
-	mi := &file_round_proto_msgTypes[20]
+	mi := &file_round_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1860,7 +2442,7 @@ func (x *FeeBreakdown) String() string {
 func (*FeeBreakdown) ProtoMessage() {}
 
 func (x *FeeBreakdown) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[20]
+	mi := &file_round_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1873,7 +2455,7 @@ func (x *FeeBreakdown) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FeeBreakdown.ProtoReflect.Descriptor instead.
 func (*FeeBreakdown) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{20}
+	return file_round_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *FeeBreakdown) GetChainFeeSat() int64 {
@@ -1934,7 +2516,7 @@ type VTXOQuote struct {
 
 func (x *VTXOQuote) Reset() {
 	*x = VTXOQuote{}
-	mi := &file_round_proto_msgTypes[21]
+	mi := &file_round_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1946,7 +2528,7 @@ func (x *VTXOQuote) String() string {
 func (*VTXOQuote) ProtoMessage() {}
 
 func (x *VTXOQuote) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[21]
+	mi := &file_round_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1959,7 +2541,7 @@ func (x *VTXOQuote) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VTXOQuote.ProtoReflect.Descriptor instead.
 func (*VTXOQuote) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{21}
+	return file_round_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *VTXOQuote) GetPkScript() []byte {
@@ -1999,7 +2581,7 @@ type LeaveQuote struct {
 
 func (x *LeaveQuote) Reset() {
 	*x = LeaveQuote{}
-	mi := &file_round_proto_msgTypes[22]
+	mi := &file_round_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2011,7 +2593,7 @@ func (x *LeaveQuote) String() string {
 func (*LeaveQuote) ProtoMessage() {}
 
 func (x *LeaveQuote) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[22]
+	mi := &file_round_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2024,7 +2606,7 @@ func (x *LeaveQuote) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaveQuote.ProtoReflect.Descriptor instead.
 func (*LeaveQuote) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{22}
+	return file_round_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *LeaveQuote) GetPkScript() []byte {
@@ -2088,7 +2670,7 @@ type JoinRoundQuote struct {
 
 func (x *JoinRoundQuote) Reset() {
 	*x = JoinRoundQuote{}
-	mi := &file_round_proto_msgTypes[23]
+	mi := &file_round_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2100,7 +2682,7 @@ func (x *JoinRoundQuote) String() string {
 func (*JoinRoundQuote) ProtoMessage() {}
 
 func (x *JoinRoundQuote) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[23]
+	mi := &file_round_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2113,7 +2695,7 @@ func (x *JoinRoundQuote) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinRoundQuote.ProtoReflect.Descriptor instead.
 func (*JoinRoundQuote) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{23}
+	return file_round_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *JoinRoundQuote) GetRoundId() string {
@@ -2199,7 +2781,7 @@ type JoinRoundAccept struct {
 
 func (x *JoinRoundAccept) Reset() {
 	*x = JoinRoundAccept{}
-	mi := &file_round_proto_msgTypes[24]
+	mi := &file_round_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2211,7 +2793,7 @@ func (x *JoinRoundAccept) String() string {
 func (*JoinRoundAccept) ProtoMessage() {}
 
 func (x *JoinRoundAccept) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[24]
+	mi := &file_round_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2224,7 +2806,7 @@ func (x *JoinRoundAccept) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinRoundAccept.ProtoReflect.Descriptor instead.
 func (*JoinRoundAccept) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{24}
+	return file_round_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *JoinRoundAccept) GetRoundId() string {
@@ -2261,7 +2843,7 @@ type JoinRoundReject struct {
 
 func (x *JoinRoundReject) Reset() {
 	*x = JoinRoundReject{}
-	mi := &file_round_proto_msgTypes[25]
+	mi := &file_round_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2273,7 +2855,7 @@ func (x *JoinRoundReject) String() string {
 func (*JoinRoundReject) ProtoMessage() {}
 
 func (x *JoinRoundReject) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[25]
+	mi := &file_round_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2286,7 +2868,7 @@ func (x *JoinRoundReject) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinRoundReject.ProtoReflect.Descriptor instead.
 func (*JoinRoundReject) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{25}
+	return file_round_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *JoinRoundReject) GetRoundId() string {
@@ -2325,7 +2907,7 @@ type SubmitNoncesRequest struct {
 
 func (x *SubmitNoncesRequest) Reset() {
 	*x = SubmitNoncesRequest{}
-	mi := &file_round_proto_msgTypes[26]
+	mi := &file_round_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2337,7 +2919,7 @@ func (x *SubmitNoncesRequest) String() string {
 func (*SubmitNoncesRequest) ProtoMessage() {}
 
 func (x *SubmitNoncesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[26]
+	mi := &file_round_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2350,7 +2932,7 @@ func (x *SubmitNoncesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitNoncesRequest.ProtoReflect.Descriptor instead.
 func (*SubmitNoncesRequest) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{26}
+	return file_round_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *SubmitNoncesRequest) GetRoundId() []byte {
@@ -2379,7 +2961,7 @@ type SignerNonces struct {
 
 func (x *SignerNonces) Reset() {
 	*x = SignerNonces{}
-	mi := &file_round_proto_msgTypes[27]
+	mi := &file_round_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2391,7 +2973,7 @@ func (x *SignerNonces) String() string {
 func (*SignerNonces) ProtoMessage() {}
 
 func (x *SignerNonces) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[27]
+	mi := &file_round_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2404,7 +2986,7 @@ func (x *SignerNonces) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignerNonces.ProtoReflect.Descriptor instead.
 func (*SignerNonces) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{27}
+	return file_round_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *SignerNonces) GetTxNonces() map[string][]byte {
@@ -2429,7 +3011,7 @@ type SubmitPartialSigRequest struct {
 
 func (x *SubmitPartialSigRequest) Reset() {
 	*x = SubmitPartialSigRequest{}
-	mi := &file_round_proto_msgTypes[28]
+	mi := &file_round_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2441,7 +3023,7 @@ func (x *SubmitPartialSigRequest) String() string {
 func (*SubmitPartialSigRequest) ProtoMessage() {}
 
 func (x *SubmitPartialSigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[28]
+	mi := &file_round_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2454,7 +3036,7 @@ func (x *SubmitPartialSigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitPartialSigRequest.ProtoReflect.Descriptor instead.
 func (*SubmitPartialSigRequest) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{28}
+	return file_round_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *SubmitPartialSigRequest) GetRoundId() []byte {
@@ -2484,7 +3066,7 @@ type SignerPartialSigs struct {
 
 func (x *SignerPartialSigs) Reset() {
 	*x = SignerPartialSigs{}
-	mi := &file_round_proto_msgTypes[29]
+	mi := &file_round_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2496,7 +3078,7 @@ func (x *SignerPartialSigs) String() string {
 func (*SignerPartialSigs) ProtoMessage() {}
 
 func (x *SignerPartialSigs) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[29]
+	mi := &file_round_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2509,7 +3091,7 @@ func (x *SignerPartialSigs) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignerPartialSigs.ProtoReflect.Descriptor instead.
 func (*SignerPartialSigs) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{29}
+	return file_round_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *SignerPartialSigs) GetTxSigs() map[string][]byte {
@@ -2534,7 +3116,7 @@ type BoardingInputSignature struct {
 
 func (x *BoardingInputSignature) Reset() {
 	*x = BoardingInputSignature{}
-	mi := &file_round_proto_msgTypes[30]
+	mi := &file_round_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2546,7 +3128,7 @@ func (x *BoardingInputSignature) String() string {
 func (*BoardingInputSignature) ProtoMessage() {}
 
 func (x *BoardingInputSignature) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[30]
+	mi := &file_round_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2559,7 +3141,7 @@ func (x *BoardingInputSignature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardingInputSignature.ProtoReflect.Descriptor instead.
 func (*BoardingInputSignature) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{30}
+	return file_round_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *BoardingInputSignature) GetInputIndex() int32 {
@@ -2597,7 +3179,7 @@ type SubmitForfeitSigRequest struct {
 
 func (x *SubmitForfeitSigRequest) Reset() {
 	*x = SubmitForfeitSigRequest{}
-	mi := &file_round_proto_msgTypes[31]
+	mi := &file_round_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2609,7 +3191,7 @@ func (x *SubmitForfeitSigRequest) String() string {
 func (*SubmitForfeitSigRequest) ProtoMessage() {}
 
 func (x *SubmitForfeitSigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[31]
+	mi := &file_round_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2622,7 +3204,7 @@ func (x *SubmitForfeitSigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitForfeitSigRequest.ProtoReflect.Descriptor instead.
 func (*SubmitForfeitSigRequest) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{31}
+	return file_round_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *SubmitForfeitSigRequest) GetRoundId() []byte {
@@ -2653,7 +3235,7 @@ type ForfeitParticipantSig struct {
 
 func (x *ForfeitParticipantSig) Reset() {
 	*x = ForfeitParticipantSig{}
-	mi := &file_round_proto_msgTypes[32]
+	mi := &file_round_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2665,7 +3247,7 @@ func (x *ForfeitParticipantSig) String() string {
 func (*ForfeitParticipantSig) ProtoMessage() {}
 
 func (x *ForfeitParticipantSig) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[32]
+	mi := &file_round_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2678,7 +3260,7 @@ func (x *ForfeitParticipantSig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForfeitParticipantSig.ProtoReflect.Descriptor instead.
 func (*ForfeitParticipantSig) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{32}
+	return file_round_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *ForfeitParticipantSig) GetPubkey() []byte {
@@ -2721,7 +3303,7 @@ type ForfeitTxSig struct {
 
 func (x *ForfeitTxSig) Reset() {
 	*x = ForfeitTxSig{}
-	mi := &file_round_proto_msgTypes[33]
+	mi := &file_round_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2733,7 +3315,7 @@ func (x *ForfeitTxSig) String() string {
 func (*ForfeitTxSig) ProtoMessage() {}
 
 func (x *ForfeitTxSig) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[33]
+	mi := &file_round_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2746,7 +3328,7 @@ func (x *ForfeitTxSig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForfeitTxSig.ProtoReflect.Descriptor instead.
 func (*ForfeitTxSig) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{33}
+	return file_round_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ForfeitTxSig) GetVtxoOutpoint() *Outpoint {
@@ -2798,7 +3380,7 @@ type SubmitVTXOForfeitSigsRequest struct {
 
 func (x *SubmitVTXOForfeitSigsRequest) Reset() {
 	*x = SubmitVTXOForfeitSigsRequest{}
-	mi := &file_round_proto_msgTypes[34]
+	mi := &file_round_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2810,7 +3392,7 @@ func (x *SubmitVTXOForfeitSigsRequest) String() string {
 func (*SubmitVTXOForfeitSigsRequest) ProtoMessage() {}
 
 func (x *SubmitVTXOForfeitSigsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[34]
+	mi := &file_round_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2823,7 +3405,7 @@ func (x *SubmitVTXOForfeitSigsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitVTXOForfeitSigsRequest.ProtoReflect.Descriptor instead.
 func (*SubmitVTXOForfeitSigsRequest) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{34}
+	return file_round_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *SubmitVTXOForfeitSigsRequest) GetRoundId() []byte {
@@ -2849,14 +3431,18 @@ func (x *SubmitVTXOForfeitSigsRequest) GetForfeitTxs() []*ForfeitTxSig {
 type QueryRoundStatusRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// round_id is the UUID of the round (16 bytes).
-	RoundId       []byte `protobuf:"bytes,1,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
+	RoundId []byte `protobuf:"bytes,1,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
+	// Optional operation selector (32 bytes). The authenticated sender must
+	// own this operation. A zero round_id permits querying a lost admission;
+	// a nonzero round_id limits the result to that attempt's round.
+	OperationId   []byte `protobuf:"bytes,2,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *QueryRoundStatusRequest) Reset() {
 	*x = QueryRoundStatusRequest{}
-	mi := &file_round_proto_msgTypes[35]
+	mi := &file_round_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2868,7 +3454,7 @@ func (x *QueryRoundStatusRequest) String() string {
 func (*QueryRoundStatusRequest) ProtoMessage() {}
 
 func (x *QueryRoundStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[35]
+	mi := &file_round_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2881,12 +3467,19 @@ func (x *QueryRoundStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryRoundStatusRequest.ProtoReflect.Descriptor instead.
 func (*QueryRoundStatusRequest) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{35}
+	return file_round_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *QueryRoundStatusRequest) GetRoundId() []byte {
 	if x != nil {
 		return x.RoundId
+	}
+	return nil
+}
+
+func (x *QueryRoundStatusRequest) GetOperationId() []byte {
+	if x != nil {
+		return x.OperationId
 	}
 	return nil
 }
@@ -2939,11 +3532,12 @@ const file_round_proto_rawDesc = "" +
 	"\x13connector_pk_script\x18\x03 \x01(\fR\x11connectorPkScript\x12)\n" +
 	"\x10connector_amount\x18\x04 \x01(\x03R\x0fconnectorAmount\x12\x1f\n" +
 	"\vvtxo_amount\x18\x05 \x01(\x03R\n" +
-	"vtxoAmount\"\xce\x01\n" +
+	"vtxoAmount\"\x88\x02\n" +
 	"\x11ClientSuccessResp\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x12R\n" +
 	"\x1baccepted_boarding_outpoints\x18\x02 \x03(\v2\x12.round.v1.OutpointR\x19acceptedBoardingOutpoints\x12J\n" +
-	"\x17accepted_vtxo_outpoints\x18\x03 \x03(\v2\x12.round.v1.OutpointR\x15acceptedVtxoOutpoints\"\xc0\x06\n" +
+	"\x17accepted_vtxo_outpoints\x18\x03 \x03(\v2\x12.round.v1.OutpointR\x15acceptedVtxoOutpoints\x128\n" +
+	"\tadmission\x18\x04 \x01(\v2\x1a.round.v1.ServiceAdmissionR\tadmission\"\xc0\x06\n" +
 	"\x0fClientBatchInfo\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x12\x1d\n" +
 	"\n" +
@@ -2987,13 +3581,22 @@ const file_round_proto_rawDesc = "" +
 	"\x15ClientRoundFailedResp\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12=\n" +
-	"\ffailure_code\x18\x03 \x01(\x0e2\x1a.round.v1.RoundFailureCodeR\vfailureCode\".\n" +
+	"\ffailure_code\x18\x03 \x01(\x0e2\x1a.round.v1.RoundFailureCodeR\vfailureCode\"h\n" +
 	"\x0fClientErrorResp\x12\x1b\n" +
-	"\terror_msg\x18\x01 \x01(\tR\berrorMsg\"\x84\x01\n" +
+	"\terror_msg\x18\x01 \x01(\tR\berrorMsg\x128\n" +
+	"\tadmission\x18\x02 \x01(\v2\x1a.round.v1.ServiceAdmissionR\tadmission\"\x84\x02\n" +
+	"\x0fOperationStatus\x12!\n" +
+	"\foperation_id\x18\x01 \x01(\fR\voperationId\x12\x18\n" +
+	"\aattempt\x18\x02 \x01(\x04R\aattempt\x12\x19\n" +
+	"\bround_id\x18\x03 \x01(\fR\aroundId\x12)\n" +
+	"\x04mode\x18\x04 \x01(\x0e2\x15.round.v1.ServiceModeR\x04mode\x12.\n" +
+	"\x05phase\x18\x05 \x01(\x0e2\x18.round.v1.OperationPhaseR\x05phase\x12>\n" +
+	"\x1bparticipation_deadline_unix\x18\x06 \x01(\x04R\x19participationDeadlineUnix\"\xbd\x01\n" +
 	"\x17ClientRoundStatusReport\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x126\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1e.round.v1.RoundLifecycleStatusR\x06status\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail\"\x85\x01\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\x127\n" +
+	"\toperation\x18\x04 \x01(\v2\x19.round.v1.OperationStatusR\toperation\"\x85\x01\n" +
 	"\x0fBoardingRequest\x12.\n" +
 	"\boutpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\boutpoint\x12'\n" +
 	"\x0fpolicy_template\x18\x02 \x01(\fR\x0epolicyTemplate\x12\x19\n" +
@@ -3021,7 +3624,7 @@ const file_round_proto_rawDesc = "" +
 	"valid_from\x18\x02 \x01(\rR\tvalidFrom\x12\x1f\n" +
 	"\vvalid_until\x18\x03 \x01(\rR\n" +
 	"validUntil\x12\x1c\n" +
-	"\tsignature\x18\x04 \x01(\fR\tsignature\"\x82\x03\n" +
+	"\tsignature\x18\x04 \x01(\fR\tsignature\"\xb6\x03\n" +
 	"\x10JoinRoundRequest\x12\x1e\n" +
 	"\n" +
 	"identifier\x18\x01 \x01(\fR\n" +
@@ -3031,7 +3634,32 @@ const file_round_proto_rawDesc = "" +
 	"\x10forfeit_requests\x18\x04 \x03(\v2\x18.round.v1.ForfeitRequestR\x0fforfeitRequests\x12=\n" +
 	"\x0eleave_requests\x18\x05 \x03(\v2\x16.round.v1.LeaveRequestR\rleaveRequests\x12\x19\n" +
 	"\bround_id\x18\x06 \x01(\tR\aroundId\x12+\n" +
-	"\x04auth\x18\a \x01(\v2\x17.round.v1.JoinRoundAuthR\x04auth\"\xd2\x01\n" +
+	"\x04auth\x18\a \x01(\v2\x17.round.v1.JoinRoundAuthR\x04auth\x122\n" +
+	"\aservice\x18\b \x01(\v2\x18.round.v1.ServiceRequestR\aservice\"\x9b\x02\n" +
+	"\x0eServiceRequest\x12!\n" +
+	"\foperation_id\x18\x01 \x01(\fR\voperationId\x12)\n" +
+	"\x04mode\x18\x02 \x01(\x0e2\x15.round.v1.ServiceModeR\x04mode\x12)\n" +
+	"\x10schedule_version\x18\x03 \x01(\x04R\x0fscheduleVersion\x12\x1d\n" +
+	"\n" +
+	"slot_index\x18\x04 \x01(\x04R\tslotIndex\x12&\n" +
+	"\x0fexpires_at_unix\x18\x05 \x01(\x04R\rexpiresAtUnix\x12\"\n" +
+	"\rfee_limit_sat\x18\x06 \x01(\x04R\vfeeLimitSat\x12%\n" +
+	"\x0eallow_fallback\x18\a \x01(\bR\rallowFallback\"\x89\x02\n" +
+	"\x0fSlotOpportunity\x12)\n" +
+	"\x10schedule_version\x18\x01 \x01(\x04R\x0fscheduleVersion\x12\x1d\n" +
+	"\n" +
+	"slot_index\x18\x02 \x01(\x04R\tslotIndex\x124\n" +
+	"\x16registration_open_unix\x18\x03 \x01(\x03R\x14registrationOpenUnix\x126\n" +
+	"\x17registration_close_unix\x18\x04 \x01(\x03R\x15registrationCloseUnix\x12>\n" +
+	"\x1bparticipation_deadline_unix\x18\x05 \x01(\x03R\x19participationDeadlineUnix\"\xdf\x02\n" +
+	"\x10ServiceAdmission\x12+\n" +
+	"\x04code\x18\x01 \x01(\x0e2\x17.round.v1.AdmissionCodeR\x04code\x12!\n" +
+	"\foperation_id\x18\x02 \x01(\fR\voperationId\x12\x18\n" +
+	"\aattempt\x18\x03 \x01(\x04R\aattempt\x12)\n" +
+	"\x04mode\x18\x04 \x01(\x0e2\x15.round.v1.ServiceModeR\x04mode\x12>\n" +
+	"\rassigned_slot\x18\x05 \x01(\v2\x19.round.v1.SlotOpportunityR\fassignedSlot\x12>\n" +
+	"\x1bparticipation_deadline_unix\x18\x06 \x01(\x03R\x19participationDeadlineUnix\x126\n" +
+	"\tnext_slot\x18\a \x01(\v2\x19.round.v1.SlotOpportunityR\bnextSlot\"\xd2\x01\n" +
 	"\fFeeBreakdown\x12\"\n" +
 	"\rchain_fee_sat\x18\x01 \x01(\x03R\vchainFeeSat\x12*\n" +
 	"\x11liquidity_fee_sat\x18\x02 \x01(\x03R\x0fliquidityFeeSat\x12,\n" +
@@ -3115,9 +3743,10 @@ const file_round_proto_rawDesc = "" +
 	"\x1cSubmitVTXOForfeitSigsRequest\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x127\n" +
 	"\vforfeit_txs\x18\x02 \x03(\v2\x16.round.v1.ForfeitTxSigR\n" +
-	"forfeitTxs\"4\n" +
+	"forfeitTxs\"W\n" +
 	"\x17QueryRoundStatusRequest\x12\x19\n" +
-	"\bround_id\x18\x01 \x01(\fR\aroundId*\\\n" +
+	"\bround_id\x18\x01 \x01(\fR\aroundId\x12!\n" +
+	"\foperation_id\x18\x02 \x01(\fR\voperationId*\\\n" +
 	"\x10RoundFailureCode\x12\x19\n" +
 	"\x15ROUND_FAILURE_UNKNOWN\x10\x00\x12-\n" +
 	")ROUND_FAILURE_INSUFFICIENT_OPERATOR_FUNDS\x10\x01*\x9f\x01\n" +
@@ -3126,7 +3755,34 @@ const file_round_proto_rawDesc = "" +
 	"\x16ROUND_STATUS_IN_FLIGHT\x10\x01\x12\x1a\n" +
 	"\x16ROUND_STATUS_BROADCAST\x10\x02\x12\x1a\n" +
 	"\x16ROUND_STATUS_CONFIRMED\x10\x03\x12\x15\n" +
-	"\x11ROUND_STATUS_DEAD\x10\x04*V\n" +
+	"\x11ROUND_STATUS_DEAD\x10\x04*\xd3\x01\n" +
+	"\x0eOperationPhase\x12\x15\n" +
+	"\x11OPERATION_UNKNOWN\x10\x00\x12\x1a\n" +
+	"\x16OPERATION_NOT_ADMITTED\x10\x01\x12\x16\n" +
+	"\x12OPERATION_ADMITTED\x10\x02\x12\x15\n" +
+	"\x11OPERATION_SIGNING\x10\x03\x12\x17\n" +
+	"\x13OPERATION_FINALIZED\x10\x04\x12\x17\n" +
+	"\x13OPERATION_COMPLETED\x10\x05\x12\x14\n" +
+	"\x10OPERATION_FAILED\x10\x06\x12\x17\n" +
+	"\x13OPERATION_UNCERTAIN\x10\a*T\n" +
+	"\vServiceMode\x12\x17\n" +
+	"\x13SERVICE_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11SERVICE_SCHEDULED\x10\x01\x12\x15\n" +
+	"\x11SERVICE_IMMEDIATE\x10\x02*\xad\x02\n" +
+	"\rAdmissionCode\x12\x19\n" +
+	"\x15ADMISSION_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12ADMISSION_ACCEPTED\x10\x01\x12\x16\n" +
+	"\x12ADMISSION_NOT_OPEN\x10\x02\x12\x14\n" +
+	"\x10ADMISSION_CLOSED\x10\x03\x12\x12\n" +
+	"\x0eADMISSION_FULL\x10\x04\x12\x1a\n" +
+	"\x16ADMISSION_UNAUTHORIZED\x10\x05\x12\x12\n" +
+	"\x0eADMISSION_BUSY\x10\x06\x12\x15\n" +
+	"\x11ADMISSION_EXPIRED\x10\a\x12\x16\n" +
+	"\x12ADMISSION_CONFLICT\x10\b\x12\x19\n" +
+	"\x15ADMISSION_UNAVAILABLE\x10\t\x12\x17\n" +
+	"\x13ADMISSION_UNCERTAIN\x10\n" +
+	"\x12\x14\n" +
+	"\x10ADMISSION_FAILED\x10\v*V\n" +
 	"\vQuoteReason\x12\f\n" +
 	"\bQUOTE_OK\x10\x00\x12\x19\n" +
 	"\x15INSUFFICIENT_RESIDUAL\x10\x01\x12\x1e\n" +
@@ -3153,123 +3809,141 @@ func file_round_proto_rawDescGZIP() []byte {
 	return file_round_proto_rawDescData
 }
 
-var file_round_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_round_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
+var file_round_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
+var file_round_proto_msgTypes = make([]protoimpl.MessageInfo, 50)
 var file_round_proto_goTypes = []any{
 	(RoundFailureCode)(0),                // 0: round.v1.RoundFailureCode
 	(RoundLifecycleStatus)(0),            // 1: round.v1.RoundLifecycleStatus
-	(QuoteReason)(0),                     // 2: round.v1.QuoteReason
-	(*Outpoint)(nil),                     // 3: round.v1.Outpoint
-	(*TxOut)(nil),                        // 4: round.v1.TxOut
-	(*TreeNode)(nil),                     // 5: round.v1.TreeNode
-	(*VTXOTree)(nil),                     // 6: round.v1.VTXOTree
-	(*ConnectorLeafInfo)(nil),            // 7: round.v1.ConnectorLeafInfo
-	(*ClientConnectorLeafInfo)(nil),      // 8: round.v1.ClientConnectorLeafInfo
-	(*ClientSuccessResp)(nil),            // 9: round.v1.ClientSuccessResp
-	(*ClientBatchInfo)(nil),              // 10: round.v1.ClientBatchInfo
-	(*ClientAwaitingInputSigsResp)(nil),  // 11: round.v1.ClientAwaitingInputSigsResp
-	(*ClientVTXOAggNonces)(nil),          // 12: round.v1.ClientVTXOAggNonces
-	(*ClientVTXOAggSigs)(nil),            // 13: round.v1.ClientVTXOAggSigs
-	(*ClientRoundFailedResp)(nil),        // 14: round.v1.ClientRoundFailedResp
-	(*ClientErrorResp)(nil),              // 15: round.v1.ClientErrorResp
-	(*ClientRoundStatusReport)(nil),      // 16: round.v1.ClientRoundStatusReport
-	(*BoardingRequest)(nil),              // 17: round.v1.BoardingRequest
-	(*VTXORequest)(nil),                  // 18: round.v1.VTXORequest
-	(*ForfeitRequest)(nil),               // 19: round.v1.ForfeitRequest
-	(*LeaveRequest)(nil),                 // 20: round.v1.LeaveRequest
-	(*JoinRoundAuth)(nil),                // 21: round.v1.JoinRoundAuth
-	(*JoinRoundRequest)(nil),             // 22: round.v1.JoinRoundRequest
-	(*FeeBreakdown)(nil),                 // 23: round.v1.FeeBreakdown
-	(*VTXOQuote)(nil),                    // 24: round.v1.VTXOQuote
-	(*LeaveQuote)(nil),                   // 25: round.v1.LeaveQuote
-	(*JoinRoundQuote)(nil),               // 26: round.v1.JoinRoundQuote
-	(*JoinRoundAccept)(nil),              // 27: round.v1.JoinRoundAccept
-	(*JoinRoundReject)(nil),              // 28: round.v1.JoinRoundReject
-	(*SubmitNoncesRequest)(nil),          // 29: round.v1.SubmitNoncesRequest
-	(*SignerNonces)(nil),                 // 30: round.v1.SignerNonces
-	(*SubmitPartialSigRequest)(nil),      // 31: round.v1.SubmitPartialSigRequest
-	(*SignerPartialSigs)(nil),            // 32: round.v1.SignerPartialSigs
-	(*BoardingInputSignature)(nil),       // 33: round.v1.BoardingInputSignature
-	(*SubmitForfeitSigRequest)(nil),      // 34: round.v1.SubmitForfeitSigRequest
-	(*ForfeitParticipantSig)(nil),        // 35: round.v1.ForfeitParticipantSig
-	(*ForfeitTxSig)(nil),                 // 36: round.v1.ForfeitTxSig
-	(*SubmitVTXOForfeitSigsRequest)(nil), // 37: round.v1.SubmitVTXOForfeitSigsRequest
-	(*QueryRoundStatusRequest)(nil),      // 38: round.v1.QueryRoundStatusRequest
-	nil,                                  // 39: round.v1.TreeNode.ChildrenEntry
-	nil,                                  // 40: round.v1.ClientBatchInfo.VtxoTreePathsEntry
-	nil,                                  // 41: round.v1.ClientBatchInfo.ConnectorLeafMapEntry
-	nil,                                  // 42: round.v1.ClientBatchInfo.AssetLeafPackagesEntry
-	nil,                                  // 43: round.v1.ClientVTXOAggNonces.AggNoncesEntry
-	nil,                                  // 44: round.v1.ClientVTXOAggSigs.AggSigsEntry
-	nil,                                  // 45: round.v1.SubmitNoncesRequest.NoncesEntry
-	nil,                                  // 46: round.v1.SignerNonces.TxNoncesEntry
-	nil,                                  // 47: round.v1.SubmitPartialSigRequest.SignaturesEntry
-	nil,                                  // 48: round.v1.SignerPartialSigs.TxSigsEntry
+	(OperationPhase)(0),                  // 2: round.v1.OperationPhase
+	(ServiceMode)(0),                     // 3: round.v1.ServiceMode
+	(AdmissionCode)(0),                   // 4: round.v1.AdmissionCode
+	(QuoteReason)(0),                     // 5: round.v1.QuoteReason
+	(*Outpoint)(nil),                     // 6: round.v1.Outpoint
+	(*TxOut)(nil),                        // 7: round.v1.TxOut
+	(*TreeNode)(nil),                     // 8: round.v1.TreeNode
+	(*VTXOTree)(nil),                     // 9: round.v1.VTXOTree
+	(*ConnectorLeafInfo)(nil),            // 10: round.v1.ConnectorLeafInfo
+	(*ClientConnectorLeafInfo)(nil),      // 11: round.v1.ClientConnectorLeafInfo
+	(*ClientSuccessResp)(nil),            // 12: round.v1.ClientSuccessResp
+	(*ClientBatchInfo)(nil),              // 13: round.v1.ClientBatchInfo
+	(*ClientAwaitingInputSigsResp)(nil),  // 14: round.v1.ClientAwaitingInputSigsResp
+	(*ClientVTXOAggNonces)(nil),          // 15: round.v1.ClientVTXOAggNonces
+	(*ClientVTXOAggSigs)(nil),            // 16: round.v1.ClientVTXOAggSigs
+	(*ClientRoundFailedResp)(nil),        // 17: round.v1.ClientRoundFailedResp
+	(*ClientErrorResp)(nil),              // 18: round.v1.ClientErrorResp
+	(*OperationStatus)(nil),              // 19: round.v1.OperationStatus
+	(*ClientRoundStatusReport)(nil),      // 20: round.v1.ClientRoundStatusReport
+	(*BoardingRequest)(nil),              // 21: round.v1.BoardingRequest
+	(*VTXORequest)(nil),                  // 22: round.v1.VTXORequest
+	(*ForfeitRequest)(nil),               // 23: round.v1.ForfeitRequest
+	(*LeaveRequest)(nil),                 // 24: round.v1.LeaveRequest
+	(*JoinRoundAuth)(nil),                // 25: round.v1.JoinRoundAuth
+	(*JoinRoundRequest)(nil),             // 26: round.v1.JoinRoundRequest
+	(*ServiceRequest)(nil),               // 27: round.v1.ServiceRequest
+	(*SlotOpportunity)(nil),              // 28: round.v1.SlotOpportunity
+	(*ServiceAdmission)(nil),             // 29: round.v1.ServiceAdmission
+	(*FeeBreakdown)(nil),                 // 30: round.v1.FeeBreakdown
+	(*VTXOQuote)(nil),                    // 31: round.v1.VTXOQuote
+	(*LeaveQuote)(nil),                   // 32: round.v1.LeaveQuote
+	(*JoinRoundQuote)(nil),               // 33: round.v1.JoinRoundQuote
+	(*JoinRoundAccept)(nil),              // 34: round.v1.JoinRoundAccept
+	(*JoinRoundReject)(nil),              // 35: round.v1.JoinRoundReject
+	(*SubmitNoncesRequest)(nil),          // 36: round.v1.SubmitNoncesRequest
+	(*SignerNonces)(nil),                 // 37: round.v1.SignerNonces
+	(*SubmitPartialSigRequest)(nil),      // 38: round.v1.SubmitPartialSigRequest
+	(*SignerPartialSigs)(nil),            // 39: round.v1.SignerPartialSigs
+	(*BoardingInputSignature)(nil),       // 40: round.v1.BoardingInputSignature
+	(*SubmitForfeitSigRequest)(nil),      // 41: round.v1.SubmitForfeitSigRequest
+	(*ForfeitParticipantSig)(nil),        // 42: round.v1.ForfeitParticipantSig
+	(*ForfeitTxSig)(nil),                 // 43: round.v1.ForfeitTxSig
+	(*SubmitVTXOForfeitSigsRequest)(nil), // 44: round.v1.SubmitVTXOForfeitSigsRequest
+	(*QueryRoundStatusRequest)(nil),      // 45: round.v1.QueryRoundStatusRequest
+	nil,                                  // 46: round.v1.TreeNode.ChildrenEntry
+	nil,                                  // 47: round.v1.ClientBatchInfo.VtxoTreePathsEntry
+	nil,                                  // 48: round.v1.ClientBatchInfo.ConnectorLeafMapEntry
+	nil,                                  // 49: round.v1.ClientBatchInfo.AssetLeafPackagesEntry
+	nil,                                  // 50: round.v1.ClientVTXOAggNonces.AggNoncesEntry
+	nil,                                  // 51: round.v1.ClientVTXOAggSigs.AggSigsEntry
+	nil,                                  // 52: round.v1.SubmitNoncesRequest.NoncesEntry
+	nil,                                  // 53: round.v1.SignerNonces.TxNoncesEntry
+	nil,                                  // 54: round.v1.SubmitPartialSigRequest.SignaturesEntry
+	nil,                                  // 55: round.v1.SignerPartialSigs.TxSigsEntry
 }
 var file_round_proto_depIdxs = []int32{
-	3,  // 0: round.v1.TreeNode.input:type_name -> round.v1.Outpoint
-	4,  // 1: round.v1.TreeNode.outputs:type_name -> round.v1.TxOut
-	39, // 2: round.v1.TreeNode.children:type_name -> round.v1.TreeNode.ChildrenEntry
-	5,  // 3: round.v1.VTXOTree.nodes:type_name -> round.v1.TreeNode
-	3,  // 4: round.v1.VTXOTree.batch_outpoint:type_name -> round.v1.Outpoint
-	4,  // 5: round.v1.VTXOTree.batch_output:type_name -> round.v1.TxOut
-	3,  // 6: round.v1.ConnectorLeafInfo.leaf_outpoint:type_name -> round.v1.Outpoint
-	4,  // 7: round.v1.ConnectorLeafInfo.leaf_output:type_name -> round.v1.TxOut
-	3,  // 8: round.v1.ClientConnectorLeafInfo.connector_outpoint:type_name -> round.v1.Outpoint
-	3,  // 9: round.v1.ClientSuccessResp.accepted_boarding_outpoints:type_name -> round.v1.Outpoint
-	3,  // 10: round.v1.ClientSuccessResp.accepted_vtxo_outpoints:type_name -> round.v1.Outpoint
-	40, // 11: round.v1.ClientBatchInfo.vtxo_tree_paths:type_name -> round.v1.ClientBatchInfo.VtxoTreePathsEntry
-	41, // 12: round.v1.ClientBatchInfo.connector_leaf_map:type_name -> round.v1.ClientBatchInfo.ConnectorLeafMapEntry
-	42, // 13: round.v1.ClientBatchInfo.asset_leaf_packages:type_name -> round.v1.ClientBatchInfo.AssetLeafPackagesEntry
-	43, // 14: round.v1.ClientVTXOAggNonces.agg_nonces:type_name -> round.v1.ClientVTXOAggNonces.AggNoncesEntry
-	44, // 15: round.v1.ClientVTXOAggSigs.agg_sigs:type_name -> round.v1.ClientVTXOAggSigs.AggSigsEntry
-	0,  // 16: round.v1.ClientRoundFailedResp.failure_code:type_name -> round.v1.RoundFailureCode
-	1,  // 17: round.v1.ClientRoundStatusReport.status:type_name -> round.v1.RoundLifecycleStatus
-	3,  // 18: round.v1.BoardingRequest.outpoint:type_name -> round.v1.Outpoint
-	3,  // 19: round.v1.ForfeitRequest.vtxo_outpoint:type_name -> round.v1.Outpoint
-	17, // 20: round.v1.JoinRoundRequest.boarding_requests:type_name -> round.v1.BoardingRequest
-	18, // 21: round.v1.JoinRoundRequest.vtxo_requests:type_name -> round.v1.VTXORequest
-	19, // 22: round.v1.JoinRoundRequest.forfeit_requests:type_name -> round.v1.ForfeitRequest
-	20, // 23: round.v1.JoinRoundRequest.leave_requests:type_name -> round.v1.LeaveRequest
-	21, // 24: round.v1.JoinRoundRequest.auth:type_name -> round.v1.JoinRoundAuth
-	24, // 25: round.v1.JoinRoundQuote.vtxo_quotes:type_name -> round.v1.VTXOQuote
-	25, // 26: round.v1.JoinRoundQuote.leave_quotes:type_name -> round.v1.LeaveQuote
-	23, // 27: round.v1.JoinRoundQuote.breakdown:type_name -> round.v1.FeeBreakdown
-	2,  // 28: round.v1.JoinRoundQuote.reject_reason:type_name -> round.v1.QuoteReason
-	45, // 29: round.v1.SubmitNoncesRequest.nonces:type_name -> round.v1.SubmitNoncesRequest.NoncesEntry
-	46, // 30: round.v1.SignerNonces.tx_nonces:type_name -> round.v1.SignerNonces.TxNoncesEntry
-	47, // 31: round.v1.SubmitPartialSigRequest.signatures:type_name -> round.v1.SubmitPartialSigRequest.SignaturesEntry
-	48, // 32: round.v1.SignerPartialSigs.tx_sigs:type_name -> round.v1.SignerPartialSigs.TxSigsEntry
-	3,  // 33: round.v1.BoardingInputSignature.outpoint:type_name -> round.v1.Outpoint
-	33, // 34: round.v1.SubmitForfeitSigRequest.signatures:type_name -> round.v1.BoardingInputSignature
-	3,  // 35: round.v1.ForfeitTxSig.vtxo_outpoint:type_name -> round.v1.Outpoint
-	35, // 36: round.v1.ForfeitTxSig.participant_sigs:type_name -> round.v1.ForfeitParticipantSig
-	36, // 37: round.v1.SubmitVTXOForfeitSigsRequest.forfeit_txs:type_name -> round.v1.ForfeitTxSig
-	6,  // 38: round.v1.ClientBatchInfo.VtxoTreePathsEntry.value:type_name -> round.v1.VTXOTree
-	7,  // 39: round.v1.ClientBatchInfo.ConnectorLeafMapEntry.value:type_name -> round.v1.ConnectorLeafInfo
-	30, // 40: round.v1.SubmitNoncesRequest.NoncesEntry.value:type_name -> round.v1.SignerNonces
-	32, // 41: round.v1.SubmitPartialSigRequest.SignaturesEntry.value:type_name -> round.v1.SignerPartialSigs
-	22, // 42: round.v1.RoundService.JoinRound:input_type -> round.v1.JoinRoundRequest
-	27, // 43: round.v1.RoundService.AcceptQuote:input_type -> round.v1.JoinRoundAccept
-	28, // 44: round.v1.RoundService.RejectQuote:input_type -> round.v1.JoinRoundReject
-	29, // 45: round.v1.RoundService.SubmitNonces:input_type -> round.v1.SubmitNoncesRequest
-	31, // 46: round.v1.RoundService.SubmitPartialSigs:input_type -> round.v1.SubmitPartialSigRequest
-	34, // 47: round.v1.RoundService.SubmitForfeitSigs:input_type -> round.v1.SubmitForfeitSigRequest
-	37, // 48: round.v1.RoundService.SubmitVTXOForfeitSigs:input_type -> round.v1.SubmitVTXOForfeitSigsRequest
-	38, // 49: round.v1.RoundService.QueryRoundStatus:input_type -> round.v1.QueryRoundStatusRequest
-	9,  // 50: round.v1.RoundService.JoinRound:output_type -> round.v1.ClientSuccessResp
-	9,  // 51: round.v1.RoundService.AcceptQuote:output_type -> round.v1.ClientSuccessResp
-	9,  // 52: round.v1.RoundService.RejectQuote:output_type -> round.v1.ClientSuccessResp
-	12, // 53: round.v1.RoundService.SubmitNonces:output_type -> round.v1.ClientVTXOAggNonces
-	13, // 54: round.v1.RoundService.SubmitPartialSigs:output_type -> round.v1.ClientVTXOAggSigs
-	11, // 55: round.v1.RoundService.SubmitForfeitSigs:output_type -> round.v1.ClientAwaitingInputSigsResp
-	9,  // 56: round.v1.RoundService.SubmitVTXOForfeitSigs:output_type -> round.v1.ClientSuccessResp
-	9,  // 57: round.v1.RoundService.QueryRoundStatus:output_type -> round.v1.ClientSuccessResp
-	50, // [50:58] is the sub-list for method output_type
-	42, // [42:50] is the sub-list for method input_type
-	42, // [42:42] is the sub-list for extension type_name
-	42, // [42:42] is the sub-list for extension extendee
-	0,  // [0:42] is the sub-list for field type_name
+	6,  // 0: round.v1.TreeNode.input:type_name -> round.v1.Outpoint
+	7,  // 1: round.v1.TreeNode.outputs:type_name -> round.v1.TxOut
+	46, // 2: round.v1.TreeNode.children:type_name -> round.v1.TreeNode.ChildrenEntry
+	8,  // 3: round.v1.VTXOTree.nodes:type_name -> round.v1.TreeNode
+	6,  // 4: round.v1.VTXOTree.batch_outpoint:type_name -> round.v1.Outpoint
+	7,  // 5: round.v1.VTXOTree.batch_output:type_name -> round.v1.TxOut
+	6,  // 6: round.v1.ConnectorLeafInfo.leaf_outpoint:type_name -> round.v1.Outpoint
+	7,  // 7: round.v1.ConnectorLeafInfo.leaf_output:type_name -> round.v1.TxOut
+	6,  // 8: round.v1.ClientConnectorLeafInfo.connector_outpoint:type_name -> round.v1.Outpoint
+	6,  // 9: round.v1.ClientSuccessResp.accepted_boarding_outpoints:type_name -> round.v1.Outpoint
+	6,  // 10: round.v1.ClientSuccessResp.accepted_vtxo_outpoints:type_name -> round.v1.Outpoint
+	29, // 11: round.v1.ClientSuccessResp.admission:type_name -> round.v1.ServiceAdmission
+	47, // 12: round.v1.ClientBatchInfo.vtxo_tree_paths:type_name -> round.v1.ClientBatchInfo.VtxoTreePathsEntry
+	48, // 13: round.v1.ClientBatchInfo.connector_leaf_map:type_name -> round.v1.ClientBatchInfo.ConnectorLeafMapEntry
+	49, // 14: round.v1.ClientBatchInfo.asset_leaf_packages:type_name -> round.v1.ClientBatchInfo.AssetLeafPackagesEntry
+	50, // 15: round.v1.ClientVTXOAggNonces.agg_nonces:type_name -> round.v1.ClientVTXOAggNonces.AggNoncesEntry
+	51, // 16: round.v1.ClientVTXOAggSigs.agg_sigs:type_name -> round.v1.ClientVTXOAggSigs.AggSigsEntry
+	0,  // 17: round.v1.ClientRoundFailedResp.failure_code:type_name -> round.v1.RoundFailureCode
+	29, // 18: round.v1.ClientErrorResp.admission:type_name -> round.v1.ServiceAdmission
+	3,  // 19: round.v1.OperationStatus.mode:type_name -> round.v1.ServiceMode
+	2,  // 20: round.v1.OperationStatus.phase:type_name -> round.v1.OperationPhase
+	1,  // 21: round.v1.ClientRoundStatusReport.status:type_name -> round.v1.RoundLifecycleStatus
+	19, // 22: round.v1.ClientRoundStatusReport.operation:type_name -> round.v1.OperationStatus
+	6,  // 23: round.v1.BoardingRequest.outpoint:type_name -> round.v1.Outpoint
+	6,  // 24: round.v1.ForfeitRequest.vtxo_outpoint:type_name -> round.v1.Outpoint
+	21, // 25: round.v1.JoinRoundRequest.boarding_requests:type_name -> round.v1.BoardingRequest
+	22, // 26: round.v1.JoinRoundRequest.vtxo_requests:type_name -> round.v1.VTXORequest
+	23, // 27: round.v1.JoinRoundRequest.forfeit_requests:type_name -> round.v1.ForfeitRequest
+	24, // 28: round.v1.JoinRoundRequest.leave_requests:type_name -> round.v1.LeaveRequest
+	25, // 29: round.v1.JoinRoundRequest.auth:type_name -> round.v1.JoinRoundAuth
+	27, // 30: round.v1.JoinRoundRequest.service:type_name -> round.v1.ServiceRequest
+	3,  // 31: round.v1.ServiceRequest.mode:type_name -> round.v1.ServiceMode
+	4,  // 32: round.v1.ServiceAdmission.code:type_name -> round.v1.AdmissionCode
+	3,  // 33: round.v1.ServiceAdmission.mode:type_name -> round.v1.ServiceMode
+	28, // 34: round.v1.ServiceAdmission.assigned_slot:type_name -> round.v1.SlotOpportunity
+	28, // 35: round.v1.ServiceAdmission.next_slot:type_name -> round.v1.SlotOpportunity
+	31, // 36: round.v1.JoinRoundQuote.vtxo_quotes:type_name -> round.v1.VTXOQuote
+	32, // 37: round.v1.JoinRoundQuote.leave_quotes:type_name -> round.v1.LeaveQuote
+	30, // 38: round.v1.JoinRoundQuote.breakdown:type_name -> round.v1.FeeBreakdown
+	5,  // 39: round.v1.JoinRoundQuote.reject_reason:type_name -> round.v1.QuoteReason
+	52, // 40: round.v1.SubmitNoncesRequest.nonces:type_name -> round.v1.SubmitNoncesRequest.NoncesEntry
+	53, // 41: round.v1.SignerNonces.tx_nonces:type_name -> round.v1.SignerNonces.TxNoncesEntry
+	54, // 42: round.v1.SubmitPartialSigRequest.signatures:type_name -> round.v1.SubmitPartialSigRequest.SignaturesEntry
+	55, // 43: round.v1.SignerPartialSigs.tx_sigs:type_name -> round.v1.SignerPartialSigs.TxSigsEntry
+	6,  // 44: round.v1.BoardingInputSignature.outpoint:type_name -> round.v1.Outpoint
+	40, // 45: round.v1.SubmitForfeitSigRequest.signatures:type_name -> round.v1.BoardingInputSignature
+	6,  // 46: round.v1.ForfeitTxSig.vtxo_outpoint:type_name -> round.v1.Outpoint
+	42, // 47: round.v1.ForfeitTxSig.participant_sigs:type_name -> round.v1.ForfeitParticipantSig
+	43, // 48: round.v1.SubmitVTXOForfeitSigsRequest.forfeit_txs:type_name -> round.v1.ForfeitTxSig
+	9,  // 49: round.v1.ClientBatchInfo.VtxoTreePathsEntry.value:type_name -> round.v1.VTXOTree
+	10, // 50: round.v1.ClientBatchInfo.ConnectorLeafMapEntry.value:type_name -> round.v1.ConnectorLeafInfo
+	37, // 51: round.v1.SubmitNoncesRequest.NoncesEntry.value:type_name -> round.v1.SignerNonces
+	39, // 52: round.v1.SubmitPartialSigRequest.SignaturesEntry.value:type_name -> round.v1.SignerPartialSigs
+	26, // 53: round.v1.RoundService.JoinRound:input_type -> round.v1.JoinRoundRequest
+	34, // 54: round.v1.RoundService.AcceptQuote:input_type -> round.v1.JoinRoundAccept
+	35, // 55: round.v1.RoundService.RejectQuote:input_type -> round.v1.JoinRoundReject
+	36, // 56: round.v1.RoundService.SubmitNonces:input_type -> round.v1.SubmitNoncesRequest
+	38, // 57: round.v1.RoundService.SubmitPartialSigs:input_type -> round.v1.SubmitPartialSigRequest
+	41, // 58: round.v1.RoundService.SubmitForfeitSigs:input_type -> round.v1.SubmitForfeitSigRequest
+	44, // 59: round.v1.RoundService.SubmitVTXOForfeitSigs:input_type -> round.v1.SubmitVTXOForfeitSigsRequest
+	45, // 60: round.v1.RoundService.QueryRoundStatus:input_type -> round.v1.QueryRoundStatusRequest
+	12, // 61: round.v1.RoundService.JoinRound:output_type -> round.v1.ClientSuccessResp
+	12, // 62: round.v1.RoundService.AcceptQuote:output_type -> round.v1.ClientSuccessResp
+	12, // 63: round.v1.RoundService.RejectQuote:output_type -> round.v1.ClientSuccessResp
+	15, // 64: round.v1.RoundService.SubmitNonces:output_type -> round.v1.ClientVTXOAggNonces
+	16, // 65: round.v1.RoundService.SubmitPartialSigs:output_type -> round.v1.ClientVTXOAggSigs
+	14, // 66: round.v1.RoundService.SubmitForfeitSigs:output_type -> round.v1.ClientAwaitingInputSigsResp
+	12, // 67: round.v1.RoundService.SubmitVTXOForfeitSigs:output_type -> round.v1.ClientSuccessResp
+	12, // 68: round.v1.RoundService.QueryRoundStatus:output_type -> round.v1.ClientSuccessResp
+	61, // [61:69] is the sub-list for method output_type
+	53, // [53:61] is the sub-list for method input_type
+	53, // [53:53] is the sub-list for extension type_name
+	53, // [53:53] is the sub-list for extension extendee
+	0,  // [0:53] is the sub-list for field type_name
 }
 
 func init() { file_round_proto_init() }
@@ -3282,8 +3956,8 @@ func file_round_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_round_proto_rawDesc), len(file_round_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   46,
+			NumEnums:      6,
+			NumMessages:   50,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
