@@ -1,6 +1,7 @@
 package round
 
 import (
+	"github.com/lightninglabs/wavelength/lib/types"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -8,6 +9,9 @@ import (
 type TimeoutPhase string
 
 const (
+	// TimeoutPhaseParticipation bounds an explicitly accepted attempt.
+	TimeoutPhaseParticipation TimeoutPhase = "participation"
+
 	// TimeoutPhaseRefreshRegistration coalesces expiry-driven refreshes
 	// before registering their assembling round.
 	TimeoutPhaseRefreshRegistration TimeoutPhase = "refresh-registration"
@@ -64,14 +68,18 @@ const statusReconcileMaxBackoffShift = 4
 // the probe traffic aimed at an operator that never answers, e.g. one
 // running a release that predates the QueryRoundStatus RPC.
 func statusReconcileProbeOutbox(roundID RoundID, env *ClientEnvironment,
-	probes uint32) []ClientOutMsg {
+	probes uint32, service ...*types.ServiceRequest) []ClientOutMsg {
 
 	shift := min(probes, statusReconcileMaxBackoffShift)
 	duration := env.StatusReconcileTimeout << shift
+	var operationID [32]byte
+	if len(service) != 0 && service[0] != nil {
+		operationID = service[0].OperationID
+	}
 
 	return []ClientOutMsg{
 		&QueryRoundStatusOutbox{
-			RoundID: roundID,
+			RoundID: roundID, OperationID: operationID,
 		},
 		&StartTimeoutReq{
 			RoundKey: RoundKeyStr(roundID.KeyString()),

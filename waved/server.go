@@ -192,6 +192,7 @@ type Server struct {
 	vtxoStore     *db.VTXOPersistenceStore
 	activityStore *db.ActivityPersistenceStore
 	roundStore    *db.RoundPersistenceStore
+	roundRuntime  *round.DurableRoundClientActor
 	ueStore       *db.UnilateralExitPersistenceStore
 
 	// oorSessionStore exposes the OOR session-registry control-plane rows
@@ -1286,6 +1287,23 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 
 		if s.outboxPublisher != nil {
 			s.outboxPublisher.Stop()
+		}
+
+		if s.roundRuntime != nil {
+			// Join native round delivery before stopping its wallet
+			// and chain dependencies or closing their shared
+			// database.
+			//nolint:contextcheck // bounded shutdown
+			if err := s.roundRuntime.StopAndWait(
+				shutdownCtx,
+			); err != nil {
+
+				s.log.WarnS(
+					shutdownCtx,
+					"Round actor shutdown failed",
+					err,
+				)
+			}
 		}
 
 		if s.runtime != nil {
@@ -3618,12 +3636,18 @@ func (s *Server) registerRoundEventRoutes(router *serverconn.EventRouter) {
 	}
 
 	// addRoundRoute is a helper that registers a push event route.
-	// It creates a fresh domain event via newEvent, deserializes
-	// the proto into it via FromProto, then wraps it in a
-	// ServerMessageNotification for delivery to the round actor.
+	// It validates the domain event and retains its protobuf payload
+	// for durable delivery to the round actor.
 	addRoundRoute := func(method string,
-		newProto func() proto.Message,
-		newEvent func() round.ClientEvent) {
+		newProto func() proto.Message) {
+
+		adapt := func(p proto.Message) (actormsg.RoundReceivable,
+			error) {
+
+			return round.NewServerMessageNotification(
+				method, p, treeOpts...,
+			)
+		}
 
 		serverconn.AddRoute(
 			router,
@@ -3635,7 +3659,7 @@ func (s *Server) registerRoundEventRoutes(router *serverconn.EventRouter) {
 				Method:   method,
 				NewEvent: newProto,
 				Key:      roundKey,
-				Adapt:    roundEventAdapt(method, newEvent),
+				Adapt:    adapt,
 			},
 		)
 	}
@@ -3645,9 +3669,6 @@ func (s *Server) registerRoundEventRoutes(router *serverconn.EventRouter) {
 		roundpb.MethodJoinAck,
 		func() proto.Message {
 			return &roundpb.ClientSuccessResp{}
-		},
-		func() round.ClientEvent {
-			return &round.RoundJoined{}
 		},
 	)
 
@@ -3661,9 +3682,6 @@ func (s *Server) registerRoundEventRoutes(router *serverconn.EventRouter) {
 		func() proto.Message {
 			return &roundpb.JoinRoundQuote{}
 		},
-		func() round.ClientEvent {
-			return &round.JoinRoundQuoteReceived{}
-		},
 	)
 
 	// BatchInfo: server built the commitment transaction.
@@ -3671,11 +3689,6 @@ func (s *Server) registerRoundEventRoutes(router *serverconn.EventRouter) {
 		roundpb.MethodBatchInfo,
 		func() proto.Message {
 			return &roundpb.ClientBatchInfo{}
-		},
-		func() round.ClientEvent {
-			return &round.CommitmentTxBuilt{
-				TreeOpts: treeOpts,
-			}
 		},
 	)
 
@@ -3685,9 +3698,6 @@ func (s *Server) registerRoundEventRoutes(router *serverconn.EventRouter) {
 		func() proto.Message {
 			return &roundpb.ClientAwaitingInputSigsResp{}
 		},
-		func() round.ClientEvent {
-			return &round.AwaitingBoardingSigs{}
-		},
 	)
 
 	// AggNonces: server sends aggregated MuSig2 nonces.
@@ -3695,9 +3705,6 @@ func (s *Server) registerRoundEventRoutes(router *serverconn.EventRouter) {
 		roundpb.MethodAggNonces,
 		func() proto.Message {
 			return &roundpb.ClientVTXOAggNonces{}
-		},
-		func() round.ClientEvent {
-			return &round.NoncesAggregated{}
 		},
 	)
 
@@ -3707,9 +3714,6 @@ func (s *Server) registerRoundEventRoutes(router *serverconn.EventRouter) {
 		func() proto.Message {
 			return &roundpb.ClientVTXOAggSigs{}
 		},
-		func() round.ClientEvent {
-			return &round.OperatorSigned{}
-		},
 	)
 
 	// RoundFailed: server reports the round has failed.
@@ -3718,9 +3722,6 @@ func (s *Server) registerRoundEventRoutes(router *serverconn.EventRouter) {
 		func() proto.Message {
 			return &roundpb.ClientRoundFailedResp{}
 		},
-		func() round.ClientEvent {
-			return &round.BoardingFailed{}
-		},
 	)
 
 	// Error: server reports a general error condition.
@@ -3728,9 +3729,6 @@ func (s *Server) registerRoundEventRoutes(router *serverconn.EventRouter) {
 		roundpb.MethodError,
 		func() proto.Message {
 			return &roundpb.ClientErrorResp{}
-		},
-		func() round.ClientEvent {
-			return &round.BoardingFailed{}
 		},
 	)
 
@@ -3743,37 +3741,7 @@ func (s *Server) registerRoundEventRoutes(router *serverconn.EventRouter) {
 		func() proto.Message {
 			return &roundpb.ClientRoundStatusReport{}
 		},
-		func() round.ClientEvent {
-			return &round.RoundStatusReported{}
-		},
 	)
-}
-
-// roundEventAdapt returns an Adapt closure for a round push event.
-// The closure creates a fresh domain event, populates it via FromProto,
-// and wraps it in a ServerMessageNotification.
-func roundEventAdapt(method string,
-	newEvent func() round.ClientEvent,
-) func(proto.Message) (actormsg.RoundReceivable, error) {
-
-	return func(p proto.Message) (actormsg.RoundReceivable, error) {
-		ev := newEvent()
-
-		inbound, ok := ev.(serverconn.InboundServerMessage)
-		if !ok {
-			return nil, fmt.Errorf("event %T does not implement "+
-				"InboundServerMessage", ev)
-		}
-
-		if err := inbound.FromProto(p); err != nil {
-			return nil, fmt.Errorf("FromProto %s/%s: %w",
-				roundpb.ServiceName, method, err)
-		}
-
-		return &round.ServerMessageNotification{
-			Message: ev,
-		}, nil
-	}
 }
 
 // handleInboundRPC dispatches a single inbound KIND_REQUEST envelope through
@@ -4062,6 +4030,7 @@ func (s *Server) startActorOutboxPublisher(ctx context.Context) error {
 	}
 
 	codec := serverconn.NewServerConnCodec()
+	round.RegisterDurableClientMessages(codec)
 	// The shared publisher decodes serverconn outbox entries and durable
 	// ask responses. MustRegister panics if a future TLV type collides
 	// across those message sets.
@@ -4421,7 +4390,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 	],
 	timeoutRef actor.TellOnlyRef[timeout.Msg],
 	vtxoManager actor.TellOnlyRef[round.VTXOManagerMsg],
-) (*round.RoundClientActor, error) {
+) (*round.DurableRoundClientActor, error) {
 
 	// Select the client wallet (signing) backend based on
 	// wallet type. In lnd mode, signing goes through lnd's
@@ -4497,13 +4466,15 @@ func (s *Server) initRoundActor(ctx context.Context,
 	}
 
 	roundCfg := &round.RoundClientConfig{
-		Name:   "round-client",
-		Logger: s.subLogger(round.Subsystem),
-		Wallet: clientWallet,
+		MaxTreeNodes: s.cfg.Server.MaxTreeNodes,
+		Name:         "round-client-mailbox",
+		Logger:       s.subLogger(round.Subsystem),
+		Wallet:       clientWallet,
 		SigningExecutor: round.NewSigningExecutor(
 			signingWorkers,
 		),
 		RoundStore:     roundStore,
+		ServiceStore:   dbStore.NewServiceOperationStore(),
 		VTXOStore:      roundStore,
 		OperatorTerms:  operatorTerms,
 		ServerConn:     s.runtime.TellRef(),
@@ -4529,22 +4500,27 @@ func (s *Server) initRoundActor(ctx context.Context,
 		RegistrationTimeout: s.cfg.RegistrationTimeout,
 	}
 
-	roundActor, err := round.NewRoundClientActor(
-		roundCfg,
-	).Unpack()
+	roundActor, err := round.NewDurableRoundClientActor(
+		roundCfg, s.deliveryStore,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create round actor: %w", err)
 	}
-
-	roundKey := round.NewServiceKey()
-	roundRef := actor.RegisterWithSystem(
-		s.actorSystem, "round-client", roundKey, roundActor,
-	)
-
-	// The round actor needs its own SelfRef for receiving
-	// asynchronous notifications (e.g., chain confirmations).
-	// We set it after registration since it's a circular dep.
-	roundCfg.SelfRef = roundRef
+	// Keep ownership before registration or startup can fail, so shutdown
+	// always joins the native worker before closing the database.
+	s.roundRuntime = roundActor
+	if err := actor.RegisterWithReceptionist(
+		s.actorSystem.Receptionist(), round.NewServiceKey(),
+		roundActor.Ref(),
+	); err != nil {
+		return nil, fmt.Errorf("register round service: %w", err)
+	}
+	outboxKey := actor.NewServiceKey[actor.Message, any](roundCfg.Name)
+	if err := actor.RegisterWithReceptionist(
+		s.actorSystem.Receptionist(), outboxKey, roundActor.OutboxRef(),
+	); err != nil {
+		return nil, fmt.Errorf("register round outbox target: %w", err)
+	}
 
 	if err := roundActor.Start(ctx); err != nil {
 		return nil, fmt.Errorf("unable to start round actor: %w", err)
@@ -4608,6 +4584,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	ledgerSink := ledger.NewSink(s.actorSystem)
 	criticalExitAssessor := s.rpcServer.assessAutomaticCriticalExit
 
+	serviceStore := dbStore.NewServiceOperationStore()
 	managerConfig := &vtxo.ManagerConfig{
 		Store:                    vtxoStore,
 		ReservationStore:         reservationStore,
@@ -4636,6 +4613,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 			return resolveExitOutcome(ctx, ueStore, outpoint)
 		},
 		HasForfeitRoundCheckpoint: roundStore.HasForfeitRoundCheckpoint,
+		HasServiceInputOwner:      serviceStore.HasServiceInputOwner,
 	}
 	managerConfig.DeferAutomaticRefreshUntilRoundReady = true
 	manager := vtxo.NewManager(managerConfig)

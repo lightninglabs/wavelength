@@ -1071,7 +1071,7 @@ func (h *actorTestHarness) setupRoundInInputSigSentState(
 		InitialState:  initialState,
 		Env:           h.actor.env,
 	}
-	newFSM := protofsm.NewStateMachine(fsmCfg)
+	newFSM := protofsm.NewInlineStateMachine(fsmCfg)
 	newFSM.Start(h.ctx)
 
 	// Add to the actor's rounds map.
@@ -1142,7 +1142,7 @@ func (h *actorTestHarness) setupRoundInForfeitCollectingState(roundID RoundID) {
 		InitialState:  initialState,
 		Env:           h.actor.env,
 	}
-	newFSM := protofsm.NewStateMachine(fsmCfg)
+	newFSM := protofsm.NewInlineStateMachine(fsmCfg)
 	newFSM.Start(h.ctx)
 
 	keyStr := RoundKeyStr(roundID.KeyString())
@@ -1175,7 +1175,7 @@ func (h *actorTestHarness) setupRoundInIntentSentState() TempRoundKey {
 		InitialState:  initialState,
 		Env:           h.actor.env,
 	}
-	newFSM := protofsm.NewStateMachine(fsmCfg)
+	newFSM := protofsm.NewInlineStateMachine(fsmCfg)
 	newFSM.Start(h.ctx)
 
 	keyStr := RoundKeyStr(tempKey.KeyString())
@@ -1206,7 +1206,7 @@ func (h *actorTestHarness) injectRoundInState(roundID RoundID,
 		InitialState:  initialState,
 		Env:           h.actor.env,
 	}
-	newFSM := protofsm.NewStateMachine(fsmCfg)
+	newFSM := protofsm.NewInlineStateMachine(fsmCfg)
 	newFSM.Start(h.ctx)
 
 	keyStr := RoundKeyStr(roundID.KeyString())

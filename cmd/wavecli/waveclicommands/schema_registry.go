@@ -99,6 +99,15 @@ func methodRegistry() []schemaMethod {
 	out = append(out, arkObservableMethodRegistry()...)
 
 	for i := range out {
+		switch out[i].Method {
+		case "ark.board", "ark.vtxos.refresh", "ark.vtxos.leave":
+			if out[i].MCPTool {
+				out[i].MCPParams = out[i].Params
+			}
+			out[i].Params = append(
+				out[i].Params, serviceSchemaParams()...,
+			)
+		}
 		out[i].OutputSchemaID = "wavecli." +
 			strings.ReplaceAll(out[i].Method, ".", "-") + ".output"
 		out[i].OutputSchemaVersion = 1

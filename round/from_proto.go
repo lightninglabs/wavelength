@@ -169,8 +169,9 @@ func (e *RoundJoined) FromProto(p proto.Message) error {
 		return fmt.Errorf("accepted_vtxo_outpoints: %w", err)
 	}
 	e.AcceptedVTXOOutpoints = vtxoOps
+	e.Admission, err = decodeServiceAdmission(pb.Admission, true)
 
-	return nil
+	return err
 }
 
 // FromProto populates a CommitmentTxBuilt from a ClientBatchInfo proto. The
@@ -497,8 +498,10 @@ func (e *BoardingFailed) FromProto(p proto.Message) error {
 		// the bridge's convertToClientEvent behavior.
 		e.Reason = pb.ErrorMsg
 		e.Recoverable = true
+		admission, err := decodeServiceAdmission(pb.Admission, false)
+		e.Admission = admission
 
-		return nil
+		return err
 
 	default:
 		return fmt.Errorf("unexpected proto type: %T, want "+
@@ -669,6 +672,11 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 		m.LeaveRequests[i] = req
 	}
 
+	service, err := roundpb.ServiceRequestFromProto(pb.Service)
+	if err != nil {
+		return err
+	}
+	m.Service = service
 	m.RoundID = pb.RoundId
 
 	// Convert auth payload.
@@ -722,6 +730,14 @@ func (e *RoundStatusReported) FromProto(p proto.Message) error {
 	copy(e.RoundID[:], pb.RoundId)
 	e.Status = pb.Status
 	e.Detail = pb.Detail
+
+	if err := validateOperationReport(pb); err != nil {
+		return err
+	}
+	if pb.Operation != nil {
+		e.Operation = &roundpb.OperationStatus{}
+		proto.Merge(e.Operation, pb.Operation)
+	}
 
 	return nil
 }

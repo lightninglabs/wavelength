@@ -85,7 +85,7 @@ func TestRoundFSMOutlivesCreationRequest(t *testing.T) {
 	t.Parallel()
 
 	state := &lifecycleProbeState{ctxErr: make(chan error, 1)}
-	fsm := protofsm.NewStateMachine(ClientStateMachineCfg{
+	fsm := protofsm.NewInlineStateMachine(ClientStateMachineCfg{
 		Logger:        btclog.Disabled,
 		ErrorReporter: newLoggerErrorReporter(btclog.Disabled),
 		InitialState:  state,

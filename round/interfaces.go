@@ -38,7 +38,7 @@ type ClientStateTransition = protofsm.StateTransition[
 type ClientEmittedEvent = protofsm.EmittedEvent[ClientEvent, ClientOutMsg]
 
 // ClientStateMachine is a type alias for the client round FSM.
-type ClientStateMachine = protofsm.StateMachine[
+type ClientStateMachine = protofsm.InlineStateMachine[
 	ClientEvent, ClientOutMsg, *ClientEnvironment,
 ]
 
@@ -272,6 +272,9 @@ func (r RoundVTXORequest) ToVTXORequest() types.VTXORequest {
 // Intents holds the accumulated round participation data after signing
 // keys have been derived. All VTXO requests carry their signing keys.
 type Intents struct {
+	// Service fixes execution and fee authorization for this operation.
+	Service *types.ServiceRequest
+
 	// Boarding contains all boarding intents to include in the round.
 	Boarding []BoardingIntent
 
@@ -302,6 +305,7 @@ type Intents struct {
 // Clone creates a copy of the Intents.
 func (i *Intents) Clone() Intents {
 	return Intents{
+		Service:            cloneServiceRequest(i.Service),
 		Boarding:           slices.Clone(i.Boarding),
 		VTXOs:              slices.Clone(i.VTXOs),
 		Leaves:             slices.Clone(i.Leaves),
@@ -611,4 +615,14 @@ type ClientWallet interface {
 	// use as a VTXO signing key.
 	DeriveNextKey(ctx context.Context,
 		family keychain.KeyFamily) (*keychain.KeyDescriptor, error)
+}
+
+// cloneServiceRequest preserves the authorization when an intent is copied.
+func cloneServiceRequest(service *types.ServiceRequest) *types.ServiceRequest {
+	if service == nil {
+		return nil
+	}
+	cloned := *service
+
+	return &cloned
 }

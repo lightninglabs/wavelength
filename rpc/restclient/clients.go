@@ -307,6 +307,17 @@ func (c *DaemonServiceClient) GetInfo(ctx context.Context,
 	return out, err
 }
 
+// GetBatchSchedule fetches the operator's current timetable through the daemon.
+func (c *DaemonServiceClient) GetBatchSchedule(ctx context.Context,
+	in *waverpc.GetBatchScheduleRequest, _ ...grpc.CallOption) (
+	*waverpc.GetBatchScheduleResponse, error) {
+
+	out := new(waverpc.GetBatchScheduleResponse)
+	err := c.client.Post(ctx, "/v1/daemon/batch-schedule", in, out)
+
+	return out, err
+}
+
 // GenSeed generates a new wallet seed.
 func (c *DaemonServiceClient) GenSeed(ctx context.Context,
 	in *waverpc.GenSeedRequest, _ ...grpc.CallOption) (

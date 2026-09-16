@@ -33,6 +33,8 @@ func newBoardCmd() *cobra.Command {
 			"admission and round seal silently drops it",
 	)
 
+	addServiceFlags(cmd)
+
 	return cmd
 }
 
@@ -51,8 +53,10 @@ func board(cmd *cobra.Command, _ []string) error {
 
 		noPersist, _ := cmd.Flags().GetBool("no-persist")
 		req.NoPersist = noPersist
+		var err error
+		req.Service, err = serviceFromFlags(cmd)
 
-		return nil
+		return err
 	}); err != nil {
 		return err
 	}

@@ -34,6 +34,21 @@ func (b *boardIntentReplayer) Replay(ctx context.Context,
 	intents []PendingIntent) (bool, error) {
 
 	a := b.ark
+	// An explicit service may already own a remote signing attempt. Keep
+	// its durable marker and require status reconciliation instead of
+	// rebuilding keys or falling back to legacy participation after a
+	// process restart.
+	for _, intent := range intents {
+		if payload, ok := intent.Payload.(*BoardIntentPayload); ok &&
+			payload.Service != nil {
+
+			a.logger(ctx).InfoS(ctx,
+				"Service boarding deferred pending operation "+
+					"reconciliation")
+
+			return false, nil
+		}
+	}
 
 	// Reconcile the persisted intents against the current set of
 	// confirmed boarding intents. An anchor is "live" only if its

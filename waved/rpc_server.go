@@ -39,6 +39,7 @@ import (
 	"github.com/lightninglabs/wavelength/metrics"
 	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/round"
+	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	"github.com/lightninglabs/wavelength/serverconn"
 	"github.com/lightninglabs/wavelength/unroll"
 	"github.com/lightninglabs/wavelength/unrollplan"
@@ -1709,6 +1710,12 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 	req *waverpc.RefreshVTXOsRequest) (*waverpc.RefreshVTXOsResponse,
 	error) {
 
+	service, serviceErr := roundpb.ServiceRequestFromProto(req.GetService())
+	if serviceErr != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid "+
+			"service authorization: %v", serviceErr)
+	}
+
 	// Pure-argument validation (selection shape / outpoint syntax)
 	// runs before the wallet-ready gate so a malformed request
 	// surfaces InvalidArgument regardless of wallet state, matching
@@ -1827,6 +1834,7 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 	// Send the refresh request to the wallet actor and await its
 	// response.
 	refreshReq := &wallet.RefreshVTXOsRequest{
+		Service:         service,
 		TargetOutpoints: targets,
 		ForceRefresh:    true,
 	}
@@ -2367,6 +2375,20 @@ func decodeBoundCustomRefreshSpend(index int, field string, raw,
 func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 	req *waverpc.LeaveVTXOsRequest) (*waverpc.LeaveVTXOsResponse, error) {
 
+	service, serviceErr := roundpb.ServiceRequestFromProto(req.GetService())
+	if serviceErr != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid "+
+			"service authorization: %v", serviceErr)
+	}
+
+	return r.leaveVTXOs(ctx, req, service)
+}
+
+// leaveVTXOs resolves selection and destinations after service validation.
+func (r *RPCServer) leaveVTXOs(ctx context.Context,
+	req *waverpc.LeaveVTXOsRequest, service *types.ServiceRequest) (
+	*waverpc.LeaveVTXOsResponse, error) {
+
 	// Pure-argument validation (selection / destinations / dry_run)
 	// runs before the wallet-ready gate so a malformed request
 	// surfaces InvalidArgument regardless of wallet state. This
@@ -2572,6 +2594,7 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 	wRef := r.server.walletRef.UnsafeFromSome()
 
 	leaveReq := &wallet.LeaveVTXOsRequest{
+		Service:         service,
 		TargetOutpoints: targets,
 		DestOutput:      defaultOutput,
 		DestOutputs:     destOutputs,
@@ -2826,6 +2849,12 @@ func (r *RPCServer) Board(ctx context.Context, req *waverpc.BoardRequest) (
 		req = &waverpc.BoardRequest{}
 	}
 
+	service, serviceErr := roundpb.ServiceRequestFromProto(req.GetService())
+	if serviceErr != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid "+
+			"service authorization: %v", serviceErr)
+	}
+
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
@@ -2857,6 +2886,7 @@ func (r *RPCServer) Board(ctx context.Context, req *waverpc.BoardRequest) (
 	_ = terms
 
 	boardReq := &wallet.BoardRequest{
+		Service:         service,
 		TargetVTXOCount: req.GetTargetVtxoCount(),
 		NoPersist:       req.GetNoPersist(),
 	}
@@ -5994,7 +6024,7 @@ func clientStateToProto(state round.ClientState) waverpc.RoundState {
 	case *round.ClientFailedState:
 		return waverpc.RoundState_ROUND_STATE_FAILED
 
-	case *round.RecoveryInitiatedState:
+	case *round.RecoveryInitiatedState, *round.ServiceReconcileState:
 		return waverpc.RoundState_ROUND_STATE_RECOVERY
 
 	default:
@@ -6049,6 +6079,8 @@ func (r *RPCServer) queryRoundStates(ctx context.Context) ([]*waverpc.RoundInfo,
 			Vtxos:          vtxos,
 			CommitmentTxid: commitmentTxid,
 			FailureReason:  roundFailureReason(info.State),
+			Admission:      info.Admission,
+			Operation:      info.Operation,
 		})
 	}
 
@@ -6092,6 +6124,9 @@ func liveRoundDetails(state round.ClientState) (string,
 		return "", upcomingFromVTXORequests(s.VTXOs)
 
 	case *round.IntentSentState:
+		return "", upcomingFromVTXORequests(s.Intents.VTXOs)
+
+	case *round.ServiceReconcileState:
 		return "", upcomingFromVTXORequests(s.Intents.VTXOs)
 
 	case *round.QuoteReceivedState:

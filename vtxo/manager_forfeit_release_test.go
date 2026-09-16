@@ -242,3 +242,46 @@ func TestReleaseOrphanedForfeitsChecksDurableRoundBoundary(t *testing.T) {
 
 	store.AssertExpectations(t)
 }
+
+// TestDeferredServiceRetainsRecoveredInputs holds both reservation states when
+// ownership exists or cannot be read, then releases after safe retirement.
+func TestDeferredServiceRetainsRecoveredInputs(t *testing.T) {
+	pending := makeDescriptor(t, 50_000, 0)
+	forfeiting := makeDescriptor(t, 40_000, 1)
+	forfeiting.ForfeitRoundID = "deferred-round"
+	mgr, store := newPendingForfeitManager(t, []*Descriptor{pending})
+	addForfeitingDescriptors(mgr, forfeiting)
+	mgr.cfg.HasForfeitRoundCheckpoint = func(context.Context, string) (bool,
+		error) {
+
+		return false, nil
+	}
+	mgr.cfg.HasServiceInputOwner = func(_ context.Context,
+		op wire.OutPoint) (bool, error) {
+
+		if op == pending.Outpoint {
+			return true, nil
+		}
+
+		return false, errors.New("service journal unavailable")
+	}
+	store.On("ListVTXOsByStatus", t.Context(), VTXOStatusPendingForfeit).
+		Return([]*Descriptor{pending}, nil)
+	store.On("ListVTXOsByStatus", t.Context(), VTXOStatusForfeiting).
+		Return([]*Descriptor{forfeiting}, nil)
+	mgr.releaseOrphanedForfeits(t.Context())
+	_, held := actorState(t, mgr, pending.Outpoint).(*PendingForfeitState)
+	require.True(t, held)
+	_, held = actorState(t, mgr, forfeiting.Outpoint).(*ForfeitingState)
+	require.True(t, held)
+	mgr.cfg.HasServiceInputOwner = func(context.Context, wire.OutPoint) (
+		bool, error) {
+
+		return false, nil
+	}
+	mgr.releaseOrphanedForfeits(t.Context())
+	_, live := actorState(t, mgr, pending.Outpoint).(*LiveState)
+	require.True(t, live)
+	_, live = actorState(t, mgr, forfeiting.Outpoint).(*LiveState)
+	require.True(t, live)
+}

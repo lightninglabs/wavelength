@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/wallet"
 	"github.com/stretchr/testify/require"
 )
@@ -321,4 +322,34 @@ func TestNewPendingIntentIDDeterminism(t *testing.T) {
 		boardPayload(1), []wire.OutPoint{opA},
 	)
 	require.NotEqual(t, idAB, idFewerAnchors)
+}
+
+// TestPendingBoardServiceAuthorization survives persistence without losing the
+// operation identity, zero fee cap, or explicit fallback permission.
+func TestPendingBoardServiceAuthorization(t *testing.T) {
+	h := newPendingIntentStoreForTest(t)
+	service := &types.ServiceRequest{
+		OperationID: [32]byte{
+			1,
+		}, Mode: types.ServiceScheduled,
+		ScheduleVersion: 2, SlotIndex: 3, ExpiresAtUnix: 2_000_000_000,
+		AllowFallback: true,
+	}
+	payload := &wallet.BoardIntentPayload{
+		TargetVTXOCount: 2,
+		Service:         service,
+	}
+	intent := makePendingIntent(payload, 100, wire.OutPoint{Index: 1})
+	require.NoError(t, h.store.UpsertPendingIntent(t.Context(), intent))
+	restored, err := h.store.ListPendingIntents(
+		t.Context(), wallet.PendingIntentKindBoard,
+	)
+	require.NoError(t, err)
+	require.Equal(t, []wallet.PendingIntent{intent}, restored)
+	legacy := makePendingIntent(
+		boardPayload(2), 100, wire.OutPoint{
+			Index: 1,
+		},
+	)
+	require.NotEqual(t, legacy.ID, intent.ID)
 }

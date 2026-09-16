@@ -235,6 +235,8 @@ func newVTXOsRefreshCmd() *cobra.Command {
 		"skip the implicit `ark rounds join` follow-up so this "+
 			"refresh can batch with other queued intents")
 
+	addServiceFlags(cmd)
+
 	return cmd
 }
 
@@ -300,8 +302,9 @@ func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 		// the outer req that parseRequest owns.
 		req.Selection = built.Selection
 		req.DryRun = built.DryRun
+		req.Service, err = serviceFromFlags(cmd)
 
-		return nil
+		return err
 	}); err != nil {
 		return err
 	}
@@ -358,6 +361,10 @@ func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 	}
 
 	noJoin, _ := cmd.Flags().GetBool("no-join")
+
+	if req.Service != nil {
+		return nil
+	}
 
 	return maybeJoinNextRound(cmd, client, req.DryRun, noJoin)
 }
@@ -605,6 +612,8 @@ func newVTXOsLeaveCmd() *cobra.Command {
 		"skip the implicit `ark rounds join` follow-up so this "+
 			"leave can batch with other queued intents")
 
+	addServiceFlags(cmd)
+
 	return cmd
 }
 
@@ -642,8 +651,9 @@ func vtxosLeave(cmd *cobra.Command, _ []string) error {
 		req.DefaultDestination = built.DefaultDestination
 		req.Destinations = built.Destinations
 		req.DryRun = built.DryRun
+		req.Service, err = serviceFromFlags(cmd)
 
-		return nil
+		return err
 	}); err != nil {
 		return err
 	}
@@ -665,6 +675,10 @@ func vtxosLeave(cmd *cobra.Command, _ []string) error {
 	}
 
 	noJoin, _ := cmd.Flags().GetBool("no-join")
+
+	if req.Service != nil {
+		return nil
+	}
 
 	return maybeJoinNextRound(cmd, client, req.DryRun, noJoin)
 }

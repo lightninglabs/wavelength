@@ -13,6 +13,7 @@ import (
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/ledger"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
+	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/mock"
@@ -491,4 +492,31 @@ func TestReplayEmptyStoreIsNoOp(t *testing.T) {
 
 	_, gotMsg := selfRef.AwaitMessage(50 * time.Millisecond)
 	require.False(t, gotMsg, "empty store must not self-Tell")
+}
+
+// TestServiceBoardRestartDefers prevents durable explicit authorization from
+// becoming a newly keyed legacy participation request during startup replay.
+func TestServiceBoardRestartDefers(t *testing.T) {
+	store := &MockBoardingStore{}
+	w, roundActor := newBoardReplayTestWallet(
+		t, store,
+		clock.NewTestClock(
+			time.Now(),
+		),
+	)
+	replay := &boardIntentReplayer{ark: w}
+	intent := PendingIntent{Payload: &BoardIntentPayload{
+		Service: &types.ServiceRequest{
+			OperationID: [32]byte{
+				1,
+			},
+		},
+	}}
+	replayed, err := replay.Replay(t.Context(), []PendingIntent{intent})
+	require.NoError(t, err)
+	require.False(t, replayed)
+	require.Empty(t, roundActor.CapturedTriggerBoards())
+	store.AssertNotCalled(
+		t, "ClearPendingIntentsByKind", mock.Anything, mock.Anything,
+	)
 }

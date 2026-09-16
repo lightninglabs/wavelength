@@ -1305,3 +1305,74 @@ func TestEvaluateQuoteEchoRejectsSingleVTXOMissingFeeDeduction(t *testing.T) {
 	)
 	require.Contains(t, rej.Reason, "disagrees with realised fee")
 }
+
+// TestEvaluateQuoteOperationFeeCap checks both the declared and realized fee
+// against the operation cap, including explicit zero-fee authorization.
+func TestEvaluateQuoteOperationFeeCap(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		cap      uint64
+		declared int64
+		realized int64
+		accepted bool
+	}{
+		{
+			name:     "at cap",
+			cap:      5000,
+			declared: 5000,
+			realized: 5000,
+			accepted: true,
+		},
+		{
+			name:     "above cap",
+			cap:      4999,
+			declared: 5000,
+			realized: 5000,
+		},
+		{
+			name:     "understated fee",
+			cap:      4000,
+			declared: 3000,
+			realized: 5000,
+		},
+		{
+			name:     "free quote",
+			cap:      0,
+			declared: 0,
+			realized: 0,
+			accepted: true,
+		},
+		{
+			name:     "zero cap",
+			cap:      0,
+			declared: 1,
+			realized: 1,
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			intents, _ := buildEchoTestIntents(t)
+			intents.Service = &types.ServiceRequest{
+				OperationID: [32]byte{
+					1,
+				}, Mode: types.ServiceScheduled,
+				ScheduleVersion: 1, ExpiresAtUnix: 2000000000,
+				FeeLimitSat: test.cap,
+			}
+			quote := quoteFromIntents(t, intents, test.declared)
+			quote.VTXOQuotes[1].AmountSat = 65000 - test.realized
+			decision := evaluateQuote(
+				context.Background(),
+				quoteReceivedTestEnv(10000), RoundID{}, intents,
+				quote,
+			)
+			if test.accepted {
+				require.IsType(t, &QuoteAccepted{}, decision)
+			} else {
+				require.IsType(t, &QuoteRejected{}, decision)
+			}
+		})
+	}
+}

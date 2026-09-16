@@ -1410,6 +1410,22 @@ func (c *Client) RefreshVTXOs(ctx context.Context,
 	return resp, nil
 }
 
+// LeaveVTXOs queues cooperative exits with optional explicit service
+// authorization. Passing nil delegates request validation to the daemon.
+func (c *Client) LeaveVTXOs(ctx context.Context,
+	req *waverpc.LeaveVTXOsRequest) (*waverpc.LeaveVTXOsResponse, error) {
+
+	if req == nil {
+		req = &waverpc.LeaveVTXOsRequest{}
+	}
+	resp, err := c.daemon.LeaveVTXOs(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("leave vtxos: %w", err)
+	}
+
+	return resp, nil
+}
+
 // RefreshCustomVTXOs queues caller-supplied custom-policy VTXOs for refresh in
 // the next round. Passing nil uses an empty request and lets the daemon return
 // the validation error.
@@ -1660,4 +1676,19 @@ func parseSessionTxID(sessionTxID string) ([]byte, error) {
 	}
 
 	return append([]byte(nil), hash[:]...), nil
+}
+
+// GetBatchSchedule fetches current operator time and slot opportunities rather
+// than relying on the daemon's cached bootstrap terms.
+func (c *Client) GetBatchSchedule(ctx context.Context) (
+	*waverpc.GetBatchScheduleResponse, error) {
+
+	response, err := c.daemon.GetBatchSchedule(
+		ctx, &waverpc.GetBatchScheduleRequest{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get batch schedule: %w", err)
+	}
+
+	return response, nil
 }

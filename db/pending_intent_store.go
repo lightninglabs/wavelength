@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/wallet"
 )
 
@@ -153,10 +154,19 @@ func upsertPendingIntentDetail(ctx context.Context, q PendingIntentStore,
 
 	switch p := intent.Payload.(type) {
 	case *wallet.BoardIntentPayload:
+		var authorization []byte
+		if p.Service != nil {
+			var err error
+			authorization, err = p.Service.Encode()
+			if err != nil {
+				return err
+			}
+		}
 		err := q.UpsertPendingBoardIntent(
 			ctx, sqlc.UpsertPendingBoardIntentParams{
-				IntentID:        intent.ID[:],
-				TargetVtxoCount: int32(p.TargetVTXOCount),
+				IntentID:             intent.ID[:],
+				TargetVtxoCount:      int32(p.TargetVTXOCount),
+				ServiceAuthorization: authorization,
 			},
 		)
 		if err != nil {
@@ -311,10 +321,21 @@ func listPendingBoardIntents(ctx context.Context, q PendingIntentStore,
 			return nil, err
 		}
 
+		var service *types.ServiceRequest
+		if len(row.ServiceAuthorization) != 0 {
+			service, err = types.DecodeServiceRequest(
+				row.ServiceAuthorization,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("decode board "+
+					"service: %w", err)
+			}
+		}
 		intents = append(intents, wallet.PendingIntent{
 			ID: id,
 			Payload: &wallet.BoardIntentPayload{
 				TargetVTXOCount: uint32(row.TargetVtxoCount),
+				Service:         service,
 			},
 			RequestedAt: row.RequestedAtUnix,
 			Anchors:     anchors[id],

@@ -71,14 +71,15 @@ func TestEmitVTXOsReceivedBoardingOrigin(t *testing.T) {
 		Index: 1,
 	}
 	roundUUID := uuid.New()
-	a.emitVTXOsReceived(t.Context(), &VTXOCreatedNotification{
+	notification := &VTXOCreatedNotification{
 		RoundID: roundUUID.String(),
 		VTXOs: []*ClientVTXO{{
 			Outpoint: outpoint,
 			Amount:   btcutil.Amount(50_000),
 			Origin:   types.VTXOOriginRoundBoarding,
 		}},
-	})
+	}
+	require.NoError(t, a.emitVTXOsReceived(t.Context(), notification))
 
 	msgs := drainLedgerMessages(t, sink)
 	require.Len(t, msgs, 1)
@@ -107,16 +108,19 @@ func TestEmitVTXOsReceivedTransferOrigin(t *testing.T) {
 	)
 	a := newLedgerEmitActor(t, sink)
 
-	a.emitVTXOsReceived(t.Context(), &VTXOCreatedNotification{
+	notification := &VTXOCreatedNotification{
 		RoundID: uuid.New().String(),
 		VTXOs: []*ClientVTXO{{
 			Outpoint: wire.OutPoint{
-				Hash: chainhash.Hash{0x22},
+				Hash: chainhash.Hash{
+					0x22,
+				},
 			},
 			Amount: btcutil.Amount(15_000),
 			Origin: types.VTXOOriginRoundTransfer,
 		}},
-	})
+	}
+	require.NoError(t, a.emitVTXOsReceived(t.Context(), notification))
 
 	msgs := drainLedgerMessages(t, sink)
 	require.Len(t, msgs, 1)
@@ -151,14 +155,15 @@ func TestEmitVTXOsReceivedRefreshEmitsPair(t *testing.T) {
 		Index: 2,
 	}
 	roundUUID := uuid.New()
-	a.emitVTXOsReceived(t.Context(), &VTXOCreatedNotification{
+	notification := &VTXOCreatedNotification{
 		RoundID: roundUUID.String(),
 		VTXOs: []*ClientVTXO{{
 			Outpoint: outpoint,
 			Amount:   btcutil.Amount(40_000),
 			Origin:   types.VTXOOriginRoundRefresh,
 		}},
-	})
+	}
+	require.NoError(t, a.emitVTXOsReceived(t.Context(), notification))
 
 	msgs := drainLedgerMessages(t, sink)
 	require.Len(t, msgs, 2)
@@ -198,16 +203,19 @@ func TestEmitVTXOsReceivedUnknownOriginIsNoOp(t *testing.T) {
 	)
 	a := newLedgerEmitActor(t, sink)
 
-	a.emitVTXOsReceived(t.Context(), &VTXOCreatedNotification{
+	notification := &VTXOCreatedNotification{
 		RoundID: uuid.New().String(),
 		VTXOs: []*ClientVTXO{{
 			Outpoint: wire.OutPoint{
-				Hash: chainhash.Hash{0x44},
+				Hash: chainhash.Hash{
+					0x44,
+				},
 			},
 			Amount: btcutil.Amount(7_000),
 			Origin: types.VTXOOriginUnknown,
 		}},
-	})
+	}
+	require.NoError(t, a.emitVTXOsReceived(t.Context(), notification))
 
 	require.Empty(
 		t, drainLedgerMessages(t, sink),
@@ -232,18 +240,21 @@ func TestEmitVTXOsReceivedRefreshEmitsFeePaidMsg(t *testing.T) {
 	a := newLedgerEmitActor(t, sink)
 
 	roundUUID := uuid.New()
-	a.emitVTXOsReceived(t.Context(), &VTXOCreatedNotification{
+	notification := &VTXOCreatedNotification{
 		RoundID:        roundUUID.String(),
 		OperatorFeeSat: 850,
 		CreatedHeight:  800_111,
 		VTXOs: []*ClientVTXO{{
 			Outpoint: wire.OutPoint{
-				Hash: chainhash.Hash{0x55},
+				Hash: chainhash.Hash{
+					0x55,
+				},
 			},
 			Amount: btcutil.Amount(30_000),
 			Origin: types.VTXOOriginRoundRefresh,
 		}},
-	})
+	}
+	require.NoError(t, a.emitVTXOsReceived(t.Context(), notification))
 
 	msgs := drainLedgerMessages(t, sink)
 	require.Len(
@@ -279,17 +290,20 @@ func TestEmitVTXOsReceivedNoFeeWhenZero(t *testing.T) {
 	)
 	a := newLedgerEmitActor(t, sink)
 
-	a.emitVTXOsReceived(t.Context(), &VTXOCreatedNotification{
+	notification := &VTXOCreatedNotification{
 		RoundID:        uuid.New().String(),
 		OperatorFeeSat: 0,
 		VTXOs: []*ClientVTXO{{
 			Outpoint: wire.OutPoint{
-				Hash: chainhash.Hash{0x66},
+				Hash: chainhash.Hash{
+					0x66,
+				},
 			},
 			Amount: btcutil.Amount(20_000),
 			Origin: types.VTXOOriginRoundRefresh,
 		}},
-	})
+	}
+	require.NoError(t, a.emitVTXOsReceived(t.Context(), notification))
 
 	for _, m := range drainLedgerMessages(t, sink) {
 		_, ok := m.(*ledger.FeePaidMsg)
@@ -311,18 +325,21 @@ func TestEmitVTXOsReceivedBoardingFee(t *testing.T) {
 	)
 	a := newLedgerEmitActor(t, sink)
 
-	a.emitVTXOsReceived(t.Context(), &VTXOCreatedNotification{
+	notification := &VTXOCreatedNotification{
 		RoundID:         uuid.New().String(),
 		OperatorFeeSat:  500,
 		OperatorFeeType: ledger.FeeTypeBoarding,
 		VTXOs: []*ClientVTXO{{
 			Outpoint: wire.OutPoint{
-				Hash: chainhash.Hash{0x77},
+				Hash: chainhash.Hash{
+					0x77,
+				},
 			},
 			Amount: btcutil.Amount(10_000),
 			Origin: types.VTXOOriginRoundBoarding,
 		}},
-	})
+	}
+	require.NoError(t, a.emitVTXOsReceived(t.Context(), notification))
 
 	msgs := drainLedgerMessages(t, sink)
 	require.Len(t, msgs, 2)
@@ -350,32 +367,39 @@ func TestEmitVTXOsReceivedMixedBatch(t *testing.T) {
 	)
 	a := newLedgerEmitActor(t, sink)
 
-	a.emitVTXOsReceived(t.Context(), &VTXOCreatedNotification{
+	notification := &VTXOCreatedNotification{
 		RoundID: uuid.New().String(),
 		VTXOs: []*ClientVTXO{
 			{
 				Outpoint: wire.OutPoint{
-					Hash: chainhash.Hash{0xa1},
+					Hash: chainhash.Hash{
+						0xa1,
+					},
 				},
 				Amount: btcutil.Amount(10_000),
 				Origin: types.VTXOOriginRoundBoarding,
 			},
 			{
 				Outpoint: wire.OutPoint{
-					Hash: chainhash.Hash{0xa2},
+					Hash: chainhash.Hash{
+						0xa2,
+					},
 				},
 				Amount: btcutil.Amount(20_000),
 				Origin: types.VTXOOriginRoundTransfer,
 			},
 			{
 				Outpoint: wire.OutPoint{
-					Hash: chainhash.Hash{0xa3},
+					Hash: chainhash.Hash{
+						0xa3,
+					},
 				},
 				Amount: btcutil.Amount(30_000),
 				Origin: types.VTXOOriginRoundRefresh,
 			},
 		},
-	})
+	}
+	require.NoError(t, a.emitVTXOsReceived(t.Context(), notification))
 
 	msgs := drainLedgerMessages(t, sink)
 	require.Len(

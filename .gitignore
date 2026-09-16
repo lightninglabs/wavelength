@@ -49,4 +49,5 @@ go.work.sum
 
 # P model generated artifacts.
 /PGenerated/
+/RoundPGenerated/
 /PCheckerOutput/

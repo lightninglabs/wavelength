@@ -54,6 +54,9 @@ type JoinRoundRequest struct {
 	// Auth contains the BIP-322 authorization payload for this
 	// request. Nil when join request auth is disabled (tests).
 	Auth *types.JoinRoundAuth
+
+	// Service contains the signed explicit execution authorization.
+	Service *types.ServiceRequest
 }
 
 func (m *JoinRoundRequest) clientOutMsgSealed() {}
@@ -392,7 +395,13 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		leaveReqs[i] = lr
 	}
 
+	service, err := roundpb.ServiceRequestToProto(m.Service)
+	if err != nil {
+		return fn.Err[proto.Message](err)
+	}
+
 	pb := &roundpb.JoinRoundRequest{
+		Service:          service,
 		BoardingRequests: boardingReqs,
 		VtxoRequests:     vtxoReqs,
 		ForfeitRequests:  forfeitReqs,
@@ -884,6 +893,10 @@ func (m *RoundCheckpointedNotification) clientOutMsgSealed() {}
 
 // StartTimeoutReq asks the actor to schedule a timeout for a round phase.
 type StartTimeoutReq struct {
+	// deadline identifies the exact durable timer generation being
+	// delivered.
+	deadline time.Time
+
 	actor.BaseMessage
 
 	// RoundKey identifies which round owns this timeout. It is the actor's
@@ -1012,6 +1025,9 @@ type QueryRoundStatusOutbox struct {
 
 	// RoundID is the round whose status is being queried.
 	RoundID RoundID
+
+	// OperationID selects authenticated durable service ownership.
+	OperationID [32]byte
 }
 
 func (m *QueryRoundStatusOutbox) clientOutMsgSealed() {}
@@ -1033,7 +1049,12 @@ func (m *QueryRoundStatusOutbox) CorrelationKey() string {
 
 // ToProto converts QueryRoundStatusOutbox to the roundpb wire format.
 func (m *QueryRoundStatusOutbox) ToProto() fn.Result[proto.Message] {
-	return fn.Ok[proto.Message](&roundpb.QueryRoundStatusRequest{
+	request := &roundpb.QueryRoundStatusRequest{
 		RoundId: append([]byte(nil), m.RoundID[:]...),
-	})
+	}
+	if m.OperationID != ([32]byte{}) {
+		request.OperationId = append([]byte(nil), m.OperationID[:]...)
+	}
+
+	return fn.Ok[proto.Message](request)
 }

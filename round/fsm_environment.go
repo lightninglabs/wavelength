@@ -17,6 +17,15 @@ import (
 // Note: Boarding address and intent persistence is handled by the wallet actor.
 // The FSM only needs RoundStore for round checkpointing.
 type ClientEnvironment struct {
+	// ServiceStore journals explicit ownership without storing signer
+	// sessions.
+	ServiceStore ServiceOperationStore
+
+	// ParticipationDeadline is fixed by explicit admission and never
+	// extended by a duplicate acknowledgement. It gates pre-checkpoint
+	// progress.
+	ParticipationDeadline time.Time
+
 	// RoundStore provides persistence for round coordination and
 	// checkpointing.
 	RoundStore RoundStore
@@ -126,9 +135,9 @@ type ClientEnvironment struct {
 	// required for rounds containing asset requests.
 	AssetVTXOVerifier AssetVTXOVerifier
 
-	// Now returns the current wall-clock time. evaluateQuote
-	// uses this to enforce the server-advertised
-	// `quote_expires_at`; a nil value falls back to time.Now so
+	// Now returns the wall-clock time used for quote expiry, service
+	// consent, and participation deadlines. A nil value falls back to
+	// time.Now so
 	// pre-existing callers that do not inject a clock keep
 	// working. Tests drive the FSM against a deterministic clock
 	// by supplying a closure.

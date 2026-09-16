@@ -2385,3 +2385,34 @@ func TestRoundStoreFailRoundLeavesConfirmedRoundAlone(t *testing.T) {
 		"retirement resurrected a deposit spent by a confirmed round",
 	)
 }
+
+// TestRoundServiceCheckpoint restores operation ownership after signing. A
+// later checkpoint without service metadata cannot erase the original binding.
+func TestRoundServiceCheckpoint(t *testing.T) {
+	t.Parallel()
+	store, _ := newRoundStoreForTest(t)
+	r := createTestRound(t, testRoundIDDB("service-checkpoint"))
+	service := &types.ServiceRequest{
+		OperationID: [32]byte{
+			1,
+		}, Mode: types.ServiceImmediate,
+		ExpiresAtUnix: 200, FeeLimitSat: 0,
+	}
+	r.Intents.Service = service
+	state := &round.InputSigSentState{
+		RoundID:     r.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	require.NoError(t, store.CommitState(t.Context(), r, state))
+	fetched, restored, err := store.FetchState(t.Context(), r.RoundID)
+	require.NoError(t, err)
+	require.Equal(t, service, fetched.Intents.Service)
+	signed, ok := restored.(*round.InputSigSentState)
+	require.True(t, ok)
+	require.Equal(t, service, signed.Intents.Service)
+	r.Intents.Service = nil
+	require.NoError(t, store.CommitState(t.Context(), r, state))
+	fetched, _, err = store.FetchState(t.Context(), r.RoundID)
+	require.NoError(t, err)
+	require.Equal(t, service, fetched.Intents.Service)
+}

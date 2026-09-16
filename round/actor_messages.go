@@ -1,11 +1,14 @@
 package round
 
 import (
+	"time"
+
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
+	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	"github.com/lightninglabs/wavelength/timeout"
 	"github.com/lightninglabs/wavelength/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -96,6 +99,10 @@ func (m *WalletBoardingConfirmed) RoundReceivable() {}
 type ServerMessageNotification struct {
 	actor.BaseMessage
 
+	// wireMethod and wirePayload retain the validated transport envelope.
+	wireMethod  []byte
+	wirePayload []byte
+
 	// Message is a ClientEvent from the server (RoundJoined,
 	// CommitmentTxBuilt, NoncesAggregated, OperatorSigned, BoardingFailed).
 	Message ClientEvent
@@ -139,6 +146,12 @@ func (m *GetClientStateRequest) RoundReceivable() {}
 
 // FSMStateInfo contains information about a single FSM's current state.
 type FSMStateInfo struct {
+	// Admission carries the last explicit service response.
+	Admission *roundpb.ServiceAdmission
+
+	// Operation is the latest authenticated durable ownership report.
+	Operation *roundpb.OperationStatus
+
 	// State is the actual state object (any ClientState implementation).
 	State ClientState
 
@@ -283,6 +296,9 @@ func (m *ConfirmationEvent) RoundReceivable() {}
 
 // TimeoutMsg is sent to the round actor when a timeout expires.
 type TimeoutMsg struct {
+	// deadline rejects callbacks from an earlier durable timer generation.
+	deadline time.Time
+
 	actor.BaseMessage
 
 	// TimeoutID identifies the expired timeout.

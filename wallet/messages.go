@@ -357,6 +357,10 @@ func (m ProcessTipTickNotification) walletMsgSealed() {}
 type RefreshVTXOsRequest struct {
 	actor.BaseMessage
 
+	// Service fixes the operation identity, execution mode, expiry, and fee
+	// cap.
+	Service *types.ServiceRequest
+
 	// TargetOutpoints specifies which VTXOs to refresh. If empty, refreshes
 	// all VTXOs within the expiry threshold.
 	TargetOutpoints []wire.OutPoint
@@ -695,6 +699,10 @@ func (m *CompleteSpendVTXOsResponse) walletRespSealed() {}
 type LeaveVTXOsRequest struct {
 	actor.BaseMessage
 
+	// Service fixes the operation identity, execution mode, expiry, and fee
+	// cap.
+	Service *types.ServiceRequest
+
 	// TargetOutpoints specifies which VTXOs to leave (offboard).
 	TargetOutpoints []wire.OutPoint
 
@@ -732,6 +740,10 @@ func (m *LeaveVTXOsRequest) walletMsgSealed() {}
 // ListRounds/WatchRounds to observe round progress.
 type BoardRequest struct {
 	actor.BaseMessage
+
+	// Service fixes the operation identity, execution mode, expiry, and fee
+	// cap.
+	Service *types.ServiceRequest
 
 	// TargetVTXOCount is the requested number of boarded VTXOs. Zero means
 	// one output, preserving the legacy single-VTXO board behavior.

@@ -185,6 +185,10 @@ type ManagerConfig struct {
 	// releasable.
 	HasForfeitRoundCheckpoint ForfeitRoundCheckpointLookup
 
+	// HasServiceInputOwner preserves deferred service reservations at
+	// startup.
+	HasServiceInputOwner func(context.Context, wire.OutPoint) (bool, error)
+
 	// ReservationStore is the durable spending-reservation index. When set,
 	// the manager runs a startup sweep that releases orphaned Spending
 	// VTXOs (those with no reservation row) and deletes reservations as
@@ -2557,6 +2561,9 @@ func (m *Manager) releaseOrphanedForfeits(ctx context.Context) {
 	var released int
 	for _, desc := range pending {
 		op := desc.Outpoint
+		if m.serviceInputRetained(ctx, op) {
+			continue
+		}
 
 		ref, ok := m.actors[op]
 		if !ok {
@@ -2629,6 +2636,10 @@ func (m *Manager) releasePreCheckpointForfeits(ctx context.Context) {
 	var released int
 	for _, desc := range forfeiting {
 		op := desc.Outpoint
+		if m.serviceInputRetained(ctx, op) {
+			continue
+		}
+
 		if desc.ForfeitRoundID == "" {
 			m.logger(ctx).WarnS(
 				ctx,
@@ -3599,4 +3610,25 @@ func clientVTXOToDescriptor(cv *round.ClientVTXO,
 		CreatedHeight:  msg.CreatedHeight,
 		Status:         VTXOStatusLive,
 	})
+}
+
+// serviceInputRetained fails closed when deferred ownership cannot be queried.
+func (m *Manager) serviceInputRetained(ctx context.Context,
+	op wire.OutPoint) bool {
+
+	if m.cfg.HasServiceInputOwner == nil {
+		return false
+	}
+	held, err := m.cfg.HasServiceInputOwner(ctx, op)
+	if err != nil {
+		m.logger(ctx).WarnS(
+			ctx,
+			"Unable to query deferred service input",
+			err,
+		)
+
+		return true
+	}
+
+	return held
 }
