@@ -26,7 +26,7 @@ func newRoundsCmd() *cobra.Command {
 
 	cmd.AddCommand(
 		newRoundsGetCmd(), newRoundsJoinCmd(), newRoundsListCmd(),
-		newRoundsWatchCmd(),
+		newRoundsWatchCmd(), newRoundsScheduleCmd(),
 	)
 
 	return cmd
@@ -345,5 +345,31 @@ func parseRoundStateFilter(state string) (waverpc.RoundState, error) {
 	default:
 		return waverpc.RoundState_ROUND_STATE_UNKNOWN,
 			fmt.Errorf("unknown round state filter: %s", state)
+	}
+}
+
+// newRoundsScheduleCmd fetches the live operator timetable and server clock.
+func newRoundsScheduleCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "schedule",
+		Short: "Get the live batch schedule and next opportunity",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			client, conn, err := getDaemonClient(cmd)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+			response, err := client.GetBatchSchedule(
+				ctx, &waverpc.GetBatchScheduleRequest{},
+			)
+			if err != nil {
+				return fmt.Errorf("query batch schedule: %w",
+					err)
+			}
+
+			return printJSON(response)
+		},
 	}
 }

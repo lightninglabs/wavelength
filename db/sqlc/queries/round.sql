@@ -4,14 +4,15 @@
 INSERT INTO rounds (
     round_id, confirmation_height, confirmation_block_hash, commitment_tx,
     commitment_txid, vtxt_tree, status, creation_time, last_update_time,
-    start_height, flow_version, sweep_delay
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    start_height, flow_version, sweep_delay, service_authorization
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 ON CONFLICT (round_id) DO UPDATE SET
     confirmation_height = COALESCE(excluded.confirmation_height, rounds.confirmation_height),
     confirmation_block_hash = COALESCE(excluded.confirmation_block_hash, rounds.confirmation_block_hash),
     commitment_tx = COALESCE(excluded.commitment_tx, rounds.commitment_tx),
     commitment_txid = COALESCE(excluded.commitment_txid, rounds.commitment_txid),
     vtxt_tree = COALESCE(excluded.vtxt_tree, rounds.vtxt_tree),
+    service_authorization = COALESCE(rounds.service_authorization, excluded.service_authorization),
     status = excluded.status,
     last_update_time = excluded.last_update_time,
     -- The sweep delay is fixed for the life of a round, so a later

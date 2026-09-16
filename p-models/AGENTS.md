@@ -20,6 +20,10 @@ fold, deferral and redrive against bounded in-memory mailboxes).
   `crash_restart_test.go`, `outbox_fold_test.go`) that replays checked-in
   traces against the real `db/actordelivery` store, keeping the model
   connected to the shipped implementation.
+- `durableround/` — required checkpoint/outbox/ack boundary for both round
+  roles, plus exclusive operation ownership while signing is uncertain.
+  The initial bridge checks the SQLite primitive; production round
+  behavior replay is still pending.
 - `scripts/check.sh` — compiles the P project, runs the green test cases
   (must find zero bugs) and the counterexample cases (must find exactly the
   expected bug), then runs the Go bridge tests.

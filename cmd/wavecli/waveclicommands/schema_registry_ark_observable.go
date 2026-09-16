@@ -192,6 +192,12 @@ func arkObservableSingletonMethodRegistry() []schemaMethod {
 			JSONInput:    true,
 		},
 		{
+			Method:       "ark.rounds.schedule",
+			Description:  "Query the current batch schedule",
+			RequestType:  "GetBatchScheduleRequest",
+			ResponseType: "GetBatchScheduleResponse",
+		},
+		{
 			Method:      "ark.rounds.watch",
 			Description: "Stream round state updates",
 			Params: []schemaParam{

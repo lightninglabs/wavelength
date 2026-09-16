@@ -341,61 +341,84 @@ func (f *joinAuthTestFixture) verifyAuth(t *testing.T,
 func TestBuildJoinRoundAuthBoardingOnly(t *testing.T) {
 	t.Parallel()
 
-	f := newJoinAuthTestFixture(t)
-
-	boardingAmount := btcutil.Amount(50000)
-	intent := f.newBoardingIntent(t, boardingAmount)
-
-	vtxoReqs := []types.VTXORequest{
-		f.newVTXORequest(t, 49000),
-	}
-	intents := Intents{
-		Boarding: []BoardingIntent{
-			intent,
-		},
-		VTXOs: vtxoReqs,
-	}
-
-	auth, err := buildJoinRoundAuth(
-		f.ctx, f.env, f.identifierKeyDesc(), intents, vtxoReqs, nil,
-		nil,
-	)
-	require.NoError(t, err)
-	require.NotNil(t, auth)
-	require.NotEmpty(t, auth.Message)
-	require.NotEmpty(t, auth.Signature)
-
-	// Ensure join-auth validity metadata is carried in the auth
-	// payload, not encoded in to_sign input 0 lock metadata.
-	require.Equal(t, f.signingHeight, auth.ValidFrom)
-	require.Equal(
-		t, joinAuthValidUntil(f.signingHeight), auth.ValidUntil,
-	)
-
-	sig, err := bip322.DecodeSig(auth.Signature)
-	require.NoError(t, err)
-
-	require.Equal(t, int32(2), sig.ToSign.Version)
-	require.Equal(t, uint32(0), sig.ToSign.LockTime)
-	require.NotEmpty(t, sig.ToSign.TxIn)
-	require.Equal(t, uint32(0), sig.ToSign.TxIn[0].Sequence)
-
-	// Build the proof prevouts needed by the validator. Each
-	// boarding UTXO must be supplied so the script engine can
-	// verify the timeout-path witness.
-	pkScript, err := txscript.PayToAddrScript(
-		intent.Address.Address,
-	)
-	require.NoError(t, err)
-
-	proofPrevOuts := map[wire.OutPoint]*wire.TxOut{
-		intent.Outpoint: {
-			Value:    int64(boardingAmount),
-			PkScript: pkScript,
+	services := map[string]*types.ServiceRequest{
+		"legacy": nil,
+		"scheduled": {
+			OperationID: [32]byte{
+				1,
+			}, Mode: types.ServiceScheduled,
+			ScheduleVersion: 1, SlotIndex: 3,
+			ExpiresAtUnix: 2000000000,
+			FeeLimitSat:   1000, AllowFallback: true,
 		},
 	}
+	for name, service := range services {
+		t.Run(name, func(t *testing.T) {
+			f := newJoinAuthTestFixture(t)
 
-	f.verifyAuth(t, auth, proofPrevOuts)
+			boardingAmount := btcutil.Amount(50000)
+			intent := f.newBoardingIntent(t, boardingAmount)
+
+			vtxoReqs := []types.VTXORequest{
+				f.newVTXORequest(t, 49000),
+			}
+			intents := Intents{
+				Service: service,
+				Boarding: []BoardingIntent{
+					intent,
+				},
+				VTXOs: vtxoReqs,
+			}
+
+			auth, err := buildJoinRoundAuth(
+				f.ctx, f.env, f.identifierKeyDesc(), intents,
+				vtxoReqs, nil, nil,
+			)
+			require.NoError(t, err)
+			require.NotNil(t, auth)
+			require.NotEmpty(t, auth.Message)
+			require.NotEmpty(t, auth.Signature)
+			decoded, err := types.DecodeJoinRoundAuthMessage(
+				auth.Message,
+			)
+			require.NoError(t, err)
+			require.Equal(t, service, decoded.Service)
+
+			// Ensure join-auth validity metadata is carried in the
+			// auth payload, not encoded in to_sign input 0 lock
+			// metadata.
+			require.Equal(t, f.signingHeight, auth.ValidFrom)
+			require.Equal(
+				t, joinAuthValidUntil(f.signingHeight),
+				auth.ValidUntil,
+			)
+
+			sig, err := bip322.DecodeSig(auth.Signature)
+			require.NoError(t, err)
+
+			require.Equal(t, int32(2), sig.ToSign.Version)
+			require.Equal(t, uint32(0), sig.ToSign.LockTime)
+			require.NotEmpty(t, sig.ToSign.TxIn)
+			require.Equal(t, uint32(0), sig.ToSign.TxIn[0].Sequence)
+
+			// Build the proof prevouts needed by the validator.
+			// Each boarding UTXO must be supplied so the script
+			// engine can verify the timeout-path witness.
+			pkScript, err := txscript.PayToAddrScript(
+				intent.Address.Address,
+			)
+			require.NoError(t, err)
+
+			proofPrevOuts := map[wire.OutPoint]*wire.TxOut{
+				intent.Outpoint: {
+					Value:    int64(boardingAmount),
+					PkScript: pkScript,
+				},
+			}
+
+			f.verifyAuth(t, auth, proofPrevOuts)
+		})
+	}
 }
 
 // TestBuildJoinRoundAuthRejectsTamperedSig verifies that round-level auth

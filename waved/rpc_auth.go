@@ -106,8 +106,9 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 	)
 
 	daemon := waverpc.DaemonService_ServiceDesc.ServiceName
-	grant(daemon, entityInfo, "read",
-		"GetInfo", "GetBalance",
+	grant(
+		daemon, entityInfo, "read", "GetInfo", "GetBalance",
+		"GetBatchSchedule",
 	)
 	grant(
 		daemon, entityInfo, "write", "GenSeed", "InitWallet",

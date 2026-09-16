@@ -1597,6 +1597,12 @@ func (a *Ark) maybeRebuildBoardingProof(ctx context.Context,
 func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 	req *RefreshVTXOsRequest) fn.Result[WalletResp] {
 
+	if req.Service != nil {
+		if err := req.Service.Validate(); err != nil {
+			return fn.Err[WalletResp](err)
+		}
+	}
+
 	a.logger(ctx).InfoS(ctx, "Received VTXO refresh request",
 		slog.Int("target_count", len(req.TargetOutpoints)),
 		slog.Bool("force_refresh", req.ForceRefresh),
@@ -1796,8 +1802,10 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 		roundRef := serviceKey.Ref(a.actorSystem)
 
 		future := roundRef.Ask(ctx, &actormsg.RegisterIntentMsg{
-			Forfeits: forfeits,
-			VTXOs:    vtxos,
+			Service:             req.Service,
+			TriggerRegistration: req.Service != nil,
+			Forfeits:            forfeits,
+			VTXOs:               vtxos,
 		})
 		result := future.Await(ctx)
 		if result.IsErr() {
@@ -2032,6 +2040,12 @@ func (a *Ark) handleDropCustomRefreshVTXOs(ctx context.Context,
 func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 	req *LeaveVTXOsRequest) fn.Result[WalletResp] {
 
+	if req.Service != nil {
+		if err := req.Service.Validate(); err != nil {
+			return fn.Err[WalletResp](err)
+		}
+	}
+
 	a.logger(ctx).InfoS(ctx, "Received VTXO leave request",
 		slog.Int("target_count", len(req.TargetOutpoints)),
 	)
@@ -2167,9 +2181,11 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 		// (TriggerRegistration=false) preserves the batched-leave
 		// semantics that operator-driven hosts rely on.
 		future := roundRef.Ask(ctx, &actormsg.RegisterIntentMsg{
-			Forfeits:            forfeits,
-			Leaves:              leaves,
-			TriggerRegistration: a.eagerRoundJoin,
+			Service:  req.Service,
+			Forfeits: forfeits,
+			Leaves:   leaves,
+			TriggerRegistration: a.eagerRoundJoin ||
+				req.Service != nil,
 		})
 		result := future.Await(ctx)
 		if result.IsErr() {
@@ -2210,6 +2226,12 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 // registration and FSM transitions asynchronously.
 func (a *Ark) handleBoard(ctx context.Context,
 	req *BoardRequest) fn.Result[WalletResp] {
+
+	if req.Service != nil {
+		if err := req.Service.Validate(); err != nil {
+			return fn.Err[WalletResp](err)
+		}
+	}
 
 	// Fetch confirmed boarding balance from the store.
 	status := BoardingStatusConfirmed
@@ -2374,6 +2396,7 @@ func (a *Ark) handleBoard(ctx context.Context,
 		}
 
 		payload := &BoardIntentPayload{
+			Service:         req.Service,
 			TargetVTXOCount: req.TargetVTXOCount,
 		}
 
@@ -2406,6 +2429,7 @@ func (a *Ark) handleBoard(ctx context.Context,
 
 	if err := roundRef.Tell(
 		ctx, &actormsg.TriggerBoardMsg{
+			Service:   req.Service,
 			Amounts:   vtxoAmounts,
 			Outpoints: boardOutpoints,
 			Change:    changeLeave,

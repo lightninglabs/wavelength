@@ -1090,7 +1090,7 @@ CREATE TABLE pending_board_intents (
     -- the confirmed boarding balance into one VTXO, non-zero fans it out.
     target_vtxo_count INTEGER NOT NULL DEFAULT 0
         CHECK (target_vtxo_count >= 0)
-);
+, service_authorization BLOB);
 
 CREATE TABLE pending_intent_anchors (
     -- The anchored outpoint. For kind='board' this is a confirmed boarding
@@ -1324,9 +1324,28 @@ CREATE TABLE rounds (
     -- today is 0 (V1); a future, genuinely different round flow is added
     -- additively (V2 == 1, and so on). NOT NULL DEFAULT 0 keeps every row a
     -- valid V1 round.
-    flow_version INTEGER NOT NULL DEFAULT 0, sweep_delay INTEGER NOT NULL DEFAULT 0,
+    flow_version INTEGER NOT NULL DEFAULT 0, sweep_delay INTEGER NOT NULL DEFAULT 0, service_authorization BLOB,
 
     FOREIGN KEY (status) REFERENCES round_statuses(status_name)
+);
+
+CREATE INDEX service_operation_input_lookup
+    ON service_operation_inputs (txid, output_index);
+
+CREATE TABLE service_operation_inputs (
+    operation_id BLOB NOT NULL REFERENCES service_operations(operation_id),
+    txid BLOB NOT NULL CHECK (length(txid) = 32),
+    output_index BIGINT NOT NULL,
+    is_forfeit BOOLEAN NOT NULL DEFAULT FALSE,
+    PRIMARY KEY (operation_id, txid, output_index)
+);
+
+CREATE TABLE service_operations (
+    operation_id BLOB PRIMARY KEY NOT NULL CHECK (length(operation_id) = 32),
+    authorization_blob BLOB NOT NULL,
+    round_id TEXT,
+    deadline_unix BIGINT NOT NULL DEFAULT 0,
+    active BOOLEAN NOT NULL DEFAULT TRUE
 );
 
 CREATE TABLE spending_reservations (

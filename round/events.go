@@ -120,6 +120,9 @@ func (e *QuoteRejected) clientEventSealed() {}
 // server FSM. The accepted outpoints are used to correlate this response to
 // the correct pending round when multiple rounds are in-flight concurrently.
 type RoundJoined struct {
+	// Admission identifies the accepted explicit service attempt.
+	Admission *roundpb.ServiceAdmission
+
 	// RoundID is the unique identifier for the round.
 	RoundID RoundID
 
@@ -391,6 +394,9 @@ func (c RoundFailureCode) IsTerminalForJob() bool {
 // BoardingFailed is emitted when an error occurs during the boarding
 // process.
 type BoardingFailed struct {
+	// Admission preserves typed service rejection and operation identity.
+	Admission *roundpb.ServiceAdmission
+
 	// RoundID is the server-assigned round id when the failure carries
 	// one (ClientRoundFailedResp). It is None for failures that arrive
 	// before a round was assigned (e.g. ClientErrorResp). When set, the
@@ -567,6 +573,10 @@ type RoundStatusReported struct {
 	// Detail is a free-form diagnostic string (e.g. the failure reason
 	// for a dead round).
 	Detail string
+
+	// Operation binds a durable service answer to its original
+	// authorization.
+	Operation *roundpb.OperationStatus
 }
 
 func (e *RoundStatusReported) clientEventSealed() {}

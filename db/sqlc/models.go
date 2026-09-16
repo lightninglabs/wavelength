@@ -280,8 +280,9 @@ type OwnedReceiveScriptSource struct {
 }
 
 type PendingBoardIntent struct {
-	IntentID        []byte
-	TargetVtxoCount int32
+	IntentID             []byte
+	TargetVtxoCount      int32
+	ServiceAuthorization []byte
 }
 
 type PendingIntent struct {
@@ -326,6 +327,7 @@ type Round struct {
 	LastUpdateTime        int64
 	FlowVersion           int32
 	SweepDelay            int32
+	ServiceAuthorization  []byte
 }
 
 type RoundBoardingIntent struct {
@@ -363,6 +365,21 @@ type RoundVtxoRequest struct {
 	OperatorPubkey []byte
 	OwnerKeyID     sql.NullInt64
 	SigningKeyID   sql.NullInt64
+}
+
+type ServiceOperation struct {
+	OperationID       []byte
+	AuthorizationBlob []byte
+	RoundID           sql.NullString
+	DeadlineUnix      int64
+	Active            bool
+}
+
+type ServiceOperationInput struct {
+	OperationID []byte
+	Txid        []byte
+	OutputIndex int64
+	IsForfeit   bool
 }
 
 type SpendingReservation struct {

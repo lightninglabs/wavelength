@@ -1,0 +1,8 @@
+<Project>
+<ProjectName>DurableRoundModels</ProjectName>
+<InputFiles>
+<PFile>src/round_commit.p</PFile>
+<PFile>test/round_commit_test.p</PFile>
+</InputFiles>
+<OutputDir>RoundPGenerated</OutputDir>
+</Project>

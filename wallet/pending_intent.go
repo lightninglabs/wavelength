@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/lib/types"
 )
 
 // PendingIntentKind discriminates the intent types persisted in the generic
@@ -66,6 +67,10 @@ type PendingIntentPayload interface {
 // the anchor outpoints needed to re-issue the original BoardRequest after a
 // restart.
 type BoardIntentPayload struct {
+	// Service retains explicit authorization across restart; it must never
+	// be replayed as a legacy request.
+	Service *types.ServiceRequest
+
 	// TargetVTXOCount mirrors BoardRequest.TargetVTXOCount: zero means
 	// "collapse the confirmed boarding balance into one VTXO", non-zero
 	// fans the balance into that many VTXOs.
@@ -82,6 +87,13 @@ func (p *BoardIntentPayload) writeIDDigest(w io.Writer) {
 	var b [4]byte
 	binary.BigEndian.PutUint32(b[:], p.TargetVTXOCount)
 	_, _ = w.Write(b[:])
+	if p.Service != nil {
+		// The wallet and persistence adapter validate authorization
+		// before accepting the payload; encoding is deterministic for
+		// that value.
+		raw, _ := p.Service.Encode()
+		_, _ = w.Write(raw)
+	}
 }
 
 func (p *BoardIntentPayload) sealPendingIntentPayload() {}

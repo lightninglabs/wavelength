@@ -29,6 +29,7 @@ import (
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/metrics"
+	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	"github.com/lightninglabs/wavelength/serverconn"
 	"github.com/lightninglabs/wavelength/timeout"
 	"github.com/lightninglabs/wavelength/wallet"
@@ -276,6 +277,18 @@ func parseTimeoutID(id timeout.ID) (RoundKeyStr, TimeoutPhase, error) {
 
 // RoundFSM wraps a state machine instance for a specific round.
 type RoundFSM struct {
+	// coldSigning holds ownership after external signing sessions are lost.
+	coldSigning bool
+
+	// env retains the exact per-round parameters used by the state machine.
+	env *ClientEnvironment
+
+	// Admission is the latest explicit service response for this operation.
+	Admission *roundpb.ServiceAdmission
+
+	// Operation is the latest authenticated durable ownership report.
+	Operation *roundpb.OperationStatus
+
 	// FSM is the state machine for this round. The baselib protofsm uses 3
 	// type parameters: InternalEvent, OutboxEvent, Env.
 	FSM *ClientStateMachine
@@ -310,6 +323,14 @@ type RoundFSM struct {
 //   - FSM processes events producing new state and outbox.
 //   - Actor processes outbox by sending messages to server/chainsource.
 type RoundClientActor struct {
+	// pendingTimers retains committed absolute deadlines for restart
+	// rearming.
+	pendingTimers map[timeout.ID]*durableClientEffect
+
+	// queueEffect captures external effects for the durable turn's commit.
+	// A nil sink uses direct delivery for the ordinary actor and FSM tests.
+	queueEffect func(context.Context, ClientOutMsg) error
+
 	// cfg contains all the configuration for this actor.
 	cfg *RoundClientConfig
 
@@ -348,6 +369,13 @@ type RoundClientActor struct {
 
 // RoundClientConfig houses the configuration for a RoundClientActor.
 type RoundClientConfig struct {
+	// MaxTreeNodes applies the live transport limit to restored pushes.
+	MaxTreeNodes int
+
+	// ServiceStore persists explicit operation ownership across cold
+	// restart.
+	ServiceStore ServiceOperationStore
+
 	// Name uniquely identifies this actor instance.
 	Name string
 
@@ -510,6 +538,7 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 	// to 0 here and will be set per-round when FSMs are created.
 	env := &ClientEnvironment{
 		RoundStore:      cfg.RoundStore,
+		ServiceStore:    cfg.ServiceStore,
 		VTXOStore:       cfg.VTXOStore,
 		Wallet:          cfg.Wallet,
 		SigningExecutor: cfg.SigningExecutor,
@@ -613,48 +642,47 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 //     accounts, so "do nothing" is strictly safer than picking a
 //     default.
 //
-// Emission is best-effort: Tell failures are logged but not
-// propagated, so a momentary ledger outage never breaks the
-// round actor's downstream dispatch loop.
+// Delivery failures propagate so the durable effect can be retried.
+// Ledger idempotency keys retain the identity of entries already delivered.
 func (a *RoundClientActor) emitVTXOsReceived(ctx context.Context,
-	n *VTXOCreatedNotification) {
+	n *VTXOCreatedNotification) error {
 
-	a.cfg.LedgerSink.WhenSome(func(sink ledger.Sink) {
-		if n == nil {
-			return
+	sink := a.cfg.LedgerSink.UnwrapOr(nil)
+	if sink == nil || n == nil {
+		return nil
+	}
+	roundID := roundIDBytes(n.RoundID)
+	for _, outflow := range n.Outflows {
+		if outflow.AmountSat <= 0 {
+			continue
 		}
-
-		roundID := roundIDBytes(n.RoundID)
-
-		for _, outflow := range n.Outflows {
-			if outflow.AmountSat <= 0 {
-				continue
-			}
-
-			a.tellLedger(ctx, sink, &ledger.VTXOSentMsg{
-				AmountSat:      outflow.AmountSat,
-				RoundID:        roundID,
-				IdempotencyKey: outflow.IdempotencyKey,
-			}, "", n.RoundID)
+		err := a.tellLedger(ctx, sink, &ledger.VTXOSentMsg{
+			AmountSat: outflow.AmountSat, RoundID: roundID,
+			IdempotencyKey: outflow.IdempotencyKey,
+		}, "", n.RoundID)
+		if err != nil {
+			return err
 		}
-
-		for _, v := range n.VTXOs {
-			if v == nil || v.Amount <= 0 {
-				continue
-			}
-
-			a.emitOwnedVTXOLedgerEntry(ctx, sink, roundID, v, n)
+	}
+	for _, v := range n.VTXOs {
+		if v == nil || v.Amount <= 0 {
+			continue
 		}
+		if err := a.emitOwnedVTXOLedgerEntry(
+			ctx, sink, roundID, v, n,
+		); err != nil {
+			return err
+		}
+	}
 
-		a.emitRoundFee(ctx, sink, roundID, n)
-	})
+	return a.emitRoundFee(ctx, sink, roundID, n)
 }
 
 // emitRoundCompleted reports a terminal round outcome to the metrics
 // actor so the waved_rounds_completed_total counter advances. The
 // round actor is the natural seam: terminal outcomes surface here as
 // RoundCompletedNotification / RoundFailedNotification, with no RPC
-// boundary that could observe them. Like ledger emission, this is
+// boundary that could observe them. Metric emission is
 // best-effort and fire-and-forget — a Tell failure is logged at debug
 // level and never fails the enclosing notification dispatch. Status is
 // "confirmed" or "failed", matching the counter's label set.
@@ -749,13 +777,12 @@ func (a *RoundClientActor) emitRoundJoined(ctx context.Context,
 // transition helper clamps to zero when outputs exceed inputs so
 // a malformed intent never produces a negative ledger row.
 //
-// Emission is best-effort: a Tell failure does not fail the
-// enclosing notification dispatch.
+// Delivery errors leave the containing durable effect pending.
 func (a *RoundClientActor) emitRoundFee(ctx context.Context, sink ledger.Sink,
-	roundID [16]byte, n *VTXOCreatedNotification) {
+	roundID [16]byte, n *VTXOCreatedNotification) error {
 
 	if n.OperatorFeeSat <= 0 {
-		return
+		return nil
 	}
 
 	feeType := n.OperatorFeeType
@@ -763,7 +790,7 @@ func (a *RoundClientActor) emitRoundFee(ctx context.Context, sink ledger.Sink,
 		feeType = ledger.FeeTypeRefresh
 	}
 
-	a.tellLedger(ctx, sink, &ledger.FeePaidMsg{
+	return a.tellLedger(ctx, sink, &ledger.FeePaidMsg{
 		RoundID:     roundID,
 		AmountSat:   n.OperatorFeeSat,
 		FeeType:     feeType,
@@ -779,14 +806,14 @@ func (a *RoundClientActor) emitRoundFee(ctx context.Context, sink ledger.Sink,
 // for the other cases.
 func (a *RoundClientActor) emitOwnedVTXOLedgerEntry(ctx context.Context,
 	sink ledger.Sink, roundID [16]byte, v *ClientVTXO,
-	n *VTXOCreatedNotification) {
+	n *VTXOCreatedNotification) error {
 
 	outpoint := v.Outpoint.String()
 
 	switch v.Origin {
 	case types.VTXOOriginRoundBoarding:
 		// Genuine boarding: wallet \u2192 VTXO.
-		a.tellLedger(ctx, sink, &ledger.VTXOReceivedMsg{
+		return a.tellLedger(ctx, sink, &ledger.VTXOReceivedMsg{
 			OutpointHash:  v.Outpoint.Hash,
 			OutpointIndex: v.Outpoint.Index,
 			AmountSat:     int64(v.Amount),
@@ -803,13 +830,16 @@ func (a *RoundClientActor) emitOwnedVTXOLedgerEntry(ctx context.Context,
 		// a per-VTXO idempotency key so two refreshes in one
 		// round don't collide on the round-scoped partial
 		// unique index.
-		a.tellLedger(ctx, sink, &ledger.VTXOSentMsg{
+		err := a.tellLedger(ctx, sink, &ledger.VTXOSentMsg{
 			Outpoint:  v.Outpoint,
 			AmountSat: int64(v.Amount),
 			RoundID:   roundID,
 		}, outpoint, n.RoundID)
+		if err != nil {
+			return err
+		}
 
-		a.tellLedger(ctx, sink, &ledger.VTXOReceivedMsg{
+		return a.tellLedger(ctx, sink, &ledger.VTXOReceivedMsg{
 			OutpointHash:  v.Outpoint.Hash,
 			OutpointIndex: v.Outpoint.Index,
 			AmountSat:     int64(v.Amount),
@@ -819,7 +849,7 @@ func (a *RoundClientActor) emitOwnedVTXOLedgerEntry(ctx context.Context,
 
 	case types.VTXOOriginRoundTransfer:
 		// Actual in-round receive from another participant.
-		a.tellLedger(ctx, sink, &ledger.VTXOReceivedMsg{
+		return a.tellLedger(ctx, sink, &ledger.VTXOReceivedMsg{
 			OutpointHash:  v.Outpoint.Hash,
 			OutpointIndex: v.Outpoint.Index,
 			AmountSat:     int64(v.Amount),
@@ -839,14 +869,15 @@ func (a *RoundClientActor) emitOwnedVTXOLedgerEntry(ctx context.Context,
 			slog.String("round_id", n.RoundID),
 			slog.String("origin", v.Origin.String()))
 	}
+
+	return nil
 }
 
 // tellLedger is a small helper wrapping sink.Tell with the
-// per-outpoint warning path, so the per-origin branches above
-// stay short. Tell failures log-and-return rather than aborting
-// the enclosing loop.
+// per-outpoint warning path. A failure aborts this delivery so it can
+// be retried with the same ledger idempotency keys.
 func (a *RoundClientActor) tellLedger(ctx context.Context, sink ledger.Sink,
-	msg ledger.LedgerMsg, outpoint, roundID string) {
+	msg ledger.LedgerMsg, outpoint, roundID string) error {
 
 	if err := sink.Tell(ctx, msg); err != nil {
 		a.log.WarnS(ctx,
@@ -855,7 +886,11 @@ func (a *RoundClientActor) tellLedger(ctx context.Context, sink ledger.Sink,
 				fmt.Sprintf("%T", msg)),
 			slog.String("outpoint", outpoint),
 			slog.String("round_id", roundID))
+
+		return err
 	}
+
+	return nil
 }
 
 // roundIDBytes parses the canonical UUID string form of a RoundID
@@ -925,37 +960,18 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	fsmPrefix := roundID.LogPrefix()
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
-	env := &ClientEnvironment{
-		RoundStore:      a.cfg.RoundStore,
-		VTXOStore:       a.cfg.VTXOStore,
-		Wallet:          a.cfg.Wallet,
-		SigningExecutor: a.env.SigningExecutor,
-		OperatorTerms:   a.cfg.OperatorTerms,
-		ChainParams:     a.cfg.ChainParams,
-		MaxOperatorFee:  a.cfg.MaxOperatorFee,
-		AutoRefreshFeeFloor: a.cfg.
-			AutoRefreshFeeFloor,
-		AutoRefreshFeeRatePPM: a.cfg.
-			AutoRefreshFeeRatePPM,
-		Log:                    fsmLogger,
-		StartHeight:            startHeight,
-		QueryBestHeight:        a.queryBestHeight,
-		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
-		ForfeitCollectionTimeout: a.
-			env.ForfeitCollectionTimeout,
-		RegistrationTimeout:    a.env.RegistrationTimeout,
-		StatusReconcileTimeout: a.env.StatusReconcileTimeout,
-		RoundKey:               RoundKeyStr(roundID.KeyString()),
-		OwnedScriptChecker:     a.cfg.OwnedScriptChecker,
-		OwnedScriptRegistrar:   a.cfg.OwnedScriptRegistrar,
-	}
+	env := *a.env
+	env.Log = fsmLogger
+	env.StartHeight = startHeight
+	env.QueryBestHeight = a.queryBestHeight
+	env.RoundKey = RoundKeyStr(roundID.KeyString())
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
 		ErrorReporter: newLoggerErrorReporter(fsmLogger),
 		InitialState:  state,
-		Env:           env,
+		Env:           &env,
 	}
-	fsm := protofsm.NewStateMachine(fsmCfg)
+	fsm := protofsm.NewInlineStateMachine(fsmCfg)
 	a.startRoundFSM(ctx, &fsm)
 
 	a.log.InfoS(ctx, "Created round FSM from checkpoint",
@@ -970,6 +986,7 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	)
 
 	return &RoundFSM{
+		env:          &env,
 		FSM:          &fsm,
 		Key:          roundID,
 		RoundID:      round.RoundID,
@@ -1002,40 +1019,22 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 	fsmPrefix := tempKey.LogPrefix()
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
-	env := &ClientEnvironment{
-		RoundStore:      a.cfg.RoundStore,
-		VTXOStore:       a.cfg.VTXOStore,
-		Wallet:          a.cfg.Wallet,
-		SigningExecutor: a.env.SigningExecutor,
-		OperatorTerms:   a.cfg.OperatorTerms,
-		ChainParams:     a.cfg.ChainParams,
-		MaxOperatorFee:  a.cfg.MaxOperatorFee,
-		AutoRefreshFeeFloor: a.cfg.
-			AutoRefreshFeeFloor,
-		AutoRefreshFeeRatePPM: a.cfg.
-			AutoRefreshFeeRatePPM,
-		Log:                    fsmLogger,
-		StartHeight:            startHeight,
-		QueryBestHeight:        a.queryBestHeight,
-		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
-		ForfeitCollectionTimeout: a.
-			env.ForfeitCollectionTimeout,
-		RegistrationTimeout:    a.env.RegistrationTimeout,
-		StatusReconcileTimeout: a.env.StatusReconcileTimeout,
-		RoundKey:               RoundKeyStr(tempKey.KeyString()),
-		OwnedScriptChecker:     a.cfg.OwnedScriptChecker,
-		OwnedScriptRegistrar:   a.cfg.OwnedScriptRegistrar,
-	}
+	env := *a.env
+	env.Log = fsmLogger
+	env.StartHeight = startHeight
+	env.QueryBestHeight = a.queryBestHeight
+	env.RoundKey = RoundKeyStr(tempKey.KeyString())
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
 		ErrorReporter: newLoggerErrorReporter(fsmLogger),
 		InitialState:  &Idle{},
-		Env:           env,
+		Env:           &env,
 	}
-	fsm := protofsm.NewStateMachine(fsmCfg)
+	fsm := protofsm.NewInlineStateMachine(fsmCfg)
 	a.startRoundFSM(ctx, &fsm)
 
 	roundFSM := &RoundFSM{
+		env: &env,
 		FSM: &fsm,
 		Key: tempKey,
 	}
@@ -1264,6 +1263,7 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 			return &ConfirmationEvent{
 				Txid:          ce.Txid,
 				BlockHeight:   ce.BlockHeight,
+				BlockHash:     ce.BlockHash,
 				Confirmations: ce.NumConfs,
 				Tx:            ce.Tx,
 			}
@@ -1327,6 +1327,10 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 func (a *RoundClientActor) askEventAndProcessOutbox(ctx context.Context,
 	roundFSM *RoundFSM, event ClientEvent) error {
 
+	if roundFSM.coldSigning {
+		return a.processColdRoundEvent(ctx, roundFSM, event)
+	}
+
 	future := roundFSM.FSM.AskEvent(ctx, event)
 	result := future.Await(ctx)
 
@@ -1375,6 +1379,13 @@ func (a *RoundClientActor) replayCheckpointedServerMessages(
 
 	inputSigState, ok := state.(*InputSigSentState)
 	if !ok {
+		return nil
+	}
+
+	// An explicit attempt has an absolute participation deadline. A cold
+	// restart retains its checkpoint and reconciles ownership, but does not
+	// resume the signing ceremony from a stale request authorization.
+	if inputSigState.Intents.Service != nil {
 		return nil
 	}
 
@@ -1493,54 +1504,9 @@ func (a *RoundClientActor) Start(ctx context.Context) error {
 		slog.String("name", a.cfg.Name),
 	)
 
-	// Register with the wallet actor to receive BoardingUtxoConfirmedEvent
-	// notifications. The wallet handles all boarding address monitoring and
-	// will notify us when new UTXOs are confirmed.
-	mappedRef := actor.NewMapInputRef(
-		a.cfg.SelfRef,
-		func(
-			evt wallet.BoardingUtxoConfirmedEvent,
-		) actormsg.RoundReceivable {
-
-			return &WalletBoardingConfirmed{
-				Intent: evt.BoardingIntent,
-			}
-		},
-	)
-
-	// Request all historical confirmations. The wallet will send backlog
-	// events for any confirmed intents.
-	regReq := &wallet.RegisterConfirmationNotifierRequest{
-		NotifierID:    fmt.Sprintf("round-actor-%s", a.cfg.Name),
-		NotifyActor:   mappedRef,
-		BacklogHeight: fn.None[int32](),
-		MinConf:       fn.Some(a.cfg.OperatorTerms.MinConfirmations),
+	if err := a.registerWalletNotifier(ctx, a.cfg); err != nil {
+		return err
 	}
-
-	// Bounded like every other Ask into the wallet: a wallet that never
-	// answers must fail the start with a diagnosable error instead of
-	// hanging daemon startup with no output.
-	//
-	// NOTE: this shares the steady-state budget rather than taking a longer
-	// one of its own, which is the deliberate trade: a wallet still
-	// replaying intents past 30s at boot turns a slow start into a failed
-	// start and a restart, instead of a silent hang. Nothing is left
-	// half-initialized — initRoundActor propagates the error and the daemon
-	// refuses to come up — and the registration is a read that the next
-	// attempt redoes. If boot replay ever grows past this, it wants its own
-	// longer startup constant, not a longer steady-state one.
-	if _, err := a.askWallet(ctx, regReq); err != nil {
-		return fmt.Errorf("register with wallet: %w", err)
-	}
-
-	a.log.InfoS(
-		ctx,
-		"Registered with wallet actor for boarding confirmations",
-		slog.Int(
-			"min_confirmations",
-			int(a.cfg.OperatorTerms.MinConfirmations),
-		),
-	)
 
 	// Load active rounds (commitment tx broadcast, not yet confirmed) and
 	// resume their FSMs. These rounds have server-assigned RoundIDs from
@@ -1620,6 +1586,10 @@ func (a *RoundClientActor) Start(ctx context.Context) error {
 		}
 	}
 
+	if err := a.restoreDeferredServiceOperations(ctx); err != nil {
+		return err
+	}
+
 	a.log.InfoS(ctx, "Round client actor started")
 
 	return nil
@@ -1633,6 +1603,21 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 	msg actormsg.RoundReceivable) fn.Result[actormsg.RoundActorResp] {
 
 	switch m := msg.(type) {
+	case *durableClientEffect:
+		if err := a.deliverDurableEffect(ctx, m); err != nil {
+			return fn.Err[actormsg.RoundActorResp](err)
+		}
+
+		return fn.Ok[actormsg.RoundActorResp](nil)
+
+	case *durableClientCommand:
+		command, err := m.message(a.cfg.ChainParams)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](err)
+		}
+
+		return a.Receive(ctx, command)
+
 	case *WalletBoardingConfirmed:
 		return a.handleWalletBoardingConfirmed(ctx, m)
 
@@ -1643,6 +1628,14 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 		return a.handleVTXORequestsReceived(ctx, m)
 
 	case *ServerMessageNotification:
+		if m.Message == nil {
+			if err := m.restoreWireEvent(
+				a.cfg.MaxTreeNodes,
+			); err != nil {
+				return fn.Err[actormsg.RoundActorResp](err)
+			}
+		}
+
 		return a.handleServerMessage(ctx, m)
 
 	case *GetClientStateRequest:
@@ -1667,6 +1660,7 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 		return a.handleRegisterIntent(ctx, &RegisterIntentRequest{
 			Package: &IntentPackage{Intents: Intents{
 				Forfeits: m.Forfeits,
+				Service:  cloneServiceRequest(m.Service),
 				VTXOs:    m.VTXOs,
 				Leaves:   m.Leaves,
 			}},
@@ -2076,6 +2070,12 @@ func (a *RoundClientActor) handleRoundJoined(ctx context.Context,
 		)
 	}
 
+	if err := validateRoundAdmission(ctx, roundFSM, event); err != nil {
+		return fn.Err[actormsg.RoundActorResp](err)
+	}
+
+	roundFSM.Admission = event.Admission
+
 	// Re-key: Remove old temp key, add with new RoundID.
 	oldKeyStr := RoundKeyStr(roundFSM.Key.KeyString())
 	delete(a.rounds, oldKeyStr)
@@ -2212,6 +2212,27 @@ func (a *RoundClientActor) handleServerMessage(ctx context.Context,
 		return a.handleRoundJoined(ctx, joined)
 	}
 
+	if report, ok := msg.Message.(*RoundStatusReported); ok &&
+		report.Operation != nil {
+
+		if pending := a.findReconcilingOperation(
+			ctx, report.Operation,
+		); pending != nil {
+
+			pending.Operation = report.Operation
+			err := a.askEventAndProcessOutbox(ctx, pending, report)
+			if err != nil {
+				return fn.Err[actormsg.RoundActorResp](err)
+			}
+
+			return fn.Ok[actormsg.RoundActorResp](
+				&ServerMessageResponse{
+					Success: true,
+				},
+			)
+		}
+	}
+
 	// Try to route by RoundID first.
 	roundID, hasRoundID := extractRoundID(msg.Message)
 
@@ -2231,6 +2252,10 @@ func (a *RoundClientActor) handleServerMessage(ctx context.Context,
 	}
 	if routed {
 		return routeRes
+	}
+
+	if report, ok := msg.Message.(*RoundStatusReported); ok {
+		roundFSM.Operation = report.Operation
 	}
 
 	err := a.askEventAndProcessOutbox(ctx, roundFSM, msg.Message)
@@ -2295,6 +2320,23 @@ var ErrNoPendingRound = errors.New("no pending round")
 // the caller short-circuits with a routing failure.
 func (a *RoundClientActor) routeServerMessageToPending(ctx context.Context,
 	msg ClientEvent) (*RoundFSM, fn.Result[actormsg.RoundActorResp], bool) {
+
+	if failure, ok := msg.(*BoardingFailed); ok &&
+		failure.Admission != nil {
+
+		matched := a.findServiceOperation(
+			ctx, failure.Admission,
+		)
+		if matched == nil {
+			return nil, fn.Err[actormsg.RoundActorResp](
+				ErrNoPendingRound,
+			), true
+		}
+
+		matched.Admission = failure.Admission
+
+		return matched, fn.Result[actormsg.RoundActorResp]{}, false
+	}
 
 	roundFSM := a.findPendingRound()
 
@@ -2417,9 +2459,11 @@ func (a *RoundClientActor) handleGetState(ctx context.Context,
 		}
 
 		states[string(keyStr)] = FSMStateInfo{
-			State:   clientState,
-			IsTemp:  roundFSM.Key.IsTemp(),
-			RoundID: roundFSM.RoundID,
+			Admission: roundFSM.Admission,
+			Operation: roundFSM.Operation,
+			State:     clientState,
+			IsTemp:    roundFSM.Key.IsTemp(),
+			RoundID:   roundFSM.RoundID,
 		}
 	}
 
@@ -2680,6 +2724,15 @@ func (a *RoundClientActor) handleConfirmation(ctx context.Context,
 func (a *RoundClientActor) handleTimeout(ctx context.Context,
 	msg *TimeoutMsg) fn.Result[actormsg.RoundActorResp] {
 
+	current, err := a.currentTimerCallback(msg)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](err)
+	}
+	if !current {
+		return fn.Ok[actormsg.RoundActorResp](nil)
+	}
+	delete(a.pendingTimers, msg.TimeoutID)
+
 	keyStr, phase, err := parseTimeoutID(msg.TimeoutID)
 	if err != nil {
 		a.log.WarnS(ctx, "Failed to parse timeout ID",
@@ -2750,6 +2803,42 @@ func (a *RoundClientActor) handleTimeout(ctx context.Context,
 			RoundID: roundID,
 		}
 
+	case TimeoutPhaseParticipation:
+		if roundFSM.Admission == nil {
+			return fn.Ok[actormsg.RoundActorResp](nil)
+		}
+		deadline := time.Unix(
+			roundFSM.Admission.ParticipationDeadlineUnix, 0,
+		)
+		remaining := deadline.Sub(roundFSM.env.now())
+		if remaining > 0 {
+			err := a.processOutbox(ctx, []ClientOutMsg{
+				&StartTimeoutReq{
+					RoundKey: keyStr, Phase: phase,
+					Duration: remaining,
+				},
+			})
+			if err != nil {
+				return fn.Err[actormsg.RoundActorResp](err)
+			}
+
+			return fn.Ok[actormsg.RoundActorResp](nil)
+		}
+		state, err := fsmState(ctx, roundFSM.FSM)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](err)
+		}
+		if state.IsTerminal() {
+			return fn.Ok[actormsg.RoundActorResp](nil)
+		}
+		if _, checkpointed := state.(*InputSigSentState); checkpointed {
+			timeoutEvt = &StatusReconcileTimedOut{
+				RoundID: roundFSM.RoundID,
+			}
+		} else {
+			timeoutEvt = participationFailure()
+		}
+
 	case TimeoutPhaseRegistration:
 		timeoutEvt = &RegistrationTimedOut{}
 
@@ -2793,11 +2882,39 @@ func (a *RoundClientActor) handleTimeout(ctx context.Context,
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }
 
-// processOutbox processes messages emitted by the FSM via Outbox and routes
-// them to the appropriate destination (server or chainsource).
+// processOutbox applies bookkeeping and captures or delivers external effects.
+func (a *RoundClientActor) processOutbox(ctx context.Context,
+	outbox []ClientOutMsg) error {
+
+	for _, msg := range outbox {
+		handled, err := a.processLocalOutbox(ctx, msg)
+		if err != nil {
+			return err
+		}
+		if handled {
+			continue
+		}
+		if a.queueEffect != nil {
+			if err := a.queueEffect(ctx, msg); err != nil {
+				return err
+			}
+
+			continue
+		}
+		if err := a.deliverOutbox(
+			ctx, []ClientOutMsg{msg},
+		); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// deliverOutbox routes committed external effects to their destinations.
 //
 //nolint:funlen
-func (a *RoundClientActor) processOutbox(ctx context.Context,
+func (a *RoundClientActor) deliverOutbox(ctx context.Context,
 	outbox []ClientOutMsg) error {
 
 	for _, msg := range outbox {
@@ -2837,6 +2954,7 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 
 				return &TimeoutMsg{
 					TimeoutID: expired.ID,
+					deadline:  m.deadline,
 				}
 			}
 			callbackRef := timeout.MapTimeoutExpired(
@@ -2867,9 +2985,8 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 
 		case *ReleaseForfeitReservation:
 			// Release forfeit-reserved VTXOs back to LiveState via
-			// the VTXO manager. Best-effort and fire-and-forget: a
-			// failed release is logged but must not halt outbox
-			// processing for the (already failed) round. Routing
+			// the VTXO manager. Failed deliveries remain pending
+			// so the durable outbox can retry the release. Routing
 			// through the manager keeps its reservation set in sync
 			// so the released inputs can be re-selected for a
 			// retry.
@@ -2890,6 +3007,8 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 						"outpoints", len(m.Outpoints),
 					),
 				)
+
+				return err
 			}
 
 		case *DropCustomForfeitReservation:
@@ -2916,6 +3035,8 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 							len(m.Outpoints),
 						),
 					)
+
+					return err
 				}
 			}
 			if a.cfg.DropCustomForfeitSigningContexts != nil {
@@ -2933,6 +3054,8 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 							len(m.Outpoints),
 						),
 					)
+
+					return err
 				}
 			}
 
@@ -2949,6 +3072,8 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 						"Failed to notify VTXO manager",
 						err,
 					)
+
+					return err
 				}
 			}
 
@@ -2959,127 +3084,9 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			// transfer (and pairing FeePaidMsg for the operator
 			// fee) requires the round FSM to surface the fee and
 			// the boarding-input provenance, which is TODO.
-			a.emitVTXOsReceived(ctx, m)
-
-		case *RoundCompletedNotification:
-			a.log.InfoS(
-				ctx,
-				"Processing round completion notification",
-				slog.String("round_id", m.RoundID.String()),
-				slog.String("txid", m.TxID.String()),
-			)
-
-			// Round FSM reached ConfirmedState. Perform actor
-			// cleanup.
-			err := a.onRoundComplete(
-				ctx, m.RoundID, m.TxID, m.ConfInfo,
-			)
-			if err != nil {
-				return fmt.Errorf("failed to complete round "+
-					"%s: %w", m.RoundID, err)
+			if err := a.emitVTXOsReceived(ctx, m); err != nil {
+				return err
 			}
-
-			// Count the confirmed round for observability.
-			a.emitRoundCompleted(
-				ctx, m.RoundID.String(),
-				"confirmed",
-			)
-
-		case *RoundCheckpointedNotification:
-			a.log.InfoS(
-				ctx,
-				"Processing round checkpoint notification",
-				slog.String("round_id", m.RoundID.String()),
-			)
-
-			// Find the round by its RoundID (should already be
-			// re-keyed at this point).
-			keyStr := RoundKeyStr(m.RoundID.KeyString())
-			roundFSM, exists := a.rounds[keyStr]
-			if !exists {
-				return fmt.Errorf("round not found for "+
-					"checkpoint: %s", m.RoundID)
-			}
-
-			// Get the current state to extract commitment tx info.
-			state, err := fsmState(ctx, roundFSM.FSM)
-			if err != nil {
-				return fmt.Errorf("failed to get state: %w",
-					err)
-			}
-
-			inputSigState, ok := state.(*InputSigSentState)
-			if !ok {
-				return fmt.Errorf("round not in "+
-					"InputSigSentState, got %T", state)
-			}
-
-			// Update round FSM with commitment tx info.
-			txid := inputSigState.CommitmentTx.UnsignedTx.TxHash()
-			roundFSM.TxID = txid
-			roundFSM.CommitmentTx = fn.Some(
-				inputSigState.CommitmentTx,
-			)
-
-			// Index the transaction before the confirmation request
-			// emitted by the FSM can be delivered. The FSM outbox
-			// owns the steady-state registration; registering again
-			// here creates two notifier subscriptions for the same
-			// tx. A restarted actor still re-registers active
-			// rounds in Start.
-			a.commitmentTxIndex[txid] = keyStr
-
-			a.log.InfoS(ctx, "Round checkpoint processed",
-				slog.String("round_id", m.RoundID.String()),
-				slog.String("commitment_txid", txid.String()),
-			)
-
-		case *RoundFailedNotification:
-			// Round entered failed state. Log for observability.
-			roundIDStr := "none"
-			m.RoundID.WhenSome(func(id RoundID) {
-				roundIDStr = id.String()
-			})
-			if m.Recoverable {
-				a.log.InfoS(ctx, "Round failed",
-					slog.Any("err", m.OriginalError),
-					slog.String("round_id", roundIDStr),
-					slog.String("reason", m.Reason),
-					slog.Bool("recoverable", true),
-				)
-			} else {
-				a.log.WarnS(ctx, "Round failed",
-					m.OriginalError,
-					slog.String("round_id", roundIDStr),
-					slog.String("reason", m.Reason),
-					slog.Bool("recoverable", false),
-				)
-			}
-
-			// Count the failed round for observability. The
-			// counter pairs with the confirmed branch above so an
-			// operator can track the join-to-completion ratio.
-			a.emitRoundCompleted(ctx, roundIDStr, "failed")
-
-			// Retire the durable side of the round. Reaping only
-			// drops the in-memory FSM, so without this the
-			// checkpoint row stays in ListActiveRounds and is
-			// re-hydrated on every start, and the deposits it
-			// adopted stay adopted: out of the sweep and pinned
-			// against the board limit for good.
-			m.RoundID.WhenSome(func(id RoundID) {
-				a.retireFailedRound(ctx, id)
-			})
-
-		case *TerminalJobFailedNotification:
-			// A terminal-for-job round failure (e.g. the operator
-			// could not fund the commitment tx). The accompanying
-			// ReleaseForfeitReservation has already returned the
-			// VTXOs to the live set; here we drop the originating
-			// job's persisted pending intent so restart replay does
-			// not re-submit the same inputs into the same wall, and
-			// surface the job's activity entry as failed.
-			a.handleTerminalJobFailure(ctx, m)
 
 		case *ForfeitRequestToVTXO:
 			// Route forfeit request to VTXO actor via service key.
@@ -3184,6 +3191,8 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 							"outpoint",
 							m.VTXOOutpoint.String(),
 						))
+
+					return err
 				}
 				a.log.InfoS(ctx,
 					"Sent forfeit confirmed to VTXO",
@@ -3240,6 +3249,7 @@ func (a *RoundClientActor) processConfirmationRequest(
 			return &ConfirmationEvent{
 				Txid:          ce.Txid,
 				BlockHeight:   ce.BlockHeight,
+				BlockHash:     ce.BlockHash,
 				Confirmations: ce.NumConfs,
 				Tx:            ce.Tx,
 			}
@@ -3294,6 +3304,8 @@ func (a *RoundClientActor) processConfirmationRequest(
 			"Failed to register confirmation",
 			err,
 		)
+
+		return err
 	}
 
 	return nil
@@ -3664,7 +3676,16 @@ func (a *RoundClientActor) handleForfeitSignatureResponse(ctx context.Context,
 func (a *RoundClientActor) askWallet(ctx context.Context,
 	msg wallet.WalletMsg) (wallet.WalletResp, error) {
 
-	timeout := a.cfg.WalletAskTimeout
+	return a.askWalletWithConfig(ctx, a.cfg, msg)
+}
+
+// askWalletWithConfig also supports startup outside the serialized actor turn.
+// That caller supplies immutable config rather than reading turn-bound stores.
+func (a *RoundClientActor) askWalletWithConfig(ctx context.Context,
+	cfg *RoundClientConfig, msg wallet.WalletMsg) (wallet.WalletResp,
+	error) {
+
+	timeout := cfg.WalletAskTimeout
 	if timeout <= 0 {
 		timeout = defaultWalletAskTimeout
 	}
@@ -3672,7 +3693,7 @@ func (a *RoundClientActor) askWallet(ctx context.Context,
 	askCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	resp, err := a.cfg.WalletActor.Ask(askCtx, msg).Await(askCtx).Unpack()
+	resp, err := cfg.WalletActor.Ask(askCtx, msg).Await(askCtx).Unpack()
 	if errors.Is(err, context.DeadlineExceeded) {
 		a.log.ErrorS(ctx, "Wallet actor did not answer in time; "+
 			"giving up to keep the round actor live", err,
@@ -3835,6 +3856,7 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 	}
 
 	pkg := &IntentPackage{Intents: Intents{
+		Service:  cloneServiceRequest(cmd.Service),
 		Boarding: boardingIntents,
 		VTXOs:    requests,
 		Leaves:   leaves,
@@ -3863,4 +3885,60 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 	)
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
+}
+
+// registerWalletNotifier reconnects process-local wallet callbacks at startup.
+func (a *RoundClientActor) registerWalletNotifier(ctx context.Context,
+	cfg *RoundClientConfig) error {
+
+	// Register with the wallet actor to receive BoardingUtxoConfirmedEvent
+	// notifications. The wallet handles all boarding address monitoring and
+	// will notify us when new UTXOs are confirmed.
+	mappedRef := actor.NewMapInputRef(
+		cfg.SelfRef,
+		func(
+			evt wallet.BoardingUtxoConfirmedEvent,
+		) actormsg.RoundReceivable {
+
+			return &WalletBoardingConfirmed{
+				Intent: evt.BoardingIntent,
+			}
+		},
+	)
+
+	// Request all historical confirmations. The wallet will send backlog
+	// events for any confirmed intents.
+	regReq := &wallet.RegisterConfirmationNotifierRequest{
+		NotifierID:    fmt.Sprintf("round-actor-%s", cfg.Name),
+		NotifyActor:   mappedRef,
+		BacklogHeight: fn.None[int32](),
+		MinConf:       fn.Some(cfg.OperatorTerms.MinConfirmations),
+	}
+
+	// Bounded like every other Ask into the wallet: a wallet that never
+	// answers must fail the start with a diagnosable error instead of
+	// hanging daemon startup with no output.
+	//
+	// NOTE: this shares the steady-state budget rather than taking a longer
+	// one of its own, which is the deliberate trade: a wallet still
+	// replaying intents past 30s at boot turns a slow start into a failed
+	// start and a restart, instead of a silent hang. Nothing is left
+	// half-initialized — initRoundActor propagates the error and the daemon
+	// refuses to come up — and the registration is a read that the next
+	// attempt redoes. If boot replay ever grows past this, it wants its own
+	// longer startup constant, not a longer steady-state one.
+	if _, err := a.askWalletWithConfig(ctx, cfg, regReq); err != nil {
+		return fmt.Errorf("register with wallet: %w", err)
+	}
+
+	a.log.InfoS(
+		ctx,
+		"Registered with wallet actor for boarding confirmations",
+		slog.Int(
+			"min_confirmations",
+			int(cfg.OperatorTerms.MinConfirmations),
+		),
+	)
+
+	return nil
 }

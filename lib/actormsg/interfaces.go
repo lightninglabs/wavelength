@@ -65,6 +65,9 @@ type VTXOManagerResp interface {
 type RegisterIntentMsg struct {
 	actor.BaseMessage
 
+	// Service binds execution mode, expiry, and fee authorization.
+	Service *types.ServiceRequest
+
 	// Forfeits contains the VTXOs being forfeited as inputs.
 	Forfeits []types.ForfeitRequest
 
@@ -101,6 +104,9 @@ func (m *RegisterIntentMsg) MessageType() string {
 // round packages.
 type TriggerBoardMsg struct {
 	actor.BaseMessage
+
+	// Service selects explicit execution for this boarding operation.
+	Service *types.ServiceRequest
 
 	// Amounts contains the VTXO output amounts to register for the next
 	// round. Typically a single amount equal to the confirmed boarding

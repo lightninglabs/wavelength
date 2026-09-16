@@ -336,6 +336,15 @@ func (s *RoundPersistenceStore) HasForfeitRoundCheckpoint(ctx context.Context,
 func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 	state round.ClientState) error {
 
+	var serviceBytes []byte
+	if r.Intents.Service != nil {
+		var err error
+		serviceBytes, err = r.Intents.Service.Encode()
+		if err != nil {
+			return err
+		}
+	}
+
 	writeTxOpts := WriteTxOption()
 
 	return s.db.ExecTx(ctx, writeTxOpts, func(q RoundStore) error {
@@ -359,6 +368,7 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 		// we only persist at the "point of no return" after sending
 		// input signatures. Confirmation info is None at this stage.
 		roundParams := InsertRoundParams{
+			ServiceAuthorization:  serviceBytes,
 			RoundID:               r.RoundID.String(),
 			ConfirmationHeight:    sql.NullInt32{},
 			ConfirmationBlockHash: nil,
@@ -1110,6 +1120,15 @@ func (s *RoundPersistenceStore) dbRoundToDomainRound(ctx context.Context,
 		SweepDelay:  uint32(dbRound.SweepDelay),
 	}
 
+	if len(dbRound.ServiceAuthorization) != 0 {
+		r.Intents.Service, err = types.DecodeServiceRequest(
+			dbRound.ServiceAuthorization,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	// Populate confirmation info if present.
 	if dbRound.ConfirmationHeight.Valid &&
 		len(dbRound.ConfirmationBlockHash) == chainhash.HashSize {
@@ -1470,6 +1489,15 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 		VTXOs:    vtxos,
 		Forfeits: forfeits,
 	}
+	if len(dbRound.ServiceAuthorization) != 0 {
+		state.Intents.Service, err = types.DecodeServiceRequest(
+			dbRound.ServiceAuthorization,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	state.InputSigs = inputSigs
 
 	// Deserialize client trees.

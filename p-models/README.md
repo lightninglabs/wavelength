@@ -28,6 +28,8 @@ single regression test for the exact SQL row sequence.
   implementation.
 - `durableactor/traces/` stores concrete scenarios shared by the model
   documentation and the Go bridge.
+- `durableround/` specifies round checkpoint/outbox/ack atomicity and
+  exclusive attempt ownership. See its [scope and runner](durableround/README.md).
 - `scripts/` contains shared entrypoints for compiling and checking models.
 
 ## Durable Actor Mailbox

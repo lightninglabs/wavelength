@@ -19,8 +19,10 @@ type Querier interface {
 	// round_uuid IS NULL guard makes re-running the backfill (e.g. after a crash
 	// mid-migration) a no-op for already-converted rows.
 	BackfillLedgerRoundUuid(ctx context.Context, arg BackfillLedgerRoundUuidParams) error
+	BindServiceOperation(ctx context.Context, arg BindServiceOperationParams) (int64, error)
 	CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) (int64, error)
 	ClearPendingIntentAnchorByOutpoint(ctx context.Context, arg ClearPendingIntentAnchorByOutpointParams) error
+	CompleteServiceOperation(ctx context.Context, operationID []byte) error
 	CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTLCRecoveryJobParams) (int64, error)
 	// CountActivityEntriesByStatus returns the number of current-state rows in the
 	// given status. It backs the wallet status summary's pending count, which must
@@ -139,6 +141,7 @@ type Querier interface {
 	GetRoundClientTree(ctx context.Context, arg GetRoundClientTreeParams) (RoundClientTree, error)
 	GetRoundClientTrees(ctx context.Context, roundID string) ([]RoundClientTree, error)
 	GetRoundVtxoRequests(ctx context.Context, roundID string) ([]RoundVtxoRequest, error)
+	GetServiceOperation(ctx context.Context, operationID []byte) (ServiceOperation, error)
 	// Returns cumulative Ark protocol fees paid to the operator (fees_paid
 	// account only). Does not include L1 chain/miner fees (onchain_fees).
 	GetTotalOperatorFeesPaid(ctx context.Context) (int64, error)
@@ -152,6 +155,7 @@ type Querier interface {
 	// GetVTXOReplacement retrieves the replacement VTXO outpoint for a forfeited
 	// VTXO. Returns NULL if not forfeited or no replacement recorded.
 	GetVTXOReplacement(ctx context.Context, arg GetVTXOReplacementParams) (GetVTXOReplacementRow, error)
+	HasServiceInputOwner(ctx context.Context, arg HasServiceInputOwnerParams) (bool, error)
 	// Boarding address queries.
 	InsertBoardingAddress(ctx context.Context, arg InsertBoardingAddressParams) error
 	// Boarding intent queries.
@@ -190,6 +194,7 @@ type Querier interface {
 	InsertRoundClientTree(ctx context.Context, arg InsertRoundClientTreeParams) error
 	// Round VTXO request queries.
 	InsertRoundVtxoRequest(ctx context.Context, arg InsertRoundVtxoRequestParams) error
+	InsertServiceOperationInput(ctx context.Context, arg InsertServiceOperationInputParams) error
 	// vHTLC recovery job queries.
 	InsertVHTLCRecoveryJob(ctx context.Context, arg InsertVHTLCRecoveryJobParams) error
 	// VTXO queries.
@@ -231,6 +236,7 @@ type Querier interface {
 	ListClientLedgerEntries(ctx context.Context, arg ListClientLedgerEntriesParams) ([]LedgerEntry, error)
 	ListClientLedgerEntriesByType(ctx context.Context, arg ListClientLedgerEntriesByTypeParams) ([]LedgerEntry, error)
 	ListClientLedgerEventTotals(ctx context.Context) ([]ListClientLedgerEventTotalsRow, error)
+	ListDeferredServiceOperations(ctx context.Context) ([]ServiceOperation, error)
 	// ListEntriesByKindStatus returns entries of the given kind and status, paged
 	// by the unique canonical_id ascending. It backs the startup rehydration of
 	// the wallet-local pending map: filtering in SQL keeps that scan O(matching
@@ -305,6 +311,7 @@ type Querier interface {
 	// ListRoundsPaginated returns rounds ordered by round_id with cursor-
 	// based pagination. When cursor is empty, returns from the beginning.
 	ListRoundsPaginated(ctx context.Context, arg ListRoundsPaginatedParams) ([]Round, error)
+	ListServiceOperationInputs(ctx context.Context, operationID []byte) ([]ListServiceOperationInputsRow, error)
 	// ListSpendingReservationOutpoints returns every reserved outpoint. Used by
 	// the startup sweep to build the set of live reservations.
 	ListSpendingReservationOutpoints(ctx context.Context) ([]ListSpendingReservationOutpointsRow, error)
@@ -396,6 +403,7 @@ type Querier interface {
 	MarkVTXOForfeiting(ctx context.Context, arg MarkVTXOForfeitingParams) error
 	// Also sets status = 4 (Spent) to keep status in sync with spent flag.
 	MarkVTXOSpent(ctx context.Context, arg MarkVTXOSpentParams) error
+	OtherServiceInputOwners(ctx context.Context, arg OtherServiceInputOwnersParams) ([][]byte, error)
 	// PullActivityEvents returns transition rows strictly after the cursor in
 	// event_seq order, the resumable-subscribe replay primitive.
 	PullActivityEvents(ctx context.Context, arg PullActivityEventsParams) ([]ActivityEvent, error)
@@ -414,6 +422,7 @@ type Querier interface {
 	// round actually adopted, so a round can never release a deposit another round
 	// has since taken.
 	RevertRoundAdoptedBoardingIntents(ctx context.Context, arg RevertRoundAdoptedBoardingIntentsParams) error
+	SaveServiceOperation(ctx context.Context, arg SaveServiceOperationParams) error
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error

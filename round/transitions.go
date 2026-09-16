@@ -9,6 +9,7 @@ import (
 	"maps"
 	"math"
 	"slices"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -424,6 +425,7 @@ func (s *Idle) ProcessEvent(ctx context.Context, event ClientEvent,
 
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
+				Service:  cloneServiceRequest(evt.Service),
 				Boarding: slices.Clone(evt.Boarding),
 				Forfeits: slices.Clone(evt.Forfeits),
 				VTXOs:    slices.Clone(evt.VTXOs),
@@ -467,6 +469,13 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 		// deduplicating boarding intents by outpoint.
 		if evt.isEmpty() {
 			return selfLoop(s), nil
+		}
+
+		// Independently authorized operations cannot share an assembly.
+		if (s.Service == nil) != (evt.Service == nil) ||
+			(s.Service != nil && *s.Service != *evt.Service) {
+			return nil, fmt.Errorf("cannot combine different " +
+				"operation authorizations")
 		}
 
 		// Build a set of existing boarding outpoints for O(1)
@@ -580,6 +589,7 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
+				Service:  cloneServiceRequest(s.Service),
 				Boarding: updatedBoarding,
 				VTXOs:    updatedVTXOs,
 				Forfeits: updatedForfeits,
@@ -730,6 +740,7 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 
 		// Build Intents with all pools for downstream validation.
 		intent := Intents{
+			Service:  cloneServiceRequest(s.Service),
 			Boarding: slices.Clone(s.Boarding),
 			VTXOs:    vtxoReqs,
 			Leaves:   leaveReqs,
@@ -769,10 +780,21 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 			joinAuth = auth
 		}
 
+		if intent.Service != nil && env.ServiceStore != nil {
+			if err := env.ServiceStore.SaveServiceOperation(
+				opCtx, deferredServiceOperation(intent),
+			); err != nil {
+				return nil, err
+			}
+		}
+
 		// With all this extracted, we'll now send the
 		// JoinRoundRequest to kick off the signing process.
 		outbox := []ClientOutMsg{
 			&JoinRoundRequest{
+				Service: cloneServiceRequest(
+					intent.Service,
+				),
 				BoardingRequests: boardingReqs,
 				VTXORequests:     vtxoReqs,
 				ForfeitRequests:  forfeitReqs,
@@ -824,11 +846,21 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 func (s *IntentSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 	env *ClientEnvironment) (*ClientStateTransition, error) {
 
+	event = env.boundParticipationEvent(event)
+	if transition := beginServiceReconciliation(
+		event, s.Intents, s.AdmittedRoundID, env,
+	); transition != nil {
+		return transition, nil
+	}
+
 	// Any transition into ClientFailedState from this pre-signing state
 	// returns forfeit-reserved inputs to LiveState; see
 	// releaseForfeitsOnFailure. Idempotent with the admission-timeout path,
 	// which already releases explicitly.
 	transition, err := s.processEvent(ctx, event, env)
+	transition, err = fenceServiceTransition(
+		ctx, s, transition, err, s.Intents, s.AdmittedRoundID, env,
+	)
 
 	return releaseForfeitsOnFailure(
 		transition, err, fn.Some(s.AdmittedRoundID), s.Intents.Forfeits,
@@ -842,6 +874,12 @@ func (s *IntentSentState) processEvent(ctx context.Context, event ClientEvent,
 
 	switch evt := event.(type) {
 	case *RoundJoined:
+		if transition, err := s.prepareServiceAdmission(
+			ctx, evt, env,
+		); transition != nil || err != nil {
+			return transition, err
+		}
+
 		// Under the #270 seal-time handshake the server's admission
 		// ack (carried as RoundJoined) no longer marks the client as
 		// committed to the round — it's a watermark only. The actor
@@ -876,6 +914,14 @@ func (s *IntentSentState) processEvent(ctx context.Context, event ClientEvent,
 			},
 		}
 
+		if !env.ParticipationDeadline.IsZero() {
+			cancelReg = append(cancelReg, &StartTimeoutReq{
+				RoundKey: RoundKeyStr(evt.RoundID.KeyString()),
+				Phase:    TimeoutPhaseParticipation,
+				Duration: time.Until(env.ParticipationDeadline),
+			})
+		}
+
 		return &ClientStateTransition{
 			NextState: &IntentSentState{
 				Intents:         s.Intents.Clone(),
@@ -887,6 +933,13 @@ func (s *IntentSentState) processEvent(ctx context.Context, event ClientEvent,
 		}, nil
 
 	case *RegistrationTimedOut:
+		if s.Intents.Service != nil &&
+			s.AdmittedRoundID == (RoundID{}) {
+			return startServiceReconciliation(
+				s.Intents, RoundID{}, env,
+			), nil
+		}
+
 		// Ignore a stale timeout once the round has been admitted.
 		// Admission (RoundJoined) cancels the timer and re-keys the
 		// round away from its temp key, so the actor layer already
@@ -1017,6 +1070,12 @@ func (s *IntentSentState) processEvent(ctx context.Context, event ClientEvent,
 		}, nil
 
 	case *BoardingFailed:
+		if fallback := s.fallbackAfterNonAdmission(
+			evt, env.now(),
+		); fallback != nil {
+			return fallback, nil
+		}
+
 		// Server rejected the registration or the request timed out.
 		// Roll back any reserved forfeits because no signatures have
 		// been produced at this phase.
@@ -1284,6 +1343,20 @@ func evaluateQuote(ctx context.Context, env *ClientEnvironment, roundID RoundID,
 			Reason: "operator fee cap is unset: " +
 				"refusing to sign",
 		}
+	}
+
+	// The operation's explicit cap can only narrow the wallet policy.
+	// Unlike an unset wallet policy, a zero operation cap authorizes a
+	// zero-fee quote. The realized-fee check uses this same lower cap.
+	if intents.Service != nil {
+		if err := intents.Service.Validate(); err != nil {
+			return &QuoteRejected{
+				RoundID: roundID, QuoteID: quote.QuoteID,
+				Reason: "invalid operation authorization: " +
+					err.Error(),
+			}
+		}
+		feeCap = min(feeCap, int64(intents.Service.FeeLimitSat))
 	}
 
 	// Belt-and-braces cap check on the operator-declared fee.
@@ -1715,10 +1788,20 @@ func (s *QuoteReceivedState) ProcessEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
+	event = env.boundParticipationEvent(event)
+	if transition := beginServiceReconciliation(
+		event, s.Intents, s.RoundID, env,
+	); transition != nil {
+		return transition, nil
+	}
+
 	// Any transition into ClientFailedState from this pre-signing state
 	// returns forfeit-reserved inputs to LiveState; see
 	// releaseForfeitsOnFailure.
 	transition, err := s.processEvent(ctx, event, env)
+	transition, err = fenceServiceTransition(
+		ctx, s, transition, err, s.Intents, s.RoundID, env,
+	)
 
 	return releaseForfeitsOnFailure(
 		transition, err, fn.Some(s.RoundID), s.Intents.Forfeits,
@@ -1917,10 +2000,20 @@ func (s *QuoteReceivedState) processEvent(ctx context.Context,
 func (s *RoundJoinedState) ProcessEvent(ctx context.Context, event ClientEvent,
 	env *ClientEnvironment) (*ClientStateTransition, error) {
 
+	event = env.boundParticipationEvent(event)
+	if transition := beginServiceReconciliation(
+		event, s.Intents, s.RoundID, env,
+	); transition != nil {
+		return transition, nil
+	}
+
 	// Any transition into ClientFailedState from this pre-signing state
 	// returns forfeit-reserved inputs to LiveState; see
 	// releaseForfeitsOnFailure.
 	transition, err := s.processEvent(ctx, event, env)
+	transition, err = fenceServiceTransition(
+		ctx, s, transition, err, s.Intents, s.RoundID, env,
+	)
 
 	return releaseForfeitsOnFailure(
 		transition, err, fn.Some(s.RoundID), s.Intents.Forfeits,
@@ -2217,10 +2310,20 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
+	event = env.boundParticipationEvent(event)
+	if transition := beginServiceReconciliation(
+		event, s.Intents, s.RoundID, env,
+	); transition != nil {
+		return transition, nil
+	}
+
 	// Any transition into ClientFailedState from this pre-signing state
 	// returns forfeit-reserved inputs to LiveState; see
 	// releaseForfeitsOnFailure.
 	transition, err := s.processEvent(ctx, event, env)
+	transition, err = fenceServiceTransition(
+		ctx, s, transition, err, s.Intents, s.RoundID, env,
+	)
 
 	return releaseForfeitsOnFailure(
 		transition, err, fn.Some(s.RoundID), s.Intents.Forfeits,
@@ -2574,10 +2677,20 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
+	event = env.boundParticipationEvent(event)
+	if transition := beginServiceReconciliation(
+		event, s.Intents, s.RoundID, env,
+	); transition != nil {
+		return transition, nil
+	}
+
 	// Any transition into ClientFailedState from this pre-signing state
 	// returns forfeit-reserved inputs to LiveState; see
 	// releaseForfeitsOnFailure.
 	transition, err := s.processEvent(ctx, event, env)
+	transition, err = fenceServiceTransition(
+		ctx, s, transition, err, s.Intents, s.RoundID, env,
+	)
 
 	return releaseForfeitsOnFailure(
 		transition, err, fn.Some(s.RoundID), s.Intents.Forfeits,
@@ -2823,12 +2936,22 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
+	event = env.boundParticipationEvent(event)
+	if transition := beginServiceReconciliation(
+		event, s.Intents, s.RoundID, env,
+	); transition != nil {
+		return transition, nil
+	}
+
 	// Failures here are still pre-signing: VTXO forfeit signatures are only
 	// submitted to the server on the success transition to
 	// InputSigSentState (SubmitVTXOForfeitSigsToServer), so any transition
 	// into ClientFailedState may safely return forfeit-reserved inputs to
 	// LiveState; see releaseForfeitsOnFailure.
 	transition, err := s.processEvent(ctx, event, env)
+	transition, err = fenceServiceTransition(
+		ctx, s, transition, err, s.Intents, s.RoundID, env,
+	)
 
 	return releaseForfeitsOnFailure(
 		transition, err, fn.Some(s.RoundID), s.Intents.Forfeits,
@@ -3206,10 +3329,22 @@ func (s *ForfeitSignaturesCollectingState) inputSigSentState(
 func (s *NoncesSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 	env *ClientEnvironment) (*ClientStateTransition, error) {
 
+	event = env.boundParticipationEvent(event)
+	if transition := beginServiceReconciliation(
+		event, s.Intents, s.RoundID, env,
+	); transition != nil {
+		cleanupServiceSessions(ctx, s, env)
+
+		return transition, nil
+	}
+
 	// Any transition into ClientFailedState from this pre-signing state
 	// returns forfeit-reserved inputs to LiveState; see
 	// releaseForfeitsOnFailure.
 	transition, err := s.processEvent(ctx, event, env)
+	transition, err = fenceServiceTransition(
+		ctx, s, transition, err, s.Intents, s.RoundID, env,
+	)
 
 	return releaseForfeitsOnFailure(
 		transition, err, fn.Some(s.RoundID), s.Intents.Forfeits,
@@ -3313,10 +3448,22 @@ func (s *NoncesAggregatedState) ProcessEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
+	event = env.boundParticipationEvent(event)
+	if transition := beginServiceReconciliation(
+		event, s.Intents, s.RoundID, env,
+	); transition != nil {
+		cleanupServiceSessions(ctx, s, env)
+
+		return transition, nil
+	}
+
 	// Any transition into ClientFailedState from this pre-signing state
 	// returns forfeit-reserved inputs to LiveState; see
 	// releaseForfeitsOnFailure.
 	transition, err := s.processEvent(ctx, event, env)
+	transition, err = fenceServiceTransition(
+		ctx, s, transition, err, s.Intents, s.RoundID, env,
+	)
 
 	return releaseForfeitsOnFailure(
 		transition, err, fn.Some(s.RoundID), s.Intents.Forfeits,
@@ -3372,8 +3519,10 @@ func (s *NoncesAggregatedState) processEvent(ctx context.Context,
 			)
 		}
 
+		signingCtx, cancelSigning := env.participationContext(ctx)
+		defer cancelSigning()
 		signatureResults, err := env.signingExecutor().Sign(
-			ctx, sessionResults,
+			signingCtx, sessionResults,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate partial "+
@@ -3449,12 +3598,22 @@ func (s *PartialSigsSentState) ProcessEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
+	event = env.boundParticipationEvent(event)
+	if transition := beginServiceReconciliation(
+		event, s.Intents, s.RoundID, env,
+	); transition != nil {
+		return transition, nil
+	}
+
 	// Still pre-signing: this state submits MuSig2 partial sigs, not VTXO
 	// forfeit sigs (those go out only when ForfeitSignaturesCollectingState
 	// transitions to InputSigSentState). Any transition into
 	// ClientFailedState may safely return forfeit-reserved inputs to
 	// LiveState; see releaseForfeitsOnFailure.
 	transition, err := s.processEvent(ctx, event, env)
+	transition, err = fenceServiceTransition(
+		ctx, s, transition, err, s.Intents, s.RoundID, env,
+	)
 
 	return releaseForfeitsOnFailure(
 		transition, err, fn.Some(s.RoundID), s.Intents.Forfeits,
@@ -4850,7 +5009,7 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 			NextState: &next,
 			NewEvents: fn.Some(ClientEmittedEvent{
 				Outbox: statusReconcileProbeOutbox(
-					s.RoundID, env, 0,
+					s.RoundID, env, 0, s.Intents.Service,
 				),
 			}),
 		}, nil
@@ -4880,12 +5039,22 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 			NewEvents: fn.Some(ClientEmittedEvent{
 				Outbox: statusReconcileProbeOutbox(
 					s.RoundID, env, s.ReconcileProbes,
+					s.Intents.Service,
 				),
 			}),
 		}, nil
 
 	case *RoundStatusReported:
 		if evt.RoundID != s.RoundID {
+			return selfLoop(s), nil
+		}
+
+		if s.Intents.Service != nil && (evt.Operation == nil ||
+			!bytes.Equal(
+				evt.Operation.OperationId,
+				s.Intents.Service.OperationID[:],
+			) ||
+			evt.Operation.Phase != operationFailed) {
 			return selfLoop(s), nil
 		}
 
@@ -5278,4 +5447,50 @@ func (s *RecoveryInitiatedState) ProcessEvent(_ context.Context,
 	return &ClientStateTransition{
 		NextState: s,
 	}, nil
+}
+
+// prepareServiceAdmission fixes the accepted deadline before further progress.
+// Store failure retains the known assignment for ownership reconciliation.
+func (s *IntentSentState) prepareServiceAdmission(ctx context.Context,
+	evt *RoundJoined, env *ClientEnvironment) (*ClientStateTransition,
+	error) {
+
+	if s.Intents.Service != nil {
+		if err := validateServiceAssignment(
+			s.Intents.Service, evt.Admission,
+		); err != nil {
+			return nil, err
+		}
+		deadline := time.Unix(
+			evt.Admission.ParticipationDeadlineUnix, 0,
+		)
+		if !env.ParticipationDeadline.IsZero() &&
+			!env.ParticipationDeadline.Equal(deadline) {
+			return nil, fmt.Errorf("admission changed " +
+				"participation deadline")
+		}
+		env.ParticipationDeadline = deadline
+		if env.ServiceStore != nil {
+			if err := env.ServiceStore.BindServiceOperation(
+				ctx, s.Intents.Service.OperationID, evt.RoundID,
+				deadline,
+			); err != nil {
+
+				// Reconcile the accepted owner despite binding
+				// failure.
+				//nolint:nilerr
+				return startServiceReconciliation(
+					s.Intents, evt.RoundID, env,
+				), nil
+			}
+		}
+
+		if !time.Now().Before(deadline) {
+			return startServiceReconciliation(
+				s.Intents, evt.RoundID, env,
+			), nil
+		}
+	}
+
+	return nil, nil
 }

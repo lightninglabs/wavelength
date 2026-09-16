@@ -54,6 +54,9 @@ func (s *Idle) clientStateSealed() {}
 // VTXO outputs, and leave outputs. The pools are validated at registration
 // time by checking sum(inputs) >= sum(outputs) + fees.
 type PendingRoundAssembly struct {
+	// Service keeps one operation authorization across assembled inputs.
+	Service *types.ServiceRequest
+
 	// Boarding contains the collected boarding intents to include in the
 	// next round.
 	Boarding []BoardingIntent
