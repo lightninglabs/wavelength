@@ -10,6 +10,9 @@ module.
 
 - `internal/actortest` — Durable actor integration tests using real DB backends (SQLite, Postgres), verifying at-least-once delivery, exactly-once dedup, FIFO ordering, and atomic state+outbox.
 - `internal/cmd/tools/accounting` — DB-backed admin command that reports ledger balances, event totals, and optional BTC/fiat valuation.
+- `internal/expiryfixture` — Deterministic signed commitment trees and OOR
+  ancestry packages for tests of the authenticated incoming-expiry acceptance
+  boundary.
 - `internal/indexerlimits` — Shared client-side bounds for indexer pagination cursors.
 - `internal/sqlbase` — `js && wasm`-only `walletdb`-compatible SQL backend
   (SQLite over `go-wasmsqlite`), used by `lwwallet` for browser builds.

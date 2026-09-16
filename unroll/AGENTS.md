@@ -83,6 +83,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   `ExitOutcomeConfirmed` (retire to spent). `UnrollTerminatedMsg` carries
   `HadOnChainFootprint`, computed by `jobHadOnChainFootprint` (any
   confirmed/in-flight proof node or a non-pending sweep). It also carries
+  `Conflicted`, set when the terminal failure was caused by a confirmed
+  foreign spend of one of the proof's root external inputs; `notifyVTXOExit`
+  maps it to `vtxo.ExitOutcomeConflicted` and it takes precedence over the
+  `HadOnChainFootprint` arm, because a defeated exit must be reclaimed
+  through a refresh rather than relived as a live coin (wavelength#1050). It
+  also carries
   the child's `ExitPolicyKind`, which the child stamps from its own durable
   exit policy (`exitPolicyKind`), so the terminal message is self-contained:
   it stays authoritative after the registry has evicted its in-memory
@@ -97,7 +103,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   `(ExitPolicyKind, ExitPolicyRef)` identity.
 - `RegistryRecord` — control-plane row (`TargetOutpoint`, `ActorID`,
   `Phase`, `Trigger`, `FailReason`, `SweepTxid`, `ExitPolicyKind`,
-  `ExitPolicyRef`).
+  `ExitPolicyRef`, `ConflictedFailure`). `ConflictedFailure` splits
+  `PhaseFailed` into two distinct durable statuses — `statusForPhase` maps
+  a plain failure to `db.UnilateralExitJobStatusFailed` and a source-batch
+  conflict to `db.UnilateralExitJobStatusFailedConflicted` — so the cause
+  survives a restart and boot reconciliation can pick the right recovery.
 - `RegistryStore` — `UpsertRecord`, `GetRecord`,
   `ListNonTerminalRecords`, `MarkTerminal`. `DBRegistryStore`
   (`db_store.go`) is production. Adapts to
@@ -181,6 +191,19 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   and the direct confirmation watch. Neutrino can miss direct confirmation
   under load; a spend of the parent output proves parent confirmation.
   `proofSpendWatches` map dedups.
+- `ensureSourceSpendWatches(ctx)` — arms spend watches on
+  `recovery.Proof.RootExternalInputs()`: the round batch/commitment outputs the
+  whole proof hangs off of. These are the outpoints an adversary can consume
+  out from under the exit — once the operator sweeps an expired batch
+  commitment output, every recovery transaction spending it is permanently
+  invalid. Without the watch the job sits in materialization forever, because
+  `txconfirm` never gives up on a transaction that cannot enter a mempool
+  (wavelength#1050). A *foreign* spend fails the job as conflicted; a spend by
+  our own root is a benign parent-confirmation signal, so arming is safe in
+  both outcomes. Arming is best-effort and per-outpoint: a registration failure
+  is logged and skipped rather than failing the load. `sourceSpendWatches`
+  dedups; `sourcePkScripts()` supplies the batch pkScript that neutrino needs
+  for BIP-158 filter matching (Esplora matches on outpoint alone).
 - `watchDeferredCheckpoint(ctx, txid, node)` — registers confirmation
   watch for fraud-triggered checkpoints while the actor waits for
   operator confirmation of the proof node.
@@ -275,6 +298,18 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
 - **Persist-before-broadcast.** `startSweep` stages the signed candidate and
   prior candidate history before cleanup or `txconfirm.Ask`. A restart or
   route retry reuses that staged transaction and wallet destination.
+- **A swept source is terminal, and terminal-but-reclaimable.** A confirmed
+  foreign spend of a root external input sets `JobState.Conflicted`, which
+  rides the checkpoint (`checkpointConflictedRecordType`) and the terminal
+  `UnrollTerminatedMsg` through to `vtxo.ExitOutcomeConflicted`. The exit
+  provably cannot complete, but the operator can only sweep that output past
+  batch expiry, so the coin is expired rather than lost: the VTXO manager
+  parks it in the non-terminal `ExpiredState` for reclaim by refresh instead of
+  retiring it to `FailedState`. Do not fold this back into the plain
+  `PhaseFailed` path — the two require opposite recoveries, and
+  `legacy_reprice.go` explicitly excludes `ConflictedFailure` records from
+  fee-rejection resume for the same reason (a repriced sweep still spends a
+  provably-spent input).
 - **Reprice only explicit fee rejection.** `TxFailedMsg.Class` distinguishes
   fee rejection from permanent invalidity and unknown errors. Fee rejection
   records the rejected txid and height without consuming `SweepAttempts`.

@@ -64,6 +64,20 @@ state transitions and validation rules live under [Invariants](#invariants).
 - `OwnedScriptRegistrar` — `RegisterOwnedScript(ctx, pkScript, ownerKey)`.
   Called at intent-build time for change/refresh outputs and inside
   `handleRegisterIntent` for entries with a non-zero `KeyLocator`.
+- `AdmissionDeadline` (`deadline.go`) — the durable budget of one accepted
+  round attempt: `ExpiresAt` (absolute UTC, preserved across retries) and
+  `Closed`. A closed attempt cannot be readmitted even when its deadline is
+  still in the future, and a deadline never authorizes releasing checkpointed
+  input signatures.
+- `AdmissionDeadlineStore` (`deadline.go`) — `ConstrainAdmissionDeadline`
+  (create or *shorten* — it returns the durable winner and never reopens a
+  closed attempt), `CloseAdmissionDeadline` (idempotent; releases no
+  reservations and touches no round checkpoint), and
+  `AbandonAdmissionDeadlines` (startup close of interrupted attempts).
+  Embedded in `ClientEnvironment` and backed by
+  `db.RoundPersistenceStore`. Signing sessions stay ephemeral: restart
+  abandons these attempts and checkpointed rounds resume through `RoundStore`
+  reconciliation instead.
 - `VTXOStore`, `RoundStore` — VTXO and round FSM persistence.
   `RoundStore.FailRound(ctx, roundID)` is the terminal-failure
   counterpart to `FinalizeRound`: it retires a checkpointed round's row

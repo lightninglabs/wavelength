@@ -23,6 +23,14 @@ scheduling live downstream in `unrollplan` and `unroll`.
   Optional fields use `fn.Option` instead of nilable pointers.
 - `ComputeMaturityHeight` — Overflow-safe `targetConfirmHeight + csvDelay`
   helper shared with `unrollplan`.
+- `Proof.RootExternalInputs()` — The outpoints consumed by root transactions
+  that no node in the proof produces: the external funding the whole graph
+  hangs off of (the batch/commitment output for a round-direct VTXO, or one
+  per lineage fragment for an OOR-chained or fan-in VTXO). These are exactly
+  the outpoints a competing party can consume out from under the exit, so
+  `unroll` arms spend watches on them (wavelength#1050). Deduplicated and
+  sorted by hash then index, so the same node set always yields identical
+  output regardless of map iteration order.
 
 ## Relationships
 

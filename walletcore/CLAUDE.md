@@ -39,6 +39,17 @@ btcwallet.BtcWallet regardless of the underlying chain source.
   `addressForTaprootScript`, repopulating the filter without a second
   import attempt — covers the case where btcwallet already persisted the
   script but the in-memory filter started empty.
+- **`Balance` is scoped to the default account; `ConfirmedBalance` is not.**
+  `Wallet.Balance` queries `lnwallet.DefaultAccountName` for both its confirmed
+  (1-conf) and total (0-conf) legs, so imported taproot scripts — boarding and
+  exit outputs registered via `ImportTaprootScript`, which btcwallet files
+  under its *imported* account — are excluded. They are unspendable by the
+  wallet's own key ring and the daemon already reports them under separate
+  boarding balance fields, so counting them here would overstate what the
+  wallet can fund an exit or sweep with. The lower-level
+  `ConfirmedBalance(minConfs)` passes an empty account name and therefore still
+  sums **all** accounts; the two are not interchangeable, and any new
+  spendable-balance surface should go through `Balance`.
 - The user-supplied `Config.WalletPassword` is btcwallet's `PrivatePass`; the
   static `PublicWalletPassphrase` constant covers only public (watch-only)
   data. A nil `Config.Seed` opens an existing wallet database; a non-nil seed

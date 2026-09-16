@@ -88,12 +88,19 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   `Status`, `Trigger`, `LastError`, `SweepTxid`, `Created/UpdatedAt`.
 - `UnilateralExitJobStatus` — `Pending(0)`, `Materializing(1)`,
   `CSVPending(2)`, `Sweeping(3)`, `Completed(4)`, `Failed(5)`,
-  `SweepBroadcasting(6)`, `FailedRecoverable(7)`. **Append-only**: new
+  `SweepBroadcasting(6)`, `FailedRecoverable(7)`,
+  `FailedConflicted(8)`. **Append-only**: new
   values are added at the end so a row's numeric meaning never shifts.
   `FailedRecoverable` is a terminal failure that left no on-chain
   footprint, so boot-time reconciliation may roll the VTXO back to live;
   it is excluded from `ListNonTerminalUnilateralExitJobs` alongside `4`
-  and `5` (wavelength#602).
+  and `5` (wavelength#602). `FailedConflicted` is a terminal failure caused
+  by a confirmed foreign spend of a commitment output the exit depends on:
+  the exit can never complete, but the value is not lost, so boot-time
+  reconciliation routes a standard-policy VTXO to **expired reclaim**
+  rather than rolling it back to live (wavelength#1050). Recovery-only
+  targets stay in exit under their owning subsystem. It is likewise
+  terminal and excluded from `ListNonTerminalUnilateralExitJobs`.
 - `UnilateralExitJobTrigger` — `Manual(0)`, `CriticalExpiry(1)`,
   `Restart(2)`, `FraudSpend(3)`.
 - `VHTLCRecoveryStoreDB` — durable vHTLC recovery store. Persists
@@ -279,6 +286,26 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   barrier that neither wasm VFS can express.
 - The handle is single-connection (`SetMaxOpenConns(1)`); multiple SQL
   connections would race the same database through one worker.
+
+### Migration backups (native SQLite)
+
+`backupAndMigrate` snapshots the database before applying migrations, unless
+`SkipMigrationDBBackup` is set. Two properties matter when touching this path:
+
+- **The backup is version-keyed, not timestamped**:
+  `<db>.v<currentDBVersion>.backup`. A restart that re-enters migration for the
+  same source version *reuses* the existing file instead of writing another
+  one, so a daemon that crash-loops through a failing migration cannot fill the
+  disk with snapshots. `VACUUM INTO` writes to a stable `.backup.tmp` staging
+  path first and is renamed into place only on success, so an interrupted copy
+  is replaced on the next start rather than mistaken for a good backup.
+- **Pruning happens after *all* migrations, not after the core ones.**
+  `pruneSqliteMigrationBackups` runs only once `admigration.RunMigrations` (the
+  actor-delivery schema) has also completed. Pruning earlier would discard the
+  snapshot while a second migration phase could still fail. It removes both
+  version-keyed and legacy timestamped backups, and a prune failure is logged
+  at warning without failing startup. The wasm build stubs both functions: the
+  browser SQLite VFS has no sibling-file namespace to prune.
 
 ### Migration baseline
 

@@ -38,6 +38,18 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
   strings.
 - `NewPackageTxError(wtxid, txid, reason)` — Eagerly maps the reject reason to
   a typed sentinel at construction time.
+- `ReplacementFeeConstraints` — Structured fee floors parsed from Bitcoin
+  Core's replacement-policy diagnostics when a replacement child cannot evict a
+  conflicting transaction: `ConflictingFee` (total fee the replacement must
+  beat), `AdditionalFeeDeficit` (shortfall against the incremental relay fee),
+  and `ConflictingFeeRateSatPerVByte` (a replacement must pay at least one
+  sat/vByte above this). Every field is a pointer; **nil means the backend did
+  not report that constraint**, which is distinct from zero. Reached via
+  `PackageTxError.ReplacementConstraints()`, which returns a deep copy (nil
+  when nothing was parsed) so a caller cannot mutate the error's state. The
+  parser targets the stable Core 28–31 message forms and returns nil on
+  anything it does not recognize, so existing substring heuristics keep
+  working rather than being silently replaced by a wrong number.
 - `WalkPackageTxErrors(err, fn)` — Walks both `Unwrap() error` and
   `Unwrap() []error` shapes to invoke `fn` for every `*PackageTxError` in a
   joined error tree. Use this instead of `errors.As` when all per-tx entries

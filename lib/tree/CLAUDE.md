@@ -13,8 +13,20 @@ descriptors through branch nodes to the batch output.
 - `LeafDescriptor` — Describes a single VTXO leaf: amount, owner pubkeys, cosigner keys, CSV delay.
 - `VTXODescriptor` — Interface for VTXO metadata needed by tree construction (amount, cosigners, owner key).
 - `ConnectorDescriptor` — Describes a connector output for forfeit transaction construction.
-- `Structure` — Intermediate tree layout built by `BuildStructure` before materialization.
+- `Structure` — Intermediate tree layout built by `BuildStructure` before materialization. Carries `Root`, the optional `AssetContext`, and `LeafScriptMap` (leaf pkScripts, kept out of `Node` so the shared structure stays asset-agnostic).
 - `StructureConfig` — Configuration for tree building (radix, partition weight function).
+- `AssetTreeContext` — Per-tree asset state for an asset-aware tree: subtree
+  asset amounts (`NodeAssetAmount`), per-input `SigningTweak`, `LeafAssetRoot`,
+  `SealedPackage`, and the tree's `AssetRef`. Nil on Bitcoin-only trees.
+  `Validate(root)` checks that the context completely describes the tree.
+  `Tree.AssetContext` is cloned — not shared — when a path is extracted, so a
+  client tree carries only its own subtree's asset state.
+- `BatchOutputSpec` / `BuildBatchOutputSpec` — A batch output together with the
+  taproot material that produced it: `Output`, the untweaked MuSig2
+  `InternalKey`, and the operator's `SweepLeaf`. `TapTreeBytes()` serializes the
+  tap tree. Callers that must re-derive or re-compose the batch output script
+  (e.g. an asset commitment root layered on top) need this rather than the bare
+  `*wire.TxOut` from `BuildBatchOutput`.
 - `SignerSession` — MuSig2 signing session for tree transactions, wrapping `input.MuSig2Signer`.
 - `Materializer` / `BTCMaterializer` — Interface and implementation for materializing tree nodes into actual Bitcoin transactions.
 - `TreeAssembler` — Two-pass builder (`BuildStructure` then `Materialize`) driven by `TreeConfig`.
@@ -23,7 +35,7 @@ descriptors through branch nodes to the batch output.
 ## Relationships
 
 - **Depends on**: `lib/arkscript` (taproot script construction, policy templates, `SpendInfo`).
-- **Depended on by**: `round` (tree construction/validation), `oor` (tree references), `db` (tree serialization).
+- **Depended on by**: `round` (tree construction/validation), `oor` (tree references), `db` (tree serialization), `tapassets` (asset-aware materialization on top of `BuildStructure` / `Materialize` / `AssetTreeContext`), `lib/recovery` (generic `Queue[T]`).
 
 ## Invariants
 
@@ -42,6 +54,19 @@ descriptors through branch nodes to the batch output.
   all outputs and recurses only into retained children. The traversal rejects
   cycles and nodes shared by multiple parents. `Node.Verify` checks only
   parent-child outpoint topology and is not a trust-boundary validator.
+- **An asset context is created only when a leaf actually carries assets.**
+  `BuildStructure` tracks leaf asset amounts in a side map and populates
+  `Structure.AssetContext` only if at least one `LeafDescriptor.AssetAmount` is
+  non-zero, aggregating subtree totals up to the root. A Bitcoin-only tree
+  keeps `AssetContext == nil`, so a nil check is the canonical "is this an
+  asset tree?" test — do not infer it from `AssetRef` or from leaf fields.
+- **Asset amounts are tracked beside the Bitcoin tree, not inside `Node`.**
+  Asset state lives in `AssetTreeContext` and `Structure.LeafScriptMap`,
+  keyed by `*Node`. This keeps `Node` and branch construction asset-agnostic,
+  which is why the maps are keyed by pointer: cloning a node without cloning
+  the context loses its asset amount. `ExtractPathForCoSigners` /
+  `ExtractPathForIndices` clone the context for the extracted root
+  (`cloneForRoot`) rather than aliasing the full tree's.
 - **Cache-aliasing invariant**: a `*Tree` is effectively immutable once published from
   a builder or resolver. Multiple downstream consumers may share the same `*Tree`
   pointer through caches and ancestry-fragment slices. Silently mutating a shared
