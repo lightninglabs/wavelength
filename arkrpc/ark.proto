@@ -144,6 +144,30 @@ message GetInfoResponse {
     // round. This is independent of min_confirmations, which protects the
     // on-chain boarding inputs consumed by a new round.
     uint32 vtxo_confirmations = 24;
+
+    // batch_schedule is absent for event-driven registration. Scheduled
+    // operators require an authenticated slot selection on every join.
+    BatchSchedule batch_schedule = 25;
+}
+
+// BatchSchedule advertises UTC registration opportunities. A cutoff starts
+// quoting/signing; it does not promise broadcast or confirmation at that time.
+message BatchSchedule {
+    // version identifies the schedule interpretation supported by the client.
+    uint32 version = 1;
+    // anchor_unix is the UTC reference cutoff, in Unix seconds.
+    int64 anchor_unix = 2;
+    // interval_seconds is the positive time between consecutive cutoffs.
+    int64 interval_seconds = 3;
+    // registration_window_seconds bounds registration immediately before
+    // cutoff.
+    int64 registration_window_seconds = 4;
+    // schedule_id binds the timing policy, including its registration window.
+    bytes schedule_id = 5;
+    // server_time_unix supports clock-skew diagnosis.
+    int64 server_time_unix = 6;
+    // next_cutoff_unix is the next opportunity the operator can admit.
+    int64 next_cutoff_unix = 7;
 }
 
 // EstimateFeeRequest asks the server to estimate the fee for a
