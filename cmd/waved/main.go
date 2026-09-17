@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/jrick/logrotate/rotator"
 	"github.com/lightninglabs/wavelength/build"
 	"github.com/lightninglabs/wavelength/chainbackends/bitcoindrpc"
 	"github.com/lightninglabs/wavelength/waved"
@@ -703,33 +702,25 @@ func run(cfg *waved.Config) error {
 func configureDaemonLogWriter(cfg *waved.Config,
 	stdout io.Writer) (io.Closer, error) {
 
-	logConfig := lndbuild.DefaultLogConfig().File
-
 	return configureDaemonLogWriterWithConfig(
-		cfg, stdout, logConfig.MaxLogFileSize, logConfig.MaxLogFiles,
+		cfg, stdout, lndbuild.DefaultLogConfig().File,
 	)
 }
 
 // configureDaemonLogWriterWithConfig configures standalone logging with the
-// supplied rotation limits.
+// supplied lnd file logger settings.
 func configureDaemonLogWriterWithConfig(cfg *waved.Config, stdout io.Writer,
-	maxLogFileSize, maxLogFiles int) (io.Closer, error) {
+	logConfig *lndbuild.FileLoggerConfig) (io.Closer, error) {
 
 	if cfg.LogWriter != nil {
 		return nil, nil
 	}
 
 	logFilePath := filepath.Join(cfg.LogDir(), daemonLogFileName)
-	if err := os.MkdirAll(filepath.Dir(logFilePath), 0700); err != nil {
-		return nil, fmt.Errorf("create log directory: %w", err)
-	}
-
-	// Match lnd's rotation setup. The lnd setting is expressed in MB while
-	// the rotator accepts a threshold in KB and enables gzip by default.
-	logRotator, err := rotator.New(
-		logFilePath, int64(maxLogFileSize)*1024, false, maxLogFiles,
-	)
-	if err != nil {
+	logRotator := lndbuild.NewRotatingLogWriter()
+	if err := logRotator.InitLogRotator(
+		logConfig, logFilePath,
+	); err != nil {
 		return nil, fmt.Errorf("initialize log rotator %q: %w",
 			logFilePath, err)
 	}
