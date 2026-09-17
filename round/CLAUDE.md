@@ -389,3 +389,6 @@ Locally owned asset leaves retain their verified reference, amount,
 commitment root, and sealed package in `ClientVTXO`. Confirmation writes persist that identity before notifying the VTXO
 manager, and both round recovery and manager notification preserve it. Missing or mismatched tree
 metadata prevents a leaf from entering wallet inventory.
+
+`JoinRoundRequest` proto conversion preserves the boarding asset disclosure
+in both directions, cloning proof, digest, commitment, and witness bytes.
