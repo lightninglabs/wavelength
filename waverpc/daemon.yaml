@@ -8,6 +8,9 @@ http:
       body: "*"
     - selector: waverpc.MacaroonService.ListPermissions
       get: /v1/daemon/macaroon/permissions
+    - selector: waverpc.DaemonService.GetBatchSchedule
+      post: /v1/daemon/batch-schedule
+      body: "*"
     - selector: waverpc.DaemonService.GetInfo
       post: /v1/daemon/get-info
       body: "*"

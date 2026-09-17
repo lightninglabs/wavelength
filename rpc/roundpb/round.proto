@@ -164,6 +164,9 @@ message ClientSuccessResp {
 
     // accepted_vtxo_outpoints lists VTXO outpoints involved in the round.
     repeated Outpoint accepted_vtxo_outpoints = 3;
+
+    // Exact durable assignment for explicitly requested execution.
+    ServiceAdmission admission = 4;
 }
 
 // ClientBatchInfo contains the commitment transaction data sent to a client
@@ -302,6 +305,9 @@ message ClientRoundFailedResp {
 message ClientErrorResp {
     // error_msg is the error message.
     string error_msg = 1;
+
+    // Typed admission failure and the next published opportunity, if any.
+    ServiceAdmission admission = 2;
 }
 
 // RoundLifecycleStatus classifies where a round sits in its lifecycle
@@ -333,6 +339,29 @@ enum RoundLifecycleStatus {
     ROUND_STATUS_DEAD = 4;
 }
 
+// OperationPhase records durable execution ownership. Unknown and missing
+// answers never authorize releasing a checkpointed signing reservation.
+enum OperationPhase {
+    OPERATION_UNKNOWN = 0;
+    OPERATION_NOT_ADMITTED = 1;
+    OPERATION_ADMITTED = 2;
+    OPERATION_SIGNING = 3;
+    OPERATION_FINALIZED = 4;
+    OPERATION_COMPLETED = 5;
+    OPERATION_FAILED = 6;
+    OPERATION_UNCERTAIN = 7;
+}
+
+// OperationStatus is visible only to the authenticated operation principal.
+message OperationStatus {
+    bytes operation_id = 1;
+    uint64 attempt = 2;
+    bytes round_id = 3;
+    ServiceMode mode = 4;
+    OperationPhase phase = 5;
+    uint64 participation_deadline_unix = 6;
+}
+
 // ClientRoundStatusReport answers a QueryRoundStatusRequest with the
 // operator's authoritative view of a round's lifecycle state. The
 // client uses ROUND_STATUS_DEAD as the proof-of-death that makes a
@@ -347,6 +376,9 @@ message ClientRoundStatusReport {
     // detail is a free-form diagnostic string (e.g. the failure reason
     // for a dead round).
     string detail = 3;
+
+    // Present only when the query selected an operation ID.
+    OperationStatus operation = 4;
 }
 
 // --------------------------------------------------------------------------
@@ -506,6 +538,68 @@ message JoinRoundRequest {
     // auth contains the BIP-322 authorization payload. Nil when join
     // request auth is disabled.
     JoinRoundAuth auth = 7;
+
+    // Explicit execution authorization, included in the join-auth payload.
+    ServiceRequest service = 8;
+}
+
+// ServiceMode selects execution explicitly; omission retains legacy behavior.
+enum ServiceMode {
+    SERVICE_UNSPECIFIED = 0;
+    SERVICE_SCHEDULED = 1;
+    SERVICE_IMMEDIATE = 2;
+}
+
+// ServiceRequest binds execution, lifetime, and fee limits to an operation.
+message ServiceRequest {
+    // Client-generated nonzero random identity, exactly 32 bytes.
+    bytes operation_id = 1;
+    ServiceMode mode = 2;
+    uint64 schedule_version = 3;
+    uint64 slot_index = 4;
+    // Absolute operation expiry in whole UTC Unix seconds.
+    uint64 expires_at_unix = 5;
+    // Maximum accepted operator quote; zero permits only a zero-fee quote.
+    uint64 fee_limit_sat = 6;
+    // Permission to switch after safe failure; does not grant service access.
+    bool allow_fallback = 7;
+}
+
+// AdmissionCode distinguishes rejection from an accepted execution attempt.
+enum AdmissionCode {
+    ADMISSION_UNSPECIFIED = 0;
+    ADMISSION_ACCEPTED = 1;
+    ADMISSION_NOT_OPEN = 2;
+    ADMISSION_CLOSED = 3;
+    ADMISSION_FULL = 4;
+    ADMISSION_UNAUTHORIZED = 5;
+    ADMISSION_BUSY = 6;
+    ADMISSION_EXPIRED = 7;
+    ADMISSION_CONFLICT = 8;
+    ADMISSION_UNAVAILABLE = 9;
+    ADMISSION_UNCERTAIN = 10;
+    ADMISSION_FAILED = 11;
+}
+
+// SlotOpportunity describes timing, without promising admission or funds.
+message SlotOpportunity {
+    uint64 schedule_version = 1;
+    uint64 slot_index = 2;
+    int64 registration_open_unix = 3;
+    int64 registration_close_unix = 4;
+    int64 participation_deadline_unix = 5;
+}
+
+// ServiceAdmission carries either a durable assignment or a typed rejection.
+// A retry cannot extend the deadline of an accepted attempt.
+message ServiceAdmission {
+    AdmissionCode code = 1;
+    bytes operation_id = 2;
+    uint64 attempt = 3;
+    ServiceMode mode = 4;
+    SlotOpportunity assigned_slot = 5;
+    int64 participation_deadline_unix = 6;
+    SlotOpportunity next_slot = 7;
 }
 
 // QuoteReason classifies why a JoinRoundQuote failed to admit the
@@ -782,6 +876,11 @@ message SubmitVTXOForfeitSigsRequest {
 message QueryRoundStatusRequest {
     // round_id is the UUID of the round (16 bytes).
     bytes round_id = 1;
+
+    // Optional operation selector (32 bytes). The authenticated sender must
+    // own this operation. A zero round_id permits querying a lost admission;
+    // a nonzero round_id limits the result to that attempt's round.
+    bytes operation_id = 2;
 }
 
 // --------------------------------------------------------------------------

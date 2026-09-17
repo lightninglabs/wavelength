@@ -33,6 +33,7 @@ const (
 	joinRoundAuthMessageVTXORecordType    tlv.Type = 5
 	joinRoundAuthMessageForfeitRecordType tlv.Type = 6
 	joinRoundAuthMessageLeaveRecordType   tlv.Type = 7
+	joinRoundAuthMessageServiceRecordType tlv.Type = 8
 )
 
 const (
@@ -116,6 +117,7 @@ type JoinRoundAuth struct {
 //	|   5   | vtxos     (blob list)                     |
 //	|   6   | forfeits  (blob list)                     |
 //	|   7   | leaves    (blob list)                     |
+//	|   8   | service   (optional authorization TLV)   |
 //	+-------+-------------------------------------------+
 //
 // Each blob list is encoded as:
@@ -144,11 +146,26 @@ type JoinRoundAuth struct {
 //
 //	1: value  |  2: pkScript  |  3: is change
 func JoinRoundAuthMessage(req *JoinRoundRequest) ([]byte, error) {
+	return encodeJoinRoundMessage(req, false)
+}
+
+// JoinRoundOperationMessage binds the spend and output intent across attempts.
+// Authentication identifiers and service selection belong to an attempt and
+// are omitted; authorization and principal ownership are checked separately.
+func JoinRoundOperationMessage(req *JoinRoundRequest) ([]byte, error) {
+	return encodeJoinRoundMessage(req, true)
+}
+
+// encodeJoinRoundMessage shares canonical input/output encoding between signed
+// authentication and stable operation identity, with separate domain tags.
+func encodeJoinRoundMessage(req *JoinRoundRequest,
+	operation bool) ([]byte, error) {
+
 	if req == nil {
 		return nil, fmt.Errorf("join round request must be provided")
 	}
 
-	if req.Identifier == nil {
+	if !operation && req.Identifier == nil {
 		return nil, fmt.Errorf("join round request identifier must " +
 			"be provided")
 	}
@@ -175,7 +192,9 @@ func JoinRoundAuthMessage(req *JoinRoundRequest) ([]byte, error) {
 
 	version := joinRoundAuthMessageVersion
 	domainTag := []byte(joinRoundAuthDomainTag)
-	identifier := req.Identifier.SerializeCompressed()
+	if operation {
+		domainTag = []byte("wavelength-join-operation")
+	}
 
 	records := make([]tlv.Record, 0, 7)
 	records = append(
@@ -188,11 +207,14 @@ func JoinRoundAuthMessage(req *JoinRoundRequest) ([]byte, error) {
 			joinRoundAuthMessageDomainRecordType, &domainTag,
 		),
 	)
-	records = append(
-		records, tlv.MakePrimitiveRecord(
-			joinRoundAuthMessageIDRecordType, &identifier,
-		),
-	)
+	if !operation {
+		identifier := req.Identifier.SerializeCompressed()
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				joinRoundAuthMessageIDRecordType, &identifier,
+			),
+		)
+	}
 
 	records = append(
 		records, tlv.MakePrimitiveRecord(
@@ -215,6 +237,18 @@ func JoinRoundAuthMessage(req *JoinRoundRequest) ([]byte, error) {
 		),
 	)
 
+	if !operation && req.Service != nil {
+		service, err := req.Service.Encode()
+		if err != nil {
+			return nil, err
+		}
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				joinRoundAuthMessageServiceRecordType, &service,
+			),
+		)
+	}
+
 	return encodeJoinAuthTLV(records)
 }
 
@@ -234,6 +268,7 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 		vtxoRaw     []byte
 		forfeitRaw  []byte
 		leaveRaw    []byte
+		serviceRaw  []byte
 	)
 
 	stream, err := tlv.NewStream(
@@ -257,6 +292,9 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthMessageLeaveRecordType, &leaveRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthMessageServiceRecordType, &serviceRaw,
 		),
 	)
 	if err != nil {
@@ -353,7 +391,17 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 		return nil, fmt.Errorf("decode identifier: %w", err)
 	}
 
+	var service *ServiceRequest
+	if _, ok := parsedTypes[joinRoundAuthMessageServiceRecordType]; ok {
+		service, err = DecodeServiceRequest(serviceRaw)
+		if err != nil {
+			return nil, fmt.Errorf("decode service request: %w",
+				err)
+		}
+	}
+
 	return &JoinRoundRequest{
+		Service:      service,
 		Identifier:   identifierKey,
 		BoardingReqs: boardingReqs,
 		VTXOReqs:     vtxoReqs,
