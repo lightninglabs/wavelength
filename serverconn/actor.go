@@ -673,17 +673,11 @@ type ServerConnectionActor struct {
 	// This is in-memory only.
 	responseRegistry *mailboxconn.ResponseRegistry
 
-	// cancelCh delivers the ingress loop cancel function from
-	// StartIngress to StopIngress without a shared field, avoiding
-	// any data-race between the two methods.
-	cancelCh chan context.CancelFunc
-
-	// stopOnce ensures StopIngress cancels the ingress loop exactly
-	// once.
-	stopOnce sync.Once
-
-	// wg tracks the ingress loop goroutine for clean shutdown.
-	wg sync.WaitGroup
+	// ingressMu protects admission to the single ingress owner, including
+	// checkpoint loading. Ingress may be paused and resumed until stopped.
+	ingressMu      sync.Mutex
+	ingressRun     *ingressRun
+	ingressStopped bool
 
 	// lastSendNano stores the UnixNano timestamp of the last
 	// successful outbound Edge.Send. The heartbeat goroutine
@@ -731,7 +725,6 @@ func NewServerConnectionActor(
 		responseRegistry: mailboxconn.NewResponseRegistry(
 			cfg.ResponseWaiterTTL,
 		),
-		cancelCh: make(chan context.CancelFunc, 1),
 	}
 }
 
@@ -1203,86 +1196,72 @@ func (a *ServerConnectionActor) deliverResponse(
 	return a.responseRegistry.DeliverResponse(id, env)
 }
 
-// StartIngress loads the ack checkpoint from the store and launches the
-// background ingress loop and heartbeat goroutines. If the checkpoint
-// cannot be loaded, an error is returned and neither goroutine is
-// started — the caller should treat this as a fatal startup failure.
-func (a *ServerConnectionActor) StartIngress(
-	ctx context.Context,
-) error {
+// StartIngress loads the checkpoint and launches foreground polling and
+// heartbeat handling. The supplied context owns their lifetime. It returns
+// ErrIngressBusy if another foreground loop or pump owns ingress. After
+// PauseIngress returns, StartIngress may be called again.
+func (a *ServerConnectionActor) StartIngress(ctx context.Context) error {
+	ingressCtx, cancel := context.WithCancel(ctx)
+	run, err := a.beginIngress(ingressCtx, cancel)
+	if err != nil {
+		cancel()
 
-	// Fast path: if the connector already transitioned to the terminal
-	// incompatible state (e.g. a durable egress replay hit a permanent
-	// version error before ingress started), refuse to start polling or
-	// load checkpoints. Returning the cached error keeps the caller from
-	// marking the connection healthy.
-	if ce := a.compatibilityError(); ce != nil {
-		return ce
+		return err
 	}
 
-	state, err := a.loadCheckpoint(ctx)
+	state, err := a.loadCheckpoint(ingressCtx)
 	if err != nil {
+		err = a.ingressError(ingressCtx, err)
+		a.finishIngress(run)
+
 		return fmt.Errorf("load ingress checkpoint: %w", err)
 	}
 
-	ingressCtx, cancel := context.WithCancel(ctx)
-
-	// Publish the cancel func so the incompatibility transition can stop
-	// ingress and heartbeat asynchronously. CancelFunc is idempotent, so
-	// StopIngress invoking it again via cancelCh is harmless.
-	a.ingressCancel.Store(&cancel)
-
-	// Recheck after publishing the cancel func to close the race with a
-	// concurrent markIncompatible. The two transitions touch the compat
-	// error and the cancel pointer in opposite orders: markIncompatible
-	// stores the compat error then loads the cancel; we store the cancel
-	// then load the compat error. So at least one of us observes the
-	// other — either we see the incompatible state here and abort, or
-	// markIncompatible sees our published cancel and stops the goroutines.
-	if ce := a.compatibilityError(); ce != nil {
-		cancel()
-
-		return ce
-	}
-
-	a.wg.Add(2)
-	a.cancelCh <- cancel
-
 	if a.cfg.AuthSignature != nil || a.cfg.TLSBindSignature != nil {
-		// Prime server-side mailbox registration before the first Pull.
-		// The heartbeat envelope carries the same Schnorr and
-		// TLS-binding headers as normal outbound traffic, so the server
-		// can record the binding without waiting for the first ticker
-		// or user request.
-		heartbeatCtx, heartbeatCancel := context.WithTimeout(
+		// Prime server-side registration before the first Pull,
+		// preserving foreground startup's best-effort heartbeat
+		// behavior.
+		heartbeatCtx, cancel := context.WithTimeout(
 			ingressCtx, defaultSendEventTimeout,
 		)
 		a.sendHeartbeat(heartbeatCtx)
-		heartbeatCancel()
+		cancel()
+	}
+	if err := ingressCtx.Err(); err != nil {
+		err = a.ingressError(ingressCtx, err)
+		a.finishIngress(run)
+
+		return err
 	}
 
-	go a.ingressLoop(ingressCtx, state)
 	go func() {
-		defer a.wg.Done()
-		a.startHeartbeat(ingressCtx)
+		defer a.finishIngress(run)
+
+		heartbeatDone := make(chan struct{})
+		go func() {
+			defer close(heartbeatDone)
+			a.startHeartbeat(ingressCtx)
+		}()
+
+		a.ingressLoop(ingressCtx, state)
+		run.cancel()
+		<-heartbeatDone
 	}()
 
 	return nil
 }
 
-// StopIngress cancels the ingress loop and waits for it to exit. Safe to
-// call multiple times — the cancel is executed at most once.
+// PauseIngress cancels and joins the current ingress owner, including an
+// in-flight checkpoint load or pump. It leaves admission open for a later
+// StartIngress or PumpIngress. The host must serialize its mode transitions.
+func (a *ServerConnectionActor) PauseIngress() {
+	a.stopIngress(false)
+}
+
+// StopIngress closes ingress admission, cancels the active owner and waits for
+// it to exit. Repeated calls also wait for the same shutdown to finish.
 func (a *ServerConnectionActor) StopIngress() {
-	a.stopOnce.Do(func() {
-		select {
-		case fn := <-a.cancelCh:
-			fn()
-
-		default:
-		}
-	})
-
-	a.wg.Wait()
+	a.stopIngress(true)
 }
 
 // NewServerConnCodec creates a MessageCodec with all server connection
