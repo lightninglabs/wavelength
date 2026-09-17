@@ -506,6 +506,18 @@ message JoinRoundRequest {
     // auth contains the BIP-322 authorization payload. Nil when join
     // request auth is disabled.
     JoinRoundAuth auth = 7;
+
+    // batch_slot explicitly selects a scheduled registration opportunity.
+    // Absence requests legacy event-driven timing. It is bound by join auth.
+    BatchSlot batch_slot = 8;
+}
+
+// BatchSlot binds a join to one timetable and cutoff.
+message BatchSlot {
+    // schedule_id is the 32-byte timing-policy identifier from discovery.
+    bytes schedule_id = 1;
+    // cutoff_unix is the positive Unix second at which registration closes.
+    uint64 cutoff_unix = 2;
 }
 
 // QuoteReason classifies why a JoinRoundQuote failed to admit the

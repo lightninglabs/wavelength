@@ -531,6 +531,12 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 			"*roundpb.JoinRoundRequest", p)
 	}
 
+	selection, err := roundpb.BatchSlotFromProto(pb.BatchSlot)
+	if err != nil {
+		return err
+	}
+	m.BatchSlot = selection
+
 	// Parse identifier public key.
 	if len(pb.Identifier) > 0 {
 		key, err := btcec.ParsePubKey(pb.Identifier)

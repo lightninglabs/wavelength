@@ -2957,7 +2957,7 @@ func (a *RoundClientActor) handleTimeout(ctx context.Context,
 
 		return fn.Ok[actormsg.RoundActorResp](nil)
 
-	case TimeoutPhaseRefreshRegistration:
+	case TimeoutPhaseRefreshRegistration, TimeoutPhaseScheduledRegistration:
 		state, stateErr := fsmState(ctx, roundFSM.FSM)
 		if stateErr != nil {
 			return fn.Err[actormsg.RoundActorResp](

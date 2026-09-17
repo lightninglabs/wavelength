@@ -591,6 +591,14 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 	// round. We'll send a message to the server using our outbox, then
 	// transition to the next phase.
 	case *IntentRequested:
+		if tr, err := s.waitForScheduledSlot(env); err != nil {
+			return failWithNotification(
+				"scheduled registration unavailable", err, true,
+				fn.None[RoundID](),
+			), nil
+		} else if tr != nil {
+			return tr, nil
+		}
 		env.Log.InfoS(
 			ctx,
 			"Registration requested, preparing to join round",
@@ -773,6 +781,7 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 		// JoinRoundRequest to kick off the signing process.
 		outbox := []ClientOutMsg{
 			&JoinRoundRequest{
+				BatchSlot:        env.scheduledSlot,
 				BoardingRequests: boardingReqs,
 				VTXORequests:     vtxoReqs,
 				ForfeitRequests:  forfeitReqs,

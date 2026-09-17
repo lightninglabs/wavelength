@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -62,10 +63,19 @@ func operatorTermsFromResponse(resp *arkrpc.GetInfoResponse) (
 		vtxoConfirmations = resp.MinConfirmations
 	}
 
+	schedule, err := arkrpc.ParseBatchSchedule(resp.BatchSchedule)
+	if err != nil {
+		return nil, fmt.Errorf("batch schedule: %w", err)
+	}
+
 	// The forfeit penalty key, sweep key and sweep delay are no longer
 	// global operator terms; they are delivered per round in the batch
 	// info, so GetInfo no longer carries them.
 	return &types.OperatorTerms{
+		BatchSchedule: schedule,
+		NextBatchCutoff: time.Unix(
+			resp.GetBatchSchedule().GetNextCutoffUnix(), 0,
+		),
 		PubKey:                  pubKey,
 		BoardingExitDelay:       resp.BoardingExitDelay,
 		VTXOExitDelay:           resp.VtxoExitDelay,
