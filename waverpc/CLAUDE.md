@@ -51,3 +51,10 @@ helper file (`errors.go`) for structured wallet-lifecycle errors.
   identity or they will be handed each other's receive scripts. An empty key
   keeps the legacy allocate-a-fresh-script behavior; repeating a non-empty key
   with a *different* label is rejected rather than silently reallocated.
+
+- Asset quantities use `uint64` asset units and remain separate from Bitcoin
+  carrier satoshis. `ListVTXOs.asset_ref` accepts canonical SDK references and
+  filters stored and pending-round entries alike. `GetBalance.asset_balances`
+  reports confirmed live holdings by asset; those carriers are excluded from
+  the Bitcoin spendable balance. Listing responses expose the commitment root,
+  but never the sealed transfer package.
