@@ -144,6 +144,42 @@ message GetInfoResponse {
     // round. This is independent of min_confirmations, which protects the
     // on-chain boarding inputs consumed by a new round.
     uint32 vtxo_confirmations = 24;
+
+    // The configured UTC timetable, if present. Clients must check
+    // admission_enabled before treating it as an available service.
+    BatchScheduleInfo batch_schedule = 25;
+}
+
+// BatchScheduleInfo describes an immutable UTC timetable and the next slot.
+// A slot is identified by (version, next_slot_index). Unix timestamps are
+// whole seconds. Start means membership close and quoting/signing begins,
+// not a guaranteed transaction broadcast time.
+message BatchScheduleInfo {
+    // Immutable schedule version. Timing changes require a new version.
+    uint64 version = 1;
+    // First membership-close time in UTC Unix seconds.
+    int64 anchor_unix = 2;
+    // Fixed interval between membership-close times.
+    uint64 interval_seconds = 3;
+    // Duration of each registration window before membership closes.
+    uint64 registration_window_seconds = 4;
+    // Operator wall-clock observation used for this response.
+    int64 server_time_unix = 5;
+    // Index of the first slot whose start is strictly after server time.
+    uint64 next_slot_index = 6;
+    // Inclusive registration opening time for the next slot.
+    int64 next_registration_open_unix = 7;
+    // Exclusive registration closing time for the next slot.
+    int64 next_start_unix = 8;
+    // Whether the operator accepts explicitly scheduled registrations.
+    // False exposes a timetable for discovery only, not an active service.
+    bool admission_enabled = 9;
+    // Earliest permitted registration opening for this schedule version.
+    int64 effective_at_unix = 10;
+    // Maximum quoting/signing duration after membership closes.
+    uint64 participation_window_seconds = 11;
+    // Absolute participation deadline for the next slot, fixed by its version.
+    int64 next_participation_deadline_unix = 12;
 }
 
 // EstimateFeeRequest asks the server to estimate the fee for a
