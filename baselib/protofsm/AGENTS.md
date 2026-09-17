@@ -12,7 +12,10 @@ transition's outbox events.
 - `State[E, O, Env]` — Interface for FSM states: `ProcessEvent` returns a
   `StateTransition`, iterated until a terminal state or no further internal
   events are emitted.
-- `StateMachine[E, O, Env]` — Non-actor FSM runner (for testing or embedded use).
+- `StateMachine[E, O, Env]` — Independently driven FSM with a worker goroutine.
+- `InlineStateMachine[E, O, Env]` — Synchronous runner for actor-owned FSMs.
+  It receives the actor turn context through the whole internal-event chain
+  and returns only after transitions finish; it never dispatches effects.
 - `StateMachineCfg[E, O, Env]` — Configuration for state machines (initial state, environment, transition table).
 - `ActorStateMachine[E, O, Env]` — FSM wrapped as an actor behavior for use with `baselib/actor`.
 - `EmittedEvent[E, O]` — Internal events (recursive, routed back into the
@@ -34,7 +37,10 @@ transition's outbox events.
 
 ## Invariants
 
-- Transition functions must be pure: no I/O, no network calls, no database writes. All side effects are expressed as outbox events.
+- The inline runner supplies no persistence or transaction by itself. Its
+  owning durable actor must commit checkpoints and effects, and restore the
+  previous checkpoint after a failed commit. Keep external calls outside a
+  database writer transaction using the actor runtime's Read/Stage/Commit API.
 - `ActorStateMachine.Receive` commits `currentState` in memory before
   dispatching any outbox events for that turn (prevents dispatching a side
   effect for a transition the FSM hasn't "moved into" yet). Protofsm itself
