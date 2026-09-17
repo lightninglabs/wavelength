@@ -1411,7 +1411,11 @@ type StartReceiveRequest struct {
 	IdempotencyKey string `protobuf:"bytes,2,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
 	// memo is an optional human-readable label to embed as the BOLT-11
 	// invoice description.
-	Memo          string `protobuf:"bytes,3,opt,name=memo,proto3" json:"memo,omitempty"`
+	Memo string `protobuf:"bytes,3,opt,name=memo,proto3" json:"memo,omitempty"`
+	// claim_address optionally selects another wallet's Ark receive address
+	// on the same operator and network. Empty allocates a local destination.
+	// External receives cannot use or attach local account credits.
+	ClaimAddress  string `protobuf:"bytes,4,opt,name=claim_address,json=claimAddress,proto3" json:"claim_address,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1463,6 +1467,13 @@ func (x *StartReceiveRequest) GetIdempotencyKey() string {
 func (x *StartReceiveRequest) GetMemo() string {
 	if x != nil {
 		return x.Memo
+	}
+	return ""
+}
+
+func (x *StartReceiveRequest) GetClaimAddress() string {
+	if x != nil {
+		return x.ClaimAddress
 	}
 	return ""
 }
@@ -2031,8 +2042,11 @@ type SwapSummary struct {
 	// available_credit_sat is the balance considered when the receive route was
 	// planned.
 	AvailableCreditSat uint64 `protobuf:"varint,26,opt,name=available_credit_sat,json=availableCreditSat,proto3" json:"available_credit_sat,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// claim_address is the external Ark receive destination, empty for local
+	// receives and pay swaps.
+	ClaimAddress  string `protobuf:"bytes,27,opt,name=claim_address,json=claimAddress,proto3" json:"claim_address,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SwapSummary) Reset() {
@@ -2247,6 +2261,13 @@ func (x *SwapSummary) GetAvailableCreditSat() uint64 {
 	return 0
 }
 
+func (x *SwapSummary) GetClaimAddress() string {
+	if x != nil {
+		return x.ClaimAddress
+	}
+	return ""
+}
+
 var File_swap_client_proto protoreflect.FileDescriptor
 
 const file_swap_client_proto_rawDesc = "" +
@@ -2342,12 +2363,13 @@ const file_swap_client_proto_rawDesc = "" +
 	"\tdirection\x18\x03 \x01(\tR\tdirection\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x04 \x01(\x04R\tamountSat\x12&\n" +
-	"\x0fcreated_at_unix\x18\x05 \x01(\x03R\rcreatedAtUnix\"q\n" +
+	"\x0fcreated_at_unix\x18\x05 \x01(\x03R\rcreatedAtUnix\"\x96\x01\n" +
 	"\x13StartReceiveRequest\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x01 \x01(\x03R\tamountSat\x12'\n" +
 	"\x0fidempotency_key\x18\x02 \x01(\tR\x0eidempotencyKey\x12\x12\n" +
-	"\x04memo\x18\x03 \x01(\tR\x04memo\"\xb3\x03\n" +
+	"\x04memo\x18\x03 \x01(\tR\x04memo\x12#\n" +
+	"\rclaim_address\x18\x04 \x01(\tR\fclaimAddress\"\xb3\x03\n" +
 	"\x14StartReceiveResponse\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\tR\vpaymentHash\x12\x18\n" +
 	"\ainvoice\x18\x02 \x01(\tR\ainvoice\x12.\n" +
@@ -2375,7 +2397,7 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x10include_existing\x18\x01 \x01(\bR\x0fincludeExisting\x12!\n" +
 	"\fpending_only\x18\x02 \x01(\bR\vpendingOnly\"H\n" +
 	"\x16SubscribeSwapsResponse\x12.\n" +
-	"\x04swap\x18\x01 \x01(\v2\x1a.swapclientrpc.SwapSummaryR\x04swap\"\xca\b\n" +
+	"\x04swap\x18\x01 \x01(\v2\x1a.swapclientrpc.SwapSummaryR\x04swap\"\xef\b\n" +
 	"\vSwapSummary\x12:\n" +
 	"\tdirection\x18\x01 \x01(\x0e2\x1c.swapclientrpc.SwapDirectionR\tdirection\x12!\n" +
 	"\fpayment_hash\x18\x02 \x01(\tR\vpaymentHash\x12.\n" +
@@ -2404,7 +2426,8 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x14requested_amount_sat\x18\x17 \x01(\x04R\x12requestedAmountSat\x12.\n" +
 	"\x13attached_credit_sat\x18\x18 \x01(\x04R\x11attachedCreditSat\x12$\n" +
 	"\x0edust_limit_sat\x18\x19 \x01(\x04R\fdustLimitSat\x120\n" +
-	"\x14available_credit_sat\x18\x1a \x01(\x04R\x12availableCreditSat*c\n" +
+	"\x14available_credit_sat\x18\x1a \x01(\x04R\x12availableCreditSat\x12#\n" +
+	"\rclaim_address\x18\x1b \x01(\tR\fclaimAddress*c\n" +
 	"\rSwapDirection\x12\x1e\n" +
 	"\x1aSWAP_DIRECTION_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12SWAP_DIRECTION_PAY\x10\x01\x12\x1a\n" +

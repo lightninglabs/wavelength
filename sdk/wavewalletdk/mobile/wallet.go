@@ -59,6 +59,7 @@ func receiveError(callCtx context.Context, err error) error {
 type mobileReceiveRequest struct {
 	AmountSat      uint64
 	Memo           string
+	ClaimAddress   string
 	TimeoutSeconds int64
 }
 
@@ -90,8 +91,9 @@ func decodeReceiveRequest(reqJSON []byte) (wavewalletdk.ReceiveRequest,
 	}
 
 	return wavewalletdk.ReceiveRequest{
-		AmountSat: mobileReq.AmountSat,
-		Memo:      mobileReq.Memo,
+		AmountSat:    mobileReq.AmountSat,
+		Memo:         mobileReq.Memo,
+		ClaimAddress: mobileReq.ClaimAddress,
 	}, timeout, nil
 }
 
