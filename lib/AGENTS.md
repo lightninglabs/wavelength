@@ -12,6 +12,9 @@ message interfaces, and core Ark types.
 - `Tree` — Root node plus batch outpoint/output (encapsulates VTXO Merkle tree).
 - `Node` — Individual tree node with children and outputs.
 - `LeafDescriptor` — VTXO or connector output to include in tree construction.
+- `AssetTreeContext` — Optional per-tree asset sidecar (asset ref, per-node
+  signing tweak and amount, per-leaf asset root, sealed packages); nil for
+  Bitcoin-only trees.
 
 ### lib/arkscript
 - `Node` — Sealed AST interface for tapscript spending conditions (Multisig, CSV, Condition, etc.).

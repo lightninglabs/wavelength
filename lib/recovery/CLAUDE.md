@@ -12,6 +12,14 @@ scheduling live downstream in `unrollplan` and `unroll`.
 
 - `Proof` — Immutable recovery graph: target outpoint, csv delay, topologically
   layered transaction nodes, parent/child adjacencies, reachability-checked.
+  `RootExternalInputs` returns the outpoints the root transactions consume that
+  no node in the graph produces — the external funding the whole exit hangs
+  off. For a round-direct VTXO that is the batch/commitment output the tree
+  root spends; for an OOR-chained or fan-in VTXO it is every distinct
+  commitment output rooting a local lineage fragment. These are exactly the
+  outpoints a competing party (an operator sweeping an expired batch) can take
+  out from under an exit, so `unroll` watches them to fail a doomed exit
+  terminally instead of materializing forever.
 - `Node` / `NodeKind` — One recovery transaction and its role (tree /
   checkpoint / ark).
 - `Session` — Mutable planning object driven by caller-reported observations
@@ -51,6 +59,9 @@ scheduling live downstream in `unrollplan` and `unroll`.
   cause survives across a restart.
 - `Session` methods are safe for concurrent use under `RWMutex`; internal
   helpers assume the caller already holds the lock.
+- `RootExternalInputs` deduplicates and sorts its result, so two proofs built
+  from the same node set yield byte-identical output. Callers may rely on that
+  ordering when persisting or comparing the watch set.
 - The TLV codec is canonical (sorted by raw hash bytes) and carries an
   explicit version byte; version mismatch is a hard decode error.
 - `parseHash` via `chainhash.NewHashFromStr` is intentionally absent: raw

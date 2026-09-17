@@ -21,6 +21,12 @@ state+outbox checkpointing.
 - `newLedgerActorForTest` (`ledger_e2e_test.go`) — Wires a real
   `ledger.LedgerActor` on the durable mailbox against the same SQLite DB, so
   ledger writes join the actor's fenced `Commit` transaction as in production.
+- `nackingSendStore` (`ledger_session_lane_test.go`) — Store wrapper that fails
+  the first insert of an outgoing OOR send leg, nacking it into retry backoff
+  so the session's receive (enqueued later but immediately claimable) would
+  overtake it. Backs `TestOORSelfChangeSurvivesANackedSend`, which proves the
+  mailbox's correlation-key lane keeps the two legs of one OOR session in
+  order regardless of the claim order the mailbox would otherwise pick.
 - Timeout constants: `outboxForwardProcessingTimeout`, `outboxDeliveryTimeout`,
   `durableAskResponseTimeout` — all 30s, kept aligned since DurableAsk
   responses and forwards are also delivered through the outbox.

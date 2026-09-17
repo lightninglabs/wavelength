@@ -19,6 +19,12 @@ descriptors through branch nodes to the batch output.
 - `Materializer` / `BTCMaterializer` — Interface and implementation for materializing tree nodes into actual Bitcoin transactions.
 - `TreeAssembler` — Two-pass builder (`BuildStructure` then `Materialize`) driven by `TreeConfig`.
 - `Queue[T]` — Generic queue used internally for BFS tree traversal.
+- `AssetTreeContext` — Optional per-tree sidecar holding everything needed to
+  materialize and sign an *asset* tree: the `AssetRef`, a per-node
+  `SigningTweak` and `NodeAssetAmount`, the per-leaf `LeafAssetRoot`, and the
+  `SealedPackage` for each committed node. Built via `NewAssetTreeContext` and
+  populated by the builder before the tree is shared; `IsEmpty` distinguishes a
+  Bitcoin-only tree. Attached as `Tree.AssetContext`.
 
 ## Relationships
 
@@ -42,6 +48,12 @@ descriptors through branch nodes to the batch output.
   all outputs and recurses only into retained children. The traversal rejects
   cycles and nodes shared by multiple parents. `Node.Verify` checks only
   parent-child outpoint topology and is not a trust-boundary validator.
+- An asset tree's node tweak comes from `AssetTreeContext.SigningTweak`, not
+  from the sweep tapscript root a Bitcoin-only tree uses. `AssetTreeContext` is
+  nil-safe: `Validate` on a nil context is a no-op, so Bitcoin-only callers
+  need no special casing. When non-nil it requires a non-empty asset ref,
+  rejects duplicate asset inputs across the tree, and checks that every node's
+  asset amount is fully described and conserved down to the leaves.
 - **Cache-aliasing invariant**: a `*Tree` is effectively immutable once published from
   a builder or resolver. Multiple downstream consumers may share the same `*Tree`
   pointer through caches and ancestry-fragment slices. Silently mutating a shared

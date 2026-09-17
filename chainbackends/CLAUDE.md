@@ -37,7 +37,16 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
   `rpcclient.ErrInsufficientFee`) instead of substring-matching reject
   strings.
 - `NewPackageTxError(wtxid, txid, reason)` — Eagerly maps the reject reason to
-  a typed sentinel at construction time.
+  a typed sentinel at construction time, and parses any replacement-policy fee
+  constraints out of it.
+- `ReplacementFeeConstraints` — Structured fee information Bitcoin Core reports
+  when a replacement child cannot evict a conflicting transaction:
+  `ConflictingFee` (total fee the replacement must beat),
+  `AdditionalFeeDeficit` (extra fee needed for the incremental relay fee), and
+  `ConflictingFeeRateSatPerVByte` (integer part of the highest conflicting
+  feerate). Reached via `(*PackageTxError).ReplacementConstraints()`; lets
+  `unroll`/`txconfirm` reprice a rejected sweep to a concrete target instead of
+  guessing a multiplier.
 - `WalkPackageTxErrors(err, fn)` — Walks both `Unwrap() error` and
   `Unwrap() []error` shapes to invoke `fn` for every `*PackageTxError` in a
   joined error tree. Use this instead of `errors.As` when all per-tx entries
@@ -67,6 +76,14 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 - `LndClientChainNotifier` enforces a 15-second timeout on registration to
   prevent hanging under LND block load.
 - Log messages use canonical txid strings (not reversed byte slices).
+- `ReplacementFeeConstraints` fields are pointers and every one of them may be
+  nil: the backend only reports the constraints its rejection path happens to
+  mention, and the parse is best-effort over Bitcoin Core's diagnostic strings.
+  Treat a nil field as "unknown", never as zero, and keep a fallback repricing
+  path for the case where nothing was parsed.
+- `ConflictingFeeRateSatPerVByte` is the *integer part* of the conflicting
+  feerate. A replacement must pay at least one sat/vByte above it to be
+  strictly greater; matching it exactly is still a rejection.
 - **A `Canceled` status is only shutdown noise when the owning context is also
   done.** Round completion stops each VTXO's block subscription, and a block
   already in flight can race that cancellation, so `GetBlockHash` or the

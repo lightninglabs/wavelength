@@ -24,7 +24,14 @@ All `*.pb.go` files are generated — never edit directly; regenerate with
   `MethodSubmitVTXOForfeitSigs` (VTXO forfeit sigs).
 - `TreeFromProto` / `TreeToProto` — Convert between `*VTXOTree` proto and
   `lib/tree.Tree`; `TreeFromProto` takes `WithMaxTreeNodes` to bound the
-  deserialized node count (`DefaultMaxTreeNodes` = 50,000).
+  deserialized node count (`DefaultMaxTreeNodes` = 50,000). Both carry the
+  optional asset context: `VTXOTree.asset_ref` plus the per-node
+  `signing_tweak`, `asset_amount`, and leaf `asset_commitment_root` fields
+  round-trip through `lib/tree.AssetTreeContext`.
+- `VTXORequest.asset_ref` / `asset_amount` — Request an asset VTXO rather than
+  a Bitcoin one; both empty/zero for a Bitcoin VTXO.
+- `ClientBatchInfo.asset_leaf_packages` — The sealed transfer package for each
+  asset VTXO created for this client, keyed by VTXO outpoint string.
 - `OutpointFromProto`/`ToProto`, `TxOutFromProto`/`ToProto`,
   `PSBTFromBytes`/`ToBytes`, `MsgTxFromBytes`/`ToBytes`,
   `SchnorrSigFromBytes`/`ToBytes` — wire/proto ⇄ Go conversions for the
@@ -41,7 +48,8 @@ distinction.
 ## Relationships
 
 - **Depends on**: `lib/tree`, `lib/types` (conversion targets in
-  `convert.go`); otherwise generated proto types only.
+  `convert.go`), and the external `tap-sdk` for `AssetRef` parsing and
+  canonical re-encoding; otherwise generated proto types only.
 - **Depended on by**: `round` (outbox routing, proto conversions, flow
   version), `db` (persisting round/VTXO proto blobs), `waved` (proto
   conversion, flow version).
@@ -70,6 +78,19 @@ distinction.
   the sibling decoder on the untrusted indexer receive path. Keep the
   two in step: a shape rejected by one and accepted by the other is a
   gap, not a difference in trust level.
+- Asset tree fields are all-or-nothing: any per-node `signing_tweak`,
+  `asset_amount`, or `asset_commitment_root` requires a non-empty
+  `VTXOTree.asset_ref`, and the ref must parse *and* re-encode to exactly the
+  bytes sent (canonical encoding only). A non-canonical alias would let two
+  distinct wire strings denote one asset and defeat per-asset comparisons.
+  Rebuilt contexts go through `tree.AssetTreeContext.Validate` before the tree
+  is accepted, so an asset tree cannot smuggle in inconsistent per-node
+  amounts.
+- For an asset tree the node taproot tweak comes from the asset context's
+  `SigningTweak`, not from `sweep_tapscript_root`; a Bitcoin-only tree uses
+  `sweep_tapscript_root` and leaves the asset fields empty. `FinalKey` is
+  recomputed from each node's cosigners and that tweak rather than trusted
+  from the wire.
 - `ValidateFlowVersion` must reject any `FlowVersion` other than the
   versions this build implements (currently only `FlowVersionV1`); never
   make it permissive by default.

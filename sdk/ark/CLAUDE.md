@@ -20,7 +20,9 @@ transport, without duplicating Ark runtime behavior.
 - `Info` / `ServerInfo` / `Seed` / `WalletInitResult` / `WalletState` —
   SDK-owned models for daemon status, cached operator terms, and wallet
   bootstrap flows. `Info.WalletReady()` checks `WalletState ==
-  WalletStateReady`.
+  WalletStateReady`. `ServerInfo.VTXOConfirmations` is the depth at which
+  round-created VTXOs become spendable off-chain, advertised separately from
+  `MinConfirmations` (which governs on-chain boarding inputs).
 - `VTXOInfo` / `VTXOExpiryInfo` — Typed VTXO view and expiry classification
   returned by `ListLiveVTXOs`, `ListSpentVTXOs`, `GetVTXOExpiryInfo`.
 - `ReceiveInfo` — Typed receive destination returned by `NewReceiveScript` /
@@ -78,6 +80,11 @@ transport, without duplicating Ark runtime behavior.
 - `ServerInfo` is a bootstrap-time operator-terms snapshot, including the
   advisory `FreeRefreshWindowBlocks`; refresh after reconnect is not wired
   through yet.
+- `ListVTXOs(ctx, nil)` lists the *inventory* set — every VTXO except forfeited
+  and spent ones, newest first — not just spendable coins. Only the live
+  entries in that set can be spent; callers that need spendable coins must
+  filter by status (or use `ListLiveVTXOs`) rather than treating the default
+  listing as a balance.
 - Pre-1.0, some methods intentionally return `waverpc` protobuf types
   directly. Those passthrough APIs are not yet treated as stable SDK-owned
   models.

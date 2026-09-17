@@ -169,6 +169,27 @@ default builds avoid the swap executor's dependency graph.
   calls `listLiveVTXOsForLeave` for sweep-all enumeration.
 - `SendResponse.actual_amount_sat` carries the true outflow for sweep-all
   sends and SHOULD be echoed back before the send is treated as confirmed.
+- **Onchain send previews quote every selected VTXO, not the destination
+  amount.** `quoteOnchainInputs` calls `EstimateFee` once per distinct
+  `(amount_sat, remaining_blocks)` pair across the selected inputs and sums the
+  results, because each forfeited input pays its own fixed operator components.
+  Quoting the destination amount once undercounts those charges and prices the
+  wrong principal whenever a bounded send returns change. Remaining lifetime is
+  `batch_expiry - block_height` clamped to at least 1 (zero would mean "full
+  default lifetime" to the operator), mirroring refresh previews.
+- **A partial remote quote is never reported as complete.** Any missing chain
+  height, missing per-input timing context, RPC failure, or out-of-range fee
+  discards the *entire* remote estimate and falls back to the batch-size-1
+  `localOnchainFeeFloor`, surfaced as `SEND_QUOTE_STATUS_LOCAL_ONLY` with a
+  warning. The one exception is an operator quote that comes back with
+  `below_dust_warning`: that rejects the preview with
+  `codes.FailedPrecondition` rather than falling back, since substituting a
+  local floor would hide an input the operator already priced as uneconomic.
+- `stampLateTransition` advances a projection's `updated_at_unix` past the
+  stored row's when the derived value would not. Ledger-derived transitions
+  carry their *source row's* creation time, which would otherwise hide the
+  change from recency ordering, pollers, and subscriber payloads. The stamp
+  never regresses a stored value under a stepped-back clock.
 - **Cooperative-leave EXIT fee**: at completion
   (`applyCooperativeLeaveForfeited`), the forfeited source VTXO's
   settlement carries the forfeit round's operator fee (from the daemon

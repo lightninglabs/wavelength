@@ -52,6 +52,7 @@ package may import from a higher layer.
 | [`fraud`](fraud/) | Fraud detection actor: watches OOR ancestor outpoints on-chain and triggers unilateral exit when an ancestor is spent |
 | [`vhtlcrecovery/coordinator`](vhtlcrecovery/coordinator/) | Runtime coordinator for durable vHTLC recovery jobs: arms, escalates into unroll, cancels, and reconciles after restart |
 | [`vhtlcrecovery/unrollpolicy`](vhtlcrecovery/unrollpolicy/) | Adapter that resolves `(exit_policy_kind, recovery_id)` into a concrete `unroll.ExitSpendPolicy` for vHTLC claim and refund exits |
+| [`tapassets`](tapassets/) | Adapts tap-sdk custom-anchor transitions to Ark trees: caller-funded asset batch outputs, asset-aware VTXO tree materialization, and a durable commit journal |
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts, fee ledger |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
 | [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade |
@@ -96,6 +97,7 @@ package may import from a higher layer.
 | [`systest`](systest/) | System-level end-to-end tests |
 | [`internal/actortest`](internal/actortest/) | Durable actor integration tests with real DB backends |
 | [`internal/testutils`](internal/testutils/) | Deterministic key/signature generation for tests |
+| [`internal/expiryfixture`](internal/expiryfixture/) | Signed VTXO ancestry fixtures for authenticated-expiry acceptance tests |
 | [`internal/indexerlimits`](internal/indexerlimits/) | Client-side bounds for indexer pagination cursors (defense-in-depth against misbehaving remotes) |
 | [`rules`](rules/) | ast-grep linting rules for code style enforcement |
 | [`tools`](tools/) | Development tool dependencies (protoc plugins, sqlc) |

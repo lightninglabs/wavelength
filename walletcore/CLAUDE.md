@@ -9,7 +9,7 @@ btcwallet.BtcWallet regardless of the underlying chain source.
 
 ## Key Types
 
-- `Wallet` — Core wallet struct embedding `input.Signer`. Provides key derivation, P2TR address generation, balance queries, and UTXO listing. Also implements `proofkeys.Backend` (via `ProofSigner` method). Chain-specific implementations embed this to satisfy `round.ClientWallet`.
+- `Wallet` — Core wallet struct embedding `input.Signer`. Provides key derivation, P2TR address generation, balance queries, and UTXO listing. Also implements `proofkeys.Backend` (via `ProofSigner` method). Chain-specific implementations embed this to satisfy `round.ClientWallet`. `Balance` reports the default account only (see invariants).
 - `BoardingBackendBase` — Shared boarding functionality: taproot script import under BIP86 scope, imported address tracking for UTXO filtering, and HD key derivation. Chain-specific adapters embed this and add `ListUnspent`, `GetTransaction`, `GetBlock`.
 - `Config` — Base configuration (seed, wallet password, seed birthday, chain
   params (mainnet/testnet/testnet4/regtest), recovery window, DB dir, logger)
@@ -39,6 +39,13 @@ btcwallet.BtcWallet regardless of the underlying chain source.
   `addressForTaprootScript`, repopulating the filter without a second
   import attempt — covers the case where btcwallet already persisted the
   script but the in-memory filter started empty.
+- `Wallet.Balance` is scoped to `lnwallet.DefaultAccountName`, not to every
+  account. Imported taproot scripts (boarding and exit outputs brought in via
+  `ImportTaprootScript`) live in btcwallet's *imported* account, are
+  unspendable by the wallet's own key ring, and are already reported under the
+  daemon's separate boarding balance fields. Passing `""` here would sum both
+  accounts and overstate what the wallet can actually fund an exit or sweep
+  with. Do not "simplify" the account argument back to the empty string.
 - The user-supplied `Config.WalletPassword` is btcwallet's `PrivatePass`; the
   static `PublicWalletPassphrase` constant covers only public (watch-only)
   data. A nil `Config.Seed` opens an existing wallet database; a non-nil seed
