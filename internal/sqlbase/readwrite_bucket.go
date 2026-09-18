@@ -1,5 +1,3 @@
-//go:build js && wasm
-
 package sqlbase
 
 import (
@@ -84,7 +82,7 @@ func (b *readWriteBucket) Get(key []byte) []byte {
 	err := row.Scan(&value)
 
 	switch {
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 		return nil
 
 	case err != nil:
@@ -137,7 +135,7 @@ func (b *readWriteBucket) NestedReadWriteBucket(
 	err := row.Scan(&id)
 
 	switch {
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 		return nil
 
 	case err != nil:
@@ -173,7 +171,7 @@ func (b *readWriteBucket) CreateBucket(key []byte) (walletdb.ReadWriteBucket,
 	err := row.Scan(&id, &value)
 
 	switch {
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 	case err == nil && value == nil:
 		return nil, walletdb.ErrBucketExists
 
@@ -229,7 +227,7 @@ func (b *readWriteBucket) CreateBucketIfNotExists(key []byte) (
 	switch {
 	// Bucket does not yet exist, so create it now. Postgres will generate a
 	// bucket id for the new bucket.
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 		row, cancel := b.tx.QueryRow(
 			"INSERT INTO "+b.table+" (parent_id, key) "+
 				"VALUES($1, $2) RETURNING id",
@@ -365,7 +363,7 @@ func (b *readWriteBucket) Delete(key []byte) error {
 	err := row.Scan(&dummy)
 	switch {
 	// No bucket exists, proceed to deletion of the key.
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
 		return err
 
@@ -447,7 +445,7 @@ func (b *readWriteBucket) Sequence() uint64 {
 	err := row.Scan(&seq)
 
 	switch {
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 		return 0
 
 	case err != nil:
@@ -473,6 +471,13 @@ func (b *readWriteBucket) ForAll(cb func(k, v []byte) error) error {
 	}
 	defer cancel()
 
+	// cancel only releases the query's timeout context; the result set
+	// holds a connection from the pool until it is closed explicitly,
+	// which rows.Next() only does for us if it is driven to completion.
+	defer func() {
+		_ = rows.Close()
+	}()
+
 	for rows.Next() {
 		var key, value []byte
 
@@ -487,5 +492,8 @@ func (b *readWriteBucket) ForAll(cb func(k, v []byte) error) error {
 		}
 	}
 
-	return nil
+	// A row error terminates the loop above just like a fully consumed
+	// result set does, so without this check a truncated bucket walk is
+	// indistinguishable from a complete one.
+	return rows.Err()
 }

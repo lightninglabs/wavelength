@@ -58,7 +58,7 @@ package may import from a higher layer.
 | [`serverconn/mailboxpull`](serverconn/mailboxpull/) | Shared exponential-backoff retry primitives for mailbox pull loops (used by serverconn ingress and SDK swap consumers) |
 | [`rpcauth`](rpcauth/) | Shared macaroon and TLS helpers securing gRPC/REST connections |
 | [`metrics`](metrics/) | Prometheus instrumentation namespaced under `waved_`: event-driven counter actor pool plus a scrape-time `SystemCollector` for live gauges, and an opt-in `/metrics` HTTP server |
-| [`internal/sqlbase`](internal/sqlbase/) | `walletdb`-compatible key/value backend over `database/sql` (js/wasm walletdb storage for `lwwallet` browser builds) |
+| [`internal/sqlbase`](internal/sqlbase/) | `walletdb`-compatible key/value backend over `database/sql` (SQL walletdb storage for `lwwallet`) |
 | [`internal/wasmhost`](internal/wasmhost/) | js/wasm host detection (browser vs Node) and the durable SQLite VFS name that follows from it; imported by `db`, `lwwallet`, and `cmd/wavewalletdk-wasm` |
 
 ### Layer 3: Application & Orchestration
