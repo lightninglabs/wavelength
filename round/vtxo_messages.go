@@ -161,12 +161,19 @@ func (e *SpendCompletedEvent) MessageType() string {
 	return "SpendCompletedEvent"
 }
 
-// ForfeitReleasedEvent releases a VTXO whose cooperative round did not cross
-// the signature-handoff checkpoint. It is accepted from PendingForfeitState,
-// and from ForfeitingState only when the manager has durable proof that no
-// round checkpoint exists.
+// ForfeitReleasedEvent releases a VTXO whose cooperative round failed. It is
+// accepted unconditionally from PendingForfeitState, where no round has
+// claimed the reservation yet, and from ForfeitingState only when RoundID
+// names the round the VTXO signed its forfeit for: once a forfeit signature is
+// out, only the round holding it can hand the coin back.
 type ForfeitReleasedEvent struct {
 	actor.BaseMessage
+
+	// RoundID is the round releasing the reservation, in the same string
+	// form ForfeitRequestToVTXO stamped on the VTXO. Empty when the
+	// producer has no round ID yet: pre-admission failures, registration
+	// rollbacks, and manager-internal rollbacks.
+	RoundID string
 }
 
 // VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.
