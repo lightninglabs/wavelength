@@ -320,6 +320,10 @@ type Options struct {
 	// LNDImage is the docker image:tag to use for lnd.
 	LNDImage string
 
+	// PrimaryLNDImage optionally overrides LNDImage for the primary node.
+	// Additional nodes continue to use LNDImage.
+	PrimaryLNDImage string
+
 	// LNDRequireInterceptor, when true, starts the main lnd node with
 	// --requireinterceptor so held HTLCs are retained on interceptor
 	// disconnect and replayed on reconnect, rather than resumed and failed.
@@ -2373,14 +2377,19 @@ func (h *Harness) startLNDInstanceWithOptions(name, dataDir string,
 
 	require.NoError(h.T, os.MkdirAll(dataDir, 0o755))
 
+	lndImage := h.opts.LNDImage
+	if name == "lnd" && h.opts.PrimaryLNDImage != "" {
+		lndImage = h.opts.PrimaryLNDImage
+	}
+
 	res := h.startLNDContainer(lndConfig{
 		name:               name,
 		dataDir:            dataDir,
 		bitcoindName:       h.bitcoindName,
 		network:            h.network,
 		group:              h.group,
-		image:              imageRepo(h.opts.LNDImage),
-		tag:                imageTag(h.opts.LNDImage),
+		image:              imageRepo(lndImage),
+		tag:                imageTag(lndImage),
 		requireInterceptor: requireInterceptor,
 		manualWalletInit:   manualWalletInit,
 		extraArgs:          extraArgs,

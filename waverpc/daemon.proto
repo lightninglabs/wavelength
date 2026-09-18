@@ -915,11 +915,21 @@ message GetIndexedVTXOByPkScriptRequest {
     // status_filter restricts the indexer query to matching lifecycle
     // states. If empty, all statuses are considered.
     repeated VTXOStatus status_filter = 2;
+
+    // policy_template optionally authorizes an exact custom output without
+    // allocating a receive-script registration. The daemon signs the policy
+    // and script; the operator verifies participant ownership on each query.
+    bytes policy_template = 3;
 }
 
 message GetIndexedVTXOByPkScriptResponse {
     // vtxo is the first matching VTXO, when found.
     VTXO vtxo = 1;
+
+    // policy_authorized confirms the operator accepted the supplied policy
+    // proof. Callers providing a policy must require this even on an empty
+    // result, so an older daemon cannot silently ignore the request field.
+    bool policy_authorized = 2;
 }
 
 // GetVTXOExpiryInfoRequest identifies one VTXO whose expiry posture should be

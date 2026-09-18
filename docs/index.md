@@ -31,6 +31,7 @@ into specific topics below.
 | [RPC_MAILBOX_CONTRACT.md](RPC_MAILBOX_CONTRACT.md) | Envelope semantics, at-least-once delivery, ack watermarks |
 | [credit_durable_actor_design.md](credit_durable_actor_design.md) | Credit subsystem durable-actor design: supervisor + per-operation actors driving fault-tolerant sub-floor pay, credit-receive, and redeem flows against the authoritative server ledger |
 | [wavewalletdk_mobile.md](wavewalletdk_mobile.md) | gomobile-safe `sdk/wavewalletdk/mobile` facade: drives an embedded in-process `waved` wallet from Android/iOS over the private bufconn transport (bytes-out API, no daemon binary) |
+| [custom-policy-queries.md](custom-policy-queries.md) | Stateless exact-policy ownership proofs, daemon capability checks, and authoritative negative observations |
 
 ## Development
 

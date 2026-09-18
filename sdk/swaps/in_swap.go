@@ -1218,9 +1218,17 @@ func (s *paySession) waitForClaimPreimage(ctx context.Context) error {
 
 		refunded, err := s.tryCooperativeRefund(ctx)
 		if err != nil {
-			return err
+			var retryable *retryableActionError
+			if !errors.As(err, &retryable) {
+				return err
+			}
+			s.client.log.DebugS(
+				ctx,
+				"Retrying cooperative refund observation",
+				slog.String("err", err.Error()),
+			)
 		}
-		if refunded {
+		if err == nil && refunded {
 			return nil
 		}
 
@@ -1277,11 +1285,13 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 		})
 	}
 	refundOutput, err := s.observeRefundOutput(ctx)
-	if err != nil {
+	if err != nil && s.refundSessionID == "" {
 		return newRetryableActionError(
 			fmt.Errorf("query in-swap refund output: %w", err),
 		)
 	}
+	// An accepted refund can still be co-signed without an indexed output.
+	// Its durable session below remains authoritative while indexing waits.
 	if refundOutput != nil {
 		return s.markRefundOutputIndexed(ctx, refundOutput)
 	}

@@ -18,7 +18,8 @@ helpers for end-to-end tests.
   (`StartAdditionalLND`, `StartAdditionalLNDWithBackend`,
   `SetupChannelBetween`), and seed recovery helpers
   (`StartAdditionalLNDWithSeed`, `RestoreLNDFromSeed`, `RescanLND`).
-- `Options` — `NewHarness` configuration: image tags, `LNDRequireInterceptor`,
+- `Options` — `NewHarness` configuration: image tags, `PrimaryLNDImage`
+  (optional primary-node override), `LNDRequireInterceptor`,
   `LNDBuildPath`, `ArtifactsBaseDir`, `GroupName`, log-to-stdout toggles,
   `StartTapd`, `AlwaysKeepArtifacts`. `DefaultOptions()` gives safe defaults.
 - `LndInstance` — Handle to one LND container (ports, TLS cert/macaroon

@@ -309,6 +309,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   once; the entry is dropped when its last holder or waiter leaves.
   `NewReceiveScriptResponse.expires_at_unix_s` reports the absolute indexer
   registration expiry on both fresh and replayed paths.
+- `GetIndexedVTXOByPkScript` validates an optional canonical policy against
+  the exact output, then signs the query with the daemon identity key. The
+  operator checks non-operator settlement participation. Only an accepted
+  query sets `policy_authorized`; transport or pending-funding failures remain
+  errors. The read creates no receive-script registration and needs no renewal.
 - `SignCreditAccountAuthorization` (and the internal
   `RPCServer.SignCreditAccountAuth` behind it) signs a canonical swap
   credit-account request digest with the daemon identity key. It validates
@@ -370,4 +375,6 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 
 - [docs/daemon_cli_guide.md](../docs/daemon_cli_guide.md) — Installation,
   configuration, CLI reference.
+- [docs/custom-policy-queries.md](../docs/custom-policy-queries.md)
+  — Exact-policy query proofs, capability checks, and negative observations.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.

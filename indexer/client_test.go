@@ -13,8 +13,10 @@ import (
 	btclog "github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/internal/indexerlimits"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -526,4 +528,71 @@ func (r *recordingRPCClient) lastRegisterReceiveScriptRequest(
 	require.True(t, ok)
 
 	return req
+}
+
+// TestPolicyScopeCommitsTemplate verifies an exact-policy query
+// signs the actual output and complete policy with the participant key. A
+// policy substitution invalidates the signature even when the key is retained.
+func TestPolicyScopeCommitsTemplate(t *testing.T) {
+	t.Parallel()
+
+	key, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operator, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	receiver, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	contract, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender: key.PubKey(), Receiver: receiver.PubKey(),
+		Server: operator.PubKey(), PreimageHash: lntypes.Hash{1},
+		RefundLocktime: 1000, UnilateralClaimDelay: 144,
+		UnilateralRefundDelay:                144,
+		UnilateralRefundWithoutReceiverDelay: 144,
+	})
+	require.NoError(t, err)
+	pkScript, err := contract.PkScript()
+	require.NoError(t, err)
+	policy, err := contract.Template.Encode()
+	require.NoError(t, err)
+	rpcClient := &recordingRPCClient{}
+	client := New(
+		rpcClient, &PrivKeySchnorrSigner{
+			Key: key,
+		}, "test-server", "client:test",
+		fn.None[btclog.Logger](),
+	)
+	scope, err := client.newPolicyScope(t.Context(), TaprootScriptScope{
+		PkScript: pkScript, PolicyTemplate: policy,
+	}, "list_vtxos_by_scripts")
+	require.NoError(t, err)
+	require.Equal(t, pkScript, scope.PkScript)
+	proof := scope.GetTaprootSchnorr()
+	var decodedPolicy []byte
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			proofTLVTypePolicyTemplate, &decodedPolicy,
+		),
+	)
+	require.NoError(t, err)
+	require.NoError(t, stream.DecodeP2P(bytes.NewReader(proof.Message)))
+	require.Equal(t, policy, decodedPolicy)
+	sig, err := schnorr.ParseSignature(proof.Sig64)
+	require.NoError(t, err)
+	digest := chainhash.TaggedHash(proofTag(), proof.Message)
+	require.True(t, sig.Verify(digest[:], key.PubKey()))
+	changed := append([]byte(nil), proof.Message...)
+	changed[len(changed)-1] ^= 1
+	digest = chainhash.TaggedHash(proofTag(), changed)
+	require.False(t, sig.Verify(digest[:], key.PubKey()))
+
+	changedScript := append([]byte(nil), pkScript...)
+	changedScript[len(changedScript)-1] ^= 1
+	_, err = client.newPolicyScope(t.Context(), TaprootScriptScope{
+		PkScript: changedScript, PolicyTemplate: policy,
+	}, "list_vtxos_by_scripts")
+	require.Error(t, err)
+	_, err = client.newPolicyScope(t.Context(), TaprootScriptScope{
+		PkScript: pkScript, PolicyTemplate: policy,
+	}, "list_vtxo_events")
+	require.Error(t, err)
 }

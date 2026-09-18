@@ -2932,9 +2932,13 @@ type GetIndexedVTXOByPkScriptRequest struct {
 	PkScript []byte `protobuf:"bytes,1,opt,name=pk_script,json=pkScript,proto3" json:"pk_script,omitempty"`
 	// status_filter restricts the indexer query to matching lifecycle
 	// states. If empty, all statuses are considered.
-	StatusFilter  []VTXOStatus `protobuf:"varint,2,rep,packed,name=status_filter,json=statusFilter,proto3,enum=waverpc.VTXOStatus" json:"status_filter,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	StatusFilter []VTXOStatus `protobuf:"varint,2,rep,packed,name=status_filter,json=statusFilter,proto3,enum=waverpc.VTXOStatus" json:"status_filter,omitempty"`
+	// policy_template optionally authorizes an exact custom output without
+	// allocating a receive-script registration. The daemon signs the policy
+	// and script; the operator verifies participant ownership on each query.
+	PolicyTemplate []byte `protobuf:"bytes,3,opt,name=policy_template,json=policyTemplate,proto3" json:"policy_template,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *GetIndexedVTXOByPkScriptRequest) Reset() {
@@ -2981,12 +2985,23 @@ func (x *GetIndexedVTXOByPkScriptRequest) GetStatusFilter() []VTXOStatus {
 	return nil
 }
 
+func (x *GetIndexedVTXOByPkScriptRequest) GetPolicyTemplate() []byte {
+	if x != nil {
+		return x.PolicyTemplate
+	}
+	return nil
+}
+
 type GetIndexedVTXOByPkScriptResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// vtxo is the first matching VTXO, when found.
-	Vtxo          *VTXO `protobuf:"bytes,1,opt,name=vtxo,proto3" json:"vtxo,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Vtxo *VTXO `protobuf:"bytes,1,opt,name=vtxo,proto3" json:"vtxo,omitempty"`
+	// policy_authorized confirms the operator accepted the supplied policy
+	// proof. Callers providing a policy must require this even on an empty
+	// result, so an older daemon cannot silently ignore the request field.
+	PolicyAuthorized bool `protobuf:"varint,2,opt,name=policy_authorized,json=policyAuthorized,proto3" json:"policy_authorized,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *GetIndexedVTXOByPkScriptResponse) Reset() {
@@ -3024,6 +3039,13 @@ func (x *GetIndexedVTXOByPkScriptResponse) GetVtxo() *VTXO {
 		return x.Vtxo
 	}
 	return nil
+}
+
+func (x *GetIndexedVTXOByPkScriptResponse) GetPolicyAuthorized() bool {
+	if x != nil {
+		return x.PolicyAuthorized
+	}
+	return false
 }
 
 // GetVTXOExpiryInfoRequest identifies one VTXO whose expiry posture should be
@@ -10899,12 +10921,14 @@ const file_daemon_proto_rawDesc = "" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12\x16\n" +
 	"\x06pubkey\x18\x02 \x01(\fR\x06pubkey\">\n" +
 	"\x17ReceiveAuthECDHResponse\x12#\n" +
-	"\rshared_secret\x18\x01 \x01(\fR\fsharedSecret\"x\n" +
+	"\rshared_secret\x18\x01 \x01(\fR\fsharedSecret\"\xa1\x01\n" +
 	"\x1fGetIndexedVTXOByPkScriptRequest\x12\x1b\n" +
 	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x128\n" +
-	"\rstatus_filter\x18\x02 \x03(\x0e2\x13.waverpc.VTXOStatusR\fstatusFilter\"E\n" +
+	"\rstatus_filter\x18\x02 \x03(\x0e2\x13.waverpc.VTXOStatusR\fstatusFilter\x12'\n" +
+	"\x0fpolicy_template\x18\x03 \x01(\fR\x0epolicyTemplate\"r\n" +
 	" GetIndexedVTXOByPkScriptResponse\x12!\n" +
-	"\x04vtxo\x18\x01 \x01(\v2\r.waverpc.VTXOR\x04vtxo\"\xc2\x01\n" +
+	"\x04vtxo\x18\x01 \x01(\v2\r.waverpc.VTXOR\x04vtxo\x12+\n" +
+	"\x11policy_authorized\x18\x02 \x01(\bR\x10policyAuthorized\"\xc2\x01\n" +
 	"\x18GetVTXOExpiryInfoRequest\x12\x1c\n" +
 	"\boutpoint\x18\x01 \x01(\tH\x00R\boutpoint\x12\x1d\n" +
 	"\tpk_script\x18\x02 \x01(\fH\x00R\bpkScript\x128\n" +

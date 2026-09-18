@@ -51,3 +51,8 @@ helper file (`errors.go`) for structured wallet-lifecycle errors.
   identity or they will be handed each other's receive scripts. An empty key
   keeps the legacy allocate-a-fresh-script behavior; repeating a non-empty key
   with a *different* label is rejected rather than silently reallocated.
+- `GetIndexedVTXOByPkScriptRequest.policy_template` selects a stateless
+  ownership proof for the exact custom output. The response must set
+  `policy_authorized` after the operator accepts that proof, including empty
+  responses. Callers supplying a policy must reject a false flag: old daemons
+  ignore unknown request fields and cannot establish this capability.

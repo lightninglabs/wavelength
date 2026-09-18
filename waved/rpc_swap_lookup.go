@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/indexer"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/grpc/codes"
@@ -35,6 +36,32 @@ func (r *RPCServer) GetIndexedVTXOByPkScript(ctx context.Context,
 		)
 	}
 
+	queryClient := r.server.indexer
+	policyAuthorized := len(req.PolicyTemplate) != 0
+	if policyAuthorized {
+		policy, err := arkscript.DecodePolicyTemplate(
+			req.PolicyTemplate,
+		)
+		if err != nil || !policy.MatchesPkScript(req.PkScript) {
+			return nil, status.Error(
+				codes.InvalidArgument,
+				"policy does not match pk_script",
+			)
+		}
+		factory, err := r.server.indexerProofSignerFactory()
+		if err != nil {
+			return nil, status.Error(codes.Unavailable, err.Error())
+		}
+		key := r.server.loadClientKeyDesc()
+		if key.PubKey == nil {
+			return nil, status.Error(
+				codes.Unavailable,
+				"identity key not initialized",
+			)
+		}
+		queryClient = queryClient.WithSigner(factory(key))
+	}
+
 	statusFilter := make([]arkrpc.VTXOStatus, 0, len(req.StatusFilter))
 	for i := range req.StatusFilter {
 		st, err := daemonStatusToIndexerStatus(req.StatusFilter[i])
@@ -46,21 +73,30 @@ func (r *RPCServer) GetIndexedVTXOByPkScript(ctx context.Context,
 		statusFilter = append(statusFilter, st)
 	}
 
-	resp, err := r.server.indexer.ListVTXOsByScriptsTaproot(
+	resp, err := queryClient.ListVTXOsByScriptsTaproot(
 		ctx,
 		[]indexer.TaprootScriptScope{{
 			PkScript: append([]byte(nil), req.PkScript...),
+			PolicyTemplate: append(
+				[]byte(nil), req.PolicyTemplate...,
+			),
 		}},
 		nil, 1, statusFilter,
 	)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "indexer query "+
-			"failed: %v", err)
+		code := status.Code(err)
+		if code == codes.Unknown {
+			code = codes.Unavailable
+		}
+
+		return nil, status.Errorf(code, "indexer query failed: %v", err)
 	}
 
 	vtxos := vtxo.FlattenListVTXOsByScriptsResponse(resp)
 	if len(vtxos) == 0 {
-		return &waverpc.GetIndexedVTXOByPkScriptResponse{}, nil
+		return &waverpc.GetIndexedVTXOByPkScriptResponse{
+			PolicyAuthorized: policyAuthorized,
+		}, nil
 	}
 
 	currentHeight, heightErr := r.currentBlockHeight(ctx)
@@ -78,7 +114,8 @@ func (r *RPCServer) GetIndexedVTXOByPkScript(ctx context.Context,
 	}
 
 	return &waverpc.GetIndexedVTXOByPkScriptResponse{
-		Vtxo: vtxo,
+		Vtxo:             vtxo,
+		PolicyAuthorized: policyAuthorized,
 	}, nil
 }
 
