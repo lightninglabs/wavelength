@@ -21,11 +21,13 @@ package may import from a higher layer.
 | [`lib`](lib/) | Shared domain utilities: tree paths, BIP-322, arkscript policy, types |
 | [`lib/arkscript`](lib/arkscript/) | Tapscript AST compiler and policy system for Ark taproot outputs |
 | [`lib/bip322`](lib/bip322/) | BIP-322 intent-bound message authentication |
+| [`lib/tree`](lib/tree/) | VTXO/connector tree construction, materialization, and MuSig2 signing sessions; `AssetTreeContext` carries Taproot Asset data beside the asset-agnostic tree |
 | [`lib/tx/arktx`](lib/tx/arktx/) | Canonical Ark transaction ordering and validation |
 | [`lib/tx/checkpoint`](lib/tx/checkpoint/) | Checkpoint PSBT construction for OOR transfers |
 | [`lib/tx/oor`](lib/tx/oor/) | OOR submit/finalize package builders and validators |
 | [`lib/tx/psbtutil`](lib/tx/psbtutil/) | PSBT encoding, decoding, and signature attachment helpers |
 | [`lib/recovery`](lib/recovery/) | Immutable recovery proof graph, session state machine, TLV codec for unilateral exit |
+| [`tapassets`](tapassets/) | Adapts tap-sdk custom-anchor transitions to Ark trees: caller-funded asset batch outputs and asset-aware VTXO tree materialization, journalled for replay |
 | [`unrollplan`](unrollplan/) | Pure dependency-resolution planner driving unilateral-exit broadcast/sweep ordering |
 | [`vhtlcrecovery`](vhtlcrecovery/) | Durable control-plane types for vHTLC on-chain recovery jobs (action, state, script parameters, swap linkage) |
 | [`credit`](credit/) | Client-side credit subsystem: supervisor/per-operation-actor pair driving fault-tolerant sub-floor pay, credit-receive, and redeem flows against the authoritative server ledger |
@@ -96,6 +98,7 @@ package may import from a higher layer.
 | [`systest`](systest/) | System-level end-to-end tests |
 | [`internal/actortest`](internal/actortest/) | Durable actor integration tests with real DB backends |
 | [`internal/testutils`](internal/testutils/) | Deterministic key/signature generation for tests |
+| [`internal/expiryfixture`](internal/expiryfixture/) | Signed VTXO ancestry fixtures for acceptance-boundary tests (`vtxo`, `oor`, `waved`) |
 | [`internal/indexerlimits`](internal/indexerlimits/) | Client-side bounds for indexer pagination cursors (defense-in-depth against misbehaving remotes) |
 | [`rules`](rules/) | ast-grep linting rules for code style enforcement |
 | [`tools`](tools/) | Development tool dependencies (protoc plugins, sqlc) |

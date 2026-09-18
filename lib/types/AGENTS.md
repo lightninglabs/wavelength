@@ -15,7 +15,12 @@ server during round participation. These types are used across `round`, `vtxo`,
 - `VTXORequest` — Describes a new VTXO to create in a round (amount, policy
   template, owner key, signing key). `IsChange bool` (TLV record 4) marks the
   output that absorbs the server-computed fee residual under the #270
-  seal-time handshake; serialized into `JoinRoundAuth`.
+  seal-time handshake; serialized into `JoinRoundAuth`. `FixedAmount bool`
+  requires the operator quote to preserve `Amount` exactly, for contract
+  outputs a shrunk replacement would invalidate. `AssetRef string` /
+  `AssetAmount uint64` request a Taproot Assets VTXO; both are covered by the
+  signed join-round auth message so the operator cannot rewrite the asset a
+  request asked for.
 - `ForfeitRequest` — Describes a VTXO being forfeited: `VTXOOutpoint`,
   local-only `Amount`, plus optional `AuthSpend *arkscript.SpendPath`
   (proof-of-control path for custom-script join-auth construction) and
@@ -29,6 +34,17 @@ server during round participation. These types are used across `round`, `vtxo`,
   `OperatorKey`, and `ExitDelay`. `TxProof fn.Option[TxProof]` carries
   an optional SPV merkle inclusion proof for server-side verification of
   boarding UTXOs without requiring the server's own chain source.
+- `TxProof` — Binds a boarding outpoint to a transaction, a block, and the
+  Taproot construction of the claimed output. Carries **no** Taproot Asset
+  state: the Bitcoin inclusion proof is owned here, and asset proofs are
+  carried separately. `Verify` takes a `HeaderVerifier` and a
+  `MerkleVerifier` so the caller supplies the chain trust anchor.
+  `SerializeTxProof` / `DeserializeTxProof` are the wire codec.
+- `TxMerkleProof` — Proves inclusion of one transaction in a Bitcoin block:
+  `Nodes` (siblings up to the root) and `Bits` (true when the sibling is on
+  the right). Built with `NewTxMerkleProof`; verified with
+  `DefaultMerkleVerifier`. `MaxTxMerkleProofNodes` (15) bounds it — fifteen
+  levels cover the maximum number of transactions in a consensus-valid block.
 - `OperatorTerms` — Server-published round parameters (fee rates, expiry
   config, connector dust amount). `FreeRefreshWindowBlocks uint32` advertises
   the optional late-refresh fee-waiver window.
@@ -63,6 +79,17 @@ server during round participation. These types are used across `round`, `vtxo`,
 - `VTXOOwnerKeyFamily` (44) is the HD key family used for deriving VTXO owner signing keys.
 - `VTXOSigningKeyFamily` (45) is the HD key family used for per-round VTXO MuSig2 signing keys.
 - `JoinRoundAuthMessage` produces a deterministic, versioned TLV byte encoding that the client signs (and the server verifies) via BIP-322.
+- **Asset VTXO requests are authenticated, not advisory.** `AssetRef` (TLV
+  record 6) and `AssetAmount` (record 7) are serialized into the signed
+  join-round auth message. The decoder requires the two records to be present
+  or absent together; one without the other is rejected. A request that
+  carried the asset only out-of-band would let the operator settle a different
+  asset, or a different amount of it, than the client signed for.
+- `TxProof` carries Bitcoin inclusion evidence only. Do not add Taproot Asset
+  state to it — asset proofs travel on their own path, and merging the two
+  would make every boarding proof pay for asset-specific decoding.
+- `TxMerkleProof` decoding must enforce `MaxTxMerkleProofNodes`; an unbounded
+  node count is an allocation lever for an untrusted peer.
 
 ## Deep Docs
 

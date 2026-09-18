@@ -109,6 +109,28 @@ default builds avoid the swap executor's dependency graph.
   per-entry error — the entry stays priced, because a committed VTXO is
   still exitable by the manual path and that exit is the only recovery when
   the operator is unreachable.
+- **The on-chain send preview prices every selected input, not the
+  destination amount.** `quoteOnchainInputs` sums the operator's per-forfeit
+  charge for each selected VTXO, priced by that input's value and remaining
+  lifetime. A sweep or a bounded send that returns change consumes several
+  VTXOs from one wallet, so quoting the destination amount once both misses
+  the sibling charges and prices the wrong principal. `onchainQuoteKey`
+  identifies inputs that can reuse a single operator request, so the accuracy
+  does not cost a round-trip per VTXO.
+- **A partial operator estimate is discarded, never presented as a quote.**
+  If any selected input fails to price, `estimateOnchainFee` drops the whole
+  operator sum and falls back to `localOnchainFeeFloor` — a batch-size-1 lower
+  bound from cached operator terms, so a preview still renders offline. The
+  resolved `onchainFeeQuote` carries how complete it is plus a warning to
+  surface when the number is a local floor rather than an operator quote; a
+  partial sum must never masquerade as a complete one.
+- **A per-input economic warning is a failed precondition, not a reason to
+  re-quote.** When the operator reports an input as uneconomic, the preview
+  fails rather than substituting the local floor: the floor is *lower* than a
+  quote already known to be costly, so falling back would hide the problem
+  behind a cheaper-looking number. A sweep must also leave a positive output
+  meeting the advertised dust floor after fees before its send intent is
+  created.
 - **Receive routing reads the VTXO floor, not the dust limit.**
   `receiveVTXOFloor` returns `max(ServerInfo.dust_limit,
   ServerInfo.min_vtxo_amount_sat)` from the daemon's `GetInfo` snapshot.

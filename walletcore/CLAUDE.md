@@ -9,7 +9,7 @@ btcwallet.BtcWallet regardless of the underlying chain source.
 
 ## Key Types
 
-- `Wallet` — Core wallet struct embedding `input.Signer`. Provides key derivation, P2TR address generation, balance queries, and UTXO listing. Also implements `proofkeys.Backend` (via `ProofSigner` method). Chain-specific implementations embed this to satisfy `round.ClientWallet`.
+- `Wallet` — Core wallet struct embedding `input.Signer`. Provides key derivation, P2TR address generation, balance queries, and UTXO listing. Also implements `proofkeys.Backend` (via `ProofSigner` method). Chain-specific implementations embed this to satisfy `round.ClientWallet`. `Balance` returns the confirmed (1-conf) and total (0-conf) balance of btcwallet's **default account** only.
 - `BoardingBackendBase` — Shared boarding functionality: taproot script import under BIP86 scope, imported address tracking for UTXO filtering, and HD key derivation. Chain-specific adapters embed this and add `ListUnspent`, `GetTransaction`, `GetBlock`.
 - `Config` — Base configuration (seed, wallet password, seed birthday, chain
   params (mainnet/testnet/testnet4/regtest), recovery window, DB dir, logger)
@@ -33,6 +33,15 @@ btcwallet.BtcWallet regardless of the underlying chain source.
 ## Invariants
 
 - Taproot scripts must be imported under `KeyScopeBIP0086` (not the custom chain key scope), because btcwallet's block processing skips credit tracking for non-default scopes (`chainntfns.go:IsDefaultScope` check).
+- **`Balance` is scoped to `lnwallet.DefaultAccountName`, not every account.**
+  That is the only account the daemon spends, derives change, and funds exits
+  from. Taproot scripts tracked by `ImportTaprootScript` (boarding and exit
+  outputs) land in btcwallet's *imported* account, cannot be signed for by the
+  wallet's own key ring, and are already reported under the separate boarding
+  balance fields. Summing across accounts would overstate what the wallet can
+  actually pay a sweep or an exit with, and would double-count against
+  `boarding_confirmed_sat`. The lnd backend is account-scoped for the same
+  reason, so all three backends now mean the same thing by "wallet balance".
 - `ImportedAddrs` is in-memory only and must be repopulated from the DB on
   restart. `ImportTaprootScript` recovers from
   `waddrmgr.ErrDuplicateAddress` by resolving the existing address via

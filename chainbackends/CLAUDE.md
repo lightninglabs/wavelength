@@ -37,7 +37,17 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
   `rpcclient.ErrInsufficientFee`) instead of substring-matching reject
   strings.
 - `NewPackageTxError(wtxid, txid, reason)` — Eagerly maps the reject reason to
-  a typed sentinel at construction time.
+  a typed sentinel at construction time, and parses any replacement fee
+  diagnostics out of the raw reason.
+- `ReplacementFeeConstraints` / `PackageTxError.ReplacementConstraints()` —
+  The fee information Bitcoin Core reports when a replacement child cannot
+  evict a conflicting transaction: `ConflictingFee` (total fee the replacement
+  must beat), `AdditionalFeeDeficit` (the incremental-relay shortfall), and
+  `ConflictingFeeRateSatPerVByte` (integer part of the highest conflicting
+  feerate — a replacement must pay at least one sat/vB above it). Every field
+  is a pointer and nil means the backend did not report that constraint. This
+  is what lets `txconfirm` construct a *higher-fee retry* rather than merely
+  classifying the conflict.
 - `WalkPackageTxErrors(err, fn)` — Walks both `Unwrap() error` and
   `Unwrap() []error` shapes to invoke `fn` for every `*PackageTxError` in a
   joined error tree. Use this instead of `errors.As` when all per-tx entries
@@ -79,6 +89,13 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
   dropped it independently, which is actionable and must stay at warning. Every
   other notifier or block-hash failure remains a warning regardless of context
   state.
+- **Replacement fee constraints are parsed at the backend boundary, and every
+  field stays optional.** Reject-string parsing covers the stable Bitcoin Core
+  28–31 diagnostics; unknown backends and unrelated rejects simply yield no
+  constraints and keep their existing behavior. Nil must mean "not reported",
+  never "zero" — treating an unreported constraint as zero would build a retry
+  that cannot evict anything. `ReplacementConstraints()` returns a copy so a
+  caller cannot mutate the error's evidence.
 
 ## Deep Docs
 

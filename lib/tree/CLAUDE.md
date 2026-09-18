@@ -6,6 +6,11 @@ VTXO tree construction, materialization, and MuSig2 signing session management.
 Builds the Merkle-like transaction tree structure used in Ark rounds, from leaf
 descriptors through branch nodes to the batch output.
 
+The shared `Node`/`Tree` types stay asset-agnostic. Asset-specific data for a
+Taproot Assets tree lives beside the tree in an `AssetTreeContext`, keyed by
+node input outpoint, so a BTC-only tree and an asset tree share one structure
+and one signing path.
+
 ## Key Types
 
 - `Tree` — Complete VTXO or connector tree: root outpoint, root output, node hierarchy, and traversal helpers. `Verify` checks structure plus value flow; `ValidateValueConservation` exposes the funding check separately for callers that have already bound `BatchOutput` to an authoritative prevout. Built via `BuildVTXOTree` or `BuildConnectorTree`.
@@ -18,12 +23,28 @@ descriptors through branch nodes to the batch output.
 - `SignerSession` — MuSig2 signing session for tree transactions, wrapping `input.MuSig2Signer`.
 - `Materializer` / `BTCMaterializer` — Interface and implementation for materializing tree nodes into actual Bitcoin transactions.
 - `TreeAssembler` — Two-pass builder (`BuildStructure` then `Materialize`) driven by `TreeConfig`.
+- `AssetTreeContext` — Side table holding everything asset materialization and
+  signing need, without widening `Node`: per-node subtree asset amounts
+  (`NodeAssetAmount`), per-leaf commitment roots (`LeafAssetRoot`), per-input
+  sealed transfer packages (`SealedPackage`), per-input taproot signing tweaks
+  (`SigningTweak`), and the tree's `AssetRef`. `IsEmpty` distinguishes a
+  BTC-only tree; `Validate(root)` checks the context completely describes the
+  given tree. Reachable from a built tree via `Tree.AssetContext` and
+  `Tree.LeafAssetRoot`.
+- `BatchOutputSpec` / `BuildBatchOutputSpec` — A batch output plus the taproot
+  material behind it (`InternalKey`, `SweepLeaf`, `TapTreeBytes`). Exposes what
+  `BuildBatchOutput` used to keep internal, so an asset batch output can be
+  recomposed with an asset commitment root.
+- `TreeBuildConfig` — Branching factor (`Radix`) and optional `WeightFunc`
+  override for leaf balancing; nil uses `WeightByBtcAmount()`.
+- `LeafDescriptor.AssetAmount` — Asset units carried by the leaf output. Zero
+  on a BTC-only leaf.
 - `Queue[T]` — Generic queue used internally for BFS tree traversal.
 
 ## Relationships
 
 - **Depends on**: `lib/arkscript` (taproot script construction, policy templates, `SpendInfo`).
-- **Depended on by**: `round` (tree construction/validation), `oor` (tree references), `db` (tree serialization).
+- **Depended on by**: `round` (tree construction/validation), `oor` (tree references), `db` (tree serialization and asset tree context persistence), `rpc/roundpb` (asset tree context on the wire), `tapassets` (materializes asset trees through `BuildAssetTree`).
 
 ## Invariants
 
@@ -47,6 +68,19 @@ descriptors through branch nodes to the batch output.
   pointer through caches and ancestry-fragment slices. Silently mutating a shared
   tree's nodes or root would corrupt every aliasing reader. Callers that need to
   transform a tree must clone it first.
+- **Asset data never lives on `Node`.** `Node` and the branch materialization
+  path stay asset-agnostic; asset amounts, commitment roots, sealed packages,
+  and signing tweaks belong in `AssetTreeContext`. Adding an asset field to
+  `Node` would force every BTC-only caller to reason about assets.
+- An asset tree's context must pass `AssetTreeContext.Validate(root)` before
+  the tree is signed or persisted. A partially populated context would sign a
+  node whose asset commitment is unknown, producing a tree whose leaves cannot
+  be spent.
+- `AssetTreeContext` is keyed by **node input outpoint**, not by node pointer,
+  for the per-input maps (sealed package, signing tweak, leaf asset root).
+  Node pointers do not survive serialization; outpoints do.
+- A nil or empty `AssetContext` means BTC-only. Consumers must treat it as
+  such rather than as a missing-data error.
 
 ## Deep Docs
 

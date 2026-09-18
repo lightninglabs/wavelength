@@ -24,7 +24,10 @@ All `*.pb.go` files are generated — never edit directly; regenerate with
   `MethodSubmitVTXOForfeitSigs` (VTXO forfeit sigs).
 - `TreeFromProto` / `TreeToProto` — Convert between `*VTXOTree` proto and
   `lib/tree.Tree`; `TreeFromProto` takes `WithMaxTreeNodes` to bound the
-  deserialized node count (`DefaultMaxTreeNodes` = 50,000).
+  deserialized node count (`DefaultMaxTreeNodes` = 50,000). Both carry the
+  tree's asset context: `VTXOTree.AssetRef` plus the per-node
+  `SigningTweak`, `AssetAmount`, and `AssetCommitmentRoot` fields rebuild a
+  `lib/tree.AssetTreeContext`.
 - `OutpointFromProto`/`ToProto`, `TxOutFromProto`/`ToProto`,
   `PSBTFromBytes`/`ToBytes`, `MsgTxFromBytes`/`ToBytes`,
   `SchnorrSigFromBytes`/`ToBytes` — wire/proto ⇄ Go conversions for the
@@ -40,8 +43,10 @@ distinction.
 
 ## Relationships
 
-- **Depends on**: `lib/tree`, `lib/types` (conversion targets in
-  `convert.go`); otherwise generated proto types only.
+- **Depends on**: `lib/tree` (including `AssetTreeContext`), `lib/types`
+  (conversion targets in `convert.go`), and the external `tap-sdk`
+  (`ParseAssetRef` for asset reference validation); otherwise generated proto
+  types only.
 - **Depended on by**: `round` (outbox routing, proto conversions, flow
   version), `db` (persisting round/VTXO proto blobs), `waved` (proto
   conversion, flow version).
@@ -73,6 +78,22 @@ distinction.
 - `ValidateFlowVersion` must reject any `FlowVersion` other than the
   versions this build implements (currently only `FlowVersionV1`); never
   make it permissive by default.
+- **Asset fields are all-or-nothing.** `assetContextFromProto` rejects a tree
+  that carries any per-node asset field (`SigningTweak`, `AssetAmount`,
+  `AssetCommitmentRoot`) without a top-level `AssetRef`. A partially populated
+  asset tree would decode to a context that cannot describe the tree, and the
+  BTC-only path would silently ignore an asset commitment the operator
+  intended to bind.
+- `AssetRef` must round-trip through `tapsdk.ParseAssetRef` to the exact same
+  string. Accepting a non-canonical encoding would let two spellings of one
+  asset reference compare unequal downstream, where the ref is used as a map
+  and database key.
+- A decoded asset context must pass `tree.AssetTreeContext.Validate(root)`
+  before `TreeFromProto` returns it, and `validateAssetTree` re-checks the
+  same on the outbound side. Signing a tree whose asset context is incomplete
+  produces leaves that cannot be spent.
+- An empty `AssetRef` with no per-node asset fields yields a nil context —
+  the ordinary BTC-only tree. Nil here means "BTC-only", not "missing data".
 
 ## Deep Docs
 

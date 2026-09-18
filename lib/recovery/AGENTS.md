@@ -21,6 +21,12 @@ scheduling live downstream in `unrollplan` and `unroll`.
   block height, including CSV maturity and ready/blocked frontiers.
 - `SessionState` — Durable caller-owned state suitable for TLV persistence.
   Optional fields use `fn.Option` instead of nilable pointers.
+- `Proof.RootExternalInputs()` — The outpoints consumed by the proof's root
+  transactions that no node in the graph produces: the external funding inputs
+  the whole recovery graph hangs off. Round-direct VTXOs yield the
+  batch/commitment output the tree root spends; OOR-chained or multi-input
+  fan-in VTXOs yield every distinct commitment output rooting a local lineage
+  fragment. Deduplicated and sorted (hash, then index).
 - `ComputeMaturityHeight` — Overflow-safe `targetConfirmHeight + csvDelay`
   helper shared with `unrollplan`.
 
@@ -53,6 +59,13 @@ scheduling live downstream in `unrollplan` and `unroll`.
   helpers assume the caller already holds the lock.
 - The TLV codec is canonical (sorted by raw hash bytes) and carries an
   explicit version byte; version mismatch is a hard decode error.
+- `RootExternalInputs` output must stay deterministic (deduplicated and sorted)
+  so two proofs built from the same node set compare equal regardless of map
+  iteration order. Callers arm spend watches on these outpoints: a confirmed
+  foreign spend of any one of them (an operator sweeping an expired batch, a
+  fraud spend) makes every dependent root — and therefore the whole proof —
+  permanently unbroadcastable, so the exit must fail terminally rather than
+  materialize forever.
 - `parseHash` via `chainhash.NewHashFromStr` is intentionally absent: raw
   32-byte hashes are encoded directly to avoid the short-form / zero-pad
   attack surface that JSON shipping with `chainhash.Hash.String()` would open.
