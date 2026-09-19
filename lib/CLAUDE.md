@@ -12,6 +12,9 @@ message interfaces, and core Ark types.
 - `Tree` — Root node plus batch outpoint/output (encapsulates VTXO Merkle tree).
 - `Node` — Individual tree node with children and outputs.
 - `LeafDescriptor` — VTXO or connector output to include in tree construction.
+- `AssetTreeContext` — Optional asset sidecar: per-node subtree asset amounts,
+  signing tweaks, leaf commitment roots, and sealed packages. Nil for a plain
+  Bitcoin tree.
 
 ### lib/arkscript
 - `Node` — Sealed AST interface for tapscript spending conditions (Multisig, CSV, Condition, etc.).
@@ -48,6 +51,9 @@ message interfaces, and core Ark types.
 - `Proof` — Immutable unilateral-exit recovery graph for one target outpoint.
 - `Session` / `SessionState` — Mutable planning state and its durable TLV
   projection, driven by broadcast/confirm/fail observations.
+- `Proof.RootExternalInputs()` — The external funding outpoints the recovery
+  graph hangs off; a confirmed foreign spend of any one fails the exit
+  terminally.
 
 ### lib/scripts
 - Removed; superseded by `lib/arkscript`.

@@ -23,6 +23,12 @@ scheduling live downstream in `unrollplan` and `unroll`.
   Optional fields use `fn.Option` instead of nilable pointers.
 - `ComputeMaturityHeight` — Overflow-safe `targetConfirmHeight + csvDelay`
   helper shared with `unrollplan`.
+- `Proof.RootTxids()` / `Proof.RootExternalInputs()` — The graph's layer-0
+  txids, and the outpoints those roots consume that no node in the proof
+  produces. `RootExternalInputs` is the set of external funding points the
+  whole recovery graph hangs off: the batch/commitment output a round-direct
+  tree root spends, or every distinct commitment output rooting a lineage
+  fragment for an OOR-chained or multi-input fan-in VTXO.
 
 ## Relationships
 
@@ -53,6 +59,17 @@ scheduling live downstream in `unrollplan` and `unroll`.
   helpers assume the caller already holds the lock.
 - The TLV codec is canonical (sorted by raw hash bytes) and carries an
   explicit version byte; version mismatch is a hard decode error.
+- **A confirmed foreign spend of any root external input kills the whole
+  proof.** `RootExternalInputs` names exactly the outpoints a competing party
+  (an operator sweeping an expired batch, a fraud spend) can consume out from
+  under the exit. Once one of them is spent elsewhere, every root that depends
+  on it — and so the entire graph — is permanently unbroadcastable. Callers arm
+  spend watches on the returned set so such a conflict fails the exit
+  *terminally* instead of retrying forever on a tree that can never confirm.
+- **`RootExternalInputs` output is deterministic.** The result is deduplicated
+  and sorted by hash then index, so two proofs built from the same node set
+  produce byte-identical output regardless of map iteration order. Anything
+  that persists or hashes this list depends on that ordering.
 - `parseHash` via `chainhash.NewHashFromStr` is intentionally absent: raw
   32-byte hashes are encoded directly to avoid the short-form / zero-pad
   attack surface that JSON shipping with `chainhash.Hash.String()` would open.

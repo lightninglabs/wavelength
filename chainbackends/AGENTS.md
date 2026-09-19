@@ -37,7 +37,18 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
   `rpcclient.ErrInsufficientFee`) instead of substring-matching reject
   strings.
 - `NewPackageTxError(wtxid, txid, reason)` — Eagerly maps the reject reason to
-  a typed sentinel at construction time.
+  a typed sentinel at construction time, and eagerly parses any
+  replacement-policy fee floor out of the reason string.
+- `ReplacementFeeConstraints` — Structured fee floors parsed from Bitcoin
+  Core's replacement-policy diagnostics: `ConflictingFee` (total fee the
+  replacement must beat), `AdditionalFeeDeficit` (extra fee needed to satisfy
+  the incremental relay fee), and `ConflictingFeeRateSatPerVByte` (integer
+  floor of the highest conflicting feerate). A nil field means the backend did
+  not report that constraint.
+- `PackageTxError.ReplacementConstraints()` — Returns a *copy* of the parsed
+  constraints, or nil when the rejection carried no recognized floor. Lets a
+  fee bumper jump straight to a feerate the node will accept instead of
+  blindly escalating.
 - `WalkPackageTxErrors(err, fn)` — Walks both `Unwrap() error` and
   `Unwrap() []error` shapes to invoke `fn` for every `*PackageTxError` in a
   joined error tree. Use this instead of `errors.As` when all per-tx entries
@@ -67,6 +78,20 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 - `LndClientChainNotifier` enforces a 15-second timeout on registration to
   prevent hanging under LND block load.
 - Log messages use canonical txid strings (not reversed byte slices).
+- **Replacement-fee parsing is best-effort and must stay best-effort.** The
+  regexes match Bitcoin Core's reject strings (total-fee and incremental-relay
+  messages hold across Core 28–31; the conflicting-*feerate* message exists
+  only on Core 28–30, before cluster mempool removed that check). An
+  unrecognized or reworded reason yields a nil `ReplacementFeeConstraints`,
+  never an error and never a zero-valued floor — callers must treat nil as
+  "no information" and fall back to their own escalation policy rather than
+  reading it as "no fee required".
+- **`ConflictingFeeRateSatPerVByte` is a floor, not a target.** It is the
+  integer part of the conflicting feerate, so a replacement must pay at least
+  one sat/vByte *above* it to be strictly greater. The broadcaster adds that
+  increment; do not "fix" the truncation here.
+- **`ReplacementConstraints()` returns a deep copy.** The pointer fields are
+  cloned so a caller cannot mutate the error's cached state. Keep it that way.
 - **A `Canceled` status is only shutdown noise when the owning context is also
   done.** Round completion stops each VTXO's block subscription, and a block
   already in flight can race that cancellation, so `GetBlockHash` or the

@@ -169,6 +169,32 @@ default builds avoid the swap executor's dependency graph.
   calls `listLiveVTXOsForLeave` for sweep-all enumeration.
 - `SendResponse.actual_amount_sat` carries the true outflow for sweep-all
   sends and SHOULD be echoed back before the send is treated as confirmed.
+- **Every selected VTXO is priced, not just the destination amount.**
+  `quoteOnchainInputs` quotes each forfeited input by its own value and
+  remaining lifetime, deduplicating identical requests, and the preview and
+  affordability check include every input's fee. Quoting the destination
+  amount once understates a multi-input leave.
+- **A partial operator estimate is discarded, never presented as a quote.**
+  If the operator does not price every input, `estimateOnchainFee` drops the
+  incomplete result and falls back to `localOnchainFeeFloor` — the batch-size-1
+  on-chain share (`leaveBaseVBytes` + per-input/output vBytes, floored at the
+  operator's `MinOperatorFee`) — which the caller must surface as
+  `LOCAL_ONLY`. The local floor cannot see the operator's liquidity and
+  congestion components, so it is a lower bound only.
+- **Per-input economic warnings are failed preconditions.** An uneconomic
+  input fails the preview rather than silently replacing a known-costly
+  operator quote with the local floor, and a sweep must leave a positive
+  output that still meets the advertised dust floor *after* fees before its
+  send intent is created.
+- **Late terminal transitions are stamped with observation time.** A
+  derive-on-read projection inherits its source row's creation time, so a
+  transition observed later (a deposit or leave completing on round
+  confirmation) would keep a stale `updated_at` and stay invisible to recency
+  ordering, pollers, and subscriber payloads. `stampLateTransition` sets the
+  observation time in the projector *before* serialization, so the stored row,
+  the replayable event payload, and the live emit all agree. It never
+  regresses the stored value under a stepped-back clock, and same-second
+  transitions share their second — matching the live path.
 - **Cooperative-leave EXIT fee**: at completion
   (`applyCooperativeLeaveForfeited`), the forfeited source VTXO's
   settlement carries the forfeit round's operator fee (from the daemon
