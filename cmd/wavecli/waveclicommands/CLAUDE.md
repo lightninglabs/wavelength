@@ -187,6 +187,14 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
 - `recovery escalate` refuses to run on non-interactive stdin unless
   `--yes` is passed — it never blocks on a y/N prompt an agent can't
   answer.
+- **`ark vtxos list` defaults to the inventory set, not "live only".** With no
+  filter the daemon returns `vtxo.InventoryStatuses` — every persisted VTXO
+  except forfeited and spent ones. `--status` is repeatable and takes one or
+  more statuses (the CLI's status list covers the whole enum); `--all` expands
+  to every status. `--all` skips checkpoint PSBTs unless `--fields` names them,
+  so an unfiltered listing stays readable instead of dumping large blobs. The
+  MCP tool and the schema registry expose the same selection, so a change to
+  the status set has to land in all three or they drift.
 - `ark vtxos refresh` is gated on fee consent: a real refresh fetches
   the dry-run estimate and prompts with it on a TTY, and refuses on
   non-interactive stdin without `--yes` (same posture as `leave --all`

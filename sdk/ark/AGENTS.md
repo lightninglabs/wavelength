@@ -78,6 +78,20 @@ transport, without duplicating Ark runtime behavior.
 - `ServerInfo` is a bootstrap-time operator-terms snapshot, including the
   advisory `FreeRefreshWindowBlocks`; refresh after reconnect is not wired
   through yet.
+- **`MinConfirmations` and `VTXOConfirmations` are two different horizons.**
+  `MinConfirmations` is boarding-*input* maturity — how deep an on-chain
+  deposit must be before it can fund a round. `VTXOConfirmations` is the depth
+  at which VTXOs *created by* a round become available for off-chain spending.
+  Both are surfaced so a caller can explain the safety horizon and the
+  availability horizon separately; do not collapse them. The field is optional
+  on the wire: an older server omits it, and a new client must fall back to
+  the legacy coupled policy rather than reading the zero value as "spendable
+  immediately".
+- **`ListVTXOs(ctx, nil)` lists the inventory set, not "everything".** A nil
+  request returns every VTXO except forfeited and spent ones, newest first.
+  Only the *live* entries in that result are spendable — the set deliberately
+  includes non-spendable states so a caller can show a complete inventory, so
+  do not treat presence in the response as spendability.
 - Pre-1.0, some methods intentionally return `waverpc` protobuf types
   directly. Those passthrough APIs are not yet treated as stable SDK-owned
   models.

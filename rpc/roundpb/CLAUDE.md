@@ -24,7 +24,11 @@ All `*.pb.go` files are generated — never edit directly; regenerate with
   `MethodSubmitVTXOForfeitSigs` (VTXO forfeit sigs).
 - `TreeFromProto` / `TreeToProto` — Convert between `*VTXOTree` proto and
   `lib/tree.Tree`; `TreeFromProto` takes `WithMaxTreeNodes` to bound the
-  deserialized node count (`DefaultMaxTreeNodes` = 50,000).
+  deserialized node count (`DefaultMaxTreeNodes` = 50,000). Both carry the
+  tree's optional asset sidecar: `TreeToProto` writes `VTXOTree.AssetRef`
+  plus per-node `SigningTweak`, `AssetAmount`, and `AssetCommitmentRoot`;
+  `TreeFromProto` rebuilds a `tree.AssetTreeContext` from them
+  (`assetContextFromProto`).
 - `OutpointFromProto`/`ToProto`, `TxOutFromProto`/`ToProto`,
   `PSBTFromBytes`/`ToBytes`, `MsgTxFromBytes`/`ToBytes`,
   `SchnorrSigFromBytes`/`ToBytes` — wire/proto ⇄ Go conversions for the
@@ -41,7 +45,8 @@ distinction.
 ## Relationships
 
 - **Depends on**: `lib/tree`, `lib/types` (conversion targets in
-  `convert.go`); otherwise generated proto types only.
+  `convert.go`), and `tap-sdk` (`ParseAssetRef`, for canonical asset-reference
+  validation); otherwise generated proto types only.
 - **Depended on by**: `round` (outbox routing, proto conversions, flow
   version), `db` (persisting round/VTXO proto blobs), `waved` (proto
   conversion, flow version).
@@ -70,6 +75,20 @@ distinction.
   the sibling decoder on the untrusted indexer receive path. Keep the
   two in step: a shape rejected by one and accepted by the other is a
   gap, not a difference in trust level.
+- **The asset sidecar is validated before any key derivation.** Per-node
+  asset fields without a `VTXOTree.AssetRef` are rejected outright; an
+  `AssetRef` must parse *and* round-trip to its canonical encoding
+  (`assetRef.String() == pt.AssetRef`), so a non-canonical spelling of the
+  same asset cannot slip through; and `AssetTreeContext.Validate(root)` must
+  pass before `TreeFromProto` derives final keys from the per-node signing
+  tweaks. An asset tree is absent, not invalid, when `AssetRef` is empty and
+  no node carries asset fields — that decodes to a nil `AssetContext`, which
+  is the normal non-asset case.
+- **The signing tweak is what binds a node to its asset commitment.** With an
+  asset context present, each node's taproot tweak comes from
+  `assetCtx.SigningTweak(node.Input)` rather than the sweep root alone.
+  Accepting per-node tweaks without first validating the context would let a
+  sender steer final-key derivation.
 - `ValidateFlowVersion` must reject any `FlowVersion` other than the
   versions this build implements (currently only `FlowVersionV1`); never
   make it permissive by default.

@@ -10,7 +10,8 @@ descriptors through branch nodes to the batch output.
 
 - `Tree` — Complete VTXO or connector tree: root outpoint, root output, node hierarchy, and traversal helpers. `Verify` checks structure plus value flow; `ValidateValueConservation` exposes the funding check separately for callers that have already bound `BatchOutput` to an authoritative prevout. Built via `BuildVTXOTree` or `BuildConnectorTree`.
 - `Node` — Single tree node representing a transaction in the tree (branch or leaf).
-- `LeafDescriptor` — Describes a single VTXO leaf: amount, owner pubkeys, cosigner keys, CSV delay.
+- `LeafDescriptor` — Describes a single VTXO leaf: amount, owner pubkeys, cosigner keys, CSV delay, and `AssetAmount` (the asset units in the leaf output; zero for a plain Bitcoin tree).
+- `AssetTreeContext` / `NewAssetTreeContext` — Sidecar carrying everything an *asset* tree needs beyond its Bitcoin shape: per-node subtree asset amounts, per-node taproot signing tweaks, per-leaf asset commitment roots, per-node sealed transfer packages, and the tree's asset reference. `Tree.AssetContext` is nil for a plain Bitcoin tree; `Structure.AssetContext` is populated by `BuildStructure` when any leaf carries a non-zero `AssetAmount`. `Validate(root)` checks the context completely describes the tree.
 - `VTXODescriptor` — Interface for VTXO metadata needed by tree construction (amount, cosigners, owner key).
 - `ConnectorDescriptor` — Describes a connector output for forfeit transaction construction.
 - `Structure` — Intermediate tree layout built by `BuildStructure` before materialization.
@@ -42,6 +43,29 @@ descriptors through branch nodes to the batch output.
   all outputs and recurses only into retained children. The traversal rejects
   cycles and nodes shared by multiple parents. `Node.Verify` checks only
   parent-child outpoint topology and is not a trust-boundary validator.
+- **The asset context is keyed by node *and* by input outpoint.** A structure
+  pass runs before materialization, when nodes have no input yet, so amounts
+  are recorded by `*Node` first and mirrored to the input outpoint as soon as
+  one exists. Path extraction clones nodes but preserves their inputs, so
+  `NodeAssetAmount` falls back to the outpoint map — that fallback is what
+  makes an extracted client path still resolve its asset amounts. Do not drop
+  either map.
+- **`AssetTreeContext.Validate` requires a complete description.** Every node
+  needs a non-zero asset amount and a 32-byte signing tweak; every *leaf*
+  needs a 32-byte asset commitment root; every *branch* must have none; child
+  asset totals may not exceed the parent's amount; and every node's input
+  outpoint must be unique across the tree, because outpoint-keyed metadata
+  would otherwise collide silently between nodes. Amount aggregation is
+  overflow-checked at every level.
+- **An asset tree's signing tweak comes from the context, not the sweep
+  root.** When `Tree.AssetContext` is non-nil, signing uses
+  `AssetContext.tweakLookup()` for each node's taproot tweak. A missing or
+  wrong-length tweak must fail validation before any key derivation.
+- **The asset context's getters and setters copy their byte slices.**
+  `SigningTweak`, `LeafAssetRoot`, and `SealedPackage` return copies and store
+  copies, so a caller cannot alias into the context. `cloneForRoot` makes an
+  extracted path's context independent of the parent tree's. This is the same
+  reasoning as the cache-aliasing invariant below — keep the copies.
 - **Cache-aliasing invariant**: a `*Tree` is effectively immutable once published from
   a builder or resolver. Multiple downstream consumers may share the same `*Tree`
   pointer through caches and ancestry-fragment slices. Silently mutating a shared
