@@ -65,7 +65,7 @@ who want direct access.
 
 | Command | RPC | Description |
 |---------|-----|-------------|
-| `ark vtxos {list,refresh,leave}` | `ListVTXOs` / `RefreshVTXOs` / `LeaveVTXOs` | VTXO inventory and lifecycle |
+| `ark vtxos {list,refresh,leave}` | `ListVTXOs` / `RefreshVTXOs` / `LeaveVTXOs` | VTXO inventory and lifecycle; `list --status` is repeatable and `--all` widens to every status (the two are mutually exclusive) |
 | `ark rounds {get,join,list,watch}` | `GetRound` / (join) / `ListRounds` / `WatchRounds` | Round FSM state; `join` commits queued intents into the next round (`vtxos refresh`/`leave` call it automatically); `watch --max-events`/`--for` bounds streams for machines |
 | `ark oor {receive,get,list}` | `NewReceiveScript` / `GetOORSession` / `ListOORSessions` | Receive-script allocation and OOR session inspection; `receive --idempotency-key` replays the allocation already made for that key |
 | `ark board` | `Board` | Trigger boarding with confirmed UTXOs |
@@ -187,6 +187,22 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
 - `recovery escalate` refuses to run on non-interactive stdin unless
   `--yes` is passed — it never blocks on a y/N prompt an agent can't
   answer.
+- **`ark vtxos list` defaults to the inventory set, not everything.** With no
+  `--status`, the daemon lists every VTXO except forfeited and spent ones,
+  newest first. `--status` is a repeatable string slice; `--all` expands to
+  every status via `allVTXOStatuses()` (enum order, `UNSPECIFIED` excluded)
+  and is rejected when combined with `--status`. `parseVTXOStatus` also
+  rejects `UNSPECIFIED`, so a caller cannot smuggle the zero value in as a
+  filter. The MCP `ark.vtxos.list` tool mirrors all of this through its
+  `statuses` / `all` arguments — keep the three surfaces (cobra flags, MCP
+  tool, `schema_registry.go`) in step or `make schema-check` fails.
+- **Checkpoint PSBTs are opt-in under `--all`.** `wantsCheckpointPSBTs`
+  requests `oor_final_checkpoint_psbts` when `--fields` names it, or when
+  neither `--fields` nor `--all` is set; otherwise the CLI sets
+  `ExcludeCheckpointPsbts`. Listing every status while inlining every
+  checkpoint PSBT would make a routine inventory dump enormous, so widening
+  the status filter narrows the payload unless the caller asks for the field
+  by name.
 - `ark vtxos refresh` is gated on fee consent: a real refresh fetches
   the dry-run estimate and prompts with it on a TTY, and refuses on
   non-interactive stdin without `--yes` (same posture as `leave --all`

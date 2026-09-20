@@ -23,6 +23,12 @@ scheduling live downstream in `unrollplan` and `unroll`.
   Optional fields use `fn.Option` instead of nilable pointers.
 - `ComputeMaturityHeight` — Overflow-safe `targetConfirmHeight + csvDelay`
   helper shared with `unrollplan`.
+- `(*Proof).RootExternalInputs()` — The outpoints consumed by root
+  transactions that no node in the proof produces: the external funding
+  inputs the whole recovery graph hangs off (the batch/commitment output for
+  a round-direct VTXO, or every distinct commitment output rooting a lineage
+  fragment for an OOR-chained or fan-in VTXO). Callers arm spend watches on
+  these; see the conflict invariant below.
 
 ## Relationships
 
@@ -51,6 +57,16 @@ scheduling live downstream in `unrollplan` and `unroll`.
   cause survives across a restart.
 - `Session` methods are safe for concurrent use under `RWMutex`; internal
   helpers assume the caller already holds the lock.
+- **A confirmed foreign spend of any root external input kills the exit
+  permanently.** `RootExternalInputs` names exactly the outpoints a competing
+  party can take out from under the exit — an operator sweeping an expired
+  batch, or a fraud spend. Once one is spent elsewhere, every root depending
+  on it is unbroadcastable and so is the whole proof, so a watcher must fail
+  the exit terminally rather than retry a tree that can never confirm.
+- `RootExternalInputs` is deduplicated and sorted by hash then index, so two
+  proofs built from the same node set return byte-identical output regardless
+  of map iteration order. Keep it deterministic: callers persist and compare
+  the result across restarts.
 - The TLV codec is canonical (sorted by raw hash bytes) and carries an
   explicit version byte; version mismatch is a hard decode error.
 - `parseHash` via `chainhash.NewHashFromStr` is intentionally absent: raw

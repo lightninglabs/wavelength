@@ -38,6 +38,14 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
   strings.
 - `NewPackageTxError(wtxid, txid, reason)` — Eagerly maps the reject reason to
   a typed sentinel at construction time.
+- `ReplacementFeeConstraints` — Parsed numeric detail from a BIP-125
+  replacement rejection: `ConflictingFee`, `AdditionalFeeDeficit`, and
+  `ConflictingFeeRateSatPerVByte`. Obtained via
+  `(*PackageTxError).ReplacementConstraints()`, which returns nil when the
+  reject reason carries no parseable amounts. Lets a fee-bump caller compute
+  the next attempt's target from what the node actually demanded instead of
+  guessing a multiplier. The accessor deep-copies every pointer field, so a
+  caller cannot mutate the error's stored constraints.
 - `WalkPackageTxErrors(err, fn)` — Walks both `Unwrap() error` and
   `Unwrap() []error` shapes to invoke `fn` for every `*PackageTxError` in a
   joined error tree. Use this instead of `errors.As` when all per-tx entries
@@ -67,6 +75,12 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 - `LndClientChainNotifier` enforces a 15-second timeout on registration to
   prevent hanging under LND block load.
 - Log messages use canonical txid strings (not reversed byte slices).
+- `ReplacementFeeConstraints` is parsed from Bitcoin Core's human-readable
+  reject strings, which differ across Core versions: total-fee and
+  incremental-relay diagnostics cover Core 28-31, while the conflicting
+  feerate is only reported by Core 28-30. Every field is therefore optional,
+  and a caller must handle a nil `ReplacementConstraints()` (or nil
+  individual fields) as "the node did not tell us" — never as zero.
 - **A `Canceled` status is only shutdown noise when the owning context is also
   done.** Round completion stops each VTXO's block subscription, and a block
   already in flight can race that cancellation, so `GetBlockHash` or the
