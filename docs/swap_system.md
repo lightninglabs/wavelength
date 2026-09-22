@@ -428,7 +428,7 @@ On a pay, the client funded the vHTLC and wants either a preimage (proof it paid
 or its money back. §4.4 named the ladder; here is each rung:
 
 1. **Immediate cooperative refund (leaf 2).**
-   [`tryCooperativeRefund`](../sdk/swaps/in_swap.go) (in_swap.go:1250) asks the
+   [`tryCooperativeRefund`](../sdk/swaps/in_swap.go) (in_swap.go:1442) asks the
    swap server to co-sign the three-party Refund leaf through
    `AuthorizeInSwapRefund`. The server signs only after it has *safely* failed
    the Lightning payment and holds no preimage, so an "unavailable" answer is not
@@ -437,8 +437,8 @@ or its money back. §4.4 named the ladder; here is each rung:
    before any locktime.
 2. **Timeout cooperative refund (leaf 3).** If the server never authorises the
    immediate refund, the client waits for the CLTV refund locktime to mature
-   (in_swap.go:1141) and then spends RefundWithoutReceiver as an OOR transfer
-   (in_swap.go:1171) — *still off-chain*, and now without needing the swap server
+   (in_swap.go:1333) and then spends RefundWithoutReceiver as an OOR transfer
+   (in_swap.go:1353) — *still off-chain*, and now without needing the swap server
    to cooperate at all, only the operator. This is the rung most often misread:
    the locktime gates an off-chain spend, it does not force a broadcast.
 3. **Unilateral exit (leaf 6).** Only if even that OOR cannot get through does
@@ -447,6 +447,17 @@ or its money back. §4.4 named the ladder; here is each rung:
    recovery.go:583) and let the daemon sweep leaf 6 on-chain after its CSV. A pay
    refund has no absolute deadline the way a receive claim does, so here the
    grace period is the only automatic trigger.
+
+Every rung reads chain state through the indexer, and the indexer lags. A
+co-signed refund transfer can be accepted while its destination output is not
+yet indexed, so an *inconclusive* observation is deliberately not a verdict:
+`waitForClaimPreimage` (in_swap.go:1145) keeps polling on a retryable refund
+observation instead of aborting the wait, and `completeRefund`
+(in_swap.go:1259) only treats an unindexed refund destination as fatal while no
+refund session exists. Once a cooperative refund has been submitted, its durable
+OOR session — not the indexer — is what settles the outcome. Reading "not
+indexed yet" as "failed" would climb the ladder toward an on-chain exit that the
+already-accepted off-chain refund made unnecessary.
 
 ### 5.5 When does it actually go on-chain?
 

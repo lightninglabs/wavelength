@@ -78,7 +78,7 @@ package may import from a higher layer.
 | [`cmd/wavecli`](cmd/wavecli/) | CLI client |
 | [`cmd/wavewalletdk-wasm`](cmd/wavewalletdk-wasm/) | Command compiling the embedded wavewalletdk runtime to a browser WASM binary |
 | [`timeout`](timeout/) | Generic timeout scheduling actor |
-| [`indexer`](indexer/) | Server indexing client for receive script registration |
+| [`indexer`](indexer/) | Server indexing client: receive-script registration plus stateless proof-of-control queries (including exact-policy scopes that register nothing) |
 | [`arkrpc`](arkrpc/) | Server-side gRPC service definitions (ArkService, IndexerService) |
 | [`arkrpc/treeconv`](arkrpc/treeconv/) | Narrow re-export of tree-path conversion helpers without the full gRPC surface |
 | [`rpc`](rpc/) | Client-side RPC message definitions (roundpb, oorpb, swapclientrpc, wavewalletrpc) and HTTP transport (`rpc/restclient`) |

@@ -212,6 +212,19 @@ result into an `IncomingVHTLCNotification`.
 - `SwapClient.waitForVHTLC` returns the full `*VTXOInfo` (not a detached
   outpoint/amount pair) so funding validation sees the whole observed VTXO;
   `validateReceiveFunding` requires it to be non-nil.
+- **An inconclusive observation must never authorize a refund or abort the
+  claim wait.** In `waitForClaimPreimage` a `retryableActionError` from
+  `tryCooperativeRefund` is logged at debug and the poll loop continues; only a
+  non-retryable error propagates. `refunded` is honored solely when the call
+  also returned `err == nil`, so an indexer that reports a co-signed transfer
+  before the VTXO materializes cannot end the wait early.
+- **An accepted refund is reconciled from its durable session, not from
+  indexing.** `completeRefund` treats an `observeRefundOutput` failure as
+  retryable-fatal only while `refundSessionID == ""`. Once a cooperative refund
+  has been submitted, the persisted session ID is authoritative and an
+  unindexed destination falls through to `reconcilePayRefundRecovery` /
+  `reconcilePayRefundSession` instead of aborting. A co-signed refund whose
+  output has not been indexed yet is pending, not failed.
 - **Account-scoped requests are signed, and the signature is per request.**
   `authorizeCreditAccountRequest` stamps a fresh `CreditAccountAuthorization`
   (1 min TTL, 32 bytes of `crypto/rand` nonce) onto `RequestChannelId`,
