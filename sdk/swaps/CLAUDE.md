@@ -158,6 +158,19 @@ result into an `IncomingVHTLCNotification`.
   `ExistingOnly`: an existing keyed winner is recovered and protected, a
   daemon `NotFound` expires the swap, and unavailable or pending results remain
   retryable. A post-deadline reconciliation must never admit a new vHTLC.
+- **A transient refund observation must not abort the pay-side claim
+  wait.** In `waitForClaimPreimage` a `retryableActionError` from
+  `tryCooperativeRefund` is logged at debug and the poll loop continues;
+  only a non-retryable error propagates to the caller. The refund counts
+  as submitted solely when that call returns `(true, nil)` — an
+  inconclusive observation never advances state nor authorizes a spend.
+- **A co-signed refund outlives its indexing lag.** `completeRefund`
+  turns an `observeRefundOutput` failure into a retryable error only
+  while `refundSessionID == ""`. Once a cooperative refund has been
+  submitted and its session ID persisted, the durable OOR session
+  consulted by `reconcilePayRefundSession` is authoritative: a refund
+  destination the indexer has not caught up to yet must not resubmit the
+  refund or drive the session to a terminal state.
 - The store is optional — both `NewSwapClient` and
   `NewSwapClientWithStore` are valid; `persist()` is a no-op when
   `store == nil`.
