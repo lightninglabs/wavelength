@@ -630,6 +630,44 @@ and assert on timestamps without wall-clock races. The
 same clock source, so per-round event ordering is stable across
 test runs.
 
+## Reading the ledger over RPC
+
+`GetFeeHistory` returns ledger rows plus the cumulative
+`fees_paid` total, read in one transaction. It has two page
+modes:
+
+- **Offset mode** (the default): newest first by `created_at`,
+  paged with `limit` and `offset`. New rows shift every later
+  offset, so this mode suits interactive browsing, not import.
+- **Cursor mode**: selected by setting `after_entry_id` or
+  `event_types`. It returns rows with `entry_id >
+  after_entry_id` in ascending `entry_id` order, optionally
+  restricted to the listed event types, up to `limit` rows. An
+  importer passes the largest `entry_id` it has stored and
+  repeats until a page comes back short. Combining cursor mode
+  with a non-zero `offset` is rejected with `InvalidArgument`.
+
+`entry_id` is a local primary key. It restarts when the daemon's
+database is reset or restored, so an importer must not use it to
+identify rows it has already stored. The natural keys below are
+stable across a restore:
+
+| Event type | Stable key |
+|---|---|
+| `boarding_fee_paid`, `refresh_fee_paid` | (`round_id`, `event_type`) |
+| `onchain_fee_paid` | (`chain_txid`, `chain_vout`, `event_type`) |
+
+For exit fee rows, `chain_txid` and `chain_vout` name the exited
+VTXO outpoint, not the sweep that completed the exit, and
+`chain_txid` is in internal byte order. After a restore the
+importer should reset its cursor to zero and dedupe on these
+keys.
+
+The boarding sweep fee leg books the miner fee and the P2A
+anchor together. `SweepBoardingUTXOs` reports them separately as
+`fee_paid_sat` and `anchor_sat`, so the chain cost of a sweep
+reported at publish time is their sum.
+
 ## Reconciliation
 
 The invariants this document describes are checkable. The
