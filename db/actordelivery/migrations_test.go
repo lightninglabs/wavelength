@@ -2,22 +2,25 @@ package actordelivery
 
 import (
 	"database/sql"
-	"fmt"
-	"net/url"
 	"path/filepath"
 	"testing"
 
+	"github.com/btcsuite/btclog/v2"
+	clientdb "github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/stretchr/testify/require"
-	_ "modernc.org/sqlite"
 )
 
+// newSQLiteDB uses the build-selected driver for migration tests.
 func newSQLiteDB(t *testing.T) *sql.DB {
 	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "actor_delivery_test.db")
-	rawDB, err := sql.Open("sqlite", dbPath)
+	result, err := clientdb.OpenSQLiteDatabase(clientdb.SQLiteOpenConfig{
+		DatabaseFileName: dbPath,
+	})
 	require.NoError(t, err)
+	rawDB := result.DB
 	t.Cleanup(func() {
 		require.NoError(t, rawDB.Close())
 	})
@@ -38,26 +41,15 @@ func newSQLiteDB(t *testing.T) *sql.DB {
 func newConcurrentSQLiteDB(t testing.TB) *sql.DB {
 	t.Helper()
 
-	pragmas := []string{
-		"foreign_keys=on",
-		"journal_mode=WAL",
-		"busy_timeout=30000",
-		"synchronous=normal",
-		"fullfsync=true",
-	}
-	opts := make(url.Values)
-	for _, p := range pragmas {
-		opts.Add("_pragma", p)
-	}
-
-	dbPath := filepath.Join(t.TempDir(), "actor_delivery_concurrent.db")
-	dsn := fmt.Sprintf("%s?%s&_txlock=immediate", dbPath, opts.Encode())
-
-	rawDB, err := sql.Open("sqlite", dsn)
+	store, err := clientdb.NewSqliteStore(&clientdb.SqliteConfig{
+		DatabaseFileName: filepath.Join(
+			t.TempDir(),
+			"actor_delivery_concurrent.db",
+		),
+		SkipMigrations: true,
+	}, btclog.Disabled)
 	require.NoError(t, err)
-
-	rawDB.SetMaxOpenConns(25)
-	rawDB.SetMaxIdleConns(25)
+	rawDB := store.DB
 
 	t.Cleanup(func() {
 		require.NoError(t, rawDB.Close())
