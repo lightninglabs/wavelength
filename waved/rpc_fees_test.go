@@ -1,6 +1,7 @@
 package waved
 
 import (
+	"database/sql"
 	"errors"
 	"math"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightninglabs/wavelength/ledger"
 	"github.com/lightninglabs/wavelength/waverpc"
@@ -105,9 +107,41 @@ func TestGetFeeHistoryValidatesRequest(t *testing.T) {
 			code: codes.InvalidArgument,
 		},
 		{
+			name: "offset with after_entry_id",
+			req: &waverpc.GetFeeHistoryRequest{
+				Offset:       1,
+				AfterEntryId: 5,
+			},
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "offset with event_types",
+			req: &waverpc.GetFeeHistoryRequest{
+				Offset: 1,
+				EventTypes: []string{
+					ledger.EventOnchainFeePaid,
+				},
+			},
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "negative after_entry_id",
+			req: &waverpc.GetFeeHistoryRequest{
+				AfterEntryId: -1,
+			},
+			code: codes.InvalidArgument,
+		},
+		{
 			name: "nil ledger store",
 			req: &waverpc.GetFeeHistoryRequest{
 				Limit: 10,
+			},
+			code: codes.Unavailable,
+		},
+		{
+			name: "cursor reaches ledger store",
+			req: &waverpc.GetFeeHistoryRequest{
+				AfterEntryId: 5,
 			},
 			code: codes.Unavailable,
 		},
@@ -516,6 +550,135 @@ func TestLedgerEntryToProtoExitCost(t *testing.T) {
 	require.Equal(t, ledger.EventOnchainFeePaid, got.EventType)
 	require.Empty(t, got.RoundId)
 	require.Empty(t, got.SessionId)
+	require.Empty(t, got.ChainTxid)
+	require.Nil(t, got.ChainVout)
+
+	// An exit fee row keyed by the exited outpoint surfaces that
+	// outpoint, including output index zero, which must stay
+	// distinguishable from an absent index.
+	exitHash := make([]byte, 32)
+	for i := range exitHash {
+		exitHash[i] = byte(i + 1)
+	}
+	row.ChainTxid = exitHash
+	row.ChainVout = sql.NullInt32{Int32: 0, Valid: true}
+
+	got = ledgerEntryToProto(row)
+
+	require.Equal(t, exitHash, got.ChainTxid)
+	require.NotNil(t, got.ChainVout)
+	require.Zero(t, got.GetChainVout())
+}
+
+// TestGetFeeHistoryCursorMode drives GetFeeHistory against a real ledger
+// store and checks that the cursor fields select ascending entry_id pages,
+// that event_types filters before the limit, and that a request without
+// cursor fields keeps the newest-first offset order.
+func TestGetFeeHistoryCursorMode(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	sqlDB := db.NewTestDB(t)
+	store := &db.LedgerStoreDB{
+		TransactionExecutor: db.NewTransactionExecutor(
+			sqlDB.BaseDB,
+			func(tx *sql.Tx) *sqlc.Queries {
+				return sqlDB.WithTx(tx)
+			},
+			btclog.Disabled,
+		),
+	}
+
+	// Book a boarding fee, an unrelated receive, and an exit fee leg
+	// keyed by the exited outpoint. Timestamps descend so created_at
+	// order is the reverse of entry_id order.
+	var exitHash chainhash.Hash
+	exitHash[0] = 0xee
+	exitVout := int32(3)
+	entries := []ledger.LedgerEntry{
+		{
+			DebitAccount:  ledger.AccountFeesPaid,
+			CreditAccount: ledger.AccountVTXOBalance,
+			AmountSat:     500,
+			RoundID:       make([]byte, 16),
+			EventType:     ledger.EventBoardingFeePaid,
+			CreatedAt:     1_700_000_300,
+		},
+		{
+			DebitAccount:  ledger.AccountVTXOBalance,
+			CreditAccount: ledger.AccountTransfersIn,
+			AmountSat:     10_000,
+			RoundID:       make([]byte, 16),
+			EventType:     ledger.EventVTXOReceived,
+			CreatedAt:     1_700_000_200,
+		},
+		{
+			DebitAccount:  ledger.AccountOnchainFees,
+			CreditAccount: ledger.AccountVTXOBalance,
+			AmountSat:     700,
+			EventType:     ledger.EventOnchainFeePaid,
+			CreatedAt:     1_700_000_100,
+			IdempotencyKey: ledger.ExitFeeIdempotencyKey(
+				exitHash, uint32(exitVout),
+			),
+			ChainTxid: exitHash[:],
+			ChainVout: &exitVout,
+		},
+	}
+	for _, e := range entries {
+		require.NoError(t, store.InsertLedgerEntry(ctx, e))
+	}
+
+	r := newTestRPCServer()
+	r.server.ledgerStore = store
+
+	// Legacy mode stays newest first by created_at.
+	resp, err := r.GetFeeHistory(ctx, &waverpc.GetFeeHistoryRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.Entries, 3)
+	require.Equal(t, ledger.EventBoardingFeePaid, resp.Entries[0].EventType)
+	require.Equal(t, ledger.EventOnchainFeePaid, resp.Entries[2].EventType)
+	require.Equal(t, int64(500), resp.TotalFeesPaidSat)
+
+	// A filter-only cursor starts from the beginning in entry_id order
+	// and skips the receive row without spending a page slot on it.
+	resp, err = r.GetFeeHistory(ctx, &waverpc.GetFeeHistoryRequest{
+		Limit: 2,
+		EventTypes: []string{
+			ledger.EventBoardingFeePaid,
+			ledger.EventOnchainFeePaid,
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Entries, 2)
+	require.Equal(t, int64(500), resp.TotalFeesPaidSat)
+
+	boarding, exitFee := resp.Entries[0], resp.Entries[1]
+	require.Equal(t, ledger.EventBoardingFeePaid, boarding.EventType)
+	require.Empty(t, boarding.ChainTxid)
+	require.Nil(t, boarding.ChainVout)
+	require.Equal(t, ledger.EventOnchainFeePaid, exitFee.EventType)
+	require.Less(t, boarding.EntryId, exitFee.EntryId)
+	require.Equal(t, exitHash[:], exitFee.ChainTxid)
+	require.NotNil(t, exitFee.ChainVout)
+	require.Equal(t, exitVout, exitFee.GetChainVout())
+
+	// Resuming after the last seen entry returns an empty page.
+	resp, err = r.GetFeeHistory(ctx, &waverpc.GetFeeHistoryRequest{
+		AfterEntryId: exitFee.EntryId,
+	})
+	require.NoError(t, err)
+	require.Empty(t, resp.Entries)
+
+	// Resuming after the boarding row without a filter returns the
+	// remaining rows in ascending order.
+	resp, err = r.GetFeeHistory(ctx, &waverpc.GetFeeHistoryRequest{
+		AfterEntryId: boarding.EntryId,
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Entries, 2)
+	require.Equal(t, ledger.EventVTXOReceived, resp.Entries[0].EventType)
+	require.Equal(t, exitFee.EntryId, resp.Entries[1].EntryId)
 }
 
 // TestTransactionHistoryRowToProtoLedger verifies that a ledger-backed
