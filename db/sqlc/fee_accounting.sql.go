@@ -8,6 +8,7 @@ package sqlc
 import (
 	"context"
 	"database/sql"
+	"strings"
 )
 
 const BackfillLedgerRoundUuid = `-- name: BackfillLedgerRoundUuid :exec
@@ -455,6 +456,88 @@ type ListClientLedgerEntriesParams struct {
 
 func (q *Queries) ListClientLedgerEntries(ctx context.Context, arg ListClientLedgerEntriesParams) ([]LedgerEntry, error) {
 	rows, err := q.db.QueryContext(ctx, ListClientLedgerEntries, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LedgerEntry
+	for rows.Next() {
+		var i LedgerEntry
+		if err := rows.Scan(
+			&i.EntryID,
+			&i.DebitAccount,
+			&i.CreditAccount,
+			&i.AmountSat,
+			&i.RoundID,
+			&i.SessionID,
+			&i.IdempotencyKey,
+			&i.EventType,
+			&i.Description,
+			&i.CreatedAt,
+			&i.ChainTxid,
+			&i.ChainVout,
+			&i.ConfirmationHeight,
+			&i.RoundUuid,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListClientLedgerEntriesAfterID = `-- name: ListClientLedgerEntriesAfterID :many
+SELECT entry_id, debit_account, credit_account, amount_sat,
+       round_id, session_id, idempotency_key,
+       event_type, description, created_at,
+       chain_txid, chain_vout, confirmation_height, round_uuid
+FROM ledger_entries
+WHERE entry_id > $1
+  -- Reference page_limit before the SLICE parameter so sqlc numbers it
+  -- ahead of the slice. The runtime SLICE expansion assumes it binds the
+  -- highest parameter numbers; any parameter numbered after it would
+  -- collide with the expanded values. LIMIT below reuses the same number.
+  AND $2 >= 0
+  -- An empty slice expands to NULL, which matches nothing, so callers
+  -- that want every event type clear filter_event_types instead.
+  AND (CAST($3 AS BOOLEAN) = FALSE
+       OR event_type IN (/*SLICE:event_types*/?))
+ORDER BY entry_id ASC
+LIMIT $2
+`
+
+type ListClientLedgerEntriesAfterIDParams struct {
+	AfterEntryID     int64
+	PageLimit        int32
+	FilterEventTypes bool
+	EventTypes       []string
+}
+
+// ListClientLedgerEntriesAfterID pages the ledger by ascending entry_id
+// for incremental importers. Only rows past after_entry_id are returned,
+// so the scan is a primary-key range read. When filter_event_types is
+// true, rows are further restricted to the event_types list.
+func (q *Queries) ListClientLedgerEntriesAfterID(ctx context.Context, arg ListClientLedgerEntriesAfterIDParams) ([]LedgerEntry, error) {
+	query := ListClientLedgerEntriesAfterID
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.AfterEntryID)
+	queryParams = append(queryParams, arg.PageLimit)
+	queryParams = append(queryParams, arg.FilterEventTypes)
+	if len(arg.EventTypes) > 0 {
+		for _, v := range arg.EventTypes {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:event_types*/?", makeQueryParams(len(queryParams), len(arg.EventTypes)), 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:event_types*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
 	if err != nil {
 		return nil, err
 	}
