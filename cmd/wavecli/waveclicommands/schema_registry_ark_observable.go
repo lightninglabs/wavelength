@@ -163,6 +163,19 @@ func arkObservableListMethodRegistry() []schemaMethod {
 					Type:        "uint32",
 					Description: "entries to skip",
 				},
+				{
+					Name: "after-entry-id",
+					Type: "int64",
+					Description: "list entries after " +
+						"this entry_id in ascending " +
+						"order",
+				},
+				{
+					Name: "event-type",
+					Type: "string[]",
+					Description: "only list entries of " +
+						"these event types, repeatable",
+				},
 			},
 			RequestType:  "GetFeeHistoryRequest",
 			ResponseType: "GetFeeHistoryResponse",
