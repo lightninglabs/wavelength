@@ -164,8 +164,8 @@ func TestScheduleBounds(t *testing.T) {
 		{
 			name:     "window longer than interval",
 			anchor:   anchor,
-			interval: time.Second,
-			window:   2 * time.Second,
+			interval: MinRegistrationWindow,
+			window:   MinRegistrationWindow + time.Second,
 		},
 		{
 			name:     "anchor before epoch",
@@ -207,14 +207,17 @@ func TestScheduleRestartProperty(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		// Draw a timetable and an instant expressed as a whole number
 		// of intervals past the anchor plus an in-interval remainder.
-		interval := rapid.Int64Range(1, 86400).Draw(t, "interval")
+		interval := rapid.Int64Range(
+			int64(MinRegistrationWindow/time.Second), 86400,
+		).Draw(t, "interval")
 		anchor := rapid.Int64Range(0, 2000000000).Draw(t, "anchor")
 		step := rapid.Int64Range(0, 1000000).Draw(t, "step")
 		offset := rapid.Int64Range(0, interval-1).Draw(t, "offset")
 
 		s, err := New(
 			time.Unix(anchor, 0),
-			time.Duration(interval)*time.Second, time.Second,
+			time.Duration(interval)*time.Second,
+			MinRegistrationWindow,
 		)
 		require.NoError(t, err)
 
@@ -570,10 +573,8 @@ func TestEstimateClockOffsetProperty(t *testing.T) {
 }
 
 // TestWakeBounds pins the join send range for representative windows. The
-// lower bound is capped at the clock-error margin so long windows do not
-// waste their opening, and scales down for short windows so the range never
-// inverts; the upper bound leaves the second half of the window for the
-// operator to prepare.
+// lower bound preserves the full clock-error margin even at the minimum
+// window; the upper bound leaves the second half for preparation and transit.
 func TestWakeBounds(t *testing.T) {
 	t.Parallel()
 
@@ -584,10 +585,10 @@ func TestWakeBounds(t *testing.T) {
 		hi     time.Duration
 	}{
 		{
-			name:   "one second scales below margin",
-			window: time.Second,
-			lo:     250 * time.Millisecond,
-			hi:     500 * time.Millisecond,
+			name:   "minimum window uses full margin",
+			window: MinRegistrationWindow,
+			lo:     2 * time.Second,
+			hi:     5 * time.Second,
 		},
 		{
 			name:   "one minute uses full margin",
@@ -613,24 +614,24 @@ func TestWakeBounds(t *testing.T) {
 
 // TestWakeBoundsProperty proves the send range is well formed for every
 // window a published schedule may carry. A client picks a wake time in
-// [lo, hi], so the range must be non-empty, start no later than the margin,
+// [lo, hi], so the range must be non-empty, preserve the full margin,
 // and end at the window's midpoint, well before the cutoff.
 func TestWakeBoundsProperty(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		window := time.Duration(
 			rapid.Int64Range(
-				int64(time.Second),
+				int64(MinRegistrationWindow),
 				int64(MaxRegistrationWindow),
 			).Draw(t, "window"),
 		)
 
 		lo, hi := WakeBounds(window)
 
-		// The range is non-empty and the lower bound never exceeds
-		// either the margin or a quarter of the window.
+		// Every supported window preserves the full clock margin and
+		// leaves at least half its duration for preparation.
 		require.LessOrEqual(t, lo, hi)
 		require.Positive(t, lo)
-		require.LessOrEqual(t, lo, MaxWakeMargin)
+		require.Equal(t, MaxWakeMargin, lo)
 		require.LessOrEqual(t, lo, window/4)
 
 		// The upper bound is the window's midpoint, leaving the second
@@ -638,4 +639,57 @@ func TestWakeBoundsProperty(t *testing.T) {
 		require.Equal(t, window/2, hi)
 		require.Less(t, hi, window)
 	})
+}
+
+// TestRegistrationWindowBounds rejects short windows at both construction
+// boundaries, before clock estimation can produce an out-of-window join.
+func TestRegistrationWindowBounds(t *testing.T) {
+	t.Parallel()
+
+	anchor := time.Unix(1800000000, 0).UTC()
+	for window := time.Second; window <
+		MinRegistrationWindow; window += time.Second {
+
+		t.Run(window.String(), func(t *testing.T) {
+			_, err := New(anchor, time.Hour, window)
+			require.ErrorContains(t, err, "minimum")
+
+			_, err = NewPublished(ID{1}, []Slot{{
+				Opens:  anchor.Add(-window),
+				Cutoff: anchor,
+			}})
+			require.ErrorContains(t, err, "minimum")
+		})
+	}
+
+	for _, window := range []time.Duration{
+		MinRegistrationWindow, time.Minute, MaxRegistrationWindow,
+	} {
+		t.Run(window.String(), func(t *testing.T) {
+			_, err := New(anchor, window, window)
+			require.NoError(t, err)
+
+			_, err = NewPublished(ID{1}, []Slot{{
+				Opens:  anchor.Add(-window),
+				Cutoff: anchor,
+			}})
+			require.NoError(t, err)
+
+			// Exercise both extremes of whole-second clock rounding
+			// with synchronized clocks and no network delay. Even
+			// the earliest wake must be inside the real window, and
+			// the final send margin must stop joins before it
+			// closes.
+			lo, hi := WakeBounds(window)
+			for _, fraction := range []time.Duration{
+				0, time.Second - time.Nanosecond,
+			} {
+				now := anchor.Add(fraction)
+				offset := EstimateClockOffset(anchor, now, now)
+				require.Positive(t, lo-offset)
+				require.Less(t, hi-offset, window)
+				require.Less(t, window-lo-offset, window)
+			}
+		})
+	}
 }

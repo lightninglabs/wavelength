@@ -28,11 +28,11 @@ database boundaries. Design and flow: `docs/scheduled_batches.md`.
 
 - Registration is `[Opens, Cutoff)`. The cutoff starts quoting; it promises
   nothing about broadcast or confirmation.
-- Windows are positive whole seconds, at most five minutes, and no longer than
+- Windows are whole seconds from ten seconds to five minutes, no longer than
   the interval for generated schedules. Published lists may have gaps.
 - The identity preimage format is fixed; changing it invalidates every
   outstanding selection.
-- `WakeBounds` keeps `lo <= 2s`, `lo <= window/4`, and `hi = max(lo, window/2)`.
+- `WakeBounds` keeps `lo = 2s` and `hi = window/2` for validated windows.
 
 ## Relationships
 

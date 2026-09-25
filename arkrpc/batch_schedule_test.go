@@ -165,6 +165,13 @@ func TestBatchScheduleDiscoveryBounds(t *testing.T) {
 		mutate func(*BatchSchedule)
 	}{
 		{
+			name: "window below minimum",
+			mutate: func(p *BatchSchedule) {
+				p.Slots[0].RegistrationOpensUnix =
+					p.Slots[0].CutoffUnix - 9
+			},
+		},
+		{
 			name: "unset version",
 			mutate: func(p *BatchSchedule) {
 				p.Version = 0

@@ -23,7 +23,7 @@ and none of the behavior below applies.
 |---|---|
 | Slot | One registration opportunity: a window `[opens, cutoff)` in whole UTC seconds. |
 | Cutoff | The first second at which joins for the slot are rejected and quoting begins. |
-| Window | `cutoff - opens`, at most five minutes. |
+| Window | `cutoff - opens`, from ten seconds to five minutes. |
 | Schedule ID | An opaque 32-byte identity for the operator's timing policy. It stays the same while the policy is unchanged. |
 | Selection | A schedule ID plus a cutoff. It names exactly one slot and is signed into the join. |
 
@@ -58,8 +58,8 @@ client uses it:
 - `version` must be 1.
 - `schedule_id` must be exactly 32 bytes and non-zero.
 - `slots` must hold between 1 and 32 entries.
-- Every slot must be whole seconds, open strictly before its cutoff, and last at
-  most five minutes.
+- Every slot must be whole seconds, open strictly before its cutoff, and last from
+  ten seconds to five minutes.
 - Slots must be in order, and each must open no earlier than the previous
   cutoff.
 
@@ -103,10 +103,14 @@ one hour is logged to help diagnose a badly skewed host.
 **It draws a wake time inside the window.** `batchschedule.WakeBounds` returns
 two offsets from `opens`:
 
-- `lo = min(2s, window / 4)`, a margin that absorbs the residual error in the
+- `lo = 2s`, a margin that absorbs the residual error in the
   clock offset estimate.
-- `hi = max(lo, window / 2)`, which leaves the second half of the window for
+- `hi = window / 2`, which leaves the second half of the window for
   wallet preparation, signing, and transit.
+
+The ten-second minimum preserves the full two-second margin even for the
+shortest supported window. A one-minute window gives mobile clients more time
+to reconnect and prepare their inputs.
 
 The attempt picks a wake time uniformly at random in `[opens + lo, opens + hi]`
 on the operator's clock. Clients for the same slot therefore spread their joins

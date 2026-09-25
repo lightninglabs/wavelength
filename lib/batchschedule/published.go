@@ -47,7 +47,7 @@ type Published struct {
 
 // NewPublished validates an advertised slot list. The list must be non-empty,
 // no longer than MaxPublishedSlots, ordered and non-overlapping, and every
-// window must be a positive whole number of seconds no longer than
+// window must be whole seconds between MinRegistrationWindow and
 // MaxRegistrationWindow. Gaps between windows are allowed, so an operator is
 // free to publish an irregular calendar.
 func NewPublished(id ID, slots []Slot) (Published, error) {
@@ -65,6 +65,11 @@ func NewPublished(id ID, slots []Slot) (Published, error) {
 			!slot.Opens.Before(slot.Cutoff):
 			return Published{}, fmt.Errorf("invalid "+
 				"published slot %d", i)
+
+		case slot.Window() < MinRegistrationWindow:
+			return Published{}, fmt.Errorf("published slot %d "+
+				"window below minimum %v", i,
+				MinRegistrationWindow)
 
 		case slot.Window() > MaxRegistrationWindow:
 			return Published{}, fmt.Errorf("published slot %d "+
@@ -167,9 +172,7 @@ func EstimateClockOffset(serverTime, sent, received time.Time) time.Duration {
 // across the first half of the window instead of the same instant and
 // leaves the second half for preparation and transit. A join with less than
 // the lower bound remaining before the cutoff is treated as closed.
+// The window must have been validated by New or NewPublished.
 func WakeBounds(window time.Duration) (time.Duration, time.Duration) {
-	lo := min(MaxWakeMargin, window/4)
-	hi := max(lo, window/2)
-
-	return lo, hi
+	return MaxWakeMargin, window / 2
 }

@@ -25,6 +25,11 @@ import (
 	"time"
 )
 
+// MinRegistrationWindow leaves room for the full clock-error margin and join
+// preparation without shrinking that margin for a shorter cadence. Operators
+// should prefer a one-minute window for mobile clients.
+const MinRegistrationWindow = 10 * time.Second
+
 // MaxRegistrationWindow bounds how long a registration window may stay open.
 // A connected client holds its inputs from registration until the cutoff, so
 // the window caps that reservation. Longer waiting belongs in a durable
@@ -78,8 +83,8 @@ type Schedule struct {
 	interval time.Duration
 
 	// window is how long before each cutoff registration opens. It is a
-	// positive whole number of seconds, no longer than interval and no
-	// longer than MaxRegistrationWindow.
+	// whole number of seconds between MinRegistrationWindow and
+	// MaxRegistrationWindow, no longer than interval.
 	window time.Duration
 
 	// id is the timetable's identity, derived from the three parameters
@@ -166,8 +171,8 @@ func (s Selection) CutoffUnix() uint64 {
 
 // New constructs a timetable from a UTC anchor, an interval and a registration
 // window. All three must have whole-second precision; the window must be
-// positive, no longer than the interval and no longer than
-// MaxRegistrationWindow.
+// between MinRegistrationWindow and MaxRegistrationWindow and no longer
+// than the interval.
 func New(anchor time.Time, interval, window time.Duration) (*Schedule, error) {
 	switch {
 	// The anchor must be a representable whole second so that every
@@ -184,6 +189,10 @@ func New(anchor time.Time, interval, window time.Duration) (*Schedule, error) {
 	case window <= 0 || window%time.Second != 0:
 		return nil, fmt.Errorf("registration window must be a "+
 			"positive whole number of seconds, got %v", window)
+
+	case window < MinRegistrationWindow:
+		return nil, fmt.Errorf("registration window %v is below "+
+			"minimum %v", window, MinRegistrationWindow)
 
 	// A window longer than the interval would let consecutive slots
 	// overlap, and one longer than the cap would hold inputs for too
