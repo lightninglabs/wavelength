@@ -38,6 +38,38 @@ func frcForfeits() ([]types.ForfeitRequest, []wire.OutPoint) {
 	}, []wire.OutPoint{op1, op2}
 }
 
+// TestForfeitCollectionTimeoutReleaseCarriesRoundID proves that a timeout
+// after some VTXOs have advanced to Forfeiting releases them with the same
+// round ID stored by their forfeit request.
+func TestForfeitCollectionTimeoutReleaseCarriesRoundID(t *testing.T) {
+	t.Parallel()
+
+	forfeits, outpoints := frcForfeits()
+	roundID := testRoundID("forfeit-collection-timeout")
+	state := &ForfeitSignaturesCollectingState{
+		RoundID: roundID,
+		Intents: Intents{
+			Forfeits: forfeits,
+		},
+	}
+
+	transition, err := state.ProcessEvent(
+		context.Background(), &ForfeitCollectionTimedOut{
+			RoundID: roundID,
+		}, &ClientEnvironment{
+			Log: btclog.Disabled,
+		},
+	)
+	require.NoError(t, err)
+
+	release, ok := findOutbox[*ReleaseForfeitReservation](
+		transition.NewEvents.UnwrapOr(ClientEmittedEvent{}).Outbox,
+	)
+	require.True(t, ok)
+	require.Equal(t, roundID.String(), release.RoundID)
+	require.ElementsMatch(t, outpoints, release.Outpoints)
+}
+
 // TestReleaseForfeitsOnFailureHelper exercises the centralized helper directly:
 // it must release exactly the reserved inputs when (and only when) a transition
 // lands in ClientFailedState, stay idempotent against a handler that already
