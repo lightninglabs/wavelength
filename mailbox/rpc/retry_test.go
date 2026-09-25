@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 // fastRetryPolicy returns a policy with the production shape but millisecond
@@ -252,6 +254,255 @@ func TestIsShedError(t *testing.T) {
 		IsShedError(
 			status.Error(codes.DeadlineExceeded, "too slow"),
 		),
+	)
+}
+
+// shedWithHint builds the operator's shed answer carrying retryAfter as a
+// google.rpc.RetryInfo detail, which is the shape the indexer actually puts
+// on the wire.
+func shedWithHint(t *testing.T, retryAfter *durationpb.Duration) error {
+	t.Helper()
+
+	st, err := status.New(
+		codes.ResourceExhausted, "rate limited",
+	).WithDetails(&errdetails.RetryInfo{
+		RetryDelay: retryAfter,
+	})
+	require.NoError(t, err)
+
+	return st.Err()
+}
+
+// timeShedRetry drives one retry to exhaustion against a shed answer and
+// returns how long the single backoff between the two attempts took.
+func timeShedRetry(t *testing.T, policy RetryPolicy, shed error) time.Duration {
+	t.Helper()
+
+	var calls int
+	start := time.Now()
+	err := Retry(
+		context.Background(), policy,
+		func(_ context.Context, _ RPCOptions) error {
+			calls++
+
+			return shed
+		},
+	)
+	elapsed := time.Since(start)
+
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	require.Equal(t, 2, calls)
+
+	return elapsed
+}
+
+// TestRetryAfterExtractsHint pins the decoding of the operator's retry-after
+// hint, including the wrapped case: callers wrap transport errors with
+// context before they reach a retry boundary, and a hint lost to wrapping is
+// a hint nobody honors.
+func TestRetryAfterExtractsHint(t *testing.T) {
+	t.Parallel()
+
+	hinted := shedWithHint(t, durationpb.New(750*time.Millisecond))
+
+	got, ok := RetryAfter(hinted)
+	require.True(t, ok)
+	require.Equal(t, 750*time.Millisecond, got)
+
+	got, ok = RetryAfter(fmt.Errorf("list VTXOs: %w", hinted))
+	require.True(t, ok)
+	require.Equal(t, 750*time.Millisecond, got)
+
+	// Everything without a hint reports absence rather than a zero
+	// duration the caller might mistake for "retry immediately".
+	_, ok = RetryAfter(nil)
+	require.False(t, ok)
+
+	_, ok = RetryAfter(errors.New("boom"))
+	require.False(t, ok)
+
+	_, ok = RetryAfter(
+		status.Error(codes.ResourceExhausted, "rate limited"),
+	)
+	require.False(t, ok)
+
+	_, ok = RetryAfter(shedWithHint(t, nil))
+	require.False(t, ok)
+
+	// A duration outside the protobuf range is malformed, not a very
+	// long wait.
+	_, ok = RetryAfter(
+		shedWithHint(
+			t, &durationpb.Duration{
+				Seconds: 1 << 60,
+			},
+		),
+	)
+	require.False(t, ok)
+}
+
+// TestRetryPrefersLongerServerHint pins that the operator's hint wins over a
+// shorter computed backoff. The hint comes from the bucket that shed the
+// request, so returning before it elapses only earns another shed, and the
+// next one is dropped in silence.
+func TestRetryPrefersLongerServerHint(t *testing.T) {
+	t.Parallel()
+
+	const hint = 60 * time.Millisecond
+
+	policy := RetryPolicy{
+		MaxAttempts:   2,
+		BaseDelay:     time.Millisecond,
+		MaxDelay:      2 * time.Millisecond,
+		MaxRetryAfter: time.Minute,
+	}
+
+	elapsed := timeShedRetry(
+		t, policy,
+		shedWithHint(
+			t, durationpb.New(
+				hint,
+			),
+		),
+	)
+
+	// The computed backoff caps at 2ms, so anything at or past the hint
+	// can only have come from the hint.
+	require.GreaterOrEqual(t, elapsed, hint)
+}
+
+// TestRetryPrefersShorterServerHint pins that the preference runs both ways:
+// an operator that says it will be ready sooner than the client's guess is
+// believed, so a brief throttle does not cost a full exponential backoff.
+func TestRetryPrefersShorterServerHint(t *testing.T) {
+	t.Parallel()
+
+	policy := RetryPolicy{
+		MaxAttempts:   2,
+		BaseDelay:     500 * time.Millisecond,
+		MaxDelay:      time.Second,
+		MaxRetryAfter: time.Minute,
+	}
+
+	elapsed := timeShedRetry(
+		t, policy,
+		shedWithHint(
+			t, durationpb.New(
+				5*time.Millisecond,
+			),
+		),
+	)
+
+	// The jitter floors the computed backoff at half the base, so
+	// finishing well under 250ms can only have come from the hint.
+	require.Less(t, elapsed, 250*time.Millisecond)
+}
+
+// TestRetryClampsHostileServerHint pins the bound on trust. The hint is a
+// number chosen by the other side, so a buggy or hostile operator must not be
+// able to park a client for a century by naming one.
+func TestRetryClampsHostileServerHint(t *testing.T) {
+	t.Parallel()
+
+	const maxRetryAfter = 40 * time.Millisecond
+
+	policy := RetryPolicy{
+		MaxAttempts:   2,
+		BaseDelay:     time.Millisecond,
+		MaxDelay:      2 * time.Millisecond,
+		MaxRetryAfter: maxRetryAfter,
+	}
+
+	elapsed := timeShedRetry(
+		t, policy,
+		shedWithHint(
+			t, durationpb.New(
+				100*365*24*time.Hour,
+			),
+		),
+	)
+
+	// The wait is the ceiling, not the century the operator asked for and
+	// not the computed backoff it displaced.
+	require.GreaterOrEqual(t, elapsed, maxRetryAfter)
+	require.Less(t, elapsed, time.Second)
+}
+
+// TestRetryIgnoresNonPositiveHint pins that a hint of zero or less does not
+// collapse the backoff into a hot loop. An operator that names no real wait
+// leaves the client on its own jittered schedule, which is the behavior a
+// hint-free shed already gets.
+func TestRetryIgnoresNonPositiveHint(t *testing.T) {
+	t.Parallel()
+
+	policy := RetryPolicy{
+		MaxAttempts:   2,
+		BaseDelay:     100 * time.Millisecond,
+		MaxDelay:      time.Second,
+		MaxRetryAfter: time.Minute,
+	}
+
+	for _, hint := range []time.Duration{0, -time.Hour} {
+		t.Run(hint.String(), func(t *testing.T) {
+			t.Parallel()
+
+			elapsed := timeShedRetry(
+				t, policy,
+				shedWithHint(
+					t, durationpb.New(hint),
+				),
+			)
+
+			// Half the base delay is the floor the jitter can
+			// produce, so reaching it proves the computed backoff
+			// still ran.
+			require.GreaterOrEqual(
+				t, elapsed, 50*time.Millisecond,
+			)
+		})
+	}
+}
+
+// TestRetryFallsBackWithoutHint pins that a shed answer carrying no hint backs
+// off exactly as it did before, so the hint is an addition to the policy
+// rather than a replacement for it.
+func TestRetryFallsBackWithoutHint(t *testing.T) {
+	t.Parallel()
+
+	policy := RetryPolicy{
+		MaxAttempts:   2,
+		BaseDelay:     100 * time.Millisecond,
+		MaxDelay:      time.Second,
+		MaxRetryAfter: time.Minute,
+	}
+
+	elapsed := timeShedRetry(
+		t, policy,
+		status.Error(codes.ResourceExhausted, "rate limited"),
+	)
+
+	require.GreaterOrEqual(t, elapsed, 50*time.Millisecond)
+	require.Less(t, elapsed, time.Second)
+}
+
+// TestRetryPolicyNormalizesMaxRetryAfter pins that a caller with no opinion on
+// the clamp still gets one. A zero ceiling read literally would mean every
+// hint is absurd, and a missing ceiling would mean none of them are.
+func TestRetryPolicyNormalizesMaxRetryAfter(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(
+		t, DefaultMaxRetryAfter,
+		RetryPolicy{}.normalize().MaxRetryAfter,
+	)
+	require.Equal(
+		t, DefaultMaxRetryAfter,
+		RetryPolicy{MaxRetryAfter: -time.Second}.
+			normalize().MaxRetryAfter,
+	)
+	require.Equal(
+		t, time.Second, RetryPolicy{MaxRetryAfter: time.Second}.
+			normalize().MaxRetryAfter,
 	)
 }
 
