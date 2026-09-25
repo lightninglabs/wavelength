@@ -34,6 +34,12 @@ Proto source: `arkrpc/ark.proto`, `arkrpc/indexer.proto`.
 
 ## Invariants
 
+- `BatchSchedule` (version 1) publishes an opaque schedule ID, the operator's
+  clock, and up to 32 concrete registration windows. `ParseBatchSchedule`
+  validates the list on its own terms, keeps `server_time_unix`, and fails on
+  any malformed or unknown-version schedule rather than falling back to
+  event-driven registration. See `docs/scheduled_batches.md`.
+
 - **Never edit generated code** — regenerate via `make rpc`.
 - Conversion round-trip: `TreePathFromTree(t)` → `TreePathToTree(pb)` must
   reproduce the original tree (excluding derived `FinalKey` fields).

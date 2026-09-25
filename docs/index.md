@@ -10,6 +10,7 @@ into specific topics below.
 |----------|-------------|
 | [ARCHITECTURE.md](../ARCHITECTURE.md) | Package layers, dependency graph, key types, patterns |
 | [round_admission_deadlines.md](round_admission_deadlines.md) | Accepted round budgets, clock policy, safe timeout and restart behavior |
+| [scheduled_batches.md](scheduled_batches.md) | Scheduled-batch discovery, slot selection, operator clock offset and jittered wake, and the signed slot binding |
 | [arkscript_spec.md](arkscript_spec.md) | RFC-style specification for the `lib/arkscript` tapscript policy system (AST, encoding, invariants, security considerations) |
 | [durable_actor_architecture.md](durable_actor_architecture.md) | CDC pattern, durable mailbox lifecycle, recovery flow |
 | [durable_actor_quickstart.md](durable_actor_quickstart.md) | Developer guide: TLVMessage, ActorBehavior, migration checklist |

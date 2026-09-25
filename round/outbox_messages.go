@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/batchschedule"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/types"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
@@ -23,6 +24,9 @@ import (
 // JoinRoundRequest is sent from client to server to request joining a round.
 // This implements ClientEvent and is emitted via Outbox.
 type JoinRoundRequest struct {
+	// BatchSlot identifies the authenticated registration opportunity.
+	BatchSlot fn.Option[batchschedule.Selection]
+
 	actor.BaseMessage
 
 	// Identifier is the participant key used for the join-auth
@@ -392,6 +396,7 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 	}
 
 	pb := &roundpb.JoinRoundRequest{
+		BatchSlot:        roundpb.SelectionToProto(m.BatchSlot),
 		BoardingRequests: boardingReqs,
 		VtxoRequests:     vtxoReqs,
 		ForfeitRequests:  forfeitReqs,

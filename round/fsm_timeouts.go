@@ -8,6 +8,10 @@ import (
 type TimeoutPhase string
 
 const (
+	// TimeoutPhaseScheduledRegistration wakes an assembly at its slot
+	// window.
+	TimeoutPhaseScheduledRegistration TimeoutPhase = "scheduled-join"
+
 	// TimeoutPhaseRefreshRegistration coalesces expiry-driven refreshes
 	// before registering their assembling round.
 	TimeoutPhaseRefreshRegistration TimeoutPhase = "refresh-registration"

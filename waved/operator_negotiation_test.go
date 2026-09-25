@@ -7,11 +7,14 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/lib/batchschedule"
 	"github.com/lightninglabs/wavelength/lib/types"
 	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/lightninglabs/wavelength/vtxo"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
@@ -620,4 +623,198 @@ func TestFetchOperatorTermsRefreshSelectedButDisabledMarksIncompatible(
 	// The refresh transitioned the runtime to INCOMPATIBLE, firing the
 	// OnIncompatible callback that clears server_connected.
 	require.False(t, s.isServerConnected())
+}
+
+// testScheduledGetInfoResponse builds a GetInfo response from a scheduled
+// operator that publishes a single slot opening ten minutes after now and
+// closing two minutes later, stamped with the given server clock reading. A
+// non-positive serverTimeUnix models an operator that reports no clock.
+func testScheduledGetInfoResponse(t *testing.T, now time.Time,
+	serverTimeUnix int64) *arkrpc.GetInfoResponse {
+
+	t.Helper()
+
+	return &arkrpc.GetInfoResponse{
+		Pubkey:             testOperatorPubKeyBytes(t),
+		SelectedArkVersion: 1,
+		MaxVtxoAmount:      200_000,
+		BatchSchedule: &arkrpc.BatchSchedule{
+			Version: 1,
+			ScheduleId: append(
+				[]byte{2}, make([]byte, 31)...,
+			),
+			ServerTimeUnix: serverTimeUnix,
+			Slots: []*arkrpc.BatchSlot{{
+				RegistrationOpensUnix: now.Unix() + 600,
+				CutoffUnix:            now.Unix() + 720,
+			}},
+		},
+	}
+}
+
+// TestRoundOperatorTermsRefreshesPublishedHorizon pins that each scheduled
+// registration attempt fetches fresh discovery. The published slot list is
+// finite and rolls forward, so the cached copy may already be exhausted by
+// the time a new attempt starts. The fresh terms must keep the client's
+// personalized limits, which the generic GetInfo response does not carry,
+// and must stay private to the attempt so they never overwrite the shared
+// cache. An event-driven operator, whose terms never roll forward, must not
+// pay for an extra discovery call.
+func TestRoundOperatorTermsRefreshesPublishedHorizon(t *testing.T) {
+	t.Parallel()
+
+	// Cache a published list whose only slot closes at now, so it has
+	// nothing left to offer an attempt that starts at now.
+	now := time.Unix(1800000000, 0).UTC()
+	old, err := batchschedule.NewPublished(
+		batchschedule.ID{1}, []batchschedule.Slot{{
+			Opens:  now.Add(-time.Minute),
+			Cutoff: now,
+		}},
+	)
+	require.NoError(t, err)
+
+	// The operator now publishes a later slot with generic limits that
+	// differ from the personalized ones in the cache.
+	direct := &stubArkServiceClient{
+		resp: testScheduledGetInfoResponse(t, now, 0),
+	}
+	srv := &Server{
+		arkClient:          direct,
+		arkProtocolVersion: 1,
+	}
+	cached := &types.OperatorTerms{
+		BatchSchedule:  fn.Some(old),
+		MaxVTXOAmount:  5_000_000,
+		MaxUserBalance: 150_000_000,
+	}
+	srv.storeOperatorTerms(cached)
+	srv.hasPersonalizedLimits.Store(true)
+
+	// A scheduled attempt makes exactly one discovery call and keeps the
+	// personalized limits rather than the response's generic ones.
+	fresh, err := srv.roundOperatorTerms(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, 1, direct.calls)
+	require.EqualValues(t, 5_000_000, fresh.MaxVTXOAmount)
+	require.EqualValues(t, 150_000_000, fresh.MaxUserBalance)
+
+	// The fresh list offers the newly published slot, and the shared
+	// cache still holds the original snapshot.
+	slot, err := fresh.BatchSchedule.UnwrapOrFail(t).Next(now)
+	require.NoError(t, err)
+	require.True(t, slot.Cutoff.Equal(now.Add(720*time.Second)))
+	require.Same(t, cached, srv.loadOperatorTerms())
+
+	// Event-driven operators get their cached terms back unchanged,
+	// without another discovery call.
+	cached = &types.OperatorTerms{}
+	srv.storeOperatorTerms(cached)
+
+	fresh, err = srv.roundOperatorTerms(t.Context())
+	require.NoError(t, err)
+	require.Same(t, cached, fresh)
+	require.Equal(t, 1, direct.calls)
+}
+
+// TestRoundOperatorTermsEstimatesClockOffset pins that a scheduled attempt
+// attaches an estimate of the operator's clock offset to its private copy of
+// the published list. A client aims its join at a window measured on the
+// operator's clock, so a skewed local clock would otherwise miss short
+// windows entirely. An operator that reports no clock reading must yield no
+// correction, and the shared cache must never receive the estimate.
+func TestRoundOperatorTermsEstimatesClockOffset(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1800000000, 0).UTC()
+
+	// The operator skew is two hours, far enough to also take the
+	// diagnostic log path. The estimate may differ from the true offset
+	// by the half-second truncation plus half of the stub's negligible
+	// round trip, so a one-second tolerance is ample.
+	testCases := []struct {
+		name         string
+		reportsClock bool
+		skew         time.Duration
+		minOffset    time.Duration
+		maxOffset    time.Duration
+	}{
+		{
+			name:         "operator clock ahead",
+			reportsClock: true,
+			skew:         2 * time.Hour,
+			minOffset:    2*time.Hour - time.Second,
+			maxOffset:    2*time.Hour + time.Second,
+		},
+		{
+			name:         "operator clock behind",
+			reportsClock: true,
+			skew:         -2 * time.Hour,
+			minOffset:    -2*time.Hour - time.Second,
+			maxOffset:    -2*time.Hour + time.Second,
+		},
+		{
+			name:         "operator clock unreported",
+			reportsClock: false,
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Cache terms from an earlier discovery that carried
+			// no offset, so any offset on the result must come
+			// from this attempt's round trip.
+			cachedSchedule, err := arkrpc.ParseBatchSchedule(
+				testScheduledGetInfoResponse(
+					t, now, 0,
+				).BatchSchedule,
+			)
+			require.NoError(t, err)
+
+			// The stub stamps its skewed clock while serving the
+			// call, just as the operator stamps the response
+			// between the client's send and receive.
+			stub := &stubArkServiceClient{
+				resp: testScheduledGetInfoResponse(t, now, 0),
+			}
+			if tc.reportsClock {
+				stub.await = func(context.Context) error {
+					serverTime := time.Now().Add(tc.skew)
+					stub.resp.BatchSchedule.ServerTimeUnix =
+						serverTime.Unix()
+
+					return nil
+				}
+			}
+
+			srv := &Server{
+				arkClient:          stub,
+				arkProtocolVersion: 1,
+				log:                btclog.Disabled,
+			}
+			cached := &types.OperatorTerms{
+				BatchSchedule: cachedSchedule,
+			}
+			srv.storeOperatorTerms(cached)
+
+			fresh, err := srv.roundOperatorTerms(t.Context())
+			require.NoError(t, err)
+
+			// The attempt's copy carries an estimate within the
+			// expected error of the true offset.
+			offset := fresh.BatchSchedule.
+				UnwrapOrFail(t).
+				ClockOffset()
+			require.GreaterOrEqual(t, offset, tc.minOffset)
+			require.LessOrEqual(t, offset, tc.maxOffset)
+
+			// The shared cache keeps its original schedule with no
+			// offset attached.
+			require.Same(t, cached, srv.loadOperatorTerms())
+			require.Zero(
+				t, cachedSchedule.UnwrapOrFail(t).ClockOffset(),
+			)
+		})
+	}
 }
