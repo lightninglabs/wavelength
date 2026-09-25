@@ -13,6 +13,10 @@ message interfaces, and core Ark types.
 - `Node` — Individual tree node with children and outputs.
 - `LeafDescriptor` — VTXO or connector output to include in tree construction.
 
+### lib/treecodec
+- `SerializeTree` / `DeserializeTree` — Shared full-tree TLV encoding for
+  database persistence and durable actor checkpoints.
+
 ### lib/arkscript
 - `Node` — Sealed AST interface for tapscript spending conditions (Multisig, CSV, Condition, etc.).
 - `VTXOPolicy` / `VHTLCPolicy` / `CheckpointPolicy` — High-level policy templates.
