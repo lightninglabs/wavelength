@@ -1383,6 +1383,62 @@ func TestCompleteSpendAlreadyPersistedSpentIsIdempotent(t *testing.T) {
 	store.AssertExpectations(t)
 }
 
+// TestCompleteSpendRecoveryOnlyWithoutActor verifies that an application-owned
+// VTXO can complete an admitted OOR spend even though it deliberately has no
+// ordinary VTXO actor. The status transition and reservation release use the
+// store's atomic operation.
+func TestCompleteSpendRecoveryOnlyWithoutActor(t *testing.T) {
+	t.Parallel()
+
+	vtxo := makeDescriptor(t, 50000, 0)
+	vtxo.Status = VTXOStatusRecoveryOnly
+
+	mgr, store := newTestManager(t, nil)
+	store.On(
+		"GetVTXO", t.Context(), vtxo.Outpoint,
+	).Return(vtxo, nil).Once()
+	store.On(
+		"UpdateVTXOStatusReleasingReservation", t.Context(),
+		vtxo.Outpoint, VTXOStatusSpent,
+	).Return(nil).Once()
+
+	result := mgr.Receive(t.Context(), &CompleteSpendRequest{
+		Outpoints: []wire.OutPoint{vtxo.Outpoint},
+	})
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+
+	completeResp, ok := resp.(*CompleteSpendResponse)
+	require.True(t, ok, "expected *CompleteSpendResponse")
+	require.Equal(t, 1, completeResp.CompletedCount)
+
+	store.AssertExpectations(t)
+}
+
+// TestCompleteSpendActorlessLiveVTXOReturnsNoActor verifies that the
+// recovery-only exception cannot retire a normal VTXO whose actor is missing.
+func TestCompleteSpendActorlessLiveVTXOReturnsNoActor(t *testing.T) {
+	t.Parallel()
+
+	vtxo := makeDescriptor(t, 50000, 0)
+	vtxo.Status = VTXOStatusLive
+
+	mgr, store := newTestManager(t, nil)
+	store.On(
+		"GetVTXO", t.Context(), vtxo.Outpoint,
+	).Return(vtxo, nil).Once()
+
+	result := mgr.Receive(t.Context(), &CompleteSpendRequest{
+		Outpoints: []wire.OutPoint{vtxo.Outpoint},
+	})
+	_, err := result.Unpack()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no actor for outpoint")
+
+	store.AssertNotCalled(t, "UpdateVTXOStatusReleasingReservation")
+	store.AssertExpectations(t)
+}
+
 // TestCompleteSpendMissingPersistedVTXOReturnsNoActor verifies that a missing
 // persisted VTXO remains a normal unknown-outpoint error.
 func TestCompleteSpendMissingPersistedVTXOReturnsNoActor(t *testing.T) {
@@ -1423,7 +1479,7 @@ func TestCompleteSpendPersistedSpentCheckError(t *testing.T) {
 	})
 	_, err := result.Unpack()
 	require.ErrorIs(t, err, storeErr)
-	require.Contains(t, err.Error(), "load vtxo for spent check")
+	require.Contains(t, err.Error(), "load vtxo for completion")
 
 	store.AssertExpectations(t)
 }

@@ -25,6 +25,13 @@ SELECT * FROM oor_session_registry
 WHERE session_id = $1
 ;
 
+-- name: GetUnfailedOORSessionRegistryByIdempotencyKey :one
+SELECT * FROM oor_session_registry
+WHERE idempotency_key = $1 AND status != 2
+ORDER BY created_at ASC
+LIMIT 1
+;
+
 -- name: ListNonTerminalOORSessionRegistry :many
 -- Status 1 = Completed, 2 = Failed (anchored to Go iota in
 -- db/oor_session_registry_store.go OORSessionStatus).
