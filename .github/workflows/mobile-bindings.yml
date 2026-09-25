@@ -1,9 +1,9 @@
 name: Mobile Bindings
 
 # The mobile binding package compiles on every relevant PR (a fast, host-tagged
-# build), but the expensive gomobile .aar / .xcframework builds (which cross
-# compile the whole embedded daemon for every ABI) run only on a tag push, so
-# routine merges do not trigger them. Two tag namespaces drive the heavy build:
+# build plus an Android arm64 link check). The gomobile .aar / .xcframework
+# release builds cross-compile the whole daemon for every ABI and run only
+# on tag pushes. Two tag namespaces drive the heavy build:
 # a `mobile-v*` tag for a mobile-only cut (artifacts only), and a `v*` release
 # tag, which additionally attaches the built `.aar`, `.xcframework`, and
 # browser WASM runtime archive to the GitHub release for that tag (see the
@@ -19,7 +19,11 @@ on:
   pull_request:
     paths:
       - "sdk/wavewalletdk/**"
+      - "sdk/swaps/**"
+      - "db/**"
       - "swapwallet/**"
+      - "go.mod"
+      - "go.sum"
       - "Makefile"
       - ".github/workflows/mobile-bindings.yml"
   merge_group:
@@ -46,9 +50,17 @@ jobs:
   # Runs on PRs and the merge queue, not on tag builds.
   ########################################################################
   unit:
-    name: Compile + test (host)
+    name: Compile + test (${{ matrix.sqlite }})
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # Preserve the existing host check name for branch protection.
+          - sqlite: host
+            tags: ""
+          - sqlite: Android SQLite
+            tags: sqlite_cgo
     steps:
       - name: Git checkout
         uses: actions/checkout@v5
@@ -58,8 +70,39 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Test mobile facade
-        run: go test -tags="${MOBILE_TAGS}" ./sdk/wavewalletdk/mobile/...
+      - name: Test mobile facade and SQLite stores
+        env:
+          SQLITE_TAGS: ${{ matrix.tags }}
+          CGO_ENABLED: "1"
+        run: |
+          go test -timeout=10m -tags="${MOBILE_TAGS} ${SQLITE_TAGS}" \
+            ./db/... ./sdk/swaps/... ./sdk/wavewalletdk/mobile/...
+
+  android-compile:
+    name: Link Android arm64
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+      - name: Link the mobile facade with Android SQLite
+        env:
+          NDK_PATH: ${{ steps.ndk.outputs.ndk-path }}
+          GOOS: android
+          GOARCH: arm64
+          CGO_ENABLED: '1'
+        run: |
+          export CC="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
+          go test -c -tags="${MOBILE_TAGS} sqlite_cgo" \
+            -ldflags="-extldflags '-Wl,-z,max-page-size=16384'" \
+            -o "$RUNNER_TEMP/mobile-android-arm64.test" \
+            ./sdk/wavewalletdk/mobile
 
   ########################################################################
   # Android .aar — tag builds only (mobile-v* or v*).

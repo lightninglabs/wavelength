@@ -208,9 +208,38 @@ make mobile target=all
 ```
 
 These call [`gen_bindings.sh`](../sdk/wavewalletdk/mobile/gen_bindings.sh), which
-runs `gomobile bind` with `-tags="mobile wavewalletrpc swapruntime"`,
-`-androidapi 21`, and a 16KB-page-size `-extldflags` (for newer Android
-devices). The generated Java package is `engineering.lightning.wavewalletdk`.
+runs `gomobile bind` with `-tags="mobile wavewalletrpc swapruntime"`. Android
+adds `sqlite_cgo`, `-androidapi 21`, and a 16KB-page-size `-extldflags` (for newer
+Android devices). The generated Java package is
+`engineering.lightning.wavewalletdk`.
+
+The `sqlite_cgo` tag selects `github.com/mattn/go-sqlite3` for the main database,
+actor-delivery migrations, and swap database. It compiles SQLite against the
+Android NDK's C library, avoiding the raw Linux syscalls in modernc/libc that
+Android's application sandbox can block. It requires CGO, which `gomobile bind`
+already enables. The schema, generated sqlc queries, and SDK API are unchanged;
+SDK consumers pick up the driver by using the rebuilt Android `.aar`.
+
+iOS and desktop builds keep modernc; browser builds keep the WASM driver. The
+CGO adapter preserves `fullfsync` on every connection, including replacement
+connections from the pool. This retains the configured durability barrier
+when testing on Darwin; the setting has no effect on Android. The build tag
+can also be used on a development host to exercise the Android database path:
+
+```bash
+CGO_ENABLED=1 go test -tags="mobile wavewalletrpc swapruntime sqlite_cgo" \
+  ./db/... ./sdk/swaps/... ./sdk/wavewalletdk/mobile/...
+```
+
+Host tests cover database behavior, but Android support also requires running
+the rebuilt SDK in an Android app process. In particular, check startup,
+write/reopen persistence, and restart on the x86_64 emulator that exposed the
+seccomp failure; a test binary launched through `adb shell` does not exercise
+the same application sandbox.
+
+PR CI also cross-compiles and links the mobile test binary for Android arm64
+with the NDK and `sqlite_cgo`. The companion SDK smoke test runs the rebuilt
+bindings inside Android and iOS app processes.
 
 > The embedded build pulls in `btcwallet`/`neutrino`/`lnd`, so the `.aar` is
 > large. Measure binary size before shipping.

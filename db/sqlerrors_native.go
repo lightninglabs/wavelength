@@ -1,4 +1,4 @@
-//go:build !js || !wasm
+//go:build (!js || !wasm) && !sqlite_cgo
 
 package db
 

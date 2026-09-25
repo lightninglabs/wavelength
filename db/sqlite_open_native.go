@@ -1,4 +1,4 @@
-//go:build !js || !wasm
+//go:build (!js || !wasm) && !sqlite_cgo
 
 package db
 
@@ -47,17 +47,4 @@ func openSQLiteDatabase(cfg SQLiteOpenConfig) (*SQLiteOpenResult, error) {
 		DriverName: "sqlite",
 		DSN:        dsn,
 	}, nil
-}
-
-// configureSQLitePool applies database/sql pool settings when present.
-func configureSQLitePool(db *sql.DB, cfg SQLiteOpenConfig) {
-	if cfg.MaxOpenConns > 0 {
-		db.SetMaxOpenConns(cfg.MaxOpenConns)
-	}
-	if cfg.MaxIdleConns > 0 {
-		db.SetMaxIdleConns(cfg.MaxIdleConns)
-	}
-	if cfg.ConnMaxLifetime > 0 {
-		db.SetConnMaxLifetime(cfg.ConnMaxLifetime)
-	}
 }

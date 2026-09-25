@@ -20,6 +20,10 @@ set -euo pipefail
 MOBILE_PKG="github.com/lightninglabs/wavelength/sdk/wavewalletdk/mobile"
 MOBILE_TAGS="mobile wavewalletrpc swapruntime"
 
+# Android needs SQLite through the NDK's libc instead of modernc's raw Linux
+# syscalls. Keep the iOS build on its existing driver.
+ANDROID_TAGS="${MOBILE_TAGS} sqlite_cgo"
+
 # Minimum Android API level. 21 (Lollipop) matches lnd-mobile.
 ANDROID_API=21
 
@@ -57,7 +61,7 @@ build_android() {
 		-target=android \
 		-androidapi "${ANDROID_API}" \
 		-javapkg=engineering.lightning.wavewalletdk \
-		-tags="${MOBILE_TAGS}" \
+		-tags="${ANDROID_TAGS}" \
 		-ldflags="-extldflags '-Wl,-z,max-page-size=${ANDROID_MAX_PAGE_SIZE}'" \
 		-v \
 		-o "${BUILD_DIR}/android/Wavewalletdk.aar" \

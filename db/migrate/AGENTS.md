@@ -7,8 +7,10 @@ Wraps `golang-migrate` with downgrade protection, per-step callbacks, an
 on-the-fly SQLite→Postgres token replacer, and structured logging. Used by
 the main schema (`db/`), the actor-delivery sub-schema
 (`db/actordelivery/migrations/`), and `sdk/swaps`. The migration driver is
-build-tagged: native builds (`driver_native.go`) use golang-migrate's
-sqlite/postgres drivers, js/wasm builds (`driver_wasm.go`,
+build-tagged: native builds (`driver_native.go`) share the postgres driver
+and select the SQLite adapter in `driver_sqlite_native.go` (modernc) or
+`driver_sqlite_cgo.go` (mattn, with `sqlite_cgo`). Android bindings select
+the CGO adapter; iOS keeps modernc. js/wasm builds (`driver_wasm.go`,
 `sqlite_wasm_driver.go`) use a hand-rolled `wasmSQLiteDriver` to avoid
 pulling the modernc sqlite driver into the browser bundle.
 
