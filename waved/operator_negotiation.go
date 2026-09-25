@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/lib/batchschedule"
 	"github.com/lightninglabs/wavelength/lib/types"
 	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
 	"github.com/lightninglabs/wavelength/serverconn"
@@ -163,9 +165,20 @@ func (s *Server) negotiateArkBootstrap(ctx context.Context,
 	}, nil
 }
 
-// roundOperatorTerms fetches published opportunities for a new scheduled
-// attempt. Legacy operators retain cached discovery. The returned snapshot is
-// private to the attempt, so it cannot overwrite a concurrent cache refresh.
+// clockOffsetLogThreshold is the estimated operator clock offset above which
+// a scheduled refresh logs the offset. The offset is still applied; the log
+// only helps diagnose a badly skewed host.
+const clockOffsetLogThreshold = time.Hour
+
+// roundOperatorTerms returns the operator terms a new registration attempt
+// should use. An event-driven operator's cached terms are returned as is. For
+// a scheduled operator the terms are fetched fresh, because its published
+// slot list rolls forward every interval, and the fetch is timed so the
+// attempt can correct for the difference between the local and operator
+// clocks when it aims for a registration window.
+//
+// The returned snapshot is private to the attempt, so it never overwrites a
+// concurrent refresh of the shared cache.
 func (s *Server) roundOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 	error) {
 
@@ -173,16 +186,41 @@ func (s *Server) roundOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 	if cached == nil {
 		return nil, fmt.Errorf("operator terms unavailable")
 	}
+
 	if cached.BatchSchedule == nil {
 		return cached, nil
 	}
+
+	// Stamp both ends of the round trip as tightly as possible around the
+	// RPC; the operator's clock reading falls somewhere between them.
+	sent := time.Now()
 	terms, err := s.fetchOperatorTerms(ctx)
+	received := time.Now()
 	if err != nil {
 		return nil, err
 	}
+
+	// Personalized limits come from the authenticated terms and must not
+	// be replaced by the generic values in this response.
 	if s.hasPersonalizedLimits.Load() {
 		terms.MaxVTXOAmount = cached.MaxVTXOAmount
 		terms.MaxUserBalance = cached.MaxUserBalance
+	}
+
+	if terms.BatchSchedule != nil {
+		offset := batchschedule.EstimateClockOffset(
+			terms.BatchSchedule.ServerTime(), sent, received,
+		)
+		terms.BatchSchedule = terms.BatchSchedule.WithClockOffset(
+			offset,
+		)
+
+		if offset.Abs() > clockOffsetLogThreshold {
+			s.log.InfoS(ctx, "Operator clock differs from local "+
+				"clock",
+				slog.Duration("offset", offset),
+			)
+		}
 	}
 
 	return terms, nil

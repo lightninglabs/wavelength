@@ -57,7 +57,21 @@ func ParseBatchSchedule(p *BatchSchedule) (*batchschedule.Published, error) {
 		})
 	}
 
-	return batchschedule.NewPublished(id, slots)
+	published, err := batchschedule.NewPublished(id, slots)
+	if err != nil {
+		return nil, err
+	}
+
+	// Keep the operator's clock reading so a caller that timed the
+	// request can estimate the clock offset. A non-positive value means
+	// the operator did not report one.
+	if p.ServerTimeUnix > 0 {
+		published = published.WithServerTime(
+			time.Unix(p.ServerTimeUnix, 0).UTC(),
+		)
+	}
+
+	return published, nil
 }
 
 // BatchScheduleToProto builds the discovery message an interval-based

@@ -436,7 +436,7 @@ func buildJoinRoundAuthRequest(ctx context.Context, env *ClientEnvironment,
 	}
 
 	return &types.JoinRoundRequest{
-		BatchSlot:    env.scheduledSlot,
+		BatchSlot:    env.batchSlot(),
 		Identifier:   nil,
 		BoardingReqs: boardingReqs,
 		VTXOReqs:     sharedVTXOReqs,

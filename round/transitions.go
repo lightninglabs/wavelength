@@ -788,7 +788,7 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 		// JoinRoundRequest to kick off the signing process.
 		outbox := []ClientOutMsg{
 			&JoinRoundRequest{
-				BatchSlot:        env.scheduledSlot,
+				BatchSlot:        env.batchSlot(),
 				BoardingRequests: boardingReqs,
 				VTXORequests:     vtxoReqs,
 				ForfeitRequests:  forfeitReqs,
