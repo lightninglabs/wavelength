@@ -34,6 +34,10 @@ Proto source: `arkrpc/ark.proto`, `arkrpc/indexer.proto`.
 
 ## Invariants
 
+- Schedule discovery version 1 publishes explicit registration windows.
+  Unsupported versions fail explicitly.
+  The schedule ID plus cutoff still binds join authorization.
+
 - **Never edit generated code** — regenerate via `make rpc`.
 - Conversion round-trip: `TreePathFromTree(t)` → `TreePathToTree(pb)` must
   reproduce the original tree (excluding derived `FinalKey` fields).

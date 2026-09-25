@@ -407,8 +407,13 @@ type RoundClientConfig struct {
 	// VTXOStore persists off-chain balance.
 	VTXOStore VTXOStore
 
-	// OperatorTerms contains the operator's parameters.
+	// OperatorTerms contains the bootstrap operator parameters.
 	OperatorTerms *types.OperatorTerms
+
+	// OperatorTermsSource refreshes discovery before selecting a slot. It
+	// must honor cancellation and be safe for concurrent use. A selected
+	// attempt pins its snapshot; nil preserves static terms.
+	OperatorTermsSource func(context.Context) (*types.OperatorTerms, error)
 
 	// ServerConn is a reference to the ServerConnectionActor for sending
 	// messages to the Ark server.
@@ -1043,15 +1048,16 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:       a.cfg.RoundStore,
-		AdmissionTimeout: a.env.AdmissionTimeout,
-		Now:              a.env.Now,
-		VTXOStore:        a.cfg.VTXOStore,
-		Wallet:           a.cfg.Wallet,
-		SigningExecutor:  a.env.SigningExecutor,
-		OperatorTerms:    a.cfg.OperatorTerms,
-		ChainParams:      a.cfg.ChainParams,
-		MaxOperatorFee:   a.cfg.MaxOperatorFee,
+		RoundStore:          a.cfg.RoundStore,
+		AdmissionTimeout:    a.env.AdmissionTimeout,
+		Now:                 a.env.Now,
+		VTXOStore:           a.cfg.VTXOStore,
+		Wallet:              a.cfg.Wallet,
+		SigningExecutor:     a.env.SigningExecutor,
+		OperatorTerms:       a.cfg.OperatorTerms,
+		OperatorTermsSource: a.cfg.OperatorTermsSource,
+		ChainParams:         a.cfg.ChainParams,
+		MaxOperatorFee:      a.cfg.MaxOperatorFee,
 		AutoRefreshFeeFloor: a.cfg.
 			AutoRefreshFeeFloor,
 		AutoRefreshFeeRatePPM: a.cfg.
@@ -1122,15 +1128,16 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:       a.cfg.RoundStore,
-		AdmissionTimeout: a.env.AdmissionTimeout,
-		Now:              a.env.Now,
-		VTXOStore:        a.cfg.VTXOStore,
-		Wallet:           a.cfg.Wallet,
-		SigningExecutor:  a.env.SigningExecutor,
-		OperatorTerms:    a.cfg.OperatorTerms,
-		ChainParams:      a.cfg.ChainParams,
-		MaxOperatorFee:   a.cfg.MaxOperatorFee,
+		RoundStore:          a.cfg.RoundStore,
+		AdmissionTimeout:    a.env.AdmissionTimeout,
+		Now:                 a.env.Now,
+		VTXOStore:           a.cfg.VTXOStore,
+		Wallet:              a.cfg.Wallet,
+		SigningExecutor:     a.env.SigningExecutor,
+		OperatorTerms:       a.cfg.OperatorTerms,
+		OperatorTermsSource: a.cfg.OperatorTermsSource,
+		ChainParams:         a.cfg.ChainParams,
+		MaxOperatorFee:      a.cfg.MaxOperatorFee,
 		AutoRefreshFeeFloor: a.cfg.
 			AutoRefreshFeeFloor,
 		AutoRefreshFeeRatePPM: a.cfg.
@@ -2957,7 +2964,7 @@ func (a *RoundClientActor) handleTimeout(ctx context.Context,
 
 		return fn.Ok[actormsg.RoundActorResp](nil)
 
-	case TimeoutPhaseRefreshRegistration:
+	case TimeoutPhaseRefreshRegistration, TimeoutPhaseScheduledRegistration:
 		state, stateErr := fsmState(ctx, roundFSM.FSM)
 		if stateErr != nil {
 			return fn.Err[actormsg.RoundActorResp](

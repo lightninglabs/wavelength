@@ -8,6 +8,10 @@ message interfaces, and core Ark types.
 
 ## Sub-Packages
 
+### lib/batchschedule
+- [Schedule and Selection](batchschedule/AGENTS.md) — UTC registration windows,
+  published opportunities, and authenticated cutoff selection.
+
 ### lib/tree
 - `Tree` — Root node plus batch outpoint/output (encapsulates VTXO Merkle tree).
 - `Node` — Individual tree node with children and outputs.

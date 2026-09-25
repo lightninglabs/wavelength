@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/batchschedule"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -30,6 +31,9 @@ const (
 // OperatorTerms holds the information that the operator will share with
 // clients. It communicates the server's terms to the client.
 type OperatorTerms struct {
+	// BatchSchedule is nil when registration is event-driven.
+	BatchSchedule *batchschedule.Published
+
 	// PubKey is the operator's main public key. This should be used for
 	// constructing boarding scripts.
 	PubKey *btcec.PublicKey
@@ -126,6 +130,10 @@ func (t *OperatorTerms) VTXOTargetConfirmations() uint32 {
 
 // JoinRoundRequest represents a participant's request to join a round.
 type JoinRoundRequest struct {
+	// BatchSlot authorizes one scheduled opportunity; nil requests legacy
+	// timing.
+	BatchSlot *batchschedule.Selection
+
 	// Identifier is the participant's public key identifier associated with
 	// this request.
 	Identifier *btcec.PublicKey

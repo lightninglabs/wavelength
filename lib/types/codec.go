@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/batchschedule"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/tlv"
 )
@@ -26,13 +27,15 @@ const (
 )
 
 const (
-	joinRoundAuthMessageVersionRecordType tlv.Type = 1
-	joinRoundAuthMessageDomainRecordType  tlv.Type = 2
-	joinRoundAuthMessageIDRecordType      tlv.Type = 3
-	joinRoundAuthMessageBoardRecordType   tlv.Type = 4
-	joinRoundAuthMessageVTXORecordType    tlv.Type = 5
-	joinRoundAuthMessageForfeitRecordType tlv.Type = 6
-	joinRoundAuthMessageLeaveRecordType   tlv.Type = 7
+	joinRoundAuthMessageVersionRecordType  tlv.Type = 1
+	joinRoundAuthMessageDomainRecordType   tlv.Type = 2
+	joinRoundAuthMessageIDRecordType       tlv.Type = 3
+	joinRoundAuthMessageBoardRecordType    tlv.Type = 4
+	joinRoundAuthMessageVTXORecordType     tlv.Type = 5
+	joinRoundAuthMessageForfeitRecordType  tlv.Type = 6
+	joinRoundAuthMessageLeaveRecordType    tlv.Type = 7
+	joinRoundAuthMessageScheduleRecordType tlv.Type = 8
+	joinRoundAuthMessageCutoffRecordType   tlv.Type = 9
 )
 
 const (
@@ -116,6 +119,8 @@ type JoinRoundAuth struct {
 //	|   5   | vtxos     (blob list)                     |
 //	|   6   | forfeits  (blob list)                     |
 //	|   7   | leaves    (blob list)                     |
+//	|   8   | schedule ID (optional 32 bytes)            |
+//	|   9   | cutoff Unix seconds (optional uint64)     |
 //	+-------+-------------------------------------------+
 //
 // Each blob list is encoded as:
@@ -215,6 +220,22 @@ func JoinRoundAuthMessage(req *JoinRoundRequest) ([]byte, error) {
 		),
 	)
 
+	if req.BatchSlot != nil {
+		if err := req.BatchSlot.Validate(); err != nil {
+			return nil, err
+		}
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				joinRoundAuthMessageScheduleRecordType,
+				&req.BatchSlot.ScheduleID,
+			),
+			tlv.MakePrimitiveRecord(
+				joinRoundAuthMessageCutoffRecordType,
+				&req.BatchSlot.CutoffUnix,
+			),
+		)
+	}
+
 	return encodeJoinAuthTLV(records)
 }
 
@@ -234,6 +255,7 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 		vtxoRaw     []byte
 		forfeitRaw  []byte
 		leaveRaw    []byte
+		selection   batchschedule.Selection
 	)
 
 	stream, err := tlv.NewStream(
@@ -257,6 +279,14 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthMessageLeaveRecordType, &leaveRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthMessageScheduleRecordType,
+			&selection.ScheduleID,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthMessageCutoffRecordType,
+			&selection.CutoffUnix,
 		),
 	)
 	if err != nil {
@@ -353,7 +383,21 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 		return nil, fmt.Errorf("decode identifier: %w", err)
 	}
 
+	var batchSlot *batchschedule.Selection
+	_, hasID := parsedTypes[joinRoundAuthMessageScheduleRecordType]
+	_, hasCutoff := parsedTypes[joinRoundAuthMessageCutoffRecordType]
+	if hasID != hasCutoff {
+		return nil, fmt.Errorf("incomplete scheduled slot")
+	}
+	if hasID {
+		if err := selection.Validate(); err != nil {
+			return nil, err
+		}
+		batchSlot = &selection
+	}
+
 	return &JoinRoundRequest{
+		BatchSlot:    batchSlot,
 		Identifier:   identifierKey,
 		BoardingReqs: boardingReqs,
 		VTXOReqs:     vtxoReqs,

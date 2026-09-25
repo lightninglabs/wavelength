@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/lib/batchschedule"
 	"github.com/lightninglabs/wavelength/lib/types"
 	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
@@ -620,4 +621,55 @@ func TestFetchOperatorTermsRefreshSelectedButDisabledMarksIncompatible(
 	// The refresh transitioned the runtime to INCOMPATIBLE, firing the
 	// OnIncompatible callback that clears server_connected.
 	require.False(t, s.isServerConnected())
+}
+
+// TestRoundOperatorTermsRefreshesPublishedHorizon replaces exhausted discovery
+// for a new attempt while retaining personalized limits and the shared cache.
+func TestRoundOperatorTermsRefreshesPublishedHorizon(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1800000000, 0)
+	old, err := batchschedule.NewPublished(
+		[32]byte{1}, []batchschedule.Slot{
+			{Opens: now.Add(-time.Minute), Cutoff: now},
+		},
+	)
+	require.NoError(t, err)
+	direct := &stubArkServiceClient{resp: &arkrpc.GetInfoResponse{
+		Pubkey:             testOperatorPubKeyBytes(t),
+		SelectedArkVersion: 1,
+		MaxVtxoAmount:      200_000,
+		BatchSchedule: &arkrpc.BatchSchedule{
+			Version:    1,
+			ScheduleId: append([]byte{2}, make([]byte, 31)...),
+			Slots: []*arkrpc.BatchSlot{{
+				RegistrationOpensUnix: now.Unix() + 600,
+				CutoffUnix:            now.Unix() + 720,
+			}},
+		},
+	}}
+	srv := &Server{arkClient: direct, arkProtocolVersion: 1}
+	cached := &types.OperatorTerms{
+		BatchSchedule:  old,
+		MaxVTXOAmount:  5_000_000,
+		MaxUserBalance: 150_000_000,
+	}
+	srv.storeOperatorTerms(cached)
+	srv.hasPersonalizedLimits.Store(true)
+	fresh, err := srv.roundOperatorTerms(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, 1, direct.calls)
+	require.EqualValues(t, 5_000_000, fresh.MaxVTXOAmount)
+	require.EqualValues(t, 150_000_000, fresh.MaxUserBalance)
+	slot, err := fresh.BatchSchedule.Next(now)
+	require.NoError(t, err)
+	require.Equal(t, now.Add(720*time.Second), slot.Cutoff)
+	require.Same(t, cached, srv.loadOperatorTerms())
+
+	// Event-driven operators need no new discovery call per registration.
+	cached = &types.OperatorTerms{}
+	srv.storeOperatorTerms(cached)
+	fresh, err = srv.roundOperatorTerms(t.Context())
+	require.NoError(t, err)
+	require.Same(t, cached, fresh)
+	require.Equal(t, 1, direct.calls)
 }

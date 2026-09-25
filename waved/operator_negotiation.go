@@ -62,10 +62,16 @@ func operatorTermsFromResponse(resp *arkrpc.GetInfoResponse) (
 		vtxoConfirmations = resp.MinConfirmations
 	}
 
+	schedule, err := arkrpc.ParseBatchSchedule(resp.BatchSchedule)
+	if err != nil {
+		return nil, fmt.Errorf("batch schedule: %w", err)
+	}
+
 	// The forfeit penalty key, sweep key and sweep delay are no longer
 	// global operator terms; they are delivered per round in the batch
 	// info, so GetInfo no longer carries them.
 	return &types.OperatorTerms{
+		BatchSchedule:           schedule,
 		PubKey:                  pubKey,
 		BoardingExitDelay:       resp.BoardingExitDelay,
 		VTXOExitDelay:           resp.VtxoExitDelay,
@@ -155,4 +161,29 @@ func (s *Server) negotiateArkBootstrap(ctx context.Context,
 		selectedArkVersion: selected,
 		terms:              terms,
 	}, nil
+}
+
+// roundOperatorTerms fetches published opportunities for a new scheduled
+// attempt. Legacy operators retain cached discovery. The returned snapshot is
+// private to the attempt, so it cannot overwrite a concurrent cache refresh.
+func (s *Server) roundOperatorTerms(ctx context.Context) (*types.OperatorTerms,
+	error) {
+
+	cached := s.loadOperatorTerms()
+	if cached == nil {
+		return nil, fmt.Errorf("operator terms unavailable")
+	}
+	if cached.BatchSchedule == nil {
+		return cached, nil
+	}
+	terms, err := s.fetchOperatorTerms(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if s.hasPersonalizedLimits.Load() {
+		terms.MaxVTXOAmount = cached.MaxVTXOAmount
+		terms.MaxUserBalance = cached.MaxUserBalance
+	}
+
+	return terms, nil
 }

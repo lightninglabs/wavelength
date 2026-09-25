@@ -20,6 +20,7 @@ package may import from a higher layer.
 | [`ledger`](ledger/) | Client-side durable ledger actor for double-entry fee accounting |
 | [`lib`](lib/) | Shared domain utilities: tree paths, BIP-322, arkscript policy, types |
 | [`lib/arkscript`](lib/arkscript/) | Tapscript AST compiler and policy system for Ark taproot outputs |
+| [`lib/batchschedule`](lib/batchschedule/) | UTC window arithmetic and authenticated slot identity |
 | [`lib/bip322`](lib/bip322/) | BIP-322 intent-bound message authentication |
 | [`lib/tx/arktx`](lib/tx/arktx/) | Canonical Ark transaction ordering and validation |
 | [`lib/tx/checkpoint`](lib/tx/checkpoint/) | Checkpoint PSBT construction for OOR transfers |

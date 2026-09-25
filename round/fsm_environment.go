@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/lib/batchschedule"
 	"github.com/lightninglabs/wavelength/lib/types"
 )
 
@@ -17,6 +18,13 @@ import (
 // Note: Boarding address and intent persistence is handled by the wallet actor.
 // The FSM uses RoundStore for admission budgets and signature checkpoints.
 type ClientEnvironment struct {
+	// scheduledSlot is fixed on the first registration request for this
+	// attempt.
+	scheduledSlot *batchschedule.Selection
+
+	// scheduledWindow pins the advertised opening alongside the selection.
+	scheduledWindow batchschedule.Slot
+
 	// RoundStore provides persistence for round coordination and
 	// checkpointing.
 	RoundStore RoundStore
@@ -34,6 +42,10 @@ type ClientEnvironment struct {
 	// OperatorTerms contains the operator's parameters including sweep
 	// keys, fee targets, confirmation thresholds, and amount limits.
 	OperatorTerms *types.OperatorTerms
+
+	// OperatorTermsSource refreshes terms before this attempt selects a
+	// slot.
+	OperatorTermsSource func(context.Context) (*types.OperatorTerms, error)
 
 	// ChainParams are the Bitcoin network parameters.
 	ChainParams *chaincfg.Params
