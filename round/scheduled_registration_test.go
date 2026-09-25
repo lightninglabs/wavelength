@@ -73,24 +73,12 @@ func TestScheduledRegistrationCursor(t *testing.T) {
 	s := &PendingRoundAssembly{}
 	_, err = s.waitForScheduledSlot(t.Context(), env)
 	require.NoError(t, err)
-	require.Equal(
-		t,
-		uint64(
-			anchor.Add(2*time.Hour).Unix(),
-		),
-		env.scheduledSlot.CutoffUnix,
-	)
+	require.True(t, env.scheduledSlot.Cutoff.Equal(anchor.Add(2*time.Hour)))
 	now = anchor.Add(3 * time.Hour)
 	env.scheduledSlot = nil
 	_, err = s.waitForScheduledSlot(t.Context(), env)
 	require.NoError(t, err)
-	require.Equal(
-		t,
-		uint64(
-			anchor.Add(4*time.Hour).Unix(),
-		),
-		env.scheduledSlot.CutoffUnix,
-	)
+	require.True(t, env.scheduledSlot.Cutoff.Equal(anchor.Add(4*time.Hour)))
 }
 
 // TestScheduledRegistrationLatestTerms pins refreshed policy at selection and
@@ -119,13 +107,7 @@ func TestScheduledRegistrationLatestTerms(t *testing.T) {
 	_, err = s.waitForScheduledSlot(t.Context(), env)
 	require.NoError(t, err)
 	require.Same(t, latest, env.OperatorTerms)
-	require.Equal(
-		t,
-		uint64(
-			anchor.Add(2*time.Hour).Unix(),
-		),
-		env.scheduledSlot.CutoffUnix,
-	)
+	require.True(t, env.scheduledSlot.Cutoff.Equal(anchor.Add(2*time.Hour)))
 	selected := env.OperatorTerms
 	latest = &types.OperatorTerms{}
 	now = anchor.Add(119 * time.Minute)
@@ -234,13 +216,7 @@ func TestScheduledRegistrationExhausted(t *testing.T) {
 	wakeup, ok := out[0].(*StartTimeoutReq)
 	require.True(t, ok)
 	require.Equal(t, 17*time.Minute, wakeup.Duration)
-	require.Equal(
-		t,
-		uint64(
-			now.Add(19*time.Minute).Unix(),
-		),
-		env.scheduledSlot.CutoffUnix,
-	)
+	require.True(t, env.scheduledSlot.Cutoff.Equal(now.Add(19*time.Minute)))
 	now = now.Add(17 * time.Minute)
 	tr, err = s.waitForScheduledSlot(t.Context(), env)
 	require.NoError(t, err)

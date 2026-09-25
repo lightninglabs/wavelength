@@ -14,7 +14,7 @@ import (
 // its fence after rollback, and accepts irregular windows without a formula.
 func TestBatchScheduleDiscovery(t *testing.T) {
 	t.Parallel()
-	now := time.Unix(1800000000, 0)
+	now := time.Unix(1800000000, 0).UTC()
 	s, err := batchschedule.New(now, time.Hour, time.Minute)
 	require.NoError(t, err)
 	p := BatchScheduleToProto(s, now, now.Add(2*time.Hour))

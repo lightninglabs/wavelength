@@ -396,7 +396,7 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 	}
 
 	pb := &roundpb.JoinRoundRequest{
-		BatchSlot:        roundpb.BatchSlotToProto(m.BatchSlot),
+		BatchSlot:        roundpb.SelectionToProto(m.BatchSlot),
 		BoardingRequests: boardingReqs,
 		VtxoRequests:     vtxoReqs,
 		ForfeitRequests:  forfeitReqs,

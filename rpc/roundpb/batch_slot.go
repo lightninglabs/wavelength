@@ -1,36 +1,33 @@
 package roundpb
 
-import (
-	"fmt"
+import "github.com/lightninglabs/wavelength/lib/batchschedule"
 
-	"github.com/lightninglabs/wavelength/lib/batchschedule"
-)
+// SelectionFromProto converts a join's slot selection from its wire form. A
+// nil message means the join requests event-driven timing and yields nil.
+func SelectionFromProto(p *BatchSlotSelection) (*batchschedule.Selection,
+	error) {
 
-// BatchSlotFromProto checks the slot's bounds before decoding its identity.
-func BatchSlotFromProto(p *BatchSlotSelection) (*batchschedule.Selection, error) {
 	if p == nil {
 		return nil, nil
 	}
-	if len(p.ScheduleId) != 32 {
-		return nil, fmt.Errorf("schedule identifier must be 32 bytes")
-	}
-	s := &batchschedule.Selection{CutoffUnix: p.CutoffUnix}
-	copy(s.ScheduleID[:], p.ScheduleId)
-	if err := s.Validate(); err != nil {
+
+	id, err := batchschedule.IDFromBytes(p.ScheduleId)
+	if err != nil {
 		return nil, err
 	}
 
-	return s, nil
+	return batchschedule.SelectionFromUnix(id, p.CutoffUnix)
 }
 
-// BatchSlotToProto preserves absence for legacy joins.
-func BatchSlotToProto(s *batchschedule.Selection) *BatchSlotSelection {
+// SelectionToProto converts a slot selection to its wire form. A nil
+// selection yields nil so that legacy joins carry no slot at all.
+func SelectionToProto(s *batchschedule.Selection) *BatchSlotSelection {
 	if s == nil {
 		return nil
 	}
 
 	return &BatchSlotSelection{
 		ScheduleId: append([]byte(nil), s.ScheduleID[:]...),
-		CutoffUnix: s.CutoffUnix,
+		CutoffUnix: s.CutoffUnix(),
 	}
 }

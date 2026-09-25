@@ -531,7 +531,7 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 			"*roundpb.JoinRoundRequest", p)
 	}
 
-	selection, err := roundpb.BatchSlotFromProto(pb.BatchSlot)
+	selection, err := roundpb.SelectionFromProto(pb.BatchSlot)
 	if err != nil {
 		return err
 	}

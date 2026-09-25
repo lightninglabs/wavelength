@@ -45,12 +45,10 @@ func (s *PendingRoundAssembly) waitForScheduledSlot(ctx context.Context,
 		env.scheduledWindow = slot
 		env.scheduledSlot = &batchschedule.Selection{
 			ScheduleID: schedule.ID(),
-			CutoffUnix: uint64(
-				slot.Cutoff.Unix(),
-			),
+			Cutoff:     slot.Cutoff,
 		}
 	}
-	cutoff := time.Unix(int64(env.scheduledSlot.CutoffUnix), 0)
+	cutoff := env.scheduledSlot.Cutoff
 	if !now.Before(cutoff) {
 		return nil, fmt.Errorf("scheduled registration window closed")
 	}
@@ -78,7 +76,7 @@ func (e *ClientEnvironment) validateScheduledSend() error {
 	if e.scheduledSlot == nil {
 		return nil
 	}
-	cutoff := time.Unix(int64(e.scheduledSlot.CutoffUnix), 0)
+	cutoff := e.scheduledSlot.Cutoff
 	if !e.now().Before(cutoff) {
 		return fmt.Errorf("scheduled registration window closed " +
 			"during preparation")

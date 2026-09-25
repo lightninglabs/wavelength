@@ -220,18 +220,25 @@ func JoinRoundAuthMessage(req *JoinRoundRequest) ([]byte, error) {
 		),
 	)
 
+	// A scheduled join also signs the slot it selected, so the operator
+	// can admit it only into that exact collector. Both records are
+	// omitted for a legacy join, which keeps its encoding byte-identical
+	// to the format that predates scheduled batches.
 	if req.BatchSlot != nil {
 		if err := req.BatchSlot.Validate(); err != nil {
 			return nil, err
 		}
+
+		scheduleID := [32]byte(req.BatchSlot.ScheduleID)
+		cutoffUnix := req.BatchSlot.CutoffUnix()
 		records = append(
 			records, tlv.MakePrimitiveRecord(
 				joinRoundAuthMessageScheduleRecordType,
-				&req.BatchSlot.ScheduleID,
+				&scheduleID,
 			),
 			tlv.MakePrimitiveRecord(
 				joinRoundAuthMessageCutoffRecordType,
-				&req.BatchSlot.CutoffUnix,
+				&cutoffUnix,
 			),
 		)
 	}
@@ -255,7 +262,8 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 		vtxoRaw     []byte
 		forfeitRaw  []byte
 		leaveRaw    []byte
-		selection   batchschedule.Selection
+		scheduleID  [32]byte
+		cutoffUnix  uint64
 	)
 
 	stream, err := tlv.NewStream(
@@ -281,12 +289,10 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 			joinRoundAuthMessageLeaveRecordType, &leaveRaw,
 		),
 		tlv.MakePrimitiveRecord(
-			joinRoundAuthMessageScheduleRecordType,
-			&selection.ScheduleID,
+			joinRoundAuthMessageScheduleRecordType, &scheduleID,
 		),
 		tlv.MakePrimitiveRecord(
-			joinRoundAuthMessageCutoffRecordType,
-			&selection.CutoffUnix,
+			joinRoundAuthMessageCutoffRecordType, &cutoffUnix,
 		),
 	)
 	if err != nil {
@@ -383,17 +389,22 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 		return nil, fmt.Errorf("decode identifier: %w", err)
 	}
 
+	// The slot records travel as a pair: a message carrying only one of
+	// them was not produced by JoinRoundAuthMessage.
 	var batchSlot *batchschedule.Selection
 	_, hasID := parsedTypes[joinRoundAuthMessageScheduleRecordType]
 	_, hasCutoff := parsedTypes[joinRoundAuthMessageCutoffRecordType]
 	if hasID != hasCutoff {
 		return nil, fmt.Errorf("incomplete scheduled slot")
 	}
+
 	if hasID {
-		if err := selection.Validate(); err != nil {
+		batchSlot, err = batchschedule.SelectionFromUnix(
+			batchschedule.ID(scheduleID), cutoffUnix,
+		)
+		if err != nil {
 			return nil, err
 		}
-		batchSlot = &selection
 	}
 
 	return &JoinRoundRequest{

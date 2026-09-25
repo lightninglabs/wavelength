@@ -627,7 +627,7 @@ func TestFetchOperatorTermsRefreshSelectedButDisabledMarksIncompatible(
 // for a new attempt while retaining personalized limits and the shared cache.
 func TestRoundOperatorTermsRefreshesPublishedHorizon(t *testing.T) {
 	t.Parallel()
-	now := time.Unix(1800000000, 0)
+	now := time.Unix(1800000000, 0).UTC()
 	old, err := batchschedule.NewPublished(
 		[32]byte{1}, []batchschedule.Slot{
 			{Opens: now.Add(-time.Minute), Cutoff: now},
