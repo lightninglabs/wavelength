@@ -28,6 +28,9 @@ communication alongside the raw registration API.
   own event type instead of the chainsource one.
 - `IsIgnorableBroadcastError`, `IsIgnorableMempoolRejectReason` — Classify
   "already known/confirmed" rebroadcast errors/reject reasons as non-fatal.
+  The classifier prefers typed `btcwallet/chain` sentinels and keeps its
+  fallback substring list limited to messages that identify the submitted
+  transaction.
 
 ## Relationships
 
@@ -45,6 +48,12 @@ communication alongside the raw registration API.
 - Confirmation sub-actors support two notification modes: Future-based (blocking
   await) and actor-based (async `Tell` via `NotifyActor`). Callers use the actor
   mode when blocking inside a durable actor transaction is unsafe.
+- **A spent input is not proof the broadcast succeeded.** Only evidence that
+  identifies the submitted transaction as already known or confirmed is
+  ignorable. A message that merely says an output is spent is ambiguous
+  because a conflicting transaction may have spent it. `handleBroadcastTx`
+  falls back to `TestMempoolAccept` for read-only evidence and propagates the
+  publication error when the backend cannot provide that evidence.
 - **An actor-mode subscription dies with its notify target.** In actor mode the
   `NotifyActor` ref *is* the subscription's owner, so when a `Tell` fails with
   `actor.ErrActorTerminated` or `actor.ErrMailboxClosed`, `BlockEpochActor`

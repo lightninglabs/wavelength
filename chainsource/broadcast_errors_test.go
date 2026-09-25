@@ -51,6 +51,14 @@ func TestIsIgnorableBroadcastError(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "ambiguous spent input",
+			err: errors.New(
+				"output already spent by conflicting " +
+					"transaction",
+			),
+			want: false,
+		},
+		{
 			name: "unknown error",
 			err:  errors.New("some other error"),
 			want: false,

@@ -18,24 +18,23 @@ var (
 		chain.ErrTxAlreadyKnown,
 	}
 
-	// ignorableBroadcastErrs lists error substrings that are expected
-	// to happen when broadcasting the same transaction more than once.
+	// ignorableBroadcastErrs lists error substrings that identify the
+	// submitted transaction as already known.
 	//
 	// We treat these errors as non-fatal because callers may legitimately
 	// rebroadcast sweeps (for retry and fee bumping) and some backends
 	// report duplicates or already-confirmed transactions as errors.
 	//
-	// This list is intentionally small and specific. If a backend returns a
-	// new string form, prefer adding a concrete sentinel error check
-	// (errors.Is) where possible, or add the minimal substring required.
+	// This list is intentionally small and specific. A message that only
+	// says an input is spent is not enough: another transaction may have
+	// spent it. If a backend returns a new string form, prefer adding a
+	// concrete sentinel error check (errors.Is) where possible, or add the
+	// minimal substring that identifies this transaction as already known.
 	ignorableBroadcastErrs = []string{
 		// Bitcoind.
 		"txn-already-in-mempool",
 		"already in mempool",
 		"already have transaction",
-
-		// Wallet-layer variants.
-		"output already spent",
 	}
 
 	// ignorableRemoveErrs lists error substrings returned when removing a
