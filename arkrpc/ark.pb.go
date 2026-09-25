@@ -255,8 +255,12 @@ type GetInfoResponse struct {
 	// round. This is independent of min_confirmations, which protects the
 	// on-chain boarding inputs consumed by a new round.
 	VtxoConfirmations uint32 `protobuf:"varint,24,opt,name=vtxo_confirmations,json=vtxoConfirmations,proto3" json:"vtxo_confirmations,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// batch_schedule is set when the operator runs scheduled batches and
+	// absent when it uses event-driven registration. A scheduled operator
+	// rejects any join that does not select one of the published slots.
+	BatchSchedule *BatchSchedule `protobuf:"bytes,25,opt,name=batch_schedule,json=batchSchedule,proto3" json:"batch_schedule,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetInfoResponse) Reset() {
@@ -436,6 +440,157 @@ func (x *GetInfoResponse) GetVtxoConfirmations() uint32 {
 	return 0
 }
 
+func (x *GetInfoResponse) GetBatchSchedule() *BatchSchedule {
+	if x != nil {
+		return x.BatchSchedule
+	}
+	return nil
+}
+
+// BatchSchedule lists an operator's upcoming scheduled-batch registration
+// windows. At each cutoff the operator stops admitting joins and starts
+// quoting and signing; a cutoff says nothing about when the batch transaction
+// is broadcast or confirmed.
+type BatchSchedule struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// version is the discovery format. Clients reject versions they do not
+	// understand rather than guess at their meaning.
+	Version uint32 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
+	// schedule_id is the opaque 32-byte identity of the operator's timing
+	// policy. It stays the same as the list rolls forward under an
+	// unchanged policy, and together with a cutoff it names one slot.
+	ScheduleId []byte `protobuf:"bytes,2,opt,name=schedule_id,json=scheduleId,proto3" json:"schedule_id,omitempty"`
+	// server_time_unix is the operator's clock, in Unix seconds, when it
+	// built this response. Clients use it to estimate the offset between
+	// their clock and the operator's.
+	ServerTimeUnix int64 `protobuf:"varint,3,opt,name=server_time_unix,json=serverTimeUnix,proto3" json:"server_time_unix,omitempty"`
+	// slots is a non-empty, chronological list of at most 32
+	// non-overlapping registration windows. Clients select only from this
+	// list and never extrapolate past it; when no listed cutoff remains in
+	// the future they fetch discovery again. Publication does not reserve
+	// admission capacity.
+	Slots         []*BatchSlot `protobuf:"bytes,4,rep,name=slots,proto3" json:"slots,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BatchSchedule) Reset() {
+	*x = BatchSchedule{}
+	mi := &file_ark_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BatchSchedule) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BatchSchedule) ProtoMessage() {}
+
+func (x *BatchSchedule) ProtoReflect() protoreflect.Message {
+	mi := &file_ark_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BatchSchedule.ProtoReflect.Descriptor instead.
+func (*BatchSchedule) Descriptor() ([]byte, []int) {
+	return file_ark_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *BatchSchedule) GetVersion() uint32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *BatchSchedule) GetScheduleId() []byte {
+	if x != nil {
+		return x.ScheduleId
+	}
+	return nil
+}
+
+func (x *BatchSchedule) GetServerTimeUnix() int64 {
+	if x != nil {
+		return x.ServerTimeUnix
+	}
+	return 0
+}
+
+func (x *BatchSchedule) GetSlots() []*BatchSlot {
+	if x != nil {
+		return x.Slots
+	}
+	return nil
+}
+
+// BatchSlot is one published registration window. Registration is accepted
+// over [registration_opens_unix, cutoff_unix), and no window is longer than
+// five minutes.
+type BatchSlot struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// registration_opens_unix is the first second, in Unix time, at which a
+	// join for this slot is accepted.
+	RegistrationOpensUnix int64 `protobuf:"varint,1,opt,name=registration_opens_unix,json=registrationOpensUnix,proto3" json:"registration_opens_unix,omitempty"`
+	// cutoff_unix is the first second, in Unix time, at which joins are
+	// rejected and quoting begins.
+	CutoffUnix    int64 `protobuf:"varint,2,opt,name=cutoff_unix,json=cutoffUnix,proto3" json:"cutoff_unix,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BatchSlot) Reset() {
+	*x = BatchSlot{}
+	mi := &file_ark_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BatchSlot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BatchSlot) ProtoMessage() {}
+
+func (x *BatchSlot) ProtoReflect() protoreflect.Message {
+	mi := &file_ark_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BatchSlot.ProtoReflect.Descriptor instead.
+func (*BatchSlot) Descriptor() ([]byte, []int) {
+	return file_ark_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *BatchSlot) GetRegistrationOpensUnix() int64 {
+	if x != nil {
+		return x.RegistrationOpensUnix
+	}
+	return 0
+}
+
+func (x *BatchSlot) GetCutoffUnix() int64 {
+	if x != nil {
+		return x.CutoffUnix
+	}
+	return 0
+}
+
 // EstimateFeeRequest asks the server to estimate the fee for a
 // VTXO operation at current rates and utilization.
 type EstimateFeeRequest struct {
@@ -454,7 +609,7 @@ type EstimateFeeRequest struct {
 
 func (x *EstimateFeeRequest) Reset() {
 	*x = EstimateFeeRequest{}
-	mi := &file_ark_proto_msgTypes[3]
+	mi := &file_ark_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -466,7 +621,7 @@ func (x *EstimateFeeRequest) String() string {
 func (*EstimateFeeRequest) ProtoMessage() {}
 
 func (x *EstimateFeeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[3]
+	mi := &file_ark_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -479,7 +634,7 @@ func (x *EstimateFeeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EstimateFeeRequest.ProtoReflect.Descriptor instead.
 func (*EstimateFeeRequest) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{3}
+	return file_ark_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *EstimateFeeRequest) GetAmountSat() int64 {
@@ -532,7 +687,7 @@ type EstimateFeeResponse struct {
 
 func (x *EstimateFeeResponse) Reset() {
 	*x = EstimateFeeResponse{}
-	mi := &file_ark_proto_msgTypes[4]
+	mi := &file_ark_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -544,7 +699,7 @@ func (x *EstimateFeeResponse) String() string {
 func (*EstimateFeeResponse) ProtoMessage() {}
 
 func (x *EstimateFeeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[4]
+	mi := &file_ark_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -557,7 +712,7 @@ func (x *EstimateFeeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EstimateFeeResponse.ProtoReflect.Descriptor instead.
 func (*EstimateFeeResponse) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{4}
+	return file_ark_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *EstimateFeeResponse) GetLiquidityFeeSat() int64 {
@@ -622,7 +777,7 @@ const file_ark_proto_rawDesc = "" +
 	"\x05State\x12\x15\n" +
 	"\x11STATE_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fSTATE_ACTIVE\x10\x01\x12\x12\n" +
-	"\x0eSTATE_DISABLED\x10\x02\"\x82\a\n" +
+	"\x0eSTATE_DISABLED\x10\x02\"\xc0\a\n" +
 	"\x0fGetInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06pubkey\x18\x02 \x01(\fR\x06pubkey\x12\x18\n" +
@@ -647,7 +802,18 @@ const file_ark_proto_rawDesc = "" +
 	"\x14selected_ark_version\x18\x15 \x01(\rR\x12selectedArkVersion\x12J\n" +
 	"\x14ark_version_policies\x18\x16 \x03(\v2\x18.arkrpc.ArkVersionPolicyR\x12arkVersionPolicies\x12;\n" +
 	"\x1afree_refresh_window_blocks\x18\x17 \x01(\rR\x17freeRefreshWindowBlocks\x12-\n" +
-	"\x12vtxo_confirmations\x18\x18 \x01(\rR\x11vtxoConfirmations\"\x7f\n" +
+	"\x12vtxo_confirmations\x18\x18 \x01(\rR\x11vtxoConfirmations\x12<\n" +
+	"\x0ebatch_schedule\x18\x19 \x01(\v2\x15.arkrpc.BatchScheduleR\rbatchSchedule\"\x9d\x01\n" +
+	"\rBatchSchedule\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\rR\aversion\x12\x1f\n" +
+	"\vschedule_id\x18\x02 \x01(\fR\n" +
+	"scheduleId\x12(\n" +
+	"\x10server_time_unix\x18\x03 \x01(\x03R\x0eserverTimeUnix\x12'\n" +
+	"\x05slots\x18\x04 \x03(\v2\x11.arkrpc.BatchSlotR\x05slots\"d\n" +
+	"\tBatchSlot\x126\n" +
+	"\x17registration_opens_unix\x18\x01 \x01(\x03R\x15registrationOpensUnix\x12\x1f\n" +
+	"\vcutoff_unix\x18\x02 \x01(\x03R\n" +
+	"cutoffUnix\"\x7f\n" +
 	"\x12EstimateFeeRequest\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x01 \x01(\x03R\tamountSat\x12\x1f\n" +
@@ -681,27 +847,31 @@ func file_ark_proto_rawDescGZIP() []byte {
 }
 
 var file_ark_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_ark_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_ark_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_ark_proto_goTypes = []any{
 	(ArkVersionPolicy_State)(0), // 0: arkrpc.ArkVersionPolicy.State
 	(*GetInfoRequest)(nil),      // 1: arkrpc.GetInfoRequest
 	(*ArkVersionPolicy)(nil),    // 2: arkrpc.ArkVersionPolicy
 	(*GetInfoResponse)(nil),     // 3: arkrpc.GetInfoResponse
-	(*EstimateFeeRequest)(nil),  // 4: arkrpc.EstimateFeeRequest
-	(*EstimateFeeResponse)(nil), // 5: arkrpc.EstimateFeeResponse
+	(*BatchSchedule)(nil),       // 4: arkrpc.BatchSchedule
+	(*BatchSlot)(nil),           // 5: arkrpc.BatchSlot
+	(*EstimateFeeRequest)(nil),  // 6: arkrpc.EstimateFeeRequest
+	(*EstimateFeeResponse)(nil), // 7: arkrpc.EstimateFeeResponse
 }
 var file_ark_proto_depIdxs = []int32{
 	0, // 0: arkrpc.ArkVersionPolicy.state:type_name -> arkrpc.ArkVersionPolicy.State
 	2, // 1: arkrpc.GetInfoResponse.ark_version_policies:type_name -> arkrpc.ArkVersionPolicy
-	1, // 2: arkrpc.ArkService.GetInfo:input_type -> arkrpc.GetInfoRequest
-	4, // 3: arkrpc.ArkService.EstimateFee:input_type -> arkrpc.EstimateFeeRequest
-	3, // 4: arkrpc.ArkService.GetInfo:output_type -> arkrpc.GetInfoResponse
-	5, // 5: arkrpc.ArkService.EstimateFee:output_type -> arkrpc.EstimateFeeResponse
-	4, // [4:6] is the sub-list for method output_type
-	2, // [2:4] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	4, // 2: arkrpc.GetInfoResponse.batch_schedule:type_name -> arkrpc.BatchSchedule
+	5, // 3: arkrpc.BatchSchedule.slots:type_name -> arkrpc.BatchSlot
+	1, // 4: arkrpc.ArkService.GetInfo:input_type -> arkrpc.GetInfoRequest
+	6, // 5: arkrpc.ArkService.EstimateFee:input_type -> arkrpc.EstimateFeeRequest
+	3, // 6: arkrpc.ArkService.GetInfo:output_type -> arkrpc.GetInfoResponse
+	7, // 7: arkrpc.ArkService.EstimateFee:output_type -> arkrpc.EstimateFeeResponse
+	6, // [6:8] is the sub-list for method output_type
+	4, // [4:6] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_ark_proto_init() }
@@ -715,7 +885,7 @@ func file_ark_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ark_proto_rawDesc), len(file_ark_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   5,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
