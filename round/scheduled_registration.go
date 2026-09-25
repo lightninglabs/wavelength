@@ -49,13 +49,18 @@ func (a *scheduledAttempt) operatorNow(env *ClientEnvironment) time.Time {
 	return env.now().Add(a.clockOffset)
 }
 
-// newScheduledAttempt selects the next published slot after operatorNow and
-// draws the attempt's wake time within that slot's window.
+// newScheduledAttempt selects the first published slot that still has at least
+// MaxWakeMargin left before its cutoff on the operator's clock, and draws the
+// attempt's wake time within that slot's window.
 func newScheduledAttempt(published batchschedule.Published,
 	localNow time.Time) (*scheduledAttempt, error) {
 
+	// Skip a slot that closes within the send margin: an attempt pinned to
+	// it could only fail, while the next slot can still be reached.
 	offset := published.ClockOffset()
-	slot, err := published.Next(localNow.Add(offset))
+	slot, err := published.Next(
+		localNow.Add(offset).Add(batchschedule.MaxWakeMargin),
+	)
 	if err != nil {
 		return nil, err
 	}

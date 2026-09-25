@@ -629,7 +629,7 @@ func TestWakeBoundsProperty(t *testing.T) {
 		// either the margin or a quarter of the window.
 		require.LessOrEqual(t, lo, hi)
 		require.Positive(t, lo)
-		require.LessOrEqual(t, lo, maxWakeMargin)
+		require.LessOrEqual(t, lo, MaxWakeMargin)
 		require.LessOrEqual(t, lo, window/4)
 
 		// The upper bound is the window's midpoint, leaving the second

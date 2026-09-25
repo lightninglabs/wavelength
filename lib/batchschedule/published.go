@@ -11,11 +11,11 @@ import (
 // a single discovery response.
 const MaxPublishedSlots = 32
 
-// maxWakeMargin caps the earliest point after a window opens at which a client
+// MaxWakeMargin caps the earliest point after a window opens at which a client
 // sends its join. It absorbs the residual error of the clock offset estimate:
 // up to half a second from the operator truncating its clock reading to whole
 // seconds, plus the asymmetry of the discovery round trip.
-const maxWakeMargin = 2 * time.Second
+const MaxWakeMargin = 2 * time.Second
 
 // ErrScheduleExhausted is returned when every published slot has passed. The
 // client must fetch fresh discovery rather than extrapolate a new slot.
@@ -164,7 +164,7 @@ func EstimateClockOffset(serverTime, sent, received time.Time) time.Duration {
 // leaves the second half for preparation and transit. A join with less than
 // the lower bound remaining before the cutoff is treated as closed.
 func WakeBounds(window time.Duration) (lo, hi time.Duration) {
-	lo = min(maxWakeMargin, window/4)
+	lo = min(MaxWakeMargin, window/4)
 	hi = max(lo, window/2)
 
 	return lo, hi

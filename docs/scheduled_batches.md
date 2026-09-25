@@ -133,15 +133,17 @@ window opens on the operator's clock, whatever the local clock reads.
 A registration attempt starts in `PendingRoundAssembly` when the FSM receives
 `IntentRequested`. `waitForScheduledSlot` runs before the join is built:
 
-1. On the first call of an attempt, it calls `OperatorTermsSource` with a
-   five-second deadline. That returns fresh terms with the clock offset
+1. On the first call of an attempt, it calls
+   `OperatorTermsSource.FreshOperatorTerms` with a five-second deadline. That returns fresh terms with the clock offset
    attached.
 2. If the terms carry no schedule, the attempt continues with event-driven
    registration.
-3. It selects `Published.Next(localNow + offset)`, the first listed slot whose
-   cutoff is after the current operator time, and draws the wake time. The
-   selection, slot, offset, wake time, and margin are pinned in a
-   `scheduledAttempt` for the rest of the attempt.
+3. It selects `Published.Next(localNow + offset + MaxWakeMargin)`, the first
+   listed slot with at least the maximum send margin left before its cutoff
+   on the operator's clock, and draws the wake time. An attempt triggered in
+   the last seconds of a window therefore waits for the next slot instead of
+   pinning one it cannot reach. The selection, slot, offset, wake time, and
+   margin are pinned in a `scheduledAttempt` for the rest of the attempt.
 4. If the operator time is before the wake time, it arms a
    `TimeoutPhaseScheduledRegistration` timer for the difference and returns. The
    timer re-sends `IntentRequested`, which re-enters step 4 with the pinned

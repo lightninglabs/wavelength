@@ -111,6 +111,44 @@ func TestScheduledRegistrationWindow(t *testing.T) {
 	require.Nil(t, tr)
 }
 
+// TestScheduledSelectionSkipsClosingSlot checks that an attempt triggered
+// within the send margin of a cutoff pins the following slot and waits for it,
+// rather than pinning a slot it can only fail to reach.
+func TestScheduledSelectionSkipsClosingSlot(t *testing.T) {
+	t.Parallel()
+
+	schedule := newTestSchedule(t)
+	cutoff := testAnchor.Add(time.Hour)
+
+	// Trigger one second before the first cutoff, inside its window but
+	// within the send margin.
+	now := cutoff.Add(-time.Second)
+	env := &ClientEnvironment{
+		OperatorTerms: &types.OperatorTerms{
+			BatchSchedule: fn.Some(
+				publishedTestSchedule(
+					t, schedule, cutoff,
+				),
+			),
+		},
+		Now:      func() time.Time { return now },
+		RoundKey: "pending",
+	}
+	s := &PendingRoundAssembly{}
+
+	// The attempt pins the next hourly cutoff and sleeps until inside
+	// that slot's window.
+	tr, err := s.waitForScheduledSlot(t.Context(), env)
+	require.NoError(t, err)
+	require.Greater(t, requireWakeup(t, s, tr), time.Hour-time.Minute)
+	require.True(
+		t,
+		env.batchSlot().UnwrapOrFail(t).Cutoff.Equal(
+			cutoff.Add(time.Hour),
+		),
+	)
+}
+
 // TestScheduledJoinsSpread checks that independent attempts for the same slot
 // do not all wake at the same instant.
 func TestScheduledJoinsSpread(t *testing.T) {
