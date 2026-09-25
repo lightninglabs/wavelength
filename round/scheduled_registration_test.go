@@ -215,7 +215,10 @@ func TestScheduledClockOffsetProperty(t *testing.T) {
 		require.NotNil(rt, tr)
 
 		outbox := tr.NewEvents.UnwrapOr(ClientEmittedEvent{}).Outbox
-		delay := outbox[0].(*StartTimeoutReq).Duration
+		require.Len(rt, outbox, 1)
+		wakeup, ok := outbox[0].(*StartTimeoutReq)
+		require.True(rt, ok)
+		delay := wakeup.Duration
 
 		// Fire the timer and translate the send instant to the
 		// operator's clock.

@@ -619,7 +619,8 @@ func TestWakeBoundsProperty(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		window := time.Duration(
 			rapid.Int64Range(
-				int64(time.Second), int64(MaxRegistrationWindow),
+				int64(time.Second),
+				int64(MaxRegistrationWindow),
 			).Draw(t, "window"),
 		)
 

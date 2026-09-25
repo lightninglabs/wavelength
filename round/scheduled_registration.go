@@ -65,10 +65,12 @@ func newScheduledAttempt(published batchschedule.Published,
 		return nil, err
 	}
 
+	// The jitter only spreads a slot's joins over time, so it needs no
+	// cryptographic randomness.
 	lo, hi := batchschedule.WakeBounds(slot.Window())
 	jitter := lo
 	if hi > lo {
-		jitter += rand.N(hi - lo)
+		jitter += rand.N(hi - lo) //nolint:gosec
 	}
 
 	return &scheduledAttempt{

@@ -57,6 +57,7 @@ func NewPublished(id ID, slots []Slot) (Published, error) {
 			"identity or size")
 	}
 
+	var prevCutoff time.Time
 	for i, slot := range slots {
 		switch {
 		case !isWholeSecond(slot.Opens) || slot.Opens.Unix() < 0 ||
@@ -71,10 +72,12 @@ func NewPublished(id ID, slots []Slot) (Published, error) {
 
 		// Each window must open no earlier than the previous cutoff,
 		// which rules out both overlap and misordering.
-		case i > 0 && slot.Opens.Before(slots[i-1].Cutoff):
+		case i > 0 && slot.Opens.Before(prevCutoff):
 			return Published{}, fmt.Errorf("published slots " +
 				"overlap or are unordered")
 		}
+
+		prevCutoff = slot.Cutoff
 	}
 
 	normalized := make([]Slot, len(slots))
@@ -154,8 +157,9 @@ func EstimateClockOffset(serverTime, sent, received time.Time) time.Duration {
 	return serverTime.Add(time.Second / 2).Sub(midpoint)
 }
 
-// WakeBounds returns the range, measured from a window's opening on the
-// operator's clock, within which a client should send its join.
+// WakeBounds returns the lower and upper bounds, measured from a window's
+// opening on the operator's clock, of the range within which a client should
+// send its join.
 //
 // The lower bound is a safety margin: a join sent any earlier could still
 // arrive before the window opens once the residual clock offset error is
@@ -163,9 +167,9 @@ func EstimateClockOffset(serverTime, sent, received time.Time) time.Duration {
 // across the first half of the window instead of the same instant and
 // leaves the second half for preparation and transit. A join with less than
 // the lower bound remaining before the cutoff is treated as closed.
-func WakeBounds(window time.Duration) (lo, hi time.Duration) {
-	lo = min(MaxWakeMargin, window/4)
-	hi = max(lo, window/2)
+func WakeBounds(window time.Duration) (time.Duration, time.Duration) {
+	lo := min(MaxWakeMargin, window/4)
+	hi := max(lo, window/2)
 
 	return lo, hi
 }
