@@ -534,6 +534,8 @@ func entryRequestFromProto(
 			Type:             EntryRequestTypeLightning,
 			LightningInvoice: req.LightningInvoice.GetInvoice(),
 			PaymentHash:      req.LightningInvoice.GetPaymentHash(),
+			ClaimAddress: req.LightningInvoice.
+				GetClaimAddress(),
 		}
 
 	case *wavewalletrpc.WalletEntryRequest_OnchainAddress:

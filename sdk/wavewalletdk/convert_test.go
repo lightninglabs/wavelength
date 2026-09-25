@@ -23,8 +23,9 @@ func TestEntryFromProto(t *testing.T) {
 	prog.Phase = wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING
 
 	invoiceReq := &wavewalletrpc.LightningInvoiceRequest{
-		Invoice:     "lnbc1...",
-		PaymentHash: "phash",
+		Invoice:      "lnbc1...",
+		PaymentHash:  "phash",
+		ClaimAddress: "external-ark-address",
 	}
 	req := &wavewalletrpc.WalletEntryRequest{
 		Request: &wavewalletrpc.WalletEntryRequest_LightningInvoice{
@@ -208,8 +209,9 @@ func TestEntryRequestFromProto(t *testing.T) {
 	)
 
 	lnInvoiceReq := &wavewalletrpc.LightningInvoiceRequest{
-		Invoice:     "lnbc1...",
-		PaymentHash: "phash",
+		Invoice:      "lnbc1...",
+		PaymentHash:  "phash",
+		ClaimAddress: "external-ark-address",
 	}
 	ln := entryRequestFromProto(&wavewalletrpc.WalletEntryRequest{
 		Request: &wavewalletrpc.WalletEntryRequest_LightningInvoice{
@@ -219,6 +221,7 @@ func TestEntryRequestFromProto(t *testing.T) {
 	require.Equal(t, EntryRequestTypeLightning, ln.Type)
 	require.Equal(t, "lnbc1...", ln.LightningInvoice)
 	require.Equal(t, "phash", ln.PaymentHash)
+	require.Equal(t, "external-ark-address", ln.ClaimAddress)
 
 	onchain := entryRequestFromProto(&wavewalletrpc.WalletEntryRequest{
 		Request: &wavewalletrpc.WalletEntryRequest_OnchainAddress{
