@@ -51,7 +51,7 @@ func (a *scheduledAttempt) operatorNow(env *ClientEnvironment) time.Time {
 
 // newScheduledAttempt selects the next published slot after operatorNow and
 // draws the attempt's wake time within that slot's window.
-func newScheduledAttempt(published *batchschedule.Published,
+func newScheduledAttempt(published batchschedule.Published,
 	localNow time.Time) (*scheduledAttempt, error) {
 
 	offset := published.ClockOffset()
@@ -78,14 +78,14 @@ func newScheduledAttempt(published *batchschedule.Published,
 	}, nil
 }
 
-// batchSlot returns the selection to sign into the join, or nil when the
+// batchSlot returns the selection to sign into the join, or None when the
 // operator uses event-driven registration.
-func (e *ClientEnvironment) batchSlot() *batchschedule.Selection {
+func (e *ClientEnvironment) batchSlot() fn.Option[batchschedule.Selection] {
 	if e.scheduled == nil {
-		return nil
+		return fn.None[batchschedule.Selection]()
 	}
 
-	return &e.scheduled.selection
+	return fn.Some(e.scheduled.selection)
 }
 
 // refreshOperatorTerms fetches fresh discovery for a new scheduled selection.
@@ -101,7 +101,7 @@ func (e *ClientEnvironment) refreshOperatorTerms(ctx context.Context) error {
 	)
 	defer cancel()
 
-	terms, err := e.OperatorTermsSource(refreshCtx)
+	terms, err := e.OperatorTermsSource.FreshOperatorTerms(refreshCtx)
 	if err != nil {
 		return fmt.Errorf("refresh batch schedule: %w", err)
 	}
@@ -134,12 +134,12 @@ func (s *PendingRoundAssembly) waitForScheduledSlot(ctx context.Context,
 		// An operator without a published schedule keeps the
 		// event-driven flow.
 		terms := env.OperatorTerms
-		if terms == nil || terms.BatchSchedule == nil {
+		if terms == nil || terms.BatchSchedule.IsNone() {
 			return nil, nil
 		}
 
 		attempt, err := newScheduledAttempt(
-			terms.BatchSchedule, env.now(),
+			terms.BatchSchedule.UnsafeFromSome(), env.now(),
 		)
 		if err != nil {
 			return nil, err

@@ -118,7 +118,7 @@ type Selection struct {
 
 // Validate rejects a selection with no schedule identity or a cutoff that
 // cannot be encoded as a positive whole Unix second.
-func (s *Selection) Validate() error {
+func (s Selection) Validate() error {
 	switch {
 	case s.ScheduleID.IsZero():
 		return fmt.Errorf("scheduled slot selection has no schedule " +
@@ -135,24 +135,24 @@ func (s *Selection) Validate() error {
 // Matches reports whether the selection names the given schedule and cutoff.
 // Instants are compared with time.Time.Equal, so location and monotonic clock
 // readings never affect the result.
-func (s *Selection) Matches(id ID, cutoff time.Time) bool {
+func (s Selection) Matches(id ID, cutoff time.Time) bool {
 	return s.ScheduleID == id && s.Cutoff.Equal(cutoff)
 }
 
 // SelectionFromUnix builds a selection from its wire form, where the cutoff
 // travels as Unix seconds. The result is validated.
-func SelectionFromUnix(id ID, cutoffUnix uint64) (*Selection, error) {
+func SelectionFromUnix(id ID, cutoffUnix uint64) (Selection, error) {
 	if cutoffUnix > uint64(maxUnixSecond) {
-		return nil, fmt.Errorf("scheduled slot cutoff %d is out "+
-			"of range", cutoffUnix)
+		return Selection{}, fmt.Errorf("scheduled slot cutoff %d is "+
+			"out of range", cutoffUnix)
 	}
 
-	selection := &Selection{
+	selection := Selection{
 		ScheduleID: id,
 		Cutoff:     time.Unix(int64(cutoffUnix), 0).UTC(),
 	}
 	if err := selection.Validate(); err != nil {
-		return nil, err
+		return Selection{}, err
 	}
 
 	return selection, nil
@@ -160,7 +160,7 @@ func SelectionFromUnix(id ID, cutoffUnix uint64) (*Selection, error) {
 
 // CutoffUnix returns the cutoff in its wire form. It must only be called on a
 // validated selection, which guarantees a positive value.
-func (s *Selection) CutoffUnix() uint64 {
+func (s Selection) CutoffUnix() uint64 {
 	return uint64(s.Cutoff.Unix())
 }
 

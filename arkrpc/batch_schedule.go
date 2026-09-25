@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/lightninglabs/wavelength/lib/batchschedule"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // batchScheduleVersion is the only discovery format this package understands:
@@ -17,30 +18,33 @@ const PublishedBatchSlots = 8
 
 // ParseBatchSchedule converts a discovery message into the client's view of
 // the operator's published slots. A nil message means the operator uses
-// event-driven registration, and yields a nil result with no error.
+// event-driven registration, and yields None with no error.
 //
 // Validation is deliberately independent of any interval formula: the list
 // must be well formed on its own terms, and batchschedule.NewPublished checks
 // ordering and window bounds. A malformed schedule is an error rather than a
 // silent fallback to event-driven registration, because the operator will
 // reject joins that carry no slot.
-func ParseBatchSchedule(p *BatchSchedule) (*batchschedule.Published, error) {
+func ParseBatchSchedule(p *BatchSchedule) (fn.Option[batchschedule.Published],
+	error) {
+
+	none := fn.None[batchschedule.Published]()
 	if p == nil {
-		return nil, nil
+		return none, nil
 	}
 
 	if p.Version != batchScheduleVersion {
-		return nil, fmt.Errorf("unsupported schedule version %d",
+		return none, fmt.Errorf("unsupported schedule version %d",
 			p.Version)
 	}
 
 	id, err := batchschedule.IDFromBytes(p.ScheduleId)
 	if err != nil {
-		return nil, err
+		return none, err
 	}
 
 	if len(p.Slots) == 0 || len(p.Slots) > batchschedule.MaxPublishedSlots {
-		return nil, fmt.Errorf("published schedule has %d slots, "+
+		return none, fmt.Errorf("published schedule has %d slots, "+
 			"want 1 to %d", len(p.Slots),
 			batchschedule.MaxPublishedSlots)
 	}
@@ -48,7 +52,7 @@ func ParseBatchSchedule(p *BatchSchedule) (*batchschedule.Published, error) {
 	slots := make([]batchschedule.Slot, 0, len(p.Slots))
 	for _, slot := range p.Slots {
 		if slot == nil {
-			return nil, fmt.Errorf("nil published slot")
+			return none, fmt.Errorf("nil published slot")
 		}
 
 		slots = append(slots, batchschedule.Slot{
@@ -59,7 +63,7 @@ func ParseBatchSchedule(p *BatchSchedule) (*batchschedule.Published, error) {
 
 	published, err := batchschedule.NewPublished(id, slots)
 	if err != nil {
-		return nil, err
+		return none, err
 	}
 
 	// Keep the operator's clock reading so a caller that timed the
@@ -71,7 +75,7 @@ func ParseBatchSchedule(p *BatchSchedule) (*batchschedule.Published, error) {
 		)
 	}
 
-	return published, nil
+	return fn.Some(published), nil
 }
 
 // BatchScheduleToProto builds the discovery message an interval-based

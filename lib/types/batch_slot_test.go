@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/lightninglabs/wavelength/lib/batchschedule"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,12 +25,13 @@ func TestJoinAuthBindsBatchSlot(t *testing.T) {
 
 	// Adding a selection must change the signed bytes, otherwise the
 	// signature would not cover the chosen slot.
-	req.BatchSlot = &batchschedule.Selection{
+	selection := batchschedule.Selection{
 		ScheduleID: batchschedule.ID{
 			1,
 		},
 		Cutoff: time.Unix(1800003600, 0).UTC(),
 	}
+	req.BatchSlot = fn.Some(selection)
 	scheduled, err := JoinRoundAuthMessage(req)
 	require.NoError(t, err)
 	require.NotEqual(t, legacy, scheduled)
@@ -42,26 +44,28 @@ func TestJoinAuthBindsBatchSlot(t *testing.T) {
 
 	// Moving the cutoff by a single second must change the message, so a
 	// signature cannot be replayed into the neighboring slot.
-	req.BatchSlot.Cutoff = req.BatchSlot.Cutoff.Add(time.Second)
+	selection.Cutoff = selection.Cutoff.Add(time.Second)
+	req.BatchSlot = fn.Some(selection)
 	changed, err := JoinRoundAuthMessage(req)
 	require.NoError(t, err)
 	require.NotEqual(t, scheduled, changed)
 
 	// Changing only the schedule identity must also change the message,
 	// so a signature cannot survive an operator policy change.
-	req.BatchSlot.ScheduleID[0]++
+	selection.ScheduleID[0]++
+	req.BatchSlot = fn.Some(selection)
 	changedID, err := JoinRoundAuthMessage(req)
 	require.NoError(t, err)
 	require.NotEqual(t, changed, changedID)
 
 	// Removing the selection restores the exact legacy bytes, and legacy
 	// bytes decode to a request with no selection.
-	req.BatchSlot = nil
+	req.BatchSlot = fn.None[batchschedule.Selection]()
 	again, err := JoinRoundAuthMessage(req)
 	require.NoError(t, err)
 	require.Equal(t, legacy, again)
 
 	decoded, err = DecodeJoinRoundAuthMessage(legacy)
 	require.NoError(t, err)
-	require.Nil(t, decoded.BatchSlot)
+	require.True(t, decoded.BatchSlot.IsNone())
 }

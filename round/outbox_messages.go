@@ -25,7 +25,7 @@ import (
 // This implements ClientEvent and is emitted via Outbox.
 type JoinRoundRequest struct {
 	// BatchSlot identifies the authenticated registration opportunity.
-	BatchSlot *batchschedule.Selection
+	BatchSlot fn.Option[batchschedule.Selection]
 
 	actor.BaseMessage
 

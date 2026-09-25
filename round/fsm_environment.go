@@ -10,6 +10,22 @@ import (
 	"github.com/lightninglabs/wavelength/lib/types"
 )
 
+// OperatorTermsSource supplies fresh operator terms to a registration attempt.
+//
+// ClientEnvironment.OperatorTerms is the snapshot an attempt reads everything
+// from: the operator key, amount limits, exit delays. It is captured when the
+// round actor is built. A scheduled operator's published slot list rolls
+// forward every interval, so that snapshot goes stale for slot selection. An
+// attempt therefore fetches fresh terms once, when it selects its slot, and
+// pins them for the rest of the attempt. The source also times the fetch, so
+// the returned schedule carries an estimate of the operator's clock offset.
+type OperatorTermsSource interface {
+	// FreshOperatorTerms fetches the operator's current terms. It must
+	// honor cancellation and be safe for concurrent use. The returned
+	// terms are private to the caller.
+	FreshOperatorTerms(ctx context.Context) (*types.OperatorTerms, error)
+}
+
 // ClientEnvironment provides the client round interaction state machine with
 // access to external systems and storage. This follows the protofsm pattern
 // where the environment contains all dependencies needed for state transitions.
@@ -41,9 +57,9 @@ type ClientEnvironment struct {
 	OperatorTerms *types.OperatorTerms
 
 	// OperatorTermsSource fetches fresh operator terms before a scheduled
-	// attempt selects its slot. It must honor cancellation and be safe for
-	// concurrent use. When nil, the attempt uses OperatorTerms as is.
-	OperatorTermsSource func(context.Context) (*types.OperatorTerms, error)
+	// attempt selects its slot. When nil, the attempt uses OperatorTerms
+	// as is.
+	OperatorTermsSource OperatorTermsSource
 
 	// ChainParams are the Bitcoin network parameters.
 	ChainParams *chaincfg.Params

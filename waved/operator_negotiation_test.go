@@ -14,6 +14,7 @@ import (
 	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/lightninglabs/wavelength/vtxo"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
@@ -683,7 +684,7 @@ func TestRoundOperatorTermsRefreshesPublishedHorizon(t *testing.T) {
 		arkProtocolVersion: 1,
 	}
 	cached := &types.OperatorTerms{
-		BatchSchedule:  old,
+		BatchSchedule:  fn.Some(old),
 		MaxVTXOAmount:  5_000_000,
 		MaxUserBalance: 150_000_000,
 	}
@@ -700,7 +701,7 @@ func TestRoundOperatorTermsRefreshesPublishedHorizon(t *testing.T) {
 
 	// The fresh list offers the newly published slot, and the shared
 	// cache still holds the original snapshot.
-	slot, err := fresh.BatchSchedule.Next(now)
+	slot, err := fresh.BatchSchedule.UnwrapOrFail(t).Next(now)
 	require.NoError(t, err)
 	require.True(t, slot.Cutoff.Equal(now.Add(720*time.Second)))
 	require.Same(t, cached, srv.loadOperatorTerms())
@@ -802,14 +803,18 @@ func TestRoundOperatorTermsEstimatesClockOffset(t *testing.T) {
 
 			// The attempt's copy carries an estimate within the
 			// expected error of the true offset.
-			offset := fresh.BatchSchedule.ClockOffset()
+			offset := fresh.BatchSchedule.
+				UnwrapOrFail(t).
+				ClockOffset()
 			require.GreaterOrEqual(t, offset, tc.minOffset)
 			require.LessOrEqual(t, offset, tc.maxOffset)
 
 			// The shared cache keeps its original schedule with no
 			// offset attached.
 			require.Same(t, cached, srv.loadOperatorTerms())
-			require.Zero(t, cachedSchedule.ClockOffset())
+			require.Zero(
+				t, cachedSchedule.UnwrapOrFail(t).ClockOffset(),
+			)
 		})
 	}
 }

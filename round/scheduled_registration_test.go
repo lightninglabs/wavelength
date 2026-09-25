@@ -8,6 +8,7 @@ import (
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/lib/batchschedule"
 	"github.com/lightninglabs/wavelength/lib/types"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
@@ -59,8 +60,10 @@ func TestScheduledRegistrationWindow(t *testing.T) {
 	now := testAnchor.Add(10 * time.Minute)
 	env := &ClientEnvironment{
 		OperatorTerms: &types.OperatorTerms{
-			BatchSchedule: publishedTestSchedule(
-				t, schedule, cutoff,
+			BatchSchedule: fn.Some(
+				publishedTestSchedule(
+					t, schedule, cutoff,
+				),
 			),
 		},
 		Now:      func() time.Time { return now },
@@ -77,7 +80,7 @@ func TestScheduledRegistrationWindow(t *testing.T) {
 	require.GreaterOrEqual(t, delay, opens.Sub(now)+lo)
 	require.LessOrEqual(t, delay, opens.Sub(now)+hi)
 
-	selection := *env.batchSlot()
+	selection := env.batchSlot().UnwrapOrFail(t)
 	require.True(t, selection.Matches(schedule.ID(), cutoff))
 
 	// Opening the window is not enough; the attempt waits for its own
@@ -92,14 +95,14 @@ func TestScheduledRegistrationWindow(t *testing.T) {
 	tr, err = s.waitForScheduledSlot(t.Context(), env)
 	require.NoError(t, err)
 	require.Nil(t, tr)
-	require.Equal(t, selection, *env.batchSlot())
+	require.Equal(t, selection, env.batchSlot().UnwrapOrFail(t))
 
 	// With less than the margin left the window counts as closed, and the
 	// selection never slides to the next slot.
 	now = cutoff.Add(-lo / 2)
 	_, err = s.waitForScheduledSlot(t.Context(), env)
 	require.ErrorContains(t, err, "closed")
-	require.Equal(t, selection, *env.batchSlot())
+	require.Equal(t, selection, env.batchSlot().UnwrapOrFail(t))
 
 	// An operator without a published schedule keeps event-driven
 	// registration.
@@ -162,7 +165,7 @@ func TestScheduledClockOffsetProperty(t *testing.T) {
 			WithClockOffset(offset)
 		env := &ClientEnvironment{
 			OperatorTerms: &types.OperatorTerms{
-				BatchSchedule: published,
+				BatchSchedule: fn.Some(published),
 			},
 			Now:      func() time.Time { return local },
 			RoundKey: "pending",
@@ -201,8 +204,11 @@ func TestScheduledRegistrationCursor(t *testing.T) {
 	now := testAnchor.Add(10 * time.Minute)
 	env := &ClientEnvironment{
 		OperatorTerms: &types.OperatorTerms{
-			BatchSchedule: publishedTestSchedule(
-				t, schedule, testAnchor.Add(2*time.Hour),
+			BatchSchedule: fn.Some(
+				publishedTestSchedule(
+					t, schedule,
+					testAnchor.Add(2*time.Hour),
+				),
 			),
 		},
 		Now: func() time.Time { return now },
@@ -213,7 +219,7 @@ func TestScheduledRegistrationCursor(t *testing.T) {
 	require.NoError(t, err)
 	require.True(
 		t,
-		env.batchSlot().Cutoff.Equal(
+		env.batchSlot().UnwrapOrFail(t).Cutoff.Equal(
 			testAnchor.Add(2*time.Hour),
 		),
 	)
@@ -226,7 +232,7 @@ func TestScheduledRegistrationCursor(t *testing.T) {
 	require.NoError(t, err)
 	require.True(
 		t,
-		env.batchSlot().Cutoff.Equal(
+		env.batchSlot().UnwrapOrFail(t).Cutoff.Equal(
 			testAnchor.Add(4*time.Hour),
 		),
 	)
@@ -241,17 +247,19 @@ func TestScheduledRegistrationLatestTerms(t *testing.T) {
 	schedule := newTestSchedule(t)
 	cutoff := testAnchor.Add(2 * time.Hour)
 	latest := &types.OperatorTerms{
-		BatchSchedule: publishedTestSchedule(t, schedule, cutoff),
+		BatchSchedule: fn.Some(
+			publishedTestSchedule(t, schedule, cutoff),
+		),
 	}
 
 	now := testAnchor.Add(10 * time.Minute)
 	env := &ClientEnvironment{
 		OperatorTerms: &types.OperatorTerms{},
-		OperatorTermsSource: func(context.Context) (
+		OperatorTermsSource: termsSourceFunc(func(context.Context) (
 			*types.OperatorTerms, error) {
 
 			return latest, nil
-		},
+		}),
 		Now: func() time.Time { return now },
 	}
 	s := &PendingRoundAssembly{}
@@ -259,7 +267,7 @@ func TestScheduledRegistrationLatestTerms(t *testing.T) {
 	_, err := s.waitForScheduledSlot(t.Context(), env)
 	require.NoError(t, err)
 	require.Same(t, latest, env.OperatorTerms)
-	require.True(t, env.batchSlot().Cutoff.Equal(cutoff))
+	require.True(t, env.batchSlot().UnwrapOrFail(t).Cutoff.Equal(cutoff))
 
 	// A later wakeup neither refreshes again nor adopts the new cache.
 	selected := env.OperatorTerms
@@ -288,8 +296,10 @@ func TestScheduledPreparationCrossesCutoff(t *testing.T) {
 	// straight to building its join.
 	now := cutoff.Add(-time.Minute).Add(hi)
 	h.env.Now = func() time.Time { return now }
-	h.env.OperatorTerms.BatchSchedule = publishedTestSchedule(
-		t, schedule, cutoff,
+	h.env.OperatorTerms.BatchSchedule = fn.Some(
+		publishedTestSchedule(
+			t, schedule, cutoff,
+		),
 	)
 
 	for _, call := range h.wallet.ExpectedCalls {
@@ -335,7 +345,7 @@ func TestScheduledRegistrationExhausted(t *testing.T) {
 
 	env := &ClientEnvironment{
 		OperatorTerms: &types.OperatorTerms{
-			BatchSchedule: p,
+			BatchSchedule: fn.Some(p),
 		},
 		Now: func() time.Time { return now },
 	}
@@ -343,7 +353,7 @@ func TestScheduledRegistrationExhausted(t *testing.T) {
 
 	_, err = s.waitForScheduledSlot(t.Context(), env)
 	require.ErrorIs(t, err, batchschedule.ErrScheduleExhausted)
-	require.Nil(t, env.batchSlot())
+	require.True(t, env.batchSlot().IsNone())
 
 	// A new discovery supplies a two minute window after the old list.
 	// The wake time is measured from its explicit opening.
@@ -358,15 +368,15 @@ func TestScheduledRegistrationExhausted(t *testing.T) {
 	require.NoError(t, err)
 
 	calls := 0
-	env.OperatorTermsSource = func(ctx context.Context) (
+	env.OperatorTermsSource = termsSourceFunc(func(ctx context.Context) (
 		*types.OperatorTerms, error) {
 
 		_, bounded := ctx.Deadline()
 		require.True(t, bounded)
 		calls++
 
-		return &types.OperatorTerms{BatchSchedule: p}, nil
-	}
+		return &types.OperatorTerms{BatchSchedule: fn.Some(p)}, nil
+	})
 
 	tr, err := s.waitForScheduledSlot(t.Context(), env)
 	require.NoError(t, err)
@@ -375,7 +385,7 @@ func TestScheduledRegistrationExhausted(t *testing.T) {
 	delay := requireWakeup(t, s, tr)
 	require.GreaterOrEqual(t, delay, 17*time.Minute+lo)
 	require.LessOrEqual(t, delay, 17*time.Minute+hi)
-	require.True(t, env.batchSlot().Cutoff.Equal(cutoff))
+	require.True(t, env.batchSlot().UnwrapOrFail(t).Cutoff.Equal(cutoff))
 
 	now = now.Add(delay)
 	tr, err = s.waitForScheduledSlot(t.Context(), env)
@@ -391,23 +401,23 @@ func TestScheduledDiscoveryFailure(t *testing.T) {
 	t.Parallel()
 
 	env := &ClientEnvironment{
-		OperatorTermsSource: func(context.Context) (
+		OperatorTermsSource: termsSourceFunc(func(context.Context) (
 			*types.OperatorTerms, error) {
 
 			return nil, context.DeadlineExceeded
-		},
+		}),
 	}
 	state := &PendingRoundAssembly{}
 
 	_, err := state.waitForScheduledSlot(t.Context(), env)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
-	require.Nil(t, env.batchSlot())
+	require.True(t, env.batchSlot().IsNone())
 }
 
 // publishedTestSchedule builds the same bounded discovery an operator
 // publishes, starting at cutoff, and parses it as a client would.
 func publishedTestSchedule(t require.TestingT, schedule *batchschedule.Schedule,
-	cutoff time.Time) *batchschedule.Published {
+	cutoff time.Time) batchschedule.Published {
 
 	p, err := arkrpc.ParseBatchSchedule(
 		arkrpc.BatchScheduleToProto(
@@ -415,6 +425,17 @@ func publishedTestSchedule(t require.TestingT, schedule *batchschedule.Schedule,
 		),
 	)
 	require.NoError(t, err)
+	require.True(t, p.IsSome())
 
-	return p
+	return p.UnsafeFromSome()
+}
+
+// termsSourceFunc adapts a function to the OperatorTermsSource interface.
+type termsSourceFunc func(context.Context) (*types.OperatorTerms, error)
+
+// FreshOperatorTerms calls the wrapped function.
+func (f termsSourceFunc) FreshOperatorTerms(ctx context.Context) (
+	*types.OperatorTerms, error) {
+
+	return f(ctx)
 }

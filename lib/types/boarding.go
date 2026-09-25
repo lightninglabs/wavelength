@@ -31,8 +31,9 @@ const (
 // OperatorTerms holds the information that the operator will share with
 // clients. It communicates the server's terms to the client.
 type OperatorTerms struct {
-	// BatchSchedule is nil when registration is event-driven.
-	BatchSchedule *batchschedule.Published
+	// BatchSchedule holds the operator's published scheduled-batch slots.
+	// It is None when the operator uses event-driven registration.
+	BatchSchedule fn.Option[batchschedule.Published]
 
 	// PubKey is the operator's main public key. This should be used for
 	// constructing boarding scripts.
@@ -130,9 +131,9 @@ func (t *OperatorTerms) VTXOTargetConfirmations() uint32 {
 
 // JoinRoundRequest represents a participant's request to join a round.
 type JoinRoundRequest struct {
-	// BatchSlot authorizes one scheduled opportunity; nil requests legacy
-	// timing.
-	BatchSlot *batchschedule.Selection
+	// BatchSlot selects the scheduled slot this join is for. It is None
+	// for a join under event-driven registration.
+	BatchSlot fn.Option[batchschedule.Selection]
 
 	// Identifier is the participant's public key identifier associated with
 	// this request.

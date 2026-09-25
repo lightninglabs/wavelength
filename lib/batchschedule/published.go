@@ -22,8 +22,10 @@ const maxWakeMargin = 2 * time.Second
 var ErrScheduleExhausted = errors.New("published batch schedule exhausted")
 
 // Published is the client's immutable view of an operator's advertised
-// registration opportunities. Its identity is opaque: a client selects from
-// the listed slots and never needs to know how the operator generated them.
+// registration opportunities. It is a value type: copies share the slot slice,
+// which nothing mutates after construction. Its identity is opaque: a client
+// selects from the listed slots and never needs to know how the operator
+// generated them.
 type Published struct {
 	// id is the operator's timing-policy identity. It stays the same as
 	// the published list rolls forward under an unchanged policy.
@@ -48,11 +50,11 @@ type Published struct {
 // window must be a positive whole number of seconds no longer than
 // MaxRegistrationWindow. Gaps between windows are allowed, so an operator is
 // free to publish an irregular calendar.
-func NewPublished(id ID, slots []Slot) (*Published, error) {
+func NewPublished(id ID, slots []Slot) (Published, error) {
 	if id.IsZero() || len(slots) == 0 ||
 		len(slots) > MaxPublishedSlots {
-		return nil, fmt.Errorf("invalid published schedule identity " +
-			"or size")
+		return Published{}, fmt.Errorf("invalid published schedule " +
+			"identity or size")
 	}
 
 	for i, slot := range slots {
@@ -60,17 +62,18 @@ func NewPublished(id ID, slots []Slot) (*Published, error) {
 		case !isWholeSecond(slot.Opens) || slot.Opens.Unix() < 0 ||
 			!inRange(slot.Cutoff) ||
 			!slot.Opens.Before(slot.Cutoff):
-			return nil, fmt.Errorf("invalid published slot %d", i)
+			return Published{}, fmt.Errorf("invalid "+
+				"published slot %d", i)
 
 		case slot.Window() > MaxRegistrationWindow:
-			return nil, fmt.Errorf("published slot %d window "+
-				"too long", i)
+			return Published{}, fmt.Errorf("published slot %d "+
+				"window too long", i)
 
 		// Each window must open no earlier than the previous cutoff,
 		// which rules out both overlap and misordering.
 		case i > 0 && slot.Opens.Before(slots[i-1].Cutoff):
-			return nil, fmt.Errorf("published slots overlap or " +
-				"are unordered")
+			return Published{}, fmt.Errorf("published slots " +
+				"overlap or are unordered")
 		}
 	}
 
@@ -82,7 +85,7 @@ func NewPublished(id ID, slots []Slot) (*Published, error) {
 		}
 	}
 
-	return &Published{
+	return Published{
 		id:    id,
 		slots: normalized,
 	}, nil
@@ -91,44 +94,42 @@ func NewPublished(id ID, slots []Slot) (*Published, error) {
 // WithServerTime returns a copy of the list that records the operator's
 // clock reading from the same discovery response. A zero time means the
 // operator did not report one.
-func (p *Published) WithServerTime(serverTime time.Time) *Published {
-	clone := *p
-	clone.slots = slices.Clone(p.slots)
-	clone.serverTime = serverTime
+func (p Published) WithServerTime(serverTime time.Time) Published {
+	p.slots = slices.Clone(p.slots)
+	p.serverTime = serverTime
 
-	return &clone
+	return p
 }
 
 // WithClockOffset returns a copy of the list that carries an estimate of how
 // far the operator's clock is ahead of the local clock.
-func (p *Published) WithClockOffset(offset time.Duration) *Published {
-	clone := *p
-	clone.slots = slices.Clone(p.slots)
-	clone.clockOffset = offset
+func (p Published) WithClockOffset(offset time.Duration) Published {
+	p.slots = slices.Clone(p.slots)
+	p.clockOffset = offset
 
-	return &clone
+	return p
 }
 
 // ID returns the operator's timing-policy identity.
-func (p *Published) ID() ID {
+func (p Published) ID() ID {
 	return p.id
 }
 
 // ServerTime returns the operator's clock reading from discovery, or the zero
 // time if it was not reported.
-func (p *Published) ServerTime() time.Time {
+func (p Published) ServerTime() time.Time {
 	return p.serverTime
 }
 
 // ClockOffset returns the estimated operator clock minus local clock.
-func (p *Published) ClockOffset() time.Duration {
+func (p Published) ClockOffset() time.Duration {
 	return p.clockOffset
 }
 
 // Next returns the first listed slot whose cutoff is strictly after the given
 // instant, which must already be expressed on the operator's clock. It never
 // synthesizes a slot beyond the list.
-func (p *Published) Next(after time.Time) (Slot, error) {
+func (p Published) Next(after time.Time) (Slot, error) {
 	for _, slot := range p.slots {
 		if after.Before(slot.Cutoff) {
 			return slot, nil

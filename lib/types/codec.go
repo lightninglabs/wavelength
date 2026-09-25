@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/batchschedule"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/tlv"
 )
@@ -224,13 +225,14 @@ func JoinRoundAuthMessage(req *JoinRoundRequest) ([]byte, error) {
 	// can admit it only into that exact collector. Both records are
 	// omitted for a legacy join, which keeps its encoding byte-identical
 	// to the format that predates scheduled batches.
-	if req.BatchSlot != nil {
-		if err := req.BatchSlot.Validate(); err != nil {
+	if req.BatchSlot.IsSome() {
+		slot := req.BatchSlot.UnsafeFromSome()
+		if err := slot.Validate(); err != nil {
 			return nil, err
 		}
 
-		scheduleID := [32]byte(req.BatchSlot.ScheduleID)
-		cutoffUnix := req.BatchSlot.CutoffUnix()
+		scheduleID := [32]byte(slot.ScheduleID)
+		cutoffUnix := slot.CutoffUnix()
 		records = append(
 			records, tlv.MakePrimitiveRecord(
 				joinRoundAuthMessageScheduleRecordType,
@@ -391,7 +393,7 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 
 	// The slot records travel as a pair: a message carrying only one of
 	// them was not produced by JoinRoundAuthMessage.
-	var batchSlot *batchschedule.Selection
+	batchSlot := fn.None[batchschedule.Selection]()
 	_, hasID := parsedTypes[joinRoundAuthMessageScheduleRecordType]
 	_, hasCutoff := parsedTypes[joinRoundAuthMessageCutoffRecordType]
 	if hasID != hasCutoff {
@@ -399,12 +401,13 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 	}
 
 	if hasID {
-		batchSlot, err = batchschedule.SelectionFromUnix(
+		selection, err := batchschedule.SelectionFromUnix(
 			batchschedule.ID(scheduleID), cutoffUnix,
 		)
 		if err != nil {
 			return nil, err
 		}
+		batchSlot = fn.Some(selection)
 	}
 
 	return &JoinRoundRequest{

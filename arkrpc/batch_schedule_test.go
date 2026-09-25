@@ -41,8 +41,9 @@ func TestBatchScheduleDiscovery(t *testing.T) {
 
 	// The parsed view keeps the operator's identity, and the first slot a
 	// client can select is the cursor, not the next grid point after now.
-	parsed, err := ParseBatchSchedule(p)
+	parsedOpt, err := ParseBatchSchedule(p)
 	require.NoError(t, err)
+	parsed := parsedOpt.UnwrapOrFail(t)
 	require.Equal(t, s.ID(), parsed.ID())
 
 	slot, err := parsed.Next(now)
@@ -67,8 +68,9 @@ func TestBatchScheduleDiscovery(t *testing.T) {
 			CutoffUnix:            now.Unix() + 220,
 		},
 	}
-	parsed, err = ParseBatchSchedule(p)
+	parsedOpt, err = ParseBatchSchedule(p)
 	require.NoError(t, err)
+	parsed = parsedOpt.UnwrapOrFail(t)
 
 	// An instant at the first cutoff moves to the second slot, whose
 	// edges come straight from the list rather than any formula.
@@ -90,9 +92,9 @@ func TestBatchScheduleDiscovery(t *testing.T) {
 
 	// A missing schedule means event-driven registration, which is not an
 	// error.
-	parsed, err = ParseBatchSchedule(nil)
+	parsedOpt, err = ParseBatchSchedule(nil)
 	require.NoError(t, err)
-	require.Nil(t, parsed)
+	require.True(t, parsedOpt.IsNone())
 }
 
 // TestParseBatchScheduleServerTime pins how the operator's clock reading is
@@ -134,8 +136,9 @@ func TestParseBatchScheduleServerTime(t *testing.T) {
 			)
 			p.ServerTimeUnix = tc.serverTime
 
-			parsed, err := ParseBatchSchedule(p)
+			parsedOpt, err := ParseBatchSchedule(p)
 			require.NoError(t, err)
+			parsed := parsedOpt.UnwrapOrFail(t)
 
 			// Deep equality also pins that a reported reading is
 			// stored in UTC.

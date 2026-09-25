@@ -13,6 +13,7 @@ import (
 	"github.com/lightninglabs/wavelength/lib/types"
 	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
 	"github.com/lightninglabs/wavelength/serverconn"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // arkVersionNegotiation is the outcome of the bootstrap GetInfo negotiation.
@@ -187,7 +188,7 @@ func (s *Server) roundOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 		return nil, fmt.Errorf("operator terms unavailable")
 	}
 
-	if cached.BatchSchedule == nil {
+	if cached.BatchSchedule.IsNone() {
 		return cached, nil
 	}
 
@@ -207,21 +208,35 @@ func (s *Server) roundOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 		terms.MaxUserBalance = cached.MaxUserBalance
 	}
 
-	if terms.BatchSchedule != nil {
-		offset := batchschedule.EstimateClockOffset(
-			terms.BatchSchedule.ServerTime(), sent, received,
-		)
-		terms.BatchSchedule = terms.BatchSchedule.WithClockOffset(
-			offset,
-		)
-
-		if offset.Abs() > clockOffsetLogThreshold {
-			s.log.InfoS(ctx, "Operator clock differs from local "+
-				"clock",
-				slog.Duration("offset", offset),
+	terms.BatchSchedule = fn.MapOption(
+		func(p batchschedule.Published) batchschedule.Published {
+			offset := batchschedule.EstimateClockOffset(
+				p.ServerTime(), sent, received,
 			)
-		}
-	}
+			if offset.Abs() > clockOffsetLogThreshold {
+				s.log.InfoS(ctx, "Operator clock differs from "+
+					"local clock",
+					slog.Duration("offset", offset),
+				)
+			}
+
+			return p.WithClockOffset(offset)
+		},
+	)(terms.BatchSchedule)
 
 	return terms, nil
+}
+
+// roundTermsSource adapts the server's scheduled-terms refresh to the round
+// actor's OperatorTermsSource interface.
+type roundTermsSource struct {
+	server *Server
+}
+
+// FreshOperatorTerms fetches the operator terms a new registration attempt
+// should use. See Server.roundOperatorTerms.
+func (r *roundTermsSource) FreshOperatorTerms(ctx context.Context) (
+	*types.OperatorTerms, error) {
+
+	return r.server.roundOperatorTerms(ctx)
 }

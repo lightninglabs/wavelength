@@ -410,10 +410,9 @@ type RoundClientConfig struct {
 	// OperatorTerms contains the bootstrap operator parameters.
 	OperatorTerms *types.OperatorTerms
 
-	// OperatorTermsSource refreshes discovery before selecting a slot. It
-	// must honor cancellation and be safe for concurrent use. A selected
-	// attempt pins its snapshot; nil preserves static terms.
-	OperatorTermsSource func(context.Context) (*types.OperatorTerms, error)
+	// OperatorTermsSource fetches fresh terms when a scheduled attempt
+	// selects its slot. Nil keeps OperatorTerms static for every attempt.
+	OperatorTermsSource OperatorTermsSource
 
 	// ServerConn is a reference to the ServerConnectionActor for sending
 	// messages to the Ark server.

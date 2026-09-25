@@ -480,7 +480,6 @@ func TestPublishedNormalizesAndCopies(t *testing.T) {
 	// receiver untouched, including its slot backing array.
 	serverTime := time.Unix(1800000000, 0).UTC()
 	withTime := base.WithServerTime(serverTime)
-	require.NotSame(t, base, withTime)
 	require.Equal(t, serverTime, withTime.ServerTime())
 	require.True(t, base.ServerTime().IsZero())
 	require.Equal(t, base.ID(), withTime.ID())
@@ -491,7 +490,6 @@ func TestPublishedNormalizesAndCopies(t *testing.T) {
 	// WithClockOffset behaves the same way and preserves the server time
 	// recorded by the earlier copy.
 	withOffset := withTime.WithClockOffset(3 * time.Second)
-	require.NotSame(t, withTime, withOffset)
 	require.Equal(t, 3*time.Second, withOffset.ClockOffset())
 	require.Equal(t, serverTime, withOffset.ServerTime())
 	require.Zero(t, withTime.ClockOffset())
