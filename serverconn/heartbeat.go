@@ -77,11 +77,22 @@ func (a *ServerConnectionActor) startHeartbeat(ctx context.Context) {
 // envelope has no body — the service/method metadata is sufficient for
 // the server to recognise it as a liveness signal.
 func (a *ServerConnectionActor) sendHeartbeat(ctx context.Context) {
+	if err := a.sendHeartbeatOnce(ctx); err != nil {
+		if !isIngressShutdownErr(ctx, err) {
+			a.log.WarnS(ctx, "Heartbeat send failed", err)
+		}
+		a.checkPermanentStatus(ctx, err)
+	}
+}
+
+// sendHeartbeatOnce sends one registration/liveness envelope. Unlike periodic
+// heartbeats, a bounded pump needs the error to yield control to its host.
+func (a *ServerConnectionActor) sendHeartbeatOnce(ctx context.Context) error {
 	// Skip heartbeats once the connector is incompatible: the transition
 	// already cancelled this goroutine's context, but guard defensively so
 	// we never contact the edge after the terminal state.
-	if a.compatibilityError() != nil {
-		return
+	if ce := a.compatibilityError(); ce != nil {
+		return ce
 	}
 
 	now := time.Now()
@@ -111,18 +122,9 @@ func (a *ServerConnectionActor) sendHeartbeat(ctx context.Context) {
 		},
 	}
 
-	// Best-effort: log but don't fail. The server will mark us
-	// offline after the staleness threshold if heartbeats stop
-	// arriving.
 	resp, err := a.cfg.Edge.Send(ctx, &mailboxpb.SendRequest{
 		Envelope: envelope,
 	})
 
-	// Best-effort: log on any failure. A permanent version status on a
-	// heartbeat is terminal, just like on any other send path, so drive the
-	// incompatibility transition (a no-op for a plain transport error).
-	if sErr := edgeResponseError("heartbeat", resp, err); sErr != nil {
-		a.log.WarnS(ctx, "Heartbeat send failed", sErr)
-		a.checkPermanentStatus(ctx, sErr)
-	}
+	return edgeResponseError("heartbeat", resp, err)
 }
