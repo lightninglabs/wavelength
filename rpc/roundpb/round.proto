@@ -506,6 +506,21 @@ message JoinRoundRequest {
     // auth contains the BIP-322 authorization payload. Nil when join
     // request auth is disabled.
     JoinRoundAuth auth = 7;
+
+    // batch_slot selects the scheduled slot this join is for. It is
+    // required by an operator that publishes a batch schedule and must be
+    // absent otherwise. The selection is also covered by the join
+    // authorization, so it cannot be changed or stripped in transit.
+    BatchSlotSelection batch_slot = 8;
+}
+
+// BatchSlotSelection names one published scheduled-batch slot.
+message BatchSlotSelection {
+    // schedule_id is the 32-byte timing-policy identity from discovery.
+    bytes schedule_id = 1;
+
+    // cutoff_unix is the selected slot's cutoff in Unix seconds.
+    uint64 cutoff_unix = 2;
 }
 
 // QuoteReason classifies why a JoinRoundQuote failed to admit the

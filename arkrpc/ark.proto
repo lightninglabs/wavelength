@@ -144,6 +144,51 @@ message GetInfoResponse {
     // round. This is independent of min_confirmations, which protects the
     // on-chain boarding inputs consumed by a new round.
     uint32 vtxo_confirmations = 24;
+
+    // batch_schedule is set when the operator runs scheduled batches and
+    // absent when it uses event-driven registration. A scheduled operator
+    // rejects any join that does not select one of the published slots.
+    BatchSchedule batch_schedule = 25;
+}
+
+// BatchSchedule lists an operator's upcoming scheduled-batch registration
+// windows. At each cutoff the operator stops admitting joins and starts
+// quoting and signing; a cutoff says nothing about when the batch transaction
+// is broadcast or confirmed.
+message BatchSchedule {
+    // version is the discovery format. Clients reject versions they do not
+    // understand rather than guess at their meaning.
+    uint32 version = 1;
+
+    // schedule_id is the opaque 32-byte identity of the operator's timing
+    // policy. It stays the same as the list rolls forward under an
+    // unchanged policy, and together with a cutoff it names one slot.
+    bytes schedule_id = 2;
+
+    // server_time_unix is the operator's clock, in Unix seconds, when it
+    // built this response. Clients use it to estimate the offset between
+    // their clock and the operator's.
+    int64 server_time_unix = 3;
+
+    // slots is a non-empty, chronological list of at most 32
+    // non-overlapping registration windows. Clients select only from this
+    // list and never extrapolate past it; when no listed cutoff remains in
+    // the future they fetch discovery again. Publication does not reserve
+    // admission capacity.
+    repeated BatchSlot slots = 4;
+}
+
+// BatchSlot is one published registration window. Registration is accepted
+// over [registration_opens_unix, cutoff_unix), and no window is longer than
+// five minutes.
+message BatchSlot {
+    // registration_opens_unix is the first second, in Unix time, at which a
+    // join for this slot is accepted.
+    int64 registration_opens_unix = 1;
+
+    // cutoff_unix is the first second, in Unix time, at which joins are
+    // rejected and quoting begins.
+    int64 cutoff_unix = 2;
 }
 
 // EstimateFeeRequest asks the server to estimate the fee for a
