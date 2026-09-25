@@ -36,6 +36,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
 - `ReceiveLimits` / `DefaultReceiveLimits` — defense-in-depth bounds on
   incoming receive (`MaxCheckpoints`, `MaxVTXOMatches`, `MaxMailboxItems`,
   `MaxMailboxScriptBytes`, `MaxConcurrentIncomingSessions`).
+- `FillOutgoingSummary(summary, record)` — decodes one outgoing registry
+  snapshot into a `SessionSummary`'s consumed inputs and retry diagnostics.
+  Exported so `waved`'s status RPCs can reuse the registry actor's exact
+  decode without routing a message through the actor; it returns the decode
+  error instead of logging, leaving each caller to decide whether coarse
+  metadata is still worth returning. `fillOutgoingSummary` is the actor's
+  thin logging wrapper over it.
 - `ErrIdempotencyKeyConflict` — caller-visible outgoing admission conflict
   when a deterministic session cannot retain the supplied key; `waved` maps it
   to `codes.AlreadyExists` after releasing freshly selected inputs.
@@ -176,6 +183,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
 - Terminal rows (completed and failed) are retained in
   `oor_session_registry` for status/diagnostics; reaping only removes the
   in-memory child, never the row.
+- Status RPCs do not ask the registry actor to scan those retained terminal
+  rows. `ListOORSessions` / `GetOORSession` read the same durable state
+  directly through `db.OORStatusStore`, so status stays available while the
+  actor is starting or unavailable, and a full listing never costs the
+  single-worker registry a scan proportional to retained history. The actor
+  remains the only writer; the store is read-only.
 - Pending submit retries persist their delay and typed rejection reason in the
   outgoing snapshot. `GetOORSession` exposes the reason while status remains
   pending, so callers can distinguish a recoverable chain pause from failure.

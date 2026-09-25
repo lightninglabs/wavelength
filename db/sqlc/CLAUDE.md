@@ -14,6 +14,10 @@ hand, except `db_custom.go`.
 
 - `Queries` / `Querier` — generated query struct and interface covering
   all tables listed above.
+- `OorStatus` — generated row type for the `oor_status` view (migration
+  `000025`), read by `ListOORStatus` / `GetOORStatus`. sqlc models views the
+  same way it models tables, so the newest-first keyset page and its filters
+  are expressed in SQL rather than reassembled in Go.
 - `BackendType` (`db_custom.go`, hand-maintained) — `Sqlite` /
   `Postgres` tag stored on the wrapped `DBTX`; `NewSqlite` / `NewPostgres`
   construct a `*Queries` carrying it, `(*Queries).Backend()` reads it back.

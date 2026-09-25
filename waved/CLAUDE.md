@@ -258,6 +258,27 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 - `SendVTXO` enforces `maxRecipients = 256`, rejects per-recipient amounts
   outside `(0, MaxSatoshi]`, and uses overflow-safe summation; the wallet
   actor repeats these checks as defense-in-depth.
+- `ListOORSessions` / `GetOORSession` read `db.OORStatusStore` rather than
+  merging actor summaries against a full package-store scan. The database
+  applies the direction filter, the status filter, newest-first ordering, and
+  the page limit, so the RPC layer no longer sorts or dedups in Go: it asks
+  for `page_size + 1` rows, trims the lookahead, and returns a cursor. Both
+  RPCs return `nil`/`NotFound` rather than an error when no database is
+  wired.
+- The OOR page token is the opaque `v1:<created_at>:<session_id>` tuple,
+  base64url-encoded. It carries the timestamp as well as the id so
+  continuation does not require the referenced row to still exist, and
+  rows inserted after the first page do not shift later pages. Legacy
+  id-only tokens sorted under a different ordering, so they are rejected
+  with `codes.InvalidArgument` telling the caller to restart with an empty
+  token — silently accepting one would skip rows. A single request is one
+  read transaction, but a paginated walk is not a historical snapshot.
+- `oorStatusToProto` lets persisted package artifacts override the registry's
+  direction, phase, and status; the registry snapshot supplies only what the
+  package cannot — consumed inputs when the bindings carry none, and the
+  failure reason when there is no package at all. A snapshot that fails to
+  decode is logged and skipped, never fatal: a malformed diagnostic blob must
+  not invalidate a durably recorded completion.
 - `SendOOR` with custom inputs serializes concurrent calls on the same
   outpoints via `reserveCustomInputs`; the release function is deferred on
   both success and failure.

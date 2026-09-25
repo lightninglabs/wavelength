@@ -68,6 +68,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   registry of per-session durable OOR actors
   (`UpsertSession`/`GetSession`/`ListSessions`/`ListNonTerminal`). One mutable
   row per session id is shared by both lifecycle directions.
+- `OORStatusStore` / `OORStatusSummary` / `OORStatusCursor` — read-only
+  status projection over the `oor_status` view (migration `000025`). `List`
+  returns one newest-first page bounded by a `(created_at, session_id)`
+  keyset cursor plus optional direction and status filters; `Get` is a point
+  lookup by session id that returns `sql.ErrNoRows` when absent. Filtering,
+  ordering, and `LIMIT` all happen in SQL, before any payload hydration:
+  only the rows that survive the page load VTXO bindings, and only an
+  outgoing session still missing consumed inputs additionally reads its
+  registry snapshot. Status reads never touch Ark PSBTs or checkpoint rows.
+  Consumed by `waved`'s `ListOORSessions` / `GetOORSession`.
 - `OORDispatchAttemptRecord` — immutable keyed outgoing identity, loaded by
   idempotency key or session id. It stores the canonical recipient record
   before the first transport enqueue and remains authoritative after the
@@ -121,7 +131,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 21` — current schema version.
+- `LatestMigrationVersion = 25` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -392,6 +402,12 @@ when adding one.
   missing net exit-send row from the surviving refresh-send and exit-fee rows,
   repairing the overstated VTXO balance atomically with the key rewrite.
 
+- `000020_taproot_asset_vtxo_state` — adds the asset columns on `vtxos`
+  (`taproot_asset_root`, `_ref`, `_amount`, `_sealed_package`). The uint64
+  unit count is an 8-byte BLOB so the full range survives on both SQLite and
+  Postgres, and a table CHECK makes the asset fields all-or-nothing: a row is
+  either wholly Bitcoin or wholly asset-bearing, never half-populated.
+
 - `000021_round_admission_deadlines` — records accepted attempt expiry and
   closure separately from signature checkpoints. Deadline constraints only
   shorten the saved budget. Startup closes interrupted admissions without
@@ -399,11 +415,39 @@ when adding one.
   boundary remains authoritative. `CommitState` closes admission atomically
   with its signature-bearing checkpoint.
 
+- `000022_owned_wallet_scripts` — adds `owned_wallet_scripts`, the durable
+  record of every pkScript the daemon minted from its own backing wallet.
+  Unlike the neighbouring `owned_receive_scripts`, its `source` column has no
+  FK into a lookup table: it is operator-facing provenance nothing branches
+  on, whereas the receive-script source is a classification the OOR protocol
+  reasons over. There is no backfill — see the ownership-oracle invariant
+  above.
+
+- `000023_deposit_funding_inputs` — adds `ledger_deposit_funding_inputs`, the
+  outpoint→deposit index that lets the ledger reverse a credit it already
+  booked for a recycled own-wallet coin. Two independent fire-and-forget
+  messages describe that coin and either can commit first, so each leaves
+  behind the half the other needs. The deposit outpoint is part of the key,
+  so one transaction paying two boarding addresses records both.
+
 - `000024_round_output_provenance` — retains each requested output's local
   accounting origin and optional refresh source outpoint in the signature
   checkpoint. Recovery preserves boarding, refresh, transfer, and automatic
   refresh classification, including distinct refreshes with identical scripts.
   Legacy requests retain unknown origin and no source; no pairing is guessed.
+
+- `000025_oor_status_cursor` — adds the scalar status projection that backs
+  the OOR status RPCs: `(created_at DESC, session_id DESC)` indexes on
+  `oor_packages` and `oor_session_registry`, and the `oor_package_status` /
+  `oor_registry_status` / `oor_status` views. The two source views are kept
+  disjoint (a package row is projected only when no registry row shares its
+  session id) so a session can never appear twice under two different
+  timestamps. Registry creation time is authoritative; only package-only
+  history falls back to the package's own timestamp, so completing a
+  registered session does not move it to the top of a newest-first page.
+  Package metadata still wins for status, phase, and direction, including an
+  outgoing transfer whose change is later observed by an incoming session
+  under the same id. The down migration drops the views and indexes only.
 
 ## Deep Docs
 
