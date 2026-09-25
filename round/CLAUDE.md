@@ -175,12 +175,14 @@ state transitions and validation rules live under [Invariants](#invariants).
 
 ## Invariants
 
-- Scheduled registration calls `OperatorTermsSource` with a five-second
-  deadline before selecting a published cutoff. It never extrapolates beyond
-  the list; exhausted discovery fails explicitly. A selected attempt retains
-  its terms across cache refreshes. Both
-  the initial wait and the final pre-send check enforce the cutoff; slow
-  wallet preparation fails locally rather than sending a known-late join.
+- **Scheduled registration** (`scheduled_registration.go`) refreshes terms
+  through `OperatorTermsSource` (five-second deadline), selects the next
+  published slot on the operator's clock (local time plus the estimated
+  offset), and pins a `scheduledAttempt`. The join is sent at a wake time drawn
+  uniformly in `[opens+lo, opens+hi]` from `batchschedule.WakeBounds`, never at
+  the opening itself, which absorbs clock error and spreads a slot's joins.
+  With less than `lo` left before the cutoff, both the wait and the pre-send
+  check fail the attempt locally; a pinned slot never slides to a later one.
 
 
 - **A leave's own-wallet flag is local-only.** `types.LeaveRequest.DestinationOwnWallet` rides from the wallet through `roundLedgerOutflows` into `RoundLedgerOutflow.ProceedsOwnWallet` and on to `ledger.VTXOSentMsg`. It is never serialized onto the join-round wire; the operator has no business knowing whose wallet a leave pays. A nil leave request keeps the conservative false.
