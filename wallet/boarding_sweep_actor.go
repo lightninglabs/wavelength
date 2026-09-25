@@ -101,6 +101,12 @@ type SweepBoardingUTXOsResponse struct {
 	// FeePaidSat is the absolute fee for published sweeps.
 	FeePaidSat int64
 
+	// AnchorSat is the P2A anchor output value carried by the built
+	// sweep. It is paid from the swept inputs on top of the miner fee,
+	// so the sweep's total chain cost is the fee plus AnchorSat. Zero
+	// when no transaction was built.
+	AnchorSat int64
+
 	// FeeRateSatPerVByte is the fee rate used to build the
 	// transaction.
 	FeeRateSatPerVByte int64
@@ -721,6 +727,7 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 	resp.HasTxid = true
 	resp.Txid = signed.Tx.TxHash()
 	resp.EstimatedFeeSat = int64(signed.Fee)
+	resp.AnchorSat = boardingSweepAnchorValue
 	resp.NetAmountSat = resp.TotalAmountSat - int64(signed.Fee)
 	resp.TxVBytes = signed.VBytes
 

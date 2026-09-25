@@ -276,6 +276,11 @@ type Querier interface {
 	ListClientAccountBalances(ctx context.Context) ([]ListClientAccountBalancesRow, error)
 	ListClientAccounts(ctx context.Context) ([]Account, error)
 	ListClientLedgerEntries(ctx context.Context, arg ListClientLedgerEntriesParams) ([]LedgerEntry, error)
+	// ListClientLedgerEntriesAfterID pages the ledger by ascending entry_id
+	// for incremental importers. Only rows past after_entry_id are returned,
+	// so the scan is a primary-key range read. When filter_event_types is
+	// true, rows are further restricted to the event_types list.
+	ListClientLedgerEntriesAfterID(ctx context.Context, arg ListClientLedgerEntriesAfterIDParams) ([]LedgerEntry, error)
 	ListClientLedgerEntriesByType(ctx context.Context, arg ListClientLedgerEntriesByTypeParams) ([]LedgerEntry, error)
 	ListClientLedgerEventTotals(ctx context.Context) ([]ListClientLedgerEventTotalsRow, error)
 	// ListDepositLegsWithoutBoardingIntent finds the third known anomaly's first

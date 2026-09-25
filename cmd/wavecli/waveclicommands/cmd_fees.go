@@ -147,13 +147,26 @@ func newFeesHistoryCmd() *cobra.Command {
 		Short: "Show fee payment history",
 		Long: "Returns paginated fee ledger entries from " +
 			"the client's local accounting database, " +
-			"including total fees paid.",
+			"including total fees paid. By default entries " +
+			"are listed newest first and paged with " +
+			"--offset. Setting --after-entry-id or " +
+			"--event-type instead lists entries with a " +
+			"larger entry_id in ascending order, which " +
+			"cannot be combined with --offset.",
 		RunE: feesHistory,
 	}
 
 	f := cmd.Flags()
 	f.Uint32("limit", 50, "maximum number of entries")
 	f.Uint32("offset", 0, "number of entries to skip")
+	f.Int64(
+		"after-entry-id", 0, "list entries with an entry_id "+
+			"greater than this value, in ascending order",
+	)
+	f.StringSlice(
+		"event-type", nil, "only list entries of this event type "+
+			"(repeatable), in ascending entry_id order",
+	)
 
 	return cmd
 }
@@ -170,9 +183,13 @@ func feesHistory(cmd *cobra.Command, _ []string) error {
 	if err := parseRequest(cmd, req, func() error {
 		limit, _ := cmd.Flags().GetUint32("limit")
 		offset, _ := cmd.Flags().GetUint32("offset")
+		afterEntryID, _ := cmd.Flags().GetInt64("after-entry-id")
+		eventTypes, _ := cmd.Flags().GetStringSlice("event-type")
 
 		req.Limit = limit
 		req.Offset = offset
+		req.AfterEntryId = afterEntryID
+		req.EventTypes = eventTypes
 
 		return nil
 	}); err != nil {
