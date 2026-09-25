@@ -20,6 +20,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	DaemonService_GetInfo_FullMethodName                                        = "/waverpc.DaemonService/GetInfo"
+	DaemonService_GetBatchSchedule_FullMethodName                               = "/waverpc.DaemonService/GetBatchSchedule"
 	DaemonService_GenSeed_FullMethodName                                        = "/waverpc.DaemonService/GenSeed"
 	DaemonService_InitWallet_FullMethodName                                     = "/waverpc.DaemonService/InitWallet"
 	DaemonService_UnlockWallet_FullMethodName                                   = "/waverpc.DaemonService/UnlockWallet"
@@ -80,6 +81,9 @@ type DaemonServiceClient interface {
 	// including version, network, lnd connection state, and server
 	// connection state.
 	GetInfo(ctx context.Context, in *GetInfoRequest, opts ...grpc.CallOption) (*GetInfoResponse, error)
+	// GetBatchSchedule queries the operator's current timetable and server
+	// time. This is a live discovery request, not cached bootstrap terms.
+	GetBatchSchedule(ctx context.Context, in *GetBatchScheduleRequest, opts ...grpc.CallOption) (*GetBatchScheduleResponse, error)
 	// GenSeed generates a new aezeed cipher seed mnemonic. This is the
 	// first step when creating a new lwwallet-backed wallet. The returned
 	// mnemonic must be passed to InitWallet to finalize wallet creation.
@@ -281,6 +285,16 @@ func (c *daemonServiceClient) GetInfo(ctx context.Context, in *GetInfoRequest, o
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetInfoResponse)
 	err := c.cc.Invoke(ctx, DaemonService_GetInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) GetBatchSchedule(ctx context.Context, in *GetBatchScheduleRequest, opts ...grpc.CallOption) (*GetBatchScheduleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetBatchScheduleResponse)
+	err := c.cc.Invoke(ctx, DaemonService_GetBatchSchedule_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -768,6 +782,9 @@ type DaemonServiceServer interface {
 	// including version, network, lnd connection state, and server
 	// connection state.
 	GetInfo(context.Context, *GetInfoRequest) (*GetInfoResponse, error)
+	// GetBatchSchedule queries the operator's current timetable and server
+	// time. This is a live discovery request, not cached bootstrap terms.
+	GetBatchSchedule(context.Context, *GetBatchScheduleRequest) (*GetBatchScheduleResponse, error)
 	// GenSeed generates a new aezeed cipher seed mnemonic. This is the
 	// first step when creating a new lwwallet-backed wallet. The returned
 	// mnemonic must be passed to InitWallet to finalize wallet creation.
@@ -968,6 +985,9 @@ type UnimplementedDaemonServiceServer struct{}
 func (UnimplementedDaemonServiceServer) GetInfo(context.Context, *GetInfoRequest) (*GetInfoResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetInfo not implemented")
 }
+func (UnimplementedDaemonServiceServer) GetBatchSchedule(context.Context, *GetBatchScheduleRequest) (*GetBatchScheduleResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetBatchSchedule not implemented")
+}
 func (UnimplementedDaemonServiceServer) GenSeed(context.Context, *GenSeedRequest) (*GenSeedResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GenSeed not implemented")
 }
@@ -1141,6 +1161,24 @@ func _DaemonService_GetInfo_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).GetInfo(ctx, req.(*GetInfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_GetBatchSchedule_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetBatchScheduleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).GetBatchSchedule(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_GetBatchSchedule_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).GetBatchSchedule(ctx, req.(*GetBatchScheduleRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1976,6 +2014,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetInfo",
 			Handler:    _DaemonService_GetInfo_Handler,
+		},
+		{
+			MethodName: "GetBatchSchedule",
+			Handler:    _DaemonService_GetBatchSchedule_Handler,
 		},
 		{
 			MethodName: "GenSeed",

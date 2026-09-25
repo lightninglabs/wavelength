@@ -26,6 +26,8 @@ func NewDaemonServiceMailboxClient(c rpc.RPCClient) *DaemonServiceMailboxClient 
 type DaemonServiceMailboxServer interface {
 	// GetInfo handles GetInfo.
 	GetInfo(ctx context.Context, req *GetInfoRequest) (*GetInfoResponse, error)
+	// GetBatchSchedule handles GetBatchSchedule.
+	GetBatchSchedule(ctx context.Context, req *GetBatchScheduleRequest) (*GetBatchScheduleResponse, error)
 	// GenSeed handles GenSeed.
 	GenSeed(ctx context.Context, req *GenSeedRequest) (*GenSeedResponse, error)
 	// InitWallet handles InitWallet.
@@ -131,6 +133,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.GetInfo(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "GetBatchSchedule", func() proto.Message {
+		return &GetBatchScheduleRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetBatchScheduleRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetBatchSchedule(ctx, req)
 	})
 	r.Handle("waverpc.DaemonService", "GenSeed", func() proto.Message {
 		return &GenSeedRequest{}
@@ -610,6 +622,29 @@ func (c *DaemonServiceMailboxClient) GetInfo(ctx context.Context, req *GetInfoRe
 	}
 
 	resp := new(GetInfoResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GetBatchSchedule calls the GetBatchSchedule RPC.
+func (c *DaemonServiceMailboxClient) GetBatchSchedule(ctx context.Context, req *GetBatchScheduleRequest, opts ...rpc.RPCOptions) (*GetBatchScheduleResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "GetBatchSchedule",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetBatchScheduleResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

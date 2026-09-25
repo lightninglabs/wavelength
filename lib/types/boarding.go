@@ -147,6 +147,9 @@ type JoinRoundRequest struct {
 	// Auth contains the BIP-322 payload that authorizes this join
 	// request.
 	Auth *JoinRoundAuth
+
+	// Service is explicit execution authorization. Nil retains legacy mode.
+	Service *ServiceRequest
 }
 
 // LeaveRequest represents a request to leave the Ark with an on-chain UTXO.
