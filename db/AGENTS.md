@@ -121,7 +121,28 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 21` — current schema version.
+- `LatestMigrationVersion = 25` — current schema version.
+- `OORStatusStore` / `NewOORStatusStore` — read-only projection over merged
+  package and registry status. `List(ctx, before, direction, status, limit)`
+  returns at most `limit` newest-first summaries older than the cursor (a nil
+  cursor starts at the newest session; direction zero and status `-1` disable
+  their filters); `Get(ctx, id)` reads one session by primary key and returns
+  `sql.ErrNoRows` when absent. Neither ever loads Ark PSBTs or checkpoint
+  rows.
+- `OORStatusSummary` — the bounded status projection of one session: scalar
+  `Metadata` (authoritative, selected in SQL) plus locally persisted
+  `ConsumedOutpoints` / `CreatedOutpoints`. A registry snapshot is decoded
+  only to recover outgoing diagnostics the package bindings do not carry.
+- `OORStatusCursor` — `{CreatedAt, SessionID}` keyset cursor for newest-first
+  paging. It carries the timestamp so continuation does not require the row
+  it names to still exist.
+- `SQLiteOpenConfig` / `SQLiteOpenResult` / `OpenSQLiteDatabase` —
+  driver-neutral SQLite open seam (`sqlite_open.go`). The config names the
+  database file (or logical browser OPFS name), the pragmas to apply at open
+  time, whether to request immediate write transactions, and the
+  `database/sql` pool bounds; the result hands back the handle plus the
+  driver name and DSN actually used, which is what lets tests assert the
+  build selected the driver they meant.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -264,6 +285,40 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   jobs store their registered kind plus the domain-owned durable ref
   needed to reconstruct the same spend policy after restart.
 
+### CGO SQLite (`sqlite_*_cgo.go`, build tag `sqlite_cgo`)
+
+- **Why it exists:** Android blocks the raw Linux syscalls `modernc/libc`
+  issues from inside the application sandbox, so the pure-Go driver cannot
+  open a database there. The `sqlite_cgo` tag swaps in `mattn/go-sqlite3`
+  against the host C library. The tag is not Android-only — it builds on any
+  host so the backend can be exercised in ordinary tests.
+- **The driver is registered under its own name** (`wavelength-sqlite3`, in
+  `sqlite_driver_cgo.go`), not as mattn's stock driver, because every
+  connection has to keep sqlc's numbered-parameter semantics — including the
+  ones `database/sql` opens later when the pool grows or replaces a handle.
+- `sqliteNumberedParams` rewrites `$N` to `?N`. SQLite assigns `$N` slots by
+  **first appearance** while sqlc (and modernc) mean the argument ordinal, so
+  passing `$N` through unchanged silently misbinds any query that reorders or
+  repeats a parameter. `?N` preserves the ordinal. The `sqliteTokens` regexp
+  is what keeps the rewrite honest: string literals, quoted identifiers,
+  bracket identifiers, comments, and Tcl-style named parameters are matched
+  as whole tokens so nothing inside them is rewritten.
+- **Unknown pragmas fail the open.** `openSQLiteDatabase` accepts only
+  `foreign_keys`, `journal_mode`, `busy_timeout`, `synchronous`, and
+  `fullfsync` as DSN options and errors on anything else, because mattn
+  *silently ignores* unknown DSN keys — a new setting would otherwise lose
+  its semantics with no signal at all. Pragmas travel as DSN options rather
+  than post-open statements so they apply to every pooled connection.
+- `fullfsync` has no mattn DSN option, so the wrapper parses it out of the
+  DSN itself and executes the embedded `sqlite_fullfsync.sql` on each new
+  handle. It lives in its own embedded file because sqlc cannot parse SQLite
+  PRAGMAs and must not see it as an application query.
+- `mapSQLiteError` (`sqlerrors_cgo.go`) is the CGO counterpart to the native
+  classifier, and it checks **extended codes first**: `BUSY_SNAPSHOT` maps to
+  `ErrDeadlockError` (the transaction has to restart) while a plain `BUSY`
+  maps to `ErrSerializationError` (waiting for the other writer is enough).
+  Collapsing the two would turn a required restart into an unbounded wait.
+
 ### js/wasm SQLite (`sqlite_open_wasm.go`)
 
 - **Two hosts, one driver.** The VFS name comes from
@@ -392,6 +447,13 @@ when adding one.
   missing net exit-send row from the surviving refresh-send and exit-fee rows,
   repairing the overstated VTXO balance atomically with the key rewrite.
 
+- `000020_taproot_asset_vtxo_state` — adds the asset columns on `vtxos`
+  (`taproot_asset_root`, `_ref`, `_amount`, `_sealed_package`). The amount is
+  an eight-byte BLOB, not an integer, so the full uint64 range survives on
+  both SQLite and Postgres. A table CHECK enforces the all-or-nothing
+  identity described under Invariants: either every asset column is NULL or
+  root, ref, and amount are all present.
+
 - `000021_round_admission_deadlines` — records accepted attempt expiry and
   closure separately from signature checkpoints. Deadline constraints only
   shorten the saved budget. Startup closes interrupted admissions without
@@ -399,11 +461,36 @@ when adding one.
   boundary remains authoritative. `CommitState` closes admission atomically
   with its signature-bearing checkpoint.
 
+- `000022_owned_wallet_scripts` — the mint-time ownership oracle described
+  under Invariants. It starts empty on an upgraded database and is never
+  backfilled, so scripts minted before it read as foreign for good.
+
+- `000023_deposit_funding_inputs` — `ledger_deposit_funding_inputs`, the
+  outpoint→deposit index that lets the ledger reverse a credit it already
+  booked for a recycled own-wallet coin. Two independent producers describe
+  that coin (the proceeds UTXO and the boarding deposit that spends it) and
+  both reach the ledger actor fire-and-forget, so either can commit first;
+  this table is the half the deposit leaves behind for whichever commits
+  second. It carries no amount, which is why it is not a `wallet_utxo_log`
+  row.
+
 - `000024_round_output_provenance` — retains each requested output's local
   accounting origin and optional refresh source outpoint in the signature
   checkpoint. Recovery preserves boarding, refresh, transfer, and automatic
   refresh classification, including distinct refreshes with identical scripts.
   Legacy requests retain unknown origin and no source; no pairing is guessed.
+
+- `000025_oor_status_cursor` — makes OOR status listing a bounded SQL read.
+  Adds `(created_at DESC, session_id DESC)` indexes on `oor_packages` and
+  `oor_session_registry` matching the keyset cursor (session id breaks
+  timestamp ties), plus the `oor_package_status` / `oor_registry_status`
+  views the projection selects from. The two view sources are deliberately
+  **disjoint**: a session's creation time comes from the registry row when
+  one exists, and only package-only history falls back to the package's own
+  timestamp, so one session can never appear twice under two timestamps.
+  Package metadata still wins for completion and direction, which is what
+  keeps an outgoing session correct after an incoming actor later observes
+  its change output.
 
 ## Deep Docs
 

@@ -41,6 +41,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `chainsource`, `lib/actormsg`, `db`, `ledger`, `round`, `txconfirm`,
   `unroll`, `vtxo`, `wallet`, `walletcore`, `oor`, `serverconn`, `indexer`,
   `arkrpc`, `lndbackend`, `fraud`, `gateway`, `rpc/restclient`,
+  `lib/batchschedule` (scheduled-operator terms refresh and clock offset),
   `vhtlcrecovery`, `vhtlcrecovery/coordinator`, `vhtlcrecovery/unrollpolicy`.
 - **Depended on by**: `cmd/waved`.
 
@@ -349,6 +350,36 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   so the bound survives restarts.
 - `operatorTermsFromResponse` and daemon `GetInfo` must preserve
   `FreeRefreshWindowBlocks` end to end.
+- `Server.roundOperatorTerms` (`operator_negotiation.go`) decides what terms
+  a **new** registration attempt runs on, and the split is by operator kind.
+  An event-driven operator's cached terms are returned as-is; a scheduled
+  operator's are fetched fresh, because its published slot list rolls
+  forward every interval and a cached list aims the attempt at a window that
+  has already closed. The fetch is stamped on both sides
+  (`sent`/`received`) so `batchschedule.EstimateClockOffset` can price the
+  difference between the local and operator clocks, and the offset is folded
+  into the returned `Published` via `WithClockOffset`. The offset is always
+  applied; `clockOffsetLogThreshold` (1h) only decides whether a badly
+  skewed host is worth an Info line.
+  Two properties are load-bearing: the returned snapshot is **private to the
+  attempt**, so it never clobbers a concurrent refresh of the shared cache;
+  and personalized limits (`MaxVTXOAmount`, `MaxUserBalance`) are carried
+  over from the cached authenticated terms when `hasPersonalizedLimits` is
+  set, because this response carries only the generic values.
+- `roundTermsSource` is the thin adapter that hands `roundOperatorTerms` to
+  the round actor as its `OperatorTermsSource`; it is wired in
+  `initRoundActor` alongside the static `OperatorTerms`, which remains the
+  event-driven path.
+- `ListOORSessions` / `GetOORSession` read through `db.OORStatusStore`
+  (`rpc_operation_status.go`), not through the OOR registry actor. The page
+  is selected, filtered, and bounded in SQL — `page_size` defaults to
+  `defaultListOORSessionsPageSize` (100) and one lookahead row decides
+  `next_page_token` — so a wallet with a long terminal history does not make
+  the actor scan retained snapshots on every status call. An undecodable
+  `page_token` is `InvalidArgument` with an explicit "restart pagination
+  with an empty page_token" hint, since a stale opaque cursor is a client
+  bug the client cannot otherwise diagnose. Persisted package artifacts
+  override the registry's direction, phase, and status.
 - `RPCServer.OperatorVTXOFloor` refreshes authenticated operator terms for
   each credit materialization decision and bounds that refresh with
   `operatorTermsRefreshTimeout` (30 s). Its callers use daemon/actor lifetime

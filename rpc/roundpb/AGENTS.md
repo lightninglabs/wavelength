@@ -5,8 +5,8 @@
 Generated protobuf/gRPC stubs for the round protocol, plus hand-written
 support code: `service.go` (mailbox method name constants), `convert.go`
 (proto <-> Go domain-type conversions, including the security-sensitive
-`TreeFromProto` VTXO-tree deserializer), and `version.go` (the round flow
-version guard).
+`TreeFromProto` VTXO-tree deserializer), `batch_slot.go` (scheduled-batch
+slot selection conversion), and `version.go` (the round flow version guard).
 
 ## Key Types
 
@@ -36,6 +36,11 @@ All `*.pb.go` files are generated — never edit directly; regenerate with
 - `FlowVersion` / `FlowVersionV1` / `ValidateFlowVersion` — the per-round
   choreography version stamped by the operator and validated by the
   client; fails closed on any version this build does not understand.
+- `SelectionFromProto` / `SelectionToProto` (`batch_slot.go`) — convert a
+  join's `*BatchSlotSelection` to and from
+  `fn.Option[batchschedule.Selection]`. A nil message and `None` are the
+  same fact — the join wants event-driven timing — so a legacy client that
+  never sets the field keeps decoding to no slot at all.
 
 `MethodSubmitForfeitSigs` and `MethodSubmitVTXOForfeitSigs` are distinct
 wire methods for two different payload types; see `round/CLAUDE.md` for
@@ -45,7 +50,8 @@ distinction.
 ## Relationships
 
 - **Depends on**: `lib/tree`, `lib/types` (conversion targets in
-  `convert.go`), `github.com/lightninglabs/tap-sdk` (`ParseAssetRef`, for
+  `convert.go`), `lib/batchschedule` (`Selection`/`ID` conversion targets in
+  `batch_slot.go`), `github.com/lightninglabs/tap-sdk` (`ParseAssetRef`, for
   canonical asset-reference validation); otherwise generated proto types only.
 - **Depended on by**: `round` (outbox routing, proto conversions, flow
   version), `db` (persisting round/VTXO proto blobs), `waved` (proto
