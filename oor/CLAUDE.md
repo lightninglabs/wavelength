@@ -39,6 +39,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
 - `ErrIdempotencyKeyConflict` — caller-visible outgoing admission conflict
   when a deterministic session cannot retain the supplied key; `waved` maps it
   to `codes.AlreadyExists` after releasing freshly selected inputs.
+- `FillOutgoingSummary(summary, record) error` — exported decoder that fills
+  consumed inputs and retry diagnostics into a `SessionSummary` from one
+  outgoing registry snapshot. The registry's own `fillOutgoingSummary` wraps
+  it and logs the decode failure; the status RPCs in `waved` call it directly
+  so they can log with their own context, and only after selecting a bounded
+  page from the database. A decode failure is returned rather than swallowed,
+  leaving the caller its coarse metadata.
 
 ## Relationships
 
@@ -212,6 +219,14 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
 - Server-side lineage-cap rejection surfaces as a typed `*ErrLineageTooLarge`
   via `ClassifySubmitError`, so wallet callers can switch on the cause
   without depending on the `oorpb` proto type.
+- **Status listing is not an actor responsibility.** `ListOORSessions` and
+  `GetOORSession` read the durable registry through `db.OORStatusStore`
+  rather than asking the registry actor to scan its retained terminal
+  snapshots, so status stays available while the actor is starting or
+  unavailable and a large history cannot turn one RPC into an unbounded
+  actor turn. `ListSessionsRequest` remains the actor's live-diagnostics
+  path. See [docs/oor_subsystem.md](../docs/oor_subsystem.md) for the
+  bounded-read design.
 
 ## Deep Docs
 

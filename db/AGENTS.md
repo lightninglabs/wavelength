@@ -68,6 +68,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   registry of per-session durable OOR actors
   (`UpsertSession`/`GetSession`/`ListSessions`/`ListNonTerminal`). One mutable
   row per session id is shared by both lifecycle directions.
+- `OORStatusStore` / `OORStatusSummary` / `OORStatusCursor` — read-only
+  status projection over the `oor_status` view
+  (`NewOORStatusStore(store)`). `List(ctx, before, direction, status, limit)`
+  returns at most `limit` summaries newest-first from the keyset cursor
+  (`nil` starts at the newest; direction zero and status `-1` disable their
+  filters); `Get(ctx, id)` is a primary-key point lookup returning
+  `sql.ErrNoRows` when absent. Filtering and package-over-registry precedence
+  happen in SQL before `LIMIT`, and only the selected rows hydrate bindings
+  and the optional outgoing snapshot — status reads never load Ark PSBTs or
+  checkpoint rows. Backs `waved`'s `ListOORSessions` / `GetOORSession`.
 - `OORDispatchAttemptRecord` — immutable keyed outgoing identity, loaded by
   idempotency key or session id. It stores the canonical recipient record
   before the first transport enqueue and remains authoritative after the
@@ -121,7 +131,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 21` — current schema version.
+- `LatestMigrationVersion = 25` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -173,7 +183,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   (VTXO/ancestry domain types), `round` (round-state domain types),
   `vhtlcrecovery` (recovery-job domain types).
 - **Depended on by**: `round`, `vtxo`, `oor`, `wallet` (storage
-  interfaces), `waved` (wires DB backends).
+  interfaces), `waved` (wires DB backends, and reads `OORStatusStore`
+  directly for the OOR status RPCs).
 
 ## Invariants
 
@@ -258,11 +269,61 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   replacement. After takeover, the incoming lifecycle's current status and
   snapshot are the state that boot restore must resume; the separate dispatch
   row still answers keyed replay.
+- The `oor_status` views make package metadata authoritative over the
+  registry for status, phase and direction, so an outgoing transfer whose
+  change is later observed by an incoming session with the same id still
+  reads as the completed outgoing transfer. `OORStatusStore` deliberately
+  loads the outgoing registry snapshot anyway when bindings supplied no
+  consumed inputs: the two projections may disagree on direction, but the
+  snapshot is still the only source of the missing input outpoints and retry
+  reason.
+- `OORStatusCursor` carries both `CreatedAt` and `SessionID`, so
+  continuation does not require the cursor row to still exist and a newer
+  insertion cannot shift a later page. A page is one read transaction;
+  pagination *across* requests is not a historical snapshot.
 - `unilateral_exit_jobs.exit_policy_kind` and `exit_policy_ref`
   persist the durable final spend policy identity. Standard timeout
   jobs use `standard_vtxo_timeout` with an empty ref; policy-specific
   jobs store their registered kind plus the domain-owned durable ref
   needed to reconstruct the same spend policy after restart.
+
+### CGO SQLite (`sqlite_cgo` build tag)
+
+- **Three SQLite backends, one package.** The native default
+  (`sqlite_open_native.go`, modernc) and the CGO backend
+  (`sqlite_open_cgo.go`, mattn) are mutually exclusive on `sqlite_cgo`;
+  `sqlite_open_wasm.go` covers `js && wasm`. `db/migrate` selects its
+  migration driver on the same tag. Android bindings build with
+  `sqlite_cgo` because modernc/libc issues raw Linux syscalls that
+  Android's application sandbox can block; iOS stays on modernc. The tag
+  also builds on a host, which is what makes the backend testable.
+- **`cgoSQLiteDriver` is registered under its own name**
+  (`wavelength-sqlite3`), not as mattn's stock driver, so every connection
+  `database/sql` opens later — pool growth, handle replacement — goes
+  through the adapter.
+- **`sqliteNumberedParams` rewrites `$N` to `?N`.** sqlc emits
+  PostgreSQL-style numbered placeholders. SQLite assigns `$N` slots by first
+  appearance, while modernc reads `N` as the argument ordinal, so passing
+  sqlc's queries through unmodified would silently bind reordered or
+  repeated parameters to the wrong arguments. `?N` preserves the ordinal.
+  The rewrite is tokenized (`sqliteTokens`) so literals, quoted
+  identifiers, comments, and Tcl-style named parameters are never touched,
+  and it is applied on `Prepare`/`PrepareContext` **and** the
+  `ExecContext`/`QueryContext` fast paths — missing one of the four would
+  leave a whole class of queries unrewritten.
+- **Unknown pragmas fail the open.** mattn silently ignores unrecognized
+  DSN keys, so `openSQLiteDatabase` allowlists the pragmas it can express
+  (`foreign_keys`, `journal_mode`, `busy_timeout`, `synchronous`,
+  `fullfsync`) and errors on anything else rather than letting a new
+  durability setting quietly lose its meaning. `fullfsync` has no mattn DSN
+  option, so it is parsed out of the DSN and applied per connection from
+  `sqlite_fullfsync.sql` — embedded separately because sqlc cannot parse
+  PRAGMAs.
+- `sqlerrors_cgo.go` mirrors the native error classification against
+  `sqlite3.Error`. Extended codes are checked first: `BUSY_SNAPSHOT` maps
+  to `ErrDeadlockError` (the transaction must restart) while plain `BUSY`
+  maps to `ErrSerializationError` (waiting on another writer is enough).
+  Collapsing the two would turn a retryable write into a wedged one.
 
 ### js/wasm SQLite (`sqlite_open_wasm.go`)
 
@@ -405,9 +466,24 @@ when adding one.
   refresh classification, including distinct refreshes with identical scripts.
   Legacy requests retain unknown origin and no source; no pairing is guessed.
 
+- `000025_oor_status_cursor` — adds `(created_at DESC, session_id DESC)`
+  indexes on `oor_packages` and `oor_session_registry`, plus the
+  `oor_package_status` / `oor_registry_status` / `oor_status` views that
+  project both sources into one scalar status row. The two sources are kept
+  **disjoint** — `oor_package_status` selects only packages with no registry
+  row — so a session cannot appear twice under two different timestamps.
+  Registry creation time is the session's own; only package-only history
+  falls back to the package's, which is why completing a registered session
+  does not jump it to the top of a newest-first page. Adds no
+  writer-maintained projection.
+
 ## Deep Docs
 
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
+- [docs/oor_subsystem.md](../docs/oor_subsystem.md) — The bounded status-read
+  design behind `OORStatusStore` (two-source merge, cursor, page bounds).
+- [db/migrate/CLAUDE.md](migrate/CLAUDE.md) — Migration orchestration and the
+  build-tagged driver selection.
 - [docs/postgres_isolation.md](../docs/postgres_isolation.md) — Isolation
   policy: read-only Postgres transactions run at `REPEATABLE READ` with
   `READ ONLY` (no `SIRead` predicate locks, never a 40001), writers stay

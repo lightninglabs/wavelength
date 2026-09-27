@@ -21,9 +21,14 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `MacaroonService`. Most write RPCs
   (`Board`, `SendVTXO`, `SendOOR`, `SweepBoardingUTXOs`, `SendOnChain`)
   validate input locally then `Ask` the relevant actor; `GetRound` and
-  `ListVTXOs` merge live actor state with persisted SQL rows, while
-  `GetFeeHistory` and `ListTransactions` are pure SQL reads
-  (`rpc_fees.go`).
+  `ListVTXOs` merge live actor state with persisted SQL rows,
+  `ListOORSessions` / `GetOORSession` are bounded SQL reads
+  (`rpc_operation_status.go`), and `GetFeeHistory` / `ListTransactions` are
+  pure SQL reads (`rpc_fees.go`).
+- `roundTermsSource` (`operator_negotiation.go`) — adapts
+  `Server.roundOperatorTerms` to the round actor's
+  `round.OperatorTermsSource`, wired in `initRoundActor`. It is how a new
+  registration attempt gets a slot list that has not already rolled forward.
 - `Config` — daemon configuration: wallet backend selection, mailbox/chain
   backend wiring, `OORConfig`/`OORLimitsConfig` (receive safety caps),
   `UnrollConfig` (unilateral-exit fee-bump cadence and cap), and
@@ -38,7 +43,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 ## Relationships
 
 - **Depends on**: `baselib/actor`, `btcwbackend`, `chainbackends`,
-  `chainsource`, `lib/actormsg`, `db`, `ledger`, `round`, `txconfirm`,
+  `chainsource`, `lib/actormsg`, `lib/batchschedule`, `db`, `ledger`,
+  `round`, `txconfirm`,
   `unroll`, `vtxo`, `wallet`, `walletcore`, `oor`, `serverconn`, `indexer`,
   `arkrpc`, `lndbackend`, `fraud`, `gateway`, `rpc/restclient`,
   `vhtlcrecovery`, `vhtlcrecovery/coordinator`, `vhtlcrecovery/unrollpolicy`.
@@ -348,7 +354,40 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   window start (`FirstRejectUnixNanos`) in the outgoing snapshot (version 5)
   so the bound survives restarts.
 - `operatorTermsFromResponse` and daemon `GetInfo` must preserve
-  `FreeRefreshWindowBlocks` end to end.
+  `FreeRefreshWindowBlocks` end to end. It also parses
+  `GetInfoResponse.BatchSchedule` through `arkrpc.ParseBatchSchedule` into
+  `OperatorTerms.BatchSchedule`, and a malformed schedule fails the
+  negotiation rather than degrading to event-driven registration — an
+  operator that publishes a schedule expects joins inside its windows, so
+  silently ignoring the schedule would register into a collector that is
+  not open.
+- `Server.roundOperatorTerms` returns cached terms unchanged for an
+  event-driven operator, but **re-fetches** for a scheduled one, because its
+  published slot list rolls forward every interval and a cached list goes
+  stale. Three properties are load-bearing:
+    - The fetch is stamped on both sides (`sent` / `received`) so
+      `batchschedule.EstimateClockOffset` can place the operator's clock
+      reading inside that round trip; the offset is applied via
+      `Published.WithClockOffset` so an attempt aims at the operator's
+      window rather than its own. An offset past `clockOffsetLogThreshold`
+      (1 h) is logged at Info — still applied, the log only names a skewed
+      host.
+    - Personalized `MaxVTXOAmount` / `MaxUserBalance` are copied back from
+      the cached terms when `hasPersonalizedLimits` is set, since this
+      refresh returns the generic values.
+    - The snapshot is **private to the attempt** and never written back to
+      the shared cache, so a refresh cannot clobber a concurrent one.
+- OOR status RPCs (`ListOORSessions`, `GetOORSession`) read
+  `db.OORStatusStore` rather than asking the OOR registry actor, so status
+  survives the actor being unavailable and a long history cannot become an
+  unbounded actor turn. `listOORSessions` selects `page_size + 1` rows for
+  the lookahead token, and an unparseable `page_token` is `InvalidArgument`
+  telling the caller to restart with an empty token — legacy ID-only
+  cursors land here. `oorStatusToProto` lets persisted package artifacts
+  override the registry's direction, phase and status, and falls back to
+  the registry snapshot only for consumed inputs and the retry reason.
+  `queryOORSessionSummaries` remains the live-actor path and re-applies the
+  request filters itself, so live and persisted filtering stay identical.
 - `RPCServer.OperatorVTXOFloor` refreshes authenticated operator terms for
   each credit materialization decision and bounds that refresh with
   `operatorTermsRefreshTimeout` (30 s). Its callers use daemon/actor lifetime
@@ -377,4 +416,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   configuration, CLI reference.
 - [docs/custom-policy-queries.md](../docs/custom-policy-queries.md)
   — Exact-policy query proofs, capability checks, and negative observations.
+- [docs/scheduled_batches.md](../docs/scheduled_batches.md) — Schedule
+  discovery, clock-offset estimation, and slot selection.
+- [docs/oor_subsystem.md](../docs/oor_subsystem.md) — Bounded OOR status
+  reads behind `ListOORSessions` / `GetOORSession`.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.

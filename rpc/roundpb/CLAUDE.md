@@ -5,8 +5,8 @@
 Generated protobuf/gRPC stubs for the round protocol, plus hand-written
 support code: `service.go` (mailbox method name constants), `convert.go`
 (proto <-> Go domain-type conversions, including the security-sensitive
-`TreeFromProto` VTXO-tree deserializer), and `version.go` (the round flow
-version guard).
+`TreeFromProto` VTXO-tree deserializer), `batch_slot.go` (scheduled-slot
+selection conversions), and `version.go` (the round flow version guard).
 
 ## Key Types
 
@@ -33,6 +33,12 @@ All `*.pb.go` files are generated — never edit directly; regenerate with
   `PSBTFromBytes`/`ToBytes`, `MsgTxFromBytes`/`ToBytes`,
   `SchnorrSigFromBytes`/`ToBytes` — wire/proto ⇄ Go conversions for the
   round protocol's payload types.
+- `SelectionFromProto` / `SelectionToProto` (`batch_slot.go`) — convert the
+  `BatchSlotSelection` wire message (`schedule_id` + `cutoff_unix`, field 8
+  on `JoinRoundRequest`) to and from
+  `fn.Option[batchschedule.Selection]`. A nil message decodes to `None` and
+  `None` encodes back to nil, so a join under event-driven registration
+  carries no slot at all.
 - `FlowVersion` / `FlowVersionV1` / `ValidateFlowVersion` — the per-round
   choreography version stamped by the operator and validated by the
   client; fails closed on any version this build does not understand.
@@ -45,7 +51,8 @@ distinction.
 ## Relationships
 
 - **Depends on**: `lib/tree`, `lib/types` (conversion targets in
-  `convert.go`), `github.com/lightninglabs/tap-sdk` (`ParseAssetRef`, for
+  `convert.go`), `lib/batchschedule` (`Selection`, in `batch_slot.go`),
+  `github.com/lightninglabs/tap-sdk` (`ParseAssetRef`, for
   canonical asset-reference validation); otherwise generated proto types only.
 - **Depended on by**: `round` (outbox routing, proto conversions, flow
   version), `db` (persisting round/VTXO proto blobs), `waved` (proto
@@ -91,6 +98,13 @@ distinction.
 - `ValidateFlowVersion` must reject any `FlowVersion` other than the
   versions this build implements (currently only `FlowVersionV1`); never
   make it permissive by default.
+- `BatchSlotSelection` is the wire form of a selection that the join-round
+  authorization already covers as TLV records 8/9 (see
+  `lib/types/CLAUDE.md`). The proto field is therefore not the authority on
+  which slot a join chose — it is a redundant copy the signature pins, and
+  both encodings must name the same slot. `SelectionFromProto` validates
+  through `batchschedule.IDFromBytes` / `SelectionFromUnix` rather than
+  trusting the raw bytes.
 
 ## Deep Docs
 

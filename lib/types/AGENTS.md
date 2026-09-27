@@ -8,7 +8,9 @@ server during round participation. These types are used across `round`, `vtxo`,
 
 ## Key Types
 
-- `JoinRoundRequest` — Client's round registration request: boarding inputs, VTXO requests, forfeit requests, leave requests.
+- `JoinRoundRequest` — Client's round registration request: boarding inputs, VTXO requests, forfeit requests, leave requests. `BatchSlot
+  fn.Option[batchschedule.Selection]` names the scheduled slot this join is
+  for; `None` is a join under event-driven registration.
 - `JoinRoundAuth` — Round-join authentication: canonical signed `Message`,
   `ValidFrom`/`ValidUntil` block-height window, and the full-format BIP-322
   `Signature` proof-of-control.
@@ -30,7 +32,10 @@ server during round participation. These types are used across `round`, `vtxo`,
   an optional SPV merkle inclusion proof for server-side verification of
   boarding UTXOs without requiring the server's own chain source.
 - `OperatorTerms` — Server-published round parameters (fee rates, expiry
-  config, connector dust amount). `FreeRefreshWindowBlocks uint32` advertises
+  config, connector dust amount). `BatchSchedule
+  fn.Option[batchschedule.Published]` carries the operator's published
+  scheduled-batch slots; `None` means the operator uses event-driven
+  registration. `FreeRefreshWindowBlocks uint32` advertises
   the optional late-refresh fee-waiver window.
   `MaxOORLineageVBytes uint32` carries the operator-published
   cap on the cumulative on-chain vbytes a recipient must publish to claim a
@@ -53,7 +58,7 @@ server during round participation. These types are used across `round`, `vtxo`,
 
 ## Relationships
 
-- **Depends on**: `lib/arkscript` (policy template decoding, `StandardVTXOParams`), `lib/tree` (tree types, used by `Ancestry.TreePath`).
+- **Depends on**: `lib/arkscript` (policy template decoding, `StandardVTXOParams`), `lib/tree` (tree types, used by `Ancestry.TreePath`), `lib/batchschedule` (`Published` on `OperatorTerms`, `Selection` on `JoinRoundRequest`).
 - **Depended on by**: `round` (round protocol messages), `wallet` (boarding
   types), `db` (persistence), `vtxo` (descriptor ancestry), `oor` (OOR
   package/session types), `rpc/roundpb` (proto conversion).
@@ -63,8 +68,21 @@ server during round participation. These types are used across `round`, `vtxo`,
 - `VTXOOwnerKeyFamily` (44) is the HD key family used for deriving VTXO owner signing keys.
 - `VTXOSigningKeyFamily` (45) is the HD key family used for per-round VTXO MuSig2 signing keys.
 - `JoinRoundAuthMessage` produces a deterministic, versioned TLV byte encoding that the client signs (and the server verifies) via BIP-322.
+- **A scheduled join signs the slot it selected.** TLV records 8 (32-byte
+  schedule ID) and 9 (cutoff Unix seconds) are appended only when
+  `JoinRoundRequest.BatchSlot` is `Some`, so a legacy join's encoding stays
+  byte-identical to the format that predates scheduled batches. The two
+  records travel as a pair: `DecodeJoinRoundAuthMessage` rejects a message
+  carrying one without the other, because `JoinRoundAuthMessage` never
+  produces that shape. Signing the selection is what stops the slot from
+  being swapped or stripped in transit, so the operator can admit the join
+  only into the exact collector it named.
 
 ## Deep Docs
 
 - [lib/CLAUDE.md](../CLAUDE.md) — Parent lib package overview.
+- [lib/batchschedule/CLAUDE.md](../batchschedule/CLAUDE.md) — Schedule
+  windows, slot identity, and cutoff selection.
+- [docs/scheduled_batches.md](../../docs/scheduled_batches.md) — Scheduled
+  batch discovery and the signed slot binding end to end.
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) — System-wide package map.

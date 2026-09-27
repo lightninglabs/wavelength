@@ -183,8 +183,13 @@ state transitions and validation rules live under [Invariants](#invariants).
   the opening itself, which absorbs clock error and spreads a slot's joins.
   With less than `lo` left before the cutoff, both the wait and the pre-send
   check fail the attempt locally; a pinned slot never slides to a later one.
-
-
+- **A scheduled attempt re-fetches its terms; an event-driven one does not.**
+  `OperatorTermsSource.FreshOperatorTerms` exists because a published slot
+  list rolls forward every interval, so the cached `OperatorTerms` snapshot
+  the actor was built with cannot be trusted to still name an open window.
+  `waved` satisfies it with `roundTermsSource`, which also folds in the
+  estimated operator clock offset. With no source wired, registration stays
+  on the cached terms and therefore on the event-driven path.
 - **A leave's own-wallet flag is local-only.** `types.LeaveRequest.DestinationOwnWallet` rides from the wallet through `roundLedgerOutflows` into `RoundLedgerOutflow.ProceedsOwnWallet` and on to `ledger.VTXOSentMsg`. It is never serialized onto the join-round wire; the operator has no business knowing whose wallet a leave pays. A nil leave request keeps the conservative false.
 - **A flagged leave must be nameable on-chain.** `roundLedgerOutflows` resolves `ProceedsVout` by matching the leave's script and its quoted, fee-adjusted amount (`Intents.LeaveAmount`, the value the commitment transaction actually carries) against the commitment transaction, and drops the flag entirely when there is no commitment tx, no match, or more than one. `emitVTXOsReceived` stages a `leave_proceeds` `UTXOCreatedMsg` at that outpoint so a later boarding deposit funded by those coins can reverse their credit. A proceeds credit with no outpoint could never be reversed, so failing closed is the safe direction.
 - **Accepted attempts have a durable deadline.** Admission persists an absolute
@@ -391,6 +396,8 @@ state transitions and validation rules live under [Invariants](#invariants).
 
 - [round/README.md](README.md) — Full state machine walkthrough with
   diagrams.
+- [docs/scheduled_batches.md](../docs/scheduled_batches.md) — Scheduled-batch
+  discovery, slot selection, jittered wake, and the signed slot binding.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
 
 ## Asset leaf persistence
