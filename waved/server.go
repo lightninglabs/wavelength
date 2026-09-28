@@ -271,6 +271,9 @@ type Server struct {
 	daemonReady     chan struct{}
 	daemonReadyOnce sync.Once
 
+	// actorProbes are published by closing daemonReady after actor startup.
+	actorProbes []actorProbe
+
 	// chainParams identifies the active Bitcoin network. In lnd
 	// mode this is populated from the lnd connection; in lwwallet
 	// mode it is derived from the config's network string.
@@ -1187,6 +1190,12 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 			)
 		}
 	}()
+
+	stopHealth, err := s.startHealthServer(ctx)
+	if err != nil {
+		return err
+	}
+	defer stopHealth()
 
 	// Derive chain params from the config network string. In lnd
 	// mode this is overwritten by the lnd connection's chain
@@ -4572,6 +4581,12 @@ func (s *Server) initRoundActor(ctx context.Context,
 	// asynchronous notifications (e.g., chain confirmations).
 	// We set it after registration since it's a circular dep.
 	roundCfg.SelfRef = roundRef
+	s.actorProbes = append(
+		s.actorProbes,
+		func(ctx context.Context) (uint64, error) {
+			return actor.Probe(ctx, roundRef)
+		},
+	)
 
 	if err := roundActor.Start(ctx); err != nil {
 		return nil, fmt.Errorf("unable to start round actor: %w", err)
@@ -4681,6 +4696,13 @@ func (s *Server) initVTXOManager(ctx context.Context,
 
 		return zero, fmt.Errorf("unable to start vtxo manager: %w", err)
 	}
+
+	s.actorProbes = append(
+		s.actorProbes,
+		func(ctx context.Context) (uint64, error) {
+			return actor.Probe(ctx, managerRef)
+		},
+	)
 
 	s.log.InfoS(ctx, "VTXO manager registered and started")
 

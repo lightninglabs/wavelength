@@ -475,6 +475,10 @@ type Config struct {
 	// non-empty listen address. A value type so a zero-value Config can
 	// never carry a nil metrics config into the start path.
 	Metrics metrics.ServerConfig `mapstructure:"metrics"`
+
+	// Health exposes unauthenticated local responsiveness checks on a
+	// separate listener. An empty address disables it.
+	Health HealthConfig `mapstructure:"health"`
 }
 
 // DBConfig groups the per-backend database tuning knobs. Only the SQLite

@@ -203,6 +203,7 @@ func newRootCmd() *cobra.Command {
 	registerPprofFlags(f, cfg)
 
 	registerMetricsFlags(f, cfg)
+	registerHealthFlags(f, cfg)
 
 	// Safety flag for mainnet operation.
 	f.Bool(
@@ -513,6 +514,16 @@ func registerMetricsFlags(f *pflag.FlagSet, cfg *waved.Config) {
 			"127.0.0.1:9092); empty disables metrics. Exposes "+
 			"operational and balance data, so bind to a "+
 			"loopback or firewalled address only",
+	)
+}
+
+// registerHealthFlags exposes the opt-in listener for local actor probes.
+func registerHealthFlags(f *pflag.FlagSet, cfg *waved.Config) {
+	f.String(
+		"health.listen", cfg.Health.ListenAddr, "address for local "+
+			"/livez and /readyz HTTP probes; empty disables "+
+			"health serving (bind to loopback or a private "+
+			"network)",
 	)
 }
 
