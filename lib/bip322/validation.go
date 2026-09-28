@@ -32,10 +32,10 @@ const (
 )
 
 const (
-	// defaultMaxProofInputs bounds proof-of-funds input count accepted
+	// DefaultMaxProofInputs bounds proof-of-funds input count accepted
 	// during validation to cap worst-case script-engine work per auth
 	// package.
-	defaultMaxProofInputs = 128
+	DefaultMaxProofInputs = 128
 )
 
 // VerificationResult contains the result of validating a BIP-322 auth package.
@@ -86,7 +86,7 @@ type validateAuthOptions struct {
 // defaultValidateAuthOptions returns default validation policy options.
 func defaultValidateAuthOptions() validateAuthOptions {
 	return validateAuthOptions{
-		maxProofInputs: defaultMaxProofInputs,
+		maxProofInputs: DefaultMaxProofInputs,
 	}
 }
 

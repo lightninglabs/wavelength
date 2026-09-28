@@ -241,10 +241,10 @@ type Manager struct {
 	// a later attempt led by the same VTXO.
 	autoRefreshCohortGeneration uint64
 
-	// adoptedAutoRefreshRelays suppresses already-queued same-block leader
-	// relays after their requests were adopted into an earlier atomic
-	// cohort. The trigger height prevents a later retry on the same
-	// outpoint from being mistaken for the adopted delivery.
+	// adoptedAutoRefreshRelays records every same-block automatic handoff,
+	// including adopted pending leaders. Keep it until a later trigger or
+	// terminal cleanup so another cohort cannot adopt an already relayed
+	// reservation and release it while the first round still owns it.
 	adoptedAutoRefreshRelays map[wire.OutPoint]int32
 
 	// roundStartupPending is true only between manager recovery and the
@@ -1560,6 +1560,7 @@ func (m *Manager) handleVTXOTerminated(ctx context.Context,
 	msg *round.VTXOTerminatedMsg) fn.Result[ManagerResp] {
 
 	delete(m.actors, msg.Outpoint)
+	delete(m.adoptedAutoRefreshRelays, msg.Outpoint)
 	m.dropReserved(msg.Outpoint)
 
 	m.logger(ctx).InfoS(ctx, "VTXO actor terminated",
@@ -1689,6 +1690,17 @@ func (m *Manager) handleRelayToRound(ctx context.Context,
 		)
 	}
 
+	// A successful handoff owns every member, not just pending leaders.
+	// Retain the marker after consuming queued leader relays as well: later
+	// cohorts can still observe these VTXOs in PendingForfeit at this
+	// height.
+	if refresh && req.Automatic {
+		m.rememberAdoptedAutoRefreshRelay(req)
+		for _, member := range cohortMembers {
+			m.rememberAdoptedAutoRefreshRelay(member.request)
+		}
+	}
+
 	return fn.Ok[ManagerResp](&RelayToRoundResp{})
 }
 
@@ -1701,6 +1713,8 @@ func (m *Manager) handleRelayToRound(ctx context.Context,
 // Cohort expansion is best-effort. A store or child failure must not delay the
 // initiating VTXO's own maintenance attempt, and each child independently
 // refuses stale, critical, reserved, or non-live requests.
+//
+//nolint:funlen
 func (m *Manager) coordinateAutoRefreshCohort(ctx context.Context,
 	req *round.RefreshVTXORequest) []autoRefreshCohortMember {
 
@@ -1763,6 +1777,8 @@ func (m *Manager) coordinateAutoRefreshCohort(ctx context.Context,
 	)
 	seen := make(map[wire.OutPoint]struct{}, cap(eligible))
 	expiryConfig := m.cfg.ExpiryConfig
+	relayed := m.adoptedAutoRefreshRelays
+	height := req.TriggerHeight
 	addCandidates := func(candidates []*Descriptor, pending bool) {
 		for _, candidate := range candidates {
 			if candidate == nil ||
@@ -1771,6 +1787,9 @@ func (m *Manager) coordinateAutoRefreshCohort(ctx context.Context,
 				candidate.BatchExpiry != req.BatchExpiry ||
 				m.isReserved(candidate.Outpoint) {
 
+				continue
+			}
+			if pending && relayed[candidate.Outpoint] == height {
 				continue
 			}
 			waitForFreeWindow := !pending &&
@@ -1956,8 +1975,9 @@ func (m *Manager) forgetAdoptedAutoRefreshRelay(req *round.RefreshVTXORequest) {
 	}
 }
 
-// consumeAdoptedAutoRefreshRelay drops exactly the queued delivery already
-// included by an earlier manager turn, without suppressing future retries.
+// consumeAdoptedAutoRefreshRelay suppresses a same-height delivery already
+// represented by an earlier handoff. Keep the marker to prevent re-adoption;
+// a later trigger height and restart can retry a released claim.
 func (m *Manager) consumeAdoptedAutoRefreshRelay(
 	req *round.RefreshVTXORequest) bool {
 
@@ -1965,8 +1985,6 @@ func (m *Manager) consumeAdoptedAutoRefreshRelay(
 	if !ok || trigger != req.TriggerHeight {
 		return false
 	}
-
-	delete(m.adoptedAutoRefreshRelays, req.VTXOOutpoint)
 
 	return true
 }

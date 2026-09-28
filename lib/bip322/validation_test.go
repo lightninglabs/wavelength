@@ -144,7 +144,7 @@ func TestValidateAuthPkgRejectsTooManyProofInputs(t *testing.T) {
 	toSpend, err := BuildToSpend(messageHash, challengeScript)
 	require.NoError(t, err)
 
-	additionalInputs := make([]AdditionalInput, defaultMaxProofInputs+1)
+	additionalInputs := make([]AdditionalInput, DefaultMaxProofInputs+1)
 	for i := 0; i < len(additionalInputs); i++ {
 		additionalInputs[i] = AdditionalInput{
 			PreviousOutPoint: wire.OutPoint{
@@ -186,7 +186,7 @@ func TestValidateAuthPkgAllowsConfiguredProofInputLimit(t *testing.T) {
 	toSpend, err := BuildToSpend(messageHash, challengeScript)
 	require.NoError(t, err)
 
-	additionalInputs := make([]AdditionalInput, defaultMaxProofInputs+1)
+	additionalInputs := make([]AdditionalInput, DefaultMaxProofInputs+1)
 	for i := 0; i < len(additionalInputs); i++ {
 		additionalInputs[i] = AdditionalInput{
 			PreviousOutPoint: wire.OutPoint{
@@ -211,7 +211,7 @@ func TestValidateAuthPkgAllowsConfiguredProofInputLimit(t *testing.T) {
 				ToSign: toSign,
 			},
 		},
-		WithMaxProofInputs(defaultMaxProofInputs+1),
+		WithMaxProofInputs(DefaultMaxProofInputs+1),
 	)
 
 	require.Equal(t, VerificationStateInconclusive, result.State)
