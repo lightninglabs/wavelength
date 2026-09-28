@@ -28,11 +28,17 @@ database boundaries. Design and flow: `docs/scheduled_batches.md`.
 
 - Registration is `[Opens, Cutoff)`. The cutoff starts quoting; it promises
   nothing about broadcast or confirmation.
-- Windows are whole seconds from ten seconds to five minutes, no longer than
-  the interval for generated schedules. Published lists may have gaps.
+- Windows are whole seconds from `MinRegistrationWindow` (10s) to
+  `MaxRegistrationWindow` (5m), no longer than the interval for generated
+  schedules. Published lists may have gaps. The floor is what leaves room for
+  the full clock-error margin plus join preparation; operators should prefer a
+  one-minute window for mobile clients.
 - The identity preimage format is fixed; changing it invalidates every
   outstanding selection.
-- `WakeBounds` keeps `lo = 2s` and `hi = window/2` for validated windows.
+- `WakeBounds` keeps `lo = MaxWakeMargin` (2s) and `hi = window/2` for
+  validated windows. `MaxWakeMargin` is also the margin a caller adds before
+  asking `Published.Next`, so a slot that closes within it is skipped rather
+  than pinned to an attempt that could only fail.
 
 ## Relationships
 

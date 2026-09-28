@@ -35,10 +35,16 @@ Proto source: `arkrpc/ark.proto`, `arkrpc/indexer.proto`.
 ## Invariants
 
 - `BatchSchedule` (version 1) publishes an opaque schedule ID, the operator's
-  clock, and up to 32 concrete registration windows. `ParseBatchSchedule`
-  validates the list on its own terms, keeps `server_time_unix`, and fails on
-  any malformed or unknown-version schedule rather than falling back to
-  event-driven registration. See `docs/scheduled_batches.md`.
+  clock, and up to `batchschedule.MaxPublishedSlots` (32) concrete
+  registration windows; `PublishedBatchSlots` (8) is how many an
+  interval-based operator advertises per response. `ParseBatchSchedule`
+  returns `fn.Option[batchschedule.Published]` — a nil message means the
+  operator uses event-driven registration and yields `None` with no error.
+  It validates the list on its own terms, keeps `server_time_unix`, and
+  fails on any malformed or unknown-version schedule rather than falling
+  back to event-driven registration, because an operator that publishes a
+  schedule will reject joins that carry no slot. See
+  `docs/scheduled_batches.md`.
 
 - **Never edit generated code** — regenerate via `make rpc`.
 - Conversion round-trip: `TreePathFromTree(t)` → `TreePathToTree(pb)` must

@@ -283,6 +283,22 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   retry that reaches the in-memory admission winner before its attempt commits
   returns the stable session id with no unproven outpoints; a later retry
   resolves them from the committed attempt.
+- **`ListOORSessions` / `GetOORSession` read the scalar status store, not
+  the registry actor.** Both go through `db.OORStatusStore`, so a small
+  status request no longer deserializes complete transfer history; only
+  the sessions on the selected page get their bindings and outgoing
+  diagnostics hydrated (via `oor.FillOutgoingSummary`, whose decode
+  failures downgrade to a warning plus coarse metadata). Package
+  precedence, the direction and status filters, and malformed-snapshot
+  warnings all match the old actor path. Live actor summaries are still
+  read through the registry for metrics.
+- **OOR status ordering is newest-first by creation time**, with the
+  stored session ID as a deterministic tie-breaker, replacing the previous
+  arbitrary displayed-hash order. `decodeOORStatusCursor` accepts only the
+  versioned opaque cursor that encodes both fields; a legacy ID-only page
+  token is rejected with `codes.InvalidArgument` and a restart
+  instruction, because its ordering cannot be safely continued under the
+  new one. Registry timestamps are now exposed for pending sessions too.
 - `Unroll` / `GetUnrollStatus` return `codes.Unavailable` (not `Internal`)
   when the unroll subsystem refs are not yet set, so clients can retry.
 - `initUnrollSubsystem` configures a fixed 2 sat/vB exit-sweep fallback only
@@ -348,7 +364,24 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   window start (`FirstRejectUnixNanos`) in the outgoing snapshot (version 5)
   so the bound survives restarts.
 - `operatorTermsFromResponse` and daemon `GetInfo` must preserve
-  `FreeRefreshWindowBlocks` end to end.
+  `FreeRefreshWindowBlocks` end to end. It also parses `BatchSchedule`
+  through `arkrpc.ParseBatchSchedule`, and a malformed schedule fails the
+  negotiation rather than degrading to event-driven registration.
+- **`Server.roundOperatorTerms` is the scheduled-discovery refresh**, wired
+  to the round actor as `roundTermsSource` (implementing
+  `round.OperatorTermsSource`). An event-driven operator's cached terms are
+  returned as is. A scheduled operator's are fetched fresh for every
+  attempt, because its published slot list rolls forward every interval.
+  The RPC is bracketed by `time.Now()` on both sides so
+  `batchschedule.EstimateClockOffset` can place the operator's clock
+  reading between them; the offset is attached with `WithClockOffset` and
+  logged at Info only past `clockOffsetLogThreshold` (1 h), where it
+  signals a badly skewed host rather than ordinary jitter. Two properties
+  are load-bearing: the returned snapshot is **private to the attempt**, so
+  it never overwrites a concurrent refresh of the shared cache, and
+  personalized limits (`MaxVTXOAmount`, `MaxUserBalance`) are carried over
+  from the authenticated cached terms, since this response carries only the
+  generic values.
 - `RPCServer.OperatorVTXOFloor` refreshes authenticated operator terms for
   each credit materialization decision and bounds that refresh with
   `operatorTermsRefreshTimeout` (30 s). Its callers use daemon/actor lifetime

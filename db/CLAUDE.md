@@ -121,7 +121,25 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 21` — current schema version.
+- `OORStatusStore` — read-only scalar status projection over the
+  `oor_status` view (`NewOORStatusStore`, `List`, `Get`). It answers
+  status RPCs without deserializing Ark PSBTs or checkpoint rows:
+  metadata, filters, package precedence, and the page limit are all
+  resolved in SQL, and only the selected sessions have their VTXO
+  bindings and outgoing diagnostics hydrated.
+- `OORStatusSummary` — one projected session: the scalar
+  `sqlc.OorStatus` metadata, `ConsumedOutpoints` / `CreatedOutpoints`
+  from the package bindings, and an optional `Registry` snapshot that
+  supplies outgoing inputs and retry diagnostics the bindings lack.
+- `OORStatusCursor` — `{CreatedAt, SessionID}` keyset position for
+  newest-first paging. It carries the timestamp, so continuation does
+  not require the cursor row to still exist. A nil cursor starts at the
+  newest session; `direction` zero and `status` -1 disable their filters.
+- `SQLiteOpenConfig` / `SQLiteOpenResult` / `OpenSQLiteDatabase` —
+  driver-neutral SQLite open surface shared by the native, CGO, and
+  browser handles (`sqlite_open.go`). Each build tag supplies its own
+  `openSQLiteDatabase`; `configureSQLitePool` applies the pool bounds.
+- `LatestMigrationVersion = 25` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -293,6 +311,40 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
 - The handle is single-connection (`SetMaxOpenConns(1)`); multiple SQL
   connections would race the same database through one worker.
 
+### CGO SQLite (`sqlite_cgo` build tag)
+
+- **Why a second SQLite driver exists.** Android's application sandbox
+  can block the raw Linux syscalls modernc/libc issues during database
+  startup, so Android bindings build with `sqlite_cgo` and get mattn
+  SQLite compiled against the host C library instead. iOS and desktop
+  keep modernc (`sqlite_open_native.go`). The tag is also selectable on
+  the host, which is what lets CI exercise both backends against the
+  same schema, sqlc queries, and SDK API.
+- **`$N` is rewritten to `?N`, not to `?`.** sqlc emits PostgreSQL-style
+  numbered placeholders. SQLite assigns `$N` slots by first appearance
+  while modernc treats `N` as the argument ordinal, so `cgoSQLiteDriver`
+  registers itself as `wavelength-sqlite3` and rewrites `$N` → `?N` on
+  every path `database/sql` can reach: `Prepare`, `PrepareContext`, and
+  the fast `ExecContext` / `QueryContext` routes. `?N` preserves the
+  ordinal even for reordered or repeated parameters. The rewrite runs
+  through `sqliteTokens`, which skips literals, quoted identifiers,
+  comments, and Tcl-style named parameters so it cannot corrupt query
+  text.
+- **Pragmas travel as DSN options so pooled handles keep them.**
+  `openSQLiteDatabase` maps `foreign_keys`, `journal_mode`,
+  `busy_timeout`, `synchronous`, and `fullfsync` to `_`-prefixed DSN
+  keys, and rejects any other pragma: mattn silently ignores unknown DSN
+  keys, so failing loudly is what stops a new setting from losing its
+  semantics on this backend only. `fullfsync` has no mattn DSN option,
+  so the driver parses it out itself and executes
+  `sqlite_fullfsync.sql` on every new connection — pool growth and
+  handle replacement included.
+- `mapSQLiteError` (`sqlerrors_cgo.go`) preserves the retry
+  classification the native driver produces. Extended codes are checked
+  first, because `BUSY_SNAPSHOT` requires restarting the transaction
+  (`ErrDeadlockError`) while plain `BUSY` can wait for the other writer
+  (`ErrSerializationError`).
+
 ### Migration baseline
 
 The migration history was squashed to a domain-grouped baseline ahead of
@@ -392,6 +444,12 @@ when adding one.
   missing net exit-send row from the surviving refresh-send and exit-fee rows,
   repairing the overstated VTXO balance atomically with the key rewrite.
 
+- `000020_taproot_asset_vtxo_state` — the asset columns on `vtxos`
+  (commitment root, opaque asset reference, uint64 units, optional sealed
+  leaf package). See the asset-identity invariant above: these fields are
+  one identity, and a partial or contradictory write is rejected rather
+  than stored.
+
 - `000021_round_admission_deadlines` — records accepted attempt expiry and
   closure separately from signature checkpoints. Deadline constraints only
   shorten the saved budget. Startup closes interrupted admissions without
@@ -399,11 +457,30 @@ when adding one.
   boundary remains authoritative. `CommitState` closes admission atomically
   with its signature-bearing checkpoint.
 
+- `000022_owned_wallet_scripts` — the mint-time ownership oracle. See the
+  `owned_wallet_scripts` invariant above: there is no backfill, so an
+  absent script reads as "not known to be ours" for good.
+
+- `000023_deposit_funding_inputs` — `ledger_deposit_funding_inputs`,
+  ledger-internal plumbing recording which outpoints funded which
+  boarding deposit (no amount), so the two independent messages about a
+  recycled own-wallet coin reconcile in either commit order.
+
 - `000024_round_output_provenance` — retains each requested output's local
   accounting origin and optional refresh source outpoint in the signature
   checkpoint. Recovery preserves boarding, refresh, transfer, and automatic
   refresh classification, including distinct refreshes with identical scripts.
   Legacy requests retain unknown origin and no source; no pairing is guessed.
+
+- `000025_oor_status_cursor` — creation-time indexes plus the scalar
+  `oor_package_status` / `oor_registry_status` / `oor_status` views that
+  back `OORStatusStore`. It adds no columns and changes no writer. The
+  two sources are kept **disjoint** — `oor_package_status` covers only
+  packages with no registry row — so one session can never occupy two
+  positions in a page. Registry creation time belongs to the session and
+  stays stable when artifacts arrive later; package metadata still wins
+  for direction and completion, including an outgoing session whose
+  change is later observed by an incoming actor.
 
 ## Deep Docs
 

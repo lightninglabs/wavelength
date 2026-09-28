@@ -64,6 +64,17 @@ state transitions and validation rules live under [Invariants](#invariants).
 - `OwnedScriptRegistrar` — `RegisterOwnedScript(ctx, pkScript, ownerKey)`.
   Called at intent-build time for change/refresh outputs and inside
   `handleRegisterIntent` for entries with a non-zero `KeyLocator`.
+- `OperatorTermsSource` — `FreshOperatorTerms(ctx) (*types.OperatorTerms,
+  error)`. `ClientEnvironment.OperatorTerms` is the snapshot an attempt
+  reads the operator key, amount limits, and exit delays from, and it is
+  captured once when the round actor is built. A scheduled operator's
+  published slot list rolls forward every interval, so that snapshot goes
+  stale for slot selection alone: an attempt fetches fresh terms exactly
+  once, when it selects its slot, and pins them for the rest of the
+  attempt. The implementation also times the fetch, which is where the
+  operator's clock offset estimate comes from. Nil keeps `OperatorTerms`
+  static for every attempt. Implemented in production by
+  `waved.roundTermsSource`.
 - `VTXOStore`, `RoundStore` — VTXO and round FSM persistence.
   `RoundStore.FailRound(ctx, roundID)` is the terminal-failure
   counterpart to `FinalizeRound`: it retires a checkpointed round's row
@@ -176,13 +187,25 @@ state transitions and validation rules live under [Invariants](#invariants).
 ## Invariants
 
 - **Scheduled registration** (`scheduled_registration.go`) refreshes terms
-  through `OperatorTermsSource` (five-second deadline), selects the next
-  published slot on the operator's clock (local time plus the estimated
-  offset), and pins a `scheduledAttempt`. The join is sent at a wake time drawn
-  uniformly in `[opens+lo, opens+hi]` from `batchschedule.WakeBounds`, never at
-  the opening itself, which absorbs clock error and spreads a slot's joins.
-  With less than `lo` left before the cutoff, both the wait and the pre-send
-  check fail the attempt locally; a pinned slot never slides to a later one.
+  through `OperatorTermsSource.FreshOperatorTerms` (five-second deadline),
+  selects a published slot on the operator's clock (local time plus the
+  estimated offset), and pins a `scheduledAttempt`. The join is sent at a wake
+  time drawn uniformly in `[opens+lo, opens+hi]` from
+  `batchschedule.WakeBounds`, never at the opening itself, which absorbs clock
+  error and spreads a slot's joins. The jitter only spreads load over time, so
+  it does not need cryptographic randomness.
+- **Slot selection skips a slot that closes within the send margin.**
+  Selection asks for `Published.Next(operatorNow + batchschedule.MaxWakeMargin)`
+  rather than `Next(operatorNow)`, because an attempt pinned to a slot with
+  less than `MaxWakeMargin` (2 s) left could only fail its own pre-send check,
+  while the next slot is still reachable. Once pinned, a slot never slides
+  forward: with less than `lo` left before the cutoff, both the wait and the
+  pre-send check fail the attempt locally.
+- **`JoinRoundRequest.BatchSlot` is `fn.Option[batchschedule.Selection]`**,
+  and `ClientEnvironment.batchSlot()` returns `None` when no attempt is
+  pinned. The selection is signed into the join-auth TLV (records 8 and 9;
+  see `lib/types/CLAUDE.md`), so the operator admits the join only into the
+  collector the client committed to.
 
 
 - **A leave's own-wallet flag is local-only.** `types.LeaveRequest.DestinationOwnWallet` rides from the wallet through `roundLedgerOutflows` into `RoundLedgerOutflow.ProceedsOwnWallet` and on to `ledger.VTXOSentMsg`. It is never serialized onto the join-round wire; the operator has no business knowing whose wallet a leave pays. A nil leave request keeps the conservative false.
