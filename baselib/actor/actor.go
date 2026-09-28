@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lightningnetwork/lnd/fn/v2"
@@ -96,6 +97,10 @@ type ActorConfig[M Message, R any] struct {
 // nil, it signifies a "tell" operation (fire-and-forget). The callerCtx allows
 // actors to respect request-scoped deadlines and cancellation.
 type envelope[M Message, R any] struct {
+	// probe is an internal, side-effect-free receive-loop acknowledgement.
+	// It never reaches the behavior or dead-letter office.
+	probe chan struct{}
+
 	message   M
 	promise   Promise[R]
 	callerCtx context.Context
@@ -148,6 +153,15 @@ type Actor[M Message, R any] struct {
 
 	// stopOnce ensures the actor's processing loop is stopped only once.
 	stopOnce sync.Once
+
+	// probeMu guards the single outstanding probe, including after a caller
+	// times out. It is never held while waiting for the actor.
+	probeMu   sync.Mutex
+	probeDone chan struct{}
+
+	// completed counts finished turns, including internal probe replies.
+	// Health checks distinguish a busy receive loop from a stuck one.
+	completed atomic.Uint64
 
 	// ref is the cached ActorRef for this actor.
 	ref ActorRef[M, R]
@@ -218,6 +232,12 @@ func (a *Actor[M, R]) process() {
 	// Process messages from the mailbox using the iterator pattern. The
 	// iterator will stop when the actor's context is cancelled.
 	for env := range a.mailbox.Receive(a.ctx) {
+		if env.probe != nil {
+			a.completed.Add(1)
+			close(env.probe)
+			continue
+		}
+
 		// For Ask messages, merge the actor's context with the
 		// caller's context so the behavior can detect both actor
 		// shutdown and caller deadline expiration. For Tell messages,
@@ -241,6 +261,7 @@ func (a *Actor[M, R]) process() {
 		result := a.behavior.Receive(processCtx, env.message)
 
 		cancel()
+		a.completed.Add(1)
 
 		// If a promise was provided (i.e., it was an "ask" operation),
 		// complete the promise with the result from the behavior.
@@ -258,6 +279,11 @@ func (a *Actor[M, R]) process() {
 	// was closed.
 	drainedCount := 0
 	for env := range a.mailbox.Drain() {
+		// Shutdown wakes probe callers through a.ctx, never as success.
+		if env.probe != nil {
+			continue
+		}
+
 		drainedCount++
 
 		logger(a.ctx).TraceS(a.ctx, "Draining message from terminated "+
