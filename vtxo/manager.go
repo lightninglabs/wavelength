@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sort"
 	"time"
 
@@ -487,9 +488,18 @@ func (m *Manager) detachedReserve(ctx context.Context, ref VTXOActorRef,
 func (m *Manager) askForfeitVTXOActor(ctx context.Context, ref VTXOActorRef,
 	msg actormsg.VTXOActorMsg) fn.Result[actormsg.VTXOActorResp] {
 
+	return askVTXOActor(ctx, ref, msg, m.forfeitVTXOActorAskTimeout())
+}
+
+// askVTXOActor bounds both enqueue and response waiting while preserving the
+// caller's cancellation. Startup reconciliation uses it outside manager turns.
+func askVTXOActor(ctx context.Context, ref VTXOActorRef,
+	msg actormsg.VTXOActorMsg,
+	timeout time.Duration) fn.Result[actormsg.VTXOActorResp] {
+
 	askCtx := ctx
 	cancel := func() {}
-	if timeout := m.forfeitVTXOActorAskTimeout(); timeout > 0 {
+	if timeout > 0 {
 		askCtx, cancel = context.WithTimeout(ctx, timeout)
 	}
 	defer cancel()
@@ -724,12 +734,10 @@ func (m *Manager) Receive(ctx context.Context,
 	}
 }
 
-// handleReconcileExpiry applies the current chain tip to every recovered VTXO
-// after the round actor has registered. A Live VTXO needs one event to persist
-// Expired and a second to enter the ordinary refresh flow; a VTXO recovered in
-// Expired needs only the latter. Querying the tip explicitly also covers chain
-// backends whose subscription starts after the current epoch and therefore
-// emits nothing until the next block.
+// handleReconcileExpiry prepares a startup pass after round registration.
+// Orphan release and the actor-reference snapshot stay serialized here, but
+// the caller must drive child actors outside this turn: their outboxes can
+// send back to this manager and need its mailbox to keep draining.
 func (m *Manager) handleReconcileExpiry(
 	ctx context.Context) fn.Result[ManagerResp] {
 
@@ -743,12 +751,6 @@ func (m *Manager) handleReconcileExpiry(
 	// while the round actor was still starting. Release that startup
 	// reservation before driving the now-ready refresh path.
 	m.releaseOrphanedForfeits(ctx)
-
-	// Finalizing a round and notifying each old VTXO are separate outbox
-	// effects. A crash between them leaves the round durably confirmed but
-	// its VTXO actor restored in Forfeiting. Re-drive those confirmations
-	// on this serialized manager turn before broadcasting the startup tip.
-	confirmedForfeits := m.reconcileConfirmedForfeits(ctx)
 
 	result := m.cfg.ChainSource.Ask(
 		ctx, &chainsource.BestHeightRequest{},
@@ -769,23 +771,37 @@ func (m *Manager) handleReconcileExpiry(
 		)
 	}
 
-	epoch := &BlockEpochEvent{
-		Height: tip.Height,
-		Hash:   tip.Hash,
-	}
+	return fn.Ok[ManagerResp](&expiryReconcilePlan{
+		actors:  maps.Clone(m.actors),
+		store:   m.cfg.Store,
+		log:     m.logger(ctx),
+		timeout: m.forfeitVTXOActorAskTimeout(),
+		epoch:   BlockEpochEvent{Height: tip.Height, Hash: tip.Hash},
+	})
+}
+
+// run applies the startup tip sequentially without occupying the manager's
+// receive loop. A newly expired VTXO needs a second event to begin refresh.
+// The caller owns this pass and waits for it; no detached work survives it.
+func (p *expiryReconcilePlan) run(
+	ctx context.Context) fn.Result[*ReconcileExpiryResponse] {
+
+	confirmedForfeits := p.reconcileConfirmedForfeits(ctx)
+	epoch := &p.epoch
 
 	var checked int
-	for outpoint, ref := range m.actors {
+	for outpoint, ref := range p.actors {
+		if err := ctx.Err(); err != nil {
+			return fn.Err[*ReconcileExpiryResponse](err)
+		}
 		if _, confirmed := confirmedForfeits[outpoint]; confirmed {
 			continue
 		}
 
-		actorResult := m.askForfeitVTXOActor(ctx, ref, epoch)
+		actorResult := askVTXOActor(ctx, ref, epoch, p.timeout)
 		actorResponse, err := actorResult.Unpack()
 		if err != nil {
-			m.logger(ctx).WarnS(
-				ctx,
-				"Startup VTXO expiry check failed",
+			p.log.WarnS(ctx, "Startup VTXO expiry check failed",
 				err,
 				slog.String("outpoint", outpoint.String()),
 			)
@@ -796,7 +812,7 @@ func (m *Manager) handleReconcileExpiry(
 		checked++
 		transition, ok := actorResponse.(VTXOActorResponse)
 		if !ok {
-			m.logger(ctx).WarnS(
+			p.log.WarnS(
 				ctx, "Unexpected startup VTXO response", nil,
 				slog.String("outpoint", outpoint.String()),
 				slog.String(
@@ -814,23 +830,24 @@ func (m *Manager) handleReconcileExpiry(
 			continue
 		}
 
-		_, err = m.askForfeitVTXOActor(ctx, ref, epoch).Unpack()
+		_, err = askVTXOActor(ctx, ref, epoch, p.timeout).Unpack()
 		if err != nil {
-			m.logger(ctx).WarnS(
-				ctx,
-				"Startup expired VTXO refresh failed",
+			p.log.WarnS(ctx, "Startup expired VTXO refresh failed",
 				err,
 				slog.String("outpoint", outpoint.String()),
 			)
 		}
 	}
 
-	m.logger(ctx).InfoS(ctx, "Startup VTXO expiry check complete",
+	if err := ctx.Err(); err != nil {
+		return fn.Err[*ReconcileExpiryResponse](err)
+	}
+	p.log.InfoS(ctx, "Startup VTXO expiry check complete",
 		slog.Int("checked", checked),
-		slog.Int("height", int(tip.Height)),
+		slog.Int("height", int(epoch.Height)),
 	)
 
-	return fn.Ok[ManagerResp](&ReconcileExpiryResponse{
+	return fn.Ok(&ReconcileExpiryResponse{
 		Checked: checked,
 	})
 }
@@ -840,18 +857,16 @@ func (m *Manager) handleReconcileExpiry(
 // joined settlement with a positive confirmation height is durable proof that
 // the consuming round confirmed; absent or incomplete settlement data and all
 // lookup/actor errors fail closed in Forfeiting.
-func (m *Manager) reconcileConfirmedForfeits(
+func (p *expiryReconcilePlan) reconcileConfirmedForfeits(
 	ctx context.Context,
 ) map[wire.OutPoint]struct{} {
 
 	reconciled := make(map[wire.OutPoint]struct{})
-	forfeiting, err := m.cfg.Store.ListVTXOsByStatus(
+	forfeiting, err := p.store.ListVTXOsByStatus(
 		ctx, VTXOStatusForfeiting,
 	)
 	if err != nil {
-		m.logger(ctx).WarnS(
-			ctx,
-			"Confirmed forfeit reconcile: list failed",
+		p.log.WarnS(ctx, "Confirmed forfeit reconcile: list failed",
 			err,
 		)
 
@@ -859,6 +874,9 @@ func (m *Manager) reconcileConfirmedForfeits(
 	}
 
 	for _, desc := range forfeiting {
+		if ctx.Err() != nil {
+			return reconciled
+		}
 		if desc == nil || desc.Settlement.IsNone() {
 			continue
 		}
@@ -870,9 +888,9 @@ func (m *Manager) reconcileConfirmedForfeits(
 			continue
 		}
 
-		ref, ok := m.actors[desc.Outpoint]
+		ref, ok := p.actors[desc.Outpoint]
 		if !ok {
-			m.logger(ctx).WarnS(
+			p.log.WarnS(
 				ctx,
 				"Confirmed forfeit reconcile: actor missing",
 				nil,
@@ -886,14 +904,14 @@ func (m *Manager) reconcileConfirmedForfeits(
 			continue
 		}
 
-		response, err := m.askForfeitVTXOActor(
+		response, err := askVTXOActor(
 			ctx, ref, &round.ForfeitConfirmedEvent{
 				CommitmentTxID: settlement.TxID,
 				BlockHeight:    settlement.Height,
-			},
+			}, p.timeout,
 		).Unpack()
 		if err != nil {
-			m.logger(ctx).WarnS(
+			p.log.WarnS(
 				ctx,
 				"Confirmed forfeit reconcile: actor failed",
 				err,
@@ -905,7 +923,7 @@ func (m *Manager) reconcileConfirmedForfeits(
 
 		transition, ok := response.(VTXOActorResponse)
 		if !ok {
-			m.logger(ctx).WarnS(
+			p.log.WarnS(
 				ctx,
 				"Confirmed forfeit reconcile: bad response",
 				nil,
@@ -919,7 +937,7 @@ func (m *Manager) reconcileConfirmedForfeits(
 			continue
 		}
 		if _, ok := transition.NewState.(*ForfeitedState); !ok {
-			m.logger(ctx).WarnS(
+			p.log.WarnS(
 				ctx,
 				"Confirmed forfeit reconcile: not terminal",
 				nil,
@@ -936,7 +954,7 @@ func (m *Manager) reconcileConfirmedForfeits(
 		reconciled[desc.Outpoint] = struct{}{}
 	}
 
-	m.logger(ctx).InfoS(ctx, "Confirmed forfeit reconcile complete",
+	p.log.InfoS(ctx, "Confirmed forfeit reconcile complete",
 		slog.Int("forfeiting", len(forfeiting)),
 		slog.Int("reconciled", len(reconciled)),
 	)

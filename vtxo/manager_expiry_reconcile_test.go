@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/chainsource"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
+	"github.com/lightninglabs/wavelength/round"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -192,7 +194,7 @@ func TestReconcileExpiryUsesCurrentTip(t *testing.T) {
 		),
 	}
 
-	response, err := mgr.handleReconcileExpiry(t.Context()).Unpack()
+	response, err := runTestExpiryReconcile(t, mgr).Unpack()
 	require.NoError(t, err)
 	require.False(t, mgr.roundStartupPending)
 	reconcileResponse, ok := response.(*ReconcileExpiryResponse)
@@ -264,7 +266,7 @@ func TestReconcileExpiryRetriesDeferredExpiredRefresh(t *testing.T) {
 	require.IsType(t, &ExpiredState{}, vtxoActor.state)
 
 	roundActor.tellErr = nil
-	_, err = mgr.handleReconcileExpiry(t.Context()).Unpack()
+	_, err = runTestExpiryReconcile(t, mgr).Unpack()
 	require.NoError(t, err)
 	require.False(t, mgr.roundStartupPending)
 
@@ -307,7 +309,7 @@ func TestReconcileExpiryContinuesRecoveredExpired(t *testing.T) {
 		),
 	}
 
-	_, err := mgr.handleReconcileExpiry(t.Context()).Unpack()
+	_, err := runTestExpiryReconcile(t, mgr).Unpack()
 	require.NoError(t, err)
 	require.IsType(
 		t, &PendingForfeitState{}, actorState(t, mgr, expired.Outpoint),
@@ -385,7 +387,7 @@ func TestReconcileExpiryFinalizesConfirmedForfeitCrashGap(t *testing.T) {
 		actorFailure.Outpoint: failedRef,
 	}
 
-	response, err := mgr.handleReconcileExpiry(t.Context()).Unpack()
+	response, err := runTestExpiryReconcile(t, mgr).Unpack()
 	require.NoError(t, err)
 	reconcileResponse, ok := response.(*ReconcileExpiryResponse)
 	require.True(t, ok)
@@ -419,8 +421,210 @@ func TestReconcileConfirmedForfeitsListErrorFailsClosed(t *testing.T) {
 	mgr := NewManager(&ManagerConfig{Store: store})
 	mgr.actors[desc.Outpoint] = ref
 
-	reconciled := mgr.reconcileConfirmedForfeits(t.Context())
+	plan := &expiryReconcilePlan{
+		actors:  mgr.actors,
+		store:   store,
+		log:     mgr.logger(t.Context()),
+		timeout: defaultForfeitVTXOActorAskTimeout,
+	}
+	reconciled := plan.reconcileConfirmedForfeits(t.Context())
 	require.Empty(t, reconciled)
 	require.IsType(t, &ForfeitingState{}, ref.state)
+	store.AssertExpectations(t)
+}
+
+// runTestExpiryReconcile drives the prepared pass outside the manager turn
+// for the synchronous state-machine fixtures above.
+func runTestExpiryReconcile(t *testing.T, mgr *Manager) fn.Result[ManagerResp] {
+	t.Helper()
+	response, err := mgr.handleReconcileExpiry(t.Context()).Unpack()
+	if err != nil {
+		return fn.Err[ManagerResp](err)
+	}
+	plan, ok := response.(*expiryReconcilePlan)
+	require.True(t, ok)
+
+	result, err := plan.run(t.Context()).Unpack()
+	if err != nil {
+		return fn.Err[ManagerResp](err)
+	}
+
+	return fn.Ok[ManagerResp](result)
+}
+
+// busyManagerRef inserts ordinary manager traffic ahead of a child's reply.
+// With a one-slot mailbox the child can finish only if the manager keeps
+// draining while the startup caller waits for that child.
+type busyManagerRef struct {
+	actor.ActorRef[ManagerMsg, ManagerResp]
+}
+
+// Tell queues competing traffic before delivering the real child outbox.
+func (b busyManagerRef) Tell(ctx context.Context, msg ManagerMsg) error {
+	if err := b.ActorRef.Tell(
+		ctx, &GetActiveVTXOCountRequest{},
+	); err != nil {
+		return err
+	}
+
+	return b.ActorRef.Tell(ctx, msg)
+}
+
+// TestReconcileExpiryDrainsChildRelays uses real bounded mailboxes and real
+// VTXO FSMs. Every recovered expired child must reach round without burning
+// its ask deadline or losing the relay behind a busy manager mailbox.
+func TestReconcileExpiryDrainsChildRelays(t *testing.T) {
+	t.Parallel()
+	h := newVTXOTestHarness(t)
+	roundRef := newMockRoundActorRef(t)
+	const children = 8
+	descs := make([]*Descriptor, children)
+	for i := range descs {
+		descs[i] = h.newTestDescriptor()
+		descs[i].Outpoint.Index = uint32(i)
+		h.store.On("UpdateVTXOStatus", mock.Anything,
+			descs[i].Outpoint, VTXOStatusPendingForfeit,
+		).Return(nil).Once()
+	}
+	h.store.On("ListVTXOsByStatus", mock.Anything,
+		VTXOStatusPendingForfeit,
+	).Return([]*Descriptor{}, nil)
+	h.store.On("ListVTXOsByStatus", mock.Anything,
+		VTXOStatusForfeiting,
+	).Return([]*Descriptor{}, nil)
+	mgr := NewManager(
+		&ManagerConfig{
+			Store:      h.store,
+			RoundActor: roundRef,
+			ChainSource: &bestHeightRef{
+				height: descs[0].BatchExpiry,
+			},
+			ForfeitVTXOActorAskTimeout:           time.Second,
+			DeferAutomaticRefreshUntilRoundReady: true,
+		},
+	)
+	managerActor := actor.NewActor(actor.ActorConfig[
+		ManagerMsg,
+		ManagerResp,
+	]{
+		ID: "startup-manager", Behavior: mgr, MailboxSize: 1,
+	})
+	t.Cleanup(managerActor.Stop)
+	for _, desc := range descs {
+		child := newRefreshTestActor(h, desc, nil, nil)
+		child.state = &ExpiredState{VTXO: desc}
+		child.cfg.Manager = busyManagerRef{managerActor.Ref()}
+		childActor := actor.NewActor(actor.ActorConfig[
+			actormsg.VTXOActorMsg, actormsg.VTXOActorResp,
+		]{ID: desc.Outpoint.String(), Behavior: child, MailboxSize: 1})
+		mgr.actors[desc.Outpoint] = childActor.Ref()
+		childActor.Start()
+		t.Cleanup(childActor.Stop)
+	}
+	managerActor.Start()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	result, err := ReconcileExpiry(ctx, managerActor.Ref())
+	require.NoError(t, err)
+	require.Equal(t, children, result.Checked)
+
+	// A manager ask is a FIFO barrier after the final child relay.
+	_, err = managerActor.Ref().Ask(ctx,
+		&GetActiveVTXOCountRequest{},
+	).Await(ctx).Unpack()
+	require.NoError(t, err)
+	messages := roundRef.getMessages()
+	require.Len(t, messages, children)
+	seen := make(map[wire.OutPoint]bool)
+	for _, msg := range messages {
+		req, ok := msg.(*round.RefreshVTXORequest)
+		require.True(t, ok)
+		require.False(t, seen[req.VTXOOutpoint])
+		seen[req.VTXOOutpoint] = true
+	}
+	h.store.AssertExpectations(t)
+}
+
+// TestReconcileExpiryCancellationKeepsManagerResponsive proves a child wait
+// neither owns the manager registry nor escapes the startup caller's lifetime.
+// A termination can remove the snapshotted child while the pass is waiting.
+func TestReconcileExpiryCancellationKeepsManagerResponsive(t *testing.T) {
+	t.Parallel()
+	desc := makeDescriptor(t, 50_000, 0)
+	store := &MockVTXOStore{}
+	for _, status := range []VTXOStatus{
+		VTXOStatusPendingForfeit, VTXOStatusForfeiting,
+	} {
+		store.On("ListVTXOsByStatus", mock.Anything, status).
+			Return([]*Descriptor{}, nil)
+	}
+	started := make(chan struct{})
+	behavior := actor.NewFunctionBehavior(func(ctx context.Context,
+		_ actormsg.VTXOActorMsg) fn.Result[actormsg.VTXOActorResp] {
+
+		close(started)
+		<-ctx.Done()
+
+		return fn.Err[actormsg.VTXOActorResp](ctx.Err())
+	})
+	child := actor.NewActor(actor.ActorConfig[
+		actormsg.VTXOActorMsg, actormsg.VTXOActorResp,
+	]{
+		ID:          "blocked-child",
+		Behavior:    behavior,
+		MailboxSize: 1,
+	})
+	child.Start()
+	t.Cleanup(child.Stop)
+	mgr := NewManager(&ManagerConfig{
+		Store:       store,
+		ChainSource: &bestHeightRef{height: desc.BatchExpiry},
+	})
+	mgr.actors[desc.Outpoint] = child.Ref()
+	managerActor := actor.NewActor(actor.ActorConfig[
+		ManagerMsg,
+		ManagerResp,
+	]{
+		ID: "responsive-manager", Behavior: mgr, MailboxSize: 1,
+	})
+	managerActor.Start()
+	t.Cleanup(managerActor.Stop)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := ReconcileExpiry(ctx, managerActor.Ref())
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("startup did not reach the child")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("startup returned before its child completed: %v", err)
+
+	default:
+	}
+	_, err := managerActor.Ref().Ask(ctx, &round.VTXOTerminatedMsg{
+		Outpoint: desc.Outpoint,
+	}).Await(ctx).Unpack()
+	require.NoError(t, err)
+	response, err := managerActor.Ref().Ask(ctx,
+		&GetActiveVTXOCountRequest{},
+	).Await(ctx).Unpack()
+	require.NoError(t, err)
+	count, ok := response.(*GetActiveVTXOCountResponse)
+	require.True(t, ok)
+	require.Zero(t, count.Count)
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+
+	case <-time.After(time.Second):
+		t.Fatal("startup pass survived caller cancellation")
+	}
 	store.AssertExpectations(t)
 }

@@ -354,6 +354,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `operatorTermsRefreshTimeout` (30 s). Its callers use daemon/actor lifetime
   contexts, so removing this local timeout can park boot reconciliation or a
   settled-receive actor turn forever on a stalled operator.
+- Startup calls `vtxo.ReconcileExpiry` after round registration and waits for
+  the pass before starting the remaining wallet-dependent actors. The helper
+  drives recovered children outside the VTXO manager receive loop so their
+  refresh relays and termination notifications can drain during the pass.
 - `deriveIdentityKeyEarly` publishes `clientKeyDesc` before mailbox bootstrap.
   `GetInfo` reuses this descriptor instead of deriving the same key for every
   status request because btcwallet-backed derivation opens a wallet database
