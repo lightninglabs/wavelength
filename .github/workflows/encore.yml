@@ -1,0 +1,37 @@
+name: encore
+
+# A reclaimed or drained node can stop a self-hosted runner mid-job. Inspect
+# the completed run from a separate, GitHub-hosted runner and retry failed jobs
+# only when every failure looks like infrastructure.
+#
+# Implementation and docs: https://github.com/lightninglabs/encore
+# This workflow takes effect only after it lands on main.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  actions: write # rerun-failed-jobs
+  checks: read # read the annotations that identify a lost runner
+
+# A retry keeps the run ID, so include the attempt to allow subsequent retries
+# while serializing duplicate completion events for the same attempt.
+concurrency:
+  group: encore-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    # Human cancellations and runs superseded by newer pushes have conclusion
+    # cancelled. Restricting this to failure keeps those runs cancelled.
+    if: github.event.workflow_run.conclusion == 'failure'
+    uses: lightninglabs/encore/.github/workflows/retry.yml@v1
+    with:
+      run_id: ${{ github.event.workflow_run.id }}
+      max_attempts: 3
+      # A runner shut down gracefully can report this instead of losing
+      # communication. Every CI matrix disables fail-fast, so a failed sibling
+      # cannot produce this cancellation signal in another matrix job.
+      extra_patterns: |
+        the operation was canceled
