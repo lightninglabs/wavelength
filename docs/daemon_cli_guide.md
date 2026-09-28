@@ -873,3 +873,51 @@ restrictive file permissions (`chmod 600`).
 | TLS certificate errors | Point `--datadir` / `--network` at the daemon's cert, set `--tlscertpath`, or use `--no-tls --no-macaroons` for regtest |
 | `password must be at least 8 bytes` | Wallet password minimum is 8 characters |
 | `decryption failed: wrong password` | Incorrect password or corrupted seed file |
+
+## Health probes
+
+Enable the dedicated health listener with `--health.listen=127.0.0.1:10032`.
+It serves only `GET /readyz` and `GET /livez`, without authentication or wallet
+RPCs. Use a private interface for a container supervisor. The listener starts
+before wallet and operator initialization. An empty address disables it.
+
+| State | `/readyz` | `/livez` |
+|-------|-----------|----------|
+| Starting, locked wallet, or waiting for startup dependencies | 503 | 200 |
+| Startup complete and both core actors responding | 200 | 200 |
+| Actor probe fails or last successful sample is over 7 seconds old | 503 | 200 during grace |
+| Either actor makes no progress for 2 minutes after startup | 503 | 503 |
+| Shutdown | 503 or connection closed | 503 or connection closed |
+
+Full startup includes wallet-dependent actors, mailbox ingress, authenticated
+operator terms, and wallet-ready hooks. Slow startup reconciliation does not
+start the liveness failure timer. A permanently stuck startup therefore remains
+unready and needs operator diagnosis; these probes do not impose a startup
+restart deadline.
+
+After startup, the daemon probes the round actor and virtual transaction output
+(VTXO) manager every 5 seconds, with one shared 2-second deadline. Each probe
+traverses the actor's ordinary receive queue and acknowledges without invoking
+business logic, storage, or another actor. Admission never waits for queue room.
+Each actor retains at most one pending probe even after a timeout. HTTP requests
+read cached status and cannot create additional probe work.
+
+Liveness also observes each actor's completed-turn counter. A full queue or a
+late acknowledgement can fail readiness while the actor continues to make
+progress. Such backlogs stay live. Each actor has its own activity deadline,
+so progress in one cannot hide a stuck peer.
+
+These checks measure local receive-loop responsiveness. They do not measure
+block freshness, wallet balances, transaction progress, or operator/LND
+reachability. Idle wallets and long block intervals remain healthy. Temporary
+external calls that delay an actor withdraw readiness but have 2 minutes to
+recover before liveness fails. An external call that itself parks a core actor
+for longer than that is indistinguishable from a local wedge. Use dependency
+monitoring separately; restarting waved cannot repair a remote service.
+
+For Kubernetes, use `/readyz` to remove an unresponsive pod from service and
+`/livez` to permit a restart after sustained failure. Readiness alone cannot
+recover a wedged background client. Poll the cached endpoints every 5–15 seconds
+with a 2-second HTTP timeout. Install an image supporting `health.listen` before
+enabling these probes. To roll back to an older image, first disable the health
+flag and restore its previous probes. No database or RPC migration is required.
