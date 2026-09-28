@@ -782,6 +782,9 @@ func (s *Server) vtxoExpiryConfig() *vtxo.ExpiryConfig {
 	if s.cfg != nil {
 		cfg.MaxPaymentCLTV = s.cfg.MaxPaymentCLTV
 	}
+	cfg.MinRefreshAmount = func() btcutil.Amount {
+		return s.loadOperatorTerms().MinVTXOAmountFloor()
+	}
 	cfg.FreeRefreshWindow = func() uint32 {
 		terms := s.loadOperatorTerms()
 		if terms == nil {

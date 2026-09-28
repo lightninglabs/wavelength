@@ -1,6 +1,10 @@
 package vtxo
 
-import "math"
+import (
+	"math"
+
+	"github.com/btcsuite/btcd/btcutil/v2"
+)
 
 // ExpiryStatus represents the result of an expiry check.
 type ExpiryStatus int
@@ -83,6 +87,12 @@ func HasUsableBatchExpiry(vtxo *Descriptor) bool {
 // The dynamic calculation accounts for tree depth (each level requires an
 // additional on-chain transaction for unilateral exit) and CSV delays.
 type ExpiryConfig struct {
+	// MinRefreshAmount returns the latest minimum replacement output
+	// amount. Automatic one-for-one refresh cannot combine small inputs, so
+	// inputs below this floor stay available for manual recovery and later
+	// epochs. Nil preserves the behavior of callers without operator terms.
+	MinRefreshAmount func() btcutil.Amount
+
 	// RefreshThresholdBlocks is the base number of blocks before batch
 	// expiry at which a refresh request should be sent. The actual
 	// threshold is adjusted based on tree depth.
@@ -386,4 +396,17 @@ func (c *ExpiryConfig) ShouldWaitForFreeRefreshWindow(vtxo *Descriptor,
 	remaining := BlocksUntilExpiry(vtxo, currentHeight)
 
 	return remaining > 0 && uint64(remaining) > uint64(window)
+}
+
+// canAutoRefresh checks the replacement output before automatic reservation.
+// One-for-one maintenance preserves the input amount before fees, so a value
+// below the current output floor cannot succeed even with a zero fee. Retain
+// the original state and retry on later epochs; manual aggregation and funded
+// critical exits do not use this gate. Asset transitions need their own path.
+func (c *ExpiryConfig) canAutoRefresh(desc *Descriptor) bool {
+	if desc.TaprootAssetRoot != nil {
+		return false
+	}
+
+	return c.MinRefreshAmount == nil || desc.Amount >= c.MinRefreshAmount()
 }
