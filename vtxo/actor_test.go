@@ -528,8 +528,8 @@ func TestExpiredCatchupWaitsForStartupReconcile(t *testing.T) {
 }
 
 // TestExpiredRefreshPreflightFailureStaysExpired verifies an unavailable
-// operator rolls the durable reservation back to Expired rather than
-// accidentally restoring swept value to the spendable set.
+// operator leaves the expired durable row untouched instead of reserving it
+// or accidentally restoring swept value to the spendable set.
 func TestExpiredRefreshPreflightFailureStaysExpired(t *testing.T) {
 	t.Parallel()
 
@@ -537,15 +537,6 @@ func TestExpiredRefreshPreflightFailureStaysExpired(t *testing.T) {
 	desc := h.newTestDescriptor()
 	height := desc.BatchExpiry
 	fetchErr := errors.New("operator unavailable")
-
-	h.store.On(
-		"UpdateVTXOStatus", h.ctx, desc.Outpoint,
-		VTXOStatusPendingForfeit,
-	).Return(nil).Once()
-	h.store.On(
-		"UpdateVTXOStatus", h.ctx, desc.Outpoint,
-		VTXOStatusExpired,
-	).Return(nil).Once()
 
 	manager := newMockManagerRef(t)
 	actorUnderTest := newRefreshTestActor(
@@ -566,7 +557,12 @@ func TestExpiredRefreshPreflightFailureStaysExpired(t *testing.T) {
 	require.ErrorIs(t, err, fetchErr)
 	require.IsType(t, &ExpiredState{}, actorUnderTest.state)
 	require.Empty(t, manager.getMessages())
-	h.store.AssertExpectations(t)
+	// Terms now fail before reservation, so no durable rollback is needed.
+	h.store.AssertNotCalled(
+		t, "UpdateVTXOStatus", mock.Anything, desc.Outpoint,
+		mock.Anything,
+	)
+
 }
 
 // TestAutoRefreshTermsLookupFailureRetries verifies a transient GetInfo

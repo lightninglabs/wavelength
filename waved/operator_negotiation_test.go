@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/lib/batchschedule"
@@ -817,4 +818,27 @@ func TestRoundOperatorTermsEstimatesClockOffset(t *testing.T) {
 			)
 		})
 	}
+}
+
+// TestAutomaticRefreshMinimumUsesLatestTerms proves long-lived actors observe
+// both a raised output minimum and a later reduction, including the dust floor.
+func TestAutomaticRefreshMinimumUsesLatestTerms(t *testing.T) {
+	t.Parallel()
+	server := &Server{}
+	cfg := server.vtxoExpiryConfig()
+	require.Zero(t, cfg.MinRefreshAmount())
+	server.storeOperatorTerms(
+		&types.OperatorTerms{
+			MinVTXOAmount: 1000,
+			DustLimit:     330,
+		},
+	)
+	require.Equal(t, btcutil.Amount(1000), cfg.MinRefreshAmount())
+	server.storeOperatorTerms(
+		&types.OperatorTerms{
+			MinVTXOAmount: 100,
+			DustLimit:     330,
+		},
+	)
+	require.Equal(t, btcutil.Amount(330), cfg.MinRefreshAmount())
 }

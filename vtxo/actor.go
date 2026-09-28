@@ -268,9 +268,10 @@ func (a *VTXOActor) fetchOperatorKey(ctx context.Context) (*btcec.PublicKey,
 	return currentKey, nil
 }
 
-// preflightAutoRefresh refreshes the operator terms when a cached threshold
-// first requests cooperative refresh. It returns deferRefresh when the fresh
-// response moves a still-safe waiver boundary later than the current block.
+// preflightAutoRefresh refreshes terms before automatic reservation, including
+// reclaim and the unfunded-critical fallback. Even a below-minimum input must
+// refresh terms so a stale high minimum cannot suppress recovery indefinitely.
+// It defers a non-critical live attempt if the fresh waiver window moved later.
 func (a *VTXOActor) preflightAutoRefresh(ctx context.Context, event VTXOEvent) (
 	*btcec.PublicKey, bool, error) {
 
@@ -278,20 +279,25 @@ func (a *VTXOActor) preflightAutoRefresh(ctx context.Context, event VTXOEvent) (
 		return nil, false, nil
 	}
 
-	blockEvent, ok := event.(*BlockEpochEvent)
-	if !ok {
+	height, automatic := automaticRefreshHeight(event)
+	if !automatic || a.cfg.VTXO.TaprootAssetRoot != nil {
 		return nil, false, nil
 	}
 
-	liveState, ok := a.state.(*LiveState)
-	if !ok || liveState.VTXO.TaprootAssetRoot != nil {
+	// Cohort members reuse the leader's refreshed terms and key snapshot.
+	if _, cohort := event.(*CohortRefreshEvent); cohort {
 		return nil, false, nil
 	}
 
-	status := a.env.ExpiryConfig.CheckExpiry(
-		liveState.VTXO, blockEvent.Height,
-	)
-	if status != ExpiryStatusNeedsRefresh {
+	liveState, live := a.state.(*LiveState)
+	_, expired := a.state.(*ExpiredState)
+	_, critical := event.(*criticalRefreshEvent)
+	if !live && !expired {
+		return nil, false, nil
+	}
+	status := a.env.ExpiryConfig.CheckExpiry(a.cfg.VTXO, height)
+	if !(live && (status == ExpiryStatusNeedsRefresh || critical)) &&
+		!(expired && status == ExpiryStatusExpired) {
 		return nil, false, nil
 	}
 
@@ -300,8 +306,12 @@ func (a *VTXOActor) preflightAutoRefresh(ctx context.Context, event VTXOEvent) (
 		return nil, false, err
 	}
 
+	if !live || critical {
+		return currentKey, false, nil
+	}
+
 	blocksRemaining := BlocksUntilExpiry(
-		liveState.VTXO, blockEvent.Height,
+		liveState.VTXO, height,
 	)
 	refreshThreshold := a.env.ExpiryConfig.CalculateRefreshThreshold(
 		liveState.VTXO,
@@ -313,7 +323,7 @@ func (a *VTXOActor) preflightAutoRefresh(ctx context.Context, event VTXOEvent) (
 	// The fresh window moved later while retaining the configured safety
 	// margin. Consume this epoch in LiveState and let the newly cached
 	// threshold trigger another preflight at the new boundary.
-	liveState.LastCheckedHeight = blockEvent.Height
+	liveState.LastCheckedHeight = height
 	a.logger(ctx).DebugS(ctx, "Deferring automatic refresh to latest "+
 		"operator window",
 		slog.Int("blocks_remaining", int(blocksRemaining)),
@@ -555,6 +565,8 @@ func (a *VTXOActor) Receive(ctx context.Context,
 		}
 	}
 
+	vtxoEvent = a.preflightCriticalExit(ctx, vtxoEvent)
+
 	var refreshKey *btcec.PublicKey
 	if cohortRefresh {
 		refreshKey = cohortEvent.OperatorKey
@@ -581,8 +593,6 @@ func (a *VTXOActor) Receive(ctx context.Context,
 	if preflightKey != nil {
 		refreshKey = preflightKey
 	}
-	vtxoEvent = a.preflightCriticalExit(ctx, vtxoEvent)
-
 	transition, err := a.state.ProcessEvent(ctx, vtxoEvent, a.env)
 	if err != nil {
 		a.logger(ctx).ErrorS(ctx, "VTXO FSM ProcessEvent failed",
@@ -673,6 +683,9 @@ func automaticRefreshHeight(event VTXOEvent) (int32, bool) {
 		return evt.Height, true
 
 	case *CohortRefreshEvent:
+		return evt.Height, true
+
+	case *criticalRefreshEvent:
 		return evt.Height, true
 
 	default:

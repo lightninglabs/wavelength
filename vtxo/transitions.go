@@ -89,7 +89,7 @@ func (s *LiveState) ProcessEvent(ctx context.Context, event VTXOEvent,
 	case *criticalRefreshEvent:
 		s.LastCheckedHeight = evt.Height
 
-		return s.autoRefreshTransition(evt.Height, false), nil
+		return s.autoRefreshTransition(evt.Height, false, env), nil
 
 	case *CohortRefreshEvent:
 		return s.handleCohortRefresh(evt, env)
@@ -157,18 +157,19 @@ func (s *LiveState) handleCohortRefresh(evt *CohortRefreshEvent,
 
 	s.LastCheckedHeight = evt.Height
 
-	return s.autoRefreshTransition(evt.Height, true), nil
+	return s.autoRefreshTransition(evt.Height, true, env), nil
 }
 
 // autoRefreshTransition reserves this VTXO for expiry-driven cooperative
 // maintenance and emits the round request. Both threshold-triggered and
 // manager-cohort paths use it so their persistence and provenance cannot
 // drift.
-func (s *LiveState) autoRefreshTransition(height int32,
-	cohortMember bool) *VTXOStateTransition {
+func (s *LiveState) autoRefreshTransition(height int32, cohortMember bool,
+	env *VTXOEnvironment) *VTXOStateTransition {
 
-	// A Bitcoin refresh would discard the asset commitment.
-	if s.VTXO.TaprootAssetRoot != nil {
+	// Refuse impossible replacement outputs before reserving the input.
+	// The coin remains live for manual aggregation or unilateral exit.
+	if !env.ExpiryConfig.canAutoRefresh(s.VTXO) {
 		return &VTXOStateTransition{NextState: s}
 	}
 
@@ -329,7 +330,7 @@ func (s *LiveState) handleBlockEpoch(ctx context.Context, evt *BlockEpochEvent,
 		// remaining-blocks without reading its own state (which the
 		// Receive loop has already advanced to PendingForfeitState
 		// by the time the outbox is dispatched).
-		return s.autoRefreshTransition(evt.Height, false), nil
+		return s.autoRefreshTransition(evt.Height, false, env), nil
 
 	case ExpiryStatusCritical:
 		// Escalate to chain resolver for unilateral exit.
@@ -1737,7 +1738,7 @@ func (s *ExpiredState) ProcessEvent(ctx context.Context, event VTXOEvent,
 			), nil
 		}
 
-		if s.VTXO.TaprootAssetRoot != nil {
+		if !env.ExpiryConfig.canAutoRefresh(s.VTXO) {
 			return &VTXOStateTransition{NextState: s}, nil
 		}
 
