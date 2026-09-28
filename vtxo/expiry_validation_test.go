@@ -513,6 +513,7 @@ func TestForfeitReleaseRestoresExpired(t *testing.T) {
 
 	t.Run("forfeiting release", func(t *testing.T) {
 		t.Parallel()
+		const roundID = "expired-reclaim"
 
 		h := newVTXOTestHarness(t)
 		vtxo := h.newTestDescriptor()
@@ -521,9 +522,10 @@ func TestForfeitReleaseRestoresExpired(t *testing.T) {
 		h.withState(&ForfeitingState{
 			VTXO:              vtxo,
 			LastCheckedHeight: pastExpiry,
+			NewRoundID:        roundID,
 		})
 
-		_, err := h.sendEvent(&ForfeitReleasedEvent{})
+		_, err := h.sendEvent(&ForfeitReleasedEvent{RoundID: roundID})
 		require.NoError(t, err)
 
 		assertState[*ExpiredState](h)

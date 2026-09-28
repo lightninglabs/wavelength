@@ -3143,6 +3143,7 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			if err := a.cfg.VTXOManager.Tell(
 				ctx, &actormsg.ReleaseForfeitRequest{
 					Outpoints: m.Outpoints,
+					RoundID:   m.RoundID,
 				},
 			); err != nil {
 

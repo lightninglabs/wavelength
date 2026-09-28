@@ -54,12 +54,12 @@ func addForfeitingDescriptors(mgr *Manager, descriptors ...*Descriptor) {
 	for _, desc := range descriptors {
 		desc.Status = VTXOStatusForfeiting
 		mgr.liveDescriptors = append(mgr.liveDescriptors, desc)
+		// Use the production recovery conversion. This proves the
+		// recovered state and startup sweep derive ownership from the
+		// same persisted ForfeitRoundID.
+		state := statusToState(context.Background(), desc, nil, nil)
 		mgr.actors[desc.Outpoint] = newMockVTXOActorRef(
-			desc.Outpoint.String(), &ForfeitingState{
-				VTXO:              desc,
-				LastCheckedHeight: desc.CreatedHeight,
-				NewRoundID:        desc.ForfeitRoundID,
-			},
+			desc.Outpoint.String(), state,
 		)
 	}
 }

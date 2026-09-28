@@ -31,7 +31,9 @@ state transitions and validation rules live under [Invariants](#invariants).
   `SubmitForfeitSigRequest`, `StartTimeoutReq`, `CancelTimeoutReq`,
   `RoundCheckpointedNotification`, `RoundCompletedNotification`,
   `RoundFailedNotification`, `ForfeitRequestToVTXO`,
-  `ForfeitConfirmedToVTXO`.
+  `ForfeitConfirmedToVTXO`, `ReleaseForfeitReservation`,
+  `DropCustomForfeitReservation`. Round-owned releases carry the failed
+  round's ID to the VTXO state machine.
 
 ### Quote & Intent (`interfaces.go`, `events.go`)
 
@@ -93,6 +95,7 @@ state transitions and validation rules live under [Invariants](#invariants).
   `SpendReleasedEvent`, `SpendCompletedEvent`, `ForfeitReleasedEvent`,
   `ForfeitSignedEvent`, `VTXOFailedEvent`, `ResumeVTXOEvent`,
   `PendingForfeitEvent`, `VTXOTerminatedMsg`.
+  `ForfeitReleasedEvent.RoundID` identifies the round releasing the VTXO.
 
 ### Misc
 
@@ -174,6 +177,11 @@ state transitions and validation rules live under [Invariants](#invariants).
 - **Receives ← `chainsource`**: `ConfirmationEvent`.
 
 ## Invariants
+
+- **Forfeit releases preserve reservation ownership.** Every round rollback
+  stamps its round ID on `ReleaseForfeitReservation`. A `Forfeiting` VTXO
+  accepts the release only when that ID matches the round stored with its
+  forfeit signature.
 
 - **Scheduled registration** (`scheduled_registration.go`) refreshes terms
   through `OperatorTermsSource` (five-second deadline), selects the next
