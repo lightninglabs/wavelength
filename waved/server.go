@@ -2752,15 +2752,9 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 func (s *Server) reconcileVTXOExpiry(ctx context.Context,
 	managerRef actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp]) error {
 
-	response, err := managerRef.Ask(
-		ctx, &vtxo.ReconcileExpiryRequest{},
-	).Await(ctx).Unpack()
+	_, err := vtxo.ReconcileExpiry(ctx, managerRef)
 	if err != nil {
 		return fmt.Errorf("ask VTXO expiry reconcile: %w", err)
-	}
-	if _, ok := response.(*vtxo.ReconcileExpiryResponse); !ok {
-		return fmt.Errorf("unexpected VTXO expiry response: %T",
-			response)
 	}
 
 	return nil

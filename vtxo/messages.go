@@ -142,10 +142,9 @@ type ListLiveDescriptorsResponse struct {
 // VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
 func (r *ListLiveDescriptorsResponse) VTXOManagerResp() {}
 
-// ReconcileExpiryRequest asks the manager to apply the current chain tip to
-// every recovered VTXO. The server sends this once the round actor is ready so
-// an offline VTXO can enter the ordinary refresh flow without racing actor
-// registration during startup.
+// ReconcileExpiryRequest prepares a startup pass after round registration.
+// Use ReconcileExpiry to execute the returned private plan outside the
+// manager's receive loop and wait for the complete pass.
 type ReconcileExpiryRequest struct {
 	actor.BaseMessage
 }
