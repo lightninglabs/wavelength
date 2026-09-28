@@ -178,6 +178,14 @@ state transitions and validation rules live under [Invariants](#invariants).
 
 ## Invariants
 
+- **Failed-round reservation release never waits for manager mailbox space.** The manager
+  can be blocked relaying into the round mailbox. Reservation release
+  uses `TryTell`; if delivery fails transiently, the timeout
+  actor retains the exact request and retries with its existing capped backoff.
+  Each cleanup has a distinct timer ID, so round-timeout cancellation cannot
+  erase it. Cleanup outlives the failed request context. The manager's existing
+  round fence and startup orphan-forfeit sweep remain the ownership boundaries.
+
 - **Forfeit releases preserve reservation ownership.** Every round rollback
   stamps its round ID on `ReleaseForfeitReservation`. A `Forfeiting` VTXO
   accepts the release only when that ID matches the round stored with its

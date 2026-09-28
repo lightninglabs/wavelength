@@ -3130,17 +3130,14 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			}
 
 		case *ReleaseForfeitReservation:
-			// Release forfeit-reserved VTXOs back to LiveState via
-			// the VTXO manager. Best-effort and fire-and-forget: a
-			// failed release is logged but must not halt outbox
-			// processing for the (already failed) round. Routing
-			// through the manager keeps its reservation set in sync
-			// so the released inputs can be re-selected for a
-			// retry.
+			// Release through the manager without parking this
+			// turn: it may itself be blocked relaying a refresh to
+			// us. The timeout actor retains cleanup while its
+			// mailbox is full.
 			if a.cfg.VTXOManager == nil || len(m.Outpoints) == 0 {
 				continue
 			}
-			if err := a.cfg.VTXOManager.Tell(
+			if err := a.deliverForfeitRelease(
 				ctx, &actormsg.ReleaseForfeitRequest{
 					Outpoints: m.Outpoints,
 					RoundID:   m.RoundID,
