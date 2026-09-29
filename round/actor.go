@@ -26,6 +26,7 @@ import (
 	"github.com/lightninglabs/wavelength/ledger"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/bip322"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/metrics"
@@ -3684,21 +3685,23 @@ func (a *RoundClientActor) handleRefreshVTXOCohortRequest(
 		vtxos = append(vtxos, vtxoReq)
 	}
 
-	// Find an assembling round (Idle or PendingRoundAssembly) or create
-	// one. We must not use findPendingRound here because it matches by
-	// temp-key status, which includes rounds in IntentSentState.
-	// Feeding an IntentPackage to IntentSentState would self-loop
-	// silently, discarding the intent.
-	var err error
-	roundFSM := a.findAssemblingRound(ctx)
-	if roundFSM == nil {
-		roundFSM, err = a.createNewRound(ctx)
-		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf("failed to create round for "+
-					"refresh: %w", err),
-			)
-		}
+	// Maintenance may coalesce only up to the verifier's proof budget.
+	// A second live registration from this client can replace its first,
+	// so defer overflow through the existing release/cooldown path rather
+	// than emitting concurrent chunks. No claim is removed from storage.
+	roundFSM, err := a.findRefreshRound(ctx, len(forfeits))
+	if errors.Is(err, errRefreshRoundBusy) {
+		a.log.DebugS(
+			ctx,
+			"Deferring refresh cohort until round capacity is "+
+				"available",
+			slog.Int("cohort_size", len(forfeits)),
+		)
+
+		return fn.Ok[actormsg.RoundActorResp](nil)
+	}
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](err)
 	}
 
 	// Schedule before mutating the FSM. Actor-turn serialization keeps the
@@ -3746,9 +3749,57 @@ func (a *RoundClientActor) handleRefreshVTXOCohortRequest(
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }
 
+// errRefreshRoundBusy means a maintenance cohort must release its reservation
+// and retry on a later block instead of enlarging or replacing an active join.
+var errRefreshRoundBusy = errors.New("automatic refresh round is full or " +
+	"active")
+
+// findRefreshRound admits a whole maintenance cohort to one bounded assembly.
+// Waiting until the commitment arrives avoids replacing an unsealed join.
+// Deferred claims use the VTXO actor's block-based retry and durable
+// startup reconciliation; no separate queue or retry identity is introduced.
+func (a *RoundClientActor) findRefreshRound(ctx context.Context,
+	proofInputs int) (*RoundFSM, error) {
+
+	scanCtx, cancel := fsmScanContext(ctx)
+	defer cancel()
+
+	var candidate *RoundFSM
+	for _, r := range a.rounds {
+		state, err := fsmState(scanCtx, r.FSM)
+		if err != nil {
+			return nil, err
+		}
+		switch s := state.(type) {
+		case *PendingRoundAssembly:
+			if len(s.Boarding)+len(s.Forfeits)+
+				proofInputs > bip322.DefaultMaxProofInputs {
+				return nil, errRefreshRoundBusy
+			}
+			candidate = r
+
+		case *Idle:
+			if candidate == nil {
+				candidate = r
+			}
+
+		case *IntentSentState, *QuoteReceivedState, *RoundJoinedState:
+			return nil, errRefreshRoundBusy
+		}
+	}
+	if proofInputs > bip322.DefaultMaxProofInputs {
+		return nil, errRefreshRoundBusy
+	}
+	if candidate != nil {
+		return candidate, nil
+	}
+
+	return a.createNewRound(ctx)
+}
+
 // releaseRejectedRefreshCohort returns a cohort that the round actor could not
 // accept to the VTXO manager. The detached context lets cleanup survive caller
-// cancellation; a failed Tell is logged and the startup checkpoint sweep
+// cancellation; delivery retries without blocking the actor, and startup sweep
 // remains the final fail-safe.
 func (a *RoundClientActor) releaseRejectedRefreshCohort(ctx context.Context,
 	outpoints []wire.OutPoint) {
@@ -3758,7 +3809,7 @@ func (a *RoundClientActor) releaseRejectedRefreshCohort(ctx context.Context,
 	}
 
 	releaseCtx := context.WithoutCancel(ctx)
-	err := a.cfg.VTXOManager.Tell(
+	err := a.deliverForfeitRelease(
 		releaseCtx, &actormsg.ReleaseForfeitRequest{
 			Outpoints: outpoints,
 		},

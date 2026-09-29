@@ -696,3 +696,72 @@ func TestManagerDoesNotAdoptOlderOrManualPending(t *testing.T) {
 }
 
 var _ VTXOActorRef = (*cohortActorRef)(nil)
+
+// TestManagerRefreshCohortsAreDisjoint proves that 265 same-height pending
+// leaders are each handed off exactly once across bounded cohorts. Consuming
+// an adopted leader relay must not allow a later coordinator to re-adopt it:
+// overflow cleanup would then release a claim already owned by another round.
+func TestManagerRefreshCohortsAreDisjoint(t *testing.T) {
+	const (
+		count  = 265
+		height = int32(800)
+		expiry = int32(1_000)
+	)
+	var pending []*Descriptor
+	store := &MockVTXOStore{}
+	roundActor := newMockRoundActorRef(t)
+	mgr := NewManager(&ManagerConfig{Store: store, RoundActor: roundActor})
+	for i := range count {
+		desc := deterministicCohortDescriptor(t, uint32(i), expiry)
+		desc.Status = VTXOStatusPendingForfeit
+		pending = append(pending, desc)
+		mgr.actors[desc.Outpoint] = newCohortActorRef(
+			desc, &PendingForfeitState{
+				VTXO:              desc,
+				RequestedAtHeight: height,
+			},
+		)
+	}
+	store.On("ListVTXOsByStatus", mock.Anything, VTXOStatusLive).Return(
+		[]*Descriptor(nil), nil,
+	)
+	store.On(
+		"ListVTXOsByStatus", mock.Anything, VTXOStatusPendingForfeit,
+	).Return(pending, nil)
+	for _, desc := range pending {
+		_, err := mgr.Receive(t.Context(), &RelayToRoundMsg{
+			Payload: autoRefreshLeaderRequest(desc, height),
+		}).Unpack()
+		require.NoError(t, err)
+	}
+	seen := make(map[wire.OutPoint]bool)
+	for _, msg := range roundActor.getMessages() {
+		cohort, ok := msg.(*round.RefreshVTXOCohortRequest)
+		require.True(t, ok)
+		require.LessOrEqual(
+			t, len(cohort.Requests), maxAutoRefreshCohortSize,
+		)
+		for _, req := range cohort.Requests {
+			require.False(
+				t, seen[req.VTXOOutpoint],
+				"claim handed off twice",
+			)
+			seen[req.VTXOOutpoint] = true
+		}
+	}
+	require.Len(t, seen, count)
+	require.Len(t, roundActor.getMessages(), (count+31)/32)
+	// Same-height duplicate deliveries stay suppressed; later blocks remain
+	// eligible to retry and terminal cleanup bounds the marker map.
+	req := autoRefreshLeaderRequest(pending[0], height)
+	require.True(t, mgr.consumeAdoptedAutoRefreshRelay(req))
+	require.True(t, mgr.consumeAdoptedAutoRefreshRelay(req))
+	req.TriggerHeight++
+	require.False(t, mgr.consumeAdoptedAutoRefreshRelay(req))
+	terminated := &round.VTXOTerminatedMsg{Outpoint: pending[0].Outpoint}
+	_, err := mgr.handleVTXOTerminated(t.Context(), terminated).Unpack()
+	require.NoError(t, err)
+	require.NotContains(
+		t, mgr.adoptedAutoRefreshRelays, pending[0].Outpoint,
+	)
+}
