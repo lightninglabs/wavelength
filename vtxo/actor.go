@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -17,6 +18,7 @@ import (
 	"github.com/lightninglabs/wavelength/ledger"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/round"
+	"github.com/lightninglabs/wavelength/timeout"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -98,6 +100,11 @@ type VTXOActorConfig struct {
 	// rather than holding a direct round actor reference.
 	Manager actor.TellOnlyRef[ManagerMsg]
 
+	// TimeoutActor retains manager notifications under mailbox pressure.
+	// It must be running before this actor receives events. Nil preserves
+	// synchronous delivery for callers without a scheduler.
+	TimeoutActor actor.TellOnlyRef[timeout.Msg]
+
 	// LedgerSink is an optional reference to the client-side
 	// ledger accounting actor. The VTXO actor does not know the
 	// confirmed exit miner fee; unroll emits ExitCostMsg once the
@@ -156,6 +163,11 @@ type VTXOActor struct {
 	env   *VTXOEnvironment
 
 	selfRef actor.TellOnlyRef[actormsg.VTXOActorMsg]
+
+	// pendingRefreshDelivery fences a deferred leader relay to its original
+	// PendingForfeit reservation. Only this child writes it; the manager
+	// reads it when processing a retained notification.
+	pendingRefreshDelivery *atomic.Bool
 
 	// lastObservedHeight tracks block progress while the VTXO is reserved,
 	// so a late release starts its cooldown from the current tip rather
@@ -435,7 +447,7 @@ func (a *VTXOActor) tellManager(ctx context.Context, msg ManagerMsg) {
 		return
 	}
 
-	if err := a.cfg.Manager.Tell(ctx, msg); err != nil {
+	if err := a.deliverManagerNotification(ctx, msg); err != nil {
 		a.logger(ctx).WarnS(ctx, "Failed to tell manager",
 			err,
 			slog.String("msg_type", fmt.Sprintf("%T", msg)),
@@ -660,6 +672,15 @@ func (a *VTXOActor) Receive(ctx context.Context,
 	}
 
 	a.state = nextState
+
+	// Deferred automatic relays must not authorize a later reservation.
+	// Invalidate only after persistence and the state transition succeed.
+	if a.pendingRefreshDelivery != nil &&
+		!isPendingForfeitState(nextState) {
+
+		a.pendingRefreshDelivery.Store(false)
+		a.pendingRefreshDelivery = nil
+	}
 
 	// Unsubscribe from block epochs when reaching terminal state.
 	if a.state.IsTerminal() && !priorState.IsTerminal() {

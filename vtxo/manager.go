@@ -25,6 +25,7 @@ import (
 	"github.com/lightninglabs/wavelength/ledger"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/round"
+	"github.com/lightninglabs/wavelength/timeout"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -122,6 +123,11 @@ type ManagerConfig struct {
 	// ChainResolver receives expiring notifications for unilateral exit.
 	// Passed through to spawned VTXO actors.
 	ChainResolver actor.TellOnlyRef[ExpiringNotification]
+
+	// TimeoutActor is the non-blocking callback scheduler shared by child
+	// actors for manager notifications. It must start before manager
+	// recovery.
+	TimeoutActor actor.TellOnlyRef[timeout.Msg]
 
 	// ForfeitVTXOActorAskTimeout bounds manager-to-VTXO Ask calls on
 	// forfeit admission paths. The manager actor is a shared admission
@@ -653,6 +659,13 @@ func (m *Manager) Receive(ctx context.Context,
 	msg ManagerMsg) fn.Result[ManagerResp] {
 
 	switch req := msg.(type) {
+	case *deferredRefreshRelay:
+		if !req.active.Load() {
+			return fn.Ok[ManagerResp](&RelayToRoundResp{})
+		}
+
+		return m.handleRelayToRound(ctx, req.relay)
+
 	case *round.VTXOCreatedNotification:
 		return m.handleVTXOCreated(ctx, req)
 
@@ -2094,6 +2107,7 @@ func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 		Log:                      m.cfg.Log,
 		ChainResolver:            m.cfg.ChainResolver,
 		Manager:                  m.managerRef,
+		TimeoutActor:             m.cfg.TimeoutActor,
 		LedgerSink:               m.cfg.LedgerSink,
 		RefreshFeeQuoter:         m.cfg.RefreshFeeQuoter,
 		CriticalExitAssessor:     m.cfg.CriticalExitAssessor,

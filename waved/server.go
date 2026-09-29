@@ -4646,6 +4646,9 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	roundActor := round.NewServiceKey().Ref(s.actorSystem)
 	ledgerSink := ledger.NewSink(s.actorSystem)
 	criticalExitAssessor := s.rpcServer.assessAutomaticCriticalExit
+	timeoutRef := actor.NewServiceKey[timeout.Msg, timeout.Resp](
+		"timeout",
+	).Ref(s.actorSystem)
 
 	managerConfig := &vtxo.ManagerConfig{
 		Store:                    vtxoStore,
@@ -4657,6 +4660,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 		ExpiryConfig:             s.vtxoExpiryConfig(),
 		Log:                      fn.Some(s.subLogger(vtxo.Subsystem)),
 		RoundActor:               roundActor,
+		TimeoutActor:             timeoutRef,
 		LedgerSink:               fn.Some(ledgerSink),
 		ChainResolver:            chainResolver,
 		RefreshFeeQuoter:         s.autoRefreshFeeQuoter(),
