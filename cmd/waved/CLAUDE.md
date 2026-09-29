@@ -27,6 +27,9 @@ hands off to `waved.Main` to run the daemon.
   `newRootCmd`. `registerMaxPaymentCLTVFlag` owns `--maxpaymentcltv`, the
   automatic-maintenance target for keeping enough VTXO lifetime available for
   Lightning payments.
+- `registerHealthFlags(f, cfg)` — owns `--health.listen`, the opt-in address
+  for the daemon's local `/livez` and `/readyz` HTTP probes. Empty (the
+  default) disables health serving entirely.
 
 ## Relationships
 
@@ -55,6 +58,10 @@ hands off to `waved.Main` to run the daemon.
 - `EagerRoundJoin`'s flag default comes from `waved.DefaultConfig()`,
   which is itself build-tag aware (true under `wavewalletrpc`, false
   otherwise); `--eagerroundjoin` still overrides it either way.
+- `--health.listen` binds an **unauthenticated** listener: it deliberately
+  requires no macaroon so a supervisor can probe it, and therefore must be
+  pointed at loopback or a private network. The endpoint set is enforced in
+  `waved` (`health.go`), which serves only `/readyz` and `/livez`.
 - `--maxpaymentcltv`'s default is build-tag aware the same way: it reads
   `cfg.MaxPaymentCLTV`, which `waved.DefaultConfig()` seeds from
   `defaultMaxPaymentCLTV()` — 300 under `swapruntime`, zero otherwise. The

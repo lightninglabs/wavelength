@@ -99,6 +99,15 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   `mailbox_messages.correlation_key` column. Populated automatically from
   `msg.CorrelationKey()` by `DurableMailbox.Send`. A zero (empty) value
   preserves the legacy unkeyed claim semantics.
+- `Probe[M, R](ctx, ref) (uint64, error)` — Side-effect-free receive-loop
+  health check for a **local channel-mailbox** actor. Enqueues an internal
+  envelope that the receive loop acknowledges without invoking the behavior,
+  and returns the actor's completed-turn counter. Admission is non-blocking
+  (`TrySend`), so a full mailbox fails fast rather than parking the caller;
+  response waiting respects both `ctx` and actor shutdown. Only the direct
+  reference from `NewActor`/`RegisterWithSystem` is accepted — routers, mapped
+  refs, and durable actors return an error. Consumed by
+  `waved`'s `/readyz` and `/livez` sampler (`waved/health.go`).
 
 ## Relationships
 
@@ -192,6 +201,21 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   `NumWorkers > 1` and postpone today, so the SQL is left alone; adding a
   lease-liveness disjunct to the anti-join is the prerequisite for that
   combination.
+- **A probe measures the receive loop, never the behavior.** `Probe` is
+  answered inline by `Actor.process` before the behavior is consulted, so a
+  successful probe proves only that the loop is draining its mailbox — it says
+  nothing about whether the behavior's downstream dependencies (wallet,
+  operator, storage) are healthy. Three properties keep it safe to call
+  repeatedly from a supervisor: concurrent callers share at most one queued
+  probe (even after a caller times out), so a stalled actor cannot accumulate
+  health-check work; a completed probe is replaced on the next call rather
+  than reused as stale success; and the drain path skips probe envelopes so
+  shutdown wakes callers through the actor context as `ErrActorTerminated`
+  rather than as a success. The returned counter increments on every finished
+  turn, including probe replies, so a supervisor can tell a *busy* loop (probe
+  times out but the counter advances) from a *stuck* one (counter frozen).
+  That distinction is the whole reason the counter is returned alongside the
+  error instead of the error alone.
 - **Per-correlation-key FIFO claim.** Two messages in the same mailbox that
   share a non-empty `CorrelationKey()` are processed in emission order
   regardless of retry backoff. Without this invariant, a transient Tell

@@ -115,6 +115,16 @@ when the local wallet owns the receive script.
 - `CriticalExitAssessment` — `{Feasible bool, Reason string}`. `Reason` is a
   short, stable diagnostic recorded in the "Automatic expiry decision" log when
   `Feasible` is false; it is a log field, not a wire value.
+- `ExpiryConfig.MinRefreshAmount` — Optional
+  `func() btcutil.Amount` returning the operator's current minimum replacement
+  output. Read on every check (not captured once) so a changed operator floor
+  applies without a restart; `waved` wires it to
+  `OperatorTerms.MinVTXOAmountFloor()`. Nil preserves the behavior of callers
+  that have no operator terms, so tests and harnesses are unaffected.
+- `ExpiryConfig.canAutoRefresh(desc)` — The gate consulted before *automatic*
+  refresh reserves an input. False for an asset carrier (a Bitcoin refresh
+  would discard the asset commitment) and for any amount below
+  `MinRefreshAmount()`.
 
 ## Relationships
 
@@ -156,6 +166,23 @@ when the local wallet owns the receive script.
 
 ## Invariants
 
+- **Automatic refresh checks the replacement output floor before reserving the
+  input.** Automatic maintenance is one-for-one: it preserves each input amount
+  in a new output and cannot combine inputs. An input below the operator's
+  current minimum therefore cannot succeed *even at zero fee*, and because the
+  round is shared, one impossible input poisons every otherwise-valid sibling
+  in it — while critical and expired retries rebuild and re-sign the same
+  invalid request, backing up round mailboxes and state queries. Every
+  automatic path consults `ExpiryConfig.canAutoRefresh` (threshold-triggered
+  refresh, manager-cohort refresh, and expired reclaim in `ExpiredState`); the
+  coin keeps its original live or expired state and stays available for later
+  epochs. Deliberately **not** gated: manual aggregation (which can combine
+  inputs and so is not bound by the one-for-one floor) and funded critical
+  exits (the safety net of last resort must not be suppressed by a fee floor).
+  Terms are refreshed before reclaim and unfunded-critical attempts so a stale
+  high minimum cannot permanently suppress recovery, and a lookup failure
+  leaves the durable row untouched rather than recording a false decision.
+  Fees remain the concern of the existing quote checks, not this gate.
 - Indexed VTXOs pass `vtxo.IndexedAncestryFromRPC` before new acceptance.
   It verifies signed tree/transaction paths to the exact target outpoint,
   value, and script. OOR inventory includes `ancestry_packages` to connect

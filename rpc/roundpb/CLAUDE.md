@@ -36,6 +36,11 @@ All `*.pb.go` files are generated — never edit directly; regenerate with
 - `FlowVersion` / `FlowVersionV1` / `ValidateFlowVersion` — the per-round
   choreography version stamped by the operator and validated by the
   client; fails closed on any version this build does not understand.
+- `SelectionFromProto` / `SelectionToProto` (`batch_slot.go`) — convert a
+  join's scheduled-slot selection between `*BatchSlotSelection` and
+  `fn.Option[batchschedule.Selection]`. A nil message decodes to `None`
+  (event-driven timing) and `None` encodes back to nil, so a legacy join
+  carries no slot field at all.
 
 `MethodSubmitForfeitSigs` and `MethodSubmitVTXOForfeitSigs` are distinct
 wire methods for two different payload types; see `round/CLAUDE.md` for
@@ -45,7 +50,8 @@ distinction.
 ## Relationships
 
 - **Depends on**: `lib/tree`, `lib/types` (conversion targets in
-  `convert.go`), `github.com/lightninglabs/tap-sdk` (`ParseAssetRef`, for
+  `convert.go`), `lib/batchschedule` (slot identity in `batch_slot.go`),
+  `github.com/lightninglabs/tap-sdk` (`ParseAssetRef`, for
   canonical asset-reference validation); otherwise generated proto types only.
 - **Depended on by**: `round` (outbox routing, proto conversions, flow
   version), `db` (persisting round/VTXO proto blobs), `waved` (proto
@@ -91,6 +97,14 @@ distinction.
 - `ValidateFlowVersion` must reject any `FlowVersion` other than the
   versions this build implements (currently only `FlowVersionV1`); never
   make it permissive by default.
+- A slot selection decoded from the wire is **validated, not trusted**:
+  `SelectionFromProto` routes the schedule ID through
+  `batchschedule.IDFromBytes` and the cutoff through
+  `batchschedule.SelectionFromUnix`, so a malformed ID length or an
+  unrepresentable cutoff is an error rather than a silently-degraded slot.
+  `SelectionToProto` copies the ID bytes rather than aliasing the
+  `Selection`'s array, so a later mutation of the proto cannot reach back
+  into the domain value.
 
 ## Deep Docs
 

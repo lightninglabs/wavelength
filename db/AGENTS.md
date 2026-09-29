@@ -64,6 +64,14 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   `MaxOwnedReceiveScriptIdempotencyKeyBytes = 128` and
   `MaxOwnedReceiveScriptRegistrationTTL = 30 * 24h`. Reusing a key with a
   different label fails with `ErrOwnedReceiveScriptReplayMismatch`.
+- `OORStatusStore` / `OORStatusSummary` / `OORStatusCursor`
+  (`oor_status_store.go`) — newest-first, cursor-paged OOR status reads that
+  merge package metadata with registry snapshots in **one** read snapshot.
+  `OORStatusSummary.Metadata` (the scalar `sqlc.OorStatus` projection) is
+  authoritative; `Registry` is attached only to recover outgoing diagnostics
+  that package bindings lack. `OORStatusCursor` carries both `CreatedAt` and
+  `SessionID` so continuation does not require the cursor row to still exist.
+  This store never loads Ark PSBTs or checkpoint rows.
 - `OORSessionRegistryStoreDB` / `OORSessionRegistryRecord` — control-plane
   registry of per-session durable OOR actors
   (`UpsertSession`/`GetSession`/`ListSessions`/`ListNonTerminal`). One mutable
@@ -121,7 +129,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 21` — current schema version.
+- `LatestMigrationVersion = 25` — current schema version. Bump it in
+  `db/migrations.go` whenever a migration is added; the daemon validates the
+  applied version against it at startup.
+- `OpenSQLiteDatabase(cfg SQLiteOpenConfig) (*SQLiteOpenResult, error)` — the
+  single entry point for opening SQLite, dispatching to one of three
+  build-tag-selected implementations (native, CGO, js/wasm).
+  `SQLiteOpenResult` carries the handle, the resolved driver name, and the
+  DSN. `configureSQLitePool` applies the shared `MaxOpenConns`,
+  `MaxIdleConns`, and `ConnMaxLifetime` settings so pool behavior does not
+  drift between backends.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -250,6 +267,23 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   record. The first submit-capable checkpoint inserts it in the same
   transaction as the mutable snapshot and first transport enqueue. A repeated
   insert must match both session id and bytes or the full transaction fails.
+- **OOR status paging selects scalars first, hydrates second.** The status
+  read picks its page from scalar metadata and loads bindings and outgoing
+  diagnostics only for the sessions that made the page; hydrating every package
+  and checkpoint before paginating is what this path exists to avoid. Ordering
+  is newest-first with the stored session bytes breaking timestamp ties, so the
+  order is total and a cursor cannot loop or skip. Registry creation time stays
+  stable as artifacts arrive, while package-only history orders by package
+  creation time. The two candidate sets (registry and package-only) are merged
+  **disjointly** so one session can never occupy two positions in a page, and
+  package direction and completion override registry metadata *before* filters
+  and limits apply — reversing that order would filter on metadata the page
+  then contradicts. When the registry candidate page comes back full, its
+  oldest timestamp bounds the package-only candidates below, since an older
+  package cannot outrank a full page; a *partial* registry page is left
+  unrestricted, because that bound would then be able to skip real results.
+  Only the final merge and payload hydration are page-bounded — filters and
+  overlapping-package exclusion may still scan scalar entries.
 - `ListNonTerminalOORSessionRegistry` intentionally filters on the mutable
   session row's current `status`.
   `oorRegistryBehavior.resolveSelfTransfer` defers a self-transfer incoming
@@ -263,6 +297,34 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   jobs use `standard_vtxo_timeout` with an empty ref; policy-specific
   jobs store their registered kind plus the domain-owned durable ref
   needed to reconstruct the same spend policy after restart.
+
+### CGO SQLite (`sqlite_open_cgo.go`, `sqlite_driver_cgo.go`)
+
+- **Why a second native backend exists.** The default `modernc` driver is pure
+  Go and issues raw Linux syscalls through its bundled libc. Android's
+  application sandbox can block those during database startup, so Android
+  bindings build with the `sqlite_cgo` tag to select the `mattn` driver, which
+  goes through the host C library instead. The tag also works on a normal host,
+  which is what lets CI exercise both backends against the same suite.
+- **The schema, sqlc queries, and SDK API are identical across backends.** The
+  only differences live at the driver boundary, and each one is deliberately
+  made to fail loudly rather than silently diverge:
+  - Pragmas travel as DSN options (`_foreign_keys`, `_journal_mode`,
+    `_busy_timeout`, `_synchronous`, `_fullfsync`) so they apply to *every*
+    connection, including handles the pool opens later. Session-scoped pragmas
+    would silently not apply to a replacement connection.
+  - An unrecognized pragma is a hard error. `mattn` ignores unknown DSN keys,
+    so without this check a newly added setting would quietly lose its
+    semantics on Android only — the hardest possible place to notice it.
+  - `TxLockImmediate` maps to `_txlock=immediate`, preserving the write-intent
+    locking the native path relies on to avoid mid-transaction upgrade
+    deadlocks.
+- Numbered query arguments, migration application (`db/migrate`'s
+  `driver_sqlite_cgo.go` / `driver_sqlite_native.go`), and busy/serialization
+  retry classification (`sqlerrors_cgo.go` / `sqlerrors_native.go`) each have a
+  per-backend implementation. A retry classifier that misses a backend's busy
+  error turns a routine contention retry into a surfaced failure, so these must
+  stay in step when either driver is upgraded.
 
 ### js/wasm SQLite (`sqlite_open_wasm.go`)
 
