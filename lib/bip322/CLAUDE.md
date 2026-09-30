@@ -18,18 +18,28 @@ metadata encoding.
   message challenge, signature, proof prev outputs, chain height).
 - `VerificationResult` — Validation outcome with state (Valid/Invalid/
   Inconclusive) and reason.
+- `DefaultMaxProofInputs` — The default proof-of-funds input cap (128) applied
+  by `ValidateAuth`. Exported so *producers* can size a request against the
+  same budget the verifier enforces; `round.findRefreshRound` uses it to admit
+  an automatic-refresh cohort only when the assembly's boarding plus forfeit
+  inputs still fit.
 
 ## Relationships
 
 - **Depends on**: (no internal repo imports; pure cryptographic library).
 - **Depended on by**: `round` (join-round intent signing and BIP-322 auth
-  validation, via `join_auth.go`).
+  validation, via `join_auth.go`; also reads `DefaultMaxProofInputs` in
+  `actor.go` to bound automatic-refresh cohort admission).
 
 ## Invariants
 
 - `ValidUntil` >= `ValidFrom` (or `ValidUntil` = 0 for no upper bound).
 - Full-format only: signature is the serialized to_sign transaction.
-- Max 128 additional inputs per validation (proof-of-funds limit).
+- Max 128 additional inputs per validation (`DefaultMaxProofInputs`,
+  overridable per call). The cap is a verifier-side policy, so a request built
+  above it is signed correctly and still rejected — callers that assemble
+  multi-input auth packages must partition against `DefaultMaxProofInputs`
+  before construction rather than retrying the same oversized assembly.
 - Height validation: signature valid only if `current >= ValidFrom` AND
   (`ValidUntil == 0` OR `current <= ValidUntil`).
 

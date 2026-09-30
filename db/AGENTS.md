@@ -49,6 +49,15 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   (`InsertClientVTXO`, `FetchByOutpoint`). Persists `ChainDepth`.
 - `OORArtifactStore`, `OwnedReceiveScriptStore` — OOR session state
   and locally owned receive-script metadata.
+- `OORStatusStore` / `OORStatusSummary` / `OORStatusCursor` — read-only
+  status projection backing the daemon's OOR status RPC.
+  `List(ctx, before, direction, status, limit)` returns at most `limit`
+  newest-first summaries older than the cursor, reading merged package and
+  registry state in one read snapshot. `OORStatusCursor` is
+  `(CreatedAt Unix seconds, SessionID)` — it carries the timestamp so
+  continuation does not require the cursor row to still exist. A nil cursor
+  starts at the newest session; direction zero and status `-1` disable those
+  filters.
 - `OwnedReceiveScriptRecord` — one owned receive-script row. Its
   `IdempotencyKey`, `RegistrationLabel`, `RegistrationExpiresAt`, and
   `RegistrationRPCKey` fields define a retry-safe allocation;
@@ -234,6 +243,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   3s cap).
 - SQLite `busy_timeout = 30 000 ms` under WAL mode tolerates
   multi-actor contention bursts.
+- There are **three** SQLite open paths, selected entirely at build time:
+  `sqlite_open_native.go` (default, modernc pure-Go), `sqlite_open_cgo.go`
+  (`sqlite_cgo` tag, mattn/CGO — see the CGO SQLite section),
+  and `sqlite_open_wasm.go` (`js && wasm`). They share `SQLiteOpenConfig`,
+  `SQLiteOpenResult`, and `configureSQLitePool`; everything else — pragma
+  delivery, driver registration, error mapping — is per-arm. A change to
+  connection setup belongs in the shared helper or in all three.
 - Postgres test fixture slots bound Docker startup and migrations only. Helpers
   release the slot before returning the initialized store; retaining it until
   test cleanup can deadlock Go's parallel-test barrier.
@@ -292,6 +308,41 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   barrier that neither wasm VFS can express.
 - The handle is single-connection (`SetMaxOpenConns(1)`); multiple SQL
   connections would race the same database through one worker.
+
+### CGO SQLite (`sqlite_open_cgo.go`, `sqlite_driver_cgo.go`)
+
+- **Build-tag selected, not runtime selected.** `sqlite_cgo` swaps the
+  default `modernc` (pure-Go) driver for `mattn/go-sqlite3` compiled against
+  the host C library. Every non-wasm file in the split comes in a
+  `sqlite_cgo` / `!sqlite_cgo` pair — `sqlite_open_*.go` (open path),
+  `sqlerrors_*.go` (error mapping), and `db/migrate/driver_sqlite_*.go`
+  (migration driver). Adding a behavior to one arm without the other means
+  the Android build and the default build silently diverge.
+- **Android is the reason it exists.** modernc/libc issues raw Linux
+  syscalls that Android's application sandbox can block; linking the
+  platform's own SQLite avoids that. The tag also works on a normal host, so
+  the CGO arm is testable outside Android.
+- `cgoSQLiteDriver` is registered under its own driver name
+  (`wavelength-sqlite3`) rather than reusing mattn's stock registration,
+  because it rewrites sqlc's PostgreSQL-style numbered placeholders into
+  SQLite's. Registering separately is what guarantees connections
+  `database/sql` opens later — pool growth, handle replacement — get the same
+  rewriting. `sqliteTokens` shields literals, quoted identifiers, comments,
+  and Tcl-style named parameters from that rewrite.
+- **Unknown pragmas fail the open.** mattn silently ignores unrecognized DSN
+  keys, so `openSQLiteDatabase` allow-lists the pragmas it can express
+  (`foreign_keys`, `journal_mode`, `busy_timeout`, `synchronous`,
+  `fullfsync`) and errors on anything else. A new pragma must be mapped here
+  or it would look applied and do nothing. Pragmas ride the DSN rather than a
+  post-open `Exec` so every pooled connection carries them. `fullfsync` has
+  no mattn DSN option, so the driver parses it out of the DSN itself and
+  applies the embedded `sqlite_fullfsync.sql` to each new handle — that SQL
+  lives in its own embedded file because sqlc cannot parse SQLite PRAGMAs.
+- `mapSQLiteError` reads mattn's *extended* codes before the primary ones,
+  so `SQLITE_BUSY_SNAPSHOT` maps to `ErrDeadlockError` (restart the
+  transaction) rather than being lumped in with ordinary `SQLITE_BUSY`
+  (wait for the other writer). Getting this backwards turns a retryable
+  serialization failure into a hang or a spurious error.
 
 ### Migration baseline
 

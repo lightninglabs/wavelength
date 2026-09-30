@@ -5,8 +5,8 @@
 Generated protobuf/gRPC stubs for the round protocol, plus hand-written
 support code: `service.go` (mailbox method name constants), `convert.go`
 (proto <-> Go domain-type conversions, including the security-sensitive
-`TreeFromProto` VTXO-tree deserializer), and `version.go` (the round flow
-version guard).
+`TreeFromProto` VTXO-tree deserializer), `batch_slot.go` (scheduled-batch
+slot selection conversions), and `version.go` (the round flow version guard).
 
 ## Key Types
 
@@ -33,6 +33,11 @@ All `*.pb.go` files are generated — never edit directly; regenerate with
   `PSBTFromBytes`/`ToBytes`, `MsgTxFromBytes`/`ToBytes`,
   `SchnorrSigFromBytes`/`ToBytes` — wire/proto ⇄ Go conversions for the
   round protocol's payload types.
+- `SelectionFromProto` / `SelectionToProto` (`batch_slot.go`) — Convert a
+  join's scheduled-slot choice between `*BatchSlotSelection` and
+  `fn.Option[batchschedule.Selection]`. A nil message decodes to `None`
+  (the join requests event-driven timing), and `None` encodes back to a nil
+  message so a legacy join carries no slot field at all.
 - `FlowVersion` / `FlowVersionV1` / `ValidateFlowVersion` — the per-round
   choreography version stamped by the operator and validated by the
   client; fails closed on any version this build does not understand.
@@ -45,7 +50,8 @@ distinction.
 ## Relationships
 
 - **Depends on**: `lib/tree`, `lib/types` (conversion targets in
-  `convert.go`), `github.com/lightninglabs/tap-sdk` (`ParseAssetRef`, for
+  `convert.go`), `lib/batchschedule` (`ID`/`Selection` in `batch_slot.go`),
+  `github.com/lightninglabs/tap-sdk` (`ParseAssetRef`, for
   canonical asset-reference validation); otherwise generated proto types only.
 - **Depended on by**: `round` (outbox routing, proto conversions, flow
   version), `db` (persisting round/VTXO proto blobs), `waved` (proto
@@ -91,6 +97,11 @@ distinction.
 - `ValidateFlowVersion` must reject any `FlowVersion` other than the
   versions this build implements (currently only `FlowVersionV1`); never
   make it permissive by default.
+- `SelectionFromProto` validates through `batchschedule.IDFromBytes` and
+  `SelectionFromUnix` rather than copying the wire fields, so a malformed
+  schedule ID or an unrepresentable cutoff is an error, not a silently
+  degraded selection. Absent (`nil`) and invalid must stay distinguishable:
+  `nil` is a legitimate event-driven join.
 
 ## Deep Docs
 

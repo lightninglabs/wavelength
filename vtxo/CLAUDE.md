@@ -30,7 +30,7 @@ when the local wallet owns the receive script.
   optional `Log`, optional `LedgerSink fn.Option[ledger.Sink]`,
   `ForfeitVTXOActorAskTimeout`, `RefreshFeeQuoter`, `CriticalExitAssessor`,
   `FetchOperatorKey`, `ForfeitParticipantSigner`, `TerminalVTXOObserver`,
-  `ExitOutcomeResolver`, and `ReservationStore`. Confirmed exit-cost accounting is emitted by unroll
+  `ExitOutcomeResolver`, `ReservationStore`, and `TimeoutActor`. Confirmed exit-cost accounting is emitted by unroll
   after final sweep confirmation. `ForfeitVTXOActorAskTimeout`
   (default 5 s) bounds forfeit and refresh child asks so a blocked child actor
   cannot monopolize the manager until the outer RPC deadline. Zero uses the
@@ -43,7 +43,15 @@ when the local wallet owns the receive script.
   active set. `ExitOutcomeResolver` is called at startup to reconcile VTXOs
   still persisted in `VTXOStatusUnilateralExit` with their terminal job
   outcome. `ReservationStore` is used at startup to sweep orphaned Spending
-  VTXOs.
+  VTXOs. `TimeoutActor` is the `timeout` actor reference children use to
+  re-deliver a manager notification that could not be admitted immediately
+  (see `deliverManagerNotification`); nil restores the legacy blocking
+  `Manager.Tell`.
+- `ExpiryConfig.MinRefreshAmount func() btcutil.Amount` — Returns the
+  operator's current minimum replacement-output amount, wired by `waved`
+  from `OperatorTerms.MinVTXOAmountFloor()`. Consulted by
+  `ExpiryConfig.canAutoRefresh` before an automatic reservation. Nil
+  preserves the behavior of callers with no operator terms.
 - `CustomForfeitInput` (`lib/actormsg`) — Describes a caller-supplied VTXO
   outside the wallet's live coin set that still needs a local actor to sign
   the exact round forfeit tx. `ActivateCustomForfeitInputsRequest` (sent by
@@ -118,12 +126,13 @@ when the local wallet owns the receive script.
 
 ## Relationships
 
-- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/types` (`Ancestry`), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission and custom-forfeit message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `coinselect` (largest-first VTXO selection), `metrics` (optional `OORTransferReceivedMsg` sink), `ledger` (`Sink` type for compatibility with manager wiring), `unroll` (via `ExitOutcomeResolver` callback wired by `waved`).
+- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/types` (`Ancestry`), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission and custom-forfeit message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `coinselect` (largest-first VTXO selection), `metrics` (optional `OORTransferReceivedMsg` sink), `ledger` (`Sink` type for compatibility with manager wiring), `timeout` (nonblocking re-delivery of manager notifications under mailbox pressure), `unroll` (via `ExitOutcomeResolver` callback wired by `waved`).
 - **Depended on by**: `round` (triggers forfeit requests), `oor` (incoming VTXOs), `wallet` (admission gating), `db` (persistence), `waved` (wiring, owned-script adapters, incoming event route, `CheckForfeitAdmission` for the leave filter and exit-plan advisory, and `assessAutomaticCriticalExit` supplying `CriticalExitAssessor`), `sdk/swaps` (forfeit sign-request conversion).
 - **Sends**:
   - → `round` (via manager relay): `RelayToRoundMsg` wrapping `ForfeitSignatureSubmission`
   - → `db` (via outbox): `VTXOStatusUpdate`
-  - → `vtxo` manager: `VTXOTerminatedNotification`, `RelayToRoundMsg`, `VTXOsMaterializedNotification` (from `IncomingVTXOHandler`)
+  - → `vtxo` manager: `VTXOTerminatedNotification`, `RelayToRoundMsg`, `VTXOsMaterializedNotification` (from `IncomingVTXOHandler`), `deferredRefreshRelay` (retained automatic relay, via `timeout`)
+  - → `timeout`: `ScheduleTimeoutRequest` (re-delivery of a manager notification refused by a full mailbox)
   - → `ledger` actor: no direct messages; unroll emits confirmed
     `ExitCostMsg` after sweep confirmation
 - **Receives**:
@@ -206,6 +215,55 @@ when the local wallet owns the receive script.
 - When the cached boundary fires, auto-refresh fetches fresh operator terms
   before reserving the VTXO. A later still-safe boundary leaves the VTXO live;
   a disabled or unsafe-late window preserves the ordinary paid refresh path.
+- **An input below the operator's output floor is never auto-reserved.**
+  Automatic refresh is one-for-one: it preserves each input's amount in a new
+  output, so it cannot combine dust the way a manual aggregation can. A single
+  sub-minimum input admitted into a shared cohort poisons every otherwise
+  valid sibling in that round, and critical/expired retries rebuild and sign
+  the same impossible request while round mailboxes and state queries back up.
+  `ExpiryConfig.canAutoRefresh` therefore gates `LiveState.autoRefreshTransition`
+  (both the threshold-triggered and `CohortRefreshEvent` paths) and the
+  `ExpiredState` reclaim path on `desc.Amount >= MinRefreshAmount()`, and
+  refuses asset-bearing VTXOs by the same door. A refused coin **stays** in its
+  original `Live`/`Expired` state — it is still recoverable by manual
+  aggregation, a funded critical exit, or a later epoch once the floor drops.
+  Terms are refreshed before reclaim and unfunded-critical attempts so a stale
+  high minimum cannot permanently suppress recovery; a lookup failure leaves
+  the durable row untouched. Fees remain the quote path's concern, not this
+  gate's.
+- **A child must not park its receive loop on a full manager mailbox.**
+  `VTXOActor.deliverManagerNotification` is the single egress for child →
+  manager notifications. When `TimeoutActor` is configured it uses
+  `TryTell` first and, on `ErrMailboxFull`, hands the exact notification to
+  the `timeout` actor with a 1 ms timer and a unique
+  `vtxo-manager-notification:<uuid>` ID, whose callbacks never block. This
+  matters because the manager routinely `Ask`s a child, so a child blocking on
+  the manager's mailbox deadlocks the pair. Unique IDs keep a later
+  notification from replacing undelivered work; `ErrActorTerminated` and
+  `ErrMailboxClosed` are returned directly rather than retried. The
+  notification is sent under `context.WithoutCancel` because it belongs to the
+  persisted transition, not the receive turn. The durable VTXO state still
+  owns the reservation, so startup reconciliation remains the recovery path
+  across a restart.
+- **A deferred automatic-refresh relay carries a child-owned validity token.**
+  A retained `RelayToRoundMsg` can outlive the reservation that emitted it, so
+  `deliverManagerNotification` wraps an automatic `RefreshVTXORequest` in an
+  unexported `deferredRefreshRelay` holding an `atomic.Bool`. Release,
+  signing, or exit clears the token before a newer reservation can reuse the
+  outpoint, and the manager checks it **before** consulting cohort markers —
+  a later trigger height may already have replaced the marker for that
+  outpoint.
+- **Same-height handoff markers are retained, not consumed.**
+  `adoptedAutoRefreshRelays` records every same-height automatic handoff
+  (including adopted pending leaders, recorded in `handleRelayToRound` for the
+  initiating request and each cohort member). `consumeAdoptedAutoRefreshRelay`
+  suppresses the duplicate delivery but deliberately leaves the entry in place,
+  and `coordinateAutoRefreshCohort` skips pending candidates whose marker
+  matches the current trigger height. Deleting on consume let a later cohort
+  re-adopt an already-relayed reservation; deferring that overlapping cohort
+  then released a claim the first round still owned. Retention is bounded by
+  `handleVTXOTerminated` (which deletes the marker) and by the trigger height —
+  a later block or a restart is free to retry a genuinely released claim.
 - **Critical expiry means "the unilateral time budget is now active", not
   "exit now".** `ExpiryStatusCritical` used to escalate a `LiveState` or
   `PendingForfeitState` VTXO straight to `UnilateralExitState`. It no longer

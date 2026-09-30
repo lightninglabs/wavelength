@@ -60,6 +60,14 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   but cannot extend the durable `MaxAttempts` ceiling. A postpone is detected
   *before* this policy is consulted and never reaches it.
 - `DefaultTellRetryPolicy` — Exponential backoff policy: up to 5 attempts, starting at 1s, capped at 60s.
+- `Probe[M, R](ctx, ref) (uint64, error)` — Side-effect-free receive-loop
+  liveness check for a **direct channel-mailbox** actor reference (the value
+  returned by `NewActor`/`RegisterWithSystem`). Enqueues an internal envelope
+  that the receive loop acknowledges without invoking the behavior, and returns
+  the actor's completed-turn counter. Routers, mapped refs, and durable actors
+  are unsupported and return an error. Admission uses `TrySend`, so a probe
+  never waits for mailbox room; only the response wait respects `ctx` and
+  actor shutdown. Used by `waved`'s `/livez` / `/readyz` sampler.
 - `Checkpoint` — Serializable actor state snapshot for recovery.
 - `WithoutOutboxID` — Context helper that strips the propagated outbox ID so child operations do not inherit the parent's delivery tracking scope.
 - `Promise[T]` / `Future[T]` — Async result types for Ask-pattern responses.
@@ -118,6 +126,18 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   p-model edge that routes ack/nack to the by-ID operations. Retry-policy
   decisions must use `Delivery.EffectiveAttempts()` so the in-flight peeked
   attempt is counted before a nack can raise the row to `max_attempts`.
+- **A probe measures the receive loop, never the behavior.** The probe
+  envelope is intercepted at the top of `process()`: it bumps the
+  completed-turn counter, closes its done channel, and never reaches
+  `behavior.Receive` or the dead-letter office. Concurrent callers share at
+  most one queued probe — including after a caller times out — so a stalled
+  actor cannot accumulate health-check work in its mailbox. A completed probe
+  is replaced on the next call rather than reused as a stale success, and the
+  drain path skips probe envelopes so shutdown wakes probe callers through the
+  actor context with `ErrActorTerminated` instead of reporting success. The
+  counter is returned even when the probe itself fails, which is what lets a
+  supervisor distinguish a busy queue or a late acknowledgement from a stuck
+  loop.
 - `Tell` with a `DurableActor` persists the message before returning (crash-safe enqueue).
 - Outbox messages are dispatched only after state is persisted (outbox pattern).
 - **Outbox fold p-model.** For tx-aware stores, outbox delivery is

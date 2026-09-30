@@ -23,10 +23,11 @@ hands off to `waved.Main` to run the daemon.
   `submitpackage` wiring for V3 ephemeral-anchor package relay; a no-op
   when `bitcoind.host` is unset.
 - `registerOperatorFeeFlags(f, cfg)` / `registerMaxPaymentCLTVFlag(f, cfg)` /
-  `registerFeeEstimationFlags(...)` — grouped flag registrars called from
+  `registerFeeEstimationFlags(...)` / `registerMetricsFlags(f, cfg)` /
+  `registerHealthFlags(f, cfg)` — grouped flag registrars called from
   `newRootCmd`. `registerMaxPaymentCLTVFlag` owns `--maxpaymentcltv`, the
   automatic-maintenance target for keeping enough VTXO lifetime available for
-  Lightning payments.
+  Lightning payments. `registerHealthFlags` owns `--health.listen`.
 
 ## Relationships
 
@@ -55,6 +56,12 @@ hands off to `waved.Main` to run the daemon.
 - `EagerRoundJoin`'s flag default comes from `waved.DefaultConfig()`,
   which is itself build-tag aware (true under `wavewalletrpc`, false
   otherwise); `--eagerroundjoin` still overrides it either way.
+- `--health.listen` is **opt-in and unauthenticated**. It is empty by default,
+  and a non-empty value starts a listener serving only `/livez` and `/readyz`
+  with no macaroon check — that is deliberate, so a supervisor or orchestrator
+  probe needs no credentials. Bind it to loopback or a private network; it is
+  not a public endpoint. The flag only carries the address, all probe
+  semantics live in `waved` (`health.go`).
 - `--maxpaymentcltv`'s default is build-tag aware the same way: it reads
   `cfg.MaxPaymentCLTV`, which `waved.DefaultConfig()` seeds from
   `defaultMaxPaymentCLTV()` — 300 under `swapruntime`, zero otherwise. The

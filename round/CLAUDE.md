@@ -326,6 +326,31 @@ state transitions and validation rules live under [Invariants](#invariants).
   Nothing reuses a failed round — `findAssemblingRound` only returns
   `Idle`/`PendingRoundAssembly` rounds, and the FSM's recovery transitions
   have no production producer — so deferred reaping is safe.
+- **Automatic refresh cohorts are admitted against the BIP-322 proof
+  budget.** `handleRefreshVTXOCohortRequest` routes through
+  `findRefreshRound(ctx, proofInputs)` rather than `findAssemblingRound`.
+  Individual cohorts arriving from the VTXO manager are already bounded, but
+  the round actor can coalesce enough of them into one
+  `PendingRoundAssembly` to push `len(Boarding) + len(Forfeits)` past
+  `bip322.DefaultMaxProofInputs` (128). That assembly signs fine and is then
+  rejected by the operator's verifier, and every retry rebuilds the same
+  oversized request. `findRefreshRound` therefore returns
+  `errRefreshRoundBusy` when the merged input total would exceed the budget,
+  when the cohort alone exceeds it, or when any round is in an **unsealed**
+  registration (`IntentSentState`, `QuoteReceivedState`, `RoundJoinedState`)
+  — a second concurrent chunk from the same client would replace its own
+  live registration. States at or past `CommitmentTxReceivedState` do not
+  block, so maintenance progresses independently of confirmation. Boarding
+  intents count against the same budget, so a nearly-full boarding assembly
+  defers refresh rather than the reverse.
+- `errRefreshRoundBusy` is **not** an error to the caller.
+  `handleRefreshVTXOCohortRequest` logs at `Debug` and returns `Ok(nil)`; the
+  deferred claims are returned to the VTXO manager through
+  `releaseRejectedRefreshCohort` → `deliverForfeitRelease`, which is the
+  nonblocking delivery path. No claim is deleted from storage, so retry is
+  owned by the VTXO actor's block-based cooldown and by durable startup
+  reconciliation — there is deliberately no separate queue or retry identity
+  for deferred cohorts.
 - `ClientWallet` provides MuSig2 signing and key derivation; boarding
   address creation is handled by the wallet actor (not the round FSM).
 - Persisted VTXO ownership uses `OwnerKey` (not `SigningKey`). For

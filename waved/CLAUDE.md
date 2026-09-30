@@ -26,9 +26,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   (`rpc_fees.go`).
 - `Config` — daemon configuration: wallet backend selection, mailbox/chain
   backend wiring, `OORConfig`/`OORLimitsConfig` (receive safety caps),
-  `UnrollConfig` (unilateral-exit fee-bump cadence and cap), and
+  `UnrollConfig` (unilateral-exit fee-bump cadence and cap),
   `MaxOperatorFeeSat` (the #270 seal-time fee-cap validated in
-  `Config.Validate()`).
+  `Config.Validate()`), and `Health` (the `/livez` / `/readyz` listener).
+- `HealthConfig` — opt-in local health listener (`health.listen`, empty
+  disables). Serves only `GET /readyz` and `GET /livez`, exposes no wallet
+  data or RPC methods, and intentionally requires no macaroon so a supervisor
+  can probe it — bind it to loopback or a private network.
 - `WalletState` — `None` / `Locked` / `Ready` wallet lifecycle.
 - `WalletRecoveryResult` — counters returned by the in-process,
   post-unlock recovery hook.
@@ -38,7 +42,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 ## Relationships
 
 - **Depends on**: `baselib/actor`, `btcwbackend`, `chainbackends`,
-  `chainsource`, `lib/actormsg`, `db`, `ledger`, `round`, `txconfirm`,
+  `chainsource`, `lib/actormsg`, `db`, `ledger`, `round`, `timeout`,
+  `txconfirm`,
   `unroll`, `vtxo`, `wallet`, `walletcore`, `oor`, `serverconn`, `indexer`,
   `arkrpc`, `lndbackend`, `fraud`, `gateway`, `rpc/restclient`,
   `vhtlcrecovery`, `vhtlcrecovery/coordinator`, `vhtlcrecovery/unrollpolicy`.
@@ -83,6 +88,37 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 - `Server.run` registers a deferred `actorSystem.Shutdown()` **before** the
   deferred `db.Close()` so in-flight actor DB transactions drain before the
   connection pool tears down.
+- **Health probing is daemon-owned, never request-owned.** `startHealthServer`
+  binds the listener *before* dependency startup, so a locked wallet or an
+  unreachable startup dependency reports "not ready" instead of causing a
+  supervisor restart loop. A background sampler (`actorHealth.monitor`) waits
+  on the `daemonReady` publication barrier, then probes the round actor and
+  the VTXO manager every 5 s under a shared 2 s deadline; the HTTP handlers
+  only read the cached result and never enqueue work, so probe load is
+  independent of how often anything scrapes the endpoints. `s.actorProbes` is
+  appended to by `initRoundActor` and `initVTXOManager` and is published by
+  closing `daemonReady` — do not read it before that barrier.
+- **`/readyz` and `/livez` answer different questions.** Readiness requires
+  the most recent sample to have succeeded *and* to be fresh (within
+  `healthInterval + healthTimeout`), so a sampler that stops progressing
+  withdraws readiness rather than serving a stale success. Liveness fails only
+  after an actor has shown no completed turns for `healthLivenessGrace`
+  (2 min), which is why `actor.Probe` returns the completed-turn counter even
+  when the probe itself times out: a *busy* actor keeps finishing turns and
+  stays live, while a genuinely wedged receive loop does not. Each actor holds
+  its own activity clock, so a busy manager cannot mask a stuck round actor.
+  Before the barrier fires the daemon is live but not ready, and shutdown
+  fails both endpoints.
+- OOR status listing is a bounded, newest-first SQL page, not an in-memory
+  scan. `ListOperationStatus` goes through `db.OORStatusStore`, which applies
+  the `db.OORStatusCursor` (creation time, session ID tiebreak), the direction
+  and status filters, and package precedence **before** `LIMIT` and payload
+  hydration; it never loads Ark PSBTs or checkpoint rows. Outgoing
+  diagnostics missing from package bindings are recovered from the registry
+  snapshot with `oor.FillOutgoingSummary`, applied only to the already-bounded
+  page. `decodeOORStatusCursor` rejects the legacy ID-only token format
+  outright — that cursor described a different ordering, so honoring it would
+  skip rows rather than continue the page.
 - Wallet transitions `None → Locked → Ready` (or direct to `Ready` if a seed
   is provided). Three wallet backends: LND, lightweight (`lwwallet`), or
   neutrino-backed (`btcwallet` via `btcwbackend`).
@@ -370,6 +406,15 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   window boundary only when the local dynamic critical threshold plus retry
   buffer remains intact. When that cached boundary fires, it fetches a fresh
   `GetInfo` snapshot and rechecks the window before reserving the input.
+- `vtxoExpiryConfig` also supplies `MinRefreshAmount`, reading
+  `OperatorTerms.MinVTXOAmountFloor()` from the latest cached terms on every
+  call. Automatic one-for-one refresh cannot combine inputs, so a VTXO below
+  that floor is skipped rather than reserved; it stays available for manual
+  aggregation and for a later epoch if the operator lowers the floor.
+- `initVTXOManager` wires `ManagerConfig.TimeoutActor` to the `"timeout"`
+  service key. Without it, a VTXO child falls back to a blocking
+  `Manager.Tell`, which parks the child's receive loop whenever the manager's
+  mailbox is full — and the manager routinely `Ask`s its children.
 - `Config.MaxPaymentCLTV` extends that same local safety floor by the largest
   total Lightning CLTV the wallet wants to keep available. Swap-enabled builds
   default to 300 blocks; core builds default to zero. An operator waiver may
