@@ -30,7 +30,9 @@ when the local wallet owns the receive script.
   optional `Log`, optional `LedgerSink fn.Option[ledger.Sink]`,
   `ForfeitVTXOActorAskTimeout`, `RefreshFeeQuoter`, `CriticalExitAssessor`,
   `FetchOperatorKey`, `ForfeitParticipantSigner`, `TerminalVTXOObserver`,
-  `ExitOutcomeResolver`, and `ReservationStore`. Confirmed exit-cost accounting is emitted by unroll
+  `ExitOutcomeResolver`, `ReservationStore`, and `TimeoutActor` (the
+  non-blocking callback scheduler shared with spawned children; it must start
+  before manager recovery). Confirmed exit-cost accounting is emitted by unroll
   after final sweep confirmation. `ForfeitVTXOActorAskTimeout`
   (default 5 s) bounds forfeit and refresh child asks so a blocked child actor
   cannot monopolize the manager until the outer RPC deadline. Zero uses the
@@ -118,7 +120,7 @@ when the local wallet owns the receive script.
 
 ## Relationships
 
-- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/types` (`Ancestry`), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission and custom-forfeit message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `coinselect` (largest-first VTXO selection), `metrics` (optional `OORTransferReceivedMsg` sink), `ledger` (`Sink` type for compatibility with manager wiring), `unroll` (via `ExitOutcomeResolver` callback wired by `waved`).
+- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/types` (`Ancestry`), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission and custom-forfeit message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `coinselect` (largest-first VTXO selection), `metrics` (optional `OORTransferReceivedMsg` sink), `ledger` (`Sink` type for compatibility with manager wiring), `timeout` (non-blocking retry scheduler for manager notifications, `manager_delivery.go`), `unroll` (via `ExitOutcomeResolver` callback wired by `waved`).
 - **Depended on by**: `round` (triggers forfeit requests), `oor` (incoming VTXOs), `wallet` (admission gating), `db` (persistence), `waved` (wiring, owned-script adapters, incoming event route, `CheckForfeitAdmission` for the leave filter and exit-plan advisory, and `assessAutomaticCriticalExit` supplying `CriticalExitAssessor`), `sdk/swaps` (forfeit sign-request conversion).
 - **Sends**:
   - → `round` (via manager relay): `RelayToRoundMsg` wrapping `ForfeitSignatureSubmission`
@@ -249,6 +251,42 @@ when the local wallet owns the receive script.
   the VTXO reserved.
 - **Startup expiry reconciliation.** After round registration, `vtxo.ReconcileExpiry` asks the manager to release orphan reservations and snapshot its child references. The daemon then drives the snapshot sequentially outside the manager receive loop, so child refresh relays and termination notifications can drain. Startup still waits for the pass, caller cancellation stops it, and each child ask retains the configured timeout. Child FSMs remain the sole owners of lifecycle transitions and persistence.
 - **Confirmed-forfeit startup reconcile.** The caller-owned startup pass first lists recovered `Forfeiting` descriptors and re-drives `ForfeitConfirmedEvent` only when the joined `Settlement` has `Height > 0`, closing a crash between round finalization and the original best-effort confirmation Tell. A missing settlement, height zero, lookup error, missing actor, or actor error fails closed in `Forfeiting`.
+- **A child never parks its receive loop on a full manager mailbox.**
+  `deliverManagerNotification` (`manager_delivery.go`) tries `TryTell` first;
+  on `ErrMailboxFull` it hands the exact notification to the `TimeoutActor`,
+  whose callbacks never block, so one timer entry owns the delivery across all
+  retries with no parked sender goroutine. Each entry gets a unique ID so a
+  later notification cannot replace undelivered work. `ErrActorTerminated` and
+  `ErrMailboxClosed` are returned as-is — those are shutdown, not
+  backpressure. The notification is sent under `context.WithoutCancel`,
+  because it belongs to the persisted transition rather than to the receive
+  turn that produced it. With no `TimeoutActor` configured the child falls
+  back to a blocking `Tell`.
+- **A deferred automatic-refresh relay carries a child-owned validity token.**
+  A retained `RelayToRoundMsg` can outlive the reservation that emitted it, so
+  an automatic `RefreshVTXORequest` is wrapped in `deferredRefreshRelay` with
+  an `atomic.Bool` the child invalidates on release, signing, or exit. The
+  manager checks that token **before** consulting cohort markers, since a
+  later trigger height may already have replaced the marker for the same
+  outpoint. Durable VTXO state still owns the reservation; startup
+  reconciliation is what recovers it across a process restart.
+- **Adopted automatic-refresh relay markers are retained, not consumed.**
+  `adoptedAutoRefreshRelays` records every same-block automatic handoff keyed
+  by outpoint and trigger height, including adopted pending leaders, and
+  `consumeAdoptedAutoRefreshRelay` suppresses the duplicate delivery without
+  deleting the marker. Deleting it would let a second cohort at the same
+  height re-adopt an already-relayed reservation and release it while the
+  first round still owns it. The marker is cleared only by a later trigger
+  height or by terminal cleanup in `handleVTXOTerminated`.
+- **Automatic refresh is skipped when the replacement output is impossible.**
+  `ExpiryConfig.MinRefreshAmount` supplies the operator's current output
+  floor. Automatic maintenance is one-for-one and preserves the input amount
+  before fees, so an input below that floor cannot succeed even at zero fee;
+  `canAutoRefresh` leaves it in its original state to retry on later epochs
+  rather than consuming a reservation. Taproot-asset descriptors are excluded
+  outright — asset transitions need their own path. A nil `MinRefreshAmount`
+  preserves the behavior of callers with no operator terms, and neither manual
+  aggregation nor funded critical exits use this gate.
 - **Round startup relay gate.** Production sets `ManagerConfig.DeferAutomaticRefreshUntilRoundReady` because manager recovery precedes round-actor registration. An automatic refresh relay during that bounded window is not sent to the unresolved service key: its reservation is rolled back and logged at `Debug`, then the post-registration `ReconcileExpiryRequest` opens the gate before releasing and re-driving urgent expiry work at the current tip. Non-critical live refreshes retain their bounded retry cooldown. Manual relays and every routing failure after the gate opens retain the ordinary `Warn` path; do not broaden the startup classification to `ErrNoActorsAvailable` or connection errors in general.
 - **Atomic reservation cleanup.** `VTXOStore.UpdateVTXOStatusReleasingReservation` deletes the spending-reservation row in the same transaction as the VTXO status change when a VTXO leaves `SpendingState` (via `SpendReleasedEvent`, `SpendCompletedEvent`, or escalation to `UnilateralExitState`). This prevents the durable index from retaining stale rows that would mask a future orphan on the same outpoint.
 - `ForceUnrollEvent` unifies every unilateral-exit trigger (manual `Unroll` RPC, fraud spend, vHTLC recovery) behind the manager's admission gate. It carries a `Trigger actormsg.UnrollTrigger` (zero value admits as critical expiry) and an `ExitPolicy fn.Option[actormsg.ExitPolicy]` (None selects the standard VTXO timeout policy); both ride through to the emitted `ExpiringNotification` so the chain-resolver bridge admits the registry job under the right `StartTrigger` and persists the correct exit-spend policy. It is accepted in `LiveState`, `PendingForfeitState`, `SpendingState`, and `ForfeitingState`: each transitions to `UnilateralExitState` and emits `ExpiringNotification` (trigger + exit policy threaded through) + `VTXOStatusUpdate{UnilateralExit}`. **`ForfeitingState` qualifies that once `forfeitSignatureIssued()`** (`ForfeitTxID` stamped by `ForfeitSignedEvent`, or the retained `ForfeitTx` restored on crash recovery): a `UnrollTriggerCriticalExpiry` event self-loops instead of escalating, because the operator can spend the coin into a connector immediately, so the exit races a transaction that has already won (wavelength#845). That self-loop is neither terminal nor `ExpiredState`, so `handleForceUnroll` detects it explicitly (prior and new state both `*ForfeitingState`) and reports `ForceUnrollResponse{Accepted: false, Reason: "forfeit signature already issued; ..."}` — without that case the caller is told an exit was accepted for a job that was never scheduled. The block-epoch critical-expiry branch carries the same guard — the chain-resolver bridge admits expiry-driven exits through both doors, so guarding one alone would leave the same doomed exit reachable by the other. Manual and fraud-spend triggers still escalate: a fraud spend means the operator has already moved against us, and a manual unroll is an explicit decision that must not be silently dropped (it is also the only lever left if the operator is unreachable and the commitment never confirms, in which case the forfeit can never confirm either and the exit is the correct recovery). It does **not** emit `VTXOTerminatedNotification` on intent — `UnilateralExitState` is **non-terminal**, so the actor stays alive to observe the exit. Truly terminal states (`Spent`, `Forfeited`, `Failed`) self-loop; the manager maps that self-loop back to `ForceUnrollResponse{Accepted: false, Reason: "already terminal"}`. A `ForceUnrollEvent` on a VTXO already in `UnilateralExitState` is an idempotent re-admission, not a no-op: the actor stays in `UnilateralExitState`, does not re-persist the status, and **re-emits** the `ExpiringNotification` under the same trigger/policy so the chain-resolver bridge re-admits the job (the first admission's best-effort Tell can be lost to a crash before the registry writes its record; the registry dedups against a live record, so a redundant re-admit is a benign no-op).

@@ -146,7 +146,9 @@ state transitions and validation rules live under [Invariants](#invariants).
 - **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor
   primitives: `ActorRef`, `ActorSystem`, `BaseMessage`), `lib/actormsg`
   (mailbox marker interfaces), `lib/tree`, `lib/types`, `lib/arkscript`,
-  `lib/bip322` (join-round BIP-322 auth signing), `rpc/roundpb` (wire proto
+  `lib/bip322` (join-round BIP-322 auth signing; `DefaultMaxProofInputs` as
+  the automatic-refresh cohort budget), `lib/batchschedule` (published slots
+  and cutoff selection for scheduled registration), `rpc/roundpb` (wire proto
   types via `FromProto`), `wallet`, `ledger` (`Sink` + `VTXOReceivedMsg` /
   `Source*` constants), `timeout`, `google/uuid`.
 - **Depended on by**: `vtxo`, `db`, `waved`.
@@ -189,7 +191,24 @@ state transitions and validation rules live under [Invariants](#invariants).
 - **Forfeit releases preserve reservation ownership.** Every round rollback
   stamps its round ID on `ReleaseForfeitReservation`. A `Forfeiting` VTXO
   accepts the release only when that ID matches the round stored with its
-  forfeit signature.
+  forfeit signature. Both release paths — the `ReleaseForfeitReservation`
+  outbox effect and `releaseRejectedRefreshCohort` — go through
+  `deliverForfeitRelease` rather than a plain `VTXOManager.Tell`, because the
+  manager may itself be parked relaying a refresh into this actor's mailbox;
+  a blocking release would deadlock the pair.
+
+- **An automatic-refresh cohort is bounded by the verifier's proof budget.**
+  `handleRefreshVTXOCohortRequest` admits a whole cohort through
+  `findRefreshRound`, which refuses (`errRefreshRoundBusy`) when the candidate
+  `PendingRoundAssembly`'s boarding inputs plus forfeits plus the new cohort
+  would exceed `bip322.DefaultMaxProofInputs`, and when any round is already
+  past assembly (`IntentSentState`, `QuoteReceivedState`, `RoundJoinedState`).
+  Overflow is deferred, not split: a second live registration from this client
+  can replace its first, so emitting concurrent chunks would silently discard
+  one. A deferred cohort releases its reservation and retries through the VTXO
+  actor's existing block-based cooldown and durable startup reconciliation —
+  no claim is removed from storage and no separate retry queue or identity is
+  introduced.
 
 - **Scheduled registration** (`scheduled_registration.go`) refreshes terms
   through `OperatorTermsSource` (five-second deadline), selects the next

@@ -39,6 +39,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
 - `ErrIdempotencyKeyConflict` — caller-visible outgoing admission conflict
   when a deterministic session cannot retain the supplied key; `waved` maps it
   to `codes.AlreadyExists` after releasing freshly selected inputs.
+- `FillOutgoingSummary(summary, record) error` — decodes one outgoing
+  snapshot's consumed inputs and retry diagnostics onto a `SessionSummary`.
+  It is exported so the status RPC can hydrate a page selected by
+  `db.OORStatusStore` without routing a listing through the registry actor;
+  the registry's own `fillOutgoingSummary` is a thin logging wrapper over it.
+  A decode failure is returned rather than swallowed, so the caller can keep
+  the coarse metadata it already has instead of dropping the session.
 
 ## Relationships
 

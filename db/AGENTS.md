@@ -121,7 +121,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 21` — current schema version.
+- `OORStatusStore` / `OORStatusSummary` / `OORStatusCursor` — read-only,
+  newest-first status projection over OOR sessions (`oor_status_store.go`).
+  `List(ctx, before, …)` returns at most `limit` summaries older than the
+  creation-time cursor (a nil cursor starts at the newest session); `Get`
+  reads one session by id and returns `sql.ErrNoRows` for an unknown id.
+  Filtering and package precedence are applied **before** `LIMIT` and payload
+  hydration, and neither method loads Ark PSBTs or checkpoint rows. The cursor
+  carries the timestamp as well as the session id, so continuation does not
+  require the cursor row to still exist.
+- `LatestMigrationVersion = 25` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -293,6 +302,28 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
 - The handle is single-connection (`SetMaxOpenConns(1)`); multiple SQL
   connections would race the same database through one worker.
 
+### CGO SQLite (`sqlite_open_cgo.go`, build tag `sqlite_cgo`)
+
+- **Three SQLite builds, one `openSQLiteDatabase`.** The native (modernc)
+  driver is now `(!js || !wasm) && !sqlite_cgo`, the CGO driver is
+  `(!js || !wasm) && sqlite_cgo`, and the wasm driver is unchanged. Only the
+  open path and the error classifier (`sqlerrors_cgo.go` vs
+  `sqlerrors_native.go`) are tag-split; `configureSQLitePool` moved up into
+  the shared `sqlite_open.go` so every backend applies identical pool limits.
+- **Android is the reason the tag exists.** modernc/libc issues raw Linux
+  syscalls that Android's application sandbox can block, so the mobile
+  bindings build against the host C library instead. The tag also works on a
+  normal host, which is what makes the CGO path testable in CI.
+- **Unknown pragmas are a build-time error, not a silent drop.** The mattn
+  driver ignores DSN keys it does not recognize, so `openSQLiteDatabase`
+  allow-lists `foreign_keys`, `journal_mode`, `busy_timeout`, `synchronous`,
+  and `fullfsync` and rejects anything else. Adding a pragma to the shared
+  config without extending this switch fails the open rather than quietly
+  running without the setting the other backends apply.
+- Pragmas travel as DSN options (`_<name>`) rather than per-connection
+  statements, so they apply to every handle the pool opens later, including
+  replacements after a connection is evicted.
+
 ### Migration baseline
 
 The migration history was squashed to a domain-grouped baseline ahead of
@@ -404,6 +435,17 @@ when adding one.
   checkpoint. Recovery preserves boarding, refresh, transfer, and automatic
   refresh classification, including distinct refreshes with identical scripts.
   Legacy requests retain unknown origin and no source; no pairing is guessed.
+
+- `000025_oor_status_cursor` — keyset-pagination support for OOR status
+  listing. Adds `(created_at DESC, session_id DESC)` indexes on `oor_packages`
+  and `oor_session_registry`, then defines the `oor_package_status` /
+  `oor_registry_status` / `oor_status` views that merge the two sources. The
+  two source views are kept **disjoint** — a package row contributes only when
+  no registry row shares its session id — so one session can never appear
+  twice under two different timestamps. Creation time comes from the registry
+  row (the session's own age), not from its later artifacts; package metadata
+  still wins for direction and completion, including an outgoing session whose
+  change is later observed by an incoming actor.
 
 ## Deep Docs
 

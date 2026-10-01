@@ -8,7 +8,10 @@ server during round participation. These types are used across `round`, `vtxo`,
 
 ## Key Types
 
-- `JoinRoundRequest` — Client's round registration request: boarding inputs, VTXO requests, forfeit requests, leave requests.
+- `JoinRoundRequest` — Client's round registration request: boarding inputs,
+  VTXO requests, forfeit requests, leave requests.
+  `BatchSlot fn.Option[batchschedule.Selection]` names the scheduled slot this
+  join targets; `None` means the join is made under event-driven registration.
 - `JoinRoundAuth` — Round-join authentication: canonical signed `Message`,
   `ValidFrom`/`ValidUntil` block-height window, and the full-format BIP-322
   `Signature` proof-of-control.
@@ -36,6 +39,9 @@ server during round participation. These types are used across `round`, `vtxo`,
   cap on the cumulative on-chain vbytes a recipient must publish to claim a
   VTXO produced by an OOR submit unilaterally. Zero means no cap enforced
   server-side (clients fall back to a conservative local default).
+  `BatchSchedule fn.Option[batchschedule.Published]` carries the operator's
+  published scheduled-batch slots; `None` means the operator runs
+  event-driven registration and clients must not wait for a slot.
 - `Ancestry` — One rooted commitment-tree fragment contributing ancestry to a VTXO (defined in `lib/types/ancestry.go`). Fields: `TreePath *tree.Tree` (extracted root-to-leaf path), `CommitmentTxID chainhash.Hash`, `InputIndices []uint32` (Ark tx input indices this fragment serves; empty for round-direct VTXOs), `TreeDepth uint32`. Round-direct VTXOs carry a single-element slice; multi-input OOR VTXOs carry one entry per distinct (commitment tx, tree path) pair — entries may share a commitment txid when inputs sat at different leaves of one commitment tree.
 - `MaxAncestryTreeDepth([]Ancestry) int` — Returns the largest `TreeDepth` across a slice; drives worst-case unilateral-exit timing calculations.
 - `ClientBatchInfo` — Client's view of batch output info after tree construction.
@@ -53,7 +59,7 @@ server during round participation. These types are used across `round`, `vtxo`,
 
 ## Relationships
 
-- **Depends on**: `lib/arkscript` (policy template decoding, `StandardVTXOParams`), `lib/tree` (tree types, used by `Ancestry.TreePath`).
+- **Depends on**: `lib/arkscript` (policy template decoding, `StandardVTXOParams`), `lib/tree` (tree types, used by `Ancestry.TreePath`), `lib/batchschedule` (`Published` slots on `OperatorTerms`, `Selection` on `JoinRoundRequest`).
 - **Depended on by**: `round` (round protocol messages), `wallet` (boarding
   types), `db` (persistence), `vtxo` (descriptor ancestry), `oor` (OOR
   package/session types), `rpc/roundpb` (proto conversion).

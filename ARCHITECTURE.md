@@ -119,6 +119,7 @@ waved (orchestrator)
 ├── vtxo            │
 │   ├── chainsource │ (block epoch events)
 │   ├── ledger      │ (ExitCostMsg via ledger.Sink — emission planned)
+│   ├── timeout     │ (non-blocking retry of manager notifications)
 │   └── db          │ (vtxo store)
 ├── wallet          │
 │   ├── chainsource │ (UTXO confirmation monitoring)

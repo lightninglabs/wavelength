@@ -29,6 +29,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `UnrollConfig` (unilateral-exit fee-bump cadence and cap), and
   `MaxOperatorFeeSat` (the #270 seal-time fee-cap validated in
   `Config.Validate()`).
+- `HealthConfig` — opt-in supervisor health listener (`health.listen`,
+  `health.go`). Empty (the default) disables it entirely. When set it binds a
+  separate HTTP listener serving only `GET /readyz` and `GET /livez` — no
+  wallet data, no RPC methods, and deliberately no macaroon, so bind it to
+  loopback or a private network.
 - `WalletState` — `None` / `Locked` / `Ready` wallet lifecycle.
 - `WalletRecoveryResult` — counters returned by the in-process,
   post-unlock recovery hook.
@@ -80,6 +85,21 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   later and worse — a missing account silently filters every UTXO away, a
   wrong-scoped one funds and signs but cannot derive a fresh script, and a
   watch-only one fails at signing after inputs are leased.
+- **Health probing is daemon-owned, never request-owned.** `startHealthServer`
+  binds **before** dependency startup, so a locked wallet or an unreachable
+  startup dependency reports unready instead of refusing the connection and
+  driving a supervisor restart loop. A background sampler waits on
+  `daemonReady`, then every 5s probes each entry of `s.actorProbes` (the round
+  actor and the VTXO manager, appended at registration) concurrently under one
+  shared 2s deadline; HTTP handlers only read the cached result and never
+  enqueue work. Readiness additionally requires the cached success to be fresh
+  (`healthFreshness`), so a sampler that stops progressing withdraws readiness
+  rather than serving stale success. Liveness tracks each actor's
+  completed-turn counter separately with a 2-minute grace, so a busy queue
+  stays live and one active actor cannot mask a stuck peer. Pre-startup is
+  live-but-unready; shutdown fails both endpoints. Block arrival and operator
+  reachability are deliberately **not** inputs — they are remote conditions,
+  and feeding them in would restart a locally healthy daemon.
 - `Server.run` registers a deferred `actorSystem.Shutdown()` **before** the
   deferred `db.Close()` so in-flight actor DB transactions drain before the
   connection pool tears down.
@@ -370,6 +390,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   window boundary only when the local dynamic critical threshold plus retry
   buffer remains intact. When that cached boundary fires, it fetches a fresh
   `GetInfo` snapshot and rechecks the window before reserving the input.
+- `vtxoExpiryConfig` also wires `ExpiryConfig.MinRefreshAmount` to the cached
+  operator terms' `MinVTXOAmountFloor()`. Automatic refresh is one-for-one and
+  cannot combine inputs, so a VTXO below the operator's current output floor
+  can never produce a valid replacement — gating it here keeps the coin
+  available for manual aggregation and later epochs instead of burning retries
+  on an attempt that is arithmetically impossible.
 - `Config.MaxPaymentCLTV` extends that same local safety floor by the largest
   total Lightning CLTV the wallet wants to keep available. Swap-enabled builds
   default to 300 blocks; core builds default to zero. An operator waiver may

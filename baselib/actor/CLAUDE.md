@@ -82,6 +82,16 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   `CallerCtx` in `context.WithTimeout` itself before handing it to
   `OnComplete` — that wrap is the sole bound on the continuation. Returns
   false for Tells, DurableAsks, and redelivered asks whose caller is gone.
+- `Probe[M, R](ctx, ref) (uint64, error)` — Side-effect-free receive-loop
+  liveness check for a **local channel-mailbox** actor. It enqueues an internal
+  probe envelope that the receive loop acknowledges without invoking the
+  behavior or the dead-letter office, and returns the actor's completed-turn
+  counter. Admission uses `TrySend` and never waits for mailbox room; waiting
+  for the acknowledgement respects both `ctx` and actor shutdown. Only the
+  direct reference from `NewActor`/`RegisterWithSystem` is accepted — routers,
+  mapped refs, and durable actors return an error. Supervisors read the counter
+  rather than the error alone, so a busy queue or a late acknowledgement is not
+  mistaken for a stuck loop.
 - `ChannelMailbox[M, R]` — In-memory channel-based mailbox (non-durable, for lightweight actors).
 - `Mailbox[M, R]` — Interface for actor message queues: `Send(ctx, env) error` (blocking; returns `ErrMailboxClosed`, `ErrActorTerminated`, or a context error on failure), `TrySend(env) error` (non-blocking), `Receive(ctx) iter.Seq[envelope]`, `Close()`, `IsClosed() bool`, `Drain() iter.Seq[envelope]`.
 - `isExpectedShutdownErr(err) bool` — Internal helper that classifies errors as expected during teardown: context cancellation/deadline, closed DB handle ("sql: database is closed", "sql: connection is already closed", "use of closed network connection"). Used by the lease loop to demote shutdown-path failures to debug instead of warn-flooding test artifacts at itest tail.
@@ -118,6 +128,14 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   p-model edge that routes ack/nack to the by-ID operations. Retry-policy
   decisions must use `Delivery.EffectiveAttempts()` so the in-flight peeked
   attempt is counted before a nack can raise the row to `max_attempts`.
+- **A probe proves the receive loop, not the subsystem.** `Probe` deliberately
+  never reaches the behavior, so a successful probe says the actor is draining
+  its mailbox — not that its downstream dependencies are healthy. Concurrent
+  callers share at most one queued probe, including after a caller times out,
+  so a stalled actor cannot accumulate health-check work; a completed probe is
+  replaced on the next call rather than reused as stale success. During
+  shutdown the drain loop skips probe envelopes, so waiters are woken through
+  the actor context as `ErrActorTerminated` and never as success.
 - `Tell` with a `DurableActor` persists the message before returning (crash-safe enqueue).
 - Outbox messages are dispatched only after state is persisted (outbox pattern).
 - **Outbox fold p-model.** For tx-aware stores, outbox delivery is
