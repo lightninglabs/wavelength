@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // ErrWaitCycle is returned by Future.Await when waiting would complete a cycle
@@ -261,12 +262,38 @@ type WaitCycle struct {
 	CallSite string
 }
 
-// reportWaitCycle logs a detected cycle. A cycle is a code defect that needs a
-// human, so it is logged at error level.
+// waitCycleHook holds the process-wide hook installed by SetWaitCycleHook.
+var waitCycleHook atomic.Pointer[func(WaitCycle)]
+
+// SetWaitCycleHook installs a function that is called each time an Await is
+// refused because it would close a wait cycle. A nil hook clears it.
+//
+// It is meant as an oracle for simulation and integration tests: a cycle is a
+// code defect, so a harness installs a hook that fails the run on any call,
+// which catches the defect even when the actor that received ErrWaitCycle
+// swallows the error. The hook runs on the goroutine of the failing Await,
+// after the graph lock is released, but it must not block, since that
+// goroutine is an actor's turn.
+func SetWaitCycleHook(hook func(WaitCycle)) {
+	if hook == nil {
+		waitCycleHook.Store(nil)
+
+		return
+	}
+
+	waitCycleHook.Store(&hook)
+}
+
+// reportWaitCycle logs a detected cycle and calls the installed hook. A cycle
+// is a code defect that needs a human, so it is logged at error level.
 func reportWaitCycle(ctx context.Context, c WaitCycle) {
 	logger(ctx).ErrorS(ctx, "Await would deadlock: actor wait cycle",
 		ErrWaitCycle,
 		"path", strings.Join(c.Path, " -> "),
 		"call_site", c.CallSite,
 	)
+
+	if hook := waitCycleHook.Load(); hook != nil {
+		(*hook)(c)
+	}
 }
