@@ -147,11 +147,13 @@ type TellOnlyRef[M Message] interface {
 	Tell(ctx context.Context, msg M) error
 
 	// TryTell enqueues a message only if the target can accept it right
-	// now. It never parks the calling goroutine, which is what makes it
-	// safe to call from inside another actor's receive loop: a backed up
-	// peer can no longer freeze the sender. A mailbox at capacity returns
-	// ErrMailboxFull, leaving the message in the caller's hands to drop,
-	// stash, or reschedule for a later retry.
+	// now. It never parks the calling goroutine, so from outside a receive
+	// turn it is the way to send to a bounded mailbox without waiting.
+	// Inside a turn a plain Tell no longer parks either, so there TryTell
+	// is only for callers that want the ErrMailboxFull signal so they can
+	// drop the message instead of queueing it. A mailbox at capacity
+	// returns ErrMailboxFull, leaving the message in the caller's hands to
+	// drop, stash, or reschedule for a later retry.
 	//
 	// The context is consulted only for an immediate cancellation check.
 	// TryTell never waits on it, so attaching a deadline buys nothing.

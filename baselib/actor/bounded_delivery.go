@@ -47,9 +47,11 @@ type NonParkingTeller[M Message] interface {
 // Tell there: TryTell performs its write on its own background context, which
 // drops the caller's transaction and, on a single-writer store such as
 // SQLite, cannot even complete while the caller still holds the writer. A
-// bounded in-memory target has the opposite problem — its Send is a blocking
-// channel send with no bound at all — and TryTell is the only way to keep the
-// caller moving.
+// bounded in-memory target has the opposite problem: from outside a receive
+// turn its Send is a blocking channel send with no bound at all, and TryTell
+// is the only way to keep the caller moving. From inside a turn a plain Tell
+// no longer parks either (it overflows), so there TryTell only adds the
+// ErrMailboxFull signal for callers that want to shed rather than queue.
 //
 // A reference this package does not recognise keeps the plain Tell. That is
 // the conservative direction: Tell is the primitive that carries a durable

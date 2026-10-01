@@ -415,9 +415,11 @@ func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 }
 
 // TryTell enqueues a message only if the mailbox can take it immediately,
-// returning ErrMailboxFull rather than waiting for room. Callers that run
-// inside another actor's receive loop use this so a backlogged target cannot
-// stall their own message processing.
+// returning ErrMailboxFull rather than waiting for room. Inside a receive
+// turn a plain Tell no longer parks, so there TryTell is only for callers that
+// want the ErrMailboxFull signal so they can drop the message instead of
+// queueing it behind the target's backlog. From outside a turn it remains the
+// way to send without waiting.
 func (ref *actorRefImpl[M, R]) TryTell(ctx context.Context, msg M) error {
 	logger(ctx).TraceS(ctx, "Sending TryTell message",
 		"actor_id", ref.actor.id,
