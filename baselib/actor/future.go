@@ -150,7 +150,9 @@ func (f *futureImpl[T]) waitTarget() string {
 //
 // Called with the context of a running receive turn on a future that is not yet
 // complete, it is subject to the AwaitInTurnPolicy, since waiting there parks
-// the actor's whole mailbox. See SetAwaitInTurnPolicy.
+// the actor's whole mailbox. See SetAwaitInTurnPolicy. If the wait would
+// complete a cycle of turns that each await another actor's reply, it returns
+// ErrWaitCycle instead of parking.
 func (f *futureImpl[T]) Await(ctx context.Context) fn.Result[T] {
 	// A completed future cannot block, so only the slow path pays for the
 	// turn check.
@@ -161,6 +163,15 @@ func (f *futureImpl[T]) Await(ctx context.Context) fn.Result[T] {
 	if err := checkAwaitInTurn(ctx); err != nil {
 		return fn.Err[T](err)
 	}
+
+	// Track the wait so a cycle of blocked turns fails here, instead of
+	// parking every actor on it. This is on the slow path only, after the
+	// policy check, and the edge is removed however the wait ends.
+	release, err := beginWait(ctx, f.target, f.rootDone)
+	if err != nil {
+		return fn.Err[T](err)
+	}
+	defer release()
 
 	return f.awaitInternal(ctx)
 }
