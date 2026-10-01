@@ -124,6 +124,14 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   `awaitFuture` helper, which uses `awaitInternal` for this package's own
   futures and falls back to the public `Await` for any foreign `Future`
   implementation, so framework helpers never trip the guard.
+- `ErrWaitCycle` / `WaitCycle` / `SetWaitCycleHook(hook)` — Runtime backstop
+  for a cycle of turns that each `Await` another actor's reply (including an
+  actor awaiting itself). Such an `Await` returns an error wrapping
+  `ErrWaitCycle` with the path (`a -> b -> a`) instead of parking, logs at
+  error level with the call site, and calls the optional hook with a
+  `WaitCycle{Path, CallSite}`. The hook is the intended oracle for simulation
+  tests (fail the run on any call); a nil hook clears it, and it must not
+  block.
 - `ChannelMailbox[M, R]` — In-memory channel-based mailbox (non-durable, for lightweight actors). A bounded channel fronted by an overflow queue: `Send` with an active turn context (see `turn.go`) never blocks and spills into the overflow (or returns `ErrMailboxOverflow` at the hard cap), which the receive loop refills into the channel after every receive (so a non-empty overflow implies a non-empty channel). Lock order is `mu` (read side) then `overflowMu`. `NewChannelMailbox` takes `WithOverflowLimit` and `WithMailboxID` options; `OverflowLen()` reports the backlog. After `Close`, `Drain` yields the channel envelopes first and the overflow second, which is send order because the overflow always trails the channel.
 - `Mailbox[M, R]` — Interface for actor message queues: `Send(ctx, env) error` (blocking, except for a `ChannelMailbox` send made with an active turn context; returns `ErrMailboxClosed`, `ErrActorTerminated`, or a context error on failure), `TrySend(env) error` (non-blocking), `Receive(ctx) iter.Seq[envelope]`, `Close()`, `IsClosed() bool`, `Drain() iter.Seq[envelope]`.
 - `DefaultMailboxOverflowLimit` — 100000. The overflow cap a `ChannelMailbox`
@@ -251,6 +259,43 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   is pending in the turn that issues it and treat a wrapped result it has no
   pending entry for as stale and ignore it, rather than assuming every
   delivered reply answers a live request.
+- **Wait cycles fail fast, within a bounded scope.** `Ask` records the
+  answering actor's ID on its future (`actorRefImpl`, `durableActorRefImpl`,
+  and `MapRef` and `ThenApply`, which inherit the inner future's target;
+  `Router` delegates to a concrete ref). In `Future.Await`, on the slow path and after the
+  await-in-turn policy check, a serial actor's active turn registers an edge
+  `actor -> target` in a process-wide map and walks the chain under the same
+  lock hold. If the walk returns to the waiting actor the `Await` fails with
+  `ErrWaitCycle` and registers nothing; otherwise the edge is removed when
+  `Await` returns by any route. Because registration and walk are atomic, of
+  two actors closing a cycle together exactly one fails, and its turn
+  returning lets the other's Ask be processed. An edge counts only while its
+  turn is active and its reply is undelivered, so a cycle is a real wait cycle
+  (barring the helper-goroutine case below); one with a deadline
+  would have unwound after every participant waited out its deadline, and
+  failing fast is better. Sends add no edges since an in-turn send never
+  parks. Not covered: non-serial turns (`NumWorkers > 1`, a parked worker does
+  not park the actor), futures with no target, `awaitInternal` helper
+  goroutines, and waits outside the framework (I/O, mutexes, raw channels).
+  Two cases are invisible because the target is not the completer. A promise
+  taken with `DetachAskPromise` keeps the coordinator as its target although
+  another actor completes it, so the coordinator later awaiting the original
+  caller can be reported as a cycle that does not exist, and a real cycle
+  through the actual completer is missed. A wait that passes through a state
+  machine's driver goroutine is also missed: protofsm `StateMachine.Receive`
+  awaits an untargeted `AskEvent` future, and the driver may itself wait on
+  other actors. An edge also stops counting once the reply it waits on has been
+  delivered (a derived `ThenApply` or `MapRef` future checks the root actor
+  future's completion, not its own), so an actor that already holds its reply
+  but has not yet removed its edge never looks blocked. An actor can have
+  several live edges, one per wait in flight, and a cycle through any of them is
+  a cycle; each edge is removed only by the wait that registered it. A goroutine
+  the behavior spawns with the live turn context registers an edge while that
+  turn is active, and Go gives no goroutine identity, so such an `Await` is
+  indistinguishable from the actor's own wait and can be reported as a cycle.
+  The await-in-turn policy already flags those goroutines: they should use
+  `AskThen` or an unguarded framework helper. An edge records its turn, so once
+  the turn returns it counts as absent.
 - **Durable senders are slowed only by the overflow cap error.** A durable
   turn never parks on a channel mailbox, so the one backpressure signal a
   durable sender gets from a saturated channel target is `ErrMailboxOverflow`
