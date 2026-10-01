@@ -10,9 +10,9 @@ import (
 type turnKey struct{}
 
 // turn identifies one in-flight receive turn of an actor. The runtime stamps
-// it onto the context it hands to the behavior, so a send made with that
-// context can tell that it is running on an actor's own goroutine, where
-// parking would stall the actor's whole mailbox.
+// it onto the context it hands to the behavior, so a send or an await made
+// with that context can tell that it is running on an actor's own goroutine,
+// where parking would stall the actor's whole mailbox.
 type turn struct {
 	// actorID is the ID of the actor processing the turn.
 	actorID string

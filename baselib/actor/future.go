@@ -73,7 +73,21 @@ type futureImpl[T any] struct {
 // cancelled. If the future is already completed, it returns the result
 // immediately. Otherwise, it waits for either the future's completion or the
 // context's cancellation.
+//
+// Called with the context of a running receive turn on a future that is not yet
+// complete, it is subject to the AwaitInTurnPolicy, since waiting there parks
+// the actor's whole mailbox. See SetAwaitInTurnPolicy.
 func (f *futureImpl[T]) Await(ctx context.Context) fn.Result[T] {
+	// A completed future cannot block, so only the slow path pays for the
+	// turn check.
+	if resPtr := f.resultCache.Load(); resPtr != nil {
+		return *resPtr
+	}
+
+	if err := checkAwaitInTurn(ctx); err != nil {
+		return fn.Err[T](err)
+	}
+
 	return f.awaitInternal(ctx)
 }
 
