@@ -112,7 +112,7 @@ func (m *MapRef[In, Out, InR, OutR]) Ask(
 	innerFuture := m.targetRef.Ask(ctx, transformed)
 
 	go func() {
-		result := innerFuture.Await(ctx)
+		result := awaitFuture(ctx, innerFuture)
 		val, err := result.Unpack()
 		if err != nil {
 			promise.Complete(fn.Err[OutR](err))
