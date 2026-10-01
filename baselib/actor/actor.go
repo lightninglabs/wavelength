@@ -82,6 +82,12 @@ type ActorConfig[M Message, R any] struct {
 	// MailboxSize defines the buffer capacity of the actor's mailbox.
 	MailboxSize int
 
+	// MailboxOverflowLimit is the hard cap on envelopes the mailbox queues
+	// beyond MailboxSize on behalf of sends made from inside a receive
+	// turn, which never block. A send that would exceed it fails with
+	// ErrMailboxOverflow. Zero selects DefaultMailboxOverflowLimit.
+	MailboxOverflowLimit int
+
 	// Wg is an optional WaitGroup for tracking actor lifecycle. If
 	// non-nil, the actor will call Add(1) when starting and Done() when
 	// its process loop exits. This enables deterministic shutdown.
@@ -181,9 +187,13 @@ func NewActor[M Message, R any](cfg ActorConfig[M, R]) *Actor[M, R] {
 	}
 
 	actor := &Actor[M, R]{
-		id:             cfg.ID,
-		behavior:       cfg.Behavior,
-		mailbox:        NewChannelMailbox[M, R](ctx, mailboxCapacity),
+		id:       cfg.ID,
+		behavior: cfg.Behavior,
+		mailbox: NewChannelMailbox[M, R](
+			ctx, mailboxCapacity,
+			WithOverflowLimit(cfg.MailboxOverflowLimit),
+			WithMailboxID(cfg.ID),
+		),
 		ctx:            ctx,
 		cancel:         cancel,
 		dlo:            cfg.DLO,
