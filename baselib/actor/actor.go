@@ -253,6 +253,10 @@ func (a *Actor[M, R]) process() {
 			cancel = func() {}
 		}
 
+		// Mark the context as this actor's turn so sends and awaits
+		// made with it know they run on the actor's only goroutine.
+		processCtx, endTurn := beginTurn(processCtx, a.id, true)
+
 		logger(processCtx).TraceS(processCtx, "Actor processing message",
 			"actor_id", a.id,
 			"msg_type", env.message.MessageType(),
@@ -260,6 +264,7 @@ func (a *Actor[M, R]) process() {
 
 		result := a.behavior.Receive(processCtx, env.message)
 
+		endTurn()
 		cancel()
 		a.completed.Add(1)
 
