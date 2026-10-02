@@ -53,7 +53,9 @@ communication alongside the raw registration API.
   ignorable. A message that merely says an output is spent is ambiguous
   because a conflicting transaction may have spent it. `handleBroadcastTx`
   falls back to `TestMempoolAccept` for read-only evidence and propagates the
-  publication error when the backend cannot provide that evidence.
+  publication error when the backend cannot provide that evidence. An
+  insufficient-fee error is not a duplicate, and an allowed mempool dry run
+  proves only that a transaction could be accepted, not that it was published.
 - **An actor-mode subscription dies with its notify target.** In actor mode the
   `NotifyActor` ref *is* the subscription's owner, so when a `Tell` fails with
   `actor.ErrActorTerminated` or `actor.ErrMailboxClosed`, `BlockEpochActor`

@@ -585,10 +585,10 @@ func TestChainSourceActorBroadcastTxIgnoresRebroadcastErrors(t *testing.T) {
 	require.Equal(t, tx.TxHash(), broadcastResp.Txid)
 }
 
-// TestChainSourceActorBroadcastTxFallsBackToTestMempoolAccept tests that the
-// ChainSourceActor treats a failed broadcast as success if the backend reports
-// that the transaction would be accepted by the mempool.
-func TestChainSourceActorBroadcastTxFallsBackToTestMempoolAccept(t *testing.T) {
+// TestChainSourceActorBroadcastTxRejectsDryRunSuccess proves that passing a
+// read-only policy check cannot replace publication. The caller must retain
+// the original error so it can retry or reconcile the transaction.
+func TestChainSourceActorBroadcastTxRejectsDryRunSuccess(t *testing.T) {
 	t.Parallel()
 
 	baseBackend := newMockBackend()
@@ -623,13 +623,8 @@ func TestChainSourceActorBroadcastTxFallsBackToTestMempoolAccept(t *testing.T) {
 	})
 
 	result := future.Await(ctx)
-	require.True(t, result.IsOk())
-
-	resp, err := result.Unpack()
-	require.NoError(t, err)
-	broadcastResp, ok := resp.(*BroadcastTxResponse)
-	require.True(t, ok)
-	require.Equal(t, tx.TxHash(), broadcastResp.Txid)
+	require.True(t, result.IsErr())
+	require.ErrorIs(t, result.Err(), backend.broadcastErr)
 }
 
 // TestChainSourceActorBroadcastTxFallsBackToIgnorableRejectReason tests that
