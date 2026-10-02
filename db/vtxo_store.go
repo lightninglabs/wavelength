@@ -221,7 +221,8 @@ func (s *VTXOPersistenceStore) GetVTXO(ctx context.Context,
 
 // BackfillVTXOCommitmentHeights fills unknown ancestry commitment heights from
 // an indexed copy of the same VTXO. Fragment identity includes both the
-// commitment transaction and serialized tree path, so two leaves from one
+// commitment transaction and serialized tree path, excluding derived FinalKey
+// caches omitted by the indexer RPC, so two leaves from one
 // commitment cannot be confused. Existing positive heights and all local proof
 // material remain authoritative and are never overwritten.
 //
@@ -276,7 +277,7 @@ func (s *VTXOPersistenceStore) BackfillVTXOCommitmentHeights(
 
 		indexedHeights := make(map[[32]byte]int32, len(indexedAncestry))
 		for i, ancestry := range indexedAncestry {
-			key, err := AncestryFragmentKey(ancestry)
+			key, err := backfillAncestryFragmentKey(ancestry)
 			if err != nil {
 				return fmt.Errorf("index indexed "+
 					"ancestry[%d]: %w", i, err)
@@ -297,7 +298,7 @@ func (s *VTXOPersistenceStore) BackfillVTXOCommitmentHeights(
 				continue
 			}
 
-			key, err := AncestryFragmentKey(ancestry)
+			key, err := backfillAncestryFragmentKey(ancestry)
 			if err != nil {
 				return fmt.Errorf("index local "+
 					"ancestry[%d]: %w", i, err)

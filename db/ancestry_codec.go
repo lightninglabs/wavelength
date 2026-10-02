@@ -157,6 +157,24 @@ func AncestryFragmentKey(a vtxo.Ancestry) ([sha256.Size]byte, error) {
 	return ancestryFragmentKeyFromBytes(a.CommitmentTxID, treePath), nil
 }
 
+// backfillAncestryFragmentKey matches local and indexed proofs without
+// depending on optional FinalKey caches omitted by the indexer RPC. All other
+// serialized proof fields and the commitment remain bound. It does not change
+// durable fragment identity or mutate shared trees.
+func backfillAncestryFragmentKey(a vtxo.Ancestry) ([sha256.Size]byte, error) {
+	var treePath []byte
+	if a.TreePath != nil {
+		data, err := serializeTree(a.TreePath, false)
+		if err != nil {
+			return [sha256.Size]byte{}, fmt.Errorf("serialize "+
+				"ancestry tree: %w", err)
+		}
+		treePath = data
+	}
+
+	return ancestryFragmentKeyFromBytes(a.CommitmentTxID, treePath), nil
+}
+
 // ancestryFragmentKeyFromBytes is the serialization-free core of
 // AncestryFragmentKey for callers that already hold the encoded tree
 // path bytes.
