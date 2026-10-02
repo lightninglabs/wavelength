@@ -3,7 +3,39 @@ package txconfirm
 import (
 	"errors"
 	"strings"
+
+	"github.com/btcsuite/btcwallet/chain"
 )
+
+// isAmbiguousSpendError recognizes rejections that cannot distinguish a
+// conflicting spend from a rebroadcast of an already-confirmed transaction.
+// LND maps missing inputs to "output already spent"; RPC transports may drop
+// sentinel identity. Neither form proves publication or terminal failure, so
+// callers must retain the signed candidate and its confirmation watch.
+func isAmbiguousSpendError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, chain.ErrMissingInputs) ||
+		errors.Is(err, chain.ErrMissingInputsOrSpent) {
+		return true
+	}
+
+	reason := strings.ToLower(err.Error())
+	for _, ambiguous := range []string{
+		"output already spent",
+		"bad-txns-inputs-missingorspent",
+		chain.ErrMissingInputsOrSpent.Error(),
+		chain.ErrMissingInputs.Error(),
+		"missing-inputs",
+	} {
+		if strings.Contains(reason, ambiguous) {
+			return true
+		}
+	}
+
+	return false
+}
 
 // BroadcastFailureClass describes what a failed submission proves. It does
 // not prove that a previous submission of the same transaction was absent.

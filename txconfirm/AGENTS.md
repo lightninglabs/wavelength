@@ -113,7 +113,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   retries above that floor. A structural
   `ErrNonTRUCParent` still fails; `ErrParentAlreadyBroadcast` advances to
   `AwaitingConfirmation`. Ordinary anchorless requests retain terminal failure
-  by default.
+  by default, except for ambiguous missing/spent inputs. Those retain the
+  signed candidate and confirmation watch and use the existing block-paced
+  retry and escalation path, even without `RetryUntilAccepted`. The same tx
+  may already be mined while its notification is still queued. Pending
+  fee-input fanouts likewise retain their candidate/watch on these errors;
+  they must not rebuild merely because a confirmed rebroadcast was ambiguous.
 - **Strict dedup check**: two `EnsureConfirmedReq` for the same txid
   must agree on `TargetConfs`, `ConfirmationPkScript`, and
   `RetryUntilAccepted`; mismatches

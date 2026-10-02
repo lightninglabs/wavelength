@@ -734,8 +734,8 @@ func (a *TxBroadcasterActor) discardIncompleteTrackedTx(ctx context.Context,
 }
 
 // recordInitialBroadcastOutcome advances the FSM based on the result of an
-// initial (or retried) broadcast for a tracked tx that had not yet reached any
-// mempool. It is shared by the initial submit in handleEnsure and the
+// initial (or retried) broadcast whose acceptance is not yet proven. It is
+// shared by the initial submit in handleEnsure and the
 // interval-driven re-attempt in handleBlockObserved so both apply identical
 // state semantics.
 //
@@ -756,6 +756,11 @@ func (a *TxBroadcasterActor) discardIncompleteTrackedTx(ctx context.Context,
 //   - explicit fee or structural rejection on an anchorless candidate: fail
 //     this candidate with its class so the signing owner can act. A fee change
 //     requires a new transaction, even when RetryUntilAccepted was requested.
+//
+//   - ambiguous missing/spent inputs: the submitted tx may already be mined.
+//     Keep its watch and retry the same signed candidate at the block interval,
+//     even without RetryUntilAccepted. A queued confirmation must not lose to
+//     a terminal failure, and a conflicting spend must not imply acceptance.
 //
 //   - any other error on an opted-in tx or anchor (CPFP) parent: acceptance
 //     is unproven and retrying the same transaction is safe. For example,
@@ -819,10 +824,13 @@ func (a *TxBroadcasterActor) recordInitialBroadcastOutcome(ctx context.Context,
 
 		return TxStateFailed, err
 
-	case entry.data.RetryUntilAccepted ||
+	case isAmbiguousSpendError(err) || entry.data.RetryUntilAccepted ||
 		findAnchorOutput(entry.data.Tx) >= 0:
 
-		// The caller or anchor contract requires continued submission.
+		// A spent input may belong to this already-confirmed tx; keep
+		// the watch even without an opt-in retry contract. Otherwise
+		// the queued confirmation can lose to a terminal failure. The
+		// caller or anchor contract can also require retries.
 		// Acceptance is unproven, so keep the same signed transaction
 		// in Broadcasting, re-attempt next interval, and escalate
 		// rather than give up.

@@ -271,11 +271,9 @@ func (a *ChainSourceActor) handleBroadcastTx(ctx context.Context,
 			})
 		}
 
-		// If supported by the backend, test mempool acceptance as a
-		// best-effort signal that the transaction is already known.
-		// This is useful for backends that return non-standard error
-		// strings from BroadcastTx but provide a structured reject
-		// reason via testmempoolaccept.
+		// A read-only policy check does not publish the transaction.
+		// Only an already-known rejection can reconcile the broadcast
+		// error; an allowed dry run still leaves publication unproven.
 		results, acceptErr := a.cfg.Backend.TestMempoolAccept(
 			ctx, req.Tx,
 		)
@@ -288,20 +286,9 @@ func (a *ChainSourceActor) handleBroadcastTx(ctx context.Context,
 			reason = results[0].Reason
 		}
 		switch {
-		case acceptErr == nil && accepted:
-			a.logger(ctx).DebugS(
-				ctx,
-				"Broadcast failed but mempool accept succeeded",
-				slog.String("broadcast_error", err.Error()),
-				slog.String("txid", txHash.String()),
-				slog.String("label", req.Label),
-			)
+		case acceptErr == nil && !accepted &&
+			IsIgnorableMempoolRejectReason(reason):
 
-			return fn.Ok[ChainSourceResp](&BroadcastTxResponse{
-				Txid: txHash,
-			})
-
-		case acceptErr == nil && IsIgnorableMempoolRejectReason(reason):
 			a.logger(ctx).DebugS(
 				ctx,
 				"Broadcast failed; mempool reject ignorable",

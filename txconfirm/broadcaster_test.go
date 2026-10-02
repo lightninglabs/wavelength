@@ -3305,64 +3305,86 @@ func TestFeeInputFanoutRejectsRewrittenOutputs(t *testing.T) {
 	require.ErrorContains(t, err, "fanout output 0 changed")
 }
 
+// TestFeeInputFanoutRebroadcastsPendingFanout keeps the same funded candidate
+// across successful rebroadcasts and ambiguous spent-input responses.
 func TestFeeInputFanoutRebroadcastsPendingFanout(t *testing.T) {
 	t.Parallel()
 
-	var broadcasts []*wire.MsgTx
-	chain := &staticChainSourceRef{
-		handler: func(_ context.Context,
-			msg chainsource.ChainSourceMsg) (
-			chainsource.ChainSourceResp, error) {
+	for _, rebroadcastErr := range []error{
+		nil, fmt.Errorf("transaction rejected: output already spent"),
+	} {
+		t.Run(fmt.Sprint(rebroadcastErr), func(t *testing.T) {
+			var broadcasts []*wire.MsgTx
+			broadcast := func(_ context.Context,
+				msg chainsource.ChainSourceMsg) (
+				chainsource.ChainSourceResp, error) {
 
-			req, ok := msg.(*chainsource.BroadcastTxRequest)
-			require.True(t, ok)
-			broadcasts = append(broadcasts, req.Tx.Copy())
+				req, ok := msg.(*chainsource.BroadcastTxRequest)
+				require.True(t, ok)
+				broadcasts = append(
+					broadcasts, req.Tx.Copy(),
+				)
+				if len(broadcasts) > 1 &&
+					rebroadcastErr != nil {
+					return nil, rebroadcastErr
+				}
 
-			return &chainsource.BroadcastTxResponse{
-				Txid: req.Tx.TxHash(),
-			}, nil
-		},
+				return &chainsource.BroadcastTxResponse{
+					Txid: req.Tx.TxHash(),
+				}, nil
+			}
+			chain := &staticChainSourceRef{handler: broadcast}
+			wallet := &rewritingWallet{
+				utxos: []*walletcore.Utxo{
+					makeWalletUTXOWithAmount(50_000, 3),
+				},
+				changeScript: p2trTestPkScript(t),
+			}
+			b := NewCPFPBroadcaster(BroadcasterConfig{
+				ChainSource: chain,
+				Wallet:      wallet,
+			})
+			c := newTestFeeBumpController(t, b)
+
+			demands := []feeInputDemand{
+				{
+					parentTxid: chainhash.Hash{
+						1,
+					},
+					minAmount: 10_000,
+				},
+				{
+					parentTxid: chainhash.Hash{
+						2,
+					},
+					minAmount: 10_000,
+				},
+			}
+			pending, err := c.EnsureSupply(
+				t.Context(), demands, 5, 100, 2,
+			)
+			require.NoError(t, err)
+			require.NotNil(t, pending)
+			require.Len(t, broadcasts, 1)
+
+			_, err = c.EnsureSupply(t.Context(), demands, 5, 101, 2)
+			require.NoError(t, err)
+			require.Len(t, broadcasts, 1)
+
+			_, err = c.EnsureSupply(t.Context(), demands, 5, 102, 2)
+			require.NoError(t, err)
+			require.Len(t, broadcasts, 2)
+			require.Equal(
+				t, broadcasts[0].TxHash(),
+				broadcasts[1].TxHash(),
+			)
+			require.NotNil(t, c.PendingFanout())
+			require.Equal(t, pending.txid, c.PendingFanout().txid)
+			_, err = c.EnsureSupply(t.Context(), demands, 5, 103, 2)
+			require.NoError(t, err)
+			require.Len(t, broadcasts, 2)
+		})
 	}
-	wallet := &rewritingWallet{
-		utxos: []*walletcore.Utxo{
-			makeWalletUTXOWithAmount(50_000, 3),
-		},
-		changeScript: p2trTestPkScript(t),
-	}
-	b := NewCPFPBroadcaster(BroadcasterConfig{
-		ChainSource: chain,
-		Wallet:      wallet,
-	})
-	c := newTestFeeBumpController(t, b)
-
-	demands := []feeInputDemand{
-		{
-			parentTxid: chainhash.Hash{
-				1,
-			},
-			minAmount: 10_000,
-		},
-		{
-			parentTxid: chainhash.Hash{
-				2,
-			},
-			minAmount: 10_000,
-		},
-	}
-	pending, err := c.EnsureSupply(t.Context(), demands, 5, 100, 2)
-	require.NoError(t, err)
-	require.NotNil(t, pending)
-	require.Len(t, broadcasts, 1)
-
-	_, err = c.EnsureSupply(t.Context(), demands, 5, 101, 2)
-	require.NoError(t, err)
-	require.Len(t, broadcasts, 1)
-
-	_, err = c.EnsureSupply(t.Context(), demands, 5, 102, 2)
-	require.NoError(t, err)
-	require.Len(t, broadcasts, 2)
-	require.Equal(t, broadcasts[0].TxHash(), broadcasts[1].TxHash())
-	require.NotNil(t, c.PendingFanout())
 }
 
 func TestFeeInputFanoutClearsRejectedPendingFanout(t *testing.T) {

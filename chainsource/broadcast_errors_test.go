@@ -2,6 +2,7 @@ package chainsource
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btcwallet/chain"
@@ -26,7 +27,14 @@ func TestIsIgnorableBroadcastError(t *testing.T) {
 		{
 			name: "insufficient fee sentinel",
 			err:  chain.ErrInsufficientFee,
-			want: true,
+			want: false,
+		},
+		{
+			name: "wrapped insufficient fee sentinel",
+			err: fmt.Errorf(
+				"publish: %w", chain.ErrInsufficientFee,
+			),
+			want: false,
 		},
 		{
 			name: "same non-witness data sentinel",
@@ -49,6 +57,14 @@ func TestIsIgnorableBroadcastError(t *testing.T) {
 				"sendrawtransaction: txn-already-in-mempool",
 			),
 			want: true,
+		},
+		{
+			name: "ambiguous spent input",
+			err: errors.New(
+				"transaction rejected: output " +
+					"already spent",
+			),
+			want: false,
 		},
 		{
 			name: "unknown error",
