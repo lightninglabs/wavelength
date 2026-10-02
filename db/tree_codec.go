@@ -717,6 +717,13 @@ func (n *tlvNode) Decode(r io.Reader) error {
 
 // SerializeTree serializes a tree.Tree to bytes using TLV encoding.
 func SerializeTree(t *tree.Tree) ([]byte, error) {
+	return serializeTree(t, true)
+}
+
+// serializeTree encodes the complete proof, optionally retaining derived
+// FinalKey caches. Only height-backfill matching omits those caches; durable
+// serialization keeps them. The tree and its asset context are read-only.
+func serializeTree(t *tree.Tree, includeFinalKey bool) ([]byte, error) {
 	if t == nil {
 		return nil, fmt.Errorf("cannot serialize nil tree")
 	}
@@ -744,7 +751,9 @@ func SerializeTree(t *tree.Tree) ([]byte, error) {
 
 	// Serialize RootNode recursively.
 	if t.Root != nil {
-		rootData, err := serializeNode(t.Root, t.AssetContext)
+		rootData, err := serializeNode(
+			t.Root, t.AssetContext, includeFinalKey,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("serialize root node: %w", err)
 		}
@@ -815,9 +824,10 @@ func DeserializeTree(data []byte) (*tree.Tree, error) {
 	return t, nil
 }
 
-// serializeNode serializes a tree.Node to bytes using TLV encoding.
-func serializeNode(n *tree.Node,
-	assetCtx *tree.AssetTreeContext) ([]byte, error) {
+// serializeNode encodes a node and its descendants, omitting only derived
+// FinalKey caches when includeFinalKey is false. Asset metadata stays bound.
+func serializeNode(n *tree.Node, assetCtx *tree.AssetTreeContext,
+	includeFinalKey bool) ([]byte, error) {
 
 	if n == nil {
 		return nil, fmt.Errorf("cannot serialize nil node")
@@ -840,7 +850,7 @@ func serializeNode(n *tree.Node,
 	}
 
 	// Set optional FinalKey if present.
-	if n.FinalKey != nil {
+	if includeFinalKey && n.FinalKey != nil {
 		tlvN.FinalKey.Val.Key = n.FinalKey
 	}
 	if assetCtx != nil {
@@ -851,7 +861,9 @@ func serializeNode(n *tree.Node,
 	}
 
 	// Serialize children recursively.
-	childrenData, err := serializeChildren(n.Children, assetCtx)
+	childrenData, err := serializeChildren(
+		n.Children, assetCtx, includeFinalKey,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("serialize children: %w", err)
 	}
@@ -930,9 +942,10 @@ func deserializeNode(data []byte, depth int,
 	return n, nil
 }
 
-// serializeChildren serializes a map of children nodes.
+// serializeChildren encodes children in output-index order using the same
+// derived-cache policy as their parent.
 func serializeChildren(children map[uint32]*tree.Node,
-	assetCtx *tree.AssetTreeContext) ([]byte, error) {
+	assetCtx *tree.AssetTreeContext, includeFinalKey bool) ([]byte, error) {
 
 	var buf bytes.Buffer
 	var scratch [8]byte
@@ -964,7 +977,9 @@ func serializeChildren(children map[uint32]*tree.Node,
 		}
 
 		// Serialize the child node.
-		childData, err := serializeNode(child, assetCtx)
+		childData, err := serializeNode(
+			child, assetCtx, includeFinalKey,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("serialize child at index "+
 				"%d: %w", idx, err)

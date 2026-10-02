@@ -20,6 +20,7 @@ import (
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/round"
+	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -143,8 +144,8 @@ func createTestVTXODescriptor(
 }
 
 // TestBackfillVTXOCommitmentHeights verifies that legacy zero heights are
-// filled only from an exact indexed fragment match. A mismatched tree leaves
-// the local proof and height untouched.
+// filled from an indexed RPC copy of a normal round-decoded tree, despite
+// different derived key caches. The durable proof remains unchanged.
 func TestBackfillVTXOCommitmentHeights(t *testing.T) {
 	t.Parallel()
 
@@ -235,6 +236,18 @@ func TestBackfillVTXOCommitmentHeights(t *testing.T) {
 		},
 		SweepTapscriptRoot: bytes.Repeat([]byte{0x03}, 32),
 	}
+	// Round decoding computes FinalKey at every node. The indexer wire
+	// representation omits that cache, but must still match this proof.
+	roundTree, err := roundpb.TreeToProto(desc.Ancestry[0].TreePath)
+	require.NoError(t, err)
+	desc.Ancestry[0].TreePath, err = roundpb.TreeFromProto(roundTree)
+	require.NoError(t, err)
+	for node := range desc.Ancestry[0].TreePath.Root.NodesIter() {
+		require.NotNil(t, node.FinalKey)
+	}
+	localBytes, err := SerializeTree(desc.Ancestry[0].TreePath)
+	require.NoError(t, err)
+
 	desc.Ancestry[0].InputIndices = []uint32{0, 3}
 	desc.Ancestry[0].TreeDepth = 2
 	require.Zero(t, desc.Ancestry[0].CommitmentHeight)
@@ -257,6 +270,13 @@ func TestBackfillVTXOCommitmentHeights(t *testing.T) {
 	indexed, err := vtxo.AncestryFromRPC([]*arkrpc.AncestryPath{rpcPath})
 	require.NoError(t, err)
 
+	for node := range indexed[0].TreePath.Root.NodesIter() {
+		require.Nil(t, node.FinalKey)
+	}
+	indexedBytes, err := SerializeTree(indexed[0].TreePath)
+	require.NoError(t, err)
+	require.NotEqual(t, localBytes, indexedBytes)
+
 	repaired, err := store.BackfillVTXOCommitmentHeights(
 		t.Context(), desc.Outpoint, indexed, 1000,
 	)
@@ -271,6 +291,13 @@ func TestBackfillVTXOCommitmentHeights(t *testing.T) {
 	gotKey, err := AncestryFragmentKey(stored.Ancestry[0])
 	require.NoError(t, err)
 	require.Equal(t, wantKey, gotKey)
+	// Neither local nodes nor the caller's indexed tree may be mutated.
+	gotLocalBytes, err := SerializeTree(desc.Ancestry[0].TreePath)
+	require.NoError(t, err)
+	require.Equal(t, localBytes, gotLocalBytes)
+	gotIndexedBytes, err := SerializeTree(indexed[0].TreePath)
+	require.NoError(t, err)
+	require.Equal(t, indexedBytes, gotIndexedBytes)
 
 	after, err := baseDB.ListVTXOAncestryPaths(t.Context(), rowKey)
 	require.NoError(t, err)
