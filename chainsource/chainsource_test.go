@@ -547,7 +547,7 @@ func TestChainSourceActorBroadcastTxIgnoresRebroadcastErrors(t *testing.T) {
 	backend := &broadcastErrorBackend{
 		mockBackend: baseBackend,
 
-		broadcastErr: chain.ErrInsufficientFee,
+		broadcastErr: chain.ErrTxAlreadyKnown,
 
 		// If we regress and call TestMempoolAccept on ignorable errors,
 		// the broadcast is treated as a failure,

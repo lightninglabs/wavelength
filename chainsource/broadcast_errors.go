@@ -12,7 +12,6 @@ var (
 	// a broadcast failure can be treated as a success (e.g., already known
 	// or already confirmed).
 	ignorableBroadcastSentinels = []error{
-		chain.ErrInsufficientFee,
 		chain.ErrSameNonWitnessData,
 		chain.ErrTxAlreadyConfirmed,
 		chain.ErrTxAlreadyKnown,
