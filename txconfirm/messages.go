@@ -140,9 +140,11 @@ type EnsureConfirmedReq struct {
 	// configured block interval, with operator escalation after repeated
 	// failures. Permanent structural errors still fail. False preserves the
 	// default: anchor parents retry, ordinary anchorless transactions fail
-	// terminally. Callers must restore this policy when reissuing after
-	// restart; txconfirm tracking is in memory. Requests for the same txid
-	// must agree.
+	// terminally, except for ambiguous spent-input errors. Those always
+	// keep the confirmation watch because the same tx may already be mined.
+	// Callers must restore this policy when reissuing after restart;
+	// txconfirm tracking is in memory. Requests for the same txid must
+	// agree.
 	RetryUntilAccepted bool
 
 	// ParentFee is the absolute miner fee, in satoshis, that Tx already

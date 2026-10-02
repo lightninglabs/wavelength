@@ -360,9 +360,13 @@ func (s *feeBumpStateFanoutPending) processDemands(ctx context.Context,
 		},
 	).Await(ctx).Unpack()
 	if err != nil {
-		// An ignorable "already known" rejection means the fanout is
-		// still in the mempool; just refresh the height.
-		if IsIgnorableBroadcastError(err) {
+		// Keep the existing watch on known transactions and ambiguous
+		// spent inputs. A confirmed fanout may return the latter on
+		// rebroadcast before its confirmation notification is
+		// processed. Neither case justifies discarding it and funding a
+		// new fanout.
+		if IsIgnorableBroadcastError(err) ||
+			isAmbiguousSpendError(err) {
 			return env.refreshRebroadcast(ctx, pending, height), nil
 		}
 

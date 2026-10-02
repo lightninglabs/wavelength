@@ -19,7 +19,7 @@ func TestChainSourceActorBroadcastTxRejectsUnprovenPublication(t *testing.T) {
 	t.Parallel()
 
 	for _, broadcastErr := range []error{
-		errors.New("output already spent by conflicting transaction"),
+		errors.New("transaction rejected: output already spent"),
 		fmt.Errorf("publish: %w", chain.ErrInsufficientFee),
 	} {
 		t.Run(broadcastErr.Error(), func(t *testing.T) {
