@@ -27,7 +27,7 @@ when the local wallet owns the receive script.
 - `Manager` — Actor managing per-VTXO FSM instances, lifecycle, and admission gating. Configured via `ManagerConfig`.
 - `ManagerConfig` — Configuration holding Store, Wallet, ChainSource,
   ActorSystem, ChainParams, ExpiryConfig, RoundActor ref, ChainResolver ref,
-  optional `Log`, optional `LedgerSink fn.Option[ledger.Sink]`,
+  `TimeoutActor`, optional `Log`, optional `LedgerSink fn.Option[ledger.Sink]`,
   `ForfeitVTXOActorAskTimeout`, `RefreshFeeQuoter`, `CriticalExitAssessor`,
   `FetchOperatorKey`, `ForfeitParticipantSigner`, `TerminalVTXOObserver`,
   `ExitOutcomeResolver`, and `ReservationStore`. Confirmed exit-cost accounting is emitted by unroll
@@ -43,7 +43,17 @@ when the local wallet owns the receive script.
   active set. `ExitOutcomeResolver` is called at startup to reconcile VTXOs
   still persisted in `VTXOStatusUnilateralExit` with their terminal job
   outcome. `ReservationStore` is used at startup to sweep orphaned Spending
-  VTXOs.
+  VTXOs. `TimeoutActor` is the shared non-blocking callback scheduler every
+  spawned child uses to retain a manager notification that could not be
+  delivered immediately; it must be running before manager recovery, and a nil
+  ref preserves the legacy blocking `Tell`.
+- `ExpiryConfig.MinRefreshAmount` — `func() btcutil.Amount` returning the
+  operator's current minimum replacement-output amount, wired by `waved` from
+  the cached operator terms. Automatic one-for-one refresh preserves each
+  input's amount, so an input below this floor can never produce a valid
+  output; the unexported `ExpiryConfig.canAutoRefresh` consults it (and refuses
+  asset-bearing descriptors) before any automatic reservation. Nil preserves
+  the behavior of callers with no operator terms.
 - `CustomForfeitInput` (`lib/actormsg`) — Describes a caller-supplied VTXO
   outside the wallet's live coin set that still needs a local actor to sign
   the exact round forfeit tx. `ActivateCustomForfeitInputsRequest` (sent by
@@ -118,7 +128,7 @@ when the local wallet owns the receive script.
 
 ## Relationships
 
-- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/types` (`Ancestry`), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission and custom-forfeit message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `coinselect` (largest-first VTXO selection), `metrics` (optional `OORTransferReceivedMsg` sink), `ledger` (`Sink` type for compatibility with manager wiring), `unroll` (via `ExitOutcomeResolver` callback wired by `waved`).
+- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/types` (`Ancestry`), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission and custom-forfeit message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `coinselect` (largest-first VTXO selection), `metrics` (optional `OORTransferReceivedMsg` sink), `ledger` (`Sink` type for compatibility with manager wiring), `timeout` (non-blocking retry scheduler for manager notifications), `unroll` (via `ExitOutcomeResolver` callback wired by `waved`).
 - **Depended on by**: `round` (triggers forfeit requests), `oor` (incoming VTXOs), `wallet` (admission gating), `db` (persistence), `waved` (wiring, owned-script adapters, incoming event route, `CheckForfeitAdmission` for the leave filter and exit-plan advisory, and `assessAutomaticCriticalExit` supplying `CriticalExitAssessor`), `sdk/swaps` (forfeit sign-request conversion).
 - **Sends**:
   - → `round` (via manager relay): `RelayToRoundMsg` wrapping `ForfeitSignatureSubmission`
@@ -206,6 +216,51 @@ when the local wallet owns the receive script.
 - When the cached boundary fires, auto-refresh fetches fresh operator terms
   before reserving the VTXO. A later still-safe boundary leaves the VTXO live;
   a disabled or unsafe-late window preserves the ordinary paid refresh path.
+- **Automatic refresh refuses an impossible replacement output.** One-for-one
+  maintenance carries each input's amount into a new output before fees, so an
+  input below the operator's current minimum VTXO amount cannot succeed even
+  at a zero fee — and because the cohort shares one round, a single
+  below-minimum input poisons every otherwise valid sibling. Both
+  `LiveState.autoRefreshTransition` (threshold, critical, and cohort paths) and
+  `ExpiredState`'s reclaim branch gate on `ExpiryConfig.canAutoRefresh` and
+  retain their original state rather than reserving the input. The coin stays
+  available for manual aggregation and funded critical exits, which do not use
+  this gate. `VTXOActor.preflightAutoRefresh` refreshes operator terms ahead of
+  reclaim and the unfunded-critical fallback as well, so a stale high minimum
+  cannot permanently suppress later recovery; a terms lookup failure leaves the
+  durable row untouched. Quote-time checks still own fee policy.
+- **A child must stay responsive while the manager waits on it.** When many
+  claims cross their refresh threshold in one block, child relays fill the
+  manager mailbox, and a manager parked on a cohort `Ask` against a child that
+  is itself parked on a blocking relay `Tell` deadlocks the pair until the ask
+  times out. `VTXOActor.deliverManagerNotification` (`manager_delivery.go`)
+  therefore tries `TryTell` first and, on a full mailbox, hands the *exact*
+  message to the shared `TimeoutActor`, whose callbacks never block. One timer
+  entry (keyed by a fresh UUID so a later notification cannot replace
+  undelivered work) owns the message across retries, with no parked sender
+  goroutine and no larger queue. Terminated/closed mailboxes are returned
+  as-is rather than retained, and the notification travels under
+  `context.WithoutCancel` because it belongs to the persisted transition, not
+  to the receive turn that produced it.
+- **A retained automatic relay is fenced to the reservation that emitted it.**
+  A deferred leader relay can outlive its own `PendingForfeit` claim, so the
+  child wraps it in `deferredRefreshRelay` carrying a child-owned
+  `*atomic.Bool`. `VTXOActor.Receive` clears that token once persistence and
+  the state transition move the actor out of `PendingForfeit`, and the manager
+  checks it before anything else — including cohort markers, since a later
+  height may already have replaced the marker for this outpoint. Without the
+  fence an old-height notification could resubmit a claim a newer attempt
+  already owns.
+- **A same-height automatic handoff marker is retained, not consumed.**
+  `adoptedAutoRefreshRelays` records every automatic relay the manager handed
+  off at a given trigger height, including adopted pending leaders, and
+  `consumeAdoptedAutoRefreshRelay` no longer deletes the entry.
+  `coordinateAutoRefreshCohort` skips a pending candidate whose marker matches
+  the current trigger height, so a later overlapping cohort cannot adopt an
+  already-relayed reservation and release it while the first round still owns
+  it. Marker retention is bounded by terminal cleanup
+  (`handleVTXOTerminated` deletes the entry); a later trigger height and a
+  restart both permit retry.
 - **Critical expiry means "the unilateral time budget is now active", not
   "exit now".** `ExpiryStatusCritical` used to escalate a `LiveState` or
   `PendingForfeitState` VTXO straight to `UnilateralExitState`. It no longer

@@ -18,18 +18,27 @@ metadata encoding.
   message challenge, signature, proof prev outputs, chain height).
 - `VerificationResult` — Validation outcome with state (Valid/Invalid/
   Inconclusive) and reason.
+- `DefaultMaxProofInputs = 128` — The proof-of-funds input ceiling applied by
+  `defaultValidateAuthOptions`. It is exported (not just an internal default)
+  so a *producer* can refuse to assemble a package the verifier would reject:
+  `round.findRefreshRound` budgets automatic refresh cohorts against it. Its
+  value is unchanged, so existing verifiers interoperate with no protocol
+  migration.
 
 ## Relationships
 
 - **Depends on**: (no internal repo imports; pure cryptographic library).
 - **Depended on by**: `round` (join-round intent signing and BIP-322 auth
-  validation, via `join_auth.go`).
+  validation, via `join_auth.go`; plus `DefaultMaxProofInputs` as the
+  refresh-cohort admission budget in `actor.go`).
 
 ## Invariants
 
 - `ValidUntil` >= `ValidFrom` (or `ValidUntil` = 0 for no upper bound).
 - Full-format only: signature is the serialized to_sign transaction.
-- Max 128 additional inputs per validation (proof-of-funds limit).
+- Max `DefaultMaxProofInputs` (128) additional inputs per validation
+  (proof-of-funds limit). Callers that build auth packages must respect the
+  same bound: a package over the limit cannot be made to pass by retrying.
 - Height validation: signature valid only if `current >= ValidFrom` AND
   (`ValidUntil == 0` OR `current <= ValidUntil`).
 

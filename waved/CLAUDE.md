@@ -26,9 +26,15 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   (`rpc_fees.go`).
 - `Config` — daemon configuration: wallet backend selection, mailbox/chain
   backend wiring, `OORConfig`/`OORLimitsConfig` (receive safety caps),
-  `UnrollConfig` (unilateral-exit fee-bump cadence and cap), and
+  `UnrollConfig` (unilateral-exit fee-bump cadence and cap), `HealthConfig`
+  (the opt-in probe listener), and
   `MaxOperatorFeeSat` (the #270 seal-time fee-cap validated in
   `Config.Validate()`).
+- `HealthConfig` (`health.go`) — opt-in, macaroon-free HTTP listener serving
+  only `GET /readyz` and `GET /livez`. `ListenAddr` enables it; empty (the
+  default) disables health serving entirely. It exposes no wallet data and no
+  RPC methods, which is what makes serving it unauthenticated acceptable —
+  bind it to loopback or a private network anyway.
 - `WalletState` — `None` / `Locked` / `Ready` wallet lifecycle.
 - `WalletRecoveryResult` — counters returned by the in-process,
   post-unlock recovery hook.
@@ -80,6 +86,33 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   later and worse — a missing account silently filters every UTXO away, a
   wrong-scoped one funds and signs but cannot derive a fresh script, and a
   watch-only one fails at signing after inputs are leased.
+- **Health endpoints serve a cached sample; an HTTP request never enqueues
+  actor work.** `actorHealth.monitor` is a daemon-lifetime goroutine that
+  waits for the startup publication barrier, then every `healthInterval` (5 s)
+  runs `sampleActors` against `Server.actorProbes` — `actor.Probe` calls that
+  acknowledge a no-op in each core receive loop without touching LND, the
+  operator, storage, or any behavior. The whole sample is bounded by
+  `healthTimeout` (2 s) and the probes run concurrently, so a busy actor
+  cannot consume the deadline before an idle peer is asked. The HTTP handler
+  only reads the cached verdict, so a wedged daemon cannot be made worse by
+  polling it.
+- **Readiness and liveness fail on different evidence, per actor.**
+  `/readyz` requires the last sample to have been fully successful *and*
+  fresher than `healthFreshness` (interval + timeout), so a sampler that stops
+  progressing withdraws readiness rather than serving a stale success.
+  `/livez` fails only after an actor records no completed turn for
+  `healthLivenessGrace` (2 min) — each actor keeps its own activity clock and
+  resets it whenever it answers *or* its completed-turn counter moves, so a
+  busy manager cannot mask a stuck round actor and a merely slow actor is not
+  reported dead. Before `begin` (pre-startup) and while idle the daemon is
+  live but not ready; context cancellation fails both.
+- `startHealthServer` binds the listener **before** dependency startup, so a
+  locked wallet or an unavailable startup dependency leaves the daemon
+  unready instead of unreachable — a supervisor sees `/readyz` fail rather
+  than a connection refused, which is what keeps it from restart-looping. The
+  returned cleanup is process-owned (the daemon context may already be
+  cancelled): it cancels sampling, bounds HTTP shutdown by `healthTimeout`,
+  and joins both goroutines.
 - `Server.run` registers a deferred `actorSystem.Shutdown()` **before** the
   deferred `db.Close()` so in-flight actor DB transactions drain before the
   connection pool tears down.
@@ -283,6 +316,25 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   retry that reaches the in-memory admission winner before its attempt commits
   returns the stable session id with no unproven outpoints; a later retry
   resolves them from the committed attempt.
+- **`ListOORSessions` / `GetOORSession` read the scalar status store, not the
+  session actors.** `rpc_operation_status.go` goes through
+  `db.OORStatusStore` so a small status request no longer deserializes
+  complete transfer history; package precedence, direction/status filters,
+  bindings, and outgoing retry diagnostics (including the malformed-snapshot
+  `Warn`, via `oor.FillOutgoingSummary`) are all preserved. Live actor
+  summaries are still used by the metrics path. Two behaviour changes are
+  deliberate and user-visible: ordering is newest-first by creation time with
+  a stored-ID tie-breaker rather than arbitrary displayed-hash order, and
+  registry timestamps are now reported for pending sessions too. The page
+  cursor is an opaque versioned encoding of both ordering fields; an old
+  ID-only cursor is rejected with `InvalidArgument` and a restart instruction,
+  because its ordering cannot be safely continued under the new sort.
+- The VTXO manager is wired with `TimeoutActor` (the shared `timeout` service
+  key) so children can retain manager notifications under mailbox pressure
+  instead of parking, and with `ExpiryConfig.MinRefreshAmount` reading
+  `loadOperatorTerms().MinVTXOAmountFloor()` so automatic refresh never
+  reserves an input that cannot produce a valid replacement output. The
+  timeout actor must be running before manager recovery.
 - `Unroll` / `GetUnrollStatus` return `codes.Unavailable` (not `Internal`)
   when the unroll subsystem refs are not yet set, so clients can retry.
 - `initUnrollSubsystem` configures a fixed 2 sat/vB exit-sweep fallback only

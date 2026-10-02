@@ -146,7 +146,8 @@ state transitions and validation rules live under [Invariants](#invariants).
 - **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor
   primitives: `ActorRef`, `ActorSystem`, `BaseMessage`), `lib/actormsg`
   (mailbox marker interfaces), `lib/tree`, `lib/types`, `lib/arkscript`,
-  `lib/bip322` (join-round BIP-322 auth signing), `rpc/roundpb` (wire proto
+  `lib/bip322` (join-round BIP-322 auth signing plus `DefaultMaxProofInputs`,
+  the cohort admission budget), `rpc/roundpb` (wire proto
   types via `FromProto`), `wallet`, `ledger` (`Sink` + `VTXOReceivedMsg` /
   `Source*` constants), `timeout`, `google/uuid`.
 - **Depended on by**: `vtxo`, `db`, `waved`.
@@ -177,6 +178,26 @@ state transitions and validation rules live under [Invariants](#invariants).
 - **Receives ← `chainsource`**: `ConfirmationEvent`.
 
 ## Invariants
+
+- **An automatic refresh cohort is admitted whole, within the verifier's
+  proof-input budget.** Each cohort the VTXO manager produces is individually
+  bounded, but the round actor could previously merge enough cohorts into one
+  assembly to exceed `bip322.DefaultMaxProofInputs` (128) — and retrying that
+  same assembly can never pass join authorization.
+  `handleRefreshVTXOCohortRequest` therefore routes through
+  `findRefreshRound`, which admits the cohort only if the candidate
+  `PendingRoundAssembly`'s existing boarding plus forfeit inputs leave room for
+  the whole cohort. It returns `errRefreshRoundBusy` when the budget would
+  overflow, when the cohort alone exceeds the limit, or when any round is past
+  assembly but not yet committed (`IntentSentState`, `QuoteReceivedState`,
+  `RoundJoinedState`) — concurrent chunks from one client can replace its
+  earlier registration, so the cohort waits until the join is sealed rather
+  than emitting a second one. Once a commitment arrives, later maintenance
+  proceeds independently of confirmation. A deferred cohort is released through
+  `releaseRejectedRefreshCohort` → the non-blocking `deliverForfeitRelease`
+  path, so no claim is removed from storage and the VTXO actor's ordinary
+  block-based retry and durable startup reconciliation re-drive it. This adds
+  no queue, retry identity, or protocol migration.
 
 - **Failed-round reservation release never waits for manager mailbox space.** The manager
   can be blocked relaying into the round mailbox. Reservation release

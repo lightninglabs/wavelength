@@ -78,7 +78,7 @@ package may import from a higher layer.
 | [`cmd/waved`](cmd/waved/) | Daemon entry point |
 | [`cmd/wavecli`](cmd/wavecli/) | CLI client |
 | [`cmd/wavewalletdk-wasm`](cmd/wavewalletdk-wasm/) | Command compiling the embedded wavewalletdk runtime to a browser WASM binary |
-| [`timeout`](timeout/) | Generic timeout scheduling actor |
+| [`timeout`](timeout/) | Generic timeout scheduling actor. Listed here historically, but it is depended on by Layer 1 (`round`, `vtxo`, `oor`, `credit`) as a non-blocking retry/scheduling primitive, so treat it as infrastructure rather than orchestration when reasoning about the layer rule |
 | [`indexer`](indexer/) | Server indexing client for receive script registration |
 | [`arkrpc`](arkrpc/) | Server-side gRPC service definitions (ArkService, IndexerService) |
 | [`arkrpc/treeconv`](arkrpc/treeconv/) | Narrow re-export of tree-path conversion helpers without the full gRPC surface |
@@ -119,6 +119,7 @@ waved (orchestrator)
 ├── vtxo            │
 │   ├── chainsource │ (block epoch events)
 │   ├── ledger      │ (ExitCostMsg via ledger.Sink — emission planned)
+│   ├── timeout     │ (non-blocking retry of child→manager notifications)
 │   └── db          │ (vtxo store)
 ├── wallet          │
 │   ├── chainsource │ (UTXO confirmation monitoring)
