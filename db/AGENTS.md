@@ -121,7 +121,17 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 21` — current schema version.
+- `OORStatusStore` / `OORStatusSummary` / `OORStatusCursor`
+  (`oor_status_store.go`) — read-only, page-bounded status projection behind
+  the `ListOORSessions` / `GetOORSession` RPCs. `List` selects scalar metadata
+  for one newest-first page in a single read snapshot and hydrates bindings
+  and outgoing diagnostics only for the selected sessions; it never loads Ark
+  PSBTs or checkpoint rows. `OORStatusCursor` carries both `CreatedAt` (Unix
+  seconds) and `SessionID`, so continuation does not require the cursor row to
+  still exist. A nil cursor starts at the newest session; direction zero and
+  status `-1` disable their respective filters; a non-positive limit is an
+  error.
+- `LatestMigrationVersion = 25` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -197,7 +207,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   coin can reconcile whichever order they commit in. Foreign inputs are
   recorded too, because ownership can become known later; that is exactly why
   it is not a `wallet_utxo_log` row.
-- **Never write raw SQL in Go** — add queries to `db/queries/`,
+- **Never write raw SQL in Go** — add queries to `db/sqlc/queries/`,
   regenerate with `make sqlc`.
 - Transaction atomicity: entire checkpoint succeeds or none.
 - Boarding intents persist from registration until round completion
@@ -263,6 +273,51 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   jobs use `standard_vtxo_timeout` with an empty ref; policy-specific
   jobs store their registered kind plus the domain-owned durable ref
   needed to reconstruct the same spend policy after restart.
+
+- **OOR status pages are ordered newest-first with a stored-ID tie-break,
+  and the cursor is opaque and versioned.** Creation time alone is not a
+  total order (ties are routine), so the page is ordered by
+  `(created_at DESC, session_id DESC)` using the *stored* byte order, not the
+  displayed hash. Registry creation time stays stable when artifacts arrive
+  later; a package-only session uses its package creation time. Registry and
+  package-only candidate pages are merged so one session can never occupy two
+  positions, and package direction and completion still override registry
+  metadata before filters and limits are applied. When the registry fills the
+  candidate page, its oldest timestamp bounds the package-only candidates —
+  older packages cannot outrank a full page — but a *partial* registry page
+  is left unbounded so the optimization cannot skip results. Only the final
+  merge and payload hydration are page-bounded; filters and overlapping-package
+  exclusion may still scan scalar entries.
+
+### CGO SQLite (`sqlite_driver_cgo.go`, `sqlite_open_cgo.go`)
+
+Built under `(!js || !wasm) && sqlite_cgo`. Android selects it because
+modernc/libc issues raw Linux syscalls that Android's application sandbox can
+block; the tag also allows host testing of the same path.
+
+- **The driver is registered under its own name (`wavelength-sqlite3`), not as
+  mattn's stock driver.** sqlc emits PostgreSQL-style `$N` placeholders, and
+  SQLite assigns `$N` slots by *first appearance* while modernc treats `N` as
+  the argument ordinal. `sqliteNumberedParams` rewrites `$N` to `?N`, which
+  preserves the ordinal even for reordered or repeated parameters. The rewrite
+  is wrapped around `Prepare`, `PrepareContext`, `ExecContext`, *and*
+  `QueryContext`, because `database/sql`'s fast paths bypass explicit
+  preparation; registering a separate driver is what guarantees every
+  connection the pool opens later keeps these semantics.
+- The `sqliteTokens` regexp exists so the rewrite cannot corrupt a query:
+  literals, quoted/bracketed/backticked identifiers, comments, ordinary
+  identifiers, and SQLite's Tcl-style named parameters (`$name::suffix(value)`)
+  are all matched as whole tokens and passed through untouched.
+- **Unknown pragmas fail the open.** mattn silently ignores unrecognized DSN
+  keys, so `openSQLiteDatabase` allow-lists exactly `foreign_keys`,
+  `journal_mode`, `busy_timeout`, `synchronous`, and `fullfsync` and returns an
+  error for anything else — a new setting must never lose its semantics by
+  being quietly dropped.
+- `fullfsync` has no mattn DSN option, so the driver parses `_fullfsync` out of
+  the DSN itself and applies the embedded `sqlite_fullfsync.sql` to **every**
+  new handle, which is what makes the Darwin durability barrier survive a
+  pooled connection being replaced. An unrecognized value is an error rather
+  than a silent "off".
 
 ### js/wasm SQLite (`sqlite_open_wasm.go`)
 
@@ -399,11 +454,29 @@ when adding one.
   boundary remains authoritative. `CommitState` closes admission atomically
   with its signature-bearing checkpoint.
 
+- `000020_taproot_asset_vtxo_state` — asset-bearing VTXO columns: commitment
+  root, opaque asset reference, uint64 units, and the optional sealed leaf
+  package. The four fields are one identity (see the asset invariant above).
+
+- `000022_owned_wallet_scripts` — the mint-time ownership oracle backing
+  `owned_wallet_scripts`. It starts empty on an upgraded database and is
+  deliberately not backfilled.
+
+- `000023_deposit_funding_inputs` — `ledger_deposit_funding_inputs`, the
+  amount-less record of which outpoints funded which boarding deposit, so two
+  independent messages about a recycled own-wallet coin reconcile in either
+  commit order.
+
 - `000024_round_output_provenance` — retains each requested output's local
   accounting origin and optional refresh source outpoint in the signature
   checkpoint. Recovery preserves boarding, refresh, transfer, and automatic
   refresh classification, including distinct refreshes with identical scripts.
   Legacy requests retain unknown origin and no source; no pairing is guessed.
+
+- `000025_oor_status_cursor` — creation-time indexes and scalar status views
+  backing the newest-first OOR status page. It adds no writer and changes no
+  transfer payload: the views exist so a status read can order and paginate on
+  scalars before hydrating any package detail.
 
 ## Deep Docs
 

@@ -5,8 +5,8 @@
 Generated protobuf/gRPC stubs for the round protocol, plus hand-written
 support code: `service.go` (mailbox method name constants), `convert.go`
 (proto <-> Go domain-type conversions, including the security-sensitive
-`TreeFromProto` VTXO-tree deserializer), and `version.go` (the round flow
-version guard).
+`TreeFromProto` VTXO-tree deserializer), `batch_slot.go` (scheduled-batch
+slot selection conversions), and `version.go` (the round flow version guard).
 
 ## Key Types
 
@@ -33,6 +33,15 @@ All `*.pb.go` files are generated — never edit directly; regenerate with
   `PSBTFromBytes`/`ToBytes`, `MsgTxFromBytes`/`ToBytes`,
   `SchnorrSigFromBytes`/`ToBytes` — wire/proto ⇄ Go conversions for the
   round protocol's payload types.
+- `SelectionFromProto` / `SelectionToProto` (`batch_slot.go`) — convert a
+  join's scheduled-slot choice between `*BatchSlotSelection` and
+  `fn.Option[batchschedule.Selection]`. The `nil` message and `fn.None` are
+  the same fact in two encodings: the join requests event-driven timing and
+  carries no slot at all, so a legacy join round-trips unchanged.
+  `SelectionFromProto` rebuilds the schedule ID through
+  `batchschedule.IDFromBytes` and the cutoff through
+  `batchschedule.SelectionFromUnix`, so a malformed ID or cutoff is a decode
+  error rather than a silently accepted slot.
 - `FlowVersion` / `FlowVersionV1` / `ValidateFlowVersion` — the per-round
   choreography version stamped by the operator and validated by the
   client; fails closed on any version this build does not understand.
@@ -45,7 +54,8 @@ distinction.
 ## Relationships
 
 - **Depends on**: `lib/tree`, `lib/types` (conversion targets in
-  `convert.go`), `github.com/lightninglabs/tap-sdk` (`ParseAssetRef`, for
+  `convert.go`), `lib/batchschedule` (conversion targets in `batch_slot.go`),
+  `github.com/lightninglabs/tap-sdk` (`ParseAssetRef`, for
   canonical asset-reference validation); otherwise generated proto types only.
 - **Depended on by**: `round` (outbox routing, proto conversions, flow
   version), `db` (persisting round/VTXO proto blobs), `waved` (proto

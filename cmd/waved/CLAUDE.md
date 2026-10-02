@@ -23,10 +23,12 @@ hands off to `waved.Main` to run the daemon.
   `submitpackage` wiring for V3 ephemeral-anchor package relay; a no-op
   when `bitcoind.host` is unset.
 - `registerOperatorFeeFlags(f, cfg)` / `registerMaxPaymentCLTVFlag(f, cfg)` /
-  `registerFeeEstimationFlags(...)` — grouped flag registrars called from
-  `newRootCmd`. `registerMaxPaymentCLTVFlag` owns `--maxpaymentcltv`, the
-  automatic-maintenance target for keeping enough VTXO lifetime available for
-  Lightning payments.
+  `registerFeeEstimationFlags(...)` / `registerHealthFlags(f, cfg)` — grouped
+  flag registrars called from `newRootCmd`. `registerMaxPaymentCLTVFlag` owns
+  `--maxpaymentcltv`, the automatic-maintenance target for keeping enough VTXO
+  lifetime available for Lightning payments. `registerHealthFlags` owns
+  `--health.listen`, the opt-in address for the `/livez` and `/readyz` probe
+  listener.
 
 ## Relationships
 
@@ -52,6 +54,12 @@ hands off to `waved.Main` to run the daemon.
   does not have). Leaving it empty means lnd's `default` account, so a daemon
   sharing an lnd node with another daemon must set it or the two can drain
   each other's funds.
+- `--health.listen` defaults to empty, which disables health serving
+  entirely. The listener it enables is unauthenticated by design (a
+  supervisor must be able to probe it without a macaroon) and exposes only
+  `/livez` and `/readyz`, so the flag's help text tells operators to bind it
+  to loopback or a private network. Enforcement of what it serves lives in
+  `waved` (`health.go`); this package only registers the flag.
 - `EagerRoundJoin`'s flag default comes from `waved.DefaultConfig()`,
   which is itself build-tag aware (true under `wavewalletrpc`, false
   otherwise); `--eagerroundjoin` still overrides it either way.

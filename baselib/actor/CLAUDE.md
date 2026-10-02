@@ -82,6 +82,15 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   `CallerCtx` in `context.WithTimeout` itself before handing it to
   `OnComplete` — that wrap is the sole bound on the continuation. Returns
   false for Tells, DurableAsks, and redelivered asks whose caller is gone.
+- `Probe[M, R](ctx, ref) (uint64, error)` (`probe.go`) — Health check for a
+  local channel-mailbox actor's **receive loop**, not its behavior. It enqueues
+  an internal, side-effect-free envelope that the loop acknowledges and that
+  never reaches the behavior or the dead-letter office, and returns the actor's
+  completed-turn counter (which counts probes too). Admission uses `TrySend`,
+  so a probe never waits for mailbox room; only the response wait respects
+  `ctx` and actor shutdown. Requires the direct `ActorRef` returned by
+  `NewActor`/`RegisterWithSystem` — routers, mapped refs, and durable actors
+  return an error.
 - `ChannelMailbox[M, R]` — In-memory channel-based mailbox (non-durable, for lightweight actors).
 - `Mailbox[M, R]` — Interface for actor message queues: `Send(ctx, env) error` (blocking; returns `ErrMailboxClosed`, `ErrActorTerminated`, or a context error on failure), `TrySend(env) error` (non-blocking), `Receive(ctx) iter.Seq[envelope]`, `Close()`, `IsClosed() bool`, `Drain() iter.Seq[envelope]`.
 - `isExpectedShutdownErr(err) bool` — Internal helper that classifies errors as expected during teardown: context cancellation/deadline, closed DB handle ("sql: database is closed", "sql: connection is already closed", "use of closed network connection"). Used by the lease loop to demote shutdown-path failures to debug instead of warn-flooding test artifacts at itest tail.
@@ -107,6 +116,17 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 
 ## Invariants
 
+- **A probe answers "is the receive loop turning", and cannot itself become
+  work.** Concurrent `Probe` callers share at most one queued probe — even
+  after a caller times out — so a stalled actor can never accumulate
+  health-check envelopes behind the message that wedged it. A completed probe
+  is replaced on the next call rather than reused as a stale success, and
+  shutdown wakes waiters through the actor context rather than by closing the
+  probe channel (the drain loop skips probe envelopes), so teardown is never
+  reported as a healthy turn. Supervisors should watch the returned
+  completed-turn counter for liveness: it advances even when the probe itself
+  fails, which is what distinguishes a busy queue or a late acknowledgement
+  from a genuinely stuck loop.
 - Messages are processed sequentially per actor by default (one worker, no concurrent `Receive` calls). Opting into `DurableActorConfig.NumWorkers > 1` relaxes this: that many worker loops drain the one mailbox concurrently, so `Receive` may run in parallel across distinct messages. The competing-consumer lease guarantees each message is still processed by exactly one worker, and per-correlation-key FIFO holds across workers; only behaviors with concurrency-safe handlers should set it. The combination is structurally restricted to the Read/Commit path: `NewDurableActor` rejects `NumWorkers > 1` on a classic `ActorBehavior` with `ErrConcurrentClassicBehavior` so a stateful, sequentially-assumed actor can never be silently fanned out.
 - **Leaseless consume ownership model.** `SingleWorkerLeaseless` removes the
   lease-token fence, so its safety argument is "one live runtime owner for this

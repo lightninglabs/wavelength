@@ -28,9 +28,10 @@ timeouts and recurring ticks, delivering `ExpiredMsg` /
 ## Relationships
 
 - **Depends on**: `baselib/actor` (actor framework).
-- **Depended on by**: `round` (forfeit/registration timeouts), `oor`
-  (retry timers via `SigningOutboxHandler`), `credit` (retry
-  callbacks).
+- **Depended on by**: `round` (forfeit/registration timeouts, plus
+  non-blocking forfeit-release retry), `oor` (retry timers via
+  `SigningOutboxHandler`), `vtxo` (non-blocking retry of child→manager
+  notifications under mailbox pressure), `credit` (retry callbacks).
 - **Messages to/from**: Receives `ScheduleTimeoutRequest` /
   `ScheduleRecurringTickRequest` / `CancelTimeoutRequest` from any
   actor; sends `ExpiredMsg` / `TickFiredMsg` back to the `Callback`

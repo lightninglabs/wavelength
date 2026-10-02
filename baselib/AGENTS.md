@@ -15,6 +15,8 @@ build on.
 - `ActorBehavior[M, R]` — Strategy interface defining how an actor processes messages.
 - `ServiceKey[M, R]` — Type-safe identifier for actor registration and discovery.
 - `Future[T]` — Eventual result of Ask operations.
+- `Probe` — Bounded, behavior-free receive-loop health check for a local
+  channel-mailbox actor; returns the completed-turn counter for liveness.
 
 ### baselib/protofsm
 - `StateMachine[InternalEvent, OutboxEvent, Env]` — Core FSM executor processing events and emitting outbox.
