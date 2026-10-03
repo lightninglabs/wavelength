@@ -21,11 +21,10 @@ transition's outbox events.
   optional `EmittedEvent`.
 - `TransitionTable[S, E, M]` — Declarative transition table mapping (State, Event) → handler.
 - `TransitionEntry[S, E, M]` — Single entry in a transition table.
-- `RoutedOutboxEvent[M, R]` — Outbox event that targets a specific actor via `ServiceKey` (Tell or Ask delivery).
+- `RoutedOutboxEvent[M, R]` — Outbox event that targets a specific actor via `ServiceKey` (fire-and-forget Tell delivery; there is no Ask mode, results return as events).
 - `ActorOutboxEvent` — Interface for outbox events that can be dispatched by the actor runtime.
 - `Environment` — Marker interface for FSM environment (provides external resources to transitions).
 - `ErrorReporter` — Interface for reporting FSM errors to external systems.
-- `DeliveryMode` — Enum: `DeliveryModeTell` (fire-and-forget) or `DeliveryModeAsk` (request-response).
 
 ## Relationships
 
