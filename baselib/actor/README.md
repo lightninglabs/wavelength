@@ -295,7 +295,11 @@ There are two main ways to send messages using an `ActorRef`:
     hang. Inside a behavior, use `actor.AskThen` to receive the reply as a
     later message, or `actor.DetachAskPromise` to complete your own caller's
     promise from it. `actor.SetAwaitInTurnPolicy` logs (default) or rejects
-    such waits.
+    such waits. A bounded wait whose callee never calls back can opt out with
+    `actor.AllowAwaitInTurn(ctx, reason)`. `Await` on a protofsm
+    `StateMachine` future from `AskEvent` is exempt, since the machine's driver
+    goroutine belongs to the caller; the results of `ThenApply` and
+    `OnComplete` on it are not wrapped.
 
 ### Actors
 
