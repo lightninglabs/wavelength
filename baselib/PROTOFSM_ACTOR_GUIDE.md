@@ -90,14 +90,15 @@ type OutboxEvent interface {
 	isOutboxEventSealed()
 }
 
-// OutboxPersist requests persistence.
+// OutboxPersist requests persistence. The store actor reports completion by
+// sending a result event back to the machine.
 type OutboxPersist struct {
 	protofsm.RoutedOutboxEvent[StorePersistMsg, StorePersistResp]
 }
 
 func NewOutboxPersist(id string, data interface{}) OutboxPersist {
 	return OutboxPersist{
-		RoutedOutboxEvent: protofsm.NewAskOutboxEvent(
+		RoutedOutboxEvent: protofsm.NewTellOutboxEvent(
 			StoreServiceKey,
 			StorePersistMsg{ID: id, Data: data},
 		),
@@ -396,33 +397,33 @@ func (b *MonitorBehavior) Receive(ctx context.Context,
 
 **Pattern:** Actor starts background work, sends event when done.
 
-### Pattern 2: Tell vs Ask for Outbox Events
+### Pattern 2: Outbox Events Are Tell, Results Come Back as Events
 
-Use `Tell` for fire-and-forget, `Ask` for request-response:
+Outbox events are always fire-and-forget (`NewTellOutboxEvent`). There is no
+Ask delivery mode: a state machine turn that waits on another actor parks the
+machine's whole mailbox, and deadlocks if that actor is in turn waiting on the
+machine. When a transition needs an answer, such as a persistence ack, have the
+target send a result event back and move to a waiting state until it arrives:
 
 ```go
-// Tell: Fire-and-forget (monitoring, notifications).
-func NewOutboxMonitor(id string) OutboxMonitor {
-	return OutboxMonitor{
-		RoutedOutboxEvent: protofsm.NewTellOutboxEvent(
-			MonitorServiceKey,
-			MonitorMsg{ID: id},
-		),
-	}
-}
-
-// Ask: Wait for response (persistence, validation).
+// Request: fire-and-forget to the store.
 func NewOutboxPersist(id string) OutboxPersist {
 	return OutboxPersist{
-		RoutedOutboxEvent: protofsm.NewAskOutboxEvent(
+		RoutedOutboxEvent: protofsm.NewTellOutboxEvent(
 			StoreServiceKey,
 			StorePersistMsg{ID: id},
 		),
 	}
 }
+
+// The store actor sends EventPersisted{ID: id} (or EventPersistFailed) to
+// the machine through its ActorTellRef when done, and the state that emitted
+// OutboxPersist handles it in a later turn.
 ```
 
-**Guideline:** Use Ask for critical operations (persistence), Tell for non-blocking operations (monitoring).
+**Guideline:** Model the wait as a state, not as a blocking call. A behavior
+that hosts its own machine outside `ActorStateMachine` can issue the request
+with `actor.AskThen`, which delivers the reply as a later message.
 
 ### Pattern 3: Service Keys for Routing
 
@@ -845,7 +846,7 @@ type OutStore interface {
 3. ✅ **Emit outbox events for side effects** - never call external systems from ProcessEvent
 4. ✅ **Always handle EventResume** in non-terminal states
 5. ✅ **Actors send result events** back to FSM via ActorTellRef
-6. ✅ **Use Tell for async, Ask for sync** outbox events
+6. ✅ **Outbox events are Tell**; get answers back as result events
 7. ✅ **One ActorSystem per manager**, multiple FSM actors per workflow instance
 8. ✅ **Persist state after every transition** via OutboxPersist
 9. ✅ **Make actors idempotent** - safe to receive same message twice

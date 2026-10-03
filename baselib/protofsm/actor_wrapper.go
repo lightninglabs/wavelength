@@ -40,23 +40,15 @@ type ActorOutboxEvent interface {
 	Dispatch(ctx context.Context, system *actor.ActorSystem) error
 }
 
-// DeliveryMode indicates how the routed event should be delivered.
-type DeliveryMode int
-
-const (
-	// DeliveryModeTell indicates a fire-and-forget delivery mode.
-	DeliveryModeTell DeliveryMode = iota
-	// DeliveryModeAsk indicates an ask delivery mode, which waits for a
-	// response.
-	DeliveryModeAsk
-)
-
 // RoutedOutboxEvent is a helper that delivers an outbox event to actors
-// registered under a specific service key.
+// registered under a specific service key. Delivery is fire-and-forget: the
+// state machine's turn never waits on the target. A transition that needs the
+// target's answer has the target send a result event back to the machine, for
+// example through a TellOnlyRef held in the environment, and handles it in a
+// later turn.
 type RoutedOutboxEvent[M actor.Message, R any] struct {
-	key  actor.ServiceKey[M, R]
-	msg  M
-	mode DeliveryMode
+	key actor.ServiceKey[M, R]
+	msg M
 }
 
 // NewTellOutboxEvent creates a fire-and-forget routed event.
@@ -64,20 +56,8 @@ func NewTellOutboxEvent[M actor.Message, R any](key actor.ServiceKey[M, R],
 	msg M) RoutedOutboxEvent[M, R] {
 
 	return RoutedOutboxEvent[M, R]{
-		key:  key,
-		msg:  msg,
-		mode: DeliveryModeTell,
-	}
-}
-
-// NewAskOutboxEvent creates an ask routed event.
-func NewAskOutboxEvent[M actor.Message, R any](key actor.ServiceKey[M, R],
-	msg M) RoutedOutboxEvent[M, R] {
-
-	return RoutedOutboxEvent[M, R]{
-		key:  key,
-		msg:  msg,
-		mode: DeliveryModeAsk,
+		key: key,
+		msg: msg,
 	}
 }
 
@@ -91,23 +71,9 @@ func (e RoutedOutboxEvent[M, R]) Dispatch(ctx context.Context,
 		actor.NewRoundRobinStrategy[M, R](), system.DeadLetters(),
 	)
 
-	switch e.mode {
-	case DeliveryModeTell:
-		router.Tell(ctx, e.msg)
+	router.Tell(ctx, e.msg)
 
-		return nil
-
-	case DeliveryModeAsk:
-		res := router.Ask(ctx, e.msg).Await(ctx)
-		if _, err := res.Unpack(); err != nil {
-			return err
-		}
-
-		return nil
-
-	default:
-		return fmt.Errorf("unknown delivery mode %v", e.mode)
-	}
+	return nil
 }
 
 // ActorStateMachine is a wrapper around a state machine that implements the

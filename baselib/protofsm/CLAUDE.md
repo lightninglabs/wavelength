@@ -21,11 +21,10 @@ transition's outbox events.
   optional `EmittedEvent`.
 - `TransitionTable[S, E, M]` — Declarative transition table mapping (State, Event) → handler.
 - `TransitionEntry[S, E, M]` — Single entry in a transition table.
-- `RoutedOutboxEvent[M, R]` — Outbox event that targets a specific actor via `ServiceKey` (Tell or Ask delivery).
+- `RoutedOutboxEvent[M, R]` — Outbox event that targets a specific actor via `ServiceKey` (fire-and-forget Tell delivery; there is no Ask mode, results return as events).
 - `ActorOutboxEvent` — Interface for outbox events that can be dispatched by the actor runtime.
 - `Environment` — Marker interface for FSM environment (provides external resources to transitions).
 - `ErrorReporter` — Interface for reporting FSM errors to external systems.
-- `DeliveryMode` — Enum: `DeliveryModeTell` (fire-and-forget) or `DeliveryModeAsk` (request-response).
 
 ## Relationships
 
@@ -44,6 +43,17 @@ transition's outbox events.
   (State, Event) transitions used for documentation/rendering
   (`RenderMarkdown`) and test validation; it is not compiler-enforced and
   does not by itself guarantee exhaustive coverage.
+- `AskEvent` returns a driver future. Its `Await` waits through `OnComplete`, so
+  a behavior that hosts a machine and awaits it inside its own turn is exempt
+  from the await-in-turn policy: the driver goroutine is the caller's own
+  helper, not another actor's mailbox. The driver may still call other actors,
+  and such a call must not wait on the hosting actor.
+- `StateMachine.Start` strips the caller's receive-turn marker with
+  `actor.WithoutTurn` before launching the driver, so a machine started from a
+  behavior's turn does not run its own awaits as the host actor.
+- Outbox delivery is Tell only. There is no Ask mode: a turn that awaited a
+  target's reply would park the machine's mailbox. A transition that needs an
+  answer has the target send a result event back and waits in a state.
 - `RoutedOutboxEvent` captures the target `ServiceKey` so the runtime can dispatch to the correct actor without the FSM knowing about actor references.
 
 ## Deep Docs
