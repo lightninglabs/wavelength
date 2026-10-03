@@ -366,3 +366,9 @@ make unit log="stdlog trace" pkg=serverconn case=TestE2E timeout=5m
   — Underlying actor durability model (CDC, leasing, deduplication).
 - [`docs/durable_actor_quickstart.md`](../docs/durable_actor_quickstart.md) —
   Practical guide to implementing durable actors and TLV messages.
+
+## Host-driven ingress
+
+See [Host-driven mailbox ingress](../docs/host-driven-ingress.md) for bounded
+`PumpIngress` invocations, pause/resume ownership, and the distinction between
+an empty remote mailbox and completed wallet work.
