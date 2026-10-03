@@ -189,7 +189,7 @@ type swapRuntimeClient interface {
 	// StartReceiveViaLightning creates a new receive swap and returns the
 	// invoice that callers hand to the remote payer.
 	StartReceiveViaLightning(context.Context, btcutil.Amount,
-		string) (receiveSwapSession, error)
+		swaps.ReceiveOptions) (receiveSwapSession, error)
 
 	// ResumePayViaLightning reloads a persisted pay swap and returns the
 	// FSM handle that the daemon worker should wait on.
@@ -721,9 +721,12 @@ func (a *swapClientAdapter) ListCredits(ctx context.Context, limit uint32) (
 // StartReceiveViaLightning starts a real sdk/swaps receive session and wraps
 // it with method accessors for the daemon RPC response path.
 func (a *swapClientAdapter) StartReceiveViaLightning(ctx context.Context,
-	amountSat btcutil.Amount, memo string) (receiveSwapSession, error) {
+	amountSat btcutil.Amount, opts swaps.ReceiveOptions) (
+	receiveSwapSession, error) {
 
-	session, err := a.client.StartReceiveViaLightning(ctx, amountSat, memo)
+	session, err := a.client.StartReceiveViaLightningWithOptions(
+		ctx, amountSat, opts,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -1498,9 +1501,23 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 		btcutil.Amount(
 			req.GetAmountSat(),
 		),
-		req.GetMemo(),
+		swaps.ReceiveOptions{
+			Memo:         req.GetMemo(),
+			ClaimAddress: req.GetClaimAddress(),
+		},
 	)
 	if err != nil {
+		if errors.Is(err, swaps.ErrInvalidClaimAddress) {
+			return nil, status.Error(
+				codes.InvalidArgument, err.Error(),
+			)
+		}
+		if errors.Is(err, swaps.ErrExternalReceiveCredits) {
+			return nil, status.Error(
+				codes.FailedPrecondition, err.Error(),
+			)
+		}
+
 		return nil, status.Errorf(codes.Internal, "start receive "+
 			"swap: %v", err)
 	}
@@ -2051,6 +2068,7 @@ func swapSummaryToProto(summary swaps.SwapSummary) *swapclientrpc.SwapSummary {
 		VhtlcAmountSat:   summary.VHTLCAmountSat,
 		FundingSessionId: summary.FundingSessionID,
 		ClaimSessionId:   summary.ClaimSessionID,
+		ClaimAddress:     summary.ClaimAddress,
 		RefundSessionId:  summary.RefundSessionID,
 		TerminalReason:   summary.TerminalReason,
 		CreatedAtUnix:    summary.CreatedAt.Unix(),

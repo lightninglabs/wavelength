@@ -401,6 +401,19 @@ func (c *SwapClient) ReceiveViaLightning(ctx context.Context,
 func (c *SwapClient) StartReceiveViaLightning(ctx context.Context,
 	amountSat btcutil.Amount, memo ...string) (*ReceiveSession, error) {
 
+	return c.StartReceiveViaLightningWithOptions(
+		ctx, amountSat, ReceiveOptions{
+			Memo: receiveInvoiceMemo(memo),
+		},
+	)
+}
+
+// StartReceiveViaLightningWithOptions prepares a receive with an optional
+// external Ark claim destination, fixed before the invoice is issued.
+func (c *SwapClient) StartReceiveViaLightningWithOptions(ctx context.Context,
+	amountSat btcutil.Amount, opts ReceiveOptions) (*ReceiveSession,
+	error) {
+
 	if err := validateSatoshiAmount(
 		amountSat, "receive amount",
 	); err != nil {
@@ -410,8 +423,21 @@ func (c *SwapClient) StartReceiveViaLightning(ctx context.Context,
 	session := &ReceiveSession{
 		client:    c,
 		amountSat: amountSat,
-		memo:      receiveInvoiceMemo(memo),
+		memo:      opts.Memo,
 		state:     ReceiveStateCreated,
+	}
+	if opts.ClaimAddress != "" {
+		script, err := receiveClaimScript(
+			opts.ClaimAddress, c.chainParams,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := c.daemon.(addressClaimSender); !ok {
+			return nil, fmt.Errorf("daemon does not support " +
+				"external receive destinations")
+		}
+		session.claimReceiveScript = script
 	}
 
 	if err := session.runUntil(
@@ -433,7 +459,7 @@ func receiveInvoiceMemo(memo []string) string {
 }
 
 // Wait blocks until the swap server funds the expected vHTLC, then claims it
-// into the client's wallet.
+// into the destination fixed when the invoice was created.
 func (s *ReceiveSession) Wait(ctx context.Context) (*ReceiveResult, error) {
 	if s == nil || s.client == nil {
 		return nil, fmt.Errorf("receive session must be provided")
@@ -468,8 +494,7 @@ func (s *ReceiveSession) WaitForFunding(ctx context.Context) (string, int64,
 	return s.vhtlcOutpoint, s.vhtlcAmount, nil
 }
 
-// Claim submits the vHTLC claim for a funded out-swap into a fresh
-// wallet-owned receive script.
+// Claim submits the vHTLC claim to the destination fixed at invoice creation.
 func (s *ReceiveSession) Claim(ctx context.Context, outpoint string,
 	amount int64) (*ReceiveResult, error) {
 
@@ -650,14 +675,21 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 		return fmt.Errorf("get receive auth key: %w", err)
 	}
 
-	claimReceiveInfo, err := s.client.daemon.AllocateReceiveScript(ctx, "")
-	if err != nil {
-		return fmt.Errorf("allocate claim receive script: %w", err)
+	claimReceiveInfo := &ReceiveInfo{PkScript: s.claimReceiveScript}
+	externalClaim := len(s.claimReceiveScript) != 0
+	if !externalClaim {
+		claimReceiveInfo, err = s.client.daemon.AllocateReceiveScript(
+			ctx, "",
+		)
+		if err != nil {
+			return fmt.Errorf("allocate claim receive script: %w",
+				err)
+		}
 	}
 	if claimReceiveInfo == nil {
 		return fmt.Errorf("claim receive script is required")
 	}
-	if len(claimReceiveInfo.PubKeyXOnly) == 0 {
+	if !externalClaim && len(claimReceiveInfo.PubKeyXOnly) == 0 {
 		return fmt.Errorf("claim receive pubkey is required")
 	}
 	if len(claimReceiveInfo.PkScript) == 0 {
@@ -689,6 +721,10 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	}
 	if quote == nil || len(quote.RouteHintPaths) == 0 {
 		return fmt.Errorf("route quote must be provided")
+	}
+	if externalClaim && (quote.AttachedCreditSat != 0 ||
+		quote.SettlementType == SettlementTypeCredit) {
+		return ErrExternalReceiveCredits
 	}
 	hintPaths := quote.RouteHintPaths
 
@@ -726,6 +762,9 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	expectedVHTLCSat := quote.VHTLCAmountSat
 	if expectedVHTLCSat == 0 {
 		expectedVHTLCSat = requestedAmountSat
+	}
+	if externalClaim && expectedVHTLCSat != requestedAmountSat {
+		return ErrExternalReceiveCredits
 	}
 	if quote.AttachedCreditSat > ^uint64(0)-requestedAmountSat {
 		return fmt.Errorf("route quote attached credit overflows " +
@@ -1749,7 +1788,7 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 	claimSessionID, err := s.client.claimReceiveVHTLC(
 		ctx, s.PaymentHash, s.Preimage, s.vhtlcPolicy,
 		s.vhtlcPolicyTemplate, s.vhtlcPkScript, s.vhtlcOutpoint,
-		s.vhtlcAmount, s.claimReceivePubKey,
+		s.vhtlcAmount, s.claimReceivePubKey, s.claimReceiveScript,
 	)
 	if errors.Is(err, errReceiveClaimAlreadyIndexed) {
 		if cancelErr := cancelVHTLCRecovery(
@@ -1802,6 +1841,13 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 // ensureClaimReceiveInfo recovers a missing claim destination for legacy or
 // manually constructed sessions before submitting the claim spend.
 func (s *ReceiveSession) ensureClaimReceiveInfo(ctx context.Context) error {
+	if len(s.claimReceivePubKey) == 0 && len(s.claimReceiveScript) != 0 {
+		_, err := receiveClaimAddress(
+			nil, s.claimReceiveScript, s.client.chainParams,
+		)
+
+		return err
+	}
 	if len(s.claimReceivePubKey) != 0 && len(s.claimReceiveScript) != 0 {
 		return nil
 	}
@@ -1968,12 +2014,12 @@ func (c *SwapClient) receiveClaimAlreadyIndexedBounded(ctx context.Context,
 }
 
 // claimReceiveVHTLC claims one funded vHTLC with the session preimage into the
-// wallet-owned receive pubkey prepared when the receive session was created.
+// destination prepared when the receive session was created.
 func (c *SwapClient) claimReceiveVHTLC(ctx context.Context,
 	paymentHash lntypes.Hash, preimage lntypes.Preimage,
 	policy *arkscript.VHTLCPolicy, policyTemplate []byte, pkScript []byte,
-	outpoint string, amount int64, claimReceivePubKey []byte) (string,
-	error) {
+	outpoint string, amount int64, claimReceivePubKey []byte,
+	claimReceiveScript []byte) (string, error) {
 
 	c.log.InfoS(ctx, "vHTLC found, claiming",
 		btclog.Hex("hash", paymentHash[:]),
@@ -1991,21 +2037,46 @@ func (c *SwapClient) claimReceiveVHTLC(ctx context.Context,
 		return "", fmt.Errorf("encode claim path: %w", err)
 	}
 
+	var claimAddress string
 	if len(claimReceivePubKey) == 0 {
-		return "", fmt.Errorf("claim receive pubkey is required")
+		if len(claimReceiveScript) == 0 {
+			return "", fmt.Errorf("claim receive destination is " +
+				"required")
+		}
+		claimAddress, err = receiveClaimAddress(
+			nil, claimReceiveScript, c.chainParams,
+		)
+		if err != nil || claimAddress == "" {
+			return "", fmt.Errorf("invalid claim receive "+
+				"script: %v", err)
+		}
 	}
 
 	var lastSendErr error
 	for attempt := 1; attempt <= c.claimMaxAttempts; attempt++ {
-		claimSessionID, err := c.daemon.SendOORWithCustomInputs(
-			ctx, claimReceivePubKey, amount, []CustomInput{{
-				Outpoint:           outpoint,
-				VTXOPolicyTemplate: policyTemplate,
-				SpendPath:          spendPath,
-				AmountSat:          amount,
-				PkScript:           pkScript,
-			}},
-		)
+		inputs := []CustomInput{{
+			Outpoint:           outpoint,
+			VTXOPolicyTemplate: policyTemplate,
+			SpendPath:          spendPath,
+			AmountSat:          amount,
+			PkScript:           pkScript,
+		}}
+		var claimSessionID string
+		if claimAddress == "" {
+			claimSessionID, err = c.daemon.SendOORWithCustomInputs(
+				ctx, claimReceivePubKey, amount, inputs,
+			)
+		} else {
+			sender, ok := c.daemon.(addressClaimSender)
+			if !ok {
+				return "", fmt.Errorf("daemon does not " +
+					"support external receive destinations")
+			}
+			claimSessionID, err = sender.
+				SendOORWithCustomInputsToAddress(
+					ctx, claimAddress, amount, inputs,
+				)
+		}
 		if err == nil {
 			c.log.InfoS(ctx, "vHTLC claimed successfully",
 				btclog.Hex("hash", paymentHash[:]),

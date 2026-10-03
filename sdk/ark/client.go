@@ -1129,6 +1129,26 @@ func (c *Client) SendOORWithCustomInputs(ctx context.Context,
 	return resp.GetSessionId(), nil
 }
 
+// SendOORWithCustomInputsToAddress spends custom inputs to the exact Ark
+// receive address supplied by another wallet, without deriving a new policy.
+func (c *Client) SendOORWithCustomInputsToAddress(ctx context.Context,
+	address string, amountSat int64, inputs []CustomOORInput) (string,
+	error) {
+
+	resp, err := c.SendOOR(ctx, &waverpc.SendOORRequest{
+		Recipients: []*waverpc.Output{{
+			Destination: &waverpc.Output_Address{Address: address},
+			AmountSat:   amountSat,
+		}},
+		CustomInputs: customOORInputsToRPC(inputs),
+	})
+	if err != nil {
+		return "", err
+	}
+
+	return resp.GetSessionId(), nil
+}
+
 // ArmVHTLCRecovery asks the daemon to persist one dormant vHTLC recovery job.
 // Higher-level swap FSMs call this before the cooperative path becomes risky so
 // restart recovery has a durable handle to the vHTLC context.

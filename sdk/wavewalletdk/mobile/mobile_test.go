@@ -32,6 +32,20 @@ func TestDecodeReceiveRequestUsesBoundedDefault(t *testing.T) {
 	}
 }
 
+// TestDecodeReceiveRequestExternalDestination verifies the mobile binding
+// preserves an explicitly selected recipient instead of receiving locally.
+func TestDecodeReceiveRequestExternalDestination(t *testing.T) {
+	req, _, err := decodeReceiveRequest([]byte(
+		`{"AmountSat":21000,"ClaimAddress":"external-ark-address"}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.ClaimAddress != "external-ark-address" {
+		t.Fatalf("claim address was lost: %+v", req)
+	}
+}
+
 // TestDecodeReceiveRequestAcceptsExplicitDeadline verifies a mobile host can
 // choose a shorter bounded foreground deadline for invoice creation.
 func TestDecodeReceiveRequestAcceptsExplicitDeadline(t *testing.T) {

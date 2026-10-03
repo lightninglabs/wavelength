@@ -15,6 +15,8 @@ import (
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // receiver drives wallet-layer Recv flows. It is a thin composition over
@@ -59,11 +61,20 @@ func (r *receiver) Recv(ctx context.Context, req *wavewalletrpc.RecvRequest) (
 	plannedVHTLCSat := amt
 	vtxoFloor, err := r.receiveVTXOFloor(ctx)
 	if err != nil {
+		if req.GetClaimAddress() != "" {
+			return nil, fmt.Errorf("external receive requires "+
+				"operator VTXO floor: %w", err)
+		}
 		r.deps.resolveLog().WarnS(ctx, "Skipping receive VTXO floor "+
 			"planning: operator terms unavailable", err)
 		vtxoFloor = 0
 	}
 	if vtxoFloor > 0 && amt < vtxoFloor {
+		if req.GetClaimAddress() != "" {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"external receive minimum is %d sats; credits "+
+					"cannot be forwarded", vtxoFloor)
+		}
 		availableCreditSat, err := r.availableCreditSat(ctx)
 		switch {
 		case err != nil:
@@ -112,8 +123,9 @@ func (r *receiver) Recv(ctx context.Context, req *wavewalletrpc.RecvRequest) (
 
 	startResp, err := r.deps.SwapService.StartReceive(
 		ctx, &swapclientrpc.StartReceiveRequest{
-			AmountSat: int64(amt),
-			Memo:      req.GetMemo(),
+			AmountSat:    int64(amt),
+			Memo:         req.GetMemo(),
+			ClaimAddress: req.GetClaimAddress(),
 		},
 	)
 	if err != nil {

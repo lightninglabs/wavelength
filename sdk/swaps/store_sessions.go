@@ -12,6 +12,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	swapsqlc "github.com/lightninglabs/wavelength/sdk/swaps/sqlc"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -80,7 +81,7 @@ func (c *SwapClient) GetSwapSummary(ctx context.Context,
 
 	receiveRow, err := c.store.queries.GetReceiveSwap(ctx, paymentHash[:])
 	if err == nil {
-		return receiveSummaryFromRow(receiveRow)
+		return receiveSummaryFromRow(receiveRow, c.chainParams)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return SwapSummary{}, ErrSwapSummaryNotFound
@@ -134,7 +135,9 @@ func (c *SwapClient) ListSwapSummaries(ctx context.Context, pendingOnly bool) (
 		summaries = append(summaries, summary)
 	}
 	for i := range receiveRows {
-		summary, err := receiveSummaryFromRow(receiveRows[i])
+		summary, err := receiveSummaryFromRow(
+			receiveRows[i], c.chainParams,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -346,7 +349,9 @@ func paySummaryFromRow(row swapsqlc.PaySwap) (SwapSummary, error) {
 
 // receiveSummaryFromRow converts one persisted receive row into the public
 // list view.
-func receiveSummaryFromRow(row swapsqlc.ReceiveSwap) (SwapSummary, error) {
+func receiveSummaryFromRow(row swapsqlc.ReceiveSwap,
+	params *chaincfg.Params) (SwapSummary, error) {
+
 	state, err := parseReceiveState(row.State)
 	if err != nil {
 		return SwapSummary{}, err
@@ -359,6 +364,13 @@ func receiveSummaryFromRow(row swapsqlc.ReceiveSwap) (SwapSummary, error) {
 
 	senderPubKey, err := optionalPubKeyFromBytes(
 		row.SwapServerPubkey, "receive sender pubkey",
+	)
+	if err != nil {
+		return SwapSummary{}, err
+	}
+
+	claimAddress, err := receiveClaimAddress(
+		row.ClaimReceivePubkey, row.ClaimReceivePkscript, params,
 	)
 	if err != nil {
 		return SwapSummary{}, err
@@ -380,6 +392,7 @@ func receiveSummaryFromRow(row swapsqlc.ReceiveSwap) (SwapSummary, error) {
 		VHTLCOutpoint:      row.VhtlcOutpoint,
 		VHTLCAmountSat:     row.VhtlcAmount,
 		ClaimSessionID:     row.ClaimSessionID,
+		ClaimAddress:       claimAddress,
 		SettlementType:     SettlementType(row.SettlementType),
 		RequestedAmountSat: requestedAmountSat,
 		AvailableCreditSat: uint64(row.AvailableCreditSat),
