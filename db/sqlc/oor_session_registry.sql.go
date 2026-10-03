@@ -69,6 +69,33 @@ func (q *Queries) GetOORSessionRegistry(ctx context.Context, sessionID []byte) (
 	return i, err
 }
 
+const GetUnfailedOORSessionRegistryByIdempotencyKey = `-- name: GetUnfailedOORSessionRegistryByIdempotencyKey :one
+SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, flow_version, created_at, updated_at FROM oor_session_registry
+WHERE idempotency_key = $1 AND status != 2
+ORDER BY created_at ASC
+LIMIT 1
+`
+
+func (q *Queries) GetUnfailedOORSessionRegistryByIdempotencyKey(ctx context.Context, idempotencyKey sql.NullString) (OorSessionRegistry, error) {
+	row := q.db.QueryRowContext(ctx, GetUnfailedOORSessionRegistryByIdempotencyKey, idempotencyKey)
+	var i OorSessionRegistry
+	err := row.Scan(
+		&i.SessionID,
+		&i.ActorID,
+		&i.Direction,
+		&i.Phase,
+		&i.IdempotencyKey,
+		&i.Status,
+		&i.LastError,
+		&i.SnapshotData,
+		&i.SnapshotVersion,
+		&i.FlowVersion,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const InsertOORDispatchAttempt = `-- name: InsertOORDispatchAttempt :exec
 INSERT INTO oor_dispatch_attempts (
     idempotency_key, session_id, request_data, created_at

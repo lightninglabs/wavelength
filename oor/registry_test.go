@@ -229,6 +229,34 @@ func upsertRegistryRowContext(ctx context.Context, t *testing.T,
 	require.NoError(t, store.UpsertSession(ctx, rec))
 }
 
+// TestOORRegistryGetStateReadsReapedSnapshot verifies status probes remain
+// valid after a terminal child has been removed from the active set.
+func TestOORRegistryGetStateReadsReapedSnapshot(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newFakeRegistryStore()
+	id := oorSessionID(0x7a)
+	record, err := outgoingRegistryRecord(id, &Completed{
+		IdempotencyKey: "ark-channel:test",
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.UpsertSession(ctx, record))
+
+	registry, recorder := newTestRegistryBehavior(store)
+	result := registry.routeAsk(ctx, id, &GetStateRequest{
+		SessionID: id,
+	})
+	require.True(t, result.IsOk(), result.Err())
+	require.Zero(t, recorder.spawns)
+
+	response, ok := result.UnwrapOr(nil).(*GetStateResponse)
+	require.True(t, ok)
+	completed, ok := response.State.(*Completed)
+	require.True(t, ok)
+	require.Equal(t, "ark-channel:test", completed.IdempotencyKey)
+}
+
 // TestOORRegistryRestoreNonTerminal verifies restore spawns one child per
 // non-terminal row and skips terminal ones.
 func TestOORRegistryRestoreNonTerminal(t *testing.T) {
@@ -303,6 +331,52 @@ func TestOORRegistryStartTransferDedup(t *testing.T) {
 	require.True(t, resp.Existing)
 	require.Equal(t, existing, resp.SessionID)
 	require.Equal(t, 0, rec.spawns)
+}
+
+// TestOORRegistryPreparedTransferDedupAfterRestart verifies that a prepared
+// session remains the keyed winner even though it has not emitted transport
+// work and therefore has no immutable dispatch-attempt row yet.
+func TestOORRegistryPreparedTransferDedupAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newFakeRegistryStore()
+	existing := oorSessionID(0x11)
+	record := clientdb.OORSessionRegistryRecord{
+		SessionID:      chainHashOf(existing),
+		ActorID:        ActorIDForSession(existing),
+		Direction:      clientdb.OORSessionDirectionOutgoing,
+		Phase:          "prepared",
+		IdempotencyKey: "prepared-key",
+		Status:         clientdb.OORSessionStatusPending,
+		SnapshotData: []byte{
+			0x01,
+		},
+	}
+	require.NoError(t, store.UpsertSession(ctx, record))
+
+	// A fresh behavior has no process-local pending key map. Both the retry
+	// and explicit lookup must still find the durable prepared winner.
+	b, rec := newTestRegistryBehavior(store)
+	started := b.handleStartTransfer(ctx, &StartTransferRequest{
+		IdempotencyKey: record.IdempotencyKey,
+	})
+	require.True(t, started.IsOk(), started.Err())
+	startResp, ok := started.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+	require.True(t, startResp.Existing)
+	require.Equal(t, existing, startResp.SessionID)
+	require.Zero(t, rec.spawns)
+
+	lookedUp := b.handleLookupTransfer(ctx, &LookupTransferRequest{
+		IdempotencyKey: record.IdempotencyKey,
+	})
+	require.True(t, lookedUp.IsOk(), lookedUp.Err())
+	lookupResp, ok := lookedUp.UnwrapOr(nil).(*LookupTransferResponse)
+	require.True(t, ok)
+	require.True(t, lookupResp.Found)
+	require.False(t, lookupResp.Pending)
+	require.Equal(t, existing, lookupResp.SessionID)
 }
 
 // TestOORRegistryAdmissionDeadline verifies a new transfer cannot cross its

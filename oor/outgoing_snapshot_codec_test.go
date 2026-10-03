@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 )
@@ -69,6 +70,17 @@ func TestOutgoingSnapshotTLVRoundTrip(t *testing.T) {
 		DispatchRequestData: []byte{
 			1, 2, 3,
 		},
+		RecipientOutputs: []oortx.RecipientOutput{{
+			PkScript: []byte{
+				0x51,
+				0x20,
+			},
+			Value: 321,
+			VTXOPolicyTemplate: []byte{
+				0x01, 0x02,
+			},
+		}},
+		PrePONRFailure: true,
 	}
 
 	raw, err := encodeOutgoingSnapshot(snapshot)
@@ -153,6 +165,20 @@ func TestDecodeOutgoingSnapshotRejectsVersionOverflow(t *testing.T) {
 
 	_, err = decodeOutgoingSnapshot(raw)
 	require.ErrorContains(t, err, "snapshot version overflows uint8")
+}
+
+// TestDecodeOutgoingSnapshotRejectsFutureVersion verifies this binary fails
+// closed instead of interpreting fields from an unknown snapshot schema.
+func TestDecodeOutgoingSnapshotRejectsFutureVersion(t *testing.T) {
+	t.Parallel()
+
+	raw, err := encodeSnapshotRawForDecodeTest(
+		uint64(outgoingSnapshotVersion)+1, 0,
+	)
+	require.NoError(t, err)
+
+	_, err = decodeOutgoingSnapshot(raw)
+	require.ErrorContains(t, err, "unknown outgoing snapshot version")
 }
 
 func TestDecodeOutgoingSnapshotRejectsRetryAfterOverflow(t *testing.T) {
