@@ -10,9 +10,12 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 
 - `Actor[M, R]` — Generic actor with typed message `M` and response `R`. Processes messages sequentially from its mailbox.
 - `ActorBehavior[M, R]` — Interface that actors implement: `Start`, `Receive`, `Stop`.
-- `ActorConfig[M, R]` — Configuration for actor creation (behavior, mailbox, codec, delivery store).
+- `ActorConfig[M, R]` — Configuration for actor creation (behavior, mailbox,
+  codec, delivery store). `MailboxSize` is the channel capacity;
+  `MailboxOverflowLimit` is the hard cap on the overflow queue behind it
+  (zero selects `DefaultMailboxOverflowLimit`).
 - `ActorRef[M, R]` — Typed reference for sending messages to an actor (`Tell`, `TryTell`, `Ask`).
-- `TellOnlyRef[M]` — Fire-and-forget reference (no response type). `Tell` blocks for mailbox room, `TryTell` never does.
+- `TellOnlyRef[M]` — Fire-and-forget reference (no response type). `Tell` blocks for mailbox room unless made with an active turn context (then it overflows instead, or fails with `ErrMailboxOverflow` at the cap), `TryTell` never blocks.
 - `ActorSystem` — Container managing actor lifecycles, registration, and
   shutdown. `DeadLetters() ActorRef[Message, any]` returns the dead-letter
   outlet configured via `ActorConfig.DLO`.
@@ -91,8 +94,22 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   `ctx` and actor shutdown. Requires the direct `ActorRef` returned by
   `NewActor`/`RegisterWithSystem` — routers, mapped refs, and durable actors
   return an error.
-- `ChannelMailbox[M, R]` — In-memory channel-based mailbox (non-durable, for lightweight actors).
-- `Mailbox[M, R]` — Interface for actor message queues: `Send(ctx, env) error` (blocking; returns `ErrMailboxClosed`, `ErrActorTerminated`, or a context error on failure), `TrySend(env) error` (non-blocking), `Receive(ctx) iter.Seq[envelope]`, `Close()`, `IsClosed() bool`, `Drain() iter.Seq[envelope]`.
+- `ChannelMailbox[M, R]` — In-memory channel-based mailbox (non-durable, for lightweight actors). A bounded channel fronted by an overflow queue: `Send` with an active turn context (see `turn.go`) never blocks and spills into the overflow (or returns `ErrMailboxOverflow` at the hard cap), which the receive loop refills into the channel after every receive (so a non-empty overflow implies a non-empty channel). Lock order is `mu` (read side) then `overflowMu`. `NewChannelMailbox` takes `WithOverflowLimit` and `WithMailboxID` options; `OverflowLen()` reports the backlog. After `Close`, `Drain` yields the channel envelopes first and the overflow second, which is send order because the overflow always trails the channel.
+- `Mailbox[M, R]` — Interface for actor message queues: `Send(ctx, env) error` (blocking, except for a `ChannelMailbox` send made with an active turn context; returns `ErrMailboxClosed`, `ErrActorTerminated`, or a context error on failure), `TrySend(env) error` (non-blocking), `Receive(ctx) iter.Seq[envelope]`, `Close()`, `IsClosed() bool`, `Drain() iter.Seq[envelope]`.
+- `DefaultMailboxOverflowLimit` — 100000. The overflow cap a `ChannelMailbox`
+  falls back to when `ActorConfig.MailboxOverflowLimit` / `WithOverflowLimit`
+  is zero or negative.
+- `TurnActor(ctx) (string, bool)` — ID of the actor whose receive turn `ctx`
+  belongs to. Both `Actor.process` and `DurableActor.processDelivery` stamp
+  this marker on the context they hand the behavior and clear it when the
+  behavior returns, so the bool is false outside a turn and for a context that
+  outlived the turn it was created in (a goroutine the behavior spawned is not
+  the actor's own goroutine and may park like any other producer). This is the
+  marker `ChannelMailbox.Send` keys its non-parking path off.
+- `WithTurnForTest(ctx, actorID) (context.Context, func())` — Stamps the same
+  turn marker from outside the package, as the runtime does before invoking a
+  behavior, and returns the function that ends the turn. For tests that
+  exercise turn-sensitive paths without standing up an actor.
 - `isExpectedShutdownErr(err) bool` — Internal helper that classifies errors as expected during teardown: context cancellation/deadline, closed DB handle ("sql: database is closed", "sql: connection is already closed", "use of closed network connection"). Used by the lease loop to demote shutdown-path failures to debug instead of warn-flooding test artifacts at itest tail.
 - `Message.CorrelationKey() string` — Per-message FIFO key consumed by the
   durable mailbox's claim path. Non-empty keys participate in per-key FIFO:
@@ -150,12 +167,40 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `RestartMessage` has `RestartPriority` (MaxInt32) ensuring it is processed before all other messages on recovery.
 - Transaction context (`WithTx`/`RequireTx`) enables same-DB-transaction joining between actors and their callers.
 - `Mailbox.Send` returns the exact failure error (`ErrMailboxClosed`, `ErrActorTerminated`, `context.Canceled`, `context.DeadlineExceeded`) rather than a boolean; `Tell` and `Ask` propagate this directly to callers.
-- **Never `Tell` from inside a receive goroutine without a bound.** A blocking
-  send into a full peer mailbox parks the whole receive loop, and if the peer
-  is waiting on that actor the pair deadlocks. Use `TryTell`, which returns
-  `ErrMailboxFull` immediately so the caller can drop, stash, or reschedule
-  the message. A `context.WithTimeout` around `Tell` is the weaker option: it
-  burns the entire deadline against a peer that is already wedged.
+- **A `Tell` or `Ask` made with the turn's context never parks on a full
+  channel mailbox.** The runtime marks the context handed to a behavior as an
+  active receive turn, and `ChannelMailbox.Send` given such a context never
+  blocks: it uses the channel when there is room and otherwise appends to an
+  overflow queue behind it, so an actor cycle cannot park on a full mailbox.
+  Per-sender order is kept. A send made with any other context keeps the
+  blocking backpressure: `context.Background()`, a context captured at
+  construction, or a goroutine that outlives the turn (the marker goes inactive
+  when the behavior returns). Always pass the turn context through; mixing it
+  with a non-turn context for sends to the same target can reorder them, since
+  a parked external sender is handed each freed slot ahead of the overflow.
+  `TryTell` is unchanged and still returns `ErrMailboxFull` immediately, and also while
+  the overflow is non-empty. Inside a turn its only use is for a caller that
+  wants the `ErrMailboxFull` signal so it can drop the message instead of
+  queueing it. The overflow has a hard cap
+  (`ActorConfig.MailboxOverflowLimit`, default
+  `DefaultMailboxOverflowLimit` = 100000). A send that would exceed it
+  enqueues nothing and returns an error wrapping `ErrMailboxOverflow` (the
+  mailbox ID is in the message), and the first rejection of an overflow
+  episode is logged at critical severity, not one log per message. It does
+  not panic: durable actors recover behavior panics, so a panic there was
+  swallowed and a send made after the durable turn committed, such as arming
+  a retry timer, was lost with no restart. A failed `Ask` send completes its
+  promise with the error, and a rejected send leaves the queue untouched.
+  `OverflowLen` reports the current backlog, and a warning is logged once per
+  episode when it passes a tenth of the cap.
+- **Durable senders are slowed only by the overflow cap error.** A durable
+  turn never parks on a channel mailbox, so the one backpressure signal a
+  durable sender gets from a saturated channel target is `ErrMailboxOverflow`
+  at the cap. A behavior that returns it is nacked and redelivered, so a
+  durable behavior that `Tell`s before it commits and then fails this way is
+  retried and its `Tell`s run again. They must tolerate redelivery; the
+  framework already provides at-least-once delivery, not exactly-once effects
+  of those sends.
 - During daemon teardown, the underlying DB is closed before every actor's lease loop has wound down. The lease loop uses `isExpectedShutdownErr` to demote these "database is closed" errors to debug level; real operational errors still surface as warnings because neither the actor context nor the outer context is done in those cases.
 - **Postpone preserves the attempt budget; nack spends it.** A nack increments
   `attempts` on every release, and both the claim and the peek queries filter

@@ -528,11 +528,19 @@ func TestReconcileExpiryDrainsChildRelays(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, children, result.Checked)
 
-	// A manager ask is a FIFO barrier after the final child relay.
+	// The relays are in-turn sends from the children, which spill into the
+	// manager's overflow when its one-slot mailbox is full. A send from
+	// outside a turn that is parked on that mailbox is handed each freed
+	// slot ahead of the overflow, so an ask from here is not a FIFO barrier
+	// after the relays; only per-sender order is promised. Wait for the
+	// relays to reach round instead.
 	_, err = managerActor.Ref().Ask(ctx,
 		&GetActiveVTXOCountRequest{},
 	).Await(ctx).Unpack()
 	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return len(roundRef.getMessages()) == children
+	}, 5*time.Second, 5*time.Millisecond)
 	messages := roundRef.getMessages()
 	require.Len(t, messages, children)
 	seen := make(map[wire.OutPoint]bool)

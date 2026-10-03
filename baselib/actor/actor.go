@@ -82,6 +82,12 @@ type ActorConfig[M Message, R any] struct {
 	// MailboxSize defines the buffer capacity of the actor's mailbox.
 	MailboxSize int
 
+	// MailboxOverflowLimit is the hard cap on envelopes the mailbox queues
+	// beyond MailboxSize on behalf of sends made from inside a receive
+	// turn, which never block. A send that would exceed it fails with
+	// ErrMailboxOverflow. Zero selects DefaultMailboxOverflowLimit.
+	MailboxOverflowLimit int
+
 	// Wg is an optional WaitGroup for tracking actor lifecycle. If
 	// non-nil, the actor will call Add(1) when starting and Done() when
 	// its process loop exits. This enables deterministic shutdown.
@@ -181,9 +187,13 @@ func NewActor[M Message, R any](cfg ActorConfig[M, R]) *Actor[M, R] {
 	}
 
 	actor := &Actor[M, R]{
-		id:             cfg.ID,
-		behavior:       cfg.Behavior,
-		mailbox:        NewChannelMailbox[M, R](ctx, mailboxCapacity),
+		id:       cfg.ID,
+		behavior: cfg.Behavior,
+		mailbox: NewChannelMailbox[M, R](
+			ctx, mailboxCapacity,
+			WithOverflowLimit(cfg.MailboxOverflowLimit),
+			WithMailboxID(cfg.ID),
+		),
 		ctx:            ctx,
 		cancel:         cancel,
 		dlo:            cfg.DLO,
@@ -253,6 +263,10 @@ func (a *Actor[M, R]) process() {
 			cancel = func() {}
 		}
 
+		// Mark the context as this actor's turn so sends and awaits
+		// made with it know they run on the actor's only goroutine.
+		processCtx, endTurn := beginTurn(processCtx, a.id, true)
+
 		logger(processCtx).TraceS(processCtx, "Actor processing message",
 			"actor_id", a.id,
 			"msg_type", env.message.MessageType(),
@@ -260,6 +274,7 @@ func (a *Actor[M, R]) process() {
 
 		result := a.behavior.Receive(processCtx, env.message)
 
+		endTurn()
 		cancel()
 		a.completed.Add(1)
 
@@ -400,9 +415,11 @@ func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 }
 
 // TryTell enqueues a message only if the mailbox can take it immediately,
-// returning ErrMailboxFull rather than waiting for room. Callers that run
-// inside another actor's receive loop use this so a backlogged target cannot
-// stall their own message processing.
+// returning ErrMailboxFull rather than waiting for room. Inside a receive
+// turn a plain Tell no longer parks, so there TryTell is only for callers that
+// want the ErrMailboxFull signal so they can drop the message instead of
+// queueing it behind the target's backlog. From outside a turn it remains the
+// way to send without waiting.
 func (ref *actorRefImpl[M, R]) TryTell(ctx context.Context, msg M) error {
 	logger(ctx).TraceS(ctx, "Sending TryTell message",
 		"actor_id", ref.actor.id,
