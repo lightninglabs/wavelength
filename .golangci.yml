@@ -26,6 +26,14 @@ linters:
           # The regex that we will use to detect the start of a log line.
           log-regex: "^\\s*.*(L|l)og\\."
 
+      actorblock:
+        type: "module"
+        description: "Reports actor Receive turns that can block."
+        settings:
+          # Functions with tolerated legacy sites, one per line with a
+          # reason. The list can only shrink, see tools/CLAUDE.md.
+          baseline: "tools/linters/actorblock_baseline.txt"
+
     errorlint:
       # Check for incorrect fmt.Errorf error wrapping.
       errorf: true

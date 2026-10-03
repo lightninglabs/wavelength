@@ -1,0 +1,71 @@
+# Baseline for the actorblock analyzer.
+#
+# Each line names a function that still contains blocking calls reachable
+# from an actor turn, as "<pkgpath.Func> await=<n> send=<n> # <reason>", with
+# the number of direct sites per kind. Entries are sorted. The analyzer fails
+# on any site beyond these counts, and the standalone driver fails on any
+# entry or count that no longer matches, so this file can only shrink: delete
+# a line or lower a count when sites are fixed, and never add or raise one
+# for a new site, fix the site or exempt it with a reasoned directive.
+#
+github.com/lightninglabs/wavelength/baselib/protofsm.StateMachine.Receive await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/chainsource.ChainSourceActor.handleRegisterConf await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/chainsource.ChainSourceActor.handleRegisterSpend await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/chainsource.ChainSourceActor.handleSubscribeBlocks await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/fraud.WatcherActor.ensureUnroll await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/fraud.WatcherActor.registerSpendWatch await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/fraud.WatcherActor.unregisterSpendWatchPoint await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/oor.newSessionWithDispatchRequest await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/oor.oorRegistryBehavior.completeAdmissionHandoff await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/oor.oorRegistryBehavior.routeAsk await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/oor.sessionBehavior.apply await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/round.RoundClientActor.askEventAndProcessOutbox await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/round.RoundClientActor.processConfirmationRequest await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/round.RoundClientActor.queryBestHeight await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/txconfirm.CPFPBroadcaster.EstimateFeeRate await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/txconfirm.CPFPBroadcaster.Preflight await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/txconfirm.CPFPBroadcaster.broadcastDirect await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/txconfirm.CPFPBroadcaster.broadcastIndividually await=2 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/txconfirm.CPFPBroadcaster.broadcastWithCPFP await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/txconfirm.TxBroadcasterActor.advanceTrackedTxFSM await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/txconfirm.TxBroadcasterActor.cleanupFailedBlockSubscription await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/txconfirm.TxBroadcasterActor.driveFeeBump await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/txconfirm.TxBroadcasterActor.ensureBestHeight await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/txconfirm.TxBroadcasterActor.ensureBlockSubscription await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/txconfirm.TxBroadcasterActor.registerConfWatch await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/txconfirm.TxBroadcasterActor.registerFanoutConfWatch await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/txconfirm.TxBroadcasterActor.unregisterConfWatch await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/txconfirm.TxBroadcasterActor.unregisterFanoutConfWatch await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/txconfirm.feeBumpStateFanoutPending.processDemands await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/txconfirm.feeBumpStateIdle.processDemands await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/unroll.behavior.driveEvent await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/unroll.behavior.ensureBlockSubscription await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/unroll.behavior.ensureNodeConfirmed await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/unroll.behavior.ensureProofSpendWatches await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/unroll.behavior.ensureSourceSpendWatches await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/unroll.behavior.ensureSpendWatch await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/unroll.behavior.routeOutbox await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/unroll.behavior.startSweep await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/unroll.behavior.stopRejectedSweep await=2 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/unroll.behavior.watchDeferredCheckpoint await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/unroll.estimateSweepFeeRate await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/unroll.registryBehavior.childState await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/unroll.registryBehavior.handleEnsure await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/unroll.registryBehavior.queryBestHeight await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/unroll.registryBehavior.tryRestoreOne await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/vtxo.Manager.askVTXOActor await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/vtxo.Manager.handleForceUnroll await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/vtxo.Manager.handleReconcileExpiry await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/vtxo.VTXOActor.subscribeBlockEpochs await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/vtxo.askVTXOActor await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/wallet.Ark.askBestHeight await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/wallet.Ark.askFeeEstimate await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/wallet.Ark.askManager await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/wallet.Ark.handleLeaveVTXOs await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/wallet.Ark.handleRefreshCustomVTXOs await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/wallet.Ark.handleRefreshVTXOs await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/wallet.Ark.handleReplaySendOnChainIntent await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/wallet.Ark.handleSendOnChain await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/wallet.Ark.handleSendVTXOs await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/wallet.Ark.registerSweepSpendWatch await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/wallet.Ark.submitSweepToConfirm await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
