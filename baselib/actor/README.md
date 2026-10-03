@@ -289,6 +289,14 @@ There are two main ways to send messages using an `ActorRef`:
     A more restricted `TellOnlyRef[M]` is also available if only fire-and-forget
     semantics are required (obtained via an actor's `TellRef()` method).
 
+    `Await` is for code outside an actor, such as `main` or a test. Do not
+    `Await` another actor's reply from inside `Receive`: the wait parks the
+    actor's whole mailbox, and if the callee is waiting on the caller, both
+    hang. Inside a behavior, use `actor.AskThen` to receive the reply as a
+    later message, or `actor.DetachAskPromise` to complete your own caller's
+    promise from it. `actor.SetAwaitInTurnPolicy` logs (default) or rejects
+    such waits.
+
 ### Actors
 
 An `Actor` is the concrete entity that runs a behavior, manages a mailbox, and

@@ -94,6 +94,36 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   `ctx` and actor shutdown. Requires the direct `ActorRef` returned by
   `NewActor`/`RegisterWithSystem` — routers, mapped refs, and durable actors
   return an error.
+- `AskThen[M, R, S](ctx, ref, msg, self, timeout, wrap)` — Pipe-to-self
+  helper for a behavior that needs another actor's reply. It sends `msg` as an
+  Ask bounded by a required `timeout`, returns at once, and delivers
+  `wrap(result)` to `self` as an ordinary message handled in a later turn. The
+  result is a value, the callee's error, a send error, or
+  `context.DeadlineExceeded`; a non-positive timeout yields the deadline error
+  without sending. The Ask keeps ctx's values but not its cancellation, so it
+  is bounded only by `timeout` and outlives the turn. What the callee sees of
+  the caller's transaction depends on its mailbox: a durable callee enqueues
+  synchronously, before `AskThen` returns, so that enqueue joins the caller's
+  transaction, but the envelope's caller context has the transaction stripped,
+  so no callee ever runs its turn inside it, and a channel-mailbox callee
+  (which runs after the caller's turn has ended) never sees it at all. The
+  reply is delivered with a context stripped of the transaction and
+  cancellation. Delivery to `self` is at most once and best effort: it is
+  dropped at debug level if `self` has stopped, and logged at warning level
+  when a live `self` fails to take it (a durable `self` can fail to encode or
+  enqueue). `wrap`
+  must be pure: it runs on a helper goroutine and must not touch actor state.
+- `ErrAwaitInTurn` / `AwaitInTurnPolicy` / `SetAwaitInTurnPolicy(p)` —
+  Process-wide policy for `Future.Await` on an incomplete future from inside a
+  receive turn. `AwaitInTurnWarn` (default) logs at info once per call site
+  (keyed on the caller's PC) and waits as before; `AwaitInTurnAllow` does
+  nothing; `AwaitInTurnError` returns `ErrAwaitInTurn` without waiting. A
+  completed future always returns its value, and a context whose turn has
+  ended is unaffected. `ThenApply` and `OnComplete` await on helper goroutines
+  through the unexported `awaitInternal`, and `MapRef.Ask` goes through the
+  `awaitFuture` helper, which uses `awaitInternal` for this package's own
+  futures and falls back to the public `Await` for any foreign `Future`
+  implementation, so framework helpers never trip the guard.
 - `ChannelMailbox[M, R]` — In-memory channel-based mailbox (non-durable, for lightweight actors). A bounded channel fronted by an overflow queue: `Send` with an active turn context (see `turn.go`) never blocks and spills into the overflow (or returns `ErrMailboxOverflow` at the hard cap), which the receive loop refills into the channel after every receive (so a non-empty overflow implies a non-empty channel). Lock order is `mu` (read side) then `overflowMu`. `NewChannelMailbox` takes `WithOverflowLimit` and `WithMailboxID` options; `OverflowLen()` reports the backlog. After `Close`, `Drain` yields the channel envelopes first and the overflow second, which is send order because the overflow always trails the channel.
 - `Mailbox[M, R]` — Interface for actor message queues: `Send(ctx, env) error` (blocking, except for a `ChannelMailbox` send made with an active turn context; returns `ErrMailboxClosed`, `ErrActorTerminated`, or a context error on failure), `TrySend(env) error` (non-blocking), `Receive(ctx) iter.Seq[envelope]`, `Close()`, `IsClosed() bool`, `Drain() iter.Seq[envelope]`.
 - `DefaultMailboxOverflowLimit` — 100000. The overflow cap a `ChannelMailbox`
@@ -165,7 +195,7 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   because begin/commit failures happen outside those operation-level logs.
 - `ServiceKey` lookup via `Receptionist` is type-safe: mismatched types return `ErrServiceKeyTypeMismatch`.
 - `RestartMessage` has `RestartPriority` (MaxInt32) ensuring it is processed before all other messages on recovery.
-- Transaction context (`WithTx`/`RequireTx`) enables same-DB-transaction joining between actors and their callers.
+- Transaction context (`WithTx`/`RequireTx`) enables same-DB-transaction joining between actors and their callers. `AskThen` is the deliberate exception on the receiving side: the durable enqueue still joins the caller's transaction, but the transaction is stripped from the envelope's caller context, because that context is the base of the callee's turn context and the caller's turn has committed or rolled back by the time the callee runs. The detached marker is cleared along with it, so the callee's own later `Ask` calls (which do wait for their replies) keep propagating their transaction normally.
 - `Mailbox.Send` returns the exact failure error (`ErrMailboxClosed`, `ErrActorTerminated`, `context.Canceled`, `context.DeadlineExceeded`) rather than a boolean; `Tell` and `Ask` propagate this directly to callers.
 - **A `Tell` or `Ask` made with the turn's context never parks on a full
   channel mailbox.** The runtime marks the context handed to a behavior as an
@@ -193,6 +223,34 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   promise with the error, and a rejected send leaves the queue untouched.
   `OverflowLen` reports the current backlog, and a warning is logged once per
   episode when it passes a tenth of the cap.
+- **A turn should not `Await` another actor's reply.** `Future.Await` inside
+  `Receive` parks the actor's whole mailbox until the callee answers. If the
+  callee is, transitively, waiting on the caller, neither can make progress, and
+  the in-turn send rule above does not help because the wait is on a reply, not
+  a mailbox slot. Use `AskThen` when the caller has follow-up work to do with
+  the reply (it arrives as a message, so all state access stays inside turns),
+  or `DetachAskPromise` when the caller only forwards the reply to its own
+  caller. Rollout is warn, then enforce: `AwaitInTurnWarn` is the default and
+  logs each offending call site once at info level, so the sites can be
+  enumerated and migrated without changing behavior; once none remain, a
+  process can switch to `AwaitInTurnError`. Awaiting from outside a turn, from
+  a goroutine that outlives the turn, or on an already-complete future is
+  always fine. Awaits that live in this package's own helper goroutines go
+  through `awaitInternal` (or `awaitFuture`) and must keep doing so.
+- **An `AskThen` reply is delivered at most once, and may be stale or never
+  arrive, so a pending entry needs its own expiry.** `wrap` is applied to one
+  result, but delivering it to `self` is best effort: it is lost if `self` has
+  stopped, and for a durable `self` also when the enqueue fails while `self`
+  lives (logged at warning level). A behavior that records a pending request
+  must expire that entry itself rather than rely on the reply or its error
+  arriving. A timeout abandons the wait, not the request: the callee may still
+  process the message, and its late reply is then discarded. A durable caller's
+  turn may also roll back after `AskThen` returned, which rolls the durable Ask
+  row back with it while the helper goroutine still delivers a wrapped
+  `context.DeadlineExceeded`. A behavior must therefore record that a request
+  is pending in the turn that issues it and treat a wrapped result it has no
+  pending entry for as stale and ignore it, rather than assuming every
+  delivered reply answers a live request.
 - **Durable senders are slowed only by the overflow cap error.** A durable
   turn never parks on a channel mailbox, so the one backpressure signal a
   durable sender gets from a saturated channel target is `ErrMailboxOverflow`

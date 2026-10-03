@@ -494,10 +494,29 @@ func (ref *actorRefImpl[M, R]) Ask(ctx context.Context, msg M) Future[R] {
 	// Attempt to send the message with the promise to the mailbox. The
 	// mailbox's Send method handles context cancellation and actor
 	// termination internally.
+	//
+	// The envelope's callerCtx becomes the base of the turn context the
+	// callee builds, so whatever transaction it carries is visible to the
+	// callee's behavior. An AskThen caller's turn has already ended by the
+	// time the callee runs, so its transaction is committed or rolled back
+	// and a callee that joined it would fail. The synchronous Send below
+	// may still use the full ctx, since it runs before the caller's turn
+	// returns.
+	//
+	// The marker is cleared as well: callerCtx is the base of the callee's
+	// turn context, and a marker left there would strip the transaction
+	// from the callee's own later Asks, which do wait for their replies.
+	callerCtx := ctx
+	if isDetachedAsk(ctx) {
+		callerCtx = context.WithValue(
+			WithoutTx(ctx), detachedAskKey{}, false,
+		)
+	}
+
 	env := envelope[M, R]{
 		message:   msg,
 		promise:   promise,
-		callerCtx: ctx,
+		callerCtx: callerCtx,
 	}
 	if err := ref.actor.mailbox.Send(ctx, env); err != nil {
 		promise.Complete(fn.Err[R](err))

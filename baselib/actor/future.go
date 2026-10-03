@@ -73,7 +73,29 @@ type futureImpl[T any] struct {
 // cancelled. If the future is already completed, it returns the result
 // immediately. Otherwise, it waits for either the future's completion or the
 // context's cancellation.
+//
+// Called with the context of a running receive turn on a future that is not yet
+// complete, it is subject to the AwaitInTurnPolicy, since waiting there parks
+// the actor's whole mailbox. See SetAwaitInTurnPolicy.
 func (f *futureImpl[T]) Await(ctx context.Context) fn.Result[T] {
+	// A completed future cannot block, so only the slow path pays for the
+	// turn check.
+	if resPtr := f.resultCache.Load(); resPtr != nil {
+		return *resPtr
+	}
+
+	if err := checkAwaitInTurn(ctx); err != nil {
+		return fn.Err[T](err)
+	}
+
+	return f.awaitInternal(ctx)
+}
+
+// awaitInternal is the wait loop behind Await. Framework helper goroutines
+// call it directly: such a goroutine often carries a context that still marks
+// an active receive turn, but it is not the actor's own goroutine, so waiting
+// there cannot stall the actor.
+func (f *futureImpl[T]) awaitInternal(ctx context.Context) fn.Result[T] {
 	// First, try a non-blocking load from the cache. If the future is
 	// already completed, this will return the result directly.
 	if resPtr := f.resultCache.Load(); resPtr != nil {
@@ -99,6 +121,20 @@ func (f *futureImpl[T]) Await(ctx context.Context) fn.Result[T] {
 	}
 }
 
+// awaitFuture waits on fut without the await-in-turn guard when fut is this
+// package's own implementation, and falls back to the public Await for any
+// other Future. It is for helper goroutines the framework spawns, never for a
+// behavior's turn.
+func awaitFuture[T any](ctx context.Context, fut Future[T]) fn.Result[T] {
+	if f, ok := fut.(interface {
+		awaitInternal(context.Context) fn.Result[T]
+	}); ok {
+		return f.awaitInternal(ctx)
+	}
+
+	return fut.Await(ctx)
+}
+
 // ThenApply registers a function to transform the result of a future. The
 // original future is not modified; a new Future instance representing the
 // transformed result is returned. Once the original future completes
@@ -116,12 +152,12 @@ func (f *futureImpl[T]) ThenApply(ctx context.Context,
 	go func() {
 		// Await the original future's result, respecting the passed
 		// context for cancellation.
-		originalResult := f.Await(ctx)
+		originalResult := f.awaitInternal(ctx)
 
 		// If the original future completed with an error (or Await was
 		// cancelled by its context), complete the transformed future
 		// with the same error.
-		// This also handles the case where originalResult.Await(ctx)
+		// This also handles the case where awaitInternal(ctx)
 		// itself returned ctx.Err().
 		if originalResult.IsErr() {
 			transformedPromise.Complete(originalResult)
@@ -151,7 +187,7 @@ func (f *futureImpl[T]) OnComplete(ctx context.Context,
 	go func() {
 		// Await the original future's result, respecting the passed
 		// context for cancellation.
-		result := f.Await(ctx)
+		result := f.awaitInternal(ctx)
 
 		// Call the callback function with the result.
 		cFunc(result)
