@@ -266,6 +266,22 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   through `OnComplete`, because the state machine's driver goroutine belongs to
   the caller and the wait is not on another actor's mailbox; and
   `AllowAwaitInTurn` marks a single reviewed wait.
+- **`actorblock` enforces the two turn rules statically.** The analyzer in
+  `tools/linters/actorblock` (run by `make lint` through `custom-gcl`, and by
+  `make actorblock-check`) walks statically resolved calls from every
+  `Receive`, from functions given to `NewFunctionBehavior`, and from protofsm
+  `State.ProcessEvent` and outbox `Dispatch` methods, across helpers
+  and packages, and reports (a) a reachable `Future.Await` and (b) a `Tell` or
+  `Ask` whose context is clearly not derived from the turn context
+  (`context.Background()`, `context.TODO()`, or a field). Fix a finding with
+  `AskThen`, `DetachAskPromise`, or the turn context, or exempt a safe site
+  with `//actor:allow-await <reason>` / `//actor:allow-send <reason>` on the
+  call line or the line above (the reason is mandatory). Legacy sites live in
+  `tools/linters/actorblock_baseline.txt`, which can only shrink. It does not
+  follow interface dispatch, function values, or reflection, and it ignores
+  `go` statements and callbacks given to `OnComplete`, `ThenApply` and
+  `AskThen`, so a clean run is not proof that no turn can block. The runtime
+  `AwaitInTurnPolicy` and `ErrWaitCycle` backstops cover what it cannot see.
 - **An `AskThen` reply is delivered at most once, and may be stale or never
   arrive, so a pending entry needs its own expiry.** `wrap` is applied to one
   result, but delivering it to `self` is best effort: it is lost if `self` has

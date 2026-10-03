@@ -29,6 +29,14 @@ use_if_current() {
 	version=$(binary_version "$bin" || true)
 
 	if [ "$version" = "$expected_version" ]; then
+		# A binary built before a plugin was added has the right
+		# golangci-lint version but cannot run the repo config.
+		if ! GOWORK=off "$bin" linters 2>/dev/null |
+			grep -q actorblock; then
+			echo "Ignoring ${label}: $bin lacks the actorblock plugin"
+			return 1
+		fi
+
 		echo "Using ${label}: $bin"
 		return 0
 	fi
