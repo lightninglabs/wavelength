@@ -64,32 +64,36 @@ const defaultRegistrationTimeout = 60 * time.Second
 // between unanswered probes.
 const defaultStatusReconcileTimeout = 90 * time.Second
 
-// defaultWalletAskTimeout bounds every Ask this actor makes into the wallet
-// actor. Both actors are single-goroutine loops that Ask each other — the
+// defaultWalletAskTimeout bounds how long this actor waits on the wallet
+// actor. Both actors are single-goroutine loops that Ask each other: the
 // wallet asks the round actor from handleRefreshVTXOs, handleLeaveVTXOs and
-// friends — so an unbounded Ask in this direction closes a circular wait that
-// nothing can break: each loop sits on the other's promise with no timer
-// anywhere in the cycle, and because a board trigger arrives by Tell there is
-// no caller deadline to fall back on either. Bounding this side is enough to
-// break the cycle, since whichever side gives up frees its loop to serve the
-// other's message.
+// friends. A wait on either side that nothing bounds closes a circular wait,
+// each loop sitting on the other's promise with no timer in the cycle.
 //
-// Unlike wallet.replayRoundRegisterTimeout, the bounded context keeps its
-// parent rather than detaching with WithoutCancel: the parent here is the
-// actor's own lifecycle context, so keeping it preserves the shutdown escape
-// instead of removing it.
+// The board trigger path no longer parks this loop. handleTriggerBoard queues
+// the trigger and sends the confirmed-boarding-intents query with
+// actor.AskThen, then returns; the reply comes back as a boardingIntentsReply
+// message and is handled in a later turn, so the wallet can Ask this actor in
+// the meantime and neither side waits on the other. This constant is that
+// query's Ask timeout.
+//
+// The remaining blocking use is Start's registration Ask (askWallet). Start
+// runs on the boot goroutine, not on the receive goroutine: in production
+// RegisterWithSystem starts the receive loop first, so the actor already
+// serves messages while Start waits. The wallet's own Asks into this actor are
+// therefore answered concurrently, which is why no circular wait forms. It is
+// bounded by this constant and keeps the parent context rather than detaching
+// with WithoutCancel: the parent is the actor's own lifecycle context, so
+// keeping it preserves the shutdown escape.
 //
 // NOTE: 30s is chosen to match the wallet's own replay budget so a wallet that
-// is slow rather than wedged still gets its answer through, and it is the same
-// number the boot-time registration Ask in Start uses. The cost is paid on this
-// actor's single receive loop, which every inbound round route funnels through:
-// while an Ask is outstanding the mailbox does not drain, and once it fills the
-// connector's ingress loop defers and re-pulls
-// (serverconn.ErrDispatchDeferred), so this constant is one of the things that
-// CAUSES the backpressure the connector now handles. Shortening it trades a
-// longer wallet stall for a shorter deaf window; the reverse direction is still
-// unbounded at four of six wallet-to-round call sites, so the cycle is broken
-// by this side alone and that asymmetry is deliberate.
+// is slow rather than wedged still gets its answer through. A failed or late
+// board fetch only drops that trigger and logs at error level, as the blocking
+// fetch did, and nothing is half registered because no round or keyring state
+// is touched before the reply turn. The
+// wallet-to-round direction is still unbounded at four of six wallet call
+// sites, which is deliberate: this actor no longer waits on the wallet inside
+// a turn, so those Asks are always answered.
 const defaultWalletAskTimeout = 30 * time.Second
 
 // defaultRefreshRegistrationDelay is the quiet period used to coalesce
@@ -379,6 +383,23 @@ type RoundClientActor struct {
 	// server from flooding the buffer.
 	pendingQuotes map[RoundID]*JoinRoundQuoteReceived
 
+	// boardQueue holds board triggers waiting for the wallet's confirmed
+	// boarding intents, oldest first. Only the head has a fetch in flight,
+	// which serializes registrations the way the former blocking fetch
+	// did.
+	//
+	// Entries are never expired. AskThen always delivers exactly one reply,
+	// the wallet's answer or an ask-timeout error, to a live actor. A reply
+	// is lost only if the actor stopped or the mailbox overflow hard cap
+	// was hit, and both are already-failed states. A deadline would not
+	// help there and would instead drop a good reply that is merely queued
+	// behind a backlog.
+	boardQueue []*actormsg.TriggerBoardMsg
+
+	// boardFetchInFlight is true while the wallet fetch for the head of
+	// boardQueue is outstanding.
+	boardFetchInFlight bool
+
 	// env is the base FSM environment template containing all dependencies.
 	// Each new round FSM gets a copy with a fresh StartHeight.
 	env *ClientEnvironment
@@ -497,9 +518,10 @@ type RoundClientConfig struct {
 	RegistrationTimeout time.Duration
 
 	// WalletAskTimeout bounds every Ask this actor makes into the wallet
-	// actor, which is what keeps the two single-goroutine loops from
-	// parking on each other forever. If zero or negative,
-	// defaultWalletAskTimeout is used.
+	// actor: Start's registration Ask and the board fetch. The board
+	// fetch is sent with actor.AskThen and its queue head expires after
+	// twice this value. If zero or negative, defaultWalletAskTimeout is
+	// used.
 	WalletAskTimeout time.Duration
 
 	// StatusReconcileTimeout bounds how long a forfeit-bearing round sits
@@ -1819,6 +1841,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 
 	case *actormsg.TriggerBoardMsg:
 		return a.handleTriggerBoard(ctx, m)
+
+	case *boardingIntentsReply:
+		return a.handleBoardingIntentsReply(ctx, m)
 
 	default:
 		return fn.Err[actormsg.RoundActorResp](
@@ -3982,10 +4007,7 @@ func (a *RoundClientActor) handleForfeitSignatureResponse(ctx context.Context,
 func (a *RoundClientActor) askWallet(ctx context.Context,
 	msg wallet.WalletMsg) (wallet.WalletResp, error) {
 
-	timeout := a.cfg.WalletAskTimeout
-	if timeout <= 0 {
-		timeout = defaultWalletAskTimeout
-	}
+	timeout := a.walletAskTimeout()
 
 	askCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -4002,11 +4024,13 @@ func (a *RoundClientActor) askWallet(ctx context.Context,
 	return resp, err
 }
 
-// handleTriggerBoard processes a board request forwarded from the wallet actor.
-// It registers the VTXO output amounts into a round FSM and then triggers
-// IntentRequested to kick off the round join flow. This combines the
-// RegisterVTXORequests + TriggerRegistration steps that the Board RPC
-// previously performed directly.
+// handleTriggerBoard accepts a board request forwarded from the wallet actor.
+// It validates the amounts, queues the request, and starts the fetch of the
+// wallet's confirmed boarding intents if none is in flight. The registration
+// itself runs in handleBoardingIntentsReply once the wallet answers, so this
+// turn never waits on the wallet: the wallet actor Asks this actor from its
+// own handlers, and a round turn parked on the wallet would close a circular
+// wait between the two loops.
 func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 	cmd *actormsg.TriggerBoardMsg) fn.Result[actormsg.RoundActorResp] {
 
@@ -4016,22 +4040,110 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 		)
 	}
 
-	// Resolve the boarding inputs before minting any VTXO owner keys, so a
-	// redundant trigger short-circuits without advancing the wallet key
-	// ring or registering owned scripts for outputs we never send.
-	//
-	// The Ask is bounded, and the same bounded context is passed to both
-	// Ask and Await: the enqueue inside Ask is itself a blocking mailbox
-	// send, so a deadline on Await alone would leave the wait unbounded
-	// whenever the wallet's mailbox is the thing that is full.
-	confirmedBoarding, err := a.askWallet(
-		ctx, &wallet.GetConfirmedBoardingIntentsRequest{},
+	for i, amount := range cmd.Amounts {
+		if amount <= 0 {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("board VTXO amount %d is "+
+					"invalid: %v", i, amount),
+			)
+		}
+	}
+
+	a.boardQueue = append(a.boardQueue, cmd)
+	a.sendBoardFetch(ctx)
+
+	return fn.Ok[actormsg.RoundActorResp](nil)
+}
+
+// walletAskTimeout returns the configured bound for Asks into the wallet,
+// falling back to the default.
+func (a *RoundClientActor) walletAskTimeout() time.Duration {
+	if a.cfg.WalletAskTimeout > 0 {
+		return a.cfg.WalletAskTimeout
+	}
+
+	return defaultWalletAskTimeout
+}
+
+// sendBoardFetch asks the wallet for its confirmed boarding intents on behalf
+// of the head of the board queue, unless a fetch is already in flight or the
+// queue is empty. At most one fetch is outstanding, which keeps the
+// registrations serialized: two fetches racing could let two triggers naming
+// the same outpoint both see it as confirmed.
+//
+// The reply returns as a boardingIntentsReply that pops the head. No round or
+// keyring state is touched before that reply turn, so a failed fetch leaves
+// nothing half done.
+func (a *RoundClientActor) sendBoardFetch(ctx context.Context) {
+	if len(a.boardQueue) == 0 || a.boardFetchInFlight {
+		return
+	}
+
+	a.boardFetchInFlight = true
+
+	actor.AskThen(
+		ctx, a.cfg.WalletActor,
+		wallet.WalletMsg(&wallet.GetConfirmedBoardingIntentsRequest{}),
+		a.cfg.SelfRef, a.walletAskTimeout(),
+		func(r fn.Result[wallet.WalletResp]) actormsg.RoundReceivable {
+			return &boardingIntentsReply{Res: r}
+		},
 	)
+}
+
+// handleBoardingIntentsReply completes the head of the board queue with the
+// wallet's answer and starts the fetch for the next queued trigger. Each
+// fetch yields exactly one reply, so the reply always belongs to the head.
+func (a *RoundClientActor) handleBoardingIntentsReply(ctx context.Context,
+	msg *boardingIntentsReply) fn.Result[actormsg.RoundActorResp] {
+
+	if len(a.boardQueue) == 0 || !a.boardFetchInFlight {
+		a.log.DebugS(ctx, "Ignoring unexpected boarding intents reply")
+
+		return fn.Ok[actormsg.RoundActorResp](nil)
+	}
+
+	head := a.boardQueue[0]
+	a.boardQueue[0] = nil
+	a.boardQueue = a.boardQueue[1:]
+	a.boardFetchInFlight = false
+
+	// Whatever the outcome, the next queued trigger proceeds.
+	defer a.sendBoardFetch(ctx)
+
+	confirmedBoarding, err := msg.Res.Unpack()
 	if err != nil {
+		// The reply arrives as a Tell, whose handler error the actor
+		// framework drops silently, so the failure is logged here.
+		a.log.ErrorS(ctx, "Fetching confirmed boarding intents "+
+			"failed; board request dropped", err,
+			slog.String("timeout", a.walletAskTimeout().String()),
+		)
+
 		return fn.Err[actormsg.RoundActorResp](
 			fmt.Errorf("fetch confirmed boarding intents: %w", err),
 		)
 	}
+
+	res := a.registerBoard(ctx, head, confirmedBoarding)
+	if err := res.Err(); err != nil {
+		// The reply is a Tell, so the turn loop discards this result.
+		a.log.ErrorS(ctx, "Registering board request failed",
+			err,
+			slog.Int("vtxo_count", len(head.Amounts)),
+		)
+	}
+
+	return res
+}
+
+// registerBoard registers the VTXO outputs of a board trigger, together with
+// the wallet's confirmed boarding inputs, into a round FSM and kicks off the
+// round join flow. This combines the RegisterVTXORequests + TriggerRegistration
+// steps that the Board RPC previously performed directly.
+func (a *RoundClientActor) registerBoard(ctx context.Context,
+	cmd *actormsg.TriggerBoardMsg,
+	confirmedBoarding wallet.WalletResp) fn.Result[actormsg.RoundActorResp] {
 
 	boardingResp, ok :=
 		confirmedBoarding.(*wallet.GetConfirmedBoardingIntentsResponse)
@@ -4094,13 +4206,6 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 	// Build VTXO requests from the provided amounts.
 	requests := make([]types.VTXORequest, 0, len(cmd.Amounts))
 	for i, amount := range cmd.Amounts {
-		if amount <= 0 {
-			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf("board VTXO amount %d is "+
-					"invalid: %v", i, amount),
-			)
-		}
-
 		// Boarding flow: the output VTXO is funded by the
 		// client's on-chain wallet input, so the ledger
 		// emission must credit wallet_balance via
@@ -4126,6 +4231,7 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 	)
 
 	// Find an existing assembling round or create a new one.
+	var err error
 	roundFSM := a.findAssemblingRound(ctx)
 	if roundFSM == nil {
 		roundFSM, err = a.createNewRound(ctx)

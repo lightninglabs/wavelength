@@ -218,6 +218,12 @@ type mockWalletActorRef struct {
 	// askGate, when non-nil, holds every Ask until it is closed or the
 	// caller's context ends. See blockAsk.
 	askGate chan struct{}
+
+	// boardingQueryHook, when non-nil, answers every confirmed boarding
+	// intents query from its own goroutine, as a real wallet actor
+	// would, instead of completing the Ask inline. A nil return from the
+	// hook answers with confirmedIntents; an error fails the Ask.
+	boardingQueryHook func(ctx context.Context) error
 }
 
 // blockAsk makes every subsequent Ask park as a wallet actor with a wedged
@@ -304,6 +310,25 @@ func (m *mockWalletActorRef) Ask(ctx context.Context,
 				[]wallet.BoardingIntent(nil),
 				m.confirmedIntents...,
 			),
+		}
+
+		if hook := m.boardingQueryHook; hook != nil {
+			promise := actor.NewPromise[wallet.WalletResp]()
+			go func() {
+				if err := hook(ctx); err != nil {
+					promise.Complete(
+						fn.Err[wallet.WalletResp](err),
+					)
+
+					return
+				}
+
+				promise.Complete(
+					fn.Ok[wallet.WalletResp](resp),
+				)
+			}()
+
+			return promise.Future()
 		}
 
 		return newImmediateFuture[wallet.WalletResp](resp)
@@ -780,6 +805,27 @@ func (h *actorTestHarness) receive(
 ) fn.Result[actormsg.RoundActorResp] {
 
 	return h.actor.Receive(h.ctx, msg)
+}
+
+// receiveBoard delivers a board trigger and then the boardingIntentsReply that
+// the trigger's wallet fetch sends back to the actor, returning the result of
+// the turn that registers the board. The trigger turn itself only queues, so
+// its own error, if any, is returned directly.
+func (h *actorTestHarness) receiveBoard(
+	msg *actormsg.TriggerBoardMsg,
+) fn.Result[actormsg.RoundActorResp] {
+
+	h.t.Helper()
+
+	if res := h.receive(msg); res.IsErr() {
+		return res
+	}
+
+	reply, ok := h.selfRef.waitForMessage(time.Second)
+	require.True(h.t, ok, "expected boardingIntentsReply message")
+	require.IsType(h.t, &boardingIntentsReply{}, reply)
+
+	return h.receive(reply)
 }
 
 // sendWalletConfirmation simulates a boarding UTXO confirmation event from the
