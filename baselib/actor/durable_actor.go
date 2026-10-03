@@ -1770,7 +1770,7 @@ func (ref *durableActorRefImpl[M, R]) Ask(ctx context.Context,
 		"actor_id", ref.actor.id,
 		"msg_type", msg.MessageType())
 
-	promise := NewPromise[R]()
+	promise := newTargetedPromise[R](ref.actor.id)
 
 	// Check if actor is already terminated.
 	if ref.actor.ctx.Err() != nil {

@@ -475,7 +475,7 @@ func (ref *actorRefImpl[M, R]) Ask(ctx context.Context, msg M) Future[R] {
 
 	// Create a new promise that will be fulfilled with the actor's
 	// response.
-	promise := NewPromise[R]()
+	promise := newTargetedPromise[R](ref.actor.id)
 
 	// If the actor's own context is already done, complete the promise with
 	// ErrActorTerminated and return immediately. This is the primary guard
