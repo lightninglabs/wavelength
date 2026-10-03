@@ -205,6 +205,7 @@ func walletSweepResponseToProto(
 		ConfTarget:         resp.ConfTarget,
 		TxVbytes:           resp.TxVBytes,
 		FailureReason:      resp.FailureReason,
+		AnchorSat:          resp.AnchorSat,
 	}
 	if resp.HasTxid {
 		protoResp.Txid = resp.Txid.String()

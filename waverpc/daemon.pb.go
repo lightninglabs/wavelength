@@ -6566,6 +6566,12 @@ type SweepBoardingUTXOsResponse struct {
 	// failure_reason carries aggregate build, broadcast, or persistence
 	// errors.
 	FailureReason string `protobuf:"bytes,12,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
+	// anchor_sat is the value of the P2A anchor output carried by the
+	// aggregate sweep transaction. It is paid out of the swept inputs on
+	// top of the miner fee, so the total on-chain cost of a published
+	// sweep is fee_paid_sat + anchor_sat (estimated_fee_sat + anchor_sat
+	// for a preview). Zero when no transaction was built.
+	AnchorSat     int64 `protobuf:"varint,13,opt,name=anchor_sat,json=anchorSat,proto3" json:"anchor_sat,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6682,6 +6688,13 @@ func (x *SweepBoardingUTXOsResponse) GetFailureReason() string {
 		return x.FailureReason
 	}
 	return ""
+}
+
+func (x *SweepBoardingUTXOsResponse) GetAnchorSat() int64 {
+	if x != nil {
+		return x.AnchorSat
+	}
+	return 0
 }
 
 type ListBoardingSweepsRequest struct {
@@ -8077,17 +8090,43 @@ func (x *EstimateFeeResponse) GetBelowDustWarning() bool {
 }
 
 // GetFeeHistoryRequest requests paginated fee history from the
-// client's local ledger. Entries are returned in newest-first order
-// (created_at descending), so offset 0 always references the most
-// recent ledger entry. Callers paginating through the full history
-// should treat the order as stable across pages but may observe new
-// entries appearing at offset 0 between calls.
+// client's local ledger. The request selects one of two page modes.
+//
+// Offset mode (after_entry_id == 0 and event_types empty): entries
+// are returned in newest-first order (created_at descending), so
+// offset 0 always references the most recent ledger entry. Callers
+// paginating through the full history should treat the order as
+// stable across pages but may observe new entries appearing at
+// offset 0 between calls.
+//
+// Cursor mode (after_entry_id > 0 or event_types non-empty): entries
+// with entry_id > after_entry_id are returned in ascending entry_id
+// order, optionally restricted to event_types. A caller importing the
+// ledger incrementally passes the largest entry_id it has seen so far
+// and repeats until a page comes back with fewer than limit entries.
+// Cursor mode cannot be combined with a non-zero offset.
 type GetFeeHistoryRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// limit bounds the number of results.
+	// limit bounds the number of results. Zero selects the server
+	// default; values above the server maximum are clamped. Applies
+	// to both page modes.
 	Limit uint32 `protobuf:"varint,1,opt,name=limit,proto3" json:"limit,omitempty"`
-	// offset is the number of entries to skip.
-	Offset        uint32 `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`
+	// offset is the number of entries to skip. Only valid in offset
+	// mode; a non-zero offset combined with after_entry_id or
+	// event_types is rejected with InvalidArgument.
+	Offset uint32 `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`
+	// after_entry_id selects cursor mode and returns only entries
+	// whose entry_id is strictly greater than this value. Zero starts
+	// from the beginning of the ledger. entry_id values are local to
+	// one daemon database and restart after a database reset or
+	// restore, so a cursor is only meaningful against the database
+	// that produced it; see FeeHistoryEntry for stable row identities.
+	AfterEntryId int64 `protobuf:"varint,3,opt,name=after_entry_id,json=afterEntryId,proto3" json:"after_entry_id,omitempty"`
+	// event_types, when non-empty, selects cursor mode and restricts
+	// the page to entries whose event_type is one of the listed
+	// values (see FeeHistoryEntry.event_type). Unknown values match
+	// nothing.
+	EventTypes    []string `protobuf:"bytes,4,rep,name=event_types,json=eventTypes,proto3" json:"event_types,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8134,6 +8173,20 @@ func (x *GetFeeHistoryRequest) GetOffset() uint32 {
 		return x.Offset
 	}
 	return 0
+}
+
+func (x *GetFeeHistoryRequest) GetAfterEntryId() int64 {
+	if x != nil {
+		return x.AfterEntryId
+	}
+	return 0
+}
+
+func (x *GetFeeHistoryRequest) GetEventTypes() []string {
+	if x != nil {
+		return x.EventTypes
+	}
+	return nil
 }
 
 // FeeHistoryEntry is a single ledger entry from the client's
@@ -8187,7 +8240,26 @@ type FeeHistoryEntry struct {
 	// session_id is the 32-byte OOR session identifier
 	// associated with the entry, when applicable. Empty for
 	// in-round events.
-	SessionId     []byte `protobuf:"bytes,9,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	SessionId []byte `protobuf:"bytes,9,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// chain_txid is the 32-byte on-chain transaction hash linked to
+	// the entry, when applicable, in internal (wire) byte order, which
+	// is the reverse of the usual hex display order. For unilateral
+	// exit rows (onchain_fee_paid and the matching vtxo_sent legs) it
+	// is the hash of the exited VTXO outpoint, not of the sweep
+	// transaction. Empty when the entry has no chain linkage.
+	ChainTxid []byte `protobuf:"bytes,10,opt,name=chain_txid,json=chainTxid,proto3" json:"chain_txid,omitempty"`
+	// chain_vout is the output index paired with chain_txid. It is
+	// unset when the entry has no chain linkage, so callers can tell
+	// output 0 apart from an absent index.
+	//
+	// Unlike entry_id, the following natural keys are stable across a
+	// daemon database reset or restore and can be used to dedupe
+	// imported rows:
+	//   - (round_id, event_type) identifies boarding_fee_paid and
+	//     refresh_fee_paid rows.
+	//   - (chain_txid, chain_vout, event_type) identifies
+	//     onchain_fee_paid rows.
+	ChainVout     *int32 `protobuf:"varint,11,opt,name=chain_vout,json=chainVout,proto3,oneof" json:"chain_vout,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8283,6 +8355,20 @@ func (x *FeeHistoryEntry) GetSessionId() []byte {
 		return x.SessionId
 	}
 	return nil
+}
+
+func (x *FeeHistoryEntry) GetChainTxid() []byte {
+	if x != nil {
+		return x.ChainTxid
+	}
+	return nil
+}
+
+func (x *FeeHistoryEntry) GetChainVout() int32 {
+	if x != nil && x.ChainVout != nil {
+		return *x.ChainVout
+	}
+	return 0
 }
 
 // GetFeeHistoryResponse contains paginated fee history entries.
@@ -11169,7 +11255,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x02 \x01(\x03R\tamountSat\x12'\n" +
-	"\x0fmaturity_height\x18\x03 \x01(\x05R\x0ematurityHeight\"\xf1\x03\n" +
+	"\x0fmaturity_height\x18\x03 \x01(\x05R\x0ematurityHeight\"\x90\x04\n" +
 	"\x1aSweepBoardingUTXOsResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12%\n" +
 	"\x0ecurrent_height\x18\x02 \x01(\x05R\rcurrentHeight\x12I\n" +
@@ -11185,7 +11271,9 @@ const file_daemon_proto_rawDesc = "" +
 	" \x01(\x03R\n" +
 	"feePaidSat\x12\x1b\n" +
 	"\ttx_vbytes\x18\v \x01(\x03R\btxVbytes\x12%\n" +
-	"\x0efailure_reason\x18\f \x01(\tR\rfailureReason\"o\n" +
+	"\x0efailure_reason\x18\f \x01(\tR\rfailureReason\x12\x1d\n" +
+	"\n" +
+	"anchor_sat\x18\r \x01(\x03R\tanchorSat\"o\n" +
 	"\x19ListBoardingSweepsRequest\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x1b\n" +
 	"\tpage_size\x18\x02 \x01(\rR\bpageSize\x12\x1d\n" +
@@ -11291,10 +11379,13 @@ const file_daemon_proto_rawDesc = "" +
 	"\rtotal_fee_sat\x18\x04 \x01(\x03R\vtotalFeeSat\x122\n" +
 	"\x15effective_annual_rate\x18\x05 \x01(\x01R\x13effectiveAnnualRate\x121\n" +
 	"\x15min_viable_amount_sat\x18\x06 \x01(\x03R\x12minViableAmountSat\x12,\n" +
-	"\x12below_dust_warning\x18\a \x01(\bR\x10belowDustWarning\"D\n" +
+	"\x12below_dust_warning\x18\a \x01(\bR\x10belowDustWarning\"\x8b\x01\n" +
 	"\x14GetFeeHistoryRequest\x12\x14\n" +
 	"\x05limit\x18\x01 \x01(\rR\x05limit\x12\x16\n" +
-	"\x06offset\x18\x02 \x01(\rR\x06offset\"\xbd\x02\n" +
+	"\x06offset\x18\x02 \x01(\rR\x06offset\x12$\n" +
+	"\x0eafter_entry_id\x18\x03 \x01(\x03R\fafterEntryId\x12\x1f\n" +
+	"\vevent_types\x18\x04 \x03(\tR\n" +
+	"eventTypes\"\x8f\x03\n" +
 	"\x0fFeeHistoryEntry\x12\x19\n" +
 	"\bentry_id\x18\x01 \x01(\x03R\aentryId\x12\x1d\n" +
 	"\n" +
@@ -11307,7 +11398,13 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0ecredit_account\x18\a \x01(\tR\rcreditAccount\x12\x19\n" +
 	"\bround_id\x18\b \x01(\fR\aroundId\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\t \x01(\fR\tsessionId\"z\n" +
+	"session_id\x18\t \x01(\fR\tsessionId\x12\x1d\n" +
+	"\n" +
+	"chain_txid\x18\n" +
+	" \x01(\fR\tchainTxid\x12\"\n" +
+	"\n" +
+	"chain_vout\x18\v \x01(\x05H\x00R\tchainVout\x88\x01\x01B\r\n" +
+	"\v_chain_vout\"z\n" +
 	"\x15GetFeeHistoryResponse\x122\n" +
 	"\aentries\x18\x01 \x03(\v2\x18.waverpc.FeeHistoryEntryR\aentries\x12-\n" +
 	"\x13total_fees_paid_sat\x18\x02 \x01(\x03R\x10totalFeesPaidSat\"\x97\x01\n" +
@@ -12021,6 +12118,7 @@ func file_daemon_proto_init() {
 		(*SendOnChainRequest_AmountSat)(nil),
 		(*SendOnChainRequest_SweepAll)(nil),
 	}
+	file_daemon_proto_msgTypes[96].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

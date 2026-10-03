@@ -1840,6 +1840,13 @@ message SweepBoardingUTXOsResponse {
     // failure_reason carries aggregate build, broadcast, or persistence
     // errors.
     string failure_reason = 12;
+
+    // anchor_sat is the value of the P2A anchor output carried by the
+    // aggregate sweep transaction. It is paid out of the swept inputs on
+    // top of the miner fee, so the total on-chain cost of a published
+    // sweep is fee_paid_sat + anchor_sat (estimated_fee_sat + anchor_sat
+    // for a preview). Zero when no transaction was built.
+    int64 anchor_sat = 13;
 }
 
 message ListBoardingSweepsRequest {
@@ -2238,17 +2245,45 @@ message EstimateFeeResponse {
 }
 
 // GetFeeHistoryRequest requests paginated fee history from the
-// client's local ledger. Entries are returned in newest-first order
-// (created_at descending), so offset 0 always references the most
-// recent ledger entry. Callers paginating through the full history
-// should treat the order as stable across pages but may observe new
-// entries appearing at offset 0 between calls.
+// client's local ledger. The request selects one of two page modes.
+//
+// Offset mode (after_entry_id == 0 and event_types empty): entries
+// are returned in newest-first order (created_at descending), so
+// offset 0 always references the most recent ledger entry. Callers
+// paginating through the full history should treat the order as
+// stable across pages but may observe new entries appearing at
+// offset 0 between calls.
+//
+// Cursor mode (after_entry_id > 0 or event_types non-empty): entries
+// with entry_id > after_entry_id are returned in ascending entry_id
+// order, optionally restricted to event_types. A caller importing the
+// ledger incrementally passes the largest entry_id it has seen so far
+// and repeats until a page comes back with fewer than limit entries.
+// Cursor mode cannot be combined with a non-zero offset.
 message GetFeeHistoryRequest {
-    // limit bounds the number of results.
+    // limit bounds the number of results. Zero selects the server
+    // default; values above the server maximum are clamped. Applies
+    // to both page modes.
     uint32 limit = 1;
 
-    // offset is the number of entries to skip.
+    // offset is the number of entries to skip. Only valid in offset
+    // mode; a non-zero offset combined with after_entry_id or
+    // event_types is rejected with InvalidArgument.
     uint32 offset = 2;
+
+    // after_entry_id selects cursor mode and returns only entries
+    // whose entry_id is strictly greater than this value. Zero starts
+    // from the beginning of the ledger. entry_id values are local to
+    // one daemon database and restart after a database reset or
+    // restore, so a cursor is only meaningful against the database
+    // that produced it; see FeeHistoryEntry for stable row identities.
+    int64 after_entry_id = 3;
+
+    // event_types, when non-empty, selects cursor mode and restricts
+    // the page to entries whose event_type is one of the listed
+    // values (see FeeHistoryEntry.event_type). Unknown values match
+    // nothing.
+    repeated string event_types = 4;
 }
 
 // FeeHistoryEntry is a single ledger entry from the client's
@@ -2310,6 +2345,27 @@ message FeeHistoryEntry {
     // associated with the entry, when applicable. Empty for
     // in-round events.
     bytes session_id = 9;
+
+    // chain_txid is the 32-byte on-chain transaction hash linked to
+    // the entry, when applicable, in internal (wire) byte order, which
+    // is the reverse of the usual hex display order. For unilateral
+    // exit rows (onchain_fee_paid and the matching vtxo_sent legs) it
+    // is the hash of the exited VTXO outpoint, not of the sweep
+    // transaction. Empty when the entry has no chain linkage.
+    bytes chain_txid = 10;
+
+    // chain_vout is the output index paired with chain_txid. It is
+    // unset when the entry has no chain linkage, so callers can tell
+    // output 0 apart from an absent index.
+    //
+    // Unlike entry_id, the following natural keys are stable across a
+    // daemon database reset or restore and can be used to dedupe
+    // imported rows:
+    //   - (round_id, event_type) identifies boarding_fee_paid and
+    //     refresh_fee_paid rows.
+    //   - (chain_txid, chain_vout, event_type) identifies
+    //     onchain_fee_paid rows.
+    optional int32 chain_vout = 11;
 }
 
 // GetFeeHistoryResponse contains paginated fee history entries.

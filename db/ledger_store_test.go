@@ -1926,6 +1926,135 @@ func TestLedgerStoreListEntriesByTypePagination(t *testing.T) {
 	require.NotEqual(t, page1[1].EntryID, page2[1].EntryID)
 }
 
+// TestLedgerStoreListEntriesAfterID verifies the ascending entry_id cursor
+// query: pages resume strictly after the cursor, the event-type filter is
+// applied before the limit, a cursor at the last row yields an empty page,
+// and the fees total is reported alongside every page.
+func TestLedgerStoreListEntriesAfterID(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newLedgerStoreForTest(t)
+
+	// Insert rows with descending timestamps so an accidental
+	// created_at ordering would reverse the expected entry_id order.
+	baseTime := time.Now().Unix()
+	exitHash := testHash32(0x40)
+	eventTypes := []string{
+		ledger.EventBoardingFeePaid,
+		ledger.EventVTXOReceived,
+		ledger.EventRefreshFeePaid,
+		ledger.EventOnchainFeePaid,
+		ledger.EventVTXOReceived,
+	}
+	for i, eventType := range eventTypes {
+		e := makeLedgerEntry(
+			"fees_paid", "vtxo_balance", int64(100*(i+1)),
+			eventType, []byte{byte(i)}, baseTime-int64(i),
+		)
+		switch eventType {
+		case ledger.EventVTXOReceived:
+			e.DebitAccount = "vtxo_balance"
+			e.CreditAccount = "transfers_in"
+
+		case ledger.EventOnchainFeePaid:
+			e.DebitAccount = "onchain_fees"
+			e.RoundID = nil
+			e.IdempotencyKey = ledger.ExitFeeIdempotencyKey(
+				exitHash, 2,
+			)
+			e.ChainTxid = exitHash[:]
+			e.ChainVout = testInt32Ptr(2)
+		}
+		require.NoError(t, store.InsertLedgerEntry(ctx, e))
+	}
+
+	all, total, err := store.ListLedgerEntriesAfterIDWithFeesTotal(
+		ctx, 0, nil, 100,
+	)
+	require.NoError(t, err)
+	require.Len(t, all, len(eventTypes))
+	require.Equal(t, int64(100+300), total)
+	for i := range all {
+		require.Equal(t, eventTypes[i], all[i].EventType)
+		if i > 0 {
+			require.Greater(t, all[i].EntryID, all[i-1].EntryID)
+		}
+	}
+
+	// The exit fee row carries the exited outpoint as its chain key.
+	exitRow := all[3]
+	require.Equal(t, exitHash[:], exitRow.ChainTxid)
+	require.True(t, exitRow.ChainVout.Valid)
+	require.Equal(t, int32(2), exitRow.ChainVout.Int32)
+
+	// A cursor pages strictly after the given entry_id.
+	page, _, err := store.ListLedgerEntriesAfterIDWithFeesTotal(
+		ctx, all[1].EntryID, nil, 2,
+	)
+	require.NoError(t, err)
+	require.Len(t, page, 2)
+	require.Equal(t, all[2].EntryID, page[0].EntryID)
+	require.Equal(t, all[3].EntryID, page[1].EntryID)
+
+	// The filter applies before the limit, so non-matching rows in
+	// between do not consume page slots.
+	feeTypes := []string{
+		ledger.EventBoardingFeePaid,
+		ledger.EventRefreshFeePaid,
+		ledger.EventOnchainFeePaid,
+	}
+	page, _, err = store.ListLedgerEntriesAfterIDWithFeesTotal(
+		ctx, 0, feeTypes, 2,
+	)
+	require.NoError(t, err)
+	require.Len(t, page, 2)
+	require.Equal(t, all[0].EntryID, page[0].EntryID)
+	require.Equal(t, all[2].EntryID, page[1].EntryID)
+
+	page, _, err = store.ListLedgerEntriesAfterIDWithFeesTotal(
+		ctx, page[1].EntryID, feeTypes, 2,
+	)
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	require.Equal(t, all[3].EntryID, page[0].EntryID)
+
+	// A single-type filter and an unknown type both work.
+	page, _, err = store.ListLedgerEntriesAfterIDWithFeesTotal(
+		ctx, 0, []string{ledger.EventVTXOReceived}, 10,
+	)
+	require.NoError(t, err)
+	require.Len(t, page, 2)
+	require.Equal(t, all[1].EntryID, page[0].EntryID)
+	require.Equal(t, all[4].EntryID, page[1].EntryID)
+
+	page, _, err = store.ListLedgerEntriesAfterIDWithFeesTotal(
+		ctx, 0, []string{"no_such_event"}, 10,
+	)
+	require.NoError(t, err)
+	require.Empty(t, page)
+
+	// A cursor at the last row, or beyond it, yields an empty page but
+	// still reports the fees total.
+	last := all[len(all)-1].EntryID
+	for _, cursor := range []int64{last, last + 100} {
+		page, total, err = store.ListLedgerEntriesAfterIDWithFeesTotal(
+			ctx, cursor, nil, 10,
+		)
+		require.NoError(t, err)
+		require.Empty(t, page)
+		require.Equal(t, int64(100+300), total)
+	}
+
+	// A cursor at the second-to-last row leaves exactly the last row.
+	page, _, err = store.ListLedgerEntriesAfterIDWithFeesTotal(
+		ctx, all[len(all)-2].EntryID, nil, 10,
+	)
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	require.Equal(t, last, page[0].EntryID)
+}
+
 // TestLedgerStoreCountEntries verifies the count query returns the
 // correct total.
 func TestLedgerStoreCountEntries(t *testing.T) {

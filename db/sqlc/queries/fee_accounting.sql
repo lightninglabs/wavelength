@@ -76,6 +76,29 @@ FROM ledger_entries
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2;
 
+-- name: ListClientLedgerEntriesAfterID :many
+-- ListClientLedgerEntriesAfterID pages the ledger by ascending entry_id
+-- for incremental importers. Only rows past after_entry_id are returned,
+-- so the scan is a primary-key range read. When filter_event_types is
+-- true, rows are further restricted to the event_types list.
+SELECT entry_id, debit_account, credit_account, amount_sat,
+       round_id, session_id, idempotency_key,
+       event_type, description, created_at,
+       chain_txid, chain_vout, confirmation_height, round_uuid
+FROM ledger_entries
+WHERE entry_id > sqlc.arg(after_entry_id)
+  -- Reference page_limit before the SLICE parameter so sqlc numbers it
+  -- ahead of the slice. The runtime SLICE expansion assumes it binds the
+  -- highest parameter numbers; any parameter numbered after it would
+  -- collide with the expanded values. LIMIT below reuses the same number.
+  AND sqlc.arg(page_limit) >= 0
+  -- An empty slice expands to NULL, which matches nothing, so callers
+  -- that want every event type clear filter_event_types instead.
+  AND (CAST(sqlc.arg(filter_event_types) AS BOOLEAN) = FALSE
+       OR event_type IN (sqlc.slice('event_types')/*SLICE:event_types*/))
+ORDER BY entry_id ASC
+LIMIT sqlc.arg(page_limit);
+
 -- name: ListClientLedgerEntriesByType :many
 SELECT entry_id, debit_account, credit_account, amount_sat,
        round_id, session_id, idempotency_key,

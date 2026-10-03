@@ -425,6 +425,46 @@ func (s *LedgerStoreDB) ListLedgerEntriesWithFeesTotal(ctx context.Context,
 	return entries, total, err
 }
 
+// ListLedgerEntriesAfterIDWithFeesTotal returns up to limit ledger
+// entries whose entry_id is greater than afterEntryID, in ascending
+// entry_id order, together with the cumulative operator-fees-paid
+// total observed in the same read transaction. A non-empty eventTypes
+// restricts the page to those event types; an empty one matches every
+// type. Callers resume from the largest entry_id they have seen, so new
+// rows never shift an earlier page the way offset pagination does.
+func (s *LedgerStoreDB) ListLedgerEntriesAfterIDWithFeesTotal(
+	ctx context.Context, afterEntryID int64, eventTypes []string,
+	limit int32) ([]sqlc.LedgerEntry, int64, error) {
+
+	var (
+		entries []sqlc.LedgerEntry
+		total   int64
+	)
+	err := s.ExecTx(
+		ctx, ReadTxOption(),
+		func(qtx *sqlc.Queries) error {
+			var txErr error
+			entries, txErr = qtx.ListClientLedgerEntriesAfterID(
+				ctx, sqlc.ListClientLedgerEntriesAfterIDParams{
+					AfterEntryID:     afterEntryID,
+					PageLimit:        limit,
+					FilterEventTypes: len(eventTypes) > 0,
+					EventTypes:       eventTypes,
+				},
+			)
+			if txErr != nil {
+				return txErr
+			}
+
+			total, txErr = qtx.GetTotalOperatorFeesPaid(ctx)
+
+			return txErr
+		},
+	)
+
+	return entries, total, err
+}
+
 // ListLedgerEntriesByType returns a paginated list of ledger entries
 // filtered by event type within a read transaction.
 func (s *LedgerStoreDB) ListLedgerEntriesByType(ctx context.Context,

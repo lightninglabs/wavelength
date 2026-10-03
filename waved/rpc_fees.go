@@ -236,6 +236,12 @@ func (r *RPCServer) EstimateFee(ctx context.Context,
 // need a netted view of round/OOR activity should aggregate by
 // round_id or session_id on the receiving side.
 //
+// Setting after_entry_id or event_types selects cursor mode, which
+// returns rows after the cursor in ascending entry_id order so an
+// importer can follow the ledger incrementally. Otherwise the legacy
+// newest-first offset mode applies unchanged. Mixing the two is
+// rejected because an offset has no meaning relative to a cursor.
+//
 // The ledger actor owns the write path: this RPC only reads. Callers
 // see entries that have been durably committed, so the cumulative
 // total is monotonic across restarts.
@@ -259,6 +265,16 @@ func (r *RPCServer) GetFeeHistory(ctx context.Context,
 			"be <= %d", math.MaxInt32)
 	}
 
+	cursorMode := req.AfterEntryId != 0 || len(req.EventTypes) > 0
+	if cursorMode && req.Offset != 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "offset "+
+			"cannot be combined with after_entry_id or event_types")
+	}
+	if req.AfterEntryId < 0 {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"after_entry_id must be >= 0")
+	}
+
 	if r.server.ledgerStore == nil {
 		return nil, status.Errorf(codes.Unavailable, "ledger store "+
 			"not initialized")
@@ -280,10 +296,23 @@ func (r *RPCServer) GetFeeHistory(ctx context.Context,
 	// same read transaction so the response is internally
 	// consistent: a concurrent insert can't show up in the total
 	// without also being on the page (or vice versa).
-	rows, totalFees, err := r.server.ledgerStore.
-		ListLedgerEntriesWithFeesTotal(
-			ctx, int32(limit), int32(req.Offset),
-		)
+	var (
+		rows      []sqlc.LedgerEntry
+		totalFees int64
+		err       error
+	)
+	if cursorMode {
+		rows, totalFees, err = r.server.ledgerStore.
+			ListLedgerEntriesAfterIDWithFeesTotal(
+				ctx, req.AfterEntryId, req.EventTypes,
+				int32(limit),
+			)
+	} else {
+		rows, totalFees, err = r.server.ledgerStore.
+			ListLedgerEntriesWithFeesTotal(
+				ctx, int32(limit), int32(req.Offset),
+			)
+	}
 	if err != nil {
 		r.server.log.WarnS(ctx,
 			"GetFeeHistory ledger read failed", err)
@@ -422,11 +451,12 @@ func proxyUpstreamError(err error, msg string) error {
 
 // ledgerEntryToProto converts a sqlc-generated LedgerEntry row to the
 // proto type returned by GetFeeHistory. Nullable round_id / session_id
-// columns surface as zero-length byte slices on the wire so clients
-// can rely on length checks to distinguish in-round, OOR, and
-// non-keyed events.
+// / chain_txid columns surface as zero-length byte slices on the wire
+// so clients can rely on length checks to distinguish in-round, OOR,
+// chain-linked, and non-keyed events. A NULL chain_vout stays unset so
+// it cannot be confused with output index zero.
 func ledgerEntryToProto(row *sqlc.LedgerEntry) *waverpc.FeeHistoryEntry {
-	return &waverpc.FeeHistoryEntry{
+	entry := &waverpc.FeeHistoryEntry{
 		EntryId:        row.EntryID,
 		EventType:      row.EventType,
 		AmountSat:      row.AmountSat,
@@ -436,7 +466,14 @@ func ledgerEntryToProto(row *sqlc.LedgerEntry) *waverpc.FeeHistoryEntry {
 		CreditAccount:  row.CreditAccount,
 		RoundId:        row.RoundID,
 		SessionId:      row.SessionID,
+		ChainTxid:      row.ChainTxid,
 	}
+	if row.ChainVout.Valid {
+		vout := row.ChainVout.Int32
+		entry.ChainVout = &vout
+	}
+
+	return entry
 }
 
 // transactionTypeFilterValid returns true for the public high-level

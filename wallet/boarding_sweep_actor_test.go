@@ -17,6 +17,7 @@ import (
 	"github.com/lightninglabs/wavelength/ledger"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tx/arktx"
+	"github.com/lightninglabs/wavelength/txconfirm"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -419,6 +420,7 @@ func TestSweepBoardingUTXOsPreviewBuildsTx(t *testing.T) {
 	require.Equal(t, "preview", resp.Status)
 	require.True(t, resp.HasTxid)
 	require.NotZero(t, resp.EstimatedFeeSat)
+	require.Equal(t, boardingSweepAnchorValue, resp.AnchorSat)
 	require.Equal(t, int64(50_000), resp.TotalAmountSat)
 	require.Len(t, resp.SweepableOutputs, 1)
 
@@ -429,6 +431,87 @@ func TestSweepBoardingUTXOsPreviewBuildsTx(t *testing.T) {
 	store.AssertNotCalled(
 		t, "MarkBoardingSweepPublished", mock.Anything, mock.Anything,
 	)
+}
+
+// TestSweepBoardingUTXOsPublishedReportsAnchor verifies that a published
+// sweep reports both the miner fee and the P2A anchor value, and that the
+// two together account for every sat the inputs do not pay to the wallet
+// output.
+func TestSweepBoardingUTXOsPublishedReportsAnchor(t *testing.T) {
+	t.Parallel()
+
+	intent := testBoardingSweepIntent(t, 50_000, 100, 10)
+
+	store := &MockBoardingSweepStore{}
+	store.On(
+		"FetchBoardingIntentsBySweepableStatuses",
+		mock.Anything, mock.Anything,
+	).Return([]BoardingIntent{intent}, nil)
+
+	// Capture the persisted sweep so the test can check the built
+	// transaction's outputs against the reported costs.
+	var persisted NewBoardingSweep
+	store.On(
+		"CreatePendingBoardingSweep", mock.Anything, mock.Anything,
+	).Run(func(args mock.Arguments) {
+		persisted, _ = args.Get(1).(NewBoardingSweep)
+	}).Return(nil)
+	store.On(
+		"MarkBoardingSweepPublished", mock.Anything, mock.Anything,
+	).Return(nil)
+
+	// Register a txconfirm stand-in that accepts every registration so
+	// the publish path reaches its success branch.
+	system := actor.NewActorSystem()
+	t.Cleanup(func() {
+		require.NoError(t, system.Shutdown(context.Background()))
+	})
+	txconfirm.NewServiceKey().Spawn(
+		system, "fake-txconfirm",
+		actor.NewFunctionBehavior(func(_ context.Context,
+			_ txconfirm.Msg) fn.Result[txconfirm.Resp] {
+
+			return fn.Ok[txconfirm.Resp](
+				&txconfirm.EnsureConfirmedResp{
+					State: txconfirm.
+						TxStateAwaitingConfirmation,
+				},
+			)
+		}),
+	)
+
+	a := NewArk(
+		&MockBoardingBackend{}, &MockBoardingStore{}, nil,
+		newMockSweepChainSource(t, 200, 2), system,
+		fn.None[ledger.Sink](), btclog.Disabled,
+		WithBoardingSweep(
+			store, &testBoardingSweepWallet{},
+			&chaincfg.RegressionNetParams,
+		),
+	)
+
+	result := a.handleSweepBoardingUTXOs(
+		t.Context(), &SweepBoardingUTXOsRequest{
+			Broadcast: true,
+		},
+	)
+	require.True(t, result.IsOk())
+
+	respVal, _ := result.Unpack()
+	resp := respVal.(*SweepBoardingUTXOsResponse) //nolint:forcetypeassert
+	require.Equal(t, "published", resp.Status, resp.FailureReason)
+	require.NotZero(t, resp.FeePaidSat)
+	require.Equal(t, boardingSweepAnchorValue, resp.AnchorSat)
+
+	// The wallet output receives the inputs minus the fee and the
+	// anchor, so fee_paid_sat + anchor_sat is the full chain cost.
+	require.NotNil(t, persisted.Tx)
+	require.Len(t, persisted.Tx.TxOut, 2)
+	require.Equal(
+		t, resp.TotalAmountSat-resp.FeePaidSat-resp.AnchorSat,
+		persisted.Tx.TxOut[0].Value,
+	)
+	require.Equal(t, resp.AnchorSat, persisted.Tx.TxOut[1].Value)
 }
 
 // TestSweepSpendNotificationMarksInputSpent verifies that a chainsource
