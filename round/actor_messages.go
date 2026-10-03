@@ -297,6 +297,27 @@ func (m *TimeoutMsg) MessageType() string {
 // RoundReceivable implements actormsg.RoundReceivable marker interface.
 func (m *TimeoutMsg) RoundReceivable() {}
 
+// boardingIntentsReply carries the wallet's answer to the confirmed boarding
+// intents query that a board trigger started. It is sent by the actor to
+// itself through actor.AskThen, so it is internal to this package.
+type boardingIntentsReply struct {
+	actor.BaseMessage
+
+	// Seq identifies the fetch this reply answers.
+	Seq uint64
+
+	// Res is the wallet's response or the error that replaced it.
+	Res fn.Result[wallet.WalletResp]
+}
+
+// MessageType returns the message type name.
+func (m *boardingIntentsReply) MessageType() string {
+	return "boardingIntentsReply"
+}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (m *boardingIntentsReply) RoundReceivable() {}
+
 // ServerMsg is the sealed interface for all messages that can be sent to a
 // RoundServerActor.
 type ServerMsg interface {

@@ -2716,7 +2716,7 @@ func TestHandleTriggerBoard(t *testing.T) {
 		},
 	}, nil).Once()
 
-	result := h.receive(&actormsg.TriggerBoardMsg{
+	result := h.receiveBoard(&actormsg.TriggerBoardMsg{
 		Amounts: []btcutil.Amount{49_000},
 	})
 	require.True(t, result.IsOk(), "expected Ok, got: %v",
@@ -2784,7 +2784,7 @@ func TestHandleTriggerBoardMultipleVTXOs(t *testing.T) {
 		}, nil).Once()
 	}
 
-	result := h.receive(&actormsg.TriggerBoardMsg{
+	result := h.receiveBoard(&actormsg.TriggerBoardMsg{
 		Amounts: []btcutil.Amount{17_000, 17_000, 16_000},
 	})
 	require.True(t, result.IsOk(), "expected Ok, got: %v",
@@ -2851,7 +2851,7 @@ func TestHandleTriggerBoardFiltersToNamedOutpoints(t *testing.T) {
 	}, nil).Once()
 
 	// The trigger names only A even though both A and B are confirmed.
-	result := h.receive(&actormsg.TriggerBoardMsg{
+	result := h.receiveBoard(&actormsg.TriggerBoardMsg{
 		Amounts:   []btcutil.Amount{49_000},
 		Outpoints: []wire.OutPoint{intentA.Outpoint},
 	})
@@ -2892,7 +2892,7 @@ func TestHandleTriggerBoardSkipsWhenNamedOutpointAbsent(t *testing.T) {
 	// Only A is confirmed, but the trigger names B (already adopted).
 	h.walletActor.setConfirmedIntents(*intentA)
 
-	result := h.receive(&actormsg.TriggerBoardMsg{
+	result := h.receiveBoard(&actormsg.TriggerBoardMsg{
 		Amounts:   []btcutil.Amount{49_000},
 		Outpoints: []wire.OutPoint{intentB.Outpoint},
 	})
