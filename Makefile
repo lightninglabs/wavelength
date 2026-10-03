@@ -1,6 +1,6 @@
 .PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
 .PHONY: lint lint-source lint-local lint-source-local lint-changed-local lint-native build-native-linter local-custom-gcl install-custom-gcl docker-tools fmt fmt-changed fmt-check fmt-changed-check tidy-module tidy-module-check schema-check doc-check sample-conf-check
-.PHONY: ast-lint ast-grep-fix
+.PHONY: ast-lint ast-grep-fix actorblock-build actorblock-test actorblock-check
 .PHONY: unit unit-cover unit-race unit-swapruntime check-go-version build install clean release
 .PHONY: release-install cross-release-install docker-release
 .PHONY: build build-swapruntime build-swapclient build-wavewalletrpc rpc install install-swapruntime install-wavewalletrpc help clean-networks
@@ -280,6 +280,7 @@ lint-changed-local: local-custom-gcl #? Run static code analysis only for change
 	GOWORK=off $(LOCAL_CUSTOM_GCL) run -v --timeout=15m $(LINT_WORKERS) \
 		--new-from-merge-base=$(LINT_BASE) \
 		--whole-files
+	@$(MAKE) actorblock-check
 
 build-native-linter: #? Build the custom golangci-lint binary natively via go tool
 	@$(call print, "Building custom linter natively.")
@@ -303,9 +304,27 @@ ast-grep-fix: #? Auto-fix ast-grep style issues (requires ast-grep/sg installed)
 	@$(call print, "Auto-fixing ast-grep style issues.")
 	sg scan --update-all $(AST_GREP_EXCLUDE) $(AST_GREP_PATH)
 
-lint: check-go-version check-migration-version lint-source #? Run static code analysis
+# The actorblock analyzer is built into custom-gcl as a plugin, which applies
+# the baseline per package. The standalone binary additionally sees the whole
+# tree, so it is what fails on stale baseline entries.
+ACTORBLOCK_BIN := $(CURDIR)/$(TOOLS_DIR)/actorblock
+ACTORBLOCK_BASELINE := $(TOOLS_DIR)/linters/actorblock_baseline.txt
+ACTORBLOCK_TAGS := test_postgres,test_sqlite,systest
 
-lint-local: check-go-version check-migration-version lint-source-local #? Run static code analysis locally (no Docker)
+actorblock-build: #? Build the standalone actorblock analyzer to ./tools/actorblock
+	cd $(TOOLS_DIR)/linters && GOWORK=off CGO_ENABLED=0 $(GOCC) build -o $(ACTORBLOCK_BIN) ./cmd/actorblock
+
+actorblock-test: #? Run the actorblock analyzer unit tests
+	@$(call print, "Testing actorblock analyzer.")
+	cd $(TOOLS_DIR)/linters && GOWORK=off $(GOTEST) ./...
+
+actorblock-check: actorblock-test actorblock-build #? Fail on actor turns that can block, or on stale actorblock baseline entries
+	@$(call print, "Checking actor turns for blocking calls.")
+	GOWORK=$(CURDIR)/go.work $(ACTORBLOCK_BIN) -baseline $(ACTORBLOCK_BASELINE) -tags $(ACTORBLOCK_TAGS) ./... ./baselib/...
+
+lint: check-go-version check-migration-version lint-source actorblock-check #? Run static code analysis
+
+lint-local: check-go-version check-migration-version lint-source-local actorblock-check #? Run static code analysis locally (no Docker)
 
 fmt: $(GOIMPORTS_BIN) $(LLFORMAT_BIN) #? Format handwritten Go source and imports
 	@$(call print, "Fixing imports for handwritten Go source.")
