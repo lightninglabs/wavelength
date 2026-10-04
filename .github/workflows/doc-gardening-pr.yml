@@ -57,7 +57,8 @@ jobs:
         run: go mod download
 
       - name: Run scoped /doc-gardening and post advisory
-        uses: anthropics/claude-code-action@fb326f7c687fa273d0843a59bbd2ddbc9e481ca1 # v1
+        # Includes Claude Code 2.1.289; Opus 5.5 requires >= 2.1.280.
+        uses: anthropics/claude-code-action@cab360f6565aa35a51d6ce9e43f1f4287c0a32ea # v1
         env:
           GH_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
