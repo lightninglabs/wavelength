@@ -78,7 +78,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   outer actor transaction via
   `actor.TxFromContext`. Read API:
   `GetAccountBalance`/`GetTotalOperatorFeesPaid`/`ListLedgerEntries[…]`/
-  `CountLedgerEntries`/`ListAccounts`.
+  `CountLedgerEntries`/`ListAccounts`. `ListLedgerEntriesAfterIDWithFeesTotal`
+  is the cursor read behind `GetFeeHistory`: entries with `entry_id` above
+  the cursor in ascending order, optionally filtered by event type, plus the
+  fees-paid total from the same read transaction. New rows never shift an
+  earlier page, which offset pagination cannot promise.
 - `UTXOAuditStoreDB` — implements `ledger.UTXOAuditStore` via
   `sqlc.InsertWalletUTXOLog` (ON CONFLICT DO NOTHING).
 - `UnilateralExitStore` / `UnilateralExitPersistenceStore` —

@@ -70,7 +70,7 @@ who want direct access.
 | `ark oor {receive,get,list}` | `NewReceiveScript` / `GetOORSession` / `ListOORSessions` | Receive-script allocation and OOR session inspection; `receive --idempotency-key` replays the allocation already made for that key |
 | `ark board` | `Board` | Trigger boarding with confirmed UTXOs |
 | `ark sweep [list]` | `SweepBoardingUTXOs` / `ListBoardingSweeps` | Boarding-timeout sweeps; broadcasting requires interactive approval or `--yes` |
-| `ark fees {estimate,history}` | `EstimateFee` / `GetFeeHistory` | Fee estimation and history |
+| `ark fees {estimate,history}` | `EstimateFee` / `GetFeeHistory` | Fee estimation and history; `history` pages newest-first with `--offset`, or ascending by `entry_id` with `--after-entry-id`/`--event-type` (cursor mode, cannot be combined with `--offset`) |
 | `ark listtransactions` | `ListTransactions` | Raw paginated transaction history |
 | `ark send {inround,oor}` | `SendVTXO` / `SendOOR` | Raw in-round / OOR send; real transfers require interactive approval or `--yes` |
 
