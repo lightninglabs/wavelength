@@ -654,6 +654,13 @@ func (a *DurableActor[M, R]) processDelivery(delivery *Delivery[M, R]) {
 	// of them.
 	processCtx = withDeliveryEnqueuedAt(processCtx, delivery.EnqueuedAt)
 
+	// Mark the context as this actor's turn. With a single worker a parked
+	// turn parks the whole actor; with a pool it parks only this worker.
+	processCtx, endTurn := beginTurn(
+		processCtx, a.id, a.numWorkers <= 1,
+	)
+	defer endTurn()
+
 	logger(processCtx).TraceS(processCtx, "Durable actor processing message",
 		"actor_id", a.id,
 		"msg_type", delivery.Message.MessageType(),
@@ -1763,7 +1770,7 @@ func (ref *durableActorRefImpl[M, R]) Ask(ctx context.Context,
 		"actor_id", ref.actor.id,
 		"msg_type", msg.MessageType())
 
-	promise := NewPromise[R]()
+	promise := newTargetedPromise[R](ref.actor.id)
 
 	// Check if actor is already terminated.
 	if ref.actor.ctx.Err() != nil {

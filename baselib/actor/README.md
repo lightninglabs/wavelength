@@ -213,7 +213,21 @@ There are two main ways to send messages using an `ActorRef`:
     ```
     The `context.Context` passed to `Tell` can be used to cancel the send
     operation if, for example, the actor's mailbox is full and the send would
-    block for too long.
+    block for too long. A `Tell` made with the context a behavior received
+    never blocks on a full channel mailbox: the message is queued in an
+    overflow behind the channel instead, so actors that message each other
+    cannot park on one another. Pass that context through. A send made with
+    any other context (`context.Background()`, one captured at construction,
+    or one used after the behavior returned) still waits for room.
+
+    The overflow has a hard cap (`ActorConfig.MailboxOverflowLimit`, default
+    `DefaultMailboxOverflowLimit`). A send that would exceed it does not
+    panic and is not queued: it returns an error wrapping
+    `ErrMailboxOverflow`, which the caller can test with `errors.Is`. The
+    first rejection of an overflow episode is logged at critical severity.
+    `Ask` completes its future with the same error. A durable behavior that
+    returns the error gets the delivery nacked and retried, which is how a
+    durable sender is slowed down when its target cannot keep up.
 
 2.  **TryTell (Non-Blocking Fire-and-Forget)**: Same as `Tell`, except that a
     target with no mailbox room reports `ErrMailboxFull` right away instead of
@@ -229,11 +243,12 @@ There are two main ways to send messages using an `ActorRef`:
         // The target is terminated or its mailbox is closed.
     }
     ```
-    Reach for this whenever the sender is itself inside a receive goroutine.
-    A blocking `Tell` there parks the sender's own message processing on the
-    peer's backlog, and if the peer is waiting on a reply from the sender the
-    two deadlock. The context is only consulted for an immediate cancellation
-    check, so attaching a deadline to `TryTell` buys nothing.
+    Outside a receive turn this is how to send to a bounded mailbox without
+    waiting. Inside a turn a `Tell` made with the turn context no longer
+    parks, so `TryTell` there is only for callers that want an
+    `ErrMailboxFull` signal so they can drop the message instead of queueing
+    it. The context is only consulted for an immediate cancellation check, so
+    attaching a deadline to `TryTell` buys nothing.
 
     Two cautions for durable targets. Their queue has no capacity, so they
     never report `ErrMailboxFull`; a slow database write surfaces as a wrapped
@@ -273,6 +288,14 @@ There are two main ways to send messages using an `ActorRef`:
     `OnComplete` (for callbacks) and `ThenApply` (for chaining transformations).
     A more restricted `TellOnlyRef[M]` is also available if only fire-and-forget
     semantics are required (obtained via an actor's `TellRef()` method).
+
+    `Await` is for code outside an actor, such as `main` or a test. Do not
+    `Await` another actor's reply from inside `Receive`: the wait parks the
+    actor's whole mailbox, and if the callee is waiting on the caller, both
+    hang. Inside a behavior, use `actor.AskThen` to receive the reply as a
+    later message, or `actor.DetachAskPromise` to complete your own caller's
+    promise from it. `actor.SetAwaitInTurnPolicy` logs (default) or rejects
+    such waits.
 
 ### Actors
 

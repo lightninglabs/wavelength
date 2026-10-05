@@ -21,13 +21,61 @@ type promiseImpl[T any] struct {
 // use to await the result, can be obtained via the Future() method. The Future
 // is completed by calling the Complete() method on this Promise.
 func NewPromise[T any]() Promise[T] {
+	return newTargetedPromise[T]("")
+}
+
+// newTargetedPromise creates a Promise whose Future records the ID of the actor
+// that is expected to complete it. An Ask sets it so that an Await of the reply
+// can be tracked as a wait on that actor. An empty target marks a future that
+// no actor's reply stands behind.
+func newTargetedPromise[T any](target string) Promise[T] {
+	return newDerivedPromise[T](target, nil)
+}
+
+// newDerivedPromise creates a targeted Promise whose Future reports rootDone
+// as the completion of the actor reply it stands for. A future derived from
+// another one, through ThenApply or a MapRef, completes later than the actor
+// reply behind it, so it passes the root future's channel along. A nil rootDone
+// makes the new future its own root.
+func newDerivedPromise[T any](target string,
+	rootDone <-chan struct{}) Promise[T] {
+
+	done := make(chan struct{})
+	if rootDone == nil {
+		rootDone = done
+	}
+
 	return &promiseImpl[T]{
 		fut: &futureImpl[T]{
 			// done is a channel that will be closed when the future
 			// is completed.
-			done: make(chan struct{}),
+			done:     done,
+			target:   target,
+			rootDone: rootDone,
 		},
 	}
+}
+
+// futureRootDone returns the channel that closes once the actor reply behind
+// fut has been delivered, or nil if fut does not record one.
+func futureRootDone[T any](fut Future[T]) <-chan struct{} {
+	f, ok := fut.(interface{ waitRootDone() <-chan struct{} })
+	if !ok {
+		return nil
+	}
+
+	return f.waitRootDone()
+}
+
+// futureTarget reports the ID of the actor expected to complete fut, or the
+// empty string when the future has no such actor.
+func futureTarget[T any](fut Future[T]) string {
+	f, ok := fut.(interface{ waitTarget() string })
+	if !ok {
+		return ""
+	}
+
+	return f.waitTarget()
 }
 
 // Future returns the Future interface associated with this Promise. Consumers
@@ -67,13 +115,72 @@ type futureImpl[T any] struct {
 	// completeOnce ensures that the logic to set the result and close the
 	// done channel is executed only once.
 	completeOnce sync.Once
+
+	// target is the ID of the actor whose reply this future represents. It
+	// is empty for a future that is not the reply to an Ask, such as one
+	// completed by a state machine's own driver goroutine; awaiting such a
+	// future cannot wait on another actor, so it never forms a wait edge.
+	target string
+
+	// rootDone is closed once the actor reply this future waits on has been
+	// delivered. For a future derived through ThenApply or a MapRef it is
+	// the root future's channel, since the derived future itself completes
+	// later, on a helper goroutine. A caller whose reply has been delivered
+	// is no longer blocked on the actor, whatever the derived future's own
+	// state.
+	rootDone <-chan struct{}
+}
+
+// waitRootDone returns the channel that closes once the actor reply behind the
+// future has been delivered.
+func (f *futureImpl[T]) waitRootDone() <-chan struct{} {
+	return f.rootDone
+}
+
+// waitTarget returns the ID of the actor expected to complete the future, or
+// the empty string if there is none.
+func (f *futureImpl[T]) waitTarget() string {
+	return f.target
 }
 
 // Await blocks until the result is available or the passed context is
 // cancelled. If the future is already completed, it returns the result
 // immediately. Otherwise, it waits for either the future's completion or the
 // context's cancellation.
+//
+// Called with the context of a running receive turn on a future that is not yet
+// complete, it is subject to the AwaitInTurnPolicy, since waiting there parks
+// the actor's whole mailbox. See SetAwaitInTurnPolicy. If the wait would
+// complete a cycle of turns that each await another actor's reply, it returns
+// ErrWaitCycle instead of parking.
 func (f *futureImpl[T]) Await(ctx context.Context) fn.Result[T] {
+	// A completed future cannot block, so only the slow path pays for the
+	// turn check.
+	if resPtr := f.resultCache.Load(); resPtr != nil {
+		return *resPtr
+	}
+
+	if err := checkAwaitInTurn(ctx); err != nil {
+		return fn.Err[T](err)
+	}
+
+	// Track the wait so a cycle of blocked turns fails here, instead of
+	// parking every actor on it. This is on the slow path only, after the
+	// policy check, and the edge is removed however the wait ends.
+	release, err := beginWait(ctx, f.target, f.rootDone)
+	if err != nil {
+		return fn.Err[T](err)
+	}
+	defer release()
+
+	return f.awaitInternal(ctx)
+}
+
+// awaitInternal is the wait loop behind Await. Framework helper goroutines
+// call it directly: such a goroutine often carries a context that still marks
+// an active receive turn, but it is not the actor's own goroutine, so waiting
+// there cannot stall the actor.
+func (f *futureImpl[T]) awaitInternal(ctx context.Context) fn.Result[T] {
 	// First, try a non-blocking load from the cache. If the future is
 	// already completed, this will return the result directly.
 	if resPtr := f.resultCache.Load(); resPtr != nil {
@@ -99,6 +206,20 @@ func (f *futureImpl[T]) Await(ctx context.Context) fn.Result[T] {
 	}
 }
 
+// awaitFuture waits on fut without the await-in-turn guard when fut is this
+// package's own implementation, and falls back to the public Await for any
+// other Future. It is for helper goroutines the framework spawns, never for a
+// behavior's turn.
+func awaitFuture[T any](ctx context.Context, fut Future[T]) fn.Result[T] {
+	if f, ok := fut.(interface {
+		awaitInternal(context.Context) fn.Result[T]
+	}); ok {
+		return f.awaitInternal(ctx)
+	}
+
+	return fut.Await(ctx)
+}
+
 // ThenApply registers a function to transform the result of a future. The
 // original future is not modified; a new Future instance representing the
 // transformed result is returned. Once the original future completes
@@ -110,18 +231,20 @@ func (f *futureImpl[T]) Await(ctx context.Context) fn.Result[T] {
 func (f *futureImpl[T]) ThenApply(ctx context.Context,
 	fApply func(T) T) Future[T] {
 
-	// Create a new promise for the transformed result.
-	transformedPromise := NewPromise[T]()
+	// Create a new promise for the transformed result. It keeps this
+	// future's target, since a caller that awaits the transformed future is
+	// still waiting on the actor that completes the original.
+	transformedPromise := newDerivedPromise[T](f.target, f.rootDone)
 
 	go func() {
 		// Await the original future's result, respecting the passed
 		// context for cancellation.
-		originalResult := f.Await(ctx)
+		originalResult := f.awaitInternal(ctx)
 
 		// If the original future completed with an error (or Await was
 		// cancelled by its context), complete the transformed future
 		// with the same error.
-		// This also handles the case where originalResult.Await(ctx)
+		// This also handles the case where awaitInternal(ctx)
 		// itself returned ctx.Err().
 		if originalResult.IsErr() {
 			transformedPromise.Complete(originalResult)
@@ -151,7 +274,7 @@ func (f *futureImpl[T]) OnComplete(ctx context.Context,
 	go func() {
 		// Await the original future's result, respecting the passed
 		// context for cancellation.
-		result := f.Await(ctx)
+		result := f.awaitInternal(ctx)
 
 		// Call the callback function with the result.
 		cFunc(result)

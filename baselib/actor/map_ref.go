@@ -99,10 +99,9 @@ func (m *MapRef[In, Out, InR, OutR]) Ask(
 	ctx context.Context, msg In,
 ) Future[OutR] {
 
-	promise := NewPromise[OutR]()
-
 	transformed, err := m.mapInput(msg)
 	if err != nil {
+		promise := NewPromise[OutR]()
 		promise.Complete(fn.Err[OutR](fmt.Errorf("map input: %w", err)))
 
 		return promise.Future()
@@ -111,8 +110,17 @@ func (m *MapRef[In, Out, InR, OutR]) Ask(
 	// Call the inner Ask and transform the result.
 	innerFuture := m.targetRef.Ask(ctx, transformed)
 
+	// The caller waits on the inner actor through this promise, so it
+	// inherits the inner future's target. A router or another wrapper only
+	// has an ID that names no actor, so there is nothing to fall back on
+	// when the inner future recorded none.
+	target := futureTarget(innerFuture)
+	promise := newDerivedPromise[OutR](
+		target, futureRootDone(innerFuture),
+	)
+
 	go func() {
-		result := innerFuture.Await(ctx)
+		result := awaitFuture(ctx, innerFuture)
 		val, err := result.Unpack()
 		if err != nil {
 			promise.Complete(fn.Err[OutR](err))

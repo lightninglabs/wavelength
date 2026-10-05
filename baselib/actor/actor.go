@@ -82,6 +82,12 @@ type ActorConfig[M Message, R any] struct {
 	// MailboxSize defines the buffer capacity of the actor's mailbox.
 	MailboxSize int
 
+	// MailboxOverflowLimit is the hard cap on envelopes the mailbox queues
+	// beyond MailboxSize on behalf of sends made from inside a receive
+	// turn, which never block. A send that would exceed it fails with
+	// ErrMailboxOverflow. Zero selects DefaultMailboxOverflowLimit.
+	MailboxOverflowLimit int
+
 	// Wg is an optional WaitGroup for tracking actor lifecycle. If
 	// non-nil, the actor will call Add(1) when starting and Done() when
 	// its process loop exits. This enables deterministic shutdown.
@@ -181,9 +187,13 @@ func NewActor[M Message, R any](cfg ActorConfig[M, R]) *Actor[M, R] {
 	}
 
 	actor := &Actor[M, R]{
-		id:             cfg.ID,
-		behavior:       cfg.Behavior,
-		mailbox:        NewChannelMailbox[M, R](ctx, mailboxCapacity),
+		id:       cfg.ID,
+		behavior: cfg.Behavior,
+		mailbox: NewChannelMailbox[M, R](
+			ctx, mailboxCapacity,
+			WithOverflowLimit(cfg.MailboxOverflowLimit),
+			WithMailboxID(cfg.ID),
+		),
 		ctx:            ctx,
 		cancel:         cancel,
 		dlo:            cfg.DLO,
@@ -253,6 +263,10 @@ func (a *Actor[M, R]) process() {
 			cancel = func() {}
 		}
 
+		// Mark the context as this actor's turn so sends and awaits
+		// made with it know they run on the actor's only goroutine.
+		processCtx, endTurn := beginTurn(processCtx, a.id, true)
+
 		logger(processCtx).TraceS(processCtx, "Actor processing message",
 			"actor_id", a.id,
 			"msg_type", env.message.MessageType(),
@@ -260,6 +274,7 @@ func (a *Actor[M, R]) process() {
 
 		result := a.behavior.Receive(processCtx, env.message)
 
+		endTurn()
 		cancel()
 		a.completed.Add(1)
 
@@ -400,9 +415,11 @@ func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 }
 
 // TryTell enqueues a message only if the mailbox can take it immediately,
-// returning ErrMailboxFull rather than waiting for room. Callers that run
-// inside another actor's receive loop use this so a backlogged target cannot
-// stall their own message processing.
+// returning ErrMailboxFull rather than waiting for room. Inside a receive
+// turn a plain Tell no longer parks, so there TryTell is only for callers that
+// want the ErrMailboxFull signal so they can drop the message instead of
+// queueing it behind the target's backlog. From outside a turn it remains the
+// way to send without waiting.
 func (ref *actorRefImpl[M, R]) TryTell(ctx context.Context, msg M) error {
 	logger(ctx).TraceS(ctx, "Sending TryTell message",
 		"actor_id", ref.actor.id,
@@ -458,7 +475,7 @@ func (ref *actorRefImpl[M, R]) Ask(ctx context.Context, msg M) Future[R] {
 
 	// Create a new promise that will be fulfilled with the actor's
 	// response.
-	promise := NewPromise[R]()
+	promise := newTargetedPromise[R](ref.actor.id)
 
 	// If the actor's own context is already done, complete the promise with
 	// ErrActorTerminated and return immediately. This is the primary guard
@@ -477,10 +494,29 @@ func (ref *actorRefImpl[M, R]) Ask(ctx context.Context, msg M) Future[R] {
 	// Attempt to send the message with the promise to the mailbox. The
 	// mailbox's Send method handles context cancellation and actor
 	// termination internally.
+	//
+	// The envelope's callerCtx becomes the base of the turn context the
+	// callee builds, so whatever transaction it carries is visible to the
+	// callee's behavior. An AskThen caller's turn has already ended by the
+	// time the callee runs, so its transaction is committed or rolled back
+	// and a callee that joined it would fail. The synchronous Send below
+	// may still use the full ctx, since it runs before the caller's turn
+	// returns.
+	//
+	// The marker is cleared as well: callerCtx is the base of the callee's
+	// turn context, and a marker left there would strip the transaction
+	// from the callee's own later Asks, which do wait for their replies.
+	callerCtx := ctx
+	if isDetachedAsk(ctx) {
+		callerCtx = context.WithValue(
+			WithoutTx(ctx), detachedAskKey{}, false,
+		)
+	}
+
 	env := envelope[M, R]{
 		message:   msg,
 		promise:   promise,
-		callerCtx: ctx,
+		callerCtx: callerCtx,
 	}
 	if err := ref.actor.mailbox.Send(ctx, env); err != nil {
 		promise.Complete(fn.Err[R](err))
