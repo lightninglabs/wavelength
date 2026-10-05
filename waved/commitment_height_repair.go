@@ -9,10 +9,106 @@ import (
 	"github.com/lightninglabs/wavelength/vtxo"
 )
 
-// legacyCommitmentHeightRepairTimeout bounds the optional post-ready indexer
-// maintenance so a slow or unavailable indexer cannot hold its startup worker
-// indefinitely.
-const legacyCommitmentHeightRepairTimeout = 30 * time.Second
+const (
+	// legacyCommitmentHeightRepairTimeout bounds one maintenance pass so
+	// an unavailable indexer cannot hold the worker indefinitely.
+	legacyCommitmentHeightRepairTimeout = 30 * time.Second
+
+	// legacyCommitmentHeightRepairInterval leaves room for live indexer
+	// traffic between passes through the remaining legacy inventory.
+	legacyCommitmentHeightRepairInterval = time.Minute
+
+	// legacyCommitmentHeightRepairMaxInterval limits polling pressure from
+	// targets that remain unavailable or fail validation across passes.
+	legacyCommitmentHeightRepairMaxInterval = time.Hour
+)
+
+// startLegacyCommitmentHeightRepair starts daemon-owned maintenance after the
+// startup publication barrier. Its cleanup cancels and joins the worker before
+// wallet, transport, or database teardown, including on startup failure.
+func (s *Server) startLegacyCommitmentHeightRepair(runCtx context.Context,
+	issuePage indexerPageCall) func() {
+
+	ctx, cancel := context.WithCancel(runCtx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+
+		s.runLegacyCommitmentHeightRepair(ctx, issuePage)
+	}()
+
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+// runLegacyCommitmentHeightRepair waits for readiness and runs bounded passes
+// until the durable legacy inventory is repaired or daemon shutdown begins.
+func (s *Server) runLegacyCommitmentHeightRepair(ctx context.Context,
+	issuePage indexerPageCall) {
+
+	select {
+	case <-s.DaemonReady():
+	case <-ctx.Done():
+		return
+	}
+
+	retryDelay := legacyCommitmentHeightRepairInterval
+	sawCandidates := false
+	for ctx.Err() == nil {
+		repairCtx, repairCancel := context.WithTimeout(
+			ctx, legacyCommitmentHeightRepairTimeout,
+		)
+		result, err := s.repairLegacyCommitmentHeights(
+			repairCtx, issuePage,
+		)
+		sawCandidates = sawCandidates || result.candidates > 0
+		repairCancel()
+		if ctx.Err() != nil {
+			return
+		}
+		if err == nil {
+			if sawCandidates {
+				s.log.InfoS(
+					ctx, "Legacy VTXO "+
+						"commitment-height repair "+
+						"complete",
+				)
+			}
+
+			return
+		}
+
+		// Durable progress keeps migration moving promptly. Repeated
+		// failures without progress back off, including setup errors.
+		if result.completed > 0 {
+			retryDelay = legacyCommitmentHeightRepairInterval
+		}
+
+		s.log.InfoS(ctx, "Legacy VTXO commitment-height repair "+
+			"incomplete; retry scheduled",
+			slog.String("error", err.Error()),
+			slog.Duration("retry_in", retryDelay),
+		)
+
+		select {
+		case <-s.clk.TickAfter(retryDelay):
+		case <-ctx.Done():
+			return
+		}
+		retryDelay = min(
+			2*retryDelay, legacyCommitmentHeightRepairMaxInterval,
+		)
+	}
+}
+
+// legacyCommitmentHeightRepairResult distinguishes idle wallets from actual
+// migration work and records durable progress for the worker cooldown.
+type legacyCommitmentHeightRepairResult struct {
+	candidates int
+	completed  int
+}
 
 // repairLegacyCommitmentHeights refreshes commitment confirmation heights for
 // active VTXOs written before that field was persisted. It runs as bounded
@@ -26,53 +122,59 @@ const legacyCommitmentHeightRepairTimeout = 30 * time.Second
 // material. Per-target failures do not stop later repairs; the caller receives
 // one bounded summary and the unroller retains its locally configured safe
 // fallback floor without depending on repair success.
-func (s *Server) repairLegacyCommitmentHeights(ctx context.Context) error {
+func (s *Server) repairLegacyCommitmentHeights(ctx context.Context,
+	issuePage indexerPageCall) (legacyCommitmentHeightRepairResult, error) {
+
+	var result legacyCommitmentHeightRepairResult
 	if s.vtxoStore == nil {
-		return fmt.Errorf("vtxo store not initialized")
+		return result, fmt.Errorf("vtxo store not initialized")
 	}
 
 	recoverable, err := s.vtxoStore.ListRecoverableVTXOs(ctx)
 	if err != nil {
-		return fmt.Errorf("list recoverable VTXOs: %w", err)
+		return result, fmt.Errorf("list recoverable VTXOs: %w", err)
 	}
 	exiting, err := s.vtxoStore.ListVTXOsByStatus(
 		ctx, vtxo.VTXOStatusUnilateralExit,
 	)
 	if err != nil {
-		return fmt.Errorf("list exiting VTXOs: %w", err)
+		return result, fmt.Errorf("list exiting VTXOs: %w", err)
 	}
 
 	targets := make([]*vtxo.Descriptor, 0, len(recoverable)+len(exiting))
 	targets = append(targets, recoverable...)
 	targets = append(targets, exiting...)
-	candidateCount := 0
+
 	for _, desc := range targets {
 		if hasUnknownCommitmentHeight(desc) {
-			candidateCount++
+			result.candidates++
 		}
 	}
-	if candidateCount == 0 {
-		return nil
+	if result.candidates == 0 {
+		return result, nil
 	}
 	if s.chainBackend == nil {
-		return fmt.Errorf("chain backend not initialized")
+		return result, fmt.Errorf("chain backend not initialized")
 	}
 
 	bestHeight, _, err := s.chainBackend.BestBlock(ctx)
 	if err != nil {
-		return fmt.Errorf("get local best height: %w", err)
+		return result, fmt.Errorf("get local best height: %w", err)
 	}
 	if bestHeight <= 0 {
-		return fmt.Errorf("invalid local best height %d", bestHeight)
+		return result, fmt.Errorf("invalid local best height %d",
+			bestHeight)
 	}
 
 	signerFactory, err := s.indexerProofSignerFactory()
 	if err != nil {
-		return fmt.Errorf("build indexer proof signer: %w", err)
+		return result, fmt.Errorf("build indexer proof signer: %w", err)
 	}
-	fetcher, err := incomingAncestryOnlyFetcher(s.indexer, signerFactory)
+	fetcher, err := incomingAncestryOnlyFetcher(
+		s.indexer, signerFactory, issuePage,
+	)
 	if err != nil {
-		return fmt.Errorf("build ancestry fetcher: %w", err)
+		return result, fmt.Errorf("build ancestry fetcher: %w", err)
 	}
 
 	var (
@@ -84,6 +186,14 @@ func (s *Server) repairLegacyCommitmentHeights(ctx context.Context) error {
 	for _, desc := range targets {
 		if !hasUnknownCommitmentHeight(desc) {
 			continue
+		}
+		if err := ctx.Err(); err != nil {
+			failedTargets = result.candidates - result.completed
+			if firstErr == nil {
+				firstErr = err
+			}
+
+			break
 		}
 
 		extras, fetchErr := fetcher(
@@ -113,10 +223,14 @@ func (s *Server) repairLegacyCommitmentHeights(ctx context.Context) error {
 			continue
 		}
 
+		// A successful atomic backfill guarantees all local heights are
+		// known. Zero updates means another writer repaired this target
+		// after our inventory snapshot, not an incomplete repair.
 		if repaired > 0 {
 			repairedTargets++
 			repairedFragments += repaired
 		}
+		result.completed++
 	}
 
 	if repairedTargets > 0 {
@@ -127,12 +241,12 @@ func (s *Server) repairLegacyCommitmentHeights(ctx context.Context) error {
 	}
 
 	if failedTargets > 0 {
-		return fmt.Errorf("%d of %d legacy VTXO commitment-height "+
-			"repairs failed; first failure: %w", failedTargets,
-			candidateCount, firstErr)
+		return result, fmt.Errorf("%d of %d legacy VTXO "+
+			"commitment-height repairs failed; first failure: %w",
+			failedTargets, result.candidates, firstErr)
 	}
 
-	return nil
+	return result, nil
 }
 
 // hasUnknownCommitmentHeight reports whether desc has usable local ancestry

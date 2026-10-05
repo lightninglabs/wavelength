@@ -79,7 +79,7 @@ func (s *Server) RecoverWalletState(ctx context.Context, window uint32) (
 	return s.rpcServer.recoverWalletState(ctx, window)
 }
 
-// retryRecoveryIndexerRPC retries recovery-local indexer calls that hit the
+// retryRecoveryIndexerRPC retries recovery and maintenance calls that hit the
 // operator's per-client query limiter.
 //
 // Seed recovery walks the whole recovery window one script at a time, so it is

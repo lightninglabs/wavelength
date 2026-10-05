@@ -1609,6 +1609,13 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 	// this runs synchronously. In lwwallet/btcwallet mode the
 	// wallet may not be unlocked yet, so everything is deferred
 	// to a background goroutine that fires after walletReady.
+	// Maintenance waits for full readiness and is cancelled and joined
+	// before the deferred resource teardown, even if startup fails.
+	stopHeightRepair := s.startLegacyCommitmentHeightRepair(
+		ctx, retryRecoveryIndexerRPC,
+	)
+	defer stopHeightRepair()
+
 	if s.isWalletReady() {
 		err := s.startWalletReadyServices(
 			ctx, chainSourceRef, timeoutRef,
@@ -1736,25 +1743,6 @@ func (s *Server) startWalletReadyServices(ctx context.Context,
 	}
 
 	s.markDaemonReady()
-
-	// Repair legacy confirmation floors as bounded post-ready maintenance.
-	// This call is synchronous, but both wallet-services and daemon
-	// readiness were published above, so the indexer cannot delay a
-	// readiness boundary. One 30-second context bounds the whole pass, not
-	// each target; a large legacy set may therefore converge across
-	// restarts. Restored jobs keep the configured safe fallback floor for
-	// this process, while successful backfills are durable for later
-	// admissions and restarts.
-	repairCtx, repairCancel := context.WithTimeout(
-		ctx, legacyCommitmentHeightRepairTimeout,
-	)
-	repairErr := s.repairLegacyCommitmentHeights(repairCtx)
-	repairCancel()
-	if repairErr != nil && ctx.Err() == nil {
-		s.log.InfoS(ctx, "Legacy VTXO commitment-height repair "+
-			"incomplete; old exits will use the safe fallback floor",
-			slog.String("error", repairErr.Error()))
-	}
 
 	return nil
 }

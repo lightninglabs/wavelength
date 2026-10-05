@@ -186,10 +186,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   live refreshes retain their bounded retry cooldown. The gate does not cover
   manual relays or any routing failure after the handshake.
 - After the daemon is ready,
-  `repairLegacyCommitmentHeights` (`commitment_height_repair.go`) runs under
-  one synchronous, whole-pass maintenance timeout. Both readiness signals are
-  published first, so it cannot delay a readiness boundary. A large legacy set
-  may converge across restarts. The repair covers recoverable plus
+  `startLegacyCommitmentHeightRepair` (`commitment_height_repair.go`) owns
+  a daemon-lifetime worker that waits for the full readiness barrier. Each
+  pass has a whole-pass timeout; failed or timed-out passes resume after a
+  cooldown starting at one minute and doubling up to one hour when no
+  progress is made. Durable progress resets the delay to one minute. The
+  worker skips completed repairs until no missing heights remain, and logs
+  completion only if legacy candidates were observed. Each indexer page
+  retries explicit rate limiting with jittered backoff and one stable
+  idempotency key per page. Cleanup cancels and joins the worker before
+  storage and transport teardown. The repair covers recoverable plus
   `VTXOStatusUnilateralExit` descriptors, and returns before building the
   indexer proof signer or ancestry fetcher when no fragment is missing a
   height. Each remaining candidate fetches authenticated indexed ancestry and
@@ -198,7 +204,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   the repair reads the local chain tip once; the store rejects every candidate
   above that tip and, for single-fragment ancestry, a candidate above the
   VTXO's known creation height. A per-target failure does not stop later
-  repairs; failures produce one non-fatal Info summary. The unroll registry
+  repairs; failures produce one non-fatal Info summary per pass, and full
+  completion emits an explicit Info record. The unroll registry
   owns the single process-level Warning for block-1 fallback; bounded
   deployment-floor fallback logs one Info per affected target. Mainnet,
   testnet3, testnet4, and signet use their network floor for every operator.
