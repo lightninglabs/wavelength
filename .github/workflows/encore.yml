@@ -8,7 +8,7 @@ name: encore
 # This workflow takes effect only after it lands on main.
 on:
   workflow_run:
-    workflows: ["CI"]
+    workflows: ["CI", "Docker image build"]
     types: [completed]
 
 permissions:
@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  ci:
+  retry:
     # Human cancellations and runs superseded by newer pushes have conclusion
     # cancelled. Restricting this to failure keeps those runs cancelled.
     if: github.event.workflow_run.conclusion == 'failure'
