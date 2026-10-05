@@ -106,8 +106,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   `loadAncestryPathsWithCache` accept the cache to avoid
   re-deserializing the same fragment across `ListLiveVTXOs` batches.
 - `BackfillVTXOCommitmentHeights` — atomically fills legacy zero heights from
-  indexed ancestry. Fragments are matched by `AncestryFragmentKey` (commitment
-  transaction plus serialized tree path), then a height-only update changes
+  indexed ancestry. Fragments are matched by a backfill-only key (commitment
+  transaction plus serialized tree path, excluding derived `FinalKey` caches
+  omitted by the indexer RPC), then a height-only update changes
   the matching row without rewriting any local proof columns. It never
   overwrites a known height. The caller supplies the current local chain tip;
   the store rejects a candidate above that tip. For single-fragment ancestry,
