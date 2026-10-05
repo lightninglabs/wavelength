@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/indexer"
+	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -54,18 +55,21 @@ func incomingAncestryFetcher(idx *indexer.Client,
 	}
 
 	return newIncomingAncestryFetcher(
-		idx, signerFactory, authenticateExpiry,
+		idx, signerFactory, authenticateExpiry, singleShotIndexerPage,
 	)
 }
 
 // incomingAncestryOnlyFetcher builds the fetch-only variant used by the
-// legacy commitment-height repair. New VTXO acceptance must use
+// legacy commitment-height repair, retrying rate-limited pages with backoff.
+// New VTXO acceptance must use
 // incomingAncestryFetcher so expiry authentication cannot be omitted.
 func incomingAncestryOnlyFetcher(idx *indexer.Client,
-	signerFactory OORReceiveScriptSignerFactory) (
-	vtxo.IncomingAncestryFetcher, error) {
+	signerFactory OORReceiveScriptSignerFactory,
+	issuePage indexerPageCall) (vtxo.IncomingAncestryFetcher, error) {
 
-	return newIncomingAncestryFetcher(idx, signerFactory, nil)
+	return newIncomingAncestryFetcher(
+		idx, signerFactory, nil, issuePage,
+	)
 }
 
 // newIncomingAncestryFetcher binds indexed ancestry to the requested target
@@ -73,8 +77,8 @@ func incomingAncestryOnlyFetcher(idx *indexer.Client,
 // remains reserved for the existing commitment-height repair.
 func newIncomingAncestryFetcher(idx *indexer.Client,
 	signerFactory OORReceiveScriptSignerFactory,
-	authenticateExpiry oor.IncomingExpiryAuthenticator) (
-	vtxo.IncomingAncestryFetcher, error) {
+	authenticateExpiry oor.IncomingExpiryAuthenticator,
+	issuePage indexerPageCall) (vtxo.IncomingAncestryFetcher, error) {
 
 	if idx == nil {
 		return nil, fmt.Errorf("indexer client not initialized")
@@ -88,6 +92,7 @@ func newIncomingAncestryFetcher(idx *indexer.Client,
 		vtxo.IncomingVTXOExtras, error) {
 
 		scopedIndexer := idx.WithSigner(signerFactory(clientKey))
+		listPage := scopedIndexer.ListVTXOsByScriptsTaproot
 		query := func(ctx context.Context, script []byte, cursor []byte,
 			limit uint32) (*arkrpc.ListVTXOsByScriptsResponse,
 			error) {
@@ -100,10 +105,30 @@ func newIncomingAncestryFetcher(idx *indexer.Client,
 				PkScript: script,
 			}
 
-			return scopedIndexer.ListVTXOsByScriptsTaproot(
-				ctx, []indexer.TaprootScriptScope{scope},
-				cursor, limit, nil, /* statusFilter: any */
+			// Each cursor identifies a separate logical request.
+			// Hold its idempotency key across retries, never across
+			// pages.
+			var resp *arkrpc.ListVTXOsByScriptsResponse
+			err := issuePage(
+				ctx,
+				func(opts mailboxrpc.RPCOptions) error {
+					var err error
+					resp, err = listPage(
+						ctx,
+						[]indexer.TaprootScriptScope{
+							scope,
+						},
+						cursor,
+						limit,
+						nil,
+						opts,
+					)
+
+					return err
+				},
 			)
+
+			return resp, err
 		}
 
 		extras, err := vtxo.ResolveIncomingAncestry(
