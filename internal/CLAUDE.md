@@ -8,6 +8,9 @@ module.
 
 ## Sub-Packages
 
+- `internal/archtest` — Package dependency-graph tests: the leaf actors
+  `chainsource` and `txconfirm` transitively import no other actor package,
+  and every package defining a `Receive` method is classified.
 - `internal/actortest` — Durable actor integration tests using real DB backends (SQLite, Postgres), verifying at-least-once delivery, exactly-once dedup, FIFO ordering, and atomic state+outbox.
 - `internal/cmd/tools/accounting` — DB-backed admin command that reports ledger balances, event totals, and optional BTC/fiat valuation.
 - `internal/expiryfixture` — Signed round-direct and OOR-merge VTXO ancestry

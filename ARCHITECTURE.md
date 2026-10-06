@@ -98,6 +98,7 @@ package may import from a higher layer.
 | [`systest`](systest/) | System-level end-to-end tests |
 | [`internal/actortest`](internal/actortest/) | Durable actor integration tests with real DB backends |
 | [`internal/testutils`](internal/testutils/) | Deterministic key/signature generation for tests |
+| [`internal/archtest`](internal/archtest/) | Dependency-graph architecture tests (leaf actors `chainsource`/`txconfirm` import no other actor package; every actor package is classified) |
 | [`internal/expiryfixture`](internal/expiryfixture/) | Signed round-direct and OOR-merge VTXO ancestry fixtures for incoming-VTXO acceptance tests |
 | [`internal/indexerlimits`](internal/indexerlimits/) | Client-side bounds for indexer pagination cursors (defense-in-depth against misbehaving remotes) |
 | [`rules`](rules/) | ast-grep linting rules for code style enforcement |
