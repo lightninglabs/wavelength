@@ -328,13 +328,15 @@ func (a *VTXOActor) preflightAutoRefresh(ctx context.Context, event VTXOEvent) (
 	refreshThreshold := a.env.ExpiryConfig.CalculateRefreshThreshold(
 		liveState.VTXO,
 	)
-	if blocksRemaining <= refreshThreshold {
+	if blocksRemaining <= refreshThreshold &&
+		!a.env.ExpiryConfig.ShouldWaitForFreeRefreshWindow(
+			liveState.VTXO, height,
+		) {
 		return currentKey, false, nil
 	}
 
-	// The fresh window moved later while retaining the configured safety
-	// margin. Consume this epoch in LiveState and let the newly cached
-	// threshold trigger another preflight at the new boundary.
+	// Keep the input available while waiting for a free quote. Subsequent
+	// epochs recheck terms, including a window widened by the operator.
 	liveState.LastCheckedHeight = height
 	a.logger(ctx).DebugS(ctx, "Deferring automatic refresh to latest "+
 		"operator window",
@@ -416,8 +418,15 @@ func (a *VTXOActor) preflightCriticalExit(ctx context.Context,
 	if reason == "" {
 		reason = "exit funding is infeasible"
 	}
+	action := "cooperative_refresh"
+	if a.env.ExpiryConfig.ShouldWaitForFreeRefreshWindow(
+		desc, blockEvent.Height,
+	) {
+
+		action = "wait_for_free_refresh_window"
+	}
 	a.logger(ctx).InfoS(ctx, "Automatic expiry decision",
-		slog.String("action", "cooperative_refresh"),
+		slog.String("action", action),
 		slog.String("reason", reason),
 		slog.Int("height", int(blockEvent.Height)),
 		slog.Int("blocks_remaining", int(blocksRemaining)),

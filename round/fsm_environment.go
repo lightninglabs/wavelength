@@ -82,16 +82,14 @@ type ClientEnvironment struct {
 	// environment must supply a sentinel like math.MaxInt64.
 	MaxOperatorFee btcutil.Amount
 
-	// AutoRefreshFeeFloor is the optional fixed allowance in the automatic
-	// maintenance budget curve. The effective budget is the larger of this
-	// floor and AutoRefreshFeeRatePPM applied to automatically refreshed
-	// value, always clamped by MaxOperatorFee. Zero disables the floor.
+	// AutoRefreshFeeFloor is retained for configuration compatibility.
+	//
+	// Deprecated: automatic refresh always requires a zero fee.
 	AutoRefreshFeeFloor btcutil.Amount
 
-	// AutoRefreshFeeRatePPM is the optional proportional allowance in the
-	// automatic maintenance budget curve. Zero disables the proportional
-	// component. When both components are zero, only MaxOperatorFee
-	// applies.
+	// AutoRefreshFeeRatePPM is retained for configuration compatibility.
+	//
+	// Deprecated: automatic refresh always requires a zero fee.
 	AutoRefreshFeeRatePPM uint32
 
 	// Log is the logger for FSM transitions and operations.

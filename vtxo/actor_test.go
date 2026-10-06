@@ -675,7 +675,7 @@ func TestAutoRefreshRechecksFreeWindow(t *testing.T) {
 		h.store.AssertExpectations(t)
 	})
 
-	t.Run("disabled window preserves paid refresh", func(t *testing.T) {
+	t.Run("disabled window leaves input live", func(t *testing.T) {
 		t.Parallel()
 
 		h := newVTXOTestHarness(t)
@@ -688,11 +688,6 @@ func TestAutoRefreshRechecksFreeWindow(t *testing.T) {
 			return cachedWindow
 		}
 		h.withExpiryConfig(cfg)
-
-		h.store.On(
-			"UpdateVTXOStatus", h.ctx, desc.Outpoint,
-			VTXOStatusPendingForfeit,
-		).Return(nil).Once()
 
 		var fetches int
 		manager := newMockManagerRef(t)
@@ -713,8 +708,8 @@ func TestAutoRefreshRechecksFreeWindow(t *testing.T) {
 		)
 		_, err := result.Unpack()
 		require.NoError(t, err)
-		require.IsType(t, &PendingForfeitState{}, actor.state)
-		require.Len(t, manager.getMessages(), 1)
+		require.IsType(t, &LiveState{}, actor.state)
+		require.Empty(t, manager.getMessages())
 		require.Equal(t, 1, fetches)
 		h.store.AssertExpectations(t)
 	})

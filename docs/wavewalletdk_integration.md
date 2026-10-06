@@ -27,11 +27,10 @@ embedded `waved` config. Host apps that need to display or forward a concrete
 address should set it explicitly. See [signet.md](signet.md) for the built-in
 testnet3, testnet4, and signet endpoints.
 
-Automatic expiry maintenance always inherits the daemon's global
-`MaxOperatorFeeSat` limit. Hosts that want tighter unattended-spend policy can
-set `AutoRefreshFeeFloorSat` and `AutoRefreshFeeRatePPM`. Together they form
-one budget curve: the larger fixed or proportional allowance applies, always
-clamped by `MaxOperatorFeeSat`. Zero/zero leaves only the global cap in force.
+Automatic expiry maintenance waits for the advertised free window and only
+accepts zero-fee quotes. `MaxOperatorFeeSat` continues to bound manually
+requested paid operations. `AutoRefreshFeeFloorSat` and `AutoRefreshFeeRatePPM`
+are deprecated compatibility fields and cannot authorize automatic fees.
 
 1. Build a `wavewalletdk.Config`.
 2. Start the embedded daemon with `wavewalletdk.Start`, or connect to an external

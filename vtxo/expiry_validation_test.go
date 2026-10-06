@@ -134,9 +134,8 @@ func TestExpiryStatusUnknownString(t *testing.T) {
 	require.Equal(t, "unknown", ExpiryStatusUnknown.String())
 }
 
-// TestShouldWaitForFreeRefreshWindow verifies cohorting preserves a safe,
-// configured future waiver while disabled or too-late windows do not delay
-// maintenance.
+// TestShouldWaitForFreeRefreshWindow verifies automatic cohorts never bypass
+// the advertised waiver, including disabled and late windows.
 func TestShouldWaitForFreeRefreshWindow(t *testing.T) {
 	t.Parallel()
 
@@ -168,13 +167,13 @@ func TestShouldWaitForFreeRefreshWindow(t *testing.T) {
 			name:     "disabled window",
 			window:   0,
 			height:   800,
-			wantWait: false,
+			wantWait: true,
 		},
 		{
 			name:     "unsafe late window",
 			window:   40,
 			height:   800,
-			wantWait: false,
+			wantWait: true,
 		},
 	}
 
@@ -435,6 +434,11 @@ func TestExpiredStateBlockEpochQueuesRefresh(t *testing.T) {
 	h := newVTXOTestHarness(t)
 	vtxo := h.newTestDescriptor()
 	vtxo.BatchExpiry = 1_000
+
+	// Disabling pre-expiry maintenance must not suppress free reclaim.
+	cfg := DefaultExpiryConfig()
+	cfg.FreeRefreshWindow = func() uint32 { return 0 }
+	h.withExpiryConfig(cfg)
 
 	h.withState(&ExpiredState{VTXO: vtxo, ObservedHeight: 1_000})
 

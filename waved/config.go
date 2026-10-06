@@ -415,16 +415,14 @@ type Config struct {
 	// below any reasonable mainnet abuse threshold.
 	MaxOperatorFeeSat int64 `mapstructure:"maxoperatorfeesat"`
 
-	// AutoRefreshFeeFloorSat is the optional fixed allowance in the
-	// automatic maintenance budget curve. The effective budget is the
-	// larger of this floor and AutoRefreshFeeRatePPM applied to
-	// automatically refreshed value, always clamped by MaxOperatorFeeSat.
-	// Zero disables the floor.
+	// AutoRefreshFeeFloorSat is retained for configuration compatibility.
+	//
+	// Deprecated: automatic refresh always requires a zero fee.
 	AutoRefreshFeeFloorSat int64 `mapstructure:"autorefreshfeefloorsat"`
 
-	// AutoRefreshFeeRatePPM is the optional proportional allowance in the
-	// automatic maintenance budget curve. Zero disables this component.
-	// When both components are zero, only MaxOperatorFeeSat applies.
+	// AutoRefreshFeeRatePPM is retained for configuration compatibility.
+	//
+	// Deprecated: automatic refresh always requires a zero fee.
 	AutoRefreshFeeRatePPM uint32 `mapstructure:"autorefreshfeerateppm"`
 
 	// MaxPaymentCLTV is the largest total Lightning payment CLTV that

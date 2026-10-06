@@ -182,6 +182,11 @@ state transitions and validation rules live under [Invariants](#invariants).
 
 ## Invariants
 
+- **Automatic refresh requires a zero realised fee.** Any auto-origin intent
+  makes the entire client round subject to this rule, including mixed rounds
+  and every seal pass. Rejections release reservations; manually requested
+  paid operations retain the global fee cap. Legacy automatic fee-budget
+  fields remain accepted for compatibility but cannot authorize a charge.
 - **An automatic refresh cohort is admitted whole, within the verifier's
   proof-input budget.** Each cohort the VTXO manager produces is individually
   bounded, but the round actor could previously merge enough cohorts into one

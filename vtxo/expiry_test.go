@@ -7,9 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestFreeRefreshWindowThreshold verifies that an advertised waiver delays
-// automatic refresh only when the local retry and unilateral-exit buffers
-// remain intact.
+// TestFreeRefreshWindowThreshold verifies a late cached waiver cannot delay
+// the desired terms-lookup boundary. Refresh admission waits independently
+// for the free window while critical-exit handling keeps its own threshold.
 func TestFreeRefreshWindowThreshold(t *testing.T) {
 	t.Parallel()
 
@@ -96,9 +96,9 @@ func TestFreeRefreshWindowBoundary(t *testing.T) {
 	)
 }
 
-// TestMaxPaymentCLTVThreshold verifies automatic maintenance reserves the
-// configured Lightning payment window in addition to the VTXO-specific exit
-// and retry budgets. A later fee-waiver boundary must not erase that reserve.
+// TestMaxPaymentCLTVThreshold verifies the desired maintenance boundary adds
+// the payment reserve to the exit and retry budgets. A later waiver must not
+// suppress the early terms lookup, even though refresh admission must wait.
 func TestMaxPaymentCLTVThreshold(t *testing.T) {
 	t.Parallel()
 
@@ -120,7 +120,7 @@ func TestMaxPaymentCLTVThreshold(t *testing.T) {
 		return 500
 	}
 	require.Equal(t, int32(558), cfg.CalculateRefreshThreshold(desc))
-	require.False(t, cfg.ShouldWaitForFreeRefreshWindow(desc, 400))
+	require.True(t, cfg.ShouldWaitForFreeRefreshWindow(desc, 400))
 
 	cfg.FreeRefreshWindow = func() uint32 {
 		return 576
