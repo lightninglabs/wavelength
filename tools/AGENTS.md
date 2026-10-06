@@ -3,8 +3,8 @@
 ## Purpose
 
 Build-tooling package: pins Go tool dependencies (`tools.go`) and hosts
-`linters/`, a custom golangci-lint plugin enforcing an 80-column line
-limit that is tab- and log-call-aware.
+`linters/`, custom golangci-lint plugins enforcing the project line-length
+policy and semantic actor/protofsm invariants.
 
 ## Key Types
 
@@ -17,11 +17,14 @@ limit that is tab- and log-call-aware.
 - `linters.New(settings)` — Plugin constructor golangci-lint calls via
   `.custom-gcl.yml`; fills default line length (80), tab width (8),
   and log regex when unset.
+- `linters.FrameworkPlugin` — Type-aware analyzer for durable actor TLV
+  schemas, protofsm transition tables, detached Ask lifetimes, and actor
+  transaction deadlocks.
 
 ## Relationships
 
 - **Depends on**: `golangci-lint`/`plugin-module-register`,
-  `golang.org/x/tools/go/analysis` (analyzer framework).
+  `golang.org/x/tools/go/analysis` (analyzer framework), and its SSA pass.
 - **Depended on by**: `make lint` / `make lint-changed` /
   `make install-custom-gcl` (builds `custom-gcl` per
   `.custom-gcl.yml`, which registers this module as a plugin).
