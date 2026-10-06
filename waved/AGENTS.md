@@ -23,7 +23,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   validate input locally then `Ask` the relevant actor; `GetRound` and
   `ListVTXOs` merge live actor state with persisted SQL rows, while
   `GetFeeHistory` and `ListTransactions` are pure SQL reads
-  (`rpc_fees.go`).
+  (`rpc_fees.go`). `GetFeeHistory` has two page modes. Setting
+  `after_entry_id` or `event_types` selects ascending cursor mode. Otherwise
+  it uses the legacy newest-first offset mode. A request that mixes a
+  non-zero `offset` with cursor fields is rejected with `InvalidArgument`.
 - `Config` — daemon configuration: wallet backend selection, mailbox/chain
   backend wiring, `OORConfig`/`OORLimitsConfig` (receive safety caps),
   `UnrollConfig` (unilateral-exit fee-bump cadence and cap), `HealthConfig`
