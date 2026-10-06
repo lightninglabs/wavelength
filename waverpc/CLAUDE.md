@@ -56,3 +56,9 @@ helper file (`errors.go`) for structured wallet-lifecycle errors.
   `policy_authorized` after the operator accepts that proof, including empty
   responses. Callers supplying a policy must reject a false flag: old daemons
   ignore unknown request fields and cannot establish this capability.
+- Asset quantities use `uint64` asset units and remain separate from Bitcoin
+  carrier satoshis. `ListVTXOs.asset_ref` accepts canonical SDK references and
+  filters stored and pending-round entries alike. `GetBalance.asset_balances`
+  reports confirmed live holdings by asset; those carriers are excluded from
+  the Bitcoin spendable balance. Listing responses expose the commitment root,
+  but never the sealed transfer package.

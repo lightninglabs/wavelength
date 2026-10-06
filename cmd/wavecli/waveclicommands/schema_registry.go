@@ -868,6 +868,12 @@ func arkVTXOMethodRegistry() []schemaMethod {
 						"--fields",
 				},
 				{
+					Name: "asset-ref",
+					Type: "string",
+					Description: "filter by canonical " +
+						"asset reference",
+				},
+				{
 					Name:        "min-amount",
 					Type:        "int64",
 					Description: "minimum amount in sats",
