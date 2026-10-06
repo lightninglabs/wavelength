@@ -95,3 +95,37 @@ func TestWithTurnForTest(t *testing.T) {
 	_, ok = TurnActor(ctx)
 	require.False(t, ok)
 }
+
+// ctxKeyForTest is a context key for the WithoutTurn test.
+type ctxKeyForTest struct{}
+
+// TestWithoutTurn checks that WithoutTurn clears the turn marker and an
+// await exemption, keeps other values and cancellation, and returns a context
+// with no turn unchanged.
+func TestWithoutTurn(t *testing.T) {
+	plain := context.WithValue(
+		context.Background(), ctxKeyForTest{}, "kept",
+	)
+	require.Equal(t, plain, WithoutTurn(plain))
+
+	turnCtx, end := WithTurnForTest(plain, "host")
+	defer end()
+
+	turnCtx = AllowAwaitInTurn(turnCtx, "test")
+	turnCtx, cancel := context.WithCancel(turnCtx)
+
+	stripped := WithoutTurn(turnCtx)
+
+	_, ok := TurnActor(stripped)
+	require.False(t, ok)
+	require.False(t, awaitAllowed(stripped))
+	require.Equal(t, "kept", stripped.Value(ctxKeyForTest{}))
+
+	// The original is untouched.
+	_, ok = TurnActor(turnCtx)
+	require.True(t, ok)
+
+	// Cancellation still propagates.
+	cancel()
+	require.Error(t, stripped.Err())
+}

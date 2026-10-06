@@ -124,6 +124,22 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   `awaitFuture` helper, which uses `awaitInternal` for this package's own
   futures and falls back to the public `Await` for any foreign `Future`
   implementation, so framework helpers never trip the guard.
+- `WithoutTurn(ctx)` — Returns ctx with its turn marker (and any
+  `AllowAwaitInTurn` exemption) cleared, keeping every other value and the
+  cancellation. Use it to hand a context to a goroutine or component that
+  outlives the turn and must not be treated as the actor; protofsm's `Start`
+  applies it to the driver context. Without it a driver started from a turn
+  inherits the host's marker, so its own awaits are refused as in-turn waits and
+  logged against, or registered as edges of, the wrong actor. A context with no
+  turn is returned unchanged.
+- `AllowAwaitInTurn(ctx, reason)` — Returns a context under which one
+  `Await` skips the policy, for a bounded wait whose callee provably never
+  calls back (directly or transitively). An empty reason is ignored, so the
+  exemption always carries an explanation. `beginTurn` clears the marker, so
+  it does not ride along on an `Ask` into the callee's own turn. The wait
+  still registers with the wait cycle detector, so a callee that does call
+  back gets `ErrWaitCycle` instead of hanging. Derive the context right at the
+  `Await`, not at the top of a behavior.
 - `ErrWaitCycle` / `WaitCycle` / `SetWaitCycleHook(hook)` — Runtime backstop
   for a cycle of turns that each `Await` another actor's reply (including an
   actor awaiting itself). Such an `Await` returns an error wrapping
@@ -244,7 +260,28 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   process can switch to `AwaitInTurnError`. Awaiting from outside a turn, from
   a goroutine that outlives the turn, or on an already-complete future is
   always fine. Awaits that live in this package's own helper goroutines go
-  through `awaitInternal` (or `awaitFuture`) and must keep doing so.
+  through `awaitInternal` (or `awaitFuture`) and must keep doing so. Two
+  exemptions keep a future default of `AwaitInTurnError` free of false
+  positives: protofsm's `AskEvent` returns a driver future whose `Await` goes
+  through `OnComplete`, because the state machine's driver goroutine belongs to
+  the caller and the wait is not on another actor's mailbox; and
+  `AllowAwaitInTurn` marks a single reviewed wait.
+- **`actorblock` enforces the two turn rules statically.** The analyzer in
+  `tools/linters/actorblock` (run by `make lint` through `custom-gcl`, and by
+  `make actorblock-check`) walks statically resolved calls from every
+  `Receive`, from functions given to `NewFunctionBehavior`, and from protofsm
+  `State.ProcessEvent` and outbox `Dispatch` methods, across helpers
+  and packages, and reports (a) a reachable `Future.Await` and (b) a `Tell` or
+  `Ask` whose context is clearly not derived from the turn context
+  (`context.Background()`, `context.TODO()`, or a field). Fix a finding with
+  `AskThen`, `DetachAskPromise`, or the turn context, or exempt a safe site
+  with `//actor:allow-await <reason>` / `//actor:allow-send <reason>` on the
+  call line or the line above (the reason is mandatory). Legacy sites live in
+  `tools/linters/actorblock_baseline.txt`, which can only shrink. It does not
+  follow interface dispatch, function values, or reflection, and it ignores
+  `go` statements and callbacks given to `OnComplete`, `ThenApply` and
+  `AskThen`, so a clean run is not proof that no turn can block. The runtime
+  `AwaitInTurnPolicy` and `ErrWaitCycle` backstops cover what it cannot see.
 - **An `AskThen` reply is delivered at most once, and may be stale or never
   arrive, so a pending entry needs its own expiry.** `wrap` is applied to one
   result, but delivering it to `self` is best effort: it is lost if `self` has
@@ -283,8 +320,8 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   caller can be reported as a cycle that does not exist, and a real cycle
   through the actual completer is missed. A wait that passes through a state
   machine's driver goroutine is also missed: protofsm `StateMachine.Receive`
-  awaits an untargeted `AskEvent` future, and the driver may itself wait on
-  other actors. An edge also stops counting once the reply it waits on has been
+  awaits an untargeted `AskEvent` driver future, and the driver may itself wait
+  on other actors. An edge also stops counting once the reply it waits on has been
   delivered (a derived `ThenApply` or `MapRef` future checks the root actor
   future's completion, not its own), so an actor that already holds its reply
   but has not yet removed its edge never looks blocked. An actor can have

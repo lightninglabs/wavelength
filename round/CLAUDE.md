@@ -90,6 +90,9 @@ state transitions and validation rules live under [Invariants](#invariants).
   exactly one `IsChange=true` across the assembled intent.
 - `ConfirmationEvent`, `TimeoutMsg` — chain confirmation / timeout
   delivery to the actor.
+- `boardingIntentsReply` — the wallet's answer to a board trigger's
+  confirmed-boarding-intents query, sent by the actor to itself through
+  `actor.AskThen`. Internal to the package.
 - VTXO-actor messages (`vtxo_messages.go`): `ForfeitRequestEvent`,
   `ForfeitConfirmedEvent`, `BlockEpochEvent`, `SpendReserveEvent`,
   `SpendReleasedEvent`, `SpendCompletedEvent`, `ForfeitReleasedEvent`,
@@ -423,6 +426,21 @@ state transitions and validation rules live under [Invariants](#invariants).
   collaborative leaf when the live output uses a custom script policy;
   without it the VTXO actor would build a forfeit against the wrong
   tapscript branch.
+- **A board trigger never waits on the wallet inside a turn.** The wallet
+  Asks the round actor (`RegisterIntentMsg` and others) from its own
+  handlers, so a round turn parked on the wallet would close a circular
+  wait. `handleTriggerBoard` validates the amounts, appends to
+  `boardQueue`, and sends the wallet query with `actor.AskThen`;
+  `handleBoardingIntentsReply` runs the registration in a later turn. At
+  most one query is in flight, which keeps registrations serialized (two
+  concurrent fetches could let two triggers naming one outpoint both see
+  it as confirmed). No FSM or keyring state changes before the reply
+  turn. The Ask timeout is `WalletAskTimeout`. AskThen always delivers
+  one reply (the answer or an ask-timeout error) to a live actor, so
+  queue entries are never expired. Start's registration Ask is still a
+  blocking Ask, but Start runs on the boot goroutine, not the receive
+  goroutine, and `RegisterWithSystem` starts the receive loop first, so
+  the wallet's Asks are served concurrently and no circular wait forms.
 
 ## Deep Docs
 

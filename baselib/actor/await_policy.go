@@ -66,6 +66,43 @@ func currentAwaitInTurnPolicy() AwaitInTurnPolicy {
 	return AwaitInTurnPolicy(awaitInTurnPolicy.Load())
 }
 
+// awaitAllowedKey is the context key under which AllowAwaitInTurn records the
+// reason a bounded wait is exempt from the await-in-turn policy.
+type awaitAllowedKey struct{}
+
+// AllowAwaitInTurn returns a context under which Future.Await skips the
+// await-in-turn policy, for the one wait that is safe even though it parks the
+// actor's mailbox. It is an escape hatch for a wait the author can show cannot
+// deadlock: the callee never sends to, asks, or otherwise waits on the calling
+// actor, directly or through anything it calls. The wait should also carry a
+// deadline, but nothing here checks that. Prefer AskThen or DetachAskPromise
+// everywhere else.
+//
+// The reason is a sentence for the reader of the call site that says why the
+// wait cannot be part of a cycle. An empty reason is ignored and the returned
+// context stays subject to the policy, so the exemption cannot be added
+// without an explanation.
+//
+// The exemption covers only the policy. The wait is still tracked by the wait
+// cycle detector, so a callee that does wait on the caller is reported as
+// ErrWaitCycle instead of hanging. Derive the context immediately before the
+// Await rather than at the top of the behavior, so the exemption does not
+// cover later waits that were not reviewed.
+func AllowAwaitInTurn(ctx context.Context, reason string) context.Context {
+	if reason == "" {
+		return ctx
+	}
+
+	return context.WithValue(ctx, awaitAllowedKey{}, reason)
+}
+
+// awaitAllowed reports whether ctx carries an exemption from AllowAwaitInTurn.
+func awaitAllowed(ctx context.Context) bool {
+	_, ok := ctx.Value(awaitAllowedKey{}).(string)
+
+	return ok
+}
+
 // checkAwaitInTurn applies the await-in-turn policy to an Await called with a
 // context that may belong to a running turn. It returns nil when the await may
 // proceed and ErrAwaitInTurn when it must not. It must be called directly from
@@ -77,7 +114,7 @@ func checkAwaitInTurn(ctx context.Context) error {
 	}
 
 	t, ok := activeTurn(ctx)
-	if !ok {
+	if !ok || awaitAllowed(ctx) {
 		return nil
 	}
 

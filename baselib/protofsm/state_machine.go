@@ -209,6 +209,11 @@ func NewStateMachine[InternalEvent any, OutboxEvent any, Env Environment](
 func (s *StateMachine[InternalEvent, OutboxEvent, Env]) Start(
 	ctx context.Context) {
 
+	// The driver outlives whatever turn called Start and is not the hosting
+	// actor, so it must not inherit that turn's marker. Otherwise its own
+	// awaits would be judged as in-turn waits of the host.
+	ctx = actor.WithoutTurn(ctx)
+
 	s.startOnce.Do(func() {
 		_ = s.gm.Go(ctx, func(ctx context.Context) {
 			s.driveMachine(ctx)
@@ -258,7 +263,8 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) AskEvent(
 
 	s.log.Debugf("Asking event %T", event)
 
-	// Create a promise to signal completion and return results.
+	// Create a promise to signal completion and return results. Every
+	// future returned below is wrapped, see driverFuture.
 	promise := actor.NewPromise[[]OutboxEvent]()
 
 	req := syncEventRequest[InternalEvent, OutboxEvent]{
@@ -275,12 +281,12 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) AskEvent(
 			),
 		)
 
-		return promise.Future()
+		return driverFuture[[]OutboxEvent]{promise.Future()}
 
 	case <-s.quit:
 		promise.Complete(fn.Err[[]OutboxEvent](ErrStateMachineShutdown))
 
-		return promise.Future()
+		return driverFuture[[]OutboxEvent]{promise.Future()}
 
 	default:
 	}
@@ -301,7 +307,7 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) AskEvent(
 		promise.Complete(fn.Err[[]OutboxEvent](ErrStateMachineShutdown))
 	}
 
-	return promise.Future()
+	return driverFuture[[]OutboxEvent]{promise.Future()}
 }
 
 // Receive processes a message and returns a Result containing the accumulated
@@ -319,11 +325,10 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) Receive(
 	e ActorMessage[InternalEvent]) fn.Result[[]OutboxEvent] {
 
 	// Use AskEvent to process the event and get the outbox events back.
-	future := s.AskEvent(ctx, e.Event)
-
-	// Await the result which will contain the accumulated outbox events
-	// from all state transitions triggered by this event.
-	return future.Await(ctx)
+	// The future is completed by this machine's own driver goroutine, so
+	// awaiting it is the actor handing its turn to the machine it hosts,
+	// not a wait on another actor. See driverFuture.
+	return s.AskEvent(ctx, e.Event).Await(ctx)
 }
 
 // CurrentState returns the current state of the state machine, waiting up to
@@ -651,4 +656,33 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) driveMachine(
 			return
 		}
 	}
+}
+
+// driverFuture is the Future AskEvent returns. It is completed by the state
+// machine's driver goroutine, which belongs to the caller: a behavior that
+// hosts the machine and asks it for an event is handing the work to its own
+// helper and waiting for the answer. Awaiting it from a receive turn therefore
+// is not the wait on another actor's mailbox that the await-in-turn policy
+// guards against, and it must not be refused as one.
+//
+// Await waits through OnComplete, which runs the wait on a helper goroutine
+// exempt from the policy, instead of widening the actor package's API. The
+// driver can still call other actors while it runs, which keeps this wait
+// invisible to the wait cycle detector; such a call must not wait on the actor
+// that hosts the machine.
+type driverFuture[T any] struct {
+	actor.Future[T]
+}
+
+// Await blocks until the driver completes the future or ctx is done, without
+// consulting the await-in-turn policy.
+func (f driverFuture[T]) Await(ctx context.Context) fn.Result[T] {
+	// OnComplete reports the context's error when ctx ends first, so the
+	// callback always runs exactly once.
+	res := make(chan fn.Result[T], 1)
+	f.Future.OnComplete(ctx, func(r fn.Result[T]) {
+		res <- r
+	})
+
+	return <-res
 }
