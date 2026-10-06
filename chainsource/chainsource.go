@@ -375,7 +375,7 @@ func (a *ChainSourceActor) handleRegisterConf(ctx context.Context,
 		FinalityDepth: a.cfg.FinalityDepth,
 	}
 	confActor := NewConfActor(confCfg)
-	actorRef := serviceKey.Spawn(a.cfg.System, actorID, confActor)
+	actorRef := spawnReplacing(a, serviceKey, actorID, confActor)
 
 	// We block on this as we want to know if the subscription could be
 	// created or not, so we can notify the caller.
@@ -411,7 +411,7 @@ func (a *ChainSourceActor) handleRegisterSpend(ctx context.Context,
 		FinalityDepth: a.cfg.FinalityDepth,
 	}
 	spendActor := NewSpendActor(spendCfg)
-	actorRef := serviceKey.Spawn(a.cfg.System, actorID, spendActor)
+	actorRef := spawnReplacing(a, serviceKey, actorID, spendActor)
 
 	// We block on this as we want to know if the subscription could be
 	// created or not, so we can notify the caller.
@@ -435,7 +435,7 @@ func (a *ChainSourceActor) handleSubscribeBlocks(ctx context.Context,
 		Log:     fn.Some(a.logger(ctx)),
 	}
 	epochActor := NewBlockEpochActor(epochCfg)
-	actorRef := serviceKey.Spawn(a.cfg.System, actorID, epochActor)
+	actorRef := spawnReplacing(a, serviceKey, actorID, epochActor)
 
 	return convertSubActorResult(
 		actorRef.Ask(ctx, req).Await(ctx),
@@ -503,6 +503,24 @@ func (a *ChainSourceActor) handleUnsubscribeBlocks(ctx context.Context,
 	unregisterByServiceKey(a, serviceKey)
 
 	return fn.Ok[ChainSourceResp](&UnsubscribeBlocksResponse{})
+}
+
+// spawnReplacing stops any subscription actor already registered under
+// serviceKey and spawns behavior in its place. The actor ID is derived from the
+// same caller and request fields as the service key, so a second registration
+// for the same subscription reuses the ID. Spawning without stopping the first
+// would overwrite it in the actor system's map, leaving an instance that
+// neither unregistration nor system shutdown can reach. That happens when a
+// caller retries a registration whose answer it never saw, for example after
+// its ask timed out while the first attempt was still queued here. Replacing
+// keeps exactly one live subscription per key.
+func spawnReplacing[Req, Resp actor.Message](a *ChainSourceActor,
+	serviceKey actor.ServiceKey[Req, Resp], actorID string,
+	behavior actor.ActorBehavior[Req, Resp]) actor.ActorRef[Req, Resp] {
+
+	unregisterByServiceKey(a, serviceKey)
+
+	return serviceKey.Spawn(a.cfg.System, actorID, behavior)
 }
 
 // unregisterByServiceKey is a generic helper that finds and unregisters all
