@@ -7,7 +7,6 @@ import (
 	"net/http"
 
 	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -57,7 +56,7 @@ func (c *StreamClient[T]) Recv() (*T, error) {
 
 			_ = c.resp.Body.Close()
 
-			return nil, status.Error(code, chunk.Error.Message)
+			return nil, chunk.Error.Status(code).Err()
 		}
 		if len(chunk.Result) == 0 {
 			continue

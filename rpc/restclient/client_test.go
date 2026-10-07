@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -196,6 +197,42 @@ func TestGatewayStatusError(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, codes.NotFound, status.Code(err))
 	require.ErrorContains(t, err, "missing")
+}
+
+// TestGatewayStatusErrorDetails verifies a known status detail in a gateway
+// error body is rebuilt on the status, and an unknown detail type is skipped
+// without changing the code or message.
+func TestGatewayStatusErrorDetails(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"code":9,"message":"existing credit pay is in ` +
+		`state released","details":[` +
+		`{"@type":"type.googleapis.com/example.Unknown","x":"y"},` +
+		`{"@type":"type.googleapis.com/google.rpc.ErrorInfo",` +
+		`"reason":"CREDIT_PAY_RELEASED",` +
+		`"domain":"swapdk.lightning.engineering"}]}`)
+
+	err := GatewayStatusError(http.StatusBadRequest, body)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.ErrorContains(
+		t, err, "existing credit pay is in state released",
+	)
+
+	details := status.Convert(err).Details()
+	require.Len(t, details, 1)
+	info, ok := details[0].(*errdetails.ErrorInfo)
+	require.True(t, ok)
+	require.Equal(t, "CREDIT_PAY_RELEASED", info.GetReason())
+	require.Equal(t, "swapdk.lightning.engineering", info.GetDomain())
+
+	// Only unknown details still yields the right code and message.
+	err = GatewayStatusError(http.StatusBadRequest, []byte(
+		`{"code":3,"message":"bad","details":[`+
+			`{"@type":"type.googleapis.com/example.Unknown"}]}`,
+	))
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Equal(t, "bad", status.Convert(err).Message())
+	require.Empty(t, status.Convert(err).Details())
 }
 
 // TestWalletStream verifies grpc-gateway stream chunks are decoded into the
