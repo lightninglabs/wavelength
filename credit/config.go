@@ -151,6 +151,12 @@ var ErrPayRejected = errors.New("pay rejected")
 // redelivered.
 var ErrRedeemRejected = errors.New("redeem rejected")
 
+// ErrTopUpRejected marks a CreateCredit failure for an Ark top-up that is
+// final for the operation: the swap server refused the amount before it created
+// an operation, so no server state exists that could complete it later. The
+// operation fails instead of being redelivered.
+var ErrTopUpRejected = errors.New("top-up rejected")
+
 // CreditServer is the swap-server credit and pay surface the credit actor uses.
 // Every method is idempotent by the supplied idempotency key (CreateCredit /
 // RedeemCredit) or by the invoice payment hash (StartPay), so a crashed turn
@@ -158,6 +164,10 @@ var ErrRedeemRejected = errors.New("redeem rejected")
 type CreditServer interface {
 	// CreateCredit starts (or returns the existing) server credit funding
 	// operation for this idempotency key.
+	//
+	// An error wrapping ErrTopUpRejected on an Ark top-up means the amount
+	// was refused before the server created anything, so it can never
+	// succeed on retry. Any other error is treated as retryable.
 	CreateCredit(ctx context.Context, accountPubKey []byte,
 		idempotencyKey string, source CreditSource, amountSat uint64,
 		memo string) (*CreateCreditResult, error)

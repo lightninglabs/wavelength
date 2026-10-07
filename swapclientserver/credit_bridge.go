@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"slices"
 
 	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
@@ -33,6 +34,12 @@ var _ credit.CreditServer = (*creditServerBridge)(nil)
 // CreateCredit forwards to the swap subserver's CreateCredit handler. The
 // account pubkey is resolved by the daemon from its own identity, so the
 // supplied accountPubKey is intentionally ignored here.
+//
+// A top-up the server refuses with the below-floor reason is wrapped with
+// credit.ErrTopUpRejected so the operation fails instead of being redelivered.
+// The match is on the reason alone: the same InvalidArgument code also covers
+// the expired replay of an existing top-up, which stays retryable. Receive
+// credits are returned as is.
 func (b *creditServerBridge) CreateCredit(ctx context.Context, _ []byte,
 	idempotencyKey string, source credit.CreditSource, amountSat uint64,
 	memo string) (*credit.CreateCreditResult, error) {
@@ -48,6 +55,11 @@ func (b *creditServerBridge) CreateCredit(ctx context.Context, _ []byte,
 		AmountSat:      amountSat,
 		Memo:           memo,
 	})
+	if source == credit.SourceArkTopUp && status.Code(err) ==
+		codes.InvalidArgument &&
+		hasCreditReason(err, creditReasonTopUpBelowFloor) {
+		return nil, fmt.Errorf("%w: %w", credit.ErrTopUpRejected, err)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -175,6 +187,12 @@ const (
 	// creditReasonShortfall marks a new pay refused for lack of credit
 	// before anything was reserved or debited.
 	creditReasonShortfall = "CREDIT_SHORTFALL"
+
+	// creditReasonTopUpBelowFloor marks a new Ark top-up refused because
+	// its amount is below the operator VTXO floor. The server sends it
+	// before it creates an operation, and not for the expired replay of an
+	// existing top-up.
+	creditReasonTopUpBelowFloor = "CREDIT_TOPUP_BELOW_FLOOR"
 )
 
 // isPayRejection reports a StartPay error that the swap client or swap server
@@ -195,25 +213,25 @@ func isPayRejection(err error) bool {
 		return true
 
 	case codes.FailedPrecondition:
-		return hasTerminalCreditReason(err)
+		return hasCreditReason(
+			err, creditReasonPayReleased, creditReasonShortfall,
+		)
 
 	default:
 		return false
 	}
 }
 
-// hasTerminalCreditReason reports whether the status in err carries an
-// ErrorInfo detail naming one of the credit pay reasons that no retry can
-// clear.
-func hasTerminalCreditReason(err error) bool {
+// hasCreditReason reports whether the status in err carries an ErrorInfo
+// detail in the swap server's credit domain naming one of the given reasons.
+func hasCreditReason(err error, reasons ...string) bool {
 	for _, detail := range status.Convert(err).Details() {
 		info, ok := detail.(*errdetails.ErrorInfo)
 		if !ok || info.GetDomain() != creditErrorDomain {
 			continue
 		}
 
-		switch info.GetReason() {
-		case creditReasonPayReleased, creditReasonShortfall:
+		if slices.Contains(reasons, info.GetReason()) {
 			return true
 		}
 	}

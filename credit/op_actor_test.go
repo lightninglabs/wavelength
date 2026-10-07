@@ -181,6 +181,7 @@ type fakeServer struct {
 	startPayCnt int
 	startPayErr error
 	redeemErr   error
+	createErr   error
 	createState ServerCreditState
 	redeemState ServerCreditState
 	receiveHash []byte
@@ -209,6 +210,9 @@ func (s *fakeServer) CreateCredit(_ context.Context, _ []byte,
 	defer s.mu.Unlock()
 
 	s.createCalls[idempotencyKey]++
+	if s.createErr != nil {
+		return nil, s.createErr
+	}
 
 	op, ok := s.ops[idempotencyKey]
 	if !ok {
@@ -1139,6 +1143,50 @@ func TestPayStartTransportErrorStaysRetryable(t *testing.T) {
 	require.Error(t, driveTurn(b, &fakeExec{}))
 	require.False(t, b.terminalCommitted)
 	require.Equal(t, string(StatePaying), b.rec.State)
+	require.Empty(t, b.rec.LastError)
+}
+
+// TestTopupCreateRejectionFails asserts that a top-up the swap server refuses
+// before creating anything terminal-fails the operation in the same turn
+// instead of returning an error that would redeliver the message forever, and
+// that a later resume never asks for the top-up again.
+func TestTopupCreateRejectionFails(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	server, daemon := newFakeServer(), newFakeDaemon()
+	server.createErr = fmt.Errorf("%w: below floor", ErrTopUpRejected)
+	b := testBehavior("op1", store, server, daemon)
+	admitTopupPay(t, b, store)
+
+	require.NoError(t, driveTurn(b, &fakeExec{}))
+	require.True(t, b.terminalCommitted)
+	require.Equal(t, string(StateFailed), b.rec.State)
+	require.Contains(t, b.rec.LastError, "below floor")
+
+	got, err := store.GetOperation(context.Background(), "op1")
+	require.NoError(t, err)
+	require.Equal(t, db.CreditOpStatusFailed, got.Status)
+
+	require.NoError(t, driveTurn(b, &fakeExec{}))
+	require.Equal(t, 1, server.createCalls["pay:abc"])
+}
+
+// TestTopupCreateInvalidArgumentStaysRetryable asserts that a CreateCredit
+// failure that is not marked as a final top-up rejection, such as an untagged
+// InvalidArgument from the expired replay of an existing top-up, still returns
+// an error so the message is redelivered.
+func TestTopupCreateInvalidArgumentStaysRetryable(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	server, daemon := newFakeServer(), newFakeDaemon()
+	server.createErr = status.Error(codes.InvalidArgument, "expired")
+	b := testBehavior("op1", store, server, daemon)
+	admitTopupPay(t, b, store)
+
+	require.Error(t, driveTurn(b, &fakeExec{}))
+	require.False(t, b.terminalCommitted)
 	require.Empty(t, b.rec.LastError)
 }
 

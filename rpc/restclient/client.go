@@ -11,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 
-	// Registers google.rpc.ErrorInfo so its details decode from a gateway
-	// error body.
 	_ "google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
