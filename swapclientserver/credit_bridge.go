@@ -13,6 +13,8 @@ import (
 	"github.com/lightninglabs/wavelength/sdk/swaps"
 	"github.com/lightninglabs/wavelength/waved"
 	"github.com/lightninglabs/wavelength/waverpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // creditServerBridge adapts the daemon swap subserver to the credit
@@ -112,6 +114,10 @@ func (b *creditServerBridge) RedeemCredit(ctx context.Context, _ []byte,
 
 // StartPay forwards to the swap subserver's StartPay handler, which dedups by
 // payment hash and starts (or reuses) the background pay worker.
+//
+// A refusal that can never succeed on retry is wrapped with
+// credit.ErrPayRejected so the credit operation fails instead of being
+// redelivered. Everything else, including transport errors, is returned as is.
 func (b *creditServerBridge) StartPay(ctx context.Context, invoice string,
 	maxFeeSat, maxCreditSat uint64) error {
 
@@ -120,8 +126,41 @@ func (b *creditServerBridge) StartPay(ctx context.Context, invoice string,
 		MaxFeeSat:    maxFeeSat,
 		MaxCreditSat: maxCreditSat,
 	})
+	if err == nil || !isPayRejection(err) {
+		return err
+	}
 
-	return err
+	// A rejection only proves nothing was started when this daemon holds
+	// no swap for the invoice. An earlier StartPay of this operation may
+	// have created one and been lost before the credit operation recorded
+	// it, and the swap server then refuses the repeat. Failing would report
+	// FAILED for a pay that is already underway or done, so an existing or
+	// unknowable record keeps the error retryable.
+	known, probeErr := b.svc.hasSwapForInvoice(ctx, invoice)
+	if probeErr != nil || known {
+		return err
+	}
+
+	return fmt.Errorf("%w: %w", credit.ErrPayRejected, err)
+}
+
+// isPayRejection reports a StartPay error that the swap client or swap server
+// returns as a final refusal of the request: an invalid argument, which covers
+// a malformed invoice and the swap server's max-fee rejection, or an
+// unimplemented method on a swap server that does not support the pay. Both are
+// returned before the pay swap is funded, so a rejection never leaves anything
+// that could complete the pay. The code is read from the status the handler
+// preserves through its wrapping, so a transport failure (Unavailable,
+// DeadlineExceeded, Canceled) and an error without a status (Unknown) never
+// match.
+func isPayRejection(err error) bool {
+	switch status.Code(err) {
+	case codes.InvalidArgument, codes.Unimplemented:
+		return true
+
+	default:
+		return false
+	}
 }
 
 // creditDaemonBridge adapts the daemon and Ark facade to the credit

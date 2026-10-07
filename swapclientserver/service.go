@@ -1699,6 +1699,39 @@ func (s *swapClientService) pendingSwapForInvoice(ctx context.Context,
 	}, true, nil
 }
 
+// hasSwapForInvoice reports whether the daemon holds any swap record, in any
+// state or direction, for the invoice's payment hash. An invoice that cannot be
+// decoded has no payment hash and so no record. When the invoice cannot be
+// decoded for lack of chain parameters, or the store cannot be read, the answer
+// is unknown and an error is returned.
+func (s *swapClientService) hasSwapForInvoice(ctx context.Context,
+	invoice string) (bool, error) {
+
+	if s.chainParams == nil {
+		return false, fmt.Errorf("chain params are not configured")
+	}
+
+	decoded, err := zpay32.Decode(
+		strings.TrimSpace(invoice), s.chainParams,
+	)
+	if err != nil || decoded.PaymentHash == nil {
+		return false, nil
+	}
+
+	hash := lntypes.Hash(*decoded.PaymentHash)
+	_, err = s.client.GetSwapSummary(ctx, hash)
+	switch {
+	case err == nil:
+		return true, nil
+
+	case errors.Is(err, swaps.ErrSwapSummaryNotFound):
+		return false, nil
+
+	default:
+		return false, err
+	}
+}
+
 // ResumeSwap is a manual wake-up path for a persisted swap. It does not create
 // an independent execution path: if a worker for the payment hash is already
 // active, the existing worker remains the sole owner and the current summary is

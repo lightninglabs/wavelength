@@ -3,6 +3,7 @@ package credit
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -1078,6 +1079,63 @@ func TestPayTopupTransportErrorStaysRetryable(t *testing.T) {
 	require.Error(t, driveTurn(b, &fakeExec{}))
 	require.False(t, b.terminalCommitted)
 	require.NotEqual(t, string(StateFailed), b.rec.State)
+}
+
+// admitPay admits a pay that needs no top-up, so StartPay is the next step.
+func admitPay(t *testing.T, b *opBehavior, store Store) {
+	t.Helper()
+
+	admit(t, b, store, &StartCreditPayRequest{
+		OpKey:        "pay:abc",
+		Invoice:      "lnbc1",
+		PaymentHash:  payHash(),
+		AmountSat:    500,
+		MaxCreditSat: 500,
+	})
+}
+
+// TestPayStartRejectionFails asserts that a pay the swap client refuses
+// outright terminal-fails the operation in the same turn instead of returning
+// an error that would redeliver the message forever, and that a later resume
+// never starts the pay again.
+func TestPayStartRejectionFails(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	server, daemon := newFakeServer(), newFakeDaemon()
+	server.startPayErr = fmt.Errorf("%w: invoice rejected", ErrPayRejected)
+	b := testBehavior("op1", store, server, daemon)
+	admitPay(t, b, store)
+
+	require.NoError(t, driveTurn(b, &fakeExec{}))
+	require.True(t, b.terminalCommitted)
+	require.Equal(t, string(StateFailed), b.rec.State)
+	require.Contains(t, b.rec.LastError, "invoice rejected")
+
+	got, err := store.GetOperation(context.Background(), "op1")
+	require.NoError(t, err)
+	require.Equal(t, db.CreditOpStatusFailed, got.Status)
+
+	require.NoError(t, driveTurn(b, &fakeExec{}))
+	require.Equal(t, 1, server.startPayCnt)
+}
+
+// TestPayStartTransportErrorStaysRetryable asserts that a StartPay failure
+// that is not a final rejection still returns an error, so the durable message
+// is redelivered and the idempotent pay is reissued.
+func TestPayStartTransportErrorStaysRetryable(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	server, daemon := newFakeServer(), newFakeDaemon()
+	server.startPayErr = status.Error(codes.Unavailable, "connection lost")
+	b := testBehavior("op1", store, server, daemon)
+	admitPay(t, b, store)
+
+	require.Error(t, driveTurn(b, &fakeExec{}))
+	require.False(t, b.terminalCommitted)
+	require.Equal(t, string(StatePaying), b.rec.State)
+	require.Empty(t, b.rec.LastError)
 }
 
 // TestRedeemReserveIdempotentAcrossRestart asserts a restart mid-redemption
