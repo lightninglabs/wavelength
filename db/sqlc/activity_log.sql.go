@@ -85,7 +85,7 @@ func (q *Queries) DeleteActivityEventsByCanonicalID(ctx context.Context, canonic
 }
 
 const GetActivityEntry = `-- name: GetActivityEntry :one
-SELECT canonical_id, kind, status, amount_sat, fee_sat, counterparty, note, phase, phase_label, failure_code, failure_reason, payment_hash, txid, confirmation_height, vtxo_outpoint, swap_session_id, ledger_txid, boarding_addr, request_json, created_at_unix, updated_at_unix FROM activity_entries WHERE canonical_id = $1
+SELECT canonical_id, kind, status, amount_sat, fee_sat, counterparty, note, phase, phase_label, failure_code, failure_reason, payment_hash, txid, confirmation_height, vtxo_outpoint, swap_session_id, ledger_txid, boarding_addr, request_json, created_at_unix, updated_at_unix, preimage FROM activity_entries WHERE canonical_id = $1
 `
 
 // GetActivityEntry returns one entry by its canonical id.
@@ -114,12 +114,13 @@ func (q *Queries) GetActivityEntry(ctx context.Context, canonicalID string) (Act
 		&i.RequestJson,
 		&i.CreatedAtUnix,
 		&i.UpdatedAtUnix,
+		&i.Preimage,
 	)
 	return i, err
 }
 
 const ListActivityEntries = `-- name: ListActivityEntries :many
-SELECT canonical_id, kind, status, amount_sat, fee_sat, counterparty, note, phase, phase_label, failure_code, failure_reason, payment_hash, txid, confirmation_height, vtxo_outpoint, swap_session_id, ledger_txid, boarding_addr, request_json, created_at_unix, updated_at_unix FROM activity_entries
+SELECT canonical_id, kind, status, amount_sat, fee_sat, counterparty, note, phase, phase_label, failure_code, failure_reason, payment_hash, txid, confirmation_height, vtxo_outpoint, swap_session_id, ledger_txid, boarding_addr, request_json, created_at_unix, updated_at_unix, preimage FROM activity_entries
 WHERE (
     CAST($1 AS BIGINT) = 0
     OR created_at_unix < CAST($1 AS BIGINT)
@@ -173,6 +174,7 @@ func (q *Queries) ListActivityEntries(ctx context.Context, arg ListActivityEntri
 			&i.RequestJson,
 			&i.CreatedAtUnix,
 			&i.UpdatedAtUnix,
+			&i.Preimage,
 		); err != nil {
 			return nil, err
 		}
@@ -188,7 +190,7 @@ func (q *Queries) ListActivityEntries(ctx context.Context, arg ListActivityEntri
 }
 
 const ListEntriesByKindStatus = `-- name: ListEntriesByKindStatus :many
-SELECT canonical_id, kind, status, amount_sat, fee_sat, counterparty, note, phase, phase_label, failure_code, failure_reason, payment_hash, txid, confirmation_height, vtxo_outpoint, swap_session_id, ledger_txid, boarding_addr, request_json, created_at_unix, updated_at_unix FROM activity_entries
+SELECT canonical_id, kind, status, amount_sat, fee_sat, counterparty, note, phase, phase_label, failure_code, failure_reason, payment_hash, txid, confirmation_height, vtxo_outpoint, swap_session_id, ledger_txid, boarding_addr, request_json, created_at_unix, updated_at_unix, preimage FROM activity_entries
 WHERE kind = $1
     AND status = $2
     AND canonical_id > $3
@@ -244,6 +246,7 @@ func (q *Queries) ListEntriesByKindStatus(ctx context.Context, arg ListEntriesBy
 			&i.RequestJson,
 			&i.CreatedAtUnix,
 			&i.UpdatedAtUnix,
+			&i.Preimage,
 		); err != nil {
 			return nil, err
 		}
@@ -354,14 +357,14 @@ INSERT INTO activity_entries (
     canonical_id, kind, status, amount_sat, fee_sat, counterparty, note,
     phase, phase_label, failure_code, failure_reason,
     payment_hash, txid, confirmation_height, vtxo_outpoint,
-    swap_session_id, ledger_txid, boarding_addr, request_json,
+    swap_session_id, ledger_txid, boarding_addr, request_json, preimage,
     created_at_unix, updated_at_unix
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
     $8, $9, $10, $11,
     $12, $13, $14, $15,
-    $16, $17, $18, $19,
-    $20, $21
+    $16, $17, $18, $19, $20,
+    $21, $22
 )
 ON CONFLICT (canonical_id) DO UPDATE SET
     kind           = EXCLUDED.kind,
@@ -382,9 +385,10 @@ ON CONFLICT (canonical_id) DO UPDATE SET
     ledger_txid     = COALESCE(EXCLUDED.ledger_txid, activity_entries.ledger_txid),
     boarding_addr   = COALESCE(EXCLUDED.boarding_addr, activity_entries.boarding_addr),
     request_json    = COALESCE(NULLIF(EXCLUDED.request_json, ''), activity_entries.request_json),
+    preimage        = COALESCE(EXCLUDED.preimage, activity_entries.preimage),
     updated_at_unix = EXCLUDED.updated_at_unix
-WHERE activity_entries.status = $22
-    OR EXCLUDED.status <> $22
+WHERE activity_entries.status = $23
+    OR EXCLUDED.status <> $23
 `
 
 type UpsertActivityEntryParams struct {
@@ -407,6 +411,7 @@ type UpsertActivityEntryParams struct {
 	LedgerTxid         []byte
 	BoardingAddr       []byte
 	RequestJson        string
+	Preimage           []byte
 	CreatedAtUnix      int64
 	UpdatedAtUnix      int64
 	PendingStatus      int64
@@ -420,7 +425,9 @@ type UpsertActivityEntryParams struct {
 // projection and updated_at_unix is bumped, but created_at_unix is preserved so
 // the row keeps its position in the created-ordered feed. The settlement and
 // correlation handles are COALESCEd so an early projection that does not yet
-// know a txid never clobbers one a later projection already recorded.
+// know a txid never clobbers one a later projection already recorded. The
+// preimage is COALESCEd the same way, so a projection made without it never
+// erases a stored one.
 func (q *Queries) UpsertActivityEntry(ctx context.Context, arg UpsertActivityEntryParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, UpsertActivityEntry,
 		arg.CanonicalID,
@@ -442,6 +449,7 @@ func (q *Queries) UpsertActivityEntry(ctx context.Context, arg UpsertActivityEnt
 		arg.LedgerTxid,
 		arg.BoardingAddr,
 		arg.RequestJson,
+		arg.Preimage,
 		arg.CreatedAtUnix,
 		arg.UpdatedAtUnix,
 		arg.PendingStatus,

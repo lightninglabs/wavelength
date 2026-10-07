@@ -40,6 +40,7 @@ type ActivityEntry struct {
 	RequestJson        string
 	CreatedAtUnix      int64
 	UpdatedAtUnix      int64
+	Preimage           []byte
 }
 
 type ActivityEvent struct {
