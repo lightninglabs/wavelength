@@ -69,6 +69,7 @@ refresh, leave, OOR spend, and directed send flows.
   `waved_background_task_errors_total`; a no-op when omitted.
 - `SendOnChainStatus` — Terminal outcome enum: `SendOnChainStatusSubmitted` (intent queued for next round), `SendOnChainStatusPreview` (dry-run preview, no commitment).
 - `GetConfirmedBoardingIntentsRequest` / `GetConfirmedBoardingIntentsResponse` — Ask-request to retrieve currently confirmed boarding intents (used by the RPC/CLI layer to report boarding balance with policy metadata).
+- `ReleaseBoardingInFlightRequest` — Tell-message from the round actor naming the boarding outpoints of a failed round, so `handleReleaseBoardingInFlight` drops them from the in-memory in-flight guard and the next Board trigger retries them.
 - `VTXODescriptor.EffectivePolicyTemplate` — Decodes the serialized `PolicyTemplate` field on the wallet-level VTXO descriptor using `lib/arkscript`.
 
 ## Relationships
@@ -89,12 +90,19 @@ refresh, leave, OOR spend, and directed send flows.
   - → `round` (via `lib/types.VTXORequest.Origin`): wallet intent composition tags each locally-owned VTXO output with a `VTXOOrigin` classifier so the round actor's downstream ledger emission dispatches to the correct `Source`. Refresh outputs and directed-send self-change get `VTXOOriginRoundRefresh`; boarding-path tagging lives in `round.handleTriggerBoard` (`VTXOOriginRoundBoarding`).
 - **Receives**:
   - ← `chainsource`: `BlockEpochNotification` (triggers UTXO polling)
-  - ← `round`: `RegisterConfirmationNotifierRequest`, `UnregisterConfirmationNotifierRequest`
+  - ← `round`: `RegisterConfirmationNotifierRequest`, `UnregisterConfirmationNotifierRequest`, `ReleaseBoardingInFlightRequest` (Tell, on round failure)
   - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`, `RefreshVTXOsRequest`, `RefreshCustomVTXOsRequest`, `DropCustomRefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`, `SendVTXOsRequest`, `SendOnChainRequest`
 
 ## Invariants
 
-- UTXO confirmation requires `MinBoardingConfs` (1) on-chain confirmations.
+- A boarding UTXO is recorded as a confirmed intent only at the operator's
+  boarding depth: `boardingDepth` returns the advertised
+  `OperatorTerms.MinConfirmations`, floored at `MinBoardingConfs` (1), so
+  every confirmed intent is one the operator accepts in a join request. If
+  the terms cannot be fetched, `handleProcessTipTick` does not advance
+  `processedTipHeight` and retries on the next tick. Shallower deposits are
+  reported by `unconfirmedBoardingBalance` (and the matching `waved` RPC path)
+  as unconfirmed.
 - `ListUnspent` runs at most once per tip-tick against the latest known chain tip; a backend whose UTXO reporting lags past one tick interval surfaces the missing UTXO on the next chain advance (whichever tick processes the new tip re-runs the scan). The per-block path no longer carries an inline retry budget — the tick loop is the retry seam.
 - Notifier registration captures `minConf` parameter per actor; different actors can require different confirmation depths.
 - Cooperative admission (refresh/leave) must reserve forfeit inputs through the VTXO manager before sending `RegisterIntentMsg` to the round actor.
@@ -121,7 +129,9 @@ refresh, leave, OOR spend, and directed send flows.
   (fired when a new deposit confirms before an earlier boarding round adopts
   its input) from re-registering an already-in-flight outpoint under a fresh
   owner key, which previously produced a quote pkScript-echo mismatch and
-  failed the round.
+  failed the round. When a round carrying those outpoints fails, the round
+  actor Tells `ReleaseBoardingInFlightRequest` so they are retried at once
+  instead of being reported as redundant until a restart clears the set.
 - `applyBoardingLimits`/`clampBoardingAmount` clip a confirmed boarding
   balance to the operator's `MaxVTXOAmount`/`MaxUserBalance` terms and, when
   clipped, mint a change leave output back to a fresh boarding script so the

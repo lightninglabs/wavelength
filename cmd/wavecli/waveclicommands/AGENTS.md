@@ -194,7 +194,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   mutually exclusive with `--status`. OOR checkpoint PSBTs are large, so the
   CLI sets `exclude_checkpoint_psbts` unless the caller is in the plain default
   listing or names `oor_final_checkpoint_psbts` in `--fields` — `--all` alone
-  does not pull them.
+  does not pull them. `--asset-ref` (and the MCP `ark.vtxos.list` tool's
+  `asset_ref`) forwards a canonical asset reference filter to `ListVTXOs`.
 - `ark vtxos refresh` is gated on fee consent: a real refresh fetches
   the dry-run estimate and prompts with it on a TTY, and refuses on
   non-interactive stdin without `--yes` (same posture as `leave --all`

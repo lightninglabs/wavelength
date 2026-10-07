@@ -158,6 +158,14 @@ result into an `IncomingVHTLCNotification`.
   `ExistingOnly`: an existing keyed winner is recovered and protected, a
   daemon `NotFound` expires the swap, and unavailable or pending results remain
   retryable. A post-deadline reconciliation must never admit a new vHTLC.
+- **A funding admission rejection is terminal only after an existing-only
+  probe.** The daemon refuses a send with `ResourceExhausted` (insufficient
+  funds) or `Aborted` (liquidity reserved elsewhere) before locking any input
+  (`isFundingAdmissionRejected`). That reservation may be this swap's own
+  earlier attempt whose response was lost, so `ensureFundingSubmitted` re-sends
+  with `ExistingOnly` on the same key: success adopts the in-flight transfer,
+  `NotFound` fails the swap terminally (a resume must not pay long after the
+  caller gave up), and any other probe error stays retryable.
 - **An inconclusive live observation must not end the claim wait.**
   `waitForClaimPreimage` treats a `retryableActionError` from
   `tryCooperativeRefund` as "keep polling": it logs at debug and falls

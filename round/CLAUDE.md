@@ -160,7 +160,9 @@ state transitions and validation rules live under [Invariants](#invariants).
   `SubmitForfeitSigRequest`, `SubmitVTXOForfeitSigsToServer`.
 - **Sends → `vtxo`**: forfeit/spend/block-epoch events listed above;
   manager-level `VTXOCreatedNotification`, `VTXOTerminatedMsg`.
-- **Sends → `wallet`**: `RegisterConfirmationRequest`.
+- **Sends → `wallet`**: `RegisterConfirmationRequest`;
+  `ReleaseBoardingInFlightRequest` (Tell) when a round carrying boarding
+  outpoints reaches `ClientFailedState`.
 - **Sends → `OwnedScriptRegistrar`** (waved adapter over the OOR
   artifact store): `RegisterOwnedScript(pkScript, ownerKey)`.
 - **Sends → `ledger`** (when `LedgerSink` is `fn.Some`), origin-routed

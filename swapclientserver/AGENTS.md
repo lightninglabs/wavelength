@@ -39,6 +39,9 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   instead of duplicating them. `creditDaemonBridge.VTXOFloor` forwards to
   `waved.RPCServer.OperatorVTXOFloor` — a live, authenticated operator-terms
   refresh, not the daemon's bootstrap `GetInfo` snapshot.
+  `creditDaemonBridge.SendOOR` forwards `existingOnly` as the request's
+  `ExistingOnly`, so a credit top-up can probe for its own earlier transfer
+  without admitting a new one.
 - `Register(ctx, grpcServer, rpcServer, cfg)` — Top-level entry point called
   by a `swapruntime`-tagged `waved` binary. Opens the daemon-owned SQLite
   swap store, dials `swapdk-server`, creates an in-process Ark SDK facade over

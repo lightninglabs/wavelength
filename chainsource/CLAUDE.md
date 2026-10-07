@@ -44,6 +44,12 @@ communication alongside the raw registration API.
 
 - Each monitoring request spawns a dedicated sub-actor (no shared state between
   monitors).
+- **One live sub-actor per service key.** The sub-actor ID is derived from the
+  same caller and request fields as the service key, so a retried
+  registration (e.g. after the caller's Ask timed out while the first attempt
+  was still queued) reuses the ID. `spawnReplacing` therefore unregisters and
+  stops any actor already under the key before spawning; spawning over it
+  would orphan an instance that neither unregistration nor shutdown can reach.
 - Registration channels are buffered.
 - Confirmation sub-actors support two notification modes: Future-based (blocking
   await) and actor-based (async `Tell` via `NotifyActor`). Callers use the actor

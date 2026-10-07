@@ -96,7 +96,7 @@ when the local wallet owns the receive script.
   unowned release delivered to a VTXO already forfeiting for another round.
 - `VTXOEvent` — Inbound events (BlockEpochEvent, ForfeitRequest, ForfeitConfirmed, SpendReserveEvent, SpendCompletedEvent, etc.).
 - `VTXOOutMsg` — Outbound messages (ForfeitRequest, ExpiringNotify, StatusUpdate, Terminated).
-- `FilterOptions` / `FilterDescriptors` — VTXO filtering by expiry status, spend state, etc.
+- `FilterOptions` / `FilterDescriptors` — VTXO filtering by expiry status, spend state, minimum amount, and canonical asset reference (`AssetRef`).
 - `GetActiveVTXOCountRequest` / `GetActiveVTXOCountResponse` — Ask-message for querying active VTXO count from the manager.
 - `ManagerMsg` / `ManagerResp` — Type aliases for `actormsg.VTXOManagerMsg` / `actormsg.VTXOManagerResp` (admission types live in `lib/actormsg` to avoid import cycles).
 - `IncomingVTXOHandler` — Actor that consumes `arkrpc.IncomingVTXOEvent` push

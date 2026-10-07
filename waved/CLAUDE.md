@@ -84,6 +84,18 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   wallet figure and `boarding_confirmed_sat` are disjoint; co-tenant
   accounts on a shared lnd node are excluded too. Imported-script
   observation itself stays unscoped.
+- **Asset holdings are reported apart from Bitcoin.** `GetBalance` fills
+  `asset_balances` via `liveAssetBalances` (`asset_balances.go`), grouping
+  live VTXOs by canonical asset reference. Amounts of different assets are
+  never summed, no decimal conversion is inferred, and carrier satoshis stay
+  separate from asset units; an incomplete or overflowing holding fails the
+  RPC with `Internal`. `ListVTXOs` accepts an `asset_ref` filter that
+  `validateAssetRefFilter` rejects with `InvalidArgument` unless it parses
+  and is in canonical encoding.
+- `fetchUnconfirmedBoardingBalance` counts deposits below the operator's
+  boarding depth (cached `MinConfirmations`, floored at
+  `wallet.MinBoardingConfs`) as unconfirmed, matching the wallet actor's rule
+  that only deposits at that depth become confirmed intents.
 - `validateLndAccount` refuses to start on a configured account that is
   missing, not taproot-scoped, or watch-only. Without it each of those fails
   later and worse — a missing account silently filters every UTXO away, a

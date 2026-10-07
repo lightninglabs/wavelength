@@ -60,6 +60,12 @@ operator VTXO floor, `max(dust_limit, min_vtxo_amount_sat)`.
 - Every external call the behavior makes (`CreateCredit`, `SendOOR`,
   `StartPay`, `RedeemCredit`) must stay idempotent by op key or payment hash,
   since a redelivered message or a reload-after-`commitFailed` re-runs it.
+- **A refused top-up fails rather than waits.** `CreditDaemon.SendOOR` takes
+  an `existingOnly` flag. When the daemon rejects the funding send with
+  `ResourceExhausted` or `Aborted` (`isFundingAdmissionRejected`),
+  `topupFundingState` re-issues it existing-only on the same op key: an own
+  earlier attempt (whose locks caused the refusal) is adopted, and `NotFound`
+  fails the operation so it never pays an abandoned invoice once funds appear.
 - **The server owns the receive invoice lifecycle.** `MaxAwaitingPolls` caps
   only pay top-ups, credit-only pays, and redemptions; `awaitingSettlementState`
   is deliberately uncapped. A local poll count cannot prove that a
