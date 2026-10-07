@@ -1541,6 +1541,15 @@ func (a *RoundClientActor) askEventAndProcessOutbox(ctx context.Context,
 // The outpoints are cleared on the first release so it fires once per failed
 // round. Delivery is best effort, since the round has already failed and a
 // restart clears the wallet's mark regardless.
+//
+// The Tell uses the turn context, so it never waits for room in the wallet's
+// mailbox. A send made with the context of an active receive turn spills into
+// the target's overflow queue when the channel is full, and only fails at the
+// overflow cap. That is what keeps the wallet's unbounded Asks into this actor
+// safe: the turn cannot park on a full wallet mailbox while the wallet waits
+// on a reply from this actor. The ctx argument must therefore stay the turn
+// context. Neither TryTell, which would drop the release when the mailbox is
+// full, nor a TellThen-style detached send is needed.
 func (a *RoundClientActor) releaseBoardingOnFailure(ctx context.Context,
 	roundFSM *RoundFSM) {
 
