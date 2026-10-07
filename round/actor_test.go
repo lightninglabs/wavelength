@@ -2824,8 +2824,9 @@ func TestBoardingFailedFromJoinedRoundReleasesInFlightOutpoints(t *testing.T) {
 			name: "server failure after join",
 			fail: func(h *actorTestHarness, id RoundID) {
 				h.sendServerMessage(&BoardingFailed{
-					RoundID:     fn.Some(id),
-					Reason:      "operator aborted in nonce phase",
+					RoundID: fn.Some(id),
+					Reason: "operator aborted in " +
+						"nonce phase",
 					Recoverable: true,
 				})
 			},
