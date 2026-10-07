@@ -5,6 +5,7 @@ package swapwallet
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
@@ -518,4 +519,129 @@ func TestCreditProjectorAttachesPreimage(t *testing.T) {
 	got = drainEntries(ch2)
 	require.Len(t, got, 1)
 	require.Empty(t, got[0].GetProgress().GetPreimage())
+}
+
+// completedCreditPayRegistry returns a registry listing one completed
+// credit-only pay keyed by payHashHex.
+func completedCreditPayRegistry() *fakeCreditRegistry {
+	return &fakeCreditRegistry{
+		listResp: &credit.ListCreditOpsResponse{
+			Ops: []credit.CreditOpSummary{{
+				OpID:       "op-pay",
+				OpKey:      "pay:" + payHashHex,
+				Kind:       credit.KindPay,
+				State:      credit.StateCompleted,
+				CreditOnly: true,
+				AmountSat:  20,
+			}},
+		},
+	}
+}
+
+// TestCreditProjectorNonTransientLookupProjects asserts a lookup error that
+// retrying cannot heal projects the terminal row without a preimage instead of
+// holding the send pending forever.
+func TestCreditProjectorNonTransientLookupProjects(t *testing.T) {
+	t.Parallel()
+
+	swap := &fakeSwapService{
+		getSwapErr: status.Error(codes.InvalidArgument, "bad hash"),
+	}
+	deps := &Deps{
+		CreditRegistry: completedCreditPayRegistry(),
+		SwapService:    swap,
+	}
+	runtime := newRuntime(t.Context(), deps)
+	t.Cleanup(runtime.stop)
+
+	ch := runtime.subscribe()
+	projected := make(map[string]credit.State)
+	runtime.pollCreditOps(projected)
+
+	got := drainEntries(ch)
+	require.Len(t, got, 1)
+	require.Equal(
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		got[0].GetStatus(),
+	)
+	require.Empty(t, got[0].GetProgress().GetPreimage())
+	require.Equal(t, credit.StateCompleted, projected["op-pay"])
+}
+
+// blockingSwapService is a SwapService whose GetSwap stalls until its context
+// ends, standing in for a hung swap backend.
+type blockingSwapService struct {
+	*fakeSwapService
+
+	// blocked is set while GetSwap should stall.
+	blocked bool
+}
+
+func (b *blockingSwapService) GetSwap(ctx context.Context,
+	req *swapclientrpc.GetSwapRequest) (*swapclientrpc.GetSwapResponse,
+	error) {
+
+	if b.blocked {
+		<-ctx.Done()
+
+		return nil, ctx.Err()
+	}
+
+	return b.fakeSwapService.GetSwap(ctx, req)
+}
+
+// TestCreditProjectorLookupTimeout asserts a stalled GetSwap is cut off by the
+// lookup timeout, is treated as transient (the op stays unprojected), and is
+// retried to success on a later poll.
+func TestCreditProjectorLookupTimeout(t *testing.T) {
+	t.Parallel()
+
+	const preimageHex = "0102030405060708090a0b0c0d0e0f10" +
+		"1112131415161718191a1b1c1d1e1f20"
+
+	swap := &blockingSwapService{
+		fakeSwapService: &fakeSwapService{
+			getSwapResp: &swapclientrpc.GetSwapResponse{
+				Swap: &swapclientrpc.SwapSummary{
+					PaymentHash: payHashHex,
+					Preimage:    preimageHex,
+				},
+			},
+		},
+		blocked: true,
+	}
+	deps := &Deps{
+		CreditRegistry: completedCreditPayRegistry(),
+		SwapService:    swap,
+	}
+	runtime := newRuntime(t.Context(), deps)
+	runtime.creditLookupTimeout = 20 * time.Millisecond
+	t.Cleanup(runtime.stop)
+
+	ch := runtime.subscribe()
+	projected := make(map[string]credit.State)
+
+	// The poll returns once the timeout fires rather than hanging.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runtime.pollCreditOps(projected)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("poll blocked on a stalled GetSwap")
+	}
+	require.Empty(t, drainEntries(ch))
+	require.NotContains(t, projected, "op-pay")
+	require.Equal(t, 1, runtime.creditLookupFails[payHashHex])
+
+	// Once the backend answers, the retry carries the preimage.
+	swap.blocked = false
+	runtime.pollCreditOps(projected)
+
+	got := drainEntries(ch)
+	require.Len(t, got, 1)
+	require.Equal(t, preimageHex, got[0].GetProgress().GetPreimage())
+	require.Empty(t, runtime.creditLookupFails)
 }

@@ -255,13 +255,29 @@ func (r *Runtime) pollCreditOps(projected map[string]credit.State) {
 	}
 }
 
+// creditLookupWarnAfter is how many consecutive transient preimage lookup
+// failures for one send are logged at Debug before the log escalates to Warn.
+// The poll runs every creditProjectInterval, so the default surfaces a stuck
+// lookup after roughly fifteen seconds.
+const creditLookupWarnAfter = 3
+
 // attachCreditPreimage stamps the payment preimage onto the terminal row of a
-// credit-only send. The server hands the preimage to the SDK pay session when
-// it settles the invoice from credit, and the session persists it on its swap
-// row, so the durable swap summary keyed by the same payment hash is the
-// source. It returns false only when the lookup failed transiently and the
-// caller should retry on the next poll. A missing swap row or a nil SwapService
-// is not retried, since the preimage cannot appear later.
+// credit-only send. The durable swap summary keyed by the same payment hash is
+// the source. It returns false only when the lookup failed transiently
+// (Unavailable or a deadline) and the caller should retry on the next poll.
+//
+// A missing swap row or an empty preimage is final rather than retried,
+// because the credit op cannot reach Completed before the swap row holds the
+// preimage. The credit FSM only leaves payingState after
+// CreditServer.StartPay returns (credit/transitions.go:160), and only then
+// polls the server ledger for DEBITED (credit/transitions.go:200). StartPay
+// runs the SDK pay session synchronously up to SwapCreated
+// (sdk/swaps/in_swap.go:499), whose createSwap credit branch sets the preimage
+// and persists the swap row in one mutateAndPersist
+// (sdk/swaps/in_swap.go:612-617), before StartPay can return. A credit-only
+// pay therefore never completes ahead of its preimage, and a miss here means
+// the row is genuinely unavailable, which is logged at Warn. Any other lookup
+// error is likewise final and projects without a preimage.
 func (r *Runtime) attachCreditPreimage(op credit.CreditOpSummary,
 	entry *wavewalletrpc.WalletEntry) bool {
 
@@ -270,29 +286,67 @@ func (r *Runtime) attachCreditPreimage(op credit.CreditOpSummary,
 		return true
 	}
 
+	log := r.deps.resolveLog()
+	hash := entry.GetProgress().GetPaymentHash()
+
+	ctx, cancel := context.WithTimeout(r.rootCtx, r.creditLookupTimeout)
+	defer cancel()
+
 	resp, err := r.deps.SwapService.GetSwap(
-		r.rootCtx, &swapclientrpc.GetSwapRequest{
-			PaymentHash: entry.GetProgress().GetPaymentHash(),
+		ctx, &swapclientrpc.GetSwapRequest{
+			PaymentHash: hash,
 		},
 	)
 	switch {
-	case status.Code(err) == codes.NotFound:
+	case err == nil:
+		delete(r.creditLookupFails, hash)
+
+		entry.Progress.Preimage = resp.GetSwap().GetPreimage()
+		if entry.Progress.Preimage == "" {
+			log.WarnS(r.rootCtx, "Completed credit send has no "+
+				"preimage", fmt.Errorf("payment hash %s", hash))
+		}
+
 		return true
 
-	case err != nil:
-		if r.rootCtx.Err() == nil {
-			r.deps.resolveLog().DebugS(
-				r.rootCtx, "Credit projector preimage lookup "+
-					"failed", err,
-			)
+	case r.rootCtx.Err() != nil:
+		return false
+
+	case isTransientLookupErr(err):
+		r.creditLookupFails[hash]++
+		if r.creditLookupFails[hash] >= creditLookupWarnAfter {
+			log.WarnS(r.rootCtx, "Credit projector preimage "+
+				"lookup keeps failing", err)
+		} else {
+			log.DebugS(r.rootCtx, "Credit projector preimage "+
+				"lookup failed", err)
 		}
 
 		return false
 	}
 
-	entry.Progress.Preimage = resp.GetSwap().GetPreimage()
+	// The remaining codes (NotFound included) will not heal by retrying,
+	// so project the terminal row without a preimage.
+	delete(r.creditLookupFails, hash)
+	log.WarnS(r.rootCtx, "Completed credit send has no preimage", err)
 
 	return true
+}
+
+// isTransientLookupErr reports whether a swap-summary lookup error is worth
+// retrying on the next poll.
+func isTransientLookupErr(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	switch status.Code(err) {
+	case codes.Unavailable, codes.DeadlineExceeded:
+		return true
+
+	default:
+		return false
+	}
 }
 
 // projectCreditEntry projects one credit operation while preserving the

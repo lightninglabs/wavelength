@@ -630,6 +630,52 @@ func TestPaySessionCreditOnlyStartCompletesWithoutVHTLC(t *testing.T) {
 	require.Equal(t, preimage, result.Preimage)
 }
 
+// TestPaySessionCreditOnlyStartPersistsPreimage pins the write order the
+// wallet's credit projector relies on: by the time
+// StartPayViaLightningWithCredits returns for a credit-settled pay (the call
+// the credit FSM makes before it begins polling for settlement), the swap row
+// is durable and already carries the preimage.
+func TestPaySessionCreditOnlyStartPersistsPreimage(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+	creditSat := uint64(testInSwapInvoiceSat)
+
+	serverConn := &testInSwapServerConn{
+		cfg: &InSwapConfig{
+			PaymentHash:    preimage.Hash(),
+			SettlementType: SettlementTypeCredit,
+			CreditQuote: &CreditQuote{
+				MustUseCredit:    true,
+				CreditAppliedSat: creditSat,
+			},
+			Preimage: &preimage,
+			Expiry:   time.Now().Add(time.Minute),
+		},
+	}
+	daemonConn := &testDaemonConn{identityKey: clientPriv.PubKey()}
+
+	store := newTestSwapStore(t)
+	client := configureTestPayClient(
+		NewSwapClientWithStore(serverConn, daemonConn, nil, nil, store),
+	)
+
+	_, err = client.StartPayViaLightningWithCredits(
+		t.Context(), invoice, testInSwapFeeSat, creditSat,
+	)
+	require.NoError(t, err)
+
+	hash := preimage.Hash()
+	row, err := store.queries.GetPaySwap(t.Context(), hash[:])
+	require.NoError(t, err)
+	require.Equal(t, preimage[:], row.Preimage)
+}
+
 // TestPayViaLightningReturnsClaimPreimage asserts the SDK recovers the
 // preimage from the spending OOR package after the vHTLC is claimed.
 func TestPayViaLightningReturnsClaimPreimage(t *testing.T) {

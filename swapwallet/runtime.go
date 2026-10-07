@@ -85,6 +85,16 @@ type Runtime struct {
 	// lifetime so ownership remains monotonic with the durable registry.
 	creditOwnedSwaps map[string]struct{}
 
+	// creditLookupTimeout bounds each swap-summary read the credit
+	// projector issues for a completed credit-only send, so a stalled
+	// SwapService cannot block the serial credit poll.
+	creditLookupTimeout time.Duration
+
+	// creditLookupFails counts consecutive transient preimage lookup
+	// failures per payment hash. Only the credit poll goroutine touches
+	// it, so it needs no lock.
+	creditLookupFails map[string]int
+
 	// subsMu guards subscribers.
 	subsMu sync.Mutex
 
@@ -144,10 +154,12 @@ func newRuntime(parent context.Context, deps *Deps) *Runtime {
 		subscribers: make(
 			map[*subscriber]struct{},
 		),
-		pending:           make(map[string]pendingEntry),
-		overlay:           make(map[string]overlayStatus),
-		creditOwnedSwaps:  make(map[string]struct{}),
-		rehydratePageSize: defaultRehydratePageSize,
+		pending:             make(map[string]pendingEntry),
+		overlay:             make(map[string]overlayStatus),
+		creditOwnedSwaps:    make(map[string]struct{}),
+		creditLookupFails:   make(map[string]int),
+		creditLookupTimeout: defaultCreditReadTimeout,
+		rehydratePageSize:   defaultRehydratePageSize,
 	}
 }
 
