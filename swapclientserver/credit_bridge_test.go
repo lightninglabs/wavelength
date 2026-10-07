@@ -12,6 +12,7 @@ import (
 	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/sdk/swaps"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -32,6 +33,21 @@ func newTestCreditBridge(t *testing.T, startPayErr error,
 	t.Cleanup(service.cancel)
 
 	return &creditServerBridge{svc: service}, fakeClient
+}
+
+// failedPreconditionWithReason builds the swap server's FailedPrecondition
+// reply carrying an ErrorInfo detail, wrapped the way the sdk wraps the RPC
+// error on its way to the bridge.
+func failedPreconditionWithReason(t *testing.T, domain, reason string) error {
+	t.Helper()
+
+	st, err := status.New(
+		codes.FailedPrecondition, "existing credit pay is in state "+
+			"released",
+	).WithDetails(&errdetails.ErrorInfo{Reason: reason, Domain: domain})
+	require.NoError(t, err)
+
+	return fmt.Errorf("create in-swap: CreateInSwap RPC: %w", st.Err())
 }
 
 // TestCreditBridgeStartPayRejection asserts that each refusal the swap client
@@ -66,6 +82,24 @@ func TestCreditBridgeStartPayRejection(t *testing.T) {
 			name: "unimplemented",
 			startErr: status.Error(
 				codes.Unimplemented, "unknown method",
+			),
+			invoice: invoice,
+		},
+		{
+			// The swap server released this pay's reservation, so
+			// the payment hash can never be reserved again.
+			name: "released reservation",
+			startErr: failedPreconditionWithReason(
+				t, creditErrorDomain, creditReasonPayReleased,
+			),
+			invoice: invoice,
+		},
+		{
+			// The swap server refused the pay before reserving or
+			// debiting anything.
+			name: "credit shortfall",
+			startErr: failedPreconditionWithReason(
+				t, creditErrorDomain, creditReasonShortfall,
 			),
 			invoice: invoice,
 		},
@@ -134,6 +168,57 @@ func TestCreditBridgeStartPayStaysRetryable(t *testing.T) {
 			startErr: status.Error(
 				codes.FailedPrecondition, "credit unavailable",
 			),
+		},
+		{
+			// A server that predates the reason sends the same
+			// message and code with no detail.
+			name: "released without detail",
+			startErr: status.Error(
+				codes.FailedPrecondition,
+				"existing credit pay is in state released",
+			),
+		},
+		{
+			// A reason this client does not know is not terminal.
+			name: "unknown reason",
+			startErr: failedPreconditionWithReason(
+				t, creditErrorDomain, "CREDIT_PAY_DISPATCHED",
+			),
+		},
+		{
+			// A terminal reason from another service is not ours.
+			name: "foreign domain",
+			startErr: failedPreconditionWithReason(
+				t, "other.example.com", creditReasonPayReleased,
+			),
+		},
+		{
+			// A reason on any other code is not a pay rejection.
+			name: "reason on unavailable",
+			startErr: func() error {
+				st, err := status.New(
+					codes.Unavailable, "backend down",
+				).WithDetails(&errdetails.ErrorInfo{
+					Reason: creditReasonShortfall,
+					Domain: creditErrorDomain,
+				})
+				require.NoError(t, err)
+
+				return st.Err()
+			}(),
+		},
+		{
+			// The daemon holds a swap for the invoice, so the
+			// released reply may belong to a pay that is underway.
+			name: "released with swap recorded",
+			startErr: failedPreconditionWithReason(
+				t, creditErrorDomain, creditReasonPayReleased,
+			),
+			summaries: []swaps.SwapSummary{{
+				Direction:   swaps.SwapDirectionPay,
+				PaymentHash: hash,
+				State:       "Completed",
+			}},
 		},
 		{
 			// An earlier StartPay of this operation left a record
