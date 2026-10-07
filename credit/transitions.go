@@ -76,6 +76,9 @@ func (topupCreatingState) ProcessEvent(ctx context.Context, _ CreditEvent,
 		ctx, acctKey, b.rec.OpKey, SourceArkTopUp,
 		uint64(b.rec.TopupSat), "",
 	)
+	if errors.Is(err, ErrTopUpRejected) {
+		return b.fail(ctx, fmt.Sprintf("top-up rejected: %v", err))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create top-up credit: %w", err)
 	}

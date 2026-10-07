@@ -7,12 +7,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"slices"
 
 	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/sdk/swaps"
 	"github.com/lightninglabs/wavelength/waved"
 	"github.com/lightninglabs/wavelength/waverpc"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -32,6 +34,12 @@ var _ credit.CreditServer = (*creditServerBridge)(nil)
 // CreateCredit forwards to the swap subserver's CreateCredit handler. The
 // account pubkey is resolved by the daemon from its own identity, so the
 // supplied accountPubKey is intentionally ignored here.
+//
+// A top-up the server refuses with the below-floor reason is wrapped with
+// credit.ErrTopUpRejected so the operation fails instead of being redelivered.
+// The match is on the reason alone: the same InvalidArgument code also covers
+// the expired replay of an existing top-up, which stays retryable. Receive
+// credits are returned as is.
 func (b *creditServerBridge) CreateCredit(ctx context.Context, _ []byte,
 	idempotencyKey string, source credit.CreditSource, amountSat uint64,
 	memo string) (*credit.CreateCreditResult, error) {
@@ -47,6 +55,11 @@ func (b *creditServerBridge) CreateCredit(ctx context.Context, _ []byte,
 		AmountSat:      amountSat,
 		Memo:           memo,
 	})
+	if source == credit.SourceArkTopUp && status.Code(err) ==
+		codes.InvalidArgument &&
+		hasCreditReason(err, creditReasonTopUpBelowFloor) {
+		return nil, fmt.Errorf("%w: %w", credit.ErrTopUpRejected, err)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -156,23 +169,74 @@ func (b *creditServerBridge) StartPay(ctx context.Context, invoice string,
 	return fmt.Errorf("%w: %w", credit.ErrPayRejected, err)
 }
 
+// Reasons and domain the swap server attaches, as a gRPC errdetails.ErrorInfo,
+// to the credit pay replies that can never succeed on a retry. They are the
+// server's wire contract, so they are matched together and only as exact
+// strings. A server that predates them sends neither, and its replies stay
+// retryable.
+const (
+	// creditErrorDomain is the ErrorInfo domain of the swap server's
+	// credit pay reasons.
+	creditErrorDomain = "swapdk.lightning.engineering"
+
+	// creditReasonPayReleased marks a replayed pay whose reservation was
+	// released before dispatch. The payment hash is the idempotency key, so
+	// the pay can never be reserved, dispatched, or debited again.
+	creditReasonPayReleased = "CREDIT_PAY_RELEASED"
+
+	// creditReasonShortfall marks a new pay refused for lack of credit
+	// before anything was reserved or debited.
+	creditReasonShortfall = "CREDIT_SHORTFALL"
+
+	// creditReasonTopUpBelowFloor marks a new Ark top-up refused because
+	// its amount is below the operator VTXO floor. The server sends it
+	// before it creates an operation, and not for the expired replay of an
+	// existing top-up.
+	creditReasonTopUpBelowFloor = "CREDIT_TOPUP_BELOW_FLOOR"
+)
+
 // isPayRejection reports a StartPay error that the swap client or swap server
 // returns as a final refusal of the request: an invalid argument, which covers
-// a malformed invoice and the swap server's max-fee rejection, or an
-// unimplemented method on a swap server that does not support the pay. Both are
-// returned before the pay swap is funded, so a rejection never leaves anything
-// that could complete the pay. The code is read from the status the handler
-// preserves through its wrapping, so a transport failure (Unavailable,
-// DeadlineExceeded, Canceled) and an error without a status (Unknown) never
-// match.
+// a malformed invoice and the swap server's max-fee rejection, an unimplemented
+// method on a swap server that does not support the pay, or a failed
+// precondition the server marks with a credit pay reason that no retry can
+// clear. All are returned before the pay is dispatched or debited, so a
+// rejection never leaves anything that could complete the pay. The code and
+// reason are read from the status the handler preserves through its wrapping,
+// so a transport failure (Unavailable, DeadlineExceeded, Canceled) and an
+// error without a status (Unknown) never match. A plain failed precondition,
+// such as the server's post-dispatch replay states, carries no reason and stays
+// retryable.
 func isPayRejection(err error) bool {
 	switch status.Code(err) {
 	case codes.InvalidArgument, codes.Unimplemented:
 		return true
 
+	case codes.FailedPrecondition:
+		return hasCreditReason(
+			err, creditReasonPayReleased, creditReasonShortfall,
+		)
+
 	default:
 		return false
 	}
+}
+
+// hasCreditReason reports whether the status in err carries an ErrorInfo
+// detail in the swap server's credit domain naming one of the given reasons.
+func hasCreditReason(err error, reasons ...string) bool {
+	for _, detail := range status.Convert(err).Details() {
+		info, ok := detail.(*errdetails.ErrorInfo)
+		if !ok || info.GetDomain() != creditErrorDomain {
+			continue
+		}
+
+		if slices.Contains(reasons, info.GetReason()) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // creditDaemonBridge adapts the daemon and Ark facade to the credit

@@ -6,12 +6,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/lightninglabs/wavelength/credit"
+	"github.com/lightninglabs/wavelength/rpc/restclient"
 	"github.com/lightninglabs/wavelength/sdk/swaps"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -32,6 +35,24 @@ func newTestCreditBridge(t *testing.T, startPayErr error,
 	t.Cleanup(service.cancel)
 
 	return &creditServerBridge{svc: service}, fakeClient
+}
+
+// The wire literals are written out in these tests rather than taken from the
+// package constants, so a typo in a constant fails them.
+
+// failedPreconditionWithReason builds the swap server's FailedPrecondition
+// reply carrying an ErrorInfo detail, wrapped the way the sdk wraps the RPC
+// error on its way to the bridge.
+func failedPreconditionWithReason(t *testing.T, domain, reason string) error {
+	t.Helper()
+
+	st, err := status.New(
+		codes.FailedPrecondition, "existing credit pay is in state "+
+			"released",
+	).WithDetails(&errdetails.ErrorInfo{Reason: reason, Domain: domain})
+	require.NoError(t, err)
+
+	return fmt.Errorf("create in-swap: CreateInSwap RPC: %w", st.Err())
 }
 
 // TestCreditBridgeStartPayRejection asserts that each refusal the swap client
@@ -66,6 +87,26 @@ func TestCreditBridgeStartPayRejection(t *testing.T) {
 			name: "unimplemented",
 			startErr: status.Error(
 				codes.Unimplemented, "unknown method",
+			),
+			invoice: invoice,
+		},
+		{
+			// The swap server released this pay's reservation, so
+			// the payment hash can never be reserved again.
+			name: "released reservation",
+			startErr: failedPreconditionWithReason(
+				t, "swapdk.lightning.engineering",
+				"CREDIT_PAY_RELEASED",
+			),
+			invoice: invoice,
+		},
+		{
+			// The swap server refused the pay before reserving or
+			// debiting anything.
+			name: "credit shortfall",
+			startErr: failedPreconditionWithReason(
+				t, "swapdk.lightning.engineering",
+				"CREDIT_SHORTFALL",
 			),
 			invoice: invoice,
 		},
@@ -134,6 +175,59 @@ func TestCreditBridgeStartPayStaysRetryable(t *testing.T) {
 			startErr: status.Error(
 				codes.FailedPrecondition, "credit unavailable",
 			),
+		},
+		{
+			// A server that predates the reason sends the same
+			// message and code with no detail.
+			name: "released without detail",
+			startErr: status.Error(
+				codes.FailedPrecondition,
+				"existing credit pay is in state released",
+			),
+		},
+		{
+			// A reason this client does not know is not terminal.
+			name: "unknown reason",
+			startErr: failedPreconditionWithReason(
+				t, "swapdk.lightning.engineering",
+				"CREDIT_PAY_DISPATCHED",
+			),
+		},
+		{
+			// A terminal reason from another service is not ours.
+			name: "foreign domain",
+			startErr: failedPreconditionWithReason(
+				t, "other.example.com", "CREDIT_PAY_RELEASED",
+			),
+		},
+		{
+			// A reason on any other code is not a pay rejection.
+			name: "reason on unavailable",
+			startErr: func() error {
+				st, err := status.New(
+					codes.Unavailable, "backend down",
+				).WithDetails(&errdetails.ErrorInfo{
+					Reason: "CREDIT_SHORTFALL",
+					Domain: "swapdk.lightning.engineering",
+				})
+				require.NoError(t, err)
+
+				return st.Err()
+			}(),
+		},
+		{
+			// The daemon holds a swap for the invoice, so the
+			// released reply may belong to a pay that is underway.
+			name: "released with swap recorded",
+			startErr: failedPreconditionWithReason(
+				t, "swapdk.lightning.engineering",
+				"CREDIT_PAY_RELEASED",
+			),
+			summaries: []swaps.SwapSummary{{
+				Direction:   swaps.SwapDirectionPay,
+				PaymentHash: hash,
+				State:       "Completed",
+			}},
 		},
 		{
 			// An earlier StartPay of this operation left a record
@@ -277,6 +371,155 @@ func TestCreditBridgeRedeemStaysRetryable(t *testing.T) {
 			)
 			require.Error(t, err)
 			require.NotErrorIs(t, err, credit.ErrRedeemRejected)
+		})
+	}
+}
+
+// topUpBelowFloorErr builds the swap server's InvalidArgument reply for a
+// top-up below the operator floor, with the reason and domain as literals.
+func topUpBelowFloorErr(t *testing.T, domain, reason string) error {
+	t.Helper()
+
+	st, err := status.New(
+		codes.InvalidArgument, "Ark top-up amount 5 sat is below "+
+			"operator VTXO floor 1000 sat",
+	).WithDetails(&errdetails.ErrorInfo{Reason: reason, Domain: domain})
+	require.NoError(t, err)
+
+	return fmt.Errorf("create credit: %w", st.Err())
+}
+
+// TestCreditBridgeCreateCreditTopUpRejection asserts that only an Ark top-up
+// refused with the below-floor reason reaches the credit operation as
+// ErrTopUpRejected, and that every other CreateCredit failure stays retryable.
+func TestCreditBridgeCreateCreditTopUpRejection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		source   credit.CreditSource
+		err      error
+		rejected bool
+	}{
+		{
+			name:   "below floor",
+			source: credit.SourceArkTopUp,
+			err: topUpBelowFloorErr(
+				t, "swapdk.lightning.engineering",
+				"CREDIT_TOPUP_BELOW_FLOOR",
+			),
+			rejected: true,
+		},
+		{
+			// The expired replay shares the code but has no reason.
+			name:   "untagged invalid argument",
+			source: credit.SourceArkTopUp,
+			err: status.Error(
+				codes.InvalidArgument,
+				"Ark top-up x is expired",
+			),
+		},
+		{
+			name:   "foreign domain",
+			source: credit.SourceArkTopUp,
+			err: topUpBelowFloorErr(
+				t, "other.example.com",
+				"CREDIT_TOPUP_BELOW_FLOOR",
+			),
+		},
+		{
+			name:   "unknown reason",
+			source: credit.SourceArkTopUp,
+			err: topUpBelowFloorErr(
+				t, "swapdk.lightning.engineering",
+				"CREDIT_TOPUP_OTHER",
+			),
+		},
+		{
+			// The receive side is left as is.
+			name:   "receive source",
+			source: credit.SourceLightningReceive,
+			err: topUpBelowFloorErr(
+				t, "swapdk.lightning.engineering",
+				"CREDIT_TOPUP_BELOW_FLOOR",
+			),
+		},
+		{
+			name:   "transport",
+			source: credit.SourceArkTopUp,
+			err: status.Error(
+				codes.Unavailable, "connection lost",
+			),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			bridge, fakeClient := newTestCreditBridge(t, nil)
+			fakeClient.createCreditErr = test.err
+
+			_, err := bridge.CreateCredit(
+				context.Background(), nil, "key", test.source,
+				5, "",
+			)
+			require.Error(t, err)
+			require.Equal(
+				t, test.rejected,
+				errors.Is(err, credit.ErrTopUpRejected),
+			)
+		})
+	}
+}
+
+// TestCreditBridgeRESTDetailsReachBridge asserts that the reasons survive the
+// REST transport: a gateway error body with an ErrorInfo detail is rebuilt by
+// the REST client into a status the bridge treats as terminal, while the same
+// body without the detail stays retryable.
+func TestCreditBridgeRESTDetailsReachBridge(t *testing.T) {
+	t.Parallel()
+
+	invoice := testStartPayInvoice(t, testHash(43), 10_000)
+	detail := `,"details":[{"@type":"type.googleapis.com/` +
+		`google.rpc.ErrorInfo","reason":"CREDIT_PAY_RELEASED",` +
+		`"domain":"swapdk.lightning.engineering"}]`
+
+	tests := []struct {
+		name     string
+		body     string
+		rejected bool
+	}{
+		{
+			name: "with detail",
+			body: `{"code":9,"message":"existing credit pay is ` +
+				`in state released"` + detail + `}`,
+			rejected: true,
+		},
+		{
+			name: "without detail",
+			body: `{"code":9,"message":"existing credit pay is ` +
+				`in state released"}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			restErr := restclient.GatewayStatusError(
+				http.StatusBadRequest, []byte(test.body),
+			)
+			bridge, _ := newTestCreditBridge(t, restErr)
+
+			err := bridge.StartPay(
+				context.Background(), invoice, 1, 0,
+			)
+			require.Error(t, err)
+			require.Equal(
+				t, test.rejected,
+				errors.Is(err, credit.ErrPayRejected),
+			)
 		})
 	}
 }

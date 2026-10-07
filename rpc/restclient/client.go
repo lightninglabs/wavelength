@@ -11,11 +11,13 @@ import (
 	"strconv"
 	"strings"
 
+	_ "google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 var (
@@ -214,6 +216,33 @@ func (c *Client) newRequest(ctx context.Context, method string, path string,
 type GatewayError struct {
 	Code    json.RawMessage `json:"code"`
 	Message string          `json:"message"`
+
+	// Details holds the status details as grpc-gateway marshals them: one
+	// JSON object per google.protobuf.Any, tagged with an "@type" field.
+	Details []json.RawMessage `json:"details"`
+}
+
+// Status builds the gRPC status the envelope describes, carrying over every
+// detail whose type this binary knows. A detail of an unknown or malformed type
+// is skipped rather than failing the conversion, since the code and message
+// already identify the error.
+func (e *GatewayError) Status(code codes.Code) *status.Status {
+	st := status.New(code, e.Message)
+	if len(e.Details) == 0 {
+		return st
+	}
+
+	pb := st.Proto()
+	for _, raw := range e.Details {
+		detail := &anypb.Any{}
+		if err := jsonUnmarshal.Unmarshal(raw, detail); err != nil {
+			continue
+		}
+
+		pb.Details = append(pb.Details, detail)
+	}
+
+	return status.FromProto(pb)
 }
 
 // GatewayStatusError converts one grpc-gateway HTTP error response into a
@@ -233,7 +262,7 @@ func GatewayStatusError(httpStatus int, body []byte) error {
 		gwErr.Message = strings.TrimSpace(string(body))
 	}
 
-	return status.Error(code, gwErr.Message)
+	return gwErr.Status(code).Err()
 }
 
 func codeFromJSON(raw json.RawMessage, fallback codes.Code) codes.Code {
