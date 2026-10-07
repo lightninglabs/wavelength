@@ -260,8 +260,8 @@ func (r *Runtime) pollCreditOps(projected map[string]credit.State) {
 // it settles the invoice from credit, and the session persists it on its swap
 // row, so the durable swap summary keyed by the same payment hash is the
 // source. It returns false only when the lookup failed transiently and the
-// caller should retry on the next poll. A missing swap row or an unavailable
-// swap service is not retried, since the preimage cannot appear later.
+// caller should retry on the next poll. A missing swap row or a nil SwapService
+// is not retried, since the preimage cannot appear later.
 func (r *Runtime) attachCreditPreimage(op credit.CreditOpSummary,
 	entry *wavewalletrpc.WalletEntry) bool {
 
@@ -282,7 +282,7 @@ func (r *Runtime) attachCreditPreimage(op credit.CreditOpSummary,
 
 	case err != nil:
 		if r.rootCtx.Err() == nil {
-			r.deps.resolveLog().WarnS(
+			r.deps.resolveLog().DebugS(
 				r.rootCtx, "Credit projector preimage lookup "+
 					"failed", err,
 			)
