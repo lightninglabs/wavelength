@@ -311,6 +311,49 @@ func (s *OORSessionRegistryStoreDB) GetSession(ctx context.Context,
 	return record, nil
 }
 
+// GetUnfailedSessionByIdempotencyKey loads a durable outgoing identity before
+// an immutable dispatch attempt exists. Failed rows deliberately release the
+// key; pending and completed rows retain it.
+func (s *OORSessionRegistryStoreDB) GetUnfailedSessionByIdempotencyKey(
+	ctx context.Context, key string) (*OORSessionRegistryRecord, error) {
+
+	if key == "" {
+		return nil, ErrOORSessionNotFound
+	}
+
+	var record *OORSessionRegistryRecord
+	readFn := func(q *sqlc.Queries) error {
+		row, err := q.GetUnfailedOORSessionRegistryByIdempotencyKey(
+			ctx, sql.NullString{
+				String: key,
+				Valid:  true,
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		converted, err := oorSessionRecordFromRow(row)
+		if err != nil {
+			return err
+		}
+
+		record = &converted
+
+		return nil
+	}
+
+	err := s.ExecTx(ctx, ReadTxOption(), readFn)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrOORSessionNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return record, nil
+}
+
 // GetDispatchAttemptByIdempotencyKey loads the immutable outgoing dispatch
 // bound to key. Unlike the mutable session lookup, it remains valid across
 // terminal and incoming lifecycle updates.

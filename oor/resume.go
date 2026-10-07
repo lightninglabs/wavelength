@@ -132,6 +132,11 @@ func OutboxForState(state State) ([]OutboxEvent, error) {
 	}
 
 	switch s := state.(type) {
+	case *Prepared:
+		// Preparation deliberately has no implied side effect. Only an
+		// explicit CommitPreparedEvent may release signatures.
+		return nil, nil
+
 	case *AwaitingArkSignatures:
 		return []OutboxEvent{
 			&RequestArkSignatures{
