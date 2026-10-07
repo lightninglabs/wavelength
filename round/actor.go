@@ -1510,51 +1510,62 @@ func (a *RoundClientActor) askEventAndProcessOutbox(ctx context.Context,
 		if err := a.processOutbox(ctx, events); err != nil {
 			return fmt.Errorf("failed to process outbox: %w", err)
 		}
-
-		a.releaseBoardingOnFailure(ctx, roundFSM, events)
 	}
+
+	// The release is decided on the FSM's state rather than the outbox,
+	// since most failure paths emit no events.
+	a.releaseBoardingOnFailure(ctx, roundFSM)
 
 	return nil
 }
 
 // releaseBoardingOnFailure tells the wallet to stop treating a round's
-// boarding outpoints as in flight once the round has announced a failure. The
+// boarding outpoints as in flight once the round sits in ClientFailedState. The
 // wallet marks outpoints in flight when it ships them in a board trigger, so a
 // later trigger does not register them a second time. A round that fails
 // client-side, for example when the operator rejects the join, never adopts
 // the outpoints, so they stay confirmed and nothing else frees the mark: every
 // later Board call would be reported as redundant until a restart.
 //
-// A round that failed after its checkpoint has its outpoints adopted, which
-// takes them out of the confirmed set, so the wallet ignores the release until
-// the round is retired and they return. Delivery is best effort, since the
-// round has already failed and a restart clears the wallet's mark regardless.
+// The decision reads the FSM's state, not the outbox. Most transitions into
+// ClientFailedState (RoundJoined and the later signing states, a locally
+// rejected quote, a user cancel) emit no RoundFailedNotification, so an
+// outbox-based trigger would miss them.
+//
+// Releasing from any failed state is safe. Before the checkpoint no boarding
+// input signature has left the client, so the operator cannot spend the UTXO
+// and a retry is harmless. After the checkpoint the intents are Adopted, which
+// takes them out of the confirmed set, so the wallet's handleBoard does not
+// ship them again and the release does nothing.
+//
+// The outpoints are cleared on the first release so it fires once per failed
+// round. Delivery is best effort, since the round has already failed and a
+// restart clears the wallet's mark regardless.
 func (a *RoundClientActor) releaseBoardingOnFailure(ctx context.Context,
-	roundFSM *RoundFSM, events []ClientOutMsg) {
+	roundFSM *RoundFSM) {
 
 	if len(roundFSM.BoardingOutpoints) == 0 || a.cfg.WalletActor == nil {
 		return
 	}
 
-	failed := slices.ContainsFunc(events, func(msg ClientOutMsg) bool {
-		_, ok := msg.(*RoundFailedNotification)
-
-		return ok
-	})
-	if !failed {
+	state, err := fsmState(ctx, roundFSM.FSM)
+	if err != nil {
+		return
+	}
+	if _, failed := state.(*ClientFailedState); !failed {
 		return
 	}
 
 	outpoints := roundFSM.BoardingOutpoints
 	roundFSM.BoardingOutpoints = nil
 
-	err := a.cfg.WalletActor.Tell(
+	err = a.cfg.WalletActor.Tell(
 		ctx, &wallet.ReleaseBoardingInFlightRequest{
 			Outpoints: outpoints,
 		},
 	)
 	if err != nil {
-		a.log.WarnS(ctx, "Failed to release boarding outpoints "+
+		a.log.DebugS(ctx, "Failed to release boarding outpoints "+
 			"of failed round", err,
 			slog.Int("outpoints", len(outpoints)),
 		)
