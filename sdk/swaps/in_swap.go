@@ -975,27 +975,59 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 			})
 		}
 
-		// The daemon rejects a send for lack of spendable funds, or
-		// because the liquidity is reserved by another operation,
-		// before it selects or locks any input and before it records a
-		// keyed dispatch attempt. Nothing left the wallet and no vHTLC
-		// can exist, so fail the swap terminally. Leaving it retryable
-		// would let a resume pay long after the caller has given up.
-		if isFundingAdmissionRejected(err) {
-			return s.failTerminal(
-				ctx, fmt.Sprintf("fund vHTLC: %v", err), err,
-				nil,
-			)
-		}
-
 		// Any transport-level send failure is ambiguous: the daemon can
 		// durably accept the detached OOR before this RPC loses its
 		// response. Keep FundingInitiated retryable so the next attempt
 		// replays the same payment-scoped key instead of terminalizing
 		// a potentially funded swap.
-		return newRetryableActionError(
-			fmt.Errorf("fund vHTLC: %w", err),
+		if !isFundingAdmissionRejected(err) {
+			return newRetryableActionError(
+				fmt.Errorf("fund vHTLC: %w", err),
+			)
+		}
+
+		// The daemon rejects a send for lack of spendable funds, or
+		// because the liquidity is reserved by another operation,
+		// before it selects or locks any input and before it records a
+		// keyed dispatch attempt. That rejection can also be this
+		// swap's own earlier attempt: it holds the only spendable
+		// inputs while its response was lost and its attempt row is
+		// not yet committed, so the keyed replay misses it. Probe the
+		// in-flight registry with an existing-only send before
+		// concluding that nothing was funded.
+		daemon := s.client.daemon
+		probed, probeErr := daemon.SendOORWithPolicyOptionsDetails(
+			ctx, s.cfg.AmountSat, s.vhtlcPolicyTemplate,
+			OORSendOptions{
+				IdempotencyKey: inSwapFundingIdempotencyKey(
+					s.cfg.PaymentHash,
+				),
+				AdmissionDeadline: s.fundingAdmissionDeadline(),
+				ExistingOnly:      true,
+			},
 		)
+		switch {
+		// An own attempt is in flight or accepted, so continue through
+		// the normal success path below.
+		case probeErr == nil:
+			result = probed
+
+		// Nothing exists for this key, so no input was locked and no
+		// vHTLC can exist. Fail terminally: leaving the swap
+		// retryable would let a resume pay long after the caller has
+		// given up.
+		case status.Code(probeErr) == codes.NotFound:
+			return s.failTerminal(
+				ctx, fmt.Sprintf("fund vHTLC: %v", err), err,
+				nil,
+			)
+
+		// The probe itself failed, so the state is unknown.
+		default:
+			return newRetryableActionError(
+				fmt.Errorf("fund vHTLC: %w", err),
+			)
+		}
 	}
 	if result == nil || result.SessionID == "" {
 		return newRetryableActionError(
