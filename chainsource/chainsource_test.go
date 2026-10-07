@@ -869,6 +869,73 @@ func TestChainSourceActorUnregisterConf(t *testing.T) {
 	require.True(t, ok)
 }
 
+// TestChainSourceActorReRegisterConfReplaces verifies a second registration
+// under the same caller, txid and target replaces the first subscription
+// rather than leaving it running where unregistration and shutdown cannot
+// reach it. A caller retrying a registration whose answer it never saw takes
+// this path.
+func TestChainSourceActorReRegisterConfReplaces(t *testing.T) {
+	t.Parallel()
+
+	backend := newMockBackend()
+	system := actor.NewActorSystem()
+
+	// Bound shutdown: an orphaned subscription actor is exactly what would
+	// make it wait forever.
+	defer func() {
+		ctx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer cancel()
+		_ = system.Shutdown(ctx)
+	}()
+
+	chainSource := NewChainSourceActor(ChainSourceConfig{
+		Backend: backend,
+		System:  system,
+	})
+	ref := ChainSourceKey.Spawn(
+		system, "chainsource-rereg-conf", chainSource,
+	)
+
+	ctx := t.Context()
+	txHash := chainhash.Hash{}
+	pkScript := []byte{0x00, 0x14}
+	register := func() *RegisterConfResponse {
+		resp, err := ref.Ask(
+			ctx, &RegisterConfRequest{
+				CallerID:    "test-rereg-conf",
+				Txid:        &txHash,
+				PkScript:    pkScript,
+				TargetConfs: 1,
+			},
+		).Await(ctx).Unpack()
+		require.NoError(t, err)
+
+		confResp, ok := resp.(*RegisterConfResponse)
+		require.True(t, ok)
+		require.NotNil(t, confResp.Future)
+
+		return confResp
+	}
+
+	first := register()
+	register()
+
+	// Exactly one subscription actor remains under the key.
+	keyPart, err := txidOrScriptKey(&txHash, pkScript)
+	require.NoError(t, err)
+	serviceKey := confActorServiceKey("test-rereg-conf", keyPart, 1)
+	refs := actor.FindInReceptionist(system.Receptionist(), serviceKey)
+	require.Len(t, refs, 1)
+
+	// The replaced subscription was stopped, which fails its future.
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err = first.Future.Await(waitCtx).Unpack()
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 // TestChainSourceActorUnregisterSpend tests cancelling a spend subscription
 // via the ChainSource actor.
 func TestChainSourceActorUnregisterSpend(t *testing.T) {
