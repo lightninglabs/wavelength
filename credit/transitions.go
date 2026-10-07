@@ -7,6 +7,8 @@ import (
 	"log/slog"
 
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // emit builds a state transition to next carrying the given outbox directives.
@@ -92,16 +94,52 @@ func (topupCreatingState) ProcessEvent(ctx context.Context, _ CreditEvent,
 	return emit(&topupFundingState{}, &stageRecord{})
 }
 
+// isFundingAdmissionRejected reports a daemon send rejection that happens
+// before any input is selected or locked: insufficient spendable funds
+// (ResourceExhausted) or liquidity held by another in-flight operation
+// (Aborted). Neither guarantees by itself that this operation has not already
+// funded the top-up, since the lock may belong to its own earlier attempt.
+func isFundingAdmissionRejected(err error) bool {
+	switch status.Code(err) {
+	case codes.ResourceExhausted, codes.Aborted:
+		return true
+
+	default:
+		return false
+	}
+}
+
 // ProcessEvent for topupFundingState submits the OOR transfer that funds the
 // top-up. The op key is the OOR idempotency key, so a re-issued send never
 // produces a second transfer.
+//
+// The daemon can refuse the send for lack of spendable funds or because the
+// liquidity is locked. Retrying would leave the operation pending until funds
+// appear and then pay an invoice the caller gave up on long before. The
+// refusal is therefore terminal, unless this operation's own earlier send was
+// accepted and only its response was lost: that attempt holds the very locks
+// that cause the refusal, so an existing-only probe on the same key decides
+// whether to adopt the transfer or fail.
 func (topupFundingState) ProcessEvent(ctx context.Context, _ CreditEvent,
 	b *opBehavior) (*CreditTransition, error) {
 
 	sessionID, err := b.cfg.Daemon.SendOOR(
 		ctx, b.rec.DestinationPubkey, uint64(b.rec.TopupSat),
-		b.rec.OpKey,
+		b.rec.OpKey, false,
 	)
+	if err != nil && isFundingAdmissionRejected(err) {
+		rejection := err
+		sessionID, err = b.cfg.Daemon.SendOOR(
+			ctx, b.rec.DestinationPubkey, uint64(b.rec.TopupSat),
+			b.rec.OpKey, true,
+		)
+		if status.Code(err) == codes.NotFound {
+			return b.fail(
+				ctx, fmt.Sprintf("fund top-up via OOR "+
+					"rejected: %v", rejection),
+			)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("fund top-up via OOR: %w", err)
 	}

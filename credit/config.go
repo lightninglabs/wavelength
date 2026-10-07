@@ -210,8 +210,11 @@ type CreditDaemon interface {
 	// pubkey-backed destination and returns the OOR session id. The
 	// supplied key dedups the transfer against the OOR registry, so a
 	// re-issued send with the same key never produces a second transfer.
+	// When existingOnly is set, the call only reconciles: it returns the
+	// transfer already bound to the key, or a gRPC NotFound status, and
+	// never selects inputs or admits a new transfer.
 	SendOOR(ctx context.Context, destinationPubKey []byte, amountSat uint64,
-		idempotencyKey string) (string, error)
+		idempotencyKey string, existingOnly bool) (string, error)
 
 	// AllocateReceiveScript allocates a fresh wallet-owned Ark receive
 	// destination for a redemption payout, returning the x-only pubkey and
