@@ -151,6 +151,9 @@ func mergeActivityContext(
 	if next.Progress.GetPaymentHash() == "" {
 		next.Progress.PaymentHash = existingProgress.GetPaymentHash()
 	}
+	if next.Progress.GetPreimage() == "" {
+		next.Progress.Preimage = existingProgress.GetPreimage()
+	}
 	if next.Progress.GetTxid() == "" {
 		next.Progress.Txid = existingProgress.GetTxid()
 	}
@@ -496,6 +499,7 @@ func entryToProjection(entry *wavewalletrpc.WalletEntry) (db.ActivityProjection,
 			wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		),
 		PaymentHash:        hexBytesOrNil(progress.GetPaymentHash()),
+		Preimage:           hexBytesOrNil(progress.GetPreimage()),
 		Txid:               hexBytesOrNil(progress.GetTxid()),
 		ConfirmationHeight: confHeight,
 		VtxoOutpoint:       progress.GetVtxoOutpoint(),
@@ -571,6 +575,7 @@ func rowToWalletEntry(row sqlc.ActivityEntry) (*wavewalletrpc.WalletEntry,
 			),
 			PhaseLabel:         row.PhaseLabel,
 			PaymentHash:        hex.EncodeToString(row.PaymentHash),
+			Preimage:           hex.EncodeToString(row.Preimage),
 			Txid:               hex.EncodeToString(row.Txid),
 			ConfirmationHeight: confHeight,
 			VtxoOutpoint:       row.VtxoOutpoint,
