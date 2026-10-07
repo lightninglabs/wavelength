@@ -900,6 +900,212 @@ func TestPaySessionFailsFastWhenFundingOORRejected(t *testing.T) {
 	require.GreaterOrEqual(t, daemonConn.cancelCalls, 1)
 }
 
+// TestPaySessionFundingAdmissionRejectionIsTerminal asserts that a daemon
+// rejection raised before any input is selected (insufficient funds or locked
+// liquidity) fails the pay swap terminally. The swap must not stay resumable,
+// because a later restart would otherwise pay an invoice the caller abandoned.
+func TestPaySessionFundingAdmissionRejectionIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		code codes.Code
+		msg  string
+	}{
+		{
+			name: "insufficient funds",
+			code: codes.ResourceExhausted,
+			msg:  "insufficient spendable funds: need 2000",
+		},
+		{
+			name: "locked liquidity",
+			code: codes.Aborted,
+			msg:  "vtxo liquidity temporarily locked",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := newTestSwapStore(t)
+
+			clientPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			operatorPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			serverPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			preimage, err := NewPreimage()
+			require.NoError(t, err)
+			invoice := testValidPayInvoice(t, preimage)
+
+			start := time.Unix(1_700_000_000, 0)
+			serverConn := &testInSwapServerConn{
+				cfg: testInSwapConfig(
+					serverPriv.PubKey(), preimage,
+					start.Add(time.Hour),
+				),
+			}
+			daemonConn := &testDaemonConn{
+				identityKey: clientPriv.PubKey(),
+				operatorKey: operatorPriv.PubKey(),
+				blockHeight: 100,
+			}
+
+			// The probe finds no in-flight attempt for the key.
+			daemonConn.sendPolicyHook = func(call int, _ string) (
+				*OORSendResult, error) {
+
+				opts := daemonConn.sendPolicyOpts[call-1]
+				if opts.ExistingOnly {
+					return nil, status.Error(
+						codes.NotFound,
+						"no active OOR transfer",
+					)
+				}
+
+				return nil, status.Error(tc.code, tc.msg)
+			}
+
+			client := configureTestPayClient(
+				NewSwapClientWithStore(
+					serverConn, daemonConn, nil, nil, store,
+				),
+			)
+			client.now = func() time.Time { return start }
+
+			session, err := client.StartPayViaLightning(
+				t.Context(), invoice, testInSwapFeeSat,
+			)
+			require.NoError(t, err)
+
+			_, err = session.Wait(t.Context())
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.msg)
+			require.Equal(t, PayStateFailed, session.State())
+			require.True(
+				t, daemonConn.sendPolicyOpts[1].ExistingOnly,
+			)
+			require.Equal(t, 2, daemonConn.sendPolicyCalls)
+
+			// The terminal failure is what subscribers see.
+			summary, err := client.GetSwapSummary(
+				t.Context(), preimage.Hash(),
+			)
+			require.NoError(t, err)
+			require.False(t, summary.Pending)
+
+			// A restart must not pick the swap back up.
+			pending, err := client.ListSwapSummaries(
+				t.Context(), true,
+			)
+			require.NoError(t, err)
+			require.Empty(t, pending)
+
+			resumed, err := client.ResumePayViaLightning(
+				t.Context(), preimage.Hash(),
+			)
+			require.NoError(t, err)
+			require.Equal(t, PayStateFailed, resumed.State())
+			require.Equal(t, 2, daemonConn.sendPolicyCalls)
+		})
+	}
+}
+
+// TestPaySessionFundingRejectionAdoptsInFlightAttempt asserts that a locked or
+// exhausted rejection does not fail the swap when the existing-only probe finds
+// the swap's own accepted attempt. The first send's response was lost and its
+// attempt row is not yet committed, so the keyed replay misses it and the
+// selection sees the attempt's own locked inputs.
+func TestPaySessionFundingRejectionAdoptsInFlightAttempt(t *testing.T) {
+	t.Parallel()
+
+	for _, code := range []codes.Code{
+		codes.Aborted, codes.ResourceExhausted,
+	} {
+		t.Run(code.String(), func(t *testing.T) {
+			t.Parallel()
+
+			store := newTestSwapStore(t)
+
+			clientPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			operatorPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			serverPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			preimage, err := NewPreimage()
+			require.NoError(t, err)
+			invoice := testValidPayInvoice(t, preimage)
+
+			start := time.Unix(1_700_000_000, 0)
+			serverConn := &testInSwapServerConn{
+				cfg: testInSwapConfig(
+					serverPriv.PubKey(), preimage,
+					start.Add(time.Hour),
+				),
+			}
+			daemonConn := &testDaemonConn{
+				identityKey: clientPriv.PubKey(),
+				operatorKey: operatorPriv.PubKey(),
+				blockHeight: 100,
+			}
+			daemonConn.sendPolicyHook = func(call int, _ string) (
+				*OORSendResult, error) {
+
+				opts := daemonConn.sendPolicyOpts[call-1]
+				if opts.ExistingOnly {
+					return &OORSendResult{
+						SessionID:         "own",
+						RecipientOutpoint: "own:0",
+					}, nil
+				}
+
+				return nil, status.Error(
+					code, "own attempt holds the inputs",
+				)
+			}
+
+			client := configureTestPayClient(
+				NewSwapClientWithStore(
+					serverConn, daemonConn, nil, nil, store,
+				),
+			)
+			client.waitPollInterval = time.Millisecond
+			client.now = func() time.Time { return start }
+
+			session, err := client.StartPayViaLightning(
+				t.Context(), invoice, testInSwapFeeSat,
+			)
+			require.NoError(t, err)
+
+			err = session.runUntil(
+				t.Context(), PayStateWaitingForClaim,
+			)
+			require.NoError(t, err)
+			require.Equal(
+				t, PayStateWaitingForClaim, session.State(),
+			)
+
+			require.Equal(t, 2, daemonConn.sendPolicyCalls)
+			require.True(
+				t, daemonConn.sendPolicyOpts[1].ExistingOnly,
+			)
+			require.Equal(
+				t, "own", session.fundingSessionID,
+			)
+			require.Equal(t, "own:0", session.vhtlcOutpoint)
+		})
+	}
+}
+
 // TestPaySessionRefundsFundedVHTLCOnTimeout asserts a pay session
 // automatically sweeps its funded vHTLC back through the sender refund path
 // once the server claim deadline elapses.

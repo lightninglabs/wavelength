@@ -212,6 +212,20 @@ func isUnregisteredScriptErr(err error) bool {
 	}
 }
 
+// isFundingAdmissionRejected reports a daemon send rejection that happens
+// before any input is selected or reserved: insufficient spendable funds
+// (ResourceExhausted) or liquidity held by another in-flight operation
+// (Aborted). Both guarantee that nothing was spent.
+func isFundingAdmissionRejected(err error) bool {
+	switch status.Code(err) {
+	case codes.ResourceExhausted, codes.Aborted:
+		return true
+
+	default:
+		return false
+	}
+}
+
 // handleFailure persists the terminal swap state associated with err and
 // returns the Loop FSM event that keeps the transport FSM aligned with the
 // durable business state.
