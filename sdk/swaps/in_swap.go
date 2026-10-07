@@ -1035,6 +1035,9 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 				"session id"),
 		)
 	}
+	if result.Failed {
+		return s.handleFailedFundingReplay(ctx, result)
+	}
 	if result.RecipientOutpoint == "" {
 
 		// Do not persist a session without the exact vHTLC output. The
@@ -1062,6 +1065,35 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 	}
 
 	return s.markVHTLCFundedFromLocalMetadata(ctx)
+}
+
+// handleFailedFundingReplay resolves a keyed funding replay that reports the
+// earlier OOR attempt durably failed, which can only be observed when the first
+// attempt's response was lost before the session id was persisted. Only a
+// failure the daemon proves happened before the point of no return is terminal:
+// the operator never co-signed a spend, so no vHTLC exists and there is nothing
+// to refund. The outgoing OOR also reaches Failed after the point of no return,
+// where the operator holds a co-signed spend and the vHTLC may exist even
+// though the outpoint is unknown. Failing the swap there would strand a
+// possibly funded output with refund recovery never armed, so that case is
+// surfaced for intervention instead. A daemon that does not report the
+// distinction reads as not proven pre-PONR and takes the same safe path.
+func (s *paySession) handleFailedFundingReplay(ctx context.Context,
+	result *OORSendResult) error {
+
+	if result.FailedBeforePONR {
+		return s.failTerminal(
+			ctx, "funding OOR failed before the point of no return",
+			nil, nil,
+		)
+	}
+
+	return s.needsIntervention(
+		ctx, fmt.Sprintf("funding OOR %s failed after the point of "+
+			"no return, so the vHTLC may exist", result.SessionID),
+		nil,
+		nil,
+	)
 }
 
 // markVHTLCFundedFromLocalMetadata records progress from a locally known
