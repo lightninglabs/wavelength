@@ -3,6 +3,7 @@ package credit
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -189,8 +190,11 @@ func (topupAwaitingCreditState) ProcessEvent(ctx context.Context, _ CreditEvent,
 
 // ProcessEvent for payingState starts the credit or mixed pay. StartPay is
 // idempotent by payment hash, so a re-issued call reuses the already-started
-// pay session. A credit-only pay then awaits settlement against the server
-// ledger; a mixed pay hands terminal authority to the swap monitor and
+// pay session. A pay the swap client refuses outright is terminal for the
+// operation: retrying a deterministic rejection would leave it pending forever
+// instead of surfacing FAILED to the caller. Transport and other ambiguous
+// errors stay retryable. A credit-only pay then awaits settlement against the
+// server ledger; a mixed pay hands terminal authority to the swap monitor and
 // completes on hand-off.
 func (payingState) ProcessEvent(ctx context.Context, _ CreditEvent,
 	b *opBehavior) (*CreditTransition, error) {
@@ -199,6 +203,9 @@ func (payingState) ProcessEvent(ctx context.Context, _ CreditEvent,
 		ctx, b.rec.Invoice, uint64(b.rec.MaxFeeSat),
 		uint64(b.rec.MaxCreditSat),
 	)
+	if errors.Is(err, ErrPayRejected) {
+		return b.fail(ctx, fmt.Sprintf("start pay rejected: %v", err))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("start pay: %w", err)
 	}

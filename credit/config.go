@@ -2,6 +2,7 @@ package credit
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"time"
 
@@ -137,6 +138,12 @@ type RedeemResult struct {
 	RedeemedSat uint64
 }
 
+// ErrPayRejected marks a StartPay failure that is final for the operation: the
+// swap client refused the pay before starting anything, so no swap,
+// reservation, or funding exists that could complete it later. The operation
+// fails instead of being redelivered.
+var ErrPayRejected = errors.New("pay rejected")
+
 // CreditServer is the swap-server credit and pay surface the credit actor uses.
 // Every method is idempotent by the supplied idempotency key (CreateCredit /
 // RedeemCredit) or by the invoice payment hash (StartPay), so a crashed turn
@@ -163,6 +170,10 @@ type CreditServer interface {
 	// the invoice with the given credit cap. A credit-only pay is then
 	// reconciled to settlement by matching the invoice payment hash against
 	// the pay operation surfaced in ListCredits.
+	//
+	// An error wrapping ErrPayRejected means the pay was refused outright
+	// and nothing was started, so it can never succeed on retry. Any other
+	// error is treated as retryable.
 	StartPay(ctx context.Context, invoice string, maxFeeSat,
 		maxCreditSat uint64) error
 }
