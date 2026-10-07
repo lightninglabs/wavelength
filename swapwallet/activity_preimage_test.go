@@ -23,8 +23,8 @@ const activityPreimageHex = "0102030405060708090a0b0c0d0e0f10" +
 
 // newPreimageFixture wires a runtime over a real in-memory activity store with
 // the credit registry and swap service fakes the send paths need.
-func newPreimageFixture(t *testing.T) (*Runtime, *history,
-	*InspectionService, *fakeCreditRegistry, *fakeSwapService) {
+func newPreimageFixture(t *testing.T) (*Runtime, *history, *InspectionService,
+	*fakeCreditRegistry, *fakeSwapService) {
 
 	t.Helper()
 
@@ -66,7 +66,9 @@ func listedEntry(t *testing.T, h *history,
 	t.Helper()
 
 	list, err := h.listActivity(
-		context.Background(), &wavewalletrpc.ListRequest{Limit: 50},
+		context.Background(), &wavewalletrpc.ListRequest{
+			Limit: 50,
+		},
 	)
 	require.NoError(t, err)
 
@@ -132,12 +134,19 @@ func TestSwapSendPreimageInPersistedList(t *testing.T) {
 		Preimage:    activityPreimageHex,
 	}
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
-		Swaps: []*swapclientrpc.SwapSummary{summary},
+		Swaps: []*swapclientrpc.SwapSummary{
+			summary,
+		},
 	}
 
-	require.NoError(t, runtime.fanOutSwapUpdate(
-		&swapclientrpc.SubscribeSwapsResponse{Swap: summary},
-	))
+	require.NoError(
+		t,
+		runtime.fanOutSwapUpdate(
+			&swapclientrpc.SubscribeSwapsResponse{
+				Swap: summary,
+			},
+		),
+	)
 
 	got := listedEntry(t, h, payHashHex)
 	require.Equal(t, activityPreimageHex, got.GetProgress().GetPreimage())
@@ -210,18 +219,28 @@ func TestSwapSendPreimageBackfill(t *testing.T) {
 		State:       swapclientrpc.SwapState_SWAP_STATE_COMPLETED,
 		AmountSat:   5_000,
 	}
-	require.NoError(t, runtime.fanOutSwapUpdate(
-		&swapclientrpc.SubscribeSwapsResponse{Swap: summary},
-	))
+	require.NoError(
+		t,
+		runtime.fanOutSwapUpdate(
+			&swapclientrpc.SubscribeSwapsResponse{
+				Swap: summary,
+			},
+		),
+	)
 	require.Empty(
 		t, listedEntry(t, h, payHashHex).GetProgress().GetPreimage(),
 	)
 
 	sub := runtime.subscribe()
 	summary.Preimage = activityPreimageHex
-	require.NoError(t, runtime.fanOutSwapUpdate(
-		&swapclientrpc.SubscribeSwapsResponse{Swap: summary},
-	))
+	require.NoError(
+		t,
+		runtime.fanOutSwapUpdate(
+			&swapclientrpc.SubscribeSwapsResponse{
+				Swap: summary,
+			},
+		),
+	)
 
 	require.Len(t, drainEntries(sub), 1)
 	require.Equal(
@@ -245,9 +264,14 @@ func TestLaterProjectionKeepsStoredPreimage(t *testing.T) {
 		AmountSat:   5_000,
 		Preimage:    activityPreimageHex,
 	}
-	require.NoError(t, runtime.fanOutSwapUpdate(
-		&swapclientrpc.SubscribeSwapsResponse{Swap: pending},
-	))
+	require.NoError(
+		t,
+		runtime.fanOutSwapUpdate(
+			&swapclientrpc.SubscribeSwapsResponse{
+				Swap: pending,
+			},
+		),
+	)
 
 	// A later summary of the same swap without the preimage, with a
 	// different fee so the row genuinely changes.
@@ -259,9 +283,14 @@ func TestLaterProjectionKeepsStoredPreimage(t *testing.T) {
 		AmountSat:   5_000,
 		FeeSat:      7,
 	}
-	require.NoError(t, runtime.fanOutSwapUpdate(
-		&swapclientrpc.SubscribeSwapsResponse{Swap: later},
-	))
+	require.NoError(
+		t,
+		runtime.fanOutSwapUpdate(
+			&swapclientrpc.SubscribeSwapsResponse{
+				Swap: later,
+			},
+		),
+	)
 
 	emitted := drainEntries(sub)
 	require.Len(t, emitted, 1)

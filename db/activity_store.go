@@ -474,10 +474,10 @@ func (s *ActivityPersistenceStore) PullEvents(ctx context.Context, cursor int64,
 // e, i.e. whether it represents a genuine lifecycle transition. It mirrors the
 // UpsertActivityEntry semantics: scalar lifecycle columns overwrite directly,
 // while an empty note and the settlement/correlation handles, including the
-// preimage, preserve their stored values. RequestJSON is compared semantically because a later rich
-// projection may be the first source of immutable invoice context. EntryJSON
-// is not compared because it is the event representation of the effective row,
-// not an independently mutable current-state field.
+// preimage, preserve their stored values. RequestJSON is compared semantically
+// because a later rich projection may be the first source of immutable invoice
+// context. EntryJSON is not compared because it is the event representation of
+// the effective row, not an independently mutable current-state field.
 func (p ActivityProjection) changesRow(e sqlc.ActivityEntry) bool {
 	if p.PendingStatus != 0 && p.Status == p.PendingStatus &&
 		e.Status != p.PendingStatus {

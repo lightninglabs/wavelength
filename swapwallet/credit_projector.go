@@ -267,7 +267,6 @@ func (r *Runtime) attachCreditPreimage(op credit.CreditOpSummary,
 
 	if op.Kind != credit.KindPay || op.State != credit.StateCompleted ||
 		r.deps.SwapService == nil {
-
 		return true
 	}
 
