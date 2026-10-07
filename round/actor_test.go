@@ -2835,7 +2835,9 @@ func TestBoardingFailedFromJoinedRoundReleasesInFlightOutpoints(t *testing.T) {
 			fail: func(h *actorTestHarness, id RoundID) {
 				result := h.receive(&CancelRoundRequest{
 					RoundKey: fn.Some(
-						RoundKeyStr(id.KeyString()),
+						RoundKeyStr(
+							id.KeyString(),
+						),
 					),
 				})
 				require.True(h.t, result.IsOk())
