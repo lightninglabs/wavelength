@@ -180,6 +180,7 @@ type fakeServer struct {
 	redeemCalls map[string]int
 	startPayCnt int
 	startPayErr error
+	redeemErr   error
 	createState ServerCreditState
 	redeemState ServerCreditState
 	receiveHash []byte
@@ -264,6 +265,9 @@ func (s *fakeServer) RedeemCredit(_ context.Context, _ []byte,
 	defer s.mu.Unlock()
 
 	s.redeemCalls[idempotencyKey]++
+	if s.redeemErr != nil {
+		return nil, s.redeemErr
+	}
 
 	op, ok := s.ops[idempotencyKey]
 	if !ok {
@@ -1135,6 +1139,50 @@ func TestPayStartTransportErrorStaysRetryable(t *testing.T) {
 	require.Error(t, driveTurn(b, &fakeExec{}))
 	require.False(t, b.terminalCommitted)
 	require.Equal(t, string(StatePaying), b.rec.State)
+	require.Empty(t, b.rec.LastError)
+}
+
+// TestRedeemRejectionFails asserts that a redemption the swap server refuses
+// before creating anything terminal-fails the operation in the same turn
+// instead of returning an error that would redeliver the message forever, and
+// that a later resume never submits the redemption again.
+func TestRedeemRejectionFails(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	server, daemon := newFakeServer(), newFakeDaemon()
+	server.redeemErr = fmt.Errorf("%w: below floor", ErrRedeemRejected)
+	b := testBehavior("op1", store, server, daemon)
+	admit(t, b, store, &RedeemRequest{OpKey: "redeem:abc", AmountSat: 1000})
+
+	require.NoError(t, driveTurn(b, &fakeExec{}))
+	require.True(t, b.terminalCommitted)
+	require.Equal(t, string(StateFailed), b.rec.State)
+	require.Contains(t, b.rec.LastError, "below floor")
+
+	got, err := store.GetOperation(context.Background(), "op1")
+	require.NoError(t, err)
+	require.Equal(t, db.CreditOpStatusFailed, got.Status)
+
+	require.NoError(t, driveTurn(b, &fakeExec{}))
+	require.Equal(t, 1, server.redeemCalls["redeem:abc"])
+}
+
+// TestRedeemTransportErrorStaysRetryable asserts that a RedeemCredit failure
+// that is not a final rejection still returns an error, so the durable message
+// is redelivered and the idempotent reservation is reissued.
+func TestRedeemTransportErrorStaysRetryable(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	server, daemon := newFakeServer(), newFakeDaemon()
+	server.redeemErr = status.Error(codes.Unavailable, "connection lost")
+	b := testBehavior("op1", store, server, daemon)
+	admit(t, b, store, &RedeemRequest{OpKey: "redeem:abc", AmountSat: 1000})
+
+	require.Error(t, driveTurn(b, &fakeExec{}))
+	require.False(t, b.terminalCommitted)
+	require.Equal(t, string(StateRedeemSubmitting), b.rec.State)
 	require.Empty(t, b.rec.LastError)
 }
 

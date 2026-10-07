@@ -385,7 +385,11 @@ func (redeemReservingState) ProcessEvent(ctx context.Context, _ CreditEvent,
 
 // ProcessEvent for redeemSubmittingState reserves the redemption with the
 // server against the checkpointed destination. The op key is the idempotency
-// key, so a re-issued reservation reuses the same server operation.
+// key, so a re-issued reservation reuses the same server operation. A
+// redemption the server refuses before creating anything is terminal for the
+// operation: retrying a deterministic rejection would leave it pending forever
+// instead of surfacing FAILED to the caller. Transport and other ambiguous
+// errors stay retryable.
 func (redeemSubmittingState) ProcessEvent(ctx context.Context, _ CreditEvent,
 	b *opBehavior) (*CreditTransition, error) {
 
@@ -398,6 +402,9 @@ func (redeemSubmittingState) ProcessEvent(ctx context.Context, _ CreditEvent,
 		ctx, acctKey, b.rec.OpKey, uint64(b.rec.AmountSat),
 		b.rec.DestinationPubkey,
 	)
+	if errors.Is(err, ErrRedeemRejected) {
+		return b.fail(ctx, fmt.Sprintf("redeem rejected: %v", err))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("reserve redemption: %w", err)
 	}

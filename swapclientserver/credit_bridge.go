@@ -92,6 +92,15 @@ func (b *creditServerBridge) ListCredits(ctx context.Context, _ []byte) (
 }
 
 // RedeemCredit forwards to the swap subserver's RedeemCredit handler.
+//
+// An InvalidArgument refusal is wrapped with credit.ErrRedeemRejected so the
+// credit operation fails instead of being redelivered. The swap server returns
+// that code only while it validates a fresh request (the destination, the
+// amount, and the operator VTXO floor), before the reservation row exists, and
+// it skips the floor check for a known idempotency key, so a replay of an
+// admitted redemption never produces it. Everything else, including transport
+// errors and the ambiguous FailedPrecondition and ResourceExhausted codes, is
+// returned as is.
 func (b *creditServerBridge) RedeemCredit(ctx context.Context, _ []byte,
 	idempotencyKey string, amountSat uint64, destinationPubKey []byte) (
 	*credit.RedeemResult, error) {
@@ -101,6 +110,9 @@ func (b *creditServerBridge) RedeemCredit(ctx context.Context, _ []byte,
 		AmountSat:         amountSat,
 		DestinationPubkey: destinationPubKey,
 	})
+	if status.Code(err) == codes.InvalidArgument {
+		return nil, fmt.Errorf("%w: %w", credit.ErrRedeemRejected, err)
+	}
 	if err != nil {
 		return nil, err
 	}
