@@ -144,6 +144,13 @@ type RedeemResult struct {
 // fails instead of being redelivered.
 var ErrPayRejected = errors.New("pay rejected")
 
+// ErrRedeemRejected marks a RedeemCredit failure that is final for the
+// operation: the swap server refused the redemption before it created an
+// operation row, reserved credits, or dispatched anything, so no server state
+// exists that could complete it later. The operation fails instead of being
+// redelivered.
+var ErrRedeemRejected = errors.New("redeem rejected")
+
 // CreditServer is the swap-server credit and pay surface the credit actor uses.
 // Every method is idempotent by the supplied idempotency key (CreateCredit /
 // RedeemCredit) or by the invoice payment hash (StartPay), so a crashed turn
@@ -162,6 +169,10 @@ type CreditServer interface {
 	// RedeemCredit reserves available credits and sends amountSat as the
 	// exact Ark recipient output amount. Transfer fees must be funded
 	// separately and never deducted from this payout.
+	//
+	// An error wrapping ErrRedeemRejected means the redemption was refused
+	// before the server created anything, so it can never succeed on
+	// retry. Any other error is treated as retryable.
 	RedeemCredit(ctx context.Context, accountPubKey []byte,
 		idempotencyKey string, amountSat uint64,
 		destinationPubKey []byte) (*RedeemResult, error)

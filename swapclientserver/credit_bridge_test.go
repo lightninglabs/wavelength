@@ -5,6 +5,7 @@ package swapclientserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg/v2"
@@ -168,6 +169,114 @@ func TestCreditBridgeStartPayStaysRetryable(t *testing.T) {
 			)
 			require.Error(t, err)
 			require.NotErrorIs(t, err, credit.ErrPayRejected)
+		})
+	}
+}
+
+// newTestRedeemBridge builds a credit bridge over a fake swap runtime whose
+// RedeemCredit fails with redeemErr.
+func newTestRedeemBridge(t *testing.T, redeemErr error) *creditServerBridge {
+	t.Helper()
+
+	fakeClient := newFakeSwapRuntime()
+	fakeClient.redeemCreditErr = redeemErr
+	service := newTestSwapClientService(fakeClient)
+	t.Cleanup(service.cancel)
+
+	return &creditServerBridge{svc: service}
+}
+
+// TestCreditBridgeRedeemRejection asserts that an InvalidArgument refusal from
+// the swap server, such as a redeem amount below the operator VTXO floor,
+// reaches the credit operation as ErrRedeemRejected even through the SDK's
+// error wrapping, so the operation fails instead of being redelivered.
+func TestCreditBridgeRedeemRejection(t *testing.T) {
+	t.Parallel()
+
+	rejection := status.Error(
+		codes.InvalidArgument,
+		"redeem amount 100 sat is below operator VTXO floor 330 sat",
+	)
+	bridge := newTestRedeemBridge(
+		t, fmt.Errorf("RedeemCredit RPC: %w", rejection),
+	)
+
+	_, err := bridge.RedeemCredit(
+		context.Background(), nil, "redeem:abc", 100, []byte{0x02},
+	)
+	require.ErrorIs(t, err, credit.ErrRedeemRejected)
+}
+
+// TestCreditBridgeRedeemStaysRetryable asserts that every other RedeemCredit
+// failure is returned without ErrRedeemRejected, so the credit operation keeps
+// retrying it. FailedPrecondition and AlreadyExists are what the swap server
+// returns for a replay of an admitted redemption, and ResourceExhausted is a
+// transient admission cap.
+func TestCreditBridgeRedeemStaysRetryable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "unavailable",
+			err: status.Error(
+				codes.Unavailable, "connection lost",
+			),
+		},
+		{
+			name: "deadline exceeded",
+			err: status.Error(
+				codes.DeadlineExceeded, "timed out",
+			),
+		},
+		{
+			name: "canceled",
+			err:  context.Canceled,
+		},
+		{
+			name: "no status",
+			err:  errors.New("redeem failed"),
+		},
+		{
+			name: "failed precondition",
+			err: status.Error(
+				codes.FailedPrecondition, "state changed",
+			),
+		},
+		{
+			name: "already exists",
+			err: status.Error(
+				codes.AlreadyExists, "idempotency mismatch",
+			),
+		},
+		{
+			name: "resource exhausted",
+			err: status.Error(
+				codes.ResourceExhausted, "admission capacity",
+			),
+		},
+		{
+			name: "unimplemented",
+			err: status.Error(
+				codes.Unimplemented, "credits are not enabled",
+			),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			bridge := newTestRedeemBridge(t, test.err)
+
+			_, err := bridge.RedeemCredit(
+				context.Background(), nil, "redeem:abc", 100,
+				[]byte{0x02},
+			)
+			require.Error(t, err)
+			require.NotErrorIs(t, err, credit.ErrRedeemRejected)
 		})
 	}
 }
