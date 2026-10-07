@@ -900,6 +900,111 @@ func TestPaySessionFailsFastWhenFundingOORRejected(t *testing.T) {
 	require.GreaterOrEqual(t, daemonConn.cancelCalls, 1)
 }
 
+// TestPaySessionFundingAdmissionRejectionIsTerminal asserts that a daemon
+// rejection raised before any input is selected (insufficient funds or locked
+// liquidity) fails the pay swap terminally. The swap must not stay resumable,
+// because a later restart would otherwise pay an invoice the caller abandoned.
+func TestPaySessionFundingAdmissionRejectionIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		code codes.Code
+		msg  string
+	}{
+		{
+			name: "insufficient funds",
+			code: codes.ResourceExhausted,
+			msg:  "insufficient spendable funds: need 2000",
+		},
+		{
+			name: "locked liquidity",
+			code: codes.Aborted,
+			msg:  "vtxo liquidity temporarily locked",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := newTestSwapStore(t)
+
+			clientPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			operatorPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			serverPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			preimage, err := NewPreimage()
+			require.NoError(t, err)
+			invoice := testValidPayInvoice(t, preimage)
+
+			start := time.Unix(1_700_000_000, 0)
+			serverConn := &testInSwapServerConn{
+				cfg: testInSwapConfig(
+					serverPriv.PubKey(), preimage,
+					start.Add(time.Hour),
+				),
+			}
+			daemonConn := &testDaemonConn{
+				identityKey: clientPriv.PubKey(),
+				operatorKey: operatorPriv.PubKey(),
+				blockHeight: 100,
+				sendPolicyHook: func(int, string) (
+					*OORSendResult, error) {
+
+					return nil, status.Error(
+						tc.code, tc.msg,
+					)
+				},
+			}
+
+			client := configureTestPayClient(
+				NewSwapClientWithStore(
+					serverConn, daemonConn, nil, nil, store,
+				),
+			)
+			client.now = func() time.Time { return start }
+
+			session, err := client.StartPayViaLightning(
+				t.Context(), invoice, testInSwapFeeSat,
+			)
+			require.NoError(t, err)
+
+			_, err = session.Wait(t.Context())
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.msg)
+			require.Equal(t, PayStateFailed, session.State())
+			require.Equal(t, 1, daemonConn.sendPolicyCalls)
+
+			// The terminal failure is what subscribers see.
+			summary, err := client.GetSwapSummary(
+				t.Context(), preimage.Hash(),
+			)
+			require.NoError(t, err)
+			require.False(t, summary.Pending)
+
+			// A restart must not pick the swap back up.
+			pending, err := client.ListSwapSummaries(
+				t.Context(), true,
+			)
+			require.NoError(t, err)
+			require.Empty(t, pending)
+
+			resumed, err := client.ResumePayViaLightning(
+				t.Context(), preimage.Hash(),
+			)
+			require.NoError(t, err)
+			require.Equal(t, PayStateFailed, resumed.State())
+			require.Equal(t, 1, daemonConn.sendPolicyCalls)
+		})
+	}
+}
+
 // TestPaySessionRefundsFundedVHTLCOnTimeout asserts a pay session
 // automatically sweeps its funded vHTLC back through the sender refund path
 // once the server claim deadline elapses.

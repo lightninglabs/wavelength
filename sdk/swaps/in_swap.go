@@ -975,6 +975,19 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 			})
 		}
 
+		// The daemon rejects a send for lack of spendable funds, or
+		// because the liquidity is reserved by another operation,
+		// before it selects or locks any input and before it records a
+		// keyed dispatch attempt. Nothing left the wallet and no vHTLC
+		// can exist, so fail the swap terminally. Leaving it retryable
+		// would let a resume pay long after the caller has given up.
+		if isFundingAdmissionRejected(err) {
+			return s.failTerminal(
+				ctx, fmt.Sprintf("fund vHTLC: %v", err), err,
+				nil,
+			)
+		}
+
 		// Any transport-level send failure is ambiguous: the daemon can
 		// durably accept the detached OOR before this RPC loses its
 		// response. Keep FundingInitiated retryable so the next attempt
