@@ -109,10 +109,17 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   relative expiry comes from its matching standard or custom policy template,
   not from operator configuration. Custom policies consider only canonical
   block-mode CSV sequences; CLTV non-final sentinels are not block delays.
-- Snapshots are versioned per direction (`OutgoingSnapshot.Version = 5`,
+- Snapshots are versioned per direction (`OutgoingSnapshot.Version = 6`,
   `IncomingSnapshot.Version = 1`); restore rejects a zero version. Outgoing
   v5 adds the `FirstRejectUnixNanos` record (bounded transient submit-reject
-  retry window); a pre-v5 snapshot decodes it to 0 (a fresh window).
+  retry window); a pre-v5 snapshot decodes it to 0 (a fresh window). Outgoing
+  v6 adds the `FailedPrePONR` record.
+- `Failed.PrePONR` is true only when an outgoing session failed from Idle,
+  `AwaitingArkSignatures`, or `AwaitingSubmitAccepted`, before the operator
+  co-signed a spend. A failure from `AwaitingCheckpointSignatures`,
+  `AwaitingFinalizeAccepted`, or `AwaitingLocalVTXOUpdate` leaves it false
+  because the outputs may exist, as does a pre-v6 failed snapshot.
+  `OutgoingFailedBeforePONR` reads it from a persisted record.
 - `StartTransferRequest.IdempotencyKey` dedup reads
   `oor_dispatch_attempts`, not the mutable session row. The table has one row
   per caller key and one caller key per deterministic session id. Once the

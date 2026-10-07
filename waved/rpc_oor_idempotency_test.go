@@ -1542,6 +1542,7 @@ func TestSendOORRejectsNewKeyForDispatchedFailedSession(t *testing.T) {
 	failedSession.FSM.Stop()
 
 	failedID := chainhash.Hash(failedSession.ID)
+	prePONR := true
 	require.NoError(
 		t,
 		registryStore.UpsertSession(
@@ -1550,13 +1551,15 @@ func TestSendOORRejectsNewKeyForDispatchedFailedSession(t *testing.T) {
 				ActorID: oor.ActorIDForSession(
 					failedSession.ID,
 				),
-				Direction:       db.OORSessionDirectionOutgoing,
-				Phase:           "failed",
-				IdempotencyKey:  "key-1",
-				Status:          db.OORSessionStatusFailed,
-				LastError:       "operator rejected",
-				SnapshotData:    []byte{0xff},
-				SnapshotVersion: 5,
+				Direction:      db.OORSessionDirectionOutgoing,
+				Phase:          "failed",
+				IdempotencyKey: "key-1",
+				Status:         db.OORSessionStatusFailed,
+				LastError:      "operator rejected",
+				SnapshotData: testFailedOutgoingSnapshot(
+					t, failedID, &prePONR,
+				),
+				SnapshotVersion: 6,
 				DispatchRequestData: []byte{
 					0xee,
 				},
@@ -1590,6 +1593,7 @@ func TestSendOORRejectsNewKeyForDispatchedFailedSession(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, "failed", failedReplay.Status)
+	require.True(t, failedReplay.FailedBeforePonr)
 	require.Equal(t, failedSession.ID.String(), failedReplay.SessionId)
 	require.Empty(t, failedReplay.RecipientOutpoints)
 	require.Equal(t, 0, testWallet.selectCount())

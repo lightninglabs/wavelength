@@ -863,7 +863,8 @@ func TestPaySessionFailsFastWhenFundingOORRejected(t *testing.T) {
 		oorSession: &waverpc.OORSessionInfo{
 			Status: waverpc.
 				OORSessionStatus_OOR_SESSION_STATUS_FAILED,
-			FailureReason: rejectReason,
+			FailureReason:    rejectReason,
+			FailedBeforePonr: true,
 		},
 	}
 
@@ -898,6 +899,75 @@ func TestPaySessionFailsFastWhenFundingOORRejected(t *testing.T) {
 	// ...and it cancelled the refund recovery that was armed optimistically
 	// from the local funding metadata.
 	require.GreaterOrEqual(t, daemonConn.cancelCalls, 1)
+}
+
+// TestPaySessionKeepsRecoveryWhenFundingOORFailsPastPONR asserts that a funding
+// OOR the daemon reports as failed without proving it failed before the point
+// of no return does not fail the swap or cancel refund recovery. Past that
+// point the operator holds a co-signed spend, so the vHTLC may exist, and
+// cancelling recovery would strand it. This covers a post-PONR failure and a
+// daemon that does not report the flag.
+func TestPaySessionKeepsRecoveryWhenFundingOORFailsPastPONR(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+
+	serverConn := &testInSwapServerConn{
+		cfg: testInSwapConfig(
+			serverPriv.PubKey(), preimage,
+			time.Now().Add(time.Hour),
+		),
+	}
+	daemonConn := &testDaemonConn{
+		identityKey:   clientPriv.PubKey(),
+		operatorKey:   operatorPriv.PubKey(),
+		blockHeight:   100,
+		sendSessionID: "funding-session",
+		sendOutpoint:  "funding:0",
+		liveLookupErr: errors.New(
+			"indexer query failed: script not registered for " +
+				"principal",
+		),
+		oorSession: &waverpc.OORSessionInfo{
+			Status: waverpc.
+				OORSessionStatus_OOR_SESSION_STATUS_FAILED,
+			FailureReason: "finalize lost",
+		},
+	}
+
+	store := newTestSwapStore(t)
+	client := configureTestPayClient(
+		NewSwapClientWithStore(serverConn, daemonConn, nil, nil, store),
+	)
+	client.waitPollInterval = time.Millisecond
+	client.refundLocktimeBuffer = 0
+
+	session, err := client.StartPayViaLightning(
+		t.Context(), invoice, testInSwapFeeSat,
+	)
+	require.NoError(t, err)
+
+	_, err = session.Wait(t.Context())
+	require.ErrorContains(t, err, "after the point of no return")
+	require.ErrorContains(t, err, "finalize lost")
+
+	// The swap needs intervention rather than failing, and the refund
+	// recovery armed from the local funding metadata is left in place.
+	require.Equal(t, PayStateNeedsIntervention, session.State())
+	require.Equal(t, 1, daemonConn.armRecoveryCalls)
+	require.Zero(t, daemonConn.cancelCalls)
+	require.Zero(t, daemonConn.sendCustomCalls)
 }
 
 // TestPaySessionFundingAdmissionRejectionIsTerminal asserts that a daemon
@@ -2981,6 +3051,162 @@ func TestPaySessionFundingReplayAfterLostResponse(t *testing.T) {
 	require.Equal(t, 3, daemonConn.sendPolicyCalls)
 	require.Equal(t, 1, daemonConn.armRecoveryCalls)
 	require.Equal(t, 1, daemonConn.cancelCalls)
+}
+
+// TestPaySessionFailedFundingReplay verifies how a keyed funding replay that
+// reports a durably failed OOR resolves a swap whose first attempt's response
+// was lost. Only a failure proven to be before the point of no return may fail
+// the swap. A post-PONR failure, or one from a daemon that does not report the
+// distinction, may have created the vHTLC, so it must not reach Failed and
+// instead needs intervention.
+func TestPaySessionFailedFundingReplay(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		replay    *OORSendResult
+		wantState PayState
+	}{
+		{
+			name: "failed before ponr fails the swap",
+			replay: &OORSendResult{
+				SessionID:        "funding-session",
+				Failed:           true,
+				FailedBeforePONR: true,
+			},
+			wantState: PayStateFailed,
+		},
+		{
+			name: "failed after ponr needs intervention",
+			replay: &OORSendResult{
+				SessionID: "funding-session",
+				Failed:    true,
+			},
+			wantState: PayStateNeedsIntervention,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := newTestSwapStore(t)
+
+			clientPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			operatorPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			serverPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			preimage, err := NewPreimage()
+			require.NoError(t, err)
+			invoice := testValidPayInvoice(t, preimage)
+
+			start := time.Unix(1_700_000_000, 0)
+			serverConn := &testInSwapServerConn{
+				cfg: testInSwapConfig(
+					serverPriv.PubKey(), preimage,
+					start.Add(time.Minute),
+				),
+			}
+			daemonConn := &testDaemonConn{
+				identityKey: clientPriv.PubKey(),
+				operatorKey: operatorPriv.PubKey(),
+				blockHeight: 100,
+			}
+			daemonConn.sendPolicyHook = func(call int, _ string) (
+				*OORSendResult, error) {
+
+				// The first attempt is accepted by the daemon
+				// but its response is lost, so no session id
+				// is ever persisted. Every later attempt
+				// replays the durably failed OOR.
+				if call == 1 {
+					return nil, status.Error(
+						codes.DeadlineExceeded,
+						"response lost",
+					)
+				}
+
+				replay := *test.replay
+
+				return &replay, nil
+			}
+
+			client := configureTestPayClient(
+				NewSwapClientWithStore(
+					serverConn, daemonConn, nil, nil, store,
+				),
+			)
+			client.fundingResumeGracePeriod = time.Millisecond
+			client.now = func() time.Time { return start }
+
+			session, err := client.StartPayViaLightning(
+				t.Context(), invoice, testInSwapFeeSat,
+			)
+			require.NoError(t, err)
+
+			_, err = session.Wait(t.Context())
+			require.ErrorContains(t, err, "response lost")
+			require.Equal(
+				t, PayStateFundingInitiated, session.State(),
+			)
+			require.Empty(t, session.fundingSessionID)
+
+			resumedClient := configureTestPayClient(
+				NewSwapClientWithStore(
+					serverConn, daemonConn, nil, nil, store,
+				),
+			)
+			resumedClient.now = func() time.Time {
+				return start.Add(30 * time.Second)
+			}
+			resumedClient.fundingResumeGracePeriod = 1
+
+			resumed, err := resumedClient.ResumePayViaLightning(
+				t.Context(), preimage.Hash(),
+			)
+			require.NoError(t, err)
+
+			_, err = resumed.Wait(t.Context())
+			require.ErrorContains(t, err, "point of no return")
+			require.Equal(t, test.wantState, resumed.State())
+			require.Equal(t, 2, daemonConn.sendPolicyCalls)
+
+			// Neither outcome persists funding metadata or arms
+			// refund recovery for an outpoint that was never
+			// learned.
+			require.Empty(t, resumed.fundingSessionID)
+			require.Empty(t, resumed.vhtlcOutpoint)
+			require.Equal(t, 0, daemonConn.armRecoveryCalls)
+
+			summary, err := resumedClient.GetSwapSummary(
+				t.Context(), preimage.Hash(),
+			)
+			require.NoError(t, err)
+			require.Equal(
+				t, test.wantState.String(), summary.State,
+			)
+			require.False(t, summary.Pending)
+
+			// A restart reloads the terminal row and must not send
+			// again.
+			terminalClient := configureTestPayClient(
+				NewSwapClientWithStore(
+					serverConn, daemonConn, nil, nil, store,
+				),
+			)
+			terminal, err := terminalClient.ResumePayViaLightning(
+				t.Context(), preimage.Hash(),
+			)
+			require.NoError(t, err)
+			require.Equal(t, test.wantState, terminal.State())
+			require.Equal(t, 2, daemonConn.sendPolicyCalls)
+		})
+	}
 }
 
 // TestPaySessionExpiresAfterAuthoritativeFundingMiss verifies an ambiguous

@@ -4003,8 +4003,17 @@ type SendOORResponse struct {
 	// may be empty when the daemon cannot resolve one recipient's
 	// outpoint from the finalized Ark transaction.
 	RecipientOutpoints []string `protobuf:"bytes,3,rep,name=recipient_outpoints,json=recipientOutpoints,proto3" json:"recipient_outpoints,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// failed_before_ponr is set only on a replay with status "failed", and
+	// only when the failed session provably failed before the point of no
+	// return: the operator never co-signed a spend of the inputs, so no
+	// recipient output was created and the transfer is safe to treat as
+	// never funded. It is false for a failure from a later state, where the
+	// operator may hold a co-signed spend and the outputs may exist, and for
+	// a failure recorded before the origin was tracked. Clients that ignore
+	// the field keep treating a failed replay as unresolved.
+	FailedBeforePonr bool `protobuf:"varint,4,opt,name=failed_before_ponr,json=failedBeforePonr,proto3" json:"failed_before_ponr,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *SendOORResponse) Reset() {
@@ -4056,6 +4065,13 @@ func (x *SendOORResponse) GetRecipientOutpoints() []string {
 		return x.RecipientOutpoints
 	}
 	return nil
+}
+
+func (x *SendOORResponse) GetFailedBeforePonr() bool {
+	if x != nil {
+		return x.FailedBeforePonr
+	}
+	return false
 }
 
 type PrepareOORRequest struct {
@@ -7723,8 +7739,15 @@ type OORSessionInfo struct {
 	CreatedOutpoints []string `protobuf:"bytes,8,rep,name=created_outpoints,json=createdOutpoints,proto3" json:"created_outpoints,omitempty"`
 	// failure_reason is populated for failed live OOR sessions when known.
 	FailureReason string `protobuf:"bytes,9,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// failed_before_ponr is true only for an outgoing session that failed
+	// from a state before the point of no return: the operator never
+	// co-signed a spend of the inputs, so no output of the transfer was
+	// created. It is false for a failure from a later state, where the
+	// outputs may exist, for any session that has not failed, and for a
+	// failure recorded before the origin was tracked.
+	FailedBeforePonr bool `protobuf:"varint,10,opt,name=failed_before_ponr,json=failedBeforePonr,proto3" json:"failed_before_ponr,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *OORSessionInfo) Reset() {
@@ -7818,6 +7841,13 @@ func (x *OORSessionInfo) GetFailureReason() string {
 		return x.FailureReason
 	}
 	return ""
+}
+
+func (x *OORSessionInfo) GetFailedBeforePonr() bool {
+	if x != nil {
+		return x.FailedBeforePonr
+	}
+	return false
 }
 
 type ListOORSessionsRequest struct {
@@ -11210,12 +11240,13 @@ const file_daemon_proto_rawDesc = "" +
 	"\x06pubkey\x18\x01 \x01(\fR\x06pubkey\x12%\n" +
 	"\x0ewitness_script\x18\x02 \x01(\fR\rwitnessScript\x12\x1c\n" +
 	"\tsignature\x18\x03 \x01(\fR\tsignature\x12\x18\n" +
-	"\asighash\x18\x04 \x01(\rR\asighash\"y\n" +
+	"\asighash\x18\x04 \x01(\rR\asighash\"\xa7\x01\n" +
 	"\x0fSendOORResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12/\n" +
-	"\x13recipient_outpoints\x18\x03 \x03(\tR\x12recipientOutpoints\"\x80\x01\n" +
+	"\x13recipient_outpoints\x18\x03 \x03(\tR\x12recipientOutpoints\x12,\n" +
+	"\x12failed_before_ponr\x18\x04 \x01(\bR\x10failedBeforePonr\"\x80\x01\n" +
 	"\x11PrepareOORRequest\x12-\n" +
 	"\trecipient\x18\x01 \x01(\v2\x0f.waverpc.OutputR\trecipient\x12<\n" +
 	"\rcustom_inputs\x18\x02 \x03(\v2\x17.waverpc.CustomOORInputR\fcustomInputs\"\xad\x01\n" +
@@ -11475,7 +11506,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x14\n" +
 	"\x12WatchRoundsRequest\"?\n" +
 	"\x13WatchRoundsResponse\x12(\n" +
-	"\x05round\x18\x01 \x01(\v2\x12.waverpc.RoundInfoR\x05round\"\xf5\x02\n" +
+	"\x05round\x18\x01 \x01(\v2\x12.waverpc.RoundInfoR\x05round\"\xa3\x03\n" +
 	"\x0eOORSessionInfo\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12:\n" +
@@ -11488,7 +11519,9 @@ const file_daemon_proto_rawDesc = "" +
 	"updated_at\x18\x06 \x01(\x03R\tupdatedAt\x12-\n" +
 	"\x12consumed_outpoints\x18\a \x03(\tR\x11consumedOutpoints\x12+\n" +
 	"\x11created_outpoints\x18\b \x03(\tR\x10createdOutpoints\x12%\n" +
-	"\x0efailure_reason\x18\t \x01(\tR\rfailureReason\"\xdd\x01\n" +
+	"\x0efailure_reason\x18\t \x01(\tR\rfailureReason\x12,\n" +
+	"\x12failed_before_ponr\x18\n" +
+	" \x01(\bR\x10failedBeforePonr\"\xdd\x01\n" +
 	"\x16ListOORSessionsRequest\x12\x1b\n" +
 	"\tpage_size\x18\x01 \x01(\x05R\bpageSize\x12\x1d\n" +
 	"\n" +

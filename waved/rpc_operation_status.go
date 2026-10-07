@@ -224,6 +224,7 @@ func (r *RPCServer) oorStatusToProto(ctx context.Context,
 		),
 		CreatedOutpoints: outpointsToStrings(summary.CreatedOutpoints),
 	}
+	info.FailedBeforePonr = r.outgoingFailedBeforePONR(ctx, info)
 	if summary.Registry != nil {
 		live := oor.SessionSummary{
 			RetryReason: summary.Registry.LastError,
@@ -253,6 +254,44 @@ func (r *RPCServer) oorStatusToProto(ctx context.Context,
 	}
 
 	return info
+}
+
+// outgoingFailedBeforePONR reports whether a failed outgoing session recorded
+// that it failed before the point of no return. It reads the registry row
+// directly because the merged status projection does not always carry it, and
+// reports false whenever the origin cannot be proven.
+func (r *RPCServer) outgoingFailedBeforePONR(ctx context.Context,
+	info *waverpc.OORSessionInfo) bool {
+
+	failed := waverpc.OORSessionStatus_OOR_SESSION_STATUS_FAILED
+	outgoing := waverpc.OORSessionDirection_OOR_SESSION_DIRECTION_OUTGOING
+	if info.Status != failed || info.Direction != outgoing ||
+		r.server.oorSessionStore == nil {
+		return false
+	}
+
+	sessionID, err := chainhash.NewHashFromStr(info.SessionId)
+	if err != nil {
+		return false
+	}
+
+	record, err := r.server.oorSessionStore.GetSession(ctx, *sessionID)
+	if err != nil {
+		return false
+	}
+
+	prePONR, err := oor.OutgoingFailedBeforePONR(record)
+	if err != nil {
+		sessionAttr := slog.String("session_id", info.SessionId)
+		r.server.log.WarnS(ctx, "Unable to classify failed OOR session",
+			err,
+			sessionAttr,
+		)
+
+		return false
+	}
+
+	return prePONR
 }
 
 // queryOORSessionSummaries fetches live OOR summaries from the actor.

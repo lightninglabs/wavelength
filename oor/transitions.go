@@ -62,11 +62,33 @@ func unexpectedEvent(state State) *StateTransition {
 }
 
 // failedState preserves the caller intent key when a running outgoing session
-// enters a terminal failure state.
+// enters a terminal failure state, and records whether the failure landed
+// before the point of no return.
 func failedState(reason string, current State) *Failed {
 	return &Failed{
 		Reason:         reason,
 		IdempotencyKey: stateIdempotencyKey(current),
+		PrePONR:        failsBeforePONR(current),
+	}
+}
+
+// failsBeforePONR reports whether a terminal failure out of the given state
+// happens before the point of no return, meaning the operator has not
+// co-signed a spend of the session inputs. These are exactly the states in
+// which prePONRInputOutpoints reserves inputs for release, plus Idle where
+// nothing has been built yet. Every other state, including
+// AwaitingCheckpointSignatures, AwaitingFinalizeAccepted and
+// AwaitingLocalVTXOUpdate, is after the point of no return: the operator holds
+// a co-signed spend, so a failure there does not prove the outputs were never
+// created. New states default to false so an unclassified state is never
+// reported as safe.
+func failsBeforePONR(state State) bool {
+	switch state.(type) {
+	case *Idle, *AwaitingArkSignatures, *AwaitingSubmitAccepted:
+		return true
+
+	default:
+		return false
 	}
 }
 

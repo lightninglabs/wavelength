@@ -981,6 +981,10 @@ func (c *Client) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 	return resp, nil
 }
 
+// oorStatusFailed is the SendOOR response status a keyed replay returns for an
+// attempt that durably failed.
+const oorStatusFailed = "failed"
+
 // OORSendResult contains daemon metadata for an accepted OOR transfer.
 type OORSendResult struct {
 	// SessionID is the OOR session identifier.
@@ -989,6 +993,18 @@ type OORSendResult struct {
 	// RecipientOutpoint is the Ark tx outpoint created for the requested
 	// recipient when the daemon can resolve it locally.
 	RecipientOutpoint string
+
+	// Failed is true when a keyed replay found that the earlier attempt
+	// durably failed. A failed result carries a session id but no
+	// recipient outpoint.
+	Failed bool
+
+	// FailedBeforePONR is true only when Failed is set and the daemon
+	// proved the attempt failed before the point of no return, so the
+	// operator never co-signed a spend and no output was created. It is
+	// false for a failure from a later state, where the output may exist,
+	// and when talking to a daemon that does not report the distinction.
+	FailedBeforePONR bool
 }
 
 // OORSendOptions controls idempotent admission and read-only reconciliation.
@@ -1100,6 +1116,9 @@ func (c *Client) SendOORWithPolicyOptionsDetails(ctx context.Context,
 	return &OORSendResult{
 		SessionID:         resp.GetSessionId(),
 		RecipientOutpoint: recipientOutpoint,
+		Failed:            resp.GetStatus() == oorStatusFailed,
+		FailedBeforePONR: resp.GetStatus() == oorStatusFailed &&
+			resp.GetFailedBeforePonr(),
 	}, nil
 }
 

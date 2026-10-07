@@ -89,6 +89,11 @@ type OutgoingSnapshot struct {
 	// RetryAfter is non-zero, it carries the pending retry reason.
 	FailReason string
 
+	// FailedPrePONR records, when Phase is Failed, that the session failed
+	// before the point of no return. It decodes to false for a snapshot
+	// that lacks the record.
+	FailedPrePONR bool
+
 	// IdempotencyKey identifies the caller intent that created this
 	// outgoing session, when one was provided.
 	IdempotencyKey string
@@ -123,8 +128,10 @@ func NewOutgoingSnapshot(sessionID SessionID,
 		// Version 5 adds the FirstRejectUnixNanos record (bounded
 		// transient submit-reject retry window). Restore stays
 		// backward-compatible: a pre-v5 snapshot lacks the record and
-		// decodes FirstRejectUnixNanos to 0 (a fresh window).
-		Version:   5,
+		// decodes FirstRejectUnixNanos to 0 (a fresh window). Version 6
+		// adds the FailedPrePONR record, which a pre-v6 snapshot lacks
+		// and decodes to false (not proven pre-PONR).
+		Version:   6,
 		SessionID: sessionID,
 	}
 
@@ -229,6 +236,7 @@ func NewOutgoingSnapshot(sessionID SessionID,
 		// Failed is terminal. Retrying is not attempted automatically.
 		snap.Phase = OutgoingPhaseFailed
 		snap.FailReason = s.Reason
+		snap.FailedPrePONR = s.PrePONR
 		snap.IdempotencyKey = s.IdempotencyKey
 
 	default:
@@ -421,6 +429,7 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 		return &Failed{
 			Reason:         snapshot.FailReason,
 			IdempotencyKey: snapshot.IdempotencyKey,
+			PrePONR:        snapshot.FailedPrePONR,
 		}, nil
 
 	default:

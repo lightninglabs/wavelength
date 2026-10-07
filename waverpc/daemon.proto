@@ -1166,6 +1166,16 @@ message SendOORResponse {
     // may be empty when the daemon cannot resolve one recipient's
     // outpoint from the finalized Ark transaction.
     repeated string recipient_outpoints = 3;
+
+    // failed_before_ponr is set only on a replay with status "failed", and
+    // only when the failed session provably failed before the point of no
+    // return: the operator never co-signed a spend of the inputs, so no
+    // recipient output was created and the transfer is safe to treat as
+    // never funded. It is false for a failure from a later state, where the
+    // operator may hold a co-signed spend and the outputs may exist, and for
+    // a failure recorded before the origin was tracked. Clients that ignore
+    // the field keep treating a failed replay as unresolved.
+    bool failed_before_ponr = 4;
 }
 
 message PrepareOORRequest {
@@ -2188,6 +2198,14 @@ message OORSessionInfo {
 
     // failure_reason is populated for failed live OOR sessions when known.
     string failure_reason = 9;
+
+    // failed_before_ponr is true only for an outgoing session that failed
+    // from a state before the point of no return: the operator never
+    // co-signed a spend of the inputs, so no output of the transfer was
+    // created. It is false for a failure from a later state, where the
+    // outputs may exist, for any session that has not failed, and for a
+    // failure recorded before the origin was tracked.
+    bool failed_before_ponr = 10;
 }
 
 message ListOORSessionsRequest {
