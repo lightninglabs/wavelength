@@ -1130,21 +1130,34 @@ func (s *paySession) markVHTLCFundedFromLocalMetadata(
 	})
 }
 
+// fundingOORFailure describes a funding OOR the daemon's durable record shows
+// as failed.
+type fundingOORFailure struct {
+	// reason is the operator's failure reason, when known.
+	reason string
+
+	// beforePONR is true only when the daemon proved the OOR failed before
+	// the point of no return, so the operator never co-signed a spend and
+	// no vHTLC was created.
+	beforePONR bool
+}
+
 // fundingOORFailed reports whether the daemon's durable record for the funding
-// OOR has reached a terminal failed state, meaning the operator rejected the
-// funding transfer and the vHTLC was never created. The pay flow proceeds on
-// local funding metadata even when the authoritative indexer rejects the
-// vHTLC lookup (expected for same-Ark receivers whose script is not registered
-// under this principal), so the indexer cannot distinguish "funded but not
-// queryable" from "funding rejected". The daemon's OOR session status does
-// make that distinction, and this is the signal we use to fail fast instead of
-// polling for a claim that can never arrive. A missing session, a still-pending
-// session, or a transient query error are all treated as "not known failed" so
-// a hiccup never fails an otherwise-healthy swap. The operator's failure reason
-// is returned for surfacing when known.
-func (s *paySession) fundingOORFailed(ctx context.Context) (bool, string) {
+// OOR has reached a terminal failed state, and whether that failure is proven
+// to be before the point of no return. The pay flow proceeds on local funding
+// metadata even when the authoritative indexer rejects the vHTLC lookup
+// (expected for same-Ark receivers whose script is not registered under this
+// principal), so the indexer cannot distinguish "funded but not queryable"
+// from "funding rejected". The daemon's OOR session status does make that
+// distinction. A failure past the point of no return is different: the
+// operator holds a co-signed spend, so the vHTLC may exist and the caller must
+// not treat it as never created. A missing session, a still-pending session,
+// or a transient query error are all treated as "not known failed" so a
+// hiccup never fails an otherwise-healthy swap. A daemon that does not report
+// the pre-PONR flag reads as not proven.
+func (s *paySession) fundingOORFailed(ctx context.Context) *fundingOORFailure {
 	if s.fundingSessionID == "" {
-		return false, ""
+		return nil
 	}
 
 	session, err := s.client.daemon.GetOORSession(ctx, s.fundingSessionID)
@@ -1157,27 +1170,41 @@ func (s *paySession) fundingOORFailed(ctx context.Context) (bool, string) {
 			slog.String("funding_session_id", s.fundingSessionID),
 		)
 
-		return false, ""
+		return nil
 	}
 	if session == nil || session.GetStatus() !=
 		waverpc.OORSessionStatus_OOR_SESSION_STATUS_FAILED {
-		return false, ""
+		return nil
 	}
 
-	return true, session.GetFailureReason()
+	return &fundingOORFailure{
+		reason:     session.GetFailureReason(),
+		beforePONR: session.GetFailedBeforePonr(),
+	}
 }
 
-// checkFundingRejected returns a terminal failure error when the funding OOR
-// was rejected by the operator, and nil otherwise. It is the shared guard used
-// at the top of every pay-side wait loop so a rejected funding OOR fails the
+// checkFundingRejected returns a terminal error when the funding OOR failed,
+// and nil otherwise. It is the shared guard used at the top of every pay-side
+// wait loop. A failure proven to be before the point of no return fails the
 // swap fast (with the operator's reason) instead of polling for a claim or
-// refund of a vHTLC that was never created.
+// refund of a vHTLC that was never created. Any other failure may have created
+// the vHTLC, so it keeps refund recovery armed and needs intervention.
 func (s *paySession) checkFundingRejected(ctx context.Context) error {
-	if failed, reason := s.fundingOORFailed(ctx); failed {
-		return s.failFundingRejected(ctx, reason)
+	failure := s.fundingOORFailed(ctx)
+	if failure == nil {
+		return nil
+	}
+	if failure.beforePONR {
+		return s.failFundingRejected(ctx, failure.reason)
 	}
 
-	return nil
+	reason := fmt.Sprintf("funding OOR %s failed after the point of no "+
+		"return, so the vHTLC may exist", s.fundingSessionID)
+	if failure.reason != "" {
+		reason = fmt.Sprintf("%s: %s", reason, failure.reason)
+	}
+
+	return s.needsIntervention(ctx, reason, nil, nil)
 }
 
 // failFundingRejected terminally fails a pay session whose funding OOR the
