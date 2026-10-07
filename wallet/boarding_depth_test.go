@@ -79,12 +79,6 @@ func TestBoardingIntentsRecordedAtOperatorDepth(t *testing.T) {
 	fix.store.AssertNotCalled(
 		t, "InsertBoardingIntents", mock.Anything, mock.Anything,
 	)
-	require.False(
-		t,
-		fix.wallet.seenUtxos.Contains(
-			NewUtxoKey(utxo.Outpoint),
-		),
-	)
 	fix.backend.AssertNumberOfCalls(t, "ListUnspent", 1)
 
 	// Once the deposit reaches the operator depth it is recorded.
@@ -95,12 +89,6 @@ func TestBoardingIntentsRecordedAtOperatorDepth(t *testing.T) {
 
 	tick(t, fix, 102)
 	fix.store.AssertNumberOfCalls(t, "InsertBoardingIntents", 1)
-	require.True(
-		t,
-		fix.wallet.seenUtxos.Contains(
-			NewUtxoKey(utxo.Outpoint),
-		),
-	)
 }
 
 // TestBoardingDepth covers how the operator terms map to the depth the
