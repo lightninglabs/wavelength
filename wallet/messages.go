@@ -237,6 +237,28 @@ func (m *GetConfirmedBoardingIntentsRequest) MessageType() string {
 // walletMsgSealed implements the sealed WalletMsg interface.
 func (m *GetConfirmedBoardingIntentsRequest) walletMsgSealed() {}
 
+// ReleaseBoardingInFlightRequest tells the wallet actor that a round which
+// carried the named boarding outpoints has failed, so the wallet must stop
+// treating them as in flight. Without it, the in-memory guard that keeps a
+// later Board trigger from re-registering an in-flight outpoint would hold a
+// failed round's outpoints until the next restart, and every Board call in
+// between would report them as redundant. The request is a Tell: the wallet
+// replies with nothing.
+type ReleaseBoardingInFlightRequest struct {
+	actor.BaseMessage
+
+	// Outpoints are the boarding outpoints the failed round carried.
+	Outpoints []wire.OutPoint
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *ReleaseBoardingInFlightRequest) MessageType() string {
+	return "ReleaseBoardingInFlightRequest"
+}
+
+// walletMsgSealed implements the sealed WalletMsg interface.
+func (m *ReleaseBoardingInFlightRequest) walletMsgSealed() {}
+
 // GetConfirmedBoardingIntentsResponse returns the confirmed boarding intents
 // currently tracked by the wallet actor.
 type GetConfirmedBoardingIntentsResponse struct {

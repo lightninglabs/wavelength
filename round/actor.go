@@ -322,6 +322,12 @@ type RoundFSM struct {
 	// CommitmentTx is the commitment transaction as a PSBT, used for
 	// registering confirmation notifications with the correct pkScript.
 	CommitmentTx fn.Option[*psbt.Packet]
+
+	// BoardingOutpoints are the boarding outpoints the wallet shipped into
+	// this round through board triggers. If the round fails, the actor
+	// tells the wallet to release them so the next Board trigger can
+	// retry them.
+	BoardingOutpoints []wire.OutPoint
 }
 
 // RoundClientActor wraps the client boarding FSM in an actor interface. The
@@ -1504,9 +1510,55 @@ func (a *RoundClientActor) askEventAndProcessOutbox(ctx context.Context,
 		if err := a.processOutbox(ctx, events); err != nil {
 			return fmt.Errorf("failed to process outbox: %w", err)
 		}
+
+		a.releaseBoardingOnFailure(ctx, roundFSM, events)
 	}
 
 	return nil
+}
+
+// releaseBoardingOnFailure tells the wallet to stop treating a round's
+// boarding outpoints as in flight once the round has announced a failure. The
+// wallet marks outpoints in flight when it ships them in a board trigger, so a
+// later trigger does not register them a second time. A round that fails
+// client-side, for example when the operator rejects the join, never adopts
+// the outpoints, so they stay confirmed and nothing else frees the mark: every
+// later Board call would be reported as redundant until a restart.
+//
+// A round that failed after its checkpoint has its outpoints adopted, which
+// takes them out of the confirmed set, so the wallet ignores the release until
+// the round is retired and they return. Delivery is best effort, since the
+// round has already failed and a restart clears the wallet's mark regardless.
+func (a *RoundClientActor) releaseBoardingOnFailure(ctx context.Context,
+	roundFSM *RoundFSM, events []ClientOutMsg) {
+
+	if len(roundFSM.BoardingOutpoints) == 0 || a.cfg.WalletActor == nil {
+		return
+	}
+
+	failed := slices.ContainsFunc(events, func(msg ClientOutMsg) bool {
+		_, ok := msg.(*RoundFailedNotification)
+
+		return ok
+	})
+	if !failed {
+		return
+	}
+
+	outpoints := roundFSM.BoardingOutpoints
+	roundFSM.BoardingOutpoints = nil
+
+	err := a.cfg.WalletActor.Tell(
+		ctx, &wallet.ReleaseBoardingInFlightRequest{
+			Outpoints: outpoints,
+		},
+	)
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to release boarding outpoints "+
+			"of failed round", err,
+			slog.Int("outpoints", len(outpoints)),
+		)
+	}
 }
 
 // replayCheckpointedServerMessages re-emits server-bound messages that are
@@ -4263,6 +4315,14 @@ func (a *RoundClientActor) registerBoard(ctx context.Context,
 		VTXOs:    requests,
 		Leaves:   leaves,
 	}}
+
+	// Remember which outpoints this round carries so a failure of the round
+	// can hand them back to the wallet's in-flight guard.
+	for _, intent := range boardingIntents {
+		roundFSM.BoardingOutpoints = append(
+			roundFSM.BoardingOutpoints, intent.Outpoint,
+		)
+	}
 
 	err = a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
 	if err != nil {

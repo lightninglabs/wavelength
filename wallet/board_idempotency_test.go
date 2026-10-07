@@ -270,3 +270,42 @@ func TestHandleBoardReshipsAfterOutpointLeavesConfirmed(t *testing.T) {
 	// when it left the confirmed set.
 	require.Equal(t, []wire.OutPoint{opB}, triggerOutpoints(t, fix, 1))
 }
+
+// TestHandleBoardRetriesAfterInFlightRelease proves the guard frees an
+// outpoint when its round fails. A failed round never adopts the outpoint, so
+// it stays confirmed, and without the release every later Board call is
+// reported as redundant until a restart.
+func TestHandleBoardRetriesAfterInFlightRelease(t *testing.T) {
+	fix := newBoardIdempotencyFixture(t)
+	ctx := context.Background()
+
+	opA := fix.intentA.Outpoint
+
+	// A stays confirmed across both triggers.
+	fix.store.On(
+		"FetchBoardingIntentsByStatus", mock.Anything,
+		BoardingStatusConfirmed,
+	).Return([]BoardingIntent{fix.intentA}, nil)
+
+	_, err := fix.wallet.handleBoard(ctx, &BoardRequest{}).Unpack()
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return fix.roundActor.TriggerBoardCalls() == 1
+	}, time.Second, 5*time.Millisecond)
+
+	// The round carrying A fails, and the round actor says so.
+	_, err = fix.wallet.handleReleaseBoardingInFlight(
+		&ReleaseBoardingInFlightRequest{
+			Outpoints: []wire.OutPoint{opA},
+		},
+	).Unpack()
+	require.NoError(t, err)
+
+	// The next trigger boards A again.
+	_, err = fix.wallet.handleBoard(ctx, &BoardRequest{}).Unpack()
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return fix.roundActor.TriggerBoardCalls() == 2
+	}, time.Second, 5*time.Millisecond)
+	require.Equal(t, []wire.OutPoint{opA}, triggerOutpoints(t, fix, 1))
+}

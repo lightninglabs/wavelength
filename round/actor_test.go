@@ -2747,6 +2747,66 @@ func TestHandleTriggerBoard(t *testing.T) {
 	)
 }
 
+// TestBoardingFailedReleasesWalletInFlightOutpoints verifies that a round
+// failing client-side after a board trigger tells the wallet to release the
+// boarding outpoints it shipped. The wallet's in-flight guard otherwise holds
+// them until a restart, and every later Board call reports them as redundant.
+func TestBoardingFailedReleasesWalletInFlightOutpoints(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+	require.NoError(t, h.start())
+
+	intent := h.newTestBoardingIntent()
+	h.walletActor.setConfirmedIntents(*intent)
+
+	h.wallet.On(
+		"DeriveNextKey", mock.Anything, types.VTXOOwnerKeyFamily,
+	).Return(&keychain.KeyDescriptor{
+		PubKey: h.clientPubKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: types.VTXOOwnerKeyFamily,
+			Index:  0,
+		},
+	}, nil).Once()
+	h.wallet.On(
+		"DeriveNextKey", mock.Anything, types.VTXOSigningKeyFamily,
+	).Return(&keychain.KeyDescriptor{
+		PubKey: h.clientPubKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: types.VTXOSigningKeyFamily,
+			Index:  1,
+		},
+	}, nil).Once()
+
+	result := h.receiveBoard(&actormsg.TriggerBoardMsg{
+		Amounts:   []btcutil.Amount{49_000},
+		Outpoints: []wire.OutPoint{intent.Outpoint},
+	})
+	require.True(t, result.IsOk(), "expected Ok, got: %v", result.Err())
+
+	// Nothing is released while the round is alive.
+	require.Empty(t, h.walletActor.released())
+
+	// The operator rejects the join before assigning a round ID, as it
+	// does for a boarding input with too few confirmations.
+	h.sendServerMessage(&BoardingFailed{
+		Reason: "join request invalid: insufficient confirmations: " +
+			"got 1, want 6",
+		Recoverable: true,
+	})
+
+	tempState, exists := h.findTempState(h.queryState())
+	require.True(t, exists, "expected the failed round to be tracked")
+	require.IsType(t, &ClientFailedState{}, tempState.State)
+
+	require.Equal(
+		t, [][]wire.OutPoint{{intent.Outpoint}},
+		h.walletActor.released(),
+	)
+}
+
 // TestHandleTriggerBoardMultipleVTXOs verifies board fanout registers one VTXO
 // request per requested target amount.
 func TestHandleTriggerBoardMultipleVTXOs(t *testing.T) {
