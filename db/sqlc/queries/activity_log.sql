@@ -8,19 +8,21 @@
 -- projection and updated_at_unix is bumped, but created_at_unix is preserved so
 -- the row keeps its position in the created-ordered feed. The settlement and
 -- correlation handles are COALESCEd so an early projection that does not yet
--- know a txid never clobbers one a later projection already recorded.
+-- know a txid never clobbers one a later projection already recorded. The
+-- preimage is COALESCEd the same way, so a projection made without it never
+-- erases a stored one.
 INSERT INTO activity_entries (
     canonical_id, kind, status, amount_sat, fee_sat, counterparty, note,
     phase, phase_label, failure_code, failure_reason,
     payment_hash, txid, confirmation_height, vtxo_outpoint,
-    swap_session_id, ledger_txid, boarding_addr, request_json,
+    swap_session_id, ledger_txid, boarding_addr, request_json, preimage,
     created_at_unix, updated_at_unix
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
     $8, $9, $10, $11,
     $12, $13, $14, $15,
-    $16, $17, $18, $19,
-    $20, $21
+    $16, $17, $18, $19, $20,
+    $21, $22
 )
 ON CONFLICT (canonical_id) DO UPDATE SET
     kind           = EXCLUDED.kind,
@@ -41,6 +43,7 @@ ON CONFLICT (canonical_id) DO UPDATE SET
     ledger_txid     = COALESCE(EXCLUDED.ledger_txid, activity_entries.ledger_txid),
     boarding_addr   = COALESCE(EXCLUDED.boarding_addr, activity_entries.boarding_addr),
     request_json    = COALESCE(NULLIF(EXCLUDED.request_json, ''), activity_entries.request_json),
+    preimage        = COALESCE(EXCLUDED.preimage, activity_entries.preimage),
     updated_at_unix = EXCLUDED.updated_at_unix
 WHERE activity_entries.status = sqlc.arg(pending_status)
     OR EXCLUDED.status <> sqlc.arg(pending_status);

@@ -136,7 +136,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   still exist. A nil cursor starts at the newest session; direction zero and
   status `-1` disable their respective filters; a non-positive limit is an
   error.
-- `LatestMigrationVersion = 25` — current schema version.
+- `LatestMigrationVersion = 26` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -482,6 +482,11 @@ when adding one.
   backing the newest-first OOR status page. It adds no writer and changes no
   transfer payload: the views exist so a status read can order and paginate on
   scalars before hydrating any package detail.
+
+- `000026_activity_preimage` — nullable `activity_entries.preimage` BLOB so
+  `List` and `InspectActivity` return the send preimage. Rows written earlier
+  stay NULL until the projector re-projects them; the upsert COALESCEs the
+  column so a projection without a preimage never erases a stored one.
 
 ## Deep Docs
 

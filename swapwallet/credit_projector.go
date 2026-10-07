@@ -13,6 +13,8 @@ import (
 	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // creditProjectInterval is how often the projector polls the credit registry
@@ -215,6 +217,14 @@ func (r *Runtime) pollCreditOps(projected map[string]credit.State) {
 			continue
 		}
 
+		// A completed credit-only send is the proof of payment for
+		// L402 and MPP buyers, so its terminal row must carry the
+		// preimage. A transient lookup failure leaves the op
+		// unprojected so the next tick retries.
+		if !r.attachCreditPreimage(op, entry) {
+			continue
+		}
+
 		// Project the credit row into the canonical activity log before
 		// fanning it out. Credit-only sends reach the feed only through
 		// this poll (never Runtime.emit from the swap monitor), so
@@ -242,6 +252,100 @@ func (r *Runtime) pollCreditOps(projected map[string]credit.State) {
 		} else {
 			r.trackPendingEntryWithoutTimeout(entry)
 		}
+	}
+}
+
+// creditLookupWarnAfter is how many consecutive transient preimage lookup
+// failures for one send are logged at Debug before the log escalates to Warn.
+// The poll runs every creditProjectInterval, so the default surfaces a stuck
+// lookup after roughly fifteen seconds.
+const creditLookupWarnAfter = 3
+
+// attachCreditPreimage stamps the payment preimage onto the terminal row of a
+// credit-only send. The durable swap summary keyed by the same payment hash is
+// the source. It returns false only when the lookup failed transiently
+// (Unavailable or a deadline) and the caller should retry on the next poll.
+//
+// A missing swap row or an empty preimage is final rather than retried,
+// because the credit op cannot reach Completed before the swap row holds the
+// preimage. The credit FSM only leaves payingState after
+// CreditServer.StartPay returns (credit/transitions.go:160), and only then
+// polls the server ledger for DEBITED (credit/transitions.go:200). StartPay
+// runs the SDK pay session synchronously up to SwapCreated
+// (sdk/swaps/in_swap.go:499), whose createSwap credit branch sets the preimage
+// and persists the swap row in one mutateAndPersist
+// (sdk/swaps/in_swap.go:612-617), before StartPay can return. A credit-only
+// pay therefore never completes ahead of its preimage, and a miss here means
+// the row is genuinely unavailable, which is logged at Warn. Any other lookup
+// error is likewise final and projects without a preimage.
+func (r *Runtime) attachCreditPreimage(op credit.CreditOpSummary,
+	entry *wavewalletrpc.WalletEntry) bool {
+
+	if op.Kind != credit.KindPay || op.State != credit.StateCompleted ||
+		r.deps.SwapService == nil {
+		return true
+	}
+
+	log := r.deps.resolveLog()
+	hash := entry.GetProgress().GetPaymentHash()
+
+	ctx, cancel := context.WithTimeout(r.rootCtx, r.creditLookupTimeout)
+	defer cancel()
+
+	resp, err := r.deps.SwapService.GetSwap(
+		ctx, &swapclientrpc.GetSwapRequest{
+			PaymentHash: hash,
+		},
+	)
+	switch {
+	case err == nil:
+		delete(r.creditLookupFails, hash)
+
+		entry.Progress.Preimage = resp.GetSwap().GetPreimage()
+		if entry.Progress.Preimage == "" {
+			log.WarnS(r.rootCtx, "Completed credit send has no "+
+				"preimage", fmt.Errorf("payment hash %s", hash))
+		}
+
+		return true
+
+	case r.rootCtx.Err() != nil:
+		return false
+
+	case isTransientLookupErr(err):
+		r.creditLookupFails[hash]++
+		if r.creditLookupFails[hash] >= creditLookupWarnAfter {
+			log.WarnS(r.rootCtx, "Credit projector preimage "+
+				"lookup keeps failing", err)
+		} else {
+			log.DebugS(r.rootCtx, "Credit projector preimage "+
+				"lookup failed", err)
+		}
+
+		return false
+	}
+
+	// The remaining codes (NotFound included) will not heal by retrying,
+	// so project the terminal row without a preimage.
+	delete(r.creditLookupFails, hash)
+	log.WarnS(r.rootCtx, "Completed credit send has no preimage", err)
+
+	return true
+}
+
+// isTransientLookupErr reports whether a swap-summary lookup error is worth
+// retrying on the next poll.
+func isTransientLookupErr(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	switch status.Code(err) {
+	case codes.Unavailable, codes.DeadlineExceeded:
+		return true
+
+	default:
+		return false
 	}
 }
 

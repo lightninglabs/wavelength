@@ -145,6 +145,10 @@ type ActivityProjection struct {
 	// RequestJSON preserves the immutable activity request snapshot.
 	RequestJSON string
 
+	// Preimage is the payment preimage of a settled send. It is nil until
+	// known, and a nil value never erases a stored preimage.
+	Preimage []byte
+
 	// EntryJSON is the protojson snapshot of the WalletEntry emitted at
 	// this transition, stored verbatim on the activity_events row.
 	EntryJSON string
@@ -302,6 +306,7 @@ func (s *ActivityPersistenceStore) ProjectEntry(ctx context.Context,
 				LedgerTxid:    p.LedgerTxid,
 				BoardingAddr:  p.BoardingAddr,
 				RequestJson:   p.RequestJSON,
+				Preimage:      p.Preimage,
 				CreatedAtUnix: createdAt,
 				UpdatedAtUnix: updatedAt,
 				PendingStatus: p.PendingStatus,
@@ -468,11 +473,11 @@ func (s *ActivityPersistenceStore) PullEvents(ctx context.Context, cursor int64,
 // changesRow reports whether the projection would alter the current-state row
 // e, i.e. whether it represents a genuine lifecycle transition. It mirrors the
 // UpsertActivityEntry semantics: scalar lifecycle columns overwrite directly,
-// while an empty note and the settlement/correlation handles preserve their
-// stored values. RequestJSON is compared semantically because a later rich
-// projection may be the first source of immutable invoice context. EntryJSON
-// is not compared because it is the event representation of the effective row,
-// not an independently mutable current-state field.
+// while an empty note and the settlement/correlation handles, including the
+// preimage, preserve their stored values. RequestJSON is compared semantically
+// because a later rich projection may be the first source of immutable invoice
+// context. EntryJSON is not compared because it is the event representation of
+// the effective row, not an independently mutable current-state field.
 func (p ActivityProjection) changesRow(e sqlc.ActivityEntry) bool {
 	if p.PendingStatus != 0 && p.Status == p.PendingStatus &&
 		e.Status != p.PendingStatus {
@@ -502,7 +507,8 @@ func (p ActivityProjection) changesRow(e sqlc.ActivityEntry) bool {
 		blobChanges(p.Txid, e.Txid) ||
 		blobChanges(p.SwapSessionID, e.SwapSessionID) ||
 		blobChanges(p.LedgerTxid, e.LedgerTxid) ||
-		blobChanges(p.BoardingAddr, e.BoardingAddr) {
+		blobChanges(p.BoardingAddr, e.BoardingAddr) ||
+		blobChanges(p.Preimage, e.Preimage) {
 		return true
 	}
 

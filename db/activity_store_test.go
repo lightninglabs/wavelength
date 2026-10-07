@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"testing"
@@ -514,4 +515,81 @@ func TestActivityStorePullEventsAfterCursor(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, after, 1)
 	require.Equal(t, all[1].EventSeq, after[0].EventSeq)
+}
+
+// testPreimage is a 32-byte payment preimage used by the preimage tests.
+var testPreimage = bytes.Repeat([]byte{0x7e}, 32)
+
+// TestActivityStorePreimageReEmits verifies a row that gains a preimage is a
+// genuine change: it is re-saved with the preimage and a new event is
+// appended, while repeating the same projection afterwards is suppressed.
+func TestActivityStorePreimageReEmits(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := newActivityStoreForTest(t)
+
+	// A row projected without a preimage, as a payment made before the
+	// preimage column existed.
+	p := sampleProjection("a")
+	seq, err := store.ProjectEntry(ctx, p)
+	require.NoError(t, err)
+	require.NotZero(t, seq)
+
+	row, err := store.GetEntry(ctx, "a")
+	require.NoError(t, err)
+	require.Nil(t, row.Preimage)
+
+	// Gaining a preimage alone, with every other column identical, must
+	// be saved and emitted.
+	p.Preimage = testPreimage
+	seq, err = store.ProjectEntry(ctx, p)
+	require.NoError(t, err)
+	require.NotZero(t, seq, "a new preimage must append an event")
+
+	row, err = store.GetEntry(ctx, "a")
+	require.NoError(t, err)
+	require.Equal(t, testPreimage, row.Preimage)
+
+	// Re-projecting the same preimage is a no-op.
+	seq, err = store.ProjectEntry(ctx, p)
+	require.NoError(t, err)
+	require.Zero(t, seq, "an unchanged preimage must be suppressed")
+
+	events, err := store.PullEvents(ctx, 0, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 2)
+}
+
+// TestActivityStoreNeverErasesPreimage verifies a later projection without a
+// preimage, even one that advances the row, keeps the stored preimage.
+func TestActivityStoreNeverErasesPreimage(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := newActivityStoreForTest(t)
+
+	p := sampleProjection("a")
+	p.Preimage = testPreimage
+	require.NoError(t, projected(store.ProjectEntry(ctx, p)))
+
+	// Advance the row with a projection that carries no preimage.
+	next := sampleProjection("a")
+	next.Status = 2
+	next.Phase = 3
+	next.PhaseLabel = "complete"
+	next.UpdatedAtUnix = 200
+	seq, err := store.ProjectEntry(ctx, next)
+	require.NoError(t, err)
+	require.NotZero(t, seq)
+
+	row, err := store.GetEntry(ctx, "a")
+	require.NoError(t, err)
+	require.Equal(t, int64(2), row.Status)
+	require.Equal(t, testPreimage, row.Preimage)
+
+	// A projection with no preimage and no other change stays suppressed.
+	seq, err = store.ProjectEntry(ctx, next)
+	require.NoError(t, err)
+	require.Zero(t, seq)
 }

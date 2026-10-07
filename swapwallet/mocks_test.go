@@ -382,6 +382,10 @@ type fakeSwapService struct {
 	listSwapsCalls int
 	listSwapsLast  *swapclientrpc.ListSwapsRequest
 
+	getSwapResp  *swapclientrpc.GetSwapResponse
+	getSwapErr   error
+	getSwapCalls int
+
 	createCreditResp  *swapclientrpc.CreateCreditResponse
 	createCreditErr   error
 	createCreditCalls int
@@ -421,6 +425,15 @@ func (f *fakeSwapService) StartReceive(_ context.Context,
 	f.startReceiveLast = req
 
 	return f.startReceiveResp, f.startReceiveErr
+}
+
+func (f *fakeSwapService) GetSwap(_ context.Context,
+	_ *swapclientrpc.GetSwapRequest) (*swapclientrpc.GetSwapResponse,
+	error) {
+
+	f.getSwapCalls++
+
+	return f.getSwapResp, f.getSwapErr
 }
 
 func (f *fakeSwapService) CreateCredit(_ context.Context,

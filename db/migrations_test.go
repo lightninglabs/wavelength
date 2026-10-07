@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -129,6 +130,50 @@ func TestIdempotentReceiveScriptsMigrationPreservesLegacyRows(t *testing.T) {
 	require.False(t, registrationExpiresAt.Valid)
 	require.False(t, registrationRPCKey.Valid)
 	require.False(t, registrationCompletedAt.Valid)
+}
+
+// TestActivityPreimageMigrationPreservesLegacyRows verifies migration 26 adds
+// a nullable preimage column without rewriting existing activity rows, and that
+// the column accepts a value afterwards.
+func TestActivityPreimageMigrationPreservesLegacyRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	database := NewTestDBWithVersion(t, 25)
+	_, err := database.ExecContext(ctx, `
+		INSERT INTO activity_entries (
+			canonical_id, kind, status, amount_sat,
+			created_at_unix, updated_at_unix
+		) VALUES ('legacy', 1, 2, -1000, 100, 100)
+	`)
+	require.NoError(t, err)
+
+	require.NoError(t, database.ExecuteMigrations(TargetLatest))
+
+	var (
+		amount   int64
+		preimage []byte
+	)
+	err = database.QueryRowContext(ctx, `
+		SELECT amount_sat, preimage FROM activity_entries
+		WHERE canonical_id = 'legacy'
+	`).Scan(&amount, &preimage)
+	require.NoError(t, err)
+	require.Equal(t, int64(-1000), amount)
+	require.Nil(t, preimage)
+
+	want := bytes.Repeat([]byte{0x01}, 32)
+	_, err = database.ExecContext(ctx, `
+		UPDATE activity_entries SET preimage = $1
+		WHERE canonical_id = 'legacy'
+	`, want)
+	require.NoError(t, err)
+	err = database.QueryRowContext(ctx, `
+		SELECT preimage FROM activity_entries
+		WHERE canonical_id = 'legacy'
+	`).Scan(&preimage)
+	require.NoError(t, err)
+	require.Equal(t, want, preimage)
 }
 
 // TestMigrationDowngrade tests that downgrading the database is prevented.

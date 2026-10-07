@@ -576,7 +576,9 @@ type Querier interface {
 	// projection and updated_at_unix is bumped, but created_at_unix is preserved so
 	// the row keeps its position in the created-ordered feed. The settlement and
 	// correlation handles are COALESCEd so an early projection that does not yet
-	// know a txid never clobbers one a later projection already recorded.
+	// know a txid never clobbers one a later projection already recorded. The
+	// preimage is COALESCEd the same way, so a projection made without it never
+	// erases a stored one.
 	UpsertActivityEntry(ctx context.Context, arg UpsertActivityEntryParams) (int64, error)
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
 	// Credit operations control-plane queries.
