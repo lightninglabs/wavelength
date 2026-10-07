@@ -13,6 +13,8 @@ import (
 	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // creditProjectInterval is how often the projector polls the credit registry
@@ -215,6 +217,14 @@ func (r *Runtime) pollCreditOps(projected map[string]credit.State) {
 			continue
 		}
 
+		// A completed credit-only send is the proof of payment for
+		// L402 and MPP buyers, so its terminal row must carry the
+		// preimage. A transient lookup failure leaves the op
+		// unprojected so the next tick retries.
+		if !r.attachCreditPreimage(op, entry) {
+			continue
+		}
+
 		// Project the credit row into the canonical activity log before
 		// fanning it out. Credit-only sends reach the feed only through
 		// this poll (never Runtime.emit from the swap monitor), so
@@ -243,6 +253,47 @@ func (r *Runtime) pollCreditOps(projected map[string]credit.State) {
 			r.trackPendingEntryWithoutTimeout(entry)
 		}
 	}
+}
+
+// attachCreditPreimage stamps the payment preimage onto the terminal row of a
+// credit-only send. The server hands the preimage to the SDK pay session when
+// it settles the invoice from credit, and the session persists it on its swap
+// row, so the durable swap summary keyed by the same payment hash is the
+// source. It returns false only when the lookup failed transiently and the
+// caller should retry on the next poll. A missing swap row or an unavailable
+// swap service is not retried, since the preimage cannot appear later.
+func (r *Runtime) attachCreditPreimage(op credit.CreditOpSummary,
+	entry *wavewalletrpc.WalletEntry) bool {
+
+	if op.Kind != credit.KindPay || op.State != credit.StateCompleted ||
+		r.deps.SwapService == nil {
+
+		return true
+	}
+
+	resp, err := r.deps.SwapService.GetSwap(
+		r.rootCtx, &swapclientrpc.GetSwapRequest{
+			PaymentHash: entry.GetProgress().GetPaymentHash(),
+		},
+	)
+	switch {
+	case status.Code(err) == codes.NotFound:
+		return true
+
+	case err != nil:
+		if r.rootCtx.Err() == nil {
+			r.deps.resolveLog().WarnS(
+				r.rootCtx, "Credit projector preimage lookup "+
+					"failed", err,
+			)
+		}
+
+		return false
+	}
+
+	entry.Progress.Preimage = resp.GetSwap().GetPreimage()
+
+	return true
 }
 
 // projectCreditEntry projects one credit operation while preserving the
