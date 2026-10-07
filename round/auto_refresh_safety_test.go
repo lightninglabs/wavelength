@@ -2,12 +2,15 @@ package round
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightninglabs/wavelength/serverconn"
 	"github.com/stretchr/testify/require"
 )
 
@@ -132,6 +135,11 @@ func TestAutomaticRefreshRequiresZeroFee(t *testing.T) {
 			legacyBudget: true},
 		{name: "manual output cannot absorb automatic fee", fee: 261,
 			mixed: true},
+		{
+			name:   "free mixed refresh is allowed",
+			mixed:  true,
+			accept: true,
+		},
 		{name: "manual paid refresh", fee: 261, manual: true,
 			accept: true},
 	} {
@@ -170,6 +178,16 @@ func TestAutomaticRefreshRequiresZeroFee(t *testing.T) {
 				t, rejected.Reason,
 				"automatic refresh requires zero fee",
 			)
+			if test.mixed {
+				require.Contains(
+					t, rejected.Reason,
+					"mixed manual/automatic round",
+				)
+				require.Contains(
+					t, rejected.Reason,
+					"retry the manual request separately",
+				)
+			}
 		})
 	}
 }
@@ -209,12 +227,41 @@ func TestAutomaticRefreshPaidResealRollsBack(t *testing.T) {
 	require.NoError(t, err)
 	require.IsType(t, &ClientFailedState{}, transition.NextState)
 	outbox := transition.NewEvents.UnwrapOr(ClientEmittedEvent{}).Outbox
-	require.IsType(t, &JoinRoundRejectOutbox{}, outbox[0])
+	require.IsType(t, &JoinRoundRejectOutbox{}, outbox[1])
 	require.Len(t, outbox, 2)
-	release, ok := outbox[1].(*ReleaseForfeitReservation)
+	release, ok := outbox[0].(*ReleaseForfeitReservation)
 	require.True(t, ok)
 	require.ElementsMatch(t, []wire.OutPoint{
 		*intents.Forfeits[0].VTXOOutpoint,
 		*intents.Forfeits[1].VTXOOutpoint,
 	}, release.Outpoints)
+
+	// Exercise delivery, not just outbox shape: a failed server send must
+	// not prevent the manager from receiving both local releases.
+	h := newActorTestHarness(t)
+	sendErr := errors.New("server mailbox unavailable")
+	h.actor.cfg.ServerConn = &failedQuoteRejectRef{
+		mockServerConnRef: h.serverConn,
+		err:               sendErr,
+	}
+	err = h.actor.processOutbox(h.ctx, outbox)
+	require.ErrorIs(t, err, sendErr)
+	messages := h.vtxoManager.getMessages()
+	require.Len(t, messages, 1)
+	request, ok := messages[0].(*actormsg.ReleaseForfeitRequest)
+	require.True(t, ok)
+	require.ElementsMatch(t, release.Outpoints, request.Outpoints)
+}
+
+// failedQuoteRejectRef simulates a server mailbox refusing the reject message.
+type failedQuoteRejectRef struct {
+	*mockServerConnRef
+	err error
+}
+
+// Tell fails the remote send while the embedded ref supplies its identity.
+func (r *failedQuoteRejectRef) Tell(context.Context,
+	serverconn.ServerConnMsg) error {
+
+	return r.err
 }

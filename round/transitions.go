@@ -1444,14 +1444,17 @@ func evaluateQuote(ctx context.Context, env *ClientEnvironment, roundID RoundID,
 	// so moving a fee to another output cannot bypass this policy.
 	_, hasAutoRefresh := autoRefreshValue(intents)
 	if hasAutoRefresh && realised != 0 {
+		reason := fmt.Sprintf("automatic refresh requires zero fee: "+
+			"quoted %d sat", realised)
+		if hasManualIntents(intents) {
+			reason += "; mixed manual/automatic round: retry the " +
+				"manual request separately"
+		}
+
 		return &QuoteRejected{
 			RoundID: roundID,
 			QuoteID: quote.QuoteID,
-			Reason: fmt.Sprintf(
-				"automatic refresh requires zero fee: quoted "+
-					"%d sat",
-				realised,
-			),
+			Reason:  reason,
 		}
 	}
 
@@ -1459,6 +1462,22 @@ func evaluateQuote(ctx context.Context, env *ClientEnvironment, roundID RoundID,
 		RoundID: roundID,
 		QuoteID: quote.QuoteID,
 	}
+}
+
+// hasManualIntents identifies locally composed mixed rounds for diagnostics.
+// Origin is not a server pricing input: a manual refresh can itself qualify
+// for the waiver, so this must not replace the realised-fee check.
+func hasManualIntents(intents Intents) bool {
+	if len(intents.Boarding) > 0 || len(intents.Leaves) > 0 {
+		return true
+	}
+	for _, req := range intents.VTXOs {
+		if req.Origin != types.VTXOOriginAutoRefresh {
+			return true
+		}
+	}
+
+	return false
 }
 
 // autoRefreshValue returns the total target value of automatic-maintenance
@@ -1773,8 +1792,7 @@ func (s *QuoteReceivedState) processEvent(ctx context.Context,
 			slog.Int64("automatic_refresh_value_sat", autoValue),
 			slog.Int("vtxo_count", len(s.Intents.VTXOs)),
 			slog.Uint64("seal_pass", uint64(s.Quote.SealPass)),
-			slog.Bool("automatic_fee_budget_enabled", automatic),
-			slog.Int64("automatic_fee_budget_sat", 0),
+			slog.Bool("zero_fee_required", automatic),
 		)
 
 		accept := &JoinRoundAcceptOutbox{
@@ -1827,8 +1845,7 @@ func (s *QuoteReceivedState) processEvent(ctx context.Context,
 			slog.Int64("automatic_refresh_value_sat", autoValue),
 			slog.Int("vtxo_count", len(s.Intents.VTXOs)),
 			slog.Uint64("seal_pass", uint64(sealPass)),
-			slog.Bool("automatic_fee_budget_enabled", automatic),
-			slog.Int64("automatic_fee_budget_sat", 0),
+			slog.Bool("zero_fee_required", automatic),
 		)
 
 		reject := &JoinRoundRejectOutbox{
@@ -1836,10 +1853,13 @@ func (s *QuoteReceivedState) processEvent(ctx context.Context,
 			QuoteID: evt.QuoteID,
 			Reason:  evt.Reason,
 		}
-		rollback := rollbackOutbox(
+		outbox := rollbackOutbox(
 			fn.Some(s.RoundID), s.Intents.Forfeits,
 		)
-		outbox := append([]ClientOutMsg{reject}, rollback...)
+		// Local rollback must precede a server Tell that can fail. The
+		// failure wrapper sees these existing releases and does not
+		// reorder or duplicate them.
+		outbox = append(outbox, reject)
 
 		return &ClientStateTransition{
 			NextState: &ClientFailedState{
