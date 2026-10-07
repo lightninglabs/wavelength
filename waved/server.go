@@ -1168,6 +1168,22 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 		slog.String("wallet_type", s.cfg.Wallet.Type),
 	)
 
+	if s.cfg.AutoRefreshFeeFloorSat != 0 ||
+		s.cfg.AutoRefreshFeeRatePPM != 0 {
+
+		s.log.InfoS(ctx, "Ignoring deprecated automatic refresh fee "+
+			"allowances; automatic refresh requires zero fees",
+			slog.Int64(
+				"autorefreshfeefloorsat",
+				s.cfg.AutoRefreshFeeFloorSat,
+			),
+			slog.Uint64(
+				"autorefreshfeerateppm",
+				uint64(s.cfg.AutoRefreshFeeRatePPM),
+			),
+		)
+	}
+
 	// -------------------------------------------------------
 	// Optional pprof debug server (disabled by default).
 	// -------------------------------------------------------

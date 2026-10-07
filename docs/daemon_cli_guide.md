@@ -543,8 +543,10 @@ accepts quotes with zero total fee. Every re-quote is checked as well. Paid
 refresh remains available through an explicit CLI/RPC request, subject to
 `maxoperatorfeesat`. The old `autorefreshfeefloorsat` and
 `autorefreshfeerateppm` settings are deprecated and cannot authorize automatic
-fees. If manual and automatic requests share a round, its entire fee must be
-zero; otherwise the round is rejected and its reservations are released.
+fees. Nonzero legacy values produce one startup notice and do not enforce an
+automatic fee budget. If manual and automatic requests share a round, its
+entire fee must be zero; otherwise the round is rejected and its reservations
+are released.
 Retry the manual request separately in that case.
 
 A rejected automatic quote waits six blocks before retrying while the VTXOs
@@ -553,6 +555,24 @@ require a zero-fee quote. A zero advertised window disables automatic refresh
 before expiry. Operators must open the free window before wallets reach their
 critical-exit boundary, with enough time for retries. A late or disabled window
 does not postpone critical exits, which can incur on-chain mining fees.
+
+For scheduled batches, plan against the usable maintenance time:
+`min(free window, wallet refresh threshold) - critical threshold`.
+That time must cover each attempted slot's wait through its cutoff, the
+signing ceremony and confirmation, six blocks per retry cooldown, and an
+additional margin. A missed slot can require waiting another full interval;
+the registration window is part of that interval, not a separate interval.
+For example, a 648-block window with a 558-block wallet target and a 186-block
+critical threshold leaves **372 blocks** for attempts before critical handling.
+An offline wallet returning later has less time. Schedule intervals use wall
+clock time, while expiry uses block height: convert delays conservatively for
+planning; a ten-minute average block time is not a safety guarantee. Widening
+the free window alone cannot fix a wallet target that starts too late.
+
+While waiting outside the window, the wallet polls updated terms every six
+blocks rather than every block. Allow that discovery delay when changing a
+window. Entering an already-known window fetches fresh terms immediately, and
+critical-exit assessment is never postponed by this polling limit.
 
 Swap-enabled builds also default `maxpaymentcltv` to 300 blocks. Automatic
 maintenance adds that payment window above each VTXO's dynamic unilateral-exit

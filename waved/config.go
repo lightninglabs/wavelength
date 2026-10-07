@@ -1278,19 +1278,6 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("maxoperatorfeesat must be positive: got %d",
 			c.MaxOperatorFeeSat)
 	}
-	if c.AutoRefreshFeeRatePPM > 1_000_000 {
-		return fmt.Errorf("autorefreshfeerateppm must not exceed "+
-			"1000000: got %d", c.AutoRefreshFeeRatePPM)
-	}
-	if c.AutoRefreshFeeFloorSat < 0 {
-		return fmt.Errorf("autorefreshfeefloorsat must be "+
-			"non-negative: got %d", c.AutoRefreshFeeFloorSat)
-	}
-	if c.AutoRefreshFeeFloorSat > c.MaxOperatorFeeSat {
-		return fmt.Errorf("autorefreshfeefloorsat must not exceed "+
-			"maxoperatorfeesat: floor=%d, max=%d",
-			c.AutoRefreshFeeFloorSat, c.MaxOperatorFeeSat)
-	}
 	if c.MaxPaymentCLTV < 0 {
 		return fmt.Errorf("maxpaymentcltv must be non-negative: got %d",
 			c.MaxPaymentCLTV)

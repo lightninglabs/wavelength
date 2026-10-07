@@ -237,7 +237,6 @@ func TestParseConfigRejectsNegativeScalars(t *testing.T) {
 		"recovery window":  `{"wallet_recovery_window": -5}`,
 		"max operator fee": `{"max_operator_fee_sat": -1000}`,
 		"max payment CLTV": `{"max_payment_cltv": -1}`,
-		"auto fee floor":   `{"auto_refresh_fee_floor_sat": -1}`,
 		"auto fee rate":    `{"auto_refresh_fee_rate_ppm": -1}`,
 		"signing workers":  `{"signing_workers": -1}`,
 		"buffer size":      `{"buffer_size": -1}`,
@@ -260,14 +259,35 @@ func TestParseConfigRejectsOverflowMaxPaymentCLTV(t *testing.T) {
 	}
 }
 
-// TestParseConfigRejectsExcessiveAutoRefreshRate verifies the mobile boundary
-// rejects rates above 100%, matching waved's configuration validation.
-func TestParseConfigRejectsExcessiveAutoRefreshRate(t *testing.T) {
+// TestParseConfigAcceptsIgnoredAutoRefreshAllowances verifies legacy economic
+// limits no longer prevent startup; their values reach the daemon notice.
+func TestParseConfigAcceptsIgnoredAutoRefreshAllowances(t *testing.T) {
+	cfg, err := parseConfig(`{"auto_refresh_fee_floor_sat": -1,
+		"auto_refresh_fee_rate_ppm": 1000001}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AutoRefreshFeeFloorSat != -1 ||
+		cfg.AutoRefreshFeeRatePPM != 1000001 {
+
+		t.Fatal(
+			"legacy allowances were not preserved for the " +
+				"startup notice",
+		)
+	}
+}
+
+// TestParseConfigRejectsOverflowAutoRefreshRate rejects a legacy setting that
+// would wrap when forwarded to the daemon for its deprecation notice.
+func TestParseConfigRejectsOverflowAutoRefreshRate(t *testing.T) {
 	if _, err := parseConfig(
-		`{"auto_refresh_fee_rate_ppm": 1000001}`,
+		`{"auto_refresh_fee_rate_ppm": 4294967296}`,
 	); err == nil {
 
-		t.Fatal("expected error for auto-refresh fee rate above 100%")
+		t.Fatal(
+			"expected error for auto-refresh fee rate above " +
+				"uint32 max",
+		)
 	}
 }
 
