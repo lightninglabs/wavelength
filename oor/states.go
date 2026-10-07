@@ -286,6 +286,15 @@ type Failed struct {
 	// IdempotencyKey identifies the caller intent that created this
 	// outgoing session, when provided.
 	IdempotencyKey string
+
+	// PrePONR is true only when an outgoing session failed before the
+	// point of no return: the operator had not co-signed a spend of the
+	// inputs, so the transfer provably created no output. It is false for
+	// every failure from a later state, where the operator may hold a
+	// co-signed spend and the outputs may exist, and it is false for a
+	// session persisted before this field was recorded, so an unknown
+	// origin is never reported as safe.
+	PrePONR bool
 }
 
 // String returns a human-readable representation of Failed.

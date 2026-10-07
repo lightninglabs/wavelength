@@ -1619,6 +1619,30 @@ func (r *oorRegistryBehavior) fillOutgoingSummary(ctx context.Context,
 	}
 }
 
+// OutgoingFailedBeforePONR reports whether a persisted outgoing session
+// record is a terminal failure that provably happened before the point of no
+// return, so the operator never co-signed a spend and no output was created.
+// It is false for any other record, for a failure from a post-PONR state, and
+// for a failed record written before the origin was recorded, so only a
+// positively recorded pre-PONR failure reads as safe.
+func OutgoingFailedBeforePONR(record *clientdb.OORSessionRegistryRecord) (bool,
+	error) {
+
+	if record.Direction != clientdb.OORSessionDirectionOutgoing ||
+		record.Status != clientdb.OORSessionStatusFailed ||
+		len(record.SnapshotData) == 0 {
+		return false, nil
+	}
+
+	snapshot, err := decodeOutgoingSnapshot(record.SnapshotData)
+	if err != nil {
+		return false, err
+	}
+
+	return snapshot.Phase == OutgoingPhaseFailed &&
+		snapshot.FailedPrePONR, nil
+}
+
 // FillOutgoingSummary fills consumed inputs and retry diagnostics from one
 // outgoing snapshot. On decode failure the caller can retain coarse metadata.
 // Status RPCs use this only after selecting a bounded page from the database.

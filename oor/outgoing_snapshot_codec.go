@@ -33,6 +33,11 @@ const (
 	// snapshotDispatchRequestDataRecordType retains the normalized caller
 	// proof until the first submit-capable checkpoint.
 	snapshotDispatchRequestDataRecordType tlv.Type = 25
+
+	// snapshotFailedPrePONRRecordType stores whether a Failed snapshot
+	// failed before the point of no return (snapshot version 6+). A
+	// pre-v6 snapshot omits it, so it decodes to false.
+	snapshotFailedPrePONRRecordType tlv.Type = 27
 )
 
 func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
@@ -62,6 +67,10 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 	idempotencyKey := []byte(snapshot.IdempotencyKey)
 	firstRejectNanos := uint64(snapshot.FirstRejectUnixNanos)
 	dispatchRequestData := snapshot.DispatchRequestData
+	var failedPrePONR uint8
+	if snapshot.FailedPrePONR {
+		failedPrePONR = 1
+	}
 
 	version := uint64(snapshot.Version)
 	records := []tlv.Record{
@@ -92,6 +101,9 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 		tlv.MakePrimitiveRecord(
 			snapshotDispatchRequestDataRecordType,
 			&dispatchRequestData,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotFailedPrePONRRecordType, &failedPrePONR,
 		),
 	}
 
@@ -129,6 +141,7 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		idempotencyKeyRaw   []byte
 		firstRejectNanos    uint64
 		dispatchRequestData []byte
+		failedPrePONR       uint8
 	)
 
 	records := []tlv.Record{
@@ -159,6 +172,9 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		tlv.MakePrimitiveRecord(
 			snapshotDispatchRequestDataRecordType,
 			&dispatchRequestData,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotFailedPrePONRRecordType, &failedPrePONR,
 		),
 	}
 
@@ -235,6 +251,7 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		IdempotencyKey:         string(idempotencyKeyRaw),
 		FirstRejectUnixNanos:   decodedFirstReject,
 		DispatchRequestData:    dispatchRequestData,
+		FailedPrePONR:          failedPrePONR == 1,
 	}, nil
 }
 
