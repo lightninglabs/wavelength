@@ -114,7 +114,10 @@ type Ark struct {
 	// derived owner key — two divergent registrations of one boarding
 	// UTXO, surfacing as a quote pkScript-echo mismatch. The set is
 	// in-memory on purpose: it is empty after a restart so the board
-	// replayer still re-boards an outpoint stranded by a failed round.
+	// replayer still re-boards an outpoint stranded by a failed round. A
+	// failed round also releases its outpoints here at once, through
+	// ReleaseBoardingInFlightRequest, so the next Board trigger retries
+	// them without waiting for a restart.
 	boardingShipped fn.Set[wire.OutPoint]
 
 	// wg tracks background goroutines spawned by the wallet actor.
@@ -873,6 +876,9 @@ func (a *Ark) Receive(ctx context.Context,
 	case *UnregisterConfirmationNotifierRequest:
 		return a.handleUnregisterNotifier(ctx, m)
 
+	case *ReleaseBoardingInFlightRequest:
+		return a.handleReleaseBoardingInFlight(m)
+
 	case BlockEpochNotification:
 		return a.handleBlockEpoch(ctx, m.BlockEpoch)
 
@@ -1207,6 +1213,21 @@ func (a *Ark) handleGetConfirmedBoardingIntents(ctx context.Context,
 	return fn.Ok[WalletResp](&GetConfirmedBoardingIntentsResponse{
 		Intents: intents,
 	})
+}
+
+// handleReleaseBoardingInFlight drops the given outpoints from the in-flight
+// guard after the round that carried them failed. The outpoints stay in the
+// confirmed set (a round that fails before its checkpoint never adopts them),
+// so the next Board trigger boards them again instead of reporting them as
+// already in flight. Outpoints the guard does not hold are ignored.
+func (a *Ark) handleReleaseBoardingInFlight(
+	req *ReleaseBoardingInFlightRequest) fn.Result[WalletResp] {
+
+	for _, op := range req.Outpoints {
+		a.boardingShipped.Remove(op)
+	}
+
+	return fn.Ok[WalletResp](nil)
 }
 
 // handleUnregisterNotifier removes an actor from the notification list.

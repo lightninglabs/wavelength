@@ -322,6 +322,12 @@ type RoundFSM struct {
 	// CommitmentTx is the commitment transaction as a PSBT, used for
 	// registering confirmation notifications with the correct pkScript.
 	CommitmentTx fn.Option[*psbt.Packet]
+
+	// BoardingOutpoints are the boarding outpoints the wallet shipped into
+	// this round through board triggers. If the round fails, the actor
+	// tells the wallet to release them so the next Board trigger can
+	// retry them.
+	BoardingOutpoints []wire.OutPoint
 }
 
 // RoundClientActor wraps the client boarding FSM in an actor interface. The
@@ -1506,7 +1512,73 @@ func (a *RoundClientActor) askEventAndProcessOutbox(ctx context.Context,
 		}
 	}
 
+	// The release is decided on the FSM's state rather than the outbox,
+	// since most failure paths emit no events.
+	a.releaseBoardingOnFailure(ctx, roundFSM)
+
 	return nil
+}
+
+// releaseBoardingOnFailure tells the wallet to stop treating a round's
+// boarding outpoints as in flight once the round sits in ClientFailedState. The
+// wallet marks outpoints in flight when it ships them in a board trigger, so a
+// later trigger does not register them a second time. A round that fails
+// client-side, for example when the operator rejects the join, never adopts
+// the outpoints, so they stay confirmed and nothing else frees the mark: every
+// later Board call would be reported as redundant until a restart.
+//
+// The decision reads the FSM's state, not the outbox. Most transitions into
+// ClientFailedState (RoundJoined and the later signing states, a locally
+// rejected quote, a user cancel) emit no RoundFailedNotification, so an
+// outbox-based trigger would miss them.
+//
+// Releasing from any failed state is safe. Before the checkpoint no boarding
+// input signature has left the client, so the operator cannot spend the UTXO
+// and a retry is harmless. After the checkpoint the intents are Adopted, which
+// takes them out of the confirmed set, so the wallet's handleBoard does not
+// ship them again and the release does nothing.
+//
+// The outpoints are cleared on the first release so it fires once per failed
+// round. Delivery is best effort, since the round has already failed and a
+// restart clears the wallet's mark regardless.
+//
+// The Tell uses the turn context, so it never waits for room in the wallet's
+// mailbox. A send made with the context of an active receive turn spills into
+// the target's overflow queue when the channel is full, and only fails at the
+// overflow cap. That is what keeps the wallet's unbounded Asks into this actor
+// safe: the turn cannot park on a full wallet mailbox while the wallet waits
+// on a reply from this actor. The ctx argument must therefore stay the turn
+// context. Neither TryTell, which would drop the release when the mailbox is
+// full, nor a TellThen-style detached send is needed.
+func (a *RoundClientActor) releaseBoardingOnFailure(ctx context.Context,
+	roundFSM *RoundFSM) {
+
+	if len(roundFSM.BoardingOutpoints) == 0 || a.cfg.WalletActor == nil {
+		return
+	}
+
+	state, err := fsmState(ctx, roundFSM.FSM)
+	if err != nil {
+		return
+	}
+	if _, failed := state.(*ClientFailedState); !failed {
+		return
+	}
+
+	outpoints := roundFSM.BoardingOutpoints
+	roundFSM.BoardingOutpoints = nil
+
+	err = a.cfg.WalletActor.Tell(
+		ctx, &wallet.ReleaseBoardingInFlightRequest{
+			Outpoints: outpoints,
+		},
+	)
+	if err != nil {
+		a.log.DebugS(ctx, "Failed to release boarding outpoints "+
+			"of failed round", err,
+			slog.Int("outpoints", len(outpoints)),
+		)
+	}
 }
 
 // replayCheckpointedServerMessages re-emits server-bound messages that are
@@ -4263,6 +4335,14 @@ func (a *RoundClientActor) registerBoard(ctx context.Context,
 		VTXOs:    requests,
 		Leaves:   leaves,
 	}}
+
+	// Remember which outpoints this round carries so a failure of the round
+	// can hand them back to the wallet's in-flight guard.
+	for _, intent := range boardingIntents {
+		roundFSM.BoardingOutpoints = append(
+			roundFSM.BoardingOutpoints, intent.Outpoint,
+		)
+	}
 
 	err = a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
 	if err != nil {

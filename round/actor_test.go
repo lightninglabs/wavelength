@@ -2747,6 +2747,141 @@ func TestHandleTriggerBoard(t *testing.T) {
 	)
 }
 
+// TestBoardingFailedReleasesWalletInFlightOutpoints verifies that a round
+// failing client-side after a board trigger tells the wallet to release the
+// boarding outpoints it shipped. The wallet's in-flight guard otherwise holds
+// them until a restart, and every later Board call reports them as redundant.
+func TestBoardingFailedReleasesWalletInFlightOutpoints(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+	require.NoError(t, h.start())
+
+	intent := h.newTestBoardingIntent()
+	h.walletActor.setConfirmedIntents(*intent)
+
+	h.wallet.On(
+		"DeriveNextKey", mock.Anything, types.VTXOOwnerKeyFamily,
+	).Return(&keychain.KeyDescriptor{
+		PubKey: h.clientPubKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: types.VTXOOwnerKeyFamily,
+			Index:  0,
+		},
+	}, nil).Once()
+	h.wallet.On(
+		"DeriveNextKey", mock.Anything, types.VTXOSigningKeyFamily,
+	).Return(&keychain.KeyDescriptor{
+		PubKey: h.clientPubKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: types.VTXOSigningKeyFamily,
+			Index:  1,
+		},
+	}, nil).Once()
+
+	result := h.receiveBoard(&actormsg.TriggerBoardMsg{
+		Amounts:   []btcutil.Amount{49_000},
+		Outpoints: []wire.OutPoint{intent.Outpoint},
+	})
+	require.True(t, result.IsOk(), "expected Ok, got: %v", result.Err())
+
+	// Nothing is released while the round is alive.
+	require.Empty(t, h.walletActor.released())
+
+	// The operator rejects the join before assigning a round ID, as it
+	// does for a boarding input with too few confirmations.
+	h.sendServerMessage(&BoardingFailed{
+		Reason: "join request invalid: insufficient confirmations: " +
+			"got 1, want 6",
+		Recoverable: true,
+	})
+
+	tempState, exists := h.findTempState(h.queryState())
+	require.True(t, exists, "expected the failed round to be tracked")
+	require.IsType(t, &ClientFailedState{}, tempState.State)
+
+	require.Equal(
+		t, [][]wire.OutPoint{{intent.Outpoint}},
+		h.walletActor.released(),
+	)
+}
+
+// TestBoardingFailedFromJoinedRoundReleasesInFlightOutpoints verifies that a
+// round failing after the operator accepted the join releases its boarding
+// outpoints even though that transition emits no RoundFailedNotification. The
+// release must follow the FSM landing in ClientFailedState, not the outbox.
+func TestBoardingFailedFromJoinedRoundReleasesInFlightOutpoints(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name string
+
+		// fail drives the joined round into ClientFailedState.
+		fail func(h *actorTestHarness, id RoundID)
+	}{
+		{
+			name: "server failure after join",
+			fail: func(h *actorTestHarness, id RoundID) {
+				h.sendServerMessage(&BoardingFailed{
+					RoundID:     fn.Some(id),
+					Reason:      "operator aborted in nonce phase",
+					Recoverable: true,
+				})
+			},
+		},
+		{
+			name: "user cancel after join",
+			fail: func(h *actorTestHarness, id RoundID) {
+				result := h.receive(&CancelRoundRequest{
+					RoundKey: fn.Some(
+						RoundKeyStr(
+							id.KeyString(),
+						),
+					),
+				})
+				require.True(h.t, result.IsOk())
+
+				resp, _ := result.Unpack()
+				cancelResp, ok := resp.(*CancelRoundResponse)
+				require.True(h.t, ok)
+				require.True(h.t, cancelResp.Success)
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newActorTestHarness(t)
+			h.setupMockRoundStoreForStart()
+			require.NoError(t, h.start())
+
+			// Stage a joined round that carries a shipped boarding
+			// outpoint, as registerBoard would have recorded.
+			intent := h.newTestBoardingIntent()
+			roundID := testRoundID("joined-then-failed")
+			h.injectRoundInState(roundID, &RoundJoinedState{
+				RoundID: roundID,
+			})
+			key := RoundKeyStr(roundID.KeyString())
+			h.actor.rounds[key].BoardingOutpoints = []wire.OutPoint{
+				intent.Outpoint,
+			}
+
+			require.Empty(t, h.walletActor.released())
+
+			tc.fail(h, roundID)
+
+			require.Equal(
+				t, [][]wire.OutPoint{{intent.Outpoint}},
+				h.walletActor.released(),
+			)
+		})
+	}
+}
+
 // TestHandleTriggerBoardMultipleVTXOs verifies board fanout registers one VTXO
 // request per requested target amount.
 func TestHandleTriggerBoardMultipleVTXOs(t *testing.T) {

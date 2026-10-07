@@ -215,6 +215,10 @@ type mockWalletActorRef struct {
 	// confirmedIntents are returned to TriggerBoard recovery queries.
 	confirmedIntents []wallet.BoardingIntent
 
+	// releasedBoarding records the outpoints of every
+	// ReleaseBoardingInFlightRequest the actor under test told the wallet.
+	releasedBoarding [][]wire.OutPoint
+
 	// askGate, when non-nil, holds every Ask until it is closed or the
 	// caller's context ends. See blockAsk.
 	askGate chan struct{}
@@ -245,6 +249,15 @@ func (m *mockWalletActorRef) blockAsk() func() {
 	})
 }
 
+// released returns a copy of the outpoint sets the actor told the wallet to
+// release from its in-flight guard.
+func (m *mockWalletActorRef) released() [][]wire.OutPoint {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return append([][]wire.OutPoint(nil), m.releasedBoarding...)
+}
+
 func newMockWalletActorRef(t *testing.T) *mockWalletActorRef {
 	return &mockWalletActorRef{
 		t:                t,
@@ -261,9 +274,13 @@ func (m *mockWalletActorRef) ID() string {
 func (m *mockWalletActorRef) Tell(_ context.Context,
 	msg wallet.WalletMsg) error {
 
-	// WalletActor uses Ask pattern for registration, so Tell is unused in
-	// these tests.
-	_ = msg
+	// Registration uses the Ask pattern, so the only Tell the tests care
+	// about is the in-flight release a failed round sends.
+	if req, ok := msg.(*wallet.ReleaseBoardingInFlightRequest); ok {
+		m.mu.Lock()
+		m.releasedBoarding = append(m.releasedBoarding, req.Outpoints)
+		m.mu.Unlock()
+	}
 
 	return nil
 }
