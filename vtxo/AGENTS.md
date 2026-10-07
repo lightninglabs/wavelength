@@ -216,8 +216,12 @@ when the local wallet owns the receive script.
   callback leaves eligibility to that quote check.
 - At the desired maintenance boundary, the actor fetches fresh operator terms
   before reserving inputs. Even a cached late window allows this lookup, so an
-  operator can widen its window without restarting the wallet. The window
-  never postpones critical-exit handling. Operators must make the waiver wide
+  operator can widen its window without restarting the wallet. While waiting,
+  each actor polls at most once per six blocks. Entering the cached window or
+  becoming eligible through another actor's terms update bypasses the poll
+  delay and still fetches the join-time key. Restart and backward epochs allow
+  a fresh lookup. Critical-exit assessment still runs on every critical epoch.
+  The window never postpones critical-exit handling. Operators must make the waiver wide
   enough for safe maintenance; a late waiver can lead to an on-chain exit.
 - **Automatic refresh refuses an impossible replacement output.** One-for-one
   maintenance carries each input's amount into a new output before fees, so an

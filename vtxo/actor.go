@@ -28,6 +28,10 @@ import (
 // refresh-to-critical safety buffer. Critical expiry always bypasses it.
 const autoRefreshRetryDelayBlocks int32 = 6
 
+// autoRefreshTermsPollBlocks bounds discovery traffic while a live VTXO waits
+// for a free window. Window entry and critical-exit assessment are not delayed.
+const autoRefreshTermsPollBlocks int64 = 6
+
 // VTXOActorServiceKey returns the service key for looking up a VTXO actor.
 // This delegates to actormsg.VTXOActorServiceKey to ensure both packages use
 // the same key for registration and lookup, avoiding type mismatches.
@@ -179,6 +183,12 @@ type VTXOActor struct {
 	// retry, but can never delay the critical path decision.
 	autoRefreshRetryHeight int32
 
+	// lastAutoRefreshTermsHeight throttles discovery while waiting for a
+	// waiver. It is actor-local and resets on restart or a backward epoch;
+	// neither case may suppress a fresh join-time key lookup.
+	lastAutoRefreshTermsHeight int32
+	hasAutoRefreshTermsHeight  bool
+
 	// autoRefreshCohortLeader owns a manager-forced pending reservation.
 	// Token-matched rollback prevents a timed-out cohort Ask from releasing
 	// a reservation that a manual or competing round acquired first.
@@ -311,6 +321,29 @@ func (a *VTXOActor) preflightAutoRefresh(ctx context.Context, event VTXOEvent) (
 	if !(live && (status == ExpiryStatusNeedsRefresh || critical)) &&
 		!(expired && status == ExpiryStatusExpired) {
 		return nil, false, nil
+	}
+
+	// A deferred live actor stays NeedsRefresh for potentially hundreds of
+	// blocks. Poll periodically rather than serializing a GetInfo RPC per
+	// VTXO on every epoch. Check cached eligibility first so entering the
+	// window (including a shared cache update) still fetches a fresh key.
+	// Critical-exit assessment already ran before this preflight; only its
+	// unfunded cooperative fallback can reach this throttle.
+	if live && a.hasAutoRefreshTermsHeight &&
+		a.env.ExpiryConfig.ShouldWaitForFreeRefreshWindow(
+			liveState.VTXO, height,
+		) {
+
+		elapsed := int64(height) - int64(a.lastAutoRefreshTermsHeight)
+		if elapsed >= 0 && elapsed < autoRefreshTermsPollBlocks {
+			liveState.LastCheckedHeight = height
+
+			return nil, true, nil
+		}
+	}
+	if live {
+		a.lastAutoRefreshTermsHeight = height
+		a.hasAutoRefreshTermsHeight = true
 	}
 
 	currentKey, err := a.fetchOperatorKey(ctx)
