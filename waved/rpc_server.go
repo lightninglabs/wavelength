@@ -4150,14 +4150,17 @@ func (r *RPCServer) replaySendOORByIdempotencyKey(ctx context.Context,
 
 		// The original call already counted the submission. A replay
 		// returns before input selection and emits no second metric.
-		replayStatus, err := r.outgoingOORReplayStatus(ctx, sessionID)
+		replayStatus, prePONR, err := r.outgoingOORReplayStatus(
+			ctx, sessionID,
+		)
 		if err != nil {
 			return nil, true, err
 		}
 		if replayStatus == "failed" {
 			return &waverpc.SendOORResponse{
-				Status:    replayStatus,
-				SessionId: sessionID.String(),
+				Status:           replayStatus,
+				SessionId:        sessionID.String(),
+				FailedBeforePonr: prePONR,
 			}, true, nil
 		}
 
@@ -4247,22 +4250,39 @@ func (r *RPCServer) findOutgoingOORSessionByIdempotencyKey(ctx context.Context,
 // row still authoritatively describes the outgoing lifecycle. A later incoming
 // takeover cannot prove the outgoing outcome, so the immutable attempt remains
 // conservatively submitted in that case.
+//
+// The second return value is true only for a failure the session recorded as
+// happening before the point of no return, where the operator never co-signed
+// a spend and no output can exist. A failure from a later state, or one whose
+// origin was not recorded, reports false because the outputs may exist.
 func (r *RPCServer) outgoingOORReplayStatus(ctx context.Context,
-	sessionID oor.SessionID) (string, error) {
+	sessionID oor.SessionID) (string, bool, error) {
 
 	record, err := r.server.oorSessionStore.GetSession(
 		ctx, chainhash.Hash(sessionID),
 	)
 	if err != nil {
-		return "", status.Errorf(codes.Internal, "load OOR session "+
-			"status: %v", err)
+		return "", false, status.Errorf(codes.Internal, "load OOR "+
+			"session status: %v", err)
 	}
 	if record.Direction == db.OORSessionDirectionOutgoing &&
 		record.Status == db.OORSessionStatusFailed {
-		return "failed", nil
+
+		prePONR, err := oor.OutgoingFailedBeforePONR(record)
+		if err != nil {
+			// An undecodable snapshot cannot prove the failure
+			// was pre-PONR, so report it as a plain failure.
+			r.server.log.WarnS(ctx, "Unable to classify failed "+
+				"OOR session", err,
+				slog.String("session_id", sessionID.String()))
+
+			prePONR = false
+		}
+
+		return "failed", prePONR, nil
 	}
 
-	return "submitted", nil
+	return "submitted", false, nil
 }
 
 // lookupOutgoingOORSessionByIdempotencyKey serializes a read-only key probe
