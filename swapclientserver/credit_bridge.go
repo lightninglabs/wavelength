@@ -163,8 +163,8 @@ func (b *creditDaemonBridge) VTXOFloor(ctx context.Context) (uint64, error) {
 // SendOOR submits an idempotency-keyed OOR transfer to a pubkey-backed
 // destination through the daemon, so the OOR registry dedups the transfer.
 func (b *creditDaemonBridge) SendOOR(ctx context.Context,
-	destinationPubKey []byte, amountSat uint64, idempotencyKey string) (
-	string, error) {
+	destinationPubKey []byte, amountSat uint64, idempotencyKey string,
+	existingOnly bool) (string, error) {
 
 	if amountSat > math.MaxInt64 {
 		return "", fmt.Errorf("oor amount exceeds int64 range")
@@ -180,6 +180,7 @@ func (b *creditDaemonBridge) SendOOR(ctx context.Context,
 			AmountSat: int64(amountSat),
 		}},
 		IdempotencyKey: idempotencyKey,
+		ExistingOnly:   existingOnly,
 	})
 	if err != nil {
 		return "", err

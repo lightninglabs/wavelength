@@ -10,6 +10,8 @@ import (
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // fakeExec is an in-memory actor.Exec[creditTx] for FSM tests. Read/Stage/
@@ -341,6 +343,14 @@ type fakeDaemon struct {
 	mu sync.Mutex
 
 	sendOORCalls map[string]int
+
+	// sendErr, when set, is returned by every non-probe SendOOR call.
+	sendErr error
+
+	// accepted holds keys whose transfer the daemon already accepted, so
+	// an existing-only probe finds them.
+	accepted map[string]bool
+
 	allocCalls   int
 	vtxoFound    bool
 	vtxoFloor    uint64
@@ -349,7 +359,10 @@ type fakeDaemon struct {
 
 // newFakeDaemon creates a fake daemon with no observed redeemed VTXO.
 func newFakeDaemon() *fakeDaemon {
-	return &fakeDaemon{sendOORCalls: make(map[string]int)}
+	return &fakeDaemon{
+		sendOORCalls: make(map[string]int),
+		accepted:     make(map[string]bool),
+	}
 }
 
 // IdentityPubKey returns the stable fake credit account key.
@@ -371,12 +384,23 @@ func (d *fakeDaemon) VTXOFloor(context.Context) (uint64, error) {
 
 // SendOOR records one idempotency-keyed fake transfer.
 func (d *fakeDaemon) SendOOR(_ context.Context, _ []byte, _ uint64,
-	idempotencyKey string) (string, error) {
+	idempotencyKey string, existingOnly bool) (string, error) {
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	if existingOnly {
+		if !d.accepted[idempotencyKey] {
+			return "", status.Error(codes.NotFound, "no transfer")
+		}
+
+		return "oor-" + idempotencyKey, nil
+	}
+
 	d.sendOORCalls[idempotencyKey]++
+	if d.sendErr != nil {
+		return "", d.sendErr
+	}
 
 	return "oor-" + idempotencyKey, nil
 }
@@ -962,6 +986,98 @@ func TestPayTopupTerminalFailure(t *testing.T) {
 	require.Equal(t, db.CreditOpStatusFailed, b.rec.Status)
 	require.NotEmpty(t, b.rec.LastError)
 	require.Equal(t, 0, server.startPayCnt)
+}
+
+// admitTopupPay admits a pay that needs a top-up and drives it until the OOR
+// funding send is the next step.
+func admitTopupPay(t *testing.T, b *opBehavior, store Store) {
+	t.Helper()
+
+	admit(t, b, store, &StartCreditPayRequest{
+		OpKey:        "pay:abc",
+		Invoice:      "lnbc1",
+		PaymentHash:  payHash(),
+		AmountSat:    500,
+		TopupSat:     200,
+		MaxCreditSat: 500,
+	})
+}
+
+// TestPayTopupAdmissionRejectionFails asserts that a top-up the daemon refuses
+// to fund, either for lack of spendable funds or for locked liquidity with no
+// earlier attempt of this operation behind it, terminal-fails the operation
+// instead of leaving it to be redelivered and paid after the caller gave up.
+func TestPayTopupAdmissionRejectionFails(t *testing.T) {
+	t.Parallel()
+
+	for _, code := range []codes.Code{
+		codes.ResourceExhausted, codes.Aborted,
+	} {
+		t.Run(code.String(), func(t *testing.T) {
+			t.Parallel()
+
+			store := newFakeStore()
+			server, daemon := newFakeServer(), newFakeDaemon()
+			daemon.sendErr = status.Error(code, "rejected")
+			b := testBehavior("op1", store, server, daemon)
+			admitTopupPay(t, b, store)
+
+			// The turn commits the failure rather than returning
+			// an error that would redeliver the message.
+			require.NoError(t, driveTurn(b, &fakeExec{}))
+			require.True(t, b.terminalCommitted)
+			require.Equal(t, string(StateFailed), b.rec.State)
+			require.Contains(t, b.rec.LastError, "rejected")
+
+			got, err := store.GetOperation(
+				context.Background(),
+				"op1",
+			)
+			require.NoError(t, err)
+			require.Equal(t, db.CreditOpStatusFailed, got.Status)
+
+			// A later resume never funds or pays.
+			require.NoError(t, driveTurn(b, &fakeExec{}))
+			require.Equal(t, 1, daemon.sendOORCalls["pay:abc"])
+			require.Equal(t, 0, server.startPayCnt)
+		})
+	}
+}
+
+// TestPayTopupAdoptsOwnInFlightAttempt asserts that a locked-liquidity
+// rejection caused by this operation's own earlier accepted send, whose
+// response was lost, is not failed: the existing-only probe finds the
+// transfer and the operation adopts it.
+func TestPayTopupAdoptsOwnInFlightAttempt(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	server, daemon := newFakeServer(), newFakeDaemon()
+	daemon.sendErr = status.Error(codes.Aborted, "liquidity locked")
+	daemon.accepted["pay:abc"] = true
+	b := testBehavior("op1", store, server, daemon)
+	admitTopupPay(t, b, store)
+
+	require.NoError(t, driveTurn(b, &fakeExec{}))
+	require.False(t, b.terminalCommitted)
+	require.Equal(t, string(StateTopupAwaitingCredit), b.rec.State)
+	require.Equal(t, "oor-pay:abc", b.rec.OORSessionID)
+}
+
+// TestPayTopupTransportErrorStaysRetryable asserts that an ambiguous send
+// failure still returns an error, so the durable message is redelivered.
+func TestPayTopupTransportErrorStaysRetryable(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	server, daemon := newFakeServer(), newFakeDaemon()
+	daemon.sendErr = status.Error(codes.Unavailable, "connection lost")
+	b := testBehavior("op1", store, server, daemon)
+	admitTopupPay(t, b, store)
+
+	require.Error(t, driveTurn(b, &fakeExec{}))
+	require.False(t, b.terminalCommitted)
+	require.NotEqual(t, string(StateFailed), b.rec.State)
 }
 
 // TestRedeemReserveIdempotentAcrossRestart asserts a restart mid-redemption
