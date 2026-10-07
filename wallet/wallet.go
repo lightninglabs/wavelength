@@ -33,8 +33,10 @@ const (
 	// address keys.
 	BoardingKeyFamily = 42
 
-	// MinBoardingConfs is the minimum number of confirmations required
-	// before notifying about a boarding UTXO.
+	// MinBoardingConfs is the floor on the number of confirmations
+	// required before a boarding UTXO is recorded as a confirmed
+	// intent. The operator's advertised MinConfirmations raises it
+	// (see boardingDepth); it never lowers it.
 	MinBoardingConfs = 1
 
 	// MaxConfsForListUnspent is the maximum confirmations parameter for
@@ -1108,10 +1110,19 @@ func (a *Ark) handleGetBoardingBalance(ctx context.Context,
 	return fn.Ok[WalletResp](resp)
 }
 
-// unconfirmedBoardingBalance sums zero-conf backend UTXOs that pay to known
-// boarding scripts.
+// unconfirmedBoardingBalance sums backend UTXOs that pay to known boarding
+// scripts but have not yet reached the boarding depth, so they are not yet
+// confirmed intents.
 func (a *Ark) unconfirmedBoardingBalance(ctx context.Context) (btcutil.Amount,
 	int, error) {
+
+	// If the terms are unavailable, fall back to the floor: the report
+	// then only counts mempool deposits, as it did before the operator
+	// depth applied.
+	depth, err := a.boardingDepth(ctx)
+	if err != nil {
+		depth = MinBoardingConfs
+	}
 
 	utxos, err := a.backend.ListUnspent(ctx, 0, MaxConfsForListUnspent)
 	if err != nil {
@@ -1121,7 +1132,7 @@ func (a *Ark) unconfirmedBoardingBalance(ctx context.Context) (btcutil.Amount,
 	var total btcutil.Amount
 	var count int
 	for _, utxo := range utxos {
-		if utxo == nil || utxo.Confirmations != 0 {
+		if utxo == nil || utxo.Confirmations >= depth {
 			continue
 		}
 
@@ -1310,8 +1321,24 @@ func (a *Ark) handleProcessTipTick(ctx context.Context) fn.Result[WalletResp] {
 		slog.Int("last_processed", int(processed)),
 	)
 
+	// Only UTXOs at the operator's boarding depth are recorded as
+	// confirmed intents, so every confirmed intent is one the operator
+	// will accept in a join request. Shallower deposits are picked up
+	// by a later tip once they gain enough confirmations.
+	depth, err := a.boardingDepth(ctx)
+	if err != nil {
+		a.logger(ctx).WarnS(ctx, "Failed resolving boarding depth",
+			err,
+			slog.Int("height", int(epoch.Height)),
+		)
+
+		// Don't advance processedTipHeight, so the next tick retries
+		// once the operator terms are available.
+		return fn.Ok[WalletResp](nil)
+	}
+
 	utxos, err := a.backend.ListUnspent(
-		ctx, MinBoardingConfs, MaxConfsForListUnspent,
+		ctx, depth, MaxConfsForListUnspent,
 	)
 	if err != nil {
 		a.logger(ctx).WarnS(ctx, "Failed listing UTXOs",
@@ -1394,6 +1421,28 @@ func (a *Ark) handleProcessTipTick(ctx context.Context) fn.Result[WalletResp] {
 	a.processedTipHeight.Store(epoch.Height)
 
 	return fn.Ok[WalletResp](nil)
+}
+
+// boardingDepth returns the number of confirmations a boarding UTXO needs
+// before it is recorded as a confirmed intent: the operator's advertised
+// MinConfirmations, floored at MinBoardingConfs. The operator rejects a join
+// request carrying a shallower boarding input, so an intent below this depth
+// must never reach handleBoard, GetBalance, or the round actor. Without a
+// terms source (harnesses) the floor applies.
+func (a *Ark) boardingDepth(ctx context.Context) (int32, error) {
+	if a.fetchOperatorTerms == nil {
+		return MinBoardingConfs, nil
+	}
+
+	terms, err := a.fetchOperatorTerms(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("fetch operator terms: %w", err)
+	}
+	if terms == nil || terms.MinConfirmations < MinBoardingConfs {
+		return MinBoardingConfs, nil
+	}
+
+	return int32(terms.MinConfirmations), nil
 }
 
 // processUtxo checks if a UTXO is new and belongs to a boarding address.

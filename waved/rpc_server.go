@@ -1032,9 +1032,21 @@ func (r *RPCServer) fetchUnconfirmedBoardingBalance(ctx context.Context,
 		return 0, fmt.Errorf("list unspent: %w", err)
 	}
 
+	// Deposits below the operator's boarding depth are not yet confirmed
+	// intents, so they are reported as unconfirmed. If the terms are
+	// unavailable, fall back to the floor, which counts only mempool
+	// deposits.
+	depth := int32(wallet.MinBoardingConfs)
+	terms, err := r.server.fetchCachedOperatorTerms(ctx)
+	if err == nil && terms != nil &&
+		terms.MinConfirmations > wallet.MinBoardingConfs {
+
+		depth = int32(terms.MinConfirmations)
+	}
+
 	var total btcutil.Amount
 	for _, utxo := range utxos {
-		if utxo == nil || utxo.Confirmations != 0 {
+		if utxo == nil || utxo.Confirmations >= depth {
 			continue
 		}
 
