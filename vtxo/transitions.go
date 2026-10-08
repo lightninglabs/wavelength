@@ -169,7 +169,7 @@ func (s *LiveState) autoRefreshTransition(height int32, cohortMember bool,
 
 	// Refuse impossible replacement outputs before reserving the input.
 	// The coin remains live for manual aggregation or unilateral exit.
-	if !env.ExpiryConfig.canAutoRefresh(s.VTXO) {
+	if !env.ExpiryConfig.canAutoRefresh(s.VTXO, height) {
 		return &VTXOStateTransition{NextState: s}
 	}
 
@@ -1738,7 +1738,7 @@ func (s *ExpiredState) ProcessEvent(ctx context.Context, event VTXOEvent,
 			), nil
 		}
 
-		if !env.ExpiryConfig.canAutoRefresh(s.VTXO) {
+		if !env.ExpiryConfig.canAutoRefresh(s.VTXO, evt.Height) {
 			return &VTXOStateTransition{NextState: s}, nil
 		}
 

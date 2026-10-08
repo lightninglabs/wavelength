@@ -252,7 +252,7 @@ func expectCohortListings(store *MockVTXOStore, live, pending []*Descriptor) {
 }
 
 // TestManagerBuildsAtomicAutoRefreshCohort verifies same-expiry selection,
-// reservation/free-window exclusions, canonical ordering, and one round Tell.
+// reservation/expiry exclusions, canonical ordering, and one round Tell.
 func TestManagerBuildsAtomicAutoRefreshCohort(t *testing.T) {
 	t.Parallel()
 
@@ -263,16 +263,14 @@ func TestManagerBuildsAtomicAutoRefreshCohort(t *testing.T) {
 	leader := deterministicCohortDescriptor(t, 10, batchExpiry)
 	eligible := deterministicCohortDescriptor(t, 9, batchExpiry)
 	reserved := deterministicCohortDescriptor(t, 8, batchExpiry)
-	waitsForFree := deterministicCohortDescriptor(t, 7, batchExpiry)
 	different := deterministicCohortDescriptor(t, 6, batchExpiry+1)
 	leader.RelativeExpiry = 100
 	eligible.RelativeExpiry = 100
 	reserved.RelativeExpiry = 100
-	waitsForFree.RelativeExpiry = 10
 
 	store := &MockVTXOStore{}
 	expectCohortListings(store, []*Descriptor{
-		waitsForFree, different, reserved, eligible, leader,
+		different, reserved, eligible, leader,
 	}, nil)
 	roundActor := newMockRoundActorRef(t)
 	expiryCfg := &ExpiryConfig{
@@ -280,7 +278,7 @@ func TestManagerBuildsAtomicAutoRefreshCohort(t *testing.T) {
 		CriticalThresholdBlocks: 30,
 		MinRefreshBuffer:        50,
 		FreeRefreshWindow: func() uint32 {
-			return 120
+			return 200
 		},
 	}
 	mgr := NewManager(&ManagerConfig{
@@ -291,7 +289,7 @@ func TestManagerBuildsAtomicAutoRefreshCohort(t *testing.T) {
 	mgr.reserved[reserved.Outpoint] = 1
 	children := map[*Descriptor]*cohortActorRef{}
 	for _, desc := range []*Descriptor{
-		leader, eligible, reserved, waitsForFree, different,
+		leader, eligible, reserved, different,
 	} {
 		ref := newCohortActorRef(desc, &LiveState{VTXO: desc})
 		children[desc] = ref
@@ -323,7 +321,7 @@ func TestManagerBuildsAtomicAutoRefreshCohort(t *testing.T) {
 		),
 	)
 	for _, excluded := range []*Descriptor{
-		reserved, waitsForFree, different,
+		reserved, different,
 	} {
 		state, _, _ = children[excluded].snapshot()
 		require.IsType(t, &LiveState{}, state)

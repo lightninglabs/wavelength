@@ -81,7 +81,8 @@ func TestDefaultConfigDisablesAutomaticRefreshBudgets(t *testing.T) {
 	require.Zero(t, cfg.AutoRefreshFeeRatePPM)
 }
 
-// TestConfigValidateAutomaticRefreshBudgets checks both public policy bounds.
+// TestConfigValidateAutomaticRefreshBudgets accepts ignored legacy allowances
+// regardless of the economic limits enforced when these settings were active.
 func TestConfigValidateAutomaticRefreshBudgets(t *testing.T) {
 	t.Parallel()
 
@@ -97,18 +98,18 @@ func TestConfigValidateAutomaticRefreshBudgets(t *testing.T) {
 	negativeFloor := newConfig()
 	negativeFloor.AutoRefreshFeeFloorSat = -1
 	err := negativeFloor.Validate()
-	require.ErrorContains(t, err, "autorefreshfeefloorsat")
+	require.NoError(t, err)
 
 	invalidRate := newConfig()
 	invalidRate.AutoRefreshFeeRatePPM = 1_000_001
 	err = invalidRate.Validate()
-	require.ErrorContains(t, err, "autorefreshfeerateppm")
+	require.NoError(t, err)
 
 	floorAboveGlobal := newConfig()
 	floorAboveGlobal.AutoRefreshFeeFloorSat =
 		floorAboveGlobal.MaxOperatorFeeSat + 1
 	err = floorAboveGlobal.Validate()
-	require.ErrorContains(t, err, "must not exceed maxoperatorfeesat")
+	require.NoError(t, err)
 
 	valid := newConfig()
 	valid.AutoRefreshFeeFloorSat = 10_000

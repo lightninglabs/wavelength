@@ -122,10 +122,6 @@ func (mc mobileConfig) validate() error {
 			mc.MaxOperatorFeeSat,
 		},
 		{
-			"auto_refresh_fee_floor_sat",
-			mc.AutoRefreshFeeFloorSat,
-		},
-		{
 			"auto_refresh_fee_rate_ppm",
 			mc.AutoRefreshFeeRatePPM,
 		},
@@ -164,9 +160,11 @@ func (mc mobileConfig) validate() error {
 		return fmt.Errorf("signing_workers exceeds maximum %d: %d",
 			wavewalletdk.MaxSigningWorkers, mc.SigningWorkers)
 	}
-	if mc.AutoRefreshFeeRatePPM > 1_000_000 {
+	// Keep the legacy value representable when forwarding it for the
+	// daemon startup notice; it no longer authorizes any fees.
+	if mc.AutoRefreshFeeRatePPM > math.MaxUint32 {
 		return fmt.Errorf("auto_refresh_fee_rate_ppm exceeds "+
-			"1000000: %d", mc.AutoRefreshFeeRatePPM)
+			"uint32 max: %d", mc.AutoRefreshFeeRatePPM)
 	}
 
 	return nil

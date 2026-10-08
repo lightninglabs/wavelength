@@ -538,28 +538,54 @@ best-effort: if the operator or chain tip is unreachable the preview
 still returns with `estimate_error` set. The binding fee remains the
 seal-time quote and may differ from any estimate.
 
-Operators can give automatic maintenance one budget curve with
-`autorefreshfeefloorsat` (a fixed allowance for the round) and
-`autorefreshfeerateppm` (a proportional allowance in parts per million of the
-automatically refreshed value). The effective automatic budget is the larger
-of those allowances, always capped by `maxoperatorfeesat`. The floor covers
-fixed round costs for small VTXOs while the rate scales with value. Both
-default to zero, which leaves only the global cap in force. If an automatic
-quote is rejected while the VTXOs are still safe, the wallet waits six blocks
-before retrying. Critical or expired VTXOs bypass that cooldown so the wallet
-does not trade unilateral-exit safety for fee throttling.
+Automatic maintenance waits for the advertised free-refresh window and only
+accepts quotes with zero total fee. Every re-quote is checked as well. Paid
+refresh remains available through an explicit CLI/RPC request, subject to
+`maxoperatorfeesat`. The old `autorefreshfeefloorsat` and
+`autorefreshfeerateppm` settings are deprecated and cannot authorize automatic
+fees. Nonzero legacy values produce one startup notice and do not enforce an
+automatic fee budget. If manual and automatic requests share a round, its
+entire fee must be zero; otherwise the round is rejected and its reservations
+are released.
+Retry the manual request separately in that case.
+
+A rejected automatic quote waits six blocks before retrying while the VTXOs
+are still safe. Critical and expired recovery bypass that cooldown, but still
+require a zero-fee quote. A zero advertised window disables automatic refresh
+before expiry. Operators must open the free window before wallets reach their
+critical-exit boundary, with enough time for retries. A late or disabled window
+does not postpone critical exits, which can incur on-chain mining fees.
+
+For scheduled batches, plan against the usable maintenance time:
+`min(free window, wallet refresh threshold) - critical threshold`.
+That time must cover each attempted slot's wait through its cutoff, the
+signing ceremony and confirmation, six blocks per retry cooldown, and an
+additional margin. A missed slot can require waiting another full interval;
+the registration window is part of that interval, not a separate interval.
+For example, a 648-block window with a 558-block wallet target and a 186-block
+critical threshold leaves **372 blocks** for attempts before critical handling.
+An offline wallet returning later has less time. Schedule intervals use wall
+clock time, while expiry uses block height: convert delays conservatively for
+planning; a ten-minute average block time is not a safety guarantee. Widening
+the free window alone cannot fix a wallet target that starts too late.
+
+While waiting outside the window, the wallet polls updated terms every six
+blocks rather than every block. Allow that discovery delay when changing a
+window. Entering an already-known window fetches fresh terms immediately, and
+critical-exit assessment is never postponed by this polling limit.
 
 Swap-enabled builds also default `maxpaymentcltv` to 300 blocks. Automatic
 maintenance adds that payment window above each VTXO's dynamic unilateral-exit
 budget and 72-block refresh-retry buffer. For example, a VTXO with a 186-block
-critical threshold refreshes at `186 + 72 + 300 = 558` blocks remaining. Set
+critical threshold targets `186 + 72 + 300 = 558` blocks remaining, but
+waits if the free window has not opened. Set
 the value to zero to keep only the ordinary exit-safety policy. This is a
 liquidity-readiness target, not an override of send-time expiry validation: a
 payment whose actual route needs more lifetime still fails safely. If a fresh,
 round-direct VTXO cannot provide the configured reserve plus one 72-block
 healthy window, the wallet logs the mismatch and keeps the ordinary refresh
 threshold. Repeated refreshes cannot extend an operator's batch lifetime, so
-they would only spend fees. An OOR descendant keeps the reserve because one
+they would only create unnecessary rounds. An OOR descendant keeps the reserve because one
 refresh can replace its inherited partial lifetime with a new full batch.
 
 An interactive real refresh shows the estimate and asks for

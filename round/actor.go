@@ -471,13 +471,14 @@ type RoundClientConfig struct {
 	// amounts and total VTXO output amounts.
 	MaxOperatorFee btcutil.Amount
 
-	// AutoRefreshFeeFloor is the optional fixed allowance in the automatic
-	// maintenance budget curve. The larger of this floor and the
-	// proportional allowance is always clamped by MaxOperatorFee.
+	// AutoRefreshFeeFloor is retained for configuration compatibility.
+	//
+	// Deprecated: automatic refresh always requires a zero fee.
 	AutoRefreshFeeFloor btcutil.Amount
 
-	// AutoRefreshFeeRatePPM is the optional proportional allowance in the
-	// automatic maintenance budget curve. Zero disables this component.
+	// AutoRefreshFeeRatePPM is retained for configuration compatibility.
+	//
+	// Deprecated: automatic refresh always requires a zero fee.
 	AutoRefreshFeeRatePPM uint32
 
 	// VTXOManager receives VTXO creation notifications after rounds

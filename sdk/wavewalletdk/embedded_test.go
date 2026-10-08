@@ -39,9 +39,9 @@ func TestSigningWorkersOverride(t *testing.T) {
 	})
 }
 
-// TestAutoRefreshFeeOverrides verifies embedded hosts can opt into stricter
-// automatic-maintenance limits while zero convenience values preserve a
-// caller-owned daemon policy.
+// TestAutoRefreshFeeOverrides verifies embedded hosts can forward legacy
+// automatic-maintenance settings for the daemon startup notice. Zero
+// convenience values preserve values already present in DaemonConfig.
 func TestAutoRefreshFeeOverrides(t *testing.T) {
 	t.Parallel()
 

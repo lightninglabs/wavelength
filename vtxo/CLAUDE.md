@@ -209,13 +209,20 @@ when the local wallet owns the receive script.
   reserve plus one healthy retry buffer, the actor logs the mismatch at info
   level when it starts and uses the base refresh policy. OOR descendants keep
   the reserve because one refresh can mint a full-lifetime replacement.
-- Auto-refresh delays to an advertised fee-waiver boundary only when the
-  boundary remains at least `MinRefreshBuffer` blocks above the dynamic
-  critical threshold. An overly late window never weakens unilateral-exit or
-  cooperative-retry safety; the wallet refreshes earlier and pays normally.
-- When the cached boundary fires, auto-refresh fetches fresh operator terms
-  before reserving the VTXO. A later still-safe boundary leaves the VTXO live;
-  a disabled or unsafe-late window preserves the ordinary paid refresh path.
+- Automatic refresh waits for the advertised fee-waiver window, including
+  cohort admission and unfunded-critical recovery. A disabled window prevents
+  pre-expiry automatic refresh. The round layer rejects every nonzero automatic
+  fee, including re-quotes and mixed manual/automatic rounds. A nil terms
+  callback leaves eligibility to that quote check.
+- At the desired maintenance boundary, the actor fetches fresh operator terms
+  before reserving inputs. Even a cached late window allows this lookup, so an
+  operator can widen its window without restarting the wallet. While waiting,
+  each actor polls at most once per six blocks. Entering the cached window or
+  becoming eligible through another actor's terms update bypasses the poll
+  delay and still fetches the join-time key. Restart and backward epochs allow
+  a fresh lookup. Critical-exit assessment still runs on every critical epoch.
+  The window never postpones critical-exit handling. Operators must make the waiver wide
+  enough for safe maintenance; a late waiver can lead to an on-chain exit.
 - **Automatic refresh refuses an impossible replacement output.** One-for-one
   maintenance carries each input's amount into a new output before fees, so an
   input below the operator's current minimum VTXO amount cannot succeed even
@@ -268,7 +275,7 @@ when the local wallet owns the receive script.
   `BlockEpochEvent` and consults `CriticalExitAssessor` first. An explicitly
   infeasible verdict (the wallet cannot fund the exit package at the current
   fee rate) is rewritten into the actor-local `criticalRefreshEvent`, which
-  starts cooperative refresh in `LiveState` and keeps `PendingForfeitState`
+  attempts free-window cooperative refresh in `LiveState` and keeps `PendingForfeitState`
   waiting on its in-flight round. Entering an exit the wallet cannot pay for
   would abandon a still-available cooperative round for a recovery that cannot
   make progress. `waverpc`'s `VTXO_EXPIRY_STATUS_CRITICAL` comment carries the

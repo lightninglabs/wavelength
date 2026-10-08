@@ -106,13 +106,14 @@ type Config struct {
 	// WithMaxPaymentCLTVDisabled to Start to force an explicit zero.
 	MaxPaymentCLTV int32
 
-	// AutoRefreshFeeFloorSat is the optional fixed allowance in the
-	// automatic-maintenance budget curve. Zero disables the floor.
+	// AutoRefreshFeeFloorSat is retained for configuration compatibility.
+	//
+	// Deprecated: automatic refresh always requires a zero fee.
 	AutoRefreshFeeFloorSat int64
 
-	// AutoRefreshFeeRatePPM is the optional proportional allowance in the
-	// automatic-maintenance budget curve. Zero disables this component.
-	// MaxOperatorFeeSat remains the hard ceiling over the whole curve.
+	// AutoRefreshFeeRatePPM is retained for configuration compatibility.
+	//
+	// Deprecated: automatic refresh always requires a zero fee.
 	AutoRefreshFeeRatePPM uint32
 
 	// SigningWorkers bounds concurrent VTXO MuSig2 signer sessions. Zero

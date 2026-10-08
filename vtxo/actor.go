@@ -28,6 +28,10 @@ import (
 // refresh-to-critical safety buffer. Critical expiry always bypasses it.
 const autoRefreshRetryDelayBlocks int32 = 6
 
+// autoRefreshTermsPollBlocks bounds discovery traffic while a live VTXO waits
+// for a free window. Window entry and critical-exit assessment are not delayed.
+const autoRefreshTermsPollBlocks int64 = 6
+
 // VTXOActorServiceKey returns the service key for looking up a VTXO actor.
 // This delegates to actormsg.VTXOActorServiceKey to ensure both packages use
 // the same key for registration and lookup, avoiding type mismatches.
@@ -179,6 +183,12 @@ type VTXOActor struct {
 	// retry, but can never delay the critical path decision.
 	autoRefreshRetryHeight int32
 
+	// lastAutoRefreshTermsHeight throttles discovery while waiting for a
+	// waiver. It is actor-local and resets on restart or a backward epoch;
+	// neither case may suppress a fresh join-time key lookup.
+	lastAutoRefreshTermsHeight int32
+	hasAutoRefreshTermsHeight  bool
+
 	// autoRefreshCohortLeader owns a manager-forced pending reservation.
 	// Token-matched rollback prevents a timed-out cohort Ask from releasing
 	// a reservation that a manual or competing round acquired first.
@@ -313,6 +323,29 @@ func (a *VTXOActor) preflightAutoRefresh(ctx context.Context, event VTXOEvent) (
 		return nil, false, nil
 	}
 
+	// A deferred live actor stays NeedsRefresh for potentially hundreds of
+	// blocks. Poll periodically rather than serializing a GetInfo RPC per
+	// VTXO on every epoch. Check cached eligibility first so entering the
+	// window (including a shared cache update) still fetches a fresh key.
+	// Critical-exit assessment already ran before this preflight; only its
+	// unfunded cooperative fallback can reach this throttle.
+	if live && a.hasAutoRefreshTermsHeight &&
+		a.env.ExpiryConfig.ShouldWaitForFreeRefreshWindow(
+			liveState.VTXO, height,
+		) {
+
+		elapsed := int64(height) - int64(a.lastAutoRefreshTermsHeight)
+		if elapsed >= 0 && elapsed < autoRefreshTermsPollBlocks {
+			liveState.LastCheckedHeight = height
+
+			return nil, true, nil
+		}
+	}
+	if live {
+		a.lastAutoRefreshTermsHeight = height
+		a.hasAutoRefreshTermsHeight = true
+	}
+
 	currentKey, err := a.fetchOperatorKey(ctx)
 	if err != nil {
 		return nil, false, err
@@ -328,13 +361,15 @@ func (a *VTXOActor) preflightAutoRefresh(ctx context.Context, event VTXOEvent) (
 	refreshThreshold := a.env.ExpiryConfig.CalculateRefreshThreshold(
 		liveState.VTXO,
 	)
-	if blocksRemaining <= refreshThreshold {
+	if blocksRemaining <= refreshThreshold &&
+		!a.env.ExpiryConfig.ShouldWaitForFreeRefreshWindow(
+			liveState.VTXO, height,
+		) {
 		return currentKey, false, nil
 	}
 
-	// The fresh window moved later while retaining the configured safety
-	// margin. Consume this epoch in LiveState and let the newly cached
-	// threshold trigger another preflight at the new boundary.
+	// Keep the input available while waiting for a free quote. Subsequent
+	// epochs recheck terms, including a window widened by the operator.
 	liveState.LastCheckedHeight = height
 	a.logger(ctx).DebugS(ctx, "Deferring automatic refresh to latest "+
 		"operator window",
@@ -416,8 +451,15 @@ func (a *VTXOActor) preflightCriticalExit(ctx context.Context,
 	if reason == "" {
 		reason = "exit funding is infeasible"
 	}
+	action := "cooperative_refresh"
+	if a.env.ExpiryConfig.ShouldWaitForFreeRefreshWindow(
+		desc, blockEvent.Height,
+	) {
+
+		action = "wait_for_free_refresh_window"
+	}
 	a.logger(ctx).InfoS(ctx, "Automatic expiry decision",
-		slog.String("action", "cooperative_refresh"),
+		slog.String("action", action),
 		slog.String("reason", reason),
 		slog.Int("height", int(blockEvent.Height)),
 		slog.Int("blocks_remaining", int(blocksRemaining)),

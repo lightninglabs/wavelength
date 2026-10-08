@@ -2,24 +2,17 @@ package round
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightninglabs/wavelength/serverconn"
 	"github.com/stretchr/testify/require"
 )
-
-// mixedAutoRefreshIntents marks one output as automatic maintenance and the
-// other as manual refresh, preserving the deterministic input/output fixture.
-func mixedAutoRefreshIntents(t *testing.T) Intents {
-	t.Helper()
-
-	intents, _ := buildEchoTestIntents(t)
-	intents.VTXOs[0].Origin = types.VTXOOriginAutoRefresh
-	intents.VTXOs[1].Origin = types.VTXOOriginRoundRefresh
-
-	return intents
-}
 
 // TestEvaluateQuoteRejectsVTXOBelowOperatorMinimum verifies the server cannot
 // pay a seal-time fee by shrinking the designated change output below the
@@ -86,100 +79,189 @@ func TestQuoteReceivedResealRejectsVTXOBelowOperatorMinimum(t *testing.T) {
 	require.Contains(t, rejected.Reason, "below operator minimum")
 }
 
-// TestEvaluateQuoteAppliesAutomaticFloor verifies the fixed component of the
-// maintenance budget is evaluated against the authoritative realised fee.
-func TestEvaluateQuoteAppliesAutomaticFloor(t *testing.T) {
+// maintenanceIntents returns a one-for-one cohort with a small fixed output
+// and a larger fee-bearing output. The latter must not subsidize automatic
+// maintenance merely because the small output retains its full value.
+func maintenanceIntents(t *testing.T) Intents {
+	t.Helper()
+
+	operator, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	var intents Intents
+	for i, amount := range []btcutil.Amount{1_200, 2_738} {
+		req := mkReq(t, operator.PubKey(), byte(i+1), true).req
+		req.Amount = amount
+		req.IsChange = i == 1
+		req.Origin = types.VTXOOriginAutoRefresh
+		outpoint := wire.OutPoint{Index: uint32(i)}
+		intents.Forfeits = append(
+			intents.Forfeits, types.ForfeitRequest{
+				VTXOOutpoint: &outpoint,
+				Amount:       amount,
+			},
+		)
+		intents.VTXOs = append(intents.VTXOs, req)
+	}
+
+	return intents
+}
+
+// TestAutomaticRefreshRequiresZeroFee checks both default and legacy budget
+// settings, mixed-origin intents, and explicitly requested paid refreshes.
+func TestAutomaticRefreshRequiresZeroFee(t *testing.T) {
 	t.Parallel()
 
-	intents := mixedAutoRefreshIntents(t)
-	quote := quoteFromIntents(t, intents, 5_000)
+	for _, test := range []struct {
+		name         string
+		fee          int64
+		manual       bool
+		mixed        bool
+		legacyBudget bool
+		accept       bool
+	}{
+		{
+			name:   "free cohort",
+			accept: true,
+		},
+		{
+			name: "one sat is not free",
+			fee:  1,
+		},
+		{
+			name: "small output hides cohort charge",
+			fee:  261,
+		},
+		{name: "legacy allowance cannot authorize fees", fee: 261,
+			legacyBudget: true},
+		{name: "manual output cannot absorb automatic fee", fee: 261,
+			mixed: true},
+		{
+			name:   "free mixed refresh is allowed",
+			mixed:  true,
+			accept: true,
+		},
+		{name: "manual paid refresh", fee: 261, manual: true,
+			accept: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-	env := quoteReceivedTestEnv(10_000)
-	env.AutoRefreshFeeFloor = btcutil.Amount(4_999)
-	decision := evaluateQuote(
-		context.Background(), env, RoundID{}, intents, quote,
+			intents := maintenanceIntents(t)
+			for i := range intents.VTXOs {
+				if test.manual || (test.mixed && i == 1) {
+					intents.VTXOs[i].Origin =
+						types.VTXOOriginRoundRefresh
+				}
+			}
+			quote := quoteFromIntents(t, intents, test.fee)
+			quote.VTXOQuotes[1].AmountSat -= test.fee
+			env := quoteReceivedTestEnv(1_000_000)
+			env.OperatorTerms = &types.OperatorTerms{
+				MinVTXOAmount: 1_000,
+			}
+			if test.legacyBudget {
+				env.AutoRefreshFeeFloor = 1_000
+				env.AutoRefreshFeeRatePPM = 1_000_000
+			}
+
+			decision := evaluateQuote(
+				t.Context(), env, RoundID{}, intents, quote,
+			)
+			if test.accept {
+				require.IsType(t, &QuoteAccepted{}, decision)
+
+				return
+			}
+			rejected, ok := decision.(*QuoteRejected)
+			require.True(t, ok)
+			require.Contains(
+				t, rejected.Reason,
+				"automatic refresh requires zero fee",
+			)
+			if test.mixed {
+				require.Contains(
+					t, rejected.Reason,
+					"mixed manual/automatic round",
+				)
+				require.Contains(
+					t, rejected.Reason,
+					"retry the manual request separately",
+				)
+			}
+		})
+	}
+}
+
+// TestAutomaticRefreshPaidResealRollsBack proves that a free first quote
+// cannot authorize a later charge and that rejection releases the inputs.
+func TestAutomaticRefreshPaidResealRollsBack(t *testing.T) {
+	t.Parallel()
+
+	intents := maintenanceIntents(t)
+	first := quoteFromIntents(t, intents, 0)
+	first.SealPass = 1
+	state := &QuoteReceivedState{Intents: intents, Quote: first}
+	reseal := quoteFromIntents(t, intents, 261)
+	reseal.SealPass = 2
+	reseal.VTXOQuotes[1].AmountSat -= 261
+	env := quoteReceivedTestEnv(1_000_000)
+	transition, err := state.ProcessEvent(
+		t.Context(), &JoinRoundQuoteReceived{
+			Quote: reseal,
+		},
+		env,
 	)
+	require.NoError(t, err)
+	events := transition.NewEvents.UnwrapOr(ClientEmittedEvent{})
+	require.Len(t, events.InternalEvent, 1)
+	decision := events.InternalEvent[0]
 	rejected, ok := decision.(*QuoteRejected)
 	require.True(t, ok)
-	require.Contains(t, rejected.Reason, "automatic refresh fee")
-
-	env.AutoRefreshFeeFloor = btcutil.Amount(5_000)
-	decision = evaluateQuote(
-		context.Background(), env, RoundID{}, intents, quote,
+	require.Contains(
+		t, rejected.Reason, "automatic refresh requires zero fee",
 	)
-	_, ok = decision.(*QuoteAccepted)
+
+	transition, err = transition.NextState.ProcessEvent(
+		t.Context(), decision, env,
+	)
+	require.NoError(t, err)
+	require.IsType(t, &ClientFailedState{}, transition.NextState)
+	outbox := transition.NewEvents.UnwrapOr(ClientEmittedEvent{}).Outbox
+	require.IsType(t, &JoinRoundRejectOutbox{}, outbox[1])
+	require.Len(t, outbox, 2)
+	release, ok := outbox[0].(*ReleaseForfeitReservation)
 	require.True(t, ok)
-}
+	require.ElementsMatch(t, []wire.OutPoint{
+		*intents.Forfeits[0].VTXOOutpoint,
+		*intents.Forfeits[1].VTXOOutpoint,
+	}, release.Outpoints)
 
-// TestEvaluateQuoteAppliesAutomaticProportionalBudgetToMixedRound verifies a
-// manual output cannot dilute the proportional denominator or bypass policy
-// when it shares an assembling round with automatic maintenance.
-func TestEvaluateQuoteAppliesAutomaticProportionalBudgetToMixedRound(
-	t *testing.T) {
-
-	t.Parallel()
-
-	intents := mixedAutoRefreshIntents(t)
-	quote := quoteFromIntents(t, intents, 5_000)
-
-	// Only the 40,000-sat automatic target is the denominator. A 124,999
-	// ppm allowance rounds down to 4,999 sat, so the entire 5,000-sat
-	// realised mixed-round fee must reject.
-	env := quoteReceivedTestEnv(10_000)
-	env.AutoRefreshFeeRatePPM = 124_999
-	decision := evaluateQuote(
-		context.Background(), env, RoundID{}, intents, quote,
-	)
-	rejected, ok := decision.(*QuoteRejected)
+	// Exercise delivery, not just outbox shape: a failed server send must
+	// not prevent the manager from receiving both local releases.
+	h := newActorTestHarness(t)
+	sendErr := errors.New("server mailbox unavailable")
+	h.actor.cfg.ServerConn = &failedQuoteRejectRef{
+		mockServerConnRef: h.serverConn,
+		err:               sendErr,
+	}
+	err = h.actor.processOutbox(h.ctx, outbox)
+	require.ErrorIs(t, err, sendErr)
+	messages := h.vtxoManager.getMessages()
+	require.Len(t, messages, 1)
+	request, ok := messages[0].(*actormsg.ReleaseForfeitRequest)
 	require.True(t, ok)
-	require.Contains(t, rejected.Reason, "automatic refresh fee")
-
-	env.AutoRefreshFeeRatePPM = 125_000
-	decision = evaluateQuote(
-		context.Background(), env, RoundID{}, intents, quote,
-	)
-	_, ok = decision.(*QuoteAccepted)
-	require.True(t, ok)
+	require.ElementsMatch(t, release.Outpoints, request.Outpoints)
 }
 
-// TestAutoRefreshFeeBudgetUsesOneCurve verifies the fixed allowance rescues a
-// small VTXO from a percentage budget below the operation's fixed costs, while
-// the proportional allowance takes over for larger cohorts.
-func TestAutoRefreshFeeBudgetUsesOneCurve(t *testing.T) {
-	t.Parallel()
-
-	budget, enabled := autoRefreshFeeBudget(
-		10_000, 300, 10_000, 1_000,
-	)
-	require.True(t, enabled)
-	require.Equal(t, int64(300), budget)
-
-	budget, enabled = autoRefreshFeeBudget(
-		10_000, 300, 10_000, 100_000,
-	)
-	require.True(t, enabled)
-	require.Equal(t, int64(1_000), budget)
+// failedQuoteRejectRef simulates a server mailbox refusing the reject message.
+type failedQuoteRejectRef struct {
+	*mockServerConnRef
+	err error
 }
 
-// TestAutoRefreshFeeBudgetClampsToGlobalCap verifies the mandatory global cap
-// remains the hard ceiling over both automatic budget components.
-func TestAutoRefreshFeeBudgetClampsToGlobalCap(t *testing.T) {
-	t.Parallel()
+// Tell fails the remote send while the embedded ref supplies its identity.
+func (r *failedQuoteRejectRef) Tell(context.Context,
+	serverconn.ServerConnMsg) error {
 
-	budget, enabled := autoRefreshFeeBudget(
-		500, 750, 100_000, 100_000,
-	)
-	require.True(t, enabled)
-	require.Equal(t, int64(500), budget)
-}
-
-// TestAutoRefreshFeeBudgetDefaultsToGlobalCap verifies zero/zero preserves
-// the existing global-only policy rather than rejecting every automatic
-// refresh with a zero budget.
-func TestAutoRefreshFeeBudgetDefaultsToGlobalCap(t *testing.T) {
-	t.Parallel()
-
-	budget, enabled := autoRefreshFeeBudget(10_000, 0, 0, 1_000)
-	require.False(t, enabled)
-	require.Equal(t, int64(10_000), budget)
+	return r.err
 }

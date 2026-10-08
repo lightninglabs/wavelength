@@ -104,8 +104,8 @@ type ExpiryConfig struct {
 	// RefreshThresholdBlocks.
 	CriticalThresholdBlocks int32
 
-	// MinRefreshBuffer is the minimum buffer (blocks) between refresh and
-	// critical thresholds, regardless of other calculations.
+	// MinRefreshBuffer is the desired buffer (blocks) between refresh and
+	// critical thresholds. A later free window can restrict maintenance.
 	MinRefreshBuffer int32
 
 	// TreeDepthMultiplier is multiplied by tree depth to calculate the
@@ -120,9 +120,9 @@ type ExpiryConfig struct {
 
 	// FreeRefreshWindow returns the operator-advertised number of blocks
 	// before batch expiry in which refresh fees are waived. A nil callback
-	// or zero window disables subsidy-aware scheduling. The callback lets a
-	// long-lived VTXO actor observe a refreshed operator-terms snapshot
-	// without weakening the local critical-expiry safety policy.
+	// leaves eligibility to the seal-time zero-fee check. A zero window
+	// disables automatic refresh before expiry. Critical exits remain
+	// independent of this fee policy.
 	FreeRefreshWindow func() uint32
 }
 
@@ -258,7 +258,9 @@ func (c *ExpiryConfig) CalculateCriticalThreshold(vtxo *Descriptor) int32 {
 	return max(c.CriticalThresholdBlocks, safeExitBuffer)
 }
 
-// CalculateRefreshThreshold returns the dynamic refresh threshold for a VTXO.
+// CalculateRefreshThreshold returns the desired maintenance boundary. This
+// also triggers a fresh operator-terms lookup. Admission separately waits for
+// the free window; a late window cannot postpone the critical-exit threshold.
 func (c *ExpiryConfig) CalculateRefreshThreshold(vtxo *Descriptor) int32 {
 	criticalThreshold := c.CalculateCriticalThreshold(vtxo)
 	safetyFloor := c.effectiveRefreshSafetyFloor(
@@ -279,9 +281,10 @@ func (c *ExpiryConfig) CalculateRefreshThreshold(vtxo *Descriptor) int32 {
 		return refreshThreshold
 	}
 
-	// Never trade away the configured retry buffer merely to chase a fee
-	// waiver. If the operator opens its free window later than the local
-	// safety floor, the wallet refreshes earlier and pays the normal fee.
+	// Keep checking operator terms at the desired boundary if the cached
+	// waiver opens too late. A widened window can then enable maintenance
+	// without waiting until the old window or critical threshold is
+	// reached.
 	if uint64(windowBlocks) < uint64(safetyFloor) {
 		return refreshThreshold
 	}
@@ -367,11 +370,11 @@ func (c *ExpiryConfig) baseRefreshSafetyFloor(criticalThreshold int32) int32 {
 	return int32(floor)
 }
 
-// ShouldWaitForFreeRefreshWindow reports whether a same-expiry cohort sibling
-// should remain live until the operator's advertised fee waiver begins. A
-// window only wins when it preserves the same critical threshold plus retry
-// buffer used by ordinary automatic refresh; disabled or unsafe-late windows
-// never prevent the manager from cohorting the VTXO earlier.
+// ShouldWaitForFreeRefreshWindow reports whether automatic maintenance must
+// wait for the advertised waiver. This also gates cohort admission and the
+// unfunded-critical fallback. Expired reclaim may still request a free quote;
+// manual operations and funded critical exits do not use this gate. Callers
+// without operator terms rely on the round's mandatory zero-fee check.
 func (c *ExpiryConfig) ShouldWaitForFreeRefreshWindow(vtxo *Descriptor,
 	currentHeight int32) bool {
 
@@ -381,30 +384,20 @@ func (c *ExpiryConfig) ShouldWaitForFreeRefreshWindow(vtxo *Descriptor,
 	}
 
 	window := c.FreeRefreshWindow()
-	if window == 0 {
-		return false
-	}
-
-	criticalThreshold := c.CalculateCriticalThreshold(vtxo)
-	safetyFloor := c.effectiveRefreshSafetyFloor(
-		vtxo, criticalThreshold,
-	)
-	if uint64(window) < uint64(safetyFloor) {
-		return false
-	}
-
 	remaining := BlocksUntilExpiry(vtxo, currentHeight)
 
 	return remaining > 0 && uint64(remaining) > uint64(window)
 }
 
-// canAutoRefresh checks the replacement output before automatic reservation.
+// canAutoRefresh checks window eligibility and the replacement output before
+// automatic reservation.
 // One-for-one maintenance preserves the input amount before fees, so a value
 // below the current output floor cannot succeed even with a zero fee. Retain
 // the original state and retry on later epochs; manual aggregation and funded
 // critical exits do not use this gate. Asset transitions need their own path.
-func (c *ExpiryConfig) canAutoRefresh(desc *Descriptor) bool {
-	if desc.TaprootAssetRoot != nil {
+func (c *ExpiryConfig) canAutoRefresh(desc *Descriptor, height int32) bool {
+	if desc.TaprootAssetRoot != nil ||
+		c.ShouldWaitForFreeRefreshWindow(desc, height) {
 		return false
 	}
 
