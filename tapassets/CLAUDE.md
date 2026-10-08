@@ -75,6 +75,12 @@ tap-sdk. Durable journals retain committed packages for restart recovery.
   transitions still in the path.
 - An empty `Witness` on a source or root input asks tapd to sign that asset
   input; a non-empty stack is taken as caller-supplied authorization.
+- **Asset anchors commit to the Ark policy root.** tap-sdk assembles
+  `TapLeaves` by pairing adjacent leaves, while arkscript splits a policy's
+  leaves in halves, and the two roots differ whenever the leaf count is not a
+  power of two. `anchorPlan` therefore passes a multi-leaf policy as its root
+  `TapBranch`, so the composed output matches
+  `arkscript.ComposeWithSiblingRoot` and the policy's control blocks.
 
 ## Deep Docs
 
