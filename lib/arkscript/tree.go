@@ -57,6 +57,22 @@ func (p *CompiledPolicy) OutputKey() *btcec.PublicKey {
 	return txscript.ComputeTaprootOutputKey(p.InternalKey, p.RootHash)
 }
 
+// RootBranch returns the left and right child hashes of the root branch, so
+// another tree can commit to this policy by its exact layout. A single-leaf
+// policy has no branch: the boolean is false and RootHash is the leaf hash.
+func (p *CompiledPolicy) RootBranch() (chainhash.Hash, chainhash.Hash, bool) {
+	n := len(p.merkleProofs)
+	if n < 2 {
+		return chainhash.Hash{}, chainhash.Hash{}, false
+	}
+
+	// Each proof ends with the sibling at the root level. The first leaf
+	// lies in the left subtree and the last leaf in the right one.
+	firstProof, lastProof := p.merkleProofs[0], p.merkleProofs[n-1]
+
+	return lastProof[len(lastProof)-1], firstProof[len(firstProof)-1], true
+}
+
 // SpendInfo returns the spend information for the leaf at the given index.
 func (p *CompiledPolicy) SpendInfo(leafIndex int) (*SpendInfo, error) {
 	if leafIndex < 0 || leafIndex >= len(p.Leaves) {
