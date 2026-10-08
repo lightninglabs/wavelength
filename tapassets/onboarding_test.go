@@ -133,7 +133,7 @@ func TestOnboarderResumesWithoutRebuilding(t *testing.T) {
 	)
 	require.NotNil(t, dto.Outputs[0].Script.OPTrue)
 	require.Equal(t, uint64(1_000), dto.Outputs[0].AnchorValueSat)
-	require.Len(t, dto.Outputs[0].Anchor.Tapscript.TapLeaves, 2)
+	require.NotNil(t, dto.Outputs[0].Anchor.Tapscript.TapBranch)
 	committed, err := psbtutil.Parse(driver.result.anchorPSBT)
 	require.NoError(t, err)
 	require.Len(t, committed.UnsignedTx.TxOut, 2)

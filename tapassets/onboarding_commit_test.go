@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
@@ -39,17 +40,28 @@ func fakeOnboardingCommit(ctx context.Context,
 		}
 		assetRoot := tapsdk.Hash(sha256.Sum256([]byte(output.ID)))
 		merkleRoot := assetRoot
-		leaves := output.Anchor.Tapscript.TapLeaves
-		if len(leaves) > 0 {
+		tapscript := output.Anchor.Tapscript
+		var policyRoot chainhash.Hash
+		switch {
+		case tapscript.TapBranch != nil:
+			policyRoot = tapBranchHash(
+				tapscript.TapBranch.LeftTapHash[:],
+				tapscript.TapBranch.RightTapHash[:],
+			)
+
+		case len(tapscript.TapLeaves) > 0:
+			leaves := tapscript.TapLeaves
 			tapLeaves := make([]txscript.TapLeaf, len(leaves))
 			for i := range leaves {
 				tapLeaves[i] = txscript.NewBaseTapLeaf(
 					leaves[i].Script,
 				)
 			}
-			policyRoot := txscript.AssembleTaprootScriptTree(
+			policyRoot = txscript.AssembleTaprootScriptTree(
 				tapLeaves...,
 			).RootNode.TapHash()
+		}
+		if policyRoot != (chainhash.Hash{}) {
 			merkleRoot = tapsdk.Hash(
 				tapBranchHash(policyRoot[:], assetRoot[:]),
 			)

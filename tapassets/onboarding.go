@@ -432,6 +432,10 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 	}
 
 	requestDigest := onboardingRequestDigest(request)
+	anchor, err := anchorPlan(policy.InternalKey, policyTapLeaves(policy))
+	if err != nil {
+		return nil, err
+	}
 	outputs := []tapsdk.CustomAssetOutput{{
 		ID:                onboardingOutputID,
 		AssetRef:          assetRef,
@@ -439,9 +443,7 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 		AnchorOutputIndex: 0,
 		AnchorValueSat:    uint64(outputValue),
 		Script:            boardingScriptPlan(requestDigest),
-		Anchor: anchorPlan(
-			policy.InternalKey, policyTapLeaves(policy),
-		),
+		Anchor:            anchor,
 	}}
 	anchorValues := []int64{outputValue}
 	if change := state.Change; change != nil {

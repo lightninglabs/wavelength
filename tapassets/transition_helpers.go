@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 )
 
 const (
@@ -228,25 +229,56 @@ func callerFundedExact() tapsdk.CustomAnchorFundingPlan {
 	}
 }
 
+// anchorPlan places the asset commitment next to the given tapscript leaves.
+// Several leaves form an Ark policy, whose tree splits its leaves in halves
+// while tap-sdk pairs adjacent TapLeaves. The plan therefore names the
+// policy's root branch, so the anchor commits to the root that
+// arkscript.ComposeWithSiblingRoot and the policy's control blocks expect.
 func anchorPlan(internalKey *btcec.PublicKey,
-	leaves []txscript.TapLeaf) tapsdk.CustomAnchorOutputPlan {
+	leaves []txscript.TapLeaf) (tapsdk.CustomAnchorOutputPlan, error) {
 
-	pubKey, _ := tapsdk.ParsePubKey(internalKey.SerializeCompressed())
-	sdkLeaves := make([]tapsdk.TapLeaf, len(leaves))
-	for idx := range leaves {
-		sdkLeaves[idx] = tapsdk.TapLeaf{
-			Script: append([]byte(nil), leaves[idx].Script...),
-		}
+	pubKey, err := tapsdk.ParsePubKey(internalKey.SerializeCompressed())
+	if err != nil {
+		return tapsdk.CustomAnchorOutputPlan{}, err
 	}
-
-	return tapsdk.CustomAnchorOutputPlan{
+	plan := tapsdk.CustomAnchorOutputPlan{
 		InternalKey: tapsdk.InternalKey{
 			PubKey: pubKey,
 		},
-		Tapscript: tapsdk.CustomAnchorTapscriptPlan{
-			TapLeaves: sdkLeaves,
-		},
 	}
+
+	if len(leaves) <= 1 {
+		sdkLeaves := make([]tapsdk.TapLeaf, len(leaves))
+		for idx := range leaves {
+			sdkLeaves[idx] = tapsdk.TapLeaf{
+				Script: append(
+					[]byte(nil), leaves[idx].Script...,
+				),
+			}
+		}
+		plan.Tapscript.TapLeaves = sdkLeaves
+
+		return plan, nil
+	}
+
+	policyLeaves := make([]arkscript.PolicyLeaf, len(leaves))
+	for idx := range leaves {
+		policyLeaves[idx] = arkscript.PolicyLeaf{
+			Leaf: leaves[idx],
+		}
+	}
+	policy, err := arkscript.BuildTree(policyLeaves, internalKey)
+	if err != nil {
+		return tapsdk.CustomAnchorOutputPlan{}, fmt.Errorf("build "+
+			"anchor policy tree: %w", err)
+	}
+	left, right, _ := policy.RootBranch()
+	plan.Tapscript.TapBranch = &tapsdk.TapBranch{
+		LeftTapHash:  tapsdk.Hash(left),
+		RightTapHash: tapsdk.Hash(right),
+	}
+
+	return plan, nil
 }
 
 func deterministicKey(digest tapsdk.Hash, domain string) tapsdk.PubKey {
