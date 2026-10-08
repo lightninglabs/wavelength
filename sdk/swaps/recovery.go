@@ -88,7 +88,7 @@ const (
 	recoveryReasonRefundSpendObserved = "cooperative refund spend observed"
 
 	// recoveryReasonClaimAccepted explains cancellation when the daemon
-	// accepted the cooperative claim OOR.
+	// reports the cooperative claim OOR as completed.
 	recoveryReasonClaimAccepted = "cooperative claim accepted"
 
 	// recoveryReasonClaimIndexed explains cancellation when the cooperative

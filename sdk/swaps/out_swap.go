@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	loopfsm "github.com/lightninglabs/loop/fsm"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/waverpc"
 	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/htlcswitch/hop"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -1654,19 +1655,12 @@ func (s *ReceiveSession) failReceiveTimingAdmission(ctx context.Context,
 // transaction, then submits the preimage claim if no spend is indexed yet.
 func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 	if s.claimSessionID != "" {
-		if err := cancelVHTLCRecovery(
-			ctx, s.client.daemon, s.claimRecoveryID,
-			recoveryReasonClaimAccepted, "",
-		); err != nil {
-			return newRetryableActionError(err)
-		}
 
-		// A persisted claim session ID means the daemon accepted the
-		// custom-input claim spend before this attempt. Do not submit
-		// another claim for the same vHTLC.
-		return s.mutateAndPersist(ctx, func() error {
-			return s.transition(receiveEventCompleted)
-		})
+		// A persisted claim session ID means the daemon admitted the
+		// custom-input claim spend before this attempt, which says
+		// nothing about whether it finished. Resolve it from the
+		// OOR's durable status instead of submitting another claim.
+		return s.resolveClaimSession(ctx)
 	}
 
 	if s.state == ReceiveStateClaimInitiated &&
@@ -1783,20 +1777,114 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 		return newRetryableActionError(err)
 	}
 	s.claimIntentRecordedInProcess = false
-	if err := cancelVHTLCRecovery(
-		ctx, s.client.daemon, s.claimRecoveryID,
-		recoveryReasonClaimAccepted, "",
-	); err != nil {
-		return newRetryableActionError(err)
+
+	// The daemon returns as soon as it admits the detached OOR, which has
+	// not finished at this point. Only its durable status can say whether
+	// the claim landed.
+	return s.resolveClaimSession(ctx)
+}
+
+// resolveClaimSession settles a receive session whose claim OOR was admitted by
+// the daemon, using the OOR's durable status. Admission is not completion: the
+// claim recovery is cancelled and the swap completed only once the OOR reports
+// completed. While it is still in flight the recovery stays armed and nothing
+// new is persisted. A missing session or a failed status query is never read as
+// a result, so both keep waiting or retrying.
+//
+// A failed claim OOR never completes the swap. The armed recovery row is
+// dormant, so nothing else retries the claim. When the daemon proves the OOR
+// failed before the point of no return, the operator never co-signed a spend
+// and the vHTLC input is free, so the session forgets the dead session id and
+// the normal claim path submits a fresh claim, with the usual recovery
+// escalation applying if claims keep failing. Any other failure may have left
+// a co-signed spend of the vHTLC behind, so a second claim could conflict with
+// it. That case stops for intervention with the recovery still armed.
+func (s *ReceiveSession) resolveClaimSession(ctx context.Context) error {
+	session, err := s.client.daemon.GetOORSession(ctx, s.claimSessionID)
+	if err != nil {
+		return newRetryableActionError(
+			fmt.Errorf("get claim OOR session: %w", err),
+		)
+	}
+	if session == nil {
+		s.client.log.DebugS(ctx, "Receive claim OOR session not found",
+			btclog.Hex("hash", s.PaymentHash[:]),
+			slog.String("claim_session_id", s.claimSessionID),
+		)
+
+		return waitForFixedPoll(ctx, s.client.waitPollInterval)
 	}
 
+	switch session.GetStatus() {
+	case waverpc.OORSessionStatus_OOR_SESSION_STATUS_COMPLETED:
+		if err := cancelVHTLCRecovery(
+			ctx, s.client.daemon, s.claimRecoveryID,
+			recoveryReasonClaimAccepted, "",
+		); err != nil {
+			return newRetryableActionError(err)
+		}
+
+		if err := s.mutateAndPersist(ctx, func() error {
+			return s.transition(receiveEventCompleted)
+		}); err != nil {
+			return newRetryableActionError(err)
+		}
+
+		return nil
+
+	case waverpc.OORSessionStatus_OOR_SESSION_STATUS_FAILED:
+		return s.handleFailedClaimSession(ctx, session)
+
+	default:
+		s.client.log.DebugS(ctx, "Receive claim OOR session pending",
+			btclog.Hex("hash", s.PaymentHash[:]),
+			slog.String("claim_session_id", s.claimSessionID),
+			slog.String("phase", session.GetPhase()),
+			slog.String("status", session.GetStatus().String()),
+		)
+
+		return waitForFixedPoll(ctx, s.client.waitPollInterval)
+	}
+}
+
+// handleFailedClaimSession routes a claim OOR the daemon reports as failed.
+// See resolveClaimSession for why the two outcomes differ.
+func (s *ReceiveSession) handleFailedClaimSession(ctx context.Context,
+	session *waverpc.OORSessionInfo) error {
+
+	reason := session.GetFailureReason()
+	if !session.GetFailedBeforePonr() {
+		msg := fmt.Sprintf("claim OOR %s failed after the point of no "+
+			"return, so the vHTLC may be spent", s.claimSessionID)
+		if reason != "" {
+			msg = fmt.Sprintf("%s: %s", msg, reason)
+		}
+
+		return newInterventionError(msg, nil)
+	}
+
+	s.client.log.WarnS(ctx, "Receive claim OOR failed before the point "+
+		"of no return, resubmitting", nil,
+		btclog.Hex("hash", s.PaymentHash[:]),
+		slog.String("claim_session_id", s.claimSessionID),
+		slog.String("reason", reason),
+	)
+
 	if err := s.mutateAndPersist(ctx, func() error {
-		return s.transition(receiveEventCompleted)
+		s.claimSessionID = ""
+
+		return nil
 	}); err != nil {
 		return newRetryableActionError(err)
 	}
 
-	return nil
+	cause := fmt.Errorf("claim OOR failed before the point of no "+
+		"return: %s", reason)
+	if err := s.maybeEscalateReceiveClaimRecovery(ctx, cause); err != nil {
+		return newRetryableActionError(err)
+	}
+
+	return waitForFixedPoll(ctx, s.client.waitPollInterval)
 }
 
 // ensureClaimReceiveInfo recovers a missing claim destination for legacy or
