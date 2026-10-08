@@ -2046,6 +2046,7 @@ type testDaemonConn struct {
 	spentLookupErr    error
 	spentLookupBlock  time.Duration
 	spendOnCustom     bool
+	onSendCustom      func()
 	skipLiveOnCustom  bool
 	sendPolicyCalls   int
 	sendPolicyKeys    []string
@@ -2121,6 +2122,9 @@ func (d *testDaemonConn) SendOORWithCustomInputs(_ context.Context,
 	recipientPubKey []byte, _ int64, inputs []CustomInput) (string, error) {
 
 	d.sendCustomCalls++
+	if d.onSendCustom != nil {
+		d.onSendCustom()
+	}
 	d.lastClaimPubKey = append([]byte(nil), recipientPubKey...)
 	d.lastClaimInput = append([]CustomInput(nil), inputs...)
 	if d.spendOnCustom && len(inputs) > 0 {
@@ -2171,6 +2175,15 @@ func (d *testDaemonConn) SendOORWithCustomInputs(_ context.Context,
 	}
 
 	return d.sendSessionID, d.sendCustomErr
+}
+
+// completedClaimOOR is the daemon status of a claim OOR that has finished.
+func completedClaimOOR() *waverpc.OORSessionInfo {
+	return &waverpc.OORSessionInfo{
+		SessionId: "claim-session",
+		Status: waverpc.
+			OORSessionStatus_OOR_SESSION_STATUS_COMPLETED,
+	}
 }
 
 // GetOORSession returns the configured local OOR session status.
@@ -2610,6 +2623,7 @@ func TestReceiveSessionWaitClaimsVHTLC(t *testing.T) {
 	}
 
 	daemonConn := &testDaemonConn{
+		oorSession:  completedClaimOOR(),
 		identityKey: clientPriv.PubKey(),
 		operatorKey: operatorPriv.PubKey(),
 		vhtlc: &VTXOInfo{
@@ -2847,6 +2861,7 @@ func TestReceiveSessionResumeFromStore(t *testing.T) {
 	}
 
 	daemonConn := &testDaemonConn{
+		oorSession:  completedClaimOOR(),
 		identityKey: clientPriv.PubKey(),
 		operatorKey: operatorPriv.PubKey(),
 		receiveInfo: &ReceiveInfo{
@@ -3841,6 +3856,7 @@ func TestReceiveSessionWaitReconcilesBeforeExpiry(t *testing.T) {
 		},
 	}
 	daemonConn := &testDaemonConn{
+		oorSession:  completedClaimOOR(),
 		identityKey: clientPriv.PubKey(),
 		operatorKey: operatorPriv.PubKey(),
 		blockHeight: 100,
@@ -4058,6 +4074,7 @@ func TestReceiveSessionFreshClaimBoundsSpentLookup(t *testing.T) {
 	require.NoError(t, err)
 
 	daemonConn := &testDaemonConn{
+		oorSession:  completedClaimOOR(),
 		blockHeight: 100,
 		receiveInfo: &ReceiveInfo{
 			PkScript: []byte{
@@ -4161,6 +4178,7 @@ func TestReceiveSessionClaimFollowsRefreshedLiveVHTLC(t *testing.T) {
 		PkScript:  pkScript,
 	}
 	daemonConn := &testDaemonConn{
+		oorSession: completedClaimOOR(),
 		// The full unilateral window is already closed here, but the
 		// cooperative claim remains uncontested until height 300.
 		blockHeight: 205,
@@ -4257,6 +4275,7 @@ func TestReceiveSessionFreshClaimBoundsSpentLookupGRPCDeadline(t *testing.T) {
 	)
 
 	daemonConn := &testDaemonConn{
+		oorSession:  completedClaimOOR(),
 		blockHeight: 100,
 		receiveInfo: &ReceiveInfo{
 			PkScript: []byte{
@@ -4579,6 +4598,7 @@ func TestReceiveSessionClaimIDPreventsDuplicateClaim(t *testing.T) {
 		},
 	}
 	daemonConn := &testDaemonConn{
+		oorSession:  completedClaimOOR(),
 		identityKey: clientPriv.PubKey(),
 		operatorKey: operatorPriv.PubKey(),
 		blockHeight: 100,
