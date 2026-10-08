@@ -453,3 +453,130 @@ func TestReceiveClaimFailedAfterPONREscalatesNearDeadline(t *testing.T) {
 	require.Equal(t, 1, h.daemon.escalateCalls)
 	require.Zero(t, h.daemon.cancelCalls)
 }
+
+// escalatedRecovery scripts the daemon recovery row after an escalation.
+func escalatedRecovery(state waverpc.VHTLCRecoveryState,
+	lastErr string) *waverpc.GetVHTLCRecoveryStatusResponse {
+
+	return &waverpc.GetVHTLCRecoveryStatusResponse{
+		Found: true,
+		Status: &waverpc.VHTLCRecoveryStatus{
+			RecoveryId: "recovery-1",
+			State:      state,
+			LastError:  lastErr,
+		},
+	}
+}
+
+// newEscalatingHarness is a restored session whose post-PONR claim failure
+// escalates the recovery, with the recovery row reporting status.
+func newEscalatingHarness(t *testing.T,
+	status *waverpc.GetVHTLCRecoveryStatusResponse) *claimSessionHarness {
+
+	t.Helper()
+
+	h := newClaimSessionHarness(t, true)
+	h.session.client.SetRecoveryPolicy(RecoveryPolicy{
+		AutoEscalate:                  true,
+		CooperativeFailureGracePeriod: time.Hour,
+		MinRecoveryMarginBlocks:       12,
+	})
+	h.daemon.blockHeight = 295
+	h.daemon.oorSession = claimOOR(oorFailed, false)
+	h.daemon.statusResp = status
+
+	return h
+}
+
+// TestReceiveClaimFailedAfterPONREscalationActiveKeepsWaiting checks that once
+// the escalation has started an unroll, the swap keeps waiting on the
+// recovery instead of parking in NeedsIntervention.
+func TestReceiveClaimFailedAfterPONREscalationActiveKeepsWaiting(t *testing.T) {
+	t.Parallel()
+
+	h := newEscalatingHarness(
+		t, escalatedRecovery(
+			recoveryStateUnrollStarted, "",
+		),
+	)
+
+	err := h.session.claimFundedVHTLC(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, 1, h.daemon.escalateCalls)
+	requireClaimUnresolved(t, h, "claim-session")
+	require.Empty(t, h.session.interventionReason)
+}
+
+// TestReceiveClaimFailedAfterPONREscalationCompletes checks that a recovery
+// the daemon completed after the escalation completes the swap.
+func TestReceiveClaimFailedAfterPONREscalationCompletes(t *testing.T) {
+	t.Parallel()
+
+	h := newEscalatingHarness(
+		t, escalatedRecovery(
+			recoveryStateCompleted, "",
+		),
+	)
+
+	err := h.session.claimFundedVHTLC(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, 1, h.daemon.escalateCalls)
+	require.Equal(t, ReceiveStateCompleted, h.session.State())
+}
+
+// TestReceiveClaimFailedAfterPONRDormantRecoveryStillParks checks that an
+// escalation that left the recovery missing or dormant still ends in
+// intervention.
+func TestReceiveClaimFailedAfterPONRDormantRecoveryStillParks(t *testing.T) {
+	t.Parallel()
+
+	for name, status := range map[string]*waverpc.
+		GetVHTLCRecoveryStatusResponse{
+
+		"not found": nil,
+		"armed":     escalatedRecovery(recoveryStateArmed, ""),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newEscalatingHarness(t, status)
+
+			err := h.session.claimFundedVHTLC(t.Context())
+			require.NotEmpty(t, interventionReason(err))
+			requireClaimUnresolved(t, h, "claim-session")
+		})
+	}
+}
+
+// TestReceiveClaimFailedAfterPONRIndexedCompletesAfterSend is the after-send
+// variant of the indexed case: the claim is submitted in this process, reads
+// failed past the point of no return, and the indexer then shows the spend.
+func TestReceiveClaimFailedAfterPONRIndexedCompletesAfterSend(t *testing.T) {
+	t.Parallel()
+
+	h := newClaimSessionHarness(t, false)
+	h.daemon.oorSession = claimOOR(oorFailed, false)
+
+	// The spend only becomes visible once the claim has been submitted.
+	preimage := h.session.Preimage
+	h.daemon.onSendCustom = func() {
+		h.daemon.spentVTXO = &VTXOInfo{
+			Outpoint:    "funding:0",
+			AmountSat:   42_000,
+			SpentByTxID: "claim-session",
+			FinalCheckpointPSBTs: [][]byte{
+				testCheckpointPSBTWithPreimage(
+					t, preimage[:],
+				),
+			},
+		}
+	}
+
+	err := h.session.claimFundedVHTLC(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateCompleted, h.session.State())
+	require.Equal(t, 1, h.daemon.sendCustomCalls)
+	require.Equal(
+		t, recoveryReasonClaimIndexed, h.daemon.lastCancel.GetReason(),
+	)
+}

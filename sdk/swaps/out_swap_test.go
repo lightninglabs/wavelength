@@ -2046,6 +2046,7 @@ type testDaemonConn struct {
 	spentLookupErr    error
 	spentLookupBlock  time.Duration
 	spendOnCustom     bool
+	onSendCustom      func()
 	skipLiveOnCustom  bool
 	sendPolicyCalls   int
 	sendPolicyKeys    []string
@@ -2121,6 +2122,9 @@ func (d *testDaemonConn) SendOORWithCustomInputs(_ context.Context,
 	recipientPubKey []byte, _ int64, inputs []CustomInput) (string, error) {
 
 	d.sendCustomCalls++
+	if d.onSendCustom != nil {
+		d.onSendCustom()
+	}
 	d.lastClaimPubKey = append([]byte(nil), recipientPubKey...)
 	d.lastClaimInput = append([]CustomInput(nil), inputs...)
 	if d.spendOnCustom && len(inputs) > 0 {

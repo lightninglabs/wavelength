@@ -1874,6 +1874,19 @@ func (s *ReceiveSession) handleFailedClaimSession(ctx context.Context,
 			return newRetryableActionError(escalateErr)
 		}
 
+		// An escalation that started an unroll must stay observable,
+		// and this branch bypasses the recovery reconciliation in the
+		// claim path, so fold the recovery state in here the way a
+		// failed send does. Only a recovery that is still dormant or
+		// missing leaves the swap parked for intervention.
+		handled, err := s.reconcileReceiveClaimRecovery(ctx)
+		if err != nil {
+			return newRetryableActionError(err)
+		}
+		if handled {
+			return nil
+		}
+
 		return newInterventionError(msg, nil)
 	}
 
