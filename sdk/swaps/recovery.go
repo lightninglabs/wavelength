@@ -671,10 +671,13 @@ func (s *paySession) maybeEscalatePayRefundRecovery(ctx context.Context,
 	return nil
 }
 
-// firstReceiveClaimRecoveryFailure returns the durable lower bound for when
-// receive-side cooperative claim started failing. The receive FSM persists
-// ClaimInitiated before retrying the claim, so UpdatedAt survives restart and
-// does not move forward while cooperative retry keeps failing.
+// firstReceiveClaimRecoveryFailure returns the lower bound for when
+// receive-side cooperative claim started failing. It is the in-memory first
+// failure when one is recorded, else the persisted UpdatedAt. A failed claim
+// OOR persists twice per cycle (the cleared session id, then the resubmitted
+// one), which moves UpdatedAt forward, so after a restart the grace clock
+// restarts from the last such cycle. The deadline margin trigger does not
+// depend on this clock.
 func (s *ReceiveSession) firstReceiveClaimRecoveryFailure() time.Time {
 	if !s.claimRecoveryFailureAt.IsZero() {
 		return s.claimRecoveryFailureAt

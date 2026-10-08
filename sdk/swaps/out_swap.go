@@ -1677,16 +1677,7 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 			return err
 		}
 		if claimed {
-			if err := cancelVHTLCRecovery(
-				ctx, s.client.daemon, s.claimRecoveryID,
-				recoveryReasonClaimIndexed, "",
-			); err != nil {
-				return newRetryableActionError(err)
-			}
-
-			return s.mutateAndPersist(ctx, func() error {
-				return s.transition(receiveEventCompleted)
-			})
+			return s.completeIndexedClaim(ctx)
 		}
 	}
 
@@ -1701,16 +1692,7 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 			return err
 		}
 		if claimed {
-			if err := cancelVHTLCRecovery(
-				ctx, s.client.daemon, s.claimRecoveryID,
-				recoveryReasonClaimIndexed, "",
-			); err != nil {
-				return newRetryableActionError(err)
-			}
-
-			return s.mutateAndPersist(ctx, func() error {
-				return s.transition(receiveEventCompleted)
-			})
+			return s.completeIndexedClaim(ctx)
 		}
 	}
 
@@ -1746,19 +1728,11 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 		s.vhtlcAmount, s.claimReceivePubKey,
 	)
 	if errors.Is(err, errReceiveClaimAlreadyIndexed) {
-		if cancelErr := cancelVHTLCRecovery(
-			ctx, s.client.daemon, s.claimRecoveryID,
-			recoveryReasonClaimIndexed, "",
-		); cancelErr != nil {
-			return newRetryableActionError(cancelErr)
-		}
 
 		// Spent-without-preimage is terminal for retry purposes inside
 		// claimReceiveVHTLC; this branch only handles a matching
 		// preimage-backed spend observed during retry reconciliation.
-		return s.mutateAndPersist(ctx, func() error {
-			return s.transition(receiveEventCompleted)
-		})
+		return s.completeIndexedClaim(ctx)
 	}
 	if err != nil {
 		if escalateErr := s.maybeEscalateReceiveClaimRecovery(
@@ -1784,6 +1758,22 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 	return s.resolveClaimSession(ctx)
 }
 
+// completeIndexedClaim completes a receive swap whose vHTLC is already spent
+// with the receive preimage on the indexer, cancelling the claim recovery
+// first.
+func (s *ReceiveSession) completeIndexedClaim(ctx context.Context) error {
+	if err := cancelVHTLCRecovery(
+		ctx, s.client.daemon, s.claimRecoveryID,
+		recoveryReasonClaimIndexed, "",
+	); err != nil {
+		return newRetryableActionError(err)
+	}
+
+	return s.mutateAndPersist(ctx, func() error {
+		return s.transition(receiveEventCompleted)
+	})
+}
+
 // resolveClaimSession settles a receive session whose claim OOR was admitted by
 // the daemon, using the OOR's durable status. Admission is not completion: the
 // claim recovery is cancelled and the swap completed only once the OOR reports
@@ -1806,15 +1796,9 @@ func (s *ReceiveSession) resolveClaimSession(ctx context.Context) error {
 			fmt.Errorf("get claim OOR session: %w", err),
 		)
 	}
-	if session == nil {
-		s.client.log.DebugS(ctx, "Receive claim OOR session not found",
-			btclog.Hex("hash", s.PaymentHash[:]),
-			slog.String("claim_session_id", s.claimSessionID),
-		)
 
-		return waitForFixedPoll(ctx, s.client.waitPollInterval)
-	}
-
+	// The production client turns a daemon NotFound into an error above, so
+	// a nil session can only be a test double and reads as in flight.
 	switch session.GetStatus() {
 	case waverpc.OORSessionStatus_OOR_SESSION_STATUS_COMPLETED:
 		if err := cancelVHTLCRecovery(
@@ -1836,6 +1820,12 @@ func (s *ReceiveSession) resolveClaimSession(ctx context.Context) error {
 		return s.handleFailedClaimSession(ctx, session)
 
 	default:
+		// An in-flight claim waits here without the claim-possible
+		// check or escalation. A claim that stalls before the point of
+		// no return is bounded by waved's MaxTransientSubmitRetry (one
+		// hour), after which the OOR fails and is routed above. One
+		// stuck in flight past the point of no return has no bound
+		// here, and only the armed recovery's owner can escalate it.
 		s.client.log.DebugS(ctx, "Receive claim OOR session pending",
 			btclog.Hex("hash", s.PaymentHash[:]),
 			slog.String("claim_session_id", s.claimSessionID),
@@ -1854,10 +1844,34 @@ func (s *ReceiveSession) handleFailedClaimSession(ctx context.Context,
 
 	reason := session.GetFailureReason()
 	if !session.GetFailedBeforePonr() {
+
+		// The operator may already have finalized the claim with only
+		// the local mark-spent step failing, so the indexer decides
+		// whether the vHTLC was in fact claimed.
+		claimed, err := s.client.receiveClaimAlreadyIndexed(
+			ctx, s.PaymentHash, s.vhtlcPkScript,
+		)
+		if err != nil {
+			return newRetryableActionError(err)
+		}
+		if claimed {
+			return s.completeIndexedClaim(ctx)
+		}
+
 		msg := fmt.Sprintf("claim OOR %s failed after the point of no "+
 			"return, so the vHTLC may be spent", s.claimSessionID)
 		if reason != "" {
 			msg = fmt.Sprintf("%s: %s", msg, reason)
+		}
+
+		// The receiver races the sender's refund locktime with the
+		// preimage revealed, so let the escalation policy unroll
+		// before parking the swap for intervention.
+		escalateErr := s.maybeEscalateReceiveClaimRecovery(
+			ctx, errors.New(msg),
+		)
+		if escalateErr != nil {
+			return newRetryableActionError(escalateErr)
 		}
 
 		return newInterventionError(msg, nil)

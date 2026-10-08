@@ -1,7 +1,6 @@
 package swaps
 
 import (
-	"context"
 	"crypto/sha256"
 	"errors"
 	"testing"
@@ -114,11 +113,6 @@ func newClaimSessionHarness(t *testing.T, restart bool) *claimSessionHarness {
 		session.claimSessionID = "claim-session"
 	} else {
 		session.claimIntentRecordedInProcess = true
-
-		// A fresh claim only gets a bounded spend check, which the
-		// scripted indexer answers with a deadline so the claim is
-		// submitted.
-		daemonConn.spentLookupErr = context.DeadlineExceeded
 	}
 
 	return &claimSessionHarness{
@@ -231,8 +225,13 @@ func TestReceiveClaimWaitsWhileClaimOORInFlight(t *testing.T) {
 				err = h.session.claimFundedVHTLC(t.Context())
 				require.NoError(t, err)
 				requireClaimUnresolved(t, h, "claim-session")
-				sends := h.daemon.sendCustomCalls
-				require.LessOrEqual(t, sends, 1)
+				wantSends := 1
+				if restart {
+					wantSends = 0
+				}
+				require.Equal(
+					t, wantSends, h.daemon.sendCustomCalls,
+				)
 
 				// Once the OOR completes, the swap completes.
 				h.daemon.oorSession = claimOOR(
@@ -305,7 +304,6 @@ func TestReceiveClaimFailedBeforePONRResubmits(t *testing.T) {
 
 			// The retry forgets the failed session and claims
 			// again; this time the OOR completes.
-			h.daemon.spentLookupErr = nil
 			h.daemon.oorSession = claimOOR(
 				oorCompleted,
 				false,
@@ -381,5 +379,77 @@ func TestReceiveClaimRestartFailedAfterPONRStopsWait(t *testing.T) {
 	require.Error(t, err)
 	require.NotEmpty(t, interventionReason(err))
 	require.Equal(t, ReceiveStateNeedsIntervention, h.session.State())
+	require.Zero(t, h.daemon.cancelCalls)
+}
+
+// TestReceiveClaimFailedAfterPONRIndexedCompletes checks that a claim OOR
+// reported failed after the point of no return still completes the swap when
+// the indexer shows the vHTLC spent with the receive preimage, which is what a
+// finalized claim whose local mark-spent step failed looks like. Recovery is
+// cancelled as indexed.
+func TestReceiveClaimFailedAfterPONRIndexedCompletes(t *testing.T) {
+	t.Parallel()
+
+	h := newClaimSessionHarness(t, true)
+	h.daemon.oorSession = claimOOR(oorFailed, false)
+
+	preimage := h.session.Preimage
+	h.daemon.spentVTXO = &VTXOInfo{
+		Outpoint:    "funding:0",
+		AmountSat:   42_000,
+		SpentByTxID: "claim-session",
+		FinalCheckpointPSBTs: [][]byte{
+			testCheckpointPSBTWithPreimage(t, preimage[:]),
+		},
+	}
+
+	err := h.session.claimFundedVHTLC(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateCompleted, h.session.State())
+	require.Equal(t, 1, h.daemon.cancelCalls)
+	require.Equal(
+		t, recoveryReasonClaimIndexed, h.daemon.lastCancel.GetReason(),
+	)
+	require.Zero(t, h.daemon.sendCustomCalls)
+}
+
+// TestReceiveClaimFailedAfterPONRIndexerErrorIsRetryable checks that an
+// indexer failure while classifying a post-PONR claim failure is neither
+// completion nor intervention.
+func TestReceiveClaimFailedAfterPONRIndexerErrorIsRetryable(t *testing.T) {
+	t.Parallel()
+
+	h := newClaimSessionHarness(t, true)
+	h.daemon.oorSession = claimOOR(oorFailed, false)
+	h.daemon.spentLookupErr = errors.New("indexer down")
+
+	err := h.session.claimFundedVHTLC(t.Context())
+
+	var retryable *retryableActionError
+	require.ErrorAs(t, err, &retryable)
+	require.Empty(t, interventionReason(err))
+	requireClaimUnresolved(t, h, "claim-session")
+}
+
+// TestReceiveClaimFailedAfterPONREscalatesNearDeadline checks that a post-PONR
+// claim failure still runs the escalation policy before the swap parks for
+// intervention, so a receiver racing the sender's refund locktime can unroll.
+func TestReceiveClaimFailedAfterPONREscalatesNearDeadline(t *testing.T) {
+	t.Parallel()
+
+	h := newClaimSessionHarness(t, true)
+	h.session.client.SetRecoveryPolicy(RecoveryPolicy{
+		AutoEscalate:                  true,
+		CooperativeFailureGracePeriod: time.Hour,
+		MinRecoveryMarginBlocks:       12,
+	})
+
+	// Within the margin of the refund locktime of 300.
+	h.daemon.blockHeight = 295
+	h.daemon.oorSession = claimOOR(oorFailed, false)
+
+	err := h.session.claimFundedVHTLC(t.Context())
+	require.NotEmpty(t, interventionReason(err))
+	require.Equal(t, 1, h.daemon.escalateCalls)
 	require.Zero(t, h.daemon.cancelCalls)
 }
