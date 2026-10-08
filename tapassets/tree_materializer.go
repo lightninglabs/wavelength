@@ -533,6 +533,10 @@ func (m *treeMaterializer) commitNode(ctx context.Context, node *tree.Node,
 
 	outputs := make([]tapsdk.CustomAssetOutput, len(specs))
 	for i, spec := range specs {
+		anchor, err := anchorPlan(spec.internalKey, spec.tapLeaves)
+		if err != nil {
+			return nil, err
+		}
 		opTrueKey := deterministicKey(
 			m.cfg.Digest, fmt.Sprintf("tree/%s/%d", input,
 				spec.index),
@@ -553,7 +557,7 @@ func (m *treeMaterializer) commitNode(ctx context.Context, node *tree.Node,
 					},
 				},
 			},
-			Anchor: anchorPlan(spec.internalKey, spec.tapLeaves),
+			Anchor: anchor,
 		}
 	}
 
