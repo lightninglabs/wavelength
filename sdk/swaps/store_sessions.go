@@ -452,6 +452,13 @@ func (s *ReceiveSession) mutateAndPersist(ctx context.Context,
 		return err
 	}
 
+	// The mailbox responder runs independently from the session state
+	// machine. Publish its immutable signing context only after the state
+	// transition and configured persistence step succeed. A configured
+	// store makes this boundary crash-durable; a no-store client retains it
+	// only for the current process.
+	s.publishReceiveForfeitBinding()
+
 	return nil
 }
 
@@ -774,7 +781,7 @@ func receiveSessionFromRow(c *SwapClient,
 		}
 	}
 
-	return &ReceiveSession{
+	session := &ReceiveSession{
 		Invoice:     row.Invoice,
 		Preimage:    preimage,
 		PaymentHash: paymentHash,
@@ -824,7 +831,15 @@ func receiveSessionFromRow(c *SwapClient,
 		paymentAddr:        paymentAddr,
 		createdAt:          time.Unix(row.CreatedAtUnix, 0),
 		updatedAt:          time.Unix(row.UpdatedAtUnix, 0),
-	}, nil
+		forfeitBindingGate: newReceiveForfeitBindingGate(),
+	}
+
+	// A restored session was reconstructed from a durable row, so a
+	// complete funded binding can be made visible before its responder is
+	// started.
+	session.publishReceiveForfeitBinding()
+
+	return session, nil
 }
 
 func receiveExpectedVHTLCSat(row swapsqlc.ReceiveSwap) uint64 {
