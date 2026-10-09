@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "trace_id": "invalid_split_authority_transition",
+  "description": "Expected-invalid trace that inserts crash and restart between the observations of one authority transition.",
+  "expect_validation_error": true,
+  "steps": [
+    { "op": "submit" },
+    { "op": "lock" },
+    { "op": "crash" },
+    { "op": "restart" },
+    { "op": "persist_signature" }
+  ]
+}

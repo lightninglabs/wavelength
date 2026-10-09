@@ -1,0 +1,8 @@
+<Project>
+<ProjectName>OORRecoveryModels</ProjectName>
+<InputFiles>
+<PFile>src/oor_recovery.p</PFile>
+<PFile>test/oor_recovery_test.p</PFile>
+</InputFiles>
+<OutputDir>PGenerated</OutputDir>
+</Project>
