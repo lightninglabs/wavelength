@@ -205,8 +205,17 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   calls `db.BackfillVTXOCommitmentHeights`, which atomically fills only zero
   heights whose exact local commitment/tree fragment matches. Before fetching,
   the repair reads the local chain tip once; the store rejects every candidate
-  above that tip and, for single-fragment ancestry, a candidate above the
-  VTXO's known creation height. A per-target failure does not stop later
+  above that tip. For single-fragment ancestry, a candidate above the VTXO's
+  historical creation height requires a local confirmation of the exact
+  commitment at the indexed height. Above-tip candidates are rejected before
+  registering a watch. Each target's registration and confirmation wait has a
+  ten-second deadline within the pass budget. The watch starts at the old local
+  height, is cancelled on every return, and never changes creation or expiry
+  metadata. Unavailable or conflicting evidence leaves repair pending.
+  LND's notifier retains historical scan progress and results after subscriber
+  cancellation; a later pass reuses that work. The Esplora backend looks up
+  this non-nil transaction ID directly rather than scanning from the hint.
+  A per-target failure does not stop later
   repairs; failures produce one non-fatal Info summary per pass, and full
   completion emits an explicit Info record. The unroll registry
   owns the single process-level Warning for block-1 fallback; bounded

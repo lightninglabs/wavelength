@@ -115,8 +115,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   omitted by the indexer RPC), then a height-only update changes
   the matching row without rewriting any local proof columns. It never
   overwrites a known height. The caller supplies the current local chain tip;
-  the store rejects a candidate above that tip. For single-fragment ancestry,
-  it also rejects a candidate above the VTXO's known creation height. Any
+  the store rejects a candidate above that tip. Creation height is not a
+  confirmation ceiling: the caller authenticates a later single-fragment
+  candidate against its local chain backend before persistence. Any
   missing, duplicate, heightless, or out-of-bounds indexed fragment aborts the
   full repair, and empty local ancestry is an error rather than a silent no-op.
   Returns the number of local fragments repaired.

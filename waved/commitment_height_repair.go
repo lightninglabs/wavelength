@@ -14,6 +14,11 @@ const (
 	// an unavailable indexer cannot hold the worker indefinitely.
 	legacyCommitmentHeightRepairTimeout = 30 * time.Second
 
+	// legacyCommitmentHeightConfirmationTimeout leaves the rest of a pass
+	// available to other targets when one local confirmation is
+	// unavailable.
+	legacyCommitmentHeightConfirmationTimeout = 10 * time.Second
+
 	// legacyCommitmentHeightRepairInterval leaves room for live indexer
 	// traffic between passes through the remaining legacy inventory.
 	legacyCommitmentHeightRepairInterval = time.Minute
@@ -125,6 +130,18 @@ type legacyCommitmentHeightRepairResult struct {
 func (s *Server) repairLegacyCommitmentHeights(ctx context.Context,
 	issuePage indexerPageCall) (legacyCommitmentHeightRepairResult, error) {
 
+	return s.repairLegacyCommitmentHeightsWithTimeout(
+		ctx, issuePage, legacyCommitmentHeightConfirmationTimeout,
+	)
+}
+
+// repairLegacyCommitmentHeightsWithTimeout keeps the per-target wait separate
+// from the caller's pass budget. Tests can shorten it without global state or
+// changing the production deadline.
+func (s *Server) repairLegacyCommitmentHeightsWithTimeout(ctx context.Context,
+	issuePage indexerPageCall, confirmationTimeout time.Duration) (
+	legacyCommitmentHeightRepairResult, error) {
+
 	var result legacyCommitmentHeightRepairResult
 	if s.vtxoStore == nil {
 		return result, fmt.Errorf("vtxo store not initialized")
@@ -209,10 +226,21 @@ func (s *Server) repairLegacyCommitmentHeights(ctx context.Context,
 			continue
 		}
 
-		repaired, repairErr := s.vtxoStore.
-			BackfillVTXOCommitmentHeights(
-				ctx, desc.Outpoint, extras.Ancestry, bestHeight,
-			)
+		// A legacy creation height can precede a later confirmation of
+		// the same transaction. Require local chain evidence before
+		// letting an indexed height cross that historical bound.
+		repairErr := s.verifyLaterCommitmentHeight(
+			ctx, desc, extras.Ancestry, bestHeight,
+			confirmationTimeout,
+		)
+		var repaired int
+		if repairErr == nil {
+			repaired, repairErr = s.vtxoStore.
+				BackfillVTXOCommitmentHeights(
+					ctx, desc.Outpoint, extras.Ancestry,
+					bestHeight,
+				)
+		}
 		if repairErr != nil {
 			failedTargets++
 			if firstErr == nil {
@@ -247,6 +275,81 @@ func (s *Server) repairLegacyCommitmentHeights(ctx context.Context,
 	}
 
 	return result, nil
+}
+
+// verifyLaterCommitmentHeight replaces the former single-fragment creation
+// ceiling with local confirmation evidence when an indexed height exceeds it.
+// The exact transaction must confirm at the claimed height; a signed tree alone
+// cannot authenticate that height. Lookup failure leaves the safe fallback in
+// place for the next maintenance pass. Above-tip claims are rejected without a
+// watch. A per-target deadline bounds registration and confirmation waiting so
+// one unavailable confirmation does not consume the whole pass. The watch is
+// always cancelled before returning. LND's notifier retains its historical
+// scan and result independently of that subscription, so a later pass can
+// consume a result that arrived after this wait expired.
+func (s *Server) verifyLaterCommitmentHeight(ctx context.Context,
+	desc *vtxo.Descriptor, indexed []vtxo.Ancestry, bestHeight int32,
+	confirmationTimeout time.Duration) error {
+
+	if len(desc.Ancestry) != 1 || desc.CreatedHeight <= 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, confirmationTimeout)
+	defer cancel()
+
+	local := desc.Ancestry[0]
+	txid := local.CommitmentTxID
+	for _, candidate := range indexed {
+		if candidate.CommitmentTxID != txid ||
+			candidate.CommitmentHeight <= desc.CreatedHeight {
+
+			continue
+		}
+		if candidate.CommitmentHeight > bestHeight {
+			return fmt.Errorf("indexed commitment height %d is "+
+				"above local best height %d",
+				candidate.CommitmentHeight, bestHeight)
+		}
+		if local.TreePath == nil || local.TreePath.BatchOutput == nil {
+			return fmt.Errorf("local commitment has no batch " +
+				"output")
+		}
+
+		// Start at the old local bound, not the disputed indexed
+		// height. This covers later confirmations without a genesis
+		// rescan. An earlier or unavailable confirmation cannot
+		// authorize the new height and leaves the repair pending.
+		registration, err := s.chainBackend.RegisterConf(
+			ctx, &txid, local.TreePath.BatchOutput.PkScript, 1,
+			uint32(desc.CreatedHeight), false,
+		)
+		if err != nil {
+			return fmt.Errorf("verify later commitment height: %w",
+				err)
+		}
+		defer registration.Cancel()
+
+		select {
+		case confirmation := <-registration.Confirmed:
+			if confirmation == nil || confirmation.Tx == nil ||
+				confirmation.Tx.TxHash() != txid {
+				return fmt.Errorf("confirmation does not " +
+					"match local commitment")
+			}
+			if confirmation.BlockHeight !=
+				uint32(candidate.CommitmentHeight) {
+				return fmt.Errorf("indexed commitment height "+
+					"%d differs from local confirmation %d",
+					candidate.CommitmentHeight,
+					confirmation.BlockHeight)
+			}
+
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	return nil
 }
 
 // hasUnknownCommitmentHeight reports whether desc has usable local ancestry
