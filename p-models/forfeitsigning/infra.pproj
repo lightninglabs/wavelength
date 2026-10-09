@@ -1,0 +1,8 @@
+<Project>
+<ProjectName>ForfeitSigningModels</ProjectName>
+<InputFiles>
+<PFile>src/forfeit_signing.p</PFile>
+<PFile>test/forfeit_signing_test.p</PFile>
+</InputFiles>
+<OutputDir>PGenerated</OutputDir>
+</Project>

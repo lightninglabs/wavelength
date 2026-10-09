@@ -1,0 +1,94 @@
+{
+  "trace_id": "session_authority_replay",
+  "description": "Reject delivery before funded authority, publish after persistence, retry after ACK failure, reject identity drift, and restore durable authority after restart.",
+  "steps": [
+    {
+      "op": "deliver",
+      "identity": "exact",
+      "signature": "first_valid",
+      "ack": "success",
+      "expect": "rejected_unacked"
+    },
+    {
+      "op": "publish_failed",
+      "durable": true
+    },
+    {
+      "op": "deliver",
+      "identity": "exact",
+      "signature": "first_valid",
+      "ack": "success",
+      "expect": "rejected_unacked"
+    },
+    {
+      "op": "publish",
+      "durable": true
+    },
+    {
+      "op": "deliver",
+      "identity": "exact",
+      "signature": "first_valid",
+      "ack": "failure",
+      "expect": "accepted_unacked"
+    },
+    {
+      "op": "deliver",
+      "identity": "exact",
+      "signature": "alternate_valid",
+      "ack": "success",
+      "expect": "accepted_acked"
+    },
+    {
+      "op": "deliver",
+      "identity": "wrong_payment_hash",
+      "signature": "alternate_valid",
+      "ack": "success",
+      "expect": "rejected_unacked"
+    },
+    {
+      "op": "deliver",
+      "identity": "wrong_outpoint",
+      "signature": "alternate_valid",
+      "ack": "success",
+      "expect": "rejected_unacked"
+    },
+    {
+      "op": "deliver",
+      "identity": "wrong_amount",
+      "signature": "alternate_valid",
+      "ack": "success",
+      "expect": "rejected_unacked"
+    },
+    {
+      "op": "deliver",
+      "identity": "wrong_script",
+      "signature": "alternate_valid",
+      "ack": "success",
+      "expect": "rejected_unacked"
+    },
+    {
+      "op": "deliver",
+      "identity": "wrong_policy",
+      "signature": "alternate_valid",
+      "ack": "success",
+      "expect": "rejected_unacked"
+    },
+    {
+      "op": "deliver",
+      "identity": "wrong_policy_hash",
+      "signature": "alternate_valid",
+      "ack": "success",
+      "expect": "rejected_unacked"
+    },
+    {
+      "op": "restart"
+    },
+    {
+      "op": "deliver",
+      "identity": "exact",
+      "signature": "alternate_valid",
+      "ack": "success",
+      "expect": "accepted_acked"
+    }
+  ]
+}

@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# Run the durable mailbox P model and the Go bridge conformance tests.
+# Run the P models and their Go bridge conformance tests.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 REPO_ROOT="$(dirname "$PROJECT_DIR")"
-P_PROJ="${PROJECT_DIR}/durableactor/infra.pproj"
+MAILBOX_P_PROJ="${PROJECT_DIR}/durableactor/infra.pproj"
+FORFEIT_P_PROJ="${PROJECT_DIR}/forfeitsigning/infra.pproj"
+FORFEIT_MODEL_PATH="${PROJECT_DIR}/forfeitsigning/src/forfeit_signing.p"
+FORFEIT_SPEC_PATH="${PROJECT_DIR}/forfeitsigning/SPEC.md"
 BUILD_DIR="${REPO_ROOT}/PGenerated/PChecker/net8.0"
-DLL_PATH="${BUILD_DIR}/MailboxInfraModels.dll"
+MAILBOX_DLL_PATH="${BUILD_DIR}/MailboxInfraModels.dll"
+FORFEIT_DLL_PATH="${BUILD_DIR}/ForfeitSigningModels.dll"
 
 SCHEDULES="${SCHEDULES:-50}"
 MAX_STEPS="${MAX_STEPS:-700}"
@@ -16,7 +20,7 @@ TIMEOUT="${TIMEOUT:-300}"
 
 cd "$REPO_ROOT"
 
-echo "=== P Mailbox Infra Checking ==="
+echo "=== P Model Checking ==="
 echo "Bounds:"
 echo "  SCHEDULES: $SCHEDULES"
 echo "  MAX_STEPS: $MAX_STEPS"
@@ -58,6 +62,39 @@ run_with_heartbeat() {
     return "$status"
 }
 
+# sha256_file prints the SHA-256 digest with the utility available on the
+# current host.
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
+
+# check_forfeit_spec_pin prevents the normative specification from silently
+# referring to a different revision of its authoritative model.
+check_forfeit_spec_pin() {
+    local actual
+    local pinned
+
+    actual="$(sha256_file "$FORFEIT_MODEL_PATH")"
+    pinned="$(sed -n 's/^`\([0-9a-f]\{64\}\)`$/\1/p' \
+        "$FORFEIT_SPEC_PATH")"
+
+    if [ -z "$pinned" ] || [ "${pinned#*$'\n'}" != "$pinned" ]; then
+        echo "ERROR: expected exactly one model SHA-256 in ${FORFEIT_SPEC_PATH}"
+        return 1
+    fi
+
+    if [ "$actual" != "$pinned" ]; then
+        echo "ERROR: forfeit signing specification model digest is stale"
+        echo "  expected: $actual"
+        echo "  pinned:   $pinned"
+        return 1
+    fi
+}
+
 EXPECTED_P_VERSION="3.0.4"
 P_VERSION="$(p --version 2>/dev/null | awk '{print $NF}')"
 case "$P_VERSION" in
@@ -68,17 +105,20 @@ case "$P_VERSION" in
         ;;
 esac
 
+check_forfeit_spec_pin
+
 rm -rf "${REPO_ROOT}/PGenerated"
-run_with_heartbeat "P compile" p compile -pp "$P_PROJ"
+run_with_heartbeat "mailbox P compile" p compile -pp "$MAILBOX_P_PROJ"
 
 # check_green runs a test case that must hold: p check exits non-zero if it
 # finds any bug, so set -e fails the script on a regression.
 check_green() {
     local testcase="$1"
+    local dll_path="${2:-$MAILBOX_DLL_PATH}"
 
     echo ""
     echo "=== green: ${testcase} (expect 0 bugs) ==="
-    run_with_heartbeat "$testcase" timeout "$TIMEOUT" p check "$DLL_PATH" \
+    run_with_heartbeat "$testcase" timeout "$TIMEOUT" p check "$dll_path" \
         --testcase "$testcase" \
         --schedules "$SCHEDULES" \
         --max-steps "$MAX_STEPS"
@@ -90,10 +130,12 @@ check_green() {
 check_negative() {
     local testcase="$1"
     local schedules="${2:-$SCHEDULES}"
+    local dll_path="${3:-$MAILBOX_DLL_PATH}"
 
     echo ""
     echo "=== negative: ${testcase} (expect a bug) ==="
-    if run_with_heartbeat "$testcase" timeout "$TIMEOUT" p check "$DLL_PATH" \
+    if run_with_heartbeat "$testcase" timeout "$TIMEOUT" \
+        p check "$dll_path" \
         --testcase "$testcase" \
         --schedules "$schedules" \
         --max-steps "$MAX_STEPS"; then
@@ -191,6 +233,25 @@ check_negative tcIngressMonitorCatchesRetryDuplicate 1
 # request the operator has already had answered.
 check_negative tcIngressUnwatermarkedServeCounterexample 1
 
+# P 3.0.4 emits project-global helpers into its output directory. Compile the
+# independent project into a clean directory so generated helpers from the
+# mailbox project cannot collide with the forfeit-signing project.
+rm -rf "${REPO_ROOT}/PGenerated"
+run_with_heartbeat "forfeit signing P compile" \
+    p compile -pp "$FORFEIT_P_PROJ"
+
+# Receive-side signing authority must be published after the configured
+# persistence step, every identity field must match it, and a replayed valid
+# answer must preserve the broker's first accepted signature set.
+check_green tcForfeitSigningAuthorityAndReplay "$FORFEIT_DLL_PATH"
+
+# The unsafe request-derived profile must still reach the signing oracle before
+# authority exists, where the authority monitor catches it.
+check_negative tcForfeitRequestDerivedCounterexample 1 \
+    "$FORFEIT_DLL_PATH"
+
 echo ""
 echo "=== Go Bridge Conformance ==="
 go test ./p-models/durableactor/bridge
+go test ./sdk/swaps ./waved \
+    -run 'TestForfeitSigning(Session|Broker)ModelTrace$'
