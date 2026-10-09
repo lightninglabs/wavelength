@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "trace_id": "invalid_split_terminal_transition",
+  "description": "Expected-invalid trace that inserts crash and restart between the observations of one terminal transition.",
+  "expect_validation_error": true,
+  "steps": [
+    { "op": "submit" },
+    { "op": "lock" },
+    { "op": "persist_signature", "expect": "owned" },
+    { "op": "disclose" },
+    { "op": "crash" },
+    { "op": "restart", "expect": "owned" },
+    { "op": "conflicting_admission", "expect": "rejected" },
+    { "op": "finalize" },
+    { "op": "crash" },
+    { "op": "restart" },
+    { "op": "materialize" }
+  ]
+}
