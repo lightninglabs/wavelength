@@ -14,6 +14,15 @@ import (
 )
 
 const (
+	// forfeitTxVersion is the canonical version used by every forfeit
+	// transaction. Keep it aligned with arktx.TxVersion when the canonical
+	// transaction families change version.
+	forfeitTxVersion = 3
+
+	// forfeitConnectorSequence keeps the connector input final. Only the
+	// VTXO spend path can impose relative lock-time semantics.
+	forfeitConnectorSequence = wire.MaxTxInSequenceNum
+
 	// ForfeitVTXOInputIndex is the index of the VTXO input in the
 	// forfeit tx.
 	ForfeitVTXOInputIndex = 0
@@ -104,7 +113,7 @@ func BuildForfeitTxWithContext(vtxoOutpoint *wire.OutPoint,
 			"non-negative, got %d", connectorAmount)
 	}
 
-	tx := wire.NewMsgTx(3)
+	tx := wire.NewMsgTx(forfeitTxVersion)
 	tx.LockTime = ctx.LockTime
 
 	vtxoSequence := ctx.VTXOSequence
@@ -119,7 +128,7 @@ func BuildForfeitTxWithContext(vtxoOutpoint *wire.OutPoint,
 
 	tx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: *connectorOutpoint,
-		Sequence:         wire.MaxTxInSequenceNum,
+		Sequence:         forfeitConnectorSequence,
 	})
 
 	tx.AddTxOut(&wire.TxOut{
@@ -247,6 +256,8 @@ type ForfeitTxParams struct {
 //   - Exactly 2 inputs: VTXO at index 0, connector at index 1
 //   - Exactly 2 outputs: penalty at index 0, P2A anchor at index 1
 //   - Inputs match expected outpoints
+//   - Transaction version, input sequences and locktime match the canonical
+//     context
 //   - Penalty output pays to server's forfeit script
 //   - Anchor output is standard P2A with zero value
 func ValidateForfeitTx(forfeitTx *wire.MsgTx, params ForfeitTxParams) error {
@@ -259,6 +270,9 @@ func ValidateForfeitTx(forfeitTx *wire.MsgTx, params ForfeitTxParams) error {
 		return fmt.Errorf("forfeit tx has %d inputs, expected 2",
 			len(forfeitTx.TxIn))
 	}
+	if err := validateForfeitTxContext(forfeitTx, params); err != nil {
+		return err
+	}
 
 	// Verify input 0 is the VTXO.
 	vtxoIn := forfeitTx.TxIn[ForfeitVTXOInputIndex]
@@ -266,16 +280,6 @@ func ValidateForfeitTx(forfeitTx *wire.MsgTx, params ForfeitTxParams) error {
 		return fmt.Errorf("forfeit tx input %d is %s, expected VTXO %s",
 			ForfeitVTXOInputIndex, vtxoIn.PreviousOutPoint,
 			params.VTXOOutpoint)
-	}
-
-	expectedSequence := params.ExpectedSequence
-	if expectedSequence == 0 {
-		expectedSequence = wire.MaxTxInSequenceNum
-	}
-	if vtxoIn.Sequence != expectedSequence {
-		return fmt.Errorf("forfeit tx input %d sequence is %d, "+
-			"expected %d", ForfeitVTXOInputIndex, vtxoIn.Sequence,
-			expectedSequence)
 	}
 
 	// Verify input 1 is the connector.
@@ -308,11 +312,6 @@ func ValidateForfeitTx(forfeitTx *wire.MsgTx, params ForfeitTxParams) error {
 		}
 	}
 
-	if forfeitTx.LockTime != params.ExpectedLockTime {
-		return fmt.Errorf("forfeit tx locktime is %d, expected %d",
-			forfeitTx.LockTime, params.ExpectedLockTime)
-	}
-
 	// Verify anchor output is a standard P2A with zero value.
 	anchorOut := forfeitTx.TxOut[ForfeitAnchorOutputIndex]
 	if !bytes.Equal(anchorOut.PkScript, arkscript.AnchorPkScript) {
@@ -322,6 +321,43 @@ func ValidateForfeitTx(forfeitTx *wire.MsgTx, params ForfeitTxParams) error {
 	if anchorOut.Value != 0 {
 		return fmt.Errorf("forfeit tx anchor output has non-zero "+
 			"value: %d", anchorOut.Value)
+	}
+
+	return nil
+}
+
+// validateForfeitTxContext binds the transaction-wide fields to the selected
+// VTXO spend path. The caller verifies the two-input shape before entering this
+// helper.
+func validateForfeitTxContext(forfeitTx *wire.MsgTx,
+	params ForfeitTxParams) error {
+
+	if forfeitTx.Version != forfeitTxVersion {
+		return fmt.Errorf("forfeit tx version is %d, expected %d",
+			forfeitTx.Version, forfeitTxVersion)
+	}
+
+	expectedSequence := params.ExpectedSequence
+	if expectedSequence == 0 {
+		expectedSequence = wire.MaxTxInSequenceNum
+	}
+	vtxoIn := forfeitTx.TxIn[ForfeitVTXOInputIndex]
+	if vtxoIn.Sequence != expectedSequence {
+		return fmt.Errorf("forfeit tx input %d sequence is %d, "+
+			"expected %d", ForfeitVTXOInputIndex, vtxoIn.Sequence,
+			expectedSequence)
+	}
+
+	connectorIn := forfeitTx.TxIn[ForfeitConnectorInputIndex]
+	if connectorIn.Sequence != forfeitConnectorSequence {
+		return fmt.Errorf("forfeit tx input %d sequence is %d, "+
+			"expected %d", ForfeitConnectorInputIndex,
+			connectorIn.Sequence, forfeitConnectorSequence)
+	}
+
+	if forfeitTx.LockTime != params.ExpectedLockTime {
+		return fmt.Errorf("forfeit tx locktime is %d, expected %d",
+			forfeitTx.LockTime, params.ExpectedLockTime)
 	}
 
 	return nil
