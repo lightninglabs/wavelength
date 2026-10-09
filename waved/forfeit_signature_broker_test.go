@@ -584,8 +584,10 @@ func TestForfeitSignatureBrokerSubmitRequiresRemoteParticipant(t *testing.T) {
 	broker.mu.Unlock()
 }
 
-// TestForfeitSignatureBrokerSubmitIsIdempotent verifies retrying an already
-// answered request with the same participant signature is idempotent.
+// TestForfeitSignatureBrokerSubmitIsIdempotent verifies retrying an answered
+// request accepts any independently valid signature set for the same retained
+// transcript. The first accepted set remains authoritative because an ACK
+// failure must not replace the signatures already delivered to the waiter.
 func TestForfeitSignatureBrokerSubmitIsIdempotent(t *testing.T) {
 	t.Parallel()
 
@@ -615,6 +617,58 @@ func TestForfeitSignatureBrokerSubmitIsIdempotent(t *testing.T) {
 
 	err = broker.submit(pending.GetRequestId(), sigs)
 	require.NoError(t, err)
+
+	originalSignature := bytes.Clone(sigs[0].GetSignature())
+	alternateSignature := testDaemonForfeitParticipantSignatureForRequest(
+		t, req, signerPrivs[1],
+		schnorr.CustomNonce(
+			[32]byte{0x42},
+		),
+	)
+	require.NotEqual(
+		t, originalSignature, alternateSignature.GetSignature(),
+	)
+
+	err = broker.submit(
+		pending.GetRequestId(),
+		[]*waverpc.ForfeitParticipantSignature{alternateSignature},
+	)
+	require.NoError(t, err)
+
+	invalidSignature := &waverpc.ForfeitParticipantSignature{
+		Pubkey:    bytes.Clone(alternateSignature.GetPubkey()),
+		Signature: bytes.Clone(alternateSignature.GetSignature()),
+	}
+	invalidSignature.Signature[len(invalidSignature.Signature)-1] ^= 0x01
+	err = broker.submit(
+		pending.GetRequestId(),
+		[]*waverpc.ForfeitParticipantSignature{invalidSignature},
+	)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Contains(
+		t, status.Convert(err).Message(),
+		"invalid participant signature",
+	)
+
+	wrongKeySignature := testDaemonForfeitParticipantSignatureForRequest(
+		t, req, signerPrivs[0],
+	)
+	err = broker.submit(
+		pending.GetRequestId(),
+		[]*waverpc.ForfeitParticipantSignature{wrongKeySignature},
+	)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Contains(
+		t, status.Convert(err).Message(),
+		"unexpected participant key",
+	)
+
+	broker.mu.Lock()
+	require.Equal(
+		t, originalSignature,
+		broker.requests[requestID].signatures[0].Signature.Serialize(),
+	)
+	broker.mu.Unlock()
 }
 
 // testDaemonForfeitParticipantSignaturesForRequest signs the VTXO input of the
@@ -629,42 +683,57 @@ func testDaemonForfeitParticipantSignaturesForRequest(t *testing.T,
 		[]*waverpc.ForfeitParticipantSignature, 0, len(signers),
 	)
 	for _, signer := range signers {
-		prevFetcher, err := arktx.NewForfeitPrevOutFetcher(
-			&arktx.VTXOSpendContext{
-				Outpoint: req.VTXO.Outpoint,
-				Output: &wire.TxOut{
-					Value:    int64(req.VTXO.Amount),
-					PkScript: req.VTXO.PkScript,
-				},
-			},
-			&arktx.ConnectorSpendContext{
-				Outpoint: req.ConnectorOutpoint,
-				Output: &wire.TxOut{
-					Value:    req.ConnectorAmount,
-					PkScript: req.ConnectorPkScript,
-				},
-			},
+		sigs = append(
+			sigs, testDaemonForfeitParticipantSignatureForRequest(
+				t, req, signer,
+			),
 		)
-		require.NoError(t, err)
-
-		sigHashes := txscript.NewTxSigHashes(req.ForfeitTx, prevFetcher)
-		leaf := txscript.NewBaseTapLeaf(req.SpendPath.WitnessScript)
-		sighash, err := txscript.CalcTapscriptSignaturehash(
-			sigHashes, txscript.SigHashDefault, req.ForfeitTx,
-			arktx.ForfeitVTXOInputIndex, prevFetcher, leaf,
-		)
-		require.NoError(t, err)
-
-		sig, err := schnorr.Sign(signer, sighash)
-		require.NoError(t, err)
-
-		sigs = append(sigs, &waverpc.ForfeitParticipantSignature{
-			Pubkey:    signer.PubKey().SerializeCompressed(),
-			Signature: sig.Serialize(),
-		})
 	}
 
 	return sigs
+}
+
+// testDaemonForfeitParticipantSignatureForRequest signs the exact VTXO input
+// transcript with one participant and optional Schnorr signing options.
+func testDaemonForfeitParticipantSignatureForRequest(t *testing.T,
+	req *vtxo.ForfeitParticipantSignRequest, signer *btcec.PrivateKey,
+	signOpts ...schnorr.SignOption) *waverpc.ForfeitParticipantSignature {
+
+	t.Helper()
+
+	prevFetcher, err := arktx.NewForfeitPrevOutFetcher(
+		&arktx.VTXOSpendContext{
+			Outpoint: req.VTXO.Outpoint,
+			Output: &wire.TxOut{
+				Value:    int64(req.VTXO.Amount),
+				PkScript: req.VTXO.PkScript,
+			},
+		},
+		&arktx.ConnectorSpendContext{
+			Outpoint: req.ConnectorOutpoint,
+			Output: &wire.TxOut{
+				Value:    req.ConnectorAmount,
+				PkScript: req.ConnectorPkScript,
+			},
+		},
+	)
+	require.NoError(t, err)
+
+	sigHashes := txscript.NewTxSigHashes(req.ForfeitTx, prevFetcher)
+	leaf := txscript.NewBaseTapLeaf(req.SpendPath.WitnessScript)
+	sighash, err := txscript.CalcTapscriptSignaturehash(
+		sigHashes, txscript.SigHashDefault, req.ForfeitTx,
+		arktx.ForfeitVTXOInputIndex, prevFetcher, leaf,
+	)
+	require.NoError(t, err)
+
+	sig, err := schnorr.Sign(signer, sighash, signOpts...)
+	require.NoError(t, err)
+
+	return &waverpc.ForfeitParticipantSignature{
+		Pubkey:    signer.PubKey().SerializeCompressed(),
+		Signature: sig.Serialize(),
+	}
 }
 
 // sameSubmittedParticipantSet reports whether the broker result matches the
