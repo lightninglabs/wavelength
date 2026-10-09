@@ -199,6 +199,35 @@ jobs:
         env:
           GOWORK: off
 
+  ###########################
+  # Lean formal proof check
+  ###########################
+  lean-model:
+    name: Lean forfeit signing proof
+    runs-on: [self-hosted]
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v5
+
+      - name: Setup go ${{ env.GO_VERSION }}
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: '${{ env.GO_VERSION }}'
+          key-prefix: lean-model
+          use-build-cache: 'no'
+
+      - name: Setup pinned Lean toolchain
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: formal/lean/forfeitsigning
+          build: false
+          test: false
+
+      - name: Check Lean proof and bridge conformance
+        run: ./formal/lean/forfeitsigning/check.sh
+        env:
+          GOWORK: off
+
   ########################
   # TLA+ formal model check
   ########################
