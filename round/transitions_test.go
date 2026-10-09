@@ -3405,7 +3405,7 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		serverForfeitScript := h.forfeitScript()
 
 		// Create forfeit tx with 40000 sats (mismatch).
-		forfeitTx := wire.NewMsgTx(2)
+		forfeitTx := wire.NewMsgTx(3)
 		forfeitTx.AddTxIn(&wire.TxIn{
 			PreviousOutPoint: vtxoOutpoint,
 			Sequence:         wire.MaxTxInSequenceNum,
