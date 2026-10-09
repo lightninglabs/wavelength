@@ -1,0 +1,8 @@
+unpublished	reject
+exact	accept
+wrong_payment_hash	reject
+wrong_outpoint	reject
+wrong_amount	reject
+wrong_script	reject
+wrong_policy	reject
+wrong_policy_payment_hash	reject
