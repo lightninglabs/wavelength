@@ -461,7 +461,8 @@ type QuotePayResponse struct {
 	PaymentHash string `protobuf:"bytes,1,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
 	// invoice_amount_sat is the sat-denominated invoice amount.
 	InvoiceAmountSat uint64 `protobuf:"varint,2,opt,name=invoice_amount_sat,json=invoiceAmountSat,proto3" json:"invoice_amount_sat,omitempty"`
-	// amount_sat is the total amount that would leave the wallet.
+	// amount_sat is the Ark funding leg for the quoted vHTLC. A credit
+	// top-up, when present, is an additional wallet outflow.
 	AmountSat uint64 `protobuf:"varint,3,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
 	// fee_sat is the swap-server fee in satoshis.
 	FeeSat         uint64             `protobuf:"varint,4,opt,name=fee_sat,json=feeSat,proto3" json:"fee_sat,omitempty"`
