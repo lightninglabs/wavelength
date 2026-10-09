@@ -268,6 +268,15 @@ SELECT * FROM mailbox_messages
 WHERE mailbox_id = $1
 ORDER BY priority DESC, available_at ASC, created_at ASC;
 
+-- name: ListPendingMailboxIDsByPrefix :many
+-- List distinct mailbox IDs that contain a message and begin with a literal
+-- prefix.
+SELECT DISTINCT mailbox_id FROM mailbox_messages
+WHERE SUBSTR(
+    mailbox_id, 1, LENGTH(CAST(sqlc.arg(prefix) AS TEXT))
+) = CAST(sqlc.arg(prefix) AS TEXT)
+ORDER BY mailbox_id;
+
 -- =============================================================================
 -- Ask Result Operations
 -- =============================================================================
