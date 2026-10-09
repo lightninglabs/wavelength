@@ -350,13 +350,7 @@ func (r *router) sendCreditInvoiceIntent(ctx context.Context,
 // reserves or requires credits, in which case the send must route through the
 // durable credit subsystem rather than the direct pay path.
 func intentUsesCredit(intent *preparedSendIntent) bool {
-	cp := intent.creditPreview
-	if cp == nil {
-		return false
-	}
-
-	return cp.GetMustUseCredit() || cp.GetCreditAppliedSat() > 0 ||
-		cp.GetCreditShortfallSat() > 0
+	return creditPlanUsesCredit(intent.creditPreview)
 }
 
 // creditPayEntry builds the pending wallet entry for a credit-backed pay,

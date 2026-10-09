@@ -35,6 +35,18 @@ func creditCoversSat(creditAppliedSat, creditTopupSat,
 		principalSat
 }
 
+// creditPlanUsesCredit reports whether a quote must enter the durable credit
+// path. Ark funding alone stays on the direct swap path and therefore does not
+// write the caller's credit cap into a signed database field.
+func creditPlanUsesCredit(plan *wavewalletrpc.CreditPreview) bool {
+	if plan == nil {
+		return false
+	}
+
+	return plan.GetMustUseCredit() || plan.GetCreditAppliedSat() > 0 ||
+		plan.GetCreditShortfallSat() > 0
+}
+
 // validateCreditPlan verifies that a server-proposed credit plan stays within
 // the two independent caller caps. The applied credit plus shortfall is what
 // the eventual payment must reserve. The top-up is new Ark value moved into
@@ -59,6 +71,10 @@ func validateCreditPlan(plan *wavewalletrpc.CreditPreview, maxCreditSat,
 	)
 	if err != nil {
 		return err
+	}
+	if creditPlanUsesCredit(plan) && maxCreditSat > math.MaxInt64 {
+		return fmt.Errorf("%w: max_credit_sat exceeds int64 range",
+			ErrAmountInvalid)
 	}
 	if requiredCreditSat > maxCreditSat {
 		return fmt.Errorf("%w: credit requirement %d exceeds "+

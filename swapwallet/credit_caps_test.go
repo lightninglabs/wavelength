@@ -11,6 +11,8 @@ import (
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"pgregory.net/rapid"
 )
 
@@ -32,6 +34,27 @@ func TestPrepareSendCreditCapsDefaultClosed(t *testing.T) {
 	)
 	require.ErrorContains(t, err, "exceeds max_credit_sat 0")
 	require.Zero(t, swap.quotePayLastReq.GetMaxCreditSat())
+	require.Zero(t, preparedIntentCount(r))
+}
+
+// TestPrepareSendRejectsUnstorableCreditCap verifies a credit-backed plan
+// cannot write a caller cap that the durable signed record would misreport.
+func TestPrepareSendRejectsUnstorableCreditCap(t *testing.T) {
+	t.Parallel()
+
+	r, swap, _ := newRouterFixture(t)
+	invoice, paymentHash := testPreparedInvoice(t, 500, "large cap")
+	swap.quotePayResp = creditOnlyQuote(paymentHash, 500, 500, 0, 0)
+
+	_, err := r.PrepareSend(
+		t.Context(), &wavewalletrpc.PrepareSendRequest{
+			Destination: &wavewalletrpc.PrepareSendRequest_Invoice{
+				Invoice: invoice,
+			},
+			MaxCreditSat: math.MaxInt64 + 1,
+		},
+	)
+	require.ErrorContains(t, err, "max_credit_sat exceeds int64 range")
 	require.Zero(t, preparedIntentCount(r))
 }
 
@@ -96,6 +119,86 @@ func TestPrepareSendEarmarksExactCreditRequirement(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, uint64(500), r.intents.earmarkedCreditSat())
+}
+
+// TestPrepareSendEarmarksFallbackCreditCap verifies a local-only quote keeps
+// the conservative caller-cap earmark, while a complete quote with no credit
+// leg clears that provisional reservation.
+func TestPrepareSendEarmarksFallbackCreditCap(t *testing.T) {
+	t.Parallel()
+
+	t.Run("local-only", func(t *testing.T) {
+		t.Parallel()
+
+		r, swap, _ := newRouterFixture(t)
+		invoice, _ := testPreparedInvoice(t, 500, "fallback")
+		swap.quotePayErr = status.Error(
+			codes.Unimplemented, "quote unavailable",
+		)
+
+		_, err := r.PrepareSend(
+			t.Context(), &wavewalletrpc.PrepareSendRequest{
+				Destination: &wavewalletrpc.
+					PrepareSendRequest_Invoice{
+					Invoice: invoice,
+				},
+				MaxCreditSat: 777,
+			},
+		)
+		require.NoError(t, err)
+		require.Equal(t, uint64(777), r.intents.earmarkedCreditSat())
+	})
+
+	t.Run("complete without credit", func(t *testing.T) {
+		t.Parallel()
+
+		r, swap, _ := newRouterFixture(t)
+		invoice, paymentHash := testPreparedInvoice(t, 500, "remote")
+		swap.quotePayResp = &swapclientrpc.QuotePayResponse{
+			PaymentHash:      paymentHash,
+			InvoiceAmountSat: 500,
+			AmountSat:        510,
+			FeeSat:           10,
+			SettlementType: swapclientrpc.
+				SwapSettlementType_SWAP_SETTLEMENT_TYPE_LIGHTNING,
+			ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
+			CreditQuote:   &swapclientrpc.CreditQuote{},
+		}
+
+		_, err := r.PrepareSend(
+			t.Context(), &wavewalletrpc.PrepareSendRequest{
+				Destination: &wavewalletrpc.
+					PrepareSendRequest_Invoice{
+					Invoice: invoice,
+				},
+				MaxCreditSat: math.MaxUint64,
+			},
+		)
+		require.NoError(t, err)
+		require.Zero(t, r.intents.earmarkedCreditSat())
+	})
+}
+
+// TestValidateCreditPlanAllowsUnsignedCapsOffCreditPath verifies a large cap
+// remains valid when no durable credit operation can be constructed.
+func TestValidateCreditPlanAllowsUnsignedCapsOffCreditPath(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(
+		t, validateCreditPlan(
+			nil, math.MaxUint64, math.MaxUint64,
+		),
+	)
+	require.NoError(
+		t,
+		validateCreditPlan(
+			&wavewalletrpc.CreditPreview{
+				ArkFundingSat: 500,
+			},
+			math.MaxUint64,
+			math.MaxUint64,
+		),
+	)
 }
 
 // TestSendCreditInvoiceIntentRevalidatesCreditCaps verifies the durable
@@ -197,6 +300,14 @@ func TestValidateCreditPlanRejectsMalformedOrOverCapPlans(t *testing.T) {
 			maxTopup:     1,
 			errorPattern: "overflows uint64",
 		},
+		{
+			name: "credit cap exceeds signed storage",
+			plan: &wavewalletrpc.CreditPreview{
+				CreditAppliedSat: 1,
+			},
+			maxCredit:    math.MaxInt64 + 1,
+			errorPattern: "max_credit_sat exceeds int64 range",
+		},
 	}
 
 	for _, test := range tests {
@@ -230,6 +341,7 @@ func TestPropertyCreditPlanCaps(t *testing.T) {
 	t.Parallel()
 
 	rapid.Check(t, func(rt *rapid.T) {
+		mustUseCredit := rapid.Bool().Draw(rt, "must_use_credit")
 		appliedSat := rapid.Uint64().Draw(rt, "applied_sat")
 		shortfallSat := rapid.Uint64().Draw(rt, "shortfall_sat")
 		topupSat := rapid.Uint64().Draw(rt, "topup_sat")
@@ -242,10 +354,15 @@ func TestPropertyCreditPlanCaps(t *testing.T) {
 		addOK := carry == 0
 		shapeOK := shortfallSat == 0 && topupSat == 0 ||
 			shortfallSat > 0 && topupSat >= shortfallSat
-		wantValid := addOK && requiredCreditSat <= maxCreditSat &&
+		usesCredit := mustUseCredit || appliedSat > 0 ||
+			shortfallSat > 0
+		capStorable := !usesCredit || maxCreditSat <= math.MaxInt64
+		wantValid := capStorable && addOK &&
+			requiredCreditSat <= maxCreditSat &&
 			topupSat <= maxTopupSat && shapeOK
 
 		err := validateCreditPlan(&wavewalletrpc.CreditPreview{
+			MustUseCredit:      mustUseCredit,
 			CreditAppliedSat:   appliedSat,
 			CreditShortfallSat: shortfallSat,
 			CreditTopupSat:     topupSat,
