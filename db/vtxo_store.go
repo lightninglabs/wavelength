@@ -228,9 +228,11 @@ func (s *VTXOPersistenceStore) GetVTXO(ctx context.Context,
 //
 // The full repair is atomic. If any local fragment with an unknown height is
 // absent from indexedAncestry, the indexed copy also lacks a height, or a
-// candidate height exceeds the current local chain tip or, for single-fragment
-// ancestry, the VTXO's known creation height, no row is changed. The return
-// value is the number of local fragments repaired.
+// candidate height exceeds the current local chain tip, no row is changed.
+// CreatedHeight is historical metadata, not a ceiling on a later confirmation
+// of the same commitment. The caller must authenticate candidates that exceed
+// that former single-fragment ceiling against its chain backend before calling
+// this method. The return value is the number of local fragments repaired.
 func (s *VTXOPersistenceStore) BackfillVTXOCommitmentHeights(
 	ctx context.Context, outpoint wire.OutPoint,
 	indexedAncestry []vtxo.Ancestry, bestHeight int32) (int, error) {
@@ -250,7 +252,7 @@ func (s *VTXOPersistenceStore) BackfillVTXOCommitmentHeights(
 	err := s.db.ExecTx(ctx, writeTxOpts, func(q RoundStore) error {
 		txRepairedCount := 0
 		outpointIndex := int32(outpoint.Index)
-		vtxoRow, err := q.GetVTXO(ctx, sqlc.GetVTXOParams{
+		_, err := q.GetVTXO(ctx, sqlc.GetVTXOParams{
 			OutpointHash:  outpoint.Hash[:],
 			OutpointIndex: outpointIndex,
 		})
@@ -266,13 +268,6 @@ func (s *VTXOPersistenceStore) BackfillVTXOCommitmentHeights(
 		}
 		if len(localAncestry) == 0 {
 			return fmt.Errorf("local ancestry is empty")
-		}
-
-		heightCeiling := bestHeight
-		if len(localAncestry) == 1 && vtxoRow.CreatedHeight > 0 &&
-			vtxoRow.CreatedHeight < heightCeiling {
-
-			heightCeiling = vtxoRow.CreatedHeight
 		}
 
 		indexedHeights := make(map[[32]byte]int32, len(indexedAncestry))
@@ -314,11 +309,11 @@ func (s *VTXOPersistenceStore) BackfillVTXOCommitmentHeights(
 					"fragment[%d] has unknown "+
 					"commitment height", i)
 			}
-			if height > heightCeiling {
+			if height > bestHeight {
 				return fmt.Errorf("indexed ancestry "+
 					"fragment[%d] commitment height %d "+
 					"exceeds local ceiling %d", i, height,
-					heightCeiling)
+					bestHeight)
 			}
 
 			updates = append(updates, heightUpdate{

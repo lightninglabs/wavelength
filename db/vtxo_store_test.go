@@ -356,8 +356,8 @@ func TestBackfillVTXOCommitmentHeightsIsAtomic(t *testing.T) {
 }
 
 // TestBackfillVTXOCommitmentHeightsEnforcesLocalCeiling verifies that an
-// indexed height cannot replace the safe fallback when it exceeds either the
-// local chain tip or a single-fragment VTXO's known creation height.
+// indexed height cannot replace the safe fallback when it exceeds the
+// local chain tip. A stale creation height is not a confirmation ceiling.
 func TestBackfillVTXOCommitmentHeightsEnforcesLocalCeiling(t *testing.T) {
 	t.Parallel()
 
@@ -384,11 +384,11 @@ func TestBackfillVTXOCommitmentHeightsEnforcesLocalCeiling(t *testing.T) {
 			wantErr:       true,
 		},
 		{
-			name:          "above creation height",
-			createdHeight: 450,
-			bestHeight:    500,
-			indexedHeight: 451,
-			wantErr:       true,
+			name:            "confirmed after creation height",
+			createdHeight:   450,
+			bestHeight:      500,
+			indexedHeight:   455,
+			wantRepairCount: 1,
 		},
 		{
 			name:            "at local tip",
@@ -436,6 +436,9 @@ func TestBackfillVTXOCommitmentHeightsEnforcesLocalCeiling(t *testing.T) {
 
 			stored, err := store.GetVTXO(t.Context(), desc.Outpoint)
 			require.NoError(t, err)
+			require.Equal(
+				t, test.createdHeight, stored.CreatedHeight,
+			)
 			if test.wantErr {
 				require.Zero(
 					t, stored.Ancestry[0].CommitmentHeight,
