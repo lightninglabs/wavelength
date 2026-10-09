@@ -20,6 +20,8 @@ bindings.
 
 - `admit_sound` proves every admitted context came from published authority and
   satisfies every binding equality.
+- `check.sh` compares Lean's axiom report for the load-bearing results against
+  the checked-in empty-dependency report.
 - Each single-field mutation is a compile-checked rejection example.
 - The bridge vectors are emitted from the same Lean definitions and replayed
   against `receiveForfeitBindingGate.load` and

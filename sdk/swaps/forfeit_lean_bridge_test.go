@@ -91,8 +91,8 @@ func replayLeanForfeitSigningCase(t *testing.T, name string) bool {
 
 	case "wrong_policy":
 		// Reorder two valid leaves so decoding and the derived payment
-		// hash and script still succeed. Exact policy binding is the only
-		// reason this payload should be rejected.
+		// hash and script still succeed. Exact policy binding is the
+		// only reason this payload should be rejected.
 		template, err := arkscript.DecodePolicyTemplate(
 			payload.VHTLCPolicyTemplate,
 		)

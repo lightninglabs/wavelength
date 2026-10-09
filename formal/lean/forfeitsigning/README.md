@@ -41,8 +41,9 @@ P-model, and cryptographic-library obligations.
 ## Verification
 
 The project pins Lean `v4.34.1` in `lean-toolchain` and has no package
-dependencies. Run the complete proof and implementation bridge from the
-repository root:
+dependencies. The checker also requires Lean to report that the load-bearing
+theorem and the historical counterexample have no axiom dependencies. Run the
+complete proof and implementation bridge from the repository root:
 
 ```shell
 ./formal/lean/forfeitsigning/check.sh
