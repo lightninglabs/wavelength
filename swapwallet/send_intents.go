@@ -26,14 +26,16 @@ type preparedSendIntent struct {
 	kind      preparedSendKind
 	expiresAt time.Time
 
-	invoice        string
-	onchainAddress string
-	amountSat      uint64
-	note           string
-	maxFeeSat      uint64
-	maxCreditSat   uint64
-	creditPreview  *wavewalletrpc.CreditPreview
-	sweepAll       bool
+	invoice           string
+	onchainAddress    string
+	amountSat         uint64
+	note              string
+	maxFeeSat         uint64
+	maxCreditSat      uint64
+	maxCreditTopupSat uint64
+	creditEarmarkSat  uint64
+	creditPreview     *wavewalletrpc.CreditPreview
+	sweepAll          bool
 
 	selectedOutpoints []string
 	actualAmountSat   int64
@@ -115,11 +117,12 @@ func (s *preparedSendStore) consume(id string) (*preparedSendIntent, error) {
 	return intent, nil
 }
 
-// earmarkedCreditSat sums the credit balance reserved by live prepared sends
-// that intend to use credits (a non-zero credit cap). The auto-redeem sweep
-// subtracts this so it never redeems credits a prepared-but-unsent credit send
-// is about to spend. A prepared intent only earmarks for its TTL, after which
-// the credits are free again.
+// earmarkedCreditSat sums the credit balance reserved by live prepared sends.
+// A complete quote earmarks its exact credit requirement, while a local-only
+// fallback conservatively earmarks the caller's cap because the requirement is
+// unknown. The auto-redeem sweep subtracts this balance so it never redeems
+// credits a prepared-but-unsent send is about to spend. Each intent earmarks
+// only for its TTL, after which the credits are free again.
 func (s *preparedSendStore) earmarkedCreditSat() uint64 {
 	if s == nil {
 		return 0
@@ -133,13 +136,13 @@ func (s *preparedSendStore) earmarkedCreditSat() uint64 {
 
 	var total uint64
 	for _, intent := range s.intents {
-		if now.After(intent.expiresAt) || intent.maxCreditSat == 0 {
+		if now.After(intent.expiresAt) || intent.creditEarmarkSat == 0 {
 			continue
 		}
-		if total > ^uint64(0)-intent.maxCreditSat {
+		if total > ^uint64(0)-intent.creditEarmarkSat {
 			return ^uint64(0)
 		}
-		total += intent.maxCreditSat
+		total += intent.creditEarmarkSat
 	}
 
 	return total

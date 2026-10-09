@@ -683,6 +683,8 @@ pass `--force` or `--yes` to skip the confirmation prompt.
 | `--onchain` | bool | Atomic onchain send via `SendOnChain` |
 | `--amt` | uint | Amount in sats (required for onchain unless `--sweep-all`) |
 | `--max-fee` | uint | Max swap fee in sats (invoice sends only) |
+| `--max-credit` | uint | Offchain only: max total server credit to reserve; 0 disables credit use |
+| `--max-credit-topup` | uint | Offchain only: max new Ark value to move into server credit; 0 disables top-ups |
 | `--note` | string | Caller-supplied label |
 | `--sweep-all` | bool | Onchain only: drain wallet; `--amt` must be 0 |
 | `--force` / `--yes` | bool | Skip the interactive confirmation prompt |
@@ -691,6 +693,8 @@ pass `--force` or `--yes` to skip the confirmation prompt.
 
 ```bash
 wavecli send lnbcrt... --offchain --force
+wavecli send lnbcrt... --offchain --max-credit 1000 \
+  --max-credit-topup 1000 --force
 wavecli send bcrt1... --onchain --amt 1000 --force
 wavecli send bcrt1... --onchain --sweep-all --force
 ```

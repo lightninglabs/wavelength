@@ -268,12 +268,14 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 }
 
 type mcpSendPrepareArgs struct {
-	Destination string `json:"destination" jsonschema:"BOLT-11 invoice (offchain) or onchain address; direction selects the rail"` //nolint:ll
-	Direction   string `json:"direction,omitempty" jsonschema:"'offchain' (default) for invoice, 'onchain' for cooperative leave"` //nolint:ll
-	AmtSat      uint64 `json:"amt_sat,omitempty" jsonschema:"amount in satoshis (required for onchain unless sweep_all)"`          //nolint:ll
-	MaxFeeSat   uint64 `json:"max_fee_sat,omitempty" jsonschema:"max fee in satoshis; zero uses daemon defaults"`                  //nolint:ll
-	Note        string `json:"note,omitempty" jsonschema:"caller-supplied label persisted with the entry"`                         //nolint:ll
-	SweepAll    bool   `json:"sweep_all,omitempty" jsonschema:"onchain only: drain every live VTXO"`                               //nolint:ll
+	Destination       string `json:"destination" jsonschema:"BOLT-11 invoice (offchain) or onchain address; direction selects the rail"`                         //nolint:ll
+	Direction         string `json:"direction,omitempty" jsonschema:"'offchain' (default) for invoice, 'onchain' for cooperative leave"`                         //nolint:ll
+	AmtSat            uint64 `json:"amt_sat,omitempty" jsonschema:"amount in satoshis (required for onchain unless sweep_all)"`                                  //nolint:ll
+	MaxFeeSat         uint64 `json:"max_fee_sat,omitempty" jsonschema:"max fee in satoshis; zero uses daemon defaults"`                                          //nolint:ll
+	MaxCreditSat      uint64 `json:"max_credit_sat,omitempty" jsonschema:"offchain only: max total server credit to reserve; zero disables credit"`              //nolint:ll
+	MaxCreditTopupSat uint64 `json:"max_credit_topup_sat,omitempty" jsonschema:"offchain only: max Ark value to move into server credit; zero disables top-ups"` //nolint:ll
+	Note              string `json:"note,omitempty" jsonschema:"caller-supplied label persisted with the entry"`                                                 //nolint:ll
+	SweepAll          bool   `json:"sweep_all,omitempty" jsonschema:"onchain only: drain every live VTXO"`                                                       //nolint:ll
 }
 
 type mcpSendArgs struct {
@@ -295,7 +297,8 @@ func prepareMCPWalletSend(ctx context.Context,
 	}
 	req, err := buildWalletPrepareSendRequest(
 		args.Destination, offchain, args.AmtSat, args.MaxFeeSat,
-		args.Note, args.SweepAll,
+		args.MaxCreditSat, args.MaxCreditTopupSat, args.Note,
+		args.SweepAll,
 	)
 	if err != nil {
 		return nil, err
@@ -363,8 +366,8 @@ func buildWalletActivityRequest(pendingOnly bool, kinds []string, limit uint32,
 // CLI's input hardening (validateDestination, validateFreeText) and
 // the offchain/onchain invariants so MCP can't construct a shape the
 // CLI would reject.
-func buildWalletPrepareSendRequest(dest string, offchain bool, amt,
-	maxFee uint64, note string,
+func buildWalletPrepareSendRequest(dest string, offchain bool, amt, maxFee,
+	maxCredit, maxCreditTopup uint64, note string,
 	sweepAll bool) (*wavewalletrpc.PrepareSendRequest, error) {
 
 	if err := validateDestination(dest); err != nil {
@@ -380,6 +383,11 @@ func buildWalletPrepareSendRequest(dest string, offchain bool, amt,
 	}
 	if !offchain {
 		switch {
+		case maxCredit != 0 || maxCreditTopup != 0:
+			return nil, fmt.Errorf("max_credit_sat and " +
+				"max_credit_topup_sat are only valid with " +
+				"offchain sends")
+
 		case sweepAll && amt != 0:
 			return nil, fmt.Errorf("sweep_all requires amt_sat=0")
 
@@ -390,10 +398,12 @@ func buildWalletPrepareSendRequest(dest string, offchain bool, amt,
 	}
 
 	req := &wavewalletrpc.PrepareSendRequest{
-		AmtSat:    amt,
-		MaxFeeSat: maxFee,
-		Note:      note,
-		SweepAll:  sweepAll,
+		AmtSat:            amt,
+		MaxFeeSat:         maxFee,
+		MaxCreditSat:      maxCredit,
+		MaxCreditTopupSat: maxCreditTopup,
+		Note:              note,
+		SweepAll:          sweepAll,
 	}
 	if offchain {
 		req.Destination = &wavewalletrpc.PrepareSendRequest_Invoice{
