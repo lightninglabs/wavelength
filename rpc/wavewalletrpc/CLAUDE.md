@@ -98,6 +98,9 @@ id; unlike `List` it may leak internal correlators, so it is kept out of
   swap runtime being started.
 - `ListView` defaults (UNSPECIFIED) to ACTIVITY so callers that omit
   the field keep getting the merged WalletEntry stream.
+- `PrepareSendRequest.max_credit_sat` and `max_credit_topup_sat` are separate,
+  zero-default authorizations. The first bounds credit reserved for a pay;
+  the second bounds new Ark value moved into server credit.
 - `ListResponse.body` is a oneof; agents see a tagged union per view
   rather than a polymorphic blob.
 - `failure_reasons.go` values are a wire contract: existing `Reason*`

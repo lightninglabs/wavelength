@@ -47,9 +47,11 @@ func TestPrepareMCPWalletSendDoesNotDispatch(t *testing.T) {
 	client := &recordingWalletServiceClient{}
 	result, err := prepareMCPWalletSend(
 		t.Context(), client, mcpSendPrepareArgs{
-			Destination: "lnbcrt100u1pwlqxyz",
-			MaxFeeSat:   250,
-			Note:        "coffee",
+			Destination:       "lnbcrt100u1pwlqxyz",
+			MaxFeeSat:         250,
+			MaxCreditSat:      500,
+			MaxCreditTopupSat: 1_000,
+			Note:              "coffee",
 		},
 	)
 	require.NoError(t, err)
@@ -60,6 +62,10 @@ func TestPrepareMCPWalletSendDoesNotDispatch(t *testing.T) {
 		t, "lnbcrt100u1pwlqxyz", client.prepareReqs[0].GetInvoice(),
 	)
 	require.Equal(t, uint64(250), client.prepareReqs[0].GetMaxFeeSat())
+	require.Equal(t, uint64(500), client.prepareReqs[0].GetMaxCreditSat())
+	require.Equal(
+		t, uint64(1_000), client.prepareReqs[0].GetMaxCreditTopupSat(),
+	)
 
 	text, ok := result.Content[0].(*mcp.TextContent)
 	require.True(t, ok)
@@ -210,13 +216,15 @@ func TestBuildWalletPrepareSendRequestHardensAgentInput(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name     string
-		dest     string
-		offchain bool
-		amt      uint64
-		note     string
-		sweepAll bool
-		wantErr  string
+		name           string
+		dest           string
+		offchain       bool
+		amt            uint64
+		maxCredit      uint64
+		maxCreditTopup uint64
+		note           string
+		sweepAll       bool
+		wantErr        string
 	}{
 		{
 			name:     "empty destination",
@@ -248,6 +256,15 @@ func TestBuildWalletPrepareSendRequestHardensAgentInput(t *testing.T) {
 			wantErr:  "only valid with onchain",
 		},
 		{
+			name:           "credit cap on onchain",
+			dest:           "bcrt1q0123",
+			offchain:       false,
+			amt:            1_000,
+			maxCredit:      500,
+			maxCreditTopup: 1_000,
+			wantErr:        "only valid with offchain sends",
+		},
+		{
 			name:     "onchain without amt or sweep_all",
 			dest:     "bcrt1q0123",
 			offchain: false,
@@ -267,8 +284,8 @@ func TestBuildWalletPrepareSendRequestHardensAgentInput(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := buildWalletPrepareSendRequest(
-				tc.dest, tc.offchain, tc.amt, 0, tc.note,
-				tc.sweepAll,
+				tc.dest, tc.offchain, tc.amt, 0, tc.maxCredit,
+				tc.maxCreditTopup, tc.note, tc.sweepAll,
 			)
 			require.Error(t, err)
 			require.Contains(t, err.Error(), tc.wantErr)
@@ -282,12 +299,14 @@ func TestBuildWalletPrepareSendRequestHappyPath(t *testing.T) {
 	t.Parallel()
 
 	req, err := buildWalletPrepareSendRequest(
-		"lnbcrt100u1pwlqxyz", true, 0, 250, "coffee", false,
+		"lnbcrt100u1pwlqxyz", true, 0, 250, 500, 1_000, "coffee", false,
 	)
 	require.NoError(t, err)
 
 	require.Equal(t, "lnbcrt100u1pwlqxyz", req.GetInvoice())
 	require.Equal(t, uint64(250), req.GetMaxFeeSat())
+	require.Equal(t, uint64(500), req.GetMaxCreditSat())
+	require.Equal(t, uint64(1_000), req.GetMaxCreditTopupSat())
 	require.Equal(t, "coffee", req.GetNote())
 }
 

@@ -141,7 +141,7 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 		ctx, &swapclientrpc.QuotePayRequest{
 			Invoice:      invoice,
 			MaxFeeSat:    req.GetMaxFeeSat(),
-			MaxCreditSat: ^uint64(0),
+			MaxCreditSat: req.GetMaxCreditSat(),
 		},
 	)
 	if err != nil {
@@ -151,30 +151,37 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 	}
 
 	intent := &preparedSendIntent{
-		kind:      preparedSendInvoice,
-		invoice:   invoice,
-		amountSat: amountSat,
-		note:      req.GetNote(),
-		maxFeeSat: req.GetMaxFeeSat(),
+		kind:              preparedSendInvoice,
+		invoice:           invoice,
+		amountSat:         amountSat,
+		note:              req.GetNote(),
+		maxFeeSat:         req.GetMaxFeeSat(),
+		maxCreditSat:      req.GetMaxCreditSat(),
+		maxCreditTopupSat: req.GetMaxCreditTopupSat(),
+		creditEarmarkSat:  req.GetMaxCreditSat(),
 	}
 
 	preview, err := prepareInvoicePreview(
-		invoice, description, paymentHash, amountSat, quote, err,
+		invoice, description, paymentHash, amountSat,
+		req.GetMaxCreditSat(), req.GetMaxCreditTopupSat(), quote, err,
 	)
 	if err != nil {
 		return nil, err
 	}
+	if quote != nil {
+		// A complete quote replaces the conservative fallback earmark
+		// with the exact amount this plan reserves. No credit quote
+		// means the plan reserves no credit at all.
+		intent.creditEarmarkSat = 0
+	}
 	if quote != nil && quote.GetCreditQuote() != nil {
-		creditQuote := quote.GetCreditQuote()
 		intent.creditPreview = preview.creditPreview
-		intent.maxCreditSat = saturatingAddSat(
-			creditQuote.GetCreditAppliedSat(),
-			creditQuote.GetCreditShortfallSat(),
+		intent.creditEarmarkSat, err = creditRequirementSat(
+			preview.creditPreview.GetCreditAppliedSat(),
+			preview.creditPreview.GetCreditShortfallSat(),
 		)
-		if creditQuote.GetMustUseCredit() {
-			if uint64(amountSat) > intent.maxCreditSat {
-				intent.maxCreditSat = uint64(amountSat)
-			}
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -280,6 +287,12 @@ func (r *router) sendCreditInvoiceIntent(ctx context.Context,
 		creditOnly bool
 	)
 	if cp := intent.creditPreview; cp != nil {
+		if err := validateCreditPlan(
+			cp, intent.maxCreditSat, intent.maxCreditTopupSat,
+		); err != nil {
+			return nil, err
+		}
+
 		topupSat = cp.GetCreditTopupSat()
 
 		// A pay is credit-only when it carries no Lightning swap leg:
@@ -337,13 +350,7 @@ func (r *router) sendCreditInvoiceIntent(ctx context.Context,
 // reserves or requires credits, in which case the send must route through the
 // durable credit subsystem rather than the direct pay path.
 func intentUsesCredit(intent *preparedSendIntent) bool {
-	cp := intent.creditPreview
-	if cp == nil {
-		return false
-	}
-
-	return cp.GetMustUseCredit() || cp.GetCreditAppliedSat() > 0 ||
-		cp.GetCreditShortfallSat() > 0
+	return creditPlanUsesCredit(intent.creditPreview)
 }
 
 // creditPayEntry builds the pending wallet entry for a credit-backed pay,
@@ -721,8 +728,9 @@ func quotePayUnavailable(err error) bool {
 
 // prepareInvoicePreview builds a remote quote preview when available and keeps
 // mixed-version deployments usable with a local-only fallback otherwise.
-func prepareInvoicePreview(invoice, description, paymentHash string,
-	amountSat uint64, quote *swapclientrpc.QuotePayResponse,
+func prepareInvoicePreview(invoice, description, paymentHash string, amountSat,
+	maxCreditSat, maxCreditTopupSat uint64,
+	quote *swapclientrpc.QuotePayResponse,
 	quoteErr error) (prepareSendPreview, error) {
 
 	if quoteErr != nil {
@@ -732,7 +740,8 @@ func prepareInvoicePreview(invoice, description, paymentHash string,
 	}
 
 	return prepareInvoicePreviewFromQuote(
-		invoice, description, paymentHash, quote,
+		invoice, description, paymentHash, maxCreditSat,
+		maxCreditTopupSat, quote,
 	)
 }
 
@@ -758,6 +767,7 @@ func prepareInvoiceLocalPreview(invoice, description, paymentHash string,
 }
 
 func prepareInvoicePreviewFromQuote(invoice, description, paymentHash string,
+	maxCreditSat, maxCreditTopupSat uint64,
 	quote *swapclientrpc.QuotePayResponse) (prepareSendPreview, error) {
 
 	if quote == nil {
@@ -788,6 +798,25 @@ func prepareInvoicePreviewFromQuote(invoice, description, paymentHash string,
 			"unless prepared with a higher fee cap"
 	}
 	creditPreview := creditPreviewFromQuote(quote.GetCreditQuote())
+	if err := validateCreditPlan(
+		creditPreview, maxCreditSat, maxCreditTopupSat,
+	); err != nil {
+		return prepareSendPreview{}, err
+	}
+
+	// The swap quote's amount is the Ark funding leg. A credit top-up is a
+	// second wallet outflow, so display and authorize their checked sum.
+	creditTopupSat := uint64(0)
+	if creditPreview != nil {
+		creditTopupSat = creditPreview.GetCreditTopupSat()
+	}
+	expectedTotalOutflowSat, err := checkedOutflowSat(
+		quote.GetAmountSat(), creditTopupSat,
+	)
+	if err != nil {
+		return prepareSendPreview{}, err
+	}
+
 	if creditPreview != nil && creditPreview.GetCreditShortfallSat() > 0 {
 		warning = fmt.Sprintf("credit shortfall requires %d sat top-up",
 			creditPreview.GetCreditTopupSat())
@@ -800,7 +829,7 @@ func prepareInvoicePreviewFromQuote(invoice, description, paymentHash string,
 		amountSat:               int64(quote.GetInvoiceAmountSat()),
 		expectedFeeSat:          int64(quote.GetFeeSat()),
 		feeKnown:                true,
-		expectedTotalOutflowSat: int64(quote.GetAmountSat()),
+		expectedTotalOutflowSat: expectedTotalOutflowSat,
 		totalOutflowKnown:       true,
 		destinationSummary:      truncate(invoice, 32),
 		invoiceDescription:      description,

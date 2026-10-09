@@ -153,6 +153,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   mutually exclusive; if neither is set, offchain is the default. The
   CLI does NOT sniff the destination string — the daemon performs
   the authoritative parse.
+- Offchain credit use is explicit: `send` defaults `--max-credit` and
+  `--max-credit-topup` to zero, and rejects either flag on the onchain path.
+  The MCP `send.prepare` tool exposes the same independent limits as
+  `max_credit_sat` and `max_credit_topup_sat`.
 - The wallet password is NEVER read from argv. The supported sources
   are `WAVED_WALLET_PASSWORD` (highest priority), then
   `--wallet-password-file`, explicit `--password-stdin`, then an
