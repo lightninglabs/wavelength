@@ -31,7 +31,9 @@ server during round participation. These types are used across `round`, `vtxo`,
   `PolicyTemplate` (authoritative join-round policy), `ClientKey` /
   `OperatorKey`, and `ExitDelay`. `TxProof fn.Option[TxProof]` carries
   an optional SPV merkle inclusion proof for server-side verification of
-  boarding UTXOs without requiring the server's own chain source.
+  boarding UTXOs without requiring the server's own chain source. Asset
+  boarding additionally carries the asset reference, amount, digest, commitment
+  leaf hash, confirmed proof, and OP_TRUE witness.
 - `OperatorTerms` — Server-published round parameters (fee rates, expiry
   config, connector dust amount). `BatchSchedule
   fn.Option[batchschedule.Published]` carries the operator's published
@@ -79,6 +81,10 @@ server during round participation. These types are used across `round`, `vtxo`,
   them, since `JoinRoundAuthMessage` cannot have produced it. The selection is
   validated (`Selection.Validate`) before signing and rebuilt through
   `batchschedule.SelectionFromUnix` on decode.
+
+- Asset boarding authenticates the reference, amount, digest, and commitment
+  leaf hash. Proofs and witnesses are verified separately. Empty `AssetRef`
+  retains the Bitcoin-only join-auth encoding.
 
 ## Deep Docs
 

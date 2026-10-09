@@ -2,10 +2,14 @@
 package tapassets
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/btcsuite/btcd/psbt/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 )
 
 type commitOutput struct {
@@ -20,6 +24,7 @@ type commitOutput struct {
 	amount            uint64
 	taprootAssetRoot  tapsdk.Hash
 	taprootMerkleRoot tapsdk.Hash
+	scriptKey         tapsdk.PubKey
 	scriptMode        tapsdk.CustomAssetScriptMode
 	opTrueWitness     [][]byte
 	proofBlob         []byte
@@ -47,6 +52,7 @@ type commitResult struct {
 	anchorPSBT   []byte
 	fundingMode  tapsdk.CustomAnchorFundingMode
 	actualFeeSat uint64
+	maxFeeSat    uint64
 	inputs       []commitInput
 	outputs      []commitOutput
 }
@@ -218,6 +224,7 @@ func commitResultFromValidatedPackage(
 		anchorPSBT:   append([]byte(nil), transfer.AnchorPsbt...),
 		fundingMode:  transfer.Funding.Mode,
 		actualFeeSat: transfer.Funding.ActualFeeSat,
+		maxFeeSat:    transfer.Funding.MaxFeeSat,
 		inputs:       make([]commitInput, len(transfer.Inputs)),
 		outputs:      make([]commitOutput, len(transfer.Outputs)),
 	}
@@ -281,6 +288,7 @@ func commitResultFromValidatedPackage(
 			amount:            output.Amount,
 			taprootAssetRoot:  output.TaprootAssetRoot,
 			taprootMerkleRoot: output.TaprootMerkleRoot,
+			scriptKey:         output.ScriptKey,
 			scriptMode:        output.ScriptMode,
 			opTrueWitness:     witness,
 			proofBlob: append(
@@ -310,4 +318,97 @@ func (e *commitResponseError) Error() string {
 // Unwrap exposes the underlying package conversion failure.
 func (e *commitResponseError) Unwrap() error {
 	return e.err
+}
+
+// CommitOnboarding commits a custom anchor that tap-sdk itself will publish
+// after Wavelength supplies the final Bitcoin signature.
+func (d *sdkDriver) CommitOnboarding(ctx context.Context,
+	request *tapsdk.CustomAnchorRequest,
+	verifier tapsdk.ConfirmedProofVerifier) (*commitResult, error) {
+
+	if d == nil || d.wallet == nil {
+		return nil, fmt.Errorf("tap-sdk wallet is required")
+	}
+
+	builder := d.wallet.NewCustomAnchorTxBuilder()
+	if verifier != nil {
+		builder.SetConfirmedProofVerifier(verifier)
+	}
+	plan, err := builder.Build(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := plan.Commit(ctx, tapsdk.CustomAnchorCommitOptions{
+		Publish: tapsdk.CustomAnchorPublishMetadata{
+			Label: "wavelength-onboarding",
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	converted, err := commitResultFromPackage(result)
+	if err != nil {
+		return nil, &commitResponseError{err: err}
+	}
+
+	return converted, nil
+}
+
+// VerifyFinalOnboarding validates Wavelength's exact signed PSBT against the
+// sealed tap-sdk package before either publishing or restoring it.
+func (d *sdkDriver) VerifyFinalOnboarding(packageBytes,
+	finalPSBT []byte) error {
+
+	var transfer tapsdk.CustomAnchorTransferPackage
+	if err := transfer.UnmarshalBinary(packageBytes); err != nil {
+		return fmt.Errorf("decode tap-sdk transfer package: %w", err)
+	}
+	if err := transfer.VerifyFinalAnchorPSBT(finalPSBT); err != nil {
+		return fmt.Errorf("verify final onboarding anchor PSBT: %w",
+			err)
+	}
+
+	return nil
+}
+
+// ReconcileOnboarding requires tapd to have recorded the exact saved signed
+// transaction. Absence is ambiguous: an earlier RPC may still be in flight.
+func (d *sdkDriver) ReconcileOnboarding(ctx context.Context,
+	finalPSBT []byte) error {
+
+	packet, err := psbtutil.Parse(finalPSBT)
+	if err != nil {
+		return err
+	}
+	finalTx, err := psbt.Extract(packet)
+	if err != nil {
+		return err
+	}
+	txid := finalTx.TxHash()
+	transfers, err := d.wallet.Client().ListTransfers(
+		ctx, &tapsdk.ListTransfersRequest{
+			AnchorTxid: txid.String(),
+		},
+	)
+	if err != nil {
+		return errors.Join(ErrReconciliationRequired, err)
+	}
+	want := serializeTx(finalTx)
+	for _, transfer := range transfers {
+		if transfer == nil || transfer.TransferTxid != [32]byte(txid) {
+			continue
+		}
+		if !bytes.Equal(transfer.AnchorTx, want) {
+			return fmt.Errorf("%w: recorded onboarding "+
+				"transaction differs",
+				ErrReconciliationRequired)
+		}
+
+		return nil
+	}
+
+	return fmt.Errorf("%w: tapd has no recorded onboarding transfer for %s",
+		ErrReconciliationRequired, txid)
 }
