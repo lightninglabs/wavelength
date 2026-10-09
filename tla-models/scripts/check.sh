@@ -9,8 +9,8 @@ REPO_ROOT="$(dirname "$MODEL_ROOT")"
 MODEL_DIR="${MODEL_ROOT}/durablehandoff"
 MODULE="${MODEL_DIR}/DurableHandoff.tla"
 
-TLA_VERSION="1.8.0"
-TLA_SHA256="7beec0f04818732a62fa193731711a99aa4f11279499b2360a7d156c519ea78d"
+TLA_VERSION="1.7.4"
+TLA_SHA256="936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
 TLA_URL="https://github.com/tlaplus/tlaplus/releases/download/v${TLA_VERSION}/tla2tools.jar"
 CACHE_ROOT="${XDG_CACHE_HOME:-${HOME}/.cache}/wavelength-tla"
 JAR="${TLA2TOOLS_JAR:-${CACHE_ROOT}/tla2tools-${TLA_VERSION}.jar}"
@@ -45,6 +45,7 @@ if [ -z "${TLA2TOOLS_JAR:-}" ]; then
     if [ ! -f "$JAR" ]; then
         curl --fail --location --retry 3 \
             --connect-timeout 15 --max-time 120 \
+            --max-filesize 67108864 \
             --output "${JAR}.tmp" "$TLA_URL"
         mv "${JAR}.tmp" "$JAR"
     fi
@@ -68,7 +69,6 @@ run_tlc() {
         -cleanup \
         -deadlock \
         -metadir "$state_dir" \
-        -noGenerateSpecTE \
         -workers 1 \
         -config "${MODEL_DIR}/${config}.cfg" \
         "$MODULE"

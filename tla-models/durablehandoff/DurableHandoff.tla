@@ -174,10 +174,12 @@ TypeOK ==
 AckHasDurableSuccessor ==
     source = "Pending" \/ target # "Absent"
 
-\* RollbackPreservesSource makes the forced failed attempt observable and
-\* proves that retry still owns a durable source row.
-RollbackPreservesSource ==
-    ~(failedOnce /\ target = "Absent") \/ source = "Pending"
+\* RollbackLeavesRetryEnabled makes the forced failed attempt observable and
+\* independently proves that the atomic retry remains enabled from the exact
+\* post-rollback state.
+RollbackLeavesRetryEnabled ==
+    ~(failedOnce /\ source = "Pending" /\ target = "Absent")
+    \/ ENABLED AtomicCommit
 
 \* PendingTargetHasConsumer covers immediate, delayed, leased, and terminal
 \* work whenever the process is running.

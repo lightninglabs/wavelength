@@ -24,7 +24,7 @@ The production configuration checks three safety invariants and two liveness
 properties:
 
 - an acknowledged source always has a durable successor;
-- rollback leaves the source pending for retry;
+- the atomic retry remains enabled after rollback;
 - every pending target mailbox has a consumer while the runtime is up;
 - the failed fold is eventually retried and committed;
 - the target row is eventually consumed.
