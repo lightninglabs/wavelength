@@ -149,6 +149,13 @@ boarding UTXO appears as input, the taproot output commits to a Merkle tree with
 all expected VTXOs, and extracts client-specific sub-trees indexed by signing
 key.
 
+Before it creates any MuSig2 session, the FSM also verifies every retained
+tree edge. For each child transaction, the parent output at the child's index
+must equal the taproot script derived from that child's cosigners and signing
+tweak. Bitcoin trees use their common sweep root; asset trees use the child's
+per-node asset signing tweak. Outpoint linkage and value conservation alone do
+not prove that the declared child signers can spend an interior output.
+
 Client trees are essential for constructing MuSig2 sessions and must be
 persisted alongside final VTXOs, as spending a VTXO off-chain requires proving
 its position via complete Merkle path to root.

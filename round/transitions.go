@@ -2350,10 +2350,10 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 			s.CommitmentTx.UnsignedTx, s.VTXOTreePaths,
 		); err != nil {
 
-			env.Log.WarnS(
+			env.Log.InfoS(
 				ctx,
 				"VTXO tree commitment binding failed",
-				err,
+				slog.Any("err", err),
 				slog.String("round_id", s.RoundID.String()),
 			)
 
@@ -4395,6 +4395,14 @@ func verifyVTXOTreeRoot(commitmentTx *wire.MsgTx, commitmentTxID chainhash.Hash,
 	if !bytes.Equal(rootScript, committed.PkScript) {
 		return fmt.Errorf("committed output script does not match " +
 			"the recomputed tree root")
+	}
+
+	// Bind each retained parent output to the cosigners and signing tweak
+	// of the child transaction that spends it. A self-consistent outpoint
+	// chain can otherwise hide an interior output controlled by a different
+	// key.
+	if err := vtxoTree.ValidateChildScripts(); err != nil {
+		return fmt.Errorf("child output scripts: %w", err)
 	}
 
 	// BatchOutput is operator-supplied, so validate values only after the
