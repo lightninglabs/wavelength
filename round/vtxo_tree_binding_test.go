@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
@@ -265,6 +266,50 @@ func TestValidateVTXOTreeBindingRejectsUnderfundedInterior(t *testing.T) {
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "value conservation")
+}
+
+// TestValidateVTXOTreeBindingRejectsInteriorScriptSubstitution proves that a
+// structurally valid and value-conserving tree cannot replace an interior
+// child funding script with a key unrelated to the child's cosigners.
+func TestValidateVTXOTreeBindingRejectsInteriorScriptSubstitution(
+	t *testing.T) {
+
+	t.Parallel()
+
+	h := newTestHarness(t)
+	vtxtTree, _ := h.newTestVTXOTree(4)
+	commitment := h.bindTreeToCommitment(
+		[]BoardingIntent{
+			h.newTestBoardingIntent(),
+			h.newTestBoardingIntent(),
+			h.newTestBoardingIntent(),
+			h.newTestBoardingIntent(),
+		},
+		vtxtTree,
+	)
+
+	require.Len(t, vtxtTree.Root.Children, 2)
+	require.False(t, vtxtTree.Root.Children[0].IsLeaf())
+	require.NoError(
+		t, vtxtTree.ValidateValueConservation(),
+	)
+
+	_, substitutedKey := btcec.PrivKeyFromBytes([]byte{0x31})
+	substitutedScript, err := txscript.PayToTaprootScript(substitutedKey)
+	require.NoError(t, err)
+	vtxtTree.Root.Outputs[0].PkScript = substitutedScript
+	relinkVTXOTree(t, vtxtTree.Root)
+
+	// Outpoint topology and value flow still pass after the hostile tree is
+	// relinked. The child-script binding is the check that rejects it.
+	require.NoError(t, vtxtTree.Root.Verify())
+	require.NoError(t, vtxtTree.ValidateValueConservation())
+	err = validateVTXOTreeBinding(
+		commitment.UnsignedTx, map[int]*tree.Tree{
+			0: vtxtTree,
+		},
+	)
+	require.ErrorContains(t, err, "child output scripts")
 }
 
 // TestConfirmationWatchScriptUsesBatchOutput builds a multi-output round whose

@@ -228,6 +228,10 @@ func (t *Tree) VerifyVTXOPath(coSignerKey *btcec.PublicKey,
 	if err := extracted.Verify(); err != nil {
 		return fmt.Errorf("extracted tree structure invalid: %w", err)
 	}
+	if err := extracted.ValidateChildScripts(); err != nil {
+		return fmt.Errorf("extracted tree child scripts invalid: %w",
+			err)
+	}
 
 	// Verify extracted tree has exactly one leaf.
 	leaves := extracted.Root.GetLeafNodes()
