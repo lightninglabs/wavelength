@@ -244,6 +244,13 @@ retry after the authoritative funding record is available. The record is
 crash-durable when the client is configured with a store and process-local
 otherwise.
 
+The executable P model in
+[`p-models/forfeitsigning`](../p-models/forfeitsigning/README.md) checks this
+authority boundary together with mailbox redelivery, alternate-valid Schnorr
+replay, and restart behavior. Checked-in traces replay the same scenarios
+against the receive-session responder and the daemon's connector-bound
+signature broker.
+
 How the proof-gated query authorises the client is the subject of §7; it is
 worth reading before reasoning about any receive that takes longer than expected.
 
