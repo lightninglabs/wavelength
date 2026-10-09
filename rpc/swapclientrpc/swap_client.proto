@@ -128,7 +128,8 @@ message QuotePayResponse {
     // invoice_amount_sat is the sat-denominated invoice amount.
     uint64 invoice_amount_sat = 2;
 
-    // amount_sat is the total amount that would leave the wallet.
+    // amount_sat is the Ark funding leg for the quoted vHTLC. A credit
+    // top-up, when present, is an additional wallet outflow.
     uint64 amount_sat = 3;
 
     // fee_sat is the swap-server fee in satoshis.
