@@ -124,26 +124,50 @@ check_green() {
         --max-steps "$MAX_STEPS"
 }
 
-# check_negative runs a test case that must find a bug. A clean run is itself a
-# regression: it means the model no longer detects the failure mode the test
-# exists to catch, so we invert the exit code and fail loudly.
+# check_negative runs a test case that must find a bug. P reports a discovered
+# bug with exit 1 and a checker diagnostic. Requiring both keeps a timeout or
+# tool failure from masquerading as the counterexample this test exists to
+# preserve.
 check_negative() {
     local testcase="$1"
     local schedules="${2:-$SCHEDULES}"
     local dll_path="${3:-$MAILBOX_DLL_PATH}"
+    local output
+    local status=0
+
+    output="$(mktemp "${TMPDIR:-/tmp}/p-negative.XXXXXX")"
 
     echo ""
     echo "=== negative: ${testcase} (expect a bug) ==="
-    if run_with_heartbeat "$testcase" timeout "$TIMEOUT" \
+    run_with_heartbeat "$testcase" timeout "$TIMEOUT" \
         p check "$dll_path" \
         --testcase "$testcase" \
         --schedules "$schedules" \
-        --max-steps "$MAX_STEPS"; then
+        --max-steps "$MAX_STEPS" >"$output" 2>&1 || status="$?"
 
+    cat "$output"
+
+    if [ "$status" -eq 0 ]; then
+        rm -f "$output"
         echo "ERROR: ${testcase} found no bug, but a bug was expected"
         return 1
     fi
 
+    if [ "$status" -ne 1 ]; then
+        rm -f "$output"
+        echo "ERROR: ${testcase} exited ${status}; expected checker bug exit 1"
+        return 1
+    fi
+
+    if ! grep -Fq "Checker found a bug." "$output" ||
+        ! grep -Eq "Found [1-9][0-9]* bug" "$output"; then
+
+        rm -f "$output"
+        echo "ERROR: ${testcase} failed without a checker bug diagnostic"
+        return 1
+    fi
+
+    rm -f "$output"
     echo "OK: ${testcase} found the expected bug"
 }
 
