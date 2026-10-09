@@ -51,3 +51,8 @@ go.work.sum
 # P model generated artifacts.
 /PGenerated/
 /PCheckerOutput/
+
+# TLA+ model checker state and trace artifacts.
+states/
+*.tla.toolbox/
+*_TTrace_*

@@ -200,6 +200,25 @@ jobs:
           GOWORK: off
 
   ########################
+  # TLA+ formal model check
+  ########################
+  tla-model:
+    name: TLA+ durable handoff model
+    runs-on: [self-hosted]
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Check TLA+ model and counterexamples
+        run: ./tla-models/scripts/check.sh
+
+  ########################
   # cross compilation
   ########################
   cross-compile:
