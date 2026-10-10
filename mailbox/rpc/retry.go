@@ -9,6 +9,7 @@ import (
 	mrand "math/rand/v2"
 	"time"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -35,6 +36,17 @@ const (
 
 	// DefaultRetryMaxDelay caps the exponential growth of the backoff.
 	DefaultRetryMaxDelay = 5 * time.Second
+
+	// DefaultMaxRetryAfter caps how long an operator-supplied retry-after
+	// hint may hold a caller back.
+	//
+	// The hint is a number chosen by the other side of the connection, so
+	// honoring it unbounded would let a buggy or hostile operator park
+	// every client of the fleet for as long as it liked by naming an
+	// absurd delay. Thirty seconds is comfortably past any honest token
+	// bucket's refill interval and comfortably short of an outage, so a
+	// hint above it is a bug or an attack either way.
+	DefaultMaxRetryAfter = 30 * time.Second
 )
 
 // NewIdempotencyKey mints the idempotency key for a single logical RPC.
@@ -70,6 +82,12 @@ type RetryPolicy struct {
 	// MaxDelay caps the exponential backoff delay. A non-positive value
 	// selects DefaultRetryMaxDelay.
 	MaxDelay time.Duration
+
+	// MaxRetryAfter caps an operator-supplied retry-after hint, which is
+	// otherwise preferred over the computed backoff. A non-positive value
+	// selects DefaultMaxRetryAfter. Lower it when the caller must stay
+	// responsive no matter how long the operator asks it to wait.
+	MaxRetryAfter time.Duration
 }
 
 // normalize replaces non-positive fields with their defaults so the retry loop
@@ -83,6 +101,9 @@ func (p RetryPolicy) normalize() RetryPolicy {
 	}
 	if p.MaxDelay <= 0 {
 		p.MaxDelay = DefaultRetryMaxDelay
+	}
+	if p.MaxRetryAfter <= 0 {
+		p.MaxRetryAfter = DefaultMaxRetryAfter
 	}
 
 	return p
@@ -104,6 +125,73 @@ func (p RetryPolicy) retryDelay(attempt int) time.Duration {
 	}
 
 	return time.Duration(delay * (0.5 + mrand.Float64()*0.5)) //nolint:gosec
+}
+
+// backoffFor returns how long to wait before the attempt following the given
+// one-based attempt, preferring the operator's retry-after hint over the
+// locally computed backoff. It must be called on a normalized policy.
+//
+// The hint is better information than anything this side can compute: it
+// comes from the very token bucket that shed the request, so a caller that
+// honors it comes back exactly when it can be served rather than guessing,
+// returning early, and getting shed again. Guessing is expensive here because
+// an operator answers only the first shed in each window; every retry that
+// lands too early is dropped in silence and teaches the caller nothing.
+//
+// It is still an untrusted number, so it is clamped to MaxRetryAfter. An
+// absent, malformed, or non-positive hint falls through to the jittered
+// exponential backoff, unchanged.
+//
+// The clamped hint is used as given, without the jitter the computed backoff
+// carries, because the hint is derived from the caller's own per-client
+// bucket rather than from a schedule shared across the fleet. Two callers
+// honoring their own hints do not wake together, so there is no herd for
+// jitter to break up.
+func (p RetryPolicy) backoffFor(attempt int, err error) time.Duration {
+	hint, ok := RetryAfter(err)
+	if !ok || hint <= 0 {
+		return p.retryDelay(attempt)
+	}
+
+	if hint > p.MaxRetryAfter {
+		return p.MaxRetryAfter
+	}
+
+	return hint
+}
+
+// RetryAfter returns the retry-after hint the operator attached to err, and
+// whether there was one at all.
+//
+// The hint rides as a standard google.rpc.RetryInfo detail on the gRPC
+// status, which the mailbox already carries end to end in the response's
+// error header, so reading it needs no new wire contract. Most errors carry
+// no hint: only an operator that both sheds a request and can name a deadline
+// annotates one.
+func RetryAfter(err error) (time.Duration, bool) {
+	st, ok := status.FromError(err)
+	if !ok {
+		return 0, false
+	}
+
+	for _, detail := range st.Details() {
+		// A detail this side cannot resolve comes back as an error
+		// rather than a message, so an unknown or corrupt entry is
+		// skipped rather than trusted.
+		info, ok := detail.(*errdetails.RetryInfo)
+		if !ok {
+			continue
+		}
+
+		delay := info.GetRetryDelay()
+		if delay == nil || !delay.IsValid() {
+			continue
+		}
+
+		return delay.AsDuration(), true
+	}
+
+	return 0, false
 }
 
 // IsShedError reports whether err is the operator's explicit "I am shedding
@@ -128,11 +216,13 @@ func IsShedError(err error) bool {
 // logical call, the key lets the operator collapse a retry storm back into the
 // single unit of work it really is.
 //
-// Only an explicit ResourceExhausted is retried, and only after a jittered
-// backoff. A context that is cancelled or past its deadline is never retried:
-// the caller has already given up, and another send would only queue work
-// nobody is left to receive. Callers that want per-attempt deadlines should
-// derive them inside call from the context Retry passes in.
+// Only an explicit ResourceExhausted is retried, and only after a backoff:
+// the operator's retry-after hint when the shed response names one, and a
+// jittered exponential delay otherwise. A context that is cancelled or past
+// its deadline is never retried: the caller has already given up, and another
+// send would only queue work nobody is left to receive. Callers that want
+// per-attempt deadlines should derive them inside call from the context Retry
+// passes in.
 func Retry(ctx context.Context, policy RetryPolicy,
 	call func(context.Context, RPCOptions) error) error {
 
@@ -188,7 +278,7 @@ func RetryWithKey(ctx context.Context, policy RetryPolicy, key string,
 		}
 
 		if err := waitBackoff(
-			ctx, policy.retryDelay(attempt),
+			ctx, policy.backoffFor(attempt, lastErr),
 		); err != nil {
 			return lastErr
 		}
