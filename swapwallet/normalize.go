@@ -64,6 +64,9 @@ func swapEntryFromSummary(s *swapclientrpc.SwapSummary, note string,
 	// Derive reason and code from one classification so a terminal failure
 	// never carries a code without a human-readable reason.
 	failureCode := failureCodeFromSwapState(s.GetState(), s.GetPending())
+	if s.GetClaimAddress() != "" {
+		counterparty = s.GetClaimAddress()
+	}
 
 	entry := &wavewalletrpc.WalletEntry{
 		Id:            s.GetPaymentHash(),
@@ -127,8 +130,9 @@ func requestFromSwapSummary(s *swapclientrpc.SwapSummary, counterparty string,
 	return &wavewalletrpc.WalletEntryRequest{
 		Request: &wavewalletrpc.WalletEntryRequest_LightningInvoice{
 			LightningInvoice: &wavewalletrpc.LightningInvoiceRequest{
-				Invoice:     invoice,
-				PaymentHash: s.GetPaymentHash(),
+				Invoice:      invoice,
+				PaymentHash:  s.GetPaymentHash(),
+				ClaimAddress: s.GetClaimAddress(),
 			},
 		},
 	}

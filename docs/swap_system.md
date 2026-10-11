@@ -167,6 +167,29 @@ The route hint is the hook. It tells the eventual Lightning payer to route the
 final hop through `swapd`, which is how `swapd` gets the chance to intercept the
 incoming HTLC instead of forwarding it.
 
+### Receiving for another Ark wallet
+
+An optional `--claim-address` on `wavecli recv --offchain` replaces the local
+claim destination with another wallet's Ark receive address. The recipient
+must use the same operator and Bitcoin network. This changes only the output
+of the final claim: this daemon still owns the invoice preimage, validates the
+incoming vHTLC, and signs its claim. The recipient does not need to sign it.
+
+The API fields are `RecvRequest.claim_address` and
+`StartReceiveRequest.claim_address`. Go hosts use
+`wavewalletdk.ReceiveRequest.ClaimAddress`, or
+`swaps.StartReceiveViaLightningWithOptions` with `ReceiveOptions.ClaimAddress`.
+The exact taproot script is persisted before returning the invoice and reused
+for retries and unilateral recovery. External receives leave the persisted
+claim owner key empty because an address exposes an output key, not the
+recipient's owner key. They never allocate a local destination on resume.
+Activity records expose the external address alongside the invoice.
+
+External receives require a full-sized VTXO without attached account credits;
+a sub-floor request is rejected instead of silently receiving local credits.
+If recovery must go on-chain, it pays the same script, so the recipient needs
+its Ark policy and keys to spend that on-chain output.
+
 ### 3.2 What the swap server does
 
 When a Lightning payer pays the invoice, the HTLC arrives at `swapd` (the hinted

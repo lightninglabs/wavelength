@@ -484,8 +484,9 @@ func TestStartReceiveReturnsInvoiceAndStartsWorker(t *testing.T) {
 
 	resp, err := service.StartReceive(
 		t.Context(), &swapclientrpc.StartReceiveRequest{
-			AmountSat: 50_000,
-			Memo:      "coffee",
+			AmountSat:    50_000,
+			Memo:         "coffee",
+			ClaimAddress: "external-ark-address",
 		},
 	)
 	require.NoError(t, err)
@@ -497,6 +498,7 @@ func TestStartReceiveReturnsInvoiceAndStartsWorker(t *testing.T) {
 	fakeClient.awaitReceiveResume(t, receiveHash)
 	require.Equal(t, 1, fakeClient.startReceiveCount())
 	require.Equal(t, "coffee", fakeClient.startReceiveMemo)
+	require.Equal(t, "external-ark-address", fakeClient.startReceiveAddress)
 	require.Equal(t, 1, fakeClient.receiveResumeCount(receiveHash))
 }
 
@@ -1448,23 +1450,24 @@ type fakeSwapRuntime struct {
 	listCreditsResp     *swaps.CreditSnapshot
 	listCreditsErr      error
 
-	quotePayCalls      int
-	quotePayInvoice    string
-	quotePayMaxFeeSat  uint64
-	startPayMaxFeeSat  uint64
-	startPayCalls      int
-	startReceiveCalls  int
-	startReceiveMemo   string
-	createCreditCalls  int
-	createCreditReq    swaps.CreateCreditRequest
-	redeemCreditCalls  int
-	redeemCreditReq    swaps.RedeemCreditRequest
-	listCreditsCalls   int
-	listCreditsLimit   uint32
-	getSummaryCalls    int
-	listPendingOnly    []bool
-	payResumeCalls     map[lntypes.Hash]int
-	receiveResumeCalls map[lntypes.Hash]int
+	quotePayCalls       int
+	quotePayInvoice     string
+	quotePayMaxFeeSat   uint64
+	startPayMaxFeeSat   uint64
+	startPayCalls       int
+	startReceiveCalls   int
+	startReceiveMemo    string
+	startReceiveAddress string
+	createCreditCalls   int
+	createCreditReq     swaps.CreateCreditRequest
+	redeemCreditCalls   int
+	redeemCreditReq     swaps.RedeemCreditRequest
+	listCreditsCalls    int
+	listCreditsLimit    uint32
+	getSummaryCalls     int
+	listPendingOnly     []bool
+	payResumeCalls      map[lntypes.Hash]int
+	receiveResumeCalls  map[lntypes.Hash]int
 
 	payResumeCh     chan lntypes.Hash
 	receiveResumeCh chan lntypes.Hash
@@ -1518,13 +1521,15 @@ func (f *fakeSwapRuntime) StartPayViaLightning(_ context.Context, _ string,
 }
 
 func (f *fakeSwapRuntime) StartReceiveViaLightning(_ context.Context,
-	_ btcutil.Amount, memo string) (receiveSwapSession, error) {
+	_ btcutil.Amount, opts swaps.ReceiveOptions) (receiveSwapSession,
+	error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	f.startReceiveCalls++
-	f.startReceiveMemo = memo
+	f.startReceiveMemo = opts.Memo
+	f.startReceiveAddress = opts.ClaimAddress
 	if f.startReceiveSession == nil {
 		return nil, errors.New("start receive session not configured")
 	}
