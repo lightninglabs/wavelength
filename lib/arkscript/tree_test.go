@@ -575,3 +575,32 @@ func TestControlBlockFormat(t *testing.T) {
 	expectedInternalKey := ARKNUMSKey.SerializeCompressed()[1:]
 	require.Equal(t, expectedInternalKey, internalKeyBytes)
 }
+
+// TestRootBranch checks that the root branch children rebuild the policy root
+// for every leaf count, including the ones whose split-at-n/2 layout differs
+// from pairing adjacent leaves.
+func TestRootBranch(t *testing.T) {
+	t.Parallel()
+
+	for n := 1; n <= 8; n++ {
+		leaves := make([]PolicyLeaf, n)
+		for i := range leaves {
+			leaves[i] = PolicyLeaf{
+				Leaf: txscript.NewBaseTapLeaf(
+					[]byte{byte(i + 1)},
+				),
+			}
+		}
+		policy, err := BuildTree(leaves, &ARKNUMSKey)
+		require.NoError(t, err)
+
+		left, right, ok := policy.RootBranch()
+		if n == 1 {
+			require.False(t, ok)
+			continue
+		}
+		require.True(t, ok)
+		root := tapBranchHash(left, right)
+		require.Equal(t, policy.RootHash, root[:], "leaves=%d", n)
+	}
+}

@@ -18,7 +18,9 @@ validated invariants.
     `BuildCustomTransferInputs` to bind a caller-supplied policy to the
     on-chain output before signatures are produced.
 - `CompiledPolicy` — Fully compiled policy with canonical leaf ordering, merkle
-  tree, and control block derivation.
+  tree, and control block derivation. `RootBranch` returns the root's child
+  hashes so another tree, such as a Taproot Asset anchor, can commit to the
+  policy with its exact layout.
 - `VTXOPolicy` — Compiled VTXO taproot policy with collab and exit spend paths.
   Provides `CollabSpendInfo()` and `ExitSpendInfo()`.
 - `VHTLCPolicy` — 6-leaf vHTLC policy with claim/refund/unilateral paths for

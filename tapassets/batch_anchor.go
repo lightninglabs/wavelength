@@ -815,6 +815,13 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 		return nil, nil, err
 	}
 
+	outputAnchor, err := anchorPlan(
+		internalKey, []txscript.TapLeaf{req.SweepLeaf},
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	outputs := []tapsdk.CustomAssetOutput{{
 		ID:                batchAnchorOutputID,
 		AssetRef:          req.AssetRef,
@@ -831,9 +838,7 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 				},
 			},
 		},
-		Anchor: anchorPlan(
-			internalKey, []txscript.TapLeaf{req.SweepLeaf},
-		),
+		Anchor: outputAnchor,
 	}}
 	if req.Change != nil {
 		outputs = append(outputs, tapsdk.CustomAssetOutput{
