@@ -80,9 +80,10 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
 - **Depends on**: `walletcore` (shared HD key mgmt, signing, boarding base —
   also used by `btcwbackend`), `chainsource` (implements `ChainBackend`),
   `wallet` (implements `BoardingBackend`), `chainbackends` (typed
-  `PackageTxError` for package-relay results), and — on `js && wasm` builds
-  only — `internal/sqlbase` (walletdb-compatible SQL backend) plus
-  `internal/wasmhost` (which durable SQLite VFS the host offers).
+  `PackageTxError` for package-relay results), `internal/sqlbase`
+  (walletdb-compatible SQL backend, used by both SQL wallet stores) and —
+  on `js && wasm` builds only — `internal/wasmhost` (which durable SQLite
+  VFS the host offers).
 - **Depended on by**: `waved` (alternative to LND-backed wallet), `sdk`
   (embedded-wallet config references).
 
@@ -125,9 +126,53 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
 - UTXO enumeration queries Esplora directly rather than btcwallet's internal
   UTXO set, because btcwallet does not credit-mark non-default scope outputs.
 - `Stop()` explicitly closes btcwallet's internal database to prevent resource
-  leaks.
+  leaks. That is not optional for the SQL wallet stores: btcwallet's loader
+  only closes a database it opened itself, so nothing else would release an
+  externally supplied handle.
 - Shutdown and startup rollback cancel `EsploraChainService` before stopping
   btcwallet so an active recovery can drain.
+
+### Native wallet store (`walletdb_native.go`)
+
+- `Config.DBBackend` picks the engine btcwallet's wallet database runs on:
+  `DBBackendBolt` (the default) keeps the classic `wallet.db` BoltDB file,
+  `DBBackendSQLite` keeps `wallet.sqlite.db` on `modernc.org/sqlite` through
+  `internal/sqlbase`. Both live under `Config.DBDir`.
+- The two backends use different file names on purpose, and `walletDBPath`
+  refuses to resolve when the other backend's file is present. Switching the
+  backend of an initialized directory would otherwise look exactly like a
+  first start, and btcwallet would create a second, empty wallet beside the
+  existing one.
+- `walletExists` must answer with the same predicate btcwallet's loader
+  applies, because `New` pairs the two: it refuses a seed when a wallet
+  exists and lets a seedless open through when one does. For the SQL
+  backends the database file's presence is *not* that predicate —
+  `newWalletLoaderOptions` creates the file and its schema before btcwallet
+  runs, so an interrupted first run leaves an empty database behind.
+  Reporting "exists" there would refuse the operator's real seed and send
+  the seedless path into `btcwallet.New`, which mints a wallet from a random
+  seed when handed none. The probe therefore shortcuts on a *missing* file
+  (so a fresh directory is never touched) and otherwise opens the database
+  to read btcwallet's marker key, closing it again.
+- The database file is created by `createWalletDBFile` with `0600` before
+  SQLite opens it. SQLite would use `0666 & ~umask`; creating it up front
+  rather than chmod'ing afterwards also covers the `-wal`/`-shm` sidecars,
+  which inherit the main file's mode.
+- The SQLite DSN sets `_txlock=immediate`. The wallet reads before it writes
+  inside one transaction (deriving the next address reads the last-used index,
+  then bumps it), and a deferred transaction that upgrades to a writer after
+  another connection committed fails with `SQLITE_BUSY_SNAPSHOT`, which
+  bypasses the busy handler and is therefore not absorbed by `busy_timeout`.
+- `synchronous=full` and `fullfsync=true` are set explicitly rather than
+  inherited: the wallet's seed and key state have no second copy, so this
+  database does not follow the daemon's configurable `synchronous=normal`
+  default, and on Darwin a plain `fsync` does not reach stable storage.
+- `sqlWalletDBTimeout` stays above `sqlWalletDBBusyTimeout`, or a query that
+  legitimately waits out the busy handler races its own context deadline and
+  reports `context deadline exceeded` instead of `SQLITE_BUSY`.
+- SQLite in WAL mode does not exclude a second OS process the way BoltDB's
+  file lock does, so `DBBackendSQLite` gives up the one-daemon-per-directory
+  guarantee. The storage layer stays consistent; the wallet layer does not.
 
 ### js/wasm wallet store (`walletdb_wasm.go`)
 

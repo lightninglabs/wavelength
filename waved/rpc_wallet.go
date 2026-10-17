@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -459,7 +460,7 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 	rollbackState := func() WalletState {
 		target := WalletStateNone
 
-		exists, err := r.server.selfManagedWalletExists()
+		exists, err := r.server.selfManagedWalletExists(ctx)
 		switch {
 		case err != nil:
 			r.server.log.WarnS(ctx, "Failed to probe wallet "+
@@ -694,20 +695,31 @@ func isWrongPassphraseErr(err error) bool {
 	return false
 }
 
-// selfManagedWalletExists probes whether a wallet database has been
-// created for the configured self-managed wallet backend. Only the
-// chain params and data directory are consulted; the probe does not
-// open the database on native builds.
-func (s *Server) selfManagedWalletExists() (bool, error) {
+// selfManagedWalletExists probes whether a wallet has been created for
+// the configured self-managed wallet backend. Only the chain params,
+// data directory and database backend are consulted, and a backend
+// whose database does not exist yet is never opened.
+//
+// The wallet backends own the lifetime of any database handle the probe
+// needs, so the caller's context is not theirs to inherit; it is used
+// here only for the log line.
+//
+//nolint:contextcheck // wallet database handles outlive the request
+func (s *Server) selfManagedWalletExists(ctx context.Context) (bool, error) {
+	var (
+		exists bool
+		err    error
+	)
 	switch s.cfg.Wallet.Type {
 	case WalletTypeLwwallet:
-		return lwwallet.WalletExists(lwwallet.Config{
+		exists, err = lwwallet.WalletExists(lwwallet.Config{
 			ChainParams: s.chainParams,
 			DBDir:       s.cfg.NetworkDir(),
+			DBBackend:   s.cfg.Wallet.DBBackend,
 		})
 
 	case WalletTypeBtcwallet:
-		return btcwbackend.WalletExists(btcwbackend.Config{
+		exists, err = btcwbackend.WalletExists(btcwbackend.Config{
 			Config: walletcore.Config{
 				ChainParams: s.chainParams,
 				DBDir:       s.cfg.NetworkDir(),
@@ -718,6 +730,20 @@ func (s *Server) selfManagedWalletExists() (bool, error) {
 		return false, fmt.Errorf("unsupported wallet type %q",
 			s.cfg.Wallet.Type)
 	}
+	if err != nil {
+		return false, err
+	}
+
+	// This answer picks the create path over the open path, and a
+	// wrong one only becomes visible in what the daemon does several
+	// steps later, so record it where the decision is made.
+	s.log.DebugS(ctx, "Probed wallet database",
+		slog.String("wallet_type", s.cfg.Wallet.Type),
+		slog.String("db_backend", s.cfg.Wallet.DBBackend),
+		slog.Bool("exists", exists),
+	)
+
+	return exists, nil
 }
 
 // isSelfManagedWallet returns true if the wallet type manages its
