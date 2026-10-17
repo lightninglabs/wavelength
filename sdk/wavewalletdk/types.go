@@ -208,6 +208,17 @@ type PrepareSendRequest struct {
 	Note           string
 	MaxFeeSat      uint64
 
+	// MaxCreditSat caps the total server credit this invoice send may
+	// reserve, including credit funded by a top-up. Zero disables credit
+	// use.
+	MaxCreditSat uint64
+
+	// MaxCreditTopupSat caps the new Ark value this send may move into
+	// server credit. Zero disables credit top-ups. A server may round a
+	// shortfall up to its minimum Ark output, but the rounded amount must
+	// remain within this cap.
+	MaxCreditTopupSat uint64
+
 	// SweepAll drains every live VTXO to OnchainAddress. PrepareSend
 	// snapshots the live VTXO set and SendPrepared later spends that
 	// exact set. Ignored on the invoice path.

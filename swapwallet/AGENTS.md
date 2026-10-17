@@ -122,6 +122,13 @@ default builds avoid the swap executor's dependency graph.
   credit-only sends (falls back with `ErrSwapBackendUnavailable`) and the
   credit projector loop is a no-op, so builds without the credit subsystem
   wired pay nothing extra.
+- Invoice credit is opt-in through two independent `PrepareSend` caps.
+  `max_credit_sat` bounds the applied credit plus any shortfall the eventual
+  payment must reserve; `max_credit_topup_sat` bounds new Ark value moved into
+  server credit. Both default to zero. A top-up may exceed its shortfall only
+  for the server's minimum-output rounding, must remain within the explicit
+  top-up cap, and is included in `expected_total_outflow_sat` with checked
+  arithmetic.
 - A pay is **credit-only** (owned solely by the credit projector) when the
   server pins it to credit or `creditCoversSat` (overflow-safe) shows applied
   credit + planned top-up covers the full principal; otherwise it is

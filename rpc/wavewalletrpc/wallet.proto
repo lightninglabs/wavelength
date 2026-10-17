@@ -359,6 +359,18 @@ message PrepareSendRequest {
     // distinct from "amt_sat defaulted to zero" so a typo cannot empty
     // the wallet by accident. Ignored on the invoice path.
     bool sweep_all = 6;
+
+    // max_credit_sat is the maximum total server credit the caller authorizes
+    // this invoice send to reserve, including credit funded by a top-up. Zero
+    // disables credit use. Ignored on the onchain path.
+    uint64 max_credit_sat = 7;
+
+    // max_credit_topup_sat is the maximum new Ark value the caller
+    // authorizes this invoice send to move into server credit. Zero disables
+    // credit top-ups. A server may round a shortfall up to its minimum Ark
+    // output, but the rounded amount must remain within this cap. Ignored on
+    // the onchain path.
+    uint64 max_credit_topup_sat = 8;
 }
 
 // PrepareSendResponse is the preview of a prepared send: the single-use

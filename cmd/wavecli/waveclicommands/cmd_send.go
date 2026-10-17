@@ -81,6 +81,12 @@ func newSendCmd() *cobra.Command {
 			"lets the daemon default the cap to ~1% of the amount "+
 			"(with a small floor), so a normal payment routes "+
 			"without setting this")
+	cmd.Flags().Uint64("max-credit", 0,
+		"offchain only: maximum total server credit to reserve; "+
+			"0 disables credit use")
+	cmd.Flags().Uint64("max-credit-topup", 0,
+		"offchain only: maximum new Ark value to move into server "+
+			"credit; 0 disables credit top-ups")
 	cmd.Flags().String("note", "",
 		"caller-supplied label to attach to the entry")
 	cmd.Flags().Bool("sweep-all", false,
@@ -124,6 +130,8 @@ func walletSend(cmd *cobra.Command, args []string) error {
 
 	amt, _ := cmd.Flags().GetUint64("amt")
 	maxFee, _ := cmd.Flags().GetUint64("max-fee")
+	maxCredit, _ := cmd.Flags().GetUint64("max-credit")
+	maxCreditTopup, _ := cmd.Flags().GetUint64("max-credit-topup")
 	note, _ := cmd.Flags().GetString("note")
 	sweepAll, _ := cmd.Flags().GetBool("sweep-all")
 
@@ -146,6 +154,13 @@ func walletSend(cmd *cobra.Command, args []string) error {
 	// front so a typo'd zero never lands on the wallet RPC.
 	if !offchain {
 		switch {
+		case maxCredit != 0 || maxCreditTopup != 0:
+			return PrintError(
+				"INVALID_ARGS", "--max-credit and "+
+					"--max-credit-topup are only valid "+
+					"with --offchain",
+			)
+
 		case sweepAll && amt != 0:
 			return PrintError(
 				"INVALID_ARGS", "--sweep-all requires "+
@@ -163,10 +178,12 @@ func walletSend(cmd *cobra.Command, args []string) error {
 	}
 
 	req := &wavewalletrpc.PrepareSendRequest{
-		AmtSat:    amt,
-		MaxFeeSat: maxFee,
-		Note:      note,
-		SweepAll:  sweepAll,
+		AmtSat:            amt,
+		MaxFeeSat:         maxFee,
+		MaxCreditSat:      maxCredit,
+		MaxCreditTopupSat: maxCreditTopup,
+		Note:              note,
+		SweepAll:          sweepAll,
 	}
 	if offchain {
 		req.Destination = &wavewalletrpc.PrepareSendRequest_Invoice{

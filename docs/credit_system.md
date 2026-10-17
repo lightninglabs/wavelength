@@ -185,8 +185,8 @@ sequenceDiagram
     participant Swap as swapclientserver
     participant Server as swap server
 
-    App->>Wallet: PrepareSend(invoice)
-    Wallet->>Swap: QuotePay(max_credit_sat = unlimited)
+    App->>Wallet: PrepareSend(invoice, credit caps)
+    Wallet->>Swap: QuotePay(max_credit_sat)
     Swap->>Server: QuoteInSwap(max_credit_sat)
     Server-->>Wallet: rail and credit_quote
     Wallet-->>App: prepared intent and CreditPreview
@@ -202,6 +202,15 @@ sequenceDiagram
 For a sub-floor invoice, the quote sets `must_use_credit=true`. If the account
 lacks enough credits, `PrepareSend` shows the required Ark top-up and `Send`
 performs that top-up before starting the credit-backed pay.
+
+`PrepareSend` defaults both `max_credit_sat` and
+`max_credit_topup_sat` to zero. The first cap bounds the existing and newly
+created credits that the payment may reserve. The second independently bounds
+new Ark value moved into server credit. A server may round
+`credit_topup_sat` above `credit_shortfall_sat` to satisfy its minimum Ark
+output, but the rounded top-up must stay within `max_credit_topup_sat`.
+`expected_total_outflow_sat` includes both the quoted Ark funding leg and the
+rounded credit top-up.
 
 For a mixed payment, credits cover only the shortfall. For example, a wallet
 with a 1,000 sat vTXO and 200 sat of credits can pay a 1,200 sat invoice. The

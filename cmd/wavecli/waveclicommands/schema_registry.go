@@ -261,98 +261,118 @@ func walletAdminMethodRegistry() []schemaMethod {
 	}
 }
 
+// walletSendSchemaParams returns the CLI-facing arguments for the two-phase
+// send command. Keeping this metadata separate makes the registry entry state
+// the command flow without burying it in flag detail.
+func walletSendSchemaParams() []schemaParam {
+	return []schemaParam{
+		{
+			Name: "destination",
+			Type: "string",
+			Description: "invoice or on-chain " +
+				"address",
+			Required:   true,
+			Positional: true,
+		},
+		{
+			Name: "offchain",
+			Type: "bool",
+			Description: "force offchain " +
+				"(BOLT-11 invoice) " +
+				"dispatch (default)",
+		},
+		{
+			Name: "onchain",
+			Type: "bool",
+			Description: "force onchain " +
+				"(cooperative leave) dispatch",
+		},
+		{
+			Name: "amt",
+			Type: "uint64",
+			Description: "amount in satoshis " +
+				"(required for onchain " +
+				"unless --sweep-all)",
+		},
+		{
+			Name: "max-fee",
+			Type: "uint64",
+			Description: "max fee in satoshis; " +
+				"zero uses daemon defaults",
+		},
+		{
+			Name: "max-credit",
+			Type: "uint64",
+			Description: "offchain only: maximum " +
+				"total server credit to reserve",
+		},
+		{
+			Name: "max-credit-topup",
+			Type: "uint64",
+			Description: "offchain only: maximum " +
+				"Ark credit top-up",
+		},
+		{
+			Name:        "note",
+			Type:        "string",
+			Description: "caller-supplied label",
+		},
+		{
+			Name: "sweep-all",
+			Type: "bool",
+			Description: "onchain only: drain " +
+				"every live VTXO",
+		},
+		{
+			Name: "dry-run",
+			Type: "bool",
+			Description: "prepare and print the " +
+				"proto-JSON preview without " +
+				"dispatching",
+		},
+		{
+			Name: "force",
+			Type: "bool",
+			Description: "skip interactive " +
+				"confirmation",
+		},
+		{
+			Name:        "yes",
+			Type:        "bool",
+			Description: "alias for force",
+		},
+		{
+			Name: "no-wait",
+			Type: "bool",
+			Description: "return after dispatch " +
+				"instead " +
+				"of waiting for settlement",
+		},
+		{
+			Name: "wait-timeout",
+			Type: "duration",
+			Description: "maximum settlement " +
+				"wait; " +
+				"zero waits indefinitely",
+		},
+		{
+			Name: "wait-poll-interval",
+			Type: "duration",
+			Description: "settlement status poll " +
+				"interval",
+		},
+	}
+}
+
 // walletPaymentMethodRegistry returns the payment-shape wallet verbs
 // (send, recv).
 func walletPaymentMethodRegistry() []schemaMethod {
 	return []schemaMethod{
 		{
-			Method:      "send",
-			Description: "Send a payment (offchain or onchain)",
-			Params: []schemaParam{
-				{
-					Name: "destination",
-					Type: "string",
-					Description: "invoice or on-chain " +
-						"address",
-					Required:   true,
-					Positional: true,
-				},
-				{
-					Name: "offchain",
-					Type: "bool",
-					Description: "force offchain " +
-						"(BOLT-11 invoice) " +
-						"dispatch (default)",
-				},
-				{
-					Name: "onchain",
-					Type: "bool",
-					Description: "force onchain " +
-						"(cooperative leave) dispatch",
-				},
-				{
-					Name: "amt",
-					Type: "uint64",
-					Description: "amount in satoshis " +
-						"(required for onchain " +
-						"unless --sweep-all)",
-				},
-				{
-					Name: "max-fee",
-					Type: "uint64",
-					Description: "max fee in satoshis; " +
-						"zero uses daemon defaults",
-				},
-				{
-					Name:        "note",
-					Type:        "string",
-					Description: "caller-supplied label",
-				},
-				{
-					Name: "sweep-all",
-					Type: "bool",
-					Description: "onchain only: drain " +
-						"every live VTXO",
-				},
-				{
-					Name: "dry-run",
-					Type: "bool",
-					Description: "prepare and print the " +
-						"proto-JSON preview without " +
-						"dispatching",
-				},
-				{
-					Name: "force",
-					Type: "bool",
-					Description: "skip interactive " +
-						"confirmation",
-				},
-				{
-					Name:        "yes",
-					Type:        "bool",
-					Description: "alias for force",
-				},
-				{
-					Name: "no-wait",
-					Type: "bool",
-					Description: "return after dispatch " +
-						"instead " +
-						"of waiting for settlement",
-				},
-				{
-					Name: "wait-timeout",
-					Type: "duration",
-					Description: "maximum settlement " +
-						"wait; " +
-						"zero waits indefinitely",
-				},
-				{
-					Name: "wait-poll-interval",
-					Type: "duration",
-					Description: "settlement status poll " +
-						"interval",
-				},
-			},
+			Method: "send",
+			Description: "Send a payment " +
+				"(offchain or onchain)",
+			Params:             walletSendSchemaParams(),
 			RequestType:        "PrepareSendRequest",
 			ResponseType:       "SendResponse",
 			DryRunResponseType: "PrepareSendResponse",
@@ -400,6 +420,19 @@ func walletPaymentMethodRegistry() []schemaMethod {
 					Name:        "max_fee_sat",
 					Type:        "uint64",
 					Description: "maximum fee in satoshis",
+				},
+				{
+					Name: "max_credit_sat",
+					Type: "uint64",
+					Description: "offchain only: " +
+						"max total server credit " +
+						"to reserve",
+				},
+				{
+					Name: "max_credit_topup_sat",
+					Type: "uint64",
+					Description: "offchain only: maximum " +
+						"Ark credit top-up",
 				},
 				{
 					Name:        "note",

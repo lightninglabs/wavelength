@@ -63,7 +63,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/wave
   `SendPreparedRequest`/`SendResult` (`PrepareSend` quotes and returns a
   single-use `SendIntentID`; `SendPrepared` dispatches it and returns
   `Entry` + `ActualAmountSat`, which equals the requested amount for a
-  bounded send and the swept total for sweep-all), `DepositRequest`/`Result` (boarding
+  bounded send and the swept total for sweep-all; invoice credit and new
+  credit top-ups are independently opt-in through zero-default caps),
+  `DepositRequest`/`Result` (boarding
   address + initial `Entry`), `ListRequest`, `ListResult` (tagged union
   on `View`, populates one of `Activity`/`VTXOs`/`Onchain`),
   `ActivityList`, `VTXOInventory`, `OnchainHistory`, `Entry`
