@@ -4,10 +4,9 @@
 
 Executable P-language state-machine models plus Go bridge tests, used to
 check concurrency and crash-recovery invariants that plain unit tests
-struggle to cover across independent actors. Currently models the durable
-actor mailbox (correlation-key FIFO claim, lease/ack/nack, Stage/Commit
-exactly-once) and the connection actor's ingress dispatch pipeline (cursor
-fold, deferral and redrive against bounded in-memory mailboxes).
+struggle to cover across independent actors. Models the durable actor mailbox,
+the connection actor's ingress dispatch pipeline, and receive-side forfeit
+signing authority and replay.
 
 ## Key Types
 
@@ -20,6 +19,8 @@ fold, deferral and redrive against bounded in-memory mailboxes).
   `crash_restart_test.go`, `outbox_fold_test.go`) that replays checked-in
   traces against the real `db/actordelivery` store, keeping the model
   connected to the shipped implementation.
+- `forfeitsigning/` — the receive signing authority and replay model, concrete
+  traces, shared trace parser, and production-package bridge tests.
 - `scripts/check.sh` — compiles the P project, runs the green test cases
   (must find zero bugs) and the counterexample cases (must find exactly the
   expected bug), then runs the Go bridge tests.

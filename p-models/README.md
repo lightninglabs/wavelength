@@ -28,6 +28,9 @@ single regression test for the exact SQL row sequence.
   implementation.
 - `durableactor/traces/` stores concrete scenarios shared by the model
   documentation and the Go bridge.
+- `forfeitsigning/` models receive-side signing authority, mailbox retry,
+  broker replay, and durable versus process-local restart behavior. Its traces
+  replay against the real receive-session responder and signature broker.
 - `scripts/` contains shared entrypoints for compiling and checking models.
 
 ## Durable Actor Mailbox
@@ -72,6 +75,21 @@ answered at most once per process lifetime however many times the redrive
 re-pulls it. The pre-fix implementation is reachable through a configuration
 profile, so each fix has a counterexample test case that removes it and fails.
 
+## Receive Forfeit Signing
+
+The forfeit-signing model treats a mailbox request as untrusted transport. The
+signing oracle becomes reachable only after the receive session publishes an
+immutable funded binding, and the request must match every bound identity
+field. A separate broker monitor permits independently valid Schnorr bytes on
+redelivery while requiring the first accepted signature set to remain
+authoritative.
+
+The green profile covers publication, identity drift, acknowledgement failure,
+valid and invalid replay, and restart behavior. The request-derived profile is
+a negative test: it restores the unsafe authority rule and must produce a
+counterexample. See [`forfeitsigning/README.md`](forfeitsigning/README.md) for
+the model-derived requirements and implementation bridge.
+
 ## Running
 
 Run the whole suite with:
@@ -82,12 +100,13 @@ Run the whole suite with:
 
 That script:
 
-1. compiles `p-models/durableactor/infra.pproj`;
+1. compiles the durable-actor and forfeit-signing P projects;
 2. runs every green test case, each of which must find zero bugs;
 3. runs every counterexample test case, each of which must find the bug it
    exists to catch — a clean run there fails the script, because a model that
    no longer detects its own failure mode is worthless;
-4. runs `go test ./p-models/durableactor/bridge`.
+4. runs the durable-actor bridge and the focused receive-session and broker
+   trace replays.
 
 To see one of the counterexamples on its own, for instance the original
 same-key reorder:
