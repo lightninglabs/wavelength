@@ -93,6 +93,7 @@ package may import from a higher layer.
 | Package | Purpose |
 |---------|---------|
 | [`p-models`](p-models/) | Executable P formal models and Go conformance bridge for distributed-systems properties (durable mailbox, Read/Commit fence, ingress deferral and redrive) |
+| [`formal`](formal/) | Machine-checked protocol and implementation invariants with executable production bridges |
 | [`p-models/durableactor/bridge`](p-models/durableactor/bridge/) | Go conformance harness: replays P model mailbox traces against the real `db/actordelivery` store |
 | [`tla-models`](tla-models/) | Exhaustive TLA+ models for durable handoff atomicity, retry, and dynamically named consumer recovery |
 | [`harness`](harness/) | Docker-based Bitcoin/LND integration test environment |
