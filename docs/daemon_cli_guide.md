@@ -426,14 +426,25 @@ Allocate an inbound payment surface.
 | `--amt` | uint | Required for `--offchain`; ignored for `--onchain` |
 | `--amt-hint` | uint | Optional expected amount for `--onchain` (accounting only) |
 | `--memo` | string | Optional memo embedded in the offchain invoice |
+| `--claim-address` | string | Another wallet's Ark receive address for the final claim (offchain only) |
 
 ```bash
 wavecli recv --onchain                  # boarding address
 wavecli recv --offchain --amt 5000 --memo coffee
+wavecli recv --offchain --amt 5000 --claim-address <recipient-ark-address>
 
 # No-wavewalletrpc equivalent for the boarding-address case:
 wavecli dev daemon NewAddress
 ```
+
+An external claim address must come from an Ark wallet using the same
+operator and Bitcoin network. The daemon still creates the Lightning invoice
+and claims the vHTLC, but the claimed output belongs to that recipient. The
+destination is fixed before the invoice is issued and survives daemon restarts.
+External receives must meet the operator's minimum VTXO amount and cannot
+attach or fall back to wallet credits. If unilateral recovery is needed, its
+on-chain output uses the same destination script; the recipient must be able
+to recover that script on-chain.
 
 ### `ark board` / `dev daemon Board`
 

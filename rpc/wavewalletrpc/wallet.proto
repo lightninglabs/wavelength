@@ -462,6 +462,11 @@ message RecvRequest {
 
     // memo is the optional human-readable memo to embed in the invoice.
     string memo = 2;
+
+    // claim_address optionally sends the final claim to another wallet's
+    // Ark receive address on the same operator and network. Empty receives
+    // locally. External receives cannot use server credits.
+    string claim_address = 3;
 }
 
 // RecvResponse returns the BOLT-11 invoice to hand out and the initial
@@ -1608,6 +1613,10 @@ message LightningInvoiceRequest {
     // payment_hash identifies the invoice and remains stable after the
     // invoice itself is no longer convenient to display.
     string payment_hash = 2;
+
+    // claim_address is the external Ark destination for a forwarded receive.
+    // Empty means the receive belongs to this wallet.
+    string claim_address = 3;
 }
 
 // OnchainAddressRequest captures the onchain address associated with an

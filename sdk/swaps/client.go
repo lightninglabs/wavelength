@@ -214,6 +214,9 @@ type SwapSummary struct {
 	// ClaimSessionID is the OOR session that claimed a receive swap vHTLC.
 	ClaimSessionID string
 
+	// ClaimAddress is the external Ark receive destination, if supplied.
+	ClaimAddress string
+
 	// RefundSessionID is the OOR session that refunded a pay swap vHTLC,
 	// or the observed spender txid when the refund was adopted from the
 	// indexer during resume.

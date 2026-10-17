@@ -187,10 +187,13 @@ type DepositResult struct {
 	Entry   Entry
 }
 
-// ReceiveRequest creates a Lightning invoice payable into the wallet.
+// ReceiveRequest creates a Lightning invoice payable into an Ark wallet.
 type ReceiveRequest struct {
 	AmountSat uint64
 	Memo      string
+	// ClaimAddress optionally forwards the claim to another Ark wallet on
+	// the same operator and network. Empty receives into this wallet.
+	ClaimAddress string
 }
 
 // ReceiveResult contains the invoice and initial wallet entry.
@@ -895,6 +898,10 @@ type EntryRequest struct {
 	// the invoice is no longer convenient to display. Populated when Type
 	// is EntryRequestTypeLightning.
 	PaymentHash string
+
+	// ClaimAddress is the external Ark destination of a Lightning receive.
+	// Empty means the receive belongs to this wallet.
+	ClaimAddress string
 
 	// OnchainAddress is the bech32 on-chain address originally issued or
 	// targeted. Populated when Type is EntryRequestTypeOnchain.
