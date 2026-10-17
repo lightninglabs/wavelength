@@ -12,9 +12,11 @@ they depend on the order in which messages are leased, retried, acknowledged,
 or observed by independent actors.
 
 The model should be read as an executable specification. It states the
-behavior we want first, then checks both the abstract model and bridge traces
-against that behavior. When a production bug is found, the goal is to encode
-the ideal invariant that would have rejected the bad execution, not just add a
+behavior we want first and checks the abstract model against that behavior.
+When the implementation lives in this repository, bridge traces also replay
+the behavior against production code. Other traces are exported as downstream
+consumer contracts. When a production bug is found, the goal is to encode the
+ideal invariant that would have rejected the bad execution, not just add a
 single regression test for the exact SQL row sequence.
 
 ## Layout
@@ -31,6 +33,10 @@ single regression test for the exact SQL row sequence.
 - `forfeitsigning/` models receive-side signing authority, mailbox retry,
   broker replay, and durable versus process-local restart behavior. Its traces
   replay against the real receive-session responder and signature broker.
+- `oorrecovery/` models post-sign OOR ownership across restart, conflicting
+  admission, atomic terminal publication, and idempotent completion. Its
+  normalized trace is versioned for replay by downstream implementation test
+  harnesses; this repository checks the model and exported artifact.
 - `scripts/` contains shared entrypoints for compiling and checking models.
 
 ## Durable Actor Mailbox
@@ -90,6 +96,21 @@ a negative test: it restores the unsafe authority rule and must produce a
 counterexample. See [`forfeitsigning/README.md`](forfeitsigning/README.md) for
 the model-derived requirements and implementation bridge.
 
+## OOR Post-Sign Recovery
+
+The OOR recovery model treats lock plus signature persistence as one durable
+authority transition and finalize plus materialize as one terminal transition.
+It checks that restart retains post-sign ownership, a conflicting admission is
+rejected while that ownership remains active, and notification plus
+acknowledgement replay cannot apply completion twice.
+
+The checked-in version 1 trace is normalized from a deterministic P checker
+counterexample and uses a stable operation vocabulary exported to downstream
+implementation test harnesses. This repository does not provide the OOR
+implementation replay. See
+[`oorrecovery/README.md`](oorrecovery/README.md) for the schema, atomic-pair
+rules, bounds, and counterexample profiles.
+
 ## Running
 
 Run the whole suite with:
@@ -100,7 +121,7 @@ Run the whole suite with:
 
 That script:
 
-1. compiles the durable-actor and forfeit-signing P projects;
+1. compiles the durable-actor, forfeit-signing, and OOR recovery P projects;
 2. runs every green test case, each of which must find zero bugs;
 3. runs every counterexample test case, each of which must find the bug it
    exists to catch — a clean run there fails the script, because a model that
