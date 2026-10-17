@@ -206,10 +206,11 @@ pkScript, _ := policy.PkScript()    // out_swap.go:1078
 // ... persisted into s.vhtlcPkScript, FSM -> ReceiveStateHTLCEventAccepted
 ```
 
-`ReceiveStateHTLCEventAccepted` is a durable checkpoint. Once the client reaches
-it, the mailbox event has been consumed and acknowledged; on restart the session
-resumes from this state rather than re-reading the mailbox. Funding detection
-therefore picks up exactly where it left off across a daemon restart.
+`ReceiveStateHTLCEventAccepted` becomes authoritative after the configured
+persistence step succeeds. With `NewSwapClientWithStore`, it is a crash-durable
+checkpoint: on restart the session resumes from this state rather than
+re-reading the mailbox. `NewSwapClient` keeps the same in-process ordering but
+has no restart recovery because its persistence step is a no-op.
 
 ### 3.4 Waiting for funding — and the indexer
 
@@ -231,6 +232,17 @@ VTXO, the poll returns the outpoint and amount. The client then claims the vHTLC
 by spending its Claim leaf with the preimage (an OOR transfer to the claim
 destination it set up in §3.1), which simultaneously *reveals the preimage* to
 the swap server, who uses it to settle the held Lightning HTLC. Everyone is paid.
+
+The receive client may also be asked to sign a forfeit transaction when this
+funded vHTLC is refreshed. It signs only after the funded outpoint and amount
+have been recorded. Before invoking the local signing oracle, it requires the
+request's payment hash, outpoint, amount, pkScript, and policy template to match
+the receive session exactly. It also decodes the policy template and requires
+its embedded payment hash to equal both the request hash and the session hash.
+An early or mismatched request is left unacknowledged so mailbox delivery can
+retry after the authoritative funding record is available. The record is
+crash-durable when the client is configured with a store and process-local
+otherwise.
 
 How the proof-gated query authorises the client is the subject of §7; it is
 worth reading before reasoning about any receive that takes longer than expected.
@@ -258,7 +270,7 @@ sequenceDiagram
     S->>A: fund vHTLC (Sender=swapd, Receiver=client)
     S-->>C: mailbox: OutSwapHtlcEvent (config + onion)
     C->>C: acceptOutSwapHtlcEvent -> derive pkScript
-    Note over C: FSM = HTLCEventAccepted (durable)
+    Note over C: FSM = HTLCEventAccepted (authoritative; durable with store)
 
     loop waitForVHTLC (every waitPollInterval)
         C->>A: ListVTXOsByScripts(vHTLC pkScript)  %% proof-gated, see §7
