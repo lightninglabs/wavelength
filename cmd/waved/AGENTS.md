@@ -60,6 +60,12 @@ hands off to `waved.Main` to run the daemon.
   `/livez` and `/readyz`, so the flag's help text tells operators to bind it
   to loopback or a private network. Enforcement of what it serves lives in
   `waved` (`health.go`); this package only registers the flag.
+- `--allow-insecure-mainnet` is the single mainnet escape hatch for every
+  transport and credential guard `waved.Config.Validate()` and auto-unlock
+  enforce: `rpc.notls`, `rpc.no-macaroons`, a non-loopback gateway listen
+  address, plaintext operator and swap links, and the public dev wallet
+  password on the env-seed path. Keep its help text in sync when `waved`
+  adds a new mainnet guard gated on it.
 - `EagerRoundJoin`'s flag default comes from `waved.DefaultConfig()`,
   which is itself build-tag aware (true under `wavewalletrpc`, false
   otherwise); `--eagerroundjoin` still overrides it either way.

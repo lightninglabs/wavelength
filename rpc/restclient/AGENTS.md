@@ -20,8 +20,11 @@ interface, and per-service factory functions so callers are channel-agnostic
   `grpc.ServerStreamingClient[T]`. Implements `Recv()`, `Header()`,
   `Trailer()`, `CloseSend()`, `Context()`, `SendMsg()`, `RecvMsg()`.
   Skips empty chunks; aggregates error responses.
-- `GatewayError` — Decoded JSON error envelope (Code, Message). `Code` may
-  be an int or a string; falls back to the HTTP status code if absent.
+- `GatewayError` — Decoded JSON error envelope (Code, Message, Details).
+  `Code` may be an int or a string; falls back to the HTTP status code if
+  absent. `Status(code)` rebuilds the `*status.Status`, carrying over each
+  `Details` entry (a JSON `google.protobuf.Any` with `@type`) whose type is
+  linked into the binary.
 - Per-service client types with `New*ServiceClient(addr, ...Option)` factories:
   `ArkServiceClient`, `DaemonServiceClient`, `MailboxServiceClient`,
   `SwapClientServiceClient`, `SwapServiceClient`, `WalletServiceClient`.
@@ -45,6 +48,12 @@ interface, and per-service factory functions so callers are channel-agnostic
   `DiscardUnknown: true` for responses (forward compatibility).
 - gRPC context metadata is injected as HTTP headers; binary-encoded
   (`-bin`-suffixed) keys are skipped.
+- Unary (`GatewayStatusError`) and streaming (`StreamClient.Recv`) errors
+  must both go through `GatewayError.Status` so status details such as
+  `errdetails.ErrorInfo` survive the REST hop; callers (e.g. the
+  `swapclientserver` credit bridge) classify final refusals by those details.
+  The blank `errdetails` import registers those types for `Any` resolution;
+  unknown or malformed details are skipped, never fatal.
 - `WatchRounds`, `SubscribeSwaps`, and `SubscribeWallet` are the only
   server-streaming methods; all other methods are unary.
 - Generated service clients implement the same gRPC-generated interfaces

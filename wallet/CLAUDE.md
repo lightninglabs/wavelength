@@ -25,7 +25,7 @@ refresh, leave, OOR spend, and directed send flows.
 - `BlockEpochNotification` — Tell-message from chain source triggering UTXO polling.
 - `BoardingUtxoConfirmedEvent` — Tell-message sent when a VTXO confirms.
 - `BoardRequest` / `BoardResponse` — Ask-request from RPC to trigger boarding flow.
-- `GetBoardingBalanceResponse` — Balance breakdown with fields: `Balance` (confirmed), `UtxoCount`, `UnconfirmedBalance` (zero-conf), `UnconfirmedUtxoCount`, `AdoptedBalance` (accepted into round, VTXOs not yet live), `PendingSweepBalance`, `SweepPendingCount`.
+- `GetBoardingBalanceResponse` — Balance breakdown with fields: `Balance` (confirmed), `UtxoCount`, `UnconfirmedBalance` (below boarding depth), `UnconfirmedUtxoCount`, `AdoptedBalance` (accepted into round, VTXOs not yet live), `PendingSweepBalance`, `SweepPendingCount`.
 - `RefreshVTXOsRequest` — Ask-request to select wallet-owned VTXOs for refresh
   (`TargetOutpoints`, `ForceRefresh`) and compose the intent package; the
   server is the fee authority at seal time (#270), so no per-input fee is
@@ -69,6 +69,10 @@ refresh, leave, OOR spend, and directed send flows.
   `waved_background_task_errors_total`; a no-op when omitted.
 - `SendOnChainStatus` — Terminal outcome enum: `SendOnChainStatusSubmitted` (intent queued for next round), `SendOnChainStatusPreview` (dry-run preview, no commitment).
 - `GetConfirmedBoardingIntentsRequest` / `GetConfirmedBoardingIntentsResponse` — Ask-request to retrieve currently confirmed boarding intents (used by the RPC/CLI layer to report boarding balance with policy metadata).
+- `ReleaseBoardingInFlightRequest` — Tell-message from the round actor naming
+  a failed round's boarding `Outpoints`; drops them from the in-memory
+  `boardingShipped` guard so the next Board trigger retries them without a
+  restart. Unknown outpoints are ignored; no reply.
 - `VTXODescriptor.EffectivePolicyTemplate` — Decodes the serialized `PolicyTemplate` field on the wallet-level VTXO descriptor using `lib/arkscript`.
 
 ## Relationships
@@ -89,12 +93,19 @@ refresh, leave, OOR spend, and directed send flows.
   - → `round` (via `lib/types.VTXORequest.Origin`): wallet intent composition tags each locally-owned VTXO output with a `VTXOOrigin` classifier so the round actor's downstream ledger emission dispatches to the correct `Source`. Refresh outputs and directed-send self-change get `VTXOOriginRoundRefresh`; boarding-path tagging lives in `round.handleTriggerBoard` (`VTXOOriginRoundBoarding`).
 - **Receives**:
   - ← `chainsource`: `BlockEpochNotification` (triggers UTXO polling)
-  - ← `round`: `RegisterConfirmationNotifierRequest`, `UnregisterConfirmationNotifierRequest`
+  - ← `round`: `RegisterConfirmationNotifierRequest`, `UnregisterConfirmationNotifierRequest`, `ReleaseBoardingInFlightRequest`
   - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`, `RefreshVTXOsRequest`, `RefreshCustomVTXOsRequest`, `DropCustomRefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`, `SendVTXOsRequest`, `SendOnChainRequest`
 
 ## Invariants
 
-- UTXO confirmation requires `MinBoardingConfs` (1) on-chain confirmations.
+- A boarding UTXO becomes a confirmed intent only at `boardingDepth`: the
+  operator's advertised `MinConfirmations`, floored at `MinBoardingConfs` (1;
+  the floor alone applies when `WithFetchOperatorTerms` is unset). The
+  operator rejects shallower joins, so a sub-depth intent must never reach
+  `handleBoard`, `GetBalance`, or the round actor. If terms cannot be fetched,
+  the tip tick returns without advancing `processedTipHeight` so the next tick
+  retries. `UnconfirmedBalance` counts UTXOs below that depth (falling back to
+  zero-conf only when terms are unavailable).
 - `ListUnspent` runs at most once per tip-tick against the latest known chain tip; a backend whose UTXO reporting lags past one tick interval surfaces the missing UTXO on the next chain advance (whichever tick processes the new tip re-runs the scan). The per-block path no longer carries an inline retry budget — the tick loop is the retry seam.
 - Notifier registration captures `minConf` parameter per actor; different actors can require different confirmation depths.
 - Cooperative admission (refresh/leave) must reserve forfeit inputs through the VTXO manager before sending `RegisterIntentMsg` to the round actor.
@@ -121,7 +132,10 @@ refresh, leave, OOR spend, and directed send flows.
   (fired when a new deposit confirms before an earlier boarding round adopts
   its input) from re-registering an already-in-flight outpoint under a fresh
   owner key, which previously produced a quote pkScript-echo mismatch and
-  failed the round.
+  failed the round. A failed round clears its outpoints from the guard via
+  `ReleaseBoardingInFlightRequest`; otherwise every later Board would report
+  them as redundant until restart. Releasing is safe after the checkpoint too:
+  adopted intents leave the confirmed set, so they are not re-shipped.
 - `applyBoardingLimits`/`clampBoardingAmount` clip a confirmed boarding
   balance to the operator's `MaxVTXOAmount`/`MaxUserBalance` terms and, when
   clipped, mint a change leave output back to a fresh boarding script so the

@@ -52,7 +52,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
 ## Relationships
 
 - **Depends on**: `baselib/protofsm` (FSM), `baselib/actor` (durable actor
-  framework), `serverconn` (submit/finalize/query transport), `vtxo`
+  framework), `baselib/tlvutil` (shared TLV stream encode/decode helpers for
+  durable messages, outbox events, and snapshots), `serverconn`
+  (submit/finalize/query transport), `vtxo`
   (materialization + status), `ledger` (`Sink`, accounting emission),
   `timeout` (`TimeoutActor` retry scheduling), `lib/arkscript` (checkpoint
   policy, collab tapleaf), `arkrpc` (indexer response types), `lnd/input`

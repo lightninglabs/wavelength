@@ -98,6 +98,14 @@ distinction.
   `AssetTreeContext.SigningTweak(node.Input)` instead of
   `sweep_tapscript_root`. Using the sweep root on an asset tree yields keys that
   fail `VerifySigned`.
+- `BoardingRequest` asset disclosure fields (`asset_ref`, `asset_amount`,
+  `asset_digest`, `asset_proof`, `asset_commitment_leaf_hash`,
+  `asset_witness`) are all empty for Bitcoin-only boarding. When `asset_ref`
+  is set, amount is non-zero and digest and leaf hash are 32 bytes (checked by
+  `types.BoardingRequest.ValidateAssetFields` in `round` conversion). Only
+  ref, amount, digest, and leaf hash are join-auth signed; `asset_proof` and
+  `asset_witness` carry no authority and the operator must verify them
+  against the recomputed composed boarding script.
 - `ValidateFlowVersion` must reject any `FlowVersion` other than the
   versions this build implements (currently only `FlowVersionV1`); never
   make it permissive by default.

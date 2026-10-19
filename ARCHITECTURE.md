@@ -38,6 +38,7 @@ package may import from a higher layer.
 | Package | Purpose |
 |---------|---------|
 | [`baselib`](baselib/) | Actor framework (`baselib/actor`) and protofsm state machine engine (`baselib/protofsm`) |
+| [`baselib/tlvutil`](baselib/tlvutil/) | Shared `lnd/tlv` stream and outpoint record helpers for durable message and snapshot codecs (byte-identical to the inlined stream form) |
 | [`build`](build/) | Cross-cutting build metadata and logging infrastructure: deployment mode, build-tag-controlled log type/level, context logger propagation, subsystem logger factory, version string. Imports no repo package |
 | [`chainsource`](chainsource/) | `ChainBackend` interface: fee estimation, block/conf/spend notifications |
 | [`chainbackends`](chainbackends/) | LND-backed `ChainBackend` implementation plus lndclient adapters (`TxBroadcaster`, `PackageSubmitter`) |

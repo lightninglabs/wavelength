@@ -96,7 +96,9 @@ when the local wallet owns the receive script.
   unowned release delivered to a VTXO already forfeiting for another round.
 - `VTXOEvent` — Inbound events (BlockEpochEvent, ForfeitRequest, ForfeitConfirmed, SpendReserveEvent, SpendCompletedEvent, etc.).
 - `VTXOOutMsg` — Outbound messages (ForfeitRequest, ExpiringNotify, StatusUpdate, Terminated).
-- `FilterOptions` / `FilterDescriptors` — VTXO filtering by expiry status, spend state, etc.
+- `FilterOptions` / `FilterDescriptors` — VTXO filtering by expiry status,
+  spend state, minimum amount, and `AssetRef` (exact match on the canonical
+  `TaprootAssetRef`; empty means no asset filter).
 - `GetActiveVTXOCountRequest` / `GetActiveVTXOCountResponse` — Ask-message for querying active VTXO count from the manager.
 - `ManagerMsg` / `ManagerResp` — Type aliases for `actormsg.VTXOManagerMsg` / `actormsg.VTXOManagerResp` (admission types live in `lib/actormsg` to avoid import cycles).
 - `IncomingVTXOHandler` — Actor that consumes `arkrpc.IncomingVTXOEvent` push
@@ -200,6 +202,13 @@ when the local wallet owns the receive script.
   `ListSelectionCandidatesByStatus`, so it excludes them by construction.
 - VTXO actor state is the single source of truth for availability.
 - Forfeit transaction is not broadcast until the connector output's round confirms (atomic replacement).
+- **An explicit forfeit spend path must bind to the VTXO's own script.**
+  `resolveForfeitSpendPath` trusts a caller-supplied
+  `ForfeitRequestEvent.ForfeitSpend` script and control block only after
+  `Descriptor.EffectivePkScript()` byte-matches the stored `PkScript` (the
+  forfeit signature's prevout) and `SpendPath.VerifyBindsToPkScript` accepts
+  it. Any mismatch is rejected before signing or a state change; skipping the
+  check would let a forged path obtain a signature for a different output.
 - Refresh is auto-triggered at configurable height before expiry.
 - `ExpiryConfig.MaxPaymentCLTV` reserves a total Lightning CLTV window above
   the VTXO-specific critical threshold and `MinRefreshBuffer`. Zero disables
@@ -221,8 +230,9 @@ when the local wallet owns the receive script.
   becoming eligible through another actor's terms update bypasses the poll
   delay and still fetches the join-time key. Restart and backward epochs allow
   a fresh lookup. Critical-exit assessment still runs on every critical epoch.
-  The window never postpones critical-exit handling. Operators must make the waiver wide
-  enough for safe maintenance; a late waiver can lead to an on-chain exit.
+  The window never postpones critical-exit handling. Operators must make the
+  waiver wide enough for safe maintenance; a late waiver can lead to an
+  on-chain exit.
 - **Automatic refresh refuses an impossible replacement output.** One-for-one
   maintenance carries each input's amount into a new output before fees, so an
   input below the operator's current minimum VTXO amount cannot succeed even
@@ -275,8 +285,8 @@ when the local wallet owns the receive script.
   `BlockEpochEvent` and consults `CriticalExitAssessor` first. An explicitly
   infeasible verdict (the wallet cannot fund the exit package at the current
   fee rate) is rewritten into the actor-local `criticalRefreshEvent`, which
-  attempts free-window cooperative refresh in `LiveState` and keeps `PendingForfeitState`
-  waiting on its in-flight round. Entering an exit the wallet cannot pay for
+  attempts free-window cooperative refresh in `LiveState` and keeps
+  `PendingForfeitState` waiting on its in-flight round. Entering an exit the wallet cannot pay for
   would abandon a still-available cooperative round for a recovery that cannot
   make progress. `waverpc`'s `VTXO_EXPIRY_STATUS_CRITICAL` comment carries the
   same weakened meaning; do not re-document it as an exit trigger.

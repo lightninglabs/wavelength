@@ -132,6 +132,30 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `serverconn.PubKeyMailboxID`, not config strings. The operator's remote
   mailbox ID and pubkey are fetched via direct gRPC (`fetchCurrentOperatorPubKey`)
   before the mailbox runtime starts.
+- **Mailbox traffic is exchanged only with the operator.**
+  `connectAndBootstrapMailbox` sets `ConnectorConfig.InboundSenders` to the
+  compound `operator:client` mailbox, the operator's own mailbox ID, and
+  `serverconn.IndexerMailboxID`; ingress drops every other sender before
+  version validation. `handleInboundRPC` addresses its response to the cached
+  `Server.remoteMailboxID`, never the request's `ReplyTo`, because the
+  response carries this client's mailbox auth and TLS-bind headers. It maps
+  the `Edge.Send` result through `serverconn.SendResponseError` so a status-only
+  mailbox rejection is not treated as delivered.
+- **Mainnet refuses insecure transport and credentials unless
+  `allow-insecure-mainnet` is set.** Beyond `rpc.notls`/`rpc.no-macaroons`
+  (`validateRPCSecurity`), `Config.Validate()` rejects `server.insecure`,
+  `swap.serverinsecure`, and an explicit `http://` operator or swap REST
+  address (`validateOutboundTLS`), and a non-loopback
+  `rpc.gateway.listenaddr` (`validateGatewayListenAddr`; the gateway serves
+  plain HTTP and forwards the macaroon header; an injected listener is
+  exempt). On the `WAVED_LWWALLET_SEED` auto-unlock path,
+  `envSeedWalletPassword` refuses the public `devWalletPassword` fallback on
+  mainnet when `WAVED_WALLET_PASSWORD` is unset and warns on every network
+  except regtest/simnet. That refusal is the only error
+  `tryAutoUnlockLwwallet`/`tryAutoUnlockBtcwallet` return, and it stops
+  startup; every other auto-unlock failure is logged and leaves the wallet
+  awaiting `InitWallet`/`UnlockWallet`. The btcwallet neutrino cleanup defer
+  is registered before auto-unlock so that early return still tears it down.
 - **Every outbound mailbox edge is wrapped in
   `serverconn.NewAuthenticatedMailboxClient`**, so `Send`, `Pull`, and
   `AckUpTo` all carry `x-mailbox-auth-sig`. The operator authorizes a mailbox
@@ -307,6 +331,22 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   terms (the operator's EstimateFee does not apply it). Estimate
   failures set `estimate_error` and never fail the preview. The real
   refresh path still gates on wallet readiness.
+- `GetBalance.asset_balances` (`asset_balances.go`, `liveAssetBalances`)
+  groups live Taproot Asset holdings by canonical asset reference, sorted by
+  reference. Units of different assets are never summed and no decimals are
+  inferred; carrier satoshis are reported per asset, separate from asset
+  units. An incomplete or inconsistent asset descriptor or an overflow fails
+  the RPC with `Internal` rather than under-reporting. `ListVTXOs.asset_ref`
+  must be a canonical `tapsdk.AssetRef` encoding (`validateAssetRefFilter`,
+  else `InvalidArgument`) and filters both stored and pending-round VTXOs.
+- `fetchUnconfirmedBoardingBalance` counts boarding UTXOs below the
+  operator's advertised `MinConfirmations` (floored at
+  `wallet.MinBoardingConfs`) as unconfirmed, matching the depth at which the
+  wallet records boarding intents.
+- The automatic refresh fee allowances (`AutoRefreshFeeFloorSat`,
+  `AutoRefreshFeeRatePPM`) are deprecated and no longer validated; automatic
+  refresh always requires a zero fee. Non-zero values are accepted for
+  config compatibility and logged once at Info on startup.
 - `SendVTXO` enforces `maxRecipients = 256`, rejects per-recipient amounts
   outside `(0, MaxSatoshi]`, and uses overflow-safe summation; the wallet
   actor repeats these checks as defense-in-depth.
@@ -331,7 +371,14 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `codes.DataLoss`. A legacy binding with no canonical request returns the
   stable session id without recipient outpoints and never sends again. If the
   current outgoing lifecycle is known to have failed, replay returns status
-  `failed` without claiming that its recipient outpoints exist. A same-key
+  `failed` without claiming that its recipient outpoints exist; it sets
+  `failed_before_ponr` only when `oor.OutgoingFailedBeforePONR` proves from
+  the stored snapshot that the operator never co-signed, and reports `false`
+  (with a Warn) when the snapshot cannot be decoded. `GetOORSession` /
+  `ListOORSessions` fill the same field for failed outgoing sessions via
+  `outgoingFailedBeforePONR`, which re-reads the registry row because the
+  scalar status projection does not carry it. Never set it on uncertain
+  evidence: callers treat it as proof that no output exists. A same-key
   retry that reaches the in-memory admission winner before its attempt commits
   returns the stable session id with no unproven outpoints; a later retry
   resolves them from the committed attempt.

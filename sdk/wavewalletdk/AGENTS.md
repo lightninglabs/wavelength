@@ -167,6 +167,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/wave
   daemon value and the swap-enabled 300-block default. To force an explicit
   zero, pass `wavewalletdk.WithMaxPaymentCLTVDisabled()` to `Start`; the mobile
   JSON adapter does this when `max_payment_cltv` is present with value zero.
+- `Config.AutoRefreshFeeFloorSat` / `AutoRefreshFeeRatePPM` are deprecated
+  and kept only for configuration compatibility. They are still forwarded
+  to the daemon, but automatic refresh always requires a zero fee, so they
+  cannot authorize any charge.
 - A caller-supplied `DaemonConfig` is deep-copied via
   `cloneDaemonConfig` before mutation (`RPC.Listener` is replaced;
   `RPCServiceRegistrars` may be appended). New reference-typed fields

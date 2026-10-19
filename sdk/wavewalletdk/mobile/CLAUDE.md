@@ -96,6 +96,10 @@ application-facing wallet API.
   needs both a pointer field in `mobileConfig` and a case in
   `mobileStartOptions`. For `max_payment_cltv`, omission keeps the 300-block
   swap default while explicit `0` disables the payment reserve.
+- The legacy `auto_refresh_fee_floor_sat` / `auto_refresh_fee_rate_ppm` keys
+  are still accepted and forwarded but authorize no fee (automatic refresh is
+  zero-fee only). Validation only keeps the rate representable as `uint32`;
+  do not reintroduce budget-range checks that would reject old host configs.
 
 ## Deep Docs
 

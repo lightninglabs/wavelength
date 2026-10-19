@@ -216,7 +216,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
 ## Relationships
 
 - **Depends on**: `baselib/actor` (`DurableActor`, `TLVMessage`,
-  codec), `baselib/protofsm`, `lib/recovery`, `unrollplan` (pure
+  codec), `baselib/tlvutil` (shared TLV stream helpers for messages,
+  deferred checkpoints, and snapshots), `baselib/protofsm`, `lib/recovery`, `unrollplan` (pure
   planner + TLV state codec), `txconfirm` (broadcast + CPFP +
   confirmation), `chainsource` (best-height, spend watch, fee
   estimate), `vtxo` (`Descriptor`, `VTXOStore`), `db`
@@ -338,9 +339,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   by every transition.
 - **Durable mailbox messages are TLV, not JSON.** Every message in
   `messages.go` implements `actor.TLVMessage` with a hand-written
-  `Encode`/`Decode` driven by `tlv.Stream`. Inner record types start
-  at 1 per message (the outer mailbox codec identifies which message).
-  The checkpoint codec in `snapshot.go` is also TLV.
+  `Encode`/`Decode` built on `baselib/tlvutil` stream helpers. Inner
+  record types start at 1 per message (the outer mailbox codec
+  identifies which message). The checkpoint codec in `snapshot.go` is
+  also TLV. Decoders whose restore logic depends on optional-record
+  presence use `tlvutil.DecodeRecords` (parsed-type map); the rest use
+  `DecodeRecordsDiscardUnknown`. Swapping one for the other changes how
+  absent fields restore.
 - **Checkpoint persists the sweep tx** via `wire.MsgTx.Serialize`
   under `checkpointSweepTxRecordType` so restore produces the exact
   same `b.sweepTx` as the pre-broadcast commit. Version 2 also persists

@@ -25,7 +25,14 @@ operator VTXO floor, `max(dust_limit, min_vtxo_amount_sat)`.
   swap-server credit/pay RPCs, the wallet/daemon (OOR send, receive-script
   allocation, VTXO lookup, and `VTXOFloor` — the live effective operator
   minimum, which must be positive or an error), and the durable control-plane
-  store.
+  store. `CreditDaemon.SendOOR` takes an `existingOnly` flag: when set it only
+  returns the transfer already bound to the key (or gRPC `NotFound`) and never
+  admits a new one.
+- `ErrPayRejected` / `ErrRedeemRejected` / `ErrTopUpRejected` — sentinels a
+  `CreditServer` implementation wraps around a refusal that is final because
+  the server created nothing (`StartPay`, `RedeemCredit`, `CreateCredit` for an
+  Ark top-up). The FSM fails the operation on these; any other error stays
+  retryable.
 - `StartCreditPayRequest` / `StartCreditReceiveRequest` / `RedeemRequest` —
   admission messages for the three operation kinds (`KindPay`, `KindReceive`,
   `KindRedeem`).
@@ -60,6 +67,18 @@ operator VTXO floor, `max(dust_limit, min_vtxo_amount_sat)`.
 - Every external call the behavior makes (`CreateCredit`, `SendOOR`,
   `StartPay`, `RedeemCredit`) must stay idempotent by op key or payment hash,
   since a redelivered message or a reload-after-`commitFailed` re-runs it.
+- **Only proven-final refusals terminate an operation.** A transition calls
+  `b.fail` only for an error wrapping one of the `Err*Rejected` sentinels;
+  transport and ambiguous errors must return an error so the message is
+  redelivered. Bridges must wrap a sentinel only when the server provably
+  created nothing, or a pay/redeem that is already underway would be reported
+  `FAILED`.
+- **Top-up funding refusals are probed before failing.** A `SendOOR`
+  rejected with `ResourceExhausted` or `Aborted` may be caused by this
+  operation's own earlier, accepted send whose response was lost (it holds the
+  locks). `topupFundingState` therefore re-issues `SendOOR` with
+  `existingOnly=true` on the same op key, adopts the returned session, and
+  fails only on `NotFound`.
 - **The server owns the receive invoice lifecycle.** `MaxAwaitingPolls` caps
   only pay top-ups, credit-only pays, and redemptions; `awaitingSettlementState`
   is deliberately uncapped. A local poll count cannot prove that a

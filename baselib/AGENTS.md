@@ -2,9 +2,9 @@
 
 ## Purpose
 
-Foundational infrastructure providing the actor framework (`baselib/actor`) and
-the protofsm state machine engine (`baselib/protofsm`) that all domain packages
-build on.
+Foundational infrastructure providing the actor framework (`baselib/actor`),
+the protofsm state machine engine (`baselib/protofsm`), and shared TLV codec
+helpers (`baselib/tlvutil`) that all domain packages build on.
 
 ## Sub-Packages
 
@@ -23,6 +23,11 @@ build on.
 - `State[InternalEvent, OutboxEvent, Env]` — Abstract state with ProcessEvent and IsTerminal.
 - `StateTransition[InternalEvent, OutboxEvent, Env]` — Next state + emitted events from a transition.
 - `EmittedEvent[InternalEvent, OutboxEvent]` — Internal events (recursive) + outbox events (external).
+
+### baselib/tlvutil
+- Shared `lnd/tlv` stream helpers (`EncodeRecords`, `DecodeRecords`,
+  `OutPointRecord`) for durable message and snapshot codecs; byte-identical
+  to the inlined stream form. See `baselib/tlvutil/CLAUDE.md`.
 
 ### baselib/example
 - Runnable reference wiring a `protofsm` state machine to `actor` services;

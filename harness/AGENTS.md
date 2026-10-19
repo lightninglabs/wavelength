@@ -68,6 +68,10 @@ helpers for end-to-end tests.
   branches, incomplete custom-account reconstruction, and spending restored
   default-account coins. The custom fixture is watch-only because the pinned
   image predates native custom-account creation.
+- The tapd container runs with `--proofactivationheight=1` so regtest
+  exercises the v0.8.5 proof rules that tap-sdk constructs and verifies.
+  Keep the `DefaultOptions` tapd/LND image tags aligned with the tap-sdk
+  version `tapassets` requires.
 - Container teardown (`Stop`) is guarded by `sync.Once`; a signal handler
   also calls `Stop` as a safety net against orphaned containers.
 

@@ -38,7 +38,9 @@ pulling the modernc sqlite driver into the browser bundle.
   map to file contents on the fly, enabling cross-database schema portability
   without duplicate SQL files.
 - `migrationLogger` — Adapts `btclog.Logger` to the golang-migrate logger
-  interface with level-aware routing.
+  interface. `Printf` progress lines always log at info (trailing newline
+  trimmed), never at the logger's current level, so a host that raises the
+  threshold to error silences them instead of seeing them as errors.
 
 ## Relationships
 

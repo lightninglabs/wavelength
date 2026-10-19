@@ -149,6 +149,18 @@ default builds avoid the swap executor's dependency graph.
   (`creditProjectInterval`) and only re-emits an operation when its
   `credit.State` changed since the last poll, keyed by `OpID` in an
   in-process (non-durable) map that starts empty on restart.
+- A completed credit-only send's terminal row must carry the payment
+  preimage (proof of payment for L402/MPP buyers). `attachCreditPreimage`
+  reads it from the swap summary via `SwapService.GetSwap`, bounded by
+  `creditLookupTimeout`. Only a transient failure (`Unavailable`, deadline)
+  leaves the op unprojected for retry on the next tick, escalating from Debug
+  to Warn after `creditLookupWarnAfter` consecutive misses; `NotFound`, other
+  codes, or an empty preimage project the row without one, since the credit
+  FSM cannot reach `Completed` before the swap row stores the preimage.
+  `creditLookupFails` is touched only by the credit poll goroutine (no lock).
+- The activity projection persists `Progress.Preimage`, and
+  `mergeActivityContext` carries an existing preimage forward when a later
+  update omits it, so activity lists keep returning the stored preimage.
 - Background goroutines (monitor loop, deadline watcher, resume
   sweep) are anchored to the daemon root context, NEVER to RPC-call
   contexts. An RPC client disconnect cannot cancel in-flight work.

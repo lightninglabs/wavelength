@@ -160,7 +160,9 @@ state transitions and validation rules live under [Invariants](#invariants).
   `SubmitForfeitSigRequest`, `SubmitVTXOForfeitSigsToServer`.
 - **Sends → `vtxo`**: forfeit/spend/block-epoch events listed above;
   manager-level `VTXOCreatedNotification`, `VTXOTerminatedMsg`.
-- **Sends → `wallet`**: `RegisterConfirmationRequest`.
+- **Sends → `wallet`**: `RegisterConfirmationRequest`,
+  `ReleaseBoardingInFlightRequest` (Tell, once per failed round carrying
+  board-trigger outpoints).
 - **Sends → `OwnedScriptRegistrar`** (waved adapter over the OOR
   artifact store): `RegisterOwnedScript(pkScript, ownerKey)`.
 - **Sends → `ledger`** (when `LedgerSink` is `fn.Some`), origin-routed
@@ -446,6 +448,18 @@ state transitions and validation rules live under [Invariants](#invariants).
   blocking Ask, but Start runs on the boot goroutine, not the receive
   goroutine, and `RegisterWithSystem` starts the receive loop first, so
   the wallet's Asks are served concurrently and no circular wait forms.
+- **A failed round hands its boarding outpoints back to the wallet.**
+  `registerBoard` records the trigger's outpoints on
+  `RoundFSM.BoardingOutpoints`; `releaseBoardingOnFailure` runs after every
+  `askEventAndProcessOutbox` and, once the FSM sits in `ClientFailedState`,
+  Tells `wallet.ReleaseBoardingInFlightRequest` and clears the slice. The
+  check reads FSM state, not the outbox, because most failure transitions
+  emit no `RoundFailedNotification`. The Tell must use the turn context (it
+  spills to overflow rather than parking on a full wallet mailbox); never
+  swap it for a blocking send while the wallet Asks this actor.
+- **Automatic-refresh quote rejection releases inputs before telling the
+  server.** Local rollback is dispatched ahead of `JoinRoundRejectOutbox`,
+  so a failed server Tell cannot strand reserved refresh inputs.
 
 ## Deep Docs
 
@@ -462,3 +476,5 @@ metadata prevents a leaf from entering wallet inventory.
 
 `JoinRoundRequest` proto conversion preserves the boarding asset disclosure
 in both directions, cloning proof, digest, commitment, and witness bytes.
+Both `ToProto` and `FromProto` run `types.BoardingRequest.ValidateAssetFields`
+per entry, so a half-populated disclosure fails at the sender and receiver.

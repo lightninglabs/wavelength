@@ -76,6 +76,22 @@ tap-sdk. Durable journals retain committed packages for restart recovery.
   transitions still in the path.
 - An empty `Witness` on a source or root input asks tapd to sign that asset
   input; a non-empty stack is taken as caller-supplied authorization.
+- **`Onboard` is idempotent per `RequestID`.** The request digest is
+  independent of proof ordering, and the owner key and any asset-change keys
+  are pinned in the journal before commit so retries rebuild the same split.
+  After commit succeeds, every retry reuses the exact package and final PSBT.
+  An unknown commit outcome needs external lease reconciliation; a publish
+  attempt is journaled before calling tapd, so an ambiguous publish
+  reconciles against tapd's saved transaction instead of publishing again.
+  Both surface as `ErrReconciliationRequired`.
+- **Use one `Onboarder` per `Store`, and serialize wallet input selection.**
+  The package does not lock across instances; the `OnboarderConfig.Signer`
+  must finalize every input, including wallet-added fee inputs.
+- **An `OnboardingResult` is not yet boardable.** The caller must wait for
+  confirmation and export the proof by `ScriptKey` before joining a round.
+  The OP_TRUE asset script key is anyone-can-spend by design; custody rests
+  on the composed Bitcoin boarding policy, and tapd does not list the output
+  as spendable inventory.
 
 ## Deep Docs
 

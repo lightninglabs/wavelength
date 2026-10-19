@@ -62,3 +62,8 @@ helper file (`errors.go`) for structured wallet-lifecycle errors.
   reports confirmed live holdings by asset; those carriers are excluded from
   the Bitcoin spendable balance. Listing responses expose the commitment root,
   but never the sealed transfer package.
+- `failed_before_ponr` (on `SendOORResponse` replays with status `failed`, and
+  on `OORSessionInfo`) is true only when the operator provably never
+  co-signed a spend of the inputs. False is ambiguous: a post-PONR failure, a
+  non-failed session, or a failure recorded before origin tracking. Callers
+  must keep treating any failed session without the flag as unresolved.

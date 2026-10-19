@@ -86,6 +86,15 @@ transport, without duplicating Ark runtime behavior.
 - Pre-1.0, some methods intentionally return `waverpc` protobuf types
   directly. Those passthrough APIs are not yet treated as stable SDK-owned
   models.
+- `OORSendResult.Failed` is set when a keyed `SendOOR` replay reports the
+  earlier attempt durably failed (status `failed`); such a result has a
+  session ID but no recipient outpoint. `FailedBeforePONR` is true only when
+  `Failed` is set and the daemon proved the failure preceded the point of no
+  return (the operator never co-signed, so no output was created; `sdk/swaps`
+  uses this to fail a pay swap whose keyed funding replay failed). It is
+  false for later-state failures and for older daemons that do not report
+  the distinction, so callers must treat `false` as "outputs may
+  exist", never as "proven post-PONR".
 - Receive-auth signing and ECDH are always delegated to the daemon; the SDK
   never holds raw private key material for receive-auth operations.
 

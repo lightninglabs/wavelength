@@ -12,7 +12,13 @@ background ingress polling with event routing.
 - `ServerConnectionActor` — Core behavior handling egress messages and the ingress loop. Dispatches `DurableUnaryQuery` values generically via `buildDurableUnary`.
 - `ArkVersionNegotiator` — Single home for Ark protocol version selection (`ark_version.go`). `Bootstrap` performs the one bootstrap `GetInfo` over the operator's **direct** ArkService connection (`ArkVersionGetInfoClient`, never the mailbox edge) and returns the response + selected version; the daemon parses domain terms from the same response. The free function `ValidateRefreshSelection(resp, boundVersion)` enforces that a refresh-only `GetInfo` keeps the runtime bound (returns a permanent `*StatusError` on drift/disable). Enabled versions are derived from the response's ACTIVE `ArkVersionPolicy` entries.
 - `UnaryFacade` — Implements `mailboxrpc.RPCClient` for generated RPC stubs (low-latency path). Bounded waits come from the caller's context plus the response registry TTL; there is no separate timeout entry point. `SendRPC` gates on `ConnectorConfig.MaxInFlightUnary` and fails a send that would exceed it with `codes.ResourceExhausted`.
-- `ConnectorConfig` — Wiring configuration (edge address, mailbox IDs, dispatchers, store, durable unary builder, `EgressWorkers`, `MaxInFlightUnary`). `EgressWorkers` sizes the egress worker pool (default `DefaultEgressWorkers` = 4); `<= 1` keeps the legacy single sender. The `DurableUnaryBuilder` field must be set to handle `DurableUnaryQuery` message types; otherwise those messages are rejected. The `AuthSignature` field holds the Schnorr auth sig injected into every outbound envelope via `mergeAuthHeaders` (auth header always wins over caller-provided headers).
+- `ConnectorConfig` — Wiring configuration (edge address, mailbox IDs, dispatchers, store, durable unary builder, `EgressWorkers`, `MaxInFlightUnary`). `EgressWorkers` sizes the egress worker pool (default `DefaultEgressWorkers` = 4); `<= 1` keeps the legacy single sender. The `DurableUnaryBuilder` field must be set to handle `DurableUnaryQuery` message types; otherwise those messages are rejected. The `AuthSignature` field holds the Schnorr auth sig injected into every outbound envelope via `mergeAuthHeaders` (auth header always wins over caller-provided headers). `InboundSenders`
+  allowlists the envelope senders ingress dispatches (empty allows all);
+  `waved` sets it to the compound `operator:client` mailbox, the operator's
+  own mailbox ID, and `IndexerMailboxID` (`svc:indexer`).
+- `SendResponseError` — Maps an `Edge.Send` result to the caller's error so a
+  mailbox rejection reported only in the response status is not mistaken for
+  a delivered envelope. Use it for any direct `Edge.Send` outside the actor.
 - `PubKeyMailboxID` — Derives canonical mailbox ID from a public key (hex-encoded compressed SEC). Panics on nil.
 - `MailboxAuthDigest` / `MailboxAuthMessage` — BIP-340 tagged hash digest construction for mailbox auth signatures. Uses `chainhash.TaggedHash` with the `MailboxAuthTagStr` domain separator over `senderCompressedPubKey || recipientMailboxID`. **Do not read this as preventing cross-server replay on its own** — see the invariant below for which callers get that property and which do not.
 - `SignMailboxAuth` / `VerifyMailboxAuth` / `ParseMailboxPubKey` — Schnorr sign/verify helpers for pubkey-derived mailbox identity.
@@ -136,6 +142,13 @@ background ingress polling with event routing.
   (`validateInboundEnvelope`); a mismatch is always a permanent
   `*mailboxconn.StatusError` — there is no legacy zero-version fallback,
   since client and operator are always deployed with a negotiated version.
+- **Foreign senders are dropped before version validation.** When
+  `ConnectorConfig.InboundSenders` is non-empty, `dispatchBatch` and
+  `runFoldedDispatch` (`dropForeignSenders`) skip envelopes from any other
+  sender with an Info log before `validateInboundEnvelope`, so a foreign
+  envelope can neither reach a waiter or route nor halt ingress with a bad
+  version pair. The batch cursor still covers them, so they are acknowledged
+  and never re-pulled. Any new ingress path must apply the same filter first.
 
 ## Deep Docs
 

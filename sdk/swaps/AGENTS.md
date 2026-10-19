@@ -158,6 +158,31 @@ result into an `IncomingVHTLCNotification`.
   `ExistingOnly`: an existing keyed winner is recovered and protected, a
   daemon `NotFound` expires the swap, and unavailable or pending results remain
   retryable. A post-deadline reconciliation must never admit a new vHTLC.
+- **A funding admission rejection is probed before failing.** A
+  `ResourceExhausted` or `Aborted` send (`isFundingAdmissionRejected`) may be
+  this swap's own earlier attempt holding the inputs with its response lost,
+  so `ensureFundingSubmitted` re-sends with `ExistingOnly` on the same key: a
+  result is adopted, `NotFound` fails the swap terminally (nothing was
+  funded), and a probe error stays retryable. Any other send error stays
+  retryable.
+- **Only a pre-PONR OOR failure proves no vHTLC exists.** The daemon's
+  `FailedBeforePonr` (`OORSendResult.FailedBeforePONR` on a keyed replay,
+  `OORSessionInfo.failed_before_ponr` on a session read) is the only signal
+  that the operator never co-signed a spend. Pay funding (keyed replay via
+  `handleFailedFundingReplay`, or `checkFundingRejected` in wait loops) fails
+  terminally only when it is set; otherwise the vHTLC may exist and the swap
+  goes to `NeedsIntervention` with refund recovery left armed. An unset flag
+  (including from an older daemon) is treated as "not proven pre-PONR".
+- **Admitting a receive claim OOR is not completing it.** Once a
+  `claimSessionID` is persisted, `resolveClaimSession` reads the OOR's
+  durable status: `COMPLETED` cancels the claim recovery and completes the
+  swap; in-flight keeps polling with recovery armed; `FAILED` before the PONR
+  clears the session id and resubmits a fresh claim (escalation still
+  applies); `FAILED` after the PONR first checks the indexer (completing if
+  the vHTLC was claimed), then runs the claim-recovery escalation and
+  reconciliation, and parks for intervention only if recovery is still
+  dormant. Never resubmit a claim after a post-PONR failure — it could
+  conflict with a co-signed spend.
 - **An inconclusive live observation must not end the claim wait.**
   `waitForClaimPreimage` treats a `retryableActionError` from
   `tryCooperativeRefund` as "keep polling": it logs at debug and falls
@@ -178,7 +203,8 @@ result into an `IncomingVHTLCNotification`.
 - Amount mismatch on a live vHTLC triggers `RefundInitiated` (pay) or
   `Failed` (receive) **immediately** — never `NeedsIntervention`.
 - `NeedsIntervention` is reserved for anomalous server behavior
-  (e.g., vHTLC spent without a matching preimage).
+  (e.g., vHTLC spent without a matching preimage) and for an OOR that failed
+  after the point of no return, where the vHTLC may exist or be spent.
 - `PaySession` / `ReceiveSession` are NOT goroutine-safe; `Wait`,
   `Claim`, `WaitForFunding`, and `State` must not be called
   concurrently.

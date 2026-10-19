@@ -143,7 +143,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/ledger.<
 ## Relationships
 
 - **Depends on**: `baselib/actor` (durable actor framework, TLV codec,
-  service keys), `lnd/clock` (injectable time source).
+  service keys), `baselib/tlvutil` (TLV stream helpers and
+  `OutPointRecord`), `lnd/clock` (injectable time source).
 - **Depended on by**: `db` (provides `LedgerStoreDB`,
   `UTXOAuditStoreDB`), `waved` (wires actor; exposes
   `LedgerStoreDB` to RPC), `round` / `oor` / `vtxo` / `wallet` (hold
@@ -203,6 +204,12 @@ or balance reconciliation. Required emission pairs:
   `CHECK (amount_sat > 0)`. The ledger retry policy immediately
   dead-letters `ErrInvalidMessage` and `ErrIdempotencyConflict`; transient
   storage and runtime failures retain the durable actor's bounded backoff.
+- **Durable message wire bytes are pinned.** Golden fixtures in
+  `messages_roundtrip_test.go` fix the encoding of all seven durable
+  messages and the decoding of the original stored format, since mailbox
+  rows written by older binaries must still decode. A malformed outpoint
+  record (`tlvutil.ErrInvalidOutPointLength`) is mapped back to
+  `ErrInvalidMessage` so it keeps dead-lettering immediately.
 - Unknown fee types and VTXO sources error out (no silent
   misclassification). Use the exported `FeeType*`/`Source*`/
   `Classification*` constants, not string literals.

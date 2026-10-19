@@ -84,7 +84,11 @@ server during round participation. These types are used across `round`, `vtxo`,
 
 - Asset boarding authenticates the reference, amount, digest, and commitment
   leaf hash. Proofs and witnesses are verified separately. Empty `AssetRef`
-  retains the Bitcoin-only join-auth encoding.
+  retains the Bitcoin-only join-auth encoding. The four signed asset TLV
+  records must appear together with a non-empty ref, or decode fails.
+  `BoardingRequest.ValidateAssetFields` enforces the shape: no asset field
+  without `AssetRef`; with it, a non-zero amount and 32-byte digest and leaf
+  hash.
 
 ## Deep Docs
 

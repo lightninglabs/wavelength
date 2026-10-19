@@ -115,6 +115,25 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   minimum. Do not add a zero/dust fallback here — the effective floor is
   `max(dust_limit, min_vtxo_amount_sat)` and it can be raised by the operator
   at any time.
+- `creditServerBridge` wraps a swap-server refusal in a `credit.Err*Rejected`
+  sentinel only when the server provably created nothing, since the credit
+  actor fails the operation on those and retries everything else:
+  - `StartPay`: `InvalidArgument`, `Unimplemented`, or `FailedPrecondition`
+    carrying an `errdetails.ErrorInfo` reason (`CREDIT_PAY_RELEASED`,
+    `CREDIT_SHORTFALL`) → `ErrPayRejected`, but only after
+    `hasSwapForInvoice` confirms no local swap record exists for the payment
+    hash. An existing record, or a probe error, keeps the error retryable
+    because a lost earlier `StartPay` may already have started the pay.
+  - `RedeemCredit`: any `InvalidArgument` → `ErrRedeemRejected`.
+  - `CreateCredit` (Ark top-up only): `InvalidArgument` with the
+    `CREDIT_TOPUP_BELOW_FLOOR` reason → `ErrTopUpRejected`. Match on the
+    reason, not the code: the expired replay of an existing top-up also
+    returns `InvalidArgument` and must stay retryable.
+  Reasons are matched as exact strings and only within the
+  `creditErrorDomain`; they are the swap server's wire contract. A plain
+  `FailedPrecondition` without a reason stays retryable. The REST transport
+  must preserve status details (see `rpc/restclient`) for these matches to
+  work.
 - `newSwapServerClients` wires **two** independent daemon-backed signers into
   every swap-server transport: `RPCServer.SignMailboxAuth` for the mailbox
   edge's `x-mailbox-auth-sig` header, and `RPCServer.SignCreditAccountAuth`

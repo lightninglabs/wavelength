@@ -30,6 +30,7 @@ everything from first principles on each call.
 - **Depends on**: `lib/recovery` (immutable `Proof` + `Node` +
   `ComputeMaturityHeight`), `github.com/lightningnetwork/lnd/fn/v2`
   (`Option`, `MapOptionZ`), `github.com/lightningnetwork/lnd/tlv` (state
+  codec), `baselib/tlvutil` (stream encode/decode helpers for the state
   codec).
 - **Depended on by**: `unroll` (`VTXOUnrollActor` drives `Planner` on every
   block height event; `EncodeState` / `DecodeState` are used by the actor's
