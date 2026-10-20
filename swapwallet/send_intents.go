@@ -10,9 +10,26 @@ import (
 	"time"
 
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
-const sendIntentTTL = 5 * time.Minute
+const (
+	sendIntentTTL = 5 * time.Minute
+
+	// maxPreparedSendIntents bounds the work done by lazy expiration scans
+	// and the number of caller-owned plans retained during the intent TTL.
+	maxPreparedSendIntents = 256
+
+	// maxPreparedSendBytes bounds the caller-owned strings retained across
+	// all live intents. The estimate intentionally excludes fixed-size
+	// fields.
+	maxPreparedSendBytes = 1 << 20
+
+	// maxPreparedSendNoteBytes keeps one note from consuming the whole
+	// store.
+	maxPreparedSendNoteBytes = 4096
+)
 
 type preparedSendKind uint8
 
@@ -57,8 +74,9 @@ type prepareSendPreview struct {
 }
 
 type preparedSendStore struct {
-	mu      sync.Mutex
-	intents map[string]*preparedSendIntent
+	mu          sync.Mutex
+	intents     map[string]*preparedSendIntent
+	storedBytes int
 }
 
 func newPreparedSendStore() *preparedSendStore {
@@ -72,6 +90,10 @@ func (s *preparedSendStore) put(intent *preparedSendIntent) (string, error) {
 	if s == nil || intent == nil {
 		return "", ErrInvalidSendIntent
 	}
+	if len(intent.note) > maxPreparedSendNoteBytes {
+		return "", status.Errorf(codes.InvalidArgument, "note exceeds "+
+			"maximum length of %d bytes", maxPreparedSendNoteBytes)
+	}
 
 	id, err := newSendIntentID()
 	if err != nil {
@@ -84,9 +106,22 @@ func (s *preparedSendStore) put(intent *preparedSendIntent) (string, error) {
 	now := time.Now()
 	s.pruneExpiredLocked(now)
 
+	intentBytes := preparedSendIntentBytes(intent)
+	if len(s.intents) >= maxPreparedSendIntents {
+		return "", status.Errorf(codes.ResourceExhausted, "prepared "+
+			"send intent limit of %d reached",
+			maxPreparedSendIntents)
+	}
+	if intentBytes > maxPreparedSendBytes-s.storedBytes {
+		return "", status.Errorf(codes.ResourceExhausted, "prepared "+
+			"send intent byte limit of %d reached",
+			maxPreparedSendBytes)
+	}
+
 	intent.id = id
 	intent.expiresAt = now.Add(sendIntentTTL)
 	s.intents[id] = intent
+	s.storedBytes += intentBytes
 
 	return id, nil
 }
@@ -107,12 +142,12 @@ func (s *preparedSendStore) consume(id string) (*preparedSendIntent, error) {
 
 	intent, ok := s.intents[id]
 	if !ok || now.After(intent.expiresAt) {
-		delete(s.intents, id)
+		s.deleteLocked(id)
 
 		return nil, ErrInvalidSendIntent
 	}
 
-	delete(s.intents, id)
+	s.deleteLocked(id)
 
 	return intent, nil
 }
@@ -151,9 +186,36 @@ func (s *preparedSendStore) earmarkedCreditSat() uint64 {
 func (s *preparedSendStore) pruneExpiredLocked(now time.Time) {
 	for id, intent := range s.intents {
 		if now.After(intent.expiresAt) {
-			delete(s.intents, id)
+			s.deleteLocked(id)
 		}
 	}
+}
+
+// deleteLocked removes an intent and releases its retained-byte accounting.
+func (s *preparedSendStore) deleteLocked(id string) {
+	intent, ok := s.intents[id]
+	if !ok {
+		return
+	}
+
+	s.storedBytes -= preparedSendIntentBytes(intent)
+	delete(s.intents, id)
+}
+
+// preparedSendIntentBytes estimates the caller-owned variable data retained by
+// an intent. Fixed-size fields are bounded by the count limit.
+func preparedSendIntentBytes(intent *preparedSendIntent) int {
+	if intent == nil {
+		return 0
+	}
+
+	size := len(intent.invoice) + len(intent.onchainAddress) +
+		len(intent.note)
+	for _, outpoint := range intent.selectedOutpoints {
+		size += len(outpoint)
+	}
+
+	return size
 }
 
 func newSendIntentID() (string, error) {

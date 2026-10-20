@@ -27,6 +27,18 @@ import (
 // allocating large backing slices.
 const MaxQuoteEntriesPerClient = 1024
 
+const (
+	// maxBatchTreeNodes bounds nodes across every tree path in one batch.
+	maxBatchTreeNodes = roundpb.DefaultMaxTreeNodes
+
+	// maxBatchTreeOutputs allows two outputs per admitted tree node.
+	maxBatchTreeOutputs = 2 * maxBatchTreeNodes
+
+	// maxBatchTreeCosigners bounds aggregate MuSig2 key parsing and
+	// aggregation while allowing broad paths near the root of large trees.
+	maxBatchTreeCosigners = 10 * maxBatchTreeNodes
+)
+
 // FromProto populates a JoinRoundQuoteReceived from a
 // roundpb.JoinRoundQuote proto. The round_id is parsed as a UUID
 // string (matching the server's envelope encoding), the quote_id is
@@ -191,6 +203,10 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 	}
 	copy(e.RoundID[:], pb.RoundId)
 
+	if err := validateBatchTreeBudget(pb.VtxoTreePaths); err != nil {
+		return err
+	}
+
 	// Deserialize PSBT. The batch PSBT is semantically required: it
 	// carries the unsigned commitment transaction with WitnessUtxo
 	// data needed for Taproot sighash computation.
@@ -352,6 +368,43 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 		return err
 	}
 	e.FlowVersion = roundpb.FlowVersion(pb.GetFlowVersion())
+
+	return nil
+}
+
+// validateBatchTreeBudget cheaply bounds all repeated tree fields before any
+// node performs public-key parsing or MuSig2 aggregation.
+func validateBatchTreeBudget(paths map[int32]*roundpb.VTXOTree) error {
+	var nodes, outputs, cosigners int
+	for _, path := range paths {
+		if path == nil {
+			continue
+		}
+		nodes += len(path.Nodes)
+		if nodes > maxBatchTreeNodes {
+			return fmt.Errorf("vtxo_tree_paths contain %d nodes, "+
+				"exceeds aggregate maximum %d", nodes,
+				maxBatchTreeNodes)
+		}
+		for _, node := range path.Nodes {
+			if node == nil {
+				continue
+			}
+			outputs += len(node.Outputs)
+			if outputs > maxBatchTreeOutputs {
+				return fmt.Errorf("vtxo_tree_paths contain %d "+
+					"outputs, exceeds aggregate maximum %d",
+					outputs, maxBatchTreeOutputs)
+			}
+			cosigners += len(node.CoSigners)
+			if cosigners > maxBatchTreeCosigners {
+				return fmt.Errorf("vtxo_tree_paths contain %d "+
+					"cosigners, exceeds aggregate "+
+					"maximum %d", cosigners,
+					maxBatchTreeCosigners)
+			}
+		}
+	}
 
 	return nil
 }

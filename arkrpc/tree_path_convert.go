@@ -37,14 +37,20 @@ func TreePathFromTree(t *tree.Tree) (*TreePath, error) {
 	}, nil
 }
 
-// DefaultMaxTreePathNodes is the upper bound on the number of nodes
-// allowed in a TreePath decoded from an indexer response. A path is a
-// slice through a commitment tree, so it is far smaller than a whole
-// tree in practice; the bound is deliberately set to the same generous
-// figure roundpb.DefaultMaxTreeNodes uses for a full tree, so the two
-// decode boundaries agree and no shape that survives one is rejected by
-// the other purely on size.
-const DefaultMaxTreePathNodes = 50_000
+// DefaultMaxTreePathNodes is the upper bound on the number of nodes allowed in
+// a TreePath decoded from an indexer response. A path is smaller than a whole
+// commitment tree in practice; using the same bound as
+// roundpb.DefaultMaxTreeNodes keeps the two untrusted decode boundaries in
+// agreement.
+const DefaultMaxTreePathNodes = 5_000
+
+const (
+	// defaultMaxTreePathOutputs allows two outputs per admitted path node.
+	defaultMaxTreePathOutputs = 2 * DefaultMaxTreePathNodes
+
+	// defaultMaxTreePathCoSigners bounds aggregate public-key parsing.
+	defaultMaxTreePathCoSigners = 10 * DefaultMaxTreePathNodes
+)
 
 // TreePathToTreeOption is a functional option for TreePathToTree that
 // allows callers to override default validation parameters.
@@ -96,6 +102,10 @@ func TreePathToTree(tp *TreePath,
 	if cfg.maxNodes > 0 && len(tp.Nodes) > cfg.maxNodes {
 		return nil, fmt.Errorf("tree path has %d nodes, exceeds "+
 			"maximum %d", len(tp.Nodes), cfg.maxNodes)
+	}
+
+	if err := validateTreePathBudget(tp); err != nil {
+		return nil, err
 	}
 
 	// Convert all proto nodes to Go nodes.
@@ -190,6 +200,33 @@ func TreePathToTree(tp *TreePath,
 		BatchOutput:        batchOut,
 		SweepTapscriptRoot: tp.SweepTapscriptRoot,
 	}, nil
+}
+
+// validateTreePathBudget bounds repeated node fields before any transaction or
+// public-key parsing occurs.
+func validateTreePathBudget(tp *TreePath) error {
+	var outputs, coSigners int
+	for _, node := range tp.Nodes {
+		if node == nil {
+			continue
+		}
+
+		outputs += len(node.Outputs)
+		if outputs > defaultMaxTreePathOutputs {
+			return fmt.Errorf("tree path has %d outputs, exceeds "+
+				"aggregate maximum %d", outputs,
+				defaultMaxTreePathOutputs)
+		}
+
+		coSigners += len(node.CoSigners)
+		if coSigners > defaultMaxTreePathCoSigners {
+			return fmt.Errorf("tree path has %d co-signers, "+
+				"exceeds aggregate maximum %d", coSigners,
+				defaultMaxTreePathCoSigners)
+		}
+	}
+
+	return nil
 }
 
 // flattenTreePathNode recursively flattens a tree node into the nodes slice

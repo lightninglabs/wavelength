@@ -79,6 +79,307 @@ func TestResumePendingStartsWorkersAndDedupes(t *testing.T) {
 	require.True(t, fakeClient.sawPendingOnlyList())
 }
 
+// TestResumePendingBoundsReceiveWorkers verifies restart admission applies the
+// same accumulated receive-worker limit as live RPC admission.
+func TestResumePendingBoundsReceiveWorkers(t *testing.T) {
+	t.Parallel()
+
+	hash1 := testHash(3)
+	hash2 := testHash(4)
+	fakeClient := newFakeSwapRuntime(
+		swaps.SwapSummary{
+			Direction: swaps.SwapDirectionReceive, PaymentHash: hash1,
+			Pending: true,
+		},
+		swaps.SwapSummary{
+			Direction: swaps.SwapDirectionReceive, PaymentHash: hash2,
+			Pending: true,
+		},
+	)
+	service := newTestSwapClientService(fakeClient)
+	service.maxActiveReceives = 1
+	defer service.cancel()
+
+	service.resumePending(t.Context())
+	fakeClient.awaitReceiveResume(t, hash1)
+
+	require.Equal(t, 1, fakeClient.receiveResumeCount(hash1))
+	require.Equal(t, 0, fakeClient.receiveResumeCount(hash2))
+
+	_, err := service.ResumeSwap(
+		t.Context(), &swapclientrpc.ResumeSwapRequest{
+			PaymentHash: hex.EncodeToString(hash2[:]),
+			Direction: swapclientrpc.
+				SwapDirection_SWAP_DIRECTION_RECEIVE,
+		},
+	)
+	require.NoError(t, err)
+}
+
+// TestPendingReceiveStartsWhenWorkerFinishes verifies a persisted receive
+// queued at the worker limit takes ownership of the slot released by its
+// predecessor.
+func TestPendingReceiveStartsWhenWorkerFinishes(t *testing.T) {
+	t.Parallel()
+
+	firstHash := testHash(30)
+	secondHash := testHash(31)
+	fakeClient := newFakeSwapRuntime(swaps.SwapSummary{
+		Direction:   swaps.SwapDirectionReceive,
+		PaymentHash: secondHash,
+		Pending:     true,
+	})
+	service := newTestSwapClientService(fakeClient)
+	service.maxActiveReceives = 1
+	service.activeReceives = 1
+	firstKey := hex.EncodeToString(firstHash[:])
+	service.active[firstKey] = struct{}{}
+	defer service.cancel()
+
+	require.Equal(
+		t, workerQueued, service.enqueuePendingReceive(secondHash),
+	)
+	service.finishReceiveWorker(firstKey)
+	fakeClient.awaitReceiveResume(t, secondHash)
+
+	require.Equal(t, 1, fakeClient.receiveResumeCount(secondHash))
+}
+
+// TestPendingReceiveRefillsOverflow verifies a worker completion refills a
+// partially drained FIFO from the durable backlog.
+func TestPendingReceiveRefillsOverflow(t *testing.T) {
+	t.Parallel()
+
+	firstHash := testHash(70)
+	overflowHash := testHash(200)
+	queueHead := testHash(80)
+	fakeClient := newFakeSwapRuntime(
+		swaps.SwapSummary{
+			Direction:   swaps.SwapDirectionReceive,
+			PaymentHash: queueHead,
+			Pending:     true,
+		},
+		swaps.SwapSummary{
+			Direction:   swaps.SwapDirectionReceive,
+			PaymentHash: overflowHash,
+			Pending:     true,
+		},
+	)
+	service := newTestSwapClientService(fakeClient)
+	service.maxActiveReceives = 1
+	service.activeReceives = 1
+	firstKey := hex.EncodeToString(firstHash[:])
+	service.active[firstKey] = struct{}{}
+
+	for i := byte(80); i < 144; i++ {
+		hash := testHash(i)
+		service.pendingReceives = append(service.pendingReceives, hash)
+		service.pendingReceiveSet[hex.EncodeToString(hash[:])] =
+			struct{}{}
+	}
+	service.receiveQueueOverflow = true
+
+	service.finishReceiveWorker(firstKey)
+	fakeClient.awaitReceiveResume(t, queueHead)
+	require.Eventually(t, func() bool {
+		service.mu.Lock()
+		defer service.mu.Unlock()
+
+		_, queued := service.pendingReceiveSet[hex.EncodeToString(
+			overflowHash[:],
+		)]
+
+		return queued && !service.receiveRefillRunning
+	}, 2*time.Second, 10*time.Millisecond)
+
+	service.mu.Lock()
+	service.pendingReceives = nil
+	service.pendingReceiveSet = make(map[string]struct{})
+	service.receiveQueueOverflow = false
+	service.mu.Unlock()
+	service.cancel()
+}
+
+// TestReservedReceiveReleaseStartsPending verifies a failed pre-creation slot
+// reservation cannot strand restart work that arrived while it was held.
+func TestReservedReceiveReleaseStartsPending(t *testing.T) {
+	t.Parallel()
+
+	hash := testHash(32)
+	fakeClient := newFakeSwapRuntime(swaps.SwapSummary{
+		Direction:   swaps.SwapDirectionReceive,
+		PaymentHash: hash,
+		Pending:     true,
+	})
+	service := newTestSwapClientService(fakeClient)
+	service.maxActiveReceives = 1
+	defer service.cancel()
+
+	require.True(t, service.reserveReceiveWorker())
+	require.Equal(t, workerQueued, service.enqueuePendingReceive(hash))
+	service.releaseReceiveWorker()
+	fakeClient.awaitReceiveResume(t, hash)
+
+	require.Equal(t, 1, fakeClient.receiveResumeCount(hash))
+}
+
+// TestPendingReceiveRefillRetriesAfterFailure verifies the final worker can
+// recover durable overflow even when the first rescan fails.
+func TestPendingReceiveRefillRetriesAfterFailure(t *testing.T) {
+	t.Parallel()
+
+	runningHash := testHash(33)
+	pendingHash := testHash(34)
+	fakeClient := newFakeSwapRuntime(swaps.SwapSummary{
+		Direction:   swaps.SwapDirectionReceive,
+		PaymentHash: pendingHash,
+		Pending:     true,
+	})
+	fakeClient.listSummaryErrs = []error{errors.New("temporary list " +
+		"failure")}
+	service := newTestSwapClientService(fakeClient)
+	service.maxActiveReceives = 1
+	service.activeReceives = 1
+	runningKey := hex.EncodeToString(runningHash[:])
+	service.active[runningKey] = struct{}{}
+	retry := make(chan struct{})
+	service.receiveRefillRetryWait = func(ctx context.Context) bool {
+		select {
+		case <-retry:
+			return true
+
+		case <-ctx.Done():
+			return false
+		}
+	}
+	defer service.cancel()
+
+	service.receiveQueueOverflow = true
+	service.finishReceiveWorker(runningKey)
+	require.Eventually(t, func() bool {
+		return fakeClient.listSwapSummaryCount() == 1
+	}, 2*time.Second, 10*time.Millisecond)
+	require.Zero(t, fakeClient.receiveResumeCount(pendingHash))
+
+	close(retry)
+	fakeClient.awaitReceiveResume(t, pendingHash)
+	require.Equal(t, 2, fakeClient.listSwapSummaryCount())
+}
+
+// TestPendingReceiveRefillStopsOnShutdown verifies a failed rescan does not
+// leave its retry goroutine or running marker behind during shutdown.
+func TestPendingReceiveRefillStopsOnShutdown(t *testing.T) {
+	t.Parallel()
+
+	runningHash := testHash(36)
+	fakeClient := newFakeSwapRuntime()
+	fakeClient.listSummaryErrs = []error{errors.New("persistent list " +
+		"failure")}
+	service := newTestSwapClientService(fakeClient)
+	service.maxActiveReceives = 1
+	service.activeReceives = 1
+	runningKey := hex.EncodeToString(runningHash[:])
+	service.active[runningKey] = struct{}{}
+	service.receiveRefillRetryWait = func(ctx context.Context) bool {
+		<-ctx.Done()
+
+		return false
+	}
+
+	service.receiveQueueOverflow = true
+	service.finishReceiveWorker(runningKey)
+	require.Eventually(t, func() bool {
+		return fakeClient.listSwapSummaryCount() == 1
+	}, 2*time.Second, 10*time.Millisecond)
+	service.cancel()
+	require.Eventually(t, func() bool {
+		service.mu.Lock()
+		defer service.mu.Unlock()
+
+		return !service.receiveRefillRunning
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
+// TestPendingReceiveDoesNotBypassOlderOverflow verifies free capacity cannot
+// admit a newly encountered hash ahead of an older durable backlog.
+func TestPendingReceiveDoesNotBypassOlderOverflow(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		overflow  bool
+		refilling bool
+	}{
+		{
+			name:     "overflow",
+			overflow: true,
+		},
+		{
+			name:      "refilling",
+			refilling: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			hash := testHash(35)
+			fakeClient := newFakeSwapRuntime()
+			service := newTestSwapClientService(fakeClient)
+			service.maxActiveReceives = 2
+			service.activeReceives = 1
+			service.receiveQueueOverflow = test.overflow
+			service.receiveRefillRunning = test.refilling
+			defer service.cancel()
+
+			require.Equal(
+				t, workerQueued,
+				service.enqueuePendingReceive(hash),
+			)
+			require.Zero(t, fakeClient.receiveResumeCount(hash))
+			require.Len(t, service.pendingReceives, 1)
+		})
+	}
+}
+
+// TestStartReceiveReturnsResourceExhaustedAtWorkerLimit verifies admission is
+// rejected before the swap runtime creates durable state.
+func TestStartReceiveReturnsResourceExhaustedAtWorkerLimit(t *testing.T) {
+	t.Parallel()
+
+	fakeClient := newFakeSwapRuntime()
+	service := newTestSwapClientService(fakeClient)
+	service.maxActiveReceives = 1
+	service.activeReceives = 1
+	defer service.cancel()
+
+	_, err := service.StartReceive(
+		t.Context(), &swapclientrpc.StartReceiveRequest{
+			AmountSat: 1,
+		},
+	)
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	require.Equal(t, 0, fakeClient.startReceiveCount())
+}
+
+// TestStartReceiveReleasesReservationOnCreationFailure verifies a failed SDK
+// start does not permanently consume receive-worker capacity.
+func TestStartReceiveReleasesReservationOnCreationFailure(t *testing.T) {
+	t.Parallel()
+
+	fakeClient := newFakeSwapRuntime()
+	service := newTestSwapClientService(fakeClient)
+	service.maxActiveReceives = 1
+	defer service.cancel()
+
+	_, err := service.StartReceive(
+		t.Context(), &swapclientrpc.StartReceiveRequest{
+			AmountSat: 1,
+		},
+	)
+	require.Equal(t, codes.Internal, status.Code(err))
+	require.Zero(t, service.activeReceives)
+	require.True(t, service.reserveReceiveWorker())
+}
+
 // TestChainParamsForNetworkAcceptsTestNet4 verifies the swapruntime daemon
 // subserver accepts every network string the main daemon config advertises.
 func TestChainParamsForNetworkAcceptsTestNet4(t *testing.T) {
@@ -1358,12 +1659,16 @@ func newTestSwapClientService(client swapRuntimeClient) *swapClientService {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &swapClientService{
-		client:      client,
-		log:         btclog.Disabled,
-		rootCtx:     ctx,
-		cancel:      cancel,
-		active:      make(map[string]struct{}),
-		subscribers: make(map[chan *swapclientrpc.SwapSummary]struct{}),
+		client:            client,
+		log:               btclog.Disabled,
+		rootCtx:           ctx,
+		cancel:            cancel,
+		active:            make(map[string]struct{}),
+		maxActiveReceives: waved.DefaultMaxActiveReceiveSwaps,
+		pendingReceiveSet: make(map[string]struct{}),
+		subscribers: make(
+			map[chan *swapclientrpc.SwapSummary]struct{},
+		),
 	}
 }
 
@@ -1463,6 +1768,7 @@ type fakeSwapRuntime struct {
 	listCreditsLimit   uint32
 	getSummaryCalls    int
 	listPendingOnly    []bool
+	listSummaryErrs    []error
 	payResumeCalls     map[lntypes.Hash]int
 	receiveResumeCalls map[lntypes.Hash]int
 
@@ -1624,6 +1930,10 @@ func (f *fakeSwapRuntime) ListSwapSummaries(_ context.Context,
 	defer f.mu.Unlock()
 
 	f.listPendingOnly = append(f.listPendingOnly, pendingOnly)
+	call := len(f.listPendingOnly)
+	if call <= len(f.listSummaryErrs) && f.listSummaryErrs[call-1] != nil {
+		return nil, f.listSummaryErrs[call-1]
+	}
 
 	summaries := make([]swaps.SwapSummary, 0, len(f.summaries))
 	for _, summary := range f.summaries {
@@ -1659,6 +1969,14 @@ func (f *fakeSwapRuntime) awaitReceiveResume(t *testing.T, hash lntypes.Hash) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timed out waiting for receive resume")
 	}
+}
+
+// listSwapSummaryCount returns the number of summary scans made by the fake.
+func (f *fakeSwapRuntime) listSwapSummaryCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return len(f.listPendingOnly)
 }
 
 func (f *fakeSwapRuntime) startPayCount() int {

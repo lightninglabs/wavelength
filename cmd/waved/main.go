@@ -451,6 +451,10 @@ func registerSwapRuntimeFlags(f *pflag.FlagSet, cfg *waved.Config) {
 		"swap.databasefilename", cfg.Swap.DatabaseFileName,
 		"swap session SQLite database path for swapruntime builds",
 	)
+	f.Int(
+		"swap.maxactivereceiveswaps", cfg.Swap.MaxActiveReceiveSwaps,
+		"maximum accumulated receive workers in swapruntime builds",
+	)
 	f.Bool(
 		"swap.vhtlcrecovery.autoescalate",
 		cfg.Swap.VHTLCRecovery.AutoEscalate, "automatically "+

@@ -24,7 +24,7 @@ All `*.pb.go` files are generated — never edit directly; regenerate with
   `MethodSubmitVTXOForfeitSigs` (VTXO forfeit sigs).
 - `TreeFromProto` / `TreeToProto` — Convert between `*VTXOTree` proto and
   `lib/tree.Tree`; `TreeFromProto` takes `WithMaxTreeNodes` to bound the
-  deserialized node count (`DefaultMaxTreeNodes` = 50,000). Both carry a
+  deserialized node count (`DefaultMaxTreeNodes` = 5,000). Both carry a
   `lib/tree.AssetTreeContext` across the wire via `VTXOTree.asset_ref` and the
   per-node `signing_tweak` / `asset_amount` / `asset_commitment_root` fields,
   and `TreeFromProto` recomputes every node's `FinalKey` (it no longer returns
