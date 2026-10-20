@@ -1489,7 +1489,11 @@ type RecvRequest struct {
 	// amt_sat is the amount the caller wants to receive in satoshis.
 	AmtSat uint64 `protobuf:"varint,1,opt,name=amt_sat,json=amtSat,proto3" json:"amt_sat,omitempty"`
 	// memo is the optional human-readable memo to embed in the invoice.
-	Memo          string `protobuf:"bytes,2,opt,name=memo,proto3" json:"memo,omitempty"`
+	Memo string `protobuf:"bytes,2,opt,name=memo,proto3" json:"memo,omitempty"`
+	// claim_address optionally sends the final claim to another wallet's
+	// Ark receive address on the same operator and network. Empty receives
+	// locally. External receives cannot use server credits.
+	ClaimAddress  string `protobuf:"bytes,3,opt,name=claim_address,json=claimAddress,proto3" json:"claim_address,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1534,6 +1538,13 @@ func (x *RecvRequest) GetAmtSat() uint64 {
 func (x *RecvRequest) GetMemo() string {
 	if x != nil {
 		return x.Memo
+	}
+	return ""
+}
+
+func (x *RecvRequest) GetClaimAddress() string {
+	if x != nil {
+		return x.ClaimAddress
 	}
 	return ""
 }
@@ -5447,7 +5458,10 @@ type LightningInvoiceRequest struct {
 	Invoice string `protobuf:"bytes,1,opt,name=invoice,proto3" json:"invoice,omitempty"`
 	// payment_hash identifies the invoice and remains stable after the
 	// invoice itself is no longer convenient to display.
-	PaymentHash   string `protobuf:"bytes,2,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	PaymentHash string `protobuf:"bytes,2,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	// claim_address is the external Ark destination for a forwarded receive.
+	// Empty means the receive belongs to this wallet.
+	ClaimAddress  string `protobuf:"bytes,3,opt,name=claim_address,json=claimAddress,proto3" json:"claim_address,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5492,6 +5506,13 @@ func (x *LightningInvoiceRequest) GetInvoice() string {
 func (x *LightningInvoiceRequest) GetPaymentHash() string {
 	if x != nil {
 		return x.PaymentHash
+	}
+	return ""
+}
+
+func (x *LightningInvoiceRequest) GetClaimAddress() string {
+	if x != nil {
+		return x.ClaimAddress
 	}
 	return ""
 }
@@ -5763,10 +5784,11 @@ const file_wallet_proto_rawDesc = "" +
 	"\x0esend_intent_id\x18\x01 \x01(\tR\fsendIntentId\"l\n" +
 	"\fSendResponse\x120\n" +
 	"\x05entry\x18\x01 \x01(\v2\x1a.wavewalletrpc.WalletEntryR\x05entry\x12*\n" +
-	"\x11actual_amount_sat\x18\x02 \x01(\x03R\x0factualAmountSat\":\n" +
+	"\x11actual_amount_sat\x18\x02 \x01(\x03R\x0factualAmountSat\"_\n" +
 	"\vRecvRequest\x12\x17\n" +
 	"\aamt_sat\x18\x01 \x01(\x04R\x06amtSat\x12\x12\n" +
-	"\x04memo\x18\x02 \x01(\tR\x04memo\"\x9f\x01\n" +
+	"\x04memo\x18\x02 \x01(\tR\x04memo\x12#\n" +
+	"\rclaim_address\x18\x03 \x01(\tR\fclaimAddress\"\x9f\x01\n" +
 	"\fRecvResponse\x12\x18\n" +
 	"\ainvoice\x18\x01 \x01(\tR\ainvoice\x120\n" +
 	"\x05entry\x18\x02 \x01(\v2\x1a.wavewalletrpc.WalletEntryR\x05entry\x12C\n" +
@@ -6061,10 +6083,11 @@ const file_wallet_proto_rawDesc = "" +
 	"\x0fonchain_address\x18\x02 \x01(\v2$.wavewalletrpc.OnchainAddressRequestH\x00R\x0eonchainAddress\x12C\n" +
 	"\vark_address\x18\x03 \x01(\v2 .wavewalletrpc.ArkAddressRequestH\x00R\n" +
 	"arkAddressB\t\n" +
-	"\arequest\"V\n" +
+	"\arequest\"{\n" +
 	"\x17LightningInvoiceRequest\x12\x18\n" +
 	"\ainvoice\x18\x01 \x01(\tR\ainvoice\x12!\n" +
-	"\fpayment_hash\x18\x02 \x01(\tR\vpaymentHash\"N\n" +
+	"\fpayment_hash\x18\x02 \x01(\tR\vpaymentHash\x12#\n" +
+	"\rclaim_address\x18\x03 \x01(\tR\fclaimAddress\"N\n" +
 	"\x15OnchainAddressRequest\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\x12\x1b\n" +
 	"\tsweep_all\x18\x02 \x01(\bR\bsweepAll\"-\n" +

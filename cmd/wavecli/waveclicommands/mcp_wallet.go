@@ -163,10 +163,11 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 	})
 
 	type recvArgs struct {
-		Direction  string `json:"direction,omitempty" jsonschema:"'offchain' (default) returns a Lightning invoice, 'onchain' returns a boarding address"` //nolint:ll
-		AmtSat     uint64 `json:"amt_sat,omitempty" jsonschema:"amount in satoshis (required for offchain)"`                                               //nolint:ll
-		Memo       string `json:"memo,omitempty" jsonschema:"optional human-readable memo embedded in the invoice"`                                        //nolint:ll
-		AmtSatHint uint64 `json:"amt_sat_hint,omitempty" jsonschema:"optional expected deposit amount for onchain (accounting only)"`                      //nolint:ll
+		ClaimAddress string `json:"claim_address,omitempty" jsonschema:"optional external Ark receive address on the same operator and network"`             //nolint:ll
+		Direction    string `json:"direction,omitempty" jsonschema:"'offchain' (default) returns a Lightning invoice, 'onchain' returns a boarding address"` //nolint:ll
+		AmtSat       uint64 `json:"amt_sat,omitempty" jsonschema:"amount in satoshis (required for offchain)"`                                               //nolint:ll
+		Memo         string `json:"memo,omitempty" jsonschema:"optional human-readable memo embedded in the invoice"`                                        //nolint:ll
+		AmtSatHint   uint64 `json:"amt_sat_hint,omitempty" jsonschema:"optional expected deposit amount for onchain (accounting only)"`                      //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "recv",
@@ -183,6 +184,17 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 		if err := validateFreeText("memo", args.Memo); err != nil {
 			return nil, nil, err
 		}
+		if args.ClaimAddress != "" {
+			if !offchain {
+				return nil, nil, fmt.Errorf("claim_address " +
+					"requires an offchain receive")
+			}
+			if err := validateDestination(
+				args.ClaimAddress,
+			); err != nil {
+				return nil, nil, err
+			}
+		}
 
 		if offchain {
 			if args.AmtSat == 0 {
@@ -191,8 +203,9 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 			}
 			resp, err := client.Recv(
 				ctx, &wavewalletrpc.RecvRequest{
-					AmtSat: args.AmtSat,
-					Memo:   args.Memo,
+					AmtSat:       args.AmtSat,
+					Memo:         args.Memo,
+					ClaimAddress: args.ClaimAddress,
 				},
 			)
 			if err != nil {

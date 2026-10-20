@@ -263,7 +263,8 @@ func walletAdminMethodRegistry() []schemaMethod {
 
 // walletPaymentMethodRegistry returns the payment-shape wallet verbs
 // (send, recv).
-func walletPaymentMethodRegistry() []schemaMethod {
+func walletPaymentMethodRegistry() []schemaMethod { //nolint:funlen
+
 	return []schemaMethod{
 		{
 			Method:      "send",
@@ -423,6 +424,11 @@ func walletPaymentMethodRegistry() []schemaMethod {
 			Method:      "recv",
 			Description: "Receive a payment (offchain or onchain)",
 			Params: []schemaParam{
+				{
+					Name:        "claim-address",
+					Type:        "string",
+					Description: "external Ark address",
+				},
 				{
 					Name: "offchain",
 					Type: "bool",

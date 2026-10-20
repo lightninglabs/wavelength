@@ -45,17 +45,28 @@ func TestRecvDispatchesStartReceive(t *testing.T) {
 			PaymentHash: "abc123",
 			Direction: swapclientrpc.
 				SwapDirection_SWAP_DIRECTION_RECEIVE,
-			Pending: true,
+			Pending:      true,
+			ClaimAddress: "external-ark-address",
 		},
 	}
 
 	resp, err := r.Recv(t.Context(), &wavewalletrpc.RecvRequest{
-		AmtSat: 50_000,
-		Memo:   "coffee",
+		AmtSat:       50_000,
+		Memo:         "coffee",
+		ClaimAddress: "external-ark-address",
 	})
 	require.NoError(t, err)
 	require.Equal(t, 1, swap.startReceiveCalls)
 	require.Equal(t, "coffee", swap.startReceiveLast.GetMemo())
+	require.Equal(
+		t, "external-ark-address",
+		swap.startReceiveLast.GetClaimAddress(),
+	)
+	require.Equal(
+		t, "external-ark-address",
+		resp.GetEntry().GetRequest().GetLightningInvoice().
+			GetClaimAddress(),
+	)
 	require.Equal(t, "lnbc1invoice", resp.GetInvoice())
 	require.Equal(t, "abc123", resp.GetEntry().GetId())
 	require.Equal(t, "coffee", resp.GetEntry().GetNote())
@@ -76,6 +87,25 @@ func TestRecvDispatchesStartReceive(t *testing.T) {
 		t, wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
 		resp.GetEntry().GetProgress().GetPhase(),
 	)
+}
+
+// TestRecvExternalRejectsCreditFallback ensures an external destination is
+// never silently replaced with a credit balance in this wallet.
+func TestRecvExternalRejectsCreditFallback(t *testing.T) {
+	t.Parallel()
+	r, swap := newRecvFixture(t)
+	r.deps.RPCServer = &fakeRPCServer{
+		getInfoResp: &waverpc.GetInfoResponse{
+			ServerInfo: &waverpc.ServerInfo{
+				DustLimit: 546, MinVtxoAmountSat: 1_000,
+			},
+		},
+	}
+	_, err := r.Recv(t.Context(), &wavewalletrpc.RecvRequest{
+		AmtSat: 800, ClaimAddress: "external-ark-address",
+	})
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Zero(t, swap.startReceiveCalls)
 }
 
 // TestRecvProjectsPendingEntry confirms a swap-backed RECV projects its

@@ -25,6 +25,8 @@ func newRecvCmd() *cobra.Command {
 			"Examples:\n" +
 			"  wavecli recv --offchain --amt 5000 " +
 			"--memo \"coffee\"\n" +
+			"  wavecli recv --amt 5000 " +
+			"--claim-address <recipient-ark-address>\n" +
 			"  wavecli recv --onchain",
 		Args: cobra.NoArgs,
 		// The retired `swap receive` verb is covered by `recv
@@ -45,6 +47,8 @@ func newRecvCmd() *cobra.Command {
 	cmd.Flags().String("memo", "",
 		"optional human-readable memo embedded in the offchain "+
 			"invoice")
+	cmd.Flags().String("claim-address", "",
+		"send the Lightning receive to another wallet's Ark address")
 	cmd.Flags().Uint64("amt-hint", 0,
 		"optional expected amount for --onchain (accounting only)")
 
@@ -60,7 +64,19 @@ func walletRecv(cmd *cobra.Command, _ []string) error {
 
 	amt, _ := cmd.Flags().GetUint64("amt")
 	memo, _ := cmd.Flags().GetString("memo")
+	claimAddress, _ := cmd.Flags().GetString("claim-address")
 	amtHint, _ := cmd.Flags().GetUint64("amt-hint")
+	if claimAddress != "" {
+		if !offchain {
+			return invalidArgs(
+				fmt.Errorf("--claim-address requires an " +
+					"offchain receive"),
+			)
+		}
+		if err := validateDestination(claimAddress); err != nil {
+			return invalidArgs(err)
+		}
+	}
 
 	if err := invalidArgs(validateFreeText("--memo", memo)); err != nil {
 		return err
@@ -83,8 +99,9 @@ func walletRecv(cmd *cobra.Command, _ []string) error {
 				resp, err := c.Recv(
 					ctx,
 					&wavewalletrpc.RecvRequest{
-						AmtSat: amt,
-						Memo:   memo,
+						AmtSat:       amt,
+						Memo:         memo,
+						ClaimAddress: claimAddress,
 					},
 				)
 				if err != nil {

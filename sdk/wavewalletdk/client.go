@@ -364,8 +364,9 @@ func (c *Client) Receive(ctx context.Context, req ReceiveRequest) (
 	}
 
 	resp, err := c.wallet.Recv(ctx, &wavewalletrpc.RecvRequest{
-		AmtSat: req.AmountSat,
-		Memo:   req.Memo,
+		AmtSat:       req.AmountSat,
+		Memo:         req.Memo,
+		ClaimAddress: req.ClaimAddress,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create receive invoice: %w", err)
