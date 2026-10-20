@@ -227,6 +227,58 @@ func TestTreePathToTreeNodeCap(t *testing.T) {
 	}
 }
 
+// TestTreePathToTreeRepeatedFieldBudgets verifies aggregate repeated fields are
+// rejected before any node payload parsing begins.
+func TestTreePathToTreeRepeatedFieldBudgets(t *testing.T) {
+	t.Parallel()
+
+	outputHalf := defaultMaxTreePathOutputs / 2
+	coSignerHalf := defaultMaxTreePathCoSigners / 2
+
+	tests := []struct {
+		name  string
+		nodes []*TreePathNode
+		err   string
+	}{
+		{
+			name: "aggregate outputs",
+			nodes: []*TreePathNode{
+				{
+					Outputs: make([]*TxOut, outputHalf+1),
+				},
+				{
+					Outputs: make([]*TxOut, outputHalf),
+				},
+			},
+			err: "outputs",
+		},
+		{
+			name: "aggregate co-signers",
+			nodes: []*TreePathNode{
+				{
+					CoSigners: make(
+						[][]byte, coSignerHalf+1,
+					),
+				},
+				{
+					CoSigners: make([][]byte, coSignerHalf),
+				},
+			},
+			err: "co-signers",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := TreePathToTree(&TreePath{Nodes: test.nodes})
+			require.ErrorContains(t, err, test.err)
+			require.Nil(t, got)
+		})
+	}
+}
+
 // TestTreePathToTreeAcceptsWellFormedTree guards against the new checks
 // rejecting anything a legitimate producer emits: a plain branching tree
 // where every node other than the root is claimed exactly once must
@@ -294,4 +346,19 @@ func TestAncestryPathDepthWalkOnSharedChild(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorContains(t, err, "must not share children")
 	require.Nil(t, got)
+}
+
+// TestTreePathBudgetHonorsConfiguredNodes proves indexer paths use the same
+// scaled work budget as round trees, while defaults still reject oversized
+// work.
+func TestTreePathBudgetHonorsConfiguredNodes(t *testing.T) {
+	t.Parallel()
+	path := &TreePath{Nodes: []*TreePathNode{{
+		Outputs: make([]*TxOut, defaultMaxTreePathOutputs+1),
+	}}}
+	_, err := TreePathToTree(path)
+	require.ErrorContains(t, err, "aggregate maximum")
+	_, err = TreePathToTree(path, WithMaxTreePathNodes(20_000))
+	require.ErrorContains(t, err, "input")
+	require.NotContains(t, err.Error(), "aggregate maximum")
 }

@@ -205,6 +205,18 @@ func TestTreeFromProtoLargeNodeCount(t *testing.T) {
 	require.Contains(t, err.Error(), "exceeds maximum")
 }
 
+// TestTreeFromProtoDefaultNodeLimit pins the availability-oriented default
+// independently of the larger malformed-tree regression above.
+func TestTreeFromProtoDefaultNodeLimit(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, 5_000, DefaultMaxTreeNodes)
+	_, err := TreeFromProto(&VTXOTree{
+		Nodes: make([]*TreeNode, DefaultMaxTreeNodes+1),
+	})
+	require.ErrorContains(t, err, "exceeds maximum 5000")
+}
+
 // =====================================================================
 // FINDING-3: Forward-reference in children allows non-tree DAG (Data
 // Integrity)
@@ -1244,4 +1256,60 @@ func TestTreeFromProtoAcceptsWellFormedTree(t *testing.T) {
 	require.Len(t, got.Root.Children, 2)
 	require.Len(t, got.Root.Children[0].Children, 1)
 	require.Empty(t, got.Root.Children[1].Children)
+}
+
+// TestTreeFromProtoBoundsRepeatedFields rejects aggregate work before parsing
+// deliberately malformed node keys, even with the node cap disabled.
+func TestTreeFromProtoBoundsRepeatedFields(t *testing.T) {
+	t.Parallel()
+
+	for _, field := range []string{"outputs", "co-signers"} {
+		t.Run(field, func(t *testing.T) {
+			node := &TreeNode{CoSigners: [][]byte{{1}}}
+			if field == "outputs" {
+				node.Outputs = make(
+					[]*TxOut, DefaultMaxTreeOutputs+1,
+				)
+			} else {
+				node.CoSigners = make(
+					[][]byte, DefaultMaxTreeCoSigners+1,
+				)
+			}
+			_, err := TreeFromProto(
+				&VTXOTree{
+					Nodes: []*TreeNode{node},
+				},
+				WithMaxTreeNodes(0),
+			)
+			require.ErrorContains(
+				t, err, field+" exceed aggregate maximum",
+			)
+		})
+	}
+}
+
+// TestTreeRepeatedBudgetsHonorConfiguredNodes proves raising the node budget
+// also raises repeated-field limits, while the default still rejects early.
+func TestTreeRepeatedBudgetsHonorConfiguredNodes(t *testing.T) {
+	t.Parallel()
+	for _, field := range []string{"outputs", "co-signers"} {
+		t.Run(field, func(t *testing.T) {
+			node := &TreeNode{}
+			if field == "outputs" {
+				node.Outputs = make(
+					[]*TxOut, DefaultMaxTreeOutputs+1,
+				)
+			} else {
+				node.CoSigners = make(
+					[][]byte, DefaultMaxTreeCoSigners+1,
+				)
+			}
+			tree := &VTXOTree{Nodes: []*TreeNode{node}}
+			_, err := TreeFromProto(tree)
+			require.ErrorContains(t, err, "aggregate maximum")
+			_, err = TreeFromProto(tree, WithMaxTreeNodes(20_000))
+			require.ErrorContains(t, err, "input")
+			require.NotContains(t, err.Error(), "aggregate maximum")
+		})
+	}
 }

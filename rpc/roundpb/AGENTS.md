@@ -24,7 +24,7 @@ All `*.pb.go` files are generated — never edit directly; regenerate with
   `MethodSubmitVTXOForfeitSigs` (VTXO forfeit sigs).
 - `TreeFromProto` / `TreeToProto` — Convert between `*VTXOTree` proto and
   `lib/tree.Tree`; `TreeFromProto` takes `WithMaxTreeNodes` to bound the
-  deserialized node count (`DefaultMaxTreeNodes` = 50,000). Both carry a
+  deserialized node count (`DefaultMaxTreeNodes` = 5,000). Both carry a
   `lib/tree.AssetTreeContext` across the wire via `VTXOTree.asset_ref` and the
   per-node `signing_tweak` / `asset_amount` / `asset_commitment_root` fields,
   and `TreeFromProto` recomputes every node's `FinalKey` (it no longer returns
@@ -80,6 +80,12 @@ distinction.
   tree rather than a forest. Without it a sender can pad a message up to
   the node cap with nodes no walk from `Root` reaches, each of which is
   still deserialized and run through `tree.ComputeFinalKey`.
+- Before parsing keys or allocating node outputs, `TreeFromProto` enforces
+  aggregate limits defaulting to 10,000 outputs and 50,000 co-signers. The node
+  cap defaults to 5,000; positive node options scale all three budgets. Explicit
+  zero disables the per-tree node cap while keeping default aggregate work
+  budgets. Batch conversion applies these budgets across all paths
+  before parsing its commitment transaction.
 - The same three structural invariants plus a node cap
   (`DefaultMaxTreePathNodes`) are enforced by `arkrpc.TreePathToTree`,
   the sibling decoder on the untrusted indexer receive path. Keep the

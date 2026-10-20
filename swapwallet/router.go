@@ -55,6 +55,11 @@ func (r *router) PrepareSend(ctx context.Context,
 	if req == nil {
 		return nil, ErrInvalidDestination
 	}
+	if len(req.GetNote()) > maxPreparedSendNoteBytes {
+		return nil, status.Errorf(codes.InvalidArgument, "note "+
+			"exceeds maximum length of %d bytes",
+			maxPreparedSendNoteBytes)
+	}
 
 	switch dest := req.GetDestination().(type) {
 	case *wavewalletrpc.PrepareSendRequest_Invoice:

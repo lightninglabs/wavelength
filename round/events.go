@@ -170,8 +170,8 @@ type CommitmentTxBuilt struct {
 
 	// TreeOpts holds functional options for VTXO tree deserialization.
 	// These are injected by the event router from daemon configuration
-	// (e.g., MaxTreeNodes limit) and passed through to
-	// roundpb.TreeFromProto during FromProto.
+	// (e.g., MaxTreeNodes limit) and used for aggregate batch admission
+	// before being passed through to roundpb.TreeFromProto.
 	TreeOpts []roundpb.TreeFromProtoOption
 
 	// TreeCosignKey is the operator's MuSig2 cosigner key for this round's

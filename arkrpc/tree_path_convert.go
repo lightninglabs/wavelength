@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/tree"
+	"github.com/lightninglabs/wavelength/rpc/roundpb"
 )
 
 // TreePathFromTree converts a tree.Tree (typically an extracted path) into its
@@ -37,14 +38,20 @@ func TreePathFromTree(t *tree.Tree) (*TreePath, error) {
 	}, nil
 }
 
-// DefaultMaxTreePathNodes is the upper bound on the number of nodes
-// allowed in a TreePath decoded from an indexer response. A path is a
-// slice through a commitment tree, so it is far smaller than a whole
-// tree in practice; the bound is deliberately set to the same generous
-// figure roundpb.DefaultMaxTreeNodes uses for a full tree, so the two
-// decode boundaries agree and no shape that survives one is rejected by
-// the other purely on size.
-const DefaultMaxTreePathNodes = 50_000
+// DefaultMaxTreePathNodes is the upper bound on the number of nodes allowed in
+// a TreePath decoded from an indexer response. A path is smaller than a whole
+// commitment tree in practice; using the same bound as
+// roundpb.DefaultMaxTreeNodes keeps the two untrusted decode boundaries in
+// agreement.
+const DefaultMaxTreePathNodes = 5_000
+
+const (
+	// defaultMaxTreePathOutputs allows two outputs per admitted path node.
+	defaultMaxTreePathOutputs = 2 * DefaultMaxTreePathNodes
+
+	// defaultMaxTreePathCoSigners bounds aggregate public-key parsing.
+	defaultMaxTreePathCoSigners = 10 * DefaultMaxTreePathNodes
+)
 
 // TreePathToTreeOption is a functional option for TreePathToTree that
 // allows callers to override default validation parameters.
@@ -64,7 +71,8 @@ func defaultTreePathToTreeConfig() treePathToTreeConfig {
 }
 
 // WithMaxTreePathNodes sets the maximum number of nodes allowed in a
-// deserialized TreePath. A value of 0 disables the limit.
+// deserialized TreePath and scales its repeated-field budgets. A value of 0
+// disables only the per-path node cap; aggregate work keeps default budgets.
 func WithMaxTreePathNodes(maxNodes int) TreePathToTreeOption {
 	return func(cfg *treePathToTreeConfig) {
 		cfg.maxNodes = maxNodes
@@ -96,6 +104,10 @@ func TreePathToTree(tp *TreePath,
 	if cfg.maxNodes > 0 && len(tp.Nodes) > cfg.maxNodes {
 		return nil, fmt.Errorf("tree path has %d nodes, exceeds "+
 			"maximum %d", len(tp.Nodes), cfg.maxNodes)
+	}
+
+	if err := validateTreePathBudget(tp, cfg.maxNodes); err != nil {
+		return nil, err
 	}
 
 	// Convert all proto nodes to Go nodes.
@@ -190,6 +202,35 @@ func TreePathToTree(tp *TreePath,
 		BatchOutput:        batchOut,
 		SweepTapscriptRoot: tp.SweepTapscriptRoot,
 	}, nil
+}
+
+// validateTreePathBudget bounds repeated node fields before any transaction or
+// public-key parsing occurs.
+func validateTreePathBudget(tp *TreePath, maxNodes int) error {
+	budget := roundpb.ResolveTreeDecodeBudget(
+		roundpb.WithMaxTreeNodes(maxNodes),
+	)
+	var outputs, coSigners int
+	for _, node := range tp.Nodes {
+		if node == nil {
+			continue
+		}
+
+		outputs += len(node.Outputs)
+		if outputs > budget.Outputs {
+			return fmt.Errorf("tree path has %d outputs, exceeds "+
+				"aggregate maximum %d", outputs, budget.Outputs)
+		}
+
+		coSigners += len(node.CoSigners)
+		if coSigners > budget.CoSigners {
+			return fmt.Errorf("tree path has %d co-signers, "+
+				"exceeds aggregate maximum %d", coSigners,
+				budget.CoSigners)
+		}
+	}
+
+	return nil
 }
 
 // flattenTreePathNode recursively flattens a tree node into the nodes slice

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"gopkg.in/macaroon-bakery.v2/bakery"
 )
 
@@ -28,6 +31,47 @@ func TestMacaroonHeaderMatcher(t *testing.T) {
 	key, ok := macaroonHeaderMatcher("Macaroon")
 	require.True(t, ok)
 	require.Equal(t, rpcauth.MacaroonMetadataKey, key)
+}
+
+// TestGatewayRequestBodyLimit verifies oversized bodies are stopped before the
+// gateway handler can retain or decode them.
+func TestGatewayRequestBodyLimit(t *testing.T) {
+	t.Parallel()
+
+	for _, chunked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("chunked=%t", chunked), func(t *testing.T) {
+			called := false
+			handler := limitGatewayRequestBody(
+				http.HandlerFunc(
+					func(http.ResponseWriter,
+						*http.Request) {
+
+						called = true
+					},
+				),
+			)
+			// Even a valid JSON prefix followed by excess
+			// whitespace must be rejected before the decoder or
+			// downstream handler runs.
+			body := bytes.NewBufferString("{}")
+			body.Write(
+				bytes.Repeat(
+					[]byte(" "),
+					int(defaultGatewayMaxRequestBodyBytes),
+				),
+			)
+			req := httptest.NewRequest(http.MethodPost, "/", body)
+			if chunked {
+				req.ContentLength = -1
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			require.False(t, called)
+			require.Equal(
+				t, http.StatusRequestEntityTooLarge, rec.Code,
+			)
+		})
+	}
 }
 
 // TestGatewayForwardsMacaroonToGRPC verifies a REST request's macaroon header
@@ -140,4 +184,56 @@ func (*gatewayTestDaemonServer) GetInfo(context.Context,
 	*waverpc.GetInfoRequest) (*waverpc.GetInfoResponse, error) {
 
 	return &waverpc.GetInfoResponse{}, nil
+}
+
+// TestGatewayAcceptsBase64Envelope verifies a bytes-heavy request within the
+// default gRPC receive limit still fits after REST base64 expansion.
+func TestGatewayAcceptsBase64Envelope(t *testing.T) {
+	t.Parallel()
+
+	req := &waverpc.SignReceiveAuthMessageRequest{
+		PaymentHash: make([]byte, 32),
+		Message:     bytes.Repeat([]byte{42}, (4<<20)-128),
+	}
+	require.Less(t, proto.Size(req), 4<<20)
+	encoded, err := protojson.Marshal(req)
+	require.NoError(t, err)
+	require.Greater(t, len(encoded), 4<<20)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := grpc.NewServer()
+	waverpc.RegisterDaemonServiceServer(server, &gatewayTestDaemonServer{})
+	t.Cleanup(server.Stop)
+	go func() {
+		_ = server.Serve(listener)
+	}()
+
+	mux := runtime.NewServeMux(gateway.ServeMuxOptions(nil)...)
+	err = waverpc.RegisterDaemonServiceHandlerFromEndpoint(
+		t.Context(), mux, listener.Addr().String(), []grpc.DialOption{
+			grpc.WithTransportCredentials(
+				insecure.NewCredentials(),
+			),
+		},
+	)
+	require.NoError(t, err)
+	httpReq := httptest.NewRequest(
+		http.MethodPost, "/v1/daemon/sign-receive-auth-message",
+		bytes.NewReader(encoded),
+	)
+	httpReq.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	limitGatewayRequestBody(mux).ServeHTTP(rec, httpReq)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
+// SignReceiveAuthMessage accepts the transport envelope without wallet effects.
+func (*gatewayTestDaemonServer) SignReceiveAuthMessage(_ context.Context,
+	req *waverpc.SignReceiveAuthMessageRequest) (
+	*waverpc.SignReceiveAuthMessageResponse, error) {
+
+	return &waverpc.SignReceiveAuthMessageResponse{
+		Signature: req.Message[:1],
+	}, nil
 }
