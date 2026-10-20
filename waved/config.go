@@ -179,6 +179,11 @@ const (
 	// signer backends remain serial unless explicitly configured otherwise.
 	DefaultSigningWorkers = 0
 
+	// DefaultMaxActiveReceiveSwaps caps daemon-owned receive workers. Each
+	// worker owns a long poll and remains active until its invoice settles
+	// or expires.
+	DefaultMaxActiveReceiveSwaps = 128
+
 	// DefaultLwwalletSigningWorkers is the bounded MuSig2 concurrency used
 	// by the profiled in-process lwwallet signer in automatic mode.
 	DefaultLwwalletSigningWorkers = 4
@@ -723,6 +728,11 @@ type SwapConfig struct {
 	// DB.
 	DatabaseFileName string `mapstructure:"databasefilename"`
 
+	// MaxActiveReceiveSwaps caps the accumulated receive workers owned by
+	// the daemon, including workers restored after restart. Zero selects
+	// DefaultMaxActiveReceiveSwaps.
+	MaxActiveReceiveSwaps int `mapstructure:"maxactivereceiveswaps"`
+
 	// VHTLCRecovery controls when the daemon-owned swap runtime escalates
 	// an already-armed vHTLC recovery row from cooperative retry into
 	// on-chain unroll.
@@ -1031,7 +1041,7 @@ type ServerConfig struct {
 	// MaxTreeNodes caps the number of nodes accepted in a VTXO tree
 	// received from the server. This prevents memory exhaustion from
 	// oversized tree payloads. If zero, the default of
-	// roundpb.DefaultMaxTreeNodes (50,000) is used.
+	// roundpb.DefaultMaxTreeNodes (5,000) is used.
 	MaxTreeNodes int `mapstructure:"maxtreenodes"`
 }
 
@@ -1241,8 +1251,9 @@ func DefaultConfig() *Config {
 			RecoveryWindow: DefaultRecoveryWindow,
 		},
 		Swap: &SwapConfig{
-			ServerTransport: RPCTransportGRPC,
-			VHTLCRecovery:   swapRecovery,
+			ServerTransport:       RPCTransportGRPC,
+			MaxActiveReceiveSwaps: DefaultMaxActiveReceiveSwaps,
+			VHTLCRecovery:         swapRecovery,
 		},
 		MaxOperatorFeeSat: DefaultMaxOperatorFeeSat,
 		MaxPaymentCLTV:    defaultMaxPaymentCLTV(),
@@ -1379,6 +1390,13 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if c.Swap != nil {
+		if c.Swap.MaxActiveReceiveSwaps < 0 {
+			return fmt.Errorf("swap max active receive swaps " +
+				"must be non-negative")
+		}
+		if c.Swap.MaxActiveReceiveSwaps == 0 {
+			c.Swap.MaxActiveReceiveSwaps = DefaultMaxActiveReceiveSwaps
+		}
 		c.Swap.VHTLCRecovery = c.Swap.VHTLCRecovery.WithDefaults()
 		recoveryPolicy := c.Swap.VHTLCRecovery
 		gracePeriod := recoveryPolicy.CooperativeFailureGracePeriod

@@ -101,6 +101,30 @@ type swapClientService struct {
 	// goroutines at once.
 	active map[string]struct{}
 
+	// activeReceives includes receive workers already running plus slots
+	// reserved by StartReceive before durable swap creation.
+	activeReceives int
+
+	// maxActiveReceives is the hard process-wide receive worker bound.
+	maxActiveReceives int
+
+	// pendingReceives is a bounded FIFO of persisted receive swaps waiting
+	// for worker capacity. pendingReceiveSet provides constant-time
+	// deduplication.
+	pendingReceives   []lntypes.Hash
+	pendingReceiveSet map[string]struct{}
+
+	// receiveQueueOverflow records that a restart scan found more pending
+	// receives than the bounded FIFO could retain. receiveRefillRunning
+	// serializes rescans that refill the FIFO as workers complete.
+	receiveQueueOverflow bool
+	receiveRefillRunning bool
+
+	// receiveRefillRetryWait waits between failed durable backlog scans.
+	// The production implementation uses a shutdown-aware timer; tests
+	// replace it with a controlled signal.
+	receiveRefillRetryWait func(context.Context) bool
+
 	// subscribers is the set of live SubscribeSwaps streams. Each channel
 	// is buffered and best-effort: workers never block on a slow
 	// subscriber, and clients can recover current state with GetSwap or
@@ -125,6 +149,24 @@ type swapClientService struct {
 	// swapdk-server state.
 	chainParams *chaincfg.Params
 }
+
+type workerAdmission uint8
+
+const (
+	workerDuplicate workerAdmission = iota
+	workerStarted
+	workerExhausted
+	workerQueued
+)
+
+const (
+	// maxPendingReceiveWorkers bounds restart backlog retained in memory.
+	// Larger durable backlogs are admitted in subsequent refill scans.
+	maxPendingReceiveWorkers = 128
+
+	// receiveRefillRetryDelay bounds the rate of failed durable rescans.
+	receiveRefillRetryDelay = time.Second
+)
 
 // operatorPubKeyFetcher returns the current Ark operator pubkey. It exists so
 // daemon-hosted swap clients can bypass the cached GetInfo snapshot when they
@@ -507,16 +549,22 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 		return vtxoMinAmountSat(info.ServerInfo)
 	}
 
+	maxActiveReceives := cfg.MaxActiveReceiveSwaps
+	if maxActiveReceives == 0 {
+		maxActiveReceives = waved.DefaultMaxActiveReceiveSwaps
+	}
+
 	service := &swapClientService{
 		client: &swapClientAdapter{
 			client: swapClient,
 		},
-		store:      store,
-		daemonConn: daemonConn,
-		log:        log,
-		rootCtx:    rootCtx,
-		cancel:     cancel,
-		active:     make(map[string]struct{}),
+		store:             store,
+		daemonConn:        daemonConn,
+		log:               log,
+		rootCtx:           rootCtx,
+		cancel:            cancel,
+		active:            make(map[string]struct{}),
+		maxActiveReceives: maxActiveReceives,
 		subscribers: make(
 			map[chan *swapclientrpc.SwapSummary]struct{},
 		),
@@ -524,6 +572,7 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 		payMinAmount:     minAmount,
 		chainParams:      chainParams,
 	}
+	service.pendingReceiveSet = make(map[string]struct{})
 
 	cleanup := func() {
 		cancel()
@@ -1493,6 +1542,17 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 			"idempotency_key is reserved for future use",
 		)
 	}
+	if !s.reserveReceiveWorker() {
+		return nil, status.Errorf(codes.ResourceExhausted, "active "+
+			"receive swap limit of %d reached", s.maxActiveReceives)
+	}
+	reserved := true
+	defer func() {
+		if reserved {
+			s.releaseReceiveWorker()
+		}
+	}()
+
 	session, err := s.client.StartReceiveViaLightning(
 		ctx,
 		btcutil.Amount(
@@ -1506,8 +1566,13 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 	}
 
 	hash := session.PaymentHash()
-	s.startReceiveWorker(hash)
-
+	if !s.startReservedReceiveWorker(hash) {
+		return nil, status.Error(
+			codes.Internal,
+			"receive worker already active for new swap",
+		)
+	}
+	reserved = false
 	summary, err := s.summaryByHash(ctx, hash)
 	if err != nil {
 		return nil, err
@@ -1750,7 +1815,11 @@ func (s *swapClientService) ResumeSwap(ctx context.Context,
 		s.startPayWorker(hash)
 
 	case swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE:
-		s.startReceiveWorker(hash)
+		if s.startReceiveWorker(hash) == workerExhausted {
+			return nil, status.Errorf(codes.ResourceExhausted,
+				"active receive swap limit of %d reached",
+				s.maxActiveReceives)
+		}
 
 	default:
 		return nil, status.Error(
@@ -1883,7 +1952,7 @@ func (s *swapClientService) resumePending(ctx context.Context) {
 			s.startPayWorker(summary.PaymentHash)
 
 		case swaps.SwapDirectionReceive:
-			s.startReceiveWorker(summary.PaymentHash)
+			s.enqueuePendingReceive(summary.PaymentHash)
 		}
 	}
 }
@@ -1917,18 +1986,39 @@ func (s *swapClientService) startPayWorker(hash lntypes.Hash) {
 	}()
 }
 
-// startReceiveWorker claims process-local ownership for a receive swap FSM and
-// runs the sdk/swaps resume-and-wait path in a goroutine. Duplicate starts for
-// the same payment hash return immediately, preserving one active receive
-// driver per hash.
-func (s *swapClientService) startReceiveWorker(hash lntypes.Hash) {
+// startReceiveWorker admits and starts one receive worker. The return value
+// distinguishes an idempotent duplicate from a capacity rejection.
+func (s *swapClientService) startReceiveWorker(
+	hash lntypes.Hash) workerAdmission {
+
 	key := hex.EncodeToString(hash[:])
-	if !s.markActive(key) {
-		return
+	admission := s.markActiveReceive(key, false)
+	if admission != workerStarted {
+		return admission
 	}
 
+	s.runReceiveWorker(hash, key)
+
+	return workerStarted
+}
+
+// startReservedReceiveWorker transfers a StartReceive reservation to the new
+// payment hash and starts its worker.
+func (s *swapClientService) startReservedReceiveWorker(hash lntypes.Hash) bool {
+	key := hex.EncodeToString(hash[:])
+	if s.markActiveReceive(key, true) != workerStarted {
+		return false
+	}
+
+	s.runReceiveWorker(hash, key)
+
+	return true
+}
+
+// runReceiveWorker runs the SDK resume-and-wait path in a goroutine.
+func (s *swapClientService) runReceiveWorker(hash lntypes.Hash, key string) {
 	go func() {
-		defer s.markInactive(key)
+		defer s.finishReceiveWorker(key)
 		defer s.publishHash(hash)
 
 		session, err := s.client.ResumeReceiveViaLightning(
@@ -1962,6 +2052,227 @@ func (s *swapClientService) markActive(key string) bool {
 	s.active[key] = struct{}{}
 
 	return true
+}
+
+// reserveReceiveWorker claims capacity before StartReceive creates durable
+// state whose worker the daemon could not run. Persisted restart work has
+// priority whenever the bounded queue or a refill scan is non-empty.
+func (s *swapClientService) reserveReceiveWorker() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	backlog := len(s.pendingReceives) > 0 || s.receiveQueueOverflow ||
+		s.receiveRefillRunning
+	if backlog || s.activeReceives >= s.maxActiveReceives {
+		return false
+	}
+
+	s.activeReceives++
+
+	return true
+}
+
+// releaseReceiveWorker releases a pre-creation reservation. A reservation has
+// no active hash, so an empty key transfers its slot to queued restart work.
+func (s *swapClientService) releaseReceiveWorker() {
+	s.finishReceiveWorker("")
+}
+
+// markActiveReceive admits a receive hash. A reserved admission transfers an
+// already-counted StartReceive slot to the worker.
+func (s *swapClientService) markActiveReceive(key string,
+	reserved bool) workerAdmission {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.active[key]; ok {
+		return workerDuplicate
+	}
+	if _, ok := s.pendingReceiveSet[key]; ok {
+		return workerDuplicate
+	}
+	if !reserved {
+		backlog := len(s.pendingReceives) > 0 ||
+			s.receiveQueueOverflow || s.receiveRefillRunning
+		if backlog || s.activeReceives >= s.maxActiveReceives {
+			return workerExhausted
+		}
+
+		s.activeReceives++
+	}
+
+	s.active[key] = struct{}{}
+
+	return workerStarted
+}
+
+// finishReceiveWorker releases receive worker ownership, transfers its slot to
+// the oldest queued persisted swap, and schedules a refill scan when the
+// bounded queue represents only part of the durable backlog.
+func (s *swapClientService) finishReceiveWorker(key string) {
+	var next *lntypes.Hash
+
+	s.mu.Lock()
+	delete(s.active, key)
+	if len(s.pendingReceives) > 0 {
+		hash := s.pendingReceives[0]
+		s.pendingReceives = s.pendingReceives[1:]
+		nextKey := hex.EncodeToString(hash[:])
+		delete(s.pendingReceiveSet, nextKey)
+		s.active[nextKey] = struct{}{}
+		next = &hash
+	} else {
+		s.activeReceives--
+	}
+
+	// Refill in batches so a large durable backlog does not force a full
+	// database rescan after every worker completion.
+	refill := s.receiveQueueOverflow && !s.receiveRefillRunning &&
+		len(s.pendingReceives) <= maxPendingReceiveWorkers/2
+	if refill {
+		s.receiveQueueOverflow = false
+		s.receiveRefillRunning = true
+	}
+	s.mu.Unlock()
+
+	if next != nil {
+		nextKey := hex.EncodeToString(next[:])
+		s.runReceiveWorker(*next, nextKey)
+	}
+	if refill {
+		go s.refillPendingReceives()
+	}
+}
+
+// enqueuePendingReceive admits a persisted receive immediately or records it in
+// the bounded FIFO for admission when a running worker exits.
+func (s *swapClientService) enqueuePendingReceive(
+	hash lntypes.Hash) workerAdmission {
+
+	key := hex.EncodeToString(hash[:])
+	s.mu.Lock()
+	if _, ok := s.active[key]; ok {
+		s.mu.Unlock()
+
+		return workerDuplicate
+	}
+	if _, ok := s.pendingReceiveSet[key]; ok {
+		s.mu.Unlock()
+
+		return workerDuplicate
+	}
+
+	if s.activeReceives < s.maxActiveReceives &&
+		len(s.pendingReceives) == 0 && !s.receiveQueueOverflow &&
+		!s.receiveRefillRunning {
+
+		s.activeReceives++
+		s.active[key] = struct{}{}
+		s.mu.Unlock()
+		s.runReceiveWorker(hash, key)
+
+		return workerStarted
+	}
+	if len(s.pendingReceives) >= maxPendingReceiveWorkers {
+		s.receiveQueueOverflow = true
+		s.mu.Unlock()
+
+		return workerExhausted
+	}
+
+	s.pendingReceives = append(s.pendingReceives, hash)
+	s.pendingReceiveSet[key] = struct{}{}
+	s.mu.Unlock()
+
+	return workerQueued
+}
+
+// refillPendingReceives retries durable backlog scans until one succeeds or the
+// service shuts down. Only one refill goroutine may run at a time.
+func (s *swapClientService) refillPendingReceives() {
+	for {
+		s.mu.Lock()
+		s.receiveQueueOverflow = false
+		s.mu.Unlock()
+
+		summaries, err := s.client.ListSwapSummaries(s.rootCtx, true)
+		if err != nil {
+			s.log.Infof("unable to refill pending receive swaps; "+
+				"retrying: %v", err)
+
+			s.mu.Lock()
+			s.receiveQueueOverflow = true
+			s.mu.Unlock()
+			if !s.waitForReceiveRefillRetry() {
+				s.mu.Lock()
+				s.receiveRefillRunning = false
+				s.mu.Unlock()
+
+				return
+			}
+
+			continue
+		}
+
+		for _, summary := range summaries {
+			if summary.Direction == swaps.SwapDirectionReceive {
+				s.enqueuePendingReceive(summary.PaymentHash)
+			}
+		}
+
+		s.mu.Lock()
+		s.receiveRefillRunning = false
+		next := s.activateQueuedReceivesLocked()
+		s.mu.Unlock()
+		for _, hash := range next {
+			s.runReceiveWorker(hash, hex.EncodeToString(hash[:]))
+		}
+
+		return
+	}
+}
+
+// activateQueuedReceivesLocked fills free worker slots from the persisted FIFO.
+// The caller must hold s.mu.
+func (s *swapClientService) activateQueuedReceivesLocked() []lntypes.Hash {
+	available := s.maxActiveReceives - s.activeReceives
+	if available > len(s.pendingReceives) {
+		available = len(s.pendingReceives)
+	}
+	if available <= 0 {
+		return nil
+	}
+
+	next := append([]lntypes.Hash(nil), s.pendingReceives[:available]...)
+	s.pendingReceives = s.pendingReceives[available:]
+	for _, hash := range next {
+		key := hex.EncodeToString(hash[:])
+		delete(s.pendingReceiveSet, key)
+		s.active[key] = struct{}{}
+		s.activeReceives++
+	}
+
+	return next
+}
+
+// waitForReceiveRefillRetry waits for a bounded retry interval or service
+// shutdown.
+func (s *swapClientService) waitForReceiveRefillRetry() bool {
+	if s.receiveRefillRetryWait != nil {
+		return s.receiveRefillRetryWait(s.rootCtx)
+	}
+
+	timer := time.NewTimer(receiveRefillRetryDelay)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return true
+
+	case <-s.rootCtx.Done():
+		return false
+	}
 }
 
 // markInactive releases process-local worker ownership for a payment hash once

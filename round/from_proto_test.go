@@ -392,6 +392,79 @@ func testRoundKey(t *testing.T, seed byte) *btcec.PublicKey {
 	return pub
 }
 
+// TestValidateBatchTreeBudget verifies aggregate limits apply before any tree
+// node conversion or cryptographic parsing begins.
+func TestValidateBatchTreeBudget(t *testing.T) {
+	t.Parallel()
+
+	makeNodes := func(count int) []*roundpb.TreeNode {
+		nodes := make([]*roundpb.TreeNode, count)
+		for idx := range nodes {
+			nodes[idx] = &roundpb.TreeNode{}
+		}
+
+		return nodes
+	}
+	nodePaths := map[int32]*roundpb.VTXOTree{
+		0: {
+			Nodes: makeNodes(2_501),
+		},
+		1: {
+			Nodes: makeNodes(2_500),
+		},
+	}
+
+	tests := []struct {
+		name  string
+		paths map[int32]*roundpb.VTXOTree
+		err   string
+	}{
+		{
+			name:  "aggregate nodes",
+			paths: nodePaths,
+			err:   "nodes",
+		},
+		{
+			name: "aggregate outputs",
+			paths: map[int32]*roundpb.VTXOTree{
+				0: {Nodes: []*roundpb.TreeNode{{
+					Outputs: make(
+						[]*roundpb.TxOut,
+						maxBatchTreeOutputs+1,
+					),
+				}}},
+			},
+			err: "outputs",
+		},
+		{
+			name: "aggregate cosigners",
+			paths: map[int32]*roundpb.VTXOTree{
+				0: {Nodes: []*roundpb.TreeNode{{
+					CoSigners: make(
+						[][]byte,
+						maxBatchTreeCosigners+1,
+					),
+				}}},
+			},
+			err: "cosigners",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateBatchTreeBudget(test.paths)
+			require.ErrorContains(t, err, test.err)
+		})
+	}
+
+	var event CommitmentTxBuilt
+	err := event.FromProto(&roundpb.ClientBatchInfo{
+		RoundId:       make([]byte, 16),
+		VtxoTreePaths: nodePaths,
+	})
+	require.ErrorContains(t, err, "nodes")
+}
+
 // TestCommitmentTxBuiltFromProtoSigningKeys verifies that FromProto parses
 // the per-round tree-cosign and connector operator keys, leaves them nil when
 // the server omits them (older-server fallback path), and rejects a malformed

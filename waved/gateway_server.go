@@ -23,6 +23,11 @@ const (
 	defaultGatewayReadHeaderTimeout = 5 * time.Second
 	defaultGatewayReadTimeout       = 30 * time.Second
 
+	// defaultGatewayMaxRequestBodyBytes matches the ordinary gRPC receive
+	// ceiling while preventing the JSON decoder from consuming an unbounded
+	// request body.
+	defaultGatewayMaxRequestBodyBytes int64 = 4 << 20
+
 	// Server-streaming gateway responses intentionally keep writes open
 	// beyond a fixed deadline.
 	defaultGatewayWriteTimeout = 0
@@ -124,8 +129,11 @@ func (g *gatewayServer) Start(ctx context.Context) error {
 	g.listener = listener
 	g.cancel = cancelRegister
 	g.httpSrv = &http.Server{
-		Handler: gateway.BrowserHeaders(
-			mux, g.cfg.AllowedOrigins, rpcauth.MacaroonMetadataKey,
+		Handler: limitGatewayRequestBody(
+			gateway.BrowserHeaders(
+				mux, g.cfg.AllowedOrigins,
+				rpcauth.MacaroonMetadataKey,
+			),
 		),
 		ReadTimeout:       defaultGatewayReadTimeout,
 		ReadHeaderTimeout: defaultGatewayReadHeaderTimeout,
@@ -179,6 +187,12 @@ func macaroonHeaderMatcher(key string) (string, bool) {
 	}
 
 	return runtime.DefaultHeaderMatcher(key)
+}
+
+// limitGatewayRequestBody prevents grpc-gateway from decoding an unbounded JSON
+// payload before the proxied gRPC server applies its own message limit.
+func limitGatewayRequestBody(next http.Handler) http.Handler {
+	return http.MaxBytesHandler(next, defaultGatewayMaxRequestBodyBytes)
 }
 
 // Stop stops the HTTP/JSON gateway.

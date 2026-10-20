@@ -3,6 +3,7 @@ package waved
 import (
 	"bytes"
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,39 @@ func TestMacaroonHeaderMatcher(t *testing.T) {
 	key, ok := macaroonHeaderMatcher("Macaroon")
 	require.True(t, ok)
 	require.Equal(t, rpcauth.MacaroonMetadataKey, key)
+}
+
+// TestGatewayRequestBodyLimit verifies oversized bodies are stopped before the
+// gateway handler can retain or decode them.
+func TestGatewayRequestBodyLimit(t *testing.T) {
+	t.Parallel()
+
+	var readErr error
+	handler := limitGatewayRequestBody(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, readErr = io.ReadAll(r.Body)
+			if readErr != nil {
+				http.Error(
+					w, readErr.Error(),
+					http.StatusRequestEntityTooLarge,
+				)
+			}
+		}),
+	)
+
+	body := bytes.NewReader(
+		make(
+			[]byte, defaultGatewayMaxRequestBodyBytes+1,
+		),
+	)
+	req := httptest.NewRequest(http.MethodPost, "/", body)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var maxErr *http.MaxBytesError
+	require.ErrorAs(t, readErr, &maxErr)
+	require.Equal(t, defaultGatewayMaxRequestBodyBytes, maxErr.Limit)
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
 }
 
 // TestGatewayForwardsMacaroonToGRPC verifies a REST request's macaroon header

@@ -205,6 +205,18 @@ func TestTreeFromProtoLargeNodeCount(t *testing.T) {
 	require.Contains(t, err.Error(), "exceeds maximum")
 }
 
+// TestTreeFromProtoDefaultNodeLimit pins the availability-oriented default
+// independently of the larger malformed-tree regression above.
+func TestTreeFromProtoDefaultNodeLimit(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, 5_000, DefaultMaxTreeNodes)
+	_, err := TreeFromProto(&VTXOTree{
+		Nodes: make([]*TreeNode, DefaultMaxTreeNodes+1),
+	})
+	require.ErrorContains(t, err, "exceeds maximum 5000")
+}
+
 // =====================================================================
 // FINDING-3: Forward-reference in children allows non-tree DAG (Data
 // Integrity)

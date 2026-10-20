@@ -325,10 +325,11 @@ func flattenNode(n *tree.Node, nodes *[]*TreeNode,
 	return nil
 }
 
-// DefaultMaxTreeNodes is the upper bound on the number of nodes
-// allowed in a VTXOTree received from the server. A round with 1000
-// participants at depth 10 produces ~2000 nodes; 50,000 is generous.
-const DefaultMaxTreeNodes = 50_000
+// DefaultMaxTreeNodes is the upper bound on the number of nodes allowed in a
+// VTXOTree received from the server. A round with 1000 participants at depth
+// 10 produces roughly 2000 nodes, leaving substantial headroom without allowing
+// multi-second tree adaptation on the ingress transaction path.
+const DefaultMaxTreeNodes = 5_000
 
 // TreeFromProtoOption is a functional option for TreeFromProto that
 // allows callers to override default validation parameters.

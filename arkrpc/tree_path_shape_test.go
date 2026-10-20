@@ -227,6 +227,56 @@ func TestTreePathToTreeNodeCap(t *testing.T) {
 	}
 }
 
+// TestTreePathToTreeRepeatedFieldBudgets verifies aggregate repeated fields are
+// rejected before any node payload parsing begins.
+func TestTreePathToTreeRepeatedFieldBudgets(t *testing.T) {
+	t.Parallel()
+
+	outputHalf := defaultMaxTreePathOutputs / 2
+	coSignerHalf := defaultMaxTreePathCoSigners / 2
+
+	tests := []struct {
+		name  string
+		nodes []*TreePathNode
+		err   string
+	}{
+		{
+			name: "aggregate outputs",
+			nodes: []*TreePathNode{
+				{
+					Outputs: make([]*TxOut, outputHalf+1),
+				},
+				{
+					Outputs: make([]*TxOut, outputHalf),
+				},
+			},
+			err: "outputs",
+		},
+		{
+			name: "aggregate co-signers",
+			nodes: []*TreePathNode{
+				{
+					CoSigners: make([][]byte, coSignerHalf+1),
+				},
+				{
+					CoSigners: make([][]byte, coSignerHalf),
+				},
+			},
+			err: "co-signers",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := TreePathToTree(&TreePath{Nodes: test.nodes})
+			require.ErrorContains(t, err, test.err)
+			require.Nil(t, got)
+		})
+	}
+}
+
 // TestTreePathToTreeAcceptsWellFormedTree guards against the new checks
 // rejecting anything a legitimate producer emits: a plain branching tree
 // where every node other than the root is claimed exactly once must
