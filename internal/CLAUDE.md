@@ -13,6 +13,8 @@ module.
 - `internal/expiryfixture` — Signed round-direct and OOR-merge VTXO ancestry
   fixtures for tests that cross the incoming-VTXO acceptance boundary.
 - `internal/indexerlimits` — Shared client-side bounds for indexer pagination cursors.
+- `internal/leasefence` — Operation-local mailbox lease ownership metadata for
+  fenced store mutations whose public method signature remains unchanged.
 - `internal/sqlbase` — `js && wasm`-only `walletdb`-compatible SQL backend
   (SQLite over `go-wasmsqlite`), used by `lwwallet` for browser builds.
 - `internal/testutils` — Deterministic key pair and Schnorr signature generation for tests.

@@ -600,6 +600,221 @@ func TestDurableActorCrossKeyIndependence(t *testing.T) {
 // only folds the framework's lease-fenced ack and dedup mark.
 type fifoTx struct{}
 
+// suspendedCommitBehavior holds a transaction callback open after writing one
+// effect. The test advances lease time and claims the same-key successor before
+// releasing it, so Commit's final ownership action must roll the effect back.
+type suspendedCommitBehavior struct {
+	startCommit chan struct{}
+	entered     chan struct{}
+	release     chan struct{}
+	result      chan error
+	enteredOnce sync.Once
+	releaseOnce sync.Once
+}
+
+// newSuspendedCommitBehavior constructs the synchronized Commit behavior.
+func newSuspendedCommitBehavior() *suspendedCommitBehavior {
+	return &suspendedCommitBehavior{
+		startCommit: make(chan struct{}),
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+		result:      make(chan error, 1),
+	}
+}
+
+// bindStores exposes the transaction-scoped delivery store to Commit.
+func (b *suspendedCommitBehavior) bindStores(_ context.Context,
+	store actor.DeliveryStore) actor.DeliveryStore {
+
+	return store
+}
+
+// releaseCommit lets the suspended transaction callback return.
+func (b *suspendedCommitBehavior) releaseCommit() {
+	b.releaseOnce.Do(func() {
+		close(b.release)
+	})
+}
+
+// Receive writes one outbox effect and waits inside Commit until the test has
+// advanced lease time and probed the successor.
+func (b *suspendedCommitBehavior) Receive(ctx context.Context, _ *keyedTestMsg,
+	ax actor.Exec[actor.DeliveryStore]) fn.Result[int] {
+
+	select {
+	case <-b.startCommit:
+	case <-ctx.Done():
+		return fn.Err[int](ctx.Err())
+	}
+
+	err := ax.Commit(ctx, func(txCtx context.Context,
+		store actor.DeliveryStore) error {
+
+		err := store.EnqueueOutbox(txCtx, actor.OutboxParams{
+			ID:            "expired-commit-effect",
+			SourceActorID: "expired-commit-source",
+			TargetActorID: "expired-commit-target",
+			MessageType:   "actordelivery.ExpiredCommitEffect",
+			Payload:       []byte("stale-effect"),
+		})
+		if err != nil {
+			return err
+		}
+
+		b.enteredOnce.Do(func() {
+			close(b.entered)
+		})
+
+		select {
+		case <-b.release:
+			return nil
+
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+
+	b.result <- err
+	if err != nil {
+		return fn.Err[int](err)
+	}
+
+	return fn.Ok(1)
+}
+
+// TestExecCommitFinalFenceRollsBackAfterSuccessorClaim verifies a Commit does
+// not authorize itself before a suspended callback. Once the final-attempt
+// predecessor expires, PostgreSQL can claim its same-key successor while the
+// callback remains open; SQLite serializes that claim behind its writer. In
+// both cases the final Ack observes expiry and rolls the callback effect back.
+func TestExecCommitFinalFenceRollsBackAfterSuccessorClaim(t *testing.T) {
+	t.Parallel()
+
+	testDB := db.NewTestDB(t)
+	baseClock := clock.NewTestClock(time.Unix(1_700_000_000, 0))
+	store, err := NewTxAwareDeliveryStoreFromDB(
+		testDB.DB, testDB.Backend(), baseClock, btclog.Disabled,
+	)
+	require.NoError(t, err)
+
+	const (
+		mailbox     = "expired-commit-fifo"
+		predecessor = "expired-commit-001"
+		successor   = "expired-commit-002"
+	)
+	preEnqueueKeyedWithMaxAttempts(
+		t, store, mailbox, predecessor, "msg-1", "lane-a",
+		baseClock.Now(), 1,
+	)
+	preEnqueueKeyedWithMaxAttempts(
+		t, store, mailbox, successor, "msg-2", "lane-a",
+		baseClock.Now().Add(time.Millisecond), 3,
+	)
+	behavior := newSuspendedCommitBehavior()
+	probeStore := newLeaseProbeStore(store)
+	cfg := actor.DefaultDurableTxActorConfig[
+		*keyedTestMsg, int, actor.DeliveryStore,
+	](
+		mailbox, behavior, behavior.bindStores, probeStore,
+		newKeyedTestCodec(),
+	)
+	cfg.LeaseDuration = time.Second
+	cfg.HeartbeatInterval = time.Hour
+	cfg.NumWorkers = 2
+	cfg.PollInterval = time.Hour
+
+	a := actor.NewDurableActor(cfg).UnwrapOrFail(t)
+	a.Start()
+	defer behavior.releaseCommit()
+
+	select {
+	case result := <-probeStore.secondResult:
+		require.NoError(t, result.err)
+		require.Empty(t, result.id)
+
+	case <-time.After(5 * time.Second):
+		t.Fatal("sibling worker did not complete its mailbox probe")
+	}
+
+	close(behavior.startCommit)
+	select {
+	case <-behavior.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Commit callback did not pause")
+	}
+
+	baseClock.SetTime(baseClock.Now().Add(2 * time.Second))
+	type claimResult struct {
+		message *actor.LeasedMessage
+		err     error
+	}
+	claim := make(chan claimResult, 1)
+	go func() {
+		message, err := store.LeaseNextMessage(
+			t.Context(), mailbox, "successor-token", time.Minute,
+		)
+		claim <- claimResult{message: message, err: err}
+	}()
+
+	var successorClaim claimResult
+	if testDB.Backend() == sqlc.BackendTypePostgres {
+		select {
+		case successorClaim = <-claim:
+			require.NoError(t, successorClaim.err)
+			require.NotNil(t, successorClaim.message)
+			require.Equal(t, successor, successorClaim.message.ID)
+
+		case <-time.After(5 * time.Second):
+			t.Fatal(
+				"PostgreSQL did not claim the expired lane " +
+					"successor",
+			)
+		}
+	}
+
+	behavior.releaseCommit()
+
+	if testDB.Backend() == sqlc.BackendTypeSqlite {
+		select {
+		case successorClaim = <-claim:
+			require.NoError(t, successorClaim.err)
+			require.NotNil(t, successorClaim.message)
+			require.Equal(t, successor, successorClaim.message.ID)
+
+		case <-time.After(5 * time.Second):
+			t.Fatal("SQLite successor claim did not resume")
+		}
+	}
+
+	select {
+	case commitErr := <-behavior.result:
+		require.ErrorIs(t, commitErr, actor.ErrLeaseLost)
+
+	case <-time.After(5 * time.Second):
+		t.Fatal("Commit did not report the lost lease")
+	}
+
+	stopCtx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	require.NoError(t, a.StopAndWait(stopCtx))
+
+	processed, err := store.IsProcessed(t.Context(), predecessor)
+	require.NoError(t, err)
+	require.False(t, processed)
+
+	outbox, err := store.ClaimOutboxBatch(
+		t.Context(), actor.OutboxClaimParams{
+			Limit:         10,
+			ClaimToken:    "rollback-check",
+			ClaimDuration: time.Minute,
+		},
+	)
+	require.NoError(t, err)
+	require.Empty(t, outbox)
+}
+
 // orderRecordingTxBehavior is a Read/Commit TxBehavior that records the
 // consumption order of messages and can sleep a per-message duration to widen
 // the window for cross-worker reordering. It mirrors the serverconn egress

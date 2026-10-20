@@ -12,18 +12,21 @@ import (
 
 const AckMailboxMessage = `-- name: AckMailboxMessage :execrows
 DELETE FROM mailbox_messages
-WHERE id = $1 AND lease_token = $2
+WHERE id = $1
+  AND lease_token = $2
+  AND lease_until >= $3
 `
 
 type AckMailboxMessageParams struct {
 	ID         string
 	LeaseToken sql.NullString
+	NowUnix    sql.NullInt64
 }
 
 // Acknowledge successful processing. Deletes the message.
-// Validates lease_token to prevent stale acks.
+// Validates both lease_token and lease lifetime to prevent stale acks.
 func (q *Queries) AckMailboxMessage(ctx context.Context, arg AckMailboxMessageParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, AckMailboxMessage, arg.ID, arg.LeaseToken)
+	result, err := q.db.ExecContext(ctx, AckMailboxMessage, arg.ID, arg.LeaseToken, arg.NowUnix)
 	if err != nil {
 		return 0, err
 	}
@@ -376,20 +379,29 @@ func (q *Queries) ExpireMailboxLeases(ctx context.Context, leaseUntil sql.NullIn
 
 const ExtendMailboxLease = `-- name: ExtendMailboxLease :execrows
 UPDATE mailbox_messages
-SET lease_until = $3
-WHERE id = $1 AND lease_token = $2
+SET lease_until = $1
+WHERE id = $2
+  AND lease_token = $3
+  AND lease_until >= $4
 `
 
 type ExtendMailboxLeaseParams struct {
+	LeaseUntil sql.NullInt64
 	ID         string
 	LeaseToken sql.NullString
-	LeaseUntil sql.NullInt64
+	NowUnix    sql.NullInt64
 }
 
 // Extend the lease for long-running message processing.
-// Validates lease_token to prevent stale extensions.
+// Validates the current lease token and lifetime so an expired owner cannot
+// revive its lease.
 func (q *Queries) ExtendMailboxLease(ctx context.Context, arg ExtendMailboxLeaseParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, ExtendMailboxLease, arg.ID, arg.LeaseToken, arg.LeaseUntil)
+	result, err := q.db.ExecContext(ctx, ExtendMailboxLease,
+		arg.LeaseUntil,
+		arg.ID,
+		arg.LeaseToken,
+		arg.NowUnix,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -912,6 +924,20 @@ func (q *Queries) ListPendingOutboxByTarget(ctx context.Context, targetActorID s
 	return items, nil
 }
 
+const LockMailboxMessageForUpdate = `-- name: LockMailboxMessageForUpdate :one
+SELECT id
+FROM mailbox_messages
+WHERE id = $1
+FOR UPDATE
+`
+
+// Serialize a fenced mutation with any current owner before sampling time.
+func (q *Queries) LockMailboxMessageForUpdate(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRowContext(ctx, LockMailboxMessageForUpdate, id)
+	err := row.Scan(&id)
+	return id, err
+}
+
 const MarkMessageProcessed = `-- name: MarkMessageProcessed :exec
 
 
@@ -964,6 +990,39 @@ func (q *Queries) MoveMailboxToDeadLetter(ctx context.Context, arg MoveMailboxTo
 	return err
 }
 
+const MoveMailboxToDeadLetterFenced = `-- name: MoveMailboxToDeadLetterFenced :execrows
+INSERT INTO dead_letters (id, source, actor_id, message_type, payload, failure_reason, attempts, created_at)
+SELECT m.id, 'mailbox', m.mailbox_id, m.message_type, m.payload,
+       $1, m.attempts, $2
+FROM mailbox_messages m
+WHERE m.id = $3
+  AND m.lease_token = $4
+  AND m.lease_until >= $5
+`
+
+type MoveMailboxToDeadLetterFencedParams struct {
+	FailureReason string
+	CreatedAt     int64
+	ID            string
+	LeaseToken    sql.NullString
+	NowUnix       sql.NullInt64
+}
+
+// Move a failed leased message only while the supplied owner remains live.
+func (q *Queries) MoveMailboxToDeadLetterFenced(ctx context.Context, arg MoveMailboxToDeadLetterFencedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, MoveMailboxToDeadLetterFenced,
+		arg.FailureReason,
+		arg.CreatedAt,
+		arg.ID,
+		arg.LeaseToken,
+		arg.NowUnix,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const MoveOutboxToDeadLetter = `-- name: MoveOutboxToDeadLetter :exec
 INSERT INTO dead_letters (id, source, actor_id, message_type, payload, failure_reason, attempts, created_at)
 SELECT o.id, 'outbox', o.source_actor_id, o.message_type, o.payload, $2, o.delivery_attempts, $3
@@ -988,21 +1047,29 @@ UPDATE mailbox_messages
 SET
     lease_token = NULL,
     lease_until = NULL,
-    available_at = $3
-WHERE id = $1 AND lease_token = $2
+    available_at = $1
+WHERE id = $2
+  AND lease_token = $3
+  AND lease_until >= $4
 `
 
 type NackMailboxMessageParams struct {
+	AvailableAt int64
 	ID          string
 	LeaseToken  sql.NullString
-	AvailableAt int64
+	NowUnix     sql.NullInt64
 }
 
 // Release message for redelivery after retry delay.
 // Clears lease and sets new available_at.
-// Validates lease_token to prevent stale nacks.
+// Validates both lease_token and lease lifetime to prevent stale nacks.
 func (q *Queries) NackMailboxMessage(ctx context.Context, arg NackMailboxMessageParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, NackMailboxMessage, arg.ID, arg.LeaseToken, arg.AvailableAt)
+	result, err := q.db.ExecContext(ctx, NackMailboxMessage,
+		arg.AvailableAt,
+		arg.ID,
+		arg.LeaseToken,
+		arg.NowUnix,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -1118,15 +1185,18 @@ UPDATE mailbox_messages
 SET
     lease_token = NULL,
     lease_until = NULL,
-    available_at = $3,
+    available_at = $1,
     attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END
-WHERE id = $1 AND lease_token = $2
+WHERE id = $2
+  AND lease_token = $3
+  AND lease_until >= $4
 `
 
 type PostponeMailboxMessageParams struct {
+	AvailableAt int64
 	ID          string
 	LeaseToken  sql.NullString
-	AvailableAt int64
+	NowUnix     sql.NullInt64
 }
 
 // Release a message for redelivery after a delay WITHOUT burning a delivery
@@ -1135,11 +1205,16 @@ type PostponeMailboxMessageParams struct {
 // this delivery. The CASE clamp guards the invariant rather than trusting
 // it: attempts is always >= 1 under a valid lease, but a clamped decrement
 // can never wrap a corrupt row negative. Validates lease_token to prevent
-// stale postpones. This is the attempt-preserving counterpart to
+// stale or expired postpones. This is the attempt-preserving counterpart to
 // NackMailboxMessage, used when a behavior reports "not now" (a postpone)
 // rather than a failure.
 func (q *Queries) PostponeMailboxMessage(ctx context.Context, arg PostponeMailboxMessageParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, PostponeMailboxMessage, arg.ID, arg.LeaseToken, arg.AvailableAt)
+	result, err := q.db.ExecContext(ctx, PostponeMailboxMessage,
+		arg.AvailableAt,
+		arg.ID,
+		arg.LeaseToken,
+		arg.NowUnix,
+	)
 	if err != nil {
 		return 0, err
 	}
