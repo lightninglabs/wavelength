@@ -341,7 +341,7 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 		retrySame      uint8
 	)
 
-	parsed, err := tlvutil.DecodeRecords(
+	parsed, err := safeDecodeRecords(
 		bytes.NewReader(raw), tlv.MakePrimitiveRecord(
 			checkpointVersionRecordType, &version,
 		),

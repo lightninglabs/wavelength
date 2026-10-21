@@ -386,10 +386,12 @@ func (c *Client) PrepareSend(ctx context.Context, req PrepareSendRequest) (
 	}
 
 	protoReq := &wavewalletrpc.PrepareSendRequest{
-		AmtSat:    req.AmountSat,
-		Note:      req.Note,
-		MaxFeeSat: req.MaxFeeSat,
-		SweepAll:  req.SweepAll,
+		AmtSat:            req.AmountSat,
+		Note:              req.Note,
+		MaxFeeSat:         req.MaxFeeSat,
+		SweepAll:          req.SweepAll,
+		MaxCreditSat:      req.MaxCreditSat,
+		MaxCreditTopupSat: req.MaxCreditTopupSat,
 	}
 	invoice := strings.TrimSpace(req.Invoice)
 	onchainAddress := strings.TrimSpace(req.OnchainAddress)

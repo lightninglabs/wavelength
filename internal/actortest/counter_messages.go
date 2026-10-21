@@ -80,7 +80,17 @@ func (m *IncrementMsg) Decode(r io.Reader) error {
 		return err
 	}
 
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+	// Bound the framing before decoding. Even though this message only
+	// holds a fixed-width scalar, the tlv decoder's unknown-record path
+	// allocates make([]byte, declaredLength) for any unrecognized odd
+	// type, so a crafted payload with a huge unknown-record length would
+	// otherwise panic the decoder.
+	safe, err := safeCounterTLVReader(r)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(safe); err != nil {
 		return err
 	}
 
@@ -136,7 +146,15 @@ func (m *DecrementMsg) Decode(r io.Reader) error {
 		return err
 	}
 
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+	// Bound the framing before decoding so a crafted unknown-record length
+	// cannot drive an unbounded make() inside the tlv decoder (see
+	// IncrementMsg.Decode for the unknown-record-path rationale).
+	safe, err := safeCounterTLVReader(r)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(safe); err != nil {
 		return err
 	}
 
@@ -231,7 +249,15 @@ func (m *ForwardMsg) Decode(r io.Reader) error {
 		return err
 	}
 
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+	// Bound the framing before decoding so a crafted durable payload cannot
+	// drive an unbounded make() inside the tlv decoder (target and payload
+	// are []byte records sized from their declared lengths).
+	safe, err := safeCounterTLVReader(r)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(safe); err != nil {
 		return err
 	}
 

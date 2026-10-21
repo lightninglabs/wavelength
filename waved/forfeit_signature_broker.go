@@ -336,18 +336,20 @@ func (b *forfeitSignatureBroker) submit(requestID []byte,
 		if sameParticipantSigSet(req.signatures, participantSigs) {
 			return nil
 		}
-
-		return status.Error(
-			codes.AlreadyExists,
-			"forfeit signature request already signed",
-		)
 	}
 
+	// Schnorr signatures for one key and message can differ when the signer
+	// supplies different auxiliary nonce data. Reverify a replay against
+	// the retained request instead of treating the first signature bytes as
+	// the request identity.
 	if err := verifyExternalForfeitParticipantSignatures(
 		req.signReq, participantSigs,
 	); err != nil {
 		return status.Errorf(codes.InvalidArgument, "verify "+
 			"participant signatures: %v", err)
+	}
+	if req.answered {
+		return nil
 	}
 
 	req.answered = true

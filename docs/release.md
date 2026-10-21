@@ -122,6 +122,22 @@ It then uploads `Wavewalletdk.aar`, `Wavewalletdk.xcframework.tar.gz`, and
 a sibling checkout. No manual step is required beyond pushing the tag to
 publish the GitHub release assets.
 
+To recover missing assets for an existing tag, dispatch the current Mobile
+Bindings workflow rather than rerunning the old tag's workflow:
+
+```shell
+$ gh workflow run mobile-bindings.yml --ref main -f release_tag=v0.2.0-rc1
+```
+
+The recovery run resolves the tag to one commit, uses that source for all
+three builds, and selects the Go version pinned in that commit's Makefile.
+It uses the current workflow's Android setup and downloads the SQLite module
+before invoking older WASM Makefile recipes. No tagged source is modified,
+and the tag is not moved. As with a normal tag build, the publish job replaces
+the three binding assets if they already exist; it leaves the daemon archives
+and signed manifest untouched. A `mobile-v*` recovery uploads workflow
+artifacts only, without publishing GitHub release assets.
+
 The Release Build and Mobile Bindings workflows can finish in either order.
 They both target the same draft and create it only when absent, so re-runs do
 not create competing releases. Once the manifest is signed, finalize the title

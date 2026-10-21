@@ -113,9 +113,8 @@ func DecodeState(raw []byte) (*State, error) {
 		sweepRaw            []byte
 	)
 
-	parsed, err := tlvutil.DecodeRecords(
-		bytes.NewReader(raw),
-		tlv.MakePrimitiveRecord(stateVersionRecordType, &version),
+	parsed, err := safeDecodeRecords(
+		raw, tlv.MakePrimitiveRecord(stateVersionRecordType, &version),
 		tlv.MakePrimitiveRecord(
 			stateConfirmedTxidsRecordType, &confirmedRaw,
 		),
@@ -274,8 +273,8 @@ func decodeSweepState(raw []byte) (SweepState, error) {
 		confirmHeight uint32
 	)
 
-	parsed, err := tlvutil.DecodeRecords(
-		bytes.NewReader(raw),
+	parsed, err := safeDecodeRecords(
+		raw,
 		tlv.MakePrimitiveRecord(sweepStatusRecordType, &statusByte),
 		tlv.MakePrimitiveRecord(sweepTxidRecordType, &txid),
 		tlv.MakePrimitiveRecord(

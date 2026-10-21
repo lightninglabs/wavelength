@@ -401,7 +401,7 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 		),
 	}
 
-	if _, err := tlvutil.DecodeRecordsFromBytes(
+	if _, err := decodeBoundedRecords(
 		raw, records...,
 	); err != nil {
 		return nil, err

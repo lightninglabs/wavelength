@@ -1,0 +1,31 @@
+{
+  "trace_id": "broker_valid_replay",
+  "description": "Accept a valid answer, accept same and alternate valid replays without replacing it, and reject invalid or wrong-key alternatives.",
+  "steps": [
+    {
+      "op": "submit",
+      "signature": "first_valid",
+      "expect": "accepted_first"
+    },
+    {
+      "op": "submit",
+      "signature": "first_valid",
+      "expect": "accepted_replay"
+    },
+    {
+      "op": "submit",
+      "signature": "alternate_valid",
+      "expect": "accepted_replay"
+    },
+    {
+      "op": "submit",
+      "signature": "invalid",
+      "expect": "rejected_invalid"
+    },
+    {
+      "op": "submit",
+      "signature": "wrong_key",
+      "expect": "rejected_invalid"
+    }
+  ]
+}

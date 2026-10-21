@@ -1070,9 +1070,19 @@ type PrepareSendRequest struct {
 	// amt_sat otherwise. This makes "drain the wallet" structurally
 	// distinct from "amt_sat defaulted to zero" so a typo cannot empty
 	// the wallet by accident. Ignored on the invoice path.
-	SweepAll      bool `protobuf:"varint,6,opt,name=sweep_all,json=sweepAll,proto3" json:"sweep_all,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SweepAll bool `protobuf:"varint,6,opt,name=sweep_all,json=sweepAll,proto3" json:"sweep_all,omitempty"`
+	// max_credit_sat is the maximum total server credit the caller authorizes
+	// this invoice send to reserve, including credit funded by a top-up. Zero
+	// disables credit use. Ignored on the onchain path.
+	MaxCreditSat uint64 `protobuf:"varint,7,opt,name=max_credit_sat,json=maxCreditSat,proto3" json:"max_credit_sat,omitempty"`
+	// max_credit_topup_sat is the maximum new Ark value the caller
+	// authorizes this invoice send to move into server credit. Zero disables
+	// credit top-ups. A server may round a shortfall up to its minimum Ark
+	// output, but the rounded amount must remain within this cap. Ignored on
+	// the onchain path.
+	MaxCreditTopupSat uint64 `protobuf:"varint,8,opt,name=max_credit_topup_sat,json=maxCreditTopupSat,proto3" json:"max_credit_topup_sat,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *PrepareSendRequest) Reset() {
@@ -1156,6 +1166,20 @@ func (x *PrepareSendRequest) GetSweepAll() bool {
 		return x.SweepAll
 	}
 	return false
+}
+
+func (x *PrepareSendRequest) GetMaxCreditSat() uint64 {
+	if x != nil {
+		return x.MaxCreditSat
+	}
+	return 0
+}
+
+func (x *PrepareSendRequest) GetMaxCreditTopupSat() uint64 {
+	if x != nil {
+		return x.MaxCreditTopupSat
+	}
+	return 0
 }
 
 type isPrepareSendRequest_Destination interface {
@@ -5732,14 +5756,16 @@ const file_wallet_proto_rawDesc = "" +
 	"\rUnlockRequest\x12'\n" +
 	"\x0fwallet_password\x18\x01 \x01(\fR\x0ewalletPassword\"9\n" +
 	"\x0eUnlockResponse\x12'\n" +
-	"\x0fidentity_pubkey\x18\x01 \x01(\tR\x0eidentityPubkey\"\xd4\x01\n" +
+	"\x0fidentity_pubkey\x18\x01 \x01(\tR\x0eidentityPubkey\"\xab\x02\n" +
 	"\x12PrepareSendRequest\x12\x1a\n" +
 	"\ainvoice\x18\x01 \x01(\tH\x00R\ainvoice\x12)\n" +
 	"\x0fonchain_address\x18\x02 \x01(\tH\x00R\x0eonchainAddress\x12\x17\n" +
 	"\aamt_sat\x18\x03 \x01(\x04R\x06amtSat\x12\x12\n" +
 	"\x04note\x18\x04 \x01(\tR\x04note\x12\x1e\n" +
 	"\vmax_fee_sat\x18\x05 \x01(\x04R\tmaxFeeSat\x12\x1b\n" +
-	"\tsweep_all\x18\x06 \x01(\bR\bsweepAllB\r\n" +
+	"\tsweep_all\x18\x06 \x01(\bR\bsweepAll\x12$\n" +
+	"\x0emax_credit_sat\x18\a \x01(\x04R\fmaxCreditSat\x12/\n" +
+	"\x14max_credit_topup_sat\x18\b \x01(\x04R\x11maxCreditTopupSatB\r\n" +
 	"\vdestination\"\xb9\x05\n" +
 	"\x13PrepareSendResponse\x12$\n" +
 	"\x0esend_intent_id\x18\x01 \x01(\tR\fsendIntentId\x12\x1d\n" +

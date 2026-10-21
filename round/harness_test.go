@@ -2188,7 +2188,7 @@ func (h *boardingTestHarness) newTestForfeitTx(
 
 	h.t.Helper()
 
-	tx := wire.NewMsgTx(2)
+	tx := wire.NewMsgTx(3)
 
 	// Input 0: VTXO being forfeited.
 	tx.AddTxIn(&wire.TxIn{

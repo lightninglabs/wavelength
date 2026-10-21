@@ -3,6 +3,7 @@ package unroll
 import (
 	"bytes"
 	"fmt"
+	"io"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/baselib/tlvutil"
@@ -103,6 +104,16 @@ func decodeDeferredCheckpoints(raw []byte) ([]DeferredCheckpoint, error) {
 			err)
 	}
 
+	// Bound the declared count against the bytes physically present
+	// before allocating. Each entry is at least a one-byte length prefix,
+	// so a count larger than the remaining bytes is a lie that would
+	// otherwise drive an unbounded (or panicking) make() from a tampered
+	// or truncated durable blob.
+	if count > uint64(reader.Len()) {
+		return nil, fmt.Errorf("deferred checkpoint count %d exceeds "+
+			"%d remaining bytes", count, reader.Len())
+	}
+
 	checkpoints := make([]DeferredCheckpoint, 0, count)
 	for i := uint64(0); i < count; i++ {
 		entryLen, err := tlv.ReadVarInt(reader, &scratch)
@@ -111,8 +122,21 @@ func decodeDeferredCheckpoints(raw []byte) ([]DeferredCheckpoint, error) {
 				"length: %w", i, err)
 		}
 
+		// Bound each entry length against the bytes still available so
+		// a huge declared length cannot pre-allocate before we discover
+		// the truncation.
+		if entryLen > uint64(reader.Len()) {
+			return nil, fmt.Errorf("deferred checkpoint %d length "+
+				"%d exceeds %d remaining bytes", i, entryLen,
+				reader.Len())
+		}
+
+		// Use io.ReadFull rather than reader.Read: a bare Read can
+		// return a short count without error, which would silently
+		// decode a truncated entry into a wrong-but-valid value
+		// (zero-padded tail) instead of failing closed.
 		entry := make([]byte, entryLen)
-		if _, err := reader.Read(entry); err != nil {
+		if _, err := io.ReadFull(reader, entry); err != nil {
 			return nil, fmt.Errorf("read deferred checkpoint %d "+
 				"body: %w", i, err)
 		}
@@ -143,7 +167,7 @@ func decodeDeferredCheckpointEntry(raw []byte) (DeferredCheckpoint, error) {
 		deadline  uint32
 	)
 
-	if err := tlvutil.DecodeRecordsDiscardUnknown(
+	if err := safeDecodeRecordsDiscardUnknown(
 		bytes.NewReader(raw), tlv.MakePrimitiveRecord(
 			deferredCheckpointTxidRecordType, &txidBytes,
 		),

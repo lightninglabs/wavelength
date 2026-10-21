@@ -855,6 +855,39 @@ func (q *Queries) ListMailboxMessagesByActor(ctx context.Context, mailboxID stri
 	return items, nil
 }
 
+const ListPendingMailboxIDsByPrefix = `-- name: ListPendingMailboxIDsByPrefix :many
+SELECT DISTINCT mailbox_id FROM mailbox_messages
+WHERE SUBSTR(
+    mailbox_id, 1, LENGTH(CAST($1 AS TEXT))
+) = CAST($1 AS TEXT)
+ORDER BY mailbox_id
+`
+
+// List distinct mailbox IDs that contain a message and begin with a literal
+// prefix.
+func (q *Queries) ListPendingMailboxIDsByPrefix(ctx context.Context, prefix string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, ListPendingMailboxIDsByPrefix, prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var mailbox_id string
+		if err := rows.Scan(&mailbox_id); err != nil {
+			return nil, err
+		}
+		items = append(items, mailbox_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListPendingOutboxByTarget = `-- name: ListPendingOutboxByTarget :many
 SELECT id, source_actor_id, target_actor_id, message_type, payload, domain_key, version, status, delivery_attempts, claim_token, claimed_until, created_at, completed_at FROM outbox_messages
 WHERE target_actor_id = $1 AND status = 'pending'

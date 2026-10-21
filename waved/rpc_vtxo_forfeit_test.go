@@ -303,10 +303,10 @@ func TestSignVTXOForfeitSignsExternalParticipantTranscript(t *testing.T) {
 // TestSignVTXOForfeitRejectsMalformedRequests pins the signing oracle's
 // fail-closed boundary. Each case gets far enough to build the same exact
 // request shape used by swapd, then mutates one critical field: local VTXO
-// state when available, a penalty output that does not match the server
-// script, a spend path that does not require this daemon's key, or transaction
-// bytes that already contain a witness. All must be caller errors and must not
-// invoke the signer.
+// state when available, transaction context, a penalty output that does not
+// match the server script, a spend path that does not require this daemon's
+// key, or transaction bytes that already contain a witness. All must be caller
+// errors and must not invoke the signer.
 func TestSignVTXOForfeitRejectsMalformedRequests(t *testing.T) {
 	t.Parallel()
 
@@ -322,6 +322,28 @@ func TestSignVTXOForfeitRejectsMalformedRequests(t *testing.T) {
 			f.req.VtxoAmountSat++
 		},
 		wantContains: "does not match local vtxo",
+	}, {
+		name: "wrong transaction version",
+		mutate: func(t *testing.T, f *signVTXOForfeitFixture) {
+			t.Helper()
+
+			tx := f.forfeitTx.Copy()
+			tx.Version = 2
+			f.req.UnsignedForfeitTx = serializeMsgTx(t, tx)
+		},
+		wantContains: "version is 2, expected 3",
+	}, {
+		name: "non-final connector sequence",
+		mutate: func(t *testing.T, f *signVTXOForfeitFixture) {
+			t.Helper()
+
+			tx := f.forfeitTx.Copy()
+			connectorIndex := forfeittx.ForfeitConnectorInputIndex
+			connectorIn := tx.TxIn[connectorIndex]
+			connectorIn.Sequence = 1
+			f.req.UnsignedForfeitTx = serializeMsgTx(t, tx)
+		},
+		wantContains: "input 1 sequence is 1",
 	}, {
 		name: "wrong server forfeit script",
 		mutate: func(t *testing.T, f *signVTXOForfeitFixture) {
@@ -366,6 +388,8 @@ func TestSignVTXOForfeitRejectsMalformedRequests(t *testing.T) {
 			t.Parallel()
 
 			fixture := newSignVTXOForfeitFixture(t)
+			signer := &input.MockInputSigner{}
+			fixture.rpcServer.oorSignerOverride = signer
 			test.mutate(t, fixture)
 
 			_, err := fixture.rpcServer.SignVTXOForfeit(
@@ -377,6 +401,10 @@ func TestSignVTXOForfeitRejectsMalformedRequests(t *testing.T) {
 			require.Contains(
 				t, status.Convert(err).Message(),
 				test.wantContains,
+			)
+			signer.AssertNotCalled(
+				t, "SignOutputRaw", mock.Anything,
+				mock.Anything,
 			)
 		})
 	}

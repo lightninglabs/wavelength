@@ -1831,9 +1831,12 @@ func (s *Server) initLndBackend(ctx context.Context) error {
 // and work fine, while address derivation pins the taproot scope and fails —
 // so the daemon runs until the moment a unilateral exit or a boarding sweep
 // needs a fresh script. A watch-only account fails later still, at signing,
-// once inputs are already leased.
+// once inputs are already leased, unless lnd signs through a remote signer,
+// which is the one case where a watch-only account is usable.
 //
 // One lookup filtered by both name and address type distinguishes all three.
+// A watch-only account on a remote-signing lnd costs one more lookup, of the
+// default account, to tell that case from a node with local keys.
 //
 // NOTE: this confirms the taproot-scoped account exists, which is what address
 // derivation needs. It does not rule out the same name also existing under
@@ -1848,23 +1851,9 @@ func (s *Server) validateLndAccount(ctx context.Context,
 		return nil
 	}
 
-	accounts, err := lnd.WalletKit.ListAccounts(
-		ctx, account, walletrpc.AddressType_TAPROOT_PUBKEY,
-	)
-	if err != nil || len(accounts) == 0 {
-		return fmt.Errorf("lnd wallet account %q not found under the "+
-			"taproot key scope: this daemon derives taproot "+
-			"addresses, and lnd resolves an account name within "+
-			"the key scope the requested address type implies, so "+
-			"the account must be created taproot-scoped (lookup "+
-			"error: %v)", account, err)
-	}
-
-	if accounts[0].GetWatchOnly() {
-		return fmt.Errorf("lnd wallet account %q is watch-only, so "+
-			"lnd cannot sign for it: coin selection would succeed "+
-			"and signing would fail after the inputs were "+
-			"already leased", account)
+	err := checkLndAccount(ctx, lnd.WalletKit, account)
+	if err != nil {
+		return err
 	}
 
 	s.log.InfoS(ctx, "Using lnd wallet account",

@@ -603,6 +603,10 @@ func validateAssetTree(t *tree.Tree) error {
 
 // treeNodeFromProto converts a single proto TreeNode to a tree.Node.
 func treeNodeFromProto(pn *TreeNode) (*tree.Node, error) {
+	if pn == nil {
+		return nil, fmt.Errorf("nil tree node")
+	}
+
 	input, err := OutpointFromProto(pn.Input)
 	if err != nil {
 		return nil, fmt.Errorf("input: %w", err)

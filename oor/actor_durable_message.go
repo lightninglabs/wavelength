@@ -270,7 +270,7 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		),
 	}
 
-	if _, err := tlvutil.DecodeRecordsFromBytes(
+	if _, err := decodeBoundedRecords(
 		raw, records...,
 	); err != nil {
 		return startTransferPayload{}, err
@@ -317,8 +317,8 @@ func encodeLookupTransferPayload(idempotencyKey string) ([]byte, error) {
 // TLV records.
 func decodeLookupTransferPayload(raw []byte) (string, error) {
 	var key []byte
-	if _, err := tlvutil.DecodeRecords(
-		bytes.NewReader(raw), tlv.MakePrimitiveRecord(
+	if _, err := decodeBoundedRecords(
+		raw, tlv.MakePrimitiveRecord(
 			lookupTransferIdempotencyKeyRecordType, &key,
 		),
 	); err != nil {
@@ -586,7 +586,7 @@ func decodeAncestryEntry(raw []byte) (vtxo.Ancestry, error) {
 		),
 	}
 
-	if _, err := tlvutil.DecodeRecordsFromBytes(
+	if _, err := decodeBoundedRecords(
 		raw, records...,
 	); err != nil {
 		return vtxo.Ancestry{}, err
@@ -803,7 +803,7 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 		),
 	}
 
-	if _, err := tlvutil.DecodeRecordsFromBytes(
+	if _, err := decodeBoundedRecords(
 		raw, records...,
 	); err != nil {
 		return IncomingMetadataMatch{}, err
@@ -931,7 +931,7 @@ func decodeRecipientPayload(raw []byte) (recipientPayload, error) {
 		),
 	}
 
-	if _, err := tlvutil.DecodeRecordsFromBytes(
+	if _, err := decodeBoundedRecords(
 		raw, records...,
 	); err != nil {
 		return recipientPayload{}, err
@@ -1066,7 +1066,7 @@ func decodeIncomingRecipientPayload(raw []byte) (incomingRecipientPayload,
 		),
 	}
 
-	if _, err := tlvutil.DecodeRecordsFromBytes(
+	if _, err := decodeBoundedRecords(
 		raw, records...,
 	); err != nil {
 		return incomingRecipientPayload{}, err
@@ -1378,7 +1378,7 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		),
 	}
 
-	if _, err := tlvutil.DecodeRecordsFromBytes(
+	if _, err := decodeBoundedRecords(
 		raw, records...,
 	); err != nil {
 		return nil, err
@@ -1690,7 +1690,7 @@ func decodeSessionPayload(raw []byte) (SessionID, error) {
 		),
 	}
 
-	if _, err := tlvutil.DecodeRecordsFromBytes(
+	if _, err := decodeBoundedRecords(
 		raw, records...,
 	); err != nil {
 		return SessionID{}, err
@@ -1740,7 +1740,7 @@ func decodeResumePayload(raw []byte) (SessionID, bool, error) {
 		),
 	}
 
-	if _, err := tlvutil.DecodeRecordsFromBytes(
+	if _, err := decodeBoundedRecords(
 		raw, records...,
 	); err != nil {
 		return SessionID{}, false, err
@@ -1792,7 +1792,7 @@ func decodeListSessionsPayload(raw []byte) (SessionDirection, bool, error) {
 		),
 	}
 
-	if _, err := tlvutil.DecodeRecordsFromBytes(
+	if _, err := decodeBoundedRecords(
 		raw, records...,
 	); err != nil {
 		return SessionDirectionAll, false, err
@@ -1867,7 +1867,7 @@ func decodeResolveIncomingTransferPayloadWithLimits(raw []byte,
 		),
 	}
 
-	if _, err := tlvutil.DecodeRecordsFromBytes(
+	if _, err := decodeBoundedRecords(
 		raw, records...,
 	); err != nil {
 		return SessionID{}, nil, 0, err
@@ -1927,7 +1927,7 @@ func decodeRestoreSnapshotPayloadWithLimits(raw []byte,
 		),
 	}
 
-	if _, err := tlvutil.DecodeRecordsFromBytes(
+	if _, err := decodeBoundedRecords(
 		raw, records...,
 	); err != nil {
 		return nil, err
@@ -1989,7 +1989,7 @@ func decodeDriveEventRequestPayloadWithLimits(raw []byte,
 		),
 	}
 
-	if _, err := tlvutil.DecodeRecordsFromBytes(
+	if _, err := decodeBoundedRecords(
 		raw, records...,
 	); err != nil {
 		return SessionID{}, nil, err
@@ -2283,7 +2283,7 @@ func decodeEventPayloadWithLimits(raw []byte,
 		),
 	}
 
-	if _, err := tlvutil.DecodeRecordsFromBytes(
+	if _, err := decodeBoundedRecords(
 		raw, records...,
 	); err != nil {
 		return nil, err
@@ -2558,11 +2558,30 @@ func decodeLengthPrefixedBlobListWithLimits(raw []byte,
 			limits.MaxMailboxItems)
 	}
 
+	// Each element occupies at least one length-prefix byte on the wire, so
+	// a count claiming more elements than the remaining bytes could back is
+	// corrupt. This bounds the make([][]byte, 0, count) capacity even
+	// though count is also capped by MaxMailboxItems.
+	if err := checkElemCount(reader.Len(), count, 1); err != nil {
+		return nil, fmt.Errorf("blob list count: %w", err)
+	}
+
 	blobs := make([][]byte, 0, count)
 	for i := uint64(0); i < count; i++ {
 		elementLen, err := tlv.ReadVarInt(reader, &scratch)
 		if err != nil {
 			return nil, err
+		}
+
+		// Reject an element length that exceeds the bytes physically
+		// present before allocating make([]byte, elementLen). Without
+		// this a tiny payload declaring a huge length panics with
+		// "makeslice: cap out of range" or drives an OOM, reachable
+		// from attacker-controlled durable-mailbox bytes.
+		if elementLen > uint64(reader.Len()) {
+			return nil, fmt.Errorf("blob list element length %d "+
+				"exceeds %d remaining bytes", elementLen,
+				reader.Len())
 		}
 
 		element := make([]byte, elementLen)

@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "trace_id": "post_sign_recovery",
+  "description": "Retain post-sign ownership across restart, reject conflicting admission, and complete the terminal transition once.",
+  "producer": {
+    "kind": "p",
+    "path": "p-models/oorrecovery/src/oor_recovery.p",
+    "model": "OORRecoveryModels",
+    "testcase": "tcOORBridgeTraceExport",
+    "tool_version": "3.0.4",
+    "model_sha256": "d11ac697d67c91e95ff1df7558bfa324dd29dd2c637635da94c6c0b25e6c3451"
+  },
+  "steps": [
+    {
+      "op": "submit"
+    },
+    {
+      "op": "lock"
+    },
+    {
+      "op": "persist_signature",
+      "expect": "owned"
+    },
+    {
+      "op": "disclose"
+    },
+    {
+      "op": "crash"
+    },
+    {
+      "op": "restart",
+      "expect": "owned"
+    },
+    {
+      "op": "conflicting_admission",
+      "expect": "rejected"
+    },
+    {
+      "op": "finalize"
+    },
+    {
+      "op": "materialize",
+      "expect": "terminal"
+    },
+    {
+      "op": "notify"
+    },
+    {
+      "op": "ack",
+      "expect": "completed"
+    }
+  ]
+}

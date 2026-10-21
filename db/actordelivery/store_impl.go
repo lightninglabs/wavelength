@@ -84,6 +84,9 @@ type ActorDeliveryQueries interface {
 
 	DeleteMailboxMessage(ctx context.Context, id string) error
 
+	ListPendingMailboxIDsByPrefix(ctx context.Context,
+		prefix string) ([]string, error)
+
 	ExpireMailboxLeases(ctx context.Context, leaseUntil sql.NullInt64) error
 
 	// Ask result operations.
@@ -1206,7 +1209,32 @@ func (s *Store) CleanupExpired(ctx context.Context) error {
 	)
 }
 
-// Helper functions for SQL type conversions.
+// ListPendingMailboxIDs returns the distinct mailbox IDs that begin with the
+// literal prefix and still contain at least one message.
+func (s *Store) ListPendingMailboxIDs(ctx context.Context, prefix string) (
+	[]string, error) {
+
+	var mailboxIDs []string
+	readTxOpts := db.ReadTxOption()
+
+	err := s.db.ExecTx(
+		ctx,
+		readTxOpts,
+		func(q ActorDeliveryQueries) error {
+			var err error
+			mailboxIDs, err = q.ListPendingMailboxIDsByPrefix(
+				ctx, prefix,
+			)
+
+			return err
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return mailboxIDs, nil
+}
 
 // toNullString converts a string to sql.NullString.
 func toNullString(s string) sql.NullString {
@@ -1784,8 +1812,22 @@ func (s *TxActorDeliveryStore) CleanupExpired(ctx context.Context) error {
 	return s.querier.CleanupExpiredAskResults(ctx, now)
 }
 
+// ListPendingMailboxIDs returns the distinct mailbox IDs that begin with the
+// literal prefix and still contain at least one message.
+func (s *TxActorDeliveryStore) ListPendingMailboxIDs(ctx context.Context,
+	prefix string) ([]string, error) {
+
+	return s.querier.ListPendingMailboxIDsByPrefix(
+		ctx, prefix,
+	)
+}
+
 // Compile-time check that TxActorDeliveryStore implements actor.DeliveryStore.
 var _ actor.DeliveryStore = (*TxActorDeliveryStore)(nil)
+
+// Compile-time check that the transaction-scoped store can list pending
+// mailboxes.
+var _ actor.PendingMailboxLister = (*TxActorDeliveryStore)(nil)
 
 // txRetryConfig governs how ExecTx replays a transaction that failed with a
 // retryable error.
@@ -2013,6 +2055,9 @@ func (s *TxAwareActorDeliveryStore) execTxAttempt(ctx context.Context,
 
 // Compile-time check that Store implements actor.DeliveryStore.
 var _ actor.DeliveryStore = (*Store)(nil)
+
+// Compile-time check that Store can list pending mailboxes.
+var _ actor.PendingMailboxLister = (*Store)(nil)
 
 // Compile-time check that Store can wake same-process outbox publishers.
 var _ actor.OutboxWakeRegistrar = (*Store)(nil)
