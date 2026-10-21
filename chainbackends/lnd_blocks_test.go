@@ -10,8 +10,10 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/lndclient"
+	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/chainsource"
 	"github.com/lightningnetwork/lnd/chainntnfs"
+	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/lnrpc/chainrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -466,4 +468,134 @@ func TestLNDBlocksStopDuringReconnect(t *testing.T) {
 	_, ok := <-sub.Epochs
 	require.False(t, ok)
 	require.EqualValues(t, 1, client.calls.Load())
+}
+
+// blockedBlockTarget models actor mailbox backpressure while respecting the
+// subscription's cancellation context.
+type blockedBlockTarget struct {
+	entered    chan struct{}
+	release    chan struct{}
+	cancelled  chan struct{}
+	delivered  chan chainsource.BlockEpoch
+	once       sync.Once
+	cancelOnce sync.Once
+}
+
+// ID identifies the notification target used by the test actor.
+func (r *blockedBlockTarget) ID() string {
+	return "blocked-block-target"
+}
+
+// Tell blocks delivery until the target recovers or its subscription stops.
+func (r *blockedBlockTarget) Tell(ctx context.Context,
+	epoch chainsource.BlockEpoch) error {
+
+	r.once.Do(func() { close(r.entered) })
+	select {
+	case <-r.release:
+	case <-ctx.Done():
+		r.cancelOnce.Do(func() { close(r.cancelled) })
+
+		return ctx.Err()
+	}
+	select {
+	case r.delivered <- epoch:
+		return nil
+
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// TryTell is unused: BlockEpochActor uses context-aware Tell for backpressure.
+func (r *blockedBlockTarget) TryTell(context.Context,
+	chainsource.BlockEpoch) error {
+
+	return errors.New("test target does not support TryTell")
+}
+
+// TestLNDBlocksActorOverflow exercises the real chainsource actor over the
+// shared backend. A blocked target must either recover with the latest tip or
+// stop promptly after overflow, without disturbing another subscriber.
+func TestLNDBlocksActorOverflow(t *testing.T) {
+	t.Parallel()
+	for _, stop := range []bool{false, true} {
+		name := "recover"
+		if stop {
+			name = "cancel"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			backend, client, _ := newTestBlockBackend(t)
+			fast, err := backend.RegisterBlocks(t.Context())
+			require.NoError(t, err)
+			stream := nextTestBlockStream(t, client)
+			target := &blockedBlockTarget{
+				entered:   make(chan struct{}),
+				release:   make(chan struct{}),
+				cancelled: make(chan struct{}),
+				delivered: make(
+					chan chainsource.BlockEpoch, 20,
+				),
+			}
+			watch := chainsource.NewBlockEpochActor(
+				chainsource.BlockEpochConfig{
+					Backend: backend,
+				},
+			)
+			defer watch.Stop()
+			var notifyRef actor.TellOnlyRef[chainsource.BlockEpoch]
+			notifyRef = target
+			result := watch.Receive(t.Context(),
+				&chainsource.SubscribeBlocksRequest{
+					CallerID:    "overflow-test",
+					NotifyActor: fn.Some(notifyRef),
+				},
+			)
+			require.True(t, result.IsOk())
+			sendTestBlock(stream, 100, 1)
+			receiveTestBlock(t, fast, 100, 1)
+			select {
+			case <-target.entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("actor did not reach blocked target")
+			}
+			for i := range lndBlockBufferSize + 2 {
+				sendTestBlock(stream, uint32(101+i), byte(2+i))
+				receiveTestBlock(
+					t, fast, int32(101+i), byte(2+i),
+				)
+			}
+			if stop {
+				watch.Stop()
+				select {
+				case <-target.cancelled:
+				default:
+					t.Fatal(
+						"stop did not cancel " +
+							"blocked Tell",
+					)
+				}
+			} else {
+				close(target.release)
+				deadline := time.After(5 * time.Second)
+				for recovered := false; !recovered; {
+					select {
+					case epoch := <-target.delivered:
+						recovered = epoch.Height == 112
+
+					case <-deadline:
+						t.Fatal(
+							"tip timeout",
+						)
+					}
+				}
+				watch.Stop()
+			}
+			require.EqualValues(t, 1, client.calls.Load())
+			require.EqualValues(t, 1, client.active.Load())
+			fast.Cancel()
+			require.Zero(t, client.active.Load())
+		})
+	}
 }
