@@ -162,6 +162,9 @@ type Querier interface {
 	ListIngressQuarantine(ctx context.Context, lane string) ([]ListIngressQuarantineRow, error)
 	// List all messages for an actor's mailbox (for debugging).
 	ListMailboxMessagesByActor(ctx context.Context, mailboxID string) ([]MailboxMessage, error)
+	// List distinct mailbox IDs that contain a message and begin with a literal
+	// prefix.
+	ListPendingMailboxIDsByPrefix(ctx context.Context, prefix string) ([]string, error)
 	// List pending outbox messages for a specific target actor.
 	ListPendingOutboxByTarget(ctx context.Context, targetActorID string) ([]OutboxMessage, error)
 	// NOTE: DeleteOutboxMessage and CleanupCompletedOutbox are intentionally

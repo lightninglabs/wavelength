@@ -1,0 +1,10 @@
+name = "forfeit_signing_authority"
+version = "0.1.0"
+defaultTargets = ["ForfeitSigning", "bridgeVectors"]
+
+[[lean_lib]]
+name = "ForfeitSigning"
+
+[[lean_exe]]
+name = "bridgeVectors"
+root = "Main"

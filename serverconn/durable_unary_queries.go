@@ -206,8 +206,15 @@ func (m *SendListOORRecipientEventsByScriptRequest) Decode(r io.Reader) error {
 		[]byte,
 	]()
 
+	// Bound the untrusted payload before decode so a crafted record
+	// length cannot drive an unbounded make() in the tlv library.
+	safe, err := safeTLVReader(r)
+	if err != nil {
+		return err
+	}
+
 	if _, err := tlvutil.DecodeRecords(
-		r, pkScriptRec.Record(), afterEventRec.Record(),
+		safe, pkScriptRec.Record(), afterEventRec.Record(),
 		limitRec.Record(), correlationRec.Record(), msgIDRec.Record(),
 		idempotencyRec.Record(),
 	); err != nil {
@@ -402,8 +409,15 @@ func (m *SendListVTXOsByScriptsRequest) Decode(r io.Reader) error {
 		[]byte,
 	]()
 
+	// Bound the untrusted payload before decode so a crafted record
+	// length cannot drive an unbounded make() in the tlv library.
+	safe, err := safeTLVReader(r)
+	if err != nil {
+		return err
+	}
+
 	parsed, err := tlvutil.DecodeRecords(
-		r, pkScriptsRec.Record(), legacyCursorRec.Record(),
+		safe, pkScriptsRec.Record(), legacyCursorRec.Record(),
 		limitRec.Record(), correlationRec.Record(), msgIDRec.Record(),
 		idempotencyRec.Record(), afterCursorRec.Record(),
 	)

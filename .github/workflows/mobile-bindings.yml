@@ -2,13 +2,20 @@ name: Mobile Bindings
 
 # The mobile binding package compiles on every relevant PR (a fast, host-tagged
 # build plus an Android arm64 link check). The gomobile .aar / .xcframework
-# release builds cross-compile the whole daemon for every ABI and run only
-# on tag pushes. Two tag namespaces drive the heavy build:
+# release builds cross-compile the whole daemon for every ABI and run on
+# tag pushes or manual recovery of an existing tag. Two tag namespaces drive
+# the heavy build:
 # a `mobile-v*` tag for a mobile-only cut (artifacts only), and a `v*` release
 # tag, which additionally attaches the built `.aar`, `.xcframework`, and
 # browser WASM runtime archive to the GitHub release for that tag (see the
 # `publish` job).
 on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to rebuild (for example v0.2.0-rc1)
+        required: true
+        type: string
   push:
     tags:
       - "mobile-v*"
@@ -25,6 +32,7 @@ on:
       - "go.mod"
       - "go.sum"
       - "Makefile"
+      - "scripts/wasm-wallet/**"
       - ".github/workflows/mobile-bindings.yml"
   merge_group:
 
@@ -32,7 +40,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: mobile-${{ github.event.pull_request.number || github.ref }}
+  group: mobile-${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 defaults:
@@ -45,13 +53,46 @@ env:
   MOBILE_TAGS: "mobile wavewalletrpc swapruntime"
 
 jobs:
+  # Resolve the requested tag once so all artifacts use the same source SHA.
+  release-source:
+    name: Resolve release source
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.source.outputs.tag }}
+      sha: ${{ steps.source.outputs.sha }}
+      go-version: ${{ steps.source.outputs.go-version }}
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+
+      - name: Resolve release tag and toolchain
+        id: source
+        env:
+          TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^(mobile-)?v[0-9][A-Za-z0-9.+-]*$ ]]; then
+            echo "Invalid release tag: $TAG" >&2
+            exit 1
+          fi
+          sha=$(git rev-parse HEAD)
+          go_version=$(awk '$1 == "GO_VERSION" && $2 == ":=" {print $3}' Makefile)
+          [[ "$go_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "go-version=$go_version" >> "$GITHUB_OUTPUT"
+          echo "Building $TAG at $sha with Go $go_version"
+
   ########################################################################
   # Fast gate: the facade must compile and its boundary tests must pass.
   # Runs on PRs and the merge queue, not on tag builds.
   ########################################################################
   unit:
     name: Compile + test (${{ matrix.sqlite }})
-    if: github.event_name != 'push'
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -70,6 +111,10 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      - name: Test WASM asset staging
+        if: matrix.sqlite == 'host'
+        run: go test ./scripts/wasm-wallet
+
       - name: Test mobile facade and SQLite stores
         env:
           SQLITE_TAGS: ${{ matrix.tags }}
@@ -80,7 +125,7 @@ jobs:
 
   android-compile:
     name: Link Android arm64
-    if: github.event_name != 'push'
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -109,7 +154,7 @@ jobs:
   ########################################################################
   android:
     name: Build Android .aar
-    if: startsWith(github.ref, 'refs/tags/mobile-v') || startsWith(github.ref, 'refs/tags/v')
+    needs: release-source
     runs-on: ubuntu-latest
     steps:
       # The .aar cross-compiles the whole embedded daemon (btcwallet /
@@ -128,11 +173,13 @@ jobs:
 
       - name: Git checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-source.outputs.sha }}
 
-      - name: Setup Go ${{ env.GO_VERSION }}
+      - name: Setup Go ${{ needs.release-source.outputs.go-version }}
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: ${{ needs.release-source.outputs.go-version }}
 
       - name: Setup JDK 17
         uses: actions/setup-java@v4
@@ -142,6 +189,8 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -174,16 +223,18 @@ jobs:
   ########################################################################
   ios:
     name: Build iOS .xcframework
-    if: startsWith(github.ref, 'refs/tags/mobile-v') || startsWith(github.ref, 'refs/tags/v')
+    needs: release-source
     runs-on: macos-latest
     steps:
       - name: Git checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-source.outputs.sha }}
 
-      - name: Setup Go ${{ env.GO_VERSION }}
+      - name: Setup Go ${{ needs.release-source.outputs.go-version }}
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: ${{ needs.release-source.outputs.go-version }}
 
       - name: Install gomobile
         run: |
@@ -213,19 +264,25 @@ jobs:
   ########################################################################
   wasm:
     name: Build browser WASM runtime
-    if: startsWith(github.ref, 'refs/tags/mobile-v') || startsWith(github.ref, 'refs/tags/v')
+    needs: release-source
     runs-on: ubuntu-latest
     steps:
       - name: Git checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-source.outputs.sha }}
 
-      - name: Setup Go ${{ env.GO_VERSION }}
+      - name: Setup Go ${{ needs.release-source.outputs.go-version }}
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: ${{ needs.release-source.outputs.go-version }}
 
       - name: Build browser WASM runtime
-        run: make wasm-wallet
+        run: |
+          # Older tags resolve the SQLite directory while parsing Makefile.
+          # Download it first so recovery needs no changes to tagged source.
+          go mod download github.com/lightninglabs/go-wasmsqlite
+          make wasm-wallet
 
       - name: Package browser WASM runtime
         run: |
@@ -261,11 +318,11 @@ jobs:
   ########################################################################
   publish:
     name: Attach bindings to release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [android, ios, wasm]
+    if: startsWith(needs.release-source.outputs.tag, 'v')
+    needs: [release-source, android, ios, wasm]
     runs-on: ubuntu-latest
     concurrency:
-      group: release-${{ github.ref }}
+      group: release-refs/tags/${{ needs.release-source.outputs.tag }}
       cancel-in-progress: false
     permissions:
       # Publishing release assets requires write access to repository
@@ -293,7 +350,7 @@ jobs:
       - name: Publish bindings to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.release-source.outputs.tag }}
         run: |
           set -euo pipefail
 

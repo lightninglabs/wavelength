@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -53,6 +54,98 @@ func decodeFixedBytes(field string, got []byte, want int) error {
 	if len(got) != want {
 		return fmt.Errorf("%w: %s has %d bytes, expected %d",
 			ErrInvalidMessage, field, len(got), want)
+	}
+
+	return nil
+}
+
+// maxLedgerMessageSize bounds the total wire size of an untrusted
+// ledger TLV message before any record length is honored. Every ledger
+// message is dominated by fixed-width identifiers (16/32-byte IDs), a
+// handful of uint32/uint64 scalars, and a few short string fields, so
+// 1 MiB gives generous headroom while rejecting the unbounded
+// allocation DoS where a malicious payload declares a multi-gigabyte
+// (or near-2^64) TLV record length in a tiny envelope. These messages
+// persist in the durable mailbox and are replayed from disk across
+// upgrades. See safeTLVReader for why the cap is load-bearing.
+const maxLedgerMessageSize = 1 << 20
+
+// safeTLVReader reads an untrusted TLV payload into a size-capped
+// buffer and pre-validates the (type, length, value) framing so the
+// downstream tlv.Stream.DecodeWithParsedTypes can never be handed a
+// record length larger than the bytes physically present.
+//
+// This is load-bearing because the tlv library sizes its value buffers
+// with make([]byte, declaredLength) BEFORE reading any value bytes:
+// stream.go does bytes.NewBuffer(make([]byte, 0, length)) for unknown
+// records, and primitive.go's DVarBytes does make([]byte, l) for known
+// []byte fields (FeeType, Source, Classification, IdempotencyKey here).
+// A producer-declared length near 2^64 panics the decoder with
+// "makeslice: cap out of range" and a multi-gigabyte length OOMs --
+// both reachable from a few attacker-controlled bytes that cross the
+// trust boundary and persist in the durable mailbox. By rejecting any
+// record whose declared length exceeds the remaining buffer we cap
+// every allocation at the message size, itself capped at
+// maxLedgerMessageSize.
+func safeTLVReader(r io.Reader) (io.Reader, error) {
+	// Read at most maxLedgerMessageSize+1 so an over-cap message is
+	// detected without buffering an unbounded amount.
+	limited := io.LimitReader(r, maxLedgerMessageSize+1)
+
+	buf, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, fmt.Errorf("%w: read ledger message: %w",
+			ErrInvalidMessage, err)
+	}
+
+	if len(buf) > maxLedgerMessageSize {
+		return nil, fmt.Errorf("%w: message %d bytes exceeds max %d",
+			ErrInvalidMessage, len(buf), maxLedgerMessageSize)
+	}
+
+	if err := validateTLVRecordLengths(buf); err != nil {
+		return nil, err
+	}
+
+	return bytes.NewReader(buf), nil
+}
+
+// validateTLVRecordLengths walks the (type, length, value) framing of a
+// buffered TLV stream and rejects any record whose declared length
+// exceeds the bytes remaining in the buffer. It deliberately does not
+// interpret record contents; it only ensures the framing cannot drive
+// an over-sized make() in the real decoder.
+func validateTLVRecordLengths(buf []byte) error {
+	var scratch [8]byte
+	br := bytes.NewReader(buf)
+
+	for br.Len() > 0 {
+		// The type varint may legitimately end the stream cleanly.
+		if _, err := tlv.ReadVarInt(br, &scratch); err != nil {
+			return fmt.Errorf("%w: read tlv type: %w",
+				ErrInvalidMessage, err)
+		}
+
+		length, err := tlv.ReadVarInt(br, &scratch)
+		if err != nil {
+			return fmt.Errorf("%w: read tlv length: %w",
+				ErrInvalidMessage, err)
+		}
+
+		// A record can never carry more value bytes than remain in
+		// the buffer; reject before the decoder allocates.
+		if length > uint64(br.Len()) {
+			return fmt.Errorf("%w: tlv record length %d exceeds "+
+				"%d remaining bytes", ErrInvalidMessage, length,
+				br.Len())
+		}
+
+		if _, err := br.Seek(
+			int64(length), io.SeekCurrent,
+		); err != nil {
+			return fmt.Errorf("%w: skip tlv value: %w",
+				ErrInvalidMessage, err)
+		}
 	}
 
 	return nil
@@ -305,8 +398,15 @@ func (m *FeePaidMsg) Decode(r io.Reader) error {
 		idempotency []byte
 	)
 
+	// Bound the untrusted payload before decode so a crafted record
+	// length cannot drive an unbounded make() in the tlv library.
+	safe, err := safeTLVReader(r)
+	if err != nil {
+		return err
+	}
+
 	if _, err := tlvutil.DecodeRecords(
-		r, tlv.MakePrimitiveRecord(
+		safe, tlv.MakePrimitiveRecord(
 			feePaidRoundIDType, &roundID,
 		),
 		tlv.MakePrimitiveRecord(
@@ -457,8 +557,15 @@ func (m *VTXOReceivedMsg) Decode(r io.Reader) error {
 		sessionID     []byte
 	)
 
+	// Bound the untrusted payload before decode so a crafted record
+	// length cannot drive an unbounded make() in the tlv library.
+	safe, err := safeTLVReader(r)
+	if err != nil {
+		return err
+	}
+
 	if _, err := tlvutil.DecodeRecords(
-		r, tlv.MakePrimitiveRecord(
+		safe, tlv.MakePrimitiveRecord(
 			vtxoRecvOutpointHashType, &outpointHash,
 		),
 		tlv.MakePrimitiveRecord(
@@ -651,8 +758,15 @@ func (m *VTXOSentMsg) Decode(r io.Reader) error {
 		proceedsOwn    uint8
 	)
 
+	// Bound the untrusted payload before decode so a crafted record
+	// length cannot drive an unbounded make() in the tlv library.
+	safe, err := safeTLVReader(r)
+	if err != nil {
+		return err
+	}
+
 	if _, err := tlvutil.DecodeRecords(
-		r, tlv.MakePrimitiveRecord(
+		safe, tlv.MakePrimitiveRecord(
 			vtxoSentSessionIDType, &sessionID,
 		),
 		tlv.MakePrimitiveRecord(
@@ -796,8 +910,15 @@ func (m *ExitCostMsg) Decode(r io.Reader) error {
 		destOwn       uint8
 	)
 
+	// Bound the untrusted payload before decode so a crafted record
+	// length cannot drive an unbounded make() in the tlv library.
+	safe, err := safeTLVReader(r)
+	if err != nil {
+		return err
+	}
+
 	if _, err := tlvutil.DecodeRecords(
-		r, tlv.MakePrimitiveRecord(
+		safe, tlv.MakePrimitiveRecord(
 			exitCostOutpointHashType, &outpointHash,
 		),
 		tlv.MakePrimitiveRecord(
@@ -937,8 +1058,15 @@ func (m *UTXOCreatedMsg) Decode(r io.Reader) error {
 		fundingInputs  []byte
 	)
 
+	// Bound the untrusted payload before decode so a crafted record
+	// length cannot drive an unbounded make() in the tlv library.
+	safe, err := safeTLVReader(r)
+	if err != nil {
+		return err
+	}
+
 	if _, err := tlvutil.DecodeRecords(
-		r, tlv.MakePrimitiveRecord(
+		safe, tlv.MakePrimitiveRecord(
 			utxoOutpointHashType, &outpointHash,
 		),
 		tlv.MakePrimitiveRecord(
@@ -1064,8 +1192,15 @@ func (m *UTXOSpentMsg) Decode(r io.Reader) error {
 		classification []byte
 	)
 
+	// Bound the untrusted payload before decode so a crafted record
+	// length cannot drive an unbounded make() in the tlv library.
+	safe, err := safeTLVReader(r)
+	if err != nil {
+		return err
+	}
+
 	if _, err := tlvutil.DecodeRecords(
-		r, tlv.MakePrimitiveRecord(
+		safe, tlv.MakePrimitiveRecord(
 			utxoOutpointHashType, &outpointHash,
 		),
 		tlv.MakePrimitiveRecord(
@@ -1263,8 +1398,15 @@ func (m *BoardingSweepConfirmedMsg) Decode(r io.Reader) error {
 		destExt     uint8
 	)
 
+	// Bound the untrusted payload before decode so a crafted record
+	// length cannot drive an unbounded make() in the tlv library.
+	safe, err := safeTLVReader(r)
+	if err != nil {
+		return err
+	}
+
 	if _, err := tlvutil.DecodeRecords(
-		r, tlv.MakePrimitiveRecord(sweepConfirmedTxidType, &txid),
+		safe, tlv.MakePrimitiveRecord(sweepConfirmedTxidType, &txid),
 		tlv.MakePrimitiveRecord(
 			sweepConfirmedBlockHeightType, &blockHeight,
 		),

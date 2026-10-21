@@ -9,9 +9,9 @@ require (
 	github.com/btcsuite/btcd v0.26.0
 	github.com/btcsuite/btcd/btcec/v2 v2.5.0
 	github.com/btcsuite/btclog/v2 v2.0.1-0.20250728225537-6090e87c6c5b
-	github.com/btcsuite/btcwallet v0.18.1-0.20260826052527-33c252f3b4d6
+	github.com/btcsuite/btcwallet v0.18.1-0.20261020173225-6bc3e2a4e6fc
 	github.com/btcsuite/btcwallet/walletdb v1.6.0
-	github.com/btcsuite/btcwallet/wtxmgr v1.6.0
+	github.com/btcsuite/btcwallet/wtxmgr v1.6.1-0.20261020132555-16cfb4483d1f
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus v1.1.0

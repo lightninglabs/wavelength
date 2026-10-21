@@ -122,7 +122,16 @@ func (s *AckState) Decode(r io.Reader) error {
 		return err
 	}
 
-	_, err = stream.DecodeWithParsedTypes(r)
+	// Bound the untrusted payload before decode: AckState is persisted
+	// in the durable checkpoint store and replayed from disk, so a
+	// crafted record length must not drive an unbounded make() in the
+	// tlv library.
+	safe, err := safeTLVReader(r)
+	if err != nil {
+		return err
+	}
+
+	_, err = stream.DecodeWithParsedTypes(safe)
 
 	return err
 }

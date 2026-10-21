@@ -133,7 +133,7 @@ func decodePackageArtifactWithLimits(raw []byte,
 		),
 	}
 
-	if _, err := tlvutil.DecodeRecordsFromBytes(
+	if _, err := decodeBoundedRecords(
 		raw, records...,
 	); err != nil {
 		return PackageArtifact{}, err

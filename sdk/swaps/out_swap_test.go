@@ -784,7 +784,7 @@ func TestReceiveSessionHandlesOutSwapForfeitSignatureRequest(t *testing.T) {
 	t.Parallel()
 
 	paymentHash := lntypes.Hash{0x01, 0x02, 0x03}
-	payload := testReceiveForfeitSignaturePayload(paymentHash)
+	payload := testReceiveForfeitSignaturePayload(t, paymentHash)
 	daemonConn := &testDaemonConn{
 		signForfeitResp: &waverpc.SignVTXOForfeitResponse{
 			Pubkey:    []byte("participant-pubkey"),
@@ -794,6 +794,7 @@ func TestReceiveSessionHandlesOutSwapForfeitSignatureRequest(t *testing.T) {
 	serverConn := &testSwapServerConn{}
 	session := &ReceiveSession{
 		client: NewSwapClient(serverConn, daemonConn, nil, nil),
+		state:  ReceiveStateVHTLCFunded,
 
 		PaymentHash:         paymentHash,
 		vhtlcOutpoint:       payload.VHTLCOutpoint,
@@ -801,9 +802,11 @@ func TestReceiveSessionHandlesOutSwapForfeitSignatureRequest(t *testing.T) {
 		vhtlcPkScript:       payload.VHTLCPkScript,
 		vhtlcPolicyTemplate: payload.VHTLCPolicyTemplate,
 	}
+	publishTestReceiveForfeitBinding(t, session)
 
 	acked := false
-	err := session.handleOutSwapForfeitSignatureRequest(
+	responder := testReceiveForfeitResponder(t, session)
+	err := responder.handleOutSwapForfeitSignatureRequest(
 		t.Context(), &OutSwapForfeitSignatureNotification{
 			Payload: payload,
 			Ack: func(context.Context) error {
@@ -855,7 +858,7 @@ func TestReceiveSessionKeepsOutSwapForfeitRequestUnackedOnSubmitFailure(
 	t.Parallel()
 
 	paymentHash := lntypes.Hash{0x04, 0x05, 0x06}
-	payload := testReceiveForfeitSignaturePayload(paymentHash)
+	payload := testReceiveForfeitSignaturePayload(t, paymentHash)
 	daemonConn := &testDaemonConn{
 		signForfeitResp: &waverpc.SignVTXOForfeitResponse{
 			Pubkey:    []byte("participant-pubkey"),
@@ -867,6 +870,7 @@ func TestReceiveSessionKeepsOutSwapForfeitRequestUnackedOnSubmitFailure(
 	}
 	session := &ReceiveSession{
 		client: NewSwapClient(serverConn, daemonConn, nil, nil),
+		state:  ReceiveStateVHTLCFunded,
 
 		PaymentHash:         paymentHash,
 		vhtlcOutpoint:       payload.VHTLCOutpoint,
@@ -874,9 +878,11 @@ func TestReceiveSessionKeepsOutSwapForfeitRequestUnackedOnSubmitFailure(
 		vhtlcPkScript:       payload.VHTLCPkScript,
 		vhtlcPolicyTemplate: payload.VHTLCPolicyTemplate,
 	}
+	publishTestReceiveForfeitBinding(t, session)
 
 	acked := false
-	err := session.handleOutSwapForfeitSignatureRequest(
+	responder := testReceiveForfeitResponder(t, session)
+	err := responder.handleOutSwapForfeitSignatureRequest(
 		t.Context(), &OutSwapForfeitSignatureNotification{
 			Payload: payload,
 			Ack: func(context.Context) error {
@@ -890,6 +896,398 @@ func TestReceiveSessionKeepsOutSwapForfeitRequestUnackedOnSubmitFailure(
 	require.Equal(t, 1, daemonConn.signForfeitCalls)
 	require.Equal(t, 1, serverConn.submitForfeitCalls)
 	require.False(t, acked)
+}
+
+// TestReceiveSessionResubmitsOutSwapForfeitSignatureAfterAckFailure verifies a
+// successful server submission is retried when the following mailbox ACK
+// fails. The daemon may produce different valid Schnorr bytes on redelivery,
+// so the SDK must submit the newly signed response before ACKing again.
+func TestReceiveSessionResubmitsOutSwapForfeitSignatureAfterAckFailure(
+	t *testing.T) {
+
+	t.Parallel()
+
+	paymentHash := lntypes.Hash{0x05, 0x06, 0x07}
+	payload := testReceiveForfeitSignaturePayload(t, paymentHash)
+	daemonConn := &testDaemonConn{
+		signForfeitResps: []*waverpc.SignVTXOForfeitResponse{
+			{
+				Pubkey:    []byte("participant-pubkey"),
+				Signature: []byte("first-valid-signature"),
+			},
+			{
+				Pubkey:    []byte("participant-pubkey"),
+				Signature: []byte("second-valid-signature"),
+			},
+		},
+	}
+	serverConn := &testSwapServerConn{}
+	session := &ReceiveSession{
+		client: NewSwapClient(serverConn, daemonConn, nil, nil),
+		state:  ReceiveStateVHTLCFunded,
+
+		PaymentHash:         paymentHash,
+		vhtlcOutpoint:       payload.VHTLCOutpoint,
+		vhtlcAmount:         payload.VHTLCAmountSat,
+		vhtlcPkScript:       payload.VHTLCPkScript,
+		vhtlcPolicyTemplate: payload.VHTLCPolicyTemplate,
+	}
+	publishTestReceiveForfeitBinding(t, session)
+
+	ackFailure := errors.New("ack unavailable")
+	ackErrs := []error{ackFailure, nil}
+	ackCalls := 0
+	notification := &OutSwapForfeitSignatureNotification{
+		Payload: payload,
+		Ack: func(context.Context) error {
+			ackCalls++
+			err := ackErrs[0]
+			ackErrs = ackErrs[1:]
+
+			return err
+		},
+	}
+	responder := testReceiveForfeitResponder(t, session)
+
+	err := responder.handleOutSwapForfeitSignatureRequest(
+		t.Context(), notification,
+	)
+	require.ErrorIs(t, err, ackFailure)
+	require.Equal(t, 1, daemonConn.signForfeitCalls)
+	require.Equal(t, 1, serverConn.submitForfeitCalls)
+	require.Equal(t, 1, ackCalls)
+	require.Equal(
+		t, []byte("first-valid-signature"),
+		serverConn.lastSubmitForfeitSig.Signature,
+	)
+
+	err = responder.handleOutSwapForfeitSignatureRequest(
+		t.Context(), notification,
+	)
+	require.NoError(t, err)
+	require.Equal(t, 2, daemonConn.signForfeitCalls)
+	require.Equal(t, 2, serverConn.submitForfeitCalls)
+	require.Equal(t, 2, ackCalls)
+	require.Equal(
+		t, []byte("second-valid-signature"),
+		serverConn.lastSubmitForfeitSig.Signature,
+	)
+}
+
+// TestReceiveSessionRejectsUnboundOutSwapForfeitSignatureRequest verifies a
+// receive signs only after funding is authoritative and every vHTLC identity
+// field is bound to the funded session.
+func TestReceiveSessionRejectsUnboundOutSwapForfeitSignatureRequest(
+	t *testing.T) {
+
+	t.Parallel()
+
+	paymentHash := lntypes.Hash{0x07, 0x08, 0x09}
+	payload := testReceiveForfeitSignaturePayload(t, paymentHash)
+
+	tests := []struct {
+		name   string
+		mutate func(*ReceiveSession, *ForfeitSignaturePayload)
+	}{
+		{
+			name: "funding not authoritative",
+			mutate: func(session *ReceiveSession,
+				_ *ForfeitSignaturePayload) {
+
+				session.state = ReceiveStateHTLCEventAccepted
+			},
+		},
+		{
+			name: "missing funded outpoint",
+			mutate: func(session *ReceiveSession,
+				_ *ForfeitSignaturePayload) {
+
+				session.vhtlcOutpoint = ""
+			},
+		},
+		{
+			name: "missing funded amount",
+			mutate: func(session *ReceiveSession,
+				_ *ForfeitSignaturePayload) {
+
+				session.vhtlcAmount = 0
+			},
+		},
+		{
+			name: "missing funded script",
+			mutate: func(session *ReceiveSession,
+				_ *ForfeitSignaturePayload) {
+
+				session.vhtlcPkScript = nil
+			},
+		},
+		{
+			name: "missing funded policy",
+			mutate: func(session *ReceiveSession,
+				_ *ForfeitSignaturePayload) {
+
+				session.vhtlcPolicyTemplate = nil
+			},
+		},
+		{
+			name: "outpoint mismatch",
+			mutate: func(_ *ReceiveSession,
+				payload *ForfeitSignaturePayload) {
+
+				payload.VHTLCOutpoint = "different:0"
+			},
+		},
+		{
+			name: "amount mismatch",
+			mutate: func(_ *ReceiveSession,
+				payload *ForfeitSignaturePayload) {
+
+				payload.VHTLCAmountSat++
+			},
+		},
+		{
+			name: "script mismatch",
+			mutate: func(_ *ReceiveSession,
+				payload *ForfeitSignaturePayload) {
+
+				payload.VHTLCPkScript = []byte{
+					0x51,
+				}
+			},
+		},
+		{
+			name: "policy mismatch",
+			mutate: func(_ *ReceiveSession,
+				payload *ForfeitSignaturePayload) {
+
+				payload.VHTLCPolicyTemplate = []byte{
+					0x01,
+				}
+			},
+		},
+		{
+			name: "template hash mismatch",
+			mutate: func(session *ReceiveSession,
+				payload *ForfeitSignaturePayload) {
+
+				differentHash := lntypes.Hash{
+					0xaa,
+					0xbb,
+					0xcc,
+				}
+				session.PaymentHash = differentHash
+				payload.PaymentHash = differentHash
+			},
+		},
+		{
+			name: "malformed bound policy",
+			mutate: func(session *ReceiveSession,
+				payload *ForfeitSignaturePayload) {
+
+				malformed := []byte{
+					0x01,
+				}
+				session.vhtlcPolicyTemplate = malformed
+				payload.VHTLCPolicyTemplate = malformed
+			},
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			testPayload := *payload
+			signForfeitResp := &waverpc.SignVTXOForfeitResponse{
+				Pubkey: []byte("participant-pubkey"),
+				Signature: []byte(
+					"participant-signature",
+				),
+			}
+			daemonConn := &testDaemonConn{
+				signForfeitResp: signForfeitResp,
+			}
+			serverConn := &testSwapServerConn{}
+			policyTemplate := payload.VHTLCPolicyTemplate
+			session := &ReceiveSession{
+				client: NewSwapClient(
+					serverConn, daemonConn, nil, nil,
+				),
+				state:               ReceiveStateVHTLCFunded,
+				PaymentHash:         paymentHash,
+				vhtlcOutpoint:       payload.VHTLCOutpoint,
+				vhtlcAmount:         payload.VHTLCAmountSat,
+				vhtlcPkScript:       payload.VHTLCPkScript,
+				vhtlcPolicyTemplate: policyTemplate,
+			}
+			test.mutate(session, &testPayload)
+			session.forfeitBindingGate =
+				newReceiveForfeitBindingGate()
+			session.publishReceiveForfeitBinding()
+
+			acked := false
+			notification := &OutSwapForfeitSignatureNotification{
+				Payload: &testPayload,
+				Ack: func(context.Context) error {
+					acked = true
+
+					return nil
+				},
+			}
+			responder := testReceiveForfeitResponder(t, session)
+			err := responder.handleOutSwapForfeitSignatureRequest(
+				t.Context(), notification,
+			)
+			require.Error(t, err)
+			require.Zero(t, daemonConn.signForfeitCalls)
+			require.Zero(t, serverConn.submitForfeitCalls)
+			require.False(t, acked)
+		})
+	}
+}
+
+// TestReceiveForfeitBindingWaitsForPersistence verifies a funding snapshot is
+// not visible to the mailbox responder when its store write fails. The same
+// request succeeds after a later durable transition publishes the binding.
+func TestReceiveForfeitBindingWaitsForPersistence(t *testing.T) {
+	t.Parallel()
+
+	paymentHash := lntypes.Hash{0x10, 0x11, 0x12}
+	payload := testReceiveForfeitSignaturePayload(t, paymentHash)
+	serverConn := &testSwapServerConn{}
+	daemonConn := &testDaemonConn{
+		signForfeitResp: &waverpc.SignVTXOForfeitResponse{
+			Pubkey:    []byte("participant-pubkey"),
+			Signature: []byte("participant-signature"),
+		},
+	}
+	client := NewSwapClientWithStore(
+		serverConn, daemonConn, nil, nil, newTestSwapStore(t),
+	)
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	session := &ReceiveSession{
+		client:              client,
+		state:               ReceiveStateHTLCEventAccepted,
+		PaymentHash:         paymentHash,
+		clientPubKey:        clientPriv.PubKey(),
+		operatorPubKey:      operatorPriv.PubKey(),
+		vhtlcPkScript:       bytes.Clone(payload.VHTLCPkScript),
+		vhtlcPolicyTemplate: bytes.Clone(payload.VHTLCPolicyTemplate),
+		forfeitBindingGate:  newReceiveForfeitBindingGate(),
+		payerFeeMsat:        math.MaxInt64 + 1,
+	}
+	responder := testReceiveForfeitResponder(t, session)
+
+	mutationEntered := make(chan struct{})
+	continueMutation := make(chan struct{})
+	mutationResult := make(chan error, 1)
+	go func() {
+		mutationResult <- session.mutateAndPersist(
+			t.Context(), func() error {
+				session.vhtlcOutpoint = payload.VHTLCOutpoint
+				session.vhtlcAmount = payload.VHTLCAmountSat
+				if err := session.transition(
+					receiveEventVHTLCFunded,
+				); err != nil {
+					return err
+				}
+
+				close(mutationEntered)
+				<-continueMutation
+
+				return nil
+			},
+		)
+	}()
+	<-mutationEntered
+
+	acked := false
+	notification := &OutSwapForfeitSignatureNotification{
+		Payload: payload,
+		Ack: func(context.Context) error {
+			acked = true
+
+			return nil
+		},
+	}
+	err = responder.handleOutSwapForfeitSignatureRequest(
+		t.Context(), notification,
+	)
+	require.ErrorContains(t, err, "not authoritative")
+	require.Zero(t, daemonConn.signForfeitCalls)
+	require.Zero(t, serverConn.submitForfeitCalls)
+	require.False(t, acked)
+	close(continueMutation)
+	err = <-mutationResult
+	require.ErrorContains(t, err, "overflows int64")
+	require.Equal(t, ReceiveStateHTLCEventAccepted, session.state)
+
+	session.payerFeeMsat = 0
+	err = session.mutateAndPersist(t.Context(), func() error {
+		session.vhtlcOutpoint = payload.VHTLCOutpoint
+		session.vhtlcAmount = payload.VHTLCAmountSat
+
+		return session.transition(receiveEventVHTLCFunded)
+	})
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		responder.handleOutSwapForfeitSignatureRequest(
+			t.Context(), notification,
+		),
+	)
+	require.EqualValues(t, 1, daemonConn.signForfeitCalls)
+	require.EqualValues(t, 1, serverConn.submitForfeitCalls)
+	require.True(t, acked)
+
+	refreshedPayload := *payload
+	refreshedPayload.VHTLCOutpoint = chainhash.Hash{
+		0xcc,
+	}.String() + ":1"
+	refreshedPayload.VHTLCAmountSat++
+	err = session.rememberReceiveFunding(
+		t.Context(), refreshedPayload.VHTLCOutpoint,
+		refreshedPayload.VHTLCAmountSat,
+	)
+	require.NoError(t, err)
+
+	acked = false
+	err = responder.handleOutSwapForfeitSignatureRequest(
+		t.Context(), notification,
+	)
+	require.ErrorContains(t, err, "vHTLC outpoint mismatch")
+	require.EqualValues(t, 1, daemonConn.signForfeitCalls)
+	require.EqualValues(t, 1, serverConn.submitForfeitCalls)
+	require.False(t, acked)
+
+	notification.Payload = &refreshedPayload
+	require.NoError(
+		t,
+		responder.handleOutSwapForfeitSignatureRequest(
+			t.Context(), notification,
+		),
+	)
+	require.EqualValues(t, 2, daemonConn.signForfeitCalls)
+	require.EqualValues(t, 2, serverConn.submitForfeitCalls)
+	require.True(t, acked)
+
+	resumed, err := client.ResumeReceiveViaLightning(
+		t.Context(), paymentHash,
+	)
+	require.NoError(t, err)
+	resumedResponder := testReceiveForfeitResponder(t, resumed)
+	require.NoError(
+		t,
+		resumedResponder.handleOutSwapForfeitSignatureRequest(
+			t.Context(), notification,
+		),
+	)
+	require.EqualValues(t, 3, daemonConn.signForfeitCalls)
+	require.EqualValues(t, 3, serverConn.submitForfeitCalls)
 }
 
 // TestForfeitSignaturePayloadFromVTXORequest verifies the pay-side signer
@@ -995,8 +1393,33 @@ func TestForfeitSignaturePayloadFromVTXORequest(t *testing.T) {
 	require.Equal(t, payload.RequestID, payloadAgain.RequestID)
 }
 
-func testReceiveForfeitSignaturePayload(
+func testReceiveForfeitSignaturePayload(t *testing.T,
 	paymentHash lntypes.Hash) *ForfeitSignaturePayload {
+
+	t.Helper()
+
+	sender, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	receiver, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operator, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender:                               sender.PubKey(),
+		Receiver:                             receiver.PubKey(),
+		Server:                               operator.PubKey(),
+		PreimageHash:                         paymentHash,
+		RefundLocktime:                       300,
+		UnilateralClaimDelay:                 10,
+		UnilateralRefundDelay:                11,
+		UnilateralRefundWithoutReceiverDelay: 12,
+	})
+	require.NoError(t, err)
+	template, err := policy.Template.Encode()
+	require.NoError(t, err)
+	pkScript, err := policy.PkScript()
+	require.NoError(t, err)
 
 	return &ForfeitSignaturePayload{
 		RequestID:   []byte("request-id"),
@@ -1004,14 +1427,9 @@ func testReceiveForfeitSignaturePayload(
 		VHTLCOutpoint: chainhash.Hash{
 			0xaa,
 		}.String() + ":0",
-		VHTLCAmountSat: 42_000,
-		VHTLCPkScript: []byte{
-			0x51,
-		},
-		VHTLCPolicyTemplate: []byte{
-			0x01,
-			0x02,
-		},
+		VHTLCAmountSat:      42_000,
+		VHTLCPkScript:       pkScript,
+		VHTLCPolicyTemplate: template,
 		ForfeitSpendPath: []byte{
 			0x03,
 			0x04,
@@ -1032,6 +1450,33 @@ func testReceiveForfeitSignaturePayload(
 			0x09,
 			0x0a,
 		},
+	}
+}
+
+// publishTestReceiveForfeitBinding marks a hand-built test session as if its
+// complete funding snapshot had crossed the persistence boundary.
+func publishTestReceiveForfeitBinding(t *testing.T, session *ReceiveSession) {
+	t.Helper()
+
+	session.forfeitBindingGate = newReceiveForfeitBindingGate()
+	session.publishReceiveForfeitBinding()
+	_, err := session.forfeitBindingGate.load()
+	require.NoError(t, err)
+}
+
+// testReceiveForfeitResponder captures the dependencies that the production
+// mailbox goroutine captures before the mutable session state machine runs.
+func testReceiveForfeitResponder(t *testing.T,
+	session *ReceiveSession) *receiveForfeitResponder {
+
+	t.Helper()
+	require.NotNil(t, session)
+	require.NotNil(t, session.client)
+	require.NotNil(t, session.forfeitBindingGate)
+
+	return &receiveForfeitResponder{
+		client:      session.client,
+		bindingGate: session.forfeitBindingGate,
 	}
 }
 
@@ -2076,6 +2521,7 @@ type testDaemonConn struct {
 	lastCancel        *waverpc.CancelVHTLCRecoveryRequest
 	lastStatus        *waverpc.GetVHTLCRecoveryStatusRequest
 	signForfeitResp   *waverpc.SignVTXOForfeitResponse
+	signForfeitResps  []*waverpc.SignVTXOForfeitResponse
 	signForfeitErr    error
 	signForfeitCalls  int
 	lastSignForfeit   *waverpc.SignVTXOForfeitRequest
@@ -2310,6 +2756,12 @@ func (d *testDaemonConn) SignVTXOForfeit(_ context.Context,
 	}
 	if d.signForfeitErr != nil {
 		return nil, d.signForfeitErr
+	}
+	if len(d.signForfeitResps) > 0 {
+		resp := d.signForfeitResps[0]
+		d.signForfeitResps = d.signForfeitResps[1:]
+
+		return resp, nil
 	}
 	if d.signForfeitResp != nil {
 		return d.signForfeitResp, nil

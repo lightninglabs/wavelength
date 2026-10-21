@@ -1,9 +1,11 @@
 package conn
 
 import (
+	"fmt"
 	"io"
 	"reflect"
 
+	"github.com/lightninglabs/wavelength/baselib/tlvutil"
 	"github.com/lightningnetwork/lnd/tlv"
 	"google.golang.org/protobuf/proto"
 )
@@ -42,7 +44,7 @@ func (w *WrappedProto[T]) Record() tlv.Record {
 
 	return tlv.MakeDynamicRecord(
 		protoRecordType, w, sizeFunc, wrappedProtoEncoder[T],
-		wrappedProtoDecoder[T],
+		tlvutil.ExactDecoder(wrappedProtoDecoder[T]),
 	)
 }
 
@@ -84,6 +86,18 @@ func wrappedProtoDecoder[T proto.Message](
 		return tlv.NewTypeForDecodingErr(
 			val, "WrappedProto", l, l,
 		)
+	}
+
+	// Bound the declared record length against a sane per-message cap
+	// before make([]byte, l). The tlv library does not cap the record
+	// length on the non-p2p decode path, so a crafted length near 2^64
+	// would otherwise panic with "makeslice: len out of range" or OOM.
+	// Callers wrap their Decode entry point in safeTLVReader, which
+	// already rejects a length larger than the buffered payload; this
+	// guard is defense-in-depth for any direct use of the record.
+	if l > maxConnMessageSize {
+		return fmt.Errorf("%w: wrapped proto length %d exceeds max %d",
+			ErrInvalidTLV, l, maxConnMessageSize)
 	}
 
 	data := make([]byte, l)

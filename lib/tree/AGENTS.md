@@ -54,6 +54,12 @@ descriptors through branch nodes to the batch output.
   its cosigners and `AssetContext.SigningTweak(node.Input)`; the Bitcoin-only
   path uses `SweepTapscriptRoot`. Mixing the two produces a key that verifies
   against neither.
+- **Every retained child edge binds its parent output script to the child.**
+  `ValidateChildScripts` recomputes each child key from its declared cosigners
+  and the Bitcoin sweep root or asset per-node signing tweak, then requires the
+  parent output at that child's index to pay the recomputed taproot script.
+  Structural outpoint links and value conservation do not establish this
+  ownership relation.
 - **Cache-aliasing invariant**: a `*Tree` is effectively immutable once published from
   a builder or resolver. Multiple downstream consumers may share the same `*Tree`
   pointer through caches and ancestry-fragment slices. Silently mutating a shared

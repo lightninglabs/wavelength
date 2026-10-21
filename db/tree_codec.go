@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/baselib/tlvutil"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightningnetwork/lnd/tlv"
 )
@@ -44,6 +45,107 @@ const (
 	// make().
 	MaxTreeChildrenPerNode = 64
 )
+
+// maxTreeBlobSize bounds the total wire size of an untrusted tree or
+// node TLV blob before any individual record length is honored. Tree
+// blobs are fed to DeserializeTree from the durable mailbox, persisted
+// rows, and operator-supplied indexer responses, all of which are
+// untrusted. A production tree's serialized size is dominated by per
+// node 36-byte outpoints, 36-byte+ outputs, 33-byte cosigner keys, and
+// 64-byte signatures across a binary tree whose practical depth is well
+// under MaxTreeDeserializeDepth; 8 MiB gives generous headroom while
+// still rejecting the unbounded-allocation DoS where a tiny payload
+// declares a multi-gigabyte (or near-2^64) DVarBytes record length.
+const maxTreeBlobSize = 8 << 20
+
+// safeTreeReader reads an untrusted tree/node TLV blob into a size
+// capped buffer and pre-validates the (type, length, value) framing so
+// the downstream tlv.Stream decode can never be handed a record length
+// larger than the bytes physically present. The tlv library sizes its
+// DVarBytes / tlv.Blob value buffers with make([]byte, declaredLength)
+// before reading any value bytes, so a producer-declared length near
+// 2^64 panics the decoder ("makeslice: len out of range") and a
+// multi-gigabyte length OOMs -- both reachable from a few bytes of a
+// crafted tree blob replayed from disk. Bounding each record length
+// against the remaining buffer caps every allocation at the blob size,
+// itself capped at maxTreeBlobSize.
+func safeTreeReader(r io.Reader) (io.Reader, error) {
+	limited := io.LimitReader(r, maxTreeBlobSize+1)
+
+	buf, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, fmt.Errorf("read tree blob: %w", err)
+	}
+
+	if len(buf) > maxTreeBlobSize {
+		return nil, fmt.Errorf("tree blob %d bytes exceeds max %d",
+			len(buf), maxTreeBlobSize)
+	}
+
+	if err := validateTreeRecordLengths(buf); err != nil {
+		return nil, err
+	}
+
+	return bytes.NewReader(buf), nil
+}
+
+// validateTreeRecordLengths walks the (type, length, value) framing of
+// a buffered TLV stream and rejects any record whose declared length
+// exceeds the bytes remaining in the buffer. It does not interpret
+// record contents; it only ensures the framing cannot drive an
+// over-sized make() in the real decoder.
+func validateTreeRecordLengths(buf []byte) error {
+	var scratch [8]byte
+	br := bytes.NewReader(buf)
+
+	for br.Len() > 0 {
+		if _, err := tlv.ReadVarInt(br, &scratch); err != nil {
+			return fmt.Errorf("read tlv type: %w", err)
+		}
+
+		length, err := tlv.ReadVarInt(br, &scratch)
+		if err != nil {
+			return fmt.Errorf("read tlv length: %w", err)
+		}
+
+		if length > uint64(br.Len()) {
+			return fmt.Errorf("tlv record length %d exceeds %d "+
+				"remaining bytes", length, br.Len())
+		}
+
+		if _, err := br.Seek(
+			int64(length), io.SeekCurrent,
+		); err != nil {
+			return fmt.Errorf("skip tlv value: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// checkElemCount rejects an element count whose minimum on-wire
+// footprint (count * minBytesPerElem) exceeds the declared record
+// length before any make([]T, count) runs. The tlv library does not
+// cap a record's element count on the non-p2p decode path, so a
+// varint-driven count near 2^64 would otherwise panic the decoder with
+// "makeslice: len out of range" or drive an OOM. A record can never
+// legitimately describe more elements than its own length can hold, so
+// bounding the count against recordLen caps every slice allocation at
+// the record size. recordLen is the per-record length the tlv stream
+// frames and hands to the decoder, itself bounded by the enclosing
+// node blob.
+func checkElemCount(count, minBytesPerElem, recordLen uint64) error {
+	if minBytesPerElem == 0 {
+		return fmt.Errorf("min bytes per element must be positive")
+	}
+
+	if count > recordLen/minBytesPerElem {
+		return fmt.Errorf("element count %d exceeds %d bytes of "+
+			"record capacity", count, recordLen)
+	}
+
+	return nil
+}
 
 // TLV type aliases for Node serialization.
 type (
@@ -128,7 +230,8 @@ func (t *txOutRecord) Record() tlv.Record {
 	}
 
 	return tlv.MakeDynamicRecord(
-		0, t, recordSize, txOutEncoder, txOutDecoder,
+		0, t, recordSize, txOutEncoder,
+		tlvutil.ExactDecoder(txOutDecoder),
 	)
 }
 
@@ -166,6 +269,14 @@ func txOutDecoder(r io.Reader, val interface{}, buf *[8]byte, l uint64) error {
 			return err
 		}
 
+		// Bound the script length against the record length before
+		// make([]byte, scriptLen): a crafted varint could otherwise
+		// drive an OOM ahead of io.ReadFull.
+		if scriptLen > l {
+			return fmt.Errorf("script length %d exceeds record "+
+				"length %d", scriptLen, l)
+		}
+
 		t.PkScript = make([]byte, scriptLen)
 		_, err = io.ReadFull(r, t.PkScript)
 
@@ -194,7 +305,8 @@ func (t *txOutsRecord) Record() tlv.Record {
 	}
 
 	return tlv.MakeDynamicRecord(
-		0, t, recordSize, txOutsEncoder, txOutsDecoder,
+		0, t, recordSize, txOutsEncoder,
+		tlvutil.ExactDecoder(txOutsDecoder),
 	)
 }
 
@@ -240,6 +352,17 @@ func txOutsDecoder(r io.Reader, val interface{}, buf *[8]byte, l uint64) error {
 			return err
 		}
 
+		// Each output costs at least 8 bytes (value) plus a 1-byte
+		// minimum varint script length, so bound numOutputs against
+		// the record length before make([]*wire.TxOut, numOutputs).
+		// Without this a varint-driven numOutputs near 2^64 panics the
+		// decoder ("makeslice: len out of range") or OOMs, reachable
+		// from a tiny untrusted node blob replayed from the durable
+		// mailbox.
+		if err := checkElemCount(numOutputs, 9, l); err != nil {
+			return fmt.Errorf("tx outputs: %w", err)
+		}
+
 		t.Outputs = make([]*wire.TxOut, numOutputs)
 		for i := uint64(0); i < numOutputs; i++ {
 			if _, err := io.ReadFull(r, buf[:]); err != nil {
@@ -251,6 +374,14 @@ func txOutsDecoder(r io.Reader, val interface{}, buf *[8]byte, l uint64) error {
 			scriptLen, err := tlv.ReadVarInt(r, buf)
 			if err != nil {
 				return err
+			}
+
+			// Bound the per-output script length against the record
+			// length before make([]byte, scriptLen).
+			if scriptLen > l {
+				return fmt.Errorf("output script length %d "+
+					"exceeds record length %d", scriptLen,
+					l)
 			}
 
 			pkScript := make([]byte, scriptLen)
@@ -284,7 +415,8 @@ func (p *pubKeysRecord) Record() tlv.Record {
 	}
 
 	return tlv.MakeDynamicRecord(
-		0, p, recordSize, pubKeysEncoder, pubKeysDecoder,
+		0, p, recordSize, pubKeysEncoder,
+		tlvutil.ExactDecoder(pubKeysDecoder),
 	)
 }
 
@@ -317,6 +449,14 @@ func pubKeysDecoder(r io.Reader, val interface{}, buf *[8]byte,
 		numKeys, err := tlv.ReadVarInt(r, buf)
 		if err != nil {
 			return err
+		}
+
+		// Each compressed pubkey is exactly 33 bytes, so bound numKeys
+		// against the record length before make([]*btcec.PublicKey,
+		// numKeys): a varint-driven count near 2^64 would otherwise
+		// panic the decoder or OOM on a tiny untrusted node blob.
+		if err := checkElemCount(numKeys, 33, l); err != nil {
+			return fmt.Errorf("cosigner keys: %w", err)
 		}
 
 		p.Keys = make([]*btcec.PublicKey, numKeys)
@@ -565,7 +705,15 @@ func (t *tlvTree) Decode(r io.Reader) error {
 		return err
 	}
 
-	return stream.Decode(r)
+	// Bound the untrusted blob before decode so a crafted DVarBytes
+	// record length cannot drive an unbounded make() in the tlv
+	// library.
+	safe, err := safeTreeReader(r)
+	if err != nil {
+		return err
+	}
+
+	return stream.Decode(safe)
 }
 
 // tlvNode is the TLV-serializable wrapper for tree.Node using RecordT.
@@ -707,7 +855,16 @@ func (n *tlvNode) Decode(r io.Reader) error {
 		return err
 	}
 
-	_, err = stream.DecodeWithParsedTypes(r)
+	// Bound the untrusted node blob before decode so a crafted record
+	// length cannot drive an unbounded make() in the tlv library (both
+	// the DVarBytes children blob and the per-record element counts in
+	// txOutsDecoder / pubKeysDecoder are sized from the wire).
+	safe, err := safeTreeReader(r)
+	if err != nil {
+		return err
+	}
+
+	_, err = stream.DecodeWithParsedTypes(safe)
 	if err != nil {
 		return err
 	}

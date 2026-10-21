@@ -92,10 +92,16 @@ func (m *RestartMessage) Decode(r io.Reader) error {
 		updatedAt = tlv.ZeroRecordT[tlv.TlvType9, uint64]()
 	)
 
-	// Build stream with pointers to local variables.
+	// Bound the untrusted payload before decode so a crafted record
+	// length cannot drive an unbounded make() in the tlv library.
+	safe, err := safeActorTLVReader(r)
+	if err != nil {
+		return err
+	}
+
 	// Decode and get typeMap showing which fields were present.
 	typeMap, err := tlvutil.DecodeRecords(
-		r, actorID.Record(), stateType.Record(), stateData.Record(),
+		safe, actorID.Record(), stateType.Record(), stateData.Record(),
 		version.Record(), updatedAt.Record(),
 	)
 	if err != nil {

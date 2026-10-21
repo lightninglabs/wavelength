@@ -99,7 +99,14 @@ func (m *AskResponse) Decode(r io.Reader) error {
 		),
 	}
 
-	if _, err := tlvutil.DecodeRecords(r, records...); err != nil {
+	// Bound the untrusted payload before decode so a crafted record
+	// length cannot drive an unbounded make() in the tlv library.
+	safe, err := safeActorTLVReader(r)
+	if err != nil {
+		return err
+	}
+
+	if _, err := tlvutil.DecodeRecords(safe, records...); err != nil {
 		return err
 	}
 

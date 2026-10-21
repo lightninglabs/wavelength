@@ -473,7 +473,7 @@ func TestRouterSendInvoiceHandsCreditPayToRegistry(t *testing.T) {
 			SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT,
 		CreditQuote: &swapclientrpc.CreditQuote{
 			MustUseCredit:      true,
-			CreditShortfallSat: 500_000,
+			CreditShortfallSat: 500,
 			CreditTopupSat:     1_000,
 		},
 		ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
@@ -484,6 +484,8 @@ func TestRouterSendInvoiceHandsCreditPayToRegistry(t *testing.T) {
 			Destination: &wavewalletrpc.PrepareSendRequest_Invoice{
 				Invoice: invoice,
 			},
+			MaxCreditSat:      500,
+			MaxCreditTopupSat: 1_000,
 		},
 	)
 	require.NoError(t, err)
@@ -503,7 +505,7 @@ func TestRouterSendInvoiceHandsCreditPayToRegistry(t *testing.T) {
 	require.Equal(t, "pay:"+paymentHash, reg.lastPay.OpKey)
 	require.Equal(t, uint64(1_000), reg.lastPay.TopupSat)
 	require.Equal(t, invoice, reg.lastPay.Invoice)
-	require.Equal(t, uint64(500_000), reg.lastPay.MaxCreditSat)
+	require.Equal(t, uint64(500), reg.lastPay.MaxCreditSat)
 	require.True(t, reg.lastPay.CreditOnly)
 	require.True(
 		t,

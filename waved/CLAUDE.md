@@ -88,7 +88,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   missing, not taproot-scoped, or watch-only. Without it each of those fails
   later and worse — a missing account silently filters every UTXO away, a
   wrong-scoped one funds and signs but cannot derive a fresh script, and a
-  watch-only one fails at signing after inputs are leased.
+  watch-only one fails at signing after inputs are leased. The one exception
+  is a remote-signing lnd, detected by its `default` taproot account being
+  watch-only itself: there a watch-only account that reports an xpub and
+  derivation path is accepted, since lnd signs by sending the signer the path
+  it derives from the xpub. A failed, empty, or ambiguous `default` lookup
+  fails closed, and waved never creates the account.
 - **Health endpoints serve a cached sample; an HTTP request never enqueues
   actor work.** `actorHealth.monitor` is a daemon-lifetime goroutine that
   waits for the startup publication barrier, then every `healthInterval` (5 s)

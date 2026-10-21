@@ -213,7 +213,7 @@ func (m *StartUnrollRequest) Decode(r io.Reader) error {
 	var height, trigger uint32
 	var policyKind, policyRef []byte
 
-	parsed, err := tlvutil.DecodeRecords(
+	parsed, err := safeDecodeRecords(
 		r, tlv.MakePrimitiveRecord(startUnrollHeightRecType, &height),
 		tlv.MakePrimitiveRecord(startUnrollTriggerRecType, &trigger),
 		tlv.MakePrimitiveRecord(
@@ -281,7 +281,7 @@ func (m *ResumeUnrollRequest) Encode(w io.Writer) error {
 func (m *ResumeUnrollRequest) Decode(r io.Reader) error {
 	var height uint32
 
-	if err := tlvutil.DecodeRecordsDiscardUnknown(
+	if err := safeDecodeRecordsDiscardUnknown(
 		r, tlv.MakePrimitiveRecord(resumeUnrollHeightRecType, &height),
 	); err != nil {
 		return fmt.Errorf("decode: %w", err)
@@ -332,7 +332,7 @@ func (m *HeightObservedMsg) Encode(w io.Writer) error {
 func (m *HeightObservedMsg) Decode(r io.Reader) error {
 	var height uint32
 
-	if err := tlvutil.DecodeRecordsDiscardUnknown(
+	if err := safeDecodeRecordsDiscardUnknown(
 		r,
 		tlv.MakePrimitiveRecord(heightObservedHeightRecType, &height),
 	); err != nil {
@@ -399,7 +399,7 @@ func (m *TxConfirmedMsg) Decode(r io.Reader) error {
 		numConfs uint32
 	)
 
-	if err := tlvutil.DecodeRecordsDiscardUnknown(
+	if err := safeDecodeRecordsDiscardUnknown(
 		r, tlv.MakePrimitiveRecord(txConfirmedTxidRecType, &txid),
 		tlv.MakePrimitiveRecord(txConfirmedHeightRecType, &height),
 		tlv.MakePrimitiveRecord(
@@ -469,7 +469,7 @@ func (m *TxFailedMsg) Decode(r io.Reader) error {
 		class  uint8
 	)
 
-	if err := tlvutil.DecodeRecordsDiscardUnknown(
+	if err := safeDecodeRecordsDiscardUnknown(
 		r, tlv.MakePrimitiveRecord(txFailedTxidRecType, &txid),
 		tlv.MakePrimitiveRecord(txFailedReasonRecType, &reason),
 		tlv.MakePrimitiveRecord(txFailedClassRecType, &class),
@@ -542,7 +542,7 @@ func (m *SpendObservedMsg) Decode(r io.Reader) error {
 		outIndex uint32
 	)
 
-	if err := tlvutil.DecodeRecordsDiscardUnknown(
+	if err := safeDecodeRecordsDiscardUnknown(
 		r, tlv.MakePrimitiveRecord(spendObservedTxidRecType, &txid),
 		tlv.MakePrimitiveRecord(spendObservedHeightRecType, &height),
 		tlv.MakePrimitiveRecord(spendObservedOutHashRecType, &outHash),

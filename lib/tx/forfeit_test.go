@@ -296,6 +296,17 @@ func TestValidateForfeitTx(t *testing.T) {
 			expectError: "forfeit tx is nil",
 		},
 		{
+			name: "wrong transaction version",
+			tx: func() *wire.MsgTx {
+				tx := validTx.Copy()
+				tx.Version = 2
+
+				return tx
+			}(),
+			params:      validParams,
+			expectError: "version is 2, expected 3",
+		},
+		{
 			name: "wrong number of inputs - too few",
 			tx: func() *wire.MsgTx {
 				tx := wire.NewMsgTx(3)
@@ -364,6 +375,19 @@ func TestValidateForfeitTx(t *testing.T) {
 				ServerForfeitScript: serverForfeitScript,
 			},
 			expectError: "expected connector",
+		},
+		{
+			name: "non-final connector sequence",
+			tx: func() *wire.MsgTx {
+				forfeitTx := validTx.Copy()
+				connectorIndex := tx.ForfeitConnectorInputIndex
+				connectorIn := forfeitTx.TxIn[connectorIndex]
+				connectorIn.Sequence = 1
+
+				return forfeitTx
+			}(),
+			params:      validParams,
+			expectError: "input 1 sequence is 1",
 		},
 		{
 			name: "wrong number of outputs - too few",

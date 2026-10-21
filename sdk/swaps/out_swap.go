@@ -292,6 +292,7 @@ type ReceiveSession struct {
 	// still be missing from the indexer.
 	claimIntentRecordedInProcess bool
 	interventionReason           string
+	forfeitBindingGate           *receiveForfeitBindingGate
 }
 
 // State returns the current client-side receive lifecycle state.
@@ -409,10 +410,11 @@ func (c *SwapClient) StartReceiveViaLightning(ctx context.Context,
 	}
 
 	session := &ReceiveSession{
-		client:    c,
-		amountSat: amountSat,
-		memo:      receiveInvoiceMemo(memo),
-		state:     ReceiveStateCreated,
+		client:             c,
+		amountSat:          amountSat,
+		memo:               receiveInvoiceMemo(memo),
+		state:              ReceiveStateCreated,
+		forfeitBindingGate: newReceiveForfeitBindingGate(),
 	}
 
 	if err := session.runUntil(
@@ -581,7 +583,11 @@ func (s *ReceiveSession) runUntil(ctx context.Context,
 		paymentHash := s.PaymentHash
 		clientPubKey := s.clientPubKey
 		if receiver != nil && clientPubKey != nil {
-			go s.respondToOutSwapForfeitSignatureRequests(
+			responder := &receiveForfeitResponder{
+				client:      s.client,
+				bindingGate: s.forfeitBindingGate,
+			}
+			go responder.respondToOutSwapForfeitSignatureRequests(
 				responderCtx, receiver, paymentHash,
 				clientPubKey,
 			)

@@ -78,6 +78,108 @@ func generateTestID() string {
 	return hex.EncodeToString(b)
 }
 
+// TestListPendingMailboxIDs verifies that recovery sees every mailbox with a
+// persisted message, independent of availability or lease state, and treats
+// the caller's prefix as literal text.
+func TestListPendingMailboxIDs(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+	now := store.clock.Now()
+
+	enqueue := func(id, mailboxID string, availableAt time.Time) {
+		t.Helper()
+
+		err := store.EnqueueMessage(ctx, actor.EnqueueParams{
+			ID:          id,
+			MailboxID:   mailboxID,
+			MessageType: "test.Message",
+			Payload:     []byte(id),
+			AvailableAt: availableAt,
+			MaxAttempts: 3,
+		})
+		require.NoError(t, err)
+	}
+
+	enqueue("ready-1", "session/ready", now.Add(-time.Minute))
+	enqueue("ready-2", "session/ready", now.Add(-time.Minute))
+	enqueue("delayed", "session/delayed", now.Add(time.Hour))
+	enqueue("leased", "session/leased", now.Add(-time.Minute))
+	enqueue("case-lookalike", "Session/upper", now.Add(-time.Minute))
+	enqueue("literal", "literal/%_!/pending", now.Add(-time.Minute))
+	enqueue(
+		"wildcard-lookalike", "literal/abc!/pending",
+		now.Add(-time.Minute),
+	)
+	enqueue("other", "other/session", now.Add(-time.Minute))
+
+	leased, err := store.LeaseNextMessage(
+		ctx, "session/leased", "active-lease", time.Hour,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, leased)
+
+	mailboxIDs, err := store.ListPendingMailboxIDs(ctx, "session/")
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"session/delayed",
+		"session/leased",
+		"session/ready",
+	}, mailboxIDs)
+
+	mailboxIDs, err = store.ListPendingMailboxIDs(ctx, "literal/%_!/")
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"literal/%_!/pending",
+	}, mailboxIDs)
+}
+
+// TestTxStoreListPendingMailboxIDs verifies that the optional capability is
+// preserved inside a caller-owned transaction.
+func TestTxStoreListPendingMailboxIDs(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newTxAwareActorDeliveryStoreForTest(t)
+	rollbackErr := errors.New("roll back mailbox listing test")
+
+	err := store.ExecTx(ctx, false, func(ctx context.Context,
+		txStore actor.DeliveryStore) error {
+
+		err := txStore.EnqueueMessage(ctx, actor.EnqueueParams{
+			ID:          "tx-pending",
+			MailboxID:   "tx/session",
+			MessageType: "test.Message",
+			Payload:     []byte("payload"),
+			AvailableAt: time.Now().Add(-time.Minute),
+			MaxAttempts: 3,
+		})
+		if err != nil {
+			return err
+		}
+
+		lister, ok := txStore.(actor.PendingMailboxLister)
+		if !ok {
+			return errors.New("transaction store cannot list " +
+				"mailboxes")
+		}
+
+		mailboxIDs, err := lister.ListPendingMailboxIDs(ctx, "tx/")
+		if err != nil {
+			return err
+		}
+		require.Equal(t, []string{"tx/session"}, mailboxIDs)
+
+		return rollbackErr
+	})
+	require.ErrorIs(t, err, rollbackErr)
+
+	mailboxIDs, err := store.ListPendingMailboxIDs(ctx, "tx/")
+	require.NoError(t, err)
+	require.Empty(t, mailboxIDs)
+}
+
 // TestActorDeliveryStoreEnqueueAndLease tests basic enqueue and lease
 // operations.
 func TestActorDeliveryStoreEnqueueAndLease(t *testing.T) {

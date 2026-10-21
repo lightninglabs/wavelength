@@ -166,6 +166,18 @@ type DeliveryStore interface {
 	CleanupExpired(ctx context.Context) error
 }
 
+// PendingMailboxLister is an optional delivery-store capability for finding
+// durable mailboxes that still contain messages. The prefix is matched as
+// literal text, so wildcard characters have no special meaning.
+type PendingMailboxLister interface {
+	// ListPendingMailboxIDs returns the distinct mailbox IDs that begin
+	// with prefix and still contain at least one message. Delayed and
+	// currently leased messages are included because both still require
+	// recovery.
+	ListPendingMailboxIDs(ctx context.Context,
+		prefix string) ([]string, error)
+}
+
 // ackMessage acknowledges a delivery, picking the fenced or unfenced store
 // operation by whether a lease token is present. A leaseless (peeked) delivery
 // carries an empty token and acks by ID; a leased delivery acks under its lease

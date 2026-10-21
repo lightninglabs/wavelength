@@ -293,8 +293,15 @@ func (m *SendClientEventRequest) Decode(r io.Reader) error {
 	methodRec := tlv.ZeroRecordT[rpcMethodRecordTLV, []byte]()
 	corrKeyRec := tlv.ZeroRecordT[correlationKeyRecordTLV, []byte]()
 
+	// Bound the untrusted payload before decode so a crafted record
+	// length cannot drive an unbounded make() in the tlv library.
+	safe, err := safeTLVReader(r)
+	if err != nil {
+		return err
+	}
+
 	if _, err := tlvutil.DecodeRecords(
-		r, payload.Record(), msgIDRec.Record(), idemRec.Record(),
+		safe, payload.Record(), msgIDRec.Record(), idemRec.Record(),
 		svcRec.Record(), methodRec.Record(), corrKeyRec.Record(),
 	); err != nil {
 		return err
@@ -445,7 +452,14 @@ func (m *SendRPCRequest) Decode(r io.Reader) error {
 	]()
 	envRec.Val.Val = &mailboxpb.Envelope{}
 
-	if _, err := tlvutil.DecodeRecords(r, envRec.Record()); err != nil {
+	// Bound the untrusted payload before decode so a crafted record
+	// length cannot drive an unbounded make() in the tlv library.
+	safe, err := safeTLVReader(r)
+	if err != nil {
+		return err
+	}
+
+	if _, err := tlvutil.DecodeRecords(safe, envRec.Record()); err != nil {
 		return err
 	}
 
@@ -592,8 +606,15 @@ func (m *SendUnaryRequest) Decode(r io.Reader) error {
 	methodRec := tlv.ZeroRecordT[rpcMethodRecordTLV, []byte]()
 	corrRec := tlv.ZeroRecordT[rpcCorrelationRecordTLV, []byte]()
 
+	// Bound the untrusted payload before decode so a crafted record
+	// length cannot drive an unbounded make() in the tlv library.
+	safe, err := safeTLVReader(r)
+	if err != nil {
+		return err
+	}
+
 	if _, err := tlvutil.DecodeRecords(
-		r, bodyRec.Record(), msgIDRec.Record(), idemRec.Record(),
+		safe, bodyRec.Record(), msgIDRec.Record(), idemRec.Record(),
 		svcRec.Record(), methodRec.Record(), corrRec.Record(),
 	); err != nil {
 		return err

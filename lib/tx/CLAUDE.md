@@ -34,6 +34,9 @@ handle specific transaction types (Ark batch, checkpoint, OOR, PSBT utilities).
 ## Invariants
 
 - `ForfeitVTXOInputIndex` is 0; `ForfeitConnectorInputIndex` is 1. Forfeit transactions always have the VTXO as the first input and the connector as the second.
+- Forfeit transactions use version 3. Their connector input is final; only the
+  VTXO input sequence and transaction locktime may vary with the selected spend
+  path.
 - Forfeit transaction construction is deterministic given the same inputs.
 
 ## Deep Docs
