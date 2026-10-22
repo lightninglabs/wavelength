@@ -92,7 +92,17 @@ func (s *feeBumpStateIdle) ProcessEvent(ctx context.Context, event feeBumpEvent,
 
 	// Nothing is in flight, so a confirmation or eviction is not ours to
 	// act on. Self-loop idle.
-	case *feeBumpFanoutConfirmedEvent, *feeBumpParentEvicted:
+	case *feeBumpParentEvicted:
+		// Unrelated or partial cohort eviction must not burn the
+		// surviving parents' destinations on their next funding retry.
+		delete(env.fanoutScripts.parents, event.parentTxid)
+		if len(env.fanoutScripts.parents) == 0 {
+			env.fanoutScripts = fanoutScriptPlan{}
+		}
+
+		return s.idleTransition(), nil
+
+	case *feeBumpFanoutConfirmedEvent:
 		return &feeBumpStateTransition{
 			NextState: s,
 		}, nil
@@ -119,6 +129,8 @@ func (s *feeBumpStateIdle) processDemands(ctx context.Context,
 
 	b := env.broadcaster
 	if b == nil || b.cfg.Wallet == nil || len(event.demands) == 0 {
+		env.fanoutScripts = fanoutScriptPlan{}
+
 		return s.idleTransition(), nil
 	}
 
@@ -128,6 +140,8 @@ func (s *feeBumpStateIdle) processDemands(ctx context.Context,
 
 	blocked := env.blockedFeeInputDemands(demands)
 	if len(blocked) == 0 {
+		env.fanoutScripts = fanoutScriptPlan{}
+
 		return s.idleTransition(), nil
 	}
 
@@ -141,6 +155,8 @@ func (s *feeBumpStateIdle) processDemands(ctx context.Context,
 	available := fanoutAvailableFeeInputs(utxos, env.reservedOutpoints())
 	blocked = demandsStillMissingSupply(blocked, available)
 	if len(blocked) == 0 {
+		env.fanoutScripts = fanoutScriptPlan{}
+
 		return s.idleTransition(), nil
 	}
 
@@ -244,6 +260,10 @@ func (s *feeBumpStateIdle) processDemands(ctx context.Context,
 		assignments:         assignments,
 		lastBroadcastHeight: height,
 	}
+
+	// Pending owns the funded transaction from here. A later, unrelated
+	// fanout must allocate its own destinations rather than reuse these.
+	env.fanoutScripts = fanoutScriptPlan{}
 
 	// The fanout is now on the wire. Log it at info as a lifecycle event:
 	// this is the moment several blocked parents gain a supply path.
@@ -774,6 +794,13 @@ func (env *feeBumpEnvironment) buildFeeInputFanoutTx(ctx context.Context,
 func (env *feeBumpEnvironment) fanoutOutputs(ctx context.Context,
 	demands []feeInputDemand, minOutputs int) ([]*wire.TxOut, error) {
 
+	if env.fanoutScripts.parents == nil {
+		env.fanoutScripts.parents = make(map[chainhash.Hash]struct{})
+	}
+	for _, demand := range demands {
+		env.fanoutScripts.parents[demand.parentTxid] = struct{}{}
+	}
+
 	outputCount := max(len(demands), minOutputs)
 	outputs := make([]*wire.TxOut, 0, outputCount)
 	var extraAmount btcutil.Amount
@@ -782,7 +809,7 @@ func (env *feeBumpEnvironment) fanoutOutputs(ctx context.Context,
 			extraAmount = demand.minAmount
 		}
 
-		pkScript, err := env.broadcaster.deriveChangePkScript(ctx)
+		pkScript, err := env.fanoutOutputPkScript(ctx, len(outputs))
 		if err != nil {
 			return nil, fmt.Errorf("fanout pkscript: %w", err)
 		}
@@ -793,7 +820,7 @@ func (env *feeBumpEnvironment) fanoutOutputs(ctx context.Context,
 		})
 	}
 	for len(outputs) < outputCount {
-		pkScript, err := env.broadcaster.deriveChangePkScript(ctx)
+		pkScript, err := env.fanoutOutputPkScript(ctx, len(outputs))
 		if err != nil {
 			return nil, fmt.Errorf("fanout pkscript: %w", err)
 		}
@@ -805,6 +832,43 @@ func (env *feeBumpEnvironment) fanoutOutputs(ctx context.Context,
 	}
 
 	return outputs, nil
+}
+
+// fanoutOutputPkScript returns a copy of a planned output's destination.
+// fanoutOutputs requests slots sequentially, so a new slot is appended once;
+// successful earlier allocations survive a later derivation/funding failure.
+func (env *feeBumpEnvironment) fanoutOutputPkScript(ctx context.Context,
+	index int) ([]byte, error) {
+
+	if index < len(env.fanoutScripts.outputs) {
+		script := env.fanoutScripts.outputs[index]
+
+		return append([]byte(nil), script...), nil
+	}
+
+	script, err := env.broadcaster.deriveChangePkScript(ctx)
+	if err != nil {
+		return nil, err
+	}
+	env.fanoutScripts.outputs = append(env.fanoutScripts.outputs, script)
+
+	return append([]byte(nil), script...), nil
+}
+
+// fanoutChangePkScript retains a separate change destination for retries of
+// the reserved-input fallback, independent of the fanout's output slots.
+func (env *feeBumpEnvironment) fanoutChangePkScript(ctx context.Context) (
+	[]byte, error) {
+
+	if len(env.fanoutScripts.change) == 0 {
+		script, err := env.broadcaster.deriveChangePkScript(ctx)
+		if err != nil {
+			return nil, err
+		}
+		env.fanoutScripts.change = script
+	}
+
+	return append([]byte(nil), env.fanoutScripts.change...), nil
 }
 
 // reservedFeeInputsForFanout collects the confirmed fee inputs already
@@ -861,7 +925,7 @@ func (env *feeBumpEnvironment) buildReservedInputFanoutTx(ctx context.Context,
 		return nil, err
 	}
 
-	changePkScript, err := env.broadcaster.deriveChangePkScript(ctx)
+	changePkScript, err := env.fanoutChangePkScript(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("fanout change pkscript: %w", err)
 	}
