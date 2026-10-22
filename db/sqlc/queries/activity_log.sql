@@ -16,13 +16,13 @@ INSERT INTO activity_entries (
     phase, phase_label, failure_code, failure_reason,
     payment_hash, txid, confirmation_height, vtxo_outpoint,
     swap_session_id, ledger_txid, boarding_addr, request_json, preimage,
-    created_at_unix, updated_at_unix
+    created_at_unix, updated_at_unix, batch_wait_json
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
     $8, $9, $10, $11,
     $12, $13, $14, $15,
     $16, $17, $18, $19, $20,
-    $21, $22
+    $21, $22, $23
 )
 ON CONFLICT (canonical_id) DO UPDATE SET
     kind           = EXCLUDED.kind,
@@ -44,6 +44,7 @@ ON CONFLICT (canonical_id) DO UPDATE SET
     boarding_addr   = COALESCE(EXCLUDED.boarding_addr, activity_entries.boarding_addr),
     request_json    = COALESCE(NULLIF(EXCLUDED.request_json, ''), activity_entries.request_json),
     preimage        = COALESCE(EXCLUDED.preimage, activity_entries.preimage),
+    batch_wait_json = EXCLUDED.batch_wait_json,
     updated_at_unix = EXCLUDED.updated_at_unix
 WHERE activity_entries.status = sqlc.arg(pending_status)
     OR EXCLUDED.status <> sqlc.arg(pending_status);

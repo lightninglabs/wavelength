@@ -16,6 +16,15 @@ transparently — the caller only sees wallet vocabulary.
 The whole package lives behind `//go:build wavewalletrpc && swapruntime` so
 default builds avoid the swap executor's dependency graph.
 
+Pending deposits and cooperative sends gain scheduled batch timing during
+activity reconciliation (`batch_wait.go`). Correlate deposits by boarding
+address and sends by input outpoint. Store changes on the existing entry and
+resumable event stream; clear the window after leaving assembly. The live round
+snapshot has a five-second deadline and uses the existing 60-second reconciler.
+A failed snapshot logs at Debug and never blocks lifecycle projection. Preserve
+stored waits under the projector lock for that pass; a successful empty snapshot
+or terminal activity state clears them.
+
 ## Key Types
 
 - `Service` — gRPC handler implementing `wavewalletrpc.WalletServiceServer`.
@@ -57,7 +66,7 @@ default builds avoid the swap executor's dependency graph.
   - `rpc/wavewalletrpc` (generated gRPC stubs and request/response shapes)
   - `waverpc` (admin RPCs proxied by Create/Unlock/Exit and the
     backends consumed for LeaveVTXOs, SendOOR, ListVTXOs, ListTransactions,
-    GetBalance, NewAddress)
+    GetBalance, NewAddress, and optional ListRounds)
   - `rpc/swapclientrpc` (swap-subsystem gRPC shape; ListSwaps,
     StartPay, StartReceive)
   - `swapclientserver` (typed `Backend` handle and runtime resume)
@@ -77,7 +86,7 @@ default builds avoid the swap executor's dependency graph.
     `UnrollRequest`, `GetUnrollStatusRequest`, `LeaveVTXOsRequest`,
     `SendOnChainRequest`, `SendOORRequest`, `JoinNextRoundRequest`,
     `ListVTXOsRequest`, `ListTransactionsRequest`, `NewAddressRequest`,
-    `GetBalanceRequest`, `GetInfoRequest`
+    `GetBalanceRequest`, `GetInfoRequest`, optional `ListRoundsRequest`
   - → swapclientrpc (in-process via SwapService): `StartPayRequest`,
     `StartReceiveRequest`, `ListSwapsRequest`, `SubscribeSwapsRequest`
 - **Receives**:

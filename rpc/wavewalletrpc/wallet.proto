@@ -1687,6 +1687,16 @@ enum WalletEntryPhase {
     WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION = 9;
 }
 
+// ScheduledBatchWindow describes the selected batch opportunity for a pending
+// operation. Times use the operator's UTC clock; cutoff starts quoting, not
+// confirmation. This is advisory progress, not a durable registration promise.
+message ScheduledBatchWindow {
+    int64 registration_opens_unix = 1;
+    int64 cutoff_unix = 2;
+    // planned_join_unix_ms is the client's planned wake before preparation.
+    int64 planned_join_unix_ms = 3;
+}
+
 // WalletEntryProgress carries lifecycle metadata normalized by the wallet
 // service.
 message WalletEntryProgress {
@@ -1714,6 +1724,13 @@ message WalletEntryProgress {
     // payment for the paid invoice (sha256(preimage) == payment_hash); it is
     // empty until the preimage is durably known and for non-Lightning entries.
     string preimage = 7;
+
+    // waiting_reason explains why this pending operation is waiting to join.
+    // Cleared when the live attempt no longer waits for registration.
+    string waiting_reason = 8;
+
+    // batch_window is the selected window for this operation, if known.
+    ScheduledBatchWindow batch_window = 9;
 }
 
 // EntryFailureCode is a stable, machine-readable classification of why a FAILED

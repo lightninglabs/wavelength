@@ -50,6 +50,10 @@ type history struct {
 	// projector uses the set after a successful derive pass to remove rows
 	// that an older binary already persisted in the canonical store.
 	internalOORActivityIDs map[string]struct{}
+
+	// batchWaitUnavailable distinguishes a failed optional lookup from an
+	// authoritative empty snapshot for the most recently derived page.
+	batchWaitUnavailable bool
 }
 
 // newHistory constructs the history merger.
@@ -509,6 +513,16 @@ func (h *history) deriveActivity(ctx context.Context,
 	// updated_at (the ledger row may carry a confirmed txid the swap
 	// summary does not).
 	entries = dedupeByID(entries)
+
+	h.batchWaitUnavailable = false
+	if err := h.applyBatchWaits(ctx, entries); err != nil {
+		h.batchWaitUnavailable = true
+		h.deps.resolveLog().DebugS(
+			ctx,
+			"Activity batch window lookup skipped",
+			err,
+		)
+	}
 
 	filtered := filterEntries(entries, req.GetPendingOnly(), kindFilter)
 

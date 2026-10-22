@@ -41,6 +41,7 @@ type ActivityEntry struct {
 	CreatedAtUnix      int64
 	UpdatedAtUnix      int64
 	Preimage           []byte
+	BatchWaitJson      string
 }
 
 type ActivityEvent struct {

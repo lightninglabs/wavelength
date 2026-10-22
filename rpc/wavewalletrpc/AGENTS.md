@@ -37,6 +37,11 @@ technical trace (ledger rows, swap/VTXO correlation) for one `WalletEntry`
 id; unlike `List` it may leak internal correlators, so it is kept out of
 `WalletService`.
 
+`WalletEntryProgress.waiting_reason` and `batch_window` describe a pending
+scheduled registration on the existing activity entry. These mutable display
+fields clear when registration advances; they do not imply durable client
+registration or estimate transaction confirmation.
+
 ## Key Messages
 
 - `WalletEntry` — Flat activity row. Every internal correlator

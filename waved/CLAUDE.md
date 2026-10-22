@@ -6,6 +6,10 @@ Top-level daemon orchestrator that wires the wallet backend, mailbox
 transport, chain backend, database, and all domain actors into a running
 system with a gRPC API.
 
+`ListRounds` and `WatchRounds` expose the assembly waiting reason and selected
+batch window from the FSM state snapshot. `round_key` distinguishes temporary
+attempts; the watcher compares metadata as well as state.
+
 ## Key Types
 
 For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<Symbol>`.

@@ -52,7 +52,7 @@ CREATE TABLE activity_entries (
 
     created_at_unix BIGINT NOT NULL,
     updated_at_unix BIGINT NOT NULL
-, preimage BLOB);
+, preimage BLOB, batch_wait_json TEXT NOT NULL DEFAULT '');
 
 CREATE TABLE activity_events (
     event_seq INTEGER PRIMARY KEY AUTOINCREMENT,

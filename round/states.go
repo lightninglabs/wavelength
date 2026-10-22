@@ -2,6 +2,7 @@ package round
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
@@ -44,6 +45,18 @@ func (s *Idle) IsTerminal() bool {
 
 func (s *Idle) clientStateSealed() {}
 
+// ScheduledBatchWait is a value snapshot of an attempt's selected window.
+// It lives in the FSM state so status readers never race its environment.
+// Every instant is expressed on the operator's clock.
+type ScheduledBatchWait struct {
+	// Opens is the first instant at which registration is accepted.
+	Opens time.Time
+	// Cutoff is the first instant at which registration is rejected.
+	Cutoff time.Time
+	// PlannedJoin is the jittered wake time before wallet preparation.
+	PlannedJoin time.Time
+}
+
 // PendingRoundAssembly tracks all active boarding intents that have been
 // funded on-chain but not yet fully confirmed. Intents are keyed by their
 // on-chain outpoint for efficient lookup when confirmation events arrive. Once
@@ -54,6 +67,10 @@ func (s *Idle) clientStateSealed() {}
 // VTXO outputs, and leave outputs. The pools are validated at registration
 // time by checking sum(inputs) >= sum(outputs) + fees.
 type PendingRoundAssembly struct {
+	// BatchWait describes scheduled registration when a cutoff is selected.
+	// A zero cutoff means no scheduled wait has been selected.
+	BatchWait ScheduledBatchWait
+
 	// Boarding contains the collected boarding intents to include in the
 	// next round.
 	Boarding []BoardingIntent

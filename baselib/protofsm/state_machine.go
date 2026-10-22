@@ -545,7 +545,16 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) applyEvents(
 				return err
 			}
 
-			s.log.InfoS(ctx, "State transition",
+			// Polls can re-arm timers without changing the
+			// displayed phase. Keep that activity available at
+			// debug without presenting every wakeup as progress at
+			// info level.
+			logTransition := s.log.InfoS
+			if currentState.String() == transition.NextState.String() {
+				logTransition = s.log.DebugS
+			}
+			logTransition(
+				ctx, "State transition",
 				btclog.Fmt("from_state", "%v", currentState),
 				btclog.Fmt(
 					"to_state", "%v", transition.NextState,

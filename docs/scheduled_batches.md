@@ -225,6 +225,53 @@ sequenceDiagram
     O-->>F: admitted, then quote at the cutoff
 ```
 
+## Seeing why an operation is waiting
+
+Inspect the live client state with:
+
+```sh
+wavecli ark rounds list
+wavecli ark rounds watch
+```
+
+A scheduled wait stays in `ROUND_STATE_PENDING_ASSEMBLY`. Its `waiting_reason`
+is `Waiting for scheduled batch registration`, and `batch_window` contains:
+
+- `registration_opens_unix`: opening time, in Unix seconds.
+- `cutoff_unix`: admission deadline, in Unix seconds.
+- `planned_join_unix_ms`: the client's selected wake time, in Unix milliseconds.
+  Preparation and signing follow this wakeup, so it is not a guaranteed send time.
+
+All three timestamps use the operator's clock. The cutoff is not a transaction
+confirmation estimate. `round_key` identifies the local attempt before the
+operator assigns a round ID. The watcher reports metadata changes even while
+the FSM stays in the same state. Without a selected scheduled wait, assembly
+reports `Assembling round inputs` and omits `batch_window`. Once the FSM leaves
+assembly, it clears both waiting fields.
+
+The client emits one INFO log, `Waiting for scheduled batch registration`, when
+it selects a future wake time. The log includes `round_key`,
+`registration_opens`, `batch_cutoff`, `planned_join`, and the remaining `wait`
+duration. Repeated timer checks do not repeat this message.
+
+In the wallet activity API, pending deposits and cooperative sends expose the
+same timing under `WalletEntry.progress.waiting_reason` and
+`WalletEntry.progress.batch_window`. `wavecli activity` prints the waiting
+reason, registration window, and planned join after the table, labelled by
+activity ID and with UTC timestamps. `wavecli activity --format expanded` and
+`activity inspect` show the same details; `--format json` exposes the structured fields. Both the daemon
+and CLI need a version with these fields and renderers.
+
+These fields update the existing activity
+entry and its resumable event stream; they do not create another payment entry.
+The existing reconciliation loop refreshes them every 60 seconds, so this view
+can lag live round status. If the round lookup fails or times out, the last known
+wait stays visible while lifecycle updates continue. A terminal activity state
+clears its wait even during an outage. Unchanged timing produces no new event.
+A later attempt can replace the window, and reconciliation clears it after the round
+advances or the client restarts without that attempt. Refresh-only rounds are
+visible through round status and logs; they do not create a wallet activity row.
+
 ## Limits of this version
 
 - A pinned attempt lives in memory. If the client restarts while it waits, the

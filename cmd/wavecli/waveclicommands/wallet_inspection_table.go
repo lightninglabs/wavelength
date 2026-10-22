@@ -68,6 +68,7 @@ func renderActivitySectionWithTitle(out io.Writer, title string,
 	printBullet(out, 0, "fee", formatSat(entry.GetFeeSat()))
 	printBullet(out, 0, "phase", formatEntryPhase(entry.GetProgress()))
 	printBullet(out, 0, "id", emptyDash(entry.GetId()))
+	renderActivityBatchWait(out, entry)
 
 	req := entry.GetRequest()
 	var requestPaymentHash string
