@@ -81,6 +81,31 @@ func (m *IncomingVTXOMsg) MessageType() string {
 const (
 	incomingVTXOMsgTLVType   tlv.Type = 0
 	incomingVTXORedriveDelay          = 30 * time.Second
+
+	// incomingVTXOPostponeHorizon bounds how long one delivery keeps
+	// retrying a transient failure before it is failed for real. Retry
+	// exists to ride out an indexer lagging behind the chain or a chain
+	// source mid-deploy, so waiting on an outpoint that is merely not
+	// indexed yet is the point; waiting without a bound is not. Past the
+	// horizon the delivery takes the ordinary failure path instead, which
+	// ends in the dead-letter table rather than an eternal redrive. The
+	// horizon is measured from the durable row's own enqueue time, so it
+	// costs nothing to consult and cannot be reset by redelivery, and it
+	// mirrors the OOR registry's own ten-minute bound. It applies to the
+	// ancestry-missing and indexer-error causes; a wait on a chain
+	// confirmation uses incomingVTXOConfirmationHorizon instead.
+	incomingVTXOPostponeHorizon = 10 * time.Minute
+
+	// incomingVTXOConfirmationHorizon bounds the commitment-unconfirmed
+	// cause, and only that cause. That wait belongs to the Bitcoin
+	// network rather than to the indexer: a round's commitment
+	// transaction has been broadcast and needs its first confirmation,
+	// and a single block can take well over ten minutes. Failing the
+	// delivery at the indexer-sized bound would dead-letter an event that
+	// is confirming exactly as expected, so this bound is sized to real
+	// confirmation time instead. An hour rides out several slow blocks
+	// while still ending a wait that will never clear.
+	incomingVTXOConfirmationHorizon = time.Hour
 )
 
 // TLVType returns the durable-mailbox type identifier for an incoming event.
@@ -583,9 +608,102 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 // incomingVTXODurableBehavior keeps slow indexer and chain I/O outside the
 // delivery-store writer transaction. Persistence and manager notification are
 // replay-safe, then one short Commit consumes the durable event. Transient
-// failures are postponed without spending the mailbox attempt budget.
+// failures are postponed without spending the mailbox attempt budget, bounded
+// per cause: incomingVTXOPostponeHorizon for an indexer that has not caught up
+// and incomingVTXOConfirmationHorizon while a commitment awaits its first
+// confirmation.
 type incomingVTXODurableBehavior struct {
 	handler *IncomingVTXOHandler
+}
+
+// postponeRetry converts a retryable incoming-event failure into a postpone
+// request, leaving every other error untouched, and gives up once the
+// delivery's own age reaches the horizon for its cause.
+//
+// A postpone never consumes an attempt, so nothing else ends the wait: a
+// pushed event whose outpoint never shows up in the indexer would keep a
+// delivery redriving forever, along with its paginated scan, its store writes
+// and its warning logs. The horizon is what makes that wait finite, and it is
+// measured from the durable row's enqueue timestamp rather than from
+// behavior-side state, so redelivery does not reset the age. A delivery with no
+// timestamp (a behavior invoked directly in a test, or a store that does not
+// report one) postpones as before, since absence means "no horizon
+// information", not "infinitely old".
+//
+// Past the horizon the plain error is returned, which routes the delivery
+// through the actor's ordinary Tell retry policy and then to the dead-letter
+// table. The coarse cause is reported either way so a wait that never clears is
+// visible without reading logs.
+//
+// The horizon is cause-aware, because the causes are not waiting on the same
+// clock. An indexer that has not indexed the outpoint yet, or a chain source
+// that could not be queried, is expected to clear in minutes and keeps the
+// ten-minute bound. A commitment waiting for its first on-chain confirmation is
+// waiting on the Bitcoin network, where one block can take longer than that, so
+// it gets incomingVTXOConfirmationHorizon; otherwise a round confirming
+// normally would be dead-lettered while still inside its first block. The
+// horizon is selected from the same cause value the postpone metric is labelled
+// with, so a cause's bound and its label cannot disagree.
+func (b *incomingVTXODurableBehavior) postponeRetry(ctx context.Context,
+	err error, cause string) error {
+
+	horizon := incomingPostponeHorizon(cause)
+	enqueuedAt, ok := actor.DeliveryEnqueuedAt(ctx)
+	if ok && time.Since(enqueuedAt) >= horizon {
+		b.handler.log.WarnS(ctx, "Incoming VTXO delivery exceeded its "+
+			"postpone horizon; failing it to the ordinary retry "+
+			"path", err,
+			slog.String("cause", cause),
+			slog.Time("enqueued_at", enqueuedAt),
+			slog.Duration("horizon", horizon),
+		)
+		metrics.EmitDeliveryPostpone(
+			ctx, b.handler.cfg.MetricsSink, b.handler.log, cause,
+			true,
+		)
+
+		return err
+	}
+
+	metrics.EmitDeliveryPostpone(
+		ctx, b.handler.cfg.MetricsSink, b.handler.log, cause, false,
+	)
+
+	return fmt.Errorf("%w: %w", err,
+		actor.Postpone(incomingVTXORedriveDelay))
+}
+
+// incomingPostponeHorizon returns the postpone bound for a coarse cause. Only a
+// wait on a chain confirmation is sized to block time; every other cause is
+// waiting on an indexer or a chain source and keeps the ten-minute bound.
+func incomingPostponeHorizon(cause string) time.Duration {
+	switch cause {
+	case metrics.PostponeCauseChainUnconfirmed:
+		return incomingVTXOConfirmationHorizon
+
+	default:
+		return incomingVTXOPostponeHorizon
+	}
+}
+
+// incomingPostponeCause buckets a retryable incoming-event failure into the
+// coarse cause reported with the postpone metric. The bucket comes from
+// sentinels the ancestry lookup returns, never from the pushed event, so no
+// event-supplied value becomes a label.
+func incomingPostponeCause(err error) string {
+	switch {
+	case errors.Is(err, ErrIncomingAncestryNotFound):
+		return metrics.PostponeCauseMissing
+
+	case errors.Is(err, ErrCommitmentUnconfirmed):
+		return metrics.PostponeCauseChainUnconfirmed
+
+	case errors.Is(err, ErrIncomingAncestryIndexer):
+		return metrics.PostponeCauseIndexerError
+
+	default:
+		return metrics.PostponeCauseOther
+	}
 }
 
 // Receive validates and materializes an incoming event. Retriable failures
@@ -601,9 +719,8 @@ func (b *incomingVTXODurableBehavior) Receive(ctx context.Context,
 		}
 
 		return fn.Err[IncomingVTXOResp](
-			fmt.Errorf(
-				"%w: %w", err,
-				actor.Postpone(incomingVTXORedriveDelay),
+			b.postponeRetry(
+				ctx, err, incomingPostponeCause(err),
 			),
 		)
 	}
@@ -618,10 +735,11 @@ func (b *incomingVTXODurableBehavior) Receive(ctx context.Context,
 				err,
 				slog.String("outpoint", desc.Outpoint.String()),
 			)
-			postpone := actor.Postpone(incomingVTXORedriveDelay)
 
 			return fn.Err[IncomingVTXOResp](
-				fmt.Errorf("%w: %w", err, postpone),
+				b.postponeRetry(
+					ctx, err, metrics.PostponeCauseOther,
+				),
 			)
 		}
 
@@ -642,10 +760,7 @@ func (b *incomingVTXODurableBehavior) Receive(ctx context.Context,
 		)
 
 		return fn.Err[IncomingVTXOResp](
-			fmt.Errorf(
-				"%w: %w", err,
-				actor.Postpone(incomingVTXORedriveDelay),
-			),
+			b.postponeRetry(ctx, err, metrics.PostponeCauseOther),
 		)
 	}
 
@@ -675,15 +790,19 @@ func NewIncomingVTXODurableActor(cfg IncomingVTXOHandlerConfig,
 		store, NewIncomingVTXOCodec(),
 	)
 	durableCfg.Log = cfg.Log
-	durableCfg.TellRetryPolicy = func(err error, attempts int) (bool,
-		time.Duration) {
 
-		if errors.Is(err, ErrInvalidBatchExpiryEvidence) {
-			return false, 0
-		}
+	// A policy that declines to retry is the dead-letter decision, so
+	// counting from the policy makes an incoming event that ran out of
+	// patience visible without reading logs.
+	durableCfg.TellRetryPolicy = metrics.WithDeadLetterCounter(
+		func(err error, attempts int) (bool, time.Duration) {
+			if errors.Is(err, ErrInvalidBatchExpiryEvidence) {
+				return false, 0
+			}
 
-		return actor.DefaultTellRetryPolicy(err, attempts)
-	}
+			return actor.DefaultTellRetryPolicy(err, attempts)
+		}, cfg.MetricsSink, metrics.ActorFamilyIncomingVTXO,
+	)
 
 	return actor.NewDurableActor(durableCfg).Unpack()
 }
