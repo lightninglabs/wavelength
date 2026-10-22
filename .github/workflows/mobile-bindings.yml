@@ -49,7 +49,7 @@ defaults:
 
 env:
   # If you change this please also update GO_VERSION in Makefile.
-  GO_VERSION: 1.26.9
+  GO_VERSION: 1.27.3
   MOBILE_TAGS: "mobile wavewalletrpc swapruntime"
 
 jobs:

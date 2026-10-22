@@ -1,6 +1,6 @@
 module github.com/lightninglabs/wavelength/baselib
 
-go 1.25.11
+go 1.27.3
 
 require (
 	github.com/btcsuite/btclog/v2 v2.0.1-0.20250728225537-6090e87c6c5b

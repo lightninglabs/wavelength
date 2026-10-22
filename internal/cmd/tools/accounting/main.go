@@ -101,7 +101,7 @@ func (s CoinGeckoPriceSource) Price(ctx context.Context, currency string) (
 		return 0, err
 	}
 
-	//nolint:gosec // Fixed CoinGecko endpoint; currency is query-encoded.
+	// The CoinGecko endpoint is fixed, and currency is query-encoded.
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err

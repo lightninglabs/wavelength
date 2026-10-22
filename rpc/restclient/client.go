@@ -122,7 +122,6 @@ func (c *Client) Post(ctx context.Context, path string, in proto.Message,
 		return err
 	}
 
-	//nolint:gosec // The caller explicitly configures the gateway URL.
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
@@ -159,7 +158,6 @@ func (c *Client) Stream(ctx context.Context, path string, in proto.Message) (
 		return nil, err
 	}
 
-	//nolint:gosec // The caller explicitly configures the gateway URL.
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err

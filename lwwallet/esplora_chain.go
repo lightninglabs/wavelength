@@ -123,7 +123,7 @@ func NewEsploraChainService(esplora *EsploraClient, tipPoller *TipPoller,
 // channel; this is what lets chain.BlockDisconnected reliably precede
 // the replacement chain.BlockConnected events for the new tip.
 func (s *EsploraChainService) Start(ctx context.Context) error {
-	//nolint:contextcheck // tip subscription lifecycle is owned by Stop
+	// Stop owns the lifecycle of the tip subscription.
 	tipHeight, tipHash, tipTime, chainSub, err :=
 		s.tipPoller.BestBlockAndSubscribeChain()
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -305,7 +306,13 @@ func startFakeDaemonServerWithService(t *testing.T,
 
 	t.Cleanup(func() {
 		server.Stop()
-		<-errChan
+		serveErr := <-errChan
+		require.True(
+			t, serveErr == nil ||
+				errors.Is(serveErr, grpc.ErrServerStopped),
+			"unexpected gRPC server error: %v",
+			serveErr,
+		)
 	})
 
 	return listener.Addr().String()

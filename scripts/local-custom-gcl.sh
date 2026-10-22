@@ -80,7 +80,7 @@ if [ -f "$config_file" ]; then
 	gcl_version=$(sed -n 's/^version:[[:space:]]*//p' "$config_file" | head -n 1)
 fi
 
-gcl_version=${gcl_version:-v2.10.1}
+gcl_version=${gcl_version:-v2.15.0}
 
 run_golangci() {
 	exec go run "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${gcl_version}" "$@"
@@ -125,7 +125,7 @@ run_golangci "$@"
 EOF2
 
 	chmod +x "$dest"
-	echo "custom-gcl not found; using golangci-lint v2.10.1 fallback"
+	echo "custom-gcl not found; using golangci-lint v2.15.0 fallback"
 	echo "(custom linter plugin 'll' is disabled in local mode)."
 	exit 0
 fi

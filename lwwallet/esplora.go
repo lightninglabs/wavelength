@@ -699,7 +699,7 @@ func (c *EsploraClient) get(ctx context.Context, path string) ([]byte, error) {
 		return nil, fmt.Errorf("build GET request: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(req) //nolint:gosec // G704: trusted URL
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -759,7 +759,7 @@ func (c *EsploraClient) TestMempoolAccept(ctx context.Context,
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req) //nolint:gosec // G704: trusted URL
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("test mempool accept: %w", err)
 	}
@@ -856,7 +856,7 @@ func (c *EsploraClient) SubmitPackage(ctx context.Context,
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req) //nolint:gosec // G704: trusted URL
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("submit package: %w", err)
 	}
@@ -945,7 +945,7 @@ func (c *EsploraClient) post(ctx context.Context, path string, body string) (
 	}
 	req.Header.Set("Content-Type", "text/plain")
 
-	resp, err := c.httpClient.Do(req) //nolint:gosec // G704: trusted URL
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

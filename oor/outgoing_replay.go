@@ -36,9 +36,13 @@ func NewOutgoingReplayData(recipients, requested []oortx.RecipientOutput) (
 		match := -1
 		for j := range canonical {
 			if used[j] ||
+
+				//nolint:gosec // G602: both are range indexes.
 				canonical[j].Value != requested[i].Value ||
+
 				!bytes.Equal(
 					canonical[j].PkScript,
+					//nolint:gosec // G602: i is ranged.
 					requested[i].PkScript,
 				) {
 
@@ -57,9 +61,12 @@ func NewOutgoingReplayData(recipients, requested []oortx.RecipientOutput) (
 		used[match] = true
 		proof = append(proof, ArkRecipientOutput{
 			OutputIndex: uint32(match),
-			Value:       requested[i].Value,
+			//nolint:gosec // G602: i is ranged.
+			Value: requested[i].Value,
 			PkScript: append(
-				[]byte(nil), requested[i].PkScript...,
+				[]byte(nil),
+				//nolint:gosec // G602: i is ranged.
+				requested[i].PkScript...,
 			),
 		})
 	}

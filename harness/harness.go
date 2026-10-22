@@ -2689,7 +2689,9 @@ func copyFile(t *testing.T, source, destination string, mode os.FileMode) {
 	contents, err := os.ReadFile(source)
 	require.NoError(t, err, "read %s", source)
 	require.NoError(
-		t, os.WriteFile(destination, contents, mode),
+		t,
+		//nolint:gosec // G703: fixed fixture paths.
+		os.WriteFile(destination, contents, mode),
 		"write %s", destination,
 	)
 }

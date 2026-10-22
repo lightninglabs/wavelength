@@ -2,6 +2,7 @@ package wavewalletdk
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 
@@ -42,8 +43,14 @@ func TestBtcwalletRPCUsesClientBufconn(t *testing.T) {
 	}()
 	defer func() {
 		grpcServer.Stop()
-		_ = listener.Close()
-		<-errChan
+		require.NoError(t, listener.Close())
+		serveErr := <-errChan
+		require.True(
+			t, serveErr == nil ||
+				errors.Is(serveErr, grpc.ErrServerStopped),
+			"unexpected gRPC server error: %v",
+			serveErr,
+		)
 	}()
 
 	conn, err := grpc.NewClient(

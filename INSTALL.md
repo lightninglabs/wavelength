@@ -19,7 +19,7 @@ operation, configuration flags, and the full CLI reference, see
 Verify your toolchain:
 
 ```bash
-go version       # expect: go1.25.5+
+go version       # expect: go1.27.3+
 make --version
 git --version
 ```

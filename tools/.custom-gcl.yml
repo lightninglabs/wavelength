@@ -1,4 +1,4 @@
-version: v2.10.1
+version: v2.15.0
 plugins:
   - module: 'github.com/lightninglabs/wavelength/tools/linters'
     path: ./linters
