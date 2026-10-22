@@ -721,3 +721,165 @@ type errContextStub struct{}
 
 // Error identifies the fake transient payment error.
 func (errContextStub) Error() string { return "stubbed transient pay error" }
+
+// TestRegistryPaySurvivesListCreditsOutage drives the full stack through a
+// ledger outage: the parked resume is postponed rather than nacked, so nothing
+// is abandoned while swapd is away and the same operation still settles once
+// the ledger answers again.
+func TestRegistryPaySurvivesListCreditsOutage(t *testing.T) {
+	t.Parallel()
+
+	store, delivery := newFakeStore(), newTestDelivery(t)
+	server, daemon := newFakeServer(), newFakeDaemon()
+
+	registry, err := NewRegistry(RegistryConfig{
+		Store:            store,
+		DeliveryStore:    delivery,
+		Server:           server,
+		Daemon:           daemon,
+		PollInterval:     20 * time.Millisecond,
+		MaxAwaitingPolls: 5,
+	})
+	require.NoError(t, err)
+	t.Cleanup(registry.Stop)
+
+	ctx := context.Background()
+	resp, err := registry.Ref().Ask(ctx, &StartCreditPayRequest{
+		OpKey:        "pay:outage",
+		Invoice:      "lnbc1",
+		PaymentHash:  payHash(),
+		AmountSat:    500,
+		MaxCreditSat: 500,
+		CreditOnly:   true,
+	}).Await(ctx).Unpack()
+	require.NoError(t, err)
+
+	startResp, ok := resp.(*StartCreditResponse)
+	require.True(t, ok)
+	waitForState(t, store, startResp.OpID, StatePayAwaitingSettlement)
+
+	// The ledger read fails, and the next poll-driven resume lands in the
+	// child's durable mailbox while it is down.
+	before := server.listCallCount()
+	server.setListErr(errors.New("server unavailable"))
+	require.NoError(
+		t,
+		registry.Ref().Tell(ctx, &ResumeCreditOpRequest{
+			OpID: startResp.OpID,
+		},
+		),
+	)
+
+	// The parked resume is redelivered and postponed over and over instead
+	// of spending its attempt budget: more ledger reads happen here than
+	// the five attempts a nack-based retry would have allowed.
+	require.Eventually(t, func() bool {
+		return server.listCallCount() >= before+6
+	}, 20*time.Second, 20*time.Millisecond)
+
+	// Nothing was abandoned: no dead letter, the resume is still parked in
+	// the durable mailbox, and the operation is still pending.
+	deadLetters, err := delivery.ListDeadLetters(
+		ctx, ActorIDForOp(startResp.OpID), 10,
+	)
+	require.NoError(t, err)
+	require.Empty(t, deadLetters)
+
+	pendingLister, ok := delivery.(actor.PendingMailboxLister)
+	require.True(t, ok)
+	pending, err := pendingLister.ListPendingMailboxIDs(
+		ctx, ActorIDForOp(startResp.OpID),
+	)
+	require.NoError(t, err)
+	require.Contains(t, pending, ActorIDForOp(startResp.OpID))
+
+	rec, err := store.GetOperation(ctx, startResp.OpID)
+	require.NoError(t, err)
+	require.Equal(t, db.CreditOpStatusPending, rec.Status)
+
+	// The ledger comes back and settles the payment; the parked resume
+	// drives the operation to completion without a restart.
+	server.setListErr(nil)
+	ph := payHash()
+	server.setPayOp(ph[:], ServerStateDebited)
+	waitForState(t, store, startResp.OpID, StateCompleted)
+}
+
+// TestRegistryPayCheckpointsFirstLedgerRead drives the transition that the
+// parked-resume outage test does not cover: the ledger read that fails is the
+// first one, taken in the same turn as the StartPay side effect. The awaiting
+// hand-off is checkpointed before that read, so the postponed delivery resumes
+// in the awaiting state instead of reloading payingState and re-issuing
+// StartPay. With a swapd that accepted the pay and then went away, that
+// re-issue fails and burns the delivery's whole attempt budget, which is the
+// dead-letter this postponement exists to avoid.
+func TestRegistryPayCheckpointsFirstLedgerRead(t *testing.T) {
+	t.Parallel()
+
+	store, delivery := newFakeStore(), newTestDelivery(t)
+	server, daemon := newFakeServer(), newFakeDaemon()
+
+	registry, err := NewRegistry(RegistryConfig{
+		Store:            store,
+		DeliveryStore:    delivery,
+		Server:           server,
+		Daemon:           daemon,
+		PollInterval:     20 * time.Millisecond,
+		MaxAwaitingPolls: 5,
+	})
+	require.NoError(t, err)
+	t.Cleanup(registry.Stop)
+
+	// Every ledger read fails, and so does every StartPay after the first
+	// one: the server accepted the pay and stopped answering.
+	server.setListErr(errors.New("server unavailable"))
+	server.failStartPayAfter(1, errContextStub{})
+
+	ctx := context.Background()
+	resp, err := registry.Ref().Ask(ctx, &StartCreditPayRequest{
+		OpKey:        "pay:first-read",
+		Invoice:      "lnbc1",
+		PaymentHash:  payHash(),
+		AmountSat:    500,
+		MaxCreditSat: 500,
+		CreditOnly:   true,
+	}).Await(ctx).Unpack()
+	require.NoError(t, err)
+
+	startResp, ok := resp.(*StartCreditResponse)
+	require.True(t, ok)
+
+	// The in-turn read failed once, then the postponed delivery is
+	// redelivered and re-reads the ledger several more times. A re-issued
+	// StartPay stops the wait early: that is the failure this test exists
+	// to catch, and it only costs one nack-backed redelivery.
+	require.Eventually(t, func() bool {
+		return server.listCallCount() >= 5 || server.startPayCount() > 1
+	}, 20*time.Second, 20*time.Millisecond)
+
+	// StartPay ran exactly once. Without the awaiting-state checkpoint the
+	// reload sits in payingState, so the redelivered turn re-issues the
+	// side effect and nacks when the server refuses it.
+	require.Equal(t, 1, server.startPayCount())
+
+	// Nothing was abandoned, and the durable row records the checkpointed
+	// awaiting state rather than paying.
+	deadLetters, err := delivery.ListDeadLetters(
+		ctx, ActorIDForOp(startResp.OpID), 10,
+	)
+	require.NoError(t, err)
+	require.Empty(t, deadLetters)
+
+	rec, err := store.GetOperation(ctx, startResp.OpID)
+	require.NoError(t, err)
+	require.Equal(t, db.CreditOpStatusPending, rec.Status)
+	require.Equal(t, string(StatePayAwaitingSettlement), rec.State)
+
+	// The ledger comes back and settles the pay; the same delivery
+	// completes the operation without a restart.
+	server.setListErr(nil)
+	ph := payHash()
+	server.setPayOp(ph[:], ServerStateDebited)
+	waitForState(t, store, startResp.OpID, StateCompleted)
+	require.Equal(t, 1, server.startPayCount())
+}

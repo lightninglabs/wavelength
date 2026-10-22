@@ -73,6 +73,7 @@ func (s *Server) initCreditRegistry(ctx context.Context) error {
 		// lifecycle; see MaxAwaitingPollsOrDefault for the
 		// zero-coercion rationale.
 		MaxAwaitingPolls: s.cfg.Swap.Credit.MaxAwaitingPollsOrDefault(),
+		MetricsSink:      s.metricsSink,
 		AutoRedeem: credit.AutoRedeemConfig{
 			Enabled:      !s.cfg.Swap.Credit.AutoRedeemDisabled,
 			MinRedeemSat: s.cfg.Swap.Credit.AutoRedeemMinSat,

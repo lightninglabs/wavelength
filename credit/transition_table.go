@@ -63,7 +63,8 @@ var CreditTransitions = CreditTransitionTable{
 			Transitions: []creditEntry{{
 				Event:       &opDrive{},
 				ToState:     &topupAwaitingCreditState{},
-				Description: "OOR funding submitted",
+				Description: "OOR funding submitted; stage it",
+				EmitsOutbox: []CreditOutMsg{&stageRecord{}},
 			}},
 		},
 		{
@@ -89,7 +90,8 @@ var CreditTransitions = CreditTransitionTable{
 			Transitions: []creditEntry{{
 				Event:       &opDrive{},
 				ToState:     &payAwaitingSettlementState{},
-				Description: "credit-only pay; settle",
+				Description: "credit-only pay; stage it",
+				EmitsOutbox: []CreditOutMsg{&stageRecord{}},
 			}, {
 				Event:       &opDrive{},
 				ToState:     &completedState{},
@@ -121,7 +123,8 @@ var CreditTransitions = CreditTransitionTable{
 			Transitions: []creditEntry{{
 				Event:       &opDrive{},
 				ToState:     &awaitingSettlementState{},
-				Description: "invoice created",
+				Description: "invoice created; stage it",
+				EmitsOutbox: []CreditOutMsg{&stageRecord{}},
 			}, {
 				Event:       &opDrive{},
 				ToState:     &failedState{},
@@ -168,7 +171,8 @@ var CreditTransitions = CreditTransitionTable{
 			Transitions: []creditEntry{{
 				Event:       &opDrive{},
 				ToState:     &awaitingOORState{},
-				Description: "redemption reserved",
+				Description: "redemption reserved; stage it",
+				EmitsOutbox: []CreditOutMsg{&stageRecord{}},
 			}, {
 				Event:       &opDrive{},
 				ToState:     &failedState{},

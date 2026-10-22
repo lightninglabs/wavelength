@@ -3,9 +3,11 @@ package credit
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
@@ -180,13 +182,18 @@ type fakeServer struct {
 	redeemCalls map[string]int
 	startPayCnt int
 	startPayErr error
-	redeemErr   error
-	createErr   error
-	createState ServerCreditState
-	redeemState ServerCreditState
-	receiveHash []byte
-	listCalls   int
-	listErr     error
+
+	// startPayErrAfter narrows startPayErr to the calls after the first n,
+	// so a test can accept an initial pay and then make the server stop
+	// accepting.
+	startPayErrAfter int
+	redeemErr        error
+	createErr        error
+	createState      ServerCreditState
+	redeemState      ServerCreditState
+	receiveHash      []byte
+	listCalls        int
+	listErr          error
 }
 
 // newFakeServer creates an empty server ledger with non-terminal defaults.
@@ -292,7 +299,29 @@ func (s *fakeServer) StartPay(_ context.Context, _ string, _, _ uint64) error {
 
 	s.startPayCnt++
 
-	return s.startPayErr
+	if s.startPayErr != nil && s.startPayCnt > s.startPayErrAfter {
+		return s.startPayErr
+	}
+
+	return nil
+}
+
+// failStartPayAfter makes StartPay fail from the (n+1)th call onwards, so a
+// test can accept one pay and then model a server that stopped accepting.
+func (s *fakeServer) failStartPayAfter(n int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.startPayErrAfter = n
+	s.startPayErr = err
+}
+
+// startPayCount returns the number of StartPay calls recorded so far.
+func (s *fakeServer) startPayCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.startPayCnt
 }
 
 // markCredited sets the tracked server op for a key to CREDITED and exposes the
@@ -323,6 +352,15 @@ func (s *fakeServer) addServerOp(id string, state ServerCreditState) {
 	defer s.mu.Unlock()
 
 	s.ops["test:"+id] = &fakeServerOp{id: id, state: state}
+}
+
+// setListErr makes every subsequent ListCredits call fail with err. A nil err
+// restores a healthy ledger read.
+func (s *fakeServer) setListErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.listErr = err
 }
 
 // listCallCount returns the number of ListCredits snapshots requested.
@@ -564,10 +602,9 @@ func TestDispatchFailsCorruptState(t *testing.T) {
 
 // TestPayTopupCommitRollbackPreservesCheckpoint asserts the persist-before-
 // effect guarantee: when the final commit rolls back after the FSM advanced and
-// fired its effects, the Stage checkpoint taken after CreateCredit survives, so
-// the reload-and-redrive on the next turn does NOT create a second server
-// credit operation. (SendOOR, being past the checkpoint, may re-run, but is
-// idempotent by op key.)
+// fired its effects, the Stage checkpoints survive, so the reload-and-redrive
+// on the next turn does NOT create a second server credit operation. (SendOOR,
+// being past the first checkpoint, may re-run, but is idempotent by op key.)
 func TestPayTopupCommitRollbackPreservesCheckpoint(t *testing.T) {
 	t.Parallel()
 
@@ -590,20 +627,24 @@ func TestPayTopupCommitRollbackPreservesCheckpoint(t *testing.T) {
 	require.ErrorIs(t, err, errInjected)
 	require.True(t, b.commitFailed)
 
-	// The Stage checkpoint after CreateCredit is durable, so the row sits
-	// at topup_funding even though the commit failed.
+	// The Stage checkpoints after CreateCredit and after SendOOR are both
+	// durable, so the row sits at topup_awaiting_credit even though the
+	// commit failed: the hand-off into the awaiting state stages before
+	// that state's first ledger read.
 	rec, gerr := store.GetOperation(context.Background(), "op1")
 	require.NoError(t, gerr)
-	require.Equal(t, string(StateTopupFunding), rec.State)
+	require.Equal(t, string(StateTopupAwaitingCredit), rec.State)
 	require.Equal(t, 1, server.createCalls["pay:abc"])
+	require.Equal(t, 1, daemon.sendOORCalls["pay:abc"])
 
-	// Recovery turn: reload from the checkpoint and re-drive. CreateCredit
-	// is NOT re-issued — the checkpoint advanced past it — proving the
-	// persist-before-effect invariant.
+	// Recovery turn: reload from the checkpoint and re-drive. Neither
+	// CreateCredit nor SendOOR is re-issued — the checkpoints advanced past
+	// them — proving the persist-before-effect invariant.
 	server.markCredited("pay:abc", 500)
 	require.NoError(t, driveTurn(b, &fakeExec{}))
 	require.False(t, b.commitFailed)
 	require.Equal(t, 1, server.createCalls["pay:abc"])
+	require.Equal(t, 1, daemon.sendOORCalls["pay:abc"])
 }
 
 // TestPayTopupStageFailureFallsBackToIdempotency asserts the second line of
@@ -1336,4 +1377,292 @@ func TestReceiveSkipsRedeemBelowWatermark(t *testing.T) {
 		require.Equal(t, string(StateCompleted), b.rec.State)
 		require.Nil(t, b.pendingRedeem)
 	})
+}
+
+// TestAwaitingStatesPostponeCreditsOutage asserts every awaiting state treats a
+// failed server-ledger read as a transient not-now condition instead of a
+// failed delivery: the turn asks for a postpone, the operation stays in its
+// awaiting state, and the durable row stays pending. None of these states has
+// advanced in memory or checkpointed anything when the read fails, so
+// redelivery simply re-reads the same ledger.
+func TestAwaitingStatesPostponeCreditsOutage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		msg  CreditMsg
+		want State
+	}{
+		{
+			name: "top-up",
+			msg: &StartCreditPayRequest{
+				OpKey:        "pay:topup",
+				Invoice:      "lnbc1",
+				PaymentHash:  payHash(),
+				AmountSat:    500,
+				TopupSat:     200,
+				MaxCreditSat: 500,
+			},
+			want: StateTopupAwaitingCredit,
+		},
+		{
+			name: "credit-only pay",
+			msg: &StartCreditPayRequest{
+				OpKey:        "pay:credit-only",
+				Invoice:      "lnbc2",
+				PaymentHash:  payHash(),
+				AmountSat:    500,
+				MaxCreditSat: 500,
+				CreditOnly:   true,
+			},
+			want: StatePayAwaitingSettlement,
+		},
+		{
+			name: "receive",
+			msg: &StartCreditReceiveRequest{
+				OpKey:     "recv:1",
+				AmountSat: 42,
+			},
+			want: StateAwaitingSettlement,
+		},
+		{
+			name: "redeem",
+			msg: &RedeemRequest{
+				OpKey:     "redeem:1",
+				AmountSat: 100,
+			},
+			want: StateAwaitingOOR,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := newFakeStore()
+			server, daemon := newFakeServer(), newFakeDaemon()
+			b := testBehavior("op1", store, server, daemon)
+
+			admit(t, b, store, test.msg)
+			drive(t, b, &ResumeCreditOpRequest{OpID: "op1"})
+			require.Equal(t, string(test.want), b.rec.State)
+
+			// swapd stops answering the ledger read.
+			server.setListErr(errors.New("server unavailable"))
+
+			// Several failed reconciliation turns in a row all ask
+			// for a postpone and leave the operation where it was.
+			// A nack here would walk the parked resume toward the
+			// dead-letter table, and the operation would never be
+			// driven again.
+			for i := 0; i < 5; i++ {
+				require.ErrorIs(
+					t,
+					driveTurn(
+						b, &fakeExec{},
+					),
+					actor.ErrPostponed,
+				)
+				require.Equal(t, string(test.want), b.rec.State)
+			}
+
+			rec, err := store.GetOperation(
+				context.Background(),
+				"op1",
+			)
+			require.NoError(t, err)
+			require.Equal(t, db.CreditOpStatusPending, rec.Status)
+
+			// The ledger answers again: the same parked operation
+			// reconciles without a restart.
+			server.setListErr(nil)
+			require.NoError(t, driveTurn(b, &fakeExec{}))
+			require.Equal(t, string(test.want), b.rec.State)
+		})
+	}
+}
+
+// TestAwaitingStateFailsAtPostponeHorizon asserts the postpone is bounded: once
+// the delivery's own age reaches the horizon, the ledger failure is returned as
+// an ordinary error so the mailbox can route it to the dead-letter table
+// instead of re-enqueueing it forever.
+func TestAwaitingStateFailsAtPostponeHorizon(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	server, daemon := newFakeServer(), newFakeDaemon()
+	b := testBehavior("op1", store, server, daemon)
+
+	admit(t, b, store, &StartCreditPayRequest{
+		OpKey:        "pay:abc",
+		Invoice:      "lnbc1",
+		PaymentHash:  payHash(),
+		AmountSat:    500,
+		MaxCreditSat: 500,
+		CreditOnly:   true,
+	})
+	drive(t, b, &ResumeCreditOpRequest{OpID: "op1"})
+	require.Equal(t, string(StatePayAwaitingSettlement), b.rec.State)
+
+	server.setListErr(errors.New("server unavailable"))
+
+	// A delivery that has been waiting longer than the horizon is failed
+	// for real rather than postponed again.
+	staleCtx := actor.WithDeliveryEnqueuedAtForTest(
+		context.Background(),
+		time.Now().Add(-listCreditsPostponeHorizon-time.Minute),
+	)
+	_, err := b.Receive(
+		staleCtx, &ResumeCreditOpRequest{OpID: "op1"}, &fakeExec{},
+	).Unpack()
+	require.Error(t, err)
+	require.NotErrorIs(t, err, actor.ErrPostponed)
+	require.ErrorContains(t, err, "list credits")
+	require.Equal(t, string(StatePayAwaitingSettlement), b.rec.State)
+}
+
+// TestTransientLedgerReadError asserts the postpone classification: a
+// connectivity or server-side failure postpones, a deterministic client-side
+// failure does not, and an unrecognized error still postpones so an unfamiliar
+// transient failure never costs the delivery its attempt budget.
+func TestTransientLedgerReadError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		err      error
+		postpone bool
+	}{
+		{
+			name: "unavailable",
+			err: fmt.Errorf(
+				"list credits: %w",
+				status.Error(codes.Unavailable, "down"),
+			),
+			postpone: true,
+		},
+		{
+			name:     "internal",
+			err:      status.Error(codes.Internal, "boom"),
+			postpone: true,
+		},
+		{
+			name:     "deadline exceeded stays transient",
+			err:      status.Error(codes.DeadlineExceeded, "slow"),
+			postpone: true,
+		},
+		{
+			name:     "unrecognized error stays transient",
+			err:      errors.New("identity pubkey unavailable"),
+			postpone: true,
+		},
+		{
+			name: "canceled context",
+			err: fmt.Errorf(
+				"list credits: %w", context.Canceled,
+			),
+			postpone: false,
+		},
+		{
+			name:     "canceled status",
+			err:      status.Error(codes.Canceled, "canceled"),
+			postpone: false,
+		},
+		{
+			name: "invalid argument",
+			err: status.Error(
+				codes.InvalidArgument, "bad account",
+			),
+			postpone: false,
+		},
+		{
+			name:     "not found",
+			err:      status.Error(codes.NotFound, "no account"),
+			postpone: false,
+		},
+		{
+			name: "unimplemented",
+			err: status.Error(
+				codes.Unimplemented, "no such method",
+			),
+			postpone: false,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(
+				t, test.postpone,
+				transientLedgerReadError(test.err),
+			)
+		})
+	}
+}
+
+// TestAwaitingStateNacksDeterministicLedgerError asserts a deterministic
+// client-side read failure keeps the ordinary failure path: only a failure that
+// waiting can repair is parked on the poll cadence.
+func TestAwaitingStateNacksDeterministicLedgerError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		listErr error
+	}{
+		{
+			name: "validation status",
+			listErr: status.Error(
+				codes.InvalidArgument, "bad account",
+			),
+		},
+		{
+			name: "canceled context",
+			listErr: fmt.Errorf(
+				"read ledger: %w", context.Canceled,
+			),
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := newFakeStore()
+			server, daemon := newFakeServer(), newFakeDaemon()
+			b := testBehavior("op1", store, server, daemon)
+
+			admit(t, b, store, &StartCreditPayRequest{
+				OpKey:        "pay:abc",
+				Invoice:      "lnbc1",
+				PaymentHash:  payHash(),
+				AmountSat:    500,
+				MaxCreditSat: 500,
+				CreditOnly:   true,
+			})
+			drive(t, b, &ResumeCreditOpRequest{OpID: "op1"})
+			require.Equal(
+				t, string(StatePayAwaitingSettlement),
+				b.rec.State,
+			)
+
+			server.setListErr(test.listErr)
+
+			err := driveTurn(b, &fakeExec{})
+			require.Error(t, err)
+			require.NotErrorIs(t, err, actor.ErrPostponed)
+
+			// The failure is not postponed, so the operation is
+			// still where it was and the read is simply retried
+			// by the ordinary policy rather than parked.
+			require.Equal(
+				t, string(StatePayAwaitingSettlement),
+				b.rec.State,
+			)
+		})
+	}
 }
