@@ -83,8 +83,8 @@ type feeBumpEnvironment struct {
 	// fanoutScripts retains the unsubmitted plan's output destinations
 	// through funding/signing failures, including the reserved-input
 	// fallback. Output values and fee inputs are still computed afresh.
-	// The plan ends on submission, resolved demand, or eviction of all
-	// participating parents.
+	// The plan ends before publication, on resolved demand, or on eviction
+	// of all participating parents. A failed broadcast can be ambiguous.
 	fanoutScripts fanoutScriptPlan
 
 	// lastErr records the most recent operational error a transition hit

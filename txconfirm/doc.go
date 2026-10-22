@@ -79,8 +79,10 @@
 //
 // An unsubmitted fee-input fanout similarly retains its output destinations
 // and reserved-input change destination across funding/signing retries. Output
-// amounts, fee estimates, and input selection are still recomputed. Submission,
-// resolved demand, or eviction of all participating parents ends that plan.
+// amounts, fee estimates, and input selection are still recomputed. A broadcast
+// attempt, resolved demand, or eviction of all participating parents ends that
+// plan. A broadcast error may follow relay, so a later funded candidate must
+// use fresh destinations even when the earlier attempt reported a failure.
 // The funded transaction already held by the pending state remains its
 // rebroadcast source.
 //

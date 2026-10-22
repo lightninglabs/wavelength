@@ -73,16 +73,15 @@ func (s *feeBumpStateIdle) stayIdle(env *feeBumpEnvironment, failure error) (
 
 // ProcessEvent applies one event to the idle fanout state.
 //
-// The only event that does work here is a fresh demand observation: it runs the
-// full supply decision (is a fanout actually needed?) and, if so, funds and
-// broadcasts a fanout transaction, reserving its outputs as predicted fee
-// inputs on the blocked parents. On success the FSM advances to fanout-pending
+// A fresh demand observation runs the full supply decision (is a fanout
+// actually needed?) and, if so, funds and broadcasts a fanout transaction,
+// reserving its outputs as predicted fee inputs on the blocked parents. On
+// success the FSM advances to fanout-pending
 // and asks the actor to register a confirmation watch.
 //
-// Confirmation and eviction events arriving while idle are late or duplicate
-// callbacks for a fanout we are no longer tracking; they self-loop rather than
-// erroring so a redundant chainsource event can never tear down the long-lived
-// FSM.
+// Eviction events prune the unsubmitted destination plan. Confirmation events
+// arriving while idle are late or duplicate callbacks for a fanout we are no
+// longer tracking; they self-loop rather than tearing down the long-lived FSM.
 func (s *feeBumpStateIdle) ProcessEvent(ctx context.Context, event feeBumpEvent,
 	env *feeBumpEnvironment) (*feeBumpStateTransition, error) {
 
@@ -90,8 +89,6 @@ func (s *feeBumpStateIdle) ProcessEvent(ctx context.Context, event feeBumpEvent,
 	case *feeBumpDemandsObserved:
 		return s.processDemands(ctx, event, env)
 
-	// Nothing is in flight, so a confirmation or eviction is not ours to
-	// act on. Self-loop idle.
 	case *feeBumpParentEvicted:
 		// Unrelated or partial cohort eviction must not burn the
 		// surviving parents' destinations on their next funding retry.
@@ -102,6 +99,7 @@ func (s *feeBumpStateIdle) ProcessEvent(ctx context.Context, event feeBumpEvent,
 
 		return s.idleTransition(), nil
 
+	// Nothing is in flight, so a late confirmation needs no action.
 	case *feeBumpFanoutConfirmedEvent:
 		return &feeBumpStateTransition{
 			NextState: s,
@@ -232,6 +230,12 @@ func (s *feeBumpStateIdle) processDemands(ctx context.Context,
 		)
 	}
 
+	// Publishing ends this destination plan even when the response is
+	// ambiguous: the candidate may already be on chain. A later funded
+	// candidate can use other inputs and confirm alongside it, so it must
+	// not reuse these addresses. Pending retains its funded tx separately.
+	env.fanoutScripts = fanoutScriptPlan{}
+
 	resp, err := b.cfg.ChainSource.Ask(
 		ctx, &chainsource.BroadcastTxRequest{
 			Tx:    fundedTx,
@@ -260,10 +264,6 @@ func (s *feeBumpStateIdle) processDemands(ctx context.Context,
 		assignments:         assignments,
 		lastBroadcastHeight: height,
 	}
-
-	// Pending owns the funded transaction from here. A later, unrelated
-	// fanout must allocate its own destinations rather than reuse these.
-	env.fanoutScripts = fanoutScriptPlan{}
 
 	// The fanout is now on the wire. Log it at info as a lifecycle event:
 	// this is the moment several blocked parents gain a supply path.

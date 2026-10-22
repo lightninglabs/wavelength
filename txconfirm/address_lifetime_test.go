@@ -345,6 +345,62 @@ func TestFanoutFallbackKeepsDestinations(t *testing.T) {
 	)
 }
 
+// TestFanoutPublishEndsScriptPlan models a broadcast timeout after the first
+// candidate may have reached the network. A later funding attempt using a
+// different input must not pay destinations from that published candidate.
+func TestFanoutPublishEndsScriptPlan(t *testing.T) {
+	t.Parallel()
+
+	chain := newFakeChainSourceRef(100)
+	chain.broadcastErr = context.DeadlineExceeded
+	wallet := &allocatingWallet{fakeWallet: &fakeWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXOWithAmount(100_000, 7),
+		},
+	}}
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain, Wallet: wallet,
+	})
+	c := newTestFeeBumpController(t, b)
+	demands := []feeInputDemand{
+		{
+			parentTxid: chainhash.Hash{
+				1,
+			},
+			minAmount: 10_000,
+		},
+		{
+			parentTxid: chainhash.Hash{
+				2,
+			},
+			minAmount: 10_000,
+		},
+	}
+	pending, err := c.EnsureSupply(t.Context(), demands, 5, 100, 1)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Nil(t, pending)
+	require.Len(t, chain.broadcastCalls, 1)
+	first := chain.broadcastCalls[0].Tx.Copy()
+	require.Equal(t, 1, wallet.scriptCalls)
+
+	// The old input remains unavailable after the ambiguous attempt. The
+	// existing funding retry can select another coin and publish both txs.
+	wallet.utxos = []*walletcore.Utxo{makeWalletUTXOWithAmount(100_000, 8)}
+	chain.broadcastErr = nil
+	pending, err = c.EnsureSupply(t.Context(), demands, 5, 102, 1)
+	require.NoError(t, err)
+	require.NotNil(t, pending)
+	require.Len(t, chain.broadcastCalls, 2)
+	require.NotEqual(
+		t, first.TxIn[0].PreviousOutPoint,
+		pending.tx.TxIn[0].PreviousOutPoint,
+	)
+	require.NotEqual(
+		t, first.TxOut[0].PkScript, pending.tx.TxOut[0].PkScript,
+	)
+	require.Equal(t, 2, wallet.scriptCalls)
+}
+
 // TestFanoutPartialAllocationSurvivesFailure proves a failed later derivation
 // does not consume the successful earlier slot again, and callers cannot
 // mutate a cached script through the returned output plan.
