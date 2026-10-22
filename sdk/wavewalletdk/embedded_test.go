@@ -173,7 +173,7 @@ func TestCloneDaemonConfigIsolation(t *testing.T) {
 		cloneF := cloneV.Field(i)
 
 		switch origF.Kind() {
-		case reflect.Ptr:
+		case reflect.Pointer:
 			if origF.IsNil() {
 				// Skip pointer fields the fixture doesn't
 				// populate; the assertion below would be

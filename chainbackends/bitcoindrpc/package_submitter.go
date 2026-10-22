@@ -261,7 +261,7 @@ func (s *PackageSubmitter) SubmitPackage(ctx context.Context,
 	// URL is the operator-configured bitcoind JSON-RPC endpoint,
 	// not caller-controlled input; it is the same s.url used for
 	// every other request on this submitter.
-	resp, err := s.client.Do(httpReq) //nolint:gosec // G704: trusted URL
+	resp, err := s.client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("http request: %w", err)
 	}

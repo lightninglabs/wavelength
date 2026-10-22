@@ -775,7 +775,7 @@ func (b *sessionBehavior) notifyMaterialized(ctx context.Context,
 		//nolint:contextcheck // The notification is daemon-owned, not
 		// turn-scoped: the materializing turn may also be the terminal
 		// one, whose context dies as the registry reaps this child.
-		go func() {
+		go func() { //nolint:gosec // G118: notification has a timeout.
 			ctx, cancel := context.WithTimeout(
 				context.Background(), terminalNotifyTimeout,
 			)

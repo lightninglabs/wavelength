@@ -453,7 +453,7 @@ func newRegistryHarnessWithSpawn(t *testing.T,
 			MailboxSize: 64,
 		})
 		childBehavior.selfRef = childActor.TellRef()
-		//nolint:contextcheck // test child actor owns its own lifecycle
+		// The test child actor owns its own lifecycle.
 		childActor.Start()
 
 		return &VTXOUnrollActor{

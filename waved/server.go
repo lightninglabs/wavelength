@@ -2427,9 +2427,8 @@ func (s *Server) startBtcwallet(ctx context.Context, seed []byte,
 			if !synced {
 				if time.Since(lastLog) >= logInterval {
 					s.log.InfoS(
-						context.Background(),
-						"Waiting for neutrino "+
-							"wallet sync",
+						runCtx, "Waiting for "+
+							"neutrino wallet sync",
 					)
 					lastLog = time.Now()
 				}
@@ -2438,13 +2437,13 @@ func (s *Server) startBtcwallet(ctx context.Context, seed []byte,
 			}
 
 			height, _, hErr := w.ChainBackend().BestBlock(
-				context.Background(),
+				runCtx,
 			)
 			if hErr != nil || height == 0 {
 				continue
 			}
 
-			s.log.InfoS(context.Background(),
+			s.log.InfoS(runCtx,
 				"Neutrino initial sync complete",
 				slog.Int("height",
 					int(height)),

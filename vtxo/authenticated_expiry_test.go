@@ -209,22 +209,22 @@ func testExpiryAncestry(t *testing.T, delay uint32,
 	txid := tx.TxHash()
 
 	return Ancestry{
-			TreePath: &tree.Tree{
-				Root: &tree.Node{
-					CoSigners: cosigners,
-				},
-				BatchOutpoint: wire.OutPoint{
-					Hash: txid,
-				},
-				BatchOutput:        tx.TxOut[0],
-				SweepTapscriptRoot: sweepRoot[:],
+		TreePath: &tree.Tree{
+			Root: &tree.Node{
+				CoSigners: cosigners,
 			},
-			CommitmentTxID:       txid,
-			CommitmentHeight:     height,
-			CommitmentSweepDelay: delay,
-			CommitmentSweepKey:   sweepKey.PubKey(),
-		}, CommitmentConfirmation{
-			Tx:          tx,
-			BlockHeight: height,
-		}
+			BatchOutpoint: wire.OutPoint{
+				Hash: txid,
+			},
+			BatchOutput:        tx.TxOut[0],
+			SweepTapscriptRoot: sweepRoot[:],
+		},
+		CommitmentTxID:       txid,
+		CommitmentHeight:     height,
+		CommitmentSweepDelay: delay,
+		CommitmentSweepKey:   sweepKey.PubKey(),
+	}, CommitmentConfirmation{
+		Tx:          tx,
+		BlockHeight: height,
+	}
 }

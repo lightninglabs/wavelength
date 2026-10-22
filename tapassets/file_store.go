@@ -104,7 +104,6 @@ func (s *FileStore) Store(ctx context.Context, requestID string,
 	}
 	// The destination name is the hex encoding of SHA-256(requestID), so
 	// requestID cannot select a path despite the conservative taint rule.
-	//nolint:gosec
 	if err := os.Rename(temporaryName, s.path(requestID)); err != nil {
 		return fmt.Errorf("replace taproot asset preparation: %w", err)
 	}

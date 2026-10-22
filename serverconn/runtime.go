@@ -115,7 +115,7 @@ func permanentAwareTellRetryPolicy(err error,
 // Start launches durable egress processing and ingress pulling. Returns an
 // error if the ingress checkpoint cannot be loaded from the store.
 func (r *Runtime) Start(ctx context.Context) error {
-	//nolint:contextcheck // durable actor owns lifecycle
+	// The durable actor owns this lifecycle independently.
 	r.StartEgress()
 
 	if err := r.StartIngress(ctx); err != nil {

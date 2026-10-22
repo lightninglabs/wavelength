@@ -14,7 +14,7 @@
 #   docker build --build-arg GOTAGS="wavewalletrpc swapruntime" -t waved:wallet .
 
 # --- Builder ---
-FROM golang:1.26.9-alpine AS builder
+FROM golang:1.27.3-alpine AS builder
 
 # Optional Go build tags, taking the same space-separated value as the
 # Makefile's tags= parameter (see build-wavewalletrpc). Empty by default so an

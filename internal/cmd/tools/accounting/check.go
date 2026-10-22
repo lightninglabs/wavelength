@@ -1200,8 +1200,6 @@ func checkDepositBoardingIntentGap(snap *checkSnapshot) checkResult {
 // printCheckReport writes the operator-readable form of a check run. Every
 // value it prints comes from the operator's own database and goes to their
 // terminal, so the taint analyser's XSS finding does not apply.
-//
-//nolint:gosec // G705: terminal output, not a web response.
 func printCheckReport(w io.Writer, rep *checkReport) error {
 	_, err := fmt.Fprintf(
 		w, "Accounting invariant check (%s backend)\n", rep.Backend,
