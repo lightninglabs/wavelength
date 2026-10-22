@@ -33,6 +33,11 @@ transition's outbox events.
 
 ## Invariants
 
+- The non-actor FSM logs displayed phase changes at INFO and unchanged-phase
+  transitions at DEBUG. Polling still applies state, outbox, and subscriber
+  updates; only log verbosity changes.
+
+
 - Transition functions must be pure: no I/O, no network calls, no database writes. All side effects are expressed as outbox events.
 - `ActorStateMachine.Receive` commits `currentState` in memory before
   dispatching any outbox events for that turn (prevents dispatching a side

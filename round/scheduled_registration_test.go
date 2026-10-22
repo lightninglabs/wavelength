@@ -1,10 +1,13 @@
 package round
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/lib/batchschedule"
 	"github.com/lightninglabs/wavelength/lib/types"
@@ -34,7 +37,10 @@ func requireWakeup(t *testing.T, s *PendingRoundAssembly,
 	t.Helper()
 
 	require.NotNil(t, tr)
-	require.Same(t, s, tr.NextState)
+	require.IsType(t, s, tr.NextState)
+	waiting, ok := tr.NextState.(*PendingRoundAssembly)
+	require.True(t, ok)
+	require.False(t, waiting.BatchWait.Cutoff.IsZero())
 
 	outbox := tr.NewEvents.UnwrapOr(ClientEmittedEvent{}).Outbox
 	require.Len(t, outbox, 1)
@@ -52,6 +58,9 @@ func requireWakeup(t *testing.T, s *PendingRoundAssembly,
 func TestScheduledRegistrationWindow(t *testing.T) {
 	t.Parallel()
 
+	var logs bytes.Buffer
+	handler := btclog.NewDefaultHandler(&logs, btclog.WithNoTimestamp())
+	handler.SetLevel(btclog.LevelInfo)
 	schedule := newTestSchedule(t)
 	cutoff := testAnchor.Add(time.Hour)
 	opens := cutoff.Add(-time.Minute)
@@ -67,6 +76,7 @@ func TestScheduledRegistrationWindow(t *testing.T) {
 			),
 		},
 		Now:      func() time.Time { return now },
+		Log:      btclog.NewSLogger(handler),
 		RoundKey: "pending",
 	}
 	s := &PendingRoundAssembly{}
@@ -77,6 +87,13 @@ func TestScheduledRegistrationWindow(t *testing.T) {
 	require.NoError(t, err)
 
 	delay := requireWakeup(t, s, tr)
+	waiting, ok := tr.NextState.(*PendingRoundAssembly)
+	require.True(t, ok)
+	require.True(t, s.BatchWait.Cutoff.IsZero())
+	require.Equal(t, cutoff, waiting.BatchWait.Cutoff)
+	require.Equal(t, opens, waiting.BatchWait.Opens)
+	require.Equal(t, now.Add(delay), waiting.BatchWait.PlannedJoin)
+
 	require.GreaterOrEqual(t, delay, opens.Sub(now)+lo)
 	require.LessOrEqual(t, delay, opens.Sub(now)+hi)
 
@@ -89,6 +106,15 @@ func TestScheduledRegistrationWindow(t *testing.T) {
 	tr, err = s.waitForScheduledSlot(t.Context(), env)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, requireWakeup(t, s, tr), lo)
+	require.Equal(
+		t, 1,
+		strings.Count(
+			logs.String(),
+			"Waiting for scheduled batch registration",
+		),
+	)
+	require.Contains(t, logs.String(), "batch_cutoff=")
+	require.Contains(t, logs.String(), "planned_join=")
 
 	// At the wake time the attempt proceeds, keeping its selection.
 	now = testAnchor.Add(10 * time.Minute).Add(delay)

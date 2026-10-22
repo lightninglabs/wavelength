@@ -2,6 +2,7 @@ package waveclicommands
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
 
@@ -244,4 +245,127 @@ func phase(label string) *wrpc.WalletEntryProgress {
 		Phase:      wrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
 		PhaseLabel: label,
 	}
+}
+
+// TestActivityBatchWaitRendering covers the normal table and expanded view:
+// pending timing is visible, absent metadata stays quiet, and terminal entries
+// never advertise an old registration window.
+func TestActivityBatchWaitRendering(t *testing.T) {
+	t.Parallel()
+
+	const reason = "Waiting for scheduled batch registration"
+	entry := &wrpc.WalletEntry{
+		Id:     "deposit-test",
+		Status: wrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Progress: &wrpc.WalletEntryProgress{
+			PhaseLabel:    "boarding",
+			WaitingReason: reason,
+			BatchWindow: &wrpc.ScheduledBatchWindow{
+				RegistrationOpensUnix: 1700000000,
+				CutoffUnix:            1700000060,
+				PlannedJoinUnixMs:     1700000012500,
+			},
+		},
+	}
+	resp := activityResponse(entry)
+	for _, render := range []func(io.Writer, *wrpc.ListResponse) error{
+		renderWalletActivityTable, renderWalletActivityExpanded,
+	} {
+		var out bytes.Buffer
+		require.NoError(t, render(&out, resp))
+		got := out.String()
+		require.Contains(t, got, "deposit-test")
+		require.Contains(t, got, "boarding")
+		require.Contains(
+			t, got, "Waiting reason: Waiting for scheduled "+
+				"batch registration",
+		)
+		require.Contains(
+			t, got, "Registration window (UTC): 2023-11-14 "+
+				"22:13:20.000 to 2023-11-14 22:14:20.000",
+		)
+		require.Contains(
+			t, got, "Planned join (UTC): 2023-11-14 22:13:32.500",
+		)
+	}
+
+	for _, status := range []wrpc.EntryStatus{
+		wrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		wrpc.EntryStatus_ENTRY_STATUS_FAILED,
+	} {
+		entry.Status = status
+		var out bytes.Buffer
+		renderActivityBatchWait(&out, entry)
+		require.Empty(t, out.String())
+	}
+	entry.Status = wrpc.EntryStatus_ENTRY_STATUS_PENDING
+	entry.Progress = nil
+	var out bytes.Buffer
+	renderActivityBatchWait(&out, entry)
+	require.Empty(t, out.String())
+}
+
+// TestActivityBatchWaitTableAlignment keeps every row aligned with the header
+// when early rows have wait details and later rows widen different columns.
+func TestActivityBatchWaitTableAlignment(t *testing.T) {
+	t.Parallel()
+	entries := []*wrpc.WalletEntry{
+		{Id: "first", Kind: wrpc.EntryKind_ENTRY_KIND_EXIT,
+			Status:    wrpc.EntryStatus_ENTRY_STATUS_PENDING,
+			AmountSat: 1, Progress: &wrpc.WalletEntryProgress{
+				PhaseLabel:    "boarding",
+				WaitingReason: "waiting",
+			},
+		},
+		{Id: "middle-longer", Kind: wrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+			Status:    wrpc.EntryStatus_ENTRY_STATUS_PENDING,
+			AmountSat: 123456789,
+			Progress: &wrpc.WalletEntryProgress{
+				PhaseLabel:    "boarding",
+				WaitingReason: "waiting",
+			},
+		},
+		{Id: "last", Kind: wrpc.EntryKind_ENTRY_KIND_SEND,
+			Status: wrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+			Progress: &wrpc.WalletEntryProgress{
+				PhaseLabel: "confirmed",
+			}},
+	}
+	var out bytes.Buffer
+	require.NoError(
+		t,
+		renderWalletActivityTable(
+			&out, activityResponse(entries...),
+		),
+	)
+	lines := strings.Split(out.String(), "\n")
+	for i, entry := range entries {
+		for _, column := range []struct{ header, value string }{
+			{
+				"KIND",
+				formatEntryKind(entry.Kind),
+			},
+			{
+				"STATUS",
+				formatEntryStatus(entry.Status),
+			},
+			{
+				"PHASE",
+				entry.Progress.PhaseLabel,
+			},
+			{
+				"ID",
+				entry.Id,
+			},
+		} {
+			require.Equal(
+				t, strings.Index(lines[0], column.header),
+				strings.Index(lines[i+1], column.value),
+				column.header,
+			)
+		}
+	}
+	require.Contains(t, out.String(), "Batch wait for first:")
+	require.Contains(t, out.String(), "Batch wait for middle-longer:")
+	require.NotContains(t, out.String(), "Batch wait for last:")
 }

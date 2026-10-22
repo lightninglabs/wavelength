@@ -586,10 +586,11 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
-				Boarding: updatedBoarding,
-				VTXOs:    updatedVTXOs,
-				Forfeits: updatedForfeits,
-				Leaves:   updatedLeaves,
+				BatchWait: s.BatchWait,
+				Boarding:  updatedBoarding,
+				VTXOs:     updatedVTXOs,
+				Forfeits:  updatedForfeits,
+				Leaves:    updatedLeaves,
 			},
 		}, nil
 

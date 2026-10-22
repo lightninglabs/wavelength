@@ -145,6 +145,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
 
 ## Invariants
 
+- Activity table, expanded, and inspection views show scheduled waiting
+  metadata for pending entries. In tables, render ID-labelled details after
+  flushing all rows to preserve column alignment. Window and join times are
+  UTC; absent metadata and terminal entries do not display a wait.
+
+
 - The top-level wallet verbs ALWAYS register at the root regardless
   of build tags; if the daemon lacks the wavewalletrpc tag, gRPC
   `Unimplemented` is mapped to `errWalletRPCDisabled` with an

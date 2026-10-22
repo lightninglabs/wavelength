@@ -2040,6 +2040,18 @@ message RoundVTXOInfo {
     uint64 asset_amount = 4;
 }
 
+// ScheduledBatchWindow is the selected opportunity for an active attempt.
+// Times use the operator's UTC clock. A cutoff starts quoting, not
+// confirmation.
+message ScheduledBatchWindow {
+    // registration_opens_unix is the first second accepting joins.
+    int64 registration_opens_unix = 1;
+    // cutoff_unix is the first second rejecting joins.
+    int64 cutoff_unix = 2;
+    // planned_join_unix_ms is the jittered wake time, before input preparation.
+    int64 planned_join_unix_ms = 3;
+}
+
 // RoundInfo describes the current state of a single round FSM
 // instance.
 message RoundInfo {
@@ -2094,6 +2106,20 @@ message RoundInfo {
     // failure_reason contains the live FSM failure reason when available.
     // Historical failed rounds loaded only from persistence leave this empty.
     string failure_reason = 11;
+
+    // waiting_reason explains an assembling round's current wait. Empty after
+    // assembly. It is a display string, not an error or a protocol state.
+    string waiting_reason = 12;
+
+    // batch_window is the selected slot while waiting for registration. It is
+    // absent for event-driven rounds and after the attempt leaves assembly.
+    ScheduledBatchWindow batch_window = 13;
+
+    // round_key is the local identity, including before round_id is assigned.
+    string round_key = 14;
+
+    // boarding_addresses correlates pending rounds with deposit activity.
+    repeated string boarding_addresses = 15;
 }
 
 message ListRoundsRequest {
@@ -2152,7 +2178,7 @@ message WatchRoundsRequest {
 
 message WatchRoundsResponse {
     // round contains the updated round state. Sent whenever a round
-    // FSM transitions to a new state.
+    // FSM changes state or waiting metadata.
     RoundInfo round = 1;
 }
 

@@ -6076,7 +6076,7 @@ func (r *RPCServer) queryRoundStates(ctx context.Context) ([]*waverpc.RoundInfo,
 	rounds := make(
 		[]*waverpc.RoundInfo, 0, len(stateResp.States),
 	)
-	for _, info := range stateResp.States {
+	for key, info := range stateResp.States {
 		roundID := ""
 		if !info.IsTemp {
 			roundID = info.RoundID.String()
@@ -6084,14 +6084,17 @@ func (r *RPCServer) queryRoundStates(ctx context.Context) ([]*waverpc.RoundInfo,
 
 		commitmentTxid, vtxos := liveRoundDetails(info.State)
 
-		rounds = append(rounds, &waverpc.RoundInfo{
+		roundInfo := &waverpc.RoundInfo{
+			RoundKey:       key,
 			RoundId:        roundID,
 			State:          clientStateToProto(info.State),
 			IsTemp:         info.IsTemp,
 			Vtxos:          vtxos,
 			CommitmentTxid: commitmentTxid,
 			FailureReason:  roundFailureReason(info.State),
-		})
+		}
+		populateRoundWait(roundInfo, info.State)
+		rounds = append(rounds, roundInfo)
 	}
 
 	return rounds, nil
@@ -6374,14 +6377,14 @@ func (r *RPCServer) ListRounds(ctx context.Context,
 
 // WatchRounds opens a server-streaming connection that pushes round
 // state updates as they occur. The stream polls the round actor and
-// sends updates whenever a round's state changes.
+// sends updates whenever a round's state or waiting metadata changes.
 func (r *RPCServer) WatchRounds(_ *waverpc.WatchRoundsRequest,
 	stream waverpc.DaemonService_WatchRoundsServer) error {
 
 	ctx := stream.Context()
 
 	// Track previous state snapshot to detect changes.
-	prevStates := make(map[string]waverpc.RoundState)
+	prevStates := make(map[string]*waverpc.RoundInfo)
 
 	ticker := time.NewTicker(watchRoundsPollInterval)
 	defer ticker.Stop()
@@ -6403,19 +6406,7 @@ func (r *RPCServer) WatchRounds(_ *waverpc.WatchRoundsRequest,
 
 		// Diff against previous snapshot and send updates
 		// for changed or new rounds.
-		for _, info := range rounds {
-			key := info.RoundId
-			if info.IsTemp {
-				key = "temp:" + key
-			}
-
-			prev, known := prevStates[key]
-			if known && prev == info.State {
-				continue
-			}
-
-			prevStates[key] = info.State
-
+		for _, info := range changedRoundStatuses(prevStates, rounds) {
 			if err := stream.Send(
 				&waverpc.WatchRoundsResponse{
 					Round: info,

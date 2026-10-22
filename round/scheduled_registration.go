@@ -3,6 +3,7 @@ package round
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"time"
 
@@ -152,6 +153,20 @@ func (s *PendingRoundAssembly) waitForScheduledSlot(ctx context.Context,
 			return nil, err
 		}
 		env.scheduled = attempt
+		wait := attempt.wake.Sub(attempt.operatorNow(env))
+		if env.Log != nil && wait > 0 {
+			env.Log.InfoS(ctx, "Waiting for scheduled batch "+
+				"registration",
+				slog.String("round_key", string(env.RoundKey)),
+				slog.Time(
+					"registration_opens",
+					attempt.slot.Opens,
+				),
+				slog.Time("batch_cutoff", attempt.slot.Cutoff),
+				slog.Time("planned_join", attempt.wake),
+				slog.Duration("wait", wait),
+			)
+		}
 	}
 
 	attempt := env.scheduled
@@ -172,8 +187,17 @@ func (s *PendingRoundAssembly) waitForScheduledSlot(ctx context.Context,
 
 	// Sleep until the wake time. The timer measures local time, and the
 	// offset is constant, so the operator-clock gap is the same duration.
+	// Publish a fresh value instead of mutating a state already handed to
+	// status readers. The chosen slot survives additional input packages.
+	next := *s
+	next.BatchWait = ScheduledBatchWait{
+		Opens:       attempt.slot.Opens,
+		Cutoff:      attempt.slot.Cutoff,
+		PlannedJoin: attempt.wake,
+	}
+
 	return &ClientStateTransition{
-		NextState: s,
+		NextState: &next,
 		NewEvents: fn.Some(ClientEmittedEvent{Outbox: []ClientOutMsg{
 			&StartTimeoutReq{
 				RoundKey: env.RoundKey,

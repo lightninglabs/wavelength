@@ -149,6 +149,10 @@ type ActivityProjection struct {
 	// known, and a nil value never erases a stored preimage.
 	Preimage []byte
 
+	// BatchWaitJSON is mutable display metadata for a pending batch wait.
+	// Empty clears the previous window when registration advances.
+	BatchWaitJSON string
+
 	// EntryJSON is the protojson snapshot of the WalletEntry emitted at
 	// this transition, stored verbatim on the activity_events row.
 	EntryJSON string
@@ -306,6 +310,7 @@ func (s *ActivityPersistenceStore) ProjectEntry(ctx context.Context,
 				LedgerTxid:    p.LedgerTxid,
 				BoardingAddr:  p.BoardingAddr,
 				RequestJson:   p.RequestJSON,
+				BatchWaitJson: p.BatchWaitJSON,
 				Preimage:      p.Preimage,
 				CreatedAtUnix: createdAt,
 				UpdatedAtUnix: updatedAt,
@@ -497,6 +502,11 @@ func (p ActivityProjection) changesRow(e sqlc.ActivityEntry) bool {
 		return true
 	}
 	if p.Note != "" && p.Note != e.Note {
+		return true
+	}
+	if p.BatchWaitJSON != e.BatchWaitJson &&
+		(p.BatchWaitJSON == "" ||
+			jsonValueChanges(p.BatchWaitJSON, e.BatchWaitJson)) {
 		return true
 	}
 	if jsonValueChanges(p.RequestJSON, e.RequestJson) {

@@ -10,6 +10,11 @@ subsystems borrow the daemon identity key (`SignReceiveAuthMessage[Compact]`,
 Generated gRPC, REST-gateway, and mailbox-RPC stubs plus one hand-written
 helper file (`errors.go`) for structured wallet-lifecycle errors.
 
+`RoundInfo.waiting_reason` and `batch_window` explain scheduled assembly
+waits. Window timestamps use the operator clock; `round_key` identifies local
+attempts before a round ID exists. Boarding addresses and input outpoints allow
+the wallet activity projector to correlate the waiting operation.
+
 ## Key Types
 
 - `DaemonServiceClient` / `DaemonServiceServer` — Generated gRPC client and
