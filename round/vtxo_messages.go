@@ -59,6 +59,9 @@ func (e *BlockEpochEvent) MessageType() string { return "BlockEpochEvent" }
 //   - Output 0: Full VTXO value to operator's forfeit address
 //   - Output 1: Anchor output (zero-value P2A for CPFP)
 type ForfeitRequestEvent struct {
+	// ReplacedRoundIDs are locally authenticated abandoned reservation
+	// owners.
+	ReplacedRoundIDs []string
 	actor.BaseMessage
 
 	// RoundID is the new round where the refreshed VTXO will be created.
@@ -167,6 +170,9 @@ func (e *SpendCompletedEvent) MessageType() string {
 // names the round the VTXO signed its forfeit for: once a forfeit signature is
 // out, only the round holding it can hand the coin back.
 type ForfeitReleasedEvent struct {
+	// ReplacedRoundIDs allow a failed replacement to release a predecessor
+	// reservation that has not yet been transferred by a new signature.
+	ReplacedRoundIDs []string
 	actor.BaseMessage
 
 	// RoundID is the round releasing the reservation, in the same string

@@ -303,6 +303,15 @@ const (
 
 // RoundFSM wraps a state machine instance for a specific round.
 type RoundFSM struct {
+	// env retains the ceremony budget across bounded replacements.
+	env *ClientEnvironment
+	// RetryAttempt and ReplacedRounds fence the bounded replacement
+	// lineage. PendingReplacement fences late traffic while local cleanup
+	// is retried.
+	PendingReplacement  *BoardingFailed
+	ReplacementFailures uint8
+	RetryAttempt        uint32
+	ReplacedRounds      []RoundID
 	// FSM is the state machine for this round. The baselib protofsm uses 3
 	// type parameters: InternalEvent, OutboxEvent, Env.
 	FSM *ClientStateMachine
@@ -1125,6 +1134,7 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 
 	return &RoundFSM{
 		FSM:          &fsm,
+		env:          env,
 		Key:          roundID,
 		RoundID:      round.RoundID,
 		TxID:         txid,
@@ -1138,6 +1148,15 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 	error) {
 
+	return a.createRoundWithState(ctx, &Idle{}, fn.None[RoundID](), nil)
+}
+
+// createRoundWithState starts an assembly or an explicitly admitted
+// replacement.
+func (a *RoundClientActor) createRoundWithState(ctx context.Context,
+	initial ClientState, assigned fn.Option[RoundID],
+	priorBudget *admissionBudget) (*RoundFSM, error) {
+
 	// The client is starting a fresh round, so any rounds that previously
 	// settled in the terminal failed state have served their observability
 	// purpose and can be swept now (see reapFailedRounds).
@@ -1148,6 +1167,8 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 		return nil, fmt.Errorf("failed to generate temp key: %w", err)
 	}
 
+	var key RoundKey = tempKey
+	assigned.WhenSome(func(id RoundID) { key = id })
 	startHeight, err := a.queryBestHeight(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query start height: %w", err)
@@ -1179,25 +1200,51 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 			env.ForfeitCollectionTimeout,
 		RegistrationTimeout:    a.env.RegistrationTimeout,
 		StatusReconcileTimeout: a.env.StatusReconcileTimeout,
-		RoundKey:               RoundKeyStr(tempKey.KeyString()),
+		RoundKey:               RoundKeyStr(key.KeyString()),
 		OwnedScriptChecker:     a.cfg.OwnedScriptChecker,
 		OwnedScriptRegistrar:   a.cfg.OwnedScriptRegistrar,
 	}
+	if assigned.IsSome() && env.AdmissionTimeout > 0 {
+		expires := env.now().Add(env.AdmissionTimeout)
+		if priorBudget != nil {
+			prior := *priorBudget
+			env.admission = &prior
+			if prior.deadline.ExpiresAt.Before(expires) {
+				expires = prior.deadline.ExpiresAt
+			}
+		}
+		id := assigned.UnwrapOr(RoundID{})
+		if err := env.constrainAdmission(ctx, id, expires); err != nil {
+			return nil, err
+		}
+		if env.admission.expired(env.now()) {
+			return nil, fmt.Errorf("replacement admission budget " +
+				"expired")
+		}
+		if err := a.processOutbox(a.lifecycleCtx(ctx), []ClientOutMsg{
+			admissionWakeup(id),
+		}); err != nil {
+			return nil, err
+		}
+	}
+
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
 		ErrorReporter: newLoggerErrorReporter(fsmLogger),
-		InitialState:  &Idle{},
+		InitialState:  initial,
 		Env:           env,
 	}
 	fsm := protofsm.NewStateMachine(fsmCfg)
 	a.startRoundFSM(ctx, &fsm)
 
 	roundFSM := &RoundFSM{
-		FSM: &fsm,
-		Key: tempKey,
+		FSM:     &fsm,
+		env:     env,
+		Key:     key,
+		RoundID: assigned.UnwrapOr(RoundID{}),
 	}
 
-	keyStr := RoundKeyStr(tempKey.KeyString())
+	keyStr := RoundKeyStr(key.KeyString())
 	a.rounds[keyStr] = roundFSM
 
 	a.log.InfoS(ctx, "Created new round FSM",
@@ -1872,6 +1919,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 	case *VTXORequestsReceived:
 		return a.handleVTXORequestsReceived(ctx, m)
 
+	case *roundReplacementRetryMsg:
+		return a.handleRoundReplacement(ctx, m.Offer)
+
 	case *ServerMessageNotification:
 		return a.handleServerMessage(ctx, m)
 
@@ -2440,6 +2490,18 @@ func extractRoundID(event ClientEvent) (RoundID, bool) {
 func (a *RoundClientActor) handleServerMessage(ctx context.Context,
 	msg *ServerMessageNotification) fn.Result[actormsg.RoundActorResp] {
 
+	if failed, ok := msg.Message.(*BoardingFailed); ok &&
+		failed.ReplacementRoundID.IsSome() {
+		return a.handleRoundReplacement(ctx, failed)
+	}
+	if id, ok := extractRoundID(msg.Message); ok &&
+		a.isAbandonedAttempt(id) {
+		return fn.Ok[actormsg.RoundActorResp](
+			&ServerMessageResponse{
+				Success: true,
+			},
+		)
+	}
 	// RoundJoined requires special handling for re-keying.
 	if joined, ok := msg.Message.(*RoundJoined); ok {
 		return a.handleRoundJoined(ctx, joined)
@@ -3240,6 +3302,9 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				ctx, &actormsg.ReleaseForfeitRequest{
 					Outpoints: m.Outpoints,
 					RoundID:   m.RoundID,
+					ReplacedRoundIDs: a.replacedRoundStrings(
+						m.RoundID,
+					),
 				},
 			); err != nil {
 
@@ -3482,7 +3547,10 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				reqCtx := context.WithoutCancel(ctx)
 				err := serviceKey.Ref(a.cfg.ActorSystem).Tell(
 					reqCtx, &ForfeitRequestEvent{
-						RoundID:               m.RoundID,
+						RoundID: m.RoundID,
+						ReplacedRoundIDs: a.replacedRoundStrings(
+							m.RoundID,
+						),
 						ConnectorOutpoint:     m.ConnectorOutpoint,
 						ConnectorPkScript:     m.ConnectorPkScript,
 						ConnectorAmount:       m.ConnectorAmount,
@@ -4031,6 +4099,11 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 // swap round. The signature is forwarded to the round's FSM for tracking.
 func (a *RoundClientActor) handleForfeitSignatureResponse(ctx context.Context,
 	resp *ForfeitSignatureResponse) fn.Result[actormsg.RoundActorResp] {
+
+	if id, err := ParseRoundID(resp.RoundID); err == nil &&
+		a.isAbandonedAttempt(id) {
+		return fn.Ok[actormsg.RoundActorResp](nil)
+	}
 
 	roundIDStr := resp.RoundID
 

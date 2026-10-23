@@ -335,3 +335,10 @@ Asset-bearing VTXOs require an asset-aware transition. Bitcoin spending,
 forfeit signing, automatic refresh, and expired reclaim refuse them. An
 unroll can materialize its presigned path, but its final Bitcoin sweep is
 withheld, including a sweep restored from a checkpoint.
+
+For survivor replacements, `ForfeitRequestEvent.ReplacedRoundIDs` comes only
+from the local round actor's authenticated lineage. A matching `Forfeiting`
+owner may sign the new connector directly into another reserved state. An
+unrelated predecessor, stale request or stale release must not transfer/free
+that reservation. A failed successor can release an untransferred predecessor
+reservation through the same locally authorized lineage.
