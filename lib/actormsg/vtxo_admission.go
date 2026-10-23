@@ -176,6 +176,9 @@ func (r *ReserveForfeitResponse) VTXOManagerResp() {}
 // ReleaseForfeitRequest releases VTXOs from pending forfeit back to
 // LiveState. Used when round registration fails after admission.
 type ReleaseForfeitRequest struct {
+	// ReplacedRoundIDs are abandoned owners retained by a replacement
+	// attempt.
+	ReplacedRoundIDs []string
 	actor.BaseMessage
 
 	// Outpoints identifies the VTXOs to release from forfeit.
