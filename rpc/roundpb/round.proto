@@ -296,6 +296,14 @@ message ClientRoundFailedResp {
     // programmatically. Servers that predate this field, and failures
     // that are not specifically classified, leave it ROUND_FAILURE_UNKNOWN.
     RoundFailureCode failure_code = 3;
+
+    // replacement_round_id declares this unfinalized attempt dead and offers
+    // a replacement to the surviving participant. Empty means no retry.
+    bytes replacement_round_id = 4;
+
+    // retry_attempt is the one-based replacement number in a closed cohort.
+    // A client accepts only the next number, with a hard limit of ten.
+    uint32 retry_attempt = 5;
 }
 
 // ClientErrorResp sends an error message to a client.
@@ -549,6 +557,11 @@ message JoinRoundRequest {
     // absent otherwise. The selection is also covered by the join
     // authorization, so it cannot be changed or stripped in transit.
     BatchSlotSelection batch_slot = 8;
+
+    // supports_round_retry permits explicit replacement of an unfinalized
+    // attempt with fresh signing sessions. Older clients are failed cleanly
+    // instead of being held to a replacement ceremony they cannot join.
+    bool supports_round_retry = 9;
 }
 
 // BatchSlotSelection names one published scheduled-batch slot.

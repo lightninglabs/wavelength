@@ -106,3 +106,9 @@ distinction.
 
 - [rpc/CLAUDE.md](../CLAUDE.md) — Parent rpc package overview.
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) — System-wide package map.
+
+`JoinRoundRequest.supports_round_retry` negotiates bounded survivor recovery.
+`ClientRoundFailedResp.replacement_round_id` explicitly abandons the old
+unfinalized attempt and offers a fresh one; `retry_attempt` must advance once
+and never exceed the client's hard limit. Empty replacement metadata retains
+the ordinary terminal-failure behavior for older peers.

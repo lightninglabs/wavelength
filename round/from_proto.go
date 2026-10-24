@@ -464,9 +464,25 @@ func (e *OperatorSigned) FromProto(p proto.Message) error {
 // FromProto populates a BoardingFailed from a ClientRoundFailedResp proto.
 // All server-initiated round failures are treated as recoverable by default.
 func (e *BoardingFailed) FromProto(p proto.Message) error {
+	e.RoundID = fn.None[RoundID]()
+	e.ReplacementRoundID = fn.None[RoundID]()
+	e.RetryAttempt = 0
 	switch pb := p.(type) {
 	case *roundpb.ClientRoundFailedResp:
 		e.Reason = pb.Reason
+		if len(pb.ReplacementRoundId) != 0 {
+			if len(pb.ReplacementRoundId) != roundIDLen ||
+				len(pb.RoundId) != roundIDLen ||
+				pb.RetryAttempt == 0 ||
+				pb.RetryAttempt > 10 {
+				return fmt.Errorf("invalid round replacement " +
+					"metadata")
+			}
+			var id RoundID
+			copy(id[:], pb.ReplacementRoundId)
+			e.ReplacementRoundID = fn.Some(id)
+			e.RetryAttempt = pb.RetryAttempt
+		}
 
 		// Recoverable and FailureCode are orthogonal axes.
 		// Recoverable is round-level: this round is over, so its inputs
