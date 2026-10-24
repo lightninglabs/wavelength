@@ -86,6 +86,11 @@ func (s *feeBumpStateIdle) stayIdle(env *feeBumpEnvironment, failure error) (
 func (s *feeBumpStateIdle) ProcessEvent(ctx context.Context, event feeBumpEvent,
 	env *feeBumpEnvironment) (*feeBumpStateTransition, error) {
 
+	// The actor joins accepted transitions even after caller cancellation.
+	// Bound dependency IO so that join, including shutdown, can finish.
+	ctx, cancel := context.WithTimeout(ctx, env.transitionTimeout)
+	defer cancel()
+
 	switch event := event.(type) {
 	case *feeBumpDemandsObserved:
 		return s.processDemands(ctx, event, env)
@@ -313,6 +318,9 @@ func (s *feeBumpStateFanoutPending) ProcessEvent(ctx context.Context,
 	event feeBumpEvent, env *feeBumpEnvironment) (*feeBumpStateTransition,
 	error) {
 
+	ctx, cancel := context.WithTimeout(ctx, env.transitionTimeout)
+	defer cancel()
+
 	switch event := event.(type) {
 	case *feeBumpDemandsObserved:
 		return s.processDemands(ctx, event, env)
@@ -367,6 +375,16 @@ func (s *feeBumpStateFanoutPending) processDemands(ctx context.Context,
 		// new fanout.
 		if IsIgnorableBroadcastError(err) ||
 			isAmbiguousSpendError(err) {
+			return env.refreshRebroadcast(ctx, pending, height), nil
+		}
+
+		// A timeout, canceled RPC or unclassified backend response does
+		// not prove that the previously submitted fanout was rejected.
+		// Preserve its candidate, reservations and confirmation watch.
+		// Surface the operational failure without destroying recovery.
+		if ClassifyBroadcastFailure(err) == BroadcastFailureUnknown {
+			env.lastErr = fmt.Errorf("rebroadcast fanout: %w", err)
+
 			return env.refreshRebroadcast(ctx, pending, height), nil
 		}
 
@@ -477,9 +495,9 @@ func (s *feeBumpStateFanoutPending) processParentEvicted(ctx context.Context,
 }
 
 // refreshRebroadcast builds the fanout-pending transition that refreshes the
-// in-flight fanout's last-broadcast height after a successful rebroadcast.
-// Transitions are pure with respect to the carried state, so a fresh pending
-// value is built rather than mutating the one in the current state.
+// in-flight fanout's last-broadcast height after a retained rebroadcast
+// attempt. Transitions are pure with respect to the carried state, so a fresh
+// pending value is built rather than mutating the one in the current state.
 func (env *feeBumpEnvironment) refreshRebroadcast(ctx context.Context,
 	pending *pendingFeeInputFanout, height int32) *feeBumpStateTransition {
 

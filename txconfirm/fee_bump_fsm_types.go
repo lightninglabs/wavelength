@@ -1,6 +1,8 @@
 package txconfirm
 
 import (
+	"time"
+
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -68,6 +70,10 @@ type feeBumpOutboxEvent interface {
 // accounting stays consistent with the CPFP-child build path, exactly as the
 // old controller did.
 type feeBumpEnvironment struct {
+	// transitionTimeout bounds wallet and chainsource IO while the actor
+	// joins a transition. Tests may shorten it before the first event.
+	transitionTimeout time.Duration
+
 	// broadcaster provides the shared parentStates reservation map plus the
 	// wallet/chainsource helpers the fanout build path reuses
 	// (deriveChangePkScript, selectReservedFeeInput, releaseWalletLease,
@@ -245,8 +251,9 @@ func newFeeBumpStateMachine(broadcaster *CPFPBroadcaster,
 	log btclog.Logger) (*feeBumpStateMachine, *feeBumpEnvironment) {
 
 	env := &feeBumpEnvironment{
-		broadcaster: broadcaster,
-		log:         log,
+		transitionTimeout: 30 * time.Second,
+		broadcaster:       broadcaster,
+		log:               log,
 	}
 
 	cfg := protofsm.StateMachineCfg[

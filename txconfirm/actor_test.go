@@ -2081,13 +2081,25 @@ func TestEnsureConfirmedWaitsForInitialCPFPInput(t *testing.T) {
 // instead of surfacing a terminal unroll-side failure.
 func TestEnsureConfirmedFansOutWhenActiveParentsNeedInputs(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
+	chainRef := &staticChainSourceRef{
+		handler: func(ctx context.Context,
+			msg chainsource.ChainSourceMsg) (
+			chainsource.ChainSourceResp, error) {
+
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+
+			return chain.handleAsk(ctx, msg)
+		},
+	}
 	walletRef := &fakeWallet{
 		utxos: []*walletcore.Utxo{
 			makeWalletUTXO(t),
 		},
 	}
 	ref, behavior := newTestActor(t, Config{
-		ChainSource:           chain,
+		ChainSource:           chainRef,
 		Wallet:                walletRef,
 		FeeBumpIntervalBlocks: 1,
 	})
@@ -2124,6 +2136,157 @@ func TestEnsureConfirmedFansOutWhenActiveParentsNeedInputs(t *testing.T) {
 			PredictedFeeInputs,
 		1,
 	)
+
+	// Finishing the triggering Ask must not cancel the fanout worker.
+	cancel()
+	chain.emitBlock(t, 101)
+	require.Eventually(t, func() bool {
+		return chain.broadcastCallCount() == 2
+	}, 3*time.Second, time.Millisecond)
+	require.Equal(t, pending.txid, behavior.feeBumpPending().txid)
+
+	// The retained candidate can still confirm and unblock its parent.
+	chain.emitConfirmation(t, pending.txid, 102)
+	require.Eventually(t, func() bool {
+		return chain.packageCallCount() == 2
+	}, 3*time.Second, time.Millisecond)
+
+	// The actor owns the detached worker and cancels it during shutdown.
+	ref.Stop()
+	require.Eventually(t, func() bool {
+		return !behavior.feeBumpFSM.IsRunning()
+	}, 3*time.Second, time.Millisecond)
+}
+
+// TestFanoutCanceledAskJoinsTransition proves that a canceled Ask cannot let
+// the actor process another turn while its fanout transition still owns the
+// shared broadcaster state.
+func TestFanoutCanceledAskJoinsTransition(t *testing.T) {
+	for _, shutdown := range []bool{false, true} {
+		t.Run(fmt.Sprintf("shutdown=%v", shutdown), func(t *testing.T) {
+			chain := newFakeChainSourceRef(100)
+			entered := make(chan struct{})
+			expired := make(chan error, 1)
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			unblock := func() {
+				releaseOnce.Do(func() { close(release) })
+			}
+			t.Cleanup(unblock)
+			handler := func(ctx context.Context,
+				msg chainsource.ChainSourceMsg) (
+				chainsource.ChainSourceResp, error) {
+
+				_, broadcast :=
+					msg.(*chainsource.BroadcastTxRequest)
+				if broadcast {
+					close(entered)
+					select {
+					case <-release:
+					case <-ctx.Done():
+						expired <- ctx.Err()
+
+						return nil, ctx.Err()
+					}
+				}
+
+				return chain.handleAsk(ctx, msg)
+			}
+			chainRef := &staticChainSourceRef{
+				handler: handler,
+			}
+			utxo := makeWalletUTXO(t)
+			ref, behavior := newTestActor(t, Config{
+				ChainSource: chainRef,
+				Wallet: &fakeWallet{
+					utxos: []*walletcore.Utxo{utxo},
+				},
+			})
+			if shutdown {
+				// Set the test bound before any message can
+				// drive the FSM.
+				env := behavior.feeBumpEnv
+				env.transitionTimeout = 200 * time.Millisecond
+			}
+			parentA := actor.NewChannelTellOnlyRef[Notification](
+				"parent-a", 4,
+			)
+			parentB := actor.NewChannelTellOnlyRef[Notification](
+				"parent-b", 4,
+			)
+			mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+				Tx:         makeTestTxWithPrevoutSeed(10, true),
+				Subscriber: parentA,
+			})
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			future := ref.Ref().Ask(ctx, &EnsureConfirmedReq{
+				Tx:         makeTestTxWithPrevoutSeed(11, true),
+				Subscriber: parentB,
+			})
+			select {
+			case <-entered:
+			case <-time.After(3 * time.Second):
+				t.Fatal("fanout did not start")
+			}
+			cancel()
+			_, err := future.Await(ctx).Unpack()
+			require.ErrorIs(t, err, context.Canceled)
+
+			if shutdown {
+				// Stop cannot run OnStop until the active
+				// transition joins. A backend that waits for
+				// its context must still let it finish.
+				ref.Stop()
+				select {
+				case err := <-expired:
+					require.ErrorIs(
+						t, err,
+						context.DeadlineExceeded,
+					)
+
+				case <-time.After(3 * time.Second):
+					t.Fatal(
+						"fanout IO did not honor " +
+							"its bound",
+					)
+				}
+				require.Eventually(t, func() bool {
+					return !behavior.feeBumpFSM.IsRunning()
+				}, 3*time.Second, time.Millisecond)
+
+				return
+			}
+
+			// A mailbox probe is the next turn. It must remain
+			// queued until the transition completes, even though
+			// the caller already returned.
+			probeCtx, cancelProbe := context.WithTimeout(
+				t.Context(), 3*time.Second,
+			)
+			defer cancelProbe()
+			_, err = actor.Probe(probeCtx, ref.Ref())
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+
+			unblock()
+			probeCtx, cancelProbe = context.WithTimeout(
+				t.Context(), 3*time.Second,
+			)
+			defer cancelProbe()
+			_, err = actor.Probe(probeCtx, ref.Ref())
+			require.NoError(t, err)
+			pending := behavior.feeBumpPending()
+			require.NotNil(t, pending)
+			chain.mu.Lock()
+			_, watched := chain.confNotify[pending.txid]
+			chain.mu.Unlock()
+			require.True(t, watched)
+			ref.Stop()
+			require.Eventually(t, func() bool {
+				return !behavior.feeBumpFSM.IsRunning()
+			}, 3*time.Second, time.Millisecond)
+		})
+	}
 }
 
 // TestEnsureConfirmedRepeatedEnsureIsIdempotent verifies that repeating the
