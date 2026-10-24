@@ -43,6 +43,12 @@ var errReceiveClaimAlreadyIndexed = errors.New("receive claim already indexed")
 var errReceiveVHTLCSpentWithoutPreimage = errors.New("receive vHTLC spent " +
 	"without claim preimage")
 
+// interventionReasonVHTLCSpentWithoutPreimage is the operator-facing reason
+// recorded when the funded receive vHTLC was spent without revealing the
+// invoice preimage.
+const interventionReasonVHTLCSpentWithoutPreimage = "funded receive vHTLC " +
+	"spent without the claim preimage"
+
 // interventionError records an anomalous swap condition that should stop the
 // FSM in a terminal NeedsIntervention state rather than collapsing into a
 // generic failure.
@@ -87,6 +93,20 @@ func newRetryableActionError(err error) error {
 	return &retryableActionError{
 		cause: err,
 	}
+}
+
+// newRetryableLookupError marks a reconciliation lookup failure non-terminal
+// for the durable FSM, while preserving an intervention classification the
+// error already carries. Lookups consult the daemon and the indexer, so their
+// failures say nothing about the durable outcome; a lookup that instead proves
+// an anomalous spend must keep that classification.
+func newRetryableLookupError(err error) error {
+	var intervention *interventionError
+	if errors.As(err, &intervention) {
+		return err
+	}
+
+	return newRetryableActionError(err)
 }
 
 // Error returns the human-readable intervention reason.

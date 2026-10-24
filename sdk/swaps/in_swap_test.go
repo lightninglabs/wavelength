@@ -3834,3 +3834,123 @@ func testCheckpointPSBTWithPreimage(t *testing.T, preimage []byte) []byte {
 
 	return buf.Bytes()
 }
+
+// TestEnsureFundingStillSafeRetriesUnknownHeight verifies a failed best-block
+// lookup never refuses funding: the safety check retries instead of treating an
+// unavailable height as chain state.
+func TestEnsureFundingStillSafeRetriesUnknownHeight(t *testing.T) {
+	t.Parallel()
+
+	heightErr := errors.New("block height unavailable")
+	daemon := &testDaemonConn{
+		blockHeightErr: heightErr,
+	}
+	session := &paySession{
+		client: NewSwapClient(nil, daemon, nil, nil),
+		cfg: &InSwapConfig{
+			VHTLCConfig: VHTLCConfig{
+				RefundLocktime: 300,
+			},
+		},
+	}
+
+	err := session.ensureFundingStillSafe(t.Context())
+
+	var retryable *retryableActionError
+	require.ErrorAs(t, err, &retryable)
+	require.ErrorIs(t, err, heightErr)
+	require.Equal(t, PayState(0), session.state)
+}
+
+// TestPayRefundWaitsWhenHeightLookupFails verifies a failed best-block lookup
+// during the timeout-refund wait keeps the funded pay swap retryable and its
+// durable state pending, instead of failing a swap whose vHTLC is still
+// refundable.
+func TestPayRefundWaitsWhenHeightLookupFails(t *testing.T) {
+	t.Parallel()
+
+	store := newTestSwapStore(t)
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	refundScript, err := txscript.PayToTaprootScript(clientPriv.PubKey())
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+
+	serverConn := &testInSwapServerConn{
+		cfg: &InSwapConfig{
+			PaymentHash:  preimage.Hash(),
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
+			ServerPubkey: serverPriv.PubKey(),
+			VHTLCConfig: VHTLCConfig{
+				RefundLocktime:                       100,
+				UnilateralClaimDelay:                 12,
+				UnilateralRefundDelay:                24,
+				UnilateralRefundWithoutReceiverDelay: 36,
+			},
+			Expiry: time.Now().Add(time.Minute),
+		},
+	}
+
+	daemonConn := &testDaemonConn{
+		identityKey: clientPriv.PubKey(),
+		operatorKey: operatorPriv.PubKey(),
+		blockHeight: 50,
+		vhtlc: &VTXOInfo{
+			Outpoint:  "funding:0",
+			AmountSat: testInSwapAmountSat,
+		},
+		receiveInfo: &ReceiveInfo{
+			PubKeyXOnly: schnorr.SerializePubKey(
+				clientPriv.PubKey(),
+			),
+			PkScript: refundScript,
+		},
+	}
+
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
+	)
+	client.waitPollInterval = time.Millisecond
+	client.refundLocktimeBuffer = 0
+
+	session, err := client.StartPayViaLightning(
+		t.Context(), invoice, testInSwapFeeSat,
+	)
+	require.NoError(t, err)
+
+	err = session.runUntil(t.Context(), PayStateWaitingForClaim)
+	require.NoError(t, err)
+
+	// The vHTLC is funded and far from its refund locktime, so only the
+	// unavailable height can stop the refund wait.
+	heightErr := errors.New("block height unavailable")
+	daemonConn.blockHeightErr = heightErr
+
+	err = session.completeRefund(t.Context())
+	var retryable *retryableActionError
+	require.ErrorAs(t, err, &retryable)
+	require.ErrorIs(t, err, heightErr)
+	require.Equal(t, PayStateWaitingForClaim, session.State())
+	require.Zero(t, daemonConn.sendCustomCalls)
+
+	// The durable row is still pending, so a restarted process keeps
+	// driving the swap instead of finding a terminal failure.
+	restored, err := client.ResumePayViaLightning(
+		t.Context(), session.cfg.PaymentHash,
+	)
+	require.NoError(t, err)
+	require.Equal(t, PayStateWaitingForClaim, restored.State())
+}

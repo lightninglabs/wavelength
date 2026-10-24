@@ -180,7 +180,19 @@ result into an `IncomingVHTLCNotification`.
 - Amount mismatch on a live vHTLC triggers `RefundInitiated` (pay) or
   `Failed` (receive) **immediately** — never `NeedsIntervention`.
 - `NeedsIntervention` is reserved for anomalous server behavior
-  (e.g., vHTLC spent without a matching preimage).
+  (e.g., vHTLC spent without a matching preimage). It is applied where the
+  condition is detected, so every caller of the same lookup inherits it,
+  including the claim-send and restored-claim paths.
+- **A receive claim lookup failure is never a claim outcome.** The restored
+  `ClaimInitiated` reconciliation wraps indexer lookups in
+  `newRetryableLookupError`, and the daemon calls that prepare the claim
+  destination and arm claim recovery wrap their transport failures in
+  `newRetryableActionError`. Both keep the durable row claimable instead of
+  persisting `Failed`, while an error that already carries an intervention
+  classification passes through unchanged.
+- **A failed block-height lookup is never chain state.** Every height-dependent
+  timing check either retries (`newRetryableActionError`) or defers its
+  absolute deadline, never proceeding on a substituted or zero height.
 - `PaySession` / `ReceiveSession` are NOT goroutine-safe; `Wait`,
   `Claim`, `WaitForFunding`, and `State` must not be called
   concurrently.

@@ -486,7 +486,13 @@ func (s *ReceiveSession) ensureReceiveClaimRecoveryArmed(
 		},
 	)
 	if err != nil {
-		return fmt.Errorf("arm receive claim recovery: %w", err)
+
+		// The row is daemon-owned and the request id is deterministic,
+		// so an unavailable daemon is retryable without duplicating
+		// recovery state.
+		return newRetryableActionError(
+			fmt.Errorf("arm receive claim recovery: %w", err),
+		)
 	}
 	if resp.GetRecoveryId() == "" {
 		return fmt.Errorf("arm receive claim recovery returned empty " +
@@ -715,9 +721,17 @@ func (s *ReceiveSession) maybeEscalateReceiveClaimRecovery(ctx context.Context,
 		)
 	}
 
+	// The refund deadline is an absolute height, so the deadline trigger
+	// cannot be evaluated without a height. Only the wall-clock grace
+	// policy applies until a height is readable.
+	deadlineHeight := s.vhtlcConfig.RefundLocktime
+	if err != nil {
+		deadlineHeight = 0
+	}
+
 	decision := decideRecoveryEscalation(
 		s.client.recoveryPolicy, s.firstReceiveClaimRecoveryFailure(),
-		s.client.now(), height, s.vhtlcConfig.RefundLocktime,
+		s.client.now(), height, deadlineHeight,
 	)
 	if !decision.Escalate {
 		s.client.log.WarnS(ctx,
@@ -734,7 +748,7 @@ func (s *ReceiveSession) maybeEscalateReceiveClaimRecovery(ctx context.Context,
 			),
 			slog.Uint64(
 				"refund_locktime",
-				uint64(decision.DeadlineHeight),
+				uint64(s.vhtlcConfig.RefundLocktime),
 			),
 			slog.Int(
 				"remaining_blocks",
@@ -760,7 +774,9 @@ func (s *ReceiveSession) maybeEscalateReceiveClaimRecovery(ctx context.Context,
 		slog.String("outpoint", s.vhtlcOutpoint),
 		slog.Int64("amount_sat", s.vhtlcAmount),
 		slog.Uint64("current_height", uint64(decision.CurrentHeight)),
-		slog.Uint64("refund_locktime", uint64(decision.DeadlineHeight)),
+		slog.Uint64(
+			"refund_locktime", uint64(s.vhtlcConfig.RefundLocktime),
+		),
 		slog.Int("remaining_blocks", int(decision.RemainingBlocks)),
 	)
 
