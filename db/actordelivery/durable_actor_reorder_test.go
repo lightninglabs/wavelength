@@ -11,6 +11,7 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/fn/v2"
@@ -187,6 +188,17 @@ func newKeyedTestCodec() *actor.MessageCodec {
 func preEnqueueKeyed(t *testing.T, store actor.TxAwareDeliveryStore, mailbox,
 	msgID, payloadID, key string, createdAt time.Time) {
 
+	preEnqueueKeyedWithMaxAttempts(
+		t, store, mailbox, msgID, payloadID, key, createdAt, 5,
+	)
+}
+
+// preEnqueueKeyedWithMaxAttempts inserts a keyed message with an explicit
+// delivery budget before the actor starts.
+func preEnqueueKeyedWithMaxAttempts(t *testing.T,
+	store actor.TxAwareDeliveryStore, mailbox, msgID, payloadID, key string,
+	createdAt time.Time, maxAttempts int) {
+
 	t.Helper()
 
 	msg := newKeyedTestMsg(payloadID, key)
@@ -206,11 +218,232 @@ func preEnqueueKeyed(t *testing.T, store actor.TxAwareDeliveryStore, mailbox,
 				MessageType:    msg.MessageType(),
 				Payload:        payload,
 				AvailableAt:    createdAt,
-				MaxAttempts:    5,
+				MaxAttempts:    maxAttempts,
 				CorrelationKey: key,
 			},
 		),
 	)
+}
+
+// finalAttemptPostponeBehavior pauses the first delivery of msg-1 before it
+// requests a postpone. The pause gives a sibling worker time to probe the same
+// lane while msg-1 is leased at its attempt limit.
+type finalAttemptPostponeBehavior struct {
+	mu           sync.Mutex
+	deliveries   map[string]int
+	observed     []string
+	firstStarted chan struct{}
+	releaseFirst chan struct{}
+	releaseOnce  sync.Once
+}
+
+// releaseFirstDelivery lets the first delivery finish exactly once.
+func (b *finalAttemptPostponeBehavior) releaseFirstDelivery() {
+	b.releaseOnce.Do(func() {
+		close(b.releaseFirst)
+	})
+}
+
+// newFinalAttemptPostponeBehavior constructs the synchronized behavior used by
+// the final-attempt worker-pool regression test.
+func newFinalAttemptPostponeBehavior() *finalAttemptPostponeBehavior {
+	return &finalAttemptPostponeBehavior{
+		deliveries:   make(map[string]int),
+		firstStarted: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+	}
+}
+
+// bindStores returns the empty transaction view used by the behavior.
+func (b *finalAttemptPostponeBehavior) bindStores(context.Context,
+	actor.DeliveryStore) fifoTx {
+
+	return fifoTx{}
+}
+
+// Receive postpones msg-1 once, then commits all later deliveries and records
+// their durable consumption order.
+func (b *finalAttemptPostponeBehavior) Receive(ctx context.Context,
+	msg *keyedTestMsg, ax actor.Exec[fifoTx]) fn.Result[int] {
+
+	id := msg.msgID()
+
+	b.mu.Lock()
+	b.deliveries[id]++
+	deliveryCount := b.deliveries[id]
+	b.mu.Unlock()
+
+	if id == "msg-1" && deliveryCount == 1 {
+		close(b.firstStarted)
+
+		select {
+		case <-b.releaseFirst:
+		case <-ctx.Done():
+			return fn.Err[int](ctx.Err())
+		}
+
+		return fn.Err[int](actor.Postpone(10 * time.Millisecond))
+	}
+
+	commit := func(context.Context, fifoTx) error { return nil }
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if err := ax.Commit(ctx, commit); err != nil {
+		return fn.Err[int](err)
+	}
+
+	b.observed = append(b.observed, id)
+
+	return fn.Ok(1)
+}
+
+// order returns the messages in durable consumption order.
+func (b *finalAttemptPostponeBehavior) order() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	order := make([]string, len(b.observed))
+	copy(order, b.observed)
+
+	return order
+}
+
+// leaseProbeResult records the result of a mailbox claim.
+type leaseProbeResult struct {
+	id  string
+	err error
+}
+
+// leaseProbeStore exposes the second worker's completed claim so the runtime
+// test does not depend on a timing window to prove it probed the mailbox.
+type leaseProbeStore struct {
+	actor.TxAwareDeliveryStore
+
+	mu           sync.Mutex
+	claimCount   int
+	secondResult chan leaseProbeResult
+}
+
+// newLeaseProbeStore wraps a delivery store and records its second claim.
+func newLeaseProbeStore(store actor.TxAwareDeliveryStore) *leaseProbeStore {
+	return &leaseProbeStore{
+		TxAwareDeliveryStore: store,
+		secondResult:         make(chan leaseProbeResult, 1),
+	}
+}
+
+// LeaseNextMessage records the completed second claim and otherwise delegates
+// to the production store unchanged.
+func (s *leaseProbeStore) LeaseNextMessage(ctx context.Context, mailboxID,
+	leaseToken string, leaseDuration time.Duration) (*actor.LeasedMessage,
+	error) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	leased, err := s.TxAwareDeliveryStore.LeaseNextMessage(
+		ctx, mailboxID, leaseToken, leaseDuration,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	s.claimCount++
+	claimNumber := s.claimCount
+
+	if claimNumber == 2 {
+		result := leaseProbeResult{}
+		if leased != nil {
+			result.id = leased.ID
+		}
+
+		s.secondResult <- result
+	}
+
+	return leased, err
+}
+
+// TestDurableActorFinalAttemptPostponePreservesPerKeyFIFO drives the exact
+// worker-pool boundary through the actor runtime. The first message is leased
+// at its attempt limit and pauses before postponing; a second worker must not
+// start its same-key successor during that live lease. Once postponed, the
+// predecessor runs again and commits before the successor.
+func TestDurableActorFinalAttemptPostponePreservesPerKeyFIFO(t *testing.T) {
+	t.Parallel()
+
+	testDB := db.NewTestDB(t)
+	store, err := NewTxAwareDeliveryStoreFromDB(
+		testDB.DB, testDB.Backend(), clock.NewDefaultClock(),
+		btclog.Disabled,
+	)
+	require.NoError(t, err)
+
+	const (
+		mailbox = "final-attempt-runtime"
+		key     = "lane-a"
+	)
+
+	now := time.Now()
+	preEnqueueKeyedWithMaxAttempts(
+		t, store, mailbox, "runtime-001", "msg-1", key, now, 1,
+	)
+	preEnqueueKeyedWithMaxAttempts(
+		t, store, mailbox, "runtime-002", "msg-2", key,
+		now.Add(time.Millisecond), 3,
+	)
+
+	behavior := newFinalAttemptPostponeBehavior()
+	probeStore := newLeaseProbeStore(store)
+	cfg := actor.DefaultDurableTxActorConfig[*keyedTestMsg, int, fifoTx](
+		mailbox, behavior, behavior.bindStores, probeStore,
+		newKeyedTestCodec(),
+	)
+	cfg.NumWorkers = 2
+	cfg.PollInterval = 10 * time.Millisecond
+	cfg.LeaseDuration = 5 * time.Second
+	cfg.HeartbeatInterval = 2 * time.Second
+
+	a := actor.NewDurableActor(cfg).UnwrapOrFail(t)
+	a.Start()
+	defer func() {
+		behavior.releaseFirstDelivery()
+
+		stopCtx, stopCancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer stopCancel()
+		require.NoError(t, a.StopAndWait(stopCtx))
+	}()
+
+	select {
+	case <-behavior.firstStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("final-attempt predecessor was not delivered")
+	}
+
+	select {
+	case result := <-probeStore.secondResult:
+		require.NoError(t, result.err)
+		require.Empty(
+			t, result.id, "same-key successor claimed during "+
+				"predecessor's live lease",
+		)
+
+	case <-time.After(5 * time.Second):
+		t.Fatal("sibling worker did not complete its mailbox probe")
+	}
+
+	behavior.releaseFirstDelivery()
+
+	require.Eventually(
+		t,
+		func() bool {
+			return len(behavior.order()) == 2
+		},
+		5*time.Second, 10*time.Millisecond,
+	)
+	require.Equal(t, []string{"msg-1", "msg-2"}, behavior.order())
 }
 
 // TestDurableActorPerKeyFIFOSurvivesTransientFailure is the actor-level
