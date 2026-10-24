@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/metrics"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -623,4 +626,275 @@ func TestIncomingVTXOHandlerNilEvent(t *testing.T) {
 	result := handler.Receive(t.Context(), msg)
 	_, resultErr := result.Unpack()
 	require.NoError(t, resultErr)
+}
+
+// TestIncomingVTXODurableBehaviorPostponeHorizon asserts a retryable failure is
+// postponed only while the delivery is inside its horizon. Past the horizon the
+// event is failed for real, so an outpoint that never appears in the indexer
+// cannot keep a durable event, a paginated scan, and a warning log redriving
+// forever.
+func TestIncomingVTXODurableBehaviorPostponeHorizon(t *testing.T) {
+	t.Parallel()
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	pkScript := []byte{0x51, 0x20, 0xbb, 0xdd}
+	saver := &mockVTXOSaver{}
+
+	sink := actor.NewChannelTellOnlyRef[metrics.Msg]("test-metrics", 4)
+	handler := NewIncomingVTXOHandler(IncomingVTXOHandlerConfig{
+		ScriptStore: &mockScriptLookup{
+			scripts: map[string]*OwnedReceiveScript{
+				string(pkScript): {
+					ClientKey: keychain.KeyDescriptor{
+						PubKey: clientKey.PubKey(),
+					},
+					OperatorPubKey: operatorKey.PubKey(),
+					ExitDelay:      144,
+				},
+			},
+		},
+		VTXOStore: saver,
+		AncestryFetcher: func(context.Context, wire.OutPoint, []byte,
+			keychain.KeyDescriptor) (IncomingVTXOExtras, error) {
+
+			return IncomingVTXOExtras{}, fmt.Errorf("%w: outpoint "+
+				"never indexed", ErrIncomingAncestryNotFound)
+		},
+		MetricsSink: fn.Some[metrics.Sink](sink),
+	})
+	behavior := &incomingVTXODurableBehavior{handler: handler}
+	exec := &recordingIncomingExec{}
+
+	var txid chainhash.Hash
+	txid[0] = 0x61
+	msg := &IncomingVTXOMsg{Event: newTestEvent(
+		txid, 0, pkScript, 50_000, "round-horizon",
+	)}
+
+	// Inside the horizon the delivery is parked, not failed.
+	freshCtx := actor.WithDeliveryEnqueuedAtForTest(
+		t.Context(), time.Now().Add(-time.Minute),
+	)
+	_, err = behavior.Receive(freshCtx, msg, exec).Unpack()
+	require.ErrorIs(t, err, actor.ErrPostponed)
+	require.ErrorIs(t, err, ErrIncomingAncestryNotFound)
+
+	msg1, ok := sink.AwaitMessage(time.Second)
+	require.True(t, ok)
+	postponed, ok := msg1.(*metrics.DeliveryPostponeMsg)
+	require.True(t, ok)
+	require.Equal(t, metrics.PostponeCauseMissing, postponed.Cause)
+	require.False(t, postponed.Expired)
+
+	// Past the horizon the same failure is handed to the ordinary retry
+	// path instead of being postponed again.
+	staleCtx := actor.WithDeliveryEnqueuedAtForTest(
+		t.Context(),
+		time.Now().Add(-incomingVTXOPostponeHorizon-time.Minute),
+	)
+	_, err = behavior.Receive(staleCtx, msg, exec).Unpack()
+	require.Error(t, err)
+	require.NotErrorIs(t, err, actor.ErrPostponed)
+	require.ErrorIs(t, err, ErrIncomingAncestryNotFound)
+
+	msg2, ok := sink.AwaitMessage(time.Second)
+	require.True(t, ok)
+	expired, ok := msg2.(*metrics.DeliveryPostponeMsg)
+	require.True(t, ok)
+	require.Equal(t, metrics.PostponeCauseMissing, expired.Cause)
+	require.True(t, expired.Expired)
+
+	require.Empty(t, saver.saved)
+	require.Zero(t, exec.commits)
+}
+
+// newPostponeTestBehavior builds a durable incoming-event behavior whose
+// ancestry lookup always fails with fetchErr, plus the store it persists to and
+// the sink it reports postpones to.
+func newPostponeTestBehavior(t *testing.T, pkScript []byte, fetchErr error) (
+	*incomingVTXODurableBehavior, *mockVTXOSaver,
+	*actor.ChannelTellOnlyRef[metrics.Msg]) {
+
+	t.Helper()
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	saver := &mockVTXOSaver{}
+
+	sink := actor.NewChannelTellOnlyRef[metrics.Msg]("test-metrics", 4)
+	handler := NewIncomingVTXOHandler(IncomingVTXOHandlerConfig{
+		ScriptStore: &mockScriptLookup{
+			scripts: map[string]*OwnedReceiveScript{
+				string(pkScript): {
+					ClientKey: keychain.KeyDescriptor{
+						PubKey: clientKey.PubKey(),
+					},
+					OperatorPubKey: operatorKey.PubKey(),
+					ExitDelay:      144,
+				},
+			},
+		},
+		VTXOStore: saver,
+		AncestryFetcher: func(context.Context, wire.OutPoint, []byte,
+			keychain.KeyDescriptor) (IncomingVTXOExtras, error) {
+
+			return IncomingVTXOExtras{}, fetchErr
+		},
+		MetricsSink: fn.Some[metrics.Sink](sink),
+	})
+
+	return &incomingVTXODurableBehavior{handler: handler}, saver, sink
+}
+
+// TestIncomingVTXOPostponeHorizonPerCause asserts the horizon is sized to what
+// each cause is actually waiting for. An indexer that has not caught up, or a
+// chain source that could not be queried, gives up at the ten-minute bound. A
+// commitment waiting for its first confirmation is still postponed well past
+// that bound, because a single Bitcoin block can take longer than it, and only
+// fails at the confirmation-sized bound.
+func TestIncomingVTXOPostponeHorizonPerCause(t *testing.T) {
+	t.Parallel()
+
+	pkScript := []byte{0x51, 0x20, 0xbb, 0xdd}
+	unconfirmed := fmt.Errorf("resolve commitment: %w: not yet mined",
+		ErrCommitmentUnconfirmed)
+
+	tests := []struct {
+		name      string
+		fetchErr  error
+		age       time.Duration
+		wantCause string
+		expired   bool
+	}{
+		{
+			name: "missing outpoint inside the bound",
+			fetchErr: fmt.Errorf("%w: outpoint never "+
+				"indexed", ErrIncomingAncestryNotFound),
+			age:       time.Minute,
+			wantCause: metrics.PostponeCauseMissing,
+		},
+		{
+			name: "missing outpoint past the bound",
+			fetchErr: fmt.Errorf("%w: outpoint never "+
+				"indexed", ErrIncomingAncestryNotFound),
+			age:       incomingVTXOPostponeHorizon + time.Minute,
+			wantCause: metrics.PostponeCauseMissing,
+			expired:   true,
+		},
+		{
+			name: "indexer error past the bound",
+			fetchErr: fmt.Errorf("%w: page failed",
+				ErrIncomingAncestryIndexer),
+			age:       incomingVTXOPostponeHorizon + time.Minute,
+			wantCause: metrics.PostponeCauseIndexerError,
+			expired:   true,
+		},
+		{
+			// Past the indexer bound but inside the
+			// confirmation bound: the event is still
+			// confirming normally, so it must keep waiting.
+			name:      "unconfirmed past the indexer bound",
+			fetchErr:  unconfirmed,
+			age:       incomingVTXOPostponeHorizon + time.Minute,
+			wantCause: metrics.PostponeCauseChainUnconfirmed,
+		},
+		{
+			name:     "unconfirmed past the confirmation bound",
+			fetchErr: unconfirmed,
+			age: incomingVTXOConfirmationHorizon +
+				time.Minute,
+			wantCause: metrics.PostponeCauseChainUnconfirmed,
+			expired:   true,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			behavior, saver, sink := newPostponeTestBehavior(
+				t, pkScript, test.fetchErr,
+			)
+			exec := &recordingIncomingExec{}
+
+			var txid chainhash.Hash
+			txid[0] = 0x62
+			msg := &IncomingVTXOMsg{Event: newTestEvent(
+				txid, 0, pkScript, 50_000, "round-horizon",
+			)}
+			ctx := actor.WithDeliveryEnqueuedAtForTest(
+				t.Context(), time.Now().Add(-test.age),
+			)
+
+			_, err := behavior.Receive(ctx, msg, exec).Unpack()
+			require.ErrorIs(t, err, test.fetchErr)
+			if test.expired {
+				require.NotErrorIs(t, err, actor.ErrPostponed)
+			} else {
+				require.ErrorIs(t, err, actor.ErrPostponed)
+			}
+
+			reported, ok := sink.AwaitMessage(time.Second)
+			require.True(t, ok)
+			decision, ok := reported.(*metrics.DeliveryPostponeMsg)
+			require.True(t, ok)
+			require.Equal(t, test.wantCause, decision.Cause)
+			require.Equal(t, test.expired, decision.Expired)
+
+			require.Empty(t, saver.saved)
+			require.Zero(t, exec.commits)
+		})
+	}
+}
+
+// TestIncomingPostponeCause asserts the postpone metric label is a fixed bucket
+// derived from the lookup's own sentinels, never from the pushed event.
+func TestIncomingPostponeCause(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "missing",
+			err: fmt.Errorf("authenticate: %w",
+				ErrIncomingAncestryNotFound),
+			want: metrics.PostponeCauseMissing,
+		},
+		{
+			name: "chain unconfirmed",
+			err: fmt.Errorf("authenticate batch expiry: %w",
+				ErrCommitmentUnconfirmed),
+			want: metrics.PostponeCauseChainUnconfirmed,
+		},
+		{
+			name: "indexer error",
+			err:  ErrIncomingAncestryIndexer,
+			want: metrics.PostponeCauseIndexerError,
+		},
+		{
+			name: "store failure",
+			err:  errors.New("database unavailable"),
+			want: metrics.PostponeCauseOther,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(
+				t, test.want, incomingPostponeCause(test.err),
+			)
+		})
+	}
 }

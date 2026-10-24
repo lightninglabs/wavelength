@@ -169,6 +169,65 @@ var (
 		[]string{"service", "method"},
 	)
 
+	// DeliveryDeadLettersTotal counts durable Tell deliveries that ended
+	// in the dead-letter table instead of being acknowledged, labelled by
+	// the coarse family of actor that owns the mailbox. A delivery only
+	// reaches the dead-letter table after its retry budget is gone, and
+	// the durable actor deletes the mailbox row in the same step, so on a
+	// money-moving actor this is a resume that will never run again
+	// without outside help: growth here should page someone, not sit in a
+	// log line.
+	DeliveryDeadLettersTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "delivery_dead_letters_total",
+			Help: "Durable deliveries moved to the " +
+				"dead-letter table, by actor family.",
+		},
+		[]string{"actor"},
+	)
+
+	// DeliveryPostponedTotal counts postpone decisions: one increment per
+	// redrive a behavior asked to wait on, labelled by the coarse reason it
+	// is waiting for, so a single delivery climbs once per redrive.
+	// Sustained growth is the honest picture of a retry loop on an external
+	// condition: it never shows up in an error counter and, unlike a nack,
+	// never climbs toward the dead-letter table. Each cause has its own
+	// behavior-owned horizon, and the horizons differ by cause - a wait on
+	// a not-yet-indexed outpoint is bounded in minutes, a wait on a Bitcoin
+	// confirmation is sized to block time - so a cause's rate says how many
+	// deliveries are waiting on it, not how close it is to failing.
+	DeliveryPostponedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "delivery_postponed_total",
+			Help: "Times a durable delivery was postponed " +
+				"by coarse reason.",
+		},
+		[]string{"cause"},
+	)
+
+	// DeliveryPostponeExpiredTotal counts expired-horizon decisions: one
+	// increment per redrive of a delivery that was past its
+	// behavior-owned horizon and so was failed for real instead of
+	// postponed again. Postpone never consumes attempts, so this counter is
+	// the signal that a retry loop ran out of patience. It is not a count
+	// of abandoned events: past the horizon every attempt of the ordinary
+	// Tell retry policy also increments it, so one abandoned delivery can
+	// count several times. Nor is the horizon one value: it is chosen per
+	// cause, so an indexer wait expires after minutes while a commitment
+	// confirmation gets an hour, which is why the `cause` label is the
+	// only way to read these series together.
+	DeliveryPostponeExpiredTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "delivery_postpone_expired_total",
+			Help: "Times a postponed delivery was given up " +
+				"on at its horizon, by coarse reason.",
+		},
+		[]string{"cause"},
+	)
+
 	// BackgroundTaskErrorsTotal counts errors hit by daemon-owned
 	// background tasks (sync loops, watchers), labelled by task so
 	// operators can locate a failing subsystem.
@@ -233,6 +292,9 @@ func allCollectors() []prometheus.Collector {
 		ServerConnLastIngressPollTimestamp,
 		ServerConnLastIngressEventTimestamp,
 		ServerConnIngressDeferredTotal,
+		DeliveryDeadLettersTotal,
+		DeliveryPostponedTotal,
+		DeliveryPostponeExpiredTotal,
 		BackgroundTaskErrorsTotal,
 		GRPCClientMetrics,
 	}

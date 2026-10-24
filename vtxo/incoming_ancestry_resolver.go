@@ -3,6 +3,7 @@ package vtxo
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -21,6 +22,21 @@ const (
 	// incoming ancestry lookup may inspect before failing closed.
 	DefaultIncomingAncestryMaxScan uint64 = 128
 )
+
+// ErrIncomingAncestryNotFound identifies a completed paginated indexer scan
+// that never contained the target outpoint. The indexer may simply not have
+// indexed the outpoint yet, so the lookup is worth retrying; it is a distinct
+// sentinel so a durable caller can tell "not there yet" from "the lookup
+// failed" when it decides how long to keep retrying and how to label why.
+var ErrIncomingAncestryNotFound = errors.New("incoming ancestry not found")
+
+// ErrIncomingAncestryIndexer identifies a page request that failed, or a page
+// whose continuation could not be validated. Retrying is appropriate (an
+// operator-side indexer can be briefly unavailable or mid-deploy), and the
+// sentinel lets a durable caller bucket the wait as an indexer failure rather
+// than guessing from the message.
+var ErrIncomingAncestryIndexer = errors.New("incoming ancestry indexer query " +
+	"failed")
 
 // IncomingAncestryQuery pages through indexer VTXOs for one taproot
 // pkScript. The caller supplies the proof-of-control and transport
@@ -58,8 +74,9 @@ func ResolveIncomingAncestry(ctx context.Context, query IncomingAncestryQuery,
 	for {
 		resp, err := query(ctx, script, cursor, pageSize)
 		if err != nil {
-			return IncomingVTXOExtras{}, fmt.Errorf("indexer list "+
-				"vtxos by scripts: %w", err)
+			return IncomingVTXOExtras{}, fmt.Errorf("%w: indexer "+
+				"list vtxos by scripts: %w",
+				ErrIncomingAncestryIndexer, err)
 		}
 
 		page := FlattenListVTXOsByScriptsResponse(resp)
@@ -113,15 +130,17 @@ func ResolveIncomingAncestry(ctx context.Context, query IncomingAncestryQuery,
 		if err := indexerlimits.ValidateVTXOsByScriptsCursor(
 			nextCursor,
 		); err != nil {
-			return IncomingVTXOExtras{}, fmt.Errorf("indexer next "+
-				"cursor: %w", err)
+			return IncomingVTXOExtras{}, fmt.Errorf("%w: indexer "+
+				"next cursor: %w", ErrIncomingAncestryIndexer,
+				err)
 		}
 
 		cursor = nextCursor
 	}
 
-	return IncomingVTXOExtras{}, fmt.Errorf("indexer response missing "+
-		"vtxo for outpoint %s after paginated scan", outpoint)
+	return IncomingVTXOExtras{}, fmt.Errorf("%w: indexer response missing "+
+		"vtxo for outpoint %s after paginated scan",
+		ErrIncomingAncestryNotFound, outpoint)
 }
 
 // matchesIncomingAncestryOutpoint returns true when candidate carries

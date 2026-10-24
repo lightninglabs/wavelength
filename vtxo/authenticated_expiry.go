@@ -19,6 +19,14 @@ import (
 // cannot repair this error.
 var ErrInvalidBatchExpiryEvidence = errors.New("invalid batch expiry evidence")
 
+// ErrCommitmentUnconfirmed identifies a chain lookup that could not return a
+// confirmed commitment transaction (not visible to the chain source yet, not
+// yet at the required depth, or the lookup itself timed out). It is distinct
+// from ErrInvalidBatchExpiryEvidence: the evidence may be perfectly good and
+// simply not confirmed yet, so a durable caller can keep waiting and can label
+// the wait as unconfirmed rather than malformed.
+var ErrCommitmentUnconfirmed = errors.New("commitment confirmation unavailable")
+
 // CommitmentConfirmation is the chain-authenticated transaction and height
 // used to derive one commitment's absolute sweep expiry.
 type CommitmentConfirmation struct {
@@ -85,8 +93,8 @@ func AuthenticateBatchExpiry(ctx context.Context, ancestry []Ancestry,
 			ctx, txid, group.pkScript, group.heightHint,
 		)
 		if err != nil {
-			return 0, fmt.Errorf("resolve commitment %s: %w", txid,
-				err)
+			return 0, fmt.Errorf("resolve commitment %s: %w: %w",
+				txid, ErrCommitmentUnconfirmed, err)
 		}
 		if confirmation.Tx == nil {
 			return 0, fmt.Errorf("commitment %s confirmation has "+

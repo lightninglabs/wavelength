@@ -100,6 +100,54 @@ func TestMetricsActorReceive(t *testing.T) {
 				)
 			},
 		},
+		{
+			name: "actor dead letter",
+			msg: &ActorDeadLetterMsg{
+				Actor: ActorFamilyCreditOp,
+			},
+			counter: func() float64 {
+				return deadLetterCount(ActorFamilyCreditOp)
+			},
+		},
+		{
+			name: "actor dead letter unknown family",
+			msg: &ActorDeadLetterMsg{
+				Actor: "credit-op-0123456789",
+			},
+			counter: func() float64 {
+				return deadLetterCount(actorFamilyOther)
+			},
+		},
+		{
+			name: "delivery postponed",
+			msg: &DeliveryPostponeMsg{
+				Cause: PostponeCauseMissing,
+			},
+			counter: func() float64 {
+				return postponedCount(PostponeCauseMissing)
+			},
+		},
+		{
+			name: "delivery postpone expired",
+			msg: &DeliveryPostponeMsg{
+				Cause:   PostponeCauseChainUnconfirmed,
+				Expired: true,
+			},
+			counter: func() float64 {
+				return postponeExpiredCount(
+					PostponeCauseChainUnconfirmed,
+				)
+			},
+		},
+		{
+			name: "delivery postpone unknown cause",
+			msg: &DeliveryPostponeMsg{
+				Cause: "unrecognized-cause",
+			},
+			counter: func() float64 {
+				return postponedCount(PostponeCauseOther)
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -116,6 +164,25 @@ func TestMetricsActorReceive(t *testing.T) {
 			require.Equal(t, before+1, tc.counter())
 		})
 	}
+}
+
+// deadLetterCount reads the dead-letter counter for one actor family.
+func deadLetterCount(family string) float64 {
+	return testutil.ToFloat64(
+		DeliveryDeadLettersTotal.WithLabelValues(family),
+	)
+}
+
+// postponedCount reads the postponed counter for one coarse cause.
+func postponedCount(cause string) float64 {
+	return testutil.ToFloat64(DeliveryPostponedTotal.WithLabelValues(cause))
+}
+
+// postponeExpiredCount reads the horizon-expiry counter for one coarse cause.
+func postponeExpiredCount(cause string) float64 {
+	return testutil.ToFloat64(
+		DeliveryPostponeExpiredTotal.WithLabelValues(cause),
+	)
 }
 
 // oorDurationSampleCount returns the number of observations recorded in

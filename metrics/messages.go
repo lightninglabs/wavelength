@@ -122,6 +122,51 @@ func (m *BoardingEventMsg) MessageType() string {
 
 func (m *BoardingEventMsg) metricsMsgSealed() {}
 
+// ActorDeadLetterMsg is sent when a durable delivery is moved to the
+// dead-letter table instead of being acknowledged. The metrics actor
+// increments DeliveryDeadLettersTotal labelled by Actor.
+type ActorDeadLetterMsg struct {
+	actor.BaseMessage
+
+	// Actor is the coarse mailbox family that owned the delivery, e.g.
+	// "credit-op" or "incoming-vtxo". It is never a per-mailbox id: those
+	// are unbounded in cardinality. An unrecognized value is bucketed as
+	// "other".
+	Actor string
+}
+
+// MessageType implements actor.Message.
+func (m *ActorDeadLetterMsg) MessageType() string {
+	return "metrics.ActorDeadLetter"
+}
+
+func (m *ActorDeadLetterMsg) metricsMsgSealed() {}
+
+// DeliveryPostponeMsg is sent when a delivery is postponed, or when a
+// postponed delivery reaches its behavior-owned horizon and is failed for
+// real. The metrics actor increments DeliveryPostponedTotal or
+// DeliveryPostponeExpiredTotal, labelled by Cause.
+type DeliveryPostponeMsg struct {
+	actor.BaseMessage
+
+	// Cause is the coarse reason the delivery is waiting, one of the
+	// PostponeCause values. An unrecognized value is bucketed as "other"
+	// so no caller string becomes a label value.
+	Cause string
+
+	// Expired reports that the postpone horizon was reached, so the
+	// delivery is being handed to the ordinary failure path instead of
+	// being re-enqueued.
+	Expired bool
+}
+
+// MessageType implements actor.Message.
+func (m *DeliveryPostponeMsg) MessageType() string {
+	return "metrics.DeliveryPostpone"
+}
+
+func (m *DeliveryPostponeMsg) metricsMsgSealed() {}
+
 // BackgroundTaskErrorMsg is sent when a daemon-owned background task hits
 // an error. The metrics actor increments BackgroundTaskErrorsTotal
 // labelled by Task.

@@ -104,9 +104,18 @@ when the local wallet owns the receive script.
   fetches ancestry, requires a positive chain-authenticated batch expiry,
   persists the descriptor, and tells the manager via
   `VTXOsMaterializedNotification`. Transient failures postpone the durable
-  event without consuming its retry budget. The push's expiry and
-  relative-expiry scalars are not trusted. Only created events are acted on;
-  unknown event kinds and unowned scripts are silently ignored.
+  event without consuming its retry budget, bounded by a per-cause horizon
+  measured from `actor.DeliveryEnqueuedAt`: ten minutes while an outpoint is
+  missing from the indexer or the indexer lookup fails (mirroring the OOR
+  registry), and an hour while a commitment waits for its first confirmation,
+  since one Bitcoin block can outlast ten minutes and the event is healthy the
+  whole time. Past the horizon the failure is returned plain so the ordinary
+  Tell retry policy can dead-letter the delivery instead of redriving it
+  forever, and both outcomes are reported as a `metrics.DeliveryPostponeMsg`
+  with a coarse cause. The
+  push's expiry and relative-expiry scalars are not trusted. Only created
+  events are acted on; unknown event kinds and unowned scripts are silently
+  ignored.
 - `IncomingVTXOMsg` / `IncomingVTXOResp` — Durable actor envelope wrapping an `arkrpc.IncomingVTXOEvent` and the `any`-typed response. Its TLV codec preserves the full protobuf across restart redelivery.
 - `IncomingVTXOServiceKey` — Well-known service key (`"incoming-vtxo-handler"`) used by `waved` to register the actor and by `serverconn.EventRouter` to dispatch routed events.
 - `OwnedReceiveScript` / `OwnedScriptLookup` — Read-only view of the owned receive scripts store used by the incoming handler. `LookupOwnedReceiveScript` returns `sql.ErrNoRows` for unknown scripts; the handler treats this as "not ours" and exits cleanly.
