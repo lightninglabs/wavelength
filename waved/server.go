@@ -6078,6 +6078,14 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 			Jobs:     recoveryStore,
 			Preimage: preimages,
 		},
+		ArmedExitPolicy: func(ctx context.Context,
+			target wire.OutPoint) (unroll.ExitPolicyKind, string,
+			bool, error) {
+
+			return armedRecoveryExitPolicy(
+				ctx, recoveryStore, target,
+			)
+		},
 		VTXOExitObserver:     exitObserver,
 		LegacyProofScanFloor: legacyProofScanFloor,
 	})
@@ -6130,12 +6138,13 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	// refund). While the chain resolver target is still unset, those
 	// notifications are buffered by the LazyChainResolver and replayed to
 	// the registry the instant it is wired (step 4). That replay is what
-	// makes the policy-bearing admission reach the registry first: the
-	// registry is first-writer-wins on exit policy, so the generic orphan
-	// scan (step 5, no policy) must not create the record before the
-	// refund-policy admission lands, or the target would silently exit
-	// under the standard timeout policy. Restore failures are non-fatal;
-	// the job is retried on the next escalation or restart.
+	// makes the policy-bearing admission reach the registry first.
+	// Admission now also inherits an armed obligation's policy for a
+	// policy-less request and rejects a conflicting identity, but keeping
+	// the replayed admission ahead of the generic orphan scan (step 5)
+	// means the scan stays a no-op for these targets instead of racing the
+	// recovery. Restore failures are non-fatal; the job is retried on the
+	// next escalation or restart.
 	if err := recoverySvc.RestoreNonTerminal(ctx); err != nil {
 		s.log.WarnS(ctx, "Failed to restore vhtlc recovery jobs",
 			err)
@@ -6146,7 +6155,12 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	chainResolverRef := actor.NewMapInputRef(
 		registry.Ref(),
 		func(msg vtxo.ExpiringNotification) unroll.RegistryMsg {
-			return ensureUnrollFromExpiring(msg)
+			req := ensureUnrollFromExpiring(msg)
+			if s.cfg.UnrollAdmissionHook != nil {
+				s.cfg.UnrollAdmissionHook(req)
+			}
+
+			return req
 		},
 	)
 
@@ -6173,22 +6187,20 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	// admission was just replayed by the Set above) is a benign no-op that
 	// preserves the existing policy.
 	//
-	// The registry is first-writer-wins on exit policy, so a naive
-	// no-policy scan could permanently claim a vHTLC target under the
-	// standard timeout policy if RestoreNonTerminal failed for it (a
-	// transient error leaves it UnilateralExit on disk with no record).
-	// To close that, we hand the scan the durable exit policy of every
-	// non-terminal recovery target so it re-admits under the RIGHT policy
-	// even when it does create the record. The ordering above stays as
-	// belt-and-suspenders. Per-target failures are collected and returned
-	// after the scan so startup fails closed instead of serving traffic
-	// with a known-stranded VTXO.
-	recoveryPolicies, err := recoveryExitPolicies(ctx, recoveryStore)
-	if err != nil {
-		return fmt.Errorf("load recovery exit policies: %w", err)
-	}
+	// The registry binds the first exit policy identity a target is
+	// admitted under and rejects a later conflicting one. The scan names
+	// no policy, so admission inherits the identity of an armed recovery
+	// obligation through the ArmedExitPolicy lookup wired above. That
+	// covers a vHTLC target whose RestoreNonTerminal call failed (a
+	// transient error leaves it UnilateralExit on disk with no record):
+	// the scan re-admits it under the right policy even when it does
+	// create the record. The ordering above stays as belt-and-suspenders.
+	// Per-target failures are collected and returned after the scan so
+	// startup fails closed instead of serving traffic with a
+	// known-stranded VTXO. A policy mismatch is only non-fatal when a
+	// live child is confirmed to be driving the bound record.
 	if err := s.recoverOrphanedUnrollJobs(
-		ctx, vtxoStore, registry, recoveryPolicies,
+		ctx, vtxoStore, registry, recoveryStore,
 	); err != nil {
 		return fmt.Errorf("recover orphaned unroll jobs: %w", err)
 	}
@@ -6243,35 +6255,69 @@ func unrollStartTrigger(t actormsg.UnrollTrigger) unroll.StartTrigger {
 	}
 }
 
-// recoveryExitPolicy is the durable exit-policy identity of one vHTLC recovery
-// target, keyed by its VTXO outpoint in recoveryExitPolicies.
-type recoveryExitPolicy struct {
-	kind unroll.ExitPolicyKind
-	ref  string
-}
-
-// recoveryExitPolicies indexes the exit policy of every non-terminal vHTLC
-// recovery target by outpoint, so the orphan-recovery scan can re-admit a
-// recovery target under its own policy instead of the standard timeout. The
-// registry is first-writer-wins on exit policy, so a no-policy re-admission
-// would otherwise permanently mislabel a refund target as a standard exit.
-func recoveryExitPolicies(ctx context.Context,
-	store coordinator.Store) (map[wire.OutPoint]recoveryExitPolicy, error) {
+// armedRecoveryExitPolicy returns the exit policy identity of the
+// non-terminal vHTLC recovery obligation for one target outpoint, if there is
+// one. The unroll registry consults it on every admission so a policy-less
+// writer -- the manual Unroll RPC, the fraud watcher, or critical expiry --
+// cannot bind a recovery target to the standard VTXO timeout policy: a vHTLC
+// commitment output has no standard owner-timeout leaf, so such an exit could
+// never be swept. A terminal recovery no longer owns its target and is
+// ignored.
+//
+// TODO(unroll): this lists every non-terminal recovery row per admission, on
+// the registry's actor goroutine. Follow-up: add a
+// GetNonTerminalVHTLCRecoveryByOutpoint query (there is none in
+// db/sqlc/queries/vhtlc_recovery_jobs.sql) and enforce that at most one
+// non-terminal row can exist per outpoint -- today the first match wins
+// without that check.
+func armedRecoveryExitPolicy(ctx context.Context, store coordinator.Store,
+	target wire.OutPoint) (unroll.ExitPolicyKind, string, bool, error) {
 
 	jobs, err := store.ListNonTerminalRecoveries(ctx)
 	if err != nil {
-		return nil, err
+		return "", "", false, err
 	}
 
-	policies := make(map[wire.OutPoint]recoveryExitPolicy, len(jobs))
 	for _, job := range jobs {
-		policies[job.VTXOOutpoint] = recoveryExitPolicy{
-			kind: unroll.ExitPolicyKind(job.ExitPolicyKind),
-			ref:  job.ID,
+		if job.VTXOOutpoint != target {
+			continue
 		}
+
+		return unroll.ExitPolicyKind(job.ExitPolicyKind), job.ID, true,
+			nil
 	}
 
-	return policies, nil
+	return "", "", false, nil
+}
+
+// failConflictingRecovery marks the recovery obligation behind a rejected
+// admission as terminally failed, but only after confirming that a live
+// child is driving the bound exit. A dormant record cannot make the scan
+// succeed: the target would remain stranded and the recovery would lose its
+// restart retry. The scan's request names no policy, so the
+// requested identity is the one admission inherited from the armed obligation,
+// and its ref names the row to fail. It mirrors the outcome the recovery
+// coordinator's post-admission guard produces, so a boot-time policy
+// disagreement leaves one clear terminal signal instead of an obligation that
+// can never be admitted. A rejected request that carries no ref named no
+// recovery obligation, so there is nothing to fail.
+func failConflictingRecovery(ctx context.Context, store coordinator.Store,
+	registry coordinator.UnrollRegistry,
+	mismatch *unroll.ExitPolicyMismatchError) error {
+
+	status, err := registry.GetStatus(ctx, mismatch.Target)
+	if err != nil {
+		return fmt.Errorf("verify conflicting unroll: %w", err)
+	}
+	if status == nil || !status.Found || !status.Active {
+		return fmt.Errorf("bound unroll is not active: %w", mismatch)
+	}
+
+	if mismatch.RequestedRef == "" {
+		return nil
+	}
+
+	return store.FailRecovery(ctx, mismatch.RequestedRef, mismatch)
 }
 
 // recoverOrphanedUnrollJobs closes the atomicity gap between the VTXO
@@ -6288,9 +6334,15 @@ func recoveryExitPolicies(ctx context.Context,
 // Per-target failures are collected and returned after the scan so startup
 // fails closed instead of serving traffic while known unilateral-exit VTXOs
 // remain stranded.
+//
+// A policy mismatch is non-fatal only when a status probe confirms that a
+// live child is driving the bound record. In that case the scan logs the
+// disagreement, terminal-fails the conflicting recovery row, and skips the
+// target. If no child is active, the scan preserves the recovery obligation
+// and fails startup rather than reporting a stranded target as recovered.
 func (s *Server) recoverOrphanedUnrollJobs(ctx context.Context,
 	vtxoStore vtxo.VTXOStore, registry *unroll.UnrollRegistryActor,
-	recoveryPolicies map[wire.OutPoint]recoveryExitPolicy) error {
+	recoveryStore coordinator.Store) error {
 
 	descs, err := vtxoStore.ListVTXOsByStatus(
 		ctx, vtxo.VTXOStatusUnilateralExit,
@@ -6310,9 +6362,12 @@ func (s *Server) recoverOrphanedUnrollJobs(ctx context.Context,
 		op := desc.Outpoint
 
 		// A vHTLC recovery target carries a non-standard exit policy.
-		// Re-admit it under that policy so the first-writer-wins
-		// registry never locks it to the standard timeout: a standard
-		// witness against a vHTLC taproot tree would never sweep.
+		// The request names none here: admission resolves the policy
+		// through the registry's ArmedExitPolicy lookup, which returns
+		// the identity of the non-terminal recovery obligation for
+		// this target. A standard witness against a vHTLC taproot tree
+		// would never sweep, so inheriting that identity is what keeps
+		// the scan from binding the target to the standard timeout.
 		//
 		// The trigger is not recovered the way the exit policy is. A
 		// target that was force-exited under TriggerFraudSpend but
@@ -6333,13 +6388,64 @@ func (s *Server) recoverOrphanedUnrollJobs(ctx context.Context,
 			Outpoint: op,
 			Trigger:  unroll.TriggerRestart,
 		}
-		if policy, ok := recoveryPolicies[op]; ok {
-			ensureReq.ExitPolicyKind = policy.kind
-			ensureReq.ExitPolicyRef = policy.ref
-		}
 
 		resp, askErr := ref.Ask(ctx, ensureReq).Await(ctx).Unpack()
 		if askErr != nil {
+			// A conflicting durable record may have failed
+			// restoration. Confirm a live child before treating the
+			// target as driven or retiring the recovery obligation.
+			var mismatch *unroll.ExitPolicyMismatchError
+			if errors.As(askErr, &mismatch) {
+				s.log.WarnS(ctx, "Orphaned unroll job exit "+
+					"policy conflicts with the policy "+
+					"already bound to the target", askErr,
+					slog.String(
+						"outpoint",
+						mismatch.Target.String(),
+					),
+					slog.String(
+						"bound_policy_kind",
+						string(mismatch.BoundKind),
+					),
+					slog.String(
+						"bound_policy_ref",
+						mismatch.BoundRef,
+					),
+					slog.String(
+						"requested_policy_kind",
+						string(mismatch.RequestedKind),
+					),
+					slog.String(
+						"requested_policy_ref",
+						mismatch.RequestedRef,
+					),
+				)
+
+				failErr := failConflictingRecovery(
+					ctx, recoveryStore,
+					coordinator.NewActorUnrollRegistry(ref),
+					mismatch,
+				)
+				if failErr != nil {
+					s.log.WarnS(ctx, "Unable to resolve orphaned "+
+						"unroll policy conflict",
+						failErr,
+						slog.String(
+							"outpoint", op.String(),
+						),
+					)
+					recoveryErrs = append(
+						recoveryErrs,
+						fmt.Errorf(
+							"%s: %w", op.String(),
+							failErr,
+						),
+					)
+				}
+
+				continue
+			}
+
 			s.log.WarnS(ctx, "Failed to recover orphaned "+
 				"unroll job; VTXO remains stranded until "+
 				"next boot", askErr,

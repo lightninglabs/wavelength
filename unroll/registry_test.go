@@ -1879,6 +1879,10 @@ func TestRegistryEnsureRejectsInlineRestoreWhenResolverMissingKind(
 		return nil, fmt.Errorf("unexpected spawn for %s", target)
 	}
 
+	// The registry keeps the historical dedup for a caller that names no
+	// policy and inherits none: the record already bound to the target
+	// keeps driving it, so the resolver-coverage check inside the inline
+	// restore path is what has to reject this admission.
 	_, err = registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
 		Outpoint: proof.TargetOutpoint(),
 		Trigger:  TriggerCriticalExpiry,

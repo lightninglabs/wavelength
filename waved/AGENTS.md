@@ -249,12 +249,19 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   carrying its durable exit policy) runs **before** the chain resolver is
   `Set()`; the force-exit admissions it drives through the VTXO manager are
   buffered by the `LazyChainResolver` and replayed to the unroll registry the
-  instant the resolver is wired. The registry is first-writer-wins on exit
-  policy, so the generic orphan-job scan (`recoverOrphanedUnrollJobs`) runs
-  **after** `Set()` and is itself policy-carrying: it is handed a per-outpoint
-  exit-policy map (`recoveryExitPolicies`, built from the recovery store) and
-  re-admits each orphaned recovery target under its own vHTLC exit policy
-  rather than mislabeling it as a standard timeout.
+  instant the resolver is wired. The registry binds the first exit policy
+  identity a target is admitted under and rejects a conflicting one, so the
+  generic orphan-job scan (`recoverOrphanedUnrollJobs`) runs **after**
+  `Set()`. Its admissions name no policy: they inherit the identity of an
+  armed recovery obligation through the registry's `ArmedExitPolicy` lookup
+  (`armedRecoveryExitPolicy`), so an orphaned recovery target re-admits under
+  its own vHTLC exit policy rather than being mislabeled as a standard
+  timeout. A scan admission that inherits nothing dedups against the bound
+  record and leaves it in force. A mismatch against the policy already bound
+  to the target is non-fatal only when a status probe confirms a live child.
+  The scan then terminal-fails the conflicting recovery and skips the target.
+  A dormant or unreadable bound record fails the boot gate and preserves the
+  recovery obligation for retry.
 - The chain-resolver→unroll bridge (`ensureUnrollFromExpiring`) maps a VTXO
   `ExpiringNotification`'s trigger and optional exit policy into the registry's
   `EnsureUnrollRequest`. `unrollStartTrigger` converts the string-typed
