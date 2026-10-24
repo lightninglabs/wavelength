@@ -302,6 +302,9 @@ type SpendDetail struct {
 type BlockRegistration struct {
 	// Epochs is a channel that sends an event for each new block connected
 	// to the chain. The channel is buffered to handle bursts of blocks.
+	// Closure ends this registration, including on slow-consumer overflow.
+	// Callers must Cancel and re-register, reconciling current chain state
+	// rather than treating the closed queue's final height as current.
 	Epochs <-chan *BlockEpoch
 
 	// Cancel is a function that can be called to cancel this registration

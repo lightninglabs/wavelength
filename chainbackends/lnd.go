@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -107,6 +108,15 @@ type LNDBackend struct {
 
 	// packageSubmitter optionally provides atomic package relay support.
 	packageSubmitter PackageSubmitter
+
+	// blockMu serializes subscriber changes and lazy upstream ownership.
+	blockMu sync.Mutex
+
+	// blockRun is the shared block stream, present until its reader exits.
+	blockRun *lndBlockRun
+
+	// blocksStopped prevents registrations after backend shutdown.
+	blocksStopped bool
 
 	// Log is an optional logger for this backend. If None, the backend
 	// falls back to extracting a logger from context.
@@ -635,75 +645,6 @@ func (b *LNDBackend) RegisterSpend(ctx context.Context, outpoint *wire.OutPoint,
 	}, nil
 }
 
-// RegisterBlocks registers for new block notifications using lnd's chain
-// notifier. The registration returns a BlockRegistration with a channel for
-// receiving block events.
-func (b *LNDBackend) RegisterBlocks(ctx context.Context) (
-	*chainsource.BlockRegistration, error) {
-
-	b.logger(ctx).InfoS(ctx, "Registering for block epoch notifications")
-
-	// Register with lnd's notifier. Pass nil for the best known block to
-	// get the current tip immediately.
-	event, err := b.notifier.RegisterBlockEpochNtfn(nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to register for blocks: %w", err)
-	}
-
-	// Create a channel to convert lnd's BlockEpoch to our type.
-	epochChan := make(chan *chainsource.BlockEpoch, 10)
-
-	// Start a goroutine to convert and forward block epochs.
-	go func() {
-		defer close(epochChan)
-		defer event.Cancel()
-
-		for {
-			select {
-			case lndEpoch, ok := <-event.Epochs:
-				if !ok {
-					return
-				}
-
-				// Skip epochs with nil hash (shouldn't happen
-				// in practice but defensive check).
-				if lndEpoch.Hash == nil {
-					continue
-				}
-
-				// Extract timestamp if block header is present.
-				var timestamp int64
-				if lndEpoch.BlockHeader != nil {
-					ts := lndEpoch.BlockHeader.Timestamp
-					timestamp = ts.Unix()
-				}
-
-				epoch := &chainsource.BlockEpoch{
-					Hash:      *lndEpoch.Hash,
-					Height:    lndEpoch.Height,
-					Timestamp: timestamp,
-				}
-
-				// Send to our channel, respecting context
-				// cancellation.
-				select {
-				case epochChan <- epoch:
-				case <-ctx.Done():
-					return
-				}
-
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	return &chainsource.BlockRegistration{
-		Epochs: epochChan,
-		Cancel: event.Cancel,
-	}, nil
-}
-
 // Start initializes the LND backend by starting the notifier and fee
 // estimator.
 func (b *LNDBackend) Start() error {
@@ -735,6 +676,8 @@ func (b *LNDBackend) Stop() error {
 		"Stopping LND chain backend")
 
 	var errs []error
+
+	b.stopBlocks()
 
 	// Stop the notifier.
 	if err := b.notifier.Stop(); err != nil {

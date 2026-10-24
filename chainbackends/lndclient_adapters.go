@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/wavelength/chainfees"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/lnrpc/chainrpc"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -476,122 +477,99 @@ func forwardOrderedSpendReorg(ctx context.Context, reorgPing <-chan struct{},
 	}
 }
 
-// RegisterBlockEpochNtfn registers for block epoch notifications using
-// lndclient's ChainNotifier.
+// RegisterBlockEpochNtfn registers directly with the authenticated chainrpc
+// client because lndclient's height-only wrapper discards the event's hash.
+// Reading the hash from the same event also avoids a height lookup racing a
+// reorg. A non-nil bestBlock requests lnd's historical catch-up semantics.
 func (n *LndClientChainNotifier) RegisterBlockEpochNtfn(
 	bestBlock *chainntnfs.BlockEpoch) (*chainntnfs.BlockEpochEvent, error) {
 
+	// The returned Cancel owns this stream, independent of any RPC caller.
 	ctx, cancel := context.WithCancel(context.Background())
-	chainNotifier := n.cfg.LND.ChainNotifier
-	heightChan, errChan, err := chainNotifier.RegisterBlockEpochNtfn(ctx)
-	if err != nil {
+	authCtx, _, client := n.cfg.LND.ChainNotifier.RawClientWithMacAuth(ctx)
+	request := &chainrpc.BlockEpoch{}
+	if bestBlock != nil {
+		if bestBlock.Hash == nil || bestBlock.Height < 0 {
+			cancel()
+
+			return nil, fmt.Errorf("invalid block epoch cursor")
+		}
+		request.Hash = bestBlock.Hash[:]
+		request.Height = uint32(bestBlock.Height)
+	}
+
+	// Bound stream establishment without imposing a lifetime deadline on a
+	// healthy stream. Cancellation interrupts a blocked gRPC registration.
+	timer := time.AfterFunc(lndRegistrationTimeout, cancel)
+	stream, err := client.RegisterBlockEpochNtfn(authCtx, request)
+	if !timer.Stop() {
+		cancel()
+		if err == nil {
+			err = context.DeadlineExceeded
+		}
+	}
+	if err != nil || ctx.Err() != nil {
+		if err == nil {
+			err = ctx.Err()
+		}
 		cancel()
 
 		return nil, fmt.Errorf("register block epoch: %w", err)
 	}
 
-	log := n.logger(ctx)
-	log.InfoS(ctx, "Registered for block epoch notifications")
-
-	// Convert height-only channel to full BlockEpoch channel.
-	epochChan := make(chan *chainntnfs.BlockEpoch, 10)
-
+	epochs := make(chan *chainntnfs.BlockEpoch, lndBlockBufferSize)
+	done := make(chan struct{})
 	go func() {
-		defer close(epochChan)
-		defer log.InfoS(ctx, "Block epoch forwarder goroutine exiting")
+		defer close(done)
+		defer close(epochs)
+		defer cancel()
 
 		for {
-			select {
-			case height, ok := <-heightChan:
-				if !ok {
-					log.InfoS(ctx, "Height channel closed")
-
-					return
-				}
-
-				log.InfoS(ctx, "Received height from lndclient",
-					slog.Int("height", int(height)),
-				)
-
-				// lndclient only provides height, so we need to
-				// fetch the hash via ChainKit.
-				//
-				// TODO(rosabeef): why doesn't lndclient also
-				// give the block height?
-				chainKit := n.cfg.LND.ChainKit
-				blockHash, err := chainKit.GetBlockHash(
-					ctx, int64(height),
-				)
-				if err != nil {
-					if isBlockEpochShutdownError(ctx, err) {
-						log.DebugS(ctx, "Block hash "+
-							"lookup cancelled during "+
-							"subscription shutdown",
-							slog.Any("err", err),
-							slog.Int(
-								"height",
-								int(height),
-							),
-						)
-
-						continue
-					}
-
-					log.WarnS(
+			epoch, err := stream.Recv()
+			if err != nil {
+				if !isBlockEpochShutdownError(ctx, err) {
+					n.logger(ctx).WarnS(
 						ctx,
-						"Failed to get block hash",
+						"Block epoch stream ended",
 						err,
-						slog.Int("height", int(height)),
 					)
-
-					continue
-				}
-
-				epoch := &chainntnfs.BlockEpoch{
-					Height: height,
-					Hash:   &blockHash,
-				}
-
-				select {
-				case epochChan <- epoch:
-				case <-ctx.Done():
-					log.InfoS(
-						ctx, "Context cancelled "+
-							"while sending epoch",
-					)
-
-					return
-				}
-
-			case err, ok := <-errChan:
-				if ok && err != nil {
-					if isBlockEpochShutdownError(ctx, err) {
-						log.DebugS(ctx, "Block epoch "+
-							"subscription cancelled",
-							slog.Any("err", err),
-						)
-					} else {
-						log.WarnS(
-							ctx,
-							"Block epoch error",
-							err,
-						)
-					}
 				}
 
 				return
+			}
 
+			// A malformed event ends the stream so the shared
+			// reader can reconnect from its last valid cursor
+			// rather than skip a block.
+			if epoch == nil ||
+				len(epoch.Hash) != chainhash.HashSize ||
+				epoch.Height > uint32(1<<31-1) {
+
+				n.logger(ctx).WarnS(ctx, "Invalid block epoch",
+					fmt.Errorf("invalid hash length or "+
+						"block height"),
+				)
+
+				return
+			}
+			var hash chainhash.Hash
+			copy(hash[:], epoch.Hash)
+			select {
+			case epochs <- &chainntnfs.BlockEpoch{
+				Height: int32(epoch.Height), Hash: &hash,
+			}:
 			case <-ctx.Done():
-				log.InfoS(ctx, "Context cancelled")
-
 				return
 			}
 		}
 	}()
 
 	return &chainntnfs.BlockEpochEvent{
-		Epochs: epochChan,
-		Cancel: cancel,
+		Epochs: epochs,
+		Cancel: func() {
+			cancel()
+			<-done
+		},
 	}, nil
 }
 

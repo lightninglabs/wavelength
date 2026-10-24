@@ -44,7 +44,10 @@ communication alongside the raw registration API.
 
 - Each monitoring request spawns a dedicated sub-actor (no shared state between
   monitors).
-- Registration channels are buffered.
+- Registration channels are buffered. A closed block queue can represent
+  slow-consumer overflow and an omitted reorg. Conf/spend finality must re-arm
+  and refresh the live tip instead of synthesizing Done from its buffered
+  heights after detecting closure.
 - Confirmation sub-actors support two notification modes: Future-based (blocking
   await) and actor-based (async `Tell` via `NotifyActor`). Callers use the actor
   mode when blocking inside a durable actor transaction is unsafe.

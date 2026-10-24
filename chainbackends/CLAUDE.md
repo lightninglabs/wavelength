@@ -24,8 +24,8 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
   a 15-second per-call timeout and last-good fallback semantics.
 - `LndClientChainNotifier` / `LndClientChainNotifierConfig` — Implements
   `chainntnfs.ChainNotifier` using lndclient. Uses a 15-second registration
-  timeout and goroutine-based forwarding to bridge lndclient's height-only
-  block events to the full `chainntnfs` interface.
+  timeout and forwarding from lndclient's authenticated raw chainrpc client.
+  Block events retain the upstream hash; no `GetBlockHash` lookup is needed.
 - `LNDBackendFromLndClientConfig` — Config struct for building an `LNDBackend`
   from lndclient services (notifier, wallet kit, chain kit).
 - `NewLNDBackendFromLndClient(cfg)` — Factory constructing a full `LNDBackend`
@@ -87,18 +87,26 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
   check. Callers must degrade gracefully when a field is absent rather than
   treating the parse as authoritative, and a Core release that rewords these
   strings silently yields nil — never a wrong number.
-- **A `Canceled` status is only shutdown noise when the owning context is also
-  done.** Round completion stops each VTXO's block subscription, and a block
-  already in flight can race that cancellation, so `GetBlockHash` or the
-  notifier error channel returns `Canceled` while the forwarder exits normally
-  — paging an operator per terminated VTXO is pure noise.
-  `isBlockEpochShutdownError(ctx, err)` demotes these to debug, but it returns
-  false whenever `ctx.Err() == nil`. Do not simplify it to a bare
-  `errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled`
-  check: a `Canceled` arriving from a *live* subscription means the backend
-  dropped it independently, which is actionable and must stay at warning. Every
-  other notifier or block-hash failure remains a warning regardless of context
-  state.
+- `RegisterBlocks` shares one lazy upstream subscription across all local
+  subscribers, including confirmation/spend finality watches. The last
+  cancellation or backend `Stop` joins upstream cleanup before another stream
+  can start. Individual caller contexts only own their local queues.
+- New block subscribers receive the latest observed tip. Live events keep
+  upstream order without height-only deduplication. Reconnect uses the last
+  observed hash/height cursor for lnd's connected-block catch-up. Explicit
+  disconnect signals remain on confirmation/spend notification streams.
+- Each subscriber has a queue of 10 epochs. Overflow closes only that queue;
+  it never silently drops an individual event or stalls healthy subscribers.
+  Chainsource actors reconnect closed registrations; consumers needing a full
+  historical view must reconcile after an overflow or fresh registration.
+- The chainntnfs registration API has no caller context. Remote stream setup
+  is bounded to 15 seconds, so shutdown racing establishment can wait that
+  long. Established stream cancellation joins its forwarding goroutine.
+- `BestBlock` remains a live ChainKit query for remote connections, independent
+  of the shared stream's cached notification tip.
+- A `Canceled` stream error is shutdown noise only when the owning context is
+  cancelled. `isBlockEpochShutdownError` keeps independent backend cancellation
+  actionable; live stream errors remain warnings before the shared reconnect.
 
 ## Deep Docs
 
