@@ -830,8 +830,9 @@ func (m *DurableMailbox[M, R]) handlePoisonMessage(ctx context.Context,
 		dlReason := fmt.Sprintf("poison message (attempts %d/%d): %s",
 			leased.Attempts, leased.MaxAttempts, reason)
 
-		if dlErr := m.cfg.Store.MoveToDeadLetter(
-			ctx, leased.ID, dlReason,
+		if dlErr := moveToDeadLetter(
+			ctx, m.cfg.Store, leased.ID, leased.LeaseToken,
+			dlReason,
 		); dlErr != nil {
 
 			logger(ctx).WarnS(ctx,

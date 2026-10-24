@@ -134,9 +134,11 @@ LIMIT 1;
 
 -- name: AckMailboxMessage :execrows
 -- Acknowledge successful processing. Deletes the message.
--- Validates lease_token to prevent stale acks.
+-- Validates both lease_token and lease lifetime to prevent stale acks.
 DELETE FROM mailbox_messages
-WHERE id = $1 AND lease_token = $2;
+WHERE id = sqlc.arg(id)
+  AND lease_token = sqlc.arg(lease_token)
+  AND lease_until >= sqlc.arg(now_unix);
 
 -- name: AckMailboxMessageByID :execrows
 -- Unfenced acknowledgment used by the leaseless single-worker consume path.
@@ -147,6 +149,13 @@ WHERE id = $1 AND lease_token = $2;
 -- path, which relies on lease_token fencing via AckMailboxMessage.
 DELETE FROM mailbox_messages
 WHERE id = $1;
+
+-- name: LockMailboxMessageForUpdate :one
+-- Serialize a fenced mutation with any current owner before sampling time.
+SELECT id
+FROM mailbox_messages
+WHERE id = $1
+FOR UPDATE;
 
 -- name: NackMailboxMessageByID :execrows
 -- Unfenced redelivery release for the leaseless single-worker consume path.
@@ -172,16 +181,18 @@ WHERE id = $1;
 -- this delivery. The CASE clamp guards the invariant rather than trusting
 -- it: attempts is always >= 1 under a valid lease, but a clamped decrement
 -- can never wrap a corrupt row negative. Validates lease_token to prevent
--- stale postpones. This is the attempt-preserving counterpart to
+-- stale or expired postpones. This is the attempt-preserving counterpart to
 -- NackMailboxMessage, used when a behavior reports "not now" (a postpone)
 -- rather than a failure.
 UPDATE mailbox_messages
 SET
     lease_token = NULL,
     lease_until = NULL,
-    available_at = $3,
+    available_at = sqlc.arg(available_at),
     attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END
-WHERE id = $1 AND lease_token = $2;
+WHERE id = sqlc.arg(id)
+  AND lease_token = sqlc.arg(lease_token)
+  AND lease_until >= sqlc.arg(now_unix);
 
 -- name: PostponeMailboxMessageByID :execrows
 -- Leaseless single-worker counterpart to PostponeMailboxMessage: releases the
@@ -199,20 +210,25 @@ WHERE id = $1;
 -- name: NackMailboxMessage :execrows
 -- Release message for redelivery after retry delay.
 -- Clears lease and sets new available_at.
--- Validates lease_token to prevent stale nacks.
+-- Validates both lease_token and lease lifetime to prevent stale nacks.
 UPDATE mailbox_messages
 SET
     lease_token = NULL,
     lease_until = NULL,
-    available_at = $3
-WHERE id = $1 AND lease_token = $2;
+    available_at = sqlc.arg(available_at)
+WHERE id = sqlc.arg(id)
+  AND lease_token = sqlc.arg(lease_token)
+  AND lease_until >= sqlc.arg(now_unix);
 
 -- name: ExtendMailboxLease :execrows
 -- Extend the lease for long-running message processing.
--- Validates lease_token to prevent stale extensions.
+-- Validates the current lease token and lifetime so an expired owner cannot
+-- revive its lease.
 UPDATE mailbox_messages
-SET lease_until = $3
-WHERE id = $1 AND lease_token = $2;
+SET lease_until = sqlc.arg(lease_until)
+WHERE id = sqlc.arg(id)
+  AND lease_token = sqlc.arg(lease_token)
+  AND lease_until >= sqlc.arg(now_unix);
 
 -- name: GetMailboxMessage :one
 -- Get a specific mailbox message by ID.
@@ -239,6 +255,16 @@ INSERT INTO dead_letters (id, source, actor_id, message_type, payload, failure_r
 SELECT m.id, 'mailbox', m.mailbox_id, m.message_type, m.payload, $2, m.attempts, $3
 FROM mailbox_messages m
 WHERE m.id = $1;
+
+-- name: MoveMailboxToDeadLetterFenced :execrows
+-- Move a failed leased message only while the supplied owner remains live.
+INSERT INTO dead_letters (id, source, actor_id, message_type, payload, failure_reason, attempts, created_at)
+SELECT m.id, 'mailbox', m.mailbox_id, m.message_type, m.payload,
+       sqlc.arg(failure_reason), m.attempts, sqlc.arg(created_at)
+FROM mailbox_messages m
+WHERE m.id = sqlc.arg(id)
+  AND m.lease_token = sqlc.arg(lease_token)
+  AND m.lease_until >= sqlc.arg(now_unix);
 
 -- name: DeleteMailboxMessage :exec
 -- Delete a mailbox message by ID (used after moving to dead letter).
