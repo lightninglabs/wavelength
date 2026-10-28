@@ -15,6 +15,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/baselib/protofsm"
 	"github.com/lightninglabs/wavelength/chainbackends"
@@ -23,7 +24,91 @@ import (
 	"github.com/lightninglabs/wavelength/walletcore"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+// TestUnknownOutputRelease verifies cleanup classification accepts the local
+// sentinel and its RPC encoding without hiding transport or ownership errors.
+func TestUnknownOutputRelease(t *testing.T) {
+	t.Parallel()
+
+	rpcUnknownOutput := status.Error(codes.Unknown, "unknown output")
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "success",
+		},
+		{
+			name: "local unknown output",
+			err:  wtxmgr.ErrUnknownOutput,
+			want: true,
+		},
+		{
+			name: "wrapped local unknown output",
+			err: fmt.Errorf("release: %w",
+				wtxmgr.ErrUnknownOutput),
+			want: true,
+		},
+		{
+			name: "rpc unknown output",
+			err:  rpcUnknownOutput,
+			want: true,
+		},
+		{
+			name: "wrapped rpc unknown output",
+			err:  fmt.Errorf("release: %w", rpcUnknownOutput),
+			want: true,
+		},
+		{
+			name: "ownership mismatch",
+			err:  wtxmgr.ErrOutputUnlockNotAllowed,
+		},
+		{
+			name: "rpc ownership mismatch",
+			err: status.Error(
+				codes.Unknown,
+				wtxmgr.ErrOutputUnlockNotAllowed.Error(),
+			),
+		},
+		{
+			name: "deadline",
+			err:  context.DeadlineExceeded,
+		},
+		{
+			name: "transport failure",
+			err: status.Error(
+				codes.Unavailable, "connection refused",
+			),
+		},
+		{
+			name: "different rpc code",
+			err:  status.Error(codes.Internal, "unknown output"),
+		},
+		{
+			name: "message only mentions unknown output",
+			err: status.Error(
+				codes.Unknown,
+				"database failure reading unknown output",
+			),
+		},
+		{
+			name: "untyped text is not the sentinel",
+			err:  errors.New("unknown output"),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(
+				t, test.want, isUnknownOutputRelease(test.err),
+			)
+		})
+	}
+}
 
 // staticChainSourceRef is a small programmable chainsource actor ref for unit
 // tests that need precise responses.

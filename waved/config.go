@@ -611,8 +611,9 @@ type OORConfig struct {
 
 	// MaxTransientSubmitRetry bounds the cumulative wall-clock time the OOR
 	// FSM keeps re-driving a transient submit rejection
-	// (OOR_REJECT_INPUT_NOT_SPENDABLE or OOR_REJECT_USER_BALANCE) while
-	// awaiting submit acceptance before failing the session terminally. A
+	// (OOR_REJECT_INPUT_NOT_SPENDABLE, OOR_REJECT_USER_BALANCE, or
+	// OOR_REJECT_INTERNAL) while awaiting submit acceptance before failing
+	// the session terminally. A
 	// zero value selects defaultMaxTransientSubmitRetry; a negative value
 	// is rejected by Config.Validate. The config key is shortened to
 	// "maxsubmitretry" so the tagged field line stays within 80 columns.
@@ -627,6 +628,8 @@ type OORConfig struct {
 // chain view simply lagging a block this client already saw) always clears well
 // within the window, while a genuinely-stuck input or a never-draining
 // USER_BALANCE recipient gives up after the cap instead of retrying forever.
+// An OOR_REJECT_INTERNAL fault (e.g. a briefly unavailable operator backing
+// store) is likewise expected to clear well within the window.
 const defaultMaxTransientSubmitRetry = time.Hour
 
 // OORLimitsConfig configures advanced incoming OOR receive safety caps.

@@ -438,6 +438,10 @@ type Server struct {
 	// subsystem is initialized.
 	lazyChainResolver *vtxo.LazyChainResolver
 
+	// serverConn is assigned once during bootstrap, before publishing
+	// serverConnected=true. Concurrent status readers must observe that
+	// publication before reading this field. Shutdown closes the connection
+	// without replacing it.
 	serverConn        *grpc.ClientConn
 	arkClient         arkrpc.ArkServiceClient
 	mailboxClient     mailboxpb.MailboxServiceClient
@@ -935,10 +939,49 @@ func (s *Server) fetchLiveVTXOBalance(ctx context.Context) (btcutil.Amount,
 	return vtxo.SumBalance(descs), nil
 }
 
-// isServerConnected returns the latest mailbox-ingress connectivity signal
-// reported by the daemon runtime.
+// serverConnectionUp composes the two signals behind GetInfo's
+// server_connected: the mailbox-ingress lifecycle signal (ingress started,
+// no incompatibility, not shut down) and, when a direct gRPC connection
+// exists, its live transport state. Without a direct connection (REST
+// transport) there is no transport state to observe, so the ingress signal
+// alone decides, matching monitorOperatorConnection. Extracted as a pure
+// function for tests.
+func serverConnectionUp(ingressUp, hasDirectConn bool,
+	connState connectivity.State) bool {
+
+	if !ingressUp {
+		return false
+	}
+	if !hasDirectConn {
+		return true
+	}
+
+	return connState == connectivity.Ready
+}
+
+// isServerConnected reports whether the daemon's connection to the Ark
+// server is currently up: mailbox ingress is running AND, for a direct
+// gRPC connection, the transport is Ready. A silent network drop is only
+// visible after gRPC detects it; RPC failures alone need not leave Ready.
+// The dialer's operatorKeepaliveParams requests a ping after 30 seconds
+// without activity and closes an unresponsive transport 10 seconds later.
 func (s *Server) isServerConnected() bool {
-	return s.serverConnected.Load()
+	// The ingress flag publishes the connection assigned by asynchronous
+	// wallet bootstrap. Do not read serverConn before observing it: GetInfo
+	// can run while bootstrap is still assigning the connection.
+	if !s.serverConnected.Load() {
+		return false
+	}
+
+	conn := s.serverConn
+	var state connectivity.State
+	if conn != nil {
+		state = conn.GetState()
+	}
+
+	return serverConnectionUp(
+		true, conn != nil, state,
+	)
 }
 
 // setServerConnected updates the mailbox-ingress connectivity signal used by
@@ -962,20 +1005,21 @@ const operatorTermsRefreshTimeout = 30 * time.Second
 // oorTransientRejectRetryDelay is how long the OOR FSM waits before re-driving
 // a submit that the operator rejected with a transient code. The wait only
 // needs to outlast the transient condition clearing — the operator's chain
-// backend catching up to a block this client already saw, or the recipient's
-// mailbox balance draining — typically seconds to a few minutes, so a short
-// delay keeps the swap responsive while being long enough to avoid hammering
-// the operator with resubmits between blocks. The (idempotent) submit is
-// re-driven on this cadence, but the total retrying is now bounded by the
+// backend catching up to a block this client already saw, the recipient's
+// mailbox balance draining, or the operator's internal fault clearing —
+// typically seconds to a few minutes, so a short delay keeps the swap
+// responsive while being long enough to avoid hammering the operator with
+// resubmits between blocks. The (idempotent) submit is re-driven on this
+// cadence, but the total retrying is now bounded by the
 // OORConfig.MaxTransientSubmitRetry cumulative-window cap enforced in the FSM
 // (see handleSubmitOutboxError), so a genuinely-stuck input or a never-draining
 // recipient balance gives up instead of retrying forever.
 const oorTransientRejectRetryDelay = 15 * time.Second
 
 // oorRejectRetry decides how a classified OOR submit rejection is driven
-// through the session FSM. Two typed rejections are transient and retried on
-// the oorTransientRejectRetryDelay cadence (bounded by the FSM's cumulative
-// retry-window cap):
+// through the session FSM. Three typed rejections are transient and retried
+// on the oorTransientRejectRetryDelay cadence (bounded by the FSM's
+// cumulative retry-window cap):
 //
 //   - ErrInputNotSpendable: the operator has not yet caught up to the input's
 //     round-commitment confirmation that this client already observed, so the
@@ -983,6 +1027,9 @@ const oorTransientRejectRetryDelay = 15 * time.Second
 //   - ErrUserBalanceExceeded: the recipient mailbox's aggregate balance is over
 //     the operator's cap, so the same-shape resubmit succeeds once the
 //     recipient's balance drops.
+//   - ErrOperatorInternal: the operator hit a transient internal fault while
+//     validating the package (e.g. a backing store was momentarily
+//     unavailable), so the identical resubmit succeeds once the fault clears.
 //
 // Every other typed rejection (lineage-too-large, output-policy, and
 // unspecified) is terminal for the same submit shape, so it drives the session
@@ -993,6 +1040,9 @@ func oorRejectRetry(classified error) (bool, time.Duration) {
 		return true, oorTransientRejectRetryDelay
 
 	case errors.Is(classified, &oor.ErrUserBalanceExceeded{}):
+		return true, oorTransientRejectRetryDelay
+
+	case errors.Is(classified, &oor.ErrOperatorInternal{}):
 		return true, oorTransientRejectRetryDelay
 
 	default:
@@ -3304,20 +3354,10 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 					rejected,
 				)
 
-				// Most typed rejections are terminal for the
-				// same submit shape (lineage cap, output
-				// policy, balance), so they drive the session
-				// to Failed. An input-not-spendable rejection
-				// is the exception: it is transient, almost
-				// always because the input's round commitment
-				// tx has not yet reached the operator's
-				// confirmation target even though this client
-				// already observed the confirmation. Retrying
-				// the identical submit succeeds once the
-				// operator's chain view catches up, so we mark
-				// it retryable and let the OOR FSM re-drive the
-				// submit after a delay rather than failing the
-				// transfer.
+				// oorRejectRetry decides which typed rejections
+				// are transient and re-driven after a delay;
+				// the rest are terminal for the same submit
+				// shape and drive the session to Failed.
 				retryable, retryAfter := oorRejectRetry(
 					classified,
 				)
@@ -5148,7 +5188,10 @@ func (s *Server) refreshAuthenticatedOperatorTerms(ctx context.Context) error {
 	s.operatorTermsUpdateMu.Lock()
 	defer s.operatorTermsUpdateMu.Unlock()
 
-	if !s.isServerConnected() {
+	// Guard on the raw mailbox-ingress lifecycle signal, not the composed
+	// GetInfo connectivity: this refresh must run whenever ingress is up,
+	// including while the transport is briefly reconnecting.
+	if !s.serverConnected.Load() {
 		return fmt.Errorf("mailbox ingress not running")
 	}
 	if s.ark == nil {

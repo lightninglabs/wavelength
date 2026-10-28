@@ -124,6 +124,19 @@ enum OORRejectCode {
     // chain view catches up, so the client should wait (see server_best_height)
     // and resubmit rather than restructuring the transfer.
     OOR_REJECT_INPUT_NOT_SPENDABLE = 4;
+
+    // OOR_REJECT_INTERNAL indicates the submit failed because of a
+    // transient internal fault on the operator (e.g. one of the operator's
+    // backing stores was momentarily unavailable while validating the
+    // package) rather than because of the package's shape. The submit was
+    // not locked, and nothing about the transfer needs to change: retrying
+    // the same shape succeeds once the operator's internal fault clears, so
+    // the client should wait and resubmit rather than restructuring the
+    // transfer or giving up. Operators return this code instead of
+    // OOR_REJECT_UNSPECIFIED precisely so clients can tell a retryable
+    // internal fault apart from a genuinely ambiguous rejection, which
+    // stays terminal.
+    OOR_REJECT_INTERNAL = 5;
 }
 
 // SubmitPackageRejection carries a typed rejection of an OOR submit.

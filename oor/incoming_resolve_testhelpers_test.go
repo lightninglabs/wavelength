@@ -3,18 +3,21 @@ package oor
 import (
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/stretchr/testify/require"
 )
 
+// buildIncomingResolveResponse creates a signed incoming package and its
+// recipient event for receive-admission tests.
 func buildIncomingResolveResponse(t *testing.T) (
 	*arkrpc.ListOORRecipientEventsByScriptResponse, SessionID, []byte,
-	uint64) {
+	uint64, *btcec.PublicKey) {
 
 	t.Helper()
 
-	arkPSBT, finalCheckpoints, recipients, _, _, _ :=
+	arkPSBT, finalCheckpoints, recipients, _, _, operatorKey :=
 		buildTestIncomingMaterialization(t)
 
 	arkRaw, err := psbtutil.Serialize(arkPSBT)
@@ -44,5 +47,5 @@ func buildIncomingResolveResponse(t *testing.T) (
 			},
 		},
 		NextCursor: 8,
-	}, sessionID, recipient.PkScript, 7
+	}, sessionID, recipient.PkScript, 7, operatorKey
 }

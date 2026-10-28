@@ -317,11 +317,21 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 
 	switch evt := event.(type) {
 	case *SubmitAcceptedEvent:
+		// A malformed accepted response is deterministic. Fail this
+		// attempt so its reserved inputs are released instead of
+		// redelivering the same response indefinitely.
+		reject := func(reason string) (*StateTransition, error) {
+			return handleOutboxError(env, s, &OutboxErrorEvent{
+				OutboxType:  "submit accepted",
+				ErrorReason: reason,
+			})
+		}
+
 		// Point-of-no-return: operator has co-signed checkpoints.
 		//
 		// After a crash, client must re-obtain co-signed bytes.
 		if evt.ArkPSBT == nil || evt.ArkPSBT.UnsignedTx == nil {
-			return nil, fmt.Errorf("ark psbt must be provided")
+			return reject("ark psbt must be provided")
 		}
 
 		if s.ArkPSBT == nil || s.ArkPSBT.UnsignedTx == nil {
@@ -330,17 +340,29 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 
 		stateTxid := s.ArkPSBT.UnsignedTx.TxHash()
 		if evt.SessionID != SessionID(stateTxid) {
-			return nil, fmt.Errorf("submit accepted session id " +
-				"mismatch")
+			return reject("submit accepted session id mismatch")
 		}
 
 		evTxid := evt.ArkPSBT.UnsignedTx.TxHash()
 		if stateTxid != evTxid {
-			return nil, fmt.Errorf("ark txid mismatch")
+			return reject("ark txid mismatch")
 		}
 
 		if len(evt.CoSignedCheckpointPSBTs) == 0 {
-			return nil, fmt.Errorf("co-signed checkpoints required")
+			return reject("co-signed checkpoints required")
+		}
+
+		// Validate the returned Ark PSBT before carrying it into the
+		// finalized package. The txid comparison above does not cover
+		// the input witness data attached by the operator.
+		_, err := oortx.ValidateSubmitPackageSigned(
+			evt.ArkPSBT, evt.CoSignedCheckpointPSBTs,
+		)
+		if err != nil {
+			return reject(
+				fmt.Sprintf("co-signed ark package "+
+					"invalid: %v", err),
+			)
 		}
 
 		checkpoints := evt.CoSignedCheckpointPSBTs
@@ -660,16 +682,16 @@ func handleOutboxError(env *Environment, current State,
 //
 // Unlike the generic handleOutboxError, a retryable error here is bounded by a
 // configurable cumulative retry window (env.MaxTransientSubmitRetry). The
-// operator's transient submit rejections (INPUT_NOT_SPENDABLE and USER_BALANCE)
-// are re-driven on the actor's fixed retry cadence, but only until the window
-// since the first reject elapses. Once the budget is exhausted the session
-// fails terminally via the same path handleOutboxError uses for non-retryable
-// errors (which releases the reserved pre-point-of-no-return input VTXOs), so a
-// genuinely-stuck input or a never-draining UserBalance recipient gives up
-// instead of retrying forever. A zero budget keeps the legacy unbounded
-// behavior, so a directly-constructed Environment without a configured cap
-// still retries as before. Non-retryable errors keep handleOutboxError's
-// immediate-terminal behavior.
+// operator's transient submit rejections (INPUT_NOT_SPENDABLE, USER_BALANCE,
+// and INTERNAL) are re-driven on the actor's fixed retry cadence, but only
+// until the window since the first reject elapses. Once the budget is exhausted
+// the session fails terminally via the same path handleOutboxError uses for
+// non-retryable errors (which releases the reserved pre-point-of-no-return
+// input VTXOs), so a genuinely-stuck input or a never-draining UserBalance
+// recipient gives up instead of retrying forever. A zero budget keeps the
+// legacy unbounded behavior, so a directly-constructed Environment without a
+// configured cap still retries as before. Non-retryable errors keep
+// handleOutboxError's immediate-terminal behavior.
 //
 // The transition never calls time.Now() directly: the current time comes from
 // env.Now() so the FSM stays deterministic under an injected clock. The

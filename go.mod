@@ -61,6 +61,7 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.11
+	gopkg.in/errgo.v1 v1.0.1
 	gopkg.in/macaroon-bakery.v2 v2.3.0
 	gopkg.in/macaroon.v2 v2.1.0
 	modernc.org/sqlite v1.59.0
@@ -219,7 +220,6 @@ require (
 	golang.org/x/tools v0.49.0 // indirect
 	google.golang.org/genproto v0.0.0-20250603155806-513f23925822 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d // indirect
-	gopkg.in/errgo.v1 v1.0.1 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

@@ -40,9 +40,9 @@ convert between the proto wire types and domain types (`psbt.Packet`,
   both read as `FlowVersionV1`; never renumber existing version constants.
 - `ValidateFlowVersion` must reject any version this build does not
   understand — fail closed on unknown values arriving from a counterparty.
-- `co_signed_ark_psbt` in `SubmitPackageSuccess` is additive: treat empty
-  bytes as "operator hasn't upgraded yet," not a parse error, to keep rolling
-  upgrades working.
+- `co_signed_ark_psbt` in `SubmitPackageSuccess` is additive: the decoder
+  accepts empty bytes, while the OOR session requires a completed Ark PSBT
+  before checkpoint signing.
 - Regenerate wire stubs from `oorwire.proto` via `make rpc`; hand-edit only
   `payloads.go` and `version.go`, never the generated `*.pb.go` files.
 

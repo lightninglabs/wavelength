@@ -19,6 +19,45 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// TestDispatchIdempotencyKey reads immutable dispatch evidence independently of
+// the mutable session registry, including the display-to-storage byte order.
+func TestDispatchIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	database := db.NewTestDB(t)
+	rpc := NewRPCServer(&Server{db: database, log: btclog.Disabled})
+	id := chainhash.Hash{1, 2, 3, 4}
+	key := "in-swap-funding:" + strings.Repeat("ab", 32)
+	require.NoError(
+		t,
+		database.InsertOORDispatchAttempt(
+			ctx, sqlc.InsertOORDispatchAttemptParams{
+				IdempotencyKey: key,
+				SessionID:      id[:],
+				CreatedAt:      100,
+			},
+		),
+	)
+
+	got, err := rpc.DispatchIdempotencyKey(ctx, id.String())
+	require.NoError(t, err)
+	require.Equal(t, key, got)
+	got, err = rpc.DispatchIdempotencyKey(ctx, chainhash.Hash{9}.String())
+	require.NoError(t, err)
+	require.Empty(t, got)
+
+	for _, invalid := range []string{"", "not-hex"} {
+		_, err := rpc.DispatchIdempotencyKey(ctx, invalid)
+		require.Equal(t, codes.InvalidArgument, status.Code(err))
+	}
+
+	withoutDB := NewRPCServer(&Server{log: btclog.Disabled})
+	got, err = withoutDB.DispatchIdempotencyKey(ctx, id.String())
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
 // TestOORStatusRPCPagination verifies default and explicit pages, terminal
 // lookahead, filters after artifact override, and direct normalized lookup.
 // Registry status is durable, so it remains visible before actor startup.

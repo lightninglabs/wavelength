@@ -1013,14 +1013,15 @@ func admitTopupPay(t *testing.T, b *opBehavior, store Store) {
 }
 
 // TestPayTopupAdmissionRejectionFails asserts that a top-up the daemon refuses
-// to fund, either for lack of spendable funds or for locked liquidity with no
-// earlier attempt of this operation behind it, terminal-fails the operation
-// instead of leaving it to be redelivered and paid after the caller gave up.
+// to fund, for lack of spendable funds, for locked liquidity, or for
+// sub-minimum change, with no earlier attempt of this operation behind it,
+// terminal-fails the operation instead of leaving it to be redelivered and
+// paid after the caller gave up.
 func TestPayTopupAdmissionRejectionFails(t *testing.T) {
 	t.Parallel()
 
 	for _, code := range []codes.Code{
-		codes.ResourceExhausted, codes.Aborted,
+		codes.ResourceExhausted, codes.Aborted, codes.OutOfRange,
 	} {
 		t.Run(code.String(), func(t *testing.T) {
 			t.Parallel()
@@ -1053,24 +1054,37 @@ func TestPayTopupAdmissionRejectionFails(t *testing.T) {
 	}
 }
 
-// TestPayTopupAdoptsOwnInFlightAttempt asserts that a locked-liquidity
-// rejection caused by this operation's own earlier accepted send, whose
-// response was lost, is not failed: the existing-only probe finds the
-// transfer and the operation adopts it.
+// TestPayTopupAdoptsOwnInFlightAttempt asserts that an admission rejection
+// does not fail an operation whose earlier send was accepted but lost its
+// response: the existing-only probe finds and adopts that transfer.
 func TestPayTopupAdoptsOwnInFlightAttempt(t *testing.T) {
 	t.Parallel()
 
-	store := newFakeStore()
-	server, daemon := newFakeServer(), newFakeDaemon()
-	daemon.sendErr = status.Error(codes.Aborted, "liquidity locked")
-	daemon.accepted["pay:abc"] = true
-	b := testBehavior("op1", store, server, daemon)
-	admitTopupPay(t, b, store)
+	for _, code := range []codes.Code{
+		codes.Aborted, codes.ResourceExhausted, codes.OutOfRange,
+	} {
+		t.Run(code.String(), func(t *testing.T) {
+			t.Parallel()
 
-	require.NoError(t, driveTurn(b, &fakeExec{}))
-	require.False(t, b.terminalCommitted)
-	require.Equal(t, string(StateTopupAwaitingCredit), b.rec.State)
-	require.Equal(t, "oor-pay:abc", b.rec.OORSessionID)
+			store := newFakeStore()
+			server, daemon := newFakeServer(), newFakeDaemon()
+			daemon.sendErr = status.Error(
+				code, "selection rejected",
+			)
+			daemon.accepted["pay:abc"] = true
+			b := testBehavior("op1", store, server, daemon)
+			admitTopupPay(t, b, store)
+
+			require.NoError(t, driveTurn(b, &fakeExec{}))
+			require.False(t, b.terminalCommitted)
+			require.Equal(
+				t, string(StateTopupAwaitingCredit),
+				b.rec.State,
+			)
+			require.Equal(t, "oor-pay:abc", b.rec.OORSessionID)
+			require.Equal(t, 1, daemon.sendOORCalls["pay:abc"])
+		})
+	}
 }
 
 // TestPayTopupTransportErrorStaysRetryable asserts that an ambiguous send

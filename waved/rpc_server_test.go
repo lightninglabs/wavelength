@@ -78,6 +78,13 @@ func TestVTXOAdmissionCode(t *testing.T) {
 		),
 	)
 	require.Equal(
+		t, codes.OutOfRange,
+		vtxoAdmissionCode(
+			fmt.Errorf("select and reserve: %w",
+				vtxo.ErrChangeBelowMin),
+		),
+	)
+	require.Equal(
 		t, codes.Internal,
 		vtxoAdmissionCode(
 			errors.New("actor system unavailable"),

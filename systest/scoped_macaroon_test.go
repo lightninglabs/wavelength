@@ -17,6 +17,8 @@ import (
 	"github.com/lightningnetwork/lnd/macaroons"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // scopedMacaroonWalletServer provides successful handlers behind the real
@@ -243,6 +245,13 @@ func TestScopedPaymentMacaroon(t *testing.T) {
 			err := call()
 			require.Error(t, err)
 			require.Contains(t, err.Error(), "permission denied")
+
+			// The denial must carry PermissionDenied so the CLI
+			// exits with its auth code and the REST gateway
+			// answers 403, not Unknown and 500.
+			require.Equal(
+				t, codes.PermissionDenied, status.Code(err),
+			)
 		})
 	}
 }

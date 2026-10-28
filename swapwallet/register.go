@@ -88,6 +88,9 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 		ChainParams:    chainParams,
 		ActivityStore:  cfg.ActivityStore,
 	}
+	if dispatch, ok := coreRPC.(OORDispatchLookup); ok {
+		deps.OORDispatch = dispatch
+	}
 	if rpcServer != nil {
 		deps.Log = rpcServer.SubLogger(waved.WalletRPCSubsystem)
 	}

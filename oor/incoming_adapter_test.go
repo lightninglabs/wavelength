@@ -41,7 +41,9 @@ func TestIncomingTransferEventFromResponseAcceptsValidCheckpointWitness(
 
 	t.Parallel()
 
-	resp, sessionID, _, recipientEventID := buildIncomingResolveResponse(t)
+	resp, sessionID, _, recipientEventID, _ := buildIncomingResolveResponse(
+		t,
+	)
 
 	event, err := IncomingTransferEventFromResponse(
 		sessionID, recipientEventID, resp,
@@ -60,7 +62,9 @@ func TestIncomingTransferEventFromResponseRejectsInvalidCheckpointWitness(
 
 	t.Parallel()
 
-	resp, sessionID, _, recipientEventID := buildIncomingResolveResponse(t)
+	resp, sessionID, _, recipientEventID, _ := buildIncomingResolveResponse(
+		t,
+	)
 	checkpoint, err := psbtutil.Parse(resp.Events[0].CheckpointPsbts[0])
 	require.NoError(t, err)
 
@@ -87,7 +91,9 @@ func TestIncomingTransferEventFromResponseRejectsWrongCheckpointPrevout(
 
 	t.Parallel()
 
-	resp, sessionID, _, recipientEventID := buildIncomingResolveResponse(t)
+	resp, sessionID, _, recipientEventID, _ := buildIncomingResolveResponse(
+		t,
+	)
 	checkpoint, err := psbtutil.Parse(resp.Events[0].CheckpointPsbts[0])
 	require.NoError(t, err)
 	require.NotNil(t, checkpoint.Inputs[0].WitnessUtxo)
@@ -110,7 +116,9 @@ func TestIncomingTransferEventFromResponseRejectsInvalidControlBlock(
 
 	t.Parallel()
 
-	resp, sessionID, _, recipientEventID := buildIncomingResolveResponse(t)
+	resp, sessionID, _, recipientEventID, _ := buildIncomingResolveResponse(
+		t,
+	)
 	checkpoint, err := psbtutil.Parse(resp.Events[0].CheckpointPsbts[0])
 	require.NoError(t, err)
 	require.NotEmpty(t, checkpoint.Inputs[0].TaprootLeafScript)

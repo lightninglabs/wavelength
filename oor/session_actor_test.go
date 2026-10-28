@@ -960,14 +960,88 @@ func TestSessionActorResumeIncomingResolving(t *testing.T) {
 	require.IsType(t, &ReceiveResolving{}, state)
 }
 
-// TestSessionActorSubmitAcceptedNilArkPSBTEnrichment verifies a server-push
-// SubmitAcceptedEvent that does not echo the ArkPSBT back is enriched from the
-// AwaitingSubmitAccepted state, so the session advances instead of failing
-// against operators that omit co_signed_ark_psbt from the response.
-func TestSessionActorSubmitAcceptedNilArkPSBTEnrichment(t *testing.T) {
+// TestSessionActorSubmitAcceptedRequiresSignedArkPSBT verifies a submit
+// response must provide a spendable Ark PSBT before checkpoint signing starts.
+func TestSessionActorSubmitAcceptedRequiresSignedArkPSBT(t *testing.T) {
 	t.Parallel()
 
-	ctx := t.Context()
+	b, submitMsg, _, _ := newSubmitAcceptedActorFixture(t)
+	var released []wire.OutPoint
+	b.cfg.SpendReleaser = func(_ context.Context, ops []wire.OutPoint,
+		_ map[wire.OutPoint]uint64) error {
+
+		released = append(released, ops...)
+
+		return nil
+	}
+
+	res := b.dispatch(t.Context(), &DriveEventRequest{
+		SessionID: b.sessionID,
+		Event: &SubmitAcceptedEvent{
+			SessionID:               b.sessionID,
+			ArkPSBT:                 nil,
+			CoSignedCheckpointPSBTs: submitMsg.CheckpointPSBTs,
+		},
+	})
+	require.True(t, res.IsOk(), res.Err())
+	require.Empty(t, b.pendingTransport)
+	require.Equal(t, []wire.OutPoint{
+		submitMsg.TransferInputs[0].VTXO.Outpoint,
+	}, released)
+	state, err := b.fsm.CurrentState()
+	require.NoError(t, err)
+	failed, ok := state.(*Failed)
+	require.True(t, ok)
+	require.True(t, failed.PrePONR)
+	require.Contains(t, failed.Reason, "ark psbt must be provided")
+}
+
+// TestSessionActorIgnoresLateSubmitAccepted verifies a duplicate response
+// after checkpoint signing does not restart the submit phase.
+func TestSessionActorIgnoresLateSubmitAccepted(t *testing.T) {
+	t.Parallel()
+
+	b, submitMsg, operatorSigner, operatorKey :=
+		newSubmitAcceptedActorFixture(t)
+	require.NoError(
+		t,
+		coSignArkPSBTForTest(
+			operatorSigner, operatorKey.PubKey(), submitMsg.ArkPSBT,
+		),
+	)
+
+	res := b.dispatch(t.Context(), &DriveEventRequest{
+		SessionID: b.sessionID,
+		Event: &SubmitAcceptedEvent{
+			SessionID:               b.sessionID,
+			ArkPSBT:                 submitMsg.ArkPSBT,
+			CoSignedCheckpointPSBTs: submitMsg.CheckpointPSBTs,
+		},
+	})
+	require.True(t, res.IsOk(), res.Err())
+	state, err := b.fsm.CurrentState()
+	require.NoError(t, err)
+	require.IsType(t, &AwaitingFinalizeAccepted{}, state)
+
+	b.pendingTransport = b.pendingTransport[:0]
+	res = b.dispatch(t.Context(), &DriveEventRequest{
+		SessionID: b.sessionID,
+		Event: &SubmitAcceptedEvent{
+			SessionID: b.sessionID,
+			ArkPSBT:   nil,
+		},
+	})
+	require.True(t, res.IsOk(), res.Err())
+	require.Empty(t, b.pendingTransport)
+	state, err = b.fsm.CurrentState()
+	require.NoError(t, err)
+	require.IsType(t, &AwaitingFinalizeAccepted{}, state)
+}
+
+func newSubmitAcceptedActorFixture(t *testing.T) (*sessionBehavior,
+	*SendSubmitPackageRequest, input.Signer, *btcec.PrivateKey) {
+
+	t.Helper()
 
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
@@ -1012,7 +1086,7 @@ func TestSessionActorSubmitAcceptedNilArkPSBTEnrichment(t *testing.T) {
 
 	// Admission turn: builds the deterministic package, signs the Ark PSBT
 	// inline, and collects the submit transport.
-	res := b.dispatch(ctx, &StartTransferRequest{
+	res := b.dispatch(t.Context(), &StartTransferRequest{
 		Policy:     policy,
 		Inputs:     inputs,
 		Recipients: recipients,
@@ -1035,61 +1109,11 @@ func TestSessionActorSubmitAcceptedNilArkPSBTEnrichment(t *testing.T) {
 		),
 	)
 
-	// Server-push turn: the event carries no ArkPSBT, matching operators
-	// whose submit response omits co_signed_ark_psbt.
 	b.pendingTransport = b.pendingTransport[:0]
 	b.commitWork = b.commitWork[:0]
 	b.postCommit = b.postCommit[:0]
 
-	res = b.dispatch(ctx, &DriveEventRequest{
-		SessionID: b.sessionID,
-		Event: &SubmitAcceptedEvent{
-			SessionID:               b.sessionID,
-			ArkPSBT:                 nil,
-			CoSignedCheckpointPSBTs: submitMsg.CheckpointPSBTs,
-		},
-	})
-	require.True(t, res.IsOk(), res.Err())
-
-	// Enrichment plus inline checkpoint signing advance the session to
-	// AwaitingFinalizeAccepted with the canonical ArkPSBT carried over.
-	state, err := b.fsm.CurrentState()
-	require.NoError(t, err)
-	finalize, ok := state.(*AwaitingFinalizeAccepted)
-	require.True(t, ok, "expected AwaitingFinalizeAccepted, got %T", state)
-	require.NotNil(t, finalize.ArkPSBT)
-
-	require.Len(t, b.pendingTransport, 1)
-	finalizeTransport := b.pendingTransport[0]
-	finalizeWrap, ok :=
-		finalizeTransport.(*serverconn.SendClientEventRequest)
-	require.True(t, ok)
-	require.IsType(t, &SendFinalizePackageRequest{}, finalizeWrap.Message)
-
-	// A redelivered nil-ArkPSBT SubmitAcceptedEvent against the advanced
-	// state must be a clean no-op ack, not an enrichment error: an
-	// at-least-once operator can re-push the same accept after a reconnect.
-	// Without this the duplicate would Nack and retry to the dead-letter
-	// against the deterministic, durable FSM.
-	b.pendingTransport = b.pendingTransport[:0]
-	b.commitWork = b.commitWork[:0]
-	b.postCommit = b.postCommit[:0]
-
-	res = b.dispatch(ctx, &DriveEventRequest{
-		SessionID: b.sessionID,
-		Event: &SubmitAcceptedEvent{
-			SessionID:               b.sessionID,
-			ArkPSBT:                 nil,
-			CoSignedCheckpointPSBTs: submitMsg.CheckpointPSBTs,
-		},
-	})
-	require.True(t, res.IsOk(), res.Err())
-
-	// The FSM stays parked in AwaitingFinalizeAccepted and emits nothing.
-	state, err = b.fsm.CurrentState()
-	require.NoError(t, err)
-	require.IsType(t, &AwaitingFinalizeAccepted{}, state)
-	require.Empty(t, b.pendingTransport)
+	return b, submitMsg, operatorSigner, operatorKey
 }
 
 // TestSessionActorReopensAttemptlessFailedOutgoing verifies a legacy/keyless

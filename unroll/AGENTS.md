@@ -273,6 +273,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
 
 ## Invariants
 
+- **Conflicted exit cleanup outlives the terminal child.** After a source
+  conflict, registry-owned workers retry cancellation with the same subscriber
+  ID until txconfirm acknowledges it or the registry stops. A timed-out Ask
+  may still complete later, so retries must be idempotent. Remove a wallet
+  transaction only when txconfirm reports no other subscriber. Each removal
+  has its own deadline and up to three attempts after an ambiguous failure.
 - **Persist-before-broadcast.** `startSweep` stages the signed candidate and
   prior candidate history before cleanup or `txconfirm.Ask`. A restart or
   route retry reuses that staged transaction and wallet destination.

@@ -1160,7 +1160,7 @@ func TestSelectAndReserveSpendRejectsUnavoidableDustChange(t *testing.T) {
 		MinChangeAmount: 5000,
 	})
 	_, err := result.Unpack()
-	require.Error(t, err)
+	require.ErrorIs(t, err, ErrChangeBelowMin)
 	require.Contains(
 		t, err.Error(),
 		"change 1400 is below minimum change amount 5000",
@@ -1176,6 +1176,36 @@ func TestSelectAndReserveSpendRejectsUnavoidableDustChange(t *testing.T) {
 		_, ok = ref.state.(*LiveState)
 		require.True(t, ok, "expected LiveState, got %T", ref.state)
 	}
+}
+
+// TestSelectAndReserveSpendExactOutpointsRejectsDustChange verifies that
+// exact inputs whose total leaves sub-minimum change fail with the typed
+// sentinel before any of them is reserved.
+func TestSelectAndReserveSpendExactOutpointsRejectsDustChange(t *testing.T) {
+	t.Parallel()
+
+	vtxo1 := makeDescriptor(t, 10_000, 0)
+
+	mgr, store := newTestManager(t, []*Descriptor{vtxo1})
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{vtxo1}, nil)
+
+	result := mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
+		TargetAmount:    9031,
+		MinChangeAmount: 1000,
+		Outpoints:       []wire.OutPoint{vtxo1.Outpoint},
+	})
+	_, err := result.Unpack()
+	require.ErrorIs(t, err, ErrChangeBelowMin)
+	require.Contains(
+		t, err.Error(),
+		"change 969 is below minimum change amount 1000",
+	)
+
+	ref, ok := mgr.actors[vtxo1.Outpoint].(*mockVTXOActorRef)
+	require.True(t, ok)
+	require.IsType(t, &LiveState{}, ref.state)
 }
 
 // TestSelectAndReserveSpendInsufficientFunds verifies that selection fails

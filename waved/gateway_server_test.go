@@ -3,6 +3,7 @@ package waved
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"github.com/lightninglabs/wavelength/gateway"
 	"github.com/lightninglabs/wavelength/rpcauth"
 	"github.com/lightninglabs/wavelength/waverpc"
+	"github.com/lightningnetwork/lnd/macaroons"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -29,7 +31,8 @@ func TestMacaroonHeaderMatcher(t *testing.T) {
 }
 
 // TestGatewayForwardsMacaroonToGRPC verifies a REST request's macaroon header
-// reaches the daemon gRPC macaroon interceptor.
+// reaches the daemon gRPC macaroon interceptor, and that authorization
+// failures surface as 401 or 403 rather than a generic 500.
 func TestGatewayForwardsMacaroonToGRPC(t *testing.T) {
 	t.Parallel()
 
@@ -39,20 +42,22 @@ func TestGatewayForwardsMacaroonToGRPC(t *testing.T) {
 	}
 	tempDir := t.TempDir()
 	macaroonPath := filepath.Join(tempDir, "admin.macaroon")
-	authService := newTestMacaroonService(
-		t, macaroonPath, "waved",
-		map[string][]bakery.Op{
-			waverpc.DaemonService_GetInfo_FullMethodName: {
-				readOp,
-			},
+	permissions := map[string][]bakery.Op{
+		waverpc.DaemonService_GetInfo_FullMethodName: {
+			readOp,
 		},
+	}
+	authService := newTestMacaroonService(
+		t, macaroonPath, "waved", permissions,
 	)
 	macaroonUnaryInterceptor, _, err := authService.Interceptors()
 	require.NoError(t, err)
 
 	grpcServer := grpc.NewServer(
 		grpc.UnaryInterceptor(
-			macaroonUnaryInterceptor,
+			macaroonStatusUnaryInterceptor(
+				macaroonUnaryInterceptor, permissions,
+			),
 		),
 	)
 	waverpc.RegisterDaemonServiceServer(
@@ -85,7 +90,33 @@ func TestGatewayForwardsMacaroonToGRPC(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	require.NotEqual(t, http.StatusOK, rec.Code)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+
+	// A valid macaroon that lacks the required op is a permission failure,
+	// not an authentication failure.
+	idCtx := macaroons.ContextWithRootKeyID(
+		t.Context(), macaroons.DefaultRootKeyID,
+	)
+	scoped, err := authService.NewMacaroon(
+		idCtx, macaroons.DefaultRootKeyID, bakery.Op{
+			Entity: entityVTXO,
+			Action: "read",
+		},
+	)
+	require.NoError(t, err)
+	scopedBytes, err := scoped.M().MarshalBinary()
+	require.NoError(t, err)
+	req = httptest.NewRequest(
+		http.MethodPost, "/v1/daemon/get-info",
+		bytes.NewBufferString("{}"),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(
+		rpcauth.MacaroonMetadataKey, hex.EncodeToString(scopedBytes),
+	)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusForbidden, rec.Code)
 
 	macHex, err := rpcauth.HexFromFile(
 		macaroonPath)

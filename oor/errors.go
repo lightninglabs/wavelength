@@ -131,6 +131,37 @@ func (e *ErrInputNotSpendable) Is(target error) bool {
 	return ok
 }
 
+// ErrOperatorInternal is the client-facing typed error returned when the
+// operator rejects an OOR submit because of a transient internal fault on
+// the operator (e.g. one of its backing stores was momentarily unavailable
+// while validating the package) rather than because of the package's
+// shape.
+//
+// Like ErrInputNotSpendable and ErrUserBalanceExceeded, and unlike
+// ErrOutputPolicyViolation, this is NOT terminal for the same submit shape:
+// nothing about the transfer needs to change, and the identical resubmit
+// succeeds once the operator's internal fault clears. Callers should wait
+// and retry rather than restructuring the transfer.
+//
+// The wrapped Reason carries the operator's human-readable explanation and
+// is suitable for surfacing directly in UX.
+type ErrOperatorInternal struct {
+	Reason string
+}
+
+// Error returns a human-readable description of the rejection cause.
+func (e *ErrOperatorInternal) Error() string {
+	return fmt.Sprintf("oor operator internal fault: %s", e.Reason)
+}
+
+// Is reports whether target is also an *ErrOperatorInternal, supporting the
+// standard errors.Is comparison without forcing callers to compare reasons.
+func (e *ErrOperatorInternal) Is(target error) bool {
+	_, ok := target.(*ErrOperatorInternal)
+
+	return ok
+}
+
 // ErrInvalidAncestry is the typed error returned by the receive-side
 // ancestry cross-check when an operator-supplied IncomingVTXOMetadata
 // fails one of the structural invariants required to bind the produced
@@ -194,6 +225,11 @@ func ClassifySubmitError(err error) error {
 			return &ErrInputNotSpendable{
 				Reason:           rejected.Reason,
 				ServerBestHeight: rejected.ServerBestHeight,
+			}
+
+		case oorpb.OORRejectCode_OOR_REJECT_INTERNAL:
+			return &ErrOperatorInternal{
+				Reason: rejected.Reason,
 			}
 
 		case oorpb.OORRejectCode_OOR_REJECT_UNSPECIFIED:

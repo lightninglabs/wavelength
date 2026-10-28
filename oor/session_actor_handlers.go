@@ -138,13 +138,6 @@ func (b *sessionBehavior) handleDriveEvent(ctx context.Context,
 		)
 	}
 
-	// An inbound SubmitAcceptedEvent may be missing the ArkPSBT (operators
-	// that do not echo co_signed_ark_psbt back); enrich it from the current
-	// state before the FSM transition rejects the nil packet.
-	if err := b.enrichSubmitAccepted(req.Event); err != nil {
-		return fn.Err[ActorResp](err)
-	}
-
 	// Capture the finalize-state context before applying so the finalized
 	// package and the ledger emission can be staged.
 	finalizeState, err := b.captureFinalizeState(req.Event)
@@ -172,44 +165,6 @@ func (b *sessionBehavior) handleDriveEvent(ctx context.Context,
 	}
 
 	return fn.Ok[ActorResp](&DriveEventResponse{})
-}
-
-// enrichSubmitAccepted populates a SubmitAcceptedEvent's missing ArkPSBT from
-// the current session state. The canonical ArkPSBT lives in the
-// AwaitingSubmitAccepted state, set when the client built and sent the submit
-// package; the server response proto is not required to echo it back, so the
-// dispatch adapter may construct the event with only the session id and the
-// co-signed checkpoints.
-func (b *sessionBehavior) enrichSubmitAccepted(event Event) error {
-	submitAccepted, ok := event.(*SubmitAcceptedEvent)
-	if !ok || submitAccepted.ArkPSBT != nil {
-		return nil
-	}
-
-	state, err := b.fsm.CurrentState()
-	if err != nil {
-		return fmt.Errorf("get current state for ark psbt "+
-			"enrichment: %w", err)
-	}
-
-	awaitingSubmit, ok := state.(*AwaitingSubmitAccepted)
-	if !ok {
-
-		// The canonical ArkPSBT only exists in AwaitingSubmitAccepted.
-		// Any other state means the FSM has already advanced past
-		// submit, so this nil-ArkPSBT event is a stale duplicate (an
-		// at-least-once operator redelivering its push after a
-		// reconnect, with the dedup TTL missed). Leave the event
-		// unenriched and let apply() discard it as an unexpected event
-		// (a clean no-op ack) rather than erroring, which would Nack
-		// and retry to the dead-letter against the deterministic,
-		// durable FSM.
-		return nil
-	}
-
-	submitAccepted.ArkPSBT = awaitingSubmit.ArkPSBT
-
-	return nil
 }
 
 // captureFinalizeState snapshots the AwaitingFinalizeAccepted state before a

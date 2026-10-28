@@ -100,12 +100,14 @@ func (topupCreatingState) ProcessEvent(ctx context.Context, _ CreditEvent,
 
 // isFundingAdmissionRejected reports a daemon send rejection that happens
 // before any input is selected or locked: insufficient spendable funds
-// (ResourceExhausted) or liquidity held by another in-flight operation
-// (Aborted). Neither guarantees by itself that this operation has not already
-// funded the top-up, since the lock may belong to its own earlier attempt.
+// (ResourceExhausted), liquidity held by another in-flight operation
+// (Aborted), or a selection whose change would fall below the minimum VTXO
+// amount (OutOfRange). None guarantees by itself that this operation has not
+// already funded the top-up, since the lock may belong to its own earlier
+// attempt.
 func isFundingAdmissionRejected(err error) bool {
 	switch status.Code(err) {
-	case codes.ResourceExhausted, codes.Aborted:
+	case codes.ResourceExhausted, codes.Aborted, codes.OutOfRange:
 		return true
 
 	default:
@@ -117,13 +119,14 @@ func isFundingAdmissionRejected(err error) bool {
 // top-up. The op key is the OOR idempotency key, so a re-issued send never
 // produces a second transfer.
 //
-// The daemon can refuse the send for lack of spendable funds or because the
-// liquidity is locked. Retrying would leave the operation pending until funds
-// appear and then pay an invoice the caller gave up on long before. The
-// refusal is therefore terminal, unless this operation's own earlier send was
-// accepted and only its response was lost: that attempt holds the very locks
-// that cause the refusal, so an existing-only probe on the same key decides
-// whether to adopt the transfer or fail.
+// The daemon can refuse the send for lack of spendable funds, because the
+// liquidity is locked, or because the top-up would leave sub-minimum change.
+// Retrying would leave the operation pending until funds appear and then pay
+// an invoice the caller gave up on long before. The refusal is therefore
+// terminal, unless this operation's own earlier send was accepted and only its
+// response was lost: that attempt holds the very locks that cause the refusal,
+// so an existing-only probe on the same key decides whether to adopt the
+// transfer or fail.
 func (topupFundingState) ProcessEvent(ctx context.Context, _ CreditEvent,
 	b *opBehavior) (*CreditTransition, error) {
 

@@ -108,12 +108,22 @@ func (s *Server) localRPCServerOptions(ctx context.Context) (
 				"interceptors: %w", err)
 		}
 
+		// The lnd interceptors return plain errors, which gRPC reports
+		// as Unknown. Wrap them so authorization failures surface as
+		// PermissionDenied or Unauthenticated, which the CLI and the
+		// REST gateway map to an auth exit code and to 403 or 401.
 		unaryInterceptors = append(
-			unaryInterceptors, macaroonUnaryInterceptor,
+			unaryInterceptors, macaroonStatusUnaryInterceptor(
+				macaroonUnaryInterceptor, wavedRPCPermissions,
+			),
 		)
 		serverOptions = append(
-			serverOptions, grpc.ChainStreamInterceptor(
-				macaroonStreamInterceptor,
+			serverOptions,
+			grpc.ChainStreamInterceptor(
+				macaroonStatusStreamInterceptor(
+					macaroonStreamInterceptor,
+					wavedRPCPermissions,
+				),
 			),
 		)
 	}

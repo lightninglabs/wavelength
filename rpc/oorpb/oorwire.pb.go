@@ -62,6 +62,18 @@ const (
 	// chain view catches up, so the client should wait (see server_best_height)
 	// and resubmit rather than restructuring the transfer.
 	OORRejectCode_OOR_REJECT_INPUT_NOT_SPENDABLE OORRejectCode = 4
+	// OOR_REJECT_INTERNAL indicates the submit failed because of a
+	// transient internal fault on the operator (e.g. one of the operator's
+	// backing stores was momentarily unavailable while validating the
+	// package) rather than because of the package's shape. The submit was
+	// not locked, and nothing about the transfer needs to change: retrying
+	// the same shape succeeds once the operator's internal fault clears, so
+	// the client should wait and resubmit rather than restructuring the
+	// transfer or giving up. Operators return this code instead of
+	// OOR_REJECT_UNSPECIFIED precisely so clients can tell a retryable
+	// internal fault apart from a genuinely ambiguous rejection, which
+	// stays terminal.
+	OORRejectCode_OOR_REJECT_INTERNAL OORRejectCode = 5
 )
 
 // Enum value maps for OORRejectCode.
@@ -72,6 +84,7 @@ var (
 		2: "OOR_REJECT_OUTPUT_POLICY",
 		3: "OOR_REJECT_USER_BALANCE",
 		4: "OOR_REJECT_INPUT_NOT_SPENDABLE",
+		5: "OOR_REJECT_INTERNAL",
 	}
 	OORRejectCode_value = map[string]int32{
 		"OOR_REJECT_UNSPECIFIED":         0,
@@ -79,6 +92,7 @@ var (
 		"OOR_REJECT_OUTPUT_POLICY":       2,
 		"OOR_REJECT_USER_BALANCE":        3,
 		"OOR_REJECT_INPUT_NOT_SPENDABLE": 4,
+		"OOR_REJECT_INTERNAL":            5,
 	}
 )
 
@@ -776,13 +790,14 @@ const file_oorwire_proto_rawDesc = "" +
 	"\x16final_checkpoint_psbts\x18\x02 \x03(\fR\x14finalCheckpointPsbts\"8\n" +
 	"\x17FinalizePackageResponse\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\fR\tsessionId*\xac\x01\n" +
+	"session_id\x18\x01 \x01(\fR\tsessionId*\xc5\x01\n" +
 	"\rOORRejectCode\x12\x1a\n" +
 	"\x16OOR_REJECT_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cOOR_REJECT_LINEAGE_TOO_LARGE\x10\x01\x12\x1c\n" +
 	"\x18OOR_REJECT_OUTPUT_POLICY\x10\x02\x12\x1b\n" +
 	"\x17OOR_REJECT_USER_BALANCE\x10\x03\x12\"\n" +
-	"\x1eOOR_REJECT_INPUT_NOT_SPENDABLE\x10\x042\xb1\x01\n" +
+	"\x1eOOR_REJECT_INPUT_NOT_SPENDABLE\x10\x04\x12\x17\n" +
+	"\x13OOR_REJECT_INTERNAL\x10\x052\xb1\x01\n" +
 	"\x11OORMailboxService\x12J\n" +
 	"\rSubmitPackage\x12\x1b.oorpb.SubmitPackageRequest\x1a\x1c.oorpb.SubmitPackageResponse\x12P\n" +
 	"\x0fFinalizePackage\x12\x1d.oorpb.FinalizePackageRequest\x1a\x1e.oorpb.FinalizePackageResponseB/Z-github.com/lightninglabs/wavelength/rpc/oorpbb\x06proto3"
