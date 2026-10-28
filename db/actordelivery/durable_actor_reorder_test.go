@@ -415,17 +415,20 @@ func (b *orderRecordingTxBehavior) Receive(ctx context.Context,
 		time.Sleep(d)
 	}
 
+	// Serialize the short commit and its observation. Once Commit deletes
+	// the row, another worker can consume its same-key successor before
+	// this goroutine resumes. Recording under a lock acquired only after
+	// Commit would then confuse scheduler order with consumption order.
+	// Keep the slow side effect above outside this critical section.
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	commit := func(context.Context, fifoTx) error { return nil }
 	if err := ax.Commit(ctx, commit); err != nil {
 		return fn.Err[int](err)
 	}
 
-	// Record after the Commit, so the order reflects true consumption: a
-	// same-key successor cannot be claimed until this predecessor's Commit
-	// deletes its row.
-	b.mu.Lock()
 	b.observed = append(b.observed, msg.msgID())
-	b.mu.Unlock()
 
 	return fn.Ok(1)
 }

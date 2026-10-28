@@ -213,6 +213,24 @@ type Deps struct {
 	// startup backfill seeds it from the history collectors. Nil disables
 	// projection.
 	ActivityStore waved.ActivityStore
+
+	// OORDispatch resolves the idempotency key an outgoing OOR session was
+	// dispatched with. The history merger uses it to correlate an orphaned
+	// internal send leg with the operation that caused it (e.g. in-swap
+	// funding whose swap record never persisted its funding session id),
+	// healing phantom activity rows the structured swap correlation cannot
+	// explain. Nil disables keyed correlation and keeps the legacy
+	// behavior.
+	OORDispatch OORDispatchLookup
+}
+
+// OORDispatchLookup resolves the idempotency key an outgoing OOR session
+// was dispatched with. The concrete *waved.RPCServer satisfies it; tests
+// supply a fake. A session dispatched without a key resolves to the empty
+// string, which is not an error.
+type OORDispatchLookup interface {
+	DispatchIdempotencyKey(ctx context.Context,
+		sessionID string) (string, error)
 }
 
 // resolveDeadline returns the effective wallet deadline, applying the

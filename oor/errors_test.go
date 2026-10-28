@@ -87,6 +87,44 @@ func TestClassifySubmitError(t *testing.T) {
 			)
 		})
 
+	t.Run("operator internal maps to typed error", func(t *testing.T) {
+		t.Parallel()
+
+		got := ClassifySubmitError(&oorpb.SubmitRejectedError{
+			Code:   oorpb.OORRejectCode_OOR_REJECT_INTERNAL,
+			Reason: "backing store temporarily unavailable",
+		})
+		require.ErrorIs(t, got, &ErrOperatorInternal{})
+		require.Contains(
+			t, got.Error(),
+			"backing store temporarily unavailable",
+		)
+
+		// An internal-fault rejection must not collapse into any of
+		// the other typed rejections: unlike output-policy it is
+		// retryable, and unlike input-not-spendable and user-balance
+		// the transient condition is operator-internal.
+		require.NotErrorIs(t, got, &ErrOutputPolicyViolation{})
+		require.NotErrorIs(t, got, &ErrInputNotSpendable{})
+		require.NotErrorIs(t, got, &ErrUserBalanceExceeded{})
+	})
+
+	t.Run("unspecified has no typed mapping", func(t *testing.T) {
+		t.Parallel()
+
+		// UNSPECIFIED deliberately stays unmapped: it conflates
+		// faults the operator did not classify, so the client must
+		// keep treating it as terminal rather than guessing at
+		// retryability. The classifier passes it through unchanged.
+		rejected := &oorpb.SubmitRejectedError{
+			Code:   oorpb.OORRejectCode_OOR_REJECT_UNSPECIFIED,
+			Reason: "unknown failure",
+		}
+
+		got := ClassifySubmitError(rejected)
+		require.Same(t, rejected, got)
+	})
+
 	t.Run("wrapped rejection is unwrapped", func(t *testing.T) {
 		t.Parallel()
 

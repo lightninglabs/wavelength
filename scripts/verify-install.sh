@@ -13,10 +13,10 @@ MANIFEST_SELECTOR=". | select(.name | test(\"manifest-v.*(\\\\.txt)$\")) | .name
 SIGNATURE_SELECTOR=". | select(.name | test(\"manifest-.*(\\\\.sig)$\")) | .name"
 HEADER_GH_JSON="Accept: application/vnd.github.v3+json"
 # NOTE: wavelength is bootstrapping this multi-signer verification
-# system. Only a single trusted key is seeded below, so the minimum
-# required signature count is 1 for now. As more wavelength
-# maintainers add their key to scripts/keys/ and this list, raise
-# MIN_REQUIRED_SIGNATURES accordingly (lnd itself requires 5-of-16).
+# system. Several trusted keys are seeded in KEYS below, but only one
+# valid signature is required for now. As more wavelength maintainers
+# sign each release, raise MIN_REQUIRED_SIGNATURES accordingly (lnd
+# itself requires 5-of-16).
 MIN_REQUIRED_SIGNATURES=1
 
 # All keys that can sign wavelength releases. The key must be added as a
@@ -60,8 +60,8 @@ function import_keys() {
 
   # Import all the signing keys. We'll create a key ring for each user and use
   # that exact key ring when verifying a user's signature. That way we can make
-  # sure one user cannot just upload multiple signatures to reach the 5/7
-  # required sigs.
+  # sure one user cannot just upload multiple signatures to reach the
+  # MIN_REQUIRED_SIGNATURES threshold.
   for key in "${KEYS[@]}"; do
     KEY_ID=$(echo $key | cut -d' ' -f1)
     USERNAME=$(echo $key | cut -d' ' -f2)
@@ -214,10 +214,10 @@ function verify_signatures() {
     ((NUM_CHECKS=NUM_CHECKS+1))
   done
 
-  # We want at least five signatures (out of seven public keys) that sign the
-  # hashes of the binaries we have installed. If we arrive here without exiting,
-  # it means no signature manifests were uploaded (yet) with the correct naming
-  # pattern.
+  # We want at least MIN_REQUIRED_SIGNATURES valid signatures, each from a
+  # distinct key in KEYS, that sign the hashes of the binaries we have
+  # installed. If we arrive here without exiting, it means no signature
+  # manifests were uploaded (yet) with the correct naming pattern.
   if [[ $NUM_CHECKS -lt $MIN_REQUIRED_SIGNATURES ]]; then
     echo "ERROR: Not enough valid signatures found!"
     echo "  Valid signatures found: $NUM_CHECKS"

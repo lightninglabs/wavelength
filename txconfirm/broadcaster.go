@@ -15,6 +15,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/chainbackends"
 	"github.com/lightninglabs/wavelength/chainsource"
@@ -22,6 +23,8 @@ import (
 	"github.com/lightninglabs/wavelength/walletcore"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -514,9 +517,8 @@ func (b *CPFPBroadcaster) feeOutpointReserved(parentTxid chainhash.Hash,
 }
 
 // releaseWalletLease calls wallet.ReleaseOutput with the package-scoped
-// LockID, silently ignoring "unknown output" / "not leased" class
-// errors since those are a normal consequence of a wallet that is
-// already past this lease (expired or garbage-collected).
+// LockID. An unknown output is expected when the wallet has already processed
+// its spend and removed the lease; other failures remain warnings.
 func (b *CPFPBroadcaster) releaseWalletLease(ctx context.Context,
 	op wire.OutPoint) {
 
@@ -525,10 +527,40 @@ func (b *CPFPBroadcaster) releaseWalletLease(ctx context.Context,
 	}
 
 	err := b.cfg.Wallet.ReleaseOutput(ctx, txconfirmLockID, op)
+	if isUnknownOutputRelease(err) {
+		b.log.DebugS(ctx, "Wallet-level lease already absent",
+			"err", err,
+			"outpoint", op,
+		)
+
+		return
+	}
+
 	if err != nil {
 		b.log.WarnS(ctx, "Wallet-level lease release failed",
 			err, "outpoint", op)
 	}
+}
+
+// isUnknownOutputRelease recognizes btcwallet's missing-output result during
+// lease cleanup, including LND's exact gRPC encoding. Match the status message
+// exactly so unrelated Unknown errors and ownership failures remain visible.
+func isUnknownOutputRelease(err error) bool {
+	if errors.Is(err, wtxmgr.ErrUnknownOutput) {
+		return true
+	}
+
+	// Inspect each wrapped cause because status.FromError includes wrapper
+	// text in the message, while the underlying RPC status is unchanged.
+	for cause := err; cause != nil; cause = errors.Unwrap(cause) {
+		rpcStatus, ok := status.FromError(cause)
+		if ok && rpcStatus.Code() == codes.Unknown &&
+			rpcStatus.Message() == wtxmgr.ErrUnknownOutput.Error() {
+			return true
+		}
+	}
+
+	return false
 }
 
 // releaseWalletLeasesAsync releases wallet-level leases without blocking the

@@ -581,3 +581,40 @@ func parseOORSessionID(sessionID string) (chainhash.Hash, error) {
 
 	return *hash, nil
 }
+
+// DispatchIdempotencyKey resolves the idempotency key an outgoing OOR
+// session was dispatched with. swapwallet's history merger uses it to
+// correlate orphaned internal send legs with the operation that caused
+// them. A session dispatched without a key, or an unknown session,
+// resolves to the empty string, which is not an error.
+func (r *RPCServer) DispatchIdempotencyKey(ctx context.Context,
+	sessionID string) (string, error) {
+
+	if sessionID == "" {
+		return "", status.Error(
+			codes.InvalidArgument, "session_id must be provided",
+		)
+	}
+
+	hash, err := parseOORSessionID(sessionID)
+	if err != nil {
+		return "", status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+
+	if r.server.db == nil {
+		return "", nil
+	}
+
+	attempt, err := r.server.db.Queries.GetOORDispatchAttemptBySessionID(
+		ctx, hash[:],
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", status.Errorf(codes.Internal, "failed to get OOR "+
+			"dispatch attempt: %v", err)
+	}
+
+	return attempt.IdempotencyKey, nil
+}

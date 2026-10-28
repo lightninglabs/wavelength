@@ -40,7 +40,9 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
@@ -1196,6 +1198,92 @@ func TestSendOORMultipleRecipientsEndToEnd(t *testing.T) {
 		amountA: 1,
 		amountB: 1,
 	}, recipientAmounts)
+}
+
+// TestSendOORRejectsSubMinimumChangeEndToEnd verifies automatic selection
+// rejects dust change across the manager, wallet, and RPC boundaries.
+func TestSendOORRejectsSubMinimumChangeEndToEnd(t *testing.T) {
+	ParallelN(t)
+
+	testSendOORRejectsSubMinimumChange(t, false)
+}
+
+// TestSendOORExactInputsRejectSubMinimumChangeEndToEnd verifies exact managed
+// inputs reject dust change through the same full daemon path.
+func TestSendOORExactInputsRejectSubMinimumChangeEndToEnd(t *testing.T) {
+	ParallelN(t)
+
+	testSendOORRejectsSubMinimumChange(t, true)
+}
+
+// testSendOORRejectsSubMinimumChange checks that a rejected send reserves no
+// inputs and records no attempt, allowing a corrected send under the same key.
+func testSendOORRejectsSubMinimumChange(t *testing.T, exactInputs bool) {
+	t.Helper()
+
+	fixture := newDirectedSendFixture(t)
+	recipientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const change = testDustLimitSat - 1
+	recipient := oorPolicyRecipient(
+		t, recipientPriv.PubKey(), fixture.operatorKey,
+		testSeededAmountSat-change,
+	)
+	req := &waverpc.SendOORRequest{
+		Recipients: []*waverpc.Output{
+			recipient,
+		},
+		IdempotencyKey: "sub-minimum-change",
+	}
+	if exactInputs {
+		outpoint := fixture.seededOutpoint.String()
+		req.CustomInputs = []*waverpc.CustomOORInput{{
+			Outpoint: outpoint,
+		}}
+	}
+
+	ctx, cancel := context.WithTimeout(
+		t.Context(), 10*time.Second,
+	)
+	defer cancel()
+
+	_, err = fixture.client.SendOOR(ctx, req)
+	require.Equal(t, codes.OutOfRange, status.Code(err))
+	require.ErrorContains(
+		t, err, fmt.Sprintf("change %d is below minimum change "+
+			"amount %d", change, testDustLimitSat),
+	)
+
+	// An existing-only retry must find no transfer to
+	// adopt.
+	req.ExistingOnly = true
+	_, err = fixture.client.SendOOR(ctx, req)
+	require.Equal(t, codes.NotFound, status.Code(err))
+
+	vtxos := listAllVTXOs(t, fixture.client)
+	require.Len(t, vtxos, 1)
+	require.Equal(
+		t, waverpc.VTXOStatus_VTXO_STATUS_LIVE, vtxos[0].Status,
+	)
+	sessions, err := fixture.client.ListOORSessions(
+		ctx, &waverpc.ListOORSessionsRequest{},
+	)
+	require.NoError(t, err)
+	require.Empty(t, sessions.GetSessions())
+	require.Empty(
+		t, fixture.mailboxServer.oorSubmitPackages(),
+	)
+
+	// Spending the input exactly proves the rejected
+	// selection retained neither a reservation nor an
+	// idempotency binding.
+	req.ExistingOnly = false
+	recipient.AmountSat = testSeededAmountSat
+	resp, err := fixture.client.SendOOR(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, "submitted", resp.GetStatus())
+	require.NotEmpty(t, resp.GetSessionId())
 }
 
 // TestSendOnChainSweepAllEndToEnd exercises the atomic onchain sweep-all send

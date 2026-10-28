@@ -225,6 +225,13 @@ func vtxoAdmissionCode(err error) codes.Code {
 	case errors.Is(err, vtxo.ErrInsufficientSpendableFunds):
 		return codes.ResourceExhausted
 
+	// Sub-minimum change is rejected before any input is reserved. It is
+	// kept distinct from FailedPrecondition, which already reports a
+	// closed admission deadline, so callers can treat it as final without
+	// conflating the two.
+	case errors.Is(err, vtxo.ErrChangeBelowMin):
+		return codes.OutOfRange
+
 	default:
 		return codes.Internal
 	}

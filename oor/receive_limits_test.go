@@ -19,7 +19,9 @@ func TestIncomingTransferEventFromResponseUsesConfiguredCheckpointLimit(
 
 	t.Parallel()
 
-	resp, sessionID, _, recipientEventID := buildIncomingResolveResponse(t)
+	resp, sessionID, _, recipientEventID, _ := buildIncomingResolveResponse(
+		t,
+	)
 	recipientEvt := resp.Events[0]
 	require.Len(t, recipientEvt.CheckpointPsbts, 1)
 
@@ -46,7 +48,9 @@ func TestIncomingTransferEventFromResponseLimitsAncestorCheckpoints(
 
 	t.Parallel()
 
-	resp, sessionID, _, recipientEventID := buildIncomingResolveResponse(t)
+	resp, sessionID, _, recipientEventID, _ := buildIncomingResolveResponse(
+		t,
+	)
 	ancestorArk, ancestorCheckpoints, _, _, _, _ :=
 		buildTestIncomingMaterialization(t)
 

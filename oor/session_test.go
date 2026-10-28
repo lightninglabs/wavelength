@@ -103,6 +103,10 @@ func TestSessionHappyPath(t *testing.T) {
 		operatorSigner, submit.TransferInputs, submit.CheckpointPSBTs,
 	)
 	require.NoError(t, err)
+	err = coSignArkPSBTForTest(
+		operatorSigner, operatorKey.PubKey(), submit.ArkPSBT,
+	)
+	require.NoError(t, err)
 
 	// Step 2: Server accepts submit and returns co-signed checkpoints.
 	fut = session.FSM.AskEvent(ctx, &SubmitAcceptedEvent{
@@ -285,6 +289,10 @@ func TestSessionMultiInputHappyPath(t *testing.T) {
 	// Operator co-signs the checkpoints.
 	err = coSignCheckpointPSBTsForTest(
 		operatorSigner, submit.TransferInputs, submit.CheckpointPSBTs,
+	)
+	require.NoError(t, err)
+	err = coSignArkPSBTForTest(
+		operatorSigner, operatorKey.PubKey(), submit.ArkPSBT,
 	)
 	require.NoError(t, err)
 

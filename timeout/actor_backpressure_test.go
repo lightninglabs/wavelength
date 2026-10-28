@@ -906,7 +906,9 @@ func TestActorLogsThroughInjectedLogger(t *testing.T) {
 	})
 	a.Start(newSyncSelfRef(a))
 
-	cb := newWedgeableCallbackRef("wedged-requester", actor.ErrMailboxFull)
+	cb := newWedgeableCallbackRef(
+		"wedged-requester", actor.ErrNoActorsAvailable,
+	)
 
 	// t.Context() carries no logger, so anything that reaches the buffer
 	// got there through the injected one.

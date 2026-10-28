@@ -35,6 +35,12 @@ func validateIncomingPackage(label string, sessionID SessionID,
 		return fmt.Errorf("%s finalize package invalid: %w", label, err)
 	}
 
+	// Validate the same Ark PSBT that will be saved for later use.
+	_, err = oortx.ValidateSubmitPackageSigned(ark, checkpoints)
+	if err != nil {
+		return fmt.Errorf("%s ark package invalid: %w", label, err)
+	}
+
 	return nil
 }
 

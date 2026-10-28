@@ -88,6 +88,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   (`arkscript.MultiSigCollabTapLeaf(clientKey, operatorKey)`), never
   single-sig; resumed custom-spend inputs are re-verified against the VTXO
   pkScript before signing.
+- Outgoing and incoming OOR admission executes every Ark input witness in the
+  exact package the client carries forward or persists.
 - Point-of-no-return is server co-signing of the checkpoint transaction(s):
   after that, the client must resume with byte-identical co-signed PSBTs
   (deterministic construction), not re-derive them.

@@ -417,11 +417,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `OutboxErrorEvent` instead of an `Adapt` error that would stall the
   serverconn ingress cursor on the offending envelope (`server.go`).
   `oorRejectRetry` classifies the event's `Retryable` flag: it is `false`
-  (terminal) for every typed reject except the two transient codes,
+  (terminal) for every typed reject except the three transient codes,
   `OOR_REJECT_INPUT_NOT_SPENDABLE` (the operator has not yet caught up to the
-  input's commitment confirmation) and `OOR_REJECT_USER_BALANCE` (the
-  recipient mailbox is over its balance cap), which re-drive the submit after
-  `oorTransientRejectRetryDelay`. That retry is now bounded: the FSM's
+  input's commitment confirmation), `OOR_REJECT_USER_BALANCE` (the recipient
+  mailbox is over its balance cap), and `OOR_REJECT_INTERNAL` (a transient
+  internal fault on the operator, e.g. a backing store briefly unavailable),
+  which re-drive the submit after `oorTransientRejectRetryDelay`. That retry
+  is now bounded: the FSM's
   `AwaitingSubmitAccepted` transition (`handleSubmitOutboxError` in
   `oor/transitions.go`) gives up terminally once the cumulative retry window
   exceeds `OORConfig.MaxTransientSubmitRetry` (default 1h), persisting the

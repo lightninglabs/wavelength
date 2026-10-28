@@ -96,6 +96,10 @@ type Config struct {
 	// proofNodeFloorAlerts is shared by every child of one registry so all
 	// legacy fallback scans produce one operator alert.
 	proofNodeFloorAlerts *proofNodeFloorAlertDeduper
+
+	// cleanupDone closes when the registry stops. Terminal cleanup outlives
+	// this child but must not retry after its owning registry has stopped.
+	cleanupDone <-chan struct{}
 }
 
 // VTXOUnrollActor wraps one durable per-target unroll actor.
@@ -896,12 +900,18 @@ func safeTxOutPkScript(tx *wire.MsgTx, index uint32) ([]byte, error) {
 	return append([]byte(nil), tx.TxOut[index].PkScript...), nil
 }
 
-// removeAbandonedBroadcastTimeout bounds each best-effort wallet RemoveTx RPC
-// issued on the terminal-failure cleanup path. lnd's RemoveTransaction is a
-// fast local wallet mutation, so 30s is generous headroom for a heavily loaded
-// node while still guaranteeing that a hung or unresponsive backend cannot leak
-// the detached cleanup goroutine indefinitely (wavelength#609).
+// removeAbandonedBroadcastTimeout bounds each cancellation or wallet-removal
+// attempt on the terminal cleanup path. A timeout is ambiguous, so the
+// registry-owned worker retries until acknowledged or shutdown.
 const removeAbandonedBroadcastTimeout = 30 * time.Second
+
+// abandonedBroadcastRetryDelay keeps a busy shared actor from receiving a
+// tight loop of duplicate cancellation requests.
+const abandonedBroadcastRetryDelay = 5 * time.Second
+
+// abandonedBroadcastRemovalAttempts bounds wallet housekeeping after
+// cancellation has already stopped the broadcaster's fee-bump work.
+const abandonedBroadcastRemovalAttempts = 3
 
 // legacyProofScanFloor returns the configured public-network deployment floor
 // when it is usable at the current chain tip. Supported public-network floors
@@ -2678,77 +2688,176 @@ func (b *behavior) removeAbandonedBroadcasts(ctx context.Context,
 		return
 	}
 
-	// Map iteration is unordered; sort so the removal sequence (and the
-	// resulting log lines) are deterministic across runs.
+	// Map iteration is unordered; launch workers in a stable order.
 	sortHashes(txids)
 
-	// Fire the removals off the actor Receive goroutine. This cleanup is
-	// pure best-effort housekeeping — the terminal outcome is already
-	// decided — so it must never sit in front of the terminal registry
-	// handoff below. A slow or hung lnd RemoveTransaction RPC on a
-	// synchronous Ask would otherwise wedge the actor's single Receive
-	// goroutine, stalling the terminal notification and every later message
-	// for this target. Detaching mirrors txconfirm's async wallet-lease
-	// release. Each op carries its own timeout so a stuck backend bounds
-	// the goroutine's lifetime, and cancellation is detached from the
-	// request ctx so a caller disconnect cannot suppress the cleanup.
-	chainSource := b.cfg.ChainSource
-	txConfirmRef := b.cfg.TxConfirmRef
-	subscriberID := b.notificationRef().ID()
-	conflicted := job.Conflicted
-	log := b.log
-	go func() {
-		for _, txid := range txids {
+	// Cleanup runs after this terminal child leaves the registry. The
+	// registry owns its lifetime, so a slow broadcaster cannot stall the
+	// terminal handoff and a timed-out Ask can be retried after the child
+	// stops. Independent transactions do not block one another.
+	cleanupCtx := actor.WithoutTurn(
+		actor.WithoutTx(
+			context.WithoutCancel(ctx),
+		),
+	)
+	for _, txid := range txids {
+		// The registry owns this cleanup after the current turn ends.
+		go cleanupAbandonedBroadcast(
+			cleanupCtx, b.cfg.cleanupDone, b.cfg.TxConfirmRef,
+			b.cfg.ChainSource, b.notificationRef().ID(), txid,
+			job.Conflicted, removeAbandonedBroadcastTimeout,
+			abandonedBroadcastRetryDelay, b.log,
+		)
+	}
+}
+
+// cleanupAbandonedBroadcast retries ambiguous actor calls until they are
+// acknowledged or the registry stops. A timed-out Ask may still run later, so
+// every retry uses the same subscriber ID and cancellation remains idempotent.
+func cleanupAbandonedBroadcast(ctx context.Context, stop <-chan struct{},
+	txConfirmRef actor.ActorRef[txconfirm.Msg, txconfirm.Resp],
+	chainSource actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	], subscriberID string, txid chainhash.Hash, conflicted bool,
+	attemptTimeout, retryDelay time.Duration, log btclog.Logger) {
+
+	var cancelFailures, removeFailures int
+	for !abandonedBroadcastCleanupStopped(ctx, stop) {
+		if conflicted {
 			opCtx, cancel := context.WithTimeout(
-				actor.WithoutTx(
-					context.WithoutCancel(ctx),
-				),
-				removeAbandonedBroadcastTimeout,
+				ctx, attemptTimeout,
 			)
-
-			// A source conflict terminates unroll independently of
-			// txconfirm. Removing wallet transactions alone leaves
-			// its CPFP retries and fee-input leases alive. Cancel
-			// only this exit's interest before wallet removal:
-			// another exit may still need an unswept root shared by
-			// both proof graphs.
-			if conflicted {
-				resp, err := txConfirmRef.Ask(
-					opCtx, &txconfirm.CancelInterestReq{
-						Txid:         txid,
-						SubscriberID: subscriberID,
-					},
-				).Await(opCtx).Unpack()
-				if err != nil {
-					cancel()
-					log.WarnS(opCtx, "Failed to cancel conflicted "+
-						"exit broadcast interest", err,
-						slog.String(
-							"txid", txid.String(),
-						),
-					)
-
-					continue
-				}
-				res, ok := resp.(*txconfirm.CancelInterestResp)
-				if !ok || res.RemainingSubscribers != 0 {
-					cancel()
-
-					continue
-				}
-			}
-			_, err := chainSource.Ask(
-				opCtx, &chainsource.RemoveTxRequest{Txid: txid},
+			resp, err := txConfirmRef.Ask(
+				opCtx, &txconfirm.CancelInterestReq{
+					Txid: txid, SubscriberID: subscriberID,
+				},
 			).Await(opCtx).Unpack()
 			cancel()
 			if err != nil {
-				log.WarnS(opCtx, "Failed to remove abandoned "+
-					"broadcast on terminal failure", err,
-					slog.String("txid", txid.String()),
+				if cleanupActorStopped(ctx, stop, err) {
+					return
+				}
+				cancelFailures++
+				logAbandonedBroadcastRetry(
+					log, ctx, txid, err, cancelFailures,
+					"Failed to cancel conflicted exit "+
+						"broadcast interest; retrying",
 				)
+				if !waitAbandonedBroadcastRetry(
+					ctx, stop, retryDelay,
+				) {
+					return
+				}
+
+				continue
+			}
+			res, ok := resp.(*txconfirm.CancelInterestResp)
+			if !ok {
+				cancelFailures++
+				logAbandonedBroadcastRetry(
+					log, ctx, txid,
+					fmt.Errorf("response %T", resp),
+					cancelFailures, "Unexpected cancel "+
+						"interest response; retrying",
+				)
+				if !waitAbandonedBroadcastRetry(
+					ctx, stop, retryDelay,
+				) {
+					return
+				}
+
+				continue
+			}
+			if res.RemainingSubscribers != 0 {
+				return
 			}
 		}
-	}()
+		if abandonedBroadcastCleanupStopped(ctx, stop) {
+			return
+		}
+
+		opCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
+		_, err := chainSource.Ask(
+			opCtx, &chainsource.RemoveTxRequest{Txid: txid},
+		).Await(opCtx).Unpack()
+		cancel()
+		if err == nil || cleanupActorStopped(ctx, stop, err) {
+			return
+		}
+		removeFailures++
+		if removeFailures >= abandonedBroadcastRemovalAttempts {
+			log.WarnS(ctx, "Failed to remove abandoned broadcast "+
+				"after bounded retries", err,
+				slog.String("txid", txid.String()))
+
+			return
+		}
+		logAbandonedBroadcastRetry(
+			log, ctx, txid, err, removeFailures,
+			"Failed to remove abandoned broadcast; retrying",
+		)
+		if !waitAbandonedBroadcastRetry(ctx, stop, retryDelay) {
+			return
+		}
+	}
+}
+
+// logAbandonedBroadcastRetry keeps a persistent failure visible without
+// emitting a warning for every bounded retry attempt.
+func logAbandonedBroadcastRetry(log btclog.Logger, ctx context.Context,
+	txid chainhash.Hash, err error, failures int, msg string) {
+
+	if failures == 1 || failures%12 == 0 {
+		log.WarnS(ctx, msg, err, slog.String("txid", txid.String()))
+
+		return
+	}
+	log.DebugS(
+		ctx, msg,
+		slog.String("txid", txid.String()), slog.Any("err", err),
+	)
+}
+
+// cleanupActorStopped reports when cleanup cannot make further progress.
+func cleanupActorStopped(ctx context.Context, stop <-chan struct{},
+	err error) bool {
+
+	return abandonedBroadcastCleanupStopped(ctx, stop) ||
+		errors.Is(err, actor.ErrActorTerminated) ||
+		errors.Is(err, actor.ErrMailboxClosed)
+}
+
+// abandonedBroadcastCleanupStopped checks both the caller context and the
+// registry's lifecycle signal.
+func abandonedBroadcastCleanupStopped(ctx context.Context,
+	stop <-chan struct{}) bool {
+
+	select {
+	case <-stop:
+		return true
+
+	default:
+		return ctx.Err() != nil
+	}
+}
+
+// waitAbandonedBroadcastRetry waits without retaining a timer after shutdown.
+func waitAbandonedBroadcastRetry(ctx context.Context,
+	stop <-chan struct{}, delay time.Duration) bool {
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-stop:
+		return false
+
+	case <-ctx.Done():
+		return false
+
+	case <-timer.C:
+		return true
+	}
 }
 
 // emitExitCostIfCompleted sends the final unilateral exit miner fee to the

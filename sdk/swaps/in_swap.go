@@ -24,11 +24,19 @@ const (
 	refundLocktimeMaxPollInterval = time.Minute
 )
 
+// InSwapFundingIdempotencyKeyPrefix prefixes the idempotency key carried by
+// every in-swap funding OOR dispatch. The wallet history layer parses this
+// prefix to correlate funding legs whose swap record never persisted its
+// funding session id. It is part of the durable dispatch contract: keys
+// written with it live in the dispatch-attempt registry, so it must not
+// change.
+const InSwapFundingIdempotencyKeyPrefix = "in-swap-funding:"
+
 // inSwapFundingIdempotencyKey derives the daemon-side OOR identity for one
 // Ark-to-Lightning vHTLC funding intent. The payment hash is the durable swap
 // identity, so this format must remain stable across process restarts.
 func inSwapFundingIdempotencyKey(hash lntypes.Hash) string {
-	return fmt.Sprintf("in-swap-funding:%s", hash.String())
+	return InSwapFundingIdempotencyKeyPrefix + hash.String()
 }
 
 // PayState identifies the client-side lifecycle state of an Ark-to-Lightning
@@ -986,8 +994,9 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 			)
 		}
 
-		// The daemon rejects a send for lack of spendable funds, or
-		// because the liquidity is reserved by another operation,
+		// The daemon rejects a send for lack of spendable funds,
+		// because the liquidity is reserved by another operation, or
+		// because every covering selection leaves sub-minimum change,
 		// before it selects or locks any input and before it records a
 		// keyed dispatch attempt. That rejection can also be this
 		// swap's own earlier attempt: it holds the only spendable

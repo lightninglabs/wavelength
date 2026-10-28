@@ -17,6 +17,11 @@ var (
 	// but some of it is currently reserved by another in-flight operation.
 	ErrVTXOLiquidityLocked = errors.New("vtxo liquidity temporarily locked")
 
+	// ErrChangeBelowMin means the live VTXOs can cover the requested
+	// amount, but every covering selection leaves non-zero change below
+	// the minimum VTXO amount. It is raised before any VTXO is reserved.
+	ErrChangeBelowMin = errors.New("change below minimum vtxo amount")
+
 	// ErrForfeitInFlight means the VTXO is already committed to a round
 	// (a leave, a refresh, or an in-round send) and cannot be committed
 	// to a second one until that round resolves.

@@ -2335,8 +2335,9 @@ func (m *Manager) selectReservationCandidates(ctx context.Context,
 	case errors.Is(err, coinselect.ErrChangeBelowMin):
 		change := res.Total - p.targetAmount
 
-		return nil, fmt.Errorf("change %d is below minimum change "+
-			"amount %d", change, p.minChangeAmount)
+		return nil, fmt.Errorf("%w: change %d is below minimum change "+
+			"amount %d", ErrChangeBelowMin, change,
+			p.minChangeAmount)
 
 	case errors.Is(err, coinselect.ErrSelectionShortfall),
 		errors.Is(err, coinselect.ErrNoCandidates):
@@ -2391,8 +2392,9 @@ func (m *Manager) selectExactReservationCandidates(ctx context.Context,
 
 	change := total - p.targetAmount
 	if change > 0 && change < p.minChangeAmount {
-		return nil, fmt.Errorf("change %d is below minimum change "+
-			"amount %d", change, p.minChangeAmount)
+		return nil, fmt.Errorf("%w: change %d is below minimum change "+
+			"amount %d", ErrChangeBelowMin, change,
+			p.minChangeAmount)
 	}
 
 	return selected, nil

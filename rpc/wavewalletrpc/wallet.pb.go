@@ -5632,9 +5632,11 @@ func (x *ArkAddressRequest) GetAddress() string {
 // operation. Times use the operator's UTC clock; cutoff starts quoting, not
 // confirmation. This is advisory progress, not a durable registration promise.
 type ScheduledBatchWindow struct {
-	state                 protoimpl.MessageState `protogen:"open.v1"`
-	RegistrationOpensUnix int64                  `protobuf:"varint,1,opt,name=registration_opens_unix,json=registrationOpensUnix,proto3" json:"registration_opens_unix,omitempty"`
-	CutoffUnix            int64                  `protobuf:"varint,2,opt,name=cutoff_unix,json=cutoffUnix,proto3" json:"cutoff_unix,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// registration_opens_unix is the first second accepting joins.
+	RegistrationOpensUnix int64 `protobuf:"varint,1,opt,name=registration_opens_unix,json=registrationOpensUnix,proto3" json:"registration_opens_unix,omitempty"`
+	// cutoff_unix is the first second rejecting joins.
+	CutoffUnix int64 `protobuf:"varint,2,opt,name=cutoff_unix,json=cutoffUnix,proto3" json:"cutoff_unix,omitempty"`
 	// planned_join_unix_ms is the client's planned wake before preparation.
 	PlannedJoinUnixMs int64 `protobuf:"varint,3,opt,name=planned_join_unix_ms,json=plannedJoinUnixMs,proto3" json:"planned_join_unix_ms,omitempty"`
 	unknownFields     protoimpl.UnknownFields

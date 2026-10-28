@@ -49,6 +49,8 @@ type oorVTXOManagerSystestFixture struct {
 	managerRef    actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp]
 }
 
+// newOORVTXOManagerSystestFixture starts the stores and actors used by OOR
+// materialization system tests.
 func newOORVTXOManagerSystestFixture(t *testing.T,
 	name string) *oorVTXOManagerSystestFixture {
 
@@ -489,12 +491,13 @@ func buildSystemTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 	require.NoError(t, err)
 
 	inputValue := btcutil.Amount(10000)
-	checkpointInput, checkpoint := buildSystemTestSignedCheckpoint(
-		t, policy, operatorKey, inputOwnerKey, wire.OutPoint{
-			Hash:  [32]byte{0x11},
-			Index: 0,
-		}, inputValue,
-	)
+	checkpointInput, checkpoint, transferInput :=
+		buildSystemTestSignedCheckpoint(
+			t, policy, operatorKey, inputOwnerKey, wire.OutPoint{
+				Hash:  [32]byte{0x11},
+				Index: 0,
+			}, inputValue,
+		)
 	inputs := []oortx.CheckpointInput{
 		checkpointInput,
 	}
@@ -528,6 +531,10 @@ func buildSystemTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 		outputs,
 	)
 	require.NoError(t, err)
+	signSystemTestArkPSBT(
+		t, arkPSBT, checkpoint, transferInput, inputOwnerKey,
+		operatorKey,
+	)
 
 	recipients, err := oor.ExtractArkRecipients(arkPSBT)
 	require.NoError(t, err)
@@ -597,12 +604,13 @@ func buildSystemTestChangeMaterialization(t *testing.T) (*psbt.Packet,
 		changeValue   btcutil.Amount = 4_000
 	)
 	inputValue := externalValue + changeValue
-	checkpointInput, checkpoint := buildSystemTestSignedCheckpoint(
-		t, policy, operatorKey, inputOwnerKey, wire.OutPoint{
-			Hash:  [32]byte{0x22},
-			Index: 0,
-		}, inputValue,
-	)
+	checkpointInput, checkpoint, transferInput :=
+		buildSystemTestSignedCheckpoint(
+			t, policy, operatorKey, inputOwnerKey, wire.OutPoint{
+				Hash:  [32]byte{0x22},
+				Index: 0,
+			}, inputValue,
+		)
 	inputs := []oortx.CheckpointInput{
 		checkpointInput,
 	}
@@ -639,6 +647,10 @@ func buildSystemTestChangeMaterialization(t *testing.T) (*psbt.Packet,
 		outputs,
 	)
 	require.NoError(t, err)
+	signSystemTestArkPSBT(
+		t, arkPSBT, checkpoint, transferInput, inputOwnerKey,
+		operatorKey,
+	)
 
 	recipients, err := oor.ExtractArkRecipients(arkPSBT)
 	require.NoError(t, err)
@@ -696,7 +708,7 @@ func buildSystemTestSignedCheckpoint(t *testing.T,
 	policy arkscript.CheckpointPolicy,
 	operatorKey, inputOwnerKey *btcec.PrivateKey,
 	spentOutpoint wire.OutPoint, amount btcutil.Amount) (
-	oortx.CheckpointInput, *oortx.CheckpointArtifact) {
+	oortx.CheckpointInput, *oortx.CheckpointArtifact, oor.TransferInput) {
 
 	t.Helper()
 
@@ -795,7 +807,60 @@ func buildSystemTestSignedCheckpoint(t *testing.T,
 	)
 	require.NoError(t, err)
 
-	return checkpointInput, checkpoint
+	return checkpointInput, checkpoint, transferInput
+}
+
+// signSystemTestArkPSBT completes the collaborative Ark input witness in
+// incoming-materialization fixtures.
+func signSystemTestArkPSBT(t *testing.T, ark *psbt.Packet,
+	checkpoint *oortx.CheckpointArtifact, transferInput oor.TransferInput,
+	inputOwnerKey, operatorKey *btcec.PrivateKey) {
+
+	t.Helper()
+
+	leaf, err := oortx.BuildTaprootTapLeafScript(
+		checkpoint.TapTreeEncoded, transferInput.OwnerLeafScript,
+	)
+	require.NoError(t, err)
+	ark.Inputs[0].TaprootLeafScript =
+		[]*psbt.TaprootTapLeafScript{leaf}
+	ownerSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{inputOwnerKey}, nil,
+	)
+	err = oor.SignArkPSBT(
+		ownerSigner, ark, []*psbt.Packet{checkpoint.PSBT},
+		[]oor.TransferInput{transferInput},
+	)
+	require.NoError(t, err)
+
+	prevOut := ark.Inputs[0].WitnessUtxo
+	prevFetcher := txscript.NewCannedPrevOutputFetcher(
+		prevOut.PkScript, prevOut.Value,
+	)
+	sigHashes := txscript.NewTxSigHashes(ark.UnsignedTx, prevFetcher)
+	signDesc := &input.SignDescriptor{
+		KeyDesc: keychain.KeyDescriptor{
+			PubKey: operatorKey.PubKey(),
+		},
+		SignMethod:        input.TaprootScriptSpendSignMethod,
+		Output:            prevOut,
+		HashType:          txscript.SigHashDefault,
+		SigHashes:         sigHashes,
+		PrevOutputFetcher: prevFetcher,
+		InputIndex:        0,
+		WitnessScript:     leaf.Script,
+		ControlBlock:      leaf.ControlBlock,
+	}
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
+	sig, err := operatorSigner.SignOutputRaw(ark.UnsignedTx, signDesc)
+	require.NoError(t, err)
+	err = psbtutil.AddTaprootScriptSpendSig(
+		&ark.Inputs[0], operatorKey.PubKey(), leaf.Script,
+		sig.Serialize(), signDesc.HashType,
+	)
+	require.NoError(t, err)
 }
 
 // systemTestVTXOPkScript derives the standard VTXO output script used by

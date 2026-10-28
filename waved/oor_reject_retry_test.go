@@ -6,15 +6,17 @@ import (
 	"time"
 
 	"github.com/lightninglabs/wavelength/oor"
+	"github.com/lightninglabs/wavelength/rpc/oorpb"
 	"github.com/stretchr/testify/require"
 )
 
-// TestOORRejectRetry verifies that the two transient rejections
-// (input-not-spendable and user-balance-exceeded) are driven through the OOR
-// FSM as retryable (so the submit is re-driven — bounded by the FSM's
-// cumulative retry-window cap — until the transient condition clears and the
-// transfer recovers), while every other typed rejection stays terminal. This is
-// the server-reject-to-client-retry link behind the darepo-client#938 fix:
+// TestOORRejectRetry verifies that the transient rejections
+// (input-not-spendable, user-balance-exceeded, and operator-internal) are
+// driven through the OOR FSM as retryable (so the submit is re-driven —
+// bounded by the FSM's cumulative retry-window cap — until the transient
+// condition clears and the transfer recovers), while every other rejection,
+// unspecified included, stays terminal. This is the
+// server-reject-to-client-retry link behind the darepo-client#938 fix:
 // paired with oor.TestHandleOutboxError (retryable OutboxError re-drives
 // instead of failing), it shows a transient rejection recovers rather than
 // wedging.
@@ -50,6 +52,26 @@ func TestOORRejectRetry(t *testing.T) {
 			},
 			wantRetryable: true,
 			wantDelay:     oorTransientRejectRetryDelay,
+		},
+		{
+			name: "operator internal is retried",
+			err: &oor.ErrOperatorInternal{
+				Reason: "backing store temporarily unavailable",
+			},
+			wantRetryable: true,
+			wantDelay:     oorTransientRejectRetryDelay,
+		},
+		{
+			// Classification leaves UNSPECIFIED unmapped, so the
+			// reject lane sees the raw proto rejection; it must
+			// stay terminal rather than be retried on a guess.
+			name: "unspecified rejection is terminal",
+			err: &oorpb.SubmitRejectedError{
+				Code: oorpb.
+					OORRejectCode_OOR_REJECT_UNSPECIFIED,
+				Reason: "unknown failure",
+			},
+			wantRetryable: false,
 		},
 		{
 			name: "lineage too large is terminal",

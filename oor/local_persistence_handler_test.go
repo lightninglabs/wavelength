@@ -1178,6 +1178,31 @@ func buildSignedTestIncomingPackage(t *testing.T,
 	}})
 	require.NoError(t, err)
 
+	transferInput := newTestTransferInput(
+		t, inputOwnerKey, operatorKey.PubKey(), spentOutpoint, amount,
+	)
+	leaf, err := oortx.BuildTaprootTapLeafScript(
+		tapTree, transferInput.OwnerLeafScript,
+	)
+	require.NoError(t, err)
+	arkPSBT.Inputs[0].TaprootLeafScript =
+		[]*psbt.TaprootTapLeafScript{leaf}
+	ownerSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{inputOwnerKey}, nil,
+	)
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
+	err = SignArkPSBT(
+		ownerSigner, arkPSBT, []*psbt.Packet{checkpoint},
+		[]TransferInput{transferInput},
+	)
+	require.NoError(t, err)
+	err = coSignArkPSBTForTest(
+		operatorSigner, operatorKey.PubKey(), arkPSBT,
+	)
+	require.NoError(t, err)
+
 	recipients, err := ExtractArkRecipients(arkPSBT)
 	require.NoError(t, err)
 
@@ -1373,6 +1398,48 @@ func buildTestIncomingMaterializationMultiInput(t *testing.T) (*psbt.Packet,
 			},
 		},
 		outputs,
+	)
+	require.NoError(t, err)
+
+	transferInputs := []TransferInput{
+		newTestTransferInput(
+			t, inputOwnerA, operatorKey.PubKey(),
+			cp0.UnsignedTx.TxIn[0].PreviousOutPoint, inputAmt,
+		),
+		newTestTransferInput(
+			t, inputOwnerB, operatorKey.PubKey(),
+			cp1.UnsignedTx.TxIn[0].PreviousOutPoint, inputAmt,
+		),
+	}
+	checkpoints := []*psbt.Packet{cp0, cp1}
+	tapTrees := [][]byte{tapTree0, tapTree1}
+	for i, checkpoint := range checkpoints {
+		leaf, err := oortx.BuildTaprootTapLeafScript(
+			tapTrees[i], transferInputs[i].OwnerLeafScript,
+		)
+		require.NoError(t, err)
+		for j, txIn := range arkPSBT.UnsignedTx.TxIn {
+			if txIn.PreviousOutPoint.Hash !=
+				checkpoint.UnsignedTx.TxHash() {
+
+				continue
+			}
+			arkPSBT.Inputs[j].TaprootLeafScript =
+				[]*psbt.TaprootTapLeafScript{leaf}
+		}
+	}
+	ownerSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{inputOwnerA, inputOwnerB}, nil,
+	)
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
+	err = SignArkPSBT(
+		ownerSigner, arkPSBT, checkpoints, transferInputs,
+	)
+	require.NoError(t, err)
+	err = coSignArkPSBTForTest(
+		operatorSigner, operatorKey.PubKey(), arkPSBT,
 	)
 	require.NoError(t, err)
 

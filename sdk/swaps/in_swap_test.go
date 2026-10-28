@@ -971,9 +971,10 @@ func TestPaySessionKeepsRecoveryWhenFundingOORFailsPastPONR(t *testing.T) {
 }
 
 // TestPaySessionFundingAdmissionRejectionIsTerminal asserts that a daemon
-// rejection raised before any input is selected (insufficient funds or locked
-// liquidity) fails the pay swap terminally. The swap must not stay resumable,
-// because a later restart would otherwise pay an invoice the caller abandoned.
+// rejection raised before any input is selected (insufficient funds, locked
+// liquidity, or sub-minimum change) fails the pay swap terminally. The swap
+// must not stay resumable, because a later restart would otherwise pay an
+// invoice the caller abandoned.
 func TestPaySessionFundingAdmissionRejectionIsTerminal(t *testing.T) {
 	t.Parallel()
 
@@ -991,6 +992,12 @@ func TestPaySessionFundingAdmissionRejectionIsTerminal(t *testing.T) {
 			name: "locked liquidity",
 			code: codes.Aborted,
 			msg:  "vtxo liquidity temporarily locked",
+		},
+		{
+			name: "sub-minimum change",
+			code: codes.OutOfRange,
+			msg: "change below minimum vtxo amount: change 969 " +
+				"is below minimum change amount 1000",
 		},
 	}
 
@@ -1086,8 +1093,8 @@ func TestPaySessionFundingAdmissionRejectionIsTerminal(t *testing.T) {
 	}
 }
 
-// TestPaySessionFundingRejectionAdoptsInFlightAttempt asserts that a locked or
-// exhausted rejection does not fail the swap when the existing-only probe finds
+// TestPaySessionFundingRejectionAdoptsInFlightAttempt asserts that an
+// admission rejection does not fail the swap when the existing-only probe finds
 // the swap's own accepted attempt. The first send's response was lost and its
 // attempt row is not yet committed, so the keyed replay misses it and the
 // selection sees the attempt's own locked inputs.
@@ -1095,7 +1102,7 @@ func TestPaySessionFundingRejectionAdoptsInFlightAttempt(t *testing.T) {
 	t.Parallel()
 
 	for _, code := range []codes.Code{
-		codes.Aborted, codes.ResourceExhausted,
+		codes.Aborted, codes.ResourceExhausted, codes.OutOfRange,
 	} {
 		t.Run(code.String(), func(t *testing.T) {
 			t.Parallel()

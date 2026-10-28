@@ -214,11 +214,12 @@ func isUnregisteredScriptErr(err error) bool {
 
 // isFundingAdmissionRejected reports a daemon send rejection that happens
 // before any input is selected or reserved: insufficient spendable funds
-// (ResourceExhausted) or liquidity held by another in-flight operation
-// (Aborted). Both guarantee that nothing was spent.
+// (ResourceExhausted), liquidity held by another in-flight operation
+// (Aborted), or a selection whose change would fall below the minimum VTXO
+// amount (OutOfRange). All three guarantee that nothing was spent.
 func isFundingAdmissionRejected(err error) bool {
 	switch status.Code(err) {
-	case codes.ResourceExhausted, codes.Aborted:
+	case codes.ResourceExhausted, codes.Aborted, codes.OutOfRange:
 		return true
 
 	default:

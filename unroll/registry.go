@@ -257,6 +257,7 @@ func NewUnrollRegistryActor(cfg RegistryConfig) *UnrollRegistryActor {
 	behavior := &registryBehavior{
 		cfg:                  cfg,
 		log:                  cfg.Log.UnwrapOr(btclog.Disabled),
+		cleanupDone:          make(chan struct{}),
 		active:               make(map[wire.OutPoint]*VTXOUnrollActor),
 		pending:              make(map[wire.OutPoint]RegistryRecord),
 		persisting:           make(map[wire.OutPoint]RegistryRecord),
@@ -284,6 +285,8 @@ type registryBehavior struct {
 	cfg     RegistryConfig
 	log     btclog.Logger
 	selfRef actor.TellOnlyRef[RegistryMsg]
+
+	cleanupDone chan struct{}
 
 	active     map[wire.OutPoint]*VTXOUnrollActor
 	pending    map[wire.OutPoint]RegistryRecord
@@ -436,6 +439,9 @@ func (r *registryBehavior) Receive(ctx context.Context,
 
 // OnStop stops all active child actors when the registry shuts down.
 func (r *registryBehavior) OnStop(context.Context) error {
+	if r.cleanupDone != nil {
+		close(r.cleanupDone)
+	}
 	for _, child := range r.active {
 		child.Stop()
 	}
@@ -1564,6 +1570,7 @@ func (r *registryBehavior) childConfig(target wire.OutPoint) Config {
 		FraudCheckpointSafetyMargin: r.cfg.FraudCheckpointSafetyMargin,
 		LegacyProofScanFloor:        r.cfg.LegacyProofScanFloor,
 		RegistryRef:                 r.selfRef,
+		cleanupDone:                 r.cleanupDone,
 		proofNodeFloorAlerts:        r.proofNodeFloorAlerts,
 	}
 }

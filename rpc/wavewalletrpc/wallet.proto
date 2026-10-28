@@ -1691,7 +1691,9 @@ enum WalletEntryPhase {
 // operation. Times use the operator's UTC clock; cutoff starts quoting, not
 // confirmation. This is advisory progress, not a durable registration promise.
 message ScheduledBatchWindow {
+    // registration_opens_unix is the first second accepting joins.
     int64 registration_opens_unix = 1;
+    // cutoff_unix is the first second rejecting joins.
     int64 cutoff_unix = 2;
     // planned_join_unix_ms is the client's planned wake before preparation.
     int64 planned_join_unix_ms = 3;
