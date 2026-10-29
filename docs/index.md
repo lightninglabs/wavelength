@@ -23,6 +23,7 @@ into specific topics below.
 | [wavewalletdk_integration.md](wavewalletdk_integration.md) | Basic `wavewalletdk` integration flow, startup/config examples, swap accounting, and wrapper guidance |
 | [canonical_activity_log_design.md](canonical_activity_log_design.md) | Design (#774): a canonical store with stable cross-restart ids replacing the derive-on-read activity feed — a current-state `activity_entries` projection plus an append-only, sequence-numbered `activity_events` log (mailbox-style cursor) for resumable subscribe; foundation of the event-log epic (#776) |
 | [wavewalletrpc_build.md](wavewalletrpc_build.md) | How to build and install the daemon and CLI with the wallet RPC subserver enabled (`wavewalletrpc` + `swapruntime` tags) |
+| [exit_ancestry_export.md](exit_ancestry_export.md) | Signed ancestry bundle format and external CPFP executor contract |
 | [seed_restore_recovery.md](seed_restore_recovery.md) | Restore a self-managed seed and recover Ark state from chain/indexer data |
 | [swap_background_execution.md](swap_background_execution.md) | Optional build-tagged daemon executor for background swap progress and daemon-backed CLI control |
 | [mailbox_architecture.md](mailbox_architecture.md) | Three-layer mailbox system: pb, rpc, conn, serverconn |

@@ -71,6 +71,10 @@ service WalletService {
     // needed, a backing-wallet address callers can fund before forced unroll.
     rpc GetExitPlan (GetExitPlanRequest) returns (GetExitPlanResponse);
 
+    // ExportExit exports signed ancestry for externally funded broadcasting.
+    // It does not start an exit. A destination opts into a signed final sweep.
+    rpc ExportExit (ExportExitRequest) returns (ExportExitResponse);
+
     // SweepWallet previews or broadcasts a normal backing-wallet sweep to a
     // caller-supplied Bitcoin address. This sweeps wallet-managed funds left
     // after CPFP/change/unroll proceeds and does not sweep boarding outputs.
@@ -975,6 +979,109 @@ message StatusResponse {
     // pending_count is the number of WalletEntry rows in PENDING
     // status.
     uint32 pending_count = 5;
+}
+
+// ExportExitRequest selects one locally held VTXO for external unrolling.
+message ExportExitRequest {
+    // outpoint identifies the target as "txid:index".
+    string outpoint = 1;
+
+    // sweep_address optionally includes a presigned final timeout sweep to
+    // this Bitcoin address. The sweep pays the full VTXO value and contains
+    // a zero-value P2A anchor for externally funded CPFP after CSV maturity.
+    // Empty exports ancestry only. Asset-bearing targets cannot be swept.
+    string sweep_address = 2;
+}
+
+// ExportExitResponse is version 2 of the portable signed ancestry bundle.
+// Every transaction witness is verified against the supplied previous outputs.
+// Commitment outputs are local assertions: an executor MUST verify them against
+// its own chain view, including confirmation and conflicting spends. Exporting
+// does not reserve the VTXO, broadcast transactions, or start a local exit job.
+message ExportExitResponse {
+    // format_version selects the bundle schema; currently 2. Version 1
+    // contained ancestry only. Executors must reject unknown versions.
+    uint32 format_version = 1;
+
+    // network is the daemon's Bitcoin network name.
+    string network = 2;
+
+    // genesis_hash binds the bundle to a Bitcoin chain (display-order hex).
+    // Custom signet executors must additionally agree on the signet challenge.
+    string genesis_hash = 3;
+
+    // target_outpoint is the VTXO that the ancestry materializes.
+    string target_outpoint = 4;
+
+    // csv_delay is the target's relative timeout in blocks. A final sweep
+    // cannot be broadcast until this delay matures after target confirmation.
+    uint32 csv_delay = 5;
+
+    // transactions are deduplicated and ordered by layer, then txid. The
+    // executor funds and signs its own anchor CPFP children as required.
+    repeated ExitAncestryTransaction transactions = 6;
+
+    // external_inputs are outputs consumed by the graph but not produced by
+    // it, ordered by raw hash bytes then output index. Their funding
+    // transactions are not included and must already be available on chain.
+    repeated ExitAncestryInput external_inputs = 7;
+
+    // final_sweep is present only when sweep_address was supplied. Its
+    // signature commits to the destination, full payout, and fee anchor.
+    // It pays zero fee and must be packaged with an executor-funded child.
+    ExitFinalSweep final_sweep = 8;
+}
+
+// ExitFinalSweep is a presigned Bitcoin timeout spend of target_outpoint.
+// It is separate from ancestry so executors cannot treat it as immediately
+// broadcastable after its parent confirms: the CSV delay must first mature.
+message ExitFinalSweep {
+    // txid is the signed sweep's display-order transaction ID.
+    string txid = 1;
+
+    // raw_tx_hex includes the complete script-path witness.
+    string raw_tx_hex = 2;
+
+    // anchor_outpoint identifies the zero-value P2A fee output.
+    string anchor_outpoint = 3;
+
+    // destination_address is the network-validated Bitcoin destination.
+    string destination_address = 4;
+
+    // amount_sat is the signed payout to the destination, before the service
+    // independently funds its CPFP child. No fee is deducted from this payout.
+    int64 amount_sat = 5;
+}
+
+// ExitAncestryTransaction contains exact signed Bitcoin transaction bytes.
+message ExitAncestryTransaction {
+    // txid is display-order hex; recompute it from raw_tx_hex on import.
+    string txid = 1;
+
+    // kind is tree, checkpoint, or ark.
+    string kind = 2;
+
+    // raw_tx_hex is a witness-inclusive Bitcoin wire transaction in hex.
+    string raw_tx_hex = 3;
+
+    // parent_txids contains in-bundle dependencies in deterministic order.
+    repeated string parent_txids = 4;
+
+    // anchor_outpoint is the P2A output available for executor-funded CPFP,
+    // formatted "txid:index". Empty means there is no recognized anchor.
+    string anchor_outpoint = 5;
+}
+
+// ExitAncestryInput supplies the value and script needed to verify signatures.
+message ExitAncestryInput {
+    // outpoint identifies the external output as "txid:index".
+    string outpoint = 1;
+
+    // amount_sat is the external output value in satoshis.
+    int64 amount_sat = 2;
+
+    // pk_script_hex is the external output's scriptPubKey in hex.
+    string pk_script_hex = 3;
 }
 
 // GetExitPlanRequest lists the VTXO outpoints to preview for unilateral exit

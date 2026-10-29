@@ -120,6 +120,15 @@ func (s *Service) GetExitPlan(ctx context.Context,
 	return s.getExitPlan(ctx, req)
 }
 
+// ExportExit exports signed ancestry and an optional final timeout sweep
+// for an externally funded unroll.
+func (s *Service) ExportExit(ctx context.Context,
+	req *wavewalletrpc.ExportExitRequest) (
+	*wavewalletrpc.ExportExitResponse, error) {
+
+	return s.exportExit(ctx, req)
+}
+
 // SweepWallet previews or broadcasts a normal backing-wallet sweep. Boarding
 // UTXOs remain owned by the dedicated boarding-sweep flow.
 func (s *Service) SweepWallet(ctx context.Context,

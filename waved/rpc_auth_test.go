@@ -67,6 +67,18 @@ func TestWavedRPCPermissionsMapsMutatingMethods(t *testing.T) {
 	}
 }
 
+// TestExitExportRequiresWritePermission protects executable signed ancestry
+// from read-only observers even though export does not mutate wallet state.
+func TestExitExportRequiresWritePermission(t *testing.T) {
+	t.Parallel()
+	method := wavewalletrpc.WalletService_ExportExit_FullMethodName
+	ops, ok := wavedRPCPermissions[method]
+	require.True(t, ok)
+	require.Equal(t, []bakery.Op{{
+		Entity: entityOnChain, Action: "write",
+	}}, ops)
+}
+
 // TestWavedRPCPermissionsProtectsMacaroonBaking verifies only the dedicated
 // generate operation authorizes credential creation.
 func TestWavedRPCPermissionsProtectsMacaroonBaking(t *testing.T) {

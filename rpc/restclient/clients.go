@@ -1130,6 +1130,17 @@ func (c *WalletServiceClient) GetExitPlan(ctx context.Context,
 	return out, err
 }
 
+// ExportExit exports signed ancestry for externally funded unrolling.
+func (c *WalletServiceClient) ExportExit(ctx context.Context,
+	in *wavewalletrpc.ExportExitRequest, _ ...grpc.CallOption) (
+	*wavewalletrpc.ExportExitResponse, error) {
+
+	out := new(wavewalletrpc.ExportExitResponse)
+	err := c.client.Post(ctx, "/v1/wallet/exit-export", in, out)
+
+	return out, err
+}
+
 // SweepWallet previews or broadcasts a backing-wallet sweep.
 func (c *WalletServiceClient) SweepWallet(ctx context.Context,
 	in *wavewalletrpc.SweepWalletRequest, _ ...grpc.CallOption) (
