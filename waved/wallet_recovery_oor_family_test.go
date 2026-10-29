@@ -179,9 +179,12 @@ func newRecoveryScanServer(t *testing.T, liveScript []byte,
 		).NewVTXOStore(clk),
 		proofKeyBackend: &recoveryKeyBackend{},
 		expiryAuthenticator: func(context.Context, []vtxo.Ancestry) (
-			int32, error) {
+			vtxo.AuthenticatedBatchEvidence, error) {
 
-			return 965281, nil
+			return vtxo.AuthenticatedBatchEvidence{
+				BatchExpiry:              965281,
+				EarliestCommitmentHeight: 964273,
+			}, nil
 		},
 		indexer: indexer.New(
 			stub, nil, "test-server", "client:test",
@@ -217,6 +220,7 @@ func TestRecoverIndexedVTXOsCoversOORReceiveScripts(t *testing.T) {
 	live, _ := expiryfixture.Round(t, 28674, oorScript,
 		1008, 964273, 2)
 	live.BatchExpiryHeight = 965281
+	live.CreatedHeight = 965282
 	live.RelativeExpiry = recoveryTestExitDelay
 
 	// The VTXO-owner family alone never queries the OOR receive script.
@@ -253,6 +257,8 @@ func TestRecoverIndexedVTXOsCoversOORReceiveScripts(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, saved)
 	require.Equal(t, oorScript, saved.PkScript)
+	require.Equal(t, int32(964273), saved.CreatedHeight)
+	require.True(t, vtxo.HasUsableBatchExpiry(saved))
 }
 
 // TestRecoveryContinuesAfterForgedTarget proves one unrelated ancestry response

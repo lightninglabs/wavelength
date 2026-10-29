@@ -116,6 +116,12 @@ type RegistryStore interface {
 	MarkTerminal(ctx context.Context, record RegistryRecord) error
 }
 
+// ArmedExitPolicyLookup resolves the exit policy identity of an armed
+// recovery obligation for one target outpoint. The boolean reports whether an
+// obligation exists for the target.
+type ArmedExitPolicyLookup func(ctx context.Context, target wire.OutPoint) (
+	ExitPolicyKind, string, bool, error)
+
 // RegistryConfig configures the thin unroll registry actor.
 type RegistryConfig struct {
 	// Store persists coarse registry records for restore.
@@ -172,6 +178,16 @@ type RegistryConfig struct {
 	// spawned VTXOUnrollActor's Config so policy-specific unroll jobs
 	// (e.g. vHTLC recovery) reach their custom resolver after restart.
 	ExitSpendPolicyResolver ExitSpendPolicyResolver
+
+	// ArmedExitPolicy resolves the exit policy identity of an armed
+	// recovery obligation for one target outpoint. It is consulted on
+	// every admission: a caller that names no policy (the manual Unroll
+	// RPC, the fraud watcher, and critical expiry all submit none)
+	// inherits the armed identity instead of binding the target to the
+	// standard VTXO timeout policy, and a caller that names a different
+	// identity is rejected with ErrExitPolicyMismatch. Nil disables the
+	// lookup.
+	ArmedExitPolicy ArmedExitPolicyLookup
 
 	// FraudCheckpointSafetyMargin overrides the default backstop
 	// margin (in blocks) the recipient subtracts from the relative
@@ -458,7 +474,7 @@ func (r *registryBehavior) OnStop(context.Context) error {
 // Deduplication trail, in order of cost:
 //
 //  1. r.active (in-memory): a live child is running right now. Return
-//     its ActorID with Created=false. No store hit.
+//     its ActorID with Created=false.
 //
 //  2. r.pending (in-memory): a child has terminated but its latest
 //     snapshot has not yet flushed to the durable store. Returning the
@@ -468,6 +484,17 @@ func (r *registryBehavior) OnStop(context.Context) error {
 //  3. Store.GetRecord: the record exists on disk but the child was
 //     never restored (e.g. the registry was just started and the caller
 //     asked before RestoreNonTerminal completed). Same dedup semantics.
+//
+// Every dedup path compares the exit policy identity the new admission
+// resolves against the identity already bound to the target, but only when
+// the admission actually names one: a caller that submits a non-standard
+// policy, or one whose policy-less request inherited an armed recovery
+// obligation, is rejected with ErrExitPolicyMismatch when the pair differs.
+// A caller that simply names nothing and inherits nothing keeps the
+// historical dedup: the record already bound to the target drives it, and
+// any identity difference is only logged at debug. The manual Unroll RPC,
+// critical expiry, the fraud watcher, and the boot scan all submit policy-less
+// requests, and dedup is what makes those paths idempotent.
 //
 // Only if all three miss do we spawn a fresh child, fetch best height,
 // persist a pending record, send StartUnrollRequest, and read back the
@@ -489,123 +516,215 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		return fn.Err[RegistryResp](err)
 	}
 
-	if child, ok := r.active[req.Outpoint]; ok {
-		return fn.Ok[RegistryResp](&EnsureUnrollResp{
-			ActorID: child.Ref().ID(),
-			Created: false,
-		})
+	resp, err := r.dedupActiveAdmission(ctx, req)
+	if err != nil || resp != nil {
+		return admissionResult(resp, err)
 	}
 
 	if err := r.feeReadmissionReady(req.Outpoint); err != nil {
 		return fn.Err[RegistryResp](err)
 	}
 
-	// Terminal records leave the active map before their persistence
-	// write completes, so fall back to the in-memory pending cache and
-	// the durable store. Re-spawning a fresh actor on top of an existing
-	// record would clobber the recorded sweep txid or fail reason.
-	//
-	// A recoverable failure is the exception: the prior exit failed
-	// cleanly with no on-chain footprint and the VTXO was rolled back to
-	// live (wavelength#602), so a fresh exit must be admittable rather
-	// than deduped against the dead attempt. Fall through to the spawn
-	// path, whose UpsertRecord overwrites the stale recoverable row.
-	if record, ok := r.pending[req.Outpoint]; ok &&
-		!record.RecoverableFailure {
-		return fn.Ok[RegistryResp](&EnsureUnrollResp{
-			ActorID: record.ActorID,
-			Created: false,
-		})
+	resp, err = r.dedupPendingAdmission(ctx, req)
+	if err != nil || resp != nil {
+		return admissionResult(resp, err)
 	}
+
+	policy, resp, err := r.dedupDurableAdmission(ctx, req)
+	if err != nil || resp != nil {
+		return admissionResult(resp, err)
+	}
+
+	return r.admitFresh(ctx, req, policy)
+}
+
+// admissionResult packages a dedup outcome as a registry response.
+func admissionResult(resp *EnsureUnrollResp,
+	err error) fn.Result[RegistryResp] {
+
+	if err != nil {
+		return fn.Err[RegistryResp](err)
+	}
+
+	return fn.Ok[RegistryResp](resp)
+}
+
+// dedupActiveAdmission answers a request for a target that has a live child.
+// A nil response without an error means no child is live and admission
+// continues.
+func (r *registryBehavior) dedupActiveAdmission(ctx context.Context,
+	req *EnsureUnrollRequest) (*EnsureUnrollResp, error) {
+
+	child, ok := r.active[req.Outpoint]
+	if !ok {
+		return nil, nil
+	}
+
+	existing, err := r.boundPolicyRecord(ctx, req.Outpoint)
+	if err != nil {
+		return nil, err
+	}
+
+	// With no record bound to the target there is no identity to agree
+	// with, and the live child keeps driving it either way, so the reply
+	// must not depend on the recovery bookkeeping being readable.
+	if existing != nil {
+		_, err = r.checkAdmissionPolicy(ctx, req, existing)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return &EnsureUnrollResp{
+		ActorID: child.Ref().ID(),
+		Created: false,
+	}, nil
+}
+
+// dedupPendingAdmission answers a request for a target whose child terminated
+// but whose latest snapshot has not flushed to the durable store, so a fresh
+// start would clobber a terminal sweep txid or failure reason.
+//
+// A recoverable failure falls through to the spawn path instead: the prior
+// exit failed cleanly with no on-chain footprint and the VTXO was rolled back
+// to live (wavelength#602), so a fresh exit must be admittable rather than
+// deduped against the dead attempt. The spawn path's UpsertRecord overwrites
+// the stale row.
+func (r *registryBehavior) dedupPendingAdmission(ctx context.Context,
+	req *EnsureUnrollRequest) (*EnsureUnrollResp, error) {
+
+	record, ok := r.pending[req.Outpoint]
+	if !ok || record.RecoverableFailure {
+		return nil, nil
+	}
+
+	_, err := r.checkAdmissionPolicy(ctx, req, &record)
+	if err != nil {
+		return nil, err
+	}
+
+	return &EnsureUnrollResp{
+		ActorID: record.ActorID,
+		Created: false,
+	}, nil
+}
+
+// dedupDurableAdmission answers a request for a target that has a durable
+// record but no live child. It also returns the exit policy identity the
+// admission resolved, so the spawn path binds exactly what dedup compared.
+// A nil response without an error means the caller may spawn a fresh child.
+func (r *registryBehavior) dedupDurableAdmission(ctx context.Context,
+	req *EnsureUnrollRequest) (admissionPolicy, *EnsureUnrollResp, error) {
 
 	existing, err := r.cfg.Store.GetRecord(ctx, req.Outpoint)
 	if err != nil {
-		return fn.Err[RegistryResp](
-			fmt.Errorf("lookup existing record: %w", err),
-		)
+		return admissionPolicy{}, nil, fmt.Errorf("lookup existing "+
+			"record: %w", err)
 	}
-	if existing != nil && feeRejectedRecord(*existing) {
+
+	policy, err := r.checkAdmissionPolicy(ctx, req, existing)
+	if err != nil {
+		return admissionPolicy{}, nil, err
+	}
+	if existing == nil {
+		return policy, nil, nil
+	}
+
+	// The admission agrees with the record bound to the target, so a legacy
+	// terminal fee rejection may now be revived in place. The ordering
+	// matters: prepareFeeReadmission rewrites the durable row, which must
+	// not happen for an admission that was about to be rejected above.
+	if feeRejectedRecord(*existing) {
 		err := r.prepareFeeReadmission(ctx, existing, req)
 		if err != nil {
-			return fn.Err[RegistryResp](err)
+			return admissionPolicy{}, nil, err
 		}
 	}
-	if existing != nil {
-		// A durable record exists but no child is live for it. Two
-		// sub-cases:
-		//
-		//   1. Terminal record (Completed / non-recoverable Failed)
-		//      — return the historical ActorID so callers see a
-		//      stable identity and do not clobber the recorded sweep
-		//      txid or failure reason. A *recoverable* terminal
-		//      failure is the exception: the VTXO was rolled back to
-		//      live (wavelength#602), so it falls through to a
-		//      fresh spawn (handled below).
-		//
-		//   2. Non-terminal record — the actor was admitted in a
-		//      previous boot but never resumed (e.g. RestoreNonTerminal
-		//      hit a transient ChainSource error). Attempt an inline
-		//      restore so a fresh Ensure from the chain resolver or
-		//      RPC layer can recover from a transient failure on the
-		//      previous boot. If restore fails again, surface the
-		//      error so the caller can retry; the durable record
-		//      stays non-terminal and will be retried on the next
-		//      Ensure / next daemon restart.
-		if !existing.IsTerminal() {
-			if err := r.validateRestorableRecords(
-				[]RegistryRecord{*existing},
-			); err != nil {
-				return fn.Err[RegistryResp](
-					fmt.Errorf("validate existing record "+
-						"for restore: %w", err),
-				)
-			}
 
-			height, err := r.queryBestHeight(ctx)
-			if err != nil {
-				return fn.Err[RegistryResp](
-					fmt.Errorf("best height for "+
-						"restore: %w", err),
-				)
-			}
-
-			child, err := r.tryRestoreOne(ctx, *existing, height)
-			if err != nil {
-				return fn.Err[RegistryResp](
-					fmt.Errorf("restore existing "+
-						"record: %w", err),
-				)
-			}
-
-			r.active[req.Outpoint] = child
-
-			// Mirror the historical record into r.pending so
-			// handleTerminated can carry over Trigger / ActorID
-			// without an extra store lookup, and so handleGetStatus
-			// answers from cache while the child runs.
-			r.pending[req.Outpoint] = cloneRegistryRecord(*existing)
-
-			return fn.Ok[RegistryResp](&EnsureUnrollResp{
-				ActorID: child.Ref().ID(),
-				Created: false,
-			})
-		}
-
-		// Terminal record. A recoverable failure (clean, no on-chain
-		// footprint) means the VTXO was rolled back to live, so a new
-		// exit is allowed: fall through to the spawn path below, whose
-		// UpsertRecord overwrites the stale record. Any other terminal
-		// record (Completed, or a footprint-bearing Failed) is a real
-		// end state — dedup against it and return the historical
-		// ActorID so the recorded sweep txid / failure reason are
-		// never clobbered.
-		if !existing.RecoverableFailure {
-			return fn.Ok[RegistryResp](&EnsureUnrollResp{
-				ActorID: existing.ActorID,
-				Created: false,
-			})
-		}
+	resp, err := r.dedupExistingRecord(ctx, req.Outpoint, *existing)
+	if err != nil {
+		return admissionPolicy{}, nil, err
 	}
+
+	return policy, resp, nil
+}
+
+// dedupExistingRecord answers an admission whose durable record is not backed
+// by a live child, or returns nil when the record may be replaced by a fresh
+// admission.
+func (r *registryBehavior) dedupExistingRecord(ctx context.Context,
+	target wire.OutPoint, existing RegistryRecord) (*EnsureUnrollResp,
+	error) {
+
+	// A non-terminal record means the actor was admitted in a previous boot
+	// but never resumed (e.g. RestoreNonTerminal hit a transient
+	// ChainSource error). Attempt an inline restore so a fresh Ensure from
+	// the chain resolver or RPC layer can recover from a transient failure
+	// on the previous boot. If restore fails again, surface the error so
+	// the caller can retry; the durable record stays non-terminal and will
+	// be retried on the next Ensure / next daemon restart.
+	if !existing.IsTerminal() {
+		return r.restoreExistingRecord(ctx, target, existing)
+	}
+
+	// Terminal record. A recoverable failure (clean, no on-chain
+	// footprint) means the VTXO was rolled back to live, so a new exit is
+	// allowed: a nil response lets admission fall through to the spawn
+	// path, whose UpsertRecord overwrites the stale record. Any other
+	// terminal record (Completed, or a footprint-bearing Failed) is a real
+	// end state -- dedup against it and return the historical ActorID so
+	// the recorded sweep txid / failure reason are never clobbered.
+	if existing.RecoverableFailure {
+		return nil, nil
+	}
+
+	return &EnsureUnrollResp{
+		ActorID: existing.ActorID,
+		Created: false,
+	}, nil
+}
+
+// restoreExistingRecord brings a non-terminal record back under a live child
+// and mirrors it into the in-memory maps.
+func (r *registryBehavior) restoreExistingRecord(ctx context.Context,
+	target wire.OutPoint, existing RegistryRecord) (*EnsureUnrollResp,
+	error) {
+
+	if err := r.validateRestorableRecords(
+		[]RegistryRecord{existing},
+	); err != nil {
+		return nil, fmt.Errorf("validate existing record for "+
+			"restore: %w", err)
+	}
+
+	height, err := r.queryBestHeight(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("best height for restore: %w", err)
+	}
+
+	child, err := r.tryRestoreOne(ctx, existing, height)
+	if err != nil {
+		return nil, fmt.Errorf("restore existing record: %w", err)
+	}
+
+	r.active[target] = child
+
+	// Mirror the historical record into r.pending so handleTerminated can
+	// carry over Trigger / ActorID without an extra store lookup, and so
+	// handleGetStatus answers from cache while the child runs.
+	r.pending[target] = cloneRegistryRecord(existing)
+
+	return &EnsureUnrollResp{
+		ActorID: child.Ref().ID(),
+		Created: false,
+	}, nil
+}
+
+// admitFresh spawns the child for a target with no live record and makes the
+// admission durable under the resolved exit policy identity.
+func (r *registryBehavior) admitFresh(ctx context.Context,
+	req *EnsureUnrollRequest,
+	policy admissionPolicy) fn.Result[RegistryResp] {
 
 	height, err := r.queryBestHeight(ctx)
 	if err != nil {
@@ -621,8 +740,8 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		TargetOutpoint: req.Outpoint,
 		ActorID:        child.Ref().ID(),
 		Trigger:        req.Trigger,
-		ExitPolicyKind: exitPolicyKind(req.ExitPolicyKind),
-		ExitPolicyRef:  req.ExitPolicyRef,
+		ExitPolicyKind: policy.Kind,
+		ExitPolicyRef:  policy.Ref,
 		Phase:          PhasePending,
 	}
 
@@ -641,8 +760,8 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 	startReq := &StartUnrollRequest{
 		Height:         height,
 		Trigger:        req.Trigger,
-		ExitPolicyKind: req.ExitPolicyKind,
-		ExitPolicyRef:  req.ExitPolicyRef,
+		ExitPolicyKind: policy.Kind,
+		ExitPolicyRef:  policy.Ref,
 	}
 	startCtx, cancelStart := context.WithTimeout(
 		context.WithoutCancel(ctx), childAdmissionTimeout,
@@ -1460,6 +1579,307 @@ func (r *registryBehavior) spawn(ctx context.Context, target wire.OutPoint) (
 
 	//nolint:contextcheck // child actor owns its own durable lifecycle
 	return NewVTXOUnrollActor(r.childConfig(target))
+}
+
+// ErrExitPolicyMismatch is returned when an admission names a different exit
+// policy than the identity already bound to the target. Unroll records are
+// deduplicated by outpoint, so silently accepting a second identity would
+// leave the first one in force while the caller believes otherwise.
+var ErrExitPolicyMismatch = errors.New("unroll exit policy mismatch")
+
+// ExitPolicyMismatchError reports one admission whose exit policy identity
+// disagrees with the identity already bound to the target, either by an
+// existing unroll record or by an armed recovery obligation.
+type ExitPolicyMismatchError struct {
+	// Target is the outpoint being admitted.
+	Target wire.OutPoint
+
+	// BoundKind and BoundRef are the identity already bound to the
+	// target.
+	BoundKind ExitPolicyKind
+	BoundRef  string
+
+	// RequestedKind and RequestedRef are the identity on the admission.
+	RequestedKind ExitPolicyKind
+	RequestedRef  string
+}
+
+// Error implements the error interface.
+func (e *ExitPolicyMismatchError) Error() string {
+	return fmt.Sprintf("%v: target %s is already bound to exit policy "+
+		"(kind=%q, ref=%q), requested (kind=%q, ref=%q)",
+		ErrExitPolicyMismatch, e.Target, e.BoundKind, e.BoundRef,
+		e.RequestedKind, e.RequestedRef)
+}
+
+// Unwrap makes errors.Is(err, ErrExitPolicyMismatch) match every mismatch.
+func (e *ExitPolicyMismatchError) Unwrap() error {
+	return ErrExitPolicyMismatch
+}
+
+// logAdmissionPolicyError records an admission-time exit policy rejection.
+// The error itself is only loud when the caller uses Ask. The writers that
+// reach the registry through a Tell-routed notification path -- the fraud
+// watcher, critical expiry, the manual Unroll RPC's notification mapper, and
+// the recovery coordinator's ensureUnroll -- drop it, so this warning is the
+// only signal those paths produce.
+func (r *registryBehavior) logAdmissionPolicyError(ctx context.Context,
+	target wire.OutPoint, err error) {
+
+	var mismatch *ExitPolicyMismatchError
+	if !errors.As(err, &mismatch) {
+		r.log.WarnS(ctx, "Unroll admission rejected: exit policy "+
+			"binding could not be resolved", err,
+			slog.String("outpoint", target.String()),
+		)
+
+		return
+	}
+
+	r.log.WarnS(ctx, "Unroll admission rejected: exit policy mismatch",
+		err,
+		slog.String("outpoint", mismatch.Target.String()),
+		slog.String("bound_policy_kind", string(mismatch.BoundKind)),
+		slog.String("bound_policy_ref", mismatch.BoundRef),
+		slog.String(
+			"requested_policy_kind", string(mismatch.RequestedKind),
+		),
+		slog.String("requested_policy_ref", mismatch.RequestedRef),
+	)
+}
+
+// checkExitPolicyBinding rejects a duplicate admission that names a different
+// exit policy identity than the one already bound to the target. A duplicate
+// carrying the same identity stays idempotent.
+func checkExitPolicyBinding(target wire.OutPoint, boundKind ExitPolicyKind,
+	boundRef string, reqKind ExitPolicyKind, reqRef string) error {
+
+	bound := exitPolicyKind(boundKind)
+	requested := exitPolicyKind(reqKind)
+	if bound == requested && boundRef == reqRef {
+		return nil
+	}
+
+	return &ExitPolicyMismatchError{
+		Target:        target,
+		BoundKind:     bound,
+		BoundRef:      boundRef,
+		RequestedKind: requested,
+		RequestedRef:  reqRef,
+	}
+}
+
+// admissionPolicy is the exit policy identity one admission resolves to,
+// together with how it arrived there.
+type admissionPolicy struct {
+	// Kind and Ref form the (ExitPolicyKind, ExitPolicyRef) pair the
+	// admission binds to its target.
+	Kind ExitPolicyKind
+	Ref  string
+
+	// Named reports whether the caller named a non-standard identity
+	// itself instead of leaving the policy to the registry.
+	Named bool
+
+	// Inherited reports whether the identity came from an armed recovery
+	// obligation for the target rather than from the request.
+	Inherited bool
+}
+
+// binds reports whether the admission's identity is the pair already bound to
+// a record.
+func (p admissionPolicy) binds(record *RegistryRecord) bool {
+	return exitPolicyKind(record.ExitPolicyKind) ==
+		exitPolicyKind(p.Kind) &&
+		record.ExitPolicyRef == p.Ref
+}
+
+// checkAdmissionPolicy resolves the exit policy identity the request binds to
+// its target and enforces the binding already in force, if any.
+//
+// A request that names a policy, and a policy-less request that inherited an
+// armed recovery obligation, must agree with the identity bound to the
+// existing record: a disagreement is the conflict admission exists to catch,
+// so it returns ErrExitPolicyMismatch. A request that names nothing and
+// inherits nothing is a plain standard-policy caller (the manual Unroll RPC,
+// critical expiry, the fraud watcher, the boot scan). Those callers are
+// idempotent by contract, so a differing record is deduped as before and the
+// bound record keeps driving the target; the difference is only worth a debug
+// line. This is also what lets the inline restore of a non-terminal record
+// run for such a caller rather than failing it outright.
+func (r *registryBehavior) checkAdmissionPolicy(ctx context.Context,
+	req *EnsureUnrollRequest, existing *RegistryRecord) (admissionPolicy,
+	error) {
+
+	policy, err := r.resolveAdmissionPolicy(ctx, req, existing)
+	if err != nil {
+		r.logAdmissionPolicyError(ctx, req.Outpoint, err)
+
+		return admissionPolicy{}, err
+	}
+
+	// A recoverable terminal failure left no on-chain footprint and the
+	// VTXO was rolled back to live, so its binding is dead and the target
+	// may be admitted afresh.
+	if existing == nil || existing.RecoverableFailure {
+		return policy, nil
+	}
+
+	if !policy.Named && !policy.Inherited {
+		r.logPolicyLessDedup(ctx, req.Outpoint, policy, existing)
+
+		return policy, nil
+	}
+
+	err = checkExitPolicyBinding(
+		req.Outpoint, existing.ExitPolicyKind, existing.ExitPolicyRef,
+		policy.Kind, policy.Ref,
+	)
+	if err != nil {
+		r.logAdmissionPolicyError(ctx, req.Outpoint, err)
+
+		return admissionPolicy{}, err
+	}
+
+	return policy, nil
+}
+
+// logPolicyLessDedup records, at debug, that a policy-less admission was
+// deduped against a record bound to a different identity. The caller asked for
+// no binding of its own, so the record already on disk wins by design; the
+// line exists so the divergence is still observable.
+func (r *registryBehavior) logPolicyLessDedup(ctx context.Context,
+	target wire.OutPoint, policy admissionPolicy,
+	existing *RegistryRecord) {
+
+	if policy.binds(existing) {
+		return
+	}
+
+	r.log.DebugS(ctx, "Unroll admission keeps the exit policy already "+
+		"bound to the target",
+		slog.String("outpoint", target.String()),
+		slog.String(
+			"bound_policy_kind",
+			string(
+				exitPolicyKind(existing.ExitPolicyKind),
+			),
+		),
+		slog.String("bound_policy_ref", existing.ExitPolicyRef),
+	)
+}
+
+// resolveAdmissionPolicy resolves the durable exit policy identity an
+// admission binds to its target.
+//
+// A caller that names no policy inherits the identity of an armed recovery
+// obligation for the same target. The three policy-less writers -- the manual
+// Unroll RPC, the fraud watcher, and critical expiry -- converge here, and a
+// target held by a recovery obligation can only be spent through that
+// obligation's leaf, so inheriting the armed identity is what keeps the
+// admitted exit spendable. The lookup is fail-closed: a caller that names a
+// different identity is rejected, and a store error aborts admission rather
+// than falling back to the standard policy.
+//
+// An explicit request that already names the identity bound to the target is
+// answered without the lookup: that duplicate leaves the binding unchanged
+// either way, and a bookkeeping failure on the recovery side must not turn an
+// idempotent repeat into an error. A recoverable failure has no live binding:
+// its replacement is a fresh admission and must consult the armed obligation.
+func (r *registryBehavior) resolveAdmissionPolicy(ctx context.Context,
+	req *EnsureUnrollRequest, existing *RegistryRecord) (admissionPolicy,
+	error) {
+
+	policy := admissionPolicy{
+		Kind: exitPolicyKind(req.ExitPolicyKind),
+		Ref:  req.ExitPolicyRef,
+		Named: exitPolicyKind(req.ExitPolicyKind) !=
+			StandardVTXOTimeoutExitPolicyKind,
+	}
+	if policy.Named && existing != nil && !existing.RecoverableFailure &&
+		policy.binds(existing) {
+		return policy, nil
+	}
+
+	armed, err := r.armedExitPolicy(ctx, req)
+	if err != nil {
+		return admissionPolicy{}, err
+	}
+	if armed == nil {
+		return policy, nil
+	}
+
+	return *armed, nil
+}
+
+// armedExitPolicy returns the identity of the armed recovery obligation that
+// owns a policy-less target, or nil when the caller names the identity itself
+// or no obligation is armed.
+func (r *registryBehavior) armedExitPolicy(ctx context.Context,
+	req *EnsureUnrollRequest) (*admissionPolicy, error) {
+
+	if r.cfg.ArmedExitPolicy == nil {
+		return nil, nil
+	}
+
+	armedKind, armedRef, armed, err := r.cfg.ArmedExitPolicy(
+		ctx, req.Outpoint,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("resolve armed exit policy for %s: %w",
+			req.Outpoint, err)
+	}
+	if !armed {
+		return nil, nil
+	}
+
+	armedKind = exitPolicyKind(armedKind)
+	if err := validateExitPolicyIdentity(armedKind, armedRef); err != nil {
+		return nil, fmt.Errorf("armed exit policy for %s: %w",
+			req.Outpoint, err)
+	}
+
+	named := exitPolicyKind(req.ExitPolicyKind)
+	if named != StandardVTXOTimeoutExitPolicyKind {
+		err := checkExitPolicyBinding(
+			req.Outpoint, armedKind, armedRef, named,
+			req.ExitPolicyRef,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		return nil, nil
+	}
+
+	return &admissionPolicy{
+		Kind:      armedKind,
+		Ref:       armedRef,
+		Inherited: true,
+	}, nil
+}
+
+// boundPolicyRecord returns the control-plane record currently bound to an
+// already-admitted target. The registry caches that record in r.pending until
+// its durable write completes and evicts it afterwards, so an active target
+// falls back to the store exactly like handleGetStatus does. A nil record
+// means no identity is available to compare; admission always persists one
+// before publishing the child in r.active.
+func (r *registryBehavior) boundPolicyRecord(ctx context.Context,
+	target wire.OutPoint) (*RegistryRecord, error) {
+
+	if record, ok := r.pending[target]; ok {
+		clone := cloneRegistryRecord(record)
+
+		return &clone, nil
+	}
+
+	record, err := r.cfg.Store.GetRecord(ctx, target)
+	if err != nil {
+		return nil, fmt.Errorf("lookup active record: %w", err)
+	}
+
+	return record, nil
 }
 
 // validateExitPolicyIdentity enforces the kind/ref pair invariant at the

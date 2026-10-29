@@ -456,7 +456,9 @@ type Descriptor struct {
 	// TreeDepth, which tracks position within a single commitment tree.
 	ChainDepth int
 
-	// CreatedHeight is the block height when this VTXO was created.
+	// CreatedHeight is historical creation metadata. Receive paths obtain
+	// it from the indexer; it is not authenticated confirmation evidence.
+	// It also feeds the optional batch-lifetime payment-reserve heuristic.
 	CreatedHeight int32
 
 	// Status is the current lifecycle status of the VTXO.

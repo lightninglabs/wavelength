@@ -7,6 +7,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/chainsource"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -77,7 +78,13 @@ func (a *TxBroadcasterActor) driveFeeBump(ctx context.Context,
 
 	a.ensureFeeBumpStarted(ctx)
 
-	outbox, err := a.feeBumpFSM.AskEvent(ctx, event).Await(ctx).Unpack()
+	// Admission still respects the caller, but once accepted the transition
+	// owns shared broadcaster state until it completes. Do not let caller
+	// cancellation release this turn and race the next actor message. Each
+	// transition bounds its IO; shutdown joins this turn before OnStop.
+	future := a.feeBumpFSM.AskEvent(ctx, event)
+	joinCtx := actor.WithoutTx(context.WithoutCancel(ctx))
+	outbox, err := future.Await(joinCtx).Unpack()
 	if err != nil {
 		a.log.WarnS(ctx, "Fee-input fanout event failed", err)
 
@@ -91,6 +98,13 @@ func (a *TxBroadcasterActor) driveFeeBump(ctx context.Context,
 	if turnErr := a.feeBumpEnv.takeLastErr(); turnErr != nil {
 		a.log.WarnS(ctx, "Unable to fan out fee inputs", turnErr)
 	}
+
+	// The accepted transition may have completed after caller cancellation.
+	// Its outbox still owns the confirmation watch and must be applied.
+	ctx, cancel := context.WithTimeout(
+		joinCtx, a.feeBumpEnv.transitionTimeout,
+	)
+	defer cancel()
 
 	for _, out := range outbox {
 		switch out := out.(type) {
@@ -125,15 +139,16 @@ func (a *TxBroadcasterActor) driveFeeBump(ctx context.Context,
 }
 
 // ensureFeeBumpStarted lazily starts the fanout FSM the first time it is
-// driven. The supplied context is the actor's long-lived internal context (the
-// same one used to start the per-tracked-tx FSMs), so the fanout FSM goroutine
-// outlives any individual request that happens to trigger the first fanout.
+// driven. The actor owns this worker: it must outlive the triggering receive
+// turn and must not inherit that turn's database transaction. OnStop stops the
+// FSM, whose goroutine manager cancels the worker context.
 func (a *TxBroadcasterActor) ensureFeeBumpStarted(ctx context.Context) {
 	if a.feeBumpFSM == nil || a.feeBumpFSM.IsRunning() {
 		return
 	}
 
-	a.feeBumpFSM.Start(ctx)
+	fsmCtx := actor.WithoutTx(context.WithoutCancel(ctx))
+	a.feeBumpFSM.Start(fsmCtx)
 }
 
 // feeBumpPending returns the in-flight fanout the FSM is currently tracking, or

@@ -121,6 +121,10 @@ type LndClientChainNotifier struct {
 	// cfg holds all notifier configuration including lnd services and
 	// optional logger.
 	cfg LndClientChainNotifierConfig
+
+	// epochs shares one lnd block epoch stream across every tip-following
+	// block epoch registration.
+	epochs *blockEpochHub
 }
 
 // NewLndClientChainNotifier creates a new chain notifier backed by lndclient.
@@ -128,9 +132,12 @@ type LndClientChainNotifier struct {
 func NewLndClientChainNotifier(
 	cfg LndClientChainNotifierConfig) *LndClientChainNotifier {
 
-	return &LndClientChainNotifier{
+	n := &LndClientChainNotifier{
 		cfg: cfg,
 	}
+	n.epochs = newBlockEpochHub(n.openBlockEpochStream, n.logger)
+
+	return n
 }
 
 // logger returns the configured logger, falling back to the context logger.
@@ -149,8 +156,13 @@ func (n *LndClientChainNotifier) Started() bool {
 	return true
 }
 
-// Stop is a no-op for lndclient-backed notifiers.
+// Stop closes the shared block epoch stream and every block epoch
+// registration, and waits for their goroutines to exit. Block epoch
+// registrations fail afterwards. Confirmation and spend registrations own
+// their streams and are unaffected.
 func (n *LndClientChainNotifier) Stop() error {
+	n.epochs.stop()
+
 	return nil
 }
 
@@ -476,123 +488,31 @@ func forwardOrderedSpendReorg(ctx context.Context, reorgPing <-chan struct{},
 	}
 }
 
-// RegisterBlockEpochNtfn registers for block epoch notifications using
-// lndclient's ChainNotifier.
+// RegisterBlockEpochNtfn registers for block epoch notifications. A nil
+// bestBlock joins the notifier's shared stream: the first registration opens
+// it, later ones join it and first receive the latest delivered tip, as lnd
+// would send on a fresh stream. A non-nil bestBlock requests lnd's catch-up
+// from that block, which cannot be shared, so it gets a dedicated stream.
+//
+// Both read lnd's authenticated raw chainrpc stream rather than lndclient's
+// height-only wrapper, so every epoch carries the hash lnd reported with it
+// and no ChainKit.GetBlockHash lookup is made.
 func (n *LndClientChainNotifier) RegisterBlockEpochNtfn(
 	bestBlock *chainntnfs.BlockEpoch) (*chainntnfs.BlockEpochEvent, error) {
 
-	ctx, cancel := context.WithCancel(context.Background())
-	chainNotifier := n.cfg.LND.ChainNotifier
-	heightChan, errChan, err := chainNotifier.RegisterBlockEpochNtfn(ctx)
-	if err != nil {
-		cancel()
+	register := n.epochs.register
+	if bestBlock != nil {
+		register = func() (*chainntnfs.BlockEpochEvent, error) {
+			return n.epochs.registerDedicated(bestBlock)
+		}
+	}
 
+	event, err := register()
+	if err != nil {
 		return nil, fmt.Errorf("register block epoch: %w", err)
 	}
 
-	log := n.logger(ctx)
-	log.InfoS(ctx, "Registered for block epoch notifications")
-
-	// Convert height-only channel to full BlockEpoch channel.
-	epochChan := make(chan *chainntnfs.BlockEpoch, 10)
-
-	go func() {
-		defer close(epochChan)
-		defer log.InfoS(ctx, "Block epoch forwarder goroutine exiting")
-
-		for {
-			select {
-			case height, ok := <-heightChan:
-				if !ok {
-					log.InfoS(ctx, "Height channel closed")
-
-					return
-				}
-
-				log.InfoS(ctx, "Received height from lndclient",
-					slog.Int("height", int(height)),
-				)
-
-				// lndclient only provides height, so we need to
-				// fetch the hash via ChainKit.
-				//
-				// TODO(rosabeef): why doesn't lndclient also
-				// give the block height?
-				chainKit := n.cfg.LND.ChainKit
-				blockHash, err := chainKit.GetBlockHash(
-					ctx, int64(height),
-				)
-				if err != nil {
-					if isBlockEpochShutdownError(ctx, err) {
-						log.DebugS(ctx, "Block hash "+
-							"lookup cancelled during "+
-							"subscription shutdown",
-							slog.Any("err", err),
-							slog.Int(
-								"height",
-								int(height),
-							),
-						)
-
-						continue
-					}
-
-					log.WarnS(
-						ctx,
-						"Failed to get block hash",
-						err,
-						slog.Int("height", int(height)),
-					)
-
-					continue
-				}
-
-				epoch := &chainntnfs.BlockEpoch{
-					Height: height,
-					Hash:   &blockHash,
-				}
-
-				select {
-				case epochChan <- epoch:
-				case <-ctx.Done():
-					log.InfoS(
-						ctx, "Context cancelled "+
-							"while sending epoch",
-					)
-
-					return
-				}
-
-			case err, ok := <-errChan:
-				if ok && err != nil {
-					if isBlockEpochShutdownError(ctx, err) {
-						log.DebugS(ctx, "Block epoch "+
-							"subscription cancelled",
-							slog.Any("err", err),
-						)
-					} else {
-						log.WarnS(
-							ctx,
-							"Block epoch error",
-							err,
-						)
-					}
-				}
-
-				return
-
-			case <-ctx.Done():
-				log.InfoS(ctx, "Context cancelled")
-
-				return
-			}
-		}
-	}()
-
-	return &chainntnfs.BlockEpochEvent{
-		Epochs: epochChan,
-		Cancel: cancel,
-	}, nil
+	return event, nil
 }
 
 // Ensure LndClientChainNotifier implements chainntnfs.ChainNotifier.

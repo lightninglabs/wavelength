@@ -492,16 +492,18 @@ func (s *Service) ensureUnroll(ctx context.Context,
 		)...,
 	)
 
-	// Best-effort policy-conflict guard. The registry admission boundary is
-	// first-writer-wins and does not reject a later request that names a
-	// different policy, so a pre-existing unroll record (e.g. a standard
-	// timeout exit that claimed this outpoint first) would silently keep
-	// its policy while this recovery believes it exits under the refund
-	// policy. Fail the recovery in that case rather than exit under the
-	// wrong policy. A not-yet-visible record is the normal case now that
-	// admission is asynchronous through the manager, so it is left to the
-	// registry's own validation plus the restart re-drive, not treated as
-	// an error.
+	// Best-effort policy-conflict guard, and the only conflict signal
+	// this path actually sees. Admission now binds the target to the
+	// identity of an armed recovery obligation and rejects a conflicting
+	// one, but that rejection is only returned to an Ask caller: the
+	// force exit above is Tell-routed through the manager, so a refused
+	// admission never reaches this function. The force exit is also
+	// asynchronous, so the record may still be invisible here. This guard
+	// therefore re-checks the durable unroll status and fails the
+	// recovery if it somehow names a different policy. A not-yet-visible
+	// record is the normal case now that admission is asynchronous
+	// through the manager, so it is left to the registry's own logging
+	// plus the restart re-drive, not treated as an error.
 	status, err := s.unroll.GetStatus(ctx, job.VTXOOutpoint)
 	if err != nil {
 		s.log.WarnS(ctx, "unable to verify vhtlc recovery unroll "+

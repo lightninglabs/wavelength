@@ -472,6 +472,85 @@ func (q *Queries) MarkVTXOForfeiting(ctx context.Context, arg MarkVTXOForfeiting
 	return err
 }
 
+const RepairVTXOCreatedHeight = `-- name: RepairVTXOCreatedHeight :execrows
+UPDATE vtxos
+SET created_height = $3,
+    last_update_time = $6
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+    AND batch_expiry = $4
+    AND (created_height = $5 OR created_height = $3)
+`
+
+type RepairVTXOCreatedHeightParams struct {
+	OutpointHash    []byte
+	OutpointIndex   int32
+	CreatedHeight   int32
+	BatchExpiry     int32
+	CreatedHeight_2 int32
+	LastUpdateTime  int64
+}
+
+// Repair only the creation height against the authenticated expiry and the
+// observed old height. Accept the replacement height too for idempotent retry.
+func (q *Queries) RepairVTXOCreatedHeight(ctx context.Context, arg RepairVTXOCreatedHeightParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, RepairVTXOCreatedHeight,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.CreatedHeight,
+		arg.BatchExpiry,
+		arg.CreatedHeight_2,
+		arg.LastUpdateTime,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const SumVTXOAmountsByStatus = `-- name: SumVTXOAmountsByStatus :many
+SELECT status,
+       CAST(COUNT(*) AS BIGINT) AS vtxo_count,
+       CAST(COALESCE(SUM(amount), 0) AS BIGINT) AS amount_sat
+FROM vtxos
+GROUP BY status
+ORDER BY status
+`
+
+type SumVTXOAmountsByStatusRow struct {
+	Status    int32
+	VtxoCount int64
+	AmountSat int64
+}
+
+// SumVTXOAmountsByStatus returns the VTXO count and total amount per status.
+// It backs the scrape-time inventory gauges, which only need these two
+// figures, so it avoids decoding full descriptors for every row on every
+// scrape. Unlike SumUnspentVTXOAmountsByStatus it does not filter on the
+// spent flag: the gauges count every row in a status, matching
+// ListVTXOsByStatus.
+func (q *Queries) SumVTXOAmountsByStatus(ctx context.Context) ([]SumVTXOAmountsByStatusRow, error) {
+	rows, err := q.db.QueryContext(ctx, SumVTXOAmountsByStatus)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SumVTXOAmountsByStatusRow
+	for rows.Next() {
+		var i SumVTXOAmountsByStatusRow
+		if err := rows.Scan(&i.Status, &i.VtxoCount, &i.AmountSat); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const UpdateVTXOStatus = `-- name: UpdateVTXOStatus :exec
 UPDATE vtxos
 SET status = $3,

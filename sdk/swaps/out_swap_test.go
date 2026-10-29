@@ -2463,6 +2463,8 @@ type testSendPolicyHook func(call int, idempotencyKey string) (
 type testDaemonConn struct {
 	identityKey       *btcec.PublicKey
 	operatorKey       *btcec.PublicKey
+	identityKeyErr    error
+	operatorKeyErr    error
 	blockHeight       uint32
 	blockHeightErr    error
 	liveVTXOs         []VTXOInfo
@@ -2475,6 +2477,7 @@ type testDaemonConn struct {
 	receiveInfo       *ReceiveInfo
 	receiveAuthKey    []byte
 	receiveAuthErr    error
+	receiveAllocErr   error
 	receiveAllocCalls int
 	sendSessionID     string
 	sendOutpoint      string
@@ -2489,6 +2492,7 @@ type testDaemonConn struct {
 	liveLookupErr     error
 	liveLookupHook    func(call int) (*VTXOInfo, error)
 	spentLookupErr    error
+	spentLookupHook   func(call int) (*VTXOInfo, error)
 	spentLookupBlock  time.Duration
 	spendOnCustom     bool
 	onSendCustom      func()
@@ -2806,7 +2810,7 @@ func (d *testDaemonConn) PrepareOORWithCustomInputs(_ context.Context,
 func (d *testDaemonConn) IdentityPubKey(context.Context) (*btcec.PublicKey,
 	error) {
 
-	return d.identityKey, nil
+	return d.identityKey, d.identityKeyErr
 }
 
 // SignOutSwapHTLCAck signs accepted terms with a deterministic test key.
@@ -2835,7 +2839,7 @@ func (d *testDaemonConn) SignOutSwapHTLCAck(_ context.Context,
 func (d *testDaemonConn) OperatorPubKey(context.Context) (*btcec.PublicKey,
 	error) {
 
-	return d.operatorKey, nil
+	return d.operatorKey, d.operatorKeyErr
 }
 
 // receiveAuthPrivKey derives the configured deterministic receive-auth key.
@@ -2973,7 +2977,8 @@ func (d *testDaemonConn) FindLiveVTXOByPkScript(_ context.Context,
 // FindSpentVTXOByPkScript returns the configured spent vHTLC. When
 // spentLookupBlock is set, the call waits for the caller's context to expire
 // before returning the configured error so test cases can exercise the bounded
-// reconcile timeout.
+// reconcile timeout. A spentLookupHook overrides both and receives the call
+// index, so a test can script one transient failure.
 func (d *testDaemonConn) FindSpentVTXOByPkScript(ctx context.Context,
 	_ []byte) (*VTXOInfo, error) {
 
@@ -2987,6 +2992,10 @@ func (d *testDaemonConn) FindSpentVTXOByPkScript(ctx context.Context,
 		case <-ctx.Done():
 		case <-timer.C:
 		}
+	}
+
+	if d.spentLookupHook != nil {
+		return d.spentLookupHook(d.spentLookupCalls)
 	}
 
 	return d.spentVTXO, d.spentLookupErr
@@ -3011,6 +3020,9 @@ func (d *testDaemonConn) AllocateReceiveScript(context.Context, string) (
 	*ReceiveInfo, error) {
 
 	d.receiveAllocCalls++
+	if d.receiveAllocErr != nil {
+		return nil, d.receiveAllocErr
+	}
 	if d.receiveInfo == nil {
 		if d.identityKey == nil {
 			return nil, nil
@@ -4943,7 +4955,8 @@ func TestReceiveSessionClaimRecoveryCompletionWinsAfterRefundLocktime(
 
 // TestReceiveSessionClaimRejectsSpentVHTLCWithoutPreimage asserts the client
 // does not submit a claim once the indexed vHTLC spend lacks the invoice
-// preimage.
+// preimage, and parks the swap for operator attention because that is the
+// anomalous condition NeedsIntervention exists for.
 func TestReceiveSessionClaimRejectsSpentVHTLCWithoutPreimage(t *testing.T) {
 	t.Parallel()
 
@@ -5006,7 +5019,8 @@ func TestReceiveSessionClaimRejectsSpentVHTLCWithoutPreimage(t *testing.T) {
 
 	_, err = session.Claim(t.Context(), "funding:0", 42_000)
 	require.ErrorIs(t, err, errReceiveVHTLCSpentWithoutPreimage)
-	require.Equal(t, ReceiveStateFailed, session.State())
+	require.Equal(t, ReceiveStateNeedsIntervention, session.State())
+	require.NotEmpty(t, session.InterventionReason())
 	require.Zero(t, daemonConn.sendCustomCalls)
 }
 

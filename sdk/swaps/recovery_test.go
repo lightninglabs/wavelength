@@ -1,6 +1,7 @@
 package swaps
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -57,4 +58,29 @@ func TestDecideRecoveryEscalationRespectsDisabledAutoEscalate(t *testing.T) {
 	)
 	require.False(t, decision.Escalate)
 	require.Equal(t, "auto_escalate_disabled", decision.Trigger)
+}
+
+// TestReceiveClaimRecoveryEscalatesOnGraceWithoutHeight verifies an unreadable
+// best block does not hold back the wall-clock grace policy: the refund
+// deadline is absolute and cannot be evaluated without a height, but the grace
+// period needs no chain state, so a receive claim recovery still escalates.
+func TestReceiveClaimRecoveryEscalatesOnGraceWithoutHeight(t *testing.T) {
+	t.Parallel()
+
+	h := newClaimSessionHarness(t, true)
+	h.session.client.SetRecoveryPolicy(RecoveryPolicy{
+		AutoEscalate:                  true,
+		CooperativeFailureGracePeriod: 0,
+		MinRecoveryMarginBlocks:       12,
+	})
+
+	// The harness carries a realistic absolute refund locktime, so the
+	// deadline trigger has nothing to admit while no height is readable.
+	h.daemon.blockHeightErr = errors.New("block height unavailable")
+
+	err := h.session.maybeEscalateReceiveClaimRecovery(
+		t.Context(), errors.New("claim send failed"),
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, h.daemon.escalateCalls)
 }

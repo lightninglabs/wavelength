@@ -14,13 +14,14 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/vhtlcrecovery"
 	"github.com/lightninglabs/wavelength/vtxo"
-	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
 )
 
@@ -79,6 +80,11 @@ type vhtlcRecoveryTargetMaterializer struct {
 	vtxos    vtxo.VTXOStore
 	packages *db.OORArtifactPersistenceStore
 	log      btclog.Logger
+
+	// fetchTarget is used only when the funding artifacts are not local.
+	fetchTarget func(context.Context, vhtlcrecovery.RecoveryJob) (
+		*arkrpc.VTXO, error)
+	authenticateExpiry oor.IncomingExpiryAuthenticator
 }
 
 // newVHTLCRecoveryTargetMaterializer creates the waved adapter used by the
@@ -170,7 +176,23 @@ func (m *vhtlcRecoveryTargetMaterializer) buildRecoveryDescriptor(
 		return nil, fmt.Errorf("recovery target outpoint hash is empty")
 	}
 
+	// A previously materialized target already holds validated foreign
+	// ancestry. Rebuild the job-owned fields without requiring its sender
+	// or the indexer to remain online after restart.
+	known, err := m.vtxos.GetVTXO(ctx, target)
+	if err == nil && known.Status == vtxo.VTXOStatusUnilateralExit &&
+		len(known.Ancestry) > 0 {
+		return recoveryDescriptor(job, known)
+	}
+	if err != nil && !errors.Is(err, vtxo.ErrVTXONotFound) {
+		return nil, fmt.Errorf("load recovery descriptor: %w", err)
+	}
+
 	targetPkg, targetOutput, err := m.loadTargetPackage(ctx, job)
+	if errors.Is(err, errRecoveryTargetPackageMissing) &&
+		m.fetchTarget != nil {
+		return m.buildIndexedRecoveryDescriptor(ctx, job)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -178,28 +200,14 @@ func (m *vhtlcRecoveryTargetMaterializer) buildRecoveryDescriptor(
 	roots, err := m.loadRootDescriptors(
 		ctx, recoveryCheckpointInputs(targetPkg),
 	)
-	if err != nil {
-		return nil, err
+	if errors.Is(err, vtxo.ErrVTXONotFound) && m.fetchTarget != nil {
+		return m.buildIndexedRecoveryDescriptor(ctx, job)
 	}
-
-	signingKey, err := recoverySigningKey(job)
 	if err != nil {
 		return nil, err
 	}
 
 	operatorKey, err := recoveryOperatorKey(roots)
-	if err != nil {
-		return nil, err
-	}
-
-	csvDelay, err := recoveryCSVDelay(job)
-	if err != nil {
-		return nil, err
-	}
-
-	policyTemplate, err := recoveryPolicyTemplate(
-		job, targetOutput.PkScript,
-	)
 	if err != nil {
 		return nil, err
 	}
@@ -222,28 +230,18 @@ func (m *vhtlcRecoveryTargetMaterializer) buildRecoveryDescriptor(
 
 	chainDepth := recoveryChainDepth(roots, 1)
 
-	return &vtxo.Descriptor{
-		Outpoint: target,
-		Amount:   btcutil.Amount(targetOutput.Value),
-		PkScript: append([]byte(nil), targetOutput.PkScript...),
-		ClientKey: keychain.KeyDescriptor{
-			KeyLocator: keychain.KeyLocator{
-				Family: keychain.KeyFamily(job.SignerKeyFamily),
-				Index:  uint32(job.SignerKeyIndex),
-			},
-			PubKey: signingKey,
-		},
+	return recoveryDescriptor(job, &vtxo.Descriptor{
+		Outpoint:       target,
+		Amount:         btcutil.Amount(targetOutput.Value),
+		PkScript:       append([]byte(nil), targetOutput.PkScript...),
 		OperatorKey:    operatorKey,
 		Ancestry:       ancestry,
 		RoundID:        roundID,
 		CommitmentTxID: commitmentTxID,
 		BatchExpiry:    batchExpiry,
-		RelativeExpiry: csvDelay,
-		PolicyTemplate: policyTemplate,
 		ChainDepth:     chainDepth,
 		CreatedHeight:  createdHeight,
-		Status:         vtxo.VTXOStatusSpending,
-	}, nil
+	})
 }
 
 // loadTargetPackage verifies that the OOR package whose session id equals the
@@ -265,7 +263,8 @@ func (m *vhtlcRecoveryTargetMaterializer) loadTargetPackage(ctx context.Context,
 		if err == nil {
 			return pkg, output, nil
 		}
-		if !errors.Is(err, errRecoveryTargetPackageMissing) {
+		if !errors.Is(err, errRecoveryTargetPackageMissing) ||
+			m.fetchTarget != nil {
 			return nil, nil, err
 		}
 
@@ -502,6 +501,27 @@ func recoveryCSVDelay(job vhtlcrecovery.RecoveryJob) (uint32, error) {
 func recoveryPolicyTemplate(job vhtlcrecovery.RecoveryJob,
 	targetPkScript []byte) ([]byte, error) {
 
+	policy, err := recoveryPolicy(job)
+	if err != nil {
+		return nil, err
+	}
+	if !policy.Template.MatchesPkScript(targetPkScript) {
+		return nil, fmt.Errorf("recovery vhtlc policy does not match " +
+			"target output script")
+	}
+
+	policyTemplate, err := policy.Template.Encode()
+	if err != nil {
+		return nil, fmt.Errorf("encode recovery vhtlc policy: %w", err)
+	}
+
+	return policyTemplate, nil
+}
+
+// recoveryPolicy reconstructs the funded policy for an authenticated lookup.
+func recoveryPolicy(job vhtlcrecovery.RecoveryJob) (*arkscript.VHTLCPolicy,
+	error) {
+
 	sender, err := recoveryPubKey(job.SenderPubkey, "sender")
 	if err != nil {
 		return nil, err
@@ -566,17 +586,8 @@ func recoveryPolicyTemplate(job vhtlcrecovery.RecoveryJob,
 	if policy.Template == nil {
 		return nil, fmt.Errorf("recovery vhtlc policy template is nil")
 	}
-	if !policy.Template.MatchesPkScript(targetPkScript) {
-		return nil, fmt.Errorf("recovery vhtlc policy does not match " +
-			"target output script")
-	}
 
-	policyTemplate, err := policy.Template.Encode()
-	if err != nil {
-		return nil, fmt.Errorf("encode recovery vhtlc policy: %w", err)
-	}
-
-	return policyTemplate, nil
+	return policy, nil
 }
 
 func recoveryPubKey(raw []byte, label string) (*btcec.PublicKey, error) {

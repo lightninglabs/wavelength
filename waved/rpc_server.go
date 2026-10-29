@@ -625,6 +625,28 @@ func walletStateToProto(s WalletState) waverpc.WalletState {
 	}
 }
 
+// unavailableError carries a codes.Unavailable status to gRPC clients
+// while wrapping the original cause, so in-process errors.Is callers can
+// still reach the underlying lookup error.
+type unavailableError struct {
+	err error
+}
+
+// Error returns the wrapped lookup failure.
+func (e unavailableError) Error() string {
+	return e.err.Error()
+}
+
+// Unwrap preserves the original cause for in-process callers.
+func (e unavailableError) Unwrap() error {
+	return e.err
+}
+
+// GRPCStatus classifies the backend failure for remote callers.
+func (e unavailableError) GRPCStatus() *status.Status {
+	return status.New(codes.Unavailable, e.err.Error())
+}
+
 // GetInfo returns basic information about the running daemon instance,
 // including version, network, and lnd connection state.
 func (r *RPCServer) GetInfo(ctx context.Context, _ *waverpc.GetInfoRequest) (
@@ -641,6 +663,12 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *waverpc.GetInfoRequest) (
 		),
 	}
 
+	// A best-block lookup failure must fail this call instead of reporting
+	// height zero, because callers treat the returned height as valid chain
+	// state. Height zero itself is a valid answer, so only a failed lookup
+	// is fatal here.
+	var heightErr error
+
 	// Populate lnd fields if connected.
 	r.server.lnd.WhenSome(
 		func(lndSvc *lndclient.GrpcLndServices) {
@@ -654,14 +682,13 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *waverpc.GetInfoRequest) (
 			_, height, err :=
 				lndSvc.ChainKit.GetBestBlock(ctx)
 			if err != nil {
-				r.server.log.WarnS(
-					ctx,
-					"Unable to fetch block height",
-					err,
-				)
-			} else {
-				resp.BlockHeight = uint32(height)
+				heightErr = fmt.Errorf("get best block height "+
+					"from lnd: %w", err)
+
+				return
 			}
+
+			resp.BlockHeight = uint32(height)
 		},
 	)
 
@@ -702,12 +729,14 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *waverpc.GetInfoRequest) (
 						ctx,
 					)
 				if err != nil {
-					r.server.log.WarnS(ctx,
-						"Unable to fetch block "+
-							"height", err)
-				} else {
-					resp.BlockHeight = uint32(height)
+					heightErr = fmt.Errorf("get best "+
+						"block height from chain "+
+						"backend: %w", err)
+
+					return
 				}
+
+				resp.BlockHeight = uint32(height)
 			}
 		},
 	)
@@ -723,15 +752,25 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *waverpc.GetInfoRequest) (
 						ctx,
 					)
 				if err != nil {
-					r.server.log.WarnS(ctx,
-						"Unable to fetch block "+
-							"height", err)
-				} else {
-					resp.BlockHeight = uint32(height)
+					heightErr = fmt.Errorf("get best "+
+						"block height from chain "+
+						"backend: %w", err)
+
+					return
 				}
+
+				resp.BlockHeight = uint32(height)
 			}
 		},
 	)
+
+	if heightErr != nil {
+		r.server.log.DebugS(ctx, "Unable to fetch block height",
+			slog.Any("err", heightErr),
+		)
+
+		return nil, unavailableError{err: heightErr}
+	}
 
 	if terms := r.server.loadOperatorTerms(); terms != nil {
 		// PubKey is mandatory in the server's GetInfo response, so a

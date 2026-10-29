@@ -559,8 +559,10 @@ func TestDropCustomForfeitInputsRestoresExistingActor(t *testing.T) {
 		CommitmentTxID: desc.CommitmentTxID,
 		BatchExpiry:    desc.BatchExpiry,
 		ChainDepth:     desc.ChainDepth,
-		CreatedHeight:  desc.CreatedHeight,
-		Ancestry:       desc.Ancestry,
+		// A fresh lookup can authenticate an earlier height than the
+		// indexer value stored by an older binary.
+		CreatedHeight: 100,
+		Ancestry:      desc.Ancestry,
 	}
 	result := mgr.Receive(
 		t.Context(), &ActivateCustomForfeitInputsRequest{

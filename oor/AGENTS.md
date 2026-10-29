@@ -106,9 +106,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   messages and return as fresh events.
 - Incoming batch expiry is authenticated by
   `AuthenticateIncomingMetadataRequest` before materialization opens its DB
-  transaction. Indexer expiry scalars are discarded. Chain failures retry the
-  outbox; invalid sweep/tree evidence fails terminally. The descriptor's
-  relative expiry comes from its matching standard or custom policy template,
+  transaction. Indexer expiry and creation-height scalars are replaced by
+  the earliest sweep maturity and confirmation height from the same local
+  evidence. Chain failures retry the outbox; invalid sweep/tree evidence
+  fails terminally. Contradictory authenticated heights also fail terminally
+  before persistence, including on replay and synchronous recovery. The
+  descriptor's relative expiry comes from its matching policy template,
   not from operator configuration. Custom policies consider only canonical
   block-mode CSV sequences; CLTV non-final sentinels are not block delays.
 - Snapshots are versioned per direction (`OutgoingSnapshot.Version = 6`,

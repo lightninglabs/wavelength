@@ -69,6 +69,29 @@
 // default. Deduplicated requests must agree on RetryUntilAccepted. The tracker
 // is in memory; callers must reassert the policy after restart.
 //
+// # Wallet destination lifetime
+//
+// A CPFP change destination belongs to the tracked parent, not a single
+// submission attempt. Failed attempts and successful replacements reuse it
+// until Evict. Its cache is separate from fee history and input reservations:
+// issuing an address proves neither that a package was accepted nor that a
+// wallet input must remain leased.
+//
+// An unsubmitted fee-input fanout similarly retains its output destinations
+// and reserved-input change destination across funding/signing retries. Output
+// amounts, fee estimates, and input selection are still recomputed. A broadcast
+// attempt, resolved demand, or eviction of all participating parents ends that
+// plan. A broadcast error may follow relay, so a later funded candidate must
+// use fresh destinations even when the earlier attempt reported a failure.
+// The funded transaction already held by the pending state remains its
+// rebroadcast source.
+//
+// These caches are in memory. Restarting the process may allocate fresh
+// destinations for outstanding work. They do not change wallet-owned address
+// records, backend-managed funding change, or broadcast-result classification.
+// A failed allocation RPC may also have advanced a remote wallet without
+// returning its script; this is not an exactly-once wallet allocation API.
+//
 // # CPFP correctness
 //
 // For transactions containing an ephemeral anchor output (BIP 431), the

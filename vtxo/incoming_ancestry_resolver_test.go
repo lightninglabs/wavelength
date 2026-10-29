@@ -2,6 +2,7 @@ package vtxo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -208,4 +209,40 @@ func testAncestryTxIDBytes(prefix byte) []byte {
 	txid := testAncestryTxID(prefix)
 
 	return txid[:]
+}
+
+// TestResolveIncomingAncestryRetrySentinels verifies the resolver distinguishes
+// a completed scan that never saw the outpoint from a page request that failed,
+// so a durable caller can bound and label the two waits differently.
+func TestResolveIncomingAncestryRetrySentinels(t *testing.T) {
+	t.Parallel()
+
+	target := wire.OutPoint{
+		Hash:  testAncestryTxID(1),
+		Index: 7,
+	}
+
+	// A finished scan without the target reports "not there yet".
+	_, err := ResolveIncomingAncestry(
+		t.Context(), newScriptedAncestryQuery(
+			testIncomingAncestryResponse(nil),
+		).Query,
+		target,
+		testAncestryPkScript,
+		128,
+		2,
+	)
+	require.ErrorIs(t, err, ErrIncomingAncestryNotFound)
+
+	// A failing page request reports an indexer failure.
+	failing := func(context.Context, []byte, []byte, uint32) (
+		*arkrpc.ListVTXOsByScriptsResponse, error) {
+
+		return nil, errors.New("indexer unavailable")
+	}
+	_, err = ResolveIncomingAncestry(
+		t.Context(), failing, target, testAncestryPkScript, 128, 2,
+	)
+	require.ErrorIs(t, err, ErrIncomingAncestryIndexer)
+	require.NotErrorIs(t, err, ErrIncomingAncestryNotFound)
 }

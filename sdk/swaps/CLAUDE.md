@@ -6,7 +6,8 @@ High-level client SDK for Lightning-to-Ark (receive) and Ark-to-Lightning
 (pay) atomic swaps via virtual HTLCs (vHTLCs). Orchestrates two durable
 FSM-driven flows using the Loop FSM engine, coordinating with a remote
 swap server and the local Ark daemon to fund, claim, or refund on-chain
-vHTLCs. Persists every state transition in an isolated SQLite database.
+vHTLCs. With `NewSwapClientWithStore`, persists every state transition in
+an isolated SQLite database; `NewSwapClient` retains state in memory.
 Also handles same-Ark (in-Ark) vHTLC settlement where sender and receiver
 settle a vHTLC inside the same Ark instance without bridging through
 Lightning.
@@ -26,9 +27,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/swap
 - `ReceiveSession` — Lightning-to-Ark receive FSM:
   `Created → InvoiceCreated → HTLCEventAccepted → VHTLCFunded →
   ClaimInitiated → Completed` (or `Expired` / `NeedsIntervention` /
-  `Failed`). `HTLCEventAccepted` is a durable checkpoint persisted
-  after the server mailbox event is validated so funding detection
-  resumes without re-driving mailbox delivery.
+  `Failed`). `HTLCEventAccepted` becomes authoritative after the configured
+  persistence step succeeds. With a store it is a crash-durable checkpoint,
+  so funding detection resumes without re-driving mailbox delivery.
 - `MailboxOutSwapEventReceiver` — mailbox-backed receiver. Pulls
   out-swap HTLC events from a `mailbox/pb` edge keyed by a per-session
   mailbox ID derived from the client identity key and payment hash.
@@ -174,11 +175,27 @@ result into an `IncomingVHTLCNotification`.
   second submission.
 - The store is optional — both `NewSwapClient` and
   `NewSwapClientWithStore` are valid; `persist()` is a no-op when
-  `store == nil`.
+  `store == nil`. A successful mutation is authoritative in both modes, but
+  only a stored mutation survives a process crash.
 - Amount mismatch on a live vHTLC triggers `RefundInitiated` (pay) or
   `Failed` (receive) **immediately** — never `NeedsIntervention`.
 - `NeedsIntervention` is reserved for anomalous server behavior
-  (e.g., vHTLC spent without a matching preimage).
+  (e.g., vHTLC spent without a matching preimage). It is applied where the
+  condition is detected, so every caller of the same lookup inherits it,
+  including the claim-send and restored-claim paths.
+- **A receive claim lookup failure is never a claim outcome.** The restored
+  `ClaimInitiated` reconciliation wraps indexer lookups in
+  `newRetryableLookupError`, and the daemon calls that prepare the claim
+  destination and arm claim recovery wrap their transport failures in
+  `newRetryableActionError`. Both keep the durable row claimable instead of
+  persisting `Failed`, while an error that already carries an intervention
+  classification passes through unchanged.
+- **A failed block-height lookup is never chain state.** Every height-dependent
+  timing check either retries (`newRetryableActionError`) or defers its
+  absolute deadline, never proceeding on a substituted or zero height.
+  Claim monitoring still applies its wall-clock deadline and persists refund
+  intent when that deadline expires. GetInfo-backed identity and operator-key
+  lookup failures during pay and receive setup also remain retryable.
 - `PaySession` / `ReceiveSession` are NOT goroutine-safe; `Wait`,
   `Claim`, `WaitForFunding`, and `State` must not be called
   concurrently.
@@ -186,8 +203,16 @@ result into an `IncomingVHTLCNotification`.
   checkpoint PSBTs (final witness, condition witness, taproot spend
   sig) to tolerate indexer-version differences. Only accepted when
   `SHA256(preimage) == paymentHash`.
-- Mailbox `Ack` must be called only after the caller has validated
-  and durably persisted the event. `AckCursor` is `eventSeq + 1`.
+- Mailbox `Ack` must be called only after the caller has validated the event
+  and crossed its configured persistence step. `AckCursor` is
+  `eventSeq + 1`; the accepted state is crash-durable only with a store.
+- A receive session must not sign an out-swap forfeit refresh before funding
+  is authoritative. The request payment hash, vHTLC outpoint, amount, script,
+  and policy template must match the funded session exactly, and the policy
+  template must contain that same payment hash. Rejected requests remain
+  unacknowledged so mailbox retry can re-deliver them after funding crosses
+  the configured persistence step. That record survives a crash only with a
+  store.
 - `ReceiveAuthKey` signing/ECDH is always delegated to the daemon;
   the SDK never holds the raw private key for receive-auth.
 - Error sentinels (`ErrSwapExpired`, `ErrSwapRefunded`,
@@ -201,7 +226,11 @@ result into an `IncomingVHTLCNotification`.
 - **vHTLC timing is validated at the admission boundary, via
   `lib/arkscript`.** `vhtlcTiming(VHTLCConfig)` projects the wire DTO into
   `arkscript.VHTLCTiming`. Pay-side `createSwap` calls `ValidateOrder()`
-  before it will fund. Receive-side `validateReceiveClaimWindow` calls
+  before it will fund. Fresh pay-side funding calls `ValidateRefundWindow`
+  with one-week CLTV and sender-only CSV limits; previously initiated funding
+  still reconciles, but an out-of-window legacy session can only query an
+  existing keyed transfer.
+  Receive-side `validateReceiveClaimWindow` calls
   `ValidateClaimWindow` with the current daemon height and the recovery
   policy's `ExitAncestryDelayBlocks` / `MinRecoveryMarginBlocks`, at the
   moment a server event first asks the receiver to accept a policy. Never

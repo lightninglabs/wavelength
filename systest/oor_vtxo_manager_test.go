@@ -51,8 +51,8 @@ type oorVTXOManagerSystestFixture struct {
 
 // newOORVTXOManagerSystestFixture starts the stores and actors used by OOR
 // materialization system tests.
-func newOORVTXOManagerSystestFixture(t *testing.T,
-	name string) *oorVTXOManagerSystestFixture {
+func newOORVTXOManagerSystestFixture(t *testing.T, name string,
+	recovered ...*vtxo.Descriptor) *oorVTXOManagerSystestFixture {
 
 	t.Helper()
 
@@ -65,6 +65,9 @@ func newOORVTXOManagerSystestFixture(t *testing.T,
 		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(), h.Logger(),
 	)
 	vtxoStore := dbStore.NewVTXOStore(clk)
+	for _, desc := range recovered {
+		require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
+	}
 
 	deliveryStore, err := actordelivery.NewTxAwareDeliveryStoreFromDB(
 		sqlDB.DB, sqlDB.Backend(), clk, h.Logger(),
@@ -83,6 +86,14 @@ func newOORVTXOManagerSystestFixture(t *testing.T,
 		ActorSystem: h.ActorSystem(),
 		ChainParams: h.ChainParams(),
 		Log:         fn.Some(h.SubLogger(vtxo.Subsystem)),
+		RepairCreatedHeight: func(ctx context.Context,
+			desc *vtxo.Descriptor) (int32, error) {
+
+			return vtxo.RepairCreatedHeight(
+				ctx, desc, authenticateSystemTestExpiry,
+				vtxoStore,
+			)
+		},
 	})
 
 	serviceName := "systest-vtxo-manager-" + name
@@ -106,6 +117,52 @@ func newOORVTXOManagerSystestFixture(t *testing.T,
 	}
 }
 
+// TestOORLegacyHeightRestoresExpiryMonitoring starts with the poisoned row
+// already persisted, recovers its actor, and proves confirmed repair restores
+// the critical-expiry transition without changing the saved expiry.
+func TestOORLegacyHeightRestoresExpiryMonitoring(t *testing.T) {
+	ParallelN(t)
+
+	ark, _, recipients, metadata, recipientKey,
+		operatorKey := buildSystemTestIncomingMaterialization(t)
+	metadata.CreatedHeight = metadata.BatchExpiry + 1
+	desc, err := oor.BuildIncomingVTXODescriptor(
+		ark, oor.IncomingVTXOConfig{
+			OutputIndex: recipients[0].OutputIndex,
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: recipientKey.PubKey(),
+			},
+			OperatorKey:    operatorKey,
+			ExitDelay:      10,
+			PolicyTemplate: recipients[0].VTXOPolicyTemplate,
+			Metadata:       metadata,
+		},
+	)
+	require.NoError(t, err)
+	f := newOORVTXOManagerSystestFixture(t, "legacy-height", desc)
+	ctx := f.h.Context()
+	refs := actor.FindInReceptionist(
+		f.h.ActorSystem().Receptionist(),
+		vtxo.VTXOActorServiceKey(desc.Outpoint),
+	)
+	require.Len(t, refs, 1)
+	response, err := refs[0].Ask(ctx, &vtxo.BlockEpochEvent{
+		Height: metadata.BatchExpiry - 1,
+	}).Await(ctx).Unpack()
+	require.NoError(t, err)
+	transition, ok := response.(vtxo.VTXOActorResponse)
+	require.True(t, ok)
+	require.IsType(t, &vtxo.UnilateralExitState{}, transition.NewState)
+	saved, err := f.vtxoStore.GetVTXO(ctx, desc.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, int32(700), saved.CreatedHeight)
+	require.Equal(t, metadata.BatchExpiry, saved.BatchExpiry)
+	require.Equal(t, vtxo.VTXOStatusUnilateralExit, saved.Status)
+	// The actor must own its repaired header rather than mutating the
+	// manager's recovery snapshot across goroutines.
+	require.Equal(t, metadata.CreatedHeight, desc.CreatedHeight)
+}
+
 // TestOORIncomingMaterializationSpawnsVTXOActor verifies the OOR receive flow
 // materializes an incoming VTXO, notifies the VTXO manager, and results in a
 // live VTXO actor registered in the actor system.
@@ -117,6 +174,9 @@ func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
 
 	arkPSBT, finalCheckpoints, recipients, metadata, recipientKey,
 		operatorKey := buildSystemTestIncomingMaterialization(t)
+	// A forged indexer height must not disable expiry monitoring after the
+	// recipient descriptor is committed to the real VTXO store.
+	metadata.CreatedHeight = metadata.BatchExpiry + 1
 	sessionID := oor.SessionID(arkPSBT.UnsignedTx.TxHash())
 	expectedIndex := recipients[0].OutputIndex
 
@@ -195,12 +255,39 @@ func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
 	require.Equal(t, metadata.RoundID, desc.RoundID)
 	require.Equal(t, metadata.CommitmentTxID, desc.CommitmentTxID)
 	require.Equal(t, metadata.BatchExpiry, desc.BatchExpiry)
-	require.Equal(t, metadata.CreatedHeight, desc.CreatedHeight)
+	require.Equal(t, int32(700), desc.CreatedHeight)
+	require.NotEqual(
+		t, vtxo.ExpiryStatusUnknown,
+		vtxo.DefaultExpiryConfig().CheckExpiry(desc, 750),
+	)
 	require.Equal(t, metadata.ChainDepth, desc.ChainDepth)
 
 	state, err := session.FSM.CurrentState()
 	require.NoError(t, err)
 	require.IsType(t, &oor.ReceiveCompleted{}, state)
+
+	// Drive the actual actor into the critical window. The old forged
+	// height kept this same event in LiveState with an empty outbox.
+	refs := actor.FindInReceptionist(
+		f.h.ActorSystem().Receptionist(),
+		vtxo.VTXOActorServiceKey(outpoint),
+	)
+	require.Len(t, refs, 1)
+	response, err := refs[0].Ask(ctx, &vtxo.BlockEpochEvent{
+		Height: metadata.BatchExpiry - 1,
+	}).Await(ctx).Unpack()
+	require.NoError(t, err)
+	transition, ok := response.(vtxo.VTXOActorResponse)
+	require.True(t, ok)
+	require.IsType(t, &vtxo.UnilateralExitState{}, transition.NewState)
+	require.Len(t, transition.Outbox, 2)
+	expiring, ok := transition.Outbox[0].(*vtxo.ExpiringNotification)
+	require.True(t, ok)
+	require.Equal(t, outpoint, expiring.VTXO.Outpoint)
+	require.Equal(t, int32(1), expiring.BlocksRemaining)
+	saved, err := f.vtxoStore.GetVTXO(ctx, outpoint)
+	require.NoError(t, err)
+	require.Equal(t, vtxo.VTXOStatusUnilateralExit, saved.Status)
 }
 
 // TestOORSelfChangeMaterializationSkipsExternalRecipient verifies the OOR
@@ -440,13 +527,17 @@ func activeVTXOCount(ctx context.Context,
 // authenticateSystemTestExpiry stands in for the chain-authentication
 // boundary in materialization-focused system tests.
 func authenticateSystemTestExpiry(_ context.Context,
-	ancestry []vtxo.Ancestry) (int32, error) {
+	ancestry []vtxo.Ancestry) (vtxo.AuthenticatedBatchEvidence, error) {
 
 	if len(ancestry) == 0 {
-		return 0, fmt.Errorf("expiry ancestry must be provided")
+		return vtxo.AuthenticatedBatchEvidence{},
+			fmt.Errorf("expiry ancestry must be provided")
 	}
 
-	return 1000, nil
+	return vtxo.AuthenticatedBatchEvidence{
+		BatchExpiry:              1000,
+		EarliestCommitmentHeight: 700,
+	}, nil
 }
 
 // seedIncomingRound inserts the round row referenced by the incoming VTXO

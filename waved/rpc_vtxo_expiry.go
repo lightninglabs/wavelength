@@ -9,7 +9,6 @@ import (
 
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightninglabs/wavelength/arkrpc"
-	"github.com/lightninglabs/wavelength/indexer"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/grpc/codes"
@@ -33,7 +32,7 @@ func (r *RPCServer) GetVTXOExpiryInfo(ctx context.Context,
 	}
 
 	currentHeight := req.GetCurrentHeight()
-	if currentHeight == 0 {
+	if currentHeight == 0 && req.GetPkScript() == nil {
 		height, err := r.currentBlockHeight(ctx)
 		if err != nil {
 			return nil, err
@@ -51,7 +50,7 @@ func (r *RPCServer) GetVTXOExpiryInfo(ctx context.Context,
 	case *waverpc.GetVTXOExpiryInfoRequest_PkScript:
 		return r.getIndexedVTXOExpiryInfo(
 			ctx, target.PkScript, req.GetStatusFilter(),
-			currentHeight,
+			req.GetPolicyTemplate(), currentHeight,
 		)
 
 	default:
@@ -106,57 +105,33 @@ func (r *RPCServer) getLocalVTXOExpiryInfo(ctx context.Context, outpoint string,
 }
 
 // getIndexedVTXOExpiryInfo resolves one indexed VTXO by pkScript and
-// classifies it with the metadata returned by the authoritative indexer.
+// classifies it with timing proved by signed ancestry and local confirmation.
 func (r *RPCServer) getIndexedVTXOExpiryInfo(ctx context.Context,
-	pkScript []byte, filters []waverpc.VTXOStatus, currentHeight int32) (
-	*waverpc.GetVTXOExpiryInfoResponse, error) {
+	pkScript []byte, filters []waverpc.VTXOStatus, policy []byte,
+	currentHeight int32) (*waverpc.GetVTXOExpiryInfoResponse, error) {
 
-	if len(pkScript) == 0 {
-		return nil, status.Error(
-			codes.InvalidArgument, "missing pk_script",
-		)
+	// The expiry RPC defaults to live generations. The shared lookup
+	// keeps its caller-selected status semantics.
+	if len(filters) == 0 {
+		filters = []waverpc.VTXOStatus{
+			waverpc.VTXOStatus_VTXO_STATUS_LIVE,
+		}
 	}
-	if r.server.indexer == nil {
-		return nil, status.Error(
-			codes.Internal, "indexer client not initialized",
-		)
-	}
-
-	statusFilter, err := indexedExpiryStatusFilter(filters)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid "+
-			"status filter: %v", err)
-	}
-
-	resp, err := r.server.indexer.ListVTXOsByScriptsTaproot(
-		ctx,
-		[]indexer.TaprootScriptScope{{
-			PkScript: append([]byte(nil), pkScript...),
-		}},
-		nil, 1, statusFilter,
+	response, err := r.getIndexedVTXOByPkScript(
+		ctx, &waverpc.GetIndexedVTXOByPkScriptRequest{
+			PkScript: pkScript, StatusFilter: filters,
+			PolicyTemplate: policy,
+		}, currentHeight,
 	)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "indexer query "+
-			"failed: %v", err)
-	}
-
-	vtxos := vtxo.FlattenListVTXOsByScriptsResponse(resp)
-	if len(vtxos) == 0 {
-		return &waverpc.GetVTXOExpiryInfoResponse{}, nil
-	}
-
-	protoVTXO, err := indexedVTXOToProto(
-		vtxos[0], currentHeight, r.server.vtxoExpiryConfig(),
-	)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "convert indexed "+
-			"vtxo: %v", err)
+		return nil, err
 	}
 
 	return &waverpc.GetVTXOExpiryInfoResponse{
-		Found:      true,
-		ExpiryInfo: protoVTXO.GetExpiryInfo(),
-		Vtxo:       protoVTXO,
+		Found:            response.Vtxo != nil,
+		ExpiryInfo:       response.GetVtxo().GetExpiryInfo(),
+		Vtxo:             response.Vtxo,
+		PolicyAuthorized: response.PolicyAuthorized,
 	}, nil
 }
 
@@ -246,28 +221,6 @@ func expiryInfoFromDescriptor(desc *vtxo.Descriptor, currentHeight int32,
 		uint32(desc.ChainDepth),
 		currentHeight,
 		cfg,
-	)
-}
-
-// expiryInfoFromIndexedVTXO classifies an indexer VTXO at the supplied chain
-// height using max tree depth across its ancestry paths.
-func expiryInfoFromIndexedVTXO(indexed *arkrpc.VTXO, currentHeight int32,
-	cfg *vtxo.ExpiryConfig) *waverpc.VTXOExpiryInfo {
-
-	if indexed == nil {
-		return nil
-	}
-
-	var maxTreeDepth uint32
-	for _, ancestry := range indexed.GetAncestryPaths() {
-		if ancestry.GetTreeDepth() > maxTreeDepth {
-			maxTreeDepth = ancestry.GetTreeDepth()
-		}
-	}
-
-	return expiryInfoFromTiming(
-		indexed.GetBatchExpiryHeight(), indexed.GetRelativeExpiry(),
-		maxTreeDepth, indexed.GetChainDepth(), currentHeight, cfg,
 	)
 }
 

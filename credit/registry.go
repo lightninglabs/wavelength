@@ -936,6 +936,7 @@ func (b *registryBehavior) childConfig(opID string) OpActorConfig {
 		AutoRedeemEnabled: b.cfg.AutoRedeem.Enabled,
 		MinRedeemSat:      b.cfg.AutoRedeem.MinRedeemSat,
 		Earmark:           b.earmark,
+		MetricsSink:       b.cfg.MetricsSink,
 	}
 }
 

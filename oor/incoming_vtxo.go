@@ -41,9 +41,9 @@ type IncomingVTXOMetadata struct {
 	// across all contributing rounds).
 	BatchExpiry int32
 
-	// ExpiryAuthenticated records that BatchExpiry was derived from the
-	// locally confirmed commitment transaction and the sweep policy bound
-	// to each ancestry tree. It is transient receive-state, not persisted
+	// ExpiryAuthenticated records that BatchExpiry and CreatedHeight came
+	// from locally confirmed commitments and the sweep policies bound to
+	// the ancestry trees. It is transient receive-state, not persisted
 	// VTXO data.
 	ExpiryAuthenticated bool
 
@@ -53,7 +53,8 @@ type IncomingVTXOMetadata struct {
 	// commitment tree.
 	ChainDepth int
 
-	// CreatedHeight is the block height at which the VTXO was created.
+	// CreatedHeight is the earliest confirmed commitment height after
+	// authentication. It is a conservative watch floor for merged ancestry.
 	CreatedHeight int32
 
 	// OperatorKey is the operator public key committed to the VTXO's

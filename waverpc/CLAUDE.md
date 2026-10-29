@@ -61,6 +61,12 @@ the wallet activity projector to correlate the waiting operation.
   `policy_authorized` after the operator accepts that proof, including empty
   responses. Callers supplying a policy must reject a false flag: old daemons
   ignore unknown request fields and cannot establish this capability.
+- `GetVTXOExpiryInfoRequest.policy_template` applies the same policy query
+  authorization to indexed expiry reads. `policy_authorized` must be checked
+  even on empty responses, because old daemons ignore the additive field.
+  A standard policy allows classification after chain authentication. A valid
+  indexed output without confirmation remains found with `UNKNOWN` posture
+  and `BatchExpiry = 0`; this must never authorize a payment deadline.
 - Asset quantities use `uint64` asset units and remain separate from Bitcoin
   carrier satoshis. `ListVTXOs.asset_ref` accepts canonical SDK references and
   filters stored and pending-round entries alike. `GetBalance.asset_balances`

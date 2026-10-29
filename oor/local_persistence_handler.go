@@ -47,10 +47,10 @@ type IncomingMetadataResolver func(ctx context.Context, sessionID SessionID,
 	recipient ArkRecipientOutput, ark *psbt.Packet,
 	finalCheckpoints []*psbt.Packet) (IncomingVTXOMetadata, error)
 
-// IncomingExpiryAuthenticator derives one metadata record's batch expiry from
-// authenticated ancestry and local chain confirmation evidence.
+// IncomingExpiryAuthenticator derives a batch expiry and conservative
+// commitment height from authenticated ancestry and local chain evidence.
 type IncomingExpiryAuthenticator func(ctx context.Context,
-	ancestry []vtxo.Ancestry) (int32, error)
+	ancestry []vtxo.Ancestry) (vtxo.AuthenticatedBatchEvidence, error)
 
 // IncomingMetadataRecipientFilter filters an incoming Ark package down to the
 // recipient outputs controlled by the local wallet.
@@ -120,9 +120,9 @@ type LocalPersistenceOutboxHandler struct {
 	// metadata for each incoming recipient output.
 	ResolveIncomingMetadata IncomingMetadataResolver
 
-	// AuthenticateIncomingExpiry replaces the indexer's expiry hint with a
-	// locally derived value before materialization starts its DB
-	// transaction.
+	// AuthenticateIncomingExpiry replaces the indexer's expiry and
+	// creation-height hints with locally derived values before
+	// materialization starts its DB transaction.
 	AuthenticateIncomingExpiry IncomingExpiryAuthenticator
 
 	// NotifyIncomingVTXOs is invoked after incoming VTXOs are persisted.
@@ -194,7 +194,7 @@ func (h *LocalPersistenceOutboxHandler) handleAuthenticateIncomingMetadata(
 	matches := make([]IncomingMetadataMatch, len(msg.Matches))
 	copy(matches, msg.Matches)
 	for i := range matches {
-		expiry, err := h.AuthenticateIncomingExpiry(
+		evidence, err := h.AuthenticateIncomingExpiry(
 			ctx, matches[i].Metadata.Ancestry,
 		)
 		if err != nil {
@@ -205,7 +205,15 @@ func (h *LocalPersistenceOutboxHandler) handleAuthenticateIncomingMetadata(
 			return nil, err
 		}
 
-		matches[i].Metadata.BatchExpiry = expiry
+		if err := vtxo.ValidateIncomingBatchExpiry(
+			evidence.BatchExpiry, evidence.EarliestCommitmentHeight,
+		); err != nil {
+			return nil, &terminalOutboxError{cause: err}
+		}
+
+		matches[i].Metadata.BatchExpiry = evidence.BatchExpiry
+		matches[i].Metadata.CreatedHeight =
+			evidence.EarliestCommitmentHeight
 		matches[i].Metadata.ExpiryAuthenticated = true
 	}
 
@@ -257,10 +265,16 @@ func (h *LocalPersistenceOutboxHandler) validateMaterializeIncoming(
 
 	for i := range msg.MetadataMatches {
 		metadata := msg.MetadataMatches[i].Metadata
-		if !metadata.ExpiryAuthenticated || metadata.BatchExpiry <= 0 {
-			return fmt.Errorf("incoming output %d batch expiry is "+
-				"not authenticated",
+		if !metadata.ExpiryAuthenticated ||
+			metadata.CreatedHeight <= 0 {
+			return fmt.Errorf("incoming output %d batch heights "+
+				"are not authenticated",
 				msg.MetadataMatches[i].OutputIndex)
+		}
+		if err := vtxo.ValidateIncomingBatchExpiry(
+			metadata.BatchExpiry, metadata.CreatedHeight,
+		); err != nil {
+			return &terminalOutboxError{cause: err}
 		}
 	}
 
@@ -474,19 +488,26 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 					"provided", recipient.OutputIndex)
 			}
 
-			expiry, err := h.AuthenticateIncomingExpiry(
+			evidence, err := h.AuthenticateIncomingExpiry(
 				ctx, metadata.Ancestry,
 			)
 			if err != nil {
 				return nil, err
 			}
-			metadata.BatchExpiry = expiry
+			metadata.BatchExpiry = evidence.BatchExpiry
+			metadata.CreatedHeight =
+				evidence.EarliestCommitmentHeight
 			metadata.ExpiryAuthenticated = true
 		}
-		if metadata.BatchExpiry <= 0 {
+		if err := vtxo.ValidateIncomingBatchExpiry(
+			metadata.BatchExpiry, metadata.CreatedHeight,
+		); err != nil {
+			return nil, &terminalOutboxError{cause: err}
+		}
+		if metadata.CreatedHeight <= 0 {
 			return nil, fmt.Errorf("incoming output %d "+
-				"authenticated batch expiry must be positive",
-				recipient.OutputIndex)
+				"authenticated creation height must be "+
+				"positive", recipient.OutputIndex)
 		}
 
 		logger(ctx).DebugS(ctx, "Resolved incoming metadata",

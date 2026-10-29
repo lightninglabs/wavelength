@@ -3,6 +3,7 @@ package arkscript
 import (
 	"testing"
 
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -68,6 +69,49 @@ func TestVHTLCTimingValidateOrder(t *testing.T) {
 			require.ErrorContains(t, err, test.wantErr)
 		})
 	}
+}
+
+// TestVHTLCTimingValidateRefundWindow checks both sender-only timelock
+// ceilings without blocking legacy policy reconstruction.
+func TestVHTLCTimingValidateRefundWindow(t *testing.T) {
+	t.Parallel()
+
+	timing := VHTLCTiming{
+		RefundLocktime:                       1108,
+		UnilateralClaimDelay:                 12,
+		UnilateralRefundDelay:                24,
+		UnilateralRefundWithoutReceiverDelay: 36,
+	}
+	require.NoError(t, timing.ValidateRefundWindow(100, 1008))
+
+	timing.RefundLocktime = 1109
+	require.ErrorContains(
+		t, timing.ValidateRefundWindow(100, 1008),
+		"refund window 1009 blocks exceeds maximum 1008",
+	)
+
+	timing.RefundLocktime = txscript.LockTimeThreshold
+	require.ErrorContains(
+		t, timing.ValidateRefundWindow(100, 1008),
+		"is not a block height",
+	)
+
+	timing.RefundLocktime = 1108
+	timing.UnilateralRefundWithoutReceiverDelay = 1008
+	require.NoError(t, timing.ValidateRefundWindow(100, 1008))
+	timing.UnilateralRefundWithoutReceiverDelay = 1009
+	require.ErrorContains(
+		t, timing.ValidateRefundWindow(100, 1008),
+		"sender-only refund delay 1009 blocks exceeds maximum 1008",
+	)
+
+	// Reconstruction still accepts an already-funded legacy policy so its
+	// recovery paths remain available after a client upgrade.
+	opts := testVHTLCOpts(t)
+	opts.RefundLocktime = txscript.LockTimeThreshold
+	opts.UnilateralRefundWithoutReceiverDelay = 65_535
+	_, err := NewVHTLCPolicy(opts)
+	require.NoError(t, err)
 }
 
 // TestVHTLCTimingValidateClaimWindow verifies strict refund-window arithmetic

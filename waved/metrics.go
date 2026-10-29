@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/metrics"
 	"github.com/lightninglabs/wavelength/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -160,37 +161,39 @@ var allVTXOStatuses = []vtxo.VTXOStatus{
 }
 
 // GetVTXOStatsByStatus returns VTXO counts and total values grouped by
-// status. It queries the store once per status and aggregates each
-// listing into a single row. The store has no aggregate query, so this
-// adapter does the grouping in Go; the per-status VTXO set is small
-// enough for a client wallet that this stays cheap at scrape time.
+// status. The store aggregates every status in one SQL query rather than
+// listing full descriptors: the listing decodes keys and ancestry for every
+// row, which made each scrape cost grow with the wallet's entire VTXO
+// history.
 func (a *systemStatsAdapter) GetVTXOStatsByStatus(ctx context.Context) (
 	[]metrics.VTXOStatRow, error) {
 
+	totals, err := a.srv.vtxoStore.SumVTXOAmountsByStatus(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("sum VTXO amounts by status: %w", err)
+	}
+
+	byStatus := make(map[vtxo.VTXOStatus]db.VTXOStatusTotal, len(totals))
+	for _, total := range totals {
+		byStatus[total.Status] = total
+	}
+
+	// Walk the explicit status list so the scrape keeps its fixed label
+	// order and drops any status the dashboards do not report. Statuses
+	// with no VTXOs are absent from the aggregate, so the scrape only
+	// carries label values that currently exist, keeping cardinality
+	// proportional to live inventory.
 	rows := make([]metrics.VTXOStatRow, 0, len(allVTXOStatuses))
 	for _, status := range allVTXOStatuses {
-		descs, err := a.srv.vtxoStore.ListVTXOsByStatus(ctx, status)
-		if err != nil {
-			return nil, fmt.Errorf("list VTXOs by status %s: %w",
-				status, err)
-		}
-
-		// Skip statuses with no VTXOs so the scrape only carries
-		// label values that currently exist, keeping cardinality
-		// proportional to live inventory.
-		if len(descs) == 0 {
+		total, ok := byStatus[status]
+		if !ok || total.Count == 0 {
 			continue
-		}
-
-		var total int64
-		for _, desc := range descs {
-			total += int64(desc.Amount)
 		}
 
 		rows = append(rows, metrics.VTXOStatRow{
 			Status:     status.String(),
-			Count:      int64(len(descs)),
-			TotalValue: total,
+			Count:      total.Count,
+			TotalValue: int64(total.Total),
 		})
 	}
 

@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/metrics"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -16,9 +19,10 @@ import (
 // The credit FSM never chains via protofsm internal events: the durable
 // per-operation actor re-drives one step at a time so it can flush a
 // stageRecord checkpoint between a state that records a server identifier and
-// the next state that depends on it. A transition with no outbox is a plain
-// advance the actor continues from; a parkOp stops the turn; a terminal
-// NextState ends the FSM.
+// the next state that depends on it, and between a state that performs a side
+// effect and the awaiting state whose first ledger read follows it. A
+// transition with no outbox is a plain advance the actor continues from; a
+// parkOp stops the turn; a terminal NextState ends the FSM.
 func emit(next CreditState, out ...CreditOutMsg) (*CreditTransition, error) {
 	t := &CreditTransition{NextState: next}
 	if len(out) > 0 {
@@ -158,7 +162,10 @@ func (topupFundingState) ProcessEvent(ctx context.Context, _ CreditEvent,
 		slog.Int64("topup_sat", b.rec.TopupSat),
 	)
 
-	return emit(&topupAwaitingCreditState{})
+	// Checkpoint the advance before the awaiting state reads the server
+	// ledger: a failed read is a postpone, and redelivery has to resume in
+	// the awaiting state rather than re-issue the OOR send.
+	return emit(&topupAwaitingCreditState{}, &stageRecord{})
 }
 
 // ProcessEvent for topupAwaitingCreditState reconciles against the server
@@ -172,7 +179,7 @@ func (topupAwaitingCreditState) ProcessEvent(ctx context.Context, _ CreditEvent,
 
 	snapshot, err := b.listCredits(ctx)
 	if err != nil {
-		return nil, err
+		return nil, b.postponeListCreditsFetch(ctx, err)
 	}
 
 	state, found := serverOpState(snapshot, b.rec.ServerOpID)
@@ -229,7 +236,12 @@ func (payingState) ProcessEvent(ctx context.Context, _ CreditEvent,
 	// persisted (set at admission), so it correlates the pay operation in
 	// ListCredits across a restart.
 	if b.creditOnly && len(b.rec.PaymentHash) > 0 {
-		return emit(&payAwaitingSettlementState{})
+
+		// Checkpoint the advance before the awaiting state reads the
+		// server ledger: a failed read is a postpone, and redelivery
+		// has to resume in the awaiting state rather than re-issue
+		// StartPay.
+		return emit(&payAwaitingSettlementState{}, &stageRecord{})
 	}
 
 	return emit(&completedState{})
@@ -245,7 +257,7 @@ func (payAwaitingSettlementState) ProcessEvent(ctx context.Context,
 
 	snapshot, err := b.listCredits(ctx)
 	if err != nil {
-		return nil, err
+		return nil, b.postponeListCreditsFetch(ctx, err)
 	}
 
 	state, found := serverOpStateByPaymentHash(snapshot, b.rec.PaymentHash)
@@ -305,7 +317,10 @@ func (receiveCreatingState) ProcessEvent(ctx context.Context, _ CreditEvent,
 		slog.String("op_id", b.cfg.OpID),
 	)
 
-	return emit(&awaitingSettlementState{})
+	// Checkpoint the created invoice before the awaiting state reads the
+	// server ledger: a failed read is a postpone, and redelivery has to
+	// resume in the awaiting state rather than create the credit again.
+	return emit(&awaitingSettlementState{}, &stageRecord{})
 }
 
 // ProcessEvent for awaitingSettlementState reconciles a receive against the
@@ -322,7 +337,7 @@ func (awaitingSettlementState) ProcessEvent(ctx context.Context, _ CreditEvent,
 
 	snapshot, err := b.listCredits(ctx)
 	if err != nil {
-		return nil, err
+		return nil, b.postponeListCreditsFetch(ctx, err)
 	}
 
 	state, found := serverOpState(snapshot, b.rec.ServerOpID)
@@ -422,7 +437,10 @@ func (redeemSubmittingState) ProcessEvent(ctx context.Context, _ CreditEvent,
 
 	b.rec.ServerOpID = res.OperationID
 
-	return emit(&awaitingOORState{})
+	// Checkpoint the reservation before the awaiting state reads the server
+	// ledger: a failed read is a postpone, and redelivery has to resume in
+	// the awaiting state rather than re-issue the reservation.
+	return emit(&awaitingOORState{}, &stageRecord{})
 }
 
 // ProcessEvent for awaitingOORState reconciles against both the server ledger
@@ -434,7 +452,7 @@ func (awaitingOORState) ProcessEvent(ctx context.Context, _ CreditEvent,
 
 	snapshot, err := b.listCredits(ctx)
 	if err != nil {
-		return nil, err
+		return nil, b.postponeListCreditsFetch(ctx, err)
 	}
 	if state, found := serverOpState(
 		snapshot, b.rec.ServerOpID,
@@ -573,6 +591,134 @@ func (b *opBehavior) redeemWatermarkCleared(ctx context.Context,
 	}
 
 	return available, true
+}
+
+// listCreditsPostponeHorizon bounds how long one delivery keeps retrying a
+// failed server-ledger read before it is failed for real. A postpone never
+// consumes a delivery attempt, so without a bound a read that fails for good
+// would re-enqueue the resume forever; with it the delivery reaches the
+// ordinary failure path and the dead-letter table, which the delivery metric
+// surfaces.
+const listCreditsPostponeHorizon = 10 * time.Minute
+
+// postponeListCreditsFetch turns a failed server-ledger read in an awaiting
+// state into a postpone request, leaving every other failure untouched.
+//
+// The read changes nothing durable: every transition into an awaiting state
+// checkpoints the advance (stageRecord) before that state's first ListCredits,
+// so the side effect that preceded the read is already recorded and a
+// redelivery resumes in the awaiting state rather than re-running it. The right
+// response to a failed read is therefore "not now", not "this operation
+// failed". Nacking instead spends one of the delivery's few attempts, and that
+// budget is shorter than a swapd deploy or a degraded endpoint easily lasts, so
+// the resume that keeps the operation alive is deleted from the mailbox while
+// the server goes on to settle the operation from its own sweep.
+//
+// Only the reconciliation read at the top of an awaiting state is classified
+// here. A Stage or Commit failure after the FSM advanced in memory keeps its
+// commitFailed reload semantics: the redelivered turn has to re-read durable
+// truth, so it must stay an ordinary error.
+//
+// Not every read failure is worth waiting on. Transport and server-side
+// failures are: a swapd deploy, a degraded endpoint, or a slow RPC timeout is
+// exactly the window this path exists to ride out, so they postpone. A
+// deterministic client-side failure — a canceled context, or a validation-style
+// status such as InvalidArgument, NotFound, or Unimplemented — is not repaired
+// by waiting, so it keeps the ordinary failure path and reaches the
+// dead-letter table as a visible error rather than a forever-parked resume. The
+// classification is transientLedgerReadError, a deny-list: an error it does not
+// recognize still postpones, so an unfamiliar transient failure never silently
+// spends the delivery's attempt budget.
+//
+// The horizon is measured from the durable row's own enqueue time, not from
+// behavior state. A delivery with no timestamp (a directly-invoked behavior in
+// a test, or a store that does not report one) postpones without a horizon,
+// since absence means "no horizon information", not "infinitely old".
+func (b *opBehavior) postponeListCreditsFetch(ctx context.Context,
+	err error) error {
+
+	if !transientLedgerReadError(err) {
+		// Waiting cannot repair a deterministic failure, so let the
+		// ordinary retry policy run out and dead-letter the delivery.
+		// No postpone metric is emitted: this is not a postpone
+		// decision, and the dead-letter counter is where it surfaces.
+		b.logger(ctx).WarnS(ctx, "Credit reconciliation read failed "+
+			"with a deterministic error; not postponing", err,
+			slog.String("op_id", b.cfg.OpID),
+		)
+
+		return err
+	}
+
+	horizon := listCreditsPostponeHorizon
+	enqueuedAt, ok := actor.DeliveryEnqueuedAt(ctx)
+	if ok && time.Since(enqueuedAt) >= horizon {
+		b.logger(ctx).WarnS(ctx, "Credit reconciliation exceeded its "+
+			"postpone horizon; failing the delivery", err,
+			slog.String("op_id", b.cfg.OpID),
+			slog.Time("enqueued_at", enqueuedAt),
+			slog.Duration("horizon", horizon),
+		)
+		metrics.EmitDeliveryPostpone(
+			ctx, b.cfg.MetricsSink, b.logger(ctx),
+			metrics.PostponeCauseServerError, true,
+		)
+
+		return err
+	}
+
+	metrics.EmitDeliveryPostpone(
+		ctx, b.cfg.MetricsSink, b.logger(ctx),
+		metrics.PostponeCauseServerError, false,
+	)
+
+	return fmt.Errorf("%w: %w", err, actor.Postpone(b.reconcileBackoff()))
+}
+
+// transientLedgerReadError reports whether a failed server-ledger read is worth
+// postponing. The classification is deliberately a deny-list: anything not
+// recognized below is treated as transient, because the cost of guessing wrong
+// is asymmetric. A transient failure that is not postponed spends the
+// delivery's attempt budget and dead-letters the only driver the operation has;
+// a deterministic failure that is postponed merely waits until its horizon.
+//
+// Two kinds of failure are denied. A canceled context is the client's own
+// decision to stop the turn (shutdown, or a lease that is going away), not
+// evidence about the operator's ledger, so re-parking the delivery would only
+// make the actor retry work it has already abandoned. A validation-style gRPC
+// status is a deterministic answer about the request or the surface itself and
+// will not change on the next poll.
+//
+// DeadlineExceeded is not denied: it is what a slow endpoint's own RPC timeout
+// looks like, and nacking there would dead-letter an operation whose server is
+// merely slow.
+func transientLedgerReadError(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+
+	switch status.Code(err) {
+	case codes.Canceled, codes.InvalidArgument, codes.NotFound,
+		codes.AlreadyExists, codes.PermissionDenied,
+		codes.Unauthenticated, codes.FailedPrecondition,
+		codes.OutOfRange, codes.Unimplemented:
+		return false
+
+	default:
+		return true
+	}
+}
+
+// reconcileBackoff returns how long a postponed reconciliation waits before it
+// is redelivered. Reusing the poll cadence keeps a postponed delivery from
+// re-driving the operation faster than the poll timer that would otherwise have
+// done it.
+func (b *opBehavior) reconcileBackoff() time.Duration {
+	if b.cfg.PollInterval > 0 {
+		return b.cfg.PollInterval
+	}
+
+	return DefaultPollInterval
 }
 
 // listCredits fetches the server-authoritative account snapshot for this

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/internal/expiryfixture"
@@ -12,6 +13,66 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
+
+// TestIncomingAncestryFetcherReplacesIndexerHeight proves a thin incoming
+// VTXO uses the locally confirmed commitment height even when the indexer
+// advertises a creation height beyond the real batch expiry.
+func TestIncomingAncestryFetcherReplacesIndexerHeight(t *testing.T) {
+	t.Parallel()
+
+	idx, rpc, recipient, _ := newTestIncomingMetadataIndexer(t)
+	candidate, commitment := expiryfixture.Round(
+		t, 10_000, recipient.PkScript, 50, 321, 52,
+	)
+	candidate.CreatedHeight = 400
+	rpc.responses = []*arkrpc.ListVTXOsByScriptsResponse{{
+		Vtxos: []*arkrpc.VTXO{
+			candidate,
+		},
+	}}
+
+	authenticate := func(ctx context.Context, ancestry []vtxo.Ancestry) (
+		vtxo.AuthenticatedBatchEvidence, error) {
+
+		return vtxo.AuthenticateBatchEvidence(
+			ctx, ancestry,
+			func(_ context.Context, txid chainhash.Hash, _ []byte,
+				_ uint32) (vtxo.CommitmentConfirmation, error) {
+
+				require.Equal(t, commitment.TxHash(), txid)
+
+				return vtxo.CommitmentConfirmation{
+					Tx:          commitment,
+					BlockHeight: 321,
+				}, nil
+			},
+		)
+	}
+	fetcher, err := incomingAncestryFetcher(
+		idx, (&recoveryKeyBackend{}).ProofSigner, authenticate,
+	)
+	require.NoError(t, err)
+	var outpoint wire.OutPoint
+	copy(outpoint.Hash[:], candidate.Outpoint.Txid)
+	outpoint.Index = candidate.Outpoint.Vout
+
+	extras, err := fetcher(
+		t.Context(), outpoint, recipient.PkScript,
+		testKeyDescriptor(t, 1),
+	)
+	require.NoError(t, err)
+	require.Equal(t, int32(321), extras.CreatedHeight)
+	require.Equal(t, int32(371), extras.BatchExpiry)
+	require.True(
+		t,
+		vtxo.HasUsableBatchExpiry(
+			&vtxo.Descriptor{
+				CreatedHeight: extras.CreatedHeight,
+				BatchExpiry:   extras.BatchExpiry,
+			},
+		),
+	)
+}
 
 // TestIncomingAncestryFetcherWithTimeout proves a stalled indexer lookup
 // returns control to the durable incoming actor for postponement.

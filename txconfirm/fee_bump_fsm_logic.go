@@ -73,26 +73,39 @@ func (s *feeBumpStateIdle) stayIdle(env *feeBumpEnvironment, failure error) (
 
 // ProcessEvent applies one event to the idle fanout state.
 //
-// The only event that does work here is a fresh demand observation: it runs the
-// full supply decision (is a fanout actually needed?) and, if so, funds and
-// broadcasts a fanout transaction, reserving its outputs as predicted fee
-// inputs on the blocked parents. On success the FSM advances to fanout-pending
+// A fresh demand observation runs the full supply decision (is a fanout
+// actually needed?) and, if so, funds and broadcasts a fanout transaction,
+// reserving its outputs as predicted fee inputs on the blocked parents. On
+// success the FSM advances to fanout-pending
 // and asks the actor to register a confirmation watch.
 //
-// Confirmation and eviction events arriving while idle are late or duplicate
-// callbacks for a fanout we are no longer tracking; they self-loop rather than
-// erroring so a redundant chainsource event can never tear down the long-lived
-// FSM.
+// Eviction events prune the unsubmitted destination plan. Confirmation events
+// arriving while idle are late or duplicate callbacks for a fanout we are no
+// longer tracking; they self-loop rather than tearing down the long-lived FSM.
 func (s *feeBumpStateIdle) ProcessEvent(ctx context.Context, event feeBumpEvent,
 	env *feeBumpEnvironment) (*feeBumpStateTransition, error) {
+
+	// The actor joins accepted transitions even after caller cancellation.
+	// Bound dependency IO so that join, including shutdown, can finish.
+	ctx, cancel := context.WithTimeout(ctx, env.transitionTimeout)
+	defer cancel()
 
 	switch event := event.(type) {
 	case *feeBumpDemandsObserved:
 		return s.processDemands(ctx, event, env)
 
-	// Nothing is in flight, so a confirmation or eviction is not ours to
-	// act on. Self-loop idle.
-	case *feeBumpFanoutConfirmedEvent, *feeBumpParentEvicted:
+	case *feeBumpParentEvicted:
+		// Unrelated or partial cohort eviction must not burn the
+		// surviving parents' destinations on their next funding retry.
+		delete(env.fanoutScripts.parents, event.parentTxid)
+		if len(env.fanoutScripts.parents) == 0 {
+			env.fanoutScripts = fanoutScriptPlan{}
+		}
+
+		return s.idleTransition(), nil
+
+	// Nothing is in flight, so a late confirmation needs no action.
+	case *feeBumpFanoutConfirmedEvent:
 		return &feeBumpStateTransition{
 			NextState: s,
 		}, nil
@@ -119,6 +132,8 @@ func (s *feeBumpStateIdle) processDemands(ctx context.Context,
 
 	b := env.broadcaster
 	if b == nil || b.cfg.Wallet == nil || len(event.demands) == 0 {
+		env.fanoutScripts = fanoutScriptPlan{}
+
 		return s.idleTransition(), nil
 	}
 
@@ -128,6 +143,8 @@ func (s *feeBumpStateIdle) processDemands(ctx context.Context,
 
 	blocked := env.blockedFeeInputDemands(demands)
 	if len(blocked) == 0 {
+		env.fanoutScripts = fanoutScriptPlan{}
+
 		return s.idleTransition(), nil
 	}
 
@@ -141,6 +158,8 @@ func (s *feeBumpStateIdle) processDemands(ctx context.Context,
 	available := fanoutAvailableFeeInputs(utxos, env.reservedOutpoints())
 	blocked = demandsStillMissingSupply(blocked, available)
 	if len(blocked) == 0 {
+		env.fanoutScripts = fanoutScriptPlan{}
+
 		return s.idleTransition(), nil
 	}
 
@@ -215,6 +234,12 @@ func (s *feeBumpStateIdle) processDemands(ctx context.Context,
 			env, fmt.Errorf("fanout watch script not found"),
 		)
 	}
+
+	// Publishing ends this destination plan even when the response is
+	// ambiguous: the candidate may already be on chain. A later funded
+	// candidate can use other inputs and confirm alongside it, so it must
+	// not reuse these addresses. Pending retains its funded tx separately.
+	env.fanoutScripts = fanoutScriptPlan{}
 
 	resp, err := b.cfg.ChainSource.Ask(
 		ctx, &chainsource.BroadcastTxRequest{
@@ -313,6 +338,9 @@ func (s *feeBumpStateFanoutPending) ProcessEvent(ctx context.Context,
 	event feeBumpEvent, env *feeBumpEnvironment) (*feeBumpStateTransition,
 	error) {
 
+	ctx, cancel := context.WithTimeout(ctx, env.transitionTimeout)
+	defer cancel()
+
 	switch event := event.(type) {
 	case *feeBumpDemandsObserved:
 		return s.processDemands(ctx, event, env)
@@ -367,6 +395,16 @@ func (s *feeBumpStateFanoutPending) processDemands(ctx context.Context,
 		// new fanout.
 		if IsIgnorableBroadcastError(err) ||
 			isAmbiguousSpendError(err) {
+			return env.refreshRebroadcast(ctx, pending, height), nil
+		}
+
+		// A timeout, canceled RPC or unclassified backend response does
+		// not prove that the previously submitted fanout was rejected.
+		// Preserve its candidate, reservations and confirmation watch.
+		// Surface the operational failure without destroying recovery.
+		if ClassifyBroadcastFailure(err) == BroadcastFailureUnknown {
+			env.lastErr = fmt.Errorf("rebroadcast fanout: %w", err)
+
 			return env.refreshRebroadcast(ctx, pending, height), nil
 		}
 
@@ -477,9 +515,9 @@ func (s *feeBumpStateFanoutPending) processParentEvicted(ctx context.Context,
 }
 
 // refreshRebroadcast builds the fanout-pending transition that refreshes the
-// in-flight fanout's last-broadcast height after a successful rebroadcast.
-// Transitions are pure with respect to the carried state, so a fresh pending
-// value is built rather than mutating the one in the current state.
+// in-flight fanout's last-broadcast height after a retained rebroadcast
+// attempt. Transitions are pure with respect to the carried state, so a fresh
+// pending value is built rather than mutating the one in the current state.
 func (env *feeBumpEnvironment) refreshRebroadcast(ctx context.Context,
 	pending *pendingFeeInputFanout, height int32) *feeBumpStateTransition {
 
@@ -774,6 +812,13 @@ func (env *feeBumpEnvironment) buildFeeInputFanoutTx(ctx context.Context,
 func (env *feeBumpEnvironment) fanoutOutputs(ctx context.Context,
 	demands []feeInputDemand, minOutputs int) ([]*wire.TxOut, error) {
 
+	if env.fanoutScripts.parents == nil {
+		env.fanoutScripts.parents = make(map[chainhash.Hash]struct{})
+	}
+	for _, demand := range demands {
+		env.fanoutScripts.parents[demand.parentTxid] = struct{}{}
+	}
+
 	outputCount := max(len(demands), minOutputs)
 	outputs := make([]*wire.TxOut, 0, outputCount)
 	var extraAmount btcutil.Amount
@@ -782,7 +827,7 @@ func (env *feeBumpEnvironment) fanoutOutputs(ctx context.Context,
 			extraAmount = demand.minAmount
 		}
 
-		pkScript, err := env.broadcaster.deriveChangePkScript(ctx)
+		pkScript, err := env.fanoutOutputPkScript(ctx, len(outputs))
 		if err != nil {
 			return nil, fmt.Errorf("fanout pkscript: %w", err)
 		}
@@ -793,7 +838,7 @@ func (env *feeBumpEnvironment) fanoutOutputs(ctx context.Context,
 		})
 	}
 	for len(outputs) < outputCount {
-		pkScript, err := env.broadcaster.deriveChangePkScript(ctx)
+		pkScript, err := env.fanoutOutputPkScript(ctx, len(outputs))
 		if err != nil {
 			return nil, fmt.Errorf("fanout pkscript: %w", err)
 		}
@@ -805,6 +850,43 @@ func (env *feeBumpEnvironment) fanoutOutputs(ctx context.Context,
 	}
 
 	return outputs, nil
+}
+
+// fanoutOutputPkScript returns a copy of a planned output's destination.
+// fanoutOutputs requests slots sequentially, so a new slot is appended once;
+// successful earlier allocations survive a later derivation/funding failure.
+func (env *feeBumpEnvironment) fanoutOutputPkScript(ctx context.Context,
+	index int) ([]byte, error) {
+
+	if index < len(env.fanoutScripts.outputs) {
+		script := env.fanoutScripts.outputs[index]
+
+		return append([]byte(nil), script...), nil
+	}
+
+	script, err := env.broadcaster.deriveChangePkScript(ctx)
+	if err != nil {
+		return nil, err
+	}
+	env.fanoutScripts.outputs = append(env.fanoutScripts.outputs, script)
+
+	return append([]byte(nil), script...), nil
+}
+
+// fanoutChangePkScript retains a separate change destination for retries of
+// the reserved-input fallback, independent of the fanout's output slots.
+func (env *feeBumpEnvironment) fanoutChangePkScript(ctx context.Context) (
+	[]byte, error) {
+
+	if len(env.fanoutScripts.change) == 0 {
+		script, err := env.broadcaster.deriveChangePkScript(ctx)
+		if err != nil {
+			return nil, err
+		}
+		env.fanoutScripts.change = script
+	}
+
+	return append([]byte(nil), env.fanoutScripts.change...), nil
 }
 
 // reservedFeeInputsForFanout collects the confirmed fee inputs already
@@ -861,7 +943,7 @@ func (env *feeBumpEnvironment) buildReservedInputFanoutTx(ctx context.Context,
 		return nil, err
 	}
 
-	changePkScript, err := env.broadcaster.deriveChangePkScript(ctx)
+	changePkScript, err := env.fanoutChangePkScript(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("fanout change pkscript: %w", err)
 	}

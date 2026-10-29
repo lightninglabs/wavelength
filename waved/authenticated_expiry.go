@@ -29,33 +29,39 @@ type confRef = actor.TellOnlyRef[chainsource.ConfirmationEvent]
 type confirmationRegistration = chainsource.RegisterConfResponse
 
 // NewBatchExpiryAuthenticator adapts the chain-source actor's one-shot
-// confirmation API to the pure VTXO expiry verifier. A fresh caller id keeps
-// concurrent acceptance checks independent; each one-shot watch is removed
-// after its future resolves.
+// confirmation API to the VTXO batch-evidence verifier. A fresh caller id
+// keeps concurrent acceptance checks independent; each one-shot watch is
+// removed after its future resolves. Unknown heights use the network deployment
+// scanFloor when it is usable at the current tip, or block 1 otherwise,
+// matching legacy unroll scans. Nonzero hints pass through unchanged.
 func NewBatchExpiryAuthenticator(chainSource actor.ActorRef[
 	chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
-]) oor.IncomingExpiryAuthenticator {
+], scanFloor uint32) oor.IncomingExpiryAuthenticator {
 
 	return batchExpiryAuthenticatorWithTimeout(
-		chainSource, expiryAuthenticationTimeout,
+		chainSource, scanFloor, expiryAuthenticationTimeout,
 	)
 }
 
-// batchExpiryAuthenticatorWithTimeout builds the expiry authenticator with a
-// bounded chain lookup. Durable callers retry a timed-out lookup instead of
-// holding their actor turn and delivery lease indefinitely.
+// batchExpiryAuthenticatorWithTimeout builds the batch-evidence authenticator
+// with a bounded chain lookup. Durable callers retry a timed-out lookup
+// instead of holding their actor turn and delivery lease indefinitely.
 func batchExpiryAuthenticatorWithTimeout(chainSource chainSourceRef,
+	scanFloor uint32,
 	timeout time.Duration) oor.IncomingExpiryAuthenticator {
 
-	return func(ctx context.Context, ancestry []vtxo.Ancestry) (int32,
-		error) {
+	return func(ctx context.Context, ancestry []vtxo.Ancestry) (
+		vtxo.AuthenticatedBatchEvidence, error) {
+
+		var empty vtxo.AuthenticatedBatchEvidence
 
 		if chainSource == nil {
-			return 0, fmt.Errorf("chain source must be provided")
+			return empty, fmt.Errorf("chain source must be " +
+				"provided")
 		}
 		if timeout <= 0 {
-			return 0, fmt.Errorf("expiry authentication timeout " +
-				"must be positive")
+			return empty, fmt.Errorf("expiry authentication " +
+				"timeout must be positive")
 		}
 
 		ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -64,13 +70,23 @@ func batchExpiryAuthenticatorWithTimeout(chainSource chainSourceRef,
 		callerID := "expiry-auth-" + uuid.NewString()
 		noNotify := fn.None[confRef]()
 
-		return vtxo.AuthenticateBatchExpiry(
+		return vtxo.AuthenticateBatchEvidence(
 			ctx, ancestry,
 			func(ctx context.Context, txid chainhash.Hash,
 				pkScript []byte, heightHint uint32) (
 				vtxo.CommitmentConfirmation, error) {
 
 				var empty vtxo.CommitmentConfirmation
+
+				if heightHint == 0 {
+					var err error
+					heightHint, err = expiryScanFloor(
+						ctx, chainSource, scanFloor,
+					)
+					if err != nil {
+						return empty, err
+					}
+				}
 
 				request := &chainsource.RegisterConfRequest{
 					CallerID:    callerID,
@@ -113,6 +129,36 @@ func batchExpiryAuthenticatorWithTimeout(chainSource chainSourceRef,
 			},
 		)
 	}
+}
+
+// expiryScanFloor bounds unknown-height scans by the network's
+// deployment floor only when the local tip has reached it. Local networks,
+// unusable floors, and nonpositive tips use block 1, as unroll does. Tip lookup
+// failures remain retryable within the caller's existing authentication budget.
+func expiryScanFloor(ctx context.Context, chainSource chainSourceRef,
+	floor uint32) (uint32, error) {
+
+	if floor <= 1 {
+		return 1, nil
+	}
+
+	response, err := chainSource.Ask(
+		ctx, &chainsource.BestHeightRequest{},
+	).Await(ctx).Unpack()
+	if err != nil {
+		return 0, fmt.Errorf("get expiry scan tip: %w", err)
+	}
+
+	tip, ok := response.(*chainsource.BestHeightResponse)
+	if !ok {
+		return 0, fmt.Errorf("unexpected best height response %T",
+			response)
+	}
+	if tip.Height <= 0 || floor > uint32(tip.Height) {
+		return 1, nil
+	}
+
+	return floor, nil
 }
 
 // unregisterExpiryConfirmation releases a one-shot confirmation watch with a

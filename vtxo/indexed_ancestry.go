@@ -18,7 +18,9 @@ import (
 func IndexedAncestryFromRPC(candidate *arkrpc.VTXO) ([]Ancestry, error) {
 	ancestry, err := AncestryFromRPC(candidate.GetAncestryPaths())
 	if err != nil {
-		return nil, err
+		return nil, invalidBatchExpiry(
+			"decode indexed ancestry: %v", err,
+		)
 	}
 	op := candidate.GetOutpoint()
 	if len(op.GetTxid()) != chainhash.HashSize ||
@@ -45,15 +47,29 @@ func IndexedAncestryFromRPC(candidate *arkrpc.VTXO) ([]Ancestry, error) {
 				"nil ancestry package %d", i,
 			)
 		}
-		rawPackets := append(
-			[][]byte{pkg.GetArkPsbt()}, pkg.GetCheckpointPsbts()...,
-		)
-		for j, raw := range rawPackets {
+		arkTx, err := expiryPackageTransaction(pkg.GetArkPsbt())
+		if err != nil {
+			return nil, invalidBatchExpiry(
+				"package %d ark transaction: %v", i, err,
+			)
+		}
+		target.Transactions = append(target.Transactions, arkTx)
+		arkParents := make(map[chainhash.Hash]struct{}, len(arkTx.TxIn))
+		for _, in := range arkTx.TxIn {
+			arkParents[in.PreviousOutPoint.Hash] = struct{}{}
+		}
+		for j, raw := range pkg.GetCheckpointPsbts() {
 			tx, err := expiryPackageTransaction(raw)
 			if err != nil {
 				return nil, invalidBatchExpiry(
-					"package %d transaction %d: %v", i, j,
+					"package %d checkpoint %d: %v", i, j,
 					err,
+				)
+			}
+			if _, ok := arkParents[tx.TxHash()]; !ok {
+				return nil, invalidBatchExpiry(
+					"package %d checkpoint %d is not an "+
+						"ark input", i, j,
 				)
 			}
 			target.Transactions = append(target.Transactions, tx)

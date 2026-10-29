@@ -59,7 +59,8 @@ func (c BlockEpochConfig) WithLogger(log btclog.Logger) BlockEpochConfig {
 //
 // The actor supports dual-mode operation: Iterator mode for range-based
 // iteration, and Actor mode for asynchronous event delivery to a registered
-// actor. Each actor creates its own backend registration (no sharing).
+// actor. Each actor owns a local backend registration; backends may share the
+// upstream notification stream.
 type BlockEpochActor struct {
 	// cfg holds all actor configuration including backend and optional
 	// logger.

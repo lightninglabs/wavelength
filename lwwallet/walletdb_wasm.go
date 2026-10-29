@@ -99,7 +99,7 @@ func openWASMWalletDB(dbDir string) (walletdb.DB, error) {
 		if err == nil {
 			return db, nil
 		}
-		if !isWASMWalletCantOpen(err) {
+		if !isWASMWalletRetryableOpen(err) {
 			return nil, fmt.Errorf("open OPFS wallet database: %w",
 				err)
 		}
@@ -176,9 +176,12 @@ func wasmWalletDBFileName(dbDir string) string {
 	return fmt.Sprintf(wasmWalletDBFileNamePattern, hasher.Sum64())
 }
 
-// isWASMWalletCantOpen identifies the SQLite error returned while OPFS still
-// holds the wallet database from a just-unloaded page runtime.
-func isWASMWalletCantOpen(err error) bool {
+// isWASMWalletRetryableOpen recognizes transient open failures while a previous
+// runtime releases its persistent wallet database handles. An active lock
+// holder exhausts the retry budget and the caller receives the final error.
+func isWASMWalletRetryableOpen(err error) bool {
 	return strings.Contains(err.Error(), "SQLITE_CANTOPEN") ||
+		strings.Contains(err.Error(), "SQLITE_BUSY") ||
+		strings.Contains(err.Error(), "database is locked") ||
 		strings.Contains(err.Error(), "unable to open database file")
 }

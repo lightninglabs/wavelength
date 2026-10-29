@@ -24,8 +24,8 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
   a 15-second per-call timeout and last-good fallback semantics.
 - `LndClientChainNotifier` / `LndClientChainNotifierConfig` — Implements
   `chainntnfs.ChainNotifier` using lndclient. Uses a 15-second registration
-  timeout and goroutine-based forwarding to bridge lndclient's height-only
-  block events to the full `chainntnfs` interface.
+  timeout. Block epochs come from lndclient's authenticated raw chainrpc
+  client, whose events carry the hash; no `GetBlockHash` lookup is made.
 - `LNDBackendFromLndClientConfig` — Config struct for building an `LNDBackend`
   from lndclient services (notifier, wallet kit, chain kit).
 - `NewLNDBackendFromLndClient(cfg)` — Factory constructing a full `LNDBackend`
@@ -87,18 +87,43 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
   check. Callers must degrade gracefully when a field is absent rather than
   treating the parse as authoritative, and a Core release that rewords these
   strings silently yields nil — never a wrong number.
+- **All tip-following `LndClientChainNotifier` block registrations share one
+  lnd stream** (`blockEpochHub`, `block_epoch_hub.go`). Every live VTXO actor
+  and finality watch subscribes, so one stream per registration meant hundreds
+  of gRPC streams and identical `GetBlockHash` calls per block. The hub opens
+  the stream with the first registration and closes it after the last cancel;
+  the final `Cancel` and `Stop` join the reader, and a registration racing
+  that teardown waits rather than opening an overlapping stream. A
+  registration with a `bestBlock` cursor gets a dedicated stream, since lnd's
+  catch-up from that cursor cannot be shared.
+- New registrations first receive the latest delivered tip. Live epochs keep
+  upstream order with no height-based deduplication, which would hide
+  same-height or lower-height reorg replacements.
+- **An upstream failure never closes registrations.** The hub's reader
+  reconnects once for everyone, with 1–30 second exponential backoff, from the
+  last delivered hash/height cursor so lnd replays connected blocks (rewinding
+  past a reorged cursor). Closing every registration instead would make every
+  owner reconnect at once. A malformed event is treated as a failure and
+  resumes from the same cursor rather than skipping a block. Reconnect retries
+  indefinitely.
+- Each registration has a queue of 1024 epochs, sized for lnd's catch-up
+  burst after a reconnect, which replays every missed block at once. A
+  small queue would overflow every registration not draining in lockstep and
+  leave each with only the tip after re-registering. Overflow closes only
+  that wedged registration; it never drops an individual epoch or stalls the
+  others.
+  Chainsource actors re-register closed registrations, and conf/spend
+  finality re-arms against the live tip instead of trusting a closed queue's
+  buffered heights. Consumers needing full history must reconcile after an
+  overflow or a fresh registration.
+- `BestBlock` remains a live ChainKit query for remote connections,
+  independent of the hub's cached tip.
 - **A `Canceled` status is only shutdown noise when the owning context is also
-  done.** Round completion stops each VTXO's block subscription, and a block
-  already in flight can race that cancellation, so `GetBlockHash` or the
-  notifier error channel returns `Canceled` while the forwarder exits normally
-  — paging an operator per terminated VTXO is pure noise.
-  `isBlockEpochShutdownError(ctx, err)` demotes these to debug, but it returns
-  false whenever `ctx.Err() == nil`. Do not simplify it to a bare
+  done.** `isBlockEpochShutdownError(ctx, err)` demotes these to debug, but it
+  returns false whenever `ctx.Err() == nil`. Do not simplify it to a bare
   `errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled`
-  check: a `Canceled` arriving from a *live* subscription means the backend
-  dropped it independently, which is actionable and must stay at warning. Every
-  other notifier or block-hash failure remains a warning regardless of context
-  state.
+  check: a `Canceled` arriving from a *live* stream means the backend dropped
+  it independently, which is actionable and must stay at warning.
 
 ## Deep Docs
 

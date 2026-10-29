@@ -121,12 +121,10 @@ const (
 	// out-of-round spend but the spend has not yet completed.
 	VTXOStatus_VTXO_STATUS_SPENDING VTXOStatus = 8
 	// VTXO_STATUS_PENDING_ROUND indicates a VTXO the wallet is about to
-	// receive from a round that has been signed but whose commitment
-	// transaction has not yet confirmed on-chain. Entries with this
-	// status are synthetic projections from the live round actor; they
-	// are not yet persisted, not yet spendable, and carry only the
-	// amount, originating round_id, and (once known) the commitment
-	// txid that will create them.
+	// receive from a signed round whose commitment is not yet confirmed.
+	// Local inventory entries are synthetic projections from the round
+	// actor and carry only pending-round metadata. Indexed lookups may
+	// include a signed output proof. Neither form is yet spendable.
 	VTXOStatus_VTXO_STATUS_PENDING_ROUND VTXOStatus = 9
 	// VTXO_STATUS_EXPIRED indicates the VTXO's batch expiry has passed, so
 	// the operator's sweep path is mature and no client-driven exit can
@@ -1869,9 +1867,11 @@ type VTXOExpiryInfo struct {
 	Status VTXOExpiryStatus `protobuf:"varint,1,opt,name=status,proto3,enum=waverpc.VTXOExpiryStatus" json:"status,omitempty"`
 	// current_height is the chain height used for this classification.
 	CurrentHeight int32 `protobuf:"varint,2,opt,name=current_height,json=currentHeight,proto3" json:"current_height,omitempty"`
-	// batch_expiry is the VTXO batch expiry height.
+	// batch_expiry is the VTXO batch expiry height. Zero means no authenticated
+	// deadline is available and must never authorize value-bearing work.
 	BatchExpiry int32 `protobuf:"varint,3,opt,name=batch_expiry,json=batchExpiry,proto3" json:"batch_expiry,omitempty"`
-	// blocks_remaining is batch_expiry - current_height.
+	// blocks_remaining is batch_expiry - current_height, or zero when the
+	// deadline or current height is unknown.
 	BlocksRemaining int32 `protobuf:"varint,4,opt,name=blocks_remaining,json=blocksRemaining,proto3" json:"blocks_remaining,omitempty"`
 	// refresh_threshold_blocks is the number of blocks before batch expiry at
 	// which cooperative refresh should begin.
@@ -1886,7 +1886,8 @@ type VTXOExpiryInfo struct {
 	MaxTreeDepth uint32 `protobuf:"varint,8,opt,name=max_tree_depth,json=maxTreeDepth,proto3" json:"max_tree_depth,omitempty"`
 	// chain_depth is the number of OOR checkpoint hops between this VTXO and
 	// the most recent on-chain commitment. It is included for diagnostics but
-	// is distinct from max_tree_depth.
+	// is distinct from max_tree_depth. Indexed reads may conservatively count
+	// parallel ancestry packages as separate hops.
 	ChainDepth    uint32 `protobuf:"varint,9,opt,name=chain_depth,json=chainDepth,proto3" json:"chain_depth,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1994,7 +1995,7 @@ type VTXO struct {
 	// status is the current lifecycle state of this VTXO.
 	Status VTXOStatus `protobuf:"varint,3,opt,name=status,proto3,enum=waverpc.VTXOStatus" json:"status,omitempty"`
 	// batch_expiry is the absolute block height at which the batch-level
-	// timelock expires.
+	// timelock expires. Zero means no authenticated deadline is available.
 	BatchExpiry int32 `protobuf:"varint,4,opt,name=batch_expiry,json=batchExpiry,proto3" json:"batch_expiry,omitempty"`
 	// round_id is the identifier of the round that created this VTXO.
 	RoundId string `protobuf:"bytes,5,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
@@ -3176,8 +3177,14 @@ type GetVTXOExpiryInfoRequest struct {
 	// current_height overrides the chain height used for classification. If
 	// zero, the daemon uses its current best chain height.
 	CurrentHeight int32 `protobuf:"varint,4,opt,name=current_height,json=currentHeight,proto3" json:"current_height,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// policy_template optionally authorizes a pk_script lookup with a wallet
+	// participant key. It must match pk_script. A standard policy also
+	// supplies the script's exit delay for expiry classification. Callers
+	// providing a policy must require policy_authorized in the response.
+	// This field is ignored for local outpoint lookups.
+	PolicyTemplate []byte `protobuf:"bytes,5,opt,name=policy_template,json=policyTemplate,proto3" json:"policy_template,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *GetVTXOExpiryInfoRequest) Reset() {
@@ -3249,6 +3256,13 @@ func (x *GetVTXOExpiryInfoRequest) GetCurrentHeight() int32 {
 	return 0
 }
 
+func (x *GetVTXOExpiryInfoRequest) GetPolicyTemplate() []byte {
+	if x != nil {
+		return x.PolicyTemplate
+	}
+	return nil
+}
+
 type isGetVTXOExpiryInfoRequest_Target interface {
 	isGetVTXOExpiryInfoRequest_Target()
 }
@@ -3273,13 +3287,16 @@ type GetVTXOExpiryInfoResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// found reports whether the daemon found a VTXO for the request target.
 	Found bool `protobuf:"varint,1,opt,name=found,proto3" json:"found,omitempty"`
-	// expiry_info is present when found is true and the VTXO had enough timing
-	// metadata to classify.
+	// expiry_info is present when found is true. Its status is UNKNOWN when
+	// chain timing or the script-specific exit delay is unavailable.
 	ExpiryInfo *VTXOExpiryInfo `protobuf:"bytes,2,opt,name=expiry_info,json=expiryInfo,proto3" json:"expiry_info,omitempty"`
 	// vtxo is the VTXO used for classification when found.
-	Vtxo          *VTXO `protobuf:"bytes,3,opt,name=vtxo,proto3" json:"vtxo,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Vtxo *VTXO `protobuf:"bytes,3,opt,name=vtxo,proto3" json:"vtxo,omitempty"`
+	// policy_authorized confirms that the indexer accepted the supplied policy
+	// proof, including when found is false. Older daemons leave this false.
+	PolicyAuthorized bool `protobuf:"varint,4,opt,name=policy_authorized,json=policyAuthorized,proto3" json:"policy_authorized,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *GetVTXOExpiryInfoResponse) Reset() {
@@ -3331,6 +3348,13 @@ func (x *GetVTXOExpiryInfoResponse) GetVtxo() *VTXO {
 		return x.Vtxo
 	}
 	return nil
+}
+
+func (x *GetVTXOExpiryInfoResponse) GetPolicyAuthorized() bool {
+	if x != nil {
+		return x.PolicyAuthorized
+	}
+	return false
 }
 
 type GetIndexedOORSessionByTxidRequest struct {
@@ -11285,18 +11309,20 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fpolicy_template\x18\x03 \x01(\fR\x0epolicyTemplate\"r\n" +
 	" GetIndexedVTXOByPkScriptResponse\x12!\n" +
 	"\x04vtxo\x18\x01 \x01(\v2\r.waverpc.VTXOR\x04vtxo\x12+\n" +
-	"\x11policy_authorized\x18\x02 \x01(\bR\x10policyAuthorized\"\xc2\x01\n" +
+	"\x11policy_authorized\x18\x02 \x01(\bR\x10policyAuthorized\"\xeb\x01\n" +
 	"\x18GetVTXOExpiryInfoRequest\x12\x1c\n" +
 	"\boutpoint\x18\x01 \x01(\tH\x00R\boutpoint\x12\x1d\n" +
 	"\tpk_script\x18\x02 \x01(\fH\x00R\bpkScript\x128\n" +
 	"\rstatus_filter\x18\x03 \x03(\x0e2\x13.waverpc.VTXOStatusR\fstatusFilter\x12%\n" +
-	"\x0ecurrent_height\x18\x04 \x01(\x05R\rcurrentHeightB\b\n" +
-	"\x06target\"\x8e\x01\n" +
+	"\x0ecurrent_height\x18\x04 \x01(\x05R\rcurrentHeight\x12'\n" +
+	"\x0fpolicy_template\x18\x05 \x01(\fR\x0epolicyTemplateB\b\n" +
+	"\x06target\"\xbb\x01\n" +
 	"\x19GetVTXOExpiryInfoResponse\x12\x14\n" +
 	"\x05found\x18\x01 \x01(\bR\x05found\x128\n" +
 	"\vexpiry_info\x18\x02 \x01(\v2\x17.waverpc.VTXOExpiryInfoR\n" +
 	"expiryInfo\x12!\n" +
-	"\x04vtxo\x18\x03 \x01(\v2\r.waverpc.VTXOR\x04vtxo\"c\n" +
+	"\x04vtxo\x18\x03 \x01(\v2\r.waverpc.VTXOR\x04vtxo\x12+\n" +
+	"\x11policy_authorized\x18\x04 \x01(\bR\x10policyAuthorized\"c\n" +
 	"!GetIndexedOORSessionByTxidRequest\x12\x1b\n" +
 	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x12!\n" +
 	"\fsession_txid\x18\x02 \x01(\fR\vsessionTxid\"j\n" +

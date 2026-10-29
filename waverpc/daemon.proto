@@ -638,12 +638,10 @@ enum VTXOStatus {
     VTXO_STATUS_SPENDING = 8;
 
     // VTXO_STATUS_PENDING_ROUND indicates a VTXO the wallet is about to
-    // receive from a round that has been signed but whose commitment
-    // transaction has not yet confirmed on-chain. Entries with this
-    // status are synthetic projections from the live round actor; they
-    // are not yet persisted, not yet spendable, and carry only the
-    // amount, originating round_id, and (once known) the commitment
-    // txid that will create them.
+    // receive from a signed round whose commitment is not yet confirmed.
+    // Local inventory entries are synthetic projections from the round
+    // actor and carry only pending-round metadata. Indexed lookups may
+    // include a signed output proof. Neither form is yet spendable.
     VTXO_STATUS_PENDING_ROUND = 9;
 
     // VTXO_STATUS_EXPIRED indicates the VTXO's batch expiry has passed, so
@@ -688,10 +686,12 @@ message VTXOExpiryInfo {
     // current_height is the chain height used for this classification.
     int32 current_height = 2;
 
-    // batch_expiry is the VTXO batch expiry height.
+    // batch_expiry is the VTXO batch expiry height. Zero means no authenticated
+    // deadline is available and must never authorize value-bearing work.
     int32 batch_expiry = 3;
 
-    // blocks_remaining is batch_expiry - current_height.
+    // blocks_remaining is batch_expiry - current_height, or zero when the
+    // deadline or current height is unknown.
     int32 blocks_remaining = 4;
 
     // refresh_threshold_blocks is the number of blocks before batch expiry at
@@ -711,7 +711,8 @@ message VTXOExpiryInfo {
 
     // chain_depth is the number of OOR checkpoint hops between this VTXO and
     // the most recent on-chain commitment. It is included for diagnostics but
-    // is distinct from max_tree_depth.
+    // is distinct from max_tree_depth. Indexed reads may conservatively count
+    // parallel ancestry packages as separate hops.
     uint32 chain_depth = 9;
 }
 
@@ -726,7 +727,7 @@ message VTXO {
     VTXOStatus status = 3;
 
     // batch_expiry is the absolute block height at which the batch-level
-    // timelock expires.
+    // timelock expires. Zero means no authenticated deadline is available.
     int32 batch_expiry = 4;
 
     // round_id is the identifier of the round that created this VTXO.
@@ -979,6 +980,13 @@ message GetVTXOExpiryInfoRequest {
     // current_height overrides the chain height used for classification. If
     // zero, the daemon uses its current best chain height.
     int32 current_height = 4;
+
+    // policy_template optionally authorizes a pk_script lookup with a wallet
+    // participant key. It must match pk_script. A standard policy also
+    // supplies the script's exit delay for expiry classification. Callers
+    // providing a policy must require policy_authorized in the response.
+    // This field is ignored for local outpoint lookups.
+    bytes policy_template = 5;
 }
 
 // GetVTXOExpiryInfoResponse returns the VTXO matched by the request together
@@ -987,12 +995,16 @@ message GetVTXOExpiryInfoResponse {
     // found reports whether the daemon found a VTXO for the request target.
     bool found = 1;
 
-    // expiry_info is present when found is true and the VTXO had enough timing
-    // metadata to classify.
+    // expiry_info is present when found is true. Its status is UNKNOWN when
+    // chain timing or the script-specific exit delay is unavailable.
     VTXOExpiryInfo expiry_info = 2;
 
     // vtxo is the VTXO used for classification when found.
     VTXO vtxo = 3;
+
+    // policy_authorized confirms that the indexer accepted the supplied policy
+    // proof, including when found is false. Older daemons leave this false.
+    bool policy_authorized = 4;
 }
 
 message GetIndexedOORSessionByTxidRequest {

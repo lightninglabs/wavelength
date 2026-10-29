@@ -2,7 +2,9 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -27,6 +29,66 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
+
+// TestRepairCreatedHeightPreservesDescriptor proves verified repair changes
+// only creation height, retries idempotently, and never guesses a saved expiry.
+func TestRepairCreatedHeightPreservesDescriptor(t *testing.T) {
+	t.Parallel()
+
+	store, _, _ := newVTXOStoreForTest(t)
+	desc := createTestVTXODescriptor(t, testRoundIDDB("height-repair"), 49)
+	desc.CreatedHeight = 1001
+	desc.BatchExpiry = 1000
+	desc.Status = vtxo.VTXOStatusSpent
+	require.NoError(t, store.SaveVTXO(t.Context(), desc))
+	before, err := store.GetVTXO(t.Context(), desc.Outpoint)
+	require.NoError(t, err)
+
+	evidence := vtxo.AuthenticatedBatchEvidence{
+		BatchExpiry:              1000,
+		EarliestCommitmentHeight: 700,
+	}
+	lookupErr := errors.New("confirmation unavailable")
+	authenticate := func(context.Context, []vtxo.Ancestry) (
+		vtxo.AuthenticatedBatchEvidence, error) {
+
+		return evidence, lookupErr
+	}
+	_, err = vtxo.RepairCreatedHeight(
+		t.Context(), desc, authenticate, store,
+	)
+	require.ErrorIs(t, err, lookupErr)
+	lookupErr = nil
+	evidence.BatchExpiry = 999
+	_, err = vtxo.RepairCreatedHeight(
+		t.Context(), desc, authenticate, store,
+	)
+	require.ErrorContains(t, err, "differs from saved expiry")
+	after, err := store.GetVTXO(t.Context(), desc.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+
+	evidence.BatchExpiry = 1000
+	stale := *desc
+	stale.CreatedHeight = 1002
+	require.Error(
+		t,
+		store.RepairVTXOCreatedHeight(
+			t.Context(), &stale, evidence,
+		),
+	)
+	for range 2 {
+		height, err := vtxo.RepairCreatedHeight(
+			t.Context(), desc, authenticate, store,
+		)
+		require.NoError(t, err)
+		require.Equal(t, int32(700), height)
+	}
+	after, err = store.GetVTXO(t.Context(), desc.Outpoint)
+	require.NoError(t, err)
+	before.CreatedHeight = 700
+	require.Equal(t, before, after)
+}
 
 // newVTXOStoreForTest creates a new VTXOPersistenceStore and the underlying
 // round store for test setup. Returns both to allow tests to set up rounds
@@ -752,6 +814,101 @@ func TestListSelectionCandidatesByStatus(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, candidates, 1)
 	require.Equal(t, descB.Outpoint, candidates[0].Outpoint)
+}
+
+// TestSumVTXOAmountsByStatus asserts that the SQL aggregate behind the
+// inventory metrics agrees, status by status, with the count and summed
+// amount of the full ListVTXOsByStatus listing it replaces. A row marked
+// spent is included so an accidental unspent-only filter would be caught.
+func TestSumVTXOAmountsByStatus(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	// An empty store has no statuses to report.
+	totals, err := vtxoStore.SumVTXOAmountsByStatus(ctx)
+	require.NoError(t, err)
+	require.Empty(t, totals)
+
+	roundID := testRoundIDDB("test-round-sum-by-status")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	require.NoError(t, roundStore.CommitState(ctx, testRound, state))
+
+	descs := make([]*vtxo.Descriptor, 0, 5)
+	for idx := 31; idx < 36; idx++ {
+		desc := createTestVTXODescriptor(t, roundID, idx)
+		require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
+
+		descs = append(descs, desc)
+	}
+
+	// Spread the VTXOs over several statuses, leaving two live. One spent
+	// row goes through MarkVTXOSpent so it carries spent = TRUE, the other
+	// only changes status.
+	require.NoError(t, roundStore.MarkVTXOSpent(ctx, descs[0].Outpoint))
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, descs[1].Outpoint, vtxo.VTXOStatusSpent,
+		),
+	)
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, descs[2].Outpoint, vtxo.VTXOStatusUnilateralExit,
+		),
+	)
+
+	totals, err = vtxoStore.SumVTXOAmountsByStatus(ctx)
+	require.NoError(t, err)
+
+	byStatus := make(map[vtxo.VTXOStatus]VTXOStatusTotal, len(totals))
+	for _, total := range totals {
+		_, dup := byStatus[total.Status]
+		require.False(t, dup, "duplicate status %v", total.Status)
+
+		byStatus[total.Status] = total
+	}
+
+	for status := vtxo.VTXOStatusLive; status <=
+		vtxo.VTXOStatusExpired; status++ {
+
+		listed, err := vtxoStore.ListVTXOsByStatus(ctx, status)
+		require.NoError(t, err)
+
+		total, ok := byStatus[status]
+		if len(listed) == 0 {
+			require.False(t, ok, "unexpected totals for %v", status)
+
+			continue
+		}
+		require.True(t, ok, "missing totals for %v", status)
+
+		var amount btcutil.Amount
+		for _, desc := range listed {
+			amount += desc.Amount
+		}
+
+		require.Equal(t, int64(len(listed)), total.Count, "%v", status)
+		require.Equal(t, amount, total.Total, "%v", status)
+	}
+
+	// Pin the expected figures too, so a broken listing cannot mask a
+	// broken aggregate.
+	require.Len(t, byStatus, 3)
+	require.Equal(t, int64(2), byStatus[vtxo.VTXOStatusSpent].Count)
+	require.Equal(
+		t, descs[0].Amount+descs[1].Amount,
+		byStatus[vtxo.VTXOStatusSpent].Total,
+	)
+	require.Equal(t, int64(2), byStatus[vtxo.VTXOStatusLive].Count)
+	require.Equal(
+		t, descs[3].Amount+descs[4].Amount,
+		byStatus[vtxo.VTXOStatusLive].Total,
+	)
 }
 
 // TestListVTXOsLightSkipsAncestry exercises the light listing variants the
