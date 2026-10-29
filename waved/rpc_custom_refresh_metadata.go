@@ -119,7 +119,7 @@ func (r *RPCServer) resolveCustomRefreshMetadata(ctx context.Context,
 					"expiry authenticator not initialized",
 				)
 			}
-			meta.BatchExpiry, err = r.server.expiryAuthenticator(
+			evidence, err := r.server.expiryAuthenticator(
 				ctx, meta.Ancestry,
 			)
 			if err != nil {
@@ -128,6 +128,8 @@ func (r *RPCServer) resolveCustomRefreshMetadata(ctx context.Context,
 					"authenticate refresh expiry for "+
 						"%s: %v", input.Outpoint, err)
 			}
+			meta.BatchExpiry = evidence.BatchExpiry
+			meta.CreatedHeight = evidence.EarliestCommitmentHeight
 
 			return meta, nil
 		}

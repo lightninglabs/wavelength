@@ -219,6 +219,40 @@ func (s *VTXOPersistenceStore) GetVTXO(ctx context.Context,
 	return result, err
 }
 
+// RepairVTXOCreatedHeight replaces an old indexer height after local evidence
+// reproduces the saved expiry. It preserves lifecycle state and proof material.
+func (s *VTXOPersistenceStore) RepairVTXOCreatedHeight(ctx context.Context,
+	desc *vtxo.Descriptor, evidence vtxo.AuthenticatedBatchEvidence) error {
+
+	height := evidence.EarliestCommitmentHeight
+	if evidence.BatchExpiry != desc.BatchExpiry ||
+		height <= 0 || height >= evidence.BatchExpiry {
+		return fmt.Errorf("inconsistent authenticated batch heights")
+	}
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q RoundStore) error {
+		rows, err := q.RepairVTXOCreatedHeight(
+			ctx, sqlc.RepairVTXOCreatedHeightParams{
+				OutpointHash:    desc.Outpoint.Hash[:],
+				OutpointIndex:   int32(desc.Outpoint.Index),
+				CreatedHeight:   height,
+				BatchExpiry:     desc.BatchExpiry,
+				CreatedHeight_2: desc.CreatedHeight,
+				LastUpdateTime:  s.clock.Now().Unix(),
+			},
+		)
+		if err != nil {
+			return err
+		}
+		if rows != 1 {
+			return fmt.Errorf("creation-height repair "+
+				"matched %d rows", rows)
+		}
+
+		return nil
+	})
+}
+
 // BackfillVTXOCommitmentHeights fills unknown ancestry commitment heights from
 // an indexed copy of the same VTXO. Fragment identity includes both the
 // commitment transaction and serialized tree path, excluding derived FinalKey
@@ -743,6 +777,52 @@ func (s *VTXOPersistenceStore) ListSelectionCandidatesByStatus(
 		}
 
 		result = candidates
+
+		return nil
+	})
+
+	return result, err
+}
+
+// VTXOStatusTotal is the VTXO count and summed amount for one status.
+type VTXOStatusTotal struct {
+	// Status is the VTXO lifecycle status these totals cover.
+	Status vtxo.VTXOStatus
+
+	// Count is the number of VTXOs in this status.
+	Count int64
+
+	// Total is the summed amount of the VTXOs in this status.
+	Total btcutil.Amount
+}
+
+// SumVTXOAmountsByStatus returns the VTXO count and summed amount for every
+// status that has at least one VTXO. The aggregation runs in SQL, so a caller
+// that only needs inventory totals (the metrics scrape) avoids decoding a full
+// descriptor, its keys, and its ancestry for every row.
+func (s *VTXOPersistenceStore) SumVTXOAmountsByStatus(ctx context.Context) (
+	[]VTXOStatusTotal, error) {
+
+	readTxOpts := ReadTxOption()
+
+	var result []VTXOStatusTotal
+
+	err := s.db.ExecTx(ctx, readTxOpts, func(q RoundStore) error {
+		rows, err := q.SumVTXOAmountsByStatus(ctx)
+		if err != nil {
+			return fmt.Errorf("sum VTXO amounts by status: %w", err)
+		}
+
+		totals := make([]VTXOStatusTotal, 0, len(rows))
+		for _, row := range rows {
+			totals = append(totals, VTXOStatusTotal{
+				Status: vtxo.VTXOStatus(row.Status),
+				Count:  row.VtxoCount,
+				Total:  btcutil.Amount(row.AmountSat),
+			})
+		}
+
+		result = totals
 
 		return nil
 	})

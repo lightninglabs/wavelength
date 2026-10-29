@@ -638,12 +638,16 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 
 	clientKey, err := s.client.daemon.IdentityPubKey(ctx)
 	if err != nil {
-		return fmt.Errorf("get client pubkey: %w", err)
+		return newRetryableActionError(
+			fmt.Errorf("get client pubkey: %w", err),
+		)
 	}
 
 	operatorKey, err := s.client.daemon.OperatorPubKey(ctx)
 	if err != nil {
-		return fmt.Errorf("get operator pubkey: %w", err)
+		return newRetryableActionError(
+			fmt.Errorf("get operator pubkey: %w", err),
+		)
 	}
 
 	preimage, err := NewPreimage()
@@ -1680,7 +1684,12 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 			ctx, s.PaymentHash, s.vhtlcPkScript,
 		)
 		if err != nil {
-			return err
+
+			// The daemon and the indexer are the only sources for
+			// this reconciliation, so a failed lookup is not a
+			// claim outcome. Keep the row retryable, exactly like
+			// the post-PONR path below.
+			return newRetryableLookupError(err)
 		}
 		if claimed {
 			return s.completeIndexedClaim(ctx)
@@ -1695,7 +1704,7 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 			ctx, s.PaymentHash, s.vhtlcPkScript,
 		)
 		if err != nil {
-			return err
+			return newRetryableLookupError(err)
 		}
 		if claimed {
 			return s.completeIndexedClaim(ctx)
@@ -1741,6 +1750,13 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 		return s.completeIndexedClaim(ctx)
 	}
 	if err != nil {
+		// A classification the error already carries, such as a vHTLC
+		// spent without the claim preimage, has to reach the FSM so the
+		// swap parks for operator attention instead of polling.
+		if interventionReason(err) != "" {
+			return err
+		}
+
 		if escalateErr := s.maybeEscalateReceiveClaimRecovery(
 			ctx, err,
 		); escalateErr != nil {
@@ -1858,7 +1874,7 @@ func (s *ReceiveSession) handleFailedClaimSession(ctx context.Context,
 			ctx, s.PaymentHash, s.vhtlcPkScript,
 		)
 		if err != nil {
-			return newRetryableActionError(err)
+			return newRetryableLookupError(err)
 		}
 		if claimed {
 			return s.completeIndexedClaim(ctx)
@@ -1929,7 +1945,12 @@ func (s *ReceiveSession) ensureClaimReceiveInfo(ctx context.Context) error {
 
 	receiveInfo, err := s.client.daemon.AllocateReceiveScript(ctx, "")
 	if err != nil {
-		return fmt.Errorf("allocate claim receive script: %w", err)
+
+		// The destination is derived by the daemon, so an allocation
+		// failure is not a durable claim outcome.
+		return newRetryableActionError(
+			fmt.Errorf("allocate claim receive script: %w", err),
+		)
 	}
 	if receiveInfo == nil {
 		return fmt.Errorf("claim receive script is required")
@@ -2045,7 +2066,10 @@ func (c *SwapClient) receiveClaimAlreadyIndexed(ctx context.Context,
 		return false, err
 	}
 	if !preimageMatchesHash(preimage, paymentHash) {
-		return false, errReceiveVHTLCSpentWithoutPreimage
+		return false, newInterventionError(
+			interventionReasonVHTLCSpentWithoutPreimage,
+			errReceiveVHTLCSpentWithoutPreimage,
+		)
 	}
 
 	return true, nil

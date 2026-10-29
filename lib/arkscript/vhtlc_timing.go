@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 )
 
@@ -72,6 +73,40 @@ func (t VHTLCTiming) ValidateOrder() error {
 	return nil
 }
 
+// ValidateRefundWindow bounds both timelocks on a new sender-funded vHTLC's
+// independent refund path. It is an admission check, not a reconstruction
+// check for already-funded policies.
+func (t VHTLCTiming) ValidateRefundWindow(currentHeight,
+	maxBlocks uint32) error {
+
+	if err := t.ValidateOrder(); err != nil {
+		return err
+	}
+	if maxBlocks == 0 {
+		return fmt.Errorf("vhtlc: maximum refund window must be set")
+	}
+	if t.RefundLocktime >= txscript.LockTimeThreshold {
+		return fmt.Errorf("vhtlc: refund locktime %d is not a "+
+			"block height", t.RefundLocktime)
+	}
+	if t.RefundLocktime <= currentHeight {
+		return fmt.Errorf("vhtlc: refund locktime %d is not after "+
+			"current height %d", t.RefundLocktime, currentHeight)
+	}
+	if t.RefundLocktime-currentHeight > maxBlocks {
+		return fmt.Errorf("vhtlc: refund window %d blocks exceeds "+
+			"maximum %d blocks", t.RefundLocktime-currentHeight,
+			maxBlocks)
+	}
+	if t.UnilateralRefundWithoutReceiverDelay > maxBlocks {
+		return fmt.Errorf("vhtlc: sender-only refund delay %d blocks "+
+			"exceeds maximum %d blocks",
+			t.UnilateralRefundWithoutReceiverDelay, maxBlocks)
+	}
+
+	return nil
+}
+
 // ValidateClaimWindow requires enough remaining absolute-locktime budget to
 // publish the exit ancestry, wait out the receiver's claim CSV, and retain the
 // caller-selected recovery margin.
@@ -105,8 +140,8 @@ func (t VHTLCTiming) ValidateClaimWindow(window VHTLCClaimWindow) error {
 // and returns its four timing constraints. Other custom policies return an
 // error so callers cannot accidentally apply vHTLC assumptions to them. The
 // decoded tuple reflects the committed script exactly; admission callers must
-// apply ValidateOrder or ValidateClaimWindow, while recovery code can still
-// reconstruct an already-funded legacy policy.
+// apply ValidateOrder, ValidateClaimWindow, or ValidateRefundWindow, while
+// recovery code can still reconstruct an already-funded legacy policy.
 func DecodeVHTLCTiming(template *PolicyTemplate) (*VHTLCTiming, error) {
 	if template == nil {
 		return nil, fmt.Errorf("vhtlc: policy template is required")

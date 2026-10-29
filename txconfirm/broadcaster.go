@@ -377,6 +377,14 @@ type CPFPBroadcaster struct {
 	// has terminally confirmed or failed.
 	parentStates map[chainhash.Hash]*parentBumpState
 
+	// changeScripts owns one destination per tracked parent, including when
+	// no fee input or accepted package exists yet. Keep it separate from
+	// parentStates: allocating an address is not replacement-fee history,
+	// and releasing a failed attempt's inputs must not discard the address.
+	// Evict ends its lifetime. Nothing is persisted across process
+	// restarts.
+	changeScripts map[chainhash.Hash][]byte
+
 	// suspectFeeInputs records wallet outpoints whose CPFP child failed
 	// during signing. Selection deprioritizes these so a coin the signer
 	// has refused (e.g. an imported watch-only script output that leaked
@@ -403,6 +411,7 @@ func NewCPFPBroadcaster(cfg BroadcasterConfig) *CPFPBroadcaster {
 		cfg:              cfg,
 		log:              cfg.Log.UnwrapOr(btclog.Disabled),
 		parentStates:     make(map[chainhash.Hash]*parentBumpState),
+		changeScripts:    make(map[chainhash.Hash][]byte),
 		suspectFeeInputs: make(map[wire.OutPoint]struct{}),
 	}
 }
@@ -420,6 +429,8 @@ func NewCPFPBroadcaster(cfg BroadcasterConfig) *CPFPBroadcaster {
 // authoritative source for this actor, so terminal progress must not wait on a
 // best-effort backend cleanup that also has a lease-expiry backstop.
 func (b *CPFPBroadcaster) Evict(ctx context.Context, txid chainhash.Hash) {
+	delete(b.changeScripts, txid)
+
 	state, ok := b.parentStates[txid]
 	if !ok {
 		return
@@ -437,6 +448,9 @@ func (b *CPFPBroadcaster) Evict(ctx context.Context, txid chainhash.Hash) {
 	b.releaseWalletLeasesAsync(ctx, outpoints)
 }
 
+// parentState returns the parent's fee-input and replacement history, creating
+// its reservation maps when first needed. Address allocation alone must not
+// call this helper because a new destination is not a previous submission.
 func (b *CPFPBroadcaster) parentState(
 	parentTxid chainhash.Hash) *parentBumpState {
 
@@ -848,12 +862,12 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 	req *BroadcastRequest, txid chainhash.Hash, anchorIdx int) (
 	*BroadcastResult, error) {
 
-	// Derive the change pkScript first so its script class can inform
+	// Obtain the parent's change pkScript so its script class can inform
 	// the child's vsize estimate. A failure here means we cannot build
 	// a CPFP child at all, so we fall straight through to broadcasting
 	// the parent directly; no fee-input reservation has been made yet,
 	// so there is nothing to release.
-	changePkScript, err := b.deriveChangePkScript(ctx)
+	changePkScript, err := b.parentChangePkScript(ctx, txid)
 	if err != nil {
 		return b.fallbackDirectBroadcast(
 			ctx, req, txid, wire.OutPoint{},
@@ -1681,6 +1695,27 @@ func feeInputFromWalletUTXO(utxo *walletcore.Utxo) *FeeInput {
 		},
 		Confirmed: true,
 	}
+}
+
+// parentChangePkScript allocates a destination once for a parent's tracking
+// lifetime. Failed attempts and accepted replacements reuse it; unrelated
+// parents and a fresh broadcaster allocate independently. Return a copy so
+// transaction construction cannot mutate the cached ownership evidence.
+func (b *CPFPBroadcaster) parentChangePkScript(ctx context.Context,
+	parentTxid chainhash.Hash) ([]byte, error) {
+
+	if script, ok := b.changeScripts[parentTxid]; ok {
+		return append([]byte(nil), script...), nil
+	}
+
+	script, err := b.deriveChangePkScript(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	b.changeScripts[parentTxid] = script
+
+	return append([]byte(nil), script...), nil
 }
 
 // deriveChangePkScript obtains a fresh wallet-managed pkScript for use as a

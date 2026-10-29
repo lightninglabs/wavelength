@@ -115,11 +115,31 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   footprint and the VTXO was rolled back to live (wavelength#602), so
   a fresh `EnsureUnrollRequest` re-admits (spawns a new child,
   overwriting the stale record) instead of deduping — otherwise a
-  recovered VTXO could never be unrolled again. Any existing unroll job
-  for the same target must carry the same `(ExitPolicyKind,
-  ExitPolicyRef)`; mismatches fail closed. A legacy terminal fee rejection
-  is also resumable after validating the saved candidate and policy. Its
-  registry row becomes non-terminal before the same actor ID is restored.
+  recovered VTXO could never be unrolled again. Every dedup path
+  compares `(ExitPolicyKind, ExitPolicyRef)` against the record bound to
+  the target, but only for an admission that names an identity: a
+  request that carries a non-standard policy, or a policy-less request
+  that inherited an armed recovery obligation, gets
+  `ErrExitPolicyMismatch` (`*ExitPolicyMismatchError`) instead of a
+  silent `Created=false` when the pair differs. A policy-less request
+  that inherits nothing (the manual Unroll RPC, critical expiry, the
+  fraud watcher, the boot scan) keeps the historical dedup: the bound
+  record drives the target and the identity difference is logged at
+  debug, which is also what lets the non-terminal inline restore run for
+  those callers. A legacy terminal fee rejection is also resumable after
+  validating the saved candidate and policy; the binding check runs
+  before that revival rewrites the durable row. Its registry row becomes
+  non-terminal before the same actor ID is restored.
+- `ArmedExitPolicy` (`ArmedExitPolicyLookup`) — optional admission-time
+  lookup of the exit policy identity of an armed recovery obligation for
+  a target. A policy-less request inherits that identity rather than
+  binding the target to the standard VTXO timeout policy; an explicit
+  conflicting identity is rejected with `ErrExitPolicyMismatch`, and a
+  lookup error aborts admission. An explicit duplicate that already
+  names the identity bound to the target is answered without the lookup,
+  so a recovery-store read failure cannot fail an idempotent repeat.
+  Recoverable failures require a fresh lookup because their old binding no
+  longer owns the target. Wired in `waved` to the vHTLC recovery store.
 - `ExitSpendPolicyResolver` — interface for looking up the final spend
   policy by `(ExitPolicyKind, ExitPolicyRef)`. Implemented by
   `vhtlcrecovery/unrollpolicy.ExitSpendPolicyResolver`.

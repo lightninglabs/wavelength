@@ -1,6 +1,8 @@
 package txconfirm
 
 import (
+	"time"
+
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -45,11 +47,13 @@ type feeBumpState interface {
 		feeBumpEvent, feeBumpOutboxEvent, *feeBumpEnvironment,
 	]
 
+	// feeBumpStateSealed limits fanout states to this package.
 	feeBumpStateSealed()
 }
 
 // feeBumpEvent is the sealed event surface the actor feeds into the fanout FSM.
 type feeBumpEvent interface {
+	// feeBumpEventSealed limits fanout events to this package.
 	feeBumpEventSealed()
 }
 
@@ -59,6 +63,7 @@ type feeBumpEvent interface {
 // and the tracked-tx retry loop — cannot be done from inside a transition, so
 // they are returned as outbox events for the actor to apply.
 type feeBumpOutboxEvent interface {
+	// feeBumpOutboxEventSealed limits fanout effects to this package.
 	feeBumpOutboxEventSealed()
 }
 
@@ -68,6 +73,10 @@ type feeBumpOutboxEvent interface {
 // accounting stays consistent with the CPFP-child build path, exactly as the
 // old controller did.
 type feeBumpEnvironment struct {
+	// transitionTimeout bounds wallet and chainsource IO while the actor
+	// joins a transition. Tests may shorten it before the first event.
+	transitionTimeout time.Duration
+
 	// broadcaster provides the shared parentStates reservation map plus the
 	// wallet/chainsource helpers the fanout build path reuses
 	// (deriveChangePkScript, selectReservedFeeInput, releaseWalletLease,
@@ -76,6 +85,13 @@ type feeBumpEnvironment struct {
 
 	// log is the package logger used for the fanout lifecycle log lines.
 	log btclog.Logger
+
+	// fanoutScripts retains the unsubmitted plan's output destinations
+	// through funding/signing failures, including the reserved-input
+	// fallback. Output values and fee inputs are still computed afresh.
+	// The plan ends before publication, on resolved demand, or on eviction
+	// of all participating parents. A failed broadcast can be ambiguous.
+	fanoutScripts fanoutScriptPlan
 
 	// lastErr records the most recent operational error a transition hit
 	// (a failed wallet fund, a rejected broadcast, a rewritten output).
@@ -90,6 +106,16 @@ type feeBumpEnvironment struct {
 	// still returned as an error, since that is a programming bug worth
 	// crashing on.
 	lastErr error
+}
+
+// fanoutScriptPlan owns destinations for one unsubmitted fanout. Slots are
+// allocated lazily and reused on retry; growing a plan adds only new slots.
+// Change has its own destination so fallback funding cannot reuse an output's
+// address. The whole plan is intentionally lost when the process restarts.
+type fanoutScriptPlan struct {
+	outputs [][]byte
+	change  []byte
+	parents map[chainhash.Hash]struct{}
 }
 
 // takeLastErr returns and clears the most recent operational error stashed by a
@@ -245,8 +271,9 @@ func newFeeBumpStateMachine(broadcaster *CPFPBroadcaster,
 	log btclog.Logger) (*feeBumpStateMachine, *feeBumpEnvironment) {
 
 	env := &feeBumpEnvironment{
-		broadcaster: broadcaster,
-		log:         log,
+		transitionTimeout: 30 * time.Second,
+		broadcaster:       broadcaster,
+		log:               log,
 	}
 
 	cfg := protofsm.StateMachineCfg[

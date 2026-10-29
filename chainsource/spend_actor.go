@@ -416,14 +416,10 @@ func (a *SpendActor) monitorSpend() {
 
 		case epoch, ok := <-blockEpochs:
 			if !ok || epoch == nil {
-				a.clearFinalityRegistration()
+				arming = a.rearmFinalityAfterClose(
+					blockRegCh, arming, log,
+				)
 				blockEpochs = nil
-				if a.spendHeight != 0 &&
-					a.cfg.FinalityDepth > 0 && !arming {
-
-					arming = true
-					a.armFinalityAsync(blockRegCh, log)
-				}
 
 				continue
 			}
@@ -439,8 +435,16 @@ func (a *SpendActor) monitorSpend() {
 			var closed bool
 			epoch, closed = drainToLatestEpoch(blockEpochs, epoch)
 			if closed {
-				a.clearFinalityRegistration()
+				// Overflow may omit a newer reorg. Never
+				// finalize from the buffered height of a closed
+				// stream; re-arming refreshes the live tip
+				// first.
+				arming = a.rearmFinalityAfterClose(
+					blockRegCh, arming, log,
+				)
 				blockEpochs = nil
+
+				continue
 			}
 
 			// The spendHeight==0 guard is load-bearing: a reorg
@@ -459,11 +463,6 @@ func (a *SpendActor) monitorSpend() {
 
 			depth := epoch.Height - a.spendHeight + 1
 			if depth < int32(a.cfg.FinalityDepth) {
-				if closed && !arming {
-					arming = true
-					a.armFinalityAsync(blockRegCh, log)
-				}
-
 				continue
 			}
 
@@ -484,6 +483,20 @@ func (a *SpendActor) monitorSpend() {
 			return
 		}
 	}
+}
+
+// rearmFinalityAfterClose cancels an invalid block stream and refreshes
+// the live tip off-loop before height-based finality can resume.
+func (a *SpendActor) rearmFinalityAfterClose(regCh chan<- finalityArmResult,
+	arming bool, log btclog.Logger) bool {
+
+	a.clearFinalityRegistration()
+	if a.spendHeight == 0 || a.cfg.FinalityDepth == 0 || arming {
+		return arming
+	}
+	a.armFinalityAsync(regCh, log)
+
+	return true
 }
 
 // clearFinalityRegistration cancels and forgets a dead block-epoch

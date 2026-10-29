@@ -86,6 +86,11 @@ transport, without duplicating Ark runtime behavior.
 - Pre-1.0, some methods intentionally return `waverpc` protobuf types
   directly. Those passthrough APIs are not yet treated as stable SDK-owned
   models.
+- `GetVTXOExpiryInfo` rejects a policy-bearing indexed response unless
+  `policy_authorized` is true, including empty responses. This prevents an
+  older daemon from silently ignoring the policy. `UNKNOWN` with zero batch
+  expiry is an observed output without a usable deadline, not permission to
+  start value-bearing work.
 - Receive-auth signing and ECDH are always delegated to the daemon; the SDK
   never holds raw private key material for receive-auth operations.
 

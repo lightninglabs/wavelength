@@ -114,7 +114,7 @@ func openWASMSQLiteWithRetry(dsn string) (*sql.DB, error) {
 		}
 
 		_ = db.Close()
-		if !isWASMCantOpen(err) {
+		if !isWASMRetryableOpen(err) {
 			return nil, err
 		}
 
@@ -125,10 +125,13 @@ func openWASMSQLiteWithRetry(dsn string) (*sql.DB, error) {
 	return nil, lastErr
 }
 
-// isWASMCantOpen identifies the SQLite error returned while OPFS still holds a
-// file lock from a just-unloaded page runtime.
-func isWASMCantOpen(err error) bool {
+// isWASMRetryableOpen recognizes transient open failures while a previous
+// runtime releases its persistent database handles. A lock holder that remains
+// active exhausts the retry budget and the caller receives the final error.
+func isWASMRetryableOpen(err error) bool {
 	return strings.Contains(err.Error(), "SQLITE_CANTOPEN") ||
+		strings.Contains(err.Error(), "SQLITE_BUSY") ||
+		strings.Contains(err.Error(), "database is locked") ||
 		strings.Contains(err.Error(), "unable to open database file")
 }
 

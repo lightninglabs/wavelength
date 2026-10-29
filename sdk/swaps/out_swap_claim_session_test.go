@@ -12,6 +12,8 @@ import (
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Short names for the daemon OOR session statuses used below.
@@ -579,4 +581,191 @@ func TestReceiveClaimFailedAfterPONRIndexedCompletesAfterSend(t *testing.T) {
 	require.Equal(
 		t, recoveryReasonClaimIndexed, h.daemon.lastCancel.GetReason(),
 	)
+}
+
+// newRestoredClaimHarness is a store-backed ClaimInitiated row restored
+// without a persisted claim session id, which is what a crash between the
+// durably recorded claim intent and the stored OOR session id leaves behind.
+func newRestoredClaimHarness(t *testing.T) *claimSessionHarness {
+	t.Helper()
+
+	base := newClaimSessionHarness(t, true)
+	client := NewSwapClientWithStore(
+		nil, base.daemon, nil, nil, newTestSwapStore(t),
+	)
+	client.waitPollInterval = time.Millisecond
+	client.claimResumeGracePeriod = 0
+
+	session := base.session
+	session.client = client
+	session.claimSessionID = ""
+	session.claimIntentRecordedInProcess = false
+
+	// Persist the full timing tuple the funded policy carries, so the
+	// restored row rebuilds the same vHTLC policy.
+	session.vhtlcConfig = VHTLCConfig{
+		RefundLocktime:                       300,
+		UnilateralClaimDelay:                 12,
+		UnilateralRefundDelay:                24,
+		UnilateralRefundWithoutReceiverDelay: 36,
+	}
+	require.NoError(t, session.persist(t.Context()))
+
+	return &claimSessionHarness{
+		session: session,
+		daemon:  base.daemon,
+	}
+}
+
+// TestReceiveClaimRestoredLookupErrorIsRetryable checks that a transient
+// indexer failure during the restored ClaimInitiated reconciliation neither
+// completes nor fails the swap: the durable row stays claimable, so a restarted
+// process keeps driving the claim instead of finding a terminal state, and the
+// next healthy lookup still completes the swap.
+func TestReceiveClaimRestoredLookupErrorIsRetryable(t *testing.T) {
+	t.Parallel()
+
+	h := newRestoredClaimHarness(t)
+
+	// The first spent-output lookup fails the way an indexer restart does.
+	indexerErr := status.Error(codes.Unavailable, "indexer unavailable")
+	h.daemon.spentLookupHook = func(call int) (*VTXOInfo, error) {
+		if call == 1 {
+			return nil, indexerErr
+		}
+
+		return nil, nil
+	}
+
+	_, err := h.session.Wait(t.Context())
+	require.Error(t, err)
+
+	var retryable *retryableActionError
+	require.ErrorAs(t, err, &retryable)
+	require.ErrorIs(t, err, indexerErr)
+	require.Equal(t, ReceiveStateClaimInitiated, h.session.State())
+	require.Zero(t, interventionReason(err))
+	require.Equal(t, 1, h.daemon.spentLookupCalls)
+	require.Zero(t, h.daemon.sendCustomCalls)
+
+	// The row on disk is still claimable, so a restarted process resumes
+	// the claim rather than observing a terminal failure.
+	restored, err := h.session.client.ResumeReceiveViaLightning(
+		t.Context(), h.session.PaymentHash,
+	)
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateClaimInitiated, restored.State())
+	require.Empty(t, restored.InterventionReason())
+	require.Empty(t, restored.claimSessionID)
+
+	// A healthy lookup then submits the claim and completes the swap.
+	h.daemon.oorSession = claimOOR(oorCompleted, false)
+	_, err = restored.Wait(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateCompleted, restored.State())
+	require.Equal(t, 1, h.daemon.sendCustomCalls)
+	require.Equal(t, 1, h.daemon.cancelCalls)
+}
+
+// TestReceiveClaimRestoredSpentWithoutPreimageNeedsIntervention checks that the
+// restored ClaimInitiated reconciliation reports a vHTLC spent without the
+// receive preimage as an intervention condition instead of a terminal failure,
+// and that the durable row records it for the next process.
+func TestReceiveClaimRestoredSpentWithoutPreimageNeedsIntervention(
+	t *testing.T) {
+
+	t.Parallel()
+
+	h := newRestoredClaimHarness(t)
+	h.daemon.spentVTXO = &VTXOInfo{
+		Outpoint:    "funding:0",
+		AmountSat:   42_000,
+		SpentByTxID: "refund-session",
+	}
+
+	_, err := h.session.Wait(t.Context())
+	require.Error(t, err)
+	require.ErrorIs(t, err, errReceiveVHTLCSpentWithoutPreimage)
+	require.NotEmpty(t, interventionReason(err))
+	require.Equal(t, ReceiveStateNeedsIntervention, h.session.State())
+	require.Zero(t, h.daemon.sendCustomCalls)
+	require.Zero(t, h.daemon.cancelCalls)
+
+	restored, err := h.session.client.ResumeReceiveViaLightning(
+		t.Context(), h.session.PaymentHash,
+	)
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateNeedsIntervention, restored.State())
+	require.Equal(
+		t, interventionReasonVHTLCSpentWithoutPreimage,
+		restored.InterventionReason(),
+	)
+}
+
+// TestReceiveClaimPostPONRSpentWithoutPreimageNeedsIntervention checks that a
+// claim OOR reported failed after the point of no return, whose vHTLC the
+// indexer then shows spent without the receive preimage, parks the swap for
+// operator attention instead of failing it or resubmitting the claim.
+func TestReceiveClaimPostPONRSpentWithoutPreimageNeedsIntervention(
+	t *testing.T) {
+
+	t.Parallel()
+
+	h := newClaimSessionHarness(t, true)
+	h.daemon.oorSession = claimOOR(oorFailed, false)
+	h.daemon.spentVTXO = &VTXOInfo{
+		Outpoint:    "funding:0",
+		AmountSat:   42_000,
+		SpentByTxID: "refund-session",
+	}
+
+	_, err := h.session.Wait(t.Context())
+	require.Error(t, err)
+	require.NotEmpty(t, interventionReason(err))
+	require.Equal(t, ReceiveStateNeedsIntervention, h.session.State())
+	require.Zero(t, h.daemon.escalateCalls)
+	require.Zero(t, h.daemon.sendCustomCalls)
+	require.Zero(t, h.daemon.cancelCalls)
+}
+
+// TestEnsureClaimReceiveInfoDaemonErrorIsRetryable checks that a daemon
+// failure while allocating the claim destination is not read as a claim
+// outcome: the durable row stays claimable instead of turning terminal.
+func TestEnsureClaimReceiveInfoDaemonErrorIsRetryable(t *testing.T) {
+	t.Parallel()
+
+	h := newClaimSessionHarness(t, false)
+	h.session.claimReceivePubKey = nil
+	h.session.claimReceiveScript = nil
+
+	allocErr := status.Error(codes.Unavailable, "daemon unavailable")
+	h.daemon.receiveAllocErr = allocErr
+
+	err := h.session.ensureClaimReceiveInfo(t.Context())
+
+	var retryable *retryableActionError
+	require.ErrorAs(t, err, &retryable)
+	require.ErrorIs(t, err, allocErr)
+	require.Empty(t, h.session.claimReceiveScript)
+	require.Empty(t, h.session.claimReceivePubKey)
+}
+
+// TestEnsureReceiveClaimRecoveryArmedDaemonErrorIsRetryable checks that a
+// failed arming call stays retryable, because the daemon owns the row and the
+// request id is deterministic, instead of failing the receive swap.
+func TestEnsureReceiveClaimRecoveryArmedDaemonErrorIsRetryable(t *testing.T) {
+	t.Parallel()
+
+	h := newClaimSessionHarness(t, false)
+	h.session.claimRecoveryID = ""
+
+	armErr := status.Error(codes.Unavailable, "daemon unavailable")
+	h.daemon.armRecoveryErr = armErr
+
+	err := h.session.ensureReceiveClaimRecoveryArmed(t.Context())
+
+	var retryable *retryableActionError
+	require.ErrorAs(t, err, &retryable)
+	require.ErrorIs(t, err, armErr)
+	require.Empty(t, h.session.claimRecoveryID)
 }

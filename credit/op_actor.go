@@ -11,6 +11,7 @@ import (
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/build"
 	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/metrics"
 	"github.com/lightninglabs/wavelength/timeout"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -107,6 +108,16 @@ func NewOpActor(cfg OpActorConfig) (*OpActor, error) {
 		NewCodec(),
 	)
 	durableCfg.Log = cfg.Log
+
+	// A delivery this mailbox gives up on is deleted after it lands in the
+	// dead-letter table, and the poll timer is only re-armed by a turn that
+	// commits, so the operation it was driving is never resumed again
+	// until a restart restores it. Count that instead of leaving a Warn in
+	// the log.
+	durableCfg.TellRetryPolicy = metrics.WithDeadLetterCounter(
+		actor.DefaultTellRetryPolicy, cfg.MetricsSink,
+		metrics.ActorFamilyCreditOp,
+	)
 
 	durable, err := actor.NewDurableActor(durableCfg).Unpack()
 	if err != nil {

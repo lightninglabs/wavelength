@@ -94,6 +94,23 @@ func (a *MetricsActor) Receive(_ context.Context, msg Msg) fn.Result[Resp] {
 	case *BackgroundTaskErrorMsg:
 		BackgroundTaskErrorsTotal.WithLabelValues(m.Task).Inc()
 
+	case *ActorDeadLetterMsg:
+		DeliveryDeadLettersTotal.WithLabelValues(
+			normalizeActorFamily(m.Actor),
+		).Inc()
+
+	case *DeliveryPostponeMsg:
+		cause := normalizePostponeCause(m.Cause)
+		if m.Expired {
+			DeliveryPostponeExpiredTotal.WithLabelValues(
+				cause,
+			).Inc()
+
+			break
+		}
+
+		DeliveryPostponedTotal.WithLabelValues(cause).Inc()
+
 	default:
 		a.log.Warnf("Unknown metrics message type: %T", msg)
 	}

@@ -141,7 +141,7 @@ func newIncomingAncestryFetcher(idx *indexer.Client,
 		}
 
 		if authenticateExpiry != nil {
-			extras.BatchExpiry, err = authenticateExpiry(
+			evidence, err := authenticateExpiry(
 				ctx, extras.Ancestry,
 			)
 			if err != nil {
@@ -149,6 +149,9 @@ func newIncomingAncestryFetcher(idx *indexer.Client,
 					"authenticate batch "+
 						"expiry: %w", err)
 			}
+			extras.BatchExpiry = evidence.BatchExpiry
+			extras.CreatedHeight =
+				evidence.EarliestCommitmentHeight
 		}
 
 		return extras, nil

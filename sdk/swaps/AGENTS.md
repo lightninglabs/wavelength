@@ -180,7 +180,22 @@ result into an `IncomingVHTLCNotification`.
 - Amount mismatch on a live vHTLC triggers `RefundInitiated` (pay) or
   `Failed` (receive) **immediately** — never `NeedsIntervention`.
 - `NeedsIntervention` is reserved for anomalous server behavior
-  (e.g., vHTLC spent without a matching preimage).
+  (e.g., vHTLC spent without a matching preimage). It is applied where the
+  condition is detected, so every caller of the same lookup inherits it,
+  including the claim-send and restored-claim paths.
+- **A receive claim lookup failure is never a claim outcome.** The restored
+  `ClaimInitiated` reconciliation wraps indexer lookups in
+  `newRetryableLookupError`, and the daemon calls that prepare the claim
+  destination and arm claim recovery wrap their transport failures in
+  `newRetryableActionError`. Both keep the durable row claimable instead of
+  persisting `Failed`, while an error that already carries an intervention
+  classification passes through unchanged.
+- **A failed block-height lookup is never chain state.** Every height-dependent
+  timing check either retries (`newRetryableActionError`) or defers its
+  absolute deadline, never proceeding on a substituted or zero height.
+  Claim monitoring still applies its wall-clock deadline and persists refund
+  intent when that deadline expires. GetInfo-backed identity and operator-key
+  lookup failures during pay and receive setup also remain retryable.
 - `PaySession` / `ReceiveSession` are NOT goroutine-safe; `Wait`,
   `Claim`, `WaitForFunding`, and `State` must not be called
   concurrently.
@@ -211,7 +226,11 @@ result into an `IncomingVHTLCNotification`.
 - **vHTLC timing is validated at the admission boundary, via
   `lib/arkscript`.** `vhtlcTiming(VHTLCConfig)` projects the wire DTO into
   `arkscript.VHTLCTiming`. Pay-side `createSwap` calls `ValidateOrder()`
-  before it will fund. Receive-side `validateReceiveClaimWindow` calls
+  before it will fund. Fresh pay-side funding calls `ValidateRefundWindow`
+  with one-week CLTV and sender-only CSV limits; previously initiated funding
+  still reconciles, but an out-of-window legacy session can only query an
+  existing keyed transfer.
+  Receive-side `validateReceiveClaimWindow` calls
   `ValidateClaimWindow` with the current daemon height and the recovery
   policy's `ExitAncestryDelayBlocks` / `MinRecoveryMarginBlocks`, at the
   moment a server event first asks the receiver to accept a policy. Never

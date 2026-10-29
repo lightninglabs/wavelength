@@ -828,6 +828,8 @@ func (c *Client) GetIndexedVTXOByPkScript(ctx context.Context,
 
 // GetVTXOExpiryInfo asks the daemon to classify a VTXO using the
 // authoritative wallet/VTXO expiry policy. Passing nil uses an empty request.
+// A policy-bearing indexed query requires the daemon's authorization flag,
+// including on an empty response, so older daemons cannot ignore the policy.
 func (c *Client) GetVTXOExpiryInfo(ctx context.Context,
 	req *waverpc.GetVTXOExpiryInfoRequest) (
 	*waverpc.GetVTXOExpiryInfoResponse, error) {
@@ -839,6 +841,10 @@ func (c *Client) GetVTXOExpiryInfo(ctx context.Context,
 	resp, err := c.daemon.GetVTXOExpiryInfo(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("get vtxo expiry info: %w", err)
+	}
+	if len(req.PolicyTemplate) > 0 && req.GetPkScript() != nil &&
+		!resp.GetPolicyAuthorized() {
+		return nil, fmt.Errorf("daemon did not authorize expiry policy")
 	}
 
 	return resp, nil

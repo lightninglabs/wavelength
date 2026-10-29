@@ -102,6 +102,10 @@ type ManagerConfig struct {
 	ChainParams  *chaincfg.Params
 	ExpiryConfig *ExpiryConfig
 
+	// RepairCreatedHeight restores expiry monitoring for legacy rows using
+	// confirmed evidence. Passed through to each VTXO actor.
+	RepairCreatedHeight CreatedHeightRepairer
+
 	// Log is an optional logger for this manager instance. If None, the
 	// manager falls back to extracting a logger from context via
 	// LoggerFromContext, or uses btclog.Disabled if no logger is found.
@@ -2104,6 +2108,7 @@ func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 		ChainSource:              m.cfg.ChainSource,
 		ChainParams:              m.cfg.ChainParams,
 		ExpiryConfig:             m.cfg.ExpiryConfig,
+		RepairCreatedHeight:      m.cfg.RepairCreatedHeight,
 		Log:                      m.cfg.Log,
 		ChainResolver:            m.cfg.ChainResolver,
 		Manager:                  m.managerRef,
@@ -3460,6 +3465,7 @@ func (m *Manager) customForfeitInputMatchesStored(ctx context.Context,
 // customForfeitInputStoredMatch reports whether the durable row for input's
 // outpoint matches the custom signer request, and whether that row looks like a
 // synthetic custom signer row recovered after a restart.
+// Creation height is derived metadata, not signer-request identity.
 func (m *Manager) customForfeitInputStoredMatch(ctx context.Context,
 	input CustomForfeitInput) (bool, bool, error) {
 
@@ -3503,9 +3509,6 @@ func (m *Manager) customForfeitInputStoredMatch(ctx context.Context,
 		return false, synthetic, nil
 	}
 	if desc.ChainDepth != input.ChainDepth {
-		return false, synthetic, nil
-	}
-	if desc.CreatedHeight != input.CreatedHeight {
 		return false, synthetic, nil
 	}
 

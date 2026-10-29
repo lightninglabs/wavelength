@@ -18,11 +18,15 @@ func TestNewOutboxHandlerForwardsExpiryAuthenticator(t *testing.T) {
 	var calls int
 	handler := NewOutboxHandler(OutboxHandlerConfig{
 		AuthenticateIncomingExpiry: func(_ context.Context,
-			_ []vtxo.Ancestry) (int32, error) {
+			_ []vtxo.Ancestry) (vtxo.AuthenticatedBatchEvidence,
+			error) {
 
 			calls++
 
-			return authenticatedExpiry, nil
+			return vtxo.AuthenticatedBatchEvidence{
+				BatchExpiry:              authenticatedExpiry,
+				EarliestCommitmentHeight: 100,
+			}, nil
 		},
 	})
 
@@ -42,4 +46,6 @@ func TestNewOutboxHandlerForwardsExpiryAuthenticator(t *testing.T) {
 		t, authenticatedExpiry,
 		resolved.Matches[0].Metadata.BatchExpiry,
 	)
+	require.Equal(t, int32(100),
+		resolved.Matches[0].Metadata.CreatedHeight)
 }

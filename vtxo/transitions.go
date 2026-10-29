@@ -309,9 +309,9 @@ func (s *LiveState) handleBlockEpoch(ctx context.Context, evt *BlockEpochEvent,
 		// hold the VTXO live rather than guessing. Failing the
 		// transition instead would wedge the actor on every block, and
 		// treating it as expired would surrender funds that may well
-		// be live. The value is stamped at creation and never
-		// rewritten, so this is a persistent data fault worth a
-		// warning until an operator notices.
+		// be live. The actor retries confirmed creation-height repair
+		// before this check. Missing or conflicting evidence keeps the
+		// row unchanged and manual recovery available.
 		build.LoggerFromContext(ctx).WithPrefix(Subsystem).WarnS(
 			ctx, "VTXO has no usable batch expiry; holding live "+
 				"without expiry monitoring", nil,

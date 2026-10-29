@@ -305,6 +305,15 @@ the invoice, a fee ceiling, and its vHTLC pubkey. The server replies with a
 pubkey, the `VHTLCConfig`, a deadline, and — decisively — a `settlement_type`
 (see §8).
 
+Before sending funds, the client checks both timelocks on its sender-only
+refund path. A new pay-side vHTLC must use a height locktime no more than 1,008
+blocks away and a sender-only CSV delay no longer than 1,008 blocks. The
+invoice's final-hop CLTV delta does not cap the full Lightning route, so it
+cannot safely replace this client-owned limit. A session whose funding was
+already initiated continues keyed reconciliation after an upgrade. An
+out-of-window legacy session can recover an accepted transfer, but cannot
+start a new one.
+
 ### 4.2 The client funds the vHTLC
 
 Here is the mirror image of the receive flow. In

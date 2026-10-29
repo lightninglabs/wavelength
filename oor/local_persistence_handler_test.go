@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -232,6 +233,7 @@ func TestLocalPersistenceOutboxHandlerAuthenticatesIncomingExpiry(
 			RoundID:        "round-auth",
 			CommitmentTxID: commitment,
 			BatchExpiry:    999999,
+			CreatedHeight:  999999,
 			Ancestry: []vtxo.Ancestry{{
 				CommitmentTxID: commitment,
 			}},
@@ -239,11 +241,15 @@ func TestLocalPersistenceOutboxHandlerAuthenticatesIncomingExpiry(
 	}}
 	handler := &LocalPersistenceOutboxHandler{
 		AuthenticateIncomingExpiry: func(_ context.Context,
-			ancestry []vtxo.Ancestry) (int32, error) {
+			ancestry []vtxo.Ancestry) (
+			vtxo.AuthenticatedBatchEvidence, error) {
 
 			require.Len(t, ancestry, 1)
 
-			return 2048, nil
+			return vtxo.AuthenticatedBatchEvidence{
+				BatchExpiry:              2048,
+				EarliestCommitmentHeight: 1900,
+			}, nil
 		},
 	}
 
@@ -260,14 +266,103 @@ func TestLocalPersistenceOutboxHandlerAuthenticatesIncomingExpiry(
 	require.True(t, event.ExpiryAuthenticated)
 	require.Len(t, event.Matches, 1)
 	require.Equal(t, int32(2048), event.Matches[0].Metadata.BatchExpiry)
+	require.Equal(t, int32(1900),
+		event.Matches[0].Metadata.CreatedHeight)
 	require.True(t, event.Matches[0].Metadata.ExpiryAuthenticated)
 	require.Equal(t, int32(999999), matches[0].Metadata.BatchExpiry)
+	require.Equal(t, int32(999999), matches[0].Metadata.CreatedHeight)
+}
+
+// TestLocalPersistenceRejectsInconsistentAuthenticatedMetadata verifies the
+// durable authentication step fails terminally before materialization when
+// the authenticator returns heights that contradict its own deadline.
+func TestLocalPersistenceRejectsInconsistentAuthenticatedMetadata(
+	t *testing.T) {
+
+	t.Parallel()
+
+	handler := &LocalPersistenceOutboxHandler{
+		AuthenticateIncomingExpiry: func(context.Context,
+			[]vtxo.Ancestry) (vtxo.AuthenticatedBatchEvidence,
+			error) {
+
+			return vtxo.AuthenticatedBatchEvidence{
+				BatchExpiry:              1000,
+				EarliestCommitmentHeight: 1001,
+			}, nil
+		},
+	}
+	matches := []IncomingMetadataMatch{{
+		OutputIndex: 2,
+		Metadata: IncomingVTXOMetadata{
+			BatchExpiry:   999999,
+			CreatedHeight: 1001,
+		},
+	}}
+	events, err := handler.Handle(
+		t.Context(), SessionID{}, &AuthenticateIncomingMetadataRequest{
+			Matches: matches,
+		},
+	)
+	require.ErrorIs(t, err, vtxo.ErrInvalidBatchExpiryEvidence)
+	var terminal *terminalOutboxError
+	require.ErrorAs(t, err, &terminal)
+	require.Empty(t, events)
+	require.False(t, matches[0].Metadata.ExpiryAuthenticated)
 }
 
 // TestLocalPersistenceOutboxHandlerMaterializeIncoming asserts incoming
-// materialization persists recipient VTXOs and emits IncomingHandledEvent.
+// materialization persists only consistent recipient metadata, including on
+// replay of previously authenticated receive state.
 func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	t.Parallel()
+
+	tests := []struct {
+		name          string
+		createdHeight int32
+	}{
+		{
+			name:          "unknown creation height",
+			createdHeight: 0,
+		},
+		{
+			name:          "honest creation height",
+			createdHeight: 700,
+		},
+		{
+			name:          "creation height equals expiry",
+			createdHeight: 1000,
+		},
+		{
+			name:          "inflated creation height",
+			createdHeight: 1001,
+		},
+		{
+			name:          "maximum creation height",
+			createdHeight: math.MaxInt32,
+		},
+	}
+	for _, test := range tests {
+		for _, authenticated := range []bool{false, true} {
+			name := fmt.Sprintf("%s authenticated=%v", test.name,
+				authenticated)
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				testMaterializeIncomingHeight(
+					t, test.createdHeight, authenticated,
+				)
+			})
+		}
+	}
+}
+
+// testMaterializeIncomingHeight verifies receive persistence and expiry
+// monitoring use confirmed heights and reject inconsistent replay metadata.
+func testMaterializeIncomingHeight(t *testing.T, createdHeight int32,
+	authenticated bool) {
+
+	t.Helper()
 
 	ctx := t.Context()
 
@@ -278,6 +373,16 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
 	store := newTestVTXOStore()
 	packageStore := &testPackageStore{}
+	metadata := IncomingVTXOMetadata{
+		RoundID:             "round-incoming",
+		CommitmentTxID:      parentCommitment,
+		BatchExpiry:         1000,
+		ExpiryAuthenticated: authenticated,
+		Ancestry: validTestIncomingAncestry(
+			parentCommitment,
+		),
+		CreatedHeight: createdHeight,
+	}
 
 	notifyCalls := 0
 	authCalls := 0
@@ -287,11 +392,15 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 		OperatorKey:  operatorKey,
 		ExitDelay:    10,
 		AuthenticateIncomingExpiry: func(context.Context,
-			[]vtxo.Ancestry) (int32, error) {
+			[]vtxo.Ancestry) (vtxo.AuthenticatedBatchEvidence,
+			error) {
 
 			authCalls++
 
-			return 1000, nil
+			return vtxo.AuthenticatedBatchEvidence{
+				BatchExpiry:              1000,
+				EarliestCommitmentHeight: 700,
+			}, nil
 		},
 		NotifyIncomingVTXOs: func(_ context.Context,
 			_ []*vtxo.Descriptor) error {
@@ -322,14 +431,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 			_ = ark
 			_ = finalCheckpoints
 
-			return IncomingVTXOMetadata{
-				RoundID:        "round-incoming",
-				CommitmentTxID: parentCommitment,
-				Ancestry: validTestIncomingAncestry(
-					parentCommitment,
-				),
-				CreatedHeight: 700,
-			}, nil
+			return metadata, nil
 		},
 	}
 
@@ -339,13 +441,42 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 		FinalCheckpointPSBTs: finalCheckpoints,
 		Recipients:           recipients,
 	}
+	if authenticated {
+		req.MetadataMatches = []IncomingMetadataMatch{{
+			OutputIndex: recipients[0].OutputIndex,
+			Metadata:    metadata,
+		}}
+	}
 
 	events, err := handler.Handle(ctx, sessionID, req)
+	if authenticated && createdHeight == 0 {
+		require.Error(t, err)
+		require.Empty(t, events)
+		require.Empty(t, store.records)
+		require.Zero(t, notifyCalls)
+
+		return
+	}
+	if authenticated && createdHeight > metadata.BatchExpiry {
+		require.ErrorIs(t, err, vtxo.ErrInvalidBatchExpiryEvidence)
+		var terminal *terminalOutboxError
+		require.ErrorAs(t, err, &terminal)
+		require.Empty(t, events)
+		require.Empty(t, store.records)
+		require.Zero(t, notifyCalls)
+
+		return
+	}
+
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 	require.IsType(t, &IncomingHandledEvent{}, events[0])
 	require.Equal(t, 1, notifyCalls)
-	require.Equal(t, 1, authCalls)
+	expectedAuthCalls := 1
+	if authenticated {
+		expectedAuthCalls = 0
+	}
+	require.Equal(t, expectedAuthCalls, authCalls)
 
 	handledEvt, ok := events[0].(*IncomingHandledEvent)
 	require.True(t, ok)
@@ -360,7 +491,20 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	require.Equal(t, parentCommitment, desc.CommitmentTxID)
 	require.EqualValues(t, 1000, desc.BatchExpiry)
 	require.EqualValues(t, 1, desc.MaxTreeDepth())
-	require.EqualValues(t, 700, desc.CreatedHeight)
+	expectedHeight := int32(700)
+	if authenticated {
+		expectedHeight = createdHeight
+	}
+	require.Equal(t, expectedHeight, desc.CreatedHeight)
+
+	expiryCfg := vtxo.DefaultExpiryConfig()
+	require.Equal(
+		t, vtxo.ExpiryStatusNeedsRefresh,
+		expiryCfg.CheckExpiry(desc, 900),
+	)
+	require.Equal(
+		t, vtxo.ExpiryStatusCritical, expiryCfg.CheckExpiry(desc, 990),
+	)
 
 	// Re-materialization should be idempotent.
 	events, err = handler.Handle(ctx, sessionID, req)
@@ -371,7 +515,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	require.Equal(t, 2, packageStore.bindingCalls)
 	require.Equal(t, PackageDirectionIncoming, packageStore.lastDirection)
 	require.Equal(t, chainhash.Hash(sessionID), packageStore.lastSessionID)
-	require.Equal(t, 2, authCalls)
+	require.Equal(t, 2*expectedAuthCalls, authCalls)
 }
 
 // TestLocalPersistenceOutboxHandlerRejectsInvalidAncestorPackage asserts
@@ -1515,9 +1659,13 @@ func TestMaterializeIncomingBooksTheReceive(t *testing.T) {
 		ExitDelay:    10,
 		LedgerSink:   fn.Some[ledger.Sink](sink),
 		AuthenticateIncomingExpiry: func(context.Context,
-			[]vtxo.Ancestry) (int32, error) {
+			[]vtxo.Ancestry) (vtxo.AuthenticatedBatchEvidence,
+			error) {
 
-			return 1000, nil
+			return vtxo.AuthenticatedBatchEvidence{
+				BatchExpiry:              1000,
+				EarliestCommitmentHeight: 700,
+			}, nil
 		},
 		NotifyIncomingVTXOs: func(context.Context,
 			[]*vtxo.Descriptor) error {

@@ -15,6 +15,73 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestValidateIncomingBatchExpiry verifies new receives cannot persist an
+// inconsistent expiry while zero creation heights remain compatible.
+func TestValidateIncomingBatchExpiry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		expiry        int32
+		createdHeight int32
+		invalid       bool
+	}{
+		{
+			name:          "valid creation height",
+			expiry:        1000,
+			createdHeight: 700,
+		},
+		{
+			name:   "unknown creation height",
+			expiry: 1000,
+		},
+		{
+			name:          "creation at expiry",
+			expiry:        1000,
+			createdHeight: 1000,
+		},
+		{
+			name:          "creation after expiry",
+			expiry:        1000,
+			createdHeight: 1001,
+			invalid:       true,
+		},
+		{
+			name:          "maximum creation height",
+			expiry:        1000,
+			createdHeight: math.MaxInt32,
+			invalid:       true,
+		},
+		{
+			name:    "missing expiry",
+			invalid: true,
+		},
+		{
+			name:    "negative expiry",
+			expiry:  -1,
+			invalid: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := ValidateIncomingBatchExpiry(
+				test.expiry, test.createdHeight,
+			)
+			if test.invalid {
+				require.ErrorIs(
+					t, err, ErrInvalidBatchExpiryEvidence,
+				)
+
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
+
 // TestAuthenticateBatchExpiryUsesEarliestCommitment verifies multi-parent
 // expiry selection and per-commitment lookup deduplication.
 func TestAuthenticateBatchExpiryUsesEarliestCommitment(t *testing.T) {
@@ -30,7 +97,7 @@ func TestAuthenticateBatchExpiryUsesEarliestCommitment(t *testing.T) {
 		second.CommitmentTxID: secondConfirmation,
 	}
 	resolveCalls := make(map[chainhash.Hash]int)
-	expiry, err := AuthenticateBatchExpiry(
+	evidence, err := AuthenticateBatchEvidence(
 		t.Context(), []Ancestry{first, duplicate, second},
 		func(_ context.Context, txid chainhash.Hash, _ []byte,
 			_ uint32) (CommitmentConfirmation, error) {
@@ -41,7 +108,9 @@ func TestAuthenticateBatchExpiryUsesEarliestCommitment(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
-	require.Equal(t, int32(140), expiry)
+	require.Equal(t, int32(140), evidence.BatchExpiry)
+	require.Equal(t, int32(100),
+		evidence.EarliestCommitmentHeight)
 	require.Equal(t, 1, resolveCalls[first.CommitmentTxID])
 	require.Equal(t, 1, resolveCalls[second.CommitmentTxID])
 }
@@ -143,6 +212,7 @@ func TestAuthenticateBatchExpiryRejectsInvalidEvidence(t *testing.T) {
 			},
 		)
 		require.ErrorIs(t, err, resolverErr)
+		require.ErrorIs(t, err, ErrCommitmentUnconfirmed)
 		require.NotErrorIs(t, err, ErrInvalidBatchExpiryEvidence)
 	})
 
@@ -166,6 +236,7 @@ func TestAuthenticateBatchExpiryRejectsInvalidEvidence(t *testing.T) {
 				},
 			)
 			require.Error(t, err)
+			require.ErrorIs(t, err, ErrCommitmentUnconfirmed)
 			require.NotErrorIs(
 				t, err, ErrInvalidBatchExpiryEvidence,
 			)

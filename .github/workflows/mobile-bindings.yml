@@ -28,6 +28,8 @@ on:
       - "sdk/wavewalletdk/**"
       - "sdk/swaps/**"
       - "db/**"
+      - "lwwallet/**"
+      - "internal/testutils/wasmsqlite.go"
       - "swapwallet/**"
       - "go.mod"
       - "go.sum"
@@ -114,6 +116,13 @@ jobs:
       - name: Test WASM asset staging
         if: matrix.sqlite == 'host'
         run: go test ./scripts/wasm-wallet
+
+      - name: Test WASM database open retries
+        if: matrix.sqlite == 'host'
+        run: |
+          GOOS=js GOARCH=wasm go test \
+            -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
+            -run '^TestWASM.*OpenRetry$' ./db ./lwwallet
 
       - name: Test mobile facade and SQLite stores
         env:

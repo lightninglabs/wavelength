@@ -757,6 +757,42 @@ func TestDialRemoteCoversFacadeMethods(t *testing.T) {
 	require.ErrorIs(t, err, io.EOF)
 }
 
+// TestExpiryPolicyRequiresDaemonCapability rejects an older daemon that
+// silently ignores the additive policy field, including an empty lookup.
+func TestExpiryPolicyRequiresDaemonCapability(t *testing.T) {
+	t.Parallel()
+
+	service := newFakeDaemonService()
+	service.expiryInfoResp = &waverpc.GetVTXOExpiryInfoResponse{}
+	client, err := DialRemote(t.Context(), RemoteConfig{
+		Address:       startFakeDaemonServerWithService(t, service),
+		AllowInsecure: true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	req := &waverpc.GetVTXOExpiryInfoRequest{
+		Target: &waverpc.GetVTXOExpiryInfoRequest_PkScript{
+			PkScript: []byte{
+				0x51,
+			},
+		},
+		PolicyTemplate: []byte{
+			1,
+		},
+	}
+	_, err = client.GetVTXOExpiryInfo(t.Context(), req)
+	require.ErrorContains(t, err, "did not authorize expiry policy")
+
+	service.expiryInfoResp.PolicyAuthorized = true
+	response, err := client.GetVTXOExpiryInfo(t.Context(), req)
+	require.NoError(t, err)
+	require.False(t, response.Found)
+	require.True(t, response.PolicyAuthorized)
+	require.Equal(
+		t, req.PolicyTemplate, service.lastExpiryInfoReq.PolicyTemplate,
+	)
+}
+
 // TestDialRemotePolicyHelpers verifies the higher-level policy and indexer
 // helpers that sdk/swaps will depend on, so those adapters can live in
 // sdk/ark rather than being reimplemented in the swap layer.

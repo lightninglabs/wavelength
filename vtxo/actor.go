@@ -91,6 +91,11 @@ type VTXOActorConfig struct {
 	ChainParams  *chaincfg.Params
 	ExpiryConfig *ExpiryConfig
 
+	// RepairCreatedHeight authenticates and persists inconsistent legacy
+	// metadata before a block can make an expiry decision. Failures retry
+	// on later epochs while manual recovery remains available.
+	RepairCreatedHeight CreatedHeightRepairer
+
 	// Log is an optional logger for this actor instance. If None, the
 	// actor falls back to extracting a logger from context via
 	// LoggerFromContext, or uses btclog.Disabled if no logger is found.
@@ -201,6 +206,13 @@ type VTXOActor struct {
 // actors being recovered from storage (e.g., in forfeiting state), this
 // fetches persisted data like the forfeit tx.
 func NewVTXOActor(ctx context.Context, cfg *VTXOActorConfig) *VTXOActor {
+	// Metadata repair belongs to this actor. A recovery snapshot or caller
+	// must not share the mutable descriptor header with its receive loop.
+	ownedConfig := *cfg
+	ownedDescriptor := *cfg.VTXO
+	ownedConfig.VTXO = &ownedDescriptor
+	cfg = &ownedConfig
+
 	actorID := fmt.Sprintf("vtxo.%s", cfg.VTXO.Outpoint.String())
 	env := NewVTXOEnvironment(
 		actorID, cfg.Store, cfg.Wallet, cfg.ExpiryConfig,
@@ -592,6 +604,9 @@ func (a *VTXOActor) Receive(ctx context.Context,
 		return fn.Err[actormsg.VTXOActorResp](
 			fmt.Errorf("unexpected event type: %T", event),
 		)
+	}
+	if _, block := vtxoEvent.(*BlockEpochEvent); block {
+		a.repairLegacyCreatedHeight(ctx)
 	}
 
 	cohortEvent, cohortRefresh := vtxoEvent.(*CohortRefreshEvent)

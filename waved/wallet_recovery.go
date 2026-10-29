@@ -366,7 +366,7 @@ func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 					return fmt.Errorf("expiry " +
 						"authenticator not initialized")
 				}
-				expiry, err := r.server.expiryAuthenticator(
+				evidence, err := r.server.expiryAuthenticator(
 					ctx, desc.Ancestry,
 				)
 				if err != nil {
@@ -384,7 +384,9 @@ func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 
 					continue
 				}
-				desc.BatchExpiry = expiry
+				desc.BatchExpiry = evidence.BatchExpiry
+				desc.CreatedHeight =
+					evidence.EarliestCommitmentHeight
 
 				saved, err := r.saveRecoveredVTXO(ctx, desc)
 				if err != nil {
@@ -869,13 +871,15 @@ func (r *RPCServer) materializeRecoveredOOREvent(ctx context.Context,
 			return fmt.Errorf("expiry authenticator not " +
 				"initialized")
 		}
-		metadata.BatchExpiry, err = r.server.expiryAuthenticator(
+		evidence, err := r.server.expiryAuthenticator(
 			ctx, metadata.Ancestry,
 		)
 		if err != nil {
 			return fmt.Errorf("authenticate recovered OOR output "+
 				"%d expiry: %w", recipient.OutputIndex, err)
 		}
+		metadata.BatchExpiry = evidence.BatchExpiry
+		metadata.CreatedHeight = evidence.EarliestCommitmentHeight
 		metadata.ExpiryAuthenticated = true
 
 		metadataMatches = append(metadataMatches,

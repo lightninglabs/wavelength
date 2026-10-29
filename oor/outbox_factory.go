@@ -50,8 +50,8 @@ type OutboxHandlerConfig struct {
 	// incoming VTXOs.
 	ResolveIncomingMetadata IncomingMetadataResolver
 
-	// AuthenticateIncomingExpiry derives the batch expiry from confirmed
-	// ancestry before incoming VTXOs are materialized.
+	// AuthenticateIncomingExpiry derives the expiry and commitment height
+	// from confirmed ancestry before incoming VTXOs are materialized.
 	AuthenticateIncomingExpiry IncomingExpiryAuthenticator
 }
 

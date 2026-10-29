@@ -519,8 +519,8 @@ type directedSendFixture struct {
 	// restart().
 	cfg *waved.Config
 
-	// rpcAddr is the daemon's gRPC listen address, reused across restarts
-	// so the client reconnects to the same endpoint.
+	// rpcAddr is the bound daemon gRPC address for the current launch.
+	// Each restart binds a fresh port before connecting a new client.
 	rpcAddr string
 
 	// serverCancel cancels the currently running daemon, and serverErrChan
@@ -574,7 +574,6 @@ func newDirectedSendFixture(t *testing.T,
 	t.Cleanup(stopMailbox)
 
 	dataDir := t.TempDir()
-	rpcAddr := newLoopbackAddr(t)
 
 	cfg := waved.DefaultConfig()
 	cfg.DataDir = dataDir
@@ -590,8 +589,12 @@ func newDirectedSendFixture(t *testing.T,
 	)
 	cfg.Server.Host = mailboxAddr
 	cfg.Server.Insecure = true
-	cfg.RPC.ListenAddr = rpcAddr
-	cfg.RPC.Gateway.ListenAddr = newLoopbackAddr(t)
+
+	// Let the listeners allocate their ports when they bind. Probing and
+	// releasing a port here leaves it available to parallel tests or Docker
+	// before startup, and retaining it across restarts repeats that race.
+	cfg.RPC.ListenAddr = "127.0.0.1:0"
+	cfg.RPC.Gateway.ListenAddr = "127.0.0.1:0"
 	cfg.RPC.NoTLS = true
 	cfg.RPC.NoMacaroons = true
 
@@ -611,7 +614,6 @@ func newDirectedSendFixture(t *testing.T,
 		operatorKey:    operatorPriv.PubKey(),
 		seededOutpoint: seededOutpoint,
 		cfg:            cfg,
-		rpcAddr:        rpcAddr,
 	}
 
 	// Register the shutdown before launching so a launch that fails its
@@ -641,6 +643,13 @@ func (f *directedSendFixture) launch() {
 
 	f.serverCancel = cancel
 	f.serverErrChan = errChan
+
+	// A bound RPC listener and a ready wallet can precede actor startup.
+	// Wait for the service boundary before issuing wallet operations.
+	readyCtx, readyCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer readyCancel()
+	require.NoError(t, server.WaitForWalletServicesReady(readyCtx))
+	f.rpcAddr = server.RPCAddr().String()
 
 	conn, err := f.dial(f.cfg.RPC.MacaroonPath)
 	require.NoError(t, err)
@@ -775,7 +784,7 @@ func startFakeMailboxServer(t *testing.T, operatorMailbox string,
 
 	t.Helper()
 
-	listener, err := net.Listen("tcp", newLoopbackAddr(t))
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
 	serverImpl := newFakeMailboxServer(

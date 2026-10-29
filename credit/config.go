@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/metrics"
 	"github.com/lightninglabs/wavelength/timeout"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -321,6 +322,12 @@ type OpActorConfig struct {
 	// daemon can wire the provider after the registry is built, without
 	// re-spawning resident children.
 	Earmark *atomic.Pointer[EarmarkFunc]
+
+	// MetricsSink is the optional client metrics sink. When set, a
+	// delivery this actor's mailbox gives up on is counted as a dead
+	// letter, and a postponed reconciliation is counted by cause. Both
+	// are observations: a missing sink never changes behavior.
+	MetricsSink fn.Option[metrics.Sink]
 }
 
 // RegistryConfig configures the credit registry coordinator actor.
@@ -379,6 +386,10 @@ type RegistryConfig struct {
 
 	// AutoRedeem configures the wallet-owned auto-redeem policy.
 	AutoRedeem AutoRedeemConfig
+
+	// MetricsSink is the optional client metrics sink handed to every
+	// child so a dead-lettered or postponed delivery is observable.
+	MetricsSink fn.Option[metrics.Sink]
 
 	// ActorSystem, when set, registers the registry under the credit
 	// service key so a timeout retry-callback ref resolves to it. Nil in

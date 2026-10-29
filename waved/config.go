@@ -24,6 +24,7 @@ import (
 	"github.com/lightninglabs/wavelength/metrics"
 	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
+	"github.com/lightninglabs/wavelength/unroll"
 	"google.golang.org/grpc"
 )
 
@@ -303,6 +304,13 @@ type Config struct {
 	// and verify the VTXO is recovered to live. Empty in production; not
 	// serialized to config files.
 	FailUnrollBroadcastReason string
+
+	// UnrollAdmissionHook is a TEST-ONLY hook that runs before a VTXO
+	// notification reaches the unroll registry. Tests may alter the request
+	// to reproduce a policy-less trigger winning admission after recovery
+	// materialization. The hook must not block. Nil in production; not
+	// serialized to config files.
+	UnrollAdmissionHook func(*unroll.EnsureUnrollRequest)
 
 	// Lnd configures the connection to the backing lnd node.
 	Lnd *LndConfig `mapstructure:"lnd"`

@@ -113,6 +113,24 @@ func TestIndexedAncestryMultiParentExpiry(t *testing.T) {
 	require.ErrorContains(t, err, "no authenticated parent")
 }
 
+// TestIndexedAncestryRejectsRepackedOORProof keeps the signed transactions
+// tied to their session packages. Otherwise an indexer could place an older
+// Ark transaction in a later package's checkpoint list and undercount hops.
+func TestIndexedAncestryRejectsRepackedOORProof(t *testing.T) {
+	t.Parallel()
+
+	candidate, _ := expiryfixture.Merge(t, false)
+	require.Len(t, candidate.AncestryPackages, 1)
+	pkg := candidate.AncestryPackages[0]
+	pkg.CheckpointPsbts = append(
+		pkg.CheckpointPsbts, pkg.ArkPsbt,
+	)
+
+	_, err := IndexedAncestryFromRPC(candidate)
+	require.ErrorIs(t, err, ErrInvalidBatchExpiryEvidence)
+	require.ErrorContains(t, err, "is not an ark input")
+}
+
 // TestIndexedAncestryRejectsForgedLeafBody checks that matching a reconstructed
 // target txid is insufficient when its signed parent never authorized the leaf.
 func TestIndexedAncestryRejectsForgedLeafBody(t *testing.T) {

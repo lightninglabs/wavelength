@@ -525,6 +525,9 @@ type Querier interface {
 	// budget. The exact kind, failed status, and legacy error guard prevent this
 	// compatibility repair from weakening the normal terminal-to-pending rule.
 	RepairCreditReceivePollCapActivity(ctx context.Context, arg RepairCreditReceivePollCapActivityParams) (int64, error)
+	// Repair only the creation height against the authenticated expiry and the
+	// observed old height. Accept the replacement height too for idempotent retry.
+	RepairVTXOCreatedHeight(ctx context.Context, arg RepairVTXOCreatedHeightParams) (int64, error)
 	// Returns every boarding intent adopted by one dead round to 'confirmed'. The
 	// commitment never broadcast, so the UTXO is exactly as it was before the
 	// round: re-boardable, and sweepable again.
@@ -552,6 +555,13 @@ type Querier interface {
 	// items the check reports rather than fails on, is policy: it lives in Go
 	// next to the handlers whose timing decides it, per this file's header.
 	SumUnspentVTXOAmountsByStatus(ctx context.Context) ([]SumUnspentVTXOAmountsByStatusRow, error)
+	// SumVTXOAmountsByStatus returns the VTXO count and total amount per status.
+	// It backs the scrape-time inventory gauges, which only need these two
+	// figures, so it avoids decoding full descriptors for every row on every
+	// scrape. Unlike SumUnspentVTXOAmountsByStatus it does not filter on the
+	// spent flag: the gauges count every row in a status, matching
+	// ListVTXOsByStatus.
+	SumVTXOAmountsByStatus(ctx context.Context) ([]SumVTXOAmountsByStatusRow, error)
 	// SumWalletUTXOLogByEventAndClassification returns the audit log totalled
 	// per (event, classification) pair. The checker decides which pairs are
 	// expected to have booked a ledger leg.

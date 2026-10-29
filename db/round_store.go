@@ -162,6 +162,11 @@ type RoundStore interface {
 		error,
 	)
 
+	// SumVTXOAmountsByStatus returns the VTXO count and summed amount
+	// per status, without decoding any descriptor.
+	SumVTXOAmountsByStatus(ctx context.Context) (
+		[]sqlc.SumVTXOAmountsByStatusRow, error)
+
 	UpdateVTXOStatus(
 		ctx context.Context, arg sqlc.UpdateVTXOStatusParams,
 	) error
@@ -193,6 +198,11 @@ type RoundStore interface {
 	) error
 
 	DeleteVTXO(ctx context.Context, arg sqlc.DeleteVTXOParams) error
+
+	// RepairVTXOCreatedHeight changes creation height only when the saved
+	// expiry and old height still match the authenticated repair request.
+	RepairVTXOCreatedHeight(ctx context.Context,
+		arg sqlc.RepairVTXOCreatedHeightParams) (int64, error)
 
 	// Per-VTXO ancestry-paths side table (multi-tree ancestry for OOR).
 	InsertVTXOAncestryPath(ctx context.Context,

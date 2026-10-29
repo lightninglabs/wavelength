@@ -54,12 +54,39 @@ operator VTXO floor, `max(dust_limit, min_vtxo_amount_sat)`.
 - A transition must flush a `stageRecord` checkpoint before the next state
   runs a side effect that depends on a server identifier just recorded
   (persist-before-effect); `runFSM` enforces this ordering via `ax.Stage`.
+  Every transition into an awaiting state stages for the same reason: the
+  side effect it just performed must be durable before that state's first
+  ledger read, or a postponed read would re-run it on redelivery.
 - `applyState`'s persisted state string must exactly match the `State`
   constants in state.go; an unrecognized string durably fails the operation
   (`failCorrupt`) rather than wedging it non-terminal forever.
 - Every external call the behavior makes (`CreateCredit`, `SendOOR`,
   `StartPay`, `RedeemCredit`) must stay idempotent by op key or payment hash,
   since a redelivered message or a reload-after-`commitFailed` re-runs it.
+- **A failed ledger read in an awaiting state is a postpone, not a nack.**
+  Each transition into an awaiting state checkpoints first, so by the time that
+  state reads `ListCredits` the side effect behind it is durable and
+  `postponeListCreditsFetch` can classify a transient read failure and
+  return `actor.Postpone`: a nack would spend one of the delivery's few
+  attempts on a swapd deploy and dead-letter the only driver the operation
+  has, while the postpone resumes in the awaiting state instead of replaying
+  the side effect. The postpone is bounded (`listCreditsPostponeHorizon`, ten
+  minutes from `actor.DeliveryEnqueuedAt`), after which the plain error lets
+  the mailbox dead-letter the delivery. Only a failure that waiting can
+  repair postpones: transport and server-side errors do, including any error
+  that carries no gRPC status, while a canceled context or a deterministic
+  validation-style status (`InvalidArgument`, `NotFound`, `Unimplemented`, …)
+  keeps the ordinary failure path so a permanent client-side fault surfaces as
+  a dead letter instead of a forever-parked resume. A ledger read has no
+  chain-confirmation cause, so unlike the incoming-VTXO handler this horizon
+  stays a single ten-minute bound. The horizon counts from when the row
+  was enqueued, not from the first failure, so a resume row already older than
+  the horizon at daemon restart gets no postpone budget — one failed read and
+  then the ordinary retry budget — and a dead-letter counter bump after a
+  restart should not be misread as a new outage. Only the reconciliation read
+  at the top of an awaiting state is classified: a `Stage`/`Commit` failure
+  after the FSM advanced in memory must keep its `commitFailed` reload
+  semantics.
 - **The server owns the receive invoice lifecycle.** `MaxAwaitingPolls` caps
   only pay top-ups, credit-only pays, and redemptions; `awaitingSettlementState`
   is deliberately uncapped. A local poll count cannot prove that a

@@ -235,10 +235,18 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   while successful repairs apply to later admissions and restarts.
 - `batchExpiryAuthenticator` is the shared acceptance boundary for new indexed
   VTXOs. It uses bounded one-shot chain-source confirmation futures, validates
-  the confirmed transaction through `vtxo.AuthenticateBatchExpiry`, and
-  unregisters each watch. Thin incoming events, OOR receives, indexed recovery,
+  the confirmed transaction through `vtxo.AuthenticateBatchEvidence`, and
+  unregisters each watch. Zero commitment hints use the configured network
+  deployment floor only when the local tip has reached it; otherwise they
+  use block 1, matching unroll. Nonzero hints pass through unchanged. The
+  tip lookup shares the authentication deadline, and failures remain
+  retryable. Thin incoming events, OOR receives, indexed recovery,
   and custom refresh metadata use it before persistence or signing. Existing
-  live rows are deliberately left unchanged. The single incoming-event actor
+  rows whose creation height exceeds expiry retry a bounded
+  local confirmation check on block epochs. Repair changes only creation
+  height and requires the confirmed evidence to reproduce the saved
+  expiry; failures preserve the row and manual recovery remains available.
+  The single incoming-event actor
   caps its complete indexer-and-chain evidence lookup at 2 seconds and relies
   on durable redelivery; other callers retain the 30-second lookup bound.
   Indexed recovery skips bad
@@ -249,12 +257,19 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   carrying its durable exit policy) runs **before** the chain resolver is
   `Set()`; the force-exit admissions it drives through the VTXO manager are
   buffered by the `LazyChainResolver` and replayed to the unroll registry the
-  instant the resolver is wired. The registry is first-writer-wins on exit
-  policy, so the generic orphan-job scan (`recoverOrphanedUnrollJobs`) runs
-  **after** `Set()` and is itself policy-carrying: it is handed a per-outpoint
-  exit-policy map (`recoveryExitPolicies`, built from the recovery store) and
-  re-admits each orphaned recovery target under its own vHTLC exit policy
-  rather than mislabeling it as a standard timeout.
+  instant the resolver is wired. The registry binds the first exit policy
+  identity a target is admitted under and rejects a conflicting one, so the
+  generic orphan-job scan (`recoverOrphanedUnrollJobs`) runs **after**
+  `Set()`. Its admissions name no policy: they inherit the identity of an
+  armed recovery obligation through the registry's `ArmedExitPolicy` lookup
+  (`armedRecoveryExitPolicy`), so an orphaned recovery target re-admits under
+  its own vHTLC exit policy rather than being mislabeled as a standard
+  timeout. A scan admission that inherits nothing dedups against the bound
+  record and leaves it in force. A mismatch against the policy already bound
+  to the target is non-fatal only when a status probe confirms a live child.
+  The scan then terminal-fails the conflicting recovery and skips the target.
+  A dormant or unreadable bound record fails the boot gate and preserves the
+  recovery obligation for retry.
 - The chain-resolver→unroll bridge (`ensureUnrollFromExpiring`) maps a VTXO
   `ExpiringNotification`'s trigger and optional exit policy into the registry's
   `EnsureUnrollRequest`. `unrollStartTrigger` converts the string-typed
@@ -266,6 +281,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   fraud spends drive exits through the VTXO manager — the same admission path
   as manual, critical-expiry, and vHTLC recovery exits — rather than talking to
   the unroll registry directly.
+- A vHTLC recovery target funded by another wallet is fetched with an
+  exact-policy indexer proof signed by the local recovery key. Before storing
+  foreign packages, the materializer validates the signed path to the exact
+  outpoint, amount, and script, and authenticates expiry against local chain
+  confirmations. Complete recovery descriptors and signed packages are reused
+  locally after restart; foreign inputs never enter coin selection. The first
+  remote materialization has a bounded, caller-owned context.
 - The vHTLC recovery service is wired with an `Exiter: managerExitAdmitter`, a
   `ForceExit` seam that `Ask`s the VTXO manager to force a materialized
   recovery target into unilateral exit. The target materializer
@@ -389,11 +411,29 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   once; the entry is dropped when its last holder or waiter leaves.
   `NewReceiveScriptResponse.expires_at_unix_s` reports the absolute indexer
   registration expiry on both fresh and replayed paths.
-- `GetIndexedVTXOByPkScript` validates an optional canonical policy against
-  the exact output, then signs the query with the daemon identity key. The
-  operator checks non-operator settlement participation. Only an accepted
-  query sets `policy_authorized`; transport or pending-funding failures remain
-  errors. The read creates no receive-script registration and needs no renewal.
+- Indexed `GetIndexedVTXOByPkScript` and `GetVTXOExpiryInfo` share the
+  policy-authorized indexer lookup and signed-target proof boundary. Reads
+  require published wallet-services readiness, not only wallet unlock, so
+  indexer and authenticator initialization happens before concurrent RPC use.
+  Startup returns `Unavailable`; a missing authenticator after readiness is
+  an `Internal` wiring error, not an unknown deadline. Both
+  accept an optional canonical policy matching the query script, sign with
+  the owned receive key for standard outputs or the daemon identity for custom
+  outputs, and set `policy_authorized` only after the indexer
+  accepts the query, including empty answers. No receive-script registration
+  is created. A matching standard policy supplies the script's exit delay;
+  custom or absent policy leaves posture `UNKNOWN`.
+  The returned script must match the query, and signed ancestry must fund its
+  exact outpoint, value, and script. Package checkpoints must feed their Ark
+  transaction, so package count cannot hide serial exit hops. Malformed or
+  conflicting evidence returns `DataLoss`, including absent ancestry.
+  Only local chain confirmation can establish `BatchExpiry`. Explicitly
+  unconfirmed candidates return immediately without a watch. Other candidates,
+  including legacy outputs with missing height hints, allow at most two
+  seconds of confirmation wait; lookup failure preserves the VTXO with
+  `UNKNOWN` posture and zero deadline. Polling after confirmation can classify
+  it. Pending outputs map to `PENDING_ROUND`. Historical status and spend
+  metadata remain visible when chain confirmation is temporarily unavailable.
 - `SignCreditAccountAuthorization` (and the internal
   `RPCServer.SignCreditAccountAuth` behind it) signs a canonical swap
   credit-account request digest with the daemon identity key. It validates
@@ -431,6 +471,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   so the bound survives restarts.
 - `operatorTermsFromResponse` and daemon `GetInfo` must preserve
   `FreeRefreshWindowBlocks` end to end.
+- `GetInfo` returns `Unavailable` when the active wallet's best-block lookup
+  fails, preserving the cause for in-process callers. A successful height zero
+  remains valid. GetInfo-backed key reads inherit this availability boundary;
+  SDK swap setup must keep those failures retryable.
 - `RPCServer.OperatorVTXOFloor` refreshes authenticated operator terms for
   each credit materialization decision and bounds that refresh with
   `operatorTermsRefreshTimeout` (30 s). Its callers use daemon/actor lifetime

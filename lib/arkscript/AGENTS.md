@@ -27,7 +27,7 @@ validated invariants.
   (`RefundLocktime`, `UnilateralClaimDelay`, `UnilateralRefundDelay`,
   `UnilateralRefundWithoutReceiverDelay`), projected from a live policy via
   `VHTLCOpts.Timing()` or recovered from a persisted template via
-  `DecodeVHTLCTiming`. Two checks hang off it:
+  `DecodeVHTLCTiming`. Three admission checks hang off it:
   - `ValidateOrder()` — structural only. Rejects a tuple whose branches drop
     cooperation requirements out of order (claim delay ≤ refund delay ≤
     refund-without-receiver delay).
@@ -36,6 +36,9 @@ validated invariants.
     `ExitAncestryDelay + UnilateralClaimDelay + RecoveryMargin`, so a receiver
     can publish the exit ancestry, wait out its own claim CSV, and still keep
     margin before the sender/operator refund branch opens.
+  - `ValidateRefundWindow(currentHeight, maxBlocks)` — bounds both the CLTV
+    horizon and sender-only CSV delay for new funding, and rejects timestamp
+    locktimes. Do not apply it while reconstructing an already-funded policy.
 - `VHTLCClaimWindow` — caller-supplied chain budget for
   `ValidateClaimWindow`: `CurrentHeight`, `ExitAncestryDelay`,
   `RecoveryMargin`.
@@ -121,14 +124,15 @@ validated invariants.
 - **Policy construction does not validate timing.** `NewVHTLCPolicy` compiles
   whatever timing tuple it is given; suitability depends on the lifecycle
   boundary and the current chain height, which the compiler does not know.
-  Callers *admitting* a new policy must call `VHTLCTiming.ValidateOrder` or
-  `ValidateClaimWindow` themselves. This separation is deliberate: an
+  Callers *admitting* a new policy must use the applicable
+  `VHTLCTiming` check: `ValidateOrder`, `ValidateClaimWindow`, or
+  `ValidateRefundWindow`. This separation is deliberate: an
   already-funded policy must still be reconstructible (and therefore
   spendable) even once its remaining timing window is no longer admissible —
   refusing to rebuild it would strand funds rather than protect them.
 - `DecodeVHTLCTiming` reports the committed script exactly and applies no
-  policy judgement. Admission callers layer `ValidateOrder` /
-  `ValidateClaimWindow` on top; recovery callers deliberately do not, so a
+  policy judgement. Admission callers apply the appropriate order, claim,
+  or refund window check; recovery callers deliberately do not, so a
   legacy on-chain policy can still be reconstructed.
 - Decode budget: policy template decode caps at `MaxPolicyTemplateBytes` /
   `MaxPolicyLeaves` / `MaxPolicyDepth` / `MaxPolicyNodes`; a single budget is

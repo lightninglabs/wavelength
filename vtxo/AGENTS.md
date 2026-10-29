@@ -104,9 +104,16 @@ when the local wallet owns the receive script.
   fetches ancestry, requires a positive chain-authenticated batch expiry,
   persists the descriptor, and tells the manager via
   `VTXOsMaterializedNotification`. Transient failures postpone the durable
-  event without consuming its retry budget. The push's expiry and
-  relative-expiry scalars are not trusted. Only created events are acted on;
-  unknown event kinds and unowned scripts are silently ignored.
+  event without consuming its retry budget. Indexer and persistence failures
+  are bounded by ten minutes from `actor.DeliveryEnqueuedAt`; past that horizon
+  the ordinary Tell retry policy can dead-letter the event. Confirmation waits,
+  including incomplete confirmation snapshots, have no wall-clock deadline:
+  elapsed time cannot prove a commitment will never confirm, and dead letters
+  have no automatic redrive. Both outcomes emit `metrics.DeliveryPostponeMsg`
+  with a coarse cause; repeated authentication failures log at `Debug`. The
+  push's expiry and relative-expiry scalars are not trusted. Only created
+  events are acted on; unknown event kinds and unowned scripts are silently
+  ignored.
 - `IncomingVTXOMsg` / `IncomingVTXOResp` — Durable actor envelope wrapping an `arkrpc.IncomingVTXOEvent` and the `any`-typed response. Its TLV codec preserves the full protobuf across restart redelivery.
 - `IncomingVTXOServiceKey` — Well-known service key (`"incoming-vtxo-handler"`) used by `waved` to register the actor and by `serverconn.EventRouter` to dispatch routed events.
 - `OwnedReceiveScript` / `OwnedScriptLookup` — Read-only view of the owned receive scripts store used by the incoming handler. `LookupOwnedReceiveScript` returns `sql.ErrNoRows` for unknown scripts; the handler treats this as "not ours" and exits cleanly.
@@ -178,6 +185,13 @@ when the local wallet owns the receive script.
   the sweep leaf, recomputes the tree-root output script, byte-matches that
   output in a locally confirmed commitment transaction, and derives the
   earliest `confirmation height + sweep delay` across ancestry fragments.
+  `AuthenticateBatchEvidence` derives creation height from the earliest
+  confirmation in the same lookups, replacing the indexer hint before
+  persistence. Legacy persisted rows retain the expiry/creation consistency
+  guard because they carry no durable authentication marker. Each child actor
+  retries a bounded creation-height repair on block epochs when creation
+  exceeds expiry, and updates only creation height if confirmed ancestry
+  independently reproduces the saved expiry.
   Lookup or save failures leave the durable event pending for retry. Existing
   persisted rows are not rewritten by this path.
 

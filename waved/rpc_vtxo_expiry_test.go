@@ -1,9 +1,14 @@
 package waved
 
 import (
+	"context"
+	"errors"
 	"testing"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/internal/expiryfixture"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
@@ -12,6 +17,24 @@ import (
 // testExpiryStatusUnknown keeps expiry status assertions readable.
 const testExpiryStatusUnknown = waverpc.
 	VTXOExpiryStatus_VTXO_EXPIRY_STATUS_UNKNOWN
+
+// TestIndexedPolicyExitDelayUsesStandardPolicy verifies only a standard
+// policy supplies the exit delay after the RPC has bound the queried script.
+func TestIndexedPolicyExitDelayUsesStandardPolicy(t *testing.T) {
+	t.Parallel()
+
+	owner := testKeyDescriptor(t, 12)
+	operator := testKeyDescriptor(t, 13)
+	raw, _, err := arkscript.EncodeStandardVTXOArtifacts(
+		owner.PubKey, operator.PubKey, 144,
+	)
+	require.NoError(t, err)
+	policy, err := arkscript.DecodePolicyTemplate(raw)
+	require.NoError(t, err)
+	delay := indexedPolicyExitDelay(policy)
+	require.Equal(t, uint32(144), delay)
+	require.Zero(t, indexedPolicyExitDelay(nil))
+}
 
 // TestExpiryInfoFromDescriptorUsesDefaultThresholds verifies that local VTXO
 // descriptors are classified with the wallet's dynamic expiry thresholds.
@@ -122,40 +145,142 @@ func TestExpiryInfoFromTimingClassifiesPostures(t *testing.T) {
 	}
 }
 
-// TestExpiryInfoFromIndexedVTXOUsesMaxAncestryPathDepth verifies indexed
-// pkScript lookups classify against the deepest indexer ancestry path.
-func TestExpiryInfoFromIndexedVTXOUsesMaxAncestryPathDepth(t *testing.T) {
+// TestAuthenticatedIndexedExpiryIgnoresIndexerTiming verifies that a signed
+// VTXO's locally confirmed batch expiry controls the daemon response even
+// when the indexer advertises a much later deadline.
+func TestAuthenticatedIndexedExpiryIgnoresIndexerTiming(t *testing.T) {
 	t.Parallel()
 
-	indexed := &arkrpc.VTXO{
-		BatchExpiryHeight: 1000,
-		RelativeExpiry:    24,
-		ChainDepth:        5,
-		AncestryPaths: []*arkrpc.AncestryPath{
-			{
-				TreeDepth: 2,
-			},
-			{
-				TreeDepth: 9,
-			},
-		},
-	}
-
-	info := expiryInfoFromIndexedVTXO(
-		indexed, 850, vtxo.DefaultExpiryConfig(),
+	indexed, commitment := expiryfixture.Round(
+		t, 10_000, []byte{0x51}, 200, 100, 1,
 	)
+	indexed.BatchExpiryHeight = 1_000
+	indexed.RelativeExpiry = 24
+	authenticate := func(ctx context.Context, ancestry []vtxo.Ancestry) (
+		vtxo.AuthenticatedBatchEvidence, error) {
 
+		return vtxo.AuthenticateBatchEvidence(
+			ctx, ancestry,
+			func(_ context.Context, txid chainhash.Hash, _ []byte,
+				_ uint32) (vtxo.CommitmentConfirmation, error) {
+
+				require.Equal(t, commitment.TxHash(), txid)
+
+				return vtxo.CommitmentConfirmation{
+					Tx: commitment, BlockHeight: 100,
+				}, nil
+			},
+		)
+	}
+	verified, err := authenticateIndexedExpiry(
+		t.Context(), indexed, authenticate,
+	)
+	require.NoError(t, err)
+	response, err := indexedVTXOToProto(
+		indexed, verified, 150, vtxo.DefaultExpiryConfig(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, int32(300), response.GetBatchExpiry())
+	require.Equal(t, int32(300), response.GetExpiryInfo().GetBatchExpiry())
+	require.Equal(t, uint32(1), response.GetExpiryInfo().GetMaxTreeDepth())
+	require.Zero(t, response.GetRelativeExpiry())
+	require.Equal(
+		t, testExpiryStatusUnknown,
+		response.GetExpiryInfo().GetStatus(),
+	)
+	require.Zero(t, response.GetExpiryInfo().GetCriticalThresholdBlocks())
+
+	// A script-bound exit delay classifies the same deadline as critical.
+	// The indexer's shorter batch relative expiry cannot make it safe.
+	verified.exitDelay = 144
+	response, err = indexedVTXOToProto(
+		indexed, verified, 150, vtxo.DefaultExpiryConfig(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, uint32(144), response.GetRelativeExpiry())
 	require.Equal(
 		t, waverpc.
-			VTXOExpiryStatus_VTXO_EXPIRY_STATUS_NEEDS_REFRESH,
-		info.GetStatus(),
+			VTXOExpiryStatus_VTXO_EXPIRY_STATUS_CRITICAL,
+		response.GetExpiryInfo().GetStatus(),
 	)
-	require.Equal(t, int32(150), info.GetBlocksRemaining())
-	require.Equal(t, int32(180), info.GetRefreshThresholdBlocks())
-	require.Equal(t, int32(108), info.GetCriticalThresholdBlocks())
-	require.Equal(t, uint32(24), info.GetRelativeExpiry())
-	require.Equal(t, uint32(9), info.GetMaxTreeDepth())
-	require.Equal(t, uint32(5), info.GetChainDepth())
+
+	indexed.AncestryPaths[0].TreeDepth = 0
+	_, err = authenticateIndexedExpiry(
+		t.Context(), indexed, authenticate,
+	)
+	require.Error(t, err)
+
+	_, err = authenticateIndexedExpiry(t.Context(), indexed, nil)
+	require.ErrorIs(t, err, vtxo.ErrInvalidBatchExpiryEvidence)
+
+	indexed.AncestryPaths[0].TreeDepth = 1
+	_, err = authenticateIndexedExpiry(t.Context(), indexed, nil)
+	require.ErrorContains(t, err, "authenticator not initialized")
+	chainErr := errors.New("chain unavailable")
+	verified, err = authenticateIndexedExpiry(
+		t.Context(), indexed,
+		func(context.Context, []vtxo.Ancestry) (
+			vtxo.AuthenticatedBatchEvidence, error) {
+
+			return vtxo.AuthenticatedBatchEvidence{}, chainErr
+		},
+	)
+	require.NoError(t, err)
+	require.Zero(t, verified.batchExpiry)
+	require.Equal(t, uint32(1), verified.treeDepth)
+
+	_, err = authenticateIndexedExpiry(
+		t.Context(), indexed,
+		func(context.Context, []vtxo.Ancestry) (
+			vtxo.AuthenticatedBatchEvidence, error) {
+
+			return vtxo.AuthenticatedBatchEvidence{},
+				vtxo.ErrInvalidBatchExpiryEvidence
+		},
+	)
+	require.ErrorIs(t, err, vtxo.ErrInvalidBatchExpiryEvidence)
+}
+
+// TestAuthenticatedIndexedExpiryCountsOORPackages verifies that an indexer
+// cannot shorten the exit buffer by understating the OOR chain depth.
+func TestAuthenticatedIndexedExpiryCountsOORPackages(t *testing.T) {
+	t.Parallel()
+
+	indexed, commitments := expiryfixture.Merge(t, false)
+	indexed.BatchExpiryHeight = 1_000
+	indexed.ChainDepth = 0
+	authenticate := func(ctx context.Context, ancestry []vtxo.Ancestry) (
+		vtxo.AuthenticatedBatchEvidence, error) {
+
+		return vtxo.AuthenticateBatchEvidence(
+			ctx, ancestry,
+			func(_ context.Context, txid chainhash.Hash, _ []byte,
+				_ uint32) (vtxo.CommitmentConfirmation, error) {
+
+				var confirmed vtxo.CommitmentConfirmation
+				for i, tx := range commitments {
+					if tx.TxHash() == txid {
+						confirmed.Tx = tx
+						confirmed.BlockHeight = int32(
+							100 + 20*i,
+						)
+
+						return confirmed, nil
+					}
+				}
+
+				var missing vtxo.CommitmentConfirmation
+
+				return missing, errors.New("unknown commitment")
+			},
+		)
+	}
+	verified, err := authenticateIndexedExpiry(
+		t.Context(), indexed, authenticate,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int32(140), verified.batchExpiry)
+	require.Equal(t, uint32(1), verified.chainDepth)
 }
 
 // TestExpiryInfoFromTimingIncludesChainDepth verifies the public posture uses

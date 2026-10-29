@@ -49,6 +49,20 @@ FROM vtxos
 WHERE status = $1 AND taproot_asset_root IS NULL
 ORDER BY creation_time DESC;
 
+-- name: SumVTXOAmountsByStatus :many
+-- SumVTXOAmountsByStatus returns the VTXO count and total amount per status.
+-- It backs the scrape-time inventory gauges, which only need these two
+-- figures, so it avoids decoding full descriptors for every row on every
+-- scrape. Unlike SumUnspentVTXOAmountsByStatus it does not filter on the
+-- spent flag: the gauges count every row in a status, matching
+-- ListVTXOsByStatus.
+SELECT status,
+       CAST(COUNT(*) AS BIGINT) AS vtxo_count,
+       CAST(COALESCE(SUM(amount), 0) AS BIGINT) AS amount_sat
+FROM vtxos
+GROUP BY status
+ORDER BY status;
+
 -- name: ListLiveVTXOs :many
 -- ListLiveVTXOs returns all VTXOs that are not in a terminal state.
 -- Terminal states are: Forfeited (3), Spent (4), UnilateralExit (5),
@@ -85,6 +99,16 @@ SET status = $3,
     spent = CASE WHEN $3 = 4 THEN TRUE ELSE spent END,
     last_update_time = $4
 WHERE outpoint_hash = $1 AND outpoint_index = $2;
+
+-- name: RepairVTXOCreatedHeight :execrows
+-- Repair only the creation height against the authenticated expiry and the
+-- observed old height. Accept the replacement height too for idempotent retry.
+UPDATE vtxos
+SET created_height = $3,
+    last_update_time = $6
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+    AND batch_expiry = $4
+    AND (created_height = $5 OR created_height = $3);
 
 -- name: MarkVTXOForfeiting :exec
 -- MarkVTXOForfeiting transitions a VTXO to Forfeiting status and persists

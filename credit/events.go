@@ -30,9 +30,10 @@ type CreditOutMsg interface {
 // stageRecord directs the actor to durably checkpoint the current record via a
 // Stage write before the next state runs its side effect. It is emitted by a
 // state that recorded a server identifier (a top-up destination, a redeem
-// destination) the next effect depends on, so a crash before the turn commits
+// destination) the next effect depends on, and by every state that hands over
+// to an awaiting state, so a crash or a postponement before the turn commits
 // re-drives from the checkpointed state rather than re-deriving a fresh
-// identifier the in-flight effect is no longer bound to.
+// identifier or re-running the side effect the awaiting state only reconciles.
 type stageRecord struct{}
 
 func (*stageRecord) creditOutMsgSealed() {}
