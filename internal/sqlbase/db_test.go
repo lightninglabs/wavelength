@@ -26,6 +26,15 @@ var testBucket = []byte("top")
 func newTestDB(t *testing.T) (walletdb.DB, string) {
 	t.Helper()
 
+	return newTestDBWithTimeout(t, 10*time.Second)
+}
+
+// newTestDBWithTimeout is newTestDB with the given per-query timeout.
+func newTestDBWithTimeout(t *testing.T,
+	timeout time.Duration) (walletdb.DB, string) {
+
+	t.Helper()
+
 	// The connection set is process-global and first-call-wins, so
 	// every test in this package shares the single-connection limit
 	// the wallet store asks for.
@@ -39,7 +48,7 @@ func newTestDB(t *testing.T) (walletdb.DB, string) {
 	db, err := NewSqlBackend(context.Background(), &Config{
 		DriverName:      "sqlite",
 		Dsn:             dsn,
-		Timeout:         10 * time.Second,
+		Timeout:         timeout,
 		TableNamePrefix: "test",
 		WithTxLevelLock: true,
 	})
@@ -369,4 +378,46 @@ func TestInitConflictingLimit(t *testing.T) {
 	require.NoError(t, Init(1))
 	require.NoError(t, Init(1))
 	require.ErrorContains(t, Init(2), "already initialized")
+}
+
+// TestForAllRowError asserts that a bucket walk the driver cuts short is
+// reported as an error rather than as a complete walk over fewer keys.
+// The failure is induced through the per-query timeout: it expires while
+// the callback holds the first row, and database/sql then closes the
+// result set with the deadline as its error, which only rows.Err()
+// surfaces.
+func TestForAllRowError(t *testing.T) {
+	t.Parallel()
+
+	const queryTimeout = 50 * time.Millisecond
+
+	db, _ := newTestDBWithTimeout(t, queryTimeout)
+
+	update(t, db, func(bucket walletdb.ReadWriteBucket) error {
+		for _, key := range []string{"a", "b", "c"} {
+			err := bucket.Put([]byte(key), []byte("value"))
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	var visited int
+	err := db.View(func(tx walletdb.ReadTx) error {
+		return kvdb.ForAll(
+			tx.ReadBucket(testBucket),
+			func(_, _ []byte) error {
+				visited++
+				time.Sleep(4 * queryTimeout)
+
+				return nil
+			},
+		)
+	}, func() {
+		visited = 0
+	})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, visited, 3)
 }
