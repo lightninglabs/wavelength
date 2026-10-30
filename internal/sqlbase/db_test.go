@@ -421,3 +421,29 @@ func TestForAllRowError(t *testing.T) {
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Less(t, visited, 3)
 }
+
+// TestOnCommitRunsEveryCallback asserts that every callback registered on
+// a transaction runs once it commits, in registration order, as with
+// bbolt, and that none runs when it rolls back. btcwallet registers one
+// per call site, so keeping only the last would silently drop the
+// in-memory updates of the others.
+func TestOnCommitRunsEveryCallback(t *testing.T) {
+	t.Parallel()
+
+	db, _ := newTestDB(t)
+
+	var fired []string
+	tx, err := db.BeginReadWriteTx()
+	require.NoError(t, err)
+	tx.OnCommit(func() { fired = append(fired, "first") })
+	tx.OnCommit(func() { fired = append(fired, "second") })
+	require.NoError(t, tx.Commit())
+	require.Equal(t, []string{"first", "second"}, fired)
+
+	fired = nil
+	tx, err = db.BeginReadWriteTx()
+	require.NoError(t, err)
+	tx.OnCommit(func() { fired = append(fired, "rolled back") })
+	require.NoError(t, tx.Rollback())
+	require.Empty(t, fired)
+}
