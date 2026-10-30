@@ -2,6 +2,8 @@ module github.com/lightninglabs/wavelength
 
 go 1.27.3
 
+godebug multipathtcp=0
+
 // Use the forked migrate with custom functionality.
 replace github.com/golang-migrate/migrate/v4 => github.com/lightninglabs/migrate/v4 v4.18.2-9023d66a-fork-pr-2
 
