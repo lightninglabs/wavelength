@@ -475,3 +475,15 @@ metadata prevents a leaf from entering wallet inventory.
 
 `JoinRoundRequest` proto conversion preserves the boarding asset disclosure
 in both directions, cloning proof, digest, commitment, and witness bytes.
+
+## Bounded survivor replacements
+
+Joins advertise `supports_round_retry`. An authenticated replacement failure
+names a fresh round ID and the next bounded ordinal. `survivor_retry.go` retires
+any old checkpoint, cleans sessions, preserves the original admission budget,
+and starts with original intents awaiting a fresh quote. Forfeit reservations
+transfer directly at the next connector-bound signature; predecessor IDs are
+local authority, never client-supplied network claims. Pending cleanup has five
+local reminders. Old server events and local forfeit replies are fenced while
+cleanup is pending and after the handoff. Do not reuse transcript material or
+renew the admission deadline when changing round IDs.

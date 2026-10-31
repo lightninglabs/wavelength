@@ -131,6 +131,8 @@ func (t *OperatorTerms) VTXOTargetConfirmations() uint32 {
 
 // JoinRoundRequest represents a participant's request to join a round.
 type JoinRoundRequest struct {
+	// SupportsRoundRetry opts into bounded survivor replacement attempts.
+	SupportsRoundRetry bool
 	// BatchSlot selects the scheduled slot this join is for. It is None
 	// for a join under event-driven registration.
 	BatchSlot fn.Option[batchschedule.Selection]

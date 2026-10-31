@@ -1131,7 +1131,13 @@ type ClientRoundFailedResp struct {
 	// failure_code classifies the failure so the client can react
 	// programmatically. Servers that predate this field, and failures
 	// that are not specifically classified, leave it ROUND_FAILURE_UNKNOWN.
-	FailureCode   RoundFailureCode `protobuf:"varint,3,opt,name=failure_code,json=failureCode,proto3,enum=round.v1.RoundFailureCode" json:"failure_code,omitempty"`
+	FailureCode RoundFailureCode `protobuf:"varint,3,opt,name=failure_code,json=failureCode,proto3,enum=round.v1.RoundFailureCode" json:"failure_code,omitempty"`
+	// replacement_round_id declares this unfinalized attempt dead and offers
+	// a replacement to the surviving participant. Empty means no retry.
+	ReplacementRoundId []byte `protobuf:"bytes,4,opt,name=replacement_round_id,json=replacementRoundId,proto3" json:"replacement_round_id,omitempty"`
+	// retry_attempt is the one-based replacement number in a closed cohort.
+	// A client accepts only the next number, with a hard limit of ten.
+	RetryAttempt  uint32 `protobuf:"varint,5,opt,name=retry_attempt,json=retryAttempt,proto3" json:"retry_attempt,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1185,6 +1191,20 @@ func (x *ClientRoundFailedResp) GetFailureCode() RoundFailureCode {
 		return x.FailureCode
 	}
 	return RoundFailureCode_ROUND_FAILURE_UNKNOWN
+}
+
+func (x *ClientRoundFailedResp) GetReplacementRoundId() []byte {
+	if x != nil {
+		return x.ReplacementRoundId
+	}
+	return nil
+}
+
+func (x *ClientRoundFailedResp) GetRetryAttempt() uint32 {
+	if x != nil {
+		return x.RetryAttempt
+	}
+	return 0
 }
 
 // ClientErrorResp sends an error message to a client.
@@ -1816,9 +1836,13 @@ type JoinRoundRequest struct {
 	// required by an operator that publishes a batch schedule and must be
 	// absent otherwise. The selection is also covered by the join
 	// authorization, so it cannot be changed or stripped in transit.
-	BatchSlot     *BatchSlotSelection `protobuf:"bytes,8,opt,name=batch_slot,json=batchSlot,proto3" json:"batch_slot,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	BatchSlot *BatchSlotSelection `protobuf:"bytes,8,opt,name=batch_slot,json=batchSlot,proto3" json:"batch_slot,omitempty"`
+	// supports_round_retry permits explicit replacement of an unfinalized
+	// attempt with fresh signing sessions. Older clients are failed cleanly
+	// instead of being held to a replacement ceremony they cannot join.
+	SupportsRoundRetry bool `protobuf:"varint,9,opt,name=supports_round_retry,json=supportsRoundRetry,proto3" json:"supports_round_retry,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *JoinRoundRequest) Reset() {
@@ -1905,6 +1929,13 @@ func (x *JoinRoundRequest) GetBatchSlot() *BatchSlotSelection {
 		return x.BatchSlot
 	}
 	return nil
+}
+
+func (x *JoinRoundRequest) GetSupportsRoundRetry() bool {
+	if x != nil {
+		return x.SupportsRoundRetry
+	}
+	return false
 }
 
 // BatchSlotSelection names one published scheduled-batch slot.
@@ -3123,11 +3154,13 @@ const file_round_proto_rawDesc = "" +
 	"\bagg_sigs\x18\x02 \x03(\v2(.round.v1.ClientVTXOAggSigs.AggSigsEntryR\aaggSigs\x1a:\n" +
 	"\fAggSigsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"\x89\x01\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"\xe0\x01\n" +
 	"\x15ClientRoundFailedResp\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12=\n" +
-	"\ffailure_code\x18\x03 \x01(\x0e2\x1a.round.v1.RoundFailureCodeR\vfailureCode\".\n" +
+	"\ffailure_code\x18\x03 \x01(\x0e2\x1a.round.v1.RoundFailureCodeR\vfailureCode\x120\n" +
+	"\x14replacement_round_id\x18\x04 \x01(\fR\x12replacementRoundId\x12#\n" +
+	"\rretry_attempt\x18\x05 \x01(\rR\fretryAttempt\".\n" +
 	"\x0fClientErrorResp\x12\x1b\n" +
 	"\terror_msg\x18\x01 \x01(\tR\berrorMsg\"\x84\x01\n" +
 	"\x17ClientRoundStatusReport\x12\x19\n" +
@@ -3168,7 +3201,7 @@ const file_round_proto_rawDesc = "" +
 	"valid_from\x18\x02 \x01(\rR\tvalidFrom\x12\x1f\n" +
 	"\vvalid_until\x18\x03 \x01(\rR\n" +
 	"validUntil\x12\x1c\n" +
-	"\tsignature\x18\x04 \x01(\fR\tsignature\"\xbf\x03\n" +
+	"\tsignature\x18\x04 \x01(\fR\tsignature\"\xf1\x03\n" +
 	"\x10JoinRoundRequest\x12\x1e\n" +
 	"\n" +
 	"identifier\x18\x01 \x01(\fR\n" +
@@ -3180,7 +3213,8 @@ const file_round_proto_rawDesc = "" +
 	"\bround_id\x18\x06 \x01(\tR\aroundId\x12+\n" +
 	"\x04auth\x18\a \x01(\v2\x17.round.v1.JoinRoundAuthR\x04auth\x12;\n" +
 	"\n" +
-	"batch_slot\x18\b \x01(\v2\x1c.round.v1.BatchSlotSelectionR\tbatchSlot\"V\n" +
+	"batch_slot\x18\b \x01(\v2\x1c.round.v1.BatchSlotSelectionR\tbatchSlot\x120\n" +
+	"\x14supports_round_retry\x18\t \x01(\bR\x12supportsRoundRetry\"V\n" +
 	"\x12BatchSlotSelection\x12\x1f\n" +
 	"\vschedule_id\x18\x01 \x01(\fR\n" +
 	"scheduleId\x12\x1f\n" +
