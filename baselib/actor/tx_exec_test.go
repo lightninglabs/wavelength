@@ -212,8 +212,9 @@ func TestExecCommitFenceConsumesMessage(t *testing.T) {
 
 // TestExecCommitStaleLeaseNoOps verifies the fence: a Commit attempted with a
 // lease token that no longer matches (message reclaimed elsewhere) aborts with
-// ErrLeaseLost and applies nothing -- no user write, no dedup mark, message
-// retained.
+// ErrLeaseLost and applies nothing. The user closure runs before the final
+// ownership check, but its write and the dedup mark roll back while the message
+// remains retained.
 func TestExecCommitStaleLeaseNoOps(t *testing.T) {
 	t.Parallel()
 
@@ -233,9 +234,9 @@ func TestExecCommitStaleLeaseNoOps(t *testing.T) {
 	require.ErrorIs(t, err, ErrLeaseLost)
 
 	require.False(t, core.committed)
-	require.False(
+	require.True(
 		t, userWriteRan,
-		"user closure must not run when the fence rejects the commit",
+		"the final ownership check must run after the user closure",
 	)
 	h.requireRetained(t, "m1")
 	require.Zero(t, h.outboxCount())
@@ -704,11 +705,12 @@ func TestExecStageSurvivesLeaseLostCommit(t *testing.T) {
 	})
 	require.ErrorIs(t, err, ErrLeaseLost)
 
-	// The staged write survived; the commit write never ran; the message is
-	// retained for redelivery.
+	// The staged write survived. The commit closure ran, but its write
+	// rolled back with the failed final ownership check, and the message
+	// remains for redelivery.
 	require.True(t, h.outboxHas("staged-1"))
 	require.False(t, h.outboxHas("commit-1"))
-	require.False(t, commitWriteRan)
+	require.True(t, commitWriteRan)
 	require.False(t, stale.committed)
 	h.requireRetained(t, "m1")
 }

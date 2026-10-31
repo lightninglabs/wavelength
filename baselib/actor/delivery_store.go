@@ -3,6 +3,8 @@ package actor
 import (
 	"context"
 	"time"
+
+	"github.com/lightninglabs/wavelength/internal/leasefence"
 )
 
 // DeliveryStore defines the persistence operations for durable mailboxes.
@@ -34,8 +36,8 @@ type DeliveryStore interface {
 		mailboxID string) (*LeasedMessage, error)
 
 	// AckMessage acknowledges successful processing of a message.
-	// Validates the lease token to prevent stale acks. Returns the number
-	// of rows affected (0 if token mismatch, 1 if success).
+	// Validates the lease token and lifetime to prevent stale acks. Returns
+	// the number of rows affected (0 if ownership is stale, 1 if success).
 	AckMessage(ctx context.Context, id, leaseToken string) (int64, error)
 
 	// AckMessageByID acknowledges successful processing of a message by ID
@@ -47,7 +49,7 @@ type DeliveryStore interface {
 
 	// NackMessage releases a message for redelivery after the specified
 	// delay. Clears the lease and sets a new available_at time.
-	// Validates the lease token to prevent stale nacks.
+	// Validates the lease token and lifetime to prevent stale nacks.
 	NackMessage(ctx context.Context, id, leaseToken string,
 		retryAfter time.Duration) (int64, error)
 
@@ -64,7 +66,8 @@ type DeliveryStore interface {
 	// specified delay WITHOUT burning a delivery attempt: it decrements
 	// attempts to compensate the increment the lease took at claim, so
 	// the message's retry budget is exactly what it was before this
-	// delivery. Validates the lease token to prevent stale postpones.
+	// delivery. Validates the lease token and lifetime to prevent stale
+	// postpones.
 	// This is the attempt-preserving counterpart to NackMessage, used
 	// when a behavior returns a PostponeError ("not now") rather than a
 	// failure.
@@ -79,11 +82,15 @@ type DeliveryStore interface {
 		retryAfter time.Duration) (int64, error)
 
 	// ExtendLease extends the lease for long-running message processing.
-	// Validates the lease token to prevent stale extensions.
+	// Validates the current lease token and lifetime so an expired owner
+	// cannot revive itself.
 	ExtendLease(ctx context.Context, id, leaseToken string,
 		extension time.Duration) (int64, error)
 
 	// MoveToDeadLetter moves a failed message to the dead letter queue.
+	// Actor delivery paths attach operation-local lease ownership to the
+	// context so the store can fence the otherwise by-ID terminal move
+	// atomically.
 	MoveToDeadLetter(ctx context.Context, id, reason string) error
 
 	// DeleteMessage removes a message from the mailbox (cleanup).
@@ -206,6 +213,18 @@ func nackMessage(ctx context.Context, store DeliveryStore, id,
 	}
 
 	return store.NackMessage(ctx, id, leaseToken, retryAfter)
+}
+
+// moveToDeadLetter moves a delivery to the dead-letter queue, attaching its
+// lease token when one exists so the store can fence the terminal by-ID move.
+func moveToDeadLetter(ctx context.Context, store DeliveryStore, id, leaseToken,
+	reason string) error {
+
+	if leaseToken != "" {
+		ctx = leasefence.WithToken(ctx, leaseToken)
+	}
+
+	return store.MoveToDeadLetter(ctx, id, reason)
 }
 
 // OutboxWakeRegistrar is optionally implemented by stores that can notify a

@@ -354,15 +354,18 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   `ShouldDeadLetter` before retry release. A policy can stop retries early or
   choose the delay, but it cannot extend `MaxAttempts`. Only a postpone can
   express an attempt-preserving wait.
-- **Fenced postpone is attempt-neutral only while the consumer still owns the
-  lease.** A classic tx turn whose fenced postpone matches zero rows has lost
-  its lease, so the actor rolls the transaction back rather than letting the
-  stale consumer ack or dead-letter another owner's row. That rollback also
-  discards the compensating decrement, while the earlier lease claim's
-  increment remains committed. The lost turn therefore spends one attempt.
-  Repeated cross-process lease loss can exhaust the row without a dead letter.
-  No current classic-path behavior returns a postpone. Close this gap before
-  adopting postpone on that path where competing runtime owners are possible.
+- **Every fenced outcome requires a live lease.** Ack, nack, postpone, and
+  extend reject both a token mismatch and an expired matching token. A classic
+  transaction translates any zero-row fenced outcome into ownership loss and
+  rolls the turn back, so behavior writes cannot commit after expiry. Its
+  Read/Commit counterpart performs the fenced ack after the behavior writes
+  and processed marker; losing ownership while the callback runs therefore
+  rolls the complete commit back before a successor can preserve stale effects.
+  The terminal dead-letter path carries the token as operation-local context.
+  The store copies the row only when that lease remains live, then deletes under
+  the same fence in the write transaction. The earlier claim's attempt
+  increment remains committed when a turn loses its lease, so repeated
+  ownership loss can still exhaust a row without a dead letter.
 - **Postpone is Tell-only.** An Ask has a caller parked on the promise, so
   postponing it would strand that caller for the length of the delay with
   nothing to observe. An Ask behavior returning a `PostponeError` gets ordinary
@@ -387,16 +390,12 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   later same-key message is claim-eligible until it drains, and every further
   postpone extends the block. Blocking is bounded to the key, not the mailbox,
   but a long backoff on a busy key is a throughput decision, not just a retry
-  decision. Unkeyed messages have no such interaction. **Scope:** per-key FIFO
-  holds for a postponing consumer only when the actor is single-worker OR the
-  lane's messages never reach their final attempt. A predecessor leased on its
-  final attempt is invisible to the claim anti-join (`m2.attempts <
-  m2.max_attempts`), so a pool worker can claim its successor; a postpone then
-  decrements the predecessor back below the cap and it reprocesses after the
-  successor, inverting order. No adopter combines keyed lanes with
-  `NumWorkers > 1` and postpone today, so the SQL is left alone; adding a
-  lease-liveness disjunct to the anti-join is the prerequisite for that
-  combination.
+  decision. Unkeyed messages have no such interaction. A predecessor leased on
+  its final attempt still blocks its lane while that lease is live, even though
+  its retry budget is exhausted. Ack removes it, postpone restores its budget
+  at the head, and lease expiry makes the exhausted row terminal so the
+  successor can proceed. An expired owner cannot later postpone and invert
+  that order because every fenced release also checks lease lifetime.
 - **Per-correlation-key FIFO claim.** Two messages in the same mailbox that
   share a non-empty `CorrelationKey()` are processed in emission order
   regardless of retry backoff. Without this invariant, a transient Tell
