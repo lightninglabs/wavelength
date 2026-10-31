@@ -1,11 +1,13 @@
 package actordelivery
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
@@ -26,6 +28,25 @@ func newTestStore(t *testing.T) (actor.TxAwareDeliveryStore, *clock.TestClock) {
 
 	store, err := NewTxAwareDeliveryStoreFromDB(
 		rawDB, sqlc.BackendTypeSqlite, clk, btclog.Disabled,
+	)
+	require.NoError(t, err)
+
+	return store, clk
+}
+
+// newBackendTestStore opens the build-selected database backend so the same
+// FIFO contract runs against SQLite normally and PostgreSQL under the
+// test_postgres build tag.
+func newBackendTestStore(t *testing.T) (actor.TxAwareDeliveryStore,
+	*clock.TestClock) {
+
+	t.Helper()
+
+	testDB := db.NewTestDB(t)
+	clk := clock.NewTestClock(time.Unix(1_700_000_000, 0))
+
+	store, err := NewTxAwareDeliveryStoreFromDB(
+		testDB.DB, testDB.Backend(), clk, btclog.Disabled,
 	)
 	require.NoError(t, err)
 
@@ -257,15 +278,16 @@ func TestPerKeyFIFOAckUnblocksKey(t *testing.T) {
 // pick a max_attempts budget. Useful for exercising the
 // attempts-exhausted predecessor path without sitting through the full
 // default retry budget.
-func enqueueWithMaxAttempts(t *testing.T, store actor.TxAwareDeliveryStore,
-	clk *clock.TestClock, id, mailbox, key string, maxAttempts int) {
+func enqueueWithMaxAttempts(t *testing.T, ctx context.Context,
+	store actor.TxAwareDeliveryStore, clk *clock.TestClock, id, mailbox,
+	key string, maxAttempts int) {
 
 	t.Helper()
 
 	require.NoError(
 		t,
 		store.EnqueueMessage(
-			t.Context(), actor.EnqueueParams{
+			ctx, actor.EnqueueParams{
 				ID:             id,
 				MailboxID:      mailbox,
 				MessageType:    "test.Msg",
@@ -277,6 +299,182 @@ func enqueueWithMaxAttempts(t *testing.T, store actor.TxAwareDeliveryStore,
 			},
 		),
 	)
+}
+
+// requireLeasedID claims one message and verifies its identity.
+func requireLeasedID(t *testing.T, ctx context.Context,
+	store actor.TxAwareDeliveryStore, mailbox, token, wantID string,
+	leaseDuration time.Duration) *actor.LeasedMessage {
+
+	t.Helper()
+
+	leased, err := store.LeaseNextMessage(
+		ctx, mailbox, token, leaseDuration,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, leased)
+	require.Equal(t, wantID, leased.ID)
+
+	return leased
+}
+
+// requireNoLeasedMessage verifies that no message can currently be claimed.
+func requireNoLeasedMessage(t *testing.T, ctx context.Context,
+	store actor.TxAwareDeliveryStore, mailbox, token string) {
+
+	t.Helper()
+
+	leased, err := store.LeaseNextMessage(
+		ctx, mailbox, token, time.Minute,
+	)
+	require.NoError(t, err)
+	require.Nil(t, leased)
+}
+
+// TestPerKeyFIFOFinalAttemptLease verifies the head-of-line boundary where a
+// claim consumes the predecessor's final attempt. A live lease keeps the row
+// at the head until its outcome is known, while acknowledgment, expiration,
+// and independent keys retain their existing semantics.
+func TestPerKeyFIFOFinalAttemptLease(t *testing.T) {
+	t.Parallel()
+
+	store, clk := newBackendTestStore(t)
+	ctx := t.Context()
+
+	t.Run("ack unblocks successor", func(t *testing.T) {
+		const (
+			mailbox = "final-attempt-ack"
+			key     = "lane-a"
+		)
+
+		enqueueWithMaxAttempts(
+			t, ctx, store, clk, "ack-001", mailbox, key, 1,
+		)
+		enqueueWithMaxAttempts(
+			t, ctx, store, clk, "ack-002", mailbox, key, 3,
+		)
+
+		first := requireLeasedID(
+			t, ctx, store, mailbox, "ack-lease-1", "ack-001",
+			time.Minute,
+		)
+		require.Equal(t, first.MaxAttempts, first.Attempts)
+		requireNoLeasedMessage(t, ctx, store, mailbox, "ack-lease-2")
+
+		rows, err := store.AckMessage(
+			ctx, first.ID, first.LeaseToken,
+		)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, rows)
+
+		requireLeasedID(
+			t, ctx, store, mailbox, "ack-lease-3", "ack-002",
+			time.Minute,
+		)
+	})
+
+	t.Run("postpone restores predecessor first", func(t *testing.T) {
+		const (
+			mailbox = "final-attempt-postpone"
+			key     = "lane-a"
+		)
+
+		enqueueWithMaxAttempts(
+			t, ctx, store, clk, "postpone-001", mailbox, key, 1,
+		)
+		enqueueWithMaxAttempts(
+			t, ctx, store, clk, "postpone-002", mailbox, key, 3,
+		)
+
+		first := requireLeasedID(
+			t, ctx, store, mailbox, "postpone-lease-1",
+			"postpone-001", time.Minute,
+		)
+		require.Equal(t, first.MaxAttempts, first.Attempts)
+		requireNoLeasedMessage(
+			t, ctx, store, mailbox, "postpone-lease-2",
+		)
+
+		rows, err := store.PostponeMessage(
+			ctx, first.ID, first.LeaseToken, 0,
+		)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, rows)
+
+		restored := requireLeasedID(
+			t, ctx, store, mailbox, "postpone-lease-3",
+			"postpone-001", time.Minute,
+		)
+		require.Equal(t, restored.MaxAttempts, restored.Attempts)
+		requireNoLeasedMessage(
+			t, ctx, store, mailbox, "postpone-lease-4",
+		)
+
+		rows, err = store.AckMessage(
+			ctx, restored.ID, restored.LeaseToken,
+		)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, rows)
+
+		requireLeasedID(
+			t, ctx, store, mailbox, "postpone-lease-5",
+			"postpone-002", time.Minute,
+		)
+	})
+
+	t.Run("expired exhausted predecessor is terminal", func(t *testing.T) {
+		const (
+			mailbox = "final-attempt-expired"
+			key     = "lane-a"
+		)
+
+		enqueueWithMaxAttempts(
+			t, ctx, store, clk, "expired-001", mailbox, key, 1,
+		)
+		enqueueWithMaxAttempts(
+			t, ctx, store, clk, "expired-002", mailbox, key, 3,
+		)
+
+		first := requireLeasedID(
+			t, ctx, store, mailbox, "expired-lease-1",
+			"expired-001", time.Second,
+		)
+		require.Equal(t, first.MaxAttempts, first.Attempts)
+		requireNoLeasedMessage(
+			t, ctx, store, mailbox, "expired-lease-2",
+		)
+
+		clk.SetTime(clk.Now().Add(2 * time.Second))
+
+		peeked, err := store.PeekNextMessage(ctx, mailbox)
+		require.NoError(t, err)
+		require.NotNil(t, peeked)
+		require.Equal(t, "expired-002", peeked.ID)
+	})
+
+	t.Run("independent key remains claimable", func(t *testing.T) {
+		const mailbox = "final-attempt-cross-key"
+
+		enqueueWithMaxAttempts(
+			t, ctx, store, clk, "cross-key-001", mailbox, "lane-a",
+			1,
+		)
+		enqueueWithMaxAttempts(
+			t, ctx, store, clk, "cross-key-002", mailbox, "lane-b",
+			3,
+		)
+
+		first := requireLeasedID(
+			t, ctx, store, mailbox, "cross-key-lease-1",
+			"cross-key-001", time.Minute,
+		)
+		require.Equal(t, first.MaxAttempts, first.Attempts)
+
+		requireLeasedID(
+			t, ctx, store, mailbox, "cross-key-lease-2",
+			"cross-key-002", time.Minute,
+		)
+	})
 }
 
 // TestPerKeyFIFOExhaustedPredecessorDoesNotBlockSuccessor closes a
@@ -303,7 +501,7 @@ func TestPerKeyFIFOExhaustedPredecessorDoesNotBlockSuccessor(t *testing.T) {
 	// by one before the body runs, so after the second nack the row's
 	// attempts equal max_attempts and the outer SELECT will refuse to
 	// re-lease it.
-	enqueueWithMaxAttempts(t, store, clk, "msg-1", mailbox, key, 2)
+	enqueueWithMaxAttempts(t, ctx, store, clk, "msg-1", mailbox, key, 2)
 
 	leased1, err := store.LeaseNextMessage(
 		ctx, mailbox, "lease-1", time.Minute,
@@ -344,7 +542,7 @@ func TestPerKeyFIFOExhaustedPredecessorDoesNotBlockSuccessor(t *testing.T) {
 	// same-key row and refuse to surface msg-2 — head-of-line blocking
 	// would be permanent. After the fix, the anti-join filters out
 	// exhausted rows and msg-2 becomes the new head of the key.
-	enqueueWithMaxAttempts(t, store, clk, "msg-2", mailbox, key, 3)
+	enqueueWithMaxAttempts(t, ctx, store, clk, "msg-2", mailbox, key, 3)
 
 	leased3, err := store.LeaseNextMessage(
 		ctx, mailbox, "lease-3", time.Minute,
