@@ -49,7 +49,8 @@ func newTestEsplora(t *testing.T) *httptest.Server {
 }
 
 // testWalletConfig returns a lifecycle-test config for the given
-// database directory, seed, and password.
+// database directory, seed, and password, using the platform's default
+// wallet database backend.
 func testWalletConfig(esploraURL, dbDir string, seed, password []byte) Config {
 	return Config{
 		Seed:           seed,
@@ -65,10 +66,24 @@ func testWalletConfig(esploraURL, dbDir string, seed, password []byte) Config {
 
 // TestWalletCreateOpenLifecycle verifies the create/open contract: a
 // seed creates the wallet database under the supplied passphrase, and
-// subsequent opens need only the passphrase.
+// subsequent opens need only the passphrase. Every supported wallet
+// database backend has to satisfy the same contract, so the test runs
+// once per backend the platform offers.
 func TestWalletCreateOpenLifecycle(t *testing.T) {
 	t.Parallel()
 
+	for _, backend := range testWalletDBBackends {
+		t.Run(backend, func(t *testing.T) {
+			t.Parallel()
+
+			testWalletCreateOpenLifecycle(t, backend)
+		})
+	}
+}
+
+// testWalletCreateOpenLifecycle drives the create/open contract against
+// one wallet database backend.
+func testWalletCreateOpenLifecycle(t *testing.T, backend string) {
 	esplora := newTestEsplora(t)
 	dbDir := t.TempDir()
 
@@ -78,19 +93,24 @@ func TestWalletCreateOpenLifecycle(t *testing.T) {
 	}
 	password := []byte("lifecycle-password")
 
+	walletConfig := func(seed []byte) Config {
+		cfg := testWalletConfig(esplora.URL, dbDir, seed, password)
+		cfg.DBBackend = backend
+
+		return cfg
+	}
+
 	// Opening before any wallet exists must fail loudly rather than
 	// silently creating a wallet with a random seed.
-	_, err := New(testWalletConfig(esplora.URL, dbDir, nil, password))
+	_, err := New(walletConfig(nil))
 	require.ErrorIs(t, err, ErrWalletNotFound)
 
 	// Create the wallet from the seed.
-	exists, err := WalletExists(
-		testWalletConfig(esplora.URL, dbDir, nil, password),
-	)
+	exists, err := WalletExists(walletConfig(nil))
 	require.NoError(t, err)
 	require.False(t, exists)
 
-	w, err := New(testWalletConfig(esplora.URL, dbDir, seed[:], password))
+	w, err := New(walletConfig(seed[:]))
 	require.NoError(t, err)
 	require.NoError(t, w.Start())
 
@@ -106,21 +126,19 @@ func TestWalletCreateOpenLifecycle(t *testing.T) {
 
 	w.Stop()
 
-	exists, err = WalletExists(
-		testWalletConfig(esplora.URL, dbDir, nil, password),
-	)
+	exists, err = WalletExists(walletConfig(nil))
 	require.NoError(t, err)
 	require.True(t, exists)
 
 	// Re-creating over an existing wallet database must be refused:
 	// btcwallet would silently ignore the new seed and open the old
 	// wallet.
-	_, err = New(testWalletConfig(esplora.URL, dbDir, seed[:], password))
+	_, err = New(walletConfig(seed[:]))
 	require.ErrorIs(t, err, ErrWalletExists)
 
 	// Reopen with the passphrase only and confirm it is the same
 	// wallet by deriving the same address chain.
-	w, err = New(testWalletConfig(esplora.URL, dbDir, nil, password))
+	w, err = New(walletConfig(nil))
 	require.NoError(t, err)
 	require.NoError(t, w.Start())
 	t.Cleanup(w.Stop)
@@ -136,10 +154,23 @@ func TestWalletCreateOpenLifecycle(t *testing.T) {
 // TestWalletWrongPasswordRetry verifies that a failed unlock (wrong
 // private passphrase) closes the wallet database again so an immediate
 // retry with the correct password succeeds instead of deadlocking on
-// the database's exclusive lock.
+// the database's exclusive lock. Every backend holds such a lock, so
+// the test runs once per backend the platform offers.
 func TestWalletWrongPasswordRetry(t *testing.T) {
 	t.Parallel()
 
+	for _, backend := range testWalletDBBackends {
+		t.Run(backend, func(t *testing.T) {
+			t.Parallel()
+
+			testWalletWrongPasswordRetry(t, backend)
+		})
+	}
+}
+
+// testWalletWrongPasswordRetry drives the wrong-password retry against
+// one wallet database backend.
+func testWalletWrongPasswordRetry(t *testing.T, backend string) {
 	esplora := newTestEsplora(t)
 	dbDir := t.TempDir()
 
@@ -149,7 +180,14 @@ func TestWalletWrongPasswordRetry(t *testing.T) {
 	}
 	password := []byte("correct-password")
 
-	w, err := New(testWalletConfig(esplora.URL, dbDir, seed[:], password))
+	walletConfig := func(seed, password []byte) Config {
+		cfg := testWalletConfig(esplora.URL, dbDir, seed, password)
+		cfg.DBBackend = backend
+
+		return cfg
+	}
+
+	w, err := New(walletConfig(seed[:], password))
 	require.NoError(t, err)
 	require.NoError(t, w.Start())
 	w.Stop()
@@ -157,19 +195,15 @@ func TestWalletWrongPasswordRetry(t *testing.T) {
 	// A wrong passphrase opens the database in New (the public
 	// passphrase is static) and fails at Start when btcwallet
 	// unlocks the private key material.
-	w, err = New(
-		testWalletConfig(
-			esplora.URL, dbDir, nil, []byte("wrong-password"),
-		),
-	)
+	w, err = New(walletConfig(nil, []byte("wrong-password")))
 	require.NoError(t, err)
 	err = w.Start()
 	require.ErrorContains(t, err, "invalid passphrase")
 
 	// The failed Start must have unwound cleanly: retrying with the
-	// correct password would block on the bbolt file lock if the
+	// correct password would block on the database's file lock if the
 	// database were still open.
-	w, err = New(testWalletConfig(esplora.URL, dbDir, nil, password))
+	w, err = New(walletConfig(nil, password))
 	require.NoError(t, err)
 	require.NoError(t, w.Start())
 	t.Cleanup(w.Stop)

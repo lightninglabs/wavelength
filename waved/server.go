@@ -1952,8 +1952,8 @@ func (s *Server) refreshProofKeyBackend() {
 // a password file. If no password source is available, the daemon
 // starts with the wallet in a non-ready state awaiting the InitWallet
 // or UnlockWallet RPC. Other failures are logged and leave the wallet
-// in the same state. Only a refused env-seed password is returned,
-// which stops startup.
+// in the same state. Only a failed wallet database probe and a refused
+// env-seed password are returned, which stops startup.
 func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) error {
 	// Check for a raw seed in the environment (dev/CI path).
 	envSeed, err := LoadSeedFromEnv()
@@ -1967,11 +1967,15 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) error {
 	// Probe for an existing wallet database. This decides between
 	// the create path (seed required) and the open path (password
 	// only).
-	exists, err := s.selfManagedWalletExists()
+	//
+	// A failed probe stops startup. Without an answer the daemon
+	// would come up with no wallet, and a host that onboards whenever
+	// it sees that state would hand the user a fresh seed for a
+	// directory that may well hold a funded wallet, such as one
+	// written by the other database backend.
+	exists, err := s.selfManagedWalletExists(ctx)
 	if err != nil {
-		s.log.ErrorS(ctx, "Failed to probe wallet database", err)
-
-		return nil
+		return fmt.Errorf("probe wallet database: %w", err)
 	}
 
 	// Any existing database means the wallet is at least Locked, so
@@ -2109,6 +2113,7 @@ func (s *Server) startLwwallet(ctx context.Context, seed []byte,
 		PollInterval:   pollInterval,
 		RecoveryWindow: recoveryWindow,
 		DBDir:          networkDir,
+		DBBackend:      s.cfg.Wallet.DBBackend,
 		Log:            fn.Some(s.subLogger(lwwallet.Subsystem)),
 	})
 	if err != nil {
@@ -2159,7 +2164,8 @@ func (s *Server) startLwwallet(ctx context.Context, seed []byte,
 // while the daemon waits for the InitWallet or UnlockWallet RPC.
 // The pre-started service is stored in s.neutrinoSvc and reused by
 // startBtcwallet when the seed becomes available. As with
-// tryAutoUnlockLwwallet, only a refused env-seed password is returned.
+// tryAutoUnlockLwwallet, only a failed wallet database probe and a
+// refused env-seed password are returned.
 func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) error {
 	// Start neutrino early so it can connect to P2P peers and
 	// sync headers while we wait for the wallet seed. This
@@ -2185,11 +2191,15 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) error {
 	// Probe for an existing wallet database. This decides between
 	// the create path (seed required) and the open path (password
 	// only).
-	exists, err := s.selfManagedWalletExists()
+	//
+	// A failed probe stops startup. Without an answer the daemon
+	// would come up with no wallet, and a host that onboards whenever
+	// it sees that state would hand the user a fresh seed for a
+	// directory that may well hold a funded wallet, such as one
+	// written by the other database backend.
+	exists, err := s.selfManagedWalletExists(ctx)
 	if err != nil {
-		s.log.ErrorS(ctx, "Failed to probe wallet database", err)
-
-		return nil
+		return fmt.Errorf("probe wallet database: %w", err)
 	}
 
 	// Any existing database means the wallet is at least Locked, so

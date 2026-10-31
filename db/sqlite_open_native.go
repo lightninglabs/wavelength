@@ -17,10 +17,18 @@ const (
 
 	// sqliteTxLockImmediate starts write transactions immediately.
 	sqliteTxLockImmediate = "_txlock=immediate"
+
+	// nativeSQLiteDriverName is the database/sql driver registered by
+	// modernc.org/sqlite.
+	nativeSQLiteDriverName = "sqlite"
 )
 
-// openSQLiteDatabase opens SQLite through the native modernc driver.
-func openSQLiteDatabase(cfg SQLiteOpenConfig) (*SQLiteOpenResult, error) {
+// SQLiteDSN returns the database/sql driver name and DSN this build opens
+// SQLite through for the given settings, without opening anything. Callers
+// that hand a DSN to their own database/sql plumbing use it to stay on the
+// driver the build selects, rather than hard-coding one. The pool settings in
+// cfg are not part of a DSN and are ignored.
+func SQLiteDSN(cfg SQLiteOpenConfig) (string, string, error) {
 	sqliteOptions := make(url.Values)
 	for _, pragma := range cfg.Pragmas {
 		sqliteOptions.Add(
@@ -35,7 +43,17 @@ func openSQLiteDatabase(cfg SQLiteOpenConfig) (*SQLiteOpenResult, error) {
 		dsn = fmt.Sprintf("%s&%s", dsn, sqliteTxLockImmediate)
 	}
 
-	db, err := sql.Open("sqlite", dsn)
+	return nativeSQLiteDriverName, dsn, nil
+}
+
+// openSQLiteDatabase opens SQLite through the native modernc driver.
+func openSQLiteDatabase(cfg SQLiteOpenConfig) (*SQLiteOpenResult, error) {
+	driverName, dsn, err := SQLiteDSN(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	db, err := sql.Open(driverName, dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +62,7 @@ func openSQLiteDatabase(cfg SQLiteOpenConfig) (*SQLiteOpenResult, error) {
 
 	return &SQLiteOpenResult{
 		DB:         db,
-		DriverName: "sqlite",
+		DriverName: driverName,
 		DSN:        dsn,
 	}, nil
 }

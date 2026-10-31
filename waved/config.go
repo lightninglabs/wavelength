@@ -1175,6 +1175,13 @@ type WalletConfig struct {
 	// automatically without requiring an UnlockWallet RPC call.
 	PasswordFile string `mapstructure:"password_file"`
 
+	// DBBackend selects the database engine the lwwallet backend
+	// keeps btcwallet's wallet database in: "bolt" (the default) uses
+	// the classic BoltDB file, "sqlite" uses a SQLite database so the
+	// network directory holds no BoltDB file at all. Both live in the
+	// network directory. Only used when Type is "lwwallet".
+	DBBackend string `mapstructure:"dbbackend"`
+
 	// BtcwalletPeers is a list of host:port addresses for neutrino
 	// to connect to exclusively (no DNS seeding). Only used when
 	// Type is "btcwallet".
@@ -1250,6 +1257,7 @@ func DefaultConfig() *Config {
 			Type:           DefaultWalletType,
 			PollInterval:   DefaultEsploraPollInterval,
 			RecoveryWindow: DefaultRecoveryWindow,
+			DBBackend:      lwwallet.DBBackendBolt,
 		},
 		Swap: &SwapConfig{
 			ServerTransport: RPCTransportGRPC,
@@ -1417,6 +1425,28 @@ func (c *Config) Validate() error {
 func (c *Config) validateWalletConfig() error {
 	if c.Wallet == nil {
 		return fmt.Errorf("wallet config is required")
+	}
+
+	// The database backend only exists for lwwallet, but the value is
+	// checked whatever the wallet type: a typo is caught at startup
+	// rather than at wallet-unlock time, and asking another wallet
+	// type for SQLite would otherwise be silently ignored, leaving the
+	// operator believing the directory holds no BoltDB file.
+	switch c.Wallet.DBBackend {
+	case "", lwwallet.DBBackendBolt:
+		// An empty value keeps the lwwallet default.
+
+	case lwwallet.DBBackendSQLite:
+		if c.Wallet.Type != WalletTypeLwwallet {
+			return fmt.Errorf("wallet.dbbackend %s is only "+
+				"supported when wallet.type is %s",
+				lwwallet.DBBackendSQLite, WalletTypeLwwallet)
+		}
+
+	default:
+		return fmt.Errorf("unknown wallet.dbbackend %q, valid values: "+
+			"%s, %s", c.Wallet.DBBackend, lwwallet.DBBackendBolt,
+			lwwallet.DBBackendSQLite)
 	}
 
 	switch c.Wallet.Type {
