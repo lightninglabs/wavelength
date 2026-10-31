@@ -335,7 +335,7 @@ wavecli
 ├── recv                      — boarding address / Lightning invoice (wavewalletrpc)
 ├── send                      — Lightning invoice / onchain leave (wavewalletrpc)
 ├── activity [inspect]        — unified wallet activity feed (wavewalletrpc)
-├── exit {status|summary|plan} — cooperative leave by default, forced unroll (wavewalletrpc)
+├── exit {status|summary|plan|export} — cooperative leave by default, forced unroll (wavewalletrpc)
 ├── wallet-sweep              — preview a backing-wallet sweep; broadcast requires approval
 ├── mcp serve                 — MCP server for AI agents (wavewalletrpc)
 ├── schema                    — JSON dump of CLI methods
@@ -727,6 +727,51 @@ survives daemon restarts); `exit summary` aggregates all in-progress
 exits; `exit plan` previews backing-wallet funding readiness before
 forcing an exit. Status enum (`UNROLL_JOB_STATUS_*`) still uses the old
 "unroll" naming.
+
+### `exit export` (signed ancestry for external broadcasting)
+
+Export one VTXO's signed transaction ancestry for an external service to
+broadcast and fund with child-pays-for-parent (CPFP) transactions:
+
+```bash
+wavecli exit export --outpoint <txid:vout> --output ancestry.json
+# Or write the same JSON to stdout:
+wavecli exit export --outpoint <txid:vout> > ancestry.json
+```
+
+`--output` creates a new file with mode `0600` and refuses to overwrite an
+existing file or symlink. Export requires an unlocked, ready wallet and
+`onchain:write` permission because the bundle contains executable signed
+transactions. It does not require confirmed fee inputs in the user's backing
+wallet, allocate a funding address, contact the operator, broadcast anything,
+or start a local unroll job. The external service provides and signs its own
+confirmed Bitcoin inputs to fund the CPFP children.
+
+The export does not reserve the VTXO or disable automatic refresh. Coordinate
+handoff before broadcasting: spending, refreshing, or forfeiting the VTXO can
+make an earlier bundle unusable. Sharing the file reveals its transaction
+ancestry and allows the recipient to initiate unrolling. The file contains no
+private keys. With `--sweep-address`, it also authorizes a final sweep to the
+chosen address.
+
+Add `--sweep-address ADDRESS` to include a presigned final sweep. The daemon
+validates the address network and signs a version-3 timeout spend paying the
+full VTXO value to that address, plus a zero-value P2A fee anchor. The service
+waits for CSV maturity and funds its own CPFP child to relay the sweep. No
+onchain fee inputs or fee estimate are needed from the user. An unavailable
+signer, invalid payout, or asset-bearing VTXO fails a sweep export.
+
+```bash
+wavecli exit export --outpoint <txid:vout> \
+  --sweep-address <bitcoin-address> --output exit.json
+```
+
+Without `--sweep-address`, export contains ancestry only and a final sweep
+still needs a later user signature. Both modes produce format version 2.
+Export does not start an unroll or reserve the VTXO.
+
+See [the bundle format and executor contract](exit_ancestry_export.md) for
+field definitions, validation, timelock handling, and package submission.
 
 ### `ark listtransactions`
 

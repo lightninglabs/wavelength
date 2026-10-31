@@ -18,6 +18,10 @@ import (
 // service tests. Each method returns whatever the test sets on the
 // corresponding response field, or the corresponding err field.
 type fakeRPCServer struct {
+	exitExportLast *waved.ExitExportRequest
+	exitExportResp *waved.ExitExport
+	exitExportErr  error
+
 	mu sync.Mutex
 
 	listVTXOsResp    *waverpc.ListVTXOsResponse
@@ -304,6 +308,17 @@ func (f *fakeRPCServer) GetExitPlan(_ context.Context,
 	f.exitPlanLast = req
 
 	return f.exitPlanResp, f.exitPlanErr
+}
+
+// ExportExit supplies a configurable ancestry export without wallet funding.
+func (f *fakeRPCServer) ExportExit(_ context.Context,
+	req *waved.ExitExportRequest) (*waved.ExitExport, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.exitExportLast = req
+
+	return f.exitExportResp, f.exitExportErr
 }
 
 func (f *fakeRPCServer) SweepWallet(_ context.Context,

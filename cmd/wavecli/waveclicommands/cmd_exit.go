@@ -55,6 +55,7 @@ func newExitCmd() *cobra.Command {
 	cmd.AddCommand(newExitStatusCmd())
 	cmd.AddCommand(newExitSummaryCmd())
 	cmd.AddCommand(newExitPlanCmd())
+	cmd.AddCommand(newExitExportCmd())
 
 	return cmd
 }

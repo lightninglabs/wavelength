@@ -105,6 +105,9 @@ type RPCServer interface {
 	GetExitPlan(ctx context.Context,
 		req *waved.ExitPlanRequest) (*waved.ExitPlanResponse, error)
 
+	ExportExit(ctx context.Context,
+		req *waved.ExitExportRequest) (*waved.ExitExport, error)
+
 	SweepWallet(ctx context.Context,
 		req *waved.SweepWalletRequest) (
 		*waved.SweepWalletResponse,

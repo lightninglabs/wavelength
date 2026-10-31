@@ -26,6 +26,7 @@ Proto source: `rpc/wavewalletrpc/wallet.proto`.
 | `Balance` | Flat balance (confirmed / pending_in / pending_out) |
 | `Status` | Daemon + wallet readiness summary |
 | `GetExitPlan` | Preview unilateral-exit readiness/funding for one VTXO |
+| `ExportExit` | Export signed ancestry and optionally a presigned anchored sweep |
 | `SweepWallet` | Preview/broadcast a backing-wallet sweep to an address |
 | `Exit` | Cooperative leave by default; unilateral unroll only with the exact force-ack |
 | `ExitStatus` | Phase of an exit job (proxies `GetUnrollStatus`) |
