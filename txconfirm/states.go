@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // trackedTxStateNew is the initial tracked-tx FSM state.
@@ -222,6 +223,17 @@ func (s *trackedTxStateFeeBumping) ProcessEvent(_ context.Context,
 	case *trackedTxBroadcastAccepted:
 		progress := e.Progress
 		progress.BumpCount = s.BumpCount + 1
+
+		return &trackedTxStateTransition{
+			NextState: &trackedTxStateAwaitingConfirmation{
+				trackedTxData:     s.trackedTxData,
+				trackedTxProgress: progress,
+			},
+		}, nil
+
+	case *trackedTxFeeBumpFailed:
+		progress := s.trackedTxProgress
+		progress.LastBroadcastHeight = fn.Some(e.AttemptHeight)
 
 		return &trackedTxStateTransition{
 			NextState: &trackedTxStateAwaitingConfirmation{
