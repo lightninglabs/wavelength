@@ -31,7 +31,7 @@ env:
 jobs:
   docker-build-push:
     name: Build and push docker image
-    runs-on: [self-hosted]
+    runs-on: ubuntu-latest
     steps:
       - name: Set up QEMU
         uses: lightninglabs/gh-actions/setup-qemu-action@2021.01.25.00
