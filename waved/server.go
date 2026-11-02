@@ -236,6 +236,12 @@ type Server struct {
 	// select on runCtx.Done().
 	runCtx context.Context //nolint:containedctx
 
+	// fatalCancel cancels runCtx with a cause when a subsystem reports an
+	// unrecoverable failure. run() returns that cause so the process exits
+	// non-zero and the orchestrator restarts it with fresh state. It is set
+	// once at the start of run() before any subsystem starts.
+	fatalCancel context.CancelCauseFunc
+
 	// walletState tracks the lifecycle state of the wallet
 	// subsystem. In lnd mode this is always WalletStateReady
 	// after successful lnd connection. In lwwallet mode it
@@ -1168,13 +1174,25 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 // run is the shared core startup logic for both RunUntilShutdown
 // and RunWithContext. The shutdownFn is wired into the logging
 // subsystem so critical log events can trigger daemon shutdown.
-func (s *Server) run(ctx context.Context, shutdownFn func()) error {
+func (s *Server) run(parentCtx context.Context, shutdownFn func()) error {
+	// Publish the fatal cancel before starting any subsystem. The derived
+	// context also withdraws health immediately, without a separate latch.
+	ctx, cancelCause := context.WithCancelCause(parentCtx)
+	defer cancelCause(nil)
+	s.fatalCancel = cancelCause
+
 	var runErr error
 	defer func() {
 		s.markWalletServicesStopped(runErr, ctx.Err())
 	}()
 
 	runErr = s.runInner(ctx, shutdownFn)
+
+	// Preserve the fatal cause even if cancellation interrupted startup
+	// and runInner returned a wrapped context.Canceled error instead.
+	if cause := context.Cause(ctx); errors.Is(cause, errFatalSubsystem) {
+		runErr = cause
+	}
 
 	return runErr
 }
@@ -1762,6 +1780,19 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 	s.log.InfoS(ctx, "Shutting down waved")
 
 	return nil
+}
+
+// errFatalSubsystem distinguishes explicit escalation from parent cancellation,
+// including when a backend's fatal error itself wraps context.Canceled.
+var errFatalSubsystem = errors.New("fatal subsystem failure")
+
+// signalFatal cancels the run context with an unrecoverable-failure cause so
+// run() returns it and the process exits non-zero. It is safe to call from any
+// subsystem goroutine and is a no-op before run() has wired fatalCancel.
+func (s *Server) signalFatal(err error) {
+	if s.fatalCancel != nil {
+		s.fatalCancel(errors.Join(errFatalSubsystem, err))
+	}
 }
 
 // startWalletReadyServices starts the services that need wallet-derived keys
@@ -2529,6 +2560,7 @@ func (s *Server) registerChainSourceActor(
 			// finality signal, and reorg-aware consumers like
 			// txconfirm would leak watch state forever.
 			FinalityDepth: chainsource.DefaultFinalityDepth,
+			OnFatal:       fn.Some(s.signalFatal),
 		},
 	)
 
