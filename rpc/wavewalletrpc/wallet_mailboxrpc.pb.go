@@ -46,6 +46,8 @@ type WalletServiceMailboxServer interface {
 	GetExitPlan(ctx context.Context, req *GetExitPlanRequest) (*GetExitPlanResponse, error)
 	// ExportExit handles ExportExit.
 	ExportExit(ctx context.Context, req *ExportExitRequest) (*ExportExitResponse, error)
+	// ExportExits handles ExportExits.
+	ExportExits(ctx context.Context, req *ExportExitsRequest) (*ExportExitsResponse, error)
 	// SweepWallet handles SweepWallet.
 	SweepWallet(ctx context.Context, req *SweepWalletRequest) (*SweepWalletResponse, error)
 	// Exit handles Exit.
@@ -169,6 +171,16 @@ func RegisterWalletServiceMailboxServer(r rpc.Router, impl WalletServiceMailboxS
 		}
 
 		return impl.ExportExit(ctx, req)
+	})
+	r.Handle("wavewalletrpc.WalletService", "ExportExits", func() proto.Message {
+		return &ExportExitsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ExportExitsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ExportExits(ctx, req)
 	})
 	r.Handle("wavewalletrpc.WalletService", "SweepWallet", func() proto.Message {
 		return &SweepWalletRequest{}
@@ -468,6 +480,29 @@ func (c *WalletServiceMailboxClient) ExportExit(ctx context.Context, req *Export
 	}
 
 	resp := new(ExportExitResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ExportExits calls the ExportExits RPC.
+func (c *WalletServiceMailboxClient) ExportExits(ctx context.Context, req *ExportExitsRequest, opts ...rpc.RPCOptions) (*ExportExitsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "wavewalletrpc.WalletService",
+		Method:  "ExportExits",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ExportExitsResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
