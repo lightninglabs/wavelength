@@ -191,6 +191,12 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 	}
 	copy(e.RoundID[:], pb.RoundId)
 
+	if err := validateBatchTreeBudget(
+		pb.VtxoTreePaths, e.TreeOpts...,
+	); err != nil {
+		return err
+	}
+
 	// Deserialize PSBT. The batch PSBT is semantically required: it
 	// carries the unsigned commitment transaction with WitnessUtxo
 	// data needed for Taproot sighash computation.
@@ -352,6 +358,46 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 		return err
 	}
 	e.FlowVersion = roundpb.FlowVersion(pb.GetFlowVersion())
+
+	return nil
+}
+
+// validateBatchTreeBudget cheaply bounds all repeated tree fields before any
+// node performs public-key parsing or MuSig2 aggregation.
+func validateBatchTreeBudget(paths map[int32]*roundpb.VTXOTree,
+	opts ...roundpb.TreeFromProtoOption) error {
+
+	budget := roundpb.ResolveTreeDecodeBudget(opts...)
+	var nodes, outputs, cosigners int
+	for _, path := range paths {
+		if path == nil {
+			continue
+		}
+		nodes += len(path.Nodes)
+		if nodes > budget.Nodes {
+			return fmt.Errorf("vtxo_tree_paths contain %d nodes, "+
+				"exceeds aggregate maximum %d", nodes,
+				budget.Nodes)
+		}
+		for _, node := range path.Nodes {
+			if node == nil {
+				continue
+			}
+			outputs += len(node.Outputs)
+			if outputs > budget.Outputs {
+				return fmt.Errorf("vtxo_tree_paths contain %d "+
+					"outputs, exceeds aggregate maximum %d",
+					outputs, budget.Outputs)
+			}
+			cosigners += len(node.CoSigners)
+			if cosigners > budget.CoSigners {
+				return fmt.Errorf("vtxo_tree_paths contain %d "+
+					"cosigners, exceeds aggregate "+
+					"maximum %d", cosigners,
+					budget.CoSigners)
+			}
+		}
+	}
 
 	return nil
 }
