@@ -31,20 +31,42 @@ func (s *Service) exportExit(ctx context.Context,
 		return nil, err
 	}
 
+	return marshalExitExport(exported)
+}
+
+// marshalExitExport preserves exact signed bytes and public sweep evidence.
+func marshalExitExport(exported *waved.ExitExport) (
+	*wavewalletrpc.ExportExitResponse, error) {
+
 	proof := exported.Ancestry.Proof
 	response := &wavewalletrpc.ExportExitResponse{
-		FormatVersion:  2,
-		Network:        exported.Network,
-		GenesisHash:    exported.GenesisHash,
-		TargetOutpoint: proof.TargetOutpoint().String(),
-		CsvDelay:       proof.CSVDelay(),
+		FormatVersion:     2,
+		Network:           exported.Network,
+		GenesisHash:       exported.GenesisHash,
+		TargetOutpoint:    proof.TargetOutpoint().String(),
+		CsvDelay:          proof.CSVDelay(),
+		BatchExpiryHeight: exported.BatchExpiryHeight,
 	}
 	for _, input := range exported.Ancestry.ExternalInputs {
+		var sweep *wavewalletrpc.ExitCommitmentSweep
+		evidence := exported.CommitmentSweeps[input.Outpoint]
+		if evidence != nil {
+			sweep = &wavewalletrpc.ExitCommitmentSweep{
+				DelayBlocks: evidence.DelayBlocks,
+				LeafScriptHex: hex.EncodeToString(
+					evidence.LeafScript,
+				),
+				ControlBlockHex: hex.EncodeToString(
+					evidence.ControlBlock,
+				),
+			}
+		}
 		response.ExternalInputs = append(
 			response.ExternalInputs,
 			&wavewalletrpc.ExitAncestryInput{
-				Outpoint:  input.Outpoint.String(),
-				AmountSat: input.Output.Value,
+				Outpoint:        input.Outpoint.String(),
+				CommitmentSweep: sweep,
+				AmountSat:       input.Output.Value,
 				PkScriptHex: hex.EncodeToString(
 					input.Output.PkScript,
 				),

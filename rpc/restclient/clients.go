@@ -1130,6 +1130,17 @@ func (c *WalletServiceClient) GetExitPlan(ctx context.Context,
 	return out, err
 }
 
+// ExportExits exports a shared ancestry graph for several targets.
+func (c *WalletServiceClient) ExportExits(ctx context.Context,
+	in *wavewalletrpc.ExportExitsRequest, _ ...grpc.CallOption) (
+	*wavewalletrpc.ExportExitsResponse, error) {
+
+	out := new(wavewalletrpc.ExportExitsResponse)
+	err := c.client.Post(ctx, "/v1/wallet/exits-export", in, out)
+
+	return out, err
+}
+
 // ExportExit exports signed ancestry for externally funded unrolling.
 func (c *WalletServiceClient) ExportExit(ctx context.Context,
 	in *wavewalletrpc.ExportExitRequest, _ ...grpc.CallOption) (

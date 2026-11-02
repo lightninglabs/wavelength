@@ -29,6 +29,7 @@ Protobuf JSON encodes `int64` amounts as decimal strings, preserving precision.
 | `network` | Bitcoin network name, such as `mainnet` or `regtest`. |
 | `genesis_hash` | Hash of the configured network's genesis block. Custom signet users must additionally agree on the challenge. |
 | `target_outpoint` | `txid:index` of the VTXO to materialize. |
+| `batch_expiry_height` | Saved earliest authenticated commitment sweep height; zero means unknown or unusable. Advisory: verify independently. |
 | `csv_delay` | Target timeout delay in blocks, measured from its confirmation. This is metadata; the output's spending script remains authoritative. |
 | `transactions` | Unique transactions sorted by dependency layer and then by raw txid bytes. Every parent appears before its children. |
 | `external_inputs` | Previous outputs consumed by the graph whose transactions are outside the bundle. Sorted by raw txid bytes and then output index. |
@@ -41,7 +42,14 @@ or an empty string). Parent IDs are sorted by raw hash bytes. The Bitcoin
 transaction is authoritative; these labels assist an executor and must be
 checked on import.
 
-Each external input has `outpoint`, `amount_sat`, and `pk_script_hex`.
+Each external input has `outpoint`, `amount_sat`, `pk_script_hex`, and optional
+`commitment_sweep` evidence. The evidence contains `delay_blocks`,
+`leaf_script_hex`, and `control_block_hex`. Export verifies that the leaf and
+control block commit to the external output and that the leaf encodes the
+advertised block-based CSV delay. Legacy records without saved public sweep
+policy omit this evidence; any saved deadline remains advisory and cannot be
+independently checked from that bundle alone. A zero deadline does not mean
+unlimited lifetime.
 These are commitment outputs already funded outside the bundle, not inputs
 the user must provide to pay for CPFP. Their funding transactions are not
 included. Export validates signatures using locally stored previous outputs;
@@ -62,6 +70,25 @@ Check confirmations and competing spends. Do not trust exported amounts,
 scripts, confirmation status, or transaction ordering as chain evidence.
 Already confirmed ancestry can be skipped; an incompatible confirmed spend
 requires stopping instead of repeatedly submitting an impossible exit.
+
+Before scheduling an exit, verify each external input's `commitment_sweep`
+against the chain-authenticated scriptPubKey. Check the control block and leaf
+version, and parse the leaf as the expected single-key block-based CSV policy.
+Do not trust `delay_blocks` without checking its script encoding. Add that delay
+to the funding transaction's current confirmation height and take the minimum
+across every external input. This reproduces the deadline independently of the
+saved `batch_expiry_height`. Treat any missing evidence as an unknown deadline;
+never omit that input from the minimum and claim the remaining result is safe.
+Recompute after reorgs. Export itself performs no chain lookup and ignores
+indexer-supplied confirmation-height hints.
+
+The deadline is the earliest height at which an operator sweep can compete with
+the ancestry. An executor must plan enough time to confirm the required tree
+layers before then and adjust fees as the deadline approaches. At or after the
+deadline, inspect actual competing spends: the bundle may still be recoverable
+if no incompatible spend has confirmed. Re-exporting the same VTXO does not
+extend its lifetime. Refreshing it creates a replacement VTXO that needs a new
+backup, and makes the old bundle stale.
 
 For each remaining transaction, wait for its parents to confirm and respect
 its input sequences and locktime. Build a CPFP child spending its P2A anchor
@@ -116,3 +143,31 @@ sharing ancestry alone still requires a later owner-signed final spend.
 Neither mode reserves the VTXO, disables automatic refresh, starts a local
 unroll, or broadcasts anything. For asset-bearing outputs, ancestry-only
 export remains available; final recovery requires an asset-aware spend.
+
+
+## Batch backups
+
+`WalletService.ExportExits` (`POST /v1/wallet/exits-export`) accepts an `exits`
+array of 1 to 100 single-export requests, each with its own `outpoint` and
+optional `sweep_address`. Duplicate targets are rejected, including different
+text encodings of the same outpoint. Any failed target fails the entire call;
+no partial bundle is returned and no exit is started.
+
+```json
+{"exits":[
+  {"outpoint":"TXID1:0","sweep_address":"bc1p..."},
+  {"outpoint":"TXID2:0","sweep_address":"bc1q..."}
+]}
+```
+
+The response has `format_version`, `network`, `genesis_hash`, shared
+`transactions` and `external_inputs`, plus `targets` in request order. Each
+target has `target_outpoint`, `csv_delay`, `batch_expiry_height`, and optional
+`final_sweep`. Shared ancestry appears once, ordered by dependency layer and
+raw txid bytes. Witness checks are reused within the request, and conflicting
+shared transactions, prevouts, or sweep evidence fail closed. The single-target
+RPC and CLI keep their existing schema.
+
+A batch is a collection of read-only exports, not a transactional wallet
+snapshot or a reservation. Reconcile the saved target set with ongoing sends
+and refreshes, and validate every target and its reachable ancestry on import.

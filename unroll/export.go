@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/recovery"
 )
@@ -31,6 +32,27 @@ type AncestryInput struct {
 // previous output. Unlike the internal planner, this export boundary refuses
 // unsigned transactions. It performs no chain I/O, funding, or signing.
 func BuildSignedAncestry(mat *LineageMaterial) (*SignedAncestry, error) {
+	var builder SignedAncestryBuilder
+
+	return builder.Build(mat)
+}
+
+// SignedAncestryBuilder reuses successful witness checks across targets in one
+// export request. Its zero value is ready to use. It is not concurrency safe.
+// Conflicting prevouts fail closed even when the signed bytes are identical.
+type SignedAncestryBuilder struct {
+	previous map[wire.OutPoint]*wire.TxOut
+	verified map[chainhash.Hash]bool
+}
+
+// Build assembles one target and verifies each distinct witness only once.
+func (b *SignedAncestryBuilder) Build(mat *LineageMaterial) (*SignedAncestry,
+	error) {
+
+	if b.previous == nil {
+		b.previous = make(map[wire.OutPoint]*wire.TxOut)
+		b.verified = make(map[chainhash.Hash]bool)
+	}
 	proof, err := BuildProofFromMaterial(mat)
 	if err != nil {
 		return nil, err
@@ -122,11 +144,34 @@ func BuildSignedAncestry(mat *LineageMaterial) (*SignedAncestry, error) {
 					ErrUnrollProofInvalid, txid)
 			}
 
-			if err := verifyTxWitnesses(
-				node.Tx, prevouts,
-			); err != nil {
-				return nil, fmt.Errorf("%w: transaction %s: %w",
-					ErrUnrollProofInvalid, txid, err)
+			for outpoint, output := range prevouts {
+				previous := b.previous[outpoint]
+				if previous != nil &&
+					(previous.Value != output.Value ||
+						!bytes.Equal(
+							previous.PkScript,
+							output.PkScript,
+						)) {
+					return nil, fmt.Errorf("%w: "+
+						"conflicting prevout %s",
+						ErrUnrollProofInvalid, outpoint)
+				}
+				b.previous[outpoint] = &wire.TxOut{
+					Value:    output.Value,
+					PkScript: bytes.Clone(output.PkScript),
+				}
+			}
+			witnessHash := node.Tx.WitnessHash()
+			if !b.verified[witnessHash] {
+				if err := verifyTxWitnesses(
+					node.Tx, prevouts,
+				); err != nil {
+					return nil, fmt.Errorf("%w: "+
+						"transaction %s: %w",
+						ErrUnrollProofInvalid, txid,
+						err)
+				}
+				b.verified[witnessHash] = true
 			}
 		}
 	}

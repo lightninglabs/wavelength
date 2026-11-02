@@ -206,3 +206,29 @@ func TestBuildSignedAncestryRejectsOverspend(t *testing.T) {
 	_, err = BuildSignedAncestry(material)
 	require.ErrorContains(t, err, "spends more than its inputs")
 }
+
+// TestSignedAncestryBuilderRejectsConflictingReuse ensures a cache hit cannot
+// hide changed prevouts or changed witnesses on overlapping target paths.
+func TestSignedAncestryBuilderRejectsConflictingReuse(t *testing.T) {
+	t.Parallel()
+	material := signedExportMaterial(t)
+	var builder SignedAncestryBuilder
+	_, err := builder.Build(material)
+	require.NoError(t, err)
+	_, err = builder.Build(material)
+	require.NoError(t, err)
+	output := *material.TreePaths[0].BatchOutput
+	output.Value++
+	material.TreePaths[0].BatchOutput = &output
+	_, err = builder.Build(material)
+	require.ErrorIs(t, err, ErrUnrollProofInvalid)
+	require.ErrorContains(t, err, "conflicting prevout")
+
+	material = signedExportMaterial(t)
+	otherKey, _ := btcec.PrivKeyFromBytes([]byte{7})
+	wrongSig, err := schnorr.Sign(otherKey, make([]byte, 32))
+	require.NoError(t, err)
+	material.TreePaths[0].Root.Signature = wrongSig
+	_, err = builder.Build(material)
+	require.ErrorIs(t, err, ErrUnrollProofInvalid)
+}

@@ -28,16 +28,25 @@ func newExitExportFixture(t *testing.T) (*RPCServer, *vtxo.Descriptor) {
 	rpc.server.chainParams = &chaincfg.RegressionNetParams
 	desc := newRefreshEstimateVTXO(t, 1, 50_000, 900)
 	key, _ := btcec.PrivKeyFromBytes([]byte{1})
-	script, err := txscript.PayToTaprootScript(
-		txscript.ComputeTaprootKeyNoScript(
-			key.PubKey(),
-		),
+	sweepKey, _ := btcec.PrivKeyFromBytes([]byte{2})
+	leaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
+		sweepKey.PubKey(), 500,
 	)
+	require.NoError(t, err)
+	sweepRoot := leaf.TapHash()
+	finalKey, err := tree.ComputeFinalKey(
+		[]*btcec.PublicKey{key.PubKey()}, sweepRoot[:],
+	)
+	require.NoError(t, err)
+	script, err := txscript.PayToTaprootScript(finalKey)
 	require.NoError(t, err)
 	batch := wire.OutPoint{Hash: chainhash.Hash{1}}
 	batchOutput := &wire.TxOut{Value: 50_000, PkScript: script}
 	root := &tree.Node{
 		Input: batch,
+		CoSigners: []*btcec.PublicKey{
+			key.PubKey(),
+		},
 		Outputs: []*wire.TxOut{
 			{
 				Value:    50_000,
@@ -51,7 +60,7 @@ func newExitExportFixture(t *testing.T) (*RPCServer, *vtxo.Descriptor) {
 	fetcher := txscript.NewCannedPrevOutputFetcher(script, 50_000)
 	sig, err := txscript.RawTxInTaprootSignature(
 		tx, txscript.NewTxSigHashes(tx, fetcher), 0, 50_000, script,
-		nil, txscript.SigHashDefault, key,
+		sweepRoot[:], txscript.SigHashDefault, key,
 	)
 	require.NoError(t, err)
 	root.Signature, err = schnorr.ParseSignature(sig)
@@ -59,12 +68,16 @@ func newExitExportFixture(t *testing.T) (*RPCServer, *vtxo.Descriptor) {
 	desc.Outpoint = wire.OutPoint{Hash: tx.TxHash()}
 	desc.CommitmentTxID = batch.Hash
 	desc.Ancestry = []vtxo.Ancestry{{
-		CommitmentTxID: batch.Hash,
-		TreeDepth:      1,
+		CommitmentTxID:       batch.Hash,
+		TreeDepth:            1,
+		CommitmentSweepKey:   sweepKey.PubKey(),
+		CommitmentSweepDelay: 500,
+		CommitmentHeight:     999_999,
 		TreePath: &tree.Tree{
-			BatchOutpoint: batch,
-			BatchOutput:   batchOutput,
-			Root:          root,
+			BatchOutpoint:      batch,
+			BatchOutput:        batchOutput,
+			SweepTapscriptRoot: sweepRoot[:],
+			Root:               root,
 		},
 	}}
 	require.NoError(t, store.SaveVTXO(t.Context(), desc))
@@ -94,6 +107,21 @@ func TestExportExitWithoutFeeWallet(t *testing.T) {
 	)
 	require.Len(t, exported.Ancestry.ExternalInputs, 1)
 	require.Nil(t, exported.FinalSweep)
+	require.Equal(t, desc.BatchExpiry, exported.BatchExpiryHeight)
+	evidence := exported.CommitmentSweeps[desc.Ancestry[0].
+		TreePath.
+		BatchOutpoint]
+	require.NotNil(t, evidence)
+	require.Equal(t, uint32(500), evidence.DelayBlocks)
+	control, err := txscript.ParseControlBlock(evidence.ControlBlock)
+	require.NoError(t, err)
+	require.NoError(
+		t, txscript.VerifyTaprootLeafCommitment(
+			control,
+			exported.Ancestry.ExternalInputs[0].Output.PkScript[2:],
+			evidence.LeafScript,
+		),
+	)
 	stored, err := rpc.server.vtxoStore.GetVTXO(t.Context(), desc.Outpoint)
 	require.NoError(t, err)
 	require.Equal(t, vtxo.VTXOStatusLive, stored.Status)
@@ -164,5 +192,130 @@ func TestExportExitRejectsUnavailable(t *testing.T) {
 			Outpoint: desc.Outpoint.String(),
 		},
 	)
+	require.Equal(t, codes.NotFound, status.Code(err))
+}
+
+// TestExportExitExpiryEvidence refuses tampered evidence, preserves offline
+// legacy export, and never substitutes untrusted commitment height hints.
+func TestExportExitExpiryEvidence(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		mutate  func(*vtxo.Descriptor)
+		invalid bool
+		unknown bool
+		legacy  bool
+	}{
+		{name: "wrong delay", invalid: true, mutate: func(
+			d *vtxo.Descriptor) {
+
+			d.Ancestry[0].CommitmentSweepDelay++
+		}},
+		{name: "missing key", invalid: true, mutate: func(
+			d *vtxo.Descriptor) {
+
+			d.Ancestry[0].CommitmentSweepKey = nil
+		}},
+		{name: "time based delay", invalid: true, mutate: func(
+			d *vtxo.Descriptor) {
+
+			delay := uint32(wire.SequenceLockTimeIsSeconds)
+			d.Ancestry[0].CommitmentSweepDelay = delay
+		}},
+		{name: "unknown expiry", invalid: true, mutate: func(
+			d *vtxo.Descriptor) {
+
+			d.BatchExpiry = 0
+		}},
+		{name: "legacy height mismatch", unknown: true, mutate: func(
+			d *vtxo.Descriptor) {
+
+			d.CreatedHeight = d.BatchExpiry + 1
+		}},
+		{name: "missing legacy policy", legacy: true, mutate: func(
+			d *vtxo.Descriptor) {
+
+			d.Ancestry[0].CommitmentSweepKey = nil
+			d.Ancestry[0].CommitmentSweepDelay = 0
+		}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			rpc, desc := newExitExportFixture(t)
+			test.mutate(desc)
+			require.NoError(
+				t,
+				rpc.server.vtxoStore.DeleteVTXO(
+					t.Context(), desc.Outpoint,
+				),
+			)
+			require.NoError(
+				t,
+				rpc.server.vtxoStore.SaveVTXO(
+					t.Context(), desc,
+				),
+			)
+			exported, err := rpc.ExportExit(
+				t.Context(), &ExitExportRequest{
+					Outpoint: desc.Outpoint.String(),
+				},
+			)
+			if test.invalid {
+				require.Equal(
+					t, codes.FailedPrecondition,
+					status.Code(err),
+				)
+				require.Nil(t, exported)
+
+				return
+			}
+			require.NoError(t, err)
+			if test.unknown {
+				require.Zero(t, exported.BatchExpiryHeight)
+			}
+			if test.legacy {
+				require.Empty(t, exported.CommitmentSweeps)
+				require.Equal(
+					t, desc.BatchExpiry,
+					exported.BatchExpiryHeight,
+				)
+			}
+		})
+	}
+}
+
+// TestExportExitsValidatesTargets checks bounded all-or-nothing backup export.
+func TestExportExitsValidatesTargets(t *testing.T) {
+	t.Parallel()
+	rpc, desc := newExitExportFixture(t)
+	request := &ExitExportRequest{Outpoint: desc.Outpoint.String()}
+	exports, err := rpc.ExportExits(
+		t.Context(), []*ExitExportRequest{request},
+	)
+	require.NoError(t, err)
+	require.Len(t, exports, 1)
+	for _, requests := range [][]*ExitExportRequest{
+		nil, {
+			nil,
+		}, {
+			request,
+			request,
+		}, make([]*ExitExportRequest, 101),
+		{
+			request,
+			{
+				Outpoint: "invalid",
+			},
+		},
+	} {
+		exports, err := rpc.ExportExits(t.Context(), requests)
+		require.Nil(t, exports)
+		require.Equal(t, codes.InvalidArgument, status.Code(err))
+	}
+	missing := wire.OutPoint{Hash: chainhash.Hash{99}}
+	exports, err = rpc.ExportExits(t.Context(), []*ExitExportRequest{
+		request, {Outpoint: missing.String()},
+	})
+	require.Nil(t, exports)
 	require.Equal(t, codes.NotFound, status.Code(err))
 }

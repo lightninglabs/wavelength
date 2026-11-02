@@ -75,6 +75,9 @@ service WalletService {
     // It does not start an exit. A destination opts into a signed final sweep.
     rpc ExportExit (ExportExitRequest) returns (ExportExitResponse);
 
+    // ExportExits exports several targets with shared ancestry included once.
+    rpc ExportExits (ExportExitsRequest) returns (ExportExitsResponse);
+
     // SweepWallet previews or broadcasts a normal backing-wallet sweep to a
     // caller-supplied Bitcoin address. This sweeps wallet-managed funds left
     // after CPFP/change/unroll proceeds and does not sweep boarding outputs.
@@ -1030,6 +1033,42 @@ message ExportExitResponse {
     // signature commits to the destination, full payout, and fee anchor.
     // It pays zero fee and must be packaged with an executor-funded child.
     ExitFinalSweep final_sweep = 8;
+
+    // batch_expiry_height is the locally stored earliest authenticated
+    // commitment sweep maturity height; zero means unknown or unusable.
+    // Advisory only: an executor must derive it from sweep evidence and its
+    // own confirmation heights, and recompute after reorgs. At this height
+    // the operator can race the exit; it does not prove a conflicting spend.
+    int32 batch_expiry_height = 9;
+}
+
+// ExportExitsRequest selects 1 to 100 distinct VTXOs. Each target may have
+// its own sweep destination. The call fails entirely if any export fails;
+// successful exports do not reserve targets or provide a transactional wallet
+// snapshot. Callers must reconcile cooperative spends and refreshes.
+message ExportExitsRequest {
+    repeated ExportExitRequest exits = 1;
+}
+
+// ExportExitsResponse is a version-2 bundle with several targets. Shared
+// transactions and external inputs occur only once. All single-export
+// validation rules apply; every target must be reachable in the common graph.
+message ExportExitsResponse {
+    uint32 format_version = 1;
+    string network = 2;
+    string genesis_hash = 3;
+    repeated ExitExportTarget targets = 4;
+    repeated ExitAncestryTransaction transactions = 5;
+    repeated ExitAncestryInput external_inputs = 6;
+}
+
+// ExitExportTarget carries the target-specific fields of ExportExitResponse.
+// Targets preserve request order; ancestry is shared by all targets.
+message ExitExportTarget {
+    string target_outpoint = 1;
+    uint32 csv_delay = 2;
+    int32 batch_expiry_height = 3;
+    ExitFinalSweep final_sweep = 4;
 }
 
 // ExitFinalSweep is a presigned Bitcoin timeout spend of target_outpoint.
@@ -1082,6 +1121,21 @@ message ExitAncestryInput {
 
     // pk_script_hex is the external output's scriptPubKey in hex.
     string pk_script_hex = 3;
+
+    // commitment_sweep proves the operator's CSV sweep leaf belongs to this
+    // output. Absent for legacy ancestry without saved sweep policy. An
+    // importer must treat missing evidence as an unknown deadline.
+    ExitCommitmentSweep commitment_sweep = 4;
+}
+
+// ExitCommitmentSweep discloses only public spend policy, not a signature.
+// Verify the control block/leaf against the chain-authenticated output, check
+// the leaf encodes the declared block delay, then add it to that transaction's
+// current confirmation height. The earliest result is the expiry deadline.
+message ExitCommitmentSweep {
+    uint32 delay_blocks = 1;
+    string leaf_script_hex = 2;
+    string control_block_hex = 3;
 }
 
 // GetExitPlanRequest lists the VTXO outpoints to preview for unilateral exit

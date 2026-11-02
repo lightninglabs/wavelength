@@ -200,7 +200,7 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 	)
 	grant(
 		wavewalletdk, entityOnChain, "write", "PrepareSend", "Send",
-		"Deposit", "SweepWallet", "Exit", "ExportExit",
+		"Deposit", "SweepWallet", "Exit", "ExportExit", "ExportExits",
 	)
 
 	inspect := wavewalletrpc.WalletInspectionService_ServiceDesc.ServiceName

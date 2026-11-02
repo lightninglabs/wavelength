@@ -22,6 +22,8 @@ type (
 	tlvTreeSweepRoot     = tlv.TlvType2
 	tlvTreeRootNode      = tlv.TlvType3
 	tlvTreeAssetRef      = tlv.TlvType4
+	tlvTreeSweepKey      = tlv.TlvType5
+	tlvTreeSweepDelay    = tlv.TlvType6
 )
 
 // Tree-decode safety bounds. The wire layer feeds DeserializeTree from
@@ -638,12 +640,18 @@ type tlvTree struct {
 	RootNodeData tlv.RecordT[tlvTreeRootNode, tlv.Blob]
 
 	// AssetRef identifies the asset carried by the tree.
-	AssetRef tlv.RecordT[tlvTreeAssetRef, tlv.Blob]
+	AssetRef   tlv.RecordT[tlvTreeAssetRef, tlv.Blob]
+	SweepKey   tlv.RecordT[tlvTreeSweepKey, pubKeyRecord]
+	SweepDelay tlv.RecordT[tlvTreeSweepDelay, uint32]
 }
 
 // newTlvTree creates a new tlvTree with initialized RecordT fields.
 func newTlvTree() *tlvTree {
 	return &tlvTree{
+		SweepKey: tlv.NewRecordT[tlvTreeSweepKey](pubKeyRecord{}),
+		SweepDelay: tlv.NewPrimitiveRecord[tlvTreeSweepDelay](
+			uint32(0),
+		),
 		BatchOutpoint: tlv.NewRecordT[tlvTreeBatchOutpoint](
 			outpointRecord{},
 		),
@@ -674,6 +682,13 @@ func (t *tlvTree) EncodeRecords() []tlv.Record {
 		records = append(records, t.AssetRef.Record())
 	}
 
+	if t.SweepKey.Val.Key != nil {
+		records = append(records, t.SweepKey.Record())
+	}
+	if t.SweepDelay.Val != 0 {
+		records = append(records, t.SweepDelay.Record())
+	}
+
 	return records
 }
 
@@ -685,6 +700,8 @@ func (t *tlvTree) DecodeRecords() []tlv.Record {
 		t.SweepRoot.Record(),
 		t.RootNodeData.Record(),
 		t.AssetRef.Record(),
+		t.SweepKey.Record(),
+		t.SweepDelay.Record(),
 	}
 }
 
@@ -874,13 +891,16 @@ func (n *tlvNode) Decode(r io.Reader) error {
 
 // SerializeTree serializes a tree.Tree to bytes using TLV encoding.
 func SerializeTree(t *tree.Tree) ([]byte, error) {
-	return serializeTree(t, true)
+	return serializeTree(t, true, true)
 }
 
 // serializeTree encodes the complete proof, optionally retaining derived
-// FinalKey caches. Only height-backfill matching omits those caches; durable
-// serialization keeps them. The tree and its asset context are read-only.
-func serializeTree(t *tree.Tree, includeFinalKey bool) ([]byte, error) {
+// FinalKey caches and optional public sweep policy. Fragment identity omits
+// sweep policy; height-backfill matching also omits FinalKey caches. Durable
+// serialization keeps both. The tree and its asset context are read-only.
+func serializeTree(t *tree.Tree, includeFinalKey,
+	includeSweepPolicy bool) ([]byte, error) {
+
 	if t == nil {
 		return nil, fmt.Errorf("cannot serialize nil tree")
 	}
@@ -891,6 +911,10 @@ func serializeTree(t *tree.Tree, includeFinalKey bool) ([]byte, error) {
 	}
 
 	tlvT := newTlvTree()
+	if includeSweepPolicy {
+		tlvT.SweepKey.Val.Key = t.SweepKey
+		tlvT.SweepDelay.Val = t.SweepDelay
+	}
 
 	// Set BatchOutpoint.
 	tlvT.BatchOutpoint.Val.OutPoint = t.BatchOutpoint
@@ -940,6 +964,8 @@ func DeserializeTree(data []byte) (*tree.Tree, error) {
 	t := &tree.Tree{
 		BatchOutpoint:      tlvT.BatchOutpoint.Val.OutPoint,
 		SweepTapscriptRoot: tlvT.SweepRoot.Val,
+		SweepKey:           tlvT.SweepKey.Val.Key,
+		SweepDelay:         tlvT.SweepDelay.Val,
 	}
 
 	// Set BatchOutput if it has a non-zero value or non-empty script.

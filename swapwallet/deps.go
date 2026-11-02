@@ -28,6 +28,8 @@ import (
 // service proxies to waverpc. They are reachable BEFORE the swap runtime
 // is live — Create and Unlock obviously run before the wallet is even
 // usable — so the admin handlers must never depend on Runtime state.
+//
+//nolint:interfacebloat
 type RPCServer interface {
 	LeaveVTXOs(ctx context.Context,
 		req *waverpc.LeaveVTXOsRequest) (
@@ -107,6 +109,12 @@ type RPCServer interface {
 
 	ExportExit(ctx context.Context,
 		req *waved.ExitExportRequest) (*waved.ExitExport, error)
+
+	ExportExits(ctx context.Context,
+		requests []*waved.ExitExportRequest) (
+		[]*waved.ExitExport,
+		error,
+	)
 
 	SweepWallet(ctx context.Context,
 		req *waved.SweepWalletRequest) (
@@ -251,20 +259,20 @@ func (d *Deps) resolveDeadline() time.Duration {
 // constant. Values above the resolved maximum are clamped so a malformed
 // request cannot fan out unbounded DB work.
 func (d *Deps) resolveListLimit(req uint32) uint32 {
-	max := d.resolveMaxListLimit()
+	maximum := d.resolveMaxListLimit()
 	if req == 0 {
 		def := d.DefaultListLimit
 		if def == 0 {
 			def = defaultListLimitConst
 		}
-		if def > max {
-			return max
+		if def > maximum {
+			return maximum
 		}
 
 		return def
 	}
-	if req > max {
-		return max
+	if req > maximum {
+		return maximum
 	}
 
 	return req

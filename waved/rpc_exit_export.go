@@ -23,11 +23,13 @@ type ExitExportRequest struct {
 
 // ExitExport holds chain identity alongside independently verifiable ancestry.
 type ExitExport struct {
-	Network      string
-	GenesisHash  string
-	Ancestry     *unroll.SignedAncestry
-	SweepAddress string
-	FinalSweep   *wire.MsgTx
+	Network           string
+	GenesisHash       string
+	Ancestry          *unroll.SignedAncestry
+	SweepAddress      string
+	FinalSweep        *wire.MsgTx
+	BatchExpiryHeight int32
+	CommitmentSweeps  map[wire.OutPoint]*ExitCommitmentSweep
 }
 
 // ExportExit reads signed ancestry from local storage without admitting an
@@ -36,6 +38,15 @@ type ExitExport struct {
 // without waiting for maturity, estimating fees, or selecting wallet inputs.
 func (r *RPCServer) ExportExit(ctx context.Context, req *ExitExportRequest) (
 	*ExitExport, error) {
+
+	var builder unroll.SignedAncestryBuilder
+
+	return r.exportExit(ctx, req, &builder)
+}
+
+// exportExit shares validated ancestry with other targets in the same request.
+func (r *RPCServer) exportExit(ctx context.Context, req *ExitExportRequest,
+	builder *unroll.SignedAncestryBuilder) (*ExitExport, error) {
 
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
@@ -74,7 +85,7 @@ func (r *RPCServer) ExportExit(ctx context.Context, req *ExitExportRequest) (
 		return nil, status.Errorf(code, "resolve exit ancestry: %v",
 			err)
 	}
-	ancestry, err := unroll.BuildSignedAncestry(material)
+	ancestry, err := builder.Build(material)
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "export "+
 			"signed ancestry: %v", err)
@@ -84,6 +95,19 @@ func (r *RPCServer) ExportExit(ctx context.Context, req *ExitExportRequest) (
 		Network:     r.server.chainParams.Name,
 		GenesisHash: r.server.chainParams.GenesisHash.String(),
 		Ancestry:    ancestry,
+	}
+	desc, err := r.server.vtxoStore.GetVTXO(ctx, target)
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "load "+
+			"expiry descriptor: %v", err)
+	}
+	result.CommitmentSweeps, err = exportCommitmentSweeps(desc, ancestry)
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "export "+
+			"commitment sweep evidence: %v", err)
+	}
+	if vtxo.HasUsableBatchExpiry(desc) {
+		result.BatchExpiryHeight = desc.BatchExpiry
 	}
 	if req.SweepAddress != "" {
 		result.FinalSweep, err = r.presignExportSweep(

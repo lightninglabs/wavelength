@@ -770,6 +770,11 @@ Without `--sweep-address`, export contains ancestry only and a final sweep
 still needs a later user signature. Both modes produce format version 2.
 Export does not start an unroll or reserve the VTXO.
 
+Exports also carry the saved batch expiry height and public sweep evidence
+when available. Backup integrations can use `WalletService.ExportExits` to
+export several VTXOs with shared ancestry included once and a separate sweep
+destination per target.
+
 See [the bundle format and executor contract](exit_ancestry_export.md) for
 field definitions, validation, timelock handling, and package submission.
 
