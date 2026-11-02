@@ -12,6 +12,8 @@ transition's outbox events.
 - `State[E, O, Env]` — Interface for FSM states: `ProcessEvent` returns a
   `StateTransition`, iterated until a terminal state or no further internal
   events are emitted.
+- `InlineStateMachine[E, O, Env]` — Synchronous runner for an owning durable
+  actor turn; it starts no worker or outgoing-message dispatcher.
 - `StateMachine[E, O, Env]` — Non-actor FSM runner (for testing or embedded use).
 - `StateMachineCfg[E, O, Env]` — Configuration for state machines (initial state, environment, transition table).
 - `ActorStateMachine[E, O, Env]` — FSM wrapped as an actor behavior for use with `baselib/actor`.
@@ -60,6 +62,10 @@ transition's outbox events.
   target's reply would park the machine's mailbox. A transition that needs an
   answer has the target send a result event back and waits in a state.
 - `RoutedOutboxEvent` captures the target `ServiceKey` so the runtime can dispatch to the correct actor without the FSM knowing about actor references.
+
+- `InlineStateMachine` finishes the complete internal-event chain in the
+  caller context. The owner must commit its resulting state and effects, and
+  reload its checkpoint after a failed commit; the runner adds no persistence.
 
 ## Deep Docs
 
