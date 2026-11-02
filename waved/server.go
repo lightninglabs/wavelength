@@ -2648,7 +2648,8 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 		lndSvc := s.lnd.UnsafeFromSome()
 		notifier := chainbackends.NewLndClientChainNotifier(
 			chainbackends.LndClientChainNotifierConfig{
-				LND: &lndSvc.LndServices,
+				LND:     &lndSvc.LndServices,
+				OnFatal: fn.Some(s.signalFatal),
 				Log: fn.Some(
 					s.subLogger(
 						chainbackends.

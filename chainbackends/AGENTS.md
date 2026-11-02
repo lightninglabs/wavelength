@@ -99,13 +99,19 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 - New registrations first receive the latest delivered tip. Live epochs keep
   upstream order with no height-based deduplication, which would hide
   same-height or lower-height reorg replacements.
-- **An upstream failure never closes registrations.** The hub's reader
+- **A transient upstream failure keeps registrations open.** The hub's reader
   reconnects once for everyone, with 1–30 second exponential backoff, from the
   last delivered hash/height cursor so lnd replays connected blocks (rewinding
   past a reorged cursor). Closing every registration instead would make every
   owner reconnect at once. A malformed event is treated as a failure and
   resumes from the same cursor rather than skipping a block. Reconnect retries
-  indefinitely.
+  indefinitely when `LndClientChainNotifierConfig.OnFatal` is absent. The
+  daemon installs that hook to bound sustained failures by five minutes plus
+  up to one minute of jitter. The shared reader escalates once and exits;
+  subscriber closure follows shutdown. A replayed tip does not clear spent
+  retry time, while a changed hash at the same height (a reorg) does. Time spent
+  on an open stream is paused, so a later transient close cannot count a long
+  Bitcoin block interval as backend failure. Open, idle streams have no timeout.
 - Each registration has a queue of 1024 epochs, sized for lnd's catch-up
   burst after a reconnect, which replays every missed block at once. A
   small queue would overflow every registration not draining in lockstep and

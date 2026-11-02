@@ -50,6 +50,9 @@ type reconnectBlockBackend struct {
 	*mockBackend
 
 	registrations chan *blockEpochRegistration
+
+	// beforeRegister lets tests advance retry time before a stream opens.
+	beforeRegister func()
 }
 
 // stoppedBlockNotifyRef models an actor that has already terminated.
@@ -97,8 +100,14 @@ func newReconnectBlockBackend() *reconnectBlockBackend {
 	}
 }
 
+// RegisterBlocks opens one independent controllable stream after the optional
+// test clock advances. The registration owns cancellation.
 func (m *reconnectBlockBackend) RegisterBlocks(ctx context.Context) (
 	*BlockRegistration, error) {
+
+	if m.beforeRegister != nil {
+		m.beforeRegister()
+	}
 
 	reg := &blockEpochRegistration{
 		epochs: make(chan *BlockEpoch, 10),
@@ -1976,6 +1985,9 @@ type deadStreamBackend struct {
 	// closed stream fail, rather than returning another closed stream.
 	reconnectErr  error
 	registrations int
+
+	// replay models notifiers that emit their cached tip before closing.
+	replay *BlockEpoch
 }
 
 // RegisterBlocks returns a closed stream initially, then closed streams or
@@ -1992,7 +2004,11 @@ func (b *deadStreamBackend) RegisterBlocks(ctx context.Context) (
 		return nil, b.reconnectErr
 	}
 
-	epochs := make(chan *BlockEpoch)
+	epochs := make(chan *BlockEpoch, 1)
+	if b.replay != nil {
+		epoch := *b.replay
+		epochs <- &epoch
+	}
 	close(epochs)
 
 	return &BlockRegistration{
@@ -2021,18 +2037,38 @@ func (c *steppedClock) now() time.Time {
 // forever and escalates through OnFatal, so the daemon can restart with a
 // fresh backend connection instead of spinning silently.
 func TestBlockEpochActorEscalatesWhenBackendStaysDown(t *testing.T) {
-	for _, reconnectErr := range []error{nil, errors.New("notifier " +
-		"unavailable")} {
-		name := "closed streams"
-		if reconnectErr != nil {
-			name = "registration errors"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		reconnectErr error
+		replay       bool
+	}{
+		{
+			name: "closed streams",
+		},
+		{
+			name:   "replayed tip",
+			replay: true,
+		},
+		{
+			name:         "registration errors",
+			reconnectErr: errors.New("notifier unavailable"),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
+			reconnectErr := test.reconnectErr
 			backend := &deadStreamBackend{
 				mockBackend:  newMockBackend(),
 				reconnectErr: reconnectErr,
+			}
+			if test.replay {
+				backend.replay = &BlockEpoch{
+					Height: 100,
+					Hash: chainhash.Hash{
+						1,
+					},
+				}
 			}
 			clock := &steppedClock{
 				cur:  time.Unix(0, 0),
@@ -2198,7 +2234,7 @@ func TestBlockEpochFatalTimeoutJitter(t *testing.T) {
 		Rand: func() float64 { return 0 },
 	})
 	require.Equal(
-		t, defaultBlockEpochFatalTimeout, def.fatalReconnectTimeout(),
+		t, DefaultBlockEpochFatalTimeout, def.fatalReconnectTimeout(),
 	)
 }
 
@@ -2241,58 +2277,97 @@ func TestBlockEpochActorCancellationBeforeEscalation(t *testing.T) {
 }
 
 // TestBlockEpochActorRecoveryResetsFatalBudget proves a delivered block starts
-// a fresh outage budget. An open, idle stream survives well past the budget.
+// a fresh outage budget. A replay preserves spent retry time, while healthy
+// open time never spends the budget, even across a long Bitcoin block interval.
 func TestBlockEpochActorRecoveryResetsFatalBudget(t *testing.T) {
-	t.Parallel()
+	for _, progress := range []bool{false, true} {
+		name := "idle after replay"
+		if progress {
+			name = "new block resets budget"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	backend := newReconnectBlockBackend()
-	var seconds atomic.Int64
-	seconds.Store(100)
-	fatal := make(chan error, 1)
-	epochActor := NewBlockEpochActor(BlockEpochConfig{
-		Backend:               backend,
-		ReconnectBackoff:      time.Millisecond,
-		MaxReconnectBackoff:   time.Millisecond,
-		FatalReconnectTimeout: time.Minute,
-		Now: func() time.Time {
-			return time.Unix(seconds.Load(), 0)
-		},
-		OnFatal: fn.Some(func(err error) { fatal <- err }),
-	})
-	defer epochActor.Stop()
-	result := epochActor.Receive(t.Context(), &SubscribeBlocksRequest{
-		CallerID: "recovery-resets-budget",
-	})
-	require.True(t, result.IsOk())
-	first := backend.nextRegistration(t)
-	close(first.epochs)
-	first.assertCanceled(t)
-	second := backend.nextRegistration(t)
-	second.send(150)
-	require.Equal(t, int32(150), (<-epochActor.epochChan).Height)
+			backend := newReconnectBlockBackend()
+			var seconds atomic.Int64
+			seconds.Store(100)
+			backend.beforeRegister = func() {
+				seconds.Add(30)
+			}
+			fatal := make(chan error, 1)
+			epochActor := NewBlockEpochActor(BlockEpochConfig{
+				Backend:               backend,
+				ReconnectBackoff:      time.Millisecond,
+				MaxReconnectBackoff:   time.Millisecond,
+				FatalReconnectTimeout: time.Minute,
+				Now: func() time.Time {
+					return time.Unix(seconds.Load(), 0)
+				},
+				OnFatal: fn.Some(
+					func(err error) {
+						fatal <- err
+					},
+				),
+			})
+			defer epochActor.Stop()
+			result := epochActor.Receive(
+				t.Context(), &SubscribeBlocksRequest{
+					CallerID: "recovery-resets-budget",
+				},
+			)
+			require.True(t, result.IsOk())
+			first := backend.nextRegistration(t)
+			first.send(150)
+			require.Equal(
+				t, int32(150), (<-epochActor.epochChan).Height,
+			)
+			close(first.epochs)
+			first.assertCanceled(t)
+			second := backend.nextRegistration(t)
+			height := int32(150)
+			if progress {
+				height++
+			}
+			second.send(height)
+			require.Equal(
+				t, height, (<-epochActor.epochChan).Height,
+			)
 
-	// Passing the old deadline cannot kill a healthy but idle stream.
-	seconds.Store(1000)
-	second.send(151)
-	require.Equal(t, int32(151), (<-epochActor.epochChan).Height)
-	close(second.epochs)
-	second.assertCanceled(t)
-	third := backend.nextRegistration(t)
-	select {
-	case err := <-fatal:
-		t.Fatalf("recovery failed to reset budget: %v", err)
+			// Passing the old deadline cannot kill a healthy but
+			// idle stream.
+			seconds.Store(1000)
+			second.send(height)
+			require.Equal(
+				t, height, (<-epochActor.epochChan).Height,
+			)
+			close(second.epochs)
+			second.assertCanceled(t)
+			third := backend.nextRegistration(t)
+			select {
+			case err := <-fatal:
+				t.Fatalf("recovery failed to reset budget: %v",
+					err)
 
-	default:
+			default:
+			}
+
+			// A new, sustained outage still escalates at its own
+			// deadline.
+			close(third.epochs)
+			if progress {
+				fourth := backend.nextRegistration(t)
+				close(fourth.epochs)
+			}
+			select {
+			case err := <-fatal:
+				require.ErrorIs(
+					t, err, errBlockEpochUnrecoverable,
+				)
+
+			case <-time.After(time.Second):
+				t.Fatal("new outage did not exhaust its budget")
+			}
+		})
 	}
 
-	// A new, sustained outage still escalates at its own deadline.
-	seconds.Store(1060)
-	close(third.epochs)
-	select {
-	case err := <-fatal:
-		require.ErrorIs(t, err, errBlockEpochUnrecoverable)
-
-	case <-time.After(time.Second):
-		t.Fatal("new outage did not exhaust its budget")
-	}
 }

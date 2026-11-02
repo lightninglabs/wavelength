@@ -27,22 +27,18 @@ const (
 	// backend outage does not spin, but recovery still happens promptly.
 	defaultBlockEpochMaxReconnectBackoff = 30 * time.Second
 
-	// defaultBlockEpochFatalTimeout bounds how long a subscription may stay
-	// continuously down before the actor stops retrying and escalates. A
-	// notifier restart heals in seconds; a streak this long means the
-	// backend connection is stuck (the production symptom was dozens of
-	// subscribers re-registering against a dead notifier every 30s forever,
-	// which no amount of in-process retrying can recover). Escalating lets
-	// the daemon exit and restart with a fresh backend connection.
-	defaultBlockEpochFatalTimeout = 5 * time.Minute
+	// DefaultBlockEpochFatalTimeout bounds continuous block-stream failures
+	// for consumers that install a fatal callback. Opening another stream
+	// alone does not prove recovery; a new block identity does.
+	DefaultBlockEpochFatalTimeout = 5 * time.Minute
 
-	// defaultBlockEpochFatalJitter is the maximum random padding added to
+	// DefaultBlockEpochFatalJitter is the maximum random padding added to
 	// the fatal timeout on the default-timeout path. A backend outage tends
 	// to drop every daemon's streams at the same instant; without jitter a
 	// whole fleet would hit the 5m budget together and restart in lockstep
 	// (thundering herd). Spreading the effective budget over a ~1m window
 	// decorrelates those restarts.
-	defaultBlockEpochFatalJitter = time.Minute
+	DefaultBlockEpochFatalJitter = time.Minute
 )
 
 // errBlockEpochUnrecoverable is the placeholder cause used when a subscription
@@ -70,7 +66,7 @@ type BlockEpochConfig struct {
 
 	// FatalReconnectTimeout bounds how long the subscription may stay
 	// continuously down before the actor stops retrying and escalates via
-	// OnFatal. Zero uses defaultBlockEpochFatalTimeout.
+	// OnFatal. Zero uses DefaultBlockEpochFatalTimeout.
 	FatalReconnectTimeout time.Duration
 
 	// OnFatal, when set, is invoked once if the subscription cannot be
@@ -87,7 +83,7 @@ type BlockEpochConfig struct {
 	// FatalReconnectJitter caps the random padding added to the fatal
 	// timeout so a fleet sharing a backend outage does not escalate in
 	// lockstep. On the default-timeout path (FatalReconnectTimeout zero) a
-	// zero jitter uses defaultBlockEpochFatalJitter; an explicitly
+	// zero jitter uses DefaultBlockEpochFatalJitter; an explicitly
 	// configured timeout with zero jitter disables jitter so tests stay
 	// deterministic.
 	FatalReconnectJitter time.Duration
@@ -308,13 +304,13 @@ func (a *BlockEpochActor) fatalReconnectTimeout() time.Duration {
 	base := a.cfg.FatalReconnectTimeout
 	jitter := a.cfg.FatalReconnectJitter
 	if base <= 0 {
-		base = defaultBlockEpochFatalTimeout
+		base = DefaultBlockEpochFatalTimeout
 
 		// Only the default path opts into jitter automatically; an
 		// explicit timeout stays exact unless jitter is set so tests
 		// remain deterministic.
 		if jitter <= 0 {
-			jitter = defaultBlockEpochFatalJitter
+			jitter = DefaultBlockEpochFatalJitter
 		}
 	}
 
@@ -401,15 +397,19 @@ func (a *BlockEpochActor) monitorBlocks() {
 	currentBackoff := reconnectBackoff
 	registration := a.registration
 
-	// downSince stamps when the subscription first went down; it is cleared
-	// only once a replacement stream actually delivers a block. lastErr
+	// downSince starts the failure budget at the first loss. Time spent on
+	// open streams is credited back when they close; a new block identity
+	// clears the budget. lastErr
 	// holds the most recent reconnect failure so the eventual escalation
 	// can surface a meaningful cause. Note the budget covers a stream that
 	// is closed/reconnecting: an open stream that goes silent without
 	// closing keeps the goroutine parked in the receive below and is out of
 	// scope. Bitcoin inter-block time is not a backend health signal.
 	var downSince time.Time
+	var openedAt time.Time
 	var lastErr error
+	var lastEpoch BlockEpoch
+	haveEpoch := false
 
 	// Sample the fatal budget once so its jitter stays fixed across every
 	// reconnect attempt for this subscription.
@@ -480,6 +480,7 @@ func (a *BlockEpochActor) monitorBlocks() {
 			}
 
 			log.InfoS(a.ctx, "Block epoch subscription reconnected")
+			openedAt = a.now()
 			currentBackoff = reconnectBackoff
 		}
 
@@ -490,8 +491,17 @@ func (a *BlockEpochActor) monitorBlocks() {
 				// first loss; a successful re-registration that
 				// immediately closes again must not reset it,
 				// or a storming backend would never escalate.
+				now := a.now()
 				if downSince.IsZero() {
-					downSince = a.now()
+					downSince = now
+				} else {
+					// Pause the failure budget while a
+					// stream is open. A long Bitcoin block
+					// interval cannot turn a later
+					// transient close into a fatal.
+					downSince = downSince.Add(
+						now.Sub(openedAt),
+					)
 				}
 
 				log.InfoS(
@@ -507,10 +517,18 @@ func (a *BlockEpochActor) monitorBlocks() {
 				continue
 			}
 
-			// A delivered block proves the subscription is healthy
-			// again, so clear the down streak and last error.
-			downSince = time.Time{}
-			lastErr = nil
+			// A new block identity proves progress. A notifier may
+			// replay its cached tip on every registration before
+			// closing again; those replays must not erase an
+			// outage.
+			if !haveEpoch || epoch.Height != lastEpoch.Height ||
+				epoch.Hash != lastEpoch.Hash {
+
+				downSince = time.Time{}
+				lastErr = nil
+			}
+			lastEpoch = *epoch
+			haveEpoch = true
 
 			log.InfoS(a.ctx, "Received block from backend",
 				slog.Int("height", int(epoch.Height)),

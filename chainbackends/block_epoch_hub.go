@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"math/rand/v2"
 	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/chainsource"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/lnrpc/chainrpc"
 )
@@ -155,7 +157,8 @@ type blockEpochOpener func(ctx context.Context,
 //   - Upstream failures are handled once, by the reader: it reconnects with
 //     backoff from the last delivered block while registrations stay open.
 //     Closing every registration instead would make each owner reconnect at
-//     once, the thundering herd the hub exists to prevent.
+//     once, the thundering herd the hub exists to prevent. An optional
+//     fatal hook bounds sustained upstream failures for supervised daemons.
 //   - Each registration channel is sent to and closed only under mu, so a
 //     cancellation can never race a send.
 //   - mu is never held across a blocking call. The first open runs unlocked
@@ -173,6 +176,15 @@ type blockEpochHub struct {
 	// minBackoff and maxBackoff bound the reader's reconnect delay.
 	minBackoff time.Duration
 	maxBackoff time.Duration
+
+	// onFatal opts into bounded recovery at the shared upstream boundary.
+	// Nil preserves indefinite retries for notifier and embedded consumers.
+	onFatal func(error)
+
+	// fatalTimeout is sampled once per hub to decorrelate daemon restarts.
+	// now is injected by tests; production uses time.Now.
+	fatalTimeout time.Duration
+	now          func() time.Time
 
 	// ctx is the root of every stream the hub opens. Stop cancels it.
 	//
@@ -241,8 +253,13 @@ func newBlockEpochHub(open blockEpochOpener,
 		queueSize:  blockEpochQueueSize,
 		minBackoff: blockEpochReconnectBackoff,
 		maxBackoff: blockEpochMaxReconnectBackoff,
-		ctx:        ctx,
-		cancel:     cancel,
+		// Jitter only decorrelates restart timing, not security state.
+		//nolint:gosec // G404: non-security-sensitive retry jitter.
+		fatalTimeout: chainsource.DefaultBlockEpochFatalTimeout +
+			rand.N(chainsource.DefaultBlockEpochFatalJitter),
+		now:    time.Now,
+		ctx:    ctx,
+		cancel: cancel,
 	}
 }
 
@@ -409,6 +426,8 @@ func (h *blockEpochHub) runUpstream(up *epochUpstream,
 
 	ctx := up.ctx
 	var cursor *chainntnfs.BlockEpoch
+	var downSince time.Time
+	var openedAt time.Time
 	backoff := h.minBackoff
 	for {
 		epoch, err := stream.next()
@@ -423,14 +442,34 @@ func (h *blockEpochHub) runUpstream(up *epochUpstream,
 				slog.Duration("reconnect_in", backoff),
 			)
 
-			stream = h.reconnect(up, cursor, &backoff)
+			now := h.now()
+			if downSince.IsZero() {
+				downSince = now
+			} else {
+				// Only failed/retrying time spends the budget.
+				// A healthy open stream may see no Bitcoin
+				// block for much longer than the recovery
+				// budget.
+				downSince = downSince.Add(now.Sub(openedAt))
+			}
+			stream = h.reconnect(
+				up, cursor, &backoff, downSince, err,
+			)
 			if stream == nil {
 				return
 			}
+			openedAt = h.now()
 
 			continue
 		}
 
+		// A replay of the same tip is not recovery from a stream that
+		// keeps closing. Reorg replacements still count as progress.
+		if cursor == nil || epoch.Height != cursor.Height ||
+			*epoch.Hash != *cursor.Hash {
+
+			downSince = time.Time{}
+		}
 		h.publish(up, epoch)
 
 		cursor = epoch
@@ -439,16 +478,30 @@ func (h *blockEpochHub) runUpstream(up *epochUpstream,
 }
 
 // reconnect reopens the generation's stream from cursor, waiting backoff
-// before each attempt. It returns nil only once the generation is cancelled.
+// before each attempt. It returns nil on cancellation or fatal escalation.
 // The backoff doubles after every attempt and is reset by the caller only
 // after a valid event, so a stream that opens and then fails at once still
 // backs off.
 func (h *blockEpochHub) reconnect(up *epochUpstream,
-	cursor *chainntnfs.BlockEpoch,
-	backoff *time.Duration) *blockEpochStream {
+	cursor *chainntnfs.BlockEpoch, backoff *time.Duration,
+	downSince time.Time, lastErr error) *blockEpochStream {
 
 	ctx := up.ctx
 	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if h.onFatal != nil &&
+			h.now().Sub(downSince) >= h.fatalTimeout {
+
+			h.onFatal(
+				fmt.Errorf("shared block epoch stream "+
+					"unrecoverable: %w", lastErr),
+			)
+
+			return nil
+		}
+
 		timer := time.NewTimer(*backoff)
 		select {
 		case <-timer.C:
@@ -471,6 +524,7 @@ func (h *blockEpochHub) reconnect(up *epochUpstream,
 			return nil
 		}
 
+		lastErr = err
 		h.log(ctx).InfoS(ctx, "Block epoch stream reconnect failed",
 			slog.Any("err", err),
 			slog.Duration("retry_in", *backoff),
@@ -515,7 +569,7 @@ func (h *blockEpochHub) publish(up *epochUpstream,
 
 // endUpstream closes a finished generation's registrations and detaches it.
 // It runs only after the generation was cancelled, by its last registration
-// or by stop, never on an upstream failure.
+// by stop, or after an opted-in fatal escalation.
 func (h *blockEpochHub) endUpstream(up *epochUpstream) {
 	up.cancel()
 
