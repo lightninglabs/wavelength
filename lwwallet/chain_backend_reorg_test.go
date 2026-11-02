@@ -1071,7 +1071,8 @@ func TestChainBackendDeeperReorgDetected(t *testing.T) {
 // conf/spend registration removes it from internal maps and does
 // not leak goroutines.
 func TestChainBackendCancelCleanup(t *testing.T) {
-	t.Parallel()
+	// The assertion samples process-wide goroutines. Keep other parallel
+	// package tests paused so their HTTP workers cannot affect it.
 
 	chain := newFakeChain(t, 100, "cancel-init")
 	srv := fakeChainServer(t, chain)

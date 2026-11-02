@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -25,7 +26,24 @@ const (
 	// defaultBlockEpochMaxReconnectBackoff caps reconnect backoff so a
 	// backend outage does not spin, but recovery still happens promptly.
 	defaultBlockEpochMaxReconnectBackoff = 30 * time.Second
+
+	// DefaultBlockEpochFatalTimeout bounds continuous block-stream failures
+	// for consumers that install a fatal callback. Opening another stream
+	// alone does not prove recovery; a new block identity does.
+	DefaultBlockEpochFatalTimeout = 5 * time.Minute
+
+	// DefaultBlockEpochFatalJitter is the maximum random padding added to
+	// the fatal timeout on the default-timeout path. A backend outage tends
+	// to drop every daemon's streams at the same instant; without jitter a
+	// whole fleet would hit the 5m budget together and restart in lockstep
+	// (thundering herd). Spreading the effective budget over a ~1m window
+	// decorrelates those restarts.
+	DefaultBlockEpochFatalJitter = time.Minute
 )
+
+// errBlockEpochUnrecoverable is the placeholder cause used when a subscription
+// stays down past the fatal timeout without a more specific reconnect error.
+var errBlockEpochUnrecoverable = errors.New("block epoch backend unreachable")
 
 // BlockEpochConfig holds configuration for BlockEpochActor.
 type BlockEpochConfig struct {
@@ -45,6 +63,35 @@ type BlockEpochConfig struct {
 	// MaxReconnectBackoff caps the exponential reconnect delay. Zero uses
 	// defaultBlockEpochMaxReconnectBackoff.
 	MaxReconnectBackoff time.Duration
+
+	// FatalReconnectTimeout bounds how long the subscription may stay
+	// continuously down before the actor stops retrying and escalates via
+	// OnFatal. Zero uses DefaultBlockEpochFatalTimeout.
+	FatalReconnectTimeout time.Duration
+
+	// OnFatal, when set, is invoked once if the subscription cannot be
+	// re-established within FatalReconnectTimeout. The daemon wires this to
+	// its shutdown path so a stuck backend connection restarts the process
+	// instead of leaving every block subscriber silently spinning forever.
+	// Without a hook the actor keeps retrying indefinitely.
+	OnFatal fn.Option[func(error)]
+
+	// Now returns the current time. Tests override it to drive the fatal
+	// timeout without real waits. Nil uses time.Now.
+	Now func() time.Time
+
+	// FatalReconnectJitter caps the random padding added to the fatal
+	// timeout so a fleet sharing a backend outage does not escalate in
+	// lockstep. On the default-timeout path (FatalReconnectTimeout zero) a
+	// zero jitter uses DefaultBlockEpochFatalJitter; an explicitly
+	// configured timeout with zero jitter disables jitter so tests stay
+	// deterministic.
+	FatalReconnectJitter time.Duration
+
+	// Rand returns a pseudo-random fraction in [0, 1) used to seed the
+	// fatal timeout jitter. Nil uses a real random source. Tests override
+	// it for determinism.
+	Rand func() float64
 }
 
 // WithLogger returns a new config with the given logger set.
@@ -224,6 +271,90 @@ func (a *BlockEpochActor) blockEpochReconnectBackoff() (time.Duration,
 	return initial, maxBackoff
 }
 
+// now returns the current time via the configured clock, defaulting to the real
+// clock. It lets tests drive the fatal timeout deterministically.
+func (a *BlockEpochActor) now() time.Time {
+	if a.cfg.Now != nil {
+		return a.cfg.Now()
+	}
+
+	return time.Now()
+}
+
+// randFloat returns a pseudo-random fraction in [0, 1) via the configured
+// source, defaulting to the global generator. It seeds the fatal timeout
+// jitter; tests override it for determinism.
+func (a *BlockEpochActor) randFloat() float64 {
+	if a.cfg.Rand != nil {
+		return a.cfg.Rand()
+	}
+
+	// The jitter only decorrelates restart timing across a fleet; it is not
+	// security-sensitive, so a weak PRNG is fine here.
+	//nolint:gosec // G404: jitter timing, not security-sensitive.
+	return rand.Float64()
+}
+
+// fatalReconnectTimeout returns the normalized down-time budget before the
+// actor escalates a stuck subscription, including a one-shot random jitter so a
+// fleet that loses a shared backend does not escalate in lockstep. It is
+// sampled once at the start of monitoring; reconnectExhausted takes the result
+// as a parameter so the budget stays fixed across the reconnect loop.
+func (a *BlockEpochActor) fatalReconnectTimeout() time.Duration {
+	base := a.cfg.FatalReconnectTimeout
+	jitter := a.cfg.FatalReconnectJitter
+	if base <= 0 {
+		base = DefaultBlockEpochFatalTimeout
+
+		// Only the default path opts into jitter automatically; an
+		// explicit timeout stays exact unless jitter is set so tests
+		// remain deterministic.
+		if jitter <= 0 {
+			jitter = DefaultBlockEpochFatalJitter
+		}
+	}
+
+	if jitter <= 0 {
+		return base
+	}
+
+	return base + time.Duration(a.randFloat()*float64(jitter))
+}
+
+// reconnectExhausted reports whether the subscription has stayed continuously
+// down past the given fatal timeout. A zero downSince means the subscription is
+// currently healthy. The caller samples the timeout once so jitter does not
+// wobble the budget between checks.
+func (a *BlockEpochActor) reconnectExhausted(downSince time.Time,
+	timeout time.Duration) bool {
+
+	if downSince.IsZero() {
+		return false
+	}
+
+	return a.now().Sub(downSince) >= timeout
+}
+
+// escalateFatal reports an unrecoverable subscription to the daemon via the
+// configured OnFatal hook. cause is the last reconnect error, if any.
+func (a *BlockEpochActor) escalateFatal(log btclog.Logger, downSince time.Time,
+	cause error) {
+
+	down := a.now().Sub(downSince).Round(time.Second)
+	if cause == nil {
+		cause = errBlockEpochUnrecoverable
+	}
+	err := fmt.Errorf("block epoch subscription unrecoverable after %s "+
+		"down: %w", down, cause)
+
+	log.WarnS(a.ctx, "Block epoch subscription unrecoverable; escalating",
+		err,
+	)
+	a.cfg.OnFatal.WhenSome(func(onFatal func(error)) {
+		onFatal(err)
+	})
+}
+
 // waitForReconnect sleeps for the current backoff unless the actor is
 // stopping. It returns false when shutdown won the race.
 func (a *BlockEpochActor) waitForReconnect(backoff time.Duration) bool {
@@ -266,6 +397,24 @@ func (a *BlockEpochActor) monitorBlocks() {
 	currentBackoff := reconnectBackoff
 	registration := a.registration
 
+	// downSince starts the failure budget at the first loss. Time spent on
+	// open streams is credited back when they close; a new block identity
+	// clears the budget. lastErr
+	// holds the most recent reconnect failure so the eventual escalation
+	// can surface a meaningful cause. Note the budget covers a stream that
+	// is closed/reconnecting: an open stream that goes silent without
+	// closing keeps the goroutine parked in the receive below and is out of
+	// scope. Bitcoin inter-block time is not a backend health signal.
+	var downSince time.Time
+	var openedAt time.Time
+	var lastErr error
+	var lastEpoch BlockEpoch
+	haveEpoch := false
+
+	// Sample the fatal budget once so its jitter stays fixed across every
+	// reconnect attempt for this subscription.
+	fatalTimeout := a.fatalReconnectTimeout()
+
 	// In iterator mode, the sender (this goroutine) is responsible for
 	// closing the channel to signal the receiver that no more values will
 	// be sent. This follows Go's channel ownership semantics.
@@ -285,6 +434,31 @@ func (a *BlockEpochActor) monitorBlocks() {
 
 	for {
 		if registration == nil {
+			// A normal shutdown cancels the actor context. Bail out
+			// before evaluating the fatal budget so a stop that
+			// coincides with a long outage exits cleanly instead of
+			// escalating a fatal failure the daemon does not really
+			// have.
+			if a.ctx.Err() != nil {
+				return
+			}
+
+			// If the subscription has stayed down past the fatal
+			// budget, stop retrying and escalate so the daemon can
+			// restart with a fresh backend connection. Only callers
+			// that opted into bounded retries by installing OnFatal
+			// take this path; without a hook there is nowhere to
+			// escalate, so we preserve the unbounded-retry contract
+			// and keep trying to heal in-process rather than
+			// silently killing the subscription.
+			if a.cfg.OnFatal.IsSome() &&
+				a.reconnectExhausted(downSince, fatalTimeout) {
+
+				a.escalateFatal(log, downSince, lastErr)
+
+				return
+			}
+
 			if !a.waitForReconnect(currentBackoff) {
 				return
 			}
@@ -292,6 +466,7 @@ func (a *BlockEpochActor) monitorBlocks() {
 			var err error
 			registration, err = a.cfg.Backend.RegisterBlocks(a.ctx)
 			if err != nil {
+				lastErr = err
 				log.WarnS(a.ctx, "Block epoch reconnect failed",
 					err,
 					slog.Duration("backoff",
@@ -305,12 +480,30 @@ func (a *BlockEpochActor) monitorBlocks() {
 			}
 
 			log.InfoS(a.ctx, "Block epoch subscription reconnected")
+			openedAt = a.now()
 			currentBackoff = reconnectBackoff
 		}
 
 		select {
 		case epoch, ok := <-registration.Epochs:
 			if !ok {
+				// Stamp the start of the down streak on the
+				// first loss; a successful re-registration that
+				// immediately closes again must not reset it,
+				// or a storming backend would never escalate.
+				now := a.now()
+				if downSince.IsZero() {
+					downSince = now
+				} else {
+					// Pause the failure budget while a
+					// stream is open. A long Bitcoin block
+					// interval cannot turn a later
+					// transient close into a fatal.
+					downSince = downSince.Add(
+						now.Sub(openedAt),
+					)
+				}
+
 				log.InfoS(
 					a.ctx,
 					"Block epoch channel closed, "+
@@ -323,6 +516,19 @@ func (a *BlockEpochActor) monitorBlocks() {
 
 				continue
 			}
+
+			// A new block identity proves progress. A notifier may
+			// replay its cached tip on every registration before
+			// closing again; those replays must not erase an
+			// outage.
+			if !haveEpoch || epoch.Height != lastEpoch.Height ||
+				epoch.Hash != lastEpoch.Hash {
+
+				downSince = time.Time{}
+				lastErr = nil
+			}
+			lastEpoch = *epoch
+			haveEpoch = true
 
 			log.InfoS(a.ctx, "Received block from backend",
 				slog.Int("height", int(epoch.Height)),
