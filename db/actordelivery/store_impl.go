@@ -11,6 +11,8 @@ import (
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/db"
 	adsqlc "github.com/lightninglabs/wavelength/db/actordelivery/sqlc"
+	dbsqlc "github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightninglabs/wavelength/internal/leasefence"
 	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
 	"github.com/lightningnetwork/lnd/clock"
 )
@@ -40,6 +42,7 @@ type (
 	MarkProcessedParams    = adsqlc.MarkMessageProcessedParams
 	SaveCheckpointParams   = adsqlc.SaveFSMCheckpointParams
 	DeadLetterInsertParams = adsqlc.MoveMailboxToDeadLetterParams
+	FencedDeadLetterParams = adsqlc.MoveMailboxToDeadLetterFencedParams
 	ListDeadLettersParams  = adsqlc.ListDeadLettersByActorParams
 )
 
@@ -66,6 +69,9 @@ type ActorDeliveryQueries interface {
 		arg AckMailboxParams) (int64, error)
 
 	AckMailboxMessageByID(ctx context.Context, id string) (int64, error)
+
+	LockMailboxMessageForUpdate(ctx context.Context,
+		id string) (string, error)
 
 	NackMailboxMessage(ctx context.Context,
 		arg NackMailboxParams) (int64, error)
@@ -157,6 +163,9 @@ type ActorDeliveryQueries interface {
 	MoveMailboxToDeadLetter(
 		ctx context.Context, arg DeadLetterInsertParams,
 	) error
+
+	MoveMailboxToDeadLetterFenced(ctx context.Context,
+		arg FencedDeadLetterParams) (int64, error)
 
 	GetDeadLetter(ctx context.Context, id string) (DeadLetterRow, error)
 
@@ -420,10 +429,17 @@ func (s *Store) AckMessage(ctx context.Context, id, leaseToken string) (int64,
 		ctx,
 		writeTxOpts,
 		func(q ActorDeliveryQueries) error {
-			var err error
+			now, err := mailboxMutationTime(
+				ctx, q, s.db.Backend(), s.clock, id,
+			)
+			if err != nil {
+				return err
+			}
+
 			rows, err = q.AckMailboxMessage(ctx, AckMailboxParams{
 				ID:         id,
 				LeaseToken: toNullString(leaseToken),
+				NowUnix:    toNullInt64(now.Unix()),
 			})
 
 			return err
@@ -467,13 +483,19 @@ func (s *Store) NackMessage(ctx context.Context, id, leaseToken string,
 		ctx,
 		writeTxOpts,
 		func(q ActorDeliveryQueries) error {
-			availableAt := s.clock.Now().Add(retryAfter)
+			now, err := mailboxMutationTime(
+				ctx, q, s.db.Backend(), s.clock, id,
+			)
+			if err != nil {
+				return err
+			}
+			availableAt := now.Add(retryAfter)
 
-			var err error
 			rows, err = q.NackMailboxMessage(ctx, NackMailboxParams{
 				ID:          id,
 				LeaseToken:  toNullString(leaseToken),
 				AvailableAt: availableAt.Unix(),
+				NowUnix:     toNullInt64(now.Unix()),
 			})
 
 			return err
@@ -531,15 +553,21 @@ func (s *Store) PostponeMessage(ctx context.Context, id, leaseToken string,
 		ctx,
 		writeTxOpts,
 		func(q ActorDeliveryQueries) error {
-			availableAt := s.clock.Now().Add(retryAfter)
+			now, err := mailboxMutationTime(
+				ctx, q, s.db.Backend(), s.clock, id,
+			)
+			if err != nil {
+				return err
+			}
+			availableAt := now.Add(retryAfter)
 
-			var err error
 			rows, err = q.PostponeMailboxMessage(
 				ctx,
 				PostponeMailboxParams{
 					ID:          id,
 					LeaseToken:  toNullString(leaseToken),
 					AvailableAt: availableAt.Unix(),
+					NowUnix:     toNullInt64(now.Unix()),
 				},
 			)
 
@@ -595,9 +623,14 @@ func (s *Store) ExtendLease(ctx context.Context, id, leaseToken string,
 		ctx,
 		writeTxOpts,
 		func(q ActorDeliveryQueries) error {
-			leaseUntil := s.clock.Now().Add(extension)
+			now, err := mailboxMutationTime(
+				ctx, q, s.db.Backend(), s.clock, id,
+			)
+			if err != nil {
+				return err
+			}
+			leaseUntil := now.Add(extension)
 
-			var err error
 			rows, err = q.ExtendMailboxLease(
 				ctx,
 				ExtendMailboxParams{
@@ -606,6 +639,7 @@ func (s *Store) ExtendLease(ctx context.Context, id, leaseToken string,
 					LeaseUntil: toNullInt64(
 						leaseUntil.Unix(),
 					),
+					NowUnix: toNullInt64(now.Unix()),
 				},
 			)
 
@@ -627,25 +661,77 @@ func (s *Store) MoveToDeadLetter(
 		ctx,
 		writeTxOpts,
 		func(q ActorDeliveryQueries) error {
-			createdAt := s.clock.Now().Unix()
-
-			// First, move to dead letter.
-			err := q.MoveMailboxToDeadLetter(
-				ctx,
-				DeadLetterInsertParams{
-					ID:            id,
-					FailureReason: reason,
-					CreatedAt:     createdAt,
-				},
+			return moveMailboxToDeadLetter(
+				ctx, q, s.clock, s.db.Backend(), id, reason,
 			)
-			if err != nil {
-				return err
-			}
-
-			// Then delete from mailbox.
-			return q.DeleteMailboxMessage(ctx, id)
 		},
 	)
+}
+
+// moveMailboxToDeadLetter copies a mailbox row into the dead-letter table and
+// then deletes it. When the caller attached a lease fence, the copy validates
+// both its token and lifetime before the fenced delete can run.
+func moveMailboxToDeadLetter(ctx context.Context, q ActorDeliveryQueries,
+	clk clock.Clock, backend dbsqlc.BackendType, id, reason string) error {
+
+	leaseToken, fenced := leasefence.Token(ctx)
+	var now time.Time
+	if fenced {
+		var err error
+		now, err = mailboxMutationTime(ctx, q, backend, clk, id)
+		if err != nil {
+			return err
+		}
+
+		rows, err := q.MoveMailboxToDeadLetterFenced(
+			ctx, FencedDeadLetterParams{
+				ID:            id,
+				LeaseToken:    toNullString(leaseToken),
+				FailureReason: reason,
+				CreatedAt:     now.Unix(),
+				NowUnix:       toNullInt64(now.Unix()),
+			},
+		)
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return actor.ErrLeaseExpired
+		}
+	} else {
+		now = clk.Now()
+
+		err := q.MoveMailboxToDeadLetter(
+			ctx, DeadLetterInsertParams{
+				ID:            id,
+				FailureReason: reason,
+				CreatedAt:     now.Unix(),
+			},
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	if !fenced {
+		return q.DeleteMailboxMessage(ctx, id)
+	}
+
+	rows, err := q.AckMailboxMessage(
+		ctx, AckMailboxParams{
+			ID:         id,
+			LeaseToken: toNullString(leaseToken),
+			NowUnix:    toNullInt64(now.Unix()),
+		},
+	)
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return actor.ErrLeaseExpired
+	}
+
+	return nil
 }
 
 // DeleteMessage removes a message from the mailbox.
@@ -1268,12 +1354,32 @@ func fromNullInt64Time(ni sql.NullInt64) time.Time {
 	return time.Unix(ni.Int64, 0)
 }
 
+// mailboxMutationTime returns a lease-fence timestamp after the mutation has
+// acquired every database lock that can delay its ownership check. SQLite's
+// immediate write transaction already serializes writers before its callback
+// runs. PostgreSQL also needs a row lock because an UPDATE can otherwise wait
+// behind another owner after the caller sampled its clock.
+func mailboxMutationTime(ctx context.Context, q ActorDeliveryQueries,
+	backend dbsqlc.BackendType, clk clock.Clock,
+	id string) (time.Time, error) {
+
+	if backend == dbsqlc.BackendTypePostgres {
+		_, err := q.LockMailboxMessageForUpdate(ctx, id)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, err
+		}
+	}
+
+	return clk.Now(), nil
+}
+
 // TxActorDeliveryStore is a transaction-scoped version of Store.
 // It wraps a specific transaction and provides DeliveryStore operations within
 // that transaction scope.
 type TxActorDeliveryStore struct {
 	querier ActorDeliveryQueries
 	clock   clock.Clock
+	backend dbsqlc.BackendType
 	tx      *sql.Tx
 
 	outboxEnqueued *bool
@@ -1281,13 +1387,15 @@ type TxActorDeliveryStore struct {
 
 // newTxActorDeliveryStore creates a new transaction-scoped delivery store.
 func newTxActorDeliveryStore(
-	querier ActorDeliveryQueries, clock clock.Clock, tx *sql.Tx,
+	querier ActorDeliveryQueries, clock clock.Clock,
+	backend dbsqlc.BackendType, tx *sql.Tx,
 	outboxEnqueued *bool,
 ) *TxActorDeliveryStore {
 
 	return &TxActorDeliveryStore{
 		querier:        querier,
 		clock:          clock,
+		backend:        backend,
 		tx:             tx,
 		outboxEnqueued: outboxEnqueued,
 	}
@@ -1409,9 +1517,17 @@ func (s *TxActorDeliveryStore) PeekNextMessage(ctx context.Context,
 func (s *TxActorDeliveryStore) AckMessage(ctx context.Context, id,
 	leaseToken string) (int64, error) {
 
+	now, err := mailboxMutationTime(
+		ctx, s.querier, s.backend, s.clock, id,
+	)
+	if err != nil {
+		return 0, err
+	}
+
 	return s.querier.AckMailboxMessage(ctx, AckMailboxParams{
 		ID:         id,
 		LeaseToken: toNullString(leaseToken),
+		NowUnix:    toNullInt64(now.Unix()),
 	})
 }
 
@@ -1428,12 +1544,19 @@ func (s *TxActorDeliveryStore) AckMessageByID(ctx context.Context, id string) (
 func (s *TxActorDeliveryStore) NackMessage(ctx context.Context, id,
 	leaseToken string, retryAfter time.Duration) (int64, error) {
 
-	availableAt := s.clock.Now().Add(retryAfter)
+	now, err := mailboxMutationTime(
+		ctx, s.querier, s.backend, s.clock, id,
+	)
+	if err != nil {
+		return 0, err
+	}
+	availableAt := now.Add(retryAfter)
 
 	return s.querier.NackMailboxMessage(ctx, NackMailboxParams{
 		ID:          id,
 		LeaseToken:  toNullString(leaseToken),
 		AvailableAt: availableAt.Unix(),
+		NowUnix:     toNullInt64(now.Unix()),
 	})
 }
 
@@ -1457,12 +1580,19 @@ func (s *TxActorDeliveryStore) NackMessageByID(ctx context.Context, id string,
 func (s *TxActorDeliveryStore) PostponeMessage(ctx context.Context, id,
 	leaseToken string, retryAfter time.Duration) (int64, error) {
 
-	availableAt := s.clock.Now().Add(retryAfter)
+	now, err := mailboxMutationTime(
+		ctx, s.querier, s.backend, s.clock, id,
+	)
+	if err != nil {
+		return 0, err
+	}
+	availableAt := now.Add(retryAfter)
 
 	return s.querier.PostponeMailboxMessage(ctx, PostponeMailboxParams{
 		ID:          id,
 		LeaseToken:  toNullString(leaseToken),
 		AvailableAt: availableAt.Unix(),
+		NowUnix:     toNullInt64(now.Unix()),
 	})
 }
 
@@ -1488,12 +1618,19 @@ func (s *TxActorDeliveryStore) PostponeMessageByID(ctx context.Context,
 func (s *TxActorDeliveryStore) ExtendLease(ctx context.Context, id,
 	leaseToken string, extension time.Duration) (int64, error) {
 
-	leaseUntil := s.clock.Now().Add(extension)
+	now, err := mailboxMutationTime(
+		ctx, s.querier, s.backend, s.clock, id,
+	)
+	if err != nil {
+		return 0, err
+	}
+	leaseUntil := now.Add(extension)
 
 	return s.querier.ExtendMailboxLease(ctx, ExtendMailboxParams{
 		ID:         id,
 		LeaseToken: toNullString(leaseToken),
 		LeaseUntil: toNullInt64(leaseUntil.Unix()),
+		NowUnix:    toNullInt64(now.Unix()),
 	})
 }
 
@@ -1502,16 +1639,9 @@ func (s *TxActorDeliveryStore) MoveToDeadLetter(
 	ctx context.Context, id, reason string,
 ) error {
 
-	err := s.querier.MoveMailboxToDeadLetter(ctx, DeadLetterInsertParams{
-		ID:            id,
-		FailureReason: reason,
-		CreatedAt:     s.clock.Now().Unix(),
-	})
-	if err != nil {
-		return err
-	}
-
-	return s.querier.DeleteMailboxMessage(ctx, id)
+	return moveMailboxToDeadLetter(
+		ctx, s.querier, s.clock, s.backend, id, reason,
+	)
 }
 
 // DeleteMessage removes a message from the mailbox.
@@ -2012,7 +2142,7 @@ func (s *TxAwareActorDeliveryStore) execTxAttempt(ctx context.Context,
 	txQuerier := adsqlc.New(tx)
 	outboxEnqueued := false
 	txStore := newTxActorDeliveryStore(
-		txQuerier, s.clock, tx, &outboxEnqueued,
+		txQuerier, s.clock, s.querier.Backend(), tx, &outboxEnqueued,
 	)
 
 	// Attach the transaction and a fresh mailbox-enqueue set to the

@@ -287,8 +287,8 @@ func (d *Delivery[M, R]) Nack(
 			reason = fmt.Sprintf("max attempts reached: %v", err)
 		}
 
-		if dlErr := d.store.MoveToDeadLetter(
-			ctx, d.ID, reason,
+		if dlErr := moveToDeadLetter(
+			ctx, d.store, d.ID, d.LeaseToken, reason,
 		); dlErr != nil {
 
 			d.setMutationFailed()

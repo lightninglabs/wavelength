@@ -184,14 +184,78 @@ type mockTxAwareStore struct {
 	// verify that promises are not completed prematurely.
 	txPostCallbackHook func()
 
+	// txCompletionHook runs after the callback has either committed or
+	// rolled back. Tests use it to join the full transaction tail without
+	// sleeping for an assumed scheduler interval.
+	txCompletionHook func(error)
+
 	// txWrites models durable state a behavior writes inside the
 	// transaction, and txMu guards it. ExecTx snapshots its length before
 	// running fn and truncates back to that length when fn returns an
 	// error, giving the mock the rollback semantics a real store provides.
 	// Without this a test cannot tell a committed turn from a rolled-back
 	// one, since the mock otherwise mutates its maps in place.
-	txMu     sync.Mutex
-	txWrites []string
+	txMu               sync.Mutex
+	txWrites           []string
+	externalLeaseOwner string
+}
+
+// mockDeliverySnapshot captures the durable maps that a mock transaction can
+// mutate. Restoring it on callback failure gives tests the same all-or-nothing
+// behavior as the SQL stores.
+type mockDeliverySnapshot struct {
+	messages    map[string]*LeasedMessage
+	askResults  map[string]*AskResult
+	processed   map[string]bool
+	checkpoints map[string]*Checkpoint
+	deadLetters map[string]*DeadLetter
+	outbox      map[string]*OutboxMessage
+}
+
+// clonePointerMap copies a string-keyed map and each pointed-to value.
+func clonePointerMap[T any](src map[string]*T) map[string]*T {
+	dst := make(map[string]*T, len(src))
+	for key, value := range src {
+		copyValue := *value
+		dst[key] = &copyValue
+	}
+
+	return dst
+}
+
+// snapshotDeliveryState returns a copy of the mock's transactional data.
+func (m *mockDeliveryStore) snapshotDeliveryState() mockDeliverySnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	processed := make(map[string]bool, len(m.processed))
+	for id, value := range m.processed {
+		processed[id] = value
+	}
+
+	return mockDeliverySnapshot{
+		messages:    clonePointerMap(m.messages),
+		askResults:  clonePointerMap(m.askResults),
+		processed:   processed,
+		checkpoints: clonePointerMap(m.checkpoints),
+		deadLetters: clonePointerMap(m.deadLetters),
+		outbox:      clonePointerMap(m.outbox),
+	}
+}
+
+// restoreDeliveryState rolls the mock's transactional data back to snapshot.
+func (m *mockDeliveryStore) restoreDeliveryState(
+	snapshot mockDeliverySnapshot) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.messages = snapshot.messages
+	m.askResults = snapshot.askResults
+	m.processed = snapshot.processed
+	m.checkpoints = snapshot.checkpoints
+	m.deadLetters = snapshot.deadLetters
+	m.outbox = snapshot.outbox
 }
 
 // recordTxWrite appends a write made by a behavior inside the transaction.
@@ -217,6 +281,32 @@ func newMockTxAwareStore() *mockTxAwareStore {
 	}
 }
 
+// setLeaseOwners models a different consumer taking each queued message.
+func (m *mockTxAwareStore) setLeaseOwners(leaseToken string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for id := range m.messages {
+		m.messages[id].LeaseToken = leaseToken
+	}
+	m.externalLeaseOwner = leaseToken
+}
+
+// restoreExternalLeaseOwner preserves a concurrent claim across rollback.
+func (m *mockTxAwareStore) restoreExternalLeaseOwner() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.externalLeaseOwner == "" {
+		return
+	}
+
+	for id := range m.messages {
+		m.messages[id].LeaseToken = m.externalLeaseOwner
+	}
+	m.externalLeaseOwner = ""
+}
+
 func (m *mockTxAwareStore) ExecTx(
 	ctx context.Context,
 	readOnly bool,
@@ -232,15 +322,22 @@ func (m *mockTxAwareStore) ExecTx(
 
 	// Snapshot the behavior-visible write log so a failed callback rolls
 	// back to exactly the state it found, the way a real transaction does.
+	deliveryBefore := m.snapshotDeliveryState()
 	m.txMu.Lock()
 	writesBefore := len(m.txWrites)
 	m.txMu.Unlock()
 
 	// Execute the function with the same store (simulating a transaction).
 	if err := fn(ctx, m.mockDeliveryStore); err != nil {
+		m.restoreDeliveryState(deliveryBefore)
+		m.restoreExternalLeaseOwner()
+
 		m.txMu.Lock()
 		m.txWrites = m.txWrites[:writesBefore]
 		m.txMu.Unlock()
+		if m.txCompletionHook != nil {
+			m.txCompletionHook(err)
+		}
 
 		return err
 	}
@@ -250,6 +347,9 @@ func (m *mockTxAwareStore) ExecTx(
 	// where premature promise completion would be observable.
 	if m.txPostCallbackHook != nil {
 		m.txPostCallbackHook()
+	}
+	if m.txCompletionHook != nil {
+		m.txCompletionHook(nil)
 	}
 
 	return nil

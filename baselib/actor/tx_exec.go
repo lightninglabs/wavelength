@@ -232,21 +232,29 @@ func (e *execCore) commit(ctx context.Context,
 	err := e.store.ExecTx(ctx, false, func(txCtx context.Context,
 		s DeliveryStore) error {
 
-		// Fence first: ack deletes the mailbox row only if our lease
-		// token still matches. Zero rows means the lease was reclaimed
-		// while the behavior did IO, so we abort and apply nothing --
-		// the whole transaction rolls back, including any writes the
-		// closure would make below. Fencing up front keeps the
-		// stale-lease path a true no-op rather than relying on rollback
-		// alone.
-		//
-		// On the leaseless (single-worker) path the token is empty, so
-		// ackMessage deletes by ID without a fence: there is no
-		// competing consumer, and a crash before this commit leaves the
-		// peeked row untouched for re-peek. A zero-row by-ID ack means
-		// the row is already gone (e.g. a redelivery of an
-		// already-consumed message racing dedup), which is likewise a
-		// no-op to roll back.
+		// The behavior's own writes (state advance, outbox effects)
+		// join this transaction via txCtx. The ownership check must be
+		// last so an expiry or successor claim while fn is running
+		// rolls every one of these writes back.
+		if err := fn(txCtx, s); err != nil {
+			return err
+		}
+
+		// Mark the message processed for dedup within the same tx so
+		// the state advance and the dedup record are atomic with
+		// consumption.
+		if err := s.MarkProcessed(
+			txCtx, e.msgID, e.actorID, e.dedupTTL,
+		); err != nil {
+			return err
+		}
+
+		// Ack is the final ownership action. A zero-row fenced ack
+		// means the lease expired or another consumer reclaimed the
+		// message while fn ran, so the transaction rolls back both the
+		// behavior writes and the processed marker. On the leaseless
+		// path, a zero-row by-ID ack likewise means the row is already
+		// gone and this transaction must not commit its effects.
 		rows, err := ackMessage(txCtx, s, e.msgID, e.leaseToken)
 		if err != nil {
 			return err
@@ -255,17 +263,7 @@ func (e *execCore) commit(ctx context.Context,
 			return ErrLeaseLost
 		}
 
-		// The behavior's own writes (state advance, outbox effects)
-		// join this transaction via txCtx, so they commit atomically
-		// with the ack above.
-		if err := fn(txCtx, s); err != nil {
-			return err
-		}
-
-		// Mark the message processed for dedup within the same tx so
-		// the state advance and the dedup record are atomic with
-		// consumption.
-		return s.MarkProcessed(txCtx, e.msgID, e.actorID, e.dedupTTL)
+		return nil
 	})
 	if err != nil {
 		return err

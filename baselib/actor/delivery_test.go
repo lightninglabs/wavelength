@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lightninglabs/wavelength/internal/leasefence"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
@@ -388,6 +389,12 @@ func (m *mockDeliveryStore) MoveToDeadLetter(ctx context.Context, id,
 	msg, ok := m.messages[id]
 	if !ok {
 		return nil
+	}
+
+	if leaseToken, fenced := leasefence.Token(ctx); fenced &&
+		(msg.LeaseToken != leaseToken ||
+			msg.LeaseUntil.Before(time.Now())) {
+		return ErrLeaseExpired
 	}
 
 	m.deadLetters[id] = &DeadLetter{
@@ -876,6 +883,47 @@ func TestDeliveryNack(t *testing.T) {
 	// Second Nack should fail.
 	err = delivery.Nack(ctx, errors.New("error"), 5*time.Second)
 	require.Equal(t, ErrAlreadyAcked, err)
+}
+
+// TestDeliveryExpiredFinalAttemptCannotDeadLetter verifies the terminal nack
+// path carries its lease fence into the by-ID dead-letter move. A matching but
+// expired token cannot delete a row that another consumer may now claim.
+func TestDeliveryExpiredFinalAttemptCannotDeadLetter(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	ctx := t.Context()
+
+	const (
+		msgID      = "expired-final-attempt"
+		leaseToken = "expired-token"
+	)
+
+	store.messages[msgID] = &LeasedMessage{
+		ID:          msgID,
+		MailboxID:   "test-actor",
+		LeaseToken:  leaseToken,
+		LeaseUntil:  time.Now().Add(-time.Second),
+		Attempts:    1,
+		MaxAttempts: 1,
+	}
+
+	delivery := &Delivery[*testTLVMsg, string]{
+		ID: msgID,
+		Message: &testTLVMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+		},
+		LeaseToken:  leaseToken,
+		LeaseUntil:  time.Now().Add(-time.Second),
+		Attempts:    1,
+		MaxAttempts: 1,
+		store:       store,
+	}
+
+	err := delivery.Nack(ctx, errors.New("terminal failure"), 0)
+	require.ErrorIs(t, err, ErrLeaseExpired)
+	require.Contains(t, store.messages, msgID)
+	require.Empty(t, store.deadLetters)
 }
 
 // TestDeliveryNackPoisonPill tests that messages exceeding max attempts are

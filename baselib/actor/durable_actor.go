@@ -14,22 +14,19 @@ import (
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
-// errLostLeaseMidTurn reports that a lease-fenced release inside the
+// errLostLeaseMidTurn reports that a lease-fenced mutation inside the
 // transaction path matched no rows, which means this consumer no longer owns
-// the message: the lease expired while the behavior was running and another
-// consumer claimed it.
+// the message. Its lease either expired or another consumer claimed the row.
 //
 // It is returned from handleResultInTx for one reason only, to roll the
 // transaction back, so the behavior's writes vanish rather than committing
 // under a row somebody else now governs. processInTransaction recognizes it
 // and returns without nacking, dead-lettering, or marking processed.
 //
-// The "without nacking" part is the load-bearing half. Delivery.Nack's
-// dead-letter arm is unfenced: it calls MoveToDeadLetter and DeleteMessage by
-// ID with no lease-token check, so routing a stale consumer through it would
-// let us dead-letter (and delete) a message its legitimate owner is actively
-// processing. Rolling back and walking away leaves the row entirely to that
-// owner, whose own turn decides its fate.
+// The "without nacking" part is the load-bearing half. A fallback nack after
+// losing ownership could make a second terminal decision outside the failed
+// transaction. Rolling back and walking away leaves the row entirely to its
+// current owner, whose own turn decides its fate.
 var errLostLeaseMidTurn = errors.New("lease lost mid-turn; rolling back")
 
 // TellRetryPolicy determines whether a failed Tell message should be retried
@@ -786,12 +783,10 @@ func (a *DurableActor[M, R]) processInTransaction(ctx context.Context,
 		// consumer holds the lease. Do nothing further: no nack, no
 		// dead-letter, no processed mark.
 		//
-		// Nacking here would be actively harmful. Delivery.Nack
-		// dead-letters when the attempt budget is spent, and that arm
-		// is unfenced (MoveToDeadLetter and DeleteMessage run by ID
-		// with no lease check), so this stale consumer could delete a
-		// row its legitimate owner is in the middle of processing.
-		// Walking away leaves the row and its outcome to that owner.
+		// Nacking here would be actively harmful. Delivery.Nack makes
+		// another retry or terminal decision outside the transaction
+		// whose ownership fence just failed. Walking away leaves the
+		// row and its outcome to its current owner.
 		if errors.Is(err, errLostLeaseMidTurn) {
 			logger(ctx).WarnS(ctx,
 				"Rolled back turn after losing lease",
@@ -1163,11 +1158,10 @@ func (a *DurableActor[M, R]) executeBehaviorSafely(ctx context.Context,
 // An unfenced (leaseless, empty-token) release that matched no rows just means
 // the row is already gone, which is benign: the original processing consumed
 // it and this is a duplicate. A fenced release that matched no rows means the
-// lease-token comparison failed, so the lease expired mid-turn and another
-// consumer owns the message now. That is not something to retry past, it is a
-// reason to abandon the turn: returning errLostLeaseMidTurn rolls the
-// transaction back so the behavior's writes never commit under a row this
-// consumer no longer holds.
+// lease-token or lease-lifetime comparison failed. That is not something to
+// retry past, it is a reason to abandon the turn: returning
+// errLostLeaseMidTurn rolls the transaction back so the behavior's writes
+// never commit under a row this consumer no longer holds.
 //
 // The op argument names the release ("Postpone" or "Nack") for the log line.
 func (a *DurableActor[M, R]) releasedRowsInTx(ctx context.Context,
@@ -1197,6 +1191,21 @@ func (a *DurableActor[M, R]) releasedRowsInTx(ctx context.Context,
 	)
 
 	return errLostLeaseMidTurn
+}
+
+// ackInTx acknowledges a delivery and translates a failed lease fence into
+// the transaction path's ownership-loss sentinel. This prevents a zero-row
+// fenced ack from reaching processInTransaction's generic failure tail, where
+// a fallback nack would make a second decision after ownership was lost.
+func (a *DurableActor[M, R]) ackInTx(ctx context.Context,
+	delivery *Delivery[M, R], result fn.Result[R]) error {
+
+	err := delivery.Ack(ctx, result)
+	if !errors.Is(err, ErrLeaseExpired) || delivery.LeaseToken == "" {
+		return err
+	}
+
+	return a.releasedRowsInTx(ctx, delivery, 0, "Ack")
 }
 
 // handleResultInTx handles the result within a transaction.
@@ -1248,7 +1257,7 @@ func (a *DurableActor[M, R]) handleResultInTx(
 			return fmt.Errorf("mark processed: %w", err)
 		}
 
-		return txDelivery.Ack(ctx, result)
+		return a.ackInTx(ctx, txDelivery, result)
 	}
 
 	// For Ask messages, always Ack (even with error result). Mark as
@@ -1260,7 +1269,7 @@ func (a *DurableActor[M, R]) handleResultInTx(
 			return fmt.Errorf("mark processed: %w", err)
 		}
 
-		return txDelivery.Ack(ctx, result)
+		return a.ackInTx(ctx, txDelivery, result)
 	}
 
 	// For Tell messages, handle based on success/error.
@@ -1324,8 +1333,9 @@ func (a *DurableActor[M, R]) handleResultInTx(
 			return a.releasedRowsInTx(ctx, delivery, rows, "Nack")
 		}
 
-		// Max retries exceeded - dead letter. Mark as processed since
-		// we won't retry.
+		// Max retries exceeded. Mark as processed since we won't retry.
+		// The dead-letter move below carries the lease fence and rolls
+		// this write back if ownership expired.
 		if err := store.MarkProcessed(
 			ctx, delivery.ID, a.id, a.deduplicationTTL,
 		); err != nil {
@@ -1337,7 +1347,17 @@ func (a *DurableActor[M, R]) handleResultInTx(
 			reason = fmt.Sprintf("max attempts reached: %v", err)
 		}
 
-		return store.MoveToDeadLetter(ctx, delivery.ID, reason)
+		err := moveToDeadLetter(
+			ctx, store, delivery.ID, delivery.LeaseToken, reason,
+		)
+		if errors.Is(err, ErrLeaseExpired) &&
+			delivery.LeaseToken != "" {
+			return a.releasedRowsInTx(
+				ctx, delivery, 0, "DeadLetter",
+			)
+		}
+
+		return err
 	}
 
 	// Success - mark as processed and Ack the message.
@@ -1347,7 +1367,7 @@ func (a *DurableActor[M, R]) handleResultInTx(
 		return fmt.Errorf("mark processed: %w", err)
 	}
 
-	return txDelivery.Ack(ctx, result)
+	return a.ackInTx(ctx, txDelivery, result)
 }
 
 // handleResult processes the behavior result and automatically acks/nacks.
@@ -1477,8 +1497,9 @@ func (a *DurableActor[M, R]) handleResult(ctx context.Context,
 			// Max retries exceeded or policy says don't retry.
 			// Explicitly move to dead letter queue.
 			reason := fmt.Sprintf("retry policy exhausted: %v", err)
-			if dlErr := a.store.MoveToDeadLetter(
-				ctx, delivery.ID, reason,
+			if dlErr := moveToDeadLetter(
+				ctx, a.store, delivery.ID, delivery.LeaseToken,
+				reason,
 			); dlErr != nil {
 
 				logger(ctx).WarnS(ctx, "Failed to dead-letter "+
@@ -1486,6 +1507,8 @@ func (a *DurableActor[M, R]) handleResult(ctx context.Context,
 					dlErr,
 					"actor_id", a.id,
 					"delivery_id", delivery.ID)
+
+				return
 			}
 
 			// Delete from mailbox after dead-lettering.

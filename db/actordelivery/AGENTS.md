@@ -92,6 +92,15 @@ other services can reuse durable actor storage without pulling unrelated tables.
   goroutines.
 - `TxAwareActorDeliveryStore.ExecTx` always defers `tx.Rollback()` so partial
   writes cannot survive a function error; commit is the only success path.
+- Token-fenced mailbox mutations require a matching token and a live lease.
+  Ack, nack, postpone, and extend all compare `lease_until` against one
+  timestamp from the store clock. The boundary is inclusive: an owner remains
+  valid at `lease_until` and becomes stale only after that instant. A matching
+  token cannot acknowledge, release, restore retry budget, or revive the row
+  after expiry. The store samples this timestamp after acquiring its write
+  transaction and, on PostgreSQL, after locking the mailbox row. Transaction
+  retries and statement lock waits therefore cannot reuse an authorization
+  time sampled before the lease expired.
 - `PeekNextMessage` is a read-only eligibility check, not an ownership write.
   The store adapter must map every peeked row to an empty lease token before it
   reaches the actor layer, including rows that still carry stale expired lease
@@ -113,6 +122,12 @@ other services can reuse durable actor storage without pulling unrelated tables.
   that budget. The live lease therefore keeps same-key successors blocked until
   the predecessor is acknowledged, postponed, or its lease expires. An
   exhausted row with no live lease is terminal and does not block the lane.
+- `MoveMailboxToDeadLetter` deletes by ID, so a leased classic transaction
+  carries its token as operation-local context. The store selects and inserts
+  the dead letter only when that token's lease remains live, then conditionally
+  deletes under the same fence in the write transaction. Rechecking the delete
+  closes a concurrent reclaim between the two statements. Either zero-row
+  fence aborts the move and rolls every transaction effect back.
 - `mailbox_messages.created_at` is the durable enqueue time and is never
   rewritten by a release: nack, postpone, and lease extension all leave it
   alone. That is what makes it a trustworthy age reference, surfaced to

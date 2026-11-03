@@ -268,6 +268,10 @@ func TestPostponeRollsBackAfterLostLease(t *testing.T) {
 	t.Parallel()
 
 	store := newMockTxAwareStore()
+	turnDone := make(chan error, 1)
+	store.txCompletionHook = func(err error) {
+		turnDone <- err
+	}
 	codec := newActorTestCodec()
 
 	// Put the delivery on its final attempt so a nack would dead-letter
@@ -287,11 +291,7 @@ func TestPostponeRollsBackAfterLostLease(t *testing.T) {
 		// Steal the lease mid-turn, exactly as an expiry followed by
 		// another consumer's claim would: the row is still there, but
 		// its token no longer matches the one this delivery holds.
-		store.mu.Lock()
-		for id := range store.messages {
-			store.messages[id].LeaseToken = "stolen-by-other"
-		}
-		store.mu.Unlock()
+		store.setLeaseOwners("stolen-by-other")
 	}
 
 	cfg := DefaultDurableActorConfig(
@@ -302,7 +302,6 @@ func TestPostponeRollsBackAfterLostLease(t *testing.T) {
 
 	a := NewDurableActor(cfg).UnwrapOrFail(t)
 	a.Start()
-	defer a.Stop()
 
 	msg := &actorTestMsg{
 		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(21)),
@@ -314,8 +313,19 @@ func TestPostponeRollsBackAfterLostLease(t *testing.T) {
 		return deliveries.Load() >= 1
 	}, 5*time.Second, 10*time.Millisecond)
 
-	// Give the consume path room to do the wrong thing if it is going to.
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case err := <-turnDone:
+		require.ErrorIs(t, err, errLostLeaseMidTurn)
+
+	case <-time.After(5 * time.Second):
+		t.Fatal("transaction tail did not complete")
+	}
+
+	stopCtx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	require.NoError(t, a.StopAndWait(stopCtx))
 
 	// The behavior's writes rolled back with the transaction: nothing it
 	// staged under the stolen row may survive.
@@ -338,6 +348,110 @@ func TestPostponeRollsBackAfterLostLease(t *testing.T) {
 	// And the stale consumer never nacked, which is what would have
 	// dead-lettered the row at this attempt count.
 	require.False(t, store.nackCalled.Load())
+}
+
+// TestTerminalOutcomeRollsBackAfterLostLease verifies both terminal
+// transaction paths abandon a turn after ownership changes. A successful turn
+// ends in Ack, while a final failed turn ends in a by-ID dead-letter move; both
+// must first prove that their lease still owns the row.
+func TestTerminalOutcomeRollsBackAfterLostLease(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		result fn.Result[int]
+	}{
+		{
+			name:   "ack",
+			result: fn.Ok(23),
+		},
+		{
+			name:   "dead letter",
+			result: fn.Err[int](errors.New("terminal failure")),
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := newMockTxAwareStore()
+			turnDone := make(chan error, 1)
+			store.txCompletionHook = func(err error) {
+				turnDone <- err
+			}
+			codec := newActorTestCodec()
+
+			var deliveries atomic.Int32
+			behavior := newMockBehavior(test.result)
+			behavior.onReceive = func(ctx context.Context,
+				msg *actorTestMsg) {
+
+				deliveries.Add(1)
+				store.recordTxWrite("write-from-stale-consumer")
+
+				// Preserve the row and install a different
+				// owner while this turn is in flight. The
+				// terminal mutation must observe the failed
+				// lease fence and roll back.
+				store.setLeaseOwners("current-owner")
+			}
+
+			cfg := DefaultDurableActorConfig(
+				"terminal-lost-lease-"+test.name, behavior,
+				store, codec,
+			)
+			cfg.PollInterval = 10 * time.Millisecond
+			cfg.MaxAttempts = 1
+
+			a := NewDurableActor(cfg).UnwrapOrFail(t)
+			a.Start()
+
+			msg := &actorTestMsg{
+				Value: tlv.NewPrimitiveRecord[tlv.TlvType1](
+					uint64(23),
+				),
+			}
+			require.NoError(
+				t,
+				a.Ref().Tell(context.Background(), msg),
+			)
+
+			require.Eventually(
+				t, func() bool {
+					return deliveries.Load() >= 1
+				}, 5*time.Second, 10*time.Millisecond,
+			)
+
+			select {
+			case err := <-turnDone:
+				require.ErrorIs(t, err, errLostLeaseMidTurn)
+
+			case <-time.After(5 * time.Second):
+				t.Fatal("transaction tail did not complete")
+			}
+
+			stopCtx, cancel := context.WithTimeout(
+				context.Background(), 5*time.Second,
+			)
+			defer cancel()
+			require.NoError(t, a.StopAndWait(stopCtx))
+
+			require.Empty(t, store.committedTxWrites())
+			require.False(t, store.nackCalled.Load())
+
+			store.mu.Lock()
+			require.Len(t, store.messages, 1)
+			for _, queued := range store.messages {
+				require.Equal(
+					t, "current-owner", queued.LeaseToken,
+				)
+			}
+			require.Empty(t, store.deadLetters)
+			store.mu.Unlock()
+		})
+	}
 }
 
 // TestDeliveryEnqueuedAtFromContext verifies the enqueue timestamp a

@@ -11,7 +11,7 @@ import (
 
 type Querier interface {
 	// Acknowledge successful processing. Deletes the message.
-	// Validates lease_token to prevent stale acks.
+	// Validates both lease_token and lease lifetime to prevent stale acks.
 	AckMailboxMessage(ctx context.Context, arg AckMailboxMessageParams) (int64, error)
 	// Unfenced acknowledgment used by the leaseless single-worker consume path.
 	// Deletes the message by ID without validating a lease_token, because a
@@ -74,7 +74,8 @@ type Querier interface {
 	// Called periodically by a background cleanup task.
 	ExpireMailboxLeases(ctx context.Context, leaseUntil sql.NullInt64) error
 	// Extend the lease for long-running message processing.
-	// Validates lease_token to prevent stale extensions.
+	// Validates the current lease token and lifetime so an expired owner cannot
+	// revive its lease.
 	ExtendMailboxLease(ctx context.Context, arg ExtendMailboxLeaseParams) (int64, error)
 	// Mark an outbox message as failed (dead letter). The claim token must match
 	// to prevent stale publishers from failing messages they no longer own.
@@ -144,6 +145,8 @@ type Querier interface {
 	ListPendingMailboxIDsByPrefix(ctx context.Context, prefix string) ([]string, error)
 	// List pending outbox messages for a specific target actor.
 	ListPendingOutboxByTarget(ctx context.Context, targetActorID string) ([]OutboxMessage, error)
+	// Serialize a fenced mutation with any current owner before sampling time.
+	LockMailboxMessageForUpdate(ctx context.Context, id string) (string, error)
 	// NOTE: DeleteOutboxMessage and CleanupCompletedOutbox are intentionally
 	// omitted from this file. A dedicated GC procedure will be added in a
 	// follow-up to handle cleanup of completed outbox messages and dead letters
@@ -155,11 +158,13 @@ type Querier interface {
 	MarkMessageProcessed(ctx context.Context, arg MarkMessageProcessedParams) error
 	// Move a failed message to the dead letter queue.
 	MoveMailboxToDeadLetter(ctx context.Context, arg MoveMailboxToDeadLetterParams) error
+	// Move a failed leased message only while the supplied owner remains live.
+	MoveMailboxToDeadLetterFenced(ctx context.Context, arg MoveMailboxToDeadLetterFencedParams) (int64, error)
 	// Move a failed outbox message to the dead letter queue.
 	MoveOutboxToDeadLetter(ctx context.Context, arg MoveOutboxToDeadLetterParams) error
 	// Release message for redelivery after retry delay.
 	// Clears lease and sets new available_at.
-	// Validates lease_token to prevent stale nacks.
+	// Validates both lease_token and lease lifetime to prevent stale nacks.
 	NackMailboxMessage(ctx context.Context, arg NackMailboxMessageParams) (int64, error)
 	// Unfenced redelivery release for the leaseless single-worker consume path.
 	// Sets a new available_at and increments attempts. The attempts bump is
@@ -200,7 +205,7 @@ type Querier interface {
 	// this delivery. The CASE clamp guards the invariant rather than trusting
 	// it: attempts is always >= 1 under a valid lease, but a clamped decrement
 	// can never wrap a corrupt row negative. Validates lease_token to prevent
-	// stale postpones. This is the attempt-preserving counterpart to
+	// stale or expired postpones. This is the attempt-preserving counterpart to
 	// NackMailboxMessage, used when a behavior reports "not now" (a postpone)
 	// rather than a failure.
 	PostponeMailboxMessage(ctx context.Context, arg PostponeMailboxMessageParams) (int64, error)
