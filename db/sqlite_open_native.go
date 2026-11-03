@@ -14,9 +14,6 @@ const (
 	// sqliteOptionPrefix is the modernc SQLite DSN prefix for pragma
 	// settings.
 	sqliteOptionPrefix = "_pragma"
-
-	// sqliteTxLockImmediate starts write transactions immediately.
-	sqliteTxLockImmediate = "_txlock=immediate"
 )
 
 // openSQLiteDatabase opens SQLite through the native modernc driver.
@@ -29,10 +26,12 @@ func openSQLiteDatabase(cfg SQLiteOpenConfig) (*SQLiteOpenResult, error) {
 		)
 	}
 
-	dsn := fmt.Sprintf("%s?%s", cfg.DatabaseFileName,
-		sqliteOptions.Encode())
 	if cfg.TxLockImmediate {
-		dsn = fmt.Sprintf("%s&%s", dsn, sqliteTxLockImmediate)
+		sqliteOptions.Set("_txlock", "immediate")
+	}
+	dsn, err := sqliteNativeDSN(cfg, sqliteOptions)
+	if err != nil {
+		return nil, err
 	}
 
 	db, err := sql.Open("sqlite", dsn)

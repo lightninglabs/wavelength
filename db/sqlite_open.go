@@ -17,6 +17,11 @@ type SQLiteOpenConfig struct {
 	// DatabaseFileName is the native filename or logical browser OPFS name.
 	DatabaseFileName string
 
+	// ReadOnly opens an existing native database with SQLite's mode=ro.
+	// Callers must leave TxLockImmediate false for read transactions.
+	// Browser-backed handles reject this option rather than ignoring it.
+	ReadOnly bool
+
 	// Pragmas are applied by the selected driver at open time when
 	// possible.
 	Pragmas []SQLitePragma

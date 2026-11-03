@@ -10,8 +10,10 @@ opens the daemon database — SQLite or Postgres — through the shared `db`
 package, reads generated sqlc accounting projections, and emits a text, JSON,
 or CSV report with optional BTC fiat conversion.
 
-The command opens the database with `SkipMigrations` (it never alters the
-daemon schema) and reads inside a read-only transaction (`db.ReadTxOption`).
+By default SQLite opens through the shared native opener with `ReadOnly: true`
+(`mode=ro`) and deferred read transactions. It does not initialize migrations
+or inherit the daemon's immediate write lock. Postgres uses `SkipMigrations`
+and a read-only transaction (`db.ReadTxOption`).
 For the sqlite backend it also refuses to create a fresh file, erroring on a
 missing path instead of reporting against an empty database it just made.
 
@@ -54,10 +56,10 @@ host or file, alongside the entry count and maximum entry ID.
 
 ## Relationships
 
-- **Depends on**: the shared `db` package (`db.NewStoreFromConfig`,
-  `db.ReadTxOption`) which selects the sqlite/postgres backend exactly as the
-  daemon does; `db/sqlc` generated read queries; `net/http` for optional fiat
-  pricing.
+- **Depends on**: the shared `db` package (`db.OpenSQLiteDatabase` and
+  `db.NewStore` for default read-only SQLite; `db.NewStoreFromConfig` for
+  Postgres and explicit migration maintenance; `db.ReadTxOption` for snapshot
+  reads); `db/sqlc` generated read queries; `net/http` for optional fiat pricing.
 - **Depended on by**: operators running e.g.
   `go run ./internal/cmd/tools/accounting --backend sqlite --sqlite.dbfile <waved.db>`.
 
@@ -65,14 +67,14 @@ host or file, alongside the entry count and maximum entry ID.
 
 - Do not embed raw SQL in the command; add accounting projections to
   `db/sqlc/queries/fee_accounting.sql` and regenerate with `make sqlc`.
-- Open the database the same way the daemon does (`db.NewStoreFromConfig`) so
-  the report works against either backend; never hand-roll a backend-specific
-  connection.
+- Default SQLite reporting uses `db.OpenSQLiteDatabase` and the shared sqlc
+  store adapter with `ReadOnly: true`. Keep daemon initialization, immediate
+  write locks, and journal-changing pragmas out of this path. Postgres and
+  explicit migration maintenance use `db.NewStoreFromConfig`.
 - Default to not running migrations; the report inspects the state the daemon
   already owns. Read inside a `db.ReadTxOption` transaction. Note: the read-only
-  transaction is enforced by Postgres, but the modernc sqlite driver does not
-  reject writes in a read-only transaction — on sqlite the read-only guarantee
-  rests on `SkipMigrations` plus the report issuing only SELECTs.
+  transaction is enforced by Postgres. Native SQLite enforces read-only file
+  access through `mode=ro`, not the driver's transaction read-only flag.
 - Do not import Faraday. Add new price providers behind `PriceSource`.
 - Keep output stable enough for admin scripts: add fields rather than
   renaming existing JSON/CSV keys. Check names are part of that contract.

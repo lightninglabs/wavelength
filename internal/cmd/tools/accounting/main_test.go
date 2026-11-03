@@ -2,14 +2,107 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/csv"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/stretchr/testify/require"
 )
+
+// TestLiveSQLiteReportReadOnly verifies reports read committed WAL state
+// without taking the daemon's write lock, and cannot modify the source.
+func TestLiveSQLiteReportReadOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "waved.db")
+	writer, err := db.NewStoreFromConfig(&db.Config{
+		Backend: "sqlite",
+		Sqlite: &db.SqliteConfig{
+			DatabaseFileName: path,
+		},
+	}, btclog.Disabled)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, writer.Close()) })
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	insert := `INSERT INTO ledger_entries
+		(debit_account, credit_account, amount_sat, event_type,
+			description, created_at)
+		VALUES ('wallet_balance', 'opening_balance', 100,
+			'wallet_utxo_created', 'fixture', 1000)`
+	_, err = writer.DB().ExecContext(ctx, insert)
+	require.NoError(t, err)
+
+	cfg := &config{backend: "sqlite", sqliteDBFile: path}
+	reader, err := openStore(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, reader.Close()) })
+
+	// A live, uncommitted write must not prevent a report or leak its
+	// pending row into the report's committed snapshot.
+	writeTx, err := writer.DB().BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() {
+		_ = writeTx.Rollback()
+	}()
+	_, err = writeTx.ExecContext(ctx, insert)
+	require.NoError(t, err)
+	rep, err := buildReport(ctx, reader, cfg, nil)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rep.EntryCount)
+	require.NoError(t, writeTx.Commit())
+
+	// Once a reader has pinned a WAL snapshot, the daemon can still
+	// commit. All report projections continue to see the same snapshot.
+	readTx, err := reader.BaseDB().BeginTx(ctx, db.ReadTxOption())
+	require.NoError(t, err)
+	defer func() {
+		_ = readTx.Rollback()
+	}()
+	queries := reader.Queries().WithTx(readTx)
+	before, err := queries.GetClientLedgerStats(ctx)
+	require.NoError(t, err)
+	_, err = writer.DB().ExecContext(ctx, insert)
+	require.NoError(t, err)
+	after, err := queries.GetClientLedgerStats(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), before.EntryCount)
+	require.Equal(t, before, after)
+	require.NoError(t, readTx.Rollback())
+
+	_, err = reader.DB().ExecContext(ctx, "DELETE FROM ledger_entries")
+	require.Error(t, err)
+	rep, err = buildReport(ctx, reader, cfg, nil)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), rep.EntryCount)
+}
+
+// TestSQLiteReportEscapesFilename verifies mode=ro still addresses the exact
+// file when its native path contains URI query or fragment characters.
+func TestSQLiteReportEscapesFilename(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "original.db")
+	writer, err := db.NewStoreFromConfig(&db.Config{
+		Backend: "sqlite",
+		Sqlite:  &db.SqliteConfig{DatabaseFileName: path},
+	}, btclog.Disabled)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	escaped := filepath.Join(root, "report #?.db")
+	require.NoError(t, os.Rename(path, escaped))
+	cfg := &config{backend: "sqlite", sqliteDBFile: escaped}
+	reader, err := openStore(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, reader.Close()) })
+	rep, err := buildReport(t.Context(), reader, cfg, nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, rep.Accounts)
+}
 
 // TestOpenStoreRequiresExistingSqliteFile verifies that the report command
 // refuses to create a new sqlite database when the operator passes a path
@@ -89,6 +182,13 @@ func TestBuildReportReadsSeededAccounts(t *testing.T) {
 	}
 	require.Contains(t, accountIDs, "wallet_clearing")
 	require.Contains(t, accountIDs, "wallet_balance")
+
+	// The checker shares the default opener. Its full snapshot must also
+	// work through the read-only handle without hidden initialization
+	// writes.
+	checked, err := buildCheckReport(t.Context(), store, cfg)
+	require.NoError(t, err)
+	require.True(t, checked.Passed)
 }
 
 // TestWriteCSVReport verifies the CSV output emits a header plus one flat row

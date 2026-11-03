@@ -36,7 +36,10 @@ func openSQLiteDatabase(cfg SQLiteOpenConfig) (*SQLiteOpenResult, error) {
 		options.Set("_txlock", "immediate")
 	}
 
-	dsn := fmt.Sprintf("%s?%s", cfg.DatabaseFileName, options.Encode())
+	dsn, err := sqliteNativeDSN(cfg, options)
+	if err != nil {
+		return nil, err
+	}
 	handle, err := sql.Open(cgoSQLiteDriverName, dsn)
 	if err != nil {
 		return nil, err

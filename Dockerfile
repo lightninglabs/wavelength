@@ -1,6 +1,6 @@
 # Wavelength (waved) Multi-Stage Build
 #
-# Builds the waved client daemon and wavecli tool from local source.
+# Builds waved, wavecli, and the standalone accounting reporter from local source.
 # The baselib/ submodule must be present since go.mod uses a local replace.
 #
 # Usage:
@@ -38,10 +38,11 @@ RUN go mod download
 # Copy full source (including baselib/ for replace directive).
 COPY . .
 
-# Build both binaries with CGO disabled for a static binary. Both get the same
+# Build the binaries with CGO disabled for static binaries. All get the same
 # tag set, mirroring the Makefile's build target.
 RUN CGO_ENABLED=0 go build -trimpath -tags="${GOTAGS}" -o /out/waved ./cmd/waved
 RUN CGO_ENABLED=0 go build -trimpath -tags="${GOTAGS}" -o /out/wavecli ./cmd/wavecli
+RUN CGO_ENABLED=0 go build -trimpath -tags="${GOTAGS}" -o /out/wavelength-accounting ./internal/cmd/tools/accounting
 
 # --- Runtime ---
 FROM alpine:3.21
@@ -50,6 +51,7 @@ RUN apk add --no-cache ca-certificates
 
 COPY --from=builder /out/waved /usr/local/bin/waved
 COPY --from=builder /out/wavecli /usr/local/bin/wavecli
+COPY --from=builder /out/wavelength-accounting /usr/local/bin/wavelength-accounting
 
 # Daemon RPC port.
 EXPOSE 10029
