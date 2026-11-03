@@ -107,18 +107,12 @@ other services can reuse durable actor storage without pulling unrelated tables.
   that reaches the cap does not merely become dead-letter-eligible, it leaves
   the eligible set entirely; only a postpone keeps a waiting message
   claim-eligible indefinitely.
-- The keyed-lane anti-join in the claim/peek queries (`m2.attempts <
-  m2.max_attempts`) has a boundary case that only postpone can expose: a
-  predecessor leased on its **final** attempt already satisfies `attempts ==
-  max_attempts`, so it is invisible to the anti-join while in flight and a
-  competing worker may claim its same-key successor. Harmless for ack and nack
-  (the predecessor can then only complete or dead-letter), but a postpone
-  decrements it back below the cap, so it reprocesses after the successor and
-  inverts per-key FIFO. No adopter combines keyed lanes, `NumWorkers > 1`, and
-  postpone today, so the SQL is deliberately unchanged; the prerequisite repair
-  is a lease-liveness disjunct so a currently-leased predecessor blocks its
-  successors regardless of attempts. See the CAVEAT comment on
-  `LeaseNextMailboxMessage` in `queries/mailbox.sql`.
+- The keyed-lane anti-join treats an earlier row as live while it either has
+  retry budget or holds an unexpired lease. This matters on the final attempt:
+  a claim increments `attempts` to `max_attempts`, but a postpone can restore
+  that budget. The live lease therefore keeps same-key successors blocked until
+  the predecessor is acknowledged, postponed, or its lease expires. An
+  exhausted row with no live lease is terminal and does not block the lane.
 - `mailbox_messages.created_at` is the durable enqueue time and is never
   rewritten by a release: nack, postpone, and lease extension all leave it
   alone. That is what makes it a trustworthy age reference, surfaced to
