@@ -81,6 +81,10 @@ tap-sdk. Durable journals retain committed packages for restart recovery.
   `anchorPlan` rejects leaves whose two roots differ (any leaf count that is
   not a power of two, or leaves out of canonical order), since the composed
   output would not match the policy's control blocks.
+- **A transition merges at most `MaxTransitionInputs` inputs per issuance.**
+  Each extra input becomes a co-input path of the proof path step, which
+  tap-sdk bounds. Plans above the bound fail with
+  `ErrTooManyTransitionInputs` before tapd seals anything.
 
 ## Deep Docs
 
