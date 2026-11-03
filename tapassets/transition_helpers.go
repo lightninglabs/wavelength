@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 )
 
 const (
@@ -228,8 +229,37 @@ func callerFundedExact() tapsdk.CustomAnchorFundingPlan {
 	}
 }
 
+// anchorPlan describes a composed anchor output for the given policy leaves.
+// tap-sdk assembles TapLeaves by pairing adjacent leaves, while arkscript
+// splits a policy's leaves in halves. Leaves are accepted only where both
+// layouts give the same root, so the composed output stays spendable through
+// the policy's control blocks.
 func anchorPlan(internalKey *btcec.PublicKey,
-	leaves []txscript.TapLeaf) tapsdk.CustomAnchorOutputPlan {
+	leaves []txscript.TapLeaf) (tapsdk.CustomAnchorOutputPlan, error) {
+
+	if len(leaves) > 1 {
+		policyLeaves := make([]arkscript.PolicyLeaf, len(leaves))
+		for idx := range leaves {
+			policyLeaves[idx] = arkscript.PolicyLeaf{
+				Leaf: leaves[idx],
+			}
+		}
+		policy, err := arkscript.BuildTree(
+			policyLeaves, &arkscript.ARKNUMSKey,
+		)
+		if err != nil {
+			return tapsdk.CustomAnchorOutputPlan{}, fmt.Errorf(
+				"build anchor policy tree: %w", err)
+		}
+
+		assembled := txscript.AssembleTaprootScriptTree(leaves...)
+		root := assembled.RootNode.TapHash()
+		if !bytes.Equal(root[:], policy.RootHash) {
+			return tapsdk.CustomAnchorOutputPlan{}, fmt.Errorf(
+				"%d anchor leaves do not assemble into their "+
+					"policy tree", len(leaves))
+		}
+	}
 
 	pubKey, _ := tapsdk.ParsePubKey(internalKey.SerializeCompressed())
 	sdkLeaves := make([]tapsdk.TapLeaf, len(leaves))
@@ -246,7 +276,7 @@ func anchorPlan(internalKey *btcec.PublicKey,
 		Tapscript: tapsdk.CustomAnchorTapscriptPlan{
 			TapLeaves: sdkLeaves,
 		},
-	}
+	}, nil
 }
 
 func deterministicKey(digest tapsdk.Hash, domain string) tapsdk.PubKey {
