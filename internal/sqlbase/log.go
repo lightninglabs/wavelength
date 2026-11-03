@@ -1,5 +1,3 @@
-//go:build js && wasm
-
 package sqlbase
 
 import "github.com/btcsuite/btclog/v2"

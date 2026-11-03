@@ -1,5 +1,3 @@
-//go:build js && wasm
-
 package sqlbase
 
 import (
@@ -15,8 +13,9 @@ type readWriteTx struct {
 	db *db
 	tx *sql.Tx
 
-	// onCommit gets called upon commit.
-	onCommit func()
+	// onCommit holds the callbacks to run, in registration order, once
+	// the transaction has committed.
+	onCommit []func()
 
 	// active is true if the transaction hasn't been committed yet.
 	active bool
@@ -161,8 +160,10 @@ func (tx *readWriteTx) Commit() error {
 
 	// Try committing the transaction.
 	err := tx.tx.Commit()
-	if err == nil && tx.onCommit != nil {
-		tx.onCommit()
+	if err == nil {
+		for _, cb := range tx.onCommit {
+			cb()
+		}
 	}
 
 	// Unlock the transaction regardless of the error result.
@@ -172,9 +173,13 @@ func (tx *readWriteTx) Commit() error {
 	return err
 }
 
-// OnCommit sets the commit callback (overriding if already set).
+// OnCommit registers a callback to run once the transaction has
+// committed. Every registered callback runs, in registration order,
+// matching bbolt: btcwallet registers one per call site, for instance one
+// per newly derived address branch to advance its cached next index, and
+// keeping only the last would leave the others' in-memory state stale.
 func (tx *readWriteTx) OnCommit(cb func()) {
-	tx.onCommit = cb
+	tx.onCommit = append(tx.onCommit, cb)
 }
 
 // QueryRow executes a QueryRow call with a timeout context.

@@ -130,6 +130,7 @@ waved \
 | `--wallet.btcwallet_filterheaderssource` | | Filter header import source for btcwallet fast sync |
 | `--wallet.pollinterval` | `30s` | Esplora poll interval (lwwallet only) |
 | `--wallet.recoverywindow` | `100` | Address look-ahead window (lwwallet only) |
+| `--wallet.dbbackend` | `bolt` | Wallet database backend (lwwallet only): `bolt` or `sqlite`; fixed once the wallet is created |
 | `--wallet.password_file` | | Auto-unlock password file path (lwwallet/btcwallet) |
 | `--lnd.host` | `localhost:10009` | lnd gRPC address |
 | `--lnd.tlspath` | | Path to lnd TLS certificate |

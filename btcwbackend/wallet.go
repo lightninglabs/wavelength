@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/lwwallet"
 	"github.com/lightninglabs/wavelength/walletcore"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
@@ -70,7 +71,28 @@ func WalletExists(cfg Config) (bool, error) {
 
 // walletExists implements the wallet database existence probe on top
 // of btcwallet's loader.
+//
+// It fails when the directory holds a wallet written by lwwallet's SQLite
+// backend. btcwallet shares its BoltDB file with lwwallet's default
+// backend, so switching between the two wallet types keeps the wallet,
+// but it never looks at the SQLite file: to the loader such a directory
+// is empty, and the create path would put a second, unrelated wallet
+// beside the existing, possibly funded, one. Every create and open goes
+// through this probe, so refusing here covers both.
 func walletExists(cfg Config) (bool, error) {
+	sqlitePath, sqliteExists, err := lwwallet.SQLiteWalletDBExists(
+		cfg.DBDir,
+	)
+	if err != nil {
+		return false, err
+	}
+	if sqliteExists {
+		return false, fmt.Errorf("wallet database %s was written by "+
+			"lwwallet's SQLite backend, which btcwallet cannot "+
+			"open; use lwwallet with the sqlite database backend "+
+			"for this directory", sqlitePath)
+	}
+
 	loader, err := btcwallet.NewWalletLoader(
 		cfg.ChainParams, cfg.RecoveryWindow,
 		btcwallet.LoaderWithLocalWalletDB(
