@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/rpc/restclient"
@@ -31,6 +32,7 @@ func newTestCreditBridge(t *testing.T, startPayErr error,
 	fakeClient := newFakeSwapRuntime(summaries...)
 	fakeClient.startPayErr = startPayErr
 	service := newTestSwapClientService(fakeClient)
+	service.daemonConn = &bridgeTestDaemon{key: bridgeTestKey()}
 	service.chainParams = &chaincfg.RegressionNetParams
 	t.Cleanup(service.cancel)
 
@@ -275,6 +277,7 @@ func newTestRedeemBridge(t *testing.T, redeemErr error) *creditServerBridge {
 	fakeClient := newFakeSwapRuntime()
 	fakeClient.redeemCreditErr = redeemErr
 	service := newTestSwapClientService(fakeClient)
+	service.daemonConn = &bridgeTestDaemon{key: bridgeTestKey()}
 	t.Cleanup(service.cancel)
 
 	return &creditServerBridge{svc: service}
@@ -296,7 +299,8 @@ func TestCreditBridgeRedeemRejection(t *testing.T) {
 	)
 
 	_, err := bridge.RedeemCredit(
-		context.Background(), nil, "redeem:abc", 100, []byte{0x02},
+		context.Background(), bridgeTestKey().SerializeCompressed(),
+		"redeem:abc", 100, []byte{0x02},
 	)
 	require.ErrorIs(t, err, credit.ErrRedeemRejected)
 }
@@ -366,8 +370,9 @@ func TestCreditBridgeRedeemStaysRetryable(t *testing.T) {
 			bridge := newTestRedeemBridge(t, test.err)
 
 			_, err := bridge.RedeemCredit(
-				context.Background(), nil, "redeem:abc", 100,
-				[]byte{0x02},
+				context.Background(),
+				bridgeTestKey().SerializeCompressed(),
+				"redeem:abc", 100, []byte{0x02},
 			)
 			require.Error(t, err)
 			require.NotErrorIs(t, err, credit.ErrRedeemRejected)
@@ -461,8 +466,9 @@ func TestCreditBridgeCreateCreditTopUpRejection(t *testing.T) {
 			fakeClient.createCreditErr = test.err
 
 			_, err := bridge.CreateCredit(
-				context.Background(), nil, "key", test.source,
-				5, "",
+				context.Background(),
+				bridgeTestKey().SerializeCompressed(),
+				"key", test.source, 5, "",
 			)
 			require.Error(t, err)
 			require.Equal(
@@ -520,6 +526,96 @@ func TestCreditBridgeRESTDetailsReachBridge(t *testing.T) {
 				t, test.rejected,
 				errors.Is(err, credit.ErrPayRejected),
 			)
+		})
+	}
+}
+
+// bridgeTestDaemon supplies a fixed wallet identity to account-binding tests.
+type bridgeTestDaemon struct {
+	swaps.DaemonConn
+	key *btcec.PublicKey
+}
+
+// IdentityPubKey returns the wallet identity used by the downstream signer.
+func (d *bridgeTestDaemon) IdentityPubKey(context.Context) (*btcec.PublicKey,
+	error) {
+
+	return d.key, nil
+}
+
+// bridgeTestKey produces a stable test wallet identity.
+func bridgeTestKey() *btcec.PublicKey {
+	_, key := btcec.PrivKeyFromBytes([]byte{42})
+
+	return key
+}
+
+// TestCreditBridgePreservesAccountAndAmounts rejects account substitution
+// before an RPC and retains per-operation amounts for completion validation.
+func TestCreditBridgePreservesAccountAndAmounts(t *testing.T) {
+	bridge, runtime := newTestCreditBridge(t, nil)
+	_, wrong := btcec.PrivKeyFromBytes([]byte{43})
+	account := wrong.SerializeCompressed()
+	_, err := bridge.CreateCredit(
+		t.Context(), account, "key", credit.SourceArkTopUp, 500, "",
+	)
+	require.Equal(t, codes.PermissionDenied, status.Code(err))
+	_, err = bridge.RedeemCredit(t.Context(), account, "key", 500, account)
+	require.Equal(t, codes.PermissionDenied, status.Code(err))
+	_, err = bridge.ListCredits(t.Context(), account)
+	require.Equal(t, codes.PermissionDenied, status.Code(err))
+	require.Zero(t, runtime.createCreditCalls)
+	require.Zero(t, runtime.redeemCreditCalls)
+	require.Zero(t, runtime.listCreditsCalls)
+	runtime.listCreditsResp = &swaps.CreditSnapshot{
+		Operations: []swaps.CreditOperation{{
+			OperationID: "pay-op",
+			State:       swaps.CreditStateDebited,
+			AmountSat:   501,
+		}},
+	}
+	snapshot, err := bridge.ListCredits(
+		t.Context(), bridgeTestKey().SerializeCompressed(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, uint64(501), snapshot.Operations[0].AmountSat)
+}
+
+// TestCreditBridgeAuthorizationConflict observes an existing payment without
+// reauthorizing it. A conflict with no local obligation is a definitive
+// refusal.
+func TestCreditBridgeAuthorizationConflict(t *testing.T) {
+	invoice := testStartPayInvoice(t, testHash(77), 10000)
+	for _, direction := range []swaps.SwapDirection{
+		"",
+		swaps.SwapDirectionPay,
+		swaps.SwapDirectionReceive,
+	} {
+		exists := direction != ""
+		t.Run(string(direction), func(t *testing.T) {
+			var summaries []swaps.SwapSummary
+			if exists {
+				summaries = append(summaries, swaps.SwapSummary{
+					Direction:   direction,
+					PaymentHash: testHash(77),
+					Invoice:     invoice,
+					State:       "Completed",
+				})
+			}
+			bridge, _ := newTestCreditBridge(
+				t, swaps.ErrPayAuthorizationMismatch,
+				summaries...,
+			)
+			err := bridge.StartPay(t.Context(), invoice, 25, 500)
+			if direction == swaps.SwapDirectionPay {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, credit.ErrPayRejected)
+				require.Equal(
+					t, codes.AlreadyExists,
+					status.Code(err),
+				)
+			}
 		})
 	}
 }

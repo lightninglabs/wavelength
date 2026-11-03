@@ -113,10 +113,11 @@ INSERT INTO pay_swaps (
     preimage,
     intervention_reason,
     created_at_unix,
-    updated_at_unix
+    updated_at_unix,
+    credit_quote
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
+    $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29
 )
 ON CONFLICT (payment_hash) DO UPDATE SET
     invoice = EXCLUDED.invoice,
@@ -145,6 +146,7 @@ ON CONFLICT (payment_hash) DO UPDATE SET
     refund_recovery_id = EXCLUDED.refund_recovery_id,
     preimage = EXCLUDED.preimage,
     intervention_reason = EXCLUDED.intervention_reason,
+    credit_quote = EXCLUDED.credit_quote,
     updated_at_unix = EXCLUDED.updated_at_unix;
 
 -- name: GetPaySwap :one
@@ -162,3 +164,12 @@ WHERE state NOT IN (
     'Completed', 'Expired', 'Refunded', 'NeedsIntervention', 'Failed'
 )
 ORDER BY created_at_unix ASC;
+
+-- name: AdmitPayAuthorization :exec
+INSERT INTO pay_authorizations (
+    payment_hash, invoice, account_pubkey, max_fee_sat, max_credit_sat
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (payment_hash) DO NOTHING;
+
+-- name: GetPayAuthorization :one
+SELECT * FROM pay_authorizations WHERE payment_hash = $1;

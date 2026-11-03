@@ -1502,17 +1502,16 @@ func (s *swapClientService) StartPay(ctx context.Context,
 			"idempotency_key is reserved for future use",
 		)
 	}
-	existing, ok, err := s.pendingSwapForInvoice(ctx, req.GetInvoice())
+	maxFeeSat := s.effectiveMaxFeeSat(req.GetMaxFeeSat(), req.GetInvoice())
+	existing, ok, err := s.pendingSwapForInvoice(
+		ctx, req.GetInvoice(), maxFeeSat, req.GetMaxCreditSat(),
+	)
 	if err != nil {
 		return nil, err
 	}
 	if ok {
 		return existing, nil
 	}
-
-	maxFeeSat := s.effectiveMaxFeeSat(
-		req.GetMaxFeeSat(), req.GetInvoice(),
-	)
 
 	session, err := s.startPay(
 		ctx, req.GetInvoice(), maxFeeSat, req.GetMaxCreditSat(),
@@ -1735,7 +1734,8 @@ func (s *swapClientService) ListCredits(ctx context.Context,
 // used by tests, or malformed invoices that sdk/swaps must reject later, skip
 // this best-effort preflight so the existing validation path is preserved.
 func (s *swapClientService) pendingSwapForInvoice(ctx context.Context,
-	invoice string) (*swapclientrpc.StartPayResponse, bool, error) {
+	invoice string, maxFeeSat, maxCreditSat uint64) (
+	*swapclientrpc.StartPayResponse, bool, error) {
 
 	if s.chainParams == nil {
 		return nil, false, nil
@@ -1768,6 +1768,18 @@ func (s *swapClientService) pendingSwapForInvoice(ctx context.Context,
 		return nil, false, nil
 	}
 
+	if validator, ok := s.client.(interface {
+		ValidatePayAuthorization(context.Context, string, uint64,
+			uint64) error
+	}); ok {
+
+		if err := validator.ValidatePayAuthorization(
+			ctx, invoice, maxFeeSat, maxCreditSat,
+		); err != nil {
+			return nil, false, err
+		}
+	}
+
 	s.startPayWorker(hash)
 
 	return &swapclientrpc.StartPayResponse{
@@ -1777,12 +1789,13 @@ func (s *swapClientService) pendingSwapForInvoice(ctx context.Context,
 }
 
 // hasSwapForInvoice reports whether the daemon holds any swap record, in any
-// state or direction, for the invoice's payment hash. An invoice that cannot be
-// decoded has no payment hash and so no record. When the invoice cannot be
-// decoded for lack of chain parameters, or the store cannot be read, the answer
-// is unknown and an error is returned.
+// state for the invoice's payment hash. An optional direction restricts
+// positive evidence to that operation family. An invoice that cannot be decoded
+// has no payment hash and so no record. When the invoice cannot be decoded for
+// lack of chain parameters, or the store cannot be read, the answer is unknown
+// and an error is returned.
 func (s *swapClientService) hasSwapForInvoice(ctx context.Context,
-	invoice string) (bool, error) {
+	invoice string, directions ...swaps.SwapDirection) (bool, error) {
 
 	if s.chainParams == nil {
 		return false, fmt.Errorf("chain params are not configured")
@@ -1796,9 +1809,13 @@ func (s *swapClientService) hasSwapForInvoice(ctx context.Context,
 	}
 
 	hash := lntypes.Hash(*decoded.PaymentHash)
-	_, err = s.client.GetSwapSummary(ctx, hash)
+	summary, err := s.client.GetSwapSummary(ctx, hash)
 	switch {
 	case err == nil:
+		if len(directions) != 0 && summary.Direction != directions[0] {
+			return false, nil
+		}
+
 		return true, nil
 
 	case errors.Is(err, swaps.ErrSwapSummaryNotFound):
@@ -2848,4 +2865,14 @@ func swapSettlementTypeToProto(
 		return swapclientrpc.
 			SwapSettlementType_SWAP_SETTLEMENT_TYPE_UNSPECIFIED
 	}
+}
+
+// ValidatePayAuthorization preserves the SDK's request binding on daemon-local
+// replay, before pending-swap deduplication returns success to a new caller.
+func (a *swapClientAdapter) ValidatePayAuthorization(ctx context.Context,
+	invoice string, maxFeeSat, maxCreditSat uint64) error {
+
+	return a.client.ValidatePayAuthorization(
+		ctx, invoice, maxFeeSat, maxCreditSat,
+	)
 }
