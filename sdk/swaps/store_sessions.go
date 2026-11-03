@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -56,7 +58,7 @@ func (c *SwapClient) ResumePayViaLightning(ctx context.Context,
 		return nil, fmt.Errorf("load pay session: %w", err)
 	}
 
-	return paySessionFromRow(c, row)
+	return paySessionFromRow(ctx, c, row)
 }
 
 // GetSwapSummary returns one persisted pay or receive swap summary by payment
@@ -165,7 +167,7 @@ func (c *SwapClient) ListPaySessions(ctx context.Context) ([]*PaySession,
 
 	sessions := make([]*PaySession, 0, len(rows))
 	for i := range rows {
-		session, err := paySessionFromRow(c, rows[i])
+		session, err := paySessionFromRow(ctx, c, rows[i])
 		if err != nil {
 			return nil, err
 		}
@@ -246,7 +248,7 @@ func (c *SwapClient) ListPendingPaySessions(ctx context.Context) ([]*PaySession,
 
 	sessions := make([]*PaySession, 0, len(rows))
 	for i := range rows {
-		session, err := paySessionFromRow(c, rows[i])
+		session, err := paySessionFromRow(ctx, c, rows[i])
 		if err != nil {
 			return nil, err
 		}
@@ -321,7 +323,13 @@ func paySummaryFromRow(row swapsqlc.PaySwap) (SwapSummary, error) {
 		preimage = &decoded
 	}
 
+	creditQuote, err := decodePayCreditQuote(row.CreditQuote)
+	if err != nil {
+		return SwapSummary{}, err
+	}
+
 	return SwapSummary{
+		CreditQuote:      creditQuote,
 		Direction:        SwapDirectionPay,
 		PaymentHash:      paymentHash,
 		Preimage:         preimage,
@@ -691,6 +699,16 @@ func (s *paySession) persist(ctx context.Context) error {
 		CreatedAtUnix:         s.createdAt.Unix(),
 		UpdatedAtUnix:         now,
 	}
+	if s.cfg.CreditQuote != nil {
+		raw, err := json.Marshal(
+			(*persistedPayCreditQuote)(s.cfg.CreditQuote),
+		)
+		if err != nil {
+			return fmt.Errorf("encode pay credit quote: %w", err)
+		}
+		params.CreditQuote = raw
+	}
+
 	if s.preimage != nil {
 		params.Preimage = append([]byte(nil), s.preimage[:]...)
 	}
@@ -852,7 +870,7 @@ func receiveExpectedVHTLCSat(row swapsqlc.ReceiveSwap) uint64 {
 }
 
 // paySessionFromRow reconstructs one pay session from its persisted SQL row.
-func paySessionFromRow(c *SwapClient,
+func paySessionFromRow(ctx context.Context, c *SwapClient,
 	row swapsqlc.PaySwap) (*PaySession, error) {
 
 	state, err := parsePayState(row.State)
@@ -922,10 +940,27 @@ func paySessionFromRow(c *SwapClient,
 		Expiry: time.Unix(row.ExpiryUnix, 0),
 	}
 
+	cfg.CreditQuote, err = decodePayCreditQuote(row.CreditQuote)
+	if err != nil {
+		return nil, err
+	}
+	var maxCreditSat uint64
+	auth, err := c.store.queries.GetPayAuthorization(ctx, row.PaymentHash)
+	if err == nil {
+		maxCreditSat, err = strconv.ParseUint(auth.MaxCreditSat, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("decode pay authorization: %w",
+				err)
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+
 	session := &paySession{
 		client:        c,
 		invoice:       row.Invoice,
 		maxFeeSat:     uint64(row.MaxFeeSat),
+		maxCreditSat:  maxCreditSat,
 		state:         state,
 		cfg:           cfg,
 		vhtlcPolicy:   policy,
@@ -1086,4 +1121,28 @@ func parsePayState(state string) (PayState, error) {
 	default:
 		return PayStateFailed, fmt.Errorf("unknown pay state %q", state)
 	}
+}
+
+// decodePayCreditQuote restores the accepted credit plan. Historical rows
+// remain unknown instead of reconstructing a reservation from server state.
+func decodePayCreditQuote(raw []byte) (*CreditQuote, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var quote persistedPayCreditQuote
+	if err := json.Unmarshal(raw, &quote); err != nil {
+		return nil, fmt.Errorf("decode pay credit quote: %w", err)
+	}
+
+	return (*CreditQuote)(&quote), nil
+}
+
+// persistedPayCreditQuote defines the stable storage representation without
+// changing the public SDK type's JSON representation.
+type persistedPayCreditQuote struct {
+	MustUseCredit      bool   `json:"must_use_credit"`
+	CreditAppliedSat   uint64 `json:"credit_applied_sat"`
+	CreditShortfallSat uint64 `json:"credit_shortfall_sat"`
+	CreditTopupSat     uint64 `json:"credit_topup_sat"`
+	ArkFundingSat      uint64 `json:"ark_funding_sat"`
 }

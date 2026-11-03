@@ -167,6 +167,7 @@ func (s *fakeStore) ListOperations(_ context.Context) (
 
 // fakeServerOp is one tracked server credit operation.
 type fakeServerOp struct {
+	amountSat   uint64
 	id          string
 	state       ServerCreditState
 	paymentHash []byte
@@ -260,6 +261,7 @@ func (s *fakeServer) ListCredits(_ context.Context, _ []byte) (*CreditSnapshot,
 	for _, op := range s.ops {
 		snap.Operations = append(snap.Operations, ServerCreditOp{
 			OperationID: op.id,
+			AmountSat:   op.amountSat,
 			State:       op.state,
 			PaymentHash: op.paymentHash,
 		})
@@ -380,6 +382,7 @@ func (s *fakeServer) setPayOp(paymentHash []byte, state ServerCreditState) {
 	key := "pay-op-" + hex.EncodeToString(paymentHash)
 	s.ops[key] = &fakeServerOp{
 		id:          key,
+		amountSat:   500,
 		state:       state,
 		paymentHash: append([]byte(nil), paymentHash...),
 	}
@@ -1679,4 +1682,57 @@ func TestAwaitingStateNacksDeterministicLedgerError(t *testing.T) {
 			)
 		})
 	}
+}
+
+// TestCreditPayRejectsOverCapLedger keeps contradictory completion pending,
+// including after actor restoration. A matching debit still completes later.
+func TestCreditPayRejectsOverCapLedger(t *testing.T) {
+	store := newFakeStore()
+	server, daemon := newFakeServer(), newFakeDaemon()
+	b := testBehavior("cap-op", store, server, daemon)
+	admit(t, b, store, &StartCreditPayRequest{
+		OpKey: "pay:cap", Invoice: "lnbc1", PaymentHash: payHash(),
+		AmountSat: 500, MaxCreditSat: 500, CreditOnly: true,
+	})
+	drive(t, b, &ResumeCreditOpRequest{OpID: "cap-op"})
+	ph := payHash()
+	server.setPayOp(ph[:], ServerStateDebited)
+	server.mu.Lock()
+	for _, op := range server.ops {
+		op.amountSat = 501
+	}
+	server.mu.Unlock()
+	require.NoError(t, driveTurn(b, &fakeExec{}))
+	require.Contains(t, b.rec.LastError, "requires intervention")
+	require.True(t, b.armRetry)
+	rec, err := store.GetOperation(t.Context(), "cap-op")
+	require.NoError(t, err)
+	require.Equal(t, string(StatePayAwaitingSettlement), rec.State)
+	restored := testBehavior("cap-op", store, server, daemon)
+	require.NoError(t, restored.restore(t.Context()))
+	require.NoError(t, driveTurn(restored, &fakeExec{}))
+	require.Contains(t, restored.rec.LastError, "requires intervention")
+	require.True(t, restored.armRetry)
+	server.setPayOp(ph[:], ServerStateDebited)
+	drive(t, restored, &ResumeCreditOpRequest{OpID: "cap-op"})
+	require.Equal(t, string(StateCompleted), restored.rec.State)
+	require.Equal(t, 1, server.startPayCnt)
+}
+
+// TestCreditLedgerReleaseOverridesAmount accepts authoritative release even
+// when stale amount metadata contradicts the cap; missing active amounts park.
+func TestCreditLedgerReleaseOverridesAmount(t *testing.T) {
+	hash := payHash()
+	snapshot := &CreditSnapshot{Operations: []ServerCreditOp{{
+		OperationID: "op", PaymentHash: hash[:], AmountSat: 501,
+		State: ServerStateReleased,
+	}}}
+	state, found, err := authorizedPayState(snapshot, hash[:], 500)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, ServerStateReleased, state)
+	snapshot.Operations[0].State = ServerStateDebited
+	snapshot.Operations[0].AmountSat = 0
+	_, _, err = authorizedPayState(snapshot, hash[:], 500)
+	require.ErrorContains(t, err, "missing amount")
 }

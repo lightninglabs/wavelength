@@ -99,6 +99,11 @@ type CreateCreditResult struct {
 
 // ServerCreditOp is one server credit operation from a ListCredits snapshot.
 type ServerCreditOp struct {
+	// AmountSat is the per-operation reservation or finalized debit
+	// reported by the server. It must stay within the original pay
+	// authorization.
+	AmountSat uint64
+
 	// OperationID is the server credit operation id.
 	OperationID string
 
@@ -301,7 +306,9 @@ type OpActorConfig struct {
 	// MaxAwaitingPolls caps how many reconciliation polls a pay top-up,
 	// credit-only pay, or redemption may take before the operation
 	// terminal-fails. Credit receives are excluded because the server-owned
-	// invoice lifecycle is their terminal authority. Zero means unlimited.
+	// invoice lifecycle is their terminal authority. Contradictory pay
+	// ledger evidence remains pending for intervention. Zero means
+	// unlimited.
 	MaxAwaitingPolls uint32
 
 	// AutoRedeemEnabled turns on the receive-driven auto-redeem: a settled
@@ -363,7 +370,8 @@ type RegistryConfig struct {
 	// MaxAwaitingPolls caps reconciliation polls for pay top-ups,
 	// credit-only pays, and redemptions before they terminal-fail. Credit
 	// receives rely only on server-reported terminal states. Zero means
-	// unlimited.
+	// unlimited. Contradictory pay ledger evidence remains pending for
+	// intervention.
 	MaxAwaitingPolls uint32
 
 	// AdmitTimeout bounds the synchronous server work an admission performs

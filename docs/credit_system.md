@@ -29,6 +29,44 @@ flowchart LR
     C -->|"attach to receive"| RX["dust-clearing receive vHTLC"]
 ```
 
+## Pay Authorization
+
+`max_credit_sat` is the caller's maximum credit reservation for one payment.
+Zero forbids credit, including payments below the minimum Ark output amount.
+Preview and create replies must stay within that cap. A required balance top-up
+does not increase it. The top-up itself has a separate wallet authorization.
+
+The SDK validates the credit leg before accepting payment completion or
+funding the Ark leg. A mixed plan must fund exactly the invoice plus fee from
+its credit and Ark legs together. A credit-only completion must include its
+credit reservation and a matching payment preimage. Its original reservation
+can exceed the final invoice plus fee when unused routing budget is released,
+but the full reservation must remain within the caller's cap.
+
+With a swap store, the SDK records the invoice, wallet identity, fee cap and
+credit cap before calling create. The first request for a payment hash is
+immutable, including after a lost response or a process restart. Exact replay
+returns an existing local session when available; changed terms fail before
+another server call. The accepted credit plan is retained in the session and
+its summary. The credit actor also checks replayed pay terms and validates
+reported per-operation debits against its durable cap. Contradictory ledger
+evidence stays pending with an intervention reason and a live poll driver;
+the ordinary poll cap cannot prove that such a payment failed. An authoritative
+release or corrected debit can still resolve the operation.
+
+Swap-store migration 2 adds immutable pay authorizations and accepted credit
+plans. Historical sessions have no inferred authorization. `Resume` and read-only
+reattachment through `Start` retain their recovery path without assigning a
+fresh cap or calling create again. Stop older writers before upgrading.
+Older binaries cannot reopen the newer schema;
+do not remove authorization rows to work around a rejected retry.
+
+Clients without a swap store enforce reply caps in memory. Applications that
+need restart and replay guarantees must configure a store and retain the
+original operation identity and request terms. These local checks cannot force
+a server to account honestly for a custodial balance; they prevent the client
+from accepting or acting on a contradictory server plan.
+
 ## Account Model
 
 | Field | Unit | Meaning |
