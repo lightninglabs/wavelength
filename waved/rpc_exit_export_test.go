@@ -318,4 +318,5 @@ func TestExportExitsValidatesTargets(t *testing.T) {
 	})
 	require.Nil(t, exports)
 	require.Equal(t, codes.NotFound, status.Code(err))
+	require.ErrorContains(t, err, missing.String())
 }

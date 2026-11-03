@@ -2,6 +2,7 @@ package waved
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/unroll"
@@ -30,8 +31,11 @@ func (r *RPCServer) ExportExits(ctx context.Context,
 		}
 		outpoint, err := parseOutpointString(req.Outpoint)
 		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"invalid outpoint: %v", err)
+			return nil, exitExportTargetError(
+				req.Outpoint,
+				status.Errorf(codes.InvalidArgument,
+					"invalid outpoint: %v", err),
+			)
 		}
 		if seen[outpoint] {
 			return nil, status.Errorf(codes.InvalidArgument,
@@ -43,14 +47,27 @@ func (r *RPCServer) ExportExits(ctx context.Context,
 	exports := make([]*ExitExport, 0, len(requests))
 	for _, req := range requests {
 		if err := ctx.Err(); err != nil {
-			return nil, status.FromContextError(err).Err()
+			return nil, exitExportTargetError(
+				req.Outpoint,
+				status.FromContextError(err).Err(),
+			)
 		}
 		exported, err := r.exportExit(ctx, req, &builder)
 		if err != nil {
-			return nil, err
+			return nil, exitExportTargetError(req.Outpoint, err)
 		}
 		exports = append(exports, exported)
 	}
 
 	return exports, nil
+}
+
+// exitExportTargetError identifies an unexportable target without discarding
+// the original status code or structured details used by backup clients.
+func exitExportTargetError(outpoint string, err error) error {
+	result := status.Convert(err).Proto()
+	result.Message = fmt.Sprintf("exit target %q: %s", outpoint,
+		result.Message)
+
+	return status.FromProto(result).Err()
 }

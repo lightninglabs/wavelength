@@ -151,7 +151,9 @@ export remains available; final recovery requires an asset-aware spend.
 array of 1 to 100 single-export requests, each with its own `outpoint` and
 optional `sweep_address`. Duplicate targets are rejected, including different
 text encodings of the same outpoint. Any failed target fails the entire call;
-no partial bundle is returned and no exit is started.
+no partial bundle is returned and no exit is started. Per-target failures name
+the failing outpoint and retain the original gRPC status code and structured
+error details, so a backup client can identify which target to leave out.
 
 ```json
 {"exits":[

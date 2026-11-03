@@ -31,8 +31,15 @@ func exportCommitmentSweeps(desc *vtxo.Descriptor,
 		inputs[input.Outpoint] = input.Output
 	}
 	result := make(map[wire.OutPoint]*ExitCommitmentSweep)
-	for _, fragment := range desc.Ancestry {
+	for i, fragment := range desc.Ancestry {
 		path := fragment.TreePath
+		// Evidence is loaded separately from the validated lineage.
+		// Refuse a missing path here as well instead of trusting a
+		// prior read.
+		if path == nil || path.Root == nil {
+			return nil, fmt.Errorf("ancestry fragment %d missing "+
+				"tree path or root", i)
+		}
 		output := inputs[path.BatchOutpoint]
 		if output == nil {
 			continue
