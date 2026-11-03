@@ -120,6 +120,23 @@ func (s *Service) GetExitPlan(ctx context.Context,
 	return s.getExitPlan(ctx, req)
 }
 
+// ExportExit exports signed ancestry and an optional final timeout sweep
+// for an externally funded unroll.
+func (s *Service) ExportExit(ctx context.Context,
+	req *wavewalletrpc.ExportExitRequest) (
+	*wavewalletrpc.ExportExitResponse, error) {
+
+	return s.exportExit(ctx, req)
+}
+
+// ExportExits exports several targets with a common deduplicated graph.
+func (s *Service) ExportExits(ctx context.Context,
+	req *wavewalletrpc.ExportExitsRequest) (
+	*wavewalletrpc.ExportExitsResponse, error) {
+
+	return s.exportExits(ctx, req)
+}
+
 // SweepWallet previews or broadcasts a normal backing-wallet sweep. Boarding
 // UTXOs remain owned by the dedicated boarding-sweep flow.
 func (s *Service) SweepWallet(ctx context.Context,
@@ -197,6 +214,8 @@ func (s *Service) Deposit(ctx context.Context,
 	// daemon records the incoming UTXO (at confirmation); before that,
 	// unconfirmed boarding funds surface via Balance.
 	createdAt := nowUnix()
+	requestPhase := wavewalletrpc.
+		WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED
 	entry := &wavewalletrpc.WalletEntry{
 		Id:            fmt.Sprintf("deposit-%s", addrResp.GetAddress()),
 		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
@@ -207,7 +226,7 @@ func (s *Service) Deposit(ctx context.Context,
 		UpdatedAtUnix: createdAt,
 		Request:       requestFromOnchainAddress(addrResp.GetAddress()),
 		Progress: &wavewalletrpc.WalletEntryProgress{
-			Phase:      wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED,
+			Phase:      requestPhase,
 			PhaseLabel: "address_issued",
 		},
 	}
@@ -540,12 +559,12 @@ func walletEntryFromEventJSON(entryJSON string) (*wavewalletrpc.WalletEntry,
 
 // entryResponse wraps a projected activity row and its cursor as a stream item.
 func entryResponse(cursor int64,
-	entry *wavewalletrpc.WalletEntry) *wavewalletrpc.SubscribeWalletResponse {
+	row *wavewalletrpc.WalletEntry) *wavewalletrpc.SubscribeWalletResponse {
 
 	return &wavewalletrpc.SubscribeWalletResponse{
 		Cursor: cursor,
 		Update: &wavewalletrpc.SubscribeWalletResponse_Entry{
-			Entry: entry,
+			Entry: row,
 		},
 	}
 }

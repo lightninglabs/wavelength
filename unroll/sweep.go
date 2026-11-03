@@ -184,14 +184,6 @@ func (p *StandardVTXOExitSpendPolicy) BuildSpendTx(ctx context.Context,
 		return nil, fmt.Errorf("fee rate must be positive")
 	}
 
-	desc := p.desc
-	if desc.ClientKey.PubKey == nil {
-		return nil, fmt.Errorf("descriptor missing ClientKey pubkey")
-	}
-	if desc.OperatorKey == nil {
-		return nil, fmt.Errorf("descriptor missing OperatorKey")
-	}
-
 	// Encode the BIP-68 height-mode sequence explicitly: for the small
 	// height-mode delays standard VTXOs carry today the raw count and the
 	// LockTimeToSequence result are numerically identical, but routing
@@ -218,6 +210,23 @@ func (p *StandardVTXOExitSpendPolicy) BuildSpendTx(ctx context.Context,
 		Value:    int64(sweepValue),
 		PkScript: append([]byte(nil), req.DestinationPkScript...),
 	})
+
+	return p.signSpendTx(req, sweepTx)
+}
+
+// signSpendTx signs the complete timeout transaction, including all outputs.
+// Both local sweeps and externally funded exports use the same leaf and
+// SIGHASH_DEFAULT commitment, so a broadcaster cannot redirect the proceeds.
+func (p *StandardVTXOExitSpendPolicy) signSpendTx(req ExitSpendRequest,
+	sweepTx *wire.MsgTx) (*wire.MsgTx, error) {
+
+	desc := p.desc
+	if desc.ClientKey.PubKey == nil {
+		return nil, fmt.Errorf("descriptor missing ClientKey pubkey")
+	}
+	if desc.OperatorKey == nil {
+		return nil, fmt.Errorf("descriptor missing OperatorKey")
+	}
 
 	spendInfo, err := arkscript.NewVTXOSpendInfoFromPolicy(
 		desc.ClientKey.PubKey, desc.OperatorKey, p.CSVDelay(), 1,

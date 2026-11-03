@@ -135,7 +135,8 @@ func (c *ancestryTreeCache) getOrDecode(treePath []byte) (*tree.Tree, error) {
 // commitment. Callers use this key to reject true duplicates while
 // admitting same-commitment multi-leaf ancestry.
 //
-// The key deliberately excludes InputIndices (and CommitmentHeight):
+// The key excludes InputIndices, CommitmentHeight, and optional public sweep
+// policy. These do not alter the signed transaction path:
 // the indexer's grouping contract is one fragment per (commitment,
 // tree path), with that fragment carrying EVERY input index it serves.
 // Two fragments sharing a (commitment, path) but splitting the covered
@@ -145,7 +146,7 @@ func (c *ancestryTreeCache) getOrDecode(treePath []byte) (*tree.Tree, error) {
 func AncestryFragmentKey(a vtxo.Ancestry) ([sha256.Size]byte, error) {
 	var treePath []byte
 	if a.TreePath != nil {
-		data, err := SerializeTree(a.TreePath)
+		data, err := serializeTree(a.TreePath, true, false)
 		if err != nil {
 			return [sha256.Size]byte{}, fmt.Errorf("serialize "+
 				"ancestry tree: %w", err)
@@ -164,7 +165,7 @@ func AncestryFragmentKey(a vtxo.Ancestry) ([sha256.Size]byte, error) {
 func backfillAncestryFragmentKey(a vtxo.Ancestry) ([sha256.Size]byte, error) {
 	var treePath []byte
 	if a.TreePath != nil {
-		data, err := serializeTree(a.TreePath, false)
+		data, err := serializeTree(a.TreePath, false, false)
 		if err != nil {
 			return [sha256.Size]byte{}, fmt.Errorf("serialize "+
 				"ancestry tree: %w", err)
@@ -221,13 +222,23 @@ func upsertAncestryPaths(ctx context.Context, q ancestryStore,
 			maxAncestryRowsPerVTXO)
 	}
 
-	// Serialize every tree path up front so the duplicate check and the
-	// insert loop below share one encoding pass.
+	// Serialize and validate before replacing any durable rows so an
+	// encoding or duplicate error cannot discard the existing ancestry.
 	treePaths := make([][]byte, len(ancestry))
 	seen := make(map[[sha256.Size]byte]struct{}, len(ancestry))
 	for i, a := range ancestry {
 		if a.TreePath != nil {
-			data, err := SerializeTree(a.TreePath)
+			// Preserve ingress policy without mutating shared
+			// trees. This metadata is excluded from fragment
+			// identity below.
+			path := *a.TreePath
+			if a.CommitmentSweepKey != nil ||
+				a.CommitmentSweepDelay != 0 {
+
+				path.SweepKey = a.CommitmentSweepKey
+				path.SweepDelay = a.CommitmentSweepDelay
+			}
+			data, err := SerializeTree(&path)
 			if err != nil {
 				return fmt.Errorf("serialize ancestry[%d] "+
 					"tree: %w", i, err)
@@ -236,9 +247,10 @@ func upsertAncestryPaths(ctx context.Context, q ancestryStore,
 			treePaths[i] = data
 		}
 
-		key := ancestryFragmentKeyFromBytes(
-			a.CommitmentTxID, treePaths[i],
-		)
+		key, err := AncestryFragmentKey(a)
+		if err != nil {
+			return err
+		}
 		if _, dup := seen[key]; dup {
 			return fmt.Errorf("ancestry[%d] duplicate "+
 				"(commitment_txid, tree_path) pair for "+
@@ -409,6 +421,8 @@ func ancestryRowToDomain(row sqlc.VtxoAncestryPath,
 		}
 
 		entry.TreePath = t
+		entry.CommitmentSweepKey = t.SweepKey
+		entry.CommitmentSweepDelay = t.SweepDelay
 	}
 
 	return entry, nil

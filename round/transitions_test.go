@@ -2444,6 +2444,8 @@ func TestInputSigSentState(t *testing.T) {
 		owned := mkReq(t, h.operatorPubKey, 2, true)
 		foreignReq, foreignTree := foreign.req, foreign.tree
 		ownedReq, ownedTree := owned.req, owned.tree
+		ownedTree.SweepKey = h.operatorPubKey
+		ownedTree.SweepDelay = 500
 
 		vtxos, err := buildClientVTXOs(
 			t.Context(), nil,
@@ -2465,6 +2467,15 @@ func TestInputSigSentState(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, vtxos, 1)
 		require.Equal(t, ownedReq.Amount, vtxos[0].Amount)
+		require.Equal(
+			t, uint32(500),
+			vtxos[0].Ancestry[0].CommitmentSweepDelay,
+		)
+		require.True(
+			t, h.operatorPubKey.IsEqual(
+				vtxos[0].Ancestry[0].CommitmentSweepKey,
+			),
+		)
 		require.True(
 			t, vtxos[0].OwnerKey.PubKey.IsEqual(
 				ownedReq.OwnerKey.PubKey,

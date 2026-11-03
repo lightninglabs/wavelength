@@ -2460,7 +2460,13 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 			// included in the tree, we'll store the client-tree
 			// (traversal path from the root to this vtxo leaf).
 			signerKey := NewSignerKey(vtxoReq.SigningKey.PubKey)
-			clientTrees[signerKey] = clientTree
+			// The extracted path is private to this request. Carry
+			// the authenticated sweep policy through checkpoints
+			// and restart.
+			path := *clientTree
+			path.SweepKey = s.SweepKey
+			path.SweepDelay = s.SweepDelay
+			clientTrees[signerKey] = &path
 		}
 
 		// Make sure all anchor outputs are valid in each tree. If they
@@ -4821,8 +4827,10 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 		// txid would leave the side-table row unbound to its
 		// commitment tx.
 		ancestry := []types.Ancestry{{
-			TreePath:  clientTree,
-			TreeDepth: uint32(clientTree.Depth()),
+			TreePath:             clientTree,
+			TreeDepth:            uint32(clientTree.Depth()),
+			CommitmentSweepKey:   clientTree.SweepKey,
+			CommitmentSweepDelay: clientTree.SweepDelay,
 		}}
 
 		vtxo := &ClientVTXO{

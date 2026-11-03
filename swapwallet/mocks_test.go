@@ -18,6 +18,12 @@ import (
 // service tests. Each method returns whatever the test sets on the
 // corresponding response field, or the corresponding err field.
 type fakeRPCServer struct {
+	exitExportLast  *waved.ExitExportRequest
+	exitExportResp  *waved.ExitExport
+	exitExportsResp []*waved.ExitExport
+	exitExportsLast []*waved.ExitExportRequest
+	exitExportErr   error
+
 	mu sync.Mutex
 
 	listVTXOsResp    *waverpc.ListVTXOsResponse
@@ -306,6 +312,28 @@ func (f *fakeRPCServer) GetExitPlan(_ context.Context,
 	return f.exitPlanResp, f.exitPlanErr
 }
 
+// ExportExit supplies a configurable ancestry export without wallet funding.
+func (f *fakeRPCServer) ExportExit(_ context.Context,
+	req *waved.ExitExportRequest) (*waved.ExitExport, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.exitExportLast = req
+
+	return f.exitExportResp, f.exitExportErr
+}
+
+// ExportExits supplies shared ancestry and captures per-target destinations.
+func (f *fakeRPCServer) ExportExits(_ context.Context,
+	req []*waved.ExitExportRequest) ([]*waved.ExitExport, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.exitExportsLast = req
+
+	return f.exitExportsResp, f.exitExportErr
+}
+
 func (f *fakeRPCServer) SweepWallet(_ context.Context,
 	req *waved.SweepWalletRequest) (*waved.SweepWalletResponse, error) {
 
@@ -483,7 +511,3 @@ func (f *fakeSwapService) ListSwaps(_ context.Context,
 
 	return filtered, f.listSwapsErr
 }
-
-// errFakeStreamClosed is the canonical error returned by streaming-aware
-// fakes when the test scope is exiting.
-var errFakeStreamClosed = errors.New("fake stream closed")

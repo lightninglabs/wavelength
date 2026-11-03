@@ -640,6 +640,35 @@ func walletQueryMethodRegistry() []schemaMethod { //nolint:funlen
 			JSONInput:    false,
 		},
 		{
+			Method: "exit.export",
+			Description: "Export signed ancestry for " +
+				"externally funded unrolling",
+			Params: []schemaParam{
+				{
+					Name:     "outpoint",
+					Type:     "string",
+					Required: true,
+					Description: "VTXO outpoint " +
+						"(txid:vout)",
+				},
+				{
+					Name: "output", Type: "string",
+					Description: "new file; defaults " +
+						"to JSON on stdout",
+				},
+				{
+					Name: "sweep-address",
+					Type: "string",
+					Description: "presign final sweep " +
+						"to this Bitcoin address",
+				},
+			},
+			RequestType:  "ExportExitRequest",
+			ResponseType: "ExportExitResponse",
+			JSONInput:    false,
+		},
+
+		{
 			Method: "wallet-sweep",
 			Description: "Preview or broadcast a sweep of the " +
 				"backing wallet to a destination address",

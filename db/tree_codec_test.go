@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/tree"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 )
@@ -472,4 +473,37 @@ func TestTreeCodecRejectsHugeNumChildren(t *testing.T) {
 	_, err := deserializeChildren(payload, 2, tree.NewAssetTreeContext())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "exceeds max")
+}
+
+// TestTreeSweepPolicyRoundTrip preserves public expiry evidence across restart
+// without changing legacy tree encodings or ancestry-fragment identity.
+func TestTreeSweepPolicyRoundTrip(t *testing.T) {
+	t.Parallel()
+	key, _ := btcec.PrivKeyFromBytes([]byte{1})
+	path := &tree.Tree{Root: &tree.Node{}}
+	legacy, err := SerializeTree(path)
+	require.NoError(t, err)
+	fragment := vtxo.Ancestry{TreePath: path}
+	identity, err := AncestryFragmentKey(fragment)
+	require.NoError(t, err)
+	path.SweepKey = key.PubKey()
+	path.SweepDelay = 500
+	encoded, err := SerializeTree(path)
+	require.NoError(t, err)
+	restored, err := DeserializeTree(encoded)
+	require.NoError(t, err)
+	require.Equal(t, uint32(500), restored.SweepDelay)
+	require.True(t, key.PubKey().IsEqual(restored.SweepKey))
+	after, err := AncestryFragmentKey(fragment)
+	require.NoError(t, err)
+	require.Equal(t, identity, after)
+	restored, err = DeserializeTree(legacy)
+	require.NoError(t, err)
+	require.Nil(t, restored.SweepKey)
+	require.Zero(t, restored.SweepDelay)
+	path.SweepKey = nil
+	path.SweepDelay = 0
+	unchanged, err := SerializeTree(path)
+	require.NoError(t, err)
+	require.Equal(t, legacy, unchanged)
 }

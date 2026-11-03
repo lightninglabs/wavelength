@@ -502,6 +502,20 @@ func generatedRegistry() []serviceSpec {
 					Comments: "",
 				},
 				{
+					Name:     "ExportExit",
+					Aliases:  []string{"export-exit"},
+					Input:    "wavewalletrpc.ExportExitRequest",
+					Output:   "wavewalletrpc.ExportExitResponse",
+					Comments: "",
+				},
+				{
+					Name:     "ExportExits",
+					Aliases:  []string{"export-exits"},
+					Input:    "wavewalletrpc.ExportExitsRequest",
+					Output:   "wavewalletrpc.ExportExitsResponse",
+					Comments: "",
+				},
+				{
 					Name:     "SweepWallet",
 					Aliases:  []string{"sweep-wallet"},
 					Input:    "wavewalletrpc.SweepWalletRequest",

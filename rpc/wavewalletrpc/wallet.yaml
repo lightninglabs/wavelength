@@ -33,6 +33,12 @@ http:
     - selector: wavewalletrpc.WalletService.GetExitPlan
       post: /v1/wallet/exit-plan
       body: "*"
+    - selector: wavewalletrpc.WalletService.ExportExit
+      post: /v1/wallet/exit-export
+      body: "*"
+    - selector: wavewalletrpc.WalletService.ExportExits
+      post: /v1/wallet/exits-export
+      body: "*"
     - selector: wavewalletrpc.WalletService.SweepWallet
       post: /v1/wallet/sweep-wallet
       body: "*"

@@ -169,6 +169,15 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
 
 ### Support
 
+- `BuildSignedExitSweep` — optionally presigns a zero-fee standard timeout
+  sweep with a full destination payout and a P2A anchor for service CPFP. It
+  verifies the witness and refuses asset carriers; CSV maturity still gates
+  broadcast.
+- `BuildSignedAncestry` — validates all ancestry witnesses and input values
+  for external export; includes external commitment prevouts and performs no
+  funding, broadcast, or local exit admission. See
+  [docs/exit_ancestry_export.md](../docs/exit_ancestry_export.md).
+
 - `LocalProofAssembler` — assembles a `recovery.Proof` from the VTXO
   descriptor and its OOR artifact lineage; implements
   `ProofAssembler`. Also exposes `EnsureProofForHarness`, a
