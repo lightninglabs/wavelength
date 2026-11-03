@@ -35,10 +35,35 @@ go run ./internal/cmd/tools/accounting \
     --postgres.dbname waved
 ```
 
-Stop the daemon before you run the report, or expect a snapshot that is one
-write behind. The command opens the same SQLite file the daemon holds under
-write-ahead logging, so it reads a consistent committed state but not
-uncommitted in-flight writes.
+The report can run while the daemon is active. It reads a consistent committed
+SQLite WAL snapshot; uncommitted in-flight writes are excluded.
+
+## Container image
+
+The Docker image includes `/usr/local/bin/wavelength-accounting`. Override the
+daemon entrypoint to run the reporter against a read-only database mount:
+
+```shell
+docker run --rm --entrypoint wavelength-accounting \
+    -v "$PWD/client-data:/client:ro" waved:local \
+    report --backend sqlite --sqlite.dbfile /client/data/mainnet/waved.db \
+    --format json
+```
+
+Without `--apply-migrations`, the SQLite connection uses `mode=ro` and deferred
+read transactions. It does not inherit the daemon's `BEGIN IMMEDIATE` or
+journal-changing pragmas. The report's queries read one committed transaction
+snapshot while the daemon continues writing in WAL mode. Keep the database,
+WAL, and shared-memory files together in the mount; never use `immutable=1`
+against a live database. A read-only filesystem requires the live WAL/SHM
+files to be present and readable; failure to open them is an error, not an
+empty report.
+
+The report contains cumulative account balances and event totals, not activity
+restricted to a daily or monthly window. Archive one JSON result per collection
+for a consistent snapshot. Separate CLI calls for different formats can observe
+different commits on a live database. Upload the report, not the database or
+other daemon files.
 
 ## Flags
 
@@ -102,20 +127,21 @@ column.
 
 ## How the report stays read-only
 
-The command opens the database through the same `db` package the daemon uses, so
-one code path serves both backends. Two choices keep the report from changing
-anything:
+The command uses the shared `db` package with a dedicated read-only SQLite
+opener and the normal Postgres store constructor. Two choices keep default
+reporting from changing the source:
 
-- It opens with `SkipMigrations`, so it never alters the schema. Pass
+- The default SQLite path opens in `mode=ro`, without initializing or migrating
+  the database. Postgres uses `SkipMigrations`. Pass
   `--apply-migrations` only when you deliberately want to migrate a database that
   lags the current schema version.
 - It reads inside a read-only transaction and issues only `SELECT` queries.
 
-Postgres enforces the read-only transaction and rejects any write. The
-`modernc.org/sqlite` driver does **not** — it accepts writes inside a read-only
-transaction. On SQLite, therefore, the read-only guarantee rests on
-`SkipMigrations` plus the report issuing only reads, not on the transaction
-itself.
+Postgres enforces read-only transactions. Native SQLite enforces read-only
+access through the file URI `mode=ro`; it does not rely on the driver honoring
+the transaction read-only flag. The explicit `--apply-migrations` maintenance
+option instead uses the normal writable store and must not be used by scheduled
+report collection.
 
 The command also refuses to open a SQLite path that does not exist. A missing
 file usually means a typo, and the shared opener would otherwise create an empty
@@ -137,13 +163,11 @@ prints one `PASS`/`FAIL` line per check followed by the offending rows.
 
 ### Running it against a live daemon
 
-Prefer a copy. On SQLite the daemon's DSN sets `_txlock=immediate`, so even
-this command's read-only transaction takes the database's write lock, and it
-holds it across fifteen full-table scans. Against a busy daemon that can stall
-writes for as long as the run takes. Snapshot the database file and point the
-check at the copy when the daemon is under load; the ledger fingerprint below
-is what tells you the copy and the original still agree. On Postgres the
-concern does not arise.
+The default SQLite opener is read-only and uses deferred transactions for both
+`report` and `check`, so it no longer takes the daemon's immediate write lock.
+A long-running read can delay WAL checkpoint progress; keep the timeout bounded
+and avoid overlapping checks on a busy daemon. A consistent copy remains useful
+for offline investigation but is not required for routine report collection.
 
 Every run prints a **ledger fingerprint**: a SHA-256 over every journal field
 in entry-ID order. The fingerprint binds to journal content alone — it names

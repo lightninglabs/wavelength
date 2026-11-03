@@ -193,6 +193,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
 
 ## Invariants
 
+- Native `OpenSQLiteDatabase` supports `ReadOnly: true` via an escaped file URI
+  with `mode=ro`. Report callers leave `TxLockImmediate` false and avoid
+  daemon initialization pragmas. Ordinary daemon connections retain their
+  existing writable/immediate defaults. Browser-backed handles reject this
+  option rather than silently allowing writes.
+
 - Asset VTXO rows persist the commitment root, opaque asset reference,
   uint64 units, and optional sealed leaf package. These fields are one
   identity: writes and reads reject incomplete state or a composed-script

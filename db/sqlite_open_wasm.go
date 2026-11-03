@@ -20,6 +20,11 @@ const wasmSQLiteDriverName = "wasmsqlite"
 // openSQLiteDatabase opens SQLite through the wasmsqlite driver, against
 // whichever durable storage the host offers.
 func openSQLiteDatabase(cfg SQLiteOpenConfig) (*SQLiteOpenResult, error) {
+	if cfg.ReadOnly {
+		return nil, fmt.Errorf("read-only SQLite handles require a " +
+			"native filesystem")
+	}
+
 	values := url.Values{}
 	values.Set("vfs", wasmhost.SQLiteVFS())
 	if wasmhost.UnderNode() {

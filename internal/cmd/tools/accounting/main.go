@@ -18,6 +18,7 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/db/sqlc"
 )
 
 const satsPerBTC = 100_000_000
@@ -71,6 +72,7 @@ type report struct {
 // PriceSource resolves a BTC fiat price without coupling this tool to
 // Faraday's accounting interfaces.
 type PriceSource interface {
+	// Price returns the current value of one BTC in the requested currency.
 	Price(ctx context.Context, currency string) (float64, error)
 }
 
@@ -191,8 +193,9 @@ func run(ctx context.Context, args []string) error {
 	ctx, cancel := context.WithTimeout(ctx, cfg.timeout)
 	defer cancel()
 
-	// SkipMigrations is set by default, so the store constructor performs
-	// no migration IO and manages its own context internally.
+	// The default SQLite path only constructs a read-only handle. Store
+	// constructors for Postgres and explicit migration maintenance manage
+	// their own initialization contexts.
 	//nolint:contextcheck
 	store, err := openStore(cfg)
 	if err != nil {
@@ -317,8 +320,8 @@ func parseFlags(args []string) (*config, error) {
 }
 
 // openStore opens the configured backend without running migrations unless the
-// operator explicitly opts in, reusing the same db package the daemon uses so
-// the report works against either a sqlite or a postgres deployment.
+// operator explicitly opts in. Default native SQLite uses the shared read-only
+// opener; Postgres and migration maintenance use the normal store constructor.
 func openStore(cfg *config) (*db.Store, error) {
 	switch cfg.backend {
 	case "sqlite":
@@ -340,6 +343,36 @@ func openStore(cfg *config) (*db.Store, error) {
 		if info.IsDir() {
 			return nil, fmt.Errorf("sqlite path %q is a directory",
 				cfg.sqliteDBFile)
+		}
+
+		if !cfg.applyMigrations {
+			// A reporting connection must not inherit the daemon's
+			// BEGIN IMMEDIATE mode or journal-changing pragmas.
+			// Open read-only at SQLite's file boundary and let a
+			// deferred read transaction observe one committed WAL
+			// snapshot.
+			opened, err := db.OpenSQLiteDatabase(
+				db.SQLiteOpenConfig{
+					DatabaseFileName: cfg.sqliteDBFile,
+					ReadOnly:         true,
+					Pragmas: []db.SQLitePragma{
+						{
+							Name:  "busy_timeout",
+							Value: "5000",
+						},
+					},
+					MaxOpenConns: 1,
+					MaxIdleConns: 1,
+				},
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			return db.NewStore(
+				opened.DB, sqlc.NewSqlite(opened.DB),
+				sqlc.BackendTypeSqlite, btclog.Disabled,
+			), nil
 		}
 
 	case "postgres":
@@ -390,10 +423,9 @@ func newPriceSource(name string) (PriceSource, error) {
 func buildReport(ctx context.Context, store *db.Store, cfg *config,
 	price *float64) (*report, error) {
 
-	// A read-only transaction expresses intent and, on backends that
-	// enforce it (e.g. postgres), rejects an accidental write. Combined
-	// with SkipMigrations and report queries that only SELECT, the tool
-	// never mutates the daemon's database.
+	// One transaction pins all projections to the same committed state.
+	// Default native SQLite enforces mode=ro at open time; Postgres
+	// enforces the transaction's read-only option.
 	tx, err := store.BaseDB().BeginTx(ctx, db.ReadTxOption())
 	if err != nil {
 		return nil, fmt.Errorf("begin read tx: %w", err)
