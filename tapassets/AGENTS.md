@@ -12,6 +12,11 @@ Durable journals retain committed packages for restart recovery.
 - `Onboarder` — Funds and publishes a composed boarding output from tapd
   inventory, returns asset change, and journals the owner keys, sealed package,
   and signed transaction. `FileStore` supplies an atomic file-backed journal.
+- `SelectOnboardingProofs` / `ExportOnboardedProof` — Pick and export the
+  confirmed proofs of the tapd anchors that fund an onboarding (one issuance,
+  smallest covering anchor, else the largest anchors up to
+  `MaxTransitionInputs`), and export the onboarding output's proof once its
+  transfer confirms (`ErrOnboardedProofPending` before).
 - `BatchAnchorCommitter` — Creates caller-funded asset batch outputs.
   `DeriveScript` produces the batch output script before funding, `Commit`
   seals the transfer package against a funded PSBT, and `Publish` records the
@@ -52,8 +57,9 @@ Durable journals retain committed packages for restart recovery.
   structures to materialize into), `lib/arkscript` (leaf policy construction
   for `StandardVTXOLeafAnchor`), `lib/tx/psbtutil` (PSBT encode/decode).
 - **Depended on by**: `waved`, which installs `VTXOVerifier` on the round
-  actor when `assets.backend` is `tapd`. Onboarding and operator-side batch
-  APIs have no production caller in this repository.
+  actor when `assets.backend` is `tapd`, and funds asset deposits through
+  `Onboarder` when `assets.lnd` is also set. Operator-side batch APIs have no
+  production caller in this repository.
 - **Sends** / **Receives**: none. This is a synchronous library, not an actor;
   it exchanges no mailbox messages.
 
