@@ -137,7 +137,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   still exist. A nil cursor starts at the newest session; direction zero and
   status `-1` disable their respective filters; a non-positive limit is an
   error.
-- `LatestMigrationVersion = 27` — current schema version.
+- `AssetDepositStore` / `AssetDeposit` — asset deposits funded from tapd:
+  the stored request (replayed verbatim on retry), the published output and
+  boarding claim, and the confirmed proof. Reusing a request ID for a
+  different request fails with `ErrAssetDepositMismatch`; repeating a
+  lifecycle update is a no-op.
+- `LatestMigrationVersion = 28` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -498,6 +503,11 @@ when adding one.
 - `000027_activity_batch_wait` — mutable JSON display metadata for pending
   batch registration. An empty value clears the window; changes update the
   existing activity row and append one resumable event.
+
+- `000028_asset_deposits` — `asset_deposits`, kept apart from the boarding
+  tables so Bitcoin boarding and sweeps never select an asset output. Status
+  moves `funding` → `published` → `confirmed`; check constraints require the
+  output and claim from `published` and the proof at `confirmed`.
 
 ## Deep Docs
 
