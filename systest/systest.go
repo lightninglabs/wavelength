@@ -67,13 +67,18 @@ type SysTestHarness struct {
 // gets its own Docker infrastructure (bitcoind, lnd), actor system, and
 // database for full isolation. Call ParallelN(t) before this to enable
 // parallel execution with controlled concurrency.
-func NewSysTestHarness(t *testing.T) *SysTestHarness {
+func NewSysTestHarness(t *testing.T,
+	mutators ...func(*harness.Options)) *SysTestHarness {
+
 	t.Helper()
 
-	// Create per-test Docker harness. We don't need tapd for boarding.
+	// Create per-test Docker harness. Only asset tests need tapd.
 	opts := harness.DefaultOptions()
 	opts.StartTapd = false
 	opts.GroupName = t.Name()
+	for _, mutate := range mutators {
+		mutate(&opts)
+	}
 
 	dockerHarness := harness.NewHarness(t, &opts)
 	t.Cleanup(dockerHarness.Stop)

@@ -3078,6 +3078,16 @@ func SetPostgresEnabled(enabled bool) bool {
 	return old
 }
 
+// TapdTLSCertPath returns the path to the main tapd's TLS certificate.
+func (h *Harness) TapdTLSCertPath() string {
+	return h.tapdTLSCert
+}
+
+// TapdMacaroonPath returns the path to the main tapd's admin macaroon.
+func (h *Harness) TapdMacaroonPath() string {
+	return h.tapdMacaroon
+}
+
 // TapdUniverseHost returns the universe host for the harness's main tapd,
 // suitable for container-to-container communication.
 func (h *Harness) TapdUniverseHost() string {

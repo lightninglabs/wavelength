@@ -88,6 +88,10 @@ type fakeMailboxServer struct {
 	// JoinRound, simulating an operator that admits the registration but
 	// cannot seal the round (e.g. it cannot fund the commitment tx).
 	failRoundOnJoin *roundpb.ClientRoundFailedResp
+
+	// feeQuote, when set, answers EstimateFee. Unset leaves the RPC
+	// unimplemented, so daemons fall back to the operator's minimum fee.
+	feeQuote *arkrpc.EstimateFeeResponse
 }
 
 // newFakeMailboxServer constructs a fake mailbox edge with the given operator
@@ -114,6 +118,29 @@ func (s *fakeMailboxServer) GetInfo(_ context.Context,
 	_ *arkrpc.GetInfoRequest) (*arkrpc.GetInfoResponse, error) {
 
 	return s.operatorInfoResp, nil
+}
+
+// EstimateFee implements arkrpc.ArkServiceServer with the armed fee quote.
+func (s *fakeMailboxServer) EstimateFee(ctx context.Context,
+	req *arkrpc.EstimateFeeRequest) (*arkrpc.EstimateFeeResponse, error) {
+
+	s.mu.Lock()
+	quote := s.feeQuote
+	s.mu.Unlock()
+
+	if quote == nil {
+		return s.UnimplementedArkServiceServer.EstimateFee(ctx, req)
+	}
+
+	return quote, nil
+}
+
+// setFeeQuote arms the fee quote EstimateFee returns. Pass nil to disarm.
+func (s *fakeMailboxServer) setFeeQuote(quote *arkrpc.EstimateFeeResponse) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.feeQuote = quote
 }
 
 // Send stores inbound envelopes addressed to the fake operator and synthesizes
