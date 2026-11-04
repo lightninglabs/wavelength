@@ -203,6 +203,12 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 		"Deposit", "SweepWallet", "Exit", "ExportExit", "ExportExits",
 	)
 
+	// Refresh proxies the daemon's RefreshVTXOs, so it carries the same
+	// permission.
+	grant(
+		wavewalletdk, entityVTXO, "write", "Refresh",
+	)
+
 	inspect := wavewalletrpc.WalletInspectionService_ServiceDesc.ServiceName
 	grant(inspect, entityActivity, "read",
 		"InspectActivity",

@@ -28,6 +28,7 @@ const (
 	WalletService_Deposit_FullMethodName         = "/wavewalletrpc.WalletService/Deposit"
 	WalletService_Balance_FullMethodName         = "/wavewalletrpc.WalletService/Balance"
 	WalletService_Status_FullMethodName          = "/wavewalletrpc.WalletService/Status"
+	WalletService_Refresh_FullMethodName         = "/wavewalletrpc.WalletService/Refresh"
 	WalletService_GetExitPlan_FullMethodName     = "/wavewalletrpc.WalletService/GetExitPlan"
 	WalletService_ExportExit_FullMethodName      = "/wavewalletrpc.WalletService/ExportExit"
 	WalletService_ExportExits_FullMethodName     = "/wavewalletrpc.WalletService/ExportExits"
@@ -95,6 +96,18 @@ type WalletServiceClient interface {
 	// the proto for programmatic callers; not surfaced as a CLI verb (the
 	// `getinfo` CLI verb covers the human-facing readiness view).
 	Status(ctx context.Context, in *StatusRequest, opts ...grpc.CallOption) (*StatusResponse, error)
+	// Refresh re-issues VTXOs into a new batch, resetting their expiry.
+	//
+	// A VTXO whose batch expiry has passed holds no spendable value until
+	// it has been re-issued, so a wallet that was offline through its
+	// refresh window reports a zero balance with funds still recoverable
+	// behind it. This is the verb that recovers them: it accepts expired
+	// VTXOs as well as live ones, forfeiting each into an ordinary round.
+	//
+	// With no selection it refreshes every VTXO that needs it. dry_run
+	// previews the operator fee without queuing anything, which is what a
+	// caller should show a user before spending their money on a round.
+	Refresh(ctx context.Context, in *RefreshRequest, opts ...grpc.CallOption) (*RefreshResponse, error)
 	// GetExitPlan previews unilateral-exit readiness for one VTXO. The
 	// response includes CPFP fee input requirements and, when funding is
 	// needed, a backing-wallet address callers can fund before forced unroll.
@@ -219,6 +232,16 @@ func (c *walletServiceClient) Status(ctx context.Context, in *StatusRequest, opt
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(StatusResponse)
 	err := c.cc.Invoke(ctx, WalletService_Status_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *walletServiceClient) Refresh(ctx context.Context, in *RefreshRequest, opts ...grpc.CallOption) (*RefreshResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RefreshResponse)
+	err := c.cc.Invoke(ctx, WalletService_Refresh_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -371,6 +394,18 @@ type WalletServiceServer interface {
 	// the proto for programmatic callers; not surfaced as a CLI verb (the
 	// `getinfo` CLI verb covers the human-facing readiness view).
 	Status(context.Context, *StatusRequest) (*StatusResponse, error)
+	// Refresh re-issues VTXOs into a new batch, resetting their expiry.
+	//
+	// A VTXO whose batch expiry has passed holds no spendable value until
+	// it has been re-issued, so a wallet that was offline through its
+	// refresh window reports a zero balance with funds still recoverable
+	// behind it. This is the verb that recovers them: it accepts expired
+	// VTXOs as well as live ones, forfeiting each into an ordinary round.
+	//
+	// With no selection it refreshes every VTXO that needs it. dry_run
+	// previews the operator fee without queuing anything, which is what a
+	// caller should show a user before spending their money on a round.
+	Refresh(context.Context, *RefreshRequest) (*RefreshResponse, error)
 	// GetExitPlan previews unilateral-exit readiness for one VTXO. The
 	// response includes CPFP fee input requirements and, when funding is
 	// needed, a backing-wallet address callers can fund before forced unroll.
@@ -437,6 +472,9 @@ func (UnimplementedWalletServiceServer) Balance(context.Context, *BalanceRequest
 }
 func (UnimplementedWalletServiceServer) Status(context.Context, *StatusRequest) (*StatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Status not implemented")
+}
+func (UnimplementedWalletServiceServer) Refresh(context.Context, *RefreshRequest) (*RefreshResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Refresh not implemented")
 }
 func (UnimplementedWalletServiceServer) GetExitPlan(context.Context, *GetExitPlanRequest) (*GetExitPlanResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetExitPlan not implemented")
@@ -645,6 +683,24 @@ func _WalletService_Status_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WalletService_Refresh_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RefreshRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletServiceServer).Refresh(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WalletService_Refresh_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletServiceServer).Refresh(ctx, req.(*RefreshRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WalletService_GetExitPlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetExitPlanRequest)
 	if err := dec(in); err != nil {
@@ -824,6 +880,10 @@ var WalletService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Status",
 			Handler:    _WalletService_Status_Handler,
+		},
+		{
+			MethodName: "Refresh",
+			Handler:    _WalletService_Refresh_Handler,
 		},
 		{
 			MethodName: "GetExitPlan",

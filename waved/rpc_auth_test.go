@@ -86,6 +86,27 @@ func TestExitExportRequiresWritePermission(t *testing.T) {
 	}
 }
 
+// TestWalletRefreshRequiresVTXOWritePermission checks the wallet-layer
+// Refresh carries the same permission as the RefreshVTXOs it proxies, so it
+// cannot become a way around a macaroon that may not spend VTXOs.
+func TestWalletRefreshRequiresVTXOWritePermission(t *testing.T) {
+	t.Parallel()
+
+	daemonMethod := waverpc.DaemonService_RefreshVTXOs_FullMethodName
+	walletMethod := wavewalletrpc.WalletService_Refresh_FullMethodName
+	daemonOps, ok := wavedRPCPermissions[daemonMethod]
+	require.True(t, ok)
+	walletOps, ok := wavedRPCPermissions[walletMethod]
+	require.True(t, ok)
+	require.Equal(
+		t, []bakery.Op{
+			{Entity: entityVTXO, Action: "write"},
+		},
+		walletOps,
+	)
+	require.Equal(t, daemonOps, walletOps)
+}
+
 // TestWavedRPCPermissionsProtectsMacaroonBaking verifies only the dedicated
 // generate operation authorizes credential creation.
 func TestWavedRPCPermissionsProtectsMacaroonBaking(t *testing.T) {
