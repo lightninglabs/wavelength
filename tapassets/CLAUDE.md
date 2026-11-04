@@ -76,6 +76,15 @@ tap-sdk. Durable journals retain committed packages for restart recovery.
   transitions still in the path.
 - An empty `Witness` on a source or root input asks tapd to sign that asset
   input; a non-empty stack is taken as caller-supplied authorization.
+- **Anchor leaves must assemble into their Ark policy tree.** tap-sdk pairs
+  adjacent `TapLeaves`, while arkscript splits a policy's leaves in halves.
+  `anchorPlan` rejects leaves whose two roots differ (any leaf count that is
+  not a power of two, or leaves out of canonical order), since the composed
+  output would not match the policy's control blocks.
+- **A transition merges at most `MaxTransitionInputs` inputs per issuance.**
+  Each extra input becomes a co-input path of the proof path step, which
+  tap-sdk bounds. Plans above the bound fail with
+  `ErrTooManyTransitionInputs` before tapd seals anything.
 
 ## Deep Docs
 

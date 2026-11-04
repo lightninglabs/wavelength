@@ -12,6 +12,41 @@ import (
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 )
 
+// MaxTransitionInputs bounds the inputs of one issuance that a transition may
+// merge. Its proof path step carries the first input as the spine and every
+// other input as a co-input path, which tap-sdk limits to
+// AssetProofPathMaxStepCoPaths.
+const MaxTransitionInputs = 1 + tapsdk.AssetProofPathMaxStepCoPaths
+
+// ErrTooManyTransitionInputs reports a transition whose proof paths tap-sdk
+// could not encode.
+var ErrTooManyTransitionInputs = errors.New("transition merges too many " +
+	"inputs of one issuance")
+
+// checkTransitionInputs rejects a plan that merges more inputs of one issuance
+// than MaxTransitionInputs.
+func checkTransitionInputs(in []tapsdk.CustomAnchorAssetInputSummary) error {
+	type packetKey struct {
+		role  tapsdk.CustomAnchorPacketRole
+		index uint32
+	}
+	counts := make(map[packetKey]int, len(in))
+	for idx := range in {
+		input := &in[idx]
+		key := packetKey{
+			role: input.PacketRole, index: input.PacketIndex,
+		}
+		counts[key]++
+		if counts[key] > MaxTransitionInputs {
+			return fmt.Errorf("%w: issuance %x has more than %d",
+				ErrTooManyTransitionInputs, input.IssuanceID[:],
+				MaxTransitionInputs)
+		}
+	}
+
+	return nil
+}
+
 type commitOutput struct {
 	logicalOutputID   string
 	packetIndex       uint32
@@ -97,11 +132,7 @@ func (d *sdkDriver) Preview(ctx context.Context,
 		return nil, fmt.Errorf("tap-sdk wallet is required")
 	}
 
-	builder := d.wallet.NewCustomAnchorTxBuilder()
-	if verifier != nil {
-		builder.SetConfirmedProofVerifier(verifier)
-	}
-	plan, err := builder.Build(ctx, request)
+	plan, err := d.buildTransition(ctx, request, verifier)
 	if err != nil {
 		return nil, err
 	}
@@ -122,6 +153,28 @@ func (d *sdkDriver) Preview(ctx context.Context,
 	}
 
 	return result, nil
+}
+
+// buildTransition plans a transition whose proof paths can be encoded, before
+// tapd seals anything.
+func (d *sdkDriver) buildTransition(ctx context.Context,
+	request *tapsdk.CustomAnchorRequest,
+	verifier tapsdk.ConfirmedProofVerifier) (*tapsdk.CustomAnchorPlan,
+	error) {
+
+	builder := d.wallet.NewCustomAnchorTxBuilder()
+	if verifier != nil {
+		builder.SetConfirmedProofVerifier(verifier)
+	}
+	plan, err := builder.Build(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkTransitionInputs(plan.Inputs()); err != nil {
+		return nil, err
+	}
+
+	return plan, nil
 }
 
 // Publish verifies and records a finalized custom-anchor transaction.
@@ -156,11 +209,7 @@ func (d *sdkDriver) Commit(ctx context.Context,
 		return nil, fmt.Errorf("tap-sdk wallet is required")
 	}
 
-	builder := d.wallet.NewCustomAnchorTxBuilder()
-	if verifier != nil {
-		builder.SetConfirmedProofVerifier(verifier)
-	}
-	plan, err := builder.Build(ctx, request)
+	plan, err := d.buildTransition(ctx, request, verifier)
 	if err != nil {
 		return nil, err
 	}

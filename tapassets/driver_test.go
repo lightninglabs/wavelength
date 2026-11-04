@@ -164,3 +164,66 @@ func TestCommitResultProjectionRequiresProof(t *testing.T) {
 	)
 	require.ErrorContains(t, err, "has no proof update")
 }
+
+// TestCheckTransitionInputs verifies the per-issuance input bound that keeps
+// every transition's proof path encodable.
+func TestCheckTransitionInputs(t *testing.T) {
+	t.Parallel()
+
+	inputs := func(role tapsdk.CustomAnchorPacketRole, packet uint32,
+		count int) []tapsdk.CustomAnchorAssetInputSummary {
+
+		result := make([]tapsdk.CustomAnchorAssetInputSummary, count)
+		for idx := range result {
+			result[idx] = tapsdk.CustomAnchorAssetInputSummary{
+				PacketRole:  role,
+				PacketIndex: packet,
+				IssuanceID: tapsdk.AssetID{
+					byte(packet),
+				},
+			}
+		}
+
+		return result
+	}
+	active := tapsdk.CustomAnchorPacketRoleActive
+	passive := tapsdk.CustomAnchorPacketRolePassive
+
+	tests := []struct {
+		name    string
+		inputs  []tapsdk.CustomAnchorAssetInputSummary
+		wantErr bool
+	}{{
+		name:   "at bound",
+		inputs: inputs(active, 0, MaxTransitionInputs),
+	}, {
+		name:    "above bound",
+		inputs:  inputs(active, 0, MaxTransitionInputs+1),
+		wantErr: true,
+	}, {
+		name: "bound per issuance",
+		inputs: append(
+			inputs(active, 0, MaxTransitionInputs),
+			inputs(active, 1, MaxTransitionInputs)...,
+		),
+	}, {
+		name: "bound per packet role",
+		inputs: append(
+			inputs(active, 0, MaxTransitionInputs),
+			inputs(passive, 0, MaxTransitionInputs)...,
+		),
+	}}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := checkTransitionInputs(test.inputs)
+			if !test.wantErr {
+				require.NoError(t, err)
+
+				return
+			}
+			require.ErrorIs(t, err, ErrTooManyTransitionInputs)
+		})
+	}
+}
