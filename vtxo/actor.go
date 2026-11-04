@@ -183,6 +183,12 @@ type VTXOActor struct {
 	// than the original request height.
 	lastObservedHeight int32
 
+	// lastEpochHeight is the highest block epoch height this actor has
+	// received. It only fences the answer to the start tip ask, which
+	// may arrive after a newer block; real epochs are never filtered by
+	// it, so a reorg still reaches the FSM.
+	lastEpochHeight int32
+
 	// autoRefreshRetryHeight is an in-memory maintenance cooldown. It is
 	// deliberately fail-safe on restart: clearing it can cause one earlier
 	// retry, but can never delay the critical path decision.
@@ -599,13 +605,26 @@ func (a *VTXOActor) Receive(ctx context.Context,
 		slog.String("current_state", fmt.Sprintf("%T", a.state)),
 	)
 
+	if startTip, ok := event.(*startTipEvent); ok {
+		epoch, ok := a.startTipEpoch(ctx, startTip)
+		if !ok {
+			return fn.Ok[actormsg.VTXOActorResp](VTXOActorResponse{
+				PriorState: a.state,
+				NewState:   a.state,
+			})
+		}
+
+		event = epoch
+	}
+
 	vtxoEvent, ok := event.(VTXOEvent)
 	if !ok {
 		return fn.Err[actormsg.VTXOActorResp](
 			fmt.Errorf("unexpected event type: %T", event),
 		)
 	}
-	if _, block := vtxoEvent.(*BlockEpochEvent); block {
+	if epoch, block := vtxoEvent.(*BlockEpochEvent); block {
+		a.lastEpochHeight = max(a.lastEpochHeight, epoch.Height)
 		a.repairLegacyCreatedHeight(ctx)
 	}
 
