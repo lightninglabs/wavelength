@@ -148,6 +148,7 @@ when the local wallet owns the receive script.
   - ← `wallet` (via `lib/actormsg`): `SelectAndReserveSpendRequest`, `ReleaseSpendRequest`, `CompleteSpendRequest`, `ReserveForfeitRequest`, `ReleaseForfeitRequest`, `SelectAndReserveForfeitRequest`, `ActivateCustomForfeitInputsRequest`, `DropCustomForfeitInputsRequest`
   - ← `round` (via `lib/actormsg`): `DropCustomForfeitInputsRequest` (rollback on rejected round intent)
   - ← `chainsource` (via Manager): `BlockEpochEvent`
+  - ← `chainsource` (`BestHeightRequest` the manager sends for it on spawn): `startTipEvent`
   - ← `serverconn` (via `EventRouter` route `MethodIncomingVTXO`): `IncomingVTXOMsg` (wrapping `arkrpc.IncomingVTXOEvent`), routed to `IncomingVTXOHandler`
   - ← `unroll` (via `RegistryConfig.VTXOExitObserver`, forwarded by `waved`): `ExitOutcomeNotification` — terminal exit job result forwarded to reconcile VTXO lifecycle after an unroll completes or fails cleanly
 
@@ -213,6 +214,22 @@ when the local wallet owns the receive script.
   actors from. Coin selection is already `VTXOStatusLive`-scoped via
   `ListSelectionCandidatesByStatus`, so it excludes them by construction.
 - VTXO actor state is the single source of truth for availability.
+- **An actor classifies its expiry when it starts.** After `Start`, the
+  manager asks the chain source for the current tip on the actor's behalf with
+  `actor.AskThen`, and the answer comes back as the actor's own
+  `startTipEvent`, which `Receive` turns into a `BlockEpochEvent`. Without it,
+  an actor spawned after the startup reconcile (every VTXO a recovery scan
+  materializes, every OOR receive) waits for the next block, and an already
+  expired VTXO counts as spendable until then. The ask never waits on the
+  manager's turn. A spawn path that persists the VTXO's status itself after
+  spawning (`recoverExitedVTXO`, `conflictExitedVTXO`) sends the ask only once
+  that write is done, through `spawnUnclassifiedVTXOActor`; otherwise its
+  write could overwrite the status the actor persisted on the tip. An answer
+  no newer than an epoch the actor already received is dropped, because the
+  ask and the block subscription are separate delivery paths. The tip only
+  classifies: an actor outside `LiveState` ignores it, since there an epoch
+  can start a reclaim (`ExpiredState`) or an exit (reserved states), which
+  must not run the moment an actor is spawned.
 - Forfeit transaction is not broadcast until the connector output's round confirms (atomic replacement).
 - Refresh is auto-triggered at configurable height before expiry.
 - `ExpiryConfig.MaxPaymentCLTV` reserves a total Lightning CLTV window above

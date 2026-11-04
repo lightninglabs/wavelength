@@ -574,7 +574,9 @@ func (a *VTXOActor) quoteRefreshFee(ctx context.Context, vtxo *Descriptor,
 	)
 }
 
-// Start initializes the actor and subscribes to block epochs.
+// Start initializes the actor and subscribes to block epochs. It does not ask
+// for the current tip: the spawning manager does that once it no longer owes
+// the store a status write for this VTXO, see requestStartTip.
 func (a *VTXOActor) Start(ctx context.Context,
 	selfRef actor.TellOnlyRef[actormsg.VTXOActorMsg]) error {
 
