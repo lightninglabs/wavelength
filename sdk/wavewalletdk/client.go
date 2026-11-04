@@ -331,6 +331,46 @@ func (c *Client) Balance(ctx context.Context) (*Balance, error) {
 	return &balance, nil
 }
 
+// Refresh re-issues VTXOs into a new batch, resetting their expiry.
+//
+// This is the recovery path for a wallet that was offline through its
+// refresh window: an expired VTXO holds no spendable value until it has
+// been re-issued, so its balance reads zero with the funds still
+// recoverable behind it. The daemon accepts expired VTXOs here as well
+// as live ones.
+func (c *Client) Refresh(ctx context.Context, req RefreshRequest) (
+	*RefreshResult, error) {
+
+	if err := c.requireWalletRPC(); err != nil {
+		return nil, err
+	}
+
+	resp, err := c.wallet.Refresh(ctx, &wavewalletrpc.RefreshRequest{
+		Outpoints: req.Outpoints,
+		DryRun:    req.DryRun,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("refresh vtxos: %w", err)
+	}
+
+	result := &RefreshResult{
+		QueuedOutpoints: resp.GetQueuedOutpoints(),
+		DryRun:          resp.GetDryRun(),
+	}
+	if estimate := resp.GetFeeEstimate(); estimate != nil {
+		result.FeeEstimate = &RefreshFeeEstimate{
+			FreeRefreshEligible: estimate.GetFreeRefreshEligible(),
+			EstimateError:       estimate.GetEstimateError(),
+		}
+		if estimate.EstimatedTotalFeeSat != nil {
+			total := estimate.GetEstimatedTotalFeeSat()
+			result.FeeEstimate.TotalFeeSat = &total
+		}
+	}
+
+	return result, nil
+}
+
 // Deposit allocates a fresh tracked boarding address.
 func (c *Client) Deposit(ctx context.Context, req DepositRequest) (
 	*DepositResult, error) {
