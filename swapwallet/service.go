@@ -110,6 +110,17 @@ func (s *Service) Exit(ctx context.Context, req *wavewalletrpc.ExitRequest) (
 	return s.exit(ctx, req)
 }
 
+// Refresh re-issues VTXOs into a new batch, resetting their expiry. It is
+// the wallet-facing route to the recovery a wallet needs after missing a
+// refresh window: an expired VTXO holds no spendable value until it has
+// been re-issued, and this is what re-issues it.
+func (s *Service) Refresh(ctx context.Context,
+	req *wavewalletrpc.RefreshRequest) (*wavewalletrpc.RefreshResponse,
+	error) {
+
+	return s.refresh(ctx, req)
+}
+
 // GetExitPlan previews whether the backing wallet has enough confirmed fee
 // inputs for unilateral exit and returns a backing-wallet funding address when
 // more fee inputs are needed.

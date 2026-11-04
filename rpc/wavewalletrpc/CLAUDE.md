@@ -25,6 +25,7 @@ Proto source: `rpc/wavewalletrpc/wallet.proto`.
 | `Deposit` | Fresh boarding address (used by `recv --onchain`) |
 | `Balance` | Flat balance (confirmed / pending_in / pending_out) |
 | `Status` | Daemon + wallet readiness summary |
+| `Refresh` | Re-issue VTXOs into a new batch, expired ones included; `dry_run` previews the operator fee |
 | `GetExitPlan` | Preview unilateral-exit readiness/funding for one VTXO |
 | `ExportExit` | Export signed ancestry, expiry evidence, and optionally a presigned anchored sweep |
 | `ExportExits` | Export several targets with shared ancestry included once |

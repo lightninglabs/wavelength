@@ -1108,6 +1108,17 @@ func (c *WalletServiceClient) Balance(ctx context.Context,
 	return out, err
 }
 
+// Refresh re-issues the selected VTXOs into a new batch.
+func (c *WalletServiceClient) Refresh(ctx context.Context,
+	in *wavewalletrpc.RefreshRequest, _ ...grpc.CallOption) (
+	*wavewalletrpc.RefreshResponse, error) {
+
+	out := new(wavewalletrpc.RefreshResponse)
+	err := c.client.Post(ctx, "/v1/wallet/refresh", in, out)
+
+	return out, err
+}
+
 // Status returns the wallet readiness summary.
 func (c *WalletServiceClient) Status(ctx context.Context,
 	in *wavewalletrpc.StatusRequest, _ ...grpc.CallOption) (

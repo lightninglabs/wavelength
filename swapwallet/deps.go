@@ -37,6 +37,10 @@ type RPCServer interface {
 		error,
 	)
 
+	RefreshVTXOs(ctx context.Context,
+		req *waverpc.RefreshVTXOsRequest) (
+		*waverpc.RefreshVTXOsResponse, error)
+
 	SendOnChain(ctx context.Context,
 		req *waverpc.SendOnChainRequest) (
 		*waverpc.SendOnChainResponse,

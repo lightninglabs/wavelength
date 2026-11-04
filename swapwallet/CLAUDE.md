@@ -230,6 +230,16 @@ or terminal activity state clears them.
   to the next round without a separate CLI step. If the implicit join fails,
   the error carries the explicit recovery hint (`ark rounds join`) so the
   leave intent — already queued in the round actor — is not stranded silently.
+- **Refresh joins the round it queued.** `RefreshVTXOs` only reserves the
+  inputs and queues the intent, leaving the round assembling, so `refresh`
+  calls `JoinNextRound` after a non-dry-run result that queued at least one
+  outpoint, and returns a join failure with its gRPC code. Without the join an
+  expired VTXO stays reserved and is never re-issued. A dry run and an empty
+  selection never join. A failed join is not rolled back: the daemon has no
+  way to drop one queued intent, so the error says the refresh stays queued
+  until the next round join or a daemon restart, whose orphaned-forfeit sweep
+  releases the reservation. Retrying Refresh does not help, because the
+  reserved VTXOs are no longer live.
 - `ListView` defaults to Activity. Only Activity honors
   `pending_only` and `kinds`; those filters are ignored for VTXOs
   and Onchain.

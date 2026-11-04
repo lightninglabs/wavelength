@@ -30,6 +30,9 @@ http:
     - selector: wavewalletrpc.WalletService.Status
       post: /v1/wallet/status
       body: "*"
+    - selector: wavewalletrpc.WalletService.Refresh
+      post: /v1/wallet/refresh
+      body: "*"
     - selector: wavewalletrpc.WalletService.GetExitPlan
       post: /v1/wallet/exit-plan
       body: "*"

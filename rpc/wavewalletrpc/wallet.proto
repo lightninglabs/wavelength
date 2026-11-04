@@ -66,6 +66,19 @@ service WalletService {
     // `getinfo` CLI verb covers the human-facing readiness view).
     rpc Status (StatusRequest) returns (StatusResponse);
 
+    // Refresh re-issues VTXOs into a new batch, resetting their expiry.
+    //
+    // A VTXO whose batch expiry has passed holds no spendable value until
+    // it has been re-issued, so a wallet that was offline through its
+    // refresh window reports a zero balance with funds still recoverable
+    // behind it. This is the verb that recovers them: it accepts expired
+    // VTXOs as well as live ones, forfeiting each into an ordinary round.
+    //
+    // With no selection it refreshes every VTXO that needs it. dry_run
+    // previews the operator fee without queuing anything, which is what a
+    // caller should show a user before spending their money on a round.
+    rpc Refresh (RefreshRequest) returns (RefreshResponse);
+
     // GetExitPlan previews unilateral-exit readiness for one VTXO. The
     // response includes CPFP fee input requirements and, when funding is
     // needed, a backing-wallet address callers can fund before forced unroll.
@@ -1136,6 +1149,62 @@ message ExitCommitmentSweep {
     uint32 delay_blocks = 1;
     string leaf_script_hex = 2;
     string control_block_hex = 3;
+}
+
+// RefreshRequest selects the VTXOs to re-issue for
+// WalletService.Refresh.
+message RefreshRequest {
+    // outpoints lists specific VTXOs to refresh, each "txid:index". Empty
+    // refreshes every VTXO that needs it, which is what a background
+    // maintenance pass wants; naming outpoints is for a UI acting on a
+    // selection the user made.
+    repeated string outpoints = 1;
+
+    // dry_run previews the operator fee and the selection without queuing
+    // the refresh.
+    bool dry_run = 2;
+}
+
+// RefreshResponse reports what WalletService.Refresh queued, or would
+// queue for a dry run.
+message RefreshResponse {
+    // queued_outpoints lists the VTXOs queued for refresh, each
+    // "txid:index". On a dry run these are the ones that would be queued.
+    repeated string queued_outpoints = 1;
+
+    // dry_run echoes whether this was a preview, so a caller reading only
+    // the response can tell a preview from a real queue.
+    bool dry_run = 2;
+
+    // fee_estimate is the advisory operator-fee preview for the selection.
+    // Populated on a dry run with a non-empty selection. The binding fee is
+    // set by the server-issued quote when the round seals and may differ.
+    RefreshFeeEstimate fee_estimate = 3;
+}
+
+// RefreshFeeEstimate is what a refresh is expected to cost. It carries
+// the daemon's summary fields with their presence semantics intact; the
+// per-outpoint breakdown stays on the daemon surface, which is where a
+// drill-down belongs.
+message RefreshFeeEstimate {
+    // estimated_total_fee_sat is the advisory total operator fee for the
+    // selection. Explicit presence, and deliberately so: the field is
+    // absent rather than zero whenever the estimate degraded, so a missing
+    // number can not be misread as a free refresh.
+    optional int64 estimated_total_fee_sat = 1;
+
+    // free_refresh_eligible is true when every selected VTXO is inside the
+    // operator's advertised free-refresh window, so refreshing exactly
+    // this selection is expected to seal with all fees waived. The waiver
+    // is all-or-nothing per round: batching this selection with boarding
+    // or leave inputs forfeits it.
+    bool free_refresh_eligible = 2;
+
+    // estimate_error is non-empty when the operator quotes could not be
+    // fetched. The preview is still returned so a dry run keeps working as
+    // a validity probe; when this is set, treat the total as absent unless
+    // free_refresh_eligible is true, since the waiver is computed locally.
+    string estimate_error = 3;
 }
 
 // GetExitPlanRequest lists the VTXO outpoints to preview for unilateral exit

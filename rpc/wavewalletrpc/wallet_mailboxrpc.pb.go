@@ -42,6 +42,8 @@ type WalletServiceMailboxServer interface {
 	Balance(ctx context.Context, req *BalanceRequest) (*BalanceResponse, error)
 	// Status handles Status.
 	Status(ctx context.Context, req *StatusRequest) (*StatusResponse, error)
+	// Refresh handles Refresh.
+	Refresh(ctx context.Context, req *RefreshRequest) (*RefreshResponse, error)
 	// GetExitPlan handles GetExitPlan.
 	GetExitPlan(ctx context.Context, req *GetExitPlanRequest) (*GetExitPlanResponse, error)
 	// ExportExit handles ExportExit.
@@ -151,6 +153,16 @@ func RegisterWalletServiceMailboxServer(r rpc.Router, impl WalletServiceMailboxS
 		}
 
 		return impl.Status(ctx, req)
+	})
+	r.Handle("wavewalletrpc.WalletService", "Refresh", func() proto.Message {
+		return &RefreshRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*RefreshRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.Refresh(ctx, req)
 	})
 	r.Handle("wavewalletrpc.WalletService", "GetExitPlan", func() proto.Message {
 		return &GetExitPlanRequest{}
@@ -434,6 +446,29 @@ func (c *WalletServiceMailboxClient) Status(ctx context.Context, req *StatusRequ
 	}
 
 	resp := new(StatusResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// Refresh calls the Refresh RPC.
+func (c *WalletServiceMailboxClient) Refresh(ctx context.Context, req *RefreshRequest, opts ...rpc.RPCOptions) (*RefreshResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "wavewalletrpc.WalletService",
+		Method:  "Refresh",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(RefreshResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

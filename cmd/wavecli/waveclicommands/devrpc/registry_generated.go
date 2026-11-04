@@ -495,6 +495,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "",
 				},
 				{
+					Name:     "Refresh",
+					Aliases:  []string{"refresh"},
+					Input:    "wavewalletrpc.RefreshRequest",
+					Output:   "wavewalletrpc.RefreshResponse",
+					Comments: "",
+				},
+				{
 					Name:     "GetExitPlan",
 					Aliases:  []string{"get-exit-plan"},
 					Input:    "wavewalletrpc.GetExitPlanRequest",

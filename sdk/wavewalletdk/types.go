@@ -109,6 +109,47 @@ func (i *Info) WalletReady() bool {
 	return i.WalletState == WalletStateReady
 }
 
+// RefreshRequest selects the VTXOs to re-issue.
+type RefreshRequest struct {
+	// Outpoints names specific VTXOs, each "txid:index". Empty
+	// refreshes every VTXO that needs it, which is what an unattended
+	// maintenance pass wants.
+	Outpoints []string
+
+	// DryRun previews the operator fee without queuing anything.
+	DryRun bool
+}
+
+// RefreshResult reports what a refresh queued, or would queue.
+type RefreshResult struct {
+	// QueuedOutpoints lists the VTXOs queued for refresh.
+	QueuedOutpoints []string
+
+	// DryRun echoes whether this was a preview.
+	DryRun bool
+
+	// FeeEstimate is the advisory fee preview, populated on a dry run.
+	// Nil when the daemon returned none.
+	FeeEstimate *RefreshFeeEstimate
+}
+
+// RefreshFeeEstimate is what a refresh is expected to cost.
+type RefreshFeeEstimate struct {
+	// TotalFeeSat is the advisory total operator fee. Nil rather than
+	// zero when the estimate degraded, so a caller cannot render a
+	// missing number as a free refresh.
+	TotalFeeSat *int64
+
+	// FreeRefreshEligible reports that every selected VTXO is inside
+	// the operator's free-refresh window, so this selection on its own
+	// is expected to seal with fees waived.
+	FreeRefreshEligible bool
+
+	// EstimateError is non-empty when the operator quotes could not be
+	// fetched. The preview is still usable as a validity probe.
+	EstimateError string
+}
+
 // CreateWalletRequest creates or imports a daemon wallet.
 type CreateWalletRequest struct {
 	Mnemonic       []string
