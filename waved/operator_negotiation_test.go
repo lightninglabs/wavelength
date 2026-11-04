@@ -628,6 +628,44 @@ func TestFetchOperatorTermsRefreshSelectedButDisabledMarksIncompatible(
 	require.False(t, s.isServerConnected())
 }
 
+// TestFetchOperatorTermsBeforeNegotiation pins the bootstrap race: the operator
+// client is published before the negotiated version is stored, so an RPC
+// handler can refresh the terms in between and pin version zero. A conforming
+// operator answers that by selecting zero. If the bootstrap stores version one
+// while the call is in flight, judging the response against the stored version
+// would mark a healthy runtime permanently incompatible. The response must be
+// judged against the version the request pinned.
+func TestFetchOperatorTermsBeforeNegotiation(t *testing.T) {
+	t.Parallel()
+
+	s := newCompatTestServer(t, okPullEdge{})
+	s.serverConnected.Store(true)
+
+	stub := &stubArkServiceClient{
+		resp: &arkrpc.GetInfoResponse{
+			Pubkey:             testOperatorPubKeyBytes(t),
+			SelectedArkVersion: 0,
+			ArkVersionPolicies: []*arkrpc.ArkVersionPolicy{
+				activeArkPolicy(1),
+			},
+		},
+
+		// The bootstrap completes while the refresh is in flight.
+		await: func(context.Context) error {
+			s.arkProtocolVersion.Store(1)
+
+			return nil
+		},
+	}
+	s.arkClient = stub
+
+	_, err := s.fetchOperatorTerms(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, 1, stub.calls)
+	require.True(t, s.isServerConnected())
+	require.Equal(t, uint32(1), s.arkProtocolVersion.Load())
+}
+
 // testScheduledGetInfoResponse builds a GetInfo response from a scheduled
 // operator that publishes a single slot opening ten minutes after now and
 // closing two minutes later, stamped with the given server clock reading. A
