@@ -320,6 +320,9 @@ type Config struct {
 	// Lnd configures the connection to the backing lnd node.
 	Lnd *LndConfig `mapstructure:"lnd"`
 
+	// Assets selects the backend that verifies Taproot Assets.
+	Assets *AssetsConfig `mapstructure:"assets"`
+
 	// Server configures the connection to the ark operator's mailbox
 	// edge server.
 	Server *ServerConfig `mapstructure:"server"`
@@ -1256,6 +1259,7 @@ func DefaultConfig() *Config {
 			Host:       DefaultLndHost,
 			RPCTimeout: DefaultRPCTimeout,
 		},
+		Assets: defaultAssetsConfig(),
 		Server: &ServerConfig{
 			Transport:    RPCTransportGRPC,
 			MaxTreeNodes: roundpb.DefaultMaxTreeNodes,
@@ -1351,6 +1355,9 @@ func (c *Config) Validate() error {
 
 	// Validate wallet config.
 	if err := c.validateWalletConfig(); err != nil {
+		return err
+	}
+	if err := c.validateAssetsConfig(); err != nil {
 		return err
 	}
 
@@ -1958,6 +1965,13 @@ func (c *Config) expandPaths() error {
 	if c.Lnd != nil {
 		fields = append(fields,
 			&c.Lnd.TLSPath, &c.Lnd.MacaroonPath,
+		)
+	}
+
+	if c.Assets != nil && c.Assets.Tapd != nil {
+		fields = append(
+			fields, &c.Assets.Tapd.TLSPath,
+			&c.Assets.Tapd.MacaroonPath,
 		)
 	}
 
