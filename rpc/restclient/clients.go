@@ -648,6 +648,28 @@ func (c *DaemonServiceClient) Board(ctx context.Context,
 	return out, err
 }
 
+// DepositAsset funds or resumes an asset deposit.
+func (c *DaemonServiceClient) DepositAsset(ctx context.Context,
+	in *waverpc.DepositAssetRequest, _ ...grpc.CallOption) (
+	*waverpc.AssetDeposit, error) {
+
+	out := new(waverpc.AssetDeposit)
+	err := c.client.Post(ctx, "/v1/daemon/deposit-asset", in, out)
+
+	return out, err
+}
+
+// ListAssetDeposits returns the asset deposits of the daemon.
+func (c *DaemonServiceClient) ListAssetDeposits(ctx context.Context,
+	in *waverpc.ListAssetDepositsRequest, _ ...grpc.CallOption) (
+	*waverpc.ListAssetDepositsResponse, error) {
+
+	out := new(waverpc.ListAssetDepositsResponse)
+	err := c.client.Post(ctx, "/v1/daemon/list-asset-deposits", in, out)
+
+	return out, err
+}
+
 // JoinNextRound commits queued round intents and joins the next round.
 func (c *DaemonServiceClient) JoinNextRound(ctx context.Context,
 	in *waverpc.JoinNextRoundRequest, _ ...grpc.CallOption) (

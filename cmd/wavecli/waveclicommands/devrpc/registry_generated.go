@@ -206,6 +206,20 @@ func generatedRegistry() []serviceSpec {
 					Comments: "Board triggers the client to join the next round with any\nconfirmed boarding UTXOs. This sends IntentRequested to\nthe round FSM, which emits a JoinRoundRequest to the server.",
 				},
 				{
+					Name:     "DepositAsset",
+					Aliases:  []string{"deposit-asset"},
+					Input:    "waverpc.DepositAssetRequest",
+					Output:   "waverpc.AssetDeposit",
+					Comments: "DepositAsset funds a boarding output holding a Taproot Asset from the\ntapd wallet behind assets.tapd and tracks it until its proof\nconfirms. Retrying with the same request_id resumes the same\ndeposit. Requires assets.backend=tapd and assets.lnd.",
+				},
+				{
+					Name:     "ListAssetDeposits",
+					Aliases:  []string{"list-asset-deposits"},
+					Input:    "waverpc.ListAssetDepositsRequest",
+					Output:   "waverpc.ListAssetDepositsResponse",
+					Comments: "ListAssetDeposits returns the asset deposits of this daemon.",
+				},
+				{
 					Name:     "JoinNextRound",
 					Aliases:  []string{"join-next-round"},
 					Input:    "waverpc.JoinNextRoundRequest",
