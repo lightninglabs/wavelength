@@ -608,3 +608,117 @@ func errorString(err error) string {
 
 	return err.Error()
 }
+
+// refresh re-issues the selected VTXOs into a new batch by proxying
+// waverpc.RefreshVTXOs and then joining the next round, so the refresh is
+// submitted rather than left queued.
+//
+// An empty selection means "everything that needs it", which is what the
+// daemon's `all` arm does; naming outpoints is for a caller acting on a
+// user's selection. The daemon accepts expired VTXOs as well as live ones,
+// which is the whole point of exposing this at the wallet layer: a wallet
+// that was offline through its refresh window has no other way back to a
+// spendable balance.
+func (s *Service) refresh(ctx context.Context,
+	req *wavewalletrpc.RefreshRequest) (*wavewalletrpc.RefreshResponse,
+	error) {
+
+	if s.deps == nil || s.deps.RPCServer == nil {
+		return nil, statusSwapBackendUnavailable()
+	}
+
+	daemonReq := &waverpc.RefreshVTXOsRequest{
+		DryRun: req.GetDryRun(),
+	}
+
+	// Reject a blank outpoint rather than passing it down: the daemon
+	// would fail to parse it and the caller would get a message about
+	// its own empty string from two layers away.
+	outpoints := make([]string, 0, len(req.GetOutpoints()))
+	for _, outpoint := range req.GetOutpoints() {
+		trimmed := strings.TrimSpace(outpoint)
+		if trimmed == "" {
+			return nil, status.Error(
+				codes.InvalidArgument,
+				"outpoints must not contain empty entries",
+			)
+		}
+		outpoints = append(outpoints, trimmed)
+	}
+
+	switch {
+	case len(outpoints) > 0:
+		daemonReq.Selection = &waverpc.RefreshVTXOsRequest_Outpoints{
+			Outpoints: &waverpc.OutpointSelection{
+				Outpoints: outpoints,
+			},
+		}
+
+	default:
+		daemonReq.Selection = &waverpc.RefreshVTXOsRequest_All{
+			All: true,
+		}
+	}
+
+	resp, err := s.deps.RPCServer.RefreshVTXOs(ctx, daemonReq)
+	if err != nil {
+		return nil, status.Errorf(status.Code(err), "refresh vtxos: %v",
+			err)
+	}
+
+	// RefreshVTXOs only reserves the inputs and queues the intent: the
+	// daemon leaves the round assembling so a caller can batch more
+	// intents before committing, which is why the CLI joins the round
+	// itself afterwards. Nothing else does that for this caller, and an
+	// expired VTXO left queued stays reserved without ever being
+	// re-issued, however many blocks pass. So join here, the same way
+	// the CLI does. A preview reserved nothing and an empty selection
+	// queued nothing, so neither has a round to join.
+	if !req.GetDryRun() && len(resp.GetQueuedOutpoints()) > 0 {
+		_, err := s.deps.RPCServer.JoinNextRound(
+			ctx, &waverpc.JoinNextRoundRequest{},
+		)
+		// A failed join leaves the refresh queued and its VTXOs
+		// reserved, so retrying Refresh cannot pick them up again:
+		// the no-selection arm only sees live VTXOs and a named one
+		// is refused. Say what does recover it instead. Any later
+		// join submits it with the rest of the assembling round, and
+		// the daemon's startup sweep returns reserved VTXOs to live,
+		// since a round that never registered is not persisted.
+		if err != nil {
+			return nil, status.Errorf(status.Code(err), "refresh "+
+				"queued but joining the next round failed: "+
+				"%v; the refresh stays queued until the next "+
+				"round join, or until the daemon restarts", err)
+		}
+	}
+
+	return &wavewalletrpc.RefreshResponse{
+		QueuedOutpoints: resp.GetQueuedOutpoints(),
+		DryRun:          req.GetDryRun(),
+		FeeEstimate:     refreshFeeEstimate(resp.GetFeeEstimate()),
+	}, nil
+}
+
+// refreshFeeEstimate narrows the daemon's fee preview to the wallet
+// surface's summary shape, keeping the presence contract that matters: the
+// total stays absent rather than becoming zero when the estimate degraded,
+// so a caller cannot misread a missing number as a free refresh.
+func refreshFeeEstimate(
+	estimate *waverpc.RefreshFeeEstimate) *wavewalletrpc.RefreshFeeEstimate {
+
+	if estimate == nil {
+		return nil
+	}
+
+	out := &wavewalletrpc.RefreshFeeEstimate{
+		FreeRefreshEligible: estimate.GetFreeRefreshEligible(),
+		EstimateError:       estimate.GetEstimateError(),
+	}
+	if estimate.EstimatedTotalFeeSat != nil {
+		total := estimate.GetEstimatedTotalFeeSat()
+		out.EstimatedTotalFeeSat = &total
+	}
+
+	return out
+}

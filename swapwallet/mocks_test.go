@@ -30,6 +30,10 @@ type fakeRPCServer struct {
 	listVTXOsErr     error
 	listVTXOsCalls   int
 	listVTXOsLastReq *waverpc.ListVTXOsRequest
+	refreshCalls     int
+	refreshLastReq   *waverpc.RefreshVTXOsRequest
+	refreshResp      *waverpc.RefreshVTXOsResponse
+	refreshErr       error
 	leaveResp        *waverpc.LeaveVTXOsResponse
 	leaveErr         error
 	leaveCalls       int
@@ -125,6 +129,19 @@ func (f *fakeRPCServer) LeaveVTXOs(_ context.Context,
 	f.leaveLastReq = req
 
 	return f.leaveResp, f.leaveErr
+}
+
+func (f *fakeRPCServer) RefreshVTXOs(_ context.Context,
+	req *waverpc.RefreshVTXOsRequest) (*waverpc.RefreshVTXOsResponse,
+	error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.refreshCalls++
+	f.refreshLastReq = req
+
+	return f.refreshResp, f.refreshErr
 }
 
 func (f *fakeRPCServer) ListVTXOs(_ context.Context,

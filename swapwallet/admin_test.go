@@ -624,4 +624,203 @@ func TestAdminHandlersPreserveGRPCCode(t *testing.T) {
 		Outpoint: "abc:0",
 	})
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+
+	rpc.refreshErr = status.Error(codes.NotFound, "unknown vtxo")
+	_, err = svc.Refresh(t.Context(), &wavewalletrpc.RefreshRequest{
+		Outpoints: []string{"abc:0"},
+	})
+	require.Equal(t, codes.NotFound, status.Code(err))
+}
+
+// TestRefreshWithoutSelectionRefreshesEverything pins the default a
+// background maintenance pass relies on: no outpoints means the daemon's
+// "all" arm, not an empty selection that would refresh nothing.
+func TestRefreshWithoutSelectionRefreshesEverything(t *testing.T) {
+	t.Parallel()
+
+	svc, rpc := newAdminFixture(t)
+	rpc.refreshResp = &waverpc.RefreshVTXOsResponse{
+		QueuedOutpoints: []string{
+			"abc:0",
+			"def:1",
+		},
+		Status: "queued",
+	}
+
+	resp, err := svc.Refresh(t.Context(), &wavewalletrpc.RefreshRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"abc:0", "def:1"}, resp.GetQueuedOutpoints())
+	require.False(t, resp.GetDryRun())
+	require.Equal(t, 1, rpc.refreshCalls)
+	require.True(t, rpc.refreshLastReq.GetAll())
+	require.Nil(t, rpc.refreshLastReq.GetOutpoints())
+}
+
+// TestRefreshWithSelectionPassesOutpoints confirms a named selection
+// reaches the daemon as a selection rather than being widened to all,
+// which would spend a user's money on VTXOs they did not pick.
+func TestRefreshWithSelectionPassesOutpoints(t *testing.T) {
+	t.Parallel()
+
+	svc, rpc := newAdminFixture(t)
+	rpc.refreshResp = &waverpc.RefreshVTXOsResponse{
+		QueuedOutpoints: []string{
+			"abc:0",
+		},
+	}
+
+	_, err := svc.Refresh(t.Context(), &wavewalletrpc.RefreshRequest{
+		Outpoints: []string{" abc:0 "},
+	})
+	require.NoError(t, err)
+	require.False(t, rpc.refreshLastReq.GetAll())
+	require.Equal(
+		t, []string{
+			"abc:0",
+		},
+		rpc.refreshLastReq.GetOutpoints().GetOutpoints(),
+	)
+}
+
+// TestRefreshRejectsEmptyOutpoint keeps a blank entry from travelling to
+// the daemon, where the parse failure it causes names the caller's own
+// empty string from two layers away.
+func TestRefreshRejectsEmptyOutpoint(t *testing.T) {
+	t.Parallel()
+
+	svc, rpc := newAdminFixture(t)
+
+	_, err := svc.Refresh(t.Context(), &wavewalletrpc.RefreshRequest{
+		Outpoints: []string{"abc:0", "  "},
+	})
+	require.Error(t, err)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Equal(t, 0, rpc.refreshCalls)
+}
+
+// TestRefreshDryRunKeepsFeeEstimatePresence is the one that matters for a
+// confirmation dialog: when the daemon could not price the refresh, the
+// total must come back absent rather than zero, or a caller renders "free"
+// over an unknown cost.
+func TestRefreshDryRunKeepsFeeEstimatePresence(t *testing.T) {
+	t.Parallel()
+
+	svc, rpc := newAdminFixture(t)
+	rpc.refreshResp = &waverpc.RefreshVTXOsResponse{
+		Status: "preview",
+		FeeEstimate: &waverpc.RefreshFeeEstimate{
+			EstimateError: "operator unreachable",
+		},
+	}
+
+	resp, err := svc.Refresh(t.Context(), &wavewalletrpc.RefreshRequest{
+		DryRun: true,
+	})
+	require.NoError(t, err)
+	require.True(t, resp.GetDryRun())
+	require.True(t, rpc.refreshLastReq.GetDryRun())
+
+	estimate := resp.GetFeeEstimate()
+	require.NotNil(t, estimate)
+	require.Nil(t, estimate.EstimatedTotalFeeSat)
+	require.Equal(t, "operator unreachable", estimate.GetEstimateError())
+
+	// A priced estimate travels as a real number.
+	total := int64(1234)
+	rpc.refreshResp.FeeEstimate = &waverpc.RefreshFeeEstimate{
+		EstimatedTotalFeeSat: &total,
+		FreeRefreshEligible:  false,
+	}
+	resp, err = svc.Refresh(t.Context(), &wavewalletrpc.RefreshRequest{
+		DryRun: true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp.GetFeeEstimate().EstimatedTotalFeeSat)
+	require.EqualValues(
+		t, 1234, resp.GetFeeEstimate().GetEstimatedTotalFeeSat(),
+	)
+}
+
+// TestRefreshJoinsNextRound is the regression for a refresh that never
+// reached a round. RefreshVTXOs only reserves the inputs and queues the
+// intent, leaving the round assembling for the caller to join, and nothing
+// joined it for a wallet caller. An expired VTXO then stayed reserved
+// without ever being re-issued. A refresh that queued something must join,
+// while a preview or an empty selection has nothing to join.
+func TestRefreshJoinsNextRound(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		dryRun    bool
+		queued    []string
+		wantJoins int
+	}{{
+		name: "queued refresh joins",
+		queued: []string{
+			"abc:0",
+		},
+		wantJoins: 1,
+	}, {
+		name:   "dry run does not join",
+		dryRun: true,
+		queued: []string{
+			"abc:0",
+		},
+	}, {
+		name: "empty selection does not join",
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			svc, rpc := newAdminFixture(t)
+			rpc.refreshResp = &waverpc.RefreshVTXOsResponse{
+				QueuedOutpoints: tc.queued,
+			}
+			rpc.joinNextRoundResp = &waverpc.JoinNextRoundResponse{
+				Status: "joined",
+			}
+
+			resp, err := svc.Refresh(
+				t.Context(), &wavewalletrpc.RefreshRequest{
+					DryRun: tc.dryRun,
+				},
+			)
+			require.NoError(t, err)
+			require.Equal(
+				t, tc.queued, resp.GetQueuedOutpoints(),
+			)
+			require.Equal(t, 1, rpc.refreshCalls)
+			require.Equal(
+				t, tc.wantJoins, rpc.joinNextRoundCalls,
+			)
+		})
+	}
+}
+
+// TestRefreshReturnsJoinError pins that a failed join is reported, with its
+// gRPC code, instead of a success for a refresh that was only queued. The
+// error must also say the refresh stays queued: a retry cannot pick up the
+// reserved VTXOs, so the caller needs to know what recovers them.
+func TestRefreshReturnsJoinError(t *testing.T) {
+	t.Parallel()
+
+	svc, rpc := newAdminFixture(t)
+	rpc.refreshResp = &waverpc.RefreshVTXOsResponse{
+		QueuedOutpoints: []string{
+			"abc:0",
+		},
+	}
+	rpc.joinNextRoundErr = status.Error(
+		codes.Unavailable, "round actor not ready",
+	)
+
+	_, err := svc.Refresh(t.Context(), &wavewalletrpc.RefreshRequest{})
+	require.Error(t, err)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.ErrorContains(t, err, "round actor not ready")
+	require.ErrorContains(t, err, "stays queued")
+	require.Equal(t, 1, rpc.joinNextRoundCalls)
 }
