@@ -155,6 +155,12 @@ state transitions and validation rules live under [Invariants](#invariants).
   Σ(cooperative leave outputs), clamped to zero. Carried on
   `VTXOCreatedNotification.OperatorFeeSat`.
 
+### Checkpoint format (`durable_state*.go`, `durable_*.go`)
+
+- `encodeClientState` / `decodeClientState` encode the complete current protocol-state union in a versioned local format. They perform no database writes and are not yet selected by the production actor.
+- Restoration reports session-dependent signing states. The future durable owner must also retain in-flight signing intent; a false session flag cannot prove that an interrupted transition did no signing work.
+- The format preserves local wallet/asset metadata, selected schedule times, map allocation and already-created signing artifacts. Signer-private sessions are never encoded.
+
 ## Relationships
 
 - **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor
