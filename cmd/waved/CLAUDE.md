@@ -65,6 +65,6 @@ hands off to `waved.Main` to run the daemon.
   otherwise); `--eagerroundjoin` still overrides it either way.
 - `--maxpaymentcltv`'s default is build-tag aware the same way: it reads
   `cfg.MaxPaymentCLTV`, which `waved.DefaultConfig()` seeds from
-  `defaultMaxPaymentCLTV()` — 300 under `swapruntime`, zero otherwise. The
+  `defaultMaxPaymentCLTV()` — 480 under `swapruntime`, zero otherwise. The
   help text therefore differs between builds, and passing `0` explicitly
   disables the payment reserve in a swap-enabled build.

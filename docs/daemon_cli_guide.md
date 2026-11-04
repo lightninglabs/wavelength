@@ -146,7 +146,7 @@ waved \
 | `--rpc.tlskeypath` | | Custom TLS key for daemon RPC |
 | `--swap.serveraddress` | network default | Swap server address override for swapruntime builds |
 | `--swap.servertransport` | `grpc` | Swap server transport: `grpc` or `rest` |
-| `--maxpaymentcltv` | `300` in swap-enabled builds | Largest total Lightning payment CLTV reserved by automatic VTXO refresh; `0` disables the payment reserve |
+| `--maxpaymentcltv` | `480` in swap-enabled builds | Largest total Lightning payment CLTV reserved by automatic VTXO refresh; `0` disables the payment reserve |
 
 Empty Ark and swap addresses resolve from the selected network and transport.
 See [signet.md](signet.md) for the testnet3, testnet4, and signet endpoints and
@@ -563,8 +563,8 @@ That time must cover each attempted slot's wait through its cutoff, the
 signing ceremony and confirmation, six blocks per retry cooldown, and an
 additional margin. A missed slot can require waiting another full interval;
 the registration window is part of that interval, not a separate interval.
-For example, a 648-block window with a 558-block wallet target and a 186-block
-critical threshold leaves **372 blocks** for attempts before critical handling.
+For example, an 864-block window with a 738-block wallet target and a 186-block
+critical threshold leaves **552 blocks** for attempts before critical handling.
 An offline wallet returning later has less time. Schedule intervals use wall
 clock time, while expiry uses block height: convert delays conservatively for
 planning; a ten-minute average block time is not a safety guarantee. Widening
@@ -575,10 +575,10 @@ blocks rather than every block. Allow that discovery delay when changing a
 window. Entering an already-known window fetches fresh terms immediately, and
 critical-exit assessment is never postponed by this polling limit.
 
-Swap-enabled builds also default `maxpaymentcltv` to 300 blocks. Automatic
+Swap-enabled builds also default `maxpaymentcltv` to 480 blocks. Automatic
 maintenance adds that payment window above each VTXO's dynamic unilateral-exit
 budget and 72-block refresh-retry buffer. For example, a VTXO with a 186-block
-critical threshold targets `186 + 72 + 300 = 558` blocks remaining, but
+critical threshold targets `186 + 72 + 480 = 738` blocks remaining, but
 waits if the free window has not opened. Set
 the value to zero to keep only the ordinary exit-safety policy. This is a
 liquidity-readiness target, not an override of send-time expiry validation: a

@@ -498,7 +498,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `GetInfo` snapshot and rechecks the window before reserving the input.
 - `Config.MaxPaymentCLTV` extends that same local safety floor by the largest
   total Lightning CLTV the wallet wants to keep available. Swap-enabled builds
-  default to 300 blocks; core builds default to zero. An operator waiver may
+  default to 480 blocks; core builds default to zero. An operator waiver may
   make the earlier refresh free but cannot shorten this payment reserve.
 
 ## Deep Docs

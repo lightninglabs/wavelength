@@ -54,7 +54,7 @@ func TestVTXOExpiryConfigUsesLatestTerms(t *testing.T) {
 func TestVTXOExpiryConfigReservesMaxPaymentCLTV(t *testing.T) {
 	t.Parallel()
 
-	server := &Server{cfg: &Config{MaxPaymentCLTV: 300}}
+	server := &Server{cfg: &Config{MaxPaymentCLTV: 480}}
 	server.storeOperatorTerms(&types.OperatorTerms{
 		FreeRefreshWindowBlocks: 144,
 	})
@@ -66,7 +66,7 @@ func TestVTXOExpiryConfigReservesMaxPaymentCLTV(t *testing.T) {
 		}},
 	}
 
-	require.Equal(t, int32(558), cfg.CalculateRefreshThreshold(desc))
+	require.Equal(t, int32(738), cfg.CalculateRefreshThreshold(desc))
 }
 
 // activeArkPolicy builds an ACTIVE policy for the given version, used to
