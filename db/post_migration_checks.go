@@ -11,10 +11,9 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/database"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/wavelength/build"
+	dbmigrate "github.com/lightninglabs/wavelength/db/migrate"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightninglabs/wavelength/ledger"
 )
@@ -374,7 +373,7 @@ type DatabaseBackend interface {
 // are the migration versions, and the values are the callbacks that will be
 // executed after the migration with the corresponding version is applied.
 func makePostStepCallbacks(db DatabaseBackend, log btclog.Logger,
-	checks map[uint]postMigrationCheck) map[uint]migrate.PostStepCallback {
+	checks map[uint]postMigrationCheck) map[uint]dbmigrate.PostStepCallback {
 
 	var (
 		ctx  = build.ContextWithLogger(context.Background(), log)
@@ -386,12 +385,12 @@ func makePostStepCallbacks(db DatabaseBackend, log btclog.Logger,
 		writeTxOpts = WriteTxOption()
 	)
 
-	postStepCallbacks := make(map[uint]migrate.PostStepCallback)
+	postStepCallbacks := make(map[uint]dbmigrate.PostStepCallback)
 	for version, check := range checks {
 		// Capture the check in a closure.
 		checkFn := check
 
-		runCheck := func(m *migrate.Migration, q sqlc.Querier) error {
+		runCheck := func(q sqlc.Querier) error {
 			log.InfoS(ctx, "Running post-migration check",
 				"version", version,
 			)
@@ -412,16 +411,10 @@ func makePostStepCallbacks(db DatabaseBackend, log btclog.Logger,
 			return nil
 		}
 
-		// We ignore the actual driver that's being returned here, since
-		// we use migrate.NewWithInstance() to create the migration
-		// instance from our already instantiated database backend that
-		// is also passed into this function.
-		postStepCallbacks[version] = func(m *migrate.Migration,
-			_ database.Driver) error {
-
+		postStepCallbacks[version] = func() error {
 			return txDB.ExecTx(
 				ctx, writeTxOpts, func(q sqlc.Querier) error {
-					return runCheck(m, q)
+					return runCheck(q)
 				},
 			)
 		}
