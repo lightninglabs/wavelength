@@ -166,7 +166,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/wave
   early with an error, or the caller's startup `ctx` cancels.
 - `Config.MaxPaymentCLTV` is the embedded/mobile convenience override for the
   daemon's automatic-refresh payment reserve. Zero preserves a caller-owned
-  daemon value and the swap-enabled 300-block default. To force an explicit
+  daemon value and the swap-enabled 480-block default. To force an explicit
   zero, pass `wavewalletdk.WithMaxPaymentCLTVDisabled()` to `Start`; the mobile
   JSON adapter does this when `max_payment_cltv` is present with value zero.
 - A caller-supplied `DaemonConfig` is deep-copied via
