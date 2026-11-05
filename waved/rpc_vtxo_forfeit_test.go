@@ -42,6 +42,8 @@ func newSignVTXOForfeitFixture(t *testing.T) *signVTXOForfeitFixture {
 	return newSignVTXOForfeitFixtureWithLocalVTXO(t, true)
 }
 
+// newSignVTXOForfeitFixtureWithLocalVTXO builds a negotiated signing fixture,
+// optionally persisting the input to exercise local ownership checks.
 func newSignVTXOForfeitFixtureWithLocalVTXO(t *testing.T,
 	saveLocalVTXO bool) *signVTXOForfeitFixture {
 
@@ -150,6 +152,7 @@ func newSignVTXOForfeitFixtureWithLocalVTXO(t *testing.T,
 			newBufconnClient(t, svc),
 		),
 	}
+	server.arkProtocolVersion.Store(1)
 	server.vtxoStore = vtxoStore
 	if saveLocalVTXO {
 		require.NoError(

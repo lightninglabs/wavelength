@@ -479,6 +479,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   fails, preserving the cause for in-process callers. A successful height zero
   remains valid. GetInfo-backed key reads inherit this availability boundary;
   SDK swap setup must keep those failures retryable.
+- `arkProtocolVersion` is atomic and zero until negotiation completes,
+  because wallet status can refresh operator terms while startup is still
+  negotiating. `fetchOperatorTerms` and `refreshAuthenticatedOperatorTerms`
+  return `errArkVersionNotNegotiated` while it is zero instead of sending
+  version zero, whose reply means no common version. Each reads the version
+  once and checks the reply against that read.
 - `RPCServer.OperatorVTXOFloor` refreshes authenticated operator terms for
   each credit materialization decision and bounds that refresh with
   `operatorTermsRefreshTimeout` (30 s). Its callers use daemon/actor lifetime

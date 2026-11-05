@@ -161,6 +161,7 @@ func TestNewReceiveScriptRetryPreservesPendingAllocation(t *testing.T) {
 			},
 		}),
 	}
+	server.arkProtocolVersion.Store(1)
 	rpcServer := NewRPCServer(server)
 	req := &waverpc.NewReceiveScriptRequest{
 		Label:          "credit top-up",

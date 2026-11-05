@@ -86,14 +86,18 @@ type stubArkServiceClient struct {
 	err   error
 	calls int
 	await func(context.Context) error
+
+	// req is the last request received.
+	req *arkrpc.GetInfoRequest
 }
 
 // GetInfo returns the canned response.
 func (s *stubArkServiceClient) GetInfo(ctx context.Context,
-	_ *arkrpc.GetInfoRequest, _ ...grpc.CallOption) (
+	req *arkrpc.GetInfoRequest, _ ...grpc.CallOption) (
 	*arkrpc.GetInfoResponse, error) {
 
 	s.calls++
+	s.req = req
 	if s.await != nil {
 		if err := s.await(ctx); err != nil {
 			return nil, err
@@ -274,9 +278,57 @@ func TestFetchOperatorTermsRefreshPinsVersion(t *testing.T) {
 	terms, err := srv.fetchOperatorTerms(t.Context())
 	require.NoError(t, err)
 	require.NotNil(t, terms)
+	require.Equal(t, []uint32{1}, stub.req.SupportedArkVersions)
 
 	// The runtime version must be unchanged by a refresh.
 	require.Equal(t, uint32(1), srv.arkProtocolVersion.Load())
+}
+
+// TestFetchOperatorTermsBeforeNegotiation proves a refresh that runs before
+// startup binds a version is refused without asking the operator. Sending
+// version zero would get selection zero back, which means no common version,
+// not usable terms.
+func TestFetchOperatorTermsBeforeNegotiation(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubArkServiceClient{
+		resp: &arkrpc.GetInfoResponse{
+			Pubkey: testOperatorPubKeyBytes(t),
+		},
+	}
+	srv := &Server{arkClient: stub}
+
+	terms, err := srv.fetchOperatorTerms(t.Context())
+	require.ErrorIs(t, err, errArkVersionNotNegotiated)
+	require.Nil(t, terms)
+	require.Zero(t, stub.calls)
+}
+
+// TestFetchOperatorTermsConcurrentWithNegotiation runs a refresh while
+// startup binds the version, so the race detector can see the access. The
+// refresh either refuses before negotiation or pins the bound version.
+func TestFetchOperatorTermsConcurrentWithNegotiation(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubArkServiceClient{
+		resp: &arkrpc.GetInfoResponse{
+			Pubkey:             testOperatorPubKeyBytes(t),
+			SelectedArkVersion: 1,
+		},
+	}
+	srv := &Server{arkClient: stub}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.arkProtocolVersion.Store(1)
+	}()
+
+	_, err := srv.fetchOperatorTerms(t.Context())
+	<-done
+	if err != nil {
+		require.ErrorIs(t, err, errArkVersionNotNegotiated)
+	}
 }
 
 // TestOperatorVTXOFloorRefreshesEffectiveMinimum verifies credit policy reads
@@ -502,6 +554,7 @@ func TestRefreshAuthenticatedOperatorTermsHonorsDeadline(t *testing.T) {
 	srv := &Server{
 		ark: arkrpc.NewArkServiceMailboxClient(mailbox),
 	}
+	srv.arkProtocolVersion.Store(1)
 	srv.setServerConnected(true)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
@@ -509,6 +562,23 @@ func TestRefreshAuthenticatedOperatorTermsHonorsDeadline(t *testing.T) {
 
 	err := srv.refreshAuthenticatedOperatorTerms(ctx)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+// TestRefreshAuthenticatedOperatorTermsBeforeNegotiation proves the
+// authenticated refresh is refused without a request while no version is
+// bound.
+func TestRefreshAuthenticatedOperatorTermsBeforeNegotiation(t *testing.T) {
+	t.Parallel()
+
+	mailbox := &stubMailboxRPCClient{}
+	srv := &Server{
+		ark: arkrpc.NewArkServiceMailboxClient(mailbox),
+	}
+	srv.setServerConnected(true)
+
+	err := srv.refreshAuthenticatedOperatorTerms(t.Context())
+	require.ErrorIs(t, err, errArkVersionNotNegotiated)
+	require.Zero(t, mailbox.calls)
 }
 
 // TestFetchOperatorTermsRefreshRejectsRenegotiation proves a refresh that
@@ -626,44 +696,6 @@ func TestFetchOperatorTermsRefreshSelectedButDisabledMarksIncompatible(
 	// The refresh transitioned the runtime to INCOMPATIBLE, firing the
 	// OnIncompatible callback that clears server_connected.
 	require.False(t, s.isServerConnected())
-}
-
-// TestFetchOperatorTermsBeforeNegotiation pins the bootstrap race: the operator
-// client is published before the negotiated version is stored, so an RPC
-// handler can refresh the terms in between and pin version zero. A conforming
-// operator answers that by selecting zero. If the bootstrap stores version one
-// while the call is in flight, judging the response against the stored version
-// would mark a healthy runtime permanently incompatible. The response must be
-// judged against the version the request pinned.
-func TestFetchOperatorTermsBeforeNegotiation(t *testing.T) {
-	t.Parallel()
-
-	s := newCompatTestServer(t, okPullEdge{})
-	s.serverConnected.Store(true)
-
-	stub := &stubArkServiceClient{
-		resp: &arkrpc.GetInfoResponse{
-			Pubkey:             testOperatorPubKeyBytes(t),
-			SelectedArkVersion: 0,
-			ArkVersionPolicies: []*arkrpc.ArkVersionPolicy{
-				activeArkPolicy(1),
-			},
-		},
-
-		// The bootstrap completes while the refresh is in flight.
-		await: func(context.Context) error {
-			s.arkProtocolVersion.Store(1)
-
-			return nil
-		},
-	}
-	s.arkClient = stub
-
-	_, err := s.fetchOperatorTerms(t.Context())
-	require.NoError(t, err)
-	require.Equal(t, 1, stub.calls)
-	require.True(t, s.isServerConnected())
-	require.Equal(t, uint32(1), s.arkProtocolVersion.Load())
 }
 
 // testScheduledGetInfoResponse builds a GetInfo response from a scheduled
