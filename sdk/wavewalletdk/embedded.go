@@ -403,6 +403,14 @@ func cloneDaemonConfig(cfg *waved.Config) *waved.Config {
 		oorCfg := *cfg.OOR
 		clone.OOR = &oorCfg
 	}
+	if cfg.Assets != nil {
+		assetsCfg := *cfg.Assets
+		if cfg.Assets.Tapd != nil {
+			tapdCfg := *cfg.Assets.Tapd
+			assetsCfg.Tapd = &tapdCfg
+		}
+		clone.Assets = &assetsCfg
+	}
 	if cfg.FeeEstimation != nil {
 		feeCfg := *cfg.FeeEstimation
 		if cfg.FeeEstimation.MempoolSpace != nil {

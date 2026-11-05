@@ -1063,8 +1063,8 @@ github.com/lightninglabs/neutrino/cache v1.1.4 h1:KVtvUmBwYr7eKtjfjHG/q6/cQlcrjH
 github.com/lightninglabs/neutrino/cache v1.1.4/go.mod h1:ZqLzxghPggIRfNXeAZN1VtTKofMyK/ALI6niYsPH6OE=
 github.com/lightninglabs/protobuf-go-hex-display v1.33.0-hex-display h1:Y2WiPkBS/00EiEg0qp0FhehxnQfk3vv8U6Xt3nN+rTY=
 github.com/lightninglabs/protobuf-go-hex-display v1.33.0-hex-display/go.mod h1:c6P6GXX6sHbq/GpV6MGZEdwhWPcYBgnhAHhKbcUYpos=
-github.com/lightninglabs/tap-sdk v0.3.0 h1:Otg3Eg3CNNp7uW0xX7mllc4YbvadNufmPEc9pR5MCh8=
-github.com/lightninglabs/tap-sdk v0.3.0/go.mod h1:Zq0OjQeYjtP+r1cLEfSmVSEHJkYRK5BXIGrkPl4E0CU=
+github.com/lightninglabs/tap-sdk v0.3.1-0.20261104162906-3f69a40a5fae h1:OMLf4MbB4ZtpmOcfCxYcE1JbnwI0RjdPpaSCfhWmGqk=
+github.com/lightninglabs/tap-sdk v0.3.1-0.20261104162906-3f69a40a5fae/go.mod h1:i89Hbtowwg/pounb/2MmfCYOqsr4CfON9daxsM890sQ=
 github.com/lightninglabs/taproot-assets v0.7.1-0.20261006112023-1434ab66b3bb h1:YXDLUvU57oe4XE3GYS6rZL/QiXtfjrSd1xGpPB/cUx4=
 github.com/lightninglabs/taproot-assets v0.7.1-0.20261006112023-1434ab66b3bb/go.mod h1:ZxTc2Lr7ZMNj30AEiJcaiP/XaQfP4lD2Qa6xk+OrvHE=
 github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20261005091416-8daf7dec6b63 h1:/xJddnJNDR0DkFuPzrMyLLoayIhfZlj44iMfP45AtHc=
@@ -1093,8 +1093,8 @@ github.com/lightningnetwork/lnd/sqldb/v2 v2.0.0-20260504151100-6fd5b7bb27d7 h1:5
 github.com/lightningnetwork/lnd/sqldb/v2 v2.0.0-20260504151100-6fd5b7bb27d7/go.mod h1:T2F1Sfb0oSpZyylIEE3ijiSejaXvIExER5xEdoe5wEE=
 github.com/lightningnetwork/lnd/ticker v1.1.1 h1:J/b6N2hibFtC7JLV77ULQp++QLtCwT6ijJlbdiZFbSM=
 github.com/lightningnetwork/lnd/ticker v1.1.1/go.mod h1:waPTRAAcwtu7Ji3+3k+u/xH5GHovTsCoSVpho0KDvdA=
-github.com/lightningnetwork/lnd/tlv v1.4.0 h1:qNGymEkOZsHbp4h8VjnkRGgLfmh+eJP1JQtz2/mJX2M=
-github.com/lightningnetwork/lnd/tlv v1.4.0/go.mod h1:oL5WIFd3ZoEwh3oH1xzizeUl6pq3DIhx9ljDvRdvI3Q=
+github.com/lightningnetwork/lnd/tlv v1.4.1 h1:cCx8H4mC6TZ2Pc0aNEYxTqdZoRQA7+XNJa95gciKXNU=
+github.com/lightningnetwork/lnd/tlv v1.4.1/go.mod h1:RvxxfVTCctKzKVWJDyQZqSdu3JV7OjaiQGF06hBCZ+s=
 github.com/lightningnetwork/lnd/tor v1.2.0 h1:Xled9KE+rdTPEMDVJE5VrSoMNkJq6EfH3NCF6pLP4h4=
 github.com/lightningnetwork/lnd/tor v1.2.0/go.mod h1:tB6/Hsk5nIm6xkOPaidd4q1at4x4gF6Bpu/t2UQxYgM=
 github.com/ltcsuite/ltcd v0.0.0-20190101042124-f37f8bf35796 h1:sjOGyegMIhvgfq5oaue6Td+hxZuf3tDC8lAPrFldqFw=

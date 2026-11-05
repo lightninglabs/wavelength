@@ -4,7 +4,8 @@
 
 Builds asset boarding outputs (`Onboarder`), caller-funded batch anchors
 (`BatchAnchorCommitter`), and asset VTXO trees (`BuildAssetTree`) through
-tap-sdk. Durable journals retain committed packages for restart recovery.
+tap-sdk, and verifies a client's asset VTXO before it signs (`VTXOVerifier`).
+Durable journals retain committed packages for restart recovery.
 
 ## Key Types
 
@@ -31,6 +32,15 @@ tap-sdk. Durable journals retain committed packages for restart recovery.
 - `TreeLeafAnchor` / `StandardVTXOLeafAnchor` — Taproot material (uncomposed
   pkScript, internal key, canonical tap leaves) for a leaf VTXO output, before
   the asset root is composed in.
+- `VTXOVerifier` — Implements the round package's `AssetVTXOVerifier`. It
+  checks the sealed package of a client's asset leaf and verifies the leaf's
+  proof path back to the confirmed deposits.
+- `ProofChainVerifier` / `TapdProofChainVerifier` — The asset backend seam:
+  chain verification of one confirmed proof file. tapd rejects a grouped
+  asset whose group it does not know, so the tapd implementation retries a
+  rejected file after inserting its issuance proof into tapd's universe. A
+  reissuance carries no group key reveal, so tapd first syncs the group's
+  anchor issuance from its federation servers.
 - `Store` — Durable, atomic journal persistence for attempts and completed
   transition packages. `ErrStoreNotFound` signals an absent key. Callers own
   workflow serialization and wallet input reservations.
@@ -41,8 +51,9 @@ tap-sdk. Durable journals retain committed packages for restart recovery.
   wallet, proof verifiers), `lib/tree` (`Node`, `Tree`, `LeafDescriptor`
   structures to materialize into), `lib/arkscript` (leaf policy construction
   for `StandardVTXOLeafAnchor`), `lib/tx/psbtutil` (PSBT encode/decode).
-- **Depended on by**: no production caller yet; daemon onboarding and round
-  runtime wiring consume these APIs in later integration work.
+- **Depended on by**: `waved`, which installs `VTXOVerifier` on the round
+  actor when `assets.backend` is `tapd`. Onboarding and operator-side batch
+  APIs have no production caller in this repository.
 - **Sends** / **Receives**: none. This is a synchronous library, not an actor;
   it exchanges no mailbox messages.
 
@@ -85,6 +96,14 @@ tap-sdk. Durable journals retain committed packages for restart recovery.
   Each extra input becomes a co-input path of the proof path step, which
   tap-sdk bounds. Plans above the bound fail with
   `ErrTooManyTransitionInputs` before tapd seals anything.
+- **An asset VTXO is verified against its round, not a wallet.**
+  `VTXOVerifier` requires the leaf package to seal the leaf's own
+  transaction, and every asset output to land in the VTXO under an OP_TRUE
+  script key and commit to the leaf's asset root. Every unconfirmed proof
+  step must anchor in the commitment transaction or on the client's tree
+  path. Deposits from other clients are not in this wallet, so their anchor
+  inventory comes from `tapsdk.DeriveConfirmedProofInventory`, and the
+  backend only verifies the confirmed proof chain.
 
 ## Deep Docs
 

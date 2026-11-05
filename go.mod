@@ -36,7 +36,7 @@ require (
 	github.com/lightninglabs/loop v0.33.0-beta
 	github.com/lightninglabs/neutrino v0.18.1-0.20261105004227-2e8b20374290
 	github.com/lightninglabs/neutrino/cache v1.1.4
-	github.com/lightninglabs/tap-sdk v0.3.0
+	github.com/lightninglabs/tap-sdk v0.3.1-0.20261104162906-3f69a40a5fae
 	github.com/lightninglabs/wavelength/baselib v0.0.0-00010101000000-000000000000
 	github.com/lightningnetwork/lightning-onion v1.4.0
 	github.com/lightningnetwork/lnd v0.21.0-beta.rc2.0.20260903094101-d66a7c137d32
@@ -46,7 +46,7 @@ require (
 	github.com/lightningnetwork/lnd/kvdb v1.5.1
 	github.com/lightningnetwork/lnd/sqldb v1.0.13
 	github.com/lightningnetwork/lnd/sqldb/v2 v2.0.0-20260504151100-6fd5b7bb27d7
-	github.com/lightningnetwork/lnd/tlv v1.4.0
+	github.com/lightningnetwork/lnd/tlv v1.4.1
 	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/modelcontextprotocol/go-sdk v1.4.0
 	github.com/ory/dockertest/v3 v3.12.0

@@ -4,7 +4,10 @@ description: "Removes large, non-essential toolsets to free up disk space on the
 runs:
   using: "composite"
   steps:
+    # Self-hosted runners start from a clean disk with room to spare, and
+    # this would delete the Go toolchains they ship with.
     - name: Free up disk space
+      if: runner.environment == 'github-hosted'
       shell: bash
       run: |
         echo "Removing large toolsets to free up disk space..."

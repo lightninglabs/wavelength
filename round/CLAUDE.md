@@ -136,6 +136,9 @@ state transitions and validation rules live under [Invariants](#invariants).
   them to the sink inside `RoundStore.FinalizeRound`'s transaction so
   the round row and its accounting commit together (a refused enqueue
   fails finalization and the next start re-drives confirmation).
+- `RoundClientConfig.AssetVTXOVerifier` — verifies each asset VTXO's sealed
+  package and proof path before the client signs its tree path. When nil,
+  rounds with asset requests fail before signing.
 - `RoundClientConfig.RegistrationTimeout` — max wall-clock duration to wait in
   `IntentSentState` for the server's `RoundJoined` admission watermark. Zero
   selects `defaultRegistrationTimeout` (60 s); negative disables the timeout

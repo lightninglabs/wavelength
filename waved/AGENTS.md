@@ -125,6 +125,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   returned cleanup is process-owned (the daemon context may already be
   cancelled): it cancels sampling, bounds HTTP shutdown by `healthTimeout`,
   and joins both goroutines.
+- `assets.backend` selects how asset VTXOs are verified. `none` (the
+  default) installs no verifier, so a round that would create an asset VTXO
+  for this daemon fails before signing. `tapd` dials tapd at startup, checks
+  that it runs on the daemon's network, and refuses to start otherwise.
 - `Server.run` registers a deferred `actorSystem.Shutdown()` **before** the
   deferred `db.Close()` so in-flight actor DB transactions drain before the
   connection pool tears down.

@@ -159,6 +159,8 @@ func newRootCmd() *cobra.Command {
 
 	registerWalletFlags(f, cfg)
 
+	registerAssetFlags(f, cfg)
+
 	registerBitcoindFlags(f)
 
 	registerDaemonRPCFlags(f, cfg)
@@ -410,6 +412,31 @@ func registerWalletFlags(f *pflag.FlagSet, cfg *waved.Config) {
 		"wallet.password_file", cfg.Wallet.PasswordFile, "path to "+
 			"file containing wallet password for auto-unlock "+
 			"at startup (lwwallet/btcwallet)",
+	)
+}
+
+// registerAssetFlags registers the flags of the daemon's Taproot Assets
+// backend.
+func registerAssetFlags(f *pflag.FlagSet, cfg *waved.Config) {
+	f.String(
+		"assets.backend", cfg.Assets.Backend,
+		"Taproot Assets backend (none, tapd)",
+	)
+	f.String(
+		"assets.tapd.host", cfg.Assets.Tapd.Host,
+		"tapd gRPC address for the tapd asset backend",
+	)
+	f.String(
+		"assets.tapd.tlspath", cfg.Assets.Tapd.TLSPath,
+		"path to tapd TLS certificate",
+	)
+	f.String(
+		"assets.tapd.macaroonpath", cfg.Assets.Tapd.MacaroonPath,
+		"path to tapd admin macaroon",
+	)
+	f.Duration(
+		"assets.tapd.rpctimeout", cfg.Assets.Tapd.RPCTimeout,
+		"timeout for individual tapd calls",
 	)
 }
 

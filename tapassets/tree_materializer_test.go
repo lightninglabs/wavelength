@@ -276,6 +276,21 @@ func newTreeMaterializerFixture(t *testing.T,
 
 	t.Helper()
 
+	return newTreeMaterializerFixtureAt(
+		t, wire.OutPoint{
+			Hash:  chainhash.Hash{0xBA},
+			Index: 1,
+		},
+		amounts...,
+	)
+}
+
+// newTreeMaterializerFixtureAt builds the fixture beneath batchOutpoint.
+func newTreeMaterializerFixtureAt(t *testing.T, batchOutpoint wire.OutPoint,
+	amounts ...uint64) *treeMaterializerFixture {
+
+	t.Helper()
+
 	_, operatorKey := createTestPubKey(t)
 	leaves := make([]tree.LeafDescriptor, len(amounts))
 	var batchValue int64
@@ -310,8 +325,6 @@ func newTreeMaterializerFixture(t *testing.T,
 	batchKey := txscript.ComputeTaprootOutputKey(rootInternal, rootTweak)
 	batchScript, err := txscript.PayToTaprootScript(batchKey)
 	require.NoError(t, err)
-
-	batchOutpoint := wire.OutPoint{Hash: chainhash.Hash{0xBA}, Index: 1}
 
 	driver := &fakeTreeDriver{}
 	assetRef := tapsdk.AssetRefFromAssetID(tapsdk.AssetID{0xAA})
