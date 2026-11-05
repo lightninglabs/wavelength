@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/ledger"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/wallet"
 	"github.com/stretchr/testify/require"
@@ -103,6 +104,67 @@ func TestComputeClientOperatorFeeMixedBoardingAndRefresh(t *testing.T) {
 	// 99_200 received back as owned VTXOs, fee = 800.
 	require.Equal(
 		t, int64(800), computeClientOperatorFee(intents, vtxos),
+	)
+}
+
+// TestComputeClientOperatorFeeAssetDeposit checks that an asset deposit and
+// the transfer-in VTXOs it funds stay out of the fee, which is booked only for
+// the client's own inputs and typed by them.
+func TestComputeClientOperatorFeeAssetDeposit(t *testing.T) {
+	t.Parallel()
+
+	deposit := newBoardingIntent(4_000)
+	deposit.Request.AssetRef = "asset"
+	depositVTXOs := []*ClientVTXO{
+		{
+			Amount: btcutil.Amount(1_000),
+			Origin: types.VTXOOriginRoundTransfer,
+		},
+		{
+			Amount: btcutil.Amount(2_000),
+			Origin: types.VTXOOriginRoundTransfer,
+		},
+	}
+
+	alone := Intents{Boarding: []BoardingIntent{deposit}}
+	require.Zero(t, computeClientOperatorFee(alone, depositVTXOs))
+
+	withRefresh := Intents{
+		Boarding: []BoardingIntent{
+			deposit,
+		},
+		Forfeits: []types.ForfeitRequest{
+			{
+				Amount: btcutil.Amount(50_000),
+			},
+		},
+	}
+	refreshed := append([]*ClientVTXO{{
+		Amount: btcutil.Amount(49_800),
+		Origin: types.VTXOOriginRoundRefresh,
+	}}, depositVTXOs...)
+	require.Equal(
+		t, int64(200), computeClientOperatorFee(withRefresh, refreshed),
+	)
+	require.Equal(
+		t, ledger.FeeTypeRefresh, roundOperatorFeeType(withRefresh),
+	)
+
+	withBoarding := Intents{
+		Boarding: []BoardingIntent{
+			deposit,
+			newBoardingIntent(100_000),
+		},
+	}
+	boarded := append([]*ClientVTXO{{
+		Amount: btcutil.Amount(99_500),
+		Origin: types.VTXOOriginRoundBoarding,
+	}}, depositVTXOs...)
+	require.Equal(
+		t, int64(500), computeClientOperatorFee(withBoarding, boarded),
+	)
+	require.Equal(
+		t, ledger.FeeTypeBoarding, roundOperatorFeeType(withBoarding),
 	)
 }
 

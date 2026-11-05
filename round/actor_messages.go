@@ -218,6 +218,27 @@ type RegisterVTXORequestsRequest struct {
 	ChangeIndex *int
 }
 
+// RegisterAssetBoardingRequest registers an asset deposit with the next round.
+// The round creates an asset VTXO of AssetVTXOAmount satoshis that carries
+// the deposited units, and a BTC VTXO that receives the rest of the deposit's
+// value after the round fee. ChangeAmount is that VTXO's target; the
+// operator's quote sets its final value.
+type RegisterAssetBoardingRequest struct {
+	actor.BaseMessage
+
+	Boarding        BoardingIntent
+	AssetVTXOAmount btcutil.Amount
+	ChangeAmount    btcutil.Amount
+}
+
+// MessageType returns the message type name.
+func (m *RegisterAssetBoardingRequest) MessageType() string {
+	return "RegisterAssetBoardingRequest"
+}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (m *RegisterAssetBoardingRequest) RoundReceivable() {}
+
 // AssetVTXORequest describes one asset output requested from a round.
 type AssetVTXORequest struct {
 	AmountSat   btcutil.Amount
