@@ -220,6 +220,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "ListAssetDeposits returns the asset deposits of this daemon.",
 				},
 				{
+					Name:     "BoardAssetDeposit",
+					Aliases:  []string{"board-asset-deposit"},
+					Input:    "waverpc.BoardAssetDepositRequest",
+					Output:   "waverpc.AssetDeposit",
+					Comments: "BoardAssetDeposit joins the next round with a confirmed asset\ndeposit. The round creates an asset VTXO with the deposited units and\na BTC VTXO with the deposit's remaining satoshis after the round fee.",
+				},
+				{
 					Name:     "JoinNextRound",
 					Aliases:  []string{"join-next-round"},
 					Input:    "waverpc.JoinNextRoundRequest",
