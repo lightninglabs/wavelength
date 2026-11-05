@@ -147,6 +147,8 @@ func TestNewReceiveScriptRetryPreservesPendingAllocation(t *testing.T) {
 		fn.None[btclog.Logger](),
 	)
 	server := &Server{
+		arkProtocolVersion: 1,
+
 		walletReady: walletReady,
 		clk:         clock.NewTestClock(now),
 		db:          db.NewTestDB(t),

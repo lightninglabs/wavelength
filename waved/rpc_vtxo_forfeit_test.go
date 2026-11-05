@@ -42,6 +42,9 @@ func newSignVTXOForfeitFixture(t *testing.T) *signVTXOForfeitFixture {
 	return newSignVTXOForfeitFixtureWithLocalVTXO(t, true)
 }
 
+// newSignVTXOForfeitFixtureWithLocalVTXO builds a negotiated signing fixture
+// with an optional persisted VTXO, covering both local and external
+// participants.
 func newSignVTXOForfeitFixtureWithLocalVTXO(t *testing.T,
 	saveLocalVTXO bool) *signVTXOForfeitFixture {
 
@@ -132,6 +135,8 @@ func newSignVTXOForfeitFixtureWithLocalVTXO(t *testing.T,
 	vtxoStore, _, _, _, _ := newSendOORTestStores(t)
 
 	server := &Server{
+		arkProtocolVersion: 1,
+
 		cfg: &Config{
 			Wallet: &WalletConfig{
 				Type: WalletTypeLwwallet,

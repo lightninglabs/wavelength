@@ -3,6 +3,7 @@ package waved
 import (
 	"context"
 	"net"
+	"slices"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -12,6 +13,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
 )
 
 // fakeArkService is a minimal in-memory ArkService that returns
@@ -89,10 +91,9 @@ func (f *fakeArkService) EstimateFee(_ context.Context,
 	return f.response, nil
 }
 
-// GetInfo returns the canned reply (or an injected error). When
-// both fields are nil the call falls through to the embedded
-// Unimplemented server, which itself returns an error — useful
-// for tests that want fetchOperatorTerms to fail via the default.
+// GetInfo returns the canned terms and selects version one only when the
+// request advertises it. An injected error wins over the reply. With neither
+// configured, the embedded Unimplemented server returns an error.
 func (f *fakeArkService) GetInfo(ctx context.Context,
 	req *arkrpc.GetInfoRequest) (*arkrpc.GetInfoResponse, error) {
 
@@ -101,7 +102,17 @@ func (f *fakeArkService) GetInfo(ctx context.Context,
 	}
 
 	if f.getInfoResponse != nil {
-		return f.getInfoResponse, nil
+		// These shared fixtures model an operator supporting version
+		// one. Keep selection request-specific, as the production
+		// handler does.
+		resp := new(arkrpc.GetInfoResponse)
+		proto.Merge(resp, f.getInfoResponse)
+		resp.SelectedArkVersion = 0
+		if slices.Contains(req.SupportedArkVersions, uint32(1)) {
+			resp.SelectedArkVersion = 1
+		}
+
+		return resp, nil
 	}
 
 	return f.UnimplementedArkServiceServer.GetInfo(ctx, req)
@@ -167,6 +178,8 @@ func TestQuoteOperatorFeeRoundTripsCongestionSpread(t *testing.T) {
 	// Construct a Server with only the fields quoteOperatorFee
 	// touches: serverConn (non-nil) and no log requirement.
 	s := &Server{
+		arkProtocolVersion: 1,
+
 		serverConn: newBufconnClient(t, svc),
 		log:        btclog.Disabled,
 	}
@@ -219,6 +232,8 @@ func TestQuoteOperatorFeeNilServerConn(t *testing.T) {
 	t.Parallel()
 
 	s := &Server{
+		arkProtocolVersion: 1,
+
 		serverConn: nil,
 		log:        btclog.Disabled,
 	}

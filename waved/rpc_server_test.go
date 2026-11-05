@@ -1128,6 +1128,8 @@ func TestOperatorPubKeyFetchesFreshTerms(t *testing.T) {
 	require.NoError(t, err)
 
 	server := &Server{
+		arkProtocolVersion: 1,
+
 		cfg: &Config{
 			Network: "regtest",
 			Wallet: &WalletConfig{
@@ -1191,6 +1193,8 @@ func TestOperatorPubKeyFloorsFetchedMinVTXOAmountAtDust(t *testing.T) {
 	require.NoError(t, err)
 
 	server := &Server{
+		arkProtocolVersion: 1,
+
 		cfg: &Config{
 			Network: "regtest",
 			Wallet: &WalletConfig{

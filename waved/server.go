@@ -364,6 +364,8 @@ type Server struct {
 	// bootstrap and bound to the mailbox runtime for its lifetime. Later
 	// refresh-only GetInfo calls pin this version and never change it; a
 	// fresh negotiation only happens on a daemon restart.
+	// Runtime accesses use sync/atomic: optional subservers can request a
+	// refresh concurrently with the single bootstrap publication.
 	arkProtocolVersion uint32
 
 	// serverConnected reports whether mailbox ingress is currently
@@ -4243,7 +4245,9 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	// Cache the negotiation outcome before constructing the runtime so
 	// every later consumer reads the bound version and initial terms
 	// instead of issuing a second negotiating call.
-	s.arkProtocolVersion = negotiation.selectedArkVersion
+	atomic.StoreUint32(
+		&s.arkProtocolVersion, negotiation.selectedArkVersion,
+	)
 	s.storeOperatorTerms(negotiation.terms)
 
 	s.log.InfoS(ctx, "Negotiated ark protocol version",
@@ -4333,7 +4337,7 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 
 	// Bind the runtime to the negotiated Ark protocol version.
 	// DefaultConnectorConfig already binds mailbox transport v1.
-	connCfg.ArkProtocolVersion = s.arkProtocolVersion
+	connCfg.ArkProtocolVersion = atomic.LoadUint32(&s.arkProtocolVersion)
 	connCfg.Store = s.deliveryStore
 	connCfg.Dispatchers = dispatchers
 	connCfg.NonTxRoutes = nonTxRoutes
@@ -5179,7 +5183,8 @@ func mapRoundVTXOManagerMsg(msg round.VTXOManagerMsg) vtxo.ManagerMsg {
 // connectAndBootstrapMailbox is the sole owner of Ark protocol version
 // selection, so this call pins the runtime-bound version by sending it as the
 // singleton supported list and rejects any response that selects a different
-// or zero version. It never mutates the runtime version.
+// or zero version. Before bootstrap binds a version, it fails locally so the
+// caller can retry after startup. It never mutates the runtime version.
 //
 // The terms include the operator pubkey, sweep delay, VTXO exit delay,
 // forfeit script, dust limit, and fee rate.
@@ -5193,7 +5198,17 @@ func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 
 	// Pin the runtime-bound version: send it as the singleton supported
 	// list so a conforming operator re-selects exactly this version.
-	boundVersion := s.arkProtocolVersion
+	boundVersion := atomic.LoadUint32(&s.arkProtocolVersion)
+
+	if boundVersion == 0 {
+
+		// Optional subservers can ask for a live operator key as soon
+		// as the wallet unlocks, before bootstrap binds the runtime.
+		// Sending zero here could return after bootstrap and falsely
+		// mark the new runtime incompatible with a correct response.
+		return nil, fmt.Errorf("ark protocol version not negotiated " +
+			"yet")
+	}
 
 	resp, err := client.GetInfo(ctx, &arkrpc.GetInfoRequest{
 		SupportedArkVersions: []uint32{
@@ -5212,7 +5227,7 @@ func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 func (s *Server) operatorTermsFromRefreshResponse(ctx context.Context,
 	resp *arkrpc.GetInfoResponse) (*types.OperatorTerms, error) {
 
-	boundVersion := s.arkProtocolVersion
+	boundVersion := atomic.LoadUint32(&s.arkProtocolVersion)
 
 	// A refresh that selects a different version is a terminal
 	// compatibility failure: the runtime is bound for its lifetime, so the
@@ -5252,7 +5267,9 @@ func (s *Server) refreshAuthenticatedOperatorTerms(ctx context.Context) error {
 	}
 
 	resp, err := s.ark.GetInfo(ctx, &arkrpc.GetInfoRequest{
-		SupportedArkVersions: []uint32{s.arkProtocolVersion},
+		SupportedArkVersions: []uint32{
+			atomic.LoadUint32(&s.arkProtocolVersion),
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("authenticated GetInfo RPC: %w", err)

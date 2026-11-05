@@ -251,6 +251,8 @@ func TestSendOORRejectsRecipientBelowFloorBeforeWalletSelection(t *testing.T) {
 	close(walletReady)
 
 	server := &Server{
+		arkProtocolVersion: 1,
+
 		cfg:         &Config{},
 		log:         btclog.Disabled,
 		walletReady: walletReady,
@@ -352,6 +354,8 @@ func TestSendOORSubmitsMultipleRecipients(t *testing.T) {
 	close(walletReady)
 
 	server := &Server{
+		arkProtocolVersion: 1,
+
 		cfg:         &Config{},
 		log:         btclog.Disabled,
 		walletReady: walletReady,
@@ -487,6 +491,8 @@ func TestSendOORReservesExactManagedCustomInputs(t *testing.T) {
 	close(walletReady)
 
 	server := &Server{
+		arkProtocolVersion: 1,
+
 		cfg:         &Config{},
 		log:         btclog.Disabled,
 		walletReady: walletReady,
@@ -618,6 +624,8 @@ func TestSendOORRejectsDuplicateRecipientOutputs(t *testing.T) {
 	close(walletReady)
 
 	server := &Server{
+		arkProtocolVersion: 1,
+
 		cfg:         &Config{},
 		log:         btclog.Disabled,
 		walletReady: walletReady,
@@ -677,6 +685,8 @@ func TestSendOORRejectsExplicitCustomInputsWithMultipleRecipients(
 	close(walletReady)
 
 	server := &Server{
+		arkProtocolVersion: 1,
+
 		cfg:         &Config{},
 		log:         btclog.Disabled,
 		walletReady: walletReady,
@@ -809,6 +819,8 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 	close(walletReady)
 
 	server := &Server{
+		arkProtocolVersion: 1,
+
 		cfg:         &Config{},
 		log:         btclog.Disabled,
 		walletReady: walletReady,
@@ -1127,6 +1139,8 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 	close(walletReady)
 
 	server := &Server{
+		arkProtocolVersion: 1,
+
 		cfg:         &Config{},
 		log:         btclog.Disabled,
 		walletReady: walletReady,
@@ -1250,6 +1264,8 @@ func TestSendOORReturnsPendingKeyedSessionBeforeAttemptCommit(t *testing.T) {
 	close(walletReady)
 
 	server := &Server{
+		arkProtocolVersion: 1,
+
 		cfg:         &Config{},
 		log:         btclog.Disabled,
 		walletReady: walletReady,
@@ -1370,6 +1386,8 @@ func TestSendOORRejectsDifferentKeyForExistingSession(t *testing.T) {
 	close(walletReady)
 
 	server := &Server{
+		arkProtocolVersion: 1,
+
 		cfg:         &Config{},
 		log:         btclog.Disabled,
 		walletReady: walletReady,
@@ -1496,6 +1514,8 @@ func TestSendOORRejectsNewKeyForDispatchedFailedSession(t *testing.T) {
 	close(walletReady)
 
 	server := &Server{
+		arkProtocolVersion: 1,
+
 		cfg:         &Config{},
 		log:         btclog.Disabled,
 		walletReady: walletReady,
@@ -1688,6 +1708,8 @@ func TestSendOORWaitCancelDoesNotUnlockSubmittedInputs(t *testing.T) {
 	close(walletReady)
 
 	server := &Server{
+		arkProtocolVersion: 1,
+
 		cfg:         &Config{},
 		log:         btclog.Disabled,
 		walletReady: walletReady,
