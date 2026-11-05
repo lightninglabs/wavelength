@@ -551,6 +551,11 @@ type RoundClientConfig struct {
 	// is skipped (tests).
 	OwnedScriptRegistrar OwnedScriptRegistrar
 
+	// AssetVTXOVerifier verifies asset VTXOs before the client signs
+	// their tree paths. When nil, rounds with asset requests fail before
+	// signing.
+	AssetVTXOVerifier AssetVTXOVerifier
+
 	// LedgerSink is an optional reference to the client-side
 	// ledger accounting actor. When set, the round actor forwards
 	// VTXOReceivedMsg / VTXOSentMsg / FeePaidMsg events as round
@@ -604,6 +609,7 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		DisableJoinRequestAuth: cfg.DisableJoinRequestAuth,
 		OwnedScriptChecker:     cfg.OwnedScriptChecker,
 		OwnedScriptRegistrar:   cfg.OwnedScriptRegistrar,
+		AssetVTXOVerifier:      cfg.AssetVTXOVerifier,
 	}
 	if env.SigningExecutor == nil {
 		env.SigningExecutor = NewSigningExecutor(1)
@@ -1102,6 +1108,7 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 		RoundKey:               RoundKeyStr(roundID.KeyString()),
 		OwnedScriptChecker:     a.cfg.OwnedScriptChecker,
 		OwnedScriptRegistrar:   a.cfg.OwnedScriptRegistrar,
+		AssetVTXOVerifier:      a.cfg.AssetVTXOVerifier,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -1182,6 +1189,7 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 		RoundKey:               RoundKeyStr(tempKey.KeyString()),
 		OwnedScriptChecker:     a.cfg.OwnedScriptChecker,
 		OwnedScriptRegistrar:   a.cfg.OwnedScriptRegistrar,
+		AssetVTXOVerifier:      a.cfg.AssetVTXOVerifier,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,

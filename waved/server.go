@@ -214,6 +214,10 @@ type Server struct {
 	// It is None in lwwallet mode.
 	lnd fn.Option[*lndclient.GrpcLndServices]
 
+	// assetVTXOVerifier verifies asset VTXOs through the configured asset
+	// backend. It is nil when assets are disabled.
+	assetVTXOVerifier round.AssetVTXOVerifier
+
 	// lwWallet holds the lightweight wallet instance when
 	// wallet.type is "lwwallet". It is None in lnd mode.
 	lwWallet fn.Option[*lwwallet.Wallet]
@@ -1340,6 +1344,14 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 	default:
 		return fmt.Errorf("unknown wallet type %q", s.cfg.Wallet.Type)
 	}
+
+	// Connect the asset backend before any round can need it.
+	assetVerifier, closeAssets, err := s.connectAssetBackend(ctx)
+	if err != nil {
+		return err
+	}
+	defer closeAssets()
+	s.assetVTXOVerifier = assetVerifier
 
 	// NOTE: Identity key derivation, server connection, and
 	// mailbox transport wiring are deferred to
@@ -4653,6 +4665,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 			dropCustomForfeitSigningContexts,
 		OwnedScriptChecker:   scriptChecker,
 		OwnedScriptRegistrar: scriptRegistrar,
+		AssetVTXOVerifier:    s.assetVTXOVerifier,
 		LedgerSink:           fn.Some(ledger.NewSink(s.actorSystem)),
 		MetricsSink:          s.metricsSink,
 		ForfeitCollectionTimeout: s.cfg.

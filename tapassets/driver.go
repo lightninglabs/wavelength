@@ -234,6 +234,11 @@ func (d *sdkDriver) Commit(ctx context.Context,
 
 // DecodePackage validates and reads a sealed SDK package.
 func (d *sdkDriver) DecodePackage(encoded []byte) (*commitResult, error) {
+	return decodeSealedPackage(encoded)
+}
+
+// decodeSealedPackage validates and reads a sealed SDK package.
+func decodeSealedPackage(encoded []byte) (*commitResult, error) {
 	var transfer tapsdk.CustomAnchorTransferPackage
 	if err := transfer.UnmarshalBinary(encoded); err != nil {
 		return nil, fmt.Errorf("decode tap-sdk transfer package: %w",
