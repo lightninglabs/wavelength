@@ -141,8 +141,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   the stored request (replayed verbatim on retry), the published output and
   boarding claim, and the confirmed proof. Reusing a request ID for a
   different request fails with `ErrAssetDepositMismatch`; repeating a
-  lifecycle update is a no-op.
-- `LatestMigrationVersion = 28` — current schema version.
+  lifecycle update is a no-op. `AssetDeposit.RoundBoarding` turns a confirmed
+  deposit into a round boarding input, and `AssetDepositRound` names the round
+  that spends it.
+- `LatestMigrationVersion = 29` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -508,6 +510,13 @@ when adding one.
   tables so Bitcoin boarding and sweeps never select an asset output. Status
   moves `funding` → `published` → `confirmed`; check constraints require the
   output and claim from `published` and the proof at `confirmed`.
+
+- `000029_round_asset_deposits` — `round_asset_deposits`, which links a
+  deposit to the round that checkpointed with it as a boarding input, with the
+  client's input signature. `CommitState` writes it in place of
+  `round_boarding_intents` for asset inputs, and round restore rebuilds the
+  intent from the deposit row. A deposit is free to board again once every
+  round that took it reads `failed`.
 
 ## Deep Docs
 
