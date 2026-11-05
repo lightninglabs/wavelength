@@ -2356,7 +2356,9 @@ func (s *Server) preStartNeutrino(ctx context.Context) error {
 		neutrinoDataDir = s.cfg.NetworkDir()
 	}
 
-	var neutrinoOpts []btcwbackend.NeutrinoServiceOption
+	neutrinoOpts := []btcwbackend.NeutrinoServiceOption{
+		btcwbackend.WithNeutrinoSQLite(s.cfg.Wallet.NeutrinoSQLite),
+	}
 	if s.cfg.Wallet.DisableGlobalLoggers {
 		neutrinoOpts = append(
 			neutrinoOpts,
@@ -2424,6 +2426,7 @@ func (s *Server) startBtcwallet(ctx context.Context, seed []byte,
 		FeeURL:               s.cfg.Wallet.FeeURL,
 		PackageSubmitter:     s.cfg.PackageSubmitter,
 		PersistFilters:       s.cfg.Wallet.PersistFilters,
+		NeutrinoSQLite:       s.cfg.Wallet.NeutrinoSQLite,
 		DisableGlobalLoggers: s.cfg.Wallet.DisableGlobalLoggers,
 	}
 

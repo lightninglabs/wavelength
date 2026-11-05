@@ -18,7 +18,9 @@ import (
 	"github.com/btcsuite/btcwallet/walletdb"
 	_ "github.com/btcsuite/btcwallet/walletdb/bdb" // Register bdb backend.
 	"github.com/lightninglabs/neutrino"
+	neutrinosqldb "github.com/lightninglabs/neutrino/sqldb"
 	"github.com/lightningnetwork/lnd/blockcache"
+	sqldbv2 "github.com/lightningnetwork/lnd/sqldb/v2"
 )
 
 // neutrinoDBName is the filename for the neutrino bbolt database.
@@ -63,6 +65,18 @@ type NeutrinoService struct {
 	// loggers, so this is enabled by default for normal one-daemon-per-
 	// process usage and disabled by parallel in-process tests.
 	wireGlobalLoggers bool
+
+	// useSQLite selects neutrino's SQLite chain-state backend.
+	useSQLite bool
+}
+
+// WithNeutrinoSQLite controls whether neutrino keeps its chain state in
+// SQLite. The bbolt database is still passed to neutrino, so enabling this on
+// an existing data dir triggers neutrino's one-time legacy import.
+func WithNeutrinoSQLite(enabled bool) NeutrinoServiceOption {
+	return func(n *NeutrinoService) {
+		n.useSQLite = enabled
+	}
 }
 
 // WithGlobalDependencyLoggers controls whether NeutrinoService.Start wires the
@@ -125,26 +139,9 @@ func NewNeutrinoService(dataDir string, chainParams *chaincfg.Params,
 
 	blockCache := blockcache.NewBlockCache(defaultBlockCacheSize)
 
-	cfg := neutrino.Config{
-		DataDir:       dataDir,
-		Database:      db,
-		ChainParams:   *chainParams,
-		ConnectPeers:  connectPeers,
-		AddPeers:      addPeers,
-		BlockCache:    blockCache.Cache,
-		PersistToDisk: persistFilters,
-		HeadersImport: headersImport,
-	}
-
-	cs, err := neutrino.NewChainService(cfg)
-	if err != nil {
-		_ = db.Close()
-
-		return nil, fmt.Errorf("create neutrino service: %w", err)
-	}
-
+	// Apply the options up front, since the SQL backend choice has to be
+	// known before the chain service is constructed.
 	svc := &NeutrinoService{
-		cs:          cs,
 		db:          db,
 		blockCache:  blockCache,
 		chainParams: chainParams,
@@ -156,6 +153,35 @@ func NewNeutrinoService(dataDir string, chainParams *chaincfg.Params,
 	for _, opt := range opts {
 		opt(svc)
 	}
+
+	cfg := neutrino.Config{
+		DataDir:       dataDir,
+		Database:      db,
+		ChainParams:   *chainParams,
+		ConnectPeers:  connectPeers,
+		AddPeers:      addPeers,
+		BlockCache:    blockCache.Cache,
+		PersistToDisk: persistFilters,
+		HeadersImport: headersImport,
+	}
+
+	// With both Database and SQLConfig set, neutrino imports the legacy
+	// flat header files and walletdb state into SQLite exactly once.
+	if svc.useSQLite {
+		cfg.SQLConfig = &neutrinosqldb.Config{
+			Backend: neutrinosqldb.BackendSqlite,
+			Sqlite:  &sqldbv2.SqliteConfig{},
+		}
+	}
+
+	cs, err := neutrino.NewChainService(cfg)
+	if err != nil {
+		_ = db.Close()
+
+		return nil, fmt.Errorf("create neutrino service: %w", err)
+	}
+
+	svc.cs = cs
 
 	return svc, nil
 }
