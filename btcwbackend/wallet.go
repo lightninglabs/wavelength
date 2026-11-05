@@ -142,7 +142,9 @@ func checkWalletInvariants(cfg Config) error {
 func New(cfg Config) (*Wallet, error) {
 	walletLog := cfg.Log.UnwrapOr(btclog.Disabled)
 	neutrinoDataDir := cfg.neutrinoDataDir()
-	var neutrinoOpts []NeutrinoServiceOption
+	neutrinoOpts := []NeutrinoServiceOption{
+		WithNeutrinoSQLite(cfg.NeutrinoSQLite),
+	}
 	if cfg.DisableGlobalLoggers {
 		neutrinoOpts = append(
 			neutrinoOpts, WithoutGlobalDependencyLoggers(),
