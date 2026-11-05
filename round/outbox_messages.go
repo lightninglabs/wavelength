@@ -414,12 +414,13 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 	}
 
 	pb := &roundpb.JoinRoundRequest{
-		BatchSlot:        roundpb.SelectionToProto(m.BatchSlot),
-		BoardingRequests: boardingReqs,
-		VtxoRequests:     vtxoReqs,
-		ForfeitRequests:  forfeitReqs,
-		LeaveRequests:    leaveReqs,
-		RoundId:          m.RoundID,
+		SupportsRoundRetry: true,
+		BatchSlot:          roundpb.SelectionToProto(m.BatchSlot),
+		BoardingRequests:   boardingReqs,
+		VtxoRequests:       vtxoReqs,
+		ForfeitRequests:    forfeitReqs,
+		LeaveRequests:      leaveReqs,
+		RoundId:            m.RoundID,
 	}
 
 	if m.Identifier != nil {

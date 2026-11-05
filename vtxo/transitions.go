@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -1085,6 +1086,20 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 	env *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	switch evt := event.(type) {
+	case *ForfeitRequestEvent:
+		// Transfer directly to another reserved signing state. The coin
+		// must never pass through Live while the replacement owns the
+		// operation.
+		if evt.RoundID == s.NewRoundID ||
+			!slices.Contains(evt.ReplacedRoundIDs, s.NewRoundID) {
+			return nil, fmt.Errorf("replacement does not own " +
+				"forfeit reservation")
+		}
+		pending := &PendingForfeitState{VTXO: s.VTXO,
+			RequestedAtHeight: s.LastCheckedHeight}
+
+		return pending.ProcessEvent(ctx, evt, env)
+
 	case *ForfeitSignedEvent:
 		// Forfeit tx has been signed and submitted. Update the txid
 		// and stay in this state. Preserve the ForfeitTx for crash
@@ -1258,7 +1273,8 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		// failed and let go of the coin before the round recorded here
 		// claimed it), and honoring it would return a coin the
 		// operator is about to consume to LiveState.
-		if evt.RoundID == "" || evt.RoundID != s.NewRoundID {
+		if evt.RoundID == "" || (evt.RoundID != s.NewRoundID &&
+			!slices.Contains(evt.ReplacedRoundIDs, s.NewRoundID)) {
 			return nil, fmt.Errorf("%w (outpoint %s, reserved by "+
 				"round %q, release from round %q)",
 				ErrForfeitReleaseRoundMismatch, s.VTXO.Outpoint,

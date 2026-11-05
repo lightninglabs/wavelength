@@ -3164,7 +3164,8 @@ func (m *Manager) handleReleaseForfeit(ctx context.Context,
 
 		result := m.askForfeitVTXOActor(
 			ctx, ref, &ForfeitReleasedEvent{
-				RoundID: req.RoundID,
+				RoundID:          req.RoundID,
+				ReplacedRoundIDs: req.ReplacedRoundIDs,
 			},
 		)
 		if _, err := result.Unpack(); err != nil {
