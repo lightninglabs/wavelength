@@ -495,3 +495,96 @@ func TestSqliteStoreRunsActorDeliveryMigrations(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, cnt)
 }
+
+// TestPostMigrationChecksRunOncePerCrossing verifies that the real post
+// migration checks (versions 15 and 19) fire in order, only for the versions a
+// migration run actually crosses, and never for an up-to-date database.
+func TestPostMigrationChecksRunOncePerCrossing(t *testing.T) {
+	tests := []struct {
+		name      string
+		startAt   uint
+		wantFired []uint
+	}{
+		{
+			name:    "fresh database",
+			startAt: 0,
+			wantFired: []uint{
+				15,
+				19,
+			},
+		},
+		{
+			name:    "stopped at 14",
+			startAt: 14,
+			wantFired: []uint{
+				15,
+				19,
+			},
+		},
+		{
+			name:    "stopped at 18",
+			startAt: 18,
+			wantFired: []uint{
+				19,
+			},
+		},
+		{
+			name:      "already past 19",
+			startAt:   27,
+			wantFired: nil,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			log := btclog.Disabled
+			store, err := NewSqliteStore(&SqliteConfig{
+				DatabaseFileName: filepath.Join(
+					t.TempDir(),
+					"test.db",
+				),
+				SkipMigrations: true,
+			}, log)
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				require.NoError(t, store.DB.Close())
+			})
+
+			// Bring the database to the starting version without
+			// any checks, which is not what is under test.
+			if test.startAt > 0 {
+				require.NoError(
+					t,
+					store.ExecuteMigrations(
+						TargetVersion(test.startAt),
+					),
+				)
+			}
+
+			var fired []uint
+			checks := make(map[uint]postMigrationCheck)
+			for _, v := range []uint{15, 19} {
+				checks[v] = func(context.Context,
+					sqlc.Querier) error {
+
+					fired = append(fired, v)
+
+					return nil
+				}
+			}
+
+			require.NoError(
+				t,
+				store.ExecuteMigrations(
+					TargetLatest,
+					WithPostStepCallbacks(
+						makePostStepCallbacks(
+							store, log, checks,
+						),
+					),
+				),
+			)
+			require.Equal(t, test.wantFired, fired)
+		})
+	}
+}
