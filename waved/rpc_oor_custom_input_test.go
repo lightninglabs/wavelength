@@ -35,6 +35,8 @@ type customOORRPCFixture struct {
 	outpoint   wire.OutPoint
 }
 
+// newCustomOORRPCFixture provides a negotiated daemon, real VTXO stores,
+// and a scripted operator for custom-input preparation and signing tests.
 func newCustomOORRPCFixture(t *testing.T) *customOORRPCFixture {
 	t.Helper()
 
@@ -66,6 +68,8 @@ func newCustomOORRPCFixture(t *testing.T) *customOORRPCFixture {
 
 	vtxoStore, _, _, _, _ := newSendOORTestStores(t)
 	server := &Server{
+		arkProtocolVersion: 1,
+
 		cfg: &Config{
 			Wallet: &WalletConfig{
 				Type: WalletTypeLwwallet,
