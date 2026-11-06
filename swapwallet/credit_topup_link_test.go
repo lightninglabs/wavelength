@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 )
@@ -103,7 +104,7 @@ func TestCollectCreditTopupLinksLabelsTopupRow(t *testing.T) {
 	}
 
 	row := topupLedgerRow(sessionID, 1_000)
-	link, ok := creditTopupLinkForRow(row, links)
+	link, ok := creditTopupLinkForRow(row, row.GetAmountSat(), links)
 	require.True(t, ok)
 
 	entry, ok := walletEntryFromLedgerRow(row)
@@ -144,7 +145,9 @@ func TestCreditTopupLinkForRowIgnoresUnrelatedRows(t *testing.T) {
 
 	// The matching send row resolves, so the negative cases below fail on
 	// shape or amount, not on the map contents.
-	_, ok := creditTopupLinkForRow(topupLedgerRow(sessionID, 1_000), links)
+	_, ok := creditTopupLinkForRow(
+		topupLedgerRow(sessionID, 1_000), 1_000, links,
+	)
 	require.True(t, ok)
 
 	// A receive-shaped row with the same session id must not match.
@@ -152,21 +155,110 @@ func TestCreditTopupLinkForRowIgnoresUnrelatedRows(t *testing.T) {
 	recvRow.Subtype = ledger.EventVTXOReceived
 	recvRow.DebitAccount = ledger.AccountVTXOBalance
 	recvRow.CreditAccount = ledger.AccountTransfersIn
-	_, ok = creditTopupLinkForRow(recvRow, links)
+	_, ok = creditTopupLinkForRow(recvRow, recvRow.GetAmountSat(), links)
 	require.False(t, ok)
 
 	// A send row whose outflow does not equal the recorded top-up amount
 	// must not match: the session id resolved to an unrelated transfer.
-	_, ok = creditTopupLinkForRow(topupLedgerRow(sessionID, 900), links)
+	_, ok = creditTopupLinkForRow(
+		topupLedgerRow(sessionID, 900), 900, links,
+	)
 	require.False(t, ok)
 
 	// A send row with an unknown session id must not match.
 	otherID := make([]byte, chainhash.HashSize)
 	otherID[0] = 0xff
-	_, ok = creditTopupLinkForRow(topupLedgerRow(otherID, 1_000), links)
+	_, ok = creditTopupLinkForRow(
+		topupLedgerRow(otherID, 1_000), 1_000, links,
+	)
 	require.False(t, ok)
 
 	// An empty link set short-circuits.
-	_, ok = creditTopupLinkForRow(topupLedgerRow(sessionID, 1_000), nil)
+	_, ok = creditTopupLinkForRow(
+		topupLedgerRow(sessionID, 1_000), 1_000, nil,
+	)
 	require.False(t, ok)
+}
+
+// TestCreditTopupWithChangeMatchesNetOutflow reproduces a small payment funded
+// by a larger input and checks that only the exact net top-up is correlated.
+func TestCreditTopupWithChangeMatchesNetOutflow(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name    string
+		change  int64
+		labeled bool
+	}{
+		{
+			name:    "matching net top-up",
+			change:  9_000,
+			labeled: true,
+		},
+		{
+			name:    "different net transfer",
+			change:  8_500,
+			labeled: false,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			h, _, rpc := newHistoryFixture(t)
+			session, sessionHex := testTopupSessionID(t)
+			payHash := strings.Repeat("ab", 32)
+			h.deps.CreditRegistry = &fakeCreditRegistry{
+				listResp: &credit.ListCreditOpsResponse{
+					Ops: []credit.CreditOpSummary{{
+						OpID: "topup", OpKey: "pay:" +
+							payHash,
+						Kind: credit.KindPay, AmountSat: 999,
+						TopupSat: 1_000, OORSessionID: sessionHex,
+					}},
+				},
+			}
+			send := topupLedgerRow(session, 10_000)
+			send.ConfirmationStatus = "recorded"
+			rpc.listTxResp = &waverpc.ListTransactionsResponse{
+				Transactions: []*waverpc.TransactionHistoryEntry{
+					send,
+					{
+						Type: "oor", Subtype: ledger.EventVTXOReceived,
+						DebitAccount:       ledger.AccountVTXOBalance,
+						CreditAccount:      ledger.AccountTransfersIn,
+						ConfirmationStatus: "recorded",
+						AmountSat:          test.change,
+						Txid: testSessionString(
+							t, session,
+						),
+						OutputIndex: 1, EntryId: 47,
+					},
+				},
+			}
+			result, err := h.List(
+				t.Context(), &wavewalletrpc.ListRequest{},
+			)
+			require.NoError(t, err)
+			entries := result.GetActivity().GetEntries()
+			require.Len(t, entries, 1)
+			entry := entries[0]
+			require.Equal(
+				t, test.change-10_000, entry.GetAmountSat(),
+			)
+			require.Equal(
+				t, test.labeled,
+				entry.GetProgress().GetPhaseLabel() == creditTopupPhaseLabel,
+			)
+			if test.labeled {
+				require.Equal(
+					t, payHash,
+					entry.GetProgress().GetPaymentHash(),
+				)
+			} else {
+				require.Empty(
+					t, entry.GetProgress().GetPaymentHash(),
+				)
+			}
+			require.Equal(t, int64(10_000), send.GetAmountSat())
+		})
+	}
 }
