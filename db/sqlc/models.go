@@ -63,6 +63,38 @@ type ActivityStatus struct {
 	Name string
 }
 
+type AssetDeposit struct {
+	RequestID          string
+	Status             string
+	AssetRef           string
+	AssetAmount        []byte
+	CarrierValueSat    int64
+	FeeRateSatPerVbyte int64
+	TargetConf         int32
+	MaxFeeSat          int64
+	OperatorKey        []byte
+	ExitDelay          int32
+	FundingProofs      []byte
+	OutpointHash       []byte
+	OutpointIndex      sql.NullInt32
+	ValueSat           sql.NullInt64
+	FeeSat             sql.NullInt64
+	PkScript           []byte
+	PolicyTemplate     []byte
+	OwnerKeyFamily     sql.NullInt32
+	OwnerKeyIndex      sql.NullInt32
+	OwnerPubkey        []byte
+	Digest             []byte
+	ScriptKey          []byte
+	TaprootAssetRoot   []byte
+	OpTrueWitness      []byte
+	ProofFile          []byte
+	ConfirmedHeight    sql.NullInt32
+	LastError          string
+	CreatedAt          int64
+	UpdatedAt          int64
+}
+
 type BoardingAddress struct {
 	PkScript            []byte
 	AddressString       string

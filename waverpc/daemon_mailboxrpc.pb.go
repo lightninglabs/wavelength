@@ -78,6 +78,10 @@ type DaemonServiceMailboxServer interface {
 	SendOnChain(ctx context.Context, req *SendOnChainRequest) (*SendOnChainResponse, error)
 	// Board handles Board.
 	Board(ctx context.Context, req *BoardRequest) (*BoardResponse, error)
+	// DepositAsset handles DepositAsset.
+	DepositAsset(ctx context.Context, req *DepositAssetRequest) (*AssetDeposit, error)
+	// ListAssetDeposits handles ListAssetDeposits.
+	ListAssetDeposits(ctx context.Context, req *ListAssetDepositsRequest) (*ListAssetDepositsResponse, error)
 	// JoinNextRound handles JoinNextRound.
 	JoinNextRound(ctx context.Context, req *JoinNextRoundRequest) (*JoinNextRoundResponse, error)
 	// SweepBoardingUTXOs handles SweepBoardingUTXOs.
@@ -391,6 +395,26 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.Board(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "DepositAsset", func() proto.Message {
+		return &DepositAssetRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*DepositAssetRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.DepositAsset(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "ListAssetDeposits", func() proto.Message {
+		return &ListAssetDepositsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListAssetDepositsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListAssetDeposits(ctx, req)
 	})
 	r.Handle("waverpc.DaemonService", "JoinNextRound", func() proto.Message {
 		return &JoinNextRoundRequest{}
@@ -1208,6 +1232,52 @@ func (c *DaemonServiceMailboxClient) Board(ctx context.Context, req *BoardReques
 	}
 
 	resp := new(BoardResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// DepositAsset calls the DepositAsset RPC.
+func (c *DaemonServiceMailboxClient) DepositAsset(ctx context.Context, req *DepositAssetRequest, opts ...rpc.RPCOptions) (*AssetDeposit, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "DepositAsset",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(AssetDeposit)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListAssetDeposits calls the ListAssetDeposits RPC.
+func (c *DaemonServiceMailboxClient) ListAssetDeposits(ctx context.Context, req *ListAssetDepositsRequest, opts ...rpc.RPCOptions) (*ListAssetDepositsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "ListAssetDeposits",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListAssetDepositsResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

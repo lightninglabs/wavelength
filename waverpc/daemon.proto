@@ -167,6 +167,16 @@ service DaemonService {
     // the round FSM, which emits a JoinRoundRequest to the server.
     rpc Board (BoardRequest) returns (BoardResponse);
 
+    // DepositAsset funds a boarding output holding a Taproot Asset from the
+    // tapd wallet behind assets.tapd and tracks it until its proof
+    // confirms. Retrying with the same request_id resumes the same
+    // deposit. Requires assets.backend=tapd and assets.lnd.
+    rpc DepositAsset (DepositAssetRequest) returns (AssetDeposit);
+
+    // ListAssetDeposits returns the asset deposits of this daemon.
+    rpc ListAssetDeposits (ListAssetDepositsRequest)
+        returns (ListAssetDepositsResponse);
+
     // JoinNextRound asks the client round FSM to commit any currently
     // queued round intents and emit a JoinRoundRequest to the operator.
     // Useful after queueing refresh or leave intents that intentionally
@@ -1791,6 +1801,79 @@ message BoardResponse {
     // vtxo_count is the number of VTXO target outputs accepted for
     // boarding. It is zero when status is "no_boarding_utxos".
     uint32 vtxo_count = 2;
+}
+
+message DepositAssetRequest {
+    // request_id identifies the deposit. A retry with the same ID and
+    // parameters resumes it; other parameters under the same ID fail.
+    string request_id = 1;
+
+    // asset_ref is the asset ID, or the group key of a grouped asset.
+    string asset_ref = 2;
+
+    // asset_amount is the number of asset units to deposit. They come
+    // from one issuance, and any surplus returns to tapd as change.
+    uint64 asset_amount = 3;
+
+    // sat_per_vbyte is the funding fee rate. Zero uses target_conf.
+    uint64 sat_per_vbyte = 4;
+
+    // target_conf is the confirmation target used when sat_per_vbyte is
+    // zero. Zero means 6.
+    uint32 target_conf = 5;
+
+    // max_fee_sat bounds the funding fee and is required.
+    uint64 max_fee_sat = 6;
+}
+
+message ListAssetDepositsRequest {
+}
+
+message ListAssetDepositsResponse {
+    repeated AssetDeposit deposits = 1;
+}
+
+// AssetDepositStatus is the lifecycle stage of an asset deposit.
+enum AssetDepositStatus {
+    ASSET_DEPOSIT_STATUS_UNSPECIFIED = 0;
+
+    // ASSET_DEPOSIT_STATUS_FUNDING means tapd has not published the
+    // deposit yet. error holds the reason of a failed attempt.
+    ASSET_DEPOSIT_STATUS_FUNDING = 1;
+
+    // ASSET_DEPOSIT_STATUS_PUBLISHED means the deposit transaction is
+    // published and has fewer confirmations than the operator requires of a
+    // boarding input.
+    ASSET_DEPOSIT_STATUS_PUBLISHED = 2;
+
+    // ASSET_DEPOSIT_STATUS_CONFIRMED means the deposit transaction has the
+    // confirmations the operator requires of a boarding input.
+    ASSET_DEPOSIT_STATUS_CONFIRMED = 3;
+}
+
+message AssetDeposit {
+    string request_id = 1;
+    AssetDepositStatus status = 2;
+    string asset_ref = 3;
+    uint64 asset_amount = 4;
+
+    // outpoint is the deposit output, empty while funding.
+    string outpoint = 5;
+
+    // value_sat is the Bitcoin value of the deposit output. The daemon
+    // sizes it from the operator's terms and boarding fee quote: it pays
+    // the round fee and the asset VTXO's satoshis, and the rest becomes a
+    // BTC VTXO when the deposit boards.
+    int64 value_sat = 6;
+
+    // fee_sat is the funding fee paid by the tapd wallet.
+    uint64 fee_sat = 7;
+
+    // confirmed_height is the height of the confirmed proof, zero before.
+    uint32 confirmed_height = 8;
+
+    // error is the latest failure, empty when none.
+    string error = 9;
 }
 
 message JoinNextRoundRequest {

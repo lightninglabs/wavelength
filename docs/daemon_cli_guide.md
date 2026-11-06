@@ -142,6 +142,10 @@ waved \
 | `--assets.tapd.tlspath` | | Path to tapd TLS certificate |
 | `--assets.tapd.macaroonpath` | | Path to tapd admin macaroon |
 | `--assets.tapd.rpctimeout` | `30s` | Timeout for tapd RPC calls |
+| `--assets.lnd.host` | | gRPC address of the lnd node behind tapd, which signs asset deposits; required by `DepositAsset` |
+| `--assets.lnd.tlspath` | | Path to that lnd node's TLS certificate |
+| `--assets.lnd.macaroonpath` | | Path to that lnd node's admin macaroon |
+| `--assets.lnd.rpctimeout` | `30s` | Timeout for calls to that lnd node |
 | `--server.host` | network default | Ark operator address override for the selected transport |
 | `--server.transport` | `grpc` | Ark operator transport: `grpc` or `rest` |
 | `--server.insecure` | `false` | Disable TLS for server connection |
@@ -439,6 +443,27 @@ wavecli recv --offchain --amt 5000 --memo coffee
 
 # No-wavewalletrpc equivalent for the boarding-address case:
 wavecli dev daemon NewAddress
+```
+
+### `dev daemon deposit-asset` / `dev daemon list-asset-deposits`
+
+Fund a boarding output holding a Taproot Asset from the tapd wallet, and list
+those deposits. Requires `--assets.backend=tapd` and `--assets.lnd.host`. The
+units come from one issuance, and any surplus returns to tapd as change.
+The lnd wallet behind tapd pays the network fee, bounded by `--max-fee-sat`,
+and the Bitcoin value of the deposit output (`value_sat`). The daemon sizes
+that value from the operator's terms: two minimum VTXOs plus twice the
+quoted round fee. When the deposit boards, the value pays the round fee and
+the asset VTXO's satoshis, and the rest becomes a BTC VTXO. Retrying with the
+same `--request-id` resumes the deposit instead of funding it again. A
+deposit is `published` once tapd broadcasts it and `confirmed` once it has the
+confirmations the operator requires of a boarding input.
+
+```bash
+wavecli dev daemon deposit-asset --request-id alice-1 \
+    --asset-ref <asset id or group key> --asset-amount 500 \
+    --max-fee-sat 5000
+wavecli dev daemon list-asset-deposits
 ```
 
 ### `ark board` / `dev daemon Board`

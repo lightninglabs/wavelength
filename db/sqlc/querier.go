@@ -102,6 +102,7 @@ type Querier interface {
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
 	// GetActivityEntry returns one entry by its canonical id.
 	GetActivityEntry(ctx context.Context, canonicalID string) (ActivityEntry, error)
+	GetAssetDeposit(ctx context.Context, requestID string) (AssetDeposit, error)
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
 	GetBoardingSweep(ctx context.Context, txid []byte) (BoardingSweep, error)
@@ -172,6 +173,9 @@ type Querier interface {
 	// The ledger actor uses it to recognise a boarding deposit's funding input as
 	// a UTXO whose value it already credited to wallet_balance.
 	GetWalletUTXOLogCreatedByOutpoint(ctx context.Context, arg GetWalletUTXOLogCreatedByOutpointParams) (WalletUtxoLog, error)
+	// InsertAssetDeposit records a deposit request before tapd funds it. A
+	// request ID already recorded inserts nothing.
+	InsertAssetDeposit(ctx context.Context, arg InsertAssetDepositParams) (int64, error)
 	// Boarding address queries.
 	InsertBoardingAddress(ctx context.Context, arg InsertBoardingAddressParams) error
 	// Boarding intent queries.
@@ -242,6 +246,8 @@ type Querier interface {
 	ListAllCreditOperations(ctx context.Context) ([]CreditOperation, error)
 	ListAllOORSessionRegistry(ctx context.Context) ([]OorSessionRegistry, error)
 	ListAllVTXOs(ctx context.Context) ([]Vtxo, error)
+	ListAssetDeposits(ctx context.Context) ([]AssetDeposit, error)
+	ListAssetDepositsByStatus(ctx context.Context, status string) ([]AssetDeposit, error)
 	ListBoardingIntentOutpoints(ctx context.Context) ([]ListBoardingIntentOutpointsRow, error)
 	ListBoardingIntentsByConfHeight(ctx context.Context, confHeight int32) ([]BoardingIntent, error)
 	ListBoardingIntentsByPkScript(ctx context.Context, pkScript []byte) ([]BoardingIntent, error)
@@ -486,6 +492,12 @@ type Querier interface {
 	// CreditOpStatus). Failed operations never dedup a keyed retry, so the lookup
 	// skips them: only a pending or completed operation answers for an op_key.
 	LookupActiveCreditOperationByKey(ctx context.Context, opKey string) (CreditOperation, error)
+	// MarkAssetDepositConfirmed stores the output's confirmed proof. Only a
+	// published deposit moves.
+	MarkAssetDepositConfirmed(ctx context.Context, arg MarkAssetDepositConfirmedParams) (int64, error)
+	// MarkAssetDepositPublished stores the funded output and its boarding claim.
+	// Only a deposit still funding moves.
+	MarkAssetDepositPublished(ctx context.Context, arg MarkAssetDepositPublishedParams) (int64, error)
 	MarkBoardingSweepInputSpentByOutpoint(ctx context.Context, arg MarkBoardingSweepInputSpentByOutpointParams) (int64, error)
 	MarkBoardingSweepInputStatus(ctx context.Context, arg MarkBoardingSweepInputStatusParams) error
 	MarkBoardingSweepInputsStatus(ctx context.Context, arg MarkBoardingSweepInputsStatusParams) error
@@ -537,6 +549,9 @@ type Querier interface {
 	// round actually adopted, so a round can never release a deposit another round
 	// has since taken.
 	RevertRoundAdoptedBoardingIntents(ctx context.Context, arg RevertRoundAdoptedBoardingIntentsParams) error
+	// SetAssetDepositError records the latest failure of a deposit that has not
+	// confirmed.
+	SetAssetDepositError(ctx context.Context, arg SetAssetDepositErrorParams) error
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	// SumLedgerWalletLegs totals the ledger legs that move value in and out of
 	// wallet_balance, split by event type and by whether wallet_balance is the

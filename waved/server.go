@@ -27,6 +27,7 @@ import (
 	btcwalletpkg "github.com/btcsuite/btcwallet/wallet"
 	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightninglabs/lndclient"
+	tapgrpc "github.com/lightninglabs/tap-sdk/grpc"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/btcwbackend"
@@ -217,6 +218,14 @@ type Server struct {
 	// assetVTXOVerifier verifies asset VTXOs through the configured asset
 	// backend. It is nil when assets are disabled.
 	assetVTXOVerifier round.AssetVTXOVerifier
+
+	// tapdClient is the tapd connection of the tapd asset backend, nil
+	// when assets are disabled.
+	tapdClient *tapgrpc.Client
+
+	// assetDeposits funds asset deposits, nil unless the tapd backend and
+	// the lnd node behind tapd are configured.
+	assetDeposits *assetDepositService
 
 	// lwWallet holds the lightweight wallet instance when
 	// wallet.type is "lwwallet". It is None in lnd mode.
@@ -1543,6 +1552,12 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 	// Build the activity-log store for the wavewalletrpc subserver.
 	s.activityStore = dbStore.NewActivityStore(s.clk)
 	s.cfg.ActivityStore = s.activityStore
+
+	stopAssetDeposits, err := s.startAssetDeposits(ctx, dbStore)
+	if err != nil {
+		return err
+	}
+	defer stopAssetDeposits()
 
 	// -------------------------------------------------------
 	// Optional Prometheus metrics server (disabled by default).

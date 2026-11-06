@@ -129,6 +129,22 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   default) installs no verifier, so a round that would create an asset VTXO
   for this daemon fails before signing. `tapd` dials tapd at startup, checks
   that it runs on the daemon's network, and refuses to start otherwise.
+- `DepositAsset` exists only with `assets.backend=tapd` and `assets.lnd.host`,
+  the lnd node behind tapd that signs deposit transactions. Without both it
+  returns `FailedPrecondition`. The deposit output's value is not a caller
+  parameter: `depositValue` sizes it to two minimum VTXOs plus twice the
+  operator's boarding fee quote, so it boards as an asset VTXO and a BTC VTXO
+  that keeps the rest. A deposit's request, including that value and its
+  selected funding proofs, is stored before tapd funds it, and a retry under
+  the same request ID replays that stored request, because the onboarding
+  journal is bound to its digest. Funding is serialized, since tapd wallet input
+  selection must not interleave. A failed attempt stays `funding` with its
+  error; a published one is polled until its transfer has the operator's
+  `MinConfirmations` (at least one) by tapd's chain tip, then stores the
+  exported proof. The operator rejects a shallower boarding input, and the
+  depth bounds the reorgs that could replace the block the proof commits to.
+  Deposits stay out of the boarding tables, so Bitcoin boarding and boarding
+  sweeps never select them.
 - `Server.run` registers a deferred `actorSystem.Shutdown()` **before** the
   deferred `db.Close()` so in-flight actor DB transactions drain before the
   connection pool tears down.

@@ -2,10 +2,12 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/lightninglabs/lndclient"
@@ -276,6 +278,59 @@ func (h *Harness) startLNDContainer(cfg lndConfig) *dockertest.Resource {
 	return res
 }
 
+// ensureImage makes repo:tag available to the local docker daemon. Shared CI
+// runners get throttled by registry mirrors for rarely pulled images, so a
+// failed pull is retried from Docker Hub and tagged under the mirror name.
+func (h *Harness) ensureImage(repo, tag string) error {
+	if tag == "" {
+		tag = "latest"
+	}
+
+	ref := repo + ":" + tag
+	if _, err := h.pool.Client.InspectImage(ref); err == nil {
+		return nil
+	}
+
+	mirrorErr := h.pool.Client.PullImage(docker.PullImageOptions{
+		Repository: repo,
+		Tag:        tag,
+	}, docker.AuthConfiguration{})
+	if mirrorErr == nil {
+		return nil
+	}
+
+	hubRepo, ok := dockerHubRepo(repo)
+	if !ok {
+		return mirrorErr
+	}
+
+	h.Logf("Pulling %s:%s from Docker Hub: %v", hubRepo, tag, mirrorErr)
+
+	err := h.pool.Client.PullImage(docker.PullImageOptions{
+		Repository: hubRepo,
+		Tag:        tag,
+	}, docker.AuthConfiguration{})
+	if err != nil {
+		return errors.Join(mirrorErr, err)
+	}
+
+	return h.pool.Client.TagImage(hubRepo+":"+tag, docker.TagImageOptions{
+		Repo: repo,
+		Tag:  tag,
+	})
+}
+
+// dockerHubRepo strips the registry host from repo. It reports false when
+// repo already names a Docker Hub repository.
+func dockerHubRepo(repo string) (string, bool) {
+	host, rest, ok := strings.Cut(repo, "/")
+	if !ok || !strings.ContainsAny(host, ".:") {
+		return "", false
+	}
+
+	return rest, true
+}
+
 // startTapdContainer starts a tapd container with the given configuration.
 func (h *Harness) startTapdContainer(cfg tapdConfig) *dockertest.Resource {
 	// Use /data/tapd as the base directory to avoid requiring root
@@ -322,6 +377,11 @@ func (h *Harness) startTapdContainer(cfg tapdConfig) *dockertest.Resource {
 	lndHostDir, err := filepath.Abs(cfg.lndDataDir)
 	require.NoError(
 		h.T, err, "failed to get absolute path for lnd data dir",
+	)
+
+	require.NoError(
+		h.T, h.ensureImage(cfg.image, cfg.tag),
+		"failed to pull tapd image",
 	)
 
 	res, err := h.runWithPortBindRetry(tapdName, func() (

@@ -1,0 +1,431 @@
+package waved
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/btcsuite/btclog/v2"
+	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightninglabs/wavelength/tapassets"
+	"github.com/lightninglabs/wavelength/waverpc"
+	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+// fakeDepositTapd serves one wallet anchor, the transfer that funds the
+// deposit output, and the chain tip.
+type fakeDepositTapd struct {
+	utxos     map[string]*tapsdk.ManagedUtxo
+	transfers []*tapsdk.AssetTransfer
+	height    uint32
+}
+
+func (f *fakeDepositTapd) GetInfo(context.Context) (*tapsdk.Info, error) {
+	return &tapsdk.Info{BlockHeight: f.height}, nil
+}
+
+func (f *fakeDepositTapd) ListUtxos(context.Context, *tapsdk.ListUtxosRequest) (
+	map[string]*tapsdk.ManagedUtxo, error) {
+
+	return f.utxos, nil
+}
+
+func (f *fakeDepositTapd) ListTransfers(context.Context,
+	*tapsdk.ListTransfersRequest) ([]*tapsdk.AssetTransfer, error) {
+
+	return f.transfers, nil
+}
+
+func (f *fakeDepositTapd) ExportProof(_ context.Context, _ tapsdk.AssetRef,
+	_ tapsdk.PubKey, outpoint *tapsdk.Outpoint) (*tapsdk.ProofFile, error) {
+
+	return &tapsdk.ProofFile{RawProofFile: outpoint.Txid[:]}, nil
+}
+
+// fakeOnboarder records onboarding requests and returns a fixed result.
+type fakeOnboarder struct {
+	requests []*tapassets.OnboardingRequest
+	result   *tapassets.OnboardingResult
+	err      error
+}
+
+func (f *fakeOnboarder) Onboard(_ context.Context,
+	req *tapassets.OnboardingRequest) (*tapassets.OnboardingResult, error) {
+
+	f.requests = append(f.requests, req)
+	if f.err != nil {
+		return nil, f.err
+	}
+
+	return f.result, nil
+}
+
+// depositFixture wires a deposit service to fakes and a real store.
+type depositFixture struct {
+	service   *assetDepositService
+	tapd      *fakeDepositTapd
+	onboarder *fakeOnboarder
+	terms     *types.OperatorTerms
+	roundFee  btcutil.Amount
+	assetRef  string
+	output    wire.OutPoint
+}
+
+func newDepositFixture(t *testing.T) *depositFixture {
+	t.Helper()
+
+	issuance := tapsdk.AssetID{0x11}
+	ref := tapsdk.AssetRefFromAssetID(issuance)
+	_, operatorKey := btcec.PrivKeyFromBytes([]byte{0x05})
+	_, ownerKey := btcec.PrivKeyFromBytes([]byte{0x06})
+	scriptKey, err := tapsdk.ParsePubKey(ownerKey.SerializeCompressed())
+	require.NoError(t, err)
+
+	output := wire.OutPoint{Hash: chainhash.Hash{0x22}, Index: 0}
+	tapd := &fakeDepositTapd{
+		utxos: map[string]*tapsdk.ManagedUtxo{
+			"anchor": {
+				OutPoint: tapsdk.Outpoint{
+					Txid: tapsdk.Hash{
+						1,
+					},
+				},
+				Assets: []*tapsdk.AssetRecord{{
+					AssetRef: ref,
+					Genesis: tapsdk.IssuanceGenesis{
+						IssuanceID: issuance,
+					},
+					Amount: 1_000,
+				}},
+			},
+		},
+		transfers: []*tapsdk.AssetTransfer{{
+			AnchorTxid: output.Hash.String(),
+			Outputs: []tapsdk.TransferOutput{{
+				AnchorOutpoint: tapsdk.Outpoint{
+					Txid:  tapsdk.Hash(output.Hash),
+					Index: output.Index,
+				},
+				IssuanceID: issuance,
+				ScriptKey:  scriptKey,
+			}},
+		}},
+	}
+	onboarder := &fakeOnboarder{
+		result: &tapassets.OnboardingResult{
+			Outpoint:     output,
+			ValueSat:     10_000,
+			ActualFeeSat: 250,
+			PkScript: []byte{
+				0x51,
+				0x20,
+				0x01,
+			},
+			PolicyTemplate: []byte{
+				0x01,
+			},
+			OwnerKey: keychain.KeyDescriptor{
+				KeyLocator: keychain.KeyLocator{
+					Family: 42, Index: 3,
+				},
+				PubKey: ownerKey,
+			},
+			Digest: tapsdk.Hash{
+				0x33,
+			},
+			ScriptKey: scriptKey,
+			TaprootAssetRoot: chainhash.Hash{
+				0x44,
+			},
+			OPTrueWitness: [][]byte{
+				{
+					0x51,
+				},
+			},
+		},
+	}
+
+	sqlDB := db.NewTestDB(t)
+	store := db.NewAssetDepositStore(
+		db.NewStore(
+			sqlDB.DB, sqlDB.Queries, sqlDB.Backend(),
+			btclog.Disabled,
+		),
+	)
+	fixture := &depositFixture{
+		tapd:      tapd,
+		onboarder: onboarder,
+		terms: &types.OperatorTerms{
+			PubKey:            operatorKey,
+			BoardingExitDelay: 144,
+			MinVTXOAmount:     1_000,
+		},
+		roundFee: 300,
+		assetRef: ref.String(),
+		output:   output,
+	}
+	fixture.service = newAssetDepositService(
+		btclog.Disabled, store, tapd, onboarder,
+		func() *types.OperatorTerms { return fixture.terms },
+		func(context.Context, btcutil.Amount) (btcutil.Amount, error) {
+			return fixture.roundFee, nil
+		},
+	)
+
+	return fixture
+}
+
+// request returns a valid deposit request for the fixture asset.
+func (f *depositFixture) request(id string) *waverpc.DepositAssetRequest {
+	return &waverpc.DepositAssetRequest{
+		RequestId:   id,
+		AssetRef:    f.assetRef,
+		AssetAmount: 600,
+		MaxFeeSat:   5_000,
+	}
+}
+
+// TestAssetDepositFunding checks that a deposit funds once from the stored
+// request, and that a retry under its request ID resumes it.
+func TestAssetDepositFunding(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newDepositFixture(t)
+
+	deposit, err := f.service.Deposit(ctx, f.request("alice-1"))
+	require.NoError(t, err)
+	require.Equal(t, db.AssetDepositPublished, deposit.Status)
+	require.Equal(t, f.output, deposit.Output.Outpoint)
+
+	require.Len(t, f.onboarder.requests, 1)
+	onboarded := f.onboarder.requests[0]
+	require.Equal(t, "alice-1", onboarded.RequestID)
+	require.EqualValues(t, 600, onboarded.AssetAmount)
+	require.EqualValues(t, 2*1_000+2*300, onboarded.CarrierValueSat)
+	require.Len(t, onboarded.ProofFiles, 1)
+	require.True(t, onboarded.OperatorKey.IsEqual(f.terms.PubKey))
+	require.EqualValues(t, 144, onboarded.ExitDelay)
+	require.EqualValues(
+		t, defaultAssetDepositTargetConf, onboarded.TargetConf,
+	)
+
+	// A published deposit is not funded again, even once the fee quote
+	// moves, and a different deposit cannot reuse its ID.
+	f.roundFee = 900
+	_, err = f.service.Deposit(ctx, f.request("alice-1"))
+	require.NoError(t, err)
+	require.Len(t, f.onboarder.requests, 1)
+
+	changed := f.request("alice-1")
+	changed.AssetAmount = 700
+	_, err = f.service.Deposit(ctx, changed)
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
+}
+
+// TestAssetDepositRetry checks that a failed attempt stays funding with its
+// error, and that a retry replays the stored proofs even once tapd no longer
+// lists the anchor.
+func TestAssetDepositRetry(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newDepositFixture(t)
+
+	f.onboarder.err = errors.Join(
+		errors.New("publish outcome unknown"),
+		tapassets.ErrReconciliationRequired,
+	)
+	_, err := f.service.Deposit(ctx, f.request("alice-1"))
+	require.Equal(t, codes.Unavailable, status.Code(err))
+
+	deposits, err := f.service.List(ctx)
+	require.NoError(t, err)
+	require.Len(t, deposits, 1)
+	require.Equal(t, db.AssetDepositFunding, deposits[0].Status)
+	require.Contains(t, deposits[0].LastError, "publish outcome unknown")
+
+	f.onboarder.err = nil
+	f.tapd.utxos = nil
+	f.roundFee = 900
+	deposit, err := f.service.Deposit(ctx, f.request("alice-1"))
+	require.NoError(t, err)
+	require.Equal(t, db.AssetDepositPublished, deposit.Status)
+	require.Empty(t, deposit.LastError)
+	require.Len(t, f.onboarder.requests, 2)
+	require.Equal(
+		t, f.onboarder.requests[0].ProofFiles,
+		f.onboarder.requests[1].ProofFiles,
+	)
+	require.Equal(
+		t, f.onboarder.requests[0].CarrierValueSat,
+		f.onboarder.requests[1].CarrierValueSat,
+	)
+}
+
+// TestAssetDepositFeePolicy checks that an explicit fee rate funds without a
+// confirmation target, so a retry that drops the ignored target matches.
+func TestAssetDepositFeePolicy(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newDepositFixture(t)
+
+	req := f.request("alice-1")
+	req.SatPerVbyte = 2
+	req.TargetConf = 6
+	_, err := f.service.Deposit(ctx, req)
+	require.NoError(t, err)
+	require.Len(t, f.onboarder.requests, 1)
+	require.EqualValues(t, 2, f.onboarder.requests[0].FeeRateSatPerVByte)
+	require.Zero(t, f.onboarder.requests[0].TargetConf)
+
+	req.TargetConf = 0
+	_, err = f.service.Deposit(ctx, req)
+	require.NoError(t, err)
+	require.Len(t, f.onboarder.requests, 1)
+}
+
+// TestAssetDepositRefusals checks the requests a deposit refuses before
+// selecting any asset.
+func TestAssetDepositRefusals(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newDepositFixture(t)
+
+	noFee := f.request("a")
+	noFee.MaxFeeSat = 0
+	_, err := f.service.Deposit(ctx, noFee)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+
+	badRef := f.request("a")
+	badRef.AssetRef = "not-an-asset"
+	_, err = f.service.Deposit(ctx, badRef)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+
+	tooMuch := f.request("a")
+	tooMuch.AssetAmount = 5_000
+	_, err = f.service.Deposit(ctx, tooMuch)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+
+	f.service.quoteBoardingFee = func(context.Context, btcutil.Amount) (
+		btcutil.Amount, error) {
+
+		return 0, errors.New("operator unreachable")
+	}
+	_, err = f.service.Deposit(ctx, f.request("a"))
+	require.Equal(t, codes.Unavailable, status.Code(err))
+
+	f.terms = nil
+	_, err = f.service.Deposit(ctx, f.request("a"))
+	require.Equal(t, codes.Unavailable, status.Code(err))
+
+	require.Empty(t, f.onboarder.requests)
+	deposits, err := f.service.List(ctx)
+	require.NoError(t, err)
+	require.Empty(t, deposits)
+}
+
+// TestDepositValue checks that a deposit covers two minimum VTXOs plus twice
+// the round fee, within the operator's boarding and fee minimums.
+func TestDepositValue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		terms    types.OperatorTerms
+		roundFee btcutil.Amount
+		want     btcutil.Amount
+	}{{
+		name: "quoted fee",
+		terms: types.OperatorTerms{
+			MinVTXOAmount: 1_000,
+		},
+		roundFee: 300,
+		want:     2_600,
+	}, {
+		name: "fee below operator minimum",
+		terms: types.OperatorTerms{
+			MinVTXOAmount:  1_000,
+			MinOperatorFee: 500,
+		},
+		roundFee: 100,
+		want:     3_000,
+	}, {
+		name: "dust above VTXO minimum",
+		terms: types.OperatorTerms{
+			DustLimit: 330,
+		},
+		want: 660,
+	}, {
+		name: "boarding minimum",
+		terms: types.OperatorTerms{
+			MinVTXOAmount:     1_000,
+			MinBoardingAmount: 10_000,
+		},
+		roundFee: 300,
+		want:     10_000,
+	}}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := depositValue(&test.terms, test.roundFee)
+			require.Equal(t, test.want, got)
+		})
+	}
+}
+
+// TestAssetDepositConfirmation checks that a published deposit stores its
+// proof only once its transfer reaches the operator's boarding depth.
+func TestAssetDepositConfirmation(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newDepositFixture(t)
+	f.terms.MinConfirmations = 3
+
+	_, err := f.service.Deposit(ctx, f.request("alice-1"))
+	require.NoError(t, err)
+
+	f.tapd.height = 209
+	f.service.confirmPublished(ctx)
+	deposits, err := f.service.List(ctx)
+	require.NoError(t, err)
+	require.Equal(t, db.AssetDepositPublished, deposits[0].Status)
+
+	// Two confirmations stay below the operator's three.
+	f.tapd.transfers[0].AnchorTxBlockHash = [32]byte{1}
+	f.tapd.transfers[0].AnchorTxBlockHeight = 210
+	f.tapd.height = 211
+	f.service.confirmPublished(ctx)
+	deposits, err = f.service.List(ctx)
+	require.NoError(t, err)
+	require.Equal(t, db.AssetDepositPublished, deposits[0].Status)
+
+	f.tapd.height = 212
+	f.service.confirmPublished(ctx)
+
+	deposits, err = f.service.List(ctx)
+	require.NoError(t, err)
+	require.Equal(t, db.AssetDepositConfirmed, deposits[0].Status)
+	require.EqualValues(t, 210, deposits[0].ConfirmedHeight)
+	require.Equal(t, f.output.Hash[:], deposits[0].ProofFile)
+
+	rpc := assetDepositToRPC(deposits[0])
+	require.Equal(
+		t, waverpc.AssetDepositStatus_ASSET_DEPOSIT_STATUS_CONFIRMED,
+		rpc.Status,
+	)
+	require.Equal(t, f.output.String(), rpc.Outpoint)
+}
