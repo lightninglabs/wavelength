@@ -142,7 +142,7 @@ waved \
 | `--assets.tapd.tlspath` | | Path to tapd TLS certificate |
 | `--assets.tapd.macaroonpath` | | Path to tapd admin macaroon |
 | `--assets.tapd.rpctimeout` | `30s` | Timeout for tapd RPC calls |
-| `--assets.lnd.host` | | gRPC address of the lnd node behind tapd, which signs asset deposits; required by `DepositAsset` |
+| `--assets.lnd.host` | | gRPC address of the lnd node behind tapd, which signs tapd's asset inputs of a deposit; required by `DepositAsset` |
 | `--assets.lnd.tlspath` | | Path to that lnd node's TLS certificate |
 | `--assets.lnd.macaroonpath` | | Path to that lnd node's admin macaroon |
 | `--assets.lnd.rpctimeout` | `30s` | Timeout for calls to that lnd node |
@@ -450,10 +450,11 @@ wavecli dev daemon NewAddress
 Fund a boarding output holding a Taproot Asset from the tapd wallet, and list
 those deposits. Requires `--assets.backend=tapd` and `--assets.lnd.host`. The
 units come from one issuance, and any surplus returns to tapd as change.
-The lnd wallet behind tapd pays the network fee, bounded by `--max-fee-sat`,
-and the Bitcoin value of the deposit output (`value_sat`). The daemon sizes
-that value from the operator's terms: two minimum VTXOs plus twice the
-quoted round fee. When the deposit boards, the value pays the round fee and
+The daemon's own wallet pays the network fee, bounded by `--max-fee-sat`,
+and the Bitcoin value of the deposit output (`value_sat`) beyond what tapd's
+spent asset outputs carry. The lnd node behind tapd only signs those asset
+outputs. The daemon sizes the deposit value from the operator's terms: two
+minimum VTXOs plus twice the quoted round fee. When the deposit boards, the value pays the round fee and
 the asset VTXO's satoshis, and the rest becomes a BTC VTXO. Retrying with the
 same `--request-id` resumes the deposit instead of funding it again. A
 deposit is `published` once tapd broadcasts it and `confirmed` once it has the
