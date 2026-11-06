@@ -1404,9 +1404,17 @@ func (m *Manager) recoverExitedVTXO(ctx context.Context,
 	// and a failed status write is re-converged by boot reconciliation (the
 	// VTXO stays in unilateral-exit on disk, so the next boot re-drives
 	// recovery).
+	//
+	// The actor classifies its expiry only once our write is done. An
+	// expired coin would otherwise persist Expired before we persist
+	// Live, and the store would count its value as spendable while the
+	// actor, already past Live, never writes again. A failed write leaves
+	// nothing to overwrite, so the ask goes out either way.
 	descriptor.Status = VTXOStatusLive
 
-	ref, err := m.spawnVTXOActor(ctx, descriptor)
+	ref, requestStartTip, err := m.spawnUnclassifiedVTXOActor(
+		ctx, descriptor,
+	)
 	if err != nil {
 		return fn.Err[ManagerResp](
 			fmt.Errorf("respawn recovered vtxo actor: %w", err),
@@ -1414,9 +1422,9 @@ func (m *Manager) recoverExitedVTXO(ctx context.Context,
 	}
 	m.actors[req.Outpoint] = ref
 
-	if err := m.cfg.Store.UpdateVTXOStatus(
-		ctx, req.Outpoint, VTXOStatusLive,
-	); err != nil {
+	err = m.cfg.Store.UpdateVTXOStatus(ctx, req.Outpoint, VTXOStatusLive)
+	requestStartTip(ctx)
+	if err != nil {
 		return fn.Err[ManagerResp](
 			fmt.Errorf("restore vtxo status: %w", err),
 		)
@@ -1545,9 +1553,15 @@ func (m *Manager) conflictExitedVTXO(ctx context.Context,
 	// A failed status write is re-converged by boot reconciliation (the
 	// VTXO stays in unilateral-exit on disk, so the next boot re-drives
 	// this).
+	//
+	// As in recoverExitedVTXO, the actor sees the current tip only once
+	// our write is done, so a reclaim it starts on that tip cannot have
+	// its status overwritten with Expired.
 	descriptor.Status = VTXOStatusExpired
 
-	ref, err := m.spawnVTXOActor(ctx, descriptor)
+	ref, requestStartTip, err := m.spawnUnclassifiedVTXOActor(
+		ctx, descriptor,
+	)
 	if err != nil {
 		return fn.Err[ManagerResp](
 			fmt.Errorf("respawn conflicted vtxo actor: %w", err),
@@ -1555,9 +1569,11 @@ func (m *Manager) conflictExitedVTXO(ctx context.Context,
 	}
 	m.actors[req.Outpoint] = ref
 
-	if err := m.cfg.Store.UpdateVTXOStatus(
+	err = m.cfg.Store.UpdateVTXOStatus(
 		ctx, req.Outpoint, VTXOStatusExpired,
-	); err != nil {
+	)
+	requestStartTip(ctx)
+	if err != nil {
 		return fn.Err[ManagerResp](
 			fmt.Errorf("persist expired status: %w", err),
 		)
@@ -2076,10 +2092,30 @@ func (m *Manager) respawnActorFromStore(ctx context.Context,
 }
 
 // spawnVTXOActor creates and starts the per-outpoint actor with the manager's
-// shared expiry, funding-assessment, round, wallet, and persistence seams. A
-// start failure removes the actor registration before returning.
+// shared expiry, funding-assessment, round, wallet, and persistence seams,
+// then has it classify its expiry at the current tip. A start failure
+// removes the actor registration before returning.
 func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 	VTXOActorRef, error) {
+
+	ref, requestStartTip, err := m.spawnUnclassifiedVTXOActor(ctx, vtxo)
+	if err != nil {
+		return ref, err
+	}
+
+	requestStartTip(ctx)
+
+	return ref, nil
+}
+
+// spawnUnclassifiedVTXOActor is spawnVTXOActor without the current tip ask,
+// which it returns for the caller to send instead. A caller that persists
+// the VTXO's status after spawning its actor must send the ask only once
+// that write is done: the answer can make the actor persist a status of its
+// own, and a later manager write would overwrite it, leaving the store
+// disagreeing with an actor that will not write again.
+func (m *Manager) spawnUnclassifiedVTXOActor(ctx context.Context,
+	vtxo *Descriptor) (VTXOActorRef, func(context.Context), error) {
 
 	if !m.cfg.ExpiryConfig.CanReserveMaxPaymentCLTV(vtxo) {
 		logger := m.logger(ctx)
@@ -2121,6 +2157,14 @@ func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 	}
 
 	vtxoActor := NewVTXOActor(ctx, actorCfg)
+
+	// A terminal actor has no expiry left to classify. Read its state
+	// before spawning, while the actor's goroutine cannot touch it yet.
+	requestStartTip := vtxoActor.requestStartTip
+	if vtxoActor.state.IsTerminal() {
+		requestStartTip = func(context.Context) {}
+	}
+
 	ref := serviceKey.Spawn(m.cfg.ActorSystem, actorID, vtxoActor)
 
 	// Start the actor to subscribe to block epochs. ActorRef embeds
@@ -2130,10 +2174,10 @@ func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 		// system.
 		m.cfg.ActorSystem.StopAndRemoveActor(actorID)
 
-		return ref, fmt.Errorf("start vtxo actor: %w", err)
+		return ref, nil, fmt.Errorf("start vtxo actor: %w", err)
 	}
 
-	return ref, nil
+	return ref, requestStartTip, nil
 }
 
 // =============================================================================
