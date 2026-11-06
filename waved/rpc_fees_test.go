@@ -412,6 +412,7 @@ func TestAutoRefreshFeeQuoterQuoteFailsFallsBackToMinFee(t *testing.T) {
 		serverConn: newBufconnClient(t, svc),
 		log:        btclog.Disabled,
 	}
+	s.arkProtocolVersion.Store(1)
 
 	got := s.autoRefreshFeeQuoter()(
 		t.Context(), 100_000, 200,
@@ -443,6 +444,7 @@ func TestAutoRefreshFeeQuoterTermsAndQuoteFailReturnsZero(t *testing.T) {
 		serverConn: newBufconnClient(t, svc),
 		log:        btclog.Disabled,
 	}
+	s.arkProtocolVersion.Store(1)
 
 	got := s.autoRefreshFeeQuoter()(
 		t.Context(), 100_000, 200,
@@ -479,6 +481,7 @@ func TestAutoRefreshFeeQuoterReturnsQuoteWhenAboveMinFee(t *testing.T) {
 		serverConn: newBufconnClient(t, svc),
 		log:        btclog.Disabled,
 	}
+	s.arkProtocolVersion.Store(1)
 
 	got := s.autoRefreshFeeQuoter()(
 		t.Context(), 100_000, 200,
@@ -514,6 +517,7 @@ func TestAutoRefreshFeeQuoterReturnsMinFeeWhenQuoteBelowFloor(t *testing.T) {
 		serverConn: newBufconnClient(t, svc),
 		log:        btclog.Disabled,
 	}
+	s.arkProtocolVersion.Store(1)
 
 	got := s.autoRefreshFeeQuoter()(
 		t.Context(), 100_000, 200,
