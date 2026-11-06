@@ -27,6 +27,7 @@ into specific topics below.
 | [seed_restore_recovery.md](seed_restore_recovery.md) | Restore a self-managed seed and recover Ark state from chain/indexer data |
 | [swap_background_execution.md](swap_background_execution.md) | Optional build-tagged daemon executor for background swap progress and daemon-backed CLI control |
 | [mailbox_architecture.md](mailbox_architecture.md) | Three-layer mailbox system: pb, rpc, conn, serverconn |
+| [mailbox-consumption-plan.md](mailbox-consumption-plan.md) | Execution plan for durable consumer ownership and semantic replay safety |
 | [mailbox_ingress_safety.md](mailbox_ingress_safety.md) | Durable ingress handoff, quarantine, replay retention, and recovery |
 | [mailbox_durable_actor_layer.md](mailbox_durable_actor_layer.md) | The durable mailbox and durable actor: leases, dedup, transactional outbox, DurableAsk, and the classic vs. Read/Commit (`TxBehavior`/`Exec[S]`) execution paths |
 | [mailbox_transport_serverconn_clientconn.md](mailbox_transport_serverconn_clientconn.md) | The RPC-over-mailbox transport relating this client's `serverconn` to the operator's `clientconn`: envelope, edge API, shared `mailbox/conn` primitives, ack watermark, identity/auth/liveness, and the wire contract |
