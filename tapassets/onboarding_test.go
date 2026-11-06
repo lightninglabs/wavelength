@@ -3,14 +3,12 @@ package tapassets
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"math"
 	"sync"
 	"testing"
 
-	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
@@ -27,6 +25,7 @@ func TestOnboarderResumesWithoutRebuilding(t *testing.T) {
 
 	request, inventory, owner := testOnboardingRequest(t)
 	driver := newFakeOnboardingDriver()
+	funder := newFakeOnboardingFunder()
 	store, err := NewFileStore(t.TempDir())
 	require.NoError(t, err)
 
@@ -37,6 +36,7 @@ func TestOnboarderResumesWithoutRebuilding(t *testing.T) {
 			inventory: inventory,
 			keys:      inventory,
 			store:     store,
+			funder:    funder,
 			signer: func(_ context.Context, anchor []byte) ([]byte,
 				error) {
 
@@ -45,7 +45,7 @@ func TestOnboarderResumesWithoutRebuilding(t *testing.T) {
 				require.NoError(t, err)
 				require.Len(t, packet.UnsignedTx.TxIn, 2)
 
-				return finalizeOnboardingTestPSBT(anchor)
+				return signOnboardingTestAnchors(anchor)
 			},
 			deriveOwnerKey: func(context.Context) (
 				*keychain.KeyDescriptor, error) {
@@ -65,7 +65,9 @@ func TestOnboarderResumesWithoutRebuilding(t *testing.T) {
 	require.Equal(t, 1, driver.commits)
 	require.Equal(t, 1, driver.verifications)
 	require.Equal(t, 1, driver.publishes)
-	require.Equal(t, int64(1_000), result.ValueSat)
+	require.Equal(t, 1, funder.funds)
+	require.Equal(t, 1, funder.finalizes)
+	require.Equal(t, int64(4_000), result.ValueSat)
 	require.Equal(t, uint64(250), result.ActualFeeSat)
 	require.NotZero(t, result.TaprootAssetRoot)
 	require.Equal(t, request.AssetRef, result.AssetRef)
@@ -93,33 +95,27 @@ func TestOnboarderResumesWithoutRebuilding(t *testing.T) {
 	require.Equal(t, 1, driver.commits)
 	require.Equal(t, 3, driver.verifications)
 	require.Equal(t, 1, driver.publishes)
+	require.Equal(t, 1, funder.funds)
+	require.Equal(t, 1, funder.finalizes)
 
+	// The daemon wallet funds the transaction at the requested rate, and
+	// its input stays leased under the request's lock.
 	dto := driver.requests[0]
 	require.Equal(
-		t, tapsdk.CustomAnchorFundingWalletFunded, dto.Funding.Mode,
-	)
-	require.NotNil(t, dto.Funding.WalletFunded)
-	require.Equal(
-		t, tapsdk.AnchorChangeOutputAdd,
-		dto.Funding.WalletFunded.ChangeOutput.Mode,
+		t, tapsdk.CustomAnchorFundingCallerFundedExact,
+		dto.Funding.Mode,
 	)
 	require.Equal(
-		t, tapsdk.AnchorFeeSatPerVByte,
-		dto.Funding.WalletFunded.Fee.Mode,
+		t, int64(request.FeeRateSatPerVByte), funder.lastFeeRate,
 	)
+	lockID := onboardingLockID(onboardingRequestDigest(request))
 	require.Equal(
-		t, request.FeeRateSatPerVByte,
-		dto.Funding.WalletFunded.Fee.FeeRate.SatPerVByteFloor(),
+		t, lockID, funder.leases[fakeOnboardingWalletInput],
 	)
-	require.Equal(t, request.MaxFeeSat, dto.Funding.WalletFunded.MaxFeeSat)
-	require.Equal(
-		t,
-		onboardingCustomLockID(
-			onboardingRequestDigest(request),
-		),
-		dto.Funding.WalletFunded.CustomLockID,
-	)
-	require.Len(t, dto.Funding.WalletFunded.CustomLockID, sha256.Size)
+	require.Len(t, dto.SigningPlans, 2)
+	require.NotNil(t, dto.SigningPlans[0].KeyPath)
+	require.EqualValues(t, 1, dto.SigningPlans[1].InputIndex)
+	require.NotNil(t, dto.SigningPlans[1].CallerSigned)
 	require.Equal(
 		t, tapsdk.CustomAnchorPassiveReject, dto.PassiveAssets.Policy,
 	)
@@ -134,7 +130,7 @@ func TestOnboarderResumesWithoutRebuilding(t *testing.T) {
 		t, tapsdk.CustomAssetScriptOPTrue, dto.Outputs[0].Script.Mode,
 	)
 	require.NotNil(t, dto.Outputs[0].Script.OPTrue)
-	require.Equal(t, uint64(1_000), dto.Outputs[0].AnchorValueSat)
+	require.Equal(t, uint64(4_000), dto.Outputs[0].AnchorValueSat)
 	require.Len(t, dto.Outputs[0].Anchor.Tapscript.TapLeaves, 2)
 	committed, err := psbtutil.Parse(driver.result.anchorPSBT)
 	require.NoError(t, err)
@@ -146,25 +142,31 @@ func TestOnboarderResumesWithoutRebuilding(t *testing.T) {
 	)
 }
 
-// TestOnboardingFeeSelection binds the public whole-sat fee selectors to the
-// tagged tap-sdk fee policy without silently preferring one selector.
-func TestOnboardingFeeSelection(t *testing.T) {
+// TestOnboardingFeeRate resolves an explicit rate without the estimator and a
+// confirmation target through it.
+func TestOnboardingFeeRate(t *testing.T) {
 	t.Parallel()
 
 	request, _, _ := testOnboardingRequest(t)
-	fee, err := onboardingAnchorFee(request)
+	funder := newFakeOnboardingFunder()
+	funder.estimate = 7
+	onboarder := &Onboarder{funder: funder}
+
+	rate, err := onboarder.feeRate(t.Context(), request)
 	require.NoError(t, err)
-	require.Equal(t, tapsdk.AnchorFeeSatPerVByte, fee.Mode)
-	require.Equal(
-		t, request.FeeRateSatPerVByte, fee.FeeRate.SatPerVByteFloor(),
-	)
+	require.Equal(t, request.FeeRateSatPerVByte, rate)
+	require.Empty(t, funder.estimated)
 
 	request.FeeRateSatPerVByte = 0
 	request.TargetConf = 6
-	fee, err = onboardingAnchorFee(request)
+	rate, err = onboarder.feeRate(t.Context(), request)
 	require.NoError(t, err)
-	require.Equal(t, tapsdk.AnchorFeeTargetConf, fee.Mode)
-	require.Equal(t, uint32(6), fee.TargetConf)
+	require.EqualValues(t, 7, rate)
+	require.Equal(t, []uint32{6}, funder.estimated)
+
+	funder.estimate = 0
+	_, err = onboarder.feeRate(t.Context(), request)
+	require.ErrorContains(t, err, "estimate is zero")
 }
 
 // TestOnboardingRejectsInvalidEconomics verifies malformed wallet-funding
@@ -242,17 +244,16 @@ func TestOnboardingRejectsInvalidEconomics(t *testing.T) {
 	}
 }
 
-// TestOnboardingCustomLockID proves retry identity is stable while every
+// TestOnboardingLockID proves retry identity is stable while every
 // carrier-funding economic choice remains part of that identity.
-func TestOnboardingCustomLockID(t *testing.T) {
+func TestOnboardingLockID(t *testing.T) {
 	t.Parallel()
 
 	request, _, _ := testOnboardingRequest(t)
-	lockID := onboardingCustomLockID(onboardingRequestDigest(request))
-	require.Len(t, lockID, sha256.Size)
+	lockID := onboardingLockID(onboardingRequestDigest(request))
 	require.Equal(
 		t, lockID,
-		onboardingCustomLockID(
+		onboardingLockID(
 			onboardingRequestDigest(request),
 		),
 	)
@@ -277,20 +278,19 @@ func TestOnboardingCustomLockID(t *testing.T) {
 		mutate(&changed)
 		require.NotEqual(
 			t, lockID,
-			onboardingCustomLockID(
+			onboardingLockID(
 				onboardingRequestDigest(&changed),
 			),
 		)
 	}
 }
 
-// TestOnboarderRejectsInvalidFundingSummary ensures restored SDK packages
-// cannot broaden the wallet-funding authority declared by the durable request.
+// TestOnboarderRejectsInvalidFundingSummary ensures a sealed package keeps the
+// caller funding and fee bound of the durable request.
 func TestOnboarderRejectsInvalidFundingSummary(t *testing.T) {
 	t.Parallel()
 
-	callerFunded := tapsdk.CustomAnchorFundingCallerFundedExact
-	wrongMaximum := uint64(999)
+	walletFunded := tapsdk.CustomAnchorFundingWalletFunded
 	tests := []struct {
 		name        string
 		configure   func(*fakeOnboardingDriver, *OnboardingRequest)
@@ -301,18 +301,9 @@ func TestOnboarderRejectsInvalidFundingSummary(t *testing.T) {
 			configure: func(driver *fakeOnboardingDriver,
 				_ *OnboardingRequest) {
 
-				driver.fundingMode = &callerFunded
+				driver.fundingMode = &walletFunded
 			},
-			errContains: "not wallet funded",
-		},
-		{
-			name: "different maximum",
-			configure: func(driver *fakeOnboardingDriver,
-				_ *OnboardingRequest) {
-
-				driver.maxFeeSat = &wrongMaximum
-			},
-			errContains: "does not match request",
+			errContains: "not caller funded",
 		},
 		{
 			name: "actual fee exceeds maximum",
@@ -448,16 +439,19 @@ func TestOnboarderFundsFromSeveralUtxos(t *testing.T) {
 	require.Equal(t, request.ProofFiles[0], dto.Inputs[0].ProofFile)
 	require.Equal(t, request.ProofFiles[1], dto.Inputs[1].ProofFile)
 
-	require.Len(t, dto.SigningPlans, 2)
+	// Both anchors precede the wallet input, and the Bitcoin change
+	// follows both asset outputs.
+	require.Len(t, dto.SigningPlans, 3)
 	for idx := range dto.SigningPlans {
 		plan := dto.SigningPlans[idx]
 		require.EqualValues(t, idx, plan.InputIndex)
-		require.NotNil(t, plan.KeyPath)
+		require.Equal(t, idx < 2, plan.KeyPath != nil)
+		require.Equal(t, idx == 2, plan.CallerSigned != nil)
 	}
 	template, err := psbtutil.Parse(dto.AnchorPSBT)
 	require.NoError(t, err)
-	require.Len(t, template.UnsignedTx.TxIn, 2)
-	require.Len(t, template.UnsignedTx.TxOut, 2)
+	require.Len(t, template.UnsignedTx.TxIn, 3)
+	require.Len(t, template.UnsignedTx.TxOut, 3)
 
 	require.Len(t, dto.Outputs, 2)
 	require.Equal(t, onboardingOutputID, dto.Outputs[0].ID)
@@ -509,9 +503,11 @@ func TestOnboarderExactFundingKeepsOneOutput(t *testing.T) {
 	require.Len(t, dto.Inputs, 2)
 	require.Len(t, dto.Outputs, 1)
 	require.Equal(t, onboardingOutputID, dto.Outputs[0].ID)
+
+	// Only the wallet's Bitcoin change follows the asset output.
 	template, err := psbtutil.Parse(dto.AnchorPSBT)
 	require.NoError(t, err)
-	require.Len(t, template.UnsignedTx.TxOut, 1)
+	require.Len(t, template.UnsignedTx.TxOut, 2)
 }
 
 // TestOnboarderRejectsInsufficientFunding keeps an onboarding that its
@@ -706,9 +702,7 @@ type fakeOnboardingDriver struct {
 	result          *commitResult
 	commitErr       error
 	actualFeeSat    uint64
-	appendChange    bool
 	fundingMode     *tapsdk.CustomAnchorFundingMode
-	maxFeeSat       *uint64
 	commits         int
 	verifications   int
 	publishes       int
@@ -722,7 +716,6 @@ type fakeOnboardingDriver struct {
 func newFakeOnboardingDriver() *fakeOnboardingDriver {
 	return &fakeOnboardingDriver{
 		actualFeeSat: 250,
-		appendChange: true,
 	}
 }
 
@@ -747,11 +740,17 @@ func (d *fakeOnboardingDriver) CommitOnboarding(_ context.Context,
 		return nil, err
 	}
 
-	// Onboarding spends one anchor input per selected funding UTXO, in
-	// the template's own input order.
+	// Each asset input spends one of the anchors, which lead the
+	// template in signing plan order.
 	template, err := psbtutil.Parse(result.anchorPSBT)
 	if err != nil {
 		return nil, err
+	}
+	var anchors int
+	for _, plan := range request.SigningPlans {
+		if plan.KeyPath != nil {
+			anchors++
+		}
 	}
 	result.inputs = make([]commitInput, len(request.Inputs))
 	for idx := range request.Inputs {
@@ -759,7 +758,7 @@ func (d *fakeOnboardingDriver) CommitOnboarding(_ context.Context,
 			logicalInputID: request.Inputs[idx].ID,
 			anchorOutpoint: sdkOutpoint(
 				template.UnsignedTx.TxIn[min(
-					idx, len(template.UnsignedTx.TxIn)-1,
+					idx, anchors-1,
 				)].PreviousOutPoint,
 			),
 			assetRef: request.Inputs[idx].AssetRef,
@@ -768,64 +767,8 @@ func (d *fakeOnboardingDriver) CommitOnboarding(_ context.Context,
 	}
 	result.fundingMode = request.Funding.Mode
 	result.actualFeeSat = d.actualFeeSat
-	if request.Funding.WalletFunded != nil {
-		result.maxFeeSat = request.Funding.WalletFunded.MaxFeeSat
-	}
 	if d.fundingMode != nil {
 		result.fundingMode = *d.fundingMode
-	}
-	if d.maxFeeSat != nil {
-		result.maxFeeSat = *d.maxFeeSat
-	}
-	if d.appendChange {
-		packet, parseErr := psbtutil.Parse(result.anchorPSBT)
-		if parseErr != nil {
-			return nil, parseErr
-		}
-		walletInputValue := int64(2_000)
-		for idx := range packet.Inputs {
-			packet.Inputs[idx].WitnessUtxo = &wire.TxOut{
-				Value: int64(
-					request.Outputs[0].AnchorValueSat,
-				),
-				PkScript: []byte{
-					txscript.OP_TRUE,
-				},
-			}
-		}
-		walletInputHash := sha256Bytes(
-			[]byte("onboarding-wallet-input"),
-		)
-		packet.UnsignedTx.AddTxIn(
-			wire.NewTxIn(
-				&wire.OutPoint{
-					Hash:  walletInputHash,
-					Index: 1,
-				},
-				nil,
-				nil,
-			),
-		)
-		packet.Inputs = append(packet.Inputs, psbt.PInput{
-			WitnessUtxo: &wire.TxOut{
-				Value:    walletInputValue,
-				PkScript: []byte{txscript.OP_TRUE},
-			},
-		})
-		changeValue := walletInputValue - int64(result.actualFeeSat)
-		packet.UnsignedTx.AddTxOut(&wire.TxOut{
-			Value:    changeValue,
-			PkScript: []byte{txscript.OP_TRUE},
-		})
-		packet.Outputs = append(packet.Outputs, psbt.POutput{})
-		result.anchorPSBT, err = psbtutil.Serialize(packet)
-		if err != nil {
-			return nil, err
-		}
-		anchorTxid := packet.UnsignedTx.TxHash()
-		for idx := range result.outputs {
-			result.outputs[idx].anchorOutpoint.Txid = anchorTxid
-		}
 	}
 	d.mu.Lock()
 	d.result = cloneCommitResult(result)
@@ -951,7 +894,7 @@ func testOnboardingRequest(t *testing.T) (*OnboardingRequest, *fakeInventory,
 		ProofFile: append(
 			[]byte(nil), []byte("confirmed-proof")...,
 		),
-		CarrierValueSat:    1_000,
+		CarrierValueSat:    4_000,
 		FeeRateSatPerVByte: 2,
 		MaxFeeSat:          1_000,
 		OperatorKey:        operator.PubKey(),
@@ -1037,8 +980,9 @@ func testOnboarder(driver onboardingDriver, inventory *fakeInventory,
 		inventory: inventory,
 		keys:      inventory,
 		store:     store,
+		funder:    newFakeOnboardingFunder(),
 		signer: func(_ context.Context, anchor []byte) ([]byte, error) {
-			return finalizeOnboardingTestPSBT(anchor)
+			return signOnboardingTestAnchors(anchor)
 		},
 		deriveOwnerKey: func(context.Context) (*keychain.KeyDescriptor,
 			error) {
@@ -1073,10 +1017,12 @@ func TestOnboarderSharedAnchor(t *testing.T) {
 	require.EqualValues(t, 40, result.AssetAmount)
 	dto := driver.requests[0]
 	require.Len(t, dto.Inputs, 2)
-	require.Len(t, dto.SigningPlans, 1)
+	require.Len(t, dto.SigningPlans, 2)
+	require.NotNil(t, dto.SigningPlans[0].KeyPath)
+	require.NotNil(t, dto.SigningPlans[1].CallerSigned)
 	anchor, err := psbtutil.Parse(dto.AnchorPSBT)
 	require.NoError(t, err)
-	require.Len(t, anchor.UnsignedTx.TxIn, 1)
+	require.Len(t, anchor.UnsignedTx.TxIn, 2)
 	replay, err := onboarder.Onboard(t.Context(), req)
 	require.NoError(t, err)
 	require.Equal(t, result.Outpoint, replay.Outpoint)
@@ -1188,9 +1134,10 @@ func TestOnboarderRecordsCancelledResults(t *testing.T) {
 					cancel()
 				}
 
-				return finalizeOnboardingTestPSBT(anchor)
+				return signOnboardingTestAnchors(anchor)
 			}
 			onboarder.signer = signer
+			funder := testFunder(t, onboarder)
 			_, err = onboarder.Onboard(ctx, request)
 			if stage == "publish" {
 				require.NoError(t, err)
@@ -1210,6 +1157,16 @@ func TestOnboarderRecordsCancelledResults(t *testing.T) {
 			var state onboardingState
 			require.NoError(t, json.Unmarshal(encoded, &state))
 			require.Empty(t, state.Attempt)
+
+			// A rejected commit frees the wallet input for a fresh
+			// funding; every later stage keeps it reserved.
+			if stage == "rejected commit" {
+				require.Empty(t, state.FundedPSBT)
+				require.Empty(t, funder.leases)
+			} else {
+				require.NotEmpty(t, state.FundedPSBT)
+				require.Len(t, funder.leases, 1)
+			}
 			if stage != "rejected commit" {
 				require.Equal(
 					t, driver.result.packageBytes,
@@ -1234,6 +1191,7 @@ func TestOnboarderRecordsCancelledResults(t *testing.T) {
 				driver, inventory, reopened, owner,
 			)
 			restarted.signer = signer
+			restarted.funder = funder
 			_, err = restarted.Onboard(t.Context(), request)
 			require.NoError(t, err)
 			wantCommits := 1
@@ -1241,6 +1199,7 @@ func TestOnboarderRecordsCancelledResults(t *testing.T) {
 				wantCommits++
 			}
 			require.Equal(t, wantCommits, driver.commits)
+			require.Equal(t, wantCommits, funder.funds)
 			require.Equal(t, 1, signs)
 			require.Equal(t, 1, driver.publishes)
 			require.Zero(t, driver.reconciliations)
@@ -1248,17 +1207,41 @@ func TestOnboarderRecordsCancelledResults(t *testing.T) {
 	}
 }
 
-// finalizeOnboardingTestPSBT models a signer that finalizes every input.
+// Witnesses of the fake anchor signer and the fake wallet, serialized as a
+// single-item stack.
+var (
+	testAnchorWitness = []byte{1, 1, txscript.OP_TRUE}
+	testWalletWitness = []byte{1, 1, txscript.OP_2}
+)
+
+// signOnboardingTestAnchors models the anchor signer: it finalizes every input
+// except the wallet's.
+func signOnboardingTestAnchors(raw []byte) ([]byte, error) {
+	packet, err := psbtutil.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	for i := range packet.Inputs {
+		if isFakeOnboardingWalletInput(&packet.Inputs[i]) {
+			continue
+		}
+		packet.Inputs[i].FinalScriptWitness = testAnchorWitness
+	}
+
+	return psbtutil.Serialize(packet)
+}
+
+// finalizeOnboardingTestPSBT returns a transaction as the anchor signer and
+// then the wallet finalize it.
 func finalizeOnboardingTestPSBT(raw []byte) ([]byte, error) {
 	packet, err := psbtutil.Parse(raw)
 	if err != nil {
 		return nil, err
 	}
 	for i := range packet.Inputs {
-		packet.Inputs[i].FinalScriptWitness = []byte{
-			1,
-			1,
-			txscript.OP_TRUE,
+		packet.Inputs[i].FinalScriptWitness = testAnchorWitness
+		if isFakeOnboardingWalletInput(&packet.Inputs[i]) {
+			packet.Inputs[i].FinalScriptWitness = testWalletWitness
 		}
 	}
 
@@ -1282,7 +1265,7 @@ func sameOnboardingTestTx(a, b []byte) bool {
 }
 
 // TestOnboarderIncompleteSignatureRetry keeps the committed package but asks
-// the signer again after restart if any input was left unfinished.
+// the signer again after restart if it left an anchor unfinished.
 func TestOnboarderIncompleteSignatureRetry(t *testing.T) {
 	t.Parallel()
 	request, inventory, owner := testOnboardingRequest(t)
@@ -1292,20 +1275,10 @@ func TestOnboarderIncompleteSignatureRetry(t *testing.T) {
 	require.NoError(t, err)
 	onboarder := testOnboarder(driver, inventory, store, owner)
 	onboarder.signer = func(_ context.Context, raw []byte) ([]byte, error) {
-		packet, err := psbtutil.Parse(raw)
-		if err != nil {
-			return nil, err
-		}
-		packet.Inputs[0].FinalScriptWitness = []byte{
-			1,
-			1,
-			txscript.OP_TRUE,
-		}
-
-		return psbtutil.Serialize(packet)
+		return raw, nil
 	}
 	_, err = onboarder.Onboard(t.Context(), request)
-	require.ErrorContains(t, err, "must finalize all inputs")
+	require.ErrorContains(t, err, "left anchor input 0 unfinalized")
 	require.Equal(t, 1, driver.commits)
 	require.Zero(t, driver.publishes)
 

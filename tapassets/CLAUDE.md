@@ -9,9 +9,13 @@ Durable journals retain committed packages for restart recovery.
 
 ## Key Types
 
-- `Onboarder` — Funds and publishes a composed boarding output from tapd
-  inventory, returns asset change, and journals the owner keys, sealed package,
-  and signed transaction. `FileStore` supplies an atomic file-backed journal.
+- `Onboarder` — Moves tapd inventory into a composed boarding output that
+  an `OnboardingFunder` pays for, returns asset change, and journals the owner
+  keys, funded template, sealed package, and signed transaction. `FileStore`
+  supplies an atomic file-backed journal.
+- `OnboardingFunder` — The wallet that pays an onboarding's Bitcoin: fee
+  estimates, funding an outputs-only template without signing it, leases, and
+  the last finalize of its own inputs.
 - `SelectOnboardingProofs` / `ExportOnboardedProof` — Pick and export the
   confirmed proofs of the tapd anchors that fund an onboarding (one issuance,
   smallest covering anchor, else the largest anchors up to
@@ -57,9 +61,9 @@ Durable journals retain committed packages for restart recovery.
   structures to materialize into), `lib/arkscript` (leaf policy construction
   for `StandardVTXOLeafAnchor`), `lib/tx/psbtutil` (PSBT encode/decode).
 - **Depended on by**: `waved`, which installs `VTXOVerifier` on the round
-  actor when `assets.backend` is `tapd`, and funds asset deposits through
-  `Onboarder` when `assets.lnd` is also set. Operator-side batch APIs have no
-  production caller in this repository.
+  actor when `assets.backend` is `tapd`, and funds asset deposits from its own
+  wallet through `Onboarder` when `assets.lnd` is also set. Operator-side batch
+  APIs have no production caller in this repository.
 - **Sends** / **Receives**: none. This is a synchronous library, not an actor;
   it exchanges no mailbox messages.
 
@@ -93,6 +97,20 @@ Durable journals retain committed packages for restart recovery.
   transitions still in the path.
 - An empty `Witness` on a source or root input asks tapd to sign that asset
   input; a non-empty stack is taken as caller-supplied authorization.
+- **The funder pays, and tapd only commits.** The funder sees an outputs-only
+  template whose boarding output is reduced by the spent anchors' value, net
+  of the fee for their key-path weight, so it selects only what the anchors
+  leave uncovered. The Onboarder then lays the transaction out as anchors,
+  funder inputs, asset outputs, funder change, and commits it caller-funded
+  exact, so tapd adds no input or output. The funder may reorder what it
+  funds; only its inputs and change are taken from its template.
+- **Funded coins are journaled before the commit.** A retry reuses the
+  journaled template and renews its leases, so it spends the same coins. A
+  refused commit, or a fee above `MaxFeeSat`, releases them and clears the
+  template; an ambiguous commit keeps them.
+- **The funder finalizes last.** The anchor signer finalizes tapd's anchors,
+  and every anchor must be final before the funder's wallet finalizes the
+  rest, since a btcwallet finalize fails on any foreign input left unsigned.
 - **Anchor leaves must assemble into their Ark policy tree.** tap-sdk pairs
   adjacent `TapLeaves`, while arkscript splits a policy's leaves in halves.
   `anchorPlan` rejects leaves whose two roots differ (any leaf count that is
