@@ -24,6 +24,11 @@ import (
 // JoinRoundRequest is sent from client to server to request joining a round.
 // This implements ClientEvent and is emitted via Outbox.
 type JoinRoundRequest struct {
+	// disableRoundRetry keeps durable owners out of replacement rounds
+	// until their lineage and retry messages can be checkpointed. The
+	// ordinary owner retains retry support by default.
+	disableRoundRetry bool
+
 	// BatchSlot identifies the authenticated registration opportunity.
 	BatchSlot fn.Option[batchschedule.Selection]
 
@@ -414,7 +419,7 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 	}
 
 	pb := &roundpb.JoinRoundRequest{
-		SupportsRoundRetry: true,
+		SupportsRoundRetry: !m.disableRoundRetry,
 		BatchSlot:          roundpb.SelectionToProto(m.BatchSlot),
 		BoardingRequests:   boardingReqs,
 		VtxoRequests:       vtxoReqs,
@@ -928,6 +933,8 @@ func (m *RoundCheckpointedNotification) clientOutMsgSealed() {}
 
 // StartTimeoutReq asks the actor to schedule a timeout for a round phase.
 type StartTimeoutReq struct {
+	// deadline is the original absolute deadline of a replayed timer.
+	deadline time.Time
 	actor.BaseMessage
 
 	// RoundKey identifies which round owns this timeout. It is the actor's
