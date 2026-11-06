@@ -837,10 +837,9 @@ func (a *DurableActor[M, R]) processInTransaction(ctx context.Context,
 func (a *DurableActor[M, R]) processWithoutTransaction(ctx context.Context,
 	delivery *Delivery[M, R]) {
 
-	// Start the heartbeat goroutine for lease extension.
-	heartbeatDone := make(chan struct{})
-	go a.heartbeat(ctx, delivery, heartbeatDone)
-	defer close(heartbeatDone)
+	// The turn owns its lease extension through durable bookkeeping.
+	stop := a.startHeartbeat(ctx, delivery)
+	defer stop()
 
 	// Execute behavior with panic recovery.
 	result := a.executeBehaviorSafely(ctx, delivery)
@@ -958,14 +957,7 @@ func (a *DurableActor[M, R]) processWithExec(ctx context.Context,
 	// A leaseless (peeked) delivery holds no lease, so there is nothing to
 	// heartbeat -- skip it to avoid a spurious "Failed to extend lease"
 	// warning loop against an empty token. stop stays a safe no-op then.
-	heartbeatDone := make(chan struct{})
-	var stopHeartbeat sync.Once
-	stop := func() {
-		stopHeartbeat.Do(func() { close(heartbeatDone) })
-	}
-	if !delivery.leaseless {
-		go a.heartbeat(ctx, delivery, heartbeatDone)
-	}
+	stop := a.startHeartbeat(ctx, delivery)
 	defer stop()
 
 	core := &execCore{
@@ -1512,21 +1504,40 @@ func (a *DurableActor[M, R]) handleResult(ctx context.Context,
 	}
 }
 
-// heartbeat extends the lease periodically for long-running operations.
-func (a *DurableActor[M, R]) heartbeat(
-	ctx context.Context,
-	delivery *Delivery[M, R],
-	done <-chan struct{},
-) {
+// startHeartbeat returns an idempotent cancel-and-join function. A completed
+// turn must own no store operation after its worker returns, because callers
+// may close storage after StopAndWait succeeds. A leaseless turn has no lease
+// work to own. Cancellation is cooperative; an uncooperative store keeps the
+// worker alive and StopAndWait can time out without claiming a successful join.
+func (a *DurableActor[M, R]) startHeartbeat(ctx context.Context,
+	delivery *Delivery[M, R]) func() {
+
+	if delivery.leaseless {
+		return func() {}
+	}
+	heartbeatCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.heartbeat(heartbeatCtx, delivery)
+	}()
+	var once sync.Once
+
+	return func() {
+		once.Do(cancel)
+		<-done
+	}
+}
+
+// heartbeat extends the lease until its owning turn or actor is cancelled.
+func (a *DurableActor[M, R]) heartbeat(ctx context.Context,
+	delivery *Delivery[M, R]) {
 
 	ticker := time.NewTicker(a.heartbeatInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-done:
-			return
-
 		case <-ctx.Done():
 			return
 
@@ -1535,6 +1546,10 @@ func (a *DurableActor[M, R]) heartbeat(
 			if err := delivery.Extend(
 				ctx, a.leaseDuration,
 			); err != nil {
+
+				if ctx.Err() != nil {
+					return
+				}
 
 				logger(ctx).WarnS(ctx, "Failed to extend lease",
 					err,
