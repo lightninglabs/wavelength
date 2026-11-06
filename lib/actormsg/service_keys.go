@@ -45,14 +45,16 @@ func VTXOManagerServiceKey() actor.ServiceKey[
 // RoundActorServiceKeyName is the well-known service key name for the round
 // actor. Both the round package (for registration) and wallet package (for
 // lookup) use this constant to ensure they reference the same actor.
-const RoundActorServiceKeyName = "round-client"
+// The typed lookup must not share the durable round-client mailbox name,
+// whose outbox adapter accepts actor.Message rather than RoundReceivable.
+const RoundActorServiceKeyName = "round-client-service"
 
 // RoundActorServiceKey returns the service key for looking up the round actor.
 // This uses RoundReceivable for the message type so the wallet can look up the
 // round actor without importing the round package (avoiding import cycles).
 //
 // The round package must register the round actor with this key for lookup to
-// work. Use RoundActorServiceKeyName to construct the actor ID for Spawn.
+// work. This process-local lookup is separate from the persisted actor ID.
 func RoundActorServiceKey() actor.ServiceKey[RoundReceivable, RoundActorResp] {
 	return actor.NewServiceKey[RoundReceivable, RoundActorResp](
 		RoundActorServiceKeyName,

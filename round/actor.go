@@ -316,9 +316,13 @@ type RoundFSM struct {
 	// advanced the FSM. Redelivering that quote cannot recreate them.
 	ReplacementQuoteOutbox   []ClientOutMsg
 	ReplacementQuoteFailures uint8
+
+	// coldSigning fences a ceremony whose private signer sessions were
+	// lost.
+	coldSigning bool
 	// FSM is the state machine for this round. The baselib protofsm uses 3
 	// type parameters: InternalEvent, OutboxEvent, Env.
-	FSM *ClientStateMachine
+	FSM roundStateMachine
 
 	// Key is the current key for this round in the actor's map. It starts
 	// as a TempRoundKey and is upgraded to a RoundID when the server
@@ -360,6 +364,13 @@ type RoundFSM struct {
 //   - FSM processes events producing new state and outbox.
 //   - Actor processes outbox by sending messages to server/chainsource.
 type RoundClientActor struct {
+	// durable enables synchronous turns owned by the persistent mailbox.
+	durable bool
+	// pendingTimers retains absolute deadlines across process restarts.
+	pendingTimers map[timeout.ID]*durableClientEffect
+	// queueEffect captures effects until their state transition commits.
+	queueEffect func(context.Context, ClientOutMsg) error
+
 	// cfg contains all the configuration for this actor.
 	cfg *RoundClientConfig
 
@@ -426,6 +437,9 @@ type RoundClientActor struct {
 	// boardFetchInFlight is true while the wallet fetch for the head of
 	// boardQueue is outstanding.
 	boardFetchInFlight bool
+	// boardFetchID prevents late responses from consuming a newer queue
+	// head.
+	boardFetchID string
 
 	// env is the base FSM environment template containing all dependencies.
 	// Each new round FSM gets a copy with a fresh StartHeight.
@@ -434,6 +448,9 @@ type RoundClientActor struct {
 
 // RoundClientConfig houses the configuration for a RoundClientActor.
 type RoundClientConfig struct {
+	// MaxTreeNodes limits trees decoded from a durable server envelope.
+	MaxTreeNodes int
+
 	// Name uniquely identifies this actor instance.
 	Name string
 
@@ -1014,7 +1031,14 @@ func (a *RoundClientActor) stageLedger(msg ledger.LedgerMsg, roundID string) {
 func (a *RoundClientActor) flushStagedLedger(ctx context.Context,
 	roundID string) error {
 
-	staged := a.stagedLedger[roundID]
+	return a.flushLedgerMessages(ctx, roundID, a.stagedLedger[roundID])
+}
+
+// flushLedgerMessages enqueues a frozen confirmation batch in the commit
+// context.
+func (a *RoundClientActor) flushLedgerMessages(ctx context.Context,
+	roundID string, staged []ledger.LedgerMsg) error {
+
 	if len(staged) == 0 || a.cfg.LedgerSink.IsNone() {
 		return nil
 	}
@@ -1137,8 +1161,7 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 		InitialState:  state,
 		Env:           env,
 	}
-	fsm := protofsm.NewStateMachine(fsmCfg)
-	a.startRoundFSM(ctx, &fsm)
+	fsm := a.newStateMachine(ctx, fsmCfg)
 
 	a.log.InfoS(ctx, "Created round FSM from checkpoint",
 		slog.String("round_id", round.RoundID.String()),
@@ -1152,7 +1175,7 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	)
 
 	return &RoundFSM{
-		FSM:          &fsm,
+		FSM:          fsm,
 		env:          env,
 		Key:          roundID,
 		RoundID:      round.RoundID,
@@ -1254,11 +1277,10 @@ func (a *RoundClientActor) createRoundWithState(ctx context.Context,
 		InitialState:  initial,
 		Env:           env,
 	}
-	fsm := protofsm.NewStateMachine(fsmCfg)
-	a.startRoundFSM(ctx, &fsm)
+	fsm := a.newStateMachine(ctx, fsmCfg)
 
 	roundFSM := &RoundFSM{
-		FSM:     &fsm,
+		FSM:     fsm,
 		env:     env,
 		Key:     key,
 		RoundID: assigned.UnwrapOr(RoundID{}),
@@ -1295,7 +1317,7 @@ func (a *RoundClientActor) createRoundWithState(ctx context.Context,
 // query also ends when the actor is stopped — and so a caller that already
 // bounded a whole scan of FSMs keeps its own, shorter deadline. See
 // fsmScanContext.
-func fsmState(ctx context.Context, fsm *ClientStateMachine) (
+func fsmState(ctx context.Context, fsm roundStateMachine) (
 	protofsm.State[ClientEvent, ClientOutMsg, *ClientEnvironment], error) {
 
 	queryCtx, cancel := context.WithTimeout(
@@ -1556,6 +1578,9 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 func (a *RoundClientActor) askEventAndProcessOutbox(ctx context.Context,
 	roundFSM *RoundFSM, event ClientEvent) error {
 
+	if roundFSM.coldSigning {
+		return a.processColdRoundEvent(ctx, roundFSM, event)
+	}
 	future := roundFSM.FSM.AskEvent(ctx, event)
 	result := future.Await(ctx)
 
@@ -1639,6 +1664,21 @@ func (a *RoundClientActor) releaseBoardingOnFailure(ctx context.Context,
 	}
 
 	outpoints := roundFSM.BoardingOutpoints
+	if a.queueEffect != nil {
+		if err := a.queueEffect(ctx, &releaseBoardingEffect{
+			outpoints: append([]wire.OutPoint(nil), outpoints...),
+		}); err != nil {
+
+			a.log.ErrorS(ctx, "Capture boarding release failed",
+				err,
+			)
+
+			return
+		}
+		roundFSM.BoardingOutpoints = nil
+
+		return
+	}
 	roundFSM.BoardingOutpoints = nil
 
 	err = a.cfg.WalletActor.Tell(
@@ -1773,7 +1813,7 @@ func (a *RoundClientActor) lifecycleCtx(ctx context.Context) context.Context {
 // startRoundFSM starts a round state machine with the actor lifecycle rather
 // than the context of the request that happened to create it.
 func (a *RoundClientActor) startRoundFSM(ctx context.Context,
-	fsm *ClientStateMachine) {
+	fsm roundStateMachine) {
 
 	fsm.Start(a.lifecycleCtx(ctx))
 }
@@ -1935,6 +1975,21 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 	msg actormsg.RoundReceivable) fn.Result[actormsg.RoundActorResp] {
 
 	switch m := msg.(type) {
+	case *durableClientCommand:
+		input, err := m.message(a.cfg.ChainParams)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](err)
+		}
+
+		return a.Receive(ctx, input)
+
+	case *durableClientEffect:
+		if err := a.deliverDurableEffect(ctx, m); err != nil {
+			return fn.Err[actormsg.RoundActorResp](err)
+		}
+
+		return fn.Ok[actormsg.RoundActorResp](nil)
+
 	case *WalletBoardingConfirmed:
 		return a.handleWalletBoardingConfirmed(ctx, m)
 
@@ -1957,6 +2012,14 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 		})
 
 	case *ServerMessageNotification:
+		if len(m.wireMethod) != 0 {
+			if err := m.restoreWireEvent(
+				a.cfg.MaxTreeNodes,
+			); err != nil {
+				return fn.Err[actormsg.RoundActorResp](err)
+			}
+		}
+
 		return a.handleServerMessage(ctx, m)
 
 	case *GetClientStateRequest:
@@ -1969,6 +2032,20 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 		return a.handleConfirmation(ctx, m)
 
 	case *TimeoutMsg:
+		if a.durable {
+			current, err := a.currentTimerCallback(m)
+			if err != nil {
+				return fn.Err[actormsg.RoundActorResp](err)
+			}
+			if !current {
+				return fn.Ok[actormsg.RoundActorResp](nil)
+			}
+			// Consume the timer in the same turn as its callback. A
+			// replacement scheduled by the handler gets a new
+			// entry.
+			delete(a.pendingTimers, m.TimeoutID)
+		}
+
 		return a.handleTimeout(ctx, m)
 
 	case *RegisterIntentRequest:
@@ -2837,6 +2914,13 @@ func (a *RoundClientActor) handleCancelRound(ctx context.Context,
 			Error:   "no pending round to cancel",
 		})
 	}
+	if targetFSM.coldSigning {
+		return fn.Ok[actormsg.RoundActorResp](&CancelRoundResponse{
+			Success: false,
+			Error: "round signing session lost; awaiting " +
+				"authoritative reconciliation",
+		})
+	}
 
 	// Inject a BoardingFailed event to transition the FSM to failed state.
 	// This will trigger any cleanup logic in the FSM transitions.
@@ -2929,9 +3013,14 @@ func (a *RoundClientActor) onRoundComplete(ctx context.Context, roundID RoundID,
 	// retry, and past that bound the next start rebuilds the round from
 	// its input_sig_sent row and re-drives the confirmation, with the
 	// ledger deduplicating any replay.
+	staged := append(
+		[]ledger.LedgerMsg(nil), a.stagedLedger[roundID.String()]...,
+	)
 	err := a.cfg.RoundStore.FinalizeRound(
 		ctx, roundID, txid, confInfo, func(txCtx context.Context) error {
-			return a.flushStagedLedger(txCtx, roundID.String())
+			return a.flushLedgerMessages(
+				txCtx, roundID.String(), staged,
+			)
 		},
 	)
 	if err != nil {
@@ -3292,9 +3381,50 @@ func (a *RoundClientActor) handleTimeout(ctx context.Context,
 
 // processOutbox processes messages emitted by the FSM via Outbox and routes
 // them to the appropriate destination (server or chainsource).
+func (a *RoundClientActor) processOutbox(ctx context.Context,
+	outbox []ClientOutMsg) error {
+
+	for _, msg := range outbox {
+		if a.queueEffect != nil {
+			switch m := msg.(type) {
+			case *RoundCompletedNotification,
+				*RoundCheckpointedNotification,
+				*RoundFailedNotification, *TerminalJobFailedNotification:
+
+				if err := a.deliverOutbox(
+					ctx, []ClientOutMsg{msg},
+				); err != nil {
+					return err
+				}
+
+				continue
+
+			case *VTXOCreatedNotification:
+				a.emitVTXOsReceived(
+					ctx, m,
+				)
+			}
+			if err := a.queueEffect(ctx, msg); err != nil {
+				return err
+			}
+
+			continue
+		}
+		if err := a.deliverOutbox(
+			ctx, []ClientOutMsg{msg},
+		); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// deliverOutbox routes committed effects and applies ordinary actor
+// bookkeeping.
 //
 //nolint:funlen
-func (a *RoundClientActor) processOutbox(ctx context.Context,
+func (a *RoundClientActor) deliverOutbox(ctx context.Context,
 	outbox []ClientOutMsg) error {
 
 	for _, msg := range outbox {
@@ -3319,6 +3449,15 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 
 		// Handle non-server messages.
 		switch m := msg.(type) {
+		case *releaseBoardingEffect:
+			if err := a.cfg.WalletActor.Tell(
+				ctx, &wallet.ReleaseBoardingInFlightRequest{
+					Outpoints: m.outpoints,
+				},
+			); err != nil {
+				return err
+			}
+
 		case *RegisterConfirmationRequest:
 			if err := a.processConfirmationRequest(
 				ctx, m,
@@ -3333,7 +3472,7 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			) actormsg.RoundReceivable {
 
 				return &TimeoutMsg{
-					TimeoutID: expired.ID,
+					TimeoutID: expired.ID, deadline: m.deadline,
 				}
 			}
 			callbackRef := timeout.MapTimeoutExpired(
@@ -3457,7 +3596,9 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			// transfer (and pairing FeePaidMsg for the operator
 			// fee) requires the round FSM to surface the fee and
 			// the boarding-input provenance, which is TODO.
-			a.emitVTXOsReceived(ctx, m)
+			if !a.durable {
+				a.emitVTXOsReceived(ctx, m)
+			}
 
 		case *RoundCompletedNotification:
 			a.log.InfoS(
@@ -4298,13 +4439,16 @@ func (a *RoundClientActor) sendBoardFetch(ctx context.Context) {
 	}
 
 	a.boardFetchInFlight = true
-
+	if a.durable && a.boardFetchID == "" {
+		a.boardFetchID = uuid.NewString()
+	}
+	fetchID := a.boardFetchID
 	actor.AskThen(
 		ctx, a.cfg.WalletActor,
 		wallet.WalletMsg(&wallet.GetConfirmedBoardingIntentsRequest{}),
 		a.cfg.SelfRef, a.walletAskTimeout(),
 		func(r fn.Result[wallet.WalletResp]) actormsg.RoundReceivable {
-			return &boardingIntentsReply{Res: r}
+			return &boardingIntentsReply{Res: r, FetchID: fetchID}
 		},
 	)
 }
@@ -4315,7 +4459,9 @@ func (a *RoundClientActor) sendBoardFetch(ctx context.Context) {
 func (a *RoundClientActor) handleBoardingIntentsReply(ctx context.Context,
 	msg *boardingIntentsReply) fn.Result[actormsg.RoundActorResp] {
 
-	if len(a.boardQueue) == 0 || !a.boardFetchInFlight {
+	if len(a.boardQueue) == 0 || !a.boardFetchInFlight ||
+		(a.durable && msg.FetchID != a.boardFetchID) {
+
 		a.log.DebugS(ctx, "Ignoring unexpected boarding intents reply")
 
 		return fn.Ok[actormsg.RoundActorResp](nil)
@@ -4325,6 +4471,7 @@ func (a *RoundClientActor) handleBoardingIntentsReply(ctx context.Context,
 	a.boardQueue[0] = nil
 	a.boardQueue = a.boardQueue[1:]
 	a.boardFetchInFlight = false
+	a.boardFetchID = ""
 
 	// Whatever the outcome, the next queued trigger proceeds.
 	defer a.sendBoardFetch(ctx)
