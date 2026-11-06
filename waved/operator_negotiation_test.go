@@ -268,14 +268,15 @@ func TestFetchOperatorTermsRefreshPinsVersion(t *testing.T) {
 			SelectedArkVersion: 1,
 		},
 	}
-	srv := &Server{arkClient: stub, arkProtocolVersion: 1}
+	srv := &Server{arkClient: stub}
+	srv.arkProtocolVersion.Store(1)
 
 	terms, err := srv.fetchOperatorTerms(t.Context())
 	require.NoError(t, err)
 	require.NotNil(t, terms)
 
 	// The runtime version must be unchanged by a refresh.
-	require.Equal(t, uint32(1), srv.arkProtocolVersion)
+	require.Equal(t, uint32(1), srv.arkProtocolVersion.Load())
 }
 
 // TestOperatorVTXOFloorRefreshesEffectiveMinimum verifies credit policy reads
@@ -292,9 +293,9 @@ func TestOperatorVTXOFloorRefreshesEffectiveMinimum(t *testing.T) {
 		},
 	}
 	rpc := &RPCServer{server: &Server{
-		arkClient:          stub,
-		arkProtocolVersion: 1,
+		arkClient: stub,
 	}}
+	rpc.server.arkProtocolVersion.Store(1)
 
 	floor, err := rpc.OperatorVTXOFloor(t.Context())
 	require.NoError(t, err)
@@ -316,8 +317,8 @@ func TestOperatorVTXOFloorFailsClosed(t *testing.T) {
 		arkClient: &stubArkServiceClient{
 			err: fmt.Errorf("operator unavailable"),
 		},
-		arkProtocolVersion: 1,
 	}}
+	rpc.server.arkProtocolVersion.Store(1)
 
 	_, err := rpc.OperatorVTXOFloor(t.Context())
 	require.ErrorContains(t, err, "operator unavailable")
@@ -335,8 +336,8 @@ func TestOperatorVTXOFloorRejectsZero(t *testing.T) {
 				SelectedArkVersion: 1,
 			},
 		},
-		arkProtocolVersion: 1,
 	}}
+	rpc.server.arkProtocolVersion.Store(1)
 
 	_, err := rpc.OperatorVTXOFloor(t.Context())
 	require.ErrorContains(t, err, "operator VTXO floor is unavailable")
@@ -358,8 +359,8 @@ func TestOperatorVTXOFloorBoundsRefresh(t *testing.T) {
 				return context.DeadlineExceeded
 			},
 		},
-		arkProtocolVersion: 1,
 	}}
+	rpc.server.arkProtocolVersion.Store(1)
 
 	started := time.Now()
 	_, err := rpc.OperatorVTXOFloor(t.Context())
@@ -393,10 +394,10 @@ func TestRefreshAuthenticatedOperatorTermsUsesMailbox(t *testing.T) {
 	}
 
 	srv := &Server{
-		arkClient:          direct,
-		ark:                arkrpc.NewArkServiceMailboxClient(mailbox),
-		arkProtocolVersion: 1,
+		arkClient: direct,
+		ark:       arkrpc.NewArkServiceMailboxClient(mailbox),
 	}
+	srv.arkProtocolVersion.Store(1)
 	srv.storeOperatorTerms(&types.OperatorTerms{
 		MaxVTXOAmount: 200_000,
 	})
@@ -432,9 +433,9 @@ func TestFetchCurrentOperatorPubKeyPreservesPersonalizedLimits(t *testing.T) {
 		},
 	}
 	srv := &Server{
-		arkClient:          direct,
-		arkProtocolVersion: 1,
+		arkClient: direct,
 	}
+	srv.arkProtocolVersion.Store(1)
 	srv.hasPersonalizedLimits.Store(true)
 	srv.storeOperatorTerms(&types.OperatorTerms{
 		MaxVTXOAmount:  5_000_000,
@@ -467,9 +468,9 @@ func TestFetchCurrentOperatorPubKeyUpdatesGlobalLimits(t *testing.T) {
 		},
 	}
 	srv := &Server{
-		arkClient:          direct,
-		arkProtocolVersion: 1,
+		arkClient: direct,
 	}
+	srv.arkProtocolVersion.Store(1)
 	srv.storeOperatorTerms(&types.OperatorTerms{
 		MaxVTXOAmount:  200_000,
 		MaxUserBalance: 100_000_000,
@@ -531,7 +532,8 @@ func TestFetchOperatorTermsRefreshRejectsRenegotiation(t *testing.T) {
 			},
 		},
 	}
-	srv := &Server{arkClient: stub, arkProtocolVersion: 1}
+	srv := &Server{arkClient: stub}
+	srv.arkProtocolVersion.Store(1)
 
 	_, err := srv.fetchOperatorTerms(t.Context())
 	require.Error(t, err)
@@ -544,7 +546,7 @@ func TestFetchOperatorTermsRefreshRejectsRenegotiation(t *testing.T) {
 	)
 
 	// The runtime version must be unchanged by a failed refresh.
-	require.Equal(t, uint32(1), srv.arkProtocolVersion)
+	require.Equal(t, uint32(1), srv.arkProtocolVersion.Load())
 }
 
 // TestNegotiateArkBootstrapSelectedButDisabled proves the client refuses to
@@ -596,7 +598,7 @@ func TestFetchOperatorTermsRefreshSelectedButDisabledMarksIncompatible(
 
 	// Model a healthy, connected client bound to v1 before the refresh.
 	s.serverConnected.Store(true)
-	s.arkProtocolVersion = 1
+	s.arkProtocolVersion.Store(1)
 	s.arkClient = &stubArkServiceClient{
 		resp: &arkrpc.GetInfoResponse{
 			Pubkey:             testOperatorPubKeyBytes(t),
@@ -624,6 +626,44 @@ func TestFetchOperatorTermsRefreshSelectedButDisabledMarksIncompatible(
 	// The refresh transitioned the runtime to INCOMPATIBLE, firing the
 	// OnIncompatible callback that clears server_connected.
 	require.False(t, s.isServerConnected())
+}
+
+// TestFetchOperatorTermsBeforeNegotiation pins the bootstrap race: the operator
+// client is published before the negotiated version is stored, so an RPC
+// handler can refresh the terms in between and pin version zero. A conforming
+// operator answers that by selecting zero. If the bootstrap stores version one
+// while the call is in flight, judging the response against the stored version
+// would mark a healthy runtime permanently incompatible. The response must be
+// judged against the version the request pinned.
+func TestFetchOperatorTermsBeforeNegotiation(t *testing.T) {
+	t.Parallel()
+
+	s := newCompatTestServer(t, okPullEdge{})
+	s.serverConnected.Store(true)
+
+	stub := &stubArkServiceClient{
+		resp: &arkrpc.GetInfoResponse{
+			Pubkey:             testOperatorPubKeyBytes(t),
+			SelectedArkVersion: 0,
+			ArkVersionPolicies: []*arkrpc.ArkVersionPolicy{
+				activeArkPolicy(1),
+			},
+		},
+
+		// The bootstrap completes while the refresh is in flight.
+		await: func(context.Context) error {
+			s.arkProtocolVersion.Store(1)
+
+			return nil
+		},
+	}
+	s.arkClient = stub
+
+	_, err := s.fetchOperatorTerms(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, 1, stub.calls)
+	require.True(t, s.isServerConnected())
+	require.Equal(t, uint32(1), s.arkProtocolVersion.Load())
 }
 
 // testScheduledGetInfoResponse builds a GetInfo response from a scheduled
@@ -681,9 +721,9 @@ func TestRoundOperatorTermsRefreshesPublishedHorizon(t *testing.T) {
 		resp: testScheduledGetInfoResponse(t, now, 0),
 	}
 	srv := &Server{
-		arkClient:          direct,
-		arkProtocolVersion: 1,
+		arkClient: direct,
 	}
+	srv.arkProtocolVersion.Store(1)
 	cached := &types.OperatorTerms{
 		BatchSchedule:  fn.Some(old),
 		MaxVTXOAmount:  5_000_000,
@@ -790,10 +830,10 @@ func TestRoundOperatorTermsEstimatesClockOffset(t *testing.T) {
 			}
 
 			srv := &Server{
-				arkClient:          stub,
-				arkProtocolVersion: 1,
-				log:                btclog.Disabled,
+				arkClient: stub,
+				log:       btclog.Disabled,
 			}
+			srv.arkProtocolVersion.Store(1)
 			cached := &types.OperatorTerms{
 				BatchSchedule: cachedSchedule,
 			}

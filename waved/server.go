@@ -367,8 +367,10 @@ type Server struct {
 	// arkProtocolVersion is the Ark protocol version negotiated during
 	// bootstrap and bound to the mailbox runtime for its lifetime. Later
 	// refresh-only GetInfo calls pin this version and never change it; a
-	// fresh negotiation only happens on a daemon restart.
-	arkProtocolVersion uint32
+	// fresh negotiation only happens on a daemon restart. It is written
+	// once by the bootstrap and read by RPC handlers that may already run
+	// while the bootstrap is in progress, hence the atomic.
+	arkProtocolVersion atomic.Uint32
 
 	// serverConnected reports whether mailbox ingress is currently
 	// running against the Ark operator. It flips true once ingress
@@ -4255,7 +4257,7 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	// Cache the negotiation outcome before constructing the runtime so
 	// every later consumer reads the bound version and initial terms
 	// instead of issuing a second negotiating call.
-	s.arkProtocolVersion = negotiation.selectedArkVersion
+	s.arkProtocolVersion.Store(negotiation.selectedArkVersion)
 	s.storeOperatorTerms(negotiation.terms)
 
 	s.log.InfoS(ctx, "Negotiated ark protocol version",
@@ -4345,7 +4347,7 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 
 	// Bind the runtime to the negotiated Ark protocol version.
 	// DefaultConnectorConfig already binds mailbox transport v1.
-	connCfg.ArkProtocolVersion = s.arkProtocolVersion
+	connCfg.ArkProtocolVersion = s.arkProtocolVersion.Load()
 	connCfg.Store = s.deliveryStore
 	connCfg.Dispatchers = dispatchers
 	connCfg.NonTxRoutes = nonTxRoutes
@@ -5194,6 +5196,12 @@ func mapRoundVTXOManagerMsg(msg round.VTXOManagerMsg) vtxo.ManagerMsg {
 // singleton supported list and rejects any response that selects a different
 // or zero version. It never mutates the runtime version.
 //
+// The operator client is published before the bootstrap stores the negotiated
+// version, so a refresh can start in between and pin version zero. The
+// response is judged against the version this request pinned, not the one
+// stored by the time it returns, so such a refresh cannot mark the runtime
+// incompatible.
+//
 // The terms include the operator pubkey, sweep delay, VTXO exit delay,
 // forfeit script, dust limit, and fee rate.
 func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
@@ -5206,7 +5214,7 @@ func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 
 	// Pin the runtime-bound version: send it as the singleton supported
 	// list so a conforming operator re-selects exactly this version.
-	boundVersion := s.arkProtocolVersion
+	boundVersion := s.arkProtocolVersion.Load()
 
 	resp, err := client.GetInfo(ctx, &arkrpc.GetInfoRequest{
 		SupportedArkVersions: []uint32{
@@ -5217,15 +5225,17 @@ func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 		return nil, fmt.Errorf("GetInfo RPC: %w", err)
 	}
 
-	return s.operatorTermsFromRefreshResponse(ctx, resp)
+	return s.operatorTermsFromRefreshResponse(ctx, resp, boundVersion)
 }
 
-// operatorTermsFromRefreshResponse validates that a refresh kept the
-// runtime-bound protocol version, then parses the returned terms.
+// operatorTermsFromRefreshResponse validates that a refresh kept boundVersion,
+// the version its request pinned, then parses the returned terms. The caller
+// passes the version it sent rather than this reading it again, so a refresh
+// that started before negotiation completed is judged against what it asked
+// for.
 func (s *Server) operatorTermsFromRefreshResponse(ctx context.Context,
-	resp *arkrpc.GetInfoResponse) (*types.OperatorTerms, error) {
-
-	boundVersion := s.arkProtocolVersion
+	resp *arkrpc.GetInfoResponse, boundVersion uint32) (
+	*types.OperatorTerms, error) {
 
 	// A refresh that selects a different version is a terminal
 	// compatibility failure: the runtime is bound for its lifetime, so the
@@ -5264,14 +5274,18 @@ func (s *Server) refreshAuthenticatedOperatorTerms(ctx context.Context) error {
 			"initialized")
 	}
 
+	boundVersion := s.arkProtocolVersion.Load()
+
 	resp, err := s.ark.GetInfo(ctx, &arkrpc.GetInfoRequest{
-		SupportedArkVersions: []uint32{s.arkProtocolVersion},
+		SupportedArkVersions: []uint32{boundVersion},
 	})
 	if err != nil {
 		return fmt.Errorf("authenticated GetInfo RPC: %w", err)
 	}
 
-	terms, err := s.operatorTermsFromRefreshResponse(ctx, resp)
+	terms, err := s.operatorTermsFromRefreshResponse(
+		ctx, resp, boundVersion,
+	)
 	if err != nil {
 		return fmt.Errorf("validate authenticated operator terms: %w",
 			err)
