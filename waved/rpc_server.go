@@ -647,6 +647,20 @@ func (e unavailableError) GRPCStatus() *status.Status {
 	return status.New(codes.Unavailable, e.err.Error())
 }
 
+// operatorTermsError converts an operator terms refresh failure into a
+// gRPC status for an RPC handler. A refresh refused because startup has not
+// bound an Ark protocol version yet is a short startup window, so it maps to
+// codes.Unavailable to tell clients the call is safe to retry. Every other
+// failure keeps codes.Internal.
+func operatorTermsError(msg string, err error) error {
+	code := codes.Internal
+	if errors.Is(err, errArkVersionNotNegotiated) {
+		code = codes.Unavailable
+	}
+
+	return status.Errorf(code, "%s: %v", msg, err)
+}
+
 // GetInfo returns basic information about the running daemon instance,
 // including version, network, and lnd connection state.
 func (r *RPCServer) GetInfo(ctx context.Context, _ *waverpc.GetInfoRequest) (
@@ -1752,8 +1766,9 @@ func (r *RPCServer) NewAddress(ctx context.Context,
 	// needed for the boarding address tapscript.
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "unable to fetch "+
-			"operator terms: %v", err)
+		return nil, operatorTermsError(
+			"unable to fetch operator terms", err,
+		)
 	}
 
 	addrReq := &wallet.CreateBoardingAddressRequest{
@@ -2756,8 +2771,9 @@ func (r *RPCServer) SendOnChain(ctx context.Context,
 	// stamped server-side; MinOperatorFee is advisory only.
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "fetch operator "+
-			"terms: %v", err)
+		return nil, operatorTermsError(
+			"fetch operator terms", err,
+		)
 	}
 
 	// For sweep_all, enumerate the sweepable VTXOs up front. We do
@@ -2900,8 +2916,9 @@ func (r *RPCServer) Board(ctx context.Context, req *waverpc.BoardRequest) (
 	// output amount after deducting fees.
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to fetch "+
-			"operator terms: %v", err)
+		return nil, operatorTermsError(
+			"failed to fetch operator terms", err,
+		)
 	}
 
 	// Delegate to the wallet actor which handles balance
@@ -3109,8 +3126,9 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 	// operator key.
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "unable to fetch "+
-			"operator terms: %v", err)
+		return nil, operatorTermsError(
+			"unable to fetch operator terms", err,
+		)
 	}
 
 	if !r.server.walletRef.IsSome() {
@@ -3241,8 +3259,9 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	operatorTermsDuration = time.Since(phaseStart)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "unable to fetch "+
-			"operator terms: %v", err)
+		return nil, operatorTermsError(
+			"unable to fetch operator terms", err,
+		)
 	}
 
 	// Resolve the recipients' pkScripts from the destination oneofs
@@ -3694,8 +3713,9 @@ func (r *RPCServer) PrepareOOR(ctx context.Context,
 
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "unable to fetch "+
-			"operator terms: %v", err)
+		return nil, operatorTermsError(
+			"unable to fetch operator terms", err,
+		)
 	}
 
 	if err := validateOORRecipientFloor(
@@ -3843,8 +3863,9 @@ func (r *RPCServer) SignOORCustomInput(ctx context.Context,
 
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "unable to fetch "+
-			"operator terms: %v", err)
+		return nil, operatorTermsError(
+			"unable to fetch operator terms", err,
+		)
 	}
 
 	identityDesc := r.server.loadClientKeyDesc()
@@ -3969,8 +3990,9 @@ func (r *RPCServer) SignVTXOForfeit(ctx context.Context,
 
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "unable to fetch "+
-			"operator terms: %v", err)
+		return nil, operatorTermsError(
+			"unable to fetch operator terms", err,
+		)
 	}
 	// vHTLC policies have swap-specific CSV delays that can be lower than
 	// the operator's standard VTXO exit delay. This RPC validates the
@@ -5117,9 +5139,10 @@ func (r *RPCServer) resolveOutputPkScript(ctx context.Context,
 		// collaboratively or exit unilaterally.
 		terms, err := r.server.fetchOperatorTerms(ctx)
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "fetch "+
-				"operator terms for pubkey destination: %v",
-				err)
+			return nil, operatorTermsError(
+				"fetch operator terms for pubkey destination",
+				err,
+			)
 		}
 
 		pkScript, err := BuildPubKeyVTXOReceiveScript(

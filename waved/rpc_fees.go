@@ -2,7 +2,9 @@ package waved
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -125,14 +127,26 @@ func (s *Server) autoRefreshFeeQuoter() vtxo.RefreshFeeQuoter {
 		// errors from its side.
 		var minFee btcutil.Amount
 		terms, termsErr := s.fetchOperatorTerms(ctx)
-		if termsErr != nil {
+		switch {
+		// Startup has not bound an Ark protocol version yet. This
+		// clears on its own within one GetInfo round trip, so it is
+		// not worth alerting anyone about.
+		case errors.Is(termsErr, errArkVersionNotNegotiated):
+			s.log.DebugS(ctx,
+				"Auto-refresh fee quoter: version not "+
+					"negotiated yet; using zero "+
+					"MinOperatorFee fallback",
+				slog.String("err", termsErr.Error()))
+
+		case termsErr != nil:
 			s.log.WarnS(ctx,
 				"Auto-refresh fee quoter: "+
 					"fetchOperatorTerms failed; "+
 					"using zero MinOperatorFee "+
 					"fallback",
 				termsErr)
-		} else {
+
+		default:
 			minFee = terms.MinOperatorFee
 		}
 

@@ -18,6 +18,8 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -302,6 +304,47 @@ func TestFetchOperatorTermsBeforeNegotiation(t *testing.T) {
 	require.ErrorIs(t, err, errArkVersionNotNegotiated)
 	require.Nil(t, terms)
 	require.Zero(t, stub.calls)
+}
+
+// TestOperatorTermsErrorClassifiesNegotiationWindow verifies a terms refresh
+// refused before version negotiation reaches RPC clients as a retryable
+// Unavailable status, while other failures stay Internal.
+func TestOperatorTermsErrorClassifiesNegotiationWindow(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		code codes.Code
+	}{
+		{
+			name: "not negotiated",
+			err:  errArkVersionNotNegotiated,
+			code: codes.Unavailable,
+		},
+		{
+			name: "wrapped not negotiated",
+			err: fmt.Errorf("refresh: %w",
+				errArkVersionNotNegotiated),
+			code: codes.Unavailable,
+		},
+		{
+			name: "other failure",
+			err:  fmt.Errorf("operator unavailable"),
+			code: codes.Internal,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := operatorTermsError(
+				"fetch operator terms", tc.err,
+			)
+			require.Equal(t, tc.code, status.Code(err))
+			require.Contains(t, err.Error(), tc.err.Error())
+		})
+	}
 }
 
 // TestFetchOperatorTermsConcurrentWithNegotiation runs a refresh while
