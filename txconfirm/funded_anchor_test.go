@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/wavelength/chainsource"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/walletcore"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -444,6 +445,58 @@ func TestBumpNowFundedParent(t *testing.T) {
 	// The one-shot operator override was consumed and cleared, so the next
 	// interval-paced bump falls back to the estimator.
 	require.Zero(t, behavior.tracked[txid].pendingTargetFeeRate)
+}
+
+// TestBumpNowFailurePreservesProgress verifies that a rejected forced bump
+// returns to AwaitingConfirmation without counting the attempt or replacing
+// metadata from the last successful broadcast.
+func TestBumpNowFailurePreservesProgress(t *testing.T) {
+	t.Parallel()
+
+	chain := newFakeChainSourceRef(100)
+	wallet := &fakeWallet{utxos: []*walletcore.Utxo{makeWalletUTXO(t)}}
+	behavior := newBumpTestBehavior(t, chain, wallet)
+
+	sub := actor.NewChannelTellOnlyRef[Notification]("failed-bump-sub", 8)
+	tx := makeFundedAnchorTx(17, 330)
+	txid := tx.TxHash()
+
+	ensureResp := mustReceiveEnsure(t, behavior, &EnsureConfirmedReq{
+		Tx:         tx,
+		Label:      "failed-bump",
+		ParentFee:  500,
+		Subscriber: sub,
+	})
+	require.Equal(t, TxStateAwaitingConfirmation, ensureResp.State)
+
+	entry := behavior.tracked[txid]
+	initialState, err := entry.currentFSMState()
+	require.NoError(t, err)
+	initial, ok := initialState.(*trackedTxStateAwaitingConfirmation)
+	require.True(t, ok)
+
+	behavior.bestHeight = 102
+	chain.packageErr = fmt.Errorf("package rejected")
+	bumpResp := mustReceiveBump(t, behavior, &BumpNowReq{
+		Txid:                     txid,
+		TargetFeeRateSatPerVByte: 25,
+	})
+	require.False(t, bumpResp.Bumped)
+	require.Equal(t, TxStateAwaitingConfirmation, bumpResp.State)
+	require.Contains(t, bumpResp.Reason, "package rejected")
+
+	failedState, err := entry.currentFSMState()
+	require.NoError(t, err)
+	afterFailure, ok := failedState.(*trackedTxStateAwaitingConfirmation)
+	require.True(t, ok)
+	require.Equal(t, initial.BumpCount, afterFailure.BumpCount)
+	require.Equal(t, initial.CurrentFeeRate, afterFailure.CurrentFeeRate)
+	require.Equal(t, initial.ChildTxid, afterFailure.ChildTxid)
+	require.Equal(
+		t, fn.Some[int32](102), afterFailure.LastBroadcastHeight,
+	)
+	require.Equal(t, 1, chain.packageCallCount())
+	require.Zero(t, entry.pendingTargetFeeRate)
 }
 
 // TestBumpNowClampedTarget asserts an over-ceiling operator target is clamped
