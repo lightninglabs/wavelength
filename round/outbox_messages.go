@@ -927,6 +927,8 @@ func (m *RoundCheckpointedNotification) clientOutMsgSealed() {}
 
 // StartTimeoutReq asks the actor to schedule a timeout for a round phase.
 type StartTimeoutReq struct {
+	// deadline is the original absolute deadline of a replayed timer.
+	deadline time.Time
 	actor.BaseMessage
 
 	// RoundKey identifies which round owns this timeout. It is the actor's
