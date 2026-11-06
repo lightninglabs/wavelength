@@ -291,8 +291,12 @@ func operatorRESTBaseURL(cfg *ServerConfig, addr string) string {
 }
 
 // operatorArkClient returns the configured ArkService client, preserving the
-// old direct gRPC test hook when tests set serverConn by hand.
+// old direct gRPC test hook when tests set serverConn by hand. RPCs call it
+// while bootstrap may still be publishing the client.
 func (s *Server) operatorArkClient() arkrpc.ArkServiceClient {
+	s.operatorConnMu.RLock()
+	defer s.operatorConnMu.RUnlock()
+
 	if s.arkClient != nil {
 		return s.arkClient
 	}
@@ -301,4 +305,32 @@ func (s *Server) operatorArkClient() arkrpc.ArkServiceClient {
 	}
 
 	return nil
+}
+
+// publishOperatorClients stores the connection and ArkService client that
+// bootstrap dialed, so concurrent readers see both or neither.
+func (s *Server) publishOperatorClients(clients *operatorClients) {
+	s.operatorConnMu.Lock()
+	defer s.operatorConnMu.Unlock()
+
+	s.serverConn = clients.conn
+	s.arkClient = clients.ark
+}
+
+// publishRuntime stores the serverconn runtime bootstrap created.
+func (s *Server) publishRuntime(rt *serverconn.Runtime) {
+	s.operatorConnMu.Lock()
+	defer s.operatorConnMu.Unlock()
+
+	s.runtime = rt
+}
+
+// loadRuntime returns the serverconn runtime, or nil before bootstrap
+// creates it. Goroutines other than bootstrap must use it rather than read
+// the field directly.
+func (s *Server) loadRuntime() *serverconn.Runtime {
+	s.operatorConnMu.RLock()
+	defer s.operatorConnMu.RUnlock()
+
+	return s.runtime
 }

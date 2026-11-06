@@ -337,6 +337,8 @@ type Server struct {
 	// can attach the binding header without re-signing.
 	tlsBindSigHex string
 
+	// runtime is published by bootstrap under operatorConnMu. Goroutines
+	// other than bootstrap read it through loadRuntime.
 	runtime *serverconn.Runtime
 	ark     *arkrpc.ArkServiceMailboxClient
 	indexer *indexer.Client
@@ -458,6 +460,11 @@ type Server struct {
 	arkClient         arkrpc.ArkServiceClient
 	mailboxClient     mailboxpb.MailboxServiceClient
 	serverConnCleanup func() error
+
+	// operatorConnMu guards bootstrap's writes of serverConn, arkClient
+	// and runtime against RPCs and shutdown, which can read them while
+	// bootstrap is still running.
+	operatorConnMu sync.RWMutex
 
 	rpcAddrMu   sync.RWMutex
 	rpcAddr     net.Addr
@@ -1424,10 +1431,10 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 			s.outboxPublisher.Stop()
 		}
 
-		if s.runtime != nil {
+		if rt := s.loadRuntime(); rt != nil {
 			s.setServerConnected(false)
 			//nolint:contextcheck // bounded shutdown
-			_ = s.runtime.StopAndWait(shutdownCtx)
+			_ = rt.StopAndWait(shutdownCtx)
 		}
 
 		if s.actorSystem != nil {
@@ -4234,8 +4241,7 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("unable to connect to server: %w", err)
 	}
-	s.serverConn = operatorClients.conn
-	s.arkClient = operatorClients.ark
+	s.publishOperatorClients(operatorClients)
 	s.mailboxClient = operatorClients.mailbox
 	s.serverConnCleanup = operatorClients.cleanup
 
@@ -4360,11 +4366,12 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	connCfg.Log = fn.Some(s.subLogger(serverconn.Subsystem))
 	connCfg.OnIncompatible = s.onServerIncompatible
 
-	s.runtime, err = serverconn.NewRuntime(connCfg)
+	rt, err := serverconn.NewRuntime(connCfg)
 	if err != nil {
 		return fmt.Errorf("unable to create serverconn runtime: %w",
 			err)
 	}
+	s.publishRuntime(rt)
 
 	// Start durable egress immediately so unary sends and actor outbox
 	// delivery can begin, but defer ingress until wallet-dependent actors
@@ -5245,8 +5252,8 @@ func (s *Server) operatorTermsFromRefreshResponse(ctx context.Context,
 		resp, boundVersion,
 	); statusErr != nil {
 
-		if s.runtime != nil {
-			s.runtime.MarkIncompatible(ctx, statusErr)
+		if rt := s.loadRuntime(); rt != nil {
+			rt.MarkIncompatible(ctx, statusErr)
 		}
 
 		return nil, statusErr
