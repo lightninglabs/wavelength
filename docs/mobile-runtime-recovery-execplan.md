@@ -9,7 +9,7 @@ A mobile wallet can be terminated after acknowledging a server message. The work
 ## Progress
 
 - [x] (2026-11-06) Fetch current main and inspect #1329, #1504, #1517, and the earlier #1334 consumer prototype.
-- [x] Create isolated worktree `wt-wavelength-mobile-runtime-recovery-20261106` and branch `feat/mobile-runtime-recovery-20261106` from main `b8658164`.
+- [x] Create isolated worktree `wt-wavelength-mobile-runtime-recovery-20261106` and branch `mobile-runtime-recovery-20261106` from main `b8658164`.
 - [x] Isolate #1517's two commits and #1329 as dependency branch `stack/mobile-runtime-prerequisites-20261106`; #1504 is already merged. Dependency tip is `fbac0db6`.
 - [x] Extract additive consumer helpers from #1334 without replacing the current #1517 checkpoint codec or importing its unrelated batch-service protocol.
 - [x] Compile the round package with the extracted runtime and preserve the threaded runner for ordinary actors.
@@ -17,7 +17,8 @@ A mobile wallet can be terminated after acknowledging a server message. The work
 - [x] Prove SQL rollback of attempted effects, retained Tell input, and restart convergence on SQLite and PostgreSQL. Test signing interruption classification, no cold signing replay, timer replacement, absolute scheduling, boarding correlation and deferred ledger capture.
 - [x] Keep full bounded wallet execution and safe-to-suspend reporting in the later host API PR; this PR supplies the persistent consumer and host-driven ingress startup seam.
 - [x] Run formatting, lint (including actorblock), module tidiness, package suites, focused race checks and both real SQL backends.
-- [ ] Publish a separate signed PR whose diff excludes prerequisite commits, request Gateway review, address concrete findings, and verify current-head CI/review.
+- [x] Publish signed implementation PR #1531 with a diff that excludes the copied prerequisites. The published base is `mobile-runtime-prerequisites-20261106`; the original local `stack/` branch remains an alias.
+- [ ] Request Gateway review, address concrete findings, and verify current-head CI/review.
 
 ## Surprises & Discoveries
 
@@ -31,7 +32,7 @@ External signing executes outside the database writer. Before entering a signing
 
 ## Outcomes & Retrospective
 
-The opt-in durable consumer, full owner snapshot, signing fence, and atomic final commit are implemented. SQLite and PostgreSQL restart/rollback tests pass, as do the round, waved, serverconn and actordelivery package suites. Focused race checks pass. Formatting, lint including actorblock, module tidiness and new-file documentation audit pass. Publication and Gateway review are pending. No deployment has occurred.
+The opt-in durable consumer, full owner snapshot, signing fence, and atomic final commit are implemented. SQLite and PostgreSQL restart/rollback tests pass, as do the round, waved, serverconn and actordelivery package suites. Focused race checks pass. Formatting, lint including actorblock, module tidiness and new-file documentation audit pass. Published as #1531. Gateway found retained timers and an expected cold failure push entering retry. Both are fixed with regression coverage; current-head re-review and CI are pending. Read-only round-query snapshot cost is a performance follow-up. No deployment has occurred.
 
 ## Context and Orientation
 
