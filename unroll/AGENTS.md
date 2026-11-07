@@ -425,3 +425,10 @@ Asset-bearing VTXOs require an asset-aware transition. Bitcoin spending,
 forfeit signing, automatic refresh, and expired reclaim refuse them. An
 unroll can materialize its presigned path, but its final Bitcoin sweep is
 withheld, including a sweep restored from a checkpoint.
+
+## Shutdown ownership
+
+Daemon shutdown joins native workers and detached database/notification work
+before closing shared stores. Child lifetime accounting survives removal from
+the registry's active map. A caller's wait deadline does not release the daemon
+cleanup owner. See [domain shutdown ownership](../docs/domain-shutdown.md).
