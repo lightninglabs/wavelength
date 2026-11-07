@@ -127,3 +127,10 @@ See [finite activity reads](../../../docs/canonical-activity-batches.md).
 ReadLightningReceipts accepts the SDK typed-source request and uses a
 cooperative ten-second context. It performs no wallet unlock or host window.
 See [receipt sources](../../../docs/lightning-receipt-source.md).
+
+## Warm receipt windows
+
+Host mode transitions retain the daemon and join ingress ownership. Restricted
+pumps validate full batches before waiter delivery; request provenance comes
+from send-time registration. Targeted resume only re-arms existing receives.
+See [warm invoice recovery](../../../docs/mobile-receipt-window.md).

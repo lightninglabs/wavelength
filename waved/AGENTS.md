@@ -579,3 +579,10 @@ sources. It validates the full request before invoking source callbacks and
 holds callback ownership through final access. Credit reads are local and
 target one original operation; no remote RPC is registered. See
 [receipt sources](../docs/lightning-receipt-source.md).
+
+## Warm receipt windows
+
+Host mode transitions retain the daemon and join ingress ownership. Restricted
+pumps validate full batches before waiter delivery; request provenance comes
+from send-time registration. Targeted resume only re-arms existing receives.
+See [warm invoice recovery](../docs/mobile-receipt-window.md).

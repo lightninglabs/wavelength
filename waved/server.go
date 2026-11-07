@@ -488,6 +488,12 @@ type Server struct {
 	// lightningReceiptMu owns the optional local wallet-layer adapter.
 	lightningReceiptMu     sync.RWMutex
 	lightningReceiptLookup LightningReceiptLookup
+	lightningReceiptResume func(context.Context, LightningReceiptReference) error
+
+	// hostControllerMu publishes the one ingress mode owner after
+	// bootstrap.
+	hostControllerMu sync.Mutex
+	hostController   *receiptWindowController
 
 	rpcAddrMu   sync.RWMutex
 	rpcAddr     net.Addr
