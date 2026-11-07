@@ -11,6 +11,7 @@ import (
 	"time"
 
 	btcwalletrpc "github.com/btcsuite/btcwallet/rpc/walletrpc"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/lightninglabs/wavelength/rpc/restclient"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
@@ -44,6 +45,12 @@ type Client struct {
 	// Server in this process. Remote clients intentionally leave it nil.
 	recoverWalletState func(context.Context, uint32) (
 		*waved.WalletRecoveryResult, error)
+
+	// setNotificationSubscription is local-only and borrows the embedded
+	// daemon signer without exporting mailbox key material.
+	setNotificationSubscription func(context.Context,
+		*mailboxpb.NotificationSubscriptionMutation) (
+		*mailboxpb.NotificationSubscriptionResponse, error)
 
 	closeFn   func(context.Context) error
 	closeOnce sync.Once
