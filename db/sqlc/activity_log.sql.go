@@ -10,6 +10,19 @@ import (
 	"database/sql"
 )
 
+const ActivityEventHighWater = `-- name: ActivityEventHighWater :one
+SELECT CAST(COALESCE(MAX(event_seq), 0) AS BIGINT) AS high_water
+FROM activity_events
+`
+
+// ActivityEventHighWater captures the current end of the transition log.
+func (q *Queries) ActivityEventHighWater(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, ActivityEventHighWater)
+	var high_water int64
+	err := row.Scan(&high_water)
+	return high_water, err
+}
+
 const AppendActivityEvent = `-- name: AppendActivityEvent :one
 INSERT INTO activity_events (
     canonical_id, status, phase, entry_json, created_at_unix
@@ -294,6 +307,78 @@ func (q *Queries) PullActivityEvents(ctx context.Context, arg PullActivityEvents
 			&i.Phase,
 			&i.EntryJson,
 			&i.CreatedAtUnix,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ReadCurrentActivityEvents = `-- name: ReadCurrentActivityEvents :many
+SELECT events.event_seq, activity_entries.canonical_id, activity_entries.kind, activity_entries.status, activity_entries.amount_sat, activity_entries.fee_sat, activity_entries.counterparty, activity_entries.note, activity_entries.phase, activity_entries.phase_label, activity_entries.failure_code, activity_entries.failure_reason, activity_entries.payment_hash, activity_entries.txid, activity_entries.confirmation_height, activity_entries.vtxo_outpoint, activity_entries.swap_session_id, activity_entries.ledger_txid, activity_entries.boarding_addr, activity_entries.request_json, activity_entries.created_at_unix, activity_entries.updated_at_unix, activity_entries.preimage, activity_entries.batch_wait_json
+FROM activity_events AS events
+JOIN activity_entries ON activity_entries.canonical_id = events.canonical_id
+WHERE events.event_seq > $1
+    AND events.event_seq <= $2
+ORDER BY events.event_seq ASC
+LIMIT $3
+`
+
+type ReadCurrentActivityEventsParams struct {
+	AfterCursor   int64
+	ThroughCursor int64
+	LimitCount    int32
+}
+
+type ReadCurrentActivityEventsRow struct {
+	EventSeq      int64
+	ActivityEntry ActivityEntry
+}
+
+// ReadCurrentActivityEvents bounds a replay page by a captured event ceiling,
+// while returning the current canonical projection for every selected event.
+// Removed internal activity has no replay rows and cannot reappear here.
+func (q *Queries) ReadCurrentActivityEvents(ctx context.Context, arg ReadCurrentActivityEventsParams) ([]ReadCurrentActivityEventsRow, error) {
+	rows, err := q.db.QueryContext(ctx, ReadCurrentActivityEvents, arg.AfterCursor, arg.ThroughCursor, arg.LimitCount)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ReadCurrentActivityEventsRow
+	for rows.Next() {
+		var i ReadCurrentActivityEventsRow
+		if err := rows.Scan(
+			&i.EventSeq,
+			&i.ActivityEntry.CanonicalID,
+			&i.ActivityEntry.Kind,
+			&i.ActivityEntry.Status,
+			&i.ActivityEntry.AmountSat,
+			&i.ActivityEntry.FeeSat,
+			&i.ActivityEntry.Counterparty,
+			&i.ActivityEntry.Note,
+			&i.ActivityEntry.Phase,
+			&i.ActivityEntry.PhaseLabel,
+			&i.ActivityEntry.FailureCode,
+			&i.ActivityEntry.FailureReason,
+			&i.ActivityEntry.PaymentHash,
+			&i.ActivityEntry.Txid,
+			&i.ActivityEntry.ConfirmationHeight,
+			&i.ActivityEntry.VtxoOutpoint,
+			&i.ActivityEntry.SwapSessionID,
+			&i.ActivityEntry.LedgerTxid,
+			&i.ActivityEntry.BoardingAddr,
+			&i.ActivityEntry.RequestJson,
+			&i.ActivityEntry.CreatedAtUnix,
+			&i.ActivityEntry.UpdatedAtUnix,
+			&i.ActivityEntry.Preimage,
+			&i.ActivityEntry.BatchWaitJson,
 		); err != nil {
 			return nil, err
 		}

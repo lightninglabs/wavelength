@@ -11,6 +11,8 @@ import (
 
 type Querier interface {
 	AbandonRoundAdmissionDeadlines(ctx context.Context) error
+	// ActivityEventHighWater captures the current end of the transition log.
+	ActivityEventHighWater(ctx context.Context) (int64, error)
 	// AppendActivityEvent records one immutable lifecycle-transition row and
 	// returns the event_seq the database assigned (monotonic, not necessarily
 	// contiguous). Callers use it as the resumable-subscribe cursor for the update.
@@ -537,6 +539,10 @@ type Querier interface {
 	// PullActivityEvents returns transition rows strictly after the cursor in
 	// event_seq order, the resumable-subscribe replay primitive.
 	PullActivityEvents(ctx context.Context, arg PullActivityEventsParams) ([]ActivityEvent, error)
+	// ReadCurrentActivityEvents bounds a replay page by a captured event ceiling,
+	// while returning the current canonical projection for every selected event.
+	// Removed internal activity has no replay rows and cannot reappear here.
+	ReadCurrentActivityEvents(ctx context.Context, arg ReadCurrentActivityEventsParams) ([]ReadCurrentActivityEventsRow, error)
 	RenewOwnedReceiveScriptRegistration(ctx context.Context, arg RenewOwnedReceiveScriptRegistrationParams) (int64, error)
 	// RepairCreditReceivePollCapActivity narrowly reopens an inbound credit
 	// receive that an older client marked terminal after exhausting its local poll
