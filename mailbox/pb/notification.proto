@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package mailbox.v1;
+
+option go_package = "github.com/lightninglabs/wavelength/mailbox/pb;mailboxpb";
+
+// NotificationService manages fixed-relay subscriptions for a mailbox owner.
+// It is a direct edge control service, independent of mailbox ingress. Every
+// mutation needs a fresh, full-request signature; static mailbox auth alone
+// never authorizes destination replacement. Servers must consume challenges
+// atomically with subscription changes after verifying the owner signature.
+service NotificationService {
+    // GetNotificationChallenge allocates no anonymous persistent state.
+    rpc GetNotificationChallenge (NotificationChallengeRequest)
+        returns (NotificationChallenge);
+
+    // SetNotificationSubscription consumes one signed challenge and applies
+    // its exact mutation. An ambiguous response needs a fresh challenge and
+    // signature; upsert/remove are idempotent for the same owner and ID.
+    rpc SetNotificationSubscription (NotificationSubscriptionRequest)
+        returns (NotificationSubscriptionResponse);
+}
+
+// NotificationChallengeRequest selects the canonical compressed mailbox key.
+message NotificationChallengeRequest {
+    bytes owner_pubkey = 1;
+}
+
+// NotificationChallenge is authenticated by the issuing operator. The token
+// covers all fields; clients bind them into their full-request signature.
+message NotificationChallenge {
+    bytes owner_pubkey = 1;
+    bytes operator_pubkey = 2;
+    int64 expires_at_unix = 3;
+    bytes token = 4;
+}
+
+// NotificationSubscriptionMutation contains no URL, device token, amount or
+// template. Capabilities are private credentials and must not appear in logs or
+// metrics.
+message NotificationSubscriptionMutation {
+    enum Action {
+        ACTION_UNSPECIFIED = 0;
+        ACTION_UPSERT = 1;
+        ACTION_REMOVE = 2;
+    }
+    Action action = 1;
+    string subscription_id = 2;
+    string relay_id = 3;
+    string wake_capability = 4;
+    string alert_capability = 5;
+    int64 expires_at_unix = 6;
+}
+
+// NotificationSubscriptionRequest signs the exact challenge and mutation
+// using the mailbox owner's BIP-340 identity key and notification domain tag.
+message NotificationSubscriptionRequest {
+    NotificationChallenge challenge = 1;
+    NotificationSubscriptionMutation mutation = 2;
+    bytes signature = 3;
+}
+
+// NotificationSubscriptionResponse exposes no capability or private routing
+// data. Removal reports expires_at_unix zero; upsert reports the saved expiry.
+message NotificationSubscriptionResponse {
+    string subscription_id = 1;
+    int64 expires_at_unix = 2;
+}
