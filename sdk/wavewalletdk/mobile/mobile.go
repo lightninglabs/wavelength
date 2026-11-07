@@ -20,6 +20,16 @@ import (
 // wavewalletdk's internal runCtx.
 const startTimeout = 90 * time.Second
 
+// stopTimeout bounds a host's wait while the singleton retains cleanup.
+const stopTimeout = 5 * time.Second
+
+// mobileShutdown belongs to one daemon generation. Closing done publishes err
+// and proves the singleton has released that generation's startup or cleanup.
+type mobileShutdown struct {
+	done chan struct{}
+	err  error
+}
+
 // lifecycleStatus is the explicit state of the embedded daemon. A plain CAS on
 // a started/stopped bit cannot express the in-between "starting" and "stopping"
 // states, and that gap is exactly where a Stop racing an in-progress Start
@@ -41,13 +51,11 @@ var state = struct {
 	mu     sync.Mutex
 	status lifecycleStatus
 
-	// gen is bumped on every status transition that begins or abandons a
-	// boot, so a Start that finishes after a racing Stop (and a possible
-	// subsequent Start) can tell it no longer owns the starting state and
-	// must not publish its client or reset the guard.
+	// gen identifies each admitted boot. Stop retains that generation until
+	// startup or cleanup has returned, so a later Start cannot overlap it.
 	gen uint64
 
-	// client is the live wallet handle, non-nil only in statusStarted.
+	// client retains the wallet handle through statusStopping.
 	client *wavewalletdk.Client
 
 	// callCtx is cancelled by Stop so in-flight RPCs and subscriptions
@@ -59,6 +67,7 @@ var state = struct {
 	// startCancel cancels an in-progress wavewalletdk.Start so a racing
 	// Stop can abort a boot rather than orphan the daemon it would produce.
 	startCancel context.CancelFunc
+	shutdown    *mobileShutdown
 }{}
 
 // Start boots the embedded waved wallet daemon from a JSON config and blocks
@@ -112,6 +121,8 @@ func startEmbedded(
 	state.status = statusStarting
 	state.gen++
 	gen := state.gen
+	shutdown := &mobileShutdown{done: make(chan struct{})}
+	state.shutdown = shutdown
 
 	operationCtx, operationCancel := context.WithCancel(
 		context.Background(),
@@ -124,10 +135,9 @@ func startEmbedded(
 	state.startCancel = startCancel
 	state.mu.Unlock()
 
-	// On any failure or panic, cancel the boot context and return to
-	// stopped, but only if this Start still owns the starting state: a
-	// racing Stop (and a later Start) may have moved on, and clobbering
-	// their state would defeat the guard.
+	// Failed startup retains its generation until the starter has joined
+	// every unpublished resource. Only then may Stop or a new Start
+	// proceed.
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("wavewalletdk mobile panic: %v\n%s", r,
@@ -140,9 +150,10 @@ func startEmbedded(
 		startCancel()
 
 		state.mu.Lock()
-		if state.status == statusStarting && state.gen == gen {
+		if state.gen == gen {
 			state.status = statusStopped
 			state.startCancel = nil
+			close(shutdown.done)
 		}
 		state.mu.Unlock()
 	}()
@@ -159,7 +170,7 @@ func startEmbedded(
 	if state.status != statusStarting || state.gen != gen {
 		state.mu.Unlock()
 		startCancel()
-		_ = client.Stop()
+		shutdown.err = client.CloseContext(context.Background())
 
 		return errors.New("wavewalletdk mobile start cancelled by Stop")
 	}
@@ -179,61 +190,68 @@ func startEmbedded(
 	return nil
 }
 
-// Stop tears down the embedded daemon and releases the private transport. It is
-// idempotent: calling it when stopped is a no-op that returns nil. If a Start
-// is still in progress, Stop cancels the boot and returns; that Start then
-// stops any client it produced. Otherwise Stop fully tears down the live client
-// (cancelling the wrapper context unblocks any in-flight Subscription.Next)
-// before resetting to stopped, so a Start that immediately follows cannot race
-// a half-finished shutdown. After Stop the singleton resets so a host can Start
-// again, e.g. after the OS suspends and resumes the app.
+// Stop cancels startup or the running daemon and waits up to five seconds.
+// A timeout retains statusStopping and the client until cleanup actually ends.
+// Start rejects during that interval. Repeated Stop calls re-wait the same
+// cleanup; successful completion releases the singleton for a new Start.
 func Stop() error {
+	ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
+	defer cancel()
+
+	return stopWithContext(ctx)
+}
+
+// stopWithContext bounds only the caller wait, never the cleanup owner. Startup
+// retains its own generation until its unpublished client has also been joined.
+func stopWithContext(ctx context.Context) error {
 	state.mu.Lock()
 	switch state.status {
-	case statusStopped, statusStopping:
-		// Already stopped, or another Stop owns the teardown.
+	case statusStopped:
 		state.mu.Unlock()
 
 		return nil
 
 	case statusStarting:
-		// Cancel the in-progress boot; that Start observes the status /
-		// gen change, stops any client it produced, and returns.
-		if state.startCancel != nil {
-			state.startCancel()
-			state.startCancel = nil
+		state.status = statusStopping
+		state.startCancel()
+
+	case statusStarted:
+		state.status = statusStopping
+		client := state.client
+		shutdown := state.shutdown
+		if state.callCancel != nil {
+			state.callCancel()
 		}
-		state.status = statusStopped
-		state.gen++
-		state.mu.Unlock()
-
-		return nil
+		//nolint:gosec,contextcheck // The singleton owns cleanup.
+		go func() {
+			shutdown.err = client.CloseContext(context.Background())
+			state.mu.Lock()
+			state.client = nil
+			//nolint:fatcontext // Release the joined owner.
+			state.callCtx = nil
+			state.callCancel = nil
+			state.status = statusStopped
+			close(shutdown.done)
+			state.mu.Unlock()
+		}()
 	}
-
-	// statusStarted: take ownership of the live client and tear it down.
-	state.status = statusStopping
-	state.gen++
-	client := state.client
-	cancel := state.callCancel
-	state.client = nil
-	state.callCtx = nil
-	state.callCancel = nil
+	shutdown := state.shutdown
 	state.mu.Unlock()
 
-	if cancel != nil {
-		cancel()
+	select {
+	case <-shutdown.done:
+		return shutdown.err
+
+	default:
 	}
+	select {
+	case <-shutdown.done:
+		return shutdown.err
 
-	var err error
-	if client != nil {
-		err = client.Stop()
+	case <-ctx.Done():
+		return fmt.Errorf("wavewalletdk mobile stop pending; call "+
+			"Stop again: %w", ctx.Err())
 	}
-
-	state.mu.Lock()
-	state.status = statusStopped
-	state.mu.Unlock()
-
-	return err
 }
 
 // activeClient returns the live client and the wrapper-owned call context, or
@@ -243,9 +261,10 @@ func activeClient() (*wavewalletdk.Client, context.Context, error) {
 	state.mu.Lock()
 	client := state.client
 	ctx := state.callCtx
+	running := state.status == statusStarted
 	state.mu.Unlock()
 
-	if client == nil || ctx == nil {
+	if !running || client == nil || ctx == nil {
 		return nil, nil, errors.New("wavewalletdk mobile not started")
 	}
 

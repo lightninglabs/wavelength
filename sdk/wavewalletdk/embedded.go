@@ -40,6 +40,7 @@ func DefaultConfig() Config {
 		WalletBtcwalletFilterHeadersSource: cfg.Wallet.
 			BtcwFilterSource,
 		SwapServerAddress:      cfg.Swap.ServerAddress,
+		SwapNotificationIssuer: cfg.Swap.NotificationIssuer,
 		SwapServerTransport:    Transport(cfg.Swap.ServerTransport),
 		SwapServerTLSCertPath:  cfg.Swap.ServerTLSCertPath,
 		SwapServerInsecure:     cfg.Swap.ServerInsecure,
@@ -193,11 +194,9 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 	conn, err := grpc.NewClient("passthrough:///bufnet", dialOpts...)
 	if err != nil {
 		cancel()
-		shutdownCtx, shutdownCancel := context.WithTimeout(
-			context.Background(), defaultCloseTimeout,
-		)
-		runErr := waitForRunExit(shutdownCtx, runErrChan)
-		shutdownCancel()
+		// No handle has been published. Startup retains ownership until
+		// the daemon returns, even after the caller deadline expires.
+		runErr := waitForRunExit(context.Background(), runErrChan)
 		listenerErr := listener.Close()
 
 		return nil, fmt.Errorf("dial embedded daemon: %w",
@@ -207,11 +206,9 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 	if err := waitForReady(ctx, conn, runDoneChan); err != nil {
 		closeErr := conn.Close()
 		cancel()
-		shutdownCtx, shutdownCancel := context.WithTimeout(
-			context.Background(), defaultCloseTimeout,
-		)
-		runErr := waitForRunExit(shutdownCtx, runErrChan)
-		shutdownCancel()
+		// No handle has been published. Startup retains ownership until
+		// the daemon returns, even after the caller deadline expires.
+		runErr := waitForRunExit(context.Background(), runErrChan)
 		listenerErr := listener.Close()
 
 		return nil, fmt.Errorf("wait for embedded daemon readiness: %w",
@@ -230,6 +227,9 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 	)
 	client.waitWalletServicesReady = server.WaitForWalletServicesReady
 	client.recoverWalletState = server.RecoverWalletState
+	client.setNotificationSubscription = server.SetNotificationSubscription
+	client.setSwapNotificationSubscription =
+		server.SetSwapNotificationSubscription
 
 	return client, nil
 }
@@ -346,6 +346,9 @@ func applyConfigOverrides(daemonCfg *waved.Config, cfg Config) {
 
 	if daemonCfg.Swap == nil {
 		daemonCfg.Swap = &waved.SwapConfig{}
+	}
+	if cfg.SwapNotificationIssuer != "" {
+		daemonCfg.Swap.NotificationIssuer = cfg.SwapNotificationIssuer
 	}
 	if cfg.SwapServerAddress != "" {
 		daemonCfg.Swap.ServerAddress = cfg.SwapServerAddress

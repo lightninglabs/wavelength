@@ -65,8 +65,9 @@ application-facing wallet API.
 - `StartExternalSeedWallet` accepts nested `config` and standard-base64
   `seed_entropy`. `config.data_dir` is the final wallet directory; this package
   derives no account, seed, or path namespace.
-- `Stop` is idempotent and always resets the singleton so a subsequent `Start`
-  can succeed (e.g. after OS suspend/resume).
+- `Stop` cancels startup or the running daemon and waits up to five seconds.
+  A timeout retains the stopping generation and its client. New Start calls
+  reject until actual cleanup ends; repeated Stop calls re-wait that owner.
 - `startEmbedded` separates its daemon-readiness deadline from the lifecycle
   context used to open or recover the wallet. `Stop` cancels both.
 - gomobile cannot carry a caller `context.Context`, so this package owns
@@ -104,3 +105,11 @@ application-facing wallet API.
 - [sdk/wavewalletdk/CLAUDE.md](../CLAUDE.md) — Wrapped SDK; see for full DTO and
   RPC method detail.
 - [ARCHITECTURE.md](../../../ARCHITECTURE.md) — System-wide package map.
+
+## Notification source registration
+
+`SetNotificationSubscription` forwards the facade DTO's optional `source`
+selector. `swap_notification_issuer` configures the separately trusted swap
+source public identity. No push payload supplies a URL or issuer pin. The
+binding call retains its lifecycle-derived ten-second deadline. See
+[notification sources](../../../docs/notification-sources.md).
