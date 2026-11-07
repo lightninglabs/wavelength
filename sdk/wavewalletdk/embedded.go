@@ -40,6 +40,7 @@ func DefaultConfig() Config {
 		WalletBtcwalletFilterHeadersSource: cfg.Wallet.
 			BtcwFilterSource,
 		SwapServerAddress:      cfg.Swap.ServerAddress,
+		SwapNotificationIssuer: cfg.Swap.NotificationIssuer,
 		SwapServerTransport:    Transport(cfg.Swap.ServerTransport),
 		SwapServerTLSCertPath:  cfg.Swap.ServerTLSCertPath,
 		SwapServerInsecure:     cfg.Swap.ServerInsecure,
@@ -231,6 +232,8 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 	client.waitWalletServicesReady = server.WaitForWalletServicesReady
 	client.recoverWalletState = server.RecoverWalletState
 	client.setNotificationSubscription = server.SetNotificationSubscription
+	client.setSwapNotificationSubscription =
+		server.SetSwapNotificationSubscription
 
 	return client, nil
 }
@@ -347,6 +350,9 @@ func applyConfigOverrides(daemonCfg *waved.Config, cfg Config) {
 
 	if daemonCfg.Swap == nil {
 		daemonCfg.Swap = &waved.SwapConfig{}
+	}
+	if cfg.SwapNotificationIssuer != "" {
+		daemonCfg.Swap.NotificationIssuer = cfg.SwapNotificationIssuer
 	}
 	if cfg.SwapServerAddress != "" {
 		daemonCfg.Swap.ServerAddress = cfg.SwapServerAddress

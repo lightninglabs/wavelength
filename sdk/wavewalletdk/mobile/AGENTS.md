@@ -104,3 +104,11 @@ application-facing wallet API.
 - [sdk/wavewalletdk/CLAUDE.md](../CLAUDE.md) — Wrapped SDK; see for full DTO and
   RPC method detail.
 - [ARCHITECTURE.md](../../../ARCHITECTURE.md) — System-wide package map.
+
+## Notification source registration
+
+`SetNotificationSubscription` forwards the facade DTO's optional `source`
+selector. `swap_notification_issuer` configures the separately trusted swap
+source public identity. No push payload supplies a URL or issuer pin. The
+binding call retains its lifecycle-derived ten-second deadline. See
+[notification sources](../../../docs/notification-sources.md).

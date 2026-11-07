@@ -145,3 +145,12 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - [docs/daemon_cli_guide.md](../docs/daemon_cli_guide.md) — Daemon setup and
   CLI reference.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
+
+## Notification source registration
+
+The optional source registrar shares the configured gRPC swap connection and
+requires `SwapConfig.NotificationIssuer`, a compressed public identity pin.
+`Register` publishes its callback through the daemon's synchronized programmatic
+hook before serving calls. An empty pin or unsupported transport leaves
+registration unsupported. Challenges cannot choose their own trusted issuer.
+See [notification sources](../docs/notification-sources.md).
