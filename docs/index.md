@@ -72,3 +72,6 @@ into specific topics below.
 |----------|-------------|
 | [PLANS.md](../PLANS.md) | ExecPlan specification for complex features |
 | [idempotent-receive-scripts-execplan.md](idempotent-receive-scripts-execplan.md) | Retry-safe `NewReceiveScript` allocation: durable identity, exact replay, and expiry renewal |
+
+- [Notification relay](notification-relay.md).
+- [Notification relay implementation plan](notification-relay-execplan.md).

@@ -1,0 +1,22 @@
+# Build with: docker build -f Dockerfile.notifyrelay -t wavenotifyd:local .
+# No wallet database, wallet RPC or signing material belongs in this image.
+FROM golang:1.27.3-alpine AS builder
+RUN apk add --no-cache git
+WORKDIR /build
+COPY go.mod go.sum go.work go.work.sum* ./
+COPY baselib/go.mod baselib/go.sum ./baselib/
+COPY tools/go.mod tools/go.sum ./tools/
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/wavenotifyd ./cmd/wavenotifyd
+
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates && \
+    addgroup -g 10001 relay && adduser -D -u 10001 -G relay relay && \
+    mkdir /data && chown relay:relay /data
+COPY --from=builder /out/wavenotifyd /usr/local/bin/wavenotifyd
+USER 10001:10001
+WORKDIR /data
+EXPOSE 8080
+ENTRYPOINT ["wavenotifyd"]
