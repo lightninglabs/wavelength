@@ -449,6 +449,9 @@ type Querier interface {
 	// ListVTXOAncestryPathsByStatus returns every ancestry row whose parent
 	// VTXO matches the given status code. Companion to ListVTXOsByStatus.
 	ListVTXOAncestryPathsByStatus(ctx context.Context, status int32) ([]VtxoAncestryPath, error)
+	// ListVTXOMaintenancePage scans primary-key identities only. Status filtering
+	// happens at the live manager, avoiding an unindexed historical-status scan.
+	ListVTXOMaintenancePage(ctx context.Context, arg ListVTXOMaintenancePageParams) ([]ListVTXOMaintenancePageRow, error)
 	// ListVTXOSelectionCandidatesByStatus returns the lightweight projection coin
 	// selection runs on: outpoint, amount, and pkScript. Selection happens on
 	// every payment and only needs these three fields, so this avoids decoding
@@ -660,6 +663,9 @@ type Querier interface {
 	UpsertSpendingReservation(ctx context.Context, arg UpsertSpendingReservationParams) error
 	// Unilateral-exit job control-plane queries.
 	UpsertUnilateralExitJob(ctx context.Context, arg UpsertUnilateralExitJobParams) error
+	// VTXOMaintenanceCeiling captures a finite outpoint range without decoding
+	// descriptors or ancestry. The primary key provides the ordering.
+	VTXOMaintenanceCeiling(ctx context.Context) (VTXOMaintenanceCeilingRow, error)
 }
 
 var _ Querier = (*Queries)(nil)

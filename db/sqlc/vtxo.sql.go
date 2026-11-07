@@ -258,6 +258,60 @@ func (q *Queries) ListRecoverableVTXOs(ctx context.Context) ([]Vtxo, error) {
 	return items, nil
 }
 
+const ListVTXOMaintenancePage = `-- name: ListVTXOMaintenancePage :many
+SELECT outpoint_hash, outpoint_index FROM vtxos
+WHERE (outpoint_hash, outpoint_index) >
+      ($1, CAST($2 AS INTEGER))
+  AND (outpoint_hash, outpoint_index) <=
+      ($3, CAST($4 AS INTEGER))
+ORDER BY outpoint_hash, outpoint_index
+LIMIT $5
+`
+
+type ListVTXOMaintenancePageParams struct {
+	AfterHash    []byte
+	AfterIndex   int32
+	ThroughHash  []byte
+	ThroughIndex int32
+	LimitCount   int32
+}
+
+type ListVTXOMaintenancePageRow struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+}
+
+// ListVTXOMaintenancePage scans primary-key identities only. Status filtering
+// happens at the live manager, avoiding an unindexed historical-status scan.
+func (q *Queries) ListVTXOMaintenancePage(ctx context.Context, arg ListVTXOMaintenancePageParams) ([]ListVTXOMaintenancePageRow, error) {
+	rows, err := q.db.QueryContext(ctx, ListVTXOMaintenancePage,
+		arg.AfterHash,
+		arg.AfterIndex,
+		arg.ThroughHash,
+		arg.ThroughIndex,
+		arg.LimitCount,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListVTXOMaintenancePageRow
+	for rows.Next() {
+		var i ListVTXOMaintenancePageRow
+		if err := rows.Scan(&i.OutpointHash, &i.OutpointIndex); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListVTXOSelectionCandidatesByStatus = `-- name: ListVTXOSelectionCandidatesByStatus :many
 SELECT outpoint_hash, outpoint_index, amount, pk_script
 FROM vtxos
@@ -578,4 +632,24 @@ func (q *Queries) UpdateVTXOStatus(ctx context.Context, arg UpdateVTXOStatusPara
 		arg.LastUpdateTime,
 	)
 	return err
+}
+
+const VTXOMaintenanceCeiling = `-- name: VTXOMaintenanceCeiling :one
+SELECT outpoint_hash, outpoint_index FROM vtxos
+ORDER BY outpoint_hash DESC, outpoint_index DESC
+LIMIT 1
+`
+
+type VTXOMaintenanceCeilingRow struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+}
+
+// VTXOMaintenanceCeiling captures a finite outpoint range without decoding
+// descriptors or ancestry. The primary key provides the ordering.
+func (q *Queries) VTXOMaintenanceCeiling(ctx context.Context) (VTXOMaintenanceCeilingRow, error) {
+	row := q.db.QueryRowContext(ctx, VTXOMaintenanceCeiling)
+	var i VTXOMaintenanceCeilingRow
+	err := row.Scan(&i.OutpointHash, &i.OutpointIndex)
+	return i, err
 }
