@@ -11,6 +11,7 @@ import (
 	"time"
 
 	btcwalletrpc "github.com/btcsuite/btcwallet/rpc/walletrpc"
+	"github.com/lightninglabs/wavelength/db"
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/lightninglabs/wavelength/rpc/restclient"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
@@ -60,6 +61,13 @@ type Client struct {
 	setSwapNotificationSubscription func(context.Context,
 		*mailboxpb.NotificationSubscriptionMutation) (
 		*mailboxpb.NotificationSubscriptionResponse, error)
+
+	// Activity replay borrows the embedded canonical store. Direct
+	// callbacks participate in localCalls, so Close cannot release their
+	// daemon owner.
+	readActivityBatch func(context.Context, int64, int64, int32) (
+		db.ActivityBatch, error)
+	activityCursor func(context.Context) (int64, error)
 
 	closeFn   func(context.Context) error
 	closeOnce sync.Once

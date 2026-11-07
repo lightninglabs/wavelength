@@ -85,3 +85,6 @@ into specific topics below.
 - [Domain shutdown implementation plan](domain-shutdown-execplan.md) — retained worker ownership.
 - [Host driven ingress](host-driven-ingress.md) — bounded mailbox ingress primitive.
 - [Mobile runtime recovery plan](mobile-runtime-recovery-execplan.md) — durable round prerequisites.
+
+- [Finite canonical activity reads](canonical-activity-batches.md) — bounded current-state replay and host cursor contract.
+- [Canonical activity batches plan](canonical-activity-batches-execplan.md) — implementation and validation boundaries.

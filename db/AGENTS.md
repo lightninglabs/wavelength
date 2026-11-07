@@ -529,3 +529,11 @@ when adding one.
   target has to be checked against, along with the caveat that a conflict
   target can also miss a plain unique constraint declared inline in a
   `CREATE TABLE`.
+
+## Bounded canonical activity reads
+
+Finite embedded activity batches join event positions to current canonical
+rows. A captured ceiling bounds replay; the host persists explicit NextCursor
+and deduplicates by canonical identity. Capturing a cursor does not reconcile
+sources. Both direct SDK callbacks join shutdown before releasing the store.
+See [finite activity reads](../docs/canonical-activity-batches.md).
