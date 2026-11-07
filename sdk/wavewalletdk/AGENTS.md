@@ -19,7 +19,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/wave
 - `Client` — concurrency-safe wallet handle owning the embedded daemon
   lifecycle, the private `bufconn` gRPC connection, and the
   waverpc/wavewalletrpc/swapclientrpc clients. `Stop`/`Close` are
-  idempotent aliases.
+  idempotent aliases. `CloseContext` bounds a caller wait while this handle
+  retains the single cleanup owner until actual completion.
 - `Config` — embedded daemon + wallet facade config. Two usage modes:
   zero-value plus convenience fields (`DataDir`, `Network`,
   `ServerAddress`, …), or a caller-owned `DaemonConfig` plus only the
@@ -247,3 +248,13 @@ empty default) or `NotificationSourceSwapServer`. Each configured source needs
 its own fresh signed registration. `Config.SwapNotificationIssuer` pins the
 swap source identity. Unknown selectors reject before signing; remote handles
 have no local signer. See [notification sources](../../docs/notification-sources.md).
+
+## Shutdown ownership
+
+A Close/Stop timeout does not release an embedded daemon. Retain the handle and
+re-wait CloseContext before reopening its data directory. Direct notification,
+recovery and readiness callbacks share one admission gate: Close cancels their
+contexts and joins their final access before daemon cleanup. Unpublished startup
+failure also joins cleanup before returning. This proves SDK handle ownership;
+it does not assert that all daemon actors are suspend-safe. See
+[shutdown ownership](../../docs/sdk-shutdown-ownership.md).
