@@ -30,14 +30,19 @@ and server-side routing need without including any transport implementation.
   handing every attempt the same `RPCOptions.IdempotencyKey`. The key is
   minted once at the logical-call boundary (random, not a payload digest, so
   two identical concurrent reads stay distinct). Only `ResourceExhausted` is
-  retried, after a jittered exponential backoff; a cancelled or expired
+  retried, after the operator's retry-after hint when the shed response names
+  one and a jittered exponential backoff otherwise; a cancelled or expired
   context never re-sends.
-- `RetryPolicy` — `MaxAttempts` / `BaseDelay` / `MaxDelay`; the zero value
-  selects the package defaults (4 attempts, 200 ms base, 5 s cap), which
-  mirror `serverconn/mailboxpull`'s backoff shape.
+- `RetryPolicy` — `MaxAttempts` / `BaseDelay` / `MaxDelay` / `MaxRetryAfter`;
+  the zero value selects the package defaults (4 attempts, 200 ms base, 5 s
+  cap, 30 s retry-after ceiling). The first three mirror
+  `serverconn/mailboxpull`'s backoff shape.
 - `NewIdempotencyKey` — Mints one 16-byte hex key per logical request.
 - `IsShedError` — Reports whether an error (wrapped or not) is the operator's
   explicit `ResourceExhausted` shed answer.
+- `RetryAfter` — Reads the operator's retry-after hint off an error, carried
+  as a `google.rpc.RetryInfo` detail on the gRPC status (so it rides the
+  existing `HeaderGRPCStatusB64` round trip, with no new wire contract).
 - `EncodeErrorHeaders` / `DecodeErrorHeaders` — Round-trip a gRPC `error` as a
   base64-encoded `google.rpc.Status` under the `HeaderGRPCStatusB64` envelope
   header, so a failed handler call can surface a typed error across the
@@ -68,6 +73,10 @@ and server-side routing need without including any transport implementation.
 - A `KIND_RESPONSE` envelope carrying `HeaderGRPCStatusB64` signals a failed
   RPC; receivers must decode it via `DecodeErrorHeaders` before attempting to
   unmarshal the body.
+- A retry-after hint is an untrusted number from the operator. `backoffFor`
+  clamps it to `RetryPolicy.MaxRetryAfter` and ignores a non-positive or
+  malformed one, so a buggy or hostile operator cannot park a client
+  indefinitely by naming an absurd delay.
 
 ## Deep Docs
 
