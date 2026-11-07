@@ -127,7 +127,7 @@ Management payload actions are:
 | Action | Additional fields | Result |
 |---|---|---|
 | `rotate_token` | `device_token` | Replace token and increment its revision |
-| `subscribe` | `route_id`, `enable_alerts` | Create/renew a 30-day subscription and rotate scoped capabilities |
+| `subscribe` | `route_id`, `enable_alerts`, optional `alert_presentation` | Create/renew a 30-day subscription and rotate scoped capabilities |
 | `revoke_subscription` | `subscription_id` | Revoke only this installation's subscription |
 | `delete_installation` | none | Disable delivery and erase token, key and attestation receipt |
 
@@ -216,3 +216,63 @@ can also be checked with
 The generic alert says “Payment activity. Open Wavelength to update your wallet.”
 A source may signal an incoming HTLC before the phone has completed its claim.
 The fixed template therefore does not claim a completed receipt or an amount.
+
+## Verified receipt presentation
+
+An updated app may sign a subscription with `enable_alerts: true` and
+`alert_presentation: "receipt_hint"`. The management response must explicitly
+acknowledge `alert_presentation: "receipt_hint"` before the app enables this
+mode. Omission or `"generic"` preserves the visible template for older apps.
+Other presentation values, a presentation without alert consent, and a
+presentation on unrelated management actions are rejected.
+
+A payment producer still calls `/v1/alerts` with its existing scoped grant.
+The relay sends `content-available: 1`, no `aps.alert`, APNs push type
+`background`, and the fixed app-data marker `kind: "payment_activity"`.
+The existing `event_id` is the SHA256 of the producer's opaque event identity.
+An ordinary `/v1/wakes` request never carries this marker. Both payment modes
+share the one-minute payment budget; ordinary wakes retain their separate
+20-minute budget. Apple's delivery policy may throttle or omit background
+hints, even when the relay accepts them.
+
+The marker authorizes a payment-activity fallback. It proves no amount or
+completion. For an amount, the app must match the event to an invoice enrolled
+under current consent and verify completed native wallet state. A locked,
+interrupted or unmatched path may use the fixed generic local alert. Persist
+presentation deduplication before adding a local notification. A process crash
+can omit an alert; activity and wallet recovery remain authoritative.
+
+A signed mode change permanently drops pending payment events atomically
+with capability rotation, retaining replay evidence. Retrying a dropped event
+returns accepted without recreating its job. An interrupted old send that
+needs retry is dropped too. The app performs foreground reconciliation during
+this cutover; old activity is not presented again in the new mode. An old in-flight provider completion
+cannot erase a newly queued event. APNs may already hold an older visible
+alert when the change commits; it cannot be recalled. The app must treat a
+remote visible alert as already presented.
+
+Opening an existing format-one database upgrades its format marker to two
+without deleting records. Missing presentation fields mean generic. Format-one
+binaries reject the new marker, so rollback requires a format-two compatible
+binary. Back up the volume before upgrading. No command in this change starts
+a relay or changes an app's subscription.
+
+### Invoice correlation contract
+
+An enrolled-invoice producer may use lowercase hexadecimal SHA256 of these
+concatenated bytes as its opaque EventID: ASCII
+`wavelength.receipt-notification.v1`, one zero byte, the wallet owner's
+33-byte compressed public key, and the invoice's 32-byte payment hash. The
+relay performs its existing SHA256 over the UTF-8 EventID and sends that
+second digest as `wavelength.event_id`. The relay does not receive the inputs.
+Knowing a public invoice does not grant push authority; capability checks and
+the producer's incoming-payment classification are still required.
+
+Cross-language fixture (public synthetic inputs):
+
+```text
+owner: 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
+payment_hash: 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+event_id: 421275775f70409fe668dbda0cb19464c1f90d1560132437ceafbfed6f091aee
+wavelength.event_id: aea16881a4d03ec94406d8539aee80b8027806ef6ba01df56d77143eb8118f78
+```
