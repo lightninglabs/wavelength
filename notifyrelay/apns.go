@@ -173,7 +173,7 @@ func notificationPayload(delivery Delivery) ([]byte, error) {
 	if delivery.Scope == ScopeAlert {
 		aps["alert"] = map[string]string{
 			"title": "Wavelength",
-			"body": "New payment. Open Wavelength " +
+			"body": "Payment activity. Open Wavelength " +
 				"to update your wallet.",
 		}
 	} else if delivery.Scope != ScopeWake {
