@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,7 +30,8 @@ import (
 // with a real key and the exact raw-message/tag SignMessage contract.
 type notificationTestSigner struct {
 	lndclient.SignerClient
-	key *btcec.PrivateKey
+	key   *btcec.PrivateKey
+	calls atomic.Int32
 }
 
 // SignMessage applies the supplied BIP-340 tag exactly once, like LND does.
@@ -37,6 +39,7 @@ func (s *notificationTestSigner) SignMessage(_ context.Context, message []byte,
 	_ keychain.KeyLocator, options ...lndclient.SignMessageOption) ([]byte,
 	error) {
 
+	s.calls.Add(1)
 	var request signrpc.SignMessageReq
 	for _, option := range options {
 		option(&request)
@@ -126,11 +129,12 @@ func TestNotificationBeforeIngress(t *testing.T) {
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	signer := &notificationTestSigner{key: owner}
 	server := &Server{
 		serverConn:          conn,
 		walletServicesReady: make(chan struct{}),
 		lnd: fn.Some(&lndclient.GrpcLndServices{
-			Signer: &notificationTestSigner{key: owner},
+			Signer: signer,
 		}),
 	}
 	server.storeClientKeyDesc(
@@ -159,6 +163,39 @@ func TestNotificationBeforeIngress(t *testing.T) {
 	result, err := server.SetNotificationSubscription(ctx, mutation)
 	require.NoError(t, err)
 	require.Equal(t, mutation.SubscriptionId, result.SubscriptionId)
+	// The separately configured swap source uses the same real identity
+	// signer, but checks its own pinned issuer before asking the wallet to
+	// sign.
+	rpcServer := &RPCServer{server: server}
+	remote := mailboxpb.NewNotificationServiceClient(conn)
+	rpcServer.RegisterSwapNotificationSource(func(ctx context.Context,
+		mutation *mailboxpb.NotificationSubscriptionMutation) (
+		*mailboxpb.NotificationSubscriptionResponse, error) {
+
+		return rpcServer.AuthorizeNotificationSubscription(
+			ctx, remote, operator.PubKey(), mutation,
+		)
+	})
+	result, err = server.SetSwapNotificationSubscription(ctx, mutation)
+	require.NoError(t, err)
+	require.Equal(t, mutation.SubscriptionId, result.SubscriptionId)
+	before := signer.calls.Load()
+	wrong, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	rpcServer.RegisterSwapNotificationSource(func(ctx context.Context,
+		mutation *mailboxpb.NotificationSubscriptionMutation) (
+		*mailboxpb.NotificationSubscriptionResponse, error) {
+
+		return rpcServer.AuthorizeNotificationSubscription(
+			ctx, remote, wrong.PubKey(), mutation,
+		)
+	})
+	_, err = server.SetSwapNotificationSubscription(ctx, mutation)
+	require.ErrorIs(t, err, notification.ErrInvalidAuthorization)
+	require.Equal(t, before, signer.calls.Load())
+	rpcServer.RegisterSwapNotificationSource(nil)
+	_, err = server.SetSwapNotificationSubscription(ctx, mutation)
+	require.ErrorIs(t, err, notification.ErrUnsupported)
 	// No bootstrap identity is a readiness error, not an unsupported edge.
 	_, err = (&Server{}).SetNotificationSubscription(ctx, mutation)
 	require.True(t, waverpc.IsWalletNotReadyError(err))

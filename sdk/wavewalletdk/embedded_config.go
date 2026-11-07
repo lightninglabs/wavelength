@@ -82,6 +82,10 @@ type Config struct {
 	// transport. Empty selects the daemon network+transport default.
 	SwapServerAddress string
 
+	// SwapNotificationIssuer pins the configured swap source's compressed
+	// public identity. Empty leaves swap notifications unsupported.
+	SwapNotificationIssuer string
+
 	// SwapServerTransport selects how the embedded daemon talks to the
 	// swap server. Empty defaults to gRPC.
 	SwapServerTransport Transport

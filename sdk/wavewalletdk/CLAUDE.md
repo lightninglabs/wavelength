@@ -239,3 +239,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/wave
 - [swapclientserver/CLAUDE.md](../../swapclientserver/CLAUDE.md) —
   Daemon-side swap subserver (`-tags swapruntime`).
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) — System-wide package map.
+
+## Notification source registration
+
+`SetNotificationSubscription` accepts `NotificationSourceOperator` (also the
+empty default) or `NotificationSourceSwapServer`. Each configured source needs
+its own fresh signed registration. `Config.SwapNotificationIssuer` pins the
+swap source identity. Unknown selectors reject before signing; remote handles
+have no local signer. See [notification sources](../../docs/notification-sources.md).
