@@ -35,7 +35,9 @@ func TestStopRetainsStartingGeneration(t *testing.T) {
 	<-entered
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	require.ErrorIs(t, stopWithContext(ctx), context.Canceled)
+	err := stopWithContext(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorContains(t, err, "stop pending; call Stop again")
 	<-cancelled
 	state.mu.Lock()
 	status := state.status
@@ -43,7 +45,7 @@ func TestStopRetainsStartingGeneration(t *testing.T) {
 	require.Equal(t, statusStopping, status)
 	require.ErrorContains(t, Start("{}"), "already started")
 	require.ErrorIs(t, stopWithContext(ctx), context.Canceled)
-	_, _, err := activeClient()
+	_, _, err = activeClient()
 	require.Error(t, err)
 	close(release)
 	require.NoError(t, stopWithContext(t.Context()))

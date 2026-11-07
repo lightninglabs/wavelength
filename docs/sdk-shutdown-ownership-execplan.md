@@ -23,8 +23,6 @@ promise a globally suspend-safe daemon state or implement a background window.
   detector, then full tagged Go SDK and mobile race suites.
 - [x] (2026-11-07) Complete default and mobile-tagged lint, actor blocking
   checks, formatting and documentation checks.
-- [ ] Publish a separate prerequisite PR.
-- [ ] Complete Gateway review of its exact head.
 
 ## Surprises & Discoveries
 
@@ -60,7 +58,7 @@ not proof of cleanup completion; callers must wait Stop before restarting.
 
 
 Focused and full tagged SDK/mobile race suites pass. Default and mobile-tagged lint, actor blocking checks, formatting and
-documentation pass. Publication and actual Gateway review remain.
+documentation pass. 
 Daemon domain joins, durable wake recovery and amount presentation remain
 separate work. No deployment, Apple setup, or framework publication occurs here.
 

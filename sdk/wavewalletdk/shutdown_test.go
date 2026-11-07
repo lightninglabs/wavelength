@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 
 	pb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/lightninglabs/wavelength/waved"
@@ -15,37 +16,43 @@ import (
 // the cleanup owner nor becomes the cached result of all later Close calls.
 func TestCloseContextRetainsCleanup(t *testing.T) {
 	t.Parallel()
-	entered := make(chan context.Context, 1)
-	release := make(chan struct{})
-	terminal := errors.New("terminal cleanup result")
-	var calls atomic.Int32
-	client := &Client{closeFn: func(ctx context.Context) error {
-		calls.Add(1)
-		entered <- ctx
-		<-release
+	synctest.Test(t, func(t *testing.T) {
+		entered := make(chan context.Context, 1)
+		release := make(chan struct{})
+		terminal := errors.New("terminal cleanup result")
+		var calls atomic.Int32
+		client := &Client{closeFn: func(ctx context.Context) error {
+			calls.Add(1)
+			entered <- ctx
+			<-release
 
-		return terminal
-	}}
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	require.ErrorIs(t, client.CloseContext(ctx), context.Canceled)
-	cleanupCtx := <-entered
-	require.NoError(t, cleanupCtx.Err())
-	waiting := make(chan error, 1)
-	go func() {
-		waiting <- client.CloseContext(t.Context())
-	}()
-	select {
-	case err := <-waiting:
-		t.Fatalf("cleanup reported complete while its owner is "+
-			"blocked: %v", err)
+			return terminal
+		}}
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		require.ErrorIs(t, client.CloseContext(ctx), context.Canceled)
+		cleanupCtx := <-entered
+		require.NoError(t, cleanupCtx.Err())
+		waiting := make(chan error, 1)
+		go func() {
+			waiting <- client.CloseContext(t.Context())
+		}()
+		// Wait proves the second caller has reached its cleanup wait
+		// before checking that no result is available. No scheduler
+		// timing assumption.
+		synctest.Wait()
+		select {
+		case err := <-waiting:
+			t.Fatalf("cleanup reported complete while its owner "+
+				"is blocked: %v", err)
 
-	default:
-	}
-	close(release)
-	require.ErrorIs(t, <-waiting, terminal)
-	require.ErrorIs(t, client.CloseContext(ctx), terminal)
-	require.EqualValues(t, 1, calls.Load())
+		default:
+		}
+		close(release)
+		require.ErrorIs(t, <-waiting, terminal)
+		require.ErrorIs(t, client.CloseContext(ctx), terminal)
+		require.EqualValues(t, 1, calls.Load())
+	})
 }
 
 // TestCloseJoinsLocalCallbacks runs every direct embedded callback through its
