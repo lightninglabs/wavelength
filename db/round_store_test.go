@@ -2441,3 +2441,131 @@ func TestRoundStoreFinalizeRoundCallbackSharesTransaction(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, activeRounds)
 }
+
+// TestLookupForfeitSettlement proves the local round store supplies no proof
+// before confirmation and preserves the consuming coordinates after it.
+func TestLookupForfeitSettlement(t *testing.T) {
+	t.Parallel()
+	store, _ := newRoundStoreForTest(t)
+	ctx := t.Context()
+	id := testRoundIDDB("consumed-vtxo-settlement")
+	proof, err := store.LookupForfeitSettlement(ctx, id.String())
+	require.NoError(t, err)
+	require.True(t, proof.IsNone())
+	r := createTestRound(t, id)
+	trees := make(map[round.SignerKey]*tree.Tree)
+	require.NoError(
+		t,
+		store.CommitState(
+			ctx, r, &round.InputSigSentState{
+				RoundID:     id,
+				ClientTrees: trees,
+			},
+		),
+	)
+	proof, err = store.LookupForfeitSettlement(ctx, id.String())
+	require.NoError(t, err)
+	require.True(t, proof.IsNone())
+	txid := chainhash.Hash{0xab}
+	require.NoError(
+		t,
+		store.FinalizeRound(
+			ctx, id, txid, round.ConfInfo{
+				Height:    123,
+				BlockHash: chainhash.Hash{2},
+			},
+			nil,
+		),
+	)
+	proof, err = store.LookupForfeitSettlement(ctx, id.String())
+	require.NoError(t, err)
+	require.True(t, proof.IsSome())
+	require.Equal(t, txid, proof.UnsafeFromSome().TxID)
+	require.EqualValues(t, 123, proof.UnsafeFromSome().Height)
+	proof, err = store.LookupForfeitSettlement(ctx, "malformed")
+	require.NoError(t, err)
+	require.True(t, proof.IsNone())
+}
+
+// TestConsumedExpiredVTXORestart uses the real store to retain a consuming
+// round across an exit/expired status overwrite. Startup retires the old
+// output before creating any actor and repeats safely on the next restart.
+func TestConsumedExpiredVTXORestart(t *testing.T) {
+	t.Parallel()
+	vs, rs, base := newVTXOStoreForTest(t)
+	ctx := t.Context()
+	commit := func(label string) round.RoundID {
+		id := testRoundIDDB(label)
+		r := createTestRound(t, id)
+		trees := make(map[round.SignerKey]*tree.Tree)
+		require.NoError(
+			t,
+			rs.CommitState(
+				ctx, r, &round.InputSigSentState{
+					RoundID:     id,
+					ClientTrees: trees,
+				},
+			),
+		)
+
+		return id
+	}
+	created := commit("consumed-input-created")
+	consuming := commit("consumed-input-consumed")
+	desc := createTestVTXODescriptor(t, created, 1)
+	require.NoError(t, vs.SaveVTXO(ctx, desc))
+	require.NoError(
+		t,
+		vs.MarkForfeiting(
+			ctx, desc.Outpoint, consuming.String(), nil,
+		),
+	)
+	require.NoError(
+		t,
+		rs.FinalizeRound(
+			ctx, consuming, chainhash.Hash{1}, round.ConfInfo{
+				Height:    123,
+				BlockHash: chainhash.Hash{2},
+			},
+			nil,
+		),
+	)
+	require.NoError(
+		t, vs.UpdateVTXOStatus(
+			ctx, desc.Outpoint, vtxo.VTXOStatusUnilateralExit,
+		),
+	)
+	require.NoError(
+		t,
+		vs.UpdateVTXOStatus(ctx, desc.Outpoint, vtxo.VTXOStatusExpired),
+	)
+	// A stale reservation must disappear in the same terminal write.
+	owner := chainhash.Hash{1}
+	require.NoError(
+		t,
+		base.UpsertSpendingReservation(
+			ctx, sqlc.UpsertSpendingReservationParams{
+				OutpointHash:  desc.Outpoint.Hash[:],
+				OutpointIndex: int32(desc.Outpoint.Index),
+				OwnerID:       owner[:],
+			},
+		),
+	)
+	lookup := rs.LookupForfeitSettlement
+	for range 2 {
+		mgr := vtxo.NewManager(
+			&vtxo.ManagerConfig{
+				Store:                   vs,
+				LookupForfeitSettlement: lookup,
+			},
+		)
+		require.NoError(t, mgr.Start(ctx, nil))
+		restored, err := vs.GetVTXO(ctx, desc.Outpoint)
+		require.NoError(t, err)
+		require.Equal(t, vtxo.VTXOStatusForfeited, restored.Status)
+		require.Equal(t, consuming.String(), restored.ForfeitRoundID)
+		reserved, err := base.ListSpendingReservationOutpoints(ctx)
+		require.NoError(t, err)
+		require.Empty(t, reserved)
+	}
+}
