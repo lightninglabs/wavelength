@@ -230,6 +230,7 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 	)
 	client.waitWalletServicesReady = server.WaitForWalletServicesReady
 	client.recoverWalletState = server.RecoverWalletState
+	client.setNotificationSubscription = server.SetNotificationSubscription
 
 	return client, nil
 }
