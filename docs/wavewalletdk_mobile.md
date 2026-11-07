@@ -85,8 +85,8 @@ func Start(cfgJSON string) error
 // ExternalSeedWalletOpenResult JSON.
 func StartExternalSeedWallet(reqJSON []byte) ([]byte, error)
 
-// Stop tears down the daemon. Idempotent; resets the singleton so a host can
-// restart after the OS suspends/resumes the app.
+// Stop cancels the daemon and waits up to five seconds. A timeout retains the
+// stopping owner; repeat Stop to re-wait before starting another instance.
 func Stop() error
 ```
 
@@ -100,6 +100,10 @@ func Stop() error
   the boot, and that `Start` tears down any client it produced rather than
   leaking it. A panic in the boot path is recovered into the returned error; an
   unrecovered panic would kill the host process across the boundary.
+- A Stop timeout ends only that caller's wait. Startup and cleanup retain the
+  singleton until they actually return. Start rejects during that interval.
+  Repeated Stop waits the same cleanup. `IsRunning` reports only starting or
+  started, so false is not proof that cleanup has finished.
 - The wrapper owns an internal `context.Context` created in `Start` and
   cancelled by `Stop`, so the mobile API never has to express a `context.Context`
   and in-flight RPCs / subscriptions unwind on shutdown.

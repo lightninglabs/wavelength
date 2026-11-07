@@ -120,18 +120,20 @@ func openStartedExternalSeedWallet(ctx context.Context, client *Client,
 	openReq.SeedEntropy = seedEntropy
 	result, err := client.openWalletFromExternalSeed(ctx, openReq)
 	if err != nil {
-		// Stop owns its own bounded daemon-shutdown context.
+		// This startup path still owns the unpublished handle. Join its
+		// cleanup before returning an error and releasing ownership.
 		//nolint:contextcheck
-		stopErr := client.Stop()
+		stopErr := client.CloseContext(context.Background())
 
 		return nil, fmt.Errorf("open external-seed wallet: %w",
 			errors.Join(err, stopErr))
 	}
 
 	if err := waitForExternalSeedWalletReady(ctx, client); err != nil {
-		// Stop owns its own bounded daemon-shutdown context.
+		// This startup path still owns the unpublished handle. Join its
+		// cleanup before returning an error and releasing ownership.
 		//nolint:contextcheck
-		stopErr := client.Stop()
+		stopErr := client.CloseContext(context.Background())
 
 		return nil, fmt.Errorf("wait for external-seed wallet "+
 			"ready: %w", errors.Join(err, stopErr))
@@ -151,7 +153,13 @@ func waitForExternalSeedWalletReady(ctx context.Context, client *Client) error {
 			"an embedded client")
 	}
 
-	return client.waitWalletServicesReady(ctx)
+	callCtx, release, err := client.beginLocalCall(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	return client.waitWalletServicesReady(callCtx)
 }
 
 // openWalletFromExternalSeed converts exactly 16 externally derived bytes to
@@ -299,7 +307,12 @@ func (c *Client) recoverExternalSeedWalletState(ctx context.Context,
 			"embedded client")
 	}
 
-	recovery, err := c.recoverWalletState(ctx, recoveryWindow)
+	callCtx, release, err := c.beginLocalCall(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	recovery, err := c.recoverWalletState(callCtx, recoveryWindow)
 	if err != nil {
 		return fmt.Errorf("recover wallet state: %w", err)
 	}

@@ -76,7 +76,12 @@ func (c *Client) SetNotificationSubscription(ctx context.Context,
 	if request.Remove {
 		action = pb.NotificationSubscriptionMutation_ACTION_REMOVE
 	}
-	result, err := register(ctx,
+	callCtx, release, err := c.beginLocalCall(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	result, err := register(callCtx,
 		&pb.NotificationSubscriptionMutation{
 			Action: action, SubscriptionId: request.SubscriptionID,
 			RelayId:         request.RelayID,
