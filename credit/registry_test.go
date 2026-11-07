@@ -518,7 +518,8 @@ func TestRegistryStopWaitsForResidentChildren(t *testing.T) {
 // TestRegistryListSurfacesTerminalCreditOnly drives a credit-only pay to
 // completion, then asserts the full list surfaces the terminal row (carrying
 // the credit-only marker so the wallet projector can own its transition) while
-// the pending-only list excludes it.
+// the pending-only list excludes it. The first ledger read precedes settlement
+// so completion must use a later resume rather than win a scheduling race.
 func TestRegistryListSurfacesTerminalCreditOnly(t *testing.T) {
 	t.Parallel()
 
@@ -549,13 +550,27 @@ func TestRegistryListSurfacesTerminalCreditOnly(t *testing.T) {
 	require.True(t, ok)
 	require.NotEmpty(t, start.OpID)
 
+	// Force the first reconciliation to observe an unsettled payment.
+	require.Eventually(t, func() bool {
+		return server.listCallCount() > 0
+	}, 5*time.Second, 20*time.Millisecond)
+
 	// A credit-only pay reconciles to settlement against the server ledger,
 	// so the server must mark the pay operation debited before the FSM
 	// completes.
 	ph := payHash()
 	server.setPayOp(ph[:], ServerStateDebited)
 
+	// This fixture has no timeout actor. Explicitly resume after changing
+	// the ledger, just as the production poll callback does. Admission only
+	// queues the initial drive; it does not wait for that drive to finish.
+	err = registry.TellRef().Tell(ctx, &ResumeCreditOpRequest{
+		OpID: start.OpID,
+	})
+	require.NoError(t, err)
+
 	waitForState(t, store, start.OpID, StateCompleted)
+	require.Equal(t, 1, server.startPayCount())
 
 	// The full list surfaces the terminal op with the credit-only marker.
 	full, err := registry.Ref().Ask(
