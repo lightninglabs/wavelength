@@ -91,3 +91,7 @@ into specific topics below.
 
 - [Targeted Lightning receipt sources](lightning-receipt-source.md) — Typed invoice admissions and canonical amount checks.
 - [Lightning receipt source plan](lightning-receipt-source-execplan.md) — Implementation and validation.
+
+- [Warm invoice recovery windows](mobile-receipt-window.md) describe retained host ingress ownership.
+
+- [Warm receipt window plan](mobile-receipt-window-execplan.md) records implementation and validation.

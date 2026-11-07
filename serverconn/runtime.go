@@ -148,6 +148,13 @@ func (r *Runtime) PumpIngress(ctx context.Context, maxBatches uint32) (
 	return r.connector.PumpIngress(ctx, maxBatches)
 }
 
+// PumpIngressWithPolicy restricts one host invocation without changing config.
+func (r *Runtime) PumpIngressWithPolicy(ctx context.Context, maxBatches uint32,
+	policy IngressPumpPolicy) (IngressPumpResult, error) {
+
+	return r.connector.PumpIngressWithPolicy(ctx, maxBatches, policy)
+}
+
 // PauseIngress cancels and joins foreground polling or an active pump, while
 // leaving ingress available for the host's next mode or wake.
 func (r *Runtime) PauseIngress() {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/db"
 )
 
@@ -125,4 +126,46 @@ func (s *Server) ReadLightningReceipts(ctx context.Context,
 	}
 
 	return result, nil
+}
+
+// RegisterLightningReceiptResumer publishes targeted, already-admitted work.
+// Unregistering waits for the last borrower before subserver cleanup.
+func (r *RPCServer) RegisterLightningReceiptResumer(
+	resume func(context.Context, LightningReceiptReference) error) {
+
+	r.server.lightningReceiptMu.Lock()
+	defer r.server.lightningReceiptMu.Unlock()
+	r.server.lightningReceiptResume = resume
+}
+
+// resumeLightningReceipt borrows the wallet adapter through its final access.
+func (s *Server) resumeLightningReceipt(ctx context.Context,
+	ref LightningReceiptReference) error {
+
+	s.lightningReceiptMu.RLock()
+	defer s.lightningReceiptMu.RUnlock()
+	if s.lightningReceiptResume == nil {
+		return fmt.Errorf("targeted receipt recovery unavailable")
+	}
+
+	return s.lightningReceiptResume(ctx, ref)
+}
+
+// ResumeCreditReceipt re-drives one existing receive through its durable actor.
+// Tell acceptance is not a settlement barrier; the host polls committed state.
+func (r *RPCServer) ResumeCreditReceipt(ctx context.Context, id string) error {
+	record, err := r.ReadCreditOperationForReceipt(ctx, id)
+	if err != nil {
+		return err
+	}
+	if record.Kind != db.CreditOpKindReceive ||
+		r.server.creditRegistry == nil {
+		return fmt.Errorf("credit receive recovery unavailable")
+	}
+
+	return r.server.creditRegistry.TellRef().Tell(
+		ctx, &credit.ResumeCreditOpRequest{
+			OpID: id,
+		},
+	)
 }

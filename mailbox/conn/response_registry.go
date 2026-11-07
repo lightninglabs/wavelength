@@ -32,6 +32,10 @@ type responseWaiter struct {
 
 	// Created records waiter registration time for stale cleanup.
 	Created time.Time
+
+	// Request provenance is installed only at initial send registration.
+	Service string
+	Method  string
 }
 
 // bufferedResponse keeps a cloned envelope until a waiter is registered.
@@ -104,6 +108,21 @@ func (r *ResponseRegistry) RegisterWaiter(
 	id CorrelationID,
 ) actor.Future[*mailboxpb.Envelope] {
 
+	return r.registerWaiter(id, "", "")
+}
+
+// RegisterRequestWaiter records request provenance before an outbound send.
+// Re-registering an existing waiter preserves its original provenance.
+func (r *ResponseRegistry) RegisterRequestWaiter(id CorrelationID, service,
+	method string) actor.Future[*mailboxpb.Envelope] {
+
+	return r.registerWaiter(id, service, method)
+}
+
+// registerWaiter shares registration without overwriting a live request owner.
+func (r *ResponseRegistry) registerWaiter(id CorrelationID, service,
+	method string) actor.Future[*mailboxpb.Envelope] {
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -116,6 +135,7 @@ func (r *ResponseRegistry) RegisterWaiter(
 		waiter = &responseWaiter{
 			Promise: promise,
 			Created: now,
+			Service: service, Method: method,
 		}
 
 		r.waiters[id] = waiter
@@ -163,6 +183,20 @@ func (r *ResponseRegistry) HasWaiter(id CorrelationID) bool {
 	_, ok := r.waiters[id]
 
 	return ok
+}
+
+// RequestMatches proves a live waiter's original outbound service and method.
+// Manual registrations and expired waiters never authorize a restricted pump.
+func (r *ResponseRegistry) RequestMatches(id CorrelationID, service,
+	method string) bool {
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pruneStaleLocked(time.Now())
+	waiter, ok := r.waiters[id]
+
+	return ok && waiter.Service != "" && waiter.Method != "" &&
+		waiter.Service == service && waiter.Method == method
 }
 
 // WaiterCount returns how many live in-memory waiters are registered, which is

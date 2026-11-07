@@ -918,6 +918,10 @@ func (a *ServerConnectionActor) runFoldedDispatch(ctx context.Context,
 		}
 	}
 
+	if err := a.validatePumpPolicy(ctx, envelopes); err != nil {
+		return state, err
+	}
+
 	// Validation covers the pulled batch; everything after it works on the
 	// clamped one, so a redrive repeats no pre-transaction work it already
 	// did.

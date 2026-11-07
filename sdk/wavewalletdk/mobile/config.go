@@ -24,7 +24,8 @@ type mobileConfig struct {
 	DebugLevel string `json:"debug_level"`
 
 	// AllowMainnet must be true to run on mainnet.
-	AllowMainnet bool `json:"allow_mainnet"`
+	DurableRoundRuntime bool `json:"durable_round_runtime"`
+	AllowMainnet        bool `json:"allow_mainnet"`
 
 	// Ark operator / mailbox edge server.
 	ServerAddress     string `json:"server_address"`
@@ -176,6 +177,7 @@ func (mc mobileConfig) validate() error {
 // convenience merge semantics so the zero value defers to the wavewalletrpc
 // build defaults.
 func applyMobileConfig(cfg *wavewalletdk.Config, mc mobileConfig) {
+	cfg.DurableRoundRuntime = mc.DurableRoundRuntime
 	if mc.DataDir != "" {
 		cfg.DataDir = mc.DataDir
 	}

@@ -69,6 +69,9 @@ func TestCloseJoinsLocalCallbacks(t *testing.T) {
 		"activity-batch",
 		"activity-cursor",
 		"lightning-receipts",
+		"host-mode",
+		"receipt-window",
+		"cancel-window",
 	} {
 		t.Run(source, func(t *testing.T) {
 			t.Parallel()
@@ -205,6 +208,44 @@ func shutdownCallbackInvoke(t *testing.T, client *Client, source string,
 			)
 
 			return err
+		}
+
+	case "host-mode":
+		client.setHostForeground = func(ctx context.Context,
+			_ bool) error {
+
+			return callback(ctx)
+		}
+
+		return func() error {
+			return client.SetHostForeground(t.Context(), true)
+		}
+
+	case "receipt-window":
+		client.runReceiptWindow = func(ctx context.Context,
+			_ waved.ReceiptWindowRequest) (
+			waved.ReceiptWindowResult, error) {
+
+			return waved.ReceiptWindowResult{}, callback(ctx)
+		}
+
+		return func() error {
+			_, err := client.RunReceiptWindow(
+				t.Context(), ReceiptWindowRequest{},
+			)
+
+			return err
+		}
+
+	case "cancel-window":
+		client.cancelReceiptWindow = func(ctx context.Context,
+			_ string) error {
+
+			return callback(ctx)
+		}
+
+		return func() error {
+			return client.CancelReceiptWindow(t.Context(), "window")
 		}
 
 	case "recovery":
