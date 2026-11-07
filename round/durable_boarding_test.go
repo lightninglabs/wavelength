@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -76,6 +77,24 @@ func durableBoardingFixture(t testing.TB) BoardingIntent {
 				TxProof: fn.Some(proof),
 			},
 			Status: wallet.BoardingStatus(2),
+		},
+		AuthSpend: &arkscript.SpendPath{
+			SpendInfo: &arkscript.SpendInfo{
+				WitnessScript: []byte{
+					0x51,
+				},
+				ControlBlock: bytes.Repeat([]byte{3}, 33),
+			},
+			RequiredSequence: 7, RequiredLockTime: 9,
+			Conditions: [][]byte{
+				{
+					1,
+				},
+				{
+					2,
+					3,
+				},
+			},
 		},
 		Request: types.BoardingRequest{
 			Outpoint: &requestPoint, PolicyTemplate: []byte{

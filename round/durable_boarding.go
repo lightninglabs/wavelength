@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -42,6 +43,7 @@ type durableBoarding struct {
 	AssetProof         []byte
 	AssetLeafHash      []byte
 	AssetWitness       []byte
+	AuthSpend          []byte
 }
 
 // records gives every local and requested field a stable TLV identity.
@@ -72,12 +74,17 @@ func (d *durableBoarding) records() []tlv.Record {
 		tlv.MakePrimitiveRecord(45, &d.AssetProof),
 		tlv.MakePrimitiveRecord(47, &d.AssetLeafHash),
 		tlv.MakePrimitiveRecord(49, &d.AssetWitness),
+		tlv.MakePrimitiveRecord(51, &d.AuthSpend),
 	}
 }
 
 // encodeDurableBoarding records the existing intent without deriving keys or
 // rebuilding a proof against a chain that may have changed since admission.
 func encodeDurableBoarding(intent BoardingIntent) ([]byte, error) {
+	if intent.Request.AssetRef != "" && intent.AuthSpend == nil {
+		return nil, fmt.Errorf("asset boarding requires " +
+			"authorization path")
+	}
 	d := durableBoarding{
 		OwnerKey: durableKeyDescriptor(
 			intent.Address.KeyDesc,
@@ -107,6 +114,12 @@ func encodeDurableBoarding(intent BoardingIntent) ([]byte, error) {
 		d.RequestOutpoint = durableOutpoint(*intent.Request.Outpoint)
 	}
 	var err error
+	if intent.AuthSpend != nil {
+		d.AuthSpend, err = intent.AuthSpend.Encode()
+		if err != nil {
+			return nil, err
+		}
+	}
 	d.Tapscript, err = encodeDurableTapscript(intent.Address.Tapscript)
 	if err != nil {
 		return nil, err
@@ -147,6 +160,16 @@ func decodeDurableBoarding(raw []byte,
 	var err error
 	if err = decodeDurableFields(raw, d.records()...); err != nil {
 		return intent, err
+	}
+	if len(d.AssetRef) != 0 && len(d.AuthSpend) == 0 {
+		return intent, fmt.Errorf("asset boarding checkpoint missing " +
+			"authorization path")
+	}
+	if len(d.AuthSpend) != 0 {
+		intent.AuthSpend, err = arkscript.DecodeSpendPath(d.AuthSpend)
+		if err != nil {
+			return intent, err
+		}
 	}
 	intent.Address.ExitDelay = d.ExitDelay
 	intent.ChainInfo.ConfHeight = int32(d.ConfHeight)

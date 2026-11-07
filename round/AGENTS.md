@@ -511,3 +511,8 @@ refused with `ErrBoardingInFlight`. While another round has a join in flight
 `ErrRoundBusy`, because the operator keeps one registration per client. A
 round whose state cannot be read fails the check with neither error. If the
 package or the join fails, the round is dropped so a retry is not refused.
+
+Durable client-state writers use version 2 so older readers reject snapshots
+that contain the exact boarding authorization spend path. Version 1 Bitcoin
+snapshots remain readable. AuthSpend retains the witness script, control block,
+conditions and timelock requirements; restore never substitutes a standard leaf.
