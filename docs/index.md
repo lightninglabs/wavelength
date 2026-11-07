@@ -72,3 +72,6 @@ into specific topics below.
 |----------|-------------|
 | [PLANS.md](../PLANS.md) | ExecPlan specification for complex features |
 | [idempotent-receive-scripts-execplan.md](idempotent-receive-scripts-execplan.md) | Retry-safe `NewReceiveScript` allocation: durable identity, exact replay, and expiry renewal |
+
+- [Host driven ingress](host-driven-ingress.md) — bounded mailbox ingress primitive.
+- [Mobile runtime recovery plan](mobile-runtime-recovery-execplan.md) — durable round prerequisites.
