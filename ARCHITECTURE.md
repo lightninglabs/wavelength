@@ -19,6 +19,7 @@ package may import from a higher layer.
 | [`wallet`](wallet/) | On-chain boarding wallet actor (address derivation, UTXO monitoring) |
 | [`ledger`](ledger/) | Client-side durable ledger actor for double-entry fee accounting |
 | [`lib`](lib/) | Shared domain utilities: tree paths, BIP-322, arkscript policy, types |
+| [`lib/treecodec`](lib/treecodec/) | Shared bounded tree encoding for database proofs and client checkpoints; legacy ancestry bytes remain stable |
 | [`lib/arkscript`](lib/arkscript/) | Tapscript AST compiler and policy system for Ark taproot outputs |
 | [`lib/batchschedule`](lib/batchschedule/) | UTC window arithmetic and authenticated slot identity |
 | [`lib/bip322`](lib/bip322/) | BIP-322 intent-bound message authentication |
