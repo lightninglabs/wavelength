@@ -440,8 +440,8 @@ func registerAssetFlags(f *pflag.FlagSet, cfg *waved.Config) {
 	)
 	f.String(
 		"assets.lnd.host", cfg.Assets.Lnd.Host, "gRPC address of "+
-			"the lnd node behind tapd, which signs asset "+
-			"deposits; required by DepositAsset",
+			"the lnd node behind tapd, which signs tapd's "+
+			"asset inputs of a deposit; required by DepositAsset",
 	)
 	f.String(
 		"assets.lnd.tlspath", cfg.Assets.Lnd.TLSPath,

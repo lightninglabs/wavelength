@@ -40,8 +40,8 @@ type AssetsConfig struct {
 	// Tapd configures the tapd node used by the "tapd" backend.
 	Tapd *TapdConfig `mapstructure:"tapd"`
 
-	// Lnd configures the lnd node behind tapd. It signs the asset deposits
-	// tapd funds, so DepositAsset requires it.
+	// Lnd configures the lnd node behind tapd. It signs tapd's asset
+	// inputs of a deposit, so DepositAsset requires it.
 	Lnd *AssetLndConfig `mapstructure:"lnd"`
 }
 
@@ -267,8 +267,12 @@ func (s *Server) startAssetDeposits(ctx context.Context, store *db.Store) (
 		Wallet: tapsdk.NewWallet(
 			s.tapdClient, tapsdk.Network(s.cfg.Network),
 		),
-		Store:          journal,
-		Signer:         lndAnchorSigner(lnd.WalletKit),
+		Store:  journal,
+		Signer: lndAnchorSigner(lnd.WalletKit),
+		Funder: &depositFunder{
+			wallet:      s.depositWallet,
+			estimateFee: s.estimateDepositFee,
+		},
 		DeriveOwnerKey: s.depositOwnerKeyDeriver(),
 	})
 	if err != nil {

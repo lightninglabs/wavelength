@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/lndclient"
 	tapsdk "github.com/lightninglabs/tap-sdk"
@@ -20,6 +21,7 @@ import (
 	"github.com/lightninglabs/wavelength/round"
 	"github.com/lightninglabs/wavelength/tapassets"
 	"github.com/lightninglabs/wavelength/wallet"
+	"github.com/lightninglabs/wavelength/walletcore"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/keychain"
 	"google.golang.org/grpc/codes"
@@ -630,8 +632,9 @@ func assetDepositToRPC(deposit *db.AssetDeposit,
 	return resp
 }
 
-// lndAnchorSigner signs and finalizes deposit transactions with the lnd node
-// behind tapd, which owns both the asset anchors and the fee inputs.
+// lndAnchorSigner signs a deposit transaction with the lnd node behind tapd
+// and finalizes the inputs it signed: tapd's asset anchors. lnd skips inputs
+// derived from another wallet, which the daemon wallet signs afterwards.
 func lndAnchorSigner(walletKit lndclient.WalletKitClient) tapsdk.AnchorSigner {
 	return func(ctx context.Context, anchorPsbt []byte) ([]byte, error) {
 		packet, err := psbt.NewFromRawBytes(
@@ -644,18 +647,146 @@ func lndAnchorSigner(walletKit lndclient.WalletKitClient) tapsdk.AnchorSigner {
 		if err != nil {
 			return nil, fmt.Errorf("lnd SignPsbt: %w", err)
 		}
-		final, _, err := walletKit.FinalizePsbt(ctx, signed, "")
-		if err != nil {
-			return nil, fmt.Errorf("lnd FinalizePsbt: %w", err)
+		for idx := range signed.Inputs {
+			input := &signed.Inputs[idx]
+			if len(input.FinalScriptWitness) != 0 ||
+				(len(input.TaprootKeySpendSig) == 0 &&
+					len(input.PartialSigs) == 0) {
+
+				continue
+			}
+			ok, err := psbt.MaybeFinalize(signed, idx)
+			if err != nil {
+				return nil, fmt.Errorf("finalize anchor input "+
+					"%d: %w", idx, err)
+			}
+			if !ok {
+				return nil, fmt.Errorf("anchor input %d is "+
+					"not finalizable", idx)
+			}
 		}
 
 		var buf bytes.Buffer
-		if err := final.Serialize(&buf); err != nil {
+		if err := signed.Serialize(&buf); err != nil {
 			return nil, fmt.Errorf("serialize anchor PSBT: %w", err)
 		}
 
 		return buf.Bytes(), nil
 	}
+}
+
+// depositWallet is the part of a daemon wallet adapter that pays for deposit
+// transactions.
+type depositWallet interface {
+	walletcore.OutputLeaser
+
+	FundTemplate(ctx context.Context, packet *psbt.Packet,
+		feeRateSatPerVByte int64, lockID wallet.LockID,
+		lockExpiry time.Duration) (int32, error)
+
+	FinalizePsbt(ctx context.Context, packet []byte) (*wire.MsgTx, error)
+}
+
+// depositFunder pays deposit transactions from the daemon wallet. The wallet
+// is resolved per call, because it unlocks after startup.
+type depositFunder struct {
+	wallet      func() (depositWallet, error)
+	estimateFee func(context.Context, uint32) (btcutil.Amount, error)
+}
+
+var _ tapassets.OnboardingFunder = (*depositFunder)(nil)
+
+// FeeRate returns the chain backend's fee estimate in sat/vB.
+func (f *depositFunder) FeeRate(ctx context.Context, targetConf uint32) (uint64,
+	error) {
+
+	rate, err := f.estimateFee(ctx, targetConf)
+	if err != nil {
+		return 0, err
+	}
+	if rate <= 0 {
+		return 0, fmt.Errorf("fee estimate of %d sat/vB is not "+
+			"positive", rate)
+	}
+
+	return uint64(rate), nil
+}
+
+// FundTemplate funds an outputs-only template from the daemon wallet.
+func (f *depositFunder) FundTemplate(ctx context.Context, packet *psbt.Packet,
+	feeRateSatPerVByte int64, lockID walletcore.LockID,
+	lockExpiry time.Duration) (int32, error) {
+
+	w, err := f.wallet()
+	if err != nil {
+		return 0, err
+	}
+
+	return w.FundTemplate(
+		ctx, packet, feeRateSatPerVByte, lockID, lockExpiry,
+	)
+}
+
+// FinalizePsbt signs the daemon wallet's inputs.
+func (f *depositFunder) FinalizePsbt(ctx context.Context, packet []byte) (
+	*wire.MsgTx, error) {
+
+	w, err := f.wallet()
+	if err != nil {
+		return nil, err
+	}
+
+	return w.FinalizePsbt(ctx, packet)
+}
+
+// LeaseOutput leases a daemon wallet output.
+func (f *depositFunder) LeaseOutput(ctx context.Context, id walletcore.LockID,
+	op wire.OutPoint, expiry time.Duration) (time.Time, error) {
+
+	w, err := f.wallet()
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	return w.LeaseOutput(ctx, id, op, expiry)
+}
+
+// ReleaseOutput releases a daemon wallet output.
+func (f *depositFunder) ReleaseOutput(ctx context.Context, id walletcore.LockID,
+	op wire.OutPoint) error {
+
+	w, err := f.wallet()
+	if err != nil {
+		return err
+	}
+
+	return w.ReleaseOutput(ctx, id, op)
+}
+
+// depositWallet returns the daemon wallet adapter that pays for deposits.
+func (s *Server) depositWallet() (depositWallet, error) {
+	sweepWallet, err := s.newSweepWallet()
+	if err != nil {
+		return nil, err
+	}
+	w, ok := sweepWallet.(depositWallet)
+	if !ok {
+		return nil, fmt.Errorf("wallet %T cannot fund deposits",
+			sweepWallet)
+	}
+
+	return w, nil
+}
+
+// estimateDepositFee returns the chain backend's fee estimate in sat/vB.
+func (s *Server) estimateDepositFee(ctx context.Context, targetConf uint32) (
+	btcutil.Amount, error) {
+
+	if s.chainBackend == nil {
+		return 0, fmt.Errorf("chain backend is not ready")
+	}
+
+	return s.chainBackend.EstimateFee(ctx, targetConf)
 }
 
 // depositOwnerKeyDeriver derives deposit owner keys from the daemon wallet.
