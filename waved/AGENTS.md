@@ -552,3 +552,10 @@ under `Server.swapNotificationMu`. `AuthorizeNotificationSubscription` is an
 in-process full-request signer bridge with an expected issuer key. It neither
 waits for ingress nor exposes a new remote signing RPC. The source owns its
 configured transport. See [notification sources](../docs/notification-sources.md).
+
+## Shutdown ownership
+
+Daemon shutdown joins native workers and detached database/notification work
+before closing shared stores. Child lifetime accounting survives removal from
+the registry's active map. A caller's wait deadline does not release the daemon
+cleanup owner. See [domain shutdown ownership](../docs/domain-shutdown.md).

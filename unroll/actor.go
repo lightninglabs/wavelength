@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
@@ -24,6 +25,10 @@ import (
 
 // Config configures one durable per-target VTXO unroll actor.
 type Config struct {
+	// workers belongs to the registry and retains removed terminal
+	// children.
+	workers *sync.WaitGroup
+
 	// TargetOutpoint is the VTXO being unrolled.
 	TargetOutpoint wire.OutPoint
 
@@ -153,6 +158,11 @@ func NewVTXOUnrollActor(cfg Config) (*VTXOUnrollActor, error) {
 		cfg.ActorID, behavior, behavior.bindStores, cfg.DeliveryStore,
 		newCodec(),
 	)
+	if cfg.workers == nil {
+		cfg.workers = &sync.WaitGroup{}
+		behavior.cfg.workers = cfg.workers
+	}
+	durableCfg.Wg = cfg.workers
 	durableCfg.Log = cfg.Log
 
 	durable, err := actor.NewDurableActor(durableCfg).Unpack()
@@ -161,11 +171,26 @@ func NewVTXOUnrollActor(cfg Config) (*VTXOUnrollActor, error) {
 	}
 	behavior.selfRef = durable.TellRef()
 	durable.Start()
+	var stopOnce sync.Once
 
 	return &VTXOUnrollActor{
-		ref:      durable.Ref(),
-		durable:  durable,
-		stop:     durable.Stop,
+		ref:     durable.Ref(),
+		durable: durable,
+		stop: func() {
+			stopOnce.Do(func() {
+				cfg.workers.Add(1)
+				durable.Stop()
+				go func() {
+					defer cfg.workers.Done()
+					_ = durable.Wait(context.Background())
+					// Chain watches use stable target IDs.
+					// Preserve their existing registration
+					// lifecycle rather than unregister a
+					// newer incarnation's watches.
+					behavior.stopFSM()
+				}()
+			})
+		},
 		behavior: behavior,
 	}, nil
 }
@@ -438,11 +463,17 @@ func (b *behavior) OnStop(ctx context.Context) error {
 	b.unregisterProofSpendWatches(ctx)
 	b.unregisterSourceSpendWatches(ctx)
 
+	b.stopFSM()
+
+	return nil
+}
+
+// stopFSM joins the mutable FSM after its native mailbox turn has exited.
+// Watch registration has a separate lifetime and is not changed by this join.
+func (b *behavior) stopFSM() {
 	if b.session != nil && b.session.FSM != nil {
 		b.session.FSM.Stop()
 	}
-
-	return nil
 }
 
 // handleEvent is the admission wrapper around driveEvent that every
@@ -2702,12 +2733,21 @@ func (b *behavior) removeAbandonedBroadcasts(ctx context.Context,
 	)
 	for _, txid := range txids {
 		// The registry owns this cleanup after the current turn ends.
-		go cleanupAbandonedBroadcast(
-			cleanupCtx, b.cfg.cleanupDone, b.cfg.TxConfirmRef,
-			b.cfg.ChainSource, b.notificationRef().ID(), txid,
-			job.Conflicted, removeAbandonedBroadcastTimeout,
-			abandonedBroadcastRetryDelay, b.log,
-		)
+		if b.cfg.workers != nil {
+			b.cfg.workers.Add(1)
+		}
+		go func() {
+			if b.cfg.workers != nil {
+				defer b.cfg.workers.Done()
+			}
+			cleanupAbandonedBroadcast(
+				cleanupCtx, b.cfg.cleanupDone,
+				b.cfg.TxConfirmRef, b.cfg.ChainSource,
+				b.notificationRef().ID(), txid, job.Conflicted,
+				removeAbandonedBroadcastTimeout,
+				abandonedBroadcastRetryDelay, b.log,
+			)
+		}()
 	}
 }
 

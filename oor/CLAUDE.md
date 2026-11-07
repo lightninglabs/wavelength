@@ -240,3 +240,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
 - [docs/oor_subsystem.md](../docs/oor_subsystem.md) — Per-session actor
   design in full.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
+
+## Shutdown ownership
+
+Daemon shutdown joins native workers and detached database/notification work
+before closing shared stores. Child lifetime accounting survives removal from
+the registry's active map. A caller's wait deadline does not release the daemon
+cleanup owner. See [domain shutdown ownership](../docs/domain-shutdown.md).

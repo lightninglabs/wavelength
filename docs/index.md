@@ -80,5 +80,8 @@ into specific topics below.
 - [Signed notification subscriptions](notification-subscriptions.md).
 - [Notification subscription implementation plan](notification-subscriptions-execplan.md).
 
+- [Domain shutdown ownership](domain-shutdown.md) — domain workers joined before shared store teardown.
+
+- [Domain shutdown implementation plan](domain-shutdown-execplan.md) — retained worker ownership.
 - [Host driven ingress](host-driven-ingress.md) — bounded mailbox ingress primitive.
 - [Mobile runtime recovery plan](mobile-runtime-recovery-execplan.md) — durable round prerequisites.
