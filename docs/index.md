@@ -75,3 +75,4 @@ into specific topics below.
 
 - [Host driven ingress](host-driven-ingress.md) — bounded mailbox ingress primitive.
 - [Mobile runtime recovery plan](mobile-runtime-recovery-execplan.md) — durable round prerequisites.
+- [Mobile round runtime architecture](mobile_round_runtime_architecture.md) — Ownership, durable turns, signer recovery and storage boundaries.
