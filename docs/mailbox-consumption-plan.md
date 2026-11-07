@@ -34,6 +34,10 @@ change its claimed delivery occurrence without changing the operation.
   existing batch-runtime work without replacing the current threaded runner.
   PR #1504 contains the primitive. Consumer migration and its acceptance tests
   remain separate checkpoints.
+- [x] (2026-11-04) Isolated the versioned round-state checkpoint format and
+  shared tree codec from the older drafts. Field-complete restoration tests
+  retain current schedule, local ownership and asset metadata. This is a
+  format prerequisite; production actor migration remains below.
 - [ ] Prove production inbox/receipt/quarantine recovery for the incoming-output
   route, including a changed occurrence ID and an expired transport receipt.
 - [ ] Migrate the current round actor to native durable ownership while retaining
