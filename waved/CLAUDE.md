@@ -575,3 +575,19 @@ sources. It validates the full request before invoking source callbacks and
 holds callback ownership through final access. Credit reads are local and
 target one original operation; no remote RPC is registered. See
 [receipt sources](../docs/lightning-receipt-source.md).
+
+## Warm receipt windows
+
+Host mode transitions retain the daemon and join ingress ownership. Restricted
+pumps validate full batches before waiter delivery; request provenance comes
+from send-time registration. Targeted resume only re-arms existing receives.
+See [warm invoice recovery](../docs/mobile-receipt-window.md).
+
+## Bounded warm maintenance
+
+The host maintenance window samples current-tip expiry for at most 64 persisted
+VTXO IDs, drives existing owners outside the manager turn, retains a finite
+keyset cursor across windows, then pumps native durable round work. It shares
+the receipt controller's mode lease, cancellation fence and final-access join.
+It performs no startup repair and produces no payment proof. See
+[background windows](../docs/mobile-receipt-window.md).

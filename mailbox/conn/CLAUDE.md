@@ -90,3 +90,10 @@ occurrence-ID, 30-day receipt and bounded poison-quarantine contracts. Receipts
 are consumed at durable inbox insertion, not at an in-memory Tell. Quarantine
 uses per-lane reservations inside a global bound and is never aged out;
 recovery removes it only with a durable handoff.
+
+## Warm receipt windows
+
+Host mode transitions retain the daemon and join ingress ownership. Restricted
+pumps validate full batches before waiter delivery; request provenance comes
+from send-time registration. Targeted resume only re-arms existing receives.
+See [warm invoice recovery](../../docs/mobile-receipt-window.md).

@@ -13,6 +13,10 @@ const MaxSigningWorkers = waved.MaxSigningWorkers
 
 // Config controls the embedded daemon and wallet facade.
 type Config struct {
+	// DurableRoundRuntime enables persisted round recovery. Keep this true
+	// independently of notification consent once the wallet adopts it.
+	DurableRoundRuntime bool
+
 	// DaemonConfig supplies the full daemon config. When nil, wavewalletdk
 	// starts from waved.DefaultConfig and applies the convenience fields
 	// below.

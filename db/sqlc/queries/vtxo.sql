@@ -165,3 +165,21 @@ WHERE outpoint_hash = $1 AND outpoint_index = $2;
 -- name: CountVTXOsByStatus :one
 -- CountVTXOsByStatus returns the count of VTXOs with the specified status.
 SELECT COUNT(*) FROM vtxos WHERE status = $1;
+
+-- name: VTXOMaintenanceCeiling :one
+-- VTXOMaintenanceCeiling captures a finite outpoint range without decoding
+-- descriptors or ancestry. The primary key provides the ordering.
+SELECT outpoint_hash, outpoint_index FROM vtxos
+ORDER BY outpoint_hash DESC, outpoint_index DESC
+LIMIT 1;
+
+-- name: ListVTXOMaintenancePage :many
+-- ListVTXOMaintenancePage scans primary-key identities only. Status filtering
+-- happens at the live manager, avoiding an unindexed historical-status scan.
+SELECT outpoint_hash, outpoint_index FROM vtxos
+WHERE (outpoint_hash, outpoint_index) >
+      (sqlc.arg(after_hash), CAST(sqlc.arg(after_index) AS INTEGER))
+  AND (outpoint_hash, outpoint_index) <=
+      (sqlc.arg(through_hash), CAST(sqlc.arg(through_index) AS INTEGER))
+ORDER BY outpoint_hash, outpoint_index
+LIMIT sqlc.arg(limit_count);

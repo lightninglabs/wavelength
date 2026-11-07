@@ -2,10 +2,87 @@ package serverconn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
+	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 )
+
+// ErrIngressNeedsForeground leaves an unsupported batch unacknowledged.
+var ErrIngressNeedsForeground = errors.New("ingress batch requires foreground")
+
+// IngressPumpPolicy limits a host window to proven durable handoffs and
+// explicitly read-only response waiters. Lists are copied at invocation; the
+// caller must not mutate them during that copy. Nil policy preserves normal
+// unrestricted ingress semantics.
+type IngressPumpPolicy struct {
+	DurableRoutes     []mailboxrpc.ServiceMethod
+	ReadOnlyResponses []mailboxrpc.ServiceMethod
+}
+
+// ingressPolicyKey scopes a restriction to one invocation, never global config.
+type ingressPolicyKey struct{}
+
+// ingressPolicy holds private route sets for one restricted invocation.
+type ingressPolicy struct {
+	durable RouteSet
+	reads   RouteSet
+}
+
+// withIngressPolicy snapshots caller policy before any pull or dispatch.
+func withIngressPolicy(ctx context.Context,
+	policy IngressPumpPolicy) context.Context {
+
+	value := ingressPolicy{durable: make(RouteSet), reads: make(RouteSet)}
+	for _, route := range policy.DurableRoutes {
+		value.durable[route] = struct{}{}
+	}
+	for _, route := range policy.ReadOnlyResponses {
+		value.reads[route] = struct{}{}
+	}
+
+	return context.WithValue(ctx, ingressPolicyKey{}, value)
+}
+
+// validatePumpPolicy runs after sender/version validation and before any
+// waiter or request handler. A refusal leaves the entire batch untouched.
+func (a *ServerConnectionActor) validatePumpPolicy(ctx context.Context,
+	envelopes []*mailboxpb.Envelope) error {
+
+	policy, restricted := ctx.Value(ingressPolicyKey{}).(ingressPolicy)
+	if !restricted {
+		return nil
+	}
+	for _, env := range envelopes {
+		if env == nil || env.Rpc == nil {
+			return ErrIngressNeedsForeground
+		}
+		route := mailboxrpc.ServiceMethod{
+			Service: env.Rpc.Service, Method: env.Rpc.Method,
+		}
+		id := CorrelationID(env.Rpc.CorrelationId)
+		if env.Rpc.Kind == mailboxpb.RpcMeta_KIND_RESPONSE &&
+			a.hasResponseWaiter(id) {
+
+			_, read := policy.reads[route]
+			if !read || !a.responseRegistry.RequestMatches(
+				id, route.Service, route.Method,
+			) {
+				return ErrIngressNeedsForeground
+			}
+
+			continue
+		}
+		_, durable := policy.durable[route]
+		if !durable || a.isNonTxRoute(env) {
+			return ErrIngressNeedsForeground
+		}
+	}
+
+	return nil
+}
 
 // IngressPumpResult describes work observed by one mailbox ingress invocation.
 // It does not describe actor, egress, quarantine or payment completion.
@@ -68,6 +145,15 @@ func (a *ServerConnectionActor) PumpIngress(ctx context.Context,
 	a.checkPermanentStatus(pumpCtx, err)
 
 	return result, a.ingressError(pumpCtx, err)
+}
+
+// PumpIngressWithPolicy runs a bounded pump under an invocation-local policy.
+// Unsupported batches return ErrIngressNeedsForeground before any dispatch.
+func (a *ServerConnectionActor) PumpIngressWithPolicy(ctx context.Context,
+	maxBatches uint32, policy IngressPumpPolicy) (IngressPumpResult,
+	error) {
+
+	return a.PumpIngress(withIngressPolicy(ctx, policy), maxBatches)
 }
 
 // pumpIngress owns one checkpoint session. Every ACK is derived from a loaded

@@ -366,3 +366,12 @@ Asset-bearing VTXOs require an asset-aware transition. Bitcoin spending,
 forfeit signing, automatic refresh, and expired reclaim refuse them. An
 unroll can materialize its presigned path, but its final Bitcoin sweep is
 withheld, including a sweep restored from a checkpoint.
+
+## Bounded warm maintenance
+
+The host maintenance window samples current-tip expiry for at most 64 persisted
+VTXO IDs, drives existing owners outside the manager turn, retains a finite
+keyset cursor across windows, then pumps native durable round work. It shares
+the receipt controller's mode lease, cancellation fence and final-access join.
+It performs no startup repair and produces no payment proof. See
+[background windows](../docs/mobile-receipt-window.md).
