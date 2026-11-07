@@ -18,7 +18,9 @@ A mobile wallet can be terminated after acknowledging a server message. The work
 - [x] Keep full bounded wallet execution and safe-to-suspend reporting in the later host API PR; this PR supplies the persistent consumer and host-driven ingress startup seam.
 - [x] Run formatting, lint (including actorblock), module tidiness, package suites, focused race checks and both real SQL backends.
 - [x] Publish signed implementation PR #1531 with a diff that excludes the copied prerequisites. The published base is `mobile-runtime-prerequisites-20261106`; the original local `stack/` branch remains an alias.
-- [ ] Request Gateway review, address concrete findings, and verify current-head CI/review.
+- [x] Complete initial Gateway review and current-head checks.
+- [x] Refresh prerequisites on current main and retain composed boarding authorization paths.
+- [ ] Verify refreshed-head Gateway review and CI.
 
 ## Surprises & Discoveries
 
@@ -65,3 +67,19 @@ Current package suites and focused race checks pass. The SQL test injects failur
 Keep `Runtime.PumpIngress` and `PauseIngress` as the transport primitives. Use `round.NewDurableRoundClientActor`, typed `Ref`, outbox target registration, and a separately owned stop/join lifecycle for persistent round work. Public SDK/mobile method names belong to the subsequent API PR. Use native TLV envelopes for durable payloads; never serialize actor references or Go contexts.
 
 Revision: records the completed runtime adaptation, tested recovery invariants, explicit host API boundary, and remaining publication/review work.
+
+## Current-main compatibility
+
+The asset-boarding merge adds BoardingIntent.AuthSpend. Full-field checkpoint
+fixtures detected that the older prototype omitted it. The runtime now stores
+its existing stable arkscript encoding, including witness script, control block,
+conditions and timelocks. A real composed asset boarding path still binds to the
+same funding script after restore.
+
+New client-state snapshots write version 2. Old readers reject that version
+instead of silently discarding authorization metadata. New readers still accept
+version 1 Bitcoin snapshots. Old asset snapshots missing the authorization
+path and unknown versions fail closed rather than substituting another leaf. The refreshed base
+is mobile-runtime-prerequisites-v2-20261107 at 8c85fdfc, combining current main
+with the same isolated ingress/checkpoint prerequisites. No deployment or
+persistent database migration is involved.

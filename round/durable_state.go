@@ -93,7 +93,7 @@ func encodeClientState(state ClientState) ([]byte, error) {
 		return nil, err
 	}
 	d := clientStateRecord{
-		Version: 1,
+		Version: 2,
 		Kind:    v.kind,
 		RoundID: v.roundID[:],
 		TxID:    v.txID,
@@ -209,7 +209,7 @@ func decodeClientState(raw []byte, params *chaincfg.Params) (ClientState, bool,
 	if err = decodeDurableFields(raw, d.records()...); err != nil {
 		return nil, false, err
 	}
-	if d.Version != 1 {
+	if d.Version != 1 && d.Version != 2 {
 		return nil, false, fmt.Errorf("unknown client state version %d",
 			d.Version)
 	}

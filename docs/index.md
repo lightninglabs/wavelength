@@ -79,3 +79,6 @@ into specific topics below.
 - [Notification source selection](notification-sources.md).
 - [Signed notification subscriptions](notification-subscriptions.md).
 - [Notification subscription implementation plan](notification-subscriptions-execplan.md).
+
+- [Host driven ingress](host-driven-ingress.md) — bounded mailbox ingress primitive.
+- [Mobile runtime recovery plan](mobile-runtime-recovery-execplan.md) — durable round prerequisites.
