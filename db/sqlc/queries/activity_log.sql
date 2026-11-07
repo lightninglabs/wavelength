@@ -136,3 +136,20 @@ SELECT * FROM activity_events
 WHERE event_seq > sqlc.arg(cursor)
 ORDER BY event_seq ASC
 LIMIT sqlc.arg(limit_count);
+
+-- name: ActivityEventHighWater :one
+-- ActivityEventHighWater captures the current end of the transition log.
+SELECT CAST(COALESCE(MAX(event_seq), 0) AS BIGINT) AS high_water
+FROM activity_events;
+
+-- name: ReadCurrentActivityEvents :many
+-- ReadCurrentActivityEvents bounds a replay page by a captured event ceiling,
+-- while returning the current canonical projection for every selected event.
+-- Removed internal activity has no replay rows and cannot reappear here.
+SELECT events.event_seq, sqlc.embed(activity_entries)
+FROM activity_events AS events
+JOIN activity_entries ON activity_entries.canonical_id = events.canonical_id
+WHERE events.event_seq > sqlc.arg(after_cursor)
+    AND events.event_seq <= sqlc.arg(through_cursor)
+ORDER BY events.event_seq ASC
+LIMIT sqlc.arg(limit_count);
