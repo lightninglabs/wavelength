@@ -73,6 +73,18 @@ type Config struct {
 	// for wallets that perform frequent rescans.
 	PersistFilters bool
 
+	// NeutrinoSQLite stores neutrino's chain state (block headers, filter
+	// headers, filters, and peer bans) in a SQLite database under the
+	// neutrino data dir instead of the legacy bbolt and flat-file stores.
+	// The bbolt database is still opened and handed to neutrino, so the
+	// first start after enabling this runs neutrino's one-time import of
+	// the existing flat header files and walletdb state into SQLite
+	// (recorded in the neutrino_migrations table). The import is never
+	// skipped here, so an existing wallet keeps its synced chain state.
+	// This is a no-op in js/wasm builds, where the neutrino backend is
+	// unavailable.
+	NeutrinoSQLite bool
+
 	// DisableGlobalLoggers skips wiring neutrino and btcwallet package
 	// globals to this wallet logger. Leave this false for normal daemon
 	// processes; set it for parallel in-process tests that collect logs
