@@ -158,7 +158,20 @@ func decodeDurableBoarding(raw []byte,
 	var intent BoardingIntent
 	var d durableBoarding
 	var err error
-	if err = decodeDurableFields(raw, d.records()...); err != nil {
+	// Version-one records already contain the asset disclosure, but omit
+	// AuthSpend. Require the original fields and decode the optional new
+	// record separately. Asset disclosure still requires a nonempty path.
+	records := d.records()
+	if err = decodeDurableFields(
+		raw, records[:len(records)-1]...,
+	); err != nil {
+		return intent, err
+	}
+	stream, err := tlv.NewStream(records[len(records)-1])
+	if err != nil {
+		return intent, err
+	}
+	if err = stream.Decode(bytes.NewReader(raw)); err != nil {
 		return intent, err
 	}
 	if len(d.AssetRef) != 0 && len(d.AuthSpend) == 0 {
