@@ -298,3 +298,11 @@ rows. A captured ceiling bounds replay; the host persists explicit NextCursor
 and deduplicates by canonical identity. Capturing a cursor does not reconcile
 sources. Both direct SDK callbacks join shutdown before releasing the store.
 See [finite activity reads](../docs/canonical-activity-batches.md).
+
+## Targeted receipt classification
+
+Invoice receipt lookup validates typed swap/credit sources, original admission
+time, Bitcoin invoice/hash/principal and current canonical status. It projects
+through the existing sink; differing source/canonical snapshots remain pending.
+Raw Ark inventory, assets, deposits and internal funding are outside this seam.
+See [receipt sources](../docs/lightning-receipt-source.md).
