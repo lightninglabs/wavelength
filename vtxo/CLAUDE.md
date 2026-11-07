@@ -386,3 +386,12 @@ owner may sign the new connector directly into another reserved state. An
 unrelated predecessor, stale request or stale release must not transfer/free
 that reservation. A failed successor can release an untransferred predecessor
 reservation through the same locally authorized lineage.
+
+## Bounded warm maintenance
+
+The host maintenance window samples current-tip expiry for at most 64 persisted
+VTXO IDs, drives existing owners outside the manager turn, retains a finite
+keyset cursor across windows, then pumps native durable round work. It shares
+the receipt controller's mode lease, cancellation fence and final-access join.
+It performs no startup repair and produces no payment proof. See
+[background windows](../docs/mobile-receipt-window.md).

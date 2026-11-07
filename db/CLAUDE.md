@@ -537,3 +537,12 @@ rows. A captured ceiling bounds replay; the host persists explicit NextCursor
 and deduplicates by canonical identity. Capturing a cursor does not reconcile
 sources. Both direct SDK callbacks join shutdown before releasing the store.
 See [finite activity reads](../docs/canonical-activity-batches.md).
+
+## Bounded warm maintenance
+
+The host maintenance window samples current-tip expiry for at most 64 persisted
+VTXO IDs, drives existing owners outside the manager turn, retains a finite
+keyset cursor across windows, then pumps native durable round work. It shares
+the receipt controller's mode lease, cancellation fence and final-access join.
+It performs no startup repair and produces no payment proof. See
+[background windows](../docs/mobile-receipt-window.md).

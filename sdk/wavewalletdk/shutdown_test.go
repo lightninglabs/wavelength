@@ -71,6 +71,7 @@ func TestCloseJoinsLocalCallbacks(t *testing.T) {
 		"lightning-receipts",
 		"host-mode",
 		"receipt-window",
+		"maintenance-window",
 		"cancel-window",
 	} {
 		t.Run(source, func(t *testing.T) {
@@ -232,6 +233,22 @@ func shutdownCallbackInvoke(t *testing.T, client *Client, source string,
 		return func() error {
 			_, err := client.RunReceiptWindow(
 				t.Context(), ReceiptWindowRequest{},
+			)
+
+			return err
+		}
+
+	case "maintenance-window":
+		client.runMaintenanceWindow = func(ctx context.Context,
+			_ string) (waved.ReceiptWindowResult, error) {
+
+			return waved.ReceiptWindowResult{}, callback(ctx)
+		}
+
+		return func() error {
+			_, err := client.RunMaintenanceWindow(
+				t.Context(),
+				"window",
 			)
 
 			return err

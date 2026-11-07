@@ -184,7 +184,7 @@ type VTXOActor struct {
 	lastObservedHeight int32
 
 	// lastEpochHeight is the highest block epoch height this actor has
-	// received. It only fences the answer to the start tip ask, which
+	// received. It fences sampled startup and maintenance tips, which
 	// may arrive after a newer block; real epochs are never filtered by
 	// it, so a reorg still reaches the FSM.
 	lastEpochHeight int32
@@ -606,6 +606,15 @@ func (a *VTXOActor) Receive(ctx context.Context,
 		slog.String("outpoint", a.cfg.VTXO.Outpoint.String()),
 		slog.String("current_state", fmt.Sprintf("%T", a.state)),
 	)
+
+	if sample, ok := event.(*maintenanceTipEvent); ok {
+		if sample.Height < a.lastEpochHeight {
+			return fn.Ok[actormsg.VTXOActorResp](VTXOActorResponse{
+				PriorState: a.state, NewState: a.state,
+			})
+		}
+		event = &sample.BlockEpochEvent
+	}
 
 	if startTip, ok := event.(*startTipEvent); ok {
 		epoch, ok := a.startTipEpoch(ctx, startTip)

@@ -1,4 +1,4 @@
-# Warm invoice recovery windows
+# Warm background recovery windows
 
 An embedded mobile host can briefly recover one invoice after an authorized
 payment hint. The wallet must already be unlocked, retain its daemon handle,
@@ -49,6 +49,42 @@ publisher and event correlation and persist presentation deduplication.
 Timeout, interruption and unavailable proof permit a generic fallback under
 the original payment hint. Ordinary protocol wakes never authorize an alert.
 
+## Round and expiry maintenance
+
+`RunMaintenanceWindow` uses the same mode lease, unique window IDs and
+`CancelReceiptWindow` cancellation path. Ordinary operator wakes and scheduled
+host background tasks can call it without any enrolled invoice. It never reads
+or resumes an invoice source and always returns an empty receipt list.
+
+First it samples the configured chain backend's current tip. A primary-key
+keyset query selects at most 64 persisted VTXO identities under a finite
+ceiling. The manager resolves existing owners only. The caller drives their
+ordinary expiry FSM turns outside the manager receive loop, so refresh relays
+can drain. A newly expired state gets the existing second reclaim turn. This
+can request cooperative refresh, retain a reservation, persist expiry or begin
+a critical exit according to existing policy. It does not rerun startup repair,
+open the round-startup gate or spawn actors from historical rows. A delayed
+sample below a newer delivered block is ignored by the owning VTXO actor.
+
+The controller retains progress across warm windows. An interrupted owner is
+retried; a finished finite sweep starts again next time. New keys behind the
+cursor join that next sweep. Process startup retains its ordinary full expiry
+reconciliation. Historical rows consume bounded identity slots; this API does
+not claim a complete expiry pass per invocation.
+
+The expiry step has a cooperative four-second sub-budget. Failure reports
+`maintenance_deferred` and still permits useful mailbox pumping. The rest of
+the window accepts the same native durable round routes, including signing
+phases of a retained session. Empty pulls keep waiting for work until the
+window deadline or batch limit. The result's maintenance counters describe
+attempted owners, never global completion or expiry protection.
+
+The host should attempt scheduled maintenance as well as push-triggered work:
+local expiry need not produce any server message. Push delivery, coalescing and
+host scheduling do not guarantee a second wake before a round deadline. Cold
+sessions retain the runtime's authoritative recovery hold; this API does not
+reconstruct lost signing nonces or bypass wallet unlock.
+
 ## Lifetime ownership
 
 `CancelReceiptWindow` signals the matching ID without releasing its owner.
@@ -91,7 +127,7 @@ Run the focused race regressions with:
     go test -race -tags 'mobile,wavewalletrpc,swapruntime,test_sqlite' \
       ./waved ./serverconn ./mailbox/conn ./swapclientserver \
       ./swapwallet ./sdk/wavewalletdk ./sdk/wavewalletdk/mobile \
-      -run 'TestReceiptWindow|TestRestrictedPump|TestCloseJoinsLocalCallbacks|TestTargetedReceiveResume'
+      -run 'TestMaintenance|TestMaintainExpiry|TestReceiptWindow|TestRestrictedPump|TestCloseJoinsLocalCallbacks|TestTargetedReceiveResume'
 
 They hold the pump's last access beyond cancellation, verify foreground cannot
 escape it, cancel before admission, preserve foreground lifetime after caller

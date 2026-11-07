@@ -24,11 +24,14 @@ type ReceiptWindowRequest struct {
 // ReceiptWindowResult reports local source proof and why a bounded attempt
 // yielded. No field asserts global reconciliation or safe suspension.
 type ReceiptWindowResult struct {
-	Receipts        []LightningReceipt `json:"receipts"`
-	Batches         uint32             `json:"batches"`
-	NeedsForeground bool               `json:"needs_foreground"`
-	Interrupted     bool               `json:"interrupted"`
-	BudgetExhausted bool               `json:"budget_exhausted"`
+	Receipts            []LightningReceipt `json:"receipts"`
+	Batches             uint32             `json:"batches"`
+	NeedsForeground     bool               `json:"needs_foreground"`
+	Interrupted         bool               `json:"interrupted"`
+	BudgetExhausted     bool               `json:"budget_exhausted"`
+	MaintenanceChecked  uint32             `json:"maintenance_checked"`
+	MaintenanceDeferred bool               `json:"maintenance_deferred"`
+	MaintenanceMore     bool               `json:"maintenance_more"`
 }
 
 // receiptIngress keeps mode ownership independently testable from transport.
@@ -65,7 +68,8 @@ type receiptWindowController struct {
 	root context.Context
 	read func(context.Context, LightningReceiptRequest) (
 		[]LightningReceipt, error)
-	resume func(context.Context, LightningReceiptReference) error
+	resume   func(context.Context, LightningReceiptReference) error
+	maintain func(context.Context) (uint32, bool, bool)
 }
 
 // setForeground cancels a reserved window before joining its mode lease.
@@ -148,10 +152,19 @@ func (c *receiptWindowController) cancelWindow(id string) {
 }
 
 // run reserves cancellation ownership before waiting for the ingress lease.
-//
-//nolint:contextcheck // Link daemon shutdown as well as caller cancellation.
 func (c *receiptWindowController) run(ctx context.Context,
 	request ReceiptWindowRequest) (ReceiptWindowResult, error) {
+
+	return c.runWindow(ctx, request, true)
+}
+
+// runWindow shares the same lease and cancellation fence for payment and
+// maintenance work. Only payment windows read or resume enrolled sources.
+//
+//nolint:contextcheck // Link daemon shutdown as well as caller cancellation.
+func (c *receiptWindowController) runWindow(ctx context.Context,
+	request ReceiptWindowRequest, payment bool) (ReceiptWindowResult,
+	error) {
 
 	result := ReceiptWindowResult{Receipts: []LightningReceipt{}}
 	windowCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -183,6 +196,12 @@ func (c *receiptWindowController) run(ctx context.Context,
 		},
 		CreatedAfterUnix: request.CreatedAfterUnix,
 	}
+	if !payment {
+		stepCtx, stop := context.WithTimeout(windowCtx, 4*time.Second)
+		result.MaintenanceChecked, result.MaintenanceDeferred,
+			result.MaintenanceMore = c.maintain(stepCtx)
+		stop()
+	}
 	resumed := false
 	for {
 		if windowCtx.Err() != nil {
@@ -190,25 +209,11 @@ func (c *receiptWindowController) run(ctx context.Context,
 
 			return result, nil
 		}
-		receipts, err := c.read(windowCtx, lookup)
-		if err != nil {
-			if windowCtx.Err() != nil {
-				result.Interrupted = true
-
-				return result, nil
-			}
-
-			return result, err
-		}
-		result.Receipts = receipts
-		if len(receipts) == 0 || receipts[0].State != "pending" {
-			return result, nil
-		}
-		if !resumed {
-			if err := c.resume(
-				windowCtx, request.Reference,
-			); err != nil {
-
+		if payment {
+			receipts, err := c.advanceReceipt(
+				windowCtx, lookup, &resumed,
+			)
+			if err != nil {
 				if windowCtx.Err() != nil {
 					result.Interrupted = true
 
@@ -217,8 +222,13 @@ func (c *receiptWindowController) run(ctx context.Context,
 
 				return result, err
 			}
-			resumed = true
+			result.Receipts = receipts
+			if len(receipts) == 0 ||
+				receipts[0].State != "pending" {
+				return result, nil
+			}
 		}
+
 		if result.Batches >= 32 {
 			result.BudgetExhausted = true
 
@@ -245,6 +255,25 @@ func (c *receiptWindowController) run(ctx context.Context,
 		}
 		timer.Stop()
 	}
+}
+
+// advanceReceipt re-arms one existing source once, retaining committed reads
+// as the completion barrier. Maintenance windows never enter this path.
+func (c *receiptWindowController) advanceReceipt(ctx context.Context,
+	lookup LightningReceiptRequest, resumed *bool) ([]LightningReceipt,
+	error) {
+
+	receipts, err := c.read(ctx, lookup)
+	if err != nil || len(receipts) == 0 || receipts[0].State != "pending" ||
+		*resumed {
+		return receipts, err
+	}
+	if err := c.resume(ctx, lookup.References[0]); err != nil {
+		return nil, err
+	}
+	*resumed = true
+
+	return receipts, nil
 }
 
 // receiptIngressPolicy lists the native durable destinations in daemon wiring.
@@ -312,12 +341,14 @@ func (s *Server) receiptController(ctx context.Context) (
 		if runtime == nil || s.runCtx == nil {
 			return nil, fmt.Errorf("receipt ingress unavailable")
 		}
+		maintenance := newExpiryMaintenance(s)
 		s.hostController = &receiptWindowController{
 			ingress: runtime, root: s.runCtx,
 			connected:  s.setServerConnected,
 			foreground: !s.cfg.HostDrivenIngress,
 			read:       s.ReadLightningReceipts,
 			resume:     s.resumeLightningReceipt,
+			maintain:   maintenance.run,
 		}
 	}
 
@@ -364,4 +395,27 @@ func (s *Server) CancelReceiptWindow(ctx context.Context, id string) error {
 	controller.cancelWindow(id)
 
 	return nil
+}
+
+// RunMaintenanceWindow samples current expiry and pumps native round work.
+// It cannot enroll invoices, produce receipts, unlock or start a cold wallet.
+// Hosts must pause foreground ingress and serialize state-creating calls first.
+func (s *Server) RunMaintenanceWindow(ctx context.Context, id string) (
+	ReceiptWindowResult, error) {
+
+	if id == "" || len(id) > 128 {
+		return ReceiptWindowResult{}, fmt.Errorf("invalid " +
+			"maintenance window ID")
+	}
+	controller, err := s.receiptController(ctx)
+	if err != nil {
+		return ReceiptWindowResult{}, err
+	}
+
+	return controller.runWindow(
+		ctx, ReceiptWindowRequest{
+			WindowID: id,
+		},
+		false,
+	)
 }
