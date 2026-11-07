@@ -29,7 +29,30 @@ func (r *RPCServer) DepositAsset(ctx context.Context,
 		return nil, err
 	}
 
-	return assetDepositToRPC(deposit), nil
+	return assetDepositToRPC(deposit, ""), nil
+}
+
+// BoardAssetDeposit joins the next round with a confirmed asset deposit.
+func (r *RPCServer) BoardAssetDeposit(ctx context.Context,
+	req *waverpc.BoardAssetDepositRequest) (*waverpc.AssetDeposit, error) {
+
+	deposits := r.server.assetDeposits
+	if deposits == nil {
+		return nil, status.Error(
+			codes.FailedPrecondition, "asset deposits require "+
+				"assets.backend=tapd and assets.lnd.host",
+		)
+	}
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	deposit, err := deposits.Board(ctx, req.GetRequestId())
+	if err != nil {
+		return nil, err
+	}
+
+	return assetDepositToRPC(deposit, ""), nil
 }
 
 // ListAssetDeposits returns the asset deposits of this daemon.
@@ -49,8 +72,13 @@ func (r *RPCServer) ListAssetDeposits(ctx context.Context,
 			"deposits: %v", err)
 	}
 	for _, deposit := range stored {
+		roundID, err := deposits.Round(ctx, deposit.Request.RequestID)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "load asset "+
+				"deposit round: %v", err)
+		}
 		resp.Deposits = append(
-			resp.Deposits, assetDepositToRPC(deposit),
+			resp.Deposits, assetDepositToRPC(deposit, roundID),
 		)
 	}
 

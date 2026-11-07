@@ -177,6 +177,11 @@ service DaemonService {
     rpc ListAssetDeposits (ListAssetDepositsRequest)
         returns (ListAssetDepositsResponse);
 
+    // BoardAssetDeposit joins the next round with a confirmed asset
+    // deposit. The round creates an asset VTXO with the deposited units and
+    // a BTC VTXO with the deposit's remaining satoshis after the round fee.
+    rpc BoardAssetDeposit (BoardAssetDepositRequest) returns (AssetDeposit);
+
     // JoinNextRound asks the client round FSM to commit any currently
     // queued round intents and emit a JoinRoundRequest to the operator.
     // Useful after queueing refresh or leave intents that intentionally
@@ -1829,6 +1834,11 @@ message DepositAssetRequest {
 message ListAssetDepositsRequest {
 }
 
+message BoardAssetDepositRequest {
+    // request_id names a confirmed deposit.
+    string request_id = 1;
+}
+
 message ListAssetDepositsResponse {
     repeated AssetDeposit deposits = 1;
 }
@@ -1874,6 +1884,10 @@ message AssetDeposit {
 
     // error is the latest failure, empty when none.
     string error = 9;
+
+    // round_id is the round that spends the deposit, empty until a round
+    // checkpoints with it or after that round fails.
+    string round_id = 10;
 }
 
 message JoinNextRoundRequest {

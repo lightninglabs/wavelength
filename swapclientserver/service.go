@@ -101,6 +101,12 @@ type swapClientService struct {
 	// resumePending.
 	mu sync.Mutex
 
+	// workers joins pay, receive and refill owners, including deferred
+	// reads. Admission and shutdown serialize under mu before Wait can
+	// observe zero.
+	workers  sync.WaitGroup
+	stopping bool
+
 	// active is the set of payment-hash hex strings currently owned by a
 	// background worker in this daemon process. It deduplicates concurrent
 	// start/resume calls so a single payment hash is never driven by two
@@ -569,6 +575,7 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 		rpcServer, swapClients.server,
 	); err != nil {
 
+		cancel()
 		_ = arkClient.Close()
 		_ = swapClients.server.Close()
 		_ = swapClients.cleanup()
@@ -613,7 +620,7 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 	service.pendingReceiveSet = make(map[string]struct{})
 
 	cleanup := func() {
-		cancel()
+		service.stopWorkers()
 		_ = arkClient.Close()
 		_ = swapClients.server.Close()
 		_ = swapClients.cleanup()
@@ -2012,7 +2019,7 @@ func (s *swapClientService) resumePending(ctx context.Context) {
 	if err != nil {
 		s.log.Warnf("unable to list pending swaps on startup: %v", err)
 		if scanReceives {
-			go s.refillPendingReceives()
+			s.launchWorker(s.refillPendingReceives)
 		}
 
 		return
@@ -2039,7 +2046,7 @@ func (s *swapClientService) startPayWorker(hash lntypes.Hash) {
 		return
 	}
 
-	go func() {
+	s.launchWorker(func() {
 		defer s.markInactive(key)
 		defer s.publishHash(hash)
 
@@ -2055,7 +2062,7 @@ func (s *swapClientService) startPayWorker(hash lntypes.Hash) {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			s.log.Warnf("pay swap %s stopped: %v", key, err)
 		}
-	}()
+	})
 }
 
 // startReceiveWorker admits and starts one receive worker. The return value
@@ -2087,9 +2094,10 @@ func (s *swapClientService) startReservedReceiveWorker(hash lntypes.Hash) bool {
 	return true
 }
 
-// runReceiveWorker runs the SDK resume-and-wait path in a goroutine.
+// runReceiveWorker admits the SDK resume-and-wait path as a joined worker.
+// The caller must not hold s.mu; admission acquires it before starting work.
 func (s *swapClientService) runReceiveWorker(hash lntypes.Hash, key string) {
-	go func() {
+	s.launchWorker(func() {
 		defer s.finishReceiveWorker(key)
 		defer s.publishHash(hash)
 
@@ -2107,7 +2115,7 @@ func (s *swapClientService) runReceiveWorker(hash lntypes.Hash, key string) {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			s.log.Warnf("receive swap %s stopped: %v", key, err)
 		}
-	}()
+	})
 }
 
 // markActive records that the daemon has an in-process worker responsible for
@@ -2223,7 +2231,7 @@ func (s *swapClientService) finishReceiveWorker(key string) {
 		s.runReceiveWorker(*next, nextKey)
 	}
 	if refill {
-		go s.refillPendingReceives()
+		s.launchWorker(s.refillPendingReceives)
 	}
 }
 
@@ -2392,7 +2400,7 @@ func (s *swapClientService) completeReceiveScan() {
 		s.runReceiveWorker(hash, hex.EncodeToString(hash[:]))
 	}
 	if refill {
-		go s.refillPendingReceives()
+		s.launchWorker(s.refillPendingReceives)
 	}
 }
 
@@ -2903,4 +2911,32 @@ func (a *swapClientAdapter) ValidatePayAuthorization(ctx context.Context,
 	return a.client.ValidatePayAuthorization(
 		ctx, invoice, maxFeeSat, maxCreditSat,
 	)
+}
+
+// launchWorker serializes daemon worker admission with teardown. Workers retain
+// the daemon context, and Done follows their deferred final summary reads.
+// A stopped service cannot start work against an already-closed store.
+// The caller must not hold s.mu. Queue transfers unlock before calling here.
+func (s *swapClientService) launchWorker(run func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopping || s.rootCtx.Err() != nil {
+		return
+	}
+	s.workers.Add(1)
+	go func() {
+		defer s.workers.Done()
+		run()
+	}()
+}
+
+// stopWorkers closes admission, cancels the daemon workers, and joins every
+// admitted worker before callers may close the swap store or its transports.
+// RPC handlers and startup callers are joined by the enclosing daemon.
+func (s *swapClientService) stopWorkers() {
+	s.mu.Lock()
+	s.stopping = true
+	s.cancel()
+	s.mu.Unlock()
+	s.workers.Wait()
 }

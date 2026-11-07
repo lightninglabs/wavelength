@@ -18,12 +18,17 @@ import (
 	"github.com/lightninglabs/tap-sdk/macaroon"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/harness"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/bip322"
+	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	"github.com/lightninglabs/wavelength/serverconn"
 	"github.com/lightninglabs/wavelength/waved"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 // TestAssetDeposit funds an asset deposit from tapd through waved. The
@@ -40,7 +45,137 @@ func TestAssetDeposit(t *testing.T) {
 	tapd := newAssetTestTapd(t, h)
 	ref := mintAssetTestAsset(t, h, tapd, 1_000)
 
-	client := startAssetDepositDaemon(t, h)
+	client, _ := startAssetDepositDaemon(t, h)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+
+	req, deposit := confirmAssetTestDeposit(t, h, client, ref)
+
+	// The retry returns the confirmed deposit and publishes nothing.
+	retried, err := client.DepositAsset(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, deposit.Outpoint, retried.Outpoint)
+	require.Equal(t, deposit.Status, retried.Status)
+	require.Empty(t, h.Harness.MempoolTxIDs())
+
+	// The 400 surplus units are back in tapd as spendable change.
+	require.Eventually(t, func() bool {
+		return assetTestUtxoUnits(t, tapd, ref) == 400
+	}, time.Minute, time.Second, "tapd holds no asset change")
+}
+
+// TestBoardAssetDeposit boards a confirmed asset deposit. The daemon joins the
+// next round with the deposit's asset disclosure, an asset VTXO and a BTC
+// change VTXO, and the join authorization proves the deposit against its
+// on-chain output.
+func TestBoardAssetDeposit(t *testing.T) {
+	ParallelN(t)
+
+	h := NewSysTestHarness(t, func(opts *harness.Options) {
+		opts.StartTapd = true
+	})
+	h.Harness.FundOperatorLND(btcutil.SatoshiPerBitcoin)
+
+	tapd := newAssetTestTapd(t, h)
+	ref := mintAssetTestAsset(t, h, tapd, 1_000)
+
+	client, mailbox := startAssetDepositDaemon(t, h)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+
+	_, deposit := confirmAssetTestDeposit(t, h, client, ref)
+	outpoint, err := wire.NewOutPointFromString(deposit.Outpoint)
+	require.NoError(t, err)
+	output := h.Harness.GetRawTransaction(
+		outpoint.Hash.String(),
+	).TxOut[outpoint.Index]
+
+	board := &waverpc.BoardAssetDepositRequest{RequestId: "alice-1"}
+	_, err = client.BoardAssetDeposit(ctx, board)
+	require.NoError(t, err)
+
+	var join *roundpb.JoinRoundRequest
+	require.Eventually(t, func() bool {
+		reqs := mailbox.joinRoundRequests()
+		if len(reqs) == 0 {
+			return false
+		}
+		join = reqs[len(reqs)-1]
+
+		return true
+	}, time.Minute, 100*time.Millisecond, "daemon never joined a round")
+
+	// The disclosure reproduces the deposit script, which is how the
+	// operator binds the claimed asset to the confirmed output.
+	require.Len(t, join.BoardingRequests, 1)
+	boarding := join.BoardingRequests[0]
+	require.Equal(t, ref.String(), boarding.AssetRef)
+	require.EqualValues(t, 600, boarding.AssetAmount)
+	require.NotEmpty(t, boarding.AssetProof)
+	require.Len(t, boarding.AssetWitness, 2)
+	composed, _, _, err := arkscript.ComposedBoardingScript(
+		boarding.PolicyTemplate,
+		[32]byte(boarding.AssetCommitmentLeafHash),
+	)
+	require.NoError(t, err)
+	require.Equal(t, output.PkScript, composed)
+
+	// The asset VTXO holds the minimum VTXO amount, and the BTC VTXO
+	// takes the rest after the fee.
+	require.Len(t, join.VtxoRequests, 2)
+	asset, change := join.VtxoRequests[0], join.VtxoRequests[1]
+	require.Equal(t, ref.String(), asset.AssetRef)
+	require.EqualValues(t, 600, asset.AssetAmount)
+	require.EqualValues(t, 1_000, asset.TargetAmountSat)
+	require.True(t, asset.FixedAmount)
+	require.Empty(t, change.AssetRef)
+	require.True(t, change.IsChange)
+	require.EqualValues(
+		t, 4_000-1_000-testOperatorFeeSat, change.TargetAmountSat,
+	)
+
+	// The join authorization proves the deposit through its composed
+	// exit spend.
+	require.NotNil(t, join.Auth)
+	identifier, err := btcec.ParsePubKey(join.Identifier)
+	require.NoError(t, err)
+	challenge, err := bip322.JoinRoundMessageChallenge(identifier)
+	require.NoError(t, err)
+	sig, err := bip322.DecodeSig(join.Auth.Signature)
+	require.NoError(t, err)
+	intent := &bip322.Intent{
+		Payload:    join.Auth.Message,
+		ValidFrom:  join.Auth.ValidFrom,
+		ValidUntil: join.Auth.ValidUntil,
+	}
+	message, err := intent.SigningMessage()
+	require.NoError(t, err)
+	result := bip322.ValidateAuthPkg(&bip322.AuthPkg{
+		Message:          message,
+		MessageChallenge: challenge,
+		Sig:              sig,
+		ProofPrevOutputs: map[wire.OutPoint]*wire.TxOut{
+			*outpoint: output,
+		},
+	})
+	require.Equal(
+		t, bip322.VerificationStateValid, result.State, result.Reason,
+	)
+
+	// The round still holds the deposit, so a second board is refused.
+	_, err = client.BoardAssetDeposit(ctx, board)
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
+}
+
+// confirmAssetTestDeposit deposits 600 units of ref through waved, mines the
+// deposit and waits until its proof confirms.
+func confirmAssetTestDeposit(t *testing.T, h *SysTestHarness,
+	client waverpc.DaemonServiceClient,
+	ref tapsdk.AssetRef) (*waverpc.DepositAssetRequest,
+	*waverpc.AssetDeposit) {
+
+	t.Helper()
+
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 
@@ -82,17 +217,7 @@ func TestAssetDeposit(t *testing.T) {
 	require.NotZero(t, deposit.ConfirmedHeight)
 	require.Empty(t, deposit.Error)
 
-	// The retry returns the confirmed deposit and publishes nothing.
-	retried, err := client.DepositAsset(ctx, req)
-	require.NoError(t, err)
-	require.Equal(t, deposit.Outpoint, retried.Outpoint)
-	require.Equal(t, deposit.Status, retried.Status)
-	require.Empty(t, h.Harness.MempoolTxIDs())
-
-	// The 400 surplus units are back in tapd as spendable change.
-	require.Eventually(t, func() bool {
-		return assetTestUtxoUnits(t, tapd, ref) == 400
-	}, time.Minute, time.Second, "tapd holds no asset change")
+	return req, deposit
 }
 
 // newAssetTestTapd connects a tap-sdk client to the harness tapd.
@@ -186,7 +311,7 @@ func assetTestUtxoUnits(t *testing.T, tapd *tapgrpc.Client,
 // startAssetDepositDaemon runs waved on the harness lnd with the tapd asset
 // backend and the same lnd signing deposits.
 func startAssetDepositDaemon(t *testing.T,
-	h *SysTestHarness) waverpc.DaemonServiceClient {
+	h *SysTestHarness) (waverpc.DaemonServiceClient, *fakeMailboxServer) {
 
 	t.Helper()
 
@@ -291,5 +416,5 @@ func startAssetDepositDaemon(t *testing.T,
 	client := waverpc.NewDaemonServiceClient(conn)
 	waitForDaemonReady(t, client)
 
-	return client
+	return client, mailbox
 }

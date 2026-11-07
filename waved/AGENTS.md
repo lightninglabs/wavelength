@@ -145,6 +145,17 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   depth bounds the reorgs that could replace the block the proof commits to.
   Deposits stay out of the boarding tables, so Bitcoin boarding and boarding
   sweeps never select them.
+- `BoardAssetDeposit` hands a confirmed deposit to the round actor as a
+  `round.RegisterAssetBoardingRequest`; the actor joins a round of the
+  deposit's own in the same turn, and the Ask outlives a cancelled caller.
+  The asset VTXO gets the operator's minimum VTXO amount and the BTC VTXO
+  targets the deposit value minus that amount and the quoted round fee; a
+  value that leaves less than a minimum VTXO is refused before the round
+  sees it. A
+  deposit that a round checkpointed with, or that a tracked round holds, is
+  refused with `AlreadyExists`. Another round's join in flight, or a round
+  state the actor cannot read, returns `Unavailable`. Board takes no lock;
+  the round actor's turn is where a second board of one deposit is refused.
 - `Server.run` registers a deferred `actorSystem.Shutdown()` **before** the
   deferred `db.Close()` so in-flight actor DB transactions drain before the
   connection pool tears down.

@@ -670,6 +670,17 @@ func (c *DaemonServiceClient) ListAssetDeposits(ctx context.Context,
 	return out, err
 }
 
+// BoardAssetDeposit joins the next round with a confirmed asset deposit.
+func (c *DaemonServiceClient) BoardAssetDeposit(ctx context.Context,
+	in *waverpc.BoardAssetDepositRequest, _ ...grpc.CallOption) (
+	*waverpc.AssetDeposit, error) {
+
+	out := new(waverpc.AssetDeposit)
+	err := c.client.Post(ctx, "/v1/daemon/board-asset-deposit", in, out)
+
+	return out, err
+}
+
 // JoinNextRound commits queued round intents and joins the next round.
 func (c *DaemonServiceClient) JoinNextRound(ctx context.Context,
 	in *waverpc.JoinNextRoundRequest, _ ...grpc.CallOption) (

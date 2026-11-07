@@ -60,3 +60,30 @@ UPDATE asset_deposits SET
     last_error = $2,
     updated_at = $3
 WHERE request_id = $1 AND status != 'confirmed';
+
+-- name: GetAssetDepositByOutpoint :one
+SELECT * FROM asset_deposits
+WHERE outpoint_hash = $1 AND outpoint_index = $2;
+
+-- name: InsertRoundAssetDeposit :exec
+INSERT INTO round_asset_deposits (
+    round_id, request_id, input_index, input_signature
+) VALUES ($1, $2, $3, $4)
+ON CONFLICT (round_id, request_id) DO UPDATE SET
+    input_index = excluded.input_index,
+    input_signature = excluded.input_signature;
+
+-- name: GetRoundAssetDeposits :many
+SELECT * FROM round_asset_deposits
+WHERE round_id = $1
+ORDER BY input_index;
+
+-- name: GetAssetDepositRound :one
+-- GetAssetDepositRound returns the round that spends a deposit. A failed round
+-- never broadcast its commitment, so it leaves the deposit free to board again.
+SELECT rad.round_id, r.status
+FROM round_asset_deposits AS rad
+JOIN rounds AS r ON r.round_id = rad.round_id
+WHERE rad.request_id = $1 AND r.status != 'failed'
+ORDER BY r.creation_time DESC
+LIMIT 1;

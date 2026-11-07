@@ -116,6 +116,21 @@ type RoundStore interface {
 	GetRoundBoardingIntents(ctx context.Context,
 		roundID string) ([]RoundBoardingIntentRow, error)
 
+	GetAssetDeposit(ctx context.Context,
+		requestID string) (sqlc.AssetDeposit, error)
+
+	GetAssetDepositByOutpoint(ctx context.Context,
+		arg sqlc.GetAssetDepositByOutpointParams) (
+		sqlc.AssetDeposit,
+		error,
+	)
+
+	InsertRoundAssetDeposit(ctx context.Context,
+		arg sqlc.InsertRoundAssetDepositParams) error
+
+	GetRoundAssetDeposits(ctx context.Context,
+		roundID string) ([]sqlc.RoundAssetDeposit, error)
+
 	InsertRoundVtxoRequest(ctx context.Context,
 		arg sqlc.InsertRoundVtxoRequestParams) error
 
@@ -439,6 +454,21 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 
 			for i, intent := range r.Intents.Boarding {
 				sig := inputSigState.InputSigs[i]
+
+				// Asset deposits live outside the Bitcoin
+				// boarding tables, so they get their own link.
+				if intent.Request.AssetRef != "" {
+					err := insertRoundAssetDeposit(
+						ctx, q, r.RoundID.String(),
+						&intent, sig,
+					)
+					if err != nil {
+						return err
+					}
+
+					continue
+				}
+
 				iParams, err := s.domainIntentToRoundParams(
 					r.RoundID.String(), &intent, sig,
 				)
@@ -1210,6 +1240,14 @@ func (s *RoundPersistenceStore) dbRoundToDomainRound(ctx context.Context,
 		r.Intents.Boarding = intents
 	}
 
+	assetIntents, _, err := s.roundAssetDepositIntents(
+		ctx, q, dbRound.RoundID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	r.Intents.Boarding = append(r.Intents.Boarding, assetIntents...)
+
 	// Rebuild the forfeit set from the VTXO table. Without this, a
 	// reloaded forfeit-bearing round looks boarding-only: the actor's
 	// restart re-arm guard never arms the status-reconcile timer, and a
@@ -1500,6 +1538,15 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 			inputSigs = append(inputSigs, nil)
 		}
 	}
+
+	assetIntents, assetSigs, err := s.roundAssetDepositIntents(
+		ctx, q, dbRound.RoundID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	intents = append(intents, assetIntents...)
+	inputSigs = append(inputSigs, assetSigs...)
 
 	// Rebuild the forfeit set alongside the boarding intents. The
 	// reconstructed InputSigSentState gates every status-reconcile
