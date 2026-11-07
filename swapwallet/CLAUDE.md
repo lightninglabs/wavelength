@@ -290,3 +290,11 @@ or terminal activity state clears them.
 - [rpc/wavewalletrpc/CLAUDE.md](../rpc/wavewalletrpc/CLAUDE.md) — Proto schema
   and per-message invariants.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
+
+## Bounded canonical activity reads
+
+Finite embedded activity batches join event positions to current canonical
+rows. A captured ceiling bounds replay; the host persists explicit NextCursor
+and deduplicates by canonical identity. Capturing a cursor does not reconcile
+sources. Both direct SDK callbacks join shutdown before releasing the store.
+See [finite activity reads](../docs/canonical-activity-batches.md).

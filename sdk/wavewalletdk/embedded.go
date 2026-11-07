@@ -225,6 +225,8 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 			return errors.Join(closeErr, runErr, listenerErr)
 		},
 	)
+	client.readActivityBatch = server.ReadCurrentActivityBatch
+	client.activityCursor = server.ActivityEventCursor
 	client.waitWalletServicesReady = server.WaitForWalletServicesReady
 	client.recoverWalletState = server.RecoverWalletState
 	client.setNotificationSubscription = server.SetNotificationSubscription
