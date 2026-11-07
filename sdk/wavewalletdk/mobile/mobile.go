@@ -249,7 +249,8 @@ func stopWithContext(ctx context.Context) error {
 		return shutdown.err
 
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("wavewalletdk mobile stop pending; call "+
+			"Stop again: %w", ctx.Err())
 	}
 }
 

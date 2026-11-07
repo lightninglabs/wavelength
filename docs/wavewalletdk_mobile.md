@@ -102,7 +102,8 @@ func Stop() error
   unrecovered panic would kill the host process across the boundary.
 - A Stop timeout ends only that caller's wait. Startup and cleanup retain the
   singleton until they actually return. Start rejects during that interval.
-  Repeated Stop waits the same cleanup. `IsRunning` reports only starting or
+  Repeated Stop waits the same cleanup. Pending waits return the stable prefix
+  `wavewalletdk mobile stop pending; call Stop again:` with the context error. `IsRunning` reports only starting or
   started, so false is not proof that cleanup has finished.
 - The wrapper owns an internal `context.Context` created in `Start` and
   cancelled by `Stop`, so the mobile API never has to express a `context.Context`
