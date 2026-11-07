@@ -415,6 +415,13 @@ type RoundAdmissionDeadline struct {
 	Closed    bool
 }
 
+type RoundAssetDeposit struct {
+	RoundID        string
+	RequestID      string
+	InputIndex     int32
+	InputSignature []byte
+}
+
 type RoundBoardingIntent struct {
 	RoundID        string
 	OutpointHash   []byte

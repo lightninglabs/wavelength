@@ -7,12 +7,15 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
 	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightninglabs/wavelength/round"
 	"github.com/lightninglabs/wavelength/tapassets"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -78,6 +81,11 @@ type depositFixture struct {
 	roundFee  btcutil.Amount
 	assetRef  string
 	output    wire.OutPoint
+
+	// boardings records the deposits handed to the round actor, and
+	// boardErr is returned for each.
+	boardings []*round.RegisterAssetBoardingRequest
+	boardErr  error
 }
 
 func newDepositFixture(t *testing.T) *depositFixture {
@@ -91,6 +99,15 @@ func newDepositFixture(t *testing.T) *depositFixture {
 	require.NoError(t, err)
 
 	output := wire.OutPoint{Hash: chainhash.Hash{0x22}, Index: 0}
+	leafHash := chainhash.Hash{0x44}
+	template, err := arkscript.EncodeStandardVTXOTemplate(
+		ownerKey, operatorKey, 144,
+	)
+	require.NoError(t, err)
+	pkScript, _, _, err := arkscript.ComposedBoardingScript(
+		template, leafHash,
+	)
+	require.NoError(t, err)
 	tapd := &fakeDepositTapd{
 		utxos: map[string]*tapsdk.ManagedUtxo{
 			"anchor": {
@@ -122,17 +139,11 @@ func newDepositFixture(t *testing.T) *depositFixture {
 	}
 	onboarder := &fakeOnboarder{
 		result: &tapassets.OnboardingResult{
-			Outpoint:     output,
-			ValueSat:     10_000,
-			ActualFeeSat: 250,
-			PkScript: []byte{
-				0x51,
-				0x20,
-				0x01,
-			},
-			PolicyTemplate: []byte{
-				0x01,
-			},
+			Outpoint:       output,
+			ValueSat:       10_000,
+			ActualFeeSat:   250,
+			PkScript:       pkScript,
+			PolicyTemplate: template,
 			OwnerKey: keychain.KeyDescriptor{
 				KeyLocator: keychain.KeyLocator{
 					Family: 42, Index: 3,
@@ -142,10 +153,8 @@ func newDepositFixture(t *testing.T) *depositFixture {
 			Digest: tapsdk.Hash{
 				0x33,
 			},
-			ScriptKey: scriptKey,
-			TaprootAssetRoot: chainhash.Hash{
-				0x44,
-			},
+			ScriptKey:        scriptKey,
+			TaprootAssetRoot: leafHash,
 			OPTrueWitness: [][]byte{
 				{
 					0x51,
@@ -173,13 +182,28 @@ func newDepositFixture(t *testing.T) *depositFixture {
 		assetRef: ref.String(),
 		output:   output,
 	}
-	fixture.service = newAssetDepositService(
-		btclog.Disabled, store, tapd, onboarder,
-		func() *types.OperatorTerms { return fixture.terms },
-		func(context.Context, btcutil.Amount) (btcutil.Amount, error) {
+	fixture.service = newAssetDepositService(&assetDepositConfig{
+		log:       btclog.Disabled,
+		store:     store,
+		tapd:      tapd,
+		onboarder: onboarder,
+		terms: func() *types.OperatorTerms {
+			return fixture.terms
+		},
+		quoteBoardingFee: func(context.Context, btcutil.Amount) (
+			btcutil.Amount, error) {
+
 			return fixture.roundFee, nil
 		},
-	)
+		chainParams: &chaincfg.RegressionNetParams,
+		registerBoarding: func(_ context.Context,
+			req *round.RegisterAssetBoardingRequest) error {
+
+			fixture.boardings = append(fixture.boardings, req)
+
+			return fixture.boardErr
+		},
+	})
 
 	return fixture
 }
@@ -422,10 +446,59 @@ func TestAssetDepositConfirmation(t *testing.T) {
 	require.EqualValues(t, 210, deposits[0].ConfirmedHeight)
 	require.Equal(t, f.output.Hash[:], deposits[0].ProofFile)
 
-	rpc := assetDepositToRPC(deposits[0])
+	rpc := assetDepositToRPC(deposits[0], "round-1")
 	require.Equal(
 		t, waverpc.AssetDepositStatus_ASSET_DEPOSIT_STATUS_CONFIRMED,
 		rpc.Status,
 	)
 	require.Equal(t, f.output.String(), rpc.Outpoint)
+	require.Equal(t, "round-1", rpc.RoundId)
+}
+
+// TestAssetDepositBoard checks that a confirmed deposit is handed to the round
+// actor with an asset VTXO at the minimum VTXO amount and a BTC VTXO for the
+// rest of its value after the quoted round fee.
+func TestAssetDepositBoard(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newDepositFixture(t)
+
+	_, err := f.service.Board(ctx, "alice-1")
+	require.Equal(t, codes.NotFound, status.Code(err))
+
+	_, err = f.service.Deposit(ctx, f.request("alice-1"))
+	require.NoError(t, err)
+	_, err = f.service.Board(ctx, "alice-1")
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+
+	f.tapd.transfers[0].AnchorTxBlockHash = [32]byte{1}
+	f.tapd.transfers[0].AnchorTxBlockHeight = 210
+	f.tapd.height = 210
+	f.service.confirmPublished(ctx)
+
+	_, err = f.service.Board(ctx, "alice-1")
+	require.NoError(t, err)
+	require.Len(t, f.boardings, 1)
+
+	req := f.boardings[0]
+	require.EqualValues(t, 1_000, req.AssetVTXOAmount)
+	require.EqualValues(t, 10_000-1_000-300, req.ChangeAmount)
+	require.Equal(t, f.output, req.Boarding.Outpoint)
+	require.Equal(t, f.assetRef, req.Boarding.Request.AssetRef)
+	require.EqualValues(t, 600, req.Boarding.Request.AssetAmount)
+	require.NotNil(t, req.Boarding.AuthSpend)
+
+	// A deposit already in a round is refused.
+	f.boardErr = round.ErrBoardingInFlight
+	_, err = f.service.Board(ctx, "alice-1")
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
+
+	// A round fee that leaves less than a minimum VTXO is refused before
+	// the round actor sees the deposit.
+	f.boardErr = nil
+	f.roundFee = 8_500
+	_, err = f.service.Board(ctx, "alice-1")
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Len(t, f.boardings, 2)
 }

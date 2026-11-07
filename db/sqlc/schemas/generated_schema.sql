@@ -659,6 +659,9 @@ CREATE INDEX idx_pending_intents_kind_status
 CREATE INDEX idx_processed_messages_expires
     ON processed_messages(expires_at);
 
+CREATE INDEX idx_round_asset_deposits_request_id
+    ON round_asset_deposits(request_id);
+
 CREATE INDEX idx_round_boarding_intents_round_id
     ON round_boarding_intents(round_id);
 
@@ -1337,6 +1340,18 @@ CREATE TABLE round_admission_deadlines (
     round_id TEXT PRIMARY KEY,
     expires_at BIGINT NOT NULL,
     closed BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE TABLE round_asset_deposits (
+    round_id TEXT NOT NULL REFERENCES rounds(round_id) ON DELETE CASCADE,
+    request_id TEXT NOT NULL REFERENCES asset_deposits(request_id),
+
+    -- input_index and input_signature are the client's signature of the
+    -- deposit input, which a restarted client needs to resume the round.
+    input_index INTEGER NOT NULL CHECK (input_index >= 0),
+    input_signature BLOB NOT NULL,
+
+    PRIMARY KEY (round_id, request_id)
 );
 
 CREATE TABLE round_boarding_intents (

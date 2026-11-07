@@ -103,6 +103,10 @@ type Querier interface {
 	// GetActivityEntry returns one entry by its canonical id.
 	GetActivityEntry(ctx context.Context, canonicalID string) (ActivityEntry, error)
 	GetAssetDeposit(ctx context.Context, requestID string) (AssetDeposit, error)
+	GetAssetDepositByOutpoint(ctx context.Context, arg GetAssetDepositByOutpointParams) (AssetDeposit, error)
+	// GetAssetDepositRound returns the round that spends a deposit. A failed round
+	// never broadcast its commitment, so it leaves the deposit free to board again.
+	GetAssetDepositRound(ctx context.Context, requestID string) (GetAssetDepositRoundRow, error)
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
 	GetBoardingSweep(ctx context.Context, txid []byte) (BoardingSweep, error)
@@ -150,6 +154,7 @@ type Querier interface {
 	GetRefreshFeePaidByRoundID(ctx context.Context, roundID []byte) (int64, error)
 	GetRound(ctx context.Context, roundID string) (Round, error)
 	GetRoundAdmissionDeadline(ctx context.Context, roundID string) (GetRoundAdmissionDeadlineRow, error)
+	GetRoundAssetDeposits(ctx context.Context, roundID string) ([]RoundAssetDeposit, error)
 	GetRoundBoardingIntents(ctx context.Context, roundID string) ([]RoundBoardingIntent, error)
 	GetRoundByCommitmentTxid(ctx context.Context, commitmentTxid []byte) (Round, error)
 	GetRoundClientTree(ctx context.Context, arg GetRoundClientTreeParams) (RoundClientTree, error)
@@ -213,6 +218,7 @@ type Querier interface {
 	InsertOORPackageCheckpoint(ctx context.Context, arg InsertOORPackageCheckpointParams) error
 	// Round queries.
 	InsertRound(ctx context.Context, arg InsertRoundParams) error
+	InsertRoundAssetDeposit(ctx context.Context, arg InsertRoundAssetDepositParams) error
 	// Round boarding intents queries.
 	InsertRoundBoardingIntent(ctx context.Context, arg InsertRoundBoardingIntentParams) error
 	// Client trees queries.

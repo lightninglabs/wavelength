@@ -10,12 +10,14 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/lndclient"
 	tapsdk "github.com/lightninglabs/tap-sdk"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightninglabs/wavelength/round"
 	"github.com/lightninglabs/wavelength/tapassets"
 	"github.com/lightninglabs/wavelength/wallet"
 	"github.com/lightninglabs/wavelength/waverpc"
@@ -72,6 +74,10 @@ type assetOnboarder interface {
 type boardingFeeQuoter func(context.Context, btcutil.Amount) (btcutil.Amount,
 	error)
 
+// assetBoardingRegistrar registers a deposit with the next round.
+type assetBoardingRegistrar func(context.Context,
+	*round.RegisterAssetBoardingRequest) error
+
 // assetDepositStore persists deposits.
 type assetDepositStore interface {
 	CreateAssetDeposit(context.Context,
@@ -90,6 +96,8 @@ type assetDepositStore interface {
 	MarkAssetDepositConfirmed(context.Context, string, []byte, uint32) error
 
 	SetAssetDepositError(context.Context, string, string) error
+
+	AssetDepositRound(context.Context, string) (string, error)
 }
 
 // assetDepositService funds asset deposits from the tapd wallet and tracks
@@ -106,6 +114,12 @@ type assetDepositService struct {
 	// quoteBoardingFee sizes the round fee the deposit value must cover.
 	quoteBoardingFee boardingFeeQuoter
 
+	// chainParams derives deposit addresses for round boarding.
+	chainParams *chaincfg.Params
+
+	// registerBoarding hands a confirmed deposit to the round actor.
+	registerBoarding assetBoardingRegistrar
+
 	// mu serializes funding, because tapd wallet input selection must not
 	// interleave between deposits.
 	mu sync.Mutex
@@ -114,19 +128,29 @@ type assetDepositService struct {
 	poll chan struct{}
 }
 
-// newAssetDepositService returns a deposit service over its dependencies.
-func newAssetDepositService(log btclog.Logger, store assetDepositStore,
-	tapd assetDepositTapd, onboarder assetOnboarder,
-	terms func() *types.OperatorTerms,
-	quoteBoardingFee boardingFeeQuoter) *assetDepositService {
+// assetDepositConfig holds the dependencies of a deposit service.
+type assetDepositConfig struct {
+	log              btclog.Logger
+	store            assetDepositStore
+	tapd             assetDepositTapd
+	onboarder        assetOnboarder
+	terms            func() *types.OperatorTerms
+	quoteBoardingFee boardingFeeQuoter
+	chainParams      *chaincfg.Params
+	registerBoarding assetBoardingRegistrar
+}
 
+// newAssetDepositService returns a deposit service over its dependencies.
+func newAssetDepositService(cfg *assetDepositConfig) *assetDepositService {
 	return &assetDepositService{
-		log:              log,
-		store:            store,
-		tapd:             tapd,
-		onboarder:        onboarder,
-		terms:            terms,
-		quoteBoardingFee: quoteBoardingFee,
+		log:              cfg.log,
+		store:            cfg.store,
+		tapd:             cfg.tapd,
+		onboarder:        cfg.onboarder,
+		terms:            cfg.terms,
+		quoteBoardingFee: cfg.quoteBoardingFee,
+		chainParams:      cfg.chainParams,
+		registerBoarding: cfg.registerBoarding,
 		poll:             make(chan struct{}, 1),
 	}
 }
@@ -275,6 +299,102 @@ func (d *assetDepositService) fund(ctx context.Context,
 	}
 
 	return published, nil
+}
+
+// Board joins the next round with a confirmed deposit. The asset VTXO gets the
+// operator's minimum VTXO amount, and the BTC VTXO targets the rest of the
+// deposit's value after the quoted round fee; the operator's quote sets its
+// final value. Board takes no lock, because the round actor refuses a deposit
+// that a tracked round holds in the turn that registers it.
+func (d *assetDepositService) Board(ctx context.Context, requestID string) (
+	*db.AssetDeposit, error) {
+
+	if requestID == "" {
+		return nil, status.Error(
+			codes.InvalidArgument, "request_id is required",
+		)
+	}
+
+	deposit, err := d.store.GetAssetDeposit(ctx, requestID)
+	if errors.Is(err, db.ErrAssetDepositNotFound) {
+		return nil, status.Errorf(codes.NotFound, "asset deposit %s "+
+			"not found", requestID)
+	}
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "load asset "+
+			"deposit: %v", err)
+	}
+	if deposit.Status != db.AssetDepositConfirmed {
+		return nil, status.Errorf(codes.FailedPrecondition, "asset "+
+			"deposit %s is %s, not confirmed", requestID,
+			deposit.Status)
+	}
+	roundID, err := d.store.AssetDepositRound(ctx, requestID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "load asset deposit "+
+			"round: %v", err)
+	}
+	if roundID != "" {
+		return nil, status.Errorf(codes.AlreadyExists, "asset deposit "+
+			"%s is boarded by round %s", requestID, roundID)
+	}
+
+	terms := d.terms()
+	if terms == nil {
+		return nil, status.Error(
+			codes.Unavailable, "operator terms are not loaded",
+		)
+	}
+	value := btcutil.Amount(deposit.Output.ValueSat)
+	roundFee, err := d.quoteBoardingFee(ctx, value)
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "quote "+
+			"boarding fee: %v", err)
+	}
+	assetSat, changeSat := boardingAmounts(terms, value, roundFee)
+	if changeSat < terms.MinVTXOAmountFloor() {
+		return nil, status.Errorf(codes.FailedPrecondition, "asset "+
+			"deposit of %v cannot fund a %v asset VTXO, the round "+
+			"fee and a BTC VTXO", value, assetSat)
+	}
+
+	boarding, err := deposit.RoundBoarding()
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	intent, err := round.NewAssetBoardingIntent(boarding, d.chainParams)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "asset deposit "+
+			"%s: %v", requestID, err)
+	}
+
+	err = d.registerBoarding(ctx, &round.RegisterAssetBoardingRequest{
+		Boarding:        intent,
+		AssetVTXOAmount: assetSat,
+		ChangeAmount:    changeSat,
+	})
+	if errors.Is(err, round.ErrBoardingInFlight) {
+		return nil, status.Errorf(codes.AlreadyExists, "asset deposit "+
+			"%s is already in a round", requestID)
+	}
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "register asset "+
+			"deposit %s: %v", requestID, err)
+	}
+	d.log.InfoS(ctx, "Asset deposit registered for boarding",
+		slog.String("request_id", requestID),
+		slog.Int64("asset_vtxo_sat", int64(assetSat)),
+		slog.Int64("change_sat", int64(changeSat)),
+	)
+
+	return deposit, nil
+}
+
+// Round returns the round that spends a deposit, or an empty ID.
+func (d *assetDepositService) Round(ctx context.Context, requestID string) (
+	string, error) {
+
+	return d.store.AssetDepositRound(ctx, requestID)
 }
 
 // List returns every deposit.
@@ -465,9 +585,23 @@ func depositValue(terms *types.OperatorTerms,
 	return max(value, terms.MinBoardingAmount)
 }
 
-// assetDepositToRPC projects a stored deposit.
-func assetDepositToRPC(deposit *db.AssetDeposit) *waverpc.AssetDeposit {
+// boardingAmounts splits a deposit's value into the asset VTXO's satoshis and
+// the BTC VTXO's target after the round fee.
+func boardingAmounts(terms *types.OperatorTerms,
+	value, roundFee btcutil.Amount) (btcutil.Amount, btcutil.Amount) {
+
+	assetSat := terms.MinVTXOAmountFloor()
+	fee := max(roundFee, terms.MinOperatorFee)
+
+	return assetSat, value - assetSat - fee
+}
+
+// assetDepositToRPC projects a stored deposit and the round that spends it.
+func assetDepositToRPC(deposit *db.AssetDeposit,
+	roundID string) *waverpc.AssetDeposit {
+
 	resp := &waverpc.AssetDeposit{
+		RoundId:         roundID,
 		RequestId:       deposit.Request.RequestID,
 		AssetRef:        deposit.Request.AssetRef,
 		AssetAmount:     deposit.Request.AssetAmount,
@@ -535,6 +669,21 @@ func (s *Server) depositOwnerKeyDeriver() tapassets.OnboardingKeyDeriver {
 
 		return backend.DeriveNextKey(ctx, wallet.BoardingKeyFamily)
 	}
+}
+
+// registerAssetBoarding hands a deposit to the round actor, which joins a
+// round with it in the same turn. The Ask outlives a cancelled caller, so a
+// deposit is never queued without its join.
+func (s *Server) registerAssetBoarding(ctx context.Context,
+	req *round.RegisterAssetBoardingRequest) error {
+
+	if s.actorSystem == nil {
+		return fmt.Errorf("actor system not initialized")
+	}
+
+	roundRef := round.NewServiceKey().Ref(s.actorSystem)
+
+	return roundRef.Ask(context.WithoutCancel(ctx), req).Await(ctx).Err()
 }
 
 // quoteBoardingFee asks the operator for the round fee of one boarding input.

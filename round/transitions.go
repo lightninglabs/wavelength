@@ -4505,6 +4505,13 @@ func computeClientOperatorFee(intents Intents, ownedVTXOs []*ClientVTXO) int64 {
 	var inputsSat int64
 
 	for i := range intents.Boarding {
+		// An asset deposit is funded from outside the wallet and
+		// pays for the outputs booked as transfers in, so neither
+		// side enters this client's fee.
+		if intents.Boarding[i].Request.AssetRef != "" {
+			continue
+		}
+
 		// ChainInfo.Amount is always populated since a
 		// BoardingIntent is only constructed after its UTXO
 		// confirms; the zero guard is defensive only.
@@ -4552,7 +4559,7 @@ func computeClientOperatorFee(intents Intents, ownedVTXOs []*ClientVTXO) int64 {
 	}
 
 	for _, v := range ownedVTXOs {
-		if v != nil {
+		if v != nil && v.Origin != types.VTXOOriginRoundTransfer {
 			outputsSat += int64(v.Amount)
 		}
 	}
@@ -4700,8 +4707,10 @@ func roundOutflowKey(roundID RoundID, kind string, index int) []byte {
 // funds entered the Ark layer in that round; all other client-paid
 // operator fees are refresh-style VTXO spends.
 func roundOperatorFeeType(intents Intents) string {
-	if len(intents.Boarding) > 0 {
-		return ledger.FeeTypeBoarding
+	for i := range intents.Boarding {
+		if intents.Boarding[i].Request.AssetRef == "" {
+			return ledger.FeeTypeBoarding
+		}
 	}
 
 	for i := range intents.VTXOs {

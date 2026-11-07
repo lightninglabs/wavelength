@@ -152,7 +152,8 @@ state transitions and validation rules live under [Invariants](#invariants).
   entirely, leaving only the wavelength#823 startup sweep.
 - `computeClientOperatorFee(intents, ownedVTXOs) int64` —
   Σ(boarding inputs) + Σ(forfeited VTXOs) − Σ(owned output VTXOs) −
-  Σ(cooperative leave outputs), clamped to zero. Carried on
+  Σ(cooperative leave outputs), clamped to zero. Asset deposit inputs and
+  transfer-in VTXOs are left out of both sides. Carried on
   `VTXOCreatedNotification.OperatorFeeSat`.
 
 ### Checkpoint format (`durable_state*.go`, `durable_*.go`)
@@ -484,3 +485,29 @@ metadata prevents a leaf from entering wallet inventory.
 
 `JoinRoundRequest` proto conversion preserves the boarding asset disclosure
 in both directions, cloning proof, digest, commitment, and witness bytes.
+
+## Asset deposits
+
+`RegisterAssetBoardingRequest` registers an asset deposit with a new round as
+one intent package: the deposit's boarding intent, a fixed asset VTXO that
+carries its units, and a BTC change VTXO that takes the rest of its value
+after the round fee. The same turn sends `IntentRequested` to that round, so
+a cancelled caller cannot leave the deposit queued without a join. The round
+is marked `RoundFSM.AssetDeposit`, and `findAssemblingRound` and
+`findRefreshRound` never add intents to it: a Bitcoin boarding input in the
+same round would flow into the change VTXO and be booked as a transfer in.
+`NewAssetBoardingIntent` builds the intent only when the boarding policy and
+commitment leaf reproduce the deposit script, and sets
+`BoardingIntent.AuthSpend` to the composed exit spend, which join-round
+authorization uses in place of the plain exit leaf. Both VTXOs are booked as
+transfers in, because the deposit's satoshis come from the lnd
+wallet behind tapd, outside the daemon's ledger. For the same reason the
+deposit and those VTXOs stay out of `computeClientOperatorFee`, so the
+deposit's share of the round fee is not booked, and `roundOperatorFeeType`
+reports a boarding fee only for Bitcoin boarding inputs, whose fee comes out
+of `wallet_balance`. A deposit that any tracked round already spends is
+refused with `ErrBoardingInFlight`. While another round has a join in flight
+(requested and not yet given a commitment), the deposit is refused with
+`ErrRoundBusy`, because the operator keeps one registration per client. A
+round whose state cannot be read fails the check with neither error. If the
+package or the join fails, the round is dropped so a retry is not refused.
