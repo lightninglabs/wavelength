@@ -212,3 +212,7 @@ Apple certificate issuance; management tests use real P-256 App Attest
 assertions. Provider transports are faked. Apple's validation-guide vectors
 can also be checked with
 `go test github.com/takimoto3/app-attest -run 'Test.*Golden|TestApple'`.
+
+The generic alert says “Payment activity. Open Wavelength to update your wallet.”
+A source may signal an incoming HTLC before the phone has completed its claim.
+The fixed template therefore does not claim a completed receipt or an amount.
