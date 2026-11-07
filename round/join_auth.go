@@ -380,6 +380,7 @@ func buildJoinRoundAuthRequest(ctx context.Context, env *ClientEnvironment,
 			OperatorKey: intent.Address.OperatorKey,
 			TapScript:   intent.Address.Tapscript,
 			Sequence:    intent.Address.ExitDelay,
+			AuthSpend:   intent.AuthSpend,
 		})
 	}
 

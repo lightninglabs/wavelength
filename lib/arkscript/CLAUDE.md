@@ -59,6 +59,8 @@ validated invariants.
 - `ComposedPolicy` — Composes an existing `CompiledPolicy` with an additional sibling tap branch root, allowing sub-tree aggregation. Built with `ComposeWithSiblingRoot`.
 - `ComposedBoardingScript` — Combines a boarding policy with a disclosed asset
   commitment leaf hash to reconstruct the deposit script and Taproot root.
+  `ComposedBoardingExitSpend` returns the owner's exit spend of that deposit,
+  with the leaf hash as the control block's top-level sibling.
 - `AnchorOutput` / `AnchorPkScript` — `AnchorPkScript` is the standard P2A keyless pkScript; `AnchorOutput` returns a zero-value `wire.TxOut` carrying it for CPFP fee bumping.
 - `EncodedLeaf` / `EncodeTapTree` / `DecodeTapTree` — Ark-specific counted
   compact-size leaf encoding for PSBT sidecars. This is distinct from the

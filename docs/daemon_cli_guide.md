@@ -466,6 +466,18 @@ wavecli dev daemon deposit-asset --request-id alice-1 \
 wavecli dev daemon list-asset-deposits
 ```
 
+### `dev daemon board-asset-deposit`
+
+Join the next round with a confirmed asset deposit. The round creates an asset
+VTXO holding the deposited units and the operator's minimum VTXO amount, and a
+BTC VTXO with the rest of the deposit's value after the round fee. Once the
+round checkpoints, `list-asset-deposits` shows its `round_id`. A deposit that a
+round already spends is refused; a failed round frees it to board again.
+
+```bash
+wavecli dev daemon board-asset-deposit --request-id alice-1
+```
+
 ### `ark board` / `dev daemon Board`
 
 Trigger the client to join the next round with any confirmed boarding

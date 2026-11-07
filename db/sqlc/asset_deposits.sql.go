@@ -51,6 +51,110 @@ func (q *Queries) GetAssetDeposit(ctx context.Context, requestID string) (AssetD
 	return i, err
 }
 
+const GetAssetDepositByOutpoint = `-- name: GetAssetDepositByOutpoint :one
+SELECT request_id, status, asset_ref, asset_amount, carrier_value_sat, fee_rate_sat_per_vbyte, target_conf, max_fee_sat, operator_key, exit_delay, funding_proofs, outpoint_hash, outpoint_index, value_sat, fee_sat, pk_script, policy_template, owner_key_family, owner_key_index, owner_pubkey, digest, script_key, taproot_asset_root, op_true_witness, proof_file, confirmed_height, last_error, created_at, updated_at FROM asset_deposits
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+`
+
+type GetAssetDepositByOutpointParams struct {
+	OutpointHash  []byte
+	OutpointIndex sql.NullInt32
+}
+
+func (q *Queries) GetAssetDepositByOutpoint(ctx context.Context, arg GetAssetDepositByOutpointParams) (AssetDeposit, error) {
+	row := q.db.QueryRowContext(ctx, GetAssetDepositByOutpoint, arg.OutpointHash, arg.OutpointIndex)
+	var i AssetDeposit
+	err := row.Scan(
+		&i.RequestID,
+		&i.Status,
+		&i.AssetRef,
+		&i.AssetAmount,
+		&i.CarrierValueSat,
+		&i.FeeRateSatPerVbyte,
+		&i.TargetConf,
+		&i.MaxFeeSat,
+		&i.OperatorKey,
+		&i.ExitDelay,
+		&i.FundingProofs,
+		&i.OutpointHash,
+		&i.OutpointIndex,
+		&i.ValueSat,
+		&i.FeeSat,
+		&i.PkScript,
+		&i.PolicyTemplate,
+		&i.OwnerKeyFamily,
+		&i.OwnerKeyIndex,
+		&i.OwnerPubkey,
+		&i.Digest,
+		&i.ScriptKey,
+		&i.TaprootAssetRoot,
+		&i.OpTrueWitness,
+		&i.ProofFile,
+		&i.ConfirmedHeight,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const GetAssetDepositRound = `-- name: GetAssetDepositRound :one
+SELECT rad.round_id, r.status
+FROM round_asset_deposits AS rad
+JOIN rounds AS r ON r.round_id = rad.round_id
+WHERE rad.request_id = $1 AND r.status != 'failed'
+ORDER BY r.creation_time DESC
+LIMIT 1
+`
+
+type GetAssetDepositRoundRow struct {
+	RoundID string
+	Status  string
+}
+
+// GetAssetDepositRound returns the round that spends a deposit. A failed round
+// never broadcast its commitment, so it leaves the deposit free to board again.
+func (q *Queries) GetAssetDepositRound(ctx context.Context, requestID string) (GetAssetDepositRoundRow, error) {
+	row := q.db.QueryRowContext(ctx, GetAssetDepositRound, requestID)
+	var i GetAssetDepositRoundRow
+	err := row.Scan(&i.RoundID, &i.Status)
+	return i, err
+}
+
+const GetRoundAssetDeposits = `-- name: GetRoundAssetDeposits :many
+SELECT round_id, request_id, input_index, input_signature FROM round_asset_deposits
+WHERE round_id = $1
+ORDER BY input_index
+`
+
+func (q *Queries) GetRoundAssetDeposits(ctx context.Context, roundID string) ([]RoundAssetDeposit, error) {
+	rows, err := q.db.QueryContext(ctx, GetRoundAssetDeposits, roundID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RoundAssetDeposit
+	for rows.Next() {
+		var i RoundAssetDeposit
+		if err := rows.Scan(
+			&i.RoundID,
+			&i.RequestID,
+			&i.InputIndex,
+			&i.InputSignature,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const InsertAssetDeposit = `-- name: InsertAssetDeposit :execrows
 INSERT INTO asset_deposits (
     request_id, status, asset_ref, asset_amount, carrier_value_sat,
@@ -96,6 +200,32 @@ func (q *Queries) InsertAssetDeposit(ctx context.Context, arg InsertAssetDeposit
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const InsertRoundAssetDeposit = `-- name: InsertRoundAssetDeposit :exec
+INSERT INTO round_asset_deposits (
+    round_id, request_id, input_index, input_signature
+) VALUES ($1, $2, $3, $4)
+ON CONFLICT (round_id, request_id) DO UPDATE SET
+    input_index = excluded.input_index,
+    input_signature = excluded.input_signature
+`
+
+type InsertRoundAssetDepositParams struct {
+	RoundID        string
+	RequestID      string
+	InputIndex     int32
+	InputSignature []byte
+}
+
+func (q *Queries) InsertRoundAssetDeposit(ctx context.Context, arg InsertRoundAssetDepositParams) error {
+	_, err := q.db.ExecContext(ctx, InsertRoundAssetDeposit,
+		arg.RoundID,
+		arg.RequestID,
+		arg.InputIndex,
+		arg.InputSignature,
+	)
+	return err
 }
 
 const ListAssetDeposits = `-- name: ListAssetDeposits :many

@@ -48,6 +48,7 @@ const (
 	DaemonService_Board_FullMethodName                                          = "/waverpc.DaemonService/Board"
 	DaemonService_DepositAsset_FullMethodName                                   = "/waverpc.DaemonService/DepositAsset"
 	DaemonService_ListAssetDeposits_FullMethodName                              = "/waverpc.DaemonService/ListAssetDeposits"
+	DaemonService_BoardAssetDeposit_FullMethodName                              = "/waverpc.DaemonService/BoardAssetDeposit"
 	DaemonService_JoinNextRound_FullMethodName                                  = "/waverpc.DaemonService/JoinNextRound"
 	DaemonService_SweepBoardingUTXOs_FullMethodName                             = "/waverpc.DaemonService/SweepBoardingUTXOs"
 	DaemonService_ListBoardingSweeps_FullMethodName                             = "/waverpc.DaemonService/ListBoardingSweeps"
@@ -203,6 +204,10 @@ type DaemonServiceClient interface {
 	DepositAsset(ctx context.Context, in *DepositAssetRequest, opts ...grpc.CallOption) (*AssetDeposit, error)
 	// ListAssetDeposits returns the asset deposits of this daemon.
 	ListAssetDeposits(ctx context.Context, in *ListAssetDepositsRequest, opts ...grpc.CallOption) (*ListAssetDepositsResponse, error)
+	// BoardAssetDeposit joins the next round with a confirmed asset
+	// deposit. The round creates an asset VTXO with the deposited units and
+	// a BTC VTXO with the deposit's remaining satoshis after the round fee.
+	BoardAssetDeposit(ctx context.Context, in *BoardAssetDepositRequest, opts ...grpc.CallOption) (*AssetDeposit, error)
 	// JoinNextRound asks the client round FSM to commit any currently
 	// queued round intents and emit a JoinRoundRequest to the operator.
 	// Useful after queueing refresh or leave intents that intentionally
@@ -576,6 +581,16 @@ func (c *daemonServiceClient) ListAssetDeposits(ctx context.Context, in *ListAss
 	return out, nil
 }
 
+func (c *daemonServiceClient) BoardAssetDeposit(ctx context.Context, in *BoardAssetDepositRequest, opts ...grpc.CallOption) (*AssetDeposit, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AssetDeposit)
+	err := c.cc.Invoke(ctx, DaemonService_BoardAssetDeposit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) JoinNextRound(ctx context.Context, in *JoinNextRoundRequest, opts ...grpc.CallOption) (*JoinNextRoundResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(JoinNextRoundResponse)
@@ -918,6 +933,10 @@ type DaemonServiceServer interface {
 	DepositAsset(context.Context, *DepositAssetRequest) (*AssetDeposit, error)
 	// ListAssetDeposits returns the asset deposits of this daemon.
 	ListAssetDeposits(context.Context, *ListAssetDepositsRequest) (*ListAssetDepositsResponse, error)
+	// BoardAssetDeposit joins the next round with a confirmed asset
+	// deposit. The round creates an asset VTXO with the deposited units and
+	// a BTC VTXO with the deposit's remaining satoshis after the round fee.
+	BoardAssetDeposit(context.Context, *BoardAssetDepositRequest) (*AssetDeposit, error)
 	// JoinNextRound asks the client round FSM to commit any currently
 	// queued round intents and emit a JoinRoundRequest to the operator.
 	// Useful after queueing refresh or leave intents that intentionally
@@ -1087,6 +1106,9 @@ func (UnimplementedDaemonServiceServer) DepositAsset(context.Context, *DepositAs
 }
 func (UnimplementedDaemonServiceServer) ListAssetDeposits(context.Context, *ListAssetDepositsRequest) (*ListAssetDepositsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListAssetDeposits not implemented")
+}
+func (UnimplementedDaemonServiceServer) BoardAssetDeposit(context.Context, *BoardAssetDepositRequest) (*AssetDeposit, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method BoardAssetDeposit not implemented")
 }
 func (UnimplementedDaemonServiceServer) JoinNextRound(context.Context, *JoinNextRoundRequest) (*JoinNextRoundResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method JoinNextRound not implemented")
@@ -1691,6 +1713,24 @@ func _DaemonService_ListAssetDeposits_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_BoardAssetDeposit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BoardAssetDepositRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).BoardAssetDeposit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_BoardAssetDeposit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).BoardAssetDeposit(ctx, req.(*BoardAssetDepositRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_JoinNextRound_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(JoinNextRoundRequest)
 	if err := dec(in); err != nil {
@@ -2166,6 +2206,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListAssetDeposits",
 			Handler:    _DaemonService_ListAssetDeposits_Handler,
+		},
+		{
+			MethodName: "BoardAssetDeposit",
+			Handler:    _DaemonService_BoardAssetDeposit_Handler,
 		},
 		{
 			MethodName: "JoinNextRound",

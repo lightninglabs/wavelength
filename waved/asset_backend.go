@@ -277,10 +277,16 @@ func (s *Server) startAssetDeposits(ctx context.Context, store *db.Store) (
 		return nil, err
 	}
 
-	s.assetDeposits = newAssetDepositService(
-		s.log, db.NewAssetDepositStore(store), s.tapdClient, onboarder,
-		s.loadOperatorTerms, s.quoteBoardingFee,
-	)
+	s.assetDeposits = newAssetDepositService(&assetDepositConfig{
+		log:              s.log,
+		store:            db.NewAssetDepositStore(store),
+		tapd:             s.tapdClient,
+		onboarder:        onboarder,
+		terms:            s.loadOperatorTerms,
+		quoteBoardingFee: s.quoteBoardingFee,
+		chainParams:      s.chainParams,
+		registerBoarding: s.registerAssetBoarding,
+	})
 
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})

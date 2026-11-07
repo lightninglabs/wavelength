@@ -101,6 +101,9 @@ http:
     - selector: waverpc.DaemonService.ListAssetDeposits
       post: /v1/daemon/list-asset-deposits
       body: "*"
+    - selector: waverpc.DaemonService.BoardAssetDeposit
+      post: /v1/daemon/board-asset-deposit
+      body: "*"
     - selector: waverpc.DaemonService.JoinNextRound
       post: /v1/daemon/join-next-round
       body: "*"

@@ -328,6 +328,10 @@ type RoundFSM struct {
 	// tells the wallet to release them so the next Board trigger can
 	// retry them.
 	BoardingOutpoints []wire.OutPoint
+
+	// AssetDeposit marks a round created for one asset deposit. No other
+	// intent joins it.
+	AssetDeposit bool
 }
 
 // RoundClientActor wraps the client boarding FSM in an actor interface. The
@@ -1289,7 +1293,12 @@ func roundInState[S ClientState](ctx context.Context) fn.Pred[*RoundFSM] {
 // over Idle rounds. This ensures VTXOs are attached to rounds that have
 // inputs, preventing registration failures from empty input sets.
 func (a *RoundClientActor) findAssemblingRound(ctx context.Context) *RoundFSM {
-	rounds := slices.Collect(maps.Values(a.rounds))
+	rounds := fn.Filter(
+		slices.Collect(maps.Values(a.rounds)),
+		func(r *RoundFSM) bool {
+			return !r.AssetDeposit
+		},
+	)
 
 	// Both filters below are one logical scan and share one deadline: this
 	// runs on the receive loop, and it queries every tracked round twice.
@@ -1876,6 +1885,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 
 	case *RegisterVTXORequestsRequest:
 		return a.handleVTXORequests(ctx, m)
+
+	case *RegisterAssetBoardingRequest:
+		return a.handleAssetBoarding(ctx, m)
 
 	case *VTXORequestsReceived:
 		return a.handleVTXORequestsReceived(ctx, m)
@@ -3878,14 +3890,14 @@ func (a *RoundClientActor) findRefreshRound(ctx context.Context,
 		}
 		switch s := state.(type) {
 		case *PendingRoundAssembly:
-			if len(s.Boarding)+len(s.Forfeits)+
+			if r.AssetDeposit || len(s.Boarding)+len(s.Forfeits)+
 				proofInputs > bip322.DefaultMaxProofInputs {
 				return nil, errRefreshRoundBusy
 			}
 			candidate = r
 
 		case *Idle:
-			if candidate == nil {
+			if candidate == nil && !r.AssetDeposit {
 				candidate = r
 			}
 
