@@ -12,6 +12,7 @@ import (
 	"github.com/lightninglabs/neutrino/cache/lru"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightninglabs/wavelength/lib/tree"
+	"github.com/lightninglabs/wavelength/lib/treecodec"
 	"github.com/lightninglabs/wavelength/vtxo"
 )
 
@@ -146,7 +147,7 @@ func (c *ancestryTreeCache) getOrDecode(treePath []byte) (*tree.Tree, error) {
 func AncestryFragmentKey(a vtxo.Ancestry) ([sha256.Size]byte, error) {
 	var treePath []byte
 	if a.TreePath != nil {
-		data, err := serializeTree(a.TreePath, true, false)
+		data, err := treecodec.SerializeFragment(a.TreePath)
 		if err != nil {
 			return [sha256.Size]byte{}, fmt.Errorf("serialize "+
 				"ancestry tree: %w", err)
@@ -165,7 +166,7 @@ func AncestryFragmentKey(a vtxo.Ancestry) ([sha256.Size]byte, error) {
 func backfillAncestryFragmentKey(a vtxo.Ancestry) ([sha256.Size]byte, error) {
 	var treePath []byte
 	if a.TreePath != nil {
-		data, err := serializeTree(a.TreePath, false, false)
+		data, err := treecodec.SerializeLegacyFragment(a.TreePath)
 		if err != nil {
 			return [sha256.Size]byte{}, fmt.Errorf("serialize "+
 				"ancestry tree: %w", err)
