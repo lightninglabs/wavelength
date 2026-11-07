@@ -21,9 +21,30 @@ type Scope string
 const (
 	// ScopeWake permits a silent request to reconcile local wallet state.
 	ScopeWake Scope = "wake"
-	// ScopeAlert permits the relay's generic incoming-payment alert.
+	// ScopeAlert permits an authorized incoming-payment notification.
 	ScopeAlert Scope = "alert"
 )
+
+// AlertPresentation selects the app-authorized treatment of payment events.
+// It never changes the producer's authority or permits custom push contents.
+type AlertPresentation string
+
+const (
+	// PresentationGeneric sends the fixed visible payment-activity alert.
+	PresentationGeneric AlertPresentation = "generic"
+	// PresentationReceiptHint sends a silent payment hint for local
+	// verification.
+	PresentationReceiptHint AlertPresentation = "receipt_hint"
+)
+
+// normalized preserves the visible template for older clients and stored rows.
+func (p AlertPresentation) normalized() AlertPresentation {
+	if p == "" {
+		return PresentationGeneric
+	}
+
+	return p
+}
 
 // ChallengeRequest selects a server-configured app and management operation.
 // InstallationID is required only for management of an existing installation.
@@ -71,20 +92,22 @@ type EnrollmentResult struct {
 // delete_installation. RouteID is an opaque app-owned wallet/network lookup
 // key, never a URL.
 type ManagementPayload struct {
-	Action         string `json:"action"`
-	DeviceToken    string `json:"device_token,omitempty"`
-	RouteID        string `json:"route_id,omitempty"`
-	EnableAlerts   bool   `json:"enable_alerts,omitempty"`
-	SubscriptionID string `json:"subscription_id,omitempty"`
+	Action         string            `json:"action"`
+	DeviceToken    string            `json:"device_token,omitempty"`
+	RouteID        string            `json:"route_id,omitempty"`
+	EnableAlerts   bool              `json:"enable_alerts,omitempty"`
+	Presentation   AlertPresentation `json:"alert_presentation,omitempty"`
+	SubscriptionID string            `json:"subscription_id,omitempty"`
 }
 
 // ManagementResult returns capabilities only when a subscription is created
 // or renewed. Capabilities must be stored privately and never logged.
 type ManagementResult struct {
-	SubscriptionID  string `json:"subscription_id,omitempty"`
-	WakeCapability  string `json:"wake_capability,omitempty"`
-	AlertCapability string `json:"alert_capability,omitempty"`
-	ExpiresAt       int64  `json:"expires_at,omitempty"`
+	SubscriptionID  string            `json:"subscription_id,omitempty"`
+	WakeCapability  string            `json:"wake_capability,omitempty"`
+	AlertCapability string            `json:"alert_capability,omitempty"`
+	ExpiresAt       int64             `json:"expires_at,omitempty"`
+	Presentation    AlertPresentation `json:"alert_presentation,omitempty"`
 }
 
 // PushRequest contains an opaque producer-owned idempotency identity only.

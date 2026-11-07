@@ -46,14 +46,15 @@ type ProviderResult struct {
 // Delivery is a frozen provider request. DeviceToken is private routing data;
 // String deliberately excludes it, and JSON serialization never emits it.
 type Delivery struct {
-	DeviceToken string    `json:"-"`
-	Topic       string    `json:"topic"`
-	Environment string    `json:"environment"`
-	Scope       Scope     `json:"scope"`
-	RouteID     string    `json:"route_id"`
-	EventHash   string    `json:"event_hash"`
-	CollapseID  string    `json:"collapse_id"`
-	ExpiresAt   time.Time `json:"expires_at"`
+	DeviceToken  string            `json:"-"`
+	Topic        string            `json:"topic"`
+	Environment  string            `json:"environment"`
+	Scope        Scope             `json:"scope"`
+	Presentation AlertPresentation `json:"alert_presentation,omitempty"`
+	RouteID      string            `json:"route_id"`
+	EventHash    string            `json:"event_hash"`
+	CollapseID   string            `json:"collapse_id"`
+	ExpiresAt    time.Time         `json:"expires_at"`
 
 	job           relayJob
 	tokenRevision uint64
@@ -143,6 +144,7 @@ func (s *Store) claim(ctx context.Context, now time.Time) (*Delivery, error) {
 				Topic:         owner.Policy.Topic,
 				Environment:   owner.Policy.APNSEnvironment,
 				Scope:         job.Scope,
+				Presentation:  sub.Presentation.normalized(),
 				RouteID:       sub.RouteID,
 				EventHash:     job.EventHash,
 				CollapseID:    secretHash(job.ID),

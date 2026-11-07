@@ -70,12 +70,13 @@ type installation struct {
 
 // subscription binds capabilities to an app-owned route within an installation.
 type subscription struct {
-	ID             string `json:"id"`
-	InstallationID string `json:"installation_id"`
-	RouteID        string `json:"route_id"`
-	WakeHash       string `json:"wake_hash"`
-	AlertHash      string `json:"alert_hash"`
-	ExpiresAt      int64  `json:"expires_at"`
+	ID             string            `json:"id"`
+	InstallationID string            `json:"installation_id"`
+	RouteID        string            `json:"route_id"`
+	WakeHash       string            `json:"wake_hash"`
+	AlertHash      string            `json:"alert_hash"`
+	Presentation   AlertPresentation `json:"alert_presentation,omitempty"`
+	ExpiresAt      int64             `json:"expires_at"`
 }
 
 // capability contains no bearer secret and grants exactly one fixed scope.
@@ -108,7 +109,7 @@ type Store struct {
 	challengeKey [32]byte
 }
 
-// OpenStore opens or initializes durable relay format one. Callers must join
+// OpenStore opens or upgrades durable relay format two. Callers must join
 // HTTP handlers and the delivery worker before closing the returned store.
 func OpenStore(path string) (*Store, error) {
 	database, err := bolt.Open(path, 0600, &bolt.Options{
@@ -133,11 +134,12 @@ func OpenStore(path string) (*Store, error) {
 		}
 		meta := tx.Bucket([]byte(metadataBucket))
 		version := meta.Get([]byte("format"))
-		if version != nil && string(version) != "1" {
+		if version != nil && string(version) != "1" &&
+			string(version) != "2" {
 			return errors.New("unsupported notification relay " +
 				"store format")
 		}
-		if err := meta.Put([]byte("format"), []byte("1")); err != nil {
+		if err := meta.Put([]byte("format"), []byte("2")); err != nil {
 			return err
 		}
 		key := meta.Get([]byte("challenge_key"))
@@ -447,6 +449,20 @@ func createSubscription(tx *bolt.Tx, installationID string,
 		if err != nil {
 			return result, err
 		}
+		// A presentation cutover retires pending payment deliveries.
+		// The claim token fence also prevents an old in-flight
+		// completion from erasing a newly queued job. Dedup evidence
+		// remains intact.
+		if !action.EnableAlerts ||
+			saved.Presentation.normalized() !=
+				action.Presentation.normalized() {
+
+			if err := tx.Bucket([]byte(jobsBucket)).Delete(
+				[]byte(string(ScopeAlert) + "/" + saved.ID),
+			); err != nil {
+				return result, err
+			}
+		}
 		if err := deleteCapabilityHashes(tx, saved); err != nil {
 			return result, err
 		}
@@ -477,6 +493,7 @@ func createSubscription(tx *bolt.Tx, installationID string,
 	}
 	saved.WakeHash = secretHash(wake)
 	saved.AlertHash = ""
+	saved.Presentation = action.Presentation.normalized()
 	saved.ExpiresAt = now.Add(subscriptionLifetime).Unix()
 	result = ManagementResult{
 		SubscriptionID: saved.ID,
@@ -497,6 +514,7 @@ func createSubscription(tx *bolt.Tx, installationID string,
 		}
 		saved.AlertHash = secretHash(alert)
 		result.AlertCapability = alert
+		result.Presentation = saved.Presentation
 		if err := putRecord(
 			tx, capabilitiesBucket, saved.AlertHash, capability{
 				SubscriptionID: saved.ID,
