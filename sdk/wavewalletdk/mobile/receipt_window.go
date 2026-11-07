@@ -61,3 +61,28 @@ func CancelReceiptWindow(windowID string) error {
 
 	return client.CancelReceiptWindow(ctx, windowID)
 }
+
+// RunMaintenanceWindow attempts due expiry and ordinary native round work.
+// The host cancels expiry with CancelReceiptWindow using the same unique ID.
+func RunMaintenanceWindow(windowID string,
+	timeoutSeconds int64) ([]byte, error) {
+
+	if timeoutSeconds < 1 || timeoutSeconds > 20 {
+		return nil, fmt.Errorf("maintenance window budget must be " +
+			"1..20 seconds")
+	}
+	client, parent, err := activeClient()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(
+		parent, time.Duration(timeoutSeconds)*time.Second,
+	)
+	defer cancel()
+	result, err := client.RunMaintenanceWindow(ctx, windowID)
+	if err != nil {
+		return nil, err
+	}
+
+	return marshal(result)
+}

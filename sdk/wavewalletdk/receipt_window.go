@@ -65,3 +65,21 @@ func (c *Client) CancelReceiptWindow(ctx context.Context, id string) error {
 
 	return c.cancelReceiptWindow(callCtx, id)
 }
+
+// RunMaintenanceWindow retains the daemon through a bounded current-tip and
+// native mailbox attempt. It shares receipt-window cancellation by unique ID.
+// This returns no payment proof and cannot authorize a payment notification.
+func (c *Client) RunMaintenanceWindow(ctx context.Context, id string) (
+	ReceiptWindowResult, error) {
+
+	if c == nil || c.runMaintenanceWindow == nil {
+		return ReceiptWindowResult{}, ErrReceiptWindowUnavailable
+	}
+	callCtx, release, err := c.beginLocalCall(ctx)
+	if err != nil {
+		return ReceiptWindowResult{}, err
+	}
+	defer release()
+
+	return c.runMaintenanceWindow(callCtx, id)
+}

@@ -735,6 +735,9 @@ func (m *Manager) Receive(ctx context.Context,
 			Descriptors: descs,
 		})
 
+	case *ResolveMaintenanceActorsRequest:
+		return m.resolveMaintenanceActors(req)
+
 	case *ReconcileExpiryRequest:
 		return m.handleReconcileExpiry(ctx)
 

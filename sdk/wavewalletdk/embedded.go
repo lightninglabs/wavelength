@@ -231,6 +231,7 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 	client.readLightningReceipts = server.ReadLightningReceipts
 	client.setHostForeground = server.SetHostForeground
 	client.runReceiptWindow = server.RunReceiptWindow
+	client.runMaintenanceWindow = server.RunMaintenanceWindow
 	client.cancelReceiptWindow = server.CancelReceiptWindow
 	client.waitWalletServicesReady = server.WaitForWalletServicesReady
 	client.recoverWalletState = server.RecoverWalletState

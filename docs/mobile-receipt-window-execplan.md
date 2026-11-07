@@ -70,3 +70,19 @@ separate host must gate amount presentation on an authorized matching event,
 consent, account/network identity and durable deduplication. Cold unlock,
 arbitrary activity accounting and guaranteed background execution are outside
 this controller.
+
+## Warm maintenance extension
+
+The host must actively attempt round work after an operator wake and refresh
+work on scheduled background opportunities. Mailbox pulls alone cannot emit
+an expiry event between blocks. Add a maintenance-only entry through the same
+lease, a finite primary-key VTXO identity page and existing-owner lookup, then
+ordinary expiry turns outside the manager receive loop. Keep startup repair
+exclusive to startup. Retain canceled futures until their actual reply. Fence
+sampled tips below delivered blocks at the owning actor. Preserve the existing
+restricted mailbox policy and produce no receipts from maintenance calls.
+
+Validate partial-page resumption, finite sweep reset, expiry failure followed
+by useful mailbox pumping, absent enrollment, quiet mailbox waiting, current
+FSM expiry behavior, delayed sampled tips and actual callback final-access
+joining. No deployment or unlock behavior belongs to this extension.
