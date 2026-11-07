@@ -68,6 +68,7 @@ func TestCloseJoinsLocalCallbacks(t *testing.T) {
 		"recovery",
 		"activity-batch",
 		"activity-cursor",
+		"lightning-receipts",
 	} {
 		t.Run(source, func(t *testing.T) {
 			t.Parallel()
@@ -186,6 +187,22 @@ func shutdownCallbackInvoke(t *testing.T, client *Client, source string,
 
 		return func() error {
 			_, err := client.ActivityCursor(t.Context())
+
+			return err
+		}
+
+	case "lightning-receipts":
+		client.readLightningReceipts = func(ctx context.Context,
+			_ waved.LightningReceiptRequest) (
+			[]waved.LightningReceipt, error) {
+
+			return nil, callback(ctx)
+		}
+
+		return func() error {
+			_, err := client.ReadLightningReceipts(
+				t.Context(), LightningReceiptRequest{},
+			)
 
 			return err
 		}

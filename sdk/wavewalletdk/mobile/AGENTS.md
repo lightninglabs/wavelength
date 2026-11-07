@@ -121,3 +121,9 @@ rows. A captured ceiling bounds replay; the host persists explicit NextCursor
 and deduplicates by canonical identity. Capturing a cursor does not reconcile
 sources. Both direct SDK callbacks join shutdown before releasing the store.
 See [finite activity reads](../../../docs/canonical-activity-batches.md).
+
+## Enrolled invoice receipts
+
+ReadLightningReceipts accepts the SDK typed-source request and uses a
+cooperative ten-second context. It performs no wallet unlock or host window.
+See [receipt sources](../../../docs/lightning-receipt-source.md).

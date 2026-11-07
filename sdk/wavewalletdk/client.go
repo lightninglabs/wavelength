@@ -67,7 +67,9 @@ type Client struct {
 	// daemon owner.
 	readActivityBatch func(context.Context, int64, int64, int32) (
 		db.ActivityBatch, error)
-	activityCursor func(context.Context) (int64, error)
+	activityCursor        func(context.Context) (int64, error)
+	readLightningReceipts func(context.Context,
+		waved.LightningReceiptRequest) ([]waved.LightningReceipt, error)
 
 	closeFn   func(context.Context) error
 	closeOnce sync.Once
@@ -446,9 +448,21 @@ func (c *Client) Receive(ctx context.Context, req ReceiveRequest) (
 		return nil, fmt.Errorf("create receive invoice: %w", err)
 	}
 
+	source := LightningReceiptSwap
+	sourceID := resp.GetEntry().GetId()
+	if creditReceive := resp.GetCreditReceive(); creditReceive != nil {
+		source = LightningReceiptCredit
+		sourceID = creditReceive.GetOperationId()
+	}
+
 	return &ReceiveResult{
-		Invoice: resp.GetInvoice(),
-		Entry:   entryFromProto(resp.GetEntry()),
+		Invoice: resp.GetInvoice(), Entry: entryFromProto(
+			resp.GetEntry(),
+		),
+		ReceiptReference: &LightningReceiptReference{
+			Source: source,
+			ID:     sourceID,
+		},
 	}, nil
 }
 
