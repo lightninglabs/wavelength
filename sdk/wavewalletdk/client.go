@@ -52,6 +52,12 @@ type Client struct {
 		*mailboxpb.NotificationSubscriptionMutation) (
 		*mailboxpb.NotificationSubscriptionResponse, error)
 
+	// setSwapNotificationSubscription borrows the separately configured
+	// source.
+	setSwapNotificationSubscription func(context.Context,
+		*mailboxpb.NotificationSubscriptionMutation) (
+		*mailboxpb.NotificationSubscriptionResponse, error)
+
 	closeFn   func(context.Context) error
 	closeOnce sync.Once
 	closeErr  error

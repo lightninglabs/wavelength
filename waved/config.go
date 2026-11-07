@@ -741,6 +741,12 @@ type SwapConfig struct {
 	// should only be used for explicit regtest/dev deployments.
 	ServerInsecure bool `mapstructure:"serverinsecure"`
 
+	// NotificationIssuer pins the canonical compressed identity of the
+	// configured swap notification source. Empty disables its registration.
+	// A challenge obtained from an unpinned source never chooses its
+	// audience.
+	NotificationIssuer string `mapstructure:"notificationissuer"`
+
 	// DatabaseFileName is the daemon-owned swap SQLite database path. When
 	// empty, the daemon stores swaps under NetworkDir()/swaps.db so a
 	// network DB reset clears persisted swap activity with the main daemon

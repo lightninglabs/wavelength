@@ -475,6 +475,12 @@ type Server struct {
 	// bootstrap is still running.
 	operatorConnMu sync.RWMutex
 
+	// swapNotificationMu protects the source callback published by the
+	// optional swap subserver. Registration is independent of mailbox
+	// ingress readiness.
+	swapNotificationMu        sync.RWMutex
+	swapNotificationRegistrar NotificationRegistrar
+
 	rpcAddrMu   sync.RWMutex
 	rpcAddr     net.Addr
 	gatewayAddr net.Addr
