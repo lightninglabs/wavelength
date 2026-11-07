@@ -4823,6 +4823,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 			return resolveExitOutcome(ctx, ueStore, outpoint)
 		},
 		HasForfeitRoundCheckpoint: roundStore.HasForfeitRoundCheckpoint,
+		LookupForfeitSettlement:   roundStore.LookupForfeitSettlement,
 	}
 	managerConfig.DeferAutomaticRefreshUntilRoundReady = true
 	manager := vtxo.NewManager(managerConfig)
