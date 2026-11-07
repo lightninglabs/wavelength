@@ -23,6 +23,9 @@ import (
 
 const defaultCloseTimeout = 5 * time.Second
 
+// ErrClientClosed rejects new direct wallet callbacks once cleanup begins.
+var ErrClientClosed = errors.New("wallet client is closing or closed")
+
 // Client is the wallet-facing SDK handle. It is safe for concurrent use.
 type Client struct {
 	conn   grpc.ClientConnInterface
@@ -61,6 +64,17 @@ type Client struct {
 	closeFn   func(context.Context) error
 	closeOnce sync.Once
 	closeErr  error
+	closeDone chan struct{}
+
+	// localMu serializes callback admission with shutdown. Direct embedded
+	// callbacks bypass the private gRPC server and need their own join
+	// owner.
+	localMu       sync.Mutex
+	localStopping bool
+	//nolint:containedctx // Handle-owned callback root.
+	localCtx    context.Context
+	localCancel context.CancelFunc
+	localCalls  sync.WaitGroup
 }
 
 // Connect returns a wavewalletdk client connected to an external daemon.
@@ -840,25 +854,88 @@ func newClientWithRPC(conn grpc.ClientConnInterface,
 	}
 }
 
-// close releases resources once so Stop and Close can be used
-// interchangeably by different host integrations.
+// close retains the historical five-second caller wait. A timeout leaves
+// cleanup owned by this handle; callers may re-wait with CloseContext.
 func (c *Client) close() error {
+	ctx, cancel := context.WithTimeout(
+		context.Background(), defaultCloseTimeout,
+	)
+	defer cancel()
+
+	return c.CloseContext(ctx)
+}
+
+// CloseContext starts cleanup once and waits for actual completion or ctx.
+// Expiring ctx stops only this wait. It never abandons cleanup or caches a
+// timeout as the terminal result. Retain the handle and re-wait before opening
+// another daemon on the same directory. Completion means the embedded Run
+// returned; it does not certify that every daemon subsystem is suspend-safe.
+//
+//nolint:contextcheck // Cleanup belongs to the handle, not this waiter.
+func (c *Client) CloseContext(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
-
 	c.closeOnce.Do(func() {
-		if c.closeFn == nil {
-			return
+		c.localMu.Lock()
+		c.localStopping = true
+		if c.localCancel != nil {
+			c.localCancel()
 		}
+		c.closeDone = make(chan struct{})
+		c.localMu.Unlock()
 
-		closeCtx, cancel := context.WithTimeout(
-			context.Background(), defaultCloseTimeout,
-		)
-		defer cancel()
-
-		c.closeErr = c.closeFn(closeCtx)
+		// The handle owns cleanup until it returns. A caller's short
+		// wait must never allow an in-process callback to race closed
+		// wallet resources.
+		go func() {
+			c.localCalls.Wait()
+			if c.closeFn != nil {
+				c.closeErr = c.closeFn(context.Background())
+			}
+			close(c.closeDone)
+		}()
 	})
+	select {
+	case <-c.closeDone:
+		return c.closeErr
 
-	return c.closeErr
+	default:
+	}
+	select {
+	case <-c.closeDone:
+		return c.closeErr
+
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// beginLocalCall admits one direct embedded callback before shutdown closes
+// admission. Its context is cancelled by either the caller or this handle.
+// release must follow the callback's final resource access, even on failure.
+func (c *Client) beginLocalCall(ctx context.Context) (context.Context, func(),
+	error) {
+
+	c.localMu.Lock()
+	defer c.localMu.Unlock()
+	if c.localStopping {
+		return nil, nil, ErrClientClosed
+	}
+	if c.localCtx == nil {
+		// This root belongs to the handle, not the first caller that
+		// uses it.
+		c.localCtx, c.localCancel = context.WithCancel(
+			context.Background(),
+		)
+	}
+	callCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(c.localCtx, cancel)
+	c.localCalls.Add(1)
+
+	return callCtx, func() {
+		stop()
+		cancel()
+		c.localCalls.Done()
+	}, nil
 }

@@ -74,3 +74,10 @@ into specific topics below.
 |----------|-------------|
 | [PLANS.md](../PLANS.md) | ExecPlan specification for complex features |
 | [idempotent-receive-scripts-execplan.md](idempotent-receive-scripts-execplan.md) | Retry-safe `NewReceiveScript` allocation: durable identity, exact replay, and expiry renewal |
+
+- [SDK shutdown ownership](sdk-shutdown-ownership.md) explains caller timeouts,
+  direct callback joins and mobile restart admission.
+- [SDK shutdown implementation plan](sdk-shutdown-ownership-execplan.md).
+- [Notification source selection](notification-sources.md).
+- [Signed notification subscriptions](notification-subscriptions.md).
+- [Notification subscription implementation plan](notification-subscriptions-execplan.md).
