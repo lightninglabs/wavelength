@@ -202,6 +202,10 @@ type ConnectorConfig struct {
 	// collapse. That turns exactly-once local delivery into a duplicate
 	// the receiving actor never sees coming, which is why the mark and
 	// the dispatcher are registered together.
+	// Bounded pumps may repeat a hoisted request across invocations when a
+	// later durable target remains full. Routes must be read-only or have
+	// their own durable idempotency; the per-call redrive guard is not that
+	// contract.
 	NonTxRoutes RouteSet
 
 	// Store is the delivery store used by both the durable actor runtime
