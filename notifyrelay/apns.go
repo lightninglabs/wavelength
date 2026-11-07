@@ -170,23 +170,35 @@ func validDeviceToken(token string) bool {
 // are lookup hints only; the app must reconcile and validate wallet activity.
 func notificationPayload(delivery Delivery) ([]byte, error) {
 	aps := map[string]any{"content-available": 1}
-	if delivery.Scope == ScopeAlert {
-		aps["alert"] = map[string]string{
-			"title": "Wavelength",
-			"body": "Payment activity. Open Wavelength " +
-				"to update your wallet.",
+	data := map[string]any{
+		"version": 1, "route_id": delivery.RouteID,
+		"event_id": delivery.EventHash,
+	}
+	switch delivery.Scope {
+	case ScopeAlert:
+		switch delivery.Presentation.normalized() {
+		case PresentationGeneric:
+			aps["alert"] = map[string]string{
+				"title": "Wavelength",
+				"body": "Payment activity. Open Wavelength " +
+					"to update your wallet.",
+			}
+
+		case PresentationReceiptHint:
+			data["kind"] = "payment_activity"
+
+		default:
+			return nil, errors.New("unknown alert presentation")
 		}
-	} else if delivery.Scope != ScopeWake {
+
+	case ScopeWake:
+		// Ordinary transport traffic is never payment authority.
+
+	default:
 		return nil, errors.New("unknown notification scope")
 	}
 
-	return json.Marshal(map[string]any{
-		"aps": aps,
-		"wavelength": map[string]any{
-			"version": 1, "route_id": delivery.RouteID,
-			"event_id": delivery.EventHash,
-		},
-	})
+	return json.Marshal(map[string]any{"aps": aps, "wavelength": data})
 }
 
 // providerRequestID is stable across retries of one claimed generation, while
@@ -235,7 +247,9 @@ func (p *APNSProvider) Send(ctx context.Context, delivery Delivery) (
 		return retry, errors.New("APNs request construction failed")
 	}
 	pushType := "background"
-	if delivery.Scope == ScopeAlert {
+	if delivery.Scope == ScopeAlert &&
+		delivery.Presentation.normalized() == PresentationGeneric {
+
 		pushType = "alert"
 	}
 	request.Header.Set("Authorization", "bearer "+token)
