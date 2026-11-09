@@ -368,6 +368,8 @@ func (s *Service) ReconcileFunding(ctx context.Context,
 }
 
 // authorizeEvent enforces which authenticated side owns every event class.
+// Cryptographically complete artifacts still need an origin because the
+// origin controls when a local side effect becomes replayable.
 func (s *Service) authorizeEvent(ctx context.Context, id ID, event Event,
 	origin eventOrigin) error {
 
@@ -379,9 +381,10 @@ func (s *Service) authorizeEvent(ctx context.Context, id ID, event Event,
 		return err
 	}
 	terms := record.Snapshot.Terms
+
 	switch event := event.(type) {
-	case *OORPreparationStarted, *BindVTXO, *BackingSigned, *OORFinalized,
-		*OORAborted:
+	case *OORPreparationStarted, *BindVTXO, *BackingSigned,
+		*OORFinalized, *OORAborted:
 		return s.requireOriginParty(origin, terms.Funder, event)
 
 	case *FundingFinalized:
@@ -390,12 +393,19 @@ func (s *Service) authorizeEvent(ctx context.Context, id ID, event Event,
 	case *RecoveryPackageInstalled:
 		return s.requireOriginParty(origin, event.Party, event)
 
-	case *RequestCooperativeClose, *CooperativeCloseAborted:
+	case *RequestCooperativeClose, *CooperativeClosePublished,
+		*CooperativeCloseAborted:
 		return s.requireOriginParty(origin, PartyClient, event)
 
-	case *ChannelActive, *FundingCanceled, *ExpirePrePONR, *Fail,
-		*Materialize, *SourceSpent, *BackingPublished,
-		*BackingObserved, *ChannelClosed:
+	case *CooperativeCloseSigned:
+		return s.requireOriginParty(origin, event.Party, event)
+
+	case *CooperativeCloseFinalized:
+		return s.requireOriginParty(origin, event.Party, event)
+
+	case *ExpirePrePONR, *FundingCanceled, *ChannelActive, *Materialize,
+		*SourceSpent, *BackingPublished, *BackingObserved,
+		*ChannelClosed, *Fail:
 
 		if origin != eventOriginLocal {
 			return fmt.Errorf("%T requires local subsystem "+

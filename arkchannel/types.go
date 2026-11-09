@@ -83,31 +83,53 @@ type Phase uint8
 
 const (
 	// PhaseRequested means immutable channel terms are registered.
-	PhaseRequested Phase = 1
-	// PhaseNegotiating means the exact VTXO is bound and funding is in
+	PhaseRequested Phase = iota + 1
+
+	// PhaseNegotiating means the exact VTXO is bound and lnd funding is in
 	// progress.
-	PhaseNegotiating Phase = 2
-	// PhaseBackingReady means signed backing and both funding facts are
-	// durable.
-	PhaseBackingReady Phase = 3
+	PhaseNegotiating
+
+	// PhaseBackingReady means the signed backing and both lnd finalization
+	// acknowledgements are durable, so the prepared OOR transfer can
+	// commit.
+	PhaseBackingReady
+
 	// PhaseActivating means lnd should observe the virtual channel point.
-	PhaseActivating Phase = 4
+	PhaseActivating
+
 	// PhaseActive means lnd reports the ordinary channel active.
-	PhaseActive Phase = 5
-	// PhaseMaterializing means source ancestry and backing must be
-	// published.
-	PhaseMaterializing Phase = 6
-	// PhaseOnChain means native lnd owns the published channel lifecycle.
-	PhaseOnChain Phase = 7
-	// PhaseClosed means native lnd completed channel resolution.
-	PhaseClosed Phase = 8
-	// PhaseCancelling means the durable OOR abort precedes lnd cleanup.
-	PhaseCancelling Phase = 9
-	// PhaseFailed means pre-commit abandonment and cleanup are complete.
-	PhaseFailed Phase = 10
-	// PhaseCoopClosing means replacement owners are fixed before
-	// quiescence.
-	PhaseCoopClosing Phase = 11
+	PhaseActive
+
+	// PhaseMaterializing means the Ark ancestry and backing transaction are
+	// being published.
+	PhaseMaterializing
+
+	// PhaseOnChain means the backing transaction was published.
+	PhaseOnChain
+
+	// PhaseClosed means lnd completed the channel lifecycle.
+	PhaseClosed
+
+	// PhaseCancelling means the prepared OOR transfer is being aborted
+	// before lnd's pending funding reservation is removed.
+	PhaseCancelling
+
+	// PhaseFailed means negotiation failed before the no-failure boundary.
+	PhaseFailed
+
+	// PhaseCoopClosing means both endpoints must quiesce lnd and agree on
+	// one clean commitment state before authorizing an ordinary OOR close.
+	PhaseCoopClosing
+
+	// PhaseCoopCloseSigned means both endpoints durably stored the hub's
+	// authorization for the exact 3-of-3 OOR close. The historical name is
+	// retained because phase values are persisted.
+	PhaseCoopCloseSigned
+
+	// PhaseCoopClosePublished means the ordinary OOR close finalized and
+	// both lnd databases must archive the channel. The historical name is
+	// retained because phase values are persisted.
+	PhaseCoopClosePublished
 )
 
 // String returns the durable name of a coordination phase.
@@ -146,13 +168,21 @@ func (p Phase) String() string {
 	case PhaseCoopClosing:
 		return "coop_closing"
 
+	case PhaseCoopCloseSigned:
+		return "coop_close_authorized"
+
+	case PhaseCoopClosePublished:
+		return "coop_close_oor_finalized"
+
 	default:
 		return "unknown"
 	}
 }
 
-// IsTerminal reports whether the Ark-owned channel record needs no replay.
-func (p Phase) IsTerminal() bool { return p == PhaseFailed || p == PhaseClosed }
+// IsTerminal reports whether Ark coordination has no further work.
+func (p Phase) IsTerminal() bool {
+	return p == PhaseClosed || p == PhaseFailed
+}
 
 // VTXOTerms identify every key role and relative delay in the channel VTXO.
 // Persisting semantics instead of derived script bytes gives both peers one
@@ -444,6 +474,11 @@ type Snapshot struct {
 	SourceConflict          *SourceConflict
 	BackingPublished        bool
 	CooperativeCloseRequest *CooperativeCloseRequest
+	CooperativeClose        *CooperativeClose
+	ClientCloseSigned       bool
+	HubCloseSigned          bool
+	ClientCloseFinalized    bool
+	HubCloseFinalized       bool
 	Failure                 string
 }
 
@@ -465,6 +500,10 @@ func (s Snapshot) Clone() Snapshot {
 	if s.CooperativeCloseRequest != nil {
 		request := s.CooperativeCloseRequest.Clone()
 		s.CooperativeCloseRequest = &request
+	}
+	if s.CooperativeClose != nil {
+		settlement := s.CooperativeClose.Clone()
+		s.CooperativeClose = &settlement
 	}
 
 	return s

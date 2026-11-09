@@ -132,6 +132,33 @@ type RequestCooperativeClose struct {
 
 func (*RequestCooperativeClose) eventSealed() {}
 
+// CooperativeCloseSigned records the hub-authorized 3-of-3 OOR close and
+// acknowledges which endpoint durably stored it. Both acknowledgements are
+// required before ordinary OOR submission becomes replayable. The historical
+// type name is retained for durable compatibility.
+type CooperativeCloseSigned struct {
+	Close CooperativeClose
+	Party Party
+}
+
+func (*CooperativeCloseSigned) eventSealed() {}
+
+// CooperativeClosePublished records finalization of the exact ordinary OOR
+// close. The historical type name is retained for durable compatibility.
+type CooperativeClosePublished struct {
+	TxID chainhash.Hash
+}
+
+func (*CooperativeClosePublished) eventSealed() {}
+
+// CooperativeCloseFinalized records that one endpoint archived its lnd
+// channel after the OOR close finalized.
+type CooperativeCloseFinalized struct {
+	Party Party
+}
+
+func (*CooperativeCloseFinalized) eventSealed() {}
+
 // CooperativeCloseAborted returns a pre-signature close attempt to the active
 // phase and permits both lnd links to resume traffic.
 type CooperativeCloseAborted struct{}
@@ -233,3 +260,26 @@ type NegotiateCooperativeClose struct {
 }
 
 func (*NegotiateCooperativeClose) actionSealed() {}
+
+// PublishCooperativeClose asks the client-owned ordinary OOR actor to settle
+// the authorized 3-of-3 close. The historical action name is retained for
+// durable compatibility.
+type PublishCooperativeClose struct {
+	Terms  Terms
+	Source VTXOBinding
+	Close  CooperativeClose
+}
+
+func (*PublishCooperativeClose) actionSealed() {}
+
+// FinalizeCooperativeClose archives the local lnd channel after the direct
+// settlement confirmed.
+type FinalizeCooperativeClose struct {
+	Terms   Terms
+	Source  VTXOBinding
+	Backing Backing
+	Request CooperativeCloseRequest
+	Close   CooperativeClose
+}
+
+func (*FinalizeCooperativeClose) actionSealed() {}

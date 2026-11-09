@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// nativeExecutorHarness implements each installed thin native boundary.
+// nativeExecutorHarness implements each thin native boundary.
 type nativeExecutorHarness struct {
 	confirmed    chainhash.Hash
 	negotiatedID ID
@@ -17,10 +17,10 @@ type nativeExecutorHarness struct {
 	abortedID    ID
 	cancelledID  ID
 	publishedID  ID
+	recoveryID   ID
 	handedOff    wire.OutPoint
 	forceClosed  wire.OutPoint
 	closeID      ID
-	recoveryID   ID
 	boundSinks   int
 	validations  int
 }
@@ -130,65 +130,101 @@ func (h *nativeExecutorHarness) NegotiateCooperativeClose(_ context.Context,
 	return nil
 }
 
-// TestNativeExecutorRoutesOnlySubsystemBoundaries verifies native routing does
-// not duplicate the channel state machine.
+// PublishCooperativeClose records direct close publication.
+func (h *nativeExecutorHarness) PublishCooperativeClose(_ context.Context,
+	id ID, _ Terms, _ VTXOBinding, _ CooperativeClose) error {
+
+	h.closeID = id
+
+	return nil
+}
+
+// FinalizeCooperativeClose records lnd archival.
+func (h *nativeExecutorHarness) FinalizeCooperativeClose(_ context.Context,
+	id ID, _ Terms, _ Backing, _ VTXOBinding, _ CooperativeCloseRequest,
+	_ CooperativeClose) error {
+
+	h.closeID = id
+
+	return nil
+}
+
+// TestNativeExecutorRoutesOnlySubsystemBoundaries verifies the adapter has no
+// channel state of its own.
 func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
 	t.Parallel()
-	h := &nativeExecutorHarness{}
-	e, err := NewNativeExecutor(PartyClient, h, h, h, h, h, h, h)
+
+	harness := &nativeExecutorHarness{}
+	executor, err := NewNativeExecutor(
+		PartyClient, harness, harness, harness, harness, harness,
+		harness, harness,
+	)
 	require.NoError(t, err)
-	require.NoError(t, e.BindChannelEventSink(harnessSink{}))
-	require.Equal(t, 4, h.boundSinks)
+	require.NoError(t, executor.BindChannelEventSink(harnessSink{}))
+	require.Equal(t, 4, harness.boundSinks)
 	terms := testTerms(t, KindPromotion)
 	source := testBinding(terms)
 	backing := testBacking(t, terms, source)
-	require.NoError(t, e.ValidatePreparedOOR(t.Context(), terms, source))
-	require.Equal(t, 1, h.validations)
-	for _, action := range []Action{
-		&NegotiateFunding{
-			Terms:  terms,
-			Source: source,
-		},
-		&CommitOOR{
-			Terms:  terms,
-			Source: source,
-		},
-		&PrepareRecovery{
-			Terms:  terms,
-			Source: source,
-		},
-		&ActivateChannel{
-			Terms:   terms,
-			Backing: backing,
-		},
-	} {
-		require.NoError(t, e.Execute(t.Context(), terms.ID, action))
-	}
+
 	require.NoError(
 		t,
-		e.Execute(
+		executor.Execute(
+			t.Context(), terms.ID, &NegotiateFunding{
+				Terms:  terms,
+				Source: source,
+			},
+		),
+	)
+	require.Equal(t, terms.ID, harness.negotiatedID)
+
+	require.NoError(
+		t,
+		executor.Execute(
+			t.Context(), terms.ID, &CommitOOR{
+				Terms:  terms,
+				Source: source,
+			},
+		),
+	)
+	require.Equal(t, terms.ID, harness.committedID)
+
+	require.NoError(
+		t,
+		executor.Execute(
 			t.Context(), terms.ID, &AbortOOR{
 				Terms:  terms,
 				Source: source,
-				Reason: "abandoned",
+				Reason: "peer rejected funding",
 			},
 		),
 	)
+	require.Equal(t, terms.ID, harness.abortedID)
+
 	require.NoError(
 		t,
-		e.Execute(
+		executor.Execute(
 			t.Context(), terms.ID, &CancelFunding{
-				Terms:  terms,
-				Source: source,
-				Reason: "abandoned",
+				Terms:   terms,
+				Backing: &backing,
 			},
 		),
 	)
-	require.Equal(t, terms.ID, h.abortedID)
-	require.Equal(t, terms.ID, h.cancelledID)
+	require.Equal(t, terms.ID, harness.cancelledID)
+
 	require.NoError(
 		t,
-		e.Execute(
+		executor.Execute(
+			t.Context(), terms.ID, &ActivateChannel{
+				Terms:   terms,
+				Backing: backing,
+			},
+		),
+	)
+	require.Equal(t, backing.ChannelPoint.Hash, harness.confirmed)
+
+	require.NoError(
+		t,
+		executor.Execute(
 			t.Context(), terms.ID, &PublishChannel{
 				Terms:   terms,
 				Source:  source,
@@ -196,55 +232,67 @@ func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
 			},
 		),
 	)
-	require.Equal(t, terms.ID, h.publishedID)
-	require.Equal(t, backing.ChannelPoint, h.handedOff)
-	require.NoError(
-		t,
-		e.Execute(
-			t.Context(), terms.ID, &ForceCloseChannel{
-				Backing: backing,
-			},
-		),
-	)
-	require.Equal(t, backing.ChannelPoint, h.forceClosed)
-	require.Equal(t, terms.ID, h.negotiatedID)
-	require.Equal(t, terms.ID, h.committedID)
-	require.Equal(t, terms.ID, h.recoveryID)
-	require.Equal(t, backing.ChannelPoint.Hash, h.confirmed)
+	require.Equal(t, terms.ID, harness.publishedID)
+	require.Equal(t, backing.ChannelPoint, harness.handedOff)
 }
 
-// TestNativeExecutorFencesOORActionsToFunder prevents the responding endpoint
-// from releasing the funding endpoint's prepared OOR transfer.
+// TestNativeExecutorFencesOORActionsToFunder proves the responder cannot commit
+// or abort the funder's OOR actor session, while either recovery-ready endpoint
+// can publish the shared source package after activation.
 func TestNativeExecutorFencesOORActionsToFunder(t *testing.T) {
 	t.Parallel()
-	h := &nativeExecutorHarness{}
-	e, err := NewNativeExecutor(PartyHub, h, h, h, h, h, h, h)
+
+	harness := &nativeExecutorHarness{}
+	executor, err := NewNativeExecutor(
+		PartyHub, harness, harness, harness, harness, harness, harness,
+		harness,
+	)
 	require.NoError(t, err)
 	terms := testTerms(t, KindPromotion)
 	source := testBinding(terms)
-	require.NoError(t, e.ValidatePreparedOOR(t.Context(), terms, source))
-	require.Zero(t, h.validations)
 	require.NoError(
 		t,
-		e.Execute(
+		executor.ValidatePreparedOOR(
+			t.Context(), terms, source,
+		),
+	)
+	require.Zero(t, harness.validations)
+
+	require.NoError(
+		t,
+		executor.Execute(
 			t.Context(), terms.ID, &CommitOOR{
 				Terms:  terms,
 				Source: source,
 			},
 		),
 	)
-	require.Equal(t, ID{}, h.committedID)
 	require.NoError(
 		t,
-		e.Execute(
+		executor.Execute(
 			t.Context(), terms.ID, &AbortOOR{
 				Terms:  terms,
 				Source: source,
-				Reason: "abandoned",
+				Reason: "test abort",
 			},
 		),
 	)
-	require.Equal(t, ID{}, h.abortedID)
+	require.Equal(t, ID{}, harness.committedID)
+	require.Equal(t, ID{}, harness.abortedID)
+
+	backing := testBacking(t, terms, source)
+	require.NoError(
+		t,
+		executor.Execute(
+			t.Context(), terms.ID, &PublishChannel{
+				Terms:   terms,
+				Source:  source,
+				Backing: backing,
+			},
+		),
+	)
+	require.Equal(t, backing.ChannelPoint, harness.handedOff)
+	require.Equal(t, terms.ID, harness.publishedID)
 }
 
 // harnessSink accepts callback events for executor wiring tests.
@@ -254,3 +302,15 @@ type harnessSink struct{}
 func (harnessSink) ApplyLocalEvent(context.Context, ID, Event) (Record, error) {
 	return Record{}, nil
 }
+
+var (
+	_ VirtualFundingActivator  = (*nativeExecutorHarness)(nil)
+	_ FundingNegotiator        = (*nativeExecutorHarness)(nil)
+	_ OORTransferController    = (*nativeExecutorHarness)(nil)
+	_ ChannelMaterializer      = (*nativeExecutorHarness)(nil)
+	_ ChannelOnchainHandoff    = (*nativeExecutorHarness)(nil)
+	_ ChannelForceCloser       = (*nativeExecutorHarness)(nil)
+	_ ChannelCooperativeCloser = (*nativeExecutorHarness)(nil)
+	_ ChannelEventSinkBinder   = (*nativeExecutorHarness)(nil)
+	_ ChannelEventSink         = harnessSink{}
+)
