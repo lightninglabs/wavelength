@@ -2,6 +2,7 @@ package waved
 
 import (
 	"context"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -22,6 +23,8 @@ import (
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/keychain"
 )
+
+const arkChannelControllerPollInterval = 25 * time.Millisecond
 
 // ArkChannelRecoveryController is the complete endpoint-local source archive,
 // watcher, and unroll preparation boundary.
