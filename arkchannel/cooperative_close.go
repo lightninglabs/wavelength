@@ -6,11 +6,17 @@ import (
 	"slices"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // CooperativeCloseRequest fixes the ordinary replacement VTXO owners before
@@ -97,6 +103,113 @@ func (p CooperativeCloseProposal) Validate(terms Terms, source VTXOBinding,
 	return nil
 }
 
+// CooperativeClose is the hub-authorized OOR close artifact. Transaction
+// contains the hub signature for the channel VTXO's no-delay 3-of-3 leaf;
+// TxID is the deterministic OOR Ark transaction/session ID.
+type CooperativeClose struct {
+	Proposal    CooperativeCloseProposal
+	Transaction []byte
+	TxID        chainhash.Hash
+}
+
+// Clone returns a close artifact without aliases to signature or PSBT bytes.
+func (c CooperativeClose) Clone() CooperativeClose {
+	c.Proposal = c.Proposal.Clone()
+	c.Transaction = slices.Clone(c.Transaction)
+
+	return c
+}
+
+// Validate proves the proposal is canonical, its session ID is deterministic,
+// and the hub authorized the exact OOR checkpoint through the 3-of-3 leaf.
+func (c CooperativeClose) Validate(terms Terms, source VTXOBinding,
+	request CooperativeCloseRequest) error {
+
+	if err := c.Proposal.Validate(terms, source, request); err != nil {
+		return err
+	}
+	template, err := NewCooperativeCloseTemplate(
+		terms, source, request, c.Proposal.ClientBalance,
+		c.Proposal.HubBalance, c.Proposal.CommitmentHeight,
+	)
+	if err != nil {
+		return err
+	}
+	if c.TxID != template.sessionID {
+		return fmt.Errorf("cooperative close OOR session ID does not " +
+			"match")
+	}
+	sig, err := schnorr.ParseSignature(c.Transaction)
+	if err != nil {
+		return fmt.Errorf("parse hub cooperative close signature: %w",
+			err)
+	}
+
+	return template.VerifySignature(terms, PartyHub, sig)
+}
+
+// ReplacementOutPoint derives the exact ordinary VTXO assigned to one close
+// participant. Reconstructing the canonical Ark transaction avoids assuming
+// recipient order, which is changed by BIP69 output sorting.
+func (c CooperativeClose) ReplacementOutPoint(terms Terms, source VTXOBinding,
+	request CooperativeCloseRequest, party Party) (wire.OutPoint, error) {
+
+	if err := c.Validate(terms, source, request); err != nil {
+		return wire.OutPoint{}, err
+	}
+
+	var (
+		owner  []byte
+		amount btcutil.Amount
+	)
+	switch party {
+	case PartyClient:
+		owner = request.ClientDeliveryScript
+		amount = c.Proposal.ClientOutput
+
+	case PartyHub:
+		owner = request.HubDeliveryScript
+		amount = c.Proposal.HubOutput
+
+	default:
+		return wire.OutPoint{}, fmt.Errorf("unknown cooperative close "+
+			"party %d", party)
+	}
+	if amount <= 0 {
+		return wire.OutPoint{}, fmt.Errorf("%s cooperative close has "+
+			"no replacement output", party)
+	}
+
+	operatorKey, err := parseChannelKey(
+		"Ark operator", terms.VTXO.ArkOperatorKey,
+	)
+	if err != nil {
+		return wire.OutPoint{}, err
+	}
+	target, err := cooperativeCloseRecipient(
+		owner, operatorKey, terms.VTXO.MinExitDelay, amount,
+	)
+	if err != nil {
+		return wire.OutPoint{}, err
+	}
+	template, err := NewCooperativeCloseTemplate(
+		terms, source, request, c.Proposal.ClientBalance,
+		c.Proposal.HubBalance, c.Proposal.CommitmentHeight,
+	)
+	if err != nil {
+		return wire.OutPoint{}, err
+	}
+	outpoint, err := oortx.RecipientOutPoint(
+		c.TxID, template.recipients, target,
+	)
+	if err != nil {
+		return wire.OutPoint{}, fmt.Errorf("derive %s cooperative "+
+			"close replacement: %w", party, err)
+	}
+
+	return outpoint, nil
+}
+
 // CooperativeCloseOORSpec contains the deterministic ordinary OOR actor input
 // data that is safe to hand across the core channel package boundary.
 type CooperativeCloseOORSpec struct {
@@ -108,11 +221,13 @@ type CooperativeCloseOORSpec struct {
 // CooperativeCloseTemplate owns the canonical OOR proposal and the immediate
 // three-party spend path while the hub signature is collected.
 type CooperativeCloseTemplate struct {
-	proposal CooperativeCloseProposal
-
-	spendPath  *arkscript.SpendPath
-	policy     arkscript.CheckpointPolicy
-	recipients []oortx.RecipientOutput
+	proposal    CooperativeCloseProposal
+	sessionID   chainhash.Hash
+	previousOut *wire.TxOut
+	checkpoint  *psbt.Packet
+	spendPath   *arkscript.SpendPath
+	policy      arkscript.CheckpointPolicy
+	recipients  []oortx.RecipientOutput
 }
 
 // NewCooperativeCloseTemplate builds an OOR transfer from full-capacity role
@@ -131,11 +246,12 @@ func NewCooperativeCloseTemplate(terms Terms, source VTXOBinding,
 	}
 
 	return &CooperativeCloseTemplate{
-		proposal: proposal,
-
-		spendPath:  artifacts.spendPath,
-		policy:     artifacts.policy,
-		recipients: artifacts.recipients,
+		proposal: proposal, sessionID: artifacts.sessionID,
+		previousOut: artifacts.previousOut,
+		checkpoint:  artifacts.checkpoint,
+		spendPath:   artifacts.spendPath,
+		policy:      artifacts.policy,
+		recipients:  artifacts.recipients,
 	}, nil
 }
 
@@ -158,10 +274,132 @@ func (t *CooperativeCloseTemplate) OORSpec() (CooperativeCloseOORSpec, error) {
 	}, nil
 }
 
+// SignDescriptor returns the exact checkpoint descriptor after checking that
+// the signer owns the requested endpoint role in the 3-of-3 policy leaf.
+func (t *CooperativeCloseTemplate) SignDescriptor(terms Terms, party Party,
+	keyDesc keychain.KeyDescriptor) (*input.SignDescriptor, error) {
+
+	var expected [33]byte
+	switch party {
+	case PartyClient:
+		expected = terms.VTXO.ClientArkKey
+
+	case PartyHub:
+		expected = terms.VTXO.HubArkKey
+
+	default:
+		return nil, fmt.Errorf("unknown cooperative close party %d",
+			party)
+	}
+
+	return t.signDescriptor(expected, keyDesc)
+}
+
+// VerifySignature proves one participant signed the canonical checkpoint.
+func (t *CooperativeCloseTemplate) VerifySignature(terms Terms, party Party,
+	sig input.Signature) error {
+
+	if sig == nil {
+		return fmt.Errorf("%s cooperative close signature is required",
+			party)
+	}
+	var expected [33]byte
+	switch party {
+	case PartyClient:
+		expected = terms.VTXO.ClientArkKey
+
+	case PartyHub:
+		expected = terms.VTXO.HubArkKey
+
+	default:
+		return fmt.Errorf("unknown cooperative close party %d", party)
+	}
+	pubKey, err := parseChannelKey("cooperative close", expected)
+	if err != nil {
+		return err
+	}
+	desc, err := t.signDescriptor(
+		expected, keychain.KeyDescriptor{
+			PubKey: pubKey,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	leaf := txscript.NewBaseTapLeaf(desc.WitnessScript)
+	sigHash, err := txscript.CalcTapscriptSignaturehash(
+		desc.SigHashes, desc.HashType, t.checkpoint.UnsignedTx,
+		desc.InputIndex, desc.PrevOutputFetcher, leaf,
+	)
+	if err != nil {
+		return fmt.Errorf("derive %s cooperative close sighash: %w",
+			party, err)
+	}
+	if !sig.Verify(sigHash, pubKey) {
+		return fmt.Errorf("invalid %s cooperative close signature",
+			party)
+	}
+
+	return nil
+}
+
+// Complete records the hub signature after verifying it against the exact
+// checkpoint. Client and Ark operator signatures remain absent until OOR
+// submission, where the operator-first custody rule is enforced.
+func (t *CooperativeCloseTemplate) Complete(terms Terms, source VTXOBinding,
+	request CooperativeCloseRequest, hubSig input.Signature) (
+	CooperativeClose, error) {
+
+	if err := t.VerifySignature(terms, PartyHub, hubSig); err != nil {
+		return CooperativeClose{}, err
+	}
+	settlement := CooperativeClose{
+		Proposal:    t.proposal.Clone(),
+		Transaction: hubSig.Serialize(),
+		TxID:        t.sessionID,
+	}
+	if err := settlement.Validate(terms, source, request); err != nil {
+		return CooperativeClose{}, err
+	}
+
+	return settlement, nil
+}
+
+// signDescriptor binds one expected key to the canonical checkpoint input.
+func (t *CooperativeCloseTemplate) signDescriptor(expected [33]byte,
+	keyDesc keychain.KeyDescriptor) (*input.SignDescriptor, error) {
+
+	if keyDesc.PubKey == nil {
+		return nil, fmt.Errorf("cooperative close signing key is " +
+			"required")
+	}
+	expectedKey, err := parseChannelKey("cooperative close", expected)
+	if err != nil {
+		return nil, err
+	}
+	if !keyDesc.PubKey.IsEqual(expectedKey) {
+		return nil, fmt.Errorf("cooperative close signing key does " +
+			"not match policy role")
+	}
+	prevFetcher := txscript.NewCannedPrevOutputFetcher(
+		t.previousOut.PkScript, t.previousOut.Value,
+	)
+	sigHashes := txscript.NewTxSigHashes(
+		t.checkpoint.UnsignedTx, prevFetcher,
+	)
+
+	return t.spendPath.BuildSignDescriptor(
+		keyDesc, t.previousOut, sigHashes, prevFetcher, 0,
+	), nil
+}
+
 type cooperativeCloseArtifacts struct {
-	spendPath  *arkscript.SpendPath
-	policy     arkscript.CheckpointPolicy
-	recipients []oortx.RecipientOutput
+	sessionID   chainhash.Hash
+	previousOut *wire.TxOut
+	checkpoint  *psbt.Packet
+	spendPath   *arkscript.SpendPath
+	policy      arkscript.CheckpointPolicy
+	recipients  []oortx.RecipientOutput
 }
 
 // buildCooperativeCloseProposal derives OOR outputs only from immutable
@@ -330,10 +568,12 @@ func buildCooperativeCloseProposal(terms Terms, source VTXOBinding,
 		ClientOutput:     clientOutput,
 		HubOutput:        hubOutput,
 	}, cooperativeCloseArtifacts{
-
-		spendPath:  spendPath,
-		policy:     checkpointPolicy,
-		recipients: recipients,
+		sessionID:   arkPSBT.UnsignedTx.TxHash(),
+		previousOut: previousOut,
+		checkpoint:  checkpoint.PSBT,
+		spendPath:   spendPath,
+		policy:      checkpointPolicy,
+		recipients:  recipients,
 	}, nil
 }
 
