@@ -68,6 +68,7 @@ type RuntimeConfig struct {
 	SelfNode      route.Vertex
 	Clock         clock.Clock
 	Funding       *FundingConfig
+	Onchain       *OnchainConfig
 
 	LocalChannelClose      func([]byte, *htlcswitch.ChanClose)
 	FetchLastChannelUpdate func(lnwire.ShortChannelID) (
@@ -88,6 +89,7 @@ type Runtime struct {
 	interceptor    *htlcswitch.InterceptableSwitch
 	payments       *FixedRoutePayments
 	funding        *FundingRuntime
+	onchain        *OnchainRuntime
 	sigPool        *lnwallet.SigPool
 
 	mu      sync.Mutex
@@ -250,6 +252,14 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 		awaitingReestablish: make(map[lnwire.ChannelID]struct{}),
 		liveChannels:        make(map[wire.OutPoint]liveChannel),
 	}
+	if cfg.Onchain != nil {
+		runtime.onchain, err = newOnchainRuntime(
+			runtime, *cfg.Onchain,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	return runtime, nil
 }
@@ -357,6 +367,22 @@ func (r *Runtime) Start() error {
 			return err
 		}
 	}
+	if r.onchain != nil {
+		if err := r.onchain.Start(); err != nil {
+			if r.funding != nil {
+				_ = r.funding.Stop()
+			}
+			_ = r.payments.Stop()
+			_ = r.interceptor.Stop()
+			_ = r.switcher.Stop()
+			_ = r.invoices.Stop()
+			_ = r.onionProcessor.Stop()
+			_ = r.htlcNotifier.Stop()
+			_ = r.sigPool.Stop()
+
+			return err
+		}
+	}
 
 	r.started = true
 
@@ -376,13 +402,17 @@ func (r *Runtime) Stop() error {
 		return nil
 	}
 
+	var onchainErr error
+	if r.onchain != nil {
+		onchainErr = r.onchain.Stop()
+	}
 	var fundingErr error
 	if r.funding != nil {
 		fundingErr = r.funding.Stop()
 	}
 
 	return errors.Join(
-		fundingErr, r.payments.Stop(), r.interceptor.Stop(),
+		onchainErr, fundingErr, r.payments.Stop(), r.interceptor.Stop(),
 		r.switcher.Stop(), r.invoices.Stop(), r.onionProcessor.Stop(),
 		r.htlcNotifier.Stop(), r.sigPool.Stop(),
 	)
@@ -689,6 +719,37 @@ func (r *Runtime) deleteLiveChannel(channelPoint wire.OutPoint,
 	}
 
 	delete(r.liveChannels, channelPoint)
+}
+
+// WatchChannel admits an active channel to lnd's standard chain and contract
+// lifecycle before the unpublished channel point can be materialized.
+func (r *Runtime) WatchChannel(channel *chanstate.OpenChannel) error {
+	if r.onchain == nil {
+		return fmt.Errorf("on-chain lifecycle is disabled")
+	}
+
+	return r.onchain.WatchChannel(channel)
+}
+
+// HandoffChannel verifies lnd's standard chain lifecycle is armed before Ark
+// publishes an active channel's backing transaction. WatchChannel is
+// idempotent, so this also repairs a missed registration after restart.
+func (r *Runtime) HandoffChannel(channelPoint wire.OutPoint) error {
+	if r.onchain == nil {
+		return fmt.Errorf("on-chain lifecycle is disabled")
+	}
+	state, err := r.cfg.DB.ChannelStateDB().FetchChannel(channelPoint)
+	if err != nil {
+		return fmt.Errorf("find channel for on-chain handoff: %w", err)
+	}
+	if state.IsPending {
+		return fmt.Errorf("cannot hand off a pending channel")
+	}
+	if err := r.WatchChannel(state); err != nil {
+		return fmt.Errorf("watch materialized channel: %w", err)
+	}
+
+	return nil
 }
 
 // unavailableChannelUpdate is the default for a private runtime with no graph.
