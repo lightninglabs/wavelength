@@ -46,6 +46,7 @@ func TestUnaryFacade_SendRPC(t *testing.T) {
 	require.Len(t, envs, 1)
 	require.Equal(t, "client-1", envs[0].Sender)
 	require.Equal(t, "server-1", envs[0].Recipient)
+	require.Equal(t, "client-1", envs[0].GetRpc().GetReplyTo())
 	require.Equal(t,
 		mailboxpb.RpcMeta_KIND_REQUEST, envs[0].Rpc.Kind,
 	)
@@ -53,6 +54,34 @@ func TestUnaryFacade_SendRPC(t *testing.T) {
 	require.Equal(t, "GetInfo", envs[0].Rpc.Method)
 	require.Equal(t,
 		result.CorrelationID, envs[0].Rpc.CorrelationId,
+	)
+}
+
+// TestUnaryFacadeSeparateReplyMailbox verifies one connector can retain its
+// authenticated sender identity while receiving replies on an isolated
+// mailbox.
+func TestUnaryFacadeSeparateReplyMailbox(t *testing.T) {
+	t.Parallel()
+
+	mailbox := newInMemoryMailbox()
+	cfg := newTestConnectorConfig(mailbox, newMemCheckpointStore())
+	cfg.ReplyMailboxID = "client-channel-1"
+	facade := NewUnaryFacade(NewServerConnectionActor(cfg))
+
+	_, err := facade.SendRPC(
+		t.Context(), mailboxrpc.ServiceMethod{
+			Service: "test.Svc", Method: "GetInfo",
+		}, wrapperspb.String("hello"), mailboxrpc.RPCOptions{},
+	)
+	require.NoError(t, err)
+
+	mailbox.mu.Lock()
+	envelopes := mailbox.mailboxes["server-1"]
+	mailbox.mu.Unlock()
+	require.Len(t, envelopes, 1)
+	require.Equal(t, "client-1", envelopes[0].GetSender())
+	require.Equal(
+		t, "client-channel-1", envelopes[0].GetRpc().GetReplyTo(),
 	)
 }
 
