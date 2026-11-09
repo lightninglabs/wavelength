@@ -814,10 +814,11 @@ type Entry struct {
 	Note          string
 	FailureReason string
 
-	// Cursor is the monotonic event-log position of this update on a
-	// SubscribeWallet stream. Persist it and pass it back as
-	// SubscribeRequest.Cursor to resume without gaps. It is zero outside
-	// the subscription path (List / Send / Recv / Deposit results).
+	// Cursor names this update's event-log position. SubscribeWallet
+	// resumes with SubscribeRequest.Cursor. For bounded replay, persist the
+	// returned ActivityBatch.NextCursor instead; it also covers gaps and
+	// entries the host filtered out. Ordinary List/Send/Recv/Deposit
+	// results leave it zero.
 	Cursor int64
 
 	// Progress carries the lifecycle metadata the daemon already

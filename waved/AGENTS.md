@@ -563,3 +563,11 @@ Daemon shutdown joins native workers and detached database/notification work
 before closing shared stores. Child lifetime accounting survives removal from
 the registry's active map. A caller's wait deadline does not release the daemon
 cleanup owner. See [domain shutdown ownership](../docs/domain-shutdown.md).
+
+## Bounded canonical activity reads
+
+Finite embedded activity batches join event positions to current canonical
+rows. A captured ceiling bounds replay; the host persists explicit NextCursor
+and deduplicates by canonical identity. Capturing a cursor does not reconcile
+sources. Both direct SDK callbacks join shutdown before releasing the store.
+See [finite activity reads](../docs/canonical-activity-batches.md).

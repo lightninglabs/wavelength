@@ -642,3 +642,12 @@ func rowToWalletEntry(row sqlc.ActivityEntry) (*wavewalletrpc.WalletEntry,
 
 	return entry, nil
 }
+
+// WalletEntryFromActivityRow decodes one current canonical activity projection.
+// Embedded hosts use the same conversion as List rather than interpreting stale
+// transition JSON. This does not reconcile or authenticate a new receipt.
+func WalletEntryFromActivityRow(row sqlc.ActivityEntry) (
+	*wavewalletrpc.WalletEntry, error) {
+
+	return rowToWalletEntry(row)
+}

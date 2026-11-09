@@ -7,6 +7,7 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/lightninglabs/wavelength/db"
 	pb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/lightninglabs/wavelength/waved"
 	"github.com/stretchr/testify/require"
@@ -65,6 +66,8 @@ func TestCloseJoinsLocalCallbacks(t *testing.T) {
 		"swap",
 		"readiness",
 		"recovery",
+		"activity-batch",
+		"activity-cursor",
 	} {
 		t.Run(source, func(t *testing.T) {
 			t.Parallel()
@@ -155,6 +158,36 @@ func shutdownCallbackInvoke(t *testing.T, client *Client, source string,
 			return waitForExternalSeedWalletReady(
 				t.Context(), client,
 			)
+		}
+
+	case "activity-batch":
+		client.readActivityBatch = func(ctx context.Context, _, _ int64,
+			_ int32) (db.ActivityBatch, error) {
+
+			return db.ActivityBatch{}, callback(ctx)
+		}
+
+		return func() error {
+			_, err := client.ReadActivityBatch(
+				t.Context(), ActivityBatchRequest{
+					Limit: 1,
+				},
+			)
+
+			return err
+		}
+
+	case "activity-cursor":
+		client.activityCursor = func(ctx context.Context) (int64,
+			error) {
+
+			return 0, callback(ctx)
+		}
+
+		return func() error {
+			_, err := client.ActivityCursor(t.Context())
+
+			return err
 		}
 
 	case "recovery":

@@ -3,6 +3,7 @@
 package wavewalletdk
 
 import (
+	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightninglabs/wavelength/swapwallet"
 	"github.com/lightninglabs/wavelength/waved"
 )
@@ -32,4 +33,14 @@ func configureWalletRPC(cfg *waved.Config, enabled bool) {
 // walletRPCAvailable reports whether this build can register wavewalletrpc.
 func walletRPCAvailable() bool {
 	return true
+}
+
+// entryFromCanonicalActivity shares the current-row decoder with wallet List.
+func entryFromCanonicalActivity(row sqlc.ActivityEntry) (Entry, error) {
+	wire, err := swapwallet.WalletEntryFromActivityRow(row)
+	if err != nil {
+		return Entry{}, err
+	}
+
+	return entryFromProto(wire), nil
 }
