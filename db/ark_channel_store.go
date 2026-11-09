@@ -249,6 +249,8 @@ type arkChannelMutableFields struct {
 	clientRecoveryReady bool
 	hubRecoveryReady    bool
 
+	backingPublished bool
+
 	failure sql.NullString
 }
 
@@ -264,6 +266,7 @@ func mutableArkChannelFields(snapshot arkchannel.Snapshot) (
 		oorAborted:          snapshot.OORAborted,
 		clientRecoveryReady: snapshot.ClientRecoveryReady,
 		hubRecoveryReady:    snapshot.HubRecoveryReady,
+		backingPublished:    snapshot.BackingPublished,
 
 		failure: sql.NullString{
 			String: snapshot.Failure,
@@ -351,6 +354,8 @@ func insertArkChannelParams(snapshot arkchannel.Snapshot,
 		ClientRecoveryReady: fields.clientRecoveryReady,
 		HubRecoveryReady:    fields.hubRecoveryReady,
 
+		BackingPublished: fields.backingPublished,
+
 		Failure:   fields.failure,
 		Revision:  initialArkChannelRevision,
 		CreatedAt: now,
@@ -388,6 +393,8 @@ func compareAndSwapArkChannelParams(snapshot arkchannel.Snapshot, revision,
 		ClientRecoveryReady: fields.clientRecoveryReady,
 		HubRecoveryReady:    fields.hubRecoveryReady,
 
+		BackingPublished: fields.backingPublished,
+
 		Failure:   fields.failure,
 		UpdatedAt: now,
 		PrePonrStartedAt: arkChannelPrePONRStartedAt(
@@ -408,9 +415,8 @@ func arkChannelPrePONRStartedAt(snapshot arkchannel.Snapshot,
 
 // arkChannelRecordFromRow validates one SQL row before exposing it.
 func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
-	if row.BackingPublished || row.ClientCloseFinalized ||
-		row.ClientCloseSigned || row.CloseClientBalance.Valid ||
-		row.CloseClientScript != nil ||
+	if row.ClientCloseFinalized || row.ClientCloseSigned ||
+		row.CloseClientBalance.Valid || row.CloseClientScript != nil ||
 		row.CloseCommitmentHeight.Valid ||
 		row.CloseFeeRateSatPerKw.Valid || row.CloseHubBalance.Valid ||
 		row.CloseHubScript != nil || row.CloseInitiator.Valid ||
@@ -524,6 +530,7 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 		OORAborted:            row.OorAborted,
 		ClientRecoveryReady:   row.ClientRecoveryReady,
 		HubRecoveryReady:      row.HubRecoveryReady,
+		BackingPublished:      row.BackingPublished,
 
 		Failure: row.Failure.String,
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 )
 
 // ActionExecutor performs one idempotent side effect after the channel FSM
@@ -71,18 +72,33 @@ type ChannelEventSinkBinder interface {
 	BindChannelEventSink(ChannelEventSink) error
 }
 
+// ChannelMaterializer publishes the Ark ancestry before the signed backing.
+type ChannelMaterializer interface {
+	MaterializeChannel(context.Context, ID, Terms, VTXOBinding,
+		Backing) error
+}
+
+// ChannelOnchainHandoff verifies lnd's standard watcher, arbitrator, and
+// resolver lifecycle is armed before backing publication is allowed.
+type ChannelOnchainHandoff interface {
+	HandoffChannel(wire.OutPoint) error
+}
+
 // NativeExecutor routes durable Ark actions into native subsystems.
 type NativeExecutor struct {
-	localParty Party
-	funding    VirtualFundingActivator
-	negotiator FundingNegotiator
-	oor        OORTransferController
+	localParty   Party
+	funding      VirtualFundingActivator
+	negotiator   FundingNegotiator
+	oor          OORTransferController
+	materializer ChannelMaterializer
+	handoff      ChannelOnchainHandoff
 }
 
 // NewNativeExecutor constructs the thin native subsystem adapter.
 func NewNativeExecutor(localParty Party, funding VirtualFundingActivator,
-	negotiator FundingNegotiator,
-	oor OORTransferController) (*NativeExecutor, error) {
+	negotiator FundingNegotiator, oor OORTransferController,
+	materializer ChannelMaterializer,
+	handoff ChannelOnchainHandoff) (*NativeExecutor, error) {
 
 	if localParty != PartyClient && localParty != PartyHub {
 		return nil, fmt.Errorf("local channel party is required")
@@ -93,12 +109,17 @@ func NewNativeExecutor(localParty Party, funding VirtualFundingActivator,
 	if negotiator == nil {
 		return nil, fmt.Errorf("funding negotiator is required")
 	}
+	if handoff == nil {
+		return nil, fmt.Errorf("channel on-chain handoff is required")
+	}
 
 	return &NativeExecutor{
-		localParty: localParty,
-		funding:    funding,
-		negotiator: negotiator,
-		oor:        oor,
+		localParty:   localParty,
+		funding:      funding,
+		negotiator:   negotiator,
+		oor:          oor,
+		materializer: materializer,
+		handoff:      handoff,
 	}, nil
 }
 
@@ -154,6 +175,20 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 			action.Backing.ChannelPoint.Hash,
 		)
 
+	case *PublishChannel:
+		if err := e.handoff.HandoffChannel(
+			action.Backing.ChannelPoint,
+		); err != nil {
+			return err
+		}
+		if e.materializer == nil {
+			return fmt.Errorf("channel materializer is unavailable")
+		}
+
+		return e.materializer.MaterializeChannel(
+			ctx, id, action.Terms, action.Source, action.Backing,
+		)
+
 	default:
 		return fmt.Errorf("unknown Ark channel action %T", action)
 	}
@@ -162,7 +197,7 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 // BindChannelEventSink connects native observations to the durable service.
 func (e *NativeExecutor) BindChannelEventSink(sink ChannelEventSink) error {
 	var bindErrors []error
-	for _, component := range []any{e.negotiator, e.oor} {
+	for _, component := range []any{e.negotiator, e.oor, e.materializer} {
 		if component == nil {
 			continue
 		}

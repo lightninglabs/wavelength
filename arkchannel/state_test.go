@@ -29,6 +29,152 @@ func (o *testRecordObserver) ObserveArkChannel(_ context.Context,
 	o.records = append(o.records, record)
 }
 
+// TestOORChannelLifecycle proves the prepared transfer commits only after both
+// lnd endpoints and the immutable backing transaction are durable.
+func TestOORChannelLifecycle(t *testing.T) {
+	t.Parallel()
+
+	store := newMemoryStore()
+	coordinator, err := NewCoordinator(store)
+	require.NoError(t, err)
+
+	terms := testTerms(t, KindPromotion)
+	record, err := coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	require.Equal(t, PhaseRequested, record.Snapshot.Phase)
+
+	binding := testBinding(terms)
+	record, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, &BindVTXO{
+			Binding: binding,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseNegotiating, record.Snapshot.Phase)
+	require.IsType(t, &NegotiateFunding{}, requireOneAction(t, actions))
+
+	backing := testBacking(t, terms, binding)
+	for _, event := range []Event{
+		&BackingSigned{
+			Backing: backing,
+		},
+		&FundingFinalized{
+			Party: PartyClient,
+		},
+	} {
+		record, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+		require.False(t, record.Snapshot.ReadyToCommitOOR())
+	}
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &FundingFinalized{
+			Party: PartyHub,
+		},
+	)
+	require.NoError(t, err)
+	require.IsType(t, &CommitOOR{}, requireOneAction(t, actions))
+	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
+	require.True(t, record.Snapshot.ReadyToCommitOOR())
+	commitRevision := record.Revision
+
+	// A retry after CommitOOR failed must replay that durable action.
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &FundingFinalized{
+			Party: PartyHub,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, commitRevision, record.Revision)
+	require.IsType(t, &CommitOOR{}, requireOneAction(t, actions))
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &OORFinalized{
+			SessionID: binding.OORSessionID,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
+	require.IsType(t, &PrepareRecovery{}, requireOneAction(t, actions))
+	require.False(t, record.Snapshot.RecoveryReady())
+
+	_, _, err = coordinator.Apply(
+		t.Context(), terms.ID, &Fail{
+			Reason: "peer disconnected",
+		},
+	)
+	require.ErrorContains(t, err, "after safety boundary")
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &RecoveryPackageInstalled{
+			Party: PartyClient,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
+	require.Empty(t, actions)
+	require.True(t, record.Snapshot.ClientRecoveryReady)
+	require.False(t, record.Snapshot.HubRecoveryReady)
+	recoveryRevision := record.Revision
+
+	// Retrying the stored acknowledgement after package installation failed
+	// must re-run the remaining recovery action.
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &RecoveryPackageInstalled{
+			Party: PartyClient,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, recoveryRevision, record.Revision)
+	require.IsType(t, &PrepareRecovery{}, requireOneAction(t, actions))
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &RecoveryPackageInstalled{
+			Party: PartyHub,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseActivating, record.Snapshot.Phase)
+	require.IsType(t, &ActivateChannel{}, requireOneAction(t, actions))
+	require.True(t, record.Snapshot.RecoveryReady())
+
+	_, resumed, err := coordinator.Resume(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.IsType(t, &ActivateChannel{}, requireOneAction(t, resumed))
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &ChannelActive{
+			ChannelPointHash:  backing.ChannelPoint.Hash,
+			ChannelPointIndex: backing.ChannelPoint.Index,
+		},
+	)
+	require.NoError(t, err)
+	require.Empty(t, actions)
+	require.Equal(t, PhaseActive, record.Snapshot.Phase)
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &Materialize{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseMaterializing, record.Snapshot.Phase)
+	require.IsType(t, &PublishChannel{}, requireOneAction(t, actions))
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &BackingPublished{
+			TxID: backing.ChannelPoint.Hash,
+		},
+	)
+	require.NoError(t, err)
+	require.Empty(t, actions)
+	require.Equal(t, PhaseOnChain, record.Snapshot.Phase)
+
+	record, _, err = coordinator.Apply(
+		t.Context(), terms.ID, &ChannelClosed{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseClosed, record.Snapshot.Phase)
+}
+
 // TestOORChannelCanAbortBeforePONR proves a definitively failed prepared
 // transfer releases its source before lnd funding is canceled.
 func TestOORChannelCanAbortBeforePONR(t *testing.T) {

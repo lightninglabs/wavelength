@@ -86,6 +86,34 @@ type ChannelActive struct {
 
 func (*ChannelActive) eventSealed() {}
 
+// Materialize requests publication of the VTXO ancestry and backing. It may
+// supersede a cooperative close only before both endpoints acknowledge the
+// close artifact; after that point only exact backing chain evidence may do so.
+type Materialize struct{}
+
+func (*Materialize) eventSealed() {}
+
+// BackingPublished records publication of the expected backing transaction.
+type BackingPublished struct {
+	TxID chainhash.Hash
+}
+
+func (*BackingPublished) eventSealed() {}
+
+// BackingObserved records independent chain evidence for the expected backing
+// transaction. It lets lnd resolution supersede an unfinished off-chain close
+// without accepting a peer's claim as proof of publication.
+type BackingObserved struct {
+	TxID chainhash.Hash
+}
+
+func (*BackingObserved) eventSealed() {}
+
+// ChannelClosed records completion of lnd's channel lifecycle.
+type ChannelClosed struct{}
+
+func (*ChannelClosed) eventSealed() {}
+
 // Fail abandons negotiation before the OOR commit action becomes replayable.
 type Fail struct {
 	Reason string
@@ -152,3 +180,13 @@ type CancelFunding struct {
 }
 
 func (*CancelFunding) actionSealed() {}
+
+// PublishChannel first hands the channel to lnd's on-chain lifecycle, then
+// publishes ancestry before the backing from either recovery-ready endpoint.
+type PublishChannel struct {
+	Terms   Terms
+	Source  VTXOBinding
+	Backing Backing
+}
+
+func (*PublishChannel) actionSealed() {}

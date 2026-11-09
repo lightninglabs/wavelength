@@ -94,6 +94,13 @@ const (
 	PhaseActivating Phase = 4
 	// PhaseActive means lnd reports the ordinary channel active.
 	PhaseActive Phase = 5
+	// PhaseMaterializing means source ancestry and backing must be
+	// published.
+	PhaseMaterializing Phase = 6
+	// PhaseOnChain means native lnd owns the published channel lifecycle.
+	PhaseOnChain Phase = 7
+	// PhaseClosed means native lnd completed channel resolution.
+	PhaseClosed Phase = 8
 	// PhaseCancelling means the durable OOR abort precedes lnd cleanup.
 	PhaseCancelling Phase = 9
 	// PhaseFailed means pre-commit abandonment and cleanup are complete.
@@ -118,6 +125,15 @@ func (p Phase) String() string {
 	case PhaseActive:
 		return "active"
 
+	case PhaseMaterializing:
+		return "materializing"
+
+	case PhaseOnChain:
+		return "on_chain"
+
+	case PhaseClosed:
+		return "closed"
+
 	case PhaseCancelling:
 		return "cancelling"
 
@@ -130,7 +146,7 @@ func (p Phase) String() string {
 }
 
 // IsTerminal reports whether the Ark-owned channel record needs no replay.
-func (p Phase) IsTerminal() bool { return p == PhaseFailed }
+func (p Phase) IsTerminal() bool { return p == PhaseFailed || p == PhaseClosed }
 
 // VTXOTerms identify every key role and relative delay in the channel VTXO.
 // Persisting semantics instead of derived script bytes gives both peers one
@@ -419,6 +435,7 @@ type Snapshot struct {
 	OORAborted            bool
 	ClientRecoveryReady   bool
 	HubRecoveryReady      bool
+	BackingPublished      bool
 	Failure               string
 }
 
