@@ -1,6 +1,8 @@
 package waved
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -92,6 +94,152 @@ func TestRecoveryDescriptorUsesBackingDelay(t *testing.T) {
 	require.Equal(t, terms.VTXO.ChannelDelay, backingDelay)
 	_, err = channelSourceCSVDelay(terms, "cooperative_close")
 	require.ErrorContains(t, err, "unsupported")
+}
+
+// TestShouldRestoreArkChannelSourceWatch verifies an in-Ark refresh remains
+// protected after its lnd channel has been archived.
+func TestShouldRestoreArkChannelSourceWatch(t *testing.T) {
+	t.Parallel()
+
+	source := &arkchannel.VTXOBinding{
+		OutPoint: wire.OutPoint{
+			Index: 1,
+		},
+	}
+	cooperativeClose := &arkchannel.CooperativeClose{}
+	tests := []struct {
+		name     string
+		snapshot arkchannel.Snapshot
+		restore  bool
+	}{
+		{
+			name: "active",
+			snapshot: arkchannel.Snapshot{
+				Phase: arkchannel.PhaseActive, Source: source,
+				ClientRecoveryReady: true,
+				HubRecoveryReady:    true,
+			},
+			restore: true,
+		},
+		{
+			name: "cooperatively closed",
+			snapshot: arkchannel.Snapshot{
+				Phase: arkchannel.PhaseClosed, Source: source,
+				ClientRecoveryReady: true,
+				HubRecoveryReady:    true,
+				CooperativeClose:    cooperativeClose,
+			},
+			restore: true,
+		},
+		{
+			name: "ordinary closed",
+			snapshot: arkchannel.Snapshot{
+				Phase: arkchannel.PhaseClosed, Source: source,
+				ClientRecoveryReady: true,
+				HubRecoveryReady:    true,
+			},
+		},
+		{
+			name: "conflict already durable",
+			snapshot: arkchannel.Snapshot{
+				Phase: arkchannel.PhaseClosed, Source: source,
+				ClientRecoveryReady: true,
+				HubRecoveryReady:    true,
+				CooperativeClose:    cooperativeClose,
+				SourceConflict: &arkchannel.SourceConflict{
+					OutPoint: wire.OutPoint{
+						Index: 2,
+					},
+				},
+			},
+		},
+		{
+			name: "recovery not installed",
+			snapshot: arkchannel.Snapshot{
+				Phase: arkchannel.PhaseActive, Source: source,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(
+				t, test.restore,
+				shouldRestoreArkChannelSourceWatch(
+					test.snapshot,
+				),
+			)
+		})
+	}
+}
+
+// TestRestoreArkChannelSourceWatchesIsolatesFailures proves a corrupt source
+// does not prevent later channels from restoring their chain protection.
+func TestRestoreArkChannelSourceWatchesIsolatesFailures(t *testing.T) {
+	t.Parallel()
+
+	firstID := arkchannel.ID{1}
+	secondID := arkchannel.ID{2}
+	records := []arkchannel.Record{
+		{
+			Snapshot: arkchannel.Snapshot{
+				Terms: arkchannel.Terms{
+					ID: firstID,
+				},
+				Phase: arkchannel.PhaseActive,
+				Source: &arkchannel.VTXOBinding{
+					OutPoint: wire.OutPoint{
+						Index: 1,
+					},
+				},
+				ClientRecoveryReady: true,
+				HubRecoveryReady:    true,
+			},
+		},
+		{
+			Snapshot: arkchannel.Snapshot{
+				Terms: arkchannel.Terms{
+					ID: secondID,
+				},
+				Phase: arkchannel.PhaseActive,
+				Source: &arkchannel.VTXOBinding{
+					OutPoint: wire.OutPoint{
+						Index: 2,
+					},
+				},
+				ClientRecoveryReady: true,
+				HubRecoveryReady:    true,
+			},
+		},
+	}
+	tracked := make([]arkchannel.ID, 0, 1)
+	err := restoreArkChannelSourceWatches(
+		t.Context(), records,
+		func(_ context.Context, outpoint wire.OutPoint) (
+			*vtxo.Descriptor, error) {
+
+			if outpoint.Index == 1 {
+				return nil, errors.New("corrupt source")
+			}
+
+			return &vtxo.Descriptor{}, nil
+		},
+		func(_ context.Context, id arkchannel.ID,
+			_ *vtxo.Descriptor) error {
+
+			tracked = append(tracked, id)
+
+			return nil
+		},
+	)
+
+	var failures *arkchannel.ResumeFailures
+	require.ErrorAs(t, err, &failures)
+	require.Len(t, failures.Failures, 1)
+	require.Equal(t, firstID, failures.Failures[0].ChannelID)
+	require.Equal(t, []arkchannel.ID{secondID}, tracked)
 }
 
 // TestChannelOperatorKeyAcceptsOppositeParity verifies that Ark operator
