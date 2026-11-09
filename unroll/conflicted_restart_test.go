@@ -186,11 +186,11 @@ func anchoredMergeProof(t *testing.T) *recovery.Proof {
 func TestSweptSourceRestoresPersistedExit(t *testing.T) {
 	t.Run(
 		"exclusive",
-		func(t *testing.T) { testSweptSourceRestart(t, false) },
+		func(t *testing.T) { testSweptSourceRestart(t, false, false) },
 	)
 	t.Run(
 		"sharedRoot",
-		func(t *testing.T) { testSweptSourceRestart(t, true) },
+		func(t *testing.T) { testSweptSourceRestart(t, true, false) },
 	)
 }
 
@@ -213,7 +213,7 @@ func (otherExitInterest) TryTell(context.Context,
 }
 
 // testSweptSourceRestart also checks that cleanup respects shared ownership.
-func testSweptSourceRestart(t *testing.T, shared bool) {
+func testSweptSourceRestart(t *testing.T, shared, branch bool) {
 	t.Helper()
 	proof := anchoredMergeProof(t)
 	target := proof.TargetOutpoint()
@@ -276,11 +276,15 @@ func testSweptSourceRestart(t *testing.T, shared bool) {
 			},
 		),
 	)
+	sweptOutpoint := sourceOutpoint
+	if branch {
+		sweptOutpoint = wire.OutPoint{Hash: proof.RootTxids()[0]}
+	}
 	chain := &sweptSourceChain{
 		fakeChainSourceRef: &fakeChainSourceRef{
 			bestHeight: 120,
 		},
-		source: sourceOutpoint,
+		source: sweptOutpoint,
 		blocks: make(
 			map[string]actor.TellOnlyRef[chainsource.BlockEpoch],
 		),
@@ -400,7 +404,15 @@ func testSweptSourceRestart(t *testing.T, shared bool) {
 	// Cleanup must remove only this unroll's broadcaster interests. A root
 	// with another owner must remain tracked and must not be
 	// wallet-removed.
-	wantRemoved := len(proof.RootTxids())
+	cleanupRoots := proof.RootTxids()
+	if branch {
+		// The branch spend confirms its parent. Deliver the matching
+		// chain confirmation to the broadcaster too; only the other
+		// root is abandoned and eligible for wallet removal.
+		chain.emitConfirmed(t, cleanupRoots[0], 119)
+		cleanupRoots = cleanupRoots[1:]
+	}
+	wantRemoved := len(cleanupRoots)
 	if shared {
 		wantRemoved--
 	}
@@ -409,7 +421,7 @@ func testSweptSourceRestart(t *testing.T, shared bool) {
 	}, 5*time.Second, 10*time.Millisecond)
 	// Drain the broadcaster after detached cleanup before probing
 	// ownership.
-	for _, txid := range proof.RootTxids() {
+	for _, txid := range cleanupRoots {
 		require.Eventually(t, func() bool {
 			resp, err := txActor.Ref().Ask(
 				t.Context(), &txconfirm.CancelInterestReq{
@@ -432,7 +444,7 @@ func testSweptSourceRestart(t *testing.T, shared bool) {
 	}
 	before := chain.broadcasts.Load()
 	chain.emitBlock(t, 122)
-	for _, txid := range proof.RootTxids() {
+	for _, txid := range cleanupRoots {
 		resp, err := txActor.Ref().Ask(
 			t.Context(), &txconfirm.CancelInterestReq{
 				Txid: txid, SubscriberID: "not-a-subscriber",
@@ -470,4 +482,10 @@ func testSweptSourceRestart(t *testing.T, shared bool) {
 	records, err := registryStore.ListNonTerminalRecords(t.Context())
 	require.NoError(t, err)
 	require.Empty(t, records)
+}
+
+// TestSweptBranchRestoresPersistedExit proves a confirmed branch sweep reaches
+// expired reclaim through the real delivery, registry and VTXO stores.
+func TestSweptBranchRestoresPersistedExit(t *testing.T) {
+	testSweptSourceRestart(t, false, true)
 }
