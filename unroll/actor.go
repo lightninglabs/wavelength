@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"time"
 
@@ -2133,6 +2134,39 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 		return b.handleEvent(ctx, ax, &FailEvent{
 			Reason:   reason,
 			Conflict: true,
+		})
+	}
+
+	// The operator can also sweep an expired tree branch after its root
+	// materialized. This kills the same target lineage as a root sweep:
+	// retain the conflict signal so the VTXO can reclaim cooperatively.
+	// Only watched edges on this target's proof qualify. A foreign spend
+	// of the target itself keeps the distinct generic-spend outcome below.
+	// Reclaim requires positive expiry evidence: an unknown or early
+	// foreign spend must not enter ExpiredState and later relive a dead
+	// lineage when expiry checking still considers it unexpired.
+	// Classify from the immutable proof, not this process's watch set:
+	// a durable spend may replay before restart has re-armed that watch.
+	isBranch := false
+	if _, ok := b.proof.Node(spentOutpoint.Hash); ok &&
+		spentOutpoint != b.cfg.TargetOutpoint {
+
+		outpoints, err := b.proofChildInputOutpoints(spentOutpoint.Hash)
+		if err != nil {
+			return fn.Err[Resp](err)
+		}
+		isBranch = slices.Contains(outpoints, spentOutpoint)
+	}
+	if isBranch && b.desc != nil && b.desc.BatchExpiry > 0 &&
+		msg.SpendingHeight >= b.desc.BatchExpiry {
+
+		reason := fmt.Sprintf("proof branch %s spent externally by tx "+
+			"%s at height %d; unilateral exit is no longer "+
+			"possible", spentOutpoint, msg.SpendingTxid,
+			msg.SpendingHeight)
+
+		return b.handleEvent(ctx, ax, &FailEvent{
+			Reason: reason, Conflict: true,
 		})
 	}
 
