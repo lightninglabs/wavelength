@@ -6,11 +6,15 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightninglabs/wavelength/arkchannel/unrollbridge"
 	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/lnruntime"
 	"github.com/lightninglabs/wavelength/vtxo"
+	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -240,6 +244,81 @@ func TestRestoreArkChannelSourceWatchesIsolatesFailures(t *testing.T) {
 	require.Len(t, failures.Failures, 1)
 	require.Equal(t, firstID, failures.Failures[0].ChannelID)
 	require.Equal(t, []arkchannel.ID{secondID}, tracked)
+}
+
+// TestReceiveIntentTermsAreDeterministic proves invoice replay derives the same
+// channel identity without consulting chain height or random state.
+func TestReceiveIntentTermsAreDeterministic(t *testing.T) {
+	identity := testKeyDescriptor(t, 1)
+	arkKey := testKeyDescriptor(t, 2)
+	backingKey := testKeyDescriptor(t, 3)
+	funderKey := testKeyDescriptor(t, 4)
+	hubNode := testKeyDescriptor(t, 5)
+	hubArk := testKeyDescriptor(t, 6)
+	hubBacking := testKeyDescriptor(t, 7)
+	operator := testKeyDescriptor(t, 8)
+	hubFunder := testKeyDescriptor(t, 9)
+	controller := &NativeArkChannelController{
+		cfg: ArkChannelControllerConfig{
+			IdentityKey: identity,
+		},
+		keys: nativeArkChannelKeys{
+			ark: arkKey, backing: backingKey, funder: funderKey,
+		},
+		peerInfo: lnruntime.FundingPeerInfo{
+			ChannelDelay: 144, FunderDelay: 576,
+			MinimumExitDelay: 144,
+		},
+	}
+	copy(
+		controller.peerInfo.HubNodeKey[:],
+		hubNode.PubKey.SerializeCompressed(),
+	)
+	copy(
+		controller.peerInfo.HubArkKey[:],
+		hubArk.PubKey.SerializeCompressed(),
+	)
+	copy(
+		controller.peerInfo.HubChannelKey[:],
+		hubBacking.PubKey.SerializeCompressed(),
+	)
+	copy(
+		controller.peerInfo.ArkOperatorKey[:],
+		operator.PubKey.SerializeCompressed(),
+	)
+	copy(
+		controller.peerInfo.HubFunderKey[:],
+		hubFunder.PubKey.SerializeCompressed(),
+	)
+
+	hash := lntypes.Hash{9}
+	reservedSCID := lnwire.ShortChannelID{
+		BlockHeight: 1 << 23, TxIndex: 42,
+	}.ToUint64()
+	first, err := controller.newReceiveIntentTerms(
+		hash, reservedSCID, btcutil.Amount(50_000),
+	)
+	require.NoError(t, err)
+	second, err := controller.newReceiveIntentTerms(
+		hash, reservedSCID, btcutil.Amount(50_000),
+	)
+	require.NoError(t, err)
+	require.Equal(t, first, second)
+	require.Equal(t, arkchannel.KindReceiveIntent, first.Kind)
+	require.Equal(t, arkchannel.PartyHub, first.Funder)
+	require.Equal(t, controller.peerInfo.HubFunderKey, first.VTXO.FunderKey)
+	require.Equal(t, hash, lntypes.Hash(first.PaymentHash))
+	require.Equal(t, reservedSCID, first.ReservedSCID)
+
+	otherSCID := lnwire.ShortChannelID{
+		BlockHeight: 1 << 23, TxIndex: 43,
+	}.ToUint64()
+	other, err := controller.newReceiveIntentTerms(
+		lntypes.Hash{10}, otherSCID, btcutil.Amount(50_000),
+	)
+	require.NoError(t, err)
+	require.NotEqual(t, first.ID, other.ID)
+	require.NotEqual(t, first.PendingChannelID, other.PendingChannelID)
 }
 
 // TestChannelOperatorKeyAcceptsOppositeParity verifies that Ark operator
