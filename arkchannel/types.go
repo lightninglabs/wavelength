@@ -84,10 +84,16 @@ type Phase uint8
 const (
 	// PhaseRequested means immutable channel terms are registered.
 	PhaseRequested Phase = 1
-
-	// PhaseNegotiating means the exact VTXO is bound and lnd funding is in
+	// PhaseNegotiating means the exact VTXO is bound and funding is in
 	// progress.
 	PhaseNegotiating Phase = 2
+	// PhaseBackingReady means signed backing and both funding facts are
+	// durable.
+	PhaseBackingReady Phase = 3
+	// PhaseActivating means lnd should observe the virtual channel point.
+	PhaseActivating Phase = 4
+	// PhaseActive means lnd reports the ordinary channel active.
+	PhaseActive Phase = 5
 )
 
 // String returns the durable name of a coordination phase.
@@ -99,13 +105,22 @@ func (p Phase) String() string {
 	case PhaseNegotiating:
 		return "negotiating"
 
+	case PhaseBackingReady:
+		return "backing_ready"
+
+	case PhaseActivating:
+		return "activating"
+
+	case PhaseActive:
+		return "active"
+
 	default:
 		return "unknown"
 	}
 }
 
-// IsTerminal reports whether Ark coordination has no further work. Preparation
-// and negotiation both retain a restart obligation.
+// IsTerminal reports whether Ark coordination has no further work. Every
+// installed phase retains a funding or channel ownership obligation.
 func (p Phase) IsTerminal() bool {
 	return false
 }
@@ -390,6 +405,12 @@ type Snapshot struct {
 	Phase                 Phase
 	OORPreparationStarted bool
 	Source                *VTXOBinding
+	Backing               *Backing
+	ClientFinalized       bool
+	HubFinalized          bool
+	OORFinalized          bool
+	ClientRecoveryReady   bool
+	HubRecoveryReady      bool
 }
 
 // Clone returns a snapshot without aliases to mutable fields.
@@ -399,8 +420,26 @@ func (s Snapshot) Clone() Snapshot {
 		source := s.Source.Clone()
 		s.Source = &source
 	}
+	if s.Backing != nil {
+		backing := s.Backing.Clone()
+		s.Backing = &backing
+	}
 
 	return s
+}
+
+// ReadyToCommitOOR reports whether both endpoints and signed backing are
+// durable.
+func (s Snapshot) ReadyToCommitOOR() bool {
+	return s.Source != nil && s.Backing != nil && s.ClientFinalized &&
+		s.HubFinalized && s.Phase == PhaseBackingReady &&
+		!s.OORFinalized
+}
+
+// RecoveryReady reports whether both endpoints independently installed the
+// recovery package needed before virtual channel activation.
+func (s Snapshot) RecoveryReady() bool {
+	return s.ClientRecoveryReady && s.HubRecoveryReady
 }
 
 // validateNodeKey checks a compressed secp256k1 node key.

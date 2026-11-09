@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/btcsuite/btcd/wire/v2"
 )
 
 var (
 	// ErrNotFound indicates that a channel ID is not registered.
 	ErrNotFound = errors.New("ark channel not found")
+
 	// ErrConflict indicates that another worker advanced the channel first.
 	ErrConflict = errors.New("ark channel revision conflict")
 
@@ -46,6 +49,8 @@ type Store interface {
 	Get(context.Context, ID) (Record, error)
 
 	GetByPendingChannelID(context.Context, [32]byte) (Record, error)
+
+	GetByChannelPoint(context.Context, wire.OutPoint) (Record, error)
 
 	ListNonTerminal(context.Context) ([]Record, error)
 
@@ -149,6 +154,14 @@ func (c *Coordinator) FindByPendingChannelID(ctx context.Context,
 	pendingID [32]byte) (Record, error) {
 
 	return c.store.GetByPendingChannelID(ctx, pendingID)
+}
+
+// FindByChannelPoint resolves the durable backing record observed by lnd's
+// pending-channel lifecycle.
+func (c *Coordinator) FindByChannelPoint(ctx context.Context,
+	channelPoint wire.OutPoint) (Record, error) {
+
+	return c.store.GetByChannelPoint(ctx, channelPoint)
 }
 
 // Apply durably applies one event and then returns any side effect to execute.
@@ -287,9 +300,18 @@ func snapshotsEqual(a, b Snapshot) bool {
 	}
 	if a.Phase != b.Phase ||
 		a.OORPreparationStarted != b.OORPreparationStarted ||
-		(a.Source == nil) != (b.Source == nil) {
+		a.ClientFinalized != b.ClientFinalized ||
+		a.HubFinalized != b.HubFinalized ||
+		a.OORFinalized != b.OORFinalized ||
+		a.ClientRecoveryReady != b.ClientRecoveryReady ||
+		a.HubRecoveryReady != b.HubRecoveryReady ||
+		(a.Source == nil) != (b.Source == nil) ||
+		(a.Backing == nil) != (b.Backing == nil) {
+		return false
+	}
+	if a.Source != nil && !bindingsEqual(*a.Source, *b.Source) {
 		return false
 	}
 
-	return a.Source == nil || bindingsEqual(*a.Source, *b.Source)
+	return a.Backing == nil || backingsEqual(*a.Backing, *b.Backing)
 }

@@ -4,12 +4,16 @@ import (
 	"context"
 	"testing"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/stretchr/testify/require"
 )
 
-// nativeExecutorHarness implements the installed thin native boundaries.
+// nativeExecutorHarness implements each installed thin native boundary.
 type nativeExecutorHarness struct {
+	confirmed    chainhash.Hash
 	negotiatedID ID
+	committedID  ID
+	recoveryID   ID
 	boundSinks   int
 	validations  int
 }
@@ -30,6 +34,22 @@ func (h *nativeExecutorHarness) ValidatePreparedOOR(_ context.Context, _ Terms,
 	return nil
 }
 
+// CommitPreparedOOR records release of the prepared transfer.
+func (h *nativeExecutorHarness) CommitPreparedOOR(_ context.Context, id ID,
+	_ Terms, _ VTXOBinding) error {
+
+	h.committedID = id
+
+	return nil
+}
+
+// ConfirmBacking records lnd virtual activation.
+func (h *nativeExecutorHarness) ConfirmBacking(txID chainhash.Hash) error {
+	h.confirmed = txID
+
+	return nil
+}
+
 // NegotiateChannel records the native funding dispatch.
 func (h *nativeExecutorHarness) NegotiateChannel(_ context.Context, id ID,
 	_ Terms, _ VTXOBinding) error {
@@ -39,34 +59,76 @@ func (h *nativeExecutorHarness) NegotiateChannel(_ context.Context, id ID,
 	return nil
 }
 
-// TestNativeExecutorRoutesOnlySubsystemBoundaries verifies the adapter has no
-// channel state of its own.
+// PrepareChannelRecovery records installation of the source package.
+func (h *nativeExecutorHarness) PrepareChannelRecovery(_ context.Context, id ID,
+	_ Terms, _ VTXOBinding) error {
+
+	h.recoveryID = id
+
+	return nil
+}
+
+// TestNativeExecutorRoutesOnlySubsystemBoundaries verifies native routing does
+// not duplicate the channel state machine.
 func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
 	t.Parallel()
-	harness := &nativeExecutorHarness{}
-	executor, err := NewNativeExecutor(PartyClient, harness, harness)
+	h := &nativeExecutorHarness{}
+	e, err := NewNativeExecutor(PartyClient, h, h, h)
 	require.NoError(t, err)
-	require.NoError(t, executor.BindChannelEventSink(harnessSink{}))
-	require.Equal(t, 2, harness.boundSinks)
+	require.NoError(t, e.BindChannelEventSink(harnessSink{}))
+	require.Equal(t, 2, h.boundSinks)
 	terms := testTerms(t, KindPromotion)
 	source := testBinding(terms)
+	backing := testBacking(t, terms, source)
+	require.NoError(t, e.ValidatePreparedOOR(t.Context(), terms, source))
+	require.Equal(t, 1, h.validations)
+	for _, action := range []Action{
+		&NegotiateFunding{
+			Terms:  terms,
+			Source: source,
+		},
+		&CommitOOR{
+			Terms:  terms,
+			Source: source,
+		},
+		&PrepareRecovery{
+			Terms:  terms,
+			Source: source,
+		},
+		&ActivateChannel{
+			Terms:   terms,
+			Backing: backing,
+		},
+	} {
+		require.NoError(t, e.Execute(t.Context(), terms.ID, action))
+	}
+	require.Equal(t, terms.ID, h.negotiatedID)
+	require.Equal(t, terms.ID, h.committedID)
+	require.Equal(t, terms.ID, h.recoveryID)
+	require.Equal(t, backing.ChannelPoint.Hash, h.confirmed)
+}
+
+// TestNativeExecutorFencesOORActionsToFunder prevents the responding endpoint
+// from releasing the funding endpoint's prepared OOR transfer.
+func TestNativeExecutorFencesOORActionsToFunder(t *testing.T) {
+	t.Parallel()
+	h := &nativeExecutorHarness{}
+	e, err := NewNativeExecutor(PartyHub, h, h, h)
+	require.NoError(t, err)
+	terms := testTerms(t, KindPromotion)
+	source := testBinding(terms)
+	require.NoError(t, e.ValidatePreparedOOR(t.Context(), terms, source))
+	require.Zero(t, h.validations)
 	require.NoError(
 		t,
-		executor.ValidatePreparedOOR(
-			t.Context(), terms, source,
-		),
-	)
-	require.Equal(t, 1, harness.validations)
-	require.NoError(
-		t,
-		executor.Execute(
-			t.Context(), terms.ID, &NegotiateFunding{
+		e.Execute(
+			t.Context(), terms.ID, &CommitOOR{
 				Terms:  terms,
 				Source: source,
 			},
 		),
 	)
-	require.Equal(t, terms.ID, harness.negotiatedID)
+	require.Equal(t, ID{}, h.committedID)
 }
 
 // harnessSink accepts callback events for executor wiring tests.

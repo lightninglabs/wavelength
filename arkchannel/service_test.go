@@ -8,9 +8,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// serviceExecutor records native dispatch through the public Service API.
+// serviceExecutor completes native callbacks through the public Service API.
 type serviceExecutor struct {
-	counts map[string]int
+	t          *testing.T
+	service    *Service
+	localParty Party
+	counts     map[string]int
 }
 
 type noOpActionExecutor struct{}
@@ -51,40 +54,133 @@ func (*serviceExecutor) ValidatePreparedOOR(context.Context, Terms,
 	return nil
 }
 
-// Execute records native negotiation dispatch without manufacturing funding
-// completion evidence.
-func (e *serviceExecutor) Execute(_ context.Context, _ ID,
+// applyPartyEvent routes one simulated endpoint callback through the matching
+// local or authenticated-peer service boundary.
+func (e *serviceExecutor) applyPartyEvent(ctx context.Context, id ID,
+	party Party, event Event) (Record, error) {
+
+	if party == e.localParty {
+		return e.service.ApplyLocalEvent(ctx, id, event)
+	}
+
+	return e.service.ApplyPeerEvent(ctx, id, event)
+}
+
+// Execute simulates native subsystem completion through authenticated
+// callbacks.
+func (e *serviceExecutor) Execute(ctx context.Context, id ID,
 	action Action) error {
 
 	e.counts[fmt.Sprintf("%T", action)]++
+	switch action := action.(type) {
+	case *NegotiateFunding:
+		backing := testBacking(e.t, action.Terms, action.Source)
+		for _, fact := range []struct {
+			party Party
+			event Event
+		}{
+			{
+				action.Terms.Funder,
+				&BackingSigned{
+					Backing: backing,
+				},
+			},
+			{
+				PartyClient,
+				&FundingFinalized{
+					Party: PartyClient,
+				},
+			},
+			{
+				PartyHub,
+				&FundingFinalized{
+					Party: PartyHub,
+				},
+			},
+		} {
+			if _, err := e.applyPartyEvent(
+				ctx, id, fact.party, fact.event,
+			); err != nil {
+				return err
+			}
+		}
+
+	case *CommitOOR:
+		_, err := e.applyPartyEvent(
+			ctx, id, action.Terms.Funder, &OORFinalized{
+				SessionID: action.Source.OORSessionID,
+			},
+		)
+
+		return err
+
+	case *PrepareRecovery:
+		for _, party := range []Party{PartyClient, PartyHub} {
+			if _, err := e.applyPartyEvent(
+				ctx, id, party, &RecoveryPackageInstalled{
+					Party: party,
+				},
+			); err != nil {
+				return err
+			}
+		}
+
+		return nil
+
+	case *ActivateChannel:
+		_, err := e.service.ApplyLocalEvent(
+			ctx, id, &ChannelActive{
+				ChannelPointHash: action.
+					Backing.
+					ChannelPoint.
+					Hash,
+				ChannelPointIndex: action.
+					Backing.
+					ChannelPoint.
+					Index,
+			},
+		)
+
+		return err
+
+	default:
+		return fmt.Errorf("unexpected service action %T", action)
+	}
 
 	return nil
 }
 
-// TestServiceSeparatesPromotionRegistrationFromBinding proves registration
-// cannot dispatch negotiation before the exact source is durably attached.
+// TestServiceSeparatesPromotionRegistrationFromBinding verifies two peers can
+// persist identical terms before either one starts lnd negotiation.
 func TestServiceSeparatesPromotionRegistrationFromBinding(t *testing.T) {
 	t.Parallel()
+
 	coordinator, err := NewCoordinator(newMemoryStore())
 	require.NoError(t, err)
-	executor := &serviceExecutor{counts: make(map[string]int)}
+	executor := &serviceExecutor{
+		t:      t,
+		counts: make(map[string]int),
+	}
 	service, err := NewService(PartyClient, coordinator, executor)
 	require.NoError(t, err)
+	executor.service = service
+	executor.localParty = PartyClient
 	terms := testTerms(t, KindPromotion)
+
 	record, err := service.RegisterPromotion(t.Context(), terms)
 	require.NoError(t, err)
 	require.Equal(t, PhaseRequested, record.Snapshot.Phase)
 	require.Empty(t, executor.counts)
+
 	record, err = service.BindPreparedOOR(
 		t.Context(), terms.ID, testBinding(terms),
 	)
 	require.NoError(t, err)
-	require.Equal(t, PhaseNegotiating, record.Snapshot.Phase)
+	require.Equal(t, PhaseActive, record.Snapshot.Phase)
 	require.Equal(t, 1, executor.counts["*arkchannel.NegotiateFunding"])
 }
 
-// TestServiceEventAuthorityMatrix checks both accepted event ownership and
-// rejection when the same evidence is attributed to the other endpoint.
+// TestServiceEventAuthorityMatrix checks the origin of each installed fact.
 func TestServiceEventAuthorityMatrix(t *testing.T) {
 	t.Parallel()
 	coordinator, err := NewCoordinator(newMemoryStore())
@@ -96,17 +192,69 @@ func TestServiceEventAuthorityMatrix(t *testing.T) {
 		PartyClient, coordinator, &noOpActionExecutor{},
 	)
 	require.NoError(t, err)
-	for _, event := range []Event{&OORPreparationStarted{}, &BindVTXO{}} {
+	for _, test := range []struct {
+		event  Event
+		origin eventOrigin
+	}{
+		{
+			&OORPreparationStarted{},
+			eventOriginLocal,
+		},
+		{
+			&BindVTXO{},
+			eventOriginLocal,
+		},
+		{
+			&BackingSigned{},
+			eventOriginLocal,
+		},
+		{
+			&OORFinalized{},
+			eventOriginLocal,
+		},
+		{
+			&FundingFinalized{
+				Party: PartyClient,
+			},
+			eventOriginLocal,
+		},
+		{
+			&FundingFinalized{
+				Party: PartyHub,
+			},
+			eventOriginPeer,
+		},
+		{
+			&RecoveryPackageInstalled{
+				Party: PartyClient,
+			},
+			eventOriginLocal,
+		},
+		{
+			&RecoveryPackageInstalled{
+				Party: PartyHub,
+			},
+			eventOriginPeer,
+		},
+		{
+			&ChannelActive{},
+			eventOriginLocal,
+		},
+	} {
 		require.NoError(
 			t,
 			service.authorizeEvent(
-				t.Context(), terms.ID, event, eventOriginLocal,
+				t.Context(), terms.ID, test.event, test.origin,
 			),
 		)
+		opposite := eventOriginLocal
+		if test.origin == eventOriginLocal {
+			opposite = eventOriginPeer
+		}
 		require.Error(
 			t,
 			service.authorizeEvent(
-				t.Context(), terms.ID, event, eventOriginPeer,
+				t.Context(), terms.ID, test.event, opposite,
 			),
 		)
 	}

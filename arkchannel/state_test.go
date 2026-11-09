@@ -29,6 +29,98 @@ func (o *testRecordObserver) ObserveArkChannel(_ context.Context,
 	o.records = append(o.records, record)
 }
 
+// TestPromotionWaitsForOORFinalization proves a client-funded promotion uses
+// the same OOR commit gate as a hub-funded receive intent.
+func TestPromotionWaitsForOORFinalization(t *testing.T) {
+	t.Parallel()
+
+	store := newMemoryStore()
+	coordinator, err := NewCoordinator(store)
+	require.NoError(t, err)
+	terms := testTerms(t, KindPromotion)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+
+	binding := testBinding(terms)
+	backing := testBacking(t, terms, binding)
+	for _, event := range []Event{
+		&BindVTXO{
+			Binding: binding,
+		},
+		&BackingSigned{
+			Backing: backing,
+		},
+		&FundingFinalized{
+			Party: PartyHub,
+		},
+	} {
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+
+	record, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, &FundingFinalized{
+			Party: PartyClient,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
+	require.IsType(t, &CommitOOR{}, requireOneAction(t, actions))
+	require.False(t, record.Snapshot.OORFinalized)
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &OORFinalized{
+			SessionID: binding.OORSessionID,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
+	require.IsType(t, &PrepareRecovery{}, requireOneAction(t, actions))
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &RecoveryPackageInstalled{
+			Party: PartyClient,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
+	require.Empty(t, actions)
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &RecoveryPackageInstalled{
+			Party: PartyHub,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseActivating, record.Snapshot.Phase)
+	require.IsType(t, &ActivateChannel{}, requireOneAction(t, actions))
+}
+
+// TestFundingFinalizationRequiresBacking ensures an edge-triggered lnd
+// notification cannot become the only durable key for recovery.
+func TestFundingFinalizationRequiresBacking(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	terms := testTerms(t, KindPromotion)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	_, _, err = coordinator.Apply(
+		t.Context(), terms.ID, &BindVTXO{
+			Binding: testBinding(terms),
+		},
+	)
+	require.NoError(t, err)
+
+	_, _, err = coordinator.Apply(
+		t.Context(), terms.ID, &FundingFinalized{
+			Party: PartyHub,
+		},
+	)
+	require.ErrorContains(t, err, "before signed backing")
+}
+
 // TestCoordinatorIdempotency proves retries preserve immutable terms and replay
 // negotiation from its persisted source after a coordinator restart.
 func TestCoordinatorIdempotency(t *testing.T) {
@@ -231,6 +323,39 @@ func TestOORPreparationStartedIsIdempotent(t *testing.T) {
 	require.Equal(t, revision, record.Revision)
 }
 
+// TestPartialFundingFactsDoNotRestartNegotiation keeps individual native facts
+// from repeatedly dispatching an already-running negotiation.
+func TestPartialFundingFactsDoNotRestartNegotiation(t *testing.T) {
+	t.Parallel()
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	terms := testTerms(t, KindPromotion)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	binding := testBinding(terms)
+	_, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, &BindVTXO{
+			Binding: binding,
+		},
+	)
+	require.NoError(t, err)
+	require.IsType(t, &NegotiateFunding{}, requireOneAction(t, actions))
+	for _, event := range []Event{
+		&BackingSigned{
+			Backing: testBacking(t, terms, binding),
+		},
+		&FundingFinalized{
+			Party: PartyClient,
+		},
+	} {
+		_, actions, err = coordinator.Apply(
+			t.Context(), terms.ID, event,
+		)
+		require.NoError(t, err)
+		require.Empty(t, actions)
+	}
+}
+
 // memoryStore is a revisioned in-memory implementation for coordinator tests.
 type memoryStore struct {
 	mu       sync.Mutex
@@ -282,6 +407,23 @@ func (s *memoryStore) GetByPendingChannelID(_ context.Context,
 
 	for _, record := range s.records {
 		if record.Snapshot.Terms.PendingChannelID == pendingID {
+			return cloneRecord(record), nil
+		}
+	}
+
+	return Record{}, ErrNotFound
+}
+
+// GetByChannelPoint loads one record by its signed lnd funding outpoint.
+func (s *memoryStore) GetByChannelPoint(_ context.Context,
+	channelPoint wire.OutPoint) (Record, error) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, record := range s.records {
+		backing := record.Snapshot.Backing
+		if backing != nil && backing.ChannelPoint == channelPoint {
 			return cloneRecord(record), nil
 		}
 	}
