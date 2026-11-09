@@ -509,6 +509,12 @@ func registerSwapRuntimeFlags(f *pflag.FlagSet, cfg *waved.Config) {
 		"maximum accumulated receive workers in swapruntime builds",
 	)
 	f.Bool(
+		"swap.arkchannelreceiveenabled",
+		cfg.Swap.ArkChannelReceiveEnabled, "opt into direct "+
+			"Ark-channel settlement for Lightning receives; "+
+			"disabled receives use only the vHTLC rail",
+	)
+	f.Bool(
 		"swap.vhtlcrecovery.autoescalate",
 		cfg.Swap.VHTLCRecovery.AutoEscalate, "automatically "+
 			"escalate armed vHTLC recovery after grace or "+
