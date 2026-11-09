@@ -281,6 +281,20 @@ func (s *Service) ListChannels(ctx context.Context) ([]Record, error) {
 	return s.coordinator.ListNonTerminal(ctx)
 }
 
+// Materialize enters the durable on-chain handoff and resumes that exact
+// action on retry if a prior process stopped after persisting the transition.
+func (s *Service) Materialize(ctx context.Context, id ID) (Record, error) {
+	record, err := s.coordinator.Get(ctx, id)
+	if err != nil {
+		return Record{}, err
+	}
+	if record.Snapshot.Phase == PhaseMaterializing {
+		return s.ResumeChannelAction(ctx, id)
+	}
+
+	return s.ApplyLocalEvent(ctx, id, &Materialize{})
+}
+
 // ObserveFundingFinalized records lnd's existing pending-open notification by
 // its durable channel point. A missed notification can be recovered through
 // ReconcileFunding.
@@ -364,7 +378,10 @@ func (s *Service) authorizeEvent(ctx context.Context, id ID, event Event,
 	case *RecoveryPackageInstalled:
 		return s.requireOriginParty(origin, event.Party, event)
 
-	case *ChannelActive, *FundingCanceled, *ExpirePrePONR, *Fail:
+	case *ChannelActive, *FundingCanceled, *ExpirePrePONR, *Fail,
+		*Materialize, *BackingPublished, *BackingObserved,
+		*ChannelClosed:
+
 		if origin != eventOriginLocal {
 			return fmt.Errorf("%T requires local subsystem "+
 				"evidence", event)

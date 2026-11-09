@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -15,9 +16,20 @@ type nativeExecutorHarness struct {
 	committedID  ID
 	abortedID    ID
 	cancelledID  ID
+	publishedID  ID
+	handedOff    wire.OutPoint
 	recoveryID   ID
 	boundSinks   int
 	validations  int
+}
+
+// HandoffChannel records transfer to lnd's on-chain lifecycle.
+func (h *nativeExecutorHarness) HandoffChannel(
+	channelPoint wire.OutPoint) error {
+
+	h.handedOff = channelPoint
+
+	return nil
 }
 
 // BindChannelEventSink records each subsystem binding.
@@ -88,15 +100,24 @@ func (h *nativeExecutorHarness) PrepareChannelRecovery(_ context.Context, id ID,
 	return nil
 }
 
+// MaterializeChannel records the unroller dispatch.
+func (h *nativeExecutorHarness) MaterializeChannel(_ context.Context, id ID,
+	_ Terms, _ VTXOBinding, _ Backing) error {
+
+	h.publishedID = id
+
+	return nil
+}
+
 // TestNativeExecutorRoutesOnlySubsystemBoundaries verifies native routing does
 // not duplicate the channel state machine.
 func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
 	t.Parallel()
 	h := &nativeExecutorHarness{}
-	e, err := NewNativeExecutor(PartyClient, h, h, h)
+	e, err := NewNativeExecutor(PartyClient, h, h, h, h, h)
 	require.NoError(t, err)
 	require.NoError(t, e.BindChannelEventSink(harnessSink{}))
-	require.Equal(t, 2, h.boundSinks)
+	require.Equal(t, 3, h.boundSinks)
 	terms := testTerms(t, KindPromotion)
 	source := testBinding(terms)
 	backing := testBacking(t, terms, source)
@@ -144,6 +165,18 @@ func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
 	)
 	require.Equal(t, terms.ID, h.abortedID)
 	require.Equal(t, terms.ID, h.cancelledID)
+	require.NoError(
+		t,
+		e.Execute(
+			t.Context(), terms.ID, &PublishChannel{
+				Terms:   terms,
+				Source:  source,
+				Backing: backing,
+			},
+		),
+	)
+	require.Equal(t, terms.ID, h.publishedID)
+	require.Equal(t, backing.ChannelPoint, h.handedOff)
 	require.Equal(t, terms.ID, h.negotiatedID)
 	require.Equal(t, terms.ID, h.committedID)
 	require.Equal(t, terms.ID, h.recoveryID)
@@ -155,7 +188,7 @@ func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
 func TestNativeExecutorFencesOORActionsToFunder(t *testing.T) {
 	t.Parallel()
 	h := &nativeExecutorHarness{}
-	e, err := NewNativeExecutor(PartyHub, h, h, h)
+	e, err := NewNativeExecutor(PartyHub, h, h, h, h, h)
 	require.NoError(t, err)
 	terms := testTerms(t, KindPromotion)
 	source := testBinding(terms)

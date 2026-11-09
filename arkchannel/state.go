@@ -148,6 +148,13 @@ func PendingAction(snapshot Snapshot) (Action, error) {
 			Backing: snapshot.Backing.Clone(),
 		}, nil
 
+	case PhaseMaterializing:
+		return &PublishChannel{
+			Terms:   snapshot.Terms.Clone(),
+			Source:  snapshot.Source.Clone(),
+			Backing: snapshot.Backing.Clone(),
+		}, nil
+
 	case PhaseCancelling:
 		if !snapshot.OORAborted {
 			return &AbortOOR{
@@ -216,6 +223,37 @@ func applyEvent(next *Snapshot, event Event) (bool, error) {
 
 	case *Fail:
 		return applyFailure(next, event.Reason)
+
+	case *Materialize:
+		if next.Phase == PhaseMaterializing ||
+			next.Phase == PhaseOnChain {
+			return false, nil
+		}
+		if next.Phase != PhaseActive {
+			return false, fmt.Errorf("cannot materialize "+
+				"channel from %s", next.Phase)
+		}
+		next.Phase = PhaseMaterializing
+
+		return true, nil
+
+	case *BackingPublished:
+		return applyBackingPublished(next, event.TxID)
+
+	case *BackingObserved:
+		return applyBackingObserved(next, event.TxID)
+
+	case *ChannelClosed:
+		if next.Phase == PhaseClosed {
+			return false, nil
+		}
+		if next.Phase != PhaseActive && next.Phase != PhaseOnChain {
+			return false, fmt.Errorf("cannot close channel from %s",
+				next.Phase)
+		}
+		next.Phase = PhaseClosed
+
+		return true, nil
 
 	case *RecoveryPackageInstalled:
 		return applyRecoveryPackageInstalled(next, event.Party)
@@ -438,7 +476,8 @@ func applyOORAborted(next *Snapshot, sessionID [32]byte,
 func applyChannelActive(next *Snapshot,
 	channelPoint wire.OutPoint) (bool, error) {
 
-	if next.Phase == PhaseActive &&
+	if (next.Phase == PhaseActive || next.Phase == PhaseMaterializing ||
+		next.Phase == PhaseOnChain || next.Phase == PhaseClosed) &&
 		next.Backing.ChannelPoint == channelPoint {
 		return false, nil
 	}
@@ -451,6 +490,50 @@ func applyChannelActive(next *Snapshot,
 			"channel point")
 	}
 	next.Phase = PhaseActive
+
+	return true, nil
+}
+
+// applyBackingPublished verifies materialization of the expected transaction.
+func applyBackingPublished(next *Snapshot, txID [32]byte) (bool, error) {
+	if next.Phase == PhaseOnChain {
+		if next.Backing.ChannelPoint.Hash == txID {
+			return false, nil
+		}
+	}
+	if next.Phase != PhaseMaterializing {
+		return false, fmt.Errorf("cannot publish backing from %s",
+			next.Phase)
+	}
+	if next.Backing.ChannelPoint.Hash != txID {
+		return false, fmt.Errorf("published backing transaction does " +
+			"not match")
+	}
+
+	next.BackingPublished = true
+	next.Phase = PhaseOnChain
+
+	return true, nil
+}
+
+// applyBackingObserved gives independent chain evidence precedence over the
+// virtual channel lifecycle.
+func applyBackingObserved(next *Snapshot, txID [32]byte) (bool, error) {
+	if next.Backing == nil || next.Backing.ChannelPoint.Hash != txID {
+		return false, fmt.Errorf("observed backing transaction does " +
+			"not match")
+	}
+	if next.Phase == PhaseOnChain {
+		return false, nil
+	}
+	switch next.Phase {
+	case PhaseActivating, PhaseActive, PhaseMaterializing:
+	default:
+		return false, fmt.Errorf("cannot observe backing from %s",
+			next.Phase)
+	}
+	next.BackingPublished = true
+	next.Phase = PhaseOnChain
 
 	return true, nil
 }
@@ -544,7 +627,8 @@ func validateSnapshot(snapshot Snapshot) error {
 	}
 	switch snapshot.Phase {
 	case PhaseRequested, PhaseNegotiating, PhaseBackingReady,
-		PhaseActivating, PhaseActive, PhaseCancelling, PhaseFailed:
+		PhaseActivating, PhaseActive, PhaseMaterializing,
+		PhaseOnChain, PhaseClosed, PhaseCancelling, PhaseFailed:
 	default:
 		return fmt.Errorf("unknown channel phase %d", snapshot.Phase)
 	}
@@ -577,7 +661,9 @@ func validateSnapshot(snapshot Snapshot) error {
 	}
 	requiresBacking := snapshot.Phase == PhaseBackingReady ||
 		snapshot.Phase == PhaseActivating ||
-		snapshot.Phase == PhaseActive
+		snapshot.Phase == PhaseActive ||
+		snapshot.Phase == PhaseMaterializing ||
+		snapshot.Phase == PhaseOnChain || snapshot.Phase == PhaseClosed
 	if requiresBacking && !backingReady(snapshot) {
 		return fmt.Errorf("phase %s requires finalized backing",
 			snapshot.Phase)
@@ -588,6 +674,10 @@ func validateSnapshot(snapshot Snapshot) error {
 	if snapshot.OORFinalized && snapshot.OORAborted {
 		return fmt.Errorf("OOR transfer cannot be finalized and " +
 			"aborted")
+	}
+	if snapshot.BackingPublished && snapshot.Phase != PhaseOnChain &&
+		snapshot.Phase != PhaseClosed {
+		return fmt.Errorf("published backing requires on-chain phase")
 	}
 	if (snapshot.ClientRecoveryReady || snapshot.HubRecoveryReady) &&
 		!backingReady(snapshot) {
@@ -638,7 +728,9 @@ func validateSnapshot(snapshot Snapshot) error {
 				"activating")
 		}
 
-	case PhaseActivating, PhaseActive:
+	case PhaseActivating, PhaseActive, PhaseMaterializing, PhaseOnChain,
+		PhaseClosed:
+
 		if !snapshot.OORFinalized || snapshot.OORAborted ||
 			!snapshot.RecoveryReady() {
 			return fmt.Errorf("channel advanced before OOR " +
@@ -650,13 +742,13 @@ func validateSnapshot(snapshot Snapshot) error {
 			return fmt.Errorf("cancelling channel has no bound " +
 				"VTXO")
 		}
-		if snapshot.OORFinalized {
+		if snapshot.OORFinalized || snapshot.BackingPublished {
 			return fmt.Errorf("failed channel crossed the safety " +
 				"boundary")
 		}
 
 	case PhaseFailed:
-		if snapshot.OORFinalized {
+		if snapshot.OORFinalized || snapshot.BackingPublished {
 			return fmt.Errorf("failed channel crossed the safety " +
 				"boundary")
 		}
@@ -664,6 +756,9 @@ func validateSnapshot(snapshot Snapshot) error {
 			return fmt.Errorf("failed channel did not abort " +
 				"prepared OOR")
 		}
+	}
+	if snapshot.Phase == PhaseOnChain && !snapshot.BackingPublished {
+		return fmt.Errorf("on-chain phase requires published backing")
 	}
 
 	return nil

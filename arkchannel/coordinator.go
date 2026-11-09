@@ -300,6 +300,7 @@ func snapshotsEqual(a, b Snapshot) bool {
 	}
 	if a.Phase != b.Phase ||
 		a.OORPreparationStarted != b.OORPreparationStarted ||
+		a.BackingPublished != b.BackingPublished ||
 		a.ClientFinalized != b.ClientFinalized ||
 		a.HubFinalized != b.HubFinalized ||
 		a.OORFinalized != b.OORFinalized ||

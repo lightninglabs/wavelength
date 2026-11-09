@@ -11,10 +11,11 @@ import (
 
 // serviceExecutor completes native callbacks through the public Service API.
 type serviceExecutor struct {
-	t          *testing.T
-	service    *Service
-	localParty Party
-	counts     map[string]int
+	t           *testing.T
+	service     *Service
+	localParty  Party
+	counts      map[string]int
+	failPublish int
 }
 
 type staticFundingFinalizationSource struct {
@@ -78,12 +79,12 @@ func (s *staticFundingFinalizationSource) FundingFinalized(context.Context,
 	return s.finalized, nil
 }
 
-// Execute simulates native subsystem completion through authenticated
-// callbacks.
+// Execute simulates native lnd and materializer completion callbacks.
 func (e *serviceExecutor) Execute(ctx context.Context, id ID,
 	action Action) error {
 
 	e.counts[fmt.Sprintf("%T", action)]++
+
 	switch action := action.(type) {
 	case *NegotiateFunding:
 		backing := testBacking(e.t, action.Terms, action.Source)
@@ -139,19 +140,38 @@ func (e *serviceExecutor) Execute(ctx context.Context, id ID,
 
 		return nil
 
-	case *ActivateChannel:
-		_, err := e.service.ApplyLocalEvent(
-			ctx, id, &ChannelActive{
-				ChannelPointHash: action.
-					Backing.
-					ChannelPoint.
-					Hash,
-				ChannelPointIndex: action.
-					Backing.
-					ChannelPoint.
-					Index,
+	case *AbortOOR:
+		_, err := e.applyPartyEvent(
+			ctx, id, action.Terms.Funder, &OORAborted{
+				SessionID: action.Source.OORSessionID,
+				Reason:    action.Reason,
 			},
 		)
+
+		return err
+
+	case *ActivateChannel:
+		_, err := e.service.ApplyLocalEvent(ctx, id, &ChannelActive{
+			ChannelPointHash:  action.Backing.ChannelPoint.Hash,
+			ChannelPointIndex: action.Backing.ChannelPoint.Index,
+		})
+
+		return err
+
+	case *CancelFunding:
+		_, err := e.service.ApplyLocalEvent(ctx, id, &FundingCanceled{})
+
+		return err
+
+	case *PublishChannel:
+		if e.failPublish > 0 {
+			e.failPublish--
+
+			return fmt.Errorf("injected handoff failure")
+		}
+		_, err := e.service.ApplyLocalEvent(ctx, id, &BackingPublished{
+			TxID: action.Backing.ChannelPoint.Hash,
+		})
 
 		return err
 
@@ -160,6 +180,81 @@ func (e *serviceExecutor) Execute(ctx context.Context, id ID,
 	}
 
 	return nil
+}
+
+// TestServiceResumesMaterializationAction proves a retry cannot acknowledge a
+// durable materializing state without re-running the failed handoff and
+// publication action.
+func TestServiceResumesMaterializationAction(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	executor := &serviceExecutor{
+		t: t, counts: make(map[string]int),
+	}
+	service, err := NewService(PartyClient, coordinator, executor)
+	require.NoError(t, err)
+	executor.service = service
+	executor.localParty = PartyClient
+
+	terms := testTerms(t, KindPromotion)
+	_, err = service.PromoteVTXO(
+		t.Context(), terms, testBinding(terms),
+	)
+	require.NoError(t, err)
+	executor.failPublish = 1
+
+	_, err = service.Materialize(t.Context(), terms.ID)
+	require.ErrorContains(t, err, "injected handoff failure")
+	record, err := service.GetChannel(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, PhaseMaterializing, record.Snapshot.Phase)
+
+	record, err = service.Materialize(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, PhaseOnChain, record.Snapshot.Phase)
+	require.Equal(t, 2, executor.counts["*arkchannel.PublishChannel"])
+}
+
+// TestServicePromotesAndMaterializesVTXO verifies the compact public workflow
+// drives callbacks without owning Lightning state.
+func TestServicePromotesAndMaterializesVTXO(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	executor := &serviceExecutor{
+		t:      t,
+		counts: make(map[string]int),
+	}
+	service, err := NewService(PartyClient, coordinator, executor)
+	require.NoError(t, err)
+	executor.service = service
+	executor.localParty = PartyClient
+
+	terms := testTerms(t, KindPromotion)
+	record, err := service.PromoteVTXO(
+		t.Context(), terms, testBinding(terms),
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseActive, record.Snapshot.Phase)
+	require.Equal(t, 1, executor.counts["*arkchannel.NegotiateFunding"])
+	require.Equal(t, 1, executor.counts["*arkchannel.CommitOOR"])
+	require.Equal(t, 1, executor.counts["*arkchannel.ActivateChannel"])
+
+	record, err = service.PromoteVTXO(
+		t.Context(), terms, testBinding(terms),
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseActive, record.Snapshot.Phase)
+	require.Equal(t, 1, executor.counts["*arkchannel.NegotiateFunding"])
+	require.Equal(t, 1, executor.counts["*arkchannel.CommitOOR"])
+	require.Equal(t, 1, executor.counts["*arkchannel.ActivateChannel"])
+
+	record, err = service.Materialize(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, PhaseOnChain, record.Snapshot.Phase)
 }
 
 // TestServiceSeparatesPromotionRegistrationFromBinding verifies two peers can
@@ -285,6 +380,22 @@ func TestServiceEventAuthorityMatrix(t *testing.T) {
 		},
 		{
 			&Fail{},
+			eventOriginLocal,
+		},
+		{
+			&Materialize{},
+			eventOriginLocal,
+		},
+		{
+			&BackingPublished{},
+			eventOriginLocal,
+		},
+		{
+			&BackingObserved{},
+			eventOriginLocal,
+		},
+		{
+			&ChannelClosed{},
 			eventOriginLocal,
 		},
 		{
