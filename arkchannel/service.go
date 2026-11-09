@@ -3,7 +3,15 @@ package arkchannel
 import (
 	"context"
 	"fmt"
+
+	"github.com/btcsuite/btcd/wire/v2"
 )
+
+// FundingFinalizationSource reports whether lnd durably stores both initial
+// commitments for an exact channel point.
+type FundingFinalizationSource interface {
+	FundingFinalized(context.Context, Terms, Backing) (bool, error)
+}
 
 // Service is the small application boundary for promotion and receive intent
 // coordination. Native lnd remains behind the ActionExecutor.
@@ -273,6 +281,66 @@ func (s *Service) ListChannels(ctx context.Context) ([]Record, error) {
 	return s.coordinator.ListNonTerminal(ctx)
 }
 
+// ObserveFundingFinalized records lnd's existing pending-open notification by
+// its durable channel point. A missed notification can be recovered through
+// ReconcileFunding.
+func (s *Service) ObserveFundingFinalized(ctx context.Context,
+	channelPoint wire.OutPoint) (Record, error) {
+
+	record, err := s.coordinator.FindByChannelPoint(ctx, channelPoint)
+	if err != nil {
+		return Record{}, err
+	}
+
+	return s.ApplyLocalEvent(
+		ctx, record.Snapshot.Terms.ID, &FundingFinalized{
+			Party: s.localParty,
+		},
+	)
+}
+
+// ReconcileFunding repairs missed pending-open notifications from lnd's
+// authoritative channel database.
+func (s *Service) ReconcileFunding(ctx context.Context,
+	source FundingFinalizationSource) error {
+
+	if source == nil {
+		return fmt.Errorf("funding finalization source is required")
+	}
+	records, err := s.coordinator.ListNonTerminal(ctx)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		snapshot := record.Snapshot
+		if snapshot.Backing == nil ||
+			partyFinalized(snapshot, s.localParty) ||
+			snapshot.Phase == PhaseCancelling ||
+			snapshot.Phase == PhaseFailed {
+
+			continue
+		}
+		finalized, err := source.FundingFinalized(
+			ctx, snapshot.Terms, *snapshot.Backing,
+		)
+		if err != nil {
+			return err
+		}
+		if !finalized {
+			continue
+		}
+		if _, err := s.ApplyLocalEvent(
+			ctx, snapshot.Terms.ID, &FundingFinalized{
+				Party: s.localParty,
+			},
+		); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // authorizeEvent enforces which authenticated side owns every event class.
 func (s *Service) authorizeEvent(ctx context.Context, id ID, event Event,
 	origin eventOrigin) error {
@@ -333,6 +401,20 @@ func otherParty(local Party) Party {
 	}
 
 	return PartyClient
+}
+
+// partyFinalized reports the local acknowledgement stored in one snapshot.
+func partyFinalized(snapshot Snapshot, party Party) bool {
+	switch party {
+	case PartyClient:
+		return snapshot.ClientFinalized
+
+	case PartyHub:
+		return snapshot.HubFinalized
+
+	default:
+		return false
+	}
 }
 
 // Resume replays side effects implied by all resumable durable records.
