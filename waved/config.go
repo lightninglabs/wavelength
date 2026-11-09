@@ -1996,13 +1996,6 @@ func (c *Config) expandPaths() error {
 		)
 	}
 
-	if c.Assets != nil && c.Assets.Lnd != nil {
-		fields = append(
-			fields, &c.Assets.Lnd.TLSPath,
-			&c.Assets.Lnd.MacaroonPath,
-		)
-	}
-
 	if c.Server != nil {
 		fields = append(
 			fields, &c.Server.TLSCertPath, &c.Server.MacaroonPath,

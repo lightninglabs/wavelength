@@ -3,6 +3,7 @@ package waved
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -12,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/tap-sdk/customanchor"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/types"
@@ -257,6 +259,46 @@ func TestAssetDepositFunding(t *testing.T) {
 	changed.AssetAmount = 700
 	_, err = f.service.Deposit(ctx, changed)
 	require.Equal(t, codes.AlreadyExists, status.Code(err))
+}
+
+// TestAssetDepositUnsupportedTapd checks that a tapd that tap-sdk does not
+// report as signing its own anchor inputs fails the deposit as a precondition.
+func TestAssetDepositUnsupportedTapd(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newDepositFixture(t)
+
+	f.onboarder.err = fmt.Errorf("build: %w",
+		&customanchor.UnsupportedCapabilityError{
+			Capability: customanchor.CapabilityBackendAnchorSigning,
+		})
+	_, err := f.service.Deposit(ctx, f.request("alice-1"))
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+
+	deposits, err := f.service.List(ctx)
+	require.NoError(t, err)
+	require.Len(t, deposits, 1)
+	require.Equal(t, db.AssetDepositFunding, deposits[0].Status)
+}
+
+// TestAssetDepositOldTapd checks that a deposit is refused before it is
+// recorded when tapd cannot sign its own anchor inputs.
+func TestAssetDepositOldTapd(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newDepositFixture(t)
+	f.tapd.version = "0.8.5-alpha commit=v0.8.5"
+
+	_, err := f.service.Deposit(ctx, f.request("alice-1"))
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.ErrorContains(t, err, "v0.9.0 or later")
+	require.Empty(t, f.onboarder.requests)
+
+	deposits, err := f.service.List(ctx)
+	require.NoError(t, err)
+	require.Empty(t, deposits)
 }
 
 // TestAssetDepositRetry checks that a failed attempt stays funding with its

@@ -405,7 +405,7 @@ func assetTestUtxoUnits(t *testing.T, tapd *tapgrpc.Client,
 }
 
 // startAssetDepositDaemon runs waved on the harness lnd with the tapd asset
-// backend and the same lnd signing deposits.
+// backend, whose tapd signs its own anchor inputs.
 func startAssetDepositDaemon(t *testing.T,
 	h *SysTestHarness) (waverpc.DaemonServiceClient, *fakeMailboxServer) {
 
@@ -440,23 +440,18 @@ func startAssetDepositDaemon(t *testing.T,
 	})
 
 	lndDataDir := filepath.Join(h.Harness.BaseDir(), "lnd")
-	lnd := &waved.AssetLndConfig{
-		Host:    net.JoinHostPort("localhost", h.Harness.LNDGRPCPort),
-		TLSPath: filepath.Join(lndDataDir, "tls.cert"),
-		MacaroonPath: filepath.Join(
-			lndDataDir, "data", "chain", "bitcoin", "regtest",
-			"admin.macaroon",
-		),
-	}
 
 	cfg := waved.DefaultConfig()
 	cfg.DataDir = t.TempDir()
 	cfg.Network = "regtest"
 	cfg.DebugLevel = "info"
 	cfg.Wallet.Type = waved.WalletTypeLnd
-	cfg.Lnd.Host = lnd.Host
-	cfg.Lnd.TLSPath = lnd.TLSPath
-	cfg.Lnd.MacaroonPath = lnd.MacaroonPath
+	cfg.Lnd.Host = net.JoinHostPort("localhost", h.Harness.LNDGRPCPort)
+	cfg.Lnd.TLSPath = filepath.Join(lndDataDir, "tls.cert")
+	cfg.Lnd.MacaroonPath = filepath.Join(
+		lndDataDir, "data", "chain", "bitcoin", "regtest",
+		"admin.macaroon",
+	)
 	cfg.Server.Host = mailboxAddr
 	cfg.Server.Insecure = true
 	cfg.RPC.ListenAddr = "127.0.0.1:0"
@@ -472,7 +467,6 @@ func startAssetDepositDaemon(t *testing.T,
 			TLSPath:      h.Harness.TapdTLSCertPath(),
 			MacaroonPath: h.Harness.TapdMacaroonPath(),
 		},
-		Lnd: lnd,
 	}
 
 	server, err := waved.NewServer(cfg)

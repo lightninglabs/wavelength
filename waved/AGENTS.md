@@ -133,33 +133,45 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   default) installs no verifier, so a round that would create an asset VTXO
   for this daemon fails before signing. `tapd` dials tapd at startup, checks
   that it runs on the daemon's network, and refuses to start otherwise.
-- `DepositAsset` exists only with `assets.backend=tapd` and `assets.lnd.host`,
-  the lnd node behind tapd that signs deposit transactions. Without both it
-  returns `FailedPrecondition`. The deposit output's value is not a caller
-  parameter: `depositValue` sizes it to two minimum VTXOs plus twice the
-  operator's boarding fee quote, so it boards as an asset VTXO and a BTC VTXO
-  that keeps the rest. A deposit's request, including that value and its
-  selected funding proofs, is stored before tapd funds it, and a retry under
-  the same request ID replays that stored request, because the onboarding
-  journal is bound to its digest. Funding is serialized, since tapd wallet input
-  selection must not interleave. A failed attempt stays `funding` with its
-  error; a published one is polled until its transfer has the operator's
-  `MinConfirmations` (at least one) by tapd's chain tip, then stores the
-  exported proof. The operator rejects a shallower boarding input, and the
-  depth bounds the reorgs that could replace the block the proof commits to.
-  Deposits stay out of the boarding tables, so Bitcoin boarding and boarding
-  sweeps never select them.
+- `DepositAsset` exists only with `assets.backend=tapd`; without it the RPC
+  returns `FailedPrecondition`. tapd signs its own asset inputs at publish, and
+  waved never connects to the lnd behind tapd. A tapd that
+  `tapassets.TapdSignsAnchorInputs` rejects (older than v0.9.0) is refused
+  with `FailedPrecondition` before the deposit is recorded. A backend that
+  tap-sdk does not report as signing them fails the deposit with
+  `FailedPrecondition` before anything is sealed, and the wallet's leased
+  coins are released. The daemon
+  wallet pays and signs the deposit's Bitcoin through `depositFunder`, over the
+  same adapter that funds CPFP children: `FundTemplate` funds an outputs-only
+  template without signing it, and leases its inputs all or none, and
+  `SignInputs` signs and finalizes only the inputs whose derivation info it
+  can derive. Nested SegWit coins are leased under `depositExclusionLockID`
+  while it funds, since their scriptSig would change the txid tapd seals. A
+  confirmation target resolves through the chain backend's sat/kWU estimate
+  where it has one (`EstimateFeePerKW`), since `EstimateFee` truncates to
+  whole sat/vB. The deposit output's value is not a caller parameter:
+  `depositValue` sizes it to two minimum VTXOs plus twice the operator's
+  boarding fee quote, so it boards as an asset VTXO and a BTC VTXO that keeps
+  the rest. A deposit's request, including that value and its selected funding
+  proofs, is stored before it is funded, and a retry under the same request ID
+  replays that stored request, because the onboarding journal is bound to its
+  digest. Funding is serialized, since two deposits must not select the same
+  tapd outputs. A failed attempt stays `funding` with its error; a published one
+  is polled until its transfer has the operator's `MinConfirmations` (at least
+  one) by tapd's chain tip, then stores the exported proof. The operator rejects
+  a shallower boarding input, and the depth bounds the reorgs that could replace
+  the block the proof commits to. Deposits stay out of the boarding tables, so
+  Bitcoin boarding and boarding sweeps never select them.
 - `BoardAssetDeposit` hands a confirmed deposit to the round actor as a
-  `round.RegisterAssetBoardingRequest`; the actor joins a round of the
-  deposit's own in the same turn, and the Ask outlives a cancelled caller.
-  The asset VTXO gets the operator's minimum VTXO amount and the BTC VTXO
-  targets the deposit value minus that amount and the quoted round fee; a
-  value that leaves less than a minimum VTXO is refused before the round
-  sees it. A
-  deposit that a round checkpointed with, or that a tracked round holds, is
-  refused with `AlreadyExists`. Another round's join in flight, or a round
-  state the actor cannot read, returns `Unavailable`. Board takes no lock;
-  the round actor's turn is where a second board of one deposit is refused.
+  `round.RegisterAssetBoardingRequest`; the actor joins a round of the deposit's
+  own in the same turn, and the Ask outlives a cancelled caller. The asset VTXO
+  gets the operator's minimum VTXO amount and the BTC VTXO targets the deposit
+  value minus that amount and the quoted round fee; a value that leaves less
+  than a minimum VTXO is refused before the round sees it. A deposit that a
+  round checkpointed with, or that a tracked round holds, is refused with
+  `AlreadyExists`. Another round's join in flight, or a round state the actor
+  cannot read, returns `Unavailable`. Board takes no lock; the round actor's
+  turn is where a second board of one deposit is refused.
 - `ClaimAssetDeposit` returns a confirmed deposit that no round holds to the
   tapd wallet, once the boarding exit delay has passed since its proof's
   height. It refuses a tapd that `tapassets.TapdCanClaim` rejects, since such
