@@ -914,7 +914,7 @@ func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
 	defer cancel()
 
 	notification, err := s.waitIncomingVHTLCNotification(
-		waitCtx, authKey,
+		waitCtx, ctx, authKey,
 	)
 	if err != nil {
 		if invoiceDeadlineExceeded(ctx, waitCtx, err) {
@@ -1011,9 +1011,11 @@ func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
 }
 
 // waitIncomingVHTLCNotification waits for and validates the server notification
-// that tells this receiver which vHTLC script should be funded.
-func (s *ReceiveSession) waitIncomingVHTLCNotification(ctx context.Context,
-	authKey ReceiveAuthKey) (*IncomingVHTLCNotification, error) {
+// that tells this receiver which vHTLC script should be funded. Acceptance uses
+// the parent context so the delivery deadline cannot interrupt persistence.
+func (s *ReceiveSession) waitIncomingVHTLCNotification(
+	ctx, acceptCtx context.Context, authKey ReceiveAuthKey) (
+	*IncomingVHTLCNotification, error) {
 
 	if receiver, ok := s.client.outEvents.(IncomingVHTLCEventReceiver); ok {
 		notification, err := receiver.WaitIncomingVHTLC(
@@ -1028,7 +1030,7 @@ func (s *ReceiveSession) waitIncomingVHTLCNotification(ctx context.Context,
 		}
 
 		return s.acceptIncomingVHTLCNotification(
-			ctx, notification, authKey,
+			acceptCtx, notification, authKey,
 		)
 	}
 
@@ -1052,7 +1054,7 @@ func (s *ReceiveSession) waitIncomingVHTLCNotification(ctx context.Context,
 		return nil, err
 	}
 
-	return s.acceptIncomingVHTLCNotification(ctx, incoming, authKey)
+	return s.acceptIncomingVHTLCNotification(acceptCtx, incoming, authKey)
 }
 
 // validateIncomingVHTLCAck checks mailbox ack metadata before the notification
