@@ -238,6 +238,11 @@ type ReceiveRequest struct {
 type ReceiveResult struct {
 	Invoice string
 	Entry   Entry
+
+	// ReceiptReference identifies the typed durable invoice source. Hosts
+	// enroll it only after explicit notification consent; it is not a
+	// receipt verdict.
+	ReceiptReference *LightningReceiptReference
 }
 
 // PrepareSendRequest validates and previews an outbound payment without

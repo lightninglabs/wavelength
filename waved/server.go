@@ -485,6 +485,10 @@ type Server struct {
 	swapNotificationMu        sync.RWMutex
 	swapNotificationRegistrar NotificationRegistrar
 
+	// lightningReceiptMu owns the optional local wallet-layer adapter.
+	lightningReceiptMu     sync.RWMutex
+	lightningReceiptLookup LightningReceiptLookup
+
 	rpcAddrMu   sync.RWMutex
 	rpcAddr     net.Addr
 	gatewayAddr net.Addr

@@ -227,6 +227,7 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 	)
 	client.readActivityBatch = server.ReadCurrentActivityBatch
 	client.activityCursor = server.ActivityEventCursor
+	client.readLightningReceipts = server.ReadLightningReceipts
 	client.waitWalletServicesReady = server.WaitForWalletServicesReady
 	client.recoverWalletState = server.RecoverWalletState
 	client.setNotificationSubscription = server.SetNotificationSubscription

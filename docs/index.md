@@ -87,3 +87,6 @@ into specific topics below.
 
 - [Finite canonical activity reads](canonical-activity-batches.md) — bounded current-state replay and host cursor contract.
 - [Canonical activity batches plan](canonical-activity-batches-execplan.md) — implementation and validation boundaries.
+
+- [Targeted Lightning receipt sources](lightning-receipt-source.md) — Typed invoice admissions and canonical amount checks.
+- [Lightning receipt source plan](lightning-receipt-source-execplan.md) — Implementation and validation.
