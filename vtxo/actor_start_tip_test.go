@@ -397,6 +397,105 @@ func TestStartTipDefersRefreshAndCriticalExit(t *testing.T) {
 	// No store expectations were set, so a PendingForfeit or
 	// UnilateralExit write would fail the test.
 	h.store.AssertExpectations(t)
+
+	// The same heights as block epochs do reserve the coin, so the
+	// start tip guard is what keeps the actors above Live.
+	reserved := map[ExpiryStatus]VTXOStatus{
+		ExpiryStatusNeedsRefresh: VTXOStatusPendingForfeit,
+		ExpiryStatusCritical:     VTXOStatusUnilateralExit,
+	}
+	for status, want := range reserved {
+		control := newVTXOTestHarness(t)
+		controlDesc := control.newTestDescriptor()
+		control.store.On(
+			"UpdateVTXOStatus", control.ctx, controlDesc.Outpoint,
+			want,
+		).Return(nil).Once()
+		actorUnderTest := &VTXOActor{
+			cfg: &VTXOActorConfig{
+				VTXO:        controlDesc,
+				Store:       control.store,
+				Wallet:      control.wallet,
+				ChainParams: &chaincfg.RegressionNetParams,
+				Manager:     newMockManagerRef(t),
+			},
+			state: &LiveState{
+				VTXO: controlDesc,
+			},
+			env: control.env,
+		}
+		_, err := actorUnderTest.Receive(
+			control.ctx, &BlockEpochEvent{
+				Height: heights[status],
+			},
+		).Unpack()
+		require.NoError(t, err)
+		_, live := actorUnderTest.state.(*LiveState)
+		require.False(t, live, "block epoch with status %v", status)
+		control.store.AssertExpectations(t)
+	}
+}
+
+// TestStartTipRepairsLegacyCreatedHeight pins that the start tip repairs a
+// legacy row whose creation height exceeds its expiry before classifying it,
+// as a block epoch does. Without the repair the row reads as unknown, and an
+// expired coin would stay Live until the next block.
+func TestStartTipRepairsLegacyCreatedHeight(t *testing.T) {
+	t.Parallel()
+
+	for _, repairErr := range []error{nil, errors.New("lookup failed")} {
+		h := newVTXOTestHarness(t)
+		desc := h.newTestDescriptor()
+		createdHeight := desc.CreatedHeight
+		desc.CreatedHeight = desc.BatchExpiry + 1
+
+		if repairErr == nil {
+			h.store.On(
+				"UpdateVTXOStatus", h.ctx, desc.Outpoint,
+				VTXOStatusExpired,
+			).Return(nil).Once()
+		}
+		repairs := 0
+		actorUnderTest := &VTXOActor{
+			cfg: &VTXOActorConfig{
+				VTXO:        desc,
+				Store:       h.store,
+				Wallet:      h.wallet,
+				ChainParams: &chaincfg.RegressionNetParams,
+				Manager:     newMockManagerRef(t),
+				RepairCreatedHeight: func(context.Context,
+					*Descriptor) (int32, error) {
+
+					repairs++
+
+					return createdHeight, repairErr
+				},
+			},
+			state: &LiveState{
+				VTXO: desc,
+			},
+			env: h.env,
+		}
+		msg := &startTipEvent{
+			tip: fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.BestHeightResponse{
+					Height: desc.BatchExpiry,
+				},
+			),
+		}
+		_, err := actorUnderTest.Receive(h.ctx, msg).Unpack()
+		require.NoError(t, err)
+		require.Equal(t, 1, repairs)
+
+		// A failed repair leaves the row unknown, so the tip is
+		// dropped rather than guessed at.
+		if repairErr != nil {
+			require.IsType(t, &LiveState{}, actorUnderTest.state)
+		} else {
+			require.IsType(t, &ExpiredState{}, actorUnderTest.state)
+		}
+		h.store.AssertExpectations(t)
+	}
 }
 
 // TestStartTipIgnoredOutsideLive pins that the start tip only classifies.

@@ -135,6 +135,10 @@ func (a *VTXOActor) startTipEpoch(ctx context.Context, msg *startTipEvent) (
 	// window would be claimed before its owner could spend, leave or
 	// refresh it, so those decisions wait for the next block and the tip
 	// only moves an expired coin out of Live.
+	// A legacy row whose creation height exceeds its expiry reads as
+	// unknown until repaired, and a block epoch repairs it before
+	// classifying, so the tip does too.
+	a.repairLegacyCreatedHeight(ctx)
 	status := a.env.ExpiryConfig.CheckExpiry(live.VTXO, tip.Height)
 	if status != ExpiryStatusExpired {
 		a.logger(ctx).DebugS(
