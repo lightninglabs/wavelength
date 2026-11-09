@@ -269,6 +269,15 @@ const (
 
 // Config holds all configuration for the waved daemon.
 type Config struct {
+	// DurableRoundRuntime selects persistent round consumption for embedded
+	// hosts. It is programmatic only; ordinary daemon configuration retains
+	// its runner.
+	DurableRoundRuntime bool `mapstructure:"-"`
+	// HostDrivenIngress leaves ingress paused at startup for a bounded host
+	// pump. It requires DurableRoundRuntime and does not stop domain actor
+	// workers.
+	HostDrivenIngress bool `mapstructure:"-"`
+
 	// DataDir is the root data directory for all daemon state. Database
 	// files, logs, and TLS material are stored under this directory.
 	DataDir string `mapstructure:"datadir"`

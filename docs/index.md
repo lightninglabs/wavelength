@@ -28,6 +28,8 @@ into specific topics below.
 | [seed_restore_recovery.md](seed_restore_recovery.md) | Restore a self-managed seed and recover Ark state from chain/indexer data |
 | [swap_background_execution.md](swap_background_execution.md) | Optional build-tagged daemon executor for background swap progress and daemon-backed CLI control |
 | [mailbox_architecture.md](mailbox_architecture.md) | Three-layer mailbox system: pb, rpc, conn, serverconn |
+| [host-driven-ingress.md](host-driven-ingress.md) | Bounded host-driven mailbox ingress |
+| [mobile-runtime-recovery-execplan.md](mobile-runtime-recovery-execplan.md) | Persistent round runtime implementation and recovery validation |
 | [mailbox-consumption-plan.md](mailbox-consumption-plan.md) | Execution plan for durable consumer ownership and semantic replay safety |
 | [mailbox_ingress_safety.md](mailbox_ingress_safety.md) | Durable ingress handoff, quarantine, replay retention, and recovery |
 | [mailbox_durable_actor_layer.md](mailbox_durable_actor_layer.md) | The durable mailbox and durable actor: leases, dedup, transactional outbox, DurableAsk, and the classic vs. Read/Commit (`TxBehavior`/`Exec[S]`) execution paths |
