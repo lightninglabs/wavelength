@@ -11,6 +11,16 @@ import (
 
 const recoveryPackageInstalledEvent = arkchannelrpc.ChannelEventType_CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED //nolint:ll
 
+// fundingStatusRequest serializes one authoritative lnd status query.
+func fundingStatusRequest(terms arkchannel.Terms,
+	backing arkchannel.Backing) *arkchannelrpc.FundingStatusRequest {
+
+	return &arkchannelrpc.FundingStatusRequest{
+		Terms:   channelTermsToRPC(terms),
+		Backing: channelBackingToRPC(backing),
+	}
+}
+
 // channelTermsToRPC serializes immutable Ark channel terms.
 func channelTermsToRPC(terms arkchannel.Terms) *arkchannelrpc.ChannelTerms {
 	return &arkchannelrpc.ChannelTerms{
@@ -201,6 +211,40 @@ func ChannelBindingFromRPC(message *arkchannelrpc.ChannelVTXOBinding) (
 	arkchannel.VTXOBinding, error) {
 
 	return channelBindingFromRPC(message)
+}
+
+// channelBackingToRPC serializes a signed VTXO-to-channel transaction.
+func channelBackingToRPC(
+	backing arkchannel.Backing) *arkchannelrpc.ChannelBacking {
+
+	return &arkchannelrpc.ChannelBacking{
+		Transaction:       append([]byte(nil), backing.Transaction...),
+		ChannelPointTxid:  backing.ChannelPoint.Hash[:],
+		ChannelPointIndex: backing.ChannelPoint.Index,
+	}
+}
+
+// channelBackingFromRPC parses a signed VTXO-to-channel transaction.
+func channelBackingFromRPC(message *arkchannelrpc.ChannelBacking) (
+	arkchannel.Backing, error) {
+
+	if message == nil {
+		return arkchannel.Backing{}, fmt.Errorf("channel backing is " +
+			"required")
+	}
+	hash, err := rpcHash(
+		"channel point txid", message.GetChannelPointTxid(),
+	)
+	if err != nil {
+		return arkchannel.Backing{}, err
+	}
+
+	return arkchannel.Backing{
+		Transaction: append([]byte(nil), message.GetTransaction()...),
+		ChannelPoint: wire.OutPoint{
+			Hash: hash, Index: message.GetChannelPointIndex(),
+		},
+	}, nil
 }
 
 // channelEventToRPC serializes the funding barriers used by the negotiator.

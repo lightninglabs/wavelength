@@ -13,10 +13,12 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	clientdb "github.com/lightninglabs/wavelength/db"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/chanstate"
+	"github.com/lightningnetwork/lnd/clock"
 	lndfunding "github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/graph/db/models"
 	"github.com/lightningnetwork/lnd/input"
@@ -38,15 +40,16 @@ type fundingFinalization struct {
 // fundingFlowNode contains one composed runtime and the callbacks used to
 // observe native lnd funding and channel-link activation.
 type fundingFlowNode struct {
-	key       *btcec.PrivateKey
-	db        *channeldb.DB
-	runtime   *Runtime
-	notifier  *VirtualFundingNotifier
-	peer      *Peer
-	finalized chan fundingFinalization
-	links     chan *chanstate.OpenChannel
-	failures  chan error
-	intents   *staticIntentSource
+	key         *btcec.PrivateKey
+	db          *channeldb.DB
+	runtime     *Runtime
+	notifier    *VirtualFundingNotifier
+	peer        *Peer
+	fundingWire *FundingWire
+	finalized   chan fundingFinalization
+	links       chan *chanstate.OpenChannel
+	failures    chan error
+	intents     *staticIntentSource
 }
 
 // fundingNegotiationSink models the already-tested durable channel FSM while
@@ -56,6 +59,36 @@ type fundingNegotiationSink struct {
 	node   *fundingFlowNode
 	party  arkchannel.Party
 	record arkchannel.Record
+}
+
+// fundingWireTestSink keeps the service's durable funding facts current while
+// the existing funding sink models native lnd callbacks for this component
+// test.
+type fundingWireTestSink struct {
+	service *arkchannel.Service
+	mirror  *fundingNegotiationSink
+}
+
+// ApplyLocalEvent records a local fact and mirrors its native lnd effect.
+func (s *fundingWireTestSink) ApplyLocalEvent(ctx context.Context,
+	id arkchannel.ID, event arkchannel.Event) (arkchannel.Record, error) {
+
+	if _, err := s.service.RecordLocalEvent(ctx, id, event); err != nil {
+		return arkchannel.Record{}, err
+	}
+
+	return s.mirror.Apply(ctx, id, event)
+}
+
+// ApplyPeerEvent records a peer fact and mirrors its native lnd effect.
+func (s *fundingWireTestSink) ApplyPeerEvent(ctx context.Context,
+	id arkchannel.ID, event arkchannel.Event) (arkchannel.Record, error) {
+
+	if _, err := s.service.RecordPeerEvent(ctx, id, event); err != nil {
+		return arkchannel.Record{}, err
+	}
+
+	return s.mirror.Apply(ctx, id, event)
 }
 
 // noOpChannelRecoveryManager satisfies composition in lnd-focused tests. The
@@ -244,6 +277,19 @@ func (t *fundingFlowTransport) dispatch(messages ...lnwire.Message) error {
 				return err
 			}
 
+		case *lnwire.Custom:
+			if t.remote.fundingWire == nil ||
+				!t.remote.fundingWire.Handles(message) {
+				return fmt.Errorf("unknown custom funding " +
+					"message")
+			}
+
+			if err := t.remote.fundingWire.Handle(
+				context.Background(), message,
+			); err != nil {
+				return err
+			}
+
 		case *lnwire.NodeAnnouncement1, *lnwire.ChannelAnnouncement1,
 			*lnwire.ChannelUpdate1:
 
@@ -255,6 +301,363 @@ func (t *fundingFlowTransport) dispatch(messages ...lnwire.Message) error {
 	}
 
 	return nil
+}
+
+// noOpFundingActionExecutor keeps this wire test focused on recording the
+// peer-readiness barrier without dispatching channel negotiation.
+type noOpFundingActionExecutor struct{}
+
+// ValidatePreparedOOR accepts the fixture after its normal state validation.
+func (*noOpFundingActionExecutor) ValidatePreparedOOR(context.Context,
+	arkchannel.Terms, arkchannel.VTXOBinding) error {
+
+	return nil
+}
+
+// Execute accepts an unused action.
+func (*noOpFundingActionExecutor) Execute(context.Context, arkchannel.ID,
+	arkchannel.Action) error {
+
+	return nil
+}
+
+// TestFundingWireRecordsPeerReadiness proves the client-to-hub reverse
+// transport durably records readiness without synchronously dispatching the
+// hub's channel action.
+func TestFundingWireRecordsPeerReadiness(t *testing.T) {
+	t.Parallel()
+
+	hub := newFundingFlowNode(t, arkchannel.PartyHub)
+	client := newFundingFlowNode(t, arkchannel.PartyClient)
+	connectFundingFlowNodes(t, hub, client)
+
+	rawStore := clientdb.NewTestDB(t)
+	store := clientdb.NewStore(
+		rawStore.DB, rawStore.Queries, rawStore.Backend(),
+		btclog.Disabled,
+	).NewArkChannelStore(clock.NewDefaultClock())
+	coordinator, err := arkchannel.NewCoordinator(store)
+	require.NoError(t, err)
+	service, err := arkchannel.NewService(
+		arkchannel.PartyHub, coordinator, &noOpFundingActionExecutor{},
+	)
+	require.NoError(t, err)
+
+	record := fundingIntentRecord(
+		t, hub, client, lndfunding.PendingChanID{2, 4, 6, 8},
+	)
+	_, err = service.RegisterReceiveIntent(
+		t.Context(), record.Snapshot.Terms,
+	)
+	require.NoError(t, err)
+	_, err = service.BindPreparedOOR(
+		t.Context(), record.Snapshot.Terms.ID, *record.Snapshot.Source,
+	)
+	require.NoError(t, err)
+
+	hubEndpoint, err := NewNativeFundingEndpoint(
+		arkchannel.PartyHub, hub.runtime.Funding(),
+		input.NewMockSigner(
+			[]*btcec.PrivateKey{hub.key}, nil,
+		),
+		keychain.KeyDescriptor{
+			PubKey: hub.key.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	hubWire, err := NewFundingWire(hub.peer)
+	require.NoError(t, err)
+	hub.fundingWire = hubWire
+	t.Cleanup(hubWire.Close)
+	require.NoError(
+		t,
+		hubWire.BindServer(
+			FundingWireServerConfig{
+				Service: service,
+				Funding: hubEndpoint,
+			},
+		),
+	)
+
+	clientWire, err := NewFundingWire(client.peer)
+	require.NoError(t, err)
+	client.fundingWire = clientWire
+	t.Cleanup(clientWire.Close)
+	_, err = clientWire.Counterparty().ApplyChannelEvent(
+		t.Context(), record.Snapshot.Terms.ID,
+		&arkchannel.FundingPeerReady{},
+	)
+	require.NoError(t, err)
+
+	stored, err := service.GetChannel(
+		t.Context(), record.Snapshot.Terms.ID,
+	)
+	require.NoError(t, err)
+	require.Equal(t, arkchannel.PhaseNegotiating, stored.Snapshot.Phase)
+}
+
+// TestFundingWireRecordsRecoveryBarrierWithoutDispatch proves an incoming lnd
+// wire event cannot synchronously execute an action that calls back through
+// the process mailbox serving the same client.
+func TestFundingWireRecordsRecoveryBarrierWithoutDispatch(t *testing.T) {
+	t.Parallel()
+
+	hub := newFundingFlowNode(t, arkchannel.PartyHub)
+	client := newFundingFlowNode(t, arkchannel.PartyClient)
+	connectFundingFlowNodes(t, hub, client)
+
+	rawStore := clientdb.NewTestDB(t)
+	store := clientdb.NewStore(
+		rawStore.DB, rawStore.Queries, rawStore.Backend(),
+		btclog.Disabled,
+	).NewArkChannelStore(clock.NewDefaultClock())
+	coordinator, err := arkchannel.NewCoordinator(store)
+	require.NoError(t, err)
+	service, err := arkchannel.NewService(
+		arkchannel.PartyClient, coordinator,
+		&noOpFundingActionExecutor{},
+	)
+	require.NoError(t, err)
+
+	record := fundingIntentRecord(
+		t, hub, client, lndfunding.PendingChanID{2, 4, 6, 7},
+	)
+	terms := record.Snapshot.Terms
+	source := *record.Snapshot.Source
+	backing := statusPollBacking(t, terms, source, client.key, hub.key)
+	_, err = service.RegisterReceiveIntent(t.Context(), terms)
+	require.NoError(t, err)
+	_, err = service.RecordPeerEvent(
+		t.Context(), terms.ID, &arkchannel.BindVTXO{
+			Binding: source,
+		},
+	)
+	require.NoError(t, err)
+	_, err = service.RecordLocalEvent(
+		t.Context(), terms.ID, &arkchannel.FundingPeerReady{},
+	)
+	require.NoError(t, err)
+	_, err = service.RecordPeerEvent(
+		t.Context(), terms.ID, &arkchannel.BackingSigned{
+			Backing: backing,
+		},
+	)
+	require.NoError(t, err)
+	_, err = service.RecordLocalEvent(
+		t.Context(), terms.ID, &arkchannel.FundingFinalized{
+			Party: arkchannel.PartyClient,
+		},
+	)
+	require.NoError(t, err)
+	_, err = service.RecordPeerEvent(
+		t.Context(), terms.ID, &arkchannel.FundingFinalized{
+			Party: arkchannel.PartyHub,
+		},
+	)
+	require.NoError(t, err)
+
+	clientEndpoint, err := NewNativeFundingEndpoint(
+		arkchannel.PartyClient, client.runtime.Funding(),
+		input.NewMockSigner(
+			[]*btcec.PrivateKey{client.key}, nil,
+		),
+		keychain.KeyDescriptor{
+			PubKey: client.key.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	clientWire, err := NewFundingWire(client.peer)
+	require.NoError(t, err)
+	client.fundingWire = clientWire
+	t.Cleanup(clientWire.Close)
+	require.NoError(
+		t,
+		clientWire.BindServer(
+			FundingWireServerConfig{
+				Service: service,
+				Funding: clientEndpoint,
+			},
+		),
+	)
+	hubWire, err := NewFundingWire(hub.peer)
+	require.NoError(t, err)
+	hub.fundingWire = hubWire
+	t.Cleanup(hubWire.Close)
+
+	_, err = hubWire.Counterparty().ApplyChannelEvent(
+		t.Context(), terms.ID, &arkchannel.OORFinalized{
+			SessionID: source.OORSessionID,
+		},
+	)
+	require.NoError(t, err)
+	stored, err := service.GetChannel(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.True(t, stored.Snapshot.OORFinalized)
+	require.False(t, stored.Snapshot.ClientRecoveryReady)
+	require.Equal(t, arkchannel.PhaseBackingReady, stored.Snapshot.Phase)
+}
+
+// TestFundingWireNegotiatesHubFundedChannel proves the production reverse
+// transport supports the complete hub-initiated lnd funding exchange.
+func TestFundingWireNegotiatesHubFundedChannel(t *testing.T) {
+	t.Parallel()
+
+	hub := newFundingFlowNode(t, arkchannel.PartyHub)
+	client := newFundingFlowNode(t, arkchannel.PartyClient)
+	connectFundingFlowNodes(t, hub, client)
+	require.NoError(t, hub.runtime.Start())
+	require.NoError(t, client.runtime.Start())
+	t.Cleanup(func() {
+		require.NoError(t, hub.runtime.Stop())
+		require.NoError(t, client.runtime.Stop())
+	})
+
+	record := fundingIntentRecord(
+		t, hub, client, lndfunding.PendingChanID{2, 4, 6, 9},
+	)
+	hub.intents.record = record
+	client.intents.record = record
+
+	rawStore := clientdb.NewTestDB(t)
+	store := clientdb.NewStore(
+		rawStore.DB, rawStore.Queries, rawStore.Backend(),
+		btclog.Disabled,
+	).NewArkChannelStore(clock.NewDefaultClock())
+	coordinator, err := arkchannel.NewCoordinator(store)
+	require.NoError(t, err)
+	service, err := arkchannel.NewService(
+		arkchannel.PartyClient, coordinator,
+		&noOpFundingActionExecutor{},
+	)
+	require.NoError(t, err)
+	_, err = service.RegisterReceiveIntent(
+		t.Context(), record.Snapshot.Terms,
+	)
+	require.NoError(t, err)
+	_, err = service.ApplyPeerEvent(
+		t.Context(), record.Snapshot.Terms.ID, &arkchannel.BindVTXO{
+			Binding: *record.Snapshot.Source,
+		},
+	)
+	require.NoError(t, err)
+	_, err = service.RecordLocalEvent(
+		t.Context(), record.Snapshot.Terms.ID,
+		&arkchannel.FundingPeerReady{},
+	)
+	require.NoError(t, err)
+	hubEndpoint, err := NewNativeFundingEndpoint(
+		arkchannel.PartyHub, hub.runtime.Funding(),
+		input.NewMockSigner(
+			[]*btcec.PrivateKey{hub.key}, nil,
+		),
+		keychain.KeyDescriptor{
+			PubKey: hub.key.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	clientEndpoint, err := NewNativeFundingEndpoint(
+		arkchannel.PartyClient, client.runtime.Funding(),
+		input.NewMockSigner(
+			[]*btcec.PrivateKey{client.key}, nil,
+		),
+		keychain.KeyDescriptor{
+			PubKey: client.key.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	hubSink := &fundingNegotiationSink{
+		node: hub, party: arkchannel.PartyHub, record: record,
+	}
+	clientSink := &fundingNegotiationSink{
+		node: client, party: arkchannel.PartyClient, record: record,
+	}
+	require.NoError(t, hubEndpoint.BindChannelEventSink(hubSink))
+	require.NoError(
+		t,
+		clientEndpoint.BindChannelEventSink(
+			&fundingWireTestSink{
+				service: service,
+				mirror:  clientSink,
+			},
+		),
+	)
+
+	clientWire, err := NewFundingWire(client.peer)
+	require.NoError(t, err)
+	client.fundingWire = clientWire
+	t.Cleanup(clientWire.Close)
+	require.NoError(
+		t,
+		clientWire.BindServer(
+			FundingWireServerConfig{
+				Service: service,
+				Funding: clientEndpoint,
+			},
+		),
+	)
+	hubWire, err := NewFundingWire(hub.peer)
+	require.NoError(t, err)
+	hub.fundingWire = hubWire
+	t.Cleanup(hubWire.Close)
+
+	negotiator, err := NewChannelNegotiator(
+		hubEndpoint, hubWire.Counterparty(), hub.peer,
+		&noOpChannelRecoveryManager{},
+	)
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	negotiated := make(chan error, 1)
+	go func() {
+		negotiated <- negotiator.NegotiateChannel(
+			ctx, record.Snapshot.Terms.ID, record.Snapshot.Terms,
+			*record.Snapshot.Source,
+		)
+	}()
+	require.Eventually(t, func() bool {
+		stored, err := service.GetChannel(
+			t.Context(), record.Snapshot.Terms.ID,
+		)
+
+		return err == nil && stored.Snapshot.OORFinalized
+	}, 5*time.Second, 10*time.Millisecond)
+	stored, err := service.GetChannel(
+		t.Context(), record.Snapshot.Terms.ID,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, stored.Snapshot.Backing)
+	_, err = service.RecordLocalEvent(
+		t.Context(), record.Snapshot.Terms.ID,
+		&arkchannel.RecoveryPackageInstalled{
+			Party: arkchannel.PartyClient,
+		},
+	)
+	require.NoError(t, err)
+	_, err = service.RecordPeerEvent(
+		t.Context(), record.Snapshot.Terms.ID,
+		&arkchannel.RecoveryPackageInstalled{
+			Party: arkchannel.PartyHub,
+		},
+	)
+	require.NoError(t, err)
+	require.NoError(
+		t, client.runtime.Funding().ConfirmBacking(
+			stored.Snapshot.Backing.ChannelPoint.Hash,
+		),
+	)
+	require.NoError(t, <-negotiated)
+
+	require.Equal(t, arkchannel.PhaseActive, hubSink.record.Snapshot.Phase)
+	require.Equal(
+		t, arkchannel.PhaseActive, clientSink.record.Snapshot.Phase,
+	)
+	hubChannel := awaitLink(t, hub)
+	clientChannel := awaitLink(t, client)
+	require.Equal(
+		t, hubChannel.FundingOutpoint, clientChannel.FundingOutpoint,
+	)
+	require.Positive(t, hubChannel.LocalCommitment.LocalBalance)
+	require.Zero(t, clientChannel.LocalCommitment.LocalBalance)
 }
 
 // TestNativeFundingFlowPromotesClientVTXO proves the same prepared-OOR flow

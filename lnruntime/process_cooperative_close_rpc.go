@@ -61,6 +61,17 @@ func arkChannelPublicPhase(snapshot arkchannel.Snapshot) string {
 	}
 }
 
+// rpcChannelID parses a fixed-width channel identifier.
+func rpcChannelID(raw []byte) (arkchannel.ID, error) {
+	var id arkchannel.ID
+	if len(raw) != len(id) {
+		return id, fmt.Errorf("channel id must be %d bytes", len(id))
+	}
+	copy(id[:], raw)
+
+	return id, nil
+}
+
 // rpcAmount rejects negative wire amounts before converting them.
 func rpcAmount(name string, value int64) (btcutil.Amount, error) {
 	if value < 0 {
