@@ -3,6 +3,7 @@ package credit
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -268,6 +269,9 @@ type CreditDaemon interface {
 
 // OpActorConfig configures one durable per-operation credit actor.
 type OpActorConfig struct {
+	// workers belongs to the registry and retains children after reaping.
+	workers *sync.WaitGroup
+
 	// OpID is the stable operation id this actor owns. The durable mailbox
 	// id is derived from it.
 	OpID string

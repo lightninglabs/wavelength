@@ -1397,30 +1397,30 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 		MailboxCapacity: actor.DefaultConfig().MailboxCapacity,
 		Log:             fn.Some(s.subLogger(actor.Subsystem)),
 	})
-	//nolint:contextcheck // shutdown uses bounded process-root context
+	//nolint:contextcheck // shutdown uses owned process-root context
 	defer func() {
 		if s.actorSystem == nil {
 			return
 		}
 
-		shutdownCtx, shutdownCancel := context.WithTimeout(
-			context.Background(), DefaultShutdownTimeout,
-		)
-		defer shutdownCancel()
+		shutdownCtx := context.Background()
 
-		//nolint:contextcheck // bounded shutdown
+		//nolint:contextcheck // owned shutdown
 		if err := s.actorSystem.Shutdown(shutdownCtx); err != nil {
 			s.log.WarnS(shutdownCtx, "Actor system shutdown "+
 				"did not complete cleanly", err)
 		}
 	}()
-	//nolint:contextcheck // shutdown uses bounded process-root context
+	//nolint:contextcheck // shutdown uses owned process-root context
 	defer func() {
-		shutdownCtx, shutdownCancel := context.WithTimeout(
-			context.Background(), DefaultShutdownTimeout,
-		)
-		defer shutdownCancel()
+		shutdownCtx := context.Background()
 
+		// RPC ingress has already joined. Detached continuations still
+		// own wallet refs and must finish before actors or stores
+		// disappear.
+		if s.rpcServer != nil {
+			s.rpcServer.cleanupWorkers.Wait()
+		}
 		if s.unrollRegistry != nil {
 			s.unrollRegistry.Stop()
 		}
@@ -1430,11 +1430,11 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 		}
 
 		if s.oorRegistry != nil {
-			s.oorRegistry.Stop()
+			s.oorRegistry.StopAndWait()
 		}
 
 		if s.incomingVTXOActor != nil {
-			//nolint:contextcheck // bounded shutdown
+			//nolint:contextcheck // owned shutdown
 			err := s.incomingVTXOActor.StopAndWait(shutdownCtx)
 			if err != nil {
 				s.log.WarnS(ctx, "Incoming VTXO actor shutdown "+
@@ -1464,12 +1464,12 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 
 		if rt := s.loadRuntime(); rt != nil {
 			s.setServerConnected(false)
-			//nolint:contextcheck // bounded shutdown
+			//nolint:contextcheck // owned shutdown
 			_ = rt.StopAndWait(shutdownCtx)
 		}
 
 		if s.actorSystem != nil {
-			//nolint:contextcheck // bounded shutdown
+			//nolint:contextcheck // owned shutdown
 			err := s.actorSystem.Shutdown(shutdownCtx)
 			if err != nil {
 				s.log.WarnS(ctx, "Actor system shutdown failed",
@@ -1488,7 +1488,7 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 		// dropped before it is persisted. It still runs before db.Close
 		// below so the actor's in-flight ledger writes drain first.
 		if s.ledgerActor != nil {
-			//nolint:contextcheck // bounded shutdown
+			//nolint:contextcheck // owned shutdown
 			err := s.ledgerActor.OnStop(shutdownCtx)
 			if err != nil {
 				s.log.WarnS(ctx, "Ledger actor shutdown failed",

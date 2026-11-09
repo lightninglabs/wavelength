@@ -126,3 +126,10 @@ operator VTXO floor, `max(dust_limit, min_vtxo_amount_sat)`.
 ## Deep Docs
 
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map
+
+## Shutdown ownership
+
+Daemon shutdown joins native workers and detached database/notification work
+before closing shared stores. Child lifetime accounting survives removal from
+the registry's active map. A caller's wait deadline does not release the daemon
+cleanup owner. See [domain shutdown ownership](../docs/domain-shutdown.md).

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
@@ -266,14 +267,20 @@ func (a *UnrollRegistryActor) Stop() {
 	}
 
 	a.registry.Stop()
+	a.behavior.registryWorkers.Wait()
+	a.behavior.workers.Wait()
 }
 
 // NewUnrollRegistryActor creates and starts the thin unroll registry actor.
 func NewUnrollRegistryActor(cfg RegistryConfig) *UnrollRegistryActor {
+	// This root belongs to the registry, not its constructor's caller.
+	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	behavior := &registryBehavior{
+		cleanupCtx:           cleanupCtx,
+		cleanupCancel:        cleanupCancel,
 		cfg:                  cfg,
 		log:                  cfg.Log.UnwrapOr(btclog.Disabled),
-		cleanupDone:          make(chan struct{}),
+		cleanupDone:          cleanupCtx.Done(),
 		active:               make(map[wire.OutPoint]*VTXOUnrollActor),
 		pending:              make(map[wire.OutPoint]RegistryRecord),
 		persisting:           make(map[wire.OutPoint]RegistryRecord),
@@ -284,6 +291,7 @@ func NewUnrollRegistryActor(cfg RegistryConfig) *UnrollRegistryActor {
 		ID:          "unroll-registry",
 		Behavior:    behavior,
 		MailboxSize: 64,
+		Wg:          &behavior.registryWorkers,
 	})
 	behavior.selfRef = registry.TellRef()
 	registry.Start()
@@ -298,11 +306,19 @@ func NewUnrollRegistryActor(cfg RegistryConfig) *UnrollRegistryActor {
 // registryBehavior is the thin control-plane actor around per-target unroll
 // actors.
 type registryBehavior struct {
+	// registryWorkers joins the sole producer before workers can reach
+	// zero.
+	registryWorkers sync.WaitGroup
+	workers         sync.WaitGroup
+
 	cfg     RegistryConfig
 	log     btclog.Logger
 	selfRef actor.TellOnlyRef[RegistryMsg]
 
-	cleanupDone chan struct{}
+	// cleanupCtx owns detached admission waits through registry shutdown.
+	cleanupCtx    context.Context //nolint:containedctx // Registry-owned lifecycle.
+	cleanupCancel context.CancelFunc
+	cleanupDone   <-chan struct{}
 
 	active     map[wire.OutPoint]*VTXOUnrollActor
 	pending    map[wire.OutPoint]RegistryRecord
@@ -455,8 +471,8 @@ func (r *registryBehavior) Receive(ctx context.Context,
 
 // OnStop stops all active child actors when the registry shuts down.
 func (r *registryBehavior) OnStop(context.Context) error {
-	if r.cleanupDone != nil {
-		close(r.cleanupDone)
+	if r.cleanupCancel != nil {
+		r.cleanupCancel()
 	}
 	for _, child := range r.active {
 		child.Stop()
@@ -875,13 +891,23 @@ func (r *registryBehavior) admitFresh(ctx context.Context,
 // finish after the registry has already returned Created=true to the caller.
 // The wait runs outside the registry actor goroutine, then reports back via a
 // normal registry message so r.active / r.pending mutations remain serialized.
+//
+//nolint:contextcheck // Await observes both admission and registry lifetime.
 func (r *registryBehavior) watchChildAdmissionResult(ctx context.Context,
 	target wire.OutPoint, child *VTXOUnrollActor,
 	future actor.Future[Resp]) {
 
 	actorID := child.Ref().ID()
+	r.workers.Add(1)
 	go func() {
-		_, err := future.Await(ctx).Unpack()
+		defer r.workers.Done()
+		awaitCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		if r.cleanupCtx != nil {
+			stop := context.AfterFunc(r.cleanupCtx, cancel)
+			defer stop()
+		}
+		_, err := future.Await(awaitCtx).Unpack()
 		if err == nil || isCancellationRace(err) ||
 			errors.Is(err, actor.ErrActorTerminated) {
 			return
@@ -1165,7 +1191,7 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 
 		// Terminal child drain uses its own bounded cleanup context.
 		//nolint:contextcheck
-		drained := stopChildAfterDrain(child)
+		drained := stopChildAfterDrain(child, &r.workers)
 		if feeRejectedRecord(record) {
 			if r.feeFailureDrains == nil {
 				r.feeFailureDrains = make(
@@ -1271,7 +1297,9 @@ func (r *registryBehavior) notifyVTXOExit(ctx context.Context,
 
 // stopChildAfterDrain stops a terminal child only after a queued status probe
 // has had a chance to run behind the currently-processing terminal message.
-func stopChildAfterDrain(child *VTXOUnrollActor) <-chan struct{} {
+func stopChildAfterDrain(child *VTXOUnrollActor,
+	workers *sync.WaitGroup) <-chan struct{} {
+
 	drained := make(chan struct{})
 	if child == nil || child.Ref() == nil {
 		close(drained)
@@ -1279,7 +1307,9 @@ func stopChildAfterDrain(child *VTXOUnrollActor) <-chan struct{} {
 		return drained
 	}
 
+	workers.Add(1)
 	go func() {
+		defer workers.Done()
 		defer close(drained)
 		defer child.Stop()
 
@@ -1973,6 +2003,7 @@ func (r *registryBehavior) validateResolverCoversRecords(
 // up a durable mailbox.
 func (r *registryBehavior) childConfig(target wire.OutPoint) Config {
 	return Config{
+		workers:                    &r.workers,
 		TargetOutpoint:             target,
 		DeliveryStore:              r.cfg.DeliveryStore,
 		ProofAssembler:             r.cfg.ProofAssembler,
@@ -2096,7 +2127,9 @@ func (r *registryBehavior) recordForPersistence(ctx context.Context,
 func (r *registryBehavior) persistRecordAsync(target wire.OutPoint, attempt int,
 	record RegistryRecord) {
 
+	r.workers.Add(1)
 	go func() {
+		defer r.workers.Done()
 		cloned := cloneRegistryRecord(record)
 		err := r.cfg.Store.UpsertRecord(
 			context.Background(), cloned,

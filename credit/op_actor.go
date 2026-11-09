@@ -107,6 +107,7 @@ func NewOpActor(cfg OpActorConfig) (*OpActor, error) {
 		actorID, behavior, behavior.bindStores, cfg.DeliveryStore,
 		NewCodec(),
 	)
+	durableCfg.Wg = cfg.workers
 	durableCfg.Log = cfg.Log
 
 	// A delivery this mailbox gives up on is deleted after it lands in the

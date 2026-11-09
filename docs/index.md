@@ -81,3 +81,7 @@ into specific topics below.
 - [Notification source selection](notification-sources.md).
 - [Signed notification subscriptions](notification-subscriptions.md).
 - [Notification subscription implementation plan](notification-subscriptions-execplan.md).
+
+- [Domain shutdown ownership](domain-shutdown.md) — domain workers joined before shared store teardown.
+- [Domain shutdown implementation plan](domain-shutdown-execplan.md) — retained worker ownership.
+
