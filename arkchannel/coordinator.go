@@ -287,7 +287,7 @@ func sameTerms(a, b Terms) error {
 		a.ReservedSCID != b.ReservedSCID || a.Capacity != b.Capacity ||
 		a.ClientNodeKey != b.ClientNodeKey ||
 		a.HubNodeKey != b.HubNodeKey ||
-		a.VTXO != b.VTXO {
+		a.PaymentHash != b.PaymentHash || a.VTXO != b.VTXO {
 		return fmt.Errorf("channel ID already has different terms")
 	}
 

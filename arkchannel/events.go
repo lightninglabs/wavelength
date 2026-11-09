@@ -33,6 +33,13 @@ type BindVTXO struct {
 
 func (*BindVTXO) eventSealed() {}
 
+// FundingPeerReady records that the client has durably bound the prepared
+// source. The client records its local evidence and the hub records the same
+// fact only after receiving it over the authenticated peer transport.
+type FundingPeerReady struct{}
+
+func (*FundingPeerReady) eventSealed() {}
+
 // FundingFinalized records that one endpoint's native lnd funding manager has
 // persisted both initial commitments.
 type FundingFinalized struct {
@@ -78,6 +85,14 @@ type OORAborted struct {
 }
 
 func (*OORAborted) eventSealed() {}
+
+// ReceiveIntentAbortRequested records that a client without the prepared OOR
+// binding requires the hub to abandon its receive-channel funding.
+type ReceiveIntentAbortRequested struct {
+	Reason string
+}
+
+func (*ReceiveIntentAbortRequested) eventSealed() {}
 
 // ChannelActive records that native lnd activated the expected channel point.
 type ChannelActive struct {
@@ -212,6 +227,15 @@ type AbortOOR struct {
 }
 
 func (*AbortOOR) actionSealed() {}
+
+// RequestReceiveIntentAbort asks the hub that owns a receive intent's OOR
+// source to finish its durable pre-PONR cleanup.
+type RequestReceiveIntentAbort struct {
+	Terms  Terms
+	Reason string
+}
+
+func (*RequestReceiveIntentAbort) actionSealed() {}
 
 // ActivateChannel asks the virtual notifier to confirm the backing to lnd.
 type ActivateChannel struct {

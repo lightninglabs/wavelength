@@ -100,6 +100,23 @@ func TestCooperativeCloseBuildsThreePartyOOR(t *testing.T) {
 	require.Equal(t, wire.MaxTxInSequenceNum, path.RequiredSequence)
 }
 
+// TestCooperativeCloseReturnsReserveToHubFunder verifies the backing reserve
+// never changes the full-capacity role allocation and follows the funder.
+func TestCooperativeCloseReturnsReserveToHubFunder(t *testing.T) {
+	t.Parallel()
+
+	terms, source, request, _, _, _ := testCooperativeCloseFixture(
+		t, KindReceiveIntent, 4_000,
+	)
+	template, err := NewCooperativeCloseTemplate(
+		terms, source, request, 25_000, 75_000, 11,
+	)
+	require.NoError(t, err)
+	proposal := template.Proposal()
+	require.EqualValues(t, 25_000, proposal.ClientOutput)
+	require.Equal(t, btcutil.Amount(79_000), proposal.HubOutput)
+}
+
 // TestCooperativeCloseRequiresFullCapacityRoleBalances proves core neither
 // infers nor assigns a balance shortfall supplied by the runtime.
 func TestCooperativeCloseRequiresFullCapacityRoleBalances(t *testing.T) {
@@ -112,6 +129,43 @@ func TestCooperativeCloseRequiresFullCapacityRoleBalances(t *testing.T) {
 		terms, source, request, 39_000, 60_000, 4,
 	)
 	require.ErrorContains(t, err, "do not match capacity")
+}
+
+// TestCooperativeCloseRejectsUnsafeSettlement verifies peers cannot alter a
+// replacement amount or omit the backing reserve.
+func TestCooperativeCloseRejectsUnsafeSettlement(t *testing.T) {
+	t.Parallel()
+
+	terms, source, request, _, _, _ := testCooperativeCloseFixture(
+		t, KindReceiveIntent, 2_000,
+	)
+	template, err := NewCooperativeCloseTemplate(
+		terms, source, request, 40_000, 60_000, 4,
+	)
+	require.NoError(t, err)
+	changed := template.Proposal()
+	changed.ClientOutput++
+	require.ErrorContains(
+		t, changed.Validate(terms, source, request),
+		"not canonical",
+	)
+
+	smallTemplate, err := NewCooperativeCloseTemplate(
+		terms, source, request, 1, terms.Capacity-1, 4,
+	)
+	require.NoError(t, err)
+	smallProposal := smallTemplate.Proposal()
+	require.EqualValues(t, 1, smallProposal.ClientOutput)
+	require.Equal(
+		t, source.Amount,
+		smallProposal.ClientOutput+smallProposal.HubOutput,
+	)
+
+	tooSmall := resizeCooperativeCloseSource(t, source, terms.Capacity)
+	_, err = NewCooperativeCloseTemplate(
+		terms, tooSmall, request, 40_000, 60_000, 4,
+	)
+	require.ErrorContains(t, err, "no backing reserve")
 }
 
 // TestCooperativeCloseRejectsWrongPolicyKey verifies role checking happens

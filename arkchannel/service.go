@@ -100,6 +100,17 @@ func NewService(localParty Party, coordinator *Coordinator,
 	return service, nil
 }
 
+// RegisterReceiveIntent durably reserves a future hub-funded OOR channel.
+func (s *Service) RegisterReceiveIntent(ctx context.Context, terms Terms) (
+	Record, error) {
+
+	if terms.Kind != KindReceiveIntent {
+		return Record{}, fmt.Errorf("receive intent terms are required")
+	}
+
+	return s.coordinator.Request(ctx, terms)
+}
+
 // RegisterPromotion durably records an existing-VTXO channel before either
 // endpoint starts native lnd funding.
 func (s *Service) RegisterPromotion(ctx context.Context, terms Terms) (Record,
@@ -387,11 +398,17 @@ func (s *Service) authorizeEvent(ctx context.Context, id ID, event Event,
 		*OORFinalized, *OORAborted:
 		return s.requireOriginParty(origin, terms.Funder, event)
 
+	case *FundingPeerReady:
+		return s.requireOriginParty(origin, PartyClient, event)
+
 	case *FundingFinalized:
 		return s.requireOriginParty(origin, event.Party, event)
 
 	case *RecoveryPackageInstalled:
 		return s.requireOriginParty(origin, event.Party, event)
+
+	case *ReceiveIntentAbortRequested:
+		return s.requireOriginParty(origin, PartyClient, event)
 
 	case *RequestCooperativeClose, *CooperativeClosePublished,
 		*CooperativeCloseAborted:
