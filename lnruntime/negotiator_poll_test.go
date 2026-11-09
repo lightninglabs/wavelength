@@ -488,6 +488,26 @@ func (s *fundingNegotiationSink) ResumeChannelAction(context.Context,
 	return s.record, nil
 }
 
+// RecordLocalEvent persists a native lnd fact without recursively dispatching
+// the service action, then mirrors it in the component-test sink.
+func (s *fundingWireTestSink) RecordLocalEvent(ctx context.Context,
+	id arkchannel.ID, event arkchannel.Event) (arkchannel.Record, error) {
+
+	if _, err := s.service.RecordLocalEvent(ctx, id, event); err != nil {
+		return arkchannel.Record{}, err
+	}
+
+	return s.mirror.Apply(ctx, id, event)
+}
+
+// ResumeChannelAction delegates replay to the real service used by the wire
+// component test.
+func (s *fundingWireTestSink) ResumeChannelAction(ctx context.Context,
+	id arkchannel.ID) (arkchannel.Record, error) {
+
+	return s.service.ResumeChannelAction(ctx, id)
+}
+
 // TestFundingStatusPollingDoesNotReopenChannel proves repeated successful local
 // status observations cannot recursively dispatch NegotiateFunding while the
 // remote lnd finalization barrier remains false.
@@ -892,3 +912,10 @@ func statusPollCompressedKey(key *btcec.PrivateKey) [33]byte {
 
 	return serialized
 }
+
+var (
+	_ NativeFundingBackend       = (*statusPollFundingBackend)(nil)
+	_ RecoveryCounterparty       = (*statusPollCounterparty)(nil)
+	_ RecoveryExportCounterparty = (*statusPollCounterparty)(nil)
+	_ ChannelRecoveryManager     = (*statusPollRecoveryManager)(nil)
+)
