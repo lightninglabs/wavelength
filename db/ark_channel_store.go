@@ -252,6 +252,10 @@ type arkChannelMutableFields struct {
 	sourceSpentOutpointIndex sql.NullInt64
 	sourceSpendingTxID       []byte
 	backingPublished         bool
+	closeInitiator           sql.NullInt32
+	closeClientScript        []byte
+	closeHubScript           []byte
+	closeFeeRate             sql.NullInt64
 
 	failure sql.NullString
 }
@@ -313,6 +317,20 @@ func mutableArkChannelFields(snapshot arkchannel.Snapshot) (
 			Valid: true,
 		}
 	}
+	if snapshot.CooperativeCloseRequest != nil {
+		request := snapshot.CooperativeCloseRequest
+		fields.closeInitiator = sql.NullInt32{
+			Int32: int32(request.Initiator),
+			Valid: true,
+		}
+		fields.closeClientScript = slices.Clone(
+			request.ClientDeliveryScript,
+		)
+		fields.closeHubScript = slices.Clone(request.HubDeliveryScript)
+		// The column predates in-Ark OOR close semantics. Keep a zero
+		// sentinel so existing databases retain their group constraint.
+		fields.closeFeeRate = sql.NullInt64{Valid: true}
+	}
 
 	return fields, nil
 }
@@ -370,6 +388,10 @@ func insertArkChannelParams(snapshot arkchannel.Snapshot,
 		SourceSpentOutpointIndex: fields.sourceSpentOutpointIndex,
 		SourceSpendingTxid:       fields.sourceSpendingTxID,
 		BackingPublished:         fields.backingPublished,
+		CloseInitiator:           fields.closeInitiator,
+		CloseClientScript:        fields.closeClientScript,
+		CloseHubScript:           fields.closeHubScript,
+		CloseFeeRateSatPerKw:     fields.closeFeeRate,
 
 		Failure:   fields.failure,
 		Revision:  initialArkChannelRevision,
@@ -411,6 +433,10 @@ func compareAndSwapArkChannelParams(snapshot arkchannel.Snapshot, revision,
 		SourceSpentOutpointIndex: fields.sourceSpentOutpointIndex,
 		SourceSpendingTxid:       fields.sourceSpendingTxID,
 		BackingPublished:         fields.backingPublished,
+		CloseInitiator:           fields.closeInitiator,
+		CloseClientScript:        fields.closeClientScript,
+		CloseHubScript:           fields.closeHubScript,
+		CloseFeeRateSatPerKw:     fields.closeFeeRate,
 
 		Failure:   fields.failure,
 		UpdatedAt: now,
@@ -433,10 +459,8 @@ func arkChannelPrePONRStartedAt(snapshot arkchannel.Snapshot,
 // arkChannelRecordFromRow validates one SQL row before exposing it.
 func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 	if row.ClientCloseFinalized || row.ClientCloseSigned ||
-		row.CloseClientBalance.Valid || row.CloseClientScript != nil ||
-		row.CloseCommitmentHeight.Valid ||
-		row.CloseFeeRateSatPerKw.Valid || row.CloseHubBalance.Valid ||
-		row.CloseHubScript != nil || row.CloseInitiator.Valid ||
+		row.CloseClientBalance.Valid ||
+		row.CloseCommitmentHeight.Valid || row.CloseHubBalance.Valid ||
 		row.CooperativeCloseTx != nil ||
 		row.CooperativeCloseTxid != nil || row.HubCloseFinalized ||
 		row.HubCloseSigned {
@@ -564,6 +588,11 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 		return arkchannel.Record{}, err
 	}
 	snapshot.Backing = backing
+	closeRequest, err := arkChannelCloseRequestFromRow(row)
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+	snapshot.CooperativeCloseRequest = closeRequest
 
 	if row.Revision <= 0 {
 		return arkchannel.Record{}, fmt.Errorf("invalid channel "+
@@ -690,6 +719,40 @@ func arkChannelBackingFromRow(row sqlc.ArkChannel) (*arkchannel.Backing,
 			Index: index,
 		},
 	}, nil
+}
+
+// arkChannelCloseRequestFromRow decodes the optional cooperative-close request
+// group.
+func arkChannelCloseRequestFromRow(row sqlc.ArkChannel) (
+	*arkchannel.CooperativeCloseRequest, error) {
+
+	if !row.CloseInitiator.Valid {
+		if len(row.CloseClientScript) != 0 ||
+			len(row.CloseHubScript) != 0 ||
+			row.CloseFeeRateSatPerKw.Valid {
+			return nil, fmt.Errorf("cooperative close request is " +
+				"incomplete")
+		}
+
+		return nil, nil
+	}
+	if len(row.CloseClientScript) == 0 || len(row.CloseHubScript) == 0 ||
+		!row.CloseFeeRateSatPerKw.Valid {
+		return nil, fmt.Errorf("cooperative close request is " +
+			"incomplete")
+	}
+	request := &arkchannel.CooperativeCloseRequest{
+		Initiator: arkchannel.Party(row.CloseInitiator.Int32),
+		ClientDeliveryScript: slices.Clone(
+			row.CloseClientScript,
+		),
+		HubDeliveryScript: slices.Clone(row.CloseHubScript),
+	}
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+
+	return request, nil
 }
 
 // copyFixed rejects corrupt fixed-width SQL blobs.

@@ -268,6 +268,18 @@ func (s *Service) ResumeChannelAction(ctx context.Context, id ID) (Record,
 	return s.coordinator.Get(ctx, id)
 }
 
+// RequestCooperativeClose starts a 3-of-3 OOR spend of an active channel-policy
+// VTXO without materializing the unpublished lnd channel point.
+func (s *Service) RequestCooperativeClose(ctx context.Context, id ID,
+	request CooperativeCloseRequest) (Record, error) {
+
+	return s.ApplyLocalEvent(
+		ctx, id, &RequestCooperativeClose{
+			Request: request,
+		},
+	)
+}
+
 // GetChannel returns the latest durable channel record without executing its
 // pending action. Cross-endpoint coordinators use this after a paired barrier
 // to avoid returning a stale pre-action acknowledgement.
@@ -377,6 +389,9 @@ func (s *Service) authorizeEvent(ctx context.Context, id ID, event Event,
 
 	case *RecoveryPackageInstalled:
 		return s.requireOriginParty(origin, event.Party, event)
+
+	case *RequestCooperativeClose, *CooperativeCloseAborted:
+		return s.requireOriginParty(origin, PartyClient, event)
 
 	case *ChannelActive, *FundingCanceled, *ExpirePrePONR, *Fail,
 		*Materialize, *SourceSpent, *BackingPublished,

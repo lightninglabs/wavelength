@@ -159,6 +159,14 @@ func PendingAction(snapshot Snapshot) (Action, error) {
 			Backing: snapshot.Backing.Clone(),
 		}, nil
 
+	case PhaseCoopClosing:
+		return &NegotiateCooperativeClose{
+			Terms:   snapshot.Terms.Clone(),
+			Source:  snapshot.Source.Clone(),
+			Backing: snapshot.Backing.Clone(),
+			Request: snapshot.CooperativeCloseRequest.Clone(),
+		}, nil
+
 	case PhaseOnChain:
 		if snapshot.SourceConflict != nil {
 			return &ForceCloseChannel{
@@ -242,7 +250,12 @@ func applyEvent(next *Snapshot, event Event) (bool, error) {
 			next.Phase == PhaseOnChain {
 			return false, nil
 		}
-		if next.Phase != PhaseActive {
+		switch next.Phase {
+		case PhaseActive:
+		case PhaseCoopClosing:
+			clearCooperativeClose(next)
+
+		default:
 			return false, fmt.Errorf("cannot materialize "+
 				"channel from %s", next.Phase)
 		}
@@ -260,6 +273,12 @@ func applyEvent(next *Snapshot, event Event) (bool, error) {
 		return applySourceSpent(
 			next, event.OutPoint, event.SpendingTxID,
 		)
+
+	case *RequestCooperativeClose:
+		return applyCooperativeCloseRequest(next, event.Request)
+
+	case *CooperativeCloseAborted:
+		return applyCooperativeCloseAborted(next)
 
 	case *ChannelClosed:
 		if next.Phase == PhaseClosed {
@@ -479,6 +498,10 @@ func applySourceSpent(next *Snapshot, outpoint wire.OutPoint,
 	case PhaseActive:
 		next.Phase = PhaseMaterializing
 
+	case PhaseCoopClosing:
+		clearCooperativeClose(next)
+		next.Phase = PhaseMaterializing
+
 	case PhaseActivating, PhaseMaterializing, PhaseOnChain, PhaseClosed:
 	default:
 		return false, fmt.Errorf("cannot handle source spend from %s",
@@ -527,7 +550,8 @@ func applyChannelActive(next *Snapshot,
 	channelPoint wire.OutPoint) (bool, error) {
 
 	if (next.Phase == PhaseActive || next.Phase == PhaseMaterializing ||
-		next.Phase == PhaseOnChain || next.Phase == PhaseClosed) &&
+		next.Phase == PhaseOnChain || next.Phase == PhaseClosed ||
+		next.Phase == PhaseCoopClosing) &&
 		next.Backing.ChannelPoint == channelPoint {
 		return false, nil
 	}
@@ -581,13 +605,64 @@ func applyBackingObserved(next *Snapshot, txID [32]byte) (bool, error) {
 		return false, nil
 	}
 	switch next.Phase {
-	case PhaseActivating, PhaseActive, PhaseMaterializing:
+	case PhaseActivating, PhaseActive, PhaseMaterializing, PhaseCoopClosing:
 	default:
 		return false, fmt.Errorf("cannot observe backing from %s",
 			next.Phase)
 	}
+	clearCooperativeClose(next)
 	next.BackingPublished = true
 	next.Phase = PhaseOnChain
+
+	return true, nil
+}
+
+// clearCooperativeClose removes an unsigned attempt when backing resolution
+// supersedes negotiation.
+func clearCooperativeClose(next *Snapshot) {
+	next.CooperativeCloseRequest = nil
+}
+
+// applyCooperativeCloseRequest fixes all payout terms before either endpoint
+// quiesces its native lnd link.
+func applyCooperativeCloseRequest(next *Snapshot,
+	request CooperativeCloseRequest) (bool, error) {
+
+	if err := request.Validate(); err != nil {
+		return false, err
+	}
+	if next.CooperativeCloseRequest != nil {
+		if cooperativeCloseRequestsEqual(
+			*next.CooperativeCloseRequest, request,
+		) {
+			return false, nil
+		}
+
+		return false, fmt.Errorf("channel already has another " +
+			"cooperative close request")
+	}
+	if next.Phase != PhaseActive {
+		return false, fmt.Errorf("cannot cooperatively close "+
+			"channel from %s", next.Phase)
+	}
+	clone := request.Clone()
+	next.CooperativeCloseRequest = &clone
+	next.Phase = PhaseCoopClosing
+
+	return true, nil
+}
+
+// applyCooperativeCloseAborted permits recovery of unsigned negotiation.
+func applyCooperativeCloseAborted(next *Snapshot) (bool, error) {
+	if next.Phase == PhaseActive && next.CooperativeCloseRequest == nil {
+		return false, nil
+	}
+	if next.Phase != PhaseCoopClosing {
+		return false, fmt.Errorf("cannot abort cooperative "+
+			"close from %s", next.Phase)
+	}
+	next.CooperativeCloseRequest = nil
+	next.Phase = PhaseActive
 
 	return true, nil
 }
@@ -682,7 +757,8 @@ func validateSnapshot(snapshot Snapshot) error {
 	switch snapshot.Phase {
 	case PhaseRequested, PhaseNegotiating, PhaseBackingReady,
 		PhaseActivating, PhaseActive, PhaseMaterializing,
-		PhaseOnChain, PhaseClosed, PhaseCancelling, PhaseFailed:
+		PhaseOnChain, PhaseClosed, PhaseCancelling, PhaseFailed,
+		PhaseCoopClosing:
 	default:
 		return fmt.Errorf("unknown channel phase %d", snapshot.Phase)
 	}
@@ -718,7 +794,9 @@ func validateSnapshot(snapshot Snapshot) error {
 		snapshot.Phase == PhaseActivating ||
 		snapshot.Phase == PhaseActive ||
 		snapshot.Phase == PhaseMaterializing ||
-		snapshot.Phase == PhaseOnChain || snapshot.Phase == PhaseClosed
+		snapshot.Phase == PhaseOnChain ||
+		snapshot.Phase == PhaseClosed ||
+		snapshot.Phase == PhaseCoopClosing
 	if requiresBacking && !backingReady(snapshot) {
 		return fmt.Errorf("phase %s requires finalized backing",
 			snapshot.Phase)
@@ -737,6 +815,9 @@ func validateSnapshot(snapshot Snapshot) error {
 	if snapshot.BackingPublished && snapshot.Phase != PhaseOnChain &&
 		snapshot.Phase != PhaseClosed {
 		return fmt.Errorf("published backing requires on-chain phase")
+	}
+	if err := validateCooperativeCloseSnapshot(snapshot); err != nil {
+		return err
 	}
 	if (snapshot.ClientRecoveryReady || snapshot.HubRecoveryReady) &&
 		!backingReady(snapshot) {
@@ -790,7 +871,7 @@ func validateSnapshot(snapshot Snapshot) error {
 		}
 
 	case PhaseActivating, PhaseActive, PhaseMaterializing, PhaseOnChain,
-		PhaseClosed:
+		PhaseClosed, PhaseCoopClosing:
 
 		if !snapshot.OORFinalized || snapshot.OORAborted ||
 			!snapshot.RecoveryReady() {
@@ -825,6 +906,32 @@ func validateSnapshot(snapshot Snapshot) error {
 	return nil
 }
 
+// validateCooperativeCloseSnapshot checks ownership fixed before quiescence.
+func validateCooperativeCloseSnapshot(snapshot Snapshot) error {
+	if snapshot.CooperativeCloseRequest != nil {
+		request := snapshot.CooperativeCloseRequest
+		if err := request.Validate(); err != nil {
+			return err
+		}
+	}
+	switch snapshot.Phase {
+	case PhaseCoopClosing:
+		if snapshot.CooperativeCloseRequest == nil {
+			return fmt.Errorf("cooperative closing phase has " +
+				"invalid facts")
+		}
+
+	case PhaseClosed:
+	default:
+		if snapshot.CooperativeCloseRequest != nil {
+			return fmt.Errorf("phase %s has cooperative "+
+				"close facts", snapshot.Phase)
+		}
+	}
+
+	return nil
+}
+
 // backingReady checks the durable prerequisites for committing the OOR source.
 func backingReady(snapshot Snapshot) bool {
 	return snapshot.Source != nil && snapshot.Backing != nil &&
@@ -843,4 +950,12 @@ func bindingsEqual(a, b VTXOBinding) bool {
 func backingsEqual(a, b Backing) bool {
 	return a.ChannelPoint == b.ChannelPoint &&
 		string(a.Transaction) == string(b.Transaction)
+}
+
+// cooperativeCloseRequestsEqual checks immutable payout instructions.
+func cooperativeCloseRequestsEqual(a, b CooperativeCloseRequest) bool {
+	return a.Initiator == b.Initiator &&
+		string(a.ClientDeliveryScript) ==
+			string(b.ClientDeliveryScript) &&
+		string(a.HubDeliveryScript) == string(b.HubDeliveryScript)
 }

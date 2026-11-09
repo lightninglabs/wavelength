@@ -433,6 +433,14 @@ func TestServiceEventAuthorityMatrix(t *testing.T) {
 			eventOriginLocal,
 		},
 		{
+			&RequestCooperativeClose{},
+			eventOriginLocal,
+		},
+		{
+			&CooperativeCloseAborted{},
+			eventOriginLocal,
+		},
+		{
 			&BackingPublished{},
 			eventOriginLocal,
 		},

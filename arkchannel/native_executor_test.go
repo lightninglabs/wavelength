@@ -19,6 +19,7 @@ type nativeExecutorHarness struct {
 	publishedID  ID
 	handedOff    wire.OutPoint
 	forceClosed  wire.OutPoint
+	closeID      ID
 	recoveryID   ID
 	boundSinks   int
 	validations  int
@@ -119,15 +120,25 @@ func (h *nativeExecutorHarness) MaterializeChannel(_ context.Context, id ID,
 	return nil
 }
 
+// NegotiateCooperativeClose records direct close negotiation.
+func (h *nativeExecutorHarness) NegotiateCooperativeClose(_ context.Context,
+	id ID, _ Terms, _ VTXOBinding, _ Backing,
+	_ CooperativeCloseRequest) error {
+
+	h.closeID = id
+
+	return nil
+}
+
 // TestNativeExecutorRoutesOnlySubsystemBoundaries verifies native routing does
 // not duplicate the channel state machine.
 func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
 	t.Parallel()
 	h := &nativeExecutorHarness{}
-	e, err := NewNativeExecutor(PartyClient, h, h, h, h, h, h)
+	e, err := NewNativeExecutor(PartyClient, h, h, h, h, h, h, h)
 	require.NoError(t, err)
 	require.NoError(t, e.BindChannelEventSink(harnessSink{}))
-	require.Equal(t, 3, h.boundSinks)
+	require.Equal(t, 4, h.boundSinks)
 	terms := testTerms(t, KindPromotion)
 	source := testBinding(terms)
 	backing := testBacking(t, terms, source)
@@ -207,7 +218,7 @@ func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
 func TestNativeExecutorFencesOORActionsToFunder(t *testing.T) {
 	t.Parallel()
 	h := &nativeExecutorHarness{}
-	e, err := NewNativeExecutor(PartyHub, h, h, h, h, h, h)
+	e, err := NewNativeExecutor(PartyHub, h, h, h, h, h, h, h)
 	require.NoError(t, err)
 	terms := testTerms(t, KindPromotion)
 	source := testBinding(terms)

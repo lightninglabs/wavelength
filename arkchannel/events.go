@@ -124,6 +124,20 @@ type ChannelClosed struct{}
 
 func (*ChannelClosed) eventSealed() {}
 
+// RequestCooperativeClose fixes the replacement VTXO owners before either lnd
+// endpoint stops accepting new HTLCs.
+type RequestCooperativeClose struct {
+	Request CooperativeCloseRequest
+}
+
+func (*RequestCooperativeClose) eventSealed() {}
+
+// CooperativeCloseAborted returns a pre-signature close attempt to the active
+// phase and permits both lnd links to resume traffic.
+type CooperativeCloseAborted struct{}
+
+func (*CooperativeCloseAborted) eventSealed() {}
+
 // Fail abandons negotiation before the OOR commit action becomes replayable.
 type Fail struct {
 	Reason string
@@ -208,3 +222,14 @@ type ForceCloseChannel struct {
 }
 
 func (*ForceCloseChannel) actionSealed() {}
+
+// NegotiateCooperativeClose quiesces both lnd endpoints and records the hub's
+// signature for an immediate 3-of-3 OOR checkpoint spend.
+type NegotiateCooperativeClose struct {
+	Terms   Terms
+	Source  VTXOBinding
+	Backing Backing
+	Request CooperativeCloseRequest
+}
+
+func (*NegotiateCooperativeClose) actionSealed() {}
