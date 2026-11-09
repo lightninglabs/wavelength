@@ -398,7 +398,11 @@ type Server struct {
 	walletRef           fn.Option[actor.ActorRef[
 		wallet.WalletMsg, wallet.WalletResp,
 	]]
-	oorRegistry       *oor.OORRegistryActor
+	oorRegistry *oor.OORRegistryActor
+	// durableRoundActor owns the opt-in persistent round consumer
+	// lifecycle.
+	durableRoundActor *round.DurableRoundClientActor
+
 	incomingVTXOActor *actor.DurableActor[
 		*vtxo.IncomingVTXOMsg, vtxo.IncomingVTXOResp,
 	]
@@ -1432,6 +1436,18 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 			}
 		}
 
+		if s.durableRoundActor != nil {
+			if err := s.durableRoundActor.StopAndWait(
+				shutdownCtx,
+			); err != nil {
+
+				s.log.WarnS(
+					ctx,
+					"Durable round shutdown failed",
+					err,
+				)
+			}
+		}
 		if s.creditRegistry != nil {
 			s.creditRegistry.Stop()
 		}
@@ -2962,6 +2978,16 @@ func (s *Server) resumeBoardingSweeps(ctx context.Context,
 // startMailboxIngress starts mailbox ingress once all actor dispatch targets
 // have been registered.
 func (s *Server) startMailboxIngress(ctx context.Context) error {
+	if s.cfg != nil && s.cfg.HostDrivenIngress {
+		if !s.cfg.DurableRoundRuntime {
+			return fmt.Errorf("host-driven ingress requires " +
+				"durable round runtime")
+		}
+		s.setServerConnected(false)
+
+		return nil
+	}
+
 	// Mark connected BEFORE starting ingress. An incompatibility that lands
 	// concurrently (e.g. the ingress loop immediately hits a permanent
 	// version error) invokes the compatibility callback, which writes
@@ -3779,6 +3805,17 @@ func (s *Server) registerRoundEventRoutes(router *serverconn.EventRouter) {
 		newProto func() proto.Message,
 		newEvent func() round.ClientEvent) {
 
+		adapt := roundEventAdapt(method, newEvent)
+		if s.cfg.DurableRoundRuntime {
+			adapt = func(payload proto.Message) (
+				actormsg.RoundReceivable, error) {
+
+				return round.NewServerMessageNotification(
+					method, payload, treeOpts...,
+				)
+			}
+		}
+
 		serverconn.AddRoute(
 			router,
 			serverconn.EventRouteConfig[
@@ -3789,7 +3826,7 @@ func (s *Server) registerRoundEventRoutes(router *serverconn.EventRouter) {
 				Method:   method,
 				NewEvent: newProto,
 				Key:      roundKey,
-				Adapt:    roundEventAdapt(method, newEvent),
+				Adapt:    adapt,
 			},
 		)
 	}
@@ -4215,6 +4252,7 @@ func (s *Server) startActorOutboxPublisher(ctx context.Context) error {
 	}
 
 	codec := serverconn.NewServerConnCodec()
+	round.RegisterDurableClientMessages(codec)
 	// The shared publisher decodes serverconn outbox entries and durable
 	// ask responses. MustRegister panics if a future TLV type collides
 	// across those message sets.
@@ -4699,6 +4737,19 @@ func (s *Server) initRoundActor(ctx context.Context,
 		Now:                 s.clk.Now,
 	}
 
+	if s.cfg.DurableRoundRuntime {
+		roundCfg.MaxTreeNodes = s.cfg.Server.MaxTreeNodes
+
+		return nil, s.startDurableRoundActor(ctx, roundCfg)
+	}
+	checkpoint, err := s.deliveryStore.LoadCheckpoint(ctx, roundCfg.Name)
+	if err != nil {
+		return nil, fmt.Errorf("check round runtime ownership: %w", err)
+	}
+	if checkpoint != nil {
+		return nil, fmt.Errorf("wallet has a durable round " +
+			"checkpoint; enable DurableRoundRuntime to resume it")
+	}
 	roundActor, err := round.NewRoundClientActor(
 		roundCfg,
 	).Unpack()

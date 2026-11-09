@@ -9,7 +9,7 @@ A mobile wallet can be terminated after acknowledging a server message. The work
 ## Progress
 
 - [x] (2026-11-06) Fetch current main and inspect #1329, #1504, #1517, and the earlier #1334 consumer prototype.
-- [x] Create isolated worktree `wt-wavelength-mobile-runtime-recovery-20261106` and branch `feat/mobile-runtime-recovery-20261106` from main `b8658164`.
+- [x] Create isolated worktree `wt-wavelength-mobile-runtime-recovery-20261106` and branch `mobile-runtime-recovery-20261106` from main `b8658164`.
 - [x] Isolate #1517's two commits and #1329 as dependency branch `stack/mobile-runtime-prerequisites-20261106`; #1504 is already merged. Dependency tip is `fbac0db6`.
 - [x] Extract additive consumer helpers from #1334 without replacing the current #1517 checkpoint codec or importing its unrelated batch-service protocol.
 - [x] Compile the round package with the extracted runtime and preserve the threaded runner for ordinary actors.
@@ -17,7 +17,8 @@ A mobile wallet can be terminated after acknowledging a server message. The work
 - [x] Prove SQL rollback of attempted effects, retained Tell input, and restart convergence on SQLite and PostgreSQL. Test signing interruption classification, no cold signing replay, timer replacement, absolute scheduling, boarding correlation and deferred ledger capture.
 - [x] Keep full bounded wallet execution and safe-to-suspend reporting in the later host API PR; this PR supplies the persistent consumer and host-driven ingress startup seam.
 - [x] Run formatting, lint (including actorblock), module tidiness, package suites, focused race checks and both real SQL backends.
-- [ ] Publish a separate signed PR whose diff excludes prerequisite commits, request Gateway review, address concrete findings, and verify current-head CI/review.
+- [x] Publish signed implementation PR #1531 with a diff that excludes the copied prerequisites. The published base is `mobile-runtime-prerequisites-20261106`; the original local `stack/` branch remains an alias.
+- [ ] Request Gateway review, address concrete findings, and verify current-head CI/review.
 
 ## Surprises & Discoveries
 
@@ -31,7 +32,7 @@ External signing executes outside the database writer. Before entering a signing
 
 ## Outcomes & Retrospective
 
-The opt-in durable consumer, full owner snapshot, signing fence, and atomic final commit are implemented. SQLite and PostgreSQL restart/rollback tests pass, as do the round, waved, serverconn and actordelivery package suites. Focused race checks pass. Formatting, lint including actorblock, module tidiness and new-file documentation audit pass. Publication and Gateway review are pending. No deployment has occurred.
+The opt-in durable consumer, full owner snapshot, signing fence, and atomic final commit are implemented. SQLite and PostgreSQL restart/rollback tests pass, as do the round, waved, serverconn and actordelivery package suites. Focused race checks pass. Formatting, lint including actorblock, module tidiness and new-file documentation audit pass. Published as #1531. Gateway found retained timers and an expected cold failure push entering retry. Both are fixed with regression coverage; current-head re-review and CI are pending. Read-only round-query snapshot cost is a performance follow-up. No deployment has occurred.
 
 ## Context and Orientation
 
@@ -57,10 +58,29 @@ Use disposable test databases only. Never reset an existing wallet database. An 
 
 ## Artifacts and Notes
 
-Current package suites and focused race checks pass. The SQL test injects failure after a cancellation turn attempts its outbox writes and before the final checkpoint commits. It proves the effect rolls back, the accepted Tell remains queued, and restart commits one reservation release. Synchronous Ask errors retain the native caller-visible failure contract; they are not treated as remote Tell retry. Combined real-store confirmation plus nonempty ledger rollback remains a useful follow-up beyond the covered deferred accounting invariant. Current dependency heads: #1329 `abf6e05b`, #1517 `9430ebe6`, merged #1504 `0187072d`.
+Current package suites and focused race checks pass. The SQL test injects failure after a cancellation turn attempts its outbox writes and before the final checkpoint commits. It proves the effect rolls back, the accepted Tell remains queued, and restart commits one reservation release. Synchronous Ask errors retain the native caller-visible failure contract; they are not treated as remote Tell retry. Combined real-store confirmation plus nonempty ledger rollback remains a useful follow-up beyond the covered deferred accounting invariant. Current dependency heads: #1329 `b244662c`, #1517 `9da005ba`; #1504 is already on main. The review rebuild starts from main `c30beaae` and copies only the current codec and ingress prerequisites.
 
 ## Interfaces and Dependencies
 
 Keep `Runtime.PumpIngress` and `PauseIngress` as the transport primitives. Use `round.NewDurableRoundClientActor`, typed `Ref`, outbox target registration, and a separately owned stop/join lifecycle for persistent round work. Public SDK/mobile method names belong to the subsequent API PR. Use native TLV envelopes for durable payloads; never serialize actor references or Go contexts.
 
 Revision: records the completed runtime adaptation, tested recovery invariants, explicit host API boundary, and remaining publication/review work.
+
+## Review remediation (2026-11-09)
+
+The standalone runtime now separates the typed service name
+`round-client-service` from its persisted mailbox and outbox address
+`round-client`. The SQL restart/rollback fixture uses that production name
+and asserts the names differ.
+
+Current main adds replacement-round lineage and retry self-messages that the
+durable owner cannot yet checkpoint. Durable effect capture therefore freezes
+`SupportsRoundRetry: false` before persisting join requests. Ordinary clients
+retain retry support. A regression checks both the initial effect and replay,
+plus the original ordinary request. Complete replacement-round persistence
+belongs to a separate change.
+
+The codec prerequisite already writes record version 2, preserves composed
+boarding authorization, and accepts legacy Bitcoin version 1 records. The
+runtime branch carries no duplicate codec fix commits. No merge or deployment
+is part of this remediation.
