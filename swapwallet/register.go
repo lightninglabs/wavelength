@@ -109,6 +109,11 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 	runtime := newRuntime(ctx, deps)
 	service := newService(deps, runtime)
 	inspectionService := newInspectionService(deps, runtime)
+	if rpcServer != nil {
+		rpcServer.RegisterLightningReceiptLookup(
+			runtime.lookupLightningReceipt,
+		)
+	}
 
 	// Wire the prepared-send store into the credit auto-redeem interlock
 	// now that the service (and its store) exists, so the sweep subtracts
@@ -137,6 +142,7 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 			// Start background goroutines after resume so
 			// subscribers observe a runtime that owns any
 			// wallet-local pending rows it just restored.
+			//nolint:contextcheck // Daemon-owned runtime.
 			runtime.start()
 		})
 
@@ -144,6 +150,9 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 	})
 
 	cleanup := func() {
+		if rpcServer != nil {
+			rpcServer.RegisterLightningReceiptLookup(nil)
+		}
 		runtime.stop()
 	}
 
