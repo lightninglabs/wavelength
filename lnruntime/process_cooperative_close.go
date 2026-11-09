@@ -491,6 +491,431 @@ func (p *ClientCooperativeCloseProcess) stateService() (
 	return p.service, nil
 }
 
+// HubCooperativeCloseProcess owns the operator endpoint's local actions. It
+// never calls the client while serving a client request.
+type HubCooperativeCloseProcess struct {
+	local    *NativeCooperativeCloseEndpoint
+	delivery CooperativeCloseDeliverySource
+	observer CooperativeCloseObserver
+	defender CooperativeCloseDefender
+
+	mu      sync.RWMutex
+	service CooperativeCloseStateSink
+	locks   cooperativeCloseOperationLock
+}
+
+// NewHubCooperativeCloseProcess constructs the hub-owned close process.
+func NewHubCooperativeCloseProcess(local *NativeCooperativeCloseEndpoint,
+	delivery CooperativeCloseDeliverySource,
+	observer CooperativeCloseObserver,
+	defender CooperativeCloseDefender) (*HubCooperativeCloseProcess,
+	error) {
+
+	if local == nil || local.party != arkchannel.PartyHub {
+		return nil, fmt.Errorf("hub cooperative close endpoint is " +
+			"required")
+	}
+	if delivery == nil {
+		return nil, fmt.Errorf("hub cooperative close delivery " +
+			"source is required")
+	}
+	if observer == nil {
+		return nil, fmt.Errorf("hub cooperative close observer is " +
+			"required")
+	}
+	if defender == nil {
+		return nil, fmt.Errorf("hub cooperative close defender is " +
+			"required")
+	}
+
+	return &HubCooperativeCloseProcess{
+		local: local, delivery: delivery, observer: observer,
+		defender: defender,
+	}, nil
+}
+
+// BindChannelEventSink attaches the process to its durable channel service.
+func (p *HubCooperativeCloseProcess) BindChannelEventSink(
+	sink arkchannel.ChannelEventSink) error {
+
+	service, ok := sink.(CooperativeCloseStateSink)
+	if !ok {
+		return fmt.Errorf("channel event sink lacks close barriers")
+	}
+	if err := p.local.BindChannelEventSink(sink); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.service == nil {
+		p.service = service
+	}
+
+	return nil
+}
+
+// BeginCooperativeClose allocates the hub payout exactly once, persists the
+// request, and returns the hub's authoritative clean channel state.
+func (p *HubCooperativeCloseProcess) BeginCooperativeClose(ctx context.Context,
+	id arkchannel.ID, clientScript []byte) (
+	arkchannel.CooperativeCloseRequest, CleanChannelState,
+	*arkchannel.CooperativeClose, error) {
+
+	unlock := p.locks.lock(id)
+	defer unlock()
+
+	service, err := p.stateService()
+	if err != nil {
+		return arkchannel.CooperativeCloseRequest{},
+			CleanChannelState{}, nil, err
+	}
+	record, err := service.GetChannel(ctx, id)
+	if err != nil {
+		return arkchannel.CooperativeCloseRequest{},
+			CleanChannelState{}, nil, err
+	}
+	var request arkchannel.CooperativeCloseRequest
+	if record.Snapshot.CooperativeCloseRequest != nil {
+		request = record.Snapshot.CooperativeCloseRequest.Clone()
+		if !bytes.Equal(request.ClientDeliveryScript, clientScript) {
+			return arkchannel.CooperativeCloseRequest{},
+				CleanChannelState{}, nil, fmt.Errorf(
+					"channel already has another " +
+						"cooperative close request")
+		}
+	} else {
+		hubScript, err := p.delivery.CooperativeCloseDelivery(ctx, id)
+		if err != nil {
+			return arkchannel.CooperativeCloseRequest{},
+				CleanChannelState{}, nil, fmt.Errorf(
+					"allocate hub close delivery: %w", err)
+		}
+		request = arkchannel.CooperativeCloseRequest{
+			Initiator: arkchannel.PartyClient,
+			ClientDeliveryScript: append(
+				[]byte(nil), clientScript...,
+			),
+			HubDeliveryScript: append([]byte(nil), hubScript...),
+		}
+		if _, err := service.RecordPeerEvent(
+			ctx, id, &arkchannel.RequestCooperativeClose{
+				Request: request,
+			},
+		); err != nil {
+			return arkchannel.CooperativeCloseRequest{},
+				CleanChannelState{}, nil, err
+		}
+		record, err = service.GetChannel(ctx, id)
+		if err != nil {
+			return arkchannel.CooperativeCloseRequest{},
+				CleanChannelState{}, nil, err
+		}
+	}
+	if record.Snapshot.Source == nil || record.Snapshot.Backing == nil {
+		return arkchannel.CooperativeCloseRequest{}, CleanChannelState{}, //nolint:ll
+			nil, fmt.Errorf("hub cooperative close artifacts are " +
+				"incomplete")
+	}
+	cleanState, err := p.local.QuiesceCooperativeClose(
+		ctx, id, record.Snapshot.Terms, *record.Snapshot.Source,
+		*record.Snapshot.Backing, request,
+	)
+	if err != nil {
+		return arkchannel.CooperativeCloseRequest{}, CleanChannelState{}, //nolint:ll
+			nil, err
+	}
+	var settlement *arkchannel.CooperativeClose
+	if record.Snapshot.CooperativeClose != nil {
+		closeCopy := record.Snapshot.CooperativeClose.Clone()
+		settlement = &closeCopy
+	}
+
+	return request, cleanState, settlement, nil
+}
+
+// CompleteCooperativeClose assembles and stores the three-signature spend.
+func (p *HubCooperativeCloseProcess) CompleteCooperativeClose(
+	ctx context.Context, id arkchannel.ID,
+	proposal arkchannel.CooperativeCloseProposal) (
+	arkchannel.CooperativeClose, error) {
+
+	unlock := p.locks.lock(id)
+	defer unlock()
+
+	service, err := p.stateService()
+	if err != nil {
+		return arkchannel.CooperativeClose{}, err
+	}
+	record, err := service.GetChannel(ctx, id)
+	if err != nil {
+		return arkchannel.CooperativeClose{}, err
+	}
+	if record.Snapshot.Source == nil || record.Snapshot.Backing == nil ||
+		record.Snapshot.CooperativeCloseRequest == nil {
+		return arkchannel.CooperativeClose{}, fmt.Errorf("hub " +
+			"cooperative close artifacts are incomplete")
+	}
+
+	return completeCooperativeClose(
+		ctx, p.local, id, record.Snapshot.Terms,
+		*record.Snapshot.Source, *record.Snapshot.Backing,
+		*record.Snapshot.CooperativeCloseRequest, proposal,
+	)
+}
+
+// AcknowledgeCooperativeCloseSigned records that the client durably stored the
+// same hub-authorized OOR close.
+func (p *HubCooperativeCloseProcess) AcknowledgeCooperativeCloseSigned(
+	ctx context.Context, id arkchannel.ID,
+	settlement arkchannel.CooperativeClose) error {
+
+	unlock := p.locks.lock(id)
+	defer unlock()
+
+	service, err := p.stateService()
+	if err != nil {
+		return err
+	}
+	_, err = service.RecordPeerEvent(
+		ctx, id, &arkchannel.CooperativeCloseSigned{
+			Close: settlement, Party: arkchannel.PartyClient,
+		},
+	)
+
+	return err
+}
+
+// PublishCooperativeClose accepts the client-confirmed OOR session and archives
+// the hub's native channel before replying.
+func (p *HubCooperativeCloseProcess) PublishCooperativeClose(
+	ctx context.Context, id arkchannel.ID, txID chainhash.Hash) (
+	chainhash.Hash, error) {
+
+	unlock := p.locks.lock(id)
+	defer unlock()
+
+	service, err := p.stateService()
+	if err != nil {
+		return chainhash.Hash{}, err
+	}
+	record, err := service.GetChannel(ctx, id)
+	if err != nil {
+		return chainhash.Hash{}, err
+	}
+	if record.Snapshot.CooperativeClose == nil {
+		return chainhash.Hash{}, fmt.Errorf("hub has no signed " +
+			"cooperative close")
+	}
+	if record.Snapshot.CooperativeClose.TxID != txID {
+		return chainhash.Hash{}, fmt.Errorf("client finalized " +
+			"another cooperative close")
+	}
+	if record.Snapshot.CooperativeClose.Proposal.HubOutput > 0 {
+		if err := p.observer.WaitForCooperativeClose(
+			ctx, txID,
+			record.Snapshot.CooperativeClose.Proposal.HubOutput,
+		); err != nil {
+			return chainhash.Hash{}, fmt.Errorf("observe "+
+				"cooperative close OOR: %w", err)
+		}
+	}
+	if record.Snapshot.Phase == arkchannel.PhaseCoopCloseSigned {
+		if _, err := service.RecordPeerEvent(
+			ctx, id, &arkchannel.CooperativeClosePublished{
+				TxID: txID,
+			},
+		); err != nil {
+			return chainhash.Hash{}, err
+		}
+	}
+	record, err = service.GetChannel(ctx, id)
+	if err != nil {
+		return chainhash.Hash{}, err
+	}
+	if !record.Snapshot.HubCloseFinalized {
+		if _, err := service.ResumeChannelAction(ctx, id); err != nil {
+			return chainhash.Hash{}, err
+		}
+	}
+
+	return txID, nil
+}
+
+// AcknowledgeCooperativeCloseFinalized records client-side channel archival.
+func (p *HubCooperativeCloseProcess) AcknowledgeCooperativeCloseFinalized(
+	ctx context.Context, id arkchannel.ID) error {
+
+	unlock := p.locks.lock(id)
+	defer unlock()
+
+	service, err := p.stateService()
+	if err != nil {
+		return err
+	}
+	_, err = service.RecordPeerEvent(
+		ctx, id, &arkchannel.CooperativeCloseFinalized{
+			Party: arkchannel.PartyClient,
+		},
+	)
+
+	return err
+}
+
+// AbortCooperativeClose restores the hub link before signatures exist.
+func (p *HubCooperativeCloseProcess) AbortCooperativeClose(ctx context.Context,
+	id arkchannel.ID) error {
+
+	unlock := p.locks.lock(id)
+	defer unlock()
+
+	service, err := p.stateService()
+	if err != nil {
+		return err
+	}
+	record, err := service.GetChannel(ctx, id)
+	if err != nil {
+		return err
+	}
+	if record.Snapshot.CooperativeClose != nil {
+		return fmt.Errorf("cannot abort a signed cooperative close")
+	}
+	if record.Snapshot.Backing == nil {
+		return fmt.Errorf("hub cooperative close backing is missing")
+	}
+	p.local.ResumeCooperativeClose(*record.Snapshot.Backing)
+	_, err = service.RecordPeerEvent(
+		ctx, id, &arkchannel.CooperativeCloseAborted{},
+	)
+
+	return err
+}
+
+// NegotiateCooperativeClose performs only the hub-local quiescence action.
+func (p *HubCooperativeCloseProcess) NegotiateCooperativeClose(
+	ctx context.Context, id arkchannel.ID, terms arkchannel.Terms,
+	source arkchannel.VTXOBinding, backing arkchannel.Backing,
+	request arkchannel.CooperativeCloseRequest) error {
+
+	_, err := p.local.QuiesceCooperativeClose(
+		ctx, id, terms, source, backing, request,
+	)
+
+	return err
+}
+
+// FinalizeCooperativeClose archives the hub-local channel and records its
+// acknowledgement without a nested client RPC.
+func (p *HubCooperativeCloseProcess) FinalizeCooperativeClose(
+	ctx context.Context, id arkchannel.ID, terms arkchannel.Terms,
+	backing arkchannel.Backing, source arkchannel.VTXOBinding,
+	request arkchannel.CooperativeCloseRequest,
+	settlement arkchannel.CooperativeClose) error {
+
+	if err := p.local.finalize(
+		terms, backing, source, request, settlement,
+	); err != nil {
+		return err
+	}
+	service, err := p.stateService()
+	if err != nil {
+		return err
+	}
+	_, err = service.RecordLocalEvent(
+		ctx, id, &arkchannel.CooperativeCloseFinalized{
+			Party: arkchannel.PartyHub,
+		},
+	)
+
+	return err
+}
+
+// DefendCooperativeClose starts ordinary wallet recovery for the exact hub
+// replacement VTXO after a closed channel's source ancestry is spent.
+func (p *HubCooperativeCloseProcess) DefendCooperativeClose(ctx context.Context,
+	id arkchannel.ID, terms arkchannel.Terms, source arkchannel.VTXOBinding,
+	settlement arkchannel.CooperativeClose) error {
+
+	unlock := p.locks.lock(id)
+	defer unlock()
+
+	service, err := p.stateService()
+	if err != nil {
+		return err
+	}
+	record, err := service.GetChannel(ctx, id)
+	if err != nil {
+		return err
+	}
+	snapshot := record.Snapshot
+	if snapshot.SourceConflict == nil {
+		return nil
+	}
+	if snapshot.Phase != arkchannel.PhaseClosed ||
+		snapshot.CooperativeCloseRequest == nil ||
+		snapshot.CooperativeClose == nil {
+		return fmt.Errorf("cooperative close defense state is " +
+			"incomplete")
+	}
+	if snapshot.CooperativeClose.TxID != settlement.TxID {
+		return fmt.Errorf("cooperative close defense settlement " +
+			"changed")
+	}
+	if settlement.Proposal.HubOutput == 0 {
+		return nil
+	}
+	outpoint, err := settlement.ReplacementOutPoint(
+		terms, source, *snapshot.CooperativeCloseRequest,
+		arkchannel.PartyHub,
+	)
+	if err != nil {
+		return fmt.Errorf("derive hub cooperative close "+
+			"replacement: %w", err)
+	}
+	if err := p.defender.DefendCooperativeClose(ctx, outpoint); err != nil {
+		return fmt.Errorf("defend hub cooperative close "+
+			"replacement: %w", err)
+	}
+
+	return nil
+}
+
+// stateService returns the bound durable channel FSM service.
+func (p *HubCooperativeCloseProcess) stateService() (CooperativeCloseStateSink,
+	error) {
+
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.service == nil {
+		return nil, fmt.Errorf("hub cooperative close service is not " +
+			"bound")
+	}
+
+	return p.service, nil
+}
+
+// HubCooperativeCloseExecutor adapts the process to NativeExecutor without
+// overloading the legacy peer-facing PublishCooperativeClose method name.
+type HubCooperativeCloseExecutor struct {
+	*HubCooperativeCloseProcess
+}
+
+// PublishCooperativeClose defers initial OOR submission to the client. If the
+// same durable action is emitted after the close because old source ancestry
+// appeared, it instead protects the hub's replacement through its wallet.
+func (e *HubCooperativeCloseExecutor) PublishCooperativeClose(
+	ctx context.Context, id arkchannel.ID, terms arkchannel.Terms,
+	source arkchannel.VTXOBinding,
+	settlement arkchannel.CooperativeClose) error {
+
+	return e.DefendCooperativeClose(
+		ctx, id, terms, source, settlement,
+	)
+}
+
+var _ arkchannel.ChannelCooperativeCloser = (*ClientCooperativeCloseProcess)(nil) //nolint:ll
+
+var _ arkchannel.ChannelCooperativeCloser = (*HubCooperativeCloseExecutor)(nil)
+
 // processCooperativeCloseRequestsEqual compares every negotiated close term.
 func processCooperativeCloseRequestsEqual(
 	a, b arkchannel.CooperativeCloseRequest) bool {
