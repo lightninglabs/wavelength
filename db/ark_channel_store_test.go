@@ -159,6 +159,75 @@ func TestArkChannelStoreRejectsDuplicateProtocolBindings(t *testing.T) {
 	})
 }
 
+// TestArkChannelStoreCooperativeCloseRoundTrip verifies the compact SQL facts
+// reconstruct and validate the exact hub-authorized OOR close.
+func TestArkChannelStoreCooperativeCloseRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	store := newArkChannelStoreForTest(t)
+	coordinator, err := arkchannel.NewCoordinator(store)
+	require.NoError(t, err)
+	terms := testArkChannelTerms(t, arkchannel.KindPromotion, 8)
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	hubKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	terms.VTXO.ClientArkKey = testArkChannelCompressedKey(clientKey)
+	terms.VTXO.HubArkKey = testArkChannelCompressedKey(hubKey)
+	terms.VTXO.ArkOperatorKey = testArkChannelCompressedKey(operatorKey)
+	binding := testArkChannelBinding(terms)
+	backing := testArkChannelBacking(t, terms, binding)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	for _, event := range []arkchannel.Event{
+		&arkchannel.BindVTXO{
+			Binding: binding,
+		},
+		&arkchannel.BackingSigned{
+			Backing: backing,
+		},
+		&arkchannel.FundingFinalized{
+			Party: arkchannel.PartyClient,
+		},
+		&arkchannel.FundingFinalized{
+			Party: arkchannel.PartyHub,
+		},
+		&arkchannel.OORFinalized{
+			SessionID: binding.OORSessionID,
+		},
+		&arkchannel.RecoveryPackageInstalled{
+			Party: arkchannel.PartyClient,
+		},
+		&arkchannel.RecoveryPackageInstalled{
+			Party: arkchannel.PartyHub,
+		},
+		&arkchannel.ChannelActive{
+			ChannelPointHash:  backing.ChannelPoint.Hash,
+			ChannelPointIndex: backing.ChannelPoint.Index,
+		},
+	} {
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+	request := arkchannel.CooperativeCloseRequest{
+		Initiator:            arkchannel.PartyClient,
+		ClientDeliveryScript: clientKey.PubKey().SerializeCompressed(),
+		HubDeliveryScript:    hubKey.PubKey().SerializeCompressed(),
+	}
+	_, _, err = coordinator.Apply(
+		t.Context(), terms.ID, &arkchannel.RequestCooperativeClose{
+			Request: request,
+		},
+	)
+	require.NoError(t, err)
+	loaded, err := store.Get(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, arkchannel.PhaseCoopClosing, loaded.Snapshot.Phase)
+	require.Equal(t, request, *loaded.Snapshot.CooperativeCloseRequest)
+}
+
 // TestArkChannelStoreNotFound verifies the shared coordinator sentinel.
 func TestArkChannelStoreNotFound(t *testing.T) {
 	t.Parallel()
@@ -340,4 +409,12 @@ func testArkChannelBackingSignature(t *testing.T,
 	require.NoError(t, err)
 
 	return sig
+}
+
+// testArkChannelCompressedKey encodes one policy key.
+func testArkChannelCompressedKey(key *btcec.PrivateKey) [33]byte {
+	var encoded [33]byte
+	copy(encoded[:], key.PubKey().SerializeCompressed())
+
+	return encoded
 }

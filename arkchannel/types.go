@@ -105,6 +105,9 @@ const (
 	PhaseCancelling Phase = 9
 	// PhaseFailed means pre-commit abandonment and cleanup are complete.
 	PhaseFailed Phase = 10
+	// PhaseCoopClosing means replacement owners are fixed before
+	// quiescence.
+	PhaseCoopClosing Phase = 11
 )
 
 // String returns the durable name of a coordination phase.
@@ -139,6 +142,9 @@ func (p Phase) String() string {
 
 	case PhaseFailed:
 		return "failed"
+
+	case PhaseCoopClosing:
+		return "coop_closing"
 
 	default:
 		return "unknown"
@@ -424,20 +430,21 @@ func (b Backing) Validate(terms Terms, source VTXOBinding) error {
 
 // Snapshot is the complete Ark-owned durable state for one channel.
 type Snapshot struct {
-	Terms                 Terms
-	Phase                 Phase
-	OORPreparationStarted bool
-	Source                *VTXOBinding
-	Backing               *Backing
-	ClientFinalized       bool
-	HubFinalized          bool
-	OORFinalized          bool
-	OORAborted            bool
-	ClientRecoveryReady   bool
-	HubRecoveryReady      bool
-	SourceConflict        *SourceConflict
-	BackingPublished      bool
-	Failure               string
+	Terms                   Terms
+	Phase                   Phase
+	OORPreparationStarted   bool
+	Source                  *VTXOBinding
+	Backing                 *Backing
+	ClientFinalized         bool
+	HubFinalized            bool
+	OORFinalized            bool
+	OORAborted              bool
+	ClientRecoveryReady     bool
+	HubRecoveryReady        bool
+	SourceConflict          *SourceConflict
+	BackingPublished        bool
+	CooperativeCloseRequest *CooperativeCloseRequest
+	Failure                 string
 }
 
 // Clone returns a snapshot without aliases to mutable fields.
@@ -454,6 +461,10 @@ func (s Snapshot) Clone() Snapshot {
 	if s.SourceConflict != nil {
 		conflict := *s.SourceConflict
 		s.SourceConflict = &conflict
+	}
+	if s.CooperativeCloseRequest != nil {
+		request := s.CooperativeCloseRequest.Clone()
+		s.CooperativeCloseRequest = &request
 	}
 
 	return s

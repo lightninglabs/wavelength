@@ -90,6 +90,13 @@ type ChannelForceCloser interface {
 	EnsureForceCloseChannel(wire.OutPoint) error
 }
 
+// ChannelCooperativeCloser quiesces native endpoints for fixed replacement
+// ownership before authorizing an ordinary OOR close.
+type ChannelCooperativeCloser interface {
+	NegotiateCooperativeClose(context.Context, ID, Terms, VTXOBinding,
+		Backing, CooperativeCloseRequest) error
+}
+
 // NativeExecutor routes durable Ark actions into native subsystems.
 type NativeExecutor struct {
 	localParty   Party
@@ -99,13 +106,15 @@ type NativeExecutor struct {
 	materializer ChannelMaterializer
 	handoff      ChannelOnchainHandoff
 	forceCloser  ChannelForceCloser
+	closer       ChannelCooperativeCloser
 }
 
 // NewNativeExecutor constructs the thin native subsystem adapter.
 func NewNativeExecutor(localParty Party, funding VirtualFundingActivator,
 	negotiator FundingNegotiator, oor OORTransferController,
 	materializer ChannelMaterializer, handoff ChannelOnchainHandoff,
-	forceCloser ChannelForceCloser) (*NativeExecutor, error) {
+	forceCloser ChannelForceCloser,
+	closer ChannelCooperativeCloser) (*NativeExecutor, error) {
 
 	if localParty != PartyClient && localParty != PartyHub {
 		return nil, fmt.Errorf("local channel party is required")
@@ -122,6 +131,9 @@ func NewNativeExecutor(localParty Party, funding VirtualFundingActivator,
 	if forceCloser == nil {
 		return nil, fmt.Errorf("channel force closer is required")
 	}
+	if closer == nil {
+		return nil, fmt.Errorf("channel cooperative closer is required")
+	}
 
 	return &NativeExecutor{
 		localParty:   localParty,
@@ -131,6 +143,7 @@ func NewNativeExecutor(localParty Party, funding VirtualFundingActivator,
 		materializer: materializer,
 		handoff:      handoff,
 		forceCloser:  forceCloser,
+		closer:       closer,
 	}, nil
 }
 
@@ -191,6 +204,12 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 			action.Backing.ChannelPoint,
 		)
 
+	case *NegotiateCooperativeClose:
+		return e.closer.NegotiateCooperativeClose(
+			ctx, id, action.Terms, action.Source, action.Backing,
+			action.Request,
+		)
+
 	case *PublishChannel:
 		if err := e.handoff.HandoffChannel(
 			action.Backing.ChannelPoint,
@@ -213,7 +232,12 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 // BindChannelEventSink connects native observations to the durable service.
 func (e *NativeExecutor) BindChannelEventSink(sink ChannelEventSink) error {
 	var bindErrors []error
-	for _, component := range []any{e.negotiator, e.oor, e.materializer} {
+	for _, component := range []any{
+		e.negotiator,
+		e.oor,
+		e.materializer,
+		e.closer,
+	} {
 		if component == nil {
 			continue
 		}

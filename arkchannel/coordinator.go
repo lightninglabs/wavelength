@@ -304,6 +304,16 @@ func snapshotsEqual(a, b Snapshot) bool {
 	if a.SourceConflict != nil && *a.SourceConflict != *b.SourceConflict {
 		return false
 	}
+	if (a.CooperativeCloseRequest == nil) !=
+		(b.CooperativeCloseRequest == nil) {
+		return false
+	}
+	if a.CooperativeCloseRequest != nil &&
+		!cooperativeCloseRequestsEqual(
+			*a.CooperativeCloseRequest, *b.CooperativeCloseRequest,
+		) {
+		return false
+	}
 	if a.Phase != b.Phase ||
 		a.OORPreparationStarted != b.OORPreparationStarted ||
 		a.BackingPublished != b.BackingPublished ||

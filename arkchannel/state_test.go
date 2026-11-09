@@ -290,6 +290,30 @@ func TestSourceConflictDuringActivationFinishesActivationFirst(t *testing.T) {
 	require.IsType(t, &PublishChannel{}, requireOneAction(t, actions))
 }
 
+// TestCooperativeCloseAbortReturnsActive proves a failure before the signed
+// transaction is durable does not strand a quiesced channel.
+func TestCooperativeCloseAbortReturnsActive(t *testing.T) {
+	t.Parallel()
+
+	terms, source, request, _, _, _ := testCooperativeCloseFixture(
+		t, KindPromotion, 5_000,
+	)
+	coordinator := activeCooperativeChannel(t, terms, source)
+	_, _, err := coordinator.Apply(
+		t.Context(), terms.ID, &RequestCooperativeClose{
+			Request: request,
+		},
+	)
+	require.NoError(t, err)
+	record, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, &CooperativeCloseAborted{},
+	)
+	require.NoError(t, err)
+	require.Empty(t, actions)
+	require.Equal(t, PhaseActive, record.Snapshot.Phase)
+	require.Nil(t, record.Snapshot.CooperativeCloseRequest)
+}
+
 // TestOORChannelCanAbortBeforePONR proves a definitively failed prepared
 // transfer releases its source before lnd funding is canceled.
 func TestOORChannelCanAbortBeforePONR(t *testing.T) {
