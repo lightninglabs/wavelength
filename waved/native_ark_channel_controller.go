@@ -5,11 +5,15 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightninglabs/wavelength/lnruntime"
+	"github.com/lightningnetwork/lnd/chanstate"
+	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -29,10 +33,14 @@ var (
 
 // NativeArkChannelController owns one Ark FSM and one modular lnd endpoint.
 type NativeArkChannelController struct {
-	cfg      ArkChannelControllerConfig
-	peerInfo lnruntime.FundingPeerInfo
-	keys     nativeArkChannelKeys
+	cfg         ArkChannelControllerConfig
+	coordinator *arkchannel.Coordinator
+	peerInfo    lnruntime.FundingPeerInfo
+	keys        nativeArkChannelKeys
+	service     *arkchannel.Service
 }
+
+var _ contractcourt.AuxChannelLifecycle = (*NativeArkChannelController)(nil)
 
 // nativeArkChannelKeys are fixed wallet roles restored by locator on restart.
 type nativeArkChannelKeys struct {
@@ -131,6 +139,96 @@ func shouldResumeOnchainArkChannel(snapshot arkchannel.Snapshot) bool {
 	return snapshot.Phase == arkchannel.PhaseOnChain
 }
 
+// ChainWatchOwner reports whether lnd or the Ark lifecycle currently owns
+// chain observation for a channel.
+func (c *NativeArkChannelController) ChainWatchOwner(ctx context.Context,
+	channel *chanstate.OpenChannel) (contractcourt.ChainWatchOwner, error) {
+
+	record, err := c.coordinator.FindByChannelPoint(
+		ctx, channel.FundingOutpoint,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("load Ark channel lifecycle: %w", err)
+	}
+
+	if shouldWatchArkChannel(record.Snapshot.Phase) {
+		return contractcourt.ChainWatchOwnerLnd, nil
+	}
+
+	return contractcourt.ChainWatchOwnerAux, nil
+}
+
+// PrepareCommitmentPublish materializes the Ark backing before lnd publishes
+// a commitment transaction.
+func (c *NativeArkChannelController) PrepareCommitmentPublish(
+	ctx context.Context, channelPoint wire.OutPoint) error {
+
+	return c.materializeBeforeCommitment(ctx, channelPoint)
+}
+
+const arkChannelFinalizationRetry = time.Second
+
+// WaitForChannelFinalization durably records lnd's terminal channel state.
+// The Ark owner retains retry policy so lnd only provides the cancellation and
+// ordering boundary.
+func (c *NativeArkChannelController) WaitForChannelFinalization(
+	ctx context.Context, channelPoint wire.OutPoint) error {
+
+	for {
+		err := c.recordFullyResolvedChannel(ctx, channelPoint)
+		if err == nil {
+			return nil
+		}
+
+		if c.cfg.Log != nil {
+			c.cfg.Log.WarnS(ctx, "Unable to finalize Ark channel",
+				err,
+				btclog.Fmt("channel_point", "%v", channelPoint),
+			)
+		}
+
+		timer := time.NewTimer(arkChannelFinalizationRetry)
+		select {
+		case <-timer.C:
+			continue
+
+		case <-ctx.Done():
+			timer.Stop()
+
+			return ctx.Err()
+		}
+	}
+}
+
+// materializeBeforeCommitment blocks lnd's local commitment publication until
+// either recovery-ready endpoint has durably published the exact backing.
+func (c *NativeArkChannelController) materializeBeforeCommitment(
+	ctx context.Context, channelPoint wire.OutPoint) error {
+
+	record, err := c.coordinator.FindByChannelPoint(ctx, channelPoint)
+	if err != nil {
+		return fmt.Errorf("load channel publication lifecycle: %w", err)
+	}
+	if record.Snapshot.Phase == arkchannel.PhaseOnChain {
+		return nil
+	}
+	if c.service == nil {
+		return fmt.Errorf("Ark channel service is not ready")
+	}
+	record, err = c.service.Materialize(
+		ctx, record.Snapshot.Terms.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("materialize channel backing: %w", err)
+	}
+	if record.Snapshot.Phase != arkchannel.PhaseOnChain {
+		return fmt.Errorf("channel backing stopped in phase %s",
+			record.Snapshot.Phase)
+	}
+
+	return nil
+}
+
 // shouldWatchArkChannel reports whether lnd must own the channel's chain and
 // contract lifecycle. An unpublished outpoint remains dormant, while an
 // observed publication can be handled without first contacting the peer.
@@ -160,6 +258,48 @@ func shouldRestoreArkChannelAddsDisabled(phase arkchannel.Phase) bool {
 	default:
 		return false
 	}
+}
+
+// recordFullyResolvedChannel advances the Ark FSM only after lnd has resolved
+// and swept every output. Chain evidence can recover a peer that never
+// received the initiating endpoint's materialization transition.
+func (c *NativeArkChannelController) recordFullyResolvedChannel(
+	ctx context.Context, channelPoint wire.OutPoint) error {
+
+	record, err := c.coordinator.FindByChannelPoint(ctx, channelPoint)
+	if err != nil {
+		return err
+	}
+	switch record.Snapshot.Phase {
+	case arkchannel.PhaseActivating, arkchannel.PhaseActive,
+		arkchannel.PhaseMaterializing,
+		arkchannel.PhaseCoopClosing,
+		arkchannel.PhaseCoopCloseSigned:
+
+		record, _, err = c.coordinator.Apply(
+			ctx, record.Snapshot.Terms.ID,
+			&arkchannel.BackingObserved{
+				TxID: channelPoint.Hash,
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+	case arkchannel.PhaseOnChain:
+	case arkchannel.PhaseClosed:
+		return nil
+
+	default:
+		return fmt.Errorf("cannot resolve on-chain channel from %s",
+			record.Snapshot.Phase)
+	}
+
+	_, _, err = c.coordinator.Apply(
+		ctx, record.Snapshot.Terms.ID, &arkchannel.ChannelClosed{},
+	)
+
+	return err
 }
 
 // newPromotionTerms creates stable protocol identifiers and binds every key
