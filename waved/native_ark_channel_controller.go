@@ -12,6 +12,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
@@ -2778,6 +2779,121 @@ func (c *NativeArkChannelController) AbandonReceiveIntent(ctx context.Context,
 	}
 }
 
+// MaterializeAndForceClose asks lnd to force close. Its blocking publication
+// barrier materializes the client-funded backing first, while the peer learns
+// the lifecycle only from its already armed chain watcher.
+func (c *NativeArkChannelController) MaterializeAndForceClose(
+	ctx context.Context, id arkchannel.ID) (arkchannel.Record,
+	chainhash.Hash, chainhash.Hash, error) {
+
+	if c.party != arkchannel.PartyClient {
+		return arkchannel.Record{}, chainhash.Hash{}, chainhash.Hash{},
+			fmt.Errorf("only a client can request force close")
+	}
+	if err := c.ensureClientStarted(ctx); err != nil {
+		return arkchannel.Record{}, chainhash.Hash{},
+			chainhash.Hash{}, err
+	}
+	record, err := c.service.GetChannel(ctx, id)
+	if err != nil {
+		return arkchannel.Record{}, chainhash.Hash{},
+			chainhash.Hash{}, err
+	}
+	if record.Snapshot.Backing == nil {
+		return arkchannel.Record{}, chainhash.Hash{}, chainhash.Hash{},
+			fmt.Errorf("materialized channel backing is missing")
+	}
+	backing := record.Snapshot.Backing.Clone()
+	closeTx, forceErr := c.node.ForceCloseChannel(backing.ChannelPoint)
+	if forceErr == nil {
+		if closeTx == nil {
+			return arkchannel.Record{}, chainhash.Hash{},
+				chainhash.Hash{}, fmt.Errorf("lnd returned " +
+					"no force-close transaction")
+		}
+	}
+
+	// Both endpoints watch the unpublished channel point before Ark
+	// materializes it. Either commitment may therefore win publication,
+	// even when the local ForceCloseChannel call itself succeeds. Return
+	// only the transaction lnd durably classified as the channel close.
+	closeTxID, waitErr := c.node.WaitForceCloseResult(
+		ctx, backing.ChannelPoint,
+	)
+	if waitErr != nil {
+		if forceErr != nil {
+			return arkchannel.Record{}, chainhash.Hash{},
+				chainhash.Hash{}, fmt.Errorf("force close "+
+					"channel: %w; reconcile peer close: %v",
+					forceErr, waitErr)
+		}
+
+		return arkchannel.Record{}, chainhash.Hash{}, chainhash.Hash{},
+			fmt.Errorf("reconcile force close: %w", waitErr)
+	}
+	record, err = c.service.GetChannel(ctx, id)
+	if err != nil {
+		return arkchannel.Record{}, chainhash.Hash{},
+			chainhash.Hash{}, err
+	}
+
+	return record, backing.ChannelPoint.Hash, closeTxID, nil
+}
+
+// RefreshChannel starts the client-owned 3-of-3 in-Ark refresh process.
+func (c *NativeArkChannelController) RefreshChannel(ctx context.Context,
+	id arkchannel.ID) (arkchannel.Record, error) {
+
+	if c.party != arkchannel.PartyClient {
+		return arkchannel.Record{}, fmt.Errorf("only a client can " +
+			"refresh a channel in Ark")
+	}
+	if err := c.ensureClientStarted(ctx); err != nil {
+		return arkchannel.Record{}, err
+	}
+
+	return c.clientClose.RequestCooperativeClose(ctx, id)
+}
+
+// GetChannel returns the endpoint's durable Ark channel record.
+func (c *NativeArkChannelController) GetChannel(ctx context.Context,
+	id arkchannel.ID) (arkchannel.Record, error) {
+
+	return c.coordinator.Get(ctx, id)
+}
+
+// ListChannels returns every channel that still needs recovery, observation,
+// or operator action without requiring the native endpoint to be online.
+func (c *NativeArkChannelController) ListChannels(ctx context.Context) (
+	[]arkchannel.Record, error) {
+
+	return c.coordinator.ListNonTerminal(ctx)
+}
+
+// ChannelBalance returns lnd's authoritative active-channel balances.
+func (c *NativeArkChannelController) ChannelBalance(ctx context.Context,
+	id arkchannel.ID) (btcutil.Amount, btcutil.Amount, error) {
+
+	if c.party == arkchannel.PartyClient {
+		if err := c.ensureClientStarted(ctx); err != nil {
+			return 0, 0, err
+		}
+	}
+	c.mu.RLock()
+	node := c.node
+	c.mu.RUnlock()
+	if node == nil {
+		return 0, 0, fmt.Errorf("native Ark channel endpoint is not " +
+			"ready")
+	}
+	record, err := c.coordinator.Get(ctx, id)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return node.ChannelBalance(record)
+}
+
 // SelectActiveChannel finds an ordinary native channel with enough balance on
 // the requested local or remote side. lnd remains authoritative and may still
 // reject a racing payment that consumes the same balance.
@@ -2906,6 +3022,42 @@ func (c *NativeArkChannelController) PayHash(ctx context.Context,
 	)
 }
 
+// PeerMessageHandler dispatches authenticated BOLT messages into native lnd.
+//
+//nolint:ll // The concrete method name and interface type are both significant.
+func (c *NativeArkChannelController) PeerMessageHandler() lnruntime.PeerEventHandler {
+	return func(ctx context.Context, message lnwire.Message) error {
+		if c.party == arkchannel.PartyClient {
+			if err := c.ensureClientStarted(ctx); err != nil {
+				return fmt.Errorf("start native Ark channel "+
+					"endpoint: %w", err)
+			}
+		}
+		log := c.cfg.Log
+		if log == nil {
+			log = btclog.Disabled
+		}
+		log.DebugS(ctx, "Dispatching native Ark channel peer message",
+			btclog.Fmt("party", "%s", c.party),
+			btclog.Fmt("message_type", "%s", message.MsgType()),
+		)
+		c.mu.RLock()
+		node := c.node
+		fundingWire := c.fundingWire
+		c.mu.RUnlock()
+		if node == nil {
+			return fmt.Errorf("native Ark channel endpoint is " +
+				"not ready")
+		}
+
+		if fundingWire != nil && fundingWire.Handles(message) {
+			return fundingWire.Handle(ctx, message)
+		}
+
+		return node.PeerMessageHandler()(ctx, message)
+	}
+}
+
 // FundingPeerService returns the generated funding protocol for a hub
 // controller bound to its authenticated client.
 func (c *NativeArkChannelController) FundingPeerService(remoteNode [33]byte) (
@@ -3021,3 +3173,10 @@ func (d *arkChannelRefreshDelivery) ValidateCooperativeCloseDelivery(
 
 	return nil
 }
+
+//nolint:ll // Keep the complete delivery contract explicit for API audits.
+var (
+	_ ArkChannelController                        = (*NativeArkChannelController)(nil)
+	_ lnruntime.CooperativeCloseDeliverySource    = (*arkChannelRefreshDelivery)(nil)
+	_ lnruntime.CooperativeCloseDeliveryValidator = (*arkChannelRefreshDelivery)(nil)
+)
