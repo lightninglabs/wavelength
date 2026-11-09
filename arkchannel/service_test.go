@@ -213,6 +213,22 @@ func TestServiceEventAuthorityMatrix(t *testing.T) {
 			eventOriginLocal,
 		},
 		{
+			&OORAborted{},
+			eventOriginLocal,
+		},
+		{
+			&FundingCanceled{},
+			eventOriginLocal,
+		},
+		{
+			&ExpirePrePONR{},
+			eventOriginLocal,
+		},
+		{
+			&Fail{},
+			eventOriginLocal,
+		},
+		{
 			&FundingFinalized{
 				Party: PartyClient,
 			},

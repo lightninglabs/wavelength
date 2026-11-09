@@ -286,7 +286,8 @@ func (s *Service) authorizeEvent(ctx context.Context, id ID, event Event,
 	}
 	terms := record.Snapshot.Terms
 	switch event := event.(type) {
-	case *OORPreparationStarted, *BindVTXO, *BackingSigned, *OORFinalized:
+	case *OORPreparationStarted, *BindVTXO, *BackingSigned, *OORFinalized,
+		*OORAborted:
 		return s.requireOriginParty(origin, terms.Funder, event)
 
 	case *FundingFinalized:
@@ -295,7 +296,7 @@ func (s *Service) authorizeEvent(ctx context.Context, id ID, event Event,
 	case *RecoveryPackageInstalled:
 		return s.requireOriginParty(origin, event.Party, event)
 
-	case *ChannelActive:
+	case *ChannelActive, *FundingCanceled, *ExpirePrePONR, *Fail:
 		if origin != eventOriginLocal {
 			return fmt.Errorf("%T requires local subsystem "+
 				"evidence", event)

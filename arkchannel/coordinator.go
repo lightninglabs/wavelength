@@ -303,6 +303,7 @@ func snapshotsEqual(a, b Snapshot) bool {
 		a.ClientFinalized != b.ClientFinalized ||
 		a.HubFinalized != b.HubFinalized ||
 		a.OORFinalized != b.OORFinalized ||
+		a.OORAborted != b.OORAborted || a.Failure != b.Failure ||
 		a.ClientRecoveryReady != b.ClientRecoveryReady ||
 		a.HubRecoveryReady != b.HubRecoveryReady ||
 		(a.Source == nil) != (b.Source == nil) ||

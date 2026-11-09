@@ -19,18 +19,25 @@ type VirtualFundingActivator interface {
 	ConfirmBacking(chainhash.Hash) error
 }
 
-// FundingNegotiator runs lnd's native external funding and recovery exchange.
+// FundingNegotiator runs lnd's native external-funding exchange over the
+// application peer transport and records completion through Service.Apply.
 type FundingNegotiator interface {
 	NegotiateChannel(context.Context, ID, Terms, VTXOBinding) error
 
 	PrepareChannelRecovery(context.Context, ID, Terms, VTXOBinding) error
+
+	CancelChannel(context.Context, ID, Terms, VTXOBinding, *Backing,
+		string) error
 }
 
-// OORTransferController validates and commits the exact prepared transfer.
+// OORTransferController commits or aborts the prepared transfer that creates
+// the exact channel-policy VTXO.
 type OORTransferController interface {
 	ValidatePreparedOOR(context.Context, Terms, VTXOBinding) error
 
 	CommitPreparedOOR(context.Context, ID, Terms, VTXOBinding) error
+
+	AbortPreparedOOR(context.Context, ID, Terms, VTXOBinding, string) error
 }
 
 // ValidatePreparedOOR proves that a binding names an output in the exact
@@ -121,6 +128,25 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 	case *PrepareRecovery:
 		return e.negotiator.PrepareChannelRecovery(
 			ctx, id, action.Terms, action.Source,
+		)
+
+	case *AbortOOR:
+		if action.Terms.Funder != e.localParty {
+			return nil
+		}
+		if e.oor == nil {
+			return fmt.Errorf("local OOR transfer controller is " +
+				"unavailable")
+		}
+
+		return e.oor.AbortPreparedOOR(
+			ctx, id, action.Terms, action.Source, action.Reason,
+		)
+
+	case *CancelFunding:
+		return e.negotiator.CancelChannel(
+			ctx, id, action.Terms, action.Source, action.Backing,
+			action.Reason,
 		)
 
 	case *ActivateChannel:

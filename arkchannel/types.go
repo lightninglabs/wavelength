@@ -94,6 +94,10 @@ const (
 	PhaseActivating Phase = 4
 	// PhaseActive means lnd reports the ordinary channel active.
 	PhaseActive Phase = 5
+	// PhaseCancelling means the durable OOR abort precedes lnd cleanup.
+	PhaseCancelling Phase = 9
+	// PhaseFailed means pre-commit abandonment and cleanup are complete.
+	PhaseFailed Phase = 10
 )
 
 // String returns the durable name of a coordination phase.
@@ -114,16 +118,19 @@ func (p Phase) String() string {
 	case PhaseActive:
 		return "active"
 
+	case PhaseCancelling:
+		return "cancelling"
+
+	case PhaseFailed:
+		return "failed"
+
 	default:
 		return "unknown"
 	}
 }
 
-// IsTerminal reports whether Ark coordination has no further work. Every
-// installed phase retains a funding or channel ownership obligation.
-func (p Phase) IsTerminal() bool {
-	return false
-}
+// IsTerminal reports whether the Ark-owned channel record needs no replay.
+func (p Phase) IsTerminal() bool { return p == PhaseFailed }
 
 // VTXOTerms identify every key role and relative delay in the channel VTXO.
 // Persisting semantics instead of derived script bytes gives both peers one
@@ -409,8 +416,10 @@ type Snapshot struct {
 	ClientFinalized       bool
 	HubFinalized          bool
 	OORFinalized          bool
+	OORAborted            bool
 	ClientRecoveryReady   bool
 	HubRecoveryReady      bool
+	Failure               string
 }
 
 // Clone returns a snapshot without aliases to mutable fields.
@@ -428,12 +437,12 @@ func (s Snapshot) Clone() Snapshot {
 	return s
 }
 
-// ReadyToCommitOOR reports whether both endpoints and signed backing are
-// durable.
+// ReadyToCommitOOR reports whether both lnd endpoints and the signed backing
+// are durable, allowing the prepared OOR transfer to cross its commit gate.
 func (s Snapshot) ReadyToCommitOOR() bool {
 	return s.Source != nil && s.Backing != nil && s.ClientFinalized &&
 		s.HubFinalized && s.Phase == PhaseBackingReady &&
-		!s.OORFinalized
+		!s.OORFinalized && !s.OORAborted
 }
 
 // RecoveryReady reports whether both endpoints independently installed the

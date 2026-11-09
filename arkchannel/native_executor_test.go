@@ -13,6 +13,8 @@ type nativeExecutorHarness struct {
 	confirmed    chainhash.Hash
 	negotiatedID ID
 	committedID  ID
+	abortedID    ID
+	cancelledID  ID
 	recoveryID   ID
 	boundSinks   int
 	validations  int
@@ -39,6 +41,24 @@ func (h *nativeExecutorHarness) CommitPreparedOOR(_ context.Context, id ID,
 	_ Terms, _ VTXOBinding) error {
 
 	h.committedID = id
+
+	return nil
+}
+
+// AbortPreparedOOR records release of the prepared source reservation.
+func (h *nativeExecutorHarness) AbortPreparedOOR(_ context.Context, id ID,
+	_ Terms, _ VTXOBinding, _ string) error {
+
+	h.abortedID = id
+
+	return nil
+}
+
+// CancelChannel records native funding cleanup.
+func (h *nativeExecutorHarness) CancelChannel(_ context.Context, id ID, _ Terms,
+	_ VTXOBinding, _ *Backing, _ string) error {
+
+	h.cancelledID = id
 
 	return nil
 }
@@ -102,6 +122,28 @@ func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
 	} {
 		require.NoError(t, e.Execute(t.Context(), terms.ID, action))
 	}
+	require.NoError(
+		t,
+		e.Execute(
+			t.Context(), terms.ID, &AbortOOR{
+				Terms:  terms,
+				Source: source,
+				Reason: "abandoned",
+			},
+		),
+	)
+	require.NoError(
+		t,
+		e.Execute(
+			t.Context(), terms.ID, &CancelFunding{
+				Terms:  terms,
+				Source: source,
+				Reason: "abandoned",
+			},
+		),
+	)
+	require.Equal(t, terms.ID, h.abortedID)
+	require.Equal(t, terms.ID, h.cancelledID)
 	require.Equal(t, terms.ID, h.negotiatedID)
 	require.Equal(t, terms.ID, h.committedID)
 	require.Equal(t, terms.ID, h.recoveryID)
@@ -129,6 +171,17 @@ func TestNativeExecutorFencesOORActionsToFunder(t *testing.T) {
 		),
 	)
 	require.Equal(t, ID{}, h.committedID)
+	require.NoError(
+		t,
+		e.Execute(
+			t.Context(), terms.ID, &AbortOOR{
+				Terms:  terms,
+				Source: source,
+				Reason: "abandoned",
+			},
+		),
+	)
+	require.Equal(t, ID{}, h.abortedID)
 }
 
 // harnessSink accepts callback events for executor wiring tests.
