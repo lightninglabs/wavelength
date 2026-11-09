@@ -63,6 +63,11 @@ func (v *TapdProofChainVerifier) VerifyProofChain(ctx context.Context,
 		return nil
 	}
 
+	// A cancelled caller gets its cancellation back, without writes.
+	if err != nil && ctx.Err() != nil {
+		return err
+	}
+
 	// The first error is kept, so a transport failure still surfaces when
 	// the insert fails too.
 	if insertErr := v.insertIssuance(ctx, proofFile); insertErr != nil {
@@ -80,8 +85,10 @@ func (v *TapdProofChainVerifier) VerifyProofChain(ctx context.Context,
 	return nil
 }
 
-// verify reports whether tapd accepts the proof file. tapd answers every
-// verification failure with an invalid result.
+// verify reports whether tapd accepts the proof file. tapd answers a failed
+// verification with an invalid result, but a valid proof of an asset it has
+// not stored with an error, so the caller retries after either once the
+// issuance is inserted.
 func (v *TapdProofChainVerifier) verify(ctx context.Context, proofFile []byte) (
 	bool, error) {
 

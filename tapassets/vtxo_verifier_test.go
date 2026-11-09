@@ -601,8 +601,9 @@ func TestTapdProofChainVerifier(t *testing.T) {
 	testCases := []struct {
 		name   string
 		client *fakeTapdProofClient
+		cancel bool
 		calls  []string
-		err    string
+		err    []string
 	}{
 		{
 			name: "known group",
@@ -664,7 +665,9 @@ func TestTapdProofChainVerifier(t *testing.T) {
 			client: &fakeTapdProofClient{
 				validFile: true, grouped: true,
 			},
-			err: "does not know asset group",
+			err: []string{
+				"does not know asset group",
+			},
 		},
 		{
 			name: "reissuance unknown to the federation",
@@ -674,26 +677,34 @@ func TestTapdProofChainVerifier(t *testing.T) {
 					"uni-a",
 				},
 			},
-			err: "uni-a: group key not known",
+			err: []string{
+				"uni-a: group key not known",
+			},
 		},
 		{
 			name: "first proof is a transfer",
 			client: &fakeTapdProofClient{
 				transfer: true,
 			},
-			err: "first proof is not an issuance",
+			err: []string{
+				"first proof is not an issuance",
+			},
 		},
 		{
 			name: "issuance rejected",
 			client: &fakeTapdProofClient{
 				insertErr: errors.New("bad issuance"),
 			},
-			err: "insert issuance proof: bad issuance",
+			err: []string{
+				"insert issuance proof: bad issuance",
+			},
 		},
 		{
 			name:   "invalid proof file",
 			client: &fakeTapdProofClient{},
-			err:    "tapd rejected the proof file",
+			err: []string{
+				"tapd rejected the proof file",
+			},
 		},
 		{
 			name: "tapd unavailable",
@@ -702,7 +713,26 @@ func TestTapdProofChainVerifier(t *testing.T) {
 				verifyErr: errors.New("tapd unavailable"),
 				insertErr: errors.New("connection refused"),
 			},
-			err: "tapd unavailable",
+			calls: []string{
+				"verify", "unpack", "decode", "insert",
+			},
+			err: []string{
+				"tapd unavailable", "connection refused",
+			},
+		},
+		{
+			name: "cancelled caller",
+			client: &fakeTapdProofClient{
+				validFile: true,
+				verifyErr: context.Canceled,
+			},
+			cancel: true,
+			calls: []string{
+				"verify",
+			},
+			err: []string{
+				"context canceled",
+			},
 		},
 	}
 
@@ -710,19 +740,32 @@ func TestTapdProofChainVerifier(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if testCase.cancel {
+				cancel()
+			}
+
 			verifier := &TapdProofChainVerifier{
 				client: testCase.client,
 			}
 			err := verifier.VerifyProofChain(
-				t.Context(), []byte("proof-file"),
+				ctx, []byte("proof-file"),
 			)
-			if testCase.err != "" {
-				require.ErrorContains(t, err, testCase.err)
+			if testCase.calls != nil {
+				require.Equal(
+					t, testCase.calls,
+					testCase.client.calls,
+				)
+			}
+			if len(testCase.err) == 0 {
+				require.NoError(t, err)
 
 				return
 			}
-			require.NoError(t, err)
-			require.Equal(t, testCase.calls, testCase.client.calls)
+			for _, want := range testCase.err {
+				require.ErrorContains(t, err, want)
+			}
 		})
 	}
 
