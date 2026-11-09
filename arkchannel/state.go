@@ -106,7 +106,8 @@ func (s *channelState) ProcessEvent(_ context.Context, event Event,
 		return nil, err
 	}
 	_, oorFinalized := event.(*OORFinalized)
-	if next.Phase == previousPhase && !oorFinalized {
+	_, oorAborted := event.(*OORAborted)
+	if next.Phase == previousPhase && !oorFinalized && !oorAborted {
 		action = nil
 	}
 	if err := validateSnapshot(next); err != nil {
@@ -147,6 +148,27 @@ func PendingAction(snapshot Snapshot) (Action, error) {
 			Backing: snapshot.Backing.Clone(),
 		}, nil
 
+	case PhaseCancelling:
+		if !snapshot.OORAborted {
+			return &AbortOOR{
+				Terms:  snapshot.Terms.Clone(),
+				Source: snapshot.Source.Clone(),
+				Reason: snapshot.Failure,
+			}, nil
+		}
+		var backing *Backing
+		if snapshot.Backing != nil {
+			clone := snapshot.Backing.Clone()
+			backing = &clone
+		}
+
+		return &CancelFunding{
+			Terms:   snapshot.Terms.Clone(),
+			Source:  snapshot.Source.Clone(),
+			Backing: backing,
+			Reason:  snapshot.Failure,
+		}, nil
+
 	default:
 		return nil, nil
 	}
@@ -157,6 +179,9 @@ func applyEvent(next *Snapshot, event Event) (bool, error) {
 	switch event := event.(type) {
 	case *OORPreparationStarted:
 		return applyOORPreparationStarted(next)
+
+	case *ExpirePrePONR:
+		return applyPrePONRExpiry(next, event.Reason)
 
 	case *BindVTXO:
 		return applyBinding(next, event.Binding)
@@ -169,6 +194,28 @@ func applyEvent(next *Snapshot, event Event) (bool, error) {
 
 	case *OORFinalized:
 		return applyOORFinalized(next, event.SessionID)
+
+	case *OORAborted:
+		return applyOORAborted(next, event.SessionID, event.Reason)
+
+	case *FundingCanceled:
+		if next.Phase == PhaseFailed {
+			return false, nil
+		}
+		if next.Phase != PhaseCancelling {
+			return false, fmt.Errorf("cannot finish funding "+
+				"cancellation from %s", next.Phase)
+		}
+		if !next.OORAborted {
+			return false, fmt.Errorf("cannot finish funding " +
+				"cancellation before OOR abort")
+		}
+		next.Phase = PhaseFailed
+
+		return true, nil
+
+	case *Fail:
+		return applyFailure(next, event.Reason)
 
 	case *RecoveryPackageInstalled:
 		return applyRecoveryPackageInstalled(next, event.Party)
@@ -241,6 +288,9 @@ func applyFundingFinalized(next *Snapshot, party Party) (bool, error) {
 		return false, fmt.Errorf("cannot finalize funding before " +
 			"signed backing")
 	}
+	if next.Phase == PhaseCancelling || next.Phase == PhaseFailed {
+		return false, fmt.Errorf("cannot finalize abandoned channel")
+	}
 
 	switch party {
 	case PartyClient:
@@ -267,6 +317,10 @@ func applyBacking(next *Snapshot, backing Backing) (bool, error) {
 	if next.Source == nil {
 		return false, fmt.Errorf("cannot record backing before VTXO " +
 			"binding")
+	}
+	if next.Phase == PhaseCancelling || next.Phase == PhaseFailed {
+		return false, fmt.Errorf("cannot record backing for " +
+			"abandoned channel")
 	}
 	if err := backing.Validate(next.Terms, *next.Source); err != nil {
 		return false, err
@@ -299,6 +353,10 @@ func applyOORFinalized(next *Snapshot, sessionID [32]byte) (bool, error) {
 	if next.OORFinalized {
 		return false, nil
 	}
+	if next.OORAborted {
+		return false, fmt.Errorf("cannot finalize an aborted OOR " +
+			"transfer")
+	}
 	if next.Phase != PhaseBackingReady || !backingReady(*next) {
 		return false, fmt.Errorf("cannot finalize OOR from %s",
 			next.Phase)
@@ -316,6 +374,11 @@ func applyRecoveryPackageInstalled(next *Snapshot, party Party) (bool, error) {
 	if next.Source == nil || next.Backing == nil || !backingReady(*next) {
 		return false, fmt.Errorf("cannot install channel recovery " +
 			"before finalized backing")
+	}
+	if next.OORAborted || next.Phase == PhaseCancelling ||
+		next.Phase == PhaseFailed {
+		return false, fmt.Errorf("cannot install recovery for " +
+			"abandoned channel")
 	}
 	switch party {
 	case PartyClient:
@@ -337,6 +400,40 @@ func applyRecoveryPackageInstalled(next *Snapshot, party Party) (bool, error) {
 	return true, nil
 }
 
+// applyOORAborted records a definitive pre-PONR failure before lnd cleanup.
+func applyOORAborted(next *Snapshot, sessionID [32]byte,
+	reason string) (bool, error) {
+
+	if next.Source == nil {
+		return false, fmt.Errorf("cannot abort OOR before VTXO binding")
+	}
+	if next.Source.OORSessionID != sessionID {
+		return false, fmt.Errorf("aborted OOR session does not match " +
+			"channel source")
+	}
+	if next.OORFinalized {
+		return false, fmt.Errorf("cannot abort a finalized OOR " +
+			"transfer")
+	}
+	if next.OORAborted {
+		return false, nil
+	}
+	if next.Phase != PhaseNegotiating && next.Phase != PhaseCancelling &&
+		next.Phase != PhaseBackingReady {
+		return false, fmt.Errorf("cannot abort OOR from %s", next.Phase)
+	}
+	if next.Failure == "" {
+		if reason == "" {
+			return false, fmt.Errorf("OOR abort reason is required")
+		}
+		next.Failure = reason
+	}
+	next.OORAborted = true
+	next.Phase = PhaseCancelling
+
+	return true, nil
+}
+
 // applyChannelActive verifies lnd activated the negotiated funding output.
 func applyChannelActive(next *Snapshot,
 	channelPoint wire.OutPoint) (bool, error) {
@@ -354,6 +451,58 @@ func applyChannelActive(next *Snapshot,
 			"channel point")
 	}
 	next.Phase = PhaseActive
+
+	return true, nil
+}
+
+// applyPrePONRExpiry lets a stale timer lose cleanly once the commit action is
+// replayable. The phase check is applied against the CAS-reloaded state, not
+// the record that the expiry scan originally observed.
+func applyPrePONRExpiry(next *Snapshot, reason string) (bool, error) {
+	if reason == "" {
+		return false, fmt.Errorf("expiry reason is required")
+	}
+	if next.Phase != PhaseRequested && next.Phase != PhaseNegotiating {
+		return false, nil
+	}
+
+	return applyFailure(next, reason)
+}
+
+// applyFailure permits abandonment only before the OOR commit action is
+// durable. A commit-time failure must arrive as OORAborted so the coordinator
+// knows the transfer stayed before its point of no return.
+func applyFailure(next *Snapshot, reason string) (bool, error) {
+	if next.Phase == PhaseFailed {
+		if next.Failure == reason {
+			return false, nil
+		}
+
+		return false, fmt.Errorf("channel already failed for another " +
+			"reason")
+	}
+	if next.Phase == PhaseCancelling {
+		if next.Failure == reason {
+			return false, nil
+		}
+
+		return false, fmt.Errorf("channel already cancelling for " +
+			"another reason")
+	}
+	if next.Phase != PhaseRequested && next.Phase != PhaseNegotiating {
+		return false, fmt.Errorf("cannot fail channel after safety " +
+			"boundary")
+	}
+	if reason == "" {
+		return false, fmt.Errorf("failure reason is required")
+	}
+
+	next.Failure = reason
+	if next.Source == nil {
+		next.Phase = PhaseFailed
+	} else {
+		next.Phase = PhaseCancelling
+	}
 
 	return true, nil
 }
@@ -395,7 +544,7 @@ func validateSnapshot(snapshot Snapshot) error {
 	}
 	switch snapshot.Phase {
 	case PhaseRequested, PhaseNegotiating, PhaseBackingReady,
-		PhaseActivating, PhaseActive:
+		PhaseActivating, PhaseActive, PhaseCancelling, PhaseFailed:
 	default:
 		return fmt.Errorf("unknown channel phase %d", snapshot.Phase)
 	}
@@ -417,7 +566,7 @@ func validateSnapshot(snapshot Snapshot) error {
 	if snapshot.Source == nil &&
 		(snapshot.Backing != nil || snapshot.ClientFinalized ||
 			snapshot.HubFinalized || snapshot.OORFinalized ||
-			snapshot.ClientRecoveryReady ||
+			snapshot.OORAborted || snapshot.ClientRecoveryReady ||
 			snapshot.HubRecoveryReady) {
 		return fmt.Errorf("funding facts require a bound VTXO")
 	}
@@ -436,9 +585,22 @@ func validateSnapshot(snapshot Snapshot) error {
 	if snapshot.OORFinalized && !backingReady(snapshot) {
 		return fmt.Errorf("OOR finalization requires finalized backing")
 	}
+	if snapshot.OORFinalized && snapshot.OORAborted {
+		return fmt.Errorf("OOR transfer cannot be finalized and " +
+			"aborted")
+	}
 	if (snapshot.ClientRecoveryReady || snapshot.HubRecoveryReady) &&
 		!backingReady(snapshot) {
 		return fmt.Errorf("channel recovery requires finalized backing")
+	}
+	if (snapshot.Phase == PhaseCancelling ||
+		snapshot.Phase == PhaseFailed) && snapshot.Failure == "" {
+		return fmt.Errorf("abandoned channel requires a reason")
+	}
+	if snapshot.Phase != PhaseCancelling && snapshot.Phase != PhaseFailed &&
+		snapshot.Failure != "" {
+		return fmt.Errorf("non-failed channel cannot have a failure " +
+			"reason")
 	}
 	switch snapshot.Phase {
 	case PhaseRequested:
@@ -448,7 +610,7 @@ func validateSnapshot(snapshot Snapshot) error {
 		}
 		if snapshot.Backing != nil || snapshot.ClientFinalized ||
 			snapshot.HubFinalized || snapshot.OORFinalized ||
-			snapshot.ClientRecoveryReady ||
+			snapshot.OORAborted || snapshot.ClientRecoveryReady ||
 			snapshot.HubRecoveryReady {
 			return fmt.Errorf("requested channel has advanced " +
 				"facts")
@@ -459,22 +621,48 @@ func validateSnapshot(snapshot Snapshot) error {
 			return fmt.Errorf("negotiating channel has no bound " +
 				"VTXO")
 		}
-		if snapshot.OORFinalized || snapshot.ClientRecoveryReady ||
+		if snapshot.OORFinalized || snapshot.OORAborted ||
+			snapshot.ClientRecoveryReady ||
 			snapshot.HubRecoveryReady {
 			return fmt.Errorf("negotiating channel has terminal " +
 				"OOR facts")
 		}
 
 	case PhaseBackingReady:
+		if snapshot.OORAborted {
+			return fmt.Errorf("backing-ready channel has " +
+				"terminal OOR facts")
+		}
 		if snapshot.OORFinalized && snapshot.RecoveryReady() {
 			return fmt.Errorf("recovery-ready channel must be " +
 				"activating")
 		}
 
 	case PhaseActivating, PhaseActive:
-		if !snapshot.OORFinalized || !snapshot.RecoveryReady() {
+		if !snapshot.OORFinalized || snapshot.OORAborted ||
+			!snapshot.RecoveryReady() {
 			return fmt.Errorf("channel advanced before OOR " +
 				"finalization and recovery installation")
+		}
+
+	case PhaseCancelling:
+		if snapshot.Source == nil {
+			return fmt.Errorf("cancelling channel has no bound " +
+				"VTXO")
+		}
+		if snapshot.OORFinalized {
+			return fmt.Errorf("failed channel crossed the safety " +
+				"boundary")
+		}
+
+	case PhaseFailed:
+		if snapshot.OORFinalized {
+			return fmt.Errorf("failed channel crossed the safety " +
+				"boundary")
+		}
+		if snapshot.Source != nil && !snapshot.OORAborted {
+			return fmt.Errorf("failed channel did not abort " +
+				"prepared OOR")
 		}
 	}
 

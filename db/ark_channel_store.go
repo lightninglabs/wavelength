@@ -234,20 +234,22 @@ func (s *ArkChannelStoreDB) CompareAndSwap(ctx context.Context,
 
 // arkChannelMutableFields is the shared SQL representation of mutable state.
 type arkChannelMutableFields struct {
-	phase             int32
-	oorSessionID      []byte
-	sourceIndex       sql.NullInt64
-	sourceAmount      sql.NullInt64
-	sourceArkTx       []byte
-	backingTx         []byte
-	channelPointTxID  []byte
-	channelPointIndex sql.NullInt64
-	clientFinalized   bool
-	hubFinalized      bool
-	oorFinalized      bool
-
+	phase               int32
+	oorSessionID        []byte
+	sourceIndex         sql.NullInt64
+	sourceAmount        sql.NullInt64
+	sourceArkTx         []byte
+	backingTx           []byte
+	channelPointTxID    []byte
+	channelPointIndex   sql.NullInt64
+	clientFinalized     bool
+	hubFinalized        bool
+	oorFinalized        bool
+	oorAborted          bool
 	clientRecoveryReady bool
 	hubRecoveryReady    bool
+
+	failure sql.NullString
 }
 
 // mutableArkChannelFields converts optional snapshot fields for sqlc.
@@ -255,13 +257,18 @@ func mutableArkChannelFields(snapshot arkchannel.Snapshot) (
 	arkChannelMutableFields, error) {
 
 	fields := arkChannelMutableFields{
-		phase:           int32(snapshot.Phase),
-		clientFinalized: snapshot.ClientFinalized,
-		hubFinalized:    snapshot.HubFinalized,
-		oorFinalized:    snapshot.OORFinalized,
-
+		phase:               int32(snapshot.Phase),
+		clientFinalized:     snapshot.ClientFinalized,
+		hubFinalized:        snapshot.HubFinalized,
+		oorFinalized:        snapshot.OORFinalized,
+		oorAborted:          snapshot.OORAborted,
 		clientRecoveryReady: snapshot.ClientRecoveryReady,
 		hubRecoveryReady:    snapshot.HubRecoveryReady,
+
+		failure: sql.NullString{
+			String: snapshot.Failure,
+			Valid:  snapshot.Failure != "",
+		},
 	}
 
 	if snapshot.Source != nil {
@@ -325,25 +332,26 @@ func insertArkChannelParams(snapshot arkchannel.Snapshot,
 		HubChannelKey: slices.Clone(
 			terms.VTXO.HubChannelKey[:],
 		),
-		FunderKey:         slices.Clone(terms.VTXO.FunderKey[:]),
-		ChannelDelay:      int64(terms.VTXO.ChannelDelay),
-		FunderDelay:       int64(terms.VTXO.FunderDelay),
-		MinExitDelay:      int64(terms.VTXO.MinExitDelay),
-		Phase:             fields.phase,
-		OorSessionID:      fields.oorSessionID,
-		SourceIndex:       fields.sourceIndex,
-		SourceAmount:      fields.sourceAmount,
-		SourceArkTx:       fields.sourceArkTx,
-		BackingTx:         fields.backingTx,
-		ChannelPointTxid:  fields.channelPointTxID,
-		ChannelPointIndex: fields.channelPointIndex,
-		ClientFinalized:   fields.clientFinalized,
-		HubFinalized:      fields.hubFinalized,
-		OorFinalized:      fields.oorFinalized,
-
+		FunderKey:           slices.Clone(terms.VTXO.FunderKey[:]),
+		ChannelDelay:        int64(terms.VTXO.ChannelDelay),
+		FunderDelay:         int64(terms.VTXO.FunderDelay),
+		MinExitDelay:        int64(terms.VTXO.MinExitDelay),
+		Phase:               fields.phase,
+		OorSessionID:        fields.oorSessionID,
+		SourceIndex:         fields.sourceIndex,
+		SourceAmount:        fields.sourceAmount,
+		SourceArkTx:         fields.sourceArkTx,
+		BackingTx:           fields.backingTx,
+		ChannelPointTxid:    fields.channelPointTxID,
+		ChannelPointIndex:   fields.channelPointIndex,
+		ClientFinalized:     fields.clientFinalized,
+		HubFinalized:        fields.hubFinalized,
+		OorFinalized:        fields.oorFinalized,
+		OorAborted:          fields.oorAborted,
 		ClientRecoveryReady: fields.clientRecoveryReady,
 		HubRecoveryReady:    fields.hubRecoveryReady,
 
+		Failure:   fields.failure,
 		Revision:  initialArkChannelRevision,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -363,23 +371,24 @@ func compareAndSwapArkChannelParams(snapshot arkchannel.Snapshot, revision,
 	}
 
 	return sqlc.CompareAndSwapArkChannelParams{
-		ChannelID:         slices.Clone(snapshot.Terms.ID[:]),
-		Revision:          revision,
-		Phase:             fields.phase,
-		OorSessionID:      fields.oorSessionID,
-		SourceIndex:       fields.sourceIndex,
-		SourceAmount:      fields.sourceAmount,
-		SourceArkTx:       fields.sourceArkTx,
-		BackingTx:         fields.backingTx,
-		ChannelPointTxid:  fields.channelPointTxID,
-		ChannelPointIndex: fields.channelPointIndex,
-		ClientFinalized:   fields.clientFinalized,
-		HubFinalized:      fields.hubFinalized,
-		OorFinalized:      fields.oorFinalized,
-
+		ChannelID:           slices.Clone(snapshot.Terms.ID[:]),
+		Revision:            revision,
+		Phase:               fields.phase,
+		OorSessionID:        fields.oorSessionID,
+		SourceIndex:         fields.sourceIndex,
+		SourceAmount:        fields.sourceAmount,
+		SourceArkTx:         fields.sourceArkTx,
+		BackingTx:           fields.backingTx,
+		ChannelPointTxid:    fields.channelPointTxID,
+		ChannelPointIndex:   fields.channelPointIndex,
+		ClientFinalized:     fields.clientFinalized,
+		HubFinalized:        fields.hubFinalized,
+		OorFinalized:        fields.oorFinalized,
+		OorAborted:          fields.oorAborted,
 		ClientRecoveryReady: fields.clientRecoveryReady,
 		HubRecoveryReady:    fields.hubRecoveryReady,
 
+		Failure:   fields.failure,
 		UpdatedAt: now,
 		PrePonrStartedAt: arkChannelPrePONRStartedAt(
 			snapshot, now,
@@ -406,9 +415,8 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 		row.CloseFeeRateSatPerKw.Valid || row.CloseHubBalance.Valid ||
 		row.CloseHubScript != nil || row.CloseInitiator.Valid ||
 		row.CooperativeCloseTx != nil ||
-		row.CooperativeCloseTxid != nil || row.Failure.Valid ||
-		row.HubCloseFinalized || row.HubCloseSigned || row.OorAborted ||
-		row.SourceSpendingTxid != nil ||
+		row.CooperativeCloseTxid != nil || row.HubCloseFinalized ||
+		row.HubCloseSigned || row.SourceSpendingTxid != nil ||
 		row.SourceSpentOutpointIndex.Valid ||
 		row.SourceSpentOutpointTxid != nil {
 		return arkchannel.Record{}, fmt.Errorf("unsupported channel " +
@@ -513,9 +521,11 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 		ClientFinalized:       row.ClientFinalized,
 		HubFinalized:          row.HubFinalized,
 		OORFinalized:          row.OorFinalized,
+		OORAborted:            row.OorAborted,
+		ClientRecoveryReady:   row.ClientRecoveryReady,
+		HubRecoveryReady:      row.HubRecoveryReady,
 
-		ClientRecoveryReady: row.ClientRecoveryReady,
-		HubRecoveryReady:    row.HubRecoveryReady,
+		Failure: row.Failure.String,
 	}
 
 	source, err := arkChannelSourceFromRow(row, terms)

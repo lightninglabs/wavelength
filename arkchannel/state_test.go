@@ -29,6 +29,183 @@ func (o *testRecordObserver) ObserveArkChannel(_ context.Context,
 	o.records = append(o.records, record)
 }
 
+// TestOORChannelCanAbortBeforePONR proves a definitively failed prepared
+// transfer releases its source before lnd funding is canceled.
+func TestOORChannelCanAbortBeforePONR(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	terms := testTerms(t, KindPromotion)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	binding := testBinding(terms)
+	backing := testBacking(t, terms, binding)
+
+	for _, event := range []Event{
+		&BindVTXO{
+			Binding: binding,
+		},
+		&BackingSigned{
+			Backing: backing,
+		},
+		&FundingFinalized{
+			Party: PartyClient,
+		},
+		&FundingFinalized{
+			Party: PartyHub,
+		},
+	} {
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+
+	record, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, &OORAborted{
+			SessionID: binding.OORSessionID,
+			Reason:    "operator rejected transfer",
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseCancelling, record.Snapshot.Phase)
+	require.IsType(t, &CancelFunding{}, requireOneAction(t, actions))
+	require.True(t, record.Snapshot.OORAborted)
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &OORAborted{
+			SessionID: binding.OORSessionID,
+			Reason:    "operator rejected transfer",
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseCancelling, record.Snapshot.Phase)
+	require.IsType(t, &CancelFunding{}, requireOneAction(t, actions))
+
+	record, _, err = coordinator.Apply(
+		t.Context(), terms.ID, &FundingCanceled{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseFailed, record.Snapshot.Phase)
+}
+
+// TestBackingReadyRejectsGenericFailure proves only the OOR actor's definitive
+// terminal result can replace a commit action after the durable commit gate.
+func TestBackingReadyRejectsGenericFailure(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	terms := testTerms(t, KindPromotion)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	binding := testBinding(terms)
+	backing := testBacking(t, terms, binding)
+	for _, event := range []Event{
+		&BindVTXO{
+			Binding: binding,
+		},
+		&BackingSigned{
+			Backing: backing,
+		},
+		&FundingFinalized{
+			Party: PartyClient,
+		},
+		&FundingFinalized{
+			Party: PartyHub,
+		},
+	} {
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+
+	_, _, err = coordinator.Apply(
+		t.Context(), terms.ID, &Fail{
+			Reason: "incoming HTLC is expiring",
+		},
+	)
+	require.ErrorContains(t, err, "after safety boundary")
+
+	record, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, &ExpirePrePONR{
+			Reason: "incoming HTLC is expiring",
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
+	require.IsType(t, &CommitOOR{}, requireOneAction(t, actions))
+
+	_, resumed, err := coordinator.Resume(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.IsType(t, &CommitOOR{}, requireOneAction(t, resumed))
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &OORAborted{
+			SessionID: binding.OORSessionID,
+			Reason:    "operator rejected transfer",
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseCancelling, record.Snapshot.Phase)
+	require.IsType(t, &CancelFunding{}, requireOneAction(t, actions))
+}
+
+// TestPrePONRExpiryLosesCommitGateCASRace proves a timer that read Negotiating
+// cannot overwrite a concurrently persisted BackingReady commit action.
+func TestPrePONRExpiryLosesCommitGateCASRace(t *testing.T) {
+	t.Parallel()
+
+	store := newMemoryStore()
+	coordinator, err := NewCoordinator(store)
+	require.NoError(t, err)
+	terms := testTerms(t, KindPromotion)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	binding := testBinding(terms)
+	backing := testBacking(t, terms, binding)
+	for _, event := range []Event{
+		&BindVTXO{
+			Binding: binding,
+		},
+	} {
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+	stale, err := coordinator.Get(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, PhaseNegotiating, stale.Snapshot.Phase)
+	for _, event := range []Event{
+		&BackingSigned{
+			Backing: backing,
+		},
+		&FundingFinalized{
+			Party: PartyClient,
+		},
+		&FundingFinalized{
+			Party: PartyHub,
+		},
+	} {
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+
+	staleStore := &staleReadStore{
+		memoryStore: store, stale: stale,
+	}
+	staleCoordinator, err := NewCoordinator(staleStore)
+	require.NoError(t, err)
+	record, actions, err := staleCoordinator.Apply(
+		t.Context(), terms.ID, &ExpirePrePONR{
+			Reason: "expired from stale scan",
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
+	require.IsType(t, &CommitOOR{}, requireOneAction(t, actions))
+	_, actions, err = staleCoordinator.Resume(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.IsType(t, &CommitOOR{}, requireOneAction(t, actions))
+}
+
 // TestPromotionWaitsForOORFinalization proves a client-funded promotion uses
 // the same OOR commit gate as a hub-funded receive intent.
 func TestPromotionWaitsForOORFinalization(t *testing.T) {
@@ -361,6 +538,24 @@ type memoryStore struct {
 	mu       sync.Mutex
 	records  map[ID]Record
 	writeErr error
+}
+
+// staleReadStore serves one stale record before delegating to the real store.
+type staleReadStore struct {
+	*memoryStore
+	stale Record
+}
+
+// Get returns one stale snapshot to force a compare-and-swap retry.
+func (s *staleReadStore) Get(ctx context.Context, id ID) (Record, error) {
+	if s.stale.Snapshot.Terms.ID == id {
+		stale := s.stale
+		s.stale = Record{}
+
+		return cloneRecord(stale), nil
+	}
+
+	return s.memoryStore.Get(ctx, id)
 }
 
 // newMemoryStore creates an empty test store.

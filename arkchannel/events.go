@@ -16,6 +16,15 @@ type OORPreparationStarted struct{}
 
 func (*OORPreparationStarted) eventSealed() {}
 
+// ExpirePrePONR abandons an armed channel only while its OOR commit action
+// cannot have started. Replaying a stale expiry after the commit gate is a
+// durable no-op rather than a generic failure.
+type ExpirePrePONR struct {
+	Reason string
+}
+
+func (*ExpirePrePONR) eventSealed() {}
+
 // BindVTXO records the exact output of a durable prepared OOR transfer.
 type BindVTXO struct {
 	Binding VTXOBinding
@@ -38,6 +47,11 @@ type BackingSigned struct {
 
 func (*BackingSigned) eventSealed() {}
 
+// FundingCanceled records that lnd removed the abandoned pending channel.
+type FundingCanceled struct{}
+
+func (*FundingCanceled) eventSealed() {}
+
 // OORFinalized records that the prepared OOR transfer completed at the Ark
 // operator and the channel-policy VTXO now exists.
 type OORFinalized struct {
@@ -54,6 +68,16 @@ type RecoveryPackageInstalled struct {
 
 func (*RecoveryPackageInstalled) eventSealed() {}
 
+// OORAborted records a definitive pre-PONR OOR failure. It proves the source
+// reservation is safe to release and permits the pending lnd channel to be
+// canceled.
+type OORAborted struct {
+	SessionID [32]byte
+	Reason    string
+}
+
+func (*OORAborted) eventSealed() {}
+
 // ChannelActive records that native lnd activated the expected channel point.
 type ChannelActive struct {
 	ChannelPointHash  chainhash.Hash
@@ -61,6 +85,13 @@ type ChannelActive struct {
 }
 
 func (*ChannelActive) eventSealed() {}
+
+// Fail abandons negotiation before the OOR commit action becomes replayable.
+type Fail struct {
+	Reason string
+}
+
+func (*Fail) eventSealed() {}
 
 // Action is side effect requested after its producing state is durable.
 type Action interface {
@@ -93,6 +124,16 @@ type PrepareRecovery struct {
 
 func (*PrepareRecovery) actionSealed() {}
 
+// AbortOOR releases the source VTXO reservation before canceling native lnd
+// funding.
+type AbortOOR struct {
+	Terms  Terms
+	Source VTXOBinding
+	Reason string
+}
+
+func (*AbortOOR) actionSealed() {}
+
 // ActivateChannel asks the virtual notifier to confirm the backing to lnd.
 type ActivateChannel struct {
 	Terms   Terms
@@ -100,3 +141,14 @@ type ActivateChannel struct {
 }
 
 func (*ActivateChannel) actionSealed() {}
+
+// CancelFunding asks the native funding adapter to remove an abandoned lnd
+// reservation before the Ark workflow becomes terminal.
+type CancelFunding struct {
+	Terms   Terms
+	Source  VTXOBinding
+	Backing *Backing
+	Reason  string
+}
+
+func (*CancelFunding) actionSealed() {}

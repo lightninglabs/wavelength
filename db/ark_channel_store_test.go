@@ -18,37 +18,41 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestArkChannelStoreRoundTrip preserves exact signed backing and funding facts
-// through SQL revision updates and lookup by the funding channel point.
+// TestArkChannelStoreRoundTrip verifies revisions, optional backing fields,
+// unsigned SCIDs, and non-terminal recovery scans.
 func TestArkChannelStoreRoundTrip(t *testing.T) {
 	t.Parallel()
+
 	store := newArkChannelStoreForTest(t)
-	c, err := arkchannel.NewCoordinator(store)
+	coordinator, err := arkchannel.NewCoordinator(store)
 	require.NoError(t, err)
 	terms := testArkChannelTerms(t, arkchannel.KindPromotion, 1)
 	terms.ReservedSCID = lnwire.ShortChannelID{
 		BlockHeight: 0x800001,
 		TxIndex:     1,
 	}.ToUint64()
-	requested, err := c.Request(t.Context(), terms)
+
+	requested, err := coordinator.Request(t.Context(), terms)
 	require.NoError(t, err)
 	require.False(t, requested.CreatedAt.IsZero())
 	require.False(t, requested.UpdatedAt.IsZero())
 	require.True(t, requested.PrePONRStartedAt.IsZero())
-	armed, _, err := c.Apply(
+	armed, _, err := coordinator.Apply(
 		t.Context(), terms.ID, &arkchannel.OORPreparationStarted{},
 	)
 	require.NoError(t, err)
 	require.True(t, armed.Snapshot.OORPreparationStarted)
 	require.Nil(t, armed.Snapshot.Source)
 	require.False(t, armed.PrePONRStartedAt.IsZero())
+	prePONRStartedAt := armed.PrePONRStartedAt
 	binding := testArkChannelBinding(terms)
-	bound, _, err := c.Apply(
+	bound, _, err := coordinator.Apply(
 		t.Context(), terms.ID, &arkchannel.BindVTXO{
 			Binding: binding,
 		},
 	)
 	require.NoError(t, err)
+	require.Equal(t, prePONRStartedAt, bound.PrePONRStartedAt)
 	backing := testArkChannelBacking(t, terms, binding)
 	for _, event := range []arkchannel.Event{
 		&arkchannel.BackingSigned{
@@ -61,30 +65,43 @@ func TestArkChannelStoreRoundTrip(t *testing.T) {
 			Party: arkchannel.PartyHub,
 		},
 	} {
-		_, _, err = c.Apply(t.Context(), terms.ID, event)
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
 		require.NoError(t, err)
 	}
+
 	loaded, err := store.Get(t.Context(), terms.ID)
 	require.NoError(t, err)
 	require.Equal(t, arkchannel.PhaseBackingReady, loaded.Snapshot.Phase)
 	require.Equal(t, terms.ReservedSCID, loaded.Snapshot.Terms.ReservedSCID)
 	require.Equal(t, backing, *loaded.Snapshot.Backing)
 	require.Equal(t, binding, *loaded.Snapshot.Source)
-	require.Equal(t, armed.PrePONRStartedAt, loaded.PrePONRStartedAt)
-	byPending, err := store.GetByPendingChannelID(
+	require.Equal(t, prePONRStartedAt, loaded.PrePONRStartedAt)
+	byPendingID, err := store.GetByPendingChannelID(
 		t.Context(), terms.PendingChannelID,
 	)
 	require.NoError(t, err)
-	require.Equal(t, loaded, byPending)
-	byPoint, err := store.GetByChannelPoint(
+	require.Equal(t, loaded, byPendingID)
+	byChannelPoint, err := store.GetByChannelPoint(
 		t.Context(), backing.ChannelPoint,
 	)
 	require.NoError(t, err)
-	require.Equal(t, loaded, byPoint)
+	require.Equal(t, loaded, byChannelPoint)
+
 	_, err = store.CompareAndSwap(
 		t.Context(), terms.ID, bound.Revision, bound.Snapshot,
 	)
 	require.ErrorIs(t, err, arkchannel.ErrConflict)
+
+	failedTerms := testArkChannelTerms(t, arkchannel.KindPromotion, 2)
+	_, err = coordinator.Request(t.Context(), failedTerms)
+	require.NoError(t, err)
+	_, _, err = coordinator.Apply(
+		t.Context(), failedTerms.ID, &arkchannel.Fail{
+			Reason: "negotiation rejected",
+		},
+	)
+	require.NoError(t, err)
+
 	records, err := store.ListNonTerminal(t.Context())
 	require.NoError(t, err)
 	require.Len(t, records, 1)
