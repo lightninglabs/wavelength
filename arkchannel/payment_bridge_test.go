@@ -35,22 +35,49 @@ func TestPaymentBridgeOutgoing(t *testing.T) {
 	require.Equal(t, PaymentCompleted, state.Snapshot().Phase)
 }
 
-// TestPaymentBridgeRejectsFailureAfterPreimage proves a bridge never converts
-// a known preimage into a failure path that could lose the source payment.
-func TestPaymentBridgeRejectsFailureAfterPreimage(t *testing.T) {
-	snapshot, preimage := testPaymentBridgeSnapshot(t, PaymentOutgoing)
+// TestPaymentBridgeIncomingFallback proves insufficient private liquidity can
+// only hand a pristine incoming reservation to the existing vHTLC lifecycle.
+func TestPaymentBridgeIncomingFallback(t *testing.T) {
+	snapshot, _ := testPaymentBridgeSnapshot(t, PaymentIncoming)
 	state, err := NewPaymentBridgeState(snapshot)
 	require.NoError(t, err)
 
-	state = applyPaymentEvent(t, state, &PaymentSourcePrepared{})
-	state = applyPaymentEvent(t, state, &PaymentSourceHTLCLocked{})
+	state = applyPaymentEvent(t, state, &PaymentFallbackSelected{
+		Reason: "insufficient private inbound liquidity",
+	})
+	require.True(t, state.IsTerminal())
+	require.Equal(t, PaymentVHTLCFallback, state.Snapshot().Phase)
+
+	_, err = state.ProcessEvent(
+		t.Context(), &PaymentSourceHTLCLocked{Circuit: &PaymentCircuit{
+			IncomingChannelID: 1, IncomingHTLCID: 2,
+		}}, &PaymentBridgeEnvironment{
+			PaymentHash: snapshot.PaymentHash,
+		},
+	)
+	require.Error(t, err)
+}
+
+// TestPaymentBridgeRejectsFailureAfterPreimage proves a bridge never converts
+// a known preimage into a failure path that could lose the source payment.
+func TestPaymentBridgeRejectsFailureAfterPreimage(t *testing.T) {
+	snapshot, preimage := testPaymentBridgeSnapshot(t, PaymentIncoming)
+	state, err := NewPaymentBridgeState(snapshot)
+	require.NoError(t, err)
+
+	state = applyPaymentEvent(t, state, &PaymentSourceHTLCLocked{
+		Circuit: &PaymentCircuit{
+			IncomingChannelID: 1, IncomingHTLCID: 2,
+			OutgoingSCID: snapshot.ReservedSCID,
+		},
+	})
 	state = applyPaymentEvent(t, state, &PaymentDestinationStarted{
-		ChannelID:       snapshot.ChannelID,
-		DestinationSCID: snapshot.ReservedSCID,
+		ChannelID:       ID{2},
+		DestinationSCID: snapshot.ReservedSCID + 1,
 	})
 	require.Equal(t, snapshot.ReservedSCID, state.Snapshot().ReservedSCID)
 	require.Equal(
-		t, snapshot.ReservedSCID, state.Snapshot().DestinationSCID,
+		t, snapshot.ReservedSCID+1, state.Snapshot().DestinationSCID,
 	)
 	state = applyPaymentEvent(t, state, &PaymentDestinationSettled{
 		Preimage: preimage,
@@ -95,18 +122,77 @@ func TestPaymentBridgeOutgoingSourceUnavailable(t *testing.T) {
 // TestSamePaymentBridgeTerms excludes worker-owned lifecycle fields while
 // retaining all caller-owned reservation terms.
 func TestSamePaymentBridgeTerms(t *testing.T) {
-	snapshot, preimage := testPaymentBridgeSnapshot(t, PaymentOutgoing)
+	snapshot, preimage := testPaymentBridgeSnapshot(t, PaymentIncoming)
 	advanced := snapshot.Clone()
 	advanced.Phase = PaymentPreimageKnown
+	advanced.ChannelID = ID{3}
 	advanced.DestinationSCID = 44
+	advanced.Circuit = &PaymentCircuit{IncomingChannelID: 1}
 	advanced.Preimage = &preimage
 
 	require.True(t, SamePaymentBridgeTerms(snapshot, advanced))
 	advanced.SourceAmount++
 	require.False(t, SamePaymentBridgeTerms(snapshot, advanced))
 	advanced = snapshot.Clone()
-	advanced.ChannelID = ID{3}
+	advanced.PrivateCLTVDeltaBlocks++
 	require.False(t, SamePaymentBridgeTerms(snapshot, advanced))
+}
+
+// TestPaymentBridgeRejectsFallbackAfterDestinationDispatch proves fallback
+// cannot double-pay while a destination payment may still settle.
+func TestPaymentBridgeRejectsFallbackAfterDestinationDispatch(t *testing.T) {
+	snapshot, _ := testPaymentBridgeSnapshot(t, PaymentIncoming)
+	state, err := NewPaymentBridgeState(snapshot)
+	require.NoError(t, err)
+
+	state = applyPaymentEvent(t, state, &PaymentSourceHTLCLocked{
+		Circuit: &PaymentCircuit{
+			IncomingChannelID: 1, IncomingHTLCID: 2,
+			OutgoingSCID: snapshot.ReservedSCID,
+		},
+	})
+	state = applyPaymentEvent(t, state, &PaymentDestinationStarted{
+		ChannelID: ID{2}, DestinationSCID: 43,
+	})
+	_, err = state.ProcessEvent(
+		t.Context(), &PaymentFallbackSelected{
+			Reason: "private channel liquidity changed",
+		}, &PaymentBridgeEnvironment{
+			PaymentHash: snapshot.PaymentHash,
+		},
+	)
+
+	require.ErrorContains(t, err, "cannot select fallback")
+	require.Equal(t, PaymentDestinationInFlight, state.Snapshot().Phase)
+	require.Equal(t, snapshot.ReservedSCID, state.Snapshot().ReservedSCID)
+}
+
+// TestPaymentBridgeDestinationUnavailableFallback proves only authoritative
+// destination failure can select the vHTLC rail after dispatch was requested.
+func TestPaymentBridgeDestinationUnavailableFallback(t *testing.T) {
+	snapshot, _ := testPaymentBridgeSnapshot(t, PaymentIncoming)
+	state, err := NewPaymentBridgeState(snapshot)
+	require.NoError(t, err)
+
+	state = applyPaymentEvent(t, state, &PaymentSourceHTLCLocked{
+		Circuit: &PaymentCircuit{
+			IncomingChannelID: 1, IncomingHTLCID: 2,
+			OutgoingSCID: snapshot.ReservedSCID,
+		},
+	})
+	state = applyPaymentEvent(t, state, &PaymentDestinationStarted{
+		ChannelID: ID{2}, DestinationSCID: 43,
+	})
+	state = applyPaymentEvent(t, state, &PaymentDestinationUnavailable{
+		Reason: "control tower reports no payment attempt",
+	})
+
+	require.True(t, state.IsTerminal())
+	require.Equal(t, PaymentVHTLCFallback, state.Snapshot().Phase)
+	require.Equal(
+		t, "control tower reports no payment attempt",
+		state.Snapshot().Failure,
+	)
 }
 
 func applyPaymentEvent(t *testing.T, state PaymentBridgeState,
@@ -142,8 +228,15 @@ func testPaymentBridgeSnapshot(t *testing.T,
 		ServerFee:         btcutil.Amount(60),
 		RoutingFeeBudget:  btcutil.Amount(40),
 	}
-	snapshot.ChannelID = ID{1}
-	snapshot.PublicInvoice = "lnbcrt1test"
+	if direction == PaymentOutgoing {
+		snapshot.ChannelID = ID{1}
+		snapshot.PublicInvoice = "lnbcrt1test"
+	} else {
+		snapshot.SourceAmount = snapshot.DestinationAmount
+		snapshot.PrivateCLTVDeltaBlocks = 616
+		snapshot.ServerFee = 0
+		snapshot.RoutingFeeBudget = 0
+	}
 
 	return snapshot, preimage
 }
