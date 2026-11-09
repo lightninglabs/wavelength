@@ -282,6 +282,76 @@ func (b VTXOBinding) Validate(terms Terms) error {
 	return nil
 }
 
+// Backing identifies the fully signed VTXO-to-channel transaction.
+type Backing struct {
+	Transaction  []byte
+	ChannelPoint wire.OutPoint
+}
+
+// Clone returns a backing record without aliases to transaction bytes.
+func (b Backing) Clone() Backing {
+	b.Transaction = slices.Clone(b.Transaction)
+
+	return b
+}
+
+// Validate proves the signed transaction spends only the bound VTXO, executes
+// the reconstructed channel spend path, and creates the expected-capacity lnd
+// channel point. The funding output script is local lnd state and is not
+// derivable from channel terms, so each endpoint must separately call
+// BackingTemplate.ValidateFundingOutput before finalizing its reservation.
+func (b Backing) Validate(terms Terms, source VTXOBinding) error {
+	if len(b.Transaction) == 0 {
+		return fmt.Errorf("signed backing transaction is required")
+	}
+	if err := source.Validate(terms); err != nil {
+		return err
+	}
+
+	tx := wire.NewMsgTx(2)
+	reader := bytes.NewReader(b.Transaction)
+	if err := tx.Deserialize(reader); err != nil {
+		return fmt.Errorf("decode backing transaction: %w", err)
+	}
+	if reader.Len() != 0 {
+		return fmt.Errorf("backing transaction has %d trailing bytes",
+			reader.Len())
+	}
+	if len(tx.TxIn) != 1 {
+		return fmt.Errorf("backing transaction must have one input")
+	}
+	if tx.TxIn[0].PreviousOutPoint != source.OutPoint {
+		return fmt.Errorf("backing transaction does not spend bound " +
+			"VTXO")
+	}
+	if len(tx.TxIn[0].Witness) == 0 {
+		return fmt.Errorf("backing transaction is not fully signed")
+	}
+	if b.ChannelPoint.Hash != tx.TxHash() {
+		return fmt.Errorf("channel point transaction ID does not match")
+	}
+	if int(b.ChannelPoint.Index) >= len(tx.TxOut) {
+		return fmt.Errorf("channel point output %d is out of range",
+			b.ChannelPoint.Index)
+	}
+	if tx.TxOut[b.ChannelPoint.Index].Value != int64(terms.Capacity) {
+		return fmt.Errorf("channel point value %d does not match "+
+			"capacity %d", tx.TxOut[b.ChannelPoint.Index].Value,
+			terms.Capacity)
+	}
+	reservedSCID := lnwire.NewShortChanIDFromInt(terms.ReservedSCID)
+	if reservedSCID.TxPosition != uint16(b.ChannelPoint.Index) {
+		return fmt.Errorf("reserved SCID output %d does not match "+
+			"channel point output %d", reservedSCID.TxPosition,
+			b.ChannelPoint.Index)
+	}
+	if err := verifyBackingWitness(tx, terms, source); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // validateNodeKey checks a compressed secp256k1 node key.
 func validateNodeKey(name string, raw [33]byte) error {
 	if _, err := btcec.ParsePubKey(raw[:]); err != nil {
