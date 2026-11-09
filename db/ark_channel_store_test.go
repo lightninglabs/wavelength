@@ -7,31 +7,35 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightningnetwork/lnd/clock"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
 )
 
-// TestArkChannelStoreRoundTrip preserves source identity, unsigned SCIDs and
-// preparation timing through revisioned SQL writes and reloads.
+// TestArkChannelStoreRoundTrip preserves exact signed backing and funding facts
+// through SQL revision updates and lookup by the funding channel point.
 func TestArkChannelStoreRoundTrip(t *testing.T) {
 	t.Parallel()
 	store := newArkChannelStoreForTest(t)
-	coordinator, err := arkchannel.NewCoordinator(store)
+	c, err := arkchannel.NewCoordinator(store)
 	require.NoError(t, err)
 	terms := testArkChannelTerms(t, arkchannel.KindPromotion, 1)
 	terms.ReservedSCID = lnwire.ShortChannelID{
-		BlockHeight: 0x800001, TxIndex: 1,
+		BlockHeight: 0x800001,
+		TxIndex:     1,
 	}.ToUint64()
-	requested, err := coordinator.Request(t.Context(), terms)
+	requested, err := c.Request(t.Context(), terms)
 	require.NoError(t, err)
 	require.False(t, requested.CreatedAt.IsZero())
 	require.False(t, requested.UpdatedAt.IsZero())
 	require.True(t, requested.PrePONRStartedAt.IsZero())
-	armed, _, err := coordinator.Apply(
+	armed, _, err := c.Apply(
 		t.Context(), terms.ID, &arkchannel.OORPreparationStarted{},
 	)
 	require.NoError(t, err)
@@ -39,30 +43,52 @@ func TestArkChannelStoreRoundTrip(t *testing.T) {
 	require.Nil(t, armed.Snapshot.Source)
 	require.False(t, armed.PrePONRStartedAt.IsZero())
 	binding := testArkChannelBinding(terms)
-	bound, _, err := coordinator.Apply(
+	bound, _, err := c.Apply(
 		t.Context(), terms.ID, &arkchannel.BindVTXO{
 			Binding: binding,
 		},
 	)
 	require.NoError(t, err)
+	backing := testArkChannelBacking(t, terms, binding)
+	for _, event := range []arkchannel.Event{
+		&arkchannel.BackingSigned{
+			Backing: backing,
+		},
+		&arkchannel.FundingFinalized{
+			Party: arkchannel.PartyClient,
+		},
+		&arkchannel.FundingFinalized{
+			Party: arkchannel.PartyHub,
+		},
+	} {
+		_, _, err = c.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
 	loaded, err := store.Get(t.Context(), terms.ID)
 	require.NoError(t, err)
-	require.Equal(t, bound, loaded)
+	require.Equal(t, arkchannel.PhaseBackingReady, loaded.Snapshot.Phase)
+	require.Equal(t, terms.ReservedSCID, loaded.Snapshot.Terms.ReservedSCID)
+	require.Equal(t, backing, *loaded.Snapshot.Backing)
 	require.Equal(t, binding, *loaded.Snapshot.Source)
 	require.Equal(t, armed.PrePONRStartedAt, loaded.PrePONRStartedAt)
-	require.Equal(t, terms.ReservedSCID, loaded.Snapshot.Terms.ReservedSCID)
 	byPending, err := store.GetByPendingChannelID(
 		t.Context(), terms.PendingChannelID,
 	)
 	require.NoError(t, err)
 	require.Equal(t, loaded, byPending)
+	byPoint, err := store.GetByChannelPoint(
+		t.Context(), backing.ChannelPoint,
+	)
+	require.NoError(t, err)
+	require.Equal(t, loaded, byPoint)
 	_, err = store.CompareAndSwap(
-		t.Context(), terms.ID, requested.Revision, requested.Snapshot,
+		t.Context(), terms.ID, bound.Revision, bound.Snapshot,
 	)
 	require.ErrorIs(t, err, arkchannel.ErrConflict)
-	remaining, err := store.ListNonTerminal(t.Context())
+	records, err := store.ListNonTerminal(t.Context())
 	require.NoError(t, err)
-	require.Len(t, remaining, 1)
+	require.Len(t, records, 1)
+	require.Equal(t, terms.ID, records[0].Snapshot.Terms.ID)
 }
 
 // TestArkChannelStoreRejectsDuplicateProtocolBindings proves a virtual SCID
@@ -249,4 +275,52 @@ func testArkChannelBinding(terms arkchannel.Terms) arkchannel.VTXOBinding {
 		PolicyTemplate: policy,
 		PkScript:       pkScript,
 	}
+}
+
+// testArkChannelBacking creates a signed funding transaction fixture.
+func testArkChannelBacking(t *testing.T, terms arkchannel.Terms,
+	binding arkchannel.VTXOBinding) arkchannel.Backing {
+
+	t.Helper()
+	packet, err := psbt.New(nil, []*wire.TxOut{{
+		Value:    int64(terms.Capacity),
+		PkScript: []byte{0x51, 0x20, 7},
+	}}, 2, 0, nil)
+	require.NoError(t, err)
+	template, err := arkchannel.NewBackingTemplate(packet, terms, binding)
+	require.NoError(t, err)
+	clientSig := testArkChannelBackingSignature(
+		t, template, terms, arkchannel.PartyClient,
+		testArkChannelPolicyKey(terms.ID[0], 4),
+	)
+	hubSig := testArkChannelBackingSignature(
+		t, template, terms, arkchannel.PartyHub,
+		testArkChannelPolicyKey(terms.ID[0], 5),
+	)
+	backing, err := template.Complete(
+		terms, binding, clientSig, hubSig,
+	)
+	require.NoError(t, err)
+
+	return backing
+}
+
+// testArkChannelBackingSignature signs one endpoint's backing branch.
+func testArkChannelBackingSignature(t *testing.T,
+	template *arkchannel.BackingTemplate, terms arkchannel.Terms,
+	party arkchannel.Party, key *btcec.PrivateKey) input.Signature {
+
+	t.Helper()
+	desc, err := template.SignDescriptor(
+		terms, party, keychain.KeyDescriptor{
+			PubKey: key.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	sig, err := input.NewMockSigner(
+		[]*btcec.PrivateKey{key}, nil,
+	).SignOutputRaw(template.Packet().UnsignedTx, desc)
+	require.NoError(t, err)
+
+	return sig
 }
