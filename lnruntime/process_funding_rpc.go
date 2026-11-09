@@ -16,6 +16,7 @@ import (
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/lntypes"
 )
 
 const fundingPeerService = "arkchannelrpc.ArkChannelFundingPeerService"
@@ -23,19 +24,51 @@ const fundingPeerService = "arkchannelrpc.ArkChannelFundingPeerService"
 const recoveryPackageInstalledEvent = arkchannelrpc.ChannelEventType_CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED //nolint:ll
 
 var fundingPeerMethods = map[string]struct{}{
-	"GetPeerInfo":            {},
-	"RegisterPromotion":      {},
-	"RegisterReceiveIntent":  {},
-	"GetFundingChannel":      {},
-	"FailReceiveIntent":      {},
-	"BindPreparedOOR":        {},
-	"SignBacking":            {},
-	"InstallBacking":         {},
-	"InstallRecoveryPackage": {},
-	"ExportRecoveryPackage":  {},
-	"FundingFinalized":       {},
-	"ChannelActive":          {},
-	"ApplyChannelEvent":      {},
+	"GetPeerInfo":             {},
+	"RegisterPromotion":       {},
+	"RegisterReceiveIntent":   {},
+	"GetFundingChannel":       {},
+	"FailReceiveIntent":       {},
+	"BindPreparedOOR":         {},
+	"SignBacking":             {},
+	"InstallBacking":          {},
+	"InstallRecoveryPackage":  {},
+	"ExportRecoveryPackage":   {},
+	"FundingFinalized":        {},
+	"ChannelActive":           {},
+	"ApplyChannelEvent":       {},
+	"CreateInvoice":           {},
+	"PayInvoice":              {},
+	"PrepareOutgoingPayment":  {},
+	"CancelOutgoingPayment":   {},
+	"RegisterIncomingPayment": {},
+	"CancelIncomingPayment":   {},
+}
+
+// OutgoingPaymentPreparation fixes the private source amount and active
+// channel before the client dispatches its held same-hash HTLC.
+type OutgoingPaymentPreparation struct {
+	PaymentHash   lntypes.Hash
+	PrivateAmount btcutil.Amount
+	Fee           btcutil.Amount
+	ChannelID     arkchannel.ID
+	ReservedSCID  uint64
+}
+
+// PaymentBridgeCoordinator is the narrow swapserver-owned public Lightning
+// boundary exposed to one authenticated private channel endpoint.
+type PaymentBridgeCoordinator interface {
+	PrepareOutgoingPayment(context.Context, [33]byte, string,
+		btcutil.Amount) (OutgoingPaymentPreparation, error)
+
+	CancelOutgoingPayment(context.Context, [33]byte, lntypes.Hash,
+		string) error
+
+	RegisterIncomingPayment(context.Context, [33]byte, lntypes.Hash,
+		btcutil.Amount, uint64) (btcutil.Amount, error)
+
+	CancelIncomingPayment(context.Context, [33]byte, lntypes.Hash,
+		string) error
 }
 
 // FundingPeerInfo contains immutable hub policy needed to construct a client
@@ -98,6 +131,26 @@ type ProcessFundingPeer interface {
 
 	ApplyChannelEvent(context.Context, arkchannel.ID,
 		arkchannel.Event) (arkchannel.Record, error)
+}
+
+// ProcessPaymentPeer is the private-channel payment surface exposed by the
+// authenticated hub endpoint.
+type ProcessPaymentPeer interface {
+	CreateInvoice(context.Context, arkchannel.ID,
+		btcutil.Amount) (lntypes.Hash, error)
+
+	PayInvoice(context.Context, arkchannel.ID, lntypes.Hash,
+		btcutil.Amount) error
+
+	PrepareOutgoingPayment(context.Context, string,
+		btcutil.Amount) (OutgoingPaymentPreparation, error)
+
+	CancelOutgoingPayment(context.Context, lntypes.Hash, string) error
+
+	RegisterIncomingPayment(context.Context, lntypes.Hash, btcutil.Amount,
+		uint64) (btcutil.Amount, error)
+
+	CancelIncomingPayment(context.Context, lntypes.Hash, string) error
 }
 
 // FundingChannelState is the minimal remote channel-FSM view needed to bind a
@@ -437,6 +490,177 @@ func (p *MailboxFundingPeer) ApplyChannelEvent(ctx context.Context,
 	}, nil
 }
 
+// CreateInvoice creates an invoice in the remote native lnd registry.
+func (p *MailboxFundingPeer) CreateInvoice(ctx context.Context,
+	id arkchannel.ID, amount btcutil.Amount) (lntypes.Hash, error) {
+
+	response, err := p.client.CreateInvoice(
+		ctx, &arkchannelrpc.PeerInvoiceRequest{
+			ChannelId: id[:], AmountSat: int64(amount),
+		},
+	)
+	if err != nil {
+		return lntypes.Hash{}, err
+	}
+
+	return rpcPaymentHash(response.GetPaymentHash())
+}
+
+// PayInvoice pays one remote invoice over the active private channel.
+func (p *MailboxFundingPeer) PayInvoice(ctx context.Context, id arkchannel.ID,
+	hash lntypes.Hash, amount btcutil.Amount) error {
+
+	response, err := p.client.PayInvoice(
+		ctx, &arkchannelrpc.PeerPayInvoiceRequest{
+			ChannelId: id[:], PaymentHash: hash[:],
+			AmountSat: int64(amount),
+		}, fundingRPCOptions(id, "pay/"+hex.EncodeToString(hash[:])),
+	)
+	if err != nil {
+		return err
+	}
+	if !response.GetSettled() {
+		return fmt.Errorf("remote native lnd payment did not settle")
+	}
+
+	return nil
+}
+
+// PrepareOutgoingPayment asks the operator to hold and dispatch one public
+// invoice using a private source HTLC.
+func (p *MailboxFundingPeer) PrepareOutgoingPayment(ctx context.Context,
+	paymentRequest string, maxFee btcutil.Amount) (
+	OutgoingPaymentPreparation, error) {
+
+	if maxFee < 0 {
+		return OutgoingPaymentPreparation{}, fmt.Errorf("maximum fee " +
+			"cannot be negative")
+	}
+	response, err := p.client.PrepareOutgoingPayment(
+		ctx, &arkchannelrpc.PrepareOutgoingPaymentRequest{
+			PaymentRequest: paymentRequest,
+			MaxFeeSat:      uint64(maxFee),
+		},
+	)
+	if err != nil {
+		return OutgoingPaymentPreparation{}, err
+	}
+	hash, err := rpcPaymentHash(response.GetPaymentHash())
+	if err != nil {
+		return OutgoingPaymentPreparation{}, err
+	}
+	amount, err := positiveRPCAmount(
+		"private payment amount", response.GetPrivateAmountSat(),
+	)
+	if err != nil {
+		return OutgoingPaymentPreparation{}, err
+	}
+	if response.GetFeeSat() < 0 {
+		return OutgoingPaymentPreparation{}, fmt.Errorf("payment fee " +
+			"cannot be negative")
+	}
+	id, err := rpcChannelID(response.GetChannelId())
+	if err != nil {
+		return OutgoingPaymentPreparation{}, err
+	}
+	if response.GetReservedScid() == 0 {
+		return OutgoingPaymentPreparation{}, fmt.Errorf("private " +
+			"payment SCID is required")
+	}
+
+	return OutgoingPaymentPreparation{
+		PaymentHash: hash, PrivateAmount: amount,
+		Fee: btcutil.Amount(response.GetFeeSat()), ChannelID: id,
+		ReservedSCID: response.GetReservedScid(),
+	}, nil
+}
+
+// CancelOutgoingPayment releases an outgoing hold invoice that the client
+// could not lock before the operator dispatched its public destination.
+func (p *MailboxFundingPeer) CancelOutgoingPayment(ctx context.Context,
+	hash lntypes.Hash, reason string) error {
+
+	if reason == "" {
+		return fmt.Errorf("outgoing payment cancellation reason is " +
+			"required")
+	}
+	response, err := p.client.CancelOutgoingPayment(
+		ctx, &arkchannelrpc.CancelOutgoingPaymentRequest{
+			PaymentHash: hash[:], Reason: reason,
+		}, fundingRPCOptions(
+			arkchannel.ID(hash),
+			"cancel-outgoing-payment",
+		),
+	)
+	if err != nil {
+		return err
+	}
+	if !response.GetCancelled() {
+		return fmt.Errorf("outgoing payment was not cancelled")
+	}
+
+	return nil
+}
+
+// RegisterIncomingPayment binds a future public route to this authenticated
+// client after its native invoice exists.
+func (p *MailboxFundingPeer) RegisterIncomingPayment(ctx context.Context,
+	hash lntypes.Hash, amount btcutil.Amount, reservedSCID uint64) (
+	btcutil.Amount, error) {
+
+	if amount <= 0 || reservedSCID == 0 {
+		return 0, fmt.Errorf("incoming payment amount and SCID are " +
+			"required")
+	}
+	response, err := p.client.RegisterIncomingPayment(
+		ctx, &arkchannelrpc.RegisterIncomingPaymentRequest{
+			PaymentHash: hash[:], AmountSat: int64(amount),
+			ReservedScid: reservedSCID,
+		},
+	)
+	if err != nil {
+		return 0, err
+	}
+	if !response.GetRegistered() {
+		return 0, fmt.Errorf("incoming payment was not registered")
+	}
+	capacity, err := positiveRPCAmount(
+		"incoming channel capacity", response.GetChannelCapacitySat(),
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	return capacity, nil
+}
+
+// CancelIncomingPayment releases a registered future-SCID receive before its
+// invoice is published or a public source HTLC is accepted.
+func (p *MailboxFundingPeer) CancelIncomingPayment(ctx context.Context,
+	hash lntypes.Hash, reason string) error {
+
+	if reason == "" {
+		return fmt.Errorf("incoming payment cancellation reason is " +
+			"required")
+	}
+	response, err := p.client.CancelIncomingPayment(
+		ctx, &arkchannelrpc.CancelIncomingPaymentRequest{
+			PaymentHash: hash[:], Reason: reason,
+		}, fundingRPCOptions(
+			arkchannel.ID(hash),
+			"cancel-incoming-payment",
+		),
+	)
+	if err != nil {
+		return err
+	}
+	if !response.GetCancelled() {
+		return fmt.Errorf("incoming payment was not cancelled")
+	}
+
+	return nil
+}
+
 // FundingPeerRPCServerConfig contains one authenticated remote endpoint and
 // the local native lnd process it may coordinate with.
 type FundingPeerRPCServerConfig struct {
@@ -446,6 +670,7 @@ type FundingPeerRPCServerConfig struct {
 	Funding    *NativeFundingEndpoint
 	Node       *NativeNode
 	Recovery   ChannelRecoveryManager
+	Bridge     PaymentBridgeCoordinator
 }
 
 // FundingPeerRPCServer serves one client-bound funding process.
@@ -831,6 +1056,181 @@ func (s *FundingPeerRPCServer) ApplyChannelEvent(ctx context.Context,
 
 	return &arkchannelrpc.ApplyChannelEventResponse{
 		Channel: ArkChannelRecordToRPC(record),
+	}, nil
+}
+
+// CreateInvoice creates a native invoice for one active owned channel.
+func (s *FundingPeerRPCServer) CreateInvoice(ctx context.Context,
+	request *arkchannelrpc.PeerInvoiceRequest) (
+	*arkchannelrpc.PeerInvoiceResponse, error) {
+
+	_, _, err := s.channel(ctx, request.GetChannelId())
+	if err != nil {
+		return nil, err
+	}
+	amount, err := positiveRPCAmount(
+		"invoice amount", request.GetAmountSat(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	_, hash, err := s.cfg.Node.AddInvoice(ctx, amount)
+	if err != nil {
+		return nil, err
+	}
+
+	return &arkchannelrpc.PeerInvoiceResponse{
+		PaymentHash: hash[:],
+	}, nil
+}
+
+// PayInvoice sends one native fixed-route payment for an active channel.
+func (s *FundingPeerRPCServer) PayInvoice(ctx context.Context,
+	request *arkchannelrpc.PeerPayInvoiceRequest) (
+	*arkchannelrpc.PeerPayInvoiceResponse, error) {
+
+	_, record, err := s.channel(ctx, request.GetChannelId())
+	if err != nil {
+		return nil, err
+	}
+	hash, err := rpcPaymentHash(request.GetPaymentHash())
+	if err != nil {
+		return nil, err
+	}
+	amount, err := positiveRPCAmount(
+		"payment amount", request.GetAmountSat(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.cfg.Node.PayInvoice(ctx, record, hash, amount); err != nil {
+		return nil, err
+	}
+
+	return &arkchannelrpc.PeerPayInvoiceResponse{Settled: true}, nil
+}
+
+// PrepareOutgoingPayment delegates public invoice admission to the operator's
+// durable bridge manager while retaining authenticated client identity here.
+func (s *FundingPeerRPCServer) PrepareOutgoingPayment(ctx context.Context,
+	request *arkchannelrpc.PrepareOutgoingPaymentRequest) (
+	*arkchannelrpc.PrepareOutgoingPaymentResponse, error) {
+
+	if s.cfg.Bridge == nil {
+		return nil, fmt.Errorf("payment bridge is not configured")
+	}
+	if request.GetPaymentRequest() == "" {
+		return nil, fmt.Errorf("payment request is required")
+	}
+	if request.GetMaxFeeSat() > uint64(btcutil.MaxSatoshi) {
+		return nil, fmt.Errorf("maximum fee exceeds maximum money")
+	}
+	preparation, err := s.cfg.Bridge.PrepareOutgoingPayment(
+		ctx, s.cfg.RemoteNode, request.GetPaymentRequest(),
+		btcutil.Amount(
+			request.GetMaxFeeSat(),
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &arkchannelrpc.PrepareOutgoingPaymentResponse{
+		PaymentHash:      preparation.PaymentHash[:],
+		PrivateAmountSat: int64(preparation.PrivateAmount),
+		FeeSat:           int64(preparation.Fee),
+		ChannelId:        preparation.ChannelID[:],
+		ReservedScid:     preparation.ReservedSCID,
+	}, nil
+}
+
+// CancelOutgoingPayment records source failure before public dispatch and
+// causes the operator worker to cancel its private hold invoice.
+func (s *FundingPeerRPCServer) CancelOutgoingPayment(ctx context.Context,
+	request *arkchannelrpc.CancelOutgoingPaymentRequest) (
+	*arkchannelrpc.CancelOutgoingPaymentResponse, error) {
+
+	if s.cfg.Bridge == nil {
+		return nil, fmt.Errorf("payment bridge is not configured")
+	}
+	hash, err := rpcPaymentHash(request.GetPaymentHash())
+	if err != nil {
+		return nil, err
+	}
+	if request.GetReason() == "" || len(request.GetReason()) > 256 {
+		return nil, fmt.Errorf("valid payment cancellation reason is " +
+			"required")
+	}
+	if err := s.cfg.Bridge.CancelOutgoingPayment(
+		ctx, s.cfg.RemoteNode, hash, request.GetReason(),
+	); err != nil {
+		return nil, err
+	}
+
+	return &arkchannelrpc.CancelOutgoingPaymentResponse{
+		Cancelled: true,
+	}, nil
+}
+
+// RegisterIncomingPayment records an authenticated future-SCID reservation
+// before the client returns its BOLT 11 invoice.
+func (s *FundingPeerRPCServer) RegisterIncomingPayment(ctx context.Context,
+	request *arkchannelrpc.RegisterIncomingPaymentRequest) (
+	*arkchannelrpc.RegisterIncomingPaymentResponse, error) {
+
+	if s.cfg.Bridge == nil {
+		return nil, fmt.Errorf("payment bridge is not configured")
+	}
+	hash, err := rpcPaymentHash(request.GetPaymentHash())
+	if err != nil {
+		return nil, err
+	}
+	amount, err := positiveRPCAmount(
+		"incoming payment amount", request.GetAmountSat(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	if request.GetReservedScid() == 0 {
+		return nil, fmt.Errorf("incoming payment SCID is required")
+	}
+	capacity, err := s.cfg.Bridge.RegisterIncomingPayment(
+		ctx, s.cfg.RemoteNode, hash, amount, request.GetReservedScid(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &arkchannelrpc.RegisterIncomingPaymentResponse{
+		Registered: true, ChannelCapacitySat: int64(capacity),
+	}, nil
+}
+
+// CancelIncomingPayment terminates a future-SCID reservation that cannot be
+// exposed in a durable client invoice.
+func (s *FundingPeerRPCServer) CancelIncomingPayment(ctx context.Context,
+	request *arkchannelrpc.CancelIncomingPaymentRequest) (
+	*arkchannelrpc.CancelIncomingPaymentResponse, error) {
+
+	if s.cfg.Bridge == nil {
+		return nil, fmt.Errorf("payment bridge is not configured")
+	}
+	hash, err := rpcPaymentHash(request.GetPaymentHash())
+	if err != nil {
+		return nil, err
+	}
+	if request.GetReason() == "" || len(request.GetReason()) > 256 {
+		return nil, fmt.Errorf("valid payment cancellation reason is " +
+			"required")
+	}
+	if err := s.cfg.Bridge.CancelIncomingPayment(
+		ctx, s.cfg.RemoteNode, hash, request.GetReason(),
+	); err != nil {
+		return nil, err
+	}
+
+	return &arkchannelrpc.CancelIncomingPaymentResponse{
+		Cancelled: true,
 	}, nil
 }
 
@@ -1568,6 +1968,16 @@ func recordSummaryFromRPC(terms arkchannel.Terms,
 	}, nil
 }
 
+// rpcPaymentHash parses one fixed-width Lightning payment hash.
+func rpcPaymentHash(raw []byte) (lntypes.Hash, error) {
+	var hash lntypes.Hash
+	if err := copyFixed("payment hash", hash[:], raw); err != nil {
+		return lntypes.Hash{}, err
+	}
+
+	return hash, nil
+}
+
 // positiveRPCAmount parses a strictly positive signed wire amount.
 func positiveRPCAmount(name string, value int64) (btcutil.Amount, error) {
 	amount, err := rpcAmount(name, value)
@@ -1600,3 +2010,10 @@ func parseCompressedKey(name string, key [33]byte) (*btcec.PublicKey, error) {
 
 	return parsed, nil
 }
+
+var _ ProcessFundingPeer = (*MailboxFundingPeer)(nil)
+var _ ProcessPaymentPeer = (*MailboxFundingPeer)(nil)
+var _ FundingCounterparty = (*MailboxFundingPeer)(nil)
+
+//nolint:ll // Keeping the generated interface name explicit aids API audits.
+var _ arkchannelrpc.ArkChannelFundingPeerServiceMailboxServer = (*FundingPeerRPCServer)(nil)
