@@ -25,9 +25,11 @@ import (
 	"github.com/lightningnetwork/lnd/graph/db/models"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnpeer"
 	"github.com/lightningnetwork/lnd/lntest/mock"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
@@ -718,6 +720,136 @@ func (t *fundingFlowTransport) deliverReestablish(
 	}
 }
 
+// TestNativeFundingFlowPaysBothDirections proves the composed funding manager
+// negotiates an unpublished channel and hands it to the same native links used
+// by lnd's invoice and payment lifecycles.
+func TestNativeFundingFlowPaysBothDirections(t *testing.T) {
+	t.Parallel()
+
+	alice := newFundingFlowNode(t, arkchannel.PartyHub)
+	bob := newFundingFlowNode(t, arkchannel.PartyClient)
+	connectFundingFlowNodes(t, alice, bob)
+	require.NoError(t, alice.runtime.Start())
+	require.NoError(t, bob.runtime.Start())
+	t.Cleanup(func() {
+		require.NoError(t, alice.runtime.Stop())
+		require.NoError(t, bob.runtime.Stop())
+	})
+
+	pendingID := lndfunding.PendingChanID{1, 3, 3, 7}
+	record := fundingIntentRecord(t, alice, bob, pendingID)
+	flow := activateFundingFlowChannel(t, alice, bob, record)
+	aliceSink := flow.hubSink
+	bobSink := flow.clientSink
+	require.NotNil(t, aliceSink.record.Snapshot.Backing)
+	require.Equal(
+		t, arkchannel.PhaseActive, aliceSink.record.Snapshot.Phase,
+	)
+	require.Equal(t, arkchannel.PhaseActive,
+		bobSink.record.Snapshot.Phase)
+	aliceChannel := flow.hubChannel
+	bobChannel := flow.clientChannel
+	require.Equal(
+		t, aliceChannel.FundingOutpoint, bobChannel.FundingOutpoint,
+	)
+	for _, channel := range []*chanstate.OpenChannel{
+		aliceChannel, bobChannel,
+	} {
+		require.Equal(
+			t, nativeChannelDBType(channel.IsInitiator),
+			channel.ChanType,
+		)
+		require.NoError(
+			t, validateNativeChannelConfig(
+				"local", channel.LocalChanCfg, channel.Capacity,
+			),
+		)
+		require.NoError(
+			t, validateNativeChannelConfig(
+				"remote", channel.RemoteChanCfg,
+				channel.Capacity,
+			),
+		)
+	}
+	require.False(t, aliceChannel.IsPending)
+	require.False(t, bobChannel.IsPending)
+	require.Positive(t, aliceChannel.LocalCommitment.LocalBalance)
+	require.Zero(t, bobChannel.LocalCommitment.LocalBalance)
+	bobLink, err := bob.runtime.GetLink(bobChannel.ShortChanID())
+	require.NoError(t, err)
+	require.Zero(t, bobLink.Bandwidth())
+	aliceLink, err := alice.runtime.GetLink(aliceChannel.ShortChanID())
+	require.NoError(t, err)
+	require.GreaterOrEqual(
+		t, aliceLink.Bandwidth(), lnwire.MilliSatoshi(30_000_000),
+	)
+
+	const firstAmount = lnwire.MilliSatoshi(30_000_000)
+	payRuntimeInvoice(t, alice, bob, firstAmount, lntypes.Preimage{1, 2, 3})
+	for _, node := range []*fundingFlowNode{alice, bob} {
+		_, err := node.runtime.QuiesceChannel(
+			t.Context(), aliceChannel.FundingOutpoint,
+		)
+		require.NoError(t, err)
+	}
+	alice.runtime.ResumeChannel(aliceChannel.FundingOutpoint)
+	bob.runtime.ResumeChannel(bobChannel.FundingOutpoint)
+
+	// Restart only Bob's link. Alice recycles its still-live link when the
+	// mailbox delivers Bob's new channel_reestablish handshake.
+	bob.runtime.RemoveLink(bobChannel.FundingOutpoint)
+	restored, err := bob.runtime.RestorePeerLinks(
+		bob.peer, func(*chanstate.OpenChannel) (LinkConfig, error) {
+			return testLinkConfig(bob.peer, bob.failures), nil
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, restored, 1)
+	recycleDeadline := time.After(5 * time.Second)
+	recycleTicker := time.NewTicker(10 * time.Millisecond)
+	defer recycleTicker.Stop()
+	for {
+		newAliceLink, linkErr := alice.runtime.GetLink(
+			aliceChannel.ShortChanID(),
+		)
+		if linkErr == nil && newAliceLink != aliceLink {
+			break
+		}
+		select {
+		case failure := <-alice.failures:
+			require.NoError(t, failure)
+
+		case failure := <-bob.failures:
+			require.NoError(t, failure)
+
+		case <-recycleTicker.C:
+		case <-recycleDeadline:
+			t.Fatal("live peer did not recycle its channel link")
+		}
+	}
+
+	const returnAmount = lnwire.MilliSatoshi(10_000_000)
+	payRuntimeInvoice(
+		t, bob, alice, returnAmount, lntypes.Preimage{7, 8, 9},
+	)
+
+	aliceClean, err := alice.runtime.QuiesceChannel(
+		t.Context(), aliceChannel.FundingOutpoint,
+	)
+	require.NoError(t, err)
+	bobClean, err := bob.runtime.QuiesceChannel(
+		t.Context(), bobChannel.FundingOutpoint,
+	)
+	require.NoError(t, err)
+	require.Equal(t, aliceClean.ChannelPoint, bobClean.ChannelPoint)
+	require.Equal(t, aliceClean.LocalBalance, bobClean.RemoteBalance)
+	require.Equal(t, aliceClean.RemoteBalance, bobClean.LocalBalance)
+	require.Equal(t, aliceClean.Capacity, bobClean.Capacity)
+	require.Equal(
+		t, aliceClean.CommitmentHeight, bobClean.CommitmentHeight,
+	)
+}
+
 // TestRestorePeerLinksIsolatesChannelFailures verifies one channel's broken
 // application config does not roll back another restored link for its peer.
 func TestRestorePeerLinksIsolatesChannelFailures(t *testing.T) {
@@ -1277,4 +1409,78 @@ func awaitLink(t *testing.T, node *fundingFlowNode) *chanstate.OpenChannel {
 	}
 
 	return nil
+}
+
+// payRuntimeInvoice sends a fixed one-hop payment through lnd's native
+// control tower, switch, channel links, and invoice registry.
+func payRuntimeInvoice(t *testing.T, payer, payee *fundingFlowNode,
+	amount lnwire.MilliSatoshi, preimage lntypes.Preimage) {
+
+	t.Helper()
+
+	_, err := payee.runtime.Invoices().AddInvoice(
+		t.Context(), &invoices.Invoice{
+			CreationDate: time.Now(),
+			Terms: invoices.ContractTerm{
+				FinalCltvDelta:  18,
+				Expiry:          time.Hour,
+				PaymentPreimage: &preimage,
+				Value:           amount,
+				Features:        emptyFeatureVector(),
+			},
+		}, preimage.Hash(),
+	)
+	require.NoError(t, err)
+
+	channels, err := payer.db.ChannelStateDB().FetchAllOpenChannels()
+	require.NoError(t, err)
+	require.Len(t, channels, 1)
+	scid := channels[0].ShortChanID().ToUint64()
+	paymentRoute := &route.Route{
+		TotalTimeLock: 800_040,
+		TotalAmount:   amount,
+		SourcePubKey:  route.NewVertex(payer.key.PubKey()),
+		Hops: []*route.Hop{
+			{
+				PubKeyBytes: route.NewVertex(
+					payee.key.PubKey(),
+				),
+				ChannelID:        scid,
+				OutgoingTimeLock: 800_040,
+				AmtToForward:     amount,
+				LegacyPayload:    true,
+			},
+		},
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		attempt, sendErr := payer.runtime.Payments().SendToOperator(
+			t.Context(), preimage.Hash(), paymentRoute, nil,
+		)
+		if sendErr == nil && attempt.Settle == nil {
+			sendErr = fmt.Errorf("payment attempt did not settle")
+		}
+		result <- sendErr
+	}()
+
+	select {
+	case err := <-result:
+		require.NoError(t, err)
+
+	case err := <-payer.failures:
+		require.NoError(t, err)
+
+	case err := <-payee.failures:
+		require.NoError(t, err)
+
+	case <-time.After(10 * time.Second):
+		t.Fatal("native lnd channel payment did not complete")
+	}
+
+	invoice, err := payee.runtime.Invoices().LookupInvoice(
+		t.Context(), preimage.Hash(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, invoices.ContractSettled, invoice.State)
 }
