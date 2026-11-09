@@ -296,8 +296,8 @@ func TestStartTipDropsStaleAnswer(t *testing.T) {
 }
 
 // TestStartTipFencesLiveActorBySeenHeight pins the height fence on its own,
-// on an actor that stays Live: an answer no newer than the last block it
-// received is dropped, and a newer one still classifies.
+// on an actor that stays Live: an expired answer no newer than the last
+// block it received is dropped, and a newer one still classifies.
 func TestStartTipFencesLiveActorBySeenHeight(t *testing.T) {
 	t.Parallel()
 
@@ -315,19 +315,9 @@ func TestStartTipFencesLiveActorBySeenHeight(t *testing.T) {
 		state: &LiveState{
 			VTXO: desc,
 		},
-		env: h.env,
+		env:             h.env,
+		lastEpochHeight: desc.BatchExpiry,
 	}
-
-	// A block well before any refresh threshold keeps the actor Live
-	// and writes nothing.
-	seen := desc.CreatedHeight + 1
-	_, err := actorUnderTest.Receive(
-		h.ctx, &BlockEpochEvent{
-			Height: seen,
-		},
-	).Unpack()
-	require.NoError(t, err)
-	require.IsType(t, &LiveState{}, actorUnderTest.state)
 
 	answer := func(height int32) *startTipEvent {
 		return &startTipEvent{
@@ -339,6 +329,7 @@ func TestStartTipFencesLiveActorBySeenHeight(t *testing.T) {
 		}
 	}
 
+	seen := actorUnderTest.lastEpochHeight
 	for _, height := range []int32{seen - 1, seen} {
 		_, ok := actorUnderTest.startTipEpoch(h.ctx, answer(height))
 		require.False(t, ok, "tip at %d after block %d", height, seen)
@@ -348,6 +339,63 @@ func TestStartTipFencesLiveActorBySeenHeight(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, seen+1, epoch.Height)
 
+	h.store.AssertExpectations(t)
+}
+
+// TestStartTipDefersRefreshAndCriticalExit pins that the start tip leaves a
+// VTXO inside its refresh or critical window Live. Either decision reserves
+// the coin, so applying it on spawn would claim a freshly received VTXO
+// before its owner could spend, leave or refresh it.
+func TestStartTipDefersRefreshAndCriticalExit(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	desc := h.newTestDescriptor()
+
+	heights := make(map[ExpiryStatus]int32)
+	for height := desc.CreatedHeight; height < desc.BatchExpiry; height++ {
+		status := h.env.ExpiryConfig.CheckExpiry(desc, height)
+		if _, ok := heights[status]; !ok {
+			heights[status] = height
+		}
+	}
+
+	for _, status := range []ExpiryStatus{
+		ExpiryStatusNeedsRefresh, ExpiryStatusCritical,
+	} {
+		height, ok := heights[status]
+		require.True(t, ok, "no height with status %v", status)
+
+		actorUnderTest := &VTXOActor{
+			cfg: &VTXOActorConfig{
+				VTXO:        desc,
+				Store:       h.store,
+				Wallet:      h.wallet,
+				ChainParams: &chaincfg.RegressionNetParams,
+				Manager:     newMockManagerRef(t),
+			},
+			state: &LiveState{
+				VTXO: desc,
+			},
+			env: h.env,
+		}
+		msg := &startTipEvent{
+			tip: fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.BestHeightResponse{
+					Height: height,
+				},
+			),
+		}
+		_, err := actorUnderTest.Receive(h.ctx, msg).Unpack()
+		require.NoError(t, err)
+		require.IsType(
+			t, &LiveState{}, actorUnderTest.state, "tip with "+
+				"status %v", status,
+		)
+	}
+
+	// No store expectations were set, so a PendingForfeit or
+	// UnilateralExit write would fail the test.
 	h.store.AssertExpectations(t)
 }
 

@@ -82,7 +82,8 @@ func (a *VTXOActor) startTipEpoch(ctx context.Context, msg *startTipEvent) (
 	// classify: an expired actor starts its reclaim on it, and a reserved
 	// one can escalate to an exit. None of that should run the moment
 	// an actor is spawned, so those states keep waiting for a block.
-	if _, live := a.state.(*LiveState); !live {
+	live, ok := a.state.(*LiveState)
+	if !ok {
 		a.logger(ctx).DebugS(ctx, "Ignoring tip on start outside live",
 			slog.String("outpoint", a.cfg.VTXO.Outpoint.String()),
 			slog.String("state", fmt.Sprintf("%T", a.state)),
@@ -124,6 +125,24 @@ func (a *VTXOActor) startTipEpoch(ctx context.Context, msg *startTipEvent) (
 			slog.String("outpoint", a.cfg.VTXO.Outpoint.String()),
 			slog.Int("tip_height", int(tip.Height)),
 			slog.Int("seen_height", int(a.lastEpochHeight)),
+		)
+
+		return nil, false
+	}
+
+	// In Live an epoch also starts an automatic refresh or a critical
+	// exit, and both reserve the coin. A VTXO spawned inside its refresh
+	// window would be claimed before its owner could spend, leave or
+	// refresh it, so those decisions wait for the next block and the tip
+	// only moves an expired coin out of Live.
+	status := a.env.ExpiryConfig.CheckExpiry(live.VTXO, tip.Height)
+	if status != ExpiryStatusExpired {
+		a.logger(ctx).DebugS(
+			ctx,
+			"Deferring tip on start to next block",
+			slog.String("outpoint", a.cfg.VTXO.Outpoint.String()),
+			slog.Int("tip_height", int(tip.Height)),
+			slog.String("expiry_status", status.String()),
 		)
 
 		return nil, false
