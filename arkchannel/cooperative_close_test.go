@@ -9,6 +9,8 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,7 +20,7 @@ import (
 func TestCooperativeCloseBuildsThreePartyOOR(t *testing.T) {
 	t.Parallel()
 
-	terms, source, request, _, _, _ :=
+	terms, source, request, clientKey, hubKey, _ :=
 		testCooperativeCloseFixture(t, KindPromotion, 5_000)
 	const (
 		clientBalance = btcutil.Amount(63_000)
@@ -54,6 +56,42 @@ func TestCooperativeCloseBuildsThreePartyOOR(t *testing.T) {
 		checkpoint.UnsignedTx.TxIn[0].Sequence,
 	)
 
+	clientSig := signCooperativeClose(
+		t, template, terms, PartyClient, clientKey,
+	)
+	require.NoError(
+		t, template.VerifySignature(terms, PartyClient, clientSig),
+	)
+	hubSig := signCooperativeClose(
+		t, template, terms, PartyHub, hubKey,
+	)
+	require.NoError(t, template.VerifySignature(terms, PartyHub, hubSig))
+	require.ErrorContains(
+		t, template.VerifySignature(terms, PartyClient, hubSig),
+		"invalid client cooperative close signature",
+	)
+
+	settlement, err := template.Complete(terms, source, request, hubSig)
+	require.NoError(t, err)
+	require.NoError(t, settlement.Validate(terms, source, request))
+	require.Equal(t, hubSig.Serialize(), settlement.Transaction)
+	require.NotEqual(t, source.OutPoint.Hash, settlement.TxID)
+	clientOutpoint, err := settlement.ReplacementOutPoint(
+		terms, source, request, PartyClient,
+	)
+	require.NoError(t, err)
+	hubOutpoint, err := settlement.ReplacementOutPoint(
+		terms, source, request, PartyHub,
+	)
+	require.NoError(t, err)
+	require.Equal(t, settlement.TxID, clientOutpoint.Hash)
+	require.Equal(t, settlement.TxID, hubOutpoint.Hash)
+	require.NotEqual(t, clientOutpoint, hubOutpoint)
+	_, err = settlement.ReplacementOutPoint(
+		terms, source, request, Party(99),
+	)
+	require.ErrorContains(t, err, "unknown cooperative close party")
+
 	spec, err := template.OORSpec()
 	require.NoError(t, err)
 	require.Len(t, spec.Recipients, 2)
@@ -74,6 +112,28 @@ func TestCooperativeCloseRequiresFullCapacityRoleBalances(t *testing.T) {
 		terms, source, request, 39_000, 60_000, 4,
 	)
 	require.ErrorContains(t, err, "do not match capacity")
+}
+
+// TestCooperativeCloseRejectsWrongPolicyKey verifies role checking happens
+// before a signature request reaches the wallet signer.
+func TestCooperativeCloseRejectsWrongPolicyKey(t *testing.T) {
+	t.Parallel()
+
+	terms, source, request, _, _, _ := testCooperativeCloseFixture(
+		t, KindPromotion, 2_000,
+	)
+	template, err := NewCooperativeCloseTemplate(
+		terms, source, request, 50_000, 50_000, 1,
+	)
+	require.NoError(t, err)
+	wrongKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	_, err = template.SignDescriptor(
+		terms, PartyClient, keychain.KeyDescriptor{
+			PubKey: wrongKey.PubKey(),
+		},
+	)
+	require.ErrorContains(t, err, "does not match policy role")
 }
 
 // testCooperativeCloseFixture creates terms and source with all immediate
@@ -131,6 +191,27 @@ func testCooperativeOwnerKey(tag byte) []byte {
 	return key.SerializeCompressed()
 }
 
+// signCooperativeClose signs one endpoint role with its Ark policy key.
+func signCooperativeClose(t *testing.T, template *CooperativeCloseTemplate,
+	terms Terms, party Party, key *btcec.PrivateKey) input.Signature {
+
+	t.Helper()
+	desc, err := template.SignDescriptor(
+		terms, party, keychain.KeyDescriptor{
+			PubKey: key.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	sig, err := input.NewMockSigner(
+		[]*btcec.PrivateKey{key}, nil,
+	).SignOutputRaw(
+		mustDecodeCheckpoint(t, template.Proposal().Transaction), desc,
+	)
+	require.NoError(t, err)
+
+	return sig
+}
+
 // mustDecodeTransaction decodes a raw transaction fixture.
 func mustDecodeTransaction(t *testing.T, raw []byte) *wire.MsgTx {
 	t.Helper()
@@ -138,4 +219,13 @@ func mustDecodeTransaction(t *testing.T, raw []byte) *wire.MsgTx {
 	require.NoError(t, tx.Deserialize(bytes.NewReader(raw)))
 
 	return tx
+}
+
+// mustDecodeCheckpoint returns an unsigned checkpoint transaction.
+func mustDecodeCheckpoint(t *testing.T, raw []byte) *wire.MsgTx {
+	t.Helper()
+	packet, err := psbtutil.Parse(raw)
+	require.NoError(t, err)
+
+	return packet.UnsignedTx
 }
