@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
@@ -49,6 +50,25 @@ func TestBindingRejectsDifferentChannelPolicy(t *testing.T) {
 
 	err := binding.Validate(terms)
 	require.ErrorContains(t, err, "policy does not match")
+}
+
+// TestBackingMustBeSignedAndBound rejects a transaction that lnd could not
+// safely activate against the exact VTXO.
+func TestBackingMustBeSignedAndBound(t *testing.T) {
+	t.Parallel()
+
+	terms := testTerms(t, KindPromotion)
+	binding := testBinding(terms)
+	backing := testBacking(t, terms, binding)
+
+	tx := wire.NewMsgTx(2)
+	require.NoError(t, tx.Deserialize(bytes.NewReader(backing.Transaction)))
+	tx.TxIn[0].Witness = nil
+	backing.Transaction = serializeTx(t, tx)
+	backing.ChannelPoint.Hash = tx.TxHash()
+
+	err := backing.Validate(terms, binding)
+	require.ErrorContains(t, err, "not fully signed")
 }
 
 // testTerms creates valid immutable terms for one channel kind.
@@ -150,4 +170,39 @@ func testBinding(terms Terms) VTXOBinding {
 		PolicyTemplate: policy,
 		PkScript:       pkScript,
 	}
+}
+
+// testBacking creates a signed single-input funding transaction.
+func testBacking(t *testing.T, terms Terms, binding VTXOBinding) Backing {
+	t.Helper()
+
+	packet, err := psbt.New(nil, []*wire.TxOut{{
+		Value:    int64(terms.Capacity),
+		PkScript: []byte{0x51, 0x20, 1},
+	}}, 2, 0, nil)
+	require.NoError(t, err)
+	template, err := NewBackingTemplate(packet, terms, binding)
+	require.NoError(t, err)
+	clientSig := signBacking(
+		t, template, terms, PartyClient,
+		testPolicyPrivateKey(terms.Kind, 4),
+	)
+	hubSig := signBacking(
+		t, template, terms, PartyHub,
+		testPolicyPrivateKey(terms.Kind, 5),
+	)
+	backing, err := template.Complete(terms, binding, clientSig, hubSig)
+	require.NoError(t, err)
+
+	return backing
+}
+
+// serializeTx serializes one witness transaction for a test fixture.
+func serializeTx(t *testing.T, tx *wire.MsgTx) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	require.NoError(t, tx.Serialize(&buf))
+
+	return buf.Bytes()
 }
