@@ -9,6 +9,9 @@ import (
 
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
+	"github.com/lightninglabs/wavelength/arkchannel/oorbridge"
+	"github.com/lightninglabs/wavelength/lnruntime"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
 )
@@ -21,6 +24,39 @@ type recordingArkChannelBackingRestorer struct {
 type recordingArkChannelForceCloseResumer struct {
 	failPoint wire.OutPoint
 	resumed   []wire.OutPoint
+}
+
+type recordingProcessFundingPeer struct {
+	lnruntime.ProcessFundingPeer
+
+	state   lnruntime.FundingChannelState
+	applied []arkchannel.Event
+}
+
+// GetFundingChannel returns the configured remote receive-intent state.
+func (p *recordingProcessFundingPeer) GetFundingChannel(context.Context,
+	arkchannel.ID) (lnruntime.FundingChannelState, error) {
+
+	return p.state, nil
+}
+
+// ApplyChannelEvent records the remote cancellation and advances its fixture.
+func (p *recordingProcessFundingPeer) ApplyChannelEvent(_ context.Context,
+	_ arkchannel.ID, event arkchannel.Event) (arkchannel.Record, error) {
+
+	p.applied = append(p.applied, event)
+	p.state.Phase = arkchannel.PhaseFailed
+
+	return arkchannel.Record{}, nil
+}
+
+type noOpArkChannelActionExecutor struct{}
+
+// Execute accepts action-free requested-intent transitions in tests.
+func (noOpArkChannelActionExecutor) Execute(context.Context, arkchannel.ID,
+	arkchannel.Action) error {
+
+	return nil
 }
 
 // ResumeForceCloseChannel records each independent on-chain reconciliation.
@@ -453,6 +489,45 @@ func TestReceiveIntentEndpointAgreement(t *testing.T) {
 			arkchannel.PhaseRequested,
 		),
 	)
+}
+
+// TestCancelReceiveIntentTerminatesBothRequestedEndpoints verifies another
+// winning rail cannot leave a requested channel record live at either endpoint.
+func TestCancelReceiveIntentTerminatesBothRequestedEndpoints(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(35_000, 0).UTC()
+	controller, coordinator, terms, closeStore := testPrePONRController(
+		t, now, oorbridge.PreparationLookup{},
+	)
+	t.Cleanup(closeStore)
+	hash := lntypes.Hash{4, 5, 6}
+	terms.ID = arkchannel.ReceiveIntentID(hash)
+	terms.PaymentHash = hash
+	_, err := coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	service, err := arkchannel.NewService(
+		controller.party, coordinator, noOpArkChannelActionExecutor{},
+	)
+	require.NoError(t, err)
+	remote := &recordingProcessFundingPeer{
+		state: lnruntime.FundingChannelState{
+			Phase: arkchannel.PhaseRequested,
+		},
+	}
+	controller.service = service
+	controller.remote = remote
+
+	err = controller.cancelReceiveIntent(
+		t.Context(), hash, "vHTLC rail won",
+	)
+	require.NoError(t, err)
+	require.Len(t, remote.applied, 1)
+	_, ok := remote.applied[0].(*arkchannel.Fail)
+	require.True(t, ok)
+	record, err := service.GetChannel(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, arkchannel.PhaseFailed, record.Snapshot.Phase)
 }
 
 // TestPromotionIdentifiersAreStableAndScoped verifies a retried creation gets
