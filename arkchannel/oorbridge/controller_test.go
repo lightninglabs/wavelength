@@ -39,6 +39,20 @@ type controllerTestRef struct {
 	stateAfterDrive oor.SessionState
 }
 
+// controllerTestSink records the terminal channel event applied by the bridge.
+type controllerTestSink struct {
+	event arkchannel.Event
+}
+
+// Apply records one channel event.
+func (s *controllerTestSink) ApplyLocalEvent(_ context.Context, _ arkchannel.ID,
+	event arkchannel.Event) (arkchannel.Record, error) {
+
+	s.event = event
+
+	return arkchannel.Record{}, nil
+}
+
 // ID returns the fake actor identity.
 func (*controllerTestRef) ID() string {
 	return "oor-controller-test"
@@ -361,6 +375,126 @@ func TestValidatePreparedOORRejectsAdvancedSession(t *testing.T) {
 		),
 		"expected prepared",
 	)
+}
+
+// TestWaitForTerminalAcceptsIncomingSelfTransfer verifies a sender's change
+// notification proves the same OOR package finalized even after it replaced
+// the reaped outgoing status row.
+func TestWaitForTerminalAcceptsIncomingSelfTransfer(t *testing.T) {
+	t.Parallel()
+
+	ref := &controllerTestRef{state: &oor.ReceiveCompleted{}}
+	controller, err := NewWithRef(ref)
+	require.NoError(t, err)
+
+	sessionID := [32]byte{2}
+	result, err := controller.waitForTerminal(
+		t.Context(), arkchannel.VTXOBinding{
+			OORSessionID: sessionID,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, TerminalResult{Finalized: true}, result)
+}
+
+// TestAbortPreparedOORReconcilesLostFinalizedResponse proves replaying abort
+// after commit completed reports finalization and never submits an abort event.
+func TestAbortPreparedOORReconcilesLostFinalizedResponse(t *testing.T) {
+	t.Parallel()
+
+	terms, source, _, _, _ := preparedChannelBinding(t)
+	ref := &controllerTestRef{state: &oor.Completed{}}
+	controller, err := NewWithRef(ref)
+	require.NoError(t, err)
+	result, err := controller.AbortPreparedOORResult(
+		t.Context(), terms.ID, terms, source, "expired",
+	)
+	require.NoError(t, err)
+	require.Equal(t, TerminalResult{Finalized: true}, result)
+	require.Nil(t, ref.driveEvent)
+}
+
+// TestCommitPreparedOORReconcilesPrePONRAbort proves a lost commit response can
+// report the actor's definitive pre-PONR failure without retrying signatures.
+func TestCommitPreparedOORReconcilesPrePONRAbort(t *testing.T) {
+	t.Parallel()
+
+	terms, source, _, _, _ := preparedChannelBinding(t)
+	ref := &controllerTestRef{state: &oor.Failed{
+		Reason: "admission rejected", PrePONR: true,
+	}}
+	controller, err := NewWithRef(ref)
+	require.NoError(t, err)
+	result, err := controller.CommitPreparedOORResult(
+		t.Context(), terms.ID, terms, source,
+	)
+	require.NoError(t, err)
+	require.Equal(t, TerminalResult{
+		Aborted: true, Reason: "admission rejected",
+	}, result)
+	require.Nil(t, ref.driveEvent)
+}
+
+// TestAbortPreparedOORLosesConcurrentCommit proves an abort response race is
+// reconciled from actor state instead of releasing the committed source.
+func TestAbortPreparedOORLosesConcurrentCommit(t *testing.T) {
+	t.Parallel()
+
+	terms, source, prepared, _, _ := preparedChannelBinding(t)
+	ref := &controllerTestRef{
+		state: prepared, driveErr: fmt.Errorf("concurrent control"),
+		stateAfterDrive: &oor.Completed{},
+	}
+	controller, err := NewWithRef(ref)
+	require.NoError(t, err)
+	result, err := controller.AbortPreparedOORResult(
+		t.Context(), terms.ID, terms, source, "expired",
+	)
+	require.NoError(t, err)
+	require.Equal(t, TerminalResult{Finalized: true}, result)
+	require.IsType(t, &oor.AbortPreparedEvent{}, ref.driveEvent)
+}
+
+// TestPostPONRFailureRemainsUnresolved proves source loss alone cannot be
+// mistaken for proof that the channel-policy output was finalized.
+func TestPostPONRFailureRemainsUnresolved(t *testing.T) {
+	t.Parallel()
+
+	terms, source, _, _, _ := preparedChannelBinding(t)
+	ref := &controllerTestRef{state: &oor.Failed{
+		Reason: "operator rejected finalization", PrePONR: false,
+	}}
+	controller, err := NewWithRef(ref)
+	require.NoError(t, err)
+	result, err := controller.CommitPreparedOORResult(
+		t.Context(), terms.ID, terms, source,
+	)
+	require.ErrorIs(t, err, ErrOORPostPONRFailure)
+	require.Zero(t, result)
+	require.Nil(t, ref.driveEvent)
+}
+
+// TestCommitPreparedOORAppliesTerminalFact proves the executor-facing wrapper
+// still records the result after the sink-independent control method returns.
+func TestCommitPreparedOORAppliesTerminalFact(t *testing.T) {
+	t.Parallel()
+
+	terms, source, _, _, _ := preparedChannelBinding(t)
+	controller, err := NewWithRef(&controllerTestRef{
+		state: &oor.Completed{},
+	})
+	require.NoError(t, err)
+	sink := &controllerTestSink{}
+	require.NoError(t, controller.BindChannelEventSink(sink))
+
+	require.NoError(
+		t,
+		controller.CommitPreparedOOR(
+			t.Context(), terms.ID, terms, source,
+		),
+	)
+	_, ok := sink.event.(*arkchannel.OORFinalized)
+	require.True(t, ok)
 }
 
 // preparedChannelBinding creates a real deterministic OOR package containing

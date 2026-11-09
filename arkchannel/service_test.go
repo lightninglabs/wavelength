@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -14,6 +15,10 @@ type serviceExecutor struct {
 	service    *Service
 	localParty Party
 	counts     map[string]int
+}
+
+type staticFundingFinalizationSource struct {
+	finalized bool
 }
 
 type noOpActionExecutor struct{}
@@ -64,6 +69,13 @@ func (e *serviceExecutor) applyPartyEvent(ctx context.Context, id ID,
 	}
 
 	return e.service.ApplyPeerEvent(ctx, id, event)
+}
+
+// FundingFinalized returns one fixed lnd database observation.
+func (s *staticFundingFinalizationSource) FundingFinalized(context.Context,
+	Terms, Backing) (bool, error) {
+
+	return s.finalized, nil
 }
 
 // Execute simulates native subsystem completion through authenticated
@@ -178,6 +190,53 @@ func TestServiceSeparatesPromotionRegistrationFromBinding(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, PhaseActive, record.Snapshot.Phase)
 	require.Equal(t, 1, executor.counts["*arkchannel.NegotiateFunding"])
+}
+
+// TestServiceReconcilesFundingByChannelPoint proves a missed lnd callback is
+// recoverable from the pending channel record keyed by signed backing.
+func TestServiceReconcilesFundingByChannelPoint(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	service, err := NewService(
+		PartyClient, coordinator, &noOpActionExecutor{},
+	)
+	require.NoError(t, err)
+	terms := testTerms(t, KindPromotion)
+	_, err = service.RegisterPromotion(t.Context(), terms)
+	require.NoError(t, err)
+	binding := testBinding(terms)
+	_, err = service.BindPreparedOOR(t.Context(), terms.ID, binding)
+	require.NoError(t, err)
+	backing := testBacking(t, terms, binding)
+	_, err = service.ApplyLocalEvent(t.Context(), terms.ID, &BackingSigned{
+		Backing: backing,
+	})
+	require.NoError(t, err)
+
+	source := &staticFundingFinalizationSource{finalized: true}
+	require.NoError(
+		t,
+		service.ReconcileFunding(t.Context(), source),
+	)
+	record, err := service.ApplyPeerEvent(
+		t.Context(), terms.ID, &FundingFinalized{
+			Party: PartyHub,
+		},
+	)
+	require.NoError(t, err)
+	require.True(t, record.Snapshot.ClientFinalized)
+	require.True(t, record.Snapshot.HubFinalized)
+	require.Equal(t, PhaseBackingReady, record.Snapshot.Phase)
+	require.True(t, record.Snapshot.ReadyToCommitOOR())
+
+	_, err = service.ObserveFundingFinalized(
+		t.Context(), wire.OutPoint{
+			Hash: [32]byte{99},
+		},
+	)
+	require.ErrorIs(t, err, ErrNotFound)
 }
 
 // TestServiceEventAuthorityMatrix checks the origin of each installed fact.
