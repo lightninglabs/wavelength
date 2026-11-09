@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -222,10 +223,60 @@ func TestArkChannelStoreCooperativeCloseRoundTrip(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
+	template, err := arkchannel.NewCooperativeCloseTemplate(
+		terms, binding, request, 70_000, 30_000, 9,
+	)
+	require.NoError(t, err)
+	hubSig := testArkChannelCloseSignature(
+		t, template, terms, arkchannel.PartyHub, hubKey,
+	)
+	settlement, err := template.Complete(
+		terms, binding, request, hubSig,
+	)
+	require.NoError(t, err)
+	for _, event := range []arkchannel.Event{
+		&arkchannel.CooperativeCloseSigned{
+			Close: settlement,
+			Party: arkchannel.PartyClient,
+		},
+		&arkchannel.CooperativeCloseSigned{
+			Close: settlement,
+			Party: arkchannel.PartyHub,
+		},
+		&arkchannel.CooperativeClosePublished{
+			TxID: settlement.TxID,
+		},
+		&arkchannel.CooperativeCloseFinalized{
+			Party: arkchannel.PartyClient,
+		},
+	} {
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+
 	loaded, err := store.Get(t.Context(), terms.ID)
 	require.NoError(t, err)
-	require.Equal(t, arkchannel.PhaseCoopClosing, loaded.Snapshot.Phase)
+	require.Equal(
+		t, arkchannel.PhaseCoopClosePublished, loaded.Snapshot.Phase,
+	)
 	require.Equal(t, request, *loaded.Snapshot.CooperativeCloseRequest)
+	require.Equal(t, settlement, *loaded.Snapshot.CooperativeClose)
+	require.True(t, loaded.Snapshot.ClientCloseFinalized)
+	require.False(t, loaded.Snapshot.HubCloseFinalized)
+
+	_, _, err = coordinator.Apply(
+		t.Context(), terms.ID, &arkchannel.CooperativeCloseFinalized{
+			Party: arkchannel.PartyHub,
+		},
+	)
+	require.NoError(t, err)
+	loaded, err = store.Get(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, arkchannel.PhaseClosed, loaded.Snapshot.Phase)
+	records, err := store.ListNonTerminal(t.Context())
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	require.Equal(t, terms.ID, records[0].Snapshot.Terms.ID)
 }
 
 // TestArkChannelStoreNotFound verifies the shared coordinator sentinel.
@@ -417,4 +468,37 @@ func testArkChannelCompressedKey(key *btcec.PrivateKey) [33]byte {
 	copy(encoded[:], key.PubKey().SerializeCompressed())
 
 	return encoded
+}
+
+// testArkChannelCloseSignature signs one endpoint's immediate VTXO role.
+func testArkChannelCloseSignature(t *testing.T,
+	template *arkchannel.CooperativeCloseTemplate, terms arkchannel.Terms,
+	party arkchannel.Party, key *btcec.PrivateKey) input.Signature {
+
+	t.Helper()
+	desc, err := template.SignDescriptor(
+		terms, party, keychain.KeyDescriptor{
+			PubKey: key.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	sig, err := input.NewMockSigner(
+		[]*btcec.PrivateKey{key}, nil,
+	).SignOutputRaw(
+		testArkChannelProposalTx(t, template.Proposal()), desc,
+	)
+	require.NoError(t, err)
+
+	return sig
+}
+
+// testArkChannelProposalTx decodes one unsigned OOR checkpoint proposal.
+func testArkChannelProposalTx(t *testing.T,
+	proposal arkchannel.CooperativeCloseProposal) *wire.MsgTx {
+
+	t.Helper()
+	packet, err := psbtutil.Parse(proposal.Transaction)
+	require.NoError(t, err)
+
+	return packet.UnsignedTx
 }

@@ -256,8 +256,16 @@ type arkChannelMutableFields struct {
 	closeClientScript        []byte
 	closeHubScript           []byte
 	closeFeeRate             sql.NullInt64
-
-	failure sql.NullString
+	cooperativeCloseTx       []byte
+	cooperativeCloseTxID     []byte
+	closeCommitmentHeight    sql.NullInt64
+	closeClientBalance       sql.NullInt64
+	closeHubBalance          sql.NullInt64
+	clientCloseSigned        bool
+	hubCloseSigned           bool
+	clientCloseFinalized     bool
+	hubCloseFinalized        bool
+	failure                  sql.NullString
 }
 
 // mutableArkChannelFields converts optional snapshot fields for sqlc.
@@ -265,15 +273,18 @@ func mutableArkChannelFields(snapshot arkchannel.Snapshot) (
 	arkChannelMutableFields, error) {
 
 	fields := arkChannelMutableFields{
-		phase:               int32(snapshot.Phase),
-		clientFinalized:     snapshot.ClientFinalized,
-		hubFinalized:        snapshot.HubFinalized,
-		oorFinalized:        snapshot.OORFinalized,
-		oorAborted:          snapshot.OORAborted,
-		clientRecoveryReady: snapshot.ClientRecoveryReady,
-		hubRecoveryReady:    snapshot.HubRecoveryReady,
-		backingPublished:    snapshot.BackingPublished,
-
+		phase:                int32(snapshot.Phase),
+		clientFinalized:      snapshot.ClientFinalized,
+		hubFinalized:         snapshot.HubFinalized,
+		oorFinalized:         snapshot.OORFinalized,
+		oorAborted:           snapshot.OORAborted,
+		clientRecoveryReady:  snapshot.ClientRecoveryReady,
+		hubRecoveryReady:     snapshot.HubRecoveryReady,
+		backingPublished:     snapshot.BackingPublished,
+		clientCloseSigned:    snapshot.ClientCloseSigned,
+		hubCloseSigned:       snapshot.HubCloseSigned,
+		clientCloseFinalized: snapshot.ClientCloseFinalized,
+		hubCloseFinalized:    snapshot.HubCloseFinalized,
 		failure: sql.NullString{
 			String: snapshot.Failure,
 			Valid:  snapshot.Failure != "",
@@ -330,6 +341,28 @@ func mutableArkChannelFields(snapshot arkchannel.Snapshot) (
 		// The column predates in-Ark OOR close semantics. Keep a zero
 		// sentinel so existing databases retain their group constraint.
 		fields.closeFeeRate = sql.NullInt64{Valid: true}
+	}
+	if snapshot.CooperativeClose != nil {
+		settlement := snapshot.CooperativeClose
+		if settlement.Proposal.CommitmentHeight > math.MaxInt64 {
+			return arkChannelMutableFields{}, fmt.Errorf(
+				"cooperative close commitment height is out " +
+					"of range")
+		}
+		fields.cooperativeCloseTx = slices.Clone(settlement.Transaction)
+		fields.cooperativeCloseTxID = slices.Clone(settlement.TxID[:])
+		fields.closeCommitmentHeight = sql.NullInt64{
+			Int64: int64(settlement.Proposal.CommitmentHeight),
+			Valid: true,
+		}
+		fields.closeClientBalance = sql.NullInt64{
+			Int64: int64(settlement.Proposal.ClientBalance),
+			Valid: true,
+		}
+		fields.closeHubBalance = sql.NullInt64{
+			Int64: int64(settlement.Proposal.HubBalance),
+			Valid: true,
+		}
 	}
 
 	return fields, nil
@@ -392,11 +425,19 @@ func insertArkChannelParams(snapshot arkchannel.Snapshot,
 		CloseClientScript:        fields.closeClientScript,
 		CloseHubScript:           fields.closeHubScript,
 		CloseFeeRateSatPerKw:     fields.closeFeeRate,
-
-		Failure:   fields.failure,
-		Revision:  initialArkChannelRevision,
-		CreatedAt: now,
-		UpdatedAt: now,
+		CooperativeCloseTx:       fields.cooperativeCloseTx,
+		CooperativeCloseTxid:     fields.cooperativeCloseTxID,
+		CloseCommitmentHeight:    fields.closeCommitmentHeight,
+		CloseClientBalance:       fields.closeClientBalance,
+		CloseHubBalance:          fields.closeHubBalance,
+		ClientCloseSigned:        fields.clientCloseSigned,
+		HubCloseSigned:           fields.hubCloseSigned,
+		ClientCloseFinalized:     fields.clientCloseFinalized,
+		HubCloseFinalized:        fields.hubCloseFinalized,
+		Failure:                  fields.failure,
+		Revision:                 initialArkChannelRevision,
+		CreatedAt:                now,
+		UpdatedAt:                now,
 		PrePonrStartedAt: arkChannelPrePONRStartedAt(
 			snapshot, now,
 		),
@@ -437,9 +478,17 @@ func compareAndSwapArkChannelParams(snapshot arkchannel.Snapshot, revision,
 		CloseClientScript:        fields.closeClientScript,
 		CloseHubScript:           fields.closeHubScript,
 		CloseFeeRateSatPerKw:     fields.closeFeeRate,
-
-		Failure:   fields.failure,
-		UpdatedAt: now,
+		CooperativeCloseTx:       fields.cooperativeCloseTx,
+		CooperativeCloseTxid:     fields.cooperativeCloseTxID,
+		CloseCommitmentHeight:    fields.closeCommitmentHeight,
+		CloseClientBalance:       fields.closeClientBalance,
+		CloseHubBalance:          fields.closeHubBalance,
+		ClientCloseSigned:        fields.clientCloseSigned,
+		HubCloseSigned:           fields.hubCloseSigned,
+		ClientCloseFinalized:     fields.clientCloseFinalized,
+		HubCloseFinalized:        fields.hubCloseFinalized,
+		Failure:                  fields.failure,
+		UpdatedAt:                now,
 		PrePonrStartedAt: arkChannelPrePONRStartedAt(
 			snapshot, now,
 		),
@@ -458,16 +507,6 @@ func arkChannelPrePONRStartedAt(snapshot arkchannel.Snapshot,
 
 // arkChannelRecordFromRow validates one SQL row before exposing it.
 func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
-	if row.ClientCloseFinalized || row.ClientCloseSigned ||
-		row.CloseClientBalance.Valid ||
-		row.CloseCommitmentHeight.Valid || row.CloseHubBalance.Valid ||
-		row.CooperativeCloseTx != nil ||
-		row.CooperativeCloseTxid != nil || row.HubCloseFinalized ||
-		row.HubCloseSigned {
-		return arkchannel.Record{}, fmt.Errorf("unsupported channel " +
-			"facts")
-	}
-
 	var terms arkchannel.Terms
 	if err := copyFixed(
 		terms.ID[:], row.ChannelID, "channel ID",
@@ -570,8 +609,11 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 		ClientRecoveryReady:   row.ClientRecoveryReady,
 		HubRecoveryReady:      row.HubRecoveryReady,
 		BackingPublished:      row.BackingPublished,
-
-		Failure: row.Failure.String,
+		ClientCloseSigned:     row.ClientCloseSigned,
+		HubCloseSigned:        row.HubCloseSigned,
+		ClientCloseFinalized:  row.ClientCloseFinalized,
+		HubCloseFinalized:     row.HubCloseFinalized,
+		Failure:               row.Failure.String,
 	}
 	conflict, err := arkChannelSourceConflictFromRow(row)
 	if err != nil {
@@ -593,6 +635,13 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 		return arkchannel.Record{}, err
 	}
 	snapshot.CooperativeCloseRequest = closeRequest
+	cooperativeClose, err := arkChannelCooperativeCloseFromRow(
+		row, terms, source, closeRequest,
+	)
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+	snapshot.CooperativeClose = cooperativeClose
 
 	if row.Revision <= 0 {
 		return arkchannel.Record{}, fmt.Errorf("invalid channel "+
@@ -753,6 +802,62 @@ func arkChannelCloseRequestFromRow(row sqlc.ArkChannel) (
 	}
 
 	return request, nil
+}
+
+// arkChannelCooperativeCloseFromRow rebuilds the canonical unsigned proposal
+// from compact SQL facts and attaches the persisted signed witness.
+func arkChannelCooperativeCloseFromRow(row sqlc.ArkChannel,
+	terms arkchannel.Terms, source *arkchannel.VTXOBinding,
+	request *arkchannel.CooperativeCloseRequest) (
+	*arkchannel.CooperativeClose, error) {
+
+	if len(row.CooperativeCloseTx) == 0 {
+		if len(row.CooperativeCloseTxid) != 0 ||
+			row.CloseCommitmentHeight.Valid ||
+			row.CloseClientBalance.Valid ||
+			row.CloseHubBalance.Valid {
+			return nil, fmt.Errorf("cooperative close artifact " +
+				"is incomplete")
+		}
+
+		return nil, nil
+	}
+	if source == nil || request == nil ||
+		len(row.CooperativeCloseTxid) == 0 ||
+		!row.CloseCommitmentHeight.Valid ||
+		!row.CloseClientBalance.Valid || !row.CloseHubBalance.Valid {
+		return nil, fmt.Errorf("cooperative close artifact is " +
+			"incomplete")
+	}
+	if row.CloseCommitmentHeight.Int64 < 0 ||
+		row.CloseClientBalance.Int64 < 0 ||
+		row.CloseHubBalance.Int64 < 0 {
+		return nil, fmt.Errorf("cooperative close artifact has " +
+			"negative values")
+	}
+	txID, err := chainhash.NewHash(row.CooperativeCloseTxid)
+	if err != nil {
+		return nil, fmt.Errorf("decode cooperative close txid: %w", err)
+	}
+	template, err := arkchannel.NewCooperativeCloseTemplate(
+		terms, *source, *request,
+		btcutil.Amount(row.CloseClientBalance.Int64),
+		btcutil.Amount(row.CloseHubBalance.Int64),
+		uint64(row.CloseCommitmentHeight.Int64),
+	)
+	if err != nil {
+		return nil, err
+	}
+	settlement := &arkchannel.CooperativeClose{
+		Proposal:    template.Proposal(),
+		Transaction: slices.Clone(row.CooperativeCloseTx),
+		TxID:        *txID,
+	}
+	if err := settlement.Validate(terms, *source, *request); err != nil {
+		return nil, err
+	}
+
+	return settlement, nil
 }
 
 // copyFixed rejects corrupt fixed-width SQL blobs.

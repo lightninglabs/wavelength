@@ -376,127 +376,133 @@ func TestServiceReconcilesFundingByChannelPoint(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
-// TestServiceEventAuthorityMatrix checks the origin of each installed fact.
+// TestServiceEventAuthorityMatrix pins the owner of every durable event class.
+// Party-bearing evidence may only be asserted by that authenticated side, and
+// local subsystem observations never cross the peer ingress boundary.
 func TestServiceEventAuthorityMatrix(t *testing.T) {
 	t.Parallel()
-	coordinator, err := NewCoordinator(newMemoryStore())
-	require.NoError(t, err)
-	terms := testTerms(t, KindPromotion)
-	_, err = coordinator.Request(t.Context(), terms)
-	require.NoError(t, err)
-	service, err := NewService(
-		PartyClient, coordinator, &noOpActionExecutor{},
-	)
-	require.NoError(t, err)
-	for _, test := range []struct {
-		event  Event
-		origin eventOrigin
+
+	newService := func(localParty Party, terms Terms) *Service {
+		coordinator, err := NewCoordinator(newMemoryStore())
+		require.NoError(t, err)
+		_, err = coordinator.Request(t.Context(), terms)
+		require.NoError(t, err)
+		service, err := NewService(
+			localParty, coordinator, &noOpActionExecutor{},
+		)
+		require.NoError(t, err)
+
+		return service
+	}
+
+	promotion := testTerms(t, KindPromotion)
+	clientService := newService(PartyClient, promotion)
+
+	tests := []struct {
+		name    string
+		service *Service
+		id      ID
+		event   Event
+		origin  eventOrigin
 	}{
+		{"prepare OOR", clientService, promotion.ID,
+			&OORPreparationStarted{}, eventOriginLocal},
+		{"bind VTXO", clientService, promotion.ID,
+			&BindVTXO{}, eventOriginLocal},
+		{"install backing", clientService, promotion.ID,
+			&BackingSigned{}, eventOriginLocal},
+		{"finalize OOR", clientService, promotion.ID,
+			&OORFinalized{}, eventOriginLocal},
+		{"abort OOR", clientService, promotion.ID,
+			&OORAborted{}, eventOriginLocal},
+		{"client funding finalized", clientService, promotion.ID,
+			&FundingFinalized{
+				Party: PartyClient,
+			}, eventOriginLocal},
+		{"hub funding finalized", clientService, promotion.ID,
+			&FundingFinalized{
+				Party: PartyHub,
+			}, eventOriginPeer},
+		{"client recovery ready", clientService, promotion.ID,
+			&RecoveryPackageInstalled{
+				Party: PartyClient,
+			},
+			eventOriginLocal},
+		{"hub recovery ready", clientService, promotion.ID,
+			&RecoveryPackageInstalled{
+				Party: PartyHub,
+			}, eventOriginPeer},
+		{"request close", clientService, promotion.ID,
+			&RequestCooperativeClose{}, eventOriginLocal},
+		{"publish close", clientService, promotion.ID,
+			&CooperativeClosePublished{}, eventOriginLocal},
+		{"abort close", clientService, promotion.ID,
+			&CooperativeCloseAborted{}, eventOriginLocal},
+		{"client close signed", clientService, promotion.ID,
+			&CooperativeCloseSigned{
+				Party: PartyClient,
+			},
+			eventOriginLocal},
+		{"hub close signed", clientService, promotion.ID,
+			&CooperativeCloseSigned{
+				Party: PartyHub,
+			}, eventOriginPeer},
+		{"client close finalized", clientService, promotion.ID,
+			&CooperativeCloseFinalized{
+				Party: PartyClient,
+			},
+			eventOriginLocal},
+		{"hub close finalized", clientService, promotion.ID,
+			&CooperativeCloseFinalized{
+				Party: PartyHub,
+			}, eventOriginPeer},
+		{"expire", clientService, promotion.ID,
+			&ExpirePrePONR{}, eventOriginLocal},
+		{"cancel funding", clientService, promotion.ID,
+			&FundingCanceled{}, eventOriginLocal},
+		{"activate", clientService, promotion.ID,
+			&ChannelActive{}, eventOriginLocal},
+		{"materialize", clientService, promotion.ID,
+			&Materialize{}, eventOriginLocal},
+		{"source spent", clientService, promotion.ID,
+			&SourceSpent{}, eventOriginLocal},
+		{"backing published", clientService, promotion.ID,
+			&BackingPublished{}, eventOriginLocal},
+		{"backing observed", clientService, promotion.ID,
+			&BackingObserved{}, eventOriginLocal},
+		{"channel closed", clientService, promotion.ID,
+			&ChannelClosed{}, eventOriginLocal},
 		{
-			&OORPreparationStarted{},
-			eventOriginLocal,
-		},
-		{
-			&BindVTXO{},
-			eventOriginLocal,
-		},
-		{
-			&BackingSigned{},
-			eventOriginLocal,
-		},
-		{
-			&OORFinalized{},
-			eventOriginLocal,
-		},
-		{
-			&OORAborted{},
-			eventOriginLocal,
-		},
-		{
-			&FundingCanceled{},
-			eventOriginLocal,
-		},
-		{
-			&ExpirePrePONR{},
-			eventOriginLocal,
-		},
-		{
+			"fail",
+			clientService,
+			promotion.ID,
 			&Fail{},
 			eventOriginLocal,
 		},
-		{
-			&Materialize{},
-			eventOriginLocal,
-		},
-		{
-			&SourceSpent{},
-			eventOriginLocal,
-		},
-		{
-			&RequestCooperativeClose{},
-			eventOriginLocal,
-		},
-		{
-			&CooperativeCloseAborted{},
-			eventOriginLocal,
-		},
-		{
-			&BackingPublished{},
-			eventOriginLocal,
-		},
-		{
-			&BackingObserved{},
-			eventOriginLocal,
-		},
-		{
-			&ChannelClosed{},
-			eventOriginLocal,
-		},
-		{
-			&FundingFinalized{
-				Party: PartyClient,
-			},
-			eventOriginLocal,
-		},
-		{
-			&FundingFinalized{
-				Party: PartyHub,
-			},
-			eventOriginPeer,
-		},
-		{
-			&RecoveryPackageInstalled{
-				Party: PartyClient,
-			},
-			eventOriginLocal,
-		},
-		{
-			&RecoveryPackageInstalled{
-				Party: PartyHub,
-			},
-			eventOriginPeer,
-		},
-		{
-			&ChannelActive{},
-			eventOriginLocal,
-		},
-	} {
-		require.NoError(
-			t,
-			service.authorizeEvent(
-				t.Context(), terms.ID, test.event, test.origin,
-			),
-		)
-		opposite := eventOriginLocal
-		if test.origin == eventOriginLocal {
-			opposite = eventOriginPeer
-		}
-		require.Error(
-			t,
-			service.authorizeEvent(
-				t.Context(), terms.ID, test.event, opposite,
-			),
-		)
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require.NoError(
+				t,
+				test.service.authorizeEvent(
+					t.Context(), test.id, test.event,
+					test.origin,
+				),
+			)
+
+			wrongOrigin := eventOriginLocal
+			if test.origin == eventOriginLocal {
+				wrongOrigin = eventOriginPeer
+			}
+			require.Error(
+				t,
+				test.service.authorizeEvent(
+					t.Context(), test.id, test.event,
+					wrongOrigin,
+				),
+			)
+		})
 	}
 }
 

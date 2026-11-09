@@ -286,7 +286,8 @@ func sameTerms(a, b Terms) error {
 		a.PendingChannelID != b.PendingChannelID ||
 		a.ReservedSCID != b.ReservedSCID || a.Capacity != b.Capacity ||
 		a.ClientNodeKey != b.ClientNodeKey ||
-		a.HubNodeKey != b.HubNodeKey || a.VTXO != b.VTXO {
+		a.HubNodeKey != b.HubNodeKey ||
+		a.VTXO != b.VTXO {
 		return fmt.Errorf("channel ID already has different terms")
 	}
 
@@ -298,14 +299,44 @@ func snapshotsEqual(a, b Snapshot) bool {
 	if err := sameTerms(a.Terms, b.Terms); err != nil {
 		return false
 	}
+	if a.Phase != b.Phase ||
+		a.OORPreparationStarted != b.OORPreparationStarted ||
+		a.ClientFinalized != b.ClientFinalized ||
+		a.HubFinalized != b.HubFinalized ||
+		a.OORFinalized != b.OORFinalized ||
+		a.OORAborted != b.OORAborted ||
+		a.ClientRecoveryReady != b.ClientRecoveryReady ||
+		a.HubRecoveryReady != b.HubRecoveryReady ||
+		a.BackingPublished != b.BackingPublished ||
+		a.ClientCloseSigned != b.ClientCloseSigned ||
+		a.HubCloseSigned != b.HubCloseSigned ||
+		a.ClientCloseFinalized != b.ClientCloseFinalized ||
+		a.HubCloseFinalized != b.HubCloseFinalized ||
+		a.Failure != b.Failure {
+		return false
+	}
+	if (a.Source == nil) != (b.Source == nil) ||
+		(a.Backing == nil) != (b.Backing == nil) {
+		return false
+	}
+	if a.Source != nil && !bindingsEqual(*a.Source, *b.Source) {
+		return false
+	}
+	if a.Backing != nil && !backingsEqual(*a.Backing, *b.Backing) {
+		return false
+	}
 	if (a.SourceConflict == nil) != (b.SourceConflict == nil) {
 		return false
 	}
-	if a.SourceConflict != nil && *a.SourceConflict != *b.SourceConflict {
+	if a.SourceConflict != nil &&
+		(a.SourceConflict.OutPoint != b.SourceConflict.OutPoint ||
+			a.SourceConflict.SpendingTxID !=
+				b.SourceConflict.SpendingTxID) {
 		return false
 	}
 	if (a.CooperativeCloseRequest == nil) !=
-		(b.CooperativeCloseRequest == nil) {
+		(b.CooperativeCloseRequest == nil) ||
+		(a.CooperativeClose == nil) != (b.CooperativeClose == nil) {
 		return false
 	}
 	if a.CooperativeCloseRequest != nil &&
@@ -314,22 +345,11 @@ func snapshotsEqual(a, b Snapshot) bool {
 		) {
 		return false
 	}
-	if a.Phase != b.Phase ||
-		a.OORPreparationStarted != b.OORPreparationStarted ||
-		a.BackingPublished != b.BackingPublished ||
-		a.ClientFinalized != b.ClientFinalized ||
-		a.HubFinalized != b.HubFinalized ||
-		a.OORFinalized != b.OORFinalized ||
-		a.OORAborted != b.OORAborted || a.Failure != b.Failure ||
-		a.ClientRecoveryReady != b.ClientRecoveryReady ||
-		a.HubRecoveryReady != b.HubRecoveryReady ||
-		(a.Source == nil) != (b.Source == nil) ||
-		(a.Backing == nil) != (b.Backing == nil) {
-		return false
-	}
-	if a.Source != nil && !bindingsEqual(*a.Source, *b.Source) {
+	if a.CooperativeClose != nil && !cooperativeClosesEqual(
+		*a.CooperativeClose, *b.CooperativeClose,
+	) {
 		return false
 	}
 
-	return a.Backing == nil || backingsEqual(*a.Backing, *b.Backing)
+	return true
 }

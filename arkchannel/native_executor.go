@@ -90,14 +90,20 @@ type ChannelForceCloser interface {
 	EnsureForceCloseChannel(wire.OutPoint) error
 }
 
-// ChannelCooperativeCloser quiesces native endpoints for fixed replacement
-// ownership before authorizing an ordinary OOR close.
+// ChannelCooperativeCloser coordinates clean lnd state, a 3-of-3 OOR close,
+// and local lnd archival across paired endpoints.
 type ChannelCooperativeCloser interface {
 	NegotiateCooperativeClose(context.Context, ID, Terms, VTXOBinding,
 		Backing, CooperativeCloseRequest) error
+
+	PublishCooperativeClose(context.Context, ID, Terms, VTXOBinding,
+		CooperativeClose) error
+
+	FinalizeCooperativeClose(context.Context, ID, Terms, Backing,
+		VTXOBinding, CooperativeCloseRequest, CooperativeClose) error
 }
 
-// NativeExecutor routes durable Ark actions into native subsystems.
+// NativeExecutor routes durable Ark actions into native lnd and the unroller.
 type NativeExecutor struct {
 	localParty   Party
 	funding      VirtualFundingActivator
@@ -125,14 +131,14 @@ func NewNativeExecutor(localParty Party, funding VirtualFundingActivator,
 	if negotiator == nil {
 		return nil, fmt.Errorf("funding negotiator is required")
 	}
+	if closer == nil {
+		return nil, fmt.Errorf("channel cooperative closer is required")
+	}
 	if handoff == nil {
 		return nil, fmt.Errorf("channel on-chain handoff is required")
 	}
 	if forceCloser == nil {
 		return nil, fmt.Errorf("channel force closer is required")
-	}
-	if closer == nil {
-		return nil, fmt.Errorf("channel cooperative closer is required")
 	}
 
 	return &NativeExecutor{
@@ -147,7 +153,8 @@ func NewNativeExecutor(localParty Party, funding VirtualFundingActivator,
 	}, nil
 }
 
-// Execute dispatches one already-durable action without interpreting lnd state.
+// Execute dispatches one already-durable action without interpreting lnd
+// channel or payment state.
 func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 	action Action) error {
 
@@ -188,26 +195,15 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 			ctx, id, action.Terms, action.Source, action.Reason,
 		)
 
-	case *CancelFunding:
-		return e.negotiator.CancelChannel(
-			ctx, id, action.Terms, action.Source, action.Backing,
-			action.Reason,
-		)
-
 	case *ActivateChannel:
 		return e.funding.ConfirmBacking(
 			action.Backing.ChannelPoint.Hash,
 		)
 
-	case *ForceCloseChannel:
-		return e.forceCloser.EnsureForceCloseChannel(
-			action.Backing.ChannelPoint,
-		)
-
-	case *NegotiateCooperativeClose:
-		return e.closer.NegotiateCooperativeClose(
+	case *CancelFunding:
+		return e.negotiator.CancelChannel(
 			ctx, id, action.Terms, action.Source, action.Backing,
-			action.Request,
+			action.Reason,
 		)
 
 	case *PublishChannel:
@@ -224,19 +220,39 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 			ctx, id, action.Terms, action.Source, action.Backing,
 		)
 
+	case *ForceCloseChannel:
+		return e.forceCloser.EnsureForceCloseChannel(
+			action.Backing.ChannelPoint,
+		)
+
+	case *NegotiateCooperativeClose:
+		return e.closer.NegotiateCooperativeClose(
+			ctx, id, action.Terms, action.Source, action.Backing,
+			action.Request,
+		)
+
+	case *PublishCooperativeClose:
+		return e.closer.PublishCooperativeClose(
+			ctx, id, action.Terms, action.Source, action.Close,
+		)
+
+	case *FinalizeCooperativeClose:
+		return e.closer.FinalizeCooperativeClose(
+			ctx, id, action.Terms, action.Backing, action.Source,
+			action.Request, action.Close,
+		)
+
 	default:
 		return fmt.Errorf("unknown Ark channel action %T", action)
 	}
 }
 
-// BindChannelEventSink connects native observations to the durable service.
+// BindChannelEventSink connects native funding and OOR terminal observations
+// to the same durable channel service.
 func (e *NativeExecutor) BindChannelEventSink(sink ChannelEventSink) error {
 	var bindErrors []error
 	for _, component := range []any{
-		e.negotiator,
-		e.oor,
-		e.materializer,
-		e.closer,
+		e.negotiator, e.oor, e.materializer, e.closer,
 	} {
 		if component == nil {
 			continue
@@ -252,3 +268,5 @@ func (e *NativeExecutor) BindChannelEventSink(sink ChannelEventSink) error {
 
 	return errors.Join(bindErrors...)
 }
+
+var _ ActionExecutor = (*NativeExecutor)(nil)

@@ -212,6 +212,24 @@ func signCooperativeClose(t *testing.T, template *CooperativeCloseTemplate,
 	return sig
 }
 
+// completeTestCooperativeClose records the hub's 3-of-3 OOR authorization.
+// The unused keys remain in the helper signature because state tests share the
+// full policy fixture.
+func completeTestCooperativeClose(t *testing.T,
+	template *CooperativeCloseTemplate, terms Terms, source VTXOBinding,
+	request CooperativeCloseRequest, _, hubKey,
+	_ *btcec.PrivateKey) CooperativeClose {
+
+	t.Helper()
+	hubSig := signCooperativeClose(
+		t, template, terms, PartyHub, hubKey,
+	)
+	settlement, err := template.Complete(terms, source, request, hubSig)
+	require.NoError(t, err)
+
+	return settlement
+}
+
 // mustDecodeTransaction decodes a raw transaction fixture.
 func mustDecodeTransaction(t *testing.T, raw []byte) *wire.MsgTx {
 	t.Helper()
