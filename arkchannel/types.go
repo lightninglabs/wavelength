@@ -435,6 +435,7 @@ type Snapshot struct {
 	OORAborted            bool
 	ClientRecoveryReady   bool
 	HubRecoveryReady      bool
+	SourceConflict        *SourceConflict
 	BackingPublished      bool
 	Failure               string
 }
@@ -450,8 +451,20 @@ func (s Snapshot) Clone() Snapshot {
 		backing := s.Backing.Clone()
 		s.Backing = &backing
 	}
+	if s.SourceConflict != nil {
+		conflict := *s.SourceConflict
+		s.SourceConflict = &conflict
+	}
 
 	return s
+}
+
+// SourceConflict records the first confirmed spend of any on-path ancestor
+// watched for a channel-policy VTXO. The channel FSM retains this evidence so
+// materialization and force close resume after a process restart.
+type SourceConflict struct {
+	OutPoint     wire.OutPoint
+	SpendingTxID chainhash.Hash
 }
 
 // ReadyToCommitOOR reports whether both lnd endpoints and the signed backing

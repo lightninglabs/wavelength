@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/protofsm"
 	"github.com/lightningnetwork/lnd/fn/v2"
@@ -107,7 +108,10 @@ func (s *channelState) ProcessEvent(_ context.Context, event Event,
 	}
 	_, oorFinalized := event.(*OORFinalized)
 	_, oorAborted := event.(*OORAborted)
-	if next.Phase == previousPhase && !oorFinalized && !oorAborted {
+	_, sourceSpent := event.(*SourceSpent)
+	if next.Phase == previousPhase && !oorFinalized && !oorAborted &&
+		!sourceSpent {
+
 		action = nil
 	}
 	if err := validateSnapshot(next); err != nil {
@@ -154,6 +158,15 @@ func PendingAction(snapshot Snapshot) (Action, error) {
 			Source:  snapshot.Source.Clone(),
 			Backing: snapshot.Backing.Clone(),
 		}, nil
+
+	case PhaseOnChain:
+		if snapshot.SourceConflict != nil {
+			return &ForceCloseChannel{
+				Backing: snapshot.Backing.Clone(),
+			}, nil
+		}
+
+		return nil, nil
 
 	case PhaseCancelling:
 		if !snapshot.OORAborted {
@@ -242,6 +255,11 @@ func applyEvent(next *Snapshot, event Event) (bool, error) {
 
 	case *BackingObserved:
 		return applyBackingObserved(next, event.TxID)
+
+	case *SourceSpent:
+		return applySourceSpent(
+			next, event.OutPoint, event.SpendingTxID,
+		)
 
 	case *ChannelClosed:
 		if next.Phase == PhaseClosed {
@@ -438,6 +456,38 @@ func applyRecoveryPackageInstalled(next *Snapshot, party Party) (bool, error) {
 	return true, nil
 }
 
+// applySourceSpent retains confirmed ancestry evidence before materialization
+// and native force close become replayable.
+func applySourceSpent(next *Snapshot, outpoint wire.OutPoint,
+	spendingTxID chainhash.Hash) (bool, error) {
+
+	if outpoint == (wire.OutPoint{}) || spendingTxID == (chainhash.Hash{}) {
+		return false, fmt.Errorf("source spend evidence is incomplete")
+	}
+	if next.SourceConflict != nil {
+		return false, nil
+	}
+	if !next.RecoveryReady() || !next.OORFinalized {
+		return false, fmt.Errorf("cannot handle source spend before " +
+			"recovery is ready")
+	}
+	next.SourceConflict = &SourceConflict{
+		OutPoint:     outpoint,
+		SpendingTxID: spendingTxID,
+	}
+	switch next.Phase {
+	case PhaseActive:
+		next.Phase = PhaseMaterializing
+
+	case PhaseActivating, PhaseMaterializing, PhaseOnChain, PhaseClosed:
+	default:
+		return false, fmt.Errorf("cannot handle source spend from %s",
+			next.Phase)
+	}
+
+	return true, nil
+}
+
 // applyOORAborted records a definitive pre-PONR failure before lnd cleanup.
 func applyOORAborted(next *Snapshot, sessionID [32]byte,
 	reason string) (bool, error) {
@@ -489,7 +539,11 @@ func applyChannelActive(next *Snapshot,
 		return false, fmt.Errorf("lnd activated an unexpected " +
 			"channel point")
 	}
-	next.Phase = PhaseActive
+	if next.SourceConflict != nil {
+		next.Phase = PhaseMaterializing
+	} else {
+		next.Phase = PhaseActive
+	}
 
 	return true, nil
 }
@@ -651,7 +705,8 @@ func validateSnapshot(snapshot Snapshot) error {
 		(snapshot.Backing != nil || snapshot.ClientFinalized ||
 			snapshot.HubFinalized || snapshot.OORFinalized ||
 			snapshot.OORAborted || snapshot.ClientRecoveryReady ||
-			snapshot.HubRecoveryReady) {
+			snapshot.HubRecoveryReady ||
+			snapshot.SourceConflict != nil) {
 		return fmt.Errorf("funding facts require a bound VTXO")
 	}
 	if snapshot.Backing == nil &&
@@ -674,6 +729,10 @@ func validateSnapshot(snapshot Snapshot) error {
 	if snapshot.OORFinalized && snapshot.OORAborted {
 		return fmt.Errorf("OOR transfer cannot be finalized and " +
 			"aborted")
+	}
+	if snapshot.SourceConflict != nil &&
+		(!snapshot.RecoveryReady() || !snapshot.OORFinalized) {
+		return fmt.Errorf("source conflict requires ready recovery")
 	}
 	if snapshot.BackingPublished && snapshot.Phase != PhaseOnChain &&
 		snapshot.Phase != PhaseClosed {
@@ -701,7 +760,8 @@ func validateSnapshot(snapshot Snapshot) error {
 		if snapshot.Backing != nil || snapshot.ClientFinalized ||
 			snapshot.HubFinalized || snapshot.OORFinalized ||
 			snapshot.OORAborted || snapshot.ClientRecoveryReady ||
-			snapshot.HubRecoveryReady {
+			snapshot.HubRecoveryReady ||
+			snapshot.SourceConflict != nil {
 			return fmt.Errorf("requested channel has advanced " +
 				"facts")
 		}
@@ -713,13 +773,14 @@ func validateSnapshot(snapshot Snapshot) error {
 		}
 		if snapshot.OORFinalized || snapshot.OORAborted ||
 			snapshot.ClientRecoveryReady ||
-			snapshot.HubRecoveryReady {
+			snapshot.HubRecoveryReady ||
+			snapshot.SourceConflict != nil {
 			return fmt.Errorf("negotiating channel has terminal " +
 				"OOR facts")
 		}
 
 	case PhaseBackingReady:
-		if snapshot.OORAborted {
+		if snapshot.OORAborted || snapshot.SourceConflict != nil {
 			return fmt.Errorf("backing-ready channel has " +
 				"terminal OOR facts")
 		}

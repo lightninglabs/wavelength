@@ -84,6 +84,12 @@ type ChannelOnchainHandoff interface {
 	HandoffChannel(wire.OutPoint) error
 }
 
+// ChannelForceCloser ensures native lnd publishes its latest commitment after
+// the Ark channel FSM has proved that the backing is on chain.
+type ChannelForceCloser interface {
+	EnsureForceCloseChannel(wire.OutPoint) error
+}
+
 // NativeExecutor routes durable Ark actions into native subsystems.
 type NativeExecutor struct {
 	localParty   Party
@@ -92,13 +98,14 @@ type NativeExecutor struct {
 	oor          OORTransferController
 	materializer ChannelMaterializer
 	handoff      ChannelOnchainHandoff
+	forceCloser  ChannelForceCloser
 }
 
 // NewNativeExecutor constructs the thin native subsystem adapter.
 func NewNativeExecutor(localParty Party, funding VirtualFundingActivator,
 	negotiator FundingNegotiator, oor OORTransferController,
-	materializer ChannelMaterializer,
-	handoff ChannelOnchainHandoff) (*NativeExecutor, error) {
+	materializer ChannelMaterializer, handoff ChannelOnchainHandoff,
+	forceCloser ChannelForceCloser) (*NativeExecutor, error) {
 
 	if localParty != PartyClient && localParty != PartyHub {
 		return nil, fmt.Errorf("local channel party is required")
@@ -112,6 +119,9 @@ func NewNativeExecutor(localParty Party, funding VirtualFundingActivator,
 	if handoff == nil {
 		return nil, fmt.Errorf("channel on-chain handoff is required")
 	}
+	if forceCloser == nil {
+		return nil, fmt.Errorf("channel force closer is required")
+	}
 
 	return &NativeExecutor{
 		localParty:   localParty,
@@ -120,6 +130,7 @@ func NewNativeExecutor(localParty Party, funding VirtualFundingActivator,
 		oor:          oor,
 		materializer: materializer,
 		handoff:      handoff,
+		forceCloser:  forceCloser,
 	}, nil
 }
 
@@ -173,6 +184,11 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 	case *ActivateChannel:
 		return e.funding.ConfirmBacking(
 			action.Backing.ChannelPoint.Hash,
+		)
+
+	case *ForceCloseChannel:
+		return e.forceCloser.EnsureForceCloseChannel(
+			action.Backing.ChannelPoint,
 		)
 
 	case *PublishChannel:

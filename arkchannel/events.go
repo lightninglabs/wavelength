@@ -2,6 +2,7 @@ package arkchannel
 
 import (
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 )
 
 // Event is a closed set of durable Ark-channel facts.
@@ -92,6 +93,15 @@ func (*ChannelActive) eventSealed() {}
 type Materialize struct{}
 
 func (*Materialize) eventSealed() {}
+
+// SourceSpent records confirmed chain evidence that one of the channel
+// source's on-path ancestors was spent.
+type SourceSpent struct {
+	OutPoint     wire.OutPoint
+	SpendingTxID chainhash.Hash
+}
+
+func (*SourceSpent) eventSealed() {}
 
 // BackingPublished records publication of the expected backing transaction.
 type BackingPublished struct {
@@ -190,3 +200,11 @@ type PublishChannel struct {
 }
 
 func (*PublishChannel) actionSealed() {}
+
+// ForceCloseChannel asks native lnd to publish its latest commitment after
+// the backing transaction is on chain.
+type ForceCloseChannel struct {
+	Backing Backing
+}
+
+func (*ForceCloseChannel) actionSealed() {}

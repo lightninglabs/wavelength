@@ -18,6 +18,7 @@ type nativeExecutorHarness struct {
 	cancelledID  ID
 	publishedID  ID
 	handedOff    wire.OutPoint
+	forceClosed  wire.OutPoint
 	recoveryID   ID
 	boundSinks   int
 	validations  int
@@ -100,6 +101,15 @@ func (h *nativeExecutorHarness) PrepareChannelRecovery(_ context.Context, id ID,
 	return nil
 }
 
+// EnsureForceCloseChannel records commitment publication through lnd.
+func (h *nativeExecutorHarness) EnsureForceCloseChannel(
+	channelPoint wire.OutPoint) error {
+
+	h.forceClosed = channelPoint
+
+	return nil
+}
+
 // MaterializeChannel records the unroller dispatch.
 func (h *nativeExecutorHarness) MaterializeChannel(_ context.Context, id ID,
 	_ Terms, _ VTXOBinding, _ Backing) error {
@@ -114,7 +124,7 @@ func (h *nativeExecutorHarness) MaterializeChannel(_ context.Context, id ID,
 func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
 	t.Parallel()
 	h := &nativeExecutorHarness{}
-	e, err := NewNativeExecutor(PartyClient, h, h, h, h, h)
+	e, err := NewNativeExecutor(PartyClient, h, h, h, h, h, h)
 	require.NoError(t, err)
 	require.NoError(t, e.BindChannelEventSink(harnessSink{}))
 	require.Equal(t, 3, h.boundSinks)
@@ -177,6 +187,15 @@ func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
 	)
 	require.Equal(t, terms.ID, h.publishedID)
 	require.Equal(t, backing.ChannelPoint, h.handedOff)
+	require.NoError(
+		t,
+		e.Execute(
+			t.Context(), terms.ID, &ForceCloseChannel{
+				Backing: backing,
+			},
+		),
+	)
+	require.Equal(t, backing.ChannelPoint, h.forceClosed)
 	require.Equal(t, terms.ID, h.negotiatedID)
 	require.Equal(t, terms.ID, h.committedID)
 	require.Equal(t, terms.ID, h.recoveryID)
@@ -188,7 +207,7 @@ func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
 func TestNativeExecutorFencesOORActionsToFunder(t *testing.T) {
 	t.Parallel()
 	h := &nativeExecutorHarness{}
-	e, err := NewNativeExecutor(PartyHub, h, h, h, h, h)
+	e, err := NewNativeExecutor(PartyHub, h, h, h, h, h, h)
 	require.NoError(t, err)
 	terms := testTerms(t, KindPromotion)
 	source := testBinding(terms)
