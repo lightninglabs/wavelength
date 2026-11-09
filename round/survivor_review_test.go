@@ -243,11 +243,11 @@ func TestReplacementBeforeAdmissionAckAppliesAbort(t *testing.T) {
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = h.actor.OnStop(t.Context()) })
+	old := testRoundID("ack-not-received")
+	h.roundStore.On("FailRound", mock.Anything, old).Return(nil).Maybe()
 	result := h.actor.handleServerMessage(t.Context(),
 		&ServerMessageNotification{Message: &BoardingFailed{
-			RoundID: fn.Some(
-				testRoundID("ack-not-received"),
-			),
+			RoundID: fn.Some(old),
 			ReplacementRoundID: fn.Some(
 				testRoundID("unused-successor"),
 			),
@@ -256,5 +256,70 @@ func TestReplacementBeforeAdmissionAckAppliesAbort(t *testing.T) {
 	require.NoError(t, result.Err())
 	state, err := fsmState(t.Context(), pending.FSM)
 	require.NoError(t, err)
+	require.IsType(t, &IntentSentState{}, state)
+	require.NoError(
+		t, h.actor.handleRoundJoined(t.Context(),
+			&RoundJoined{RoundID: old}).Err(),
+	)
+	state, err = fsmState(t.Context(), pending.FSM)
+	require.NoError(t, err)
 	require.IsType(t, &ClientFailedState{}, state)
+}
+
+// TestStaleReplacementCannotAbortPendingJoin preserves an unrelated join when
+// a completed predecessor's offer is redelivered after its lineage is gone.
+func TestStaleReplacementCannotAbortPendingJoin(t *testing.T) {
+	h := newActorTestHarness(t)
+	h.actor.env.AdmissionTimeout = 0
+	pending, err := h.actor.createRoundWithState(
+		t.Context(), &IntentSentState{}, fn.None[RoundID](), nil,
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = h.actor.OnStop(t.Context()) })
+	stale, own := testRoundID("retired-A"), testRoundID("new-B")
+	result := h.actor.handleServerMessage(t.Context(),
+		&ServerMessageNotification{Message: &BoardingFailed{
+			RoundID: fn.Some(stale),
+			ReplacementRoundID: fn.Some(
+				testRoundID("retired-A-successor"),
+			),
+			RetryAttempt: 1,
+		}})
+	require.NoError(t, result.Err())
+	require.NoError(
+		t, h.actor.handleRoundJoined(t.Context(),
+			&RoundJoined{RoundID: own}).Err(),
+	)
+	state, err := fsmState(t.Context(), pending.FSM)
+	require.NoError(t, err)
+	sent, ok := state.(*IntentSentState)
+	require.True(t, ok)
+	require.Equal(t, own, sent.AdmittedRoundID)
+	require.Empty(t, h.actor.pendingReplacementOffers)
+}
+
+// TestPendingReplacementOffersBounded limits storage for unmatched offers.
+func TestPendingReplacementOffersBounded(t *testing.T) {
+	h := newActorTestHarness(t)
+	h.actor.env.AdmissionTimeout = 0
+	_, err := h.actor.createRoundWithState(
+		t.Context(), &IntentSentState{}, fn.None[RoundID](), nil,
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = h.actor.OnStop(t.Context()) })
+	for i := 0; i <= maxPendingQuotes; i++ {
+		id, err := NewRoundID()
+		require.NoError(t, err)
+		result := h.actor.bufferReplacementOffer(&BoardingFailed{
+			RoundID:            fn.Some(id),
+			ReplacementRoundID: fn.Some(testRoundID("successor")),
+			RetryAttempt:       1,
+		})
+		if i == maxPendingQuotes {
+			require.ErrorContains(t, result.Err(), "limit reached")
+		} else {
+			require.NoError(t, result.Err())
+		}
+	}
+	require.Len(t, h.actor.pendingReplacementOffers, maxPendingQuotes)
 }

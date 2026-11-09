@@ -16,6 +16,43 @@ import (
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
+// bufferReplacementOffer defers an unknown ID without applying its abort to
+// another pending join. Admission later matches by authenticated outpoints.
+func (a *RoundClientActor) bufferReplacementOffer(
+	offer *BoardingFailed) fn.Result[actormsg.RoundActorResp] {
+
+	ack := fn.Ok[actormsg.RoundActorResp](
+		&ServerMessageResponse{
+			Success: true,
+		},
+	)
+	id := offer.RoundID.UnwrapOr(RoundID{})
+	if id == (RoundID{}) || a.findPendingRound() == nil {
+		return ack
+	}
+	if prior := a.pendingReplacementOffers[id]; prior != nil {
+		if prior.ReplacementRoundID != offer.ReplacementRoundID ||
+			prior.RetryAttempt != offer.RetryAttempt {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("conflicting pending replacement"),
+			)
+		}
+
+		return ack
+	}
+	if len(a.pendingReplacementOffers) >= maxPendingQuotes {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("pending replacement offer limit reached"),
+		)
+	}
+	if a.pendingReplacementOffers == nil {
+		a.pendingReplacementOffers = make(map[RoundID]*BoardingFailed)
+	}
+	a.pendingReplacementOffers[id] = offer
+
+	return ack
+}
+
 // retryMaterial retains the original intent while discarding all transcripts.
 func retryMaterial(
 	state protofsm.State[ClientEvent, ClientOutMsg, *ClientEnvironment],

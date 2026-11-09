@@ -405,6 +405,10 @@ type RoundClientActor struct {
 	// silent drop. Bounded by maxPendingQuotes to keep a hostile
 	// server from flooding the buffer.
 	pendingQuotes map[RoundID]*JoinRoundQuoteReceived
+	// pendingReplacementOffers waits for an outpoint-matched admission
+	// acknowledgement. Unknown round IDs never identify an arbitrary join.
+	// It shares the pending quote count bound.
+	pendingReplacementOffers map[RoundID]*BoardingFailed
 
 	// boardQueue holds board triggers waiting for the wallet's confirmed
 	// boarding intents, oldest first. Only the head has a fetch in flight,
@@ -2413,6 +2417,20 @@ func (a *RoundClientActor) handleRoundJoined(ctx context.Context,
 		)
 	}
 
+	// Apply only the offer correlated by this outpoint-matched ack.
+	offer := a.pendingReplacementOffers[event.RoundID]
+	delete(a.pendingReplacementOffers, event.RoundID)
+	if a.findPendingRound() == nil {
+		clear(a.pendingReplacementOffers)
+	}
+	if offer != nil {
+		delete(a.pendingQuotes, event.RoundID)
+
+		return a.handleServerMessage(ctx, &ServerMessageNotification{
+			Message: offer,
+		})
+	}
+
 	// If a JoinRoundQuoteReceived for this round arrived before the
 	// re-key, deliver it now. The mailbox contract allows
 	// out-of-order delivery; draining here prevents the buffered
@@ -2523,11 +2541,15 @@ func (a *RoundClientActor) handleServerMessage(ctx context.Context,
 	if failed, ok := msg.Message.(*BoardingFailed); ok &&
 		failed.ReplacementRoundID.IsSome() {
 
+		oldID := failed.RoundID.UnwrapOr(RoundID{})
+		if a.rounds[RoundKeyStr(oldID.KeyString())] == nil &&
+			!a.isReplacedRound(oldID) {
+			return a.bufferReplacementOffer(failed)
+		}
 		result := a.handleRoundReplacement(ctx, failed)
 		if result.Err() == nil {
 			return result
 		}
-		oldID := failed.RoundID.UnwrapOr(RoundID{})
 		if a.isReplacedRound(oldID) {
 			return result
 		}
@@ -2539,17 +2561,6 @@ func (a *RoundClientActor) handleServerMessage(ctx context.Context,
 		plain := *failed
 		plain.ReplacementRoundID = fn.None[RoundID]()
 		plain.RetryAttempt = 0
-		if a.rounds[RoundKeyStr(oldID.KeyString())] == nil {
-			if pending := a.findPendingRound(); pending != nil {
-				state, err := fsmState(ctx, pending.FSM)
-				if sent, ok := state.(*IntentSentState); err == nil &&
-					ok &&
-					sent.AdmittedRoundID == (RoundID{}) {
-
-					plain.RoundID = fn.None[RoundID]()
-				}
-			}
-		}
 
 		return a.handleServerMessage(ctx, &ServerMessageNotification{
 			Message: &plain,
