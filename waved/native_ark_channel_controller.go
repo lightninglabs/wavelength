@@ -1,7 +1,9 @@
 package waved
 
 import (
+	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -11,6 +13,18 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
+)
+
+var (
+	// ErrInsufficientArkChannelLiquidity means no active private channel
+	// has enough balance on the requested sending side.
+	ErrInsufficientArkChannelLiquidity = fmt.Errorf("insufficient active " +
+		"Ark channel liquidity")
+
+	// ErrReceiveChannelFallback means channel creation was abandoned before
+	// the hub's prepared OOR crossed its signing point of no return.
+	ErrReceiveChannelFallback = fmt.Errorf("receive channel can safely " +
+		"fall back to vHTLC")
 )
 
 // NativeArkChannelController owns one Ark FSM and one modular lnd endpoint.
@@ -288,4 +302,90 @@ func (c *NativeArkChannelController) newReceiveIntentTerms(
 	)
 
 	return terms, terms.Validate()
+}
+
+// waitIncomingPaymentReady joins the two independent durable readiness
+// barriers. Returning after only one would either expose an unusable channel or
+// release the preimage before its channel exists.
+func waitIncomingPaymentReady(ctx context.Context,
+	waitInvoice func(context.Context) (lnwire.ShortChannelID, error),
+	syncIntent func(context.Context) error) (lnwire.ShortChannelID, error) {
+
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type invoiceWaitResult struct {
+		channelID lnwire.ShortChannelID
+		err       error
+	}
+	invoiceResult := make(chan invoiceWaitResult, 1)
+	go func() {
+		channelID, err := waitInvoice(waitCtx)
+		invoiceResult <- invoiceWaitResult{
+			channelID: channelID,
+			err:       err,
+		}
+	}()
+	syncResult := make(chan error, 1)
+	go func() {
+		syncResult <- syncIntent(waitCtx)
+	}()
+
+	var incomingSCID lnwire.ShortChannelID
+	for invoiceResult != nil || syncResult != nil {
+		select {
+		case result := <-invoiceResult:
+			invoiceResult = nil
+			if result.err != nil {
+				return lnwire.ShortChannelID{}, fmt.Errorf(
+					"wait for incoming hold invoice: %w",
+					result.err)
+			}
+			incomingSCID = result.channelID
+
+		case err := <-syncResult:
+			syncResult = nil
+			if err != nil && !errors.Is(
+				err, ErrReceiveChannelFallback,
+			) {
+				return lnwire.ShortChannelID{}, fmt.Errorf(
+					"synchronize receive channel: %w", err)
+			}
+
+		case <-waitCtx.Done():
+			return lnwire.ShortChannelID{}, waitCtx.Err()
+		}
+	}
+
+	if incomingSCID == (lnwire.ShortChannelID{}) {
+		return lnwire.ShortChannelID{}, fmt.Errorf("incoming payment " +
+			"channel SCID is empty")
+	}
+
+	return incomingSCID, nil
+}
+
+// receiveIntentIsRetained identifies reusable or later channel lifecycle
+// states.
+func receiveIntentIsRetained(phase arkchannel.Phase) bool {
+	switch phase {
+	case arkchannel.PhaseActive, arkchannel.PhaseMaterializing,
+		arkchannel.PhaseOnChain, arkchannel.PhaseClosed,
+		arkchannel.PhaseCoopClosing, arkchannel.PhaseCoopCloseSigned,
+		arkchannel.PhaseCoopClosePublished:
+		return true
+
+	default:
+		return false
+	}
+}
+
+// receiveIntentEndpointsDisagree detects a retained/pre-PONR split.
+func receiveIntentEndpointsDisagree(remoteMissing bool, remote arkchannel.Phase,
+	localMissing bool, local arkchannel.Phase) bool {
+
+	remoteRetained := !remoteMissing && receiveIntentIsRetained(remote)
+	localRetained := !localMissing && receiveIntentIsRetained(local)
+
+	return remoteRetained != localRetained
 }
