@@ -11,13 +11,17 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	clientdb "github.com/lightninglabs/wavelength/db"
+	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
+	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/chanstate"
 	"github.com/lightningnetwork/lnd/clock"
@@ -126,6 +130,139 @@ type activeFundingFlow struct {
 	clientChannel *chanstate.OpenChannel
 	hubSink       *fundingNegotiationSink
 	clientSink    *fundingNegotiationSink
+}
+
+// cooperativeCloseActionExecutor keeps this composed test focused on the
+// direct-close actions while using the production process and services.
+type cooperativeCloseActionExecutor struct {
+	closer       arkchannel.ChannelCooperativeCloser
+	negotiations atomic.Uint32
+}
+
+// BindChannelEventSink connects the local endpoint to its durable service.
+func (e *cooperativeCloseActionExecutor) BindChannelEventSink(
+	sink arkchannel.ChannelEventSink) error {
+
+	binder, ok := e.closer.(arkchannel.ChannelEventSinkBinder)
+	if !ok {
+		return fmt.Errorf("cooperative close process cannot bind " +
+			"event sink")
+	}
+
+	return binder.BindChannelEventSink(sink)
+}
+
+// Execute dispatches the three durable cooperative-close actions.
+func (e *cooperativeCloseActionExecutor) Execute(ctx context.Context,
+	id arkchannel.ID, action arkchannel.Action) error {
+
+	switch action := action.(type) {
+	case *arkchannel.NegotiateCooperativeClose:
+		e.negotiations.Add(1)
+
+		return e.closer.NegotiateCooperativeClose(
+			ctx, id, action.Terms, action.Source, action.Backing,
+			action.Request,
+		)
+
+	case *arkchannel.PublishCooperativeClose:
+		return e.closer.PublishCooperativeClose(
+			ctx, id, action.Terms, action.Source, action.Close,
+		)
+
+	case *arkchannel.FinalizeCooperativeClose:
+		return e.closer.FinalizeCooperativeClose(
+			ctx, id, action.Terms, action.Backing, action.Source,
+			action.Request, action.Close,
+		)
+
+	default:
+		return fmt.Errorf("unexpected cooperative close action %T",
+			action)
+	}
+}
+
+// blockingCooperativeClosePublisher models the ordinary OOR completion barrier
+// so the test can prove lnd remains open until replacement VTXOs finalize.
+type blockingCooperativeClosePublisher struct {
+	published chan arkchannel.CooperativeClose
+	confirm   chan struct{}
+}
+
+// cooperativeCloseSigningOrder records which policy role signs the exact
+// settlement transaction first.
+type cooperativeCloseSigningOrder struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+// recordingCooperativeCloseSigner wraps an ordinary lnd signer without
+// changing any signing behavior.
+type recordingCooperativeCloseSigner struct {
+	input.Signer
+
+	label string
+	order *cooperativeCloseSigningOrder
+}
+
+// SignOutputRaw records the role and delegates the signature operation.
+func (s *recordingCooperativeCloseSigner) SignOutputRaw(tx *wire.MsgTx,
+	desc *input.SignDescriptor) (input.Signature, error) {
+
+	s.order.mu.Lock()
+	s.order.calls = append(s.order.calls, s.label)
+	s.order.mu.Unlock()
+
+	return s.Signer.SignOutputRaw(tx, desc)
+}
+
+// snapshot returns an isolated signing order.
+func (o *cooperativeCloseSigningOrder) snapshot() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	return append([]string(nil), o.calls...)
+}
+
+// exactCooperativeCloseDeliveryValidator models a wallet ownership lookup for
+// one expected payout script.
+func exactCooperativeCloseDeliveryValidator(
+	expected []byte) CooperativeCloseDeliveryValidator {
+
+	return CooperativeCloseDeliveryValidatorFunc(func(_ context.Context,
+		_ arkchannel.ID, script []byte) error {
+
+		if !bytes.Equal(script, expected) {
+			return fmt.Errorf("payout script is not wallet owned")
+		}
+
+		return nil
+	})
+}
+
+// SettleCooperativeClose validates the exact OOR authorization and waits for
+// the simulated durable OOR completion.
+func (p *blockingCooperativeClosePublisher) SettleCooperativeClose(
+	ctx context.Context, _ arkchannel.ID, _ arkchannel.Terms,
+	_ arkchannel.VTXOBinding, _ arkchannel.CooperativeCloseRequest,
+	settlement arkchannel.CooperativeClose) error {
+
+	if settlement.TxID == (chainhash.Hash{}) {
+		return fmt.Errorf("cooperative close OOR session ID is empty")
+	}
+
+	select {
+	case p.published <- settlement:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-p.confirm:
+		return nil
+
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Apply records funding facts and releases virtual confirmation only after
@@ -1155,6 +1292,356 @@ func TestRestorePeerLinksIsolatesChannelFailures(t *testing.T) {
 	require.NoError(t, err)
 	_, err = client.runtime.GetLink(first.clientChannel.ShortChanID())
 	require.ErrorIs(t, err, htlcswitch.ErrChannelLinkNotFound)
+}
+
+// TestNativeFundingFlowInArkCooperativeClose proves an active unpublished
+// channel can carry payments in both directions and then settle its clean lnd
+// balances with an ordinary OOR package over the channel VTXO's 3-of-3 path.
+// The backing channel point never becomes an input to the close package.
+func TestNativeFundingFlowInArkCooperativeClose(t *testing.T) {
+	t.Parallel()
+
+	hub := newFundingFlowNode(t, arkchannel.PartyHub)
+	client := newFundingFlowNode(t, arkchannel.PartyClient)
+	connectFundingFlowNodes(t, hub, client)
+	require.NoError(t, hub.runtime.Start())
+	require.NoError(t, client.runtime.Start())
+	t.Cleanup(func() {
+		require.NoError(t, hub.runtime.Stop())
+		require.NoError(t, client.runtime.Stop())
+	})
+
+	clientArkKey := testIntentKey(t)
+	hubArkKey := testIntentKey(t)
+	operatorArkKey := testIntentKey(t)
+	pendingID := lndfunding.PendingChanID{4, 8, 1, 5}
+	record := fundingIntentRecord(t, hub, client, pendingID)
+	record.Snapshot.Terms.Kind = arkchannel.KindPromotion
+	record.Snapshot.Terms.Funder = arkchannel.PartyClient
+	record.Snapshot.Terms.PaymentHash = [32]byte{}
+	record.Snapshot.Terms.VTXO.ClientArkKey = compressedIntentKey(
+		clientArkKey,
+	)
+	record.Snapshot.Terms.VTXO.HubArkKey = compressedIntentKey(hubArkKey)
+	record.Snapshot.Terms.VTXO.ArkOperatorKey = compressedIntentKey(
+		operatorArkKey,
+	)
+	record.Snapshot.Source = testIntentBinding(
+		t, record.Snapshot.Terms, testFundingCapacity+1_000, 1,
+	)
+	request := arkchannel.CooperativeCloseRequest{
+		Initiator:            arkchannel.PartyClient,
+		ClientDeliveryScript: client.key.PubKey().SerializeCompressed(),
+		HubDeliveryScript:    hub.key.PubKey().SerializeCompressed(),
+	}
+	flow := activateFundingFlowChannel(t, hub, client, record)
+	channelPoint := flow.hubChannel.FundingOutpoint
+	require.Equal(t, channelPoint, flow.clientChannel.FundingOutpoint)
+	require.Zero(t, flow.hubChannel.LocalCommitment.LocalBalance)
+	require.Positive(t, flow.clientChannel.LocalCommitment.LocalBalance)
+
+	payRuntimeInvoice(
+		t, client, hub, lnwire.MilliSatoshi(30_000_000),
+		lntypes.Preimage{1, 4, 1, 5},
+	)
+	payRuntimeInvoice(
+		t, hub, client, lnwire.MilliSatoshi(10_000_000),
+		lntypes.Preimage{9, 2, 6, 5},
+	)
+
+	hubRawStore := clientdb.NewTestDB(t)
+	clientRawStore := clientdb.NewTestDB(t)
+	hubStore := clientdb.NewStore(
+		hubRawStore.DB, hubRawStore.Queries, hubRawStore.Backend(),
+		btclog.Disabled,
+	).NewArkChannelStore(clock.NewDefaultClock())
+	clientStore := clientdb.NewStore(
+		clientRawStore.DB, clientRawStore.Queries,
+		clientRawStore.Backend(), btclog.Disabled,
+	).NewArkChannelStore(clock.NewDefaultClock())
+	_, err := hubStore.Create(t.Context(), flow.hubSink.record.Snapshot)
+	require.NoError(t, err)
+	_, err = clientStore.Create(
+		t.Context(), flow.clientSink.record.Snapshot,
+	)
+	require.NoError(t, err)
+	hubFSM, err := arkchannel.NewCoordinator(hubStore)
+	require.NoError(t, err)
+	clientFSM, err := arkchannel.NewCoordinator(clientStore)
+	require.NoError(t, err)
+
+	signingOrder := &cooperativeCloseSigningOrder{}
+	hubEndpoint, err := NewNativeCooperativeCloseEndpoint(
+		arkchannel.PartyHub, hub.runtime,
+		&recordingCooperativeCloseSigner{
+			Signer: input.NewMockSigner(
+				[]*btcec.PrivateKey{hubArkKey}, nil,
+			),
+			label: "hub",
+			order: signingOrder,
+		},
+		keychain.KeyDescriptor{PubKey: hubArkKey.PubKey()},
+		exactCooperativeCloseDeliveryValidator(
+			request.HubDeliveryScript,
+		),
+	)
+	require.NoError(t, err)
+	clientEndpoint, err := NewNativeCooperativeCloseEndpoint(
+		arkchannel.PartyClient, client.runtime, nil,
+		keychain.KeyDescriptor{},
+		exactCooperativeCloseDeliveryValidator(
+			request.ClientDeliveryScript,
+		),
+	)
+	require.NoError(t, err)
+	publisher := &blockingCooperativeClosePublisher{
+		published: make(chan arkchannel.CooperativeClose, 1),
+		confirm:   make(chan struct{}),
+	}
+	defended := make(chan wire.OutPoint, 1)
+	hubClose, err := NewHubCooperativeCloseProcess(
+		hubEndpoint,
+		&stableCooperativeCloseDelivery{
+			script: request.HubDeliveryScript,
+		},
+		CooperativeCloseObserverFunc(func(context.Context,
+			chainhash.Hash, btcutil.Amount) error {
+
+			return nil
+		}),
+		CooperativeCloseDefenderFunc(func(_ context.Context,
+			outpoint wire.OutPoint) error {
+
+			defended <- outpoint
+
+			return nil
+		}),
+	)
+	require.NoError(t, err)
+	hubExecutor := &HubCooperativeCloseExecutor{
+		HubCooperativeCloseProcess: hubClose,
+	}
+	hubActionExecutor := &cooperativeCloseActionExecutor{
+		closer: hubExecutor,
+	}
+	hubService, err := arkchannel.NewService(
+		arkchannel.PartyHub, hubFSM, hubActionExecutor,
+	)
+	require.NoError(t, err)
+	hubRPC, err := NewCooperativeClosePeerRPCServer(
+		record.Snapshot.Terms.ClientNodeKey, hubClose,
+	)
+	require.NoError(t, err)
+	mux := mailboxrpc.NewServeMux()
+	arkchannelrpc.RegisterArkChannelPeerServiceMailboxServer(mux, hubRPC)
+	mailboxPeer, err := NewMailboxCooperativeClosePeer(
+		newLoopbackCooperativeCloseRPC(mux),
+	)
+	require.NoError(t, err)
+	lossyPeer := &lossyCooperativeClosePeer{
+		ProcessCooperativeClosePeer: mailboxPeer,
+		loseBegin:                   true,
+		loseComplete:                true,
+		failPublish:                 true,
+	}
+	clientDelivery := &stableCooperativeCloseDelivery{
+		script: request.ClientDeliveryScript,
+	}
+	clientClose, err := NewClientCooperativeCloseProcess(
+		clientEndpoint, lossyPeer, publisher, clientDelivery,
+	)
+	require.NoError(t, err)
+	clientService, err := arkchannel.NewService(
+		arkchannel.PartyClient, clientFSM,
+		&cooperativeCloseActionExecutor{
+			closer: clientClose,
+		},
+	)
+	require.NoError(t, err)
+
+	_, err = clientClose.RequestCooperativeClose(
+		t.Context(), record.Snapshot.Terms.ID,
+	)
+	require.ErrorContains(t, err, "lost begin response")
+	require.Equal(t, 1, clientDelivery.callCount())
+	require.Zero(
+		t, hubActionExecutor.negotiations.Load(),
+		"begin must persist the request without replaying its action",
+	)
+
+	_, err = clientClose.RequestCooperativeClose(
+		t.Context(), record.Snapshot.Terms.ID,
+	)
+	require.ErrorContains(t, err, "lost complete response")
+	require.Equal(t, 2, clientDelivery.callCount())
+
+	// The client received nothing, but the hub must already hold the
+	// exact hub authorization. OOR signing cannot start until the client
+	// recovers it and completes the durable acknowledgement barrier.
+	hubCompleted, err := hubStore.Get(
+		t.Context(), record.Snapshot.Terms.ID,
+	)
+	require.NoError(t, err)
+	clientWaiting, err := clientStore.Get(
+		t.Context(), record.Snapshot.Terms.ID,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, hubCompleted.Snapshot.CooperativeClose)
+	require.True(t, hubCompleted.Snapshot.HubCloseSigned)
+	require.False(t, hubCompleted.Snapshot.ClientCloseSigned)
+	require.Nil(t, clientWaiting.Snapshot.CooperativeClose)
+	require.Equal(
+		t, []string{"hub"},
+		signingOrder.snapshot(),
+	)
+	select {
+	case <-publisher.published:
+		t.Fatal("cooperative close OOR started before client recovery")
+
+	default:
+	}
+
+	closeResult := make(chan error, 1)
+	go func() {
+		_, closeErr := clientClose.RequestCooperativeClose(
+			t.Context(), record.Snapshot.Terms.ID,
+		)
+		closeResult <- closeErr
+	}()
+
+	var settlement arkchannel.CooperativeClose
+	select {
+	case settlement = <-publisher.published:
+	case err := <-closeResult:
+		require.NoError(t, err)
+		t.Fatal("cooperative close completed without OOR settlement")
+
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for cooperative OOR settlement")
+	}
+	require.Equal(
+		t, []string{"hub"},
+		signingOrder.snapshot(),
+	)
+	require.NoError(
+		t, settlement.Validate(
+			record.Snapshot.Terms, *record.Snapshot.Source, request,
+		),
+	)
+	require.Len(t, settlement.Transaction, schnorr.SignatureSize)
+	require.NotEqual(t, channelPoint.Hash, settlement.TxID)
+
+	// OOR submission has started, but lnd must retain both open-channel
+	// records until the OOR actor reports durable completion.
+	for _, node := range []*fundingFlowNode{hub, client} {
+		_, err := node.db.ChannelStateDB().FetchChannel(channelPoint)
+		require.NoError(t, err)
+	}
+	hubSigned, err := hubStore.Get(t.Context(), record.Snapshot.Terms.ID)
+	require.NoError(t, err)
+	clientSigned, err := clientStore.Get(
+		t.Context(), record.Snapshot.Terms.ID,
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, arkchannel.PhaseCoopCloseSigned, hubSigned.Snapshot.Phase,
+	)
+	require.Equal(
+		t, arkchannel.PhaseCoopCloseSigned, clientSigned.Snapshot.Phase,
+	)
+
+	close(publisher.confirm)
+	select {
+	case err := <-closeResult:
+		require.ErrorContains(t, err, "publish interruption")
+
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout finalizing cooperative OOR close")
+	}
+	clientPublished, err := clientStore.Get(
+		t.Context(), record.Snapshot.Terms.ID,
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, arkchannel.PhaseCoopClosePublished,
+		clientPublished.Snapshot.Phase,
+	)
+	hubWaiting, err := hubStore.Get(
+		t.Context(), record.Snapshot.Terms.ID,
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, arkchannel.PhaseCoopCloseSigned, hubWaiting.Snapshot.Phase,
+	)
+	for _, node := range []*fundingFlowNode{hub, client} {
+		_, err := node.db.ChannelStateDB().FetchChannel(channelPoint)
+		require.NoError(t, err)
+	}
+
+	require.Equal(t, 2, clientDelivery.callCount())
+	closed, err := clientClose.RequestCooperativeClose(
+		t.Context(), record.Snapshot.Terms.ID,
+	)
+	require.NoError(t, err)
+	require.Equal(t, arkchannel.PhaseClosed, closed.Snapshot.Phase)
+
+	for party, state := range map[arkchannel.Party]struct {
+		node  *fundingFlowNode
+		store *clientdb.ArkChannelStoreDB
+	}{
+		arkchannel.PartyHub: {
+			node: hub, store: hubStore,
+		},
+		arkchannel.PartyClient: {
+			node: client, store: clientStore,
+		},
+	} {
+		closedRecord, err := state.store.Get(
+			t.Context(), record.Snapshot.Terms.ID,
+		)
+		require.NoError(t, err)
+		require.Equal(
+			t, arkchannel.PhaseClosed, closedRecord.Snapshot.Phase,
+		)
+		_, err = state.node.db.ChannelStateDB().FetchChannel(
+			channelPoint,
+		)
+		require.ErrorIs(t, err, channeldb.ErrChannelNotFound)
+		closedChannel, err := state.node.db.
+			ChannelStateDB().
+			FetchClosedChannel(&channelPoint)
+		require.NoError(t, err)
+		require.Equal(
+			t, channeldb.CooperativeClose, closedChannel.CloseType,
+		)
+		require.Equal(t, settlement.TxID, closedChannel.ClosingTXID)
+		expectedBalance := settlement.Proposal.ClientBalance
+		if party == arkchannel.PartyHub {
+			expectedBalance = settlement.Proposal.HubBalance
+		}
+		require.Equal(t, expectedBalance, closedChannel.SettledBalance)
+	}
+	expectedHubReplacement, err := settlement.ReplacementOutPoint(
+		record.Snapshot.Terms, *record.Snapshot.Source, request,
+		arkchannel.PartyHub,
+	)
+	require.NoError(t, err)
+	_, err = hubService.ApplyLocalEvent(
+		t.Context(), record.Snapshot.Terms.ID,
+		&arkchannel.SourceSpent{
+			OutPoint:     record.Snapshot.Source.OutPoint,
+			SpendingTxID: chainhash.Hash{9, 9, 9},
+		},
+	)
+	require.NoError(t, err)
+	select {
+	case outpoint := <-defended:
+		require.Equal(t, expectedHubReplacement, outpoint)
+
+	case <-time.After(time.Second):
+		t.Fatal("hub replacement was not defended")
+	}
+	_ = clientService
 }
 
 // TestNativeFundingFlowPromotesClientVTXO proves the same prepared-OOR flow
