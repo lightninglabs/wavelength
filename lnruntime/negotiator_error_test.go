@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -66,6 +67,33 @@ func TestRemoteFundingNegotiationErrorClassification(t *testing.T) {
 			require.ErrorContains(t, err, test.err.Error())
 		})
 	}
+}
+
+// TestFundingWireResponseMarksPeerRejection verifies an error response that
+// arrived from the peer remains distinguishable from a lost response.
+func TestFundingWireResponseMarksPeerRejection(t *testing.T) {
+	t.Parallel()
+
+	requestID := [32]byte{1}
+	result := make(chan fundingWireResult, 1)
+	wire := &FundingWire{
+		pending: map[[32]byte]chan fundingWireResult{
+			requestID: result,
+		},
+	}
+	require.NoError(
+		t,
+		wire.deliverResponse(
+			requestID, &arkchannelrpc.FundingWireEnvelope{
+				Error: "channel rejected",
+			},
+		),
+	)
+
+	response := <-result
+	require.ErrorIs(t, response.err, errFundingWireRequestRejected)
+	err := remoteFundingNegotiationError("remote step", response.err)
+	require.NotErrorIs(t, err, ErrFundingNegotiationAmbiguous)
 }
 
 // TestAwaitNegotiatedPSBTPreservesLocalFailure verifies lnd's terminal local
