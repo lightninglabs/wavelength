@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -175,11 +176,52 @@ func (e *serviceExecutor) Execute(ctx context.Context, id ID,
 
 		return err
 
+	case *ForceCloseChannel:
+		return nil
+
 	default:
 		return fmt.Errorf("unexpected service action %T", action)
 	}
 
 	return nil
+}
+
+// TestServiceReplaysSourceConflictAction proves repeating the same durable
+// chain fact retries a backing publication that failed after state commit.
+func TestServiceReplaysSourceConflictAction(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	executor := &serviceExecutor{
+		t: t, counts: make(map[string]int), failPublish: 1,
+	}
+	service, err := NewService(PartyClient, coordinator, executor)
+	require.NoError(t, err)
+	executor.service = service
+	executor.localParty = PartyClient
+	terms := testTerms(t, KindPromotion)
+	binding := testBinding(terms)
+	_, err = service.PromoteVTXO(t.Context(), terms, binding)
+	require.NoError(t, err)
+
+	conflict := &SourceSpent{
+		OutPoint: binding.OutPoint,
+		SpendingTxID: chainhash.Hash{
+			44,
+		},
+	}
+	_, err = service.ApplyLocalEvent(t.Context(), terms.ID, conflict)
+	require.ErrorContains(t, err, "injected handoff failure")
+	record, err := service.GetChannel(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, PhaseMaterializing, record.Snapshot.Phase)
+
+	record, err = service.ApplyLocalEvent(t.Context(), terms.ID, conflict)
+	require.NoError(t, err)
+	require.Equal(t, PhaseOnChain, record.Snapshot.Phase)
+	require.Equal(t, 2, executor.counts["*arkchannel.PublishChannel"])
+	require.Equal(t, 1, executor.counts["*arkchannel.ForceCloseChannel"])
 }
 
 // TestServiceResumesMaterializationAction proves a retry cannot acknowledge a
@@ -384,6 +426,10 @@ func TestServiceEventAuthorityMatrix(t *testing.T) {
 		},
 		{
 			&Materialize{},
+			eventOriginLocal,
+		},
+		{
+			&SourceSpent{},
 			eventOriginLocal,
 		},
 		{

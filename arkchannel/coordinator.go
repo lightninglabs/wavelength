@@ -298,6 +298,12 @@ func snapshotsEqual(a, b Snapshot) bool {
 	if err := sameTerms(a.Terms, b.Terms); err != nil {
 		return false
 	}
+	if (a.SourceConflict == nil) != (b.SourceConflict == nil) {
+		return false
+	}
+	if a.SourceConflict != nil && *a.SourceConflict != *b.SourceConflict {
+		return false
+	}
 	if a.Phase != b.Phase ||
 		a.OORPreparationStarted != b.OORPreparationStarted ||
 		a.BackingPublished != b.BackingPublished ||

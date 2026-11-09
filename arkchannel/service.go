@@ -379,8 +379,8 @@ func (s *Service) authorizeEvent(ctx context.Context, id ID, event Event,
 		return s.requireOriginParty(origin, event.Party, event)
 
 	case *ChannelActive, *FundingCanceled, *ExpirePrePONR, *Fail,
-		*Materialize, *BackingPublished, *BackingObserved,
-		*ChannelClosed:
+		*Materialize, *SourceSpent, *BackingPublished,
+		*BackingObserved, *ChannelClosed:
 
 		if origin != eventOriginLocal {
 			return fmt.Errorf("%T requires local subsystem "+

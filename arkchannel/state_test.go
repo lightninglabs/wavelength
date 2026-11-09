@@ -175,6 +175,121 @@ func TestOORChannelLifecycle(t *testing.T) {
 	require.Equal(t, PhaseClosed, record.Snapshot.Phase)
 }
 
+// TestSourceConflictDrivesForceClose proves confirmed ancestry evidence is a
+// durable trigger for backing publication followed by native lnd force close.
+func TestSourceConflictDrivesForceClose(t *testing.T) {
+	t.Parallel()
+
+	terms := testTerms(t, KindPromotion)
+	source := testBinding(terms)
+	backing := testBacking(t, terms, source)
+	coordinator := activeCooperativeChannel(t, terms, source)
+	conflict := &SourceSpent{
+		OutPoint: source.OutPoint,
+		SpendingTxID: chainhash.Hash{
+			99,
+		},
+	}
+
+	record, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, conflict,
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseMaterializing, record.Snapshot.Phase)
+	require.Equal(
+		t, conflict.OutPoint, record.Snapshot.SourceConflict.OutPoint,
+	)
+	require.Equal(
+		t, conflict.SpendingTxID,
+		record.Snapshot.SourceConflict.SpendingTxID,
+	)
+	require.IsType(t, &PublishChannel{}, requireOneAction(t, actions))
+
+	// Replaying the same confirmed fact must also replay an action whose
+	// prior execution could have failed after the transition was stored.
+	_, actions, err = coordinator.Apply(t.Context(), terms.ID, conflict)
+	require.NoError(t, err)
+	require.IsType(t, &PublishChannel{}, requireOneAction(t, actions))
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &BackingPublished{
+			TxID: backing.ChannelPoint.Hash,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseOnChain, record.Snapshot.Phase)
+	require.True(t, record.Snapshot.BackingPublished)
+	require.IsType(t, &ForceCloseChannel{}, requireOneAction(t, actions))
+
+	_, actions, err = coordinator.Apply(t.Context(), terms.ID, conflict)
+	require.NoError(t, err)
+	require.IsType(t, &ForceCloseChannel{}, requireOneAction(t, actions))
+}
+
+// TestSourceConflictDuringActivationFinishesActivationFirst proves a parent
+// conflict cannot strand a channel between lnd funding and materialization.
+func TestSourceConflictDuringActivationFinishesActivationFirst(t *testing.T) {
+	t.Parallel()
+
+	store := newMemoryStore()
+	coordinator, err := NewCoordinator(store)
+	require.NoError(t, err)
+	terms := testTerms(t, KindPromotion)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	source := testBinding(terms)
+	backing := testBacking(t, terms, source)
+	for _, event := range []Event{
+		&BindVTXO{
+			Binding: source,
+		},
+		&BackingSigned{
+			Backing: backing,
+		},
+		&FundingFinalized{
+			Party: PartyClient,
+		},
+		&FundingFinalized{
+			Party: PartyHub,
+		},
+		&OORFinalized{
+			SessionID: source.OORSessionID,
+		},
+		&RecoveryPackageInstalled{
+			Party: PartyClient,
+		},
+		&RecoveryPackageInstalled{
+			Party: PartyHub,
+		},
+	} {
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+
+	conflict := &SourceSpent{
+		OutPoint: source.OutPoint,
+		SpendingTxID: chainhash.Hash{
+			100,
+		},
+	}
+	record, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, conflict,
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseActivating, record.Snapshot.Phase)
+	require.IsType(t, &ActivateChannel{}, requireOneAction(t, actions))
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &ChannelActive{
+			ChannelPointHash:  backing.ChannelPoint.Hash,
+			ChannelPointIndex: backing.ChannelPoint.Index,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseMaterializing, record.Snapshot.Phase)
+	require.IsType(t, &PublishChannel{}, requireOneAction(t, actions))
+}
+
 // TestOORChannelCanAbortBeforePONR proves a definitively failed prepared
 // transfer releases its source before lnd funding is canceled.
 func TestOORChannelCanAbortBeforePONR(t *testing.T) {
@@ -827,6 +942,51 @@ func cloneRecord(record Record) Record {
 	record.Snapshot = record.Snapshot.Clone()
 
 	return record
+}
+
+// activeCooperativeChannel drives one channel through OOR finalization and
+// virtual lnd activation.
+func activeCooperativeChannel(t *testing.T, terms Terms,
+	source VTXOBinding) *Coordinator {
+
+	t.Helper()
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	backing := testBacking(t, terms, source)
+	for _, event := range []Event{
+		&BindVTXO{
+			Binding: source,
+		},
+		&BackingSigned{
+			Backing: backing,
+		},
+		&FundingFinalized{
+			Party: PartyClient,
+		},
+		&FundingFinalized{
+			Party: PartyHub,
+		},
+		&OORFinalized{
+			SessionID: source.OORSessionID,
+		},
+		&RecoveryPackageInstalled{
+			Party: PartyClient,
+		},
+		&RecoveryPackageInstalled{
+			Party: PartyHub,
+		},
+		&ChannelActive{
+			ChannelPointHash:  backing.ChannelPoint.Hash,
+			ChannelPointIndex: backing.ChannelPoint.Index,
+		},
+	} {
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+
+	return coordinator
 }
 
 // testTerms creates valid immutable terms for one channel kind.
