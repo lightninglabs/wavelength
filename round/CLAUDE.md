@@ -505,3 +505,29 @@ refused with `ErrBoardingInFlight`. While another round has a join in flight
 `ErrRoundBusy`, because the operator keeps one registration per client. A
 round whose state cannot be read fails the check with neither error. If the
 package or the join fails, the round is dropped so a retry is not refused.
+
+## Bounded survivor replacements
+
+Joins advertise `supports_round_retry`. An authenticated replacement failure
+names a fresh round ID and the next bounded ordinal. `survivor_retry.go` retires
+any old checkpoint, cleans sessions, preserves the original admission budget,
+and starts with original intents awaiting a fresh quote. Forfeit reservations
+transfer directly at the next connector-bound signature; predecessor IDs are
+local authority, never client-supplied network claims. Pending cleanup has five
+local reminders. Old server events and local forfeit replies are fenced while
+cleanup is pending and after the handoff. Do not reuse transcript material or
+renew the admission deadline when changing round IDs.
+
+Replacement attempts start in IntentSentState with an admitted ID, so a fresh
+quote must pass the normal fee policy before any commitment is processed.
+Refused offers and exhausted local cleanup take the ordinary failure path.
+Do not renew a missing admission budget after restart. Buffered quote effects
+are retained across bounded local delivery retries, and old confirmation routes
+are removed at handoff. Ordinary boarding also checks stateBoarding across all
+tracked rounds so retiring a checkpoint cannot register its inputs twice.
+The selected confirmation-only assembly may acquire its first outputs; an
+assembly with selected outputs or inputs owned by another attempt stays fenced.
+
+An offer for an unknown predecessor is buffered with a count bound until an
+outpoint-matched RoundJoined identifies its owner. Never clear the predecessor
+ID to route an abort to an arbitrary pending join.

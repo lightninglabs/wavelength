@@ -391,6 +391,11 @@ func (c RoundFailureCode) IsTerminalForJob() bool {
 // BoardingFailed is emitted when an error occurs during the boarding
 // process.
 type BoardingFailed struct {
+	// ReplacementRoundID offers a fresh attempt after authoritative abort.
+	ReplacementRoundID fn.Option[RoundID]
+	// RetryAttempt is bounded and must advance exactly once per
+	// replacement.
+	RetryAttempt uint32
 	// RoundID is the server-assigned round id when the failure carries
 	// one (ClientRoundFailedResp). It is None for failures that arrive
 	// before a round was assigned (e.g. ClientErrorResp). When set, the
