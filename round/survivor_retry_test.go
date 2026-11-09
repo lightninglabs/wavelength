@@ -18,6 +18,7 @@ import (
 func TestRoundReplacementRetainsIntentAndFencesOldEvents(t *testing.T) {
 	t.Parallel()
 	h := newActorTestHarness(t)
+	h.actor.env.AdmissionTimeout = 0
 	oldID, newID := testRoundID("old"), testRoundID("new")
 	original := Intents{VTXOs: []types.VTXORequest{{Amount: 1234}}}
 	h.injectRoundInState(
@@ -37,10 +38,10 @@ func TestRoundReplacementRetainsIntentAndFencesOldEvents(t *testing.T) {
 	require.True(t, fresh.AssetDeposit)
 	state, err := fsmState(t.Context(), fresh.FSM)
 	require.NoError(t, err)
-	joined, ok := state.(*RoundJoinedState)
+	joined, ok := state.(*IntentSentState)
 	require.True(t, ok)
 	require.Equal(t, original, joined.Intents)
-	require.Nil(t, joined.Quote)
+	require.Equal(t, newID, joined.AdmittedRoundID)
 	require.Equal(
 		t, []string{oldID.String()},
 		h.actor.replacedRoundStrings(
@@ -81,6 +82,7 @@ func TestRoundReplacementRetainsIntentAndFencesOldEvents(t *testing.T) {
 func TestRoundReplacementRetirementFailure(t *testing.T) {
 	t.Parallel()
 	h := newActorTestHarness(t)
+	h.actor.env.AdmissionTimeout = 0
 	oldID, newID := testRoundID("checkpoint"), testRoundID("replacement")
 	h.setupRoundInInputSigSentState(oldID)
 	t.Cleanup(func() { _ = h.actor.OnStop(t.Context()) })
@@ -103,6 +105,7 @@ func TestRoundReplacementRetirementFailure(t *testing.T) {
 func TestRoundReplacementPreservesDeadline(t *testing.T) {
 	t.Parallel()
 	h := newActorTestHarness(t)
+	h.actor.env.AdmissionTimeout = 0
 	clk := clock.NewTestClock(time.Unix(1_800_000_000, 0))
 	h.actor.env.Now = clk.Now
 	h.actor.env.AdmissionTimeout = time.Minute
@@ -146,6 +149,7 @@ func TestRoundReplacementPreservesDeadline(t *testing.T) {
 func TestRoundReplacementCleanupReminder(t *testing.T) {
 	t.Parallel()
 	h := newActorTestHarness(t)
+	h.actor.env.AdmissionTimeout = 0
 	oldID, newID := testRoundID("retry-old"), testRoundID("retry-new")
 	h.setupRoundInInputSigSentState(oldID)
 	t.Cleanup(func() { _ = h.actor.OnStop(t.Context()) })

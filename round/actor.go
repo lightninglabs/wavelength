@@ -312,6 +312,10 @@ type RoundFSM struct {
 	ReplacementFailures uint8
 	RetryAttempt        uint32
 	ReplacedRounds      []RoundID
+	// ReplacementQuoteOutbox retains effects after the buffered quote has
+	// advanced the FSM. Redelivering that quote cannot recreate them.
+	ReplacementQuoteOutbox   []ClientOutMsg
+	ReplacementQuoteFailures uint8
 	// FSM is the state machine for this round. The baselib protofsm uses 3
 	// type parameters: InternalEvent, OutboxEvent, Env.
 	FSM *ClientStateMachine
@@ -1940,7 +1944,13 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 		return a.handleVTXORequestsReceived(ctx, m)
 
 	case *roundReplacementRetryMsg:
-		return a.handleRoundReplacement(ctx, m.Offer)
+		if m.QuoteRoundID != (RoundID{}) {
+			return a.deliverReplacementQuote(ctx, m.QuoteRoundID)
+		}
+
+		return a.handleServerMessage(ctx, &ServerMessageNotification{
+			Message: m.Offer,
+		})
 
 	case *ServerMessageNotification:
 		return a.handleServerMessage(ctx, m)
@@ -2512,7 +2522,38 @@ func (a *RoundClientActor) handleServerMessage(ctx context.Context,
 
 	if failed, ok := msg.Message.(*BoardingFailed); ok &&
 		failed.ReplacementRoundID.IsSome() {
-		return a.handleRoundReplacement(ctx, failed)
+
+		result := a.handleRoundReplacement(ctx, failed)
+		if result.Err() == nil {
+			return result
+		}
+		oldID := failed.RoundID.UnwrapOr(RoundID{})
+		if a.isReplacedRound(oldID) {
+			return result
+		}
+		if old := a.rounds[RoundKeyStr(oldID.KeyString())]; old != nil &&
+			old.PendingReplacement != nil {
+			return result
+		}
+		// Refusing the successor does not revoke the operator's abort.
+		plain := *failed
+		plain.ReplacementRoundID = fn.None[RoundID]()
+		plain.RetryAttempt = 0
+		if a.rounds[RoundKeyStr(oldID.KeyString())] == nil {
+			if pending := a.findPendingRound(); pending != nil {
+				state, err := fsmState(ctx, pending.FSM)
+				if sent, ok := state.(*IntentSentState); err == nil &&
+					ok &&
+					sent.AdmittedRoundID == (RoundID{}) {
+
+					plain.RoundID = fn.None[RoundID]()
+				}
+			}
+		}
+
+		return a.handleServerMessage(ctx, &ServerMessageNotification{
+			Message: &plain,
+		})
 	}
 	if id, ok := extractRoundID(msg.Message); ok &&
 		a.isAbandonedAttempt(id) {
@@ -4293,6 +4334,14 @@ func (a *RoundClientActor) handleBoardingIntentsReply(ctx context.Context,
 
 	res := a.registerBoard(ctx, head, confirmedBoarding)
 	if err := res.Err(); err != nil {
+		if errors.Is(err, ErrBoardingInFlight) {
+			a.log.InfoS(
+				ctx,
+				"Skipping boarding inputs already in a round",
+			)
+
+			return res
+		}
 		// The reply is a Tell, so the turn loop discards this result.
 		a.log.ErrorS(ctx, "Registering board request failed",
 			err,
@@ -4355,6 +4404,11 @@ func (a *RoundClientActor) registerBoard(ctx context.Context,
 		}
 
 		boardingIntents = append(boardingIntents, intent)
+	}
+	if err := a.checkBoardingInputsAvailable(
+		ctx, boardingIntents,
+	); err != nil {
+		return fn.Err[actormsg.RoundActorResp](err)
 	}
 
 	// A named-outpoint trigger whose inputs are all gone (adopted between

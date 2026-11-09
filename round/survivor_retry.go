@@ -6,11 +6,13 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/baselib/protofsm"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/timeout"
+	"github.com/lightninglabs/wavelength/wallet"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -48,6 +50,53 @@ func retryMaterial(
 	default:
 		return Intents{}, nil, false, false
 	}
+}
+
+// checkBoardingInputsAvailable prevents a retired checkpoint's deposits from
+// being registered again while its replacement still owns them in memory.
+func (a *RoundClientActor) checkBoardingInputsAvailable(ctx context.Context,
+	intents []BoardingIntent) error {
+
+	owned := make(map[wire.OutPoint]struct{})
+	scanCtx, cancel := fsmScanContext(ctx)
+	defer cancel()
+	for _, active := range a.rounds {
+		state, err := fsmState(scanCtx, active.FSM)
+		if err != nil {
+			return fmt.Errorf("read boarding ownership: %w", err)
+		}
+		for _, intent := range stateBoarding(state) {
+			owned[intent.Outpoint] = struct{}{}
+		}
+	}
+	var duplicate *wire.OutPoint
+	var unowned []wire.OutPoint
+	for _, intent := range intents {
+		if _, exists := owned[intent.Outpoint]; exists {
+			op := intent.Outpoint
+			duplicate = &op
+		} else {
+			unowned = append(unowned, intent.Outpoint)
+		}
+	}
+	if duplicate == nil {
+		return nil
+	}
+	// A wallet trigger marks its whole package shipped before the reply
+	// arrives here. Release the new inputs from the rejected package, while
+	// retaining every input already owned by a tracked round.
+	if len(unowned) > 0 && a.cfg.WalletActor != nil {
+		if err := a.cfg.WalletActor.Tell(
+			ctx, &wallet.ReleaseBoardingInFlightRequest{
+				Outpoints: unowned,
+			},
+		); err != nil {
+			return fmt.Errorf("release rejected boarding "+
+				"package: %w", err)
+		}
+	}
+
+	return fmt.Errorf("%w: %s", ErrBoardingInFlight, duplicate)
 }
 
 // isReplacedRound fences late server events for abandoned attempt identifiers.
@@ -93,6 +142,12 @@ func (a *RoundClientActor) handleRoundReplacement(ctx context.Context,
 	oldID := failed.RoundID.UnwrapOr(RoundID{})
 	nextID := failed.ReplacementRoundID.UnwrapOr(RoundID{})
 	if a.isReplacedRound(oldID) {
+		fresh := a.rounds[RoundKeyStr(nextID.KeyString())]
+		if fresh != nil &&
+			fresh.RetryAttempt == failed.RetryAttempt {
+			return a.deliverReplacementQuote(ctx, nextID)
+		}
+
 		return success
 	}
 	old := a.rounds[RoundKeyStr(oldID.KeyString())]
@@ -126,6 +181,16 @@ func (a *RoundClientActor) handleRoundReplacement(ctx context.Context,
 		)
 	}
 	old.PendingReplacement = failed
+	if a.env.AdmissionTimeout > 0 &&
+		(old.env == nil || old.env.admission == nil) {
+
+		old.PendingReplacement = nil
+
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("replacement has no original admission " +
+				"budget"),
+		)
+	}
 	if err := cleanupSignerSessions(sessions); err != nil {
 		return a.retryRoundReplacement(ctx, old, failed, err)
 	}
@@ -147,8 +212,8 @@ func (a *RoundClientActor) handleRoundReplacement(ctx context.Context,
 	if old.env != nil {
 		priorBudget = old.env.admission
 	}
-	fresh, err := a.createRoundWithState(ctx, &RoundJoinedState{
-		RoundID: nextID, Intents: intents,
+	fresh, err := a.createRoundWithState(ctx, &IntentSentState{
+		AdmittedRoundID: nextID, Intents: intents,
 	}, fn.Some(nextID), priorBudget)
 	if err != nil {
 		return a.retryRoundReplacement(ctx, old, failed, err)
@@ -172,6 +237,7 @@ func (a *RoundClientActor) handleRoundReplacement(ctx context.Context,
 	}
 	old.FSM.Stop()
 	delete(a.rounds, RoundKeyStr(oldID.KeyString()))
+	delete(a.commitmentTxIndex, old.TxID)
 	a.dropStagedLedger(oldID)
 	// Cancel old local phase clocks; callbacks already queued are
 	// round-fenced.
@@ -197,18 +263,8 @@ func (a *RoundClientActor) handleRoundReplacement(ctx context.Context,
 		slog.String("round_id", nextID.String()),
 		slog.Uint64("retry_attempt", uint64(failed.RetryAttempt)),
 	)
-	if quote := a.pendingQuotes[nextID]; quote != nil {
-		if err := a.askEventAndProcessOutbox(
-			ctx, fresh, quote,
-		); err != nil {
 
-			// Keep the quote buffered when delivery did not finish.
-			return fn.Err[actormsg.RoundActorResp](err)
-		}
-		delete(a.pendingQuotes, nextID)
-	}
-
-	return success
+	return a.deliverReplacementQuote(ctx, nextID)
 }
 
 // roundReplacementRetryMsg retains one transient local recovery operation.
@@ -216,7 +272,8 @@ func (a *RoundClientActor) handleRoundReplacement(ctx context.Context,
 // status reconciliation if the process exits before the reminder runs.
 type roundReplacementRetryMsg struct {
 	actor.BaseMessage
-	Offer *BoardingFailed
+	Offer        *BoardingFailed
+	QuoteRoundID RoundID
 }
 
 // RoundReceivable permits delivery through the round actor's service key.
@@ -271,10 +328,86 @@ func (a *RoundClientActor) retryRoundReplacement(ctx context.Context,
 		},
 	)
 	if err != nil {
+		old.PendingReplacement = nil
 		a.log.WarnS(ctx, "Unable to retain round replacement cleanup",
 			err,
 		)
 	}
 
 	return fn.Err[actormsg.RoundActorResp](cause)
+}
+
+// deliverReplacementQuote retains emitted effects until each is delivered.
+// Replaying the quote itself after the FSM advances cannot re-emit an accept.
+func (a *RoundClientActor) deliverReplacementQuote(ctx context.Context,
+	id RoundID) fn.Result[actormsg.RoundActorResp] {
+
+	fresh := a.rounds[RoundKeyStr(id.KeyString())]
+	if fresh == nil {
+		return fn.Ok[actormsg.RoundActorResp](nil)
+	}
+	if quote := a.pendingQuotes[id]; quote != nil {
+		future := fresh.FSM.AskEvent(ctx, quote)
+		result := future.Await(ctx) //actor:allow-await leaf quote FSM
+		events, err := result.Unpack()
+		if err != nil {
+			return a.retryReplacementQuote(ctx, fresh, err)
+		}
+		fresh.ReplacementQuoteOutbox = append(
+			fresh.ReplacementQuoteOutbox, events...,
+		)
+		delete(a.pendingQuotes, id)
+	}
+	for len(fresh.ReplacementQuoteOutbox) > 0 {
+		if err := a.processOutbox(
+			ctx, fresh.ReplacementQuoteOutbox[:1],
+		); err != nil {
+			return a.retryReplacementQuote(ctx, fresh, err)
+		}
+		fresh.ReplacementQuoteOutbox = fresh.ReplacementQuoteOutbox[1:]
+	}
+	a.releaseBoardingOnFailure(ctx, fresh)
+
+	return fn.Ok[actormsg.RoundActorResp](&ServerMessageResponse{
+		Success: true,
+	})
+}
+
+// retryReplacementQuote bounds local retries without requiring another offer.
+func (a *RoundClientActor) retryReplacementQuote(ctx context.Context,
+	fresh *RoundFSM, cause error) fn.Result[actormsg.RoundActorResp] {
+
+	if fresh.ReplacementQuoteFailures < 5 && a.cfg.TimeoutActor != nil {
+		fresh.ReplacementQuoteFailures++
+		callback := timeout.MapTimeoutExpired(a.cfg.SelfRef,
+			func(timeout.ExpiredMsg) actormsg.RoundReceivable {
+				return &roundReplacementRetryMsg{
+					QuoteRoundID: fresh.RoundID,
+				}
+			},
+		)
+		err := a.cfg.TimeoutActor.Tell(a.lifecycleCtx(ctx),
+			&timeout.ScheduleTimeoutRequest{
+				ID: timeout.ID(
+					"replacement-quote:" +
+						fresh.RoundID.String(),
+				),
+				Duration: 2 * time.Second, Callback: callback,
+			},
+		)
+		if err == nil {
+			return fn.Err[actormsg.RoundActorResp](cause)
+		}
+	}
+	delete(a.pendingQuotes, fresh.RoundID)
+	fresh.ReplacementQuoteOutbox = nil
+
+	return a.handleServerMessage(ctx, &ServerMessageNotification{
+		Message: &BoardingFailed{
+			RoundID:     fn.Some(fresh.RoundID),
+			Error:       cause,
+			Reason:      "replacement quote delivery failed",
+			Recoverable: true,
+		},
+	})
 }

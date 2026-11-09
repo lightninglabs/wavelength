@@ -517,3 +517,11 @@ local authority, never client-supplied network claims. Pending cleanup has five
 local reminders. Old server events and local forfeit replies are fenced while
 cleanup is pending and after the handoff. Do not reuse transcript material or
 renew the admission deadline when changing round IDs.
+
+Replacement attempts start in IntentSentState with an admitted ID, so a fresh
+quote must pass the normal fee policy before any commitment is processed.
+Refused offers and exhausted local cleanup take the ordinary failure path.
+Do not renew a missing admission budget after restart. Buffered quote effects
+are retained across bounded local delivery retries, and old confirmation routes
+are removed at handoff. Ordinary boarding also checks stateBoarding across all
+tracked rounds so retiring a checkpoint cannot register its inputs twice.

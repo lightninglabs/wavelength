@@ -278,10 +278,10 @@ func TestBoardTriggersRunOneFetchAtATime(t *testing.T) {
 	require.True(t, ok)
 
 	res = h.receive(reply2)
-	require.True(t, res.IsOk(), "reply 2: %v", res.Err())
-	require.ElementsMatch(
-		t, []btcutil.Amount{10_000, 20_000}, boardedAmounts(h),
-	)
+	// The mock wallet still returns the first input as confirmed. FIFO
+	// fetching alone cannot prevent a second registration of that input.
+	require.ErrorIs(t, res.Err(), ErrBoardingInFlight)
+	require.Equal(t, []btcutil.Amount{10_000}, boardedAmounts(h))
 	require.EqualValues(t, 1, maxSeen.Load())
 }
 
