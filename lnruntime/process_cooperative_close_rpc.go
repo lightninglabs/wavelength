@@ -14,9 +14,31 @@ import (
 )
 
 const (
+	cooperativeClosePeerService = "arkchannelrpc.ArkChannelPeerService"
+
 	closeAckClientSigned    = arkchannelrpc.CooperativeCloseAcknowledgement_COOPERATIVE_CLOSE_ACKNOWLEDGEMENT_CLIENT_SIGNED    //nolint:ll
 	closeAckClientFinalized = arkchannelrpc.CooperativeCloseAcknowledgement_COOPERATIVE_CLOSE_ACKNOWLEDGEMENT_CLIENT_FINALIZED //nolint:ll
 )
+
+var cooperativeClosePeerMethods = map[string]struct{}{
+	"BeginCooperativeClose":       {},
+	"CompleteCooperativeClose":    {},
+	"AcknowledgeCooperativeClose": {},
+	"PublishCooperativeClose":     {},
+	"AbortCooperativeClose":       {},
+}
+
+// IsCooperativeClosePeerRoute reports whether one mailbox route belongs to the
+// narrow direct-close peer protocol.
+func IsCooperativeClosePeerRoute(service, method string) bool {
+	if service != cooperativeClosePeerService {
+		return false
+	}
+
+	_, ok := cooperativeClosePeerMethods[method]
+
+	return ok
+}
 
 // MailboxCooperativeClosePeer adapts the generated mailbox client to the
 // process-owned cooperative-close protocol.
@@ -168,6 +190,215 @@ func (p *MailboxCooperativeClosePeer) AbortCooperativeClose(ctx context.Context,
 	return err
 }
 
+// CooperativeClosePeerRPCServer binds one authenticated client identity to a
+// hub process. Channel IDs belonging to another client are rejected before a
+// local lnd or signing side effect.
+type CooperativeClosePeerRPCServer struct {
+	clientNode [33]byte
+	hub        *HubCooperativeCloseProcess
+}
+
+// NewCooperativeClosePeerRPCServer constructs a client-bound mailbox server.
+func NewCooperativeClosePeerRPCServer(clientNode [33]byte,
+	hub *HubCooperativeCloseProcess) (*CooperativeClosePeerRPCServer,
+	error) {
+
+	if clientNode == ([33]byte{}) {
+		return nil, fmt.Errorf("cooperative close client node is " +
+			"required")
+	}
+	if hub == nil {
+		return nil, fmt.Errorf("hub cooperative close process is " +
+			"required")
+	}
+
+	return &CooperativeClosePeerRPCServer{
+		clientNode: clientNode,
+		hub:        hub,
+	}, nil
+}
+
+// BeginCooperativeClose persists the request before returning clean lnd state.
+func (s *CooperativeClosePeerRPCServer) BeginCooperativeClose(
+	ctx context.Context, req *arkchannelrpc.BeginCooperativeCloseRequest) (
+	*arkchannelrpc.BeginCooperativeCloseResponse, error) {
+
+	id, err := s.channelID(ctx, req.GetChannelId())
+	if err != nil {
+		return nil, err
+	}
+	request, state, settlement, err := s.hub.BeginCooperativeClose(
+		ctx, id, req.GetClientDeliveryScript(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	resp := &arkchannelrpc.BeginCooperativeCloseResponse{
+		Request:    cooperativeCloseRequestToRPC(request),
+		CleanState: cleanChannelStateToRPC(state),
+	}
+	if settlement != nil {
+		resp.Settlement = cooperativeCloseToRPC(*settlement)
+	}
+
+	return resp, nil
+}
+
+// CompleteCooperativeClose validates the proposal and returns the hub's 3-of-3
+// OOR authorization.
+func (s *CooperativeClosePeerRPCServer) CompleteCooperativeClose(
+	ctx context.Context,
+	req *arkchannelrpc.CompleteCooperativeCloseRequest) (
+	*arkchannelrpc.CompleteCooperativeCloseResponse, error) {
+
+	id, err := s.channelID(ctx, req.GetChannelId())
+	if err != nil {
+		return nil, err
+	}
+	proposal, err := cooperativeCloseProposalFromRPC(req.GetProposal())
+	if err != nil {
+		return nil, err
+	}
+	settlement, err := s.hub.CompleteCooperativeClose(
+		ctx, id, proposal,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &arkchannelrpc.CompleteCooperativeCloseResponse{
+		Settlement: cooperativeCloseToRPC(settlement),
+	}, nil
+}
+
+// AcknowledgeCooperativeClose accepts only the two client-owned barrier facts.
+func (s *CooperativeClosePeerRPCServer) AcknowledgeCooperativeClose(
+	ctx context.Context,
+	req *arkchannelrpc.AcknowledgeCooperativeCloseRequest) (
+	*arkchannelrpc.AcknowledgeCooperativeCloseResponse, error) {
+
+	id, err := s.channelID(ctx, req.GetChannelId())
+	if err != nil {
+		return nil, err
+	}
+	switch req.GetAcknowledgement() {
+	case closeAckClientSigned:
+		settlement, err := cooperativeCloseFromRPC(req.GetSettlement())
+		if err != nil {
+			return nil, err
+		}
+		if err := s.hub.AcknowledgeCooperativeCloseSigned(
+			ctx, id, settlement,
+		); err != nil {
+			return nil, err
+		}
+
+	case closeAckClientFinalized:
+		if req.GetSettlement() != nil {
+			return nil, fmt.Errorf("finalized acknowledgement " +
+				"must not carry a settlement")
+		}
+		if err := s.hub.AcknowledgeCooperativeCloseFinalized(
+			ctx, id,
+		); err != nil {
+			return nil, err
+		}
+
+	default:
+		return nil, fmt.Errorf("unknown cooperative close " +
+			"acknowledgement")
+	}
+	record, err := s.hubRecord(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	return &arkchannelrpc.AcknowledgeCooperativeCloseResponse{
+		Channel: ArkChannelRecordToRPC(record),
+	}, nil
+}
+
+// PublishCooperativeClose waits for OOR finalization and hub-local archival.
+func (s *CooperativeClosePeerRPCServer) PublishCooperativeClose(
+	ctx context.Context,
+	req *arkchannelrpc.PublishCooperativeCloseRequest) (
+	*arkchannelrpc.PublishCooperativeCloseResponse, error) {
+
+	id, err := s.channelID(ctx, req.GetChannelId())
+	if err != nil {
+		return nil, err
+	}
+	txID, err := rpcHash(
+		"settlement txid", req.GetSettlementTxid(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	txID, err = s.hub.PublishCooperativeClose(ctx, id, txID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &arkchannelrpc.PublishCooperativeCloseResponse{
+		SettlementTxid: txID[:],
+		HubFinalized:   true,
+	}, nil
+}
+
+// AbortCooperativeClose restores the hub only before a signed artifact exists.
+func (s *CooperativeClosePeerRPCServer) AbortCooperativeClose(
+	ctx context.Context, req *arkchannelrpc.AbortCooperativeCloseRequest) (
+	*arkchannelrpc.AbortCooperativeCloseResponse, error) {
+
+	id, err := s.channelID(ctx, req.GetChannelId())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.hub.AbortCooperativeClose(ctx, id); err != nil {
+		return nil, err
+	}
+	record, err := s.hubRecord(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	return &arkchannelrpc.AbortCooperativeCloseResponse{
+		Channel: ArkChannelRecordToRPC(record),
+	}, nil
+}
+
+// channelID parses the request ID and verifies its authenticated client owner.
+func (s *CooperativeClosePeerRPCServer) channelID(ctx context.Context,
+	raw []byte) (arkchannel.ID, error) {
+
+	id, err := rpcChannelID(raw)
+	if err != nil {
+		return arkchannel.ID{}, err
+	}
+	record, err := s.hubRecord(ctx, id)
+	if err != nil {
+		return arkchannel.ID{}, err
+	}
+	if record.Snapshot.Terms.ClientNodeKey != s.clientNode {
+		return arkchannel.ID{}, fmt.Errorf("channel belongs to " +
+			"another client")
+	}
+
+	return id, nil
+}
+
+// hubRecord loads one channel from the hub's durable FSM service.
+func (s *CooperativeClosePeerRPCServer) hubRecord(ctx context.Context,
+	id arkchannel.ID) (arkchannel.Record, error) {
+
+	service, err := s.hub.stateService()
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+
+	return service.GetChannel(ctx, id)
+}
+
 // ArkChannelRecordToRPC converts the compact durable channel summary exposed
 // by local and peer process RPCs.
 func ArkChannelRecordToRPC(record arkchannel.Record) *arkchannelrpc.ArkChannel {
@@ -259,6 +490,20 @@ func rpcHash(name string, raw []byte) (chainhash.Hash, error) {
 	return hash, nil
 }
 
+// cooperativeCloseRequestToRPC serializes immutable negotiated close terms.
+func cooperativeCloseRequestToRPC(
+	request arkchannel.CooperativeCloseRequest) *arkchannelrpc.CooperativeCloseRequest { //nolint:ll
+
+	return &arkchannelrpc.CooperativeCloseRequest{
+		ClientDeliveryScript: append(
+			[]byte(nil), request.ClientDeliveryScript...,
+		),
+		HubDeliveryScript: append(
+			[]byte(nil), request.HubDeliveryScript...,
+		),
+	}
+}
+
 // cooperativeCloseRequestFromRPC validates negotiated close terms from RPC.
 func cooperativeCloseRequestFromRPC(
 	request *arkchannelrpc.CooperativeCloseRequest) (
@@ -282,6 +527,21 @@ func cooperativeCloseRequestFromRPC(
 	}
 
 	return result, nil
+}
+
+// cleanChannelStateToRPC serializes one quiesced lnd channel snapshot.
+func cleanChannelStateToRPC(
+	state CleanChannelState) *arkchannelrpc.CleanChannelState {
+
+	return &arkchannelrpc.CleanChannelState{
+		ChannelPointTxid:  state.ChannelPoint.Hash[:],
+		ChannelPointIndex: state.ChannelPoint.Index,
+		LocalBalanceSat:   int64(state.LocalBalance),
+		RemoteBalanceSat:  int64(state.RemoteBalance),
+		CapacitySat:       int64(state.Capacity),
+		CommitmentHeight:  state.CommitmentHeight,
+		LocalInitiator:    state.LocalInitiator,
+	}
 }
 
 // cleanChannelStateFromRPC validates one quiesced lnd channel snapshot.
@@ -415,3 +675,7 @@ func cooperativeCloseFromRPC(settlement *arkchannelrpc.CooperativeClose) (
 		TxID: txID,
 	}, nil
 }
+
+var _ ProcessCooperativeClosePeer = (*MailboxCooperativeClosePeer)(nil)
+
+var _ arkchannelrpc.ArkChannelPeerServiceMailboxServer = (*CooperativeClosePeerRPCServer)(nil) //nolint:ll
