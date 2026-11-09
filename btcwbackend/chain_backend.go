@@ -403,6 +403,19 @@ func (b *ChainBackend) Stop() error {
 	return stopErr
 }
 
+// EstimateFeePerKW returns the estimator's fee rate for the given
+// confirmation target at full precision, unlike EstimateFee's whole sat/vB.
+func (b *ChainBackend) EstimateFeePerKW(_ context.Context, targetConf uint32) (
+	chainfee.SatPerKWeight, error) {
+
+	feePerKw, err := b.feeEstimator.EstimateFeePerKW(targetConf)
+	if err != nil {
+		return 0, fmt.Errorf("estimate fee: %w", err)
+	}
+
+	return feePerKw, nil
+}
+
 // EstimateFee returns the estimated fee rate in satoshis per vbyte
 // for the given confirmation target. The fee estimator queries a web
 // API since neutrino has no mempool visibility.

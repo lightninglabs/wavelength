@@ -147,6 +147,22 @@ func TestLNDBackendEstimateFeeConvertsSatPerKWOnce(t *testing.T) {
 	require.Equal(t, uint32(6), estimator.gotTarget)
 }
 
+func TestLNDBackendEstimateFeePerKWKeepsPrecision(t *testing.T) {
+	t.Parallel()
+
+	estimator := &stubFeeEstimator{
+		rate: chainfee.SatPerKWeight(499),
+	}
+	backend := NewLNDBackend(
+		&stubNotifier{}, estimator, &stubBroadcaster{},
+	)
+
+	gotRate, err := backend.EstimateFeePerKW(t.Context(), 6)
+	require.NoError(t, err)
+	require.Equal(t, chainfee.SatPerKWeight(499), gotRate)
+	require.Equal(t, uint32(6), estimator.gotTarget)
+}
+
 func TestRegisterConfSurvivesCallerContextCancellation(t *testing.T) {
 	t.Parallel()
 
