@@ -240,3 +240,6 @@ func testPrePONRBinding(t *testing.T,
 		PkScript: pkScript,
 	}
 }
+
+var _ arkchannel.OORTransferController = (*testPrePONROORController)(nil)
+var _ prePONRResultController = (*testPrePONROORController)(nil)
