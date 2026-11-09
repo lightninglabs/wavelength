@@ -88,7 +88,6 @@ type commitResult struct {
 	anchorPSBT   []byte
 	fundingMode  customanchor.FundingMode
 	actualFeeSat uint64
-	maxFeeSat    uint64
 	inputs       []commitInput
 	outputs      []commitOutput
 }
@@ -286,7 +285,6 @@ func commitResultFromValidatedPackage(transfer *customanchor.TransferPackage,
 		anchorPSBT:   append([]byte(nil), transfer.AnchorPsbt...),
 		fundingMode:  transfer.Funding.Mode,
 		actualFeeSat: transfer.Funding.ActualFeeSat,
-		maxFeeSat:    transfer.Funding.MaxFeeSat,
 		inputs:       make([]commitInput, len(transfer.Inputs)),
 		outputs:      make([]commitOutput, len(transfer.Outputs)),
 	}
