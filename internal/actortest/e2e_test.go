@@ -444,7 +444,7 @@ func TestDurableCounter_ForwardWritesToOutbox(t *testing.T) {
 	h := newTestHarness(t)
 
 	actorID := uniqueID("counter")
-	counterActor, behavior := h.newDurableCounter(actorID)
+	counterActor, _ := h.newDurableCounter(actorID)
 	counterActor.Start()
 	defer counterActor.Stop()
 
@@ -460,20 +460,21 @@ func TestDurableCounter_ForwardWritesToOutbox(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Wait for processing.
-	eventually(t, 2*time.Second, func() bool {
-		return behavior.ForwardCount() == 1
-	})
+	// ForwardCount changes inside Receive, before its transaction commits.
+	// Wait for the durable effect rather than that in-memory observation.
+	var batch []actor.OutboxMessage
+	eventually(t, outboxForwardProcessingTimeout, func() bool {
+		batch, err = h.store.ClaimOutboxBatch(
+			h.ctx, actor.OutboxClaimParams{
+				Limit:         10,
+				ClaimToken:    "test-claim",
+				ClaimDuration: 30 * time.Second,
+			},
+		)
+		require.NoError(t, err)
 
-	// Verify message is in outbox by claiming with a test token.
-	batch, err := h.store.ClaimOutboxBatch(
-		h.ctx, actor.OutboxClaimParams{
-			Limit:         10,
-			ClaimToken:    "test-claim",
-			ClaimDuration: 30 * time.Second,
-		},
-	)
-	require.NoError(t, err)
+		return len(batch) > 0
+	})
 	require.Len(t, batch, 1)
 	require.Equal(t, actorID, batch[0].SourceActorID)
 	require.Equal(t, "target-counter", batch[0].TargetActorID)
