@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -528,6 +530,128 @@ func TestCancelReceiveIntentTerminatesBothRequestedEndpoints(t *testing.T) {
 	record, err := service.GetChannel(t.Context(), terms.ID)
 	require.NoError(t, err)
 	require.Equal(t, arkchannel.PhaseFailed, record.Snapshot.Phase)
+}
+
+// TestEnsureClientStartedSharesProcessAttempt proves one canceled request does
+// not cancel startup that another caller is waiting on.
+func TestEnsureClientStartedSharesProcessAttempt(t *testing.T) {
+	t.Parallel()
+
+	startupErr := errors.New("startup failed")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var starts atomic.Int32
+	controller := &NativeArkChannelController{
+		clientStarter: func(ctx context.Context) error {
+			if starts.Add(1) == 1 {
+				close(started)
+			}
+
+			select {
+			case <-release:
+				return startupErr
+
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	}
+	controller.initLifecycle(t.Context())
+	t.Cleanup(func() {
+		require.NoError(t, controller.Stop())
+	})
+
+	requestCtx, cancel := context.WithCancel(t.Context())
+	firstResult := make(chan error, 1)
+	go func() {
+		firstResult <- controller.ensureClientStarted(requestCtx)
+	}()
+	<-started
+	cancel()
+	require.ErrorIs(t, <-firstResult, context.Canceled)
+
+	secondResult := make(chan error, 1)
+	go func() {
+		secondResult <- controller.ensureClientStarted(t.Context())
+	}()
+	require.Never(t, func() bool {
+		return starts.Load() != 1
+	}, 25*time.Millisecond, time.Millisecond)
+	close(release)
+	require.ErrorIs(t, <-secondResult, startupErr)
+	require.Equal(t, int32(1), starts.Load())
+}
+
+// TestArkChannelControllerStopCancelsStartup verifies concurrent shutdown is
+// idempotent and waits for a process-owned startup attempt to exit.
+func TestArkChannelControllerStopCancelsStartup(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{})
+	controller := &NativeArkChannelController{
+		clientStarter: func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+
+			return ctx.Err()
+		},
+	}
+	controller.initLifecycle(t.Context())
+	startResult := make(chan error, 1)
+	go func() {
+		startResult <- controller.ensureClientStarted(t.Context())
+	}()
+	<-started
+
+	var shutdown sync.WaitGroup
+	shutdown.Add(2)
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			defer shutdown.Done()
+
+			errs <- controller.Stop()
+		}()
+	}
+	shutdown.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	require.ErrorIs(t, <-startResult, context.Canceled)
+}
+
+// TestArkChannelControllerStartsForExistingState proves startup recovery does
+// not wait for a new RPC when the durable store already owns a channel.
+func TestArkChannelControllerStartsForExistingState(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(30_000, 0).UTC()
+	controller, coordinator, terms, closeStore := testPrePONRController(
+		t, now, oorbridge.PreparationLookup{
+			Status: oorbridge.PreparationAbsent,
+		},
+	)
+	t.Cleanup(closeStore)
+	_, err := coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	controller.party = arkchannel.PartyClient
+	controller.initLifecycle(t.Context())
+	started := make(chan struct{})
+	controller.clientStarter = func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done()
+
+		return ctx.Err()
+	}
+	controller.Start()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("existing Ark channel did not trigger client startup")
+	}
+	require.NoError(t, controller.Stop())
 }
 
 // TestPromotionIdentifiersAreStableAndScoped verifies a retried creation gets
