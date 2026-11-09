@@ -2835,6 +2835,31 @@ func (s *ForfeitSignaturesCollectingState) processEvent(ctx context.Context,
 	error) {
 
 	switch evt := event.(type) {
+	case *ForfeitSignatureRejected:
+		_, expected := s.ExpectedForfeits[evt.VTXOOutpoint]
+		_, collected := s.CollectedForfeits[evt.VTXOOutpoint]
+		if evt.RoundID != s.RoundID.String() || !expected || collected {
+			return selfLoop(s), nil
+		}
+
+		// No input signatures have left the client. Stop this attempt
+		// through the existing rollback path rather than waiting for
+		// the collection timer to discover the missing signature.
+		reason := fmt.Sprintf("forfeit signature rejected for %s: %s",
+			evt.VTXOOutpoint, evt.Reason)
+
+		tr := failWithNotification(
+			reason, fmt.Errorf("%s", reason), true,
+			fn.Some(s.RoundID),
+		)
+		emitted := tr.NewEvents.UnwrapOr(ClientEmittedEvent{})
+		emitted.Outbox = append(
+			emitted.Outbox, cancelForfeitTimeout(s.RoundID)...,
+		)
+		tr.NewEvents = fn.Some(emitted)
+
+		return tr, nil
+
 	case *ForfeitSignatureResponse:
 		// Validate this is a response we're expecting.
 		connectorInfo, expected := s.ExpectedForfeits[evt.VTXOOutpoint]

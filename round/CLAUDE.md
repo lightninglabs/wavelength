@@ -194,6 +194,14 @@ state transitions and validation rules live under [Invariants](#invariants).
 
 ## Invariants
 
+- **A refused input stops only its collecting attempt.** An exiting VTXO
+  explicitly refuses `ForfeitRequestEvent`. Its actor sends
+  `ForfeitSignatureRejected` through the retained manager relay with the
+  request's round ID and input outpoint. The round fails only while collecting
+  that expected input and before its signature has arrived. Foreign, duplicate
+  and checkpointed-state notices cannot release another owner's inputs.
+  See [round input ownership](../docs/round-input-ownership.md).
+
 - **Automatic refresh requires a zero realised fee.** Any auto-origin intent
   makes the entire client round subject to this rule, including mixed rounds
   and every seal pass. Rejections release reservations; manually requested
