@@ -28,6 +28,15 @@ type recordingArkChannelForceCloseResumer struct {
 	resumed   []wire.OutPoint
 }
 
+type recordingProcessPaymentPeer struct {
+	lnruntime.ProcessPaymentPeer
+
+	cancelContextErr error
+	cancelHash       lntypes.Hash
+	cancelReason     string
+	cancelErr        error
+}
+
 type recordingPromotionPeer struct {
 	lnruntime.ProcessFundingPeer
 
@@ -84,6 +93,17 @@ func (p *recordingPromotionPeer) BindPreparedOOR(_ context.Context,
 	p.boundSources = append(p.boundSources, source)
 
 	return arkchannel.Record{}, nil
+}
+
+// CancelOutgoingPayment records the cleanup context and requested failure.
+func (p *recordingProcessPaymentPeer) CancelOutgoingPayment(ctx context.Context,
+	hash lntypes.Hash, reason string) error {
+
+	p.cancelContextErr = ctx.Err()
+	p.cancelHash = hash
+	p.cancelReason = reason
+
+	return p.cancelErr
 }
 
 // ResumeForceCloseChannel records each independent on-chain reconciliation.
@@ -407,6 +427,30 @@ func TestShouldResumeOnchainArkChannel(t *testing.T) {
 			)
 		})
 	}
+}
+
+// TestCancelOutgoingPaymentDetachesFromRequest proves every successful
+// preparation gets a cleanup attempt even after its request is canceled.
+func TestCancelOutgoingPaymentDetachesFromRequest(t *testing.T) {
+	t.Parallel()
+
+	requestCtx, cancel := context.WithCancel(t.Context())
+	cancel()
+	cause := errors.New("private payment failed")
+	hash := lntypes.Hash{1, 2, 3}
+	peer := &recordingProcessPaymentPeer{}
+	controller := &NativeArkChannelController{paymentPeer: peer}
+
+	err := controller.cancelOutgoingPayment(requestCtx, hash, cause)
+	require.ErrorIs(t, err, cause)
+	require.NoError(t, peer.cancelContextErr)
+	require.Equal(t, hash, peer.cancelHash)
+	require.Equal(t, cause.Error(), peer.cancelReason)
+
+	peer.cancelErr = errors.New("cleanup failed")
+	err = controller.cancelOutgoingPayment(requestCtx, hash, cause)
+	require.ErrorIs(t, err, cause)
+	require.ErrorIs(t, err, peer.cancelErr)
 }
 
 // TestWaitIncomingPaymentReadyJoinsBothBarriers verifies an accepted invoice
