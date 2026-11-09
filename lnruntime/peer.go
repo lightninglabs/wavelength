@@ -215,6 +215,11 @@ func (p *Peer) Disconnect(reason error) {
 	})
 }
 
+// emptyFeatureVector returns a feature vector with no optional behavior.
+func emptyFeatureVector() *lnwire.FeatureVector {
+	return lnwire.NewFeatureVector(lnwire.NewRawFeatureVector(), nil)
+}
+
 // nativePeerFeatureVector advertises the capabilities required to negotiate
 // this runtime's explicit static-remote-key anchor channel type.
 func nativePeerFeatureVector() *lnwire.FeatureVector {
@@ -227,3 +232,5 @@ func nativePeerFeatureVector() *lnwire.FeatureVector {
 		lnwire.Features,
 	)
 }
+
+var _ lnpeer.Peer = (*Peer)(nil)
