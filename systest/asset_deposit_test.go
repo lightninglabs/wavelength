@@ -6,12 +6,12 @@ import (
 	"context"
 	"errors"
 	"net"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
 	tapgrpc "github.com/lightninglabs/tap-sdk/grpc"
@@ -25,6 +25,7 @@ import (
 	"github.com/lightninglabs/wavelength/tapassets"
 	"github.com/lightninglabs/wavelength/waved"
 	"github.com/lightninglabs/wavelength/waverpc"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -32,9 +33,10 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// TestAssetDeposit funds an asset deposit from tapd through waved. The
-// deposit confirms with its proof, a retry under its request ID returns it
-// without funding again, and tapd keeps the surplus units as change.
+// TestAssetDeposit deposits tapd assets through waved. The daemon wallet pays
+// the deposit's Bitcoin, the deposit confirms with its proof, a retry under its
+// request ID returns it without funding again, and tapd keeps the surplus
+// units as change.
 func TestAssetDeposit(t *testing.T) {
 	ParallelN(t)
 
@@ -44,13 +46,61 @@ func TestAssetDeposit(t *testing.T) {
 	h.Harness.FundOperatorLND(btcutil.SatoshiPerBitcoin)
 
 	tapd := newAssetTestTapd(t, h)
+	skipWithoutAnchorSigning(t, tapd)
 	ref := mintAssetTestAsset(t, h, tapd, 1_000)
 
-	client, _ := startAssetDepositDaemon(t, h)
+	client, _, walletLnd := startAssetDepositDaemon(t, h)
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 
+	walletUtxos := assetTestWalletUtxos(t, walletLnd)
+	anchors := assetTestAnchors(t, tapd)
+	walletBefore, err := walletLnd.Client.Client.WalletBalance(ctx)
+	require.NoError(t, err)
+
 	req, deposit := confirmAssetTestDeposit(t, h, client, ref)
+
+	// The deposit spends tapd's asset anchors and the daemon wallet's
+	// coins, and nothing else of the lnd behind tapd.
+	outpoint, err := wire.NewOutPointFromString(deposit.Outpoint)
+	require.NoError(t, err)
+	depositTx := h.Harness.GetRawTransaction(outpoint.Hash.String())
+	var walletIn, anchorIn int
+	for _, txIn := range depositTx.TxIn {
+		if _, ok := walletUtxos[txIn.PreviousOutPoint]; ok {
+			walletIn++
+			continue
+		}
+		_, ok := anchors[txIn.PreviousOutPoint]
+		require.True(
+			t, ok, "deposit spends %v from neither tapd nor the "+
+				"daemon wallet", txIn.PreviousOutPoint,
+		)
+		anchorIn++
+	}
+	require.Positive(t, walletIn)
+	require.Positive(t, anchorIn)
+
+	// The daemon wallet's balance drops by what it spent, less its
+	// change.
+	walletAfter := assetTestWalletUtxos(t, walletLnd)
+	var spent, change int64
+	for _, txIn := range depositTx.TxIn {
+		spent += walletUtxos[txIn.PreviousOutPoint]
+	}
+	for idx := range depositTx.TxOut {
+		change += walletAfter[wire.OutPoint{
+			Hash:  outpoint.Hash,
+			Index: uint32(idx),
+		}]
+	}
+	require.Positive(t, change)
+	balance, err := walletLnd.Client.Client.WalletBalance(ctx)
+	require.NoError(t, err)
+	require.Equal(
+		t, walletBefore.Confirmed-btcutil.Amount(spent-change),
+		balance.Confirmed,
+	)
 
 	// The retry returns the confirmed deposit and publishes nothing.
 	retried, err := client.DepositAsset(ctx, req)
@@ -78,9 +128,10 @@ func TestBoardAssetDeposit(t *testing.T) {
 	h.Harness.FundOperatorLND(btcutil.SatoshiPerBitcoin)
 
 	tapd := newAssetTestTapd(t, h)
+	skipWithoutAnchorSigning(t, tapd)
 	ref := mintAssetTestAsset(t, h, tapd, 1_000)
 
-	client, mailbox := startAssetDepositDaemon(t, h)
+	client, mailbox, _ := startAssetDepositDaemon(t, h)
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 
@@ -168,8 +219,6 @@ func TestBoardAssetDeposit(t *testing.T) {
 	require.Equal(t, codes.AlreadyExists, status.Code(err))
 }
 
-// confirmAssetTestDeposit deposits 600 units of ref through waved, mines the
-// deposit and waits until its proof confirms.
 // TestClaimAssetDeposit claims a confirmed deposit that no round took. The
 // claim spends the deposit through its owner's exit leaf once the exit delay
 // passes, and returns the asset to tapd as an ordinary holding.
@@ -185,7 +234,7 @@ func TestClaimAssetDeposit(t *testing.T) {
 	skipWithoutExternalInputConfirm(t, tapd)
 	ref := mintAssetTestAsset(t, h, tapd, 1_000)
 
-	client, _ := startAssetDepositDaemon(t, h)
+	client, _, _ := startAssetDepositDaemon(t, h)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
 
@@ -245,6 +294,8 @@ func TestClaimAssetDeposit(t *testing.T) {
 	require.True(t, again.Claimed)
 }
 
+// confirmAssetTestDeposit deposits 600 units of ref through waved, mines the
+// deposit and waits until its proof confirms.
 func confirmAssetTestDeposit(t *testing.T, h *SysTestHarness,
 	client waverpc.DaemonServiceClient,
 	ref tapsdk.AssetRef) (*waverpc.DepositAssetRequest,
@@ -312,6 +363,26 @@ func skipWithoutExternalInputConfirm(t *testing.T, tapd *tapgrpc.Client) {
 			"tapd %s cannot confirm a transfer spending an "+
 				"asset it does not hold; v0.9.0 or later is "+
 				"required", info.Version,
+		)
+	}
+}
+
+// skipWithoutAnchorSigning skips a test whose tapd cannot sign its own anchor
+// inputs at publish, which every deposit the daemon wallet pays needs.
+// Released tapd gains that in v0.9.0; development builds before it report
+// 0.8.99.
+func skipWithoutAnchorSigning(t *testing.T, tapd *tapgrpc.Client) {
+	t.Helper()
+
+	info, err := tapd.GetInfo(t.Context())
+	require.NoError(t, err)
+
+	supported, err := tapassets.TapdSignsAnchorInputs(info.Version)
+	require.NoError(t, err)
+	if !supported {
+		t.Skipf(
+			"tapd %s cannot sign its anchor inputs; v0.9.0 or "+
+				"later is required", info.Version,
 		)
 	}
 }
@@ -404,12 +475,29 @@ func assetTestUtxoUnits(t *testing.T, tapd *tapgrpc.Client,
 	return units
 }
 
-// startAssetDepositDaemon runs waved on the harness lnd with the tapd asset
-// backend, whose tapd signs its own anchor inputs.
-func startAssetDepositDaemon(t *testing.T,
-	h *SysTestHarness) (waverpc.DaemonServiceClient, *fakeMailboxServer) {
+// startAssetDepositDaemon runs waved with the tapd asset backend, whose tapd
+// signs its own anchor inputs. The daemon wallet is a funded lnd of its own,
+// apart from the harness lnd behind tapd.
+func startAssetDepositDaemon(t *testing.T, h *SysTestHarness) (
+	waverpc.DaemonServiceClient, *fakeMailboxServer, *harness.LndInstance) {
 
 	t.Helper()
+
+	walletLnd := h.Harness.StartAdditionalLND("asset-depositor")
+	addr, err := walletLnd.Client.WalletKit.NextAddr(
+		t.Context(),
+		"default", walletrpc.AddressType_TAPROOT_PUBKEY, false,
+	)
+	require.NoError(t, err)
+	h.Harness.Faucet(addr.String(), assetTestWalletFunds)
+	h.Harness.GenerateAndWait(1)
+	require.Eventually(t, func() bool {
+		balance, err := walletLnd.Client.Client.WalletBalance(
+			t.Context(),
+		)
+
+		return err == nil && balance.Confirmed == assetTestWalletFunds
+	}, time.Minute, time.Second, "daemon wallet never funded")
 
 	operatorPriv, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
@@ -439,19 +527,14 @@ func startAssetDepositDaemon(t *testing.T,
 		TotalFeeSat: testOperatorFeeSat,
 	})
 
-	lndDataDir := filepath.Join(h.Harness.BaseDir(), "lnd")
-
 	cfg := waved.DefaultConfig()
 	cfg.DataDir = t.TempDir()
 	cfg.Network = "regtest"
 	cfg.DebugLevel = "info"
 	cfg.Wallet.Type = waved.WalletTypeLnd
-	cfg.Lnd.Host = net.JoinHostPort("localhost", h.Harness.LNDGRPCPort)
-	cfg.Lnd.TLSPath = filepath.Join(lndDataDir, "tls.cert")
-	cfg.Lnd.MacaroonPath = filepath.Join(
-		lndDataDir, "data", "chain", "bitcoin", "regtest",
-		"admin.macaroon",
-	)
+	cfg.Lnd.Host = net.JoinHostPort("localhost", walletLnd.GRPCPort)
+	cfg.Lnd.TLSPath = walletLnd.TLSCert
+	cfg.Lnd.MacaroonPath = walletLnd.Macaroon
 	cfg.Server.Host = mailboxAddr
 	cfg.Server.Insecure = true
 	cfg.RPC.ListenAddr = "127.0.0.1:0"
@@ -506,5 +589,43 @@ func startAssetDepositDaemon(t *testing.T,
 	client := waverpc.NewDaemonServiceClient(conn)
 	waitForDaemonReady(t, client)
 
-	return client, mailbox
+	return client, mailbox, walletLnd
+}
+
+// assetTestWalletFunds is what the daemon wallet starts with.
+const assetTestWalletFunds = btcutil.Amount(100_000)
+
+// assetTestWalletUtxos returns the values of an lnd's confirmed coins.
+func assetTestWalletUtxos(t *testing.T,
+	lnd *harness.LndInstance) map[wire.OutPoint]int64 {
+
+	t.Helper()
+
+	utxos, err := lnd.Client.WalletKit.ListUnspent(t.Context(), 1, 0)
+	require.NoError(t, err)
+	values := make(map[wire.OutPoint]int64, len(utxos))
+	for _, utxo := range utxos {
+		values[utxo.OutPoint] = int64(utxo.Value)
+	}
+
+	return values
+}
+
+// assetTestAnchors returns the outpoints of tapd's asset anchors.
+func assetTestAnchors(t *testing.T,
+	tapd *tapgrpc.Client) map[wire.OutPoint]struct{} {
+
+	t.Helper()
+
+	utxos, err := tapd.ListUtxos(t.Context(), &tapsdk.ListUtxosRequest{})
+	require.NoError(t, err)
+	anchors := make(map[wire.OutPoint]struct{}, len(utxos))
+	for _, utxo := range utxos {
+		anchors[wire.OutPoint{
+			Hash:  chainhash.Hash(utxo.OutPoint.Txid),
+			Index: utxo.OutPoint.Index,
+		}] = struct{}{}
+	}
+
+	return anchors
 }
