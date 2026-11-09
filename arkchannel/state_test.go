@@ -2,6 +2,10 @@ package arkchannel
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"sort"
+	"sync"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -13,6 +17,88 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testRecordObserver captures post-commit channel projections.
+type testRecordObserver struct {
+	records []Record
+}
+
+// ObserveArkChannel records one already-durable channel revision.
+func (o *testRecordObserver) ObserveArkChannel(_ context.Context,
+	record Record) {
+
+	o.records = append(o.records, record)
+}
+
+// TestCoordinatorIdempotency proves retries preserve immutable terms and replay
+// negotiation from its persisted source after a coordinator restart.
+func TestCoordinatorIdempotency(t *testing.T) {
+	t.Parallel()
+	store := newMemoryStore()
+	coordinator, err := NewCoordinator(store)
+	require.NoError(t, err)
+	terms := testTerms(t, KindPromotion)
+	requested, err := coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	repeated, err := coordinator.Request(t.Context(), terms.Clone())
+	require.NoError(t, err)
+	require.Equal(t, requested.Revision, repeated.Revision)
+	binding := testBinding(terms)
+	bound, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, &BindVTXO{
+			Binding: binding,
+		},
+	)
+	require.NoError(t, err)
+	require.IsType(t, &NegotiateFunding{}, requireOneAction(t, actions))
+	duplicate, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, &BindVTXO{
+			Binding: binding.Clone(),
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, bound.Revision, duplicate.Revision)
+	require.IsType(t, &NegotiateFunding{}, requireOneAction(t, actions))
+	restarted, err := NewCoordinator(store)
+	require.NoError(t, err)
+	work, err := restarted.ResumeAll(t.Context())
+	require.NoError(t, err)
+	require.Len(t, work, 1)
+	require.IsType(t, &NegotiateFunding{}, work[0].Action)
+	changed := terms.Clone()
+	changed.Capacity++
+	_, err = coordinator.Request(t.Context(), changed)
+	require.ErrorContains(t, err, "different terms")
+}
+
+// TestFindByPendingChannelID resolves the durable intent used by lnd's
+// responder-side channel acceptor.
+func TestFindByPendingChannelID(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	terms := testTerms(t, KindPromotion)
+	expected, err := coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+
+	record, err := coordinator.FindByPendingChannelID(
+		t.Context(), terms.PendingChannelID,
+	)
+	require.NoError(t, err)
+	require.Equal(t, expected, record)
+
+	_, err = coordinator.FindByPendingChannelID(
+		t.Context(), [32]byte{99},
+	)
+	require.ErrorIs(t, err, ErrNotFound)
+
+	conflicting := testTerms(t, KindPromotion)
+	conflicting.ID[0] = 99
+	conflicting.PendingChannelID = terms.PendingChannelID
+	_, err = coordinator.Request(t.Context(), conflicting)
+	require.ErrorContains(t, err, "belongs to another Ark channel")
+}
+
 // TestChannelTermsRejectNonZeroFundingPosition keeps the advertised alias
 // consistent with the single output in every channel backing transaction.
 func TestChannelTermsRejectNonZeroFundingPosition(t *testing.T) {
@@ -23,7 +109,7 @@ func TestChannelTermsRejectNonZeroFundingPosition(t *testing.T) {
 	scid.TxPosition = 1
 	terms.ReservedSCID = scid.ToUint64()
 
-	err := terms.Validate()
+	_, err := NewState(terms)
 	require.ErrorContains(t, err, "funding output position must be zero")
 }
 
@@ -35,7 +121,7 @@ func TestChannelTermsRejectUnsafeRefundDelay(t *testing.T) {
 	terms := testTerms(t, KindPromotion)
 	terms.VTXO.FunderDelay = terms.VTXO.ChannelDelay + 431
 
-	err := terms.Validate()
+	_, err := NewState(terms)
 	require.ErrorContains(t, err, "preserve the reaction window")
 }
 
@@ -69,6 +155,195 @@ func TestBackingMustBeSignedAndBound(t *testing.T) {
 
 	err := backing.Validate(terms, binding)
 	require.ErrorContains(t, err, "not fully signed")
+}
+
+// TestCoordinatorDoesNotEmitBeforeCommit verifies failed persistence cannot
+// leak the side effect produced by an in-memory transition.
+func TestCoordinatorDoesNotEmitBeforeCommit(t *testing.T) {
+	t.Parallel()
+
+	store := newMemoryStore()
+	coordinator, err := NewCoordinator(store)
+	require.NoError(t, err)
+	terms := testTerms(t, KindPromotion)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+
+	store.writeErr = errors.New("disk unavailable")
+	_, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, &BindVTXO{
+			Binding: testBinding(terms),
+		},
+	)
+	require.ErrorIs(t, err, store.writeErr)
+	require.Empty(t, actions)
+}
+
+// TestCoordinatorObserverRunsAfterCommit proves ancillary accounting sees the
+// exact revision that is already present in the canonical channel store.
+func TestCoordinatorObserverRunsAfterCommit(t *testing.T) {
+	t.Parallel()
+
+	store := newMemoryStore()
+	observer := &testRecordObserver{}
+	coordinator, err := NewCoordinator(store, observer)
+	require.NoError(t, err)
+	terms := testTerms(t, KindPromotion)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	updated, _, err := coordinator.Apply(
+		t.Context(), terms.ID, &BindVTXO{
+			Binding: testBinding(terms),
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, observer.records, 2)
+	require.Equal(t, updated, observer.records[1])
+	persisted, err := store.Get(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, persisted, observer.records[1])
+}
+
+// TestOORPreparationStartedIsIdempotent proves wallet selection is armed as a
+// durable channel fact before the source outpoint exists.
+func TestOORPreparationStartedIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	terms := testTerms(t, KindPromotion)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+
+	record, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, &OORPreparationStarted{},
+	)
+	require.NoError(t, err)
+	require.Empty(t, actions)
+	require.True(t, record.Snapshot.OORPreparationStarted)
+	revision := record.Revision
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &OORPreparationStarted{},
+	)
+	require.NoError(t, err)
+	require.Empty(t, actions)
+	require.Equal(t, revision, record.Revision)
+}
+
+// memoryStore is a revisioned in-memory implementation for coordinator tests.
+type memoryStore struct {
+	mu       sync.Mutex
+	records  map[ID]Record
+	writeErr error
+}
+
+// newMemoryStore creates an empty test store.
+func newMemoryStore() *memoryStore {
+	return &memoryStore{records: make(map[ID]Record)}
+}
+
+// Create stores a new requested channel at revision one.
+func (s *memoryStore) Create(_ context.Context, snapshot Snapshot) (Record,
+	error) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	id := snapshot.Terms.ID
+	if _, ok := s.records[id]; ok {
+		return Record{}, ErrConflict
+	}
+	record := Record{Snapshot: snapshot.Clone(), Revision: 1}
+	s.records[id] = record
+
+	return cloneRecord(record), nil
+}
+
+// Get loads one channel record.
+func (s *memoryStore) Get(_ context.Context, id ID) (Record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	record, ok := s.records[id]
+	if !ok {
+		return Record{}, ErrNotFound
+	}
+
+	return cloneRecord(record), nil
+}
+
+// GetByPendingChannelID loads one record by its lnd funding correlation ID.
+func (s *memoryStore) GetByPendingChannelID(_ context.Context,
+	pendingID [32]byte) (Record, error) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, record := range s.records {
+		if record.Snapshot.Terms.PendingChannelID == pendingID {
+			return cloneRecord(record), nil
+		}
+	}
+
+	return Record{}, ErrNotFound
+}
+
+// ListNonTerminal loads resumable records in stable ID order.
+func (s *memoryStore) ListNonTerminal(_ context.Context) ([]Record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	records := make([]Record, 0, len(s.records))
+	for _, record := range s.records {
+		if record.Snapshot.Phase.IsTerminal() {
+			continue
+		}
+
+		records = append(records, cloneRecord(record))
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return bytes.Compare(
+			records[i].Snapshot.Terms.ID[:],
+			records[j].Snapshot.Terms.ID[:],
+		) < 0
+	})
+
+	return records, nil
+}
+
+// CompareAndSwap advances a channel only from the expected revision.
+func (s *memoryStore) CompareAndSwap(_ context.Context, id ID, revision uint64,
+	snapshot Snapshot) (Record, error) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.writeErr != nil {
+		return Record{}, s.writeErr
+	}
+	record, ok := s.records[id]
+	if !ok {
+		return Record{}, ErrNotFound
+	}
+	if record.Revision != revision {
+		return Record{}, ErrConflict
+	}
+
+	record = Record{
+		Snapshot: snapshot.Clone(),
+		Revision: revision + 1,
+	}
+	s.records[id] = record
+
+	return cloneRecord(record), nil
+}
+
+// cloneRecord returns a record with isolated snapshot byte slices.
+func cloneRecord(record Record) Record {
+	record.Snapshot = record.Snapshot.Clone()
+
+	return record
 }
 
 // testTerms creates valid immutable terms for one channel kind.
@@ -205,4 +480,12 @@ func serializeTx(t *testing.T, tx *wire.MsgTx) []byte {
 	require.NoError(t, tx.Serialize(&buf))
 
 	return buf.Bytes()
+}
+
+// requireOneAction asserts and returns one emitted coordinator action.
+func requireOneAction(t *testing.T, actions []Action) Action {
+	t.Helper()
+	require.Len(t, actions, 1)
+
+	return actions[0]
 }
