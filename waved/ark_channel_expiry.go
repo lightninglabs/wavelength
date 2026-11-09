@@ -7,11 +7,15 @@ import (
 
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightninglabs/wavelength/arkchannel/oorbridge"
+	"github.com/lightningnetwork/lnd/clock"
 )
 
 const (
-	defaultArkChannelPrePONRTimeout = 10 * time.Minute
-	arkChannelPrePONRExpiryReason   = "channel preparation expired " +
+	defaultArkChannelPrePONRTimeout      = 10 * time.Minute
+	defaultArkChannelPrePONRScanInterval = 30 * time.Second
+	defaultArkChannelClientStartTimeout  = 30 * time.Second
+	defaultArkChannelClientRetryInterval = time.Second
+	arkChannelPrePONRExpiryReason        = "channel preparation expired " +
 		"before OOR commit"
 )
 
@@ -24,6 +28,112 @@ type prePONRResultController interface {
 	AbortPreparedOORResult(context.Context, arkchannel.ID, arkchannel.Terms,
 		arkchannel.VTXOBinding,
 		string) (oorbridge.TerminalResult, error)
+}
+
+// withArkChannelControllerDefaults installs process-owned clocks.
+func withArkChannelControllerDefaults(
+	cfg ArkChannelControllerConfig) ArkChannelControllerConfig {
+
+	if cfg.Clock == nil {
+		cfg.Clock = clock.NewDefaultClock()
+	}
+
+	return cfg
+}
+
+// Start launches process-owned maintenance after the controller and mailbox
+// ingress have both been published.
+func (c *NativeArkChannelController) Start() {
+	c.workersOnce.Do(func() {
+		c.startLifecycleWorker(c.runPrePONRReaper)
+		if c.party == arkchannel.PartyClient {
+			c.startLifecycleWorker(c.resumeExistingClientEndpoint)
+		}
+	})
+}
+
+// startLifecycleWorker starts one goroutine only while shutdown admission is
+// still open.
+func (c *NativeArkChannelController) startLifecycleWorker(
+	worker func(context.Context)) {
+
+	c.mu.Lock()
+	if c.stopped || c.lifecycleCtx == nil {
+		c.mu.Unlock()
+
+		return
+	}
+	ctx := c.lifecycleCtx
+	c.lifecycleWG.Add(1)
+	c.mu.Unlock()
+
+	go func() {
+		defer c.lifecycleWG.Done()
+
+		worker(ctx)
+	}()
+}
+
+// runPrePONRReaper expires abandoned local preparations throughout the
+// controller lifecycle.
+func (c *NativeArkChannelController) runPrePONRReaper(ctx context.Context) {
+	for {
+		c.mu.RLock()
+		service := c.service
+		c.mu.RUnlock()
+		err := c.maintainPrePONRChannels(
+			ctx, service, c.cfg.Clock.Now(),
+		)
+		_ = tolerateNativeArkChannelFailures(
+			ctx, err, c.cfg.Log,
+			"Ark channel pre-PONR maintenance failed",
+		)
+
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-c.cfg.Clock.TickAfter(
+			defaultArkChannelPrePONRScanInterval,
+		):
+		}
+	}
+}
+
+// resumeExistingClientEndpoint starts and retries native recovery when durable
+// channel state already exists before the first new RPC or peer message.
+func (c *NativeArkChannelController) resumeExistingClientEndpoint(
+	ctx context.Context) {
+
+	for {
+		records, err := c.coordinator.ListNonTerminal(ctx)
+		if err == nil && len(records) == 0 {
+			return
+		}
+		if err == nil {
+			err = c.ensureClientStarted(ctx)
+			if err == nil {
+				return
+			}
+		}
+		if c.cfg.Log != nil {
+			c.cfg.Log.WarnS(
+				ctx,
+				"Ark channel client recovery failed",
+				err,
+			)
+		}
+
+		timer := time.NewTimer(defaultArkChannelClientRetryInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+
+			return
+
+		case <-timer.C:
+		}
+	}
 }
 
 // maintainPrePONRChannels reconciles only deterministic OOR keys, then expires
