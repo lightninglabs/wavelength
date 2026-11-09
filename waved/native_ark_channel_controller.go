@@ -1642,6 +1642,151 @@ func (c *NativeArkChannelController) cancelOutgoingPayment(ctx context.Context,
 	return cause
 }
 
+// PrepareIncomingPayment installs the known-preimage native invoice before a
+// route hint can be exposed to an external payer.
+func (c *NativeArkChannelController) PrepareIncomingPayment(ctx context.Context,
+	preimage lntypes.Preimage, amount btcutil.Amount) error {
+
+	if c.party != arkchannel.PartyClient {
+		return fmt.Errorf("incoming payment preparation is client only")
+	}
+	if err := c.ensureClientStarted(ctx); err != nil {
+		return err
+	}
+
+	return c.AddInvoiceWithPreimage(ctx, preimage, amount)
+}
+
+// RegisterIncomingPayment binds the advertised future SCID to this
+// authenticated endpoint after the private invoice is durable. It returns the
+// minimum CLTV delta required by the private channel payment.
+func (c *NativeArkChannelController) RegisterIncomingPayment(
+	ctx context.Context, hash lntypes.Hash, amount btcutil.Amount,
+	reservedSCID uint64) (uint32, error) {
+
+	if c.party != arkchannel.PartyClient {
+		return 0, fmt.Errorf("incoming payment registration is " +
+			"client only")
+	}
+	if err := c.ensureClientStarted(ctx); err != nil {
+		return 0, err
+	}
+
+	capacity, err := c.paymentPeer.RegisterIncomingPayment(
+		ctx, hash, amount, reservedSCID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	terms, err := c.newReceiveIntentTerms(
+		hash, reservedSCID, capacity,
+	)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := c.remote.RegisterReceiveIntent(ctx, terms); err != nil {
+		return 0, err
+	}
+	if _, err := c.service.RegisterReceiveIntent(ctx, terms); err != nil {
+		return 0, err
+	}
+
+	return c.IncomingPaymentCLTVDeltaBlocks()
+}
+
+// IncomingPaymentCLTVDeltaBlocks returns the private payment lifetime derived
+// from the immutable channel policy advertised by this endpoint. The hub uses
+// the same value to bind public-HTLC admission to the client's invoice hint.
+func (c *NativeArkChannelController) IncomingPaymentCLTVDeltaBlocks() (uint32,
+	error) {
+
+	return lnruntime.ArkChannelPaymentCLTVDelta(
+		arkchannel.VTXOTerms{
+			ChannelDelay: c.peerInfo.ChannelDelay,
+			FunderDelay:  c.peerInfo.FunderDelay,
+		},
+	)
+}
+
+// WaitIncomingPayment waits for the private hold invoice and returns the active
+// channel that delivered it without releasing the shared preimage.
+func (c *NativeArkChannelController) WaitIncomingPayment(ctx context.Context,
+	hash lntypes.Hash) (arkchannel.ID, bool, error) {
+
+	if c.party != arkchannel.PartyClient {
+		return arkchannel.ID{}, false, fmt.Errorf("incoming payment " +
+			"wait is client only")
+	}
+	if err := c.ensureClientStarted(ctx); err != nil {
+		return arkchannel.ID{}, false, err
+	}
+
+	incomingSCID, err := waitIncomingPaymentReady(
+		ctx,
+		func(ctx context.Context) (lnwire.ShortChannelID, error) {
+			return c.node.WaitInvoiceAcceptedChannel(ctx, hash)
+		},
+		func(ctx context.Context) error {
+			return c.syncReceiveIntent(ctx, hash)
+		},
+	)
+	if err != nil {
+		return arkchannel.ID{}, false, err
+	}
+
+	record, err := c.activeChannelBySCID(ctx, incomingSCID)
+	if err != nil {
+		return arkchannel.ID{}, false, err
+	}
+	id := record.Snapshot.Terms.ID
+	manifested := id == arkchannel.ReceiveIntentID(hash)
+	if manifested &&
+		(record.Snapshot.Terms.Kind != arkchannel.KindReceiveIntent ||
+			record.Snapshot.Terms.PaymentHash != hash) {
+		return arkchannel.ID{}, false, fmt.Errorf("manifested " +
+			"receive channel does not match payment")
+	}
+
+	return id, manifested, nil
+}
+
+// activeChannelBySCID binds an accepted native invoice HTLC to one durable
+// active channel instead of trusting the public route reservation.
+func (c *NativeArkChannelController) activeChannelBySCID(ctx context.Context,
+	scid lnwire.ShortChannelID) (arkchannel.Record, error) {
+
+	if scid == (lnwire.ShortChannelID{}) {
+		return arkchannel.Record{}, fmt.Errorf("incoming payment " +
+			"channel SCID is empty")
+	}
+	records, err := c.service.ListChannels(ctx)
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+
+	var selected *arkchannel.Record
+	for i := range records {
+		record := records[i]
+		if record.Snapshot.Phase != arkchannel.PhaseActive ||
+			record.Snapshot.Terms.ReservedSCID != scid.ToUint64() {
+
+			continue
+		}
+		if selected != nil {
+			return arkchannel.Record{}, fmt.Errorf("multiple "+
+				"active channels use SCID %d", scid.ToUint64())
+		}
+
+		selected = &record
+	}
+	if selected == nil {
+		return arkchannel.Record{}, fmt.Errorf("no active channel "+
+			"uses SCID %d", scid.ToUint64())
+	}
+
+	return *selected, nil
+}
+
 // waitIncomingPaymentReady joins the two independent durable readiness
 // barriers. Returning after only one would either expose an unusable channel or
 // release the preimage before its channel exists.
@@ -1701,6 +1846,49 @@ func waitIncomingPaymentReady(ctx context.Context,
 	}
 
 	return incomingSCID, nil
+}
+
+// SettleIncomingPayment releases the private hold invoice after the SDK
+// durably chooses the channel rail as the winner.
+func (c *NativeArkChannelController) SettleIncomingPayment(ctx context.Context,
+	preimage lntypes.Preimage) error {
+
+	if c.party != arkchannel.PartyClient {
+		return fmt.Errorf("incoming payment settlement is client only")
+	}
+	if err := c.ensureClientStarted(ctx); err != nil {
+		return err
+	}
+
+	return c.SettleHoldInvoice(ctx, preimage)
+}
+
+// CancelIncomingPayment prevents private settlement and abandons any paired
+// receive intent that remains before the channel funding point of no return.
+func (c *NativeArkChannelController) CancelIncomingPayment(ctx context.Context,
+	hash lntypes.Hash, reason string) error {
+
+	if c.party != arkchannel.PartyClient {
+		return fmt.Errorf("incoming payment cancellation is client " +
+			"only")
+	}
+	if reason == "" {
+		return fmt.Errorf("incoming payment cancellation reason is " +
+			"required")
+	}
+	if err := c.ensureClientStarted(ctx); err != nil {
+		return err
+	}
+	if err := c.paymentPeer.CancelIncomingPayment(
+		ctx, hash, reason,
+	); err != nil {
+		return fmt.Errorf("cancel hub incoming payment: %w", err)
+	}
+	if err := c.CancelInvoice(ctx, hash); err != nil {
+		return fmt.Errorf("cancel incoming hold invoice: %w", err)
+	}
+
+	return c.cancelReceiveIntent(ctx, hash, reason)
 }
 
 // cancelReceiveIntent applies the same pre-PONR failure to every existing
@@ -2588,6 +2776,134 @@ func (c *NativeArkChannelController) AbandonReceiveIntent(ctx context.Context,
 		return fmt.Errorf("cannot abandon receive intent from %s",
 			record.Snapshot.Phase)
 	}
+}
+
+// SelectActiveChannel finds an ordinary native channel with enough balance on
+// the requested local or remote side. lnd remains authoritative and may still
+// reject a racing payment that consumes the same balance.
+func (c *NativeArkChannelController) SelectActiveChannel(ctx context.Context,
+	amount btcutil.Amount, localSends bool) (arkchannel.Record, error) {
+
+	if amount <= 0 {
+		return arkchannel.Record{}, fmt.Errorf("payment amount must " +
+			"be positive")
+	}
+	if c.party == arkchannel.PartyClient {
+		if err := c.ensureClientStarted(ctx); err != nil {
+			return arkchannel.Record{}, err
+		}
+	}
+	c.mu.RLock()
+	service := c.service
+	node := c.node
+	c.mu.RUnlock()
+	if service == nil || node == nil {
+		return arkchannel.Record{}, fmt.Errorf("native Ark channel " +
+			"endpoint is not ready")
+	}
+	records, err := service.ListChannels(ctx)
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+	for _, record := range records {
+		if record.Snapshot.Phase != arkchannel.PhaseActive {
+			continue
+		}
+		local, remote, err := node.ChannelBalance(record)
+		if err != nil {
+			continue
+		}
+		available := remote
+		if localSends {
+			available = local
+		}
+		if available >= amount {
+			return record, nil
+		}
+	}
+
+	return arkchannel.Record{}, fmt.Errorf("%w for %d sat",
+		ErrInsufficientArkChannelLiquidity, amount)
+}
+
+// AddHoldInvoice registers the private source for an outgoing bridge.
+func (c *NativeArkChannelController) AddHoldInvoice(ctx context.Context,
+	hash lntypes.Hash, amount btcutil.Amount) error {
+
+	if c.party == arkchannel.PartyClient {
+		if err := c.ensureClientStarted(ctx); err != nil {
+			return err
+		}
+	}
+
+	return c.node.AddHoldInvoice(ctx, hash, amount)
+}
+
+// AddInvoiceWithPreimage registers the private hold destination for an incoming
+// bridge before its BOLT 11 invoice is exposed to a payer.
+func (c *NativeArkChannelController) AddInvoiceWithPreimage(ctx context.Context,
+	preimage lntypes.Preimage, amount btcutil.Amount) error {
+
+	if c.party == arkchannel.PartyClient {
+		if err := c.ensureClientStarted(ctx); err != nil {
+			return err
+		}
+	}
+	_, err := c.node.AddInvoiceWithPreimage(
+		ctx, amount, preimage, true,
+	)
+
+	return err
+}
+
+// WaitInvoiceAccepted waits for a private hold invoice HTLC.
+func (c *NativeArkChannelController) WaitInvoiceAccepted(ctx context.Context,
+	hash lntypes.Hash) error {
+
+	return c.node.WaitInvoiceAccepted(ctx, hash)
+}
+
+// WaitInvoiceSettled waits for an incoming private destination to settle.
+func (c *NativeArkChannelController) WaitInvoiceSettled(ctx context.Context,
+	hash lntypes.Hash) error {
+
+	return c.node.WaitInvoiceSettled(ctx, hash)
+}
+
+// SettleHoldInvoice releases a private hold invoice with its shared preimage.
+func (c *NativeArkChannelController) SettleHoldInvoice(ctx context.Context,
+	preimage lntypes.Preimage) error {
+
+	return c.node.SettleHoldInvoice(ctx, preimage)
+}
+
+// CancelInvoice fails a private hold invoice before its preimage is released.
+func (c *NativeArkChannelController) CancelInvoice(ctx context.Context,
+	hash lntypes.Hash) error {
+
+	return c.node.CancelInvoice(ctx, hash)
+}
+
+// PayHash sends or resumes one same-hash payment over a selected private
+// channel and returns the destination preimage. A new attempt must expire no
+// later than maxExpiryHeight.
+func (c *NativeArkChannelController) PayHash(ctx context.Context,
+	id arkchannel.ID, hash lntypes.Hash, amount btcutil.Amount,
+	maxExpiryHeight uint32) (lntypes.Preimage, error) {
+
+	if c.party == arkchannel.PartyClient {
+		if err := c.ensureClientStarted(ctx); err != nil {
+			return lntypes.Preimage{}, err
+		}
+	}
+	record, err := c.service.GetChannel(ctx, id)
+	if err != nil {
+		return lntypes.Preimage{}, err
+	}
+
+	return c.node.PayInvoiceResultBefore(
+		ctx, record, hash, amount, maxExpiryHeight,
+	)
 }
 
 // FundingPeerService returns the generated funding protocol for a hub
