@@ -6,6 +6,7 @@ import (
 
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
+	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -340,4 +341,43 @@ func TestShouldResumeOnchainArkChannel(t *testing.T) {
 			)
 		})
 	}
+}
+
+// TestPromotionIdentifiersAreStableAndScoped verifies a retried creation gets
+// the same protocol identity without colliding across daemon identities.
+func TestPromotionIdentifiersAreStableAndScoped(t *testing.T) {
+	t.Parallel()
+
+	first := &NativeArkChannelController{cfg: ArkChannelControllerConfig{
+		IdentityKey: testKeyDescriptor(t, 70),
+	}}
+	second := &NativeArkChannelController{cfg: ArkChannelControllerConfig{
+		IdentityKey: testKeyDescriptor(t, 71),
+	}}
+
+	firstID, firstPending, firstSCID :=
+		first.promotionIdentifiers("invoice-42")
+	retryID, retryPending, retrySCID :=
+		first.promotionIdentifiers("invoice-42")
+	require.Equal(t, firstID, retryID)
+	require.Equal(t, firstPending, retryPending)
+	require.Equal(t, firstSCID, retrySCID)
+	reservedSCID := lnwire.NewShortChanIDFromInt(firstSCID)
+	require.NotZero(t, reservedSCID.BlockHeight)
+	require.Zero(t, reservedSCID.TxPosition)
+
+	otherKeyID, _, _ := first.promotionIdentifiers("invoice-43")
+	otherIdentityID, _, _ := second.promotionIdentifiers("invoice-42")
+	require.NotEqual(t, firstID, otherKeyID)
+	require.NotEqual(t, firstID, otherIdentityID)
+}
+
+// TestNewPromotionTermsRequiresIdempotencyKey verifies the controller cannot
+// reintroduce an unrecoverable random channel identity below the RPC layer.
+func TestNewPromotionTermsRequiresIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	controller := &NativeArkChannelController{}
+	_, err := controller.newPromotionTerms(100_000, "")
+	require.ErrorContains(t, err, "idempotency key is required")
 }
