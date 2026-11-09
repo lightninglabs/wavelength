@@ -525,6 +525,8 @@ Do not renew a missing admission budget after restart. Buffered quote effects
 are retained across bounded local delivery retries, and old confirmation routes
 are removed at handoff. Ordinary boarding also checks stateBoarding across all
 tracked rounds so retiring a checkpoint cannot register its inputs twice.
+The selected confirmation-only assembly may acquire its first outputs; an
+assembly with selected outputs or inputs owned by another attempt stays fenced.
 
 An offer for an unknown predecessor is buffered with a count bound until an
 outpoint-matched RoundJoined identifies its owner. Never clear the predecessor

@@ -4416,8 +4416,9 @@ func (a *RoundClientActor) registerBoard(ctx context.Context,
 
 		boardingIntents = append(boardingIntents, intent)
 	}
+	roundFSM := a.findAssemblingRound(ctx)
 	if err := a.checkBoardingInputsAvailable(
-		ctx, boardingIntents,
+		ctx, boardingIntents, roundFSM,
 	); err != nil {
 		return fn.Err[actormsg.RoundActorResp](err)
 	}
@@ -4463,7 +4464,6 @@ func (a *RoundClientActor) registerBoard(ctx context.Context,
 
 	// Find an existing assembling round or create a new one.
 	var err error
-	roundFSM := a.findAssemblingRound(ctx)
 	if roundFSM == nil {
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {

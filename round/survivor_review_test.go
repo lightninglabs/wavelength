@@ -7,12 +7,73 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/timeout"
 	"github.com/lightninglabs/wavelength/wallet"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
+
+// TestBoardAssemblyOwnership keeps selected or unrelated assemblies fenced
+// while allowing a confirmation-only assembly to acquire its first output.
+func TestBoardAssemblyOwnership(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		selected bool
+		target   bool
+	}{
+		{
+			name:   "confirmation only",
+			target: true,
+		},
+		{
+			name:     "selected output",
+			selected: true,
+			target:   true,
+		},
+		{
+			name: "another assembly",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newActorTestHarness(t)
+			intent := BoardingIntent{
+				BoardingIntent: wallet.BoardingIntent{
+					Outpoint: wire.OutPoint{
+						Index: 12,
+					},
+				},
+			}
+			pending := &PendingRoundAssembly{
+				Boarding: []BoardingIntent{
+					intent,
+				},
+			}
+			if test.selected {
+				pending.VTXOs = []types.VTXORequest{{}}
+			}
+			id := testRoundID(test.name)
+			h.injectRoundInState(id, pending)
+			t.Cleanup(func() { _ = h.actor.OnStop(t.Context()) })
+			var target *RoundFSM
+			if test.target {
+				target = h.actor.rounds[RoundKeyStr(
+					id.KeyString(),
+				)]
+			}
+			err := h.actor.checkBoardingInputsAvailable(
+				t.Context(), []BoardingIntent{intent}, target,
+			)
+			if test.selected || !test.target {
+				require.ErrorIs(t, err, ErrBoardingInFlight)
+
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
 
 // TestReplacementRefusalAppliesAbort keeps the operator's dead verdict even
 // when a successor is unsupported or its ordinal is invalid.
@@ -177,7 +238,7 @@ func TestReplacementRetiresConfirmationRoute(t *testing.T) {
 	require.ErrorIs(
 		t,
 		h.actor.checkBoardingInputsAvailable(
-			t.Context(), []BoardingIntent{intent},
+			t.Context(), []BoardingIntent{intent}, nil,
 		),
 		ErrBoardingInFlight,
 	)
@@ -188,7 +249,7 @@ func TestReplacementRetiresConfirmationRoute(t *testing.T) {
 	require.NoError(
 		t,
 		h.actor.checkBoardingInputsAvailable(
-			t.Context(), []BoardingIntent{other},
+			t.Context(), []BoardingIntent{other}, nil,
 		),
 	)
 }

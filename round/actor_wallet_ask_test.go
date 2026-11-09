@@ -209,6 +209,36 @@ func TestBoardFetchDoesNotDeadlockWithWalletRegisterIntent(t *testing.T) {
 	}, 5*time.Second, 5*time.Millisecond)
 }
 
+// TestBoardConsumesConfirmedAssembly covers the normal wallet sequence: a
+// confirmation collects a deposit before Board chooses its output amount.
+func TestBoardConsumesConfirmedAssembly(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+	require.NoError(t, h.start())
+	mockBoardKeys(h)
+	intent := h.newTestBoardingIntent()
+	h.walletActor.setConfirmedIntents(*intent)
+	require.NoError(
+		t, h.receive(&WalletBoardingConfirmed{
+			Intent: intent,
+		}).Err(),
+	)
+	require.Empty(t, boardedAmounts(h))
+
+	require.NoError(
+		t, h.receive(&actormsg.TriggerBoardMsg{
+			Amounts: []btcutil.Amount{10_000},
+		}).Err(),
+	)
+	reply, ok := h.selfRef.waitForMessage(time.Second)
+	require.True(t, ok)
+	require.NoError(t, h.receive(reply).Err())
+	require.Equal(t, []btcutil.Amount{10_000}, boardedAmounts(h))
+	require.Len(t, h.actor.rounds, 1)
+}
+
 // TestBoardTriggersRunOneFetchAtATime pins the FIFO serialization: a second
 // trigger waits for the first trigger's reply before its own fetch is sent, so
 // two triggers cannot both see the same outpoint as confirmed.

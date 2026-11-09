@@ -92,7 +92,7 @@ func retryMaterial(
 // checkBoardingInputsAvailable prevents a retired checkpoint's deposits from
 // being registered again while its replacement still owns them in memory.
 func (a *RoundClientActor) checkBoardingInputsAvailable(ctx context.Context,
-	intents []BoardingIntent) error {
+	intents []BoardingIntent, assembling *RoundFSM) error {
 
 	owned := make(map[wire.OutPoint]struct{})
 	scanCtx, cancel := fsmScanContext(ctx)
@@ -101,6 +101,15 @@ func (a *RoundClientActor) checkBoardingInputsAvailable(ctx context.Context,
 		state, err := fsmState(scanCtx, active.FSM)
 		if err != nil {
 			return fmt.Errorf("read boarding ownership: %w", err)
+		}
+		// Wallet confirmations collect deposits before Board selects
+		// their outputs. Permit that same assembly to consume them,
+		// but keep scheduled packages with selected outputs fenced.
+		pending, ok := state.(*PendingRoundAssembly)
+		if active == assembling && ok && len(pending.VTXOs) == 0 &&
+			len(pending.Leaves) == 0 && len(pending.Forfeits) == 0 {
+
+			continue
 		}
 		for _, intent := range stateBoarding(state) {
 			owned[intent.Outpoint] = struct{}{}
