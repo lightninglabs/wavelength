@@ -2,6 +2,7 @@ package waved
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -15,6 +16,69 @@ import (
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
 )
+
+// arkChannelSourceWatchTracker arms source watches for one durable channel.
+type arkChannelSourceWatchTracker func(context.Context, arkchannel.ID,
+	*vtxo.Descriptor) error
+
+// restoreArkChannelSourceWatches restores every eligible source independently
+// so one damaged record cannot suppress protection for healthy channels.
+func restoreArkChannelSourceWatches(ctx context.Context,
+	records []arkchannel.Record,
+	load func(context.Context, wire.OutPoint) (*vtxo.Descriptor, error),
+	track arkChannelSourceWatchTracker) error {
+
+	failures := make([]arkchannel.ResumeFailure, 0)
+	for i := range records {
+		snapshot := records[i].Snapshot
+		if !shouldRestoreArkChannelSourceWatch(snapshot) {
+			continue
+		}
+		desc, err := load(ctx, snapshot.Source.OutPoint)
+		if err != nil {
+			failures = append(failures, arkchannel.ResumeFailure{
+				ChannelID: snapshot.Terms.ID,
+				Err: fmt.Errorf(
+					"load recovery source: %w", err,
+				),
+			})
+
+			continue
+		}
+		if err := track(
+			ctx, snapshot.Terms.ID, desc,
+		); err != nil {
+
+			failures = append(failures, arkchannel.ResumeFailure{
+				ChannelID: snapshot.Terms.ID,
+				Err: fmt.Errorf(
+					"restore source watch: %w", err,
+				),
+			})
+		}
+	}
+	if len(failures) > 0 {
+		return &arkchannel.ResumeFailures{Failures: failures}
+	}
+
+	return nil
+}
+
+// shouldRestoreArkChannelSourceWatch reports whether confirmed ancestry can
+// still require a durable channel action. Once conflict evidence is stored,
+// Service.Resume owns retries and another chain registration is unnecessary.
+func shouldRestoreArkChannelSourceWatch(snapshot arkchannel.Snapshot) bool {
+	if !snapshot.RecoveryReady() || snapshot.Source == nil ||
+		snapshot.SourceConflict != nil {
+		return false
+	}
+	if !snapshot.Phase.IsTerminal() {
+		return true
+	}
+
+	return snapshot.Phase == arkchannel.PhaseClosed &&
+		snapshot.CooperativeClose != nil
+}
 
 // validateRecoveryPackageRoots accepts package traversal endpoints only when
 // the transported round ancestry supplies the transaction they spend.
