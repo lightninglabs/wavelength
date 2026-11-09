@@ -736,6 +736,13 @@ func (h *Harness) purgeDockerResources() {
 	h.purgeResource(h.postgres, "postgres")
 	h.purgeResource(h.tapd, "tapd")
 	h.purgeResource(h.lnd, "lnd")
+
+	for name, inst := range h.extraLNDs {
+		if inst != nil {
+			h.purgeResource(inst.Resource, name)
+		}
+	}
+
 	h.purgeResource(h.bitcoind, "bitcoind")
 
 	// Use force removal to ensure the network is cleaned up even if some

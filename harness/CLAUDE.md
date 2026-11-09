@@ -70,6 +70,8 @@ helpers for end-to-end tests.
   image predates native custom-account creation.
 - Container teardown (`Stop`) is guarded by `sync.Once`; a signal handler
   also calls `Stop` as a safety net against orphaned containers.
+- `Stop` kills and then removes every harness container, including
+  `StartAdditionalLND*` nodes, saving their logs first on failure.
 
 ## Deep Docs
 
