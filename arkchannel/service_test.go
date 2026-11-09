@@ -329,6 +329,43 @@ func TestServiceSeparatesPromotionRegistrationFromBinding(t *testing.T) {
 	require.Equal(t, 1, executor.counts["*arkchannel.NegotiateFunding"])
 }
 
+// TestServiceRegistersReceiveIntentWithoutFunding verifies registration does
+// not spend operator liquidity until a matching prepared OOR output is known.
+func TestServiceRegistersReceiveIntentWithoutFunding(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	executor := &serviceExecutor{
+		t:      t,
+		counts: make(map[string]int),
+	}
+	service, err := NewService(PartyHub, coordinator, executor)
+	require.NoError(t, err)
+	executor.service = service
+	executor.localParty = PartyHub
+	terms := testTerms(t, KindReceiveIntent)
+
+	record, err := service.RegisterReceiveIntent(t.Context(), terms)
+	require.NoError(t, err)
+	require.Equal(t, PhaseRequested, record.Snapshot.Phase)
+
+	record, err = service.BindPreparedOOR(
+		t.Context(), terms.ID, testBinding(terms),
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseRequested, record.Snapshot.Phase)
+	require.NotNil(t, record.Snapshot.Source)
+	require.Empty(t, executor.counts)
+
+	record, err = service.ApplyPeerEvent(
+		t.Context(), terms.ID, &FundingPeerReady{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseActive, record.Snapshot.Phase)
+	require.Equal(t, 1, executor.counts["*arkchannel.NegotiateFunding"])
+}
+
 // TestServiceReconcilesFundingByChannelPoint proves a missed lnd callback is
 // recoverable from the pending channel record keyed by signed backing.
 func TestServiceReconcilesFundingByChannelPoint(t *testing.T) {
@@ -397,6 +434,9 @@ func TestServiceEventAuthorityMatrix(t *testing.T) {
 
 	promotion := testTerms(t, KindPromotion)
 	clientService := newService(PartyClient, promotion)
+	receive := testTerms(t, KindReceiveIntent)
+	hubService := newService(PartyHub, receive)
+	clientReceiveService := newService(PartyClient, receive)
 
 	tests := []struct {
 		name    string
@@ -415,6 +455,10 @@ func TestServiceEventAuthorityMatrix(t *testing.T) {
 			&OORFinalized{}, eventOriginLocal},
 		{"abort OOR", clientService, promotion.ID,
 			&OORAborted{}, eventOriginLocal},
+		{"funding peer ready", hubService, receive.ID,
+			&FundingPeerReady{}, eventOriginPeer},
+		{"local funding readiness", clientReceiveService, receive.ID,
+			&FundingPeerReady{}, eventOriginLocal},
 		{"client funding finalized", clientService, promotion.ID,
 			&FundingFinalized{
 				Party: PartyClient,
@@ -432,6 +476,8 @@ func TestServiceEventAuthorityMatrix(t *testing.T) {
 			&RecoveryPackageInstalled{
 				Party: PartyHub,
 			}, eventOriginPeer},
+		{"request receive abort", clientReceiveService, receive.ID,
+			&ReceiveIntentAbortRequested{}, eventOriginLocal},
 		{"request close", clientService, promotion.ID,
 			&RequestCooperativeClose{}, eventOriginLocal},
 		{"publish close", clientService, promotion.ID,
@@ -544,3 +590,8 @@ func TestServiceResumeIsolatesChannelFailures(t *testing.T) {
 	)
 	require.ElementsMatch(t, []ID{first.ID, second.ID}, executor.calls)
 }
+
+var (
+	_ ActionExecutor            = (*serviceExecutor)(nil)
+	_ FundingFinalizationSource = (*staticFundingFinalizationSource)(nil)
+)

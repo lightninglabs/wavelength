@@ -387,7 +387,7 @@ func insertArkChannelParams(snapshot arkchannel.Snapshot,
 		Capacity:         int64(terms.Capacity),
 		ClientNodeKey:    slices.Clone(terms.ClientNodeKey[:]),
 		HubNodeKey:       slices.Clone(terms.HubNodeKey[:]),
-		PaymentHash:      make([]byte, 32),
+		PaymentHash:      slices.Clone(terms.PaymentHash[:]),
 		ClientArkKey:     slices.Clone(terms.VTXO.ClientArkKey[:]),
 		HubArkKey:        slices.Clone(terms.VTXO.HubArkKey[:]),
 		ArkOperatorKey: slices.Clone(
@@ -529,15 +529,10 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 	); err != nil {
 		return arkchannel.Record{}, err
 	}
-	var paymentHash [32]byte
 	if err := copyFixed(
-		paymentHash[:], row.PaymentHash, "payment hash",
+		terms.PaymentHash[:], row.PaymentHash, "payment hash",
 	); err != nil {
 		return arkchannel.Record{}, err
-	}
-	if paymentHash != ([32]byte{}) {
-		return arkchannel.Record{}, fmt.Errorf("unsupported receive " +
-			"payment hash")
 	}
 	if err := copyFixed(
 		terms.VTXO.ClientArkKey[:], row.ClientArkKey, "client Ark key",

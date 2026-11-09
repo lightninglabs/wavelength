@@ -2,6 +2,7 @@ package arkchannel
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"slices"
 
@@ -20,13 +21,41 @@ const DefaultBackingFee btcutil.Amount = 1_000
 // ID is the stable identifier shared by both sides of an Ark channel.
 type ID [32]byte
 
+// ReceiveIntentID derives the stable channel identifier for one incoming
+// payment. Replays of the same invoice can only address the same intent.
+func ReceiveIntentID(paymentHash [32]byte) ID {
+	digest := sha256.Sum256(
+		append(
+			[]byte("wavelength-receive-channel-id:"),
+			paymentHash[:]...,
+		),
+	)
+
+	return ID(digest)
+}
+
+// ReceiveIntentPendingID derives lnd's stable pending channel identifier for
+// one incoming payment.
+func ReceiveIntentPendingID(paymentHash [32]byte) [32]byte {
+	return sha256.Sum256(
+		append(
+			[]byte("wavelength-receive-pending-id:"),
+			paymentHash[:]...,
+		),
+	)
+}
+
 // Kind identifies how the VTXO backing a channel is obtained.
 type Kind uint8
 
 const (
 	// KindPromotion moves an existing client-owned VTXO into a
 	// channel-policy VTXO through an OOR transfer.
-	KindPromotion Kind = 1
+	KindPromotion Kind = iota + 1
+
+	// KindReceiveIntent moves hub liquidity into a channel-policy VTXO
+	// through an OOR transfer before resuming an incoming payment.
+	KindReceiveIntent
 )
 
 // String returns the durable name of a channel kind.
@@ -34,6 +63,9 @@ func (k Kind) String() string {
 	switch k {
 	case KindPromotion:
 		return "promotion"
+
+	case KindReceiveIntent:
+		return "receive_intent"
 
 	default:
 		return "unknown"
@@ -261,8 +293,8 @@ type Terms struct {
 	Capacity         btcutil.Amount
 	ClientNodeKey    [33]byte
 	HubNodeKey       [33]byte
-
-	VTXO VTXOTerms
+	PaymentHash      [32]byte
+	VTXO             VTXOTerms
 }
 
 // Clone returns an isolated copy of immutable terms.
@@ -306,6 +338,19 @@ func (t Terms) Validate() error {
 	case KindPromotion:
 		if t.Funder != PartyClient {
 			return fmt.Errorf("promotion must be client funded")
+		}
+		if t.PaymentHash != ([32]byte{}) {
+			return fmt.Errorf("promotion cannot bind a payment " +
+				"hash")
+		}
+
+	case KindReceiveIntent:
+		if t.Funder != PartyHub {
+			return fmt.Errorf("receive intent must be hub funded")
+		}
+		if t.PaymentHash == ([32]byte{}) {
+			return fmt.Errorf("receive intent requires a payment " +
+				"hash")
 		}
 
 	default:

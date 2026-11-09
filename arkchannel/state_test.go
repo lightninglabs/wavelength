@@ -38,7 +38,7 @@ func TestOORChannelLifecycle(t *testing.T) {
 	coordinator, err := NewCoordinator(store)
 	require.NoError(t, err)
 
-	terms := testTerms(t, KindPromotion)
+	terms := testTerms(t, KindReceiveIntent)
 	record, err := coordinator.Request(t.Context(), terms)
 	require.NoError(t, err)
 	require.Equal(t, PhaseRequested, record.Snapshot.Phase)
@@ -48,6 +48,14 @@ func TestOORChannelLifecycle(t *testing.T) {
 		t.Context(), terms.ID, &BindVTXO{
 			Binding: binding,
 		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseRequested, record.Snapshot.Phase)
+	require.Empty(t, actions)
+	require.NotNil(t, record.Snapshot.Source)
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &FundingPeerReady{},
 	)
 	require.NoError(t, err)
 	require.Equal(t, PhaseNegotiating, record.Snapshot.Phase)
@@ -704,7 +712,7 @@ func TestCooperativeCloseAbortReturnsActive(t *testing.T) {
 	t.Parallel()
 
 	terms, source, request, _, _, _ := testCooperativeCloseFixture(
-		t, KindPromotion, 5_000,
+		t, KindReceiveIntent, 5_000,
 	)
 	coordinator := activeCooperativeChannel(t, terms, source)
 	_, _, err := coordinator.Apply(
@@ -730,7 +738,7 @@ func TestOORChannelCanAbortBeforePONR(t *testing.T) {
 
 	coordinator, err := NewCoordinator(newMemoryStore())
 	require.NoError(t, err)
-	terms := testTerms(t, KindPromotion)
+	terms := testTerms(t, KindReceiveIntent)
 	_, err = coordinator.Request(t.Context(), terms)
 	require.NoError(t, err)
 	binding := testBinding(terms)
@@ -740,6 +748,7 @@ func TestOORChannelCanAbortBeforePONR(t *testing.T) {
 		&BindVTXO{
 			Binding: binding,
 		},
+		&FundingPeerReady{},
 		&BackingSigned{
 			Backing: backing,
 		},
@@ -789,7 +798,7 @@ func TestBackingReadyRejectsGenericFailure(t *testing.T) {
 
 	coordinator, err := NewCoordinator(newMemoryStore())
 	require.NoError(t, err)
-	terms := testTerms(t, KindPromotion)
+	terms := testTerms(t, KindReceiveIntent)
 	_, err = coordinator.Request(t.Context(), terms)
 	require.NoError(t, err)
 	binding := testBinding(terms)
@@ -798,6 +807,7 @@ func TestBackingReadyRejectsGenericFailure(t *testing.T) {
 		&BindVTXO{
 			Binding: binding,
 		},
+		&FundingPeerReady{},
 		&BackingSigned{
 			Backing: backing,
 		},
@@ -851,7 +861,7 @@ func TestPrePONRExpiryLosesCommitGateCASRace(t *testing.T) {
 	store := newMemoryStore()
 	coordinator, err := NewCoordinator(store)
 	require.NoError(t, err)
-	terms := testTerms(t, KindPromotion)
+	terms := testTerms(t, KindReceiveIntent)
 	_, err = coordinator.Request(t.Context(), terms)
 	require.NoError(t, err)
 	binding := testBinding(terms)
@@ -860,6 +870,7 @@ func TestPrePONRExpiryLosesCommitGateCASRace(t *testing.T) {
 		&BindVTXO{
 			Binding: binding,
 		},
+		&FundingPeerReady{},
 	} {
 		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
 		require.NoError(t, err)
@@ -974,7 +985,7 @@ func TestFundingFinalizationRequiresBacking(t *testing.T) {
 
 	coordinator, err := NewCoordinator(newMemoryStore())
 	require.NoError(t, err)
-	terms := testTerms(t, KindPromotion)
+	terms := testTerms(t, KindReceiveIntent)
 	_, err = coordinator.Request(t.Context(), terms)
 	require.NoError(t, err)
 	_, _, err = coordinator.Apply(
@@ -992,44 +1003,61 @@ func TestFundingFinalizationRequiresBacking(t *testing.T) {
 	require.ErrorContains(t, err, "before signed backing")
 }
 
-// TestCoordinatorIdempotency proves retries preserve immutable terms and replay
-// negotiation from its persisted source after a coordinator restart.
+// TestCoordinatorIdempotency verifies duplicate facts do not advance the
+// store revision or invent work when the durable state has no pending action.
 func TestCoordinatorIdempotency(t *testing.T) {
 	t.Parallel()
+
 	store := newMemoryStore()
 	coordinator, err := NewCoordinator(store)
 	require.NoError(t, err)
-	terms := testTerms(t, KindPromotion)
+	terms := testTerms(t, KindReceiveIntent)
 	requested, err := coordinator.Request(t.Context(), terms)
 	require.NoError(t, err)
+
 	repeated, err := coordinator.Request(t.Context(), terms.Clone())
 	require.NoError(t, err)
 	require.Equal(t, requested.Revision, repeated.Revision)
+
 	binding := testBinding(terms)
-	bound, actions, err := coordinator.Apply(
+	bound, _, err := coordinator.Apply(
 		t.Context(), terms.ID, &BindVTXO{
 			Binding: binding,
 		},
 	)
 	require.NoError(t, err)
-	require.IsType(t, &NegotiateFunding{}, requireOneAction(t, actions))
+
 	duplicate, actions, err := coordinator.Apply(
 		t.Context(), terms.ID, &BindVTXO{
 			Binding: binding.Clone(),
 		},
 	)
 	require.NoError(t, err)
+	require.Empty(t, actions)
 	require.Equal(t, bound.Revision, duplicate.Revision)
-	require.IsType(t, &NegotiateFunding{}, requireOneAction(t, actions))
+
 	restarted, err := NewCoordinator(store)
 	require.NoError(t, err)
 	work, err := restarted.ResumeAll(t.Context())
 	require.NoError(t, err)
+	require.Empty(t, work)
+
+	_, actions, err = restarted.Apply(
+		t.Context(), terms.ID, &FundingPeerReady{},
+	)
+	require.NoError(t, err)
+	require.IsType(t, &NegotiateFunding{}, requireOneAction(t, actions))
+
+	restarted, err = NewCoordinator(store)
+	require.NoError(t, err)
+	work, err = restarted.ResumeAll(t.Context())
+	require.NoError(t, err)
 	require.Len(t, work, 1)
 	require.IsType(t, &NegotiateFunding{}, work[0].Action)
-	changed := terms.Clone()
-	changed.Capacity++
-	_, err = coordinator.Request(t.Context(), changed)
+
+	changedTerms := terms.Clone()
+	changedTerms.Capacity++
+	_, err = coordinator.Request(t.Context(), changedTerms)
 	require.ErrorContains(t, err, "different terms")
 }
 
@@ -1040,7 +1068,7 @@ func TestFindByPendingChannelID(t *testing.T) {
 
 	coordinator, err := NewCoordinator(newMemoryStore())
 	require.NoError(t, err)
-	terms := testTerms(t, KindPromotion)
+	terms := testTerms(t, KindReceiveIntent)
 	expected, err := coordinator.Request(t.Context(), terms)
 	require.NoError(t, err)
 
@@ -1055,11 +1083,23 @@ func TestFindByPendingChannelID(t *testing.T) {
 	)
 	require.ErrorIs(t, err, ErrNotFound)
 
-	conflicting := testTerms(t, KindPromotion)
+	conflicting := testTerms(t, KindReceiveIntent)
 	conflicting.ID[0] = 99
 	conflicting.PendingChannelID = terms.PendingChannelID
 	_, err = coordinator.Request(t.Context(), conflicting)
 	require.ErrorContains(t, err, "belongs to another Ark channel")
+}
+
+// TestReceiveIntentRejectsUnsafeTerms verifies the hub must own all initial
+// receive-channel liquidity.
+func TestReceiveIntentRejectsUnsafeTerms(t *testing.T) {
+	t.Parallel()
+
+	terms := testTerms(t, KindReceiveIntent)
+	terms.Funder = PartyClient
+
+	_, err := NewState(terms)
+	require.ErrorContains(t, err, "hub funded")
 }
 
 // TestChannelTermsRejectNonZeroFundingPosition keeps the advertised alias
@@ -1128,7 +1168,7 @@ func TestCoordinatorDoesNotEmitBeforeCommit(t *testing.T) {
 	store := newMemoryStore()
 	coordinator, err := NewCoordinator(store)
 	require.NoError(t, err)
-	terms := testTerms(t, KindPromotion)
+	terms := testTerms(t, KindReceiveIntent)
 	_, err = coordinator.Request(t.Context(), terms)
 	require.NoError(t, err)
 
@@ -1151,7 +1191,7 @@ func TestCoordinatorObserverRunsAfterCommit(t *testing.T) {
 	observer := &testRecordObserver{}
 	coordinator, err := NewCoordinator(store, observer)
 	require.NoError(t, err)
-	terms := testTerms(t, KindPromotion)
+	terms := testTerms(t, KindReceiveIntent)
 	_, err = coordinator.Request(t.Context(), terms)
 	require.NoError(t, err)
 	updated, _, err := coordinator.Apply(
@@ -1194,13 +1234,50 @@ func TestOORPreparationStartedIsIdempotent(t *testing.T) {
 	require.Equal(t, revision, record.Revision)
 }
 
-// TestPartialFundingFactsDoNotRestartNegotiation keeps individual native facts
-// from repeatedly dispatching an already-running negotiation.
-func TestPartialFundingFactsDoNotRestartNegotiation(t *testing.T) {
+// TestSourceLessReceiveAbortWaitsForFunderConfirmation proves the client keeps
+// a replayable action until the hub's authenticated abort fact is durable.
+func TestSourceLessReceiveAbortWaitsForFunderConfirmation(t *testing.T) {
 	t.Parallel()
+
 	coordinator, err := NewCoordinator(newMemoryStore())
 	require.NoError(t, err)
-	terms := testTerms(t, KindPromotion)
+	terms := testTerms(t, KindReceiveIntent)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+
+	reason := "client rejected the prepared source"
+	record, actions, err := coordinator.Apply(
+		t.Context(), terms.ID, &ReceiveIntentAbortRequested{
+			Reason: reason,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseCancelling, record.Snapshot.Phase)
+	require.Nil(t, record.Snapshot.Source)
+	require.False(t, record.Snapshot.OORAborted)
+	require.IsType(
+		t, &RequestReceiveIntentAbort{}, requireOneAction(t, actions),
+	)
+
+	record, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &OORAborted{
+			SessionID: [32]byte{9}, Reason: reason,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, PhaseFailed, record.Snapshot.Phase)
+	require.True(t, record.Snapshot.OORAborted)
+	require.Empty(t, actions)
+}
+
+// TestPartialFundingFactsDoNotRestartNegotiation verifies callback progress
+// stays within one native lnd funding attempt.
+func TestPartialFundingFactsDoNotRestartNegotiation(t *testing.T) {
+	t.Parallel()
+
+	coordinator, err := NewCoordinator(newMemoryStore())
+	require.NoError(t, err)
+	terms := testTerms(t, KindReceiveIntent)
 	_, err = coordinator.Request(t.Context(), terms)
 	require.NoError(t, err)
 	binding := testBinding(terms)
@@ -1210,7 +1287,13 @@ func TestPartialFundingFactsDoNotRestartNegotiation(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
+	require.Empty(t, actions)
+	_, actions, err = coordinator.Apply(
+		t.Context(), terms.ID, &FundingPeerReady{},
+	)
+	require.NoError(t, err)
 	require.IsType(t, &NegotiateFunding{}, requireOneAction(t, actions))
+
 	for _, event := range []Event{
 		&BackingSigned{
 			Backing: testBacking(t, terms, binding),
@@ -1415,6 +1498,14 @@ func activeCooperativeChannel(t *testing.T, terms Terms,
 			ChannelPointIndex: backing.ChannelPoint.Index,
 		},
 	} {
+		if _, receive := event.(*BackingSigned); receive &&
+			terms.Kind == KindReceiveIntent {
+
+			_, _, err = coordinator.Apply(
+				t.Context(), terms.ID, &FundingPeerReady{},
+			)
+			require.NoError(t, err)
+		}
 		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
 		require.NoError(t, err)
 	}
@@ -1473,6 +1564,10 @@ func testTerms(t *testing.T, kind Kind) Terms {
 			FunderDelay:      576,
 			MinExitDelay:     144,
 		},
+	}
+	if kind == KindReceiveIntent {
+		terms.Funder = PartyHub
+		terms.PaymentHash = [32]byte{9, 9, byte(kind)}
 	}
 
 	return terms
