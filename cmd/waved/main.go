@@ -438,23 +438,6 @@ func registerAssetFlags(f *pflag.FlagSet, cfg *waved.Config) {
 		"assets.tapd.rpctimeout", cfg.Assets.Tapd.RPCTimeout,
 		"timeout for individual tapd calls",
 	)
-	f.String(
-		"assets.lnd.host", cfg.Assets.Lnd.Host, "gRPC address of "+
-			"the lnd node behind tapd, which signs asset "+
-			"deposits; required by DepositAsset",
-	)
-	f.String(
-		"assets.lnd.tlspath", cfg.Assets.Lnd.TLSPath,
-		"path to the TLS certificate of the lnd node behind tapd",
-	)
-	f.String(
-		"assets.lnd.macaroonpath", cfg.Assets.Lnd.MacaroonPath,
-		"path to the admin macaroon of the lnd node behind tapd",
-	)
-	f.Duration(
-		"assets.lnd.rpctimeout", cfg.Assets.Lnd.RPCTimeout,
-		"timeout for individual calls to the lnd node behind tapd",
-	)
 }
 
 // registerArkServerFlags registers the daemon's outbound Ark operator flags.

@@ -16,8 +16,8 @@ func (r *RPCServer) DepositAsset(ctx context.Context,
 	deposits := r.server.assetDeposits
 	if deposits == nil {
 		return nil, status.Error(
-			codes.FailedPrecondition, "asset deposits require "+
-				"assets.backend=tapd and assets.lnd.host",
+			codes.FailedPrecondition,
+			"asset deposits require assets.backend=tapd",
 		)
 	}
 	if err := r.requireWalletReady(); err != nil {
@@ -39,8 +39,8 @@ func (r *RPCServer) BoardAssetDeposit(ctx context.Context,
 	deposits := r.server.assetDeposits
 	if deposits == nil {
 		return nil, status.Error(
-			codes.FailedPrecondition, "asset deposits require "+
-				"assets.backend=tapd and assets.lnd.host",
+			codes.FailedPrecondition,
+			"asset deposits require assets.backend=tapd",
 		)
 	}
 	if err := r.requireWalletReady(); err != nil {
@@ -63,8 +63,8 @@ func (r *RPCServer) ClaimAssetDeposit(ctx context.Context,
 	deposits := r.server.assetDeposits
 	if deposits == nil {
 		return nil, status.Error(
-			codes.FailedPrecondition, "asset deposits require "+
-				"assets.backend=tapd and assets.lnd.host",
+			codes.FailedPrecondition,
+			"asset deposits require assets.backend=tapd",
 		)
 	}
 	if err := r.requireWalletReady(); err != nil {
