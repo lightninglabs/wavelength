@@ -1127,6 +1127,44 @@ func (c *NativeArkChannelController) failReceiveIntentDetached(
 	return c.failReceiveIntent(cleanupCtx, id, cause)
 }
 
+// receiveNegotiationFailureIsReplayable protects outcomes that may already
+// have produced durable work. Only explicit peer rejections and local errors
+// are definitive enough to abandon a still-negotiating channel.
+func receiveNegotiationFailureIsReplayable(err error) bool {
+	if errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, lnruntime.ErrFundingNegotiationAmbiguous) {
+		return true
+	}
+	grpcStatus, ok := status.FromError(err)
+	if !ok {
+		return false
+	}
+
+	switch grpcStatus.Code() {
+	case codes.InvalidArgument, codes.NotFound, codes.AlreadyExists,
+		codes.PermissionDenied, codes.Unauthenticated,
+		codes.FailedPrecondition, codes.OutOfRange,
+		codes.Unimplemented:
+		return false
+
+	default:
+		return true
+	}
+}
+
+// handleReceiveNegotiationFailure converts only a definitive failure whose
+// durable source remains pre-PONR into the vHTLC fallback signal.
+func (c *NativeArkChannelController) handleReceiveNegotiationFailure(
+	ctx context.Context, id arkchannel.ID, cause error) error {
+
+	if receiveNegotiationFailureIsReplayable(cause) {
+		return cause
+	}
+
+	return c.failReceiveIntentDetached(ctx, id, cause)
+}
+
 // mirrorReceiveIntentFailure applies the hub's terminal pre-PONR failure to
 // the local channel record so restart recovery has no abandoned reservation.
 func (c *NativeArkChannelController) mirrorReceiveIntentFailure(
@@ -1173,4 +1211,145 @@ func (c *NativeArkChannelController) mirrorReceiveIntentFailure(
 	}
 
 	return fmt.Errorf("%w: %s", ErrReceiveChannelFallback, reason)
+}
+
+// prepareIncomingChannelSource durably orders capital admission before wallet
+// selection and binds the exact prepared OOR output to the channel FSM.
+func (c *NativeArkChannelController) prepareIncomingChannelSource(
+	ctx context.Context, record arkchannel.Record) error {
+
+	snapshot := record.Snapshot
+	if snapshot.Phase != arkchannel.PhaseRequested ||
+		snapshot.Source != nil {
+		return nil
+	}
+	if c.cfg.PrepareOOR == nil {
+		return fmt.Errorf("hub channel OOR preparer is unavailable")
+	}
+	if _, err := c.service.StartOORPreparation(
+		ctx, snapshot.Terms.ID,
+	); err != nil {
+		return err
+	}
+	if err := c.cfg.ReserveReceiveCapital(ctx, snapshot.Terms); err != nil {
+		if !errors.Is(err, ErrReceiveChannelFallback) {
+			return err
+		}
+		_, failErr := c.service.ApplyLocalEvent(
+			ctx, snapshot.Terms.ID, &arkchannel.Fail{
+				Reason: err.Error(),
+			},
+		)
+
+		return errors.Join(err, failErr)
+	}
+
+	binding, err := c.cfg.PrepareOOR(
+		ctx, snapshot.Terms, arkchannel.DefaultBackingFee,
+	)
+	if err == nil {
+		_, err = c.service.BindPreparedOOR(
+			ctx, snapshot.Terms.ID, binding,
+		)
+
+		return err
+	}
+	if errors.Is(err, arkchannel.ErrOORPreparationAmbiguous) {
+		return fmt.Errorf("reconcile ambiguous receive channel OOR: %w",
+			err)
+	}
+	_, failErr := c.service.ApplyLocalEvent(
+		ctx, snapshot.Terms.ID, &arkchannel.Fail{
+			Reason: err.Error(),
+		},
+	)
+
+	return errors.Join(
+		fmt.Errorf("%w: %w", ErrReceiveChannelFallback, err), failErr,
+	)
+}
+
+// ManifestIncomingChannel binds hub-owned Ark liquidity to a registered
+// receive intent and drives native lnd funding after the client records the
+// exact prepared source.
+func (c *NativeArkChannelController) ManifestIncomingChannel(
+	ctx context.Context, hash lntypes.Hash, amount, capacity btcutil.Amount,
+	reservedSCID uint64) (arkchannel.Record, error) {
+
+	if c.party != arkchannel.PartyHub {
+		return arkchannel.Record{}, fmt.Errorf("receive channel " +
+			"funding is hub only")
+	}
+	id := arkchannel.ReceiveIntentID(hash)
+	record, err := c.service.GetChannel(ctx, id)
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+	terms := record.Snapshot.Terms
+	if terms.Kind != arkchannel.KindReceiveIntent ||
+		terms.Funder != arkchannel.PartyHub ||
+		terms.PaymentHash != hash || terms.Capacity != capacity ||
+		terms.ReservedSCID != reservedSCID || capacity < amount {
+		return arkchannel.Record{}, fmt.Errorf("receive intent does " +
+			"not match intercepted payment")
+	}
+	if err := c.prepareIncomingChannelSource(ctx, record); err != nil {
+		return arkchannel.Record{}, err
+	}
+
+	ticker := time.NewTicker(arkChannelControllerPollInterval)
+	defer ticker.Stop()
+	for {
+		record, err = c.service.GetChannel(ctx, id)
+		if err != nil {
+			return arkchannel.Record{}, err
+		}
+		switch record.Snapshot.Phase {
+		case arkchannel.PhaseNegotiating:
+			_, err = c.service.ResumeChannelAction(ctx, id)
+			if err != nil {
+				return arkchannel.Record{},
+					c.handleReceiveNegotiationFailure(
+						ctx, id, err,
+					)
+			}
+
+			continue
+
+		case arkchannel.PhaseActive:
+			return record, nil
+
+		case arkchannel.PhaseFailed:
+			return arkchannel.Record{}, fmt.Errorf("%w: %s",
+				ErrReceiveChannelFallback,
+				record.Snapshot.Failure)
+
+		case arkchannel.PhaseRequested, arkchannel.PhaseBackingReady,
+			arkchannel.PhaseActivating, arkchannel.PhaseCancelling:
+
+			// The opposite endpoint or a replayable FSM action
+			// still has work in flight. Poll the durable record
+			// below.
+
+		case arkchannel.PhaseMaterializing, arkchannel.PhaseOnChain,
+			arkchannel.PhaseClosed, arkchannel.PhaseCoopClosing,
+			arkchannel.PhaseCoopCloseSigned,
+			arkchannel.PhaseCoopClosePublished:
+			return arkchannel.Record{}, fmt.Errorf("receive "+
+				"channel entered unexpected phase %s before "+
+				"activation", record.Snapshot.Phase)
+
+		default:
+			return arkchannel.Record{}, fmt.Errorf("receive "+
+				"channel has unknown phase %d",
+				record.Snapshot.Phase)
+		}
+
+		select {
+		case <-ctx.Done():
+			return arkchannel.Record{}, ctx.Err()
+
+		case <-ticker.C:
+		}
+	}
 }

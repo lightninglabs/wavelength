@@ -21,6 +21,8 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // receiveFailurePeer adapts a production service and SQL-backed FSM to the
@@ -546,6 +548,69 @@ func (f *receiveFailureFixture) advanceBackingReady(t *testing.T) {
 	}
 }
 
+// TestManifestIncomingChannelCleansDefinitiveFailure proves a local lnd
+// rejection releases the prepared OOR and both durable endpoint records even
+// when the originating request is canceled as the rejection returns.
+func TestManifestIncomingChannelCleansDefinitiveFailure(t *testing.T) {
+	t.Parallel()
+
+	negotiationErr := errors.New("lnd rejected channel negotiation")
+	fixture := newReceiveFailureFixture(t, negotiationErr, true)
+	ctx, cancel := context.WithCancel(t.Context())
+	fixture.hubExecutor.cancelRequest = cancel
+
+	_, err := fixture.controller.ManifestIncomingChannel(
+		ctx, fixture.hash, fixture.terms.Capacity,
+		fixture.terms.Capacity, fixture.terms.ReservedSCID,
+	)
+	require.ErrorIs(t, err, ErrReceiveChannelFallback)
+	require.ErrorIs(t, err, negotiationErr)
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+	require.NoError(t, fixture.hubExecutor.cleanupCtxErr)
+	require.Equal(t, 1, fixture.hubExecutor.aborts)
+	require.Equal(t, 1, fixture.hubExecutor.cancellations)
+	require.Equal(t, 1, fixture.clientExecutor.cancellations)
+
+	for _, service := range []*arkchannel.Service{
+		fixture.hubService, fixture.clientService,
+	} {
+		record, loadErr := service.GetChannel(
+			t.Context(), fixture.terms.ID,
+		)
+		require.NoError(t, loadErr)
+		require.Equal(t, arkchannel.PhaseFailed, record.Snapshot.Phase)
+		require.True(t, record.Snapshot.OORAborted)
+	}
+}
+
+// TestManifestIncomingChannelWithoutClientRPC exercises the production hub
+// role: the funding wire acknowledges peer cleanup, not a process RPC client.
+func TestManifestIncomingChannelWithoutClientRPC(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("incoming funding rejected while wallet syncs")
+	fixture := newReceiveFailureFixture(t, cause, true)
+	require.Nil(t, fixture.controller.remote)
+
+	_, err := fixture.controller.ManifestIncomingChannel(
+		t.Context(), fixture.hash, fixture.terms.Capacity,
+		fixture.terms.Capacity, fixture.terms.ReservedSCID,
+	)
+	require.ErrorIs(t, err, ErrReceiveChannelFallback)
+	require.ErrorIs(t, err, cause)
+	require.Equal(t, 1, fixture.clientPeer.peerEventAttemptCount())
+	for _, service := range []*arkchannel.Service{
+		fixture.hubService, fixture.clientService,
+	} {
+		record, loadErr := service.GetChannel(
+			t.Context(), fixture.terms.ID,
+		)
+		require.NoError(t, loadErr)
+		require.Equal(t, arkchannel.PhaseFailed, record.Snapshot.Phase)
+		require.True(t, record.Snapshot.OORAborted)
+	}
+}
+
 // TestHubReceiveFailureWaitsForAbortAck keeps the source reserved when the
 // funding wire cannot acknowledge the remote abort, even without a client RPC.
 func TestHubReceiveFailureWaitsForAbortAck(t *testing.T) {
@@ -847,5 +912,66 @@ func TestSyncReceiveIntentDetachesCleanupFromCancelledRequest(t *testing.T) {
 		require.NoError(t, loadErr)
 		require.Equal(t, arkchannel.PhaseFailed, record.Snapshot.Phase)
 		require.True(t, record.Snapshot.OORAborted)
+	}
+}
+
+// TestManifestIncomingChannelPreservesReplayableFailure proves caller and
+// transport ambiguity leave both durable negotiation actions intact.
+func TestManifestIncomingChannelPreservesReplayableFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "caller canceled",
+			err:  context.Canceled,
+		},
+		{
+			name: "caller deadline",
+			err:  context.DeadlineExceeded,
+		},
+		{
+			name: "mailbox outcome ambiguous",
+			err: fmt.Errorf("%w: response lost",
+				lnruntime.ErrFundingNegotiationAmbiguous),
+		},
+		{
+			name: "transport unavailable",
+			err: status.Error(
+				codes.Unavailable, "transport unavailable",
+			),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			fixture := newReceiveFailureFixture(t, test.err, true)
+			_, err := fixture.controller.ManifestIncomingChannel(
+				t.Context(), fixture.hash,
+				fixture.terms.Capacity, fixture.terms.Capacity,
+				fixture.terms.ReservedSCID,
+			)
+			require.ErrorIs(t, err, test.err)
+			require.NotErrorIs(t, err, ErrReceiveChannelFallback)
+			require.Zero(t, fixture.hubExecutor.aborts)
+
+			for _, service := range []*arkchannel.Service{
+				fixture.hubService, fixture.clientService,
+			} {
+				record, loadErr := service.GetChannel(
+					t.Context(), fixture.terms.ID,
+				)
+				require.NoError(t, loadErr)
+				require.Equal(
+					t, arkchannel.PhaseNegotiating,
+					record.Snapshot.Phase,
+				)
+				require.False(t, record.Snapshot.OORAborted)
+			}
+		})
 	}
 }
