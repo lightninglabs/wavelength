@@ -33,9 +33,9 @@ func newBoundedTestFacade(t *testing.T,
 }
 
 // TestSendRPCReusesCallerIdempotencyKey pins that the transport forwards a
-// caller-owned key verbatim on every attempt while still rotating the message
-// ID. The stable key is what lets the operator recognize a retry, and the
-// fresh message ID is what keeps the two sends distinct on the wire.
+// caller-owned key verbatim while rotating both message and correlation IDs.
+// A fresh correlation lets the operator re-enqueue a cached response after an
+// earlier attempt's response has already been acknowledged.
 func TestSendRPCReusesCallerIdempotencyKey(t *testing.T) {
 	t.Parallel()
 
@@ -43,6 +43,7 @@ func TestSendRPCReusesCallerIdempotencyKey(t *testing.T) {
 
 	const key = "idem-one-logical-request"
 	opts := mailboxrpc.RPCOptions{IdempotencyKey: key}
+	correlationIDs := make(map[string]struct{})
 
 	for i := 0; i < 3; i++ {
 		result, err := facade.SendRPC(
@@ -51,10 +52,13 @@ func TestSendRPCReusesCallerIdempotencyKey(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.Equal(t, key, result.IdempotencyKey)
-
-		// A retry reuses the correlation ID too, so an answer to the
-		// abandoned attempt lands on the retry's waiter.
-		require.Equal(t, key, result.CorrelationID)
+		require.NotEmpty(t, result.CorrelationID)
+		_, duplicate := correlationIDs[result.CorrelationID]
+		require.False(
+			t, duplicate, "correlation ID %s reused",
+			result.CorrelationID,
+		)
+		correlationIDs[result.CorrelationID] = struct{}{}
 	}
 
 	mb.mu.Lock()
@@ -66,7 +70,11 @@ func TestSendRPCReusesCallerIdempotencyKey(t *testing.T) {
 	msgIDs := make(map[string]struct{}, len(envs))
 	for _, env := range envs {
 		require.Equal(t, key, env.IdempotencyKey)
-		require.Equal(t, key, env.Rpc.CorrelationId)
+		_, ok := correlationIDs[env.Rpc.CorrelationId]
+		require.True(
+			t, ok, "unknown correlation ID %s",
+			env.Rpc.CorrelationId,
+		)
 
 		require.NotEmpty(t, env.MsgId)
 		_, dup := msgIDs[env.MsgId]

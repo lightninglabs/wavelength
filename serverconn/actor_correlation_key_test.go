@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
@@ -263,4 +264,34 @@ func TestSendClientEventRequestPlumbsCorrelationKeyToStore(t *testing.T) {
 		t, innerKey, store.lastParams.CorrelationKey,
 		"wrapper must forward inner CorrelationKey into EnqueueParams",
 	)
+}
+
+// TestSendClientEventRequestEmitsCorrelationID verifies that the durable
+// claim key also crosses the final transport boundary. The server uses this
+// field to bind channel protocol messages to one durable process.
+func TestSendClientEventRequestEmitsCorrelationID(t *testing.T) {
+	t.Parallel()
+
+	const innerKey = "channel/001122"
+
+	conn, mb, _ := newTestConnector(t, nil)
+	result := conn.Receive(
+		t.Context(), &SendClientEventRequest{
+			Message: &keyedServerMessage{
+				key:     innerKey,
+				payload: []byte("channel-event"),
+			},
+		}, &fakeEgressExec{},
+	)
+	require.NoError(t, result.Err())
+
+	mb.mu.Lock()
+	require.Len(t, mb.mailboxes["server-1"], 1)
+	envelope, ok := proto.Clone(
+		mb.mailboxes["server-1"][0],
+	).(*mailboxpb.Envelope)
+	require.True(t, ok)
+	mb.mu.Unlock()
+
+	require.Equal(t, innerKey, envelope.GetRpc().GetCorrelationId())
 }
