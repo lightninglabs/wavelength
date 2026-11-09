@@ -1,8 +1,11 @@
 package waved
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
@@ -341,6 +344,115 @@ func TestShouldResumeOnchainArkChannel(t *testing.T) {
 			)
 		})
 	}
+}
+
+// TestWaitIncomingPaymentReadyJoinsBothBarriers verifies an accepted invoice
+// cannot win before the matching channel has also become active.
+func TestWaitIncomingPaymentReadyJoinsBothBarriers(t *testing.T) {
+	t.Parallel()
+
+	invoiceReady := make(chan struct{})
+	channelReady := make(chan struct{})
+	type readinessResult struct {
+		channelID lnwire.ShortChannelID
+		err       error
+	}
+	result := make(chan readinessResult, 1)
+	wantChannelID := lnwire.NewShortChanIDFromInt(42)
+	go func() {
+		channelID, err := waitIncomingPaymentReady(
+			t.Context(),
+			func(context.Context) (lnwire.ShortChannelID, error) {
+				<-invoiceReady
+
+				return wantChannelID, nil
+			},
+			func(context.Context) error {
+				<-channelReady
+
+				return nil
+			},
+		)
+		result <- readinessResult{channelID: channelID, err: err}
+	}()
+
+	close(invoiceReady)
+	select {
+	case result := <-result:
+		t.Fatalf("returned before channel activation: %v", result.err)
+
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(channelReady)
+	actual := <-result
+	require.NoError(t, actual.err)
+	require.Equal(t, wantChannelID, actual.channelID)
+}
+
+// TestWaitIncomingPaymentReadyPropagatesSyncFailure verifies a definitive
+// channel failure reaches the SDK instead of silently disabling
+// synchronization.
+func TestWaitIncomingPaymentReadyPropagatesSyncFailure(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("channel failed")
+	_, err := waitIncomingPaymentReady(
+		t.Context(),
+		func(ctx context.Context) (lnwire.ShortChannelID, error) {
+			<-ctx.Done()
+
+			return lnwire.ShortChannelID{}, ctx.Err()
+		},
+		func(context.Context) error {
+			return wantErr
+		},
+	)
+	require.ErrorIs(t, err, wantErr)
+}
+
+// TestWaitIncomingPaymentReadyAcceptsReusedChannel verifies intentional
+// receive-intent abandonment still waits for the private HTLC's channel.
+func TestWaitIncomingPaymentReadyAcceptsReusedChannel(t *testing.T) {
+	t.Parallel()
+
+	wantChannelID := lnwire.NewShortChanIDFromInt(43)
+	actual, err := waitIncomingPaymentReady(
+		t.Context(),
+		func(context.Context) (lnwire.ShortChannelID, error) {
+			return wantChannelID, nil
+		},
+		func(context.Context) error {
+			return ErrReceiveChannelFallback
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, wantChannelID, actual)
+}
+
+// TestReceiveIntentEndpointAgreement verifies only fully pre-PONR or fully
+// retained endpoint pairs can be canceled or kept without an unsafe split.
+func TestReceiveIntentEndpointAgreement(t *testing.T) {
+	t.Parallel()
+
+	require.False(
+		t, receiveIntentEndpointsDisagree(
+			false, arkchannel.PhaseRequested, false,
+			arkchannel.PhaseNegotiating,
+		),
+	)
+	require.False(
+		t, receiveIntentEndpointsDisagree(
+			false, arkchannel.PhaseActive, false,
+			arkchannel.PhaseActive,
+		),
+	)
+	require.True(
+		t, receiveIntentEndpointsDisagree(
+			false, arkchannel.PhaseActive, false,
+			arkchannel.PhaseRequested,
+		),
+	)
 }
 
 // TestPromotionIdentifiersAreStableAndScoped verifies a retried creation gets
