@@ -33,8 +33,10 @@ var (
 
 // NativeArkChannelController owns one Ark FSM and one modular lnd endpoint.
 type NativeArkChannelController struct {
+	party       arkchannel.Party
 	cfg         ArkChannelControllerConfig
 	coordinator *arkchannel.Coordinator
+	remote      lnruntime.ProcessFundingPeer
 	peerInfo    lnruntime.FundingPeerInfo
 	keys        nativeArkChannelKeys
 	service     *arkchannel.Service
