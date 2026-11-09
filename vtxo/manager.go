@@ -1901,6 +1901,7 @@ func (m *Manager) coordinateAutoRefreshCohort(ctx context.Context,
 
 	// The leader consumes one slot. Overflow is deliberately left Live so
 	// later threshold ticks can form another bounded cohort.
+	declinedReservations := 0
 	remaining := maxAutoRefreshCohortSize - 1
 	members := make([]autoRefreshCohortMember, 0, remaining)
 	for _, candidate := range eligible {
@@ -1924,18 +1925,24 @@ func (m *Manager) coordinateAutoRefreshCohort(ctx context.Context,
 			},
 		).Unpack()
 		if err != nil {
-			m.logger(ctx).WarnS(ctx,
-				"Automatic refresh cohort member declined",
-				err,
-				slog.String(
-					"outpoint",
-					descriptor.Outpoint.String(),
-				),
-				slog.String(
-					"leader_outpoint",
-					req.VTXOOutpoint.String(),
-				),
-			)
+			if errors.Is(err, ErrCohortReservationNotOwned) {
+				declinedReservations++
+			} else {
+				m.logger(ctx).WarnS(
+					ctx,
+					"Automatic refresh cohort member "+
+						"declined",
+					err,
+					slog.String(
+						"outpoint",
+						descriptor.Outpoint.String(),
+					),
+					slog.String(
+						"leader_outpoint",
+						req.VTXOOutpoint.String(),
+					),
+				)
+			}
 			m.releaseAutoRefreshCohortMember(
 				ctx, ref, descriptor.Outpoint, req.VTXOOutpoint,
 				generation,
@@ -1991,6 +1998,17 @@ func (m *Manager) coordinateAutoRefreshCohort(ctx context.Context,
 		slog.Int("cohort_limit", maxAutoRefreshCohortSize),
 		slog.Bool("deadline_exhausted", cohortCtx.Err() != nil),
 	)
+
+	if declinedReservations > 0 {
+		m.logger(ctx).DebugS(
+			ctx,
+			"Automatic refresh cohort skipped reserved candidates",
+			slog.Int("skipped", declinedReservations),
+			slog.String(
+				"leader_outpoint", req.VTXOOutpoint.String(),
+			),
+		)
+	}
 
 	return members
 }

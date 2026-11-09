@@ -811,8 +811,8 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 			s.RequestedAtHeight != evt.Height ||
 			evt.BatchExpiry <= 0 ||
 			s.VTXO.BatchExpiry != evt.BatchExpiry {
-			return nil, fmt.Errorf("pending_forfeit: automatic " +
-				"cohort adoption does not own reservation")
+			return nil, fmt.Errorf("pending_forfeit: %w",
+				ErrCohortReservationNotOwned)
 		}
 
 		return &VTXOStateTransition{

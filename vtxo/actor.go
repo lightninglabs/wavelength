@@ -685,11 +685,23 @@ func (a *VTXOActor) Receive(ctx context.Context,
 	}
 	transition, err := a.state.ProcessEvent(ctx, vtxoEvent, a.env)
 	if err != nil {
-		a.logger(ctx).ErrorS(ctx, "VTXO FSM ProcessEvent failed",
-			err,
-			slog.String("event_type", fmt.Sprintf("%T", vtxoEvent)),
-			slog.String("outpoint", a.cfg.VTXO.Outpoint.String()),
-		)
+		// Expected cohort contention is summarized once by the manager.
+		// Keep real state-machine failures operator-visible.
+		if !errors.Is(err, ErrCohortReservationNotOwned) {
+			a.logger(ctx).ErrorS(
+				ctx,
+				"VTXO FSM ProcessEvent failed",
+				err,
+				slog.String(
+					"event_type",
+					fmt.Sprintf("%T", vtxoEvent),
+				),
+				slog.String(
+					"outpoint",
+					a.cfg.VTXO.Outpoint.String(),
+				),
+			)
+		}
 
 		return fn.Err[actormsg.VTXOActorResp](
 			fmt.Errorf("process event: %w", err),
