@@ -17,6 +17,7 @@ import (
 	"github.com/lightningnetwork/lnd/actor"
 	"github.com/lightningnetwork/lnd/aliasmgr"
 	"github.com/lightningnetwork/lnd/chanacceptor"
+	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/chanstate"
 	"github.com/lightningnetwork/lnd/discovery"
 	lndfunding "github.com/lightningnetwork/lnd/funding"
@@ -39,6 +40,9 @@ const (
 	nativeChannelMaxHTLCs     = uint16(input.MaxHTLCNumber / 2)
 	nativeChannelMinHTLC      = lnwire.MilliSatoshi(1)
 )
+
+const nativeChannelCommitmentType = chanstate.SingleFunderTweaklessBit |
+	chanstate.AnchorOutputsBit | chanstate.ZeroHtlcTxFeeBit
 
 // FundingConfig contains the application-owned dependencies needed by lnd's
 // native funding manager. Protocol defaults remain private and opinionated so
@@ -437,6 +441,148 @@ func (f *FundingRuntime) OpenChannel(req FundingOpenRequest) (*FundingFlow,
 	}, nil
 }
 
+// ExpectedFundingOutput returns the exact output derived by this endpoint's
+// native lnd reservation. Both endpoints validate this independently before
+// signing the prepared OOR channel's backing transaction.
+func (f *FundingRuntime) ExpectedFundingOutput(
+	pendingID lndfunding.PendingChanID) (*wire.TxOut, error) {
+
+	output, err := f.wallet.PendingFundingOutput(pendingID)
+	if err != nil {
+		return nil, fmt.Errorf("read lnd funding output: %w", err)
+	}
+
+	return output, nil
+}
+
+// FinalizeBacking verifies lnd's negotiated funding output, registers the
+// fully signed backing transaction before lnd can watch it, and resumes the
+// native funding state machine.
+func (f *FundingRuntime) FinalizeBacking(pendingID lndfunding.PendingChanID,
+	packet *psbt.Packet, funding VirtualFunding) error {
+
+	if packet == nil {
+		return fmt.Errorf("funding PSBT is required")
+	}
+	// Keep the intent paused after verification. Passing skipFinalize would
+	// wake funding.Manager before the notifier knows the backing txid.
+	if err := f.wallet.PsbtFundingVerify(
+		pendingID, packet, false,
+	); err != nil {
+		return fmt.Errorf("verify virtual channel funding PSBT: %w",
+			err)
+	}
+	if err := f.notifier.RegisterVirtualFunding(funding); err != nil {
+		return err
+	}
+	if err := f.wallet.PsbtFundingFinalize(
+		pendingID, nil, funding.Transaction,
+	); err != nil {
+
+		_ = f.notifier.UnregisterVirtualFunding(
+			funding.Transaction.TxHash(),
+		)
+
+		return fmt.Errorf("finalize virtual channel funding PSBT: %w",
+			err)
+	}
+
+	return nil
+}
+
+// RegisterBacking lets the responder install the same fully signed backing
+// transaction before the initiator resumes lnd's funding exchange.
+func (f *FundingRuntime) RegisterBacking(funding VirtualFunding) error {
+	return f.notifier.RegisterVirtualFunding(funding)
+}
+
+// CancelBacking cancels either an in-memory PSBT intent or the pending lnd
+// channel that replaced it after commitment finalization.
+func (f *FundingRuntime) CancelBacking(pendingID lndfunding.PendingChanID,
+	channelPoint *wire.OutPoint) error {
+
+	if channelPoint != nil {
+		channel, err := f.stateDB.FetchChannel(*channelPoint)
+		switch {
+		case err == nil:
+			return f.abandonPendingBacking(channel)
+
+		case !errors.Is(err, channeldb.ErrChannelNotFound):
+			return fmt.Errorf("find pending lnd channel: %w", err)
+		}
+	}
+
+	cancelErr := f.wallet.CancelFundingIntent(pendingID)
+	if cancelErr == nil {
+		if channelPoint == nil {
+			return nil
+		}
+
+		return f.notifier.UnregisterVirtualFunding(channelPoint.Hash)
+	}
+	if channelPoint == nil {
+		return fmt.Errorf("cancel lnd funding intent: %w", cancelErr)
+	}
+
+	// CompleteReservation removes the PSBT intent before it persists the
+	// pending channel. Re-read the channel DB to close that race.
+	channel, err := f.stateDB.FetchChannel(*channelPoint)
+	if err == nil {
+		return f.abandonPendingBacking(channel)
+	}
+	if !errors.Is(err, channeldb.ErrChannelNotFound) {
+		return fmt.Errorf("reconcile pending lnd channel: %w", err)
+	}
+	_, err = f.stateDB.FetchClosedChannel(channelPoint)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, channeldb.ErrClosedChannelNotFound) {
+		return fmt.Errorf("find canceled lnd channel: %w", err)
+	}
+
+	return fmt.Errorf("cancel lnd funding intent: %w", cancelErr)
+}
+
+// abandonPendingBacking removes finalized channel state before Ark commits the
+// prepared OOR transfer.
+func (f *FundingRuntime) abandonPendingBacking(
+	channel *chanstate.OpenChannel) error {
+
+	if !channel.IsPending {
+		return fmt.Errorf("cannot cancel active lnd channel %v",
+			channel.FundingOutpoint)
+	}
+	if err := f.notifier.CancelVirtualFunding(
+		channel.FundingOutpoint.Hash,
+	); err != nil {
+		return err
+	}
+	_, height, err := f.chain.GetBestBlock()
+	if err != nil {
+		return fmt.Errorf("read height for channel cancellation: %w",
+			err)
+	}
+	if err := f.stateDB.AbandonChannel(
+		&channel.FundingOutpoint, uint32(height),
+	); err != nil {
+		return fmt.Errorf("abandon pending lnd channel: %w", err)
+	}
+
+	return nil
+}
+
+// ConfirmBacking opens lnd's channel only after the Ark FSM's durable OOR and
+// backing-signature gates are satisfied.
+func (f *FundingRuntime) ConfirmBacking(txid chainhash.Hash) error {
+	return f.notifier.ConfirmVirtualFunding(txid)
+}
+
+// ReorgBacking retracts activation when the channel's Ark ancestry reorgs.
+func (f *FundingRuntime) ReorgBacking(txid chainhash.Hash, depth int32) error {
+	return f.notifier.ReorgVirtualFunding(txid, depth)
+}
+
 // ProcessMessage dispatches one native funding message received over the
 // application peer transport.
 func (f *FundingRuntime) ProcessMessage(message lnwire.Message,
@@ -479,6 +625,14 @@ func (f *FundingRuntime) IsPendingChannel(channelID lnwire.ChannelID,
 	peer lnpeer.Peer) bool {
 
 	return f.manager.IsPendingChannel(channelID, peer)
+}
+
+// AddLocalAlias associates a reserved future SCID with an active virtual
+// channel before an intercepted HTLC is resumed.
+func (f *FundingRuntime) AddLocalAlias(
+	alias, base lnwire.ShortChannelID) error {
+
+	return f.aliases.AddLocalAlias(alias, base, false, true)
 }
 
 // findOpenChannel resolves funding channel IDs without constructing a graph.
@@ -524,6 +678,18 @@ func nativeChannelType() *lnwire.ChannelType {
 		lnwire.AnchorsZeroFeeHtlcTxRequired,
 	),
 	)
+}
+
+// nativeChannelDBType returns lnd's exact persisted channel type. The external
+// funding assembler means only the initiator records that it has no funding
+// transaction to publish.
+func nativeChannelDBType(initiator bool) chanstate.ChannelType {
+	channelType := nativeChannelCommitmentType
+	if initiator {
+		channelType |= chanstate.NoFundingTxBit
+	}
+
+	return channelType
 }
 
 // isNativeChannelType reports whether an explicit wire type is exactly the
