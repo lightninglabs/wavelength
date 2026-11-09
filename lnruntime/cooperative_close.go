@@ -325,6 +325,26 @@ func (e *NativeCooperativeCloseEndpoint) GetChannel(ctx context.Context,
 	return sink.GetChannel(ctx, id)
 }
 
+// finalize archives this endpoint's ordinary lnd channel state.
+func (e *NativeCooperativeCloseEndpoint) finalize(terms arkchannel.Terms,
+	backing arkchannel.Backing, source arkchannel.VTXOBinding,
+	request arkchannel.CooperativeCloseRequest,
+	settlement arkchannel.CooperativeClose) error {
+
+	if err := settlement.Validate(terms, source, request); err != nil {
+		return err
+	}
+	settledBalance := settlement.Proposal.ClientBalance
+	if e.party == arkchannel.PartyHub {
+		settledBalance = settlement.Proposal.HubBalance
+	}
+
+	return e.runtime.FinalizeExternalCooperativeClose(
+		backing.ChannelPoint, settlement.TxID, settledBalance,
+		request.Initiator == e.party,
+	)
+}
+
 // stateSink returns the bound durable channel service.
 func (e *NativeCooperativeCloseEndpoint) stateSink() (CooperativeCloseStateSink,
 	error) {
@@ -337,6 +357,30 @@ func (e *NativeCooperativeCloseEndpoint) stateSink() (CooperativeCloseStateSink,
 	}
 
 	return e.sink, nil
+}
+
+// reconcileCleanChannelStates maps relative lnd balances to stable Ark roles
+// and requires both endpoint databases to describe the same commitment.
+func reconcileCleanChannelStates(localParty arkchannel.Party, local,
+	remote CleanChannelState) (btcutil.Amount, btcutil.Amount, error) {
+
+	if local.ChannelPoint != remote.ChannelPoint ||
+		local.Capacity != remote.Capacity ||
+		local.CommitmentHeight != remote.CommitmentHeight ||
+		local.LocalInitiator == remote.LocalInitiator {
+		return 0, 0, fmt.Errorf("lnd endpoints disagree on clean " +
+			"channel state")
+	}
+	clientLocal, hubLocal := mapCleanBalances(localParty, local)
+	clientRemote, hubRemote := mapCleanBalances(
+		otherChannelParty(localParty), remote,
+	)
+	if clientLocal != clientRemote || hubLocal != hubRemote {
+		return 0, 0, fmt.Errorf("lnd endpoints disagree on " +
+			"cooperative balances")
+	}
+
+	return clientLocal, hubLocal, nil
 }
 
 // validateCleanChannelState binds one relative lnd view to Ark channel terms.
