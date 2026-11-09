@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 
 	"github.com/lightninglabs/wavelength/db/sqlc"
@@ -15,6 +16,8 @@ import (
 // ActivityStore groups the SQL methods needed to maintain the canonical
 // activity log: the current-state activity_entries projection and the
 // append-only activity_events transition log.
+//
+//nolint:interfacebloat // One canonical projector and snapshot query boundary.
 type ActivityStore interface {
 	// UpsertActivityEntry inserts or advances one current-state projection.
 	UpsertActivityEntry(ctx context.Context,
@@ -67,6 +70,15 @@ type ActivityStore interface {
 	// PullActivityEvents reads replay events strictly after a cursor.
 	PullActivityEvents(ctx context.Context,
 		arg sqlc.PullActivityEventsParams) ([]sqlc.ActivityEvent, error)
+
+	// ActivityEventHighWater captures the end of the transition log.
+	ActivityEventHighWater(ctx context.Context) (int64, error)
+
+	// ReadCurrentActivityEvents reads bounded cursors with current
+	// projections.
+	ReadCurrentActivityEvents(ctx context.Context,
+		arg sqlc.ReadCurrentActivityEventsParams) (
+		[]sqlc.ReadCurrentActivityEventsRow, error)
 }
 
 // BatchedActivityStore combines the query surface with batched transaction
@@ -567,4 +579,101 @@ func nullInt64(v *int64) sql.NullInt64 {
 	}
 
 	return sql.NullInt64{Int64: *v, Valid: true}
+}
+
+// MaxActivityBatchSize bounds current-projection replay work in one read.
+const MaxActivityBatchSize int32 = 256
+
+// ActivityBatchEntry pairs a replay position with the current canonical row.
+// The row describes current state, not the historical state at that position.
+type ActivityBatchEntry struct {
+	Cursor int64
+	Entry  sqlc.ActivityEntry
+}
+
+// ActivityBatch is a finite page ending at HighWater. NextCursor accounts for
+// all scanned transitions even when a caller filters or deduplicates Entries.
+type ActivityBatch struct {
+	HighWater  int64
+	NextCursor int64
+	More       bool
+	Entries    []ActivityBatchEntry
+}
+
+// EventHighWater returns the end of the currently retained activity event log.
+// A new notification consumer can baseline here after canonical reconciliation
+// instead of presenting historical receipts as new. This does not reconcile.
+func (s *ActivityPersistenceStore) EventHighWater(ctx context.Context) (int64,
+	error) {
+
+	var cursor int64
+	err := s.db.ExecTx(ctx, ReadTxOption(), func(q ActivityStore) error {
+		var err error
+		cursor, err = q.ActivityEventHighWater(ctx)
+
+		return err
+	})
+
+	return cursor, err
+}
+
+// ReadCurrentBatch reads at most limit canonical projections for transition
+// positions above the input cursor and at or below through. Zero captures
+// a new ceiling in the same read transaction. Reuse HighWater while paging.
+// A caller must persist NextCursor, not infer it from filtered entry cursors.
+//
+// Current rows may change between pages. HighWater freezes the replay range,
+// not the projection values. Repeated transitions can return the same canonical
+// ID; receipt presentation must deduplicate by that identity. Removed internal
+// projections and their deleted event rows do not reappear.
+func (s *ActivityPersistenceStore) ReadCurrentBatch(ctx context.Context, after,
+	through int64, limit int32) (ActivityBatch, error) {
+
+	var batch ActivityBatch
+	if after < 0 || through < 0 || (through != 0 && through < after) ||
+		limit <= 0 || limit > MaxActivityBatchSize {
+		return batch, fmt.Errorf("invalid activity batch bounds")
+	}
+	err := s.db.ExecTx(ctx, ReadTxOption(), func(q ActivityStore) error {
+		ceiling := through
+		if ceiling == 0 {
+			var err error
+			ceiling, err = q.ActivityEventHighWater(ctx)
+			if err != nil {
+				return err
+			}
+			// Reconciliation may have deleted retained transition
+			// rows. A consumer's cursor never moves backwards as a
+			// result.
+			ceiling = max(after, ceiling)
+		}
+		rows, err := q.ReadCurrentActivityEvents(ctx,
+			sqlc.ReadCurrentActivityEventsParams{
+				AfterCursor: after, ThroughCursor: ceiling,
+				LimitCount: limit + 1,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		batch = ActivityBatch{HighWater: ceiling, NextCursor: ceiling}
+		batch.More = len(rows) > int(limit)
+		if batch.More {
+			rows = rows[:limit]
+			batch.NextCursor = rows[len(rows)-1].EventSeq
+		}
+		batch.Entries = make([]ActivityBatchEntry, 0, len(rows))
+		for _, row := range rows {
+			batch.Entries = append(
+				batch.Entries, ActivityBatchEntry{
+					Cursor: row.EventSeq,
+					Entry:  row.ActivityEntry,
+				},
+			)
+		}
+
+		return nil
+	})
+
+	return batch, err
 }

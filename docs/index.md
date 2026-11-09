@@ -85,3 +85,5 @@ into specific topics below.
 - [Domain shutdown ownership](domain-shutdown.md) — domain workers joined before shared store teardown.
 - [Domain shutdown implementation plan](domain-shutdown-execplan.md) — retained worker ownership.
 
+- [Finite canonical activity reads](canonical-activity-batches.md) — bounded current-state replay and host cursor contract.
+- [Canonical activity batches plan](canonical-activity-batches-execplan.md) — implementation and validation boundaries.
