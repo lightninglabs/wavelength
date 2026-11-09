@@ -561,20 +561,20 @@ func buildCooperativeCloseProposal(terms Terms, source VTXOBinding,
 	}
 
 	return CooperativeCloseProposal{
-			Transaction:      checkpointRaw,
-			CommitmentHeight: commitmentHeight,
-			ClientBalance:    clientBalance,
-			HubBalance:       hubBalance,
-			ClientOutput:     clientOutput,
-			HubOutput:        hubOutput,
-		}, cooperativeCloseArtifacts{
-			sessionID:   arkPSBT.UnsignedTx.TxHash(),
-			previousOut: previousOut,
-			checkpoint:  checkpoint.PSBT,
-			spendPath:   spendPath,
-			policy:      checkpointPolicy,
-			recipients:  recipients,
-		}, nil
+		Transaction:      checkpointRaw,
+		CommitmentHeight: commitmentHeight,
+		ClientBalance:    clientBalance,
+		HubBalance:       hubBalance,
+		ClientOutput:     clientOutput,
+		HubOutput:        hubOutput,
+	}, cooperativeCloseArtifacts{
+		sessionID:   arkPSBT.UnsignedTx.TxHash(),
+		previousOut: previousOut,
+		checkpoint:  checkpoint.PSBT,
+		spendPath:   spendPath,
+		policy:      checkpointPolicy,
+		recipients:  recipients,
+	}, nil
 }
 
 // cooperativeCloseRecipient constructs one ordinary Ark VTXO output.
