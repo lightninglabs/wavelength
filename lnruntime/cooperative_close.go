@@ -359,6 +359,88 @@ func (e *NativeCooperativeCloseEndpoint) stateSink() (CooperativeCloseStateSink,
 	return e.sink, nil
 }
 
+// completeCooperativeClose verifies the proposal against the hub's clean lnd
+// state, adds only the hub's channel-policy signature, and stores that exact
+// OOR authorization before returning it. The Ark operator and client sign in
+// the ordinary OOR protocol.
+func completeCooperativeClose(ctx context.Context,
+	local *NativeCooperativeCloseEndpoint, id arkchannel.ID,
+	terms arkchannel.Terms, source arkchannel.VTXOBinding,
+	backing arkchannel.Backing, request arkchannel.CooperativeCloseRequest,
+	proposal arkchannel.CooperativeCloseProposal) (
+	arkchannel.CooperativeClose, error) {
+
+	if local.party != arkchannel.PartyHub {
+		return arkchannel.CooperativeClose{}, fmt.Errorf("only hub " +
+			"can complete cooperative close")
+	}
+	record, err := local.GetChannel(ctx, id)
+	if err != nil {
+		return arkchannel.CooperativeClose{}, err
+	}
+	if err := validateLocalCooperativeClose(
+		record, terms, source, backing, request,
+	); err != nil {
+		return arkchannel.CooperativeClose{}, err
+	}
+	if record.Snapshot.CooperativeClose != nil {
+		settlement := record.Snapshot.CooperativeClose.Clone()
+		if !cooperativeCloseProposalsEqual(
+			settlement.Proposal, proposal,
+		) {
+			return arkchannel.CooperativeClose{}, fmt.Errorf(
+				"hub stored another cooperative close proposal")
+		}
+		if err := settlement.Validate(
+			terms, source, request,
+		); err != nil {
+			return arkchannel.CooperativeClose{}, err
+		}
+
+		return settlement, nil
+	}
+	if err := proposal.Validate(terms, source, request); err != nil {
+		return arkchannel.CooperativeClose{}, err
+	}
+	template, err := arkchannel.NewCooperativeCloseTemplate(
+		terms, source, request, proposal.ClientBalance,
+		proposal.HubBalance, proposal.CommitmentHeight,
+	)
+	if err != nil {
+		return arkchannel.CooperativeClose{}, err
+	}
+	hubSig, err := local.SignHubCooperativeClose(
+		ctx, id, terms, source, backing, request, proposal,
+	)
+	if err != nil {
+		return arkchannel.CooperativeClose{}, err
+	}
+	if err := template.VerifySignature(
+		terms, arkchannel.PartyHub, hubSig,
+	); err != nil {
+		return arkchannel.CooperativeClose{}, err
+	}
+	settlement, err := template.Complete(
+		terms, source, request, hubSig,
+	)
+	if err != nil {
+		return arkchannel.CooperativeClose{}, fmt.Errorf("complete "+
+			"cooperative close: %w", err)
+	}
+	_, err = local.RecordLocalEvent(
+		ctx, id, &arkchannel.CooperativeCloseSigned{
+			Close: settlement,
+			Party: arkchannel.PartyHub,
+		},
+	)
+	if err != nil {
+		return arkchannel.CooperativeClose{}, fmt.Errorf("store "+
+			"complete cooperative close at hub: %w", err)
+	}
+
+	return settlement, nil
+}
+
 // reconcileCleanChannelStates maps relative lnd balances to stable Ark roles
 // and requires both endpoint databases to describe the same commitment.
 func reconcileCleanChannelStates(localParty arkchannel.Party, local,
@@ -528,4 +610,17 @@ func decodeCloseProposal(proposal arkchannel.CooperativeCloseProposal) (
 	}
 
 	return packet.UnsignedTx, nil
+}
+
+// cooperativeCloseProposalsEqual compares every field that identifies one
+// exact unsigned OOR checkpoint authorization.
+func cooperativeCloseProposalsEqual(
+	a, b arkchannel.CooperativeCloseProposal) bool {
+
+	return a.CommitmentHeight == b.CommitmentHeight &&
+		a.ClientBalance == b.ClientBalance &&
+		a.HubBalance == b.HubBalance &&
+		a.ClientOutput == b.ClientOutput &&
+		a.HubOutput == b.HubOutput &&
+		bytes.Equal(a.Transaction, b.Transaction)
 }
