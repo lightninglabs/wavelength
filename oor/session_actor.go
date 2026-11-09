@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
@@ -29,6 +30,10 @@ const terminalNotifyTimeout = 10 * time.Second
 // builds one of these per session via its childConfig, so every field except
 // SessionID/Direction is shared across all sessions owned by the same daemon.
 type SessionActorConfig struct {
+	// workers joins children and their detached notifications at the
+	// registry.
+	workers *sync.WaitGroup
+
 	// SessionID is the session this actor owns.
 	SessionID SessionID
 
@@ -212,6 +217,11 @@ func NewOORSessionActor(cfg SessionActorConfig) (*OORSessionActor, error) {
 		actorID, behavior, behavior.bindStores, cfg.DeliveryStore,
 		newOORActorCodec(cfg.Limits),
 	)
+	if cfg.workers == nil {
+		cfg.workers = &sync.WaitGroup{}
+		behavior.cfg.workers = cfg.workers
+	}
+	durableCfg.Wg = cfg.workers
 	durableCfg.Log = cfg.Log
 
 	durable, err := actor.NewDurableActor(durableCfg).Unpack()
@@ -220,18 +230,25 @@ func NewOORSessionActor(cfg SessionActorConfig) (*OORSessionActor, error) {
 	}
 	behavior.selfRef = durable.TellRef()
 	durable.Start()
+	var stopOnce sync.Once
 
 	return &OORSessionActor{
 		ref:     durable.Ref(),
 		tellRef: durable.TellRef(),
 		durable: durable,
-		// Stop the durable actor first so the mailbox loop drains and
-		// no turn can touch the FSM, then stop the FSM goroutine
-		// itself: it is started on a non-cancelling context, so
-		// durable.Stop alone would leak its driveMachine goroutine.
+		// The FSM is mutable turn-owned state. Join the native mailbox
+		// before stopping it; cancellation alone does not exclude a
+		// turn.
 		stop: func() {
-			durable.Stop()
-			behavior.stopFSM()
+			stopOnce.Do(func() {
+				cfg.workers.Add(1)
+				durable.Stop()
+				go func() {
+					defer cfg.workers.Done()
+					_ = durable.Wait(context.Background())
+					behavior.stopFSM()
+				}()
+			})
 		},
 	}, nil
 }
@@ -633,7 +650,13 @@ func (b *sessionBehavior) notifyTerminal() {
 	sessionID := b.sessionID
 	log := b.log
 
+	if b.cfg.workers != nil {
+		b.cfg.workers.Add(1)
+	}
 	go func() {
+		if b.cfg.workers != nil {
+			defer b.cfg.workers.Done()
+		}
 		ctx, cancel := context.WithTimeout(
 			context.Background(), terminalNotifyTimeout,
 		)

@@ -727,10 +727,15 @@ func (b *sessionBehavior) notifyMaterialized(ctx context.Context,
 	log := b.log
 
 	b.postCommit = append(b.postCommit, func(_ context.Context) {
-		//nolint:contextcheck // The notification is daemon-owned, not
-		// turn-scoped: the materializing turn may also be the terminal
-		// one, whose context dies as the registry reaps this child.
-		go func() { //nolint:gosec // G118: notification has a timeout.
+		// The notification is daemon-owned: a terminal turn's context
+		// dies as the registry reaps this child.
+		if b.cfg.workers != nil {
+			b.cfg.workers.Add(1)
+		}
+		go func() { //nolint:gosec,contextcheck // Owned, bounded task.
+			if b.cfg.workers != nil {
+				defer b.cfg.workers.Done()
+			}
 			ctx, cancel := context.WithTimeout(
 				context.Background(), terminalNotifyTimeout,
 			)

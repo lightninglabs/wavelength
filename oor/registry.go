@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
@@ -206,6 +207,18 @@ func (a *OORRegistryActor) Stop() {
 	a.stopWithDrain(ctx, a.registry.StopAndWait)
 }
 
+// StopAndWait joins the registry before cancelling its children, then joins
+// every child and detached notification, including previously reaped children.
+// The shutdown owner keeps waiting until no session can access shared stores.
+func (a *OORRegistryActor) StopAndWait() {
+	if a == nil || a.registry == nil {
+		return
+	}
+	_ = a.registry.StopAndWait(context.Background())
+	a.behavior.stopChildren()
+	a.behavior.workers.Wait()
+}
+
 // stopWithDrain drains the registry goroutine via the supplied drain function,
 // then stops the children only if the drain succeeded. It is factored out of
 // Stop so the drain-timeout branch can be tested without a real durable actor.
@@ -363,6 +376,11 @@ func (a *OORRegistryActor) RestoreNonTerminal(ctx context.Context) error {
 
 // oorRegistryBehavior is the control-plane behavior around per-session actors.
 type oorRegistryBehavior struct {
+	// workers retains every native child and notification, including reaped
+	// children no longer present in active. Only a joined registry may
+	// wait.
+	workers sync.WaitGroup
+
 	cfg    OORRegistryConfig
 	log    btclog.Logger
 	active map[SessionID]*OORSessionActor
@@ -1868,6 +1886,7 @@ func (r *oorRegistryBehavior) childConfig(sessionID SessionID,
 	direction clientdb.OORSessionDirection) SessionActorConfig {
 
 	return SessionActorConfig{
+		workers:                 &r.workers,
 		SessionID:               sessionID,
 		Direction:               direction,
 		Log:                     r.cfg.Log,
