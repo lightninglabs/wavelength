@@ -2343,8 +2343,9 @@ func (c *NativeArkChannelController) waitReceiveIntentSyncRetry(
 	}
 }
 
-// failReceiveIntent abandons the funder's prepared OOR and waits until its
-// authoritative abort has driven both endpoint FSMs through lnd cleanup.
+// failReceiveIntent abandons the funder's prepared OOR and waits for durable
+// native funding cleanup. The hub's funding wire acknowledges peer cleanup
+// before recording local cancellation; only the client queries the hub by RPC.
 func (c *NativeArkChannelController) failReceiveIntent(ctx context.Context,
 	id arkchannel.ID, cause error) error {
 
@@ -2423,7 +2424,11 @@ func (c *NativeArkChannelController) failReceiveIntent(ctx context.Context,
 		}
 
 		local, localErr = c.service.GetChannel(ctx, id)
-		remote, remoteErr := c.remote.GetFundingChannel(ctx, id)
+		var remote lnruntime.FundingChannelState
+		var remoteErr error
+		if c.party == arkchannel.PartyClient {
+			remote, remoteErr = c.remote.GetFundingChannel(ctx, id)
+		}
 		if localErr == nil && remoteErr == nil {
 			outcome, err := receiveIntentFunderOutcome(
 				c.party, local.Snapshot, remote,
@@ -2431,8 +2436,10 @@ func (c *NativeArkChannelController) failReceiveIntent(ctx context.Context,
 			if err != nil {
 				return errors.Join(cause, err)
 			}
+			peerCleaned := c.party == arkchannel.PartyHub ||
+				remote.Phase == arkchannel.PhaseFailed
 			if local.Snapshot.Phase == arkchannel.PhaseFailed &&
-				remote.Phase == arkchannel.PhaseFailed &&
+				peerCleaned &&
 				outcome == receiveIntentFundingAborted {
 				return fmt.Errorf("%w: %w",
 					ErrReceiveChannelFallback, cause)

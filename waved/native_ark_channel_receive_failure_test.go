@@ -504,7 +504,6 @@ func newReceiveFailureFixture(t *testing.T, negotiationErr error,
 		controller: &NativeArkChannelController{
 			party:   arkchannel.PartyHub,
 			service: hubService,
-			remote:  clientPeer,
 		},
 		hubService: hubService, clientService: clientService,
 		hubCoordinator:    hubCoordinator,
@@ -582,6 +581,67 @@ func TestManifestIncomingChannelCleansDefinitiveFailure(t *testing.T) {
 		require.Equal(t, arkchannel.PhaseFailed, record.Snapshot.Phase)
 		require.True(t, record.Snapshot.OORAborted)
 	}
+}
+
+// TestManifestIncomingChannelWithoutClientRPC exercises the production hub
+// role: the funding wire acknowledges peer cleanup, not a process RPC client.
+func TestManifestIncomingChannelWithoutClientRPC(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("incoming funding rejected while wallet syncs")
+	fixture := newReceiveFailureFixture(t, cause, true)
+	require.Nil(t, fixture.controller.remote)
+
+	_, err := fixture.controller.ManifestIncomingChannel(
+		t.Context(), fixture.hash, fixture.terms.Capacity,
+		fixture.terms.Capacity, fixture.terms.ReservedSCID,
+	)
+	require.ErrorIs(t, err, ErrReceiveChannelFallback)
+	require.ErrorIs(t, err, cause)
+	require.Equal(t, 1, fixture.clientPeer.peerEventAttemptCount())
+	for _, service := range []*arkchannel.Service{
+		fixture.hubService, fixture.clientService,
+	} {
+		record, loadErr := service.GetChannel(
+			t.Context(), fixture.terms.ID,
+		)
+		require.NoError(t, loadErr)
+		require.Equal(t, arkchannel.PhaseFailed, record.Snapshot.Phase)
+		require.True(t, record.Snapshot.OORAborted)
+	}
+}
+
+// TestHubReceiveFailureWaitsForAbortAck keeps the source reserved when the
+// funding wire cannot acknowledge the remote abort, even without a client RPC.
+func TestHubReceiveFailureWaitsForAbortAck(t *testing.T) {
+	t.Parallel()
+
+	fixture := newReceiveFailureFixture(t, nil, true)
+	cause := errors.New("funding negotiation rejected")
+	ackErr := errors.New("abort acknowledgement lost")
+	fixture.clientPeer.failPeerEvents(100, ackErr)
+	_, err := fixture.hubService.ApplyLocalEvent(
+		t.Context(), fixture.terms.ID, &arkchannel.Fail{
+			Reason: cause.Error(),
+		},
+	)
+	require.ErrorIs(t, err, ackErr)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err = fixture.controller.failReceiveIntent(ctx, fixture.terms.ID, cause)
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotErrorIs(t, err, ErrReceiveChannelFallback)
+	hub, err := fixture.hubService.GetChannel(t.Context(), fixture.terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, arkchannel.PhaseCancelling, hub.Snapshot.Phase)
+	require.True(t, hub.Snapshot.OORAborted)
+	client, err := fixture.clientService.GetChannel(
+		t.Context(), fixture.terms.ID,
+	)
+	require.NoError(t, err)
+	require.Equal(t, arkchannel.PhaseNegotiating, client.Snapshot.Phase)
+	require.False(t, client.Snapshot.OORAborted)
 }
 
 // TestFailReceiveIntentUsesRemoteFunder proves a client-side source binding
