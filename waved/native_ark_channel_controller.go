@@ -42,10 +42,11 @@ var (
 )
 
 const (
-	arkChannelArkKeyFamily          keychain.KeyFamily = 220
-	arkChannelBackingKeyFamily      keychain.KeyFamily = 221
-	arkChannelFunderKeyFamily       keychain.KeyFamily = 223
-	arkChannelReceiveCleanupTimeout                    = 30 * time.Second
+	arkChannelArkKeyFamily            keychain.KeyFamily = 220
+	arkChannelBackingKeyFamily        keychain.KeyFamily = 221
+	arkChannelFunderKeyFamily         keychain.KeyFamily = 223
+	arkChannelReceiveCleanupTimeout                      = 30 * time.Second
+	maxArkChannelIdempotencyKeyLength                    = 128
 )
 
 // HubArkChannelControllerConfig contains the hub-only signer, publisher, and
@@ -1180,6 +1181,153 @@ func (c *NativeArkChannelController) newService(node *lnruntime.NativeNode,
 	}
 
 	return arkchannel.NewService(c.party, c.coordinator, executor)
+}
+
+// PromoteVTXO prepares and activates one client-funded OOR channel.
+func (c *NativeArkChannelController) PromoteVTXO(ctx context.Context,
+	amount btcutil.Amount, idempotencyKey string) (arkchannel.Record,
+	error) {
+
+	if c.party != arkchannel.PartyClient {
+		return arkchannel.Record{}, fmt.Errorf("only a client can " +
+			"promote VTXO liquidity")
+	}
+	if amount <= 0 {
+		return arkchannel.Record{}, fmt.Errorf("channel amount must " +
+			"be positive")
+	}
+	if idempotencyKey == "" {
+		return arkchannel.Record{}, fmt.Errorf("idempotency key is " +
+			"required")
+	}
+	if len(idempotencyKey) > maxArkChannelIdempotencyKeyLength {
+		return arkchannel.Record{}, fmt.Errorf("idempotency key "+
+			"exceeds %d bytes", maxArkChannelIdempotencyKeyLength)
+	}
+	if err := c.ensureClientStarted(ctx); err != nil {
+		return arkchannel.Record{}, err
+	}
+	terms, err := c.newPromotionTerms(amount, idempotencyKey)
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+	existing, err := c.coordinator.Get(ctx, terms.ID)
+	if err == nil && existing.Snapshot.Terms != terms {
+		return arkchannel.Record{}, fmt.Errorf("idempotency key is " +
+			"already bound to different channel terms")
+	}
+	if err != nil && !errors.Is(err, arkchannel.ErrNotFound) {
+		return arkchannel.Record{}, err
+	}
+	if err == nil && existing.Snapshot.Source != nil {
+		if _, err := c.resumeBoundPromotion(ctx, existing); err != nil {
+			return arkchannel.Record{}, err
+		}
+
+		return c.waitPromotionCompletion(ctx, terms.ID)
+	}
+	if _, err := c.remote.RegisterPromotion(ctx, terms); err != nil {
+		return arkchannel.Record{}, err
+	}
+	if _, err := c.service.RegisterPromotion(ctx, terms); err != nil {
+		return arkchannel.Record{}, err
+	}
+	if _, err := c.service.StartOORPreparation(ctx, terms.ID); err != nil {
+		return arkchannel.Record{}, err
+	}
+	binding, err := c.cfg.PrepareOOR(
+		ctx, terms, arkchannel.DefaultBackingFee,
+	)
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+	if _, err := c.remote.BindPreparedOOR(
+		ctx, terms.ID, binding,
+	); err != nil {
+		return arkchannel.Record{}, err
+	}
+	if _, err := c.service.BindPreparedOOR(
+		ctx, terms.ID, binding,
+	); err != nil {
+		return arkchannel.Record{}, err
+	}
+
+	return c.waitPromotionCompletion(ctx, terms.ID)
+}
+
+// waitPromotionCompletion preserves the blocking promotion contract across
+// idempotent retries while the durable channel FSM finishes asynchronously.
+func (c *NativeArkChannelController) waitPromotionCompletion(
+	ctx context.Context, id arkchannel.ID) (arkchannel.Record, error) {
+
+	ticker := time.NewTicker(arkChannelControllerPollInterval)
+	defer ticker.Stop()
+
+	for {
+		record, err := c.service.GetChannel(ctx, id)
+		if err != nil {
+			return arkchannel.Record{}, err
+		}
+		switch record.Snapshot.Phase {
+		case arkchannel.PhaseActive:
+			return record, nil
+
+		case arkchannel.PhaseFailed:
+			return arkchannel.Record{}, fmt.Errorf("channel "+
+				"promotion failed: %s", record.Snapshot.Failure)
+
+		case arkchannel.PhaseRequested,
+			arkchannel.PhaseNegotiating,
+			arkchannel.PhaseBackingReady,
+			arkchannel.PhaseActivating,
+			arkchannel.PhaseCancelling:
+
+			// A peer callback or replayable channel action still
+			// owns the next durable transition.
+
+		default:
+			// Preserve idempotent lookup after the channel has
+			// moved beyond its active creation lifecycle.
+			return record, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return arkchannel.Record{}, ctx.Err()
+
+		case <-ticker.C:
+		}
+	}
+}
+
+// resumeBoundPromotion resumes only channel-creation work. A later channel
+// phase must be reported as-is instead of revalidating the finalized OOR.
+func (c *NativeArkChannelController) resumeBoundPromotion(ctx context.Context,
+	record arkchannel.Record) (arkchannel.Record, error) {
+
+	switch record.Snapshot.Phase {
+	case arkchannel.PhaseRequested:
+		_, err := c.remote.BindPreparedOOR(
+			ctx, record.Snapshot.Terms.ID,
+			record.Snapshot.Source.Clone(),
+		)
+		if err != nil {
+			return arkchannel.Record{}, err
+		}
+
+		return c.service.ResumeChannelAction(
+			ctx, record.Snapshot.Terms.ID,
+		)
+
+	case arkchannel.PhaseNegotiating, arkchannel.PhaseBackingReady,
+		arkchannel.PhaseActivating, arkchannel.PhaseCancelling:
+		return c.service.ResumeChannelAction(
+			ctx, record.Snapshot.Terms.ID,
+		)
+
+	default:
+		return record, nil
+	}
 }
 
 // newPromotionTerms creates stable protocol identifiers and binds every key
