@@ -16,7 +16,9 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lnruntime"
+	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
 	"github.com/lightningnetwork/lnd/chanstate"
 	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/htlcswitch"
@@ -46,31 +48,50 @@ const (
 	arkChannelReceiveCleanupTimeout                    = 30 * time.Second
 )
 
+// HubArkChannelControllerConfig contains the hub-only signer, publisher, and
+// authenticated client transport needed to compose one native endpoint.
+type HubArkChannelControllerConfig struct {
+	Process ArkChannelControllerConfig
+
+	RemoteNode    [33]byte
+	PeerSender    lnruntime.PeerEventSender
+	Info          lnruntime.FundingPeerInfo
+	CloseObserver lnruntime.CooperativeCloseObserver
+	CloseDefender lnruntime.CooperativeCloseDefender
+	PaymentBridge lnruntime.PaymentBridgeCoordinator
+}
+
 // NativeArkChannelController owns one Ark FSM and one modular lnd endpoint.
 type NativeArkChannelController struct {
-	party           arkchannel.Party
-	cfg             ArkChannelControllerConfig
-	coordinator     *arkchannel.Coordinator
-	remote          lnruntime.ProcessFundingPeer
-	fundingPeer     lnruntime.FundingCounterparty
-	paymentPeer     lnruntime.ProcessPaymentPeer
-	peerInfo        lnruntime.FundingPeerInfo
-	keys            nativeArkChannelKeys
-	mu              sync.RWMutex
-	node            *lnruntime.NativeNode
-	service         *arkchannel.Service
-	clientClose     *lnruntime.ClientCooperativeCloseProcess
-	hubClose        *lnruntime.HubCooperativeCloseProcess
-	fundingWire     *lnruntime.FundingWire
-	startAttempt    *arkChannelStartAttempt
-	stopped         bool
+	party arkchannel.Party
+	cfg   ArkChannelControllerConfig
+
+	coordinator *arkchannel.Coordinator
+	remote      lnruntime.ProcessFundingPeer
+	fundingPeer lnruntime.FundingCounterparty
+	paymentPeer lnruntime.ProcessPaymentPeer
+	peerInfo    lnruntime.FundingPeerInfo
+	remoteNode  [33]byte
+	keys        nativeArkChannelKeys
+
+	mu            sync.RWMutex
+	node          *lnruntime.NativeNode
+	service       *arkchannel.Service
+	clientClose   *lnruntime.ClientCooperativeCloseProcess
+	hubClose      *lnruntime.HubCooperativeCloseProcess
+	fundingWire   *lnruntime.FundingWire
+	paymentBridge lnruntime.PaymentBridgeCoordinator
+	startAttempt  *arkChannelStartAttempt
+	stopped       bool
+
 	lifecycleCtx    context.Context //nolint:containedctx // process owned
 	lifecycleCancel context.CancelFunc
 	lifecycleWG     sync.WaitGroup
 	workersOnce     sync.Once
 	stopOnce        sync.Once
 	stopErr         error
-	clientStarter   func(context.Context) error
+
+	clientStarter func(context.Context) error
 }
 
 // arkChannelStartAttempt is one shared client endpoint startup result.
@@ -120,6 +141,46 @@ func (c *loggedArkChannelForceCloser) EnsureForceCloseChannel(
 	return nil
 }
 
+// NewHubFundingPeerInfo derives the immutable channel policy advertised by a
+// real operator Wavelength process. The key roles share the same deterministic
+// locators used when the hub endpoint is restored after restart.
+func NewHubFundingPeerInfo(ctx context.Context,
+	cfg ArkChannelControllerConfig) (lnruntime.FundingPeerInfo, error) {
+
+	if err := validateArkChannelProcessConfig(cfg); err != nil {
+		return lnruntime.FundingPeerInfo{}, err
+	}
+	if cfg.OperatorTerms == nil || cfg.OperatorTerms.PubKey == nil {
+		return lnruntime.FundingPeerInfo{}, fmt.Errorf("Ark operator " +
+			"terms are required")
+	}
+	keys, err := deriveNativeArkChannelKeys(ctx, cfg)
+	if err != nil {
+		return lnruntime.FundingPeerInfo{}, err
+	}
+	channelDelay := cfg.OperatorTerms.VTXOExitDelay
+	if channelDelay > ^uint32(0)-arkscript.DefaultChannelReactionWindow {
+		return lnruntime.FundingPeerInfo{}, fmt.Errorf("Ark channel " +
+			"delay exceeds sequence range")
+	}
+	info := lnruntime.FundingPeerInfo{
+		ChannelDelay: channelDelay,
+		FunderDelay: channelDelay +
+			arkscript.DefaultChannelReactionWindow,
+		MinimumExitDelay: channelDelay,
+	}
+	copy(info.HubNodeKey[:], cfg.IdentityKey.PubKey.SerializeCompressed())
+	copy(info.HubArkKey[:], keys.ark.PubKey.SerializeCompressed())
+	copy(info.HubChannelKey[:], keys.backing.PubKey.SerializeCompressed())
+	copy(info.HubFunderKey[:], keys.funder.PubKey.SerializeCompressed())
+	copy(
+		info.ArkOperatorKey[:],
+		cfg.OperatorTerms.PubKey.SerializeCompressed(),
+	)
+
+	return info, info.Validate()
+}
+
 // NewClientArkChannelController constructs a lazy client endpoint. The first
 // lifecycle request loads hub policy over the already-running mailbox and
 // starts the native lnd components.
@@ -154,6 +215,73 @@ func NewClientArkChannelController(ctx context.Context,
 		fundingPeer: remote, paymentPeer: remote, keys: keys,
 	}
 	controller.initLifecycle(ctx)
+
+	return controller, nil
+}
+
+// NewHubArkChannelController eagerly composes one authenticated client
+// endpoint for swapserver's channel directory.
+func NewHubArkChannelController(ctx context.Context,
+	cfg HubArkChannelControllerConfig) (*NativeArkChannelController,
+	error) {
+
+	cfg.Process = withArkChannelControllerDefaults(cfg.Process)
+
+	if err := validateArkChannelProcessConfig(cfg.Process); err != nil {
+		return nil, err
+	}
+	if cfg.Process.FundingOOR == nil || cfg.Process.PrepareOOR == nil ||
+		cfg.Process.LookupOOR == nil ||
+		cfg.Process.ReserveReceiveCapital == nil {
+		return nil, fmt.Errorf("complete hub OOR and capital control " +
+			"is required")
+	}
+	if _, ok := cfg.Process.FundingOOR.(prePONRResultController); !ok {
+		return nil, fmt.Errorf("result-bearing hub OOR controller is " +
+			"required")
+	}
+	if _, err := btcec.ParsePubKey(cfg.RemoteNode[:]); err != nil {
+		return nil, fmt.Errorf("parse client channel node: %w", err)
+	}
+	if cfg.PeerSender == nil || cfg.CloseObserver == nil ||
+		cfg.CloseDefender == nil {
+		return nil, fmt.Errorf("complete hub channel process is " +
+			"required")
+	}
+	if err := cfg.Info.Validate(); err != nil {
+		return nil, err
+	}
+	var observers []arkchannel.RecordObserver
+	if cfg.Process.RecordObserver != nil {
+		observers = append(observers, cfg.Process.RecordObserver)
+	}
+	coordinator, err := arkchannel.NewCoordinator(
+		cfg.Process.Store, observers...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	keys, err := deriveNativeArkChannelKeys(ctx, cfg.Process)
+	if err != nil {
+		return nil, err
+	}
+	controller := &NativeArkChannelController{
+		party: arkchannel.PartyHub, cfg: cfg.Process,
+		coordinator: coordinator, peerInfo: cfg.Info, keys: keys,
+		paymentBridge: cfg.PaymentBridge, remoteNode: cfg.RemoteNode,
+	}
+	controller.initLifecycle(ctx)
+	if err := controller.startHub(
+		ctx, cfg.RemoteNode, cfg.PeerSender, cfg.CloseObserver,
+		cfg.CloseDefender,
+	); err != nil {
+
+		controller.lifecycleCancel()
+
+		return nil, err
+	}
+	//nolint:contextcheck // controller owns its process-lifetime context
+	controller.Start()
 
 	return controller, nil
 }
@@ -489,6 +617,131 @@ func (c *NativeArkChannelController) startClient(ctx context.Context) error {
 	c.node = node
 	c.clientClose = clientClose
 	c.mu.Unlock()
+
+	return nil
+}
+
+// startHub starts one operator endpoint for an authenticated client.
+func (c *NativeArkChannelController) startHub(ctx context.Context,
+	remoteNode [33]byte, sender lnruntime.PeerEventSender,
+	closeObserver lnruntime.CooperativeCloseObserver,
+	closeDefender lnruntime.CooperativeCloseDefender) error {
+
+	remoteKey, err := btcec.ParsePubKey(remoteNode[:])
+	if err != nil {
+		return err
+	}
+	node, err := c.newNode(
+		ctx, arkchannel.PartyHub, remoteKey, sender,
+	)
+	if err != nil {
+		return err
+	}
+	fundingWire, err := lnruntime.NewFundingWire(node.Peer())
+	if err != nil {
+		_ = node.Stop()
+
+		return err
+	}
+	negotiator, err := node.NewNegotiator(
+		fundingWire.Counterparty(), c.cfg.Recovery,
+	)
+	if err != nil {
+		fundingWire.Close()
+		_ = node.Stop()
+
+		return err
+	}
+	delivery := newArkChannelRefreshDelivery(c.cfg.OORDestination)
+	closeEndpoint, err := lnruntime.NewNativeCooperativeCloseEndpoint(
+		arkchannel.PartyHub, node.Runtime(), c.cfg.Wallet.BtcWallet,
+		c.keys.ark, delivery,
+	)
+	if err != nil {
+		fundingWire.Close()
+		_ = node.Stop()
+
+		return err
+	}
+	hubClose, err := lnruntime.NewHubCooperativeCloseProcess(
+		closeEndpoint, delivery, closeObserver, closeDefender,
+	)
+	if err != nil {
+		fundingWire.Close()
+		_ = node.Stop()
+
+		return err
+	}
+	service, err := c.newService(
+		node, negotiator, &lnruntime.HubCooperativeCloseExecutor{
+			HubCooperativeCloseProcess: hubClose,
+		},
+	)
+	if err != nil {
+		fundingWire.Close()
+		_ = node.Stop()
+
+		return err
+	}
+	c.service = service
+	c.fundingWire = fundingWire
+	cleanup := func() {
+		c.service = nil
+		c.fundingWire = nil
+		fundingWire.Close()
+		_ = node.Stop()
+	}
+	if err := tolerateNativeArkChannelFailures(
+		ctx, restoreNativeArkChannelBackings(ctx, node, service),
+		c.cfg.Log, "Ark channel backing restore failed",
+	); err != nil {
+
+		cleanup()
+
+		return err
+	}
+	if err := node.Start(); err != nil {
+		cleanup()
+
+		return err
+	}
+	if err := tolerateNativeArkChannelFailures(
+		ctx, c.restoreRecoveryWatches(ctx, service), c.cfg.Log,
+		"Ark channel recovery watch restore failed",
+	); err != nil {
+
+		cleanup()
+
+		return err
+	}
+	if err := tolerateNativeArkChannelFailures(
+		ctx,
+		c.maintainPrePONRChannels(
+			ctx, service, c.cfg.Clock.Now(),
+		),
+		c.cfg.Log, "Ark channel pre-PONR maintenance failed",
+	); err != nil {
+
+		cleanup()
+
+		return err
+	}
+	if err := resumeNativeArkChannels(ctx, service, c.cfg.Log); err != nil {
+		cleanup()
+
+		return err
+	}
+	if err := tolerateNativeArkChannelFailures(
+		ctx, resumeOnchainArkChannels(ctx, node, service), c.cfg.Log,
+		"Ark channel force-close resume failed",
+	); err != nil {
+
+		cleanup()
+
+		return err
+	}
+	c.node = node
+	c.hubClose = hubClose
 
 	return nil
 }
@@ -1971,6 +2224,91 @@ func (c *NativeArkChannelController) ManifestIncomingChannel(
 		case <-ticker.C:
 		}
 	}
+}
+
+// AbandonReceiveIntent removes an unused pre-funding reservation. Active
+// channels are retained because their liquidity is reusable after this
+// particular incoming payment takes another route.
+func (c *NativeArkChannelController) AbandonReceiveIntent(ctx context.Context,
+	hash lntypes.Hash, reason string) error {
+
+	if c.party != arkchannel.PartyHub {
+		return fmt.Errorf("receive intent abandonment is hub only")
+	}
+	if reason == "" {
+		return fmt.Errorf("receive intent abandonment reason is " +
+			"required")
+	}
+	id := arkchannel.ReceiveIntentID(hash)
+	record, err := c.service.GetChannel(ctx, id)
+	if err != nil {
+		return err
+	}
+	if record.Snapshot.Terms.Kind != arkchannel.KindReceiveIntent ||
+		record.Snapshot.Terms.PaymentHash != hash {
+		return fmt.Errorf("channel is not this payment's receive " +
+			"intent")
+	}
+	switch record.Snapshot.Phase {
+	case arkchannel.PhaseRequested:
+		_, err := c.service.ApplyLocalEvent(
+			ctx, id, &arkchannel.Fail{
+				Reason: reason,
+			},
+		)
+
+		return err
+
+	case arkchannel.PhaseFailed, arkchannel.PhaseActive,
+		arkchannel.PhaseMaterializing, arkchannel.PhaseOnChain,
+		arkchannel.PhaseClosed, arkchannel.PhaseCoopClosing,
+		arkchannel.PhaseCoopCloseSigned,
+		arkchannel.PhaseCoopClosePublished:
+		return nil
+
+	default:
+		return fmt.Errorf("cannot abandon receive intent from %s",
+			record.Snapshot.Phase)
+	}
+}
+
+// FundingPeerService returns the generated funding protocol for a hub
+// controller bound to its authenticated client.
+func (c *NativeArkChannelController) FundingPeerService(remoteNode [33]byte) (
+	arkchannelrpc.ArkChannelFundingPeerServiceMailboxServer, error) {
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.party != arkchannel.PartyHub || c.node == nil || c.service == nil {
+		return nil, fmt.Errorf("hub Ark channel endpoint is not ready")
+	}
+
+	return lnruntime.NewFundingPeerRPCServer(
+		lnruntime.FundingPeerRPCServerConfig{
+			RemoteNode: remoteNode, Info: c.peerInfo,
+			Service: c.service, Funding: c.node.FundingEndpoint(),
+			Node: c.node, Recovery: c.cfg.Recovery,
+			Bridge: c.paymentBridge,
+		},
+	)
+}
+
+// CooperativeClosePeerService returns the generated close protocol for a hub
+// controller bound to its authenticated client.
+func (c *NativeArkChannelController) CooperativeClosePeerService(
+	remoteNode [33]byte) (arkchannelrpc.ArkChannelPeerServiceMailboxServer,
+	error) {
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.party != arkchannel.PartyHub || c.hubClose == nil {
+		return nil, fmt.Errorf("hub cooperative close endpoint is " +
+			"not ready")
+	}
+
+	return lnruntime.NewCooperativeClosePeerRPCServer(
+		remoteNode, c.hubClose,
+	)
 }
 
 // Stop releases native lnd state before the owning wallet and database stop.
