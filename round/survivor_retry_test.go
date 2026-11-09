@@ -27,12 +27,14 @@ func TestRoundReplacementRetainsIntentAndFencesOldEvents(t *testing.T) {
 		},
 	)
 	t.Cleanup(func() { _ = h.actor.OnStop(t.Context()) })
+	h.actor.rounds[RoundKeyStr(oldID.KeyString())].AssetDeposit = true
 	retry := &BoardingFailed{RoundID: fn.Some(oldID),
 		ReplacementRoundID: fn.Some(newID), RetryAttempt: 1}
 	_, err := h.actor.handleRoundReplacement(t.Context(), retry).Unpack()
 	require.NoError(t, err)
 	fresh := h.actor.rounds[RoundKeyStr(newID.KeyString())]
 	require.NotNil(t, fresh)
+	require.True(t, fresh.AssetDeposit)
 	state, err := fsmState(t.Context(), fresh.FSM)
 	require.NoError(t, err)
 	joined, ok := state.(*RoundJoinedState)

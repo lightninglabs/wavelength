@@ -161,6 +161,7 @@ func (a *RoundClientActor) handleRoundReplacement(ctx context.Context,
 		oldID,
 	)
 	fresh.BoardingOutpoints = old.BoardingOutpoints
+	fresh.AssetDeposit = old.AssetDeposit
 	if err := a.cfg.RoundStore.CloseAdmissionDeadline(
 		ctx, oldID,
 	); err != nil {
