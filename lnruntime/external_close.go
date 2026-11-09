@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/chanstate"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/htlcswitch"
@@ -168,4 +170,92 @@ func cleanChannelSnapshot(channelPoint wire.OutPoint,
 		CommitmentHeight: snapshot.CommitHeight,
 		LocalInitiator:   localFunder,
 	}, true, nil
+}
+
+// FinalizeExternalCooperativeClose archives a channel whose clean balance was
+// settled by an application-owned transaction. The close is idempotent across
+// a crash after the open-channel record was removed.
+func (r *Runtime) FinalizeExternalCooperativeClose(channelPoint wire.OutPoint,
+	closingTxID chainhash.Hash, settledBalance btcutil.Amount,
+	localInitiated bool) error {
+
+	stateDB := r.cfg.DB.ChannelStateDB()
+	channel, err := stateDB.FetchChannel(channelPoint)
+	if errors.Is(err, channeldb.ErrChannelNotFound) {
+		closed, closedErr := stateDB.FetchClosedChannel(&channelPoint)
+		if closedErr != nil {
+			return fmt.Errorf("find externally closed channel: %w",
+				closedErr)
+		}
+		if closed.CloseType != channeldb.CooperativeClose ||
+			closed.ClosingTXID != closingTxID ||
+			closed.SettledBalance != settledBalance {
+			return fmt.Errorf("channel was archived with another " +
+				"close")
+		}
+
+		return r.forgetExternallyClosedChannel(channelPoint)
+	}
+	if err != nil {
+		return fmt.Errorf("find channel for external close: %w", err)
+	}
+	if channel.IsPending {
+		return fmt.Errorf("cannot archive a pending channel")
+	}
+	if settledBalance < 0 || settledBalance > channel.Capacity {
+		return fmt.Errorf("settled balance %d exceeds channel "+
+			"capacity %d", settledBalance, channel.Capacity)
+	}
+
+	r.RemoveLink(channelPoint)
+	_, height, err := r.cfg.Chain.GetBestBlock()
+	if err != nil {
+		return fmt.Errorf("read height for external close: %w", err)
+	}
+	if height < 0 {
+		return fmt.Errorf("invalid external close height %d", height)
+	}
+	closeSummary := &channeldb.ChannelCloseSummary{
+		ChanPoint:               channel.FundingOutpoint,
+		ShortChanID:             channel.ShortChannelID,
+		ChainHash:               channel.ChainHash,
+		ClosingTXID:             closingTxID,
+		RemotePub:               channel.IdentityPub,
+		Capacity:                channel.Capacity,
+		CloseHeight:             uint32(height),
+		SettledBalance:          settledBalance,
+		CloseType:               channeldb.CooperativeClose,
+		IsPending:               false,
+		RemoteCurrentRevocation: channel.RemoteCurrentRevocation,
+		RemoteNextRevocation:    channel.RemoteNextRevocation,
+		LocalChanConfig:         channel.LocalChanCfg,
+	}
+	if chanSync, syncErr := channel.ChanSyncMsg(); syncErr == nil {
+		closeSummary.LastChanSyncMsg = chanSync
+	}
+	status := channeldb.ChanStatusRemoteCloseInitiator
+	if localInitiated {
+		status = channeldb.ChanStatusLocalCloseInitiator
+	}
+	if err := channel.CloseChannel(closeSummary, status); err != nil {
+		return fmt.Errorf("archive externally closed channel: %w", err)
+	}
+
+	return r.forgetExternallyClosedChannel(channelPoint)
+}
+
+// forgetExternallyClosedChannel retires the pre-registered on-chain watcher.
+// The Ark cooperative-close FSM is the terminal durability barrier here, so
+// this cleanup intentionally does not invoke the force-close resolution hook.
+func (r *Runtime) forgetExternallyClosedChannel(
+	channelPoint wire.OutPoint) error {
+
+	if r.onchain == nil {
+		return nil
+	}
+	if err := r.onchain.ForgetChannel(channelPoint); err != nil {
+		return fmt.Errorf("retire externally closed channel: %w", err)
+	}
+
+	return nil
 }
