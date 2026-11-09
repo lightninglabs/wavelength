@@ -549,6 +549,69 @@ func (r *Runtime) AddLink(state *chanstate.OpenChannel, cfg LinkConfig) (
 	return channel, nil
 }
 
+// HandleChannelReestablish dispatches an expected startup handshake or
+// recycles one live link when only the remote endpoint restarted.
+func (r *Runtime) HandleChannelReestablish(message *lnwire.ChannelReestablish,
+	peer lnpeer.Peer, configSource LinkConfigSource) error {
+
+	if message == nil {
+		return fmt.Errorf("channel reestablish message is required")
+	}
+	if peer == nil {
+		return fmt.Errorf("channel peer is required")
+	}
+	if configSource == nil {
+		return fmt.Errorf("link config source is required")
+	}
+	if r.claimExpectedReestablish(message.ChanID) {
+		return r.handleChannelMessage(message.ChanID, message)
+	}
+
+	state, err := r.openChannelByID(peer, message.ChanID)
+	if err != nil {
+		return err
+	}
+	r.RemoveLink(state.FundingOutpoint)
+	linkConfig, err := configSource(state)
+	if err != nil {
+		return fmt.Errorf("build reestablished lnd link config: %w",
+			err)
+	}
+	linkConfig.Peer = peer
+	linkConfig.SyncStates = true
+	if _, err := r.AddLink(state, linkConfig); err != nil {
+		return fmt.Errorf("recycle lnd channel link: %w", err)
+	}
+	if !r.claimExpectedReestablish(message.ChanID) {
+		return fmt.Errorf("recycled lnd channel did not await " +
+			"reestablish")
+	}
+
+	return r.handleChannelMessage(message.ChanID, message)
+}
+
+// openChannelByID resolves one authenticated peer's durable channel state.
+func (r *Runtime) openChannelByID(peer lnpeer.Peer,
+	channelID lnwire.ChannelID) (*chanstate.OpenChannel, error) {
+
+	states, err := r.cfg.DB.ChannelStateDB().FetchOpenChannels(
+		peer.IdentityKey(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("fetch lnd peer channels: %w", err)
+	}
+	for _, state := range states {
+		if lnwire.NewChanIDFromOutPoint(
+			state.FundingOutpoint,
+		) == channelID {
+			return state, nil
+		}
+	}
+
+	return nil, fmt.Errorf("find lnd channel link: %w",
+		htlcswitch.ErrChannelLinkNotFound)
+}
+
 // setAwaitingReestablish records whether a newly installed link expects the
 // next channel_reestablish instead of treating it as a remote restart signal.
 func (r *Runtime) setAwaitingReestablish(channelID lnwire.ChannelID,
@@ -562,6 +625,18 @@ func (r *Runtime) setAwaitingReestablish(channelID lnwire.ChannelID,
 		return
 	}
 	delete(r.awaitingReestablish, channelID)
+}
+
+// claimExpectedReestablish consumes one startup handshake expectation.
+func (r *Runtime) claimExpectedReestablish(channelID lnwire.ChannelID) bool {
+	r.reestablishMu.Lock()
+	defer r.reestablishMu.Unlock()
+	if _, ok := r.awaitingReestablish[channelID]; !ok {
+		return false
+	}
+	delete(r.awaitingReestablish, channelID)
+
+	return true
 }
 
 // HandleChannelMessage dispatches one incoming commitment or HTLC update to

@@ -3,8 +3,10 @@ package lnruntime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 	"github.com/lightningnetwork/lnd/clock"
 	lndfunding "github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/graph/db/models"
+	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnpeer"
@@ -50,6 +53,8 @@ type fundingFlowNode struct {
 	links       chan *chanstate.OpenChannel
 	failures    chan error
 	intents     *staticIntentSource
+
+	restoreAddsDisabled atomic.Bool
 }
 
 // fundingNegotiationSink models the already-tested durable channel FSM while
@@ -109,6 +114,15 @@ func (*noOpChannelRecoveryManager) InstallRecoveryPackage(context.Context,
 	arkchannel.RecoveryPackage) error {
 
 	return nil
+}
+
+// activeFundingFlow is one fully activated unpublished channel and the two
+// endpoint snapshots that authorized it.
+type activeFundingFlow struct {
+	hubChannel    *chanstate.OpenChannel
+	clientChannel *chanstate.OpenChannel
+	hubSink       *fundingNegotiationSink
+	clientSink    *fundingNegotiationSink
 }
 
 // Apply records funding facts and releases virtual confirmation only after
@@ -276,6 +290,9 @@ func (t *fundingFlowTransport) dispatch(messages ...lnwire.Message) error {
 			); err != nil {
 				return err
 			}
+
+		case *lnwire.ChannelReestablish:
+			go t.deliverReestablish(message)
 
 		case *lnwire.Custom:
 			if t.remote.fundingWire == nil ||
@@ -660,6 +677,114 @@ func TestFundingWireNegotiatesHubFundedChannel(t *testing.T) {
 	require.Zero(t, clientChannel.LocalCommitment.LocalBalance)
 }
 
+// deliverReestablish models durable mailbox retry while the remote runtime is
+// still rebuilding its link during a simultaneous restart.
+func (t *fundingFlowTransport) deliverReestablish(
+	message *lnwire.ChannelReestablish) {
+
+	deadline := time.After(5 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		err := t.remote.runtime.HandleChannelReestablish(
+			message, t.remote.peer,
+			func(*chanstate.OpenChannel) (LinkConfig, error) {
+				cfg := testLinkConfig(
+					t.remote.peer, t.remote.failures,
+				)
+				cfg.AddsDisabled = t.remote.
+					restoreAddsDisabled.Load()
+
+				return cfg, nil
+			},
+		)
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, htlcswitch.ErrChannelLinkNotFound) {
+			t.remote.failures <- err
+
+			return
+		}
+
+		select {
+		case <-ticker.C:
+		case <-deadline:
+			t.remote.failures <- err
+
+			return
+		}
+	}
+}
+
+// TestRestorePeerLinksIsolatesChannelFailures verifies one channel's broken
+// application config does not roll back another restored link for its peer.
+func TestRestorePeerLinksIsolatesChannelFailures(t *testing.T) {
+	t.Parallel()
+
+	hub := newFundingFlowNode(t, arkchannel.PartyHub)
+	client := newFundingFlowNode(t, arkchannel.PartyClient)
+	connectFundingFlowNodes(t, hub, client)
+	require.NoError(t, hub.runtime.Start())
+	require.NoError(t, client.runtime.Start())
+	t.Cleanup(func() {
+		require.NoError(t, hub.runtime.Stop())
+		require.NoError(t, client.runtime.Stop())
+	})
+
+	first := activateFundingFlowChannel(
+		t, hub, client,
+		fundingIntentRecord(
+			t, hub, client, lndfunding.PendingChanID{4, 1},
+		),
+	)
+	_ = awaitFinalized(t, hub, nil)
+	_ = awaitFinalized(t, client, nil)
+	secondRecord := fundingIntentRecord(
+		t, hub, client, lndfunding.PendingChanID{4, 2},
+	)
+	secondRecord.Snapshot.Terms.ID[0] = 2
+	secondRecord.Snapshot.Terms.ReservedSCID = lnwire.ShortChannelID{
+		BlockHeight: 16_000_001,
+		TxIndex:     2,
+	}.ToUint64()
+	secondRecord.Snapshot.Source = testIntentBinding(
+		t, secondRecord.Snapshot.Terms, testFundingCapacity+1_000, 1,
+	)
+	second := activateFundingFlowChannel(t, hub, client, secondRecord)
+
+	failedPoint := first.clientChannel.FundingOutpoint
+	healthyPoint := second.clientChannel.FundingOutpoint
+	client.runtime.RemoveLink(failedPoint)
+	client.runtime.RemoveLink(healthyPoint)
+
+	restored, err := client.runtime.RestorePeerLinks(
+		client.peer,
+		func(state *chanstate.OpenChannel) (LinkConfig, error) {
+			if state.FundingOutpoint == failedPoint {
+				return LinkConfig{}, fmt.Errorf("damaged " +
+					"channel config")
+			}
+
+			return testLinkConfig(client.peer, client.failures), nil
+		},
+	)
+	var restoreErr *PeerLinkRestoreError
+	require.ErrorAs(t, err, &restoreErr)
+	require.Len(t, restoreErr.Failures, 1)
+	require.Equal(t, failedPoint, restoreErr.Failures[0].ChannelPoint)
+	require.Len(t, restored, 1)
+	require.Equal(
+		t, healthyPoint, restored[0].StateSnapshot().ChannelPoint,
+	)
+
+	_, err = client.runtime.GetLink(second.clientChannel.ShortChanID())
+	require.NoError(t, err)
+	_, err = client.runtime.GetLink(first.clientChannel.ShortChanID())
+	require.ErrorIs(t, err, htlcswitch.ErrChannelLinkNotFound)
+}
+
 // TestNativeFundingFlowPromotesClientVTXO proves the same prepared-OOR flow
 // opens a client-funded channel with all initial liquidity on the client side.
 func TestNativeFundingFlowPromotesClientVTXO(t *testing.T) {
@@ -742,6 +867,85 @@ func testNativeFundingFlowPromotesClientVTXO(t *testing.T) {
 	)
 	require.Positive(t, clientChannel.LocalCommitment.LocalBalance)
 	require.Zero(t, hubChannel.LocalCommitment.LocalBalance)
+}
+
+// activateFundingFlowChannel negotiates and activates one native lnd channel
+// against the exact prepared OOR channel-policy output in record.
+func activateFundingFlowChannel(t *testing.T, hub, client *fundingFlowNode,
+	record arkchannel.Record) activeFundingFlow {
+
+	t.Helper()
+
+	hub.intents.record = record
+	client.intents.record = record
+	hubEndpoint, err := NewNativeFundingEndpoint(
+		arkchannel.PartyHub, hub.runtime.Funding(),
+		input.NewMockSigner(
+			[]*btcec.PrivateKey{hub.key}, nil,
+		),
+		keychain.KeyDescriptor{
+			PubKey: hub.key.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	clientEndpoint, err := NewNativeFundingEndpoint(
+		arkchannel.PartyClient, client.runtime.Funding(),
+		input.NewMockSigner(
+			[]*btcec.PrivateKey{client.key}, nil,
+		),
+		keychain.KeyDescriptor{
+			PubKey: client.key.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	hubSink := &fundingNegotiationSink{
+		node: hub, party: arkchannel.PartyHub, record: record,
+	}
+	clientSink := &fundingNegotiationSink{
+		node: client, party: arkchannel.PartyClient, record: record,
+	}
+	require.NoError(t, hubEndpoint.BindChannelEventSink(hubSink))
+	require.NoError(t, clientEndpoint.BindChannelEventSink(clientSink))
+	initiator := hubEndpoint
+	responder := clientEndpoint
+	initiatorPeer := hub.peer
+	if record.Snapshot.Terms.FundingInitiator() ==
+		arkchannel.PartyClient {
+
+		initiator = clientEndpoint
+		responder = hubEndpoint
+		initiatorPeer = client.peer
+	}
+	negotiator, err := NewChannelNegotiator(
+		initiator, responder, initiatorPeer,
+		&noOpChannelRecoveryManager{},
+	)
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		negotiator.NegotiateChannel(
+			t.Context(), record.Snapshot.Terms.ID,
+			record.Snapshot.Terms, *record.Snapshot.Source,
+		),
+	)
+	require.Equal(t, arkchannel.PhaseActive, hubSink.record.Snapshot.Phase)
+	require.Equal(
+		t, arkchannel.PhaseActive, clientSink.record.Snapshot.Phase,
+	)
+	hubChannel := awaitLink(t, hub)
+	clientChannel := awaitLink(t, client)
+	require.Equal(
+		t, hubChannel.FundingOutpoint, clientChannel.FundingOutpoint,
+	)
+	require.False(t, hubChannel.IsPending)
+	require.False(t, clientChannel.IsPending)
+
+	return activeFundingFlow{
+		hubChannel:    hubChannel,
+		clientChannel: clientChannel,
+		hubSink:       hubSink,
+		clientSink:    clientSink,
+	}
 }
 
 // TestNativeFundingCancellationAfterFinalization proves a prepared OOR
