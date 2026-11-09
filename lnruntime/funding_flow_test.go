@@ -2,6 +2,7 @@ package lnruntime
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -46,6 +47,111 @@ type fundingFlowNode struct {
 	links     chan *chanstate.OpenChannel
 	failures  chan error
 	intents   *staticIntentSource
+}
+
+// fundingNegotiationSink models the already-tested durable channel FSM while
+// this component test exercises the production native funding coordinator.
+type fundingNegotiationSink struct {
+	mu     sync.Mutex
+	node   *fundingFlowNode
+	party  arkchannel.Party
+	record arkchannel.Record
+}
+
+// noOpChannelRecoveryManager satisfies composition in lnd-focused tests. The
+// durable recovery archive and activation barrier are exercised separately.
+type noOpChannelRecoveryManager struct{}
+
+// ExportRecoveryPackage returns an unused package in these funding tests.
+func (*noOpChannelRecoveryManager) ExportRecoveryPackage(context.Context,
+	arkchannel.ID, arkchannel.Terms, arkchannel.VTXOBinding) (
+	arkchannel.RecoveryPackage, error) {
+
+	return arkchannel.RecoveryPackage{}, nil
+}
+
+// InstallRecoveryPackage accepts the unused package in these funding tests.
+func (*noOpChannelRecoveryManager) InstallRecoveryPackage(context.Context,
+	arkchannel.ID, arkchannel.Terms, arkchannel.VTXOBinding,
+	arkchannel.RecoveryPackage) error {
+
+	return nil
+}
+
+// Apply records funding facts and releases virtual confirmation only after
+// both native lnd endpoints have finalized their initial commitments.
+func (s *fundingNegotiationSink) Apply(_ context.Context, id arkchannel.ID,
+	event arkchannel.Event) (arkchannel.Record, error) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if id != s.record.Snapshot.Terms.ID {
+		return arkchannel.Record{}, fmt.Errorf("unexpected channel ID")
+	}
+
+	snapshot := &s.record.Snapshot
+	switch event := event.(type) {
+	case *arkchannel.BackingSigned:
+		backing := event.Backing.Clone()
+		snapshot.Backing = &backing
+
+	case *arkchannel.FundingFinalized:
+		if event.Party == arkchannel.PartyClient {
+			snapshot.ClientFinalized = true
+		} else {
+			snapshot.HubFinalized = true
+		}
+		if snapshot.ClientFinalized && snapshot.HubFinalized &&
+			snapshot.Terms.Funder == s.party {
+
+			snapshot.OORFinalized = true
+			snapshot.ClientRecoveryReady = true
+			snapshot.HubRecoveryReady = true
+			if err := s.node.runtime.Funding().ConfirmBacking(
+				snapshot.Backing.ChannelPoint.Hash,
+			); err != nil {
+				return arkchannel.Record{}, err
+			}
+		}
+
+	case *arkchannel.OORFinalized:
+		if event.SessionID != snapshot.Source.OORSessionID {
+			return arkchannel.Record{}, fmt.Errorf("unexpected " +
+				"OOR session")
+		}
+		snapshot.OORFinalized = true
+		snapshot.ClientRecoveryReady = true
+		snapshot.HubRecoveryReady = true
+		if err := s.node.runtime.Funding().ConfirmBacking(
+			snapshot.Backing.ChannelPoint.Hash,
+		); err != nil {
+			return arkchannel.Record{}, err
+		}
+
+	case *arkchannel.ChannelActive:
+		snapshot.Phase = arkchannel.PhaseActive
+
+	default:
+		return arkchannel.Record{}, fmt.Errorf("unexpected channel "+
+			"event %T", event)
+	}
+	s.record.Revision++
+
+	return s.record, nil
+}
+
+// ApplyLocalEvent records one locally observed funding fact.
+func (s *fundingNegotiationSink) ApplyLocalEvent(ctx context.Context,
+	id arkchannel.ID, event arkchannel.Event) (arkchannel.Record, error) {
+
+	return s.Apply(ctx, id, event)
+}
+
+// ApplyPeerEvent records one authenticated peer funding fact.
+func (s *fundingNegotiationSink) ApplyPeerEvent(ctx context.Context,
+	id arkchannel.ID, event arkchannel.Event) (arkchannel.Record, error) {
+
+	return s.Apply(ctx, id, event)
 }
 
 // fundingFlowTransport preserves lnd wire ordering over an in-memory version
@@ -149,6 +255,90 @@ func (t *fundingFlowTransport) dispatch(messages ...lnwire.Message) error {
 	}
 
 	return nil
+}
+
+// TestNativeFundingFlowPromotesClientVTXO proves the same prepared-OOR flow
+// opens a client-funded channel with all initial liquidity on the client side.
+func TestNativeFundingFlowPromotesClientVTXO(t *testing.T) {
+	t.Parallel()
+	testNativeFundingFlowPromotesClientVTXO(t)
+}
+
+// testNativeFundingFlowPromotesClientVTXO exercises ordinary wallet-VTXO
+// promotion independently from the hub-funded receive-intent flow.
+func testNativeFundingFlowPromotesClientVTXO(t *testing.T) {
+	t.Helper()
+
+	hub := newFundingFlowNode(t, arkchannel.PartyHub)
+	client := newFundingFlowNode(t, arkchannel.PartyClient)
+	connectFundingFlowNodes(t, hub, client)
+	require.NoError(t, hub.runtime.Start())
+	require.NoError(t, client.runtime.Start())
+	t.Cleanup(func() {
+		require.NoError(t, hub.runtime.Stop())
+		require.NoError(t, client.runtime.Stop())
+	})
+
+	pendingID := lndfunding.PendingChanID{7, 2, 0, 4}
+	record := fundingIntentRecord(t, hub, client, pendingID)
+	record.Snapshot.Terms.Kind = arkchannel.KindPromotion
+	record.Snapshot.Terms.Funder = arkchannel.PartyClient
+	record.Snapshot.Terms.Capacity = testFundingCapacity
+	record.Snapshot.Terms.PaymentHash = [32]byte{}
+	record.Snapshot.Source = testIntentBinding(
+		t, record.Snapshot.Terms, testFundingCapacity+1_000, 1,
+	)
+	hub.intents.record = record
+	client.intents.record = record
+
+	hubEndpoint, err := NewNativeFundingEndpoint(
+		arkchannel.PartyHub, hub.runtime.Funding(),
+		input.NewMockSigner(
+			[]*btcec.PrivateKey{hub.key}, nil,
+		),
+		keychain.KeyDescriptor{
+			PubKey: hub.key.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	clientEndpoint, err := NewNativeFundingEndpoint(
+		arkchannel.PartyClient, client.runtime.Funding(),
+		input.NewMockSigner(
+			[]*btcec.PrivateKey{client.key}, nil,
+		),
+		keychain.KeyDescriptor{
+			PubKey: client.key.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	hubSink := &fundingNegotiationSink{
+		node: hub, party: arkchannel.PartyHub, record: record,
+	}
+	clientSink := &fundingNegotiationSink{
+		node: client, party: arkchannel.PartyClient, record: record,
+	}
+	require.NoError(t, hubEndpoint.BindChannelEventSink(hubSink))
+	require.NoError(t, clientEndpoint.BindChannelEventSink(clientSink))
+	negotiator, err := NewChannelNegotiator(
+		clientEndpoint, hubEndpoint, client.peer,
+		&noOpChannelRecoveryManager{},
+	)
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		negotiator.NegotiateChannel(
+			t.Context(), record.Snapshot.Terms.ID,
+			record.Snapshot.Terms, *record.Snapshot.Source,
+		),
+	)
+
+	hubChannel := awaitLink(t, hub)
+	clientChannel := awaitLink(t, client)
+	require.Equal(
+		t, clientChannel.FundingOutpoint, hubChannel.FundingOutpoint,
+	)
+	require.Positive(t, clientChannel.LocalCommitment.LocalBalance)
+	require.Zero(t, hubChannel.LocalCommitment.LocalBalance)
 }
 
 // TestNativeFundingCancellationAfterFinalization proves a prepared OOR
@@ -462,4 +652,22 @@ func awaitFinalized(t *testing.T, node *fundingFlowNode,
 	}
 
 	return fundingFinalization{}
+}
+
+// awaitLink waits until funding.Manager hands the open channel to the peer.
+func awaitLink(t *testing.T, node *fundingFlowNode) *chanstate.OpenChannel {
+	t.Helper()
+
+	select {
+	case channel := <-node.links:
+		return channel
+
+	case err := <-node.failures:
+		require.NoError(t, err)
+
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for lnd channel link")
+	}
+
+	return nil
 }
