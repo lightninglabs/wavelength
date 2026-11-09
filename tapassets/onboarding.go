@@ -11,9 +11,9 @@ import (
 	"math"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
@@ -22,7 +22,10 @@ import (
 	"github.com/lightninglabs/tap-sdk/customanchor"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
+	"github.com/lightninglabs/wavelength/walletcore"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
 const (
@@ -37,6 +40,15 @@ const (
 	// Asset change uses tapd's wallet anchor value, independently of the
 	// operator's boarding carrier value.
 	onboardingChangeValueSat = int64(1_000)
+
+	// onboardingLeaseExpiry bounds how long one funding attempt reserves
+	// its wallet inputs. A resumed attempt renews the leases.
+	onboardingLeaseExpiry = 24 * time.Hour
+
+	// onboardingAnchorInputWeight is the weight a tapd anchor adds when
+	// spent through its key path with a default sighash signature.
+	onboardingAnchorInputWeight = 4*input.InputSize +
+		input.TaprootKeyPathWitnessSize
 )
 
 // These output IDs are persisted in sealed packages.
@@ -45,7 +57,7 @@ const (
 	onboardingChangeID = "wavelength-onboarding-change"
 )
 
-// Asset outputs precede any Bitcoin change appended during funding.
+// Asset outputs precede the Bitcoin change of the funding wallet.
 const onboardingChangeOutputIndex = uint32(1)
 
 // OnboardingRequest funds a boarding output from confirmed tapd assets.
@@ -129,13 +141,52 @@ type onboardingDriver interface {
 	ReconcileOnboarding(context.Context, []byte) error
 }
 
-// OnboarderConfig supplies the asset wallet, journal, and Bitcoin signer.
-// Signer must finalize every input, including wallet fee inputs. The caller
-// must serialize wallet input selection and use one Onboarder per Store.
+// anchorSigningTapdVersion is the first tapd version that signs its own
+// asset anchor inputs at publish. Development builds ahead of v0.9.0 report
+// 0.8.99.
+var anchorSigningTapdVersion = [3]int{0, 8, 99}
+
+// TapdSignsAnchorInputs reports whether tapd of the given version signs its
+// own asset anchor inputs at publish, which an onboarding paid by an
+// OnboardingFunder needs.
+func TapdSignsAnchorInputs(version string) (bool, error) {
+	return tapdAtLeast(version, anchorSigningTapdVersion)
+}
+
+// OnboardingFunder pays and signs the Bitcoin side of an onboarding from a
+// wallet other than tapd's: the outputs beyond what the spent tapd anchors
+// carry, and the fee. Its inputs follow the anchors and its change follows the
+// asset outputs.
+type OnboardingFunder interface {
+	walletcore.OutputLeaser
+
+	// FeeRate returns the fee rate that confirms within targetConf
+	// blocks.
+	FeeRate(ctx context.Context,
+		targetConf uint32) (chainfee.SatPerKWeight, error)
+
+	// FundTemplate adds wallet inputs and change to an outputs-only
+	// template without signing it, and leases the inputs under lockID. It
+	// returns the change output's index, or -1 without change. Every
+	// input must spend a native SegWit output, whose witness leaves the
+	// txid unchanged.
+	FundTemplate(ctx context.Context, packet *psbt.Packet,
+		feeRate chainfee.SatPerKWeight, lockID walletcore.LockID,
+		lockExpiry time.Duration) (int32, error)
+
+	// SignInputs signs and finalizes the inputs whose derivation info
+	// the wallet can derive, and leaves every other input as it is.
+	SignInputs(ctx context.Context, packet *psbt.Packet) error
+}
+
+// OnboarderConfig supplies the asset wallet, journal, and Bitcoin funder.
+// tapd signs its anchor inputs at publish, so Wallet's client must report
+// backend anchor signing. The caller must serialize funding and use one
+// Onboarder per Store.
 type OnboarderConfig struct {
 	Wallet         *tapsdk.Wallet
 	Store          Store
-	Signer         tapsdk.AnchorSigner
+	Funder         OnboardingFunder
 	DeriveOwnerKey OnboardingKeyDeriver
 }
 
@@ -145,7 +196,7 @@ type Onboarder struct {
 	inventory      proofInventoryClient
 	keys           onboardingKeyClient
 	store          Store
-	signer         tapsdk.AnchorSigner
+	funder         OnboardingFunder
 	deriveOwnerKey OnboardingKeyDeriver
 	mu             sync.Mutex
 }
@@ -193,6 +244,7 @@ type onboardingState struct {
 	OwnerKeyIndex   uint32            `json:"owner_key_index"`
 	PolicyTemplate  []byte            `json:"policy_template"`
 	Change          *onboardingChange `json:"change,omitempty"`
+	FundedPSBT      []byte            `json:"funded_psbt,omitempty"`
 	TransferPackage []byte            `json:"transfer_package,omitempty"`
 	FinalAnchorPSBT []byte            `json:"final_anchor_psbt,omitempty"`
 	Published       bool              `json:"published"`
@@ -207,8 +259,8 @@ func NewOnboarder(cfg OnboarderConfig) (*Onboarder, error) {
 		return nil, fmt.Errorf("taproot asset onboarding store is " +
 			"required")
 	}
-	if cfg.Signer == nil {
-		return nil, fmt.Errorf("taproot asset anchor signer is " +
+	if cfg.Funder == nil {
+		return nil, fmt.Errorf("taproot asset onboarding funder is " +
 			"required")
 	}
 	if cfg.DeriveOwnerKey == nil {
@@ -223,7 +275,7 @@ func NewOnboarder(cfg OnboarderConfig) (*Onboarder, error) {
 		inventory:      cfg.Wallet.Client(),
 		keys:           cfg.Wallet.Client(),
 		store:          cfg.Store,
-		signer:         cfg.Signer,
+		funder:         cfg.Funder,
 		deriveOwnerKey: cfg.DeriveOwnerKey,
 	}, nil
 }
@@ -236,8 +288,7 @@ func (o *Onboarder) Onboard(ctx context.Context, request *OnboardingRequest) (
 	*OnboardingResult, error) {
 
 	if o == nil || o.driver == nil || o.inventory == nil || o.keys == nil ||
-		o.store == nil ||
-		o.signer == nil || o.deriveOwnerKey == nil {
+		o.store == nil || o.funder == nil || o.deriveOwnerKey == nil {
 		return nil, fmt.Errorf("taproot asset onboarder is not " +
 			"configured")
 	}
@@ -303,23 +354,14 @@ func (o *Onboarder) Onboard(ctx context.Context, request *OnboardingRequest) (
 	}
 
 	if len(state.FinalAnchorPSBT) == 0 {
-		state.FinalAnchorPSBT, err = o.signer(ctx, committed.anchorPSBT)
+		state.FinalAnchorPSBT, err = o.sign(ctx, state, committed)
 		if err != nil {
-			return nil, fmt.Errorf("sign onboarding anchor "+
-				"PSBT: %w", err)
+			return nil, err
 		}
 		if err := o.driver.VerifyFinalOnboarding(
 			state.TransferPackage, state.FinalAnchorPSBT,
 		); err != nil {
 			return nil, err
-		}
-		packet, err := psbtutil.Parse(state.FinalAnchorPSBT)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := psbt.Extract(packet); err != nil {
-			return nil, fmt.Errorf("onboarding signer must "+
-				"finalize all inputs: %w", err)
 		}
 		if err := o.storeResult(
 			ctx, request.RequestID, state,
@@ -400,14 +442,21 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 				err)
 		}
 
+		// Until publication spends them, the funder's coins must
+		// stay reserved for the sealed transaction.
+		if !state.Published &&
+			state.Attempt != onboardingAttemptPublish {
+
+			err := o.renewLeases(ctx, request, state, committed)
+			if err != nil {
+				return nil, err
+			}
+		}
+
 		return committed, nil
 	}
 
 	assetRef, assetInputs, err := o.verifyInputs(ctx, request)
-	if err != nil {
-		return nil, err
-	}
-	fee, err := onboardingAnchorFee(request)
 	if err != nil {
 		return nil, err
 	}
@@ -427,8 +476,8 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 	plans := make(
 		[]customanchor.InputSigningPlan, 0, len(assetInputs),
 	)
-	anchorInputs := make([]tapsdk.Outpoint, 0, len(assetInputs))
-	anchors := make(map[tapsdk.Outpoint]struct{})
+	anchors := make([]*tapsdk.ManagedUtxo, 0, len(assetInputs))
+	seen := make(map[tapsdk.Outpoint]struct{})
 	for idx := range assetInputs {
 		input := &assetInputs[idx]
 		inputs = append(inputs, customanchor.AssetInput{
@@ -443,24 +492,16 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 			},
 		})
 
-		if _, ok := anchors[input.anchor.OutPoint]; ok {
+		if _, ok := seen[input.anchor.OutPoint]; ok {
 			continue
 		}
-		anchors[input.anchor.OutPoint] = struct{}{}
+		seen[input.anchor.OutPoint] = struct{}{}
 
-		// The injected signer also finalizes appended wallet fee
-		// inputs.
-		signer, err := onboardingAnchorSigner(input.anchor)
-		if err != nil {
-			return nil, err
-		}
 		plans = append(plans, customanchor.InputSigningPlan{
-			InputIndex: uint32(len(anchorInputs)),
-			KeyPath: &customanchor.KeyPathSigningPlan{
-				Signer: signer,
-			},
+			InputIndex:    uint32(len(anchors)),
+			BackendSigned: &customanchor.BackendSignedPlan{},
 		})
-		anchorInputs = append(anchorInputs, input.anchor.OutPoint)
+		anchors = append(anchors, input.anchor)
 	}
 
 	requestDigest := onboardingRequestDigest(request)
@@ -501,7 +542,19 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 		anchorValues = append(anchorValues, change.OutputValueSat)
 	}
 
-	anchorPSBT, err := onboardingAnchorPSBT(anchorInputs, anchorValues)
+	funded, err := o.fundedTemplate(
+		ctx, request, state, anchors, anchorValues,
+	)
+	if err != nil {
+		return nil, err
+	}
+	for idx := len(anchors); idx < len(funded.UnsignedTx.TxIn); idx++ {
+		plans = append(plans, customanchor.InputSigningPlan{
+			InputIndex:   uint32(idx),
+			CallerSigned: &customanchor.CallerSignedPlan{},
+		})
+	}
+	anchorPSBT, err := psbtutil.Serialize(funded)
 	if err != nil {
 		return nil, err
 	}
@@ -510,19 +563,7 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 		Inputs:     inputs,
 		Outputs:    outputs,
 		AnchorPSBT: anchorPSBT,
-		Funding: customanchor.FundingPlan{
-			Mode: customanchor.FundingWalletFunded,
-			WalletFunded: &customanchor.WalletFunding{
-				ChangeOutput: tapsdk.AnchorChangeOutput{
-					Mode: tapsdk.AnchorChangeOutputAdd,
-				},
-				Fee:       fee,
-				MaxFeeSat: request.MaxFeeSat,
-				CustomLockID: onboardingCustomLockID(
-					requestDigest,
-				),
-			},
-		},
+		Funding:    callerFundedExact(),
 		PassiveAssets: customanchor.PassiveAssets{
 			Policy: customanchor.PassiveReject,
 		},
@@ -546,7 +587,19 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 				"%q: %w", request.RequestID,
 				errors.Join(ErrReconciliationRequired, err))
 		}
+
+		// tapd sealed nothing, so a retry funds afresh once the
+		// coins are free again. Coins still leased stay journaled
+		// for the retry to reuse.
+		releaseErr := o.releaseInputs(
+			ctx, onboardingLockID(requestDigest), funded,
+			len(anchors),
+		)
+		err = errors.Join(err, releaseErr)
 		state.Attempt = ""
+		if releaseErr == nil {
+			state.FundedPSBT = nil
+		}
 		if storeErr := o.storeResult(
 			ctx, request.RequestID, state,
 		); storeErr != nil {
@@ -563,6 +616,449 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 	}
 
 	return committed, nil
+}
+
+// fundedTemplate returns the onboarding transaction tapd commits to: tapd's
+// anchors and then the funder's inputs, the asset outputs and then the
+// funder's change. A journaled template is reused with its leases renewed, so
+// a retry spends the same coins.
+func (o *Onboarder) fundedTemplate(ctx context.Context,
+	request *OnboardingRequest, state *onboardingState,
+	anchors []*tapsdk.ManagedUtxo, values []int64) (*psbt.Packet, error) {
+
+	lockID := onboardingLockID(onboardingRequestDigest(request))
+	if len(state.FundedPSBT) != 0 {
+		packet, err := psbtutil.Parse(state.FundedPSBT)
+		if err == nil {
+			err = checkFundedTemplate(packet, anchors, values)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("restore funded onboarding: %w",
+				err)
+		}
+		for _, txIn := range packet.UnsignedTx.TxIn[len(anchors):] {
+			_, err := o.funder.LeaseOutput(
+				ctx, lockID, txIn.PreviousOutPoint,
+				onboardingLeaseExpiry,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("renew onboarding "+
+					"input lease: %w", err)
+			}
+		}
+
+		return packet, nil
+	}
+
+	feeRate, err := o.feeRate(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	// The funder sees only the outputs, so the anchors' value, less the
+	// fee for the weight they add, comes off the asset outputs first,
+	// down to dust. Any value left over goes to the funder's change.
+	var anchorValue int64
+	for _, anchor := range anchors {
+		anchorValue += anchor.AmtSat
+	}
+	anchorWeight := int64(len(anchors)) * onboardingAnchorInputWeight
+	if int64(feeRate) > math.MaxInt64/anchorWeight {
+		return nil, fmt.Errorf("onboarding fee rate %v is too high",
+			feeRate)
+	}
+	anchorFee := (int64(feeRate)*anchorWeight + 999) / 1000
+	template := append([]int64(nil), values...)
+	credit := anchorValue - anchorFee
+	if credit < 0 {
+		template[0] -= credit
+	}
+	for idx := range template {
+		take := min(credit, template[idx]-int64(onboardingDustFloorSat))
+		if take > 0 {
+			template[idx] -= take
+			credit -= take
+		}
+	}
+
+	packet, err := onboardingOutputsTemplate(template)
+	if err != nil {
+		return nil, err
+	}
+	changeIndex, err := o.funder.FundTemplate(
+		ctx, packet, feeRate, lockID, onboardingLeaseExpiry,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("fund onboarding: %w", err)
+	}
+
+	funded, err := arrangeFundedTemplate(
+		packet, changeIndex, anchors, values, max(credit, 0),
+	)
+	if err == nil {
+		err = checkOnboardingFee(funded, anchors, request.MaxFeeSat)
+	}
+	if err == nil {
+		state.FundedPSBT, err = psbtutil.Serialize(funded)
+	}
+	if err == nil {
+		err = o.storeResult(ctx, request.RequestID, state)
+	}
+	if err != nil {
+		state.FundedPSBT = nil
+
+		return nil, errors.Join(
+			err, o.releaseInputs(ctx, lockID, packet, 0),
+		)
+	}
+
+	return funded, nil
+}
+
+// feeRate resolves the request's fee policy to a rate.
+func (o *Onboarder) feeRate(ctx context.Context, request *OnboardingRequest) (
+	chainfee.SatPerKWeight, error) {
+
+	if request.FeeRateSatPerVByte != 0 {
+		rate := chainfee.SatPerKVByte(request.FeeRateSatPerVByte * 1000)
+
+		return rate.FeePerKWeight(), nil
+	}
+
+	rate, err := o.funder.FeeRate(ctx, request.TargetConf)
+	if err != nil {
+		return 0, fmt.Errorf("estimate onboarding fee rate: %w", err)
+	}
+	if rate <= 0 {
+		return 0, fmt.Errorf("onboarding fee estimate %v is not "+
+			"positive", rate)
+	}
+
+	return rate, nil
+}
+
+// releaseInputs drops the funder's leases on a template's inputs, skipping
+// the leading anchors. The release outlives a cancelled caller, which would
+// otherwise leave the coins locked until the leases expire.
+func (o *Onboarder) releaseInputs(ctx context.Context, lockID walletcore.LockID,
+	packet *psbt.Packet, anchors int) error {
+
+	ctx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), commitJournalWriteTimeout,
+	)
+	defer cancel()
+
+	var errs error
+	for _, txIn := range packet.UnsignedTx.TxIn[anchors:] {
+		errs = errors.Join(
+			errs, o.funder.ReleaseOutput(
+				ctx, lockID, txIn.PreviousOutPoint,
+			),
+		)
+	}
+
+	return errs
+}
+
+// renewLeases extends the funder's leases on the coins a sealed package
+// spends.
+func (o *Onboarder) renewLeases(ctx context.Context, request *OnboardingRequest,
+	state *onboardingState, committed *commitResult) error {
+
+	if len(state.FundedPSBT) == 0 {
+		return nil
+	}
+	packet, err := psbtutil.Parse(state.FundedPSBT)
+	if err != nil {
+		return fmt.Errorf("restore funded onboarding: %w", err)
+	}
+
+	anchors := committedAnchors(committed)
+	lockID := onboardingLockID(onboardingRequestDigest(request))
+	for _, txIn := range packet.UnsignedTx.TxIn {
+		if _, ok := anchors[txIn.PreviousOutPoint]; ok {
+			continue
+		}
+		_, err := o.funder.LeaseOutput(
+			ctx, lockID, txIn.PreviousOutPoint,
+			onboardingLeaseExpiry,
+		)
+		if err != nil {
+			return fmt.Errorf("renew onboarding input lease: %w",
+				err)
+		}
+	}
+
+	return nil
+}
+
+// committedAnchors returns the tapd anchors a sealed package spends.
+func committedAnchors(committed *commitResult) map[wire.OutPoint]struct{} {
+	anchors := make(map[wire.OutPoint]struct{}, len(committed.inputs))
+	for _, input := range committed.inputs {
+		anchors[wire.OutPoint{
+			Hash:  chainhash.Hash(input.anchorOutpoint.Txid),
+			Index: input.anchorOutpoint.Index,
+		}] = struct{}{}
+	}
+
+	return anchors
+}
+
+// sign has the funder sign and finalize its own inputs. tapd signs its anchors
+// when the transfer publishes, so they stay unsigned. The funder signs a copy
+// whose anchors carry no derivation info, which keeps a wallet that shares
+// tapd's keys from signing them.
+func (o *Onboarder) sign(ctx context.Context, state *onboardingState,
+	committed *commitResult) ([]byte, error) {
+
+	packet, err := psbtutil.Parse(committed.anchorPSBT)
+	if err != nil {
+		return nil, err
+	}
+	funded, err := psbtutil.Parse(state.FundedPSBT)
+	if err != nil {
+		return nil, fmt.Errorf("restore funded onboarding: %w", err)
+	}
+	fundedInputs := make(map[wire.OutPoint]*psbt.PInput, len(funded.Inputs))
+	for idx, txIn := range funded.UnsignedTx.TxIn {
+		fundedInputs[txIn.PreviousOutPoint] = &funded.Inputs[idx]
+	}
+
+	signing, err := psbtutil.Parse(committed.anchorPSBT)
+	if err != nil {
+		return nil, err
+	}
+	anchors := committedAnchors(committed)
+	var funderInputs []int
+	for idx, txIn := range signing.UnsignedTx.TxIn {
+		input := &signing.Inputs[idx]
+		if _, ok := anchors[txIn.PreviousOutPoint]; ok {
+			input.Bip32Derivation = nil
+			input.TaprootBip32Derivation = nil
+
+			continue
+		}
+		own, ok := fundedInputs[txIn.PreviousOutPoint]
+		if !ok {
+			return nil, fmt.Errorf("onboarding input %d spends "+
+				"neither a tapd anchor nor a funded coin", idx)
+		}
+		input.Bip32Derivation = own.Bip32Derivation
+		input.TaprootBip32Derivation = own.TaprootBip32Derivation
+		funderInputs = append(funderInputs, idx)
+	}
+
+	if err := o.funder.SignInputs(ctx, signing); err != nil {
+		return nil, fmt.Errorf("sign onboarding wallet inputs: %w", err)
+	}
+	if signing.UnsignedTx.TxHash() != packet.UnsignedTx.TxHash() {
+		return nil, fmt.Errorf("onboarding funder signed another " +
+			"transaction")
+	}
+	for idx, txIn := range signing.UnsignedTx.TxIn {
+		_, anchor := anchors[txIn.PreviousOutPoint]
+		final := len(signing.Inputs[idx].FinalScriptWitness) != 0
+		if anchor && final {
+			return nil, fmt.Errorf("onboarding funder signed tapd "+
+				"anchor input %d", idx)
+		}
+	}
+	for _, idx := range funderInputs {
+		witness := signing.Inputs[idx].FinalScriptWitness
+		if len(witness) == 0 {
+			return nil, fmt.Errorf("onboarding funder left input "+
+				"%d unsigned", idx)
+		}
+		packet.Inputs[idx].FinalScriptWitness = witness
+	}
+
+	return psbtutil.Serialize(packet)
+}
+
+// onboardingOutputsTemplate builds an outputs-only template whose outputs pay
+// a placeholder script. tapd replaces the asset outputs' scripts at commit.
+func onboardingOutputsTemplate(values []int64) (*psbt.Packet, error) {
+	placeholder, err := onboardingPlaceholderScript()
+	if err != nil {
+		return nil, err
+	}
+
+	tx := wire.NewMsgTx(2)
+	for _, value := range values {
+		tx.AddTxOut(&wire.TxOut{
+			Value:    value,
+			PkScript: placeholder,
+		})
+	}
+
+	return psbt.NewFromUnsignedTx(tx)
+}
+
+// onboardingPlaceholderScript is the script of an asset output before tapd
+// commits to its assets.
+func onboardingPlaceholderScript() ([]byte, error) {
+	key := txscript.ComputeTaprootKeyNoScript(&arkscript.ARKNUMSKey)
+
+	return txscript.PayToTaprootScript(key)
+}
+
+// NativeSegWitScript reports whether spending pkScript leaves a transaction's
+// ID unchanged: a native SegWit output, which is signed in the witness alone.
+func NativeSegWitScript(pkScript []byte) bool {
+	return txscript.IsPayToWitnessPubKeyHash(pkScript) ||
+		txscript.IsPayToWitnessScriptHash(pkScript) ||
+		txscript.IsPayToTaproot(pkScript)
+}
+
+// arrangeFundedTemplate lays a funded outputs-only template out for tapd:
+// the anchors ahead of the funder's inputs, and the asset outputs at their
+// full values ahead of the funder's change. The funder may reorder what it
+// funds, so only its inputs and change are taken from the template.
+func arrangeFundedTemplate(funded *psbt.Packet, changeIndex int32,
+	anchors []*tapsdk.ManagedUtxo, values []int64,
+	extraChange int64) (*psbt.Packet, error) {
+
+	placeholder, err := onboardingPlaceholderScript()
+	if err != nil {
+		return nil, err
+	}
+	fundedTx := funded.UnsignedTx
+	wantOutputs := len(values)
+	if changeIndex >= 0 {
+		wantOutputs++
+	}
+	if len(fundedTx.TxOut) != wantOutputs ||
+		changeIndex >= int32(len(fundedTx.TxOut)) {
+		return nil, fmt.Errorf("funder changed the onboarding outputs")
+	}
+	for idx, txOut := range fundedTx.TxOut {
+		if int32(idx) != changeIndex &&
+			!bytes.Equal(txOut.PkScript, placeholder) {
+			return nil, fmt.Errorf("funder changed the " +
+				"onboarding outputs")
+		}
+	}
+	if len(fundedTx.TxIn) == 0 {
+		return nil, fmt.Errorf("funder added no inputs")
+	}
+
+	tx := wire.NewMsgTx(fundedTx.Version)
+	tx.LockTime = fundedTx.LockTime
+	inputs := make([]psbt.PInput, 0, len(anchors)+len(fundedTx.TxIn))
+	for _, anchor := range anchors {
+		tx.AddTxIn(
+			wire.NewTxIn(
+				&wire.OutPoint{
+					Hash: chainhash.Hash(
+						anchor.OutPoint.Txid,
+					),
+					Index: anchor.OutPoint.Index,
+				},
+				nil,
+				nil,
+			),
+		)
+		inputs = append(inputs, psbt.PInput{})
+	}
+	for idx, txIn := range fundedTx.TxIn {
+		utxo := funded.Inputs[idx].WitnessUtxo
+		if utxo == nil {
+			return nil, fmt.Errorf("funder input %d has no "+
+				"witness UTXO", idx)
+		}
+		if !NativeSegWitScript(utxo.PkScript) {
+			return nil, fmt.Errorf("funder input %d is not "+
+				"native SegWit", idx)
+		}
+		tx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: txIn.PreviousOutPoint,
+			Sequence:         txIn.Sequence,
+		})
+		inputs = append(inputs, funded.Inputs[idx])
+	}
+
+	outputs := make([]psbt.POutput, 0, wantOutputs)
+	for _, value := range values {
+		tx.AddTxOut(&wire.TxOut{
+			Value:    value,
+			PkScript: placeholder,
+		})
+		outputs = append(outputs, psbt.POutput{})
+	}
+	if changeIndex >= 0 {
+		change := fundedTx.TxOut[changeIndex]
+		tx.AddTxOut(&wire.TxOut{
+			Value:    change.Value + extraChange,
+			PkScript: append([]byte(nil), change.PkScript...),
+		})
+		outputs = append(outputs, funded.Outputs[changeIndex])
+	}
+
+	packet, err := psbt.NewFromUnsignedTx(tx)
+	if err != nil {
+		return nil, err
+	}
+	packet.Inputs = inputs
+	packet.Outputs = outputs
+
+	return packet, nil
+}
+
+// checkFundedTemplate binds a journaled template to the anchors and output
+// values it was funded for.
+func checkFundedTemplate(packet *psbt.Packet, anchors []*tapsdk.ManagedUtxo,
+	values []int64) error {
+
+	tx := packet.UnsignedTx
+	if len(tx.TxIn) <= len(anchors) || len(tx.TxOut) < len(values) {
+		return fmt.Errorf("template shape mismatch")
+	}
+	for idx, anchor := range anchors {
+		want := wire.OutPoint{
+			Hash:  chainhash.Hash(anchor.OutPoint.Txid),
+			Index: anchor.OutPoint.Index,
+		}
+		if tx.TxIn[idx].PreviousOutPoint != want {
+			return fmt.Errorf("template input %d is not anchor %s",
+				idx, want)
+		}
+	}
+	for idx, value := range values {
+		if tx.TxOut[idx].Value != value {
+			return fmt.Errorf("template output %d value "+
+				"%d, want %d", idx, tx.TxOut[idx].Value, value)
+		}
+	}
+
+	return nil
+}
+
+// checkOnboardingFee bounds the fee a funded template pays.
+func checkOnboardingFee(packet *psbt.Packet, anchors []*tapsdk.ManagedUtxo,
+	maxFeeSat uint64) error {
+
+	var fee int64
+	for _, anchor := range anchors {
+		fee += anchor.AmtSat
+	}
+	for _, input := range packet.Inputs[len(anchors):] {
+		fee += input.WitnessUtxo.Value
+	}
+	for _, output := range packet.UnsignedTx.TxOut {
+		fee -= output.Value
+	}
+	switch {
+	case fee < 0:
+		return fmt.Errorf("onboarding outputs exceed its inputs "+
+			"by %d sat", -fee)
+
+	case uint64(fee) > maxFeeSat:
+		return fmt.Errorf("onboarding fee %d exceeds maximum %d", fee,
+			maxFeeSat)
+	}
+
+	return nil
 }
 
 // onboardingAssetInput identifies one verified asset record and its anchor.
@@ -755,27 +1251,6 @@ func (o *Onboarder) pinChange(ctx context.Context, request *OnboardingRequest,
 	return o.storeState(ctx, request.RequestID, state)
 }
 
-// onboardingAnchorSigner returns the tapd key-path signer of one funding
-// anchor's Bitcoin input.
-func onboardingAnchorSigner(anchor *tapsdk.ManagedUtxo) (tapsdk.XOnlyPubKey,
-	error) {
-
-	internalKey, err := btcec.ParsePubKey(anchor.InternalKey[:])
-	if err != nil {
-		return tapsdk.XOnlyPubKey{}, fmt.Errorf("parse onboarding "+
-			"anchor internal key: %w", err)
-	}
-	signer, err := tapsdk.ParseXOnlyPubKey(
-		schnorr.SerializePubKey(internalKey),
-	)
-	if err != nil {
-		return tapsdk.XOnlyPubKey{}, fmt.Errorf("parse onboarding "+
-			"anchor signer: %w", err)
-	}
-
-	return signer, nil
-}
-
 // onboardingResultFromCommit binds the sealed output to its policy and value.
 func onboardingResultFromCommit(request *OnboardingRequest,
 	state *onboardingState, ownerKey keychain.KeyDescriptor,
@@ -792,19 +1267,14 @@ func onboardingResultFromCommit(request *OnboardingRequest,
 		return nil, fmt.Errorf("onboarding package must contain %d "+
 			"inputs and %d outputs", wantInputs, wantOutputs)
 	}
-	if committed.fundingMode != customanchor.FundingWalletFunded {
-		return nil, fmt.Errorf("onboarding package is not wallet " +
-			"funded")
+	if committed.fundingMode != customanchor.FundingCallerFundedExact {
+		return nil, fmt.Errorf("onboarding package funding mode %d is "+
+			"not caller-funded exact", committed.fundingMode)
 	}
-	if committed.maxFeeSat != request.MaxFeeSat {
-		return nil, fmt.Errorf("onboarding package maximum fee %d "+
-			"does not match request %d", committed.maxFeeSat,
-			request.MaxFeeSat)
-	}
-	if committed.actualFeeSat > committed.maxFeeSat {
+	if committed.actualFeeSat > request.MaxFeeSat {
 		return nil, fmt.Errorf("onboarding package actual fee %d "+
 			"exceeds maximum %d", committed.actualFeeSat,
-			committed.maxFeeSat)
+			request.MaxFeeSat)
 	}
 	assetRef, err := tapsdk.ParseAssetRef(request.AssetRef)
 	if err != nil {
@@ -1118,7 +1588,7 @@ func validateOnboardingRequest(request *OnboardingRequest) error {
 		return fmt.Errorf("taproot asset onboarding maximum fee is " +
 			"required")
 	}
-	if _, err := onboardingAnchorFee(request); err != nil {
+	if err := checkOnboardingFeePolicy(request); err != nil {
 		return err
 	}
 	if request.OperatorKey == nil || request.ExitDelay == 0 {
@@ -1152,38 +1622,28 @@ func onboardingRequestDigest(request *OnboardingRequest) tapsdk.Hash {
 	return tapsdk.Hash(digest)
 }
 
-// onboardingAnchorFee selects exactly one SDK fee policy.
-func onboardingAnchorFee(request *OnboardingRequest) (tapsdk.AnchorFee, error) {
-	if request == nil {
-		return tapsdk.AnchorFee{}, fmt.Errorf("taproot asset " +
-			"onboarding request is required")
+// checkOnboardingFeePolicy requires exactly one of a fee rate and a
+// confirmation target.
+func checkOnboardingFeePolicy(request *OnboardingRequest) error {
+	if (request.FeeRateSatPerVByte != 0) == (request.TargetConf != 0) {
+		return fmt.Errorf("taproot asset onboarding requires exactly " +
+			"one of fee rate and target confirmation")
 	}
-	hasFeeRate := request.FeeRateSatPerVByte != 0
-	hasTargetConf := request.TargetConf != 0
-	if hasFeeRate == hasTargetConf {
-		return tapsdk.AnchorFee{}, fmt.Errorf("taproot asset " +
-			"onboarding requires exactly one of fee rate and " +
-			"target confirmation")
-	}
-	if hasTargetConf {
-		return tapsdk.AnchorFee{
-			Mode:       tapsdk.AnchorFeeTargetConf,
-			TargetConf: request.TargetConf,
-		}, nil
+	if request.FeeRateSatPerVByte != 0 {
+		return checkOnboardingFeeRate(request.FeeRateSatPerVByte)
 	}
 
-	feeRate, err := tapsdk.NewFeeRateSatPerVByte(
-		request.FeeRateSatPerVByte,
-	)
-	if err != nil {
-		return tapsdk.AnchorFee{}, fmt.Errorf("taproot asset "+
-			"onboarding fee rate: %w", err)
+	return nil
+}
+
+// checkOnboardingFeeRate bounds a fee rate to what a transaction fee can
+// express.
+func checkOnboardingFeeRate(satPerVByte uint64) error {
+	if _, err := tapsdk.NewFeeRateSatPerVByte(satPerVByte); err != nil {
+		return fmt.Errorf("taproot asset onboarding fee rate: %w", err)
 	}
 
-	return tapsdk.AnchorFee{
-		Mode:    tapsdk.AnchorFeeSatPerVByte,
-		FeeRate: feeRate,
-	}, nil
+	return nil
 }
 
 // sortedProofFiles returns the request's funding proofs ordered by content,
@@ -1198,14 +1658,13 @@ func sortedProofFiles(request *OnboardingRequest) [][]byte {
 	return sorted
 }
 
-// onboardingCustomLockID scopes wallet funding locks to the request.
-func onboardingCustomLockID(requestDigest tapsdk.Hash) []byte {
+// onboardingLockID scopes the funder's input leases to the request.
+func onboardingLockID(requestDigest tapsdk.Hash) walletcore.LockID {
 	var value bytes.Buffer
 	writeDigestBytes(&value, []byte(onboardingLockIDDomain))
 	writeDigestBytes(&value, requestDigest[:])
-	lockID := sha256.Sum256(value.Bytes())
 
-	return lockID[:]
+	return sha256.Sum256(value.Bytes())
 }
 
 // ownerKeyFromState restores the pinned Bitcoin owner descriptor.
@@ -1227,50 +1686,6 @@ func ownerKeyFromState(state *onboardingState) (keychain.KeyDescriptor, error) {
 		},
 		PubKey: pubKey,
 	}, nil
-}
-
-// onboardingAnchorPSBT reserves asset input and output positions. Wallet
-// funding appends fee inputs and Bitcoin change without reordering them.
-func onboardingAnchorPSBT(inputs []tapsdk.Outpoint,
-	values []int64) ([]byte, error) {
-
-	if len(inputs) == 0 || len(values) == 0 {
-		return nil, fmt.Errorf("onboarding anchor template needs an " +
-			"input and an output")
-	}
-	placeholderKey := txscript.ComputeTaprootKeyNoScript(
-		&arkscript.ARKNUMSKey,
-	)
-	placeholderScript, err := txscript.PayToTaprootScript(placeholderKey)
-	if err != nil {
-		return nil, err
-	}
-
-	tx := wire.NewMsgTx(2)
-	for _, input := range inputs {
-		tx.AddTxIn(
-			wire.NewTxIn(
-				&wire.OutPoint{
-					Hash:  chainhash.Hash(input.Txid),
-					Index: input.Index,
-				},
-				nil,
-				nil,
-			),
-		)
-	}
-	for _, value := range values {
-		tx.AddTxOut(&wire.TxOut{
-			Value:    value,
-			PkScript: placeholderScript,
-		})
-	}
-	packet, err := psbt.NewFromUnsignedTx(tx)
-	if err != nil {
-		return nil, fmt.Errorf("build onboarding anchor PSBT: %w", err)
-	}
-
-	return psbtutil.Serialize(packet)
 }
 
 // policyTapLeaves preserves the standard policy in the composed output.

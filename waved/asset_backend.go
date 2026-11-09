@@ -298,7 +298,6 @@ func (s *Server) startAssetDeposits(ctx context.Context, store *db.Store) (
 			s.tapdClient, tapsdk.Network(s.cfg.Network),
 		),
 		Store:          journal,
-		Signer:         lndAnchorSigner(lnd.WalletKit),
 		DeriveOwnerKey: s.depositOwnerKeyDeriver(),
 	})
 	if err != nil {

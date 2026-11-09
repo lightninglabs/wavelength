@@ -42,6 +42,11 @@ var claimTapdVersion = [3]int{0, 8, 99}
 // asset. Older versions cannot confirm a transfer whose input they do not
 // hold.
 func TapdCanClaim(version string) (bool, error) {
+	return tapdAtLeast(version, claimTapdVersion)
+}
+
+// tapdAtLeast reports whether a tapd version string is at least minimum.
+func tapdAtLeast(version string, minimum [3]int) (bool, error) {
 	var parsed [3]int
 	_, err := fmt.Sscanf(
 		version, "%d.%d.%d", &parsed[0], &parsed[1], &parsed[2],
@@ -51,8 +56,8 @@ func TapdCanClaim(version string) (bool, error) {
 			err)
 	}
 	for i := range parsed {
-		if parsed[i] != claimTapdVersion[i] {
-			return parsed[i] > claimTapdVersion[i], nil
+		if parsed[i] != minimum[i] {
+			return parsed[i] > minimum[i], nil
 		}
 	}
 
