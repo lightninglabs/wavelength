@@ -5764,17 +5764,67 @@ func (w *lndUnrollWallet) FinalizePsbt(ctx context.Context,
 	return finalTx, nil
 }
 
+// SignInputs signs and finalizes the inputs whose derivation info lnd can
+// derive, and leaves every other input as it is.
+func (w *lndUnrollWallet) SignInputs(ctx context.Context,
+	packet *psbt.Packet) error {
+
+	signed, err := w.boardingBackend.WalletKit().SignPsbt(ctx, packet)
+	if err != nil {
+		return fmt.Errorf("LND SignPsbt: %w", err)
+	}
+	if err := finalizeSignedInputs(signed); err != nil {
+		return err
+	}
+	*packet = *signed
+
+	return nil
+}
+
 // FundPsbt funds and finalizes a fanout transaction through LND WalletKit.
 func (w *lndUnrollWallet) FundPsbt(ctx context.Context, packetBytes []byte,
 	feeRateSatPerVByte int64, lockID wallet.LockID,
 	lockExpiry time.Duration) (*wire.MsgTx, error) {
 
+	packet, err := psbt.NewFromRawBytes(
+		bytes.NewReader(packetBytes), false,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("parse PSBT: %w", err)
+	}
+	_, err = w.FundTemplate(
+		ctx, packet, chainfee.SatPerKWeight(feeRateSatPerVByte*250),
+		lockID, lockExpiry,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := packet.Serialize(&buf); err != nil {
+		return nil, fmt.Errorf("serialize funded PSBT: %w", err)
+	}
+
+	return w.FinalizePsbt(ctx, buf.Bytes())
+}
+
+// FundTemplate adds wallet inputs and change to an outputs-only template
+// without signing it, and leases the inputs under lockID. It returns the
+// change output's index, or -1 when the template needs no change.
+func (w *lndUnrollWallet) FundTemplate(ctx context.Context, packet *psbt.Packet,
+	feeRate chainfee.SatPerKWeight, lockID wallet.LockID,
+	lockExpiry time.Duration) (int32, error) {
+
+	var template bytes.Buffer
+	if err := packet.Serialize(&template); err != nil {
+		return 0, fmt.Errorf("serialize PSBT template: %w", err)
+	}
 	req := &walletrpc.FundPsbtRequest{
 		Template: &walletrpc.FundPsbtRequest_Psbt{
-			Psbt: packetBytes,
+			Psbt: template.Bytes(),
 		},
-		Fees: &walletrpc.FundPsbtRequest_SatPerVbyte{
-			SatPerVbyte: uint64(feeRateSatPerVByte),
+		Fees: &walletrpc.FundPsbtRequest_SatPerKw{
+			SatPerKw: uint64(feeRate),
 		},
 		Account:  w.boardingBackend.Account(),
 		MinConfs: 1,
@@ -5797,17 +5847,15 @@ func (w *lndUnrollWallet) FundPsbt(ctx context.Context, packetBytes []byte,
 			walletrpc.ChangeAddressType_CHANGE_ADDRESS_TYPE_P2TR
 	}
 
-	packet, _, _, err := w.boardingBackend.WalletKit().FundPsbt(ctx, req)
+	funded, changeIndex, _, err := w.boardingBackend.WalletKit().FundPsbt(
+		ctx, req,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("LND FundPsbt: %w", err)
+		return 0, fmt.Errorf("LND FundPsbt: %w", err)
 	}
+	*packet = *funded
 
-	var buf bytes.Buffer
-	if err := packet.Serialize(&buf); err != nil {
-		return nil, fmt.Errorf("serialize funded PSBT: %w", err)
-	}
-
-	return w.FinalizePsbt(ctx, buf.Bytes())
+	return changeIndex, nil
 }
 
 // LeaseOutput forwards the CPFP fee-input lease to the LND boarding backend,
@@ -5930,6 +5978,18 @@ func (w *lwUnrollWallet) FinalizePsbt(_ context.Context, packetBytes []byte) (
 	return finalTx, nil
 }
 
+// SignInputs signs and finalizes the inputs whose derivation info btcwallet
+// can derive, and leaves every other input as it is.
+func (w *lwUnrollWallet) SignInputs(_ context.Context,
+	packet *psbt.Packet) error {
+
+	if _, err := w.Wallet.BtcWallet.SignPsbt(packet); err != nil {
+		return fmt.Errorf("btcwallet SignPsbt: %w", err)
+	}
+
+	return finalizeSignedInputs(packet)
+}
+
 // FundPsbt funds and finalizes a fanout transaction through btcwallet.
 func (w *lwUnrollWallet) FundPsbt(ctx context.Context, packetBytes []byte,
 	feeRateSatPerVByte int64, lockID wallet.LockID,
@@ -5941,26 +6001,12 @@ func (w *lwUnrollWallet) FundPsbt(ctx context.Context, packetBytes []byte,
 	if err != nil {
 		return nil, fmt.Errorf("parse PSBT: %w", err)
 	}
-
-	_, err = w.Wallet.BtcWallet.FundPsbt(
-		packet, 1, chainfee.SatPerKWeight(feeRateSatPerVByte*250),
-		lnwallet.DefaultAccountName, nil,
-		btcwalletpkg.CoinSelectionLargest, nil,
+	_, err = w.FundTemplate(
+		ctx, packet, chainfee.SatPerKWeight(feeRateSatPerVByte*250),
+		lockID, lockExpiry,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("btcwallet FundPsbt: %w", err)
-	}
-
-	// BtcWallet.FundPsbt may also install wallet-internal locks. The
-	// txconfirm lease below is the cross-subsystem ownership record; any
-	// wallet-internal lock is left to btcwallet's own expiry.
-	for _, txIn := range packet.UnsignedTx.TxIn {
-		_, err := w.LeaseOutput(
-			ctx, lockID, txIn.PreviousOutPoint, lockExpiry,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("lease funded input: %w", err)
-		}
+		return nil, err
 	}
 
 	var buf bytes.Buffer
@@ -5969,6 +6015,32 @@ func (w *lwUnrollWallet) FundPsbt(ctx context.Context, packetBytes []byte,
 	}
 
 	return w.FinalizePsbt(ctx, buf.Bytes())
+}
+
+// FundTemplate adds wallet inputs and change to an outputs-only template
+// without signing it, and leases the inputs under lockID. It returns the
+// change output's index, or -1 when the template needs no change.
+func (w *lwUnrollWallet) FundTemplate(ctx context.Context, packet *psbt.Packet,
+	feeRate chainfee.SatPerKWeight, lockID wallet.LockID,
+	lockExpiry time.Duration) (int32, error) {
+
+	changeIndex, err := w.Wallet.BtcWallet.FundPsbt(
+		packet, 1, feeRate, lnwallet.DefaultAccountName, nil,
+		btcwalletpkg.CoinSelectionLargest, nil,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("btcwallet FundPsbt: %w", err)
+	}
+
+	// BtcWallet.FundPsbt may also install wallet-internal locks. The
+	// lease below is the cross-subsystem ownership record; any
+	// wallet-internal lock is left to btcwallet's own expiry.
+	err = leaseFundedInputs(ctx, w, packet, lockID, lockExpiry)
+	if err != nil {
+		return 0, err
+	}
+
+	return changeIndex, nil
 }
 
 // LeaseOutput forwards the CPFP fee-input lease down to btcwallet. The
@@ -6072,6 +6144,18 @@ func (w *btcwUnrollWallet) FinalizePsbt(_ context.Context, packetBytes []byte) (
 	return finalTx, nil
 }
 
+// SignInputs signs and finalizes the inputs whose derivation info btcwallet
+// can derive, and leaves every other input as it is.
+func (w *btcwUnrollWallet) SignInputs(_ context.Context,
+	packet *psbt.Packet) error {
+
+	if _, err := w.Wallet.BtcWallet.SignPsbt(packet); err != nil {
+		return fmt.Errorf("btcwallet SignPsbt: %w", err)
+	}
+
+	return finalizeSignedInputs(packet)
+}
+
 // FundPsbt funds and finalizes a fanout transaction through btcwallet.
 func (w *btcwUnrollWallet) FundPsbt(ctx context.Context, packetBytes []byte,
 	feeRateSatPerVByte int64, lockID wallet.LockID,
@@ -6083,26 +6167,12 @@ func (w *btcwUnrollWallet) FundPsbt(ctx context.Context, packetBytes []byte,
 	if err != nil {
 		return nil, fmt.Errorf("parse PSBT: %w", err)
 	}
-
-	_, err = w.Wallet.BtcWallet.FundPsbt(
-		packet, 1, chainfee.SatPerKWeight(feeRateSatPerVByte*250),
-		lnwallet.DefaultAccountName, nil,
-		btcwalletpkg.CoinSelectionLargest, nil,
+	_, err = w.FundTemplate(
+		ctx, packet, chainfee.SatPerKWeight(feeRateSatPerVByte*250),
+		lockID, lockExpiry,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("btcwallet FundPsbt: %w", err)
-	}
-
-	// BtcWallet.FundPsbt may also install wallet-internal locks. The
-	// txconfirm lease below is the cross-subsystem ownership record; any
-	// wallet-internal lock is left to btcwallet's own expiry.
-	for _, txIn := range packet.UnsignedTx.TxIn {
-		_, err := w.LeaseOutput(
-			ctx, lockID, txIn.PreviousOutPoint, lockExpiry,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("lease funded input: %w", err)
-		}
+		return nil, err
 	}
 
 	var buf bytes.Buffer
@@ -6111,6 +6181,32 @@ func (w *btcwUnrollWallet) FundPsbt(ctx context.Context, packetBytes []byte,
 	}
 
 	return w.FinalizePsbt(ctx, buf.Bytes())
+}
+
+// FundTemplate adds wallet inputs and change to an outputs-only template
+// without signing it, and leases the inputs under lockID. It returns the
+// change output's index, or -1 when the template needs no change.
+func (w *btcwUnrollWallet) FundTemplate(ctx context.Context,
+	packet *psbt.Packet, feeRate chainfee.SatPerKWeight,
+	lockID wallet.LockID, lockExpiry time.Duration) (int32, error) {
+
+	changeIndex, err := w.Wallet.BtcWallet.FundPsbt(
+		packet, 1, feeRate, lnwallet.DefaultAccountName, nil,
+		btcwalletpkg.CoinSelectionLargest, nil,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("btcwallet FundPsbt: %w", err)
+	}
+
+	// BtcWallet.FundPsbt may also install wallet-internal locks. The
+	// lease below is the cross-subsystem ownership record; any
+	// wallet-internal lock is left to btcwallet's own expiry.
+	err = leaseFundedInputs(ctx, w, packet, lockID, lockExpiry)
+	if err != nil {
+		return 0, err
+	}
+
+	return changeIndex, nil
 }
 
 // LeaseOutput forwards the CPFP fee-input lease down to the neutrino-backed
@@ -6127,6 +6223,57 @@ func (w *btcwUnrollWallet) ReleaseOutput(_ context.Context, id wallet.LockID,
 	op wire.OutPoint) error {
 
 	return w.Wallet.BtcWallet.ReleaseOutput(wtxmgr.LockID(id), op)
+}
+
+// finalizeSignedInputs finalizes every input a wallet signed and that is not
+// final yet.
+func finalizeSignedInputs(packet *psbt.Packet) error {
+	for idx := range packet.Inputs {
+		input := &packet.Inputs[idx]
+		if len(input.FinalScriptWitness) != 0 ||
+			(len(input.TaprootKeySpendSig) == 0 &&
+				len(input.PartialSigs) == 0) {
+
+			continue
+		}
+		ok, err := psbt.MaybeFinalize(packet, idx)
+		if err != nil {
+			return fmt.Errorf("finalize input %d: %w", idx, err)
+		}
+		if !ok {
+			return fmt.Errorf("input %d is not finalizable", idx)
+		}
+	}
+
+	return nil
+}
+
+// leaseFundedInputs leases every input of a funded template, or none of them:
+// a failed lease releases the ones taken before it, which would otherwise stay
+// locked until they expire.
+func leaseFundedInputs(ctx context.Context, leaser walletcore.OutputLeaser,
+	packet *psbt.Packet, lockID wallet.LockID,
+	lockExpiry time.Duration) error {
+
+	for idx, txIn := range packet.UnsignedTx.TxIn {
+		_, err := leaser.LeaseOutput(
+			ctx, lockID, txIn.PreviousOutPoint, lockExpiry,
+		)
+		if err == nil {
+			continue
+		}
+
+		for _, leased := range packet.UnsignedTx.TxIn[:idx] {
+			_ = leaser.ReleaseOutput(
+				context.WithoutCancel(ctx), lockID,
+				leased.PreviousOutPoint,
+			)
+		}
+
+		return fmt.Errorf("lease funded input: %w", err)
+	}
+
+	return nil
 }
 
 // initUnrollSubsystem creates and wires the new unilateral-exit runtime:
