@@ -4,9 +4,132 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/stretchr/testify/require"
 )
+
+// TestCooperativeCloseBuildsThreePartyOOR proves the no-delay 3-of-3 policy
+// authorizes an ordinary OOR transfer that preserves full-capacity role
+// balances and never spends the unpublished channel point.
+func TestCooperativeCloseBuildsThreePartyOOR(t *testing.T) {
+	t.Parallel()
+
+	terms, source, request, _, _, _ :=
+		testCooperativeCloseFixture(t, KindPromotion, 5_000)
+	const (
+		clientBalance = btcutil.Amount(63_000)
+		hubBalance    = btcutil.Amount(37_000)
+	)
+	template, err := NewCooperativeCloseTemplate(
+		terms, source, request, clientBalance, hubBalance, 7,
+	)
+	require.NoError(t, err)
+	proposal := template.Proposal()
+	require.NoError(t, proposal.Validate(terms, source, request))
+	require.Equal(
+		t, terms.Capacity, proposal.ClientBalance+proposal.HubBalance,
+	)
+	require.Equal(
+		t, source.Amount, proposal.ClientOutput+proposal.HubOutput,
+	)
+	require.Equal(t, clientBalance+5_000, proposal.ClientOutput)
+	require.Equal(t, hubBalance, proposal.HubOutput)
+
+	checkpoint, err := psbtutil.Parse(proposal.Transaction)
+	require.NoError(t, err)
+	require.Equal(
+		t, source.OutPoint,
+		checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint,
+	)
+	require.NotEqual(
+		t, testBacking(t, terms, source).ChannelPoint,
+		checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint,
+	)
+	require.Equal(
+		t, wire.MaxTxInSequenceNum,
+		checkpoint.UnsignedTx.TxIn[0].Sequence,
+	)
+
+	spec, err := template.OORSpec()
+	require.NoError(t, err)
+	require.Len(t, spec.Recipients, 2)
+	path, err := arkscript.DecodeSpendPath(spec.SpendPath)
+	require.NoError(t, err)
+	require.Equal(t, wire.MaxTxInSequenceNum, path.RequiredSequence)
+}
+
+// TestCooperativeCloseRequiresFullCapacityRoleBalances proves core neither
+// infers nor assigns a balance shortfall supplied by the runtime.
+func TestCooperativeCloseRequiresFullCapacityRoleBalances(t *testing.T) {
+	t.Parallel()
+
+	terms, source, request, _, _, _ := testCooperativeCloseFixture(
+		t, KindPromotion, 2_000,
+	)
+	_, err := NewCooperativeCloseTemplate(
+		terms, source, request, 39_000, 60_000, 4,
+	)
+	require.ErrorContains(t, err, "do not match capacity")
+}
+
+// testCooperativeCloseFixture creates terms and source with all immediate
+// cooperative policy keys available to the test.
+func testCooperativeCloseFixture(t *testing.T, kind Kind,
+	reserve btcutil.Amount) (Terms, VTXOBinding, CooperativeCloseRequest,
+	*btcec.PrivateKey, *btcec.PrivateKey, *btcec.PrivateKey) {
+
+	t.Helper()
+	terms := testTerms(t, kind)
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	hubKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	terms.VTXO.ClientArkKey = compressedKey(clientKey)
+	terms.VTXO.HubArkKey = compressedKey(hubKey)
+	terms.VTXO.ArkOperatorKey = compressedKey(operatorKey)
+	source := resizeCooperativeCloseSource(
+		t, testBinding(terms), terms.Capacity+reserve,
+	)
+	request := CooperativeCloseRequest{
+		Initiator:            PartyClient,
+		ClientDeliveryScript: testCooperativeOwnerKey(1),
+		HubDeliveryScript:    testCooperativeOwnerKey(2),
+	}
+
+	return terms, source, request, clientKey, hubKey, operatorKey
+}
+
+// resizeCooperativeCloseSource changes the prepared output amount and keeps its
+// transaction ID and outpoint binding canonical.
+func resizeCooperativeCloseSource(t *testing.T, source VTXOBinding,
+	amount btcutil.Amount) VTXOBinding {
+
+	t.Helper()
+	tx := mustDecodeTransaction(t, source.ArkTransaction)
+	tx.TxOut[source.OutPoint.Index].Value = int64(amount)
+	var raw bytes.Buffer
+	require.NoError(t, tx.Serialize(&raw))
+	txid := tx.TxHash()
+	source.OORSessionID = [32]byte(txid)
+	source.OutPoint.Hash = txid
+	source.Amount = amount
+	source.ArkTransaction = raw.Bytes()
+
+	return source
+}
+
+// testCooperativeOwnerKey returns a deterministic compressed account key.
+func testCooperativeOwnerKey(tag byte) []byte {
+	_, key := btcec.PrivKeyFromBytes(bytes.Repeat([]byte{tag}, 32))
+
+	return key.SerializeCompressed()
+}
 
 // mustDecodeTransaction decodes a raw transaction fixture.
 func mustDecodeTransaction(t *testing.T, raw []byte) *wire.MsgTx {
