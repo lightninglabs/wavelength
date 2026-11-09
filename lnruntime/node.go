@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightningnetwork/lnd/chainntnfs"
@@ -502,6 +503,33 @@ func (n *NativeNode) RestoreBacking(terms arkchannel.Terms,
 // one channel's backing transaction.
 func (n *NativeNode) HandoffChannel(channelPoint wire.OutPoint) error {
 	return n.runtime.HandoffChannel(channelPoint)
+}
+
+// ForceCloseChannel asks lnd to close and resolve one handed-off channel.
+func (n *NativeNode) ForceCloseChannel(channelPoint wire.OutPoint) (*wire.MsgTx,
+	error) {
+
+	return n.runtime.ForceCloseChannel(channelPoint)
+}
+
+// WaitForceCloseResult returns the commitment transaction lnd durably
+// classified after either endpoint won a force-close publication race.
+func (n *NativeNode) WaitForceCloseResult(ctx context.Context,
+	channelPoint wire.OutPoint) (chainhash.Hash, error) {
+
+	return n.runtime.WaitForceCloseResult(ctx, channelPoint)
+}
+
+// ResumeForceCloseChannel reconciles an already materialized channel with
+// lnd's durable commitment-broadcast state after restart.
+func (n *NativeNode) ResumeForceCloseChannel(channelPoint wire.OutPoint) error {
+	return n.runtime.ResumeForceCloseChannel(channelPoint)
+}
+
+// EnsureForceCloseChannel resumes an interrupted close or initiates one after
+// the durable Ark FSM observes peer-driven materialization.
+func (n *NativeNode) EnsureForceCloseChannel(channelPoint wire.OutPoint) error {
+	return n.runtime.EnsureForceCloseChannel(channelPoint)
 }
 
 // NewNegotiator constructs the funder-side coordinator for this node.

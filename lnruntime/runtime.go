@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/chainntnfs"
@@ -30,10 +31,11 @@ import (
 )
 
 const (
-	defaultCommitInterval      = 50 * time.Millisecond
-	defaultCommitBatchSize     = uint32(10)
-	defaultOutgoingRejectDelta = uint32(3)
-	defaultQuiescenceTimeout   = time.Minute
+	defaultCommitInterval        = 50 * time.Millisecond
+	defaultCommitBatchSize       = uint32(10)
+	defaultOutgoingRejectDelta   = uint32(3)
+	defaultQuiescenceTimeout     = time.Minute
+	forceCloseResultPollInterval = 100 * time.Millisecond
 )
 
 // durablePeerPendingCommitTicker disables lnd's socket-liveness timeout for a
@@ -101,6 +103,9 @@ type Runtime struct {
 
 	channelMu    sync.RWMutex
 	liveChannels map[wire.OutPoint]liveChannel
+
+	forceCloseMu    sync.Mutex
+	forceCloseCalls map[wire.OutPoint]*forceCloseCall
 }
 
 // liveChannel keeps the authoritative in-memory channel together with the
@@ -109,6 +114,16 @@ type liveChannel struct {
 	channel     *lnwallet.LightningChannel
 	channelType chanstate.ChannelType
 	localFunder bool
+}
+
+// forceCloseCall owns one in-process force-close result. LND's force-close
+// request can block while Ark materializes the channel point, so duplicate RPC
+// delivery must join the existing request instead of entering the channel
+// arbitrator a second time.
+type forceCloseCall struct {
+	done chan struct{}
+	tx   *wire.MsgTx
+	err  error
 }
 
 // NewRuntime composes lnd's existing invoice, switch, link-signing, and
@@ -253,6 +268,7 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 		sigPool:             lnwallet.NewSigPool(1, cfg.Signer),
 		awaitingReestablish: make(map[lnwire.ChannelID]struct{}),
 		liveChannels:        make(map[wire.OutPoint]liveChannel),
+		forceCloseCalls:     make(map[wire.OutPoint]*forceCloseCall),
 	}
 	if cfg.Onchain != nil {
 		runtime.onchain, err = newOnchainRuntime(
@@ -841,6 +857,206 @@ func (r *Runtime) HandoffChannel(channelPoint wire.OutPoint) error {
 	}
 
 	return nil
+}
+
+// ForceCloseChannel asks the standard lnd chain arbitrator to publish the
+// latest commitment and own all output resolutions through completion.
+func (r *Runtime) ForceCloseChannel(channelPoint wire.OutPoint) (*wire.MsgTx,
+	error) {
+
+	if r.onchain == nil {
+		return nil, fmt.Errorf("on-chain lifecycle is disabled")
+	}
+
+	return r.runForceClose(channelPoint, func() (*wire.MsgTx, error) {
+		return r.onchain.ForceClose(channelPoint)
+	})
+}
+
+// WaitForceCloseResult waits until lnd has durably classified the channel as
+// locally or remotely force closed. This lets an Ark close request converge
+// when both endpoints race to spend the newly materialized channel point and
+// the peer commitment wins.
+func (r *Runtime) WaitForceCloseResult(ctx context.Context,
+	channelPoint wire.OutPoint) (chainhash.Hash, error) {
+
+	ticker := time.NewTicker(forceCloseResultPollInterval)
+	defer ticker.Stop()
+
+	stateDB := r.cfg.DB.ChannelStateDB()
+	for {
+		summary, err := stateDB.FetchClosedChannel(&channelPoint)
+		switch {
+		case err == nil:
+			return forceCloseSummaryTxID(summary, channelPoint)
+
+		case !errors.Is(err, channeldb.ErrClosedChannelNotFound):
+			return chainhash.Hash{}, fmt.Errorf("find force-close "+
+				"result: %w", err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return chainhash.Hash{}, ctx.Err()
+
+		case <-ticker.C:
+		}
+	}
+}
+
+// ResumeForceCloseChannel re-drives the publication edge after Ark has
+// durably materialized a channel. A channel already broadcast or moved to the
+// closed bucket needs no second force-close request.
+func (r *Runtime) ResumeForceCloseChannel(channelPoint wire.OutPoint) error {
+	// A normal force close can be waiting inside the Ark backing barrier
+	// when the durable channel FSM records materialization. That transition
+	// emits the same resume action used by external parent-spend recovery.
+	// Let the original request continue instead of recursively waiting on
+	// its channel arbitrator.
+	if r.forceCloseIsActive(channelPoint) {
+		return nil
+	}
+
+	stateDB := r.cfg.DB.ChannelStateDB()
+	channel, err := stateDB.FetchChannel(channelPoint)
+	if errors.Is(err, channeldb.ErrChannelNotFound) {
+		if _, closedErr := stateDB.FetchClosedChannel(
+			&channelPoint,
+		); closedErr != nil {
+			return fmt.Errorf("find materialized channel: %w",
+				closedErr)
+		}
+
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("find materialized channel: %w", err)
+	}
+	if channel.HasChanStatus(channeldb.ChanStatusCommitBroadcasted) {
+		return nil
+	}
+	if _, err := r.onchain.ResumeForceClose(channelPoint); err != nil {
+		return fmt.Errorf("resume lnd force close: %w", err)
+	}
+
+	return nil
+}
+
+// EnsureForceCloseChannel resumes an interrupted local force close, or starts
+// a new one when this endpoint learned about materialization from its peer.
+// The caller must only invoke this after the durable Ark FSM has recorded both
+// backing publication and the source conflict that requires channel closure.
+func (r *Runtime) EnsureForceCloseChannel(channelPoint wire.OutPoint) error {
+	return ensureForceClose(
+		func() error {
+			return r.ResumeForceCloseChannel(channelPoint)
+		},
+		func() error {
+			if _, err := r.ForceCloseChannel(
+				channelPoint,
+			); err != nil {
+				return fmt.Errorf("start lnd force close: %w",
+					err)
+			}
+
+			return nil
+		},
+	)
+}
+
+// ensureForceClose preserves resume-only behavior unless lnd proves that this
+// endpoint has no interrupted force close to continue.
+func ensureForceClose(resume, start func() error) error {
+	err := resume()
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, contractcourt.ErrNoForceCloseToResume) {
+		return err
+	}
+
+	return start()
+}
+
+// runForceClose coalesces concurrent close requests for one channel point. A
+// successful close stays cached for the runtime lifetime, while a failed close
+// is removed so the durable lifecycle can retry it.
+func (r *Runtime) runForceClose(channelPoint wire.OutPoint,
+	forceClose func() (*wire.MsgTx, error)) (*wire.MsgTx, error) {
+
+	r.forceCloseMu.Lock()
+	if r.forceCloseCalls == nil {
+		r.forceCloseCalls = make(map[wire.OutPoint]*forceCloseCall)
+	}
+	call, ok := r.forceCloseCalls[channelPoint]
+	if !ok {
+		call = &forceCloseCall{done: make(chan struct{})}
+		r.forceCloseCalls[channelPoint] = call
+	}
+	r.forceCloseMu.Unlock()
+
+	if ok {
+		<-call.done
+
+		return call.tx, call.err
+	}
+
+	call.tx, call.err = forceClose()
+
+	r.forceCloseMu.Lock()
+	if call.err != nil {
+		delete(r.forceCloseCalls, channelPoint)
+	}
+	close(call.done)
+	r.forceCloseMu.Unlock()
+
+	return call.tx, call.err
+}
+
+// forceCloseIsActive reports whether the original LND force-close request is
+// already responsible for advancing this channel.
+func (r *Runtime) forceCloseIsActive(channelPoint wire.OutPoint) bool {
+	r.forceCloseMu.Lock()
+	defer r.forceCloseMu.Unlock()
+
+	call, ok := r.forceCloseCalls[channelPoint]
+	if !ok {
+		return false
+	}
+	select {
+	case <-call.done:
+		return false
+
+	default:
+		return true
+	}
+}
+
+// forceCloseSummaryTxID validates that a closed-channel record proves the
+// exact force-close outcome awaited by the caller.
+func forceCloseSummaryTxID(summary *channeldb.ChannelCloseSummary,
+	channelPoint wire.OutPoint) (chainhash.Hash, error) {
+
+	if summary == nil {
+		return chainhash.Hash{}, fmt.Errorf("force-close summary is " +
+			"nil")
+	}
+	if summary.ChanPoint != channelPoint {
+		return chainhash.Hash{}, fmt.Errorf("force-close summary is "+
+			"for %v, not %v", summary.ChanPoint, channelPoint)
+	}
+	switch summary.CloseType {
+	case channeldb.LocalForceClose, channeldb.RemoteForceClose:
+	default:
+		return chainhash.Hash{}, fmt.Errorf("channel closed with type "+
+			"%v, not a force close", summary.CloseType)
+	}
+	if summary.ClosingTXID == (chainhash.Hash{}) {
+		return chainhash.Hash{}, fmt.Errorf("force-close transaction " +
+			"ID is missing")
+	}
+
+	return summary.ClosingTXID, nil
 }
 
 // unavailableChannelUpdate is the default for a private runtime with no graph.
