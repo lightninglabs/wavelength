@@ -18,7 +18,7 @@ require (
 	github.com/btcsuite/btcd/txscript/v2 v2.0.0
 	github.com/btcsuite/btcd/wire/v2 v2.0.0
 	github.com/btcsuite/btclog/v2 v2.0.1-0.20250728225537-6090e87c6c5b
-	github.com/btcsuite/btcwallet v0.18.1-0.20261020173225-6bc3e2a4e6fc
+	github.com/btcsuite/btcwallet v0.18.1
 	github.com/btcsuite/btcwallet/wallet/txrules v1.3.0
 	github.com/btcsuite/btcwallet/walletdb v1.6.0
 	github.com/btcsuite/btcwallet/wtxmgr v1.6.1-0.20261020132555-16cfb4483d1f
@@ -40,11 +40,13 @@ require (
 	github.com/lightninglabs/wavelength/baselib v0.0.0-00010101000000-000000000000
 	github.com/lightningnetwork/lightning-onion v1.4.0
 	github.com/lightningnetwork/lnd v0.21.0-beta.rc2.0.20260903094101-d66a7c137d32
+	github.com/lightningnetwork/lnd/actor v0.0.6
 	github.com/lightningnetwork/lnd/cert v1.2.2
 	github.com/lightningnetwork/lnd/clock v1.1.1
-	github.com/lightningnetwork/lnd/fn/v2 v2.0.9
+	github.com/lightningnetwork/lnd/fn/v2 v2.0.10
 	github.com/lightningnetwork/lnd/kvdb v1.5.1
 	github.com/lightningnetwork/lnd/sqldb v1.0.13
+	github.com/lightningnetwork/lnd/ticker v1.1.1
 	github.com/lightningnetwork/lnd/tlv v1.4.1
 	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/modelcontextprotocol/go-sdk v1.4.0
@@ -145,10 +147,8 @@ require (
 	github.com/lightninglabs/lightning-node-connect/hashmailrpc v1.0.4-0.20250610182311-2f1d46ef18b7 // indirect
 	github.com/lightninglabs/taproot-assets v0.7.1-0.20261006112023-1434ab66b3bb // indirect
 	github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20261005091416-8daf7dec6b63 // indirect
-	github.com/lightningnetwork/lnd/actor v0.0.6 // indirect
 	github.com/lightningnetwork/lnd/healthcheck v1.2.6 // indirect
-	github.com/lightningnetwork/lnd/queue v1.2.0 // indirect
-	github.com/lightningnetwork/lnd/ticker v1.1.1 // indirect
+	github.com/lightningnetwork/lnd/queue v1.2.1 // indirect
 	github.com/lightningnetwork/lnd/tor v1.2.0 // indirect
 	github.com/ltcsuite/ltcd v0.0.0-20190101042124-f37f8bf35796 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
@@ -201,7 +201,7 @@ require (
 	go.etcd.io/etcd/server/v3 v3.5.12 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.61.0 // indirect
-	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 // indirect
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0 // indirect
 	go.opentelemetry.io/otel v1.45.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.45.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.45.0 // indirect
@@ -235,3 +235,7 @@ replace google.golang.org/protobuf => github.com/lightninglabs/protobuf-go-hex-d
 
 // Use local baselib for development and CI.
 replace github.com/lightninglabs/wavelength/baselib => ./baselib
+
+replace github.com/lightningnetwork/lnd => github.com/sputn1ck/lnd v0.4.2-beta.0.20261109115006-f90e29072800
+
+replace github.com/lightningnetwork/lnd/kvdb => github.com/sputn1ck/lnd/kvdb v0.0.0-20261109115006-f90e29072800
