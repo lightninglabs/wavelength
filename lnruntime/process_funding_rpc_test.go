@@ -8,6 +8,7 @@ import (
 	"github.com/lightninglabs/wavelength/arkchannel"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
@@ -156,4 +157,51 @@ func TestGetFundingChannelUsesFreshRequestIdentity(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, arkchannel.PhaseActive, second.Phase)
 	require.EqualValues(t, 2, transport.reads)
+}
+
+// TestCancelIncomingPaymentRPCBindsClient proves pre-publication cleanup is
+// applied to the bridge row owned by the authenticated mailbox endpoint.
+func TestCancelIncomingPaymentRPCBindsClient(t *testing.T) {
+	t.Parallel()
+
+	client := [33]byte{2}
+	hash := lntypes.Hash{3}
+	bridge := &recordingPaymentBridgeCoordinator{}
+	server := &FundingPeerRPCServer{cfg: FundingPeerRPCServerConfig{
+		RemoteNode: client,
+		Bridge:     bridge,
+	}}
+	response, err := server.CancelIncomingPayment(
+		t.Context(), &arkchannelrpc.CancelIncomingPaymentRequest{
+			PaymentHash: hash[:],
+			Reason:      "invoice publication failed",
+		},
+	)
+	require.NoError(t, err)
+	require.True(t, response.GetCancelled())
+	require.Equal(t, client, bridge.cancelIncomingClient)
+	require.Equal(t, hash, bridge.cancelIncomingHash)
+	require.Equal(
+		t, "invoice publication failed", bridge.cancelIncomingReason,
+	)
+}
+
+type recordingPaymentBridgeCoordinator struct {
+	PaymentBridgeCoordinator
+
+	cancelIncomingClient [33]byte
+	cancelIncomingHash   lntypes.Hash
+	cancelIncomingReason string
+}
+
+// CancelIncomingPayment records authenticated receive cleanup.
+func (b *recordingPaymentBridgeCoordinator) CancelIncomingPayment(
+	_ context.Context, client [33]byte, hash lntypes.Hash,
+	reason string) error {
+
+	b.cancelIncomingClient = client
+	b.cancelIncomingHash = hash
+	b.cancelIncomingReason = reason
+
+	return nil
 }
