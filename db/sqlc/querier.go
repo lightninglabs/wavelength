@@ -23,6 +23,7 @@ type Querier interface {
 	CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) (int64, error)
 	ClearPendingIntentAnchorByOutpoint(ctx context.Context, arg ClearPendingIntentAnchorByOutpointParams) error
 	CloseRoundAdmissionDeadline(ctx context.Context, roundID string) error
+	CompareAndSwapArkChannel(ctx context.Context, arg CompareAndSwapArkChannelParams) (int64, error)
 	CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTLCRecoveryJobParams) (int64, error)
 	ConstrainRoundAdmissionDeadline(ctx context.Context, arg ConstrainRoundAdmissionDeadlineParams) error
 	// CountActivityEntriesByStatus returns the number of current-state rows in the
@@ -102,6 +103,9 @@ type Querier interface {
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
 	// GetActivityEntry returns one entry by its canonical id.
 	GetActivityEntry(ctx context.Context, canonicalID string) (ActivityEntry, error)
+	GetArkChannel(ctx context.Context, channelID []byte) (ArkChannel, error)
+	GetArkChannelByChannelPoint(ctx context.Context, arg GetArkChannelByChannelPointParams) (ArkChannel, error)
+	GetArkChannelByPendingID(ctx context.Context, pendingChannelID []byte) (ArkChannel, error)
 	GetAssetDeposit(ctx context.Context, requestID string) (AssetDeposit, error)
 	GetAssetDepositByOutpoint(ctx context.Context, arg GetAssetDepositByOutpointParams) (AssetDeposit, error)
 	// GetAssetDepositRound returns the round that spends a deposit. A failed round
@@ -179,6 +183,8 @@ type Querier interface {
 	// The ledger actor uses it to recognise a boarding deposit's funding input as
 	// a UTXO whose value it already credited to wallet_balance.
 	GetWalletUTXOLogCreatedByOutpoint(ctx context.Context, arg GetWalletUTXOLogCreatedByOutpointParams) (WalletUtxoLog, error)
+	// Ark channel coordination queries.
+	InsertArkChannel(ctx context.Context, arg InsertArkChannelParams) (int64, error)
 	// InsertAssetDeposit records a deposit request before tapd funds it. A
 	// request ID already recorded inserts nothing.
 	InsertAssetDeposit(ctx context.Context, arg InsertAssetDepositParams) (int64, error)
@@ -375,6 +381,10 @@ type Querier interface {
 	// Also filter on spent = FALSE to handle VTXOs marked spent via the earlier
 	// flag before the status field was introduced.
 	ListLiveVTXOs(ctx context.Context) ([]Vtxo, error)
+	// Phase 8 is closed and phase 10 is failed. A cooperatively closed channel
+	// remains resumable because its signed replacement VTXOs still need source
+	// ancestry defense. Cancelling also remains resumable.
+	ListNonTerminalArkChannels(ctx context.Context) ([]ArkChannel, error)
 	// Status 1 = Completed, 2 = Failed (anchored to Go iota in
 	// db/credit_operation_store.go CreditOpStatus).
 	ListNonTerminalCreditOperations(ctx context.Context) ([]CreditOperation, error)
