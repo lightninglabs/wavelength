@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/tap-sdk/customanchor"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
@@ -52,7 +53,7 @@ type TreeRootAssetInput struct {
 	Witness [][]byte
 
 	// Verifier verifies this input's proof.
-	Verifier tapsdk.ConfirmedProofVerifier
+	Verifier customanchor.ConfirmedProofVerifier
 }
 
 // TreeRootAssetSource identifies the asset states spent by the root node.
@@ -95,14 +96,14 @@ type TreeMaterializerConfig struct {
 // treePathVerifier delegates existing proof steps and checks appended tree
 // steps against their transactions.
 type treePathVerifier struct {
-	base      tapsdk.ConfirmedProofVerifier
+	base      customanchor.ConfirmedProofVerifier
 	baseDepth uint16
 	steps     []*expectedUnconfirmedAnchor
 }
 
 // VerifyConfirmedProof verifies the confirmed base proof.
 func (v *treePathVerifier) VerifyConfirmedProof(ctx context.Context,
-	proofFile []byte) (*tapsdk.ConfirmedProofVerification, error) {
+	proofFile []byte) (*customanchor.ConfirmedProofVerification, error) {
 
 	if v == nil || v.base == nil {
 		return nil, fmt.Errorf("confirmed asset proof verifier is " +
@@ -114,10 +115,10 @@ func (v *treePathVerifier) VerifyConfirmedProof(ctx context.Context,
 
 // VerifyUnconfirmedAnchor verifies one unconfirmed transition.
 func (v *treePathVerifier) VerifyUnconfirmedAnchor(ctx context.Context,
-	transition tapsdk.UnconfirmedAnchorVerification) error {
+	transition customanchor.UnconfirmedAnchorVerification) error {
 
 	if transition.StepIndex < v.baseDepth {
-		base, ok := v.base.(tapsdk.UnconfirmedAnchorVerifier)
+		base, ok := v.base.(customanchor.UnconfirmedAnchorVerifier)
 		if !ok {
 			return fmt.Errorf("proof verifier cannot verify " +
 				"unconfirmed step")
@@ -255,12 +256,12 @@ func validateRootAssetInput(input TreeRootAssetInput,
 		return nil
 	}
 
-	var path tapsdk.AssetProofPath
+	var path customanchor.ProofPath
 	if err := path.UnmarshalBinary(input.ProofPath); err != nil {
 		return fmt.Errorf("decode proof path: %w", err)
 	}
 	if len(path.Steps) != 0 {
-		_, ok := input.Verifier.(tapsdk.UnconfirmedAnchorVerifier)
+		_, ok := input.Verifier.(customanchor.UnconfirmedAnchorVerifier)
 		if !ok {
 			return fmt.Errorf("proof path requires an " +
 				"unconfirmed anchor verifier")
@@ -358,11 +359,11 @@ func (m *treeMaterializer) resolveInput(input wire.OutPoint) (
 		}
 		total += input.Amount
 
-		witness := tapsdk.CustomAssetWitnessPlan{
+		witness := customanchor.AssetWitnessPlan{
 			Mode: witnessBackendSigner,
 		}
 		if len(input.Witness) != 0 {
-			witness = tapsdk.CustomAssetWitnessPlan{
+			witness = customanchor.AssetWitnessPlan{
 				Mode:  witnessCallerProvided,
 				Stack: cloneByteSlices(input.Witness),
 			}
@@ -379,7 +380,7 @@ func (m *treeMaterializer) resolveInput(input wire.OutPoint) (
 				[]byte(nil), input.ProofFile...,
 			)
 		} else {
-			var path tapsdk.AssetProofPath
+			var path customanchor.ProofPath
 			if err := path.UnmarshalBinary(
 				input.ProofPath,
 			); err != nil {
@@ -519,7 +520,7 @@ func (m *treeMaterializer) commitNode(ctx context.Context, node *tree.Node,
 			"total %d", amount, total)
 	}
 
-	inputs := make([]tapsdk.CustomAssetInput, len(sources))
+	inputs := make([]customanchor.AssetInput, len(sources))
 	for idx := range sources {
 		assetInput, err := sources[idx].customInput(
 			fmt.Sprintf("wavelength-tree-input-%d", idx),
@@ -531,7 +532,7 @@ func (m *treeMaterializer) commitNode(ctx context.Context, node *tree.Node,
 		inputs[idx] = assetInput
 	}
 
-	outputs := make([]tapsdk.CustomAssetOutput, len(specs))
+	outputs := make([]customanchor.AssetOutput, len(specs))
 	for i, spec := range specs {
 		anchor, err := anchorPlan(spec.internalKey, spec.tapLeaves)
 		if err != nil {
@@ -541,7 +542,7 @@ func (m *treeMaterializer) commitNode(ctx context.Context, node *tree.Node,
 			m.cfg.Digest, fmt.Sprintf("tree/%s/%d", input,
 				spec.index),
 		)
-		outputs[i] = tapsdk.CustomAssetOutput{
+		outputs[i] = customanchor.AssetOutput{
 			ID: fmt.Sprintf(
 				"wavelength-tree-out-%d", spec.index,
 			),
@@ -549,9 +550,9 @@ func (m *treeMaterializer) commitNode(ctx context.Context, node *tree.Node,
 			Amount:            spec.assetAmount,
 			AnchorOutputIndex: spec.index,
 			AnchorValueSat:    uint64(spec.btcValue),
-			Script: tapsdk.CustomAssetScriptPlan{
-				Mode: tapsdk.CustomAssetScriptOPTrue,
-				OPTrue: &tapsdk.CustomAssetOPTrueScriptPlan{
+			Script: customanchor.AssetScriptPlan{
+				Mode: customanchor.AssetScriptOPTrue,
+				OPTrue: &customanchor.AssetOPTrueScriptPlan{
 					InternalKey: tapsdk.KeyDescriptor{
 						RawKeyBytes: opTrueKey,
 					},
@@ -561,18 +562,18 @@ func (m *treeMaterializer) commitNode(ctx context.Context, node *tree.Node,
 		}
 	}
 
-	request := &tapsdk.CustomAnchorRequest{
+	request := &customanchor.Request{
 		Inputs:     inputs,
 		Outputs:    outputs,
 		AnchorPSBT: anchorBytes,
 		Funding:    callerFundedExact(),
-		PassiveAssets: tapsdk.CustomAnchorPassiveAssets{
-			Policy: tapsdk.CustomAnchorPassiveReject,
+		PassiveAssets: customanchor.PassiveAssets{
+			Policy: customanchor.PassiveReject,
 		},
-		LossPolicy: tapsdk.CustomAnchorLossPolicy{
-			Mode: tapsdk.CustomAnchorLossReject,
+		LossPolicy: customanchor.LossPolicy{
+			Mode: customanchor.LossReject,
 		},
-		SigningPlans: []tapsdk.CustomAnchorInputSigningPlan{
+		SigningPlans: []customanchor.InputSigningPlan{
 			musig2SigningPlan(0, node.CoSigners, sessionContext),
 		},
 	}
@@ -590,7 +591,7 @@ func (m *treeMaterializer) validateCommit(input wire.OutPoint,
 		return nil, fmt.Errorf("asset commit result is required")
 	}
 	if committed.fundingMode !=
-		tapsdk.CustomAnchorFundingCallerFundedExact {
+		customanchor.FundingCallerFundedExact {
 		return nil, fmt.Errorf("unexpected funding mode %d",
 			committed.fundingMode)
 	}
@@ -798,7 +799,7 @@ func (m *treeMaterializer) validateCommitOutputs(spec treeOutputSpec,
 				spec.index, output.anchorValueSat,
 				spec.btcValue)
 		}
-		if output.scriptMode != tapsdk.CustomAssetScriptOPTrue {
+		if output.scriptMode != customanchor.AssetScriptOPTrue {
 			return fmt.Errorf("output %d script mode %d is "+
 				"not OP_TRUE", spec.index, output.scriptMode)
 		}
@@ -935,7 +936,7 @@ func boundFinalKey(cosigners []*btcec.PublicKey, tweak,
 
 // musig2SigningPlan returns the key-spend plan for an anchor input.
 func musig2SigningPlan(index uint32, cosigners []*btcec.PublicKey,
-	sessionContext []byte) tapsdk.CustomAnchorInputSigningPlan {
+	sessionContext []byte) customanchor.InputSigningPlan {
 
 	// tree.ComputeInternalKey sorts cosigners before aggregation.
 	sorted := make([]*btcec.PublicKey, len(cosigners))
@@ -953,9 +954,9 @@ func musig2SigningPlan(index uint32, cosigners []*btcec.PublicKey,
 		participants = append(participants, key)
 	}
 
-	return tapsdk.CustomAnchorInputSigningPlan{
+	return customanchor.InputSigningPlan{
 		InputIndex: index,
-		MuSig2: &tapsdk.CustomAnchorMuSig2SigningPlan{
+		MuSig2: &customanchor.MuSig2SigningPlan{
 			Participants:   participants,
 			SessionContext: sessionContext,
 		},

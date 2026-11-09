@@ -54,10 +54,11 @@ Durable journals retain committed packages for restart recovery.
 
 ## Relationships
 
-- **Depends on**: `github.com/lightninglabs/tap-sdk` (custom-anchor requests,
-  wallet, proof verifiers), `lib/tree` (`Node`, `Tree`, `LeafDescriptor`
-  structures to materialize into), `lib/arkscript` (leaf policy construction
-  for `StandardVTXOLeafAnchor`), `lib/tx/psbtutil` (PSBT encode/decode).
+- **Depends on**: `github.com/lightninglabs/tap-sdk` (wallet) and its
+  `customanchor` package (custom-anchor requests, proof verifiers),
+  `lib/tree` (`Node`, `Tree`, `LeafDescriptor` structures to materialize
+  into), `lib/arkscript` (leaf policy construction for
+  `StandardVTXOLeafAnchor`), `lib/tx/psbtutil` (PSBT encode/decode).
 - **Depended on by**: `waved`, which installs `VTXOVerifier` on the round
   actor when `assets.backend` is `tapd`, and funds asset deposits through
   `Onboarder` when `assets.lnd` is also set. Operator-side batch APIs have no
@@ -110,7 +111,7 @@ Durable journals retain committed packages for restart recovery.
   script key and commit to the leaf's asset root. Every unconfirmed proof
   step must anchor in the commitment transaction or on the client's tree
   path. Deposits from other clients are not in this wallet, so their anchor
-  inventory comes from `tapsdk.DeriveConfirmedProofInventory`, and the
+  inventory comes from `customanchor.DeriveConfirmedProofInventory`, and the
   backend only verifies the confirmed proof chain.
 
 ## Deep Docs

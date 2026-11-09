@@ -8,12 +8,13 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/tap-sdk/customanchor"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 )
 
 // fakeOnboardingCommit composes the requested policy with deterministic asset
 // roots while leaving wallet funding to the caller's fixture.
-func fakeOnboardingCommit(request *tapsdk.CustomAnchorRequest) (*commitResult,
+func fakeOnboardingCommit(request *customanchor.Request) (*commitResult,
 	error) {
 
 	packet, err := psbtutil.Parse(request.AnchorPSBT)

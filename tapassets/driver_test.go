@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/tap-sdk/customanchor"
 	"github.com/stretchr/testify/require"
 )
 
@@ -14,19 +15,19 @@ func TestCommitResultProjection(t *testing.T) {
 	assetRef := tapsdk.AssetRefFromAssetID(tapsdk.AssetID{0x01})
 	firstOutpoint := tapsdk.Outpoint{Txid: tapsdk.Hash{0x02}, Index: 1}
 	secondOutpoint := tapsdk.Outpoint{Txid: tapsdk.Hash{0x03}, Index: 2}
-	transfer := &tapsdk.CustomAnchorTransferPackage{
+	transfer := &customanchor.TransferPackage{
 		AnchorPsbt: []byte{
 			0x04,
 		},
-		Funding: tapsdk.CustomAnchorFundingSummary{
-			Mode: tapsdk.
-				CustomAnchorFundingCallerFundedExact,
+		Funding: customanchor.FundingSummary{
+			Mode: customanchor.
+				FundingCallerFundedExact,
 			ActualFeeSat: 5,
 		},
-		Inputs: []tapsdk.CustomAnchorAssetInputSummary{{
+		Inputs: []customanchor.AssetInputSummary{{
 			LogicalInputID:    "input-0",
 			PacketIndex:       3,
-			PacketRole:        tapsdk.CustomAnchorPacketRoleActive,
+			PacketRole:        customanchor.PacketRoleActive,
 			VirtualInputIndex: 4,
 			AnchorOutpoint:    firstOutpoint,
 			AssetRef:          assetRef,
@@ -34,19 +35,19 @@ func TestCommitResultProjection(t *testing.T) {
 				0x05,
 			},
 			Amount: 10,
-			ProofSource: tapsdk.CustomAnchorProofSourceSummary{
-				Kind: tapsdk.
-					CustomAnchorProofSourceConfirmedFile,
+			ProofSource: customanchor.ProofSourceSummary{
+				Kind: customanchor.
+					ProofSourceConfirmedFile,
 				Blob: []byte{
 					0x0D,
 				},
 			},
 		}},
-		Outputs: []tapsdk.CustomAnchorAssetOutputSummary{
+		Outputs: []customanchor.AssetOutputSummary{
 			{
 				LogicalOutputID: "output-0",
-				PacketRole: tapsdk.
-					CustomAnchorPacketRoleActive,
+				PacketRole: customanchor.
+					PacketRoleActive,
 				PacketIndex:        0,
 				VirtualOutputIndex: 0,
 				AnchorOutputIndex:  1,
@@ -63,8 +64,8 @@ func TestCommitResultProjection(t *testing.T) {
 				TaprootMerkleRoot: tapsdk.Hash{
 					0x07,
 				},
-				ScriptMode: tapsdk.CustomAssetScriptOPTrue,
-				OPTrueSpend: &tapsdk.CustomAssetOPTrueSpendInfo{
+				ScriptMode: customanchor.AssetScriptOPTrue,
+				OPTrueSpend: &customanchor.AssetOPTrueSpendInfo{
 					LeafScript: []byte{
 						0x51,
 					},
@@ -75,8 +76,8 @@ func TestCommitResultProjection(t *testing.T) {
 			},
 			{
 				LogicalOutputID: "output-1",
-				PacketRole: tapsdk.
-					CustomAnchorPacketRoleActive,
+				PacketRole: customanchor.
+					PacketRoleActive,
 				PacketIndex:        1,
 				VirtualOutputIndex: 0,
 				AnchorOutputIndex:  2,
@@ -88,10 +89,10 @@ func TestCommitResultProjection(t *testing.T) {
 				Amount: 6,
 			},
 		},
-		ProofUpdates: []tapsdk.CustomAnchorProofUpdate{
+		ProofUpdates: []customanchor.ProofUpdate{
 			{
-				PacketRole: tapsdk.
-					CustomAnchorPacketRoleActive,
+				PacketRole: customanchor.
+					PacketRoleActive,
 				PacketIndex:        1,
 				VirtualOutputIndex: 0,
 				ProofBlob: []byte{
@@ -99,8 +100,8 @@ func TestCommitResultProjection(t *testing.T) {
 				},
 			},
 			{
-				PacketRole: tapsdk.
-					CustomAnchorPacketRoleActive,
+				PacketRole: customanchor.
+					PacketRoleActive,
 				PacketIndex:        0,
 				VirtualOutputIndex: 0,
 				ProofBlob: []byte{
@@ -123,13 +124,12 @@ func TestCommitResultProjection(t *testing.T) {
 	require.Equal(t, "input-0", result.inputs[0].logicalInputID)
 	require.Equal(t, uint32(3), result.inputs[0].packetIndex)
 	require.Equal(
-		t, tapsdk.CustomAnchorPacketRoleActive,
-		result.inputs[0].packetRole,
+		t, customanchor.PacketRoleActive, result.inputs[0].packetRole,
 	)
 	require.Equal(t, uint32(4), result.inputs[0].virtualInputIndex)
 	require.Equal(t, tapsdk.AssetID{0x05}, result.inputs[0].issuanceID)
 	require.Equal(
-		t, tapsdk.CustomAnchorProofSourceConfirmedFile,
+		t, customanchor.ProofSourceConfirmedFile,
 		result.inputs[0].proofSource.kind,
 	)
 	require.Equal(t, []byte{0x0D}, result.inputs[0].proofSource.blob)
@@ -156,9 +156,9 @@ func TestCommitResultProjectionRequiresProof(t *testing.T) {
 	t.Parallel()
 
 	_, err := commitResultFromValidatedPackage(
-		&tapsdk.CustomAnchorTransferPackage{
-			Outputs: []tapsdk.CustomAnchorAssetOutputSummary{{
-				PacketRole: tapsdk.CustomAnchorPacketRoleActive,
+		&customanchor.TransferPackage{
+			Outputs: []customanchor.AssetOutputSummary{{
+				PacketRole: customanchor.PacketRoleActive,
 			}},
 		}, nil,
 	)
@@ -170,12 +170,12 @@ func TestCommitResultProjectionRequiresProof(t *testing.T) {
 func TestCheckTransitionInputs(t *testing.T) {
 	t.Parallel()
 
-	inputs := func(role tapsdk.CustomAnchorPacketRole, packet uint32,
-		count int) []tapsdk.CustomAnchorAssetInputSummary {
+	inputs := func(role customanchor.PacketRole, packet uint32,
+		count int) []customanchor.AssetInputSummary {
 
-		result := make([]tapsdk.CustomAnchorAssetInputSummary, count)
+		result := make([]customanchor.AssetInputSummary, count)
 		for idx := range result {
-			result[idx] = tapsdk.CustomAnchorAssetInputSummary{
+			result[idx] = customanchor.AssetInputSummary{
 				PacketRole:  role,
 				PacketIndex: packet,
 				IssuanceID: tapsdk.AssetID{
@@ -186,12 +186,12 @@ func TestCheckTransitionInputs(t *testing.T) {
 
 		return result
 	}
-	active := tapsdk.CustomAnchorPacketRoleActive
-	passive := tapsdk.CustomAnchorPacketRolePassive
+	active := customanchor.PacketRoleActive
+	passive := customanchor.PacketRolePassive
 
 	tests := []struct {
 		name    string
-		inputs  []tapsdk.CustomAnchorAssetInputSummary
+		inputs  []customanchor.AssetInputSummary
 		wantErr bool
 	}{{
 		name:   "at bound",

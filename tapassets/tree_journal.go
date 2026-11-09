@@ -10,6 +10,7 @@ import (
 
 	"github.com/btcsuite/btcd/wire/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/tap-sdk/customanchor"
 )
 
 const (
@@ -33,8 +34,8 @@ type customAnchorCommitJournal struct {
 }
 
 func (m *treeMaterializer) commitDurably(ctx context.Context,
-	input wire.OutPoint, request *tapsdk.CustomAnchorRequest,
-	verifier tapsdk.ConfirmedProofVerifier) (*commitResult, error) {
+	input wire.OutPoint, request *customanchor.Request,
+	verifier customanchor.ConfirmedProofVerifier) (*commitResult, error) {
 
 	key := fmt.Sprintf("asset-tree/%s/%s", m.cfg.Digest, input)
 	journal := customAnchorCommitJournal{
@@ -48,8 +49,8 @@ func (m *treeMaterializer) commitDurably(ctx context.Context,
 }
 
 func (j *customAnchorCommitJournal) commitDurably(ctx context.Context,
-	key string, request *tapsdk.CustomAnchorRequest,
-	verifier tapsdk.ConfirmedProofVerifier) (*commitResult, error) {
+	key string, request *customanchor.Request,
+	verifier customanchor.ConfirmedProofVerifier) (*commitResult, error) {
 
 	if request == nil {
 		return nil, fmt.Errorf("%s request is required", j.operation)
@@ -170,7 +171,7 @@ func (j *customAnchorCommitJournal) storeState(ctx context.Context, key string,
 	return j.store.Store(ctx, key, encoded)
 }
 
-func customAnchorCommitRequestDigest(request *tapsdk.CustomAnchorRequest,
+func customAnchorCommitRequestDigest(request *customanchor.Request,
 	domain string) (tapsdk.Hash, error) {
 
 	encoded, err := json.Marshal(request)

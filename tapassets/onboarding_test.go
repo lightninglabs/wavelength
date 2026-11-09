@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/tap-sdk/customanchor"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -96,7 +97,7 @@ func TestOnboarderResumesWithoutRebuilding(t *testing.T) {
 
 	dto := driver.requests[0]
 	require.Equal(
-		t, tapsdk.CustomAnchorFundingWalletFunded, dto.Funding.Mode,
+		t, customanchor.FundingWalletFunded, dto.Funding.Mode,
 	)
 	require.NotNil(t, dto.Funding.WalletFunded)
 	require.Equal(
@@ -121,17 +122,17 @@ func TestOnboarderResumesWithoutRebuilding(t *testing.T) {
 	)
 	require.Len(t, dto.Funding.WalletFunded.CustomLockID, sha256.Size)
 	require.Equal(
-		t, tapsdk.CustomAnchorPassiveReject, dto.PassiveAssets.Policy,
+		t, customanchor.PassiveReject, dto.PassiveAssets.Policy,
 	)
-	require.Equal(t, tapsdk.CustomAnchorLossReject, dto.LossPolicy.Mode)
+	require.Equal(t, customanchor.LossReject, dto.LossPolicy.Mode)
 	require.Equal(
-		t, tapsdk.CustomAssetWitnessBackendSigner,
+		t, customanchor.AssetWitnessBackendSigner,
 		dto.Inputs[0].Witness.Mode,
 	)
 	// The boarding output is anyone-can-spend at the asset layer so the
 	// round's operator can build the transition that consumes it.
 	require.Equal(
-		t, tapsdk.CustomAssetScriptOPTrue, dto.Outputs[0].Script.Mode,
+		t, customanchor.AssetScriptOPTrue, dto.Outputs[0].Script.Mode,
 	)
 	require.NotNil(t, dto.Outputs[0].Script.OPTrue)
 	require.Equal(t, uint64(1_000), dto.Outputs[0].AnchorValueSat)
@@ -289,7 +290,7 @@ func TestOnboardingCustomLockID(t *testing.T) {
 func TestOnboarderRejectsInvalidFundingSummary(t *testing.T) {
 	t.Parallel()
 
-	callerFunded := tapsdk.CustomAnchorFundingCallerFundedExact
+	callerFunded := customanchor.FundingCallerFundedExact
 	wrongMaximum := uint64(999)
 	tests := []struct {
 		name        string
@@ -396,7 +397,7 @@ func TestOnboarderStopsAfterAmbiguousCommit(t *testing.T) {
 
 	request, inventory, owner := testOnboardingRequest(t)
 	driver := newFakeOnboardingDriver()
-	driver.commitErr = &tapsdk.CustomAnchorCommitAttemptError{
+	driver.commitErr = &customanchor.CommitAttemptError{
 		Err:            errors.New("transport lost"),
 		OutcomeUnknown: true,
 	}
@@ -464,7 +465,7 @@ func TestOnboarderFundsFromSeveralUtxos(t *testing.T) {
 	require.Equal(t, boarded, dto.Outputs[0].Amount)
 	require.EqualValues(t, 0, dto.Outputs[0].AnchorOutputIndex)
 	require.Equal(
-		t, tapsdk.CustomAssetScriptOPTrue, dto.Outputs[0].Script.Mode,
+		t, customanchor.AssetScriptOPTrue, dto.Outputs[0].Script.Mode,
 	)
 
 	change := dto.Outputs[1]
@@ -618,7 +619,7 @@ func TestOnboardingChangeFailsClosed(t *testing.T) {
 		name: "wallet script mode substituted",
 		mutate: func(result *commitResult, _ *onboardingChange) {
 			result.outputs[1].scriptMode =
-				tapsdk.CustomAssetScriptOPTrue
+				customanchor.AssetScriptOPTrue
 		},
 		errContains: "is not the pinned external wallet key",
 	}, {
@@ -702,12 +703,12 @@ func onboardingChangeFixture(t *testing.T) (*commitResult, *onboardingChange,
 
 type fakeOnboardingDriver struct {
 	mu              sync.Mutex
-	requests        []*tapsdk.CustomAnchorRequest
+	requests        []*customanchor.Request
 	result          *commitResult
 	commitErr       error
 	actualFeeSat    uint64
 	appendChange    bool
-	fundingMode     *tapsdk.CustomAnchorFundingMode
+	fundingMode     *customanchor.FundingMode
 	maxFeeSat       *uint64
 	commits         int
 	verifications   int
@@ -727,7 +728,7 @@ func newFakeOnboardingDriver() *fakeOnboardingDriver {
 }
 
 func (d *fakeOnboardingDriver) CommitOnboarding(_ context.Context,
-	request *tapsdk.CustomAnchorRequest) (*commitResult, error) {
+	request *customanchor.Request) (*commitResult, error) {
 
 	if d.afterCommit != nil {
 		defer d.afterCommit()
@@ -1115,7 +1116,7 @@ func TestOnboarderReconcilesPublication(t *testing.T) {
 	t.Parallel()
 	request, inventory, owner := testOnboardingRequest(t)
 	driver := newFakeOnboardingDriver()
-	driver.publishErr = &tapsdk.CustomAnchorPublishAttemptError{
+	driver.publishErr = &customanchor.PublishAttemptError{
 		Err:            errors.New("response lost"),
 		OutcomeUnknown: true,
 	}
@@ -1332,10 +1333,10 @@ func TestOnboarderCommitErrorDetails(t *testing.T) {
 	t.Parallel()
 	cause := errors.New("commit response lost")
 	for _, commitErr := range []error{
-		&tapsdk.CustomAnchorCommitAttemptError{
+		&customanchor.CommitAttemptError{
 			Err: cause, OutcomeUnknown: true,
 		},
-		&tapsdk.CustomAnchorCommitResponseError{
+		&customanchor.CommitResponseError{
 			Err: cause,
 		},
 	} {

@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/tap-sdk/customanchor"
 )
 
 // validateOutputCommitment binds the returned root to the policy and P2TR
@@ -60,11 +61,11 @@ func committedOutput(committed *commitResult,
 // commitOutcomeKnown distinguishes pre-commit failures from uncertain
 // mutations.
 func commitOutcomeKnown(err error) bool {
-	var attemptErr *tapsdk.CustomAnchorCommitAttemptError
+	var attemptErr *customanchor.CommitAttemptError
 	if errors.As(err, &attemptErr) {
 		return !attemptErr.OutcomeUnknown
 	}
-	var responseErr *tapsdk.CustomAnchorCommitResponseError
+	var responseErr *customanchor.CommitResponseError
 	if errors.As(err, &responseErr) {
 		return false
 	}

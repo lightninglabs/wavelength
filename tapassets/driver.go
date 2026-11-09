@@ -9,6 +9,7 @@ import (
 
 	"github.com/btcsuite/btcd/psbt/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/tap-sdk/customanchor"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 )
 
@@ -16,7 +17,7 @@ import (
 // merge. Its proof path step carries the first input as the spine and every
 // other input as a co-input path, which tap-sdk limits to
 // AssetProofPathMaxStepCoPaths.
-const MaxTransitionInputs = 1 + tapsdk.AssetProofPathMaxStepCoPaths
+const MaxTransitionInputs = 1 + customanchor.ProofPathMaxStepCoPaths
 
 // ErrTooManyTransitionInputs reports a transition whose proof paths tap-sdk
 // could not encode.
@@ -25,9 +26,9 @@ var ErrTooManyTransitionInputs = errors.New("transition merges too many " +
 
 // checkTransitionInputs rejects a plan that merges more inputs of one issuance
 // than MaxTransitionInputs.
-func checkTransitionInputs(in []tapsdk.CustomAnchorAssetInputSummary) error {
+func checkTransitionInputs(in []customanchor.AssetInputSummary) error {
 	type packetKey struct {
-		role  tapsdk.CustomAnchorPacketRole
+		role  customanchor.PacketRole
 		index uint32
 	}
 	counts := make(map[packetKey]int, len(in))
@@ -50,7 +51,7 @@ func checkTransitionInputs(in []tapsdk.CustomAnchorAssetInputSummary) error {
 type commitOutput struct {
 	logicalOutputID   string
 	packetIndex       uint32
-	packetRole        tapsdk.CustomAnchorPacketRole
+	packetRole        customanchor.PacketRole
 	anchorOutputIndex uint32
 	anchorOutpoint    tapsdk.Outpoint
 	anchorValueSat    int64
@@ -60,7 +61,7 @@ type commitOutput struct {
 	taprootAssetRoot  tapsdk.Hash
 	taprootMerkleRoot tapsdk.Hash
 	scriptKey         tapsdk.PubKey
-	scriptMode        tapsdk.CustomAssetScriptMode
+	scriptMode        customanchor.AssetScriptMode
 	opTrueWitness     [][]byte
 	proofBlob         []byte
 }
@@ -68,7 +69,7 @@ type commitOutput struct {
 type commitInput struct {
 	logicalInputID    string
 	packetIndex       uint32
-	packetRole        tapsdk.CustomAnchorPacketRole
+	packetRole        customanchor.PacketRole
 	virtualInputIndex uint32
 	anchorOutpoint    tapsdk.Outpoint
 	assetRef          tapsdk.AssetRef
@@ -78,14 +79,14 @@ type commitInput struct {
 }
 
 type commitProofSource struct {
-	kind tapsdk.CustomAnchorProofSourceKind
+	kind customanchor.ProofSourceKind
 	blob []byte
 }
 
 type commitResult struct {
 	packageBytes []byte
 	anchorPSBT   []byte
-	fundingMode  tapsdk.CustomAnchorFundingMode
+	fundingMode  customanchor.FundingMode
 	actualFeeSat uint64
 	maxFeeSat    uint64
 	inputs       []commitInput
@@ -93,8 +94,8 @@ type commitResult struct {
 }
 
 type assetTreeDriver interface {
-	Commit(context.Context, *tapsdk.CustomAnchorRequest,
-		tapsdk.ConfirmedProofVerifier) (*commitResult, error)
+	Commit(context.Context, *customanchor.Request,
+		customanchor.ConfirmedProofVerifier) (*commitResult, error)
 
 	DecodePackage([]byte) (*commitResult, error)
 }
@@ -109,8 +110,8 @@ type outputCommitmentPreview struct {
 type batchAnchorDriver interface {
 	assetTreeDriver
 
-	Preview(context.Context, *tapsdk.CustomAnchorRequest,
-		tapsdk.ConfirmedProofVerifier) (
+	Preview(context.Context, *customanchor.Request,
+		customanchor.ConfirmedProofVerifier) (
 		[]outputCommitmentPreview,
 		error,
 	)
@@ -123,10 +124,9 @@ type sdkDriver struct {
 }
 
 // Preview returns the commitment roots produced by a custom-anchor request.
-func (d *sdkDriver) Preview(ctx context.Context,
-	request *tapsdk.CustomAnchorRequest,
-	verifier tapsdk.ConfirmedProofVerifier) ([]outputCommitmentPreview,
-	error) {
+func (d *sdkDriver) Preview(ctx context.Context, request *customanchor.Request,
+	verifier customanchor.ConfirmedProofVerifier) (
+	[]outputCommitmentPreview, error) {
 
 	if d == nil || d.wallet == nil {
 		return nil, fmt.Errorf("tap-sdk wallet is required")
@@ -158,11 +158,11 @@ func (d *sdkDriver) Preview(ctx context.Context,
 // buildTransition plans a transition whose proof paths can be encoded, before
 // tapd seals anything.
 func (d *sdkDriver) buildTransition(ctx context.Context,
-	request *tapsdk.CustomAnchorRequest,
-	verifier tapsdk.ConfirmedProofVerifier) (*tapsdk.CustomAnchorPlan,
+	request *customanchor.Request,
+	verifier customanchor.ConfirmedProofVerifier) (*customanchor.Plan,
 	error) {
 
-	builder := d.wallet.NewCustomAnchorTxBuilder()
+	builder := customanchor.NewTxBuilder(d.wallet)
 	if verifier != nil {
 		builder.SetConfirmedProofVerifier(verifier)
 	}
@@ -185,7 +185,7 @@ func (d *sdkDriver) Publish(ctx context.Context, packageBytes,
 		return fmt.Errorf("tap-sdk wallet is required")
 	}
 
-	var transfer tapsdk.CustomAnchorTransferPackage
+	var transfer customanchor.TransferPackage
 	if err := transfer.UnmarshalBinary(packageBytes); err != nil {
 		return fmt.Errorf("decode sealed transfer package: %w", err)
 	}
@@ -193,17 +193,16 @@ func (d *sdkDriver) Publish(ctx context.Context, packageBytes,
 		return fmt.Errorf("verify final anchor PSBT: %w", err)
 	}
 
-	_, err := d.wallet.PublishCustomAnchorTransfer(
-		ctx, &transfer, finalPSBT,
+	_, err := customanchor.PublishTransfer(
+		ctx, d.wallet, &transfer, finalPSBT,
 	)
 
 	return err
 }
 
 // Commit builds, commits, verifies, and seals one SDK custom-anchor request.
-func (d *sdkDriver) Commit(ctx context.Context,
-	request *tapsdk.CustomAnchorRequest,
-	verifier tapsdk.ConfirmedProofVerifier) (*commitResult, error) {
+func (d *sdkDriver) Commit(ctx context.Context, request *customanchor.Request,
+	verifier customanchor.ConfirmedProofVerifier) (*commitResult, error) {
 
 	if d == nil || d.wallet == nil {
 		return nil, fmt.Errorf("tap-sdk wallet is required")
@@ -214,8 +213,8 @@ func (d *sdkDriver) Commit(ctx context.Context,
 		return nil, err
 	}
 
-	result, err := plan.Commit(ctx, tapsdk.CustomAnchorCommitOptions{
-		Publish: tapsdk.CustomAnchorPublishMetadata{
+	result, err := plan.Commit(ctx, customanchor.CommitOptions{
+		Publish: customanchor.PublishMetadata{
 			SkipAnchorTxBroadcast: true,
 			ExternalBroadcast:     true,
 		},
@@ -239,7 +238,7 @@ func (d *sdkDriver) DecodePackage(encoded []byte) (*commitResult, error) {
 
 // decodeSealedPackage validates and reads a sealed SDK package.
 func decodeSealedPackage(encoded []byte) (*commitResult, error) {
-	var transfer tapsdk.CustomAnchorTransferPackage
+	var transfer customanchor.TransferPackage
 	if err := transfer.UnmarshalBinary(encoded); err != nil {
 		return nil, fmt.Errorf("decode tap-sdk transfer package: %w",
 			err)
@@ -249,7 +248,7 @@ func decodeSealedPackage(encoded []byte) (*commitResult, error) {
 }
 
 // commitResultFromPackage keeps the package fields used by tree construction.
-func commitResultFromPackage(transfer *tapsdk.CustomAnchorTransferPackage) (
+func commitResultFromPackage(transfer *customanchor.TransferPackage) (
 	*commitResult, error) {
 
 	if transfer == nil {
@@ -269,8 +268,7 @@ func commitResultFromPackage(transfer *tapsdk.CustomAnchorTransferPackage) (
 	return commitResultFromValidatedPackage(transfer, encoded)
 }
 
-func commitResultFromValidatedPackage(
-	transfer *tapsdk.CustomAnchorTransferPackage,
+func commitResultFromValidatedPackage(transfer *customanchor.TransferPackage,
 	encoded []byte) (*commitResult, error) {
 
 	result := &commitResult{
@@ -355,7 +353,7 @@ func commitResultFromValidatedPackage(
 }
 
 type proofUpdateKey struct {
-	packetRole         tapsdk.CustomAnchorPacketRole
+	packetRole         customanchor.PacketRole
 	packetIndex        uint32
 	virtualOutputIndex uint32
 }
@@ -377,20 +375,20 @@ func (e *commitResponseError) Unwrap() error {
 // CommitOnboarding commits a custom anchor that tap-sdk itself will publish
 // after Wavelength supplies the final Bitcoin signature.
 func (d *sdkDriver) CommitOnboarding(ctx context.Context,
-	request *tapsdk.CustomAnchorRequest) (*commitResult, error) {
+	request *customanchor.Request) (*commitResult, error) {
 
 	if d == nil || d.wallet == nil {
 		return nil, fmt.Errorf("tap-sdk wallet is required")
 	}
 
-	builder := d.wallet.NewCustomAnchorTxBuilder()
+	builder := customanchor.NewTxBuilder(d.wallet)
 	plan, err := builder.Build(ctx, request)
 	if err != nil {
 		return nil, err
 	}
 
-	result, err := plan.Commit(ctx, tapsdk.CustomAnchorCommitOptions{
-		Publish: tapsdk.CustomAnchorPublishMetadata{
+	result, err := plan.Commit(ctx, customanchor.CommitOptions{
+		Publish: customanchor.PublishMetadata{
 			Label: "wavelength-onboarding",
 		},
 	})
@@ -411,7 +409,7 @@ func (d *sdkDriver) CommitOnboarding(ctx context.Context,
 func (d *sdkDriver) VerifyFinalOnboarding(packageBytes,
 	finalPSBT []byte) error {
 
-	var transfer tapsdk.CustomAnchorTransferPackage
+	var transfer customanchor.TransferPackage
 	if err := transfer.UnmarshalBinary(packageBytes); err != nil {
 		return fmt.Errorf("decode tap-sdk transfer package: %w", err)
 	}
