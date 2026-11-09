@@ -12,6 +12,14 @@ var (
 	ErrNotFound = errors.New("ark channel not found")
 	// ErrConflict indicates that another worker advanced the channel first.
 	ErrConflict = errors.New("ark channel revision conflict")
+
+	// ErrOORPreparationAmbiguous means the prepared-transfer request may
+	// have reached its durable actor even though the caller did not receive
+	// the resulting binding. The channel must remain recoverable until a
+	// keyed lookup either reconstructs and aborts that transfer or
+	// preparation succeeds.
+	ErrOORPreparationAmbiguous = errors.New("ark channel OOR preparation " +
+		"outcome is ambiguous")
 )
 
 const maxCASAttempts = 8
