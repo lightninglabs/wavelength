@@ -45,6 +45,7 @@ const (
 	arkChannelArkKeyFamily            keychain.KeyFamily = 220
 	arkChannelBackingKeyFamily        keychain.KeyFamily = 221
 	arkChannelFunderKeyFamily         keychain.KeyFamily = 223
+	arkChannelPaymentCleanupTimeout                      = 30 * time.Second
 	arkChannelReceiveCleanupTimeout                      = 30 * time.Second
 	maxArkChannelIdempotencyKeyLength                    = 128
 )
@@ -140,6 +141,23 @@ func (c *loggedArkChannelForceCloser) EnsureForceCloseChannel(
 	)
 
 	return nil
+}
+
+// LightningPaymentResult is the atomic public-payment result returned after
+// the private source settled with the same preimage.
+type LightningPaymentResult struct {
+	PaymentHash   lntypes.Hash
+	Preimage      lntypes.Preimage
+	PrivateAmount btcutil.Amount
+	Fee           btcutil.Amount
+	ChannelID     arkchannel.ID
+}
+
+// ArkChannelPaymentResult reports the payment hash and terminal state observed
+// in lnd's authoritative payment or invoice store.
+type ArkChannelPaymentResult struct {
+	PaymentHash lntypes.Hash
+	Settled     bool
 }
 
 // NewHubFundingPeerInfo derives the immutable channel policy advertised by a
@@ -1470,6 +1488,158 @@ func (c *NativeArkChannelController) newReceiveIntentTerms(
 	)
 
 	return terms, terms.Validate()
+}
+
+// SendPayment creates a hub invoice and pays it through native lnd.
+func (c *NativeArkChannelController) SendPayment(ctx context.Context,
+	id arkchannel.ID, amount btcutil.Amount) (ArkChannelPaymentResult,
+	error) {
+
+	if c.party != arkchannel.PartyClient {
+		return ArkChannelPaymentResult{}, fmt.Errorf("client payment " +
+			"RPC is not available on the hub endpoint")
+	}
+	if err := c.ensureClientStarted(ctx); err != nil {
+		return ArkChannelPaymentResult{}, err
+	}
+	record, err := c.service.GetChannel(ctx, id)
+	if err != nil {
+		return ArkChannelPaymentResult{}, err
+	}
+	hash, err := c.paymentPeer.CreateInvoice(ctx, id, amount)
+	if err != nil {
+		return ArkChannelPaymentResult{}, err
+	}
+	preimage, err := c.node.PayInvoiceResult(ctx, record, hash, amount)
+	if err != nil {
+		return ArkChannelPaymentResult{}, err
+	}
+	settled := preimage.Hash() == hash
+	if !settled {
+		return ArkChannelPaymentResult{}, fmt.Errorf("native client " +
+			"payment returned the wrong preimage")
+	}
+
+	return ArkChannelPaymentResult{
+		PaymentHash: hash, Settled: settled,
+	}, nil
+}
+
+// ReceivePayment creates a local invoice and asks the hub to pay it.
+func (c *NativeArkChannelController) ReceivePayment(ctx context.Context,
+	id arkchannel.ID, amount btcutil.Amount) (ArkChannelPaymentResult,
+	error) {
+
+	if c.party != arkchannel.PartyClient {
+		return ArkChannelPaymentResult{}, fmt.Errorf("client payment " +
+			"RPC is not available on the hub endpoint")
+	}
+	if err := c.ensureClientStarted(ctx); err != nil {
+		return ArkChannelPaymentResult{}, err
+	}
+	if _, err := c.service.GetChannel(ctx, id); err != nil {
+		return ArkChannelPaymentResult{}, err
+	}
+	_, hash, err := c.node.AddInvoice(ctx, amount)
+	if err != nil {
+		return ArkChannelPaymentResult{}, err
+	}
+	if err := c.paymentPeer.PayInvoice(ctx, id, hash, amount); err != nil {
+		return ArkChannelPaymentResult{}, err
+	}
+	settled, err := c.node.InvoiceSettled(ctx, hash)
+	if err != nil {
+		return ArkChannelPaymentResult{}, err
+	}
+	if !settled {
+		return ArkChannelPaymentResult{}, fmt.Errorf("native client " +
+			"invoice did not settle")
+	}
+
+	return ArkChannelPaymentResult{
+		PaymentHash: hash, Settled: settled,
+	}, nil
+}
+
+// PayLightningInvoice asks the hub to dispatch one public invoice only after
+// this endpoint's private same-hash HTLC is held.
+func (c *NativeArkChannelController) PayLightningInvoice(ctx context.Context,
+	paymentRequest string, maxFee btcutil.Amount) (LightningPaymentResult,
+	error) {
+
+	if c.party != arkchannel.PartyClient {
+		return LightningPaymentResult{}, fmt.Errorf("public payment " +
+			"is available only on the client endpoint")
+	}
+	if paymentRequest == "" || maxFee < 0 {
+		return LightningPaymentResult{}, fmt.Errorf("valid payment " +
+			"request and maximum fee are required")
+	}
+	if err := c.ensureClientStarted(ctx); err != nil {
+		return LightningPaymentResult{}, err
+	}
+	preparation, err := c.paymentPeer.PrepareOutgoingPayment(
+		ctx, paymentRequest, maxFee,
+	)
+	if err != nil {
+		return LightningPaymentResult{}, err
+	}
+	record, err := c.service.GetChannel(ctx, preparation.ChannelID)
+	if err != nil {
+		return LightningPaymentResult{}, c.cancelOutgoingPayment(
+			ctx, preparation.PaymentHash, err,
+		)
+	}
+	if record.Snapshot.Terms.ReservedSCID != preparation.ReservedSCID {
+		err := fmt.Errorf("payment preparation changed channel SCID")
+
+		return LightningPaymentResult{}, c.cancelOutgoingPayment(
+			ctx, preparation.PaymentHash, err,
+		)
+	}
+	preimage, err := c.node.PayInvoiceResult(
+		ctx, record, preparation.PaymentHash, preparation.PrivateAmount,
+	)
+	if err != nil {
+		return LightningPaymentResult{}, c.cancelOutgoingPayment(
+			ctx, preparation.PaymentHash, err,
+		)
+	}
+	if preimage.Hash() != preparation.PaymentHash {
+		err := fmt.Errorf("payment preimage does not match preparation")
+
+		return LightningPaymentResult{}, c.cancelOutgoingPayment(
+			ctx, preparation.PaymentHash, err,
+		)
+	}
+
+	return LightningPaymentResult{
+		PaymentHash: preparation.PaymentHash, Preimage: preimage,
+		PrivateAmount: preparation.PrivateAmount, Fee: preparation.Fee,
+		ChannelID: preparation.ChannelID,
+	}, nil
+}
+
+// cancelOutgoingPayment releases a prepared public-payment reservation even
+// when the request that detected the failure has already been canceled.
+func (c *NativeArkChannelController) cancelOutgoingPayment(ctx context.Context,
+	hash lntypes.Hash, cause error) error {
+
+	cleanupCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), arkChannelPaymentCleanupTimeout,
+	)
+	defer cancel()
+
+	err := c.paymentPeer.CancelOutgoingPayment(
+		cleanupCtx, hash, cause.Error(),
+	)
+	if err != nil {
+		return errors.Join(
+			cause, fmt.Errorf("cancel outgoing payment: %w", err),
+		)
+	}
+
+	return cause
 }
 
 // waitIncomingPaymentReady joins the two independent durable readiness
