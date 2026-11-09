@@ -402,10 +402,12 @@ type Server struct {
 	incomingVTXOActor *actor.DurableActor[
 		*vtxo.IncomingVTXOMsg, vtxo.IncomingVTXOResp,
 	]
-	creditRegistry     *credit.Registry
-	vhtlcRecoveryStore *db.VHTLCRecoveryStoreDB
-	vhtlcRecovery      *coordinator.Service
-	vhtlcPreimages     *unrollpolicy.PreimageResolverRegistry
+	creditRegistry       *credit.Registry
+	vhtlcRecoveryStore   *db.VHTLCRecoveryStoreDB
+	arkChannelMu         sync.RWMutex
+	arkChannelController ArkChannelController
+	vhtlcRecovery        *coordinator.Service
+	vhtlcPreimages       *unrollpolicy.PreimageResolverRegistry
 
 	// ledgerStore exposes the client-side ledger DB adapter for
 	// read-only RPC handlers (GetFeeHistory). Writes go through
