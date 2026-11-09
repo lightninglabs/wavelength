@@ -592,8 +592,9 @@ func TestVerifyAssetVTXORejectsMalformedInput(t *testing.T) {
 }
 
 // TestTapdProofChainVerifier checks that tapd verifies a proof file without
-// writing to its universe when it knows the asset, and learns an unknown
-// group from the issuance proof or, for a reissuance, from its federation.
+// writing to its universe when it knows the asset, and learns an unstored
+// asset or an unknown group from the issuance proof or, for a reissuance,
+// from its federation.
 func TestTapdProofChainVerifier(t *testing.T) {
 	t.Parallel()
 
@@ -619,6 +620,16 @@ func TestTapdProofChainVerifier(t *testing.T) {
 				validFile: true,
 			},
 			calls: []string{
+				"verify",
+			},
+		},
+		{
+			name: "ungrouped asset on a fresh tapd",
+			client: &fakeTapdProofClient{
+				validFile: true, unstored: true,
+			},
+			calls: []string{
+				"verify", "unpack", "decode", "insert",
 				"verify",
 			},
 		},
@@ -684,6 +695,15 @@ func TestTapdProofChainVerifier(t *testing.T) {
 			client: &fakeTapdProofClient{},
 			err:    "tapd rejected the proof file",
 		},
+		{
+			name: "tapd unavailable",
+			client: &fakeTapdProofClient{
+				validFile: true,
+				verifyErr: errors.New("tapd unavailable"),
+				insertErr: errors.New("connection refused"),
+			},
+			err: "tapd unavailable",
+		},
 	}
 
 	for _, testCase := range testCases {
@@ -723,9 +743,12 @@ func (f *fakeProofChain) VerifyProofChain(context.Context, []byte) error {
 
 // fakeTapdProofClient models tapd's group rule: a grouped asset verifies only
 // once tapd knows its group, which a group anchor issuance or a federation
-// sync teaches it.
+// sync teaches it. An unstored asset models tapd failing to describe a valid
+// proof of an asset it has not stored, until its issuance is inserted.
 type fakeTapdProofClient struct {
 	validFile   bool
+	unstored    bool
+	verifyErr   error
 	grouped     bool
 	anchor      bool
 	transfer    bool
@@ -776,6 +799,7 @@ func (f *fakeTapdProofClient) InsertProof(context.Context, []byte,
 		return errors.New("group key not known")
 	}
 	f.knownGroup = true
+	f.unstored = false
 
 	return nil
 }
@@ -784,6 +808,15 @@ func (f *fakeTapdProofClient) VerifyProof(context.Context, []byte) (
 	*tapsdk.VerifyProofResponse, error) {
 
 	f.calls = append(f.calls, "verify")
+
+	switch {
+	case f.verifyErr != nil:
+		return nil, f.verifyErr
+
+	case f.unstored:
+		return nil, errors.New("unable to marshal proof: unable to " +
+			"fetch asset meta")
+	}
 
 	return &tapsdk.VerifyProofResponse{
 		Valid: f.validFile && (!f.grouped || f.knownGroup),
