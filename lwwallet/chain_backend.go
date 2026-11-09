@@ -696,12 +696,16 @@ func (b *ChainBackend) RegisterSpend(ctx context.Context,
 		b.cancelSpendReg(id, reg)
 	}
 
-	// Per-registration one-shot to handle outpoints that are
-	// already spent at registration time. See RegisterConf for the
-	// O(N²)-vs-O(1) rationale and the b.wg lifecycle note.
+	// Complete the initial spend check before returning. Lnd's transaction
+	// publisher performs a non-blocking read immediately after registering
+	// to distinguish a confirmed transaction from an RBF candidate. An
+	// asynchronous initial check can therefore make lnd replace an already
+	// confirmed sweep and terminally fail it with missing inputs.
+	//
+	// The check remains scoped to this registration, so registration is
+	// still O(1) rather than re-scanning all pending registrations.
 	b.wg.Add(1)
-	//nolint:contextcheck // registration cancel/Stop own one-shot lifetime
-	go b.runSpendOneShot(id, reg)
+	b.runSpendOneShot(ctx, id, reg)
 
 	return &chainsource.SpendRegistration{
 		Spend:   spendChan,
@@ -735,7 +739,9 @@ func (b *ChainBackend) cancelSpendReg(id uint64, reg *spendRegistration) {
 // triggered at RegisterSpend time. The registration is NOT deleted
 // after delivery: a reorg may later reset it to stateWatching and
 // the next re-check must fire Spend again on the new chain.
-func (b *ChainBackend) runSpendOneShot(id uint64, reg *spendRegistration) {
+func (b *ChainBackend) runSpendOneShot(ctx context.Context, id uint64,
+	reg *spendRegistration) {
+
 	defer b.wg.Done()
 
 	select {
@@ -752,14 +758,16 @@ func (b *ChainBackend) runSpendOneShot(id uint64, reg *spendRegistration) {
 		return
 	}
 
-	b.deliverSpendIfNew(id, reg)
+	b.deliverSpendIfNew(ctx, id, reg)
 }
 
 // deliverSpendIfNew runs a spend re-check and fires the Spend
 // channel iff the registration is in stateWatching and a spend is
 // now available. Mirror of deliverConfIfNew; see that function's
 // comment for the regMu / channel-send ordering rationale.
-func (b *ChainBackend) deliverSpendIfNew(id uint64, reg *spendRegistration) {
+func (b *ChainBackend) deliverSpendIfNew(ctx context.Context, id uint64,
+	reg *spendRegistration) {
+
 	reg.regMu.Lock()
 	if reg.state == statePositive {
 		reg.regMu.Unlock()
@@ -774,11 +782,9 @@ func (b *ChainBackend) deliverSpendIfNew(id uint64, reg *spendRegistration) {
 	// did not parse and reorgSpendReg will fall back to a
 	// conservative re-check rather than try to match against
 	// ReorgEvent.Disconnected.
-	detail, spendingBlockHash, err := b.checkSingleSpend(reg)
+	detail, spendingBlockHash, err := b.checkSingleSpend(ctx, reg)
 	if err != nil {
-		b.log.DebugS(
-			context.Background(),
-			"Spend status temporarily unavailable",
+		b.log.DebugS(ctx, "Spend status temporarily unavailable",
 			slog.Uint64("reg_id", id),
 			btclog.Fmt("err", "%v", err),
 		)
@@ -811,7 +817,7 @@ func (b *ChainBackend) deliverSpendIfNew(id uint64, reg *spendRegistration) {
 		return
 	}
 
-	b.log.DebugS(context.Background(),
+	b.log.DebugS(ctx,
 		"Spend registration fulfilled",
 		slog.Uint64("reg_id", id),
 		slog.String("outpoint", reg.outpoint.String()),
@@ -1052,7 +1058,9 @@ func (b *ChainBackend) reorgSpendReg(id uint64, reg *spendRegistration,
 		// was unparseable at delivery time. If the outpoint is
 		// still spent by the same spender in the same block,
 		// no reorg for this registration.
-		current, currentBlock, err := b.checkSingleSpend(reg)
+		current, currentBlock, err := b.checkSingleSpend(
+			context.Background(), reg,
+		)
 		if err != nil {
 			b.log.DebugS(
 				context.Background(),
@@ -1103,7 +1111,7 @@ func (b *ChainBackend) reorgSpendReg(id uint64, reg *spendRegistration,
 		slog.Uint64("reg_id", id),
 	)
 
-	b.deliverSpendIfNew(id, reg)
+	b.deliverSpendIfNew(context.Background(), id, reg)
 }
 
 // handleChainEvents drains the unified chain stream and dispatches
@@ -1483,7 +1491,7 @@ func (b *ChainBackend) checkSpends() {
 			continue
 		}
 
-		b.deliverSpendIfNew(id, reg)
+		b.deliverSpendIfNew(context.Background(), id, reg)
 	}
 }
 
@@ -1494,15 +1502,16 @@ func (b *ChainBackend) checkSpends() {
 // interpreted as a reorg. The second return value is the block hash containing
 // the spending tx; a zero hash means only that the hash was unparseable while
 // the spend itself was valid.
-func (b *ChainBackend) checkSingleSpend(reg *spendRegistration) (
-	*chainsource.SpendDetail, chainhash.Hash, error) {
+func (b *ChainBackend) checkSingleSpend(ctx context.Context,
+	reg *spendRegistration) (*chainsource.SpendDetail, chainhash.Hash,
+	error) {
 
 	if reg.outpoint == nil {
 		return nil, chainhash.Hash{}, nil
 	}
 
 	outspend, err := b.esplora.GetOutspend(
-		context.Background(), reg.outpoint.Hash, reg.outpoint.Index,
+		ctx, reg.outpoint.Hash, reg.outpoint.Index,
 	)
 	if err != nil {
 		return nil, chainhash.Hash{}, err
@@ -1517,9 +1526,7 @@ func (b *ChainBackend) checkSingleSpend(reg *spendRegistration) (
 		return nil, chainhash.Hash{}, err
 	}
 
-	spendingTx, err := b.esplora.GetRawTx(
-		context.Background(), *spenderHash,
-	)
+	spendingTx, err := b.esplora.GetRawTx(ctx, *spenderHash)
 	if err != nil {
 		return nil, chainhash.Hash{}, err
 	}
