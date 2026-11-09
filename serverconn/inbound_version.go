@@ -1,16 +1,19 @@
 package serverconn
 
 import (
+	"fmt"
+
 	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 )
 
 // validateInboundEnvelope checks that an inbound server envelope carries the
-// mailbox transport and Ark protocol versions bound to this runtime. It
-// returns a typed permanent version StatusError on mismatch so the ingress
-// loop refuses to acknowledge or dispatch the envelope and the connector can
-// classify the failure as permanent. A nil return means the envelope is
-// compatible and may be delivered.
+// mailbox transport and Ark protocol versions bound to this runtime and, when
+// present, names its effective reply mailbox. It returns a typed permanent
+// version StatusError on version mismatch so the ingress loop refuses to
+// acknowledge or dispatch the envelope and the connector can classify the
+// failure as permanent. A nil return means the envelope is compatible and may
+// be delivered.
 //
 // There is no legacy fallback: an inbound Ark version of zero is treated as a
 // mismatch like any other wrong version. The client and operator are deployed
@@ -40,6 +43,13 @@ func (a *ServerConnectionActor) validateInboundEnvelope(
 				mailboxconn.StatusArkVersionMismatch,
 			),
 		)
+	}
+
+	recipient := env.GetRecipient()
+	if recipient != "" && recipient != a.cfg.replyMailboxID() {
+		return fmt.Errorf("inbound envelope recipient %q does not "+
+			"match reply mailbox %q", recipient,
+			a.cfg.replyMailboxID())
 	}
 
 	return nil
