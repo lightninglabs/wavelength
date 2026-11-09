@@ -78,6 +78,38 @@ func (p Party) String() string {
 	}
 }
 
+// Phase is the Ark coordination phase, not the Lightning channel state.
+type Phase uint8
+
+const (
+	// PhaseRequested means immutable channel terms are registered.
+	PhaseRequested Phase = 1
+
+	// PhaseNegotiating means the exact VTXO is bound and lnd funding is in
+	// progress.
+	PhaseNegotiating Phase = 2
+)
+
+// String returns the durable name of a coordination phase.
+func (p Phase) String() string {
+	switch p {
+	case PhaseRequested:
+		return "requested"
+
+	case PhaseNegotiating:
+		return "negotiating"
+
+	default:
+		return "unknown"
+	}
+}
+
+// IsTerminal reports whether Ark coordination has no further work. Preparation
+// and negotiation both retain a restart obligation.
+func (p Phase) IsTerminal() bool {
+	return false
+}
+
 // VTXOTerms identify every key role and relative delay in the channel VTXO.
 // Persisting semantics instead of derived script bytes gives both peers one
 // canonical policy representation to validate.
@@ -350,6 +382,25 @@ func (b Backing) Validate(terms Terms, source VTXOBinding) error {
 	}
 
 	return nil
+}
+
+// Snapshot is the complete Ark-owned durable state for one channel.
+type Snapshot struct {
+	Terms                 Terms
+	Phase                 Phase
+	OORPreparationStarted bool
+	Source                *VTXOBinding
+}
+
+// Clone returns a snapshot without aliases to mutable fields.
+func (s Snapshot) Clone() Snapshot {
+	s.Terms = s.Terms.Clone()
+	if s.Source != nil {
+		source := s.Source.Clone()
+		s.Source = &source
+	}
+
+	return s
 }
 
 // validateNodeKey checks a compressed secp256k1 node key.
