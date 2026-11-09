@@ -35,6 +35,11 @@ var (
 	ErrForfeitReleaseRoundMismatch = errors.New("forfeit release names a " +
 		"round that does not hold the reservation")
 
+	// ErrCohortReservationNotOwned means automatic cohort adoption raced
+	// with another reservation or carries a different observation height.
+	ErrCohortReservationNotOwned = errors.New("automatic cohort adoption " +
+		"does not own reservation")
+
 	// ErrExitInFlight means the VTXO has been handed to the chain
 	// resolver for a unilateral exit, so it is no longer available for
 	// any cooperative operation.
