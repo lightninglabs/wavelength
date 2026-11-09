@@ -2,11 +2,14 @@ package lnruntime
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
@@ -15,14 +18,75 @@ import (
 	"github.com/lightningnetwork/lnd/chanstate"
 	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/graph/db/models"
+	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnpeer"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
+	paymentsdb "github.com/lightningnetwork/lnd/payments/db"
 	"github.com/lightningnetwork/lnd/routing/route"
 )
+
+const (
+	maximumBlockHeight = ^uint32(0)
+
+	// arkChannelPaymentCLTVMarginBlocks is the ordinary Lightning reaction
+	// margin added after the complete Ark source-recovery delay.
+	arkChannelPaymentCLTVMarginBlocks = uint32(40)
+)
+
+var (
+	// ErrPrivatePaymentExpiryNotNested means a private Ark-channel HTLC
+	// cannot expire strictly before the public HTLC safety boundary that
+	// funds it.
+	ErrPrivatePaymentExpiryNotNested = errors.New("private payment " +
+		"expiry is not nested inside public payment")
+)
+
+// TerminalPaymentError means lnd's control tower has durably terminated a
+// payment without a preimage. Retrying the same hash cannot create a new
+// attempt, but a higher-level atomic bridge may still choose another rail.
+type TerminalPaymentError struct {
+	Reason string
+}
+
+// Error returns the terminal lnd payment reason.
+func (e *TerminalPaymentError) Error() string {
+	if e == nil || e.Reason == "" {
+		return "native payment failed"
+	}
+
+	return "native payment failed: " + e.Reason
+}
+
+// PaymentNotStartedError means lnd rejected a route and its control tower
+// confirms that no attempt owns the payment hash. A caller may safely choose
+// another delivery rail because this node cannot reveal the preimage later.
+type PaymentNotStartedError struct {
+	Err error
+}
+
+// Error returns the underlying route admission failure.
+func (e *PaymentNotStartedError) Error() string {
+	if e == nil || e.Err == nil {
+		return "native payment was not started"
+	}
+
+	return "native payment was not started: " + e.Err.Error()
+}
+
+// Unwrap exposes the underlying route admission failure.
+func (e *PaymentNotStartedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+
+	return e.Err
+}
 
 // NativeNodeConfig contains the process-owned dependencies for one modular
 // lnd channel endpoint.
@@ -462,4 +526,582 @@ func (n *NativeNode) PeerMessageHandler() PeerEventHandler {
 
 		return n.runtime.HandlePeerMessage(ctx, message, n.peer)
 	}
+}
+
+// AddInvoice creates a native lnd invoice and returns its preimage and hash.
+func (n *NativeNode) AddInvoice(ctx context.Context, amount btcutil.Amount) (
+	lntypes.Preimage, lntypes.Hash, error) {
+
+	if amount <= 0 {
+		return lntypes.Preimage{}, lntypes.Hash{}, fmt.Errorf(
+			"invoice amount must be positive")
+	}
+	var preimage lntypes.Preimage
+	if _, err := rand.Read(preimage[:]); err != nil {
+		return lntypes.Preimage{}, lntypes.Hash{}, err
+	}
+	hash, err := n.AddInvoiceWithPreimage(ctx, amount, preimage, false)
+	if err != nil {
+		return lntypes.Preimage{}, lntypes.Hash{}, err
+	}
+
+	return preimage, hash, nil
+}
+
+// AddInvoiceWithPreimage adds or validates one deterministic native invoice.
+// A retry never changes amount, preimage, or hold semantics.
+func (n *NativeNode) AddInvoiceWithPreimage(ctx context.Context,
+	amount btcutil.Amount, preimage lntypes.Preimage, hold bool) (
+	lntypes.Hash, error) {
+
+	if amount <= 0 {
+		return lntypes.Hash{}, fmt.Errorf("invoice amount must be " +
+			"positive")
+	}
+	hash := preimage.Hash()
+	invoice := &invoices.Invoice{
+		CreationDate: time.Now(),
+		HodlInvoice:  hold,
+		Terms: invoices.ContractTerm{
+			FinalCltvDelta:  18,
+			Expiry:          time.Hour,
+			PaymentPreimage: &preimage,
+			Value: lnwire.NewMSatFromSatoshis(
+				amount,
+			),
+			Features: emptyFeatureVector(),
+		},
+	}
+	_, err := n.runtime.Invoices().AddInvoice(ctx, invoice, hash)
+	if errors.Is(err, invoices.ErrDuplicateInvoice) {
+		existing, lookupErr := n.runtime.Invoices().LookupInvoice(
+			ctx, hash,
+		)
+		if lookupErr != nil {
+			return lntypes.Hash{}, lookupErr
+		}
+		if err := validateNativeInvoice(
+			existing, amount, hold,
+		); err != nil {
+			return lntypes.Hash{}, err
+		}
+
+		return hash, nil
+	}
+	if err != nil {
+		return lntypes.Hash{}, err
+	}
+
+	return hash, nil
+}
+
+// AddHoldInvoice adds or validates a deterministic hash-only hold invoice.
+func (n *NativeNode) AddHoldInvoice(ctx context.Context, hash lntypes.Hash,
+	amount btcutil.Amount) error {
+
+	if hash == (lntypes.Hash{}) {
+		return fmt.Errorf("payment hash is required")
+	}
+	if amount <= 0 {
+		return fmt.Errorf("invoice amount must be positive")
+	}
+	_, err := n.runtime.Invoices().AddInvoice(ctx, &invoices.Invoice{
+		CreationDate: time.Now(),
+		HodlInvoice:  true,
+		Terms: invoices.ContractTerm{
+			FinalCltvDelta: 18,
+			Expiry:         time.Hour,
+			Value: lnwire.NewMSatFromSatoshis(
+				amount,
+			),
+			Features: emptyFeatureVector(),
+		},
+	}, hash)
+	if errors.Is(err, invoices.ErrDuplicateInvoice) {
+		existing, lookupErr := n.runtime.Invoices().LookupInvoice(
+			ctx, hash,
+		)
+		if lookupErr != nil {
+			return lookupErr
+		}
+
+		return validateNativeInvoice(existing, amount, true)
+	}
+
+	return err
+}
+
+// validateNativeInvoice rejects hash reuse with different immutable terms.
+func validateNativeInvoice(invoice invoices.Invoice, amount btcutil.Amount,
+	hold bool) error {
+
+	if invoice.Terms.Value != lnwire.NewMSatFromSatoshis(amount) {
+		return fmt.Errorf("native invoice already has another amount")
+	}
+	if invoice.HodlInvoice != hold {
+		return fmt.Errorf("native invoice hold semantics changed")
+	}
+	if invoice.State == invoices.ContractCanceled {
+		return fmt.Errorf("native invoice is canceled")
+	}
+
+	return nil
+}
+
+// WaitInvoiceAccepted waits for a hold invoice to own at least one accepted
+// HTLC. A settled invoice also satisfies this recovery barrier.
+func (n *NativeNode) WaitInvoiceAccepted(ctx context.Context,
+	hash lntypes.Hash) error {
+
+	_, err := n.WaitInvoiceAcceptedChannel(ctx, hash)
+
+	return err
+}
+
+// WaitInvoiceAcceptedChannel waits for a hold invoice and returns the one
+// native channel that delivered its accepted HTLCs.
+func (n *NativeNode) WaitInvoiceAcceptedChannel(ctx context.Context,
+	hash lntypes.Hash) (lnwire.ShortChannelID, error) {
+
+	var channelID lnwire.ShortChannelID
+	err := n.waitInvoiceState(ctx, hash, func(invoice *invoices.Invoice) (
+		bool, error) {
+
+		switch invoice.State {
+		case invoices.ContractAccepted, invoices.ContractSettled:
+			var err error
+			channelID, err = acceptedInvoiceChannel(invoice)
+			if err != nil {
+				return false, err
+			}
+
+			return true, nil
+
+		case invoices.ContractCanceled:
+			return false, fmt.Errorf("native invoice was canceled")
+
+		default:
+			return false, nil
+		}
+	})
+	if err != nil {
+		return lnwire.ShortChannelID{}, err
+	}
+
+	return channelID, nil
+}
+
+// acceptedInvoiceChannel rejects local, missing, or multi-channel delivery so
+// callers can bind settlement to one active channel record.
+func acceptedInvoiceChannel(invoice *invoices.Invoice) (lnwire.ShortChannelID,
+	error) {
+
+	if invoice == nil {
+		return lnwire.ShortChannelID{}, fmt.Errorf("native invoice " +
+			"is nil")
+	}
+
+	var channelID lnwire.ShortChannelID
+	found := false
+	for circuit, htlc := range invoice.Htlcs {
+		if htlc == nil || (htlc.State != invoices.HtlcStateAccepted &&
+			htlc.State != invoices.HtlcStateSettled) {
+
+			continue
+		}
+		if circuit.ChanID == (lnwire.ShortChannelID{}) {
+			return lnwire.ShortChannelID{}, fmt.Errorf("native " +
+				"invoice HTLC has no incoming channel")
+		}
+		if found && channelID != circuit.ChanID {
+			return lnwire.ShortChannelID{}, fmt.Errorf("native " +
+				"invoice HTLCs use multiple channels")
+		}
+
+		channelID = circuit.ChanID
+		found = true
+	}
+	if !found {
+		return lnwire.ShortChannelID{}, fmt.Errorf("native invoice " +
+			"has no accepted channel HTLC")
+	}
+
+	return channelID, nil
+}
+
+// WaitInvoiceSettled waits until the native invoice registry has accepted a
+// valid preimage for this hash.
+func (n *NativeNode) WaitInvoiceSettled(ctx context.Context,
+	hash lntypes.Hash) error {
+
+	return n.waitInvoiceState(ctx, hash, func(invoice *invoices.Invoice) (
+		bool, error) {
+
+		switch invoice.State {
+		case invoices.ContractSettled:
+			return true, nil
+
+		case invoices.ContractCanceled:
+			return false, fmt.Errorf("native invoice was canceled")
+
+		default:
+			return false, nil
+		}
+	})
+}
+
+// waitInvoiceState subscribes before waiting so no accepted or settled update
+// can be lost between a lookup and subscription.
+func (n *NativeNode) waitInvoiceState(ctx context.Context, hash lntypes.Hash,
+	terminal func(*invoices.Invoice) (bool, error)) error {
+
+	subscription, err := n.runtime.Invoices().SubscribeSingleInvoice(
+		ctx, hash,
+	)
+	if err != nil {
+		return err
+	}
+	defer subscription.Cancel()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+
+		case invoice, ok := <-subscription.Updates:
+			if !ok {
+				return fmt.Errorf("native invoice " +
+					"subscription closed")
+			}
+			done, err := terminal(invoice)
+			if err != nil {
+				return err
+			}
+			if done {
+				return nil
+			}
+		}
+	}
+}
+
+// SettleHoldInvoice releases a native hold invoice with its matching preimage.
+func (n *NativeNode) SettleHoldInvoice(ctx context.Context,
+	preimage lntypes.Preimage) error {
+
+	err := n.runtime.Invoices().SettleHodlInvoice(ctx, preimage)
+	if errors.Is(err, invoices.ErrInvoiceAlreadySettled) {
+		return nil
+	}
+
+	return err
+}
+
+// CancelInvoice fails a native hold invoice while no preimage is known.
+func (n *NativeNode) CancelInvoice(ctx context.Context,
+	hash lntypes.Hash) error {
+
+	err := n.runtime.Invoices().CancelInvoice(ctx, hash)
+	if errors.Is(err, invoices.ErrInvoiceAlreadyCanceled) {
+		return nil
+	}
+
+	return err
+}
+
+// ChannelBalance returns the latest local and remote balances for an active
+// native channel owned by this endpoint.
+func (n *NativeNode) ChannelBalance(record arkchannel.Record) (btcutil.Amount,
+	btcutil.Amount, error) {
+
+	if record.Snapshot.Phase != arkchannel.PhaseActive ||
+		record.Snapshot.Backing == nil {
+		return 0, 0, fmt.Errorf("Ark channel is not active")
+	}
+	terms := record.Snapshot.Terms
+	if _, err := n.runtime.GetLink(
+		lnwire.NewShortChanIDFromInt(terms.ReservedSCID),
+	); err != nil {
+		return 0, 0, fmt.Errorf("Ark channel link is inactive: %w", err)
+	}
+	channel, err := n.db.ChannelStateDB().FetchChannel(
+		record.Snapshot.Backing.ChannelPoint,
+	)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := channel.Refresh(); err != nil {
+		return 0, 0, err
+	}
+	local, _, err := channel.LatestCommitments()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return local.LocalBalance.ToSatoshis(),
+		local.RemoteBalance.ToSatoshis(), nil
+}
+
+// PayInvoiceResult sends or resumes one fixed one-hop payment and returns the
+// destination preimage recorded by lnd's control tower.
+func (n *NativeNode) PayInvoiceResult(ctx context.Context,
+	record arkchannel.Record, hash lntypes.Hash, amount btcutil.Amount) (
+	lntypes.Preimage, error) {
+
+	return n.payInvoiceResult(ctx, record, hash, amount, 0)
+}
+
+// PayInvoiceResultBefore sends or resumes one fixed one-hop payment, but
+// refuses a new attempt whose absolute CLTV expiry height would exceed
+// maxExpiryHeight. Existing attempts remain authoritative because they may
+// already reveal the preimage.
+func (n *NativeNode) PayInvoiceResultBefore(ctx context.Context,
+	record arkchannel.Record, hash lntypes.Hash, amount btcutil.Amount,
+	maxExpiryHeight uint32) (lntypes.Preimage, error) {
+
+	if maxExpiryHeight == 0 {
+		return lntypes.Preimage{}, fmt.Errorf("maximum private " +
+			"payment expiry is required")
+	}
+
+	return n.payInvoiceResult(
+		ctx, record, hash, amount, maxExpiryHeight,
+	)
+}
+
+// payInvoiceResult owns common replay and dispatch handling. A zero absolute
+// expiry height retains the unconstrained behavior used by ordinary private
+// payments.
+func (n *NativeNode) payInvoiceResult(ctx context.Context,
+	record arkchannel.Record, hash lntypes.Hash, amount btcutil.Amount,
+	maxExpiryHeight uint32) (lntypes.Preimage, error) {
+
+	preimage, found, err := n.existingPaymentResult(ctx, hash)
+	if err != nil {
+		return lntypes.Preimage{}, err
+	}
+	if found {
+		return preimage, nil
+	}
+
+	attempt, err := n.sendInvoiceAttempt(
+		ctx, record, hash, amount, maxExpiryHeight,
+	)
+	if err == nil && attempt.Settle != nil {
+		return attempt.Settle.Preimage, nil
+	}
+	if err == nil {
+		return lntypes.Preimage{}, fmt.Errorf("native lnd payment " +
+			"did not settle")
+	}
+
+	// SendToRoute reports an already-known payment on replay. The control
+	// tower remains authoritative for whether that attempt settled.
+	preimage, found, lookupErr := n.existingPaymentResult(ctx, hash)
+	if lookupErr != nil {
+		return lntypes.Preimage{}, fmt.Errorf("determine native "+
+			"payment state after dispatch: %w", lookupErr)
+	}
+	if found {
+		return preimage, nil
+	}
+
+	return lntypes.Preimage{}, &PaymentNotStartedError{Err: err}
+}
+
+// existingPaymentResult returns a terminal preimage or waits for an in-flight
+// payment that survived process restart.
+func (n *NativeNode) existingPaymentResult(ctx context.Context,
+	hash lntypes.Hash) (lntypes.Preimage, bool, error) {
+
+	control := n.runtime.Payments().ControlTower()
+	payment, err := control.FetchPayment(ctx, hash)
+	if errors.Is(err, paymentsdb.ErrPaymentNotInitiated) {
+		return lntypes.Preimage{}, false, nil
+	}
+	if err != nil {
+		return lntypes.Preimage{}, false, err
+	}
+	if payment.Terminated() {
+		return terminalPaymentPreimage(payment)
+	}
+	subscriber, err := control.SubscribePayment(hash)
+	if err != nil {
+		return lntypes.Preimage{}, false, err
+	}
+	defer subscriber.Close()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return lntypes.Preimage{}, false, ctx.Err()
+
+		case update, ok := <-subscriber.Updates():
+			if !ok {
+				return lntypes.Preimage{}, false, fmt.Errorf(
+					"native payment subscription " +
+						"closed")
+			}
+			payment, ok := update.(paymentsdb.DBMPPayment)
+			if !ok || !payment.Terminated() {
+				continue
+			}
+
+			return terminalPaymentPreimage(payment)
+		}
+	}
+}
+
+// terminalPaymentPreimage extracts the successful terminal attempt.
+func terminalPaymentPreimage(payment paymentsdb.DBMPPayment) (lntypes.Preimage,
+	bool, error) {
+
+	attempt, failure := payment.TerminalInfo()
+	if failure != nil {
+		return lntypes.Preimage{}, false, &TerminalPaymentError{
+			Reason: failure.String(),
+		}
+	}
+	if attempt == nil || attempt.Settle == nil {
+		return lntypes.Preimage{}, false, fmt.Errorf("native payment " +
+			"terminated without preimage")
+	}
+
+	return attempt.Settle.Preimage, true, nil
+}
+
+// sendInvoiceAttempt constructs and dispatches one private one-hop route.
+func (n *NativeNode) sendInvoiceAttempt(ctx context.Context,
+	record arkchannel.Record, hash lntypes.Hash, amount btcutil.Amount,
+	maxExpiryHeight uint32) (*paymentsdb.HTLCAttempt, error) {
+
+	if record.Snapshot.Phase != arkchannel.PhaseActive ||
+		record.Snapshot.Backing == nil {
+		return nil, fmt.Errorf("Ark channel is not active")
+	}
+	if amount <= 0 {
+		return nil, fmt.Errorf("payment amount must be positive")
+	}
+	_, height, err := n.cfg.Chain.GetBestBlock()
+	if err != nil {
+		return nil, fmt.Errorf("read payment height: %w", err)
+	}
+	if height < 0 {
+		return nil, fmt.Errorf("invalid payment height %d", height)
+	}
+
+	terms := record.Snapshot.Terms
+	remoteNode := terms.HubNodeKey
+	if n.cfg.Party == arkchannel.PartyHub {
+		remoteNode = terms.ClientNodeKey
+	}
+	lockTime, err := arkChannelPaymentLockTime(
+		uint32(height), terms.VTXO, maxExpiryHeight,
+	)
+	if err != nil {
+		return nil, err
+	}
+	msat := lnwire.NewMSatFromSatoshis(amount)
+	paymentRoute := &route.Route{
+		TotalTimeLock: lockTime,
+		TotalAmount:   msat,
+		SourcePubKey:  route.NewVertex(n.cfg.IdentityKey.PubKey),
+		Hops: []*route.Hop{{
+			PubKeyBytes:      route.Vertex(remoteNode),
+			ChannelID:        terms.ReservedSCID,
+			OutgoingTimeLock: lockTime,
+			AmtToForward:     msat,
+			LegacyPayload:    true,
+		}},
+	}
+
+	return n.runtime.Payments().SendToOperator(
+		ctx, hash, paymentRoute, nil,
+	)
+}
+
+// arkChannelPaymentLockTime keeps a private HTLC enforceable while the Ark
+// source follows its non-interactive recovery path onto the chain. The funder
+// delay contains both the channel materialization delay and its reaction
+// window, so the ordinary Lightning margin starts after that entire horizon.
+func arkChannelPaymentLockTime(height uint32, terms arkchannel.VTXOTerms,
+	maxExpiryHeight uint32) (uint32, error) {
+
+	delta, err := ArkChannelPaymentCLTVDelta(terms)
+	if err != nil {
+		return 0, err
+	}
+	if height > maximumBlockHeight-delta {
+		return 0, fmt.Errorf("channel payment locktime overflows")
+	}
+	lockTime := height + delta
+	if maxExpiryHeight != 0 && lockTime > maxExpiryHeight {
+		return 0, fmt.Errorf("%w: required expiry %d exceeds "+
+			"maximum %d", ErrPrivatePaymentExpiryNotNested,
+			lockTime, maxExpiryHeight)
+	}
+
+	return lockTime, nil
+}
+
+// ArkChannelPaymentCLTVDelta returns the complete relative lifetime in blocks
+// required by a private Ark-channel HTLC: source recovery followed by the
+// Lightning reaction margin.
+func ArkChannelPaymentCLTVDelta(terms arkchannel.VTXOTerms) (uint32, error) {
+	if terms.FunderDelay < terms.ChannelDelay {
+		return 0, fmt.Errorf("channel funder delay %d is shorter than "+
+			"materialization delay %d", terms.FunderDelay,
+			terms.ChannelDelay)
+	}
+	if terms.FunderDelay >
+		maximumBlockHeight-arkChannelPaymentCLTVMarginBlocks {
+		return 0, fmt.Errorf("channel payment CLTV delta overflows")
+	}
+
+	deltaBlocks := terms.FunderDelay + arkChannelPaymentCLTVMarginBlocks
+	if deltaBlocks > htlcswitch.DefaultMaxOutgoingCltvExpiry {
+		return 0, fmt.Errorf("channel payment CLTV delta %d exceeds "+
+			"lnd maximum %d", deltaBlocks,
+			htlcswitch.DefaultMaxOutgoingCltvExpiry)
+	}
+
+	return deltaBlocks, nil
+}
+
+// MaxNestedPrivateCLTVExpiry returns the latest absolute private HTLC expiry
+// height that is strictly earlier than the public HTLC's settlement boundary.
+// The extra block makes the relationship strict rather than racing both
+// decisions at the same height.
+func MaxNestedPrivateCLTVExpiry(publicExpiryHeight,
+	settlementMarginBlocks uint32) (uint32, error) {
+
+	if publicExpiryHeight <= settlementMarginBlocks ||
+		publicExpiryHeight-settlementMarginBlocks <= 1 {
+		return 0, fmt.Errorf("%w: public expiry %d leaves no "+
+			"private window", ErrPrivatePaymentExpiryNotNested,
+			publicExpiryHeight)
+	}
+
+	return publicExpiryHeight - settlementMarginBlocks - 1, nil
+}
+
+// PayInvoice sends one fixed one-hop payment over an active Ark channel.
+func (n *NativeNode) PayInvoice(ctx context.Context, record arkchannel.Record,
+	hash lntypes.Hash, amount btcutil.Amount) error {
+
+	_, err := n.PayInvoiceResult(ctx, record, hash, amount)
+
+	return err
+}
+
+// InvoiceSettled reports whether the native invoice registry has accepted the
+// preimage for one payment hash.
+func (n *NativeNode) InvoiceSettled(ctx context.Context, hash lntypes.Hash) (
+	bool, error) {
+
+	invoice, err := n.runtime.Invoices().LookupInvoice(ctx, hash)
+	if err != nil {
+		return false, err
+	}
+
+	return invoice.State == invoices.ContractSettled, nil
 }

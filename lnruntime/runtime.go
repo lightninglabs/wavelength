@@ -106,7 +106,9 @@ type Runtime struct {
 // liveChannel keeps the authoritative in-memory channel together with the
 // immutable fields needed to derive an external cooperative-close snapshot.
 type liveChannel struct {
-	channel *lnwallet.LightningChannel
+	channel     *lnwallet.LightningChannel
+	channelType chanstate.ChannelType
+	localFunder bool
 }
 
 // NewRuntime composes lnd's existing invoice, switch, link-signing, and
@@ -776,8 +778,22 @@ func (r *Runtime) setLiveChannel(state *chanstate.OpenChannel,
 	defer r.channelMu.Unlock()
 
 	r.liveChannels[state.FundingOutpoint] = liveChannel{
-		channel: channel,
+		channel:     channel,
+		channelType: state.ChanType,
+		localFunder: state.IsInitiator,
 	}
+}
+
+// getLiveChannel returns the channel currently owned by an installed link.
+func (r *Runtime) getLiveChannel(channelPoint wire.OutPoint) (liveChannel,
+	bool) {
+
+	r.channelMu.RLock()
+	defer r.channelMu.RUnlock()
+
+	channel, ok := r.liveChannels[channelPoint]
+
+	return channel, ok
 }
 
 // deleteLiveChannel forgets an installed channel. When expected is non-nil,
