@@ -39,6 +39,11 @@ MuSig2) for the round actor, and proof-key derivation/signing.
 
 ## Invariants
 
+- `FeeInputConfirmed` compares the wallet transaction's confirmation block
+  with ChainKit's active hash at that height. WalletKit confirmation counts
+  alone can be stale after a reorg. The check does not require an unspent
+  output, so an accepted CPFP child can reuse its fee input for replacement.
+
 - `ClientWallet.signOutputRawWithLocator` always forwards the key locator
   when set (including family != 0, index == 0), working around an lndclient
   gap that otherwise breaks the family-6/index-0 identity signing path.
