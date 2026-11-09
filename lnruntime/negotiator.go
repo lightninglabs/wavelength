@@ -3,8 +3,10 @@ package lnruntime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -12,7 +14,19 @@ import (
 	lndfunding "github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+var (
+	// ErrFundingNegotiationAmbiguous means a remote negotiation step may
+	// have completed even though its caller did not receive a result. The
+	// durable channel action must remain replayable.
+	ErrFundingNegotiationAmbiguous = errors.New("funding negotiation " +
+		"outcome is ambiguous")
+)
+
+const defaultFundingPollInterval = 25 * time.Millisecond
 
 // NativeFundingBackend is the narrow native lnd surface required by channel
 // negotiation. It keeps the coordinator independent of lnd's internal wallet
@@ -307,6 +321,471 @@ func (e *NativeFundingEndpoint) recordLocalEvent(ctx context.Context,
 	return sink.RecordLocalEvent(ctx, id, event)
 }
 
+// resumeChannelAction dispatches the action implied by already-durable channel
+// evidence after its paired peer barrier has completed.
+func (e *NativeFundingEndpoint) resumeChannelAction(ctx context.Context,
+	id arkchannel.ID) (arkchannel.Record, error) {
+
+	e.mu.RLock()
+	sink := e.sink
+	e.mu.RUnlock()
+	if sink == nil {
+		return arkchannel.Record{}, fmt.Errorf("channel event sink " +
+			"is not bound")
+	}
+
+	return sink.ResumeChannelAction(ctx, id)
+}
+
+// ChannelNegotiator coordinates only the cross-system funding barriers. lnd
+// continues to own the BOLT funding exchange and both commitment states.
+type ChannelNegotiator struct {
+	local    *NativeFundingEndpoint
+	remote   FundingCounterparty
+	peer     *Peer
+	recovery ChannelRecoveryManager
+
+	pollInterval time.Duration
+}
+
+// NewChannelNegotiator constructs the funder-side coordinator.
+func NewChannelNegotiator(local *NativeFundingEndpoint,
+	remote FundingCounterparty, peer *Peer,
+	recovery ChannelRecoveryManager) (*ChannelNegotiator, error) {
+
+	if local == nil {
+		return nil, fmt.Errorf("local funding endpoint is required")
+	}
+	if remote == nil {
+		return nil, fmt.Errorf("remote funding endpoint is required")
+	}
+	if peer == nil {
+		return nil, fmt.Errorf("native lnd peer is required")
+	}
+	if recovery == nil {
+		return nil, fmt.Errorf("channel recovery manager is required")
+	}
+
+	return &ChannelNegotiator{
+		local:        local,
+		remote:       remote,
+		peer:         peer,
+		recovery:     recovery,
+		pollInterval: defaultFundingPollInterval,
+	}, nil
+}
+
+// BindChannelEventSink attaches the local endpoint to its service.
+func (n *ChannelNegotiator) BindChannelEventSink(
+	sink arkchannel.ChannelEventSink) error {
+
+	if err := n.local.BindChannelEventSink(sink); err != nil {
+		return err
+	}
+	if binder, ok := n.recovery.(arkchannel.ChannelEventSinkBinder); ok {
+		return binder.BindChannelEventSink(sink)
+	}
+
+	return nil
+}
+
+// NegotiateChannel runs only on lnd's funding initiator. The Ark funder is also
+// the lnd opener, so every channel begins with its entire spendable balance on
+// the endpoint that supplied the prepared OOR transfer.
+func (n *ChannelNegotiator) NegotiateChannel(ctx context.Context,
+	id arkchannel.ID, terms arkchannel.Terms,
+	source arkchannel.VTXOBinding) error {
+
+	if err := validateFundingRequest(ctx, id, terms, source); err != nil {
+		return err
+	}
+	if terms.FundingInitiator() != n.local.party {
+		return nil
+	}
+
+	flow, err := n.local.funding.OpenChannel(FundingOpenRequest{
+		Peer:             n.peer,
+		PendingChannelID: terms.PendingChannelID,
+		Capacity:         terms.Capacity,
+		PushAmount:       terms.InitialPushAmount(),
+	})
+	if err != nil {
+		return err
+	}
+	basePacket, err := awaitNegotiatedPSBT(ctx, flow)
+	if err != nil {
+		return err
+	}
+	localPacket, err := cloneFundingPSBT(basePacket)
+	if err != nil {
+		return err
+	}
+	template, err := arkchannel.NewBackingTemplate(
+		localPacket, terms, source,
+	)
+	if err != nil {
+		return err
+	}
+	expected, err := n.local.funding.ExpectedFundingOutput(
+		terms.PendingChannelID,
+	)
+	if err != nil {
+		return err
+	}
+	if err := template.ValidateFundingOutput(expected); err != nil {
+		return err
+	}
+	localSig, err := n.local.SignBacking(
+		ctx, id, terms, source, basePacket,
+	)
+	if err != nil {
+		return err
+	}
+	remoteSig, err := n.remote.SignBacking(
+		ctx, id, terms, source, basePacket,
+	)
+	if err != nil {
+		return remoteFundingNegotiationError(
+			"sign remote channel backing", err,
+		)
+	}
+
+	var clientSig, hubSig input.Signature
+	if n.local.party == arkchannel.PartyClient {
+		clientSig, hubSig = localSig, remoteSig
+	} else {
+		clientSig, hubSig = remoteSig, localSig
+	}
+	backing, err := template.Complete(
+		terms, source, clientSig, hubSig,
+	)
+	if err != nil {
+		return err
+	}
+	if err := n.remote.InstallBacking(
+		ctx, id, terms, source, backing,
+	); err != nil {
+		return remoteFundingNegotiationError(
+			"install remote channel backing", err,
+		)
+	}
+	if err := n.local.InstallBacking(
+		ctx, id, terms, source, backing,
+	); err != nil {
+		return err
+	}
+	funding, err := virtualFundingFromBacking(terms, backing)
+	if err != nil {
+		return err
+	}
+	if err := n.local.funding.FinalizeBacking(
+		terms.PendingChannelID, template.Packet(), funding,
+	); err != nil {
+		return err
+	}
+	if err := n.waitForFundingFinalized(ctx, terms, backing); err != nil {
+		return err
+	}
+
+	if _, err := n.remote.ApplyChannelEvent(
+		ctx, id, &arkchannel.FundingFinalized{
+			Party: n.local.party,
+		},
+	); err != nil {
+		return err
+	}
+	localRecord, err := n.local.ApplyChannelEvent(
+		ctx, id, &arkchannel.FundingFinalized{
+			Party: otherChannelParty(n.local.party),
+		},
+	)
+	if err != nil {
+		return err
+	}
+	if terms.Funder == n.local.party {
+		if !localRecord.Snapshot.OORFinalized {
+			return fmt.Errorf("funder OOR did not finalize after " +
+				"lnd safety barrier")
+		}
+		if _, err := n.remote.ApplyChannelEvent(
+			ctx, id, &arkchannel.OORFinalized{
+				SessionID: source.OORSessionID,
+			},
+		); err != nil {
+			return err
+		}
+	} else {
+		// The remote FundingFinalized call above is a synchronous
+		// durable barrier. On the Ark funder it does not return until
+		// CommitOOR has completed and OORFinalized has been recorded in
+		// its channel FSM.
+		if _, err := n.local.ApplyChannelEvent(
+			ctx, id, &arkchannel.OORFinalized{
+				SessionID: source.OORSessionID,
+			},
+		); err != nil {
+			return err
+		}
+	}
+	if err := n.waitForChannelActive(ctx, terms, backing); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// PrepareChannelRecovery copies the finalized source package to both
+// endpoints before recording the activation barrier. The lnd opener drives
+// the exchange. For a hub-funded receive, the client replays the same durable
+// action to fetch and install its own copy over the authenticated control RPC.
+func (n *ChannelNegotiator) PrepareChannelRecovery(ctx context.Context,
+	id arkchannel.ID, terms arkchannel.Terms,
+	source arkchannel.VTXOBinding) error {
+
+	if err := validateFundingRequest(ctx, id, terms, source); err != nil {
+		return err
+	}
+	initiator := terms.FundingInitiator() == n.local.party
+	receiveClient := terms.Kind == arkchannel.KindReceiveIntent &&
+		terms.Funder == arkchannel.PartyHub &&
+		n.local.party == arkchannel.PartyClient
+	if !initiator && !receiveClient {
+		return nil
+	}
+	var recovery arkchannel.RecoveryPackage
+	var err error
+	if initiator && terms.Funder == n.local.party {
+		recovery, err = n.recovery.ExportRecoveryPackage(
+			ctx, id, terms, source,
+		)
+	} else {
+		exporter, ok := n.remote.(RecoveryExportCounterparty)
+		if !ok {
+			return fmt.Errorf("remote channel recovery export is " +
+				"unavailable")
+		}
+		recovery, err = exporter.ExportRecoveryPackage(ctx, id)
+	}
+	if err != nil {
+		return fmt.Errorf("export channel recovery package: %w", err)
+	}
+	if err := n.recovery.InstallRecoveryPackage(
+		ctx, id, terms, source, recovery,
+	); err != nil {
+		return fmt.Errorf("install local channel recovery: %w", err)
+	}
+	localEvent := &arkchannel.RecoveryPackageInstalled{
+		Party: n.local.party,
+	}
+	localRecord, err := n.local.recordLocalEvent(ctx, id, localEvent)
+	if err != nil {
+		return err
+	}
+	if _, err := n.remote.ApplyChannelEvent(
+		ctx, id, localEvent,
+	); err != nil {
+		return err
+	}
+	if localRecord.Snapshot.Phase == arkchannel.PhaseActivating {
+		_, err := n.local.resumeChannelAction(ctx, id)
+
+		return err
+	}
+	if !initiator {
+		return nil
+	}
+	remote, ok := n.remote.(RecoveryCounterparty)
+	if !ok {
+		if terms.Funder == n.local.party {
+
+			// Receive-channel recovery is fetched by the client
+			// over its existing authenticated control RPC. The hub
+			// installs its own package first, then waits for the
+			// client's common FSM event.
+			return nil
+		}
+
+		return fmt.Errorf("remote channel recovery transport is " +
+			"unavailable")
+	}
+	if err := remote.InstallRecoveryPackage(
+		ctx, id, terms, source, recovery,
+	); err != nil {
+		return fmt.Errorf("install remote channel recovery: %w", err)
+	}
+	_, err = n.local.ApplyChannelEvent(
+		ctx, id, &arkchannel.RecoveryPackageInstalled{
+			Party: otherChannelParty(n.local.party),
+		},
+	)
+
+	return err
+}
+
+// CancelChannel removes this endpoint's native lnd reservation after its
+// funder's prepared OOR session has durably aborted.
+func (n *ChannelNegotiator) CancelChannel(ctx context.Context, id arkchannel.ID,
+	terms arkchannel.Terms, source arkchannel.VTXOBinding,
+	backing *arkchannel.Backing, reason string) error {
+
+	var channelPoint *wire.OutPoint
+	if backing != nil {
+		channelPoint = &backing.ChannelPoint
+	}
+	if err := n.local.funding.CancelBacking(
+		terms.PendingChannelID, channelPoint,
+	); err != nil {
+		return err
+	}
+	if terms.Funder == n.local.party {
+		if _, err := n.remote.ApplyChannelEvent(
+			ctx, id, &arkchannel.OORAborted{
+				SessionID: source.OORSessionID,
+				Reason:    reason,
+			},
+		); err != nil {
+			return fmt.Errorf("confirm remote OOR abort: %w", err)
+		}
+	}
+	_, err := n.local.applyLocalEvent(
+		ctx, id, &arkchannel.FundingCanceled{},
+	)
+
+	return err
+}
+
+// waitForFundingFinalized polls the authoritative lnd databases rather than
+// relying on an edge-triggered callback from either endpoint.
+func (n *ChannelNegotiator) waitForFundingFinalized(ctx context.Context,
+	terms arkchannel.Terms, backing arkchannel.Backing) error {
+
+	return n.waitForBoth(ctx, func(ctx context.Context,
+		endpoint FundingCounterparty) (bool, error) {
+
+		return endpoint.FundingFinalized(ctx, terms, backing)
+	}, func(ctx context.Context) (bool, error) {
+		return n.local.FundingFinalized(ctx, terms, backing)
+	})
+}
+
+// waitForChannelActive waits until virtual confirmation moved both native lnd
+// channel records out of pending state.
+func (n *ChannelNegotiator) waitForChannelActive(ctx context.Context,
+	terms arkchannel.Terms, backing arkchannel.Backing) error {
+
+	return n.waitForBoth(ctx, func(ctx context.Context,
+		endpoint FundingCounterparty) (bool, error) {
+
+		return endpoint.ChannelActive(ctx, terms, backing)
+	}, func(ctx context.Context) (bool, error) {
+		return n.local.ChannelActive(ctx, terms, backing)
+	})
+}
+
+// waitForBoth evaluates local and remote durable facts until both hold.
+func (n *ChannelNegotiator) waitForBoth(ctx context.Context,
+	remoteCheck func(context.Context, FundingCounterparty) (bool, error),
+	localCheck func(context.Context) (bool, error)) error {
+
+	ticker := time.NewTicker(n.pollInterval)
+	defer ticker.Stop()
+	for {
+		localReady, err := localCheck(ctx)
+		if err != nil {
+			return err
+		}
+		remoteReady, err := remoteCheck(ctx, n.remote)
+		if err != nil {
+			return err
+		}
+		if localReady && remoteReady {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+
+		case <-ticker.C:
+		}
+	}
+}
+
+// awaitNegotiatedPSBT waits for lnd to finish exchanging channel parameters.
+func awaitNegotiatedPSBT(ctx context.Context,
+	flow *FundingFlow) (*psbt.Packet, error) {
+
+	for {
+		select {
+		case update := <-flow.Updates:
+			psbtUpdate := update.GetPsbtFund()
+			if psbtUpdate == nil {
+				continue
+			}
+
+			return psbt.NewFromRawBytes(
+				bytes.NewReader(psbtUpdate.Psbt), false,
+			)
+
+		case err := <-flow.Errors:
+			return nil, err
+
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+// remoteFundingNegotiationError preserves explicit peer rejections while
+// marking transport-shaped outcomes for durable replay. Plain remote errors
+// are ambiguous because the mailbox may have admitted the request before its
+// response was lost.
+func remoteFundingNegotiationError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if fundingRPCErrorIsDefinitive(err) {
+		return fmt.Errorf("%s: %w", operation, err)
+	}
+
+	return ambiguousFundingNegotiationError(operation, err)
+}
+
+// fundingRPCErrorIsDefinitive recognizes only received funding-wire errors or
+// gRPC statuses that prove the peer rejected the request. Retry and transport
+// statuses remain ambiguous.
+func fundingRPCErrorIsDefinitive(err error) bool {
+	if errors.Is(err, errFundingWireRequestRejected) {
+		return true
+	}
+	if errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	grpcStatus, ok := status.FromError(err)
+	if !ok {
+		return false
+	}
+
+	switch grpcStatus.Code() {
+	case codes.InvalidArgument, codes.NotFound, codes.AlreadyExists,
+		codes.PermissionDenied, codes.Unauthenticated,
+		codes.FailedPrecondition, codes.OutOfRange,
+		codes.Unimplemented:
+		return true
+
+	default:
+		return false
+	}
+}
+
+// ambiguousFundingNegotiationError marks an error whose side effects must be
+// reconciled from durable state before the receive rail can fall back.
+func ambiguousFundingNegotiationError(operation string, err error) error {
+	return fmt.Errorf("%w: %s: %w", ErrFundingNegotiationAmbiguous,
+		operation, err)
+}
+
 // cloneFundingPSBT isolates endpoint validation from caller mutation.
 func cloneFundingPSBT(packet *psbt.Packet) (*psbt.Packet, error) {
 	if packet == nil {
@@ -340,3 +819,7 @@ func validateFundingRequest(ctx context.Context, id arkchannel.ID,
 
 	return source.Validate(terms)
 }
+
+var _ arkchannel.FundingNegotiator = (*ChannelNegotiator)(nil)
+var _ arkchannel.ChannelEventSinkBinder = (*ChannelNegotiator)(nil)
+var _ FundingCounterparty = (*NativeFundingEndpoint)(nil)
