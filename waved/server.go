@@ -28,6 +28,7 @@ import (
 	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightninglabs/lndclient"
 	tapgrpc "github.com/lightninglabs/tap-sdk/grpc"
+	"github.com/lightninglabs/wavelength/arkchannel/unrollbridge"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/btcwbackend"
@@ -46,6 +47,7 @@ import (
 	"github.com/lightninglabs/wavelength/lib/recovery"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/lndbackend"
+	"github.com/lightninglabs/wavelength/lnruntime"
 	"github.com/lightninglabs/wavelength/lwwallet"
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
@@ -53,6 +55,7 @@ import (
 	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/proofkeys"
 	"github.com/lightninglabs/wavelength/round"
+	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
 	"github.com/lightninglabs/wavelength/rpc/oorpb"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	"github.com/lightninglabs/wavelength/rpcauth"
@@ -398,16 +401,21 @@ type Server struct {
 	walletRef           fn.Option[actor.ActorRef[
 		wallet.WalletMsg, wallet.WalletResp,
 	]]
-	oorRegistry       *oor.OORRegistryActor
 	incomingVTXOActor *actor.DurableActor[
 		*vtxo.IncomingVTXOMsg, vtxo.IncomingVTXOResp,
 	]
-	creditRegistry       *credit.Registry
-	vhtlcRecoveryStore   *db.VHTLCRecoveryStoreDB
-	arkChannelMu         sync.RWMutex
-	arkChannelController ArkChannelController
-	vhtlcRecovery        *coordinator.Service
-	vhtlcPreimages       *unrollpolicy.PreimageResolverRegistry
+	oorRegistry              *oor.OORRegistryActor
+	creditRegistry           *credit.Registry
+	vhtlcRecoveryStore       *db.VHTLCRecoveryStoreDB
+	arkChannelStore          *db.ArkChannelStoreDB
+	arkChannelMu             sync.RWMutex
+	arkChannelController     ArkChannelController
+	arkChannelMailboxRuntime *serverconn.Runtime
+	arkChannelPeerIngress    *lnruntime.PeerMessageIngress
+	arkChannelStartupWg      sync.WaitGroup
+	vhtlcRecovery            *coordinator.Service
+	vhtlcRecoveryTarget      *vhtlcRecoveryTargetMaterializer
+	vhtlcPreimages           *unrollpolicy.PreimageResolverRegistry
 
 	// ledgerStore exposes the client-side ledger DB adapter for
 	// read-only RPC handlers (GetFeeHistory). Writes go through
@@ -1441,13 +1449,44 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 		if s.outboxPublisher != nil {
 			s.outboxPublisher.Stop()
 		}
+		if ingress := s.getArkChannelPeerIngress(); ingress != nil {
+			//nolint:contextcheck // bounded shutdown
+			if err := ingress.StopAndWait(shutdownCtx); err != nil {
+				s.log.WarnS(
+					ctx,
+					"Ark channel peer ingress shutdown "+
+						"failed",
+					err,
+				)
+			}
+		}
+
+		controller := s.getArkChannelController()
+		if controller != nil {
+			if err := controller.Stop(); err != nil {
+				s.log.WarnS(
+					ctx,
+					"Ark channel runtime shutdown failed",
+					err,
+				)
+			}
+		}
+		if runtime := s.takeArkChannelMailboxRuntime(); runtime != nil {
+			//nolint:contextcheck // bounded shutdown
+			if err := runtime.StopAndWait(shutdownCtx); err != nil {
+				s.log.WarnS(
+					ctx,
+					"Ark channel mailbox shutdown failed",
+					err,
+				)
+			}
+		}
 
 		if rt := s.loadRuntime(); rt != nil {
 			s.setServerConnected(false)
 			//nolint:contextcheck // bounded shutdown
 			_ = rt.StopAndWait(shutdownCtx)
 		}
-
 		if s.actorSystem != nil {
 			//nolint:contextcheck // bounded shutdown
 			err := s.actorSystem.Shutdown(shutdownCtx)
@@ -1620,6 +1659,11 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 	waverpc.RegisterMacaroonServiceServer(
 		s.grpcServer, s.rpcServer,
 	)
+	arkchannelrpc.RegisterArkChannelServiceServer(
+		s.grpcServer, &arkChannelRPCServer{
+			server: s,
+		},
+	)
 	if cleanup := registerBtcwalletRPC(s.grpcServer, s); cleanup != nil {
 		defer cleanup()
 	}
@@ -1643,6 +1687,28 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 			defer cleanup()
 		}
 	}
+	// The Ark channel runtime borrows the swap registrar's mailbox
+	// transport. Register this defer after registrar cleanup defers so it
+	// runs first.
+	//nolint:contextcheck // Shutdown requires a fresh bounded context.
+	defer func() {
+		s.arkChannelStartupWg.Wait()
+
+		if runtime := s.takeArkChannelMailboxRuntime(); runtime != nil {
+			shutdownCtx, cancel := context.WithTimeout(
+				context.Background(), DefaultShutdownTimeout,
+			)
+			defer cancel()
+
+			if err := runtime.StopAndWait(shutdownCtx); err != nil {
+				s.log.WarnS(
+					shutdownCtx,
+					"Ark channel mailbox shutdown failed",
+					err,
+				)
+			}
+		}
+	}()
 	activePermissions, err := registeredRPCPermissions(s.grpcServer)
 	// Preserve the no-auth development mode's support for custom services
 	// without daemon-defined permissions. When authentication is enabled,
@@ -1874,6 +1940,8 @@ func (s *Server) startWalletReadyServices(ctx context.Context,
 	if refreshErr != nil {
 		return refreshErr
 	}
+
+	s.startArkChannelProcessSupervisor(ctx)
 
 	if err := s.replayPendingIntents(
 		ctx, s.walletRef.UnsafeFromSome(),
@@ -6064,6 +6132,8 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	s.ueStore = ueStore
 	recoveryStore := dbStore.NewVHTLCRecoveryStore(s.clk)
 	s.vhtlcRecoveryStore = recoveryStore
+	channelStore := dbStore.NewArkChannelStore(s.clk)
+	s.arkChannelStore = channelStore
 	preimages := s.vhtlcPreimages
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
 
@@ -6178,9 +6248,12 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		MaxSweepFeeRateSatPerVByte: s.unrollMaxFeeRate(),
 		SweepFeeRateFallbackSatPerVByte: s.
 			unrollSweepFeeRateFallback(),
-		ExitSpendPolicyResolver: unrollpolicy.ExitSpendPolicyResolver{
-			Jobs:     recoveryStore,
-			Preimage: preimages,
+		ExitSpendPolicyResolver: unroll.PolicyResolvers{
+			unrollpolicy.ExitSpendPolicyResolver{
+				Jobs:     recoveryStore,
+				Preimage: preimages,
+			},
+			unrollbridge.Resolver{Channels: channelStore},
 		},
 		ArmedExitPolicy: func(ctx context.Context,
 			target wire.OutPoint) (unroll.ExitPolicyKind, string,
@@ -6220,6 +6293,7 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		return err
 	}
 	s.vhtlcRecovery = recoverySvc
+	s.vhtlcRecoveryTarget = materializer
 
 	err = s.initFraudWatcher(ctx, chainSourceRef)
 	if err != nil {
