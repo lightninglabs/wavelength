@@ -30,6 +30,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnpeer"
 	"github.com/lightningnetwork/lnd/lntest/mock"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
@@ -848,6 +849,245 @@ func TestNativeFundingFlowPaysBothDirections(t *testing.T) {
 	require.Equal(
 		t, aliceClean.CommitmentHeight, bobClean.CommitmentHeight,
 	)
+}
+
+// TestCleanChannelSnapshotRestoresFunderCommitmentFee verifies a zero-fee Ark
+// close returns lnd's reserved commitment fee and anchors to the Ark funder.
+func TestCleanChannelSnapshotRestoresFunderCommitmentFee(t *testing.T) {
+	tests := []struct {
+		name   string
+		funder arkchannel.Party
+	}{
+		{
+			name:   "hub funded",
+			funder: arkchannel.PartyHub,
+		},
+		{
+			name:   "client funded",
+			funder: arkchannel.PartyClient,
+		},
+	}
+
+	for i, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			hub := newFundingFlowNode(t, arkchannel.PartyHub)
+			client := newFundingFlowNode(
+				t, arkchannel.PartyClient,
+			)
+			connectFundingFlowNodes(t, hub, client)
+			require.NoError(t, hub.runtime.Start())
+			require.NoError(t, client.runtime.Start())
+			t.Cleanup(func() {
+				require.NoError(t, hub.runtime.Stop())
+				require.NoError(t, client.runtime.Stop())
+			})
+
+			record := fundingIntentRecord(
+				t, hub, client,
+				lndfunding.PendingChanID{9, 1, byte(i + 1)},
+			)
+			if test.funder == arkchannel.PartyClient {
+				terms := &record.Snapshot.Terms
+				terms.Kind = arkchannel.KindPromotion
+				terms.Funder = arkchannel.PartyClient
+				terms.PaymentHash = [32]byte{}
+				record.Snapshot.Source = testIntentBinding(
+					t, *terms, testFundingCapacity+1_000, 1,
+				)
+			}
+			flow := activateFundingFlowChannel(
+				t, hub, client, record,
+			)
+
+			hubClean, err := hub.runtime.QuiesceChannel(
+				t.Context(), flow.hubChannel.FundingOutpoint,
+			)
+			require.NoError(t, err)
+			clientClean, err := client.runtime.QuiesceChannel(
+				t.Context(), flow.clientChannel.FundingOutpoint,
+			)
+			require.NoError(t, err)
+
+			assertCleanChannelAllocation(
+				t, hub.runtime, flow.hubChannel, hubClean,
+			)
+			assertCleanChannelAllocation(
+				t, client.runtime, flow.clientChannel,
+				clientClean,
+			)
+			require.Equal(
+				t, hubClean.LocalBalance,
+				clientClean.RemoteBalance,
+			)
+			require.Equal(
+				t, hubClean.RemoteBalance,
+				clientClean.LocalBalance,
+			)
+
+			if test.funder == arkchannel.PartyHub {
+				require.Equal(
+					t, testFundingCapacity,
+					hubClean.LocalBalance,
+				)
+				require.Zero(t, hubClean.RemoteBalance)
+
+				return
+			}
+			require.Zero(t, hubClean.LocalBalance)
+			require.Equal(
+				t, testFundingCapacity, hubClean.RemoteBalance,
+			)
+		})
+	}
+}
+
+// assertCleanChannelAllocation pins lnd's commitment accounting against the
+// zero-fee balances returned to Ark.
+func assertCleanChannelAllocation(t *testing.T, runtime *Runtime,
+	state *chanstate.OpenChannel, clean CleanChannelState) {
+
+	t.Helper()
+
+	live, ok := runtime.getLiveChannel(state.FundingOutpoint)
+	require.True(t, ok)
+	require.Equal(t, state.IsInitiator, live.localFunder)
+	require.True(t, live.channelType.HasAnchors())
+	snapshot := live.channel.StateSnapshot()
+	require.Positive(t, snapshot.CommitFee)
+	funderCredit := snapshot.CommitFee + 2*lnwallet.AnchorSize
+	expectedLocal := snapshot.LocalBalance.ToSatoshis()
+	expectedRemote := snapshot.RemoteBalance.ToSatoshis()
+	if live.localFunder {
+		expectedLocal += funderCredit
+	} else {
+		expectedRemote += funderCredit
+	}
+
+	require.Equal(t, expectedLocal, clean.LocalBalance)
+	require.Equal(t, expectedRemote, clean.RemoteBalance)
+	require.Equal(t, snapshot.Capacity, clean.Capacity)
+	require.Equal(t, clean.Capacity,
+		clean.LocalBalance+clean.RemoteBalance)
+	require.Equal(t, live.localFunder, clean.LocalInitiator)
+}
+
+// TestQuiesceChannelWithStoppedLink proves cooperative close does not depend
+// on a link callback after the link has stopped servicing callback requests.
+func TestQuiesceChannelWithStoppedLink(t *testing.T) {
+	t.Parallel()
+
+	hub := newFundingFlowNode(t, arkchannel.PartyHub)
+	client := newFundingFlowNode(t, arkchannel.PartyClient)
+	connectFundingFlowNodes(t, hub, client)
+	require.NoError(t, hub.runtime.Start())
+	require.NoError(t, client.runtime.Start())
+	t.Cleanup(func() {
+		require.NoError(t, hub.runtime.Stop())
+		require.NoError(t, client.runtime.Stop())
+	})
+
+	record := fundingIntentRecord(
+		t, hub, client, lndfunding.PendingChanID{7, 3, 1, 8},
+	)
+	flow := activateFundingFlowChannel(t, hub, client, record)
+	link, err := hub.runtime.GetLink(flow.hubChannel.ShortChanID())
+	require.NoError(t, err)
+	stoppable, ok := link.(interface{ Stop() })
+	require.True(t, ok)
+	stoppable.Stop()
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	clean, err := hub.runtime.QuiesceChannel(
+		ctx, flow.hubChannel.FundingOutpoint,
+	)
+	require.NoError(t, err)
+	require.Equal(t, flow.hubChannel.Capacity, clean.Capacity)
+}
+
+// TestNativeFundingFlowRestoresQuiescedLinks proves a restart in any durable
+// cooperative-close phase installs both links with new HTLC adds disabled.
+func TestNativeFundingFlowRestoresQuiescedLinks(t *testing.T) {
+	t.Parallel()
+
+	hub := newFundingFlowNode(t, arkchannel.PartyHub)
+	client := newFundingFlowNode(t, arkchannel.PartyClient)
+	connectFundingFlowNodes(t, hub, client)
+	require.NoError(t, hub.runtime.Start())
+	require.NoError(t, client.runtime.Start())
+	t.Cleanup(func() {
+		require.NoError(t, hub.runtime.Stop())
+		require.NoError(t, client.runtime.Stop())
+	})
+
+	record := fundingIntentRecord(
+		t, hub, client, lndfunding.PendingChanID{8, 1, 7, 2},
+	)
+	flow := activateFundingFlowChannel(t, hub, client, record)
+	hub.restoreAddsDisabled.Store(true)
+	client.restoreAddsDisabled.Store(true)
+	client.runtime.RemoveLink(flow.clientChannel.FundingOutpoint)
+	active, err := client.runtime.Funding().ChannelActive(
+		t.Context(), flow.clientSink.record.Snapshot.Terms,
+		*flow.clientSink.record.Snapshot.Backing,
+	)
+	require.NoError(t, err)
+	require.False(
+		t, active,
+		"an open database row without a link is not payment-ready",
+	)
+
+	restored, err := client.runtime.RestorePeerLinks(
+		client.peer,
+		func(*chanstate.OpenChannel) (LinkConfig, error) {
+			cfg := testLinkConfig(client.peer, client.failures)
+			cfg.AddsDisabled = true
+
+			return cfg, nil
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, restored, 1)
+
+	require.Eventually(t, func() bool {
+		for _, node := range []*fundingFlowNode{hub, client} {
+			channels, err := node.db.ChannelStateDB().
+				FetchAllOpenChannels()
+			if err != nil || len(channels) != 1 {
+				return false
+			}
+			link, err := node.runtime.GetLink(
+				channels[0].ShortChanID(),
+			)
+			if err != nil ||
+				!link.IsFlushing(htlcswitch.Incoming) ||
+				!link.IsFlushing(htlcswitch.Outgoing) {
+				return false
+			}
+		}
+
+		return true
+	}, 5*time.Second, 10*time.Millisecond)
+
+	active, err = client.runtime.Funding().ChannelActive(
+		t.Context(), flow.clientSink.record.Snapshot.Terms,
+		*flow.clientSink.record.Snapshot.Backing,
+	)
+	require.NoError(t, err)
+	require.False(
+		t, active,
+		"a quiesced link is registered but not forwarding-eligible",
+	)
+
+	client.runtime.ResumeChannel(flow.clientChannel.FundingOutpoint)
+	require.Eventually(t, func() bool {
+		active, err := client.runtime.Funding().ChannelActive(
+			t.Context(), flow.clientSink.record.Snapshot.Terms,
+			*flow.clientSink.record.Snapshot.Backing,
+		)
+
+		return err == nil && active
+	}, 5*time.Second, 10*time.Millisecond)
 }
 
 // TestRestorePeerLinksIsolatesChannelFailures verifies one channel's broken
