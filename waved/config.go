@@ -1244,6 +1244,12 @@ type WalletConfig struct {
 	// filters to disk in addition to the in-memory cache.
 	PersistFilters bool `mapstructure:"persist_filters"`
 
+	// NeutrinoSQLite stores neutrino's chain state in SQLite instead of
+	// the legacy bbolt and flat-file stores. Existing bbolt data is
+	// imported once on the first start (neutrino_migrations version 2);
+	// the import is never skipped. Set to false to stay on bbolt.
+	NeutrinoSQLite bool `mapstructure:"neutrino_sqlite"`
+
 	// DisableGlobalLoggers prevents btcwallet/neutrino package globals
 	// from being wired to the daemon logger. This is intended for
 	// parallel in-process tests that collect per-test log artifacts.
@@ -1284,6 +1290,7 @@ func DefaultConfig() *Config {
 			PollInterval:   DefaultEsploraPollInterval,
 			RecoveryWindow: DefaultRecoveryWindow,
 			DBBackend:      lwwallet.DBBackendBolt,
+			NeutrinoSQLite: true,
 		},
 		Swap: &SwapConfig{
 			ServerTransport:       RPCTransportGRPC,

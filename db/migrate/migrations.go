@@ -76,7 +76,7 @@ type Config struct {
 	LatestVersion *uint
 
 	// PostStepCallbacks are invoked after each SQL migration step.
-	PostStepCallbacks map[uint]golangmigrate.PostStepCallback
+	PostStepCallbacks map[uint]PostStepCallback
 
 	// PostgresReplacements are source replacements applied for Postgres.
 	PostgresReplacements map[string]string
@@ -118,16 +118,10 @@ func RunMigrations(db *sql.DB, backend sqlc.BackendType, sourceFS fs.FS,
 		return fmt.Errorf("create migration source: %w", err)
 	}
 
-	postStepCallbacks := cfg.PostStepCallbacks
-	if postStepCallbacks == nil {
-		postStepCallbacks = make(
-			map[uint]golangmigrate.PostStepCallback,
-		)
-	}
+	driver = newPostStepDriver(driver, cfg.PostStepCallbacks)
 
 	mig, err := golangmigrate.NewWithInstance(
 		"iofs", source, cfg.DatabaseName, driver,
-		golangmigrate.WithPostStepCallbacks(postStepCallbacks),
 	)
 	if err != nil {
 		return fmt.Errorf("create migration instance: %w", err)
