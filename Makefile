@@ -139,6 +139,8 @@ DOCKER_TOOLS = docker run \
   -v $${HOME}/.cache/golangci-lint:/root/.cache/golangci-lint \
   -v $${HOME}/go/pkg/mod:/go/pkg/mod \
   -e GOPATH=/go \
+  -e GOGC \
+  -e GOMEMLIMIT \
   -v $$(pwd):/build wavelength-tools
 else
 # Local mode: Docker named volumes for fast macOS/Windows performance.
@@ -148,6 +150,8 @@ DOCKER_TOOLS = docker run \
   -v wavelength-go-lint-cache:/root/.cache/golangci-lint \
   -v wavelength-go-mod-cache:/go/pkg/mod \
   -e GOPATH=/go \
+  -e GOGC \
+  -e GOMEMLIMIT \
   -v $$(pwd):/build wavelength-tools
 endif
 
