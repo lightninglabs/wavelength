@@ -410,3 +410,24 @@ func TestEntryRoundTripsAsJSON(t *testing.T) {
 		t.Fatalf("request union lost in round-trip: %+v", back.Request)
 	}
 }
+
+// TestHostDrivenIngressConfig keeps background startup paused at the JSON
+// boundary without changing the default for existing mobile hosts.
+func TestHostDrivenIngressConfig(t *testing.T) {
+	cfg, err := parseConfig(
+		`{"durable_round_runtime":true,"host_driven_ingress":true}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.HostDrivenIngress || !cfg.DurableRoundRuntime {
+		t.Fatal("host-driven durable startup was not applied")
+	}
+	ordinary, err := parseConfig(`{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ordinary.HostDrivenIngress {
+		t.Fatal("ordinary startup must retain automatic ingress")
+	}
+}

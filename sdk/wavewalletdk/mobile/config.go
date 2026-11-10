@@ -24,6 +24,7 @@ type mobileConfig struct {
 	DebugLevel string `json:"debug_level"`
 
 	// AllowMainnet must be true to run on mainnet.
+	HostDrivenIngress   bool `json:"host_driven_ingress"`
 	DurableRoundRuntime bool `json:"durable_round_runtime"`
 	AllowMainnet        bool `json:"allow_mainnet"`
 
@@ -177,6 +178,7 @@ func (mc mobileConfig) validate() error {
 // convenience merge semantics so the zero value defers to the wavewalletrpc
 // build defaults.
 func applyMobileConfig(cfg *wavewalletdk.Config, mc mobileConfig) {
+	cfg.HostDrivenIngress = mc.HostDrivenIngress
 	cfg.DurableRoundRuntime = mc.DurableRoundRuntime
 	if mc.DataDir != "" {
 		cfg.DataDir = mc.DataDir
