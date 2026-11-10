@@ -592,16 +592,18 @@ func TestVerifyAssetVTXORejectsMalformedInput(t *testing.T) {
 }
 
 // TestTapdProofChainVerifier checks that tapd verifies a proof file without
-// writing to its universe when it knows the asset, and learns an unknown
-// group from the issuance proof or, for a reissuance, from its federation.
+// writing to its universe when it knows the asset, and learns an unstored
+// asset or an unknown group from the issuance proof or, for a reissuance,
+// from its federation.
 func TestTapdProofChainVerifier(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
 		name   string
 		client *fakeTapdProofClient
+		cancel bool
 		calls  []string
-		err    string
+		err    []string
 	}{
 		{
 			name: "known group",
@@ -619,6 +621,16 @@ func TestTapdProofChainVerifier(t *testing.T) {
 				validFile: true,
 			},
 			calls: []string{
+				"verify",
+			},
+		},
+		{
+			name: "ungrouped asset on a fresh tapd",
+			client: &fakeTapdProofClient{
+				validFile: true, unstored: true,
+			},
+			calls: []string{
+				"verify", "unpack", "decode", "insert",
 				"verify",
 			},
 		},
@@ -653,7 +665,9 @@ func TestTapdProofChainVerifier(t *testing.T) {
 			client: &fakeTapdProofClient{
 				validFile: true, grouped: true,
 			},
-			err: "does not know asset group",
+			err: []string{
+				"does not know asset group",
+			},
 		},
 		{
 			name: "reissuance unknown to the federation",
@@ -663,26 +677,62 @@ func TestTapdProofChainVerifier(t *testing.T) {
 					"uni-a",
 				},
 			},
-			err: "uni-a: group key not known",
+			err: []string{
+				"uni-a: group key not known",
+			},
 		},
 		{
 			name: "first proof is a transfer",
 			client: &fakeTapdProofClient{
 				transfer: true,
 			},
-			err: "first proof is not an issuance",
+			err: []string{
+				"first proof is not an issuance",
+			},
 		},
 		{
 			name: "issuance rejected",
 			client: &fakeTapdProofClient{
 				insertErr: errors.New("bad issuance"),
 			},
-			err: "insert issuance proof: bad issuance",
+			err: []string{
+				"insert issuance proof: bad issuance",
+			},
 		},
 		{
 			name:   "invalid proof file",
 			client: &fakeTapdProofClient{},
-			err:    "tapd rejected the proof file",
+			err: []string{
+				"tapd rejected the proof file",
+			},
+		},
+		{
+			name: "tapd unavailable",
+			client: &fakeTapdProofClient{
+				validFile: true,
+				verifyErr: errors.New("tapd unavailable"),
+				insertErr: errors.New("connection refused"),
+			},
+			calls: []string{
+				"verify", "unpack", "decode", "insert",
+			},
+			err: []string{
+				"tapd unavailable", "connection refused",
+			},
+		},
+		{
+			name: "cancelled caller",
+			client: &fakeTapdProofClient{
+				validFile: true,
+				verifyErr: context.Canceled,
+			},
+			cancel: true,
+			calls: []string{
+				"verify",
+			},
+			err: []string{
+				"context canceled",
+			},
 		},
 	}
 
@@ -690,19 +740,32 @@ func TestTapdProofChainVerifier(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if testCase.cancel {
+				cancel()
+			}
+
 			verifier := &TapdProofChainVerifier{
 				client: testCase.client,
 			}
 			err := verifier.VerifyProofChain(
-				t.Context(), []byte("proof-file"),
+				ctx, []byte("proof-file"),
 			)
-			if testCase.err != "" {
-				require.ErrorContains(t, err, testCase.err)
+			if testCase.calls != nil {
+				require.Equal(
+					t, testCase.calls,
+					testCase.client.calls,
+				)
+			}
+			if len(testCase.err) == 0 {
+				require.NoError(t, err)
 
 				return
 			}
-			require.NoError(t, err)
-			require.Equal(t, testCase.calls, testCase.client.calls)
+			for _, want := range testCase.err {
+				require.ErrorContains(t, err, want)
+			}
 		})
 	}
 
@@ -723,9 +786,12 @@ func (f *fakeProofChain) VerifyProofChain(context.Context, []byte) error {
 
 // fakeTapdProofClient models tapd's group rule: a grouped asset verifies only
 // once tapd knows its group, which a group anchor issuance or a federation
-// sync teaches it.
+// sync teaches it. An unstored asset models tapd failing to describe a valid
+// proof of an asset it has not stored, until its issuance is inserted.
 type fakeTapdProofClient struct {
 	validFile   bool
+	unstored    bool
+	verifyErr   error
 	grouped     bool
 	anchor      bool
 	transfer    bool
@@ -776,6 +842,7 @@ func (f *fakeTapdProofClient) InsertProof(context.Context, []byte,
 		return errors.New("group key not known")
 	}
 	f.knownGroup = true
+	f.unstored = false
 
 	return nil
 }
@@ -784,6 +851,15 @@ func (f *fakeTapdProofClient) VerifyProof(context.Context, []byte) (
 	*tapsdk.VerifyProofResponse, error) {
 
 	f.calls = append(f.calls, "verify")
+
+	switch {
+	case f.verifyErr != nil:
+		return nil, f.verifyErr
+
+	case f.unstored:
+		return nil, errors.New("unable to marshal proof: unable to " +
+			"fetch asset meta")
+	}
 
 	return &tapsdk.VerifyProofResponse{
 		Valid: f.validFile && (!f.grouped || f.knownGroup),

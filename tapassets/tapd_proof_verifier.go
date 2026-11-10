@@ -47,9 +47,10 @@ func NewTapdProofChainVerifier(client tapsdk.Client) (*TapdProofChainVerifier,
 }
 
 // VerifyProofChain verifies the proof file through tapd. tapd rejects a
-// grouped asset whose group it does not know, so a rejected file gets its
-// issuance proof inserted into tapd's universe and is verified again. Only
-// that fallback writes to tapd.
+// grouped asset whose group it does not know, and fails to describe a valid
+// proof of an asset it has not stored. A rejected or failed file therefore
+// gets its issuance proof inserted into tapd's universe and is verified
+// again. Only that fallback writes to tapd.
 func (v *TapdProofChainVerifier) VerifyProofChain(ctx context.Context,
 	proofFile []byte) error {
 
@@ -58,12 +59,19 @@ func (v *TapdProofChainVerifier) VerifyProofChain(ctx context.Context,
 	}
 
 	valid, err := v.verify(ctx, proofFile)
-	if err != nil || valid {
+	if valid {
+		return nil
+	}
+
+	// A cancelled caller gets its cancellation back, without writes.
+	if err != nil && ctx.Err() != nil {
 		return err
 	}
 
-	if err := v.insertIssuance(ctx, proofFile); err != nil {
-		return err
+	// The first error is kept, so a transport failure still surfaces when
+	// the insert fails too.
+	if insertErr := v.insertIssuance(ctx, proofFile); insertErr != nil {
+		return errors.Join(err, insertErr)
 	}
 
 	valid, err = v.verify(ctx, proofFile)
@@ -77,8 +85,10 @@ func (v *TapdProofChainVerifier) VerifyProofChain(ctx context.Context,
 	return nil
 }
 
-// verify reports whether tapd accepts the proof file. tapd answers every
-// verification failure with an invalid result.
+// verify reports whether tapd accepts the proof file. tapd answers a failed
+// verification with an invalid result, but a valid proof of an asset it has
+// not stored with an error, so the caller retries after either once the
+// issuance is inserted.
 func (v *TapdProofChainVerifier) verify(ctx context.Context, proofFile []byte) (
 	bool, error) {
 

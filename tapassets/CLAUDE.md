@@ -42,10 +42,12 @@ Durable journals retain committed packages for restart recovery.
   proof path back to the confirmed deposits.
 - `ProofChainVerifier` / `TapdProofChainVerifier` — The asset backend seam:
   chain verification of one confirmed proof file. tapd rejects a grouped
-  asset whose group it does not know, so the tapd implementation retries a
-  rejected file after inserting its issuance proof into tapd's universe. A
-  reissuance carries no group key reveal, so tapd first syncs the group's
-  anchor issuance from its federation servers.
+  asset whose group it does not know, and answers a valid proof of an asset
+  it has not stored with an error, since it cannot describe the asset. The
+  tapd implementation retries a rejected or failed file after inserting its
+  issuance proof into tapd's universe. A reissuance carries no group key
+  reveal, so tapd first syncs the group's anchor issuance from its federation
+  servers.
 - `Store` — Durable, atomic journal persistence for attempts and completed
   transition packages. `ErrStoreNotFound` signals an absent key. Callers own
   workflow serialization and wallet input reservations.
