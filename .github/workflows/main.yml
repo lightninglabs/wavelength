@@ -348,7 +348,12 @@ jobs:
         # Bump the per-package test timeout from Go's 10m default because the
         # ARC runners boot the test harness slower than Depot/local; 30m is
         # generous headroom while still failing on a real hang.
-        run: sudo env "PATH=$PATH" "GOPATH=$GOPATH" make ${{ matrix.unit_type }} timeout=30m
+        # Coverage instrumentation and the runtime dependency graph make
+        # concurrent compiler heaps exceed the runner's memory budget.
+        run: |
+          sudo env "PATH=$PATH" "GOPATH=$GOPATH" \
+            GOGC=50 GOMEMLIMIT=4GiB GOFLAGS=-p=2 \
+            make ${{ matrix.unit_type }} timeout=30m
 
       - name: Clean coverage
         run: grep -Ev '(\.pb\.go|\.pb\.json\.go|\.pb\.gw\.go|db/sqlc/)' coverage.txt > coverage-norpc.txt
