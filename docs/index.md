@@ -96,3 +96,6 @@ into specific topics below.
 - [Warm invoice recovery windows](mobile-receipt-window.md) describe retained host ingress ownership.
 
 - [Warm receipt window plan](mobile-receipt-window-execplan.md) records implementation and validation.
+
+- [Notification relay](notification-relay.md).
+- [Notification relay implementation plan](notification-relay-execplan.md).
