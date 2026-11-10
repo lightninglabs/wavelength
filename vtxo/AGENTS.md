@@ -174,6 +174,14 @@ when the local wallet owns the receive script.
 
 ## Invariants
 
+- **A refused input stops only its collecting attempt.** An exiting VTXO
+  explicitly refuses `ForfeitRequestEvent`. Its actor sends
+  `ForfeitSignatureRejected` through the retained manager relay with the
+  request's round ID and input outpoint. The round fails only while collecting
+  that expected input and before its signature has arrived. Foreign, duplicate
+  and checkpointed-state notices cannot release another owner's inputs.
+  See [round input ownership](../docs/round-input-ownership.md).
+
 - Startup checks each recovered VTXO's persisted `ForfeitRoundID` against
   the local consuming round before spawning an actor. A nonzero commitment
   txid and positive confirmation height retire the input as `Forfeited`, even

@@ -520,6 +520,33 @@ func (e *ForfeitSignatureResponse) MessageType() string {
 	return "ForfeitSignatureResponse"
 }
 
+// ForfeitSignatureRejected reports that an input could not sign for this
+// attempt. It is local to the client and cannot release a round whose
+// signature checkpoint has already been committed.
+type ForfeitSignatureRejected struct {
+	actor.BaseMessage
+
+	// VTXOOutpoint identifies the input that refused to sign.
+	VTXOOutpoint wire.OutPoint
+
+	// RoundID identifies the request, including delayed rejection delivery.
+	RoundID string
+
+	// Reason describes why this input could not supply a signature.
+	Reason string
+}
+
+// clientEventSealed marks the rejection as a round event.
+func (*ForfeitSignatureRejected) clientEventSealed() {}
+
+// RoundReceivable admits the rejection to the round actor's mailbox.
+func (*ForfeitSignatureRejected) RoundReceivable() {}
+
+// MessageType identifies the local signing rejection.
+func (*ForfeitSignatureRejected) MessageType() string {
+	return "ForfeitSignatureRejected"
+}
+
 // ForfeitCollectionTimedOut is emitted by the round actor when the forfeit
 // signature collection window expires before all expected responses arrive.
 // This transitions the round into a failed state to avoid indefinite stalls.

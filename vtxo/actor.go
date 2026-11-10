@@ -685,9 +685,26 @@ func (a *VTXOActor) Receive(ctx context.Context,
 	}
 	transition, err := a.state.ProcessEvent(ctx, vtxoEvent, a.env)
 	if err != nil {
+		request, signing := vtxoEvent.(*ForfeitRequestEvent)
+		exiting := signing && errors.Is(err, ErrExitInFlight)
+		if exiting {
+			// Tell acknowledges enqueue only. Return the refusal
+			// through the retained signature relay, naming the
+			// exact request so a delayed message cannot cancel
+			// another round.
+			a.tellManager(ctx, &RelayToRoundMsg{
+				Payload: &round.ForfeitSignatureRejected{
+					VTXOOutpoint: a.cfg.VTXO.Outpoint,
+					RoundID:      request.RoundID,
+					Reason:       err.Error(),
+				},
+			})
+		}
+
 		// Expected cohort contention is summarized once by the manager.
+		// An exit refusing a stale signing request is also expected.
 		// Keep real state-machine failures operator-visible.
-		if !errors.Is(err, ErrCohortReservationNotOwned) {
+		if !errors.Is(err, ErrCohortReservationNotOwned) && !exiting {
 			a.logger(ctx).ErrorS(
 				ctx,
 				"VTXO FSM ProcessEvent failed",
