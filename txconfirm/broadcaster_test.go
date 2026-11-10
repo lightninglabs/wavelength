@@ -28,9 +28,9 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// TestUnknownOutputRelease verifies cleanup classification accepts the local
+// TestUnknownWalletOutput verifies lease classification accepts the local
 // sentinel and its RPC encoding without hiding transport or ownership errors.
-func TestUnknownOutputRelease(t *testing.T) {
+func TestUnknownWalletOutput(t *testing.T) {
 	t.Parallel()
 
 	rpcUnknownOutput := status.Error(codes.Unknown, "unknown output")
@@ -104,7 +104,7 @@ func TestUnknownOutputRelease(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			require.Equal(
-				t, test.want, isUnknownOutputRelease(test.err),
+				t, test.want, isUnknownWalletOutput(test.err),
 			)
 		})
 	}
@@ -2484,6 +2484,13 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 			// spending that same reserved outpoint instead of
 			// consuming another confirmed wallet UTXO.
 			testWallet.utxos = []*walletcore.Utxo{secondUTXO}
+			// LND can also refuse renewal once its wallet no longer
+			// knows the spent output. That must not discard the
+			// cached input needed for a replacement or change its
+			// ownership.
+			testWallet.leaseErr = status.Error(
+				codes.Unknown, "unknown output",
+			)
 
 			result2, err := b.Submit(t.Context(), 101,
 				&BroadcastRequest{

@@ -490,7 +490,8 @@ func (b *CPFPBroadcaster) parentState(
 // while the CPFP child is in flight. A failure from the wallet-level
 // lease is logged but does not abort the broadcast: the in-memory
 // reservation map in parentStates is authoritative for intra-package
-// coordination.
+// coordination. An unknown-output renewal after an accepted package is
+// diagnostic: the earlier child can already have spent the reserved input.
 func (b *CPFPBroadcaster) reserveFeeInput(ctx context.Context,
 	parentTxid chainhash.Hash, feeInput *FeeInput) {
 
@@ -500,11 +501,12 @@ func (b *CPFPBroadcaster) reserveFeeInput(ctx context.Context,
 
 	state := b.parentState(parentTxid)
 	op := feeInput.Outpoint
+	renewal := state.LastFeeRate > 0 &&
+		b.feeOutpointReserved(parentTxid, op)
 
-	// If we already reserved this outpoint for this parent, the
-	// wallet already has a lease; re-leasing extends the expiry,
-	// which is exactly what we want on a fee bump that re-picks the
-	// same UTXO for TRUC RBF double-spend.
+	// Re-leasing extends an existing lease when the wallet still lists the
+	// input. A previous child may already have spent it, so a reservation
+	// does not prove the wallet can renew that lease.
 	state.UsedFeeOutpoints[op] = struct{}{}
 	state.UsedFeeInputs[op] = cloneFeeInput(feeInput)
 
@@ -515,6 +517,17 @@ func (b *CPFPBroadcaster) reserveFeeInput(ctx context.Context,
 	_, err := b.cfg.Wallet.LeaseOutput(
 		ctx, txconfirmLockID, op, DefaultFeeInputLeaseExpiry,
 	)
+	if renewal && isUnknownWalletOutput(err) {
+		b.log.DebugS(ctx, "Wallet-level lease renewal output absent; "+
+			"retaining in-memory reservation",
+			"err", err,
+			"parent", parentTxid,
+			"outpoint", op,
+		)
+
+		return
+	}
+
 	if err != nil {
 		b.log.WarnS(ctx, "Wallet-level lease failed; relying on "+
 			"in-memory reservation only",
@@ -553,7 +566,7 @@ func (b *CPFPBroadcaster) releaseWalletLease(ctx context.Context,
 	}
 
 	err := b.cfg.Wallet.ReleaseOutput(ctx, txconfirmLockID, op)
-	if isUnknownOutputRelease(err) {
+	if isUnknownWalletOutput(err) {
 		b.log.DebugS(ctx, "Wallet-level lease already absent",
 			"err", err,
 			"outpoint", op,
@@ -568,10 +581,10 @@ func (b *CPFPBroadcaster) releaseWalletLease(ctx context.Context,
 	}
 }
 
-// isUnknownOutputRelease recognizes btcwallet's missing-output result during
-// lease cleanup, including LND's exact gRPC encoding. Match the status message
+// isUnknownWalletOutput recognizes btcwallet's missing-output result for
+// wallet leases, including LND's exact gRPC encoding. Match the status message
 // exactly so unrelated Unknown errors and ownership failures remain visible.
-func isUnknownOutputRelease(err error) bool {
+func isUnknownWalletOutput(err error) bool {
 	if errors.Is(err, wtxmgr.ErrUnknownOutput) {
 		return true
 	}
