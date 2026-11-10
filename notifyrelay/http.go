@@ -119,11 +119,19 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 
 // validManagement rejects fields unrelated to the signed mutation's action.
 func validManagement(value ManagementPayload) bool {
+	presentation := value.Presentation
+	if presentation != "" && (!value.EnableAlerts ||
+		(presentation != PresentationGeneric &&
+			presentation != PresentationReceiptHint)) {
+		return false
+	}
+
 	switch value.Action {
 	case "rotate_token":
 		return validDeviceToken(value.DeviceToken) &&
 			value.RouteID == "" &&
-			value.SubscriptionID == "" && !value.EnableAlerts
+			value.SubscriptionID == "" && !value.EnableAlerts &&
+			value.Presentation == ""
 
 	case "subscribe":
 		return validIdentifier(value.RouteID, 128) &&
@@ -133,11 +141,13 @@ func validManagement(value ManagementPayload) bool {
 	case "revoke_subscription":
 		return validIdentifier(value.SubscriptionID, 64) &&
 			value.DeviceToken == "" &&
-			value.RouteID == "" && !value.EnableAlerts
+			value.RouteID == "" && !value.EnableAlerts &&
+			value.Presentation == ""
 
 	case "delete_installation":
 		return value.SubscriptionID == "" && value.DeviceToken == "" &&
-			value.RouteID == "" && !value.EnableAlerts
+			value.RouteID == "" && !value.EnableAlerts &&
+			value.Presentation == ""
 
 	default:
 		return false
