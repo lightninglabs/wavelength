@@ -258,3 +258,11 @@ contexts and joins their final access before daemon cleanup. Unpublished startup
 failure also joins cleanup before returning. This proves SDK handle ownership;
 it does not assert that all daemon actors are suspend-safe. See
 [shutdown ownership](../../docs/sdk-shutdown-ownership.md).
+
+## Bounded canonical activity reads
+
+Finite embedded activity batches join event positions to current canonical
+rows. A captured ceiling bounds replay; the host persists explicit NextCursor
+and deduplicates by canonical identity. Capturing a cursor does not reconcile
+sources. Both direct SDK callbacks join shutdown before releasing the store.
+See [finite activity reads](../../docs/canonical-activity-batches.md).

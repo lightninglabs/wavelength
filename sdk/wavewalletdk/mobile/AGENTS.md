@@ -113,3 +113,11 @@ selector. `swap_notification_issuer` configures the separately trusted swap
 source public identity. No push payload supplies a URL or issuer pin. The
 binding call retains its lifecycle-derived ten-second deadline. See
 [notification sources](../../../docs/notification-sources.md).
+
+## Bounded canonical activity reads
+
+Finite embedded activity batches join event positions to current canonical
+rows. A captured ceiling bounds replay; the host persists explicit NextCursor
+and deduplicates by canonical identity. Capturing a cursor does not reconcile
+sources. Both direct SDK callbacks join shutdown before releasing the store.
+See [finite activity reads](../../../docs/canonical-activity-batches.md).
