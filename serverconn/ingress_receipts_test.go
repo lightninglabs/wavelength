@@ -23,7 +23,7 @@ func TestIngressReceiptScopeAndCompatibility(t *testing.T) {
 			Method:  "method",
 		},
 	}
-	scope := ingressScope{local: "local", remote: "remote"}
+	scope := ingressScope{reply: "local", remote: "remote"}
 	receipt := func(scope ingressScope, env *mailboxpb.Envelope) string {
 		ctx := context.WithValue(
 			context.Background(), ingressScopeKey{}, scope,
@@ -38,11 +38,11 @@ func TestIngressReceiptScopeAndCompatibility(t *testing.T) {
 	require.NotEmpty(t, original)
 	for _, changed := range []ingressScope{
 		{
-			local:  "other",
+			reply:  "other",
 			remote: "remote",
 		},
 		{
-			local:  "local",
+			reply:  "local",
 			remote: "other",
 		},
 	} {
