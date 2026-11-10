@@ -578,6 +578,8 @@ func swapTraceFromSummary(
 		),
 		SenderPubkey: swap.GetSenderPubkey(),
 		Preimage:     swap.GetPreimage(),
+		ChannelId:    swap.GetChannelId(),
+		ReservedScid: swap.GetReservedScid(),
 	}
 }
 
