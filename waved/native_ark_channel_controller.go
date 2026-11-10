@@ -612,16 +612,8 @@ func (c *NativeArkChannelController) startClient(ctx context.Context) error {
 
 		return err
 	}
-	if err := resumeNativeArkChannels(ctx, service, c.cfg.Log); err != nil {
-		cleanup()
-
-		return err
-	}
-	if err := tolerateNativeArkChannelFailures(
-		ctx, resumeOnchainArkChannels(ctx, node, service), c.cfg.Log,
-		"Ark channel force-close resume failed",
-	); err != nil {
-
+	resumeIDs, err := nativeArkChannelResumeIDs(ctx, service)
+	if err != nil {
 		cleanup()
 
 		return err
@@ -637,6 +629,8 @@ func (c *NativeArkChannelController) startClient(ctx context.Context) error {
 	c.node = node
 	c.clientClose = clientClose
 	c.mu.Unlock()
+	//nolint:contextcheck // recovery uses the controller lifecycle
+	c.startNativeArkChannelResume(service, node, resumeIDs)
 
 	return nil
 }
@@ -746,22 +740,18 @@ func (c *NativeArkChannelController) startHub(ctx context.Context,
 
 		return err
 	}
-	if err := resumeNativeArkChannels(ctx, service, c.cfg.Log); err != nil {
+	resumeIDs, err := nativeArkChannelResumeIDs(ctx, service)
+	if err != nil {
 		cleanup()
 
 		return err
 	}
-	if err := tolerateNativeArkChannelFailures(
-		ctx, resumeOnchainArkChannels(ctx, node, service), c.cfg.Log,
-		"Ark channel force-close resume failed",
-	); err != nil {
-
-		cleanup()
-
-		return err
-	}
+	c.mu.Lock()
 	c.node = node
 	c.hubClose = hubClose
+	c.mu.Unlock()
+	//nolint:contextcheck // recovery uses the controller lifecycle
+	c.startNativeArkChannelResume(service, node, resumeIDs)
 
 	return nil
 }
@@ -817,17 +807,6 @@ func restoreNativeArkChannelBackingRecords(restorer arkChannelBackingRestorer,
 	return nil
 }
 
-// resumeNativeArkChannels logs isolated channel failures while preserving a
-// functioning endpoint for every channel that recovered successfully.
-func resumeNativeArkChannels(ctx context.Context, service *arkchannel.Service,
-	log btclog.Logger) error {
-
-	return tolerateNativeArkChannelFailures(
-		ctx, service.Resume(ctx), log,
-		"Ark channel action resume failed",
-	)
-}
-
 // tolerateNativeArkChannelFailures reports durable per-channel failures without
 // tearing down independent links that recovered successfully.
 func tolerateNativeArkChannelFailures(ctx context.Context, err error,
@@ -858,19 +837,6 @@ func tolerateNativeArkChannelFailures(ctx context.Context, err error,
 // durable commitment-broadcast state.
 type arkChannelForceCloseResumer interface {
 	ResumeForceCloseChannel(wire.OutPoint) error
-}
-
-// resumeOnchainArkChannels closes the crash window between durable backing
-// publication and lnd's commitment-broadcast marker.
-func resumeOnchainArkChannels(ctx context.Context,
-	node arkChannelForceCloseResumer, service *arkchannel.Service) error {
-
-	records, err := service.ListChannels(ctx)
-	if err != nil {
-		return err
-	}
-
-	return resumeOnchainArkChannelRecords(node, records)
 }
 
 // resumeOnchainArkChannelRecords attempts every materialized channel and
