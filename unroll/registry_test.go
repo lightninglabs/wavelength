@@ -594,7 +594,9 @@ func TestRegistryEnsureDedupesSameTarget(t *testing.T) {
 	ensureResp, ok := resp.(*EnsureUnrollResp)
 	require.True(t, ok)
 	require.True(t, ensureResp.Created)
-	require.Equal(t, 1, txconfirmRef.requestCount())
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() == 1
+	}, testTimeout, time.Millisecond)
 
 	resp, err = registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
 		Outpoint: proof.TargetOutpoint(),
@@ -605,8 +607,18 @@ func TestRegistryEnsureDedupesSameTarget(t *testing.T) {
 	ensureResp, ok = resp.(*EnsureUnrollResp)
 	require.True(t, ok)
 	require.False(t, ensureResp.Created)
-	require.Equal(t, 1, txconfirmRef.requestCount())
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() == 1
+	}, testTimeout, time.Millisecond)
 
+	require.Eventually(t, func() bool {
+		record, err := store.GetRecord(
+			t.Context(), proof.TargetOutpoint(),
+		)
+
+		return err == nil && record != nil &&
+			record.Phase == PhaseMaterializing
+	}, testTimeout, time.Millisecond)
 	record, err := store.GetRecord(t.Context(), proof.TargetOutpoint())
 	require.NoError(t, err)
 	require.NotNil(t, record)
@@ -1213,9 +1225,15 @@ func TestRegistryEnsureMarksRealStartErrorFailed(t *testing.T) {
 		Outpoint: proof.TargetOutpoint(),
 		Trigger:  TriggerManual,
 	}).Await(t.Context()).Unpack()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "start child")
-	require.Contains(t, err.Error(), "start boom")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		record, err := store.GetRecord(
+			t.Context(), proof.TargetOutpoint(),
+		)
+
+		return err == nil && record != nil &&
+			record.Phase == PhaseFailed
+	}, testTimeout, time.Millisecond)
 
 	record, err := store.GetRecord(t.Context(), proof.TargetOutpoint())
 	require.NoError(t, err)
@@ -1261,6 +1279,9 @@ func TestRegistryTerminalPersistRetriesUntilDurable(t *testing.T) {
 	// Drive the child to terminal AFTER admission so the first terminal
 	// upsert hits the injected failure and the retry path must land
 	// the record.
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() > 0
+	}, testTimeout, time.Millisecond)
 	txconfirmRef.emitFailed(t, 0, proof.RootTxids()[0], "rejected")
 
 	require.Eventually(t, func() bool {
@@ -1312,6 +1333,9 @@ func TestRegistryStatusFallsBackToPendingTerminalRecord(t *testing.T) {
 
 	// Drive the child to terminal AFTER admission so only the terminal
 	// upsert hits the always-fail injection.
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() > 0
+	}, testTimeout, time.Millisecond)
 	txconfirmRef.emitFailed(t, 0, proof.RootTxids()[0], "rejected")
 
 	require.Eventually(t, func() bool {
@@ -1382,6 +1406,9 @@ func TestRegistryTerminalStatusRemainsQueryableWhilePersistBlocked(
 
 	// Drive the child to terminal AFTER admission so only the terminal
 	// upsert is gated by the blocking store.
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() > 0
+	}, testTimeout, time.Millisecond)
 	txconfirmRef.emitFailed(t, 0, proof.RootTxids()[0], "rejected")
 
 	select {

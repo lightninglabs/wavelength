@@ -361,16 +361,24 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   non-terminal records via `validateRestorableRecords` before re-admitting
   them; a record with an unrecognized `ExitPolicyKind` or missing ref fails
   closed rather than spawning an actor that cannot build the final spend.
-  Late admission failures observed after the synchronous timeout window are
-  delivered as `childAdmissionResultMsg` so they remain serialized with
-  registry mutations.
+  Fresh admissions persist their pending record before returning. Best-height
+  lookup, durable child start, and optional state refinement run outside the
+  registry turn under a registry-owned context. Temporary height errors retry
+  with capped backoff while the accepted job remains pending. Each lookup is
+  bounded and shutdown cancels the retry. `childAdmissionResultMsg`
+  serializes their results with terminal bookkeeping; child identity fences
+  stale results from a replacement with the same actor ID. Shutdown cancels
+  and joins these observers before returning. Restored pending records start
+  with their saved policy identity if no child checkpoint exists; an existing
+  checkpoint resumes idempotently. Later phases keep the explicit Resume path.
 - **Fail-closed admission write.** `handleEnsure` calls
   `Store.UpsertRecord` synchronously and only returns `Created=true`
   after the record is durable. On write failure the spawned child is
-  stopped, removed from `r.active`, and the caller sees a wrapped
-  error — no silent orphans. Subsequent updates stay on the async
-  `requestPersist` path so the registry goroutine isn't held hostage
-  by every transition.
+  stopped and the caller sees an error. Deterministic backend startup errors
+  after admission become failed records and recovery notifications. Child
+  cancellation/deadline outcomes remain pending because they cannot prove
+  absence of side effects. Subsequent updates stay on the async
+  `requestPersist` path so transitions do not hold the registry turn.
 - **Durable mailbox messages are TLV, not JSON.** Every message in
   `messages.go` implements `actor.TLVMessage` with a hand-written
   `Encode`/`Decode` driven by `tlv.Stream`. Inner record types start

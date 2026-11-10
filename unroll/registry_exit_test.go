@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -380,7 +381,7 @@ func TestRegistryFailedAdmissionNotifiesRecoverable(t *testing.T) {
 		Outpoint: proof.TargetOutpoint(),
 		Trigger:  TriggerManual,
 	}).Await(t.Context()).Unpack()
-	require.Error(t, err)
+	require.NoError(t, err)
 
 	// The pre-broadcast failure is reported to the manager as recoverable.
 	require.Eventually(t, func() bool {
@@ -480,7 +481,7 @@ func TestRegistryReadmitsTargetAfterRecoverableFailure(t *testing.T) {
 		Outpoint: target,
 		Trigger:  TriggerManual,
 	}).Await(t.Context()).Unpack()
-	require.Error(t, err)
+	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
 		return len(observer.notifications()) == 1
@@ -679,12 +680,23 @@ func TestRegistryReadmissionReissuesStagedRoot(t *testing.T) {
 	// failure, but the child checkpoint must retain the exact root
 	// transaction.
 	_, err = ensure()
-	require.ErrorContains(t, err, "injected txconfirm ask failure")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		record, err := registryStore.GetRecord(t.Context(), target)
+
+		return err == nil && record != nil &&
+			record.RecoverableFailure &&
+			strings.Contains(
+				record.FailReason,
+				"injected txconfirm ask failure",
+			)
+	}, testTimeout, time.Millisecond)
 	require.Equal(t, 1, txconfirmRef.requestCountForTxid(rootTxid))
 
 	actorID := actorIDForTarget(target)
 	checkpoint, err := deliveryStore.LoadCheckpoint(t.Context(), actorID)
 	require.NoError(t, err)
+
 	require.NotNil(t, checkpoint)
 
 	decoded, err := decodeCheckpoint(checkpoint.StateData)
@@ -704,8 +716,14 @@ func TestRegistryReadmissionReissuesStagedRoot(t *testing.T) {
 	// proves it reissues the root instead of silently accepting a non-idle
 	// Start, and that another recovery attempt remains possible.
 	_, err = ensure()
-	require.ErrorContains(t, err, "injected txconfirm ask failure")
-	require.Equal(t, 2, txconfirmRef.requestCountForTxid(rootTxid))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		record, err := registryStore.GetRecord(t.Context(), target)
+
+		return err == nil && record != nil &&
+			record.RecoverableFailure &&
+			txconfirmRef.requestCountForTxid(rootTxid) == 2
+	}, testTimeout, time.Millisecond)
 
 	// The third admission succeeds with the same actor and transaction
 	// identity. A normal duplicate Ensure while it is active must not
@@ -714,7 +732,9 @@ func TestRegistryReadmissionReissuesStagedRoot(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, admitted.Created)
 	require.Equal(t, actorID, admitted.ActorID)
-	require.Equal(t, 3, txconfirmRef.requestCountForTxid(rootTxid))
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(rootTxid) == 3
+	}, testTimeout, time.Millisecond)
 	require.Equal(t, 3, txconfirmRef.requestCount())
 
 	duplicate, err := ensure()
