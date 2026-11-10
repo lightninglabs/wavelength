@@ -99,6 +99,17 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
 
 ## Invariants
 
+- LND-backed wallets implement `FeeInputConfirmer`: validate only the selected
+  fee coin's confirmation against the active chain before signing. An orphaned
+  new coin is skipped for this attempt; unavailable evidence stops the attempt.
+  Cached replacement inputs are rechecked. A stale cached coin must not block
+  another healthy cached or fresh coin. Retire its fee-input cache and lease
+  while retaining parent tracking and accepted fee history. Unknown evidence
+  preserves the reservation. A later confirmation restores eligibility through
+  fresh wallet enumeration. Unknown confirmation evidence is distinct from fee
+  shortage:
+  it must not start fanout or direct-parent fallback.
+
 - **Direct rejection classification.** Explicit fee or structural rejection
   of an anchorless candidate produces `TxFailed` even with
   `RetryUntilAccepted`. The signing owner can reprice a fee-rejected candidate;

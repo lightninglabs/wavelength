@@ -59,6 +59,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 
 ## Invariants
 
+- `lndUnrollWallet.FeeInputConfirmed` forwards the selected CPFP fee coin to
+  the boarding backend's active-chain confirmation check. A stale wallet
+  listing must not make an orphaned coin eligible for a signed child.
+
 - Indexed VTXOs pass `vtxo.IndexedAncestryFromRPC` before new acceptance.
   It verifies signed tree/transaction paths to the exact target outpoint,
   value, and script. OOR inventory includes `ancestry_packages` to connect
