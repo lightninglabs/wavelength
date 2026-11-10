@@ -159,7 +159,10 @@ jobs:
       - name: lint
         # The linter container writes to the shared Go module cache as root,
         # so the analyzer tests that follow need the same access.
-        run: sudo env "PATH=$PATH" "GOPATH=$GOPATH" "HOME=$HOME" GOGC=50 make lint
+        # Retain CI cache mounts and bound cold-cache analysis in Docker.
+        run: |
+          sudo env "PATH=$PATH" "GOPATH=$GOPATH" "HOME=$HOME" \
+            "CI=$CI" GOGC=50 GOMEMLIMIT=4GiB make lint workers=4
 
   ########################
   # P formal model check
