@@ -12,13 +12,21 @@ on:
   workflow_dispatch:
     inputs:
       checkout:
-        description: 'Ref to build (branch, tag, or commit SHA). Defaults to the workflow trigger ref.'
+        description: 'Ref to build (branch, tag, or commit SHA). Defaults to the workflow trigger commit.'
         required: false
         default: ''
       tag_suffix:
         description: 'Optional suffix appended to the manual build tag'
         required: false
         default: ''
+      notification_image:
+        description: 'Image repository for the notification relay'
+        type: choice
+        options:
+          - wavenotifyd
+          - waved
+        required: false
+        default: 'wavenotifyd'
 
 defaults:
   run:
@@ -50,7 +58,7 @@ jobs:
       - name: git checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.checkout || github.ref }}
+          ref: ${{ github.event.inputs.checkout || github.sha }}
           submodules: recursive
           fetch-depth: 0
 
@@ -65,12 +73,23 @@ jobs:
           # below) can run.
           INPUT_CHECKOUT: ${{ github.event.inputs.checkout }}
           INPUT_TAG_SUFFIX: ${{ github.event.inputs.tag_suffix }}
+          INPUT_NOTIFICATION_IMAGE: ${{ github.event.inputs.notification_image }}
         run: |
           set -euo pipefail
           SOURCE_SHA="$(git rev-parse HEAD)"
           SHORT_SHA="$(git rev-parse --short=7 HEAD)"
           DATE_TAG="$(date -u +%Y-%m-%d)"
           REPO="${DOCKER_REPO}/${DOCKER_IMAGE_WAVED}"
+          NOTIFY_IMAGE="${INPUT_NOTIFICATION_IMAGE:-${DOCKER_IMAGE_NOTIFY}}"
+          case "${NOTIFY_IMAGE}" in
+            wavenotifyd|waved) ;;
+            *) echo "Unsupported notification image repository" >&2; exit 1 ;;
+          esac
+          # Sharing a repository must never replace wallet image tags.
+          NOTIFY_PREFIX=""
+          if [[ "${NOTIFY_IMAGE}" == "${DOCKER_IMAGE_WAVED}" ]]; then
+            NOTIFY_PREFIX="wavenotifyd-"
+          fi
           TAGS=""
           case "${GITHUB_EVENT_NAME}" in
             push)
@@ -113,8 +132,9 @@ jobs:
             echo "source_sha=${SOURCE_SHA}"
             echo "notify_tags<<EOF"
             while IFS= read -r wave_tag; do
+              NOTIFY_TAG="${NOTIFY_PREFIX}${wave_tag##*:}"
               printf '%s/%s:%s\n' "${DOCKER_REPO}" \
-                "${DOCKER_IMAGE_NOTIFY}" "${wave_tag##*:}"
+                "${NOTIFY_IMAGE}" "${NOTIFY_TAG:0:128}"
             done <<< "${TAGS}"
             echo "EOF"
           } >> "${GITHUB_OUTPUT}"
