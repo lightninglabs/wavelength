@@ -88,6 +88,9 @@ type RPCServer struct {
 
 	server *Server
 
+	// cleanupWorkers joins detached continuations after gRPC handlers exit.
+	cleanupWorkers sync.WaitGroup
+
 	// macaroonManager owns local macaroon baking and reports the active RPC
 	// permission map. It is configured after all optional gRPC services are
 	// registered, before the listener starts serving requests.
@@ -4545,6 +4548,9 @@ func (r *RPCServer) cleanupSubmittedOORStart(ctx context.Context,
 	)
 }
 
+// cleanupSubmittedOORStartWithTimeout retains submitted-transfer cleanup
+// through its final callback. Caller cancellation does not release ambiguous
+// input ownership; the existing bounded cleanup policy still decides that.
 func (r *RPCServer) cleanupSubmittedOORStartWithTimeout(ctx context.Context,
 	future actor.Future[oor.ActorResp],
 	locked *wallet.SelectAndLockVTXOsResponse, releaseCustomInputs func(),
@@ -4554,7 +4560,9 @@ func (r *RPCServer) cleanupSubmittedOORStartWithTimeout(ctx context.Context,
 		context.WithoutCancel(ctx), timeout,
 	)
 
+	r.cleanupWorkers.Add(1)
 	go func() {
+		defer r.cleanupWorkers.Done()
 		defer cancel()
 
 		oorResult := future.Await(cleanupCtx)

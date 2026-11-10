@@ -64,6 +64,7 @@ func (r *Registry) Stop() {
 	if r.wg != nil {
 		r.wg.Wait()
 	}
+	r.behavior.workers.Wait()
 }
 
 // RestoreNonTerminal respawns and resumes every non-terminal operation. It runs
@@ -194,6 +195,10 @@ func (r *Registry) SetEarmarkProvider(fn EarmarkFunc) {
 // the row write and the spawn is recovered by RestoreNonTerminal on the next
 // boot.
 type registryBehavior struct {
+	// workers retains native children independently of active-map
+	// membership.
+	workers sync.WaitGroup
+
 	cfg     RegistryConfig
 	log     btclog.Logger
 	selfRef actor.TellOnlyRef[CreditMsg]
@@ -930,6 +935,7 @@ func (b *registryBehavior) considerRedeem(ctx context.Context,
 // childConfig builds the per-operation actor config for one op id.
 func (b *registryBehavior) childConfig(opID string) OpActorConfig {
 	return OpActorConfig{
+		workers:           &b.workers,
 		OpID:              opID,
 		Log:               b.cfg.Log,
 		Server:            b.cfg.Server,

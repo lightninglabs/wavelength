@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
@@ -83,6 +84,8 @@ type WatcherActor struct {
 	selfRef actor.TellOnlyRef[Msg]
 
 	actor *actor.Actor[Msg, Resp]
+	// workers joins the watcher and its synchronous watch cleanup.
+	workers sync.WaitGroup
 
 	// targets indexes the watch plan armed for each recipient VTXO.
 	targets map[wire.OutPoint]*trackedTarget
@@ -110,6 +113,7 @@ func (w *WatcherActor) Stop() {
 	}
 
 	w.actor.Stop()
+	w.workers.Wait()
 }
 
 // NewWatcherActor creates and starts the recipient fraud watcher actor.
@@ -128,6 +132,7 @@ func NewWatcherActor(cfg WatcherConfig) *WatcherActor {
 	w.actor = actor.NewActor(actor.ActorConfig[Msg, Resp]{
 		ID:          ServiceKeyName,
 		Behavior:    w,
+		Wg:          &w.workers,
 		MailboxSize: mailbox,
 	})
 	w.selfRef = w.actor.TellRef()
