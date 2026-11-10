@@ -1,6 +1,8 @@
 package round
 
 import (
+	"time"
+
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -94,6 +96,9 @@ func (m *WalletBoardingConfirmed) RoundReceivable() {}
 
 // ServerMessageNotification delivers a server FSM outbox message to the client.
 type ServerMessageNotification struct {
+	// wireMethod and wirePayload retain the original validated push.
+	wireMethod  []byte
+	wirePayload []byte
 	actor.BaseMessage
 
 	// Message is a ClientEvent from the server (RoundJoined,
@@ -304,6 +309,8 @@ func (m *ConfirmationEvent) RoundReceivable() {}
 
 // TimeoutMsg is sent to the round actor when a timeout expires.
 type TimeoutMsg struct {
+	// deadline fences callbacks from a superseded durable timer.
+	deadline time.Time
 	actor.BaseMessage
 
 	// TimeoutID identifies the expired timeout.
@@ -322,6 +329,8 @@ func (m *TimeoutMsg) RoundReceivable() {}
 // intents query that a board trigger started. It is sent by the actor to
 // itself through actor.AskThen, so it is internal to this package.
 type boardingIntentsReply struct {
+	// FetchID correlates a durable reply with its persisted queue head.
+	FetchID string
 	actor.BaseMessage
 
 	// Res is the wallet's response or the error that replaced it.

@@ -167,3 +167,32 @@ func TestStartMailboxIngressAlreadyIncompatible(t *testing.T) {
 	require.Error(t, err)
 	require.False(t, s.isServerConnected())
 }
+
+// TestHostDrivenIngressStartsPaused proves the embedded opt-in does not start
+// a resident ingress worker or report a connection before the host pumps it.
+func TestHostDrivenIngressStartsPaused(t *testing.T) {
+	s := newCompatTestServer(t, okPullEdge{})
+	s.cfg = &Config{DurableRoundRuntime: true, HostDrivenIngress: true}
+	require.NoError(t, s.startMailboxIngress(t.Context()))
+	require.False(t, s.isServerConnected())
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	result, err := s.runtime.PumpIngress(ctx, 1)
+	require.NoError(t, err)
+	require.True(t, result.MailboxEmpty)
+	require.NoError(t, s.runtime.StopAndWait(ctx))
+}
+
+// TestHostDrivenIngressRequiresDurableRound rejects a partial opt-in before
+// remote dispatch can acknowledge a message accepted by a volatile round inbox.
+func TestHostDrivenIngressRequiresDurableRound(t *testing.T) {
+	s := newCompatTestServer(t, okPullEdge{})
+	s.cfg = &Config{HostDrivenIngress: true}
+	require.ErrorContains(
+		t,
+		s.startMailboxIngress(
+			t.Context(),
+		),
+		"durable round runtime",
+	)
+}
