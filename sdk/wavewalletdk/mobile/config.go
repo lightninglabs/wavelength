@@ -43,11 +43,12 @@ type mobileConfig struct {
 	WalletFilterHeadersSource string `json:"wallet_filter_headers_source"`
 
 	// Swap server.
-	SwapServerAddress     string `json:"swap_server_address"`
-	SwapServerTransport   string `json:"swap_server_transport"`
-	SwapServerTLSCertPath string `json:"swap_server_tls_cert_path"`
-	SwapServerInsecure    bool   `json:"swap_server_insecure"`
-	SwapDatabaseFileName  string `json:"swap_database_file_name"`
+	SwapServerAddress      string `json:"swap_server_address"`
+	SwapNotificationIssuer string `json:"swap_notification_issuer"`
+	SwapServerTransport    string `json:"swap_server_transport"`
+	SwapServerTLSCertPath  string `json:"swap_server_tls_cert_path"`
+	SwapServerInsecure     bool   `json:"swap_server_insecure"`
+	SwapDatabaseFileName   string `json:"swap_database_file_name"`
 
 	MaxOperatorFeeSat      int64  `json:"max_operator_fee_sat"`
 	MaxPaymentCLTV         *int64 `json:"max_payment_cltv"`
@@ -229,6 +230,9 @@ func applyMobileConfig(cfg *wavewalletdk.Config, mc mobileConfig) {
 			mc.WalletFilterHeadersSource
 	}
 
+	if mc.SwapNotificationIssuer != "" {
+		cfg.SwapNotificationIssuer = mc.SwapNotificationIssuer
+	}
 	if mc.SwapServerAddress != "" {
 		cfg.SwapServerAddress = mc.SwapServerAddress
 	}

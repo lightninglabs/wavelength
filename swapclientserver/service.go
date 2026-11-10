@@ -65,6 +65,10 @@ type swapClientService struct {
 	// exercises worker ownership without running real swap FSMs.
 	client swapRuntimeClient
 
+	// notificationRPC shares the configured swap connection. It is absent
+	// for transports with no direct notification control service.
+	notificationRPC mailboxpb.NotificationServiceClient
+
 	// store is the daemon-owned durable swap store. The service keeps the
 	// pointer so cleanup can close it with the same lifecycle as the
 	// background workers that read from it.
@@ -315,9 +319,10 @@ type swapClientAdapter struct {
 // swapServerClients holds all outbound clients backed by one configured
 // swapdk-server transport.
 type swapServerClients struct {
-	server  swaps.SwapServerConn
-	mailbox mailboxpb.MailboxServiceClient
-	cleanup func() error
+	notification mailboxpb.NotificationServiceClient
+	server       swaps.SwapServerConn
+	mailbox      mailboxpb.MailboxServiceClient
+	cleanup      func() error
 }
 
 // clientTLSCertProvider returns the daemon identity certificate at handshake
@@ -350,11 +355,27 @@ type receiveSessionAdapter struct {
 func Register(ctx context.Context, grpcServer *grpc.Server,
 	rpcServer *waved.RPCServer, cfg *waved.Config) (func(), error) {
 
+	var sourceConfig *waved.SwapConfig
+	if cfg != nil {
+		sourceConfig = cfg.Swap
+	}
+	issuer, err := parseSwapNotificationIssuer(sourceConfig)
+	if err != nil {
+		return nil, err
+	}
 	svc, cleanup, err := newSwapClientService(ctx, rpcServer, cfg)
 	if err != nil {
 		return nil, err
 	}
 
+	registrar := svc.swapNotificationRegistrar(issuer, rpcServer)
+	if issuer != nil && registrar == nil {
+		svc.log.InfoS(
+			ctx, "Swap notification registration unsupported "+
+				"by configured transport",
+		)
+	}
+	rpcServer.RegisterSwapNotificationSource(registrar)
 	swapclientrpc.RegisterSwapClientServiceServer(grpcServer, svc)
 
 	// Publish the backend handle so the wavewalletrpc registrar (if
@@ -380,7 +401,10 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 		svc.resumePending(ctx)
 	}
 
-	return cleanup, nil
+	return func() {
+		rpcServer.RegisterSwapNotificationSource(nil)
+		cleanup()
+	}, nil
 }
 
 // ResumePending re-arms background workers for every persisted pending swap
@@ -579,6 +603,7 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 			client: swapClient,
 		},
 		store:             store,
+		notificationRPC:   swapClients.notification,
 		daemonConn:        daemonConn,
 		log:               log,
 		rootCtx:           rootCtx,
@@ -692,6 +717,9 @@ func newSwapServerClients(cfg *waved.SwapConfig, swapAddr string,
 		}
 
 		return &swapServerClients{
+			notification: mailboxpb.NewNotificationServiceClient(
+				swapConn,
+			),
 			server: swaps.NewGRPCSwapServerConn(
 				swapConn, creditSigner,
 			),

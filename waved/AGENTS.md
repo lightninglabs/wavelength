@@ -548,3 +548,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 - [docs/custom-policy-queries.md](../docs/custom-policy-queries.md)
   — Exact-policy query proofs, capability checks, and negative observations.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
+
+## Notification source registration
+
+`RPCServer.RegisterSwapNotificationSource` publishes a configured source callback
+under `Server.swapNotificationMu`. `AuthorizeNotificationSubscription` is an
+in-process full-request signer bridge with an expected issuer key. It neither
+waits for ingress nor exposes a new remote signing RPC. The source owns its
+configured transport. See [notification sources](../docs/notification-sources.md).
