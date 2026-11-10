@@ -71,6 +71,17 @@ type ListRoundsQuery struct {
 //
 //nolint:interfacebloat
 type RoundStore interface {
+	// VTXOMaintenanceCeiling captures a bounded primary-key sweep.
+	VTXOMaintenanceCeiling(context.Context) (
+		sqlc.VTXOMaintenanceCeilingRow,
+		error,
+	)
+
+	// ListVTXOMaintenancePage selects lightweight identities only.
+	ListVTXOMaintenancePage(context.Context,
+		sqlc.ListVTXOMaintenancePageParams) (
+		[]sqlc.ListVTXOMaintenancePageRow, error)
+
 	// ConstrainRoundAdmissionDeadline persists the earliest accepted
 	// budget.
 	ConstrainRoundAdmissionDeadline(ctx context.Context,

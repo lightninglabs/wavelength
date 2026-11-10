@@ -113,7 +113,9 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 	// rather than dropped. The returned Future is not needed here —
 	// AwaitRPC re-registers (idempotently) and blocks on it.
 	corrID := CorrelationID(correlationID)
-	f.connector.RegisterWaiter(corrID)
+	f.connector.responseRegistry.RegisterRequestWaiter(
+		corrID, method.Service, method.Method,
+	)
 
 	body, err := anypb.New(req)
 	if err != nil {

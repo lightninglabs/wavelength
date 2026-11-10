@@ -416,6 +416,34 @@ func (s *swapClientService) ResumePending(ctx context.Context) {
 	s.resumePending(ctx)
 }
 
+// ResumeReceive re-arms one persisted pending receive using the existing
+// bounded worker admission gate. It never creates a session or scans history.
+func (s *swapClientService) ResumeReceive(ctx context.Context,
+	id string) error {
+
+	hash, err := parsePaymentHash(id)
+	if err != nil {
+		return err
+	}
+	summary, err := s.summaryByHash(ctx, hash)
+	if err != nil {
+		return err
+	}
+	if summary.GetDirection() !=
+		swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE {
+		return fmt.Errorf("source is not a receive")
+	}
+	if !summary.GetPending() {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.startReceiveWorker(hash)
+
+	return nil
+}
+
 // RegisterGateway installs the optional SwapClientService handlers on the
 // daemon HTTP/JSON gateway.
 func RegisterGateway(ctx context.Context, mux *runtime.ServeMux,

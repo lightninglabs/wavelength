@@ -71,6 +71,13 @@ type Client struct {
 	readLightningReceipts func(context.Context,
 		waved.LightningReceiptRequest) ([]waved.LightningReceipt, error)
 
+	setHostForeground func(context.Context, bool) error
+	runReceiptWindow  func(context.Context, waved.ReceiptWindowRequest) (
+		waved.ReceiptWindowResult, error)
+	cancelReceiptWindow  func(context.Context, string) error
+	runMaintenanceWindow func(context.Context, string) (
+		waved.ReceiptWindowResult, error)
+
 	closeFn   func(context.Context) error
 	closeOnce sync.Once
 	closeErr  error

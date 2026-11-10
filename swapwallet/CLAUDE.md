@@ -306,3 +306,10 @@ time, Bitcoin invoice/hash/principal and current canonical status. It projects
 through the existing sink; differing source/canonical snapshots remain pending.
 Raw Ark inventory, assets, deposits and internal funding are outside this seam.
 See [receipt sources](../docs/lightning-receipt-source.md).
+
+## Warm receipt windows
+
+Host mode transitions retain the daemon and join ingress ownership. Restricted
+pumps validate full batches before waiter delivery; request provenance comes
+from send-time registration. Targeted resume only re-arms existing receives.
+See [warm invoice recovery](../docs/mobile-receipt-window.md).

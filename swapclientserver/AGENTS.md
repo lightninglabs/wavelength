@@ -154,3 +154,10 @@ requires `SwapConfig.NotificationIssuer`, a compressed public identity pin.
 hook before serving calls. An empty pin or unsupported transport leaves
 registration unsupported. Challenges cannot choose their own trusted issuer.
 See [notification sources](../docs/notification-sources.md).
+
+## Warm receipt windows
+
+Host mode transitions retain the daemon and join ingress ownership. Restricted
+pumps validate full batches before waiter delivery; request provenance comes
+from send-time registration. Targeted resume only re-arms existing receives.
+See [warm invoice recovery](../docs/mobile-receipt-window.md).

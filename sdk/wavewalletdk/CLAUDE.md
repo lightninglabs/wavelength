@@ -273,3 +273,19 @@ Receive returns a typed local ReceiptReference. ReadLightningReceipts checks
 at most 64 explicitly enrolled sources under direct-call shutdown ownership.
 Only agreeing committed source/canonical completion permits presentation.
 See [receipt sources](../../docs/lightning-receipt-source.md).
+
+## Warm receipt windows
+
+Host mode transitions retain the daemon and join ingress ownership. Restricted
+pumps validate full batches before waiter delivery; request provenance comes
+from send-time registration. Targeted resume only re-arms existing receives.
+See [warm invoice recovery](../../docs/mobile-receipt-window.md).
+
+## Bounded warm maintenance
+
+The host maintenance window samples current-tip expiry for at most 64 persisted
+VTXO IDs, drives existing owners outside the manager turn, retains a finite
+keyset cursor across windows, then pumps native durable round work. It shares
+the receipt controller's mode lease, cancellation fence and final-access join.
+It performs no startup repair and produces no payment proof. See
+[background windows](../../docs/mobile-receipt-window.md).

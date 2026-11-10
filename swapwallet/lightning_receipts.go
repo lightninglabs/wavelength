@@ -212,3 +212,35 @@ func receiptState(state wavewalletrpc.EntryStatus) string {
 		return "pending"
 	}
 }
+
+// resumeLightningReceipt re-arms only an existing source already validated by
+// the window's targeted lookup. It never starts a new receive or scans history.
+func (r *Runtime) resumeLightningReceipt(ctx context.Context,
+	ref waved.LightningReceiptReference) error {
+
+	switch ref.Source {
+	case waved.LightningReceiptSwap:
+		backend, ok := r.deps.SwapBackend.(interface {
+			ResumeReceive(context.Context, string) error
+		})
+		if !ok {
+			return fmt.Errorf("targeted swap recovery unavailable")
+		}
+
+		return backend.ResumeReceive(ctx, ref.ID)
+
+	case waved.LightningReceiptCredit:
+		backend, ok := r.deps.RPCServer.(interface {
+			ResumeCreditReceipt(context.Context, string) error
+		})
+		if !ok {
+			return fmt.Errorf("targeted credit recovery " +
+				"unavailable")
+		}
+
+		return backend.ResumeCreditReceipt(ctx, ref.ID)
+
+	default:
+		return fmt.Errorf("unsupported receipt source")
+	}
+}

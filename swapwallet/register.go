@@ -113,6 +113,9 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 		rpcServer.RegisterLightningReceiptLookup(
 			runtime.lookupLightningReceipt,
 		)
+		rpcServer.RegisterLightningReceiptResumer(
+			runtime.resumeLightningReceipt,
+		)
 	}
 
 	// Wire the prepared-send store into the credit auto-redeem interlock
@@ -151,6 +154,7 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 
 	cleanup := func() {
 		if rpcServer != nil {
+			rpcServer.RegisterLightningReceiptResumer(nil)
 			rpcServer.RegisterLightningReceiptLookup(nil)
 		}
 		runtime.stop()

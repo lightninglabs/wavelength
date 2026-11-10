@@ -51,6 +51,7 @@ func DefaultConfig() Config {
 		AutoRefreshFeeRatePPM:  cfg.AutoRefreshFeeRatePPM,
 		SigningWorkers:         cfg.SigningWorkers,
 		EagerRoundJoin:         cfg.EagerRoundJoin,
+		DurableRoundRuntime:    cfg.DurableRoundRuntime,
 	}
 }
 
@@ -228,6 +229,10 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 	client.readActivityBatch = server.ReadCurrentActivityBatch
 	client.activityCursor = server.ActivityEventCursor
 	client.readLightningReceipts = server.ReadLightningReceipts
+	client.setHostForeground = server.SetHostForeground
+	client.runReceiptWindow = server.RunReceiptWindow
+	client.runMaintenanceWindow = server.RunMaintenanceWindow
+	client.cancelReceiptWindow = server.CancelReceiptWindow
 	client.waitWalletServicesReady = server.WaitForWalletServicesReady
 	client.recoverWalletState = server.RecoverWalletState
 	client.setNotificationSubscription = server.SetNotificationSubscription
@@ -296,6 +301,9 @@ func applyConfigOverrides(daemonCfg *waved.Config, cfg Config) {
 	}
 	if cfg.SigningWorkers != 0 {
 		daemonCfg.SigningWorkers = cfg.SigningWorkers
+	}
+	if cfg.DurableRoundRuntime {
+		daemonCfg.DurableRoundRuntime = true
 	}
 	if cfg.EagerRoundJoin {
 		daemonCfg.EagerRoundJoin = true
