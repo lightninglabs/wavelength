@@ -17,6 +17,10 @@ type Config struct {
 	// independently of notification consent once the wallet adopts it.
 	DurableRoundRuntime bool
 
+	// HostDrivenIngress starts mailbox intake paused. A durable host must
+	// explicitly run a bounded window or call SetHostForeground(true).
+	HostDrivenIngress bool
+
 	// DaemonConfig supplies the full daemon config. When nil, wavewalletdk
 	// starts from waved.DefaultConfig and applies the convenience fields
 	// below.

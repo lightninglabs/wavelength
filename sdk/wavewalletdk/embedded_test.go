@@ -297,3 +297,24 @@ func TestClientStopIdempotent(t *testing.T) {
 		"closeFn must be invoked exactly once across Stop/Close calls",
 	)
 }
+
+// TestHostDrivenIngressConfig preserves explicit host ownership across the
+// convenience merge while leaving ordinary clients on automatic intake.
+func TestHostDrivenIngressConfig(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultConfig()
+	ordinary, err := resolveDaemonConfig(cfg)
+	require.NoError(t, err)
+	require.False(t, ordinary.HostDrivenIngress)
+	cfg.DurableRoundRuntime = true
+	cfg.HostDrivenIngress = true
+	host, err := resolveDaemonConfig(cfg)
+	require.NoError(t, err)
+	require.True(t, host.HostDrivenIngress)
+	require.True(t, host.DurableRoundRuntime)
+	cfg.HostDrivenIngress = false
+	cfg.DaemonConfig = host
+	inherited, err := resolveDaemonConfig(cfg)
+	require.NoError(t, err)
+	require.True(t, inherited.HostDrivenIngress)
+}

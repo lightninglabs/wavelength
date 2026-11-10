@@ -52,6 +52,7 @@ func DefaultConfig() Config {
 		SigningWorkers:         cfg.SigningWorkers,
 		EagerRoundJoin:         cfg.EagerRoundJoin,
 		DurableRoundRuntime:    cfg.DurableRoundRuntime,
+		HostDrivenIngress:      cfg.HostDrivenIngress,
 	}
 }
 
@@ -301,6 +302,9 @@ func applyConfigOverrides(daemonCfg *waved.Config, cfg Config) {
 	}
 	if cfg.SigningWorkers != 0 {
 		daemonCfg.SigningWorkers = cfg.SigningWorkers
+	}
+	if cfg.HostDrivenIngress {
+		daemonCfg.HostDrivenIngress = true
 	}
 	if cfg.DurableRoundRuntime {
 		daemonCfg.DurableRoundRuntime = true
