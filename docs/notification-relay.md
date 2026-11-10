@@ -151,9 +151,13 @@ checking the mailbox owner's fresh full-request signature, call
 
 HTTP 200 returns only `expires_at`, the live subscription's Unix expiry. The
 wake grant must authorize that subscription. An optional alert grant must have
-alert scope for the same subscription. Expired, revoked, disabled, mixed or
-unsupported-policy grants fail. This read-only call creates no job and sends
-no push. The producer must cap its saved expiry to this verified grant and
+alert scope for the same subscription. Expired, revoked, deleted, mixed or
+unsupported-policy grants fail with HTTP 401. A valid grant whose current
+APNs token was invalidated returns HTTP 503 instead, on both verification and
+push admission. Producers must retain the binding and use their bounded retry
+policy; signed token rotation restores delivery with the same grant. No job
+is admitted while the destination is disabled. This read-only call creates no
+job and sends no push. The producer must cap its saved expiry to this verified grant and
 consume the signed request's nonce atomically with its local mutation. Perform
 the verification call outside the database transaction. Resolve the HTTPS
 origin through a server-configured relay allowlist and deny redirects; a client

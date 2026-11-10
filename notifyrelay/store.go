@@ -19,6 +19,9 @@ import (
 var (
 	// ErrNotFound reports missing, revoked or expired relay authority.
 	ErrNotFound = errors.New("relay record not found")
+	// ErrDestinationUnavailable reports a valid grant whose APNs token must
+	// be rotated. Producers must retry rather than revoke their binding.
+	ErrDestinationUnavailable = errors.New("relay destination unavailable")
 	// ErrReplay reports a consumed challenge or non-increasing assertion.
 	ErrReplay = errors.New("relay proof already consumed")
 	// ErrCapacity asks a producer to back off without evicting valid
@@ -593,7 +596,8 @@ func revokeSubscription(tx *bolt.Tx, owner, id string) error {
 
 // authorizedSubscription resolves one live capability through its fixed
 // subscription and installation. Admission and non-sending verification share
-// this boundary so a revoked, expired or disabled grant cannot pass either.
+// this boundary so revoked or expired grants cannot pass either. Disabled
+// destinations remain unavailable until signed device-token rotation.
 func authorizedSubscription(tx *bolt.Tx, secret string, scope Scope,
 	now time.Time) (subscription, installation, error) {
 
@@ -615,8 +619,11 @@ func authorizedSubscription(tx *bolt.Tx, secret string, scope Scope,
 	owner, err := readRecord[installation](
 		tx, installationsBucket, sub.InstallationID,
 	)
-	if err != nil || owner.Deleted || owner.Disabled {
+	if err != nil || owner.Deleted {
 		return empty, noOwner, ErrNotFound
+	}
+	if owner.Disabled {
+		return sub, owner, ErrDestinationUnavailable
 	}
 
 	return sub, owner, nil
@@ -635,19 +642,34 @@ func (s *Store) verifySubscription(ctx context.Context, wake string,
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		sub, owner, err := authorizedSubscription(
+		sub, owner, wakeErr := authorizedSubscription(
 			tx, wake, ScopeWake, now,
 		)
-		if err != nil || sub.ID != request.SubscriptionID {
+		if wakeErr != nil && !errors.Is(
+			wakeErr, ErrDestinationUnavailable,
+		) {
+			return wakeErr
+		}
+		if sub.ID != request.SubscriptionID {
 			return ErrNotFound
 		}
 		if request.AlertCapability != "" {
 			alert, _, err := authorizedSubscription(
 				tx, request.AlertCapability, ScopeAlert, now,
 			)
-			if err != nil || alert.ID != sub.ID {
+			if err != nil && !errors.Is(
+				err, ErrDestinationUnavailable,
+			) {
+				return err
+			}
+			if alert.ID != sub.ID {
 				return ErrNotFound
 			}
+		}
+		// Match all grant identities before classifying destination
+		// availability, so a malformed binding never becomes retryable.
+		if wakeErr != nil {
+			return wakeErr
 		}
 		policy = owner.Policy
 		expiry = sub.ExpiresAt
