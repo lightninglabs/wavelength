@@ -170,8 +170,24 @@ mailbox traffic does not establish that a payment occurred.
 Repeated identities deduplicate for 24 hours. Pending work coalesces per scope
 and subscription. Jobs expire after an hour. Global budgets bound queued jobs
 to 4096, dedup records to 100000 and consumed challenges to 100000. Per-route
-dedup capacity is 1024. Capacity returns 429; callers retain their durable job
-and retry. A single installed device observes a 20-minute quiet period after
+dedup capacity is 1024. Each installation also has a shared 1024-record budget
+across its routes and both wake and alert scopes, about 1% of the global replay
+budget. One busy route can use the budget; 16 routes average 64 distinct events
+each per day. Retries with the same event identity do not consume another slot
+and succeed even at capacity. Fresh identities consume slots even when their
+push jobs coalesce or observe a quiet period. Capacity returns 429; callers
+retain their durable job and retry.
+
+Quota counts include expired records until bounded maintenance removes them.
+Renewing a route preserves its subscription ID and replay records. Revoking or
+expiring a subscription removes its replay records atomically with authority;
+its old capabilities can no longer enqueue, and recreating the route uses a
+fresh subscription ID. Installation deletion disables all admission immediately;
+its indexed replay records remain charged until expiry and maintenance. No new
+storage format or counter migration is required. Records orphaned by revocation
+on older versions remain covered by the global cap until their 24-hour expiry
+and maintenance. Existing installations above the new quota can replay accepted
+identities but must wait for capacity before adding fresh ones. A single installed device observes a 20-minute quiet period after
 an accepted silent push and a separate one-minute alert quiet period.
 
 ## Storage, retries and operations

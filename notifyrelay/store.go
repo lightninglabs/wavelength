@@ -27,16 +27,17 @@ var (
 )
 
 const (
-	challengeLifetime     = 5 * time.Minute
-	subscriptionLifetime  = 30 * 24 * time.Hour
-	jobLifetime           = time.Hour
-	dedupLifetime         = 24 * time.Hour
-	claimLifetime         = 30 * time.Second
-	maxConsumedChallenges = 100_000
-	maxSubscriptions      = 16
-	maxDedupPerRoute      = 1024
-	maxDedupRecords       = 100_000
-	maxPendingJobs        = 4096
+	challengeLifetime       = 5 * time.Minute
+	subscriptionLifetime    = 30 * 24 * time.Hour
+	jobLifetime             = time.Hour
+	dedupLifetime           = 24 * time.Hour
+	claimLifetime           = 30 * time.Second
+	maxConsumedChallenges   = 100_000
+	maxSubscriptions        = 16
+	maxDedupPerRoute        = 1024
+	maxDedupPerInstallation = 1024
+	maxDedupRecords         = 100_000
+	maxPendingJobs          = 4096
 )
 
 // Bucket names belong to relay storage format version one.
@@ -552,7 +553,9 @@ func deleteCapabilityHashes(tx *bolt.Tx, value subscription) error {
 	return nil
 }
 
-// revokeSubscription checks installation ownership before removing authority.
+// revokeSubscription checks installation ownership before removing authority
+// and replay records that can no longer authorize an enqueue. Renewals keep
+// their subscription ID and replay evidence; recreation uses a fresh ID.
 func revokeSubscription(tx *bolt.Tx, owner, id string) error {
 	value, err := readRecord[subscription](tx, subscriptionsBucket, id)
 	if err != nil {
@@ -568,6 +571,21 @@ func revokeSubscription(tx *bolt.Tx, owner, id string) error {
 		[]byte(owner + "/" + value.RouteID),
 	); err != nil {
 		return err
+	}
+
+	// Collect before deleting so cursor mutation cannot skip evidence.
+	dedup := tx.Bucket([]byte(dedupBucket))
+	prefix := []byte(id + "/")
+	cursor := dedup.Cursor()
+	var keys [][]byte
+	for key, _ := cursor.Seek(prefix); bytes.HasPrefix(key, prefix); {
+		keys = append(keys, bytes.Clone(key))
+		key, _ = cursor.Next()
+	}
+	for _, key := range keys {
+		if err := dedup.Delete(key); err != nil {
+			return err
+		}
 	}
 
 	return tx.Bucket([]byte(subscriptionsBucket)).Delete([]byte(id))
@@ -640,6 +658,34 @@ func (s *Store) verifySubscription(ctx context.Context, wake string,
 	return policy, expiry, err
 }
 
+// installationDedupCount counts retained records across all of an
+// installation's indexed subscriptions, including expired evidence awaiting
+// maintenance. Revoked subscriptions remove their evidence atomically, so route
+// churn cannot leave uncharged records. Stop at the quota; admission needs no
+// larger exact count.
+func installationDedupCount(tx *bolt.Tx, installationID string) int {
+	index := tx.Bucket([]byte(subscriptionIndex)).Cursor()
+	prefix := []byte(installationID + "/")
+	dedup := tx.Bucket([]byte(dedupBucket))
+	count := 0
+	for key, id := index.Seek(prefix); bytes.HasPrefix(key, prefix); {
+		routePrefix := append(bytes.Clone(id), '/')
+		cursor := dedup.Cursor()
+		for record, _ := cursor.Seek(routePrefix); bytes.HasPrefix(
+			record, routePrefix,
+		); record, _ = cursor.Next() {
+
+			count++
+			if count >= maxDedupPerInstallation {
+				return count
+			}
+		}
+		key, id = index.Next()
+	}
+
+	return count
+}
+
 // enqueue authenticates a fixed-scope bearer capability and commits dedup and
 // coalesced work together. The request cannot provide a destination or
 // template.
@@ -667,7 +713,9 @@ func (s *Store) enqueue(ctx context.Context, secret string, scope Scope,
 				return nil
 			}
 		}
-		if dedup.Stats().KeyN >= maxDedupRecords {
+		if dedup.Stats().KeyN >= maxDedupRecords ||
+			installationDedupCount(tx, sub.InstallationID) >=
+				maxDedupPerInstallation {
 			return ErrCapacity
 		}
 		prefix := []byte(sub.ID + "/")
