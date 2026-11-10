@@ -303,7 +303,6 @@ func (h *stormHarness) run(t *testing.T) (context.CancelFunc, chan struct{}) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 
-	h.conn.wg.Add(1)
 	go func() {
 		defer close(done)
 
