@@ -194,11 +194,9 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 	conn, err := grpc.NewClient("passthrough:///bufnet", dialOpts...)
 	if err != nil {
 		cancel()
-		shutdownCtx, shutdownCancel := context.WithTimeout(
-			context.Background(), defaultCloseTimeout,
-		)
-		runErr := waitForRunExit(shutdownCtx, runErrChan)
-		shutdownCancel()
+		// No handle has been published. Startup retains ownership until
+		// the daemon returns, even after the caller deadline expires.
+		runErr := waitForRunExit(context.Background(), runErrChan)
 		listenerErr := listener.Close()
 
 		return nil, fmt.Errorf("dial embedded daemon: %w",
@@ -208,11 +206,9 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 	if err := waitForReady(ctx, conn, runDoneChan); err != nil {
 		closeErr := conn.Close()
 		cancel()
-		shutdownCtx, shutdownCancel := context.WithTimeout(
-			context.Background(), defaultCloseTimeout,
-		)
-		runErr := waitForRunExit(shutdownCtx, runErrChan)
-		shutdownCancel()
+		// No handle has been published. Startup retains ownership until
+		// the daemon returns, even after the caller deadline expires.
+		runErr := waitForRunExit(context.Background(), runErrChan)
 		listenerErr := listener.Close()
 
 		return nil, fmt.Errorf("wait for embedded daemon readiness: %w",
