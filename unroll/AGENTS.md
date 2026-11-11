@@ -426,6 +426,15 @@ forfeit signing, automatic refresh, and expired reclaim refuse them. An
 unroll can materialize its presigned path, but its final Bitcoin sweep is
 withheld, including a sweep restored from a checkpoint.
 
+With an `AssetClaimer` configured, the matured exit of an asset VTXO is the
+claimer's claim instead: the leaf spent through its exit leaf into the asset
+wallet. The claim pays no fee, so `startAssetClaim` hands it to txconfirm for
+CPFP and follows it like a sweep, replacing any staged sweep. The claimer
+returns the same claim on every call; one it cannot produce yet is retried at
+the next block. A claim books no exit cost, because the carrier's satoshis
+leave for the asset wallet, which the ledger does not track. Without a
+claimer the exit stops before its final spend.
+
 ## Shutdown ownership
 
 Daemon shutdown joins native workers and detached database/notification work

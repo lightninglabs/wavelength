@@ -59,6 +59,10 @@ type Config struct {
 	// built-in standard VTXO timeout resolver.
 	ExitSpendPolicyResolver ExitSpendPolicyResolver
 
+	// AssetClaimer claims an asset VTXO in place of the final sweep. If
+	// nil, the exit of an asset VTXO stops before its final spend.
+	AssetClaimer AssetClaimer
+
 	// Wallet provides sweep destination derivation and
 	// timeout-path signing.
 	Wallet SweepWallet
@@ -596,9 +600,14 @@ func (b *behavior) startSweep(ctx context.Context,
 	ax actor.Exec[unrollTx]) error {
 
 	// Check before adopting any staged sweep: a restored Bitcoin sweep
-	// must never consume an output now known to carry assets.
-	if b.desc != nil && b.desc.TaprootAssetRoot != nil {
-		return vtxo.ErrAssetVTXORequiresTransition
+	// must never consume an output now known to carry assets. The asset
+	// claim takes the sweep's place and is submitted below like one.
+	asset := b.desc != nil && b.desc.TaprootAssetRoot != nil
+	if asset {
+		claimed, err := b.claimAsset(ctx)
+		if err != nil || !claimed {
+			return err
+		}
 	}
 
 	// Idempotency guard against a lost-in-memory sweep. Before deriving a
@@ -626,7 +635,7 @@ func (b *behavior) startSweep(ctx context.Context,
 		return err
 	}
 	rejected := stateJob(state).RejectedSweep
-	if rejected.IsSome() && !stateJob(state).RetrySame &&
+	if !asset && rejected.IsSome() && !stateJob(state).RetrySame &&
 		b.sweepTx != nil &&
 		b.sweepTx.TxHash() == rejected.UnsafeFromSome() {
 
@@ -826,6 +835,7 @@ func (b *behavior) startSweep(ctx context.Context,
 		RetryUntilAccepted:   true,
 		ConfirmationPkScript: sweepPkScript,
 		Label:                sweepLabel,
+		TargetConfs:          b.sweepTargetConfs(),
 		Subscriber:           b.notificationRef(),
 	}).Await(ctx).Unpack()
 	if err != nil {
@@ -833,6 +843,46 @@ func (b *behavior) startSweep(ctx context.Context,
 	}
 
 	return b.driveEvent(ctx, ax, &SweepBroadcastedEvent{Txid: sweepTxid})
+}
+
+// claimAsset sets the asset claimer's claim of a matured asset VTXO as the
+// exit spend, replacing any staged sweep. The claimer returns the same claim
+// on every call, so a restart or route retry submits the same transaction. A
+// claim the claimer cannot produce yet is retried at the next block, and
+// claimAsset then reports false.
+func (b *behavior) claimAsset(ctx context.Context) (bool, error) {
+	if b.cfg.AssetClaimer == nil {
+		return false, vtxo.ErrAssetVTXORequiresTransition
+	}
+
+	target := b.cfg.TargetOutpoint
+	claimTx, err := b.cfg.AssetClaimer.ClaimAssetVTXO(
+		ctx, b.desc, b.proofNodeConfHeightHint(ctx, target.Hash),
+	)
+	if err != nil {
+		b.log.InfoS(ctx, "Deferring asset VTXO claim",
+			slog.String("target_outpoint", target.String()),
+			slog.String("err", err.Error()),
+		)
+
+		return false, nil
+	}
+	b.sweepTx = claimTx
+
+	return true, nil
+}
+
+// sweepTargetConfs is the depth at which txconfirm reports the exit spend
+// confirmed, which completes the job. tapd leaves the relay of an asset claim
+// to this job, so the job keeps tracking the claim, and relays it again after
+// a reorganization or restart, until it is final. Zero asks for one
+// confirmation.
+func (b *behavior) sweepTargetConfs() uint32 {
+	if b.desc != nil && b.desc.TaprootAssetRoot != nil {
+		return chainsource.DefaultFinalityDepth
+	}
+
+	return 0
 }
 
 // sweepFeeRateFallback prefers the daemon-level local-network fallback, then
@@ -2513,7 +2563,8 @@ func (b *behavior) routeOutbox(ctx context.Context, ax actor.Exec[unrollTx],
 					ConfirmationPkScript: sweepPkScript,
 					Label: "unroll-sweep-" +
 						b.cfg.TargetOutpoint.String(),
-					Subscriber: b.notificationRef(),
+					TargetConfs: b.sweepTargetConfs(),
+					Subscriber:  b.notificationRef(),
 				},
 			).Await(ctx).Unpack()
 			if err != nil {
@@ -2962,6 +3013,21 @@ func (b *behavior) emitExitCostIfCompleted(ctx context.Context, phase Phase,
 		return true
 	}
 	if b.exitCostNotified && b.proceedsRecorded {
+		return true
+	}
+
+	// An asset claim pays no fee and moves the carrier's satoshis to the
+	// asset wallet, which the ledger does not track.
+	if b.desc != nil && b.desc.TaprootAssetRoot != nil {
+		b.log.DebugS(ctx, "Asset VTXO claim books no exit cost",
+			slog.String(
+				"target_outpoint",
+				b.cfg.TargetOutpoint.String(),
+			),
+		)
+		b.exitCostNotified = true
+		b.proceedsRecorded = true
+
 		return true
 	}
 
