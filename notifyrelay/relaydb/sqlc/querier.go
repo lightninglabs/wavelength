@@ -9,25 +9,41 @@ import (
 )
 
 type Querier interface {
+	ClaimInstallation(ctx context.Context, arg ClaimInstallationParams) (int64, error)
+	ClaimJob(ctx context.Context, arg ClaimJobParams) (RelayJob, error)
+	CoalesceJob(ctx context.Context, arg CoalesceJobParams) error
 	ConsumeChallenge(ctx context.Context, arg ConsumeChallengeParams) (int64, error)
 	CountConsumedChallenges(ctx context.Context) (int64, error)
+	CountDedup(ctx context.Context) (int64, error)
+	CountInstallationDedup(ctx context.Context, installationID string) (int64, error)
 	CountInstallationSubscriptions(ctx context.Context, installationID string) (int64, error)
+	CountPendingJobs(ctx context.Context) (int64, error)
+	CountSubscriptionDedup(ctx context.Context, subscriptionID string) (int64, error)
+	DeleteClaimedJob(ctx context.Context, arg DeleteClaimedJobParams) (int64, error)
 	DeleteInstallationSubscriptions(ctx context.Context, installationID string) error
 	DeleteScopeJob(ctx context.Context, arg DeleteScopeJobParams) error
 	DeleteSubscription(ctx context.Context, arg DeleteSubscriptionParams) error
+	FinishJob(ctx context.Context, arg FinishJobParams) (int64, error)
 	GetConsumedChallenge(ctx context.Context, id string) (int64, error)
+	GetDedup(ctx context.Context, arg GetDedupParams) (int64, error)
 	GetInstallation(ctx context.Context, id string) (RelayInstallation, error)
+	GetJob(ctx context.Context, id string) (RelayJob, error)
 	GetMetadata(ctx context.Context, key string) ([]byte, error)
 	GetSource(ctx context.Context, id string) (RelaySource, error)
 	GetSubscription(ctx context.Context, id string) (RelaySubscription, error)
 	GetSubscriptionByRoute(ctx context.Context, arg GetSubscriptionByRouteParams) (RelaySubscription, error)
 	InsertMetadata(ctx context.Context, arg InsertMetadataParams) (int64, error)
 	InsertSource(ctx context.Context, arg InsertSourceParams) (int64, error)
+	ListDueJobs(ctx context.Context, arg ListDueJobsParams) ([]RelayJob, error)
 	ListExpiredSubscriptions(ctx context.Context, arg ListExpiredSubscriptionsParams) ([]RelaySubscription, error)
 	ListInstallationSubscriptions(ctx context.Context, installationID string) ([]RelaySubscription, error)
 	PruneConsumedChallenges(ctx context.Context, arg PruneConsumedChallengesParams) (int64, error)
+	PruneExpiredDedup(ctx context.Context, arg PruneExpiredDedupParams) (int64, error)
+	PruneExpiredJobs(ctx context.Context, arg PruneExpiredJobsParams) (int64, error)
+	PutDedup(ctx context.Context, arg PutDedupParams) error
 	PutInstallation(ctx context.Context, arg PutInstallationParams) (int64, error)
 	PutSubscription(ctx context.Context, arg PutSubscriptionParams) (int64, error)
+	ReleaseInstallation(ctx context.Context, arg ReleaseInstallationParams) (int64, error)
 }
 
 var _ Querier = (*Queries)(nil)

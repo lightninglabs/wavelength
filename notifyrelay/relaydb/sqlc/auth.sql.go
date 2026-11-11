@@ -98,7 +98,7 @@ func (q *Queries) GetConsumedChallenge(ctx context.Context, id string) (int64, e
 }
 
 const getInstallation = `-- name: GetInstallation :one
-SELECT id, policy, public_key, attest_receipt, assertion_counter, device_token, token_revision, token_updated, next_wake_at, next_alert_at, disabled, deleted FROM relay_installations WHERE id = $1
+SELECT id, policy, public_key, attest_receipt, assertion_counter, device_token, token_revision, token_updated, next_wake_at, next_alert_at, disabled, deleted, delivery_claim_token, delivery_lease_until FROM relay_installations WHERE id = $1
 `
 
 func (q *Queries) GetInstallation(ctx context.Context, id string) (RelayInstallation, error) {
@@ -117,6 +117,8 @@ func (q *Queries) GetInstallation(ctx context.Context, id string) (RelayInstalla
 		&i.NextAlertAt,
 		&i.Disabled,
 		&i.Deleted,
+		&i.DeliveryClaimToken,
+		&i.DeliveryLeaseUntil,
 	)
 	return i, err
 }
