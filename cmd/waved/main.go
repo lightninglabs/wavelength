@@ -420,7 +420,12 @@ func registerWalletFlags(f *pflag.FlagSet, cfg *waved.Config) {
 func registerAssetFlags(f *pflag.FlagSet, cfg *waved.Config) {
 	f.String(
 		"assets.backend", cfg.Assets.Backend,
-		"Taproot Assets backend (none, tapd)",
+		"Taproot Assets backend (none, tapd, embedded)",
+	)
+	f.StringSlice(
+		"assets.groupkeys", cfg.Assets.GroupKeys, "asset groups "+
+			"the embedded asset backend trusts, as hex "+
+			"compressed public keys",
 	)
 	f.String(
 		"assets.tapd.host", cfg.Assets.Tapd.Host,
