@@ -149,6 +149,22 @@ func (q *Queries) CountSubscriptionDedup(ctx context.Context, subscriptionID str
 	return count, err
 }
 
+const deferUnclaimedJob = `-- name: DeferUnclaimedJob :exec
+UPDATE relay_jobs SET next_at = $1
+WHERE id = $2 AND lease_until <= $3
+`
+
+type DeferUnclaimedJobParams struct {
+	NextAt  int64
+	ID      string
+	NowNano int64
+}
+
+func (q *Queries) DeferUnclaimedJob(ctx context.Context, arg DeferUnclaimedJobParams) error {
+	_, err := q.db.ExecContext(ctx, deferUnclaimedJob, arg.NextAt, arg.ID, arg.NowNano)
+	return err
+}
+
 const deleteClaimedJob = `-- name: DeleteClaimedJob :execrows
 DELETE FROM relay_jobs WHERE id = $1 AND claim_token = $2
 `
