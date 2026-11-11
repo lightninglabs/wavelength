@@ -81,8 +81,57 @@ ID with another producer identity fails instead of transferring that authority.
    subscription and configured source. It cannot claim another device's route.
 
 Tokens are correlation, not authorization. They need not be globally unique.
-Ingress must first look up the event's grant ID as a local subscription, then
-compare its bound token. Rebinding the same token retains generation progress;
+Ingress first looks up the event's grant ID as a local subscription. The
+following subscriber slice handles producer events that race the app handoff. Rebinding the same token retains generation progress;
 rotating the token starts a new generation stream. Revocation deletes local
 feed bindings with their subscription. This slice does not start a subscriber
 worker or switch the HTTP daemon to SQL yet.
+
+## Subscriber ingress and acknowledgement
+
+`NewFeedSubscriber` opens the configured TLS producer endpoint with its ordinary
+RPC credentials. A direct feed challenge checks the configured logical source
+identity before the relay sends its static subscriber proof. The identity is
+supplied by the authenticated TLS endpoint; the challenge is not a new
+server-signature scheme. Pull and ACK then carry the source-specific R proof.
+
+Each bounded `Step` acquires a SQL lease for that source. It flushes a retained
+ACK before pulling, even when no envelopes remain. Otherwise the producer could
+keep an outstanding marker and never emit a pending successor.
+
+```mermaid
+flowchart LR
+    P[Pull ordered prefix] --> V[Validate source and v1 events]
+    V --> T[SQL transaction: jobs, generations, cursor, pending ACK]
+    T --> A[Remote cumulative ACK]
+    A --> C[Clear exact pending prefix under claim]
+    T --> D[Independent provider worker]
+```
+
+Jobs, binding generation and checkpoint commit atomically. A capacity failure
+rolls them all back and sends no ACK. An ambiguous ACK response retains pending
+state. Restart retries that ACK before another Pull. Stale lease owners cannot
+write jobs, advance the checkpoint or clear a newer owner's pending ACK.
+Provider acceptance is independent of the source ACK and proves no device
+execution or wallet completion.
+
+The fixed producer's ordered event stream is authoritative for its correlation
+token. A wake can beat the app's `bind_feed` response, including after token
+renewal. Ingress first resolves the event's random grant ID to an **existing**
+local subscription. It can learn or refresh that route's token under current
+publisher class policy, alert consent and the shorter source/local expiry.
+Tokens never allocate subscriptions or choose a device. A delayed app handoff
+of the same token retains generation progress. Same-token generations and the
+source cursor suppress replay. Unknown or revoked routes are skipped under a
+committed checkpoint. Disabled device tokens still get bounded local jobs and
+wait for signed token recovery without blocking other routes.
+
+A malformed envelope, unsupported version, unexpected source/recipient or wrong
+RPC method stops the source prefix without ACK. This is a producer compatibility
+or correctness fault, not a device-controlled routing mechanism. Legal sequence
+gaps after expiry/revocation are accepted. Empty responses alone never advance
+a checkpoint.
+
+The daemon owns the stepping loop. It cancels and joins each subscriber before
+closing connections and SQL. A cancelled step leaves at most a bounded lease;
+no detached cleanup outlives it. HTTP/CLI activation follows separately.
