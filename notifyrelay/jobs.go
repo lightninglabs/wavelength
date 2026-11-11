@@ -71,8 +71,16 @@ func (d Delivery) String() string {
 // must not contain device tokens, provider JWTs or request URLs containing
 // them.
 type Provider interface {
-	// Send observes its context and returns APNs acceptance separately from
-	// eventual device delivery. Implementations must not retarget a
+	// ValidateApplication checks the provider-specific destination policy.
+	ValidateApplication(AppConfig) error
+
+	// NormalizeDeviceToken validates and canonicalizes a provider
+	// destination. Opaque case-sensitive tokens must not inherit APNs hex
+	// normalization.
+	NormalizeDeviceToken(string) (string, error)
+
+	// Send observes its context and returns provider acceptance separately
+	// from eventual device delivery. Implementations must not retarget a
 	// delivery.
 	Send(context.Context, Delivery) (ProviderResult, error)
 }

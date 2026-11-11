@@ -2,7 +2,6 @@ package notifyrelay
 
 import (
 	"context"
-	"crypto/x509"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -26,7 +25,10 @@ var appAttestRoot []byte
 // construction. Logger receives metadata only, never proof bodies or tokens.
 type Config struct {
 	Applications []AppConfig
-	Logger       *slog.Logger
+	// Authenticator defaults to App Attest; custom modules are trusted
+	// publisher code selected at construction, never by HTTP clients.
+	Authenticator DeviceAuthenticator
+	Logger        *slog.Logger
 }
 
 // Server owns bounded HTTP admission and a durable delivery worker. The caller
@@ -34,7 +36,7 @@ type Config struct {
 type Server struct {
 	store     *Store
 	provider  Provider
-	verifier  installationVerifier
+	verifier  DeviceAuthenticator
 	apps      map[string]AppConfig
 	log       *slog.Logger
 	now       func() time.Time
@@ -46,19 +48,21 @@ type Server struct {
 	delivered [2][4]atomic.Uint64
 }
 
-// NewServer constructs a relay with the pinned Apple attestation trust root.
+// NewServer constructs a publisher relay. App Attest is the default module;
+// Config.Authenticator can select an explicit publisher integration in Go.
 // There is no HTTP or command-line attestation bypass.
 func NewServer(cfg Config, store *Store, provider Provider) (*Server, error) {
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(appAttestRoot) {
-		return nil, errors.New("invalid embedded App Attest root")
+	authenticator := cfg.Authenticator
+	if authenticator == nil {
+		var err error
+		authenticator, err = NewAppAttestAuthenticator()
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	return newServer(
-		cfg, store, provider, &appAttestVerifier{
-			roots: roots,
-		},
-		time.Now,
+	return newAuthenticatedServer(
+		cfg, store, provider, authenticator, time.Now,
 	)
 }
 
@@ -66,13 +70,35 @@ func NewServer(cfg Config, store *Store, provider Provider) (*Server, error) {
 func newServer(cfg Config, store *Store, provider Provider,
 	verifier installationVerifier, now func() time.Time) (*Server, error) {
 
+	if verifier == nil {
+		return nil, errors.New("relay verifier required")
+	}
+
+	return newAuthenticatedServer(
+		cfg, store, provider, &AppAttestAuthenticator{
+			verifier: verifier,
+		},
+		now,
+	)
+}
+
+// newAuthenticatedServer shares HTTP/store ownership across publisher modules.
+func newAuthenticatedServer(cfg Config, store *Store, provider Provider,
+	verifier DeviceAuthenticator, now func() time.Time) (*Server, error) {
+
 	if store == nil || provider == nil || verifier == nil ||
 		now == nil || len(cfg.Applications) == 0 {
 		return nil, errors.New("relay dependencies and apps required")
 	}
 	apps := make(map[string]AppConfig, len(cfg.Applications))
 	for _, app := range cfg.Applications {
-		if err := app.validate(); err != nil {
+		if !validIdentifier(app.ID, 100) {
+			return nil, errors.New("invalid relay app alias")
+		}
+		if err := verifier.ValidateApplication(app); err != nil {
+			return nil, err
+		}
+		if err := provider.ValidateApplication(app); err != nil {
 			return nil, err
 		}
 		if _, duplicate := apps[app.ID]; duplicate {

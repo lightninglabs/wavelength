@@ -80,21 +80,27 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 	var payload EnrollmentPayload
 	if err := decodeJSON(
 		bytes.NewReader(proof.Payload), &payload,
-	); err != nil ||
-		!validDeviceToken(payload.DeviceToken) {
+	); err != nil {
 
 		writeError(w, http.StatusBadRequest, "invalid_payload")
 
 		return
 	}
+	token, err := s.provider.NormalizeDeviceToken(payload.DeviceToken)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_payload")
+
+		return
+	}
+
 	id, err := InstallationID(challenge.AppID, proof.KeyID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_key")
 
 		return
 	}
-	key, err := s.verifier.attest(
-		app, proof.Proof, proof.KeyID,
+	key, err := s.verifier.Attest(
+		r.Context(), app, proof.Proof, proof.KeyID,
 		ClientData(challenge, proof.Payload),
 	)
 	if err != nil {
@@ -105,8 +111,8 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	err = s.store.enroll(r.Context(), challenge, installation{
 		ID: id, Policy: app,
-		PublicKey: key.publicKey, Receipt: key.receipt,
-		DeviceToken:   strings.ToLower(payload.DeviceToken),
+		PublicKey: key.PublicKey, Receipt: key.Receipt,
+		DeviceToken:   token,
 		TokenRevision: 1, TokenUpdated: now.UnixNano(),
 	}, now)
 	if err != nil {
@@ -137,7 +143,7 @@ func validManagement(value ManagementPayload) bool {
 			!value.EnableAlerts && value.Presentation == ""
 
 	case "rotate_token":
-		return validDeviceToken(value.DeviceToken) &&
+		return value.DeviceToken != "" &&
 			value.RouteID == "" &&
 			value.SubscriptionID == "" && !value.EnableAlerts &&
 			value.Presentation == ""
@@ -202,16 +208,26 @@ func (s *Server) manage(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
-	counter, err := s.verifier.assert(
-		app, owner.PublicKey, owner.Counter, challenge, proof.Payload,
-		proof.Proof,
+	counter, err := s.verifier.Assert(
+		r.Context(), app, owner.PublicKey, owner.Counter, challenge,
+		proof.Payload, proof.Proof,
 	)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid_proof")
 
 		return
 	}
-	action.DeviceToken = strings.ToLower(action.DeviceToken)
+	if action.Action == "rotate_token" {
+		token, err := s.provider.NormalizeDeviceToken(
+			action.DeviceToken,
+		)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_payload")
+
+			return
+		}
+		action.DeviceToken = token
+	}
 	result, err := s.store.applyManagement(
 		r.Context(), challenge, counter, action, s.now(),
 	)

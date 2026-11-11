@@ -135,3 +135,34 @@ a checkpoint.
 The daemon owns the stepping loop. It cancels and joins each subscriber before
 closing connections and SQL. A cancelled step leaves at most a bounded lease;
 no detached cleanup outlives it. HTTP/CLI activation follows separately.
+
+## Publisher authentication and provider modules
+
+`Config.Authenticator` selects trusted publisher code implementing
+`DeviceAuthenticator`. App Attest is the default. It keeps Apple's dedicated
+attestation root, audience, environment, nonce, key and exact-payload checks.
+There is no HTTP or CLI switch that disables authentication.
+
+The module validates local application policy and authenticates enrollment and
+management transcripts with the request context. It returns public verification
+material and an authenticated assertion counter. SQL independently owns consumed
+challenges, strictly increasing counters, installation ownership and token
+revisions. Modules must bind the canonical 32-byte base64 credential identifier
+to their authenticated credential. Its encoding is not an Apple trust claim.
+Publisher account implementations retain private account credentials outside
+relay installation records.
+
+The delivery `Provider` separately validates application destination policy and
+normalizes device tokens. APNs requires valid hex and canonicalizes lowercase.
+An opaque provider can preserve case-sensitive tokens. Custom publishers must
+implement these provider methods; implementing `Send` alone is insufficient.
+`AppConfig`'s Apple fields are required only by the reference Apple modules.
+Other modules validate their own audience/destination policy using their local
+configuration. Changing authentication policy requires deliberate enrollment;
+no evidence importer or automatic trust fallback is provided.
+
+The HTTP integration tests include a signed account fixture with no Apple
+configuration and a case-sensitive opaque provider. They check credential and
+payload substitution, enrollment replay, store-owned monotonic counters and
+rotation without case changes. This proves the extension boundary, not a
+shipped Android or account-authentication product.

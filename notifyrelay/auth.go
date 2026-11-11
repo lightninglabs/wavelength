@@ -12,9 +12,10 @@ import (
 	attest "github.com/takimoto3/app-attest"
 )
 
-// AppConfig is publisher-controlled routing and attestation policy. AppleAppID
-// includes the App ID prefix and bundle ID. Development and production are
-// separate aliases; neither the token nor a capability can change this policy.
+// AppConfig is immutable publisher routing and admission policy. ID selects
+// the application alias. The reference App Attest/APNs modules also require
+// AppleAppID, Topic and separate attestation/provider environments. Custom
+// publisher modules validate their own audience and destination fields.
 type AppConfig struct {
 	ID                string `json:"id"`
 	AppleAppID        string `json:"apple_app_id"`
@@ -23,9 +24,8 @@ type AppConfig struct {
 	APNSEnvironment   string `json:"apns_environment"`
 }
 
-// validate rejects ambiguous publisher policy before the service can enroll
-// an installation or send a notification under the wrong app/environment.
-func (a AppConfig) validate() error {
+// validateAttestation checks only the default Apple admission module's policy.
+func (a AppConfig) validateAttestation() error {
 	if !validIdentifier(a.ID, 100) || !validIdentifier(a.Topic, 255) ||
 		!validIdentifier(a.AppleAppID, 266) ||
 		len(strings.TrimSuffix(a.AppleAppID, "."+a.Topic)) != 10 ||
@@ -36,10 +36,6 @@ func (a AppConfig) validate() error {
 	if a.AttestEnvironment != "production" &&
 		a.AttestEnvironment != "development" {
 		return errors.New("invalid App Attest environment")
-	}
-	if a.APNSEnvironment != "production" &&
-		a.APNSEnvironment != "development" {
-		return errors.New("invalid APNs environment")
 	}
 
 	return nil

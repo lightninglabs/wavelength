@@ -15,6 +15,16 @@ import (
 // unusedProvider proves an empty relay never performs provider I/O.
 type unusedProvider struct{}
 
+// ValidateApplication retains the reference provider's startup policy.
+func (unusedProvider) ValidateApplication(app notifyrelay.AppConfig) error {
+	return (&notifyrelay.APNSProvider{}).ValidateApplication(app)
+}
+
+// NormalizeDeviceToken retains APNs token policy without provider I/O.
+func (unusedProvider) NormalizeDeviceToken(token string) (string, error) {
+	return (&notifyrelay.APNSProvider{}).NormalizeDeviceToken(token)
+}
+
 // Send rejects unexpected delivery in the shutdown ownership test.
 func (unusedProvider) Send(context.Context, notifyrelay.Delivery) (
 	notifyrelay.ProviderResult, error) {
