@@ -49,6 +49,29 @@ func (q *Queries) CountInstallationSubscriptions(ctx context.Context, installati
 	return count, err
 }
 
+const deleteInstallationSubscriptions = `-- name: DeleteInstallationSubscriptions :exec
+DELETE FROM relay_subscriptions WHERE installation_id = $1
+`
+
+func (q *Queries) DeleteInstallationSubscriptions(ctx context.Context, installationID string) error {
+	_, err := q.db.ExecContext(ctx, deleteInstallationSubscriptions, installationID)
+	return err
+}
+
+const deleteScopeJob = `-- name: DeleteScopeJob :exec
+DELETE FROM relay_jobs WHERE subscription_id = $1 AND scope = $2
+`
+
+type DeleteScopeJobParams struct {
+	SubscriptionID string
+	Scope          string
+}
+
+func (q *Queries) DeleteScopeJob(ctx context.Context, arg DeleteScopeJobParams) error {
+	_, err := q.db.ExecContext(ctx, deleteScopeJob, arg.SubscriptionID, arg.Scope)
+	return err
+}
+
 const deleteSubscription = `-- name: DeleteSubscription :exec
 DELETE FROM relay_subscriptions WHERE id = $1 AND installation_id = $2
 `

@@ -12,6 +12,8 @@ type Querier interface {
 	ConsumeChallenge(ctx context.Context, arg ConsumeChallengeParams) (int64, error)
 	CountConsumedChallenges(ctx context.Context) (int64, error)
 	CountInstallationSubscriptions(ctx context.Context, installationID string) (int64, error)
+	DeleteInstallationSubscriptions(ctx context.Context, installationID string) error
+	DeleteScopeJob(ctx context.Context, arg DeleteScopeJobParams) error
 	DeleteSubscription(ctx context.Context, arg DeleteSubscriptionParams) error
 	GetConsumedChallenge(ctx context.Context, id string) (int64, error)
 	GetInstallation(ctx context.Context, id string) (RelayInstallation, error)

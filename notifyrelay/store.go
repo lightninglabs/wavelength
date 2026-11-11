@@ -3,14 +3,12 @@ package notifyrelay
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"strings"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -109,8 +107,8 @@ type relayJob struct {
 // Store owns a dedicated relay database. A database file has one process owner;
 // the file lock prevents multiple relay instances from silently sharing it.
 type Store struct {
-	db           *bolt.DB
-	challengeKey [32]byte
+	db *bolt.DB
+	challengeAuthority
 }
 
 // OpenStore opens or upgrades durable relay format two. Callers must join
@@ -169,7 +167,12 @@ func OpenStore(path string) (*Store, error) {
 		return nil, err
 	}
 
-	return &Store{db: database, challengeKey: challengeKey}, nil
+	return &Store{
+		db: database,
+		challengeAuthority: challengeAuthority{
+			challengeKey: challengeKey,
+		},
+	}, nil
 }
 
 // Close releases the file lock after all users of the store have joined.
@@ -231,73 +234,6 @@ func readRecord[T any](tx *bolt.Tx, bucket, key string) (T, error) {
 	if err := json.Unmarshal(encoded, &value); err != nil {
 		return value, err
 	}
-
-	return value, nil
-}
-
-// NewChallenge issues a stateless MAC-bound nonce. Anonymous requests allocate
-// no durable row; only a successfully authenticated use enters the replay set.
-func (s *Store) NewChallenge(ctx context.Context, req ChallengeRequest,
-	now time.Time) (Challenge, error) {
-
-	if err := ctx.Err(); err != nil {
-		return Challenge{}, err
-	}
-	nonce, err := randomSecret(32)
-	if err != nil {
-		return Challenge{}, err
-	}
-	value := Challenge{Nonce: nonce, AppID: req.AppID,
-		Operation: req.Operation, InstallationID: req.InstallationID,
-		ExpiresAt: now.Add(challengeLifetime).Unix()}
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return Challenge{}, err
-	}
-	mac := hmac.New(sha256.New, s.challengeKey[:])
-	_, _ = mac.Write(raw)
-	value.ID = base64.RawURLEncoding.EncodeToString(raw) + "." +
-		base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-
-	return value, nil
-}
-
-// loadChallenge validates a self-contained server nonce without allocating
-// state. Its successful use is still checked atomically with the mutation.
-func (s *Store) loadChallenge(ctx context.Context, id string, now time.Time) (
-	Challenge, error) {
-
-	if err := ctx.Err(); err != nil {
-		return Challenge{}, err
-	}
-	if len(id) > 1024 {
-		return Challenge{}, ErrNotFound
-	}
-	payload, signature, ok := strings.Cut(id, ".")
-	if !ok {
-		return Challenge{}, ErrNotFound
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(payload)
-	if err != nil {
-		return Challenge{}, ErrNotFound
-	}
-	actual, err := base64.RawURLEncoding.DecodeString(signature)
-	if err != nil {
-		return Challenge{}, ErrNotFound
-	}
-	mac := hmac.New(sha256.New, s.challengeKey[:])
-	_, _ = mac.Write(raw)
-	if !hmac.Equal(actual, mac.Sum(nil)) {
-		return Challenge{}, ErrNotFound
-	}
-	var value Challenge
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return Challenge{}, err
-	}
-	if value.ID != "" || value.ExpiresAt <= now.Unix() {
-		return Challenge{}, ErrNotFound
-	}
-	value.ID = id
 
 	return value, nil
 }
