@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -35,6 +36,8 @@ type feedRPCFixture struct {
 	expectedMacaroon string
 	reads            atomic.Int32
 	wrongPin         atomic.Bool
+	emptyStarted     chan struct{}
+	emptyOnce        sync.Once
 }
 
 // GetFeedChallenge checks ordinary RPC credentials without requiring R proof.
@@ -99,6 +102,17 @@ func (p *feedRPCFixture) Pull(ctx context.Context, r *pb.PullRequest) (
 		return nil, err
 	}
 
+	if r.Cursor > p.event.EventSeq {
+		if p.emptyStarted != nil {
+			p.emptyOnce.Do(func() { close(p.emptyStarted) })
+			<-ctx.Done()
+
+			return nil, status.FromContextError(ctx.Err()).Err()
+		}
+
+		return &pb.PullResponse{Status: &pb.Status{Ok: true}}, nil
+	}
+
 	return feedBatch(p.event), nil
 }
 
@@ -113,11 +127,10 @@ func (p *feedRPCFixture) AckUpTo(ctx context.Context, r *pb.AckUpToRequest) (
 	return &pb.AckUpToResponse{Status: &pb.Status{Ok: true}}, nil
 }
 
-// TestFeedSubscriberAuthenticatedTransport proves the configured TLS source,
-// ordinary macaroon and subscriber proof compose on real RPC calls. A pin
-// mismatch is rejected before transmitting static subscriber proof.
-func TestFeedSubscriberAuthenticatedTransport(t *testing.T) {
-	h, f, event := ingressHarness(t)
+// startFeedRPCFixture serves a TLS source with real ordinary credentials and R
+// proof checks. Policy is installed before any subscriber goroutine starts.
+func startFeedRPCFixture(t *testing.T, producer *feedRPCFixture) {
+	t.Helper()
 	// httptest provides a localhost test certificate without external
 	// services.
 	certificateServer := httptest.NewTLSServer(nil)
@@ -160,11 +173,7 @@ func TestFeedSubscriberAuthenticatedTransport(t *testing.T) {
 			),
 		),
 	)
-	producer := &feedRPCFixture{
-		source:           f.source,
-		event:            event,
-		expectedMacaroon: hex.EncodeToString(raw),
-	}
+	producer.expectedMacaroon = hex.EncodeToString(raw)
 	pb.RegisterMailboxServiceServer(server, producer)
 	pb.RegisterWakeFeedServiceServer(server, producer)
 	done := make(chan error, 1)
@@ -172,10 +181,21 @@ func TestFeedSubscriberAuthenticatedTransport(t *testing.T) {
 		done <- server.Serve(listener)
 	}()
 	t.Cleanup(func() { server.Stop(); assert.NoError(t, <-done) })
-	source := h.store.sources["producer"]
+	source := producer.source
 	source.config.Endpoint = listener.Addr().String()
 	source.config.TLSCertFile = certPath
 	source.config.MacaroonFile = macPath
+
+}
+
+// TestFeedSubscriberAuthenticatedTransport proves the configured TLS source,
+// ordinary macaroon and subscriber proof compose on real RPC calls. A pin
+// mismatch is rejected before transmitting static subscriber proof.
+func TestFeedSubscriberAuthenticatedTransport(t *testing.T) {
+	h, f, event := ingressHarness(t)
+	producer := &feedRPCFixture{source: f.source, event: event}
+	startFeedRPCFixture(t, producer)
+	source := f.source
 	subscriber, err := NewFeedSubscriber(t.Context(), h.store, "producer")
 	require.NoError(t, err)
 	worked, err := subscriber.Step(t.Context())

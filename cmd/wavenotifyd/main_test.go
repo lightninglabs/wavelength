@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lightninglabs/wavelength/notifyrelay"
+	"github.com/lightninglabs/wavelength/notifyrelay/relaydb"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,10 +37,24 @@ func (unusedProvider) Send(context.Context, notifyrelay.Delivery) (
 }
 
 // TestServeShutdown proves successful shutdown joins the worker and releases
-// the database's exclusive process lock before returning to the caller.
+// database pool before returning to the caller.
 func TestServeShutdown(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "relay.db")
-	store, err := notifyrelay.OpenStore(path)
+	database, err := relaydb.OpenSQLite(t.Context(), path)
+	require.NoError(t, err)
+	key, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	store, err := notifyrelay.NewSQLStore(
+		t.Context(), database, notifyrelay.SourceConfig{
+			ID:       "producer",
+			Role:     "operator",
+			Endpoint: "127.0.0.1:1",
+			PublicKey: hex.EncodeToString(
+				key.PubKey().SerializeCompressed(),
+			),
+			EventClasses: 1,
+		},
+	)
 	require.NoError(t, err)
 	relay, err := notifyrelay.NewServer(notifyrelay.Config{
 		Applications: []notifyrelay.AppConfig{{
@@ -53,7 +71,7 @@ func TestServeShutdown(t *testing.T) {
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, relay, store, listener)
+		done <- serve(ctx, relay, database, listener)
 	}()
 	client := &http.Client{Timeout: time.Second}
 	require.Eventually(t, func() bool {
@@ -75,7 +93,14 @@ func TestServeShutdown(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("shutdown did not join")
 	}
-	reopened, err := notifyrelay.OpenStore(path)
+	require.ErrorContains(
+		t,
+		database.DB.PingContext(
+			t.Context(),
+		),
+		"database is closed",
+	)
+	reopened, err := relaydb.OpenSQLite(t.Context(), path)
 	require.NoError(t, err)
 	require.NoError(t, reopened.Close())
 }
@@ -85,4 +110,60 @@ func TestServeShutdown(t *testing.T) {
 func TestRunRequiresTLSIngress(t *testing.T) {
 	err := run(context.Background(), []string{"--listen=0.0.0.0:8080"})
 	require.EqualError(t, err, "external HTTP requires --behind-tls-proxy")
+}
+
+// TestSQLDatabaseSelection never treats a legacy/non-SQL file as a relay
+// database and never exposes mounted PostgreSQL credentials in an error.
+func TestSQLDatabaseSelection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old-relay.db")
+	original := []byte("not a SQLite database")
+	require.NoError(t, os.WriteFile(path, original, 0600))
+	_, err := openDatabase(t.Context(), path, "")
+	require.Error(t, err)
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, original, after)
+	dsnPath := filepath.Join(t.TempDir(), "postgres-secret")
+	require.NoError(
+		t,
+		os.WriteFile(
+			dsnPath, []byte(
+				"postgres://secret-user:private-password@inv"+
+					"alid:1/relay",
+			),
+			0600,
+		),
+	)
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	_, err = openDatabase(
+		ctx,
+		filepath.Join(
+			t.TempDir(),
+			"unused.db",
+		),
+		dsnPath,
+	)
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "private-password")
+	require.NotContains(t, err.Error(), "secret-user")
+}
+
+// TestPublisherPolicyJSON rejects silently ignored fields and trailing policy.
+func TestPublisherPolicyJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sources.json")
+	var sources []notifyrelay.SourceConfig
+	require.NoError(
+		t,
+		os.WriteFile(
+			path, []byte(`[{"id":"producer","unrecognized":true}]`),
+			0600,
+		),
+	)
+	require.Error(t, readPolicy(path, &sources))
+	require.NoError(t, os.WriteFile(path, []byte(`[] []`), 0600))
+	require.Error(t, readPolicy(path, &sources))
+	require.NoError(t, os.WriteFile(path, []byte(`[]`), 0600))
+	require.NoError(t, readPolicy(path, &sources))
+	require.Empty(t, sources)
 }
