@@ -147,7 +147,15 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   asset wallet: `claiming` once signed, `claimed` once tapd confirms it.
   Recording a different claim transaction fails with
   `ErrAssetDepositMismatch`.
-- `LatestMigrationVersion = 30` — current schema version.
+- `AssetEngineStore` — the store of tap-sdk's embedded asset engine
+  (`embedded.Store`): derived keys, script keys, proof files of asset
+  outputs with their `owned` and `spent` flags, and published transfers. A
+  transfer row carries the engine's own payload as an opaque blob. An
+  unknown key, an absent journal entry and a recorded transfer are answers:
+  they are returned after the transaction, never from inside it, so the
+  executor logs no warning. The same store keeps the asset deposit journal
+  (`LoadJournalEntry` / `StoreJournalEntry`) for the embedded backend.
+- `LatestMigrationVersion = 31` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -524,6 +532,12 @@ when adding one.
 - `000030_asset_deposit_claims` — `asset_deposit_claims`, one claim per
   deposit that returns it to the asset wallet through the owner's exit path.
   It is a separate table so the deposit's own status constraint is untouched.
+
+- `000031_asset_engine` — the embedded asset engine's tables:
+  `asset_engine_keys`, `asset_engine_script_keys`, `asset_engine_proofs` and
+  `asset_engine_transfers`, plus `asset_journal`, the deposit journal of the
+  embedded backend. They live in the daemon's database because a browser has
+  one exclusive connection and no files.
 
 ## Deep Docs
 
