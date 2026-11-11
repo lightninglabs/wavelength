@@ -82,8 +82,11 @@ type FeedGrantMutation struct {
 	// Unknown bits are rejected. These never authorize wallet operations.
 	EventClasses  uint32 `protobuf:"varint,4,opt,name=event_classes,json=eventClasses,proto3" json:"event_classes,omitempty"`
 	ExpiresAtUnix int64  `protobuf:"varint,5,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Subscriber-signed consent binds this producer, grant ID, classes and
+	// expiry. A producer retains one owner per (subscriber, grant ID).
+	SubscriberSignature []byte `protobuf:"bytes,6,opt,name=subscriber_signature,json=subscriberSignature,proto3" json:"subscriber_signature,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *FeedGrantMutation) Reset() {
@@ -149,6 +152,13 @@ func (x *FeedGrantMutation) GetExpiresAtUnix() int64 {
 		return x.ExpiresAtUnix
 	}
 	return 0
+}
+
+func (x *FeedGrantMutation) GetSubscriberSignature() []byte {
+	if x != nil {
+		return x.SubscriberSignature
+	}
+	return nil
 }
 
 // FeedGrantRequest signs every challenge and mutation field under the wallet
@@ -290,6 +300,9 @@ type WakeFeedEvent struct {
 	PaymentEventId string `protobuf:"bytes,4,opt,name=payment_event_id,json=paymentEventId,proto3" json:"payment_event_id,omitempty"`
 	// Bound local push retries by this producer-authorized grant expiry.
 	ExpiresAtUnix int64 `protobuf:"varint,5,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
+	// Publisher-owned route ID, matching the enrolled route when binding the
+	// token. This is not the wallet identity.
+	GrantId       string `protobuf:"bytes,6,opt,name=grant_id,json=grantId,proto3" json:"grant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -359,18 +372,26 @@ func (x *WakeFeedEvent) GetExpiresAtUnix() int64 {
 	return 0
 }
 
+func (x *WakeFeedEvent) GetGrantId() string {
+	if x != nil {
+		return x.GrantId
+	}
+	return ""
+}
+
 var File_wakefeed_proto protoreflect.FileDescriptor
 
 const file_wakefeed_proto_rawDesc = "" +
 	"\n" +
 	"\x0ewakefeed.proto\x12\n" +
-	"mailbox.v1\x1a\x12notification.proto\"\xae\x02\n" +
+	"mailbox.v1\x1a\x12notification.proto\"\xe1\x02\n" +
 	"\x11FeedGrantMutation\x12<\n" +
 	"\x06action\x18\x01 \x01(\x0e2$.mailbox.v1.FeedGrantMutation.ActionR\x06action\x12\x19\n" +
 	"\bgrant_id\x18\x02 \x01(\tR\agrantId\x12+\n" +
 	"\x11subscriber_pubkey\x18\x03 \x01(\fR\x10subscriberPubkey\x12#\n" +
 	"\revent_classes\x18\x04 \x01(\rR\feventClasses\x12&\n" +
-	"\x0fexpires_at_unix\x18\x05 \x01(\x03R\rexpiresAtUnix\"F\n" +
+	"\x0fexpires_at_unix\x18\x05 \x01(\x03R\rexpiresAtUnix\x121\n" +
+	"\x14subscriber_signature\x18\x06 \x01(\fR\x13subscriberSignature\"F\n" +
 	"\x06Action\x12\x16\n" +
 	"\x12ACTION_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rACTION_UPSERT\x10\x01\x12\x11\n" +
@@ -383,7 +404,7 @@ const file_wakefeed_proto_rawDesc = "" +
 	"\bgrant_id\x18\x01 \x01(\tR\agrantId\x12\x1d\n" +
 	"\n" +
 	"feed_token\x18\x02 \x01(\fR\tfeedToken\x12&\n" +
-	"\x0fexpires_at_unix\x18\x03 \x01(\x03R\rexpiresAtUnix\"\xc5\x01\n" +
+	"\x0fexpires_at_unix\x18\x03 \x01(\x03R\rexpiresAtUnix\"\xe0\x01\n" +
 	"\rWakeFeedEvent\x12\x1d\n" +
 	"\n" +
 	"feed_token\x18\x01 \x01(\fR\tfeedToken\x12\x1e\n" +
@@ -392,7 +413,8 @@ const file_wakefeed_proto_rawDesc = "" +
 	"generation\x12#\n" +
 	"\revent_classes\x18\x03 \x01(\rR\feventClasses\x12(\n" +
 	"\x10payment_event_id\x18\x04 \x01(\tR\x0epaymentEventId\x12&\n" +
-	"\x0fexpires_at_unix\x18\x05 \x01(\x03R\rexpiresAtUnix2\xbf\x01\n" +
+	"\x0fexpires_at_unix\x18\x05 \x01(\x03R\rexpiresAtUnix\x12\x19\n" +
+	"\bgrant_id\x18\x06 \x01(\tR\agrantId2\xbf\x01\n" +
 	"\x0fWakeFeedService\x12_\n" +
 	"\x10GetFeedChallenge\x12(.mailbox.v1.NotificationChallengeRequest\x1a!.mailbox.v1.NotificationChallenge\x12K\n" +
 	"\fSetFeedGrant\x12\x1c.mailbox.v1.FeedGrantRequest\x1a\x1d.mailbox.v1.FeedGrantResponseB:Z8github.com/lightninglabs/wavelength/mailbox/pb;mailboxpbb\x06proto3"
