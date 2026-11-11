@@ -463,6 +463,26 @@ func (b *ChainBackend) BestBlock(ctx context.Context) (int32, chainhash.Hash,
 	return bs.Height, bs.Hash, nil
 }
 
+// BlockHeaderByHeight returns the header of the best-chain block at height
+// from neutrino's header chain.
+func (b *ChainBackend) BlockHeaderByHeight(_ context.Context, height uint32) (
+	*wire.BlockHeader, error) {
+
+	hash, err := b.neutrinoCS.GetBlockHash(int64(height))
+	if err != nil {
+		return nil, fmt.Errorf("neutrino block hash at height %d: %w",
+			height, err)
+	}
+
+	header, err := b.neutrinoCS.GetBlockHeader(hash)
+	if err != nil {
+		return nil, fmt.Errorf("neutrino block header %v: %w", hash,
+			err)
+	}
+
+	return header, nil
+}
+
 // TestMempoolAccept is not supported by the neutrino backend since
 // neutrino does not maintain a mempool.
 func (b *ChainBackend) TestMempoolAccept(_ context.Context, _ ...*wire.MsgTx) (

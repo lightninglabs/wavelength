@@ -9,6 +9,10 @@ communication alongside the raw registration API.
 
 ## Key Types
 
+- `BlockHeaderSource` — Optional backend interface:
+  `BlockHeaderByHeight` returns the best-chain header at a height. The
+  Esplora and neutrino backends implement it; the embedded asset backend
+  verifies proofs against it.
 - `ChainBackend` — Interface: `EstimateFee`, `BestBlock`, `BroadcastTx`,
   `TestMempoolAccept`, `RegisterConf/Spend/Blocks`, `SubmitPackage`,
   `Start/Stop`. Implemented by `chainbackends`, `btcwbackend`, `lwwallet`.
