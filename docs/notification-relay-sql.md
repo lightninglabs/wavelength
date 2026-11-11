@@ -188,3 +188,24 @@ becomes an unbounded second queue. Coalescing keeps only the latest candidate.
 Signed presentation changes drop pending jobs under the existing transaction.
 Protocol wakes retain their separate budget. No device can turn its own replay
 quota into head-of-line blocking for every device on the subscriber mailbox.
+
+## Idle delivery latency
+
+After ingress commits its local jobs and source cursor, it non-blockingly
+signals the existing delivery loop before attempting the remote ACK. A full
+signal buffer already represents pending work. The one-second delivery ticker
+remains a fallback; durable jobs and commit-before-ACK do not depend on a signal.
+
+An empty producer Pull waits up to four seconds inside a six-second RPC budget.
+It may pull again immediately after that wait. A replica that cannot acquire
+the source lease still backs off for one second, and connection/ingress errors
+still back off for five seconds. These are distinct step results, not timing
+heuristics. The whole step has a 20-second budget under a 30-second source
+lease; ACK has its existing ten-second budget within that step. Cancellation
+interrupts the long-wait and shutdown still joins each source loop.
+
+An idle source issues about 15 Pulls per minute instead of 30. Publishers must
+use sources whose maximum Pull wait permits four seconds; a source with a
+shorter configured cap will increase that request rate. This pacing assumes
+the authenticated producer honors the requested long-wait. Producer-side
+polling and provider acceptance latency are separate measurements.

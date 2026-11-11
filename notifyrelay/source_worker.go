@@ -17,9 +17,12 @@ func (s *Server) runFeedSource(ctx context.Context, store *SQLStore,
 		phase := "connect"
 		subscriber, err := NewFeedSubscriber(ctx, store, id)
 		if err == nil {
+			subscriber.ingress.wake = s.wake
 			phase = "ingress"
 			for ctx.Err() == nil {
-				worked, stepErr := subscriber.Step(ctx)
+				result, stepErr := subscriber.ingress.next(
+					ctx,
+				)
 				if stepErr != nil {
 					break
 				}
@@ -31,7 +34,9 @@ func (s *Server) runFeedSource(ctx context.Context, store *SQLStore,
 					)
 					attempts = 0
 				}
-				if !worked && !waitSource(ctx, time.Second) {
+				if result == feedStepLeaseBusy &&
+					!waitSource(ctx, time.Second) {
+
 					break
 				}
 			}

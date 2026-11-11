@@ -37,19 +37,45 @@ type feedMailbox interface {
 // feedIngress runs a bounded step under one leased source owner. SQL persists
 // every local delivery obligation before the corresponding remote ACK.
 type feedIngress struct {
+	// wake is an optional post-commit hint; the worker ticker remains
+	// fallback.
+	wake    chan<- struct{}
 	store   *SQLStore
 	source  *feedSource
 	mailbox feedMailbox
 }
 
-// step flushes a retained ACK even if the next Pull would be empty. That ACK
-// lets the producer release its outstanding marker and emit pending N+1.
+// feedStepResult distinguishes a paced empty pull from a competing lease owner.
+type feedStepResult uint8
+
+const (
+	// feedStepLeaseBusy requires backoff because no long-wait was
+	// performed.
+	feedStepLeaseBusy feedStepResult = iota
+
+	// feedStepEmpty already waited at the producer and may pull again at
+	// once.
+	feedStepEmpty
+
+	// feedStepCommitted preserves progress even if the following ACK fails.
+	feedStepCommitted
+)
+
+// step preserves the public subscriber's committed-progress result.
 func (f *feedIngress) step(parent context.Context) (bool, error) {
+	result, err := f.next(parent)
+
+	return result == feedStepCommitted, err
+}
+
+// next flushes a retained ACK before Pull and reports whether an empty
+// result already long-waited. Source ownership and commit-before-ACK are fixed.
+func (f *feedIngress) next(parent context.Context) (feedStepResult, error) {
 	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
 	token, err := randomSecret(16)
 	if err != nil {
-		return false, err
+		return feedStepLeaseBusy, err
 	}
 	var state sqlc.RelaySource
 	err = f.store.database.Write(ctx, func(q *sqlc.Queries) error {
@@ -64,10 +90,10 @@ func (f *feedIngress) step(parent context.Context) (bool, error) {
 		return claimErr
 	})
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		return feedStepLeaseBusy, nil
 	}
 	if err != nil {
-		return false, err
+		return feedStepLeaseBusy, err
 	}
 	// Cancellation may prevent release. No detached cleanup escapes daemon
 	// ownership; another replica can take over when the bounded lease
@@ -81,35 +107,41 @@ func (f *feedIngress) step(parent context.Context) (bool, error) {
 		)
 	}()
 	if err := f.flushAck(ctx, state, token); err != nil {
-		return false, err
+		return feedStepLeaseBusy, err
 	}
-	pullCtx, pullCancel := context.WithTimeout(ctx, 5*time.Second)
+	pullCtx, pullCancel := context.WithTimeout(ctx, 6*time.Second)
 	response, err := f.mailbox.Pull(pullCtx, &pb.PullRequest{
 		MailboxId: f.source.mailboxID, Cursor: uint64(state.Cursor),
-		MaxEnvelopes: 64, WaitTimeoutMs: 1000,
+		MaxEnvelopes: 64, WaitTimeoutMs: 4000,
 	})
 	pullCancel()
 	if err != nil {
-		return false, ErrFeedSource
+		return feedStepLeaseBusy, ErrFeedSource
 	}
 	events, err := f.validateBatch(response, state.Cursor)
 	if err != nil {
-		return false, err
+		return feedStepLeaseBusy, err
 	}
 	if len(events) == 0 {
-		return false, nil
+		return feedStepEmpty, nil
 	}
 	next := int64(response.NextCursor)
 	if err := f.commitBatch(ctx, state, token, next, events); err != nil {
-		return false, err
+		return feedStepLeaseBusy, err
+	}
+	// The durable job is visible now, even if the remote ACK stalls or its
+	// response is lost. Never signal from the retried SQL closure.
+	select {
+	case f.wake <- struct{}{}:
+	default:
 	}
 	state.Cursor = next
 	state.AckPending = true
 	if err := f.flushAck(ctx, state, token); err != nil {
-		return true, err
+		return feedStepCommitted, err
 	}
 
-	return true, nil
+	return feedStepCommitted, nil
 }
 
 // flushAck clears only the exact committed prefix under the current claim.
