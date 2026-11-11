@@ -184,6 +184,54 @@ CREATE TABLE asset_deposits (
     ))
 );
 
+CREATE TABLE asset_engine_keys (
+    pubkey BLOB PRIMARY KEY CHECK (length(pubkey) = 33),
+    key_family BIGINT NOT NULL CHECK (key_family >= 0),
+    key_index BIGINT NOT NULL CHECK (key_index >= 0)
+);
+
+CREATE TABLE asset_engine_proofs (
+    asset_id BLOB NOT NULL CHECK (length(asset_id) = 32),
+    script_key BLOB NOT NULL CHECK (length(script_key) = 33),
+    outpoint_hash BLOB NOT NULL CHECK (length(outpoint_hash) = 32),
+    outpoint_index BIGINT NOT NULL CHECK (outpoint_index >= 0),
+    proof_file BLOB NOT NULL,
+    owned BOOLEAN NOT NULL,
+    spent BOOLEAN NOT NULL DEFAULT FALSE,
+
+    PRIMARY KEY (asset_id, script_key, outpoint_hash, outpoint_index)
+);
+
+CREATE TABLE asset_engine_script_keys (
+    tweaked_key BLOB PRIMARY KEY CHECK (length(tweaked_key) = 33),
+    raw_key BLOB NOT NULL CHECK (length(raw_key) = 33),
+    key_family BIGINT NOT NULL CHECK (key_family >= 0),
+    key_index BIGINT NOT NULL CHECK (key_index >= 0),
+
+    -- tweak is NULL for a BIP-86 key.
+    tweak BLOB,
+    key_type INTEGER NOT NULL CHECK (key_type >= 0)
+);
+
+CREATE TABLE asset_engine_transfers (
+    anchor_txid BLOB PRIMARY KEY CHECK (length(anchor_txid) = 32),
+    state INTEGER NOT NULL CHECK (state BETWEEN 0 AND 2),
+    height_hint BIGINT NOT NULL CHECK (height_hint >= 0),
+
+    -- block_hash is NULL while the transfer is unconfirmed.
+    block_hash BLOB CHECK (block_hash IS NULL OR length(block_hash) = 32),
+    block_height BIGINT NOT NULL DEFAULT 0 CHECK (block_height >= 0),
+
+    -- created_at is in Unix nanoseconds and orders the transfers.
+    created_at BIGINT NOT NULL,
+    payload BLOB NOT NULL
+);
+
+CREATE TABLE asset_journal (
+    journal_key TEXT PRIMARY KEY CHECK (length(journal_key) BETWEEN 1 AND 256),
+    value BLOB NOT NULL
+);
+
 CREATE TABLE boarding_addresses (
     -- pk_script is the raw output script (P2TR script) and serves as the
     -- primary key since it uniquely identifies an address.
@@ -524,6 +572,12 @@ CREATE UNIQUE INDEX idx_asset_deposits_outpoint
 
 CREATE INDEX idx_asset_deposits_status
     ON asset_deposits(status);
+
+CREATE INDEX idx_asset_engine_proofs_owned
+    ON asset_engine_proofs(owned, spent);
+
+CREATE INDEX idx_asset_engine_transfers_created_at
+    ON asset_engine_transfers(created_at);
 
 CREATE INDEX idx_boarding_addresses_creation_time
     ON boarding_addresses(creation_time DESC);

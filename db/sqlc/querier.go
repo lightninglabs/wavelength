@@ -59,6 +59,7 @@ type Querier interface {
 	// activity. Callers delete these first to satisfy the activity_entries foreign
 	// key without weakening it for ordinary lifecycle rows.
 	DeleteActivityEventsByCanonicalID(ctx context.Context, canonicalID string) error
+	DeleteAssetEngineProof(ctx context.Context, arg DeleteAssetEngineProofParams) error
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
 	DeleteOORPackageCheckpoints(ctx context.Context, sessionID []byte) error
 	DeleteOrphanedPendingBoardIntents(ctx context.Context) error
@@ -110,6 +111,11 @@ type Querier interface {
 	// GetAssetDepositRound returns the round that spends a deposit. A failed round
 	// never broadcast its commitment, so it leaves the deposit free to board again.
 	GetAssetDepositRound(ctx context.Context, requestID string) (GetAssetDepositRoundRow, error)
+	GetAssetEngineKey(ctx context.Context, pubkey []byte) (AssetEngineKey, error)
+	GetAssetEngineProof(ctx context.Context, arg GetAssetEngineProofParams) (AssetEngineProof, error)
+	GetAssetEngineScriptKey(ctx context.Context, tweakedKey []byte) (AssetEngineScriptKey, error)
+	GetAssetEngineTransfer(ctx context.Context, anchorTxid []byte) (AssetEngineTransfer, error)
+	GetAssetJournalEntry(ctx context.Context, journalKey string) ([]byte, error)
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
 	GetBoardingSweep(ctx context.Context, txid []byte) (BoardingSweep, error)
@@ -187,6 +193,11 @@ type Querier interface {
 	// InsertAssetDepositClaim records a signed claim. A deposit that already has
 	// a claim inserts nothing.
 	InsertAssetDepositClaim(ctx context.Context, arg InsertAssetDepositClaimParams) (int64, error)
+	// InsertAssetEngineKey records a derived key. A known key inserts nothing.
+	InsertAssetEngineKey(ctx context.Context, arg InsertAssetEngineKeyParams) error
+	// InsertAssetEngineTransfer records a transfer. A recorded anchor
+	// transaction inserts nothing.
+	InsertAssetEngineTransfer(ctx context.Context, arg InsertAssetEngineTransferParams) (int64, error)
 	// Boarding address queries.
 	InsertBoardingAddress(ctx context.Context, arg InsertBoardingAddressParams) error
 	// Boarding intent queries.
@@ -261,6 +272,8 @@ type Querier interface {
 	ListAssetDepositClaimsByStatus(ctx context.Context, status string) ([]AssetDepositClaim, error)
 	ListAssetDeposits(ctx context.Context) ([]AssetDeposit, error)
 	ListAssetDepositsByStatus(ctx context.Context, status string) ([]AssetDeposit, error)
+	ListAssetEngineProofsByKey(ctx context.Context, arg ListAssetEngineProofsByKeyParams) ([]AssetEngineProof, error)
+	ListAssetEngineTransfers(ctx context.Context) ([]AssetEngineTransfer, error)
 	ListBoardingIntentOutpoints(ctx context.Context) ([]ListBoardingIntentOutpointsRow, error)
 	ListBoardingIntentsByConfHeight(ctx context.Context, confHeight int32) ([]BoardingIntent, error)
 	ListBoardingIntentsByPkScript(ctx context.Context, pkScript []byte) ([]BoardingIntent, error)
@@ -402,6 +415,8 @@ type Querier interface {
 	// ties for the ID tie-breaker; a partial page must still search older history.
 	ListOORStatus(ctx context.Context, arg ListOORStatusParams) ([]ListOORStatusRow, error)
 	ListOORVTXOBindingsBySession(ctx context.Context, sessionID []byte) ([]ListOORVTXOBindingsBySessionRow, error)
+	// ListOwnedAssetEngineProofs returns every output the wallet holds or held.
+	ListOwnedAssetEngineProofs(ctx context.Context) ([]AssetEngineProof, error)
 	ListOwnedReceiveScripts(ctx context.Context) ([]OwnedReceiveScript, error)
 	// Only status = 'pending' rows replay; a 'failed' intent is terminally
 	// retired and must not be re-submitted on restart.
@@ -439,6 +454,8 @@ type Querier interface {
 	// applied before LIMIT/OFFSET so filtered pagination never skips over matching
 	// rows hidden behind non-matching entries.
 	ListTransactionHistory(ctx context.Context, arg ListTransactionHistoryParams) ([]ListTransactionHistoryRow, error)
+	// ListUnspentAssetEngineProofs returns the outputs the wallet holds.
+	ListUnspentAssetEngineProofs(ctx context.Context) ([]AssetEngineProof, error)
 	// ListUnspentVTXOAncestryPaths returns every ancestry row whose parent
 	// VTXO is unspent (status != 4 AND spent = FALSE), mirroring the filter
 	// on ListUnspentVTXOs. Companion to the round-side ListVTXOs path.
@@ -516,6 +533,7 @@ type Querier interface {
 	// MarkAssetDepositPublished stores the funded output and its boarding claim.
 	// Only a deposit still funding moves.
 	MarkAssetDepositPublished(ctx context.Context, arg MarkAssetDepositPublishedParams) (int64, error)
+	MarkAssetEngineProofSpent(ctx context.Context, arg MarkAssetEngineProofSpentParams) (int64, error)
 	MarkBoardingSweepInputSpentByOutpoint(ctx context.Context, arg MarkBoardingSweepInputSpentByOutpointParams) (int64, error)
 	MarkBoardingSweepInputStatus(ctx context.Context, arg MarkBoardingSweepInputStatusParams) error
 	MarkBoardingSweepInputsStatus(ctx context.Context, arg MarkBoardingSweepInputsStatusParams) error
@@ -603,6 +621,7 @@ type Querier interface {
 	// per (event, classification) pair. The checker decides which pairs are
 	// expected to have booked a ledger leg.
 	SumWalletUTXOLogByEventAndClassification(ctx context.Context) ([]SumWalletUTXOLogByEventAndClassificationRow, error)
+	UpdateAssetEngineTransfer(ctx context.Context, arg UpdateAssetEngineTransferParams) (int64, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
 	UpdateLedgerEntryIdempotencyKey(ctx context.Context, arg UpdateLedgerEntryIdempotencyKeyParams) (int64, error)
 	UpdateLegacyExitLedgerEntry(ctx context.Context, arg UpdateLegacyExitLedgerEntryParams) (int64, error)
@@ -627,6 +646,11 @@ type Querier interface {
 	// preimage is COALESCEd the same way, so a projection made without it never
 	// erases a stored one.
 	UpsertActivityEntry(ctx context.Context, arg UpsertActivityEntryParams) (int64, error)
+	// UpsertAssetEngineProof stores a proof file. A known output keeps its spent
+	// flag.
+	UpsertAssetEngineProof(ctx context.Context, arg UpsertAssetEngineProofParams) error
+	UpsertAssetEngineScriptKey(ctx context.Context, arg UpsertAssetEngineScriptKeyParams) error
+	UpsertAssetJournalEntry(ctx context.Context, arg UpsertAssetJournalEntryParams) error
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
 	// Credit operations control-plane queries.
 	UpsertCreditOperation(ctx context.Context, arg UpsertCreditOperationParams) error
