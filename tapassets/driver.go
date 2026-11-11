@@ -181,6 +181,15 @@ func (d *sdkDriver) buildTransition(ctx context.Context,
 func (d *sdkDriver) Publish(ctx context.Context, packageBytes,
 	finalPSBT []byte) error {
 
+	return d.PublishWithInputProofs(ctx, packageBytes, finalPSBT, nil)
+}
+
+// PublishWithInputProofs is Publish for a transfer whose input histories tapd
+// may lack, such as a confirmed leaf of an off-chain tree. It supplies the
+// inputs' proof files with the transfer.
+func (d *sdkDriver) PublishWithInputProofs(ctx context.Context, packageBytes,
+	finalPSBT []byte, inputProofs [][]byte) error {
+
 	if d == nil || d.wallet == nil {
 		return fmt.Errorf("tap-sdk wallet is required")
 	}
@@ -195,6 +204,7 @@ func (d *sdkDriver) Publish(ctx context.Context, packageBytes,
 
 	_, err := customanchor.PublishTransfer(
 		ctx, d.wallet, &transfer, finalPSBT,
+		customanchor.WithInputProofFiles(inputProofs...),
 	)
 
 	return err

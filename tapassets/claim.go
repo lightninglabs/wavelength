@@ -123,7 +123,7 @@ type claimDriver interface {
 
 	DecodePackage([]byte) (*commitResult, error)
 
-	Publish(context.Context, []byte, []byte) error
+	PublishWithInputProofs(context.Context, []byte, []byte, [][]byte) error
 
 	ReconcileOnboarding(context.Context, []byte) error
 }
@@ -214,7 +214,7 @@ func (c *Claimer) Claim(ctx context.Context, request *ClaimRequest) (
 	if err != nil {
 		return nil, err
 	}
-	if err := c.publish(ctx, request.RequestID, state); err != nil {
+	if err := c.publish(ctx, request, state); err != nil {
 		return nil, err
 	}
 
@@ -452,13 +452,16 @@ func (c *Claimer) sign(request *ClaimRequest, anchorPSBT []byte) ([]byte,
 	return psbtutil.Serialize(packet)
 }
 
-// publish records the signed claim in tapd. The attempt is journaled first,
-// and a retry after an attempt publishes again only once tapd reports no
-// record of the claim. tapd keys a transfer by its anchor transaction, so a
-// second publish of the same claim attaches to the first rather than logging
-// it twice.
-func (c *Claimer) publish(ctx context.Context, requestID string,
+// publish records the signed claim in tapd, with the claimed output's proof
+// file, since tapd may never have seen its history. The attempt is journaled
+// first, and a retry after an attempt publishes again only once tapd reports
+// no record of the claim. tapd keys a transfer by its anchor transaction, so
+// a second publish of the same claim attaches to the first rather than
+// logging it twice.
+func (c *Claimer) publish(ctx context.Context, request *ClaimRequest,
 	state *claimState) error {
+
+	requestID := request.RequestID
 
 	if state.Published {
 		return nil
@@ -479,8 +482,9 @@ func (c *Claimer) publish(ctx context.Context, requestID string,
 		return err
 	}
 
-	err := c.driver.Publish(
+	err := c.driver.PublishWithInputProofs(
 		ctx, state.TransferPackage, state.FinalAnchorPSBT,
+		[][]byte{request.ProofFile},
 	)
 	if err != nil {
 		var attempted *customanchor.PublishAttemptError

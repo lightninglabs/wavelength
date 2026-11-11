@@ -26,6 +26,7 @@ type fakeClaimDriver struct {
 	publishErr   error
 	reconcileErr error
 	anchorPSBT   []byte
+	inputProofs  [][]byte
 	request      *customanchor.Request
 }
 
@@ -53,8 +54,11 @@ func (d *fakeClaimDriver) DecodePackage(encoded []byte) (*commitResult, error) {
 	}, nil
 }
 
-func (d *fakeClaimDriver) Publish(context.Context, []byte, []byte) error {
+func (d *fakeClaimDriver) PublishWithInputProofs(_ context.Context, _, _ []byte,
+	inputProofs [][]byte) error {
+
 	d.publishes++
+	d.inputProofs = inputProofs
 
 	return d.publishErr
 }
@@ -188,6 +192,10 @@ func TestClaimerClaimsOnce(t *testing.T) {
 		t, request.OPTrueWitness, committed.Inputs[0].Witness.Stack,
 	)
 	require.Equal(t, scriptExternal, committed.Outputs[0].Script.Mode)
+
+	// tapd gets the claimed output's proof file with the claim, since it
+	// may never have seen its history.
+	require.Equal(t, [][]byte{request.ProofFile}, driver.inputProofs)
 
 	again, err := claimer.Claim(ctx, request)
 	require.NoError(t, err)
