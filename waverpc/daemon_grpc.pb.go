@@ -49,6 +49,7 @@ const (
 	DaemonService_DepositAsset_FullMethodName                                   = "/waverpc.DaemonService/DepositAsset"
 	DaemonService_ListAssetDeposits_FullMethodName                              = "/waverpc.DaemonService/ListAssetDeposits"
 	DaemonService_BoardAssetDeposit_FullMethodName                              = "/waverpc.DaemonService/BoardAssetDeposit"
+	DaemonService_ClaimAssetDeposit_FullMethodName                              = "/waverpc.DaemonService/ClaimAssetDeposit"
 	DaemonService_JoinNextRound_FullMethodName                                  = "/waverpc.DaemonService/JoinNextRound"
 	DaemonService_SweepBoardingUTXOs_FullMethodName                             = "/waverpc.DaemonService/SweepBoardingUTXOs"
 	DaemonService_ListBoardingSweeps_FullMethodName                             = "/waverpc.DaemonService/ListBoardingSweeps"
@@ -208,6 +209,13 @@ type DaemonServiceClient interface {
 	// deposit. The round creates an asset VTXO with the deposited units and
 	// a BTC VTXO with the deposit's remaining satoshis after the round fee.
 	BoardAssetDeposit(ctx context.Context, in *BoardAssetDepositRequest, opts ...grpc.CallOption) (*AssetDeposit, error)
+	// ClaimAssetDeposit spends a confirmed asset deposit that no round
+	// holds through the owner's exit path, once the exit delay has passed,
+	// and returns the asset to the tapd wallet. The claim pays its fee with a
+	// CPFP child from the daemon wallet. Retrying resumes the same claim.
+	// Requires a tapd that confirms transfers spending assets it does not
+	// hold.
+	ClaimAssetDeposit(ctx context.Context, in *ClaimAssetDepositRequest, opts ...grpc.CallOption) (*AssetDeposit, error)
 	// JoinNextRound asks the client round FSM to commit any currently
 	// queued round intents and emit a JoinRoundRequest to the operator.
 	// Useful after queueing refresh or leave intents that intentionally
@@ -591,6 +599,16 @@ func (c *daemonServiceClient) BoardAssetDeposit(ctx context.Context, in *BoardAs
 	return out, nil
 }
 
+func (c *daemonServiceClient) ClaimAssetDeposit(ctx context.Context, in *ClaimAssetDepositRequest, opts ...grpc.CallOption) (*AssetDeposit, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AssetDeposit)
+	err := c.cc.Invoke(ctx, DaemonService_ClaimAssetDeposit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) JoinNextRound(ctx context.Context, in *JoinNextRoundRequest, opts ...grpc.CallOption) (*JoinNextRoundResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(JoinNextRoundResponse)
@@ -937,6 +955,13 @@ type DaemonServiceServer interface {
 	// deposit. The round creates an asset VTXO with the deposited units and
 	// a BTC VTXO with the deposit's remaining satoshis after the round fee.
 	BoardAssetDeposit(context.Context, *BoardAssetDepositRequest) (*AssetDeposit, error)
+	// ClaimAssetDeposit spends a confirmed asset deposit that no round
+	// holds through the owner's exit path, once the exit delay has passed,
+	// and returns the asset to the tapd wallet. The claim pays its fee with a
+	// CPFP child from the daemon wallet. Retrying resumes the same claim.
+	// Requires a tapd that confirms transfers spending assets it does not
+	// hold.
+	ClaimAssetDeposit(context.Context, *ClaimAssetDepositRequest) (*AssetDeposit, error)
 	// JoinNextRound asks the client round FSM to commit any currently
 	// queued round intents and emit a JoinRoundRequest to the operator.
 	// Useful after queueing refresh or leave intents that intentionally
@@ -1109,6 +1134,9 @@ func (UnimplementedDaemonServiceServer) ListAssetDeposits(context.Context, *List
 }
 func (UnimplementedDaemonServiceServer) BoardAssetDeposit(context.Context, *BoardAssetDepositRequest) (*AssetDeposit, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method BoardAssetDeposit not implemented")
+}
+func (UnimplementedDaemonServiceServer) ClaimAssetDeposit(context.Context, *ClaimAssetDepositRequest) (*AssetDeposit, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ClaimAssetDeposit not implemented")
 }
 func (UnimplementedDaemonServiceServer) JoinNextRound(context.Context, *JoinNextRoundRequest) (*JoinNextRoundResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method JoinNextRound not implemented")
@@ -1731,6 +1759,24 @@ func _DaemonService_BoardAssetDeposit_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_ClaimAssetDeposit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClaimAssetDepositRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ClaimAssetDeposit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ClaimAssetDeposit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ClaimAssetDeposit(ctx, req.(*ClaimAssetDepositRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_JoinNextRound_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(JoinNextRoundRequest)
 	if err := dec(in); err != nil {
@@ -2210,6 +2256,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "BoardAssetDeposit",
 			Handler:    _DaemonService_BoardAssetDeposit_Handler,
+		},
+		{
+			MethodName: "ClaimAssetDeposit",
+			Handler:    _DaemonService_ClaimAssetDeposit_Handler,
 		},
 		{
 			MethodName: "JoinNextRound",

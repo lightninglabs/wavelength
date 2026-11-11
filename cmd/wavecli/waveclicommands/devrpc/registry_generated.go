@@ -227,6 +227,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "BoardAssetDeposit joins the next round with a confirmed asset\ndeposit. The round creates an asset VTXO with the deposited units and\na BTC VTXO with the deposit's remaining satoshis after the round fee.",
 				},
 				{
+					Name:     "ClaimAssetDeposit",
+					Aliases:  []string{"claim-asset-deposit"},
+					Input:    "waverpc.ClaimAssetDepositRequest",
+					Output:   "waverpc.AssetDeposit",
+					Comments: "ClaimAssetDeposit spends a confirmed asset deposit that no round\nholds through the owner's exit path, once the exit delay has passed,\nand returns the asset to the tapd wallet. The claim pays its fee with a\nCPFP child from the daemon wallet. Retrying resumes the same claim.\nRequires a tapd that confirms transfers spending assets it does not\nhold.",
+				},
+				{
 					Name:     "JoinNextRound",
 					Aliases:  []string{"join-next-round"},
 					Input:    "waverpc.JoinNextRoundRequest",
