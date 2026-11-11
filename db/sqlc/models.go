@@ -103,6 +103,46 @@ type AssetDepositClaim struct {
 	UpdatedAt int64
 }
 
+type AssetEngineKey struct {
+	Pubkey    []byte
+	KeyFamily int64
+	KeyIndex  int64
+}
+
+type AssetEngineProof struct {
+	AssetID       []byte
+	ScriptKey     []byte
+	OutpointHash  []byte
+	OutpointIndex int64
+	ProofFile     []byte
+	Owned         bool
+	Spent         bool
+}
+
+type AssetEngineScriptKey struct {
+	TweakedKey []byte
+	RawKey     []byte
+	KeyFamily  int64
+	KeyIndex   int64
+	Tweak      []byte
+	KeyType    int32
+}
+
+type AssetEngineTransfer struct {
+	AnchorTxid  []byte
+	State       int32
+	HeightHint  int64
+	BlockHash   []byte
+	BlockHeight int64
+	CreatedAt   int64
+	Payload     []byte
+}
+
+type AssetJournal struct {
+	JournalKey string
+	Value      []byte
+}
+
 type BoardingAddress struct {
 	PkScript            []byte
 	AddressString       string
