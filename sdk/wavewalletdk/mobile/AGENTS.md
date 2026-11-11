@@ -49,6 +49,14 @@ application-facing wallet API.
   and returns `Results` / `Destination`. Every result must be inspected even
   on nil error. It uses the daemon lifecycle context, like singular `Exit`;
   unknown outcomes require reconciliation rather than replay or unroll.
+- Asset verbs (`assets.go`: `NewAssetReceiveKeys`,
+  `NewAssetFundingAddress`, `ImportAssetProof`, `ListOwnedAssets`,
+  `DepositAsset`, `ListAssetDeposits`, `BoardAssetDeposit`) — the asset
+  wallet and deposits of the daemon's asset backend.
+  `mobileConfig.AssetsBackend` (`assets_backend`) selects it, for example
+  `embedded`, and `asset_group_keys` lists trusted groups. Reads use
+  `readContext`; the verbs that verify proofs or publish use the two-minute
+  `assetWriteTimeout`.
 - Scalar conveniences (`ConfirmedBalanceSat`, `PendingInboundSat`,
   `WalletReady`, `IsRunning`) — avoid a JSON round trip for hot-path reads;
   `IsRunning` never blocks on an RPC.
