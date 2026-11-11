@@ -61,6 +61,10 @@ func NewAppAttestAuthenticator() (*AppAttestAuthenticator, error) {
 // ValidateApplication checks Apple's audience, topic and attestation boundary.
 // Delivery-provider validation separately owns destination environment policy.
 func (a *AppAttestAuthenticator) ValidateApplication(app AppConfig) error {
+	if a == nil || a.verifier == nil {
+		return errors.New("uninitialized App Attest authenticator")
+	}
+
 	return app.validateAttestation()
 }
 

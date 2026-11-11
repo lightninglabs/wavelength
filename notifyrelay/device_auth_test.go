@@ -279,3 +279,20 @@ func TestReferenceDevicePolicies(t *testing.T) {
 	_, err = auth.Assert(ctx, app, nil, 0, Challenge{}, nil, nil)
 	require.ErrorIs(t, err, context.Canceled)
 }
+
+// TestAppAttestModuleRejectsUninitializedConfig enforces constructor ownership
+// at application validation instead of panicking on the first device request.
+func TestAppAttestModuleRejectsUninitializedConfig(t *testing.T) {
+	var missing *AppAttestAuthenticator
+	for _, module := range []DeviceAuthenticator{
+		missing, &AppAttestAuthenticator{},
+	} {
+		require.ErrorContains(
+			t,
+			module.ValidateApplication(
+				AppConfig{},
+			),
+			"uninitialized App Attest authenticator",
+		)
+	}
+}
