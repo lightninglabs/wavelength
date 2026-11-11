@@ -12,7 +12,10 @@ type Querier interface {
 	AdvanceFeedBinding(ctx context.Context, arg AdvanceFeedBindingParams) (int64, error)
 	ClaimInstallation(ctx context.Context, arg ClaimInstallationParams) (int64, error)
 	ClaimJob(ctx context.Context, arg ClaimJobParams) (RelayJob, error)
+	ClaimSource(ctx context.Context, arg ClaimSourceParams) (RelaySource, error)
+	ClearSourceAck(ctx context.Context, arg ClearSourceAckParams) (int64, error)
 	CoalesceJob(ctx context.Context, arg CoalesceJobParams) error
+	CommitSourceCursor(ctx context.Context, arg CommitSourceCursorParams) (int64, error)
 	ConsumeChallenge(ctx context.Context, arg ConsumeChallengeParams) (int64, error)
 	CountConsumedChallenges(ctx context.Context) (int64, error)
 	CountDedup(ctx context.Context) (int64, error)
@@ -25,6 +28,7 @@ type Querier interface {
 	DeleteScopeJob(ctx context.Context, arg DeleteScopeJobParams) error
 	DeleteSubscription(ctx context.Context, arg DeleteSubscriptionParams) error
 	FinishJob(ctx context.Context, arg FinishJobParams) (int64, error)
+	GetClaimedSource(ctx context.Context, arg GetClaimedSourceParams) (RelaySource, error)
 	GetConsumedChallenge(ctx context.Context, id string) (int64, error)
 	GetDedup(ctx context.Context, arg GetDedupParams) (int64, error)
 	GetFeedBinding(ctx context.Context, arg GetFeedBindingParams) (RelayFeedBinding, error)
@@ -47,6 +51,7 @@ type Querier interface {
 	PutInstallation(ctx context.Context, arg PutInstallationParams) (int64, error)
 	PutSubscription(ctx context.Context, arg PutSubscriptionParams) (int64, error)
 	ReleaseInstallation(ctx context.Context, arg ReleaseInstallationParams) (int64, error)
+	ReleaseSource(ctx context.Context, arg ReleaseSourceParams) error
 }
 
 var _ Querier = (*Queries)(nil)
