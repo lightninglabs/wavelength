@@ -97,11 +97,11 @@ func run(ctx context.Context, args []string) error {
 	}
 	var apps []notifyrelay.AppConfig
 	if err := readPolicy(*appsFile, &apps); err != nil {
-		return err
+		return fmt.Errorf("apps-config: %w", err)
 	}
 	var sources []notifyrelay.SourceConfig
 	if err := readPolicy(*sourcesFile, &sources); err != nil {
-		return err
+		return fmt.Errorf("sources-config: %w", err)
 	}
 	keyBytes, err := os.ReadFile(*keyFile)
 	if err != nil {

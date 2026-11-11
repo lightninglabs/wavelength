@@ -29,8 +29,8 @@ type managementStore interface {
 	applyManagement(context.Context, Challenge, uint32, ManagementPayload,
 		time.Time) (ManagementResult, error)
 
-	// claim freezes one job and serializes this installation's delivery.
-	claim(context.Context, time.Time) (*Delivery, error)
+	// claimWithProgress also reports committed deferred-page work.
+	claimWithProgress(context.Context, time.Time) (*Delivery, bool, error)
 
 	// complete fences the claim and token revision after provider I/O.
 	complete(context.Context, Delivery, ProviderResult, time.Time) error

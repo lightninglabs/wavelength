@@ -2,6 +2,7 @@ package notifyrelay
 
 import (
 	"context"
+	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
@@ -19,4 +20,13 @@ func (s *Store) pendingJobs(ctx context.Context) (int64, error) {
 	})
 
 	return count, err
+}
+
+// claimWithProgress adapts retired store fixtures to the production loop.
+func (s *Store) claimWithProgress(ctx context.Context, now time.Time) (
+	*Delivery, bool, error) {
+
+	delivery, err := s.claim(ctx, now)
+
+	return delivery, delivery != nil, err
 }

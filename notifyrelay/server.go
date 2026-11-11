@@ -225,9 +225,9 @@ func scopeIndex(scope Scope) int {
 // DeliverOnce processes at most one job without idle waiting. Its provider
 // timeout is shorter than the durable claim, and completion is claim-fenced.
 func (s *Server) DeliverOnce(ctx context.Context) (bool, error) {
-	delivery, err := s.store.claim(ctx, s.now())
+	delivery, progress, err := s.store.claimWithProgress(ctx, s.now())
 	if err != nil || delivery == nil {
-		return false, err
+		return progress, err
 	}
 	app, supported := s.apps[delivery.policy.ID]
 	result := ProviderResult{Outcome: OutcomeRejected}

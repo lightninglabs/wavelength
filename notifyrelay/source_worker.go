@@ -12,13 +12,24 @@ import (
 func (s *Server) runFeedSource(ctx context.Context, store *SQLStore,
 	id string) {
 
+	attempts := 0
 	for ctx.Err() == nil {
+		phase := "connect"
 		subscriber, err := NewFeedSubscriber(ctx, store, id)
 		if err == nil {
+			phase = "ingress"
 			for ctx.Err() == nil {
 				worked, stepErr := subscriber.Step(ctx)
 				if stepErr != nil {
 					break
+				}
+				if attempts != 0 {
+					s.log.InfoContext(
+						ctx, "Notification source "+
+							"recovered",
+						slog.String("source", id),
+					)
+					attempts = 0
 				}
 				if !worked && !waitSource(ctx, time.Second) {
 					break
@@ -32,9 +43,16 @@ func (s *Server) runFeedSource(ctx context.Context, store *SQLStore,
 		// No raw driver/network error can expose DSNs, tokens or proof
 		// metadata.
 		s.sourceFailures.Add(1)
-		s.log.DebugContext(
-			ctx, "Notification source retry deferred",
+		attempts++
+		level := slog.LevelDebug
+		if attempts == 1 {
+			level = slog.LevelInfo
+		}
+		s.log.Log(
+			ctx, level, "Notification source retry deferred",
 			slog.String("source", id),
+			slog.String("phase", phase),
+			slog.Int("attempt", attempts),
 		)
 		if !waitSource(ctx, 5*time.Second) {
 			return
