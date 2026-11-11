@@ -167,7 +167,9 @@ func (q *Queries) DeleteClaimedJob(ctx context.Context, arg DeleteClaimedJobPara
 }
 
 const finishJob = `-- name: FinishJob :execrows
-UPDATE relay_jobs SET done_generation = $1,
+UPDATE relay_jobs SET attempts = CASE
+        WHEN $1 > done_generation THEN 0 ELSE attempts END,
+    done_generation = $1,
     next_at = $2, claim_token = '', lease_until = 0
 WHERE id = $3 AND claim_token = $4
 `
