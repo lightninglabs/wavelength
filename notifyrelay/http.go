@@ -119,6 +119,9 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 
 // validManagement rejects fields unrelated to the signed mutation's action.
 func validManagement(value ManagementPayload) bool {
+	if value.Action != "bind_feed" && value.FeedBinding != nil {
+		return false
+	}
 	presentation := value.Presentation
 	if presentation != "" && (!value.EnableAlerts ||
 		(presentation != PresentationGeneric &&
@@ -127,6 +130,12 @@ func validManagement(value ManagementPayload) bool {
 	}
 
 	switch value.Action {
+	case "bind_feed":
+		return value.FeedBinding != nil &&
+			validIdentifier(value.SubscriptionID, 64) &&
+			value.DeviceToken == "" && value.RouteID == "" &&
+			!value.EnableAlerts && value.Presentation == ""
+
 	case "rotate_token":
 		return validDeviceToken(value.DeviceToken) &&
 			value.RouteID == "" &&

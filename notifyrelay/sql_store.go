@@ -18,12 +18,13 @@ import (
 type SQLStore struct {
 	challengeAuthority
 	database *relaydb.Database
+	sources  map[string]*feedSource
 }
 
 // NewSQLStore restores persistent challenge authority. Concurrent initializers
 // always use the committed key, including when another replica inserted it.
-func NewSQLStore(ctx context.Context,
-	database *relaydb.Database) (*SQLStore, error) {
+func NewSQLStore(ctx context.Context, database *relaydb.Database,
+	configs ...SourceConfig) (*SQLStore, error) {
 
 	if database == nil {
 		return nil, relaydb.ErrUnavailable
@@ -52,12 +53,15 @@ func NewSQLStore(ctx context.Context,
 		return nil, err
 	}
 
-	return &SQLStore{
-		database: database,
+	store := &SQLStore{database: database,
 		challengeAuthority: challengeAuthority{
 			challengeKey: key,
-		},
-	}, nil
+		}}
+	if err := store.restoreSources(ctx, configs); err != nil {
+		return nil, err
+	}
+
+	return store, nil
 }
 
 // loadInstallation restores verifier evidence without exposing deleted keys.
@@ -236,6 +240,21 @@ func (s *SQLStore) applyManagement(ctx context.Context, challenge Challenge,
 			}
 			result, err = subscribeSQL(
 				ctx, q, value.ID, action, now,
+			)
+			if err != nil {
+				return err
+			}
+			result.FeedOffers, err = s.feedOffers(
+				ctx, q, result.SubscriptionID,
+			)
+			if err != nil {
+				return err
+			}
+
+		case "bind_feed":
+			result, err = s.bindFeedTx(
+				ctx, q, value.ID, action.SubscriptionID,
+				action.FeedBinding, now,
 			)
 			if err != nil {
 				return err
