@@ -297,6 +297,12 @@ func TestSQLPaymentReplayAndRollback(t *testing.T) {
 	)
 	current, err := h.store.claim(t.Context(), h.now)
 	require.NoError(t, err)
+	require.Nil(
+		t, current,
+		"the old accepted send still consumes the quiet period",
+	)
+	current, err = h.store.claim(t.Context(), h.now.Add(alertQuietPeriod))
+	require.NoError(t, err)
 	require.NotNil(t, current)
 	require.Equal(t, PresentationReceiptHint, current.Presentation)
 	require.Equal(t, secretHash("invoice-two"), current.EventHash)
@@ -444,4 +450,68 @@ func TestSQLPruneExpiredObligations(t *testing.T) {
 	dedup, err = h.database.Queries.CountDedup(t.Context())
 	require.NoError(t, err)
 	require.Zero(t, dedup)
+}
+
+// TestSQLPrunedSendStillConsumesQuietPeriod exercises expiry while provider I/O
+// owns the installation lease and a different live route is already pending.
+func TestSQLPrunedSendStillConsumesQuietPeriod(t *testing.T) {
+	h := newSQLAuthHarness(t)
+	first := h.sqlSubscription(t, "old")
+	second := h.sqlSubscription(t, "new")
+	h.sqlEnqueue(t, first, ScopeWake, "old")
+	h.now = h.now.Add(jobLifetime - time.Second)
+	sent, err := h.store.claim(t.Context(), h.now)
+	require.NoError(t, err)
+	require.NotNil(t, sent)
+	h.now = h.now.Add(2 * time.Second)
+	deleted, err := h.database.Queries.PruneExpiredJobs(
+		t.Context(), sqlc.PruneExpiredJobsParams{
+			ExpiresAt: h.now.UnixNano(),
+			Limit:     32,
+		},
+	)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, deleted)
+	h.sqlEnqueue(t, second, ScopeWake, "new")
+	require.NoError(
+		t,
+		h.store.complete(
+			t.Context(), *sent, ProviderResult{
+				Outcome: OutcomeAccepted,
+			},
+			h.now,
+		),
+	)
+	ready, err := h.store.claim(t.Context(), h.now)
+	require.NoError(t, err)
+	require.Nil(t, ready)
+	ready, err = h.store.claim(t.Context(), h.now.Add(wakeQuietPeriod))
+	require.NoError(t, err)
+	require.NotNil(t, ready)
+	require.Equal(t, second, ready.job.SubscriptionID)
+}
+
+// TestSQLRetryBudgetStartsWithSuccessor keeps historical successful sends from
+// inflating the first transient retry delay for a newer coalesced generation.
+func TestSQLRetryBudgetStartsWithSuccessor(t *testing.T) {
+	h := newSQLAuthHarness(t)
+	id := h.sqlSubscription(t, "wallet")
+	h.sqlEnqueue(t, id, ScopeWake, "one")
+	sent, err := h.store.claim(t.Context(), h.now)
+	require.NoError(t, err)
+	require.NotNil(t, sent)
+	h.sqlEnqueue(t, id, ScopeWake, "two")
+	require.NoError(
+		t,
+		h.store.complete(
+			t.Context(), *sent, ProviderResult{
+				Outcome: OutcomeAccepted,
+			},
+			h.now,
+		),
+	)
+	next, err := h.store.claim(t.Context(), h.now.Add(wakeQuietPeriod))
+	require.NoError(t, err)
+	require.NotNil(t, next)
+	require.EqualValues(t, 1, next.job.Attempts)
 }

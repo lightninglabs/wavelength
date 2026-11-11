@@ -233,17 +233,10 @@ func (s *SQLStore) complete(ctx context.Context, sent Delivery,
 func completeSQLJob(ctx context.Context, q *sqlc.Queries, sent Delivery,
 	result ProviderResult, now time.Time) error {
 
-	job, err := q.GetJob(ctx, sent.job.ID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if job.ClaimToken != sent.job.ClaimToken {
-		return nil
-	}
 	row, err := q.GetInstallation(ctx, sent.installationID)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && row.Deleted {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -253,6 +246,30 @@ func completeSQLJob(ctx context.Context, q *sqlc.Queries, sent Delivery,
 	owner, err := loadSQLInstallation(ctx, q, sent.installationID)
 	if err != nil {
 		return err
+	}
+	// An accepted send consumes device capacity even if a concurrent
+	// presentation change, revocation or expiry removed its scope job.
+	// The installation lease owns this effect; only job retirement below
+	// depends on the surviving job claim.
+	if result.Outcome == OutcomeAccepted {
+		if sent.Scope == ScopeWake {
+			owner.NextWakeAt = now.Add(wakeQuietPeriod).UnixNano()
+		} else {
+			owner.NextAlertAt = now.Add(alertQuietPeriod).UnixNano()
+		}
+		if err := saveSQLInstallation(ctx, q, owner); err != nil {
+			return err
+		}
+	}
+	job, err := q.GetJob(ctx, sent.job.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if job.ClaimToken != sent.job.ClaimToken {
+		return nil
 	}
 	if result.Outcome == OutcomeInvalidToken {
 		current := owner.TokenRevision == sent.tokenRevision
@@ -281,22 +298,7 @@ func completeSQLJob(ctx context.Context, q *sqlc.Queries, sent Delivery,
 	switch result.Outcome {
 	case OutcomeAccepted, OutcomeRejected:
 		done = max(done, int64(sent.job.Generation))
-		if result.Outcome == OutcomeAccepted {
-			if sent.Scope == ScopeWake {
-				owner.NextWakeAt = now.
-					Add(wakeQuietPeriod).
-					UnixNano()
-			} else {
-				owner.NextAlertAt = now.
-					Add(alertQuietPeriod).
-					UnixNano()
-			}
-			if err := saveSQLInstallation(
-				ctx, q, owner,
-			); err != nil {
-				return err
-			}
-		}
+
 		if job.Generation == done {
 			_, err := q.DeleteClaimedJob(
 				ctx, sqlc.DeleteClaimedJobParams{
