@@ -5,7 +5,9 @@ embedded durable runtime, paused foreground ingress and host serialization of
 state-creating calls. Its unique invocation ID shares `CancelReceiptWindow`
 for early OS expiry. The mobile binding takes that ID and a bounded timeout.
 
-The result preserves `Batches`, `MailboxEmpty` and `NeedsForeground`. On
+The result preserves `Batches`, `MailboxEmpty` and `NeedsForeground`.
+`NeedsForeground` also covers a busy retained window or mode transition. The
+host can join/cancel that owner and retry; this flag does not mandate UI. On
 successful nonempty return, recoverable handoffs and the remote ACK are
 committed. A rejected route stays unacknowledged. A canceled or failed call
 may already have committed a prefix, which the next invocation resumes from

@@ -13,9 +13,11 @@ import (
 // A successful nonempty step has committed recoverable handoffs and their
 // remote ACK. Actor turns and external effects may still be pending.
 type IngressStepResult struct {
-	Batches         uint32 `json:"batches"`
-	MailboxEmpty    bool   `json:"mailbox_empty"`
-	NeedsForeground bool   `json:"needs_foreground"`
+	Batches      uint32 `json:"batches"`
+	MailboxEmpty bool   `json:"mailbox_empty"`
+	// NeedsForeground also reports a retained window or mode transition.
+	// The host can join the previous owner and retry; it need not open UI.
+	NeedsForeground bool `json:"needs_foreground"`
 }
 
 // processNext shares window exclusion and cancellation without receipt lookup,
