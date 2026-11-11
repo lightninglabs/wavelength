@@ -34,7 +34,7 @@ The package is gated behind three build tags — `mobile`, `wavewalletrpc`, and
 
 | Shape | Convention | Verbs |
 |-------|-----------|-------|
-| RPC verbs | **JSON `[]byte` in / out** (throwing) | `GetInfo`, `CreateWallet`, `UnlockWallet`, `OpenWalletFromPasskey`, `Balance`, `Deposit`, `Receive`, `PrepareSend`, `SendPrepared`, `List`, `Exit`, `ExitStatus`, `ExitSummary`, `GetExitPlan`, `SweepWallet`, `Status` |
+| RPC verbs | **JSON `[]byte` in / out** (throwing) | `GetInfo`, `CreateWallet`, `UnlockWallet`, `OpenWalletFromPasskey`, `Balance`, `Deposit`, `Receive`, `PrepareSend`, `SendPrepared`, `List`, `Exit`, `ExitStatus`, `ExitSummary`, `GetExitPlan`, `SweepWallet`, `Status`, `NewAssetReceiveKeys`, `NewAssetFundingAddress`, `ImportAssetProof`, `ListOwnedAssets`, `DepositAsset`, `ListAssetDeposits`, `BoardAssetDeposit` |
 | Lifecycle JSON | **JSON `[]byte` in / out** (throwing) | `StartExternalSeedWallet` |
 | Streaming | **pull handle** `Subscription{ next() []byte; close() }` | `Subscribe` |
 | Hot-path scalars | **plain `int64`/`bool`** | `ConfirmedBalanceSat`, `PendingInboundSat`, `WalletReady`, `IsRunning` |
@@ -197,6 +197,20 @@ Set the fields explicitly when a mobile host needs a custom or local endpoint.
 ```
 
 (`10.0.2.2` is the Android emulator's alias for the host loopback.)
+
+`"assets_backend": "embedded"` runs the Taproot Assets engine inside the
+daemon, on the wallet's seed and database, so a phone or a browser tab holds
+assets with no tapd. `asset_group_keys` lists the asset groups it trusts as
+hex compressed public keys. Omitting `assets_backend` keeps assets disabled.
+The asset verbs take and return the `wavewalletdk` asset types
+(`AssetReceiveKeys`, `AssetFundingAddress`, `ImportAssetProofRequest`,
+`OwnedAsset`, `DepositAssetRequest`, `BoardAssetDepositRequest`,
+`AssetDeposit`); keys are hex strings and `ProofFile` is base64. Asset
+amounts (`Amount`, `AssetAmount`) are decimal strings, because an asset
+amount can exceed the largest integer JavaScript reads exactly from a JSON
+number; Bitcoin amounts stay numbers. A deposit spends the wallet's own
+Bitcoin, so the host funds the address from `NewAssetFundingAddress` before
+it calls `DepositAsset`.
 
 ## Building the bindings
 
