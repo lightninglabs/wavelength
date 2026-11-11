@@ -289,3 +289,15 @@ keyset cursor across windows, then pumps native durable round work. It shares
 the receipt controller's mode lease, cancellation fence and final-access join.
 It performs no startup repair and produces no payment proof. See
 [background windows](../../docs/mobile-receipt-window.md).
+
+## Single-batch host intake
+
+`ProcessNext(ctx, id)` uses the same durable-runtime and mode-ownership gate as
+receipt windows, but performs one restricted batch without receipt lookup,
+maintenance or polling sleeps. Hosts pause foreground ingress, serialize
+state-creating calls, pass unique IDs and use `CancelReceiptWindow(id)` for
+early expiry. A successful nonempty result proves recoverable handoff and its
+remote ACK. It does not prove domain completion, awaiting-peer or safe
+suspension. See [ingress ownership](../../docs/sdk-wake-ingress-architecture.md).
+
+See [single-batch host intake](../../docs/sdk-process-next.md) for the API contract.

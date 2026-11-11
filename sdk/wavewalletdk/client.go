@@ -77,6 +77,8 @@ type Client struct {
 	readLightningReceipts func(context.Context,
 		waved.LightningReceiptRequest) ([]waved.LightningReceipt, error)
 
+	processNext func(context.Context, string) (
+		waved.IngressStepResult, error)
 	setHostForeground func(context.Context, bool) error
 	runReceiptWindow  func(context.Context, waved.ReceiptWindowRequest) (
 		waved.ReceiptWindowResult, error)

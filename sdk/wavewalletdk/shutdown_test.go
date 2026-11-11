@@ -73,6 +73,7 @@ func TestCloseJoinsLocalCallbacks(t *testing.T) {
 		"lightning-receipts",
 		"host-mode",
 		"receipt-window",
+		"ingress-step",
 		"maintenance-window",
 		"cancel-window",
 	} {
@@ -245,6 +246,19 @@ func shutdownCallbackInvoke(t *testing.T, client *Client, source string,
 
 		return func() error {
 			return client.SetHostForeground(t.Context(), true)
+		}
+
+	case "ingress-step":
+		client.processNext = func(ctx context.Context, _ string) (
+			waved.IngressStepResult, error) {
+
+			return waved.IngressStepResult{}, callback(ctx)
+		}
+
+		return func() error {
+			_, err := client.ProcessNext(t.Context(), "step")
+
+			return err
 		}
 
 	case "receipt-window":

@@ -231,6 +231,7 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 	client.activityCursor = server.ActivityEventCursor
 	client.readLightningReceipts = server.ReadLightningReceipts
 	client.setHostForeground = server.SetHostForeground
+	client.processNext = server.ProcessNext
 	client.runReceiptWindow = server.RunReceiptWindow
 	client.runMaintenanceWindow = server.RunMaintenanceWindow
 	client.cancelReceiptWindow = server.CancelReceiptWindow
