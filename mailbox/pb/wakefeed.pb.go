@@ -70,8 +70,9 @@ func (FeedGrantMutation_Action) EnumDescriptor() ([]byte, []int) {
 	return file_wakefeed_proto_rawDescGZIP(), []int{0, 0}
 }
 
-// FeedGrantMutation binds an app-owned stable grant ID to one subscriber key.
-// Renewal preserves the feed token only when the subscriber key is unchanged.
+// FeedGrantMutation binds a publisher-issued random ID to one subscriber key.
+// IDs encode at least 128 cryptographically random bits as raw URL-base64.
+// Renewal retains the subscriber route and its token until expiry.
 // Removal uses only action and grant_id; all other fields must be empty.
 type FeedGrantMutation struct {
 	state            protoimpl.MessageState   `protogen:"open.v1"`
