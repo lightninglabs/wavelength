@@ -18,17 +18,24 @@ import (
 type sqlAuthHarness struct {
 	store    *SQLStore
 	database *relaydb.Database
+	open     func() *relaydb.Database
 	now      time.Time
 }
 
 // newSQLAuthHarness enrolls one verified installation into a dedicated store.
 func newSQLAuthHarness(t *testing.T) *sqlAuthHarness {
 	t.Helper()
-	database := sqlTestOpener(t)()
+	open := sqlTestOpener(t)
+	database := open()
 	t.Cleanup(func() { require.NoError(t, database.Close()) })
 	store, err := NewSQLStore(t.Context(), database)
 	require.NoError(t, err)
-	h := &sqlAuthHarness{store: store, database: database, now: time.Now()}
+	h := &sqlAuthHarness{
+		store:    store,
+		database: database,
+		open:     open,
+		now:      time.Now(),
+	}
 	challenge, err := store.NewChallenge(t.Context(), ChallengeRequest{
 		AppID: "app", Operation: OperationEnroll,
 	}, h.now)
