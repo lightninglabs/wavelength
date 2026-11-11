@@ -38,6 +38,17 @@ func feedFixture(t *testing.T) (*ChallengeAuthority, *pb.FeedGrantRequest,
 			ExpiresAtUnix: now.Add(time.Hour).Unix(),
 		},
 	}
+	routeMessage, err := FeedRouteSigningMessage(
+		request.Challenge.OperatorPubkey, request.Mutation.GrantId,
+		request.Mutation.EventClasses, request.Mutation.ExpiresAtUnix,
+	)
+	require.NoError(t, err)
+	routeDigest := chainhash.TaggedHash(
+		[]byte(FeedRouteSignatureTag), routeMessage,
+	)
+	routeSignature, err := schnorr.Sign(subscriber, routeDigest[:])
+	require.NoError(t, err)
+	request.Mutation.SubscriberSignature = routeSignature.Serialize()
 	signFeed(t, request, owner, FeedSignatureTag)
 
 	return authority, request, owner, now
@@ -295,6 +306,7 @@ func TestFeedClientResponseBinding(t *testing.T) {
 // TestFeedEventClassBinding rejects a correlator without payment authority.
 func TestFeedEventClassBinding(t *testing.T) {
 	event := &pb.WakeFeedEvent{
+		GrantId:      "app-route",
 		FeedToken:    bytes.Repeat([]byte{9}, FeedTokenSize),
 		Generation:   1,
 		EventClasses: FeedClassWake, ExpiresAtUnix: 100,
@@ -327,4 +339,39 @@ func TestFeedMailboxNamespace(t *testing.T) {
 	require.False(t, IsFeedMailbox("invalid:wake-feed"))
 	_, err = FeedMailboxID(nil)
 	require.ErrorIs(t, err, ErrInvalidAuthorization)
+}
+
+// TestFeedSubscriberConsent rejects wallet-signed grants without publisher
+// consent, including a valid consent transplanted to another route or source.
+func TestFeedSubscriberConsent(t *testing.T) {
+	_, request, owner, now := feedFixture(t)
+	changes := map[string]func(*pb.FeedGrantRequest){
+		"signature": func(r *pb.FeedGrantRequest) {
+			r.Mutation.SubscriberSignature[0] ^= 1
+		},
+		"route": func(r *pb.FeedGrantRequest) {
+			r.Mutation.GrantId = "unapproved-route"
+		},
+		"source": func(r *pb.FeedGrantRequest) {
+			r.Challenge.OperatorPubkey = r.Challenge.OwnerPubkey
+		},
+		"classes": func(r *pb.FeedGrantRequest) {
+			r.Mutation.EventClasses = FeedClassWake
+		},
+		"expiry": func(r *pb.FeedGrantRequest) {
+			r.Mutation.ExpiresAtUnix--
+		},
+	}
+	for name, change := range changes {
+		t.Run(name, func(t *testing.T) {
+			changed := new(pb.FeedGrantRequest)
+			proto.Merge(changed, request)
+			change(changed)
+			signFeed(t, changed, owner, FeedSignatureTag)
+			require.ErrorIs(
+				t, VerifyFeedAuthorization(changed, now),
+				ErrInvalidAuthorization,
+			)
+		})
+	}
 }

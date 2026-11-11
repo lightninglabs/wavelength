@@ -34,12 +34,20 @@ the challenge and applies the exact mutation in one database transaction.
 
 An upsert contains:
 
-- an app-generated stable `grant_id` of 1–64 ASCII letters, digits, dots,
+- a publisher-issued stable `grant_id` of 1–64 ASCII letters, digits, dots,
   underscores or hyphens;
 - the subscriber's canonical 33-byte compressed secp256k1 public key;
 - an `event_classes` mask: 1 for protocol work, 2 for classified incoming
   payment activity, or 3 for both;
-- an expiry no more than 30 days after producer verification.
+- an expiry no more than 30 days after producer verification;
+- subscriber-signed route consent for this exact producer, grant ID, class
+  mask and expiry. The relay issues consent after its own device admission.
+
+The producer retains one owner for each (subscriber, grant ID) until expiry.
+A relay chooses its route IDs; its signature admits only routes it created.
+This prevents arbitrary wallets from exhausting another publisher's subscriber
+quota, and prevents one consent from being registered under many wallet keys.
+The subscriber signs no wallet identity and the producer contacts no relay.
 
 The grant ID is scoped to the owner. Retrying an ambiguous response uses a
 fresh challenge and the same grant ID. Renewal with the same subscriber keeps
@@ -75,8 +83,15 @@ Integers use big-endian fixed-width encoding.
 | Subscriber public key | bytes |
 | Event classes | uint32 |
 | Grant expiry | int64 |
+| Subscriber consent signature | bytes |
 
-The signature itself is excluded. Unknown fields, unknown class bits,
+Subscriber consent uses the separate tag `wavelength-wake-feed-route-v1`.
+Its transcript contains producer public key and grant ID as length-prefixed
+bytes, followed by class mask (uint32) and expiry (int64), all big-endian. The
+subscriber signs this digest with its mailbox key; the wallet then signs the
+full grant including that signature.
+
+The wallet signature itself is excluded. Unknown fields, unknown class bits,
 noncanonical keys and contradictory removal fields are rejected. The tag
 separates feed authority from the existing push-subscription and mailbox-auth
 signatures. `notification.SetFeedGrant` implements the challenge/sign/mutate
@@ -86,7 +101,7 @@ exchange without a running ingress loop. An unsupported service returns
 ## Wake events and coalescing
 
 A producer-originated `KIND_EVENT` contains `WakeFeedEvent`, with the feed
-token, positive generation, class mask, latest opaque payment event identity
+token, publisher route ID, positive generation, class mask, latest opaque payment event identity
 when the payment bit is set, and grant expiry. The payment identity retains
 the existing lowercase 32-byte hexadecimal correlation format. A wake-only
 hint carries no payment identity. The event proves no received amount or
@@ -105,6 +120,10 @@ events may yield the latest correlator only, as with a coalesced push job.
 Clients must reconcile durable receipt sources rather than count hints as
 payments. Ordinary indexer/round-confirmation sources can create feed work
 even when there is no wallet mailbox envelope.
+
+An app binds a token through authenticated relay management. The relay must
+also match the event's publisher route ID to that enrolled route. Token
+knowledge alone must not let another installation retarget a hint.
 
 The relay must durably record its push obligation and ingestion identity before
 acknowledging the cumulative cursor. A crash before ACK replays the same event

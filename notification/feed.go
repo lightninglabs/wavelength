@@ -19,6 +19,10 @@ const (
 	// every other wallet-signing operation.
 	FeedSignatureTag = "wavelength-wake-feed-grant-v1"
 
+	// FeedRouteSignatureTag binds publisher consent without a wallet
+	// identity.
+	FeedRouteSignatureTag = "wavelength-wake-feed-route-v1"
+
 	// FeedClassWake permits a hint to reconcile outstanding protocol work.
 	FeedClassWake uint32 = 1
 
@@ -47,13 +51,15 @@ func validateFeedMutationShape(m *pb.FeedGrantMutation) error {
 	case pb.FeedGrantMutation_ACTION_UPSERT:
 		if !canonicalPublicKey(m.SubscriberPubkey) ||
 			!validFeedClasses(m.EventClasses) ||
-			m.ExpiresAtUnix <= 0 {
+			m.ExpiresAtUnix <= 0 ||
+			len(m.SubscriberSignature) != schnorr.SignatureSize {
 			return ErrInvalidAuthorization
 		}
 
 	case pb.FeedGrantMutation_ACTION_REMOVE:
 		if len(m.SubscriberPubkey) != 0 || m.EventClasses != 0 ||
-			m.ExpiresAtUnix != 0 {
+			m.ExpiresAtUnix != 0 ||
+			len(m.SubscriberSignature) != 0 {
 			return ErrInvalidAuthorization
 		}
 
@@ -109,6 +115,7 @@ func FeedSigningMessage(r *pb.FeedGrantRequest) ([]byte, error) {
 	writeField(m.SubscriberPubkey)
 	_ = binary.Write(&buf, binary.BigEndian, m.EventClasses)
 	_ = binary.Write(&buf, binary.BigEndian, m.ExpiresAtUnix)
+	writeField(m.SubscriberSignature)
 
 	return buf.Bytes(), nil
 }
@@ -126,6 +133,13 @@ func VerifyFeedAuthorization(r *pb.FeedGrantRequest, now time.Time) error {
 	}
 	if err := ValidateFeedMutation(r.Mutation, now); err != nil {
 		return err
+	}
+	if r.Mutation.Action == pb.FeedGrantMutation_ACTION_UPSERT {
+		if err := VerifyFeedRouteConsent(
+			r.Challenge.OperatorPubkey, r.Mutation,
+		); err != nil {
+			return err
+		}
 	}
 	sig, err := schnorr.ParseSignature(r.Signature)
 	if err != nil {
@@ -152,7 +166,7 @@ func ValidateFeedEvent(event *pb.WakeFeedEvent) error {
 		event.Generation == 0 ||
 		event.Generation > math.MaxInt64 ||
 		!validFeedClasses(event.EventClasses) ||
-		event.ExpiresAtUnix <= 0 {
+		event.ExpiresAtUnix <= 0 || !validID(event.GrantId, 64) {
 		return ErrInvalidAuthorization
 	}
 
@@ -196,4 +210,56 @@ func IsFeedMailbox(mailboxID string) bool {
 	canonical, err := FeedMailboxID(raw)
 
 	return err == nil && canonical == mailboxID
+}
+
+// FeedRouteSigningMessage encodes publisher consent without a wallet identity.
+// The producer binding prevents using consent issued for a different source.
+func FeedRouteSigningMessage(source []byte, grantID string, classes uint32,
+	expiry int64) ([]byte, error) {
+
+	if !canonicalPublicKey(source) || !validID(grantID, 64) ||
+		!validFeedClasses(classes) || expiry <= 0 {
+		return nil, ErrInvalidAuthorization
+	}
+	var buf bytes.Buffer
+	for _, field := range [][]byte{source, []byte(grantID)} {
+		_ = binary.Write(&buf, binary.BigEndian, uint32(len(field)))
+		_, _ = buf.Write(field)
+	}
+	_ = binary.Write(&buf, binary.BigEndian, classes)
+	_ = binary.Write(&buf, binary.BigEndian, expiry)
+
+	return buf.Bytes(), nil
+}
+
+// VerifyFeedRouteConsent proves the subscriber admitted this exact route.
+// The producer must separately retain a unique (subscriber, grant ID) owner
+// binding until expiry, so one consent cannot allocate many wallet grants.
+func VerifyFeedRouteConsent(source []byte, m *pb.FeedGrantMutation) error {
+	if err := validateFeedMutationShape(m); err != nil {
+		return err
+	}
+	if m.Action != pb.FeedGrantMutation_ACTION_UPSERT {
+		return ErrInvalidAuthorization
+	}
+	message, err := FeedRouteSigningMessage(
+		source, m.GrantId, m.EventClasses, m.ExpiresAtUnix,
+	)
+	if err != nil {
+		return err
+	}
+	key, err := btcec.ParsePubKey(m.SubscriberPubkey)
+	if err != nil {
+		return ErrInvalidAuthorization
+	}
+	sig, err := schnorr.ParseSignature(m.SubscriberSignature)
+	if err != nil {
+		return ErrInvalidAuthorization
+	}
+	digest := chainhash.TaggedHash([]byte(FeedRouteSignatureTag), message)
+	if !sig.Verify(digest[:], key) {
+		return ErrInvalidAuthorization
+	}
+
+	return nil
 }
