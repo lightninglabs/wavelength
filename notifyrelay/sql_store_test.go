@@ -127,12 +127,22 @@ func decodedSecretLength(t *testing.T, value string) int {
 // TestSQLManagementRollback proves a rejected ownership mutation retains the
 // nonce/counter for a valid retry, and deletion cannot reset an installation.
 func TestSQLManagementRollback(t *testing.T) {
-	h := newSQLAuthHarness(t)
+	h := sourceHarness(t, testSourceConfig(t, "producer"))
 	challenge := h.challenge(t)
 	_, err := h.store.applyManagement(
 		t.Context(), challenge, 1, ManagementPayload{
-			Action:         "revoke_subscription",
+			Action:         "bind_feed",
 			SubscriptionID: "foreign",
+			FeedBinding: &FeedBindingRequest{
+				SourceID: "producer",
+				FeedToken: base64.RawURLEncoding.EncodeToString(
+					bytes.Repeat(
+						[]byte{1}, 32,
+					),
+				),
+				EventClasses:  1,
+				ExpiresAtUnix: h.now.Add(time.Minute).Unix(),
+			},
 		},
 		h.now,
 	)

@@ -302,3 +302,13 @@ payment_hash: 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
 event_id: 421275775f70409fe668dbda0cb19464c1f90d1560132437ceafbfed6f091aee
 wavelength.event_id: aea16881a4d03ec94406d8539aee80b8027806ef6ba01df56d77143eb8118f78
 ```
+
+### Repeated revocation
+
+An authenticated installation may revoke an already absent subscription. The
+relay returns the same successful empty response for an absent ID and an ID
+owned by another installation, while leaving the other installation intact.
+Every successful no-op still consumes its management challenge and advances
+the assertion counter. Reusing that proof remains a replay error. This lets a
+client finish cleanup after a revoke reply is lost without disclosing who owns
+a subscription ID.
