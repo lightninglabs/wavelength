@@ -7,14 +7,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testGroupKeyHex is a valid compressed public key: the secp256k1 generator.
+const testGroupKeyHex = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959" +
+	"f2815b16f81798"
+
 // TestConfigValidateAssets checks that the asset backend selector accepts
-// only the implemented backends and that tapd requires an address.
+// only the implemented backends, that tapd requires an address, and that
+// the embedded backend requires a local wallet on regtest.
 func TestConfigValidateAssets(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name        string
 		assets      *AssetsConfig
+		network     string
+		walletType  string
 		wantBackend string
 		wantErr     string
 	}{
@@ -66,9 +73,52 @@ func TestConfigValidateAssets(t *testing.T) {
 		{
 			name: "unknown backend",
 			assets: &AssetsConfig{
-				Backend: "embedded",
+				Backend: "universe",
 			},
 			wantErr: "unknown assets.backend",
+		},
+		{
+			name: "embedded on the default wallet",
+			assets: &AssetsConfig{
+				Backend: AssetBackendEmbedded,
+			},
+			wantBackend: AssetBackendEmbedded,
+		},
+		{
+			name: "embedded with a trusted group",
+			assets: &AssetsConfig{
+				Backend: AssetBackendEmbedded,
+				GroupKeys: []string{
+					testGroupKeyHex,
+				},
+			},
+			wantBackend: AssetBackendEmbedded,
+		},
+		{
+			name: "embedded with a malformed group key",
+			assets: &AssetsConfig{
+				Backend: AssetBackendEmbedded,
+				GroupKeys: []string{
+					"02abcd",
+				},
+			},
+			wantErr: "assets.groupkeys",
+		},
+		{
+			name: "embedded on an lnd wallet",
+			assets: &AssetsConfig{
+				Backend: AssetBackendEmbedded,
+			},
+			walletType: WalletTypeLnd,
+			wantErr:    "requires wallet.type",
+		},
+		{
+			name: "embedded outside regtest",
+			assets: &AssetsConfig{
+				Backend: AssetBackendEmbedded,
+			},
+			network: "signet",
+			wantErr: "available on regtest only",
 		},
 	}
 
@@ -78,6 +128,12 @@ func TestConfigValidateAssets(t *testing.T) {
 
 			cfg := DefaultConfig()
 			cfg.Network = "regtest"
+			if tc.network != "" {
+				cfg.Network = tc.network
+			}
+			if tc.walletType != "" {
+				cfg.Wallet.Type = tc.walletType
+			}
 			cfg.Wallet.EsploraURL = "http://127.0.0.1:3000"
 			cfg.Assets = tc.assets
 

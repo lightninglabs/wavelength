@@ -8,6 +8,7 @@ import (
 
 	"github.com/lightninglabs/wavelength/waved"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
 
@@ -121,6 +122,46 @@ func newTestConfigCommand(t *testing.T,
 	}
 
 	return v, cmd
+}
+
+// TestAssetFlags checks that the asset backend flags reach the daemon config.
+func TestAssetFlags(t *testing.T) {
+	t.Parallel()
+
+	cfg := waved.DefaultConfig()
+	flags := pflag.NewFlagSet("waved", pflag.ContinueOnError)
+	registerAssetFlags(flags, cfg)
+
+	groupKeys := []string{
+		"02" + strings.Repeat("11", 32),
+		"03" + strings.Repeat("22", 32),
+	}
+	err := flags.Parse([]string{
+		"--assets.backend=embedded",
+		"--assets.groupkeys=" + strings.Join(groupKeys, ","),
+	})
+	if err != nil {
+		t.Fatalf("parse asset flags: %v", err)
+	}
+
+	v := viper.New()
+	if err := v.BindPFlags(flags); err != nil {
+		t.Fatalf("bind asset flags: %v", err)
+	}
+	if err := v.Unmarshal(cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+
+	if cfg.Assets.Backend != waved.AssetBackendEmbedded {
+		t.Fatalf("expected the embedded backend, got %q",
+			cfg.Assets.Backend)
+	}
+	if strings.Join(cfg.Assets.GroupKeys, ",") !=
+		strings.Join(groupKeys, ",") {
+
+		t.Fatalf("expected group keys %v, got %v", groupKeys,
+			cfg.Assets.GroupKeys)
+	}
 }
 
 // TestIsLoopbackHost pins the URL parsing that decides whether the

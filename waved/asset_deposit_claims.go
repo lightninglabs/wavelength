@@ -149,7 +149,7 @@ func (d *assetDepositService) Claim(ctx context.Context, requestID string) (
 func (d *assetDepositService) checkClaimable(ctx context.Context,
 	deposit *db.AssetDeposit) error {
 
-	info, err := d.tapd.GetInfo(ctx)
+	info, err := d.backend.GetInfo(ctx)
 	if err != nil || info == nil {
 		return status.Errorf(codes.Unavailable, "read tapd info: %v",
 			err)
@@ -303,7 +303,7 @@ func (d *assetDepositService) confirmClaims(ctx context.Context) {
 	if len(claims) == 0 {
 		return
 	}
-	info, err := d.tapd.GetInfo(ctx)
+	info, err := d.backend.GetInfo(ctx)
 	if err != nil || info == nil {
 		d.log.DebugS(ctx, "Unable to read the tapd chain tip",
 			btclog.Fmt("error", "%v", err),
@@ -386,7 +386,7 @@ func (d *assetDepositService) retrackClaim(ctx context.Context,
 func (d *assetDepositService) claimFinal(ctx context.Context,
 	txid chainhash.Hash, tip uint32) (bool, error) {
 
-	transfers, err := d.tapd.ListTransfers(
+	transfers, err := d.backend.ListTransfers(
 		ctx, &tapsdk.ListTransfersRequest{
 			AnchorTxid: txid.String(),
 		},
