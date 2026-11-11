@@ -98,6 +98,23 @@ func (q *Queries) GetAssetDepositByOutpoint(ctx context.Context, arg GetAssetDep
 	return i, err
 }
 
+const GetAssetDepositClaim = `-- name: GetAssetDepositClaim :one
+SELECT request_id, claim_txid, status, created_at, updated_at FROM asset_deposit_claims WHERE request_id = $1
+`
+
+func (q *Queries) GetAssetDepositClaim(ctx context.Context, requestID string) (AssetDepositClaim, error) {
+	row := q.db.QueryRowContext(ctx, GetAssetDepositClaim, requestID)
+	var i AssetDepositClaim
+	err := row.Scan(
+		&i.RequestID,
+		&i.ClaimTxid,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const GetAssetDepositRound = `-- name: GetAssetDepositRound :one
 SELECT rad.round_id, r.status
 FROM round_asset_deposits AS rad
@@ -202,6 +219,31 @@ func (q *Queries) InsertAssetDeposit(ctx context.Context, arg InsertAssetDeposit
 	return result.RowsAffected()
 }
 
+const InsertAssetDepositClaim = `-- name: InsertAssetDepositClaim :execrows
+INSERT INTO asset_deposit_claims (
+    request_id, claim_txid, status, created_at, updated_at
+) VALUES (
+    $1, $2, 'claiming', $3, $3
+)
+ON CONFLICT (request_id) DO NOTHING
+`
+
+type InsertAssetDepositClaimParams struct {
+	RequestID string
+	ClaimTxid []byte
+	CreatedAt int64
+}
+
+// InsertAssetDepositClaim records a signed claim. A deposit that already has
+// a claim inserts nothing.
+func (q *Queries) InsertAssetDepositClaim(ctx context.Context, arg InsertAssetDepositClaimParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, InsertAssetDepositClaim, arg.RequestID, arg.ClaimTxid, arg.CreatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const InsertRoundAssetDeposit = `-- name: InsertRoundAssetDeposit :exec
 INSERT INTO round_asset_deposits (
     round_id, request_id, input_index, input_signature
@@ -226,6 +268,40 @@ func (q *Queries) InsertRoundAssetDeposit(ctx context.Context, arg InsertRoundAs
 		arg.InputSignature,
 	)
 	return err
+}
+
+const ListAssetDepositClaimsByStatus = `-- name: ListAssetDepositClaimsByStatus :many
+SELECT request_id, claim_txid, status, created_at, updated_at FROM asset_deposit_claims WHERE status = $1
+ORDER BY created_at, request_id
+`
+
+func (q *Queries) ListAssetDepositClaimsByStatus(ctx context.Context, status string) ([]AssetDepositClaim, error) {
+	rows, err := q.db.QueryContext(ctx, ListAssetDepositClaimsByStatus, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AssetDepositClaim
+	for rows.Next() {
+		var i AssetDepositClaim
+		if err := rows.Scan(
+			&i.RequestID,
+			&i.ClaimTxid,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const ListAssetDeposits = `-- name: ListAssetDeposits :many
@@ -341,6 +417,27 @@ func (q *Queries) ListAssetDepositsByStatus(ctx context.Context, status string) 
 		return nil, err
 	}
 	return items, nil
+}
+
+const MarkAssetDepositClaimed = `-- name: MarkAssetDepositClaimed :execrows
+UPDATE asset_deposit_claims SET
+    status = 'claimed',
+    updated_at = $2
+WHERE request_id = $1 AND status = 'claiming'
+`
+
+type MarkAssetDepositClaimedParams struct {
+	RequestID string
+	UpdatedAt int64
+}
+
+// MarkAssetDepositClaimed records that tapd confirmed the claim.
+func (q *Queries) MarkAssetDepositClaimed(ctx context.Context, arg MarkAssetDepositClaimedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, MarkAssetDepositClaimed, arg.RequestID, arg.UpdatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const MarkAssetDepositConfirmed = `-- name: MarkAssetDepositConfirmed :execrows

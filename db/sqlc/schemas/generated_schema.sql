@@ -98,6 +98,18 @@ CREATE TABLE ask_results (
     expires_at BIGINT NOT NULL
 );
 
+CREATE TABLE asset_deposit_claims (
+    request_id TEXT PRIMARY KEY REFERENCES asset_deposits(request_id),
+
+    claim_txid BLOB NOT NULL CHECK (length(claim_txid) = 32),
+
+    -- status is claiming until tapd records the claim as confirmed.
+    status TEXT NOT NULL CHECK (status IN ('claiming', 'claimed')),
+
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL
+);
+
 CREATE TABLE asset_deposits (
     -- request_id is the caller's idempotency key and the onboarding journal
     -- key.
@@ -502,6 +514,9 @@ CREATE INDEX idx_activity_events_canonical
 
 CREATE INDEX idx_ask_results_expires
     ON ask_results(expires_at);
+
+CREATE INDEX idx_asset_deposit_claims_status
+    ON asset_deposit_claims(status);
 
 CREATE UNIQUE INDEX idx_asset_deposits_outpoint
     ON asset_deposits(outpoint_hash, outpoint_index)
