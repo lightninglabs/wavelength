@@ -1,6 +1,6 @@
 // Package notifyrelay provides a publisher-owned notification relay. App
-// Attest authorizes installation management; scoped capabilities authorize
-// fixed-destination, fixed-template notifications without wallet credentials.
+// Attest authorizes installation management. Delegated source feeds admit
+// locally bound delivery work without wallet credentials or device choice.
 package notifyrelay
 
 import (
@@ -103,35 +103,12 @@ type ManagementPayload struct {
 }
 
 // ManagementResult returns per-source offers on subscription creation or
-// renewal. Legacy capabilities remain only until push API retirement; tokens
-// and capabilities must be stored privately and never logged.
+// renewal. Returned feed offers grant no spending or device authority.
 type ManagementResult struct {
-	FeedOffers      []FeedOffer       `json:"feed_offers,omitempty"`
-	SubscriptionID  string            `json:"subscription_id,omitempty"`
-	WakeCapability  string            `json:"wake_capability,omitempty"`
-	AlertCapability string            `json:"alert_capability,omitempty"`
-	ExpiresAt       int64             `json:"expires_at,omitempty"`
-	Presentation    AlertPresentation `json:"alert_presentation,omitempty"`
-}
-
-// PushRequest contains an opaque producer-owned idempotency identity only.
-// A bearer capability fixes the destination, routing key, scope and template.
-type PushRequest struct {
-	EventID string `json:"event_id"`
-}
-
-// SubscriptionVerificationRequest lets a producer prove that wake and optional
-// alert capabilities were issued for the same live subscription. It is not an
-// enrollment or push operation. The wake capability is supplied as a bearer.
-type SubscriptionVerificationRequest struct {
-	SubscriptionID  string `json:"subscription_id"`
-	AlertCapability string `json:"alert_capability,omitempty"`
-}
-
-// SubscriptionVerificationResult discloses expiry only. It never returns an
-// installation identity, route, device token or other private management data.
-type SubscriptionVerificationResult struct {
-	ExpiresAt int64 `json:"expires_at"`
+	FeedOffers     []FeedOffer       `json:"feed_offers,omitempty"`
+	SubscriptionID string            `json:"subscription_id,omitempty"`
+	ExpiresAt      int64             `json:"expires_at,omitempty"`
+	Presentation   AlertPresentation `json:"alert_presentation,omitempty"`
 }
 
 // ClientData constructs the exact App Attest transcript used by both the app

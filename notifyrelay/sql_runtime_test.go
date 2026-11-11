@@ -59,8 +59,6 @@ func TestSQLRuntimeOwnsSourceAndDelivery(t *testing.T) {
 	h.enroll()
 	result := h.subscribe("wallet-route", false)
 	require.Len(t, result.FeedOffers, 1)
-	require.Empty(t, result.WakeCapability)
-	require.Empty(t, result.AlertCapability)
 	require.Equal(t, result.SubscriptionID, result.FeedOffers[0].GrantID)
 	// No app bind has returned yet. The authenticated source still records
 	// this first wake against the enrolled random route.

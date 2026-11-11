@@ -6,8 +6,7 @@ import (
 )
 
 // managementStore is the shared HTTP/delivery transaction boundary. Production
-// construction accepts only SQLStore. The retired store remains in library
-// regression fixtures until the separate cleanup slice.
+// construction accepts only SQLStore. There is one delivery state owner.
 type managementStore interface {
 	// NewChallenge creates stateless, scope-bound management authority.
 	NewChallenge(context.Context, ChallengeRequest,
