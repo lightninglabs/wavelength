@@ -160,6 +160,24 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   refused with `AlreadyExists`. Another round's join in flight, or a round
   state the actor cannot read, returns `Unavailable`. Board takes no lock;
   the round actor's turn is where a second board of one deposit is refused.
+- `ClaimAssetDeposit` returns a confirmed deposit that no round holds to the
+  tapd wallet, once the boarding exit delay has passed since its proof's
+  height. It refuses a tapd that `tapassets.TapdCanClaim` rejects, since such
+  a tapd cannot confirm a transfer spending an asset it does not hold.
+  `tapassets.Claimer` spends the deposit through the owner's composed exit
+  leaf into keys tapd derives, at the deposit's full value, so the claim pays
+  no fee; txconfirm relays it with a CPFP child from the daemon wallet. The
+  claim journal (`assets/claims`) pins tapd's keys and the signed
+  transaction, so a retry or a restart rebuilds the same claim.
+- A claim is reserved and recorded before tapd learns of it. The round actor
+  reserves the deposit (`round.ReserveAssetDepositClaimRequest`), refusing
+  while a round holds it and refusing to board it afterwards, and
+  `asset_deposit_claims` records the claim. Board refuses a recorded claim,
+  which covers a restart. txconfirm keeps no state across restarts, so the
+  deposit watcher hands every pending claim to it again, and marks a claim
+  `claimed` only once tapd's transfer for it is
+  `chainsource.DefaultFinalityDepth` blocks deep, the depth at which
+  txconfirm stops following it through reorgs.
 - `Server.run` registers a deferred `actorSystem.Shutdown()` **before** the
   deferred `db.Close()` so in-flight actor DB transactions drain before the
   connection pool tears down.
