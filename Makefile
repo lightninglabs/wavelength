@@ -217,6 +217,11 @@ $(MIGRATE_BIN):
 # SQLC TARGETS
 # ============
 
+relay-sqlc: #? Generate dedicated notification relay SQL queries
+	docker run --rm --user "$(shell id -u):$(shell id -g)" \
+		-v "$(CURDIR):/build" -w /build sqlc/sqlc:1.29.0 \
+		generate -f notifyrelay/relaydb/sqlc.yaml
+
 sqlc: #? Generate SQL code from schema and queries
 	@$(call print, "Generating sql models and queries in Go")
 	./scripts/gen_sqlc_docker.sh
