@@ -431,3 +431,30 @@ func TestHostDrivenIngressConfig(t *testing.T) {
 		t.Fatal("ordinary startup must retain automatic ingress")
 	}
 }
+
+// TestParseConfigAssets verifies the asset backend and its trusted group keys
+// reach the SDK config, and that omitting them keeps assets disabled.
+func TestParseConfigAssets(t *testing.T) {
+	got, err := parseConfig(`{
+		"assets_backend": "embedded",
+		"asset_group_keys": ["02aa", "03bb"]
+	}`)
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if got.AssetsBackend != "embedded" {
+		t.Fatalf("assets backend = %q", got.AssetsBackend)
+	}
+	if len(got.AssetGroupKeys) != 2 || got.AssetGroupKeys[1] != "03bb" {
+		t.Fatalf("asset group keys = %v", got.AssetGroupKeys)
+	}
+
+	got, err = parseConfig(`{"network": "regtest"}`)
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if got.AssetsBackend != "" || len(got.AssetGroupKeys) != 0 {
+		t.Fatalf("assets configured without being set: %q %v",
+			got.AssetsBackend, got.AssetGroupKeys)
+	}
+}

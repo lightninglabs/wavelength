@@ -113,6 +113,19 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/wave
 - `CreditPreview`, `SendRail`, `SendQuoteStatus` — embedded in
   `PrepareSendResult`; describe whether a prepared send will draw on
   sat-native server credits and how complete the prepare-time quote is.
+- Asset types and methods (`assets.go`) — `NewAssetReceiveKeys`,
+  `NewAssetFundingAddress`, `ImportAssetProof`, `ListOwnedAssets`,
+  `DepositAsset`, `ListAssetDeposits` and `BoardAssetDeposit` wrap the
+  daemon's asset RPCs with wrapper-owned DTOs (`AssetReceiveKeys`,
+  `AssetFundingAddress`, `OwnedAsset`, `AssetDeposit`). They call
+  `waverpc` directly, so they do not depend on the `wavewalletrpc` tag.
+  Asset amounts are `AssetUnits`, which encode as decimal strings in JSON,
+  since they can exceed the largest integer JavaScript reads exactly from a
+  JSON number.
+  `AssetDeposit.ClaimTxid` and `Claimed` report a deposit claimed back to
+  the asset backend's wallet, which does not board.
+  `Config.AssetsBackend` and `Config.AssetGroupKeys` select and configure the
+  daemon's asset backend; empty values keep the daemon configuration.
 - `ErrWalletRPCUnavailable` — sentinel returned by every wallet method
   on builds without the `wavewalletrpc` tag.
 - `ErrSwapRuntimeUnavailable` — back-compat alias for
