@@ -214,15 +214,16 @@ func IsFeedMailbox(mailboxID string) bool {
 
 // FeedRouteSigningMessage encodes publisher consent without a wallet identity.
 // The producer binding prevents using consent issued for a different source.
-func FeedRouteSigningMessage(source []byte, grantID string, classes uint32,
-	expiry int64) ([]byte, error) {
+func FeedRouteSigningMessage(source, subscriber []byte, grantID string,
+	classes uint32, expiry int64) ([]byte, error) {
 
-	if !canonicalPublicKey(source) || !validID(grantID, 64) ||
+	if !canonicalPublicKey(source) || !canonicalPublicKey(subscriber) ||
+		!validID(grantID, 64) ||
 		!validFeedClasses(classes) || expiry <= 0 {
 		return nil, ErrInvalidAuthorization
 	}
 	var buf bytes.Buffer
-	for _, field := range [][]byte{source, []byte(grantID)} {
+	for _, field := range [][]byte{source, subscriber, []byte(grantID)} {
 		_ = binary.Write(&buf, binary.BigEndian, uint32(len(field)))
 		_, _ = buf.Write(field)
 	}
@@ -243,7 +244,8 @@ func VerifyFeedRouteConsent(source []byte, m *pb.FeedGrantMutation) error {
 		return ErrInvalidAuthorization
 	}
 	message, err := FeedRouteSigningMessage(
-		source, m.GrantId, m.EventClasses, m.ExpiresAtUnix,
+		source, m.SubscriberPubkey, m.GrantId, m.EventClasses,
+		m.ExpiresAtUnix,
 	)
 	if err != nil {
 		return err

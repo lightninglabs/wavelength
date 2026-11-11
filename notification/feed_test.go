@@ -39,7 +39,8 @@ func feedFixture(t *testing.T) (*ChallengeAuthority, *pb.FeedGrantRequest,
 		},
 	}
 	routeMessage, err := FeedRouteSigningMessage(
-		request.Challenge.OperatorPubkey, request.Mutation.GrantId,
+		request.Challenge.OperatorPubkey,
+		request.Mutation.SubscriberPubkey, request.Mutation.GrantId,
 		request.Mutation.EventClasses, request.Mutation.ExpiresAtUnix,
 	)
 	require.NoError(t, err)
@@ -346,6 +347,9 @@ func TestFeedMailboxNamespace(t *testing.T) {
 func TestFeedSubscriberConsent(t *testing.T) {
 	_, request, owner, now := feedFixture(t)
 	changes := map[string]func(*pb.FeedGrantRequest){
+		"subscriber namespace": func(r *pb.FeedGrantRequest) {
+			r.Mutation.SubscriberPubkey[0] ^= 1
+		},
 		"signature": func(r *pb.FeedGrantRequest) {
 			r.Mutation.SubscriberSignature[0] ^= 1
 		},

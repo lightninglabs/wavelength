@@ -86,7 +86,8 @@ Integers use big-endian fixed-width encoding.
 | Subscriber consent signature | bytes |
 
 Subscriber consent uses the separate tag `wavelength-wake-feed-route-v1`.
-Its transcript contains producer public key and grant ID as length-prefixed
+Its transcript contains producer public key, exact compressed subscriber key
+and grant ID as length-prefixed
 bytes, followed by class mask (uint32) and expiry (int64), all big-endian. The
 subscriber signs this digest with its mailbox key; the wallet then signs the
 full grant including that signature.
