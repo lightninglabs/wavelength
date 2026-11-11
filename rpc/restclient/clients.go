@@ -237,6 +237,30 @@ func (c *SwapServiceClient) AuthorizeInSwapRefund(ctx context.Context,
 	return out, err
 }
 
+// GetSwapRecoveryInfo retrieves the audience before signing a recovery list.
+func (c *SwapServiceClient) GetSwapRecoveryInfo(ctx context.Context,
+	in *swaprpc.GetSwapRecoveryInfoRequest, _ ...grpc.CallOption) (
+	*swaprpc.GetSwapRecoveryInfoResponse, error) {
+
+	out := new(swaprpc.GetSwapRecoveryInfoResponse)
+	err := c.client.Post(ctx, "/v1/swap/recovery-info", in, out)
+
+	return out, err
+}
+
+// ListRecoverableSwaps returns authenticated recovery candidates.
+func (c *SwapServiceClient) ListRecoverableSwaps(ctx context.Context,
+	in *swaprpc.ListRecoverableSwapsRequest, _ ...grpc.CallOption) (
+	*swaprpc.ListRecoverableSwapsResponse, error) {
+
+	out := new(swaprpc.ListRecoverableSwapsResponse)
+	err := c.client.Post(
+		ctx, "/v1/swap/list-recoverable-swaps", in, out,
+	)
+
+	return out, err
+}
+
 // AcknowledgeOutSwapHtlc tells the swap server an out-swap receiver durably
 // accepted the HTLC event.
 func (c *SwapServiceClient) AcknowledgeOutSwapHtlc(ctx context.Context,
@@ -429,6 +453,30 @@ func (c *DaemonServiceClient) ReceiveAuthECDH(ctx context.Context,
 
 	out := new(waverpc.ReceiveAuthECDHResponse)
 	err := c.client.Post(ctx, "/v1/daemon/receive-auth-ecdh", in, out)
+
+	return out, err
+}
+
+// DeriveSwapPreimage requests a seed-restorable invoice secret.
+func (c *DaemonServiceClient) DeriveSwapPreimage(ctx context.Context,
+	in *waverpc.DeriveSwapPreimageRequest, _ ...grpc.CallOption) (
+	*waverpc.DeriveSwapPreimageResponse, error) {
+
+	out := new(waverpc.DeriveSwapPreimageResponse)
+	err := c.client.Post(ctx, "/v1/daemon/derive-swap-preimage", in, out)
+
+	return out, err
+}
+
+// SignIdentitySchnorr signs a tagged message with the daemon identity key.
+func (c *DaemonServiceClient) SignIdentitySchnorr(ctx context.Context,
+	in *waverpc.SignIdentitySchnorrRequest, _ ...grpc.CallOption) (
+	*waverpc.SignIdentitySchnorrResponse, error) {
+
+	out := new(waverpc.SignIdentitySchnorrResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/sign-identity-schnorr", in, out,
+	)
 
 	return out, err
 }

@@ -29,6 +29,8 @@ const (
 	SwapService_AcknowledgeOutSwapHtlc_FullMethodName        = "/swaprpc.SwapService/AcknowledgeOutSwapHtlc"
 	SwapService_SignInSwapForfeit_FullMethodName             = "/swaprpc.SwapService/SignInSwapForfeit"
 	SwapService_SubmitOutSwapForfeitSignature_FullMethodName = "/swaprpc.SwapService/SubmitOutSwapForfeitSignature"
+	SwapService_ListRecoverableSwaps_FullMethodName          = "/swaprpc.SwapService/ListRecoverableSwaps"
+	SwapService_GetSwapRecoveryInfo_FullMethodName           = "/swaprpc.SwapService/GetSwapRecoveryInfo"
 )
 
 // SwapServiceClient is the client API for SwapService service.
@@ -72,6 +74,15 @@ type SwapServiceClient interface {
 	// signature for a connector-bound out-swap vHTLC refresh request that was
 	// delivered through the receiver mailbox.
 	SubmitOutSwapForfeitSignature(ctx context.Context, in *SubmitOutSwapForfeitSignatureRequest, opts ...grpc.CallOption) (*SubmitOutSwapForfeitSignatureResponse, error)
+	// ListRecoverableSwaps returns bounded owner-scoped recovery candidates.
+	// Open receive intents and unfunded out-swap states are excluded; unpaid
+	// or unacknowledged invoices time out and fail back. Late-funded in-swaps
+	// remain discoverable without an age cutoff. Clients must still verify
+	// live/spent vHTLC state against the indexer before starting recovery.
+	ListRecoverableSwaps(ctx context.Context, in *ListRecoverableSwapsRequest, opts ...grpc.CallOption) (*ListRecoverableSwapsResponse, error)
+	// GetSwapRecoveryInfo returns the signing audience for recovery listing.
+	// Fetch over authenticated TLS before producing an owner proof.
+	GetSwapRecoveryInfo(ctx context.Context, in *GetSwapRecoveryInfoRequest, opts ...grpc.CallOption) (*GetSwapRecoveryInfoResponse, error)
 }
 
 type swapServiceClient struct {
@@ -182,6 +193,26 @@ func (c *swapServiceClient) SubmitOutSwapForfeitSignature(ctx context.Context, i
 	return out, nil
 }
 
+func (c *swapServiceClient) ListRecoverableSwaps(ctx context.Context, in *ListRecoverableSwapsRequest, opts ...grpc.CallOption) (*ListRecoverableSwapsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListRecoverableSwapsResponse)
+	err := c.cc.Invoke(ctx, SwapService_ListRecoverableSwaps_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *swapServiceClient) GetSwapRecoveryInfo(ctx context.Context, in *GetSwapRecoveryInfoRequest, opts ...grpc.CallOption) (*GetSwapRecoveryInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSwapRecoveryInfoResponse)
+	err := c.cc.Invoke(ctx, SwapService_GetSwapRecoveryInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SwapServiceServer is the server API for SwapService service.
 // All implementations must embed UnimplementedSwapServiceServer
 // for forward compatibility.
@@ -223,6 +254,15 @@ type SwapServiceServer interface {
 	// signature for a connector-bound out-swap vHTLC refresh request that was
 	// delivered through the receiver mailbox.
 	SubmitOutSwapForfeitSignature(context.Context, *SubmitOutSwapForfeitSignatureRequest) (*SubmitOutSwapForfeitSignatureResponse, error)
+	// ListRecoverableSwaps returns bounded owner-scoped recovery candidates.
+	// Open receive intents and unfunded out-swap states are excluded; unpaid
+	// or unacknowledged invoices time out and fail back. Late-funded in-swaps
+	// remain discoverable without an age cutoff. Clients must still verify
+	// live/spent vHTLC state against the indexer before starting recovery.
+	ListRecoverableSwaps(context.Context, *ListRecoverableSwapsRequest) (*ListRecoverableSwapsResponse, error)
+	// GetSwapRecoveryInfo returns the signing audience for recovery listing.
+	// Fetch over authenticated TLS before producing an owner proof.
+	GetSwapRecoveryInfo(context.Context, *GetSwapRecoveryInfoRequest) (*GetSwapRecoveryInfoResponse, error)
 	mustEmbedUnimplementedSwapServiceServer()
 }
 
@@ -262,6 +302,12 @@ func (UnimplementedSwapServiceServer) SignInSwapForfeit(context.Context, *SignIn
 }
 func (UnimplementedSwapServiceServer) SubmitOutSwapForfeitSignature(context.Context, *SubmitOutSwapForfeitSignatureRequest) (*SubmitOutSwapForfeitSignatureResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SubmitOutSwapForfeitSignature not implemented")
+}
+func (UnimplementedSwapServiceServer) ListRecoverableSwaps(context.Context, *ListRecoverableSwapsRequest) (*ListRecoverableSwapsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListRecoverableSwaps not implemented")
+}
+func (UnimplementedSwapServiceServer) GetSwapRecoveryInfo(context.Context, *GetSwapRecoveryInfoRequest) (*GetSwapRecoveryInfoResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSwapRecoveryInfo not implemented")
 }
 func (UnimplementedSwapServiceServer) mustEmbedUnimplementedSwapServiceServer() {}
 func (UnimplementedSwapServiceServer) testEmbeddedByValue()                     {}
@@ -464,6 +510,42 @@ func _SwapService_SubmitOutSwapForfeitSignature_Handler(srv interface{}, ctx con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SwapService_ListRecoverableSwaps_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListRecoverableSwapsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwapServiceServer).ListRecoverableSwaps(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SwapService_ListRecoverableSwaps_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwapServiceServer).ListRecoverableSwaps(ctx, req.(*ListRecoverableSwapsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SwapService_GetSwapRecoveryInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSwapRecoveryInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwapServiceServer).GetSwapRecoveryInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SwapService_GetSwapRecoveryInfo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwapServiceServer).GetSwapRecoveryInfo(ctx, req.(*GetSwapRecoveryInfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SwapService_ServiceDesc is the grpc.ServiceDesc for SwapService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -510,6 +592,14 @@ var SwapService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SubmitOutSwapForfeitSignature",
 			Handler:    _SwapService_SubmitOutSwapForfeitSignature_Handler,
+		},
+		{
+			MethodName: "ListRecoverableSwaps",
+			Handler:    _SwapService_ListRecoverableSwaps_Handler,
+		},
+		{
+			MethodName: "GetSwapRecoveryInfo",
+			Handler:    _SwapService_GetSwapRecoveryInfo_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

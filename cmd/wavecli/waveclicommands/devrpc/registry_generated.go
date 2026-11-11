@@ -94,11 +94,25 @@ func generatedRegistry() []serviceSpec {
 					Comments: "SignReceiveAuthMessageCompact signs one message with the\nper-payment receive-auth key and returns a compact signature.",
 				},
 				{
+					Name:     "SignIdentitySchnorr",
+					Aliases:  []string{"sign-identity-schnorr"},
+					Input:    "waverpc.SignIdentitySchnorrRequest",
+					Output:   "waverpc.SignIdentitySchnorrResponse",
+					Comments: "SignIdentitySchnorr signs recovery owner proofs with the daemon identity\nkey. Only the wavelength-swap-recovery-owner-v1 tag is accepted.",
+				},
+				{
 					Name:     "ReceiveAuthECDH",
 					Aliases:  []string{"receive-auth-ecdh"},
 					Input:    "waverpc.ReceiveAuthECDHRequest",
 					Output:   "waverpc.ReceiveAuthECDHResponse",
 					Comments: "ReceiveAuthECDH derives one Sphinx shared secret with the\nper-payment receive-auth key.",
+				},
+				{
+					Name:     "DeriveSwapPreimage",
+					Aliases:  []string{"derive-swap-preimage"},
+					Input:    "waverpc.DeriveSwapPreimageRequest",
+					Output:   "waverpc.DeriveSwapPreimageResponse",
+					Comments: "DeriveSwapPreimage derives a receive preimage from public recovery\nparameters using the active wallet's seed. In lnd mode the same lnd\nwallet seed must be restored; private keys never leave that wallet.",
 				},
 				{
 					Name:     "GetIndexedVTXOByPkScript",
