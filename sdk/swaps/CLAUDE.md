@@ -272,6 +272,68 @@ result into an `IncomingVHTLCNotification`.
   `newSwapServerConn`) so tests can pin the expiry and nonce; production code
   must not reach past them to `time.Now` / `crypto/rand` directly.
 
+## Seed Recovery Contract
+
+`RecoverableSwapPageServerConn` adds audience discovery and bounded listing
+without expanding the core connection interface. Fetch
+`GetSwapRecoveryInfo` over authenticated TLS, compare the genesis hash with
+local chain parameters, and sign each exact page. The server verifies its
+own daemon identity and network, not caller-supplied audience values.
+`ListRecoverableSwaps` is only the legacy default first-page wrapper.
+
+REST creation probes `GetSwapRecoveryInfo` before signing requests that carry
+recovery metadata. A missing route (HTTP 404) or `Unimplemented` omits those
+fields before account authorization, since old JSON gateways discard them.
+Other errors propagate without retrying creation or downgrading ownership.
+Missing REST recovery discovery is optional during restore. Legacy swaps stay
+usable but do not gain server-backed seed recovery. gRPC needs no creation
+probe because protobuf preserves unknown fields.
+
+A page defaults to 100 rows and cannot exceed 500. Ordering is direction,
+then payment hash. Keep the continuation token opaque, stop at an empty
+token, and start each new scan with an empty token. There is no creation-time
+or expiry cutoff for potentially late-funded in-swaps. The server excludes
+unfunded out-swaps and open receive intents: recovery supports funded
+vHTLCs, not resuming unpaid invoices or the invoice/ACK handshake. Those
+invoices time out and fail back. Clients must validate live funding and
+script ownership independently before reconstructing durable swap sessions.
+
+`RecoverSwapserverVHTLCs` requires a configured swap store and persists new
+pay sessions at `RefundInitiated` and receive sessions at `VHTLCFunded`.
+Never reconstruct a pay session at `Created` or a funding state. Normal
+workers retry exact-checkpoint cooperative refunds, wait for timeout maturity,
+and attempt cooperative claims before the opt-in exit policy. Availability
+flags are hints; the server must still authorize each exact refund spend.
+Cooperative claim attempts stop at the refund safety cutoff without revealing
+the preimage. New automatic exits require a readable height and enough time
+for ancestry plus claim CSV before the refund leaf opens. Deadline pressure
+uses the latest viable exit start, not the refund height. Too-late live
+hashlocks remain pending for explicit intervention; refund maturity alone does
+not prove a spend, and manual exits still require operator assessment.
+Restored receives require live funding to equal the advertised vHTLC total,
+including attached credit, before deriving a preimage or admitting a session.
+Matching daemon jobs are looked up through the unique request-ID index,
+including terminal jobs; restore never lists every job for each server row.
+Recovery counters count restored sessions, not completed settlement.
+Existing local sessions retain ownership. Matching terminal daemon recovery
+jobs require explicit intervention before retry; do not allocate a different
+destination against their deterministic request ID or reactivate cancellation.
+
+Owner proofs are timestamp-bounded bearer credentials under
+`wavelength-swap-recovery-owner-v1`. Identical retries remain valid; the
+nonce is a salt, not a consumed challenge. Never log proofs. Each list proof
+binds the compressed server identity, genesis hash, raw page size (including
+zero), and exact token. No prerelease domain compatibility is supported.
+
+For an lnd-backed wallet, `waved` restricts its public identity-signing RPC
+to this tag and derives preimages internally. This is an application policy,
+not an lnd signer restriction. Access to lnd's raw `SignMessage` or
+`DeriveSharedKey` APIs can bypass that policy: a caller can sign owner
+proofs or derive preimages from public recovery parameters and the wallet's
+keys. Treat those signer credentials, and any remote signer, as trusted
+wallet-secret access. Do not expose them to the swap server or untrusted
+plugins. See [seed restore](../../docs/seed_restore_recovery.md).
+
 ## Deep Docs
 
 - [docs/swap_system.md](../../docs/swap_system.md) — Full walkthrough of

@@ -3,6 +3,7 @@ package swaps
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btclog/v2"
 	loopfsm "github.com/lightninglabs/loop/fsm"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
@@ -420,7 +422,7 @@ func (c *SwapClient) StartReceiveViaLightning(ctx context.Context,
 	if err := session.runUntil(
 		ctx, ReceiveStateInvoiceCreated,
 	); err != nil {
-		return nil, err
+		return c.resumeReceiveAdmission(ctx, err)
 	}
 
 	return session, nil
@@ -650,9 +652,11 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 		)
 	}
 
-	preimage, err := NewPreimage()
+	preimage, preimageRecoveryParams, err := newOutSwapPreimage(
+		ctx, s.client.daemon,
+	)
 	if err != nil {
-		return fmt.Errorf("generate preimage: %w", err)
+		return fmt.Errorf("derive preimage: %w", err)
 	}
 	paymentHash := preimage.Hash()
 
@@ -691,9 +695,24 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	// invoice deadline.
 	_, supportsInArkCredit :=
 		s.client.outEvents.(IncomingVHTLCEventReceiver)
+	paramsHash := sha256.Sum256(preimageRecoveryParams)
+	ownerProof, err := newSwapOwnerProof(
+		ctx, s.client.daemon, clientKey, swapRecoveryAuthRequestChannel,
+		s.client.currentTime().Unix(), clientKey.SerializeCompressed(),
+		paymentHash[:],
+		recoveryUint64Field(
+			uint64(s.amountSat),
+		),
+		recoveryUint64Field(defaultReceiveExpirySeconds),
+		paramsHash[:],
+	)
+	if err != nil {
+		return fmt.Errorf("create owner proof: %w", err)
+	}
 	quote, err := s.client.server.RequestChannelID(
 		ctx, clientKey, paymentHash, s.amountSat,
-		defaultReceiveExpirySeconds, supportsInArkCredit,
+		defaultReceiveExpirySeconds, supportsInArkCredit, ownerProof,
+		preimageRecoveryParams,
 	)
 	if err != nil {
 		return fmt.Errorf("request channel ID: %w", err)
@@ -1730,11 +1749,24 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 		return nil
 	}
 
-	if err := s.ensureReceiveClaimStillPossible(ctx); err != nil {
-		return err
-	}
 	if err := s.reconcileLiveReceiveFunding(ctx); err != nil {
 		return err
+	}
+	if err := s.ensureReceiveClaimStillPossible(ctx); err != nil {
+		if !errors.Is(err, errReceiveCooperativeDeadline) {
+			return err
+		}
+
+		// Do not expose the preimage in a competing cooperative claim.
+		// Keep the live obligation pending. Automatic fallback still
+		// requires a viable claim window, not another operator send.
+		if escalateErr := s.maybeEscalateReceiveClaimRecovery(
+			ctx, err,
+		); escalateErr != nil {
+			return newRetryableActionError(escalateErr)
+		}
+
+		return waitForFixedPoll(ctx, s.client.waitPollInterval)
 	}
 
 	claimSessionID, err := s.client.claimReceiveVHTLC(
@@ -1974,10 +2006,16 @@ func (s *ReceiveSession) ensureClaimReceiveInfo(ctx context.Context) error {
 	})
 }
 
-// ensureReceiveClaimStillPossible stops a new claim attempt once the refund
-// path is mature enough for the swap server to recover the vHTLC.
+// ensureReceiveClaimStillPossible prevents a cooperative send from exposing the
+// preimage while a competing refund can win. It does not expire the durable
+// obligation: a live hashlock may still use policy-gated unilateral recovery.
 func (s *ReceiveSession) ensureReceiveClaimStillPossible(
 	ctx context.Context) error {
+
+	if s.vhtlcConfig.RefundLocktime >= txscript.LockTimeThreshold {
+		return fmt.Errorf("%w: refund locktime is not a block height",
+			errReceiveCooperativeDeadline)
+	}
 
 	height, err := s.client.daemon.BlockHeight(ctx)
 	if err != nil {
@@ -1986,24 +2024,14 @@ func (s *ReceiveSession) ensureReceiveClaimStillPossible(
 		)
 	}
 
-	if height+s.client.refundLocktimeBuffer < s.vhtlcConfig.RefundLocktime {
+	if uint64(height)+uint64(s.client.refundLocktimeBuffer) <
+		uint64(s.vhtlcConfig.RefundLocktime) {
 		return nil
 	}
 
-	// Once the refund locktime is mature, a new receive claim becomes a
-	// late race with the server refund path and should stop durably.
-	reason := fmt.Sprintf("refund locktime %d is imminent or reached "+
-		"before receive claim at height %d",
-		s.vhtlcConfig.RefundLocktime, height)
-	if persistErr := s.mutateAndPersist(ctx, func() error {
-		s.interventionReason = reason
-
-		return s.transition(receiveEventExpired)
-	}); persistErr != nil {
-		return persistErr
-	}
-
-	return fmt.Errorf("%s: %w", reason, errSwapExpired)
+	return fmt.Errorf("%w: height %d, refund locktime %d",
+		errReceiveCooperativeDeadline, height,
+		s.vhtlcConfig.RefundLocktime)
 }
 
 // waitForClaimResumeGrace gives an accepted-but-not-yet-indexed receive claim a

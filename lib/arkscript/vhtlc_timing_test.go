@@ -142,6 +142,12 @@ func TestVHTLCTimingValidateClaimWindow(t *testing.T) {
 	timing.RefundLocktime = 100
 	err = timing.ValidateClaimWindow(window)
 	require.ErrorContains(t, err, "is not after current height")
+
+	// A timestamp CLTV can already be spendable even though its numeric
+	// value looks far above the best block height.
+	timing.RefundLocktime = txscript.LockTimeThreshold
+	err = timing.ValidateClaimWindow(window)
+	require.ErrorContains(t, err, "is not a block height")
 }
 
 // TestDecodeVHTLCTiming verifies that encoded semantic policies retain the

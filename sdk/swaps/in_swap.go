@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	loopfsm "github.com/lightninglabs/loop/fsm"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"google.golang.org/grpc/codes"
@@ -23,6 +24,10 @@ const (
 	refundLocktimeNearBlocks      = uint32(3)
 	refundLocktimeMaxPollMultiple = uint32(30)
 	refundLocktimeMaxPollInterval = time.Minute
+
+	// cooperativeRefundAuthTimeout prevents a wait-for-ready signer from
+	// starving the independent sender-only timeout and exit paths.
+	cooperativeRefundAuthTimeout = 5 * time.Second
 
 	// maxPayRefundWindowBlocks caps both the absolute locktime horizon and
 	// the relative CSV delay on a new pay-side sender-only refund. The
@@ -547,7 +552,7 @@ func (c *SwapClient) StartPayViaLightningWithCredits(ctx context.Context,
 	}
 
 	if err := session.runUntil(ctx, PayStateSwapCreated); err != nil {
-		return nil, err
+		return c.resumePayAdmission(ctx, err)
 	}
 
 	return session, nil
@@ -623,19 +628,32 @@ func (s *paySession) createSwap(ctx context.Context) error {
 		return err
 	}
 
+	// The recovery proof also binds the participant script key even though
+	// it currently equals the daemon identity key.
+	ownerProof, err := newSwapOwnerProof(
+		ctx, s.client.daemon, clientKey, swapRecoveryAuthCreateIn,
+		s.client.currentTime().Unix(), clientKey.SerializeCompressed(),
+		[]byte(s.invoice), recoveryUint64Field(s.maxFeeSat),
+	)
+	if err != nil {
+		return fmt.Errorf("create owner proof: %w", err)
+	}
+
 	var cfg *InSwapConfig
 	if server, ok := s.client.server.(interface {
 		CreateInSwapWithCredits(context.Context, string, uint64,
-			*btcec.PublicKey, []byte, uint64) (*InSwapConfig, error)
+			*btcec.PublicKey, []byte, uint64,
+			*swaprpc.SwapOwnerProof) (*InSwapConfig, error)
 	}); ok {
 
 		cfg, err = server.CreateInSwapWithCredits(
 			ctx, s.invoice, s.maxFeeSat, clientKey,
 			clientKey.SerializeCompressed(), s.maxCreditSat,
+			ownerProof,
 		)
 	} else {
 		cfg, err = s.client.server.CreateInSwap(
-			ctx, s.invoice, s.maxFeeSat, clientKey,
+			ctx, s.invoice, s.maxFeeSat, clientKey, ownerProof,
 		)
 	}
 	if err != nil {
@@ -1533,6 +1551,20 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 		return nil
 	}
 
+	// Restore can enter refund intent before the timeout branch matures.
+	// Keep attempting the receiver-authorized path during that wait; the
+	// server, not a stale discovery hint, authorizes the exact checkpoint.
+	refunded, err := s.tryCooperativeRefund(ctx)
+	if err == nil && refunded {
+		return waitForFixedPoll(ctx, s.client.waitPollInterval)
+	}
+	if err != nil {
+		var retryable *retryableActionError
+		if !errors.As(err, &retryable) {
+			return err
+		}
+	}
+
 	funded, err := s.observeRefundableVHTLC(ctx)
 	if err != nil {
 		return newRetryableActionError(
@@ -1721,10 +1753,17 @@ func (s *paySession) tryCooperativeRefund(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
+	// Bound only the external authorization peer. Preparing, submitting
+	// and persisting an accepted OOR keep the caller's lifetime so a slow
+	// successful send is not cancelled before its session ID is saved.
+	authCtx, cancel := context.WithTimeout(
+		ctx, cooperativeRefundAuthTimeout,
+	)
 	authorization, err := s.client.server.AuthorizeInSwapRefund(
-		ctx, s.cfg.PaymentHash, s.vhtlcOutpoint, s.vhtlcAmount,
+		authCtx, s.cfg.PaymentHash, s.vhtlcOutpoint, s.vhtlcAmount,
 		s.vhtlcPolicyTemplate, spendPath, preparedInput.CheckpointPSBT,
 	)
+	cancel()
 	if err != nil {
 		code := status.Code(err)
 		if code == codes.FailedPrecondition ||

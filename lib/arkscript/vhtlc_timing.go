@@ -114,6 +114,10 @@ func (t VHTLCTiming) ValidateClaimWindow(window VHTLCClaimWindow) error {
 	if err := t.ValidateOrder(); err != nil {
 		return err
 	}
+	if t.RefundLocktime >= txscript.LockTimeThreshold {
+		return fmt.Errorf("vhtlc: refund locktime %d is not a "+
+			"block height", t.RefundLocktime)
+	}
 
 	if t.RefundLocktime <= window.CurrentHeight {
 		return fmt.Errorf("vhtlc: refund locktime %d is not after "+

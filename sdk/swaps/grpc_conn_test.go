@@ -121,7 +121,7 @@ func TestCreditAccountRPCRequiresSigner(t *testing.T) {
 
 	_, err = conn.RequestChannelID(
 		t.Context(), privKey.PubKey(), lntypes.Hash{1},
-		btcutil.Amount(1_000), 30, false,
+		btcutil.Amount(1_000), 30, false, nil, nil,
 	)
 	require.ErrorContains(
 		t, err, "credit account authorization signer is required",

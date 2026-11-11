@@ -19,6 +19,45 @@ import (
 	"github.com/lightningnetwork/lnd/lntypes"
 )
 
+// swapAdmissionConflict stops a losing initial writer before it can advance
+// the FSM or persist failure over the durable winner. The payment hash survives
+// mutateAndPersist rolling the losing session back to its pre-admission state.
+type swapAdmissionConflict struct {
+	hash lntypes.Hash
+}
+
+// Error identifies an admission conflict without exposing swap secrets.
+func (e *swapAdmissionConflict) Error() string {
+	return "swap session already admitted"
+}
+
+// resumePayAdmission reloads the winner after initial pay persistence loses a
+// race. StartPayViaLightningWithCredits must use this for its runUntil error;
+// unrelated errors pass through without resuming or changing durable state.
+func (c *SwapClient) resumePayAdmission(ctx context.Context, err error) (
+	*PaySession, error) {
+
+	var conflict *swapAdmissionConflict
+	if !errors.As(err, &conflict) {
+		return nil, err
+	}
+
+	return c.ResumePayViaLightning(ctx, conflict.hash)
+}
+
+// resumeReceiveAdmission reloads the winner after initial receive persistence
+// loses a race. StartReceiveViaLightning must use this for its runUntil error.
+func (c *SwapClient) resumeReceiveAdmission(ctx context.Context, err error) (
+	*ReceiveSession, error) {
+
+	var conflict *swapAdmissionConflict
+	if !errors.As(err, &conflict) {
+		return nil, err
+	}
+
+	return c.ResumeReceiveViaLightning(ctx, conflict.hash)
+}
+
 // ResumeReceiveViaLightning reloads one persisted receive session by payment
 // hash from the isolated swap store.
 func (c *SwapClient) ResumeReceiveViaLightning(ctx context.Context,
@@ -470,9 +509,37 @@ func (s *ReceiveSession) mutateAndPersist(ctx context.Context,
 	return nil
 }
 
-// persist writes the full receive session snapshot into the isolated swap
-// store when one is configured.
+// persist admits the first receive snapshot without replacing another writer,
+// then updates snapshots belonging to that admitted session. updatedAt is set
+// only after persistence succeeds, or when a durable row is reloaded.
 func (s *ReceiveSession) persist(ctx context.Context) error {
+	return s.persistSnapshot(ctx, s == nil || s.updatedAt.IsZero())
+}
+
+// persistRestored admits a reconstructed receive session without overwriting
+// normal progress, even when discovery checked for a row before another writer
+// inserted it. A conflict adopts the durable winner instead of driving stale
+// reconstructed state.
+func (s *ReceiveSession) persistRestored(ctx context.Context) error {
+	err := s.persistSnapshot(ctx, true)
+	var conflict *swapAdmissionConflict
+	if !errors.As(err, &conflict) {
+		return err
+	}
+	winner, err := s.client.ResumeReceiveViaLightning(ctx, conflict.hash)
+	if err != nil {
+		return err
+	}
+	*s = *winner
+
+	return nil
+}
+
+// persistSnapshot shares receive snapshot encoding between insert-only
+// admission and updates, so the two paths cannot omit different durable data.
+func (s *ReceiveSession) persistSnapshot(ctx context.Context,
+	insertOnly bool) error {
+
 	if s == nil || s.client == nil || s.client.store == nil {
 		return nil
 	}
@@ -539,7 +606,20 @@ func (s *ReceiveSession) persist(ctx context.Context) error {
 		s.createdAt = time.Unix(now, 0)
 	}
 
-	err := s.client.store.queries.UpsertReceiveSwap(ctx, params)
+	var err error
+	if insertOnly {
+		var inserted int64
+		inserted, err = s.client.store.queries.InsertReceiveSwap(
+			ctx, swapsqlc.InsertReceiveSwapParams(params),
+		)
+		if err == nil && inserted == 0 {
+			return newRetryableActionError(&swapAdmissionConflict{
+				hash: s.PaymentHash,
+			})
+		}
+	} else {
+		err = s.client.store.queries.UpsertReceiveSwap(ctx, params)
+	}
 	if err != nil {
 		return fmt.Errorf("persist receive session: %w", err)
 	}
@@ -647,9 +727,35 @@ func (s *paySession) persistRefundSessionID(ctx context.Context,
 	return nil
 }
 
-// persist writes the full pay session snapshot into the isolated swap store
-// when one is configured.
+// persist admits the first pay snapshot without replacing another writer,
+// then updates the admitted session. Credit-only completion is also an initial
+// admission when no earlier snapshot has been persisted.
 func (s *paySession) persist(ctx context.Context) error {
+	return s.persistSnapshot(ctx, s == nil || s.updatedAt.IsZero())
+}
+
+// persistRestored admits a reconstructed pay session without overwriting normal
+// progress and adopts the durable winner when another writer arrived first.
+func (s *paySession) persistRestored(ctx context.Context) error {
+	err := s.persistSnapshot(ctx, true)
+	var conflict *swapAdmissionConflict
+	if !errors.As(err, &conflict) {
+		return err
+	}
+	winner, err := s.client.ResumePayViaLightning(ctx, conflict.hash)
+	if err != nil {
+		return err
+	}
+	*s = *winner
+
+	return nil
+}
+
+// persistSnapshot shares pay snapshot encoding between insert-only admission
+// and updates, including the credit-only path with no vHTLC metadata.
+func (s *paySession) persistSnapshot(ctx context.Context,
+	insertOnly bool) error {
+
 	if s == nil || s.client == nil || s.client.store == nil ||
 		s.client.store.queries == nil || s.cfg == nil ||
 		s.cfg.PaymentHash == (lntypes.Hash{}) {
@@ -718,7 +824,20 @@ func (s *paySession) persist(ctx context.Context) error {
 		s.createdAt = time.Unix(now, 0)
 	}
 
-	err := s.client.store.queries.UpsertPaySwap(ctx, params)
+	var err error
+	if insertOnly {
+		var inserted int64
+		inserted, err = s.client.store.queries.InsertPaySwap(
+			ctx, swapsqlc.InsertPaySwapParams(params),
+		)
+		if err == nil && inserted == 0 {
+			return newRetryableActionError(&swapAdmissionConflict{
+				hash: s.cfg.PaymentHash,
+			})
+		}
+	} else {
+		err = s.client.store.queries.UpsertPaySwap(ctx, params)
+	}
 	if err != nil {
 		return fmt.Errorf("persist pay session: %w", err)
 	}

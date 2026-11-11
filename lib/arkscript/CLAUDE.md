@@ -135,6 +135,8 @@ validated invariants.
   already-funded policy must still be reconstructible (and therefore
   spendable) even once its remaining timing window is no longer admissible —
   refusing to rebuild it would strand funds rather than protect them.
+- Claim/refund window admission is block-based and rejects timestamp CLTVs;
+  a large timestamp must never masquerade as a distant block height.
 - `DecodeVHTLCTiming` reports the committed script exactly and applies no
   policy judgement. Admission callers apply the appropriate order, claim,
   or refund window check; recovery callers deliberately do not, so a

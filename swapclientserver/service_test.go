@@ -1270,7 +1270,7 @@ func TestNewSwapServerClientsREST(t *testing.T) {
 
 	hint, err := clients.server.RequestChannelID(
 		t.Context(), clientPriv.PubKey(), lntypes.Hash{1},
-		btcutil.Amount(42_000), 30, true,
+		btcutil.Amount(42_000), 30, true, nil, nil,
 	)
 	require.NoError(t, err)
 	require.Len(t, hint.RouteHintPaths, 1)
@@ -1379,7 +1379,7 @@ func TestSwapServerClientsWaitForLateGRPCServer(t *testing.T) {
 	resultChan := make(chan createInSwapResult, 1)
 	go func() {
 		cfg, err := clients.server.CreateInSwap(
-			ctx, "invoice", 1_000, clientKey.PubKey(),
+			ctx, "invoice", 1_000, clientKey.PubKey(), nil,
 		)
 		resultChan <- createInSwapResult{
 			cfg: cfg,

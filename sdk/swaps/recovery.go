@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -137,6 +138,8 @@ type RecoveryPolicy struct {
 	// AutoEscalate allows the SDK to start on-chain recovery without a
 	// manual caller command once the grace/deadline policy says waiting
 	// longer is unsafe or unproductive.
+	// New receive exits also require enough remaining blocks for ancestry
+	// and claim CSV; an unreadable height or a closed window defers them.
 	AutoEscalate bool
 
 	// CooperativeFailureGracePeriod is measured from the first cooperative
@@ -145,14 +148,13 @@ type RecoveryPolicy struct {
 	// pressure overrides the wait.
 	CooperativeFailureGracePeriod time.Duration
 
-	// MinRecoveryMarginBlocks is the minimum block margin preserved before
-	// a refund locktime. Claim recovery may override the grace period when
-	// the current height plus this margin reaches the refund locktime.
+	// MinRecoveryMarginBlocks triggers deadline pressure before the latest
+	// viable claim-exit start (refund height minus ancestry and claim CSV).
+	// It may override grace, but never the requirement for a viable window.
 	MinRecoveryMarginBlocks uint32
 
-	// ExitAncestryDelayBlocks is the pre-funding block budget reserved for
-	// making the vHTLC output available on chain when the receiver first
-	// evaluates a proposed vHTLC policy.
+	// ExitAncestryDelayBlocks budgets making the vHTLC output available on
+	// chain, both during policy admission and before a new automatic exit.
 	ExitAncestryDelayBlocks uint32
 
 	// MaxFeeRateSatPerKW caps the final recovery exit-spend fee rate. The
@@ -247,7 +249,8 @@ func decideRecoveryEscalation(policy RecoveryPolicy, firstFailureAt time.Time,
 	}
 
 	if deadlineHeight != 0 &&
-		currentHeight+policy.MinRecoveryMarginBlocks >= deadlineHeight {
+		uint64(currentHeight)+uint64(policy.MinRecoveryMarginBlocks) >=
+			uint64(deadlineHeight) {
 
 		decision.Escalate = true
 		decision.Trigger = "deadline_margin"
@@ -760,19 +763,38 @@ func (s *ReceiveSession) maybeEscalateReceiveClaimRecovery(ctx context.Context,
 			btclog.Hex("hash", s.PaymentHash[:]),
 			slog.String("recovery_id", s.claimRecoveryID),
 		)
+
+		return nil
 	}
 
-	// The refund deadline is an absolute height, so the deadline trigger
-	// cannot be evaluated without a height. Only the wall-clock grace
-	// policy applies until a height is readable.
-	deadlineHeight := s.vhtlcConfig.RefundLocktime
-	if err != nil {
-		deadlineHeight = 0
+	policy := s.client.recoveryPolicy.WithDefaults()
+	// A new unroll must leave time for ancestry and claim CSV before the
+	// sender's refund leaf opens. Keep funded sessions pending when that
+	// window closes; neither grace expiry nor consent makes a late exit
+	// safe.
+	if err := vhtlcTiming(s.vhtlcConfig).ValidateClaimWindow(
+		arkscript.VHTLCClaimWindow{
+			CurrentHeight:     height,
+			ExitAncestryDelay: policy.ExitAncestryDelayBlocks,
+		},
+	); err != nil {
+
+		s.client.log.DebugS(ctx, "Receive claim exit window closed",
+			slog.Any("err", err),
+			btclog.Hex("hash", s.PaymentHash[:]),
+		)
+
+		return nil
 	}
+	// Apply deadline pressure before the latest viable start, rather than
+	// waiting until only the margin remains before the refund itself.
+	deadlineHeight := s.vhtlcConfig.RefundLocktime -
+		policy.ExitAncestryDelayBlocks -
+		s.vhtlcConfig.UnilateralClaimDelay
 
 	decision := decideRecoveryEscalation(
-		s.client.recoveryPolicy, s.firstReceiveClaimRecoveryFailure(),
-		s.client.now(), height, deadlineHeight,
+		policy, s.firstReceiveClaimRecoveryFailure(), s.client.now(),
+		height, deadlineHeight,
 	)
 	if !decision.Escalate {
 		s.client.log.DebugS(ctx,

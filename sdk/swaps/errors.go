@@ -38,6 +38,10 @@ var errSwapExpired = ErrSwapExpired
 // persisted for the current process.
 var errReceiveClaimAlreadyIndexed = errors.New("receive claim already indexed")
 
+// errReceiveCooperativeDeadline prevents revealing a preimage to an operator
+// once the competing refund is imminent, without abandoning on-chain recovery.
+var errReceiveCooperativeDeadline = errors.New("cooperative claim deadline")
+
 // errReceiveVHTLCSpentWithoutPreimage reports that the funded receive vHTLC
 // was spent by a path that did not reveal the invoice preimage.
 var errReceiveVHTLCSpentWithoutPreimage = errors.New("receive vHTLC spent " +
