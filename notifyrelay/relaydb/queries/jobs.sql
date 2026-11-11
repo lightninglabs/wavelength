@@ -63,7 +63,9 @@ UPDATE relay_installations SET delivery_claim_token = '', delivery_lease_until =
 WHERE id = $1 AND delivery_claim_token = $2;
 
 -- name: FinishJob :execrows
-UPDATE relay_jobs SET done_generation = sqlc.arg(done_generation),
+UPDATE relay_jobs SET attempts = CASE
+        WHEN sqlc.arg(done_generation) > done_generation THEN 0 ELSE attempts END,
+    done_generation = sqlc.arg(done_generation),
     next_at = sqlc.arg(next_at), claim_token = '', lease_until = 0
 WHERE id = sqlc.arg(id) AND claim_token = sqlc.arg(claim_token);
 
