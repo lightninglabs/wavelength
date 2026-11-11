@@ -25,6 +25,9 @@ import (
 // spends.
 var ErrBoardingInFlight = errors.New("boarding input is already in a round")
 
+// ErrDepositClaimed rejects an asset deposit that is reserved for a claim.
+var ErrDepositClaimed = errors.New("asset deposit is reserved for a claim")
+
 // ErrRoundBusy rejects an asset deposit while another round of this client is
 // joining, because the operator keeps one registration per client and the
 // deposit's join would replace it.
@@ -175,6 +178,12 @@ func (a *RoundClientActor) handleAssetBoarding(ctx context.Context,
 			fmt.Errorf("asset boarding amounts must be positive"),
 		)
 	}
+	if _, ok := a.claimedDeposits[intent.Outpoint]; ok {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("%w: %s", ErrDepositClaimed,
+				intent.Outpoint),
+		)
+	}
 	if err := a.checkAssetBoarding(ctx, intent.Outpoint); err != nil {
 		return fn.Err[actormsg.RoundActorResp](err)
 	}
@@ -266,11 +275,43 @@ func (a *RoundClientActor) handleAssetBoarding(ctx context.Context,
 	})
 }
 
+// handleReserveAssetDepositClaim reserves an asset deposit for a claim unless
+// a tracked round spends it. Asset boarding refuses a reserved deposit, so a
+// claim and a round never both spend one. The reservation lasts for the life
+// of the process; the caller records the claim durably before publishing it.
+func (a *RoundClientActor) handleReserveAssetDepositClaim(ctx context.Context,
+	m *ReserveAssetDepositClaimRequest) fn.Result[actormsg.RoundActorResp] {
+
+	if _, err := a.scanAssetBoarding(ctx, m.Outpoint); err != nil {
+		return fn.Err[actormsg.RoundActorResp](err)
+	}
+	a.claimedDeposits[m.Outpoint] = struct{}{}
+
+	return fn.Ok[actormsg.RoundActorResp](nil)
+}
+
 // checkAssetBoarding fails unless an asset deposit can join a round of its
 // own: no tracked round spends the deposit, and no other round has a join in
 // flight. A round whose state cannot be read fails the check.
 func (a *RoundClientActor) checkAssetBoarding(ctx context.Context,
 	outpoint wire.OutPoint) error {
+
+	busy, err := a.scanAssetBoarding(ctx, outpoint)
+	if err != nil {
+		return err
+	}
+	if busy {
+		return ErrRoundBusy
+	}
+
+	return nil
+}
+
+// scanAssetBoarding fails with ErrBoardingInFlight if a tracked round spends
+// the deposit, and reports whether any round has a join in flight. A round
+// whose state cannot be read fails the scan.
+func (a *RoundClientActor) scanAssetBoarding(ctx context.Context,
+	outpoint wire.OutPoint) (bool, error) {
 
 	scanCtx, cancel := fsmScanContext(ctx)
 	defer cancel()
@@ -279,22 +320,19 @@ func (a *RoundClientActor) checkAssetBoarding(ctx context.Context,
 	for _, roundFSM := range a.rounds {
 		state, err := fsmState(scanCtx, roundFSM.FSM)
 		if err != nil {
-			return fmt.Errorf("read state of round %s: %w",
+			return false, fmt.Errorf("read state of round %s: %w",
 				roundFSM.Key.KeyString(), err)
 		}
 		for _, intent := range stateBoarding(state) {
 			if intent.Outpoint == outpoint {
-				return fmt.Errorf("%w: %s", ErrBoardingInFlight,
-					outpoint)
+				return false, fmt.Errorf("%w: %s",
+					ErrBoardingInFlight, outpoint)
 			}
 		}
 		busy = busy || joinInFlight(state)
 	}
-	if busy {
-		return ErrRoundBusy
-	}
 
-	return nil
+	return busy, nil
 }
 
 // removeRound stops a round's state machine and drops it from the tracked
