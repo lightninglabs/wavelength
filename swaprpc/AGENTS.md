@@ -91,6 +91,18 @@ because they are part of the wire contract, not of either side's logic.
 - `SwapMailboxEvent` is a proto oneof: read the populated variant, don't
   assume `OutSwapHtlcEvent` is the only case as new event kinds are added.
 
+- Recovery listing is bounded (default 100, maximum 500) and ordered by
+  direction/payment hash. Each continuation request needs an owner proof
+  over its exact token and raw page size, the server's compressed identity,
+  and the network genesis hash. `GetSwapRecoveryInfo` provides the audience
+  over the authenticated transport; clients must validate the network.
+- Listing excludes open receive intents and unfunded out-swap states.
+  Invoice/ACK handshake recovery is not supported. Potential late-funded
+  in-swaps remain discoverable without an expiry or age cutoff.
+- The sole owner-proof tag is `wavelength-swap-recovery-owner-v1`.
+  Proofs are retryable bearer credentials, not single-use tokens. The
+  compressed identity encoding is mandatory. Keep proofs out of logs.
+
 ## Deep Docs
 
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.

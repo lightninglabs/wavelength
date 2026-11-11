@@ -112,6 +112,43 @@ service SwapService {
     // delivered through the receiver mailbox.
     rpc SubmitOutSwapForfeitSignature (SubmitOutSwapForfeitSignatureRequest)
         returns (SubmitOutSwapForfeitSignatureResponse);
+
+    // ListRecoverableSwaps returns bounded owner-scoped recovery candidates.
+    // Open receive intents and unfunded out-swap states are excluded; unpaid
+    // or unacknowledged invoices time out and fail back. Late-funded in-swaps
+    // remain discoverable without an age cutoff. Clients must still verify
+    // live/spent vHTLC state against the indexer before starting recovery.
+    rpc ListRecoverableSwaps (ListRecoverableSwapsRequest)
+        returns (ListRecoverableSwapsResponse);
+
+    // GetSwapRecoveryInfo returns the signing audience for recovery listing.
+    // Fetch over authenticated TLS before producing an owner proof.
+    rpc GetSwapRecoveryInfo (GetSwapRecoveryInfoRequest)
+        returns (GetSwapRecoveryInfoResponse);
+}
+
+// SwapOwnerProof proves control of one client identity key for swap recovery
+// ownership. The signature is a BIP-340 tagged Schnorr signature over the
+// server-defined canonical request message.
+// This is a timestamp-bounded bearer proof, not a single-use challenge.
+// Use authenticated TLS and do not log proofs: a captured proof is replayable
+// during the server's clock-skew window. Identical retries are intentional.
+message SwapOwnerProof {
+    // client_identity_pubkey is the compressed daemon identity pubkey that
+    // owns recoverable swap rows.
+    bytes client_identity_pubkey = 1;
+
+    // timestamp_unix is the caller's current unix timestamp. The server uses
+    // this to bound replay of list requests.
+    int64 timestamp_unix = 2;
+
+    // nonce is 16 cryptographically random bytes generated uniquely for each
+    // request and included in the signed message. It is a uniqueness salt,
+    // not replay protection; the server does not keep a used-nonce registry.
+    bytes nonce = 3;
+
+    // signature is the raw 64-byte BIP-340 Schnorr signature.
+    bytes signature = 4;
 }
 
 // RequestChannelIdRequest starts one Lightning-to-Ark receive negotiation.
@@ -143,6 +180,12 @@ message RequestChannelIdRequest {
     // exact request. Swap servers require it before consulting or reserving
     // account credits.
     CreditAccountAuthorization account_authorization = 6;
+
+    // Recovery ownership is independent of credit-account authorization.
+    SwapOwnerProof owner_proof = 7;
+
+    // Version 1, big-endian key index, and 32-byte random nonce.
+    bytes preimage_recovery_params = 8;
 }
 
 // RequestChannelIdResponse returns the route hint paths for one receive
@@ -384,6 +427,86 @@ message CreateInSwapRequest {
     // account_authorization proves control of account_pubkey for this exact
     // request whenever account_pubkey is set.
     CreditAccountAuthorization account_authorization = 6;
+
+    // owner_proof authenticates the daemon identity that may later list this
+    // in-swap for seed recovery. Rows created without this proof remain usable
+    // but are not returned by ListRecoverableSwaps.
+    SwapOwnerProof owner_proof = 7;
+}
+
+// RecoverableSwapDirection identifies which recovery path a row belongs to.
+enum RecoverableSwapDirection {
+    RECOVERABLE_SWAP_DIRECTION_UNSPECIFIED = 0;
+
+    // RECOVERABLE_SWAP_DIRECTION_IN identifies an Ark-to-Lightning in-swap
+    // where the client is the vHTLC sender/refunder.
+    RECOVERABLE_SWAP_DIRECTION_IN = 1;
+
+    // RECOVERABLE_SWAP_DIRECTION_OUT identifies a Lightning-to-Ark out-swap
+    // where the client is the vHTLC receiver/claimer.
+    RECOVERABLE_SWAP_DIRECTION_OUT = 2;
+}
+
+// ListRecoverableSwapsRequest lists server-owned recovery metadata for one
+// authenticated client identity.
+message ListRecoverableSwapsRequest {
+    // owner_proof authenticates the client identity whose recoverable rows are
+    // requested.
+    SwapOwnerProof owner_proof = 1;
+
+    // page_size is signed as supplied. Zero defaults to 100; maximum 500.
+    uint32 page_size = 2;
+
+    // page_token is an opaque keyset cursor returned by the previous page.
+    // It is signed byte-for-byte. Start each new scan with an empty token
+    // so rows funded after an earlier scan remain discoverable.
+    bytes page_token = 3;
+}
+
+// ListRecoverableSwapsResponse returns a bounded page of recovery candidates.
+message ListRecoverableSwapsResponse {
+    // swaps are sorted by direction, then lexicographic payment hash.
+    repeated RecoverableSwap swaps = 1;
+
+    // next_page_token is empty only at the end of this scan. Rows may change
+    // during a scan; callers must deduplicate and restart scans periodically.
+    bytes next_page_token = 2;
+}
+
+message GetSwapRecoveryInfoRequest {
+}
+
+message GetSwapRecoveryInfoResponse {
+    // server_identity_pubkey is the compressed swap server daemon identity.
+    bytes server_identity_pubkey = 1;
+    // network_genesis_hash is the 32-byte chainhash wire representation.
+    bytes network_genesis_hash = 2;
+}
+
+// RecoverableSwap carries enough server-owned metadata for a restored client
+// to rebuild a candidate vHTLC and then verify its chain/indexer state.
+message RecoverableSwap {
+    RecoverableSwapDirection direction = 1;
+    bytes payment_hash = 2;
+    uint64 amount_sat = 3;
+    int32 state = 4;
+    string state_name = 5;
+    bytes sender_pubkey = 6;
+    bytes receiver_pubkey = 7;
+    bytes operator_pubkey = 8;
+    bytes preimage_hash = 9;
+    uint32 refund_locktime = 10;
+    uint32 unilateral_claim_delay = 11;
+    uint32 unilateral_refund_delay = 12;
+    uint32 unilateral_refund_without_receiver_delay = 13;
+    bytes vhtlc_pk_script = 14;
+    string vhtlc_outpoint = 15;
+    bool refund_authorization_available = 16;
+    reserved 17;
+    reserved "encrypted_recovery_blob";
+    google.protobuf.Timestamp expires_at = 18;
+    // Public parameters registered before the receive invoice is returned.
+    bytes preimage_recovery_params = 19;
 }
 
 // CreateInSwapResponse returns the negotiated parameters for one in-swap.

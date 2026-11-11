@@ -59,10 +59,21 @@ service DaemonService {
     rpc SignReceiveAuthMessageCompact (SignReceiveAuthMessageCompactRequest)
         returns (SignReceiveAuthMessageCompactResponse);
 
+    // SignIdentitySchnorr signs recovery owner proofs with the daemon identity
+    // key. Only the wavelength-swap-recovery-owner-v1 tag is accepted.
+    rpc SignIdentitySchnorr (SignIdentitySchnorrRequest)
+        returns (SignIdentitySchnorrResponse);
+
     // ReceiveAuthECDH derives one Sphinx shared secret with the
     // per-payment receive-auth key.
     rpc ReceiveAuthECDH (ReceiveAuthECDHRequest)
         returns (ReceiveAuthECDHResponse);
+
+    // DeriveSwapPreimage derives a receive preimage from public recovery
+    // parameters using the active wallet's seed. In lnd mode the same lnd
+    // wallet seed must be restored; private keys never leave that wallet.
+    rpc DeriveSwapPreimage (DeriveSwapPreimageRequest)
+        returns (DeriveSwapPreimageResponse);
 
     // GetIndexedVTXOByPkScript queries the authoritative indexer for the
     // first VTXO matching the given script and status filter.
@@ -533,6 +544,18 @@ message InitWalletResponse {
     // recovered_oor_events is the number of OOR recipient events processed
     // during recovery.
     uint32 recovered_oor_events = 7;
+
+    // recovered_vhtlcs is the number of swapserver recoverable vHTLC rows
+    // validated during recovery.
+    uint32 recovered_vhtlcs = 8;
+
+    // recovered_vhtlc_refunds is the number of pay-side refund recovery rows
+    // armed from recovered in-swaps.
+    uint32 recovered_vhtlc_refunds = 9;
+
+    // recovered_vhtlc_claims is the number of receive-side claim recovery
+    // rows armed from recovered out-swaps.
+    uint32 recovered_vhtlc_claims = 10;
 }
 
 message UnlockWalletRequest {
@@ -940,6 +963,20 @@ message SignReceiveAuthMessageCompactRequest {
 
 message SignReceiveAuthMessageCompactResponse {
     // signature is the compact public-key-recoverable ECDSA signature.
+    bytes signature = 1;
+}
+
+message SignIdentitySchnorrRequest {
+    // message is the raw domain-separated message to sign.
+    bytes message = 1;
+
+    // tag must be wavelength-swap-recovery-owner-v1. Other domains, including
+    // transaction-signing domains, are rejected before wallet access.
+    bytes tag = 2;
+}
+
+message SignIdentitySchnorrResponse {
+    // signature is the raw 64-byte BIP-340 Schnorr signature.
     bytes signature = 1;
 }
 
@@ -3039,12 +3076,17 @@ message CancelVHTLCRecoveryResponse {
 }
 
 message GetVHTLCRecoveryStatusRequest {
-    // recovery_id identifies the recovery job to query.
+    // recovery_id identifies the job. Set exactly one of recovery_id or
+    // request_id.
     string recovery_id = 1;
+
+    // request_id looks up the original arm idempotency key through the unique
+    // database index, including terminal jobs, without listing all recoveries.
+    string request_id = 2;
 }
 
 message GetVHTLCRecoveryStatusResponse {
-    // found is true when a recovery row exists for recovery_id.
+    // found is true when a recovery row matches the supplied identifier.
     bool found = 1;
 
     // status is populated when found is true.
@@ -3217,4 +3259,14 @@ message ListPermissionsResponse {
     // method_permissions maps full RPC method URIs to their required
     // entity/action operations.
     map<string, MacaroonPermissionList> method_permissions = 1;
+}
+
+message DeriveSwapPreimageRequest {
+    // Version 1: byte 1, big-endian uint32 index, and 32-byte random nonce.
+    bytes recovery_params = 1;
+}
+
+message DeriveSwapPreimageResponse {
+    // The derived 32-byte preimage. Treat this response as secret.
+    bytes preimage = 1;
 }
