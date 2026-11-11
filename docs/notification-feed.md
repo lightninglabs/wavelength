@@ -154,3 +154,26 @@ The feed does not change durable wallet execution, verified receipt presentation
 notification consent or authenticated tap routing. A separate `ProcessNext`
 API must prove its own persistence and lifecycle guarantees. Transport ACK is
 not an idle, shutdown or payment-completion barrier.
+
+## Embedded SDK and mobile binding
+
+`wavewalletdk.Client.SetNotificationFeedGrant` accepts
+`NotificationFeedGrant`. `Source` selects the configured operator by default,
+or `swap_server`; it cannot name a URL. `SubscriberPubkey` is compressed-key
+hex, `GrantID` is the app-owned stable ID, and `EventClasses` and
+`ExpiresAtUnix` are the signed limits. `SubscriberSignature` carries the
+relay-issued route consent as raw URL-base64. `Remove` requires the remaining routing
+fields to be empty. The response's `FeedToken` uses raw URL-base64 for storage
+and transfer to the publisher relay.
+
+The gomobile `SetNotificationFeedGrant` function accepts and returns the same
+snake-case JSON fields. It derives its ten-second deadline from the active
+wallet lifecycle. The embedded handle retains the daemon until the call's
+final access ends, even if a host's close wait expires. Remote handles return
+`notification.ErrUnsupported`; this adds no remote wallet-signing RPC.
+
+Operator registration uses the bootstrapped operator connection and identity.
+The separately configured swap connection needs its existing explicit issuer
+pin and a transport with the direct feed service. A source challenge is checked
+against that pin before the wallet signs. Registration can run before ingress
+starts, but cannot unlock a wallet or bypass identity initialization.

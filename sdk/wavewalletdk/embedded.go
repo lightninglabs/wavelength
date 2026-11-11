@@ -236,6 +236,8 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 	client.cancelReceiptWindow = server.CancelReceiptWindow
 	client.waitWalletServicesReady = server.WaitForWalletServicesReady
 	client.recoverWalletState = server.RecoverWalletState
+	client.setFeedGrant = server.SetNotificationFeedGrant
+	client.setSwapFeedGrant = server.SetSwapFeedGrant
 	client.setNotificationSubscription = server.SetNotificationSubscription
 	client.setSwapNotificationSubscription =
 		server.SetSwapNotificationSubscription

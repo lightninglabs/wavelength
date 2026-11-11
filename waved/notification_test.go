@@ -56,6 +56,7 @@ func (s *notificationTestSigner) SignMessage(_ context.Context, message []byte,
 // notificationTestEdge verifies the real direct gRPC control exchange.
 type notificationTestEdge struct {
 	mailboxpb.UnimplementedNotificationServiceServer
+	mailboxpb.UnimplementedWakeFeedServiceServer
 	authority *notification.ChallengeAuthority
 }
 
@@ -86,6 +87,33 @@ func (e *notificationTestEdge) SetNotificationSubscription(_ context.Context,
 	}, nil
 }
 
+// GetFeedChallenge shares the configured issuer without starting ingress.
+func (e *notificationTestEdge) GetFeedChallenge(ctx context.Context,
+	r *mailboxpb.NotificationChallengeRequest) (
+	*mailboxpb.NotificationChallenge, error) {
+
+	return e.GetNotificationChallenge(ctx, r)
+}
+
+// SetFeedGrant verifies real feed-domain proofs through the daemon signer.
+func (e *notificationTestEdge) SetFeedGrant(_ context.Context,
+	r *mailboxpb.FeedGrantRequest) (*mailboxpb.FeedGrantResponse, error) {
+
+	now := time.Now()
+	if err := e.authority.VerifyChallenge(r.Challenge, now); err != nil {
+		return nil, err
+	}
+	if err := notification.VerifyFeedAuthorization(r, now); err != nil {
+		return nil, err
+	}
+
+	return &mailboxpb.FeedGrantResponse{GrantId: r.Mutation.GrantId,
+		FeedToken: bytes.Repeat([]byte{3}, 32),
+		ExpiresAtUnix: r.
+			Mutation.
+			ExpiresAtUnix}, nil
+}
+
 // TestNotificationBeforeIngress exercises the actual daemon and wallet-signing
 // bridge while wallet-services readiness is unresolved and no ingress exists.
 func TestNotificationBeforeIngress(t *testing.T) {
@@ -104,6 +132,11 @@ func TestNotificationBeforeIngress(t *testing.T) {
 	t.Cleanup(func() { _ = listener.Close() })
 	grpcServer := grpc.NewServer()
 	mailboxpb.RegisterNotificationServiceServer(
+		grpcServer, &notificationTestEdge{
+			authority: authority,
+		},
+	)
+	mailboxpb.RegisterWakeFeedServiceServer(
 		grpcServer, &notificationTestEdge{
 			authority: authority,
 		},
@@ -152,7 +185,8 @@ func TestNotificationBeforeIngress(t *testing.T) {
 	action := mailboxpb.NotificationSubscriptionMutation_ACTION_UPSERT
 	mutation := &mailboxpb.NotificationSubscriptionMutation{
 		Action:         action,
-		SubscriptionId: "route", RelayId: "publisher",
+		SubscriptionId: "route",
+		RelayId:        "publisher",
 		WakeCapability: base64.RawURLEncoding.EncodeToString(
 			bytes.Repeat(
 				[]byte{2}, 32,
@@ -195,6 +229,56 @@ func TestNotificationBeforeIngress(t *testing.T) {
 	require.Equal(t, before, signer.calls.Load())
 	rpcServer.RegisterSwapNotificationSource(nil)
 	_, err = server.SetSwapNotificationSubscription(ctx, mutation)
+	require.ErrorIs(t, err, notification.ErrUnsupported)
+	feed := &mailboxpb.FeedGrantMutation{
+		Action:           mailboxpb.FeedGrantMutation_ACTION_UPSERT,
+		GrantId:          "AAECAwQFBgcICQoLDA0ODw",
+		SubscriberPubkey: wrong.PubKey().SerializeCompressed(),
+		EventClasses:     notification.FeedClassWake,
+		ExpiresAtUnix: time.
+			Now().
+			Add(time.Hour).
+			Unix(),
+	}
+	routeMessage, err := notification.FeedRouteSigningMessage(
+		operator.PubKey().SerializeCompressed(), feed.SubscriberPubkey,
+		feed.GrantId, feed.EventClasses, feed.ExpiresAtUnix,
+	)
+	require.NoError(t, err)
+	routeDigest := chainhash.TaggedHash(
+		[]byte(notification.FeedRouteSignatureTag), routeMessage,
+	)
+	routeSignature, err := schnorr.Sign(wrong, routeDigest[:])
+	require.NoError(t, err)
+	feed.SubscriberSignature = routeSignature.Serialize()
+	feedResult, err := server.SetNotificationFeedGrant(ctx, feed)
+	require.NoError(t, err)
+	require.Equal(t, feed.GrantId, feedResult.GrantId)
+	feedRemote := mailboxpb.NewWakeFeedServiceClient(conn)
+	rpcServer.RegisterSwapFeedSource(func(ctx context.Context,
+		mutation *mailboxpb.FeedGrantMutation) (
+		*mailboxpb.FeedGrantResponse, error) {
+
+		return rpcServer.AuthorizeFeedGrant(
+			ctx, feedRemote, operator.PubKey(), mutation,
+		)
+	})
+	_, err = server.SetSwapFeedGrant(ctx, feed)
+	require.NoError(t, err)
+	before = signer.calls.Load()
+	rpcServer.RegisterSwapFeedSource(func(ctx context.Context,
+		mutation *mailboxpb.FeedGrantMutation) (
+		*mailboxpb.FeedGrantResponse, error) {
+
+		return rpcServer.AuthorizeFeedGrant(
+			ctx, feedRemote, wrong.PubKey(), mutation,
+		)
+	})
+	_, err = server.SetSwapFeedGrant(ctx, feed)
+	require.ErrorIs(t, err, notification.ErrInvalidAuthorization)
+	require.Equal(t, before, signer.calls.Load())
+	rpcServer.RegisterSwapFeedSource(nil)
+	_, err = server.SetSwapFeedGrant(ctx, feed)
 	require.ErrorIs(t, err, notification.ErrUnsupported)
 	// No bootstrap identity is a readiness error, not an unsupported edge.
 	_, err = (&Server{}).SetNotificationSubscription(ctx, mutation)
