@@ -106,6 +106,11 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - Swap state, persistence, and protocol behavior are never duplicated in this
   layer — they stay in `sdk/swaps`. This package is a worker registry and RPC
   facade only.
+- Wallet seed recovery invokes `RecoverVHTLCs`, which persists recovered SDK
+  sessions and schedules `resumePending` on the daemon context even when the
+  discovery scan returns partial progress and an error. Wallet creation's
+  cancellation must not cancel the refund/claim workers or block their next
+  maturity/grace poll. Startup resumes the same durable rows after restart.
 - `idempotency_key` on `StartPay` / `StartReceive` is explicitly reserved and
   returns `Unimplemented` to guard against accidental duplicate-start
   assumptions; by contrast `CreateCredit` / `RedeemCredit` require a

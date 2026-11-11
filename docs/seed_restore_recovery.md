@@ -29,9 +29,71 @@ The recovery response reports how much state was materialized:
 - `recovered_vtxos`
 - `recovered_oor_receive_scripts`
 - `recovered_oor_events`
+- `recovered_vhtlcs`
+- `recovered_vhtlc_refunds`
+- `recovered_vhtlc_claims`
 
 Recovery is idempotent. Re-running it against already persisted scripts or
 VTXOs should not fail because the state already exists.
+
+## Swap Recovery And Signer Trust
+
+Swap recovery supports funded vHTLCs. It does not resume unpaid invoices,
+open receive intents, or an unfinished invoice/acknowledgement handshake;
+those invoices time out and fail back. Registration still stores ownership
+and public preimage parameters before returning the invoice. The server is
+only a discovery source: independently verify each candidate's funding,
+script, and live/spent state before rebuilding durable swap sessions.
+
+Recovered pay sessions only refund; they never resend a Lightning payment.
+Receive sessions derive and verify the preimage, then attempt a cooperative
+claim. Both persist before recovery is armed, continue after the restore RPC
+ends, and resume after daemon restart. Cooperative refunds are attempted
+before the refund timeout when the server can authorize them. Unilateral
+fallback still requires the configured automatic-escalation policy; restore
+does not itself opt into on-chain fees. Recovery counters count admitted
+sessions, not completed refunds or claims. Inspect swap and recovery status
+to confirm settlement.
+
+Cooperative receive claims stop before refund maturity, including the normal
+safety buffer, so they do not disclose a preimage to an operator who can
+authorize a competing refund. New automatic exits require enough remaining
+blocks for ancestry and claim CSV, and a readable chain height. Deadline
+pressure applies before the latest viable exit start, not just before the
+refund itself. A too-late live hashlock remains pending for explicit operator
+intervention rather than spending exit fees or disclosing another cooperative
+preimage. Manual exits and already-started unrolls still need deadline/race
+assessment; starting within the budget cannot guarantee timely confirmation.
+
+Restored receive funding must match the server's advertised vHTLC total,
+including any attached credit, before a session or preimage is admitted.
+Existing recovery jobs are found by their indexed arm request ID, including
+terminal jobs, rather than listing and probing every daemon recovery per row.
+The wallet's optional swap scan still has a 30-second budget and can report
+partial results for large histories. It does not continue discovery in a new
+background scanner; explicit SDK scans can use a longer caller-owned context.
+
+Listing is paginated (default 100, maximum 500), ordered by direction and
+payment hash. Follow every continuation token, signing each exact page for
+the advertised server identity and the locally expected network. Begin each
+new scan with an empty token. Expired and failed in-swap quotes can be funded
+late, so discovery has no age cutoff that would hide those funds.
+
+For lnd-backed wallets, the daemon performs wallet self-ECDH through lnd's
+`DeriveSharedKey` API and derives a preimage from the resulting secret plus
+public, network-bound invoice parameters. The daemon restricts its own public
+identity-signing RPC to `wavelength-swap-recovery-owner-v1`. Lnd does not
+enforce that recovery-only policy: raw `SignMessage` and `DeriveSharedKey`
+access can produce owner proofs or reproduce invoice preimages without using
+the daemon's constrained APIs. Treat lnd signer credentials and any remote
+signer as trusted wallet-secret access. Keep these credentials separate from
+swap-server credentials and do not grant them to untrusted plugins.
+
+Owner proofs remain valid for identical retries within the server's ten-minute
+clock-skew window. A nonce is a uniqueness salt, not a single-use challenge.
+Use authenticated TLS and never log proofs. The server verifies its own
+compressed identity, genesis hash, raw page size, and exact continuation
+token against the signed message; a proof for another audience or page fails.
 
 ## Before You Restore
 

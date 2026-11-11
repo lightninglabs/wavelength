@@ -25,6 +25,7 @@ import (
 	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	"github.com/lightninglabs/wavelength/unroll"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/grpc"
 )
 
@@ -330,6 +331,11 @@ type Config struct {
 	// materialization. The hook must not block. Nil in production; not
 	// serialized to config files.
 	UnrollAdmissionHook func(*unroll.EnsureUnrollRequest)
+
+	// CustomOORSendHook is a TEST-ONLY admission hook for custom-input
+	// transfers, including SDK calls that bypass the gRPC interceptors.
+	// It must not block. Nil in production; not loaded from config files.
+	CustomOORSendHook func(context.Context, *waverpc.SendOORRequest) error
 
 	// Lnd configures the connection to the backing lnd node.
 	Lnd *LndConfig `mapstructure:"lnd"`
@@ -867,6 +873,8 @@ type SwapVHTLCRecoveryConfig struct {
 	// AutoEscalate allows the daemon-owned swap runtime to start on-chain
 	// recovery without a manual command once the grace/deadline policy says
 	// cooperative retry is no longer safe or useful.
+	// New receive exits still require a readable height and enough time
+	// for exit ancestry plus claim CSV before the sender can refund.
 	AutoEscalate bool `mapstructure:"autoescalate"`
 
 	// CooperativeFailureGracePeriod is measured from the first cooperative
@@ -875,10 +883,9 @@ type SwapVHTLCRecoveryConfig struct {
 	// the wait.
 	CooperativeFailureGracePeriod time.Duration `mapstructure:"cooperativefailuregraceperiod"` //nolint:ll
 
-	// MinRecoveryMarginBlocks is the minimum block margin preserved before
-	// a refund locktime. Receive-side claim recovery may override the grace
-	// period when the current height plus this margin reaches the refund
-	// locktime.
+	// MinRecoveryMarginBlocks triggers deadline pressure before the latest
+	// viable claim-exit start, accounting for ancestry and claim CSV. It
+	// may override grace, but cannot authorize an already-too-late exit.
 	MinRecoveryMarginBlocks uint32 `mapstructure:"minrecoverymarginblocks"`
 
 	// MaxFeeRateSatPerKW caps the final vHTLC recovery exit-spend fee rate.
@@ -900,6 +907,22 @@ func (c SwapVHTLCRecoveryConfig) WithDefaults() SwapVHTLCRecoveryConfig {
 	return c
 }
 
+// SwapRecoveryResult summarizes vHTLC recovery work performed by the optional
+// swap runtime during seed restore.
+type SwapRecoveryResult struct {
+	// RecoveredVHTLCs counts recoverable rows returned by the swapserver
+	// that had vHTLC metadata the runtime could validate.
+	RecoveredVHTLCs uint32
+
+	// RecoveredVHTLCRefunds counts pay-side refund recovery rows armed
+	// from recovered in-swaps.
+	RecoveredVHTLCRefunds uint32
+
+	// RecoveredVHTLCClaims counts receive-side claim recovery rows armed
+	// from recovered out-swaps.
+	RecoveredVHTLCClaims uint32
+}
+
 // SwapBackend is the in-Go handle exposed by swapclientserver after Register
 // completes. It lets higher-level subservers (such as the wavewalletrpc
 // subserver) drive the swap runtime without dialing the daemon's gRPC server
@@ -912,6 +935,10 @@ type SwapBackend interface {
 	// when the active resume policy is allowed to start background
 	// workers.
 	ResumePending(ctx context.Context)
+
+	// RecoverVHTLCs asks the swap runtime to discover swapserver-owned
+	// recoverable vHTLC rows and arm daemon-owned recovery jobs.
+	RecoverVHTLCs(ctx context.Context) (*SwapRecoveryResult, error)
 }
 
 // ActivityStore is the wavewalletrpc subserver's handle on the canonical

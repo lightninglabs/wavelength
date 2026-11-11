@@ -42,6 +42,104 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// TestRecoverVHTLCsPreservesPartialResults verifies the daemon sees armed rows
+// even when another row fails or the bounded recovery context expires.
+func TestRecoverVHTLCsPreservesPartialResults(t *testing.T) {
+	t.Parallel()
+
+	partial := &swaps.SwapserverRecoveryResult{
+		RecoveredVHTLCs:       3,
+		RecoveredVHTLCRefunds: 1,
+		RecoveredVHTLCClaims:  2,
+	}
+	lookupErr := errors.New("indexer unavailable")
+	tests := []struct {
+		name   string
+		result *swaps.SwapserverRecoveryResult
+		err    error
+	}{
+		{
+			name:   "complete",
+			result: partial,
+		},
+		{
+			name:   "partial",
+			result: partial,
+			err:    lookupErr,
+		},
+		{
+			name: "timeout", result: partial,
+			err: context.DeadlineExceeded,
+		},
+		{
+			name: "empty",
+		},
+		{
+			name: "failed",
+			err:  lookupErr,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := newFakeSwapRuntime()
+			client.recoveryResult = test.result
+			client.recoveryErr = test.err
+			service := newTestSwapClientService(client)
+			defer service.cancel()
+
+			result, err := service.RecoverVHTLCs(t.Context())
+			require.ErrorIs(t, err, test.err)
+			require.NotNil(t, result)
+			if test.result == nil {
+				require.Empty(t, result)
+
+				return
+			}
+
+			require.Equal(t, &waved.SwapRecoveryResult{
+				RecoveredVHTLCs:       3,
+				RecoveredVHTLCRefunds: 1,
+				RecoveredVHTLCClaims:  2,
+			}, result)
+		})
+	}
+}
+
+// TestRecoveryResumesBeyondRequestLifetime verifies partial restoration starts
+// durable pay and receive workers even when wallet creation's RPC is cancelled.
+func TestRecoveryResumesBeyondRequestLifetime(t *testing.T) {
+	t.Parallel()
+	payHash := testHash(181)
+	receiveHash := testHash(182)
+	client := newFakeSwapRuntime(
+		swaps.SwapSummary{
+			Direction:   swaps.SwapDirectionPay,
+			PaymentHash: payHash, Pending: true,
+		},
+		swaps.SwapSummary{
+			Direction:   swaps.SwapDirectionReceive,
+			PaymentHash: receiveHash, Pending: true,
+		},
+	)
+	client.recoveryResult = &swaps.SwapserverRecoveryResult{
+		RecoveredVHTLCs: 2,
+	}
+	client.recoveryErr = context.Canceled
+	service := newTestSwapClientService(client)
+	defer service.cancel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	result, err := service.RecoverVHTLCs(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	require.EqualValues(t, 2, result.RecoveredVHTLCs)
+	client.awaitPayResume(t, payHash)
+	client.awaitReceiveResume(t, receiveHash)
+	require.NoError(t, service.rootCtx.Err())
+}
+
 func TestResumePendingStartsWorkersAndDedupes(t *testing.T) {
 	t.Parallel()
 
@@ -1759,6 +1857,8 @@ type fakeSwapRuntime struct {
 	redeemCreditErr     error
 	listCreditsResp     *swaps.CreditSnapshot
 	listCreditsErr      error
+	recoveryResult      *swaps.SwapserverRecoveryResult
+	recoveryErr         error
 
 	quotePayCalls      int
 	quotePayInvoice    string
@@ -1850,9 +1950,12 @@ func (f *fakeSwapRuntime) StartReceiveViaLightning(_ context.Context,
 	return f.startReceiveSession, nil
 }
 
-func (f *fakeSwapRuntime) ResumePayViaLightning(_ context.Context,
+func (f *fakeSwapRuntime) ResumePayViaLightning(ctx context.Context,
 	hash lntypes.Hash) (paySwapSession, error) {
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -1863,9 +1966,12 @@ func (f *fakeSwapRuntime) ResumePayViaLightning(_ context.Context,
 }
 
 // ResumeReceiveViaLightning records admission and returns a controlled worker.
-func (f *fakeSwapRuntime) ResumeReceiveViaLightning(_ context.Context,
+func (f *fakeSwapRuntime) ResumeReceiveViaLightning(ctx context.Context,
 	hash lntypes.Hash) (receiveSwapSession, error) {
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -1960,6 +2066,13 @@ func (f *fakeSwapRuntime) ListSwapSummaries(_ context.Context,
 	}
 
 	return summaries, nil
+}
+
+// RecoverSwapserverVHTLCs exposes partial results and failures independently.
+func (f *fakeSwapRuntime) RecoverSwapserverVHTLCs(context.Context) (
+	*swaps.SwapserverRecoveryResult, error) {
+
+	return f.recoveryResult, f.recoveryErr
 }
 
 func (f *fakeSwapRuntime) awaitPayResume(t *testing.T, hash lntypes.Hash) {

@@ -26,6 +26,12 @@ func (f *fakeResumeOnlyBackend) ResumePending(_ context.Context) {
 	f.resumeCalls.Add(1)
 }
 
+func (f *fakeResumeOnlyBackend) RecoverVHTLCs(context.Context) (
+	*waved.SwapRecoveryResult, error) {
+
+	return &waved.SwapRecoveryResult{}, nil
+}
+
 // fakeWalletBackend satisfies both the in-Go resume handle and the gRPC-shaped
 // swap service required by the wallet registrar.
 type fakeWalletBackend struct {
@@ -46,6 +52,12 @@ func TestChainParamsForWalletNetworkAcceptsTestNet4(t *testing.T) {
 	params, err := chainParamsForWalletNetwork("testnet4")
 	require.NoError(t, err)
 	require.Same(t, &chaincfg.TestNet4Params, params)
+}
+
+func (f *fakeWalletBackend) RecoverVHTLCs(context.Context) (
+	*waved.SwapRecoveryResult, error) {
+
+	return &waved.SwapRecoveryResult{}, nil
 }
 
 // TestRegisterDefersResumeUntilWalletReadyHook confirms the wallet subserver
