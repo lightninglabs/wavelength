@@ -13,6 +13,10 @@ type Querier interface {
 	GetPayAuthorization(ctx context.Context, paymentHash []byte) (PayAuthorization, error)
 	GetPaySwap(ctx context.Context, paymentHash []byte) (PaySwap, error)
 	GetReceiveSwap(ctx context.Context, paymentHash []byte) (ReceiveSwap, error)
+	// Admission never replaces a session already owned by another caller.
+	InsertPaySwap(ctx context.Context, arg InsertPaySwapParams) (int64, error)
+	// Admission never replaces a session already owned by another caller.
+	InsertReceiveSwap(ctx context.Context, arg InsertReceiveSwapParams) (int64, error)
 	ListPaySwaps(ctx context.Context) ([]PaySwap, error)
 	ListPendingPaySwaps(ctx context.Context) ([]PaySwap, error)
 	ListPendingReceiveSwaps(ctx context.Context) ([]ReceiveSwap, error)
