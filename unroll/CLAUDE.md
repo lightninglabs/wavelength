@@ -428,12 +428,18 @@ withheld, including a sweep restored from a checkpoint.
 
 With an `AssetClaimer` configured, the matured exit of an asset VTXO is the
 claimer's claim instead: the leaf spent through its exit leaf into the asset
-wallet. The claim pays no fee, so `startAssetClaim` hands it to txconfirm for
-CPFP and follows it like a sweep, replacing any staged sweep. The claimer
-returns the same claim on every call; one it cannot produce yet is retried at
-the next block. A claim books no exit cost, because the carrier's satoshis
-leave for the asset wallet, which the ledger does not track. Without a
-claimer the exit stops before its final spend.
+wallet. The claim pays no fee, so `startSweep` hands it to txconfirm for CPFP
+and follows it like a sweep, replacing any staged sweep. tapd leaves the
+claim's relay to the job, so the job asks txconfirm for
+`chainsource.DefaultFinalityDepth` confirmations and stays open, resuming the
+relay after a restart, until the claim is final. The claimer returns the same
+claim on every call; one it cannot produce yet is retried at the next block.
+A claim books no exit cost, because the carrier's satoshis leave for the
+asset wallet, which the ledger does not track. `PlanExitFunding` prices an
+asset exit as one more wallet-funded CPFP child and skips the dust and cost
+checks, since the exit recovers the asset rather than the carrier's satoshis.
+For the same reason it reports a zero `NetRecoveredSat`. Without a claimer
+the exit stops before its final spend.
 
 ## Shutdown ownership
 

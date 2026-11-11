@@ -92,6 +92,33 @@ func TestAssessExitFeasibility(t *testing.T) {
 			},
 		},
 		{
+			name: "asset claim is priced as a CPFP child",
+			mutate: func(in *ExitFeasibilityInput) {
+				// A carrier of a few hundred satoshis would
+				// fail the dust and cost checks of a sweep.
+				in.VTXOAmountSat = 330
+				in.AssetClaim = true
+			},
+			wantReason: ExitFeasible,
+			assert: func(t *testing.T, f ExitFeasibility) {
+				// 3 children * 155 vB + a 200 vB claim.
+				require.EqualValues(
+					t, 665, f.CPFPFeeTotalSat,
+				)
+				require.Zero(t, f.SweepFeeSat)
+				require.EqualValues(t, 330, f.VTXOAmountSat)
+				require.Zero(t, f.NetRecoveredSat)
+			},
+		},
+		{
+			name: "asset claim needs a funded wallet",
+			mutate: func(in *ExitFeasibilityInput) {
+				in.AssetClaim = true
+				in.WalletConfirmedSat = 664
+			},
+			wantReason: ExitWalletUnderfunded,
+		},
+		{
 			name: "sub-dust VTXO cannot be swept",
 			mutate: func(in *ExitFeasibilityInput) {
 				// The #608 case: a 1-sat VTXO. After any sweep
