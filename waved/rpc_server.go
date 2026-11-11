@@ -5897,6 +5897,9 @@ func (r *RPCServer) enrichExitFees(ctx context.Context,
 	})
 	fees.TotalCostSat = fees.CpfpFeeSat + fees.SweepFeeSat
 	fees.NetRecoveredSat = fees.VtxoAmountSat - fees.SweepFeeSat
+	if desc.TaprootAssetRoot != nil {
+		fees.NetRecoveredSat = 0
+	}
 	fees.SpentSoFarSat = spentSoFarSat(
 		fees, progress, sweepBuilt, out.Status,
 	)

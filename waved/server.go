@@ -57,6 +57,7 @@ import (
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	"github.com/lightninglabs/wavelength/rpcauth"
 	"github.com/lightninglabs/wavelength/serverconn"
+	"github.com/lightninglabs/wavelength/tapassets"
 	"github.com/lightninglabs/wavelength/timeout"
 	"github.com/lightninglabs/wavelength/txconfirm"
 	"github.com/lightninglabs/wavelength/unroll"
@@ -222,6 +223,10 @@ type Server struct {
 	// tapdClient is the tapd connection of the tapd asset backend, nil
 	// when assets are disabled.
 	tapdClient *tapgrpc.Client
+
+	// assetClaimer claims asset deposits and asset VTXOs back to the tapd
+	// wallet, nil when assets are disabled.
+	assetClaimer *tapassets.Claimer
 
 	// assetDeposits funds asset deposits, nil unless the tapd backend and
 	// the lnd node behind tapd are configured.
@@ -6264,6 +6269,7 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 			Jobs:     recoveryStore,
 			Preimage: preimages,
 		},
+		AssetClaimer: s.unrollAssetClaimer(chainSourceRef),
 		ArmedExitPolicy: func(ctx context.Context,
 			target wire.OutPoint) (unroll.ExitPolicyKind, string,
 			bool, error) {
