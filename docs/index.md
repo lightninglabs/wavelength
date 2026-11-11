@@ -29,6 +29,7 @@ into specific topics below.
 | [swap_background_execution.md](swap_background_execution.md) | Optional build-tagged daemon executor for background swap progress and daemon-backed CLI control |
 | [mailbox_architecture.md](mailbox_architecture.md) | Three-layer mailbox system: pb, rpc, conn, serverconn |
 | [host-driven-ingress.md](host-driven-ingress.md) | Bounded host-driven mailbox ingress |
+| [sdk-wake-ingress-architecture.md](sdk-wake-ingress-architecture.md) | SDK intake ownership, durable handoffs, domain commits and restart limits |
 | [mobile_round_runtime_architecture.md](mobile_round_runtime_architecture.md) | Ownership, durable turns, signer recovery and storage boundaries |
 | [mobile-runtime-recovery-execplan.md](mobile-runtime-recovery-execplan.md) | Persistent round runtime implementation and recovery validation |
 | [mailbox-consumption-plan.md](mailbox-consumption-plan.md) | Execution plan for durable consumer ownership and semantic replay safety |
