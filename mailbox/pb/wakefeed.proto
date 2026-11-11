@@ -34,6 +34,9 @@ message FeedGrantMutation {
     // Unknown bits are rejected. These never authorize wallet operations.
     uint32 event_classes = 4;
     int64 expires_at_unix = 5;
+    // Subscriber-signed consent binds this producer, grant ID, classes and
+    // expiry. A producer retains one owner per (subscriber, grant ID).
+    bytes subscriber_signature = 6;
 }
 
 // FeedGrantRequest signs every challenge and mutation field under the wallet
@@ -66,4 +69,7 @@ message WakeFeedEvent {
     string payment_event_id = 4;
     // Bound local push retries by this producer-authorized grant expiry.
     int64 expires_at_unix = 5;
+    // Publisher-owned route ID, matching the enrolled route when binding the
+    // token. This is not the wallet identity.
+    string grant_id = 6;
 }
