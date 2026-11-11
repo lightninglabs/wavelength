@@ -1981,6 +1981,13 @@ func (s *swapClientService) SubscribeSwaps(
 	stream grpc.ServerStreamingServer[swapclientrpc.SubscribeSwapsResponse],
 ) error {
 
+	// Register before reading the snapshot so a worker that finishes
+	// during snapshot delivery is buffered for the live loop. Registering
+	// afterward loses its only terminal update when the snapshot still
+	// contains the earlier pending state.
+	ch := s.addSubscriber()
+	defer s.removeSubscriber(ch)
+
 	if req.GetIncludeExisting() {
 		existing, err := s.ListSwaps(
 			stream.Context(), &swapclientrpc.ListSwapsRequest{
@@ -2001,9 +2008,6 @@ func (s *swapClientService) SubscribeSwaps(
 			}
 		}
 	}
-
-	ch := s.addSubscriber()
-	defer s.removeSubscriber(ch)
 
 	for {
 		select {
