@@ -141,6 +141,7 @@ flowchart TD
     B -- "yes" --> D["return IngressPumpResult"]
     B -- "no" --> P["pullBatchWithWait"]
     P -- "empty" --> N["MailboxEmpty point observation"]
+    N --> D
     P -- "invalid cursor or transport error" --> E
     P -- "nonempty" --> V["validate batch and policy"]
     V -- "unsupported" --> F["ErrIngressNeedsForeground; no dispatch"]
@@ -215,6 +216,7 @@ stateDiagram-v2
     NoncesSentState --> coldSigning: restore without signer sessions
     PartialSigsSentState --> coldSigning: restore without signer sessions
     RoundJoinedState --> coldSigning: restore interrupted signing fence
+    coldSigning --> coldSigning: non-dead status or another ordinary event
     coldSigning --> ClientFailedState: authoritative dead status
     ClientFailedState --> [*]: retire owner and release reservations
 ```
@@ -222,7 +224,11 @@ stateDiagram-v2
 The diagram omits intermediate validation states; it shows signing ownership.
 Private MuSig2 sessions are excluded from snapshots. A cold signing attempt
 cannot create replacement nonces or re-sign. It keeps ownership until
-reconciliation permits retirement. `InputSigSentState` can restore saved
+reconciliation permits retirement. `processColdRoundEvent` does not promote a
+non-dead status or a commitment-confirmation event to `ConfirmedState`; those
+events leave the cold attempt owned. This is a limit of that recovery path,
+not a statement that an operator can complete every such attempt.
+`InputSigSentState` can restore saved
 boarding signatures and confirmation watches without restoring nonce sessions.
 Durable join effects persist `SupportsRoundRetry: false` before publication.
 
