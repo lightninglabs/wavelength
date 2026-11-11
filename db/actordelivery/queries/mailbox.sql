@@ -53,35 +53,12 @@ ON CONFLICT (id) DO NOTHING;
 -- and participate in the global available_at order as before; they are
 -- not affected by, and do not affect, keyed lanes.
 --
--- The anti-join also requires the predecessor to still have retry budget
--- (m2.attempts < m2.max_attempts). Without this clause, a same-key row
--- that exhausted its attempts but has not yet been physically deleted
--- (e.g. a crash window between MoveMailboxToDeadLetter and
--- DeleteMailboxMessage in handlePoisonMessage) would permanently block
--- every later same-key message instead of being passed over. The
--- exhausted row is already filtered out of the outer candidate set by
--- m.attempts < m.max_attempts, so this just brings the anti-join
--- predicate into agreement with the eligibility predicate.
---
--- CAVEAT (postpone + keyed lanes + multiple workers). That agreement has a
--- boundary case that postpone can turn into a FIFO inversion. A predecessor
--- leased on its FINAL attempt (attempts == max_attempts after the claim
--- pre-increment) is invisible to this anti-join while it is still being
--- processed, so a competing worker may claim its same-key successor. That is
--- harmless when the predecessor can only ack or dead-letter, which is true for
--- ack and nack. A postpone breaks it: the predecessor is released with attempts
--- DECREMENTED back below max_attempts, so it becomes claim-eligible again and
--- reprocesses AFTER the successor already ran, inverting per-key order.
---
--- No adopter combines all three preconditions today (keyed correlation lanes,
--- NumWorkers > 1, and a postponing behavior), so the SQL is deliberately left
--- alone rather than complicated for a hypothetical. Per-key FIFO therefore
--- holds for a postponing consumer only when the actor is single-worker, or
--- when the lane's messages never reach their final attempt. Before wiring a
--- postponing behavior onto a keyed lane with a worker pool, fix this first:
--- the intended repair is to add a lease-liveness disjunct so a predecessor
--- that is currently leased still blocks its successors regardless of its
--- attempts, rather than relying on the attempts predicate alone.
+-- An earlier row blocks its lane while it either has retry budget or holds a
+-- live lease. The lease disjunct matters on the final attempt: claiming the
+-- row increments attempts to max_attempts, but a postpone may later restore
+-- its budget. Keeping the row at the head until that outcome is known prevents
+-- a competing worker from claiming its successor first. Once the lease expires,
+-- an exhausted row is terminal and no longer blocks later same-key messages.
 UPDATE mailbox_messages
 SET
     lease_token = $2,
@@ -100,7 +77,10 @@ WHERE mailbox_messages.id = (
               WHERE m2.mailbox_id = m.mailbox_id
                 AND m2.correlation_key = m.correlation_key
                 AND m2.id < m.id
-                AND m2.attempts < m2.max_attempts
+                AND (
+                    m2.attempts < m2.max_attempts
+                    OR m2.lease_until >= $4
+                )
           )
       )
     ORDER BY m.priority DESC, m.available_at ASC, m.created_at ASC
@@ -122,8 +102,7 @@ RETURNING *;
 -- The eligibility predicate and ORDER BY mirror LeaseNextMailboxMessage's inner
 -- SELECT EXACTLY so the leaseless path observes the same per-correlation-key
 -- FIFO and priority/available_at/created_at ordering. See that query for the
--- full rationale on the correlation-key anti-join and the m2.attempts <
--- m2.max_attempts predicate.
+-- full rationale on the correlation-key anti-join.
 --
 -- Because peek takes no lease, attempts is NOT incremented here. The store
 -- adapter maps the returned row to an empty-token delivery even if the
@@ -144,7 +123,10 @@ WHERE m.mailbox_id = $1
           WHERE m2.mailbox_id = m.mailbox_id
             AND m2.correlation_key = m.correlation_key
             AND m2.id < m.id
-            AND m2.attempts < m2.max_attempts
+            AND (
+                m2.attempts < m2.max_attempts
+                OR m2.lease_until >= $2
+            )
       )
   )
 ORDER BY m.priority DESC, m.available_at ASC, m.created_at ASC
