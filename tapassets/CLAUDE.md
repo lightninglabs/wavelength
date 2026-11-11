@@ -12,6 +12,14 @@ Durable journals retain committed packages for restart recovery.
 - `Onboarder` — Funds and publishes a composed boarding output from tapd
   inventory, returns asset change, and journals the owner keys, sealed package,
   and signed transaction. `FileStore` supplies an atomic file-backed journal.
+- `Claimer` / `ClaimRequest` — Spends a confirmed composed output through
+  its owner's exit leaf and moves the asset to keys the tapd wallet derives,
+  so it becomes an ordinary holding. The claim keeps the output's full value
+  and adds a zero-value P2A anchor, so the caller relays it with a CPFP
+  child. The journal pins the derived keys before the commit and the signed
+  transaction before the publish. `Prepare` signs a claim without recording
+  it in tapd, so the caller can record it first. `TapdCanClaim` reports
+  whether a tapd version credits a claim.
 - `SelectOnboardingProofs` / `ExportOnboardedProof` — Pick and export the
   confirmed proofs of the tapd anchors that fund an onboarding (one issuance,
   smallest covering anchor, else the largest anchors up to
@@ -82,7 +90,10 @@ Durable journals retain committed packages for restart recovery.
 - **`ErrReconciliationRequired` means "do not retry blindly."** When tapd reports
   a publish attempt with an unknown outcome, `Publish` joins this sentinel onto
   the error. The transaction may already be in flight; the caller must check the
-  real outcome before re-publishing.
+  real outcome before re-publishing. A claim is the exception: once tapd
+  reports no record of it, `Claimer` publishes it again, because tapd keys a
+  transfer by its anchor transaction and a second publish attaches to the
+  first.
 - **Value and asset amount must both be conserved.** `AssetTreeRequest` requires
   `BatchOutput.Value` to equal the sum of leaf amounts (node transactions pay
   zero fee, for v3 ephemeral-anchor relay) *and* the leaf asset amounts to sum

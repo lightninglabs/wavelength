@@ -421,6 +421,10 @@ func (d *sdkDriver) VerifyFinalOnboarding(packageBytes,
 	return nil
 }
 
+// errTransferNotRecorded reports that tapd holds no transfer for a signed
+// transaction.
+var errTransferNotRecorded = errors.New("tapd has no recorded transfer")
+
 // ReconcileOnboarding requires tapd to have recorded the exact saved signed
 // transaction. Absence is ambiguous: an earlier RPC may still be in flight.
 func (d *sdkDriver) ReconcileOnboarding(ctx context.Context,
@@ -457,6 +461,6 @@ func (d *sdkDriver) ReconcileOnboarding(ctx context.Context,
 		return nil
 	}
 
-	return fmt.Errorf("%w: tapd has no recorded onboarding transfer for %s",
-		ErrReconciliationRequired, txid)
+	return fmt.Errorf("%w: %w: %s", ErrReconciliationRequired,
+		errTransferNotRecorded, txid)
 }
