@@ -19,8 +19,8 @@ type Querier interface {
 	GetSource(ctx context.Context, id string) (RelaySource, error)
 	GetSubscription(ctx context.Context, id string) (RelaySubscription, error)
 	GetSubscriptionByRoute(ctx context.Context, arg GetSubscriptionByRouteParams) (RelaySubscription, error)
-	InsertMetadata(ctx context.Context, arg InsertMetadataParams) error
-	InsertSource(ctx context.Context, arg InsertSourceParams) error
+	InsertMetadata(ctx context.Context, arg InsertMetadataParams) (int64, error)
+	InsertSource(ctx context.Context, arg InsertSourceParams) (int64, error)
 	ListExpiredSubscriptions(ctx context.Context, arg ListExpiredSubscriptionsParams) ([]RelaySubscription, error)
 	ListInstallationSubscriptions(ctx context.Context, installationID string) ([]RelaySubscription, error)
 	PruneConsumedChallenges(ctx context.Context, arg PruneConsumedChallengesParams) (int64, error)

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"embed"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -44,24 +45,24 @@ type Database struct {
 func OpenSQLite(ctx context.Context, path string) (*Database, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return nil, ErrUnavailable
+		return nil, unavailable("sqlite file", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(absolute), 0700); err != nil {
-		return nil, ErrUnavailable
+		return nil, unavailable("sqlite file", err)
 	}
 	// The publisher selects this path in local daemon configuration.
 	//nolint:gosec // No device or producer request controls the file path.
 	file, err := os.OpenFile(absolute, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
-		return nil, ErrUnavailable
+		return nil, unavailable("sqlite file", err)
 	}
 	if err := file.Chmod(0600); err != nil {
 		_ = file.Close()
 
-		return nil, ErrUnavailable
+		return nil, unavailable("sqlite file", err)
 	}
 	if err := file.Close(); err != nil {
-		return nil, ErrUnavailable
+		return nil, unavailable("sqlite file", err)
 	}
 	options := url.Values{}
 	for _, pragma := range []string{
@@ -80,7 +81,7 @@ func OpenSQLite(ctx context.Context, path string) (*Database, error) {
 	}
 	pool, err := sql.Open("sqlite", location.String())
 	if err != nil {
-		return nil, ErrUnavailable
+		return nil, unavailable("sqlite pool", err)
 	}
 	pool.SetMaxOpenConns(1)
 	pool.SetMaxIdleConns(1)
@@ -92,7 +93,7 @@ func OpenSQLite(ctx context.Context, path string) (*Database, error) {
 	if err != nil {
 		_ = pool.Close()
 
-		return nil, ErrUnavailable
+		return nil, unavailable("sqlite migration driver", err)
 	}
 
 	return initialize(ctx, pool, driver, "sqlite")
@@ -103,7 +104,7 @@ func OpenSQLite(ctx context.Context, path string) (*Database, error) {
 func OpenPostgres(ctx context.Context, dsn string) (*Database, error) {
 	pool, err := sql.Open("pgx", dsn)
 	if err != nil {
-		return nil, ErrUnavailable
+		return nil, unavailable("postgres pool", err)
 	}
 	pool.SetMaxOpenConns(25)
 	pool.SetMaxIdleConns(5)
@@ -113,7 +114,7 @@ func OpenPostgres(ctx context.Context, dsn string) (*Database, error) {
 	if err := pool.PingContext(pingCtx); err != nil {
 		_ = pool.Close()
 
-		return nil, ErrUnavailable
+		return nil, unavailable("postgres connection", err)
 	}
 	driver, err := postgres.WithInstance(
 		pool, &postgres.Config{
@@ -123,7 +124,7 @@ func OpenPostgres(ctx context.Context, dsn string) (*Database, error) {
 	if err != nil {
 		_ = pool.Close()
 
-		return nil, ErrUnavailable
+		return nil, unavailable("postgres migration driver", err)
 	}
 
 	return initialize(ctx, pool, driver, "postgres")
@@ -142,21 +143,21 @@ func initialize(ctx context.Context, pool *sql.DB, driver database.Driver,
 	if err != nil {
 		_ = driver.Close()
 
-		return nil, ErrUnavailable
+		return nil, unavailable("migration source", err)
 	}
 	migration, err := migrate.NewWithInstance("iofs", source, name, driver)
 	if err != nil {
 		_ = source.Close()
 		_ = driver.Close()
 
-		return nil, ErrUnavailable
+		return nil, unavailable("migration setup", err)
 	}
 	if err := migration.Up(); err != nil &&
 		!errors.Is(err, migrate.ErrNoChange) {
 
 		_, _ = migration.Close()
 
-		return nil, ErrUnavailable
+		return nil, unavailable("schema migration", err)
 	}
 
 	return &Database{
@@ -164,6 +165,22 @@ func initialize(ctx context.Context, pool *sql.DB, driver database.Driver,
 		Queries:  sqlc.New(pool),
 		migrator: migration,
 	}, nil
+}
+
+// unavailable retains a fixed startup phase and safe typed failure details.
+// Driver text can contain connection credentials and is deliberately excluded.
+func unavailable(phase string, cause error) error {
+	var dirty migrate.ErrDirty
+	if errors.As(cause, &dirty) {
+		return fmt.Errorf("%w: %s: dirty version %d", ErrUnavailable,
+			phase, dirty.Version)
+	}
+	if errors.Is(cause, os.ErrPermission) {
+		return fmt.Errorf("%w: %s: permission denied", ErrUnavailable,
+			phase)
+	}
+
+	return fmt.Errorf("%w: %s", ErrUnavailable, phase)
 }
 
 // Close releases the source and pool after all domain owners have joined.

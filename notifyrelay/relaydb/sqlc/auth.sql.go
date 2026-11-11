@@ -171,7 +171,7 @@ func (q *Queries) GetSubscriptionByRoute(ctx context.Context, arg GetSubscriptio
 	return i, err
 }
 
-const insertMetadata = `-- name: InsertMetadata :exec
+const insertMetadata = `-- name: InsertMetadata :execrows
 INSERT INTO relay_metadata (key, value) VALUES ($1, $2)
 ON CONFLICT (key) DO NOTHING
 `
@@ -181,12 +181,15 @@ type InsertMetadataParams struct {
 	Value []byte
 }
 
-func (q *Queries) InsertMetadata(ctx context.Context, arg InsertMetadataParams) error {
-	_, err := q.db.ExecContext(ctx, insertMetadata, arg.Key, arg.Value)
-	return err
+func (q *Queries) InsertMetadata(ctx context.Context, arg InsertMetadataParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertMetadata, arg.Key, arg.Value)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const insertSource = `-- name: InsertSource :exec
+const insertSource = `-- name: InsertSource :execrows
 INSERT INTO relay_sources (id, source_pubkey, subscriber_key) VALUES ($1, $2, $3)
 ON CONFLICT (id) DO NOTHING
 `
@@ -197,9 +200,12 @@ type InsertSourceParams struct {
 	SubscriberKey []byte
 }
 
-func (q *Queries) InsertSource(ctx context.Context, arg InsertSourceParams) error {
-	_, err := q.db.ExecContext(ctx, insertSource, arg.ID, arg.SourcePubkey, arg.SubscriberKey)
-	return err
+func (q *Queries) InsertSource(ctx context.Context, arg InsertSourceParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertSource, arg.ID, arg.SourcePubkey, arg.SubscriberKey)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const listExpiredSubscriptions = `-- name: ListExpiredSubscriptions :many

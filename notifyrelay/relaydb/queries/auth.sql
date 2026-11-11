@@ -1,7 +1,7 @@
 -- name: GetMetadata :one
 SELECT value FROM relay_metadata WHERE key = $1;
 
--- name: InsertMetadata :exec
+-- name: InsertMetadata :execrows
 INSERT INTO relay_metadata (key, value) VALUES ($1, $2)
 ON CONFLICT (key) DO NOTHING;
 
@@ -73,6 +73,6 @@ ORDER BY expires_at, id LIMIT $2;
 -- name: GetSource :one
 SELECT * FROM relay_sources WHERE id = $1;
 
--- name: InsertSource :exec
+-- name: InsertSource :execrows
 INSERT INTO relay_sources (id, source_pubkey, subscriber_key) VALUES ($1, $2, $3)
 ON CONFLICT (id) DO NOTHING;

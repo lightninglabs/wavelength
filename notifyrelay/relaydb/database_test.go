@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/golang-migrate/migrate/v4"
 	"github.com/lightninglabs/wavelength/notifyrelay/relaydb/sqlc"
 	"github.com/stretchr/testify/require"
 )
@@ -32,7 +33,7 @@ func TestRelayDatabaseRestart(t *testing.T) {
 		DeviceToken: "token", TokenRevision: 2, TokenUpdated: 100,
 	}
 	err := store.Write(ctx, func(q *sqlc.Queries) error {
-		if err := q.InsertMetadata(ctx, sqlc.InsertMetadataParams{
+		if _, err := q.InsertMetadata(ctx, sqlc.InsertMetadataParams{
 			Key: "challenge", Value: key,
 		}); err != nil {
 			return err
@@ -46,9 +47,17 @@ func TestRelayDatabaseRestart(t *testing.T) {
 		ID: "source", SourcePubkey: bytes.Repeat([]byte{2}, 33),
 		SubscriberKey: key,
 	}
-	require.NoError(t, store.Queries.InsertSource(ctx, source))
+	inserted, err := store.Queries.InsertSource(ctx, source)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, inserted)
 	source.SubscriberKey = bytes.Repeat([]byte{3}, 32)
-	require.NoError(t, store.Queries.InsertSource(ctx, source))
+	source.SourcePubkey = bytes.Repeat([]byte{3}, 33)
+	inserted, err = store.Queries.InsertSource(ctx, source)
+	require.NoError(t, err)
+	require.Zero(
+		t, inserted,
+		"caller must restore and verify the retained source",
+	)
 	route := sqlc.PutSubscriptionParams{
 		ID: "subscription", InstallationID: "device", RouteID: "route",
 		Presentation: "generic", ExpiresAt: 1000, Revision: 3,
@@ -89,6 +98,7 @@ func TestRelayDatabaseRestart(t *testing.T) {
 	retained, err := store.Queries.GetSource(ctx, "source")
 	require.NoError(t, err)
 	require.Equal(t, key, retained.SubscriberKey)
+	require.Equal(t, bytes.Repeat([]byte{2}, 33), retained.SourcePubkey)
 	retainedRoute, err := store.Queries.GetSubscription(ctx, "subscription")
 	require.NoError(t, err)
 	require.Equal(t, "route", retainedRoute.RouteID)
@@ -196,4 +206,15 @@ func incrementCounter(ctx context.Context, store *Database) error {
 
 		return err
 	})
+}
+
+// TestRelayStartupErrorRedaction preserves useful migration diagnosis without
+// returning a raw driver error that could contain publisher credentials.
+func TestRelayStartupErrorRedaction(t *testing.T) {
+	_, err := OpenPostgres(t.Context(), "postgres://secret:secret@%invalid")
+	require.ErrorIs(t, err, ErrUnavailable)
+	require.NotContains(t, err.Error(), "secret")
+	err = unavailable("schema migration", migrate.ErrDirty{Version: 1})
+	require.ErrorIs(t, err, ErrUnavailable)
+	require.Contains(t, err.Error(), "dirty version 1")
 }
