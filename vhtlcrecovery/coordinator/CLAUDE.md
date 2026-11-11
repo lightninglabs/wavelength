@@ -52,6 +52,9 @@ exit through the VTXO manager (`actormsg`) and reads status back from `unroll`.
 ## Invariants
 
 - Recovery state is SQL-owned. The service keeps no durable in-memory state.
+- `GetRecoveryStatusByRequestID` uses the unique arm-key index and reconciles
+  only that job, including terminal jobs. Restore must not list/probe every
+  unrelated recovery to find an idempotent destination.
 - Escalation writes `unroll_started` before forcing the exit through the VTXO
   manager, so restart can reissue admission if the process dies during the
   handoff.

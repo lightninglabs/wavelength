@@ -125,6 +125,13 @@ func (missingRecoveryStore) GetRecovery(context.Context, string) (
 	return nil, db.ErrVHTLCRecoveryJobNotFound
 }
 
+// GetRecoveryByRequestID models a missing indexed arm request.
+func (missingRecoveryStore) GetRecoveryByRequestID(context.Context, string) (
+	*vhtlcrecovery.RecoveryJob, error) {
+
+	return nil, db.ErrVHTLCRecoveryJobNotFound
+}
+
 func (missingRecoveryStore) ListNonTerminalRecoveries(context.Context) (
 	[]vhtlcrecovery.RecoveryJob, error) {
 

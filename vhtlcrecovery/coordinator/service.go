@@ -32,6 +32,10 @@ type Store interface {
 	GetRecovery(ctx context.Context,
 		id string) (*vhtlcrecovery.RecoveryJob, error)
 
+	// GetRecoveryByRequestID loads one job through its unique arm key.
+	GetRecoveryByRequestID(ctx context.Context,
+		requestID string) (*vhtlcrecovery.RecoveryJob, error)
+
 	// ListNonTerminalRecoveries returns all recovery rows that may need
 	// restore or reconciliation after daemon startup.
 	ListNonTerminalRecoveries(ctx context.Context) (
@@ -347,6 +351,19 @@ func (s *Service) GetRecoveryStatus(ctx context.Context, id string) (
 	*RecoveryStatus, error) {
 
 	job, err := s.store.GetRecovery(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.reconcileLoaded(ctx, *job)
+}
+
+// GetRecoveryStatusByRequestID reconciles just the job matching an arm key,
+// without loading unrelated recoveries or probing their unroll actors.
+func (s *Service) GetRecoveryStatusByRequestID(ctx context.Context,
+	requestID string) (*RecoveryStatus, error) {
+
+	job, err := s.store.GetRecoveryByRequestID(ctx, requestID)
 	if err != nil {
 		return nil, err
 	}
