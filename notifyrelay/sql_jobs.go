@@ -118,13 +118,26 @@ func sqlPaymentDuplicate(ctx context.Context, q *sqlc.Queries,
 func (s *SQLStore) claim(ctx context.Context, now time.Time) (*Delivery,
 	error) {
 
+	delivery, _, err := s.claimWithProgress(ctx, now)
+
+	return delivery, err
+}
+
+// claimWithProgress reports committed deferral work as well as provider-ready
+// work. A worker can inspect the next due page immediately after moving a full
+// replay-blocked page forward, without holding a longer writer transaction.
+func (s *SQLStore) claimWithProgress(ctx context.Context, now time.Time) (
+	*Delivery, bool, error) {
+
 	token, err := randomSecret(16)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var delivery *Delivery
+	var progress bool
 	err = s.database.Write(ctx, func(q *sqlc.Queries) error {
 		delivery = nil
+		progress = false
 		due, err := q.ListDueJobs(ctx, sqlc.ListDueJobsParams{
 			NowNano: now.UnixNano(), NowUnix: now.Unix(),
 			BatchLimit: 32,
@@ -146,6 +159,7 @@ func (s *SQLStore) claim(ctx context.Context, now time.Time) (*Delivery,
 				return err
 			}
 			if !ready {
+				progress = true
 				continue
 			}
 			claimed, err := q.ClaimInstallation(
@@ -186,7 +200,7 @@ func (s *SQLStore) claim(ctx context.Context, now time.Time) (*Delivery,
 		return nil
 	})
 
-	return delivery, err
+	return delivery, progress && err == nil, err
 }
 
 // prepareSQLPayment reserves replay evidence before a payment provider call.

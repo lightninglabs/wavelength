@@ -300,3 +300,88 @@ func TestDeferredPaymentReplayAdmission(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, count, "admitted identity remains replay protected")
 }
+
+// TestDeferredPageReportsProgress keeps a full replay-blocked page from adding
+// one idle sleep per page before an ordinary wake can reach the provider.
+func TestDeferredPageReportsProgress(t *testing.T) {
+	h := newSQLAuthHarness(t)
+	first := h.sqlSubscription(t, "first")
+	second := secondReplayRoute(t, h)
+	owners := []struct{ owner, first string }{
+		{
+			"device",
+			first,
+		}, {
+			"second",
+			second,
+		},
+	}
+	for _, owner := range owners {
+		err := h.database.Write(
+			t.Context(), func(q *sqlc.Queries) error {
+				for i := range maxDedupPerInstallation {
+					params := sqlc.PutDedupParams{
+						SubscriptionID: owner.first,
+						InstallationID: owner.owner,
+						Scope:          "alert",
+						EventHash:      fmt.Sprint(i),
+						ExpiresAt: h.now.Add(
+							dedupLifetime,
+						).Unix(),
+					}
+					if err := q.PutDedup(
+						t.Context(), params,
+					); err != nil {
+						return err
+					}
+				}
+
+				return nil
+			},
+		)
+		require.NoError(t, err)
+		for route := range maxSubscriptions {
+			id := owner.first
+			if route != 0 {
+				value, err := h.store.loadInstallation(
+					t.Context(), owner.owner,
+				)
+				require.NoError(t, err)
+				challenge, err := h.store.NewChallenge(
+					t.Context(), ChallengeRequest{
+						AppID:          "app",
+						Operation:      OperationManage,
+						InstallationID: owner.owner,
+					},
+					h.now,
+				)
+				require.NoError(t, err)
+				result, err := h.store.applyManagement(
+					t.Context(), challenge, value.Counter+1,
+					ManagementPayload{
+						Action: "subscribe",
+						RouteID: fmt.Sprint(
+							route,
+						),
+						EnableAlerts: true,
+					},
+					h.now,
+				)
+				require.NoError(t, err)
+				id = result.SubscriptionID
+			}
+			h.sqlEnqueue(t, id, ScopeAlert, "deferred")
+		}
+	}
+	h.sqlEnqueue(t, first, ScopeWake, "wake")
+	delivery, progressed, err := h.store.claimWithProgress(
+		t.Context(), h.now,
+	)
+	require.NoError(t, err)
+	require.Nil(t, delivery)
+	require.True(t, progressed)
+	delivery, _, err = h.store.claimWithProgress(t.Context(), h.now)
+	require.NoError(t, err)
+	require.NotNil(t, delivery)
+	require.Equal(t, ScopeWake, delivery.Scope)
+}
