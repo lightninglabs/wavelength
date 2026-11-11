@@ -73,7 +73,8 @@ ID with another producer identity fails instead of transferring that authority.
    relay subscription ID. The app-local route remains local.
 2. The relay returns one consent offer per configured source. Each signature
    binds the producer identity, subscriber key, subscription ID, allowed event
-   classes and expiry. Alert-disabled subscriptions receive no payment consent.
+   classes and expiry. New offers for alert-disabled subscriptions contain no payment consent.
+   Existing producer delegation changes require a new wallet signature.
 3. The app asks its wallet SDK to authorize that exact offer at its configured
    source. The source returns an opaque feed token.
 4. Signed `bind_feed` management attaches the token to that device's existing

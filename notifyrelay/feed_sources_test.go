@@ -2,6 +2,7 @@ package notifyrelay
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"testing"
@@ -288,4 +289,49 @@ func TestFeedBindingPolicyAndReplay(t *testing.T) {
 	require.ErrorIs(t, h.bindTestFeed(t, "missing", request), ErrNotFound)
 	request.SourceID = "not-configured"
 	require.ErrorIs(t, h.bindTestFeed(t, id, request), ErrNotFound)
+}
+
+// TestFeedBindingRevocationCascades proves both database backends remove the
+// binding when verified management deletes its subscription or installation.
+func TestFeedBindingRevocationCascades(t *testing.T) {
+	for _, action := range []string{
+		"revoke_subscription",
+		"delete_installation",
+	} {
+		t.Run(action, func(t *testing.T) {
+			source := testSourceConfig(t, "source")
+			h := sourceHarness(t, source)
+			id := h.sqlSubscription(t, "wallet")
+			request := FeedBindingRequest{
+				SourceID: source.ID,
+				FeedToken: base64.RawURLEncoding.EncodeToString(
+					bytes.Repeat(
+						[]byte{7}, 32,
+					),
+				),
+				EventClasses:  1,
+				ExpiresAtUnix: h.now.Add(time.Hour).Unix(),
+			}
+			require.NoError(t, h.bindTestFeed(t, id, request))
+			owner, err := h.store.loadInstallation(
+				t.Context(),
+				"device",
+			)
+			require.NoError(t, err)
+			payload := ManagementPayload{Action: action}
+			if action == "revoke_subscription" {
+				payload.SubscriptionID = id
+			}
+			_, err = h.store.applyManagement(
+				t.Context(), h.challenge(t), owner.Counter+1,
+				payload, h.now,
+			)
+			require.NoError(t, err)
+			_, err = h.database.Queries.GetFeedBinding(t.Context(),
+				sqlc.GetFeedBindingParams{
+					SourceID: source.ID, SubscriptionID: id,
+				})
+			require.ErrorIs(t, err, sql.ErrNoRows)
+		})
+	}
 }
