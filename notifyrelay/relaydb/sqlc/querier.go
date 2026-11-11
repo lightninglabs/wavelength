@@ -9,6 +9,7 @@ import (
 )
 
 type Querier interface {
+	AdvanceFeedBinding(ctx context.Context, arg AdvanceFeedBindingParams) (int64, error)
 	ClaimInstallation(ctx context.Context, arg ClaimInstallationParams) (int64, error)
 	ClaimJob(ctx context.Context, arg ClaimJobParams) (RelayJob, error)
 	CoalesceJob(ctx context.Context, arg CoalesceJobParams) error
@@ -26,6 +27,7 @@ type Querier interface {
 	FinishJob(ctx context.Context, arg FinishJobParams) (int64, error)
 	GetConsumedChallenge(ctx context.Context, id string) (int64, error)
 	GetDedup(ctx context.Context, arg GetDedupParams) (int64, error)
+	GetFeedBinding(ctx context.Context, arg GetFeedBindingParams) (RelayFeedBinding, error)
 	GetInstallation(ctx context.Context, id string) (RelayInstallation, error)
 	GetJob(ctx context.Context, id string) (RelayJob, error)
 	GetMetadata(ctx context.Context, key string) ([]byte, error)
@@ -41,6 +43,7 @@ type Querier interface {
 	PruneExpiredDedup(ctx context.Context, arg PruneExpiredDedupParams) (int64, error)
 	PruneExpiredJobs(ctx context.Context, arg PruneExpiredJobsParams) (int64, error)
 	PutDedup(ctx context.Context, arg PutDedupParams) error
+	PutFeedBinding(ctx context.Context, arg PutFeedBindingParams) error
 	PutInstallation(ctx context.Context, arg PutInstallationParams) (int64, error)
 	PutSubscription(ctx context.Context, arg PutSubscriptionParams) (int64, error)
 	ReleaseInstallation(ctx context.Context, arg ReleaseInstallationParams) (int64, error)
