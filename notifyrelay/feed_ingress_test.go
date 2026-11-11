@@ -3,6 +3,7 @@ package notifyrelay
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -284,26 +285,11 @@ func TestFeedIngressReplicaFences(t *testing.T) {
 }
 
 // TestFeedIngressQuotaRollback keeps both jobs and cursor uncommitted when
-// replay capacity rejects the second obligation in the same event.
+// global pending-job capacity rejects the second obligation in one event.
 func TestFeedIngressQuotaRollback(t *testing.T) {
 	h, f, envelope := ingressHarness(t)
 	event := envelopeEvent(t, envelope)
-	expiry := h.now.Add(dedupLifetime).Unix()
-	params := sqlc.PutDedupParams{
-		SubscriptionID: event.GrantId, InstallationID: "device",
-		Scope: "alert", ExpiresAt: expiry,
-	}
-	err := h.database.Write(t.Context(), func(q *sqlc.Queries) error {
-		for i := range maxDedupPerInstallation {
-			params.EventHash = fmt.Sprint(i)
-			if err := q.PutDedup(t.Context(), params); err != nil {
-				return err
-			}
-		}
-
-		return nil
-	})
-	require.NoError(t, err)
+	fillPendingJobBudget(t, h, maxPendingJobs-1)
 	f.mailbox = &feedTransport{
 		pull: func(context.Context, *pb.PullRequest) (*pb.PullResponse,
 			error) {
@@ -327,7 +313,12 @@ func TestFeedIngressQuotaRollback(t *testing.T) {
 	require.False(t, state.AckPending)
 	count, err := h.database.Queries.CountPendingJobs(t.Context())
 	require.NoError(t, err)
-	require.Zero(t, count, "wake insert rolled back with rejected payment")
+	require.EqualValues(
+		t, maxPendingJobs-1, count,
+		"the inserted wake rolled back with the rejected payment",
+	)
+	_, err = h.database.Queries.GetJob(t.Context(), "wake/"+event.GrantId)
+	require.ErrorIs(t, err, sql.ErrNoRows)
 	binding, err := h.database.Queries.GetFeedBinding(
 		t.Context(), sqlc.GetFeedBindingParams{
 			SourceID:       "producer",

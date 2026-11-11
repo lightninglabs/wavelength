@@ -360,7 +360,16 @@ func TestSQLDedupQuotaIsPerInstallation(t *testing.T) {
 
 		return enqueueSQLJobTx(ctx, q, sub, ScopeAlert, "full", h.now)
 	})
-	require.ErrorIs(t, err, ErrCapacity)
+	require.NoError(t, err)
+	pending, err := h.database.Queries.GetJob(ctx, "alert/"+id)
+	require.NoError(t, err)
+	require.Equal(t, secretHash("full"), pending.EventHash)
+	count, err := h.database.Queries.CountInstallationDedup(ctx, "device")
+	require.NoError(t, err)
+	require.EqualValues(t, maxDedupPerInstallation, count)
+	sent, err := h.store.claim(ctx, h.now)
+	require.NoError(t, err)
+	require.Nil(t, sent, "only the quota-exhausted device waits")
 	challenge, err := h.store.NewChallenge(
 		ctx, ChallengeRequest{
 			AppID:     "app",
