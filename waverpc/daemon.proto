@@ -179,9 +179,10 @@ service DaemonService {
     rpc Board (BoardRequest) returns (BoardResponse);
 
     // DepositAsset funds a boarding output holding a Taproot Asset from the
-    // tapd wallet behind assets.tapd and tracks it until its proof
+    // asset wallet of the asset backend and tracks it until its proof
     // confirms. Retrying with the same request_id resumes the same
-    // deposit. Requires assets.backend=tapd and tapd v0.9.0 or later.
+    // deposit. Requires an asset backend; a tapd backend must run tapd
+    // v0.9.0 or later.
     rpc DepositAsset (DepositAssetRequest) returns (AssetDeposit);
 
     // ListAssetDeposits returns the asset deposits of this daemon.
@@ -200,6 +201,31 @@ service DaemonService {
     // Requires a tapd that confirms transfers spending assets it does not
     // hold.
     rpc ClaimAssetDeposit (ClaimAssetDepositRequest) returns (AssetDeposit);
+
+    // NewAssetReceiveKeys derives the keys a sender needs to transfer a
+    // Taproot Asset to this daemon's asset wallet on chain: the script key
+    // that will hold the asset and the internal key of its anchor output.
+    // The sender hands over the proof file of the transfer, which
+    // ImportAssetProof adds to the wallet. Requires an asset backend.
+    rpc NewAssetReceiveKeys (NewAssetReceiveKeysRequest)
+        returns (AssetReceiveKeys);
+
+    // ImportAssetProof verifies the proof file of an asset output sent to
+    // keys from NewAssetReceiveKeys and adds the asset to the daemon's
+    // asset wallet. Importing a known proof returns the same asset.
+    // Requires an asset backend.
+    rpc ImportAssetProof (ImportAssetProofRequest) returns (OwnedAsset);
+
+    // ListOwnedAssets returns the Taproot Assets the daemon's asset wallet
+    // holds on chain. Assets held in VTXOs are reported by GetBalance.
+    rpc ListOwnedAssets (ListOwnedAssetsRequest)
+        returns (ListOwnedAssetsResponse);
+
+    // NewAssetFundingAddress returns a new address of the daemon's backing
+    // wallet. Bitcoin sent to it pays for asset deposits: the value of the
+    // deposit output and the miner fee. Requires an asset backend.
+    rpc NewAssetFundingAddress (NewAssetFundingAddressRequest)
+        returns (AssetFundingAddress);
 
     // JoinNextRound asks the client round FSM to commit any currently
     // queued round intents and emit a JoinRoundRequest to the operator.
@@ -1949,6 +1975,70 @@ message AssetDeposit {
 
     // claimed is true once tapd records the claim six blocks deep.
     bool claimed = 12;
+}
+
+message NewAssetReceiveKeysRequest {
+}
+
+message AssetReceiveKeys {
+    // script_key is the compressed Taproot output key the asset is sent
+    // to.
+    bytes script_key = 1;
+
+    // raw_script_key is the compressed key that script_key is the BIP-86
+    // output key of.
+    bytes raw_script_key = 2;
+
+    // anchor_internal_key is the compressed internal key of the anchor
+    // output that carries the asset.
+    bytes anchor_internal_key = 3;
+}
+
+message ImportAssetProofRequest {
+    // proof_file is the proof file of the asset output, from its issuance
+    // to the transfer into the wallet's keys.
+    bytes proof_file = 1;
+
+    // asset_ref is the asset the caller expects to receive: the asset ID,
+    // or the group key of a grouped asset. A proof of another asset is
+    // refused.
+    string asset_ref = 2;
+}
+
+message NewAssetFundingAddressRequest {
+}
+
+message AssetFundingAddress {
+    // address is a Bitcoin address of the daemon's backing wallet.
+    string address = 1;
+}
+
+message ListOwnedAssetsRequest {
+}
+
+message ListOwnedAssetsResponse {
+    repeated OwnedAsset assets = 1;
+}
+
+// OwnedAsset is one asset output the daemon's asset wallet holds on chain.
+message OwnedAsset {
+    // asset_ref is the group key of a grouped asset, else the asset ID.
+    string asset_ref = 1;
+
+    // asset_id is the ID of the issuance the units belong to.
+    string asset_id = 2;
+
+    // amount is the number of asset units in the output.
+    uint64 amount = 3;
+
+    // outpoint is the anchor output that carries the asset.
+    string outpoint = 4;
+
+    // script_key is the compressed key the asset is locked to.
+    bytes script_key = 5;
+
+    // anchor_value_sat is the Bitcoin value of the anchor output.
+    int64 anchor_value_sat = 6;
 }
 
 message JoinNextRoundRequest {
