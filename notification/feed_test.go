@@ -30,7 +30,7 @@ func feedFixture(t *testing.T) (*ChallengeAuthority, *pb.FeedGrantRequest,
 		Challenge: old.Challenge,
 		Mutation: &pb.FeedGrantMutation{
 			Action:  pb.FeedGrantMutation_ACTION_UPSERT,
-			GrantId: "app-generated-grant-id",
+			GrantId: "AAECAwQFBgcICQoLDA0ODw",
 			SubscriberPubkey: subscriber.
 				PubKey().
 				SerializeCompressed(),
@@ -87,7 +87,7 @@ func TestFeedProofBinding(t *testing.T) {
 			r.Challenge.ExpiresAtUnix--
 		},
 		"grant id": func(r *pb.FeedGrantRequest) {
-			r.Mutation.GrantId = "another-grant"
+			r.Mutation.GrantId = "EBESExQVFhcYGRobHB0eHw"
 		},
 		"subscriber": func(r *pb.FeedGrantRequest) {
 			r.Mutation.SubscriberPubkey = r.Challenge.OwnerPubkey
@@ -157,7 +157,7 @@ func TestFeedAuthorizationBoundaries(t *testing.T) {
 	)
 	request.Mutation = &pb.FeedGrantMutation{
 		Action:  pb.FeedGrantMutation_ACTION_REMOVE,
-		GrantId: "existing-grant",
+		GrantId: "AAECAwQFBgcICQoLDA0ODw",
 	}
 	signFeed(t, request, owner, FeedSignatureTag)
 	require.NoError(t, VerifyFeedAuthorization(request, now))
@@ -268,7 +268,7 @@ func TestFeedClientResponseBinding(t *testing.T) {
 	authority, request, owner, now := feedFixture(t)
 	changes := map[string]func(*pb.FeedGrantResponse){
 		"other grant": func(r *pb.FeedGrantResponse) {
-			r.GrantId = "other"
+			r.GrantId = "EBESExQVFhcYGRobHB0eHw"
 		},
 		"missing token": func(r *pb.FeedGrantResponse) {
 			r.FeedToken = nil
@@ -307,7 +307,7 @@ func TestFeedClientResponseBinding(t *testing.T) {
 // TestFeedEventClassBinding rejects a correlator without payment authority.
 func TestFeedEventClassBinding(t *testing.T) {
 	event := &pb.WakeFeedEvent{
-		GrantId:      "app-route",
+		GrantId:      "AAECAwQFBgcICQoLDA0ODw",
 		FeedToken:    bytes.Repeat([]byte{9}, FeedTokenSize),
 		Generation:   1,
 		EventClasses: FeedClassWake, ExpiresAtUnix: 100,
@@ -354,7 +354,7 @@ func TestFeedSubscriberConsent(t *testing.T) {
 			r.Mutation.SubscriberSignature[0] ^= 1
 		},
 		"route": func(r *pb.FeedGrantRequest) {
-			r.Mutation.GrantId = "unapproved-route"
+			r.Mutation.GrantId = "EBESExQVFhcYGRobHB0eHw"
 		},
 		"source": func(r *pb.FeedGrantRequest) {
 			r.Challenge.OperatorPubkey = r.Challenge.OwnerPubkey
@@ -378,4 +378,24 @@ func TestFeedSubscriberConsent(t *testing.T) {
 			)
 		})
 	}
+}
+
+// TestFeedGrantIdentifierShape rejects short/local names that independent
+// publishers could accidentally collide in the same wallet-owner namespace.
+func TestFeedGrantIdentifierShape(t *testing.T) {
+	_, request, _, _ := feedFixture(t)
+	for _, id := range []string{
+		"1",
+		"route",
+		"publisher.route",
+		"AAECAwQFBgcICQoLDA0ODw==",
+		strings.Repeat("a", 65),
+	} {
+		request.Mutation.GrantId = id
+		_, err := FeedSigningMessage(request)
+		require.ErrorIs(t, err, ErrInvalidAuthorization)
+	}
+	request.Mutation.GrantId = "AAECAwQFBgcICQoLDA0ODw"
+	_, err := FeedSigningMessage(request)
+	require.NoError(t, err)
 }

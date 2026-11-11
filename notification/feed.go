@@ -2,6 +2,7 @@ package notification
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"math"
@@ -35,6 +36,19 @@ const (
 	FeedTokenSize = 32
 )
 
+// validFeedGrantID requires canonical raw URL-base64 with at least 128 bits.
+// Publishers must generate these bytes randomly: IDs share an owner namespace
+// across independent publishers and must never be sequential app route names.
+func validFeedGrantID(id string) bool {
+	if len(id) > 64 {
+		return false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(id)
+
+	return err == nil && len(raw) >= 16 &&
+		base64.RawURLEncoding.EncodeToString(raw) == id
+}
+
 // validFeedClasses rejects empty masks and unsupported event classes.
 func validFeedClasses(classes uint32) bool {
 	return classes != 0 && classes&^(FeedClassWake|FeedClassPayment) == 0
@@ -43,7 +57,7 @@ func validFeedClasses(classes uint32) bool {
 // validateFeedMutationShape validates canonical fields without a local clock.
 func validateFeedMutationShape(m *pb.FeedGrantMutation) error {
 	if m == nil || len(m.ProtoReflect().GetUnknown()) != 0 ||
-		!validID(m.GrantId, 64) {
+		!validFeedGrantID(m.GrantId) {
 		return ErrInvalidAuthorization
 	}
 
@@ -89,8 +103,8 @@ func ValidateFeedMutation(m *pb.FeedGrantMutation, now time.Time) error {
 
 // FeedSigningMessage encodes the full v1 delegation in fixed field order.
 // Byte/string fields have uint32 big-endian lengths; action and class mask
-// are uint32, expiries are int64. Signatures and protobuf serialization do
-// not participate. Unknown fields are rejected rather than left unsigned.
+// are uint32, expiries are int64. Subscriber consent participates; the owner
+// signature and protobuf serialization do not. Unknown fields are rejected.
 func FeedSigningMessage(r *pb.FeedGrantRequest) ([]byte, error) {
 	if r == nil || len(r.ProtoReflect().GetUnknown()) != 0 ||
 		!validChallengeShape(r.Challenge) {
@@ -166,7 +180,7 @@ func ValidateFeedEvent(event *pb.WakeFeedEvent) error {
 		event.Generation == 0 ||
 		event.Generation > math.MaxInt64 ||
 		!validFeedClasses(event.EventClasses) ||
-		event.ExpiresAtUnix <= 0 || !validID(event.GrantId, 64) {
+		event.ExpiresAtUnix <= 0 || !validFeedGrantID(event.GrantId) {
 		return ErrInvalidAuthorization
 	}
 
@@ -218,7 +232,7 @@ func FeedRouteSigningMessage(source, subscriber []byte, grantID string,
 	classes uint32, expiry int64) ([]byte, error) {
 
 	if !canonicalPublicKey(source) || !canonicalPublicKey(subscriber) ||
-		!validID(grantID, 64) ||
+		!validFeedGrantID(grantID) ||
 		!validFeedClasses(classes) || expiry <= 0 {
 		return nil, ErrInvalidAuthorization
 	}

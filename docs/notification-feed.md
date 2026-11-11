@@ -34,8 +34,10 @@ the challenge and applies the exact mutation in one database transaction.
 
 An upsert contains:
 
-- a publisher-issued stable `grant_id` of 1–64 ASCII letters, digits, dots,
-  underscores or hyphens;
+- a publisher-issued stable `grant_id`: at least 128 cryptographically random
+  bits encoded as canonical raw URL-base64, at most 64 characters. These IDs
+  share an owner namespace across publishers; never use sequential IDs or
+  app-local route names;
 - the subscriber's canonical 33-byte compressed secp256k1 public key;
 - an `event_classes` mask: 1 for protocol work, 2 for classified incoming
   payment activity, or 3 for both;
@@ -50,9 +52,9 @@ quota, and prevents one consent from being registered under many wallet keys.
 The subscriber signs no wallet identity and the producer contacts no relay.
 
 The grant ID is scoped to the owner. Retrying an ambiguous response uses a
-fresh challenge and the same grant ID. Renewal with the same subscriber keeps
-its correlation token; replacing the subscriber rotates it and removes the
-old subscriber's pending obligation. Removing a grant signs its action and
+fresh challenge and the same grant ID. Renewal retains the subscriber route
+and correlation token; changing subscribers requires a new grant ID. Removing
+a grant signs its action and
 ID with the other mutation fields empty. Removal returns no token and zero
 expiry. Producers may shorten a grant's expiry, never extend it.
 
