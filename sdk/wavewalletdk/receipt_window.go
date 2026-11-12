@@ -20,6 +20,8 @@ type ReceiptWindowResult = waved.ReceiptWindowResult
 
 // SetHostForeground cancels and joins an active window before resuming normal
 // ingress. False pauses ingress; domain and swap workers remain daemon-owned.
+// An authenticated bootstrap error can follow successful foreground intake;
+// false still joins that owner before the host runs a bounded window.
 func (c *Client) SetHostForeground(ctx context.Context, foreground bool) error {
 	if c == nil || c.setHostForeground == nil {
 		return ErrReceiptWindowUnavailable

@@ -68,6 +68,7 @@ var state = struct {
 	// Stop can abort a boot rather than orphan the daemon it would produce.
 	startCancel context.CancelFunc
 	shutdown    *mobileShutdown
+	logs        *diagnosticLogBuffer
 }{}
 
 // Start boots the embedded waved wallet daemon from a JSON config and blocks
@@ -91,6 +92,12 @@ func Start(cfgJSON string) error {
 			return nil, fmt.Errorf("parse config: %w", err)
 		}
 
+		attachDiagnosticLogs(
+			&cfg,
+			diagnosticLoggingRequested(
+				[]byte(cfgJSON), false,
+			),
+		)
 		client, err := wavewalletdk.Start(
 			startCtx, cfg, mobileStartOptions(cfg)...,
 		)

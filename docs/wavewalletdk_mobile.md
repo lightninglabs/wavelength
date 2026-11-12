@@ -312,3 +312,52 @@ callable as-is.
   cooperative with OS suspension. The package currently relies on the embedded
   daemon's always-on background ingress loop.
 - Reference Kotlin/Swift ergonomic wrappers (sketched above, not shipped).
+
+## Read-only diagnostics
+
+`DiagnosticRead` accepts a JSON object with `View` and optional `Outpoint`,
+`RoundID`, `History` and `PageToken`. The view is one of `info`, `balance`,
+`vtxos`, `vtxo`, `anchors`, `rounds`, `round`, `oor`, `swaps` or `credits`.
+This is a finite read-only dispatch table, not arbitrary RPC execution. It does
+not start a wallet or submit payments, refreshes or exits. Each call inherits
+the active mobile lifecycle and the ten-second read deadline.
+
+RPC responses use protobuf JSON field names and integer-string conventions.
+The `anchors` view returns ordinary SDK JSON fields: `Outpoint`, `AmountSat`,
+`PkScript` and `ConfirmationHeight`. A VTXO can have several Bitcoin anchors;
+shared tree fragments are deduplicated by the actual Bitcoin outpoint. These
+are recorded ancestry outputs, not evidence they are currently unspent.
+Missing ancestry returns an empty list, never an invented output index.
+The direct Go `Client.VTXOAnchors` method retains the embedded daemon until
+its final store access, including when shutdown cancels the call.
+
+Inventory reads skip checkpoint PSBT loading. `History` explicitly includes
+spent and forfeited records; the default includes current and pending-round
+states. Round lists support the daemon's opaque continuation token. Swap
+inspection omits invoice and preimage fields. Hosts must preserve their normal
+wallet authentication gate before displaying or sharing diagnostics.
+
+## Optional native log capture
+
+Set `diagnostic_logs: true` in the mobile startup config to capture native logs.
+It defaults to false, including external-seed startup, whose opt-in belongs in
+its nested `config` object. Logging does not change the configured verbosity.
+`DiagnosticLogs` returns `Entries` with `ID`, `Time` (Unix milliseconds),
+`Level`, `Source` and `Message`, plus `HistoryUnavailable` when persistent
+capture is unavailable. The existing stdout logger remains active.
+
+Capture stores at most 2,000 records in memory, truncates each message to
+4 KiB, and rotates two files of at most 1 MiB each under
+`<data_dir>/diagnostics/<network>/native.jsonl`. Directories and files use
+0700 and 0600 permissions. Common credential-bearing records are omitted
+before persistence. Storage errors leave memory capture usable and never
+prevent wallet startup. Hosts own backup exclusion, screen authentication,
+filtering and explicit user-controlled export. Capture contains this daemon's
+logs, not other apps' or the device's system-wide Console output.
+
+Diagnostic inventory supplements the lightweight list with authoritative expiry
+reads under one shared ten-second deadline and one chain-height snapshot. OOR
+records add `amount_sat` when persisted source data proves it: outgoing caller
+recipients exclude change; incoming local output bindings exclude spent inputs.
+Missing legacy or pending amounts stay absent, not zero. No PSBT is materialized
+for these amounts and no arbitrary RPC is exposed.

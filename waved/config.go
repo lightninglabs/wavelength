@@ -365,9 +365,10 @@ type Config struct {
 
 	// WalletReadyHooks are programmatic hooks that run after the
 	// wallet-derived mailbox transport and wallet-dependent actors are
-	// online, but before daemon readiness is marked. They are used by
-	// optional subservers that must register RPC surfaces while locked
-	// but defer background work until the wallet can sign.
+	// initialized, but before daemon readiness is marked. Host-driven mode
+	// keeps intake paused until the host explicitly enables it. They are
+	// used by optional subservers that must register RPC surfaces while
+	// locked but defer background work until the wallet can sign.
 	WalletReadyHooks []WalletReadyHook
 
 	// Wallet configures the wallet backend used for signing, key

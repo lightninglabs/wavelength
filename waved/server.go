@@ -284,16 +284,22 @@ type Server struct {
 	walletReady chan struct{}
 
 	// walletServicesReady is resolved after wallet-dependent actors and
-	// mailbox ingress have started. The first result is sticky: failures
+	// mailbox routing are initialized (host-driven intake may be paused).
+	// The first result is sticky: failures
 	// before that boundary are published to waiters, while later startup
 	// failures cannot replace a successful result.
 	walletServicesReady     chan struct{}
 	walletServicesReadyErr  error
 	walletServicesReadyOnce sync.Once
 
+	// onlineStartup gates policy-sensitive intent replay after host
+	// ingress.
+	onlineStartup walletOnlineStartup
+
 	// daemonReady is closed when all startup steps have
-	// completed: wallet initialized, mailbox transport
-	// connected, and wallet-dependent actors started. Test
+	// completed: wallet initialized, mailbox routing and local hooks
+	// started. Host-driven intake still waits for an explicit foreground
+	// call, including authenticated policy refresh and intent replay. Test
 	// harnesses should wait on this before issuing RPCs that
 	// require the full stack.
 	daemonReady     chan struct{}
@@ -1905,39 +1911,29 @@ func (s *Server) startWalletReadyServices(ctx context.Context,
 	}
 	s.markWalletServicesReady(nil)
 
-	// The bootstrap GetInfo call cannot use the mailbox identity because
-	// the runtime does not exist yet. Refresh the cached terms now that
-	// authenticated mailbox ingress is running, before a recovered Board
-	// intent can size its outputs from the anonymous bootstrap limits.
-	refreshCtx, refreshCancel := context.WithTimeout(
-		ctx, operatorTermsRefreshTimeout,
-	)
-	refreshErr := s.refreshAuthenticatedOperatorTerms(refreshCtx)
-	refreshCancel()
-	if refreshErr != nil {
-		return refreshErr
+	return s.finishWalletStartup(ctx)
+}
+
+// finishWalletStartup starts local recovery even when host intake is paused.
+// Ordinary daemons preserve authenticated policy/replay before subserver hooks.
+func (s *Server) finishWalletStartup(ctx context.Context) error {
+	if !s.cfg.HostDrivenIngress {
+		if err := s.finishWalletOnlineStartup(ctx); err != nil {
+			return err
+		}
 	}
-
-	if err := s.replayPendingIntents(
-		ctx, s.walletRef.UnsafeFromSome(),
-	); err != nil {
-
-		s.log.WarnS(ctx, "Failed to replay pending intents", err)
-	}
-
 	if err := s.runWalletReadyHooks(ctx); err != nil {
 		return err
 	}
-
 	s.markDaemonReady()
 
 	return nil
 }
 
 // runWalletReadyHooks runs optional post-wallet-unlock hooks in registration
-// order. Hooks are intentionally run after wallet-dependent services are
-// online so optional subservers can safely start background work that calls
-// wallet RPCs.
+// order after wallet-dependent actors are initialized. In host-driven mode
+// intake remains paused; local source recovery and activity backfill must not
+// depend on a foreground mailbox session.
 func (s *Server) runWalletReadyHooks(ctx context.Context) error {
 	for _, hook := range s.cfg.WalletReadyHooks {
 		if hook == nil {
