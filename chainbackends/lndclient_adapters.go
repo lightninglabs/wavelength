@@ -103,6 +103,12 @@ type LndClientChainNotifierConfig struct {
 	// falls back to extracting a logger from context via
 	// LoggerFromContext, or uses btclog.Disabled if no logger is found.
 	Log fn.Option[btclog.Logger]
+
+	// OnFatal opts into daemon shutdown after sustained shared block-stream
+	// failures. Without it, registrations survive indefinite reconnects.
+	// It runs on the shared reader and must signal shutdown promptly,
+	// rather than synchronously stopping this notifier from that reader.
+	OnFatal fn.Option[func(error)]
 }
 
 // WithLogger returns a new config with the given logger set.
@@ -136,6 +142,7 @@ func NewLndClientChainNotifier(
 		cfg: cfg,
 	}
 	n.epochs = newBlockEpochHub(n.openBlockEpochStream, n.logger)
+	n.epochs.onFatal = cfg.OnFatal.UnwrapOr(nil)
 
 	return n
 }
