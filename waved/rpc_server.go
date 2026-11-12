@@ -2459,8 +2459,9 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 	// up front — callers that want distinct destinations must
 	// enumerate the outpoints themselves.
 	var (
-		targets  []wire.OutPoint
-		leaveAll bool
+		targets   []wire.OutPoint
+		leaveAll  bool
+		targetSet = make(map[wire.OutPoint]struct{})
 	)
 	switch sel := req.Selection.(type) {
 	case *waverpc.LeaveVTXOsRequest_All:
@@ -2484,6 +2485,12 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 				return nil, status.Errorf(codes.InvalidArgument,
 					"invalid outpoint %q: %v", opStr, err)
 			}
+
+			if _, duplicate := targetSet[op]; duplicate {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"duplicate outpoint %s", op)
+			}
+			targetSet[op] = struct{}{}
 
 			targets = append(targets, op)
 		}
@@ -2516,10 +2523,6 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 	// reject keys that aren't in the selection. selection=all
 	// already rejected non-empty Destinations above, so the set is
 	// only consulted on the explicit-outpoints branch.
-	targetSet := make(map[wire.OutPoint]struct{}, len(targets))
-	for _, op := range targets {
-		targetSet[op] = struct{}{}
-	}
 
 	// Resolve per-outpoint overrides. Each destination key must be
 	// a valid outpoint AND must appear in the selection — a stray
@@ -2680,29 +2683,14 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 		)
 	}
 
-	// Build the list of outpoints that were successfully queued.
-	// For selection=all we already populated targets from the
-	// vtxoStore above, so the same iteration works for both
-	// selection modes.
-	queued := make([]string, 0, resp.LeavingCount)
-	for _, op := range targets {
-		if _, hasErr := resp.Errors[op]; !hasErr {
-			queued = append(
-				queued, fmt.Sprintf("%s:%d", op.Hash, op.Index),
-			)
-		}
-	}
-
+	response := leaveVTXOsResponse(targets, resp)
 	r.server.log.InfoS(ctx, "VTXOs queued for leave",
-		slog.Int("queued_count", len(queued)),
+		slog.Int("queued_count", len(response.QueuedOutpoints)),
 		slog.Int("error_count", len(resp.Errors)),
 		slog.Int("skipped_count", skipped),
 	)
 
-	return &waverpc.LeaveVTXOsResponse{
-		QueuedOutpoints: queued,
-		Status:          "queued",
-	}, nil
+	return response, nil
 }
 
 // SendOnChain plans and submits an atomic onchain payment from VTXOs.
