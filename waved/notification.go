@@ -8,6 +8,7 @@ import (
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/lightninglabs/wavelength/notification"
 	"github.com/lightninglabs/wavelength/waverpc"
+	"google.golang.org/grpc"
 )
 
 // SetNotificationSubscription authorizes one fixed-relay route under this
@@ -19,30 +20,16 @@ func (s *Server) SetNotificationSubscription(ctx context.Context,
 	mutation *mailboxpb.NotificationSubscriptionMutation) (
 	*mailboxpb.NotificationSubscriptionResponse, error) {
 
-	s.operatorConnMu.RLock()
-	conn := s.serverConn
-	terms := s.loadOperatorTerms()
-	identity := s.loadClientKeyDesc()
-	s.operatorConnMu.RUnlock()
-	if conn == nil || terms == nil || terms.PubKey == nil ||
-		identity.PubKey == nil {
-		return nil, waverpc.WalletNotReadyError(
-			"notification signer or operator connection " +
-				"unavailable",
-		)
-	}
-	sign := func(ctx context.Context, message, tag []byte) (
-		*schnorr.Signature, error) {
-
-		return s.signTaggedSchnorr(
-			ctx, message, tag, "notification subscription",
-		)
+	conn, owner, source, err := s.notificationSource()
+	if err != nil {
+		return nil, err
 	}
 
 	return notification.SetSubscription(
-		ctx, mailboxpb.NewNotificationServiceClient(conn),
-		identity.PubKey, terms.PubKey, mutation, sign,
+		ctx, mailboxpb.NewNotificationServiceClient(conn), owner,
+		source, mutation, s.signNotificationGrant,
 	)
+
 }
 
 // NotificationRegistrar sends a signed mutation to one configured source.
@@ -93,15 +80,37 @@ func (r *RPCServer) AuthorizeNotificationSubscription(ctx context.Context,
 			"notification identity unavailable",
 		)
 	}
-	sign := func(ctx context.Context, message, tag []byte) (
-		*schnorr.Signature, error) {
 
-		return r.server.signTaggedSchnorr(
-			ctx, message, tag, "notification subscription",
+	return notification.SetSubscription(
+		ctx, remote, identity.PubKey, issuer, mutation,
+		r.server.signNotificationGrant,
+	)
+}
+
+// notificationSource snapshots the configured producer and wallet identity.
+// It intentionally does not wait for mailbox ingress or unlock a wallet.
+func (s *Server) notificationSource() (grpc.ClientConnInterface,
+	*btcec.PublicKey, *btcec.PublicKey, error) {
+
+	s.operatorConnMu.RLock()
+	conn := s.serverConn
+	terms := s.loadOperatorTerms()
+	identity := s.loadClientKeyDesc()
+	s.operatorConnMu.RUnlock()
+	if conn == nil || terms == nil || terms.PubKey == nil ||
+		identity.PubKey == nil {
+		return nil, nil, nil, waverpc.WalletNotReadyError(
+			"notification signer or operator connection " +
+				"unavailable",
 		)
 	}
 
-	return notification.SetSubscription(
-		ctx, remote, identity.PubKey, issuer, mutation, sign,
-	)
+	return conn, identity.PubKey, terms.PubKey, nil
+}
+
+// signNotificationGrant applies the caller's notification domain exactly once.
+func (s *Server) signNotificationGrant(ctx context.Context, message,
+	tag []byte) (*schnorr.Signature, error) {
+
+	return s.signTaggedSchnorr(ctx, message, tag, "notification grant")
 }

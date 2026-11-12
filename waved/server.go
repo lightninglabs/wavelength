@@ -485,6 +485,10 @@ type Server struct {
 	swapNotificationMu        sync.RWMutex
 	swapNotificationRegistrar NotificationRegistrar
 
+	// swapFeedRegistrar delegates observation to a subscriber mailbox key.
+	// swapNotificationMu owns both configured source callbacks.
+	swapFeedRegistrar FeedGrantRegistrar
+
 	// lightningReceiptMu owns the optional local wallet-layer adapter.
 	lightningReceiptMu     sync.RWMutex
 	lightningReceiptLookup LightningReceiptLookup

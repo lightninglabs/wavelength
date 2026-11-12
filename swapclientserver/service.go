@@ -68,6 +68,7 @@ type swapClientService struct {
 	// notificationRPC shares the configured swap connection. It is absent
 	// for transports with no direct notification control service.
 	notificationRPC mailboxpb.NotificationServiceClient
+	feedRPC         mailboxpb.WakeFeedServiceClient
 
 	// store is the daemon-owned durable swap store. The service keeps the
 	// pointer so cleanup can close it with the same lifecycle as the
@@ -320,6 +321,7 @@ type swapClientAdapter struct {
 // swapdk-server transport.
 type swapServerClients struct {
 	notification mailboxpb.NotificationServiceClient
+	feed         mailboxpb.WakeFeedServiceClient
 	server       swaps.SwapServerConn
 	mailbox      mailboxpb.MailboxServiceClient
 	cleanup      func() error
@@ -376,6 +378,9 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 		)
 	}
 	rpcServer.RegisterSwapNotificationSource(registrar)
+	rpcServer.RegisterSwapFeedSource(
+		svc.swapFeedRegistrar(issuer, rpcServer),
+	)
 	swapclientrpc.RegisterSwapClientServiceServer(grpcServer, svc)
 
 	// Publish the backend handle so the wavewalletrpc registrar (if
@@ -403,6 +408,7 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 
 	return func() {
 		rpcServer.RegisterSwapNotificationSource(nil)
+		rpcServer.RegisterSwapFeedSource(nil)
 		cleanup()
 	}, nil
 }
@@ -632,6 +638,7 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 		},
 		store:             store,
 		notificationRPC:   swapClients.notification,
+		feedRPC:           swapClients.feed,
 		daemonConn:        daemonConn,
 		log:               log,
 		rootCtx:           rootCtx,
@@ -745,6 +752,7 @@ func newSwapServerClients(cfg *waved.SwapConfig, swapAddr string,
 		}
 
 		return &swapServerClients{
+			feed: mailboxpb.NewWakeFeedServiceClient(swapConn),
 			notification: mailboxpb.NewNotificationServiceClient(
 				swapConn,
 			),

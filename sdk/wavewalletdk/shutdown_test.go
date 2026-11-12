@@ -64,6 +64,8 @@ func TestCloseJoinsLocalCallbacks(t *testing.T) {
 	for _, source := range []string{
 		"operator",
 		"swap",
+		"feed-operator",
+		"feed-swap",
 		"readiness",
 		"recovery",
 		"activity-batch",
@@ -149,6 +151,29 @@ func shutdownCallbackInvoke(t *testing.T, client *Client, source string,
 		return func() error {
 			_, err := client.SetNotificationSubscription(
 				t.Context(), NotificationSubscription{
+					Source: selector,
+				},
+			)
+
+			return err
+		}
+
+	case "feed-operator", "feed-swap":
+		register := func(ctx context.Context, _ *pb.FeedGrantMutation) (
+			*pb.FeedGrantResponse, error) {
+
+			return nil, callback(ctx)
+		}
+		selector := NotificationSourceOperator
+		client.setFeedGrant = register
+		if source == "feed-swap" {
+			selector = NotificationSourceSwapServer
+			client.setSwapFeedGrant = register
+		}
+
+		return func() error {
+			_, err := client.SetNotificationFeedGrant(
+				t.Context(), NotificationFeedGrant{
 					Source: selector,
 				},
 			)

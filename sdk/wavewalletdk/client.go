@@ -62,6 +62,12 @@ type Client struct {
 		*mailboxpb.NotificationSubscriptionMutation) (
 		*mailboxpb.NotificationSubscriptionResponse, error)
 
+	// Feed registration borrows configured source signers and transports.
+	setFeedGrant func(context.Context, *mailboxpb.FeedGrantMutation) (
+		*mailboxpb.FeedGrantResponse, error)
+	setSwapFeedGrant func(context.Context, *mailboxpb.FeedGrantMutation) (
+		*mailboxpb.FeedGrantResponse, error)
+
 	// Activity replay borrows the embedded canonical store. Direct
 	// callbacks participate in localCalls, so Close cannot release their
 	// daemon owner.
