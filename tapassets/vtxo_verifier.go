@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/tap-sdk/customanchor"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 )
@@ -149,7 +150,7 @@ func checkLeafOutputs(committed *commitResult, ref tapsdk.AssetRef,
 			return fmt.Errorf("asset output %d holds %s, want %s",
 				idx, output.assetRef, ref)
 
-		case output.scriptMode != tapsdk.CustomAssetScriptOPTrue ||
+		case output.scriptMode != customanchor.AssetScriptOPTrue ||
 			len(output.opTrueWitness) == 0:
 			return fmt.Errorf("asset output %d is not "+
 				"OP_TRUE locked", idx)
@@ -198,7 +199,7 @@ func verifyLeafOutputProof(ctx context.Context, committed *commitResult,
 	if err != nil {
 		return err
 	}
-	path.Steps = append(path.Steps, tapsdk.AssetProofPathStep{
+	path.Steps = append(path.Steps, customanchor.ProofPathStep{
 		TransitionProof: bytes.Clone(output.proofBlob),
 	})
 
@@ -212,7 +213,7 @@ func verifyLeafOutputProof(ctx context.Context, committed *commitResult,
 
 // checkProvenOutput checks that the asset a verified proof path ends in is
 // the package output: the same asset and tranche, amount, VTXO and script key.
-func checkProvenOutput(summary *tapsdk.AssetProofPathSummary,
+func checkProvenOutput(summary *customanchor.ProofPathSummary,
 	output *commitOutput, ref tapsdk.AssetRef) error {
 
 	switch {
@@ -238,10 +239,10 @@ func checkProvenOutput(summary *tapsdk.AssetProofPathSummary,
 }
 
 // inputProofPath decodes the proof source of a leaf transition's input.
-func inputProofPath(source commitProofSource) (*tapsdk.AssetProofPath, error) {
+func inputProofPath(source commitProofSource) (*customanchor.ProofPath, error) {
 	switch source.kind {
-	case tapsdk.CustomAnchorProofSourceCompactPath:
-		var path tapsdk.AssetProofPath
+	case customanchor.ProofSourceCompactPath:
+		var path customanchor.ProofPath
 		if err := path.UnmarshalBinary(source.blob); err != nil {
 			return nil, fmt.Errorf("decode input proof path: %w",
 				err)
@@ -249,8 +250,8 @@ func inputProofPath(source commitProofSource) (*tapsdk.AssetProofPath, error) {
 
 		return &path, nil
 
-	case tapsdk.CustomAnchorProofSourceConfirmedFile:
-		return &tapsdk.AssetProofPath{
+	case customanchor.ProofSourceConfirmedFile:
+		return &customanchor.ProofPath{
 			ConfirmedBaseProof: bytes.Clone(source.blob),
 		}, nil
 
@@ -304,19 +305,19 @@ func newRoundProofVerifier(chain ProofChainVerifier, commitmentTx *wire.MsgTx,
 // inventory from the proof, since the deposits of other clients are not in
 // this wallet.
 func (v *roundProofVerifier) VerifyConfirmedProof(ctx context.Context,
-	proofFile []byte) (*tapsdk.ConfirmedProofVerification, error) {
+	proofFile []byte) (*customanchor.ConfirmedProofVerification, error) {
 
 	if err := v.chain.VerifyProofChain(ctx, proofFile); err != nil {
 		return nil, err
 	}
 
-	return tapsdk.DeriveConfirmedProofInventory(proofFile)
+	return customanchor.DeriveConfirmedProofInventory(proofFile)
 }
 
 // VerifyUnconfirmedAnchor checks that an unconfirmed step anchors its asset on
 // the VTXO's path through the round.
 func (v *roundProofVerifier) VerifyUnconfirmedAnchor(_ context.Context,
-	transition tapsdk.UnconfirmedAnchorVerification) error {
+	transition customanchor.UnconfirmedAnchorVerification) error {
 
 	var tx wire.MsgTx
 	err := tx.Deserialize(bytes.NewReader(transition.AnchorTransaction))

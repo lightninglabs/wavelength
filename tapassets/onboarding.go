@@ -19,6 +19,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/tap-sdk/customanchor"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -117,7 +118,7 @@ type OnboardingResult struct {
 
 type onboardingDriver interface {
 	CommitOnboarding(context.Context,
-		*tapsdk.CustomAnchorRequest) (*commitResult, error)
+		*customanchor.Request) (*commitResult, error)
 
 	DecodePackage([]byte) (*commitResult, error)
 
@@ -378,7 +379,7 @@ func (o *Onboarder) startPublication(ctx context.Context, requestID string,
 		return nil
 	}
 
-	var attempted *tapsdk.CustomAnchorPublishAttemptError
+	var attempted *customanchor.PublishAttemptError
 	if errors.As(err, &attempted) && attempted.OutcomeUnknown {
 		return errors.Join(ErrReconciliationRequired, err)
 	}
@@ -422,23 +423,23 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 		return nil, err
 	}
 
-	inputs := make([]tapsdk.CustomAssetInput, 0, len(assetInputs))
+	inputs := make([]customanchor.AssetInput, 0, len(assetInputs))
 	plans := make(
-		[]tapsdk.CustomAnchorInputSigningPlan, 0, len(assetInputs),
+		[]customanchor.InputSigningPlan, 0, len(assetInputs),
 	)
 	anchorInputs := make([]tapsdk.Outpoint, 0, len(assetInputs))
 	anchors := make(map[tapsdk.Outpoint]struct{})
 	for idx := range assetInputs {
 		input := &assetInputs[idx]
-		inputs = append(inputs, tapsdk.CustomAssetInput{
+		inputs = append(inputs, customanchor.AssetInput{
 			ID: fmt.Sprintf(
 				"wavelength-onboarding-input-%d", idx,
 			),
 			AssetRef:  assetRef,
 			Amount:    input.amount,
 			ProofFile: append([]byte(nil), input.proofFile...),
-			Witness: tapsdk.CustomAssetWitnessPlan{
-				Mode: tapsdk.CustomAssetWitnessBackendSigner,
+			Witness: customanchor.AssetWitnessPlan{
+				Mode: customanchor.AssetWitnessBackendSigner,
 			},
 		})
 
@@ -453,9 +454,9 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 		if err != nil {
 			return nil, err
 		}
-		plans = append(plans, tapsdk.CustomAnchorInputSigningPlan{
+		plans = append(plans, customanchor.InputSigningPlan{
 			InputIndex: uint32(len(anchorInputs)),
-			KeyPath: &tapsdk.CustomAnchorKeyPathSigningPlan{
+			KeyPath: &customanchor.KeyPathSigningPlan{
 				Signer: signer,
 			},
 		})
@@ -467,7 +468,7 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 	if err != nil {
 		return nil, err
 	}
-	outputs := []tapsdk.CustomAssetOutput{{
+	outputs := []customanchor.AssetOutput{{
 		ID:                onboardingOutputID,
 		AssetRef:          assetRef,
 		Amount:            request.AssetAmount,
@@ -478,7 +479,7 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 	}}
 	anchorValues := []int64{outputValue}
 	if change := state.Change; change != nil {
-		outputs = append(outputs, tapsdk.CustomAssetOutput{
+		outputs = append(outputs, customanchor.AssetOutput{
 			ID:                onboardingChangeID,
 			AssetRef:          assetRef,
 			Amount:            change.Amount,
@@ -486,14 +487,14 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 			AnchorValueSat:    uint64(change.OutputValueSat),
 
 			// Wallet mode would derive a new key on replay.
-			Script: tapsdk.CustomAssetScriptPlan{
+			Script: customanchor.AssetScriptPlan{
 				Mode: scriptExternal,
-				External: &tapsdk.
-					CustomAssetExternalScriptPlan{
+				External: &customanchor.
+					AssetExternalScriptPlan{
 					ScriptKey: change.ScriptKey,
 				},
 			},
-			Anchor: tapsdk.CustomAnchorOutputPlan{
+			Anchor: customanchor.OutputPlan{
 				InternalKey: change.AnchorInternalKey,
 			},
 		})
@@ -505,13 +506,13 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 		return nil, err
 	}
 
-	requestDTO := &tapsdk.CustomAnchorRequest{
+	requestDTO := &customanchor.Request{
 		Inputs:     inputs,
 		Outputs:    outputs,
 		AnchorPSBT: anchorPSBT,
-		Funding: tapsdk.CustomAnchorFundingPlan{
-			Mode: tapsdk.CustomAnchorFundingWalletFunded,
-			WalletFunded: &tapsdk.CustomAnchorWalletFunding{
+		Funding: customanchor.FundingPlan{
+			Mode: customanchor.FundingWalletFunded,
+			WalletFunded: &customanchor.WalletFunding{
 				ChangeOutput: tapsdk.AnchorChangeOutput{
 					Mode: tapsdk.AnchorChangeOutputAdd,
 				},
@@ -522,11 +523,11 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 				),
 			},
 		},
-		PassiveAssets: tapsdk.CustomAnchorPassiveAssets{
-			Policy: tapsdk.CustomAnchorPassiveReject,
+		PassiveAssets: customanchor.PassiveAssets{
+			Policy: customanchor.PassiveReject,
 		},
-		LossPolicy: tapsdk.CustomAnchorLossPolicy{
-			Mode: tapsdk.CustomAnchorLossReject,
+		LossPolicy: customanchor.LossPolicy{
+			Mode: customanchor.LossReject,
 		},
 		SigningPlans: plans,
 	}
@@ -791,7 +792,7 @@ func onboardingResultFromCommit(request *OnboardingRequest,
 		return nil, fmt.Errorf("onboarding package must contain %d "+
 			"inputs and %d outputs", wantInputs, wantOutputs)
 	}
-	if committed.fundingMode != tapsdk.CustomAnchorFundingWalletFunded {
+	if committed.fundingMode != customanchor.FundingWalletFunded {
 		return nil, fmt.Errorf("onboarding package is not wallet " +
 			"funded")
 	}
@@ -1287,10 +1288,10 @@ func policyTapLeaves(policy *arkscript.VTXOPolicy) []txscript.TapLeaf {
 
 // boardingScriptPlan uses OP_TRUE for operator-built asset transitions.
 // Custody stays with the owner through the composed Bitcoin spending policy.
-func boardingScriptPlan(digest tapsdk.Hash) tapsdk.CustomAssetScriptPlan {
-	return tapsdk.CustomAssetScriptPlan{
-		Mode: tapsdk.CustomAssetScriptOPTrue,
-		OPTrue: &tapsdk.CustomAssetOPTrueScriptPlan{
+func boardingScriptPlan(digest tapsdk.Hash) customanchor.AssetScriptPlan {
+	return customanchor.AssetScriptPlan{
+		Mode: customanchor.AssetScriptOPTrue,
+		OPTrue: &customanchor.AssetOPTrueScriptPlan{
 			InternalKey: tapsdk.KeyDescriptor{
 				RawKeyBytes: deterministicKey(
 					digest, "onboarding-boarding",

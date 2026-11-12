@@ -227,6 +227,10 @@ type Server struct {
 	// the lnd node behind tapd are configured.
 	assetDeposits *assetDepositService
 
+	// assetClaimSubscriber receives txconfirm notifications for asset
+	// deposit claims.
+	assetClaimSubscriber claimNotifications
+
 	// lwWallet holds the lightweight wallet instance when
 	// wallet.type is "lwwallet". It is None in lnd mode.
 	lwWallet fn.Option[*lwwallet.Wallet]

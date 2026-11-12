@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/tap-sdk/customanchor"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
@@ -33,7 +34,7 @@ type BatchAnchorSource struct {
 	Witness [][]byte
 
 	// Verifier verifies ProofFile.
-	Verifier tapsdk.ConfirmedProofVerifier
+	Verifier customanchor.ConfirmedProofVerifier
 
 	// AnchorOutpoint is the Bitcoin output that holds the asset.
 	AnchorOutpoint wire.OutPoint
@@ -185,7 +186,7 @@ type BatchAnchorCommit struct {
 type BatchAnchorCommitter struct {
 	driver          batchAnchorDriver
 	store           Store
-	encodeProofPath func(*tapsdk.AssetProofPath) ([]byte, error)
+	encodeProofPath func(*customanchor.ProofPath) ([]byte, error)
 	mu              sync.Mutex
 }
 
@@ -391,7 +392,7 @@ func (c *BatchAnchorCommitter) Commit(ctx context.Context,
 			"package")
 	}
 	if committed.fundingMode !=
-		tapsdk.CustomAnchorFundingCallerFundedExact {
+		customanchor.FundingCallerFundedExact {
 		return nil, fmt.Errorf("unexpected funding mode %d",
 			committed.fundingMode)
 	}
@@ -434,7 +435,7 @@ func (c *BatchAnchorCommitter) Commit(ctx context.Context,
 			return nil, fmt.Errorf("batch anchor output %d asset "+
 				"ref mismatch", idx)
 		}
-		if output.scriptMode != tapsdk.CustomAssetScriptOPTrue {
+		if output.scriptMode != customanchor.AssetScriptOPTrue {
 			return nil, fmt.Errorf("batch anchor output %d script "+
 				"mode %d is not OP_TRUE", idx,
 				output.scriptMode)
@@ -517,7 +518,7 @@ func (c *BatchAnchorCommitter) Publish(ctx context.Context, packageBytes,
 
 	err := c.driver.Publish(ctx, packageBytes, finalPSBT)
 	if err != nil {
-		var attemptErr *tapsdk.CustomAnchorPublishAttemptError
+		var attemptErr *customanchor.PublishAttemptError
 		if errors.As(err, &attemptErr) && attemptErr.OutcomeUnknown {
 			return errors.Join(
 				ErrReconciliationRequired,
@@ -572,7 +573,7 @@ func validateBatchInputs(req *BatchAnchorRequest,
 				"%d, want %d", idx, input.amount, source.Amount)
 		}
 		if input.proofSource.kind !=
-			tapsdk.CustomAnchorProofSourceConfirmedFile ||
+			customanchor.ProofSourceConfirmedFile ||
 			!bytes.Equal(input.proofSource.blob, source.ProofFile) {
 			return fmt.Errorf("batch anchor input %d proof source "+
 				"mismatch", idx)
@@ -750,8 +751,7 @@ func checkCommittedChange(change *BatchAnchorChange, assetRef tapsdk.AssetRef,
 
 // buildRequest creates the SDK request used by derivation and commit.
 func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
-	anchor *psbt.Packet) (*tapsdk.CustomAnchorRequest, *btcec.PublicKey,
-	error) {
+	anchor *psbt.Packet) (*customanchor.Request, *btcec.PublicKey, error) {
 
 	if err := validateBatchAnchorRequest(req, anchor); err != nil {
 		return nil, nil, err
@@ -787,19 +787,19 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 		return nil, nil, fmt.Errorf("serialize anchor PSBT: %w", err)
 	}
 
-	inputs := make([]tapsdk.CustomAssetInput, 0, len(req.Sources))
+	inputs := make([]customanchor.AssetInput, 0, len(req.Sources))
 	for i := range req.Sources {
 		source := &req.Sources[i]
-		witnessPlan := tapsdk.CustomAssetWitnessPlan{
+		witnessPlan := customanchor.AssetWitnessPlan{
 			Mode: witnessBackendSigner,
 		}
 		if len(source.Witness) != 0 {
-			witnessPlan = tapsdk.CustomAssetWitnessPlan{
+			witnessPlan = customanchor.AssetWitnessPlan{
 				Mode:  witnessCallerProvided,
 				Stack: cloneByteSlices(source.Witness),
 			}
 		}
-		inputs = append(inputs, tapsdk.CustomAssetInput{
+		inputs = append(inputs, customanchor.AssetInput{
 			ID:       fmt.Sprintf("batch-anchor-input-%d", i),
 			AssetRef: req.AssetRef,
 			Amount:   source.Amount,
@@ -821,15 +821,15 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 	if err != nil {
 		return nil, nil, err
 	}
-	outputs := []tapsdk.CustomAssetOutput{{
+	outputs := []customanchor.AssetOutput{{
 		ID:                batchAnchorOutputID,
 		AssetRef:          req.AssetRef,
 		Amount:            req.Amount,
 		AnchorOutputIndex: req.OutputIndex,
 		AnchorValueSat:    uint64(req.OutputValueSat),
-		Script: tapsdk.CustomAssetScriptPlan{
-			Mode: tapsdk.CustomAssetScriptOPTrue,
-			OPTrue: &tapsdk.CustomAssetOPTrueScriptPlan{
+		Script: customanchor.AssetScriptPlan{
+			Mode: customanchor.AssetScriptOPTrue,
+			OPTrue: &customanchor.AssetOPTrueScriptPlan{
 				InternalKey: tapsdk.KeyDescriptor{
 					RawKeyBytes: deterministicKey(
 						req.Digest, "batch-anchor",
@@ -840,7 +840,7 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 		Anchor: batchAnchor,
 	}}
 	if req.Change != nil {
-		outputs = append(outputs, tapsdk.CustomAssetOutput{
+		outputs = append(outputs, customanchor.AssetOutput{
 			ID:                batchAnchorChangeID,
 			AssetRef:          req.AssetRef,
 			Amount:            req.Change.Amount,
@@ -849,33 +849,33 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 				req.Change.OutputValueSat,
 			),
 			// Reuse the key derived before the anchor was funded.
-			Script: tapsdk.CustomAssetScriptPlan{
+			Script: customanchor.AssetScriptPlan{
 				Mode: scriptExternal,
-				External: &tapsdk.
-					CustomAssetExternalScriptPlan{
+				External: &customanchor.
+					AssetExternalScriptPlan{
 					ScriptKey: req.Change.ScriptKey,
 				},
 			},
-			Anchor: tapsdk.CustomAnchorOutputPlan{
+			Anchor: customanchor.OutputPlan{
 				InternalKey: req.Change.AnchorInternalKey,
 			},
 		})
 	}
 
-	request := &tapsdk.CustomAnchorRequest{
+	request := &customanchor.Request{
 		Inputs:     inputs,
 		Outputs:    outputs,
 		AnchorPSBT: anchorBytes,
-		Funding: tapsdk.CustomAnchorFundingPlan{
-			Mode: tapsdk.CustomAnchorFundingCallerFundedExact,
-			CallerFundedExact: &tapsdk.
-				CustomAnchorCallerFundedExact{},
+		Funding: customanchor.FundingPlan{
+			Mode: customanchor.FundingCallerFundedExact,
+			CallerFundedExact: &customanchor.
+				CallerFundedExact{},
 		},
-		PassiveAssets: tapsdk.CustomAnchorPassiveAssets{
-			Policy: tapsdk.CustomAnchorPassiveReject,
+		PassiveAssets: customanchor.PassiveAssets{
+			Policy: customanchor.PassiveReject,
 		},
-		LossPolicy: tapsdk.CustomAnchorLossPolicy{
-			Mode: tapsdk.CustomAnchorLossReject,
+		LossPolicy: customanchor.LossPolicy{
+			Mode: customanchor.LossReject,
 		},
 		SigningPlans: plans,
 	}
@@ -1024,8 +1024,7 @@ func validateBatchSources(sources []BatchAnchorSource,
 
 // batchSigningPlans assigns tapd-owned inputs and caller-owned inputs.
 func batchSigningPlans(tx *wire.MsgTx,
-	sources []BatchAnchorSource) ([]tapsdk.CustomAnchorInputSigningPlan,
-	error) {
+	sources []BatchAnchorSource) ([]customanchor.InputSigningPlan, error) {
 
 	type fundingPlan struct {
 		callerSigned bool
@@ -1048,16 +1047,16 @@ func batchSigningPlans(tx *wire.MsgTx,
 	}
 
 	plans := make(
-		[]tapsdk.CustomAnchorInputSigningPlan, 0, len(tx.TxIn),
+		[]customanchor.InputSigningPlan, 0, len(tx.TxIn),
 	)
 	for idx, txIn := range tx.TxIn {
 		plan, ok := funding[txIn.PreviousOutPoint]
 		if ok && !plan.callerSigned {
 			plans = append(
-				plans, tapsdk.CustomAnchorInputSigningPlan{
+				plans, customanchor.InputSigningPlan{
 					InputIndex: uint32(idx),
-					KeyPath: &tapsdk.
-						CustomAnchorKeyPathSigningPlan{
+					KeyPath: &customanchor.
+						KeyPathSigningPlan{
 						Signer: plan.signer,
 					},
 				},
@@ -1066,10 +1065,10 @@ func batchSigningPlans(tx *wire.MsgTx,
 			continue
 		}
 
-		plans = append(plans, tapsdk.CustomAnchorInputSigningPlan{
+		plans = append(plans, customanchor.InputSigningPlan{
 			InputIndex: uint32(idx),
-			CallerSigned: &tapsdk.
-				CustomAnchorCallerSignedPlan{},
+			CallerSigned: &customanchor.
+				CallerSignedPlan{},
 		})
 	}
 
@@ -1078,9 +1077,11 @@ func batchSigningPlans(tx *wire.MsgTx,
 
 // sourcesVerifier combines the verifiers for all requested sources.
 func sourcesVerifier(
-	sources []BatchAnchorSource) tapsdk.ConfirmedProofVerifier {
+	sources []BatchAnchorSource) customanchor.ConfirmedProofVerifier {
 
-	verifiers := make([]tapsdk.ConfirmedProofVerifier, 0, len(sources))
+	verifiers := make(
+		[]customanchor.ConfirmedProofVerifier, 0, len(sources),
+	)
 	for i := range sources {
 		if sources[i].Verifier != nil {
 			verifiers = append(verifiers, sources[i].Verifier)
@@ -1092,12 +1093,12 @@ func sourcesVerifier(
 
 // multiSourceVerifier fans a proof out to the per-source verifiers.
 type multiSourceVerifier struct {
-	verifiers []tapsdk.ConfirmedProofVerifier
+	verifiers []customanchor.ConfirmedProofVerifier
 }
 
 // VerifyConfirmedProof accepts a proof any per-source verifier accepts.
 func (v *multiSourceVerifier) VerifyConfirmedProof(ctx context.Context,
-	proofFile []byte) (*tapsdk.ConfirmedProofVerification, error) {
+	proofFile []byte) (*customanchor.ConfirmedProofVerification, error) {
 
 	if len(v.verifiers) == 0 {
 		return nil, fmt.Errorf("no funding source verifiers")
@@ -1122,7 +1123,7 @@ func (v *multiSourceVerifier) VerifyConfirmedProof(ctx context.Context,
 // output.
 func batchRootSource(req *BatchAnchorRequest, outputs []commitOutput,
 	inputs []commitInput, finalTx *wire.MsgTx, derived *BatchAnchorScript,
-	encodeProofPath func(*tapsdk.AssetProofPath) ([]byte, error)) (
+	encodeProofPath func(*customanchor.ProofPath) ([]byte, error)) (
 	TreeRootAssetSource, error) {
 
 	root := TreeRootAssetSource{
@@ -1156,10 +1157,10 @@ func batchRootSource(req *BatchAnchorRequest, outputs []commitOutput,
 // transition.
 func batchRootInput(req *BatchAnchorRequest, output commitOutput,
 	inputs []commitInput, anchorOutpoint wire.OutPoint, anchorTx []byte,
-	encodeProofPath func(*tapsdk.AssetProofPath) ([]byte, error)) (
+	encodeProofPath func(*customanchor.ProofPath) ([]byte, error)) (
 	TreeRootAssetInput, error) {
 
-	step := tapsdk.AssetProofPathStep{
+	step := customanchor.ProofPathStep{
 		TransitionProof: append([]byte(nil), output.proofBlob...),
 	}
 
@@ -1215,11 +1216,11 @@ func batchRootInput(req *BatchAnchorRequest, output commitOutput,
 		}
 	}
 
-	path := &tapsdk.AssetProofPath{
+	path := &customanchor.ProofPath{
 		ConfirmedBaseProof: append(
 			[]byte(nil), base.proofSource.blob...,
 		),
-		Steps: []tapsdk.AssetProofPathStep{
+		Steps: []customanchor.ProofPathStep{
 			step,
 		},
 	}
@@ -1227,7 +1228,7 @@ func batchRootInput(req *BatchAnchorRequest, output commitOutput,
 	if len(packetInputs) > 1 {
 		for idx := 1; idx < len(packetInputs); idx++ {
 			input := packetInputs[idx]
-			coPath := &tapsdk.AssetProofPath{
+			coPath := &customanchor.ProofPath{
 				ConfirmedBaseProof: append(
 					[]byte(nil), input.proofSource.blob...,
 				),
@@ -1241,7 +1242,7 @@ func batchRootInput(req *BatchAnchorRequest, output commitOutput,
 		}
 	}
 	if encodeProofPath == nil {
-		encodeProofPath = func(path *tapsdk.AssetProofPath) ([]byte,
+		encodeProofPath = func(path *customanchor.ProofPath) ([]byte,
 			error) {
 
 			return path.MarshalBinary()

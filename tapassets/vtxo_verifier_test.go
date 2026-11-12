@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/tap-sdk/customanchor"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/stretchr/testify/require"
 )
@@ -220,7 +221,7 @@ func TestOPTrueSpendBindsScriptKey(t *testing.T) {
 	var internalKey, scriptKey tapsdk.PubKey
 	copy(internalKey[:], internal.PubKey().SerializeCompressed())
 	copy(scriptKey[:], outputKey.SerializeCompressed())
-	spend := &tapsdk.CustomAssetOPTrueSpendInfo{
+	spend := &customanchor.AssetOPTrueSpendInfo{
 		LeafScript:   opTrue,
 		LeafVersion:  uint8(txscript.BaseLeafVersion),
 		ControlBlock: controlBlock,
@@ -245,7 +246,7 @@ func TestCheckProvenOutput(t *testing.T) {
 	f := newAssetVTXOFixture(t)
 	ref := f.tree.mat.cfg.AssetRef
 	output := f.committed.outputs[0]
-	proven := tapsdk.AssetProofPathSummary{
+	proven := customanchor.ProofPathSummary{
 		AssetRef:       output.assetRef,
 		IssuanceID:     output.issuanceID,
 		Amount:         output.amount,
@@ -255,7 +256,7 @@ func TestCheckProvenOutput(t *testing.T) {
 
 	testCases := []struct {
 		name   string
-		mutate func(*tapsdk.AssetProofPathSummary)
+		mutate func(*customanchor.ProofPathSummary)
 		err    string
 	}{
 		{
@@ -263,7 +264,7 @@ func TestCheckProvenOutput(t *testing.T) {
 		},
 		{
 			name: "different asset",
-			mutate: func(s *tapsdk.AssetProofPathSummary) {
+			mutate: func(s *customanchor.ProofPathSummary) {
 				s.AssetRef = tapsdk.AssetRefFromAssetID(
 					tapsdk.AssetID{0xBB},
 				)
@@ -272,28 +273,28 @@ func TestCheckProvenOutput(t *testing.T) {
 		},
 		{
 			name: "different tranche",
-			mutate: func(s *tapsdk.AssetProofPathSummary) {
+			mutate: func(s *customanchor.ProofPathSummary) {
 				s.IssuanceID[0] ^= 1
 			},
 			err: "proven asset does not match",
 		},
 		{
 			name: "different amount",
-			mutate: func(s *tapsdk.AssetProofPathSummary) {
+			mutate: func(s *customanchor.ProofPathSummary) {
 				s.Amount--
 			},
 			err: "proven amount",
 		},
 		{
 			name: "different anchor",
-			mutate: func(s *tapsdk.AssetProofPathSummary) {
+			mutate: func(s *customanchor.ProofPathSummary) {
 				s.AnchorOutpoint.Index++
 			},
 			err: "not in the VTXO",
 		},
 		{
 			name: "different script key",
-			mutate: func(s *tapsdk.AssetProofPathSummary) {
+			mutate: func(s *customanchor.ProofPathSummary) {
 				s.ScriptKey[1] ^= 1
 			},
 			err: "not the OP_TRUE key",
@@ -391,16 +392,16 @@ func TestRoundProofVerifier(t *testing.T) {
 	require.NotNil(t, otherTx)
 
 	step := func(tx *wire.MsgTx,
-		anchor wire.OutPoint) tapsdk.UnconfirmedAnchorVerification {
+		op wire.OutPoint) customanchor.UnconfirmedAnchorVerification {
 
-		return tapsdk.UnconfirmedAnchorVerification{
-			AnchorOutpoint:    sdkOutpoint(anchor),
+		return customanchor.UnconfirmedAnchorVerification{
+			AnchorOutpoint:    sdkOutpoint(op),
 			AnchorTransaction: serializeTx(tx),
 		}
 	}
 	testCases := []struct {
 		name       string
-		transition tapsdk.UnconfirmedAnchorVerification
+		transition customanchor.UnconfirmedAnchorVerification
 		err        string
 	}{
 		{
@@ -434,7 +435,7 @@ func TestRoundProofVerifier(t *testing.T) {
 		},
 		{
 			name: "malformed transaction",
-			transition: tapsdk.UnconfirmedAnchorVerification{
+			transition: customanchor.UnconfirmedAnchorVerification{
 				AnchorTransaction: []byte{
 					0x01,
 				},
@@ -467,7 +468,7 @@ func TestRoundProofVerifier(t *testing.T) {
 
 	chain.err = nil
 	_, err = verifier.VerifyConfirmedProof(t.Context(), []byte{0x01})
-	require.ErrorIs(t, err, tapsdk.ErrAssetProofPathInvalid)
+	require.ErrorIs(t, err, customanchor.ErrProofPathInvalid)
 	require.Equal(t, 2, chain.calls)
 }
 
@@ -488,7 +489,7 @@ func TestVerifyLeafOutputProofInputs(t *testing.T) {
 		packetRole:  output.packetRole,
 		packetIndex: output.packetIndex,
 		proofSource: commitProofSource{
-			kind: tapsdk.CustomAnchorProofSourceUnknown,
+			kind: customanchor.ProofSourceUnknown,
 		},
 	}
 

@@ -182,6 +182,14 @@ service DaemonService {
     // a BTC VTXO with the deposit's remaining satoshis after the round fee.
     rpc BoardAssetDeposit (BoardAssetDepositRequest) returns (AssetDeposit);
 
+    // ClaimAssetDeposit spends a confirmed asset deposit that no round
+    // holds through the owner's exit path, once the exit delay has passed,
+    // and returns the asset to the tapd wallet. The claim pays its fee with a
+    // CPFP child from the daemon wallet. Retrying resumes the same claim.
+    // Requires a tapd that confirms transfers spending assets it does not
+    // hold.
+    rpc ClaimAssetDeposit (ClaimAssetDepositRequest) returns (AssetDeposit);
+
     // JoinNextRound asks the client round FSM to commit any currently
     // queued round intents and emit a JoinRoundRequest to the operator.
     // Useful after queueing refresh or leave intents that intentionally
@@ -1839,6 +1847,11 @@ message BoardAssetDepositRequest {
     string request_id = 1;
 }
 
+message ClaimAssetDepositRequest {
+    // request_id names a confirmed deposit.
+    string request_id = 1;
+}
+
 message ListAssetDepositsResponse {
     repeated AssetDeposit deposits = 1;
 }
@@ -1888,6 +1901,13 @@ message AssetDeposit {
     // round_id is the round that spends the deposit, empty until a round
     // checkpoints with it or after that round fails.
     string round_id = 10;
+
+    // claim_txid is the transaction that claims the deposit back to the tapd
+    // wallet, empty unless a claim was signed.
+    string claim_txid = 11;
+
+    // claimed is true once tapd records the claim six blocks deep.
+    bool claimed = 12;
 }
 
 message JoinNextRoundRequest {

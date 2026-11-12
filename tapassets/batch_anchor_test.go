@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/tap-sdk/customanchor"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
@@ -25,7 +26,7 @@ type fakeBatchDriver struct {
 	afterCommit  func()
 	commits      int
 	packages     map[string]*commitResult
-	paths        []*tapsdk.AssetProofPath
+	paths        []*customanchor.ProofPath
 	publishErr   error
 	published    int
 }
@@ -51,7 +52,7 @@ func batchAssetRoot(input wire.OutPoint, index uint32) tapsdk.Hash {
 }
 
 func (f *fakeBatchDriver) Preview(_ context.Context,
-	request *tapsdk.CustomAnchorRequest, _ tapsdk.ConfirmedProofVerifier) (
+	request *customanchor.Request, _ customanchor.ConfirmedProofVerifier) (
 	[]outputCommitmentPreview, error) {
 
 	template, err := parseAnchorTx(request.AnchorPSBT)
@@ -83,7 +84,7 @@ func (f *fakeBatchDriver) Preview(_ context.Context,
 }
 
 func (f *fakeBatchDriver) Commit(_ context.Context,
-	request *tapsdk.CustomAnchorRequest, _ tapsdk.ConfirmedProofVerifier) (
+	request *customanchor.Request, _ customanchor.ConfirmedProofVerifier) (
 	*commitResult, error) {
 
 	template, err := parseAnchorTx(request.AnchorPSBT)
@@ -93,7 +94,7 @@ func (f *fakeBatchDriver) Commit(_ context.Context,
 	input := template.TxIn[0].PreviousOutPoint
 
 	result := &commitResult{
-		fundingMode: tapsdk.CustomAnchorFundingCallerFundedExact,
+		fundingMode: customanchor.FundingCallerFundedExact,
 		anchorPSBT:  request.AnchorPSBT,
 	}
 	remaining := make([]uint64, len(request.Inputs))
@@ -110,7 +111,7 @@ func (f *fakeBatchDriver) Commit(_ context.Context,
 		result.inputs = append(result.inputs, commitInput{
 			logicalInputID:    input.ID,
 			packetIndex:       uint32(idx),
-			packetRole:        tapsdk.CustomAnchorPacketRoleActive,
+			packetRole:        customanchor.PacketRoleActive,
 			virtualInputIndex: 0,
 			anchorOutpoint: sdkOutpoint(
 				template.TxIn[anchorIndex].PreviousOutPoint,
@@ -119,14 +120,14 @@ func (f *fakeBatchDriver) Commit(_ context.Context,
 			issuanceID: issuance,
 			amount:     input.Amount,
 			proofSource: commitProofSource{
-				kind: tapsdk.
-					CustomAnchorProofSourceConfirmedFile,
+				kind: customanchor.
+					ProofSourceConfirmedFile,
 				blob: append([]byte(nil), input.ProofFile...),
 			},
 		})
 	}
 	for _, out := range request.Outputs {
-		scriptMode := tapsdk.CustomAssetScriptOPTrue
+		scriptMode := customanchor.AssetScriptOPTrue
 		if out.ID == batchAnchorChangeID {
 			scriptMode = scriptExternal
 		}
@@ -144,8 +145,8 @@ func (f *fakeBatchDriver) Commit(_ context.Context,
 			result.outputs = append(result.outputs, commitOutput{
 				logicalOutputID: out.ID,
 				packetIndex:     uint32(inputIdx),
-				packetRole: tapsdk.
-					CustomAnchorPacketRoleActive,
+				packetRole: customanchor.
+					PacketRoleActive,
 				anchorOutputIndex: out.AnchorOutputIndex,
 				anchorOutpoint: sdkOutpoint(wire.OutPoint{
 					Hash:  template.TxHash(),
@@ -279,7 +280,7 @@ func newBatchAnchorFixture(t *testing.T) (*BatchAnchorCommitter,
 	committer := &BatchAnchorCommitter{
 		driver: fake,
 		store:  newMemoryStore(),
-		encodeProofPath: func(path *tapsdk.AssetProofPath) ([]byte,
+		encodeProofPath: func(path *customanchor.ProofPath) ([]byte,
 			error) {
 
 			fake.paths = append(fake.paths, path.Clone())
@@ -410,8 +411,8 @@ func TestBatchAnchorCommitValidation(t *testing.T) {
 				_ *BatchAnchorScript, fake *fakeBatchDriver) {
 
 				fake.mutateCommit = func(r *commitResult) {
-					r.fundingMode = tapsdk.
-						CustomAnchorFundingWalletFunded
+					r.fundingMode = customanchor.
+						FundingWalletFunded
 				}
 			},
 			wantErr: "unexpected funding mode",
@@ -755,7 +756,7 @@ func TestBatchAnchorChangeValidation(t *testing.T) {
 
 				fake.mutateCommit = func(r *commitResult) {
 					r.outputs[1].scriptMode =
-						tapsdk.CustomAssetScriptOPTrue
+						customanchor.AssetScriptOPTrue
 				}
 			},
 			wantErr: "is not external",
@@ -977,7 +978,7 @@ func TestBatchAnchorPublish(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, fake.published)
 
-	fake.publishErr = &tapsdk.CustomAnchorPublishAttemptError{
+	fake.publishErr = &customanchor.PublishAttemptError{
 		Err:            fmt.Errorf("transport failed"),
 		OutcomeUnknown: true,
 	}
@@ -1029,7 +1030,7 @@ func TestBatchAnchorJournal(t *testing.T) {
 		)
 		require.NoError(t, err)
 		funded := fundedFromTemplate(t, template, derived)
-		fake.commitErr = &tapsdk.CustomAnchorCommitAttemptError{
+		fake.commitErr = &customanchor.CommitAttemptError{
 			Err:            fmt.Errorf("transport failed"),
 			OutcomeUnknown: true,
 		}

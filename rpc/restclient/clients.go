@@ -681,6 +681,17 @@ func (c *DaemonServiceClient) BoardAssetDeposit(ctx context.Context,
 	return out, err
 }
 
+// ClaimAssetDeposit claims a confirmed asset deposit back to the tapd wallet.
+func (c *DaemonServiceClient) ClaimAssetDeposit(ctx context.Context,
+	in *waverpc.ClaimAssetDepositRequest, _ ...grpc.CallOption) (
+	*waverpc.AssetDeposit, error) {
+
+	out := new(waverpc.AssetDeposit)
+	err := c.client.Post(ctx, "/v1/daemon/claim-asset-deposit", in, out)
+
+	return out, err
+}
+
 // JoinNextRound commits queued round intents and joins the next round.
 func (c *DaemonServiceClient) JoinNextRound(ctx context.Context,
 	in *waverpc.JoinNextRoundRequest, _ ...grpc.CallOption) (

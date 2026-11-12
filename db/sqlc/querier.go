@@ -106,6 +106,7 @@ type Querier interface {
 	GetActivityEntry(ctx context.Context, canonicalID string) (ActivityEntry, error)
 	GetAssetDeposit(ctx context.Context, requestID string) (AssetDeposit, error)
 	GetAssetDepositByOutpoint(ctx context.Context, arg GetAssetDepositByOutpointParams) (AssetDeposit, error)
+	GetAssetDepositClaim(ctx context.Context, requestID string) (AssetDepositClaim, error)
 	// GetAssetDepositRound returns the round that spends a deposit. A failed round
 	// never broadcast its commitment, so it leaves the deposit free to board again.
 	GetAssetDepositRound(ctx context.Context, requestID string) (GetAssetDepositRoundRow, error)
@@ -183,6 +184,9 @@ type Querier interface {
 	// InsertAssetDeposit records a deposit request before tapd funds it. A
 	// request ID already recorded inserts nothing.
 	InsertAssetDeposit(ctx context.Context, arg InsertAssetDepositParams) (int64, error)
+	// InsertAssetDepositClaim records a signed claim. A deposit that already has
+	// a claim inserts nothing.
+	InsertAssetDepositClaim(ctx context.Context, arg InsertAssetDepositClaimParams) (int64, error)
 	// Boarding address queries.
 	InsertBoardingAddress(ctx context.Context, arg InsertBoardingAddressParams) error
 	// Boarding intent queries.
@@ -254,6 +258,7 @@ type Querier interface {
 	ListAllCreditOperations(ctx context.Context) ([]CreditOperation, error)
 	ListAllOORSessionRegistry(ctx context.Context) ([]OorSessionRegistry, error)
 	ListAllVTXOs(ctx context.Context) ([]Vtxo, error)
+	ListAssetDepositClaimsByStatus(ctx context.Context, status string) ([]AssetDepositClaim, error)
 	ListAssetDeposits(ctx context.Context) ([]AssetDeposit, error)
 	ListAssetDepositsByStatus(ctx context.Context, status string) ([]AssetDeposit, error)
 	ListBoardingIntentOutpoints(ctx context.Context) ([]ListBoardingIntentOutpointsRow, error)
@@ -503,6 +508,8 @@ type Querier interface {
 	// CreditOpStatus). Failed operations never dedup a keyed retry, so the lookup
 	// skips them: only a pending or completed operation answers for an op_key.
 	LookupActiveCreditOperationByKey(ctx context.Context, opKey string) (CreditOperation, error)
+	// MarkAssetDepositClaimed records that tapd confirmed the claim.
+	MarkAssetDepositClaimed(ctx context.Context, arg MarkAssetDepositClaimedParams) (int64, error)
 	// MarkAssetDepositConfirmed stores the output's confirmed proof. Only a
 	// published deposit moves.
 	MarkAssetDepositConfirmed(ctx context.Context, arg MarkAssetDepositConfirmedParams) (int64, error)

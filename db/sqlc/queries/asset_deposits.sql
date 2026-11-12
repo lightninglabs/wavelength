@@ -87,3 +87,27 @@ JOIN rounds AS r ON r.round_id = rad.round_id
 WHERE rad.request_id = $1 AND r.status != 'failed'
 ORDER BY r.creation_time DESC
 LIMIT 1;
+
+-- name: InsertAssetDepositClaim :execrows
+-- InsertAssetDepositClaim records a signed claim. A deposit that already has
+-- a claim inserts nothing.
+INSERT INTO asset_deposit_claims (
+    request_id, claim_txid, status, created_at, updated_at
+) VALUES (
+    $1, $2, 'claiming', $3, $3
+)
+ON CONFLICT (request_id) DO NOTHING;
+
+-- name: GetAssetDepositClaim :one
+SELECT * FROM asset_deposit_claims WHERE request_id = $1;
+
+-- name: ListAssetDepositClaimsByStatus :many
+SELECT * FROM asset_deposit_claims WHERE status = $1
+ORDER BY created_at, request_id;
+
+-- name: MarkAssetDepositClaimed :execrows
+-- MarkAssetDepositClaimed records that tapd confirmed the claim.
+UPDATE asset_deposit_claims SET
+    status = 'claimed',
+    updated_at = $2
+WHERE request_id = $1 AND status = 'claiming';

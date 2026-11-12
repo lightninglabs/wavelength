@@ -55,6 +55,36 @@ func (r *RPCServer) BoardAssetDeposit(ctx context.Context,
 	return assetDepositToRPC(deposit, ""), nil
 }
 
+// ClaimAssetDeposit claims a confirmed asset deposit that no round holds back
+// to the tapd wallet through the owner's exit path.
+func (r *RPCServer) ClaimAssetDeposit(ctx context.Context,
+	req *waverpc.ClaimAssetDepositRequest) (*waverpc.AssetDeposit, error) {
+
+	deposits := r.server.assetDeposits
+	if deposits == nil {
+		return nil, status.Error(
+			codes.FailedPrecondition, "asset deposits require "+
+				"assets.backend=tapd and assets.lnd.host",
+		)
+	}
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	deposit, err := deposits.Claim(ctx, req.GetRequestId())
+	if err != nil {
+		return nil, err
+	}
+	claim, err := deposits.ClaimOf(ctx, req.GetRequestId())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "load asset deposit "+
+			"claim: %v", err)
+	}
+
+	return applyAssetDepositClaim(assetDepositToRPC(deposit, ""), claim),
+		nil
+}
+
 // ListAssetDeposits returns the asset deposits of this daemon.
 func (r *RPCServer) ListAssetDeposits(ctx context.Context,
 	_ *waverpc.ListAssetDepositsRequest) (
@@ -77,8 +107,16 @@ func (r *RPCServer) ListAssetDeposits(ctx context.Context,
 			return nil, status.Errorf(codes.Internal, "load asset "+
 				"deposit round: %v", err)
 		}
+		claim, err := deposits.ClaimOf(ctx, deposit.Request.RequestID)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "load asset "+
+				"deposit claim: %v", err)
+		}
 		resp.Deposits = append(
-			resp.Deposits, assetDepositToRPC(deposit, roundID),
+			resp.Deposits,
+			applyAssetDepositClaim(
+				assetDepositToRPC(deposit, roundID), claim,
+			),
 		)
 	}
 

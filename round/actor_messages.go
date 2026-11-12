@@ -244,6 +244,23 @@ func (m *RegisterAssetBoardingRequest) MessageType() string {
 // RoundReceivable implements actormsg.RoundReceivable marker interface.
 func (m *RegisterAssetBoardingRequest) RoundReceivable() {}
 
+// ReserveAssetDepositClaimRequest reserves an asset deposit for a claim. The
+// actor refuses it while a tracked round spends the deposit, and refuses to
+// board a reserved deposit.
+type ReserveAssetDepositClaimRequest struct {
+	actor.BaseMessage
+
+	Outpoint wire.OutPoint
+}
+
+// MessageType returns the message type name.
+func (m *ReserveAssetDepositClaimRequest) MessageType() string {
+	return "ReserveAssetDepositClaimRequest"
+}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (m *ReserveAssetDepositClaimRequest) RoundReceivable() {}
+
 // AssetVTXORequest describes one asset output requested from a round.
 type AssetVTXORequest struct {
 	AmountSat   btcutil.Amount

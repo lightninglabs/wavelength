@@ -22,6 +22,7 @@ import (
 	"github.com/lightninglabs/wavelength/lib/bip322"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	"github.com/lightninglabs/wavelength/serverconn"
+	"github.com/lightninglabs/wavelength/tapassets"
 	"github.com/lightninglabs/wavelength/waved"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
@@ -169,6 +170,81 @@ func TestBoardAssetDeposit(t *testing.T) {
 
 // confirmAssetTestDeposit deposits 600 units of ref through waved, mines the
 // deposit and waits until its proof confirms.
+// TestClaimAssetDeposit claims a confirmed deposit that no round took. The
+// claim spends the deposit through its owner's exit leaf once the exit delay
+// passes, and returns the asset to tapd as an ordinary holding.
+func TestClaimAssetDeposit(t *testing.T) {
+	ParallelN(t)
+
+	h := NewSysTestHarness(t, func(opts *harness.Options) {
+		opts.StartTapd = true
+	})
+	h.Harness.FundOperatorLND(btcutil.SatoshiPerBitcoin)
+
+	tapd := newAssetTestTapd(t, h)
+	skipWithoutExternalInputConfirm(t, tapd)
+	ref := mintAssetTestAsset(t, h, tapd, 1_000)
+
+	client, _ := startAssetDepositDaemon(t, h)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+
+	confirmAssetTestDeposit(t, h, client, ref)
+	require.Eventually(t, func() bool {
+		return assetTestUtxoUnits(t, tapd, ref) == 400
+	}, time.Minute, time.Second, "tapd holds no asset change")
+
+	claimReq := &waverpc.ClaimAssetDepositRequest{RequestId: "alice-1"}
+	_, err := client.ClaimAssetDeposit(ctx, claimReq)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err), err)
+
+	// The exit leaf opens after the 144-block boarding exit delay.
+	h.Harness.Generate(144)
+
+	var claimed *waverpc.AssetDeposit
+	require.Eventually(t, func() bool {
+		claimed, err = client.ClaimAssetDeposit(ctx, claimReq)
+
+		return err == nil
+	}, time.Minute, time.Second, "claim refused: %v", err)
+	require.NotEmpty(t, claimed.ClaimTxid)
+	require.False(t, claimed.Claimed)
+
+	// txconfirm relays the zero-fee claim with a CPFP child. The claim is
+	// final six blocks deep.
+	h.Harness.WaitMempoolTx(claimed.ClaimTxid)
+	h.Harness.Generate(6)
+
+	require.Eventually(t, func() bool {
+		resp, err := client.ListAssetDeposits(
+			ctx, &waverpc.ListAssetDepositsRequest{},
+		)
+		if err != nil || len(resp.Deposits) != 1 {
+			return false
+		}
+		claimed = resp.Deposits[0]
+
+		return claimed.Claimed
+	}, time.Minute, time.Second, "claim never confirmed: %v", claimed)
+
+	// tapd holds the claimed units beside the change.
+	require.Eventually(t, func() bool {
+		return assetTestUtxoUnits(t, tapd, ref) == 1_000
+	}, time.Minute, time.Second, "tapd holds no claimed asset")
+
+	// A claimed deposit cannot board, and claiming again changes nothing.
+	_, err = client.BoardAssetDeposit(
+		ctx, &waverpc.BoardAssetDepositRequest{
+			RequestId: "alice-1",
+		},
+	)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err), err)
+	again, err := client.ClaimAssetDeposit(ctx, claimReq)
+	require.NoError(t, err)
+	require.Equal(t, claimed.ClaimTxid, again.ClaimTxid)
+	require.True(t, again.Claimed)
+}
+
 func confirmAssetTestDeposit(t *testing.T, h *SysTestHarness,
 	client waverpc.DaemonServiceClient,
 	ref tapsdk.AssetRef) (*waverpc.DepositAssetRequest,
@@ -218,6 +294,26 @@ func confirmAssetTestDeposit(t *testing.T, h *SysTestHarness,
 	require.Empty(t, deposit.Error)
 
 	return req, deposit
+}
+
+// skipWithoutExternalInputConfirm skips a test whose tapd cannot confirm a
+// transfer spending an asset it does not hold. Released tapd gains that in
+// v0.9.0; development builds before it report 0.8.99.
+func skipWithoutExternalInputConfirm(t *testing.T, tapd *tapgrpc.Client) {
+	t.Helper()
+
+	info, err := tapd.GetInfo(t.Context())
+	require.NoError(t, err)
+
+	supported, err := tapassets.TapdCanClaim(info.Version)
+	require.NoError(t, err)
+	if !supported {
+		t.Skipf(
+			"tapd %s cannot confirm a transfer spending an "+
+				"asset it does not hold; v0.9.0 or later is "+
+				"required", info.Version,
+		)
+	}
 }
 
 // newAssetTestTapd connects a tap-sdk client to the harness tapd.

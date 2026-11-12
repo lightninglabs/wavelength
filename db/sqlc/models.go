@@ -95,6 +95,14 @@ type AssetDeposit struct {
 	UpdatedAt          int64
 }
 
+type AssetDepositClaim struct {
+	RequestID string
+	ClaimTxid []byte
+	Status    string
+	CreatedAt int64
+	UpdatedAt int64
+}
+
 type BoardingAddress struct {
 	PkScript            []byte
 	AddressString       string

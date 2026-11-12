@@ -269,3 +269,65 @@ func TestHandleAssetBoarding(t *testing.T) {
 	require.NotErrorIs(t, result.Err(), ErrRoundBusy)
 	require.Len(t, h.serverMessages(), 1)
 }
+
+// TestReserveAssetDepositClaim checks that a deposit a round holds cannot be
+// reserved for a claim, and that a reserved deposit cannot board.
+func TestReserveAssetDepositClaim(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+	require.NoError(t, h.start())
+
+	for i := range 2 {
+		h.wallet.On(
+			"DeriveNextKey", mock.Anything,
+			types.VTXOOwnerKeyFamily,
+		).Return(&keychain.KeyDescriptor{
+			KeyLocator: keychain.KeyLocator{
+				Family: types.VTXOOwnerKeyFamily,
+				Index:  uint32(i),
+			},
+			PubKey: h.clientPubKey,
+		}, nil).Once()
+	}
+
+	_, operator := btcec.PrivKeyFromBytes([]byte{0x02})
+	boarded := newTestAssetBoarding(t, h.clientPubKey, operator)
+	boardedIntent, err := NewAssetBoardingIntent(
+		boarded, &chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+	result := h.receive(&RegisterAssetBoardingRequest{
+		Boarding:        boardedIntent,
+		AssetVTXOAmount: 1_000,
+		ChangeAmount:    2_000,
+	})
+	require.True(t, result.IsOk(), "%v", result.Err())
+
+	result = h.receive(&ReserveAssetDepositClaimRequest{
+		Outpoint: boarded.Outpoint,
+	})
+	require.ErrorIs(t, result.Err(), ErrBoardingInFlight)
+
+	// A deposit no round holds is reserved even while another round is
+	// joining, and then refused for boarding.
+	claimed := *boarded
+	claimed.Outpoint.Index = 2
+	result = h.receive(&ReserveAssetDepositClaimRequest{
+		Outpoint: claimed.Outpoint,
+	})
+	require.True(t, result.IsOk(), "%v", result.Err())
+
+	claimedIntent, err := NewAssetBoardingIntent(
+		&claimed, &chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+	result = h.receive(&RegisterAssetBoardingRequest{
+		Boarding:        claimedIntent,
+		AssetVTXOAmount: 1_000,
+		ChangeAmount:    2_000,
+	})
+	require.ErrorIs(t, result.Err(), ErrDepositClaimed)
+	require.Len(t, h.serverMessages(), 1)
+}

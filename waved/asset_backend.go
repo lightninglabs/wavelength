@@ -277,16 +277,51 @@ func (s *Server) startAssetDeposits(ctx context.Context, store *db.Store) (
 		return nil, err
 	}
 
+	claimJournal, err := tapassets.NewFileStore(
+		filepath.Join(
+			s.cfg.NetworkDir(),
+			"assets", "claims",
+		),
+	)
+	if err != nil {
+		lnd.Close()
+
+		return nil, err
+	}
+	claimer, err := tapassets.NewClaimer(tapassets.ClaimerConfig{
+		Wallet: tapsdk.NewWallet(
+			s.tapdClient, tapsdk.Network(s.cfg.Network),
+		),
+		Store:  claimJournal,
+		Signer: claimSigner{server: s},
+	})
+	if err != nil {
+		lnd.Close()
+
+		return nil, err
+	}
+
+	depositStore := db.NewAssetDepositStore(store)
 	s.assetDeposits = newAssetDepositService(&assetDepositConfig{
 		log:              s.log,
-		store:            db.NewAssetDepositStore(store),
+		store:            depositStore,
 		tapd:             s.tapdClient,
 		onboarder:        onboarder,
 		terms:            s.loadOperatorTerms,
 		quoteBoardingFee: s.quoteBoardingFee,
 		chainParams:      s.chainParams,
 		registerBoarding: s.registerAssetBoarding,
+		claims:           depositStore,
+		claimer:          claimer,
+		broadcastClaim:   s.broadcastAssetClaim,
+		reserveClaim:     s.reserveAssetDepositClaim,
 	})
+
+	// The subscriber lives as long as the actor system, not this call.
+	//nolint:contextcheck
+	s.assetClaimSubscriber = s.registerAssetClaimSubscriber(
+		s.assetDeposits,
+	)
 
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})

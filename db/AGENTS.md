@@ -143,8 +143,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   different request fails with `ErrAssetDepositMismatch`; repeating a
   lifecycle update is a no-op. `AssetDeposit.RoundBoarding` turns a confirmed
   deposit into a round boarding input, and `AssetDepositRound` names the round
-  that spends it.
-- `LatestMigrationVersion = 29` — current schema version.
+  that spends it. `AssetDepositClaim` is a deposit's one claim back to the
+  asset wallet: `claiming` once signed, `claimed` once tapd confirms it.
+  Recording a different claim transaction fails with
+  `ErrAssetDepositMismatch`.
+- `LatestMigrationVersion = 30` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -517,6 +520,10 @@ when adding one.
   `round_boarding_intents` for asset inputs, and round restore rebuilds the
   intent from the deposit row. A deposit is free to board again once every
   round that took it reads `failed`.
+
+- `000030_asset_deposit_claims` — `asset_deposit_claims`, one claim per
+  deposit that returns it to the asset wallet through the owner's exit path.
+  It is a separate table so the deposit's own status constraint is untouched.
 
 ## Deep Docs
 

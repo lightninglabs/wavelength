@@ -11,6 +11,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/lndclient"
@@ -120,6 +121,19 @@ type assetDepositService struct {
 	// registerBoarding hands a confirmed deposit to the round actor.
 	registerBoarding assetBoardingRegistrar
 
+	// claims, claimer, broadcastClaim and reserveClaim return a deposit
+	// no round holds to the tapd wallet. Claims are unavailable while any
+	// of them is nil.
+	claims         assetDepositClaimStore
+	claimer        assetClaimer
+	broadcastClaim claimBroadcaster
+	reserveClaim   claimReserver
+
+	// claimsMu guards trackedClaims, the claims txconfirm tracks in this
+	// process. txconfirm keeps no state across restarts.
+	claimsMu      sync.Mutex
+	trackedClaims map[chainhash.Hash]struct{}
+
 	// mu serializes funding, because tapd wallet input selection must not
 	// interleave between deposits.
 	mu sync.Mutex
@@ -138,6 +152,10 @@ type assetDepositConfig struct {
 	quoteBoardingFee boardingFeeQuoter
 	chainParams      *chaincfg.Params
 	registerBoarding assetBoardingRegistrar
+	claims           assetDepositClaimStore
+	claimer          assetClaimer
+	broadcastClaim   claimBroadcaster
+	reserveClaim     claimReserver
 }
 
 // newAssetDepositService returns a deposit service over its dependencies.
@@ -151,6 +169,11 @@ func newAssetDepositService(cfg *assetDepositConfig) *assetDepositService {
 		quoteBoardingFee: cfg.quoteBoardingFee,
 		chainParams:      cfg.chainParams,
 		registerBoarding: cfg.registerBoarding,
+		claims:           cfg.claims,
+		claimer:          cfg.claimer,
+		broadcastClaim:   cfg.broadcastClaim,
+		reserveClaim:     cfg.reserveClaim,
+		trackedClaims:    make(map[chainhash.Hash]struct{}),
 		poll:             make(chan struct{}, 1),
 	}
 }
@@ -338,6 +361,16 @@ func (d *assetDepositService) Board(ctx context.Context, requestID string) (
 		return nil, status.Errorf(codes.AlreadyExists, "asset deposit "+
 			"%s is boarded by round %s", requestID, roundID)
 	}
+	claim, err := d.ClaimOf(ctx, requestID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "load asset deposit "+
+			"claim: %v", err)
+	}
+	if claim != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "asset "+
+			"deposit %s is claimed by %s", requestID,
+			claim.ClaimTxid)
+	}
 
 	terms := d.terms()
 	if terms == nil {
@@ -377,6 +410,10 @@ func (d *assetDepositService) Board(ctx context.Context, requestID string) (
 		return nil, status.Errorf(codes.AlreadyExists, "asset deposit "+
 			"%s is already in a round", requestID)
 	}
+	if errors.Is(err, round.ErrDepositClaimed) {
+		return nil, status.Errorf(codes.FailedPrecondition, "asset "+
+			"deposit %s is being claimed", requestID)
+	}
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "register asset "+
 			"deposit %s: %v", requestID, err)
@@ -411,6 +448,7 @@ func (d *assetDepositService) run(ctx context.Context) {
 
 	for {
 		d.confirmPublished(ctx)
+		d.confirmClaims(ctx)
 
 		select {
 		case <-ctx.Done():

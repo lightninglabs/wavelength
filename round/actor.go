@@ -388,6 +388,10 @@ type RoundClientActor struct {
 	// assembly.
 	rounds map[RoundKeyStr]*RoundFSM
 
+	// claimedDeposits holds the asset deposits reserved for a claim, which
+	// asset boarding refuses.
+	claimedDeposits map[wire.OutPoint]struct{}
+
 	// stagedLedger holds the ledger messages a confirmed round produced,
 	// keyed by RoundID string, until FinalizeRound commits them in its
 	// transaction. Staging rather than sending on emission is what makes
@@ -697,6 +701,7 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		cfg:               cfg,
 		log:               actorLog,
 		rounds:            make(map[RoundKeyStr]*RoundFSM),
+		claimedDeposits:   make(map[wire.OutPoint]struct{}),
 		stagedLedger:      make(map[string][]ledger.LedgerMsg),
 		commitmentTxIndex: make(map[chainhash.Hash]RoundKeyStr),
 		pendingQuotes:     make(map[RoundID]*JoinRoundQuoteReceived),
@@ -1998,6 +2003,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 
 	case *RegisterAssetBoardingRequest:
 		return a.handleAssetBoarding(ctx, m)
+
+	case *ReserveAssetDepositClaimRequest:
+		return a.handleReserveAssetDepositClaim(ctx, m)
 
 	case *VTXORequestsReceived:
 		return a.handleVTXORequestsReceived(ctx, m)

@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/tap-sdk/customanchor"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/stretchr/testify/require"
@@ -21,12 +22,12 @@ import (
 
 type fakeTreeDriver struct {
 	commits     int
-	requests    []*tapsdk.CustomAnchorRequest
+	requests    []*customanchor.Request
 	packages    map[string]*commitResult
 	commitErr   error
 	afterCommit func()
 
-	mutate func(request *tapsdk.CustomAnchorRequest, result *commitResult)
+	mutate func(request *customanchor.Request, result *commitResult)
 }
 
 func merkleRootFor(input wire.OutPoint, index uint32) tapsdk.Hash {
@@ -36,7 +37,7 @@ func merkleRootFor(input wire.OutPoint, index uint32) tapsdk.Hash {
 }
 
 func (f *fakeTreeDriver) Commit(_ context.Context,
-	request *tapsdk.CustomAnchorRequest, _ tapsdk.ConfirmedProofVerifier) (
+	request *customanchor.Request, _ customanchor.ConfirmedProofVerifier) (
 	*commitResult, error) {
 
 	f.commits++
@@ -56,7 +57,7 @@ func (f *fakeTreeDriver) Commit(_ context.Context,
 	input := committedTx.TxIn[0].PreviousOutPoint
 
 	result := &commitResult{
-		fundingMode: tapsdk.CustomAnchorFundingCallerFundedExact,
+		fundingMode: customanchor.FundingCallerFundedExact,
 		inputs:      make([]commitInput, len(request.Inputs)),
 	}
 	issuanceAmounts := make([]uint64, len(request.Inputs))
@@ -119,8 +120,8 @@ func (f *fakeTreeDriver) Commit(_ context.Context,
 				amount:            amount,
 				taprootAssetRoot:  tapsdk.Hash(assetRoot),
 				taprootMerkleRoot: merkleRoot,
-				scriptMode: tapsdk.
-					CustomAssetScriptOPTrue,
+				scriptMode: customanchor.
+					AssetScriptOPTrue,
 				opTrueWitness: [][]byte{{0x51}},
 				proofBlob: []byte(
 					fmt.Sprintf("proof/%s/%d/%x", input,
@@ -166,7 +167,7 @@ func (f *fakeTreeDriver) Commit(_ context.Context,
 	return result, nil
 }
 
-func fakeInputIssuance(input tapsdk.CustomAssetInput) (tapsdk.AssetID, error) {
+func fakeInputIssuance(input customanchor.AssetInput) (tapsdk.AssetID, error) {
 	var proofFile []byte
 	if len(input.ProofFile) != 0 {
 		proofFile = input.ProofFile
@@ -198,9 +199,9 @@ type memoryStore struct {
 type staticProofVerifier struct{}
 
 func (staticProofVerifier) VerifyConfirmedProof(context.Context, []byte) (
-	*tapsdk.ConfirmedProofVerification, error) {
+	*customanchor.ConfirmedProofVerification, error) {
 
-	return &tapsdk.ConfirmedProofVerification{
+	return &customanchor.ConfirmedProofVerification{
 		AnchorAssetInventoryComplete: true,
 	}, nil
 }
@@ -210,15 +211,15 @@ type recordingProofVerifier struct {
 }
 
 func (v *recordingProofVerifier) VerifyConfirmedProof(context.Context, []byte) (
-	*tapsdk.ConfirmedProofVerification, error) {
+	*customanchor.ConfirmedProofVerification, error) {
 
-	return &tapsdk.ConfirmedProofVerification{
+	return &customanchor.ConfirmedProofVerification{
 		AnchorAssetInventoryComplete: true,
 	}, nil
 }
 
 func (v *recordingProofVerifier) VerifyUnconfirmedAnchor(_ context.Context,
-	transition tapsdk.UnconfirmedAnchorVerification) error {
+	transition customanchor.UnconfirmedAnchorVerification) error {
 
 	v.steps = append(v.steps, transition.StepIndex)
 
@@ -543,14 +544,14 @@ func TestTreePathVerifier(t *testing.T) {
 	}
 
 	err := verifier.VerifyUnconfirmedAnchor(
-		t.Context(), tapsdk.UnconfirmedAnchorVerification{
+		t.Context(), customanchor.UnconfirmedAnchorVerification{
 			StepIndex: 0,
 		},
 	)
 	require.NoError(t, err)
 	require.Equal(t, []uint16{0}, base.steps)
 
-	transition := tapsdk.UnconfirmedAnchorVerification{
+	transition := customanchor.UnconfirmedAnchorVerification{
 		StepIndex:              1,
 		PreviousAnchorOutpoint: previous,
 		PreviousAnchorOutpoints: []tapsdk.Outpoint{
@@ -731,7 +732,7 @@ func TestTreeMaterializerCommitCache(t *testing.T) {
 
 	retryInput := f.batch
 	retryInput.Index++
-	f.driver.commitErr = &tapsdk.CustomAnchorCommitAttemptError{
+	f.driver.commitErr = &customanchor.CommitAttemptError{
 		Err:            fmt.Errorf("transport failed"),
 		OutcomeUnknown: true,
 	}
@@ -805,12 +806,12 @@ func TestTreeMaterializerRejectsTamperedCommit(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		mutate  func(*tapsdk.CustomAnchorRequest, *commitResult)
+		mutate  func(*customanchor.Request, *commitResult)
 		wantErr string
 	}{
 		{
 			name: "nonzero fee",
-			mutate: func(_ *tapsdk.CustomAnchorRequest,
+			mutate: func(_ *customanchor.Request,
 				result *commitResult) {
 
 				result.actualFeeSat = 10
@@ -819,7 +820,7 @@ func TestTreeMaterializerRejectsTamperedCommit(t *testing.T) {
 		},
 		{
 			name: "input outpoint drift",
-			mutate: func(_ *tapsdk.CustomAnchorRequest,
+			mutate: func(_ *customanchor.Request,
 				result *commitResult) {
 
 				result.inputs[0].anchorOutpoint.Index++
@@ -828,7 +829,7 @@ func TestTreeMaterializerRejectsTamperedCommit(t *testing.T) {
 		},
 		{
 			name: "input asset drift",
-			mutate: func(_ *tapsdk.CustomAnchorRequest,
+			mutate: func(_ *customanchor.Request,
 				result *commitResult) {
 
 				result.inputs[0].assetRef =
@@ -840,7 +841,7 @@ func TestTreeMaterializerRejectsTamperedCommit(t *testing.T) {
 		},
 		{
 			name: "input amount drift",
-			mutate: func(_ *tapsdk.CustomAnchorRequest,
+			mutate: func(_ *customanchor.Request,
 				result *commitResult) {
 
 				result.inputs[0].amount++
@@ -849,17 +850,17 @@ func TestTreeMaterializerRejectsTamperedCommit(t *testing.T) {
 		},
 		{
 			name: "script mode downgrade",
-			mutate: func(_ *tapsdk.CustomAnchorRequest,
+			mutate: func(_ *customanchor.Request,
 				result *commitResult) {
 
 				result.outputs[0].scriptMode =
-					tapsdk.CustomAssetScriptWallet
+					customanchor.AssetScriptWallet
 			},
 			wantErr: "not OP_TRUE",
 		},
 		{
 			name: "merkle root drift",
-			mutate: func(_ *tapsdk.CustomAnchorRequest,
+			mutate: func(_ *customanchor.Request,
 				result *commitResult) {
 
 				result.outputs[0].taprootMerkleRoot[0] ^= 1
@@ -868,7 +869,7 @@ func TestTreeMaterializerRejectsTamperedCommit(t *testing.T) {
 		},
 		{
 			name: "asset amount drift",
-			mutate: func(_ *tapsdk.CustomAnchorRequest,
+			mutate: func(_ *customanchor.Request,
 				result *commitResult) {
 
 				result.outputs[0].amount++
@@ -877,7 +878,7 @@ func TestTreeMaterializerRejectsTamperedCommit(t *testing.T) {
 		},
 		{
 			name: "output asset drift",
-			mutate: func(_ *tapsdk.CustomAnchorRequest,
+			mutate: func(_ *customanchor.Request,
 				result *commitResult) {
 
 				result.outputs[0].assetRef =
@@ -889,7 +890,7 @@ func TestTreeMaterializerRejectsTamperedCommit(t *testing.T) {
 		},
 		{
 			name: "output outpoint drift",
-			mutate: func(_ *tapsdk.CustomAnchorRequest,
+			mutate: func(_ *customanchor.Request,
 				result *commitResult) {
 
 				result.outputs[0].anchorOutpoint.Index++
@@ -898,7 +899,7 @@ func TestTreeMaterializerRejectsTamperedCommit(t *testing.T) {
 		},
 		{
 			name: "missing asset root",
-			mutate: func(_ *tapsdk.CustomAnchorRequest,
+			mutate: func(_ *customanchor.Request,
 				result *commitResult) {
 
 				output := &result.outputs[0]
@@ -908,7 +909,7 @@ func TestTreeMaterializerRejectsTamperedCommit(t *testing.T) {
 		},
 		{
 			name: "topology drift",
-			mutate: func(_ *tapsdk.CustomAnchorRequest,
+			mutate: func(_ *customanchor.Request,
 				result *commitResult) {
 
 				packet, err := psbtutil.Parse(
@@ -1020,7 +1021,7 @@ func TestBuildAssetTree(t *testing.T) {
 	require.NoError(t, built.Verify())
 
 	err = validateTreeProofCapacity(
-		f.mat.cfg.Root, tapsdk.AssetProofPathMaxDepth+1,
+		f.mat.cfg.Root, customanchor.ProofPathMaxDepth+1,
 	)
 	require.ErrorContains(t, err, "cannot add")
 }

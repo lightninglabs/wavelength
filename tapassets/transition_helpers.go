@@ -11,14 +11,15 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/tap-sdk/customanchor"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 )
 
 const (
 	opTrueKeyDomain       = "wavelength/assets/optrue/v0/"
-	witnessBackendSigner  = tapsdk.CustomAssetWitnessBackendSigner
-	witnessCallerProvided = tapsdk.CustomAssetWitnessCallerProvided
-	scriptExternal        = tapsdk.CustomAssetScriptExternal
+	witnessBackendSigner  = customanchor.AssetWitnessBackendSigner
+	witnessCallerProvided = customanchor.AssetWitnessCallerProvided
+	scriptExternal        = customanchor.AssetScriptExternal
 )
 
 type expectedUnconfirmedAnchor struct {
@@ -30,9 +31,9 @@ type expectedUnconfirmedAnchor struct {
 
 type assetSpendSource struct {
 	proofFile      []byte
-	proofPath      *tapsdk.AssetProofPath
-	witness        tapsdk.CustomAssetWitnessPlan
-	verifier       tapsdk.ConfirmedProofVerifier
+	proofPath      *customanchor.ProofPath
+	witness        customanchor.AssetWitnessPlan
+	verifier       customanchor.ConfirmedProofVerifier
 	amount         uint64
 	issuanceID     tapsdk.AssetID
 	issuanceKnown  bool
@@ -44,7 +45,7 @@ type assetSourceVerifier struct {
 }
 
 func (v *assetSourceVerifier) VerifyConfirmedProof(ctx context.Context,
-	proofFile []byte) (*tapsdk.ConfirmedProofVerification, error) {
+	proofFile []byte) (*customanchor.ConfirmedProofVerification, error) {
 
 	var errs []error
 	for _, source := range v.sources {
@@ -62,12 +63,12 @@ func (v *assetSourceVerifier) VerifyConfirmedProof(ctx context.Context,
 }
 
 func (v *assetSourceVerifier) VerifyUnconfirmedAnchor(ctx context.Context,
-	transition tapsdk.UnconfirmedAnchorVerification) error {
+	transition customanchor.UnconfirmedAnchorVerification) error {
 
 	var errs []error
 	for _, source := range v.sources {
 		verifier, ok :=
-			source.verifier.(tapsdk.UnconfirmedAnchorVerifier)
+			source.verifier.(customanchor.UnconfirmedAnchorVerifier)
 		if !ok {
 			continue
 		}
@@ -85,18 +86,18 @@ func (v *assetSourceVerifier) VerifyUnconfirmedAnchor(ctx context.Context,
 }
 
 func (s *assetSpendSource) customInput(id string, assetRef tapsdk.AssetRef) (
-	tapsdk.CustomAssetInput, error) {
+	customanchor.AssetInput, error) {
 
 	if s == nil {
-		return tapsdk.CustomAssetInput{}, fmt.Errorf("asset proof " +
+		return customanchor.AssetInput{}, fmt.Errorf("asset proof " +
 			"source is required")
 	}
 
-	input := tapsdk.CustomAssetInput{
+	input := customanchor.AssetInput{
 		ID:       id,
 		AssetRef: assetRef,
 		Amount:   s.amount,
-		Witness: tapsdk.CustomAssetWitnessPlan{
+		Witness: customanchor.AssetWitnessPlan{
 			Mode:  s.witness.Mode,
 			Stack: cloneByteSlices(s.witness.Stack),
 		},
@@ -110,7 +111,7 @@ func (s *assetSpendSource) customInput(id string, assetRef tapsdk.AssetRef) (
 		input.ProofPath = s.proofPath.Clone()
 
 	default:
-		return tapsdk.CustomAssetInput{}, fmt.Errorf("asset proof " +
+		return customanchor.AssetInput{}, fmt.Errorf("asset proof " +
 			"source is empty")
 	}
 
@@ -124,23 +125,23 @@ func (s *assetSpendSource) appendTransition(output commitOutput,
 		return nil, fmt.Errorf("asset transition proof is required")
 	}
 
-	var path *tapsdk.AssetProofPath
+	var path *customanchor.ProofPath
 	if s.proofPath != nil {
 		path = s.proofPath.Clone()
 	} else {
-		path = &tapsdk.AssetProofPath{
+		path = &customanchor.ProofPath{
 			ConfirmedBaseProof: append(
 				[]byte(nil), s.proofFile...,
 			),
 		}
 	}
 
-	if len(path.Steps) >= tapsdk.AssetProofPathMaxDepth {
+	if len(path.Steps) >= customanchor.ProofPathMaxDepth {
 		return nil, fmt.Errorf("asset proof path has no remaining " +
 			"transition slot")
 	}
 	baseDepth := uint16(len(path.Steps))
-	path.Steps = append(path.Steps, tapsdk.AssetProofPathStep{
+	path.Steps = append(path.Steps, customanchor.ProofPathStep{
 		TransitionProof: append([]byte(nil), output.proofBlob...),
 	})
 
@@ -155,7 +156,7 @@ func (s *assetSpendSource) appendTransition(output commitOutput,
 
 	return &assetSpendSource{
 		proofPath: path,
-		witness: tapsdk.CustomAssetWitnessPlan{
+		witness: customanchor.AssetWitnessPlan{
 			Mode:  witnessCallerProvided,
 			Stack: cloneByteSlices(output.opTrueWitness),
 		},
@@ -184,7 +185,7 @@ func validateTreeProofCapacity(root TreeRootAssetSource,
 		input := root.Inputs[idx]
 		var currentDepth, currentSize int
 		if len(input.ProofPath) != 0 {
-			var path tapsdk.AssetProofPath
+			var path customanchor.ProofPath
 			if err := path.UnmarshalBinary(
 				input.ProofPath,
 			); err != nil {
@@ -194,7 +195,7 @@ func validateTreeProofCapacity(root TreeRootAssetSource,
 			currentDepth = len(path.Steps)
 			currentSize = len(input.ProofPath)
 		} else {
-			maxSize := tapsdk.AssetProofPathMaxConfirmedProofSize
+			maxSize := customanchor.ProofPathMaxConfirmedProofSize
 			if len(input.ProofFile) > maxSize {
 				return fmt.Errorf("root asset input %d proof "+
 					"exceeds %d bytes", idx, maxSize)
@@ -203,16 +204,16 @@ func validateTreeProofCapacity(root TreeRootAssetSource,
 		}
 
 		if currentDepth+
-			additionalSteps > tapsdk.AssetProofPathMaxDepth {
+			additionalSteps > customanchor.ProofPathMaxDepth {
 			return fmt.Errorf("root asset input %d proof depth %d "+
 				"cannot add %d tree transitions", idx,
 				currentDepth, additionalSteps)
 		}
 
 		stepBudget := uint64(additionalSteps) *
-			uint64(4+tapsdk.AssetProofPathMaxStepSize)
+			uint64(4+customanchor.ProofPathMaxStepSize)
 		if uint64(currentSize)+
-			stepBudget > tapsdk.AssetProofPathMaxSize {
+			stepBudget > customanchor.ProofPathMaxSize {
 			return fmt.Errorf("root asset input %d proof lacks "+
 				"space for %d tree transitions", idx,
 				additionalSteps)
@@ -222,10 +223,10 @@ func validateTreeProofCapacity(root TreeRootAssetSource,
 	return nil
 }
 
-func callerFundedExact() tapsdk.CustomAnchorFundingPlan {
-	return tapsdk.CustomAnchorFundingPlan{
-		Mode:              tapsdk.CustomAnchorFundingCallerFundedExact,
-		CallerFundedExact: &tapsdk.CustomAnchorCallerFundedExact{},
+func callerFundedExact() customanchor.FundingPlan {
+	return customanchor.FundingPlan{
+		Mode:              customanchor.FundingCallerFundedExact,
+		CallerFundedExact: &customanchor.CallerFundedExact{},
 	}
 }
 
@@ -235,7 +236,7 @@ func callerFundedExact() tapsdk.CustomAnchorFundingPlan {
 // layouts give the same root, so the composed output stays spendable through
 // the policy's control blocks.
 func anchorPlan(internalKey *btcec.PublicKey,
-	leaves []txscript.TapLeaf) (tapsdk.CustomAnchorOutputPlan, error) {
+	leaves []txscript.TapLeaf) (customanchor.OutputPlan, error) {
 
 	if len(leaves) > 1 {
 		policyLeaves := make([]arkscript.PolicyLeaf, len(leaves))
@@ -248,16 +249,16 @@ func anchorPlan(internalKey *btcec.PublicKey,
 			policyLeaves, &arkscript.ARKNUMSKey,
 		)
 		if err != nil {
-			return tapsdk.CustomAnchorOutputPlan{}, fmt.Errorf(
-				"build anchor policy tree: %w", err)
+			return customanchor.OutputPlan{}, fmt.Errorf("build "+
+				"anchor policy tree: %w", err)
 		}
 
 		assembled := txscript.AssembleTaprootScriptTree(leaves...)
 		root := assembled.RootNode.TapHash()
 		if !bytes.Equal(root[:], policy.RootHash) {
-			return tapsdk.CustomAnchorOutputPlan{}, fmt.Errorf(
-				"%d anchor leaves do not assemble into their "+
-					"policy tree", len(leaves))
+			return customanchor.OutputPlan{}, fmt.Errorf("%d "+
+				"anchor leaves do not assemble into their "+
+				"policy tree", len(leaves))
 		}
 	}
 
@@ -269,11 +270,11 @@ func anchorPlan(internalKey *btcec.PublicKey,
 		}
 	}
 
-	return tapsdk.CustomAnchorOutputPlan{
+	return customanchor.OutputPlan{
 		InternalKey: tapsdk.InternalKey{
 			PubKey: pubKey,
 		},
-		Tapscript: tapsdk.CustomAnchorTapscriptPlan{
+		Tapscript: customanchor.TapscriptPlan{
 			TapLeaves: sdkLeaves,
 		},
 	}, nil

@@ -12,6 +12,14 @@ Durable journals retain committed packages for restart recovery.
 - `Onboarder` — Funds and publishes a composed boarding output from tapd
   inventory, returns asset change, and journals the owner keys, sealed package,
   and signed transaction. `FileStore` supplies an atomic file-backed journal.
+- `Claimer` / `ClaimRequest` — Spends a confirmed composed output through
+  its owner's exit leaf and moves the asset to keys the tapd wallet derives,
+  so it becomes an ordinary holding. The claim keeps the output's full value
+  and adds a zero-value P2A anchor, so the caller relays it with a CPFP
+  child. The journal pins the derived keys before the commit and the signed
+  transaction before the publish. `Prepare` signs a claim without recording
+  it in tapd, so the caller can record it first. `TapdCanClaim` reports
+  whether a tapd version credits a claim.
 - `SelectOnboardingProofs` / `ExportOnboardedProof` — Pick and export the
   confirmed proofs of the tapd anchors that fund an onboarding (one issuance,
   smallest covering anchor, else the largest anchors up to
@@ -54,10 +62,11 @@ Durable journals retain committed packages for restart recovery.
 
 ## Relationships
 
-- **Depends on**: `github.com/lightninglabs/tap-sdk` (custom-anchor requests,
-  wallet, proof verifiers), `lib/tree` (`Node`, `Tree`, `LeafDescriptor`
-  structures to materialize into), `lib/arkscript` (leaf policy construction
-  for `StandardVTXOLeafAnchor`), `lib/tx/psbtutil` (PSBT encode/decode).
+- **Depends on**: `github.com/lightninglabs/tap-sdk` (wallet) and its
+  `customanchor` package (custom-anchor requests, proof verifiers),
+  `lib/tree` (`Node`, `Tree`, `LeafDescriptor` structures to materialize
+  into), `lib/arkscript` (leaf policy construction for
+  `StandardVTXOLeafAnchor`), `lib/tx/psbtutil` (PSBT encode/decode).
 - **Depended on by**: `waved`, which installs `VTXOVerifier` on the round
   actor when `assets.backend` is `tapd`, and funds asset deposits through
   `Onboarder` when `assets.lnd` is also set. Operator-side batch APIs have no
@@ -81,7 +90,10 @@ Durable journals retain committed packages for restart recovery.
 - **`ErrReconciliationRequired` means "do not retry blindly."** When tapd reports
   a publish attempt with an unknown outcome, `Publish` joins this sentinel onto
   the error. The transaction may already be in flight; the caller must check the
-  real outcome before re-publishing.
+  real outcome before re-publishing. A claim is the exception: once tapd
+  reports no record of it, `Claimer` publishes it again, because tapd keys a
+  transfer by its anchor transaction and a second publish attaches to the
+  first.
 - **Value and asset amount must both be conserved.** `AssetTreeRequest` requires
   `BatchOutput.Value` to equal the sum of leaf amounts (node transactions pay
   zero fee, for v3 ephemeral-anchor relay) *and* the leaf asset amounts to sum
@@ -110,7 +122,7 @@ Durable journals retain committed packages for restart recovery.
   script key and commit to the leaf's asset root. Every unconfirmed proof
   step must anchor in the commitment transaction or on the client's tree
   path. Deposits from other clients are not in this wallet, so their anchor
-  inventory comes from `tapsdk.DeriveConfirmedProofInventory`, and the
+  inventory comes from `customanchor.DeriveConfirmedProofInventory`, and the
   backend only verifies the confirmed proof chain.
 
 ## Deep Docs

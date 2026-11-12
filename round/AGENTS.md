@@ -516,6 +516,14 @@ refused with `ErrBoardingInFlight`. While another round has a join in flight
 round whose state cannot be read fails the check with neither error. If the
 package or the join fails, the round is dropped so a retry is not refused.
 
+`ReserveAssetDepositClaimRequest` reserves a deposit for a claim. The actor
+refuses it with `ErrBoardingInFlight` while a tracked round spends the
+deposit, and afterwards refuses to board the deposit with
+`ErrDepositClaimed`. Both checks run in the actor's turn, so a claim and a
+round never both spend one deposit. Reservations live in memory; the caller
+records the claim durably before publishing it and refuses to board a
+recorded claim.
+
 ## Bounded survivor replacements
 
 Joins advertise `supports_round_retry`. An authenticated replacement failure
