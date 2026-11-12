@@ -174,6 +174,15 @@ when the local wallet owns the receive script.
 
 ## Invariants
 
+- Startup checks each recovered VTXO's persisted `ForfeitRoundID` against
+  the local consuming round before spawning an actor. A nonzero commitment
+  txid and positive confirmation height retire the input as `Forfeited`, even
+  when legacy exit recovery left it `Expired`. Lookup and write errors stop
+  startup; missing or unconfirmed evidence never terminalizes a claim. The
+  same proof check precedes clean-failure and conflicted-exit recovery at
+  runtime. A source-batch
+  sweep alone does not prove that a VTXO remains unconsumed.
+
 - Indexed VTXOs pass `vtxo.IndexedAncestryFromRPC` before new acceptance.
   It verifies signed tree/transaction paths to the exact target outpoint,
   value, and script. OOR inventory includes `ancestry_packages` to connect

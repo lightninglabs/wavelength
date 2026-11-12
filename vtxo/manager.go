@@ -196,6 +196,13 @@ type ManagerConfig struct {
 	// releasable.
 	HasForfeitRoundCheckpoint ForfeitRoundCheckpointLookup
 
+	// LookupForfeitSettlement reads the local consuming round bound to a
+	// persisted VTXO. A confirmed settlement retires that input before
+	// startup or exit recovery can make it reclaimable again. Nil retains
+	// legacy behavior for callers without round persistence.
+	LookupForfeitSettlement func(context.Context, string) (
+		fn.Option[Settlement], error)
+
 	// ReservationStore is the durable spending-reservation index. When set,
 	// the manager runs a startup sweep that releases orphaned Spending
 	// VTXOs (those with no reservation row) and deletes reservations as
@@ -551,6 +558,14 @@ func (m *Manager) Start(ctx context.Context,
 	}
 
 	for _, vtxo := range vtxos {
+		consumed, err := m.reconcileConsumedVTXO(ctx, vtxo)
+		if err != nil {
+			return fmt.Errorf("reconcile consumed vtxo: %w", err)
+		}
+		if consumed {
+			continue
+		}
+
 		ref, err := m.spawnVTXOActor(ctx, vtxo)
 		if err != nil {
 			m.logger(ctx).ErrorS(
@@ -1303,6 +1318,26 @@ func (m *Manager) handleExitOutcome(ctx context.Context,
 		slog.String("outcome", req.Outcome.String()),
 		slog.String("reason", req.Reason),
 	)
+
+	if m.cfg.LookupForfeitSettlement != nil &&
+		!req.ExitPolicyKind.Valid() &&
+		(req.Outcome == ExitOutcomeRecoverable ||
+			req.Outcome == ExitOutcomeConflicted) {
+
+		desc, err := m.cfg.Store.GetVTXO(ctx, req.Outpoint)
+		if err != nil {
+			return fn.Err[ManagerResp](err)
+		}
+		if desc != nil && desc.Status == VTXOStatusUnilateralExit {
+			consumed, err := m.reconcileConsumedVTXO(ctx, desc)
+			if err != nil {
+				return fn.Err[ManagerResp](err)
+			}
+			if consumed {
+				return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+			}
+		}
+	}
 
 	switch req.Outcome {
 	case ExitOutcomeRecoverable:
@@ -3821,4 +3856,43 @@ func clientVTXOToDescriptor(cv *round.ClientVTXO,
 		CreatedHeight:  msg.CreatedHeight,
 		Status:         VTXOStatusLive,
 	})
+}
+
+// reconcileConsumedVTXO retires an input using its durable binding to a
+// confirmed local consuming round. It never infers consumption from an exit
+// conflict or a remote rejection. Call before spawning recovery actors, or
+// for an actor still in UnilateralExit before applying its recovery outcome.
+func (m *Manager) reconcileConsumedVTXO(ctx context.Context, desc *Descriptor) (
+	bool, error) {
+
+	lookup := m.cfg.LookupForfeitSettlement
+	if lookup == nil || desc.ForfeitRoundID == "" {
+		return false, nil
+	}
+	settlement, err := lookup(ctx, desc.ForfeitRoundID)
+	if err != nil {
+		return false, fmt.Errorf("lookup consuming round: %w", err)
+	}
+	if settlement.IsNone() {
+		return false, nil
+	}
+	proof := settlement.UnsafeFromSome()
+	if proof.Height <= 0 || proof.TxID == (chainhash.Hash{}) {
+		return false, nil
+	}
+	if ref, ok := m.actors[desc.Outpoint]; ok {
+		_, err := m.askVTXOActor(ctx, ref, &ForfeitConfirmedEvent{
+			CommitmentTxID: proof.TxID,
+			BlockHeight:    proof.Height,
+		}).Unpack()
+
+		return err == nil, err
+	}
+	if err := m.cfg.Store.UpdateVTXOStatusReleasingReservation(
+		ctx, desc.Outpoint, VTXOStatusForfeited,
+	); err != nil {
+		return false, fmt.Errorf("persist consumed vtxo: %w", err)
+	}
+
+	return true, nil
 }

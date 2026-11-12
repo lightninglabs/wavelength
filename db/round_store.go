@@ -2348,3 +2348,37 @@ func (s *RoundPersistenceStore) ListRoundsPaginated(ctx context.Context,
 // Compile-time checks that RoundPersistenceStore implements the interfaces.
 var _ round.RoundStore = (*RoundPersistenceStore)(nil)
 var _ round.VTXOStore = (*RoundPersistenceStore)(nil)
+
+// LookupForfeitSettlement returns confirmed local consuming-round evidence.
+// Missing, unconfirmed, and incomplete rows carry no proof of consumption;
+// read errors propagate so recovery cannot proceed on unavailable evidence.
+func (s *RoundPersistenceStore) LookupForfeitSettlement(ctx context.Context,
+	roundID string) (fn.Option[vtxo.Settlement], error) {
+
+	proof := fn.None[vtxo.Settlement]()
+	err := s.db.ExecTx(ctx, ReadTxOption(), func(q RoundStore) error {
+		r, err := q.GetRound(ctx, roundID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !r.ConfirmationHeight.Valid {
+			return nil
+		}
+		if r.ConfirmationHeight.Int32 <= 0 ||
+			len(r.CommitmentTxid) != chainhash.HashSize {
+			return nil
+		}
+		var txid chainhash.Hash
+		copy(txid[:], r.CommitmentTxid)
+		proof = fn.Some(vtxo.Settlement{
+			TxID: txid, Height: r.ConfirmationHeight.Int32,
+		})
+
+		return nil
+	})
+
+	return proof, err
+}
