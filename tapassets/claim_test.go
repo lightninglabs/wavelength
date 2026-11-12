@@ -26,7 +26,12 @@ type fakeClaimDriver struct {
 	publishErr   error
 	reconcileErr error
 	anchorPSBT   []byte
+	inputProofs  [][]byte
 	request      *customanchor.Request
+
+	// outputs are the asset outputs tapd seals: one per input, in the
+	// claim's first output, unless a test sets them.
+	outputs []commitOutput
 }
 
 func (d *fakeClaimDriver) Commit(_ context.Context,
@@ -36,6 +41,13 @@ func (d *fakeClaimDriver) Commit(_ context.Context,
 	d.commits++
 	d.request = request
 	d.anchorPSBT = request.AnchorPSBT
+	if d.outputs == nil {
+		for _, input := range request.Inputs {
+			d.outputs = append(d.outputs, commitOutput{
+				amount: input.Amount,
+			})
+		}
+	}
 
 	return d.DecodePackage([]byte("claim-package"))
 }
@@ -45,16 +57,15 @@ func (d *fakeClaimDriver) DecodePackage(encoded []byte) (*commitResult, error) {
 		packageBytes: encoded,
 		anchorPSBT:   d.anchorPSBT,
 		fundingMode:  customanchor.FundingCallerFundedExact,
-		outputs: []commitOutput{
-			{
-				anchorOutputIndex: 0,
-			},
-		},
+		outputs:      d.outputs,
 	}, nil
 }
 
-func (d *fakeClaimDriver) Publish(context.Context, []byte, []byte) error {
+func (d *fakeClaimDriver) PublishWithInputProofs(_ context.Context, _, _ []byte,
+	inputProofs [][]byte) error {
+
 	d.publishes++
+	d.inputProofs = inputProofs
 
 	return d.publishErr
 }
@@ -126,17 +137,19 @@ func newClaimTest(t *testing.T) (*Claimer, *fakeClaimDriver, *fakeInventory,
 		OwnerKey: keychain.KeyDescriptor{
 			PubKey: owner.PubKey(),
 		},
-		AssetRef:  "asset",
-		Amount:    600,
-		ProofFile: []byte("proof"),
-		OPTrueWitness: [][]byte{
-			{
-				0x51,
+		AssetRef: "asset",
+		Inputs: []ClaimInput{{
+			Amount:    600,
+			ProofFile: []byte("proof"),
+			OPTrueWitness: [][]byte{
+				{
+					0x51,
+				},
+				{
+					0xc0,
+				},
 			},
-			{
-				0xc0,
-			},
-		},
+		}},
 	}
 
 	return claimer, driver, keys, request
@@ -185,9 +198,16 @@ func TestClaimerClaimsOnce(t *testing.T) {
 		committed.Inputs[0].Witness.Mode,
 	)
 	require.Equal(
-		t, request.OPTrueWitness, committed.Inputs[0].Witness.Stack,
+		t, request.Inputs[0].OPTrueWitness,
+		committed.Inputs[0].Witness.Stack,
 	)
 	require.Equal(t, scriptExternal, committed.Outputs[0].Script.Mode)
+
+	// tapd gets the claimed output's proof file with the claim, since it
+	// may never have seen its history.
+	require.Equal(
+		t, [][]byte{request.Inputs[0].ProofFile}, driver.inputProofs,
+	)
 
 	again, err := claimer.Claim(ctx, request)
 	require.NoError(t, err)
@@ -306,9 +326,80 @@ func TestClaimerRejectsChangedRequest(t *testing.T) {
 	require.NoError(t, err)
 
 	changed := *request
-	changed.Amount = 500
+	changed.Inputs = []ClaimInput{request.Inputs[0]}
+	changed.Inputs[0].Amount = 500
 	_, err = claimer.Claim(ctx, &changed)
 	require.ErrorContains(t, err, "different request")
+}
+
+// TestClaimerClaimsEveryIssuance checks that a claim of an output holding two
+// issuances spends both in one asset output and supplies both proof files.
+func TestClaimerClaimsEveryIssuance(t *testing.T) {
+	t.Parallel()
+
+	claimer, driver, _, request := newClaimTest(t)
+	reissued := ClaimInput{
+		Amount:        150,
+		ProofFile:     []byte("reissued proof"),
+		OPTrueWitness: request.Inputs[0].OPTrueWitness,
+	}
+	request.Inputs = append(request.Inputs, reissued)
+
+	_, err := claimer.Claim(t.Context(), request)
+	require.NoError(t, err)
+
+	committed := driver.request
+	require.Len(t, committed.Inputs, 2)
+	require.NotEqual(t, committed.Inputs[0].ID, committed.Inputs[1].ID)
+	for idx, input := range committed.Inputs {
+		require.Equal(t, request.Inputs[idx].Amount, input.Amount)
+		require.Equal(t, request.Inputs[idx].ProofFile, input.ProofFile)
+	}
+	require.Len(t, committed.Outputs, 1)
+	require.EqualValues(t, 750, committed.Outputs[0].Amount)
+	require.Equal(
+		t, [][]byte{[]byte("proof"), []byte("reissued proof")},
+		driver.inputProofs,
+	)
+}
+
+// TestClaimerRefusesShortCommit checks that a sealed claim moving fewer units
+// than the output holds is refused before it is signed.
+func TestClaimerRefusesShortCommit(t *testing.T) {
+	t.Parallel()
+
+	claimer, driver, _, request := newClaimTest(t)
+	driver.outputs = []commitOutput{{
+		amount: 599,
+	}}
+
+	_, err := claimer.Claim(t.Context(), request)
+	require.ErrorContains(t, err, "moves 599 units, want 600")
+	require.Zero(t, driver.publishes)
+}
+
+// TestClaimerKeepsJournalAcrossProofs checks that a journaled claim serves a
+// request whose proof file was rebuilt, as after a reorganization confirms
+// the same history in other blocks, and publishes the rebuilt proof.
+func TestClaimerKeepsJournalAcrossProofs(t *testing.T) {
+	t.Parallel()
+
+	claimer, driver, _, request := newClaimTest(t)
+	ctx := t.Context()
+
+	prepared, err := claimer.Prepare(ctx, request)
+	require.NoError(t, err)
+
+	rebuilt := *request
+	rebuilt.Inputs = []ClaimInput{request.Inputs[0]}
+	rebuilt.Inputs[0].ProofFile = []byte("reconfirmed proof")
+	claimed, err := claimer.Claim(ctx, &rebuilt)
+	require.NoError(t, err)
+	require.Equal(t, prepared.Tx.TxHash(), claimed.Tx.TxHash())
+	require.Equal(t, 1, driver.commits)
+	require.Equal(
+		t, [][]byte{[]byte("reconfirmed proof")}, driver.inputProofs,
+	)
 }
 
 // TestClaimRequestBindsExitSpend checks that a claim is refused when the exit

@@ -180,6 +180,10 @@ type RegistryConfig struct {
 	// (e.g. vHTLC recovery) reach their custom resolver after restart.
 	ExitSpendPolicyResolver ExitSpendPolicyResolver
 
+	// AssetClaimer claims each asset VTXO in place of its final sweep.
+	// Forwarded verbatim into each spawned child's Config.
+	AssetClaimer AssetClaimer
+
 	// ArmedExitPolicy resolves the exit policy identity of an armed
 	// recovery obligation for one target outpoint. It is consulted on
 	// every admission: a caller that names no policy (the manual Unroll
@@ -2018,6 +2022,7 @@ func (r *registryBehavior) childConfig(target wire.OutPoint) Config {
 		SweepFeeRateFallbackSatPerVByte: r.cfg.
 			SweepFeeRateFallbackSatPerVByte,
 		ExitSpendPolicyResolver:     r.cfg.ExitSpendPolicyResolver,
+		AssetClaimer:                r.cfg.AssetClaimer,
 		FraudCheckpointSafetyMargin: r.cfg.FraudCheckpointSafetyMargin,
 		LegacyProofScanFloor:        r.cfg.LegacyProofScanFloor,
 		RegistryRef:                 r.selfRef,

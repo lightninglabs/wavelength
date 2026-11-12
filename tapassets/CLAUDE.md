@@ -19,7 +19,14 @@ Durable journals retain committed packages for restart recovery.
   child. The journal pins the derived keys before the commit and the signed
   transaction before the publish. `Prepare` signs a claim without recording
   it in tapd, so the caller can record it first. `TapdCanClaim` reports
-  whether a tapd version credits a claim.
+  whether a tapd version credits a claim. A claimed output holds one input
+  per issuance of its asset, and a claim always supplies their proof files
+  with the publish, since tapd may never have seen their history. The
+  journal's request digest leaves the proof files out, so a proof rebuilt
+  after a reorganization still serves a journaled claim.
+  `DecodeAssetVTXOClaimInputs` reads, for each issuance an asset VTXO's leaf
+  holds, the proof path down to the leaf and the OP_TRUE witness from the
+  leaf's sealed package.
 - `SelectOnboardingProofs` / `ExportOnboardedProof` — Pick and export the
   confirmed proofs of the tapd anchors that fund an onboarding (one issuance,
   smallest covering anchor, else the largest anchors up to

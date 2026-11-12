@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 
 	"github.com/btcsuite/btcd/psbt/v2"
@@ -77,16 +78,50 @@ type ClaimRequest struct {
 	// OwnerKey signs the exit leaf.
 	OwnerKey keychain.KeyDescriptor
 
-	// AssetRef and Amount describe the asset the output holds.
+	// AssetRef is the asset the output holds.
 	AssetRef tapsdk.AssetRef
-	Amount   uint64
 
-	// ProofFile is the asset's confirmed proof file, ending in Outpoint.
+	// Inputs are the asset pieces the output holds, one per issuance.
+	// Only a grouped asset holds more than one.
+	Inputs []ClaimInput
+}
+
+// ClaimInput is one asset piece of a claimed output.
+type ClaimInput struct {
+	// Amount is the number of units the piece holds.
+	Amount uint64
+
+	// ProofFile is the piece's confirmed proof file, ending in the claimed
+	// output. The claim journal does not bind it, so a proof rebuilt from
+	// the blocks of a reorganized chain still serves a journaled claim.
 	ProofFile []byte
 
-	// OPTrueWitness authorizes the asset spend under its OP_TRUE script
-	// key.
+	// OPTrueWitness authorizes the spend of the piece under its OP_TRUE
+	// script key.
 	OPTrueWitness [][]byte
+}
+
+// amount returns the units of every piece of the claimed output.
+func (r *ClaimRequest) amount() (uint64, error) {
+	var total uint64
+	for _, claimInput := range r.Inputs {
+		if claimInput.Amount > math.MaxUint64-total {
+			return 0, fmt.Errorf("claimed asset amount overflow")
+		}
+		total += claimInput.Amount
+	}
+
+	return total, nil
+}
+
+// inputProofs returns the proof file of every piece of the claimed output.
+func (r *ClaimRequest) inputProofs() [][]byte {
+	proofs := make([][]byte, len(r.Inputs))
+	for idx, claimInput := range r.Inputs {
+		proofs[idx] = claimInput.ProofFile
+	}
+
+	return proofs
 }
 
 // ClaimResult is the signed claim transaction. It pays no fee: its last
@@ -123,7 +158,7 @@ type claimDriver interface {
 
 	DecodePackage([]byte) (*commitResult, error)
 
-	Publish(context.Context, []byte, []byte) error
+	PublishWithInputProofs(context.Context, []byte, []byte, [][]byte) error
 
 	ReconcileOnboarding(context.Context, []byte) error
 }
@@ -214,7 +249,7 @@ func (c *Claimer) Claim(ctx context.Context, request *ClaimRequest) (
 	if err != nil {
 		return nil, err
 	}
-	if err := c.publish(ctx, request.RequestID, state); err != nil {
+	if err := c.publish(ctx, request, state); err != nil {
 		return nil, err
 	}
 
@@ -291,26 +326,36 @@ func (c *Claimer) commit(ctx context.Context, request *ClaimRequest,
 	if err != nil {
 		return nil, err
 	}
+	amount, err := request.amount()
+	if err != nil {
+		return nil, err
+	}
 
-	// The claimed asset goes to keys tapd derived, so tapd holds it as
-	// its own once the claim confirms.
-	requestDTO := &customanchor.Request{
-		Inputs: []customanchor.AssetInput{{
-			ID:        claimInputID,
+	inputs := make([]customanchor.AssetInput, len(request.Inputs))
+	for idx, claimInput := range request.Inputs {
+		inputs[idx] = customanchor.AssetInput{
+			ID:        fmt.Sprintf("%s-%d", claimInputID, idx),
 			AssetRef:  request.AssetRef,
-			Amount:    request.Amount,
-			ProofFile: bytes.Clone(request.ProofFile),
+			Amount:    claimInput.Amount,
+			ProofFile: bytes.Clone(claimInput.ProofFile),
 			Witness: customanchor.AssetWitnessPlan{
 				Mode: customanchor.AssetWitnessCallerProvided,
 				Stack: cloneByteSlices(
-					request.OPTrueWitness,
+					claimInput.OPTrueWitness,
 				),
 			},
-		}},
+		}
+	}
+
+	// The claimed asset goes to keys tapd derived, so tapd holds it as
+	// its own once the claim confirms. tap-sdk splits the output into one
+	// asset per issuance, each under a script key unique to its issuance.
+	requestDTO := &customanchor.Request{
+		Inputs: inputs,
 		Outputs: []customanchor.AssetOutput{{
 			ID:                claimOutputID,
 			AssetRef:          request.AssetRef,
-			Amount:            request.Amount,
+			Amount:            amount,
 			AnchorOutputIndex: 0,
 			AnchorValueSat:    uint64(request.Output.Value),
 			Script: customanchor.AssetScriptPlan{
@@ -343,7 +388,7 @@ func (c *Claimer) commit(ctx context.Context, request *ClaimRequest,
 		return nil, fmt.Errorf("commit claim %q: %w", request.RequestID,
 			err)
 	}
-	if err := validateClaimCommit(committed); err != nil {
+	if err := validateClaimCommit(committed, amount); err != nil {
 		return nil, err
 	}
 
@@ -381,9 +426,9 @@ func claimTemplate(request *ClaimRequest) (*psbt.Packet, error) {
 	return packet, nil
 }
 
-// validateClaimCommit checks that tapd sealed a zero-fee claim with exactly
-// the requested asset output.
-func validateClaimCommit(committed *commitResult) error {
+// validateClaimCommit checks that tapd sealed a zero-fee claim that moves the
+// whole claimed amount into its first output.
+func validateClaimCommit(committed *commitResult, amount uint64) error {
 	switch {
 	case committed == nil:
 		return fmt.Errorf("claim commit result is required")
@@ -396,13 +441,26 @@ func validateClaimCommit(committed *commitResult) error {
 		return fmt.Errorf("claim must pay no fee, got %d",
 			committed.actualFeeSat)
 
-	case len(committed.outputs) != 1:
-		return fmt.Errorf("claim must create one asset output, got %d",
-			len(committed.outputs))
+	case len(committed.outputs) == 0:
+		return fmt.Errorf("claim creates no asset output")
+	}
 
-	case committed.outputs[0].anchorOutputIndex != 0:
-		return fmt.Errorf("claimed asset anchors at output %d",
-			committed.outputs[0].anchorOutputIndex)
+	var total uint64
+	for idx := range committed.outputs {
+		output := &committed.outputs[idx]
+		switch {
+		case output.anchorOutputIndex != 0:
+			return fmt.Errorf("claimed asset anchors at output %d",
+				output.anchorOutputIndex)
+
+		case output.amount > math.MaxUint64-total:
+			return fmt.Errorf("claimed asset amount overflow")
+		}
+		total += output.amount
+	}
+	if total != amount {
+		return fmt.Errorf("claim moves %d units, want %d", total,
+			amount)
 	}
 
 	return nil
@@ -452,13 +510,16 @@ func (c *Claimer) sign(request *ClaimRequest, anchorPSBT []byte) ([]byte,
 	return psbtutil.Serialize(packet)
 }
 
-// publish records the signed claim in tapd. The attempt is journaled first,
-// and a retry after an attempt publishes again only once tapd reports no
+// publish records the signed claim in tapd, with the proof files of the claimed
+// output, since tapd may never have seen its history. The attempt is journaled
+// first, and a retry after an attempt publishes again only once tapd reports no
 // record of the claim. tapd keys a transfer by its anchor transaction, so a
-// second publish of the same claim attaches to the first rather than logging
-// it twice.
-func (c *Claimer) publish(ctx context.Context, requestID string,
+// second publish of the same claim attaches to the first rather than logging it
+// twice.
+func (c *Claimer) publish(ctx context.Context, request *ClaimRequest,
 	state *claimState) error {
+
+	requestID := request.RequestID
 
 	if state.Published {
 		return nil
@@ -479,8 +540,9 @@ func (c *Claimer) publish(ctx context.Context, requestID string,
 		return err
 	}
 
-	err := c.driver.Publish(
+	err := c.driver.PublishWithInputProofs(
 		ctx, state.TransferPackage, state.FinalAnchorPSBT,
+		request.inputProofs(),
 	)
 	if err != nil {
 		var attempted *customanchor.PublishAttemptError
@@ -606,14 +668,29 @@ func validateClaimRequest(request *ClaimRequest) error {
 	case request.OwnerKey.PubKey == nil:
 		return fmt.Errorf("claim owner key is required")
 
-	case request.AssetRef == "" || request.Amount == 0:
-		return fmt.Errorf("claimed asset ref and amount are required")
+	case request.AssetRef == "":
+		return fmt.Errorf("claimed asset ref is required")
 
-	case len(request.ProofFile) == 0:
-		return fmt.Errorf("claimed asset proof file is required")
+	case len(request.Inputs) == 0:
+		return fmt.Errorf("claimed asset inputs are required")
+	}
+	for idx, claimInput := range request.Inputs {
+		switch {
+		case claimInput.Amount == 0:
+			return fmt.Errorf("claimed asset input %d has "+
+				"no amount", idx)
 
-	case len(request.OPTrueWitness) == 0:
-		return fmt.Errorf("claimed asset witness is required")
+		case len(claimInput.ProofFile) == 0:
+			return fmt.Errorf("claimed asset input %d has no "+
+				"proof file", idx)
+
+		case len(claimInput.OPTrueWitness) == 0:
+			return fmt.Errorf("claimed asset input %d has "+
+				"no witness", idx)
+		}
+	}
+	if _, err := request.amount(); err != nil {
+		return err
 	}
 
 	if err := request.ExitSpend.Validate(); err != nil {
@@ -623,10 +700,12 @@ func validateClaimRequest(request *ClaimRequest) error {
 	return request.ExitSpend.VerifyBindsToPkScript(request.Output.PkScript)
 }
 
-// claimRequestDigest binds a journal entry to one claim request.
+// claimRequestDigest binds a journal entry to one claim request. It leaves
+// out the proof files: they only prove the pieces, and a reorganization can
+// confirm the same history in other blocks.
 func claimRequestDigest(request *ClaimRequest) tapsdk.Hash {
 	h := sha256.New()
-	h.Write([]byte("wavelength/asset-claim-request/v0"))
+	h.Write([]byte("wavelength/asset-claim-request/v1"))
 
 	writeBytes := func(data []byte) {
 		var size [8]byte
@@ -649,11 +728,13 @@ func claimRequestDigest(request *ClaimRequest) tapsdk.Hash {
 	writeUint(uint64(request.ExitSpend.RequiredSequence))
 	writeBytes(request.OwnerKey.PubKey.SerializeCompressed())
 	writeBytes([]byte(request.AssetRef))
-	writeUint(request.Amount)
-	writeBytes(request.ProofFile)
-	writeUint(uint64(len(request.OPTrueWitness)))
-	for _, item := range request.OPTrueWitness {
-		writeBytes(item)
+	writeUint(uint64(len(request.Inputs)))
+	for _, claimInput := range request.Inputs {
+		writeUint(claimInput.Amount)
+		writeUint(uint64(len(claimInput.OPTrueWitness)))
+		for _, item := range claimInput.OPTrueWitness {
+			writeBytes(item)
+		}
 	}
 
 	var digest tapsdk.Hash

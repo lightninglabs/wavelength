@@ -436,12 +436,14 @@ func depositClaimRequest(deposit *db.AssetDeposit) (*tapassets.ClaimRequest,
 		Output: wire.NewTxOut(
 			output.ValueSat, output.PkScript,
 		),
-		ExitSpend:     exitSpend,
-		OwnerKey:      output.OwnerKey,
-		AssetRef:      tapsdk.AssetRef(deposit.Request.AssetRef),
-		Amount:        deposit.Request.AssetAmount,
-		ProofFile:     deposit.ProofFile,
-		OPTrueWitness: output.OPTrueWitness,
+		ExitSpend: exitSpend,
+		OwnerKey:  output.OwnerKey,
+		AssetRef:  tapsdk.AssetRef(deposit.Request.AssetRef),
+		Inputs: []tapassets.ClaimInput{{
+			Amount:        deposit.Request.AssetAmount,
+			ProofFile:     deposit.ProofFile,
+			OPTrueWitness: output.OPTrueWitness,
+		}},
 	}, nil
 }
 

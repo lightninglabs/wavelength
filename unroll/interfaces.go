@@ -134,6 +134,17 @@ type ExitSpendPolicy interface {
 		req ExitSpendRequest) (*wire.MsgTx, error)
 }
 
+// AssetClaimer claims an asset VTXO whose exit leaf has matured: it spends
+// the leaf through that leaf into the asset wallet, so the asset becomes an
+// ordinary holding. The claim pays no fee and carries a P2A anchor, so
+// txconfirm relays it with a CPFP child. Every call for one VTXO returns the
+// same transaction. heightHint bounds the scan for the confirmations of the
+// VTXO's tree path.
+type AssetClaimer interface {
+	ClaimAssetVTXO(ctx context.Context, desc *vtxo.Descriptor,
+		heightHint uint32) (*wire.MsgTx, error)
+}
+
 // ExitSpendPolicyResolver reconstructs a policy from the durable identity
 // stored with an unroll job. Custom actor factories can inject resolvers for
 // their policy families; the built-in actor default handles standard VTXO

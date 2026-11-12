@@ -235,6 +235,10 @@ type ExitFeasibilityInput struct {
 	// enough to plausibly fund a CPFP child on their own.
 	WalletUsableInputs int
 
+	// AssetClaim marks the exit of an asset VTXO, whose final spend is a
+	// zero-fee claim the wallet relays with one more CPFP child.
+	AssetClaim bool
+
 	// Config tunes the cost model. The zero value uses all defaults.
 	Config ExitFeasibilityConfig
 }
@@ -269,7 +273,8 @@ type ExitFeasibility struct {
 	TotalRecoveryCostSat btcutil.Amount
 
 	// NetRecoveredSat is VTXOAmountSat - SweepFeeSat: the value that
-	// actually lands back in the wallet from the sweep.
+	// actually lands back in the wallet from the sweep. It is zero for an
+	// asset claim, whose output keeps the VTXO value with the asset.
 	NetRecoveredSat btcutil.Amount
 
 	// VTXOAmountSat echoes the input VTXO value.
@@ -313,11 +318,25 @@ func AssessExitFeasibility(in ExitFeasibilityInput) ExitFeasibility {
 	// under-counted the exit cost and under-recommended funding.
 	cpfpVBytes := cfg.CPFPChildVBytes*int64(in.NumRecoveryTxs) +
 		in.RecoveryTxVBytes
+
+	// An asset claim keeps the carrier's full value, so the wallet pays
+	// its fee through one more CPFP child. The claim is about the size of
+	// a sweep.
+	if in.AssetClaim {
+		cpfpVBytes += cfg.CPFPChildVBytes + cfg.SweepVBytes
+		sweepFee = 0
+	}
 	cpfpTotal := btcutil.Amount(
 		int64(in.FeeRateSatPerVByte) * cpfpVBytes,
 	)
 	totalCost := cpfpTotal + sweepFee
+
+	// An asset claim moves the VTXO value into the asset wallet with the
+	// asset, so no bitcoin lands in the wallet that funds the exit.
 	net := in.VTXOAmountSat - sweepFee
+	if in.AssetClaim {
+		net = 0
+	}
 
 	f := ExitFeasibility{
 		Feasible:             true,
@@ -333,6 +352,12 @@ func AssessExitFeasibility(in ExitFeasibilityInput) ExitFeasibility {
 		RequiredWalletInputs: in.NumAncestryPaths,
 		WalletConfirmedSat:   in.WalletConfirmedSat,
 		WalletUsableInputs:   in.WalletUsableInputs,
+	}
+
+	// An asset exit recovers the asset, not the carrier's satoshis, so
+	// only the wallet's ability to fund it is checked.
+	if in.AssetClaim {
+		return checkExitWalletFunding(f, in, cpfpTotal)
 	}
 
 	// 1. Impossible: after the sweep pays its own fee, the output left
@@ -360,6 +385,14 @@ func AssessExitFeasibility(in ExitFeasibilityInput) ExitFeasibility {
 
 		return f
 	}
+
+	return checkExitWalletFunding(f, in, cpfpTotal)
+}
+
+// checkExitWalletFunding fails the verdict when the wallet cannot fund the
+// CPFP children of an exit.
+func checkExitWalletFunding(f ExitFeasibility, in ExitFeasibilityInput,
+	cpfpTotal btcutil.Amount) ExitFeasibility {
 
 	// 3. Wallet can't fund the CPFP children at all.
 	if in.WalletConfirmedSat < cpfpTotal {

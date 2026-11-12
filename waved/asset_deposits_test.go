@@ -624,7 +624,8 @@ func TestAssetDepositClaim(t *testing.T) {
 	request := claimer.request
 	require.Equal(t, "deposit/alice-1", request.RequestID)
 	require.Equal(t, f.output, request.Outpoint)
-	require.EqualValues(t, 600, request.Amount)
+	require.Len(t, request.Inputs, 1)
+	require.EqualValues(t, 600, request.Inputs[0].Amount)
 	require.EqualValues(t, 144, request.ExitSpend.RequiredSequence)
 	require.NoError(
 		t, request.ExitSpend.VerifyBindsToPkScript(

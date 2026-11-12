@@ -178,6 +178,17 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `claimed` only once tapd's transfer for it is
   `chainsource.DefaultFinalityDepth` blocks deep, the depth at which
   txconfirm stops following it through reorgs.
+- One `tapassets.Claimer` (`Server.assetClaimer`), created when tapd
+  connects, claims both deposits (`deposit/` journal keys) and asset VTXOs
+  (`vtxo/`). The unroll registry hands a matured asset VTXO to
+  `assetVTXOClaimer`, which takes the proof path and OP_TRUE witness of each
+  issuance the VTXO holds from its sealed package, reads the block of every
+  transaction on those paths through one-shot chainsource confirmations with
+  `IncludeBlock` (bounded by `assetVTXOClaimChainTimeout`), and supplies the
+  confirmed proof files with the claim, since tapd never saw the tree's
+  history. This needs a tapd that
+  accepts `input_proof_files`; an older tapd refuses the publish and the
+  unroll retries at the next block.
 - `Server.run` registers a deferred `actorSystem.Shutdown()` **before** the
   deferred `db.Close()` so in-flight actor DB transactions drain before the
   connection pool tears down.

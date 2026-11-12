@@ -46,9 +46,13 @@ func PlanExitFunding(desc *vtxo.Descriptor, mat *LineageMaterial,
 	feeRate btcutil.Amount, wallet ExitFundingSnapshot) ExitFundingPlan {
 
 	numTxs, numPaths, vbytes := recoveryEstimate(desc, mat)
-	var amount btcutil.Amount
+	var (
+		amount     btcutil.Amount
+		assetClaim bool
+	)
 	if desc != nil {
 		amount = desc.Amount
+		assetClaim = desc.TaprootAssetRoot != nil
 	}
 
 	feasibility := AssessExitFeasibility(ExitFeasibilityInput{
@@ -59,6 +63,7 @@ func PlanExitFunding(desc *vtxo.Descriptor, mat *LineageMaterial,
 		FeeRateSatPerVByte: feeRate,
 		WalletConfirmedSat: wallet.WalletConfirmedSat,
 		WalletUsableInputs: wallet.WalletUsableInputs,
+		AssetClaim:         assetClaim,
 	})
 
 	recommended := RecommendedExitFeeInputAmount(feasibility)

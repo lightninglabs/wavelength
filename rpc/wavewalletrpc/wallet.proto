@@ -1560,7 +1560,8 @@ message ExitFees {
     // vtxo_amount_sat is the value of the VTXO being exited.
     int64 vtxo_amount_sat = 4;
 
-    // net_recovered_sat is vtxo_amount_sat - sweep_fee_sat.
+    // net_recovered_sat is vtxo_amount_sat - sweep_fee_sat. It is zero for an
+    // asset VTXO, whose exit keeps its value with the asset.
     int64 net_recovered_sat = 5;
 
     // fee_rate_sat_vbyte is the fee rate used for the estimate.

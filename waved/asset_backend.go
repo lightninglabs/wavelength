@@ -159,6 +159,14 @@ func (s *Server) connectAssetBackend(ctx context.Context) (
 		}
 	}
 
+	claimer, err := s.newAssetClaimer(client)
+	if err != nil {
+		cleanup()
+
+		return nil, nil, err
+	}
+	s.assetClaimer = claimer
+
 	chain, err := tapassets.NewTapdProofChainVerifier(client)
 	if err != nil {
 		cleanup()
@@ -219,6 +227,28 @@ func (s *Server) connectTapd(ctx context.Context) (*tapgrpc.Client, error) {
 	return client, nil
 }
 
+// newAssetClaimer returns the claimer of asset deposits and asset VTXOs. Its
+// journal pins each claim, so a retry or a restart rebuilds the same one.
+func (s *Server) newAssetClaimer(client *tapgrpc.Client) (*tapassets.Claimer,
+	error) {
+
+	journal, err := tapassets.NewFileStore(
+		filepath.Join(
+			s.cfg.NetworkDir(),
+			"assets", "claims",
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return tapassets.NewClaimer(tapassets.ClaimerConfig{
+		Wallet: tapsdk.NewWallet(client, tapsdk.Network(s.cfg.Network)),
+		Store:  journal,
+		Signer: claimSigner{server: s},
+	})
+}
+
 // startAssetDeposits starts the asset deposit service when the tapd backend
 // and the lnd node behind tapd are configured. The returned cleanup stops the
 // deposit watcher and closes the lnd connection.
@@ -277,30 +307,6 @@ func (s *Server) startAssetDeposits(ctx context.Context, store *db.Store) (
 		return nil, err
 	}
 
-	claimJournal, err := tapassets.NewFileStore(
-		filepath.Join(
-			s.cfg.NetworkDir(),
-			"assets", "claims",
-		),
-	)
-	if err != nil {
-		lnd.Close()
-
-		return nil, err
-	}
-	claimer, err := tapassets.NewClaimer(tapassets.ClaimerConfig{
-		Wallet: tapsdk.NewWallet(
-			s.tapdClient, tapsdk.Network(s.cfg.Network),
-		),
-		Store:  claimJournal,
-		Signer: claimSigner{server: s},
-	})
-	if err != nil {
-		lnd.Close()
-
-		return nil, err
-	}
-
 	depositStore := db.NewAssetDepositStore(store)
 	s.assetDeposits = newAssetDepositService(&assetDepositConfig{
 		log:              s.log,
@@ -312,7 +318,7 @@ func (s *Server) startAssetDeposits(ctx context.Context, store *db.Store) (
 		chainParams:      s.chainParams,
 		registerBoarding: s.registerAssetBoarding,
 		claims:           depositStore,
-		claimer:          claimer,
+		claimer:          s.assetClaimer,
 		broadcastClaim:   s.broadcastAssetClaim,
 		reserveClaim:     s.reserveAssetDepositClaim,
 	})
