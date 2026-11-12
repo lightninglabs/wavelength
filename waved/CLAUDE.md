@@ -484,6 +484,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   the pass before starting the remaining wallet-dependent actors. The helper
   drives recovered children outside the VTXO manager receive loop so their
   refresh relays and termination notifications can drain during the pass.
+- Bootstrap publishes `serverConn`, `arkClient` and `runtime` through
+  `publishOperatorClients` and `publishRuntime` under `operatorConnMu`.
+  RPCs and shutdown can run while bootstrap is in progress, so code off the
+  bootstrap goroutine reads them through `operatorArkClient` and
+  `loadRuntime`, never the fields directly.
 - `deriveIdentityKeyEarly` publishes `clientKeyDesc` before mailbox bootstrap.
   `GetInfo` reuses this descriptor instead of deriving the same key for every
   status request because btcwallet-backed derivation opens a wallet database
