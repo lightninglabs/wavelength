@@ -4,6 +4,7 @@ package waved
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"testing"
@@ -161,6 +162,7 @@ func TestNewReceiveScriptRetryPreservesPendingAllocation(t *testing.T) {
 			},
 		}),
 	}
+	server.arkProtocolVersion.Store(1)
 	rpcServer := NewRPCServer(server)
 	req := &waverpc.NewReceiveScriptRequest{
 		Label:          "credit top-up",
@@ -294,4 +296,50 @@ func TestNewReceiveScriptRenewsExpiredRegistration(t *testing.T) {
 		renewed.RegistrationRPCKey,
 	)
 	require.True(t, renewed.RegistrationCompletedAt.IsSome())
+}
+
+// TestNewReceiveScriptBeforeNegotiationIsRetryable verifies the RPC returns a
+// retryable Unavailable status while startup is still negotiating the Ark
+// protocol version, and allocates nothing a retry would have to resume.
+func TestNewReceiveScriptBeforeNegotiationIsRetryable(t *testing.T) {
+	t.Parallel()
+
+	walletReady := make(chan struct{})
+	close(walletReady)
+	receiveKey := testKeyDescriptor(t, 95)
+	operatorKey := testKeyDescriptor(t, 96)
+	idx := indexer.New(
+		&testReceiveScriptRPCClient{}, nil, "test-server",
+		"client:test", fn.None[btclog.Logger](),
+	)
+	server := &Server{
+		walletReady: walletReady,
+		clk:         clock.NewTestClock(time.Now()),
+		db:          db.NewTestDB(t),
+		indexer:     idx,
+		proofKeyBackend: &testReceiveScriptProofBackend{
+			nextKey: &receiveKey,
+		},
+		serverConn: newBufconnClient(t, &fakeArkService{
+			getInfoResponse: &arkrpc.GetInfoResponse{
+				Pubkey:        operatorKey.PubKey.SerializeCompressed(),
+				VtxoExitDelay: 144,
+			},
+		}),
+	}
+	rpcServer := NewRPCServer(server)
+	req := &waverpc.NewReceiveScriptRequest{
+		Label:          "credit top-up",
+		IdempotencyKey: "consumer:before-negotiation",
+	}
+
+	_, err := rpcServer.NewReceiveScript(t.Context(), req)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+
+	store, err := rpcServer.newOORReceiveScriptStore()
+	require.NoError(t, err)
+	_, err = store.LookupOwnedReceiveScriptByIdempotencyKey(
+		t.Context(), req.IdempotencyKey,
+	)
+	require.ErrorIs(t, err, sql.ErrNoRows)
 }

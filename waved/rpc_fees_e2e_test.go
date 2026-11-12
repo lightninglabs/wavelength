@@ -35,6 +35,7 @@ func TestEstimateFeeProxiesEveryField(t *testing.T) {
 		serverConn: newBufconnClient(t, svc),
 		log:        btclog.Disabled,
 	}
+	s.arkProtocolVersion.Store(1)
 	r := &RPCServer{server: s}
 
 	resp, err := r.EstimateFee(
@@ -93,6 +94,7 @@ func TestEstimateFeeAmountMatchesQuoteOperatorFee(t *testing.T) {
 		serverConn: newBufconnClient(t, svc),
 		log:        btclog.Disabled,
 	}
+	s.arkProtocolVersion.Store(1)
 	r := &RPCServer{server: s}
 
 	// CLI path.
