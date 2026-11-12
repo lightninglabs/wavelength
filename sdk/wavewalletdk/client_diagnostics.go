@@ -25,3 +25,20 @@ func (c *Client) VTXOAnchors(ctx context.Context, outpoint string) (
 
 	return c.readVTXOAnchors(callCtx, outpoint)
 }
+
+// OORAmount returns a persisted requested outgoing or received incoming value.
+// Nil means the source cannot prove an amount, never a zero-value transfer.
+func (c *Client) OORAmount(ctx context.Context, sessionID string,
+	outgoing bool) (*int64, error) {
+
+	if c == nil || c.readOORAmount == nil {
+		return nil, errors.New("OOR amounts require an embedded wallet")
+	}
+	callCtx, release, err := c.beginLocalCall(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	return c.readOORAmount(callCtx, sessionID, outgoing)
+}

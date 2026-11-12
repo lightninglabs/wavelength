@@ -76,6 +76,8 @@ type Client struct {
 	activityCursor  func(context.Context) (int64, error)
 	readVTXOAnchors func(context.Context, string) ([]waved.VTXOAnchor,
 		error)
+	readOORAmount func(context.Context, string, bool) (
+		*int64, error)
 	readLightningReceipts func(context.Context,
 		waved.LightningReceiptRequest) ([]waved.LightningReceipt, error)
 
