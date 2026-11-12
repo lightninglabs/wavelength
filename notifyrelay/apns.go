@@ -44,6 +44,28 @@ type APNSProvider struct {
 	issued time.Time
 }
 
+// ValidateApplication rejects invalid APNs topics and environment policy.
+func (p *APNSProvider) ValidateApplication(app AppConfig) error {
+	if !validIdentifier(app.Topic, 255) {
+		return errors.New("APNs topic required")
+	}
+	if app.APNSEnvironment != "production" &&
+		app.APNSEnvironment != "development" {
+		return errors.New("invalid APNs environment")
+	}
+
+	return nil
+}
+
+// NormalizeDeviceToken retains Apple's validated lowercase hex representation.
+func (p *APNSProvider) NormalizeDeviceToken(token string) (string, error) {
+	if !validDeviceToken(token) {
+		return "", errors.New("invalid APNs device token")
+	}
+
+	return strings.ToLower(token), nil
+}
+
 // ParseAPNSKey accepts Apple's PKCS#8 P-256 provider key format only.
 func ParseAPNSKey(raw []byte) (*ecdsa.PrivateKey, error) {
 	block, remainder := pem.Decode(raw)

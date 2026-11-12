@@ -53,6 +53,16 @@ type testProvider struct {
 	send func(context.Context, Delivery) (ProviderResult, error)
 }
 
+// ValidateApplication preserves reference APNs routing policy in legacy tests.
+func (p *testProvider) ValidateApplication(app AppConfig) error {
+	return (&APNSProvider{}).ValidateApplication(app)
+}
+
+// NormalizeDeviceToken preserves reference token validation in legacy tests.
+func (p *testProvider) NormalizeDeviceToken(token string) (string, error) {
+	return (&APNSProvider{}).NormalizeDeviceToken(token)
+}
+
 // Send invokes the test's controlled provider outcome.
 func (p *testProvider) Send(ctx context.Context, d Delivery) (ProviderResult,
 	error) {

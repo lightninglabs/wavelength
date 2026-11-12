@@ -67,7 +67,7 @@ type Challenge struct {
 
 // ProofRequest carries an attestation or assertion and the exact JSON payload
 // bytes it signs. Byte slices use standard padded base64 in JSON. KeyID uses
-// DCAppAttestService's standard base64 key identifier and is enrollment-only.
+// the canonical 32-byte base64 credential identifier and is enrollment-only.
 type ProofRequest struct {
 	ChallengeID string `json:"challenge_id"`
 	KeyID       string `json:"key_id,omitempty"`
@@ -75,8 +75,9 @@ type ProofRequest struct {
 	Payload     []byte `json:"payload"`
 }
 
-// EnrollmentPayload binds initial token registration to the attested key.
-// Topic, APNs environment and Apple App ID are selected by server policy.
+// EnrollmentPayload binds an initial provider destination to the authenticated
+// credential. Application audience and provider routing come from server
+// policy.
 type EnrollmentPayload struct {
 	DeviceToken string `json:"device_token"`
 }
