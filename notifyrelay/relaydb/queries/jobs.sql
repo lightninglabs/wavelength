@@ -83,3 +83,7 @@ DELETE FROM relay_dedup WHERE (subscription_id, scope, event_hash) IN (
     SELECT d.subscription_id, d.scope, d.event_hash FROM relay_dedup AS d
     WHERE d.expires_at <= $1 ORDER BY d.expires_at, d.subscription_id LIMIT $2
 );
+
+-- name: DeferUnclaimedJob :exec
+UPDATE relay_jobs SET next_at = sqlc.arg(next_at)
+WHERE id = sqlc.arg(id) AND lease_until <= sqlc.arg(now_nano);

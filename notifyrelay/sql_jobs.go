@@ -27,11 +27,19 @@ func enqueueSQLJobTx(ctx context.Context, q *sqlc.Queries,
 		return nil
 	}
 	hash := secretHash(eventID)
+	replayReserved := false
 	if scope == ScopeAlert {
 		duplicate, err := sqlPaymentDuplicate(ctx, q, sub, hash, now)
-		if err != nil || duplicate {
+		if err != nil && !errors.Is(err, ErrCapacity) {
 			return err
 		}
+		if duplicate {
+			return nil
+		}
+		// A device replay quota must not block the aggregate source
+		// cursor. Keep its bounded job and reserve replay space before
+		// provider I/O.
+		replayReserved = err == nil
 	}
 	id := string(scope) + "/" + sub.ID
 	_, err := q.GetJob(ctx, id)
@@ -57,7 +65,7 @@ func enqueueSQLJobTx(ctx context.Context, q *sqlc.Queries,
 	}); err != nil {
 		return err
 	}
-	if scope != ScopeAlert {
+	if scope != ScopeAlert || !replayReserved {
 		return nil
 	}
 
@@ -69,8 +77,8 @@ func enqueueSQLJobTx(ctx context.Context, q *sqlc.Queries,
 	})
 }
 
-// sqlPaymentDuplicate bounds per-device replay evidence before allocating any
-// job. A quota rejection rolls back the caller's source checkpoint as well.
+// sqlPaymentDuplicate checks live replay evidence and per-device/global
+// capacity. A quota defers provider admission, not durable source ingestion.
 func sqlPaymentDuplicate(ctx context.Context, q *sqlc.Queries,
 	sub sqlc.RelaySubscription, hash string, now time.Time) (bool, error) {
 
@@ -110,13 +118,26 @@ func sqlPaymentDuplicate(ctx context.Context, q *sqlc.Queries,
 func (s *SQLStore) claim(ctx context.Context, now time.Time) (*Delivery,
 	error) {
 
+	delivery, _, err := s.claimWithProgress(ctx, now)
+
+	return delivery, err
+}
+
+// claimWithProgress reports committed deferral work as well as provider-ready
+// work. A worker can inspect the next due page immediately after moving a full
+// replay-blocked page forward, without holding a longer writer transaction.
+func (s *SQLStore) claimWithProgress(ctx context.Context, now time.Time) (
+	*Delivery, bool, error) {
+
 	token, err := randomSecret(16)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var delivery *Delivery
+	var progress bool
 	err = s.database.Write(ctx, func(q *sqlc.Queries) error {
 		delivery = nil
+		progress = false
 		due, err := q.ListDueJobs(ctx, sqlc.ListDueJobsParams{
 			NowNano: now.UnixNano(), NowUnix: now.Unix(),
 			BatchLimit: 32,
@@ -130,6 +151,16 @@ func (s *SQLStore) claim(ctx context.Context, now time.Time) (*Delivery,
 			)
 			if err != nil {
 				return err
+			}
+			ready, err := prepareSQLPayment(
+				ctx, q, candidate, sub, now,
+			)
+			if err != nil {
+				return err
+			}
+			if !ready {
+				progress = true
+				continue
 			}
 			claimed, err := q.ClaimInstallation(
 				ctx, sqlc.ClaimInstallationParams{
@@ -169,7 +200,44 @@ func (s *SQLStore) claim(ctx context.Context, now time.Time) (*Delivery,
 		return nil
 	})
 
-	return delivery, err
+	return delivery, progress && err == nil, err
+}
+
+// prepareSQLPayment reserves replay evidence before a payment provider call.
+// Existing evidence belongs to this pending job/retry: enqueue never creates
+// a job for an already admitted identity. Missing evidence means a bounded
+// candidate deferred by quota. Delay only that job, leaving other routes free.
+func prepareSQLPayment(ctx context.Context, q *sqlc.Queries, job sqlc.RelayJob,
+	sub sqlc.RelaySubscription, now time.Time) (bool, error) {
+
+	if job.Scope != string(ScopeAlert) {
+		return true, nil
+	}
+	exists, err := sqlPaymentDuplicate(ctx, q, sub, job.EventHash, now)
+	if errors.Is(err, ErrCapacity) {
+		return false, q.DeferUnclaimedJob(
+			ctx, sqlc.DeferUnclaimedJobParams{
+				ID:      job.ID,
+				NextAt:  now.Add(time.Minute).UnixNano(),
+				NowNano: now.UnixNano(),
+			},
+		)
+	}
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		return true, nil
+	}
+	err = q.PutDedup(ctx, sqlc.PutDedupParams{
+		SubscriptionID: sub.ID, InstallationID: sub.InstallationID,
+		Scope:     string(ScopeAlert),
+		EventHash: job.EventHash, ExpiresAt: now.
+				Add(dedupLifetime).
+				Unix(),
+	})
+
+	return err == nil, err
 }
 
 // sqlDelivery constructs a fixed route/template from transaction-owned state.

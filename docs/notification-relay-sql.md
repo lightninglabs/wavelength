@@ -108,7 +108,7 @@ flowchart LR
     T --> D[Independent provider worker]
 ```
 
-Jobs, binding generation and checkpoint commit atomically. A capacity failure
+Jobs, binding generation and checkpoint commit atomically. Global pending-job exhaustion
 rolls them all back and sends no ACK. An ambiguous ACK response retains pending
 state. Restart retries that ACK before another Pull. Stale lease owners cannot
 write jobs, advance the checkpoint or clear a newer owner's pending ACK.
@@ -166,3 +166,26 @@ configuration and a case-sensitive opaque provider. They check credential and
 payload substitution, enrollment replay, store-owned monotonic counters and
 rotation without case changes. This proves the extension boundary, not a
 shipped Android or account-authentication product.
+
+## Replay capacity isolation
+
+A device's payment replay quota must not block an aggregated source prefix.
+If its replay budget is full, ingestion still commits one bounded local payment
+candidate in the existing job queue. It advances the source checkpoint with
+that job, so other devices keep moving. Global pending-job exhaustion remains
+real backpressure and rolls back the whole source prefix.
+
+A payment candidate cannot reach the provider until the claim transaction
+reserves its 24-hour replay record. If capacity remains full, the worker delays
+only that unclaimed job for one minute and considers other routes. Existing
+live replay evidence belongs to that pending job/retry: enqueue never creates
+a job for an identity already admitted by an older job. The unique route/scope
+job and transaction boundary make an additional replay-state flag unnecessary.
+
+This preserves replay evidence for admitted identities and presentation changes.
+A deferred candidate has not yet been admitted for presentation. It still has
+the ordinary one-hour/grant expiry and can expire without a banner; it never
+becomes an unbounded second queue. Coalescing keeps only the latest candidate.
+Signed presentation changes drop pending jobs under the existing transaction.
+Protocol wakes retain their separate budget. No device can turn its own replay
+quota into head-of-line blocking for every device on the subscriber mailbox.
