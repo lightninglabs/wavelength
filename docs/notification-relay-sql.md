@@ -61,3 +61,28 @@ takeover. They also cover N+1 during N's send, quiet periods across routes, toke
 rotation/recovery, presentation cutover, transaction rollback, replay quota
 isolation and independent expiry horizons. HTTP/source ingress wiring follows
 in the next slice.
+
+## Publisher source offers and bindings
+
+The publisher configures each producer's fixed endpoint, identity, optional TLS
+certificate and ordinary RPC macaroon. HTTP requests cannot choose those values.
+The relay persists a distinct subscriber key for each producer. Reusing a source
+ID with another producer identity fails instead of transferring that authority.
+
+1. Device enrollment and signed subscription management create an opaque random
+   relay subscription ID. The app-local route remains local.
+2. The relay returns one consent offer per configured source. Each signature
+   binds the producer identity, subscriber key, subscription ID, allowed event
+   classes and expiry. New offers for alert-disabled subscriptions contain no payment consent.
+   Existing producer delegation changes require a new wallet signature.
+3. The app asks its wallet SDK to authorize that exact offer at its configured
+   source. The source returns an opaque feed token.
+4. Signed `bind_feed` management attaches the token to that device's existing
+   subscription and configured source. It cannot claim another device's route.
+
+Tokens are correlation, not authorization. They need not be globally unique.
+Ingress must first look up the event's grant ID as a local subscription, then
+compare its bound token. Rebinding the same token retains generation progress;
+rotating the token starts a new generation stream. Revocation deletes local
+feed bindings with their subscription. This slice does not start a subscriber
+worker or switch the HTTP daemon to SQL yet.

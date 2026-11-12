@@ -88,21 +88,24 @@ type EnrollmentResult struct {
 }
 
 // ManagementPayload is signed in full by an installation's App Attest key.
-// Action is rotate_token, subscribe, revoke_subscription or
-// delete_installation. RouteID is an opaque app-owned wallet/network lookup
-// key, never a URL.
+// Action is rotate_token, subscribe, revoke_subscription or delete_installation
+// and bind_feed. RouteID is an opaque app-owned wallet/network lookup key,
+// never a URL.
 type ManagementPayload struct {
-	Action         string            `json:"action"`
-	DeviceToken    string            `json:"device_token,omitempty"`
-	RouteID        string            `json:"route_id,omitempty"`
-	EnableAlerts   bool              `json:"enable_alerts,omitempty"`
-	Presentation   AlertPresentation `json:"alert_presentation,omitempty"`
-	SubscriptionID string            `json:"subscription_id,omitempty"`
+	Action         string              `json:"action"`
+	FeedBinding    *FeedBindingRequest `json:"feed_binding,omitempty"`
+	DeviceToken    string              `json:"device_token,omitempty"`
+	RouteID        string              `json:"route_id,omitempty"`
+	EnableAlerts   bool                `json:"enable_alerts,omitempty"`
+	Presentation   AlertPresentation   `json:"alert_presentation,omitempty"`
+	SubscriptionID string              `json:"subscription_id,omitempty"`
 }
 
-// ManagementResult returns capabilities only when a subscription is created
-// or renewed. Capabilities must be stored privately and never logged.
+// ManagementResult returns per-source offers on subscription creation or
+// renewal. Legacy capabilities remain only until push API retirement; tokens
+// and capabilities must be stored privately and never logged.
 type ManagementResult struct {
+	FeedOffers      []FeedOffer       `json:"feed_offers,omitempty"`
 	SubscriptionID  string            `json:"subscription_id,omitempty"`
 	WakeCapability  string            `json:"wake_capability,omitempty"`
 	AlertCapability string            `json:"alert_capability,omitempty"`
