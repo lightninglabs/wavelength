@@ -74,7 +74,7 @@ func TestClientVTXOToDescriptorChainDepthZero(t *testing.T) {
 	// path. Round creation supplies the height needed to prove this
 	// 300-block lifetime is too short for the default payment reserve.
 	expiryCfg := DefaultExpiryConfig()
-	expiryCfg.MaxPaymentCLTV = 300
+	expiryCfg.MaxPaymentCLTV = 480
 	require.False(t, expiryCfg.CanReserveMaxPaymentCLTV(desc))
 	require.Equal(t, int32(144), expiryCfg.CalculateRefreshThreshold(desc))
 }

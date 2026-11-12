@@ -94,7 +94,7 @@ application-facing wallet API.
 - `wavewalletdk.Config` convenience scalars are enable-only: zero defers to
   the daemon default rather than forcing zero. A mobile zero that must win
   needs both a pointer field in `mobileConfig` and a case in
-  `mobileStartOptions`. For `max_payment_cltv`, omission keeps the 300-block
+  `mobileStartOptions`. For `max_payment_cltv`, omission keeps the 480-block
   swap default while explicit `0` disables the payment reserve.
 
 ## Deep Docs

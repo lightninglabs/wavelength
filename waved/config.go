@@ -232,10 +232,15 @@ const (
 	DefaultMaxOperatorFeeSat int64 = 1_000_000
 
 	// DefaultMaxPaymentCLTV is the total Lightning payment CLTV reserved by
-	// automatic maintenance in swap-enabled builds. Three hundred blocks
-	// covers high-CLTV merchant invoices plus ordinary routing deltas while
-	// leaving substantial room inside a one-week Ark batch lifetime.
-	DefaultMaxPaymentCLTV int32 = 300
+	// automatic maintenance in swap-enabled builds. Added to a typical
+	// 150 to 186 block exit budget and the 72-block retry buffer, it starts
+	// refresh with roughly 700 to 740 blocks left. That covers a ~390-block
+	// merchant route plus the swap server's claim reserve and refund
+	// headroom. The reserve applies only when the exit budget, retry
+	// buffer, this reserve, and one more retry buffer fit inside the batch
+	// lifetime; otherwise maintenance keeps the ordinary exit-and-retry
+	// floor.
+	DefaultMaxPaymentCLTV int32 = 480
 
 	// RPCTransportGRPC selects native gRPC for daemon-owned outbound RPCs.
 	RPCTransportGRPC = "grpc"

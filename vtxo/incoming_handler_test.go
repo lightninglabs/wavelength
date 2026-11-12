@@ -439,7 +439,7 @@ func TestIncomingVTXOHandlerOwnedScript(t *testing.T) {
 	require.Equal(t, VTXOStatusLive, desc.Status)
 
 	expiryCfg := DefaultExpiryConfig()
-	expiryCfg.MaxPaymentCLTV = 300
+	expiryCfg.MaxPaymentCLTV = 480
 	require.False(t, expiryCfg.CanReserveMaxPaymentCLTV(desc))
 }
 
