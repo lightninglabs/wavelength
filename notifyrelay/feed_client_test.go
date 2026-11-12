@@ -29,6 +29,9 @@ import (
 // feedRPCFixture runs a real TLS producer edge with ordinary RPC admission and
 // independently verified R proof. It contains no wallet runtime registration.
 type feedRPCFixture struct {
+	pull func(context.Context, *pb.PullRequest) (*pb.PullResponse, error)
+	ack  func(context.Context, *pb.AckUpToRequest) (
+		*pb.AckUpToResponse, error)
 	pb.UnimplementedMailboxServiceServer
 	pb.UnimplementedWakeFeedServiceServer
 	source           *feedSource
@@ -102,6 +105,9 @@ func (p *feedRPCFixture) Pull(ctx context.Context, r *pb.PullRequest) (
 		return nil, err
 	}
 
+	if p.pull != nil {
+		return p.pull(ctx, r)
+	}
 	if r.Cursor > p.event.EventSeq {
 		if p.emptyStarted != nil {
 			p.emptyOnce.Do(func() { close(p.emptyStarted) })
@@ -122,6 +128,10 @@ func (p *feedRPCFixture) AckUpTo(ctx context.Context, r *pb.AckUpToRequest) (
 
 	if err := p.proof(ctx, r.MailboxId); err != nil {
 		return nil, err
+	}
+
+	if p.ack != nil {
+		return p.ack(ctx, r)
 	}
 
 	return &pb.AckUpToResponse{Status: &pb.Status{Ok: true}}, nil

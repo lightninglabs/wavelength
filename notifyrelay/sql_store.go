@@ -266,7 +266,10 @@ func (s *SQLStore) applyManagement(ctx context.Context, challenge Challenge,
 			)
 			if errors.Is(err, sql.ErrNoRows) || err == nil &&
 				owned.InstallationID != value.ID {
-				return ErrNotFound
+
+				// Hide ownership and finish the proof/counter
+				// mutation.
+				break
 			}
 			if err != nil {
 				return err
