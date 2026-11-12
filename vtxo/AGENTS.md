@@ -238,7 +238,11 @@ when the local wallet owns the receive script.
   ask and the block subscription are separate delivery paths. The tip only
   classifies: an actor outside `LiveState` ignores it, since there an epoch
   can start a reclaim (`ExpiredState`) or an exit (reserved states), which
-  must not run the moment an actor is spawned.
+  must not run the moment an actor is spawned. In `LiveState` the tip runs
+  the same bounded legacy creation-height repair a block epoch runs, then is
+  applied only when the VTXO has expired at it. A tip inside the refresh or
+  critical window would reserve the coin for an automatic refresh or exit,
+  so that decision waits for the next block.
 - Forfeit transaction is not broadcast until the connector output's round confirms (atomic replacement).
 - Refresh is auto-triggered at configurable height before expiry.
 - `ExpiryConfig.MaxPaymentCLTV` reserves a total Lightning CLTV window above
