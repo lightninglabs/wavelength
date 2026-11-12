@@ -21,6 +21,7 @@ func TestExitBatchJSONContract(t *testing.T) {
 	require.Equal(t, "common-address", request.Destination)
 	raw, err := marshal(&wavewalletdk.ExitBatchResult{
 		Destination: "common-address",
+		ActivityID:  "batch-activity",
 		Results: []wavewalletdk.ExitBatchInputResult{
 			{
 				Outpoint: "a:0",
@@ -36,6 +37,7 @@ func TestExitBatchJSONContract(t *testing.T) {
 	require.NoError(t, err)
 	require.JSONEq(t, `{
         "Destination":"common-address",
+        "ActivityID":"batch-activity",
         "Results":[
             {"Outpoint":"a:0","Outcome":"accepted","Error":""},
             {"Outpoint":"b:1","Outcome":"unknown","Error":"response lost"}
