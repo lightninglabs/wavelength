@@ -12,8 +12,6 @@ on:
       - "main"
 
 permissions:
-  # Required to manage and delete caches.
-  actions: write
   # Default permission for checking out code.
   contents: read
 
@@ -36,7 +34,7 @@ jobs:
   ########################
   commit-message:
     name: Commit Message
-    runs-on: [self-hosted]
+    runs-on: ubuntu-latest
     steps:
       - name: Git checkout
         uses: actions/checkout@v5
@@ -67,7 +65,7 @@ jobs:
   ########################
   static-checks:
     name: Static Checks
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, linux, x64, vm-8cpu]
     steps:
       - name: Git checkout
         uses: actions/checkout@v5
@@ -137,12 +135,15 @@ jobs:
   ########################
   lint:
     name: Lint code
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, linux, x64, vm-8cpu]
     steps:
       - name: git checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      - name: Clean up runner space
+        uses: ./.github/actions/cleanup-space
 
       - name: setup go ${{ env.GO_VERSION }}
         uses: ./.github/actions/setup-go
@@ -152,14 +153,16 @@ jobs:
           key-prefix: unit-test
 
       - name: lint
-        run: GOGC=50 make lint
+        # The linter container writes to the shared Go module cache as root,
+        # so the analyzer tests that follow need the same access.
+        run: sudo env "PATH=$PATH" "GOPATH=$GOPATH" "HOME=$HOME" GOGC=50 make lint
 
   ########################
   # P formal model check
   ########################
   p-model:
     name: P durable mailbox model
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, linux, x64, vm-8cpu]
     steps:
       - name: Git checkout
         uses: actions/checkout@v5
@@ -204,7 +207,7 @@ jobs:
   ###########################
   lean-model:
     name: Lean forfeit signing proof
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, linux, x64, vm-8cpu]
     steps:
       - name: Git checkout
         uses: actions/checkout@v5
@@ -233,7 +236,7 @@ jobs:
   ########################
   tla-model:
     name: TLA+ durable handoff model
-    runs-on: [self-hosted]
+    runs-on: ubuntu-latest
     steps:
       - name: Git checkout
         uses: actions/checkout@v5
@@ -252,7 +255,7 @@ jobs:
   ########################
   cross-compile:
     name: Cross compilation
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, linux, x64, vm-8cpu]
     strategy:
       # Keep sibling failures visible to the infrastructure retry classifier.
       fail-fast: false
@@ -274,6 +277,9 @@ jobs:
       - name: Git checkout
         uses: actions/checkout@v5
 
+      - name: Clean up runner space
+        uses: ./.github/actions/cleanup-space
+
       - name: Setup go ${{ env.GO_VERSION }}
         uses: ./.github/actions/setup-go
         with:
@@ -289,7 +295,7 @@ jobs:
   ########################
   unit-test:
     name: Run unit tests
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, linux, x64, vm-8cpu]
     strategy:
       # Allow other tests in the matrix to continue if one fails.
       fail-fast: false
@@ -306,6 +312,9 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      - name: Clean up runner space
+        uses: ./.github/actions/cleanup-space
 
       - name: Fetch and rebase on ${{ github.base_ref }}
         if: github.event_name == 'pull_request'
@@ -369,7 +378,7 @@ jobs:
   ########################
   systest:
     name: Run system tests
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, linux, x64, vm-8cpu]
     strategy:
       # Allow other tests in the matrix to continue if one fails.
       fail-fast: false
@@ -383,6 +392,9 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      - name: Clean up runner space
+        uses: ./.github/actions/cleanup-space
 
       - name: Fetch and rebase on ${{ github.base_ref }}
         if: github.event_name == 'pull_request'

@@ -167,14 +167,19 @@ func (k *testBlockChainKit) GetBlockHash(context.Context, int64) (
 // newTestBlockNotifier builds the real notifier over a controllable RPC. Its
 // reconnect backoff is shortened so reconnect tests run quickly, and its queues
 // are shrunk so overflow tests stay small.
-func newTestBlockNotifier(t *testing.T) (*LndClientChainNotifier,
-	*testBlockClient, *testBlockChainKit) {
+func newTestBlockNotifier(t *testing.T, onFatal ...func(error)) (
+	*LndClientChainNotifier, *testBlockClient, *testBlockChainKit) {
 
 	t.Helper()
 
+	var fatalHook fn.Option[func(error)]
+	if len(onFatal) != 0 && onFatal[0] != nil {
+		fatalHook = fn.Some(onFatal[0])
+	}
 	client := &testBlockClient{opened: make(chan *testBlockStream, 1000)}
 	kit := &testBlockChainKit{}
 	n := NewLndClientChainNotifier(LndClientChainNotifierConfig{
+		OnFatal: fatalHook,
 		LND: &lndclient.LndServices{
 			ChainNotifier: &testBlockNotifier{client: client},
 			ChainKit:      kit,
@@ -994,4 +999,235 @@ func TestBlockEpochHubActorOverflow(t *testing.T) {
 			require.Zero(t, client.active.Load())
 		})
 	}
+}
+
+// TestBlockEpochHubFatalRecovery proves raw upstream failures reach the fatal
+// hook even though the hub keeps subscriber queues open during reconnects.
+// Replaying the same tip cannot hide failure; hookless notifiers still heal.
+func TestBlockEpochHubFatalRecovery(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		replay            bool
+		registrationError bool
+		hookless          bool
+	}{
+		{
+			name: "closed streams",
+		},
+		{
+			name:   "replayed tip",
+			replay: true,
+		},
+		{
+			name:              "registration errors",
+			registrationError: true,
+		},
+		{
+			name:     "hookless retries",
+			hookless: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			fatal := make(chan error, 2)
+			var hook func(error)
+			if !test.hookless {
+				hook = func(err error) {
+					fatal <- err
+				}
+			}
+			n, client, _ := newTestBlockNotifier(t, hook)
+			var seconds atomic.Int64
+			seconds.Store(100)
+			n.epochs.now = func() time.Time {
+				return time.Unix(seconds.Load(), 0)
+			}
+			n.epochs.fatalTimeout = time.Minute
+
+			open := n.epochs.open
+			n.epochs.open = func(ctx context.Context,
+				cursor *chainntnfs.BlockEpoch) (
+				*blockEpochStream, error) {
+
+				if client.calls.Load() != 0 {
+					seconds.Add(30)
+				}
+
+				return open(ctx, cursor)
+			}
+
+			event, err := n.RegisterBlockEpochNtfn(nil)
+			require.NoError(t, err)
+			defer event.Cancel()
+			stream := nextTestBlockStream(t, client)
+			if test.replay {
+				sendTestBlock(stream, 100, 1)
+				recvTestEpoch(t, event, 100, 1)
+			}
+			if test.registrationError {
+				client.fail.Store(1000)
+			}
+			lost := errors.New("upstream lost")
+			stream.results <- blockStreamResult{err: lost}
+
+			if !test.registrationError {
+				// Each reconnect spends 30 seconds while
+				// closed. The three streams themselves close
+				// without open time.
+				for range 2 {
+					second := nextTestBlockStream(t, client)
+					if test.replay {
+						sendTestBlock(second, 100, 1)
+						recvTestEpoch(t, event, 100, 1)
+					}
+					second.results <- blockStreamResult{
+						err: lost,
+					}
+				}
+			}
+
+			if test.hookless {
+				third := nextTestBlockStream(t, client)
+				sendTestBlock(third, 101, 2)
+				recvTestEpoch(t, event, 101, 2)
+
+				return
+			}
+			select {
+			case err := <-fatal:
+				if test.registrationError {
+					require.ErrorContains(
+						t, err, "registration failed",
+					)
+				} else {
+					require.ErrorIs(t, err, lost)
+				}
+
+			case <-time.After(epochTestTimeout):
+				t.Fatal("shared upstream did not escalate")
+			}
+			require.NoError(t, n.Stop())
+			_, ok := <-event.Epochs
+			require.False(t, ok)
+			select {
+			case err := <-fatal:
+				t.Fatalf("duplicate escalation: %v", err)
+
+			default:
+			}
+		})
+	}
+}
+
+// TestBlockEpochHubFatalBudgetResets proves a replacement block, including a
+// same-height reorg, resets the outage budget. Duplicate tips preserve spent
+// retry time while open time is paused. Healthy idle streams survive;
+// a later sustained failure still escalates.
+func TestBlockEpochHubFatalBudgetResets(t *testing.T) {
+	for _, progress := range []bool{false, true} {
+		name := "idle after replay"
+		if progress {
+			name = "reorg resets budget"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fatal := make(chan error, 1)
+			n, client, _ := newTestBlockNotifier(
+				t,
+				func(err error) { fatal <- err },
+			)
+			var seconds atomic.Int64
+			seconds.Store(100)
+			n.epochs.now = func() time.Time {
+				return time.Unix(seconds.Load(), 0)
+			}
+			n.epochs.fatalTimeout = time.Minute
+			open := n.epochs.open
+			n.epochs.open = func(ctx context.Context,
+				cursor *chainntnfs.BlockEpoch) (
+				*blockEpochStream, error) {
+
+				if client.calls.Load() != 0 {
+					seconds.Add(30)
+				}
+
+				return open(ctx, cursor)
+			}
+
+			event, err := n.RegisterBlockEpochNtfn(nil)
+			require.NoError(t, err)
+			defer event.Cancel()
+			first := nextTestBlockStream(t, client)
+			sendTestBlock(first, 100, 1)
+			recvTestEpoch(t, event, 100, 1)
+			first.results <- blockStreamResult{
+				err: errors.New("first outage"),
+			}
+			second := nextTestBlockStream(t, client)
+			hash := byte(1)
+			if progress {
+				hash = 2
+			}
+			sendTestBlock(second, 100, hash)
+			recvTestEpoch(t, event, 100, hash)
+
+			seconds.Store(1000)
+			second.results <- blockStreamResult{
+				err: errors.New("second outage"),
+			}
+			third := nextTestBlockStream(t, client)
+			third.results <- blockStreamResult{
+				err: errors.New("still failing"),
+			}
+			if progress {
+				fourth := nextTestBlockStream(t, client)
+				fourth.results <- blockStreamResult{
+					err: errors.New("still failing"),
+				}
+			}
+			select {
+			case err := <-fatal:
+				require.ErrorContains(t, err, "still failing")
+
+			case <-time.After(epochTestTimeout):
+				t.Fatal("new outage did not exhaust its budget")
+			}
+		})
+	}
+
+}
+
+// TestBlockEpochHubCancellationBeforeFatal proves shutdown takes precedence
+// when cancellation coincides with the first observed upstream failure.
+func TestBlockEpochHubCancellationBeforeFatal(t *testing.T) {
+	t.Parallel()
+
+	var fatal atomic.Bool
+	n, client, _ := newTestBlockNotifier(
+		t,
+		func(error) { fatal.Store(true) },
+	)
+	n.epochs.fatalTimeout = time.Nanosecond
+	n.epochs.now = func() time.Time {
+		n.epochs.cancel()
+
+		return time.Now()
+	}
+	event, err := n.RegisterBlockEpochNtfn(nil)
+	require.NoError(t, err)
+	stream := nextTestBlockStream(t, client)
+	stream.results <- blockStreamResult{
+		err: errors.New("closed at shutdown"),
+	}
+	select {
+	case _, ok := <-event.Epochs:
+		require.False(t, ok)
+
+	case <-time.After(epochTestTimeout):
+		t.Fatal("cancelled hub did not release subscribers")
+	}
+	require.NoError(t, n.Stop())
+	require.False(t, fatal.Load())
 }

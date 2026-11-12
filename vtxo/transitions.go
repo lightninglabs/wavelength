@@ -797,6 +797,9 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 	env *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	switch evt := event.(type) {
+	case *ForfeitConfirmedEvent:
+		return recoveredForfeitConfirmation(ctx, s.VTXO, evt)
+
 	case *CohortRefreshEvent:
 		// Another same-block leader may have already moved this VTXO
 		// into automatic PendingForfeit and queued its own manager
@@ -807,8 +810,8 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 			s.RequestedAtHeight != evt.Height ||
 			evt.BatchExpiry <= 0 ||
 			s.VTXO.BatchExpiry != evt.BatchExpiry {
-			return nil, fmt.Errorf("pending_forfeit: automatic " +
-				"cohort adoption does not own reservation")
+			return nil, fmt.Errorf("pending_forfeit: %w",
+				ErrCohortReservationNotOwned)
 		}
 
 		return &VTXOStateTransition{
@@ -1553,6 +1556,9 @@ func (s *UnilateralExitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 	_ *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	switch evt := event.(type) {
+	case *ForfeitConfirmedEvent:
+		return recoveredForfeitConfirmation(ctx, s.VTXO, evt)
+
 	case *ForceUnrollEvent:
 		// A ForceUnrollEvent on an already-exiting VTXO is an
 		// idempotent re-admission, not a no-op: the manager drives one
@@ -1720,6 +1726,9 @@ func (s *ExpiredState) ProcessEvent(ctx context.Context, event VTXOEvent,
 	env *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	switch evt := event.(type) {
+	case *ForfeitConfirmedEvent:
+		return recoveredForfeitConfirmation(ctx, s.VTXO, evt)
+
 	case *BlockEpochEvent:
 		s.ObservedHeight = evt.Height
 
@@ -1879,4 +1888,18 @@ func (s *ExpiredState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		// transitioning, so the actor survives.
 		return nil, fmt.Errorf("expired: unexpected event: %T", event)
 	}
+}
+
+// recoveredForfeitConfirmation accepts a late consuming-round confirmation
+// after exit recovery moved the input out of Forfeiting. The input remains
+// consumed even if an expired actor reserved another refresh before the
+// confirmation arrived. Reuse ordinary terminal persistence and cleanup.
+func recoveredForfeitConfirmation(ctx context.Context, desc *Descriptor,
+	event *ForfeitConfirmedEvent) (*VTXOStateTransition, error) {
+
+	forfeiting := &ForfeitingState{
+		VTXO: desc, NewRoundID: desc.ForfeitRoundID,
+	}
+
+	return forfeiting.ProcessEvent(ctx, event, nil)
 }

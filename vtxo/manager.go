@@ -196,6 +196,13 @@ type ManagerConfig struct {
 	// releasable.
 	HasForfeitRoundCheckpoint ForfeitRoundCheckpointLookup
 
+	// LookupForfeitSettlement reads the local consuming round bound to a
+	// persisted VTXO. A confirmed settlement retires that input before
+	// startup or exit recovery can make it reclaimable again. Nil retains
+	// legacy behavior for callers without round persistence.
+	LookupForfeitSettlement func(context.Context, string) (
+		fn.Option[Settlement], error)
+
 	// ReservationStore is the durable spending-reservation index. When set,
 	// the manager runs a startup sweep that releases orphaned Spending
 	// VTXOs (those with no reservation row) and deletes reservations as
@@ -551,6 +558,14 @@ func (m *Manager) Start(ctx context.Context,
 	}
 
 	for _, vtxo := range vtxos {
+		consumed, err := m.reconcileConsumedVTXO(ctx, vtxo)
+		if err != nil {
+			return fmt.Errorf("reconcile consumed vtxo: %w", err)
+		}
+		if consumed {
+			continue
+		}
+
 		ref, err := m.spawnVTXOActor(ctx, vtxo)
 		if err != nil {
 			m.logger(ctx).ErrorS(
@@ -1304,6 +1319,26 @@ func (m *Manager) handleExitOutcome(ctx context.Context,
 		slog.String("reason", req.Reason),
 	)
 
+	if m.cfg.LookupForfeitSettlement != nil &&
+		!req.ExitPolicyKind.Valid() &&
+		(req.Outcome == ExitOutcomeRecoverable ||
+			req.Outcome == ExitOutcomeConflicted) {
+
+		desc, err := m.cfg.Store.GetVTXO(ctx, req.Outpoint)
+		if err != nil {
+			return fn.Err[ManagerResp](err)
+		}
+		if desc != nil && desc.Status == VTXOStatusUnilateralExit {
+			consumed, err := m.reconcileConsumedVTXO(ctx, desc)
+			if err != nil {
+				return fn.Err[ManagerResp](err)
+			}
+			if consumed {
+				return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+			}
+		}
+	}
+
 	switch req.Outcome {
 	case ExitOutcomeRecoverable:
 		return m.recoverExitedVTXO(ctx, req)
@@ -1404,9 +1439,17 @@ func (m *Manager) recoverExitedVTXO(ctx context.Context,
 	// and a failed status write is re-converged by boot reconciliation (the
 	// VTXO stays in unilateral-exit on disk, so the next boot re-drives
 	// recovery).
+	//
+	// The actor classifies its expiry only once our write is done. An
+	// expired coin would otherwise persist Expired before we persist
+	// Live, and the store would count its value as spendable while the
+	// actor, already past Live, never writes again. A failed write leaves
+	// nothing to overwrite, so the ask goes out either way.
 	descriptor.Status = VTXOStatusLive
 
-	ref, err := m.spawnVTXOActor(ctx, descriptor)
+	ref, requestStartTip, err := m.spawnUnclassifiedVTXOActor(
+		ctx, descriptor,
+	)
 	if err != nil {
 		return fn.Err[ManagerResp](
 			fmt.Errorf("respawn recovered vtxo actor: %w", err),
@@ -1414,9 +1457,9 @@ func (m *Manager) recoverExitedVTXO(ctx context.Context,
 	}
 	m.actors[req.Outpoint] = ref
 
-	if err := m.cfg.Store.UpdateVTXOStatus(
-		ctx, req.Outpoint, VTXOStatusLive,
-	); err != nil {
+	err = m.cfg.Store.UpdateVTXOStatus(ctx, req.Outpoint, VTXOStatusLive)
+	requestStartTip(ctx)
+	if err != nil {
 		return fn.Err[ManagerResp](
 			fmt.Errorf("restore vtxo status: %w", err),
 		)
@@ -1545,9 +1588,15 @@ func (m *Manager) conflictExitedVTXO(ctx context.Context,
 	// A failed status write is re-converged by boot reconciliation (the
 	// VTXO stays in unilateral-exit on disk, so the next boot re-drives
 	// this).
+	//
+	// As in recoverExitedVTXO, the actor sees the current tip only once
+	// our write is done, so a reclaim it starts on that tip cannot have
+	// its status overwritten with Expired.
 	descriptor.Status = VTXOStatusExpired
 
-	ref, err := m.spawnVTXOActor(ctx, descriptor)
+	ref, requestStartTip, err := m.spawnUnclassifiedVTXOActor(
+		ctx, descriptor,
+	)
 	if err != nil {
 		return fn.Err[ManagerResp](
 			fmt.Errorf("respawn conflicted vtxo actor: %w", err),
@@ -1555,9 +1604,11 @@ func (m *Manager) conflictExitedVTXO(ctx context.Context,
 	}
 	m.actors[req.Outpoint] = ref
 
-	if err := m.cfg.Store.UpdateVTXOStatus(
+	err = m.cfg.Store.UpdateVTXOStatus(
 		ctx, req.Outpoint, VTXOStatusExpired,
-	); err != nil {
+	)
+	requestStartTip(ctx)
+	if err != nil {
 		return fn.Err[ManagerResp](
 			fmt.Errorf("persist expired status: %w", err),
 		)
@@ -1850,6 +1901,7 @@ func (m *Manager) coordinateAutoRefreshCohort(ctx context.Context,
 
 	// The leader consumes one slot. Overflow is deliberately left Live so
 	// later threshold ticks can form another bounded cohort.
+	declinedReservations := 0
 	remaining := maxAutoRefreshCohortSize - 1
 	members := make([]autoRefreshCohortMember, 0, remaining)
 	for _, candidate := range eligible {
@@ -1873,18 +1925,24 @@ func (m *Manager) coordinateAutoRefreshCohort(ctx context.Context,
 			},
 		).Unpack()
 		if err != nil {
-			m.logger(ctx).WarnS(ctx,
-				"Automatic refresh cohort member declined",
-				err,
-				slog.String(
-					"outpoint",
-					descriptor.Outpoint.String(),
-				),
-				slog.String(
-					"leader_outpoint",
-					req.VTXOOutpoint.String(),
-				),
-			)
+			if errors.Is(err, ErrCohortReservationNotOwned) {
+				declinedReservations++
+			} else {
+				m.logger(ctx).WarnS(
+					ctx,
+					"Automatic refresh cohort member "+
+						"declined",
+					err,
+					slog.String(
+						"outpoint",
+						descriptor.Outpoint.String(),
+					),
+					slog.String(
+						"leader_outpoint",
+						req.VTXOOutpoint.String(),
+					),
+				)
+			}
 			m.releaseAutoRefreshCohortMember(
 				ctx, ref, descriptor.Outpoint, req.VTXOOutpoint,
 				generation,
@@ -1940,6 +1998,17 @@ func (m *Manager) coordinateAutoRefreshCohort(ctx context.Context,
 		slog.Int("cohort_limit", maxAutoRefreshCohortSize),
 		slog.Bool("deadline_exhausted", cohortCtx.Err() != nil),
 	)
+
+	if declinedReservations > 0 {
+		m.logger(ctx).DebugS(
+			ctx,
+			"Automatic refresh cohort skipped reserved candidates",
+			slog.Int("skipped", declinedReservations),
+			slog.String(
+				"leader_outpoint", req.VTXOOutpoint.String(),
+			),
+		)
+	}
 
 	return members
 }
@@ -2076,10 +2145,30 @@ func (m *Manager) respawnActorFromStore(ctx context.Context,
 }
 
 // spawnVTXOActor creates and starts the per-outpoint actor with the manager's
-// shared expiry, funding-assessment, round, wallet, and persistence seams. A
-// start failure removes the actor registration before returning.
+// shared expiry, funding-assessment, round, wallet, and persistence seams,
+// then has it classify its expiry at the current tip. A start failure
+// removes the actor registration before returning.
 func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 	VTXOActorRef, error) {
+
+	ref, requestStartTip, err := m.spawnUnclassifiedVTXOActor(ctx, vtxo)
+	if err != nil {
+		return ref, err
+	}
+
+	requestStartTip(ctx)
+
+	return ref, nil
+}
+
+// spawnUnclassifiedVTXOActor is spawnVTXOActor without the current tip ask,
+// which it returns for the caller to send instead. A caller that persists
+// the VTXO's status after spawning its actor must send the ask only once
+// that write is done: the answer can make the actor persist a status of its
+// own, and a later manager write would overwrite it, leaving the store
+// disagreeing with an actor that will not write again.
+func (m *Manager) spawnUnclassifiedVTXOActor(ctx context.Context,
+	vtxo *Descriptor) (VTXOActorRef, func(context.Context), error) {
 
 	if !m.cfg.ExpiryConfig.CanReserveMaxPaymentCLTV(vtxo) {
 		logger := m.logger(ctx)
@@ -2121,6 +2210,14 @@ func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 	}
 
 	vtxoActor := NewVTXOActor(ctx, actorCfg)
+
+	// A terminal actor has no expiry left to classify. Read its state
+	// before spawning, while the actor's goroutine cannot touch it yet.
+	requestStartTip := vtxoActor.requestStartTip
+	if vtxoActor.state.IsTerminal() {
+		requestStartTip = func(context.Context) {}
+	}
+
 	ref := serviceKey.Spawn(m.cfg.ActorSystem, actorID, vtxoActor)
 
 	// Start the actor to subscribe to block epochs. ActorRef embeds
@@ -2130,10 +2227,10 @@ func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 		// system.
 		m.cfg.ActorSystem.StopAndRemoveActor(actorID)
 
-		return ref, fmt.Errorf("start vtxo actor: %w", err)
+		return ref, nil, fmt.Errorf("start vtxo actor: %w", err)
 	}
 
-	return ref, nil
+	return ref, requestStartTip, nil
 }
 
 // =============================================================================
@@ -3777,4 +3874,43 @@ func clientVTXOToDescriptor(cv *round.ClientVTXO,
 		CreatedHeight:  msg.CreatedHeight,
 		Status:         VTXOStatusLive,
 	})
+}
+
+// reconcileConsumedVTXO retires an input using its durable binding to a
+// confirmed local consuming round. It never infers consumption from an exit
+// conflict or a remote rejection. Call before spawning recovery actors, or
+// for an actor still in UnilateralExit before applying its recovery outcome.
+func (m *Manager) reconcileConsumedVTXO(ctx context.Context, desc *Descriptor) (
+	bool, error) {
+
+	lookup := m.cfg.LookupForfeitSettlement
+	if lookup == nil || desc.ForfeitRoundID == "" {
+		return false, nil
+	}
+	settlement, err := lookup(ctx, desc.ForfeitRoundID)
+	if err != nil {
+		return false, fmt.Errorf("lookup consuming round: %w", err)
+	}
+	if settlement.IsNone() {
+		return false, nil
+	}
+	proof := settlement.UnsafeFromSome()
+	if proof.Height <= 0 || proof.TxID == (chainhash.Hash{}) {
+		return false, nil
+	}
+	if ref, ok := m.actors[desc.Outpoint]; ok {
+		_, err := m.askVTXOActor(ctx, ref, &ForfeitConfirmedEvent{
+			CommitmentTxID: proof.TxID,
+			BlockHeight:    proof.Height,
+		}).Unpack()
+
+		return err == nil, err
+	}
+	if err := m.cfg.Store.UpdateVTXOStatusReleasingReservation(
+		ctx, desc.Outpoint, VTXOStatusForfeited,
+	); err != nil {
+		return false, fmt.Errorf("persist consumed vtxo: %w", err)
+	}
+
+	return true, nil
 }

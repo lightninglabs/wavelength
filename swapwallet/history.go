@@ -1207,7 +1207,10 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 		if amount, ok := oorProjection.displayAmountByEntryID[entryID]; ok {
 			entry.AmountSat = amount
 		}
-		if link, ok := creditTopupLinkForRow(t, creditTopups); ok {
+		if link, ok := creditTopupLinkForRow(
+			t, -entry.GetAmountSat(), creditTopups,
+		); ok {
+
 			decorateCreditTopupEntry(entry, link)
 		}
 
@@ -1714,6 +1717,7 @@ func (h *history) collectCreditTopupLinks(
 // creditTopupLinkForRow resolves the credit pay operation funded by one
 // ledger OOR-send row, when one exists.
 func creditTopupLinkForRow(row *waverpc.TransactionHistoryEntry,
+	netOutflowSat int64,
 	links map[string]creditTopupLink) (creditTopupLink, bool) {
 
 	if len(links) == 0 {
@@ -1730,9 +1734,10 @@ func creditTopupLinkForRow(row *waverpc.TransactionHistoryEntry,
 		return creditTopupLink{}, false
 	}
 
-	// The recorded top-up amount must match the row's outflow exactly; a
-	// mismatch means the session id resolved to an unrelated transfer.
-	if link.topupSat > 0 && row.GetAmountSat() != link.topupSat {
+	// Match the wallet-facing outflow after self-change, not the gross
+	// input spent by the ledger row. A mismatch still rejects unrelated
+	// transfers even when their session id resolves to a credit operation.
+	if link.topupSat > 0 && netOutflowSat != link.topupSat {
 		return creditTopupLink{}, false
 	}
 

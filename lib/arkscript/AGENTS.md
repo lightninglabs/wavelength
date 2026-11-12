@@ -60,7 +60,10 @@ validated invariants.
 - `ComposedBoardingScript` — Combines a boarding policy with a disclosed asset
   commitment leaf hash to reconstruct the deposit script and Taproot root.
 - `AnchorOutput` / `AnchorPkScript` — `AnchorPkScript` is the standard P2A keyless pkScript; `AnchorOutput` returns a zero-value `wire.TxOut` carrying it for CPFP fee bumping.
-- `EncodedLeaf` / `EncodeTapTree` / `DecodeTapTree` — TLV-based tap tree serialization for PSBT sidecars compatible with `waddrmgr` format.
+- `EncodedLeaf` / `EncodeTapTree` / `DecodeTapTree` — Ark-specific counted
+  compact-size leaf encoding for PSBT sidecars. This is distinct from the
+  checkpoint TLV format and BIP-371. Decode caps leaf metadata at 256 leaves
+  and script allocations at the bytes remaining in the shared input.
 - `EncodeStandardVTXOArtifacts(ownerKey, operatorKey, exitDelay)` — Convenience
   helper returning both the encoded policy template bytes and the canonical P2TR
   pkScript for the standard VTXO shape. Use `tree.NewVTXODescriptor` when the

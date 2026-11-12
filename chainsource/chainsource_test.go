@@ -50,6 +50,9 @@ type reconnectBlockBackend struct {
 	*mockBackend
 
 	registrations chan *blockEpochRegistration
+
+	// beforeRegister lets tests advance retry time before a stream opens.
+	beforeRegister func()
 }
 
 // stoppedBlockNotifyRef models an actor that has already terminated.
@@ -97,8 +100,14 @@ func newReconnectBlockBackend() *reconnectBlockBackend {
 	}
 }
 
+// RegisterBlocks opens one independent controllable stream after the optional
+// test clock advances. The registration owns cancellation.
 func (m *reconnectBlockBackend) RegisterBlocks(ctx context.Context) (
 	*BlockRegistration, error) {
+
+	if m.beforeRegister != nil {
+		m.beforeRegister()
+	}
 
 	reg := &blockEpochRegistration{
 		epochs: make(chan *BlockEpoch, 10),
@@ -1963,4 +1972,402 @@ func TestConfActorIncludeBlock(t *testing.T) {
 			require.NotNil(t, event.Tx)
 		})
 	}
+}
+
+// deadStreamBackend hands out block registrations whose epoch stream is already
+// closed, modelling a backend that can never sustain a subscription (e.g. a
+// chain notifier connection stuck after an LND restart). Every reconnect
+// attempt therefore fails immediately.
+type deadStreamBackend struct {
+	*mockBackend
+
+	// reconnectErr optionally makes every registration after the initial
+	// closed stream fail, rather than returning another closed stream.
+	reconnectErr  error
+	registrations int
+
+	// replay models notifiers that emit their cached tip before closing.
+	replay *BlockEpoch
+}
+
+// RegisterBlocks returns a closed stream initially, then closed streams or
+// the configured registration error on retries.
+func (b *deadStreamBackend) RegisterBlocks(ctx context.Context) (
+	*BlockRegistration, error) {
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	b.registrations++
+	if b.registrations > 1 && b.reconnectErr != nil {
+		return nil, b.reconnectErr
+	}
+
+	epochs := make(chan *BlockEpoch, 1)
+	if b.replay != nil {
+		epoch := *b.replay
+		epochs <- &epoch
+	}
+	close(epochs)
+
+	return &BlockRegistration{
+		Epochs: epochs,
+		Cancel: func() {},
+	}, nil
+}
+
+// steppedClock advances by a fixed step on every read. Only the actor's monitor
+// goroutine reads it, so no synchronization is needed; it lets the fatal
+// reconnect timeout be exercised without real waits.
+type steppedClock struct {
+	cur  time.Time
+	step time.Duration
+}
+
+// now advances the clock and returns the new time.
+func (c *steppedClock) now() time.Time {
+	c.cur = c.cur.Add(c.step)
+
+	return c.cur
+}
+
+// TestBlockEpochActorEscalatesWhenBackendStaysDown verifies that a subscription
+// which cannot be re-established within the fatal timeout stops retrying
+// forever and escalates through OnFatal, so the daemon can restart with a
+// fresh backend connection instead of spinning silently.
+func TestBlockEpochActorEscalatesWhenBackendStaysDown(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		reconnectErr error
+		replay       bool
+	}{
+		{
+			name: "closed streams",
+		},
+		{
+			name:   "replayed tip",
+			replay: true,
+		},
+		{
+			name:         "registration errors",
+			reconnectErr: errors.New("notifier unavailable"),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			reconnectErr := test.reconnectErr
+			backend := &deadStreamBackend{
+				mockBackend:  newMockBackend(),
+				reconnectErr: reconnectErr,
+			}
+			if test.replay {
+				backend.replay = &BlockEpoch{
+					Height: 100,
+					Hash: chainhash.Hash{
+						1,
+					},
+				}
+			}
+			clock := &steppedClock{
+				cur:  time.Unix(0, 0),
+				step: 30 * time.Second,
+			}
+
+			fatalCh := make(chan error, 2)
+			var calls atomic.Int32
+			epochActor := NewBlockEpochActor(BlockEpochConfig{
+				Backend:               backend,
+				ReconnectBackoff:      time.Millisecond,
+				MaxReconnectBackoff:   time.Millisecond,
+				FatalReconnectTimeout: 90 * time.Second,
+				Now:                   clock.now,
+				OnFatal: fn.Some(func(err error) {
+					calls.Add(1)
+					select {
+					case fatalCh <- err:
+					default:
+					}
+				}),
+			})
+			defer epochActor.Stop()
+
+			notifier := actor.NewChannelTellOnlyRef[BlockEpoch](
+				"test-escalate-notify", 10,
+			)
+			result := epochActor.Receive(
+				t.Context(), &SubscribeBlocksRequest{
+					CallerID: "test-epoch-escalate",
+					NotifyActor: fn.Some(
+						actor.TellOnlyRef[BlockEpoch](
+							notifier,
+						),
+					),
+				},
+			)
+			require.True(t, result.IsOk())
+
+			select {
+			case err := <-fatalCh:
+				require.ErrorContains(
+					t, err, "block epoch subscription "+
+						"unrecoverable",
+				)
+				if reconnectErr != nil {
+					require.ErrorIs(t, err, reconnectErr)
+				} else {
+					require.ErrorIs(
+						t, err,
+						errBlockEpochUnrecoverable,
+					)
+				}
+
+			case <-time.After(5 * time.Second):
+				t.Fatal(
+					"expected fatal escalation when " +
+						"backend stays down",
+				)
+			}
+			epochActor.wg.Wait()
+			require.EqualValues(t, 1, calls.Load())
+			require.GreaterOrEqual(t, backend.registrations, 2)
+			require.LessOrEqual(t, backend.registrations, 4)
+
+		})
+	}
+
+}
+
+// countingDeadStreamBackend is a deadStreamBackend that counts reconnect
+// attempts so a test can assert the monitor keeps retrying.
+type countingDeadStreamBackend struct {
+	*deadStreamBackend
+
+	registerCount atomic.Int64
+}
+
+// RegisterBlocks counts the attempt and delegates to the dead-stream backend.
+func (b *countingDeadStreamBackend) RegisterBlocks(ctx context.Context) (
+	*BlockRegistration, error) {
+
+	b.registerCount.Add(1)
+
+	return b.deadStreamBackend.RegisterBlocks(ctx)
+}
+
+// TestBlockEpochActorRetriesWithoutOnFatal verifies that, with no OnFatal hook
+// installed, a subscription that stays down past the fatal timeout keeps
+// retrying instead of silently killing itself. Bounded escalation is opt-in via
+// OnFatal; hookless callers keep the original unbounded-retry contract.
+func TestBlockEpochActorRetriesWithoutOnFatal(t *testing.T) {
+	t.Parallel()
+
+	backend := &countingDeadStreamBackend{
+		deadStreamBackend: &deadStreamBackend{
+			mockBackend: newMockBackend(),
+		},
+	}
+	clock := &steppedClock{cur: time.Unix(0, 0), step: time.Minute}
+
+	epochActor := NewBlockEpochActor(BlockEpochConfig{
+		Backend:               backend,
+		ReconnectBackoff:      time.Millisecond,
+		MaxReconnectBackoff:   time.Millisecond,
+		FatalReconnectTimeout: 90 * time.Second,
+		Now:                   clock.now,
+		// OnFatal deliberately unset: the actor must keep retrying.
+	})
+	defer epochActor.Stop()
+
+	notifier := actor.NewChannelTellOnlyRef[BlockEpoch](
+		"test-noescalate-notify", 10,
+	)
+	result := epochActor.Receive(t.Context(), &SubscribeBlocksRequest{
+		CallerID: "test-epoch-noescalate",
+		NotifyActor: fn.Some(
+			actor.TellOnlyRef[BlockEpoch](notifier),
+		),
+	})
+	require.True(t, result.IsOk())
+
+	// The clock leaps a minute per read, so the fatal budget is exceeded
+	// almost immediately. Without OnFatal the monitor must keep
+	// reconnecting rather than exiting, so the attempt count climbs well
+	// past the point where an escalating actor would have stopped (~1
+	// attempt).
+	require.Eventually(t, func() bool {
+		return backend.registerCount.Load() > 50
+	}, 5*time.Second, 5*time.Millisecond,
+		"monitor should keep retrying when no OnFatal hook is set")
+}
+
+// TestBlockEpochFatalTimeoutJitter verifies the effective fatal timeout: an
+// explicit timeout with no jitter stays exact (so escalation tests are
+// deterministic), while a configured jitter adds a bounded, rand-driven pad on
+// top of the base.
+func TestBlockEpochFatalTimeoutJitter(t *testing.T) {
+	t.Parallel()
+
+	// An explicit timeout with no jitter configured is exact.
+	exact := NewBlockEpochActor(BlockEpochConfig{
+		FatalReconnectTimeout: 90 * time.Second,
+	})
+	require.Equal(
+		t, 90*time.Second, exact.fatalReconnectTimeout(),
+	)
+
+	// A configured jitter adds rand()*jitter to the base; the injected
+	// rand source makes it deterministic.
+	jittered := NewBlockEpochActor(BlockEpochConfig{
+		FatalReconnectTimeout: time.Minute,
+		FatalReconnectJitter:  30 * time.Second,
+		Rand:                  func() float64 { return 0.5 },
+	})
+	require.Equal(
+		t, time.Minute+15*time.Second, jittered.fatalReconnectTimeout(),
+	)
+
+	// The default-timeout path opts into jitter automatically; with a zero
+	// rand fraction the effective budget is exactly the default.
+	def := NewBlockEpochActor(BlockEpochConfig{
+		Rand: func() float64 { return 0 },
+	})
+	require.Equal(
+		t, DefaultBlockEpochFatalTimeout, def.fatalReconnectTimeout(),
+	)
+}
+
+// TestBlockEpochActorCancellationBeforeEscalation proves cancellation wins
+// when an expired outage returns to the reconnect loop. The injected clock
+// cancels at the first observed loss, so this needs no timing race.
+func TestBlockEpochActorCancellationBeforeEscalation(t *testing.T) {
+	t.Parallel()
+
+	backend := &deadStreamBackend{mockBackend: newMockBackend()}
+	var fatal atomic.Bool
+	clock := &steppedClock{cur: time.Unix(100, 0), step: time.Hour}
+	var epochActor *BlockEpochActor
+	epochActor = NewBlockEpochActor(BlockEpochConfig{
+		Backend:               backend,
+		FatalReconnectTimeout: time.Nanosecond,
+		Now: func() time.Time {
+			epochActor.cancel()
+
+			return clock.now()
+		},
+		OnFatal: fn.Some(func(error) { fatal.Store(true) }),
+	})
+	result := epochActor.Receive(t.Context(), &SubscribeBlocksRequest{
+		CallerID: "cancel-before-escalation",
+	})
+	require.True(t, result.IsOk())
+	done := make(chan struct{})
+	go func() {
+		epochActor.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		epochActor.Stop()
+		t.Fatal("cancelled monitor did not stop")
+	}
+	require.False(t, fatal.Load())
+}
+
+// TestBlockEpochActorRecoveryResetsFatalBudget proves a delivered block starts
+// a fresh outage budget. A replay preserves spent retry time, while healthy
+// open time never spends the budget, even across a long Bitcoin block interval.
+func TestBlockEpochActorRecoveryResetsFatalBudget(t *testing.T) {
+	for _, progress := range []bool{false, true} {
+		name := "idle after replay"
+		if progress {
+			name = "new block resets budget"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := newReconnectBlockBackend()
+			var seconds atomic.Int64
+			seconds.Store(100)
+			backend.beforeRegister = func() {
+				seconds.Add(30)
+			}
+			fatal := make(chan error, 1)
+			epochActor := NewBlockEpochActor(BlockEpochConfig{
+				Backend:               backend,
+				ReconnectBackoff:      time.Millisecond,
+				MaxReconnectBackoff:   time.Millisecond,
+				FatalReconnectTimeout: time.Minute,
+				Now: func() time.Time {
+					return time.Unix(seconds.Load(), 0)
+				},
+				OnFatal: fn.Some(
+					func(err error) {
+						fatal <- err
+					},
+				),
+			})
+			defer epochActor.Stop()
+			result := epochActor.Receive(
+				t.Context(), &SubscribeBlocksRequest{
+					CallerID: "recovery-resets-budget",
+				},
+			)
+			require.True(t, result.IsOk())
+			first := backend.nextRegistration(t)
+			first.send(150)
+			require.Equal(
+				t, int32(150), (<-epochActor.epochChan).Height,
+			)
+			close(first.epochs)
+			first.assertCanceled(t)
+			second := backend.nextRegistration(t)
+			height := int32(150)
+			if progress {
+				height++
+			}
+			second.send(height)
+			require.Equal(
+				t, height, (<-epochActor.epochChan).Height,
+			)
+
+			// Passing the old deadline cannot kill a healthy but
+			// idle stream.
+			seconds.Store(1000)
+			second.send(height)
+			require.Equal(
+				t, height, (<-epochActor.epochChan).Height,
+			)
+			close(second.epochs)
+			second.assertCanceled(t)
+			third := backend.nextRegistration(t)
+			select {
+			case err := <-fatal:
+				t.Fatalf("recovery failed to reset budget: %v",
+					err)
+
+			default:
+			}
+
+			// A new, sustained outage still escalates at its own
+			// deadline.
+			close(third.epochs)
+			if progress {
+				fourth := backend.nextRegistration(t)
+				close(fourth.epochs)
+			}
+			select {
+			case err := <-fatal:
+				require.ErrorIs(
+					t, err, errBlockEpochUnrecoverable,
+				)
+
+			case <-time.After(time.Second):
+				t.Fatal("new outage did not exhaust its budget")
+			}
+		})
+	}
+
 }

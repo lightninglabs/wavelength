@@ -2,7 +2,9 @@ package waved
 
 import (
 	"context"
+	"errors"
 	"net"
+	"net/http"
 	"testing"
 	"time"
 
@@ -151,64 +153,128 @@ func TestOpenRPCListenerBindsListenAddr(t *testing.T) {
 
 // TestRunWithContextServesInjectedListener verifies the daemon can boot on an
 // injected in-memory listener and serve a real gRPC request before the wallet
-// has been initialized.
+// has been initialized. Fatal shutdown returns its cause; ordinary cancellation
+// wins over a later fatal report, and both withdraw cached health immediately.
 func TestRunWithContextServesInjectedListener(t *testing.T) {
-	t.Parallel()
+	for _, mode := range []string{
+		"cancel",
+		"fatal",
+		"fatal wrapping cancellation",
+		"cancel then fatal",
+	} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 
-	listener := bufconn.Listen(1 << 20)
-	cfg := testConfigWithInjectedRPCListener(listener)
-	cfg.DataDir = t.TempDir()
-	cfg.Wallet.Type = WalletTypeLwwallet
-	cfg.Wallet.DisableGlobalLoggers = true
+			listener := bufconn.Listen(1 << 20)
+			cfg := testConfigWithInjectedRPCListener(listener)
+			cfg.DataDir = t.TempDir()
+			cfg.Wallet.Type = WalletTypeLwwallet
+			cfg.Wallet.DisableGlobalLoggers = true
 
-	server, err := NewServer(cfg)
-	require.NoError(t, err)
+			server, err := NewServer(cfg)
+			require.NoError(t, err)
 
-	runCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+			runCtx, cancel := context.WithCancel(
+				context.Background(),
+			)
+			defer cancel()
 
-	errChan := make(chan error, 1)
-	go func() {
-		errChan <- server.RunWithContext(runCtx)
-	}()
+			errChan := make(chan error, 1)
+			go func() {
+				errChan <- server.RunWithContext(runCtx)
+			}()
 
-	require.Eventually(t, func() bool {
-		return server.RPCAddr() != nil
-	}, 30*time.Second, 20*time.Millisecond)
+			require.Eventually(t, func() bool {
+				return server.RPCAddr() != nil
+			}, 30*time.Second, 20*time.Millisecond)
 
-	connCtx, connCancel := context.WithTimeout(
-		context.Background(), 5*time.Second,
-	)
-	defer connCancel()
+			connCtx, connCancel := context.WithTimeout(
+				context.Background(), 5*time.Second,
+			)
+			defer connCancel()
 
-	conn, err := grpc.NewClient(
-		"passthrough:///bufnet",
-		grpc.WithTransportCredentials(
-			insecure.NewCredentials(),
-		),
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (
-			net.Conn, error) {
+			conn, err := grpc.NewClient(
+				"passthrough:///bufnet",
+				grpc.WithTransportCredentials(
+					insecure.NewCredentials(),
+				),
+				grpc.WithContextDialer(
+					func(ctx context.Context, _ string) (
+						net.Conn, error) {
 
-			return listener.DialContext(ctx)
-		}),
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, conn.Close())
-	})
+						return listener.DialContext(ctx)
+					},
+				),
+			)
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				require.NoError(t, conn.Close())
+			})
 
-	conn.Connect()
-	require.Eventually(t, func() bool {
-		return conn.GetState() == connectivity.Ready
-	}, 5*time.Second, 20*time.Millisecond)
+			conn.Connect()
+			require.Eventually(t, func() bool {
+				return conn.GetState() == connectivity.Ready
+			}, 5*time.Second, 20*time.Millisecond)
 
-	client := waverpc.NewDaemonServiceClient(conn)
+			client := waverpc.NewDaemonServiceClient(conn)
 
-	resp, err := client.GenSeed(connCtx, &waverpc.GenSeedRequest{})
-	require.NoError(t, err)
-	require.Len(t, resp.Mnemonic, 24)
-	require.Equal(t, listener.Addr(), server.RPCAddr())
+			resp, err := client.GenSeed(
+				connCtx, &waverpc.GenSeedRequest{},
+			)
+			require.NoError(t, err)
+			require.Len(t, resp.Mnemonic, 24)
+			require.Equal(t, listener.Addr(), server.RPCAddr())
 
-	cancel()
-	require.NoError(t, <-errChan)
+			h := &actorHealth{}
+			now := time.Now()
+			h.begin(now, 1)
+			h.record(now, []actorSample{{}})
+			handler := h.handler(
+				server.runCtx,
+				func() time.Time { return now },
+			)
+			assertHealthStatus(t, handler, "/readyz", http.StatusOK)
+			assertHealthStatus(t, handler, "/livez", http.StatusOK)
+
+			fatalErr := errors.New("block notifier unrecoverable")
+			if mode == "fatal wrapping cancellation" {
+				fatalErr = errors.Join(
+					fatalErr, context.Canceled,
+				)
+			}
+			switch mode {
+			case "fatal", "fatal wrapping cancellation":
+				server.signalFatal(fatalErr)
+
+			case "cancel":
+				cancel()
+
+			case "cancel then fatal":
+				cancel()
+				server.signalFatal(fatalErr)
+			}
+			assertHealthStatus(
+				t, handler, "/readyz",
+				http.StatusServiceUnavailable,
+			)
+			assertHealthStatus(
+				t, handler, "/livez",
+				http.StatusServiceUnavailable,
+			)
+			select {
+			case runErr := <-errChan:
+				if mode == "fatal" ||
+					mode == "fatal wrapping cancellation" {
+
+					require.ErrorIs(t, runErr, fatalErr)
+				} else {
+					require.NoError(t, runErr)
+				}
+
+			case <-time.After(DefaultShutdownTimeout + time.Second):
+				t.Fatal("daemon failed to shut down")
+			}
+		})
+	}
+
 }

@@ -392,6 +392,96 @@ func testRoundKey(t *testing.T, seed byte) *btcec.PublicKey {
 	return pub
 }
 
+// TestValidateBatchTreeBudget verifies aggregate limits apply before any tree
+// node conversion or cryptographic parsing begins.
+func TestValidateBatchTreeBudget(t *testing.T) {
+	t.Parallel()
+
+	tooManyCoSigners := roundpb.DefaultMaxTreeCoSigners + 1
+
+	makeNodes := func(count int) []*roundpb.TreeNode {
+		nodes := make([]*roundpb.TreeNode, count)
+		for idx := range nodes {
+			nodes[idx] = &roundpb.TreeNode{}
+		}
+
+		return nodes
+	}
+	nodePaths := map[int32]*roundpb.VTXOTree{
+		0: {
+			Nodes: makeNodes(2_501),
+		},
+		1: {
+			Nodes: makeNodes(2_500),
+		},
+	}
+
+	tests := []struct {
+		name  string
+		paths map[int32]*roundpb.VTXOTree
+		err   string
+	}{
+		{
+			name:  "aggregate nodes",
+			paths: nodePaths,
+			err:   "nodes",
+		},
+		{
+			name: "aggregate outputs",
+			paths: map[int32]*roundpb.VTXOTree{
+				0: {Nodes: []*roundpb.TreeNode{{
+					Outputs: make(
+						[]*roundpb.TxOut,
+						roundpb.DefaultMaxTreeOutputs+
+							1,
+					),
+				}}},
+			},
+			err: "outputs",
+		},
+		{
+			name: "aggregate cosigners",
+			paths: map[int32]*roundpb.VTXOTree{
+				0: {Nodes: []*roundpb.TreeNode{{
+					CoSigners: make(
+						[][]byte, tooManyCoSigners,
+					),
+				}}},
+			},
+			err: "cosigners",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateBatchTreeBudget(test.paths)
+			require.ErrorContains(t, err, test.err)
+
+			// The PSBT is deliberately absent. Budget rejection
+			// must win before transaction parsing, allocation, or
+			// key aggregation.
+			var event CommitmentTxBuilt
+			err = event.FromProto(&roundpb.ClientBatchInfo{
+				RoundId:       make([]byte, 16),
+				VtxoTreePaths: test.paths,
+			})
+			require.ErrorContains(t, err, test.err)
+		})
+	}
+
+	// Negative control: an in-budget envelope reaches the PSBT requirement.
+	var event CommitmentTxBuilt
+	err := event.FromProto(
+		&roundpb.ClientBatchInfo{
+			RoundId: make([]byte, 16),
+			VtxoTreePaths: map[int32]*roundpb.VTXOTree{
+				0: {Nodes: makeNodes(1)},
+			},
+		},
+	)
+	require.ErrorContains(t, err, "batch_psbt")
+}
+
 // TestCommitmentTxBuiltFromProtoSigningKeys verifies that FromProto parses
 // the per-round tree-cosign and connector operator keys, leaves them nil when
 // the server omits them (older-server fallback path), and rejects a malformed
@@ -519,4 +609,27 @@ func TestCommitmentTxBuiltFromProtoRejectsInvalidAssetPackages(t *testing.T) {
 		),
 		"is not canonical",
 	)
+}
+
+// TestBatchTreeBudgetHonorsConfiguredNodeLimit proves the daemon's tree option
+// raises aggregate admission before the missing-PSBT negative control fires.
+func TestBatchTreeBudgetHonorsConfiguredNodeLimit(t *testing.T) {
+	t.Parallel()
+	paths := map[int32]*roundpb.VTXOTree{
+		0: {
+			Nodes: make([]*roundpb.TreeNode, 6_000),
+		},
+	}
+	var defaults CommitmentTxBuilt
+	err := defaults.FromProto(&roundpb.ClientBatchInfo{
+		RoundId: make([]byte, 16), VtxoTreePaths: paths,
+	})
+	require.ErrorContains(t, err, "aggregate maximum 5000")
+	configured := CommitmentTxBuilt{TreeOpts: []roundpb.TreeFromProtoOption{
+		roundpb.WithMaxTreeNodes(20_000),
+	}}
+	err = configured.FromProto(&roundpb.ClientBatchInfo{
+		RoundId: make([]byte, 16), VtxoTreePaths: paths,
+	})
+	require.ErrorContains(t, err, "batch_psbt")
 }

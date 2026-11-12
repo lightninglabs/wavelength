@@ -79,6 +79,9 @@ var (
 	errCPFPFeeInputShortfall = errors.New("confirmed cpfp fee input " +
 		"shortfall")
 
+	errFeeInputConfirmationUnknown = errors.New("cpfp fee input " +
+		"confirmation unavailable")
+
 	// ErrNonTRUCParent indicates that the caller submitted a parent
 	// carrying a zero-value ephemeral anchor whose version is not v3
 	// (TRUC). The ephemeral-anchor CPFP strategy relies on BIP-431
@@ -178,6 +181,15 @@ type Wallet interface {
 		lockExpiry time.Duration) (*wire.MsgTx, error)
 
 	walletcore.OutputLeaser
+}
+
+// FeeInputConfirmer is implemented by wallets whose confirmed-coin listing
+// can lag a reorg. It checks the selected coin's confirmation against the
+// active chain, including when reusing an input for a replacement child.
+// A false result is authoritative stale confirmation metadata; an error is
+// unavailable evidence and must stop this attempt without signing.
+type FeeInputConfirmer interface {
+	FeeInputConfirmed(context.Context, wire.OutPoint) (bool, error)
 }
 
 // FeeInput is a confirmed wallet UTXO selected for CPFP fee payment.
@@ -478,7 +490,8 @@ func (b *CPFPBroadcaster) parentState(
 // while the CPFP child is in flight. A failure from the wallet-level
 // lease is logged but does not abort the broadcast: the in-memory
 // reservation map in parentStates is authoritative for intra-package
-// coordination.
+// coordination. An unknown-output renewal after an accepted package is
+// diagnostic: the earlier child can already have spent the reserved input.
 func (b *CPFPBroadcaster) reserveFeeInput(ctx context.Context,
 	parentTxid chainhash.Hash, feeInput *FeeInput) {
 
@@ -488,11 +501,12 @@ func (b *CPFPBroadcaster) reserveFeeInput(ctx context.Context,
 
 	state := b.parentState(parentTxid)
 	op := feeInput.Outpoint
+	renewal := state.LastFeeRate > 0 &&
+		b.feeOutpointReserved(parentTxid, op)
 
-	// If we already reserved this outpoint for this parent, the
-	// wallet already has a lease; re-leasing extends the expiry,
-	// which is exactly what we want on a fee bump that re-picks the
-	// same UTXO for TRUC RBF double-spend.
+	// Re-leasing extends an existing lease when the wallet still lists the
+	// input. A previous child may already have spent it, so a reservation
+	// does not prove the wallet can renew that lease.
 	state.UsedFeeOutpoints[op] = struct{}{}
 	state.UsedFeeInputs[op] = cloneFeeInput(feeInput)
 
@@ -503,6 +517,17 @@ func (b *CPFPBroadcaster) reserveFeeInput(ctx context.Context,
 	_, err := b.cfg.Wallet.LeaseOutput(
 		ctx, txconfirmLockID, op, DefaultFeeInputLeaseExpiry,
 	)
+	if renewal && isUnknownWalletOutput(err) {
+		b.log.DebugS(ctx, "Wallet-level lease renewal output absent; "+
+			"retaining in-memory reservation",
+			"err", err,
+			"parent", parentTxid,
+			"outpoint", op,
+		)
+
+		return
+	}
+
 	if err != nil {
 		b.log.WarnS(ctx, "Wallet-level lease failed; relying on "+
 			"in-memory reservation only",
@@ -541,7 +566,7 @@ func (b *CPFPBroadcaster) releaseWalletLease(ctx context.Context,
 	}
 
 	err := b.cfg.Wallet.ReleaseOutput(ctx, txconfirmLockID, op)
-	if isUnknownOutputRelease(err) {
+	if isUnknownWalletOutput(err) {
 		b.log.DebugS(ctx, "Wallet-level lease already absent",
 			"err", err,
 			"outpoint", op,
@@ -556,10 +581,10 @@ func (b *CPFPBroadcaster) releaseWalletLease(ctx context.Context,
 	}
 }
 
-// isUnknownOutputRelease recognizes btcwallet's missing-output result during
-// lease cleanup, including LND's exact gRPC encoding. Match the status message
+// isUnknownWalletOutput recognizes btcwallet's missing-output result for
+// wallet leases, including LND's exact gRPC encoding. Match the status message
 // exactly so unrelated Unknown errors and ownership failures remain visible.
-func isUnknownOutputRelease(err error) bool {
+func isUnknownWalletOutput(err error) bool {
 	if errors.Is(err, wtxmgr.ErrUnknownOutput) {
 		return true
 	}
@@ -605,10 +630,10 @@ func (b *CPFPBroadcaster) releaseWalletLeasesAsync(_ context.Context,
 
 // releaseFeeOutpoint removes the given wallet outpoint from the parent's
 // reserved set and releases the wallet-level lease held on it. Called
-// on fallback/failure paths where the CPFP child that would have spent
-// the outpoint never actually reached the mempool, so holding the
-// reservation just starves other parents without any TRUC RBF
-// double-spend to protect.
+// on fallback/failure paths where the CPFP child did not reach the mempool,
+// or when its funding confirmation is no longer active. Parent tracking and
+// accepted fee history survive, so removing stale eligibility does not stop
+// confirmation watching or replacement fee accounting.
 func (b *CPFPBroadcaster) releaseFeeOutpoint(ctx context.Context,
 	parentTxid chainhash.Hash, op wire.OutPoint) {
 
@@ -945,6 +970,10 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 		ctx, txid, childFeeInputTarget(childFee, anchorValue),
 	)
 	if err != nil {
+		if errors.Is(err, errFeeInputConfirmationUnknown) {
+			return nil, err
+		}
+
 		return nil, fmt.Errorf("%w: %w", ErrCPFPFeeInputUnavailable,
 			err)
 	}
@@ -993,11 +1022,12 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 				childFeeInputTarget(childFee, anchorValue),
 			)
 			if selErr != nil {
-				return b.fallbackDirectBroadcast(
-					ctx, req, txid, feeInput.Outpoint,
-					"reselect_fee_input", selErr,
+				return b.feeInputReselectFailed(
+					ctx, req, txid, feeInput,
+					feeInputCarriedOver, selErr,
 				)
 			}
+
 			if reselected.Outpoint != feeInput.Outpoint {
 				reselectedCarriedOver := b.feeOutpointReserved(
 					txid, reselected.Outpoint,
@@ -1011,11 +1041,10 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 				// TRUC RBF still needs the previous child's fee
 				// input reserved, so releasing it would drop an
 				// input the replacement must double-spend.
-				if !feeInputCarriedOver {
-					b.releaseFeeOutpoint(
-						ctx, txid, feeInput.Outpoint,
-					)
-				}
+				b.releaseNewFeeInput(
+					ctx, txid, feeInput,
+					feeInputCarriedOver,
+				)
 
 				feeInput = reselected
 				feeInputCarriedOver = reselectedCarriedOver
@@ -1150,6 +1179,23 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 	return b.successfulPackageResult(
 		txid, child.TxHash(), feeRate, totalFee,
 	), nil
+}
+
+// feeInputReselectFailed keeps unavailable confirmation evidence off the
+// direct-broadcast and fanout paths, preserving previously published inputs.
+func (b *CPFPBroadcaster) feeInputReselectFailed(ctx context.Context,
+	req *BroadcastRequest, txid chainhash.Hash, feeInput *FeeInput,
+	carriedOver bool, err error) (*BroadcastResult, error) {
+
+	if errors.Is(err, errFeeInputConfirmationUnknown) {
+		b.releaseNewFeeInput(ctx, txid, feeInput, carriedOver)
+
+		return nil, err
+	}
+
+	return b.fallbackDirectBroadcast(
+		ctx, req, txid, feeInput.Outpoint, "reselect_fee_input", err,
+	)
 }
 
 // boundedPackageFee computes the initial package fee, applies every local and
@@ -1566,17 +1612,32 @@ func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
 		return nil, fmt.Errorf("wallet must be provided")
 	}
 
-	if feeInput := b.selectReservedFeeInput(
-		parentTxid, minAmount,
-	); feeInput != nil {
-		return feeInput, nil
+	stale := make(map[wire.OutPoint]struct{})
+	for {
+		feeInput := b.selectReservedFeeInput(parentTxid, minAmount)
+		if feeInput == nil {
+			break
+		}
+
+		confirmed, err := b.feeInputConfirmed(ctx, feeInput.Outpoint)
+		if err != nil {
+			return nil, err
+		}
+		if confirmed {
+			return feeInput, nil
+		}
+
+		// Retire stale eligibility so fresh selection and supply
+		// planning can progress. Parent tracking and prior fee history
+		// stay live.
+		stale[feeInput.Outpoint] = struct{}{}
+		b.releaseFeeOutpoint(ctx, parentTxid, feeInput.Outpoint)
 	}
 
 	excluded := b.excludedOutpointsForOtherParents(parentTxid)
 
 	deadline := time.Now().Add(2 * time.Second)
 
-	var lastSuspect *walletcore.Utxo
 	for {
 		utxos, err := b.cfg.Wallet.ListUnspent(ctx, 1, 9999999)
 		if err != nil {
@@ -1591,6 +1652,9 @@ func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
 		var best, bestSuspect *walletcore.Utxo
 		for _, utxo := range utxos {
 			if _, skip := excluded[utxo.Outpoint]; skip {
+				continue
+			}
+			if _, skip := stale[utxo.Outpoint]; skip {
 				continue
 			}
 
@@ -1614,11 +1678,28 @@ func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
 			}
 		}
 
-		if best != nil {
-			return feeInputFromWalletUTXO(best), nil
+		// Keep the existing clean-coin preference during the handoff
+		// window, then allow a previously unsignable coin to recover.
+		if best == nil && (len(excluded) == 0 ||
+			time.Now().After(deadline)) {
+
+			best = bestSuspect
 		}
-		if bestSuspect != nil {
-			lastSuspect = bestSuspect
+		if best != nil {
+			confirmed, err := b.feeInputConfirmed(
+				ctx, best.Outpoint,
+			)
+			if err != nil {
+				return nil, err
+			}
+			if !confirmed {
+				// Exclude this coin only for this attempt.
+				// A later confirmation restores eligibility.
+				stale[best.Outpoint] = struct{}{}
+				continue
+			}
+
+			return feeInputFromWalletUTXO(best), nil
 		}
 
 		// After one CPFP package confirms, wallet backends
@@ -1639,17 +1720,27 @@ func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
 		}
 	}
 
-	// No clean candidate materialized within the poll window. Settle for
-	// a previously refused coin rather than giving up outright: if the
-	// earlier signing failure was transient (wallet sync lag), this
-	// retry recovers, and if the coin is genuinely unsignable the sign
-	// step fails exactly as it would have before the deprioritization.
-	if lastSuspect != nil {
-		return feeInputFromWalletUTXO(lastSuspect), nil
-	}
-
 	return nil, fmt.Errorf("%w: no confirmed wallet UTXOs available (need "+
 		">= %d sats)", errCPFPFeeInputShortfall, int64(minAmount))
+}
+
+// feeInputConfirmed validates only the selected candidate, rather than making
+// chain RPCs for every coin in a potentially large wallet listing.
+func (b *CPFPBroadcaster) feeInputConfirmed(ctx context.Context,
+	outpoint wire.OutPoint) (bool, error) {
+
+	confirmer, ok := b.cfg.Wallet.(FeeInputConfirmer)
+	if !ok {
+		return true, nil
+	}
+
+	confirmed, err := confirmer.FeeInputConfirmed(ctx, outpoint)
+	if err != nil {
+		return false, fmt.Errorf("%w: %w",
+			errFeeInputConfirmationUnknown, err)
+	}
+
+	return confirmed, nil
 }
 
 // selectReservedFeeInput returns the smallest cached fee input already

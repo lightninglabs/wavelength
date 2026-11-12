@@ -59,6 +59,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 
 ## Invariants
 
+- `lndUnrollWallet.FeeInputConfirmed` forwards the selected CPFP fee coin to
+  the boarding backend's active-chain confirmation check. A stale wallet
+  listing must not make an orphaned coin eligible for a signed child.
+
 - Indexed VTXOs pass `vtxo.IndexedAncestryFromRPC` before new acceptance.
   It verifies signed tree/transaction paths to the exact target outpoint,
   value, and script. OOR inventory includes `ancestry_packages` to connect
@@ -484,6 +488,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   the pass before starting the remaining wallet-dependent actors. The helper
   drives recovered children outside the VTXO manager receive loop so their
   refresh relays and termination notifications can drain during the pass.
+- Bootstrap publishes `serverConn`, `arkClient` and `runtime` through
+  `publishOperatorClients` and `publishRuntime` under `operatorConnMu`.
+  RPCs and shutdown can run while bootstrap is in progress, so code off the
+  bootstrap goroutine reads them through `operatorArkClient` and
+  `loadRuntime`, never the fields directly.
 - `deriveIdentityKeyEarly` publishes `clientKeyDesc` before mailbox bootstrap.
   `GetInfo` reuses this descriptor instead of deriving the same key for every
   status request because btcwallet-backed derivation opens a wallet database
@@ -498,7 +507,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `GetInfo` snapshot and rechecks the window before reserving the input.
 - `Config.MaxPaymentCLTV` extends that same local safety floor by the largest
   total Lightning CLTV the wallet wants to keep available. Swap-enabled builds
-  default to 300 blocks; core builds default to zero. An operator waiver may
+  default to 480 blocks; core builds default to zero. An operator waiver may
   make the earlier refresh free but cannot shorten this payment reserve.
 
 ## Deep Docs

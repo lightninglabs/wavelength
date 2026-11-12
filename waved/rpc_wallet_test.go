@@ -124,36 +124,35 @@ func TestSignOutSwapHtlcAckSignsTerms(t *testing.T) {
 }
 
 // TestSignCreditAccountAuthorizationValidatesEnvelope verifies malformed and
-// stale authorization inputs are rejected before signing.
+// stale authorization inputs are rejected before signing. Expiries are built
+// after parallel admission so queued subtests cannot consume their TTL margin.
 func TestSignCreditAccountAuthorizationValidatesEnvelope(t *testing.T) {
 	t.Parallel()
 
-	now := time.Now()
-	tooFarExpiry := now.Add(
-		swaprpc.CreditAccountMaxAuthTTL + time.Minute,
-	).Unix()
 	tests := []struct {
-		name string
-		req  *waverpc.SignCreditAccountAuthorizationRequest
+		name         string
+		expiryOffset time.Duration
+		req          *waverpc.SignCreditAccountAuthorizationRequest
 	}{
 		{
-			name: "request digest",
+			name:         "request digest",
+			expiryOffset: time.Minute,
 			req: &waverpc.SignCreditAccountAuthorizationRequest{
 				Nonce: make(
 					[]byte, swaprpc.CreditAccountNonceSize,
 				),
-				ExpiresAtUnix: now.Add(time.Minute).Unix(),
 			},
 		},
 		{
-			name: "nonce",
+			name:         "nonce",
+			expiryOffset: time.Minute,
 			req: &waverpc.SignCreditAccountAuthorizationRequest{
 				RequestDigest: make([]byte, 32),
-				ExpiresAtUnix: now.Add(time.Minute).Unix(),
 			},
 		},
 		{
-			name: "expired",
+			name:         "expired",
+			expiryOffset: -time.Minute,
 			req: &waverpc.SignCreditAccountAuthorizationRequest{
 				AccountPubkey: make(
 					[]byte, btcec.PubKeyBytesLenCompressed,
@@ -162,11 +161,12 @@ func TestSignCreditAccountAuthorizationValidatesEnvelope(t *testing.T) {
 				Nonce: make(
 					[]byte, swaprpc.CreditAccountNonceSize,
 				),
-				ExpiresAtUnix: now.Add(-time.Minute).Unix(),
 			},
 		},
 		{
 			name: "too far",
+			expiryOffset: swaprpc.CreditAccountMaxAuthTTL +
+				time.Minute,
 			req: &waverpc.SignCreditAccountAuthorizationRequest{
 				AccountPubkey: make(
 					[]byte, btcec.PubKeyBytesLenCompressed,
@@ -175,7 +175,6 @@ func TestSignCreditAccountAuthorizationValidatesEnvelope(t *testing.T) {
 				Nonce: make(
 					[]byte, swaprpc.CreditAccountNonceSize,
 				),
-				ExpiresAtUnix: tooFarExpiry,
 			},
 		},
 	}
@@ -185,6 +184,10 @@ func TestSignCreditAccountAuthorizationValidatesEnvelope(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
+			test.req.ExpiresAtUnix = time.
+				Now().
+				Add(test.expiryOffset).
+				Unix()
 			_, err := (&RPCServer{}).SignCreditAccountAuthorization(
 				t.Context(),
 				test.req,

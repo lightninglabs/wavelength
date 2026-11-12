@@ -703,7 +703,7 @@ func TestExpiredStateRejectsUnexpectedEvent(t *testing.T) {
 
 	h.withState(&ExpiredState{VTXO: vtxo, ObservedHeight: 1_000})
 
-	_, err := h.sendEvent(&ForfeitConfirmedEvent{})
+	_, err := h.sendEvent(&ForfeitSignedEvent{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unexpected event")
 

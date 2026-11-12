@@ -236,6 +236,12 @@ type Server struct {
 	// select on runCtx.Done().
 	runCtx context.Context //nolint:containedctx
 
+	// fatalCancel cancels runCtx with a cause when a subsystem reports an
+	// unrecoverable failure. run() returns that cause so the process exits
+	// non-zero and the orchestrator restarts it with fresh state. It is set
+	// once at the start of run() before any subsystem starts.
+	fatalCancel context.CancelCauseFunc
+
 	// walletState tracks the lifecycle state of the wallet
 	// subsystem. In lnd mode this is always WalletStateReady
 	// after successful lnd connection. In lwwallet mode it
@@ -327,6 +333,8 @@ type Server struct {
 	// can attach the binding header without re-signing.
 	tlsBindSigHex string
 
+	// runtime is published by bootstrap under operatorConnMu. Goroutines
+	// other than bootstrap read it through loadRuntime.
 	runtime *serverconn.Runtime
 	ark     *arkrpc.ArkServiceMailboxClient
 	indexer *indexer.Client
@@ -357,8 +365,10 @@ type Server struct {
 	// arkProtocolVersion is the Ark protocol version negotiated during
 	// bootstrap and bound to the mailbox runtime for its lifetime. Later
 	// refresh-only GetInfo calls pin this version and never change it; a
-	// fresh negotiation only happens on a daemon restart.
-	arkProtocolVersion uint32
+	// fresh negotiation only happens on a daemon restart. It is written
+	// once by the bootstrap and read by RPC handlers that may already run
+	// while the bootstrap is in progress, hence the atomic.
+	arkProtocolVersion atomic.Uint32
 
 	// serverConnected reports whether mailbox ingress is currently
 	// running against the Ark operator. It flips true once ingress
@@ -446,6 +456,11 @@ type Server struct {
 	arkClient         arkrpc.ArkServiceClient
 	mailboxClient     mailboxpb.MailboxServiceClient
 	serverConnCleanup func() error
+
+	// operatorConnMu guards bootstrap's writes of serverConn, arkClient
+	// and runtime against RPCs and shutdown, which can read them while
+	// bootstrap is still running.
+	operatorConnMu sync.RWMutex
 
 	rpcAddrMu   sync.RWMutex
 	rpcAddr     net.Addr
@@ -1168,13 +1183,25 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 // run is the shared core startup logic for both RunUntilShutdown
 // and RunWithContext. The shutdownFn is wired into the logging
 // subsystem so critical log events can trigger daemon shutdown.
-func (s *Server) run(ctx context.Context, shutdownFn func()) error {
+func (s *Server) run(parentCtx context.Context, shutdownFn func()) error {
+	// Publish the fatal cancel before starting any subsystem. The derived
+	// context also withdraws health immediately, without a separate latch.
+	ctx, cancelCause := context.WithCancelCause(parentCtx)
+	defer cancelCause(nil)
+	s.fatalCancel = cancelCause
+
 	var runErr error
 	defer func() {
 		s.markWalletServicesStopped(runErr, ctx.Err())
 	}()
 
 	runErr = s.runInner(ctx, shutdownFn)
+
+	// Preserve the fatal cause even if cancellation interrupted startup
+	// and runInner returned a wrapped context.Canceled error instead.
+	if cause := context.Cause(ctx); errors.Is(cause, errFatalSubsystem) {
+		runErr = cause
+	}
 
 	return runErr
 }
@@ -1392,10 +1419,10 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 			s.outboxPublisher.Stop()
 		}
 
-		if s.runtime != nil {
+		if rt := s.loadRuntime(); rt != nil {
 			s.setServerConnected(false)
 			//nolint:contextcheck // bounded shutdown
-			_ = s.runtime.StopAndWait(shutdownCtx)
+			_ = rt.StopAndWait(shutdownCtx)
 		}
 
 		if s.actorSystem != nil {
@@ -1762,6 +1789,19 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 	s.log.InfoS(ctx, "Shutting down waved")
 
 	return nil
+}
+
+// errFatalSubsystem distinguishes explicit escalation from parent cancellation,
+// including when a backend's fatal error itself wraps context.Canceled.
+var errFatalSubsystem = errors.New("fatal subsystem failure")
+
+// signalFatal cancels the run context with an unrecoverable-failure cause so
+// run() returns it and the process exits non-zero. It is safe to call from any
+// subsystem goroutine and is a no-op before run() has wired fatalCancel.
+func (s *Server) signalFatal(err error) {
+	if s.fatalCancel != nil {
+		s.fatalCancel(errors.Join(errFatalSubsystem, err))
+	}
 }
 
 // startWalletReadyServices starts the services that need wallet-derived keys
@@ -2529,6 +2569,7 @@ func (s *Server) registerChainSourceActor(
 			// finality signal, and reorg-aware consumers like
 			// txconfirm would leak watch state forever.
 			FinalityDepth: chainsource.DefaultFinalityDepth,
+			OnFatal:       fn.Some(s.signalFatal),
 		},
 	)
 
@@ -2616,7 +2657,8 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 		lndSvc := s.lnd.UnsafeFromSome()
 		notifier := chainbackends.NewLndClientChainNotifier(
 			chainbackends.LndClientChainNotifierConfig{
-				LND: &lndSvc.LndServices,
+				LND:     &lndSvc.LndServices,
+				OnFatal: fn.Some(s.signalFatal),
 				Log: fn.Some(
 					s.subLogger(
 						chainbackends.
@@ -4177,8 +4219,7 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("unable to connect to server: %w", err)
 	}
-	s.serverConn = operatorClients.conn
-	s.arkClient = operatorClients.ark
+	s.publishOperatorClients(operatorClients)
 	s.mailboxClient = operatorClients.mailbox
 	s.serverConnCleanup = operatorClients.cleanup
 
@@ -4200,7 +4241,7 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	// Cache the negotiation outcome before constructing the runtime so
 	// every later consumer reads the bound version and initial terms
 	// instead of issuing a second negotiating call.
-	s.arkProtocolVersion = negotiation.selectedArkVersion
+	s.arkProtocolVersion.Store(negotiation.selectedArkVersion)
 	s.storeOperatorTerms(negotiation.terms)
 
 	s.log.InfoS(ctx, "Negotiated ark protocol version",
@@ -4290,7 +4331,7 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 
 	// Bind the runtime to the negotiated Ark protocol version.
 	// DefaultConnectorConfig already binds mailbox transport v1.
-	connCfg.ArkProtocolVersion = s.arkProtocolVersion
+	connCfg.ArkProtocolVersion = s.arkProtocolVersion.Load()
 	connCfg.Store = s.deliveryStore
 	connCfg.Dispatchers = dispatchers
 	connCfg.NonTxRoutes = nonTxRoutes
@@ -4303,11 +4344,12 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	connCfg.Log = fn.Some(s.subLogger(serverconn.Subsystem))
 	connCfg.OnIncompatible = s.onServerIncompatible
 
-	s.runtime, err = serverconn.NewRuntime(connCfg)
+	rt, err := serverconn.NewRuntime(connCfg)
 	if err != nil {
 		return fmt.Errorf("unable to create serverconn runtime: %w",
 			err)
 	}
+	s.publishRuntime(rt)
 
 	// Start durable egress immediately so unary sends and actor outbox
 	// delivery can begin, but defer ingress until wallet-dependent actors
@@ -4743,6 +4785,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 			return resolveExitOutcome(ctx, ueStore, outpoint)
 		},
 		HasForfeitRoundCheckpoint: roundStore.HasForfeitRoundCheckpoint,
+		LookupForfeitSettlement:   roundStore.LookupForfeitSettlement,
 	}
 	managerConfig.DeferAutomaticRefreshUntilRoundReady = true
 	manager := vtxo.NewManager(managerConfig)
@@ -5138,6 +5181,12 @@ func mapRoundVTXOManagerMsg(msg round.VTXOManagerMsg) vtxo.ManagerMsg {
 // singleton supported list and rejects any response that selects a different
 // or zero version. It never mutates the runtime version.
 //
+// The operator client is published before the bootstrap stores the negotiated
+// version, so a refresh can start in between and pin version zero. The
+// response is judged against the version this request pinned, not the one
+// stored by the time it returns, so such a refresh cannot mark the runtime
+// incompatible.
+//
 // The terms include the operator pubkey, sweep delay, VTXO exit delay,
 // forfeit script, dust limit, and fee rate.
 func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
@@ -5150,7 +5199,7 @@ func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 
 	// Pin the runtime-bound version: send it as the singleton supported
 	// list so a conforming operator re-selects exactly this version.
-	boundVersion := s.arkProtocolVersion
+	boundVersion := s.arkProtocolVersion.Load()
 
 	resp, err := client.GetInfo(ctx, &arkrpc.GetInfoRequest{
 		SupportedArkVersions: []uint32{
@@ -5161,15 +5210,17 @@ func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 		return nil, fmt.Errorf("GetInfo RPC: %w", err)
 	}
 
-	return s.operatorTermsFromRefreshResponse(ctx, resp)
+	return s.operatorTermsFromRefreshResponse(ctx, resp, boundVersion)
 }
 
-// operatorTermsFromRefreshResponse validates that a refresh kept the
-// runtime-bound protocol version, then parses the returned terms.
+// operatorTermsFromRefreshResponse validates that a refresh kept boundVersion,
+// the version its request pinned, then parses the returned terms. The caller
+// passes the version it sent rather than this reading it again, so a refresh
+// that started before negotiation completed is judged against what it asked
+// for.
 func (s *Server) operatorTermsFromRefreshResponse(ctx context.Context,
-	resp *arkrpc.GetInfoResponse) (*types.OperatorTerms, error) {
-
-	boundVersion := s.arkProtocolVersion
+	resp *arkrpc.GetInfoResponse, boundVersion uint32) (
+	*types.OperatorTerms, error) {
 
 	// A refresh that selects a different version is a terminal
 	// compatibility failure: the runtime is bound for its lifetime, so the
@@ -5179,8 +5230,8 @@ func (s *Server) operatorTermsFromRefreshResponse(ctx context.Context,
 		resp, boundVersion,
 	); statusErr != nil {
 
-		if s.runtime != nil {
-			s.runtime.MarkIncompatible(ctx, statusErr)
+		if rt := s.loadRuntime(); rt != nil {
+			rt.MarkIncompatible(ctx, statusErr)
 		}
 
 		return nil, statusErr
@@ -5208,14 +5259,18 @@ func (s *Server) refreshAuthenticatedOperatorTerms(ctx context.Context) error {
 			"initialized")
 	}
 
+	boundVersion := s.arkProtocolVersion.Load()
+
 	resp, err := s.ark.GetInfo(ctx, &arkrpc.GetInfoRequest{
-		SupportedArkVersions: []uint32{s.arkProtocolVersion},
+		SupportedArkVersions: []uint32{boundVersion},
 	})
 	if err != nil {
 		return fmt.Errorf("authenticated GetInfo RPC: %w", err)
 	}
 
-	terms, err := s.operatorTermsFromRefreshResponse(ctx, resp)
+	terms, err := s.operatorTermsFromRefreshResponse(
+		ctx, resp, boundVersion,
+	)
 	if err != nil {
 		return fmt.Errorf("validate authenticated operator terms: %w",
 			err)
@@ -5524,6 +5579,8 @@ type lndUnrollWallet struct {
 	scripts ownedWalletScriptRegistrar
 }
 
+var _ txconfirm.FeeInputConfirmer = (*lndUnrollWallet)(nil)
+
 // ListUnspent returns UTXOs from the boarding backend's configured LND wallet
 // account only.
 //
@@ -5540,6 +5597,13 @@ func (w *lndUnrollWallet) ListUnspent(ctx context.Context, minConfs,
 	return w.boardingBackend.ListUnspentWalletAccount(
 		ctx, minConfs, maxConfs,
 	)
+}
+
+// FeeInputConfirmed verifies the selected LND coin against the active chain.
+func (w *lndUnrollWallet) FeeInputConfirmed(ctx context.Context,
+	outpoint wire.OutPoint) (bool, error) {
+
+	return w.boardingBackend.FeeInputConfirmed(ctx, outpoint)
 }
 
 // NewWalletPkScript returns a fresh wallet-managed taproot pkScript suitable

@@ -119,6 +119,8 @@ func EncodeTapTree(policy *CompiledPolicy) ([]byte, error) {
 
 // DecodeTapTree deserializes a PSBT tap tree encoding back into leaf data.
 // This can be used during PSBT finalization to reconstruct the tap tree.
+// Leaf metadata is capped by maxTapTreeLeaves. Script allocations are bounded
+// by the bytes remaining in data, so their aggregate cannot exceed len(data).
 func DecodeTapTree(data []byte) ([]EncodedLeaf, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("psbt: empty tap tree data")
@@ -164,6 +166,16 @@ func DecodeTapTree(data []byte) ([]EncodedLeaf, error) {
 		if err != nil {
 			return nil, fmt.Errorf("psbt: failed to read script "+
 				"length for leaf %d: %w", i, err)
+		}
+
+		// Bound before allocation or conversion to int. The remaining
+		// input is an int-sized, shared budget across all leaves; a
+		// declared size cannot amplify a truncated payload into a large
+		// allocation.
+		if scriptLen > uint64(r.Len()) {
+			return nil, fmt.Errorf("psbt: script length %d for "+
+				"leaf %d exceeds remaining %d bytes: %w",
+				scriptLen, i, r.Len(), io.ErrUnexpectedEOF)
 		}
 
 		// Read script bytes.
