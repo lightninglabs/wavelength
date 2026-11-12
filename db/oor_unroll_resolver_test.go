@@ -33,6 +33,43 @@ func TestResolveUnrollPackagesUnknownOutpoint(t *testing.T) {
 	require.True(t, errors.Is(err, sql.ErrNoRows))
 }
 
+// TestResolveUnrollPackagesBySessionID verifies an OOR sender can resolve the
+// recipient output before shared channel recovery state creates a local VTXO
+// row and output binding.
+func TestResolveUnrollPackagesBySessionID(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newOORArtifactStoreForTest(t)
+	sessionID, arkPSBT, checkpoints, outpoint, _, _, unresolvedInput :=
+		buildTestOORPackage(t, 0x31)
+
+	err := store.UpsertPackage(
+		ctx, OORPackageDirectionOutgoing, sessionID, arkPSBT,
+		checkpoints,
+	)
+	require.NoError(t, err)
+
+	resolved, err := store.ResolveUnrollPackagesBySessionID(
+		ctx, outpoint, sessionID,
+	)
+	require.NoError(t, err)
+	require.Equal(t, outpoint, resolved.TargetOutpoint)
+	require.Len(t, resolved.Packages, 1)
+	require.Equal(t, sessionID, resolved.Packages[0].SessionID)
+	require.Equal(
+		t, []wire.OutPoint{unresolvedInput},
+		resolved.UnresolvedCheckpointInputs,
+	)
+
+	wrongSession := sessionID
+	wrongSession[0] ^= 1
+	_, err = store.ResolveUnrollPackagesBySessionID(
+		ctx, outpoint, wrongSession,
+	)
+	require.ErrorContains(t, err, "does not match OOR session")
+}
+
 // TestResolveUnrollPackagesWithKnownAncestor verifies that resolver traversal
 // returns a deterministic ancestor-first package chain and surfaces unresolved
 // outermost checkpoint inputs.

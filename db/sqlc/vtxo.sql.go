@@ -561,6 +561,35 @@ func (q *Queries) RepairVTXOCreatedHeight(ctx context.Context, arg RepairVTXOCre
 	return result.RowsAffected()
 }
 
+const SetRecoveryOnlyVTXORelativeExpiry = `-- name: SetRecoveryOnlyVTXORelativeExpiry :execrows
+UPDATE vtxos
+SET expiry = $3,
+    last_update_time = $4
+WHERE outpoint_hash = $1 AND outpoint_index = $2 AND status = 9
+`
+
+type SetRecoveryOnlyVTXORelativeExpiryParams struct {
+	OutpointHash   []byte
+	OutpointIndex  int32
+	Expiry         int32
+	LastUpdateTime int64
+}
+
+// Selects the exact final-spend delay for an application-owned recovery row.
+// Ordinary wallet VTXOs can never be modified through this query.
+func (q *Queries) SetRecoveryOnlyVTXORelativeExpiry(ctx context.Context, arg SetRecoveryOnlyVTXORelativeExpiryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, SetRecoveryOnlyVTXORelativeExpiry,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.Expiry,
+		arg.LastUpdateTime,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const SumVTXOAmountsByStatus = `-- name: SumVTXOAmountsByStatus :many
 SELECT status,
        CAST(COUNT(*) AS BIGINT) AS vtxo_count,
