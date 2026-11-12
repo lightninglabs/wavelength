@@ -1,5 +1,10 @@
 # Publisher-owned notification relay
 
+Historical implementation plan for the retired push-capability relay. The
+current subscriber and SQL runtime is documented in
+[Notification relay](notification-relay.md) and
+[SQL ownership](notification-relay-sql.md).
+
 ## Purpose
 
 Build a standalone relay that lets an attested app register its APNs device

@@ -8,16 +8,17 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/lightninglabs/wavelength/notifyrelay"
+	"github.com/lightninglabs/wavelength/notifyrelay/relaydb"
 )
 
 // version is populated by the image build without embedding runtime secrets.
@@ -45,8 +46,16 @@ func run(ctx context.Context, args []string) error {
 		"HTTP listen address behind TLS ingress",
 	)
 	database := flags.String(
-		"database", "relay.db", "dedicated relay database file",
+		"database", "relay-sqlite.db", "dedicated SQLite relay file",
 	)
+	postgresFile := flags.String(
+		"postgres-dsn-file", "", "mounted dedicated PostgreSQL "+
+			"DSN; selects PostgreSQL instead of SQLite",
+	)
+	sourcesFile := flags.String(
+		"sources-config", "", "JSON publisher source policy file",
+	)
+
 	appsFile := flags.String(
 		"apps-config", "", "JSON publisher app policy file",
 	)
@@ -82,18 +91,17 @@ func run(ctx context.Context, args []string) error {
 	if !*behindTLS && (address == nil || !address.IsLoopback()) {
 		return errors.New("external HTTP requires --behind-tls-proxy")
 	}
-	if *appsFile == "" || *keyFile == "" {
-		return errors.New("apps-config and apns-key-file are required")
-	}
-	policy, err := os.ReadFile(*appsFile)
-	if err != nil {
-		return fmt.Errorf("load publisher policy: %w", err)
+	if *appsFile == "" || *keyFile == "" || *sourcesFile == "" {
+		return errors.New("apps-config, sources-config and " +
+			"apns-key-file are required")
 	}
 	var apps []notifyrelay.AppConfig
-	decoder := json.NewDecoder(bytes.NewReader(policy))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&apps); err != nil {
-		return errors.New("invalid publisher policy JSON")
+	if err := readPolicy(*appsFile, &apps); err != nil {
+		return fmt.Errorf("apps-config: %w", err)
+	}
+	var sources []notifyrelay.SourceConfig
+	if err := readPolicy(*sourcesFile, &sources); err != nil {
+		return fmt.Errorf("sources-config: %w", err)
 	}
 	keyBytes, err := os.ReadFile(*keyFile)
 	if err != nil {
@@ -109,37 +117,40 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(*database), 0700); err != nil {
-		return err
-	}
-	store, err := notifyrelay.OpenStore(*database)
+	databaseHandle, err := openDatabase(ctx, *database, *postgresFile)
 	if err != nil {
 		return err
+	}
+	store, err := notifyrelay.NewSQLStore(ctx, databaseHandle, sources...)
+	if err != nil {
+		_ = databaseHandle.Close()
+
+		return errors.New("initialize relay SQL store failed")
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	server, err := notifyrelay.NewServer(notifyrelay.Config{
 		Applications: apps, Logger: logger,
 	}, store, provider)
 	if err != nil {
-		return errors.Join(err, store.Close())
+		return errors.Join(err, databaseHandle.Close())
 	}
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
-		return errors.Join(err, store.Close())
+		return errors.Join(err, databaseHandle.Close())
 	}
 	logger.InfoContext(
 		ctx, "Notification relay started",
 		slog.Int("apps", len(apps)), slog.String("version", version),
 	)
 
-	return serve(ctx, server, store, listener)
+	return serve(ctx, server, databaseHandle, listener)
 }
 
 // serve joins HTTP handlers and the worker before closing storage. If shutdown
 // cannot join within its budget, it leaves the store open and returns an error;
-// main then exits, preserving Bolt's process-crash transaction boundary.
+// main then exits, preserving the SQL process-crash transaction boundary.
 func serve(ctx context.Context, relay *notifyrelay.Server,
-	store *notifyrelay.Store, listener net.Listener) error {
+	store *relaydb.Database, listener net.Listener) error {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -198,4 +209,45 @@ func serve(ctx context.Context, relay *notifyrelay.Server,
 	}
 
 	return errors.Join(workerErr, httpErr, store.Close())
+}
+
+// readPolicy decodes publisher-owned JSON without allowing unknown fields or
+// trailing values. Neither the policy body nor credential contents are logged.
+func readPolicy(path string, target any) error {
+	// Publisher-selected local configuration, never an HTTP request path.
+	raw, err := os.ReadFile(path) // #nosec G304
+	if err != nil {
+		return errors.New("load publisher policy failed")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return errors.New("invalid publisher policy JSON")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("trailing publisher policy JSON")
+	}
+
+	return nil
+}
+
+// openDatabase selects one dedicated SQL engine. PostgreSQL credentials come
+// only from a mounted file, never a command-line DSN or HTTP request.
+func openDatabase(ctx context.Context, path,
+	postgresFile string) (*relaydb.Database, error) {
+
+	if postgresFile == "" {
+		return relaydb.OpenSQLite(ctx, path)
+	}
+	// Publisher-selected mounted credential, never an HTTP request path.
+	raw, err := os.ReadFile(postgresFile) // #nosec G304
+	if err != nil {
+		return nil, errors.New("load PostgreSQL credential file failed")
+	}
+	dsn := string(bytes.TrimSpace(raw))
+	if dsn == "" {
+		return nil, errors.New("empty PostgreSQL credential file")
+	}
+
+	return relaydb.OpenPostgres(ctx, dsn)
 }

@@ -9,10 +9,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
-
-	bolt "go.etcd.io/bbolt"
 )
 
 // appAttestRoot is Apple's dedicated App Attestation root, obtained from
@@ -32,26 +31,32 @@ type Config struct {
 }
 
 // Server owns bounded HTTP admission and a durable delivery worker. The caller
-// owns Store and must join HTTP shutdown and Run before closing it.
+// owns the SQL database and must join HTTP shutdown and Run before closing it.
 type Server struct {
-	store     *Store
-	provider  Provider
-	verifier  DeviceAuthenticator
-	apps      map[string]AppConfig
-	log       *slog.Logger
-	now       func() time.Time
-	handler   http.Handler
-	wake      chan struct{}
-	slots     chan struct{}
-	running   atomic.Bool
-	requests  [2]atomic.Uint64
-	delivered [2][4]atomic.Uint64
+	store          managementStore
+	provider       Provider
+	verifier       DeviceAuthenticator
+	apps           map[string]AppConfig
+	log            *slog.Logger
+	now            func() time.Time
+	handler        http.Handler
+	wake           chan struct{}
+	slots          chan struct{}
+	running        atomic.Bool
+	sourceFailures atomic.Uint64
+	requests       [2]atomic.Uint64
+	delivered      [2][4]atomic.Uint64
 }
 
-// NewServer constructs a publisher relay. App Attest is the default module;
-// Config.Authenticator can select an explicit publisher integration in Go.
-// There is no HTTP or command-line attestation bypass.
-func NewServer(cfg Config, store *Store, provider Provider) (*Server, error) {
+// NewServer constructs a SQL subscriber relay. App Attest is the default
+// module; Config.Authenticator can select an explicit publisher integration in
+// Go. There is no HTTP or command-line attestation bypass.
+func NewServer(cfg Config, store *SQLStore,
+	provider Provider) (*Server, error) {
+
+	if store == nil || len(store.sources) == 0 {
+		return nil, errors.New("SQL relay sources required")
+	}
 	authenticator := cfg.Authenticator
 	if authenticator == nil {
 		var err error
@@ -66,25 +71,10 @@ func NewServer(cfg Config, store *Store, provider Provider) (*Server, error) {
 	)
 }
 
-// newServer injects deterministic dependencies for package tests only.
-func newServer(cfg Config, store *Store, provider Provider,
-	verifier installationVerifier, now func() time.Time) (*Server, error) {
-
-	if verifier == nil {
-		return nil, errors.New("relay verifier required")
-	}
-
-	return newAuthenticatedServer(
-		cfg, store, provider, &AppAttestAuthenticator{
-			verifier: verifier,
-		},
-		now,
-	)
-}
-
 // newAuthenticatedServer shares HTTP/store ownership across publisher modules.
-func newAuthenticatedServer(cfg Config, store *Store, provider Provider,
-	verifier DeviceAuthenticator, now func() time.Time) (*Server, error) {
+func newAuthenticatedServer(cfg Config, store managementStore,
+	provider Provider, verifier DeviceAuthenticator,
+	now func() time.Time) (*Server, error) {
 
 	if store == nil || provider == nil || verifier == nil ||
 		now == nil || len(cfg.Applications) == 0 {
@@ -120,9 +110,6 @@ func newAuthenticatedServer(cfg Config, store *Store, provider Provider,
 	mux.HandleFunc("POST /v1/challenges", s.challenge)
 	mux.HandleFunc("POST /v1/installations", s.enroll)
 	mux.HandleFunc("POST /v1/installations/{installation}/manage", s.manage)
-	mux.HandleFunc("POST /v1/wakes", s.push(ScopeWake))
-	mux.HandleFunc("POST /v1/alerts", s.push(ScopeAlert))
-	mux.HandleFunc("POST /v1/subscriptions/verify", s.verifySubscription)
 	mux.HandleFunc(
 		"GET /healthz",
 		func(w http.ResponseWriter, _ *http.Request) {
@@ -141,7 +128,14 @@ func newAuthenticatedServer(cfg Config, store *Store, provider Provider,
 		},
 	)
 	mux.HandleFunc("GET /metrics", s.metrics)
-	s.handler = http.HandlerFunc(
+	s.handler = s.limitRequests(mux)
+
+	return s, nil
+}
+
+// limitRequests bounds concurrent admission and untrusted JSON before routing.
+func (s *Server) limitRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			select {
 			case s.slots <- struct{}{}:
@@ -157,11 +151,10 @@ func newAuthenticatedServer(cfg Config, store *Store, provider Provider,
 				return
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
-			mux.ServeHTTP(w, r)
+			next.ServeHTTP(w, r)
 		},
 	)
 
-	return s, nil
 }
 
 // Handler exposes the relay API behind request deadlines and TLS termination.
@@ -232,9 +225,9 @@ func scopeIndex(scope Scope) int {
 // DeliverOnce processes at most one job without idle waiting. Its provider
 // timeout is shorter than the durable claim, and completion is claim-fenced.
 func (s *Server) DeliverOnce(ctx context.Context) (bool, error) {
-	delivery, err := s.store.claim(ctx, s.now())
+	delivery, progress, err := s.store.claimWithProgress(ctx, s.now())
 	if err != nil || delivery == nil {
-		return false, err
+		return progress, err
 	}
 	app, supported := s.apps[delivery.policy.ID]
 	result := ProviderResult{Outcome: OutcomeRejected}
@@ -278,6 +271,22 @@ func (s *Server) Run(ctx context.Context) error {
 		return errors.New("notification worker already running")
 	}
 	defer s.running.Store(false)
+	runCtx, cancel := context.WithCancel(ctx)
+	var sources sync.WaitGroup
+	if store, ok := s.store.(*SQLStore); ok {
+		for id := range store.sources {
+			sources.Go(
+				func() {
+					s.runFeedSource(runCtx, store, id)
+				},
+			)
+		}
+	}
+	defer func() {
+		cancel()
+		sources.Wait()
+	}()
+	ctx = runCtx
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
@@ -317,10 +326,6 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	for _, scope := range []Scope{ScopeWake, ScopeAlert} {
 		index := scopeIndex(scope)
-		_, _ = fmt.Fprintf(
-			w, "notification_relay_push_requests_total{scope=%q}"+
-				" %d\n", scope, s.requests[index].Load(),
-		)
 		for outcome, label := range []string{
 			"retry",
 			"accepted",
@@ -334,15 +339,11 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 			)
 		}
 	}
-	var pending int
-	err := s.store.db.View(func(tx *bolt.Tx) error {
-		if err := r.Context().Err(); err != nil {
-			return err
-		}
-		pending = tx.Bucket([]byte(jobsBucket)).Stats().KeyN
-
-		return nil
-	})
+	_, _ = fmt.Fprintf(
+		w, "notification_relay_source_failures_total %d\n",
+		s.sourceFailures.Load(),
+	)
+	pending, err := s.store.pendingJobs(r.Context())
 	if err == nil {
 		_, _ = fmt.Fprintf(
 			w, "notification_relay_pending_jobs %d\n", pending,

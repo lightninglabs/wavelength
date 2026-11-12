@@ -1,40 +1,40 @@
 # Notification relay
 
-`wavenotifyd` sends fixed notifications for a publisher's own iOS app. The
-publisher configures Apple App Attest and Apple Push Notification service
-(APNs) credentials. An app installation proves possession of its attested key
-before registering a device token or changing a subscription. A mailbox
-operator receives revocable capabilities for a fixed subscription, rather
-than device tokens or Apple credentials.
+`wavenotifyd` is a publisher-owned subscriber and delivery service. Producers
+append generic wake hints to its mailbox. The relay consumes those hints and
+owns device enrollment, delivery providers, quiet periods and presentation.
+Another app team can run its own relay without a producer relay-URL allowlist.
+The reference uses App Attest and Apple Push Notification service (APNs).
 
 ```mermaid
 sequenceDiagram
-    participant A as iOS app
-    participant R as Relay
-    participant O as Mailbox operator
-    participant P as APNs
-    A->>R: Challenge and App Attest enrollment
-    A->>R: Signed subscription management
-    R-->>A: Scoped wake and optional alert capabilities
-    A->>O: Authenticated mailbox subscription
-    O->>R: Capability and opaque event identity
-    R->>R: Commit coalesced delivery job
-    R->>P: Fixed destination and template
-    P-->>A: Best-effort notification
-    A->>O: Reconcile canonical wallet state
+    participant A as App and native wallet SDK
+    participant R as Publisher relay
+    participant S as Producer
+    participant P as Delivery provider
+    A->>R: Device enrollment and signed local subscription
+    R-->>A: Subscriber-signed source offers
+    A->>S: Wallet-signed feed grant for exact offer
+    S-->>A: Opaque feed token
+    A->>R: Signed token binding
+    S->>S: Append coalesced hint with source event
+    R->>S: Pull with subscriber-key proof
+    R->>R: Commit local jobs and checkpoint
+    R->>S: Cumulative ACK
+    R->>P: Fixed route and authorized presentation
 ```
 
-The relay never receives wallet seeds, mailbox contents, payment amounts or
-arbitrary callback URLs. A remote generic alert says to open the wallet. The
-app may display a verified amount after reconciling persisted wallet activity.
-APNs acceptance proves neither device delivery nor wallet completion. Wallet
-safety and foreground recovery must work when no background notification runs.
+A hint contains no wallet identity, amount, device token or callback URL. The
+relay holds its subscriber keys, device destinations and public enrollment
+evidence; it never holds wallet signing keys. Provider acceptance proves
+neither device execution nor wallet completion. Foreground wallet recovery must
+work when background notification delivery never runs.
 
 ## Publisher configuration
 
-Provide a JSON array of policies through `--apps-config`. Example identifiers
-below are placeholders. The App ID prefix must be the actual Apple App ID
-prefix, which can differ from a publisher's Team ID.
+Build the reference command with `go build -o /tmp/wavenotifyd ./cmd/wavenotifyd`.
+Provide an `--apps-config` JSON array. All identifiers below are placeholders.
+The Apple App ID prefix can differ from the publisher's Team ID.
 
 ```json
 [
@@ -49,50 +49,88 @@ prefix, which can differ from a publisher's Team ID.
 ```
 
 Use separate aliases for development and production. TestFlight uses production
-APNs independently of the wallet's Bitcoin network. Once enrolled, an
-installation retains its exact policy. Changing the same alias to a different
-topic, audience or environment fails closed for existing installations.
+APNs independently of the wallet's Bitcoin network. Enrollment retains the
+exact app policy. Changing its audience, topic or environment requires deliberate
+re-enrollment; an existing installation does not silently change policy.
 
-Mount the Apple PKCS#8 P-256 provider key in a private file. Do not put the
-key or device tokens in flags, request logs, crash reports or metrics. The
-provider key ID and Team ID identify that credential; they do not select an
-HTTP caller's application. The trust root for App Attest is embedded from
-Apple's dedicated App Attestation certificate authority.
+Provide `--sources-config` as a JSON array of fixed producer endpoints and
+identities. This example public key is synthetic, not a real service identity.
+Use the producer's normal RPC admission credentials. A feed grant does not
+bypass those credentials or the wallet owner's ordinary admission policy.
+
+```json
+[
+  {
+    "id": "primary",
+    "role": "operator",
+    "endpoint": "producer.example:443",
+    "public_key": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    "tls_cert_file": "/config/producer-root.pem",
+    "macaroon_file": "/secrets/client.macaroon",
+    "event_classes": 1
+  }
+]
+```
+
+`tls_cert_file` may be omitted for system TLS roots. `macaroon_file` may be
+omitted only when that producer's ordinary RPC policy permits it. Bit 0 of
+`event_classes` permits protocol wakes; bit 1 permits classified payment hints.
+Unknown bits fail startup. A role is a local app-facing label, not authority.
+No HTTP caller chooses an endpoint, credential path or source identity.
+
+The relay persists a distinct subscriber key per configured source. Reusing a
+source ID for another producer identity fails. Never reuse a subscriber key
+across unrelated producers: the existing static mailbox proof is not bound to
+a producer identity. The TLS endpoint supplies the checked logical source
+identity; the feed probe is not a new server-signature scheme.
+
+Mount the Apple PKCS#8 P-256 provider key privately. Do not put provider keys,
+PostgreSQL DSNs or device tokens in command-line arguments, logs or metrics.
+The App Attest module embeds Apple's dedicated attestation root, independently
+of TLS certificate trust.
 
 ```sh
-go build -o /tmp/wavenotifyd ./cmd/wavenotifyd
 /tmp/wavenotifyd --apps-config=/config/apps.json \
+  --sources-config=/config/sources.json \
   --apns-key-file=/secrets/provider.p8 --apns-key-id=TESTKEY001 \
-  --apns-team-id=TESTTEAM01 --database=/data/relay.db \
+  --apns-team-id=TESTTEAM01 --database=/data/relay-sqlite.db \
   --listen=127.0.0.1:8080
 ```
 
-The default listener accepts loopback only. A non-loopback listener requires
-`--behind-tls-proxy` and a trusted HTTPS ingress. Keep `/metrics`, `/healthz`
-and `/readyz` on a private monitoring path. Apply ingress request and connection
-limits as well as the relay's 64 concurrent-handler limit and 64 KiB body
-limit. There is no attestation bypass or unauthenticated enrollment mode.
+SQLite is the default dedicated store. `--postgres-dsn-file=/secrets/relay-dsn`
+selects PostgreSQL instead; `--database` is the SQLite path only. Keep either
+database separate from all wallet state. The new SQLite filename intentionally
+avoids the retired store. A non-SQL file fails instead of being imported or
+opened through a fallback.
 
-## App protocol
+The default listener permits loopback only. Non-loopback HTTP requires
+`--behind-tls-proxy` and trusted HTTPS ingress. Keep `/metrics`, `/healthz` and
+`/readyz` on a private monitoring path. Apply ingress connection/request limits
+in addition to the command's 64 concurrent handlers and 64 KiB body limit.
+There is no CLI or HTTP authentication bypass.
 
-All paths use JSON. Bytes in JSON use standard padded base64. Unknown fields
-and trailing JSON values are rejected. Enrollment returns 201; management 200;
-accepted notifications return 202. Errors contain a fixed `error` code and
-never echo proofs, capabilities or device tokens.
+## Device and wallet setup
+
+JSON byte fields use standard padded base64. Unknown fields and trailing values
+are rejected. Enrollment returns 201; successful management returns 200. Public
+errors never echo proofs, tokens or private records.
 
 1. `POST /v1/challenges` with `app_id` and `operation: "enroll"` obtains a
-   five-minute challenge. Management uses `operation: "manage"` and the
-   existing `installation_id`.
-2. Build the exact payload bytes once. Enrollment payload is
-   `{"device_token":"hex-encoded-APNs-token"}`. Calculate the transcript below,
-   then pass SHA256(transcript) to Apple's `attestKey` or `generateAssertion`.
-3. `POST /v1/installations` with `challenge_id`, `key_id`, `proof` and `payload`
-   enrolls. `proof` is Apple's attestation object; `payload` is the base64
-   representation of the original JSON bytes. Store the returned
-   `installation_id` with the App Attest key identifier.
-4. `POST /v1/installations/{installation_id}/manage` carries the same proof
-   envelope with an assertion and no `key_id`. Serialize assertions per key
-   so their strictly increasing counters commit in generation order.
+   five-minute stateless challenge. Management uses `operation: "manage"` and
+   the existing `installation_id`.
+2. Serialize exact payload bytes once. Enrollment uses
+   `{"device_token":"hex-encoded-APNs-token"}` with the reference provider.
+   Pass SHA256 of the transcript below to Apple's attestation/assertion API.
+3. `POST /v1/installations` carries `challenge_id`, `key_id`, `proof` and
+   `payload`. Save the returned installation ID with the attested key ID.
+4. `POST /v1/installations/{installation_id}/manage` carries an assertion over
+   the exact payload and no `key_id`. Serialize assertions per credential.
+5. A signed `subscribe` returns a random local subscription ID and source
+   offers. Ask the native wallet's `SetNotificationFeedGrant` to authorize each
+   exact offer at its already configured source. Neither a push nor an offer
+   may introduce a caller-selected producer endpoint.
+6. Return the source token through signed `bind_feed` management. Feed tokens
+   use canonical raw URL-base64, unlike the proof envelope's padded base64.
 
 The transcript is UTF-8 ASCII fields separated by literal newline bytes,
 including the **final newline**. An empty installation ID occupies an empty
@@ -109,173 +147,141 @@ wavelength.notification-relay.v1
 <payload digest>
 ```
 
-The challenge is authenticated by the relay and bound to the operation, app
-and installation. Anonymous challenge creation allocates no database record.
-Only a verified proof consumes a challenge, atomically with its assertion
-counter and mutation. Reusing either a consumed challenge or an old counter
-is rejected. A retry after an ambiguous response needs a new challenge and
-assertion. Subscribing to the same route rotates its capabilities; deliver the
-new capabilities to the operator before considering renewal complete.
+The relay consumes the challenge with its counter and authorized mutation in
+one transaction. Replay returns 409. An ambiguous response needs a fresh
+challenge and assertion. Enrollment never resets an existing counter.
 
-Enrollment's installation ID is the lowercase hexadecimal SHA256 of
-`app_id + NUL + decoded App Attest key_id`. The decoded key ID is 32 bytes.
-This permits signed management recovery when enrollment committed but its
-response was lost. Re-enrollment never resets an existing assertion counter.
-
-Management payload actions are:
+Installation IDs are lowercase SHA256 hex over
+`app_id + NUL + decoded credential key_id`. The decoded credential identifier
+is 32 bytes. App Attest binds it to its attested key. A custom publisher module
+must bind it to that module's authenticated credential.
 
 | Action | Additional fields | Result |
-|---|---|---|
-| `rotate_token` | `device_token` | Replace token and increment its revision |
-| `subscribe` | `route_id`, `enable_alerts`, optional `alert_presentation` | Create/renew a 30-day subscription and rotate scoped capabilities |
-| `revoke_subscription` | `subscription_id` | Revoke only this installation's subscription |
-| `delete_installation` | none | Disable delivery and erase token, key and attestation receipt |
+| --- | --- | --- |
+| `rotate_token` | `device_token` | Validate/normalize destination and increment token revision |
+| `subscribe` | `route_id`, `enable_alerts`, optional `alert_presentation` | Create/renew a route for slightly less than 30 days and return source offers |
+| `bind_feed` | `subscription_id`, `feed_binding` | Bind configured source/token/classes/expiry to an owned route |
+| `revoke_subscription` | `subscription_id` | Remove this installation's route and bindings |
+| `delete_installation` | none | Disable delivery and erase destination/public credential evidence |
 
-Route IDs are app-owned opaque wallet/network lookup identities. They confer
-no wallet authority. Keep route mapping local and validate the selected account
-and network after a tap. Each installation allows at most 16 live routes.
-Capabilities are 32 random bytes. The relay persists only their SHA256 hashes.
-Wake and alert scopes are separate; disabling alerts also drops queued alerts.
+`feed_binding` contains `source_id`, `feed_token`, `event_classes` and
+`expires_at_unix`. A device cannot claim another installation's subscription.
+Each installation has at most 16 live routes. Route IDs are app-owned wallet/
+network lookup labels, not wallet authority. Validate that local mapping and
+the selected account/network after a tap.
 
-## Operator protocol
+The subscriber-signed offer binds producer identity, subscriber key, random
+subscription ID, classes and expiry. The wallet signs the full source grant.
+Only the source learns that wallet identity. Tokens never authorize a mailbox
+read, allocate a route or choose a destination.
 
-Before persisting a mailbox notification subscription, its producer verifies
-that the app actually holds grants issued by the configured relay. After
-checking the mailbox owner's fresh full-request signature, call
-`POST /v1/subscriptions/verify` at the configured HTTPS origin, with
-`Authorization: Bearer <wake capability>` and:
+A source event may arrive before the app returns its token, including renewal.
+The authenticated ordered source stream can learn or refresh correlation only
+for an existing local random route, under current publisher class/alert policy
+and the shorter source/local expiry. This retains the first wake without
+blocking all other routes on unfinished app setup. Same-token renewal retains
+its generation watermark. Unknown or revoked routes can be skipped safely.
 
-```json
-{"subscription_id":"relay-issued-id","alert_capability":"optional-alert-grant"}
-```
+## Source ACK and delivery
 
-HTTP 200 returns only `expires_at`, the live subscription's Unix expiry. The
-wake grant must authorize that subscription. An optional alert grant must have
-alert scope for the same subscription. Expired, revoked, deleted, mixed or
-unsupported-policy grants fail with HTTP 401. A valid grant whose current
-APNs token was invalidated returns HTTP 503 instead, on both verification and
-push admission. Producers must retain the binding and use their bounded retry
-policy; signed token rotation restores delivery with the same grant. No job
-is admitted while the destination is disabled. This read-only call creates no
-job and sends no push. The producer must cap its saved expiry to this verified grant and
-consume the signed request's nonce atomically with its local mutation. Perform
-the verification call outside the database transaction. Resolve the HTTPS
-origin through a server-configured relay allowlist and deny redirects; a client
-must not choose a URL. A mailbox signature alone proves no relay enrollment.
+The producer appends one outstanding envelope per live grant. New activity
+increments pending generation while that envelope remains outstanding. Its
+mailbox ACK and any pending successor append are atomic. Feed mailbox appends
+never create another wake; response envelopes do not cause wake loops.
 
-Call `POST /v1/wakes` or `POST /v1/alerts` with
-`Authorization: Bearer <matching capability>` and `{"event_id":"opaque-id"}`.
-The capability fixes installation, route, app policy, expiry and scope. The
-request cannot choose another destination or notification text. The producer
-must use a stable event identity when retrying an ambiguous response. Visible
-alerts require an authorized incoming-payment event at the producer; arbitrary
-mailbox traffic does not establish that a payment occurred.
+The relay leases one ingress owner per source. It commits local jobs, binding
+progress and a pending-ACK checkpoint together **before** the cumulative ACK.
+A lost ACK response is retried before the next Pull, including an empty Pull.
+A stale owner cannot advance or clear a newer checkpoint. Malformed or
+unsupported source envelopes stop progress without ACK. Legal sequence gaps
+after producer expiry/revocation are accepted.
 
-Repeated identities deduplicate for 24 hours. Pending work coalesces per scope
-and subscription. Jobs expire after an hour. Global budgets bound queued jobs
-to 4096, dedup records to 100000 and consumed challenges to 100000. Per-route
-dedup capacity is 1024. Each installation also has a shared 1024-record budget
-across its routes and both wake and alert scopes, about 1% of the global replay
-budget. One busy route can use the budget; 16 routes average 64 distinct events
-each per day. Retries with the same event identity do not consume another slot
-and succeed even at capacity. Fresh identities consume slots even when their
-push jobs coalesce or observe a quiet period. Capacity returns 429; callers
-retain their durable job and retry.
+The retired `POST /v1/wakes`, `POST /v1/alerts` and
+`POST /v1/subscriptions/verify` endpoints return 404. Producers hold no relay
+capability and call no delivery HTTP endpoint.
 
-Quota counts include expired records until bounded maintenance removes them.
-Renewing a route preserves its subscription ID and replay records. Revoking or
-expiring a subscription removes its replay records atomically with authority;
-its old capabilities can no longer enqueue, and recreating the route uses a
-fresh subscription ID. Installation deletion disables all admission immediately;
-its indexed replay records remain charged until expiry and maintenance. No new
-storage format or counter migration is required. Records orphaned by revocation
-on older versions remain covered by the global cap until their 24-hour expiry
-and maintenance. Existing installations above the new quota can replay accepted
-identities but must wait for capacity before adding fresh ones. A single installed device observes a 20-minute quiet period after
-an accepted silent push and a separate one-minute alert quiet period.
+Ordinary wakes use checkpoint/generation replay protection without allocating
+one long-lived dedup row per wake. Admitted payment correlators retain
+24-hour replay evidence. Pending jobs coalesce per route/scope and expire after at most one
+hour, capped by grant expiry. Limits are 4096 pending jobs, 100000 payment
+replay records, 1024 replay records per route and per installation, and 100000
+consumed challenges. Expired rows count until bounded maintenance removes them.
+Global pending-job exhaustion rolls back the source prefix, so the producer
+retains its outstanding hint. A full payment replay budget instead defers a
+bounded local candidate, leaving the aggregate source ACK and other devices
+free to proceed. The provider claim transaction must reserve replay evidence
+first. Deferred candidates retain the ordinary expiry and may expire without a
+banner. These bounds do not replace paid/resource admission at an open producer.
 
-## Storage, retries and operations
+A device has a 20-minute silent-wake quiet period and a separate one-minute
+payment period after accepted sends. SQL job and installation leases prevent
+replicas from bypassing those periods through different routes. Completion
+fences claims, generations and token revisions. A late provider response cannot
+disable a rotated token or erase newer work. Disabled destinations retain
+bounded jobs for signed token recovery instead of blocking an aggregate feed.
 
-Use exactly one relay process and a persistent volume for the dedicated Bolt
-file. The file has mode 0600 and a five-second exclusive-open timeout. A
-restart preserves subscriptions, assertion counters, challenge authentication
-key, replay records, delivery identities and pending jobs. Losing this file
-requires app re-enrollment. Back it up as private data with an application-
-consistent snapshot. Never share a wallet database or run multiple replicas
-against this file.
+## Storage and process ownership
 
-Delivery claims expire after 30 seconds. The worker retries temporary provider
-failures with bounded backoff and stable request identity. A completion is
-fenced by its claim and generation, so it cannot erase work added during the
-send. APNs invalid-token responses are also fenced by the token revision and
-invalidation timestamp. A late response cannot disable a newly registered
-token. Transport errors are sanitized because HTTP error URLs contain tokens.
+SQLite uses a private 0600 file, WAL, synchronous commits and one connection.
+For multiple replicas use a dedicated PostgreSQL database and identical
+publisher policies. SQL owns cross-replica claims, assertion counters and
+checkpoints; it does not depend on an exclusive process file lock. Back up the
+database as private data. Losing subscriber keys changes source mailbox
+identity and requires new grants; losing device evidence requires deliberate
+re-enrollment. There is no legacy-store importer or automatic trust fallback.
 
-SIGTERM cancels provider I/O, stops HTTP admission, joins the worker and HTTP
-handlers, then closes storage. If joining exceeds 30 seconds, the command exits
-without closing storage beneath live workers; Bolt recovers at the next open.
-Readiness requires a running worker. Metrics use fixed scope/outcome labels
-and contain no installation, route, event, capability or token identifiers.
+SIGTERM cancels HTTP, source loops and provider calls, joins them, then closes
+SQL. If joining exceeds the command's 30-second shutdown budget, it leaves the
+database open beneath live work and exits; committed SQL evidence survives.
+A cancelled source step may leave only its bounded lease. No detached cleanup
+outlives the daemon-owned worker.
 
-Build the non-root image with `Dockerfile.notifyrelay`. The existing Docker
-workflow builds and publishes the relay alongside the daemon after this source
-lands on main (and on its existing tag/nightly/manual triggers). Relay tags
-share the source tag suffix and the binary embeds the actual checkout SHA.
-No publication workflow is run as part of preparing this PR. Source publication,
-registry upload, configuration activation and real-device acceptance are
-separate steps. This change creates no credential, sends no live notification
-and activates no service.
+Readiness means the relay worker is running, not that APNs or every producer
+is reachable. Internal metrics count pending jobs, source failures and provider
+outcomes with bounded labels. They contain no device, route, token or proof
+identifiers. A source retry log identifies only its configured local alias;
+raw network/driver errors cannot expose credentials there.
 
-Run `go test -race ./notifyrelay ./cmd/wavenotifyd -count=1` for the local
-authentication, queue, provider and shutdown suite. Enrollment tests replace
-Apple certificate issuance; management tests use real P-256 App Attest
-assertions. Provider transports are faked. Apple's validation-guide vectors
-can also be checked with
-`go test github.com/takimoto3/app-attest -run 'Test.*Golden|TestApple'`.
+## Publisher modules and validation
 
-The generic alert says “Payment activity. Open Wavelength to update your wallet.”
-A source may signal an incoming HTLC before the phone has completed its claim.
-The fixed template therefore does not claim a completed receipt or an amount.
+`Config.Authenticator` selects a trusted Go `DeviceAuthenticator`; App Attest
+is the default. A custom module authenticates exact transcripts and credential
+identity, while SQL independently enforces nonce and counter state. The provider
+validates destination policy and owns token normalization. APNs canonicalizes
+hex; an opaque provider may preserve case. The reference command ships neither
+an Android nor an account-auth module. See [SQL ownership and module contracts](notification-relay-sql.md).
+
+Run `go test -race ./notifyrelay/... ./cmd/wavenotifyd` for SQLite and add
+`-tags=test_postgres` for disposable PostgreSQL fixtures. HTTP tests replace
+Apple certificate issuance but use real P-256 assertion signatures. TLS source
+fixtures verify ordinary RPC credentials and R proof. Provider calls are
+controlled; these tests do not prove physical APNs delivery or iOS execution.
+Source publication, image publication, configuration activation and device
+acceptance are separate gates. Preparing this code activates no service.
 
 ## Verified receipt presentation
 
-An updated app may sign a subscription with `enable_alerts: true` and
-`alert_presentation: "receipt_hint"`. The management response must explicitly
-acknowledge `alert_presentation: "receipt_hint"` before the app enables this
-mode. Omission or `"generic"` preserves the visible template for older apps.
-Other presentation values, a presentation without alert consent, and a
-presentation on unrelated management actions are rejected.
+A device may sign `enable_alerts: true` and
+`alert_presentation: "receipt_hint"`. Require that exact presentation in the
+management response before enabling it. Omission or `"generic"` keeps the fixed
+visible payment-activity template. Invalid presentation or missing alert consent
+is rejected.
 
-A payment producer still calls `/v1/alerts` with its existing scoped grant.
-The relay sends `content-available: 1`, no `aps.alert`, APNs push type
-`background`, and the fixed app-data marker `kind: "payment_activity"`.
-The existing `event_id` is the SHA256 of the producer's opaque event identity.
-An ordinary `/v1/wakes` request never carries this marker. Both payment modes
-share the one-minute payment budget; ordinary wakes retain their separate
-20-minute budget. Apple's delivery policy may throttle or omit background
-hints, even when the relay accepts them.
+For classified payment events, receipt-hint mode sends `content-available: 1`,
+no `aps.alert`, push type `background` and `kind: "payment_activity"`. Ordinary
+wakes never carry that payment marker. Both payment modes share the one-minute
+payment budget. Apple may throttle or omit background delivery.
 
-The marker authorizes a payment-activity fallback. It proves no amount or
-completion. For an amount, the app must match the event to an invoice enrolled
-under current consent and verify completed native wallet state. A locked,
+A hint proves no amount or completion. The app must match an enrolled invoice
+and verify completed native wallet state before displaying an amount. A locked,
 interrupted or unmatched path may use the fixed generic local alert. Persist
-presentation deduplication before adding a local notification. A process crash
-can omit an alert; activity and wallet recovery remain authoritative.
+presentation dedup before adding a local notification. Wallet recovery remains
+authoritative if a process crash omits a banner.
 
-A signed mode change permanently drops pending payment events atomically
-with capability rotation, retaining replay evidence. Retrying a dropped event
-returns accepted without recreating its job. An interrupted old send that
-needs retry is dropped too. The app performs foreground reconciliation during
-this cutover; old activity is not presented again in the new mode. An old in-flight provider completion
-cannot erase a newly queued event. APNs may already hold an older visible
-alert when the change commits; it cannot be recalled. The app must treat a
-remote visible alert as already presented.
-
-Opening an existing format-one database upgrades its format marker to two
-without deleting records. Missing presentation fields mean generic. Format-one
-binaries reject the new marker, so rollback requires a format-two compatible
-binary. Back up the volume before upgrading. No command in this change starts
-a relay or changes an app's subscription.
+A signed presentation change drops pending payment jobs atomically while
+retaining replay evidence. Old in-flight provider completion cannot erase new
+work. A previously submitted APNs alert cannot be recalled. The app must treat
+a remote visible alert as already presented.
 
 ### Invoice correlation contract
 
@@ -285,7 +291,7 @@ concatenated bytes as its opaque EventID: ASCII
 33-byte compressed public key, and the invoice's 32-byte payment hash. The
 relay performs its existing SHA256 over the UTF-8 EventID and sends that
 second digest as `wavelength.event_id`. The relay does not receive the inputs.
-Knowing a public invoice does not grant push authority; capability checks and
+Knowing a public invoice does not grant push authority; wallet delegation, subscriber proof and
 the producer's incoming-payment classification are still required.
 
 Cross-language fixture (public synthetic inputs):

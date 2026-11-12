@@ -11,7 +11,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -151,11 +150,14 @@ func publisherPost(t *testing.T, server *Server, path string,
 // reaches real HTTP enrollment, assertions and atomic store updates without
 // Apple configuration or accidental case normalization.
 func TestPublisherAccountModuleAndOpaqueTokens(t *testing.T) {
-	store, err := OpenStore(filepath.Join(t.TempDir(), "relay.db"))
-	require.NoError(t, err)
+	database := sqlTestOpener(t)()
 	defer func() {
-		require.NoError(t, store.Close())
+		require.NoError(t, database.Close())
 	}()
+	store, err := NewSQLStore(
+		t.Context(), database, testSourceConfig(t, "producer"),
+	)
+	require.NoError(t, err)
 	auth := &accountTestAuthenticator{
 		secret: []byte("account fixture secret"),
 	}

@@ -6,9 +6,9 @@ installation assertions, consumed challenges, subscriptions, source subscriber
 keys, feed checkpoints and provider jobs. It contains no wallet state or wallet
 signing keys.
 
-This first slice adds the schema, typed management queries and transaction
-primitive. The daemon still uses its existing store until the following relay
-runtime slices replace it. No import or automatic fallback opens an old store.
+The reference daemon uses this SQL store and fixed-source subscribers. It
+opens no legacy store and exposes no producer push endpoint. Old library
+regression fixtures remain only until their separate cleanup slice.
 
 ## Persistence rules
 
@@ -59,8 +59,7 @@ expired jobs, replay records and subscriptions in bounded transactions.
 The job race tests use separate database pools for competing workers and lease
 takeover. They also cover N+1 during N's send, quiet periods across routes, token
 rotation/recovery, presentation cutover, transaction rollback, replay quota
-isolation and independent expiry horizons. HTTP/source ingress wiring follows
-in the next slice.
+isolation and independent expiry horizons. The subscriber and HTTP runtime use the same job boundary.
 
 ## Publisher source offers and bindings
 
@@ -84,8 +83,7 @@ Tokens are correlation, not authorization. They need not be globally unique.
 Ingress first looks up the event's grant ID as a local subscription. The
 following subscriber slice handles producer events that race the app handoff. Rebinding the same token retains generation progress;
 rotating the token starts a new generation stream. Revocation deletes local
-feed bindings with their subscription. This slice does not start a subscriber
-worker or switch the HTTP daemon to SQL yet.
+feed bindings with their subscription. The SQL runtime owns the subscriber workers and authenticated HTTP API.
 
 ## Subscriber ingress and acknowledgement
 
@@ -134,7 +132,7 @@ a checkpoint.
 
 The daemon owns the stepping loop. It cancels and joins each subscriber before
 closing connections and SQL. A cancelled step leaves at most a bounded lease;
-no detached cleanup outlives it. HTTP/CLI activation follows separately.
+no detached cleanup outlives it. The command owns that cancellation and shutdown boundary.
 
 ## Publisher authentication and provider modules
 
