@@ -229,6 +229,7 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 	)
 	client.readActivityBatch = server.ReadCurrentActivityBatch
 	client.activityCursor = server.ActivityEventCursor
+	client.readVTXOAnchors = server.ReadVTXOAnchors
 	client.readLightningReceipts = server.ReadLightningReceipts
 	client.setHostForeground = server.SetHostForeground
 	client.processNext = server.ProcessNext

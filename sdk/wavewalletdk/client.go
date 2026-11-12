@@ -73,7 +73,9 @@ type Client struct {
 	// daemon owner.
 	readActivityBatch func(context.Context, int64, int64, int32) (
 		db.ActivityBatch, error)
-	activityCursor        func(context.Context) (int64, error)
+	activityCursor  func(context.Context) (int64, error)
+	readVTXOAnchors func(context.Context, string) ([]waved.VTXOAnchor,
+		error)
 	readLightningReceipts func(context.Context,
 		waved.LightningReceiptRequest) ([]waved.LightningReceipt, error)
 
