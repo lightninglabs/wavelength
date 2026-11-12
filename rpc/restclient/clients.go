@@ -1229,6 +1229,17 @@ func (c *WalletServiceClient) Exit(ctx context.Context,
 	return out, err
 }
 
+// ExitBatch submits one cooperative selection without replaying on error.
+func (c *WalletServiceClient) ExitBatch(ctx context.Context,
+	in *wavewalletrpc.ExitBatchRequest, _ ...grpc.CallOption) (
+	*wavewalletrpc.ExitBatchResponse, error) {
+
+	out := new(wavewalletrpc.ExitBatchResponse)
+	err := c.client.Post(ctx, "/v1/wallet/exit-batch", in, out)
+
+	return out, err
+}
+
 // ExitStatus returns one wallet unilateral exit status.
 func (c *WalletServiceClient) ExitStatus(ctx context.Context,
 	in *wavewalletrpc.ExitStatusRequest, _ ...grpc.CallOption) (

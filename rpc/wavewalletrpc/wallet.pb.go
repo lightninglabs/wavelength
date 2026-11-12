@@ -490,6 +490,61 @@ func (ExitInfeasibilityReason) EnumDescriptor() ([]byte, []int) {
 	return file_wallet_proto_rawDescGZIP(), []int{6}
 }
 
+// ExitBatchOutcome describes admission of one input, not its eventual payout.
+type ExitBatchOutcome int32
+
+const (
+	// EXIT_BATCH_UNKNOWN means admission could not be established.
+	// Reconcile wallet activity and input state before any new submission.
+	ExitBatchOutcome_EXIT_BATCH_UNKNOWN ExitBatchOutcome = 0
+	// EXIT_BATCH_ACCEPTED means queued into the local round intent.
+	// Operator admission and confirmation are asynchronous and can still fail.
+	ExitBatchOutcome_EXIT_BATCH_ACCEPTED ExitBatchOutcome = 1
+	// EXIT_BATCH_FAILED means this input was definitively not queued.
+	ExitBatchOutcome_EXIT_BATCH_FAILED ExitBatchOutcome = 2
+)
+
+// Enum value maps for ExitBatchOutcome.
+var (
+	ExitBatchOutcome_name = map[int32]string{
+		0: "EXIT_BATCH_UNKNOWN",
+		1: "EXIT_BATCH_ACCEPTED",
+		2: "EXIT_BATCH_FAILED",
+	}
+	ExitBatchOutcome_value = map[string]int32{
+		"EXIT_BATCH_UNKNOWN":  0,
+		"EXIT_BATCH_ACCEPTED": 1,
+		"EXIT_BATCH_FAILED":   2,
+	}
+)
+
+func (x ExitBatchOutcome) Enum() *ExitBatchOutcome {
+	p := new(ExitBatchOutcome)
+	*p = x
+	return p
+}
+
+func (x ExitBatchOutcome) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ExitBatchOutcome) Descriptor() protoreflect.EnumDescriptor {
+	return file_wallet_proto_enumTypes[7].Descriptor()
+}
+
+func (ExitBatchOutcome) Type() protoreflect.EnumType {
+	return &file_wallet_proto_enumTypes[7]
+}
+
+func (x ExitBatchOutcome) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ExitBatchOutcome.Descriptor instead.
+func (ExitBatchOutcome) EnumDescriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{7}
+}
+
 // ExitJobStatus collapses the underlying unroll job phases to a short
 // wallet-facing string set.
 type ExitJobStatus int32
@@ -551,11 +606,11 @@ func (x ExitJobStatus) String() string {
 }
 
 func (ExitJobStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_wallet_proto_enumTypes[7].Descriptor()
+	return file_wallet_proto_enumTypes[8].Descriptor()
 }
 
 func (ExitJobStatus) Type() protoreflect.EnumType {
-	return &file_wallet_proto_enumTypes[7]
+	return &file_wallet_proto_enumTypes[8]
 }
 
 func (x ExitJobStatus) Number() protoreflect.EnumNumber {
@@ -564,7 +619,7 @@ func (x ExitJobStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ExitJobStatus.Descriptor instead.
 func (ExitJobStatus) EnumDescriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{7}
+	return file_wallet_proto_rawDescGZIP(), []int{8}
 }
 
 // WalletEntryPhase is a coarse, wallet-facing lifecycle phase. It is not a
@@ -642,11 +697,11 @@ func (x WalletEntryPhase) String() string {
 }
 
 func (WalletEntryPhase) Descriptor() protoreflect.EnumDescriptor {
-	return file_wallet_proto_enumTypes[8].Descriptor()
+	return file_wallet_proto_enumTypes[9].Descriptor()
 }
 
 func (WalletEntryPhase) Type() protoreflect.EnumType {
-	return &file_wallet_proto_enumTypes[8]
+	return &file_wallet_proto_enumTypes[9]
 }
 
 func (x WalletEntryPhase) Number() protoreflect.EnumNumber {
@@ -655,7 +710,7 @@ func (x WalletEntryPhase) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use WalletEntryPhase.Descriptor instead.
 func (WalletEntryPhase) EnumDescriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{8}
+	return file_wallet_proto_rawDescGZIP(), []int{9}
 }
 
 // EntryFailureCode is a stable, machine-readable classification of why a FAILED
@@ -714,11 +769,11 @@ func (x EntryFailureCode) String() string {
 }
 
 func (EntryFailureCode) Descriptor() protoreflect.EnumDescriptor {
-	return file_wallet_proto_enumTypes[9].Descriptor()
+	return file_wallet_proto_enumTypes[10].Descriptor()
 }
 
 func (EntryFailureCode) Type() protoreflect.EnumType {
-	return &file_wallet_proto_enumTypes[9]
+	return &file_wallet_proto_enumTypes[10]
 }
 
 func (x EntryFailureCode) Number() protoreflect.EnumNumber {
@@ -727,7 +782,7 @@ func (x EntryFailureCode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use EntryFailureCode.Descriptor instead.
 func (EntryFailureCode) EnumDescriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{9}
+	return file_wallet_proto_rawDescGZIP(), []int{10}
 }
 
 // CreateRequest carries the parameters for WalletService.Create: the
@@ -5140,6 +5195,184 @@ func (x *ExitResponse) GetOnchainAddress() string {
 	return ""
 }
 
+// ExitBatchRequest selects distinct VTXOs for one cooperative intent. Inputs
+// may originate in different rounds. This RPC has no idempotent replay key.
+type ExitBatchRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// outpoints is a nonempty exact selection in "txid:index" format.
+	// Empty entries, malformed outpoints and duplicates are rejected.
+	Outpoints []string `protobuf:"bytes,1,rep,name=outpoints,proto3" json:"outpoints,omitempty"`
+	// onchain_address is the common destination. Empty allocates one fresh
+	// backing-wallet address for the whole batch. Each input creates its own
+	// on-chain output; outputs are not consolidated.
+	OnchainAddress string `protobuf:"bytes,2,opt,name=onchain_address,json=onchainAddress,proto3" json:"onchain_address,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ExitBatchRequest) Reset() {
+	*x = ExitBatchRequest{}
+	mi := &file_wallet_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExitBatchRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExitBatchRequest) ProtoMessage() {}
+
+func (x *ExitBatchRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExitBatchRequest.ProtoReflect.Descriptor instead.
+func (*ExitBatchRequest) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{50}
+}
+
+func (x *ExitBatchRequest) GetOutpoints() []string {
+	if x != nil {
+		return x.Outpoints
+	}
+	return nil
+}
+
+func (x *ExitBatchRequest) GetOnchainAddress() string {
+	if x != nil {
+		return x.OnchainAddress
+	}
+	return ""
+}
+
+// ExitBatchInputResult preserves the authoritative result for a selected input.
+type ExitBatchInputResult struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Outpoint string                 `protobuf:"bytes,1,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
+	Outcome  ExitBatchOutcome       `protobuf:"varint,2,opt,name=outcome,proto3,enum=wavewalletrpc.ExitBatchOutcome" json:"outcome,omitempty"`
+	// error explains a failed or unknown outcome; it is not a retry directive.
+	Error         string `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExitBatchInputResult) Reset() {
+	*x = ExitBatchInputResult{}
+	mi := &file_wallet_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExitBatchInputResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExitBatchInputResult) ProtoMessage() {}
+
+func (x *ExitBatchInputResult) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExitBatchInputResult.ProtoReflect.Descriptor instead.
+func (*ExitBatchInputResult) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *ExitBatchInputResult) GetOutpoint() string {
+	if x != nil {
+		return x.Outpoint
+	}
+	return ""
+}
+
+func (x *ExitBatchInputResult) GetOutcome() ExitBatchOutcome {
+	if x != nil {
+		return x.Outcome
+	}
+	return ExitBatchOutcome_EXIT_BATCH_UNKNOWN
+}
+
+func (x *ExitBatchInputResult) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+// ExitBatchResponse contains one result per selected input, in request order.
+// Partial admission is possible. A transport error can hide accepted work;
+// neither that error nor an UNKNOWN result authorizes a retry or unilateral
+// exit.
+type ExitBatchResponse struct {
+	state   protoimpl.MessageState  `protogen:"open.v1"`
+	Results []*ExitBatchInputResult `protobuf:"bytes,1,rep,name=results,proto3" json:"results,omitempty"`
+	// onchain_address is the common caller-supplied or generated destination.
+	OnchainAddress string `protobuf:"bytes,2,opt,name=onchain_address,json=onchainAddress,proto3" json:"onchain_address,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ExitBatchResponse) Reset() {
+	*x = ExitBatchResponse{}
+	mi := &file_wallet_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExitBatchResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExitBatchResponse) ProtoMessage() {}
+
+func (x *ExitBatchResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExitBatchResponse.ProtoReflect.Descriptor instead.
+func (*ExitBatchResponse) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *ExitBatchResponse) GetResults() []*ExitBatchInputResult {
+	if x != nil {
+		return x.Results
+	}
+	return nil
+}
+
+func (x *ExitBatchResponse) GetOnchainAddress() string {
+	if x != nil {
+		return x.OnchainAddress
+	}
+	return ""
+}
+
 // ExitStatusRequest identifies the VTXO whose exit job to query via
 // WalletService.ExitStatus.
 type ExitStatusRequest struct {
@@ -5158,7 +5391,7 @@ type ExitStatusRequest struct {
 
 func (x *ExitStatusRequest) Reset() {
 	*x = ExitStatusRequest{}
-	mi := &file_wallet_proto_msgTypes[50]
+	mi := &file_wallet_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5170,7 +5403,7 @@ func (x *ExitStatusRequest) String() string {
 func (*ExitStatusRequest) ProtoMessage() {}
 
 func (x *ExitStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[50]
+	mi := &file_wallet_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5183,7 +5416,7 @@ func (x *ExitStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExitStatusRequest.ProtoReflect.Descriptor instead.
 func (*ExitStatusRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{50}
+	return file_wallet_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *ExitStatusRequest) GetOutpoint() string {
@@ -5232,7 +5465,7 @@ type ExitProgress struct {
 
 func (x *ExitProgress) Reset() {
 	*x = ExitProgress{}
-	mi := &file_wallet_proto_msgTypes[51]
+	mi := &file_wallet_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5244,7 +5477,7 @@ func (x *ExitProgress) String() string {
 func (*ExitProgress) ProtoMessage() {}
 
 func (x *ExitProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[51]
+	mi := &file_wallet_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5257,7 +5490,7 @@ func (x *ExitProgress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExitProgress.ProtoReflect.Descriptor instead.
 func (*ExitProgress) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{51}
+	return file_wallet_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *ExitProgress) GetConfirmedTxs() uint32 {
@@ -5342,7 +5575,7 @@ type ExitCSV struct {
 
 func (x *ExitCSV) Reset() {
 	*x = ExitCSV{}
-	mi := &file_wallet_proto_msgTypes[52]
+	mi := &file_wallet_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5354,7 +5587,7 @@ func (x *ExitCSV) String() string {
 func (*ExitCSV) ProtoMessage() {}
 
 func (x *ExitCSV) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[52]
+	mi := &file_wallet_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5367,7 +5600,7 @@ func (x *ExitCSV) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExitCSV.ProtoReflect.Descriptor instead.
 func (*ExitCSV) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{52}
+	return file_wallet_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *ExitCSV) GetTargetConfirmHeight() int32 {
@@ -5432,7 +5665,7 @@ type ExitFees struct {
 
 func (x *ExitFees) Reset() {
 	*x = ExitFees{}
-	mi := &file_wallet_proto_msgTypes[53]
+	mi := &file_wallet_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5444,7 +5677,7 @@ func (x *ExitFees) String() string {
 func (*ExitFees) ProtoMessage() {}
 
 func (x *ExitFees) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[53]
+	mi := &file_wallet_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5457,7 +5690,7 @@ func (x *ExitFees) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExitFees.ProtoReflect.Descriptor instead.
 func (*ExitFees) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{53}
+	return file_wallet_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *ExitFees) GetCpfpFeeSat() int64 {
@@ -5555,7 +5788,7 @@ type ExitStatusResponse struct {
 
 func (x *ExitStatusResponse) Reset() {
 	*x = ExitStatusResponse{}
-	mi := &file_wallet_proto_msgTypes[54]
+	mi := &file_wallet_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5567,7 +5800,7 @@ func (x *ExitStatusResponse) String() string {
 func (*ExitStatusResponse) ProtoMessage() {}
 
 func (x *ExitStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[54]
+	mi := &file_wallet_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5580,7 +5813,7 @@ func (x *ExitStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExitStatusResponse.ProtoReflect.Descriptor instead.
 func (*ExitStatusResponse) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{54}
+	return file_wallet_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *ExitStatusResponse) GetFound() bool {
@@ -5662,7 +5895,7 @@ type ExitSummaryRequest struct {
 
 func (x *ExitSummaryRequest) Reset() {
 	*x = ExitSummaryRequest{}
-	mi := &file_wallet_proto_msgTypes[55]
+	mi := &file_wallet_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5674,7 +5907,7 @@ func (x *ExitSummaryRequest) String() string {
 func (*ExitSummaryRequest) ProtoMessage() {}
 
 func (x *ExitSummaryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[55]
+	mi := &file_wallet_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5687,7 +5920,7 @@ func (x *ExitSummaryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExitSummaryRequest.ProtoReflect.Descriptor instead.
 func (*ExitSummaryRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{55}
+	return file_wallet_proto_rawDescGZIP(), []int{58}
 }
 
 // ExitSummaryItem is one in-progress exit's coarse contribution to the
@@ -5714,7 +5947,7 @@ type ExitSummaryItem struct {
 
 func (x *ExitSummaryItem) Reset() {
 	*x = ExitSummaryItem{}
-	mi := &file_wallet_proto_msgTypes[56]
+	mi := &file_wallet_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5726,7 +5959,7 @@ func (x *ExitSummaryItem) String() string {
 func (*ExitSummaryItem) ProtoMessage() {}
 
 func (x *ExitSummaryItem) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[56]
+	mi := &file_wallet_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5739,7 +5972,7 @@ func (x *ExitSummaryItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExitSummaryItem.ProtoReflect.Descriptor instead.
 func (*ExitSummaryItem) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{56}
+	return file_wallet_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *ExitSummaryItem) GetOutpoint() string {
@@ -5801,7 +6034,7 @@ type ExitSummaryResponse struct {
 
 func (x *ExitSummaryResponse) Reset() {
 	*x = ExitSummaryResponse{}
-	mi := &file_wallet_proto_msgTypes[57]
+	mi := &file_wallet_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5813,7 +6046,7 @@ func (x *ExitSummaryResponse) String() string {
 func (*ExitSummaryResponse) ProtoMessage() {}
 
 func (x *ExitSummaryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[57]
+	mi := &file_wallet_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5826,7 +6059,7 @@ func (x *ExitSummaryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExitSummaryResponse.ProtoReflect.Descriptor instead.
 func (*ExitSummaryResponse) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{57}
+	return file_wallet_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *ExitSummaryResponse) GetExits() []*ExitSummaryItem {
@@ -5885,7 +6118,7 @@ type SubscribeWalletRequest struct {
 
 func (x *SubscribeWalletRequest) Reset() {
 	*x = SubscribeWalletRequest{}
-	mi := &file_wallet_proto_msgTypes[58]
+	mi := &file_wallet_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5897,7 +6130,7 @@ func (x *SubscribeWalletRequest) String() string {
 func (*SubscribeWalletRequest) ProtoMessage() {}
 
 func (x *SubscribeWalletRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[58]
+	mi := &file_wallet_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5910,7 +6143,7 @@ func (x *SubscribeWalletRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeWalletRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeWalletRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{58}
+	return file_wallet_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *SubscribeWalletRequest) GetIncludeExisting() bool {
@@ -5957,7 +6190,7 @@ type SubscribeWalletResponse struct {
 
 func (x *SubscribeWalletResponse) Reset() {
 	*x = SubscribeWalletResponse{}
-	mi := &file_wallet_proto_msgTypes[59]
+	mi := &file_wallet_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5969,7 +6202,7 @@ func (x *SubscribeWalletResponse) String() string {
 func (*SubscribeWalletResponse) ProtoMessage() {}
 
 func (x *SubscribeWalletResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[59]
+	mi := &file_wallet_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5982,7 +6215,7 @@ func (x *SubscribeWalletResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeWalletResponse.ProtoReflect.Descriptor instead.
 func (*SubscribeWalletResponse) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{59}
+	return file_wallet_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *SubscribeWalletResponse) GetCursor() int64 {
@@ -6051,7 +6284,7 @@ type SubscribeGap struct {
 
 func (x *SubscribeGap) Reset() {
 	*x = SubscribeGap{}
-	mi := &file_wallet_proto_msgTypes[60]
+	mi := &file_wallet_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6063,7 +6296,7 @@ func (x *SubscribeGap) String() string {
 func (*SubscribeGap) ProtoMessage() {}
 
 func (x *SubscribeGap) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[60]
+	mi := &file_wallet_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6076,7 +6309,7 @@ func (x *SubscribeGap) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeGap.ProtoReflect.Descriptor instead.
 func (*SubscribeGap) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{60}
+	return file_wallet_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *SubscribeGap) GetReason() string {
@@ -6150,7 +6383,7 @@ type WalletEntry struct {
 
 func (x *WalletEntry) Reset() {
 	*x = WalletEntry{}
-	mi := &file_wallet_proto_msgTypes[61]
+	mi := &file_wallet_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6162,7 +6395,7 @@ func (x *WalletEntry) String() string {
 func (*WalletEntry) ProtoMessage() {}
 
 func (x *WalletEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[61]
+	mi := &file_wallet_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6175,7 +6408,7 @@ func (x *WalletEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WalletEntry.ProtoReflect.Descriptor instead.
 func (*WalletEntry) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{61}
+	return file_wallet_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *WalletEntry) GetId() string {
@@ -6286,7 +6519,7 @@ type WalletEntryRequest struct {
 
 func (x *WalletEntryRequest) Reset() {
 	*x = WalletEntryRequest{}
-	mi := &file_wallet_proto_msgTypes[62]
+	mi := &file_wallet_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6298,7 +6531,7 @@ func (x *WalletEntryRequest) String() string {
 func (*WalletEntryRequest) ProtoMessage() {}
 
 func (x *WalletEntryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[62]
+	mi := &file_wallet_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6311,7 +6544,7 @@ func (x *WalletEntryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WalletEntryRequest.ProtoReflect.Descriptor instead.
 func (*WalletEntryRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{62}
+	return file_wallet_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *WalletEntryRequest) GetRequest() isWalletEntryRequest_Request {
@@ -6389,7 +6622,7 @@ type LightningInvoiceRequest struct {
 
 func (x *LightningInvoiceRequest) Reset() {
 	*x = LightningInvoiceRequest{}
-	mi := &file_wallet_proto_msgTypes[63]
+	mi := &file_wallet_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6401,7 +6634,7 @@ func (x *LightningInvoiceRequest) String() string {
 func (*LightningInvoiceRequest) ProtoMessage() {}
 
 func (x *LightningInvoiceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[63]
+	mi := &file_wallet_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6414,7 +6647,7 @@ func (x *LightningInvoiceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LightningInvoiceRequest.ProtoReflect.Descriptor instead.
 func (*LightningInvoiceRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{63}
+	return file_wallet_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *LightningInvoiceRequest) GetInvoice() string {
@@ -6451,7 +6684,7 @@ type OnchainAddressRequest struct {
 
 func (x *OnchainAddressRequest) Reset() {
 	*x = OnchainAddressRequest{}
-	mi := &file_wallet_proto_msgTypes[64]
+	mi := &file_wallet_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6463,7 +6696,7 @@ func (x *OnchainAddressRequest) String() string {
 func (*OnchainAddressRequest) ProtoMessage() {}
 
 func (x *OnchainAddressRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[64]
+	mi := &file_wallet_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6476,7 +6709,7 @@ func (x *OnchainAddressRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OnchainAddressRequest.ProtoReflect.Descriptor instead.
 func (*OnchainAddressRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{64}
+	return file_wallet_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *OnchainAddressRequest) GetAddress() string {
@@ -6504,7 +6737,7 @@ type ArkAddressRequest struct {
 
 func (x *ArkAddressRequest) Reset() {
 	*x = ArkAddressRequest{}
-	mi := &file_wallet_proto_msgTypes[65]
+	mi := &file_wallet_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6516,7 +6749,7 @@ func (x *ArkAddressRequest) String() string {
 func (*ArkAddressRequest) ProtoMessage() {}
 
 func (x *ArkAddressRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[65]
+	mi := &file_wallet_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6529,7 +6762,7 @@ func (x *ArkAddressRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArkAddressRequest.ProtoReflect.Descriptor instead.
 func (*ArkAddressRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{65}
+	return file_wallet_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *ArkAddressRequest) GetAddress() string {
@@ -6556,7 +6789,7 @@ type ScheduledBatchWindow struct {
 
 func (x *ScheduledBatchWindow) Reset() {
 	*x = ScheduledBatchWindow{}
-	mi := &file_wallet_proto_msgTypes[66]
+	mi := &file_wallet_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6568,7 +6801,7 @@ func (x *ScheduledBatchWindow) String() string {
 func (*ScheduledBatchWindow) ProtoMessage() {}
 
 func (x *ScheduledBatchWindow) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[66]
+	mi := &file_wallet_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6581,7 +6814,7 @@ func (x *ScheduledBatchWindow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduledBatchWindow.ProtoReflect.Descriptor instead.
 func (*ScheduledBatchWindow) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{66}
+	return file_wallet_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *ScheduledBatchWindow) GetRegistrationOpensUnix() int64 {
@@ -6638,7 +6871,7 @@ type WalletEntryProgress struct {
 
 func (x *WalletEntryProgress) Reset() {
 	*x = WalletEntryProgress{}
-	mi := &file_wallet_proto_msgTypes[67]
+	mi := &file_wallet_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6650,7 +6883,7 @@ func (x *WalletEntryProgress) String() string {
 func (*WalletEntryProgress) ProtoMessage() {}
 
 func (x *WalletEntryProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[67]
+	mi := &file_wallet_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6663,7 +6896,7 @@ func (x *WalletEntryProgress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WalletEntryProgress.ProtoReflect.Descriptor instead.
 func (*WalletEntryProgress) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{67}
+	return file_wallet_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *WalletEntryProgress) GetPhase() WalletEntryPhase {
@@ -7058,7 +7291,17 @@ const file_wallet_proto_rawDesc = "" +
 	"\bactor_id\x18\x02 \x01(\tR\aactorId\x12+\n" +
 	"\x04mode\x18\x03 \x01(\x0e2\x17.wavewalletrpc.ExitModeR\x04mode\x12)\n" +
 	"\x10queued_outpoints\x18\x04 \x03(\tR\x0fqueuedOutpoints\x12'\n" +
-	"\x0fonchain_address\x18\x05 \x01(\tR\x0eonchainAddress\"K\n" +
+	"\x0fonchain_address\x18\x05 \x01(\tR\x0eonchainAddress\"Y\n" +
+	"\x10ExitBatchRequest\x12\x1c\n" +
+	"\toutpoints\x18\x01 \x03(\tR\toutpoints\x12'\n" +
+	"\x0fonchain_address\x18\x02 \x01(\tR\x0eonchainAddress\"\x83\x01\n" +
+	"\x14ExitBatchInputResult\x12\x1a\n" +
+	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x129\n" +
+	"\aoutcome\x18\x02 \x01(\x0e2\x1f.wavewalletrpc.ExitBatchOutcomeR\aoutcome\x12\x14\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\"{\n" +
+	"\x11ExitBatchResponse\x12=\n" +
+	"\aresults\x18\x01 \x03(\v2#.wavewalletrpc.ExitBatchInputResultR\aresults\x12'\n" +
+	"\x0fonchain_address\x18\x02 \x01(\tR\x0eonchainAddress\"K\n" +
 	"\x11ExitStatusRequest\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1a\n" +
 	"\bdetailed\x18\x02 \x01(\bR\bdetailed\"\xd5\x02\n" +
@@ -7212,7 +7455,11 @@ const file_wallet_proto_rawDesc = "" +
 	"&EXIT_INFEASIBILITY_REASON_UNECONOMICAL\x10\x02\x120\n" +
 	",EXIT_INFEASIBILITY_REASON_WALLET_UNDERFUNDED\x10\x03\x123\n" +
 	"/EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS\x10\x04\x12-\n" +
-	")EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED\x10\x05*\xea\x01\n" +
+	")EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED\x10\x05*Z\n" +
+	"\x10ExitBatchOutcome\x12\x16\n" +
+	"\x12EXIT_BATCH_UNKNOWN\x10\x00\x12\x17\n" +
+	"\x13EXIT_BATCH_ACCEPTED\x10\x01\x12\x15\n" +
+	"\x11EXIT_BATCH_FAILED\x10\x02*\xea\x01\n" +
 	"\rExitJobStatus\x12\x1f\n" +
 	"\x1bEXIT_JOB_STATUS_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17EXIT_JOB_STATUS_PENDING\x10\x01\x12!\n" +
@@ -7238,8 +7485,7 @@ const file_wallet_proto_rawDesc = "" +
 	"\x1aENTRY_FAILURE_CODE_EXPIRED\x10\x02\x12\x1f\n" +
 	"\x1bENTRY_FAILURE_CODE_REFUNDED\x10\x03\x12)\n" +
 	"%ENTRY_FAILURE_CODE_NEEDS_INTERVENTION\x10\x04\x12\x1d\n" +
-	"\x19ENTRY_FAILURE_CODE_FAILED\x10\x052\xfe\n" +
-	"\n" +
+	"\x19ENTRY_FAILURE_CODE_FAILED\x10\x052\xce\v\n" +
 	"\rWalletService\x12E\n" +
 	"\x06Create\x12\x1c.wavewalletrpc.CreateRequest\x1a\x1d.wavewalletrpc.CreateResponse\x12E\n" +
 	"\x06Unlock\x12\x1c.wavewalletrpc.UnlockRequest\x1a\x1d.wavewalletrpc.UnlockResponse\x12T\n" +
@@ -7256,7 +7502,8 @@ const file_wallet_proto_rawDesc = "" +
 	"ExportExit\x12 .wavewalletrpc.ExportExitRequest\x1a!.wavewalletrpc.ExportExitResponse\x12T\n" +
 	"\vExportExits\x12!.wavewalletrpc.ExportExitsRequest\x1a\".wavewalletrpc.ExportExitsResponse\x12T\n" +
 	"\vSweepWallet\x12!.wavewalletrpc.SweepWalletRequest\x1a\".wavewalletrpc.SweepWalletResponse\x12?\n" +
-	"\x04Exit\x12\x1a.wavewalletrpc.ExitRequest\x1a\x1b.wavewalletrpc.ExitResponse\x12Q\n" +
+	"\x04Exit\x12\x1a.wavewalletrpc.ExitRequest\x1a\x1b.wavewalletrpc.ExitResponse\x12N\n" +
+	"\tExitBatch\x12\x1f.wavewalletrpc.ExitBatchRequest\x1a .wavewalletrpc.ExitBatchResponse\x12Q\n" +
 	"\n" +
 	"ExitStatus\x12 .wavewalletrpc.ExitStatusRequest\x1a!.wavewalletrpc.ExitStatusResponse\x12T\n" +
 	"\vExitSummary\x12!.wavewalletrpc.ExitSummaryRequest\x1a\".wavewalletrpc.ExitSummaryResponse\x12b\n" +
@@ -7276,8 +7523,8 @@ func file_wallet_proto_rawDescGZIP() []byte {
 	return file_wallet_proto_rawDescData
 }
 
-var file_wallet_proto_enumTypes = make([]protoimpl.EnumInfo, 10)
-var file_wallet_proto_msgTypes = make([]protoimpl.MessageInfo, 68)
+var file_wallet_proto_enumTypes = make([]protoimpl.EnumInfo, 11)
+var file_wallet_proto_msgTypes = make([]protoimpl.MessageInfo, 71)
 var file_wallet_proto_goTypes = []any{
 	(EntryKind)(0),                  // 0: wavewalletrpc.EntryKind
 	(EntryStatus)(0),                // 1: wavewalletrpc.EntryStatus
@@ -7286,176 +7533,184 @@ var file_wallet_proto_goTypes = []any{
 	(SendQuoteStatus)(0),            // 4: wavewalletrpc.SendQuoteStatus
 	(ExitMode)(0),                   // 5: wavewalletrpc.ExitMode
 	(ExitInfeasibilityReason)(0),    // 6: wavewalletrpc.ExitInfeasibilityReason
-	(ExitJobStatus)(0),              // 7: wavewalletrpc.ExitJobStatus
-	(WalletEntryPhase)(0),           // 8: wavewalletrpc.WalletEntryPhase
-	(EntryFailureCode)(0),           // 9: wavewalletrpc.EntryFailureCode
-	(*CreateRequest)(nil),           // 10: wavewalletrpc.CreateRequest
-	(*CreateResponse)(nil),          // 11: wavewalletrpc.CreateResponse
-	(*UnlockRequest)(nil),           // 12: wavewalletrpc.UnlockRequest
-	(*UnlockResponse)(nil),          // 13: wavewalletrpc.UnlockResponse
-	(*PrepareSendRequest)(nil),      // 14: wavewalletrpc.PrepareSendRequest
-	(*PrepareSendResponse)(nil),     // 15: wavewalletrpc.PrepareSendResponse
-	(*SendRequest)(nil),             // 16: wavewalletrpc.SendRequest
-	(*SendResponse)(nil),            // 17: wavewalletrpc.SendResponse
-	(*RecvRequest)(nil),             // 18: wavewalletrpc.RecvRequest
-	(*RecvResponse)(nil),            // 19: wavewalletrpc.RecvResponse
-	(*CreditPreview)(nil),           // 20: wavewalletrpc.CreditPreview
-	(*CreditReceive)(nil),           // 21: wavewalletrpc.CreditReceive
-	(*ListRequest)(nil),             // 22: wavewalletrpc.ListRequest
-	(*ListResponse)(nil),            // 23: wavewalletrpc.ListResponse
-	(*ActivityList)(nil),            // 24: wavewalletrpc.ActivityList
-	(*VTXOInventory)(nil),           // 25: wavewalletrpc.VTXOInventory
-	(*WalletVTXO)(nil),              // 26: wavewalletrpc.WalletVTXO
-	(*OnchainHistory)(nil),          // 27: wavewalletrpc.OnchainHistory
-	(*OnchainTx)(nil),               // 28: wavewalletrpc.OnchainTx
-	(*InspectActivityRequest)(nil),  // 29: wavewalletrpc.InspectActivityRequest
-	(*InspectActivityResponse)(nil), // 30: wavewalletrpc.InspectActivityResponse
-	(*ActivitySwapTrace)(nil),       // 31: wavewalletrpc.ActivitySwapTrace
-	(*ActivityVTXOTrace)(nil),       // 32: wavewalletrpc.ActivityVTXOTrace
-	(*ActivityLedgerTrace)(nil),     // 33: wavewalletrpc.ActivityLedgerTrace
-	(*DepositRequest)(nil),          // 34: wavewalletrpc.DepositRequest
-	(*DepositResponse)(nil),         // 35: wavewalletrpc.DepositResponse
-	(*BalanceRequest)(nil),          // 36: wavewalletrpc.BalanceRequest
-	(*BalanceResponse)(nil),         // 37: wavewalletrpc.BalanceResponse
-	(*StatusRequest)(nil),           // 38: wavewalletrpc.StatusRequest
-	(*StatusResponse)(nil),          // 39: wavewalletrpc.StatusResponse
-	(*ExportExitRequest)(nil),       // 40: wavewalletrpc.ExportExitRequest
-	(*ExportExitResponse)(nil),      // 41: wavewalletrpc.ExportExitResponse
-	(*ExportExitsRequest)(nil),      // 42: wavewalletrpc.ExportExitsRequest
-	(*ExportExitsResponse)(nil),     // 43: wavewalletrpc.ExportExitsResponse
-	(*ExitExportTarget)(nil),        // 44: wavewalletrpc.ExitExportTarget
-	(*ExitFinalSweep)(nil),          // 45: wavewalletrpc.ExitFinalSweep
-	(*ExitAncestryTransaction)(nil), // 46: wavewalletrpc.ExitAncestryTransaction
-	(*ExitAncestryInput)(nil),       // 47: wavewalletrpc.ExitAncestryInput
-	(*ExitCommitmentSweep)(nil),     // 48: wavewalletrpc.ExitCommitmentSweep
-	(*RefreshRequest)(nil),          // 49: wavewalletrpc.RefreshRequest
-	(*RefreshResponse)(nil),         // 50: wavewalletrpc.RefreshResponse
-	(*RefreshFeeEstimate)(nil),      // 51: wavewalletrpc.RefreshFeeEstimate
-	(*GetExitPlanRequest)(nil),      // 52: wavewalletrpc.GetExitPlanRequest
-	(*ExitPlanEntry)(nil),           // 53: wavewalletrpc.ExitPlanEntry
-	(*GetExitPlanResponse)(nil),     // 54: wavewalletrpc.GetExitPlanResponse
-	(*SweepWalletRequest)(nil),      // 55: wavewalletrpc.SweepWalletRequest
-	(*WalletSweepInput)(nil),        // 56: wavewalletrpc.WalletSweepInput
-	(*SweepWalletResponse)(nil),     // 57: wavewalletrpc.SweepWalletResponse
-	(*ExitRequest)(nil),             // 58: wavewalletrpc.ExitRequest
-	(*ExitResponse)(nil),            // 59: wavewalletrpc.ExitResponse
-	(*ExitStatusRequest)(nil),       // 60: wavewalletrpc.ExitStatusRequest
-	(*ExitProgress)(nil),            // 61: wavewalletrpc.ExitProgress
-	(*ExitCSV)(nil),                 // 62: wavewalletrpc.ExitCSV
-	(*ExitFees)(nil),                // 63: wavewalletrpc.ExitFees
-	(*ExitStatusResponse)(nil),      // 64: wavewalletrpc.ExitStatusResponse
-	(*ExitSummaryRequest)(nil),      // 65: wavewalletrpc.ExitSummaryRequest
-	(*ExitSummaryItem)(nil),         // 66: wavewalletrpc.ExitSummaryItem
-	(*ExitSummaryResponse)(nil),     // 67: wavewalletrpc.ExitSummaryResponse
-	(*SubscribeWalletRequest)(nil),  // 68: wavewalletrpc.SubscribeWalletRequest
-	(*SubscribeWalletResponse)(nil), // 69: wavewalletrpc.SubscribeWalletResponse
-	(*SubscribeGap)(nil),            // 70: wavewalletrpc.SubscribeGap
-	(*WalletEntry)(nil),             // 71: wavewalletrpc.WalletEntry
-	(*WalletEntryRequest)(nil),      // 72: wavewalletrpc.WalletEntryRequest
-	(*LightningInvoiceRequest)(nil), // 73: wavewalletrpc.LightningInvoiceRequest
-	(*OnchainAddressRequest)(nil),   // 74: wavewalletrpc.OnchainAddressRequest
-	(*ArkAddressRequest)(nil),       // 75: wavewalletrpc.ArkAddressRequest
-	(*ScheduledBatchWindow)(nil),    // 76: wavewalletrpc.ScheduledBatchWindow
-	(*WalletEntryProgress)(nil),     // 77: wavewalletrpc.WalletEntryProgress
+	(ExitBatchOutcome)(0),           // 7: wavewalletrpc.ExitBatchOutcome
+	(ExitJobStatus)(0),              // 8: wavewalletrpc.ExitJobStatus
+	(WalletEntryPhase)(0),           // 9: wavewalletrpc.WalletEntryPhase
+	(EntryFailureCode)(0),           // 10: wavewalletrpc.EntryFailureCode
+	(*CreateRequest)(nil),           // 11: wavewalletrpc.CreateRequest
+	(*CreateResponse)(nil),          // 12: wavewalletrpc.CreateResponse
+	(*UnlockRequest)(nil),           // 13: wavewalletrpc.UnlockRequest
+	(*UnlockResponse)(nil),          // 14: wavewalletrpc.UnlockResponse
+	(*PrepareSendRequest)(nil),      // 15: wavewalletrpc.PrepareSendRequest
+	(*PrepareSendResponse)(nil),     // 16: wavewalletrpc.PrepareSendResponse
+	(*SendRequest)(nil),             // 17: wavewalletrpc.SendRequest
+	(*SendResponse)(nil),            // 18: wavewalletrpc.SendResponse
+	(*RecvRequest)(nil),             // 19: wavewalletrpc.RecvRequest
+	(*RecvResponse)(nil),            // 20: wavewalletrpc.RecvResponse
+	(*CreditPreview)(nil),           // 21: wavewalletrpc.CreditPreview
+	(*CreditReceive)(nil),           // 22: wavewalletrpc.CreditReceive
+	(*ListRequest)(nil),             // 23: wavewalletrpc.ListRequest
+	(*ListResponse)(nil),            // 24: wavewalletrpc.ListResponse
+	(*ActivityList)(nil),            // 25: wavewalletrpc.ActivityList
+	(*VTXOInventory)(nil),           // 26: wavewalletrpc.VTXOInventory
+	(*WalletVTXO)(nil),              // 27: wavewalletrpc.WalletVTXO
+	(*OnchainHistory)(nil),          // 28: wavewalletrpc.OnchainHistory
+	(*OnchainTx)(nil),               // 29: wavewalletrpc.OnchainTx
+	(*InspectActivityRequest)(nil),  // 30: wavewalletrpc.InspectActivityRequest
+	(*InspectActivityResponse)(nil), // 31: wavewalletrpc.InspectActivityResponse
+	(*ActivitySwapTrace)(nil),       // 32: wavewalletrpc.ActivitySwapTrace
+	(*ActivityVTXOTrace)(nil),       // 33: wavewalletrpc.ActivityVTXOTrace
+	(*ActivityLedgerTrace)(nil),     // 34: wavewalletrpc.ActivityLedgerTrace
+	(*DepositRequest)(nil),          // 35: wavewalletrpc.DepositRequest
+	(*DepositResponse)(nil),         // 36: wavewalletrpc.DepositResponse
+	(*BalanceRequest)(nil),          // 37: wavewalletrpc.BalanceRequest
+	(*BalanceResponse)(nil),         // 38: wavewalletrpc.BalanceResponse
+	(*StatusRequest)(nil),           // 39: wavewalletrpc.StatusRequest
+	(*StatusResponse)(nil),          // 40: wavewalletrpc.StatusResponse
+	(*ExportExitRequest)(nil),       // 41: wavewalletrpc.ExportExitRequest
+	(*ExportExitResponse)(nil),      // 42: wavewalletrpc.ExportExitResponse
+	(*ExportExitsRequest)(nil),      // 43: wavewalletrpc.ExportExitsRequest
+	(*ExportExitsResponse)(nil),     // 44: wavewalletrpc.ExportExitsResponse
+	(*ExitExportTarget)(nil),        // 45: wavewalletrpc.ExitExportTarget
+	(*ExitFinalSweep)(nil),          // 46: wavewalletrpc.ExitFinalSweep
+	(*ExitAncestryTransaction)(nil), // 47: wavewalletrpc.ExitAncestryTransaction
+	(*ExitAncestryInput)(nil),       // 48: wavewalletrpc.ExitAncestryInput
+	(*ExitCommitmentSweep)(nil),     // 49: wavewalletrpc.ExitCommitmentSweep
+	(*RefreshRequest)(nil),          // 50: wavewalletrpc.RefreshRequest
+	(*RefreshResponse)(nil),         // 51: wavewalletrpc.RefreshResponse
+	(*RefreshFeeEstimate)(nil),      // 52: wavewalletrpc.RefreshFeeEstimate
+	(*GetExitPlanRequest)(nil),      // 53: wavewalletrpc.GetExitPlanRequest
+	(*ExitPlanEntry)(nil),           // 54: wavewalletrpc.ExitPlanEntry
+	(*GetExitPlanResponse)(nil),     // 55: wavewalletrpc.GetExitPlanResponse
+	(*SweepWalletRequest)(nil),      // 56: wavewalletrpc.SweepWalletRequest
+	(*WalletSweepInput)(nil),        // 57: wavewalletrpc.WalletSweepInput
+	(*SweepWalletResponse)(nil),     // 58: wavewalletrpc.SweepWalletResponse
+	(*ExitRequest)(nil),             // 59: wavewalletrpc.ExitRequest
+	(*ExitResponse)(nil),            // 60: wavewalletrpc.ExitResponse
+	(*ExitBatchRequest)(nil),        // 61: wavewalletrpc.ExitBatchRequest
+	(*ExitBatchInputResult)(nil),    // 62: wavewalletrpc.ExitBatchInputResult
+	(*ExitBatchResponse)(nil),       // 63: wavewalletrpc.ExitBatchResponse
+	(*ExitStatusRequest)(nil),       // 64: wavewalletrpc.ExitStatusRequest
+	(*ExitProgress)(nil),            // 65: wavewalletrpc.ExitProgress
+	(*ExitCSV)(nil),                 // 66: wavewalletrpc.ExitCSV
+	(*ExitFees)(nil),                // 67: wavewalletrpc.ExitFees
+	(*ExitStatusResponse)(nil),      // 68: wavewalletrpc.ExitStatusResponse
+	(*ExitSummaryRequest)(nil),      // 69: wavewalletrpc.ExitSummaryRequest
+	(*ExitSummaryItem)(nil),         // 70: wavewalletrpc.ExitSummaryItem
+	(*ExitSummaryResponse)(nil),     // 71: wavewalletrpc.ExitSummaryResponse
+	(*SubscribeWalletRequest)(nil),  // 72: wavewalletrpc.SubscribeWalletRequest
+	(*SubscribeWalletResponse)(nil), // 73: wavewalletrpc.SubscribeWalletResponse
+	(*SubscribeGap)(nil),            // 74: wavewalletrpc.SubscribeGap
+	(*WalletEntry)(nil),             // 75: wavewalletrpc.WalletEntry
+	(*WalletEntryRequest)(nil),      // 76: wavewalletrpc.WalletEntryRequest
+	(*LightningInvoiceRequest)(nil), // 77: wavewalletrpc.LightningInvoiceRequest
+	(*OnchainAddressRequest)(nil),   // 78: wavewalletrpc.OnchainAddressRequest
+	(*ArkAddressRequest)(nil),       // 79: wavewalletrpc.ArkAddressRequest
+	(*ScheduledBatchWindow)(nil),    // 80: wavewalletrpc.ScheduledBatchWindow
+	(*WalletEntryProgress)(nil),     // 81: wavewalletrpc.WalletEntryProgress
 }
 var file_wallet_proto_depIdxs = []int32{
 	3,  // 0: wavewalletrpc.PrepareSendResponse.rail:type_name -> wavewalletrpc.SendRail
 	4,  // 1: wavewalletrpc.PrepareSendResponse.quote_status:type_name -> wavewalletrpc.SendQuoteStatus
-	20, // 2: wavewalletrpc.PrepareSendResponse.credit_preview:type_name -> wavewalletrpc.CreditPreview
-	71, // 3: wavewalletrpc.SendResponse.entry:type_name -> wavewalletrpc.WalletEntry
-	71, // 4: wavewalletrpc.RecvResponse.entry:type_name -> wavewalletrpc.WalletEntry
-	21, // 5: wavewalletrpc.RecvResponse.credit_receive:type_name -> wavewalletrpc.CreditReceive
+	21, // 2: wavewalletrpc.PrepareSendResponse.credit_preview:type_name -> wavewalletrpc.CreditPreview
+	75, // 3: wavewalletrpc.SendResponse.entry:type_name -> wavewalletrpc.WalletEntry
+	75, // 4: wavewalletrpc.RecvResponse.entry:type_name -> wavewalletrpc.WalletEntry
+	22, // 5: wavewalletrpc.RecvResponse.credit_receive:type_name -> wavewalletrpc.CreditReceive
 	2,  // 6: wavewalletrpc.ListRequest.view:type_name -> wavewalletrpc.ListView
 	0,  // 7: wavewalletrpc.ListRequest.kinds:type_name -> wavewalletrpc.EntryKind
-	24, // 8: wavewalletrpc.ListResponse.activity:type_name -> wavewalletrpc.ActivityList
-	25, // 9: wavewalletrpc.ListResponse.vtxos:type_name -> wavewalletrpc.VTXOInventory
-	27, // 10: wavewalletrpc.ListResponse.onchain:type_name -> wavewalletrpc.OnchainHistory
-	71, // 11: wavewalletrpc.ActivityList.entries:type_name -> wavewalletrpc.WalletEntry
-	26, // 12: wavewalletrpc.VTXOInventory.vtxos:type_name -> wavewalletrpc.WalletVTXO
-	28, // 13: wavewalletrpc.OnchainHistory.txs:type_name -> wavewalletrpc.OnchainTx
-	71, // 14: wavewalletrpc.InspectActivityResponse.entry:type_name -> wavewalletrpc.WalletEntry
-	31, // 15: wavewalletrpc.InspectActivityResponse.swap:type_name -> wavewalletrpc.ActivitySwapTrace
-	32, // 16: wavewalletrpc.InspectActivityResponse.vtxos:type_name -> wavewalletrpc.ActivityVTXOTrace
-	33, // 17: wavewalletrpc.InspectActivityResponse.ledger_rows:type_name -> wavewalletrpc.ActivityLedgerTrace
-	71, // 18: wavewalletrpc.DepositResponse.entry:type_name -> wavewalletrpc.WalletEntry
-	37, // 19: wavewalletrpc.StatusResponse.balance:type_name -> wavewalletrpc.BalanceResponse
-	46, // 20: wavewalletrpc.ExportExitResponse.transactions:type_name -> wavewalletrpc.ExitAncestryTransaction
-	47, // 21: wavewalletrpc.ExportExitResponse.external_inputs:type_name -> wavewalletrpc.ExitAncestryInput
-	45, // 22: wavewalletrpc.ExportExitResponse.final_sweep:type_name -> wavewalletrpc.ExitFinalSweep
-	40, // 23: wavewalletrpc.ExportExitsRequest.exits:type_name -> wavewalletrpc.ExportExitRequest
-	44, // 24: wavewalletrpc.ExportExitsResponse.targets:type_name -> wavewalletrpc.ExitExportTarget
-	46, // 25: wavewalletrpc.ExportExitsResponse.transactions:type_name -> wavewalletrpc.ExitAncestryTransaction
-	47, // 26: wavewalletrpc.ExportExitsResponse.external_inputs:type_name -> wavewalletrpc.ExitAncestryInput
-	45, // 27: wavewalletrpc.ExitExportTarget.final_sweep:type_name -> wavewalletrpc.ExitFinalSweep
-	48, // 28: wavewalletrpc.ExitAncestryInput.commitment_sweep:type_name -> wavewalletrpc.ExitCommitmentSweep
-	51, // 29: wavewalletrpc.RefreshResponse.fee_estimate:type_name -> wavewalletrpc.RefreshFeeEstimate
-	7,  // 30: wavewalletrpc.ExitPlanEntry.exit_status:type_name -> wavewalletrpc.ExitJobStatus
+	25, // 8: wavewalletrpc.ListResponse.activity:type_name -> wavewalletrpc.ActivityList
+	26, // 9: wavewalletrpc.ListResponse.vtxos:type_name -> wavewalletrpc.VTXOInventory
+	28, // 10: wavewalletrpc.ListResponse.onchain:type_name -> wavewalletrpc.OnchainHistory
+	75, // 11: wavewalletrpc.ActivityList.entries:type_name -> wavewalletrpc.WalletEntry
+	27, // 12: wavewalletrpc.VTXOInventory.vtxos:type_name -> wavewalletrpc.WalletVTXO
+	29, // 13: wavewalletrpc.OnchainHistory.txs:type_name -> wavewalletrpc.OnchainTx
+	75, // 14: wavewalletrpc.InspectActivityResponse.entry:type_name -> wavewalletrpc.WalletEntry
+	32, // 15: wavewalletrpc.InspectActivityResponse.swap:type_name -> wavewalletrpc.ActivitySwapTrace
+	33, // 16: wavewalletrpc.InspectActivityResponse.vtxos:type_name -> wavewalletrpc.ActivityVTXOTrace
+	34, // 17: wavewalletrpc.InspectActivityResponse.ledger_rows:type_name -> wavewalletrpc.ActivityLedgerTrace
+	75, // 18: wavewalletrpc.DepositResponse.entry:type_name -> wavewalletrpc.WalletEntry
+	38, // 19: wavewalletrpc.StatusResponse.balance:type_name -> wavewalletrpc.BalanceResponse
+	47, // 20: wavewalletrpc.ExportExitResponse.transactions:type_name -> wavewalletrpc.ExitAncestryTransaction
+	48, // 21: wavewalletrpc.ExportExitResponse.external_inputs:type_name -> wavewalletrpc.ExitAncestryInput
+	46, // 22: wavewalletrpc.ExportExitResponse.final_sweep:type_name -> wavewalletrpc.ExitFinalSweep
+	41, // 23: wavewalletrpc.ExportExitsRequest.exits:type_name -> wavewalletrpc.ExportExitRequest
+	45, // 24: wavewalletrpc.ExportExitsResponse.targets:type_name -> wavewalletrpc.ExitExportTarget
+	47, // 25: wavewalletrpc.ExportExitsResponse.transactions:type_name -> wavewalletrpc.ExitAncestryTransaction
+	48, // 26: wavewalletrpc.ExportExitsResponse.external_inputs:type_name -> wavewalletrpc.ExitAncestryInput
+	46, // 27: wavewalletrpc.ExitExportTarget.final_sweep:type_name -> wavewalletrpc.ExitFinalSweep
+	49, // 28: wavewalletrpc.ExitAncestryInput.commitment_sweep:type_name -> wavewalletrpc.ExitCommitmentSweep
+	52, // 29: wavewalletrpc.RefreshResponse.fee_estimate:type_name -> wavewalletrpc.RefreshFeeEstimate
+	8,  // 30: wavewalletrpc.ExitPlanEntry.exit_status:type_name -> wavewalletrpc.ExitJobStatus
 	6,  // 31: wavewalletrpc.ExitPlanEntry.infeasibility_reason:type_name -> wavewalletrpc.ExitInfeasibilityReason
-	53, // 32: wavewalletrpc.GetExitPlanResponse.plans:type_name -> wavewalletrpc.ExitPlanEntry
-	56, // 33: wavewalletrpc.SweepWalletResponse.inputs:type_name -> wavewalletrpc.WalletSweepInput
+	54, // 32: wavewalletrpc.GetExitPlanResponse.plans:type_name -> wavewalletrpc.ExitPlanEntry
+	57, // 33: wavewalletrpc.SweepWalletResponse.inputs:type_name -> wavewalletrpc.WalletSweepInput
 	5,  // 34: wavewalletrpc.ExitResponse.mode:type_name -> wavewalletrpc.ExitMode
-	7,  // 35: wavewalletrpc.ExitStatusResponse.status:type_name -> wavewalletrpc.ExitJobStatus
-	61, // 36: wavewalletrpc.ExitStatusResponse.progress:type_name -> wavewalletrpc.ExitProgress
-	62, // 37: wavewalletrpc.ExitStatusResponse.csv:type_name -> wavewalletrpc.ExitCSV
-	63, // 38: wavewalletrpc.ExitStatusResponse.fees:type_name -> wavewalletrpc.ExitFees
-	7,  // 39: wavewalletrpc.ExitSummaryItem.status:type_name -> wavewalletrpc.ExitJobStatus
-	66, // 40: wavewalletrpc.ExitSummaryResponse.exits:type_name -> wavewalletrpc.ExitSummaryItem
-	0,  // 41: wavewalletrpc.SubscribeWalletRequest.kinds:type_name -> wavewalletrpc.EntryKind
-	71, // 42: wavewalletrpc.SubscribeWalletResponse.entry:type_name -> wavewalletrpc.WalletEntry
-	70, // 43: wavewalletrpc.SubscribeWalletResponse.gap:type_name -> wavewalletrpc.SubscribeGap
-	0,  // 44: wavewalletrpc.WalletEntry.kind:type_name -> wavewalletrpc.EntryKind
-	1,  // 45: wavewalletrpc.WalletEntry.status:type_name -> wavewalletrpc.EntryStatus
-	72, // 46: wavewalletrpc.WalletEntry.request:type_name -> wavewalletrpc.WalletEntryRequest
-	77, // 47: wavewalletrpc.WalletEntry.progress:type_name -> wavewalletrpc.WalletEntryProgress
-	9,  // 48: wavewalletrpc.WalletEntry.failure_code:type_name -> wavewalletrpc.EntryFailureCode
-	73, // 49: wavewalletrpc.WalletEntryRequest.lightning_invoice:type_name -> wavewalletrpc.LightningInvoiceRequest
-	74, // 50: wavewalletrpc.WalletEntryRequest.onchain_address:type_name -> wavewalletrpc.OnchainAddressRequest
-	75, // 51: wavewalletrpc.WalletEntryRequest.ark_address:type_name -> wavewalletrpc.ArkAddressRequest
-	8,  // 52: wavewalletrpc.WalletEntryProgress.phase:type_name -> wavewalletrpc.WalletEntryPhase
-	76, // 53: wavewalletrpc.WalletEntryProgress.batch_window:type_name -> wavewalletrpc.ScheduledBatchWindow
-	10, // 54: wavewalletrpc.WalletService.Create:input_type -> wavewalletrpc.CreateRequest
-	12, // 55: wavewalletrpc.WalletService.Unlock:input_type -> wavewalletrpc.UnlockRequest
-	14, // 56: wavewalletrpc.WalletService.PrepareSend:input_type -> wavewalletrpc.PrepareSendRequest
-	16, // 57: wavewalletrpc.WalletService.Send:input_type -> wavewalletrpc.SendRequest
-	18, // 58: wavewalletrpc.WalletService.Recv:input_type -> wavewalletrpc.RecvRequest
-	22, // 59: wavewalletrpc.WalletService.List:input_type -> wavewalletrpc.ListRequest
-	34, // 60: wavewalletrpc.WalletService.Deposit:input_type -> wavewalletrpc.DepositRequest
-	36, // 61: wavewalletrpc.WalletService.Balance:input_type -> wavewalletrpc.BalanceRequest
-	38, // 62: wavewalletrpc.WalletService.Status:input_type -> wavewalletrpc.StatusRequest
-	49, // 63: wavewalletrpc.WalletService.Refresh:input_type -> wavewalletrpc.RefreshRequest
-	52, // 64: wavewalletrpc.WalletService.GetExitPlan:input_type -> wavewalletrpc.GetExitPlanRequest
-	40, // 65: wavewalletrpc.WalletService.ExportExit:input_type -> wavewalletrpc.ExportExitRequest
-	42, // 66: wavewalletrpc.WalletService.ExportExits:input_type -> wavewalletrpc.ExportExitsRequest
-	55, // 67: wavewalletrpc.WalletService.SweepWallet:input_type -> wavewalletrpc.SweepWalletRequest
-	58, // 68: wavewalletrpc.WalletService.Exit:input_type -> wavewalletrpc.ExitRequest
-	60, // 69: wavewalletrpc.WalletService.ExitStatus:input_type -> wavewalletrpc.ExitStatusRequest
-	65, // 70: wavewalletrpc.WalletService.ExitSummary:input_type -> wavewalletrpc.ExitSummaryRequest
-	68, // 71: wavewalletrpc.WalletService.SubscribeWallet:input_type -> wavewalletrpc.SubscribeWalletRequest
-	29, // 72: wavewalletrpc.WalletInspectionService.InspectActivity:input_type -> wavewalletrpc.InspectActivityRequest
-	11, // 73: wavewalletrpc.WalletService.Create:output_type -> wavewalletrpc.CreateResponse
-	13, // 74: wavewalletrpc.WalletService.Unlock:output_type -> wavewalletrpc.UnlockResponse
-	15, // 75: wavewalletrpc.WalletService.PrepareSend:output_type -> wavewalletrpc.PrepareSendResponse
-	17, // 76: wavewalletrpc.WalletService.Send:output_type -> wavewalletrpc.SendResponse
-	19, // 77: wavewalletrpc.WalletService.Recv:output_type -> wavewalletrpc.RecvResponse
-	23, // 78: wavewalletrpc.WalletService.List:output_type -> wavewalletrpc.ListResponse
-	35, // 79: wavewalletrpc.WalletService.Deposit:output_type -> wavewalletrpc.DepositResponse
-	37, // 80: wavewalletrpc.WalletService.Balance:output_type -> wavewalletrpc.BalanceResponse
-	39, // 81: wavewalletrpc.WalletService.Status:output_type -> wavewalletrpc.StatusResponse
-	50, // 82: wavewalletrpc.WalletService.Refresh:output_type -> wavewalletrpc.RefreshResponse
-	54, // 83: wavewalletrpc.WalletService.GetExitPlan:output_type -> wavewalletrpc.GetExitPlanResponse
-	41, // 84: wavewalletrpc.WalletService.ExportExit:output_type -> wavewalletrpc.ExportExitResponse
-	43, // 85: wavewalletrpc.WalletService.ExportExits:output_type -> wavewalletrpc.ExportExitsResponse
-	57, // 86: wavewalletrpc.WalletService.SweepWallet:output_type -> wavewalletrpc.SweepWalletResponse
-	59, // 87: wavewalletrpc.WalletService.Exit:output_type -> wavewalletrpc.ExitResponse
-	64, // 88: wavewalletrpc.WalletService.ExitStatus:output_type -> wavewalletrpc.ExitStatusResponse
-	67, // 89: wavewalletrpc.WalletService.ExitSummary:output_type -> wavewalletrpc.ExitSummaryResponse
-	69, // 90: wavewalletrpc.WalletService.SubscribeWallet:output_type -> wavewalletrpc.SubscribeWalletResponse
-	30, // 91: wavewalletrpc.WalletInspectionService.InspectActivity:output_type -> wavewalletrpc.InspectActivityResponse
-	73, // [73:92] is the sub-list for method output_type
-	54, // [54:73] is the sub-list for method input_type
-	54, // [54:54] is the sub-list for extension type_name
-	54, // [54:54] is the sub-list for extension extendee
-	0,  // [0:54] is the sub-list for field type_name
+	7,  // 35: wavewalletrpc.ExitBatchInputResult.outcome:type_name -> wavewalletrpc.ExitBatchOutcome
+	62, // 36: wavewalletrpc.ExitBatchResponse.results:type_name -> wavewalletrpc.ExitBatchInputResult
+	8,  // 37: wavewalletrpc.ExitStatusResponse.status:type_name -> wavewalletrpc.ExitJobStatus
+	65, // 38: wavewalletrpc.ExitStatusResponse.progress:type_name -> wavewalletrpc.ExitProgress
+	66, // 39: wavewalletrpc.ExitStatusResponse.csv:type_name -> wavewalletrpc.ExitCSV
+	67, // 40: wavewalletrpc.ExitStatusResponse.fees:type_name -> wavewalletrpc.ExitFees
+	8,  // 41: wavewalletrpc.ExitSummaryItem.status:type_name -> wavewalletrpc.ExitJobStatus
+	70, // 42: wavewalletrpc.ExitSummaryResponse.exits:type_name -> wavewalletrpc.ExitSummaryItem
+	0,  // 43: wavewalletrpc.SubscribeWalletRequest.kinds:type_name -> wavewalletrpc.EntryKind
+	75, // 44: wavewalletrpc.SubscribeWalletResponse.entry:type_name -> wavewalletrpc.WalletEntry
+	74, // 45: wavewalletrpc.SubscribeWalletResponse.gap:type_name -> wavewalletrpc.SubscribeGap
+	0,  // 46: wavewalletrpc.WalletEntry.kind:type_name -> wavewalletrpc.EntryKind
+	1,  // 47: wavewalletrpc.WalletEntry.status:type_name -> wavewalletrpc.EntryStatus
+	76, // 48: wavewalletrpc.WalletEntry.request:type_name -> wavewalletrpc.WalletEntryRequest
+	81, // 49: wavewalletrpc.WalletEntry.progress:type_name -> wavewalletrpc.WalletEntryProgress
+	10, // 50: wavewalletrpc.WalletEntry.failure_code:type_name -> wavewalletrpc.EntryFailureCode
+	77, // 51: wavewalletrpc.WalletEntryRequest.lightning_invoice:type_name -> wavewalletrpc.LightningInvoiceRequest
+	78, // 52: wavewalletrpc.WalletEntryRequest.onchain_address:type_name -> wavewalletrpc.OnchainAddressRequest
+	79, // 53: wavewalletrpc.WalletEntryRequest.ark_address:type_name -> wavewalletrpc.ArkAddressRequest
+	9,  // 54: wavewalletrpc.WalletEntryProgress.phase:type_name -> wavewalletrpc.WalletEntryPhase
+	80, // 55: wavewalletrpc.WalletEntryProgress.batch_window:type_name -> wavewalletrpc.ScheduledBatchWindow
+	11, // 56: wavewalletrpc.WalletService.Create:input_type -> wavewalletrpc.CreateRequest
+	13, // 57: wavewalletrpc.WalletService.Unlock:input_type -> wavewalletrpc.UnlockRequest
+	15, // 58: wavewalletrpc.WalletService.PrepareSend:input_type -> wavewalletrpc.PrepareSendRequest
+	17, // 59: wavewalletrpc.WalletService.Send:input_type -> wavewalletrpc.SendRequest
+	19, // 60: wavewalletrpc.WalletService.Recv:input_type -> wavewalletrpc.RecvRequest
+	23, // 61: wavewalletrpc.WalletService.List:input_type -> wavewalletrpc.ListRequest
+	35, // 62: wavewalletrpc.WalletService.Deposit:input_type -> wavewalletrpc.DepositRequest
+	37, // 63: wavewalletrpc.WalletService.Balance:input_type -> wavewalletrpc.BalanceRequest
+	39, // 64: wavewalletrpc.WalletService.Status:input_type -> wavewalletrpc.StatusRequest
+	50, // 65: wavewalletrpc.WalletService.Refresh:input_type -> wavewalletrpc.RefreshRequest
+	53, // 66: wavewalletrpc.WalletService.GetExitPlan:input_type -> wavewalletrpc.GetExitPlanRequest
+	41, // 67: wavewalletrpc.WalletService.ExportExit:input_type -> wavewalletrpc.ExportExitRequest
+	43, // 68: wavewalletrpc.WalletService.ExportExits:input_type -> wavewalletrpc.ExportExitsRequest
+	56, // 69: wavewalletrpc.WalletService.SweepWallet:input_type -> wavewalletrpc.SweepWalletRequest
+	59, // 70: wavewalletrpc.WalletService.Exit:input_type -> wavewalletrpc.ExitRequest
+	61, // 71: wavewalletrpc.WalletService.ExitBatch:input_type -> wavewalletrpc.ExitBatchRequest
+	64, // 72: wavewalletrpc.WalletService.ExitStatus:input_type -> wavewalletrpc.ExitStatusRequest
+	69, // 73: wavewalletrpc.WalletService.ExitSummary:input_type -> wavewalletrpc.ExitSummaryRequest
+	72, // 74: wavewalletrpc.WalletService.SubscribeWallet:input_type -> wavewalletrpc.SubscribeWalletRequest
+	30, // 75: wavewalletrpc.WalletInspectionService.InspectActivity:input_type -> wavewalletrpc.InspectActivityRequest
+	12, // 76: wavewalletrpc.WalletService.Create:output_type -> wavewalletrpc.CreateResponse
+	14, // 77: wavewalletrpc.WalletService.Unlock:output_type -> wavewalletrpc.UnlockResponse
+	16, // 78: wavewalletrpc.WalletService.PrepareSend:output_type -> wavewalletrpc.PrepareSendResponse
+	18, // 79: wavewalletrpc.WalletService.Send:output_type -> wavewalletrpc.SendResponse
+	20, // 80: wavewalletrpc.WalletService.Recv:output_type -> wavewalletrpc.RecvResponse
+	24, // 81: wavewalletrpc.WalletService.List:output_type -> wavewalletrpc.ListResponse
+	36, // 82: wavewalletrpc.WalletService.Deposit:output_type -> wavewalletrpc.DepositResponse
+	38, // 83: wavewalletrpc.WalletService.Balance:output_type -> wavewalletrpc.BalanceResponse
+	40, // 84: wavewalletrpc.WalletService.Status:output_type -> wavewalletrpc.StatusResponse
+	51, // 85: wavewalletrpc.WalletService.Refresh:output_type -> wavewalletrpc.RefreshResponse
+	55, // 86: wavewalletrpc.WalletService.GetExitPlan:output_type -> wavewalletrpc.GetExitPlanResponse
+	42, // 87: wavewalletrpc.WalletService.ExportExit:output_type -> wavewalletrpc.ExportExitResponse
+	44, // 88: wavewalletrpc.WalletService.ExportExits:output_type -> wavewalletrpc.ExportExitsResponse
+	58, // 89: wavewalletrpc.WalletService.SweepWallet:output_type -> wavewalletrpc.SweepWalletResponse
+	60, // 90: wavewalletrpc.WalletService.Exit:output_type -> wavewalletrpc.ExitResponse
+	63, // 91: wavewalletrpc.WalletService.ExitBatch:output_type -> wavewalletrpc.ExitBatchResponse
+	68, // 92: wavewalletrpc.WalletService.ExitStatus:output_type -> wavewalletrpc.ExitStatusResponse
+	71, // 93: wavewalletrpc.WalletService.ExitSummary:output_type -> wavewalletrpc.ExitSummaryResponse
+	73, // 94: wavewalletrpc.WalletService.SubscribeWallet:output_type -> wavewalletrpc.SubscribeWalletResponse
+	31, // 95: wavewalletrpc.WalletInspectionService.InspectActivity:output_type -> wavewalletrpc.InspectActivityResponse
+	76, // [76:96] is the sub-list for method output_type
+	56, // [56:76] is the sub-list for method input_type
+	56, // [56:56] is the sub-list for extension type_name
+	56, // [56:56] is the sub-list for extension extendee
+	0,  // [0:56] is the sub-list for field type_name
 }
 
 func init() { file_wallet_proto_init() }
@@ -7473,12 +7728,12 @@ func file_wallet_proto_init() {
 		(*ListResponse_Onchain)(nil),
 	}
 	file_wallet_proto_msgTypes[41].OneofWrappers = []any{}
-	file_wallet_proto_msgTypes[59].OneofWrappers = []any{
+	file_wallet_proto_msgTypes[62].OneofWrappers = []any{
 		(*SubscribeWalletResponse_Entry)(nil),
 		(*SubscribeWalletResponse_Gap)(nil),
 	}
-	file_wallet_proto_msgTypes[61].OneofWrappers = []any{}
-	file_wallet_proto_msgTypes[62].OneofWrappers = []any{
+	file_wallet_proto_msgTypes[64].OneofWrappers = []any{}
+	file_wallet_proto_msgTypes[65].OneofWrappers = []any{
 		(*WalletEntryRequest_LightningInvoice)(nil),
 		(*WalletEntryRequest_OnchainAddress)(nil),
 		(*WalletEntryRequest_ArkAddress)(nil),
@@ -7488,8 +7743,8 @@ func file_wallet_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wallet_proto_rawDesc), len(file_wallet_proto_rawDesc)),
-			NumEnums:      10,
-			NumMessages:   68,
+			NumEnums:      11,
+			NumMessages:   71,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

@@ -102,6 +102,11 @@ service WalletService {
     // present in the local backing wallet's UTXO set.
     rpc Exit (ExitRequest) returns (ExitResponse);
 
+    // ExitBatch submits the exact selection in one cooperative leave request.
+    // It never starts unilateral exit. Results describe local admission, not
+    // confirmation. Unknown outcomes must be reconciled, never blindly retried.
+    rpc ExitBatch (ExitBatchRequest) returns (ExitBatchResponse);
+
     // ExitStatus reports the current phase of an unroll job for the
     // specified VTXO outpoint, including recovery chain progress and
     // sweep state. Proxies waverpc.GetUnrollStatus.
@@ -1475,6 +1480,51 @@ message ExitResponse {
     // onchain_address is the cooperative leave destination used by the
     // daemon. It may be caller-supplied or daemon-generated.
     string onchain_address = 5;
+}
+
+// ExitBatchRequest selects distinct VTXOs for one cooperative intent. Inputs
+// may originate in different rounds. This RPC has no idempotent replay key.
+message ExitBatchRequest {
+    // outpoints is a nonempty exact selection in "txid:index" format.
+    // Empty entries, malformed outpoints and duplicates are rejected.
+    repeated string outpoints = 1;
+
+    // onchain_address is the common destination. Empty allocates one fresh
+    // backing-wallet address for the whole batch. Each input creates its own
+    // on-chain output; outputs are not consolidated.
+    string onchain_address = 2;
+}
+
+// ExitBatchOutcome describes admission of one input, not its eventual payout.
+enum ExitBatchOutcome {
+    // EXIT_BATCH_UNKNOWN means admission could not be established.
+    // Reconcile wallet activity and input state before any new submission.
+    EXIT_BATCH_UNKNOWN = 0;
+
+    // EXIT_BATCH_ACCEPTED means queued into the local round intent.
+    // Operator admission and confirmation are asynchronous and can still fail.
+    EXIT_BATCH_ACCEPTED = 1;
+
+    // EXIT_BATCH_FAILED means this input was definitively not queued.
+    EXIT_BATCH_FAILED = 2;
+}
+
+// ExitBatchInputResult preserves the authoritative result for a selected input.
+message ExitBatchInputResult {
+    string outpoint = 1;
+    ExitBatchOutcome outcome = 2;
+    // error explains a failed or unknown outcome; it is not a retry directive.
+    string error = 3;
+}
+
+// ExitBatchResponse contains one result per selected input, in request order.
+// Partial admission is possible. A transport error can hide accepted work;
+// neither that error nor an UNKNOWN result authorizes a retry or unilateral
+// exit.
+message ExitBatchResponse {
+    repeated ExitBatchInputResult results = 1;
+    // onchain_address is the common caller-supplied or generated destination.
+    string onchain_address = 2;
 }
 
 // ExitStatusRequest identifies the VTXO whose exit job to query via

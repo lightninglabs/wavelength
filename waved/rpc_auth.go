@@ -201,7 +201,8 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 	)
 	grant(
 		wavewalletdk, entityOnChain, "write", "PrepareSend", "Send",
-		"Deposit", "SweepWallet", "Exit", "ExportExit", "ExportExits",
+		"Deposit", "SweepWallet", "Exit", "ExitBatch", "ExportExit",
+		"ExportExits",
 	)
 
 	// Refresh proxies the daemon's RefreshVTXOs, so it carries the same
