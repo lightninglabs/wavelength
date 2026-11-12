@@ -1,4 +1,4 @@
-.PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
+.PHONY: sqlc sqlc-check relay-sqlc migrate-create migrate-up migrate-down gen
 .PHONY: lint lint-source lint-local lint-source-local lint-changed-local lint-native build-native-linter local-custom-gcl install-custom-gcl docker-tools fmt fmt-changed fmt-check fmt-changed-check tidy-module tidy-module-check schema-check doc-check sample-conf-check
 .PHONY: ast-lint ast-grep-fix actorblock-build actorblock-test actorblock-check
 .PHONY: unit unit-cover unit-race unit-swapruntime check-go-version build install clean release
@@ -217,13 +217,18 @@ $(MIGRATE_BIN):
 # SQLC TARGETS
 # ============
 
+relay-sqlc: #? Generate dedicated notification relay SQL queries
+	docker run --rm --user "$(shell id -u):$(shell id -g)" \
+		-v "$(CURDIR):/build" -w /build sqlc/sqlc:1.29.0 \
+		generate -f notifyrelay/relaydb/sqlc.yaml
+
 sqlc: #? Generate SQL code from schema and queries
 	@$(call print, "Generating sql models and queries in Go")
 	./scripts/gen_sqlc_docker.sh
 	@$(call print, "Merging SQL migrations into consolidated schemas")
 	go run ./cmd/merge-sql-schemas/main.go
 
-sqlc-check: sqlc #? Verify SQL code generation is up to date
+sqlc-check: sqlc relay-sqlc #? Verify SQL code generation is up to date
 	@$(call print, "Verifying sql code generation")
 	@if [ ! -f db/sqlc/schemas/generated_schema.sql ]; then \
 		echo "Missing file: db/sqlc/schemas/generated_schema.sql"; \
