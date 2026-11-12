@@ -76,3 +76,9 @@ SELECT * FROM relay_sources WHERE id = $1;
 -- name: InsertSource :execrows
 INSERT INTO relay_sources (id, source_pubkey, subscriber_key) VALUES ($1, $2, $3)
 ON CONFLICT (id) DO NOTHING;
+
+-- name: DeleteScopeJob :exec
+DELETE FROM relay_jobs WHERE subscription_id = $1 AND scope = $2;
+
+-- name: DeleteInstallationSubscriptions :exec
+DELETE FROM relay_subscriptions WHERE installation_id = $1;
