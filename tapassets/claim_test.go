@@ -378,6 +378,30 @@ func TestClaimerRefusesShortCommit(t *testing.T) {
 	require.Zero(t, driver.publishes)
 }
 
+// TestClaimerKeepsJournalAcrossProofs checks that a journaled claim serves a
+// request whose proof file was rebuilt, as after a reorganization confirms
+// the same history in other blocks, and publishes the rebuilt proof.
+func TestClaimerKeepsJournalAcrossProofs(t *testing.T) {
+	t.Parallel()
+
+	claimer, driver, _, request := newClaimTest(t)
+	ctx := t.Context()
+
+	prepared, err := claimer.Prepare(ctx, request)
+	require.NoError(t, err)
+
+	rebuilt := *request
+	rebuilt.Inputs = []ClaimInput{request.Inputs[0]}
+	rebuilt.Inputs[0].ProofFile = []byte("reconfirmed proof")
+	claimed, err := claimer.Claim(ctx, &rebuilt)
+	require.NoError(t, err)
+	require.Equal(t, prepared.Tx.TxHash(), claimed.Tx.TxHash())
+	require.Equal(t, 1, driver.commits)
+	require.Equal(
+		t, [][]byte{[]byte("reconfirmed proof")}, driver.inputProofs,
+	)
+}
+
 // TestClaimRequestBindsExitSpend checks that a claim is refused when the exit
 // leaf does not spend the claimed output.
 func TestClaimRequestBindsExitSpend(t *testing.T) {

@@ -92,7 +92,8 @@ type ClaimInput struct {
 	Amount uint64
 
 	// ProofFile is the piece's confirmed proof file, ending in the claimed
-	// output.
+	// output. The claim journal does not bind it, so a proof rebuilt from
+	// the blocks of a reorganized chain still serves a journaled claim.
 	ProofFile []byte
 
 	// OPTrueWitness authorizes the spend of the piece under its OP_TRUE
@@ -699,10 +700,12 @@ func validateClaimRequest(request *ClaimRequest) error {
 	return request.ExitSpend.VerifyBindsToPkScript(request.Output.PkScript)
 }
 
-// claimRequestDigest binds a journal entry to one claim request.
+// claimRequestDigest binds a journal entry to one claim request. It leaves
+// out the proof files: they only prove the pieces, and a reorganization can
+// confirm the same history in other blocks.
 func claimRequestDigest(request *ClaimRequest) tapsdk.Hash {
 	h := sha256.New()
-	h.Write([]byte("wavelength/asset-claim-request/v0"))
+	h.Write([]byte("wavelength/asset-claim-request/v1"))
 
 	writeBytes := func(data []byte) {
 		var size [8]byte
@@ -728,7 +731,6 @@ func claimRequestDigest(request *ClaimRequest) tapsdk.Hash {
 	writeUint(uint64(len(request.Inputs)))
 	for _, claimInput := range request.Inputs {
 		writeUint(claimInput.Amount)
-		writeBytes(claimInput.ProofFile)
 		writeUint(uint64(len(claimInput.OPTrueWitness)))
 		for _, item := range claimInput.OPTrueWitness {
 			writeBytes(item)
