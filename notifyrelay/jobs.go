@@ -56,9 +56,10 @@ type Delivery struct {
 	CollapseID   string            `json:"collapse_id"`
 	ExpiresAt    time.Time         `json:"expires_at"`
 
-	job           relayJob
-	tokenRevision uint64
-	policy        AppConfig
+	installationID string
+	job            relayJob
+	tokenRevision  uint64
+	policy         AppConfig
 }
 
 // String makes routine diagnostics safe even when a delivery is formatted.

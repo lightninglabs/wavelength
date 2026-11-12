@@ -22,18 +22,20 @@ type RelayFeedBinding struct {
 }
 
 type RelayInstallation struct {
-	ID               string
-	Policy           []byte
-	PublicKey        []byte
-	AttestReceipt    []byte
-	AssertionCounter int64
-	DeviceToken      string
-	TokenRevision    int64
-	TokenUpdated     int64
-	NextWakeAt       int64
-	NextAlertAt      int64
-	Disabled         bool
-	Deleted          bool
+	ID                 string
+	Policy             []byte
+	PublicKey          []byte
+	AttestReceipt      []byte
+	AssertionCounter   int64
+	DeviceToken        string
+	TokenRevision      int64
+	TokenUpdated       int64
+	NextWakeAt         int64
+	NextAlertAt        int64
+	Disabled           bool
+	Deleted            bool
+	DeliveryClaimToken string
+	DeliveryLeaseUntil int64
 }
 
 type RelayJob struct {
