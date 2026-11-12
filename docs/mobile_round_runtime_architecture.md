@@ -17,6 +17,14 @@ the threaded round owner when this option is false. If a native round
 checkpoint already exists, startup rejects the false setting; the host must
 explicitly enable durable recovery. `HostDrivenIngress` leaves transport intake paused at startup;
 the domain actors and shared outbox publisher still have independent lifetimes.
+Local wallet-ready hooks, including swap recovery and canonical activity backfill,
+run while ingress is paused. Authenticated operator policy refresh and persisted
+Board replay run once after explicit foreground ingress starts. A failed or
+cancelled policy read or Board replay leaves that online phase incomplete. The
+host owns retries by calling `SetHostForeground(true)` again; native startup
+does not schedule a retry. Board replay never uses the anonymous bootstrap
+policy. Ordinary daemon startup keeps its original online-policy, best-effort
+replay, then hook order.
 
 ```mermaid
 flowchart TB

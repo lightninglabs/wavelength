@@ -133,6 +133,60 @@ func TestRecoveredSettledPayProjectsOnceOnStartup(t *testing.T) {
 	require.Len(t, events, 2)
 }
 
+// TestStartupBackfillRepairsCompletedReceive reproduces a saved settling row
+// whose swap completed while the live activity monitor was not running.
+func TestStartupBackfillRepairsCompletedReceive(t *testing.T) {
+	t.Parallel()
+	const hash = "dddddddddddddddddddddddddddddddd" +
+		"dddddddddddddddddddddddddddddddd"
+	runtime, store, _ := newReconcileFixture(t)
+	runtime.deps.SwapBackend = &fakeResumeOnlyBackend{}
+	swap, ok := runtime.deps.SwapService.(*fakeSwapService)
+	require.True(t, ok)
+	summary := &swapclientrpc.SwapSummary{
+		PaymentHash: hash,
+		Direction:   swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE,
+		State:       swapclientrpc.SwapState_SWAP_STATE_CLAIM_INITIATED,
+		AmountSat:   3000,
+	}
+	require.NoError(
+		t,
+		runtime.fanOutSwapUpdate(
+			&swapclientrpc.SubscribeSwapsResponse{
+				Swap: summary,
+			},
+		),
+	)
+	before, err := store.GetEntry(t.Context(), hash)
+	require.NoError(t, err)
+	require.EqualValues(
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		before.Status,
+	)
+	summary.State = swapclientrpc.SwapState_SWAP_STATE_COMPLETED
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			summary,
+		},
+	}
+	runtime.resumeAll(t.Context())
+	after, err := store.GetEntry(t.Context(), hash)
+	require.NoError(t, err)
+	require.Equal(t, before.CanonicalID, after.CanonicalID)
+	require.EqualValues(
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		after.Status,
+	)
+	require.EqualValues(t, 3000, after.AmountSat)
+	events, err := store.PullEvents(t.Context(), 0, 100)
+	require.NoError(t, err)
+	require.Len(t, events, 2)
+	runtime.resumeAll(t.Context())
+	repeated, err := store.PullEvents(t.Context(), 0, 100)
+	require.NoError(t, err)
+	require.Len(t, repeated, 2)
+}
+
 // TestReconcileActivityFlipsDepositLive verifies the reconciler lands a
 // confirmed boarding deposit's PENDING -> COMPLETE transition into the store
 // live (no restart), and that a second pass is a no-op (ProjectEntry

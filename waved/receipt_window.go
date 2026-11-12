@@ -64,6 +64,9 @@ type receiptWindowController struct {
 	ingress          receiptIngress
 	// connected publishes mode changes while modeMu owns intake ordering.
 	connected func(bool)
+	// afterForeground runs authenticated bootstrap under mode ownership so
+	// a concurrent pause/restart cannot cancel its response transport.
+	afterForeground func(context.Context) error
 	//nolint:containedctx // Daemon owns foreground ingress, not the caller.
 	root context.Context
 	read func(context.Context, LightningReceiptRequest) (
@@ -136,6 +139,9 @@ func (c *receiptWindowController) setForeground(ctx context.Context,
 	}
 	c.foregroundCancel = cancel
 	started = true
+	if c.afterForeground != nil {
+		return c.afterForeground(ctx)
+	}
 
 	return nil
 }
@@ -342,13 +348,18 @@ func (s *Server) receiptController(ctx context.Context) (
 			return nil, fmt.Errorf("receipt ingress unavailable")
 		}
 		maintenance := newExpiryMaintenance(s)
+		var foregroundHook func(context.Context) error
+		if s.cfg.HostDrivenIngress {
+			foregroundHook = s.finishWalletOnlineStartup
+		}
 		s.hostController = &receiptWindowController{
 			ingress: runtime, root: s.runCtx,
-			connected:  s.setServerConnected,
-			foreground: !s.cfg.HostDrivenIngress,
-			read:       s.ReadLightningReceipts,
-			resume:     s.resumeLightningReceipt,
-			maintain:   maintenance.run,
+			connected:       s.setServerConnected,
+			foreground:      !s.cfg.HostDrivenIngress,
+			read:            s.ReadLightningReceipts,
+			resume:          s.resumeLightningReceipt,
+			maintain:        maintenance.run,
+			afterForeground: foregroundHook,
 		}
 	}
 
