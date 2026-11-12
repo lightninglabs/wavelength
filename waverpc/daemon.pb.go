@@ -9900,10 +9900,11 @@ type UnrollFees struct {
 	SweepFeeSat int64 `protobuf:"varint,2,opt,name=sweep_fee_sat,json=sweepFeeSat,proto3" json:"sweep_fee_sat,omitempty"`
 	// total_cost_sat is cpfp_fee_sat + sweep_fee_sat.
 	TotalCostSat int64 `protobuf:"varint,3,opt,name=total_cost_sat,json=totalCostSat,proto3" json:"total_cost_sat,omitempty"`
-	// vtxo_amount_sat is the value of the VTXO being exited.
+	// vtxo_amount_sat is the value of the VTXO being exited. An asset VTXO's
+	// exit moves this value into the asset wallet with the asset.
 	VtxoAmountSat int64 `protobuf:"varint,4,opt,name=vtxo_amount_sat,json=vtxoAmountSat,proto3" json:"vtxo_amount_sat,omitempty"`
 	// net_recovered_sat is vtxo_amount_sat - sweep_fee_sat: the value that
-	// lands back in the wallet from the sweep.
+	// lands back in the wallet from the sweep. It is zero for an asset VTXO.
 	NetRecoveredSat int64 `protobuf:"varint,5,opt,name=net_recovered_sat,json=netRecoveredSat,proto3" json:"net_recovered_sat,omitempty"`
 	// fee_rate_sat_vbyte is the fee rate used for the estimate.
 	FeeRateSatVbyte int64 `protobuf:"varint,6,opt,name=fee_rate_sat_vbyte,json=feeRateSatVbyte,proto3" json:"fee_rate_sat_vbyte,omitempty"`
