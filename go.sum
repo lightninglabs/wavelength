@@ -1063,12 +1063,12 @@ github.com/lightninglabs/neutrino/cache v1.1.4 h1:KVtvUmBwYr7eKtjfjHG/q6/cQlcrjH
 github.com/lightninglabs/neutrino/cache v1.1.4/go.mod h1:ZqLzxghPggIRfNXeAZN1VtTKofMyK/ALI6niYsPH6OE=
 github.com/lightninglabs/protobuf-go-hex-display v1.33.0-hex-display h1:Y2WiPkBS/00EiEg0qp0FhehxnQfk3vv8U6Xt3nN+rTY=
 github.com/lightninglabs/protobuf-go-hex-display v1.33.0-hex-display/go.mod h1:c6P6GXX6sHbq/GpV6MGZEdwhWPcYBgnhAHhKbcUYpos=
-github.com/lightninglabs/tap-sdk v0.3.1-0.20261109170616-457d6bb47c7b h1:1apFvw1PGi8OiW5fWmMG2+wWZZng5bq66g6AGEoyhRQ=
-github.com/lightninglabs/tap-sdk v0.3.1-0.20261109170616-457d6bb47c7b/go.mod h1:rvygxMc9xPM5wtVgZQPUrkRVLgeGZLrXaDSOWcYXiNo=
+github.com/lightninglabs/tap-sdk v0.3.1-0.20261112132723-6ebef2d4085f h1:Lx1z6ZVz8VxjBF9ulTN0hhW0FI1VTbVSVPgnDrwZ728=
+github.com/lightninglabs/tap-sdk v0.3.1-0.20261112132723-6ebef2d4085f/go.mod h1:F8kzeiYXXT9/puX+3TYULY9+HJbhxqZL/FEHk3HA/2k=
 github.com/lightninglabs/taproot-assets v0.7.1-0.20261006112023-1434ab66b3bb h1:YXDLUvU57oe4XE3GYS6rZL/QiXtfjrSd1xGpPB/cUx4=
 github.com/lightninglabs/taproot-assets v0.7.1-0.20261006112023-1434ab66b3bb/go.mod h1:ZxTc2Lr7ZMNj30AEiJcaiP/XaQfP4lD2Qa6xk+OrvHE=
-github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20261109140140-9d4fed15579d h1:5aMLz19SzHm6p4FDlEprZM5WaRRUV+mAhCMsn/rerjs=
-github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20261109140140-9d4fed15579d/go.mod h1:DnNNUTIcA4h1hMDOHDW8hYeYxvBDv7eCrgPusMw5nLA=
+github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20261112123219-14aa3fd90e6a h1:2wMGcwunfUeOYhAb0XUwprhZBbaHKM3elfZv095b8AY=
+github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20261112123219-14aa3fd90e6a/go.mod h1:DnNNUTIcA4h1hMDOHDW8hYeYxvBDv7eCrgPusMw5nLA=
 github.com/lightningnetwork/lightning-onion v1.4.0 h1:qWE1icOH4AKXRcq1KCzt6P/TesqptgBTP++V7wowTc0=
 github.com/lightningnetwork/lightning-onion v1.4.0/go.mod h1:YDPkvVTVQ6FBBE6Yj93tDd7zA3iTSrryi9xq46i7bKE=
 github.com/lightningnetwork/lnd v0.21.0-beta.rc2.0.20260903094101-d66a7c137d32 h1:lwPqwW244WCcdOZGwmS+rrieC1hTPYaRvkjHC8KXDeY=
