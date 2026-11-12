@@ -29,13 +29,12 @@ func CheckForfeitAdmission(desc *Descriptor) error {
 	case VTXOStatusLive, VTXOStatusExpired:
 		return nil
 
-	// Already committed to a round. PendingForfeit is refused even though
-	// the FSM tolerates the duplicate as a self-loop: a second request
-	// carrying a different destination would otherwise report success
-	// while the first destination is what actually gets paid, and which
-	// of the two behaviours a caller meets is decided purely by how far
-	// the round happens to have progressed in the preceding seconds.
 	case VTXOStatusPendingForfeit, VTXOStatusForfeiting:
+		// Already committed to a round. Reject here with an actionable
+		// error; the FSM also refuses a second claim in either state if
+		// a concurrent reservation wins after this advisory check. A
+		// fresh destination must not be reported as queued while the
+		// first claim owns the input.
 		return fmt.Errorf("%w %s", ErrForfeitInFlight,
 			forfeitRoundHint(desc))
 

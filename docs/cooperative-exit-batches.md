@@ -127,6 +127,18 @@ submission and the destination once returned, keep the daemon alive during
 submission, and reconcile uncertainty before allowing another funds-moving action
 for those inputs.
 
+## Browser WASM binding
+
+The typed browser host SDK can call the private transport method
+`wavewalletdkCall("exitBatch", request)`. It dispatches once through the same
+`mobile.ExitBatch` facade. Requests and responses use the PascalCase JSON
+fields shown above, and the returned promise resolves to the parsed result.
+
+The host SDK owns lifecycle serialization and runtime locking. It must inspect
+every input outcome after resolution. A rejected promise or an unknown outcome
+requires reconciliation before a new submission; the bridge adds no retries or
+unilateral fallback.
+
 ## CLI and REST
 
 ```sh

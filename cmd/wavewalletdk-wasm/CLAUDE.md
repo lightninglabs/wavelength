@@ -32,6 +32,10 @@ VM with no separate gateway.
 - Every verb takes a JS request object and resolves/rejects a JS `Promise`;
   never call back into JS synchronously from a goroutine without going
   through `promise`, or a panic can escape and kill the Go runtime.
+- `exitBatch` dispatches once through `mobile.ExitBatch` with the same
+  PascalCase request and result fields as the mobile ABI. The promise may
+  resolve with failed or unknown input outcomes; the host must inspect every
+  result and reconcile uncertainty before resubmitting.
 - `data_dir` must default to `browserDataDir` (`/wavelength`) when unset **on a
   browser host**, because the embedded daemon's config validation calls
   `os.UserHomeDir` for the default `~/.waved`, which fails under

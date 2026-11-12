@@ -31,6 +31,7 @@ Proto source: `rpc/wavewalletrpc/wallet.proto`.
 | `ExportExits` | Export several targets with shared ancestry included once |
 | `SweepWallet` | Preview/broadcast a backing-wallet sweep to an address |
 | `Exit` | Cooperative leave by default; unilateral unroll only with the exact force-ack |
+| `ExitBatch` | One cooperative request for an exact selection, with ordered accepted/failed/unknown input results. |
 | `ExitStatus` | Phase of an exit job (proxies `GetUnrollStatus`) |
 | `ExitSummary` | Wallet-wide portfolio of in-progress exits |
 | `SubscribeWallet` | Streams normalized `WalletEntry` updates (resumable via cursor) |
@@ -72,6 +73,11 @@ registration or estimate transaction confirmation.
 - `ExitPlanEntry.round_commitment` — names the cooperative round holding the
   VTXO, empty when none. Distinct from `error`, which means the entry could
   not be answered at all.
+- `ExitBatchRequest` / `ExitBatchResponse` — exact distinct outpoints and one
+  common destination, with one ordered `ExitBatchInputResult` per input.
+  Accepted means queued locally, not confirmed. Partial admission and unknown
+  outcomes are explicit; callers must reconcile before resubmitting unknown
+  inputs. No unilateral option, automatic retry, or replay key is provided.
 - `ExitMode` — which of the two exits an `Exit` call actually ran
   (`COOPERATIVE` / `UNILATERAL`). `EXIT_MODE_UNSPECIFIED` is what an older
   daemon sends; clients must treat it as "unknown", not as a default.
@@ -100,9 +106,9 @@ registration or estimate transaction confirmation.
   verbs land HERE first and admin proxies pull from `waverpc`.
   Internal correlators MUST NOT leak from `waverpc` into wavewalletrpc
   responses (that is what `WalletInspectionService` is for instead).
-- `Create`, `Unlock`, `Exit`, and `ExitStatus` are admin-shape proxies
-  that work BEFORE the swap subsystem is live; the server-side
-  implementation (in `swapwallet/admin.go`) MUST NOT depend on the
+- `Create`, `Unlock`, `Exit`, `ExitBatch`, and `ExitStatus` are admin-shape
+  proxies that work BEFORE the swap subsystem is live. Their handlers in
+  `swapwallet/admin.go` and `swapwallet/exit_batch.go` MUST NOT depend on the
   swap runtime being started.
 - `ListView` defaults (UNSPECIFIED) to ACTIVITY so callers that omit
   the field keep getting the merged WalletEntry stream.
