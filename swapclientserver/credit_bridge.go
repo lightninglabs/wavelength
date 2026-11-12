@@ -3,8 +3,10 @@
 package swapclientserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -32,17 +34,20 @@ type creditServerBridge struct {
 var _ credit.CreditServer = (*creditServerBridge)(nil)
 
 // CreateCredit forwards to the swap subserver's CreateCredit handler. The
-// account pubkey is resolved by the daemon from its own identity, so the
-// supplied accountPubKey is intentionally ignored here.
+// supplied account must match the wallet identity used to sign the request.
 //
 // A top-up the server refuses with the below-floor reason is wrapped with
 // credit.ErrTopUpRejected so the operation fails instead of being redelivered.
 // The match is on the reason alone: the same InvalidArgument code also covers
 // the expired replay of an existing top-up, which stays retryable. Receive
 // credits are returned as is.
-func (b *creditServerBridge) CreateCredit(ctx context.Context, _ []byte,
-	idempotencyKey string, source credit.CreditSource, amountSat uint64,
-	memo string) (*credit.CreateCreditResult, error) {
+func (b *creditServerBridge) CreateCredit(ctx context.Context,
+	accountPubKey []byte, idempotencyKey string, source credit.CreditSource,
+	amountSat uint64, memo string) (*credit.CreateCreditResult, error) {
+
+	if err := b.validateAccount(ctx, accountPubKey); err != nil {
+		return nil, err
+	}
 
 	protoSource, err := creditSourceToProto(source)
 	if err != nil {
@@ -75,8 +80,12 @@ func (b *creditServerBridge) CreateCredit(ctx context.Context, _ []byte,
 }
 
 // ListCredits forwards to the swap subserver's ListCredits handler.
-func (b *creditServerBridge) ListCredits(ctx context.Context, _ []byte) (
-	*credit.CreditSnapshot, error) {
+func (b *creditServerBridge) ListCredits(ctx context.Context,
+	accountPubKey []byte) (*credit.CreditSnapshot, error) {
+
+	if err := b.validateAccount(ctx, accountPubKey); err != nil {
+		return nil, err
+	}
 
 	resp, err := b.svc.ListCredits(ctx, &swapclientrpc.ListCreditsRequest{
 		Limit: math.MaxUint32,
@@ -94,6 +103,7 @@ func (b *creditServerBridge) ListCredits(ctx context.Context, _ []byte) (
 		snapshot.Operations = append(snapshot.Operations,
 			credit.ServerCreditOp{
 				OperationID: op.GetOperationId(),
+				AmountSat:   op.GetAmountSat(),
 				State: creditStateFromProtoEnum(
 					op.GetState(),
 				),
@@ -114,9 +124,13 @@ func (b *creditServerBridge) ListCredits(ctx context.Context, _ []byte) (
 // admitted redemption never produces it. Everything else, including transport
 // errors and the ambiguous FailedPrecondition and ResourceExhausted codes, is
 // returned as is.
-func (b *creditServerBridge) RedeemCredit(ctx context.Context, _ []byte,
-	idempotencyKey string, amountSat uint64, destinationPubKey []byte) (
-	*credit.RedeemResult, error) {
+func (b *creditServerBridge) RedeemCredit(ctx context.Context,
+	accountPubKey []byte, idempotencyKey string, amountSat uint64,
+	destinationPubKey []byte) (*credit.RedeemResult, error) {
+
+	if err := b.validateAccount(ctx, accountPubKey); err != nil {
+		return nil, err
+	}
 
 	resp, err := b.svc.RedeemCredit(ctx, &swapclientrpc.RedeemCreditRequest{
 		IdempotencyKey:    idempotencyKey,
@@ -151,6 +165,24 @@ func (b *creditServerBridge) StartPay(ctx context.Context, invoice string,
 		MaxFeeSat:    maxFeeSat,
 		MaxCreditSat: maxCreditSat,
 	})
+	if errors.Is(err, swaps.ErrPayAuthorizationMismatch) {
+		// A different request may already own this invoice. Observe
+		// that existing obligation without changing its authority or
+		// reissuing create; the credit-only ledger check still enforces
+		// this actor's cap, and mixed settlement remains owned by the
+		// existing swap.
+		known, probeErr := b.svc.hasSwapForInvoice(
+			ctx, invoice, swaps.SwapDirectionPay,
+		)
+		if probeErr != nil {
+			return err
+		}
+		if known {
+			return nil
+		}
+
+		return fmt.Errorf("%w: %w", credit.ErrPayRejected, err)
+	}
 	if err == nil || !isPayRejection(err) {
 		return err
 	}
@@ -417,4 +449,26 @@ func decodeHexHash(hexHash string) []byte {
 	}
 
 	return raw
+}
+
+// validateAccount keeps the credit actor's account binding intact across the
+// RPC bridge. The downstream SDK signs with this daemon's wallet identity.
+func (b *creditServerBridge) validateAccount(ctx context.Context,
+	account []byte) error {
+
+	if b.svc.daemonConn == nil {
+		return fmt.Errorf("credit account identity is unavailable")
+	}
+	key, err := b.svc.daemonConn.IdentityPubKey(ctx)
+	if err != nil {
+		return err
+	}
+	if key == nil || !bytes.Equal(account, key.SerializeCompressed()) {
+		return status.Error(
+			codes.PermissionDenied,
+			"credit account does not match wallet identity",
+		)
+	}
+
+	return nil
 }

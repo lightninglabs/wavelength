@@ -4,6 +4,14 @@
 
 package sqlc
 
+type PayAuthorization struct {
+	PaymentHash   []byte
+	Invoice       string
+	AccountPubkey []byte
+	MaxFeeSat     string
+	MaxCreditSat  string
+}
+
 type PaySwap struct {
 	PaymentHash                          []byte
 	Invoice                              string
@@ -33,6 +41,7 @@ type PaySwap struct {
 	CreatedAtUnix                        int64
 	UpdatedAtUnix                        int64
 	SettlementType                       string
+	CreditQuote                          []byte
 }
 
 type ReceiveSwap struct {

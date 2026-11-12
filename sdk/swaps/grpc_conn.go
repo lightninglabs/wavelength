@@ -189,7 +189,7 @@ func (g *GRPCSwapServerConn) CreateInSwap(ctx context.Context, invoice string,
 
 // CreateInSwapWithCredits initiates one Ark-to-Lightning swap and authorizes
 // the server to reserve credits from accountPubKey when maxCreditSat is
-// non-zero or credit is mandatory.
+// non-zero. Zero forbids credit, including mandatory credit.
 func (g *GRPCSwapServerConn) CreateInSwapWithCredits(ctx context.Context,
 	invoice string, maxFeeSat uint64, clientVhtlcPubkey *btcec.PublicKey,
 	accountPubKey []byte, maxCreditSat uint64) (*InSwapConfig, error) {

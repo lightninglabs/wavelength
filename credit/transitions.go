@@ -260,7 +260,27 @@ func (payAwaitingSettlementState) ProcessEvent(ctx context.Context,
 		return nil, b.postponeListCreditsFetch(ctx, err)
 	}
 
-	state, found := serverOpStateByPaymentHash(snapshot, b.rec.PaymentHash)
+	state, found, err := authorizedPayState(
+		snapshot, b.rec.PaymentHash, uint64(b.rec.MaxCreditSat),
+	)
+	if err != nil {
+		// Contradictory accounting can describe an already-paid
+		// invoice. Persist the intervention reason and keep a live poll
+		// driver instead of nacking to dead-letter or declaring the
+		// payment failed. The normal poll cap cannot prove absence of
+		// this obligation.
+		b.rec.LastError = "credit pay requires intervention: " +
+			err.Error()
+
+		return emit(&payAwaitingSettlementState{}, &parkOp{})
+	}
+	if !found && b.rec.LastError != "" {
+
+		// Missing later evidence cannot erase a contradictory
+		// obligation.
+		return emit(&payAwaitingSettlementState{}, &parkOp{})
+	}
+	b.rec.LastError = ""
 	if found && state == ServerStateDebited {
 		b.logger(ctx).InfoS(ctx, "Credit pay settled",
 			slog.String("op_id", b.cfg.OpID),
@@ -754,21 +774,39 @@ func serverOpState(snapshot *CreditSnapshot,
 	return "", false
 }
 
-// serverOpStateByPaymentHash returns the server state of the operation bound to
-// a payment hash. A credit-only pay is an outbound payment, so the wallet holds
-// no other operation for that payee invoice hash and the match is unambiguous.
-func serverOpStateByPaymentHash(snapshot *CreditSnapshot,
-	paymentHash []byte) (ServerCreditState, bool) {
+// authorizedPayState checks a pay operation's reported reservation or debit
+// against the durable caller cap before its state can establish completion.
+// Contradictory evidence leaves the obligation pending for reconciliation.
+func authorizedPayState(snapshot *CreditSnapshot, paymentHash []byte,
+	maxCreditSat uint64) (ServerCreditState, bool, error) {
 
 	if snapshot == nil || len(paymentHash) == 0 {
-		return "", false
+		return "", false, nil
 	}
 
 	for _, op := range snapshot.Operations {
 		if bytes.Equal(op.PaymentHash, paymentHash) {
-			return op.State, true
+			if op.State.IsTerminalFailure() {
+				return op.State, true, nil
+			}
+			active := op.State == ServerStateDebited ||
+				op.State == ServerStateReserved ||
+				op.State == ServerStatePayingLightning
+			if active && op.AmountSat == 0 {
+				return "", false, fmt.Errorf("credit "+
+					"operation %s missing amount",
+					op.OperationID)
+			}
+			if op.AmountSat > maxCreditSat {
+				return "", false, fmt.Errorf("credit "+
+					"operation %s amount %d exceeds "+
+					"max_credit_sat %d", op.OperationID,
+					op.AmountSat, maxCreditSat)
+			}
+
+			return op.State, true, nil
 		}
 	}
 
-	return "", false
+	return "", false, nil
 }

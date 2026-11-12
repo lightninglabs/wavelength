@@ -358,7 +358,8 @@ func TestValidateInSwapPreviewAllowsCreditOnlyZeroAmount(t *testing.T) {
 	}
 
 	err = validateInSwapPreview(
-		invoice, quote, &chaincfg.RegressionNetParams,
+		invoice, quote, testInSwapInvoiceSat,
+		&chaincfg.RegressionNetParams,
 	)
 	require.NoError(t, err)
 }
@@ -379,7 +380,8 @@ func TestValidateInSwapQuoteRejectsServerMismatches(t *testing.T) {
 		serverPriv.PubKey(), preimage, time.Now().Add(time.Minute),
 	)
 	err = validateInSwapQuote(
-		invoice, testInSwapFeeSat, cfg, &chaincfg.RegressionNetParams,
+		invoice, testInSwapFeeSat, 0, cfg,
+		&chaincfg.RegressionNetParams,
 	)
 	require.NoError(t, err)
 
@@ -461,7 +463,7 @@ func TestValidateInSwapQuoteRejectsServerMismatches(t *testing.T) {
 			}
 
 			err := validateInSwapQuote(
-				test.invoice, test.maxFeeSat, cfg,
+				test.invoice, test.maxFeeSat, 0, cfg,
 				test.chainParams,
 			)
 			require.ErrorContains(t, err, test.wantErr)
@@ -486,7 +488,8 @@ func TestValidateInSwapQuoteRejectsAmountlessInvoice(t *testing.T) {
 		serverPriv.PubKey(), preimage, time.Now().Add(time.Minute),
 	)
 	err = validateInSwapQuote(
-		invoice, testInSwapFeeSat, cfg, &chaincfg.RegressionNetParams,
+		invoice, testInSwapFeeSat, 0, cfg,
+		&chaincfg.RegressionNetParams,
 	)
 	require.ErrorContains(t, err, "invoice amount")
 }

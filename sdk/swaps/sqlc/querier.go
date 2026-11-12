@@ -9,6 +9,8 @@ import (
 )
 
 type Querier interface {
+	AdmitPayAuthorization(ctx context.Context, arg AdmitPayAuthorizationParams) error
+	GetPayAuthorization(ctx context.Context, paymentHash []byte) (PayAuthorization, error)
 	GetPaySwap(ctx context.Context, paymentHash []byte) (PaySwap, error)
 	GetReceiveSwap(ctx context.Context, paymentHash []byte) (ReceiveSwap, error)
 	ListPaySwaps(ctx context.Context) ([]PaySwap, error)

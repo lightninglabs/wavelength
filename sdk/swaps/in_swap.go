@@ -2,6 +2,7 @@ package swaps
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -502,6 +503,41 @@ func (c *SwapClient) StartPayViaLightningWithCredits(ctx context.Context,
 	invoice string, maxFeeSat uint64, maxCreditSat uint64) (*PaySession,
 	error) {
 
+	key, err := c.daemon.IdentityPubKey(ctx)
+	if err != nil {
+		return nil, newRetryableActionError(
+			fmt.Errorf("get client pubkey: %w", err),
+		)
+	}
+	decoded, err := decodePayInvoice(invoice, c.chainParams)
+	if err != nil {
+		return nil, err
+	}
+	if decoded.PaymentHash == nil {
+		return nil, fmt.Errorf("invoice payment hash is required")
+	}
+	if c.store != nil {
+		row, err := c.store.queries.GetPaySwap(
+			ctx, decoded.PaymentHash[:],
+		)
+		if err == nil {
+			if err := c.ValidatePayAuthorization(
+				ctx, invoice, maxFeeSat, maxCreditSat,
+			); err != nil {
+				return nil, err
+			}
+
+			return paySessionFromRow(ctx, c, row)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+	}
+	if _, err := c.authorizePay(ctx, invoice, maxFeeSat, maxCreditSat,
+		key); err != nil {
+		return nil, err
+	}
+
 	session := &paySession{
 		client:       c,
 		invoice:      invoice,
@@ -581,6 +617,12 @@ func (s *paySession) createSwap(ctx context.Context) error {
 		)
 	}
 
+	if _, err := s.client.authorizePay(
+		ctx, s.invoice, s.maxFeeSat, s.maxCreditSat, clientKey,
+	); err != nil {
+		return err
+	}
+
 	var cfg *InSwapConfig
 	if server, ok := s.client.server.(interface {
 		CreateInSwapWithCredits(context.Context, string, uint64,
@@ -607,7 +649,8 @@ func (s *paySession) createSwap(ctx context.Context) error {
 	}
 
 	err = validateInSwapQuote(
-		s.invoice, s.maxFeeSat, cfg, s.client.chainParams,
+		s.invoice, s.maxFeeSat, s.maxCreditSat, cfg,
+		s.client.chainParams,
 	)
 	if err != nil {
 		return fmt.Errorf("validate in-swap quote: %w", err)

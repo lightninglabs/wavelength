@@ -5,6 +5,7 @@ package swapclientserver
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/sdk/swaps"
+	swapsqlc "github.com/lightninglabs/wavelength/sdk/swaps/sqlc"
 	"github.com/lightninglabs/wavelength/serverconn"
 	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/waved"
@@ -2237,4 +2239,88 @@ func TestStartReceiveReturnsPersistedInvoice(t *testing.T) {
 			}
 		})
 	}
+}
+
+// authorizationRuntime exercises the production SDK replay validator while
+// keeping worker execution deterministic in daemon admission tests.
+type authorizationRuntime struct {
+	*fakeSwapRuntime
+	validator *swaps.SwapClient
+}
+
+// ValidatePayAuthorization delegates to the real swap-store authorization
+// boundary, including legacy rows without inferred caps.
+func (a *authorizationRuntime) ValidatePayAuthorization(ctx context.Context,
+	invoice string, maxFeeSat, maxCreditSat uint64) error {
+
+	return a.validator.ValidatePayAuthorization(
+		ctx, invoice, maxFeeSat, maxCreditSat,
+	)
+}
+
+// TestStartPayReattachesLegacyAuthorization uses a pre-upgrade durable pay row
+// and the real SDK validator. Daemon dedup returns the existing swap and starts
+// its recovery worker without calling create or assigning a new authorization.
+func TestStartPayReattachesLegacyAuthorization(t *testing.T) {
+	hash := testHash(78)
+	invoice := testStartPayInvoice(t, hash, 10000)
+	store, err := swaps.NewSqliteStore(&swaps.SqliteStoreConfig{
+		DatabaseFileName: filepath.Join(t.TempDir(), "swaps.db"),
+	}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	key := bridgeTestKey().SerializeCompressed()
+	require.NoError(
+		t,
+		store.Queries().UpsertPaySwap(t.Context(),
+			swapsqlc.UpsertPaySwapParams{
+				PaymentHash:         hash[:],
+				Invoice:             invoice,
+				MaxFeeSat:           25,
+				State:               "FundingInitiated",
+				AmountSat:           10000,
+				ClientPubkey:        key,
+				OperatorPubkey:      key,
+				ServerPubkey:        key,
+				VhtlcPkscript:       []byte{},
+				VhtlcPolicyTemplate: []byte{},
+			},
+		),
+	)
+	validator := swaps.NewSwapClientWithStore(
+		nil, &bridgeTestDaemon{
+			key: bridgeTestKey(),
+		},
+		nil,
+		nil,
+		store,
+	)
+	validator.SetChainParams(&chaincfg.RegressionNetParams)
+	runtime := &authorizationRuntime{
+		fakeSwapRuntime: newFakeSwapRuntime(swaps.SwapSummary{
+			Direction:   swaps.SwapDirectionPay,
+			PaymentHash: hash,
+			Invoice:     invoice,
+			State:       "FundingInitiated",
+			Pending:     true,
+			AmountSat:   10000,
+		}),
+		validator: validator,
+	}
+	service := newTestSwapClientService(runtime)
+	service.chainParams = &chaincfg.RegressionNetParams
+	t.Cleanup(service.cancel)
+	response, err := service.StartPay(
+		t.Context(), &swapclientrpc.StartPayRequest{
+			Invoice:      invoice,
+			MaxFeeSat:    25,
+			MaxCreditSat: 500,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, hex.EncodeToString(hash[:]), response.PaymentHash)
+	runtime.awaitPayResume(t, hash)
+	require.Zero(t, runtime.startPayCount())
+	_, err = store.Queries().GetPayAuthorization(t.Context(), hash[:])
+	require.ErrorIs(t, err, sql.ErrNoRows)
 }

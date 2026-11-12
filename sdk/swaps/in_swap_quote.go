@@ -98,7 +98,7 @@ func (c *SwapClient) QuotePayViaLightningWithCredits(ctx context.Context,
 	}
 
 	if err := validateInSwapPreview(
-		invoice, quote, c.chainParams,
+		invoice, quote, maxCreditSat, c.chainParams,
 	); err != nil {
 		return nil, err
 	}
@@ -107,9 +107,9 @@ func (c *SwapClient) QuotePayViaLightningWithCredits(ctx context.Context,
 }
 
 // validateInSwapPreview verifies that a server quote is bound to the caller's
-// invoice before the wallet renders it as a user-visible preview.
+// invoice and credit cap before the wallet renders a user-visible preview.
 func validateInSwapPreview(invoice string, quote *InSwapQuote,
-	chainParams *chaincfg.Params) error {
+	maxCreditSat uint64, chainParams *chaincfg.Params) error {
 
 	if quote == nil {
 		return fmt.Errorf("in-swap quote is required")
@@ -162,6 +162,12 @@ func validateInSwapPreview(invoice string, quote *InSwapQuote,
 	}
 
 	expectedAmountSat := expectedInvoiceSat + quote.FeeSat
+	if err := validatePayCredit(
+		quote.SettlementType, quote.CreditQuote, maxCreditSat,
+		expectedAmountSat, false,
+	); err != nil {
+		return err
+	}
 	switch quote.SettlementType {
 	case "", SettlementTypeLightning, SettlementTypeInArk:
 	case SettlementTypeCredit:
@@ -185,9 +191,9 @@ func validateInSwapPreview(invoice string, quote *InSwapQuote,
 }
 
 // validateInSwapQuote verifies that the server quote is bound to the caller's
-// invoice and fee limit before the client funds the quoted vHTLC.
-func validateInSwapQuote(invoice string, maxFeeSat uint64, cfg *InSwapConfig,
-	chainParams *chaincfg.Params) error {
+// invoice, fee limit and credit cap before accepting completion or funding.
+func validateInSwapQuote(invoice string, maxFeeSat, maxCreditSat uint64,
+	cfg *InSwapConfig, chainParams *chaincfg.Params) error {
 
 	if cfg == nil {
 		return fmt.Errorf("in-swap config is required")
@@ -230,6 +236,12 @@ func validateInSwapQuote(invoice string, maxFeeSat uint64, cfg *InSwapConfig,
 	}
 
 	expectedAmountSat := amountSat + cfg.FeeSat
+	if err := validatePayCredit(
+		cfg.SettlementType, cfg.CreditQuote, maxCreditSat,
+		expectedAmountSat, true,
+	); err != nil {
+		return err
+	}
 	switch cfg.SettlementType {
 	case "", SettlementTypeLightning, SettlementTypeInArk:
 	case SettlementTypeCredit:
@@ -255,6 +267,69 @@ func validateInSwapQuote(invoice string, maxFeeSat uint64, cfg *InSwapConfig,
 		return fmt.Errorf("in-swap amount %d does not equal invoice "+
 			"amount %d plus fee %d", cfg.AmountSat, amountSat,
 			cfg.FeeSat)
+	}
+
+	return nil
+}
+
+// validatePayCredit binds the server's credit leg to local authorization and
+// the invoice plus fee. Preview may include a shortfall; creation must return
+// a fully reserved plan. A completed credit pay can report a larger original
+// reservation than its final invoice plus charged fee after unused routing
+// budget is released. Mandatory credit never expands caller authority.
+func validatePayCredit(settlement SettlementType, quote *CreditQuote,
+	maxCreditSat, totalSat uint64, completed bool) error {
+
+	switch settlement {
+	case "", SettlementTypeLightning, SettlementTypeInArk,
+		SettlementTypeCredit, SettlementTypeMixed:
+	default:
+		return fmt.Errorf("unknown in-swap settlement type %q",
+			settlement)
+	}
+
+	if quote == nil {
+		if settlement == SettlementTypeCredit ||
+			settlement == SettlementTypeMixed {
+			return fmt.Errorf("credit settlement missing credit " +
+				"quote")
+		}
+
+		return nil
+	}
+	applied, shortfall := quote.CreditAppliedSat, quote.CreditShortfallSat
+	if applied > maxCreditSat || shortfall > maxCreditSat-applied {
+		return fmt.Errorf("credit requirement exceeds "+
+			"max_credit_sat %d", maxCreditSat)
+	}
+	if completed && (shortfall != 0 || quote.CreditTopupSat != 0) {
+		return fmt.Errorf("completed credit reservation contains a " +
+			"shortfall or top-up")
+	}
+	required := applied + shortfall
+	switch settlement {
+	case SettlementTypeCredit:
+		if maxCreditSat == 0 || required < totalSat ||
+			(!completed && required != totalSat) ||
+			quote.ArkFundingSat != 0 {
+			return fmt.Errorf("credit settlement does not cover " +
+				"invoice plus fee within authorization")
+		}
+
+	case SettlementTypeMixed:
+		if applied == 0 || shortfall != 0 || applied >= totalSat ||
+			quote.ArkFundingSat != totalSat-applied {
+			return fmt.Errorf("mixed credit and Ark funding do " +
+				"not equal invoice plus fee")
+		}
+
+	case "", SettlementTypeLightning, SettlementTypeInArk:
+		if required != 0 || quote.MustUseCredit ||
+			quote.CreditTopupSat != 0 {
+			return fmt.Errorf("non-credit settlement contains " +
+				"credit reservation")
+		}
+
 	}
 
 	return nil

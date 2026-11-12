@@ -11,6 +11,7 @@ import (
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/db/actordelivery"
+	"github.com/lightninglabs/wavelength/timeout"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 )
@@ -397,6 +398,36 @@ func TestRegistryDedupReturnsExisting(t *testing.T) {
 	require.True(t, ok)
 	require.True(t, secondResp.Existing)
 	require.Equal(t, firstResp.OpID, secondResp.OpID)
+
+	// A reused operation key must not acknowledge different authorization.
+	for _, mutate := range []func(*StartCreditPayRequest){
+		func(p *StartCreditPayRequest) {
+			p.MaxCreditSat++
+		},
+		func(p *StartCreditPayRequest) {
+			p.TopupSat++
+		},
+		func(p *StartCreditPayRequest) {
+			p.AmountSat++
+		},
+		func(p *StartCreditPayRequest) {
+			p.MaxFeeSat++
+		},
+		func(p *StartCreditPayRequest) {
+			p.Invoice += "changed"
+		},
+		func(p *StartCreditPayRequest) {
+			p.PaymentHash[0]++
+		},
+		func(p *StartCreditPayRequest) {
+			p.CreditOnly = !p.CreditOnly
+		},
+	} {
+		changed := req()
+		mutate(changed)
+		_, err := registry.Ref().Ask(ctx, changed).Await(ctx).Unpack()
+		require.ErrorContains(t, err, "differs from original")
+	}
 }
 
 // TestRegistryReceiveReturnsInvoice asserts a receive admission creates the
@@ -881,5 +912,75 @@ func TestRegistryPayCheckpointsFirstLedgerRead(t *testing.T) {
 	ph := payHash()
 	server.setPayOp(ph[:], ServerStateDebited)
 	waitForState(t, store, startResp.OpID, StateCompleted)
+	require.Equal(t, 1, server.startPayCount())
+}
+
+// TestContradictoryCreditLedgerKeepsLiveDriver exercises more deliveries than
+// the nack budget and a one-poll limit. Contradiction remains pending with an
+// intervention reason; corrected evidence settles without restart or redrive.
+func TestContradictoryCreditLedgerKeepsLiveDriver(t *testing.T) {
+	store, delivery := newFakeStore(), newTestDelivery(t)
+	server, daemon := newFakeServer(), newFakeDaemon()
+	ph := payHash()
+	server.setPayOp(ph[:], ServerStateDebited)
+	server.mu.Lock()
+	for _, op := range server.ops {
+		op.amountSat = 501
+	}
+	server.mu.Unlock()
+	system := actor.NewActorSystem()
+	t.Cleanup(
+		func() {
+			require.NoError(
+				t,
+				system.Shutdown(
+					context.Background(),
+				),
+			)
+		},
+	)
+	timers := timeout.NewActor()
+	timerKey := actor.NewServiceKey[timeout.Msg, timeout.Resp](
+		"credit-test-timeout",
+	)
+	timerRef := actor.RegisterWithSystem(
+		system, "credit-test-timeout", timerKey, timers,
+	)
+	timers.Start(timerRef)
+
+	registry, err := NewRegistry(RegistryConfig{
+		ActorSystem: system, TimeoutActor: timerRef,
+		CallbackRef: NewRetryCallbackRef(NewServiceKey().Ref(system)),
+
+		Store: store, DeliveryStore: delivery,
+		Server: server, Daemon: daemon,
+		PollInterval: 20 * time.Millisecond, MaxAwaitingPolls: 1,
+	})
+	require.NoError(t, err)
+	t.Cleanup(registry.Stop)
+	response, err := registry.Ref().Ask(t.Context(), &StartCreditPayRequest{
+		OpKey: "pay:contradiction", Invoice: "lnbc1", PaymentHash: ph,
+		AmountSat: 500, MaxCreditSat: 500, CreditOnly: true,
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+	start, ok := response.(*StartCreditResponse)
+	require.True(t, ok)
+	opID := start.OpID
+	require.Eventually(
+		t,
+		func() bool { return server.listCallCount() >= 7 },
+		5*time.Second, 10*time.Millisecond,
+	)
+	record, err := store.GetOperation(t.Context(), opID)
+	require.NoError(t, err)
+	require.Equal(t, db.CreditOpStatusPending, record.Status)
+	require.Contains(t, record.LastError, "requires intervention")
+	dead, err := delivery.ListDeadLetters(
+		t.Context(), ActorIDForOp(opID), 10,
+	)
+	require.NoError(t, err)
+	require.Empty(t, dead)
+	server.setPayOp(ph[:], ServerStateDebited)
+	waitForState(t, store, opID, StateCompleted)
 	require.Equal(t, 1, server.startPayCount())
 }

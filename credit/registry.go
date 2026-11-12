@@ -1,6 +1,7 @@
 package credit
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -336,6 +337,13 @@ func (b *registryBehavior) admit(ctx context.Context, msg CreditMsg,
 	existing, err := b.cfg.Store.LookupActiveOperationByKey(ctx, opKey)
 	switch {
 	case err == nil:
+		if pay, ok := msg.(*StartCreditPayRequest); ok {
+			if err := validateCreditPayReplay(
+				existing, pay,
+			); err != nil {
+				return fn.Err[CreditResp](err)
+			}
+		}
 		// Dedup hit: ensure the existing child is resident and
 		// resuming, and answer with the known op id. A receive carries
 		// its already-created invoice back so a retry is idempotent.
@@ -968,4 +976,28 @@ func newOpID() (string, error) {
 	}
 
 	return hex.EncodeToString(buf[:]), nil
+}
+
+// validateCreditPayReplay rejects operation-key reuse that changes any pay
+// authority. The supervisor serializes admission; a retry cannot replace the
+// winning durable amounts, caps, invoice, hash or settlement owner.
+func validateCreditPayReplay(existing *db.CreditOperationRecord,
+	pay *StartCreditPayRequest) error {
+
+	snap, err := decodeOpSnapshot(existing.SnapshotData)
+	if err != nil {
+		return err
+	}
+	if existing.Kind != KindPay || existing.Invoice != pay.Invoice ||
+		!bytes.Equal(existing.PaymentHash, pay.PaymentHash[:]) ||
+		uint64(existing.AmountSat) != pay.AmountSat ||
+		uint64(existing.TopupSat) != pay.TopupSat ||
+		uint64(existing.MaxCreditSat) != pay.MaxCreditSat ||
+		uint64(existing.MaxFeeSat) != pay.MaxFeeSat ||
+		snap.CreditOnly != pay.CreditOnly {
+		return fmt.Errorf("credit pay authorization differs from " +
+			"original request")
+	}
+
+	return nil
 }
